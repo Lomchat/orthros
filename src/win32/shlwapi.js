@@ -98,6 +98,7 @@ export function registerShlwapi(api, vm) {
   const mem = vm.mem;
   const S = {};
   // string access for the two character widths
+  // snapshot: constant
   const forms = [
     { sfx: 'A', read: (c, i) => c.str(i) ?? '', write: (a, s, max) => mem.writeCString(a, s, max), size: 1 },
     { sfx: 'W', read: (c, i) => c.wstr(i) ?? '', write: (a, s, max) => mem.writeWString(a, s, max), size: 2 },

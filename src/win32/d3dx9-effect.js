@@ -2,12 +2,14 @@
 // shaders, strings) addressed by handles or names, techniques and passes whose state assignments are applied to the
 // device at BeginPass / CommitChanges — render, stage and sampler states, shaders with their constants laid out from
 // the parameters by each shader's constant table, preshaders, array selectors — and restored at End.
+import { snapClass } from '../core/snapshot.js';
 import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
 import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, PARAM_DESC_SLOTS, PARAM_DESC_ENTRY, PARAM_DESC_BYTES } from '../cpu/jit/runtime.js';
 import { apiOpt } from '../core/api-opt.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
+// snapshot: scratch
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
 const fbits = (v) => { f32[0] = v; return u32[0]; };
 const bitsf = (w) => { u32[0] = w; return f32[0]; };
@@ -827,6 +829,7 @@ export function defineEffects(X, vm, h) {
       if (s.ps !== undefined) this.call(c, M.SetPixelShader, 1, s.ps);
     }
   }
+  for (const C of [Effect]) snapClass(vm, C, { name: `d3dx9-effect.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   const create = (c, dev, src, len, pEffect, pErrors, flags) => {
     if (pEffect) mem.write32(pEffect, 0);

@@ -4,6 +4,7 @@
 // index buffers) stored in guest memory with Lock/Unlock, and a pluggable backend
 // (`vm.host.gfx`) that receives state changes and draw calls. Without a backend (headless Node)
 // everything is tracked and counted so traces and tests can observe the game's rendering.
+import { snapKnown, snapClass } from '../core/snapshot.js';
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_INVALIDARG, E_OUTOFMEMORY, E_NOTIMPL } from './com.js';
 import { Surface as GdiSurface } from '../gfx/gdi/surface.js';
 import { makeDC } from './gdi32.js';
@@ -66,6 +67,7 @@ export function stateUseReport(dev) {
   if (!dev?.stateUse) return '';
   return [...dev.stateUse].map(([k, set]) => [`${STATE_GROUP_NAMES[Math.floor(k / 0x10000)]}:${k % 0x10000}`, set]).sort((a, b) => a[0].localeCompare(b[0], 'en', { numeric: true })).map(([k, set]) => `${k}=${[...set].map((v) => (v > 0xffff ? '0x' + v.toString(16) : v)).join(',')}`).join('\n  ');
 }
+// snapshot: scratch
 const f32b = new Float32Array(1), u32b = new Uint32Array(f32b.buffer);
 /** Bit pattern of a float32 (exact comparison of matrices: -0 vs 0 and NaN payloads count as changes). */
 function f32bits(v) { f32b[0] = v; return u32b[0]; }
@@ -137,9 +139,9 @@ export function d3dCore(vm) {
   }
 
   // ---------------------------------------------------------------- resources
-  let nextResId = 1;
+  const resIds = snapKnown(vm, 'd3d8.resIds', { next: 1 }); // (resource ids)
   class Resource {
-    constructor(dev, type, pool, usage, fmt) { this.dev = dev; this.type = type; this.pool = pool; this.usage = usage; this.fmt = fmt; this.id = nextResId++; this.priority = 0; this.privateData = new Map(); this.iids = [IID_IDirect3DResource8]; }
+    constructor(dev, type, pool, usage, fmt) { this.dev = dev; this.type = type; this.pool = pool; this.usage = usage; this.fmt = fmt; this.id = resIds.next++; this.priority = 0; this.privateData = new Map(); this.iids = [IID_IDirect3DResource8]; }
     GetDevice(c) { c.out32(1, this.dev.ptr); com.addRef(com.objectAt(this.dev.ptr)); return D3D_OK; }
     SetPrivateData(c) { const g = readGuid(mem, c.arg(1)), p = c.arg(2), n = c.arg(3), flags = c.arg(4); this.privateData.set(g, flags & 1 ? { iunknown: mem.read32(p) } : { data: mem.bytes(p, n).slice() }); return D3D_OK; }
     GetPrivateData(c) { const g = readGuid(mem, c.arg(1)), p = c.arg(2), ps = c.arg(3); const d = this.privateData.get(g); if (!d) return D3DERR_NOTFOUND; const bytes = d.data ?? new Uint8Array(4); const size = mem.read32(ps); mem.write32(ps, bytes.length); if (size < bytes.length) return D3DERR_MOREDATA; if (d.data) mem.writeBytes(p, d.data); else mem.write32(p, d.iunknown); return D3D_OK; }
@@ -160,7 +162,7 @@ export function d3dCore(vm) {
     constructor(dev, owner, fmt, w, h, usage, pool, level = 0, face = 0) {
       this.dev = dev; this.owner = owner; this.fmt = fmt; this.width = w; this.height = h; this.usage = usage; this.pool = pool; this.level = level; this.face = face;
       this.pitch = surfacePitch(fmt, w); this.bytes = surfaceBytes(fmt, w, h);
-      this._mem = 0; this.locked = false; this._dirty = false; this.dirtyRect = null; this.lockRect = null; this.id = nextResId++; this.privateData = new Map(); this.type = RTYPE.SURFACE;
+      this._mem = 0; this.locked = false; this._dirty = false; this.dirtyRect = null; this.lockRect = null; this.id = resIds.next++; this.privateData = new Map(); this.type = RTYPE.SURFACE;
       this.iids = [IID_IDirect3DSurface8];
     }
     /**
@@ -711,7 +713,7 @@ export function d3dCore(vm) {
     DeletePatch() { return D3DERR_INVALIDCALL; }
   }
 
-  vm.d3dCore = { Resource, Surface, Texture, CubeTexture, VolumeTexture, Buffer, Device, writeCaps, displayMode, writeMode, modes, RS_DEFAULTS, TSS_DEFAULTS, MAX_STAGES, MAX_STREAMS, allocResId: () => nextResId++ };
+  vm.d3dCore = { Resource, Surface, Texture, CubeTexture, VolumeTexture, Buffer, Device, writeCaps, displayMode, writeMode, modes, RS_DEFAULTS, TSS_DEFAULTS, MAX_STAGES, MAX_STREAMS, allocResId: () => resIds.next++ };
   return vm.d3dCore;
 }
 
@@ -720,6 +722,7 @@ export function registerDirect3D8(api, vm) {
   const I = (name, iid, parent, methods) => com.interface(name, iid, parent, methods);
   I('IDirect3D8', IID_IDirect3D8, 'IUnknown', [['RegisterSoftwareDevice', 1], ['GetAdapterCount', 0], ['GetAdapterIdentifier', 3], ['GetAdapterModeCount', 1], ['EnumAdapterModes', 3], ['GetAdapterDisplayMode', 2], ['CheckDeviceType', 5], ['CheckDeviceFormat', 6], ['CheckDeviceMultiSampleType', 5], ['CheckDepthStencilMatch', 5], ['GetDeviceCaps', 3], ['GetAdapterMonitor', 1], ['CreateDevice', 6]]);
   I('IDirect3DDevice8', IID_IDirect3DDevice8, 'IUnknown', [['TestCooperativeLevel', 0], ['GetAvailableTextureMem', 0], ['ResourceManagerDiscardBytes', 1], ['GetDirect3D', 1], ['GetDeviceCaps', 1], ['GetDisplayMode', 1], ['GetCreationParameters', 1], ['SetCursorProperties', 3], ['SetCursorPosition', 3], ['ShowCursor', 1], ['CreateAdditionalSwapChain', 2], ['Reset', 1], ['Present', 4], ['GetBackBuffer', 3], ['GetRasterStatus', 1], ['SetGammaRamp', 2], ['GetGammaRamp', 1], ['CreateTexture', 7], ['CreateVolumeTexture', 8], ['CreateCubeTexture', 6], ['CreateVertexBuffer', 5], ['CreateIndexBuffer', 5], ['CreateRenderTarget', 6], ['CreateDepthStencilSurface', 5], ['CreateImageSurface', 4], ['CopyRects', 5], ['UpdateTexture', 2], ['GetFrontBuffer', 1], ['SetRenderTarget', 2], ['GetRenderTarget', 1], ['GetDepthStencilSurface', 1], ['BeginScene', 0], ['EndScene', 0], ['Clear', 6], ['SetTransform', 2], ['GetTransform', 2], ['MultiplyTransform', 2], ['SetViewport', 1], ['GetViewport', 1], ['SetMaterial', 1], ['GetMaterial', 1], ['SetLight', 2], ['GetLight', 2], ['LightEnable', 2], ['GetLightEnable', 2], ['SetClipPlane', 2], ['GetClipPlane', 2], ['SetRenderState', 2], ['GetRenderState', 2], ['BeginStateBlock', 0], ['EndStateBlock', 1], ['ApplyStateBlock', 1], ['CaptureStateBlock', 1], ['DeleteStateBlock', 1], ['CreateStateBlock', 2], ['SetClipStatus', 1], ['GetClipStatus', 1], ['GetTexture', 2], ['SetTexture', 2], ['GetTextureStageState', 3], ['SetTextureStageState', 3], ['ValidateDevice', 1], ['GetInfo', 3], ['SetPaletteEntries', 2], ['GetPaletteEntries', 2], ['SetCurrentTexturePalette', 1], ['GetCurrentTexturePalette', 1], ['DrawPrimitive', 3], ['DrawIndexedPrimitive', 5], ['DrawPrimitiveUP', 4], ['DrawIndexedPrimitiveUP', 8], ['ProcessVertices', 5], ['CreateVertexShader', 4], ['SetVertexShader', 1], ['GetVertexShader', 1], ['DeleteVertexShader', 1], ['SetVertexShaderConstant', 3], ['GetVertexShaderConstant', 3], ['GetVertexShaderDeclaration', 3], ['GetVertexShaderFunction', 3], ['SetStreamSource', 3], ['GetStreamSource', 3], ['SetIndices', 2], ['GetIndices', 2], ['CreatePixelShader', 2], ['SetPixelShader', 1], ['GetPixelShader', 1], ['DeletePixelShader', 1], ['SetPixelShaderConstant', 3], ['GetPixelShaderConstant', 3], ['GetPixelShaderFunction', 3], ['DrawRectPatch', 3], ['DrawTriPatch', 3], ['DeletePatch', 1]]);
+  // snapshot: constant
   const resourceMethods = [['GetDevice', 1], ['SetPrivateData', 4], ['GetPrivateData', 3], ['FreePrivateData', 1], ['SetPriority', 1], ['GetPriority', 0], ['PreLoad', 0], ['GetType', 0]];
   I('IDirect3DResource8', IID_IDirect3DResource8, 'IUnknown', resourceMethods);
   I('IDirect3DBaseTexture8', IID_IDirect3DBaseTexture8, 'IDirect3DResource8', [['SetLOD', 1], ['GetLOD', 0], ['GetLevelCount', 0]]);
@@ -779,6 +782,7 @@ export function registerDirect3D8(api, vm) {
       return D3D_OK;
     }
   }
+  for (const C of [Resource, Surface, Texture, CubeTexture, VolumeTexture, Buffer, Device, Direct3D]) snapClass(vm, C, { name: `d3d8.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   api.define('d3d8.dll', {
     Direct3DCreate8: [1, (c) => {

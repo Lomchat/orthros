@@ -407,6 +407,7 @@ export function encodeDxt(fmt, rgba, w, h) {
 }
 /** Size of the DXT blocks of a w x h image. */
 export const dxtBytes = (fmt, w, h) => Math.max(1, (w + 3) >> 2) * Math.max(1, (h + 3) >> 2) * (fmt === FMT.DXT1 ? 8 : 16);
+// snapshot: the encoder, made again on use
 let dxtEncoder = null;
 /** Install an encoder that may split the work (returns null to decline: the encoder here runs). */
 export function setDxtEncoder(f) { dxtEncoder = f; }

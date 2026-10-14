@@ -1,6 +1,7 @@
 // D3DX 9 (d3dx9_24.dll ... d3dx9_43.dll): the helper library of the DirectX SDK that games ship against — math,
 // texture loading from image files in memory, shader helpers, buffers and the effect framework (d3dx9-effect.js).
 // One implementation answers to every numbered DLL name (the export sets differ only by additions).
+import { snapClass } from '../core/snapshot.js';
 import { FMT, surfaceBytes, surfacePitch, readShaderTokens } from './d3d8.js';
 import { fvfLayout } from '../gfx/d3d8-shaders.js';
 import { defineD3DXMath } from './d3dx9-math.js';
@@ -31,6 +32,7 @@ export function registerD3DX9(api, vm) {
     GetBufferSize() { return this.size; }
     destroy() { this.proc.vmem.release(this.addr); }
   }
+  for (const C of [DxBuffer]) snapClass(vm, C, { name: `d3dx9.${C.name}` }); // (snapshots: core/vm-snapshot.js)
   /** a new ID3DXBuffer holding `bytes` (Uint8Array) or `n` zero bytes */
   const newBuffer = (c, bytes, n = bytes?.length ?? 0) => { const b = new DxBuffer(c.proc, n); if (bytes) mem.writeBytes(b.addr, bytes); return com.create(c.proc, 'ID3DXBuffer', b); };
   const textBuffer = (c, s) => newBuffer(c, Uint8Array.from(s + '\0', (ch) => ch.charCodeAt(0) & 0xff));
@@ -287,6 +289,7 @@ export function registerD3DX9(api, vm) {
    * D3DXFilterTexture builds right after start from it instead of decoding the compressed level. Any other write
    * to the surface (fillSurface, a lock) drops it.
    */
+  // snapshot: cache (decoded surfaces)
   const recentRgba = [];
   const rememberRgba = (s, rgba) => { s.rgbaCache = rgba; recentRgba.push(s); if (recentRgba.length > 4) { const old = recentRgba.shift(); if (!recentRgba.includes(old)) old.rgbaCache = null; } };
   X.D3DXLoadSurfaceFromFileInMemory = [9, (c) => { // (dst, dstPal, dstRect, src, size, srcRect, filter, key, info)
@@ -298,6 +301,7 @@ export function registerD3DX9(api, vm) {
     for (let y = 0; y < sh; y++) sub.set(full.subarray(((sr.t + y) * im.width + sr.l) * 4, ((sr.t + y) * im.width + sr.r) * 4), y * sw * 4);
     return blitRgba(c, dst, rectOf(c.arg(2), dst.width, dst.height), sub, sw, sh, c.arg(6), c.arg(7));
   }];
+  // snapshot: diagnostics
   let loadLogs = 0; // (--log d3dx: the first calls described)
   X.D3DXLoadSurfaceFromMemory = [10, (c) => { // (dst, dstPal, dstRect, src, srcFmt, srcPitch, srcPal, srcRect, filter, key)
     const dst = surfaceOf(c.arg(0)); if (!dst || !c.arg(7)) return D3DERR_INVALIDCALL;

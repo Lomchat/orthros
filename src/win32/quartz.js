@@ -8,6 +8,7 @@
 // Other files fail as on a Windows without the codec (VFW_E_UNKNOWN_FILE_TYPE / VFW_E_UNSUPPORTED_STREAM): a game then
 // skips its movie. Pictures are shown on the host display's video layer, above the game's own layers, in the video
 // window's rectangle; sound goes through the DirectSound mixer; playback follows the VM clock.
+import { snapClass } from '../core/snapshot.js';
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOTIMPL, E_POINTER, E_INVALIDARG, E_FAIL } from './com.js';
 import { MoviePlayer, MediaClock } from './movie-player.js';
 
@@ -33,6 +34,7 @@ const WS_CHILD = 0x40000000, WS_OVERLAPPEDWINDOW = 0x00cf0000, WS_CLIPSIBLINGS =
 
 const DISPATCH = [['GetTypeInfoCount', 1], ['GetTypeInfo', 3], ['GetIDsOfNames', 5], ['Invoke', 8]];
 /** IDispatch (dual interfaces): no type information */
+// snapshot: constant
 const dispatchImpl = {
   GetTypeInfoCount(c) { c.out32(1, 0); return S_OK; },
   GetTypeInfo(c) { c.out32(3, 0); return E_NOTIMPL; },
@@ -195,6 +197,7 @@ export function registerQuartz(api, vm) {
     setVisible(v) { this.win.visible = v; this.player.refresh(); }
     windowChanged() { if (this.win.visible) this.player.refresh(); }
   }
+  for (const C of [Graph]) snapClass(vm, C, { name: `quartz.${C.name}` }); // (snapshots: core/vm-snapshot.js)
 
   // ---------------------------------------------------------------- the interfaces
   const GRAPH = {
@@ -373,7 +376,7 @@ export function registerQuartz(api, vm) {
     queryInterface(c, iid) { const n = BY_IID.get(iid); return n ? this.g.part(c, n) : 0; }
     destroy() { this.g.released(name); }
   };
-  const define = (name, methods, iids) => { const C = part(name, iids); Object.assign(C.prototype, methods); PARTS[name] = C; };
+  const define = (name, methods, iids) => { const C = part(name, iids); Object.assign(C.prototype, methods); PARTS[name] = C; snapClass(vm, C, { name: `quartz.part.${name}` }); };
   define('IFilterGraph2', GRAPH, [IID.IFilterGraph, IID.IGraphBuilder]);
   define('IMediaControl', CONTROL);
   define('IMediaEventEx', EVENT, [IID.IMediaEvent]);

@@ -121,6 +121,9 @@ export class ApiRegistry {
     this.signatures = new Map();
     this.unknown = new Map(); // "dll!name" -> call count
     this.onThunk = null; // (idx, 'dll!name', def) callback when a thunk slot is created
+    /** DLL -> (name) => def: handlers a module defines as the game reaches them (COM methods), defined by name instead
+     *  — a restored Vm's (core/vm-snapshot.js) */
+    this.lazyDefs = new Map();
     /** default return value of tracing stubs per DLL (GpStatus GenericError for gdiplus, E_NOTIMPL for COM-style DLLs) */
     this.stubReturns = new Map([['gdiplus.dll', 1], ['ole32.dll', 0x80004001], ['oleaut32.dll', 0x80004001], ['d3d8.dll', 0], ['dsound.dll', 0x80004001], ['ddraw.dll', 0x80004001], ['dinput8.dll', 0x80004001], ['quartz.dll', 0x80004001], ['avifil32.dll', 0x80004001]]);
   }

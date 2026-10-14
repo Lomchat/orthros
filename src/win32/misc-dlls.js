@@ -221,6 +221,7 @@ export function registerMiscDlls(api, vm) {
   api.define('psapi.dll', { GetProcessMemoryInfo: [3, (c) => { const p = c.arg(1); mem.write32(p + 12, 0x2000000); return 1; }], EnumProcessModules: [4, (c) => { c.out32(3, 4); if (c.arg(2) >= 4) mem.write32(c.arg(1), c.proc.exe.base); return 1; }], GetModuleFileNameExA: [4, (c) => { const m = c.proc.moduleByHandle(c.arg(1)); const s = c.proc.moduleFileName(m); mem.writeCString(c.arg(2), s, c.arg(3)); return Math.min(s.length, c.arg(3) - 1); }], GetModuleBaseNameA: [4, (c) => { const m = c.proc.moduleByHandle(c.arg(1)); const s = m?.name ?? ''; mem.writeCString(c.arg(2), s, c.arg(3)); return s.length; }], GetModuleInformation: [4, (c) => { const m = c.proc.moduleByHandle(c.arg(1)); if (!m) return 0; mem.write32(c.arg(2), m.base); mem.write32(c.arg(2) + 4, m.size); mem.write32(c.arg(2) + 8, m.entry); return 1; }], EnumProcesses: [3, (c) => { mem.write32(c.arg(0), c.proc.pid); c.out32(2, 4); return 1; }] });
   // WinVerifyTrust on a file (WINTRUST_DATA dwUnionChoice WTD_CHOICE_FILE): its Authenticode signature checked
   // (src/win32/authenticode.js: digest, signer's signature; not the chain to a root). Games verify their own executable.
+  // snapshot: cache (signature checks of files)
   const trustCache = new Map();
   api.define('wintrust.dll', { WinVerifyTrust: [3, (c) => {
     const d = c.arg(2);
@@ -261,6 +262,7 @@ export function registerMiscDlls(api, vm) {
   api.define('hid.dll', { HidD_GetHidGuid: [1, () => {}], HidD_GetAttributes: [2, () => 0], HidD_GetPreparsedData: [2, () => 0], HidP_GetCaps: [2, () => 0], HidD_FreePreparsedData: [1, () => 1] });
   // DirectX 9 system DLLs whose presence version checks test (the DirectPlay NAT helper is DirectX 8.1's marker):
   // in-process COM servers serving no class here
+  // snapshot: constant
   const comServer = { DllCanUnloadNow: [0, () => 1], DllGetClassObject: [3, (c) => { if (c.arg(2)) mem.write32(c.arg(2), 0); return 0x80040111; }], DllRegisterServer: [0, () => S_OK], DllUnregisterServer: [0, () => S_OK] }; // (S_FALSE; CLASS_E_CLASSNOTAVAILABLE)
   api.define('dpnhpast.dll', comServer);
 }

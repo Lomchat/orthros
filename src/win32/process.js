@@ -20,7 +20,6 @@ export const MAX_TLS_MODULES = 48;
 
 export const TS = Object.freeze({ READY: 0, RUNNING: 1, BLOCKED: 2, SUSPENDED: 3, DONE: 4 });
 
-let nextPid = 0x400;
 
 export class Thread {
   /**
@@ -116,7 +115,7 @@ export class Process {
     this.api = vm.api;
     this.vfs = vm.vfs;
     this.type = 'process';
-    this.pid = nextPid; nextPid += 4;
+    this.pid = vm.nextPid; vm.nextPid += 4; // (per machine: in its snapshots)
     this.vmem = new VMem();
     this.handles = new HandleTable(vm.mem);
     /** @type {Map<string, any>} lowercase name -> module (PeModule or builtin marker) */
