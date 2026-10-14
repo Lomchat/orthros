@@ -2,11 +2,16 @@
 // shaders, strings) addressed by handles or names, techniques and passes whose state assignments are applied to the
 // device at BeginPass / CommitChanges — render, stage and sampler states, shaders with their constants laid out from
 // the parameters by each shader's constant table, preshaders, array selectors — and restored at End.
-import { snapClass } from '../core/snapshot.js';
+import { snapClass, cacheKey } from '../core/snapshot.js';
 import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
 import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, PARAM_DESC_SLOTS, PARAM_DESC_ENTRY, PARAM_DESC_BYTES } from '../cpu/jit/runtime.js';
 import { apiOpt } from '../core/api-opt.js';
+
+// Caches compiled from an effect's data, kept on its nodes (passes, sampler parameters, shaders, expressions): rebuilt
+// where they are read, never in a snapshot (core/snapshot.js cacheKey)
+const PASS_OPS = cacheKey('fx.passOps'), SAMPLER_OPS = cacheKey('fx.samplerOps'), SAMPLER_CONST = cacheKey('fx.samplerConst'), SAMPLER_TEX = cacheKey('fx.samplerTexOps');
+const PRESHADER = cacheKey('fx.preshader'), EXPR_PROG = cacheKey('fx.expression');
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
 // snapshot: scratch
@@ -429,10 +434,12 @@ export function defineEffects(X, vm, h) {
             sh.consts.push({ e, top, ver: -1, dv: -1, set: e.set, reg: e.reg, count: e.count, plan: this.planOf(n, e.type, e.count, e.set), vals, u: e.set === RSET.FLOAT4, vi: new Int32Array(vals.buffer) });
           }
         }
-        if (sh.info.preshader) sh.pre = this.programOf(sh.info.preshader);
+        this.preOf(sh);
       }
       return sh;
     }
+    /** shader `sh`'s preshader program, or null */
+    preOf(sh) { return sh.info?.preshader ? (sh[PRESHADER] ??= this.programOf(sh.info.preshader)) : null; }
     /** a preshader / expression with its input plans, its register files and a cache of its last outputs */
     programOf(prog) {
       const inputs = prog.inputs.map((e) => { const n = this.lookup(e.name, null); if (!n) return null; let top = n; while (top.parent) top = top.parent; return { e, n, top, plan: this.planOf(n, e.type, e.count, e.set) }; }).filter(Boolean);
@@ -483,7 +490,7 @@ export function defineEffects(X, vm, h) {
       if (e[0] === 1 && e[1] && e[3]) { const out = []; for (let el = 0; el < Math.max(1, e[1].elements.length); el++) { const sh = this.paramShader(e[2], el); if (sh) out.push(sh); } return out; }
       return one ? [one] : [];
     }
-    evalIndex(ex, count) { const out = this.runProgram(ex.P ??= this.programOf(ex.prog)); return Math.max(0, Math.min(count - 1, Math.round(out[0]))); }
+    evalIndex(ex, count) { const out = this.runProgram(ex[EXPR_PROG] ??= this.programOf(ex.prog)); return Math.max(0, Math.min(count - 1, Math.round(out[0]))); }
     /**
      * The register layout of a parameter for a constant-table entry, as a plan: for each of the 4 * count register
      * components, the parameter word it takes (-1: zero) and how to read it (0 float, 1 int, 2 bool). Matrices by
@@ -583,7 +590,7 @@ export function defineEffects(X, vm, h) {
       }
       const smp = sh.samplers;
       for (let i = 0; i < smp.length; i++) this.bindShaderSampler(c, dev, smp[i]);
-      const P = sh.pre;
+      const P = this.preOf(sh);
       if (P) { // (after the constants, as always: its outputs win where they share registers)
         const runs = P.runs;
         this.runProgram(P);
@@ -625,10 +632,11 @@ export function defineEffects(X, vm, h) {
         this.setConsts(c, vs, b.e.set, b.e.reg, b.e.count, b.vals); wrote = true;
       }
       for (const s of sh.samplers) this.bindSampler(c, s.n, s.reg);
-      if (sh.pre) { // (after the constants, as always: its outputs win where they share registers)
-        const runs = sh.pre.runs, out = this.runProgram(sh.pre);
-        if (!same || wrote || runs !== sh.pre.runs || sh.preRuns !== runs) for (const [start, cnt] of sh.pre.prog.outRanges) this.setConsts(c, vs, RSET.FLOAT4, start, cnt, out, 4 * start);
-        sh.preRuns = sh.pre.runs;
+      const pre = this.preOf(sh);
+      if (pre) { // (after the constants, as always: its outputs win where they share registers)
+        const runs = pre.runs, out = this.runProgram(pre);
+        if (!same || wrote || runs !== pre.runs || sh.preRuns !== runs) for (const [start, cnt] of pre.prog.outRanges) this.setConsts(c, vs, RSET.FLOAT4, start, cnt, out, 4 * start);
+        sh.preRuns = pre.runs;
       }
       // (sent to a state manager instead: the device's registers may not hold them, compared again once it is removed)
       if (dev) { sh.constVersion = all ? dev.constVersion : vs ? dev.vsConstVersion : dev.psConstVersion; sh.constAll = all; sh.constRegs = regs; } else sh.constRegs = null;
@@ -636,30 +644,30 @@ export function defineEffects(X, vm, h) {
     /** a sampler parameter's states (and texture) applied to sampler register `reg`, compiled once per parameter */
     /** a sampler parameter's states compiled once: { tex } (its texture) or { type, word() } (a sampler state) */
     samplerOpsOf(n) {
-      if (!n.samplerOps) {
+      if (!n[SAMPLER_OPS]) {
         const states = n.samplerStates?.[0] ?? (n.parent?.samplerStates?.[n.parent.elements.indexOf(n)]) ?? [];
         const pi = this.params.indexOf(n.parent ?? n), el = n.parent ? n.parent.elements.indexOf(n) : 0;
-        n.samplerOps = states.map((s, k) => {
+        n[SAMPLER_OPS] = states.map((s, k) => {
           const [cls, idx] = STATES[s.op] ?? [];
           const key = `p${pi}:${el}:${k}`;
           if (cls === 'texture') { const tn = this.refs.has(key) ? this.lookup(this.refs.get(key), null) : null; return { tex: tn }; }
           if (cls === 'samp') return { type: idx, word: this.wordOf(s, key), cst: !this.refs.has(key) && !this.exprs.has(key) };
           return null;
         }).filter(Boolean);
-        n.samplerConst = n.samplerOps.every((o) => o.tex !== undefined || o.cst); // (its states constants: see bindSampler)
-        n.samplerTexOps = n.samplerOps.filter((o) => o.tex !== undefined);
+        n[SAMPLER_CONST] = n[SAMPLER_OPS].every((o) => o.tex !== undefined || o.cst); // (its states constants: see bindSampler)
+        n[SAMPLER_TEX] = n[SAMPLER_OPS].filter((o) => o.tex !== undefined);
       }
-      return n.samplerOps;
+      return n[SAMPLER_OPS];
     }
     /**
      * bindSampler for sampler binding `s` of a shader ({ n, reg }), the device's own setters receiving the calls: the
      * register's state table it last applied its constant states to (and that table's version) kept on the binding.
      */
     bindShaderSampler(c, dev, s) {
-      const n = s.n, reg = s.reg, ops = n.samplerOps ?? this.samplerOpsOf(n);
-      const tbl = n.samplerConst && !dev.recording && dev.samplers !== undefined ? dev.samplers[reg] : undefined;
+      const n = s.n, reg = s.reg, ops = n[SAMPLER_OPS] ?? this.samplerOpsOf(n);
+      const tbl = n[SAMPLER_CONST] && !dev.recording && dev.samplers !== undefined ? dev.samplers[reg] : undefined;
       if (tbl !== undefined && s.tbl === tbl && s.ver === tbl.ver) { // (only its texture may differ: the state operations not walked)
-        const t = n.samplerTexOps;
+        const t = n[SAMPLER_TEX];
         for (let i = 0; i < t.length; i++) { const p = t[i].tex?.obj?.ptr ?? 0; if (dev.textures[reg] !== p) this.call(c, M.SetTexture, 2, reg, p); }
         return;
       }
@@ -675,11 +683,11 @@ export function defineEffects(X, vm, h) {
       const dev = this.stateManager ? null : (this.devImpl ??= com.implAt(this.dev));
       const ops = this.samplerOpsOf(n);
       // constant states already applied to this register, its state table untouched since (its version): not compared again
-      const tbl = dev !== null && n.samplerConst && !dev.recording && !apiOpt.off ? dev.samplers?.[reg] : undefined;
+      const tbl = dev !== null && n[SAMPLER_CONST] && !dev.recording && !apiOpt.off ? dev.samplers?.[reg] : undefined;
       const seen = tbl !== undefined ? n.samplerSeen?.[reg] : undefined;
       const skip = seen !== undefined && seen.tbl === tbl && seen.ver === tbl.ver;
       if (skip) { // (only its texture may differ: the state operations not walked)
-        const t = n.samplerTexOps;
+        const t = n[SAMPLER_TEX];
         for (let i = 0; i < t.length; i++) { const p = t[i].tex?.obj?.ptr ?? 0; if (dev.textures[reg] !== p) this.call(c, M.SetTexture, 2, reg, p); }
         return;
       }
@@ -764,8 +772,8 @@ export function defineEffects(X, vm, h) {
       const tex = (st) => { if (st >= 0 && st < 16) out.add(SHADOW_TEX + st); }; // (a texture bound: runtime.js DEFER_F_TEX)
       const sampler = (n, reg) => { for (const o of this.samplerOpsOf(n)) if (o.tex === undefined) samp(reg, o.type); else tex(reg); };
       let any = false;
-      ps.ops ??= this.compilePass(ps);
-      for (const o of ps.ops) {
+      ps[PASS_OPS] ??= this.compilePass(ps);
+      for (const o of ps[PASS_OPS]) {
         if (!o.dyn) continue;
         const t = o.touches;
         if (!t) continue;
@@ -793,7 +801,7 @@ export function defineEffects(X, vm, h) {
     }
     apply(c, ps, commit) {
     vm.effectCtx = c;
-      const ops = ps.ops ??= this.compilePass(ps);
+      const ops = ps[PASS_OPS] ??= this.compilePass(ps);
       for (let i = 0; i < ops.length; i++) { const o = ops[i]; if (!commit || o.dyn) o.f(c); } // (CommitChanges: what depends on parameters)
     }
     /**
@@ -829,7 +837,8 @@ export function defineEffects(X, vm, h) {
       if (s.ps !== undefined) this.call(c, M.SetPixelShader, 1, s.ps);
     }
   }
-  for (const C of [Effect]) snapClass(vm, C, { name: `d3dx9-effect.${C.name}` }); // (snapshots: core/vm-snapshot.js)
+  // (snapshots, core/vm-snapshot.js: the fast path's call context and the device's setters it calls, made again at its next use)
+  for (const C of [Effect]) snapClass(vm, C, { name: `d3dx9-effect.${C.name}`, skip: ['fastCtx', 'devFns'] });
 
   const create = (c, dev, src, len, pEffect, pErrors, flags) => {
     if (pEffect) mem.write32(pEffect, 0);

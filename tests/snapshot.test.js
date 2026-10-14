@@ -119,3 +119,16 @@ test('the profile stays the player\'s: a snapshot applies while what its machine
     assert.equal(c.proc, null);
   }
 });
+
+test('caches under a cacheKey are left out and rebuilt where read; other symbol keys are refused', async () => {
+  const { SnapRegistry, encodeGraph, decodeGraph, cacheKey } = await import('../src/core/snapshot.js');
+  const OPS = cacheKey('test.ops'), node = { prog: [1, 2], [OPS]: [{ f: () => 3 }] }, root = { nodes: [node] };
+  const reg = new SnapRegistry(); reg.known('root', root);
+  const g = encodeGraph(root, reg);
+  assert.ok(!JSON.stringify(g.objects).includes('"f"'));
+  const fresh = { nodes: [] }, reg2 = new SnapRegistry(); reg2.known('root', fresh);
+  const back = decodeGraph(g, reg2, null).root.nodes[0];
+  assert.deepEqual(back.prog, [1, 2]); assert.equal(back[OPS], undefined);
+  const r3 = new SnapRegistry(), other = { nodes: [{ [Symbol('x')]: 1 }] }; r3.known('root', other);
+  assert.throws(() => encodeGraph(other, r3), /symbol keys/);
+});

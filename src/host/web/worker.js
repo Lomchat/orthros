@@ -54,6 +54,7 @@ let bgTranslator = null, regionLater = [], bgDoneLogged = false; const bgMods = 
 let lastFlush = 0, running = false, stopped = false;
 let snapshotWanted = null; // (the page asked for a snapshot of the machine: { id, at }, taken at the next quiet point — docs/snapshot.md)
 let snapshotWatch = null, autoSeen = null; // (this session's automatic snapshot, once the game settled: snapshot-watch.js; what it saw of the profile)
+let snapshotPublish = false; // (the server's publishing session: its snapshots carry the profile, for new players — docs/snapshot.md stage 3)
 /** shared first-launch profile (profile-seed.js): files offered by the server to an empty profile; a first session's watch */
 let seedWatch = null, seedSink = null, profileSeeded = 0;
 const channel = new MessageChannel();
@@ -104,11 +105,19 @@ const codeCacheOn = (o) => o.codeCache !== false && (!o.headless || !!o.opfs);
 /** The profile's files: { path (original case, '/'-separated), data (a view: copy to keep) } */
 function profileFilesList() {
   const out = [];
-  for (const [key, f] of profile.files) {
-    const parts = key.split('/');
-    out.push({ path: parts.map((_, i) => profile.names.get(parts.slice(0, i + 1).join('/')) ?? parts[i]).join('/'), data: f.data.subarray(0, f.len) });
-  }
+  for (const [key, f] of profile.files) out.push({ path: profilePath(key), data: f.data.subarray(0, f.len) });
   return out;
+}
+/** A profile path in its original case ('/'-separated) from its lowercase key. */
+function profilePath(key) { const parts = key.split('/'); return parts.map((_, i) => profile.names.get(parts.slice(0, i + 1).join('/')) ?? parts[i]).join('/'); }
+/**
+ * The whole profile as a published snapshot carries it (stage 3: a new player's profile is made so before the
+ * restore — what the publishing session's game wrote before the capture, its folders), or null when over 8 MiB.
+ */
+function profileImage() {
+  const files = profileFilesList();
+  if (files.reduce((n, f) => n + f.data.length, 0) > 8 << 20) return null;
+  return { dirs: [...profile.dirs].filter(Boolean).sort().map(profilePath), files: files.map((f) => ({ path: f.path, data: toBase64(f.data) })) };
 }
 
 async function flushProfile(force = false) {
@@ -341,6 +350,13 @@ async function start(m) {
     const t0 = performance.now();
     let snap = null;
     try { snap = decodeSnapshot(new Uint8Array(m.snapshot)); } catch (e) { log('loader', `snapshot not used: ${e.message}`); post({ type: 'snapshot-stale', reason: e.message }); }
+    // (the server's shared snapshot, for a new player — no profile of their own here, at most the shared first-launch
+    // one it started from too: the profile its game had at the capture put in place first, nothing of theirs replaced)
+    if (snap && m.snapshotShared && snap.meta?.profile && profileFilesRestored === 0 && !(m.opts.profileFiles?.length)) {
+      for (const d of snap.meta.profile.dirs ?? []) { if (typeof d !== 'string') continue; const parts = d.split('/'); for (let i = 1; i <= parts.length; i++) profile.mkdir(parts.slice(0, i).join('/')); }
+      const ok = (p) => typeof p === 'string' && p.length <= 240 && p.split('/').every((c) => c && c !== '.' && c !== '..' && !/[\\:*?"<>|\x00-\x1f]/.test(c));
+      for (const f of snap.meta.profile.files ?? []) { const data = fromBase64(f.data); if (data && ok(f.path)) profile.open(f.path, { create: true, truncate: true })?.write(0, data); }
+    }
     if (snap) try { restoreVm(vm, snap); restored = true; }
     catch (e) {
       // (one that does not apply — the profile or settings changed since — was refused before any change: the usual start;
@@ -352,7 +368,9 @@ async function start(m) {
     if (restored && vm.restoring) await Promise.race([vm.restoring, new Promise((r) => setTimeout(r, 5000))]);
     if (restored) log('loader', `restored from a snapshot of ${(m.snapshot.byteLength / 1048576).toFixed(1)} MiB in ${(performance.now() - t0).toFixed(0)} ms`);
   }
-  if (!restored && m.opts.snapshotAuto) snapshotWatch = new SnapshotWatch();
+  // (refined at each later settled stretch until the player acts — a restored session too: snapshot-watch.js)
+  if (m.opts.snapshotAuto) snapshotWatch = new SnapshotWatch({ opens: vm.vfs.opens });
+  snapshotPublish = !!m.opts.snapshotPublish;
   if (!restored) try {
     vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
   } catch (e) { post({ type: 'crash', report: e instanceof GuestCrash ? e.report : String(e.stack || e) }); return; }
@@ -527,7 +545,9 @@ function snapshotStep() {
 function takeSnapshot(id) {
   const t0 = performance.now(), problems = id === 'auto' ? null : [];
   try {
-    const s = captureVm(vm, { manifest: manifestName, at: vm.clock.now() }, problems);
+    const image = id === 'auto' && snapshotPublish ? profileImage() : undefined;
+    if (image === null) throw new Error('a profile over 8 MiB: not published');
+    const s = captureVm(vm, { manifest: manifestName, at: vm.clock.now(), ...(image ? { profile: image } : {}) }, problems);
     if (problems?.length) { post({ type: 'snapshot', id, problems }); return false; }
     if (id === 'auto') autoSeen = s.meta.persistent;
     const t1 = performance.now(), bytes = encodeSnapshot(s);
@@ -538,14 +558,14 @@ function takeSnapshot(id) {
 /** The automatic snapshot (snapshot-watch.js): tried once the game settled, at a quiet point; kept once the session went on. */
 function snapshotAutoStep() {
   const w = snapshotWatch, now = performance.now(), frames = host.framesPresented;
+  if (host.playerActions && !w.last) w.stop();
   if (w.ripe(now, frames)) {
     // (kept only with the profile as its machine saw it: the next start would refuse it otherwise)
     const changed = persistentChanged(vm, autoSeen);
-    if (!changed) { w.kept(); post({ type: 'snapshot-keep' }); snapshotWatch = null; return; }
-    log('loader', `snapshot dropped, taken again later: ${changed}`); post({ type: 'snapshot-drop' }); w.dropped(now, frames);
-    if (w.done) snapshotWatch = null;
-    return;
+    if (!changed) { w.kept(); post({ type: 'snapshot-keep' }); }
+    else { log('loader', `snapshot dropped, taken again later: ${changed}`); post({ type: 'snapshot-drop' }); w.dropped(now, frames); }
   }
+  if (w.done) { snapshotWatch = null; return; }
   if (!w.due(now, frames, vm.vfs.opens) || vm.readsInFlight || notQuiet(vm)) return;
   const ok = takeSnapshot('auto');
   w.tried(ok, performance.now(), host.framesPresented);

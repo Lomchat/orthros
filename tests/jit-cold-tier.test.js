@@ -22,7 +22,7 @@ const CODE = 0x20000000, DATA = 0x10000000, OUT = 0x10001000, CW = 0x10002000;
 // the x87 loop of jit-prewarm.test.js (mode switches, a local call, a conditional branch), 20 iterations
 const X87_LOOP = hex('b914000000d906d84e04d99f00020000f7c1010000007404d92beb03d96b02d94608d8760cdd1ccfe8040000004975d5f4d97b08d96b04d94610db9c8f00010000d96b08c3');
 
-function setup(code, { cold = true, bg = true } = {}) {
+function setup(code, { cold = true, bg = true, interpCpu = undefined } = {}) {
   const mem = new GuestMemory({ shared: true });
   const cpu = new CpuState(mem, THREAD_STATES_BASE);
   cpu.reset();
@@ -31,7 +31,7 @@ function setup(code, { cold = true, bg = true } = {}) {
   mem.write16(CW, 0x027f); mem.write16(CW + 2, 0x007f); mem.write16(CW + 4, 0x0c7f);
   cpu.eip = CODE; cpu.esp = DATA + 0x8000; cpu.esi = DATA; cpu.edi = OUT; cpu.ebx = CW; cpu.eflags = F.RESERVED1 | F.IF;
   mem.write16(cpu.base + ST.FPU_CW, 0x007f);
-  const jit = new Jit(mem, new Interp(mem, cpu), { smc: true, coldTier: cold, warn: (m) => { throw new Error(m); } });
+  const jit = new Jit(mem, new Interp(mem, interpCpu === undefined ? cpu : interpCpu), { smc: true, coldTier: cold, warn: (m) => { throw new Error(m); } });
   jit.cpu = cpu;
   const replies = [];
   if (bg) jit.attachBackground({ postMessage: (m) => handleMessage(m, (r) => replies.push(r)) });
@@ -177,4 +177,15 @@ test('a store straddling into a page holding translated code, and a push onto on
   assert.equal(t.jit.coldSafe(CODE), null);
   t.cpu.esp = FN - 0x100; // (the slot in the page before: interpreted)
   assert.notEqual(t.jit.coldSafe(CODE), null);
+});
+
+test('a new entry is checked with the running thread\'s registers, whatever thread the interpreter ran last', () => {
+  // (a machine restored from a snapshot: its interpreter has run no thread yet — the check read null registers)
+  // (entered at its second instruction, fld dword [esi]: an entry with a memory operand)
+  const enter = (x) => { x.cpu.eip = CODE + 5; x.cpu.ecx = 20; return x; };
+  const a = enter(setup(X87_LOOP, { cold: false }));
+  assert.equal(runAll(a), EXIT.HALT);
+  const b = enter(setup(X87_LOOP, { interpCpu: null }));
+  assert.equal(runAll(b), EXIT.HALT);
+  assert.deepEqual(regs(b.cpu), regs(a.cpu));
 });

@@ -1,7 +1,7 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--profile-seed-quorum N]
+// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--profile-seed-quorum N] [--snapshot-jobs]
 //   --engines-dir: the installed engine releases of the browser ports (default data_engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
@@ -9,7 +9,10 @@
 //   --learn: the order in which sessions read the game's file blocks is kept there (the prefetch list of later sessions),
 //            the GL programs they built and the code regions they translated (both prepared ahead by later sessions),
 //            and the small profile files first sessions wrote (shared first-launch profile; --profile-seed-quorum: the
-//            distinct sessions that must report a set identical before it is offered, default 2)
+//            distinct sessions that must report a set identical before it is offered, default 2), and the shared snapshots
+//            of the games' machines new players start from (docs/snapshot.md, stage 3)
+//   --snapshot-jobs: when a page asks for a shared snapshot there is none of, a headless browser session of a new
+//            player makes it (tools/snapshot-publish.mjs, one at a time, through the project's browser slots)
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -28,6 +31,8 @@ import { programSourceId } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
+import { SnapshotStore, SnapshotJobs, SNAPSHOT_KEY } from './snapshot-store.js';
+import { pipeline } from 'node:stream/promises';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
@@ -404,6 +409,11 @@ export function createServer(opts = {}) {
     seedsChanged(name);
     return true;
   };
+  // shared snapshots (snapshot-store.js, docs/snapshot.md stage 3): kept with the learned data; their publishing
+  // sessions started by this server only when asked (--snapshot-jobs: headless browsers on this machine)
+  const snapshots = opts.learnDir ? new SnapshotStore(path.join(opts.learnDir, 'snapshots')) : null;
+  // (tests: opts.snapshotJobs an object of the same interface — want, job — instead of browsers)
+  const snapshotJobs = !snapshots || !opts.snapshotJobs ? null : opts.snapshotJobs !== true ? opts.snapshotJobs : new SnapshotJobs({ root: ROOT, url: () => `http://127.0.0.1:${server.address().port}`, logDir: path.join(opts.learnDir, 'snapshots') });
   const seedFor = (name, lang) => {
     let best = null;
     for (const s of seedsOf(name).sets) if (s.lang === lang && s.sessions.length >= seedQuorum && (!best || s.sessions.length > best.sessions.length || (s.sessions.length === best.sessions.length && s.at > best.at))) best = s;
@@ -633,6 +643,34 @@ export function createServer(opts = {}) {
         }
         return send(res, 200, JSON.stringify(programsList(m[1])), { 'Content-Type': 'application/json' });
       }
+      // a new player's starting point (snapshot-store.js): the shared snapshot of this key, language and first-launch
+      // profile; none yet: a publishing session queued. Published by that session only (its token).
+      m = /^\/api\/snapshot\/([^/]+)$/.exec(p);
+      if (m) {
+        const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
+        const key = url.searchParams.get('key') ?? '', lang = seedLang(url.searchParams.get('lang') ?? '');
+        if (!snapshots || !SNAPSHOT_KEY.test(key) || lang === null || runtimeOf(man) !== 'win32') return send(res, 404, 'none');
+        const seed = man.profileSeed === false ? null : (seedFor(m[1], lang).key ?? null);
+        if (req.method === 'POST') {
+          if (!snapshotJobs?.job(url.searchParams.get('token') ?? '', m[1], lang, key)) return send(res, 403, 'not a publishing session of this server');
+          fs.mkdirSync(snapshots.dir, { recursive: true });
+          const tmp = path.join(snapshots.dir, `upload-${process.pid}-${Date.now()}.tmp`);
+          let size = 0;
+          req.on('data', (d) => { size += d.length; if (size > 1 << 30) req.destroy(new Error('too large')); });
+          pipeline(req, fs.createWriteStream(tmp)).then(async () => {
+            const fd = fs.openSync(tmp, 'r'), head = Buffer.alloc(4); fs.readSync(fd, head, 0, 4, 0); fs.closeSync(fd);
+            if (head.readUInt32BE(0) !== 0x4f534e50) { fs.rmSync(tmp, { force: true }); return send(res, 400, 'not a snapshot'); }
+            await snapshots.put(m[1], lang, key, tmp, { seed });
+            send(res, 204, '');
+          }).catch(() => { fs.rmSync(tmp, { force: true }); if (!res.headersSent) send(res, 500, 'not kept'); });
+          return;
+        }
+        const f = snapshots.open(m[1], lang, key, String(req.headers['accept-encoding'] ?? ''));
+        if (!f || (f.meta.seed ?? null) !== seed) { snapshotJobs?.want(m[1], lang, key); return send(res, 404, 'none yet'); }
+        res.writeHead(200, headers({ 'Content-Type': 'application/octet-stream', 'Content-Encoding': f.encoding, 'Content-Length': String(f.size), 'X-Snapshot-Bytes': String(f.meta.bytes), 'Cache-Control': 'no-cache' }));
+        fs.createReadStream(f.file).pipe(res);
+        return;
+      }
       m = /^\/api\/profile-seed\/([^/]+)$/.exec(p);
       if (m) {
         const man = getManifest(m[1]);
@@ -706,6 +744,7 @@ export function createServer(opts = {}) {
     let url; try { url = new URL(req.url, 'http://x'); } catch { socket.destroy(); return; }
     if (!upgrades.some((u) => u.handle(req, socket, url))) socket.destroy();
   });
+  server.snapshotJobs = snapshotJobs; // (tools/snapshot-shared-check.mjs: waits for the publishing sessions)
   return server;
 }
 
@@ -715,6 +754,6 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
   const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts');
   for (const d of [telemetryDir, learnDir, accountsDir]) if (d) fs.mkdirSync(d, { recursive: true });
-  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined });
+  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
 }

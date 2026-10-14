@@ -203,6 +203,7 @@ export class BrowserHost {
     this.lastCats = null; // (the categories of the last frame: the slow-frame diagnostics)
     // (fields the worker and the audio path set later, declared here: one hidden class, see Vm's constructor)
     this.dxtPool = null; this.wake = null; this.onUserInput = null; // (a click / a printable character, before the guest sees it: profile-seed.js)
+    this.playerActions = 0; // (clicks and key presses so far: the session's automatic snapshot stops at the first, snapshot-watch.js)
     this.audioHook = null; this.interval = null; this.waitMs = 0;
     this.audioPeak = 0; this.audioMs = 0; this.audioFrames = 0; this.audioDiag = 0; this.chunk = null;
     this.audioLead = undefined; this.audioUnderSeen = 0; this.audioCalmSince = 0;
@@ -218,6 +219,7 @@ export class BrowserHost {
       tail = (tail + 1) | 0;
       if (!ev) continue;
       this.inputQueue.push(ev);
+      if (ev.type === 'mousedown' || ev.type === 'keydown') this.playerActions++;
       if (ev.type === 'mousedown') this.onUserInput?.(false);
       else if (ev.type === 'char' && ev.code >= 0x20) this.onUserInput?.(true);
     }

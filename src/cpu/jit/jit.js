@@ -661,6 +661,7 @@ export class Jit {
   }
   runColdNow(eip) {
     const cpu = this.cpu, m = this.mem, interp = this.interp, b4 = cpu.b4, cold = this.cold;
+    interp.cpu = cpu; // (before coldSafe: its operand addresses are this thread's — not the last one the interpreter ran)
     let n = cold.get(eip);
     if (n === undefined) {
       if (this.coldSafe(eip) === null) return COLD_TRANSLATE; // (nothing to ask of the background worker: translated here)
@@ -671,7 +672,6 @@ export class Jit {
       if (this.learned && this.learned.length < 65536) this.learned.push([eip, fpc, Math.round(performance.now())]);
       this.stats.coldEntries = (this.stats.coldEntries ?? 0) + 1;
     } else if (n >= this.coldLimit) { cold.delete(eip); this.stats.coldHot = (this.stats.coldHot ?? 0) + 1; return COLD_TRANSLATE; }
-    interp.cpu = cpu;
     const budget = m.i32[b4 + ST.ICOUNT / 4], stopAt = m.u32[b4 + ST.STOP_AT / 4];
     let k = 0, s = EXIT.NONE;
     for (;;) {

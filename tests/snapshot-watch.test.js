@@ -16,19 +16,26 @@ test('a capture is due once no file was opened for a while as frames went on; ke
   assert.equal(w.due(9000, 250, 11), false);
   assert.equal(w.due(11700, 400, 11), true);
   w.tried(true, 11700, 400);
-  assert.equal(w.due(12000, 410, 11), false); // (taken: no other)
+  assert.equal(w.due(12000, 410, 11), false); // (one waiting to be kept)
   assert.equal(w.ripe(20000, 600), false);
   assert.equal(w.ripe(31800, 600), true);
   w.kept();
-  assert.equal(w.ripe(40000, 900), false); // (once)
-  assert.equal(w.done, true);
+  assert.equal(w.ripe(40000, 900), false);
+  assert.equal(w.due(60000, 2000, 11), false); // (no file opened since: the same point, not taken again)
 });
 
-test('refused as many times as it may be tried: no more captures', () => {
-  const w = new SnapshotWatch({ quietMs: 1000, minFps: 0, tries: 2 });
-  w.due(0, 0, 1); assert.equal(w.due(1000, 0, 1), true); w.tried(false, 1000, 0);
-  assert.equal(w.due(2000, 0, 1), true); w.tried(false, 2000, 0);
-  assert.equal(w.done, true); assert.equal(w.due(9000, 0, 1), false);
+test('taken again at a later settled stretch after more loading, until the player acts', () => {
+  const w = new SnapshotWatch({ quietMs: 1000, minFps: 0, keepMs: 5000, keepFrames: 0 });
+  w.due(0, 0, 5); assert.equal(w.due(1000, 0, 5), true); w.tried(true, 1000, 0); // (an intro, its video streamed)
+  assert.equal(w.ripe(6000, 0), true); w.kept();
+  w.due(7000, 0, 9); assert.equal(w.due(8000, 0, 9), true); w.tried(true, 8000, 0); // (the menu, loaded after it)
+  w.stop(); // (the player clicks while it waits to be kept)
+  assert.equal(w.done, false);
+  assert.equal(w.ripe(13000, 0), true); w.kept();
+  assert.equal(w.done, true);
+  const r = new SnapshotWatch({ quietMs: 1000, minFps: 0, opens: 3 }); // (restored, the reopened files counted)
+  r.due(0, 0, 3); assert.equal(r.due(5000, 0, 3), false); // (nothing loaded since the restore)
+  r.stop(); assert.equal(r.done, true);
 });
 
 test('a snapshot dropped (the profile changed after it) is taken again after another settled stretch', () => {
@@ -38,5 +45,12 @@ test('a snapshot dropped (the profile changed after it) is taken again after ano
   assert.equal(w.ripe(6000, 0), true); w.dropped(6000, 0);
   assert.equal(w.ripe(7000, 0), false); assert.equal(w.due(6500, 0, 2), false);
   assert.equal(w.due(7600, 0, 2), true); w.tried(true, 7600, 0);
-  assert.equal(w.ripe(12600, 0), true); w.kept(); assert.equal(w.done, true);
+  assert.equal(w.ripe(12600, 0), true); w.kept(); assert.equal(w.done, false);
+});
+
+test('refused as many times as it may be tried: no more captures', () => {
+  const w = new SnapshotWatch({ quietMs: 1000, minFps: 0, tries: 2 });
+  w.due(0, 0, 1); assert.equal(w.due(1000, 0, 1), true); w.tried(false, 1000, 0);
+  assert.equal(w.due(2000, 0, 1), true); w.tried(false, 2000, 0);
+  assert.equal(w.done, true); assert.equal(w.due(9000, 0, 1), false);
 });

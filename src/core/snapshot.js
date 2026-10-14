@@ -123,6 +123,14 @@ export function snapshotClass(cls, opts = {}) {
   return cls;
 }
 
+// snapshot: constant, the keys cacheKey made
+const CACHE_KEYS = new Set();
+/**
+ * A property key for a cache a module keeps on a plain object — code compiled from the object's data, values derived
+ * from it: never in a snapshot, rebuilt where it is read (`obj[KEY] ??= build(obj)`). Any other symbol key is refused.
+ */
+export function cacheKey(name) { const k = Symbol(name); CACHE_KEYS.add(k); return k; }
+
 /** `vm.snap.known(name, obj, opts)` on a Vm that has a snapshot registry (a test's minimal one may not): `obj`. */
 export const snapKnown = (vm, name, obj, opts) => (vm.snap ? vm.snap.known(name, obj, opts) : obj);
 /** `vm.snap.cls(cls, opts)` on a Vm that has a snapshot registry. */
@@ -170,7 +178,7 @@ export function encodeGraph(root, reg, problems = null) {
       if (!('value' in d)) { refuse(new SnapshotError(`an accessor (${owner})`, where(id, '.' + k))); continue; }
       p[k] = value(d.value, id, '.' + k, code);
     }
-    if (Object.getOwnPropertySymbols(o).length) refuse(new SnapshotError(`symbol keys (${owner})`, where(id, '')));
+    if (Object.getOwnPropertySymbols(o).some((s) => !CACHE_KEYS.has(s))) refuse(new SnapshotError(`symbol keys (${owner})`, where(id, '')));
     return p;
   };
   const rootName = reg.knownName.get(root);

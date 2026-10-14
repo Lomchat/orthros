@@ -90,10 +90,12 @@ harness's startup scenario (18 draws per frame where the scenario waits for 150)
 
 ## In the page: a player's own snapshot (stages 1b and 2)
 
-A session that did not start from a snapshot takes one **once the game settled**: no file opened for 4 s while it went
-on presenting frames (its loading over, a screen waiting for the player), at the next quiet point
-(`src/host/snapshot-watch.js`, the worker's `snapshotAutoStep`). A capture refused — a movie playing, a kind of state not
-supported yet — is tried again after the next settled stretch, four times at most. The page keeps it in OPFS
+A session takes one **once the game settled**: no file opened for 4 s while it went on presenting frames (a loading
+step over), at the next quiet point (`src/host/snapshot-watch.js`, the worker's `snapshotAutoStep`) — then again at each
+later settled stretch after more files were opened, until the player's first click or key: an intro that streams its
+video from a file already open settles too, the menu after it is a later point. A session restored from a snapshot goes
+on the same way. A capture refused — a movie playing, a kind of state not supported yet — is tried again after the next
+settled stretch, four times at most. The page keeps it in OPFS
 (`orthros-snapshot-<manifest>/machine.bin`, then `machine.json` with its key, written last; the data manager counts it
 with the game's cache and clears it with it) once the session went on for 20 s more **with the profile still as the
 snapshot's machine saw it** — the next start would refuse it otherwise: a game often writes its settings as it reaches
@@ -127,6 +129,19 @@ time).
 |---|---|---|---|
 | Vice City, menu | 28.5 MiB | 0.6 s (20, 580, 36 ms) — 3.2 s with the earlier JavaScript page scan | 67-90 ms |
 
-## Next stages
+## Shared by the server (stage 3)
 
-- **Stage 3, shared**: the server makes the snapshot itself in Node from the shared first-launch profile, for new players.
+A player with no profile of a game yet (a first launch in this browser) and no snapshot of its key asks the server
+for its **shared snapshot** (`/api/snapshot/<manifest>?key=&lang=`, `src/host/snapshot-store.js`): the one a new
+player's session took on the server itself. When there is none, the server (`--snapshot-jobs`) opens the game in a
+headless browser as a new player would — the same page and worker, the shared first-launch profile — with
+`?snapshot=publish`: each snapshot that session keeps is posted back with the job's token, the later ones replacing the
+first, until its loading is over (`tools/snapshot-publish.mjs`, one session at a time, through the browser slot
+guard). Made in a browser rather than in Node: the machine sees the same host as a player's (text measured by the
+browser's fonts, the audio worklet, the display). It carries the profile as its game had it at the capture (the folders
+and settings it wrote while starting): a new player's profile — nothing of their own, at most the shared first-launch
+files the session started from too — is made so before the worker's checks, which then pass as for a player's own
+snapshot; nothing of a player is ever replaced. Another first-launch profile learned since makes it stale (the server
+then makes a new one). Kept with the learned data (`<learn>/snapshots/`), gzip- and
+brotli-compressed, the two most recent keys per game version and language. Not downloaded when it would take longer
+than 60 s at the connection's last measured rate; kept as the player's own once it applied.
