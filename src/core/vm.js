@@ -556,6 +556,7 @@ export class Vm {
     this.deferredCalls = (this.deferredCalls ?? 0) + 1;
     if (this.shadowResync) { this.shadowResync = false; for (const d of this.d3dDevices ?? []) d.shadowOn?.(); }
     if (this.jit?.optOnPending) { this.jit.optOnPending = false; m.write32(PROC_CONSTS + 4, 0); }
+    if (this.jit?.drawOptPending) { this.jit.drawOptPending = false; this.jit.setFxSpecs(true); }
   }
 
   /**

@@ -258,9 +258,9 @@ export function registerDirect3D9(api, vm) {
       return D3D_OK;
     }
     // (the shader and input layout setters move programVersion only on a real change: effects re-set them per pass)
-    SetVertexDeclaration(c) { const ptr = c.arg(1); const d = ptr ? com.implAt(ptr) : null; if (ptr && !(d instanceof VertexDecl)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.decl = d; return D3D_OK; } if (this.vertexDecl !== d || (d && this.fvf)) this.programVersion++; this.vertexDecl = d; if (d) this.fvf = 0; return D3D_OK; }
+    SetVertexDeclaration(c) { const ptr = c.arg(1); const d = ptr ? com.implAt(ptr) : null; if (ptr && !(d instanceof VertexDecl)) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.decl = d; return D3D_OK; } if (this.vertexDecl !== d || (d && this.fvf)) this.programVersion++; this.vertexDecl = d; if (d) this.fvf = 0; this.shadowFvf(); return D3D_OK; }
     GetVertexDeclaration(c) { const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL; if (this.vertexDecl) { com.addRef(com.objectAt(this.vertexDecl.ptr)); mem.write32(pp, this.vertexDecl.ptr); } else mem.write32(pp, 0); return D3D_OK; }
-    SetFVF(c) { const fvf = c.arg(1); if (this.recording) { this.recording.fvf = fvf; return D3D_OK; } if (this.fvf !== fvf || (fvf && this.vertexDecl)) this.programVersion++; this.fvf = fvf; if (fvf) this.vertexDecl = null; return D3D_OK; }
+    SetFVF(c) { const fvf = c.arg(1); if (this.recording) { this.recording.fvf = fvf; return D3D_OK; } if (this.fvf !== fvf || (fvf && this.vertexDecl)) this.programVersion++; this.fvf = fvf; if (fvf) this.vertexDecl = null; this.shadowFvf(); return D3D_OK; }
     GetFVF(c) { c.out32(1, this.fvf); return D3D_OK; }
     CreateVertexShader(c) {
       const fn = c.arg(1), pp = c.arg(2);
@@ -319,6 +319,7 @@ export function registerDirect3D9(api, vm) {
       if (sb.fvf !== undefined) { this.fvf = sb.fvf; if (sb.fvf) this.vertexDecl = null; }
       if (sb.vs !== undefined) { this.vsObj = sb.vs; this.vertexShader = sb.vs ? sb.vs.handle : 0; }
       if (sb.ps !== undefined) { this.psObj = sb.ps; this.pixelShader = sb.ps ? sb.ps.handle : 0; }
+      this.shadowFvf();
       return r;
     }
     CaptureStateBlock(c) {
