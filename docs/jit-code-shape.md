@@ -399,8 +399,86 @@ Review re-measure (one more concurrent RotWK pair, `--gl-discard`, same learned 
 An unparsable `?jitopts` is now reported (`[warn] jitopts ignored`), and `tools/headless.mjs --jit-opts` refuses
 one that is not JSON.
 
+## BFME1's map load (2026-10-06 / 2026-10-14)
+
+BFME1's skirmish map load (`bfme-phases.txt`, the `loadscreen` phase) runs ~40 G guest instructions on the game's
+thread in ~60 s of Node real clock: ~1.4 ns per guest instruction, 95 % of it in translated code, the 10 hottest
+regions 63-68 % of the counted instructions (mix: MOV 18-21 %, JCC 9-9.5 %, FLD 6.4-7.7 %, CMP 5.2-5.5 %, FSTP
+5.0-5.9 %, FMUL 3.4-3.9 %, CALL 1.5 %, RET 1.2-1.4 %; block counters switched on at the load mark, so only the
+regions translated during the load are counted). Part of its x87 code runs under **24-bit precision with rounding
+toward zero** (control word 0xc7f-like: code that truncates for its FISTPs sets it for whole computations) — few
+regions (`startbench --x87-modes`, new, live regions by mode at the end of the load: none 6 642, 24-bit nearest 1 564,
+53-bit 57, 24-bit toward zero 30, 64-bit 4) but, by the A/B below, most of the time this branch saved: the x87
+arithmetic of a region specialized for a static directed 24-bit mode was the expensive part:
+every FADD / FMUL / FSUB... rounded its f64 result to the 24-bit grid with a vector mask (its constant rebuilt per
+instruction), a range test with f64 compares on |s| (two constants, three compares), and results already on the grid
+(exact sums of values with few significant bits, x − x) went out of line to an exactness test with f32 round trips of
+both operands: ~25 host instructions per arithmetic instruction.
+
+Changes (all generic, exact against the interpreter):
+
+- **Toward-zero rounding on the result's bits** (translate-x87.js `roundTowardZero24`): the f64 result's bit pattern,
+  integer tests only — off the 24-bit grid with an exponent field in [2, 0x7fe], masking the 29 low significand bits
+  is the x87 result (f64 rounding never crosses a grid point without landing on it); on the grid, a zero as computed
+  or the value itself when exact (`pushExactOnGridAt`: TwoSum's error term for sums, the operands' low bits for
+  products / quotients / square roots); anything else (denormal, infinite, NaN, the lowest normal binade) leaves the
+  region for the interpreter. ~11 host instructions for an off-grid result. The on-grid path is no longer hinted out of
+  line (common in that code), and TwoSum of a difference adds instead of negating (same values, no constant).
+- **Narrow values** (`Emitter.g24Mask`): registers known at translation time to hold a 24-bit significand (m32 and
+  m16 operands, FLD1 / FLDZ, results of 24-bit arithmetic, copies, FCHS / FABS / FXCH of such) — a product or quotient
+  of two needs no grid test, only the exponent test. Dropped wherever the f32 shadows are (block entry, fallbacks,
+  rotations). FST m32 under a static directed 24-bit mode stores a value that is already a float after one compare.
+- **The status word in a local** (`swLocal`, default on; translate.js `L_SW`): x87 regions load it with the stack
+  cache and write it back with it; the compares, FNSTSW, FNCLEX, the per-block C1 clear and the exception flags update
+  the local instead of a load and a store of the state block each (`FCOM; FNSTSW AX; TEST AH; Jcc` chained three
+  store-to-load forwardings, loop-carried). JIT option, so it can be A/B'd: `ORTHROS_JIT_DEFAULTS={"swLocal":false}`.
+  The translated-code cache keys on JIT_DEFAULTS: the first session after the change translates again.
+- Fidelity found by the new randomized status-word test: unordered FCOM / FICOM / FTST / FCOMI now raise IE as the
+  interpreter does (FUCOM / FUCOMI only for a signaling NaN) — in the compare's cold path (C2 / PF set).
+- Tools: per-phase `--jit-profile` in scenarios, `--list-top` lists the counted regions with their x87 mode,
+  `--x87-modes`, `tools/x87loop-bench.mjs --full / --src` and a 41-instruction sums-of-squares kernel.
+- Tests: tests/jit-x87-narrow.test.js (random programs under every precision / rounding control, time slices, a wide
+  operand whose product rounds onto the grid while inexact, narrow products / quotients chained past both ends of the
+  double range under truncation), tests/jit-x87-sw-local.test.js (random compare / FNSTSW / SAHF / branch / FNCLEX /
+  exception / FPREM programs with swLocal on and off, the whole status word compared, time slices).
+
+Results (base ca01ae8 against this branch at e1232f6):
+
+- **Node, concurrent real-clock pairs** (`startbench --input bfme-phases.txt`, the same profile copied for each run,
+  launch order alternated; `loadscreen` phase): quiet machine (load average ~20) 60.8 → 47.8 s (1.451 → 1.121 ns per
+  guest instruction) and 59.4 → 46.2 s (1.416 → 1.101 ns): **−21 / −22 % map-load time, −23 / −22 % ns per
+  instruction**; loaded machine (load average ~40, other projects) 75.7 → 48.8 s and 88.3 → 65.3 s (1.693 → 1.162,
+  2.042 → 1.400 ns). The same guest work (40.0-40.9 G instructions in every run).
+- **swLocal alone** (this branch, off / on, concurrent pairs, alternated): map load 1.201 → 1.161 and 1.196 → 1.172 ns
+  per instruction (−3.3 / −2.0 %), play 2.955 / 2.955 and 2.870 / 2.844 ns: most of the gain is the toward-zero path.
+- **Play, no regression**: BFME1 Node play (same pairs, quiet) 2.586 → 2.622 (+1.4 %) and 2.952 → 2.941 ns (−0.4 %),
+  thread CPU 74.2 / 75.5 and 85.9 / 85.0 s for the same 6 136 frames — within the spread. (The two loaded pairs showed
+  play +15 / +24 % for the branch: it finished its load ~25 s earlier, so its play overlapped the base's map load at full
+  CPU and the base played its last 25 s alone; not seen when the machine was quiet, nor with swLocal off / on, whose
+  loads end together.) Concurrent `--virtual` pairs (deterministic guest work), play / drive ns per instruction, two
+  alternated pairs each: BFME2 2.587 → 2.457 and 2.522 → 2.549, RotWK 2.308 → 2.308 and 2.714 → 2.671, Vice City drive
+  2.141 → 2.074 and 2.145 → 2.166 — neutral.
+- **Kernels** (`tools/x87loop-bench.mjs 2000000 --pos --ab <base>`, alternated in one process, median ns per
+  iteration, control word 0xc7f): sums of squares 83.8 → 34.4, fild + fmul + fstp 21.4 → 12.4, xform 39.9 → 31.6,
+  recurrence 18.5 → 15.4, e^x loop 38.1 → 29.8, fcom + fchs + fstp 12.6 → 10.3, fcomp + test ah 13.2 → 11.9.
+  Under 0x7f / 0x27f the machine's load (±30 % per run) hid any difference; `perf record` cycles of the translated
+  region per iteration (`perf record` on `node --no-liftoff --perf-prof`, as in the tool's header; 2 runs each): arith across blocks at
+  0xc7f 109 / 93 → 58 / 55, fcomp + test ah at 0x7f 34 / 28 → 22 / 22, recurrence at 0x7f 15 / 17 → 19 / 22 (the same
+  loop, two host instructions shorter — the C1 clear on a register instead of a read-modify-write of the state block —
+  sampling noise).
+- **Browser**, one concurrent pair (`headless.mjs --gl-discard`, bfme-phases, both browsers started together, the same
+  profile and learned data copied for each): loading screen 62.7 → 50.3 s (−20 %), guest 1.413 → 1.135 ns per
+  instruction; play 38 / 38 fps, 2.960 → 3.008 ns (+1.6 %, the branch's play phase 318 s against 302 s of the same
+  560 s session: within the Node pairs' spread), work p50 14.2 / 14.3 ms, p99 33.8 / 32.5 ms, frames > 40 ms per minute
+  9 / 8; menu 1.542 → 1.485 ns.
+
 ## Measured, not kept
 
+- Raising ZE / OE for an infinite result of x87 arithmetic at 53 / 64-bit precision in translated code (X87.arith
+  does): the test on the arithmetic hot path cost +15 % on the 53-bit sums-of-squares kernel; left unraised by the JIT
+  (documented in translate-x87.js).
+- Directed rounding up / down on the vector mask as toward zero used to: the sign-dependent step is cheaper as an
+  integer add on the bits (kept that way).
 - Chained exits each with its own chain code (`siteChain`: the hash probe and tail call at every exit site, the probe
   addresses constants for static targets) instead of one shared exit: RotWK +15 %, BFME2 +52 % (Node in-session) —
   every tail-call site pins all sixteen values to the call's argument places, and the code grows.
