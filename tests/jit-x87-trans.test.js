@@ -2,7 +2,7 @@
 // F2XM1, FSCALE, FYL2X, FYL2XP1, FPATAN, FSIN, FCOS, FSINCOS, FPTAN) as JIT mechanics: the
 // static stack shift and tag word across the FSINCOS/FPTAN pushes and the FYL2X/FYL2XP1/FPATAN
 // pops, FXCH/FINCSTP/FDECSTP/FFREE around them, the status word (C2 out of range, IE | ES and
-// the indefinite for NaN, C0-C3 cleared), precision control, time slices at every budget, the
+// the indefinite for NaN, C2 cleared, C0 / C3 kept), precision control, time slices at every budget, the
 // out-of-range FSINCOS/FPTAN region exit, FXAM, FNSTENV, m80 loads and stores (once interpreter
 // fallbacks) next to the native ops, SMC exits with a pending shift, region consolidation, chained
 // entries, the region classifier and the fallback histogram, and a seeded random differential
@@ -263,11 +263,13 @@ test('C2 out of range then cleared by the next in-range op; the whole status wor
       const setup = (E) => { E.cpu.fpuSw = preset; };
       const { EJ } = both(a.finish(), [[0, big], [8, 0.3]], end, { slots: [16, 24, 32, 40], setup, msg: `big=${big} preset=${hex(preset)}` });
       const sw = (o) => EJ.mem.read16(DATA + o);
+      // C0 and C3 are kept by every path (measured on the reference CPU, x87-cc-hw.test.js), C1 and C2 cleared
+      const kept = preset & (C0 | C3);
       assert.equal(sw(64) & SW_CC, (preset & SW_CC) | C2, 'FSIN out of range: C2 set, other condition bits kept');
-      assert.equal(sw(66) & SW_CC, 0, 'the next in-range FSIN clears C0-C3');
-      assert.equal(sw(68) & SW_CC, C2, 'FCOS of the big value (ST(0) again after the pop): C2 set again');
-      assert.equal(sw(70) & SW_CC, C2, 'FPTAN out of range');
-      assert.equal(sw(72) & SW_CC, 0, 'FSINCOS in range clears C2');
+      assert.equal(sw(66) & SW_CC, kept, 'the next in-range FSIN clears C2 (C0 / C3 kept)');
+      assert.equal(sw(68) & SW_CC, kept | C2, 'FCOS of the big value (ST(0) again after the pop): C2 set again');
+      assert.equal(sw(70) & SW_CC, kept | C2, 'FPTAN out of range');
+      assert.equal(sw(72) & SW_CC, kept, 'FSINCOS in range clears C2');
       assert.equal(sw(72) & 0xff, preset & 0xff, 'exception bits untouched by in-range ops');
       assert.equal(EJ.mem.readF64(DATA + 48), big, 'FPTAN left the big value in place, no push');
       assert.equal(EJ.cpu.fpuTop, 0); assert.equal(EJ.cpu.fpuTw, 0);
@@ -277,7 +279,7 @@ test('C2 out of range then cleared by the next in-range op; the whole status wor
 
 // +-inf is an invalid trig argument on the hardware (not an out-of-range one): IE, the indefinite,
 // the pushes of FSINCOS/FPTAN happen (D034). ES follows the IE mask bit of the control word.
-test('+-inf trig arguments: IE (ES only when unmasked), C0-C3 cleared, the indefinite pushed twice; preset bits kept', () => {
+test('+-inf trig arguments: IE (ES only when unmasked), C2 cleared (C0 / C3 kept), the indefinite pushed twice; preset bits kept', () => {
   //   fldcw ; fld big ; fsin ; fnstsw ; fstp ; fld big ; fsincos ; fnstsw ; fstp ; fstp ; fld big ; fptan ; fnstsw ; fstp ; fstp ; fld big ; fcos ; fstp ; fnstsw
   const CW = DATA + 120;
   const a = new Asm(CODE);
@@ -293,8 +295,8 @@ test('+-inf trig arguments: IE (ES only when unmasked), C0-C3 cleared, the indef
         const setup = (E) => { E.cpu.fpuSw = preset; E.mem.write16(CW, cw); };
         const { EJ } = both(a.finish(), [[0, big]], end, { setup, msg: `big=${big} cw=${hex(cw)} preset=${hex(preset)}` });
         const sw = (o) => EJ.mem.read16(DATA + o);
-        const want = (preset & 0xff) | SW_IE | (cw & 1 ? 0 : SW_ES);
-        for (const o of [64, 66, 68, 70]) assert.equal(sw(o) & 0x45ff, want, `[D+${o}]: IE, ES if unmasked, other exception bits kept, C0-C3 cleared`); // TOP and C1 masked
+        const want = (preset & (0xff | C0 | C3)) | SW_IE | (cw & 1 ? 0 : SW_ES);
+        for (const o of [64, 66, 68, 70]) assert.equal(sw(o) & 0x45ff, want, `[D+${o}]: IE, ES if unmasked, other exception bits kept, C2 cleared`); // TOP and C1 masked
         for (const o of [16, 24, 32, 40, 48, 56]) assert.equal(memBits(EJ, DATA + o), 0xfff8000000000000n, `[D+${o}] is the indefinite`);
         assert.equal(EJ.cpu.fpuTop, 0); assert.equal(EJ.cpu.fpuTw, 0);
         assert.equal(EJ.jit.stats.fallbackSteps, 0);

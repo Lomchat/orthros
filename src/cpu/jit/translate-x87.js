@@ -403,10 +403,9 @@ function loadIntOperand(E, o) {
   else if (o.size === 4) c.i32load(0, 0).f64convert_i32_s();
   else c.i64load(0, 0).f64convert_i64_s();
 }
-function setCC(E, c0, c2, c3) { // constants 0/1
-  const c = E.c;
-  E.swGet(); c.i32(~SW_CC).and().i32((c0 ? C0 : 0) | (c2 ? C2 : 0) | (c3 ? C3 : 0)).or(); E.swSet();
-}
+/** C2 cleared (a trig instruction's reduction complete); C0 and C3 are kept, as on the reference CPU (the SDM: undefined),
+ * and C1 is cleared by the instruction's C1 prologue (see C1_CLEARING) */
+function clearC2(E) { E.swGet(); E.c.i32(~C2).and(); E.swSet(); }
 /**
  * After an unordered compare (cold): IE as the interpreter raises it (X87.compare) — FCOM / FICOM / FTST / FCOMI for any
  * NaN operand, the unordered FUCOM family (`quiet`) only for a signaling one (an f64 NaN with its quiet bit clear).
@@ -504,15 +503,16 @@ function istore(E, insn, doPop, trunc) {
   E.eaTo(o);
   loadST(E, 0); roundRC(E, trunc); c.set(L_F64A);
   if (o.size === 8) {
-    // out of range / NaN -> 0x8000000000000000
+    // out of range / NaN -> 0x8000000000000000 and IE (the interpreter's storeInt; PE of an inexact value is not raised);
+    // the in-range test hinted likely: the IE update stays out of line
     c.get(L_F64A).f64c(-9223372036854775808).f64ge().get(L_F64A).f64c(9223372036854775808).f64lt().and();
-    const i = c.if_(T.i64); c.get(L_F64A).i64trunc_sat_f64_s(); c.else_(); c.i64(-0x8000000000000000n); c.end(); void i;
+    const i = c.hint(true).if_(T.i64); c.get(L_F64A).i64trunc_sat_f64_s(); c.else_(); raise(E, 0); c.i64(-0x8000000000000000n); c.end(); void i;
     c.set(L_I64A); c.get(L_TA).get(L_I64A).i64store(0, 0);
   } else {
     const lim = o.size === 4 ? 2147483648 : 32768;
     const indef = o.size === 4 ? -2147483648 : -32768;
     c.get(L_F64A).f64c(-lim).f64ge().get(L_F64A).f64c(lim).f64lt().and();
-    const i = c.if_(T.i32); c.get(L_F64A).i32trunc_sat_f64_s(); c.else_(); c.i32(indef); c.end(); void i;
+    const i = c.hint(true).if_(T.i32); c.get(L_F64A).i32trunc_sat_f64_s(); c.else_(); raise(E, 0); c.i32(indef); c.end(); void i;
     c.set(L_TV); c.get(L_TA).get(L_TV); if (o.size === 4) c.i32store(0, 0); else c.i32store16(0);
   }
   if (doPop) pop(E); // before the SMC check (see fstore)
@@ -874,16 +874,16 @@ HANDLERS[OP.FPATAN] = (E) => {
 };
 /**
  * Trig argument classification shared by FSIN/FCOS (trig1) and FSINCOS/FPTAN (trig2), the
- * interpreter's trigSpecial(), on the argument in L_F64A: a NaN -> C0-C3 cleared, nan2(x, x)
- * (SNaN: IE and quieted; QNaN propagated); +-inf -> C0-C3 cleared, IE, the indefinite; a finite
- * |x| >= 2^63 -> C2 set, ST(0) unchanged, no push (`oor`); else C0-C3 cleared and the kernel
+ * interpreter's trigSpecial(), on the argument in L_F64A: a NaN -> C2 cleared, nan2(x, x)
+ * (SNaN: IE and quieted; QNaN propagated); +-inf -> C2 cleared, IE, the indefinite; a finite
+ * |x| >= 2^63 -> C2 set, ST(0) unchanged, no push (`oor`); else C2 cleared and the kernel
  * (`compute`). `store` consumes the special value left on the stack by the first two paths.
  */
 function trigArg(E, store, oor, compute) {
   const c = E.c;
   c.get(L_F64A).get(L_F64A).f64ne();
   const nan = c.hint(false).if_();
-  setCC(E, 0, 0, 0);
+  clearC2(E);
   c.get(L_F64A).get(L_F64A).call(IMP_NAN2);
   const ie = c.if_(); raise(E, 0); c.end(); void ie;
   store(c);
@@ -892,12 +892,12 @@ function trigArg(E, store, oor, compute) {
   const big = c.hint(false).if_();
   c.get(L_F64A).f64abs().f64c(Infinity).f64eq();
   const inf = c.if_();
-  setCC(E, 0, 0, 0); raise(E, 0); indefinite(c); store(c);
+  clearC2(E); raise(E, 0); indefinite(c); store(c);
   c.else_();
   orSW(E, C2); oor(c);
   c.end(); void inf;
   c.else_();
-  setCC(E, 0, 0, 0); compute(c);
+  clearC2(E); compute(c);
   c.end(); void big;
   c.end(); void nan;
 }
@@ -905,7 +905,7 @@ function trigArg(E, store, oor, compute) {
 // Inline fast path for tiny <= |x| < pi/4 (the kernel's first two tests: no tiny shortcut, and the range reduction
 // is the identity r = x + 0, quadrant 0 for the sine, 1 for the cosine, no sign change): the kernel's polynomial
 // emitter on (x, +0), i.e. the same operations on the same operands, without the call, the reduction dispatch and
-// the special-value classification (C0-C3 cleared as on the kernel path). Every other argument (NaN included:
+// the special-value classification (C2 cleared as on the kernel path). Every other argument (NaN included:
 // the test is false) takes the classified kernel path.
 function trig1(kernel, isCos) {
   return (E) => {
@@ -914,7 +914,7 @@ function trig1(kernel, isCos) {
     toF64(E, 0); // written on some paths only (out of range: unchanged)
     if (inlineTrans()) c.get(L_F64A).f64abs().f64c(PIO4).f64lt().get(L_F64A).f64abs().f64c(isCos ? TINY_COS : TINY_SIN).f64ge().and(); else c.i32(0);
     const fast = c.if_();
-    setCC(E, 0, 0, 0);
+    clearC2(E);
     c.f64c(0).set(L_F64B); // rl
     c.get(L_F64A).get(L_F64A).f64mul().set(L_F64D); // z = rh^2
     if (isCos) emitCosPoly(c, L_F64A, L_F64B, L_F64D, L_F64E, L_F64G); else emitSinPoly(c, L_F64A, L_F64B, L_F64D);
@@ -1108,11 +1108,12 @@ export {};
 // set it. The native handlers leave the status word alone, so C1 is cleared once per block, by the first instruction
 // that clears it on the processor (and again after an interpreter fallback or FXAM, which may set it): a C1 left set
 // by FPREM changed the outcome of the C runtime's fmod for the code examining the status word afterwards (a game's
-// endless loop). FCOMI/FUCOMI leave it, as the interpreter does.
+// endless loop). Measured on the reference CPU (AMD Zen 2; the interpreter follows it): FCOMI/FUCOMI(P) and FCMOVcc leave
+// C1 (and C0, C2, C3) as it was — the SDM documents C1 cleared for FCOMI —, FFREE clears it.
 const C1_CLEARING = ['FLD', 'FILD', 'FST', 'FSTP', 'FIST', 'FISTP', 'FISTTP', 'FBLD', 'FBSTP', 'FLD1', 'FLDZ', 'FLDPI', 'FLDL2E', 'FLDL2T', 'FLDLG2', 'FLDLN2',
   'FADD', 'FADDP', 'FIADD', 'FMUL', 'FMULP', 'FIMUL', 'FSUB', 'FSUBP', 'FISUB', 'FSUBR', 'FSUBRP', 'FISUBR', 'FDIV', 'FDIVP', 'FIDIV', 'FDIVR', 'FDIVRP', 'FIDIVR',
   'FCOM', 'FCOMP', 'FCOMPP', 'FUCOM', 'FUCOMP', 'FUCOMPP', 'FICOM', 'FICOMP', 'FTST', 'FCHS', 'FABS', 'FSQRT', 'FRNDINT', 'F2XM1', 'FYL2X', 'FYL2XP1',
-  'FPTAN', 'FPATAN', 'FSCALE', 'FXTRACT', 'FXCH', 'FINCSTP', 'FDECSTP', 'FCMOVCC', 'FSIN', 'FCOS', 'FSINCOS'];
+  'FPTAN', 'FPATAN', 'FSCALE', 'FXTRACT', 'FXCH', 'FFREE', 'FINCSTP', 'FDECSTP', 'FSIN', 'FCOS', 'FSINCOS'];
 for (const name of C1_CLEARING) {
   const op = OP[name], h = HANDLERS[op];
   if (op === undefined || !h) continue;

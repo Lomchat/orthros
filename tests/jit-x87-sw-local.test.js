@@ -33,7 +33,7 @@ function tables(R) {
 }
 
 /** a random program: the stack kept 1..6 deep, AX (FNSTSW) and EBX (branches taken) stored as it goes */
-function program(R) {
+function program(R, ext = false) {
   const b = [];
   let depth = 0, out = OUT;
   const pick = (n) => Math.floor(R() * n);
@@ -41,6 +41,20 @@ function program(R) {
   const axAt = []; // (where AX values are stored)
   const saveAx = () => { axAt.push(out - OUT); b.push(0x66, 0xa3, ...le(out)); out += 4; }; // mov [out], ax
   for (let n = 0; n < 70; n++) {
+    // ext: the instructions whose condition codes the reference CPU leaves or clears differently from the SDM
+    // (x87-cc-hw.test.js), each followed by FNSTSW AX stored: FCOMIP / FUCOMIP, FCMOVcc, FFREE of an empty register,
+    // FPREM1, FXAM, FINCSTP + FDECSTP
+    if (ext && depth >= 1 && R() < 0.2) {
+      const k = pick(6);
+      if (k === 0 && depth >= 2) { b.push(0xdf, (R() < 0.5 ? 0xf0 : 0xe8) + 1 + pick(depth - 1)); depth--; } // fcomip / fucomip
+      else if (k === 1 && depth >= 2) b.push(0xda + pick(2), 0xc0 + 8 * pick(4) + 1 + pick(depth - 1)); // fcmovcc st(i)
+      else if (k === 2 && depth < 8) b.push(0xdd, 0xc0 + depth + pick(8 - depth)); // ffree of an empty register
+      else if (k === 3 && depth >= 2) b.push(0xd9, 0xf5); // fprem1
+      else if (k === 4) b.push(0xd9, 0xf7, 0xd9, 0xf6); // fincstp ; fdecstp
+      else b.push(0xd9, 0xe5); // fxam
+      b.push(0xdf, 0xe0); saveAx();
+      continue;
+    }
     const r = R();
     if (depth === 0 || (depth < 6 && r < 0.25)) { // a push
       const k = pick(4);
@@ -112,8 +126,8 @@ function exec(jitOpts, code, outLen, T, cw, slice = 1e7) {
   return { out: Buffer.from(mem.bytes(OUT, outLen)).toString('hex'), sw: cpu.fpuSw, top: cpu.fpuTop };
 }
 
-function check(seed, cw, slices) {
-  const R = rng(seed), T = tables(R), { code, outLen, axAt } = program(R);
+function check(seed, cw, slices, ext = false) {
+  const R = rng(seed), T = tables(R), { code, outLen, axAt } = program(R, ext);
   // ZE / OE at 53 / 64-bit precision: not raised by the JIT (translate-x87.js arith), left out of the comparison
   const ign = (cw & 0x300) ? 0x0c : 0;
   const mask = (r) => {
@@ -135,6 +149,17 @@ function check(seed, cw, slices) {
 
 test('x87 status word in a local: random compare / branch / exception programs match the interpreter', () => {
   for (let seed = 1; seed <= 100; seed++) for (const cw of [0x037f, 0x0c7f, 0x007f]) check(seed, cw, [1e7]);
+});
+
+test('x87 status word in a local: the seeds that found FCOMI / FUCOMI clearing C1 in the interpreter only', () => {
+  // FXAM (C1 = the sign) -> FUCOMI st(3) -> FNSTSW AX: the interpreter cleared C1 (0x1400), the JIT kept it (0x1600);
+  // the reference CPU keeps it (x87-cc-hw.test.js)
+  for (const seed of [1034, 1646, 1921]) for (const cw of [0x037f, 0x0c7f, 0x007f, 0x027f, 0x047f, 0x087f]) check(seed, cw, [1e7]);
+});
+
+test('x87 status word in a local: FCOMIP / FCMOVcc / FFREE / FPREM1 / FXAM / FINCSTP mixed in', () => {
+  for (let seed = 3000; seed < 3030; seed++) for (const cw of [0x037f, 0x0c7f, 0x007f]) check(seed, cw, [1e7], true);
+  for (let seed = 3100; seed < 3110; seed++) check(seed, 0x037f, [1, 7], true);
 });
 
 test('x87 status word in a local: time slices through random programs', () => {
