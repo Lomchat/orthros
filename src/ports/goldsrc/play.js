@@ -129,11 +129,13 @@ $('start').addEventListener('submit', async event => {
     if (!crossOriginIsolated) throw new Error(S.isolated);
     const g = config.goldsrc, base = `/engines/${encodeURIComponent(g.engine)}/`;
     db = await openStorage(config.saveKey);
-    const { Xash3D, Net } = await import(base + 'engine/index.js');
+    const { Xash3D, Net, DEFAULT_SERVER_LIBRARY } = await import(base + 'engine/index.js');
     engine = session.engine = new Xash3D({
       canvas: $('canvas'),
-      // (?debug: the engine's developer messages from its start)
-      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', '1024', '-height', '768', ...(new URLSearchParams(location.search).has('debug') ? ['-dev', '2'] : [])],
+      // (-dll: the engine opens the server module under the name the wrapper preloaded it with, not the one the game's
+      // liblist.gam names — another name finds no library and the local server never starts;
+      // ?debug: the engine's developer messages from its start)
+      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-dll', DEFAULT_SERVER_LIBRARY, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', '1024', '-height', '768', ...(new URLSearchParams(location.search).has('debug') ? ['-dev', '2'] : [])],
       libraries: {
         xash: base + 'engine/xash.wasm', filesystem: base + 'engine/filesystem_stdio.wasm',
         menu: base + (g.modules.menu ?? 'engine/libmenu.wasm'), client: base + g.modules.client, server: base + g.modules.server,

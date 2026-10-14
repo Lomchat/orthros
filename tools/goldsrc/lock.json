@@ -189,6 +189,43 @@
       }
     ]
   },
+  "modules": {
+    "id": "xash3d-web-1.2.2-cs16-15278ca",
+    "engine": "xash3d-web-1.2.2",
+    "repository": "https://github.com/Velaron/cs16-client",
+    "commit": "15278ca324543b40a481204dd08cbe6846b2c3d0",
+    "submodules": {
+      "3rdparty/ReGameDLL_CS": "dbcb75e9a8b262ece921815d5820dcb98be7dece",
+      "3rdparty/ReGameDLL_CS/regamedll/extra/cssdk": "a09ee092843489fa95a8c002a44860427812094c",
+      "3rdparty/mainui_cpp": "30ef0a1977f83e56fd60179bfe91577d90e1938c",
+      "3rdparty/mainui_cpp/miniutl": "66bb8ce932649907a33007b89c09deb30cebd49e",
+      "3rdparty/miniutl": "66bb8ce932649907a33007b89c09deb30cebd49e",
+      "3rdparty/yapb": "34772be5cadfd1538758a5cc03def63ea6e958fa",
+      "3rdparty/yapb/ext/crlib": "b5f7ccc23dec2d018048b40085f78255cc232e52",
+      "3rdparty/yapb/ext/linkage": "a21540a52d7559333ad9d8326411daf78af62891"
+    },
+    "patches": {
+      ".": "cs16-client.patch",
+      "3rdparty/ReGameDLL_CS": "ReGameDLL_CS.patch"
+    },
+    "emsdk": "emscripten/emsdk:4.0.23@sha256:86537645c51e44899812d29820ee3b64b96c321ebb2aba4416a04ceeb1bcde62",
+    "gameDir": "counterstrike/cstrike",
+    "purpose": "Counter-Strike client, menu and server modules built from these sources (the browser modules of the \"browser\" release were recovered without theirs); the server also natively, for the dedicated server.",
+    "files": [
+      {
+        "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
+        "sha256": "713202bad2484424ca9a8ce23d0421acb09e20248478b3bb08cfdd03cbbc4cf0"
+      },
+      {
+        "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
+        "sha256": "d59d082fe0b58a35340432867629fd7342d9e8c91e81aa36550a7857e1474db8"
+      },
+      {
+        "path": "counterstrike/cstrike/dlls/cs_emscripten_wasm32.wasm",
+        "sha256": "78e013ef3da18fa1f76fc0e091f06654bc289b2906f48ccf8c36ff890eb33fad"
+      }
+    ]
+  },
   "dedicatedServer": {
     "id": "xash3d-dedicated-e0ece3d",
     "repository": "https://github.com/FWGS/xash3d-fwgs",

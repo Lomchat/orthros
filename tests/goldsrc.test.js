@@ -60,6 +60,7 @@ test('a GoldSrc version needs no executable and is checked by its own rules', (t
     [(v) => { v.goldsrc.modules.client = '../client.wasm'; }, /goldsrc.modules/],
     [(v) => { delete v.goldsrc.solo; }, /solo ou goldsrc.multiplayer/],
     [(v) => { v.goldsrc.multiplayer = { server: 'srv', port: 80, map: 'dm' }; }, /goldsrc.multiplayer/],
+    [(v) => { v.goldsrc.multiplayer = { server: 'srv', port: 27999, map: 'dm', gameLibrary: '../cs.so' }; }, /gameLibrary/],
     [(v) => { v.goldsrc.gameDir = 'a/b'; }, /gameDir/],
     [(v) => { v.runtime = 'dos'; }, /runtime inconnu/],
     [(v) => { v.coverFile = '../cover.svg'; }, /coverFile/],

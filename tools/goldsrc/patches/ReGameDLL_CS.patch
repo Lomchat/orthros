@@ -1,0 +1,47 @@
+diff --git a/regamedll/game_shared/counter.h b/regamedll/game_shared/counter.h
+index 84f03ce..4e5682e 100644
+--- a/regamedll/game_shared/counter.h
++++ b/regamedll/game_shared/counter.h
+@@ -38,7 +38,7 @@
+ 	#include <sys/types.h>
+ 	#include <fcntl.h>
+ 	#include <unistd.h>
+-	#ifdef __APPLE__
++	#if defined __APPLE__ || defined __EMSCRIPTEN__
+ 		#include <limits.h>
+ 	#else
+ 		#include <linux/limits.h>
+diff --git a/regamedll/public/tier0/platform.h b/regamedll/public/tier0/platform.h
+index eaf294f..1cf84ab 100644
+--- a/regamedll/public/tier0/platform.h
++++ b/regamedll/public/tier0/platform.h
+@@ -75,7 +75,7 @@
+ // Can't use extern "C" when DLL exporting a global
+ #define DLL_GLOBAL_EXPORT extern __declspec(dllexport)
+ #define DLL_GLOBAL_IMPORT extern __declspec(dllimport)
+-#elif defined __linux__ || defined __APPLE__
++#elif defined __linux__ || defined __APPLE__ || defined __EMSCRIPTEN__
+ 
+ // Used for dll exporting and importing
+ #define DLL_EXPORT extern "C"
+diff --git a/regamedll/version/appversion.sh b/regamedll/version/appversion.sh
+index 68c3586..cf3bc1f 100755
+--- a/regamedll/version/appversion.sh
++++ b/regamedll/version/appversion.sh
+@@ -118,10 +118,12 @@ init()
+ 
+ update_appversion()
+ {
+-	day=$(date +%d)
+-	year=$(date +%Y)
+-	hours=$(date +%H:%M:%S)
+-	month=$(LANG=en_us_88591; date +"%b")
++	# (SOURCE_DATE_EPOCH, when set, instead of the current time: a reproducible build)
++	stamp=${SOURCE_DATE_EPOCH:+-u -d @$SOURCE_DATE_EPOCH}
++	day=$(date $stamp +%d)
++	year=$(date $stamp +%Y)
++	hours=$(date $stamp +%H:%M:%S)
++	month=$(LANG=en_us_88591; date $stamp +"%b")
+ 
+ 	# Write appversion.h
+ 	echo Updating appversion.h, new version is '"'$NEW_VERSION'"', the old one was $OLD_VERSION

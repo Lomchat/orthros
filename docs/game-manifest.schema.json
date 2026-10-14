@@ -39,7 +39,8 @@
                   "server": { "$ref": "#/$defs/id", "description": "Release du serveur dédié natif dans data_engines/ (tools/goldsrc/build-server.sh)." },
                   "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "description": "Port UDP du serveur dédié, sur 127.0.0.1 seulement ; les joueurs passent par /api/udp/<manifeste>." },
                   "map": { "type": "string" },
-                  "maxPlayers": { "type": "integer", "minimum": 2, "maximum": 32 }
+                  "maxPlayers": { "type": "integer", "minimum": 2, "maximum": 32 },
+                  "gameLibrary": { "type": "string", "description": "Bibliothèque de jeu native du serveur dédié, chemin de la release goldsrc.engine (tools/goldsrc/build-modules.sh), au lieu de celle que nomment les fichiers du jeu." }
                 }
               }
             },

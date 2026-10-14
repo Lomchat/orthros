@@ -18,10 +18,10 @@ Nothing in the code names a game: engine release, game directory, modules, maps 
 | --- | --- | --- |
 | `src/host/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
-| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
+| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` and `cmake/` (game modules from source), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
-| `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
 carry their own licenses (notices below), and the browser game modules were recovered from a deployed build whose
@@ -50,6 +50,13 @@ treat `data_engines/` like `data_games/` (the only copy of the recovered modules
 The contract is in `game-manifest.schema.json`. A version offers `solo`, `multiplayer` or both. `coverFile` is an
 image beside `manifest.json`, for games whose own files hold none a browser displays. The base/version overlay is the
 same as for Windows games: version files replace same-named base files, whatever their case.
+`multiplayer.gameLibrary` (optional) is a native game library in the `engine` release that the dedicated server loads
+instead of the one the game's `liblist.gam` names (`-dll`): the server side of modules built from source.
+
+The page starts the engine with `-dll` set to the name the engine's wrapper preloads the server module under
+(`DEFAULT_SERVER_LIBRARY` of its `constants.js`): the engine otherwise opens the library the game's `liblist.gam` names
+(`dlls/cs_emscripten_wasm32.wasm` for Counter-Strike), finds no such module and runs no local server — what kept
+Counter-Strike at its title screen in single player, whichever server module.
 
 ## Server routes
 
@@ -85,6 +92,35 @@ at once (names and sizes from `/api/tree`); a file's bytes arrive at its first r
   every 2 minutes and when it is closed. The first session of a version, without a learned list, starts at once and
   fetches every read; it teaches the next ones.
 
+## Game modules built from source
+
+The browser release's game modules were recovered from a deployed build whose sources no longer exist.
+`tools/goldsrc/build-modules.sh` builds Counter-Strike's from public sources instead, pinned in `lock.json` "modules":
+`Velaron/cs16-client` at `15278ca` (the commit the recovered build started from) with its submodules — the client,
+`mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). The result is a release of its own,
+`data_engines/xash3d-web-1.2.2-cs16-15278ca/`: the engine files of `xash3d-web-1.2.2` (checked against the lock) and
+under `counterstrike/cstrike/` the three WebAssembly modules and `dlls/cs.so`, the same server compiled natively for the
+32-bit dedicated server (`multiplayer.gameLibrary`).
+
+- **Sources.** `data_engines/src/cs16-client` stays at the pinned commits (checked, clean); the build works on a copy in
+  scratch, where `tools/goldsrc/patches/` are applied: a few one-line portability fixes (Emscripten is neither Linux nor
+  Apple for these sources), the client's engine version check accepting the build number `-1` the WebAssembly engine
+  reports, options to skip the YaPB bots and the downloaded bot graphs, and `SOURCE_DATE_EPOCH` for ReGameDLL's build
+  date.
+- **WebAssembly.** In the pinned image `emscripten/emsdk:4.0.23` (the engine's Emscripten), without network.
+  `cmake/emscripten-side-modules.cmake` makes each shared library a side module (`-sSIDE_MODULE=1`), as the engine's
+  own build does; `cmake/hidden-visibility.cmake` compiles the server with hidden visibility, as the recovered one was:
+  Emscripten's dynamic linker has one symbol table for every module, where the client's same-named weapon and entity
+  symbols would otherwise bind in place of the server's. The menu renders fonts with stb_truetype (no FreeType).
+- **Reproducible.** The pinned commit's time is the build time the sources record: two builds give the same bytes, and
+  the script refuses WebAssembly modules whose SHA-256 differ from the lock's. The native library depends on the host's
+  g++ (its digest is in the release's `release.json` only).
+- **Checked** (2026-10-14, headless Chromium, `check.mjs` and a probe): the rebuilt modules behave as the recovered ones —
+  same exports for the server (216), every entry point of the client and menu; two players on the dedicated server,
+  first with Valve's `cs.so`, then with the native ReGameDLL (`multiplayer.gameLibrary`), move, see each other and get
+  the same score. In single player both module sets now start the local server (`-dll`, above) on `de_dust2`, up to the
+  spectator view and the team menu (`chooseteam`).
+
 ## Browser storage
 
 IndexedDB database `orthros-port:<game>:<version folder>` (the installation; unchanged since the first release):
@@ -103,6 +139,7 @@ Half-Life uses UDP 28015, Counter-Strike 28016.
 ```sh
 python3 tools/goldsrc/install-engine.py          # browser engine release -> data_engines/
 sh tools/goldsrc/build-server.sh                 # dedicated server -> data_engines/ (gcc, 32-bit libraries)
+sh tools/goldsrc/build-modules.sh                # Counter-Strike modules from source -> data_engines/ (Docker, g++ -m32)
 install -m 644 tools/goldsrc/orthros-goldsrc@.service /etc/systemd/system/ && systemctl daemon-reload
 systemctl enable --now orthros-goldsrc@half-life-original-en orthros-goldsrc@counter-strike-original-en
 tools/with-browser-slot.sh node tools/goldsrc/check.mjs half-life-original-en solo --url https://orthros.chalco.website --reload
@@ -120,9 +157,10 @@ The engine files are pinned by SHA-256 in `lock.json` and served only from relea
 Checked in headless Chromium (SwiftShader) with `tools/goldsrc/check.mjs`, from the home card: Half-Life single
 player (moves, saves, loads, quits and finds its save again), Half-Life and Counter-Strike multiplayer (two players on
 the dedicated server see each other, move, and both receive the score when one dies). Not checked: a whole campaign,
-long sessions, voice chat. Counter-Strike has no single-player mode: the recovered WebAssembly server module stays at
-the title screen. Known upstream messages: Half-Life's optional `ReqState` voice message has no handler;
-Counter-Strike warns about its HUD sprite count.
+long sessions, voice chat. Counter-Strike's manifest offers no single-player mode yet: its local server starts since
+`-dll` (above), but the team menu does not open by itself at the start and the bots lack their profile database
+(`BotProfile.db`, in cs16-client's extras). Known upstream messages: Half-Life's optional `ReqState` voice message has
+no handler; Counter-Strike warns about its HUD sprite count.
 
 ## Third-party components
 
@@ -133,4 +171,7 @@ Counter-Strike warns about its HUD sprite count.
 - Xash3D FWGS native engine `FWGS/xash3d-fwgs` at `e0ece3d` with libbacktrace, mbedTLS and miniz (their notices are in
   the checkout): the dedicated server.
 - `FWGS/hlsdk-portable` at `6c168fc`: reference sources only, not the source of the recovered modules.
+- `Velaron/cs16-client` at `15278ca` (GPL 2 or later, with the Half-Life engine exception) and its submodules
+  `Velaron/ReGameDLL_CS` (MIT), `Velaron/mainui_cpp` (GPL 2 or later), `FWGS/MiniUTL`: the modules of
+  `xash3d-web-1.2.2-cs16-15278ca`, built by `build-modules.sh`; their notices are in the checkout.
 - The game files are the games' own, never modified; their provenance is recorded in each manifest's `installedFrom`.
