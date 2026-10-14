@@ -155,7 +155,8 @@ class X87 {
     } else if (a < b) f |= F.CF;
     else if (a === b) f |= F.ZF;
     this.I.flags = f >>> 0;
-    this.clearC1();
+    // the condition codes are left as they were, C1 included: measured on the reference CPU (AMD Zen 2), where the SDM
+    // documents C1 cleared (tools/oracle/x87cc.c)
   }
 
   // ---- memory operand conversions
@@ -568,8 +569,9 @@ function bigFloorDiv(A, B) {
 function prem(I, nearest) {
   const x = x87(I);
   const a = x.st(0), b = x.st(1);
-  if (Number.isNaN(a) || Number.isNaN(b)) { x.setSt(0, x.nan2(a, b)); x.setCC(0, 0, 0, 0); return; }
-  if (!Number.isFinite(a) || b === 0) { x.raise(SW_IE); x.setSt(0, INDEFINITE); x.setCC(0, 0, 0, 0); return; }
+  // a NaN or an invalid operand: C1 and C2 cleared, C0 and C3 kept (measured on the reference CPU)
+  if (Number.isNaN(a) || Number.isNaN(b)) { x.setSt(0, x.nan2(a, b)); x.sw = x.sw & ~(C1 | C2); return; }
+  if (!Number.isFinite(a) || b === 0) { x.raise(SW_IE); x.setSt(0, INDEFINITE); x.sw = x.sw & ~(C1 | C2); return; }
   if (!Number.isFinite(b) || a === 0) { x.setSt(0, a); x.setCC(0, 0, 0, 0); return; }
   const A = decompose(a), B = decompose(b);
   const d = A.top - B.top;
@@ -592,7 +594,9 @@ function prem(I, nearest) {
   }
   x.setSt(0, r);
   const qi = Number(q & 7n);
-  x.setCC(qi & 4 ? 1 : 0, qi & 1 ? 1 : 0, partial ? 1 : 0, qi & 2 ? 1 : 0);
+  // a partial remainder: C2 alone (the quotient bits cleared, measured on the reference CPU; the SDM: undefined)
+  if (partial) x.setCC(0, 0, 1, 0);
+  else x.setCC(qi & 4 ? 1 : 0, qi & 1 ? 1 : 0, 0, qi & 2 ? 1 : 0);
 }
 H[OP.FPREM] = (I) => prem(I, false);
 H[OP.FPREM1] = (I) => prem(I, true);
@@ -632,15 +636,16 @@ H[OP.FYL2XP1] = (I) => {
   x.setSt(1, r); x.pop();
 };
 /**
- * Classify the argument of FSIN/FCOS/FSINCOS/FPTAN (the JIT's trigArg): a NaN -> C0-C3 cleared,
- * nan1 (SNaN: IE, quieted; QNaN propagated); +-inf -> C0-C3 cleared, IE, the indefinite; a finite
- * |x| >= 2^63 -> C2 set, ST(0) unchanged, no push (null); else C0-C3 cleared, compute (undefined).
+ * Classify the argument of FSIN/FCOS/FSINCOS/FPTAN (the JIT's trigArg), C1 and C2 cleared, C0 and C3 kept: a NaN ->
+ * nan1 (SNaN: IE, quieted; QNaN propagated); +-inf -> IE, the indefinite; a finite |x| >= 2^63 -> C2 set,
+ * ST(0) unchanged, no push (null); else compute (undefined).
  */
 function trigSpecial(x, v) {
-  if (Number.isNaN(v)) { x.setCC(0, 0, 0, 0); return x.nan1(v); }
-  if (!Number.isFinite(v)) { x.setCC(0, 0, 0, 0); x.raise(SW_IE); return INDEFINITE; }
+  // C1 and C2 cleared (C2 set out of range), C0 and C3 kept: measured on the reference CPU (the SDM: undefined)
+  x.sw = x.sw & ~(C1 | C2);
+  if (Number.isNaN(v)) return x.nan1(v);
+  if (!Number.isFinite(v)) { x.raise(SW_IE); return INDEFINITE; }
   if (Math.abs(v) >= 2 ** 63) { x.sw = x.sw | C2; return null; }
-  x.setCC(0, 0, 0, 0);
   return undefined;
 }
 function trig1(fn) {
@@ -682,7 +687,7 @@ H[OP.FXCH] = (I, insn) => {
   const a = x.st(0), b = x.st(i);
   x.setSt(0, b); x.setSt(i, a); x.clearC1();
 };
-H[OP.FFREE] = (I, insn) => { const x = x87(I); x.setValid(insn.ops[0].r, false); };
+H[OP.FFREE] = (I, insn) => { const x = x87(I); x.setValid(insn.ops[0].r, false); x.clearC1(); }; // (C1 cleared: measured)
 H[OP.FINCSTP] = (I) => { const x = x87(I); x.top = x.top + 1; x.clearC1(); };
 H[OP.FDECSTP] = (I) => { const x = x87(I); x.top = x.top - 1; x.clearC1(); };
 H[OP.FNOP] = () => {};
@@ -699,8 +704,7 @@ H[OP.FCMOVCC] = (I, insn) => {
   const x = x87(I); const i = insn.ops[0].r;
   const take = I.cond(insn.cc);
   if (x.isEmpty(0) || x.isEmpty(i)) { x.raise(SW_IE | SW_SF); x.setSt(0, INDEFINITE); x.clearC1(); return; }
-  if (take) x.setSt(0, x.st(i));
-  x.clearC1();
+  if (take) x.setSt(0, x.st(i)); // C1 left as it was (measured, like FCOMI)
 };
 
 // ---- environment save/restore (32-bit protected mode layout, 28 bytes)
