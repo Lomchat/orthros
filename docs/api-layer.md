@@ -242,6 +242,24 @@ array selector picking the vertex shader 7 %), render states 18 %; the time of `
   description cache and technique slots, the commit list, the restore lists of its techniques, the empty list of
   `D3DXFX_DONOTSAVESTATE`); the queue has run by then (every call handled in JavaScript drains it first). Before, every
   effect released kept them, a few hundred bytes to a few KiB per effect created. Test: `d3dx9-effect-bind.test.js`.
+- **A pointer kept after the Release** (fixed after a review of the above): `Effect.destroy` freed the handle block, the
+  commit list and the restore lists, but the object's +12 / +20 words still pointed at them, and the queued effect
+  calls' guard (`DEFER_HANDLE` / `DEFER_OBJ`) checked only that +12 was non-zero — not `COM_MARKER`: a call through a
+  stale pointer (undefined behaviour on Windows, but no reason for Orthros to write into memory the heap has handed to
+  someone else) made the fast path write the technique slots, the pass count, the restore list's and the commit list's
+  shadow entries into reused memory. Now: `Com.dispose` clears +12 and +20 of every released object (after its
+  `destroy`); the queued effect calls and `GetParameterDesc` require a live object (`COM_MARKER`) whose handle block
+  names it back (`FX_OWNER`, written by `createEffect`, cleared by `destroy`); the device's state shadow names its device
+  too (`SHADOW_OWNER`, +4 of the block); `IDirect3DSurface::GetDesc` requires its description right after the object
+  (+12 == this + 24). A live object of another kind at a stale pointer's address therefore never passes for an effect,
+  a device or a surface either: the call goes to JavaScript, which reports the unknown object (E_POINTER) or calls the
+  object found there by method name. The other fast paths reading COM words already checked the marker (AddRef /
+  Release, the issued-state filter, the surface description). Tests: `jit-defer-technique.test.js` (a released effect
+  with its stale words and freed blocks reused: every call to JavaScript, nothing written — failed before the fix: all
+  six calls on the fast path), `com-object-refs.test.js`, `jit-defer-filter.test.js`, `jit-surface-desc.test.js`.
+- **Spec bits** (merge with the draw work): the technique-call flags moved to bits 14, 15 and 31 (`DEFER_FX_*` uses 27-29);
+  a spec's structure-words field is 6 bits (`DEFER_WORDS`, the largest structure a light's 26 words; `deferSpecs`
+  rejects a field out of range).
 - Test of the shaders picked in an array (the per-element cache, the device's shader compared by object):
   `d3dx9-effect-bind.test.js` — passes indexing a shader array by `round(Sel)` and `round(Sel + 1)` with indexes out of
   range (clamped, ±1e9 included), the device's shader set directly between commits (to none or another element),

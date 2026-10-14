@@ -46,7 +46,8 @@ for (const api9 of [false, true]) {
     const OUT = E.alloc(64), want = surfaces.map((p) => { mem.fill(OUT, 32, 0xee); assert.equal(com.implAt(p).GetDesc(ctx([p, OUT])), 0); return Array.from(mem.bytes(OUT, 32)); });
     // guest code: GetDesc(surface, out) for every surface into its own buffer, then a null output, then a released surface
     const outs = surfaces.map(() => E.alloc(32));
-    const calls = [...surfaces.map((p, i) => [p, outs[i]]), [surfaces[1], 0], [dead, OUT]];
+    mem.write32(devPtr + 4, COM_MARKER); // (a live object of another kind, its +12 word its state shadow: not a description)
+    const calls = [...surfaces.map((p, i) => [p, outs[i]]), [surfaces[1], 0], [dead, OUT], [devPtr, OUT]];
     mem.writeBytes(CODE, Uint8Array.from([...calls.flatMap(([s, o]) => [...push(o), ...push(s), 0xff, 0x15, ...le(SLOT)]), 0xf4]));
     mem.write32(dead + 4, 0); // (released: com.js clears the marker)
     for (const o of outs) mem.fill(o, 32, 0x77);
@@ -67,7 +68,7 @@ for (const api9 of [false, true]) {
     }
     assert.equal(r, EXIT.HALT);
     assert.equal(cpu.esp, 0x3f09000, 'stdcall returns');
-    assert.deepEqual(toJs, [[surfaces[1], 0], [dead, OUT]], 'a null output and a released object go to JavaScript');
+    assert.deepEqual(toJs, [[surfaces[1], 0], [dead, OUT], [devPtr, OUT]], 'a null output, a released object and another kind of object go to JavaScript');
     surfaces.forEach((p, i) => assert.deepEqual(Array.from(mem.bytes(outs[i], 32)), want[i], `surface ${i}`));
     // switched off for a measurement (ORTHROS_D3DX_FAST_OFF): every call to JavaScript
     jit.setD3dxFast(false);

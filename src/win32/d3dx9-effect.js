@@ -5,7 +5,7 @@
 import { snapClass } from '../core/snapshot.js';
 import { parseEffect, describeEffect, PT, PC, STATES, isSamplerType, isTextureType } from './d3dx9-fxparse.js';
 import { shaderInfo, expressionInfo, compilePreshader, RSET } from './d3dx9-preshader.js';
-import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, PARAM_DESC_SLOTS, PARAM_DESC_ENTRY, FX_SLOTS, FX_SLOT_BYTES } from '../cpu/jit/runtime.js';
+import { DEFER_HANDLE_BYTES, COMMIT_LIST, COMMIT_LIST_WORDS, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, PARAM_DESC_SLOTS, PARAM_DESC_ENTRY, FX_SLOTS, FX_SLOT_BYTES, FX_OWNER } from '../cpu/jit/runtime.js';
 import { apiOpt } from '../core/api-opt.js';
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
@@ -80,7 +80,8 @@ export function defineEffects(X, vm, h) {
   /** a guest string (names in descriptions: allocated once per effect object, freed with it) */
   const gstr = (fx, s) => { let a = fx.strAddrs.get(s); if (a === undefined) { a = fx.proc.processHeap.alloc(s.length + 1); mem.writeCString(a, s); fx.strAddrs.set(s, a); } return a; };
   /** an effect's guest object; +12 holds its handle block (runtime.js DEFER_HANDLE: setters given a handle are queued by the JIT) */
-  const createEffect = (c, fx) => { const p = com.create(c.proc, 'ID3DXEffect', fx); mem.write32(p + 12, fx.handleBlock); return p; };
+  // (the object's +12: its handle block, which names the object back — runtime.js FX_OWNER — for the JIT's fast paths)
+  const createEffect = (c, fx) => { const p = com.create(c.proc, 'ID3DXEffect', fx); mem.write32(p + 12, fx.handleBlock); mem.write32(fx.handleBlock + FX_OWNER, p); return p; };
 
   class Effect {
     constructor(c, dev, parsed, flags) {
@@ -370,8 +371,11 @@ export function defineEffects(X, vm, h) {
       for (const p of this.allParams()) if (p.obj?.ptr && isTextureType(p.type.type) && com.objectAt(p.obj.ptr)) com.release(com.objectAt(p.obj.ptr));
       for (const sh of this.shaders.values()) if (sh.ptr && com.objectAt(sh.ptr)) com.release(com.objectAt(sh.ptr));
       if (com.objectAt(this.dev)) com.release(com.objectAt(this.dev));
-      // (its process-heap blocks; every queued call on it ran before this Release: Vm.dispatchThunkBody drains first)
+      // (its process-heap blocks; every queued call on it ran before this Release: Vm.dispatchThunkBody drains first. The
+      // object's words pointing at them are cleared by Com.dispose, and the handle block no longer names it — FX_OWNER —
+      // so a pointer kept after the Release, even with those words left in place, never reaches them on the fast path)
       const heap = this.proc.processHeap;
+      if (this.handleBlock) mem.write32(this.handleBlock + FX_OWNER, 0);
       for (const t of this.techniques) if (t.restoreList) { heap.free_(t.restoreList); t.restoreList = 0; t.restoreShadow = 0; }
       if (this.commitBlock) { heap.free_(this.commitBlock); this.commitBlock = 0; }
       if (this.noRestore) { heap.free_(this.noRestore); this.noRestore = 0; }

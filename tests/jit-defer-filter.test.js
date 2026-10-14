@@ -10,7 +10,7 @@ import { GuestMemory, THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { DEFER_QUEUE, DEFER_SPEC, REFS_ANY, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST } from '../src/cpu/jit/runtime.js';
+import { DEFER_QUEUE, DEFER_SPEC, REFS_ANY, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST, FX_OWNER, SHADOW_OWNER } from '../src/cpu/jit/runtime.js';
 import { StateTable } from '../src/win32/state-table.js';
 
 const CODE = 0x20000000, SLOTS = 0x10000100, DEV = 0x10004000, FX = 0x10004100, SB = 0x10005000, TEX = 0x10004200, STACK = 0x10090000, THUNK_SIZE = 16;
@@ -148,8 +148,8 @@ test('issued-state filter: randomized call sequences end in the same state with 
   let dropped = 0;
   for (let seed = 1; seed <= 40; seed++) {
     const env = setup(), { mem } = env;
-    mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.write32(FX + 4, COM_MARKER); mem.write32(FX + 12, 0x10006000);
-    mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1);
+    mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.write32(FX + 4, COM_MARKER); mem.write32(FX + 12, 0x10006000); mem.write32(0x10006000 + FX_OWNER, FX);
+    mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1); mem.write32(SB + SHADOW_OWNER, DEV);
     // odd seeds: the effect lists the states its CommitChanges sets (forgotten when it is queued); even: no list (the
     // filter waits for the queue to run)
     if (seed % 2) { const L = 0x10007800, e = [SHADOW_RS + 7, SHADOW_TSS + 1, SHADOW_SAMP + 16 * 2 + 5, SHADOW_TEX + 3]; mem.write32(L, SB); mem.write32(L + 4, e.length); e.forEach((x, i) => mem.write32(L + 8 + 4 * i, x)); mem.write32(FX + COMMIT_LIST, L); }
@@ -175,6 +175,20 @@ test('issued-state filter: a device without a shadow block, or another object, q
   const before = mem.read32(FAST_STATS);
   runJit(env, calls, dev);
   assert.equal(mem.read32(FAST_STATS), before, 'nothing dropped');
+});
+
+test('issued-state filter: a block that does not name the object (a released device\'s pointer, its memory now another object\'s) is not trusted', () => {
+  // (the block at +12 holds the values the calls set, enabled: only SHADOW_OWNER differs)
+  for (const owner of [DEV, FX]) {
+    const env = setup(), { mem } = env;
+    mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1); mem.write32(SB + SHADOW_OWNER, owner);
+    mem.write32(SB + 16 + 8 * (SHADOW_RS + 7), 1); mem.write32(SB + 16 + 8 * (SHADOW_RS + 7) + 4, 1);
+    const before = mem.read32(FAST_STATS), snap = Array.from(mem.bytes(SB, SHADOW_BYTES));
+    runJit(env, Array.from({ length: 6 }, () => [M.SetRenderState, [DEV, 7, 2]]), new Model(null));
+    if (owner === DEV) { assert.equal(mem.read32(FAST_STATS) - before, 5, 'its own block: the repeated sets dropped'); continue; }
+    assert.equal(mem.read32(FAST_STATS), before, 'nothing dropped');
+    assert.deepEqual(Array.from(mem.bytes(SB, SHADOW_BYTES)), snap, 'the block untouched');
+  }
 });
 
 test('COM AddRef/Release: counted in guest memory by the fast path; the last Release and pending reference changes go to JavaScript', () => {
@@ -217,7 +231,7 @@ test('COM AddRef/Release with Direct3D 9 bindings queued: on the fast path with 
   const OBJS = [0x10004400, 0x10004440, 0x10004480, 0x100044c0, 0x10004500]; // (textures, a vertex buffer, an index buffer: COM objects)
   for (let seed = 1; seed <= 40; seed++) {
     const env = setup(), { mem, cpu } = env;
-    mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1);
+    mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1); mem.write32(SB + SHADOW_OWNER, DEV);
     for (const o of OBJS) { mem.write32(o + 4, COM_MARKER); mem.write32(o + COM_REFS, 3); }
     // the device as d3d9.js keeps it (bindings take and drop references; the shadow follows), and its reference twin
     const world = (refsOf, setRefs, shadow) => {
@@ -303,8 +317,8 @@ test('issued-state filter: an effect commit list that misses a state it sets is 
   let mismatches = 0;
   for (let seed = 1; seed <= 20; seed++) {
     const env = setup(), { mem } = env;
-    mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.write32(FX + 4, COM_MARKER); mem.write32(FX + 12, 0x10006000);
-    mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1);
+    mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.write32(FX + 4, COM_MARKER); mem.write32(FX + 12, 0x10006000); mem.write32(0x10006000 + FX_OWNER, FX);
+    mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1); mem.write32(SB + SHADOW_OWNER, DEV);
     const L = 0x10007800, e = [SHADOW_RS + 7, SHADOW_TSS + 1]; mem.write32(L, SB); mem.write32(L + 4, e.length); e.forEach((x, i) => mem.write32(L + 8 + 4 * i, x)); mem.write32(FX + COMMIT_LIST, L);
     const calls = randomProgram(seed, 400);
     const ref = new Model(null); for (const [m, a] of calls) ref.call(m, a);

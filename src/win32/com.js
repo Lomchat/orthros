@@ -170,6 +170,9 @@ export class Com {
     // (debugging, ?dbg=ORTHROS_RELEASE_WATCH=1: the guest memory of a released object is reused only 4096 releases later —
     // a call through a pointer kept after the release then reaches no object, reported, instead of the next object)
     try { obj.impl.destroy?.(obj); } finally {
+      // (the words the fast paths follow — runtime.js: +12 an effect's handle block, a device's shadow, a surface's
+      // description; +20 an effect's commit list — no longer lead to the blocks the implementation freed)
+      this.mem.write32(obj.ptr + 12, 0); this.mem.write32(obj.ptr + 20, 0);
       if (globalThis.ORTHROS_RELEASE_WATCH) { (this.quarantine ??= []).push(obj); if (this.quarantine.length > 4096) { const o = this.quarantine.shift(); o.proc.processHeap.free_(o.ptr); } }
       else obj.proc.processHeap.free_(obj.ptr);
     }

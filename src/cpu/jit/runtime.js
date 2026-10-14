@@ -126,7 +126,7 @@ export const REFS_SET = PROC_CONSTS + 0x100;
  * parameter name, whose string may be gone by the time the call runs) goes to JavaScript at once.
  * DEFER_OBJ: queued only while the object keeps a non-zero word at +12 (an effect clears it while the application's
  * state manager receives its states: applying them then calls guest code, which must run at the call, on its thread).
- * Both flags also require that word to be non-zero.
+ * Both flags also require that word to be non-zero, the object live (COM_MARKER) and the block naming it (FX_OWNER).
  */
 export const FID_DEFER = 16;
 export const DEFER_HANDLE = 1 << 16, DEFER_HANDLE_BYTES = 4 * 4096, DEFER_OBJ = 1 << 17;
@@ -152,10 +152,17 @@ export const FID_PARAM_DESC = 27, PARAM_DESC_SLOTS = 64, PARAM_DESC_ENTRY = 48, 
 // (bits 14, 15 and 31: the words field of a spec is 6 bits wide — the largest structure, a light, is 26 words — and
 // bits 16 to 30 are the handle / object / filter / refs / states / raw flags)
 export const DEFER_TECH = 1 << 14, DEFER_BEGIN = 1 << 15, DEFER_END = 1 << 31;
-export const FX_SLOTS = DEFER_HANDLE_BYTES + PARAM_DESC_BYTES, FX_SLOT_BYTES = 8;
+/**
+ * FX_OWNER: the word after the slots holds the effect's COM object, written when the object is made and cleared when it
+ * is released: every fast path that trusts an object's +12 block for an effect (DEFER_HANDLE / DEFER_OBJ,
+ * FID_PARAM_DESC) also requires a live object (COM_MARKER) whose block names it — a pointer kept after a Release (the
+ * object's memory and its blocks freed, perhaps reused) reaches JavaScript, which reports the unknown object.
+ */
+export const FX_SLOTS = DEFER_HANDLE_BYTES + PARAM_DESC_BYTES, FX_SLOT_BYTES = 16, FX_OWNER = FX_SLOTS + 8;
 /**
  * Issued-state filter of the device state setters (render, texture stage, sampler states): a device keeps at +12 the
- * address of a STATE_SHADOW block — +0 enabled (0 while a state block records: every set is then recorded), entries of
+ * address of a STATE_SHADOW block — +0 enabled (0 while a state block records: every set is then recorded), +4 the device's
+ * COM object (SHADOW_OWNER: a released device's pointer, its memory reused by another object, finds no shadow), entries of
  * two words (known, value) from +16: SHADOW_RS render states 0..255, SHADOW_TSS stage 0..7 x type 0..39, SHADOW_SAMP
  * sampler 0..15 x type 0..15. An entry holds the state's value as of every call issued so far, queued ones included: the
  * fast path writes it when it queues a set, and the device's state tables (state-table.js) whenever JavaScript changes
@@ -210,7 +217,7 @@ export const SHADOW_RS = 0, SHADOW_TSS = 256, SHADOW_SAMP = SHADOW_TSS + 8 * 40,
 /** D3DLIGHT8/9 and D3DMATERIAL8/9 in words; lights 0..SHADOW_LIGHTS-1 shadowed */
 export const LIGHT_WORDS = 26, MATERIAL_WORDS = 17, SHADOW_LIGHTS = 8;
 export const SHADOW_FVF = SHADOW_IB + 1, SHADOW_LIGHTON = SHADOW_FVF + 1, SHADOW_LIGHT = SHADOW_LIGHTON + SHADOW_LIGHTS, SHADOW_MATERIAL = SHADOW_LIGHT + LIGHT_WORDS * SHADOW_LIGHTS;
-export const SHADOW_ENTRIES = SHADOW_MATERIAL + MATERIAL_WORDS, SHADOW_BYTES = 16 + 8 * SHADOW_ENTRIES;
+export const SHADOW_ENTRIES = SHADOW_MATERIAL + MATERIAL_WORDS, SHADOW_BYTES = 16 + 8 * SHADOW_ENTRIES, SHADOW_OWNER = 4;
 export const COMMIT_LIST_WORDS = 2 + SHADOW_ENTRIES;
 /** Orthros COM objects (com.js): +4 this marker, +16 the reference count (AddRef/Release on the fast path), +20 an effect's commit list */
 export const COM_MARKER = 0x4d4f4321, COM_REFS = 16;
@@ -516,7 +523,9 @@ export function buildRuntime(opts = {}) {
           c.get(TM).i32(DEFER_HANDLE | DEFER_OBJ).and();
           const guarded = c.if_(); // (A0 = this, A1 = the handle)
           c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
-          c.get(A0).i32load(12).eqz().br_if(notHandled);
+          c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(notHandled); // (a live Orthros object)
+          c.get(A0).i32load(12).tee(FB).eqz().get(FB).i32(0x7fff0000 - FX_OWNER - 4).ge_u().or().br_if(notHandled);
+          c.get(FB).i32load(FX_OWNER).get(A0).ne().br_if(notHandled); // (its own block, not a freed one)
           c.get(TM).i32(DEFER_HANDLE).and();
           const handle = c.if_();
           c.get(A1).get(A0).i32load(12).sub().i32(DEFER_HANDLE_BYTES).ge_u().br_if(notHandled);
@@ -548,6 +557,7 @@ export function buildRuntime(opts = {}) {
             c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(nofilter);
             c.get(A0).i32load(12).tee(FB).eqz().br_if(nofilter);
             c.get(FB).i32(0x7fff0000 - SHADOW_BYTES).ge_u().br_if(nofilter);
+            c.get(FB).i32load(SHADOW_OWNER).get(A0).ne().br_if(nofilter); // (the shadow names its device)
             c.get(FB).i32load(0).eqz().br_if(nofilter); // (a state block records)
             c.i32(DEFER_QUEUE).i32load(8).br_if(nofilter); // (a queued call changes states the shadow does not follow)
             c.i32(1).set(KC);
@@ -789,7 +799,8 @@ export function buildRuntime(opts = {}) {
         case FID_PARAM_DESC: { // GetParameterDesc(this, h, desc): a description the effect's cache holds (TM = the entry)
           c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
           c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(notHandled); // (a live Orthros object)
-          c.get(A0).i32load(12).tee(FB).eqz().br_if(notHandled);
+          c.get(A0).i32load(12).tee(FB).eqz().get(FB).i32(0x7fff0000 - FX_OWNER - 4).ge_u().or().br_if(notHandled);
+          c.get(FB).i32load(FX_OWNER).get(A0).ne().br_if(notHandled); // (its own block, not a freed one)
           c.get(A1).get(FB).sub().tee(TM).i32(DEFER_HANDLE_BYTES).ge_u().get(TM).i32(3).and().or().br_if(notHandled);
           c.get(FB).i32(DEFER_HANDLE_BYTES).add().get(TM).i32(2).shr_u().i32(PARAM_DESC_SLOTS - 1).and().i32(PARAM_DESC_ENTRY).mul().add().tee(TM);
           c.i32load(0).get(A1).ne().br_if(notHandled);
@@ -800,7 +811,7 @@ export function buildRuntime(opts = {}) {
         case FID_SURF_DESC: { // GetDesc(this, desc): the surface's description, kept after its object (FB)
           c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
           c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(notHandled); // (a live Orthros object)
-          c.get(A0).i32load(12).tee(FB).eqz().get(FB).i32(0x7fff0000 - SURF_DESC_BYTES).ge_u().or().br_if(notHandled);
+          c.get(A0).i32load(12).tee(FB).get(A0).i32(24).add().ne().br_if(notHandled); // (right after the object: a surface's)
           c.get(A1).eqz().get(A1).i32(0x7fff0000 - SURF_DESC_BYTES).ge_u().or().br_if(notHandled); // (null: JavaScript's error)
           c.get(A1).get(FB).i32(SURF_DESC_BYTES).memcopy();
           c.get(STATE).i32(0); ret(2); break;

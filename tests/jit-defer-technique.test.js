@@ -278,3 +278,33 @@ test('effect technique calls queued: an End whose Begin is not the one that publ
   compare(A, B, calls, 'begun twice');
   shadowCheck(A, 'begun twice');
 });
+
+test('a released effect: calls through a pointer kept after the Release reach JavaScript, the freed blocks are not written', () => {
+  // (Windows: the interface is gone, its memory the heap's; Orthros: the fast path must not trust the object's words —
+  // here the stale words a heap leaves in the freed object, +12 the handle block and +20 the commit list, both freed too
+  // and handed to another allocation)
+  const A = session(true), f = A.fxs[0], { mem, com, E } = A, ptr = f.ptr;
+  runJit(A, [[M.SetTechnique, [ptr, f.techs[0]]], [M.Begin, [ptr, RESULTS, 0]], [M.BeginPass, [ptr, 0]], [M.CommitChanges, [ptr]], [M.EndPass, [ptr]], [M.End, [ptr]],
+    [M.SetTechnique, [ptr, f.techs[0]]], [M.Begin, [ptr, RESULTS, 0]], [M.BeginPass, [ptr, 0]]]);
+  const hb = f.fx.handleBlock, commit = mem.read32(ptr + 20), restore = f.fx.techniques[0].restoreList;
+  assert.ok(hb && commit && restore, 'blocks published');
+  const words = [mem.read32(ptr), mem.read32(ptr + 12), mem.read32(ptr + 16), mem.read32(ptr + 20)];
+  // the release (com.js: dispose); the heap keeps the freed bytes (no debug fill), and another allocation reuses them
+  E.proc.processHeap.free_ = () => {};
+  com.release(com.objectAt(ptr));
+  assert.equal(com.objectAt(ptr), null);
+  if (!mem.read32(ptr + 12) && !mem.read32(ptr + 20)) { mem.write32(ptr + 12, words[1]); mem.write32(ptr + 20, words[3]); } // (the guard on its own)
+  mem.write32(ptr, words[0]); mem.write32(ptr + 16, words[2]);
+  const blocks = [[hb, FX_SLOTS + 16], [commit, 64], [restore, 64]];
+  const fill = (a, n) => { for (let i = 0; i < n; i += 4) mem.write32(a + i, 0x01000001 + i); };
+  blocks.forEach(([a, n]) => fill(a, n));
+  const before = blocks.map(([a, n]) => Array.from(mem.bytes(a, n)));
+  const q0 = mem.read32(DEFER_QUEUE);
+  const S = { ...A, call: (m, args) => (com.implAt(args[0]) ? A.call(m, args) : 0x80004003) }; // (com.js dispatch: E_POINTER)
+  const toJs = runJit(S, [[M.SetTechnique, [ptr, f.techs[0]]], [M.Begin, [ptr, RESULTS + 8, 0]], [M.SetInt, [ptr, f.R, 1]], [M.CommitChanges, [ptr]], [M.EndPass, [ptr]], [M.End, [ptr]]]);
+  assert.deepEqual([toJs[M.SetTechnique], toJs[M.Begin], toJs[M.SetInt], toJs[M.CommitChanges], toJs[M.EndPass], toJs[M.End]], [1, 1, 1, 1, 1, 1], 'every call to JavaScript');
+  assert.equal(q0, 0); assert.equal(mem.read32(DEFER_QUEUE), 0, 'nothing queued');
+  blocks.forEach(([a, n], i) => assert.deepEqual(Array.from(mem.bytes(a, n)), before[i], `freed block ${i} untouched`));
+  assert.equal(mem.read32(RESULTS + 8), 0, 'no pass count written');
+  for (let i = 0; i < 6; i++) assert.equal(mem.read32(RESULTS + 0x10000 + 4 * i), 0x80004003, `call ${i}: E_POINTER`);
+});
