@@ -190,7 +190,6 @@
     ]
   },
   "modules": {
-    "id": "xash3d-web-1.2.2-cs16-15278ca",
     "engine": "xash3d-web-1.2.2",
     "repository": "https://github.com/Velaron/cs16-client",
     "commit": "15278ca324543b40a481204dd08cbe6846b2c3d0",
@@ -204,25 +203,105 @@
       "3rdparty/yapb/ext/crlib": "b5f7ccc23dec2d018048b40085f78255cc232e52",
       "3rdparty/yapb/ext/linkage": "a21540a52d7559333ad9d8326411daf78af62891"
     },
-    "patches": {
-      ".": "cs16-client.patch",
-      "3rdparty/ReGameDLL_CS": "ReGameDLL_CS.patch"
-    },
     "emsdk": "emscripten/emsdk:4.0.23@sha256:86537645c51e44899812d29820ee3b64b96c321ebb2aba4416a04ceeb1bcde62",
     "gameDir": "counterstrike/cstrike",
-    "purpose": "Counter-Strike client, menu and server modules built from these sources (the browser modules of the \"browser\" release were recovered without theirs); the server also natively, for the dedicated server.",
-    "files": [
+    "purpose": "Counter-Strike client, menu and server modules built from these sources (the browser modules of the \"browser\" release were recovered without theirs); the server also natively, for the dedicated server; the bots' profiles and navigation meshes.",
+    "bots": {
+      "archive": "orthros-bots.pk3",
+      "profiles": "3rdparty/cs16client-extras/BotProfile.db",
+      "game": "counter-strike-original-en",
+      "maps": [
+        "as_oilrig",
+        "cs_747",
+        "cs_assault",
+        "cs_backalley",
+        "cs_estate",
+        "cs_havana",
+        "cs_italy",
+        "cs_militia",
+        "cs_office",
+        "cs_siege",
+        "de_airstrip",
+        "de_aztec",
+        "de_cbble",
+        "de_chateau",
+        "de_dust",
+        "de_dust2",
+        "de_inferno",
+        "de_nuke",
+        "de_piranesi",
+        "de_prodigy",
+        "de_storm",
+        "de_survivor",
+        "de_torn",
+        "de_train",
+        "de_vertigo"
+      ]
+    },
+    "builds": [
       {
-        "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
-        "sha256": "713202bad2484424ca9a8ce23d0421acb09e20248478b3bb08cfdd03cbbc4cf0"
+        "id": "xash3d-web-1.2.2-cs16-15278ca-r2",
+        "purpose": "Counter-Strike as its sources give it.",
+        "patches": [
+          [
+            ".",
+            "cs16-client.patch"
+          ],
+          [
+            "3rdparty/ReGameDLL_CS",
+            "ReGameDLL_CS.patch"
+          ]
+        ],
+        "files": [
+          {
+            "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
+            "sha256": "713202bad2484424ca9a8ce23d0421acb09e20248478b3bb08cfdd03cbbc4cf0"
+          },
+          {
+            "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
+            "sha256": "d59d082fe0b58a35340432867629fd7342d9e8c91e81aa36550a7857e1474db8"
+          },
+          {
+            "path": "counterstrike/cstrike/dlls/cs_emscripten_wasm32.wasm",
+            "sha256": "dc4f39db8cb0a35fe9c26d69a7e99201bc70d0ab94ce98aab0acb60752d9b2c2"
+          }
+        ]
       },
       {
-        "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
-        "sha256": "d59d082fe0b58a35340432867629fd7342d9e8c91e81aa36550a7857e1474db8"
-      },
-      {
-        "path": "counterstrike/cstrike/dlls/cs_emscripten_wasm32.wasm",
-        "sha256": "78e013ef3da18fa1f76fc0e091f06654bc289b2906f48ccf8c36ff890eb33fad"
+        "id": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r1",
+        "purpose": "The Half-Life arsenal: five Half-Life weapons bought in Counter-Strike (hl-arsenal patches).",
+        "patches": [
+          [
+            ".",
+            "cs16-client.patch"
+          ],
+          [
+            "3rdparty/ReGameDLL_CS",
+            "ReGameDLL_CS.patch"
+          ],
+          [
+            ".",
+            "hl-arsenal/cs16-client.patch"
+          ],
+          [
+            "3rdparty/ReGameDLL_CS",
+            "hl-arsenal/ReGameDLL_CS.patch"
+          ]
+        ],
+        "files": [
+          {
+            "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
+            "sha256": "197725b38d6eaa363362cbc8edf20fcbe3ab019e374417a05cef5a3a24da81bd"
+          },
+          {
+            "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
+            "sha256": "d59d082fe0b58a35340432867629fd7342d9e8c91e81aa36550a7857e1474db8"
+          },
+          {
+            "path": "counterstrike/cstrike/dlls/cs_emscripten_wasm32.wasm",
+            "sha256": "39d9dc8cbd6848578858dc56333e78a529aeca4449746777151c787729b4e562"
+          }
+        ]
       }
     ]
   },

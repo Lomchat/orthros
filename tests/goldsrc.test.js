@@ -34,7 +34,7 @@ function fixture(t, port = {}) {
   fs.writeFileSync(path.join(gs, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'gs', name: 'GS', defaultVersion: 'gs-orig',
     defaults: { runtime: 'goldsrc', coverFile: 'cover.svg' }, versions: [{ id: 'gs-orig', dir: 'orig', version: 'Original', goldsrc: goldsrc(), ...port }] }));
   const release = path.join(engines, ENGINE);
-  for (const f of ['release.json', 'engine/index.js', 'engine/xash.wasm', 'mod/client.wasm', 'mod/server.wasm']) {
+  for (const f of ['release.json', 'engine/index.js', 'engine/xash.wasm', 'engine/valve/extras.pk3', 'mod/client.wasm', 'mod/server.wasm', 'mod/bots.pk3']) {
     fs.mkdirSync(path.dirname(path.join(release, f)), { recursive: true }); fs.writeFileSync(path.join(release, f), f);
   }
   fs.writeFileSync(path.join(root, 'secret'), 'never served');
@@ -61,7 +61,12 @@ test('a GoldSrc version needs no executable and is checked by its own rules', (t
     [(v) => { delete v.goldsrc.solo; }, /solo ou goldsrc.multiplayer/],
     [(v) => { v.goldsrc.multiplayer = { server: 'srv', port: 80, map: 'dm' }; }, /goldsrc.multiplayer/],
     [(v) => { v.goldsrc.multiplayer = { server: 'srv', port: 27999, map: 'dm', gameLibrary: '../cs.so' }; }, /gameLibrary/],
+    [(v) => { v.goldsrc.multiplayer = { server: 'srv', port: 27999, map: 'dm', commands: ['mp_startmoney 16000; quit'] }; }, /multiplayer.commands/],
     [(v) => { v.goldsrc.gameDir = 'a/b'; }, /gameDir/],
+    [(v) => { v.goldsrc.extras = ['mod/bots.zip']; }, /extras/],
+    [(v) => { v.goldsrc.extras = ['mod/bots.pk3', 'other/BOTS.pk3']; }, /extras/],
+    [(v) => { v.goldsrc.solo.commands = ['bot_quota 4; quit']; }, /solo.commands/],
+    [(v) => { v.requires = [{ game: 'win', version: 'win-1', mount: 'C:\\Win' }]; }, /requires invalide/],
     [(v) => { v.runtime = 'dos'; }, /runtime inconnu/],
     [(v) => { v.coverFile = '../cover.svg'; }, /coverFile/],
     [(v) => { v.saveKey = 'other'; }, /saveKey est généré/],
@@ -170,4 +175,37 @@ test('the dedicated server sees the version\'s files over the base\'s as one tre
   assert.equal(fs.readFileSync(path.join(dest, 'VALVE', 'config.cfg'), 'utf8'), 'version');
   assert.equal(fs.readFileSync(path.join(dest, 'VALVE', 'maps', 'start.bsp'), 'utf8'), 'map');
   assert.ok(fs.lstatSync(path.join(dest, 'VALVE', 'maps', 'start.bsp')).isSymbolicLink());
+});
+
+test('a port requiring another port has its files beneath its own: in the page\'s tree, the files served and the dedicated server\'s', async (t) => {
+  const { root, games, engines } = fixture(t, { goldsrc: goldsrc({ extras: ['engine/valve/extras.pk3', 'mod/bots.pk3'], solo: { map: 'start', commands: ['bot_quota 4'] } }) });
+  const mod = path.join(games, 'mod');
+  fs.mkdirSync(path.join(mod, 'base', 'valve'), { recursive: true }); fs.mkdirSync(path.join(mod, 'versions', '1'), { recursive: true });
+  fs.writeFileSync(path.join(mod, 'base', 'valve', 'config.cfg'), 'mod');
+  fs.writeFileSync(path.join(mod, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'mod', name: 'Mod', defaultVersion: 'mod-1',
+    defaults: { runtime: 'goldsrc' }, versions: [{ id: 'mod-1', dir: '1', version: '1', goldsrc: goldsrc(), requires: [{ game: 'gs', version: 'gs-orig' }] }] }));
+  const catalog = loadGameCatalog(games), man = catalog.get('mod-1');
+  assert.equal(man.extraMounts, undefined);
+  const base = await serve(t, { gamesDir: games, enginesDir: engines });
+  assert.equal(await (await fetch(`${base}/game/mod-1/valve/config.cfg`)).text(), 'mod'); // (its own file first)
+  assert.equal(await (await fetch(`${base}/game/mod-1/valve/maps/start.bsp`)).text(), 'map'); // (then the required game's)
+  const tree = await (await fetch(`${base}/api/tree/mod-1`)).json();
+  assert.ok(JSON.stringify(tree).includes('start.bsp'));
+  const info = await (await fetch(`${base}/api/manifest/mod-1`)).json();
+  assert.equal(info.underlays, undefined); assert.equal(JSON.stringify(info).includes(root), false);
+  const port = (await (await fetch(`${base}/api/manifests`)).json()).find((m) => m.name === 'gs-orig');
+  assert.equal(port.available, true);
+  fs.rmSync(path.join(engines, ENGINE, 'mod', 'bots.pk3'));
+  assert.equal((await (await fetch(`${base}/api/manifests`)).json()).find((m) => m.name === 'gs-orig').available, false);
+  const dest = path.join(root, 'linked');
+  assert.equal(linkGameLayers(man, dest), 2);
+  assert.equal(fs.readFileSync(path.join(dest, 'valve', 'config.cfg'), 'utf8'), 'mod');
+  assert.equal(fs.readFileSync(path.join(dest, 'valve', 'maps', 'start.bsp'), 'utf8'), 'map');
+  // (only another port, and never itself through a cycle)
+  editManifest(mod, (spec) => { spec.versions[0].requires = [{ game: 'win', version: 'win-1' }]; });
+  assert.throws(() => loadGameCatalog(games), /pas un portage goldsrc/);
+  editManifest(mod, (spec) => { spec.versions[0].requires = [{ game: 'gs', version: 'gs-orig' }]; });
+  const gsDir = path.join(games, 'gs');
+  editManifest(gsDir, (spec) => { spec.versions[0].requires = [{ game: 'mod', version: 'mod-1' }]; });
+  assert.throws(() => loadGameCatalog(games), /circulaire/);
 });

@@ -42,7 +42,8 @@ export function loadGameFolder(gameDir) {
     if (!RUNTIMES.includes(runtime)) fail(file, `${entry.id}: runtime inconnu: ${runtime}`);
     if (runtime === 'win32' && !safePath(entry.exe)) fail(file, `${entry.id}: exe doit être un chemin relatif sûr`);
     if (entry.languages !== undefined && (!Array.isArray(entry.languages) || !entry.languages.length || !entry.languages.every((v) => typeof v === 'string' && /^[a-z]{2}(?:-[A-Z]{2})?$/.test(v)))) fail(file, `${entry.id}: languages invalide`);
-    if (entry.requires !== undefined && (!Array.isArray(entry.requires) || !entry.requires.every((d) => d && ID.test(d.game ?? '') && ID.test(d.version ?? '') && WIN_MOUNT.test(d.mount ?? '')))) fail(file, `${entry.id}: requires invalide`);
+    // (win32: another game's version mounted at its own drive path; goldsrc: its files beneath this version's, no mount)
+    if (entry.requires !== undefined && (!Array.isArray(entry.requires) || !entry.requires.every((d) => d && ID.test(d.game ?? '') && ID.test(d.version ?? '') && (runtime === 'goldsrc' ? d.mount === undefined : WIN_MOUNT.test(d.mount ?? ''))))) fail(file, `${entry.id}: requires invalide`);
     for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
     const { id, dir, requires, ...version } = entry;
     const manifest = withDefaults({ ...defaults, ...version, runtime, name: spec.name, gameId: spec.id,
@@ -97,7 +98,19 @@ export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null) {
       if (dep.version === id || sources.get(dep.version)?.game !== dep.game) throw new Error(`${id}: dépendance introuvable ou invalide: ${dep.game}/${dep.version}`);
       deps.push({ mount: dep.mount, manifest: dep.version });
     }
-    if (deps.length) catalog.get(id).extraMounts = deps;
+    if (deps.length && catalog.get(id).runtime !== 'goldsrc') catalog.get(id).extraMounts = deps;
+  }
+  // (a GoldSrc version's required versions lie beneath its own files, in order, with theirs: a mod over its game)
+  const underlays = (id, seen) => {
+    if (seen.includes(id)) throw new Error(`dépendance circulaire: ${[...seen, id].join(' -> ')}`);
+    return sources.get(id).requires.flatMap((dep) => {
+      const m = catalog.get(dep.version);
+      if (m.runtime !== 'goldsrc') throw new Error(`${id}: ${dep.version} n'est pas un portage goldsrc`);
+      return [m.folder, m.baseFolder, ...underlays(dep.version, [...seen, id])];
+    });
+  };
+  for (const [id, source] of sources) {
+    if (source.requires.length && catalog.get(id).runtime === 'goldsrc') catalog.get(id).underlays = underlays(id, []);
   }
   for (const [id, manifest] of extra ?? []) catalog.set(id, manifest);
   return catalog;
