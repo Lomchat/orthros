@@ -57,17 +57,12 @@ for (const fmt of [FMT.DXT1, FMT.DXT5, FMT.A1R5G5B5, FMT.R5G6B5, FMT.A8R8G8B8, F
   });
 }
 
-test('D3DXCreateTextureFromFileInMemoryEx from DDS files (read in place): levels as is, converted, generated, color key — the base\'s bytes', () => {
+/** D3DXCreateTextureFromFileInMemoryEx on each DDS case at `skew` bytes past an aligned address: the base's levels */
+function checkDds(cases, skew) {
   const { E, mem, call, com, devPtr, out } = env();
-  const cases = [
-    { fmt: FMT.DXT1, w: 64, h: 64, mips: 7, req: [0, 0], key: 0 }, // (every level as the file has it)
-    { fmt: FMT.DXT5, w: 64, h: 32, mips: 7, req: [32, 16], key: 0 }, // (a smaller texture: each level converted from the file's)
-    { fmt: FMT.DXT3, w: 64, h: 64, mips: 1, req: [0, 0], key: 0 }, // (one level in the file: the others generated)
-    { fmt: FMT.DXT1, w: 32, h: 32, mips: 6, req: [0, 0], key: 0xff000000 }, // (a color key: through RGBA)
-    { fmt: FMT.DXT5, w: 128, h: 128, mips: 2, req: [0, 0], key: 0, texFmt: FMT.A8R8G8B8 }, // (another texture format)
-  ];
   for (const k of cases) {
-    const f = dds(k.fmt, k.w, k.h, k.mips, k.w + k.mips), src = E.alloc(f.bytes.length); mem.writeBytes(src, f.bytes);
+    // (`skew`: the file at an address that is not a multiple of 4 — its levels are views of guest memory there)
+    const f = dds(k.fmt, k.w, k.h, k.mips, k.w + k.mips), src = E.alloc(f.bytes.length + 8) + skew; mem.writeBytes(src, f.bytes);
     assert.equal(call('D3DXCreateTextureFromFileInMemoryEx', devPtr, src, f.bytes.length, k.req[0], k.req[1], 0, 0, k.texFmt ?? 0, 1, 5, 5, k.key, 0, 0, out), 0);
     const t = com.implAt(mem.read32(out)), fmt = k.texFmt ?? k.fmt;
     const w = k.req[0] || k.w, h = k.req[1] || k.h;
@@ -87,7 +82,37 @@ test('D3DXCreateTextureFromFileInMemoryEx from DDS files (read in place): levels
     mem.fill(src, f.bytes.length, 0xee); // (the file's buffer is the game's: nothing kept from it)
     assert.deepEqual(levelBytes(mem, t.levels[0]), Array.from(want[0]));
   }
+}
+
+test('D3DXCreateTextureFromFileInMemoryEx from DDS files (read in place): levels as is, converted, generated, color key — the base\'s bytes', () => {
+  checkDds([
+    { fmt: FMT.DXT1, w: 64, h: 64, mips: 7, req: [0, 0], key: 0 }, // (every level as the file has it)
+    { fmt: FMT.DXT5, w: 64, h: 32, mips: 7, req: [32, 16], key: 0 }, // (a smaller texture: each level converted from the file's)
+    { fmt: FMT.DXT3, w: 64, h: 64, mips: 1, req: [0, 0], key: 0 }, // (one level in the file: the others generated)
+    { fmt: FMT.DXT1, w: 32, h: 32, mips: 6, req: [0, 0], key: 0xff000000 }, // (a color key: through RGBA)
+    { fmt: FMT.DXT5, w: 128, h: 128, mips: 2, req: [0, 0], key: 0, texFmt: FMT.A8R8G8B8 }, // (another texture format)
+  ], 0);
 });
+
+// DDS levels are views of the guest's buffer at the guest's address (no aligned copy): files at odd addresses, 16 and
+// 32-bit sources (unpacked / swizzled from the view), with the WebAssembly kernels and with the JavaScript code.
+for (const kernels of [true, false]) {
+  test(`DDS files at unaligned addresses, DXT / 16 / 32-bit, ${kernels ? 'WebAssembly kernels' : 'ORTHROS_DXT_WASM=0'}: the base's bytes`, () => {
+    const cases = [
+      { fmt: FMT.DXT1, w: 64, h: 64, mips: 7, req: [32, 32], key: 0 }, // (converted from the file's levels)
+      { fmt: FMT.DXT5, w: 64, h: 64, mips: 1, req: [0, 0], key: 0 }, // (generated)
+      { fmt: FMT.R5G6B5, w: 64, h: 64, mips: 7, req: [32, 32], key: 0 },
+      { fmt: FMT.A4R4G4B4, w: 64, h: 32, mips: 1, req: [0, 0], key: 0 },
+      { fmt: FMT.A1R5G5B5, w: 64, h: 64, mips: 7, req: [0, 0], key: 0, texFmt: FMT.DXT1 },
+      { fmt: FMT.A8R8G8B8, w: 64, h: 64, mips: 7, req: [32, 32], key: 0 },
+      { fmt: FMT.X8R8G8B8, w: 64, h: 64, mips: 1, req: [0, 0], key: 0, texFmt: FMT.DXT5 },
+      { fmt: FMT.A8R8G8B8, w: 64, h: 64, mips: 7, req: [0, 0], key: 0xff000000, texFmt: FMT.R5G6B5 },
+    ];
+    const was = globalThis.ORTHROS_DXT_WASM;
+    globalThis.ORTHROS_DXT_WASM = kernels ? undefined : 0;
+    try { for (const skew of [1, 2, 3]) checkDds(cases, skew); } finally { globalThis.ORTHROS_DXT_WASM = was; }
+  });
+}
 
 test('D3DXFilterTexture from level 1, and over a source level without memory (left alone, the chain starting below it)', () => {
   const { E, mem, call, texture, surface } = env();

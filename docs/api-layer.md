@@ -151,13 +151,16 @@ DXT encoder (`colorBlock`) alone 17 % of the BFME2 load screen's Node profile.
   in f64 with the same strict "nearer than every earlier level" scan; no fused multiply-add. The decoder builds each
   block's palette with the same truncating integer divisions and gathers a row's texels with `i8x16.swizzle`. 16-bit
   expansion uses tables made by the JavaScript expression (`i8x16.swizzle`), quantization the exact integer form of
-  `Math.round(v * m / 255)` (`floor((v m + 127) / 255)`, checked for every value). Small images (< 1024 texels) stay in
-  JavaScript. Single thread, Node, interleaved with the base (`d3dx-image-bench.mjs --vs`, loaded server): X8R8G8B8
+  `Math.round(v * m / 255)` (`floor((v m + 127) / 255)`, checked for every value). Small images (< 1024 texels,
+  `WASM_MIN_TEXELS`) stay in JavaScript for the swizzle, the 16-bit unpack / pack, the DXT decoder and the 2:1 filter;
+  the DXT encoder (`encodeDxt` / `encodeDxtRows`) and `mipChain` use the kernels at every size, down to 1 x 1 levels
+  (the same bytes: the exactness tests cover every size from 1 x 1). Single thread, Node, interleaved with the base (`d3dx-image-bench.mjs --vs`, loaded server): X8R8G8B8
   256 x 256 -> DXT1 load 2.1-3.4 -> 0.5-1.3 ms, DXT1 mip chain from 256 0.80-0.97 -> 0.20-0.23 ms, A1R5G5B5 chain from
   its level 0.36-0.77 -> 0.11-0.20 ms, DXT1 / DXT5 decode 0.80 / 1.13 -> 0.19 / 0.30 ms, TGA image information 0.5-0.9 ms
   -> 2 µs; the same bytes from both trees.
-- The kernels run on a private memory of the emulator thread (grown to the largest image met, never shrunk: a 2048 x
-  2048 texture keeps ~32 MiB) — and in the DXT helper workers (D062), which now share one `WebAssembly.Memory` (shared)
+- The kernels run on a private memory of the emulator thread (grown to the largest image met, never shrunk; the
+  largest user is `mipChain`, which reserves two RGBA regions of the largest level plus every encoded level: from a
+  2048 x 2048 source ~35 MiB for a DXT1 chain, up to ~53 MiB for a 32-bit chain that includes its top level) — and in the DXT helper workers (D062), which now share one `WebAssembly.Memory` (shared)
   with the emulator thread and encode their block rows in place (the JavaScript encoder where SIMD is missing). With a
   4x faster encoder the hand-off pays only for larger images: the pool now takes images from 2048 blocks (was 1024).
   Measured in Node with 4 helper threads on the loaded server (`DxtPool` against the local encoder, interleaved): 128 x
@@ -231,9 +234,39 @@ slow under the server's load for the scenario's clicks to start the map (both si
 intermittent access violation in the game's heap code during the menu, which base `main` also shows (the race under
 investigation in the green-thread scheduler; no D3DX image call there).
 
+Re-measured after review (2026-10-14, code unchanged — only tests and this text —, Node `startbench` with a fresh
+profile each side, base `ca01ae8` and this branch at the same time, launch order alternated, 1-minute load 17-25; "API"
+is the API time of the load + loadscreen phases):
+
+| Run (pair, first launched) | load + loadscreen | API time | FilterTexture / LoadSurfaceFromMemory | thread CPU |
+| --- | --- | --- | --- | --- |
+| BFME2 bfme2-startup, base first | 21.8 -> 17.7 s | 5 237 -> 2 201 ms (-58 %) | 1 471 -> 393 / 2 097 -> 619 ms | 21.7 -> 17.6 s |
+| BFME2, variant first | 22.3 -> 18.7 s | 5 593 -> 2 326 ms (-58 %) | 1 571 -> 450 / 2 301 -> 616 ms | 22.1 -> 18.6 s |
+| RotWK rotwk-startup, base first | 21.1 -> 19.2 s | 3 193 -> 2 082 ms (-35 %) | 560 -> 618 / 1 174 -> 308 ms | 20.4 -> 18.7 s |
+| RotWK, variant first | 17.7 -> 15.6 s | 2 838 -> 1 126 ms (-60 %) | 517 -> 126 / 1 058 -> 273 ms | 17.0 -> 15.0 s |
+| RotWK, base first | 20.1 -> 18.2 s | 3 012 -> 1 305 ms (-57 %) | 543 -> 91 / 1 093 -> 302 ms | 19.5 -> 17.5 s |
+
+Every pair gains in time to play (2-4 s) and API time; the gain is well beyond the spread between pairs. One outlier:
+in the first RotWK pair the variant's `D3DXFilterTexture` took 618 ms for its 592 calls (91-126 ms in the two other
+variant runs) — a stall of one run (the large DXT levels go to the helper pool, which waits for helpers on a loaded
+server), not reproduced.
+
+The 16-bit decode alone (`toRgba` of an R5G6B5 / A4R4G4B4 256 x 256 image, `d3dx-image-bench.mjs`) is the one operation
+where the kernels barely help: it is a table lookup per texel in JavaScript already, and the kernel adds a copy in and
+a copy out. A verification run on the loaded server (1-minute load 30-59, 9 runs) found it slower than the base (A/B
+1.10-2.02 for R5G6B5, 1.07-1.39 for A4R4G4B4, +0.03-0.5 ms per image); re-run at load 17-22 with 15 runs it was faster
+in each of 6 runs (A/B 0.62-0.86 and 0.60-0.89), and in-process against the same tree's JavaScript path
+(`ORTHROS_DXT_WASM=0` toggled, 200 interleaved calls) 0.18-0.23 against 0.20-0.27 ms (R5G6B5, one run of three slower
+by 6 %) and 0.10 against 0.14-0.15 ms (A4R4G4B4). Within the noise of a loaded server, so kept: the same kernel feeds
+the in-memory mip chains of 16-bit sources (A1R5G5B5 chain 0.35 -> 0.12 ms), and no game run shows a 16-bit decode on
+its own among the costly calls.
+
 ## Measuring within a session
 
-Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of the above off (`=` back on);
+Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of the above off (`=` back on) except
+the D3DX image work: of that section, `ORTHROS_API_OPT_OFF` and `ORTHROS_D3DX_FAST_OFF` cover only the surface `GetDesc`
+fast path, `dbg:ORTHROS_DXT_WASM=0` puts the image kernels (and the helpers' encoder) back on JavaScript, and the GUID
+string cache, the header-only TGA / BMP information, DDS files read in place and the lighter `LockRect` have no switch;
 `dbg:ORTHROS_GL_NOCACHE=1` only the backend's caches; `dbg:ORTHROS_D3DX_FAST_OFF=1` only the JIT fast paths;
 `dbg:ORTHROS_FX_BIND_OFF=1` only the effect binding above (raw words, versions, sampler shortcut, resolved methods).
 Scenarios `tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phases on / off in play (both orders),
