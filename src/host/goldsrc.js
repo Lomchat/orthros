@@ -38,7 +38,7 @@ export function goldsrcProblem(g) {
     if (mp.maxPlayers !== undefined && (!Number.isInteger(mp.maxPlayers) || mp.maxPlayers < 2 || mp.maxPlayers > 32)) return 'goldsrc.multiplayer.maxPlayers invalide';
     if (mp.gameLibrary !== undefined && !safePath(mp.gameLibrary)) return 'goldsrc.multiplayer.gameLibrary doit être un chemin de la release';
     if (mp.commands !== undefined && !commandsOk(mp.commands)) return 'goldsrc.multiplayer.commands : commandes de console, une par entrée';
-    if (mp.mapImage !== undefined && (typeof mp.mapImage !== 'string' || !mp.mapImage.includes('{map}') || !safePath(mp.mapImage.replace('{map}', 'm')))) return 'goldsrc.multiplayer.mapImage : chemin du dossier du jeu avec {map}';
+    if (mp.mapImage !== undefined && (typeof mp.mapImage !== 'string' || !mp.mapImage.includes('{map}') || !safePath(mp.mapImage.replaceAll('{map}', 'm')))) return 'goldsrc.multiplayer.mapImage : chemin du dossier du jeu avec {map}';
     if (mp.maps !== undefined && (!Array.isArray(mp.maps) || !mp.maps.length || !mp.maps.every((n) => typeof n === 'string' && MAP.test(n)))) return 'goldsrc.multiplayer.maps : noms de cartes';
     if (mp.rooms !== undefined) {
       const r = mp.rooms, [first, last] = Array.isArray(r?.ports) ? r.ports : [];
@@ -56,9 +56,10 @@ const labelOk = (l) => typeof l === 'string' ? l.length > 0 && l.length <= 60 : 
 /** A room's settings a player chooses (rooms.options): each a few choices, each its server commands. */
 function roomOptionsOk(options) {
   if (!Array.isArray(options) || options.length > 8 || new Set(options.map((o) => o?.id)).size !== options.length) return false;
-  return options.every((o) => isObject(o) && OPTION_ID.test(o.id ?? '') && labelOk(o.label) && Array.isArray(o.choices) && o.choices.length >= 2 && o.choices.length <= 12
-    && new Set(o.choices.map((c) => c?.id)).size === o.choices.length && o.choices.some((c) => c.id === o.default)
-    && o.choices.every((c) => isObject(c) && OPTION_ID.test(c.id ?? '') && labelOk(c.label) && commandsOk(c.commands ?? [])));
+  return options.every((o) => isObject(o) && OPTION_ID.test(o.id ?? '') && labelOk(o.label) && [o.bots, o.show].every((b) => b === undefined || typeof b === 'boolean')
+    && Array.isArray(o.choices) && o.choices.length >= 2 && o.choices.length <= 12
+    && o.choices.every((c) => isObject(c) && OPTION_ID.test(c.id ?? '') && labelOk(c.label) && commandsOk(c.commands ?? []))
+    && new Set(o.choices.map((c) => c.id)).size === o.choices.length && o.choices.some((c) => c.id === o.default));
 }
 
 // ---------------------------------------------------------------- the rooms: the games players create

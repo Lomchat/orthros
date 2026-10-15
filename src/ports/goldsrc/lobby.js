@@ -39,15 +39,18 @@ export function mapThumb(name, map) {
     const img = new Image(); img.decoding = 'async';
     img.onload = () => {
       try {
-        const w = 240, h = Math.round(w * img.naturalHeight / Math.max(1, img.naturalWidth)), c = document.createElement('canvas'); c.width = w; c.height = h;
-        const g = c.getContext('2d', { willReadFrequently: true }); g.imageSmoothingQuality = 'high'; g.drawImage(img, 0, 0, w, h);
-        const px = g.getImageData(0, 0, w, h), d = px.data;
-        for (let i = 0; i < d.length; i += 4) if (d[i + 1] > 150 && d[i] < 110 && d[i + 2] < 110 && d[i + 1] > d[i] + 80) { d[i] = 22; d[i + 1] = 24; d[i + 2] = 30; }
-        g.putImageData(px, 0, 0);
+        // (the key replaced at full size, before smoothing blends it into its neighbours: no green fringe)
+        const W = img.naturalWidth, H = img.naturalHeight, full = document.createElement('canvas'); full.width = W; full.height = H;
+        const f = full.getContext('2d', { willReadFrequently: true }); f.drawImage(img, 0, 0);
+        const px = f.getImageData(0, 0, W, H), d = px.data;
+        for (let i = 0; i < d.length; i += 4) if (d[i + 1] > 230 && d[i] < 40 && d[i + 2] < 40) { d[i] = 22; d[i + 1] = 24; d[i + 2] = 30; }
+        f.putImageData(px, 0, 0);
+        const w = 240, h = Math.round(w * H / Math.max(1, W)), c = document.createElement('canvas'); c.width = w; c.height = h;
+        const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(full, 0, 0, w, h);
         resolve(c.toDataURL('image/webp', 0.85));
-      } catch { resolve(null); }
+      } catch { thumbs.delete(key); resolve(null); }
     };
-    img.onerror = () => resolve(null);
+    img.onerror = () => { thumbs.delete(key); resolve(null); }; // (tried again next time)
     img.src = `/api/map-image/${encodeURIComponent(name)}/${encodeURIComponent(map)}`;
   }));
   return thumbs.get(key);
@@ -104,10 +107,11 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
   function segmented(option) {
     const row = el('div', { class: 'lb-seg', role: 'radiogroup', 'aria-label': label(option.label) });
     for (const c of option.choices) row.append(el('button', { type: 'button', role: 'radio', 'data-id': c.id, onclick: () => { choice.options[option.id] = c.id; syncAll(); } }, label(c.label)));
+    arrows(row, () => [...row.children], (b) => { choice.options[option.id] = b.dataset.id; syncAll(); });
     const field = el('div', { class: 'lb-field' + (option.choices.length > 3 ? ' wide' : '') }, el('span', {}, label(option.label)), row);
     segments[option.id] = () => {
       field.classList.toggle('hidden', !!option.bots && !choice.bots);
-      for (const b of row.children) b.setAttribute('aria-checked', String(b.dataset.id === choice.options[option.id]));
+      for (const b of row.children) { const on = b.dataset.id === choice.options[option.id]; b.setAttribute('aria-checked', String(on)); b.tabIndex = on ? 0 : -1; }
     };
     return field;
   }
@@ -118,8 +122,21 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
   }
   function pickMap(map) {
     choice.map = map;
-    for (const card of mapsGrid.children) card.setAttribute('aria-selected', String(card.dataset.map === map));
+    for (const card of mapsGrid.children) { card.setAttribute('aria-selected', String(card.dataset.map === map)); card.tabIndex = card.dataset.map === map ? 0 : -1; }
   }
+  /** Arrows, Home and End move the choice within a group (one Tab stop each: the chosen element). */
+  function arrows(container, items, pick, columns = () => 1) {
+    container.addEventListener('keydown', (event) => {
+      const list = items(), i = list.indexOf(document.activeElement); if (i < 0) return;
+      const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: columns(), ArrowUp: -columns(), Home: -Infinity, End: Infinity }[event.key];
+      if (step === undefined) return;
+      event.preventDefault();
+      const next = list[Math.max(0, Math.min(list.length - 1, i + step))];
+      pick(next); next.focus(); next.scrollIntoView({ block: 'nearest' });
+    });
+  }
+  arrows(mapsGrid, () => [...mapsGrid.children], (card) => pickMap(card.dataset.map),
+    () => Math.max(1, Math.round(mapsGrid.clientWidth / (mapsGrid.firstElementChild?.offsetWidth || 1))))
 
   function fillForm() {
     if (filled || !data?.maps?.length) return;
@@ -131,7 +148,7 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
       for (const e of entries) {
         if (!e.isIntersecting) continue;
         seen.unobserve(e.target);
-        mapThumb(name, e.target.dataset.map).then((url) => { if (url) e.target.prepend(el('img', { src: url, alt: '', draggable: 'false' })); });
+        mapThumb(name, e.target.dataset.map).then((url) => { if (url) e.target.prepend(el('img', { src: url, alt: '', draggable: 'false' })); else setTimeout(() => seen.observe(e.target), 15000); });
       }
     }, { root: mapsGrid, rootMargin: '120px' }) : null;
     for (const m of data.maps) {
@@ -150,7 +167,7 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
   }
 
   /** The room's shown settings (its options with `show`), by their labels. */
-  const shownOptions = (r) => (data?.options ?? []).filter((o) => o.show && r.options?.[o.id]).map((o) => label(o.choices.find((c) => c.id === r.options[o.id])?.label));
+  const shownOptions = (r) => (data?.options ?? []).filter((o) => o.show && (!o.bots || r.bots > 0) && r.options?.[o.id]).map((o) => label(o.choices.find((c) => c.id === r.options[o.id])?.label));
   function render() {
     const rooms = data?.rooms ?? [];
     const humans = rooms.reduce((t, r) => t + r.humans, 0);
