@@ -94,7 +94,7 @@ files, the game's first images) with their progress, and tips.
   (Emscripten gives SDL positions relative to the canvas already: the page must not shift them — a version that did put
   clicks 44 pixels above the cursor, outside full screen.)
 - **Large screens.** The engine's `hud_scale` (read at its start: the width of a virtual screen the HUD is drawn on) is
-  set from the game's size: none up to about 1920 × 1080, then by half steps, 1.5 at 2560 × 1440 and 2.5 at
+  set from the largest size the game takes (the screen's, full screen): none up to about 1920 × 1080, then by half steps, 1.5 at 2560 × 1440 and 2.5 at
   3840 × 2160 — the HUD, its texts and the mods' menus keep their size instead of shrinking.
 - **Telemetry.** A few reports a session to `/api/telemetry` (`port: "goldsrc"`, `event`: `start`, `error` — a page
   error or an unhandled rejection —, `crash` with the end of the engine's log, `end` with the frame rate). After a crash

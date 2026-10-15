@@ -313,7 +313,7 @@ export function mountHome({ onPlay }) {
   function renderTabs() {
     const count = (k) => (k === 'all' ? games : games.filter((g) => kindOf(g) === k)).length;
     $('hmTabs').replaceChildren(...['all', ...KINDS].map((k) => h('button', { type: 'button', role: 'tab', class: 'hm-tab', 'aria-selected': String(k === tab), 'data-tab': k,
-      onclick: () => { tab = k; savePref('orthros.libTab', k); renderView(); } }, S().tabs[k], h('span', { class: 'n' }, String(count(k))))));
+      onclick: () => { tab = k; savePref('orthros.libTab', k); renderView(); $('hmTabs').querySelector(`[data-tab="${k}"]`)?.focus(); } }, S().tabs[k], h('span', { class: 'n' }, String(count(k))))));
   }
   function renderGames() {
     const focused = document.activeElement?.dataset?.name;

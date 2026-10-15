@@ -119,6 +119,8 @@ try {
       await page.goto(pageUrl); await page.waitForFunction(() => portSession?.state === 'ready', null, { timeout: 20000 });
       await page.click('#launch');
       await page.waitForFunction(() => ['running', 'error'].includes(portSession?.state), null, { timeout: 180000 });
+      const again = await page.evaluate(() => ({ state: portSession.state, status: document.querySelector('#status').textContent }));
+      if (again.state !== 'running') throw new Error(again.status);
       await page.waitForTimeout(3000); await enter(page);
       await page.waitForFunction(() => renderProbe.draws > 50, null, { timeout: 30000 });
       const restored = await page.evaluate(listSaves, saves);

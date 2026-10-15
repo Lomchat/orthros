@@ -30,7 +30,7 @@ const STRINGS = {
       'The game runs entirely in your browser, from its original files: nothing is installed.',
     ],
     saveFailed: 'Saving in the browser failed. Keep this page open to retry.', stopped: 'Game over. Saves and settings are kept.',
-    cannotSave: 'Cannot save: ', lost: 'Connection to the multiplayer server lost: it comes back by itself.',
+    cannotSave: 'Cannot save: ', lost: 'Connection to the multiplayer server lost: join it again from the game\'s multiplayer menu (LAN games).',
     engineFiles: 'Engine resources unavailable', restart: 'Restart the game', paused: 'paused', loadingShort: 'loading',
   },
   fr: {
@@ -53,7 +53,7 @@ const STRINGS = {
       'Le jeu tourne entièrement dans ton navigateur, depuis ses fichiers d’origine : rien n’est installé.',
     ],
     saveFailed: 'La sauvegarde navigateur a échoué. Garde cette page ouverte pour réessayer.', stopped: 'Partie terminée. Les sauvegardes et réglages sont conservés.',
-    cannotSave: 'Enregistrement impossible : ', lost: 'Connexion au serveur multijoueur perdue : elle revient d’elle-même.',
+    cannotSave: 'Enregistrement impossible : ', lost: 'Connexion au serveur multijoueur perdue : rejoins-le depuis le menu multijoueur du jeu (parties LAN).',
     engineFiles: 'Ressources du moteur indisponibles', restart: 'Relancer le jeu', paused: 'en pause', loadingShort: 'chargement',
   },
 };
@@ -190,6 +190,8 @@ setInterval(() => {
   if (perf.samples.length > 120) perf.samples.shift();
   renderHud();
 }, 500);
+/** The session's end, once: its length and frame rate. */
+function endReport() { if (telemetry.ended) return; telemetry.ended = true; report('end', { frames: frameStats() }); }
 /** The last minute's frame rate and slowest frames, for the session's report. */
 function frameStats() {
   const a = perf.samples.filter((x) => x.fps > 0); if (!a.length) return null;
@@ -303,9 +305,9 @@ async function loadInBackground(rest) {
   log(`Background loading done: ${JSON.stringify(session.background)}`);
 }
 
-// The HUD's scale (the engine's hud_scale: the width of a virtual screen the HUD is drawn on): none up to about
-// 1920 × 1080, then by half steps — 1.5 at 2560 × 1440, 2.5 at 3840 × 2160 — so its texts and menus keep their size on
-// a large screen instead of shrinking; 0 turns it off. Read at the engine's start.
+// The HUD's scale (the engine's hud_scale: the width of a virtual screen the HUD is drawn on, which the engine scales to
+// the game's width): none up to about 1920 × 1080, then by half steps — 1.5 at 2560 × 1440, 2.5 at 3840 × 2160 — so its
+// texts and menus keep their size on a large screen instead of shrinking; 0 turns it off. Read at the engine's start.
 function hudScale(width, height) {
   const factor = Math.floor(Math.min(width / 1280, height / 720) * 2) / 2;
   return factor > 1 ? Math.round(width / factor) : 0;
@@ -331,7 +333,9 @@ $('start').addEventListener('submit', async event => {
       // liblist.gam names — another name finds no library and the local server never starts; the size, the canvas'
       // on the page — SDL takes it again on every change;
       // ?debug: the engine's developer messages from its start)
-      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-dll', DEFAULT_SERVER_LIBRARY, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', String(width), '-height', String(height), ...(new URLSearchParams(location.search).has('debug') ? ['-dev', '2'] : []), '+hud_scale', String(hudScale(width, height))],
+      // (the HUD's scale from the largest size the game takes — full screen: the engine reads it at its start only, and
+      // its virtual width still fits a smaller window)
+      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-dll', DEFAULT_SERVER_LIBRARY, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', String(width), '-height', String(height), ...(new URLSearchParams(location.search).has('debug') ? ['-dev', '2'] : []), '+hud_scale', String(hudScale(Math.max(width, screen.width), Math.max(height, screen.height)))],
       libraries: {
         xash: base + 'engine/xash.wasm', filesystem: base + 'engine/filesystem_stdio.wasm',
         menu: base + (g.modules.menu ?? 'engine/libmenu.wasm'), client: base + g.modules.client, server: base + g.modules.server,
@@ -409,7 +413,7 @@ $('tbFull').addEventListener('click', async () => {
 $('tbGames').addEventListener('click', async () => {
   if (session.state !== 'running') { location.href = '/?menu'; return; }
   if (!confirm(S.quit(config?.name ?? ''))) return;
-  $('tbGames').disabled = true; stopped = true; if (timer) clearInterval(timer);
+  $('tbGames').disabled = true; stopped = true; if (timer) clearInterval(timer); endReport();
   try {
     engine?.Cmd_ExecuteString('host_writeconfig'); await save();
     try { engine?.quit(); } catch (error) {
@@ -422,5 +426,5 @@ $('tbGames').addEventListener('click', async () => {
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) save().catch(log); });
 window.addEventListener('pagehide', () => {
-  if (session.state === 'running') report('end', { frames: frameStats() });
+  if (session.state === 'running') endReport();
   stopped = true; if (timer) clearInterval(timer); relay?.close(); reportReads(true); });
