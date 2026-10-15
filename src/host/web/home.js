@@ -23,6 +23,8 @@ const STRINGS = {
     settings: 'Settings', account: 'Account', language: 'Language', gameLanguage: 'Game language', gameLanguageShort: 'Language', gameVersion: 'Version', others: 'Others',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`),
     modes: { solo: 'Single player', multiplayer: 'Multiplayer' },
+    tabs: { all: 'All', windows: 'Windows', recompiled: 'Recompiled', modified: 'Recompiled & modified' },
+    tabEmpty: 'No game of this kind on this server.',
     dlStart: 'Download first', dlPause: 'Pause', dlResume: 'Resume', dlRetry: 'Try again',
     dlTitle: 'Downloads the whole game into this browser now (it resumes where it stopped on your next visit): on a slow connection the game then starts and plays without waiting for the network.',
   },
@@ -37,6 +39,8 @@ const STRINGS = {
     settings: 'Paramètres', account: 'Compte', language: 'Langue', gameLanguage: 'Langue du jeu', gameLanguageShort: 'Langue', gameVersion: 'Version', others: 'Autres',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1).replace('.', ',')} Go` : `${Math.round(b / 1e6)} Mo`),
     modes: { solo: 'Solo', multiplayer: 'Multijoueur' },
+    tabs: { all: 'Tout', windows: 'Windows', recompiled: 'Recompilés', modified: 'Recompilés et modifiés' },
+    tabEmpty: 'Aucun jeu de ce genre sur ce serveur.',
     dlStart: 'Télécharger d’abord', dlPause: 'Pause', dlResume: 'Reprendre', dlRetry: 'Réessayer',
     dlTitle: 'Télécharge tout le jeu dans ce navigateur maintenant (reprend où il s’est arrêté à la visite suivante) : sur une connexion lente, le jeu démarre et se joue ensuite sans attendre le réseau.',
   },
@@ -191,6 +195,11 @@ export function mountHome({ onPlay }) {
   function heat(on_) { menu.toggleAttribute('data-hot', on_); } // (the hound's eyes flare while a game is under the pointer)
 
   const pref = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
+  // the library's tabs: the Windows games (run as they are in the emulator), the ones whose engine is recompiled for the
+  // browser, and those also modified (a mod: the manifest's "modified"); "all" in that order
+  const KINDS = ['windows', 'recompiled', 'modified'];
+  const kindOf = (g) => g.variants.every((v) => (v.runtime ?? 'win32') === 'win32') ? 'windows' : g.variants.some((v) => v.modified) ? 'modified' : 'recompiled';
+  let tab = ['all', ...KINDS].includes(pref('orthros.libTab')) ? pref('orthros.libTab') : 'all';
   const savePref = (key, value) => { try { localStorage.setItem(key, value); } catch { /* storage disabled */ } };
   const chosen = (g) => g.variants.find((v) => v.name === pref('orthros.version.' + g.id) && v.available)
     ?? g.variants.find((v) => v.name === last && v.available)
@@ -287,6 +296,7 @@ export function mountHome({ onPlay }) {
   /** What the library shows: placeholders while the games load, the error, the empty server, or the games. */
   function renderView() {
     const cta = $('hmCta');
+    $('hmTabs').hidden = view.kind !== 'games' || !games.length;
     if (view.kind === 'loading') {
       cta.classList.add('hidden'); $('hmCount').textContent = '';
       grid.style.setProperty('--n', 2);
@@ -300,17 +310,25 @@ export function mountHome({ onPlay }) {
       message('empty', S().emptyTitle, [S().emptyText + ' ', h('code', {}, 'orthros run <folder>')]);
     } else renderGames();
   }
+  function renderTabs() {
+    const count = (k) => (k === 'all' ? games : games.filter((g) => kindOf(g) === k)).length;
+    $('hmTabs').replaceChildren(...['all', ...KINDS].map((k) => h('button', { type: 'button', role: 'tab', class: 'hm-tab', 'aria-selected': String(k === tab), 'data-tab': k,
+      onclick: () => { tab = k; savePref('orthros.libTab', k); renderView(); } }, S().tabs[k], h('span', { class: 'n' }, String(count(k))))));
+  }
   function renderGames() {
     const focused = document.activeElement?.dataset?.name;
     renderCta();
-    $('hmCount').textContent = S().games(games.length);
+    renderTabs();
+    const shown = games.filter((g) => tab === 'all' || kindOf(g) === tab);
+    $('hmCount').textContent = S().games(shown.length);
     // covers behind the page: the one of the game under the pointer, else the resumable one
     backdrops.replaceChildren();
     for (const g of games) syncBackdrop(g);
     setBackdrop(resume?.id ?? null);
-    cards = games.map(card);
+    cards = shown.map(card);
     drawn = true; // (later drawings — a language change — do not replay the entrance)
-    grid.style.setProperty('--n', games.length);
+    if (!cards.length) { message('empty', S().tabs[tab], S().tabEmpty); return; }
+    grid.style.setProperty('--n', shown.length);
     grid.replaceChildren(...cards);
     grid.setAttribute('aria-busy', 'false');
     if (focused) grid.querySelector(`[data-name="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
@@ -366,7 +384,7 @@ export function mountHome({ onPlay }) {
         if (!groups.has(id)) groups.set(id, { id, title: variant.title, variants: [] });
         groups.get(id).variants.push(variant);
       }
-      games = [...groups.values()];
+      games = [...groups.values()].sort((a, b) => KINDS.indexOf(kindOf(a)) - KINDS.indexOf(kindOf(b))); // (stable: the server's order within a kind)
       for (const group of games) group.variants.sort((a, b) => (b.versionOrder ?? 0) - (a.versionOrder ?? 0));
       last = lastPlayed; view = { kind: 'games' };
       applyLang();

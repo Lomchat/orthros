@@ -568,7 +568,7 @@ export function createServer(opts = {}) {
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
-            hidden: !!m.hidden, cover: !!coverFile(m), bytes,
+            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes,
             available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });

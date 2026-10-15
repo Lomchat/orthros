@@ -111,11 +111,21 @@
 @keyframes hm-eye { 0%, 100% { opacity: .78; transform: translate(-50%, -50%) scale(.92); } 45% { opacity: 1; transform: translate(-50%, -50%) scale(1.16); } 52% { opacity: .55; } 58% { opacity: 1; } }
 
 /* ---- library */
-#menu .hm-lib { --fixed: 598px; padding: 4px 0 22px; }
+#menu .hm-lib { --fixed: 646px; padding: 4px 0 22px; }
 #menu .hm-lib-head { display: flex; align-items: baseline; gap: 14px; margin: 0 0 12px; }
 #menu .hm-lib-head h2 { margin: 0; font: 700 12.5px var(--mono); letter-spacing: .26em; text-transform: uppercase; color: var(--bone); }
 #menu .hm-lib-head .count { font: 12px var(--mono); color: var(--faint); }
 #menu .hm-lib-head::after { content: ""; flex: 1; align-self: center; height: 1px; order: 3; background: linear-gradient(90deg, var(--line), transparent); }
+/* the tabs: all, the Windows games, the recompiled ones, the recompiled and modified ones (with their counts) */
+#menu .hm-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
+#menu .hm-tabs[hidden] { display: none; }
+#menu .hm-tab { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 13px; border-radius: 9px; cursor: pointer;
+  border: 1px solid var(--line); background: rgba(14, 20, 36, .7); color: var(--muted); font: 600 13px var(--sans); transition: color .15s, background .15s, border-color .15s; }
+#menu .hm-tab .n { font: 11.5px var(--mono); color: var(--faint); min-width: 18px; padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, .05); text-align: center; }
+#menu .hm-tab:hover { color: var(--fg); border-color: #3a4560; }
+#menu .hm-tab:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+#menu .hm-tab[aria-selected="true"] { color: var(--bone); border-color: rgba(248, 144, 31, .55); background: rgba(248, 144, 31, .14); }
+#menu .hm-tab[aria-selected="true"] .n { color: var(--ember-hi); background: rgba(248, 144, 31, .16); }
 #menu .hm-grid { --n: 2; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 24px; max-width: calc(var(--n) * 460px + (var(--n) - 1) * 24px); }
 
 #menu .hm-card { position: relative; display: flex; flex-direction: column; overflow: hidden; border-radius: 18px; border: 1px solid var(--line); cursor: pointer; outline: none;
@@ -125,7 +135,7 @@
 #menu .hm-card.still { animation: none; }
 #menu .hm-card:hover, #menu .hm-card:focus-visible { transform: translateY(-5px); border-color: rgba(248, 144, 31, .75); box-shadow: 0 22px 50px rgba(0, 0, 0, .6), 0 0 0 1px rgba(248, 144, 31, .3), 0 0 46px -8px rgba(248, 144, 31, .34); }
 #menu .hm-card:focus-visible { box-shadow: 0 22px 50px rgba(0, 0, 0, .6), 0 0 0 2px var(--ember), 0 0 46px -6px rgba(248, 144, 31, .45); }
-#menu .hm-cover { position: relative; aspect-ratio: 16 / 9; min-height: 120px; max-height: max(120px, calc(100dvh - var(--fixed))); overflow: hidden; background: #0b101c; } /* (16:9, but shorter when the window is: all the library shows without scrolling) */
+#menu .hm-cover { position: relative; aspect-ratio: 16 / 9; min-height: 120px; max-height: max(120px, calc(100dvh - var(--fixed))); overflow: hidden; background: #0b101c; } /* (16:9, but shorter when the window is: all the library shows without scrolling; --fixed: the rest of its height, tabs included) */
 #menu .hm-cover img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; object-position: 50% 32%; opacity: 0; transition: transform .8s var(--ease), opacity .6s; }
 #menu .hm-cover img.loaded { opacity: 1; }
 #menu .hm-card:hover .hm-cover img, #menu .hm-card:focus-visible .hm-cover img { transform: scale(1.05); }
@@ -190,14 +200,14 @@
 @media (min-width: 1240px) and (min-height: 960px) {
   #menu .hm-hero { --cell: 8px; }
   #menu .hm-hound { --k: 3; }
-  #menu .hm-lib { --fixed: 738px; }
+  #menu .hm-lib { --fixed: 786px; }
 }
 @media (max-height: 760px) and (min-width: 901px) {
   #menu .hm-hound { --k: 1; margin-bottom: 0; }
-  #menu .hm-lib { --fixed: 538px; }
+  #menu .hm-lib { --fixed: 586px; }
   #menu .hm-points { display: none; }
 }
-@media (max-width: 1100px) and (min-width: 901px) { #menu .hm-lib { --fixed: 628px; } } /* (narrow cards: their text wraps more) */
+@media (max-width: 1100px) and (min-width: 901px) { #menu .hm-lib { --fixed: 676px; } } /* (narrow cards: their text wraps more) */
 @media (max-width: 900px) {
   #menu .hm-hero { grid-template-columns: 1fr; justify-items: start; gap: 8px; padding-top: 0; }
   #menu .hm-hound { order: -1; align-self: center; justify-self: center; margin: 0 auto -14px; }
