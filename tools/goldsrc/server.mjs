@@ -8,7 +8,7 @@
 // 127.0.0.1:<goldsrc.multiplayer.port> (TCP), for the Orthros server only (src/host/goldsrc.js roomsProxy):
 //   GET /rooms  -> { rooms: [{ index, port, name, map, players (bots included), humans, maxPlayers, bots, permanent, since, up }], maps,
 //                    slots, maxPlayers, bots: { max } | null }
-//   POST /rooms { name, map, maxPlayers, bots, by } -> 201 { room } once the server answers, or 400/409/503 (`by`: the
+//   POST /rooms { name, map, maxPlayers, bots, options, by } -> 201 { room } once the server answers, or 400/409/503 (`by`: the
 //                    creator's address — one live room each)
 // The game library is the one the game's files name, or goldsrc.multiplayer.gameLibrary: a native build in the browser
 // release (tools/goldsrc/build-modules.sh). The writable state (configuration, logs, the linked game files) goes to
@@ -20,7 +20,7 @@ import http from 'node:http';
 import dgram from 'node:dgram';
 import { spawn } from 'node:child_process';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/host/game-catalog.js';
-import { DEFAULT_ENGINES_DIR, engineFile, linkGameLayers, parseServerInfo, roomPort, roomRequest, roomSlots, sameRoomName } from '../../src/host/goldsrc.js';
+import { DEFAULT_ENGINES_DIR, engineFile, linkGameLayers, parseServerInfo, roomOptionCommands, roomPort, roomRequest, roomSlots, sameRoomName } from '../../src/host/goldsrc.js';
 
 const IDLE = 300; // (seconds a created room stays without a human player)
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
@@ -63,10 +63,11 @@ function launch(room) {
   fs.writeFileSync(path.join(base, g.gameDir, 'server.cfg'), `hostname "${quote(room.name)}"\nsv_lan 1\nsv_cheats 0\nsv_maxrate 100000\nsv_minrate 10000\nmp_timelimit ${room.permanent ? 30 : 0}\n`);
   if (!room.permanent) fs.writeFileSync(path.join(base, g.gameDir, 'mapcycle.txt'), `${room.map}\n`);
   const botCommands = room.bots ? (mp.rooms?.bots?.commands ?? []).map((c) => c.replaceAll('{n}', String(room.bots))) : [];
+  const optionCommands = room.permanent ? [] : roomOptionCommands(mp, room); // (its chosen settings: starting money, the bots' team…)
   const child = room.child = spawn(path.join(release, 'xash'), ['-dedicated', '-noip6', '-rodir', game, '-game', g.gameDir,
     ...(gameLibrary ? ['-dll', gameLibrary] : []), ...(room.bots ? mp.rooms?.bots?.args ?? [] : []), '-port', String(room.port), '+ip', '127.0.0.1', '+maxplayers', String(room.maxPlayers),
     // (goldsrc.multiplayer.commands: the version's settings, before the map starts; then a room's bots)
-    ...[...(mp.commands ?? []), ...botCommands].flatMap((c) => c.split(' ').map((w, i) => (i ? w : `+${w}`))), '+map', room.map], {
+    ...[...(mp.commands ?? []), ...botCommands, ...optionCommands].flatMap((c) => c.split(' ').map((w, i) => (i ? w : `+${w}`))), '+map', room.map], {
     cwd: base,
     env: { ...process.env, XASH3D_BASEDIR: base, XASH3D_LIBDIR: release, LD_LIBRARY_PATH: release },
     stdio: room.permanent ? 'inherit' : ['ignore', 'ignore', 'inherit'],
@@ -120,7 +121,7 @@ const poll = setInterval(() => {
 }, 5000);
 
 const view = (r) => ({ index: r.index, port: r.port, name: r.info?.name || r.name, map: r.info?.map ?? r.map, players: (r.info?.players ?? 0) + r.bots,
-  humans: r.info?.players ?? 0, maxPlayers: r.maxPlayers, bots: r.bots, permanent: r.permanent, since: r.since,
+  humans: r.info?.players ?? 0, maxPlayers: r.maxPlayers, bots: r.bots, options: r.options ?? {}, permanent: r.permanent, since: r.since,
   up: !!r.child && Date.now() - (r.seen ?? 0) < 15000 });
 
 /** A new room: the first free index, its server started, answered once it answers its info (20 s at most). */

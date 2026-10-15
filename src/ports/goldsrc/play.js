@@ -252,12 +252,16 @@ function closeLobby() {
 $('tbLobby').addEventListener('click', () => (lobbyOverlay.classList.contains('hidden') ? openLobby() : closeLobby()));
 lobbyOverlay.addEventListener('click', (event) => { if (event.target === lobbyOverlay) closeLobby(); });
 lobbyOverlay.querySelector('.close').addEventListener('click', closeLobby);
-// (while it shows, no key reaches the engine, wherever the focus is: caught before the engine's listeners)
-for (const type of ['keydown', 'keyup', 'keypress']) addEventListener(type, (event) => {
-  if (lobbyOverlay.classList.contains('hidden')) return;
-  event.stopImmediatePropagation();
-  if (type === 'keydown' && event.key === 'Escape') { event.preventDefault(); closeLobby(); }
-}, { capture: true });
+// (while it shows, no key reaches the engine: keys aimed elsewhere are caught before the engine's listeners; those of
+// the overlay's own controls reach them, then stop at the overlay)
+for (const type of ['keydown', 'keyup', 'keypress']) {
+  addEventListener(type, (event) => {
+    if (lobbyOverlay.classList.contains('hidden')) return;
+    if (type === 'keydown' && event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closeLobby(); return; }
+    if (!lobbyOverlay.contains(event.target)) { event.stopImmediatePropagation(); lobbyOverlay.querySelector('.close').focus(); }
+  }, { capture: true });
+  lobbyOverlay.addEventListener(type, (event) => event.stopPropagation());
+}
 try {
   const [manifestResponse, treeResponse] = await Promise.all([fetch(`/api/manifest/${encodeURIComponent(name)}`), fetch(`/api/tree/${encodeURIComponent(name)}`)]);
   if (!manifestResponse.ok || !treeResponse.ok) throw new Error(`HTTP ${manifestResponse.ok ? treeResponse.status : manifestResponse.status}`);

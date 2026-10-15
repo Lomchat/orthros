@@ -27,7 +27,7 @@ import { withDefaults } from './manifest.js';
 import { listGameTree, resolveGameFile } from './game-files.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
-import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
+import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
@@ -531,6 +531,7 @@ export function createServer(opts = {}) {
   };
 
   const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game) }) : null;
+  const mapImages = new Map(); // (the lobby's map pictures, compressed: file|mtime -> { raw, gzip, zstd })
   const rooms = roomsApi({ getManifest, ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
@@ -538,6 +539,19 @@ export function createServer(opts = {}) {
     try {
       // (the multiplayer rooms of a browser port, from its server manager)
       if (p.startsWith('/api/rooms/') && rooms.handle(req, res, url)) return;
+      // (a map's picture for the lobby: the game's own overview, multiplayer.mapImage)
+      { const m = /^\/api\/map-image\/([^/]+)\/([^/]+)$/.exec(p);
+        if (m) {
+          const file = mapImageFile(getManifest(m[1]), m[2]); if (!file) return send(res, 404, 'no picture');
+          // (compressed once, kept: an 8-bit bitmap of the game shrinks several times; the browser draws it)
+          let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'no picture'); }
+          const key = `${file}|${st.mtimeMs}`; let packed = mapImages.get(key);
+          if (!packed) { const raw = fs.readFileSync(file); packed = { raw, gzip: zlib.gzipSync(raw, { level: 9 }), zstd: zlib.zstdCompressSync?.(raw) ?? null }; mapImages.set(key, packed); if (mapImages.size > 200) mapImages.delete(mapImages.keys().next().value); }
+          const accept = String(req.headers['accept-encoding'] ?? ''), enc = packed.zstd && /\bzstd\b/.test(accept) ? 'zstd' : /\bgzip\b/.test(accept) ? 'gzip' : null;
+          const body = enc ? packed[enc] : packed.raw;
+          res.writeHead(200, headers({ 'Content-Type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream', 'Cache-Control': 'public, max-age=86400', 'Vary': 'Accept-Encoding', 'Content-Length': body.length, ...(enc ? { 'Content-Encoding': enc } : {}) }));
+          return res.end(req.method === 'HEAD' ? undefined : body);
+        } }
       if (p === '/api/account' || p.startsWith('/api/account/') || p === '/api/cloud' || p.startsWith('/api/cloud/')) {
         if (!accountApi) return send(res, 503, 'accounts unavailable');
         accountApi(req, res).catch((e) => { console.error('account API:', e); if (!res.headersSent) send(res, e.status ?? 500, 'account API error'); else res.destroy(); });

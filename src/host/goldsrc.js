@@ -9,7 +9,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gameLayers } from './game-files.js';
+import { gameLayers, resolveGameFile } from './game-files.js';
 
 export const DEFAULT_ENGINES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data_engines');
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
@@ -38,15 +38,28 @@ export function goldsrcProblem(g) {
     if (mp.maxPlayers !== undefined && (!Number.isInteger(mp.maxPlayers) || mp.maxPlayers < 2 || mp.maxPlayers > 32)) return 'goldsrc.multiplayer.maxPlayers invalide';
     if (mp.gameLibrary !== undefined && !safePath(mp.gameLibrary)) return 'goldsrc.multiplayer.gameLibrary doit être un chemin de la release';
     if (mp.commands !== undefined && !commandsOk(mp.commands)) return 'goldsrc.multiplayer.commands : commandes de console, une par entrée';
+    if (mp.mapImage !== undefined && (typeof mp.mapImage !== 'string' || !mp.mapImage.includes('{map}') || !safePath(mp.mapImage.replaceAll('{map}', 'm')))) return 'goldsrc.multiplayer.mapImage : chemin du dossier du jeu avec {map}';
     if (mp.maps !== undefined && (!Array.isArray(mp.maps) || !mp.maps.length || !mp.maps.every((n) => typeof n === 'string' && MAP.test(n)))) return 'goldsrc.multiplayer.maps : noms de cartes';
     if (mp.rooms !== undefined) {
       const r = mp.rooms, [first, last] = Array.isArray(r?.ports) ? r.ports : [];
       if (!isObject(r) || !Number.isInteger(first) || !Number.isInteger(last) || first < 1024 || last > 65535 || last < first || last - first >= 8 || (mp.port >= first && mp.port <= last)) return 'goldsrc.multiplayer.rooms.ports : [premier, dernier], 8 ports au plus, hors du port du serveur';
       if (r.bots !== undefined && (!isObject(r.bots) || !Number.isInteger(r.bots.max) || r.bots.max < 1 || r.bots.max > 31 || !commandsOk(r.bots.commands ?? []) || !(r.bots.commands ?? []).some((c) => c.includes('{n}')))) return 'goldsrc.multiplayer.rooms.bots : max (1-31) et commands, l\'une avec {n}';
+      if (r.options !== undefined && !roomOptionsOk(r.options)) return 'goldsrc.multiplayer.rooms.options : [{ id, label, default, choices: [{ id, label, commands }] }], ids distincts';
       if (r.bots?.args !== undefined && (!Array.isArray(r.bots.args) || !r.bots.args.every((a) => typeof a === 'string' && /^-[a-z0-9_]{1,32}$/.test(a)))) return 'goldsrc.multiplayer.rooms.bots.args : options de ligne de commande (-nom)';
     }
   }
   return null;
+}
+
+const OPTION_ID = /^[A-Za-z0-9_-]{1,32}$/;
+const labelOk = (l) => typeof l === 'string' ? l.length > 0 && l.length <= 60 : isObject(l) && Object.entries(l).length > 0 && Object.entries(l).every(([k, v]) => /^[a-z]{2}$/.test(k) && typeof v === 'string' && v.length > 0 && v.length <= 60);
+/** A room's settings a player chooses (rooms.options): each a few choices, each its server commands. */
+function roomOptionsOk(options) {
+  if (!Array.isArray(options) || options.length > 8 || new Set(options.map((o) => o?.id)).size !== options.length) return false;
+  return options.every((o) => isObject(o) && OPTION_ID.test(o.id ?? '') && labelOk(o.label) && [o.bots, o.show].every((b) => b === undefined || typeof b === 'boolean')
+    && Array.isArray(o.choices) && o.choices.length >= 2 && o.choices.length <= 12
+    && o.choices.every((c) => isObject(c) && OPTION_ID.test(c.id ?? '') && labelOk(c.label) && commandsOk(c.commands ?? []))
+    && new Set(o.choices.map((c) => c.id)).size === o.choices.length && o.choices.some((c) => c.id === o.default));
 }
 
 // ---------------------------------------------------------------- the rooms: the games players create
@@ -80,7 +93,26 @@ export function roomRequest(body, mp, maps) {
   if (!maps.includes(map)) return { error: 'map' };
   if (!Number.isInteger(maxPlayers) || maxPlayers < 2 || maxPlayers > (mp.maxPlayers ?? 16)) return { error: 'maxPlayers' };
   if (!Number.isInteger(bots) || bots < 0 || bots > (mp.rooms?.bots?.max ?? 0) || bots >= maxPlayers) return { error: 'bots' };
-  return { room: { name, map, maxPlayers, bots } };
+  // (each option a choice of its own, its default when none: rooms.options)
+  const options = {};
+  for (const o of mp.rooms?.options ?? []) {
+    const wanted = body?.options?.[o.id] ?? o.default;
+    if (!o.choices.some((c) => c.id === wanted)) return { error: 'options' };
+    options[o.id] = wanted;
+  }
+  return { room: { name, map, maxPlayers, bots, options } };
+}
+
+/** The server commands of a room's chosen options (an option whose bots: true goes only with bots). */
+export const roomOptionCommands = (mp, room) => (mp.rooms?.options ?? [])
+  .filter((o) => !o.bots || room.bots > 0)
+  .flatMap((o) => o.choices.find((c) => c.id === room.options?.[o.id])?.commands ?? []);
+
+/** A map's picture for the lobby (multiplayer.mapImage, a file of the game folder: the game's own overview), or null. */
+export function mapImageFile(manifest, map) {
+  const mp = manifest?.goldsrc?.multiplayer;
+  if (!mp?.mapImage || !MAP.test(map ?? '')) return null;
+  return resolveGameFile(manifest, `${manifest.goldsrc.gameDir}/${mp.mapImage.replaceAll('{map}', map)}`);
 }
 
 /** The answer of a dedicated server to `info 49` (its name, map, clients, maximum), or null. */
@@ -156,7 +188,9 @@ export function roomsApi({ getManifest, request = managerRequest, now = () => Da
     const man = getManifest(decodeURIComponent(m[1])), mp = man?.runtime === 'goldsrc' ? man.goldsrc?.multiplayer : null;
     if (!mp) { send(404, { error: 'none' }); return true; }
     if (req.method === 'GET') {
-      request(mp.port, 'GET', null).then(([, body]) => send(200, { ...body, creatable: !!mp.rooms }), () => send(200, { rooms: [], maps: [], slots: 0, offline: true, creatable: false }));
+      // (the options' choices for the page: ids and labels, not their commands)
+      const options = (mp.rooms?.options ?? []).map((o) => ({ id: o.id, label: o.label, default: o.default, bots: !!o.bots, show: !!o.show, choices: o.choices.map((c) => ({ id: c.id, label: c.label })) }));
+      request(mp.port, 'GET', null).then(([, body]) => send(200, { ...body, options, mapImages: !!mp.mapImage, creatable: !!mp.rooms }), () => send(200, { rooms: [], maps: [], options, slots: 0, offline: true, creatable: false }));
       return true;
     }
     if (req.method !== 'POST') { send(405, { error: 'method' }); return true; }
@@ -175,7 +209,7 @@ export function roomsApi({ getManifest, request = managerRequest, now = () => Da
       const checked = roomRequest(wanted, mp, [wanted?.map].filter((x) => typeof x === 'string')); // (the map is the manager's to check)
       if (checked.error && checked.error !== 'map') { release(); send(400, { error: checked.error }); return; }
       // (`by`: one live room per address, the manager's to keep)
-      request(mp.port, 'POST', { name: wanted.name, map: wanted.map, maxPlayers: wanted.maxPlayers, bots: wanted.bots ?? 0, by: who })
+      request(mp.port, 'POST', { name: wanted.name, map: wanted.map, maxPlayers: wanted.maxPlayers, bots: wanted.bots ?? 0, options: wanted.options ?? {}, by: who })
         .then(([status, out]) => { if (status !== 201) release(); send(status, out); }, () => { release(); send(503, { error: 'offline' }); });
     });
     return true;
