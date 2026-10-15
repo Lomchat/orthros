@@ -11,7 +11,7 @@ const STRINGS = {
     name: 'Name', map: 'Map', size: 'Players', botsLabel: 'Bots', none: 'None', cancel: 'Cancel', submit: 'Create and join',
     defaultName: (nick) => `${nick}'s game`, creating: 'Creating the game…',
     errors: { name: 'Give it a name (2 characters at least).', map: 'Choose a map.', maxPlayers: 'Invalid number of players.', bots: 'Too many bots for that many players.',
-      taken: 'A game already has that name.', full: 'Every game slot is taken: join one, or wait for one to end.', wait: 'One game a minute: wait a moment.',
+      taken: 'A game already has that name.', owned: 'You already have a game running: join it, or wait for it to end.', full: 'Every game slot is taken: join one, or wait for one to end.', wait: 'One game a minute: wait a moment.',
       start: 'The game server did not start. Try again.', offline: 'The game servers are not reachable right now.', forbidden: 'Creating games is not offered here.' },
   },
   fr: {
@@ -21,7 +21,7 @@ const STRINGS = {
     name: 'Nom', map: 'Carte', size: 'Joueurs', botsLabel: 'Bots', none: 'Aucun', cancel: 'Annuler', submit: 'Créer et rejoindre',
     defaultName: (nick) => `Partie de ${nick}`, creating: 'Création de la partie…',
     errors: { name: 'Donne-lui un nom (2 caractères au moins).', map: 'Choisis une carte.', maxPlayers: 'Nombre de joueurs invalide.', bots: 'Trop de bots pour ce nombre de joueurs.',
-      taken: 'Une partie porte déjà ce nom.', full: 'Toutes les places de parties sont prises : rejoins-en une, ou attends qu’une se termine.', wait: 'Une partie par minute : patiente un instant.',
+      taken: 'Une partie porte déjà ce nom.', owned: 'Tu as déjà une partie en cours : rejoins-la, ou attends qu’elle se termine.', full: 'Toutes les places de parties sont prises : rejoins-en une, ou attends qu’une se termine.', wait: 'Une partie par minute : patiente un instant.',
       start: 'Le serveur de jeu n’a pas démarré. Réessaie.', offline: 'Les serveurs de jeu sont injoignables pour le moment.', forbidden: 'La création de parties n’est pas proposée ici.' },
   },
 };
@@ -51,14 +51,15 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
     el('div', { class: 'lb-actions' }, el('button', { type: 'button', onclick: () => toggleForm(false) }, S.cancel), submit), message);
   const createButton = el('button', { type: 'button', class: 'lb-new', onclick: () => toggleForm(true) }, S.create);
   const root = el('section', { class: 'lobby' }, el('header', {}, el('h3', {}, S.title), online, createButton), form, list, note);
-  let data = null, timer = null, busy = false;
+  let data = null, timer = null, busy = false, filled = false;
 
   function toggleForm(open) {
     form.classList.toggle('hidden', !open); createButton.classList.toggle('hidden', open); message.textContent = '';
     if (open) { if (!nameInput.value) nameInput.value = S.defaultName(nickname()).slice(0, 32); nameInput.focus(); nameInput.select(); }
   }
   function fillForm() {
-    if (!data || mapSelect.options.length) return;
+    if (filled || !data?.maps?.length) return;
+    filled = true;
     for (const m of data.maps) mapSelect.append(el('option', { value: m }, m));
     const first = data.rooms.find((r) => r.permanent)?.map; if (data.maps.includes(first)) mapSelect.value = first;
     for (let n = 2; n <= (data.maxPlayers ?? 16); n++) sizeSelect.append(el('option', { value: String(n) }, String(n)));
@@ -83,8 +84,8 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
   }
   async function refresh() {
     try { data = await (await fetch(`/api/rooms/${encodeURIComponent(name)}`, { cache: 'no-store' })).json(); }
-    catch (error) { log('Lobby: ' + error.message); data = { rooms: [], offline: true }; }
-    fillForm(); render();
+    catch (error) { log('Lobby: ' + error.message); data = { rooms: [], maps: [], offline: true }; }
+    try { fillForm(); } finally { render(); }
   }
   form.addEventListener('submit', async (event) => {
     event.preventDefault(); if (busy) return;

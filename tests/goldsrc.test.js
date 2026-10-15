@@ -237,6 +237,7 @@ test('rooms: a version\'s rooms are checked, their ports one version\'s each', (
 test('rooms: a creation request is checked, a server\'s info read', () => {
   const mp = { port: 27999, maxPlayers: 12, rooms: { ports: [28000, 28001], bots: { max: 6, commands: ['bot_quota {n}'] } } };
   assert.equal(roomName('  a "quoted"; \\ name\n with  spaces that goes well past the limit '), 'a quoted name with spaces that g');
+  assert.equal(roomName('Ort\u200bhros\u202e - x\u0085'), 'Orthros - x'); // (no control, invisible or bidi character)
   assert.deepEqual(roomRequest({ name: 'Dust', map: 'de_dust2', maxPlayers: 10, bots: 4 }, mp, ['de_dust2']), { room: { name: 'Dust', map: 'de_dust2', maxPlayers: 10, bots: 4 } });
   for (const [body, error] of [[{ name: 'x', map: 'de_dust2' }, 'name'], [{ name: 'Dust', map: 'nope' }, 'map'], [{ name: 'Dust', map: 'de_dust2', maxPlayers: 20 }, 'maxPlayers'],
     [{ name: 'Dust', map: 'de_dust2', maxPlayers: 4, bots: 4 }, 'bots'], [{ name: 'Dust', map: 'de_dust2', bots: 7 }, 'bots']]) assert.equal(roomRequest(body, mp, ['de_dust2']).error, error);
@@ -278,6 +279,17 @@ test('rooms: listed and created through the server manager, from the page\'s ori
   const made = await post({ name: 'Mine', map: 'dm', maxPlayers: 8 });
   assert.equal(made.status, 201); assert.equal((await made.json()).room.name, 'Mine');
   assert.equal((await post({ name: 'Again', map: 'dm' })).status, 429);
+  assert.equal(calls.at(-1)[2].by, '127.0.0.1'); // (the creator's address: one live room each, the manager's to keep)
   assert.equal((await fetch(`${base}/api/rooms/win-1`)).status, 404);
   assert.equal((await (await fetch(`${base}/api/rooms/gs-orig`, { method: 'PUT' })).json()).error, 'method');
+});
+
+test('rooms: creations sent together from one address: one passes, the others wait', async (t) => {
+  let pending = 0;
+  const roomsRequest = async (port, method, body) => { pending++; await new Promise((r) => setTimeout(r, 50)); return [201, { room: { index: pending, ...body } }]; };
+  const { games, engines } = fixture(t, { goldsrc: goldsrc({ multiplayer: { server: 'srv', port: 27999, map: 'dm', rooms: { ports: [28000, 28007] } } }) });
+  const base = await serve(t, { gamesDir: games, enginesDir: engines, roomsRequest });
+  const post = (name) => fetch(`${base}/api/rooms/gs-orig`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base }, body: JSON.stringify({ name, map: 'dm' }) });
+  const statuses = (await Promise.all(['One', 'Two', 'Three', 'Four'].map(post))).map((r) => r.status).sort();
+  assert.deepEqual(statuses, [201, 429, 429, 429]);
 });

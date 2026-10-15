@@ -58,7 +58,17 @@ export const roomPort = (mp, index) => (index === 0 ? mp.port : mp.rooms.ports[0
 /** How many rooms players may create. */
 export const roomSlots = (mp) => (mp.rooms ? mp.rooms.ports[1] - mp.rooms.ports[0] + 1 : 0);
 /** A room's name as players read it: printable, no quotes nor console separators, 32 characters at most. */
-export const roomName = (value) => String(value ?? '').normalize('NFC').replace(/[\u0000-\u001f\u007f"\\;]/g, '').replace(/\s+/g, ' ').trim().slice(0, 32);
+export const roomName = (value) => String(value ?? '').normalize('NFC').replace(/[\p{C}"\\;]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 32);
+/** Two room names that read the same (case, compatibility forms). */
+export const sameRoomName = (a, b) => roomName(a).normalize('NFKC').toLowerCase() === roomName(b).normalize('NFKC').toLowerCase();
+
+/** The visitor's address: the one the local reverse proxy (Caddy, trusting Cloudflare's) put last, else the socket's. */
+export function clientAddress(req) {
+  const remote = String(req.socket?.remoteAddress ?? '');
+  const local = /^(127\.|::1$|::ffff:127\.)/.test(remote);
+  const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',').map((v) => v.trim()).filter(Boolean).at(-1);
+  return local && forwarded ? forwarded : remote;
+}
 
 /**
  * A request to create a room, checked: { name, map (one of `maps`), maxPlayers (2 to the server's), bots (0 to the
@@ -138,7 +148,7 @@ export function linkGameLayers(manifest, dest) {
  * A creation needs the page's origin and comes once a minute per address. `handle(req, res, url)` answers or returns false.
  */
 export function roomsApi({ getManifest, request = managerRequest, now = () => Date.now() }) {
-  const created = new Map();
+  const created = new Map(), recent = []; // (per address; every creation of the last minute: 6 at most, all addresses)
   const handle = (req, res, url) => {
     const m = /^\/api\/rooms\/([^/]+)$/.exec(url.pathname);
     if (!m) return false;
@@ -152,17 +162,21 @@ export function roomsApi({ getManifest, request = managerRequest, now = () => Da
     if (req.method !== 'POST') { send(405, { error: 'method' }); return true; }
     let sameOrigin = false; try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* no Origin: refused */ }
     if (!sameOrigin || !mp.rooms) { send(403, { error: 'forbidden' }); return true; }
-    const who = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0].trim();
-    if (now() - (created.get(who) ?? 0) < 60000) { send(429, { error: 'wait' }); return true; }
+    const who = clientAddress(req), t = now();
+    while (recent.length && t - recent[0] > 60000) recent.shift();
+    if (t - (created.get(who) ?? -Infinity) < 60000 || recent.length >= 6) { send(429, { error: 'wait' }); return true; }
+    // (the slot taken at once: requests sent together cannot all pass the check)
+    created.set(who, t); recent.push(t);
+    const release = () => { created.delete(who); const i = recent.indexOf(t); if (i >= 0) recent.splice(i, 1); };
     let body = '';
-    req.on('data', (d) => { body += d; if (body.length > 2048) req.destroy(); });
+    req.on('data', (d) => { body += d; if (body.length > 2048) { release(); req.destroy(); } });
     req.on('end', () => {
-      let wanted; try { wanted = JSON.parse(body); } catch { send(400, { error: 'json' }); return; }
+      let wanted; try { wanted = JSON.parse(body); } catch { release(); send(400, { error: 'json' }); return; }
       const checked = roomRequest(wanted, mp, [wanted?.map].filter((x) => typeof x === 'string')); // (the map is the manager's to check)
-      if (checked.error && checked.error !== 'map') { send(400, { error: checked.error }); return; }
-      created.set(who, now());
-      request(mp.port, 'POST', { name: wanted.name, map: wanted.map, maxPlayers: wanted.maxPlayers, bots: wanted.bots ?? 0 })
-        .then(([status, out]) => { if (status !== 201) created.delete(who); send(status, out); }, () => { created.delete(who); send(503, { error: 'offline' }); });
+      if (checked.error && checked.error !== 'map') { release(); send(400, { error: checked.error }); return; }
+      // (`by`: one live room per address, the manager's to keep)
+      request(mp.port, 'POST', { name: wanted.name, map: wanted.map, maxPlayers: wanted.maxPlayers, bots: wanted.bots ?? 0, by: who })
+        .then(([status, out]) => { if (status !== 201) release(); send(status, out); }, () => { release(); send(503, { error: 'offline' }); });
     });
     return true;
   };
@@ -190,6 +204,7 @@ export function managerRequest(port, method, body) {
  */
 export function udpRelay({ getManifest, accept, maxClients = 64, log = () => {} }) {
   const clients = new Set();
+  let serial = 0;
   const handle = (req, socket, url) => {
     const m = /^\/api\/udp\/([^/]+)$/.exec(url.pathname);
     if (!m) return false;
@@ -198,6 +213,16 @@ export function udpRelay({ getManifest, accept, maxClients = 64, log = () => {} 
     // (the refusal, then the socket closed for good: a client keeping its side open would hold it forever)
     if (!mp || !sameOrigin || clients.size >= maxClients) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy()); return true; }
     const tagged = url.searchParams.has('rooms'), count = 1 + roomSlots(mp);
+    // (each player its own loopback address: the engine limits queries and connections per address — one for all
+    // would let one player's queries starve everyone's, the manager's included; 127.64.0.0/16, never 127.0.0.1)
+    const n = serial++ % 65000 + 1, address = `127.64.${n >> 8}.${n & 255}`;
+    // (a budget of packets a second: a game sends some tens; the LAN search, every room at once, a few)
+    const budget = { at: Date.now(), packets: 0, searches: 0 };
+    const allowed = (search) => {
+      const t = Date.now(); if (t - budget.at >= 1000) { budget.at = t; budget.packets = 0; budget.searches = 0; }
+      if (++budget.packets > 500) return false;
+      return !search || ++budget.searches <= 4;
+    };
     /** @type {Map<number, { udp: any, ready: boolean, pending: Buffer[] }>} */
     const sockets = new Map();
     let closed = false, peer = null;
@@ -212,7 +237,7 @@ export function udpRelay({ getManifest, accept, maxClients = 64, log = () => {} 
         if (socket.writableLength > 1024 * 1024) { peer?.close(); return; }
         peer?.send(tagged ? Buffer.concat([Buffer.from([index]), bytes]) : bytes);
       });
-      udp.connect(roomPort(mp, index), '127.0.0.1', () => { if (closed) return; s.ready = true; for (const p of s.pending.splice(0)) udp.send(p); });
+      udp.bind(0, address, () => udp.connect(roomPort(mp, index), '127.0.0.1', () => { if (closed) return; s.ready = true; for (const p of s.pending.splice(0)) udp.send(p); }));
       return s;
     };
     const send = (index, msg) => {
@@ -221,9 +246,10 @@ export function udpRelay({ getManifest, accept, maxClients = 64, log = () => {} 
     };
     peer = accept(req, socket, (msg, text) => {
       if (text) return;
-      if (!tagged) { send(0, msg); return; }
+      if (!tagged) { if (allowed(false)) send(0, msg); return; }
       if (msg.length < 2) return;
       const index = msg[0], data = msg.subarray(1);
+      if (!allowed(index === 255)) return;
       if (index === 255) { for (let i = 0; i < count; i++) send(i, data); } else if (index < count) send(index, data);
     }, () => { closed = true; clients.delete(peer); for (const s of sockets.values()) { try { s.udp.close(); } catch { /* not bound */ } } });
     if (!peer) return true;

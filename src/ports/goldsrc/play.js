@@ -126,7 +126,7 @@ function hideLoader() {
   loader.querySelector('.fill').style.width = '100%'; loader.querySelector('.pct').textContent = '100%';
   setTimeout(() => { loader.classList.add('gone'); setTimeout(() => { loader.classList.add('hidden'); fit(); }, 600); }, 250);
   $('status').textContent = S.running;
-  lobby?.hide();
+  if (lobbyOverlay.classList.contains('hidden')) lobby?.hide();
 }
 const fail = error => {
   const crashed = !!engine; // (an engine that ran: its saves are kept, a new start reloads the page — a stopped engine cannot start again)
@@ -230,6 +230,7 @@ const nickname = () => $('name').value.replace(/[^a-zA-Z0-9 _.-]/g, '').slice(0,
 /** A room of the lobby joined: the engine started first if it was not, or told to connect. */
 function joinRoom(room) {
   const address = roomAddress(room.index);
+  closeLobby();
   if (session.state === 'running') { closeLobby(); log(`Joining ${room.name} (${address})`); engine.Cmd_ExecuteString(`connect ${address}`); $('canvas').focus(); return; }
   pendingConnect = address;
   if (session.state === 'ready' || session.state === 'error') $('start').requestSubmit();
@@ -239,12 +240,24 @@ const lobbyOverlay = $('lobbyOverlay');
 function openLobby() {
   if (!lobby) return;
   document.exitPointerLock?.(); lobbyOverlay.querySelector('.panel').prepend(lobby.el); lobby.el.classList.remove('hidden'); lobbyOverlay.classList.remove('hidden'); lobby.show();
+  lobbyOverlay.querySelector('.close').focus(); // (the keys typed then are the overlay's)
 }
-function closeLobby() { if (lobbyOverlay.classList.contains('hidden')) return; lobbyOverlay.classList.add('hidden'); lobby?.hide(); $('canvas').focus(); }
+function closeLobby() {
+  if (lobbyOverlay.classList.contains('hidden')) return;
+  lobbyOverlay.classList.add('hidden'); lobby?.hide();
+  // (before the start: back in the loading screen, under its form)
+  if (session.state !== 'running') { $('start').after(lobby.el); if (!$('start').classList.contains('hidden')) lobby.show(); else lobby.el.classList.add('hidden'); }
+  else $('canvas').focus();
+}
 $('tbLobby').addEventListener('click', () => (lobbyOverlay.classList.contains('hidden') ? openLobby() : closeLobby()));
 lobbyOverlay.addEventListener('click', (event) => { if (event.target === lobbyOverlay) closeLobby(); });
 lobbyOverlay.querySelector('.close').addEventListener('click', closeLobby);
-for (const type of ['keydown', 'keyup', 'keypress']) lobbyOverlay.addEventListener(type, (event) => { event.stopPropagation(); if (type === 'keydown' && event.key === 'Escape') closeLobby(); });
+// (while it shows, no key reaches the engine, wherever the focus is: caught before the engine's listeners)
+for (const type of ['keydown', 'keyup', 'keypress']) addEventListener(type, (event) => {
+  if (lobbyOverlay.classList.contains('hidden')) return;
+  event.stopImmediatePropagation();
+  if (type === 'keydown' && event.key === 'Escape') { event.preventDefault(); closeLobby(); }
+}, { capture: true });
 try {
   const [manifestResponse, treeResponse] = await Promise.all([fetch(`/api/manifest/${encodeURIComponent(name)}`), fetch(`/api/tree/${encodeURIComponent(name)}`)]);
   if (!manifestResponse.ok || !treeResponse.ok) throw new Error(`HTTP ${manifestResponse.ok ? treeResponse.status : manifestResponse.status}`);

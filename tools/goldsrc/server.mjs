@@ -8,7 +8,8 @@
 // 127.0.0.1:<goldsrc.multiplayer.port> (TCP), for the Orthros server only (src/host/goldsrc.js roomsProxy):
 //   GET /rooms  -> { rooms: [{ index, port, name, map, players (bots included), humans, maxPlayers, bots, permanent, since, up }], maps,
 //                    slots, maxPlayers, bots: { max } | null }
-//   POST /rooms { name, map, maxPlayers, bots } -> 201 { room } once the server answers, or 400/409/503
+//   POST /rooms { name, map, maxPlayers, bots, by } -> 201 { room } once the server answers, or 400/409/503 (`by`: the
+//                    creator's address — one live room each)
 // The game library is the one the game's files name, or goldsrc.multiplayer.gameLibrary: a native build in the browser
 // release (tools/goldsrc/build-modules.sh). The writable state (configuration, logs, the linked game files) goes to
 // $STATE_DIRECTORY, or --state <dir>; a room's to rooms/<index>/ there.
@@ -19,7 +20,7 @@ import http from 'node:http';
 import dgram from 'node:dgram';
 import { spawn } from 'node:child_process';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/host/game-catalog.js';
-import { DEFAULT_ENGINES_DIR, engineFile, linkGameLayers, parseServerInfo, roomPort, roomRequest, roomSlots } from '../../src/host/goldsrc.js';
+import { DEFAULT_ENGINES_DIR, engineFile, linkGameLayers, parseServerInfo, roomPort, roomRequest, roomSlots, sameRoomName } from '../../src/host/goldsrc.js';
 
 const IDLE = 300; // (seconds a created room stays without a human player)
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
@@ -51,8 +52,11 @@ const MAPS = mp.maps ?? (mapsDir ? fs.readdirSync(path.join(gameFolder, mapsDir)
 /** @type {Map<number, { index: number, port: number, name: string, map: string, maxPlayers: number, bots: number, permanent: boolean, since: number, child: any, info: any, seen: number, idleSince: number, stopping?: boolean }>} */
 const rooms = new Map();
 const quote = (s) => String(s).replace(/["\\;]/g, '');
+let shuttingDown = false;
 
+/** A room's server started; a created room goes when it stops, room 0 starts again 5 s later. */
 function launch(room) {
+  room.stopping = false;
   const base = room.permanent ? state : path.join(state, 'rooms', String(room.index));
   fs.mkdirSync(path.join(base, g.gameDir), { recursive: true });
   // (its settings, written at each start: its name; a created room stays on its map)
@@ -67,13 +71,30 @@ function launch(room) {
     env: { ...process.env, XASH3D_BASEDIR: base, XASH3D_LIBDIR: release, LD_LIBRARY_PATH: release },
     stdio: room.permanent ? 'inherit' : ['ignore', 'ignore', 'inherit'],
   });
-  child.on('error', (error) => console.error(`room ${room.index}: ${error.message}`));
-  child.on('exit', (code, signal) => {
+  const finish = (why) => {
     if (room.child !== child) return;
-    room.child = null;
-    if (room.permanent && !shuttingDown) { console.error(`room 0 exited (${code ?? signal}): starting it again in 5 s`); setTimeout(() => launch(room), 5000); }
-    else { rooms.delete(room.index); if (!room.permanent) console.log(`room ${room.index} "${room.name}" closed`); }
-  });
+    room.child = null; room.seen = 0;
+    if (room.permanent && !shuttingDown) {
+      console.error(`room 0 stopped (${why}): starting it again in 5 s`);
+      relaunch(room);
+    } else { rooms.delete(room.index); if (!room.permanent) console.log(`room ${room.index} "${room.name}" closed (${why})`); }
+  };
+  // (a spawn that failed has no pid: no exit comes)
+  child.on('error', (error) => { console.error(`room ${room.index}: ${error.message}`); if (child.pid === undefined) finish(error.message); });
+  child.on('exit', (code, signal) => finish(code ?? signal));
+}
+
+/** Room 0 started again in 5 s (and again 5 s later while starting it fails). */
+function relaunch(room) {
+  clearTimeout(room.restart);
+  room.restart = setTimeout(() => { if (shuttingDown) return; try { launch(room); } catch (error) { console.error(`room 0: ${error.message}`); relaunch(room); } }, 5000);
+}
+
+/** A room's server stopped: SIGTERM, then SIGKILL 10 s later if it is still there. */
+function stop(room, why) {
+  const child = room.child; if (!child || room.stopping) return;
+  room.stopping = true; console.log(`room ${room.index} "${room.name}": ${why}, closing`);
+  child.kill('SIGTERM'); setTimeout(() => { if (room.child === child) child.kill('SIGKILL'); }, 10000).unref();
 }
 
 // (every 5 s: each server's name, map and players — `info 49`, as the game's LAN search asks it)
@@ -87,13 +108,14 @@ probe.on('message', (bytes, from) => {
 });
 probe.on('error', (error) => console.error(`probe: ${error.message}`));
 probe.bind(0, '127.0.0.1');
-const ask = (room) => probe.send(Buffer.from('\xff\xff\xff\xffinfo 49', 'latin1'), room.port, '127.0.0.1');
-setInterval(() => {
+const ask = (room) => { if (!shuttingDown) probe.send(Buffer.from('\xff\xff\xff\xffinfo 49', 'latin1'), room.port, '127.0.0.1'); };
+const poll = setInterval(() => {
   for (const room of rooms.values()) {
-    if (room.child) ask(room);
-    if (!room.permanent && room.idleSince && Date.now() - room.idleSince > IDLE * 1000 && !room.stopping) {
-      room.stopping = true; console.log(`room ${room.index} "${room.name}": ${IDLE} s without players, closing`); room.child?.kill('SIGTERM');
-    }
+    if (!room.child) continue;
+    ask(room);
+    // (silent a minute once it had answered: stuck — a created room goes, room 0 starts again)
+    if (room.seen && Date.now() - room.seen > 60000) { room.stopping = false; stop(room, 'no answer for a minute'); continue; }
+    if (!room.permanent && room.idleSince && Date.now() - room.idleSince > IDLE * 1000) stop(room, `${IDLE} s without players`);
   }
 }, 5000);
 
@@ -105,15 +127,17 @@ const view = (r) => ({ index: r.index, port: r.port, name: r.info?.name || r.nam
 async function create(request) {
   const checked = roomRequest(request, mp, MAPS);
   if (checked.error) return [400, { error: checked.error }];
-  const { room: spec } = checked;
-  if ([...rooms.values()].some((r) => r.name.toLowerCase() === spec.name.toLowerCase() || r.info?.name?.toLowerCase() === spec.name.toLowerCase())) return [409, { error: 'taken' }];
+  const { room: spec } = checked, by = typeof request?.by === 'string' ? request.by.slice(0, 64) : '';
+  if ([...rooms.values()].some((r) => sameRoomName(r.name, spec.name) || (r.info?.name && sameRoomName(r.info.name, spec.name)))) return [409, { error: 'taken' }];
+  if (by && [...rooms.values()].some((r) => r.by === by)) return [409, { error: 'owned' }];
   let index = 1; while (rooms.has(index) && index <= roomSlots(mp)) index++;
   if (index > roomSlots(mp)) return [503, { error: 'full' }];
-  const room = { index, port: roomPort(mp, index), ...spec, permanent: false, since: Date.now(), child: null, info: null, seen: 0, idleSince: Date.now() };
-  rooms.set(index, room); launch(room);
+  const room = { index, port: roomPort(mp, index), ...spec, by, permanent: false, since: Date.now(), child: null, info: null, seen: 0, idleSince: Date.now() };
+  rooms.set(index, room);
+  try { launch(room); } catch (error) { rooms.delete(index); console.error(`room ${index}: ${error.message}`); return [503, { error: 'start' }]; }
   console.log(`room ${index} "${room.name}" on ${room.map}, ${room.maxPlayers} players, ${room.bots} bots`);
   for (let t = 0; t < 40 && rooms.get(index) === room; t++) { ask(room); await new Promise((r) => setTimeout(r, 500)); if (room.seen) return [201, { room: view(room) }]; }
-  room.child?.kill('SIGKILL');
+  if (room.child) room.child.kill('SIGKILL'); else rooms.delete(index);
   return [503, { error: 'start' }];
 }
 
@@ -122,18 +146,21 @@ const control = http.createServer((req, res) => {
   if (req.url === '/rooms' && req.method === 'GET') return send(200, { rooms: [...rooms.values()].map(view).sort((a, b) => a.index - b.index), maps: MAPS, slots: roomSlots(mp), maxPlayers: mp.maxPlayers ?? 16, bots: mp.rooms?.bots ? { max: mp.rooms.bots.max } : null });
   if (req.url === '/rooms' && req.method === 'POST' && mp.rooms) {
     let body = ''; req.on('data', (d) => { body += d; if (body.length > 4096) req.destroy(); });
-    req.on('end', async () => { let request; try { request = JSON.parse(body); } catch { return send(400, { error: 'json' }); } const [status, out] = await create(request); send(status, out); });
+    req.on('end', () => {
+      let request; try { request = JSON.parse(body); } catch { return send(400, { error: 'json' }); }
+      create(request).then(([status, out]) => send(status, out), (error) => { console.error(`create: ${error.message}`); send(500, { error: 'start' }); });
+    });
     return;
   }
   send(404, { error: 'none' });
 });
 control.listen(mp.port, '127.0.0.1');
 
-let shuttingDown = false;
 const permanent = { index: 0, port: mp.port, name: `Orthros - ${man.name}`, map: mp.map, maxPlayers: mp.maxPlayers ?? 16, bots: 0, permanent: true, since: Date.now(), child: null, info: null, seen: 0, idleSince: 0 };
 rooms.set(0, permanent); launch(permanent);
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
-  shuttingDown = true; control.close(); probe.close();
+  shuttingDown = true; clearInterval(poll); clearTimeout(permanent.restart); control.close(); probe.close();
   for (const room of rooms.values()) room.child?.kill('SIGTERM');
-  setTimeout(() => process.exit(0), 3000).unref();
+  const done = setInterval(() => { if (![...rooms.values()].some((r) => r.child)) process.exit(0); }, 200);
+  setTimeout(() => { clearInterval(done); for (const room of rooms.values()) room.child?.kill('SIGKILL'); process.exit(0); }, 8000);
 });

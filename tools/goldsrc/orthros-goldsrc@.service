@@ -22,6 +22,8 @@ RestartSec=5
 TasksMax=192
 CPUQuota=300%
 MemoryMax=1600M
+# (a room the kernel kills for memory goes alone: the other servers stay)
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target
