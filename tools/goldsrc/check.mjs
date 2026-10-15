@@ -111,7 +111,8 @@ try {
     if (args.includes('--reload')) {
       const saved = await page.evaluate(listSaves, saves);
       await page.evaluate(() => document.exitPointerLock());
-      await page.click('#stop'); await page.waitForURL((url) => url.pathname === '/' && url.searchParams.has('menu'));
+      // (the header's back to the games: it saves and quits, once the player confirmed)
+      page.once('dialog', (dialog) => dialog.accept()); await page.click('#tbGames'); await page.waitForURL((url) => url.pathname === '/' && url.searchParams.has('menu'));
       await page.goto(pageUrl); await page.waitForFunction(() => portSession?.state === 'ready', null, { timeout: 20000 });
       await page.selectOption('#mode', 'solo'); await page.click('#launch');
       await page.waitForFunction(() => ['running', 'error'].includes(portSession?.state), null, { timeout: 180000 });

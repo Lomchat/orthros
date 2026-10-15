@@ -2,42 +2,68 @@
 // pinned engine release the manifest names (/engines/<release>/), the version's game files streamed (files.js: what
 // the game reads first loaded before it starts, the rest as it goes; kept in IndexedDB), the writable profile (saves,
 // settings) in IndexedDB under the installation's key, multiplayer through the server's relay (/api/udp/<manifest>).
-// It never loads the Win32 runtime, and nothing here names a game.
+// Around the game, the page of the Windows games' look (/src/host/web/player.css): the header (frame rate, full screen,
+// back to the games), the loading screen — the player's choices first, then the start's progress — and the game filling
+// the rest of the window. It never loads the Win32 runtime, and nothing here names a game.
 import { pickLang } from '../../host/web/lang.js';
 import { openStorage, readStorage, writeStorage, storageKeys, removeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, PIECE } from './files.js';
 
 const STRINGS = {
   en: {
-    back: '← All games', name: 'Nickname', mode: 'Mode', play: 'Play', fullscreen: 'Full screen', stop: 'Quit and save', log: 'Launch log',
-    help: 'Keyboard and mouse · Click in the game to capture the mouse · Esc releases it.',
+    games: '☰ Games', gamesTitle: 'quit the game (saves and settings kept) and return to the game list', fullscreen: '⛶ Full screen',
+    fullscreenTitle: 'full screen: only the game (hold Esc to leave)', perfTitle: 'frames per second, the last minute, the slowest frames',
+    name: 'Nickname', mode: 'Mode', play: 'Play', log: 'Launch log', subtitle: 'its original files, on a game engine in your browser',
     loading: 'Loading the game…', preparing: 'Preparing the installation.', solo: 'Single player', multiplayer: 'Multiplayer',
-    ready: 'Ready. Choose a mode and start the game.', noServer: 'The multiplayer server is not available yet.',
+    ready: 'Choose a mode and start the game.', noServer: 'The multiplayer server is not available yet.',
     failed: 'The game could not start: ', isolated: 'This page must be served with the browser isolation headers',
-    init: 'Starting the engine…', files: (pct) => `Loading the files · ${pct} %`, running: 'Game started. Click in the game to play.',
+    init: 'Starting the engine…', connecting: 'Connecting to the server…', files: (pct) => `Loading the files · ${pct} %`,
+    starting: 'Starting the game…', running: 'Game started. Click in the game to play.',
+    steps: { engine: 'Starting the engine', net: 'Connecting to the multiplayer server', files: 'Downloading the game files', game: 'Starting the game' },
+    capture: 'Click the game to capture the mouse · Esc releases it · ⛶ for full screen',
+    released: 'Mouse released · click the game to capture it again', quit: (title) => `Quit ${title}? Saves and settings are kept.`,
+    tips: [
+      'The first launch downloads the game files into this browser: the next ones start from its own copy, much faster.',
+      'Full screen (button above) gives the game the whole screen; hold Esc to leave it.',
+      'In the game, a click captures the mouse; Esc releases it, and in the menus the mouse is free.',
+      'The game runs entirely in your browser, from its original files: nothing is installed.',
+    ],
     saveFailed: 'Saving in the browser failed. Keep this page open to retry.', stopped: 'Game over. Saves and settings are kept.',
     cannotSave: 'Cannot save: ', lost: 'Connection to the server lost. Quit the game and start it again.',
     unreachable: 'Multiplayer server unreachable', refused: 'Multiplayer connection refused',
-    engineFiles: 'Engine resources unavailable',
+    engineFiles: 'Engine resources unavailable', paused: 'paused', loadingShort: 'loading',
   },
   fr: {
-    back: '← Tous les jeux', name: 'Pseudo', mode: 'Mode', play: 'Jouer', fullscreen: 'Plein écran', stop: 'Quitter et enregistrer', log: 'Journal de lancement',
-    help: 'Clavier et souris · Clique dans le jeu pour capturer la souris · Échap pour la libérer.',
+    games: '☰ Jeux', gamesTitle: 'quitter la partie (sauvegardes et réglages conservés) et revenir à la liste des jeux', fullscreen: '⛶ Plein écran',
+    fullscreenTitle: 'plein écran : le jeu seul (maintiens Échap pour sortir)', perfTitle: 'images par seconde, la dernière minute, les images les plus lentes',
+    name: 'Pseudo', mode: 'Mode', play: 'Jouer', log: 'Journal de lancement', subtitle: 'ses fichiers d’origine, sur un moteur de jeu dans ton navigateur',
     loading: 'Chargement du jeu…', preparing: 'Préparation de l’installation.', solo: 'Campagne solo', multiplayer: 'Multijoueur',
-    ready: 'Prêt. Choisis un mode et lance la partie.', noServer: 'Le serveur multijoueur n’est pas encore disponible.',
+    ready: 'Choisis un mode et lance la partie.', noServer: 'Le serveur multijoueur n’est pas encore disponible.',
     failed: 'Le jeu n’a pas pu démarrer : ', isolated: 'Cette page doit être servie avec les en-têtes d’isolation du navigateur',
-    init: 'Initialisation du moteur…', files: (pct) => `Chargement des fichiers · ${pct} %`, running: 'Partie lancée. Clique dans le jeu pour jouer.',
+    init: 'Démarrage du moteur…', connecting: 'Connexion au serveur…', files: (pct) => `Chargement des fichiers · ${pct} %`,
+    starting: 'Lancement du jeu…', running: 'Partie lancée. Clique dans le jeu pour jouer.',
+    steps: { engine: 'Démarrage du moteur', net: 'Connexion au serveur multijoueur', files: 'Téléchargement des fichiers du jeu', game: 'Lancement du jeu' },
+    capture: 'Clique dans le jeu pour capturer la souris · Échap la libère · ⛶ pour le plein écran',
+    released: 'Souris libérée · clique dans le jeu pour la capturer de nouveau', quit: (title) => `Quitter ${title} ? Les sauvegardes et réglages sont conservés.`,
+    tips: [
+      'Le premier lancement télécharge les fichiers du jeu dans ce navigateur : les suivants partent de sa copie, bien plus vite.',
+      'Le plein écran (bouton en haut) donne tout l’écran au jeu ; maintiens Échap pour en sortir.',
+      'En jeu, un clic capture la souris ; Échap la libère, et dans les menus la souris reste libre.',
+      'Le jeu tourne entièrement dans ton navigateur, depuis ses fichiers d’origine : rien n’est installé.',
+    ],
     saveFailed: 'La sauvegarde navigateur a échoué. Garde cette page ouverte pour réessayer.', stopped: 'Partie terminée. Les sauvegardes et réglages sont conservés.',
     cannotSave: 'Enregistrement impossible : ', lost: 'Connexion au serveur interrompue. Quitte la partie puis relance-la.',
     unreachable: 'Serveur multijoueur inaccessible', refused: 'Connexion multijoueur impossible',
-    engineFiles: 'Ressources du moteur indisponibles',
+    engineFiles: 'Ressources du moteur indisponibles', paused: 'en pause', loadingShort: 'chargement',
   },
 };
 const lang = pickLang(), S = STRINGS[lang] ?? STRINGS.en;
 document.documentElement.lang = lang;
 const $ = id => document.getElementById(id);
-for (const [id, key] of [['back', 'back'], ['nameLabel', 'name'], ['modeLabel', 'mode'], ['launch', 'play'], ['fullscreen', 'fullscreen'], ['stop', 'stop'], ['help', 'help'], ['logLabel', 'log'], ['title', 'loading'], ['status', 'preparing']]) $(id).textContent = S[key];
-const status = text => { $('status').textContent = text; };
+for (const [id, key] of [['tbGames', 'games'], ['tbFull', 'fullscreen'], ['nameLabel', 'name'], ['modeLabel', 'mode'], ['launch', 'play'], ['logLabel', 'log'], ['title', 'loading'], ['subtitle', 'subtitle'], ['status', 'preparing']]) $(id).textContent = S[key];
+$('tbGames').title = S.gamesTitle; $('tbFull').title = S.fullscreenTitle; $('tbPerf').title = S.perfTitle;
+for (const li of document.querySelectorAll('#loader li')) li.children[1].textContent = S.steps[li.dataset.k];
+const loader = $('loader');
 const logs = [], session = { state: 'loading', logs, engine: null, config: null, multiplayer: 'disconnected' };
 window.portSession = session;
 // Async asset loading outlives the original click. Resume the engine's audio on the next user gesture.
@@ -53,9 +79,118 @@ window.addEventListener('error', event => {
   if (stopped && (event.error === Infinity || event.error === 'unwind')) event.preventDefault();
 });
 const log = line => { logs.push(String(line)); if (logs.length > 500) logs.shift(); $('log').textContent = logs.slice(-100).join('\n'); };
-const fail = error => { session.state = 'error'; status(S.failed + (error.message ?? error)); log(error.stack ?? error); $('launch').disabled = false; socket?.close(); if (timer) clearInterval(timer); };
+
+// ---------------------------------------------------------------- the loading screen and passing messages
+const tips = S.tips; let tipTimer = null;
+const showTip = (i) => { $('tip').textContent = tips[i % tips.length]; $('tip').dataset.i = String(i % tips.length); };
+showTip(Math.floor(Math.random() * tips.length));
+tipTimer = setInterval(() => showTip(Number($('tip').dataset.i) + 1), 9000);
+const toast = (text, ms = 5000) => {
+  const el = $('toast'); el.textContent = text; el.classList.remove('hidden'); el.style.opacity = '1';
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.classList.add('hidden'), 700); }, ms);
+};
+/** A status line: in the loading screen while it shows, then as a passing message over the game. */
+const status = (text, error = false) => {
+  $('status').textContent = text; $('status').classList.toggle('error', error);
+  if (loader.classList.contains('hidden') && text) toast(text, error ? 9000 : 5000);
+};
+/** The start's steps (engine, network, files, game), each weighing its usual share of the wait; never going back. */
+const progress = { weights: { engine: 0.2, net: 0.05, files: 0.55, game: 0.2 }, parts: {}, pct: 0 };
+function step(k, state, value = '', fraction = undefined) {
+  const li = loader.querySelector(`li[data-k="${k}"]`); li.className = state; li.querySelector('.v').textContent = value;
+  progress.parts[k] = state === 'skip' ? null : fraction ?? (state === 'done' ? 1 : progress.parts[k] ?? 0);
+  let weight = 0, done = 0;
+  for (const [key, f] of Object.entries(progress.parts)) if (f !== null) { weight += progress.weights[key]; done += progress.weights[key] * f; }
+  progress.pct = Math.max(progress.pct, Math.min(99, Math.floor(weight ? done / weight * 100 : 0)));
+  loader.querySelector('.fill').style.width = progress.pct + '%'; loader.querySelector('.pct').textContent = progress.pct + '%';
+}
+function hideLoader() {
+  if (loader.classList.contains('hidden')) return;
+  clearInterval(tipTimer);
+  loader.querySelector('.fill').style.width = '100%'; loader.querySelector('.pct').textContent = '100%';
+  setTimeout(() => { loader.classList.add('gone'); setTimeout(() => { loader.classList.add('hidden'); fit(); }, 600); }, 250);
+  $('status').textContent = S.running; toast(S.capture, 7000);
+}
+const fail = error => {
+  session.state = 'error'; loader.classList.remove('hidden', 'gone'); status(S.failed + (error.message ?? error), true); log(error.stack ?? error);
+  $('start').classList.remove('hidden'); $('launch').disabled = false; $('mode').disabled = false; socket?.close(); if (timer) clearInterval(timer);
+};
+
+// ---------------------------------------------------------------- the game's place: the window under the header
+// (SDL sizes the game's screen to the canvas' size on the page: the game renders at the size it is shown, without
+// bars; a mouse position maps one to one)
+function fit() {
+  const stage = $('stage'), canvas = $('canvas'), w = Math.max(320, stage.clientWidth), h = Math.max(240, stage.clientHeight);
+  if (canvas.style.width === w + 'px' && canvas.style.height === h + 'px') return;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  // (SDL measures it again at the window's resize only: the header hidden or shown changes none)
+  if (session.state === 'running') queueMicrotask(() => dispatchEvent(new Event('resize')));
+}
+addEventListener('resize', fit);
+document.addEventListener('fullscreenchange', () => { fit(); if (!document.fullscreenElement) navigator.keyboard?.unlock?.(); });
+// (the engine's glue resets the canvas' style when it sets its size: put back)
+new MutationObserver(fit).observe($('canvas'), { attributes: true, attributeFilter: ['style', 'width', 'height'] });
+fit();
+
+// ---------------------------------------------------------------- the mouse
+// The engine captures the mouse itself when the game takes it (SDL's relative mode: pointer lock at the next input
+// event) and frees it in its menus and console, its cursor shown there. A click captures it again only while the game
+// wants it — its cursor hidden: after the browser released it (Esc) — never in a menu, where the mouse must stay free.
+const wantsMouse = () => session.state === 'running' && $('canvas').style.cursor === 'none';
+$('canvas').addEventListener('pointerdown', () => { if (wantsMouse() && document.pointerLockElement !== $('canvas')) $('canvas').requestPointerLock()?.catch?.(() => {}); });
+$('canvas').addEventListener('contextmenu', (event) => event.preventDefault());
+document.addEventListener('pointerlockchange', () => { if (!document.pointerLockElement && wantsMouse() && !stopped) toast(S.released, 4000); });
+
+// ---------------------------------------------------------------- the header's frame rate
+// (a frame is a main loop iteration that drew: the engine may run some without rendering, under its fps_max)
+let draws = 0;
+for (const type of [globalThis.WebGL2RenderingContext, globalThis.WebGLRenderingContext]) {
+  if (!type) continue;
+  for (const method of ['drawArrays', 'drawElements']) {
+    const original = type.prototype[method];
+    type.prototype[method] = function (...args) { draws++; return original.apply(this, args); };
+  }
+}
+const perf = { frames: [], samples: [], lastDraws: 0, started: 0 };
+function onFrame() {
+  if (draws === perf.lastDraws) return;
+  perf.lastDraws = draws; perf.frames.push(performance.now());
+  if (perf.frames.length > 400) perf.frames.splice(0, perf.frames.length - 400);
+  if (session.state === 'running' && ++perf.started === 10) hideLoader(); // (its first images: the game is shown)
+}
+setInterval(() => {
+  const now = performance.now(), recent = perf.frames.filter((t) => t > now - 500);
+  const gaps = recent.slice(1).map((t, i) => t - recent[i]).sort((a, b) => a - b);
+  perf.samples.push({ fps: recent.length * 2, max: gaps.at(-1) ?? 0, p99: gaps[Math.floor(gaps.length * 0.99)] ?? 0 });
+  if (perf.samples.length > 120) perf.samples.shift();
+  renderHud();
+}, 500);
+function renderHud() {
+  const bar = $('topbar'), fpsEl = bar.querySelector('.fps'), sub = bar.querySelector('.sub'), a = perf.samples;
+  const ms = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`);
+  if (session.state !== 'running' || perf.started < 10) { fpsEl.textContent = '…'; fpsEl.className = 'fps'; sub.textContent = S.loadingShort; }
+  else if (document.hidden) { fpsEl.textContent = '❚❚'; fpsEl.className = 'fps'; sub.textContent = S.paused; }
+  else {
+    const f = ((a.at(-1)?.fps ?? 0) + (a.at(-2)?.fps ?? 0)) / 2;
+    fpsEl.textContent = f.toFixed(0); fpsEl.className = 'fps ' + (f >= 29.5 ? 'good' : f >= 20 ? 'warn' : 'bad');
+    const last2 = a.slice(-2);
+    sub.textContent = `p99 ${ms(Math.max(...last2.map((s) => s.p99)))}\nmax ${ms(Math.max(...last2.map((s) => s.max)))}`;
+  }
+  const cv = bar.querySelector('canvas'), g = cv.getContext('2d'), w = cv.width, h = cv.height, top = 60, span = 120;
+  const y = (v) => h - 1 - Math.min(v, top) / top * (h - 2);
+  g.clearRect(0, 0, w, h); g.fillStyle = 'rgba(255,255,255,0.04)'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(255,255,255,0.25)'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(0, y(30)); g.lineTo(w, y(30)); g.stroke(); g.setLineDash([]);
+  const shown = perf.started >= 10 ? a : [], x0 = w - Math.min(shown.length, span) * (w / span);
+  g.strokeStyle = '#8fd18f'; g.beginPath();
+  shown.slice(-span).forEach((p, i) => { const x = x0 + i * (w / span); if (i) g.lineTo(x, y(p.fps)); else g.moveTo(x, y(p.fps)); });
+  g.stroke();
+  g.fillStyle = '#ff6b6b'; shown.slice(-span).forEach((p, i) => { if (p.max > 50) g.fillRect(x0 + i * (w / span), 0, 2, 4); });
+}
+
+// ---------------------------------------------------------------- the installation
 const name = decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? '');
 const sessionId = crypto.randomUUID().replaceAll('-', '').slice(0, 24);
+loader.querySelector('.bg').style.backgroundImage = `url(/api/cover/${encodeURIComponent(name)})`;
 let config, files, streamed;
 try {
   const [manifestResponse, treeResponse] = await Promise.all([fetch(`/api/manifest/${encodeURIComponent(name)}`), fetch(`/api/tree/${encodeURIComponent(name)}`)]);
@@ -63,7 +198,7 @@ try {
   config = session.config = await manifestResponse.json();
   if (config.runtime !== 'goldsrc') throw new Error('not a GoldSrc installation');
   files = treeFiles(await treeResponse.json());
-  $('title').textContent = config.name; document.title = config.name + ' · Orthros';
+  $('title').textContent = config.name; $('tbGame').textContent = config.name; document.title = config.name + ' · Orthros';
   const g = config.goldsrc;
   for (const mode of ['solo', 'multiplayer']) {
     if (!g[mode]) continue;
@@ -72,6 +207,7 @@ try {
   const available = [...$('mode').options].find(option => !option.disabled);
   if (available) { $('mode').value = available.value; $('launch').disabled = false; }
   status(available ? S.ready : S.noServer); session.state = 'ready';
+  $('launch').focus();
 } catch (error) { fail(error); }
 
 async function save() {
@@ -102,7 +238,7 @@ async function connect(Net) {
     socket.onopen = () => { clearTimeout(timeout); session.multiplayer = 'connected'; resolve(); };
     socket.onerror = () => { clearTimeout(timeout); reject(new Error(S.refused)); };
   });
-  socket.onclose = () => { session.multiplayer = 'disconnected'; if (!stopped) status(S.lost); };
+  socket.onclose = () => { session.multiplayer = 'disconnected'; if (!stopped) status(S.lost, true); };
 }
 
 /** The reads the game made since the last report, to the server's learned list (sendBeacon when the page goes). */
@@ -122,29 +258,37 @@ async function loadInBackground(rest) {
   log(`Background loading done: ${JSON.stringify(session.background)}`);
 }
 
+const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)} MB`;
 $('start').addEventListener('submit', async event => {
   event.preventDefault(); if (!config || session.state === 'starting' || session.state === 'running') return;
-  $('launch').disabled = true; $('mode').disabled = true; session.state = 'starting'; $('progress').classList.remove('hidden');
+  $('launch').disabled = true; $('mode').disabled = true; session.state = 'starting';
+  $('start').classList.add('hidden'); for (const el of loader.querySelectorAll('.progress')) el.classList.remove('hidden');
+  const multiplayer = $('mode').value === 'multiplayer';
   try {
     if (!crossOriginIsolated) throw new Error(S.isolated);
     const g = config.goldsrc, base = `/engines/${encodeURIComponent(g.engine)}/`;
+    step('engine', 'active'); step('net', multiplayer ? '' : 'skip'); step('files', ''); step('game', '');
+    status(S.init);
     db = await openStorage(config.saveKey);
     const { Xash3D, Net, DEFAULT_SERVER_LIBRARY } = await import(base + 'engine/index.js');
     engine = session.engine = new Xash3D({
       canvas: $('canvas'),
       // (-dll: the engine opens the server module under the name the wrapper preloaded it with, not the one the game's
-      // liblist.gam names — another name finds no library and the local server never starts;
+      // liblist.gam names — another name finds no library and the local server never starts; the size, the canvas'
+      // on the page — SDL takes it again on every change;
       // ?debug: the engine's developer messages from its start)
-      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-dll', DEFAULT_SERVER_LIBRARY, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', '1024', '-height', '768', ...(new URLSearchParams(location.search).has('debug') ? ['-dev', '2'] : [])],
+      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-dll', DEFAULT_SERVER_LIBRARY, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', String($('canvas').clientWidth || 1024), '-height', String($('canvas').clientHeight || 768), ...(new URLSearchParams(location.search).has('debug') ? ['-dev', '2'] : [])],
       libraries: {
         xash: base + 'engine/xash.wasm', filesystem: base + 'engine/filesystem_stdio.wasm',
         menu: base + (g.modules.menu ?? 'engine/libmenu.wasm'), client: base + g.modules.client, server: base + g.modules.server,
         render: { gl4es: base + 'engine/libref_webgl2.wasm' }
       },
-      module: { print: log, printErr: log, onAbort: reason => fail(new Error(String(reason))) }
+      module: { print: log, printErr: log, onAbort: reason => fail(new Error(String(reason))), postMainLoop: onFrame }
     });
-    if ($('mode').value === 'multiplayer') await connect(Net);
-    status(S.init); await engine.init();
+    if (multiplayer) { step('net', 'active'); status(S.connecting); await connect(Net); step('net', 'done'); status(S.init); }
+    const t = performance.now();
+    await engine.init();
+    step('engine', 'done', `${((performance.now() - t) / 1000).toFixed(1)} s`);
     const FS = engine.em.FS;
     // (the game's writable folder, with its maps folder: files the game writes there, as its bots' navigation meshes)
     FS.mkdirTree('/rodir'); FS.mkdirTree('/rwdir/' + g.gameDir + '/maps');
@@ -159,9 +303,11 @@ $('start').addEventListener('submit', async event => {
     const plan = learnedPlan(learned, [...streamed.files.values()]), first = plan.filter((e) => e.startup);
     const bytesOf = (e) => (e.pieces ? Math.min(e.file.size, e.pieces.length * PIECE) : e.file.size), total = first.reduce((sum, e) => sum + bytesOf(e), 0);
     let loaded = 0;
+    step('files', 'active', fmtMB(0), 0);
     await StreamedFiles.pool(first.map((e) => async () => {
       await streamed.load(e.file, e.pieces); loaded += bytesOf(e);
-      $('progress').value = loaded / Math.max(1, total); status(S.files(Math.round(loaded / Math.max(1, total) * 100)));
+      const f = loaded / Math.max(1, total), secs = (performance.now() - t0) / 1000;
+      step('files', 'active', `${fmtMB(loaded)}${secs > 1 ? ` · ${(loaded / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
     }), 6);
     session.startup = { files: first.length, bytes: total, ms: Math.round(performance.now() - t0), ...streamed.stats };
     log(`Startup files: ${JSON.stringify(session.startup)}`);
@@ -171,7 +317,9 @@ $('start').addEventListener('submit', async event => {
       if (!extrasResponse.ok) throw new Error(S.engineFiles);
       FS.writeFile(`/rodir/${g.gameDir}/${extra.split('/').pop()}`, new Uint8Array(await extrasResponse.arrayBuffer()));
     }
+    step('files', 'done', fmtMB(total));
     FS.chdir('/rwdir');
+    step('game', 'active', '', 0.2); status(S.starting);
     // (main() only schedules the engine's start: it runs once the engine's WebAssembly libraries are loaded, which
     // can be after this — no console command before it has run; the reads are learned from its start)
     const M = engine.em.Module, started = new Promise((resolve) => {
@@ -180,25 +328,32 @@ $('start').addEventListener('submit', async event => {
     });
     engine.main();
     await started;
+    step('game', 'active', '', 0.6);
     loadInBackground(plan.filter((e) => !e.startup)).catch((error) => log('Background loading failed: ' + error.message));
     setTimeout(() => reportReads(), 30000); setInterval(() => reportReads(), 120000);
     engine.Cmd_ExecuteString('developer ' + (new URLSearchParams(location.search).has('debug') ? '1' : '0'));
     const nickname = $('name').value.replace(/[^a-zA-Z0-9 _.-]/g, '').slice(0, 24) || 'Player';
     engine.Cmd_ExecuteString(`name "${nickname}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
-    if ($('mode').value === 'multiplayer') engine.Cmd_ExecuteString('connect 127.0.0.1:8080');
+    if (multiplayer) engine.Cmd_ExecuteString('connect 127.0.0.1:8080');
     else { for (const command of g.solo.commands ?? []) engine.Cmd_ExecuteString(command); engine.Cmd_ExecuteString(`map ${g.solo.map}`); }
     session.command = command => engine.Cmd_ExecuteString(command);
-    session.state = 'running'; status(S.running);
-    $('start').classList.add('hidden'); $('progress').classList.add('hidden'); $('stop').disabled = false;
-    timer = setInterval(() => save().catch(error => { log('Profile save failed: ' + error.message); status(S.saveFailed); }), 10000);
+    session.state = 'running';
+    timer = setInterval(() => save().catch(error => { log('Profile save failed: ' + error.message); status(S.saveFailed, true); }), 10000);
     $('canvas').focus();
   } catch (error) { fail(error); }
 });
 
-$('canvas').addEventListener('click', () => { if (session.state === 'running') $('canvas').requestPointerLock()?.catch?.(log); });
-$('fullscreen').addEventListener('click', () => $('canvas').requestFullscreen().catch(error => status(error.message)));
-$('stop').addEventListener('click', async () => {
-  $('stop').disabled = true; stopped = true; if (timer) clearInterval(timer);
+// ---------------------------------------------------------------- the header's buttons
+$('tbFull').addEventListener('click', async () => {
+  try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (error) { status(error.message, true); return; }
+  try { await navigator.keyboard?.lock?.(['Escape']); } catch { /* keyboard lock unavailable: Esc leaves the full screen */ }
+  $('canvas').focus();
+  if (wantsMouse()) $('canvas').requestPointerLock()?.catch?.(() => {}); // (in the game: the mouse captured at once, as the Windows games')
+});
+$('tbGames').addEventListener('click', async () => {
+  if (session.state !== 'running') { location.href = '/?menu'; return; }
+  if (!confirm(S.quit(config?.name ?? ''))) return;
+  $('tbGames').disabled = true; stopped = true; if (timer) clearInterval(timer);
   try {
     engine?.Cmd_ExecuteString('host_writeconfig'); await save();
     try { engine?.quit(); } catch (error) {
@@ -207,7 +362,7 @@ $('stop').addEventListener('click', async () => {
     }
     await save(); socket?.close(); db?.close();
     session.state = 'stopped'; status(S.stopped); location.href = '/?menu';
-  } catch (error) { stopped = false; $('stop').disabled = false; status(S.cannotSave + (error?.message ?? String(error))); }
+  } catch (error) { stopped = false; $('tbGames').disabled = false; status(S.cannotSave + (error?.message ?? String(error)), true); }
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) save().catch(log); });
 window.addEventListener('pagehide', () => { stopped = true; if (timer) clearInterval(timer); socket?.close(); reportReads(true); });
