@@ -50,6 +50,7 @@ export function loadGameFolder(gameDir) {
       folder: path.join(gameDir, 'versions', dir), baseFolder: path.join(gameDir, 'base'),
       saveDir: path.resolve(gameDir, '../../build/saves', id) });
     if (!WIN_MOUNT.test(manifest.mount)) fail(file, `${id}: mount invalide`);
+    if (manifest.modified !== undefined && typeof manifest.modified !== 'boolean') fail(file, `${id}: modified doit être un booléen`);
     if (runtime === 'win32' && !resolveGameFile(manifest, manifest.exe)) fail(file, `${id}: exécutable ${manifest.exe} absent de base/ et versions/${dir}/`);
     if (runtime === 'goldsrc') {
       const problem = goldsrcProblem(manifest.goldsrc);

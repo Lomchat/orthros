@@ -1,0 +1,35 @@
+# Orthros CI: `make test` — the unit tests (Node), the CPU conformance against the native x86-32 oracle (clang),
+# the CRT-free Win32 test programs (clang, lld-link, llvm-dlltool) and the browser tests (Playwright Chromium).
+# No game files here: tests needing installed games skip.
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Native tools (clang, lld, llvm 18)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-18 lld-18 llvm-18 python3
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -sf /usr/bin/clang-18 "$RUNNER_TEMP/bin/clang"
+          ln -sf /usr/bin/lld-link-18 "$RUNNER_TEMP/bin/lld-link"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Dependencies (Playwright and its Chromium)
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: make test
+        run: make test
