@@ -268,7 +268,7 @@
         ]
       },
       {
-        "id": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r3",
+        "id": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r4",
         "purpose": "The Half-Life arsenal: the fourteen Half-Life weapons bought in Counter-Strike, at its scale, anywhere and anytime, with its own team, appearance and buy menus (hl-arsenal patches).",
         "patches": [
           [
@@ -289,10 +289,6 @@
           ]
         ],
         "files": [
-          {
-            "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
-            "sha256": "3b0d5503274b24f3099c56f10ef7d625b06bdb75141907ef778fbf9d2cc14042"
-          },
           {
             "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
             "sha256": "d59d082fe0b58a35340432867629fd7342d9e8c91e81aa36550a7857e1474db8"

@@ -1,5 +1,6 @@
 // Browser check of a GoldSrc port (docs/browser-ports.md), from the Orthros home: the version's card starts its page,
-// the engine boots and draws; `solo` then moves, saves, loads (--reload: quits, starts again and finds the save; --no-save:
+// the engine boots to the game's main menu and draws, then the check enters the mode as the menu does (`solo`: the
+// manifest's map, its commands already run by the page; `multiplayer`: the server its LAN search lists, 127.0.0.1:8080); `solo` then moves, saves, loads (--reload: quits, starts again and finds the save; --no-save:
 // a game without saves — it joins (--join-keys), moves, and counts the players, bots included, --min-players);
 // `multiplayer` runs two players in separate browser contexts on the version's dedicated server, checks both see
 // each other, move, and receive the same score when the first one dies. Evidence under /tmp/orthros-scratch/.
@@ -22,6 +23,7 @@ const pageUrl = `${base}/ports/goldsrc/${encodeURIComponent(name)}/?debug=1`;
 const nicknames = [1, 2].map((i) => `QA${i}-${Date.now().toString(36)}`);
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const clients = [], keys = arg('--join-keys');
+const enter = (page) => page.evaluate((command) => portSession.command(command), mode === 'solo' ? `map ${manifest.goldsrc.solo.map}` : 'connect 127.0.0.1:8080');
 const focusGame = async (page) => { await page.bringToFront(); await page.evaluate(() => document.exitPointerLock()); await page.locator('#canvas').click(); };
 const lastPos = (page) => page.evaluate(() => portSession.logs.filter((l) => /\borg \(/.test(l)).at(-1)?.match(/org \(([^)]+)\)/)?.[1]);
 const heartbeat = setInterval(async () => {
@@ -53,8 +55,9 @@ try {
       await page.goto(pageUrl);
     } else await page.goto(pageUrl);
     await page.waitForFunction(() => ['ready', 'error'].includes(window.portSession?.state), null, { timeout: 20000 });
-    await page.fill('#name', nicknames[i]); await page.selectOption('#mode', mode); await page.click('#launch');
+    await page.fill('#name', nicknames[i]); await page.click('#launch');
     await page.waitForFunction(() => ['running', 'error'].includes(window.portSession?.state), null, { timeout: 180000 });
+    if (await page.evaluate(() => portSession.state) === 'running') { await page.waitForTimeout(3000); await enter(page); }
     const state = await page.evaluate(() => ({ state: portSession.state, status: document.querySelector('#status').textContent, draws: renderProbe.draws, multiplayer: portSession.multiplayer }));
     console.log('BOOT', i, JSON.stringify(state));
     if (state.state !== 'running') throw new Error(state.status);
@@ -114,8 +117,9 @@ try {
       // (the header's back to the games: it saves and quits, once the player confirmed)
       page.once('dialog', (dialog) => dialog.accept()); await page.click('#tbGames'); await page.waitForURL((url) => url.pathname === '/' && url.searchParams.has('menu'));
       await page.goto(pageUrl); await page.waitForFunction(() => portSession?.state === 'ready', null, { timeout: 20000 });
-      await page.selectOption('#mode', 'solo'); await page.click('#launch');
+      await page.click('#launch');
       await page.waitForFunction(() => ['running', 'error'].includes(portSession?.state), null, { timeout: 180000 });
+      await page.waitForTimeout(3000); await enter(page);
       await page.waitForFunction(() => renderProbe.draws > 50, null, { timeout: 30000 });
       const restored = await page.evaluate(listSaves, saves);
       if (JSON.stringify(restored) !== JSON.stringify(saved)) throw new Error('Saved files changed across quit and relaunch');

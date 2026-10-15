@@ -20,7 +20,7 @@ Nothing in the code names a game: engine release, game directory, modules, maps 
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r3` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r4` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -71,8 +71,18 @@ Counter-Strike at its title screen in single player, whichever server module.
 
 `src/ports/goldsrc/play.html` looks as the Windows games' page (`src/host/web/player.css`, shared with `index.html`):
 the header (brand, game, frame rate with its last minute and slowest frames, full screen, back to the games), and the
-loading screen over the game's blurred cover — first the player's choices (nickname, mode), then the start's steps
-(engine, multiplayer server, game files, the game's first images) with their progress, and tips.
+loading screen over the game's blurred cover — first the nickname and "Play", then the start's steps (engine, game
+files, the game's first images) with their progress, and tips.
+
+- **The game's own main menu.** No mode to choose before the start: the engine starts on the game's menu, where the
+  player picks single player (Half-Life's new game; Counter-Strike's multiplayer, create game) or multiplayer. The
+  manifest's `solo.commands` run at the start (bots, game settings): a game the menu creates gets them; `solo.map` is
+  only `check.mjs`'s. The nickname is remembered by the page, and is never the games' default "Player", which their
+  multiplayer menus refuse.
+- **Orthros' server in the LAN games.** With `multiplayer`, the page opens the relay (`/api/udp/<manifest>`) as the
+  engine starts and sends it every packet the engine sends, whatever its address: the menu's LAN search (a broadcast)
+  reaches the version's dedicated server, whose answer comes as `127.0.0.1:8080` and lists it, with its map and players;
+  joining it connects there. The server closes an idle relay after two minutes: the next packet opens a new one.
 
 - **The game fills the window** under the header (the whole screen in full screen). SDL sizes the game's screen to the
   canvas' size on the page: the game renders at the size it is shown, without bars, whatever the window's shape, and a
@@ -81,10 +91,14 @@ loading screen over the game's blurred cover — first the player's choices (nic
   input event) and frees it in its menus and console, where its cursor shows (the canvas' CSS cursor). A click on the
   game captures it again only while the game wants it (after Esc released it in the game), never in a menu — the page
   used to lock it at every click, which left the menus without a cursor. Full screen captures it at once in the game.
-  The engine's SDL reads a mouse position relative to the document, its events being the document's: the canvas
-  starting under the header, the page gives the mouse events the canvas' coordinates (else a click lands 44 pixels
-  below the cursor, in the engine's menus as in a game's own).
-- **The frame rate** counts the engine's main loop iterations that drew (`postMainLoop`, draw calls seen).
+  (Emscripten gives SDL positions relative to the canvas already: the page must not shift them — a version that did put
+  clicks 44 pixels above the cursor, outside full screen.)
+- **Large screens.** The engine's `hud_scale` (read at its start: the width of a virtual screen the HUD is drawn on) is
+  set from the game's size: none up to about 1920 × 1080, then by half steps, 1.5 at 2560 × 1440 and 2.5 at
+  3840 × 2160 — the HUD, its texts and the mods' menus keep their size instead of shrinking.
+- **Telemetry.** A few reports a session to `/api/telemetry` (`port: "goldsrc"`, `event`: `start`, `error` — a page
+  error or an unhandled rejection —, `crash` with the end of the engine's log, `end` with the frame rate). After a crash
+  the profile is saved and "Restart the game" reloads the page (an engine that stopped cannot start again in it).- **The frame rate** counts the engine's main loop iterations that drew (`postMainLoop`, draw calls seen).
 - **The menu module.** Counter-Strike's manifests name none: the engine's (`engine/libmenu.wasm`) shows the game's own
   title screens and takes the mouse; cs16-client's `mainui_cpp` (still built, `modules.builds`) wants the images of its
   `cs16client-extras` package and gets no mouse position from this engine.
@@ -131,7 +145,7 @@ The browser release's game modules were recovered from a deployed build whose so
 `Velaron/cs16-client` at `15278ca` (the commit the recovered build started from) with its submodules — the client,
 `mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). Each of `modules.builds` is a release of its own, its patches
 on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sources give it) and
-`xash3d-web-1.2.2-cs16-15278ca-arsenal-r3` (the Half-Life Arsenal, below). A release holds the engine files of
+`xash3d-web-1.2.2-cs16-15278ca-arsenal-r4` (the Half-Life Arsenal, below). A release holds the engine files of
 `xash3d-web-1.2.2` (checked against the lock) and under `counterstrike/cstrike/` the three WebAssembly modules,
 `dlls/cs.so` (the same server compiled natively for the 32-bit dedicated server: `multiplayer.gameLibrary`) and
 `orthros-bots.pk3` (`goldsrc.extras`).

@@ -13,13 +13,14 @@ const STRINGS = {
   en: {
     games: '☰ Games', gamesTitle: 'quit the game (saves and settings kept) and return to the game list', fullscreen: '⛶ Full screen',
     fullscreenTitle: 'full screen: only the game (hold Esc to leave)', perfTitle: 'frames per second, the last minute, the slowest frames',
-    name: 'Nickname', mode: 'Mode', play: 'Play', log: 'Launch log', subtitle: 'its original files, on a game engine in your browser',
-    loading: 'Loading the game…', preparing: 'Preparing the installation.', solo: 'Single player', multiplayer: 'Multiplayer',
-    ready: 'Choose a mode and start the game.', noServer: 'The multiplayer server is not available yet.',
+    name: 'Nickname', play: 'Play', log: 'Launch log', subtitle: 'its original files, on a game engine in your browser',
+    loading: 'Loading the game…', preparing: 'Preparing the installation.',
+    ready: 'Start the game: single player and multiplayer are in its menu.',
+    readyServer: 'Start the game: single player and multiplayer are in its menu — Orthros\' server is in its LAN games.',
     failed: 'The game could not start: ', isolated: 'This page must be served with the browser isolation headers',
-    init: 'Starting the engine…', connecting: 'Connecting to the server…', files: (pct) => `Loading the files · ${pct} %`,
+    init: 'Starting the engine…', files: (pct) => `Loading the files · ${pct} %`,
     starting: 'Starting the game…', running: 'Game started. Click in the game to play.',
-    steps: { engine: 'Starting the engine', net: 'Connecting to the multiplayer server', files: 'Downloading the game files', game: 'Starting the game' },
+    steps: { engine: 'Starting the engine', files: 'Downloading the game files', game: 'Starting the game' },
     capture: 'Click the game to capture the mouse · Esc releases it · ⛶ for full screen',
     released: 'Mouse released · click the game to capture it again', quit: (title) => `Quit ${title}? Saves and settings are kept.`,
     tips: [
@@ -29,20 +30,20 @@ const STRINGS = {
       'The game runs entirely in your browser, from its original files: nothing is installed.',
     ],
     saveFailed: 'Saving in the browser failed. Keep this page open to retry.', stopped: 'Game over. Saves and settings are kept.',
-    cannotSave: 'Cannot save: ', lost: 'Connection to the server lost. Quit the game and start it again.',
-    unreachable: 'Multiplayer server unreachable', refused: 'Multiplayer connection refused',
-    engineFiles: 'Engine resources unavailable', paused: 'paused', loadingShort: 'loading',
+    cannotSave: 'Cannot save: ', lost: 'Connection to the multiplayer server lost: it comes back by itself.',
+    engineFiles: 'Engine resources unavailable', restart: 'Restart the game', paused: 'paused', loadingShort: 'loading',
   },
   fr: {
     games: '☰ Jeux', gamesTitle: 'quitter la partie (sauvegardes et réglages conservés) et revenir à la liste des jeux', fullscreen: '⛶ Plein écran',
     fullscreenTitle: 'plein écran : le jeu seul (maintiens Échap pour sortir)', perfTitle: 'images par seconde, la dernière minute, les images les plus lentes',
-    name: 'Pseudo', mode: 'Mode', play: 'Jouer', log: 'Journal de lancement', subtitle: 'ses fichiers d’origine, sur un moteur de jeu dans ton navigateur',
-    loading: 'Chargement du jeu…', preparing: 'Préparation de l’installation.', solo: 'Campagne solo', multiplayer: 'Multijoueur',
-    ready: 'Choisis un mode et lance la partie.', noServer: 'Le serveur multijoueur n’est pas encore disponible.',
+    name: 'Pseudo', play: 'Jouer', log: 'Journal de lancement', subtitle: 'ses fichiers d’origine, sur un moteur de jeu dans ton navigateur',
+    loading: 'Chargement du jeu…', preparing: 'Préparation de l’installation.',
+    ready: 'Lance le jeu : le solo et le multijoueur sont dans son menu.',
+    readyServer: 'Lance le jeu : le solo et le multijoueur sont dans son menu — le serveur d’Orthros est dans ses parties en réseau local (LAN).',
     failed: 'Le jeu n’a pas pu démarrer : ', isolated: 'Cette page doit être servie avec les en-têtes d’isolation du navigateur',
-    init: 'Démarrage du moteur…', connecting: 'Connexion au serveur…', files: (pct) => `Chargement des fichiers · ${pct} %`,
+    init: 'Démarrage du moteur…', files: (pct) => `Chargement des fichiers · ${pct} %`,
     starting: 'Lancement du jeu…', running: 'Partie lancée. Clique dans le jeu pour jouer.',
-    steps: { engine: 'Démarrage du moteur', net: 'Connexion au serveur multijoueur', files: 'Téléchargement des fichiers du jeu', game: 'Lancement du jeu' },
+    steps: { engine: 'Démarrage du moteur', files: 'Téléchargement des fichiers du jeu', game: 'Lancement du jeu' },
     capture: 'Clique dans le jeu pour capturer la souris · Échap la libère · ⛶ pour le plein écran',
     released: 'Souris libérée · clique dans le jeu pour la capturer de nouveau', quit: (title) => `Quitter ${title} ? Les sauvegardes et réglages sont conservés.`,
     tips: [
@@ -52,15 +53,14 @@ const STRINGS = {
       'Le jeu tourne entièrement dans ton navigateur, depuis ses fichiers d’origine : rien n’est installé.',
     ],
     saveFailed: 'La sauvegarde navigateur a échoué. Garde cette page ouverte pour réessayer.', stopped: 'Partie terminée. Les sauvegardes et réglages sont conservés.',
-    cannotSave: 'Enregistrement impossible : ', lost: 'Connexion au serveur interrompue. Quitte la partie puis relance-la.',
-    unreachable: 'Serveur multijoueur inaccessible', refused: 'Connexion multijoueur impossible',
-    engineFiles: 'Ressources du moteur indisponibles', paused: 'en pause', loadingShort: 'chargement',
+    cannotSave: 'Enregistrement impossible : ', lost: 'Connexion au serveur multijoueur perdue : elle revient d’elle-même.',
+    engineFiles: 'Ressources du moteur indisponibles', restart: 'Relancer le jeu', paused: 'en pause', loadingShort: 'chargement',
   },
 };
 const lang = pickLang(), S = STRINGS[lang] ?? STRINGS.en;
 document.documentElement.lang = lang;
 const $ = id => document.getElementById(id);
-for (const [id, key] of [['tbGames', 'games'], ['tbFull', 'fullscreen'], ['nameLabel', 'name'], ['modeLabel', 'mode'], ['launch', 'play'], ['logLabel', 'log'], ['title', 'loading'], ['subtitle', 'subtitle'], ['status', 'preparing']]) $(id).textContent = S[key];
+for (const [id, key] of [['tbGames', 'games'], ['tbFull', 'fullscreen'], ['nameLabel', 'name'], ['launch', 'play'], ['logLabel', 'log'], ['title', 'loading'], ['subtitle', 'subtitle'], ['status', 'preparing']]) $(id).textContent = S[key];
 $('tbGames').title = S.gamesTitle; $('tbFull').title = S.fullscreenTitle; $('tbPerf').title = S.perfTitle;
 for (const li of document.querySelectorAll('#loader li')) li.children[1].textContent = S.steps[li.dataset.k];
 const loader = $('loader');
@@ -74,11 +74,26 @@ if (NativeAudioContext) globalThis.AudioContext = class extends NativeAudioConte
 const resumeAudio = () => { for (const context of audioContexts) if (context.state === 'suspended') context.resume().catch(log); };
 document.addEventListener('pointerdown', resumeAudio);
 document.addEventListener('keydown', resumeAudio);
-let engine, db, socket, timer, saving, stopped = false;
-window.addEventListener('error', event => {
-  if (stopped && (event.error === Infinity || event.error === 'unwind')) event.preventDefault();
-});
+let engine, db, relay, timer, saving, stopped = false;
 const log = line => { logs.push(String(line)); if (logs.length > 500) logs.shift(); $('log').textContent = logs.slice(-100).join('\n'); };
+window.addEventListener('error', event => {
+  if (stopped && (event.error === Infinity || event.error === 'unwind')) { event.preventDefault(); return; }
+  if (event.error === 'unwind') return; // (the engine's normal exits from its main loop)
+  log(`Page error: ${event.message}`); report('error', { message: String(event.message).slice(0, 300), where: 'page' });
+});
+window.addEventListener('unhandledrejection', event => { log(`Unhandled: ${event.reason?.message ?? event.reason}`); report('error', { message: String(event.reason?.message ?? event.reason).slice(0, 300), where: 'promise' }); });
+
+// ---------------------------------------------------------------- what the server learns of a session (/api/telemetry)
+// (its start, its errors with the end of the engine's log, its end with its length and frame rate; a few a session)
+const telemetry = { session: crypto.randomUUID().replaceAll('-', '').slice(0, 16), started: performance.now(), sent: 0 };
+function report(event, data = {}) {
+  if (telemetry.sent >= 20) return; telemetry.sent++;
+  const body = JSON.stringify({ session: telemetry.session, game: decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? ''), port: 'goldsrc', event,
+    seconds: Math.round((performance.now() - telemetry.started) / 1000), state: session.state, ...data,
+    env: { ua: navigator.userAgent, cores: navigator.hardwareConcurrency, memGB: navigator.deviceMemory ?? null, dpr: devicePixelRatio, screen: `${screen.width}x${screen.height}` } });
+  try { if (!navigator.sendBeacon('/api/telemetry', new Blob([body], { type: 'application/json' }))) throw new Error('beacon refused'); }
+  catch { fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {}); }
+}
 
 // ---------------------------------------------------------------- the loading screen and passing messages
 const tips = S.tips; let tipTimer = null;
@@ -95,7 +110,7 @@ const status = (text, error = false) => {
   if (loader.classList.contains('hidden') && text) toast(text, error ? 9000 : 5000);
 };
 /** The start's steps (engine, network, files, game), each weighing its usual share of the wait; never going back. */
-const progress = { weights: { engine: 0.2, net: 0.05, files: 0.55, game: 0.2 }, parts: {}, pct: 0 };
+const progress = { weights: { engine: 0.2, files: 0.6, game: 0.2 }, parts: {}, pct: 0 };
 function step(k, state, value = '', fraction = undefined) {
   const li = loader.querySelector(`li[data-k="${k}"]`); li.className = state; li.querySelector('.v').textContent = value;
   progress.parts[k] = state === 'skip' ? null : fraction ?? (state === 'done' ? 1 : progress.parts[k] ?? 0);
@@ -109,11 +124,14 @@ function hideLoader() {
   clearInterval(tipTimer);
   loader.querySelector('.fill').style.width = '100%'; loader.querySelector('.pct').textContent = '100%';
   setTimeout(() => { loader.classList.add('gone'); setTimeout(() => { loader.classList.add('hidden'); fit(); }, 600); }, 250);
-  $('status').textContent = S.running; toast(S.capture, 7000);
+  $('status').textContent = S.running;
 }
 const fail = error => {
+  const crashed = !!engine; // (an engine that ran: its saves are kept, a new start reloads the page — a stopped engine cannot start again)
   session.state = 'error'; loader.classList.remove('hidden', 'gone'); status(S.failed + (error.message ?? error), true); log(error.stack ?? error);
-  $('start').classList.remove('hidden'); $('launch').disabled = false; $('mode').disabled = false; socket?.close(); if (timer) clearInterval(timer);
+  report('crash', { message: String(error.message ?? error).slice(0, 300), crashed, log: logs.slice(-30).map((l) => l.slice(0, 200)) });
+  $('start').classList.remove('hidden'); $('launch').disabled = false; relay?.close(); if (timer) clearInterval(timer);
+  if (crashed) { $('launch').textContent = S.restart; save().catch((e) => log('Profile save failed: ' + e.message)); }
 };
 
 // ---------------------------------------------------------------- the game's place: the window under the header
@@ -137,14 +155,12 @@ fit();
 // event) and frees it in its menus and console, its cursor shown there. A click captures it again only while the game
 // wants it — its cursor hidden: after the browser released it (Esc) — never in a menu, where the mouse must stay free.
 const wantsMouse = () => session.state === 'running' && $('canvas').style.cursor === 'none';
-// (the engine takes the mouse's position from events of the document, relative to it: the canvas starts below the
-// header, so its events are given the canvas's coordinates — the engine's menus and the games' own get where it points)
-for (const type of ['mousedown', 'mouseup', 'mousemove']) addEventListener(type, (event) => {
-  const rect = $('canvas').getBoundingClientRect();
-  if (!rect.left && !rect.top) return;
-  Object.defineProperty(event, 'clientX', { value: event.clientX - rect.left, configurable: true });
-  Object.defineProperty(event, 'clientY', { value: event.clientY - rect.top, configurable: true });
-}, { capture: true });
+// (how to capture the mouse: told the first time the game wants it — the game starts on its menu, where it is free)
+let captureTold = false;
+new MutationObserver(() => {
+  if (captureTold || !wantsMouse() || document.pointerLockElement) return;
+  captureTold = true; toast(S.capture, 7000);
+}).observe($('canvas'), { attributes: true, attributeFilter: ['style'] });
 $('canvas').addEventListener('pointerdown', () => { if (wantsMouse() && document.pointerLockElement !== $('canvas')) $('canvas').requestPointerLock()?.catch?.(() => {}); });
 $('canvas').addEventListener('contextmenu', (event) => event.preventDefault());
 // (the engine frees the mouse for its menus a moment after the lock ends: only a release by the player is told)
@@ -174,6 +190,11 @@ setInterval(() => {
   if (perf.samples.length > 120) perf.samples.shift();
   renderHud();
 }, 500);
+/** The last minute's frame rate and slowest frames, for the session's report. */
+function frameStats() {
+  const a = perf.samples.filter((x) => x.fps > 0); if (!a.length) return null;
+  return { fps: Math.round(a.reduce((t, x) => t + x.fps, 0) / a.length), p99: Math.round(Math.max(...a.map((x) => x.p99))) };
+}
 function renderHud() {
   const bar = $('topbar'), fpsEl = bar.querySelector('.fps'), sub = bar.querySelector('.sub'), a = perf.samples;
   const ms = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`);
@@ -208,14 +229,11 @@ try {
   if (config.runtime !== 'goldsrc') throw new Error('not a GoldSrc installation');
   files = treeFiles(await treeResponse.json());
   $('title').textContent = config.name; $('tbGame').textContent = config.name; document.title = config.name + ' · Orthros';
-  const g = config.goldsrc;
-  for (const mode of ['solo', 'multiplayer']) {
-    if (!g[mode]) continue;
-    const option = document.createElement('option'); option.value = mode; option.textContent = S[mode]; $('mode').append(option);
-  }
-  const available = [...$('mode').options].find(option => !option.disabled);
-  if (available) { $('mode').value = available.value; $('launch').disabled = false; }
-  status(available ? S.ready : S.noServer); session.state = 'ready';
+  // (the last nickname, else one of its own: the games' menus refuse their default "Player" for multiplayer)
+  let saved = null; try { saved = localStorage.getItem('orthros.port.nickname'); } catch { /* no storage */ }
+  $('name').value = saved || `Player${100 + Math.floor(Math.random() * 900)}`;
+  $('launch').disabled = false;
+  status(config.goldsrc.multiplayer ? S.readyServer : S.ready); session.state = 'ready';
   $('launch').focus();
 } catch (error) { fail(error); }
 
@@ -226,9 +244,33 @@ async function save() {
 }
 session.save = save;
 
-async function connect(Net) {
-  const endpoint = new URL(`/api/udp/${encodeURIComponent(name)}`, location.href); endpoint.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  socket = new WebSocket(endpoint); socket.binaryType = 'arraybuffer';
+/**
+ * The multiplayer relay (/api/udp/<manifest>): every packet the engine sends goes to the version's dedicated server,
+ * whatever its address — the game's LAN search (a broadcast) reaches it and lists it, its answers come as 127.0.0.1:8080.
+ * Opened when the engine starts, opened again at the next packet once closed (the server closes idle ones).
+ */
+class Relay {
+  constructor(url) { this.url = url; this.socket = null; this.queue = []; this.closed = false; this.used = 0; }
+  open() {
+    if (this.closed || (this.socket && this.socket.readyState <= WebSocket.OPEN)) return;
+    const socket = this.socket = new WebSocket(this.url); socket.binaryType = 'arraybuffer';
+    socket.onopen = () => { session.multiplayer = 'connected'; for (const data of this.queue.splice(0)) socket.send(data); };
+    socket.onmessage = (event) => { this.used = performance.now(); engine.net.incoming.enqueue({ data: new Uint8Array(event.data), ip: [127, 0, 0, 1], port: 8080 }); };
+    socket.onclose = () => {
+      session.multiplayer = 'disconnected';
+      // (told only when it was in use: a game on the server loses its connection, the next packet opens a new one)
+      if (!this.closed && !stopped && performance.now() - this.used < 5000) status(S.lost, true);
+    };
+  }
+  send(data) {
+    this.open();
+    if (this.socket.readyState === WebSocket.OPEN) { if (this.socket.bufferedAmount < 1024 * 1024) this.socket.send(data); }
+    else if (this.queue.length < 64) this.queue.push(data.slice());
+  }
+  close() { this.closed = true; this.socket?.close(); }
+}
+
+function attachNet(Net) {
   class BrowserNet extends Net {
     recvfrom(...args) {
       const result = super.recvfrom(...args);
@@ -238,16 +280,10 @@ async function connect(Net) {
       return result;
     }
   }
-  engine.net = new BrowserNet({ sendto(packet) {
-    if (socket.readyState === WebSocket.OPEN && socket.bufferedAmount < 1024 * 1024) socket.send(packet.data);
-  } });
-  socket.onmessage = event => { engine.net.incoming.enqueue({ data: new Uint8Array(event.data), ip: [127, 0, 0, 1], port: 8080 }); };
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => { socket.close(); reject(new Error(S.unreachable)); }, 10000);
-    socket.onopen = () => { clearTimeout(timeout); session.multiplayer = 'connected'; resolve(); };
-    socket.onerror = () => { clearTimeout(timeout); reject(new Error(S.refused)); };
-  });
-  socket.onclose = () => { session.multiplayer = 'disconnected'; if (!stopped) status(S.lost, true); };
+  const endpoint = new URL(`/api/udp/${encodeURIComponent(name)}`, location.href); endpoint.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  relay = new Relay(endpoint);
+  engine.net = new BrowserNet({ sendto: (packet) => relay.send(packet.data) });
+  relay.open();
 }
 
 /** The reads the game made since the last report, to the server's learned list (sendBeacon when the page goes). */
@@ -267,26 +303,35 @@ async function loadInBackground(rest) {
   log(`Background loading done: ${JSON.stringify(session.background)}`);
 }
 
+// The HUD's scale (the engine's hud_scale: the width of a virtual screen the HUD is drawn on): none up to about
+// 1920 × 1080, then by half steps — 1.5 at 2560 × 1440, 2.5 at 3840 × 2160 — so its texts and menus keep their size on
+// a large screen instead of shrinking; 0 turns it off. Read at the engine's start.
+function hudScale(width, height) {
+  const factor = Math.floor(Math.min(width / 1280, height / 720) * 2) / 2;
+  return factor > 1 ? Math.round(width / factor) : 0;
+}
+
 const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)} MB`;
 $('start').addEventListener('submit', async event => {
   event.preventDefault(); if (!config || session.state === 'starting' || session.state === 'running') return;
-  $('launch').disabled = true; $('mode').disabled = true; session.state = 'starting';
+  if (engine) { try { localStorage.setItem('orthros.port.nickname', $('name').value); } catch { /* no storage */ } location.reload(); return; }
+  $('launch').disabled = true; session.state = 'starting';
   $('start').classList.add('hidden'); for (const el of loader.querySelectorAll('.progress')) el.classList.remove('hidden');
-  const multiplayer = $('mode').value === 'multiplayer';
   try {
     if (!crossOriginIsolated) throw new Error(S.isolated);
     const g = config.goldsrc, base = `/engines/${encodeURIComponent(g.engine)}/`;
-    step('engine', 'active'); step('net', multiplayer ? '' : 'skip'); step('files', ''); step('game', '');
+    step('engine', 'active'); step('files', ''); step('game', '');
     status(S.init);
     db = await openStorage(config.saveKey);
     const { Xash3D, Net, DEFAULT_SERVER_LIBRARY } = await import(base + 'engine/index.js');
+    const width = $('canvas').clientWidth || 1024, height = $('canvas').clientHeight || 768;
     engine = session.engine = new Xash3D({
       canvas: $('canvas'),
       // (-dll: the engine opens the server module under the name the wrapper preloaded it with, not the one the game's
       // liblist.gam names — another name finds no library and the local server never starts; the size, the canvas'
       // on the page — SDL takes it again on every change;
       // ?debug: the engine's developer messages from its start)
-      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-dll', DEFAULT_SERVER_LIBRARY, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', String($('canvas').clientWidth || 1024), '-height', String($('canvas').clientHeight || 768), ...(new URLSearchParams(location.search).has('debug') ? ['-dev', '2'] : [])],
+      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-dll', DEFAULT_SERVER_LIBRARY, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', String(width), '-height', String(height), ...(new URLSearchParams(location.search).has('debug') ? ['-dev', '2'] : []), '+hud_scale', String(hudScale(width, height))],
       libraries: {
         xash: base + 'engine/xash.wasm', filesystem: base + 'engine/filesystem_stdio.wasm',
         menu: base + (g.modules.menu ?? 'engine/libmenu.wasm'), client: base + g.modules.client, server: base + g.modules.server,
@@ -294,7 +339,7 @@ $('start').addEventListener('submit', async event => {
       },
       module: { print: log, printErr: log, onAbort: reason => fail(new Error(String(reason))), postMainLoop: onFrame }
     });
-    if (multiplayer) { step('net', 'active'); status(S.connecting); await connect(Net); step('net', 'done'); status(S.init); }
+    if (g.multiplayer) attachNet(Net);
     const t = performance.now();
     await engine.init();
     step('engine', 'done', `${((performance.now() - t) / 1000).toFixed(1)} s`);
@@ -341,12 +386,14 @@ $('start').addEventListener('submit', async event => {
     loadInBackground(plan.filter((e) => !e.startup)).catch((error) => log('Background loading failed: ' + error.message));
     setTimeout(() => reportReads(), 30000); setInterval(() => reportReads(), 120000);
     engine.Cmd_ExecuteString('developer ' + (new URLSearchParams(location.search).has('debug') ? '1' : '0'));
-    const nickname = $('name').value.replace(/[^a-zA-Z0-9 _.-]/g, '').slice(0, 24) || 'Player';
+    const nickname = $('name').value.replace(/[^a-zA-Z0-9 _.-]/g, '').slice(0, 24) || `Player${100 + Math.floor(Math.random() * 900)}`;
+    try { localStorage.setItem('orthros.port.nickname', nickname); } catch { /* no storage */ }
     engine.Cmd_ExecuteString(`name "${nickname}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
-    if (multiplayer) engine.Cmd_ExecuteString('connect 127.0.0.1:8080');
-    else { for (const command of g.solo.commands ?? []) engine.Cmd_ExecuteString(command); engine.Cmd_ExecuteString(`map ${g.solo.map}`); }
+    // (the game's main menu: its single player and its multiplayer — a game it creates gets the manifest's settings,
+    // bots included; Orthros' server answers its LAN search)
+    for (const command of g.solo?.commands ?? []) engine.Cmd_ExecuteString(command);
     session.command = command => engine.Cmd_ExecuteString(command);
-    session.state = 'running';
+    session.state = 'running'; report('start', { engine: g.engine });
     timer = setInterval(() => save().catch(error => { log('Profile save failed: ' + error.message); status(S.saveFailed, true); }), 10000);
     $('canvas').focus();
   } catch (error) { fail(error); }
@@ -369,9 +416,11 @@ $('tbGames').addEventListener('click', async () => {
       // Emscripten ends its main loop by unwinding; this is successful shutdown.
       if (error !== Infinity && error !== 'unwind' && error?.name !== 'ExitStatus') throw error;
     }
-    await save(); socket?.close(); db?.close();
+    await save(); relay?.close(); db?.close();
     session.state = 'stopped'; status(S.stopped); location.href = '/?menu';
   } catch (error) { stopped = false; $('tbGames').disabled = false; status(S.cannotSave + (error?.message ?? String(error)), true); }
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) save().catch(log); });
-window.addEventListener('pagehide', () => { stopped = true; if (timer) clearInterval(timer); socket?.close(); reportReads(true); });
+window.addEventListener('pagehide', () => {
+  if (session.state === 'running') report('end', { frames: frameStats() });
+  stopped = true; if (timer) clearInterval(timer); relay?.close(); reportReads(true); });

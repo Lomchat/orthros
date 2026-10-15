@@ -237,10 +237,10 @@ index e77a067..33b67c6 100644
  	void AddWeapon( WEAPON *wp ) 
 diff --git a/cl_dll/arsenal_ui.cpp b/cl_dll/arsenal_ui.cpp
 new file mode 100644
-index 0000000..31630ae
+index 0000000..87136bb
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.cpp
-@@ -0,0 +1,1509 @@
+@@ -0,0 +1,1521 @@
 +/*
 +arsenal_ui.cpp - the Half-Life arsenal's own menus, drawn by the client
 +
@@ -624,7 +624,19 @@ index 0000000..31630ae
 +	for ( int i = 0; i < g_iTexts; i++ )
 +	{
 +		const QueuedText &t = g_Texts[i];
-+		DrawUtils::DrawHudString( (int)t.x, (int)t.y, (int)t.maxX, t.s, t.c.r, t.c.g, t.c.b, t.scale );
++		if ( !t.scale )
++		{
++			DrawUtils::DrawHudString( (int)t.x, (int)t.y, (int)t.maxX, t.s, t.c.r, t.c.g, t.c.b );
++			continue;
++		}
++		// (enlarged: a character at a time, advanced by its width at that scale — the client's own scaled strings
++		// divide the advance by the HUD's scale once more, which overlaps them on a stretched HUD)
++		float x = t.x;
++		for ( const char *c = t.s; *c; c++ )
++		{
++			gMobileAPI.pfnDrawScaledCharacter( (int)x, (int)t.y, (unsigned char)*c, t.c.r, t.c.g, t.c.b, t.scale );
++			x += gHUD.GetCharWidth( (unsigned char)*c ) * t.scale;
++		}
 +	}
 +	g_iTexts = 0;
 +}

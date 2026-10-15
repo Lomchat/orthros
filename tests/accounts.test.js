@@ -9,7 +9,13 @@ import { createServer } from '../src/host/server.js';
 
 test('optional account, private cloud backups, versions and conflict protection', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-accounts-'));
-  const server = createServer({ accountsDir: dir, accountOrigin: 'http://localhost:8080' });
+  // (a game of its own, bfme-vanilla in name only: the test needs no installed game, and runs where none is, as in CI)
+  const games = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-accounts-games-'));
+  fs.mkdirSync(path.join(games, 'fixture', 'base'), { recursive: true }); fs.mkdirSync(path.join(games, 'fixture', 'versions', 'v1'), { recursive: true });
+  fs.writeFileSync(path.join(games, 'fixture', 'base', 'game.exe'), 'MZ');
+  fs.writeFileSync(path.join(games, 'fixture', 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'fixture', name: 'Fixture', defaultVersion: 'bfme-vanilla',
+    versions: [{ id: 'bfme-vanilla', dir: 'v1', version: '1', exe: 'game.exe' }] }));
+  const server = createServer({ accountsDir: dir, gamesDir: games, accountOrigin: 'http://localhost:8080' });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = 'http://127.0.0.1:' + server.address().port;
@@ -52,5 +58,6 @@ test('optional account, private cloud backups, versions and conflict protection'
     server.close();
     await once(server, 'close');
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(games, { recursive: true, force: true });
   }
 });
