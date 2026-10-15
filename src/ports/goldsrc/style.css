@@ -1,1 +1,21 @@
-:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#080b13;color:#f7ead8;--accent:#f8901f;--muted:#a9a6a1;--line:#34313a}*{box-sizing:border-box}body{margin:0}a{color:inherit}header{padding:20px clamp(20px,5vw,80px);display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--line)}header>a:last-child{color:var(--muted);font-size:14px}.brand{font-weight:850;text-decoration:none;letter-spacing:3px;font-size:22px}main{max-width:1440px;margin:auto;padding:20px clamp(20px,5vw,80px) 50px}h1{font-size:32px;letter-spacing:-1px;margin:18px 0}p{line-height:1.6;color:var(--muted)}input,select,button{font:inherit;border-radius:7px;padding:12px 15px;border:1px solid var(--line);background:#191b23;color:inherit}input:focus,select:focus,button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}form{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:20px}button{cursor:pointer}button.primary{background:var(--accent);color:#15100b;font-weight:700}canvas{display:block;width:100%;aspect-ratio:4/3;max-height:80vh;object-fit:contain;background:#080b0e;outline:none}details{margin-top:20px}pre{max-height:250px;overflow:auto;font-size:11px;white-space:pre-wrap;background:#080b0e;padding:16px}.controls{display:flex;gap:12px;margin:14px 0}.hidden{display:none!important}@media(max-width:600px){header{align-items:flex-start}form{align-items:stretch;flex-direction:column}}
+/* A browser port's page (play.html): the game under the page's header (/src/host/web/player.css, as the Windows
+   games'), its choices and loading in the loading screen's box. (No rule here may begin with "canvas": the engine's
+   glue rewrites those of the page's first style sheet when it hides the mouse.) */
+html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; color-scheme: dark; }
+#stage { position: absolute; left: 0; right: 0; bottom: 0; top: var(--bar); display: flex; align-items: center; justify-content: center; }
+html:fullscreen #stage { top: 0; }
+#stage #canvas { display: block; outline: none; background: #000; }
+#loader .box form { display: grid; grid-template-columns: 1fr auto; gap: 12px 14px; align-items: end; margin-bottom: 18px; }
+#loader .box form label { display: grid; gap: 5px; font-size: 12px; color: #8a8f9c; }
+#loader .box form label:first-child { grid-column: 1 / -1; }
+#loader .box input, #loader .box select, #loader .box button { font: 14px system-ui, sans-serif; border-radius: 8px; padding: 10px 13px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05); color: #e8e2d2; }
+#loader .box input:focus, #loader .box select:focus, #loader .box button:focus-visible { outline: 2px solid rgba(224,189,110,.7); outline-offset: 2px; }
+#loader .box button.primary { font-weight: 700; cursor: pointer; color: #15100b; border-color: transparent; background: linear-gradient(180deg, #e0bd6e, #b98f3f); padding: 10px 26px; }
+#loader .box button.primary:disabled { opacity: .5; cursor: default; }
+#loader .phase.error { color: #ff8b8b; }
+#loader .row { margin-top: 0; }
+#loader details { margin-top: 12px; font-size: 11.5px; color: #6f7480; }
+#loader summary { cursor: pointer; }
+#loader pre { max-height: 180px; overflow: auto; margin: 8px 0 0; font: 10.5px/1.35 ui-monospace, monospace; white-space: pre-wrap; color: #9aa0ab; background: rgba(0,0,0,.4); padding: 8px; border-radius: 6px; }
+.hidden { display: none !important; }
+@media (max-width: 600px) { #loader .box form { grid-template-columns: 1fr; } }

@@ -67,6 +67,26 @@ The page starts the engine with `-dll` set to the name the engine's wrapper prel
 (`dlls/cs_emscripten_wasm32.wasm` for Counter-Strike), finds no such module and runs no local server — what kept
 Counter-Strike at its title screen in single player, whichever server module.
 
+## The page
+
+`src/ports/goldsrc/play.html` looks as the Windows games' page (`src/host/web/player.css`, shared with `index.html`):
+the header (brand, game, frame rate with its last minute and slowest frames, full screen, back to the games), and the
+loading screen over the game's blurred cover — first the player's choices (nickname, mode), then the start's steps
+(engine, multiplayer server, game files, the game's first images) with their progress, and tips.
+
+- **The game fills the window** under the header (the whole screen in full screen). SDL sizes the game's screen to the
+  canvas' size on the page: the game renders at the size it is shown, without bars, whatever the window's shape, and a
+  mouse position maps one to one. The page tells SDL when that size changes without the window's (the header hidden).
+- **The mouse.** The engine captures it itself when the game takes it (SDL's relative mode: pointer lock at the next
+  input event) and frees it in its menus and console, where its cursor shows (the canvas' CSS cursor). A click on the
+  game captures it again only while the game wants it (after Esc released it in the game), never in a menu — the page
+  used to lock it at every click, which left the menus without a cursor. Full screen captures it at once in the game.
+- **The frame rate** counts the engine's main loop iterations that drew (`postMainLoop`, draw calls seen).
+- **The menu module.** Counter-Strike's manifests name none: the engine's (`engine/libmenu.wasm`) shows the game's own
+  title screens and takes the mouse; cs16-client's `mainui_cpp` (still built, `modules.builds`) wants the images of its
+  `cs16client-extras` package and gets no mouse position from this engine.
+- "Back to the games" saves the profile and quits the engine once the player confirmed (`check.mjs --reload` accepts).
+
 ## Server routes
 
 - `/api/manifests`: every version, with `runtime`; a port also has `launchUrl` and `modes`, and is `available` only
