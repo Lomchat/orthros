@@ -21,9 +21,78 @@
           "version": { "type": "string", "minLength": 1 },
           "versionOrder": { "type": "number" },
           "modified": { "type": "boolean", "default": false, "description": "true : une version modifiée du jeu (un mod : du contenu ou des règles qui ne sont pas les siennes), rangée sous « Recompilés et modifiés » dans la bibliothèque. Aussi dans defaults." },
-          "runtime": { "enum": ["win32", "goldsrc"], "default": "win32", "description": "win32 : le jeu Windows tel quel dans l'émulateur d'Orthros (exe obligatoire). goldsrc : portage navigateur, un moteur GoldSrc tiers épinglé, compilé en WebAssembly, sur les fichiers du jeu (goldsrc obligatoire ; docs/browser-ports.md). Aussi dans defaults." },
+          "runtime": { "enum": ["win32", "goldsrc", "openmw"], "default": "win32", "description": "win32 : le jeu Windows tel quel dans l'émulateur d'Orthros (exe obligatoire). goldsrc : portage navigateur, un moteur GoldSrc tiers épinglé, compilé en WebAssembly, sur les fichiers du jeu (goldsrc obligatoire ; docs/browser-ports.md). openmw : moteur OpenMW-Web épinglé (openmw obligatoire ; docs/openmw.md). Aussi dans defaults." },
           "exe": { "type": "string", "minLength": 1, "description": "Runtime win32 (obligatoire) : l'exécutable, cherché dans la superposition de base/ et versions/<dir>/." },
           "coverFile": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*\\.(png|jpe?g|svg|webp)$", "description": "Image de couverture à côté de manifest.json, pour un jeu dont les fichiers n'en ont aucune qu'un navigateur affiche (sinon cover : un fichier du jeu). Aussi dans defaults." },
+          "openmw": {
+            "type": "object",
+            "required": [
+              "engine",
+              "files"
+            ],
+            "properties": {
+              "engine": {
+                "$ref": "#/$defs/id"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Fichiers requis de la superposition base/version ; absents : version indisponible."
+              },
+              "startCell": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Cellule de départ optionnelle, transmise au moteur." },
+              "example": {
+                "type": "boolean",
+                "description": "Monde de démonstration libre inclus dans le moteur (solo, files vide)."
+              },
+              "multiplayer": {
+                "type": "object",
+                "required": [
+                  "port"
+                ],
+                "properties": {
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1024,
+                    "maximum": 65535
+                  },
+                  "maxPlayers": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 32
+                  }
+                }
+              },
+              "mods": {
+                "type": "array",
+                "description": "Pile de mods dans l’ordre de chargement, avec provenance et état d’installation. Un mod en attente rend la version indisponible.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "name",
+                    "installed"
+                  ],
+                  "properties": {
+                    "id": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "installed": {
+                      "type": "boolean"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "goldsrc": {
             "type": "object",
             "description": "Runtime goldsrc (docs/browser-ports.md) ; les modules sont des chemins de la release data_engines/<engine>/. Un mode au moins : solo ou multiplayer.",

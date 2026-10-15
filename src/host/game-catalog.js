@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
 import { resolveGameFile } from './game-files.js';
 import { goldsrcProblem } from './goldsrc.js';
+import { openmwProblem } from './openmw.js';
 
 export const DEFAULT_GAMES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data_games');
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
@@ -13,7 +14,7 @@ const WIN_MOUNT = /^[A-Za-z]:\\[^/:*?"<>|]*$/;
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const fail = (file, message) => { throw new Error(`${file}: ${message}`); };
 const directory = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
-const RUNTIMES = ['win32', 'goldsrc']; // (win32: the emulator; goldsrc: a browser port, src/host/goldsrc.js)
+const RUNTIMES = ['win32', 'goldsrc', 'openmw'];
 const COVER_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.(png|jpe?g|svg|webp)$/i;
 const safePath = (value) => typeof value === 'string' && value.length > 0 && !path.isAbsolute(value) && !value.includes('\\') && value.split('/').every((part) => part && part !== '.' && part !== '..');
 
@@ -56,6 +57,12 @@ export function loadGameFolder(gameDir) {
       const problem = goldsrcProblem(manifest.goldsrc);
       if (problem) fail(file, `${id}: ${problem}`);
       manifest.saveKey = `orthros-port:${spec.id}:${dir}`; // (the installation, game/version folder: the page's saved profile)
+    }
+    if (runtime === 'openmw') {
+      const problem = openmwProblem(manifest.openmw);
+      if (problem) fail(file, `${id}: ${problem}`);
+      if (requires?.length) fail(file, `${id}: openmw utilise sa propre pile de mods, sans requires`);
+      manifest.saveKey = `orthros-port:${spec.id}:${dir}`;
     }
     // (an image beside manifest.json, for a game whose own files hold none a browser displays)
     if (manifest.coverFile !== undefined) {
@@ -103,7 +110,13 @@ export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null) {
   }
   // (the UDP ports of the dedicated servers and their rooms: one version each)
   const ports = new Map();
+  const tcpPorts = new Map();
   for (const [id, m] of catalog) {
+    if (m.runtime === 'openmw' && m.openmw.multiplayer) {
+      const p = m.openmw.multiplayer.port;
+      if (tcpPorts.has(p)) throw new Error(`${id}: port TCP ${p} déjà pris par ${tcpPorts.get(p)}`);
+      tcpPorts.set(p, id);
+    }
     const mp = m.runtime === 'goldsrc' ? m.goldsrc?.multiplayer : null; if (!mp) continue;
     const own = [mp.port];
     if (mp.rooms) for (let p = mp.rooms.ports[0]; p <= mp.rooms.ports[1]; p++) own.push(p);

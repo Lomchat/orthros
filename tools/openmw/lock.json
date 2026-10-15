@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "openmw-web-v1.5.3",
+  "tag": "v1.5.3",
+  "upstream": "https://github.com/Virtastic/openmw-web",
+  "engineVersion": "098857c7cdb0",
+  "bundle": {
+    "url": "https://github.com/Virtastic/openmw-web/releases/download/v1.5.3/openmw-web-v1.5.3.zip",
+    "sha256": "f1a042d8046a83603a449115bb0096d7104bb96352cc870258ffb94c0d9ce1c0"
+  },
+  "source": {
+    "url": "https://github.com/Virtastic/openmw-web/releases/download/v1.5.3/openmw-web-src-v1.5.3.tar.gz",
+    "sha256": "894c0fc99a4de6edcf0f13a5439bb784e13eb5c6e1010a9a527143a14abc3878"
+  },
+  "serverImage": "ghcr.io/virtastic/openmw-web-server@sha256:3d6bf2250ede928757a4ea79c4ee48301452664f8df9b7cff98ebf54b228924a"
+}

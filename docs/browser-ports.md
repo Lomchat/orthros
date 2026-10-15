@@ -1,6 +1,6 @@
 # Browser ports: games whose engine runs as browser code
 
-Orthros runs two kinds of games. Both are declared by `data_games/<game>/manifest.json`, listed on the same home,
+Orthros runs games in the Win32 emulator and browser ports. All are declared by `data_games/<game>/manifest.json`, listed on the same home,
 served by the same server (`src/host/server.js`, `orthros.service`) on the same origin. The version's `runtime` says
 which kind it is:
 
@@ -11,6 +11,11 @@ which kind it is:
   `src/ports/goldsrc/`; it never loads the Win32 runtime, and the Win32 runtime never imports it.
 
 Nothing in the code names a game: engine release, game directory, modules, maps and server ports come from the manifest.
+
+OpenMW ports use `runtime: "openmw"`, their own page and a pinned OpenMW-Web engine. Their
+multiplayer uses a native world gateway and simulation peers, proxied on the same origin.
+See [OpenMW installation, pending data and validation](openmw.md). The original game files
+and several mods are still required; the freely licensed engine example is a separate card.
 
 ## Where things are
 

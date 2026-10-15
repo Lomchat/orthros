@@ -1,0 +1,138 @@
+// OpenMW browser ports. Third-party code stays in data_engines; HTTP and WebSocket traffic
+// stays on the Orthros origin, beneath the selected installation's URL.
+import http from 'node:http';
+import fs from 'node:fs';
+import { engineFile, clientAddress } from './goldsrc.js';
+import { resolveGameFile } from './game-files.js';
+
+const ID = /^[a-z0-9][a-z0-9._-]*$/;
+const MOD_ID = /^[a-z0-9][a-z0-9-]{0,54}$/;
+const safePath = (s) => typeof s === 'string' && s.length > 0 && !s.includes('\\') && s.split('/').every((p) => p && p !== '.' && p !== '..');
+export function openmwProblem(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o) || !ID.test(o.engine ?? '')) return 'openmw.engine doit nommer une release';
+  if (o.example !== undefined && typeof o.example !== 'boolean') return 'openmw.example doit être un booléen';
+  if (o.startCell !== undefined && (typeof o.startCell !== 'string' || !o.startCell.length || o.startCell.length > 128 || /[\r\n\0]/.test(o.startCell))) return 'openmw.startCell invalide';
+  if (!Array.isArray(o.files) || !o.files.every(safePath) || (!o.example && !o.files.length)) return 'openmw.files doit lister les fichiers nécessaires';
+  if (o.example && (o.files.length || o.multiplayer)) return 'openmw.example est le monde de démonstration solo du moteur';
+  if (o.mods !== undefined && (!Array.isArray(o.mods) || !o.mods.every((m) => m && MOD_ID.test(m.id ?? '') && typeof m.name === 'string' && typeof m.installed === 'boolean') || new Set(o.mods.map((m) => m.id)).size !== o.mods.length)) return 'openmw.mods doit lister les mods et leur état, avec des ids distincts';
+  if ((o.mods ?? []).some((m) => m.parts !== undefined && (!Array.isArray(m.parts) || !m.parts.every((p, i) => p && p.dir === `mods/${m.id}-${i}` && safePath(p.sentinel) && Array.isArray(p.plugins) && p.plugins.every(safePath) && Array.isArray(p.archives) && p.archives.every(safePath))))) return 'openmw.mods.parts invalide';
+  if (o.multiplayer !== undefined) {
+    const mp = o.multiplayer;
+    if (!mp || !Number.isInteger(mp.port) || mp.port < 1024 || mp.port > 65535) return 'openmw.multiplayer.port invalide';
+    if (mp.maxPlayers !== undefined && (!Number.isInteger(mp.maxPlayers) || mp.maxPlayers < 2 || mp.maxPlayers > 32)) return 'openmw.multiplayer.maxPlayers invalide';
+  }
+  return null;
+}
+
+export function openmwInstalled(man, enginesDir) {
+  const engine = man.openmw?.engine;
+  try {
+    const release = JSON.parse(fs.readFileSync(engineFile(enginesDir, engine, 'release.json'), 'utf8'));
+    return release.runtime === 'openmw' && Array.isArray(release.files) && release.files.length > 0
+      && ['index.html', 'launcher.html', ...release.files].every((f) => engineFile(enginesDir, engine, f))
+      && (man.openmw.mods ?? []).every((m) => m.installed && m.parts?.length > 0)
+      && (man.openmw.mods ?? []).flatMap((m) => m.parts ?? []).every((p) => resolveGameFile(man, `${p.dir}/${p.sentinel}`))
+      && man.openmw.files.every((f) => resolveGameFile(man, f));
+  } catch { return false; }
+}
+
+export const openmwBase = (id) => `/ports/openmw/${encodeURIComponent(id)}/app`;
+export const openmwModes = (o) => ['solo', ...(o.multiplayer ? ['multiplayer'] : [])];
+
+// Only the upstream browser pages are adapted. Guest filesystem paths (/mwdata, /userdata)
+// and the generated Emscripten JS must retain their original meaning.
+export function openmwWebText(text, base, saveKey) {
+  return text.replace(/ · <a href="\/admin">server administration<\/a>/, '')
+    .replace(/(["'`])\/(auth(?:\/|["'`])|worlds(?:\/|["'`])|locker(?:\/|["'`])|saves(?:\/|["'`])|w\/|ws(?=["'`])|clientlog(?=["'`])|admin(?:\/|["'`])|mwdata-(?:manifest|mods)\.json|index\.html|launcher\.html|join(?=["'`])|play(?=["'`]))/g, `$1${base}/$2`)
+    .replace(/(location\.(?:href\s*=\s*|replace\(\s*))["']\/["']/g, `$1'${base}/'`)
+    .replace(/(['"])omwmp:([^'"]+)\1/g, (_m, q, k) => `${q}${saveKey}:mp:${k}${q}`)
+    .replace(/(['"])omw-mp-session\1/g, (_m, q) => `${q}${saveKey}:session${q}`)
+    .replace(/(['"])omw-launcher\1/g, (_m, q) => `${q}${saveKey}:launcher${q}`)
+    // IDBFS normally names the database after its guest mount point (/userdata).
+    .replace("FS.mount(IDBFS, {}, '/userdata');", `var orthrosGetDB = IDBFS.getDB; IDBFS.getDB = function(name, callback) { return orthrosGetDB.call(IDBFS, name === '/userdata' ? ${JSON.stringify(saveKey)} : name, callback); }; FS.mount(IDBFS, {}, '/userdata');`);
+}
+
+function responseJson(body, base) {
+  const visit = (v) => {
+    if (!v || typeof v !== 'object') return;
+    for (const k of Object.keys(v)) {
+      if (['wsPath', 'joinWsPath'].includes(k) && typeof v[k] === 'string' && v[k].startsWith('/w/')) v[k] = base + v[k];
+      else visit(v[k]);
+    }
+  };
+  const value = JSON.parse(body); visit(value); return JSON.stringify(value);
+}
+
+const proxyPath = (p) => /^\/(auth|worlds|locker|saves)(\/|$)/.test(p) || p === '/clientlog'
+  || /^\/mwdata\//.test(p) || /^\/mwdata-(manifest|mods)\.json$/.test(p);
+const OMIT_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding', 'content-security-policy', 'x-frame-options']);
+const isolation = { 'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp', 'cross-origin-resource-policy': 'same-origin' };
+function upstreamHeaders(req) {
+  const headers = { ...req.headers, 'accept-encoding': 'identity', 'x-forwarded-for': clientAddress(req) };
+  for (const key of ['cf-connecting-ip', 'true-client-ip', 'x-omw-client-ip', 'forwarded']) delete headers[key];
+  return headers;
+}
+
+/** A namespaced bridge to one manifest's localhost gateway. Never accepts a target URL from a visitor. */
+export function openmwProxy({ getManifest }) {
+  function target(url) {
+    const m = /^\/ports\/openmw\/([^/]+)\/app(\/.*)$/.exec(url.pathname);
+    if (!m) return null;
+    const man = getManifest(m[1]);
+    return man?.runtime === 'openmw' && man.openmw?.multiplayer ? { man, id: m[1], path: m[2], base: openmwBase(m[1]) } : null;
+  }
+  return {
+    handle(req, res, url) {
+      const t = target(url);
+      if (t?.path === '/admin/api/state' && ['GET', 'HEAD'].includes(req.method)) {
+        res.writeHead(200, { ...isolation, 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ serverName: t.man.name, setup: { deploymentMode: 'multiplayer', deliveryModel: 'serve' } })); return true;
+      }
+      if (!t || !proxyPath(t.path)) return false;
+      const upstream = http.request({ hostname: '127.0.0.1', port: t.man.openmw.multiplayer.port,
+        path: t.path + url.search, method: req.method, headers: upstreamHeaders(req) }, (reply) => {
+        const headers = { ...isolation, 'cache-control': 'no-store' };
+        for (const [k, v] of Object.entries(reply.headers)) if (!OMIT_HEADERS.has(k) && v !== undefined) headers[k] = v;
+        if (headers.location?.startsWith('/') && !headers.location.startsWith('//')) headers.location = t.base + headers.location;
+        if (headers['set-cookie']) headers['set-cookie'] = headers['set-cookie'].map((c) => c.replace(/;\s*Path=\/([^;]*)/i, `; Path=${t.base}/$1`));
+        const type = String(reply.headers['content-type'] ?? '');
+        if (req.method === 'HEAD' || !/text\/html|javascript|application\/json/.test(type)) {
+          res.writeHead(reply.statusCode, headers); reply.pipe(res); return;
+        }
+        const chunks = []; let bytes = 0;
+        reply.on('data', (c) => { bytes += c.length; if (bytes > 8 * 1024 * 1024) reply.destroy(new Error('OpenMW response too large')); else chunks.push(c); });
+        reply.on('end', () => {
+          let body = Buffer.concat(chunks).toString('utf8');
+          try { body = /application\/json/.test(type) ? responseJson(body, t.base) : openmwWebText(body, t.base, t.man.saveKey); }
+          catch { res.writeHead(502, isolation); res.end('Invalid OpenMW response'); return; }
+          res.writeHead(reply.statusCode, headers); res.end(body);
+        });
+        reply.on('error', () => { if (!res.headersSent) res.writeHead(502, isolation); res.end('OpenMW gateway response failed'); });
+      });
+      upstream.on('error', () => { if (!res.headersSent) res.writeHead(503, isolation); res.end('OpenMW multiplayer is not running.'); });
+      upstream.setTimeout(30000, () => upstream.destroy(new Error('timeout')));
+      req.on('aborted', () => upstream.destroy()); res.on('close', () => upstream.destroy()); req.pipe(upstream);
+      return true;
+    },
+    upgrade(req, socket, url, head) {
+      const t = target(url);
+      if (!t || !/^\/w\/[a-zA-Z0-9_-]+$/.test(t.path)) return false;
+      // Same origin is required before forwarding a player's credentials or opening a world.
+      let origin; try { origin = new URL(req.headers.origin); } catch { socket.destroy(); return true; }
+      if (!['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host) { socket.destroy(); return true; }
+      const up = http.request({ hostname: '127.0.0.1', port: t.man.openmw.multiplayer.port,
+        path: t.path + url.search, headers: upstreamHeaders(req) });
+      up.on('upgrade', (reply, peer, first) => {
+        let lines = `HTTP/1.1 ${reply.statusCode} ${reply.statusMessage}\r\n`;
+        for (let i = 0; i < reply.rawHeaders.length; i += 2) lines += `${reply.rawHeaders[i]}: ${reply.rawHeaders[i + 1]}\r\n`;
+        socket.write(lines + '\r\n'); if (first.length) socket.write(first); if (head?.length) peer.write(head);
+        socket.on('error', () => peer.destroy()); peer.on('error', () => socket.destroy());
+        socket.on('close', () => peer.destroy()); peer.on('close', () => socket.destroy());
+        socket.pipe(peer).pipe(socket);
+      });
+      up.on('response', (reply) => { reply.resume(); socket.destroy(); });
+      up.on('error', () => socket.destroy()); socket.on('close', () => up.destroy()); up.end();
+      return true;
+    },
+  };
+}

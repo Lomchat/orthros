@@ -1,0 +1,117 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { createHash } from 'node:crypto';
+import { loadGameCatalog } from '../src/host/game-catalog.js';
+import { createServer } from '../src/host/server.js';
+import { openmwProblem, openmwWebText } from '../src/host/openmw.js';
+
+function fixture(t, options = { example: true, files: [] }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-openmw-'));
+  t.after(() => fs.rmSync(root, { force: true, recursive: true }));
+  const games = path.join(root, 'games'), engines = path.join(root, 'engines'), game = path.join(games, 'sample');
+  fs.mkdirSync(path.join(game, 'base'), { recursive: true }); fs.mkdirSync(path.join(game, 'versions/1'), { recursive: true });
+  const spec = { schemaVersion: 1, id: 'sample', name: 'Sample', defaultVersion: 'sample-1', defaults: { runtime: 'openmw' },
+    versions: [{ id: 'sample-1', dir: '1', version: '1', openmw: { engine: 'test-engine', ...options } }] };
+  const file = path.join(game, 'manifest.json'); fs.writeFileSync(file, JSON.stringify(spec));
+  const release = path.join(engines, 'test-engine'); fs.mkdirSync(path.join(release, 'e/abc'), { recursive: true });
+  for (const f of ['index.html', 'launcher.html']) fs.writeFileSync(path.join(release, f), `<script>fetch('/auth/profile');FS.readFile('/mwdata/file')</script>`);
+  fs.writeFileSync(path.join(release, 'e/abc/openmw.wasm'), 'wasm-test');
+  fs.writeFileSync(path.join(release, 'release.json'), JSON.stringify({ runtime: 'openmw', files: ['e/abc/openmw.wasm'] }));
+  fs.mkdirSync(path.join(release, 'portal'));
+  fs.writeFileSync(path.join(release, 'portal/play.html'), '<script src="/admin/static/play.js"></script>');
+  return { root, games, engines, game, spec, file };
+}
+async function listen(t, server) {
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise((r) => { server.closeAllConnections(); server.close(r); }));
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+test('OpenMW manifests validate paths, examples, mod status and localhost ports', () => {
+  assert.equal(openmwProblem({ engine: 'v1', files: [], example: true }), null);
+  for (const o of [{ engine: '../x', files: [] }, { engine: 'v1', files: [] }, { engine: 'v1', files: ['../x'] },
+    { engine: 'v1', files: ['x'], multiplayer: { port: 0 } }, { engine: 'v1', files: [], example: true, multiplayer: { port: 28100 } },
+    { engine: 'v1', files: ['x'], mods: [{ id: 'mod', name: 'Mod', installed: 'yes' }] }]) assert.ok(openmwProblem(o), JSON.stringify(o));
+});
+
+test('OpenMW appears in the catalog, serves only browser assets, and refuses missing data/mods', async (t) => {
+  const f = fixture(t), server = createServer({ gamesDir: f.games, enginesDir: f.engines });
+  const base = await listen(t, server);
+  const entries = async () => (await (await fetch(base + '/api/manifests')).json())[0];
+  assert.deepEqual([(await entries()).runtime, (await entries()).available, (await entries()).modes], ['openmw', true, ['solo']]);
+  const man = loadGameCatalog(f.games).get('sample-1'); assert.equal(man.saveKey, 'orthros-port:sample:1');
+  const page = await fetch(base + '/ports/openmw/sample-1/'); assert.equal(page.status, 200); assert.match(await page.text(), /src\/ports\/openmw\/play.js/);
+  const engine = await fetch(base + '/ports/openmw/sample-1/app/index.html');
+  assert.equal(engine.headers.get('cross-origin-embedder-policy'), 'require-corp');
+  assert.match(await engine.text(), /fetch\('\/ports\/openmw\/sample-1\/app\/auth\/profile'\)/);
+  const wasm = await fetch(base + '/ports/openmw/sample-1/app/e/abc/openmw.wasm', { headers: { Range: 'bytes=0-3' } });
+  assert.equal(wasm.status, 206); assert.equal(wasm.headers.get('content-type'), 'application/wasm'); assert.equal(await wasm.text(), 'wasm');
+  for (const rel of ['server.py', 'release.json', 'admin', 'admin/api/settings', 'e/abc/secret']) assert.equal((await fetch(base + '/ports/openmw/sample-1/app/' + rel)).status, 404, rel);
+  f.spec.versions[0].openmw = { engine: 'test-engine', files: ['Game.esm', 'Game.bsa'], mods: [{ id: 'fix', name: 'Fix', installed: false }] };
+  fs.writeFileSync(f.file, JSON.stringify(f.spec)); assert.equal((await entries()).available, false);
+  fs.writeFileSync(path.join(f.game, 'base/Game.esm'), 'master'); fs.writeFileSync(path.join(f.game, 'base/Game.bsa'), 'archive');
+  assert.equal((await entries()).available, false, 'pending mods are not advertised as installed');
+  f.spec.versions[0].openmw.mods[0].installed = true; fs.writeFileSync(f.file, JSON.stringify(f.spec)); assert.equal((await entries()).available, false, 'a receipt without data roots is insufficient');
+  f.spec.versions[0].openmw.mods[0].parts = [{ dir: 'mods/fix-0', sentinel: 'asset.dds', plugins: [], archives: [] }];
+  fs.writeFileSync(f.file, JSON.stringify(f.spec)); assert.equal((await entries()).available, false, 'a missing mod sentinel is insufficient');
+  fs.mkdirSync(path.join(f.game, 'versions/1/mods/fix-0'), { recursive: true }); fs.writeFileSync(path.join(f.game, 'versions/1/mods/fix-0/asset.dds'), 'asset');
+  assert.equal((await entries()).available, true);
+  fs.rmSync(path.join(f.engines, 'test-engine/e/abc/openmw.wasm')); assert.equal((await entries()).available, false);
+});
+
+test('the web adaptation namespaces HTTP paths and saves without changing guest paths', () => {
+  const text = `fetch('/auth/profile');const ws='/ws';location.href='/join';location.replace('/');const door=location.pathname === '/join';FS.readFile('/mwdata/a');FS.mount(IDBFS, {}, '/userdata');sessionStorage.getItem('omwmp:bootfrag');`;
+  const result = openmwWebText(text, '/ports/openmw/a/app', 'orthros-port:a:1');
+  assert.match(result, /fetch\('\/ports\/openmw\/a\/app\/auth\/profile'\)/);
+  assert.match(result, /location.replace\('\/ports\/openmw\/a\/app\/'\)/);
+  assert.match(result, /FS.readFile\('\/mwdata\/a'\)/);
+  assert.match(result, /orthrosGetDB.call\(IDBFS, name === '\/userdata' \? "orthros-port:a:1"/);
+  assert.match(result, /orthros-port:a:1:mp:bootfrag/);
+});
+
+test('gateway HTTP proxy preserves streamed bytes, scopes world paths and cookies, and hides administration', async (t) => {
+  let seen;
+  const backend = http.createServer((req, res) => {
+    seen = { path: req.url, headers: req.headers };
+    if (req.url === '/worlds') { res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'session=value; Path=/; HttpOnly' }); res.end(JSON.stringify({ wsPath: '/w/test', name: '/w/keep-user-text' })); }
+    else if (req.url === '/mwdata/archive.bsa') { res.writeHead(206, { 'content-type': 'application/octet-stream', 'content-range': 'bytes 1-3/5' }); res.end(Buffer.from([0, 255, 2])); }
+    else { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<script src="/admin/static/play.js"></script>'); }
+  });
+  await listen(t, backend);
+  const f = fixture(t, { files: ['Game.esm'], multiplayer: { port: backend.address().port } });
+  const base = await listen(t, createServer({ gamesDir: f.games, enginesDir: f.engines }));
+  const prefix = base + '/ports/openmw/sample-1/app';
+  const r = await fetch(prefix + '/worlds', { headers: { 'cf-connecting-ip': 'forged', 'x-omw-client-ip': 'forged' } });
+  assert.deepEqual(await r.json(), { wsPath: '/ports/openmw/sample-1/app/w/test', name: '/w/keep-user-text' });
+  assert.match(r.headers.get('set-cookie'), /Path=\/ports\/openmw\/sample-1\/app\//);
+  assert.equal(seen.headers['cf-connecting-ip'], undefined); assert.equal(seen.headers['x-omw-client-ip'], undefined);
+  const binary = await fetch(prefix + '/mwdata/archive.bsa', { headers: { Range: 'bytes=1-3' } });
+  assert.equal(binary.status, 206); assert.equal(seen.headers.range, 'bytes=1-3'); assert.deepEqual(Buffer.from(await binary.arrayBuffer()), Buffer.from([0, 255, 2]));
+  assert.match(await (await fetch(prefix + '/')).text(), /src="\/ports\/openmw\/sample-1\/app\/admin\/static\/play.js"/);
+  const old = seen; const state = await (await fetch(prefix + '/admin/api/state')).json(); assert.equal(state.setup.deploymentMode, 'multiplayer'); assert.equal(seen, old);
+  for (const rel of ['/admin', '/admin/api/settings', '/healthz', '/metrics']) assert.equal((await fetch(prefix + rel)).status, 404);
+});
+
+test('the WebSocket bridge forwards the world handshake and rejects a different origin', async (t) => {
+  let upgrades = 0;
+  const peers = new Set(), backend = http.createServer();
+  backend.on('upgrade', (req, socket) => {
+    upgrades++; peers.add(socket); socket.on('close', () => peers.delete(socket));
+    assert.equal(req.url, '/w/test');
+    const accept = createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  });
+  t.after(() => { for (const s of peers) s.destroy(); }); await listen(t, backend);
+  const f = fixture(t, { files: ['Game.esm'], multiplayer: { port: backend.address().port } });
+  const base = await listen(t, createServer({ gamesDir: f.games, enginesDir: f.engines }));
+  const dial = (origin) => new Promise((resolve) => {
+    const req = http.get(base + '/ports/openmw/sample-1/app/w/test', { headers: { Origin: origin, Upgrade: 'websocket', Connection: 'Upgrade', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==' } });
+    req.on('upgrade', (r, socket) => { socket.destroy(); resolve(r.statusCode); }); req.on('error', () => resolve(0));
+  });
+  assert.equal(await dial(base), 101); assert.equal(upgrades, 1);
+  assert.equal(await dial('https://elsewhere.invalid'), 0); assert.equal(upgrades, 1);
+});

@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "id": "morrowind",
+  "name": "The Elder Scrolls III: Morrowind",
+  "defaultVersion": "morrowind-goty-vanilla-plus-en",
+  "defaults": {
+    "runtime": "openmw",
+    "coverFile": "cover.svg"
+  },
+  "versions": [
+    {
+      "id": "morrowind-goty-vanilla-plus-en",
+      "dir": "goty-vanilla-plus-en",
+      "version": "GOTY · Vanilla+ · OpenMW-Web 1.5.3",
+      "languages": [
+        "en"
+      ],
+      "modified": true,
+      "description": "Morrowind GOTY with faithful graphics improvements and experimental cooperative multiplayer. Game data not installed yet.",
+      "descriptionFr": "Morrowind GOTY, graphismes fidèles améliorés et coopération expérimentale. Fichiers du jeu à installer.",
+      "openmw": {
+        "engine": "openmw-web-v1.5.3",
+        "files": [
+          "Morrowind.esm",
+          "Morrowind.bsa",
+          "Tribunal.esm",
+          "Tribunal.bsa",
+          "Bloodmoon.esm",
+          "Bloodmoon.bsa"
+        ],
+        "multiplayer": {
+          "port": 28100,
+          "maxPlayers": 8
+        },
+        "mods": [
+          {
+            "id": "patch-for-purists",
+            "name": "Patch for Purists",
+            "url": "https://www.nexusmods.com/morrowind/mods/45096",
+            "installed": false
+          },
+          {
+            "id": "optimization-patch",
+            "name": "Morrowind Optimization Patch",
+            "url": "https://www.nexusmods.com/morrowind/mods/45384",
+            "installed": false
+          },
+          {
+            "id": "enhanced-textures",
+            "name": "Morrowind Enhanced Textures",
+            "url": "https://www.nexusmods.com/morrowind/mods/46221",
+            "installed": false
+          },
+          {
+            "id": "glow-in-the-dahrk",
+            "name": "Glow in the Dahrk",
+            "url": "https://www.nexusmods.com/morrowind/mods/45886",
+            "installed": false
+          },
+          {
+            "id": "graphic-herbalism",
+            "name": "Graphic Herbalism",
+            "url": "https://www.nexusmods.com/morrowind/mods/46599",
+            "installed": false
+          },
+          {
+            "id": "project-atlas",
+            "name": "Project Atlas",
+            "url": "https://www.nexusmods.com/morrowind/mods/45399",
+            "installed": false,
+            "download": "https://codeload.github.com/MelchiorDahrk/Project-Atlas/zip/68a838650fb177afb5e6a63c558dc4ae6bf29b56",
+            "sha256": "364c5896a4b181def2420e1b30f54043b3c0ef35812db24b53fe79f1aa1a92f5"
+          },
+          {
+            "id": "familiar-faces",
+            "name": "Familiar Faces by Caleb",
+            "url": "https://www.nexusmods.com/morrowind/mods/50093",
+            "installed": false
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -28,6 +28,7 @@ import { listGameTree, resolveGameFile } from './game-files.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
+import { openmwInstalled, openmwModes, openmwProxy, openmwWebText } from './openmw.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
@@ -533,10 +534,12 @@ export function createServer(opts = {}) {
   const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game) }) : null;
   const mapImages = new Map(); // (the lobby's map pictures, compressed: file|mtime -> { raw, gzip, zstd })
   const rooms = roomsApi({ getManifest, ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
+  const openmw = openmwProxy({ getManifest });
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
     try {
+      if (openmw.handle(req, res, url)) return;
       // (the multiplayer rooms of a browser port, from its server manager)
       if (p.startsWith('/api/rooms/') && rooms.handle(req, res, url)) return;
       // (a map's picture for the lobby: the game's own overview, multiplayer.mapImage)
@@ -583,10 +586,10 @@ export function createServer(opts = {}) {
           const runtime = runtimeOf(m), port = runtime !== 'win32';
           return { name, title: m.name ?? name, gameId: m.gameId ?? name, version: m.version ?? null,
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], runtime, exe: port ? null : m.exe,
-            modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
+            modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
             hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes,
-            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) };
+            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
       }
@@ -743,11 +746,25 @@ export function createServer(opts = {}) {
       if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
       // browser ports: the version's page (its runtime's own, src/ports/<runtime>/), and the engine releases they name,
       // immutable under their release id
+      m = /^\/ports\/openmw\/([^/]+)\/app\/(.*)$/.exec(p);
+      if (m) {
+        const man = getManifest(m[1]); if (man?.runtime !== 'openmw') return send(res, 404, 'no such port');
+        const rel = m[2] || (man.openmw.multiplayer ? 'play' : 'launcher.html'), base = `/ports/openmw/${encodeURIComponent(m[1])}/app`;
+        if (rel === 'clientlog' && req.method === 'POST' && !man.openmw.multiplayer) { req.resume(); return send(res, 204, ''); }
+        // The upstream operator dashboard is local only. No arbitrary files from a server installation.
+        if (!/^(index\.html|launcher\.html|join|play|admin\/static\/(play\.js|providers\.js)|e\/[a-f0-9]+\/(openmw\.(js|wasm|data)(\.br)?|streamfs\.js)|moddata\/openmw-web-assets\.bsa|LICENSE|NOTICE|AUTHORS\.md|THIRD-PARTY-LICENSES\.md|CREDITS-DEMO-DATA\.txt)$/.test(rel)) return send(res, 404, 'not found');
+        const asset = rel === 'join' ? 'launcher.html' : rel === 'play' ? 'portal/play.html' : rel.startsWith('admin/static/') ? 'portal/' + rel.split('/').at(-1) : rel;
+        const f = engineFile(enginesDir, man.openmw.engine, asset);
+        if (!f) return send(res, 404, 'engine not installed');
+        if (asset.endsWith('.html') || asset.startsWith('portal/')) return send(res, 200, openmwWebText(fs.readFileSync(f, 'utf8'), base, man.saveKey), { 'Content-Type': MIME[path.extname(asset)] });
+        const raw = f.endsWith('.br') ? f.slice(0, -3) : f;
+        return sendFile(req, res, f, MIME[path.extname(raw)] ?? 'application/octet-stream', { ...(f.endsWith('.br') ? { 'Content-Encoding': 'br' } : {}), 'Cache-Control': 'public, max-age=86400' });
+      }
       m = /^\/ports\/([a-z0-9]+)\/([^/]+)\/$/.exec(p);
       if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendFile(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
       m = /^\/engines\/([^/]+)\/(.+)$/.exec(p);
       if (m) {
-        if (![...manifests.values()].some((man) => man.goldsrc?.engine === m[1])) return send(res, 404, 'no such engine');
+        if (![...manifests.values()].some((man) => man.goldsrc?.engine === m[1] || man.openmw?.engine === m[1])) return send(res, 404, 'no such engine');
         const file = engineFile(enginesDir, m[1], m[2]); if (!file) return send(res, 404, 'not found');
         return sendFile(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream', { 'Cache-Control': 'public, max-age=31536000, immutable' });
       }
@@ -763,8 +780,9 @@ export function createServer(opts = {}) {
   });
   // WebSockets: the virtual LAN of the Win32 games (/api/lan) and the multiplayer relay of the ports (/api/udp/<manifest>)
   const upgrades = [lanUpgrades(opts.lanLog ?? ((m) => console.log(m))), udpRelay({ getManifest, accept: acceptWebSocket, log: (m) => console.log(m) })];
-  server.on('upgrade', (req, socket) => {
+  server.on('upgrade', (req, socket, head) => {
     let url; try { url = new URL(req.url, 'http://x'); } catch { socket.destroy(); return; }
+    if (openmw.upgrade(req, socket, url, head)) return;
     if (!upgrades.some((u) => u.handle(req, socket, url))) socket.destroy();
   });
   server.snapshotJobs = snapshotJobs; // (tools/snapshot-shared-check.mjs: waits for the publishing sessions)
