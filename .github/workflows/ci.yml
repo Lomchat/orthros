@@ -1,6 +1,7 @@
-# Orthros CI: `make test` — the unit tests (Node), the CPU conformance against the native x86-32 oracle (clang),
-# the CRT-free Win32 test programs (clang, lld-link, llvm-dlltool) and the browser tests (Playwright Chromium).
-# No game files here: tests needing installed games skip.
+# Orthros CI: the unit tests (Node) with the CRT-free Win32 test programs (clang, lld-link, llvm-dlltool) and the
+# browser tests (Playwright Chromium). Not the CPU conformance against the native x86-32 oracle (`make gen`): its
+# results are the reference CPU's, made on the development machine — a runner's CPU is another one (on GitHub's the
+# oracle faults part way); those tests skip without them. No game files here: tests needing installed games skip.
 name: CI
 on:
   push:
@@ -31,5 +32,5 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
-      - name: make test
-        run: make test
+      - name: make pe-tests test-unit
+        run: make pe-tests test-unit
