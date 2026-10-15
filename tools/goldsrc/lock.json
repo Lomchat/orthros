@@ -290,6 +290,10 @@
         ],
         "files": [
           {
+            "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
+            "sha256": "74f3533c0fd2a6b54cc8ba4c4e6811d9c1e9231072e1e89b1d1b10a12239e1bc"
+          },
+          {
             "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
             "sha256": "d59d082fe0b58a35340432867629fd7342d9e8c91e81aa36550a7857e1474db8"
           },
