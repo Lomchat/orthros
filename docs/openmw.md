@@ -115,6 +115,8 @@ This check is explicitly the free example, **not** a Morrowind multiplayer succe
 Initial validation: `make test` passed (1,073 passed, 3 skipped, 2 todo); targeted catalog/proxy
 checks passed after the final changes. Chromium reached the example's Village from the home
 card, drew 8,515 WebGL calls and opened the expected installation-specific IDBFS database.
+The published HTTPS site also passed the browser check (7,645 draw calls), with the example
+available and the incomplete Morrowind version unavailable.
 The real pinned gateway accepted a locally provisioned test player, issued its login credentials
 and returned its profile; Chromium followed the namespaced sign-in to the username/profile step
 without a page error. Those accounts and worlds were scratch only and were removed afterwards.
