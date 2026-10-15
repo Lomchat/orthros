@@ -45,12 +45,14 @@
                   "commands": { "type": "array", "items": { "type": "string" }, "description": "Commandes du serveur dédié avant la carte (+commande), une par entrée." },
                   "gameLibrary": { "type": "string", "description": "Bibliothèque de jeu native du serveur dédié, chemin de la release goldsrc.engine (tools/goldsrc/build-modules.sh), au lieu de celle que nomment les fichiers du jeu." },
                   "maps": { "type": "array", "items": { "type": "string" }, "description": "Les cartes d'une partie créée (lobby) : sinon toutes celles du dossier maps/ du jeu." },
+                  "mapImage": { "type": "string", "description": "L'image d'une carte dans le lobby, chemin du dossier du jeu avec {map} (la vue de dessus du jeu : overviews/{map}.bmp) ; son vert pur est rendu sombre." },
                   "rooms": {
                     "type": "object",
                     "required": ["ports"],
                     "description": "Le lobby : des parties que les joueurs créent (nom, carte, taille, bots), un serveur dédié chacune sur un port de la plage, arrêtée après 5 min sans joueur (tools/goldsrc/server.mjs, docs/browser-ports.md).",
                     "properties": {
                       "ports": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "[premier, dernier] : 8 ports UDP au plus, hors de port, d'aucun autre jeu." },
+                      "options": { "type": "array", "maxItems": 8, "description": "Les réglages d'une partie que le joueur choisit (équipe des bots, argent de départ…) : chacun ses choix, chaque choix ses commandes serveur ; bots: true, seulement avec des bots ; show: true, affiché dans le lobby.", "items": { "type": "object", "required": ["id", "label", "default", "choices"], "properties": { "id": { "type": "string" }, "label": { "description": "Texte, ou { langue: texte }." }, "default": { "type": "string" }, "bots": { "type": "boolean" }, "show": { "type": "boolean" }, "choices": { "type": "array", "minItems": 2, "maxItems": 12, "items": { "type": "object", "required": ["id", "label"], "properties": { "id": { "type": "string" }, "label": {}, "commands": { "type": "array", "items": { "type": "string" } } } } } } } },
                       "bots": { "type": "object", "required": ["max", "commands"], "properties": { "max": { "type": "integer", "minimum": 1, "maximum": 31 }, "commands": { "type": "array", "items": { "type": "string" }, "description": "Commandes du serveur pour n bots, {n} remplacé." }, "args": { "type": "array", "items": { "type": "string" }, "description": "Options de ligne de commande d'une partie avec bots (-bots)." } } }
                     }
                   }

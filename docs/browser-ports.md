@@ -298,7 +298,11 @@ with `multiplayer.rooms`, those players create.
   (a server takes about 150 MB).
 - **The lobby** (`src/ports/goldsrc/lobby.js`): in the page's loading screen and over the game (the header's "Online
   games"), the version's games with their map and players, joined in a click — the engine started first if it is not —
-  and the form that creates one: a name, a map, a size, bots. Each room is also in the game's own LAN list, under its
+  and the form that creates one: a name, a map picked on its picture, a size and bots (− and + buttons), the version's
+  options as buttons side by side (`rooms.options`: Counter-Strike's bots' team, `bot_join_team`, and starting money,
+  `mp_startmoney`). A map's picture is the game's own overview (`multiplayer.mapImage`, `/api/map-image/<manifest>/<map>`,
+  compressed once by the server), drawn smaller by the page with its keyed pure green turned into the panel's dark, and
+  loaded when its card comes into view; a map without one gets its name on a pattern. Each room is also in the game's own LAN list, under its
   name: the relay sends the LAN search to every room, room i answers as 10.87.0.<i+1>:27015 (127.0.0.1:8080 too for
   room 0). The home's cards tell how many games are online and how many play.
 - **Ports.** Half-Life: UDP 28015, rooms 28100-28103; Counter-Strike: 28016, rooms 28110-28113; Counter-Strike

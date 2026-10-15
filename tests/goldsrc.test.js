@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
-import { linkGameLayers, parseServerInfo, roomName, roomPort, roomRequest, roomSlots } from '../src/host/goldsrc.js';
+import { linkGameLayers, parseServerInfo, roomName, roomOptionCommands, roomPort, roomRequest, roomSlots } from '../src/host/goldsrc.js';
 import { createServer } from '../src/host/server.js';
 
 const ENGINE = 'engine-test-1';
@@ -238,7 +238,7 @@ test('rooms: a creation request is checked, a server\'s info read', () => {
   const mp = { port: 27999, maxPlayers: 12, rooms: { ports: [28000, 28001], bots: { max: 6, commands: ['bot_quota {n}'] } } };
   assert.equal(roomName('  a "quoted"; \\ name\n with  spaces that goes well past the limit '), 'a quoted name with spaces that g');
   assert.equal(roomName('Ort\u200bhros\u202e - x\u0085'), 'Orthros - x'); // (no control, invisible or bidi character)
-  assert.deepEqual(roomRequest({ name: 'Dust', map: 'de_dust2', maxPlayers: 10, bots: 4 }, mp, ['de_dust2']), { room: { name: 'Dust', map: 'de_dust2', maxPlayers: 10, bots: 4 } });
+  assert.deepEqual(roomRequest({ name: 'Dust', map: 'de_dust2', maxPlayers: 10, bots: 4 }, mp, ['de_dust2']), { room: { name: 'Dust', map: 'de_dust2', maxPlayers: 10, bots: 4, options: {} } });
   for (const [body, error] of [[{ name: 'x', map: 'de_dust2' }, 'name'], [{ name: 'Dust', map: 'nope' }, 'map'], [{ name: 'Dust', map: 'de_dust2', maxPlayers: 20 }, 'maxPlayers'],
     [{ name: 'Dust', map: 'de_dust2', maxPlayers: 4, bots: 4 }, 'bots'], [{ name: 'Dust', map: 'de_dust2', bots: 7 }, 'bots']]) assert.equal(roomRequest(body, mp, ['de_dust2']).error, error);
   assert.equal(roomRequest({ name: 'Dust', map: 'de_dust2', bots: 1 }, { ...mp, rooms: { ports: [28000, 28001] } }, ['de_dust2']).error, 'bots'); // (no bots: none)
@@ -292,4 +292,30 @@ test('rooms: creations sent together from one address: one passes, the others wa
   const post = (name) => fetch(`${base}/api/rooms/gs-orig`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base }, body: JSON.stringify({ name, map: 'dm' }) });
   const statuses = (await Promise.all(['One', 'Two', 'Three', 'Four'].map(post))).map((r) => r.status).sort();
   assert.deepEqual(statuses, [201, 429, 429, 429]);
+});
+
+test('rooms: options a player chooses, each choice its commands; a map picture from the game folder', async (t) => {
+  const options = [
+    { id: 'team', label: { en: 'Bots\' team', fr: 'Équipe des bots' }, bots: true, default: 'any', choices: [{ id: 'any', label: 'Both', commands: ['bot_join_team any'] }, { id: 't', label: 'T', commands: ['bot_join_team T'] }] },
+    { id: 'money', label: 'Money', default: '800', show: true, choices: [{ id: '800', label: '800 $', commands: ['mp_startmoney 800'] }, { id: '16000', label: '16000 $', commands: ['mp_startmoney 16000'] }] },
+  ];
+  const mp = { port: 27999, maxPlayers: 12, rooms: { ports: [28000, 28001], bots: { max: 6, commands: ['bot_quota {n}'] }, options } };
+  const asked = roomRequest({ name: 'Rich', map: 'dm', bots: 2, options: { money: '16000' } }, mp, ['dm']);
+  assert.deepEqual(asked.room.options, { team: 'any', money: '16000' });
+  assert.deepEqual(roomOptionCommands(mp, asked.room), ['bot_join_team any', 'mp_startmoney 16000']);
+  assert.deepEqual(roomOptionCommands(mp, { ...asked.room, bots: 0 }), ['mp_startmoney 16000']); // (the bots' option without bots: none)
+  assert.equal(roomRequest({ name: 'Rich', map: 'dm', options: { money: '1000000' } }, mp, ['dm']).error, 'options');
+  const { games, engines, gs } = fixture(t, { goldsrc: goldsrc({ multiplayer: { server: 'srv', port: 27999, map: 'dm', mapImage: 'overviews/{map}.bmp', rooms: { ports: [28000, 28001], options } } }) });
+  fs.mkdirSync(path.join(gs, 'base', 'valve', 'Overviews'), { recursive: true }); fs.writeFileSync(path.join(gs, 'base', 'valve', 'Overviews', 'DM.bmp'), Buffer.alloc(5000, 7));
+  const base = await serve(t, { gamesDir: games, enginesDir: engines, roomsRequest: async () => [200, { rooms: [], maps: ['dm'] }] });
+  const picture = await fetch(`${base}/api/map-image/gs-orig/dm`, { headers: { 'Accept-Encoding': 'gzip' } });
+  assert.equal(picture.status, 200); assert.equal(picture.headers.get('content-type'), 'image/bmp');
+  assert.equal((await picture.arrayBuffer()).byteLength, 5000); // (sent compressed, read whole)
+  for (const bad of ['nope', '..%2Fsecret', 'a%20b']) assert.equal((await fetch(`${base}/api/map-image/gs-orig/${bad}`)).status, 404);
+  const listed = await (await fetch(`${base}/api/rooms/gs-orig`)).json();
+  assert.equal(listed.mapImages, true); assert.deepEqual(listed.options.map((o) => [o.id, o.choices.length, o.choices[0].commands]), [['team', 2, undefined], ['money', 2, undefined]]); // (no commands sent out)
+  editManifest(gs, (spec) => { spec.versions[0].goldsrc.multiplayer.rooms.options[0].default = 'none'; });
+  assert.throws(() => loadGameCatalog(games), /rooms.options/);
+  editManifest(gs, (spec) => { spec.versions[0].goldsrc.multiplayer.rooms.options[0].default = 'any'; spec.versions[0].goldsrc.multiplayer.mapImage = '../{map}.bmp'; });
+  assert.throws(() => loadGameCatalog(games), /mapImage/);
 });
