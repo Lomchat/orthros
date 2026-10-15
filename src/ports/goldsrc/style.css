@@ -89,5 +89,6 @@ html:fullscreen #stage { top: 0; }
 #lobbyOverlay .close { position: absolute; top: 12px; right: 14px; cursor: pointer; border: 0; background: none; color: #8a8f9c; font-size: 16px; }
 #lobbyOverlay .close:hover { color: #f0e9d8; }
 #lobbyOverlay .lobby header { padding-right: 28px; }
+#soundHint { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 38; cursor: pointer; font: 600 14px system-ui, sans-serif; color: #15100b; border: 0; border-radius: 999px; padding: 10px 20px; background: linear-gradient(180deg, #e0bd6e, #b98f3f); box-shadow: 0 8px 26px rgba(0,0,0,.5); }
 .hidden { display: none !important; }
 @media (max-width: 600px) { #loader #start { grid-template-columns: 1fr; } }

@@ -23,6 +23,19 @@ index cab27a4..6671695 100644
  					return true;
  				}
  			}
+diff --git a/regamedll/dlls/bot/cs_bot_manager.cpp b/regamedll/dlls/bot/cs_bot_manager.cpp
+index 8c7c7a1..4fcb447 100644
+--- a/regamedll/dlls/bot/cs_bot_manager.cpp
++++ b/regamedll/dlls/bot/cs_bot_manager.cpp
+@@ -1617,7 +1617,7 @@ bool CCSBotManager::AddBot(const BotProfile *profile, BotProfileTeamType team)
+ 	{
+ 		int skin = profile->GetSkin();
+ 		if (!skin)
+-			skin = 6;
++			skin = 0; // (random: Half Strike's 6 is one of its looks)
+ 
+ 		HandleMenu_ChooseAppearance(pBot, skin);
+ 
 diff --git a/regamedll/dlls/cbase.cpp b/regamedll/dlls/cbase.cpp
 index 5be847b..bedeac6 100644
 --- a/regamedll/dlls/cbase.cpp
@@ -37,7 +50,7 @@ index 5be847b..bedeac6 100644
  		}
  	}
 diff --git a/regamedll/dlls/client.cpp b/regamedll/dlls/client.cpp
-index b802a2e..f697401 100644
+index b802a2e..58916ff 100644
 --- a/regamedll/dlls/client.cpp
 +++ b/regamedll/dlls/client.cpp
 @@ -83,6 +83,7 @@ int gmsgFog = 0;
@@ -48,7 +61,45 @@ index b802a2e..f697401 100644
  bool g_bClientPrintEnable = true;
  
  char *sPlayerModelFiles[] =
-@@ -230,6 +231,9 @@ void LinkUserMessages()
+@@ -101,6 +102,37 @@ char *sPlayerModelFiles[] =
+ 	"models/player/militia/militia.mdl"    // CZ
+ };
+ 
++// Half Strike: the Half-Life player models, after Counter-Strike's four looks of a side (slots 5 to 9) — the Black
++// Mesa defenders on the Counter-Terrorists' side, its enemies on the Terrorists'
++static const char *const HL_SkinsT[] = { "hgrunt", "recon", "gman", "zombie", "robo" };
++static const char *const HL_SkinsCT[] = { "barney", "gordon", "helmet", "gina", "scientist" };
++#define HL_NUM_SKIN 5
++// (the model files, kept for the engine: it keeps the pointers it is given to precache)
++const char *HL_SkinPath(const char *name)
++{
++	static char paths[2 * HL_NUM_SKIN][MAX_PATH];
++	for (int i = 0; i < 2 * HL_NUM_SKIN; i++)
++	{
++		const char *skin = i < HL_NUM_SKIN ? HL_SkinsT[i] : HL_SkinsCT[i - HL_NUM_SKIN];
++		if (Q_strcmp(skin, name))
++			continue;
++		if (!paths[i][0])
++			Q_snprintf(paths[i], sizeof(paths[i]), "models/player/%s/%s.mdl", skin, skin);
++		return paths[i];
++	}
++	return "models/player.mdl";
++}
++
++const char *HL_SkinForTeam(const char *name, int team)
++{
++	for (int i = 0; i < HL_NUM_SKIN; i++)
++	{
++		if (!Q_strcmp(name, HL_SkinsT[i]) || !Q_strcmp(name, HL_SkinsCT[i]))
++			return team == TERRORIST ? HL_SkinsT[i] : team == CT ? HL_SkinsCT[i] : nullptr;
++	}
++	return nullptr;
++}
++
+ bool g_skipCareerInitialSpawn = false;
+ 
+ static entity_field_alias_t entity_field_alias[] =
+@@ -230,6 +262,9 @@ void LinkUserMessages()
  	gmsgAccount       = REG_USER_MSG("Account", 5);
  	gmsgHealthInfo    = REG_USER_MSG("HealthInfo", 5);
  #endif
@@ -58,7 +109,7 @@ index b802a2e..f697401 100644
  }
  
  void WriteSigonMessages()
-@@ -399,6 +403,97 @@ void EXT_FUNC __API_HOOK(ShowMenu)(CBasePlayer *pPlayer, int bitsValidSlots, int
+@@ -399,6 +434,97 @@ void EXT_FUNC __API_HOOK(ShowMenu)(CBasePlayer *pPlayer, int bitsValidSlots, int
  
  LINK_HOOK_VOID_CHAIN(ShowVGUIMenu, (CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu), pPlayer, MenuType, BitMask, szOldMenu);
  
@@ -156,7 +207,7 @@ index b802a2e..f697401 100644
  void EXT_FUNC __API_HOOK(ShowVGUIMenu)(CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu)
  {
  #ifdef REGAMEDLL_ADD
-@@ -1094,6 +1189,13 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
+@@ -1094,6 +1220,13 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
  	if (pPlayer->HasShield() && iWeapon == WEAPON_ELITE)
  		return false;
  
@@ -170,7 +221,7 @@ index b802a2e..f697401 100644
  	if (pPlayer->HasShield() && iWeapon == WEAPON_SHIELDGUN)
  		return false;
  
-@@ -1564,6 +1666,10 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
+@@ -1564,6 +1697,10 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
  	if (!CanBuyThis(pPlayer, weaponID))
  		return nullptr;
  
@@ -181,7 +232,61 @@ index b802a2e..f697401 100644
  	WeaponInfoStruct *info = GetWeaponInfo(weaponID);
  	if (!info || !info->entityName)
  		return nullptr;
-@@ -2296,6 +2402,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
+@@ -1615,6 +1752,23 @@ LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slo
+ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int slot)
+ {
+ 	int numSkins = AreRunningCZero() ? CZ_NUM_SKIN : CS_NUM_SKIN;
++	// (Half Strike: its Half-Life looks too; a slot past them, or 0, a look at random among all)
++	const int csSkins = numSkins;
++	if (!AreRunningCZero())
++		numSkins += HL_NUM_SKIN;
++	const char *hlSkin = nullptr;
++	if (!AreRunningCZero() && (pPlayer->m_iTeam == TERRORIST || pPlayer->m_iTeam == CT))
++	{
++		// (out of range — 0, the bots' and the auto-join's "random": a look at random among all; a bot's custom profile skin
++		// stays its own)
++		if ((slot > numSkins || slot < 1) && !(pPlayer->IsBot() && TheBotProfiles->GetCustomSkin(slot)))
++			slot = RANDOM_LONG(1, numSkins);
++		if (slot > csSkins && slot <= numSkins)
++		{
++			hlSkin = (pPlayer->m_iTeam == TERRORIST ? HL_SkinsT : HL_SkinsCT)[slot - csSkins - 1];
++			slot = 1; // (the side's first look stands for it in the game's rules)
++		}
++	}
+ 
+ 	struct
+ 	{
+@@ -1755,8 +1909,10 @@ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int
+ 	pPlayer->pev->body = 0;
+ 	pPlayer->m_iModelName = appearance.model_id;
+ 
+-	pPlayer->SetClientUserInfoModel(GET_INFO_BUFFER(pPlayer->edict()), appearance.model_name);
+-	pPlayer->SetNewPlayerModel(sPlayerModelFiles[appearance.model_name_index]);
++	// (a Half-Life look: the player's own model, kept at each spawn by SetPlayerModel; none for a Counter-Strike one)
++	pPlayer->CSPlayer()->SetPlayerModelEx(hlSkin ? hlSkin : "");
++	pPlayer->SetClientUserInfoModel(GET_INFO_BUFFER(pPlayer->edict()), hlSkin ? (char *)hlSkin : appearance.model_name);
++	pPlayer->SetNewPlayerModel(hlSkin ? HL_SkinPath(hlSkin) : sPlayerModelFiles[appearance.model_name_index]);
+ 
+ 	if (CSGameRules()->m_bMapHasVIPSafetyZone)
+ 	{
+@@ -2095,14 +2251,14 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
+ 				if (AreRunningCZero())
+ 					ShowVGUIMenu(pPlayer, VGUI_Menu_Class_CT, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5 | MENU_KEY_6), "#CT_Select");
+ 				else
+-					ShowVGUIMenu(pPlayer, VGUI_Menu_Class_CT, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5), "#CT_Select");
++					ShowVGUIMenu(pPlayer, VGUI_Menu_Class_CT, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5 | MENU_KEY_6 | MENU_KEY_7 | MENU_KEY_8 | MENU_KEY_9 | MENU_KEY_0), "#CT_Select"); // (Half Strike: its Half-Life looks, 5 to 9; 0 at random)
+ 				break;
+ 
+ 			case TERRORIST:
+ 				if (AreRunningCZero())
+ 					ShowVGUIMenu(pPlayer, VGUI_Menu_Class_T, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5 | MENU_KEY_6), "#Terrorist_Select");
+ 				else
+-					ShowVGUIMenu(pPlayer, VGUI_Menu_Class_T, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5), "#Terrorist_Select");
++					ShowVGUIMenu(pPlayer, VGUI_Menu_Class_T, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5 | MENU_KEY_6 | MENU_KEY_7 | MENU_KEY_8 | MENU_KEY_9 | MENU_KEY_0), "#Terrorist_Select"); // (Half Strike: its Half-Life looks, 5 to 9; 0 at random)
+ 				break;
+ 			}
+ 		}
+@@ -2296,6 +2452,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
  		return false;
  	}
  
@@ -192,7 +297,7 @@ index b802a2e..f697401 100644
  	// Purchase the ammo if the player has enough money
  	if (pPlayer->m_iAccount >= info->clipCost)
  	{
-@@ -2421,6 +2531,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
+@@ -2421,6 +2581,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
  	WeaponIdType weaponID = WEAPON_NONE;
  	const char *weaponFailName = BuyAliasToWeaponID(pszCommand, weaponID);
  
@@ -206,7 +311,7 @@ index b802a2e..f697401 100644
  	// Ok, we have weapon info ID.
  	if (weaponID != WEAPON_NONE)
  	{
-@@ -2935,6 +3052,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -2935,6 +3102,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				{
  					switch (slot)
  					{
@@ -222,7 +327,7 @@ index b802a2e..f697401 100644
  						case VGUI_MenuSlot_Buy_Pistol:
  						{
  							pPlayer->m_iMenu = Menu_BuyPistol;
-@@ -3064,6 +3190,27 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3064,6 +3240,27 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				}
  				break;
  			}
@@ -250,7 +355,7 @@ index b802a2e..f697401 100644
  			case Menu_BuyPistol:
  			{
  				if (canOpenOldMenu())
-@@ -3567,7 +3714,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3567,7 +3764,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  			{
  				if (pPlayer->m_signals.GetState() & SIGNAL_BUY)
  				{
@@ -259,7 +364,21 @@ index b802a2e..f697401 100644
  					pPlayer->m_iMenu = Menu_Buy;
  
  					if (TheBots)
-@@ -4925,7 +5072,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
+@@ -4029,6 +4226,13 @@ void ClientPrecache()
+ 	for (i = 0; i < numPlayerModels; i++)
+ 		PRECACHE_MODEL(sPlayerModelFiles[i]);
+ 
++	// (Half Strike: the Half-Life looks)
++	for (i = 0; i < HL_NUM_SKIN; i++)
++	{
++		PRECACHE_MODEL(HL_SkinPath(HL_SkinsT[i]));
++		PRECACHE_MODEL(HL_SkinPath(HL_SkinsCT[i]));
++	}
++
+ 	if (AreRunningCZero())
+ 	{
+ 		for (i = FirstCustomSkin; i <= LastCustomSkin; i++)
+@@ -4925,7 +5129,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
  				weapon->GetItemInfo(&II);
  #endif
  
@@ -268,7 +387,7 @@ index b802a2e..f697401 100644
  				{
  					auto item = &info[II.iId];
  
-@@ -5084,7 +5231,8 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
+@@ -5084,7 +5288,8 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
  #endif
  				)
  			{
@@ -279,16 +398,26 @@ index b802a2e..f697401 100644
  				if ((unsigned int)weapon->m_iPrimaryAmmoType < MAX_AMMO_SLOTS)
  				{
 diff --git a/regamedll/dlls/client.h b/regamedll/dlls/client.h
-index d873bd2..d7fa8db 100644
+index d873bd2..f291712 100644
 --- a/regamedll/dlls/client.h
 +++ b/regamedll/dlls/client.h
-@@ -292,3 +292,4 @@ extern int gmsgFog;
+@@ -131,6 +131,9 @@ void respawn(entvars_t *pev, BOOL fCopyCorpse = FALSE);
+ void ClientKill(edict_t *pEntity);
+ void ShowMenu(CBasePlayer *pPlayer, int bitsValidSlots, int nDisplayTime, BOOL fNeedMore, char *pszText);
+ void ShowVGUIMenu(CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu);
++// Half Strike: a Half-Life look of either side, as the same rank on a team's side (null: none); its model file
++const char *HL_SkinForTeam(const char *name, int team);
++const char *HL_SkinPath(const char *name);
+ void ListPlayers(CBasePlayer *current);
+ void ProcessKickVote(CBasePlayer *pVotingPlayer, CBasePlayer *pKickPlayer);
+ void CheckStartMoney();
+@@ -292,3 +295,4 @@ extern int gmsgFog;
  extern int gmsgShowTimer;
  extern int gmsgAccount;
  extern int gmsgHealthInfo;
 +extern int gmsgHLWeapons;
 diff --git a/regamedll/dlls/game.cpp b/regamedll/dlls/game.cpp
-index 2c6d9fb..b2b5be3 100644
+index 2c6d9fb..6afbdf4 100644
 --- a/regamedll/dlls/game.cpp
 +++ b/regamedll/dlls/game.cpp
 @@ -25,7 +25,8 @@ cvar_t infiniteAmmo          = { "mp_infinite_ammo", "0", FCVAR_SERVER, 0.0f, nu
@@ -301,7 +430,17 @@ index 2c6d9fb..b2b5be3 100644
  cvar_t freezetime            = { "mp_freezetime", "6", FCVAR_SERVER, 0.0f, nullptr };
  cvar_t c4timer               = { "mp_c4timer", "45", FCVAR_SERVER, 0.0f, nullptr };
  cvar_t ghostfrequency        = { "mp_ghostfrequency", "0.1", FCVAR_SERVER, 0.0f, nullptr };
-@@ -135,7 +136,7 @@ cvar_t respawn_immunity_effects     = { "mp_respawn_immunity_effects", "1", FCVA
+@@ -114,7 +115,8 @@ cvar_t weapondrop            = { "mp_weapondrop", "1", 0, 1.0f, nullptr };
+ cvar_t ammodrop              = { "mp_ammodrop", "1", 0, 1.0f, nullptr };
+ cvar_t roundrespawn_time     = { "mp_roundrespawn_time", "20", 0, 20.0f, nullptr };
+ cvar_t auto_reload_weapons   = { "mp_auto_reload_weapons", "0", 0, 0.0f, nullptr };
+-cvar_t refill_bpammo_weapons = { "mp_refill_bpammo_weapons", "0", 0, 0.0f, nullptr }; // Useful for mods like DeathMatch, GunGame, ZombieMod etc
++// (Half Strike: a gun comes with its spare ammo, as at each spawn — R reloads at once)
++cvar_t refill_bpammo_weapons = { "mp_refill_bpammo_weapons", "2", 0, 0.0f, nullptr }; // Useful for mods like DeathMatch, GunGame, ZombieMod etc
+ cvar_t freeforall            = { "mp_freeforall", "0", FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t auto_join_team        = { "mp_auto_join_team", "0", 0, 0.0f, nullptr };
+ cvar_t max_teamkills         = { "mp_max_teamkills", "3", 0, 3.0f, nullptr };
+@@ -135,7 +137,7 @@ cvar_t respawn_immunity_effects     = { "mp_respawn_immunity_effects", "1", FCVA
  cvar_t respawn_immunity_force_unset = { "mp_respawn_immunity_force_unset", "1", FCVAR_SERVER, 0.0f, nullptr };
  cvar_t kill_filled_spawn            = { "mp_kill_filled_spawn", "1", 0, 0.0f, nullptr };
  cvar_t afk_bomb_drop_time           = { "mp_afk_bomb_drop_time", "0", FCVAR_SERVER, 0.0f, nullptr };
@@ -312,7 +451,7 @@ index 2c6d9fb..b2b5be3 100644
  
 diff --git a/regamedll/dlls/hl_weapons.h b/regamedll/dlls/hl_weapons.h
 new file mode 100644
-index 0000000..7926031
+index 0000000..f0e28a0
 --- /dev/null
 +++ b/regamedll/dlls/hl_weapons.h
 @@ -0,0 +1,642 @@
@@ -361,20 +500,20 @@ index 0000000..7926031
 +// switched to when bought; below 0 never automatically)
 +
 +// Crowbar: the knife slot, beside the knife
-+#define HL_CROWBAR_PRICE             300
++#define HL_CROWBAR_PRICE             200
 +#define HL_CROWBAR_DAMAGE            25
 +#define HL_CROWBAR_MAX_SPEED         250.0f
 +#define HL_CROWBAR_WEIGHT            0
 +
 +// 9mm handgun (Glock 17): Counter-Strike's 9mm ammo; aimed shots, or quicker wild ones
-+#define HL_GLOCK_PRICE               400
++#define HL_GLOCK_PRICE               300
 +#define HL_GLOCK_MAX_CLIP            17
 +#define HL_GLOCK_DAMAGE              22
 +#define HL_GLOCK_MAX_SPEED           250.0f
 +#define HL_GLOCK_WEIGHT              7
 +
 +// .357 Magnum revolver: pistol slot
-+#define HL_PYTHON_PRICE              900
++#define HL_PYTHON_PRICE              700
 +#define HL_PYTHON_MAX_CLIP           6
 +#define HL_PYTHON_MAX_CARRY          36
 +#define HL_PYTHON_AMMO_PRICE         60
@@ -384,17 +523,17 @@ index 0000000..7926031
 +#define HL_PYTHON_WEIGHT             7
 +
 +// MP5 and its M203 launcher: Counter-Strike's 9mm ammo; its contact grenades are bought apart
-+#define HL_MP5_PRICE                 1800
++#define HL_MP5_PRICE                 1450
 +#define HL_MP5_MAX_CLIP              50
 +#define HL_MP5_DAMAGE                21
 +#define HL_MP5_MAX_SPEED             240.0f
 +#define HL_MP5_WEIGHT                30
-+#define HL_ARGRENADE_PRICE           300
++#define HL_ARGRENADE_PRICE           250
 +#define HL_ARGRENADE_MAX_CARRY       2
 +#define HL_ARGRENADE_DAMAGE          100
 +
 +// Shotgun (SPAS-12): Counter-Strike's buckshot; one barrel, or both
-+#define HL_SHOTGUN_PRICE             2000
++#define HL_SHOTGUN_PRICE             1600
 +#define HL_SHOTGUN_MAX_CLIP          8
 +#define HL_SHOTGUN_PELLETS           6
 +#define HL_SHOTGUN_DAMAGE            18 // (a pellet)
@@ -402,7 +541,7 @@ index 0000000..7926031
 +#define HL_SHOTGUN_WEIGHT            30
 +
 +// Crossbow: zoomed, an instant bolt; otherwise an explosive bolt in flight
-+#define HL_CROSSBOW_PRICE            3000
++#define HL_CROSSBOW_PRICE            2400
 +#define HL_CROSSBOW_MAX_CLIP         5
 +#define HL_CROSSBOW_MAX_CARRY        30
 +#define HL_CROSSBOW_AMMO_PRICE       150
@@ -414,14 +553,14 @@ index 0000000..7926031
 +#define HL_CROSSBOW_WEIGHT           30
 +
 +// Hornet gun: hornets that home in, or straight darts; they grow back, nothing to buy
-+#define HL_HORNETGUN_PRICE           2500
++#define HL_HORNETGUN_PRICE           2000
 +#define HL_HORNET_MAX_CARRY          8
 +#define HL_HORNET_DAMAGE             15
 +#define HL_HORNETGUN_MAX_SPEED       240.0f
 +#define HL_HORNETGUN_WEIGHT          30
 +
 +// Rocket launcher, its rocket following the laser spot
-+#define HL_RPG_PRICE                 4500
++#define HL_RPG_PRICE                 3600
 +#define HL_RPG_MAX_CLIP              1
 +#define HL_RPG_MAX_CARRY             3
 +#define HL_RPG_AMMO_PRICE            300
@@ -431,7 +570,7 @@ index 0000000..7926031
 +#define HL_RPG_WEIGHT                30
 +
 +// Gauss (tau cannon): a primary shot, or a charged one that also pushes its shooter back
-+#define HL_GAUSS_PRICE               4000
++#define HL_GAUSS_PRICE               3200
 +#define HL_GAUSS_DEFAULT_GIVE        40
 +#define HL_URANIUM_MAX_CARRY         100
 +#define HL_URANIUM_AMMO_PRICE        200
@@ -442,35 +581,35 @@ index 0000000..7926031
 +#define HL_GAUSS_WEIGHT              30
 +
 +// Egon (gluon gun): a continuous beam
-+#define HL_EGON_PRICE                5500
++#define HL_EGON_PRICE                4400
 +#define HL_EGON_DEFAULT_GIVE         40
 +#define HL_EGON_DAMAGE               12
 +#define HL_EGON_MAX_SPEED            210.0f
 +#define HL_EGON_WEIGHT               30
 +
 +// Hand grenade: cooking from the moment its pin is pulled, 3 s
-+#define HL_HANDGRENADE_PRICE         300
++#define HL_HANDGRENADE_PRICE         250
 +#define HL_HANDGRENADE_MAX_CARRY     1
 +#define HL_HANDGRENADE_DAMAGE        100
 +#define HL_HANDGRENADE_MAX_SPEED     250.0f
 +#define HL_HANDGRENADE_WEIGHT        2
 +
 +// Satchel charge: thrown, then set off by its radio; gone with its owner
-+#define HL_SATCHEL_PRICE             600
++#define HL_SATCHEL_PRICE             450
 +#define HL_SATCHEL_MAX_CARRY         2
 +#define HL_SATCHEL_DAMAGE            150
 +#define HL_SATCHEL_MAX_SPEED         250.0f
 +#define HL_SATCHEL_WEIGHT            -10
 +
 +// Tripmine: on a wall, its laser sets it off — not for its owner's team
-+#define HL_TRIPMINE_PRICE            500
++#define HL_TRIPMINE_PRICE            400
 +#define HL_TRIPMINE_MAX_CARRY        2
 +#define HL_TRIPMINE_DAMAGE           150
 +#define HL_TRIPMINE_MAX_SPEED        250.0f
 +#define HL_TRIPMINE_WEIGHT           -10
 +
 +// Snarks: a pack of three, hunting the nearest enemy for 15 s
-+#define HL_SNARK_PRICE               500
++#define HL_SNARK_PRICE               400
 +#define HL_SNARK_DEFAULT_GIVE        3
 +#define HL_SNARK_MAX_CARRY           6
 +#define HL_SNARK_BITE_DAMAGE         10
@@ -959,7 +1098,7 @@ index 0000000..7926031
 +	int m_fJustThrown;
 +};
 diff --git a/regamedll/dlls/multiplay_gamerules.cpp b/regamedll/dlls/multiplay_gamerules.cpp
-index 2b91a50..653e2ab 100644
+index 2b91a50..5db9af1 100644
 --- a/regamedll/dlls/multiplay_gamerules.cpp
 +++ b/regamedll/dlls/multiplay_gamerules.cpp
 @@ -658,6 +658,9 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(CleanUpMap)()
@@ -972,6 +1111,26 @@ index 2b91a50..653e2ab 100644
  #ifndef REGAMEDLL_FIXES
  	// Remove defuse kit
  	// Old code only removed 4 kits and stopped.
+@@ -3798,8 +3801,8 @@ void CHalfLifeMultiplay::PlayerThink(CBasePlayer *pPlayer)
+ 			{
+ 				if (slot != MENU_SLOT_TEAM_SPECT && (IsCareer() || m_bSkipShowMenu))
+ 				{
+-					// slot 6 - chooses randomize the appearance to model player
+-					HandleMenu_ChooseAppearance(pPlayer, 6);
++					// slot 0 - chooses randomize the appearance to model player (Half Strike: 6 is one of its looks)
++					HandleMenu_ChooseAppearance(pPlayer, 0);
+ 				}
+ 			}
+ 			else
+@@ -3818,7 +3821,7 @@ void CHalfLifeMultiplay::PlayerThink(CBasePlayer *pPlayer)
+ 			if (slot != MENU_SLOT_TEAM_SPECT && IsCareer())
+ 			{
+ 				// slot 6 - chooses randomize the appearance to model player
+-				HandleMenu_ChooseAppearance(pPlayer, 6);
++				HandleMenu_ChooseAppearance(pPlayer, 0); // (random: Half Strike's 6 is one of its looks)
+ 			}
+ #endif
+ 		}
 @@ -4259,6 +4262,10 @@ LINK_HOOK_CLASS_CUSTOM_CHAIN(BOOL, CHalfLifeMultiplay, CSGameRules, CanHavePlaye
  // Returns FALSE if the player is not allowed to pick up this weapon
  BOOL EXT_FUNC CHalfLifeMultiplay::__API_HOOK(CanHavePlayerItem)(CBasePlayer *pPlayer, CBasePlayerItem *pItem)
@@ -984,7 +1143,7 @@ index 2b91a50..653e2ab 100644
  }
  
 diff --git a/regamedll/dlls/player.cpp b/regamedll/dlls/player.cpp
-index 1d04cc9..7faaa8f 100644
+index 1d04cc9..c7211da 100644
 --- a/regamedll/dlls/player.cpp
 +++ b/regamedll/dlls/player.cpp
 @@ -201,6 +201,20 @@ const char *GetCSModelName(int item_id)
@@ -1008,7 +1167,25 @@ index 1d04cc9..7faaa8f 100644
  	default:
  		ALERT(at_console, "CBasePlayer::PackDeadPlayerItems(): Unhandled item- not creating weaponbox\n");
  	}
-@@ -885,6 +899,10 @@ const char *CBasePlayer::GetKillerWeaponName(entvars_t *pevInflictor, entvars_t
+@@ -267,8 +281,15 @@ void CBasePlayer::SetPlayerModel(BOOL HasC4)
+ 
+ #ifdef REGAMEDLL_ADD
+ 	auto modelEx = CSPlayer()->m_szModel;
+-	if (modelEx[0] != '\0') {
+-		model = modelEx;
++	// (Half Strike: a Half-Life look follows its player to the other side — the same rank there — and gives way to the
++	// VIP's model)
++	const char *hlModel = (modelEx[0] != '\0' && !m_bIsVIP) ? HL_SkinForTeam(modelEx, m_iTeam) : nullptr;
++	if (hlModel) {
++		model = (char *)hlModel;
++		if (Q_strcmp(modelEx, hlModel)) {
++			CSPlayer()->SetPlayerModelEx(hlModel);
++			SetNewPlayerModel(HL_SkinPath(hlModel));
++		}
+ 	} else
+ #endif
+ 	if (m_iTeam == CT)
+@@ -885,6 +906,10 @@ const char *CBasePlayer::GetKillerWeaponName(entvars_t *pevInflictor, entvars_t
  	else if (!Q_strncmp(killer_weapon_name, cut_func, sizeof(cut_func) - 1))
  		killer_weapon_name += sizeof(cut_func) - 1;
  
@@ -1019,7 +1196,7 @@ index 1d04cc9..7faaa8f 100644
  	return killer_weapon_name;
  }
  
-@@ -1228,6 +1246,10 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
+@@ -1228,6 +1253,10 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
  			case WEAPON_AK47:
  				flRatio *= 1.55;
  				break;
@@ -1030,7 +1207,7 @@ index 1d04cc9..7faaa8f 100644
  			}
  		}
  
-@@ -7495,6 +7517,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -7495,6 +7524,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  	{
  		m_fInitHUD = FALSE;
  		gInitHUD = FALSE;
@@ -1038,7 +1215,7 @@ index 1d04cc9..7faaa8f 100644
  #ifdef REGAMEDLL_FIXES
  		m_signals.Reset();
  #else
-@@ -7893,6 +7916,25 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -7893,6 +7923,25 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  		m_iLastClientHealth = m_iClientHealth;
  	}
  #endif // #ifdef BUILD_LATEST
@@ -1064,7 +1241,7 @@ index 1d04cc9..7faaa8f 100644
  }
  
  bool CBasePlayer::ShouldToShowAccount(CBasePlayer *pReceiver) const
-@@ -8374,7 +8416,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
+@@ -8374,7 +8423,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
  		}
  
  		// take item off hud
@@ -1073,7 +1250,7 @@ index 1d04cc9..7faaa8f 100644
  
  #ifdef REGAMEDLL_FIXES
  		// No more weapon
-@@ -9303,6 +9345,11 @@ void CBasePlayer::SetPrefsFromUserinfo(char *infobuffer)
+@@ -9303,6 +9352,11 @@ void CBasePlayer::SetPrefsFromUserinfo(char *infobuffer)
  	else
  		m_bVGUIMenus = true;
  

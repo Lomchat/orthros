@@ -12,7 +12,7 @@ import { createLobby, roomAddress } from './lobby.js';
 
 const STRINGS = {
   en: {
-    lobby: '◉ Online games', lobbyTitle: 'the games running on the servers: join one, or create yours', games: '☰ Games', gamesTitle: 'quit the game (saves and settings kept) and return to the game list', fullscreen: '⛶ Full screen',
+    soundOff: '🔇 Sound off — click to turn it on', lobby: '◉ Online games', lobbyTitle: 'the games running on the servers: join one, or create yours', games: '☰ Games', gamesTitle: 'quit the game (saves and settings kept) and return to the game list', fullscreen: '⛶ Full screen',
     fullscreenTitle: 'full screen: only the game (hold Esc to leave)', perfTitle: 'frames per second, the last minute, the slowest frames',
     name: 'Nickname', play: 'Play', log: 'Launch log', subtitle: 'its original files, on a game engine in your browser',
     loading: 'Loading the game…', preparing: 'Preparing the installation.',
@@ -35,7 +35,7 @@ const STRINGS = {
     engineFiles: 'Engine resources unavailable', restart: 'Restart the game', paused: 'paused', loadingShort: 'loading',
   },
   fr: {
-    lobby: '◉ Parties en ligne', lobbyTitle: 'les parties en cours sur les serveurs : en rejoindre une, ou créer la tienne', games: '☰ Jeux', gamesTitle: 'quitter la partie (sauvegardes et réglages conservés) et revenir à la liste des jeux', fullscreen: '⛶ Plein écran',
+    soundOff: '🔇 Son coupé — clique pour l’activer', lobby: '◉ Parties en ligne', lobbyTitle: 'les parties en cours sur les serveurs : en rejoindre une, ou créer la tienne', games: '☰ Jeux', gamesTitle: 'quitter la partie (sauvegardes et réglages conservés) et revenir à la liste des jeux', fullscreen: '⛶ Plein écran',
     fullscreenTitle: 'plein écran : le jeu seul (maintiens Échap pour sortir)', perfTitle: 'images par seconde, la dernière minute, les images les plus lentes',
     name: 'Pseudo', play: 'Jouer', log: 'Journal de lancement', subtitle: 'ses fichiers d’origine, sur un moteur de jeu dans ton navigateur',
     loading: 'Chargement du jeu…', preparing: 'Préparation de l’installation.',
@@ -72,9 +72,35 @@ const audioContexts = new Set(), NativeAudioContext = globalThis.AudioContext;
 if (NativeAudioContext) globalThis.AudioContext = class extends NativeAudioContext {
   constructor(...args) { super(...args); audioContexts.add(this); }
 };
-const resumeAudio = () => { for (const context of audioContexts) if (context.state === 'suspended') context.resume().catch(log); };
-document.addEventListener('pointerdown', resumeAudio);
-document.addEventListener('keydown', resumeAudio);
+// (the engine's output measured: its level the last seconds, for the "sound blocked" hint and the session's report)
+const audioMeter = { peak: 0, heard: 0 };
+const NativeConnect = AudioNode.prototype.connect;
+AudioNode.prototype.connect = function (target, ...rest) {
+  if (target instanceof AudioDestinationNode && !target.context.__meter) {
+    const meter = target.context.__meter = target.context.createAnalyser(); meter.fftSize = 1024;
+    NativeConnect.call(this, meter);
+  } else if (target instanceof AudioDestinationNode) NativeConnect.call(this, target.context.__meter);
+  return NativeConnect.call(this, target, ...rest);
+};
+setInterval(() => {
+  const buf = new Float32Array(1024); let peak = 0;
+  for (const context of audioContexts) { if (!context.__meter) continue; context.__meter.getFloatTimeDomainData(buf); for (const v of buf) peak = Math.max(peak, Math.abs(v)); }
+  audioMeter.peak = Math.max(audioMeter.peak * 0.9, peak); if (peak > 0.01) audioMeter.heard = performance.now();
+}, 250);
+const audioState = () => ({ contexts: [...audioContexts].map((c) => c.state), heard: audioMeter.heard ? Math.round((performance.now() - audioMeter.heard) / 1000) : null });
+const resumeAudio = () => {
+  for (const context of audioContexts) if (context.state !== 'running' && context.state !== 'closed') context.resume().then(() => soundHint(), log);
+  soundHint();
+};
+document.addEventListener('pointerdown', resumeAudio, { capture: true });
+document.addEventListener('keydown', resumeAudio, { capture: true });
+// (the browser keeps the sound off until the page is used: told, with a button, while it is)
+function soundHint() {
+  const blocked = session.state === 'running' && [...audioContexts].some((c) => c.state === 'suspended');
+  $('soundHint').classList.toggle('hidden', !blocked);
+}
+setInterval(soundHint, 1000);
+$('soundHint').textContent = S.soundOff; $('soundHint').addEventListener('click', resumeAudio);
 let engine, db, relay, timer, saving, stopped = false;
 const log = line => { logs.push(String(line)); if (logs.length > 500) logs.shift(); $('log').textContent = logs.slice(-100).join('\n'); };
 window.addEventListener('error', event => {
@@ -193,7 +219,7 @@ setInterval(() => {
   renderHud();
 }, 500);
 /** The session's end, once: its length and frame rate. */
-function endReport() { if (telemetry.ended) return; telemetry.ended = true; report('end', { frames: frameStats() }); }
+function endReport() { if (telemetry.ended) return; telemetry.ended = true; report('end', { frames: frameStats(), audio: audioState() }); }
 /** The last minute's frame rate and slowest frames, for the session's report. */
 function frameStats() {
   const a = perf.samples.filter((x) => x.fps > 0); if (!a.length) return null;
@@ -464,6 +490,7 @@ $('start').addEventListener('submit', async event => {
     if (pendingConnect) { log(`Joining ${pendingConnect}`); engine.Cmd_ExecuteString(`connect ${pendingConnect}`); pendingConnect = null; }
     session.command = command => engine.Cmd_ExecuteString(command);
     session.state = 'running'; report('start', { engine: g.engine });
+    setTimeout(() => report('audio', audioState()), 60000); // (a minute in: is the game heard?)
     timer = setInterval(() => save().catch(error => { log('Profile save failed: ' + error.message); status(S.saveFailed, true); }), 10000);
     $('canvas').focus();
   } catch (error) { fail(error); }

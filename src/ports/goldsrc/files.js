@@ -245,8 +245,16 @@ export class StreamedFiles {
   }
 }
 
+/** A file's bytes; a network failure (the request's or its body's) or a server error tried again three times, 0.5, 1.5 and 4 s later. */
 async function defaultGet(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-  return new Uint8Array(await response.arrayBuffer());
+  for (let attempt = 0; ; attempt++) {
+    let status = 0;
+    try {
+      const response = await fetch(url);
+      if (response.ok) return new Uint8Array(await response.arrayBuffer());
+      status = response.status; response.body?.cancel().catch(() => {});
+    } catch (error) { if (attempt >= 3) throw error; }
+    if (status && (status < 500 || attempt >= 3)) throw new Error(`${url}: HTTP ${status}`);
+    await new Promise((r) => setTimeout(r, [500, 1500, 4000][attempt]));
+  }
 }
