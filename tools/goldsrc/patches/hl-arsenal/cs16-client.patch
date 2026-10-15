@@ -237,10 +237,10 @@ index e77a067..33b67c6 100644
  	void AddWeapon( WEAPON *wp ) 
 diff --git a/cl_dll/arsenal_ui.cpp b/cl_dll/arsenal_ui.cpp
 new file mode 100644
-index 0000000..87136bb
+index 0000000..21f9f37
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.cpp
-@@ -0,0 +1,1521 @@
+@@ -0,0 +1,1588 @@
 +/*
 +arsenal_ui.cpp - the Half-Life arsenal's own menus, drawn by the client
 +
@@ -388,22 +388,22 @@ index 0000000..87136bb
 +	ITEM( "nvgs", "Night Vision", "Equipment", "", 0, 1250, ANY, "See in the dark (N)" ),
 +	ITEM( "shield", "Tactical Shield", "Equipment", "models/w_shield.mdl", 0, 2200, ONLY_CT, "Stops bullets; a pistol in the other hand" ),
 +	// the Half-Life arsenal: guns
-+	GUN( "crowbar", "Crowbar", "Melee  -  Black Mesa", "w_crowbar", HL_CROWBAR, 300, ANY, 25, 1, 0.5f, 0, 0, 250, 1.7f, 0, "Swings beside the knife" ),
-+	GUN( "9mmhandgun", "9mm Handgun", "Pistol  -  9mm", "w_9mmhandgun", HL_GLOCK, 400, ANY, 22, 1, 0.25f, 17, 120, 250, 1.05f, 0.75f, "Right click: rapid, wilder fire" ),
-+	GUN( "python", ".357 Magnum", "Revolver  -  .357", "w_357", HL_PYTHON, 900, ANY, 65, 1, 0.75f, 6, 36, 250, 1.5f, 0.85f, "Six heavy rounds" ),
-+	GUN( "9mmAR", "MP5", "SMG  -  9mm", "w_9mmar", HL_MP5, 1800, ANY, 21, 1, 0.1f, 50, 120, 240, 1.0f, 0.84f, "Right click: contact grenades" ),
-+	GUN( "argrenade", "MP5 Grenades", "Ammunition  -  2 at most", "grenade", 0, 300, ANY, 100, 1, 1.0f, 0, 2, 0, 1.0f, 0, "Explode on contact, for the MP5" ),
-+	GUN( "shotgun", "Shotgun", "Shotgun  -  buckshot", "w_shotgun", HL_SHOTGUN, 2000, ANY, 18, 6, 0.75f, 8, 32, 230, 1.0f, 0.3f, "Right click: both barrels" ),
-+	GUN( "crossbow", "Crossbow", "Crossbow  -  bolts", "w_crossbow", HL_CROSSBOW, 3000, ANY, 100, 1, 0.75f, 5, 30, 230, 1.7f, 0.99f, "Scoped bolts; explosive unscoped" ),
++	GUN( "crowbar", "Crowbar", "Melee  -  Black Mesa", "w_crowbar", HL_CROWBAR, 200, ANY, 25, 1, 0.5f, 0, 0, 250, 1.7f, 0, "Swings beside the knife" ),
++	GUN( "9mmhandgun", "9mm Handgun", "Pistol  -  9mm", "w_9mmhandgun", HL_GLOCK, 300, ANY, 22, 1, 0.25f, 17, 120, 250, 1.05f, 0.75f, "Right click: rapid, wilder fire" ),
++	GUN( "python", ".357 Magnum", "Revolver  -  .357", "w_357", HL_PYTHON, 700, ANY, 65, 1, 0.75f, 6, 36, 250, 1.5f, 0.85f, "Six heavy rounds" ),
++	GUN( "9mmAR", "MP5", "SMG  -  9mm", "w_9mmar", HL_MP5, 1450, ANY, 21, 1, 0.1f, 50, 120, 240, 1.0f, 0.84f, "Right click: contact grenades" ),
++	GUN( "argrenade", "MP5 Grenades", "Ammunition  -  2 at most", "grenade", 0, 250, ANY, 100, 1, 1.0f, 0, 2, 0, 1.0f, 0, "Explode on contact, for the MP5" ),
++	GUN( "shotgun", "Shotgun", "Shotgun  -  buckshot", "w_shotgun", HL_SHOTGUN, 1600, ANY, 18, 6, 0.75f, 8, 32, 230, 1.0f, 0.3f, "Right click: both barrels" ),
++	GUN( "crossbow", "Crossbow", "Crossbow  -  bolts", "w_crossbow", HL_CROSSBOW, 2400, ANY, 100, 1, 0.75f, 5, 30, 230, 1.7f, 0.99f, "Scoped bolts; explosive unscoped" ),
 +	// the Half-Life arsenal: heavy weapons and explosives
-+	GUN( "hornetgun", "Hornet Gun", "Bio-weapon  -  hornets", "w_hgun", HL_HORNETGUN, 2500, ANY, 15, 1, 0.25f, 0, 8, 240, 1.0f, 0.9f, "Homing hornets; it breeds its own" ),
-+	GUN( "gauss", "Gauss", "Tau cannon  -  uranium", "w_gauss", HL_GAUSS, 4000, ANY, 20, 1, 0.2f, 0, 100, 220, 1.5f, 1.0f, "Hold right click: up to 200 damage" ),
-+	GUN( "rpg", "RPG", "Rocket launcher", "w_rpg", HL_RPG, 4500, ANY, 120, 1, 1.5f, 1, 3, 200, 1.0f, 1.0f, "Laser-guided rockets" ),
-+	GUN( "egon", "Egon", "Gluon gun  -  uranium", "w_egon", HL_EGON, 5500, ANY, 12, 1, 0.1f, 0, 100, 210, 1.5f, 0.6f, "A continuous, searing beam" ),
-+	GUN( "handgrenade", "Hand Grenade", "Explosive", "w_grenade", HL_HANDGRENADE, 300, ANY, 100, 1, 0, 0, 1, 250, 1.0f, 0, "Cooks while held, three seconds" ),
-+	GUN( "satchel", "Satchel Charge", "Explosive  -  2 at most", "w_satchel", HL_SATCHEL, 600, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Throw it, then detonate it" ),
-+	GUN( "tripmine", "Tripmine", "Explosive  -  2 at most", "p_tripmine", HL_TRIPMINE, 500, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Laser-triggered, on a wall" ),
-+	GUN( "snark", "Snarks", "Creatures  -  3 a box", "w_sqknest", HL_SNARK, 500, ANY, 10, 1, 0, 0, 6, 250, 1.0f, 0, "Hungry: they hunt the nearest enemy" ),
++	GUN( "hornetgun", "Hornet Gun", "Bio-weapon  -  hornets", "w_hgun", HL_HORNETGUN, 2000, ANY, 15, 1, 0.25f, 0, 8, 240, 1.0f, 0.9f, "Homing hornets; it breeds its own" ),
++	GUN( "gauss", "Gauss", "Tau cannon  -  uranium", "w_gauss", HL_GAUSS, 3200, ANY, 20, 1, 0.2f, 0, 100, 220, 1.5f, 1.0f, "Hold right click: up to 200 damage" ),
++	GUN( "rpg", "RPG", "Rocket launcher", "w_rpg", HL_RPG, 3600, ANY, 120, 1, 1.5f, 1, 3, 200, 1.0f, 1.0f, "Laser-guided rockets" ),
++	GUN( "egon", "Egon", "Gluon gun  -  uranium", "w_egon", HL_EGON, 4400, ANY, 12, 1, 0.1f, 0, 100, 210, 1.5f, 0.6f, "A continuous, searing beam" ),
++	GUN( "handgrenade", "Hand Grenade", "Explosive", "w_grenade", HL_HANDGRENADE, 250, ANY, 100, 1, 0, 0, 1, 250, 1.0f, 0, "Cooks while held, three seconds" ),
++	GUN( "satchel", "Satchel Charge", "Explosive  -  2 at most", "w_satchel", HL_SATCHEL, 450, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Throw it, then detonate it" ),
++	GUN( "tripmine", "Tripmine", "Explosive  -  2 at most", "p_tripmine", HL_TRIPMINE, 400, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Laser-triggered, on a wall" ),
++	GUN( "snark", "Snarks", "Creatures  -  3 a box", "w_sqknest", HL_SNARK, 400, ANY, 10, 1, 0, 0, 6, 250, 1.0f, 0, "Hungry: they hunt the nearest enemy" ),
 +};
 +
 +struct BuyTab
@@ -432,21 +432,33 @@ index 0000000..87136bb
 +	const char *model, *name, *note;
 +};
 +
-+static const Look g_Looks[2][5] =
++// (a side's looks: Counter-Strike's four, then Half-Life's five — the server's slots 1 to 9: Black Mesa's defenders on
++// the Counter-Terrorists' side, its enemies on the Terrorists')
++#define CS_LOOKS 4
++#define NUM_LOOKS 9
++static const Look g_Looks[2][NUM_LOOKS] =
 +{
 +	{
 +		{ "terror", "Phoenix Connexion", "Ruthless, well funded, never seen coming" },
 +		{ "leet", "Elite Crew", "A tight crew of mercenaries" },
 +		{ "arctic", "Arctic Avengers", "Trained in the cold of the north" },
 +		{ "guerilla", "Guerilla Warfare", "At home in any rough terrain" },
-+		{ "militia", "Midwest Militia", "Volunteers who know their land" },
++		{ "hgrunt", "HECU Marine", "Sent to silence Black Mesa" },
++		{ "recon", "HECU Recon", "Scouts ahead of the marines" },
++		{ "gman", "G-Man", "He has plans for everyone" },
++		{ "zombie", "Zombie", "What a headcrab leaves" },
++		{ "robo", "Robo", "Built for war, feels nothing" },
 +	},
 +	{
 +		{ "urban", "Seal Team 6", "Navy special forces, masters of assault" },
 +		{ "gsg9", "GSG-9", "Border police, precise and methodical" },
 +		{ "sas", "SAS", "The oldest special forces of all" },
 +		{ "gign", "GIGN", "Specialists of hostage rescue" },
-+		{ "spetsnaz", "Spetsnaz", "Special forces of the east" },
++		{ "barney", "Barney", "Black Mesa security, on duty" },
++		{ "gordon", "Gordon Freeman", "Physicist in his HEV suit" },
++		{ "helmet", "Freeman, helmet on", "The HEV suit, fully sealed" },
++		{ "gina", "Gina Cross", "Hazard course instructor" },
++		{ "scientist", "Scientist", "Black Mesa research staff" },
 +	},
 +};
 +
@@ -569,6 +581,22 @@ index 0000000..87136bb
 +		x = xs[i] + w;
 +	}
 +	Fill( x, y, sw - x, h, c );
++}
++
++// the screen shaded but for two rows of cards (each its own left edges, width, top and height)
++static void ShadeAroundRows( const float *xs1, int n1, float w1, float y1, float h1, const float *xs2, int n2, float w2, float y2, float h2, Col c )
++{
++	float sw = ScreenWidth, sh = ScreenHeight;
++	Fill( 0, 0, sw, y1, c );
++	Fill( 0, y1 + h1, sw, y2 - y1 - h1, c );
++	Fill( 0, y2 + h2, sw, sh - y2 - h2, c );
++	const float *xs[2] = { xs1, xs2 }; const int ns[2] = { n1, n2 }; const float ws[2] = { w1, w2 }, ys[2] = { y1, y2 }, hs[2] = { h1, h2 };
++	for ( int r = 0; r < 2; r++ )
++	{
++		float x = 0;
++		for ( int i = 0; i < ns[r]; i++ ) { Fill( x, ys[r], xs[r][i] - x, hs[r], c ); x = xs[r][i] + ws[r]; }
++		Fill( x, ys[r], sw - x, hs[r], c );
++	}
 +}
 +
 +static void FlushShapes( void )
@@ -702,7 +730,7 @@ index 0000000..87136bb
 +//
 +// The models
 +//
-+#define MAX_PREVIEWS 6
++#define MAX_PREVIEWS 10
 +#define PREVIEW_DIST 9.0f
 +#define BACKDROP_DIST 14.5f
 +
@@ -715,6 +743,18 @@ index 0000000..87136bb
 +	float scale; // (of the last frame, for the light)
 +	bool active, failed;
 +	cl_entity_t ent;
++};
++
++// the world models that do not lie as the others: `over` turned over along their length (upside down), `roll` degrees
++// in the screen's plane, `yaw` degrees around the vertical (their face toward the view)
++struct Turn { const char *model; bool over; float roll, yaw; };
++static const Turn g_Turns[] =
++{
++	{ "models/w_9mmhandgun.mdl", true, 0, 0 },
++	{ "models/w_357.mdl", true, 0, 0 },
++	{ "models/w_shotgun.mdl", true, 0, 0 },
++	{ "models/w_9mmar.mdl", false, 90, 0 },
++	{ "models/w_gauss.mdl", true, 0, 0 },
 +};
 +
 +struct Backdrop
@@ -883,6 +923,23 @@ index 0000000..87136bb
 +		pose[0][0] = 1; pose[1][0] = 0; pose[2][0] = 0;
 +		pose[0][1] = 0; pose[1][1] = 0; pose[2][1] = 1;
 +		pose[0][2] = 0; pose[1][2] = -1; pose[2][2] = 0;
++	}
++	// (models that lie otherwise than the others: turned over along their length, or in the screen's plane, or a
++	// quarter turn to show their face — g_Turns)
++	for ( const Turn &t : g_Turns )
++	{
++		if ( strcmp( t.model, p->name ))
++			continue;
++		const float r = t.roll * M_PI / 180, f = t.over ? M_PI : 0, w = t.yaw * M_PI / 180;
++		// E = Rz(yaw) * Ry(roll) * Rx(over), in the display's axes (x right, y away, z up)
++		const float rx[3][3] = { { 1, 0, 0 }, { 0, cosf( f ), -sinf( f ) }, { 0, sinf( f ), cosf( f ) } };
++		const float ry[3][3] = { { cosf( r ), 0, sinf( r ) }, { 0, 1, 0 }, { -sinf( r ), 0, cosf( r ) } };
++		const float rz[3][3] = { { cosf( w ), -sinf( w ), 0 }, { sinf( w ), cosf( w ), 0 }, { 0, 0, 1 } };
++		float e1[3][3], e[3][3], q[3][3];
++		for ( int i = 0; i < 3; i++ ) for ( int j = 0; j < 3; j++ ) e1[i][j] = ry[i][0] * rx[0][j] + ry[i][1] * rx[1][j] + ry[i][2] * rx[2][j];
++		for ( int i = 0; i < 3; i++ ) for ( int j = 0; j < 3; j++ ) e[i][j] = rz[i][0] * e1[0][j] + rz[i][1] * e1[1][j] + rz[i][2] * e1[2][j];
++		for ( int i = 0; i < 3; i++ ) for ( int j = 0; j < 3; j++ ) q[i][j] = e[i][0] * pose[0][j] + e[i][1] * pose[1][j] + e[i][2] * pose[2][j];
++		memcpy( pose, q, sizeof( q ));
 +	}
 +	vec3_t center, half;
 +	for ( int i = 0; i < 3; i++ )
@@ -1113,7 +1170,7 @@ index 0000000..87136bb
 +	ShadeAroundRow( xs, 2, cw, y0, ch, Alpha( C_SHADE, fade ));
 +	int nT = TeamCount( TEAM_TERRORIST ), nCT = TeamCount( TEAM_CT );
 +	char l1[64], l2[64];
-+	int look = (int)( Now() / 3.5f ) % 4; // (the side's looks, in turn)
++	int look = (int)( Now() / 3.5f ) % NUM_LOOKS; // (the side's looks, in turn)
 +	char model[64];
 +
 +	snprintf( l1, sizeof( l1 ), "%d player%s", nT, nT == 1 ? "" : "s" );
@@ -1172,35 +1229,45 @@ index 0000000..87136bb
 +{
 +	float fade = Fade();
 +	float sw = ScreenWidth, sh = ScreenHeight;
-+	int team = g_iClassTeam;
-+	int looks = Allowed( 6 ) ? 5 : 4, autoKey = looks + 1;
-+	Title( sh * 0.08f, "CHOOSE YOUR LOOK", team ? "Counter-Terrorists" : "Terrorists", fade );
++	int team = g_iClassTeam, lh = LineHeight();
++	Title( sh * 0.06f, "CHOOSE YOUR LOOK", team ? "Counter-Terrorists" : "Terrorists", fade );
 +	Col accent = team ? C_CTCOL : C_TCOL;
-+	float gap = 14, cw = min( 230.0f, ( sw - 60 - gap * ( looks - 1 )) / looks ), ch = min( 430.0f, sh * 0.58f );
-+	float x0 = sw / 2 - ( looks * cw + ( looks - 1 ) * gap ) / 2, y0 = sh * 0.22f;
-+	float xs[5];
-+	for ( int i = 0; i < looks; i++ )
-+		xs[i] = x0 + i * ( cw + gap );
-+	ShadeAroundRow( xs, looks, cw, y0, ch, Alpha( C_SHADE, fade ));
-+	for ( int i = 0; i < looks; i++ )
++	// (two rows: Counter-Strike's looks, Half-Life's; keys 1 to 9, 0 at random)
++	const int counts[2] = { CS_LOOKS, NUM_LOOKS - CS_LOOKS };
++	const char *rowNames[2] = { "Counter-Strike", "Half-Life" };
++	float gap = 12, labelH = lh * 1.6f, bh = lh * 2.2f;
++	float top = sh * 0.06f + LineHeight( Scaled( 2.0f ) ? 2.0f : 1.0f ) + lh * 2.6f;
++	float ch = min( 300.0f, ( sh - top - labelH * 2 - gap - bh - 40 ) / 2 ), cw = min( 190.0f, ( sw - 60 - gap * 4 ) / 5 );
++	float xs[2][5], ys[2];
++	for ( int r = 0; r < 2; r++ )
 +	{
-+		const Look &l = g_Looks[team][i];
-+		char model[64], key[4];
-+		snprintf( model, sizeof( model ), "models/player/%s/%s.mdl", l.model, l.model );
-+		snprintf( key, sizeof( key ), "%d", i + 1 );
-+		if ( Card( i, x0 + i * ( cw + gap ), y0, cw, ch, model, POSE_UPRIGHT, key, l.name, l.note, NULL, accent, Allowed( i + 1 ), fade ))
++		ys[r] = top + labelH + r * ( ch + gap + labelH );
++		float x0 = sw / 2 - ( counts[r] * cw + ( counts[r] - 1 ) * gap ) / 2;
++		for ( int i = 0; i < counts[r]; i++ ) xs[r][i] = x0 + i * ( cw + gap );
++	}
++	ShadeAroundRows( xs[0], counts[0], cw, ys[0], ch, xs[1], counts[1], cw, ys[1], ch, Alpha( C_SHADE, fade ));
++	int index = 0;
++	for ( int r = 0; r < 2; r++ )
++	{
++		Text( xs[r][0], ys[r] - labelH + lh * 0.25f, rowNames[r], Alpha( C_DIM, fade ));
++		for ( int i = 0; i < counts[r]; i++, index++ )
 +		{
-+			Command( "joinclass %d", i + 1 );
-+			Close();
-+			return;
++			const Look &l = g_Looks[team][index];
++			char model[64], key[4];
++			snprintf( model, sizeof( model ), "models/player/%s/%s.mdl", l.model, l.model );
++			snprintf( key, sizeof( key ), "%d", index + 1 );
++			if ( Card( index, xs[r][i], ys[r], cw, ch, model, POSE_UPRIGHT, key, l.name, l.note, NULL, accent, Allowed( index + 1 ), fade ))
++			{
++				Command( "joinclass %d", index + 1 );
++				Close();
++				return;
++			}
 +		}
 +	}
-+	float bh = LineHeight() * 2.2f, bw = 230;
-+	char key[4];
-+	snprintf( key, sizeof( key ), "%d", autoKey );
-+	if ( Button( sw / 2 - bw / 2, y0 + ch + 22, bw, bh, key, "Auto-select", Allowed( autoKey ), C_GOLD ))
++	float bw = 230;
++	if ( Button( sw / 2 - bw / 2, ys[1] + ch + 16, bw, bh, "0", "Auto-select", Allowed( 10 ), C_GOLD ))
 +	{
-+		Command( "joinclass %d", autoKey );
++		Command( "joinclass %d", 10 );
 +		Close();
 +	}
 +}
@@ -1488,9 +1555,9 @@ index 0000000..87136bb
 +	}
 +	else if ( g_iPanel == P_CLASS )
 +	{
-+		if ( Allowed( key ) && key <= 6 )
++		if ( Allowed( key ))
 +		{
-+			Command( "joinclass %d", key );
++			Command( "joinclass %d", key ); // (0: 10, a look at random)
 +			Close();
 +		}
 +	}
