@@ -21,7 +21,7 @@ const manifest = await (await fetch(`${base}/api/manifest/${encodeURIComponent(n
 const pageUrl = `${base}/ports/goldsrc/${encodeURIComponent(name)}/?debug=1`;
 const nicknames = [1, 2].map((i) => `QA${i}-${Date.now().toString(36)}`);
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
-const clients = [];
+const clients = [], keys = arg('--join-keys');
 const focusGame = async (page) => { await page.bringToFront(); await page.evaluate(() => document.exitPointerLock()); await page.locator('#canvas').click(); };
 const lastPos = (page) => page.evaluate(() => portSession.logs.filter((l) => /\borg \(/.test(l)).at(-1)?.match(/org \(([^)]+)\)/)?.[1]);
 const heartbeat = setInterval(async () => {
@@ -61,13 +61,13 @@ try {
     await page.waitForFunction(() => renderProbe.draws > 50, null, { timeout: 30000 });
     await page.waitForTimeout(7000);
     await page.screenshot({ path: path.join(root, `client-${i}.png`) });
-  }
-  const keys = arg('--join-keys');
-  if (mode === 'multiplayer' || args.includes('--no-save')) {
-    if (keys) for (let i = 0; i < clients.length; i++) {
-      await focusGame(clients[i].page);
-      for (const k of keys.split(',')) { await clients[i].page.keyboard.press(k.replace('{n}', String(i + 1))); await clients[i].page.waitForTimeout(1000); }
+    // (each player joins as soon as it is in, before the next one starts: one browser's renderer is shared by them)
+    if (keys && (mode === 'multiplayer' || args.includes('--no-save'))) {
+      await focusGame(page);
+      for (const k of keys.split(',')) { await page.keyboard.press(k.replace('{n}', String(i + 1))); await page.waitForTimeout(1000); }
     }
+  }
+  if (mode === 'multiplayer' || args.includes('--no-save')) {
     await clients[0].page.waitForTimeout(8000); // (a round may freeze players at its start)
     for (const { page } of clients) {
       await page.evaluate(() => portSession.command('status'));

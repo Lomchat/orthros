@@ -20,7 +20,7 @@ Nothing in the code names a game: engine release, game directory, modules, maps 
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r2` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r3` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -81,6 +81,9 @@ loading screen over the game's blurred cover — first the player's choices (nic
   input event) and frees it in its menus and console, where its cursor shows (the canvas' CSS cursor). A click on the
   game captures it again only while the game wants it (after Esc released it in the game), never in a menu — the page
   used to lock it at every click, which left the menus without a cursor. Full screen captures it at once in the game.
+  The engine's SDL reads a mouse position relative to the document, its events being the document's: the canvas
+  starting under the header, the page gives the mouse events the canvas' coordinates (else a click lands 44 pixels
+  below the cursor, in the engine's menus as in a game's own).
 - **The frame rate** counts the engine's main loop iterations that drew (`postMainLoop`, draw calls seen).
 - **The menu module.** Counter-Strike's manifests name none: the engine's (`engine/libmenu.wasm`) shows the game's own
   title screens and takes the mouse; cs16-client's `mainui_cpp` (still built, `modules.builds`) wants the images of its
@@ -128,7 +131,7 @@ The browser release's game modules were recovered from a deployed build whose so
 `Velaron/cs16-client` at `15278ca` (the commit the recovered build started from) with its submodules — the client,
 `mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). Each of `modules.builds` is a release of its own, its patches
 on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sources give it) and
-`xash3d-web-1.2.2-cs16-15278ca-arsenal-r2` (the Half-Life Arsenal, below). A release holds the engine files of
+`xash3d-web-1.2.2-cs16-15278ca-arsenal-r3` (the Half-Life Arsenal, below). A release holds the engine files of
 `xash3d-web-1.2.2` (checked against the lock) and under `counterstrike/cstrike/` the three WebAssembly modules,
 `dlls/cs.so` (the same server compiled natively for the 32-bit dedicated server: `multiplayer.gameLibrary`) and
 `orthros-bots.pk3` (`goldsrc.extras`).
@@ -161,11 +164,11 @@ on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sour
 
 ## Half-Life Arsenal
 
-`counter-strike-hl-arsenal`: Counter-Strike 1.6 with the fourteen Half-Life weapons bought beside its own — `9. Half-Life
-arsenal` of the buy menu, in four categories, or the console aliases of the table. Both teams, every map,
-Counter-Strike's economy (`$800` to start, its rewards; `mp_startmoney` among the manifest's commands changes it). Their
-ammo is bought as any gun's (`6`/`7` of the menu): the 9mm handgun and the MP5 share Counter-Strike's 9mm, the shotgun
-its buckshot.
+`counter-strike-hl-arsenal`: Counter-Strike 1.6 with the fourteen Half-Life weapons bought beside its own — the two
+Half-Life tabs of its buy menu (below), or the console aliases of the table. Both teams, every map, anywhere and at any
+time of a round (`mp_buy_anywhere 1`, `mp_buytime -1`: the mod's defaults), Counter-Strike's economy (`$800` to start,
+its rewards; `mp_startmoney` among the manifest's commands changes it). Their ammo is bought as any gun's (`,`/`.`):
+the 9mm handgun and the MP5 share Counter-Strike's 9mm, the shotgun its buckshot.
 
 | Weapon (alias) | Menu, slot | Price | Damage | Notes |
 | --- | --- | --- | --- | --- |
@@ -222,6 +225,34 @@ or changed.
 - **Effects.** The Egon's beams are the server's for every player, its shooter included (the Half-Life client's own
   beams follow a predicted aim this client does not have). Explosions are Half-Life's (Counter-Strike's grenade
   explosion is the flashbang's).
+
+### Its own menus
+
+The mod's client draws its team, appearance and buy menus itself (`cl_dll/arsenal_ui.cpp`), in the page's look: the
+original game's are VGUI panels of a library not available in WebAssembly, the text menus their fallback.
+
+- **Team**: the two sides, a player model of each turning in its card (their looks in turn), how many play in each;
+  auto-select, spectate, cancel when allowed. **Appearance**: the side's looks, each turning with its name.
+- **Buy**: eight tabs (pistols, shotguns, SMGs, rifles, machine gun, equipment, the Half-Life guns, the Half-Life heavy
+  weapons and explosives), the items the player's team may buy with their price (red when too dear, "owned"), and the
+  hovered one turning in 3D (drag to turn it) with its figures: damage (pellets), fire rate, armor piercing, range
+  (damage kept at 1000 units), mobility (speed), magazine, a line on its use. Click buys (the server's buy aliases);
+  keys: a tab's number then an item's, `0` back, the wheel or arrows change tab, `,`/`.` ammo, `B` or Esc closes.
+- **Other text menus** (radio, the server's): a panel of the same look. The radio menus were not shown at all: the
+  client replaced them with touch-screen configurations.
+- **How.** The client announces its menus with the user info `_ars_ui 1`: the server then sends its VGUI menus
+  (`VGUIMenu`, as to a client with VGUI) instead of text ones, and the client draws them. The page's `_vgui_menus 0`
+  still holds for the other games. The models are entities of the frame, placed close in front of the view at the
+  panel's place (their transform and light set in `StudioModelRenderer`), over backdrops drawn in the world just behind
+  them; the HUD (but the chat and the kills) and the weapon in hand hide while a panel is open.
+- **The mouse.** This engine sends the client no mouse moves (`IN_ClientLookEvent` is never called): while a panel is
+  open the client turns the engine's touch "client only" mode on, in which the engine shows the mouse's cursor (the
+  page frees it, as in a menu) and a client button over the screen gives its presses (`+ars_click`), the engine
+  its position (`GetMousePosition`).
+- **Cost** (headless Chromium, SwiftShader, 1280×756, the same view): 44 frames a second in the game, 22 with the team
+  or appearance menu, 20 with the buy menu, 38 with the radio menu. In the buy menu, per frame: about 12 ms for its
+  shapes (one draw call: pixels blended, SwiftShader's CPU rasterizer), 14 ms for its texts (the engine draws each of
+  its ~550 characters by itself), 5 ms for the model and its backdrop. Not measured on a GPU.
 
 ## Browser storage
 

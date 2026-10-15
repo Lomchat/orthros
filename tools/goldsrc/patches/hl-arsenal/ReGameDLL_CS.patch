@@ -287,6 +287,29 @@ index d873bd2..d7fa8db 100644
  extern int gmsgAccount;
  extern int gmsgHealthInfo;
 +extern int gmsgHLWeapons;
+diff --git a/regamedll/dlls/game.cpp b/regamedll/dlls/game.cpp
+index 2c6d9fb..b2b5be3 100644
+--- a/regamedll/dlls/game.cpp
++++ b/regamedll/dlls/game.cpp
+@@ -25,7 +25,8 @@ cvar_t infiniteAmmo          = { "mp_infinite_ammo", "0", FCVAR_SERVER, 0.0f, nu
+ cvar_t infiniteGrenades      = { "mp_infinite_grenades", "0", FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t allowmonsters         = { "mp_allowmonsters", "0", FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t roundtime             = { "mp_roundtime", "5", FCVAR_SERVER, 0.0f, nullptr };
+-cvar_t buytime               = { "mp_buytime", "1.5", FCVAR_SERVER, 0.0f, nullptr };
++// (the Half-Life arsenal: buying anytime, anywhere)
++cvar_t buytime               = { "mp_buytime", "-1", FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t freezetime            = { "mp_freezetime", "6", FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t c4timer               = { "mp_c4timer", "45", FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t ghostfrequency        = { "mp_ghostfrequency", "0.1", FCVAR_SERVER, 0.0f, nullptr };
+@@ -135,7 +136,7 @@ cvar_t respawn_immunity_effects     = { "mp_respawn_immunity_effects", "1", FCVA
+ cvar_t respawn_immunity_force_unset = { "mp_respawn_immunity_force_unset", "1", FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t kill_filled_spawn            = { "mp_kill_filled_spawn", "1", 0, 0.0f, nullptr };
+ cvar_t afk_bomb_drop_time           = { "mp_afk_bomb_drop_time", "0", FCVAR_SERVER, 0.0f, nullptr };
+-cvar_t buy_anywhere                 = { "mp_buy_anywhere", "0", FCVAR_SERVER, 0.0f, nullptr };
++cvar_t buy_anywhere                 = { "mp_buy_anywhere", "1", FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t give_player_c4               = { "mp_give_player_c4", "1", FCVAR_SERVER, 0.0f, nullptr };
+ cvar_t weapons_allow_map_placed     = { "mp_weapons_allow_map_placed", "1", FCVAR_SERVER, 0.0f, nullptr };
+ 
 diff --git a/regamedll/dlls/hl_weapons.h b/regamedll/dlls/hl_weapons.h
 new file mode 100644
 index 0000000..7926031
@@ -961,7 +984,7 @@ index 2b91a50..653e2ab 100644
  }
  
 diff --git a/regamedll/dlls/player.cpp b/regamedll/dlls/player.cpp
-index 1d04cc9..8e9d8c7 100644
+index 1d04cc9..7faaa8f 100644
 --- a/regamedll/dlls/player.cpp
 +++ b/regamedll/dlls/player.cpp
 @@ -201,6 +201,20 @@ const char *GetCSModelName(int item_id)
@@ -1050,6 +1073,18 @@ index 1d04cc9..8e9d8c7 100644
  
  #ifdef REGAMEDLL_FIXES
  		// No more weapon
+@@ -9303,6 +9345,11 @@ void CBasePlayer::SetPrefsFromUserinfo(char *infobuffer)
+ 	else
+ 		m_bVGUIMenus = true;
+ 
++	// (the Half-Life arsenal's client draws the team, appearance and buy menus itself: it takes them as VGUI menus)
++	pszKeyVal = GET_KEY_VALUE(infobuffer, "_ars_ui");
++	if (Q_atoi(pszKeyVal) != 0)
++		m_bVGUIMenus = true;
++
+ 	pszKeyVal = GET_KEY_VALUE(infobuffer, "_ah");
+ 
+ 	if (Q_strcmp(pszKeyVal, "") != 0)
 diff --git a/regamedll/dlls/player.h b/regamedll/dlls/player.h
 index 7809834..7d45dd9 100644
 --- a/regamedll/dlls/player.h

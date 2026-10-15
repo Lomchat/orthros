@@ -1,3 +1,49 @@
+diff --git a/cl_dll/StudioModelRenderer.cpp b/cl_dll/StudioModelRenderer.cpp
+index 2c50bca..ebd6f16 100644
+--- a/cl_dll/StudioModelRenderer.cpp
++++ b/cl_dll/StudioModelRenderer.cpp
+@@ -17,6 +17,7 @@
+ // for this code.
+ #include <assert.h>
+ #include "hud.h"
++#include "arsenal_ui.h"
+ #include "cl_util.h"
+ #include "const.h"
+ #include "com_model.h"
+@@ -417,6 +418,9 @@ void CStudioModelRenderer::StudioSetUpTransform(int trivial_accept)
+ 	(*m_protationmatrix)[0][3] = modelpos[0];
+ 	(*m_protationmatrix)[1][3] = modelpos[1];
+ 	(*m_protationmatrix)[2][3] = modelpos[2];
++
++	// (a model of the Half-Life arsenal's panels: placed in front of the view)
++	ArsUI_PreviewTransform( m_pCurrentEntity, (*m_protationmatrix) );
+ }
+ 
+ float CStudioModelRenderer::StudioEstimateInterpolant(void)
+@@ -838,6 +842,14 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
+ 
+ 	m_pCurrentEntity = IEngineStudio.GetCurrentEntity();
+ 
++	// (the Half-Life arsenal's panels: the weapon in hand hidden, their models without events)
++	if( m_pCurrentEntity == gEngfuncs.GetViewModel() && ArsUI_HidesViewModel() )
++		return 0;
++
++	bool bPreview = ArsUI_IsPreview( m_pCurrentEntity );
++	if( bPreview && !( flags & STUDIO_RENDER ))
++		return 0;
++
+ 	if( g_bHoldingKnife && m_pCurrentEntity == gEngfuncs.GetViewModel() && (flags & STUDIO_RENDER) )
+ 	{
+ 		bChangedRightHand = true;
+@@ -928,6 +940,8 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
+ 		IEngineStudio.StudioDynamicLight(m_pCurrentEntity, &lighting);
+ 
+ 		IEngineStudio.StudioEntityLight(&lighting);
++		if( bPreview )
++			ArsUI_PreviewLighting( m_pCurrentEntity, &lighting );
+ 		IEngineStudio.StudioSetupLighting(&lighting);
+ 
+ 		m_nTopColor = m_pCurrentEntity->curstate.colormap & 0xFF;
 diff --git a/cl_dll/ammo.cpp b/cl_dll/ammo.cpp
 index a78ad14..ac66fa8 100644
 --- a/cl_dll/ammo.cpp
@@ -189,6 +235,1564 @@ index e77a067..33b67c6 100644
  
  	WEAPON *GetWeapon( int iId ) { return &rgWeapons[iId]; }
  	void AddWeapon( WEAPON *wp ) 
+diff --git a/cl_dll/arsenal_ui.cpp b/cl_dll/arsenal_ui.cpp
+new file mode 100644
+index 0000000..31630ae
+--- /dev/null
++++ b/cl_dll/arsenal_ui.cpp
+@@ -0,0 +1,1509 @@
++/*
++arsenal_ui.cpp - the Half-Life arsenal's own menus, drawn by the client
++
++The server's team, appearance and buy menus (VGUIMenu messages, the client announcing them with the _ars_ui
++user info) open panels of their own. While one is open the engine shows the mouse's own cursor (the touch
++screen's client-only mode, which frees the mouse as its menus do): a client button over the whole screen gives
++its presses (+ars_click), the engine its position; the keys 1-9 choose too. The hovered weapon, item or player
++model turns in its panel, with its figures; the server's other text menus (radio...) are styled alike.
++
++The models are entities of the frame placed close in front of the view at the panels' places, scaled down and lit
++on their own (the hull keeps walls further away), over backdrops drawn in the world at a slightly larger depth:
++the panels' 2D parts are drawn around them.
++*/
++
++#include "hud.h"
++#include "cl_util.h"
++#include "const.h"
++#include "com_model.h"
++#include "studio.h"
++#include "entity_state.h"
++#include "cl_entity.h"
++#include "entity_types.h"
++#include "triangleapi.h"
++#include "r_studioint.h"
++#include "keydefs.h"
++#include "draw_util.h"
++#include "ammohistory.h"
++#include "weapontype.h"
++#include "arsenal_ui.h"
++#include <string.h>
++#include <stdio.h>
++#include <math.h>
++
++extern engine_studio_api_t IEngineStudio;
++extern int g_iMobileAPIVersion;
++
++// (the server's menus: cdll_dll.h)
++enum
++{
++	VGUI_TEAM = 2,
++	VGUI_CLASS_T = 26,
++	VGUI_CLASS_CT,
++	VGUI_BUY,
++	VGUI_BUY_PISTOL,
++	VGUI_BUY_SHOTGUN,
++	VGUI_BUY_RIFLE,
++	VGUI_BUY_SMG,
++	VGUI_BUY_MG,
++	VGUI_BUY_ITEM
++};
++
++// (the Half-Life arsenal's weapon ids, from the server's)
++enum
++{
++	HL_PYTHON = 32, HL_CROSSBOW, HL_RPG, HL_GAUSS, HL_EGON, HL_CROWBAR, HL_GLOCK, HL_MP5, HL_SHOTGUN, HL_HORNETGUN,
++	HL_HANDGRENADE, HL_SATCHEL, HL_TRIPMINE, HL_SNARK
++};
++
++//
++// Look
++//
++struct Col { unsigned char r, g, b, a; };
++static const Col C_PANEL   = { 15, 16, 21, 238 };
++static const Col C_PANEL2  = { 24, 26, 33, 238 };
++static const Col C_ROW     = { 255, 255, 255, 10 };
++static const Col C_HOVER   = { 201, 165, 90, 46 };
++static const Col C_SEL     = { 201, 165, 90, 78 };
++static const Col C_LINE    = { 201, 165, 90, 80 };
++static const Col C_SOFT    = { 255, 255, 255, 26 };
++static const Col C_GOLD    = { 201, 165, 90, 255 };
++static const Col C_GOLDT   = { 236, 205, 138, 255 };
++static const Col C_TEXT    = { 226, 229, 236, 255 };
++static const Col C_DIM     = { 132, 137, 150, 255 };
++static const Col C_FAINT   = { 86, 90, 102, 255 };
++static const Col C_RED     = { 232, 96, 84, 255 };
++static const Col C_GREEN   = { 124, 214, 128, 255 };
++static const Col C_TCOL    = { 226, 128, 76, 255 };
++static const Col C_CTCOL   = { 104, 160, 236, 255 };
++static const Col C_BAR     = { 255, 255, 255, 22 };
++static const Col C_SHADE   = { 6, 7, 10, 150 };
++static const Col C_WHITE   = { 255, 250, 238, 255 };
++
++static Col Alpha( Col c, float f ) { c.a = (unsigned char)( c.a * ( f < 0 ? 0 : f > 1 ? 1 : f )); return c; }
++static Col Mix( Col a, Col b, float t ) { Col c = { (unsigned char)( a.r + ( b.r - a.r ) * t ), (unsigned char)( a.g + ( b.g - a.g ) * t ), (unsigned char)( a.b + ( b.b - a.b ) * t ), (unsigned char)( a.a + ( b.a - a.a ) * t ) }; return c; }
++static float Clamp01( float f ) { return f < 0 ? 0 : f > 1 ? 1 : f; }
++
++//
++// The catalog: Counter-Strike's figures from its server sources (weapons.h, weapontype.cpp, player.cpp's armor
++// ratios), the Half-Life arsenal's from hl_weapons.h; a cycle is the time between two shots
++//
++enum { ANY = 0, ONLY_T = 1, ONLY_CT = 2 };
++enum { POSE_FLAT, POSE_UPRIGHT };
++
++struct BuyItem
++{
++	const char *cmd, *name, *kind, *model;
++	int id, price, team, pose;
++	float damage; int pellets; float cycle; int clip, reserve; float speed, armor, range;
++	const char *note;
++};
++
++#define GUN( cmd, name, kind, model, id, price, team, dmg, pel, cyc, clip, res, spd, arm, rng, note ) \
++	{ cmd, name, kind, "models/" model ".mdl", id, price, team, POSE_FLAT, dmg, pel, cyc, clip, res, spd, arm, rng, note }
++#define ITEM( cmd, name, kind, model, id, price, team, note ) \
++	{ cmd, name, kind, model, id, price, team, POSE_FLAT, 0, 0, 0, 0, 0, 0, 0, 0, note }
++
++static const BuyItem g_Items[] =
++{
++	// pistols
++	GUN( "glock", "Glock 18", "Pistol  -  9mm", "w_glock18", WEAPON_GLOCK18, 400, ANY, 25, 1, 0.15f, 20, 120, 250, 1.05f, 0.75f, "Semi-automatic, or three-round bursts" ),
++	GUN( "usp", "USP .45", "Pistol  -  .45 ACP", "w_usp", WEAPON_USP, 500, ANY, 34, 1, 0.15f, 12, 100, 250, 1.0f, 0.79f, "Accurate, with a removable silencer" ),
++	GUN( "p228", "P228", "Pistol  -  .357 SIG", "w_p228", WEAPON_P228, 600, ANY, 32, 1, 0.15f, 13, 52, 250, 1.25f, 0.8f, "Compact, steady, a good grip on armor" ),
++	GUN( "deagle", "Desert Eagle", "Pistol  -  .50 AE", "w_deagle", WEAPON_DEAGLE, 650, ANY, 54, 1, 0.225f, 7, 35, 250, 1.5f, 0.81f, "The heaviest handgun: a headshot kills" ),
++	GUN( "elites", "Dual Elites", "Pistols  -  9mm", "w_elite", WEAPON_ELITE, 800, ONLY_T, 36, 1, 0.122f, 30, 120, 250, 1.05f, 0.75f, "Two Berettas, thirty rounds" ),
++	GUN( "fn57", "Five-SeveN", "Pistol  -  5.7mm", "w_fiveseven", WEAPON_FIVESEVEN, 750, ONLY_CT, 20, 1, 0.15f, 20, 100, 250, 1.5f, 0.885f, "Light rounds that go through armor" ),
++	// shotguns
++	GUN( "m3", "M3 Super 90", "Shotgun  -  12 gauge", "w_m3", WEAPON_M3, 1700, ANY, 20, 9, 0.875f, 8, 32, 230, 1.0f, 0.3f, "Pump action: nine pellets a shot" ),
++	GUN( "xm1014", "XM1014", "Shotgun  -  12 gauge", "w_xm1014", WEAPON_XM1014, 3000, ANY, 20, 6, 0.25f, 7, 32, 240, 1.0f, 0.3f, "Semi-automatic shotgun" ),
++	// sub-machine guns
++	GUN( "mac10", "MAC-10", "SMG  -  .45 ACP", "w_mac10", WEAPON_MAC10, 1400, ONLY_T, 29, 1, 0.07f, 30, 100, 250, 0.95f, 0.82f, "Fastest fire, hard to hold" ),
++	GUN( "tmp", "TMP", "SMG  -  9mm", "w_tmp", WEAPON_TMP, 1250, ONLY_CT, 20, 1, 0.07f, 30, 120, 250, 1.0f, 0.85f, "Silent: no tracer gives you away" ),
++	GUN( "mp5", "MP5 Navy", "SMG  -  9mm", "w_mp5", WEAPON_MP5N, 1500, ANY, 26, 1, 0.075f, 30, 120, 250, 1.0f, 0.84f, "Accurate all-rounder" ),
++	GUN( "ump45", "UMP45", "SMG  -  .45 ACP", "w_ump45", WEAPON_UMP45, 1700, ANY, 30, 1, 0.1f, 25, 100, 250, 1.0f, 0.82f, "Slower, harder hitting" ),
++	GUN( "p90", "P90", "SMG  -  5.7mm", "w_p90", WEAPON_P90, 2350, ANY, 21, 1, 0.066f, 50, 100, 245, 1.5f, 0.885f, "Fifty rounds that pierce armor" ),
++	// rifles
++	GUN( "galil", "Galil", "Assault rifle  -  5.56mm", "w_galil", WEAPON_GALIL, 2000, ONLY_T, 30, 1, 0.0875f, 35, 90, 240, 1.55f, 0.98f, "The cheapest rifle, thirty-five rounds" ),
++	GUN( "famas", "FAMAS", "Assault rifle  -  5.56mm", "w_famas", WEAPON_FAMAS, 2250, ONLY_CT, 30, 1, 0.0825f, 25, 90, 240, 1.4f, 0.96f, "Automatic, or three-round bursts" ),
++	GUN( "ak47", "AK-47", "Assault rifle  -  7.62mm", "w_ak47", WEAPON_AK47, 2500, ONLY_T, 36, 1, 0.0955f, 30, 90, 221, 1.55f, 0.98f, "A headshot kills, even through a helmet" ),
++	GUN( "m4a1", "M4A1", "Assault rifle  -  5.56mm", "w_m4a1", WEAPON_M4A1, 3100, ONLY_CT, 32, 1, 0.0875f, 30, 90, 230, 1.4f, 0.97f, "Precise, with a removable silencer" ),
++	GUN( "sg552", "SG 552", "Assault rifle  -  5.56mm", "w_sg552", WEAPON_SG552, 3500, ONLY_T, 33, 1, 0.0825f, 30, 90, 235, 1.4f, 0.955f, "With a 2x scope" ),
++	GUN( "aug", "AUG", "Assault rifle  -  5.56mm", "w_aug", WEAPON_AUG, 3500, ONLY_CT, 32, 1, 0.0825f, 30, 90, 240, 1.4f, 0.96f, "With a 2x scope" ),
++	GUN( "scout", "Scout", "Sniper rifle  -  7.62mm", "w_scout", WEAPON_SCOUT, 2750, ANY, 75, 1, 1.25f, 10, 90, 260, 1.7f, 0.98f, "Light bolt-action: run and snipe" ),
++	GUN( "awp", "AWP", "Sniper rifle  -  .338 Magnum", "w_awp", WEAPON_AWP, 4750, ANY, 115, 1, 1.45f, 10, 30, 210, 1.95f, 0.99f, "One shot, one kill" ),
++	GUN( "g3sg1", "G3/SG-1", "Sniper rifle  -  7.62mm", "w_g3sg1", WEAPON_G3SG1, 5000, ONLY_T, 80, 1, 0.25f, 20, 90, 210, 1.65f, 0.98f, "Automatic sniper rifle" ),
++	GUN( "sg550", "SG 550", "Sniper rifle  -  5.56mm", "w_sg550", WEAPON_SG550, 4200, ONLY_CT, 70, 1, 0.25f, 30, 90, 210, 1.45f, 0.98f, "Automatic sniper rifle" ),
++	// machine gun
++	GUN( "m249", "M249", "Machine gun  -  5.56mm", "w_m249", WEAPON_M249, 5750, ANY, 32, 1, 0.1f, 100, 200, 220, 1.5f, 0.97f, "A hundred-round belt" ),
++	// equipment
++	ITEM( "vest", "Kevlar Vest", "Armor  -  100 points", "models/w_kevlar.mdl", 0, 650, ANY, "Halves the damage of most hits to the body" ),
++	ITEM( "vesthelm", "Kevlar + Helmet", "Armor  -  100 points", "models/w_assault.mdl", 0, 1000, ANY, "The vest, and a helmet against headshots" ),
++	ITEM( "flash", "Flashbang", "Grenade", "models/w_flashbang.mdl", WEAPON_FLASHBANG, 200, ANY, "Blinds whoever looks at it; two at most" ),
++	ITEM( "hegren", "HE Grenade", "Grenade", "models/w_hegrenade.mdl", WEAPON_HEGRENADE, 300, ANY, "Explodes after a short fuse" ),
++	ITEM( "sgren", "Smoke Grenade", "Grenade", "models/w_smokegrenade.mdl", WEAPON_SMOKEGRENADE, 300, ANY, "A cloud that hides a passage" ),
++	ITEM( "defuser", "Defusal Kit", "Equipment", "models/w_thighpack.mdl", 0, 200, ONLY_CT, "Defuses the bomb in five seconds, not ten" ),
++	ITEM( "nvgs", "Night Vision", "Equipment", "", 0, 1250, ANY, "See in the dark (N)" ),
++	ITEM( "shield", "Tactical Shield", "Equipment", "models/w_shield.mdl", 0, 2200, ONLY_CT, "Stops bullets; a pistol in the other hand" ),
++	// the Half-Life arsenal: guns
++	GUN( "crowbar", "Crowbar", "Melee  -  Black Mesa", "w_crowbar", HL_CROWBAR, 300, ANY, 25, 1, 0.5f, 0, 0, 250, 1.7f, 0, "Swings beside the knife" ),
++	GUN( "9mmhandgun", "9mm Handgun", "Pistol  -  9mm", "w_9mmhandgun", HL_GLOCK, 400, ANY, 22, 1, 0.25f, 17, 120, 250, 1.05f, 0.75f, "Right click: rapid, wilder fire" ),
++	GUN( "python", ".357 Magnum", "Revolver  -  .357", "w_357", HL_PYTHON, 900, ANY, 65, 1, 0.75f, 6, 36, 250, 1.5f, 0.85f, "Six heavy rounds" ),
++	GUN( "9mmAR", "MP5", "SMG  -  9mm", "w_9mmar", HL_MP5, 1800, ANY, 21, 1, 0.1f, 50, 120, 240, 1.0f, 0.84f, "Right click: contact grenades" ),
++	GUN( "argrenade", "MP5 Grenades", "Ammunition  -  2 at most", "grenade", 0, 300, ANY, 100, 1, 1.0f, 0, 2, 0, 1.0f, 0, "Explode on contact, for the MP5" ),
++	GUN( "shotgun", "Shotgun", "Shotgun  -  buckshot", "w_shotgun", HL_SHOTGUN, 2000, ANY, 18, 6, 0.75f, 8, 32, 230, 1.0f, 0.3f, "Right click: both barrels" ),
++	GUN( "crossbow", "Crossbow", "Crossbow  -  bolts", "w_crossbow", HL_CROSSBOW, 3000, ANY, 100, 1, 0.75f, 5, 30, 230, 1.7f, 0.99f, "Scoped bolts; explosive unscoped" ),
++	// the Half-Life arsenal: heavy weapons and explosives
++	GUN( "hornetgun", "Hornet Gun", "Bio-weapon  -  hornets", "w_hgun", HL_HORNETGUN, 2500, ANY, 15, 1, 0.25f, 0, 8, 240, 1.0f, 0.9f, "Homing hornets; it breeds its own" ),
++	GUN( "gauss", "Gauss", "Tau cannon  -  uranium", "w_gauss", HL_GAUSS, 4000, ANY, 20, 1, 0.2f, 0, 100, 220, 1.5f, 1.0f, "Hold right click: up to 200 damage" ),
++	GUN( "rpg", "RPG", "Rocket launcher", "w_rpg", HL_RPG, 4500, ANY, 120, 1, 1.5f, 1, 3, 200, 1.0f, 1.0f, "Laser-guided rockets" ),
++	GUN( "egon", "Egon", "Gluon gun  -  uranium", "w_egon", HL_EGON, 5500, ANY, 12, 1, 0.1f, 0, 100, 210, 1.5f, 0.6f, "A continuous, searing beam" ),
++	GUN( "handgrenade", "Hand Grenade", "Explosive", "w_grenade", HL_HANDGRENADE, 300, ANY, 100, 1, 0, 0, 1, 250, 1.0f, 0, "Cooks while held, three seconds" ),
++	GUN( "satchel", "Satchel Charge", "Explosive  -  2 at most", "w_satchel", HL_SATCHEL, 600, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Throw it, then detonate it" ),
++	GUN( "tripmine", "Tripmine", "Explosive  -  2 at most", "p_tripmine", HL_TRIPMINE, 500, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Laser-triggered, on a wall" ),
++	GUN( "snark", "Snarks", "Creatures  -  3 a box", "w_sqknest", HL_SNARK, 500, ANY, 10, 1, 0, 0, 6, 250, 1.0f, 0, "Hungry: they hunt the nearest enemy" ),
++};
++
++struct BuyTab
++{
++	const char *title, *menuTitle;
++	int first, count;
++	int vgui; // (the server's menu that opens it)
++};
++
++static const BuyTab g_Tabs[] =
++{
++	{ "Pistols", "Pistols", 0, 6, VGUI_BUY_PISTOL },
++	{ "Shotguns", "Shotguns", 6, 2, VGUI_BUY_SHOTGUN },
++	{ "SMGs", "Sub-machine guns", 8, 5, VGUI_BUY_SMG },
++	{ "Rifles", "Rifles", 13, 10, VGUI_BUY_RIFLE },
++	{ "Machine gun", "Machine gun", 23, 1, VGUI_BUY_MG },
++	{ "Equipment", "Equipment", 24, 8, VGUI_BUY_ITEM },
++	{ "Half-Life guns", "Half-Life arsenal: guns", 32, 7, 0 },
++	{ "Half-Life heavy", "Half-Life arsenal: heavy weapons", 39, 8, 0 },
++};
++#define NUM_TABS ( (int)( sizeof( g_Tabs ) / sizeof( g_Tabs[0] )))
++#define NUM_ITEMS ( (int)( sizeof( g_Items ) / sizeof( g_Items[0] )))
++
++struct Look
++{
++	const char *model, *name, *note;
++};
++
++static const Look g_Looks[2][5] =
++{
++	{
++		{ "terror", "Phoenix Connexion", "Ruthless, well funded, never seen coming" },
++		{ "leet", "Elite Crew", "A tight crew of mercenaries" },
++		{ "arctic", "Arctic Avengers", "Trained in the cold of the north" },
++		{ "guerilla", "Guerilla Warfare", "At home in any rough terrain" },
++		{ "militia", "Midwest Militia", "Volunteers who know their land" },
++	},
++	{
++		{ "urban", "Seal Team 6", "Navy special forces, masters of assault" },
++		{ "gsg9", "GSG-9", "Border police, precise and methodical" },
++		{ "sas", "SAS", "The oldest special forces of all" },
++		{ "gign", "GIGN", "Specialists of hostage rescue" },
++		{ "spetsnaz", "Spetsnaz", "Special forces of the east" },
++	},
++};
++
++//
++// State
++//
++enum { P_NONE, P_TEAM, P_CLASS, P_BUY };
++
++static int g_iPanel = P_NONE;
++static int g_iBits;
++static float g_flOpened;
++static int g_iClassTeam; // 0: Terrorists, 1: Counter-Terrorists
++static int g_iTab, g_iHover = -1, g_iFocus = -1, g_iKeyLevel; // (keys: 0 the tabs, 1 the items)
++static float g_flHoverSince;
++static int g_iFlashItem = -1; static float g_flFlash; static bool g_bFlashBad;
++static float g_cx, g_cy; // the mouse, in HUD units
++static bool g_bClick, g_bMouseDown;
++static float g_flDragYaw, g_flDragLastX; static bool g_bDragging;
++static bool g_bTouch; // (the client button and the visible cursor are set)
++static bool g_bInMouse; // (inside the engine call that sets them: the engine's mouse callbacks it makes are ours)
++static bool g_bSuspended; // (the engine's menu took the mouse: given back when the game takes it again)
++static bool g_bHeld[256]; // (keys down: the engine passes their auto-repeats on)
++
++static float Now( void ) { return gEngfuncs.GetClientTime(); }
++
++static int LocalTeam( void )
++{
++	return g_PlayerExtraInfo[gHUD.m_Scoreboard.m_iPlayerNum].teamnumber;
++}
++
++static bool Owned( int id )
++{
++	if ( id <= 0 )
++		return false;
++	return id < 32 ? !!( gHUD.m_iWeaponBits & ( 1 << id )) : !!( gHUD.m_iWeaponBitsHL & ( 1 << ( id - 32 )));
++}
++
++static bool ItemForTeam( const BuyItem &it )
++{
++	int team = LocalTeam();
++	return it.team == ANY || ( it.team == ONLY_T && team == TEAM_TERRORIST ) || ( it.team == ONLY_CT && team == TEAM_CT );
++}
++
++// the items of a tab the player's team may buy
++static int TabItems( int tab, int *out )
++{
++	int n = 0;
++	for ( int i = 0; i < g_Tabs[tab].count; i++ )
++	{
++		int index = g_Tabs[tab].first + i;
++		if ( ItemForTeam( g_Items[index] ))
++			out[n++] = index;
++	}
++	return n;
++}
++
++//
++// Drawing
++//
++static float SC( float v ) { return v * gHUD.m_flScale; } // (HUD units to the screen's: shapes are drawn in its pixels)
++
++// The shapes of a frame go in one batch, drawn at its end in one call, then its texts over them (in their order:
++// a shape is never drawn over a text)
++#define MAX_QUADS 1024
++#define MAX_TEXTS 320
++
++struct Quad { float x[4], y[4]; Col c[4]; };
++struct QueuedText { float x, y, maxX, scale; Col c; char s[96]; };
++
++static Quad g_Quads[MAX_QUADS];
++static int g_iQuads;
++static QueuedText g_Texts[MAX_TEXTS];
++static int g_iTexts;
++
++static void Quad4( float x, float y, float w, float h, Col c00, Col c01, Col c11, Col c10 )
++{
++	if ( w <= 0 || h <= 0 || g_iQuads >= MAX_QUADS || ( !c00.a && !c01.a && !c11.a && !c10.a ))
++		return;
++	Quad &q = g_Quads[g_iQuads++];
++	q.x[0] = q.x[1] = SC( x ); q.x[2] = q.x[3] = SC( x + w );
++	q.y[0] = q.y[3] = SC( y ); q.y[1] = q.y[2] = SC( y + h );
++	q.c[0] = c00; q.c[1] = c01; q.c[2] = c11; q.c[3] = c10;
++}
++
++static void Color( Col c ) { gEngfuncs.pTriAPI->Color4f( c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f ); }
++
++static void Grad( float x, float y, float w, float h, Col top, Col bottom ) { Quad4( x, y, w, h, top, bottom, bottom, top ); }
++
++static void GradH( float x, float y, float w, float h, Col left, Col right ) { Quad4( x, y, w, h, left, left, right, right ); }
++
++static void Fill( float x, float y, float w, float h, Col c ) { Quad4( x, y, w, h, c, c, c, c ); }
++
++static void Frame( float x, float y, float w, float h, Col c, float t = 1 )
++{
++	Fill( x, y, w, t, c );
++	Fill( x, y + h - t, w, t, c );
++	Fill( x, y + t, t, h - 2 * t, c );
++	Fill( x + w - t, y + t, t, h - 2 * t, c );
++}
++
++// a filled rectangle with a hole in it (where a model turns)
++static void FillAround( float x, float y, float w, float h, float hx, float hy, float hw, float hh, Col c )
++{
++	Fill( x, y, w, hy - y, c );
++	Fill( x, hy + hh, w, y + h - hy - hh, c );
++	Fill( x, hy, hx - x, hh, c );
++	Fill( hx + hw, hy, x + w - hx - hw, hh, c );
++}
++
++// the screen shaded but for a row of cards (same top, same height, left to right)
++static void ShadeAroundRow( const float *xs, int n, float w, float y, float h, Col c )
++{
++	float sw = ScreenWidth, sh = ScreenHeight;
++	Fill( 0, 0, sw, y, c );
++	Fill( 0, y + h, sw, sh - y - h, c );
++	float x = 0;
++	for ( int i = 0; i < n; i++ )
++	{
++		Fill( x, y, xs[i] - x, h, c );
++		x = xs[i] + w;
++	}
++	Fill( x, y, sw - x, h, c );
++}
++
++static void FlushShapes( void )
++{
++	if ( !g_iQuads )
++		return;
++	gRenderAPI.GL_SelectTexture( 0 );
++	gRenderAPI.GL_Bind( 0, gHUD.m_WhiteTex );
++	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
++	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
++	gEngfuncs.pTriAPI->Brightness( 1.0f );
++	gEngfuncs.pTriAPI->Begin( TRI_QUADS );
++	for ( int i = 0; i < g_iQuads; i++ )
++	{
++		const Quad &q = g_Quads[i];
++		for ( int k = 0; k < 4; k++ )
++		{
++			gEngfuncs.pTriAPI->Color4f( q.c[k].r / 255.0f, q.c[k].g / 255.0f, q.c[k].b / 255.0f, q.c[k].a / 255.0f );
++			gEngfuncs.pTriAPI->TexCoord2f( k >= 2, k == 1 || k == 2 );
++			gEngfuncs.pTriAPI->Vertex3f( q.x[k], q.y[k], 0 );
++		}
++	}
++	gEngfuncs.pTriAPI->End();
++	gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
++	g_iQuads = 0;
++}
++
++static int LineHeight( float scale = 1 ) { return (int)( gHUD.GetCharHeight() * scale ); }
++
++static int TextWidth( const char *s, float scale = 1 ) { return (int)( DrawUtils::HudStringLen( s ) * scale ); }
++
++static bool Scaled( float scale ) { return scale != 1 && g_iMobileAPIVersion; }
++
++static void TextClip( float x, float y, float maxX, const char *s, Col c, float scale = 1 )
++{
++	if ( g_iTexts >= MAX_TEXTS || !c.a || !s[0] )
++		return;
++	if ( c.a < 255 )
++	{
++		float f = c.a / 255.0f;
++		c.r *= f; c.g *= f; c.b *= f; // (the font is additive)
++	}
++	QueuedText &t = g_Texts[g_iTexts++];
++	t.x = x; t.y = y; t.maxX = maxX; t.scale = Scaled( scale ) ? scale : 0.0f; t.c = c;
++	strncpy( t.s, s, sizeof( t.s ) - 1 );
++	t.s[sizeof( t.s ) - 1] = 0;
++}
++
++static void Text( float x, float y, const char *s, Col c, float scale = 1 ) { TextClip( x, y, 100000, s, c, scale ); }
++
++static void FlushTexts( void )
++{
++	for ( int i = 0; i < g_iTexts; i++ )
++	{
++		const QueuedText &t = g_Texts[i];
++		DrawUtils::DrawHudString( (int)t.x, (int)t.y, (int)t.maxX, t.s, t.c.r, t.c.g, t.c.b, t.scale );
++	}
++	g_iTexts = 0;
++}
++
++static int TextW( const char *s, float scale ) { return Scaled( scale ) ? TextWidth( s, scale ) : TextWidth( s ); }
++
++static void TextCenter( float cx, float y, const char *s, Col c, float scale = 1 ) { Text( cx - TextW( s, scale ) / 2, y, s, c, scale ); }
++
++static void TextRight( float rx, float y, const char *s, Col c, float scale = 1 ) { Text( rx - TextW( s, scale ), y, s, c, scale ); }
++
++// the text cut at a width, with an ellipsis
++static void TextFit( float x, float y, const char *s, float w, Col c )
++{
++	char buf[96];
++	strncpy( buf, s, sizeof( buf ) - 1 );
++	buf[sizeof( buf ) - 1] = 0;
++	if ( TextWidth( buf ) <= w )
++	{
++		Text( x, y, buf, c );
++		return;
++	}
++	for ( int n = strlen( buf ); n > 0; n-- )
++	{
++		buf[n] = 0;
++		strcat( buf, "..." );
++		if ( TextWidth( buf ) <= w )
++			break;
++		buf[n] = 0;
++	}
++	Text( x, y, buf, c );
++}
++
++static bool Hover( float x, float y, float w, float h ) { return g_cx >= x && g_cx < x + w && g_cy >= y && g_cy < y + h; }
++
++static bool Clicked( float x, float y, float w, float h ) { return g_bClick && Hover( x, y, w, h ); }
++
++// a key's badge: [1]
++static void KeyBadge( float x, float y, const char *key, bool lit )
++{
++	int h = LineHeight();
++	int w = TextWidth( key ) + 10;
++	Fill( x, y - 2, w, h + 4, lit ? Alpha( C_GOLD, 0.6f ) : C_SOFT );
++	Text( x + 5, y, key, lit ? C_WHITE : C_DIM ); // (the font is additive: light on the gold)
++}
++
++// a button with a key; returns whether it was clicked
++static bool Button( float x, float y, float w, float h, const char *key, const char *label, bool enabled, Col accent )
++{
++	bool hover = enabled && Hover( x, y, w, h );
++	Fill( x, y, w, h, hover ? C_HOVER : C_PANEL2 );
++	Frame( x, y, w, h, hover ? accent : C_SOFT );
++	int lh = LineHeight();
++	float tx = x + 12;
++	if ( key )
++	{
++		KeyBadge( tx, y + ( h - lh ) / 2, key, hover );
++		tx += TextWidth( key ) + 20;
++	}
++	Text( tx, y + ( h - lh ) / 2, label, enabled ? ( hover ? C_GOLDT : C_TEXT ) : C_FAINT );
++	return enabled && Clicked( x, y, w, h );
++}
++
++//
++// The models
++//
++#define MAX_PREVIEWS 6
++#define PREVIEW_DIST 9.0f
++#define BACKDROP_DIST 14.5f
++
++struct Preview
++{
++	char name[64];
++	model_t *model;
++	int sequence, pose;
++	float x, y, w, h, t0, yaw, zoom;
++	float scale; // (of the last frame, for the light)
++	bool active, failed;
++	cl_entity_t ent;
++};
++
++struct Backdrop
++{
++	float x, y, w, h;
++	Col c;
++};
++
++static Preview g_Previews[MAX_PREVIEWS];
++static bool g_bPreviewUsed[MAX_PREVIEWS];
++static Backdrop g_Backdrops[8], g_BackdropsNext[8];
++static int g_iBackdrops, g_iBackdropsNext;
++static vec3_t g_vViewOrg, g_vForward, g_vRight, g_vUp;
++static bool g_bView;
++
++// a model turning in a rectangle of the screen, this frame (slots keep their animation while their model stays)
++static void PreviewAdd( int slot, const char *model, float x, float y, float w, float h, int pose, float yaw, float zoom = 1 )
++{
++	if ( slot < 0 || slot >= MAX_PREVIEWS || !model || !model[0] )
++		return;
++	Preview &p = g_Previews[slot];
++	if ( strcmp( p.name, model ))
++	{
++		strncpy( p.name, model, sizeof( p.name ) - 1 );
++		p.name[sizeof( p.name ) - 1] = 0;
++		p.model = NULL;
++		p.failed = false;
++		p.t0 = Now();
++	}
++	p.x = x; p.y = y; p.w = w; p.h = h; p.pose = pose; p.yaw = yaw; p.zoom = zoom;
++	g_bPreviewUsed[slot] = true;
++}
++
++static void BackdropAdd( float x, float y, float w, float h, Col c )
++{
++	if ( g_iBackdropsNext >= (int)( sizeof( g_BackdropsNext ) / sizeof( g_BackdropsNext[0] )))
++		return;
++	Backdrop &b = g_BackdropsNext[g_iBackdropsNext++];
++	b.x = x; b.y = y; b.w = w; b.h = h; b.c = c;
++}
++
++static int PickSequence( studiohdr_t *hdr, int pose )
++{
++	if ( pose != POSE_UPRIGHT )
++		return 0;
++	mstudioseqdesc_t *seq = (mstudioseqdesc_t *)( (byte *)hdr + hdr->seqindex );
++	for ( int i = 0; i < hdr->numseq; i++ )
++		if ( !strcmp( seq[i].label, "idle1" ))
++			return i;
++	for ( int i = 0; i < hdr->numseq; i++ )
++		if ( strstr( seq[i].label, "idle" ))
++			return i;
++	return 0;
++}
++
++void ArsUI_SetView( const float *origin, const float *angles )
++{
++	VectorCopy( origin, g_vViewOrg );
++	AngleVectors( angles, g_vForward, g_vRight, g_vUp );
++	g_bView = true;
++}
++
++// the tangents of the half field of view, from where the renderer projects two points
++static void Projection( float &tx, float &ty )
++{
++	vec3_t p;
++	float screen[3];
++	tx = ty = 1;
++	VectorMA( g_vViewOrg, 100, g_vForward, p ); VectorMA( p, 100, g_vRight, p );
++	if ( !gEngfuncs.pTriAPI->WorldToScreen( p, screen ) && fabs( screen[0] ) > 0.001f )
++		tx = 1.0f / fabs( screen[0] );
++	VectorMA( g_vViewOrg, 100, g_vForward, p ); VectorMA( p, 100, g_vUp, p );
++	if ( !gEngfuncs.pTriAPI->WorldToScreen( p, screen ) && fabs( screen[1] ) > 0.001f )
++		ty = 1.0f / fabs( screen[1] );
++}
++
++// where a point of the screen (HUD units) is, at a distance in front of the view
++static void ScreenPoint( float sx, float sy, float dist, float tx, float ty, float *out )
++{
++	float nx = sx / ScreenWidth * 2 - 1, ny = 1 - sy / ScreenHeight * 2;
++	for ( int i = 0; i < 3; i++ )
++		out[i] = g_vViewOrg[i] + dist * ( g_vForward[i] + g_vRight[i] * nx * tx + g_vUp[i] * ny * ty );
++}
++
++void ArsUI_CreateEntities( void )
++{
++	if ( !g_bView )
++		return;
++	for ( int i = 0; i < MAX_PREVIEWS; i++ )
++	{
++		Preview &p = g_Previews[i];
++		if ( !p.active || p.failed || g_iPanel == P_NONE )
++			continue;
++		if ( !p.model )
++		{
++			p.model = IEngineStudio.Mod_ForName( p.name, 0 );
++			if ( !p.model || p.model->type != mod_studio )
++			{
++				p.model = NULL;
++				p.failed = true; // (tried once, while its name stays)
++				continue;
++			}
++			p.sequence = PickSequence( (studiohdr_t *)IEngineStudio.Mod_Extradata( p.model ), p.pose );
++		}
++		cl_entity_t *e = &p.ent;
++		memset( e, 0, sizeof( *e ));
++		e->model = p.model;
++		e->curstate.sequence = p.sequence;
++		e->curstate.framerate = 1;
++		e->curstate.animtime = p.t0;
++		e->curstate.rendermode = kRenderNormal;
++		e->curstate.renderamt = 255;
++		e->curstate.movetype = MOVETYPE_NONE;
++		e->latched.prevsequence = p.sequence;
++		float tx, ty;
++		Projection( tx, ty );
++		ScreenPoint( p.x + p.w / 2, p.y + p.h / 2, PREVIEW_DIST, tx, ty, e->origin );
++		VectorCopy( e->origin, e->curstate.origin );
++		gEngfuncs.CL_CreateVisibleEntity( ET_NORMAL, e );
++	}
++}
++
++bool ArsUI_IsPreview( cl_entity_t *ent )
++{
++	return ent >= &g_Previews[0].ent && ent <= &g_Previews[MAX_PREVIEWS - 1].ent;
++}
++
++static Preview *PreviewOf( cl_entity_t *ent )
++{
++	for ( int i = 0; i < MAX_PREVIEWS; i++ )
++		if ( ent == &g_Previews[i].ent )
++			return &g_Previews[i];
++	return NULL;
++}
++
++// the model's frame: its bounding box centered in the rectangle, fitted to it as it turns, the side of a weapon
++// facing the view (world models lie on that side); a player faces it, the top tilted a little toward it
++bool ArsUI_PreviewTransform( cl_entity_t *ent, float m[3][4] )
++{
++	Preview *p = PreviewOf( ent );
++	if ( !p || !g_bView )
++		return false;
++	studiohdr_t *hdr = (studiohdr_t *)IEngineStudio.Mod_Extradata( p->model );
++	vec3_t mins, maxs;
++	mstudioseqdesc_t *seq = (mstudioseqdesc_t *)( (byte *)hdr + hdr->seqindex ) + p->sequence;
++	VectorCopy( seq->bbmin, mins ); VectorCopy( seq->bbmax, maxs );
++	if ( maxs[0] - mins[0] < 0.5f || maxs[2] - mins[2] < 0.5f )
++	{
++		VectorCopy( hdr->bbmin, mins ); VectorCopy( hdr->bbmax, maxs );
++	}
++	if ( maxs[0] - mins[0] < 0.5f || maxs[2] - mins[2] < 0.5f )
++	{
++		VectorCopy( hdr->min, mins ); VectorCopy( hdr->max, maxs );
++	}
++	if ( maxs[0] - mins[0] < 0.5f )
++	{
++		mins[0] = mins[1] = mins[2] = -12;
++		maxs[0] = maxs[1] = maxs[2] = 12;
++	}
++
++	// local axes in the display frame (x: the screen's right, y: away from the view, z: its up)
++	float pose[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
++	if ( p->pose == POSE_FLAT )
++	{
++		// (lying weapons: their up toward the view, their left up)
++		pose[0][0] = 1; pose[1][0] = 0; pose[2][0] = 0;
++		pose[0][1] = 0; pose[1][1] = 0; pose[2][1] = 1;
++		pose[0][2] = 0; pose[1][2] = -1; pose[2][2] = 0;
++	}
++	vec3_t center, half;
++	for ( int i = 0; i < 3; i++ )
++	{
++		center[i] = ( mins[i] + maxs[i] ) / 2;
++		half[i] = ( maxs[i] - mins[i] ) / 2;
++	}
++	float ex = 0, ey = 0, ez = 0;
++	for ( int j = 0; j < 3; j++ )
++	{
++		ex += fabs( pose[0][j] ) * half[j];
++		ey += fabs( pose[1][j] ) * half[j];
++		ez += fabs( pose[2][j] ) * half[j];
++	}
++	// (small items shown at a sensible size, not blown up to the frame)
++	ez = max( ez, 4.5f );
++	float radius = max( (float)sqrt( ex * ex + ey * ey ), 7.0f );
++	float tx, ty;
++	Projection( tx, ty );
++	float worldW = p->w / ScreenWidth * 2 * tx * PREVIEW_DIST, worldH = p->h / ScreenHeight * 2 * ty * PREVIEW_DIST;
++	float intro = Clamp01(( Now() - p->t0 ) / 0.25f );
++	intro = 1 - ( 1 - intro ) * ( 1 - intro );
++	float s = min( worldW * 0.94f / ( 2 * radius ), worldH * 0.9f / ( 2 * ez )) * p->zoom * ( 0.86f + 0.14f * intro );
++	// (never deeper than the backdrop: the model stays between it and the view)
++	s = min( s, ( BACKDROP_DIST - PREVIEW_DIST - 0.5f ) / radius );
++	p->scale = s;
++
++	// (a slow sway around the side that faces the view: a close model turned edge-on would leave the frame)
++	float yaw = p->yaw + sin(( Now() - p->t0 ) * 0.8f ) * ( p->pose == POSE_UPRIGHT ? 0.55f : 0.42f ) + g_flDragYaw;
++	if ( p->pose == POSE_UPRIGHT )
++		yaw -= M_PI / 2; // (the front toward the view)
++	float cy = cos( yaw ), sy = sin( yaw );
++	float tilt = ( p->pose == POSE_UPRIGHT ? 5.0f : 9.0f ) * M_PI / 180, ct = cos( tilt ), st = sin( tilt );
++	// display = Tilt * Spin * pose
++	float spin[3][3] = { { cy, -sy, 0 }, { sy, cy, 0 }, { 0, 0, 1 } };
++	float tiltm[3][3] = { { 1, 0, 0 }, { 0, ct, -st }, { 0, st, ct } };
++	float a[3][3], d[3][3];
++	for ( int i = 0; i < 3; i++ )
++		for ( int j = 0; j < 3; j++ )
++			a[i][j] = spin[i][0] * pose[0][j] + spin[i][1] * pose[1][j] + spin[i][2] * pose[2][j];
++	for ( int i = 0; i < 3; i++ )
++		for ( int j = 0; j < 3; j++ )
++			d[i][j] = tiltm[i][0] * a[0][j] + tiltm[i][1] * a[1][j] + tiltm[i][2] * a[2][j];
++	// world = [right forward up] * display * scale
++	vec3_t mid;
++	ScreenPoint( p->x + p->w / 2, p->y + p->h / 2, PREVIEW_DIST, tx, ty, mid );
++	for ( int i = 0; i < 3; i++ )
++	{
++		for ( int j = 0; j < 3; j++ )
++			m[i][j] = ( g_vRight[i] * d[0][j] + g_vForward[i] * d[1][j] + g_vUp[i] * d[2][j] ) * s;
++		m[i][3] = mid[i] - ( m[i][0] * center[0] + m[i][1] * center[1] + m[i][2] * center[2] );
++	}
++	VectorCopy( mid, ent->origin );
++	return true;
++}
++
++// a light of its own: from above the view, on its left
++void ArsUI_PreviewLighting( cl_entity_t *ent, alight_t *lighting )
++{
++	Preview *p = PreviewOf( ent );
++	if ( !p )
++		return;
++	lighting->ambientlight = 78;
++	lighting->shadelight = 168;
++	lighting->color[0] = lighting->color[1] = lighting->color[2] = 1.0f;
++	vec3_t dir;
++	for ( int i = 0; i < 3; i++ )
++		dir[i] = g_vForward[i] * 0.55f - g_vUp[i] * 0.7f + g_vRight[i] * 0.45f;
++	VectorNormalize( dir );
++	// (the bones are scaled: the light turned in their frame would be too)
++	float k = p->scale > 0.0001f ? 1.0f / p->scale : 1.0f;
++	VectorScale( dir, k, lighting->plightvec );
++}
++
++void ArsUI_DrawBackdrops( void )
++{
++	if ( !g_bView || !g_iBackdrops || g_iPanel == P_NONE )
++		return;
++	float tx, ty;
++	Projection( tx, ty );
++	gRenderAPI.GL_SelectTexture( 0 );
++	gRenderAPI.GL_Bind( 0, gHUD.m_WhiteTex );
++	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
++	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
++	for ( int i = 0; i < g_iBackdrops; i++ )
++	{
++		Backdrop &b = g_Backdrops[i];
++		vec3_t c[4];
++		ScreenPoint( b.x, b.y, BACKDROP_DIST, tx, ty, c[0] );
++		ScreenPoint( b.x, b.y + b.h, BACKDROP_DIST, tx, ty, c[1] );
++		ScreenPoint( b.x + b.w, b.y + b.h, BACKDROP_DIST, tx, ty, c[2] );
++		ScreenPoint( b.x + b.w, b.y, BACKDROP_DIST, tx, ty, c[3] );
++		Color( b.c );
++		gEngfuncs.pTriAPI->Begin( TRI_QUADS );
++		for ( int k = 0; k < 4; k++ )
++		{
++			gEngfuncs.pTriAPI->TexCoord2f( 0, 0 );
++			gEngfuncs.pTriAPI->Vertex3fv( c[k] );
++		}
++		gEngfuncs.pTriAPI->End();
++	}
++	gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
++}
++
++bool ArsUI_HidesViewModel( void )
++{
++	return g_iPanel != P_NONE;
++}
++
++//
++// Panels
++//
++extern void IN_ReleaseMouseButtons( void );
++
++static void Mouse( bool on )
++{
++	if ( on == g_bTouch || !g_iMobileAPIVersion )
++		return;
++	g_bTouch = on;
++	g_bInMouse = true;
++	if ( on )
++	{
++		// (a button held as the panel opens: its release would go to the panel, its action stay on, +attack firing)
++		IN_ReleaseMouseButtons();
++		static byte none[4] = { 0, 0, 0, 0 };
++		gMobileAPI.pfnTouchAddClientButton( "_ars_click", "*white", "+ars_click", 0, 0, 1, 1, none, 0, 1.0f, 0 );
++		gMobileAPI.pfnTouchSetClientOnly( 1 );
++	}
++	else
++	{
++		gMobileAPI.pfnTouchRemoveButton( "_ars_click" );
++		gMobileAPI.pfnTouchSetClientOnly( 0 );
++	}
++	g_bInMouse = false;
++}
++
++static void Open( int panel, int bits )
++{
++	Mouse( true );
++	if ( g_iPanel != panel )
++		g_flOpened = Now();
++	g_iPanel = panel;
++	g_iBits = bits;
++	g_iHover = g_iFocus = -1;
++	g_iKeyLevel = 0;
++	g_bClick = g_bMouseDown = g_bDragging = false;
++	g_flDragYaw = 0;
++	gHUD.m_Menu.m_fMenuDisplayed = 0;
++	gHUD.m_Menu.m_iFlags &= ~HUD_DRAW;
++}
++
++static void Close( void )
++{
++	Mouse( false );
++	g_bSuspended = false;
++	g_iPanel = P_NONE;
++	g_bClick = g_bMouseDown = g_bDragging = false;
++}
++
++static bool Allowed( int key ) { return !!( g_iBits & ( 1 << ( key - 1 ))); }
++
++static void Command( const char *fmt, int arg )
++{
++	char buf[64];
++	snprintf( buf, sizeof( buf ), fmt, arg );
++	ClientCmd( buf );
++}
++
++static int TeamCount( int team )
++{
++	int n = 0;
++	gHUD.m_Scoreboard.GetAllPlayersInfo();
++	for ( int i = 1; i <= MAX_PLAYERS; i++ )
++		if ( g_PlayerInfoList[i].name && g_PlayerInfoList[i].name[0] && g_PlayerExtraInfo[i].teamnumber == team )
++			n++;
++	return n;
++}
++
++static float Fade( void ) { return Clamp01(( Now() - g_flOpened ) / 0.15f ); }
++
++static void Title( float y, const char *title, const char *subtitle, float fade )
++{
++	float cx = ScreenWidth / 2;
++	TextCenter( cx, y, title, Alpha( C_GOLDT, fade ), 2.0f );
++	float ty = y + LineHeight( Scaled( 2.0f ) ? 2.0f : 1.0f ) + 8;
++	GradH( cx - 160, ty, 160, 1, Alpha( C_GOLD, 0 ), Alpha( C_GOLD, fade * 0.8f ));
++	GradH( cx, ty, 160, 1, Alpha( C_GOLD, fade * 0.8f ), Alpha( C_GOLD, 0 ));
++	if ( subtitle )
++		TextCenter( cx, ty + 10, subtitle, Alpha( C_DIM, fade ));
++}
++
++// a card: a model turning over its backdrop, its name under it; returns whether it was clicked
++static bool Card( int slot, float x, float y, float w, float h, const char *model, int pose, const char *key, const char *name,
++	const char *line1, const char *line2, Col accent, bool enabled, float fade )
++{
++	bool hover = enabled && Hover( x, y, w, h );
++	int lh = LineHeight();
++	float infoH = lh * ( line2 ? 4.6f : 3.4f );
++	float hx = x + 1, hy = y + 1, hw = w - 2, hh = h - infoH - 1;
++	Col back = hover ? Mix( C_PANEL, accent, 0.10f ) : C_PANEL;
++	BackdropAdd( hx, hy, hw, hh, Alpha( back, fade * 0.92f ));
++	Grad( hx, hy + hh * 0.55f, hw, hh * 0.45f, Alpha( accent, 0 ), Alpha( accent, ( hover ? 0.20f : 0.08f ) * fade )); // (the floor's glow)
++	if ( model )
++		PreviewAdd( slot, model, hx + 6, hy + 8, hw - 12, hh - 14, pose, 0, hover ? 1.04f : 0.97f );
++	Fill( x, y + h - infoH, w, infoH, Alpha( hover ? C_PANEL2 : C_PANEL, fade ));
++	Fill( x, y + h - infoH, w, 2, Alpha( accent, ( hover ? 1.0f : 0.55f ) * fade ));
++	Frame( x, y, w, h, Alpha( hover ? accent : C_SOFT, fade ));
++	float ty = y + h - infoH + lh * 0.55f;
++	if ( key )
++		KeyBadge( x + 12, ty, key, hover );
++	Text( x + ( key ? 22 + TextWidth( key ) : 12 ), ty, name, Alpha( enabled ? ( hover ? C_GOLDT : C_TEXT ) : C_FAINT, fade ));
++	if ( line1 )
++		TextFit( x + 12, ty + lh * 1.3f, line1, w - 24, Alpha( C_DIM, fade ));
++	if ( line2 )
++		TextFit( x + 12, ty + lh * 2.4f, line2, w - 24, Alpha( C_FAINT, fade ));
++	return enabled && Clicked( x, y, w, h );
++}
++
++// the team panel: the two sides, their models turning, how many play in each; auto-select, spectate
++static void DrawTeam( void )
++{
++	float fade = Fade();
++	float sw = ScreenWidth, sh = ScreenHeight;
++	Title( sh * 0.08f, "CHOOSE YOUR SIDE", "Click a side, or press its key", fade );
++	float cw = min( 340.0f, sw * 0.28f ), ch = min( 470.0f, sh * 0.6f ), gap = min( 48.0f, sw * 0.04f );
++	float x0 = sw / 2 - cw - gap / 2, y0 = sh * 0.22f;
++	float xs[2] = { x0, x0 + cw + gap };
++	ShadeAroundRow( xs, 2, cw, y0, ch, Alpha( C_SHADE, fade ));
++	int nT = TeamCount( TEAM_TERRORIST ), nCT = TeamCount( TEAM_CT );
++	char l1[64], l2[64];
++	int look = (int)( Now() / 3.5f ) % 4; // (the side's looks, in turn)
++	char model[64];
++
++	snprintf( l1, sizeof( l1 ), "%d player%s", nT, nT == 1 ? "" : "s" );
++	snprintf( model, sizeof( model ), "models/player/%s/%s.mdl", g_Looks[0][look].model, g_Looks[0][look].model );
++	if ( Card( 0, x0, y0, cw, ch, model, POSE_UPRIGHT, "1", "Terrorists", l1, "Plant the bomb, hold the hostages", C_TCOL, Allowed( 1 ), fade ))
++	{
++		Command( "jointeam %d", 1 );
++		Close();
++		return;
++	}
++	snprintf( l1, sizeof( l1 ), "%d player%s", nCT, nCT == 1 ? "" : "s" );
++	snprintf( model, sizeof( model ), "models/player/%s/%s.mdl", g_Looks[1][look].model, g_Looks[1][look].model );
++	if ( Card( 1, x0 + cw + gap, y0, cw, ch, model, POSE_UPRIGHT, "2", "Counter-Terrorists", l1, "Defuse the bomb, rescue the hostages", C_CTCOL, Allowed( 2 ), fade ))
++	{
++		Command( "jointeam %d", 2 );
++		Close();
++		return;
++	}
++	(void)l2;
++	float by = y0 + ch + 22, bh = LineHeight() * 2.2f, bw = min( 210.0f, cw * 0.62f );
++	int buttons = 1 + Allowed( 3 ) + Allowed( 6 ) + Allowed( 10 );
++	float bx = sw / 2 - ( buttons * bw + ( buttons - 1 ) * 14 ) / 2;
++	if ( Button( bx, by, bw, bh, "5", "Auto-select", Allowed( 5 ), C_GOLD ))
++	{
++		Command( "jointeam %d", 5 );
++		Close();
++		return;
++	}
++	bx += bw + 14;
++	if ( Allowed( 3 ))
++	{
++		if ( Button( bx, by, bw, bh, "3", "VIP", true, C_GOLD ))
++		{
++			Command( "jointeam %d", 3 );
++			Close();
++			return;
++		}
++		bx += bw + 14;
++	}
++	if ( Allowed( 6 ))
++	{
++		if ( Button( bx, by, bw, bh, "6", "Spectate", true, C_GOLD ))
++		{
++			Command( "jointeam %d", 6 );
++			Close();
++			return;
++		}
++		bx += bw + 14;
++	}
++	if ( Allowed( 10 ) && Button( bx, by, bw, bh, "0", "Cancel", true, C_GOLD ))
++		Close();
++}
++
++// the appearance panel: the side's looks, turning
++static void DrawClass( void )
++{
++	float fade = Fade();
++	float sw = ScreenWidth, sh = ScreenHeight;
++	int team = g_iClassTeam;
++	int looks = Allowed( 6 ) ? 5 : 4, autoKey = looks + 1;
++	Title( sh * 0.08f, "CHOOSE YOUR LOOK", team ? "Counter-Terrorists" : "Terrorists", fade );
++	Col accent = team ? C_CTCOL : C_TCOL;
++	float gap = 14, cw = min( 230.0f, ( sw - 60 - gap * ( looks - 1 )) / looks ), ch = min( 430.0f, sh * 0.58f );
++	float x0 = sw / 2 - ( looks * cw + ( looks - 1 ) * gap ) / 2, y0 = sh * 0.22f;
++	float xs[5];
++	for ( int i = 0; i < looks; i++ )
++		xs[i] = x0 + i * ( cw + gap );
++	ShadeAroundRow( xs, looks, cw, y0, ch, Alpha( C_SHADE, fade ));
++	for ( int i = 0; i < looks; i++ )
++	{
++		const Look &l = g_Looks[team][i];
++		char model[64], key[4];
++		snprintf( model, sizeof( model ), "models/player/%s/%s.mdl", l.model, l.model );
++		snprintf( key, sizeof( key ), "%d", i + 1 );
++		if ( Card( i, x0 + i * ( cw + gap ), y0, cw, ch, model, POSE_UPRIGHT, key, l.name, l.note, NULL, accent, Allowed( i + 1 ), fade ))
++		{
++			Command( "joinclass %d", i + 1 );
++			Close();
++			return;
++		}
++	}
++	float bh = LineHeight() * 2.2f, bw = 230;
++	char key[4];
++	snprintf( key, sizeof( key ), "%d", autoKey );
++	if ( Button( sw / 2 - bw / 2, y0 + ch + 22, bw, bh, key, "Auto-select", Allowed( autoKey ), C_GOLD ))
++	{
++		Command( "joinclass %d", autoKey );
++		Close();
++	}
++}
++
++static void Bar( float x, float y, float w, float h, float value, Col c )
++{
++	Fill( x, y, w, h, C_BAR );
++	value = Clamp01( value );
++	if ( value > 0 )
++		GradH( x, y, w * value, h, Alpha( c, 0.65f ), c );
++}
++
++static void StatRow( float x, float y, float w, const char *label, float value, const char *text, Col c )
++{
++	int lh = LineHeight();
++	Text( x, y, label, C_DIM );
++	float bx = x + w * 0.34f, bw = w * 0.42f;
++	Bar( bx, y + lh / 2 - 3, bw, 6, value, c );
++	TextRight( x + w, y, text, C_TEXT );
++}
++
++// (the server decides: its price can be lower than the one shown — the helmet alone for a full vest — and it tells
++// why it refuses; the row flashes red when the shown price is more than the money)
++static void Buy( int index )
++{
++	const BuyItem &it = g_Items[index];
++	g_iFlashItem = index;
++	g_flFlash = Now();
++	g_bFlashBad = it.price > gHUD.m_Money.Money();
++	ClientCmd( (char *)it.cmd );
++}
++
++static void ItemFigures( float x, float y, float w, const BuyItem &it )
++{
++	int lh = LineHeight();
++	float row = lh * 1.55f;
++	char text[48];
++	if ( !it.damage )
++	{
++		Text( x, y, it.note, C_TEXT );
++		return;
++	}
++	if ( it.pellets > 1 )
++		snprintf( text, sizeof( text ), "%d x %d", (int)it.damage, it.pellets );
++	else
++		snprintf( text, sizeof( text ), "%d", (int)it.damage );
++	StatRow( x, y, w, "Damage", it.damage * it.pellets / 120.0f, text, C_RED );
++	y += row;
++	if ( it.cycle > 0 )
++	{
++		snprintf( text, sizeof( text ), "%d rpm", (int)( 60 / it.cycle + 0.5f ));
++		StatRow( x, y, w, "Fire rate", 60 / it.cycle / 900.0f, text, C_GOLD );
++		y += row;
++	}
++	if ( it.armor > 0 && it.speed > 0 )
++	{
++		float pen = min( 1.0f, it.armor * 0.5f );
++		snprintf( text, sizeof( text ), "%d%%", (int)( pen * 100 + 0.5f ));
++		StatRow( x, y, w, "Armor piercing", pen, text, C_CTCOL );
++		y += row;
++	}
++	if ( it.range > 0 )
++	{
++		float kept = it.range * it.range; // (damage kept at 1000 units)
++		snprintf( text, sizeof( text ), "%d%%", (int)( kept * 100 + 0.5f ));
++		StatRow( x, y, w, "Range", kept, text, C_GREEN );
++		y += row;
++	}
++	if ( it.speed > 0 )
++	{
++		snprintf( text, sizeof( text ), "%d", (int)it.speed );
++		StatRow( x, y, w, "Mobility", ( it.speed - 180 ) / 80.0f, text, C_TEXT );
++		y += row;
++	}
++	if ( it.clip > 0 || it.reserve > 0 )
++	{
++		if ( it.clip > 0 )
++			snprintf( text, sizeof( text ), "%d / %d", it.clip, it.reserve );
++		else
++			snprintf( text, sizeof( text ), "%d", it.reserve );
++		Text( x, y, it.clip > 0 ? "Magazine" : "Carried", C_DIM );
++		TextRight( x + w, y, text, C_TEXT );
++		y += row;
++	}
++	Text( x, y + 2, it.note, C_FAINT );
++}
++
++// the buy panel: the categories, their items, the hovered one turning with its figures
++static void DrawBuy( void )
++{
++	float fade = Fade();
++	float sw = ScreenWidth, sh = ScreenHeight;
++	int lh = LineHeight();
++	float W = min( 1120.0f, sw - 40 ), H = min( 640.0f, sh - 40 );
++	float x0 = (int)( sw - W ) / 2, y0 = (int)( sh - H ) / 2;
++	float headH = lh * 3.4f, footH = lh * 3.0f;
++	float tabsW = min( 200.0f, W * 0.2f ), listW = min( 380.0f, W * 0.36f );
++	float bodyY = y0 + headH, bodyH = H - headH - footH;
++	float dx = x0 + tabsW + listW, dw = W - tabsW - listW;
++	float px = dx + 1, py = bodyY + 1, pw = dw - 2, ph = bodyH * 0.46f; // (the model's hole)
++	int money = gHUD.m_Money.Money();
++
++	// panel, its hole
++	BackdropAdd( px, py, pw, ph, Alpha( C_PANEL, fade ));
++	Grad( px, py + ph * 0.6f, pw, ph * 0.4f, Alpha( C_GOLD, 0 ), Alpha( C_GOLD, 0.07f * fade ));
++	FillAround( x0, y0, W, H, px, py, pw, ph, Alpha( C_PANEL, fade ));
++	Grad( x0, y0, W, headH, Alpha( C_PANEL2, fade ), Alpha( C_PANEL, fade ));
++	Fill( x0, y0 + headH - 1, W, 1, Alpha( C_LINE, fade ));
++	Fill( x0, y0 + H - footH, W, 1, Alpha( C_LINE, fade ));
++	Fill( x0 + tabsW, bodyY, 1, bodyH, Alpha( C_SOFT, fade ));
++	Fill( dx, bodyY, 1, bodyH, Alpha( C_SOFT, fade ));
++	Frame( x0, y0, W, H, Alpha( C_LINE, fade ));
++	Fill( x0, y0, W, 2, Alpha( C_GOLD, fade ));
++
++	// header
++	float hy = y0 + ( headH - LineHeight( Scaled( 1.7f ) ? 1.7f : 1 )) / 2;
++	Text( x0 + 18, hy, "BUY", Alpha( C_GOLDT, fade ), 1.7f );
++	Text( x0 + 22 + TextW( "BUY", 1.7f ) + 10, hy + LineHeight( Scaled( 1.7f ) ? 1.7f : 1 ) - lh - 1, "Anywhere, anytime  -  B, Esc or right click closes", Alpha( C_DIM, fade ));
++	char sz[48];
++	snprintf( sz, sizeof( sz ), "$ %d", money );
++	TextRight( x0 + W - 18, hy, sz, Alpha( C_GREEN, fade ), 1.7f );
++
++	// tabs
++	float ty = bodyY + 8, tabH = lh * 2.25f;
++	for ( int t = 0; t < NUM_TABS; t++ )
++	{
++		int items[16], n = TabItems( t, items );
++		bool sel = t == g_iTab, hover = Hover( x0, ty, tabsW, tabH );
++		if ( sel || hover )
++			Fill( x0 + 1, ty, tabsW - 1, tabH, sel ? C_SEL : C_HOVER );
++		if ( sel )
++			Fill( x0 + 1, ty, 3, tabH, C_GOLD );
++		char key[4];
++		snprintf( key, sizeof( key ), "%d", t + 1 );
++		KeyBadge( x0 + 14, ty + ( tabH - lh ) / 2, key, sel && g_iKeyLevel == 0 );
++		Text( x0 + 40, ty + ( tabH - lh ) / 2, g_Tabs[t].title, Alpha( sel ? C_GOLDT : hover ? C_TEXT : C_DIM, fade ));
++		snprintf( key, sizeof( key ), "%d", n );
++		TextRight( x0 + tabsW - 12, ty + ( tabH - lh ) / 2, key, Alpha( C_FAINT, fade ));
++		if ( Clicked( x0, ty, tabsW, tabH ) && t != g_iTab )
++		{
++			g_iTab = t;
++			g_iFocus = -1;
++			g_iKeyLevel = 1;
++		}
++		ty += tabH + 2;
++	}
++
++	// items
++	int items[16], n = TabItems( g_iTab, items );
++	float lx = x0 + tabsW + 1, ly = bodyY + 8, rowH = lh * 2.4f;
++	Text( lx + 14, ly + 2, g_Tabs[g_iTab].menuTitle, Alpha( C_GOLDT, fade ));
++	ly += lh * 1.8f;
++	int hovered = -1;
++	for ( int i = 0; i < n; i++ )
++	{
++		const BuyItem &it = g_Items[items[i]];
++		bool hover = Hover( lx, ly, listW - 1, rowH );
++		bool focus = items[i] == g_iFocus;
++		bool afford = it.price <= money, owned = Owned( it.id );
++		if ( hover )
++			hovered = items[i];
++		float flash = items[i] == g_iFlashItem ? Clamp01( 1 - ( Now() - g_flFlash ) / 0.5f ) : 0;
++		Fill( lx + 6, ly + 1, listW - 13, rowH - 2, ( hover || focus ) ? C_HOVER : C_ROW );
++		if ( flash > 0 )
++			Fill( lx + 6, ly + 1, listW - 13, rowH - 2, Alpha( g_bFlashBad ? C_RED : C_GREEN, flash * 0.35f ));
++		if ( hover || focus )
++			Fill( lx + 6, ly + 1, 2, rowH - 2, C_GOLD );
++		char key[4];
++		snprintf( key, sizeof( key ), "%d", i + 1 );
++		float cy = ly + ( rowH - lh ) / 2;
++		KeyBadge( lx + 16, cy, key, ( hover || focus ) && g_iKeyLevel == 1 );
++		Text( lx + 42, cy, it.name, Alpha( afford ? (( hover || focus ) ? C_GOLDT : C_TEXT ) : C_FAINT, fade ));
++		snprintf( sz, sizeof( sz ), "$%d", it.price );
++		TextRight( lx + listW - 18, cy, sz, Alpha( afford ? C_GREEN : C_RED, fade ));
++		if ( owned )
++			TextRight( lx + listW - 26 - TextWidth( sz ), cy, "owned", Alpha( C_DIM, fade ));
++		if ( hover && g_bClick )
++			Buy( items[i] );
++		ly += rowH + 3;
++	}
++	if ( hovered >= 0 && hovered != g_iHover )
++	{
++		g_iHover = hovered;
++		g_flHoverSince = Now();
++		g_flDragYaw = 0;
++	}
++	int shown = hovered >= 0 ? hovered : g_iFocus >= 0 ? g_iFocus : ( g_iHover >= 0 && g_iHover >= g_Tabs[g_iTab].first && g_iHover < g_Tabs[g_iTab].first + g_Tabs[g_iTab].count ) ? g_iHover : ( n ? items[0] : -1 );
++
++	// the shown item: its model, its figures
++	if ( shown >= 0 )
++	{
++		const BuyItem &it = g_Items[shown];
++		if ( it.model[0] )
++			PreviewAdd( 0, it.model, px + 10, py + 10, pw - 20, ph - 20, it.pose, 0 );
++		else
++			TextCenter( px + pw / 2, py + ph / 2 - lh / 2, "no model to show", Alpha( C_FAINT, fade ));
++		if ( Hover( px, py, pw, ph ))
++			TextRight( px + pw - 10, py + ph - lh - 8, "drag to turn", Alpha( C_FAINT, fade ));
++		float ix = dx + 22, iy = py + ph + 12, iw = dw - 44;
++		Text( ix, iy, it.name, Alpha( C_GOLDT, fade ), 1.45f );
++		snprintf( sz, sizeof( sz ), "$%d", it.price );
++		bool afford = it.price <= money;
++		TextRight( ix + iw, iy, sz, Alpha( afford ? C_GREEN : C_RED, fade ), 1.45f );
++		iy += LineHeight( Scaled( 1.45f ) ? 1.45f : 1 ) + 4;
++		char kind[96];
++		snprintf( kind, sizeof( kind ), "%s%s", it.kind, it.team == ONLY_T ? "  -  Terrorists only" : it.team == ONLY_CT ? "  -  Counter-Terrorists only" : "" );
++		Text( ix, iy, kind, Alpha( C_DIM, fade ));
++		iy += lh * 1.9f;
++		ItemFigures( ix, iy, iw, it );
++	}
++
++	// footer: ammo, close
++	float fy = y0 + H - footH + ( footH - lh * 2.1f ) / 2, bh = lh * 2.1f;
++	float bx = x0 + 14;
++	if ( Button( bx, fy, 190, bh, ",", "Primary ammo", true, C_GOLD ))
++		ClientCmd( "primammo" );
++	bx += 200;
++	if ( Button( bx, fy, 200, bh, ".", "Secondary ammo", true, C_GOLD ))
++		ClientCmd( "secammo" );
++	if ( Button( x0 + W - 14 - 130, fy, 130, bh, "B", "Close", true, C_GOLD ))
++		Close();
++
++	// (the keys, or why a purchase failed)
++	if ( g_iFlashItem >= 0 && g_bFlashBad && Now() - g_flFlash < 1.5f )
++		TextRight( x0 + W - 14 - 130 - 16, fy + ( bh - lh ) / 2, "Not enough money", C_RED );
++	else
++		TextRight( x0 + W - 14 - 130 - 16, fy + ( bh - lh ) / 2, g_iKeyLevel ? "1-9 buy    0 categories    wheel, arrows: category" : "1-8 category    wheel, arrows: category", Alpha( C_FAINT, fade ));
++
++	// dragging the model turns it
++	if ( g_bMouseDown && ( g_bDragging || Hover( px, py, pw, ph )))
++	{
++		if ( g_bDragging )
++			g_flDragYaw += ( g_cx - g_flDragLastX ) * 0.02f;
++		g_bDragging = true;
++		g_flDragLastX = g_cx;
++	}
++	else
++		g_bDragging = false;
++}
++
++//
++// Entry points
++//
++static void ClickDown( void )
++{
++	g_bClick = true;
++	g_bMouseDown = true;
++}
++
++static void ClickUp( void )
++{
++	g_bMouseDown = false;
++}
++
++void ArsUI_Init( void )
++{
++	gEngfuncs.pfnRegisterVariable( "_ars_ui", "1", FCVAR_USERINFO );
++	gEngfuncs.pfnAddCommand( "+ars_click", ClickDown );
++	gEngfuncs.pfnAddCommand( "-ars_click", ClickUp );
++}
++
++void ArsUI_VidInit( void )
++{
++	Close();
++	memset( g_Previews, 0, sizeof( g_Previews ));
++	g_iBackdrops = g_iBackdropsNext = 0;
++	g_bView = false;
++}
++
++bool ArsUI_Active( void ) { return g_iPanel != P_NONE; }
++
++bool ArsUI_HidesHud( void ) { return g_iPanel != P_NONE; }
++
++static void NumberKey( int key )
++{
++	if ( g_iPanel == P_TEAM )
++	{
++		if ( key == 10 && Allowed( 10 ))
++			Close();
++		else if ( key >= 1 && key <= 6 && key != 4 && Allowed( key ))
++		{
++			Command( "jointeam %d", key );
++			Close();
++		}
++	}
++	else if ( g_iPanel == P_CLASS )
++	{
++		if ( Allowed( key ) && key <= 6 )
++		{
++			Command( "joinclass %d", key );
++			Close();
++		}
++	}
++	else if ( g_iPanel == P_BUY )
++	{
++		if ( key == 10 )
++		{
++			if ( g_iKeyLevel == 1 )
++				g_iKeyLevel = 0;
++			else
++				Close();
++			return;
++		}
++		if ( g_iKeyLevel == 0 )
++		{
++			if ( key <= NUM_TABS )
++			{
++				g_iTab = key - 1;
++				g_iKeyLevel = 1;
++				g_iFocus = -1;
++			}
++			return;
++		}
++		int items[16], n = TabItems( g_iTab, items );
++		if ( key <= n )
++		{
++			g_iFocus = items[key - 1];
++			Buy( items[key - 1] );
++		}
++	}
++}
++
++bool ArsUI_Key( int down, int keynum, const char *pszCurrentBinding )
++{
++	bool repeat = false;
++	if ( keynum >= 0 && keynum < 256 )
++	{
++		repeat = down && g_bHeld[keynum];
++		g_bHeld[keynum] = !!down;
++	}
++	if ( g_iPanel == P_NONE || !down )
++		return false; // (releases reach the game: a key held as the panel opened)
++	const char *b = pszCurrentBinding ? pszCurrentBinding : "";
++	if ( keynum == K_MWHEELUP || keynum == K_MWHEELDOWN || ( g_iPanel == P_BUY && ( keynum == K_LEFTARROW || keynum == K_RIGHTARROW || keynum == K_UPARROW || keynum == K_DOWNARROW )))
++	{
++		if ( g_iPanel == P_BUY )
++		{
++			int step = ( keynum == K_MWHEELUP || keynum == K_LEFTARROW || keynum == K_UPARROW ) ? -1 : 1;
++			g_iTab = ( g_iTab + step + NUM_TABS ) % NUM_TABS;
++			g_iFocus = -1;
++			g_iKeyLevel = 1;
++		}
++		return true;
++	}
++	if ( keynum == K_ESCAPE )
++	{
++		if ( repeat )
++			return true;
++		if ( g_iPanel == P_BUY || ( g_iPanel == P_TEAM && Allowed( 10 )))
++		{
++			Close();
++			return true;
++		}
++		// (the engine's menu opens: the mouse is its own until the game is back)
++		Mouse( false );
++		g_bSuspended = true;
++		return false;
++	}
++	if ( keynum >= '0' && keynum <= '9' )
++	{
++		if ( !repeat )
++			NumberKey( keynum == '0' ? 10 : keynum - '0' );
++		return true;
++	}
++	if ( keynum == K_BACKSPACE && g_iPanel == P_BUY )
++	{
++		g_iKeyLevel = 0;
++		return true;
++	}
++	if ( g_iPanel == P_BUY && ( !strcmp( b, "buy" ) || !strcmp( b, "buymenu" ) || !strcmp( b, "client_buy_open" )))
++	{
++		if ( !repeat )
++			Close();
++		return true;
++	}
++	if ( g_iPanel == P_TEAM && !strcmp( b, "chooseteam" ) && Allowed( 10 ))
++	{
++		if ( !repeat )
++			Close();
++		return true;
++	}
++	return false;
++}
++
++// The engine's mouse callbacks (the client's IN_ActivateMouse / IN_DeactivateMouse): the game has the mouse again
++void ArsUI_EngineMouse( bool active )
++{
++	if ( !g_bInMouse && active )
++		g_bSuspended = false;
++}
++
++// A press of the mouse while the touch screen's client-only mode is on: finger 0 the left button, 1 the others
++bool ArsUI_Touch( int type, int finger )
++{
++	if ( !g_bTouch )
++		return false;
++	if ( finger == 0 )
++	{
++		if ( type == 0 )
++			ClickDown();
++		else if ( type == 1 )
++			ClickUp();
++	}
++	else if ( finger == 1 && type == 0 && ( g_iPanel == P_BUY || ( g_iPanel == P_TEAM && Allowed( 10 ))))
++		Close(); // (a right click closes what may be closed)
++	return true;
++}
++
++bool ArsUI_ShowVGUIMenu( int menuType, int bitsValidSlots )
++{
++	switch ( menuType )
++	{
++	case VGUI_TEAM:
++		Open( P_TEAM, bitsValidSlots );
++		return true;
++	case VGUI_CLASS_T:
++	case VGUI_CLASS_CT:
++		Open( P_CLASS, bitsValidSlots );
++		g_iClassTeam = menuType == VGUI_CLASS_CT;
++		return true;
++	case VGUI_BUY:
++	case VGUI_BUY_PISTOL:
++	case VGUI_BUY_SHOTGUN:
++	case VGUI_BUY_RIFLE:
++	case VGUI_BUY_SMG:
++	case VGUI_BUY_MG:
++	case VGUI_BUY_ITEM:
++		if ( g_iPanel != P_BUY )
++			Open( P_BUY, bitsValidSlots );
++		for ( int t = 0; t < NUM_TABS; t++ )
++			if ( g_Tabs[t].vgui == menuType )
++			{
++				g_iTab = t;
++				g_iKeyLevel = 1;
++			}
++		return true;
++	}
++	return false;
++}
++
++void ArsUI_CloseBuy( void )
++{
++	if ( g_iPanel == P_BUY )
++		Close();
++}
++
++void ArsUI_Draw( float flTime )
++{
++	// (what was drawn this frame is what the next one renders)
++	for ( int i = 0; i < MAX_PREVIEWS; i++ )
++		g_bPreviewUsed[i] = false;
++	g_iBackdropsNext = 0;
++
++	// (dead: the death camera, not the shop)
++	if ( g_iPanel == P_BUY && ( gHUD.m_Health.m_iHealth <= 0 || g_iUser1 || LocalTeam() == 0 ))
++		Close();
++	if ( g_iPanel != P_NONE && !g_bTouch && !g_bSuspended )
++		Mouse( true );
++
++	if ( g_iPanel != P_NONE )
++	{
++		int mx = 0, my = 0;
++		gEngfuncs.GetMousePosition( &mx, &my );
++		g_cx = mx / gHUD.m_flScale;
++		g_cy = my / gHUD.m_flScale;
++	}
++
++	switch ( g_iPanel )
++	{
++	case P_TEAM: DrawTeam(); break;
++	case P_CLASS: DrawClass(); break;
++	case P_BUY: DrawBuy(); break;
++	}
++	FlushShapes();
++	FlushTexts();
++	g_bClick = false;
++
++	// (a panel closed by a click of this frame: nothing of it in the next one)
++	if ( g_iPanel == P_NONE )
++	{
++		memset( g_bPreviewUsed, 0, sizeof( g_bPreviewUsed ));
++		g_iBackdropsNext = 0;
++	}
++	for ( int i = 0; i < MAX_PREVIEWS; i++ )
++	{
++		g_Previews[i].active = g_bPreviewUsed[i];
++		if ( !g_bPreviewUsed[i] )
++			g_Previews[i].name[0] = 0;
++	}
++	memcpy( g_Backdrops, g_BackdropsNext, sizeof( g_Backdrops ));
++	g_iBackdrops = g_iBackdropsNext;
++}
++
++// the server's text menus: a panel on the left, its title in gold, its keys as badges
++bool ArsUI_DrawTextMenu( const char *pszMenu )
++{
++	if ( g_iPanel != P_NONE )
++		return true;
++	char lines[24][128];
++	int n = 0;
++	for ( const char *p = pszMenu; *p && n < 24; )
++	{
++		int len = 0;
++		while ( p[len] && p[len] != '\n' )
++			len++;
++		int copy = min( len, 127 );
++		memcpy( lines[n], p, copy );
++		lines[n][copy] = 0;
++		n++;
++		p += len;
++		if ( *p == '\n' )
++			p++;
++	}
++	while ( n > 0 && !lines[n - 1][0] )
++		n--;
++	if ( !n )
++		return true;
++	int lh = LineHeight(), rowH = (int)( lh * 1.55f );
++	float w = 0;
++	for ( int i = 0; i < n; i++ )
++		w = max( w, (float)TextWidth( lines[i] ));
++	w = max( w + 70, 240.0f );
++	float h = n * rowH + 24;
++	float x = 18, y = ScreenHeight / 2 - h / 2 - 30;
++	Fill( x, y, w, h, Alpha( C_PANEL, 0.86f ));
++	Fill( x, y, 3, h, C_GOLD );
++	Frame( x, y, w, h, C_SOFT );
++	float ty = y + 12;
++	for ( int i = 0; i < n; i++ )
++	{
++		const char *s = lines[i];
++		Col c = i == 0 ? C_GOLDT : C_TEXT;
++		// (codes of a whole line: \y title, \w normal, \d disabled, \r red)
++		while ( s[0] == '\\' && s[1] )
++		{
++			if ( s[1] == 'y' ) c = C_GOLDT;
++			else if ( s[1] == 'w' ) c = C_TEXT;
++			else if ( s[1] == 'd' ) c = C_FAINT;
++			else if ( s[1] == 'r' ) c = C_RED;
++			else break;
++			s += 2;
++		}
++		if ( s[0] >= '0' && s[0] <= '9' && s[1] == '.' )
++		{
++			char key[2] = { s[0], 0 };
++			KeyBadge( x + 14, ty + ( rowH - lh ) / 2, key, false );
++			s += 2;
++			while ( *s == ' ' )
++				s++;
++			TextClip( x + 40, ty + ( rowH - lh ) / 2, x + w - 10, s, c );
++		}
++		else if ( s[0] )
++			TextClip( x + 14, ty + ( rowH - lh ) / 2, x + w - 10, s, c );
++		if ( i == 0 && n > 1 )
++			Fill( x + 14, ty + rowH - 2, w - 28, 1, C_LINE );
++		ty += rowH;
++	}
++	FlushShapes();
++	FlushTexts();
++	return true;
++}
+diff --git a/cl_dll/arsenal_ui.h b/cl_dll/arsenal_ui.h
+new file mode 100644
+index 0000000..e2a6d4b
+--- /dev/null
++++ b/cl_dll/arsenal_ui.h
+@@ -0,0 +1,37 @@
++/*
++arsenal_ui.h - the Half-Life arsenal's own menus (buy, team, appearance), drawn by the client
++*/
++#pragma once
++#ifndef ARSENAL_UI_H
++#define ARSENAL_UI_H
++
++struct cl_entity_s;
++struct alight_s;
++
++void ArsUI_Init( void );
++void ArsUI_VidInit( void );
++void ArsUI_Draw( float flTime );
++// whether a panel is open
++bool ArsUI_Active( void );
++bool ArsUI_HidesHud( void );
++// returns true when the panel took the key
++bool ArsUI_Key( int down, int keynum, const char *pszCurrentBinding );
++// a VGUI menu of the server (cdll_dll.h MENU_*): true when one of the panels shows it
++bool ArsUI_ShowVGUIMenu( int menuType, int bitsValidSlots );
++void ArsUI_CloseBuy( void );
++// the engine's mouse callbacks, and its touch events (the mouse while a panel is open): true when taken
++void ArsUI_EngineMouse( bool active );
++bool ArsUI_Touch( int type, int finger );
++// the server's text menus, styled; true when drawn
++bool ArsUI_DrawTextMenu( const char *pszMenu );
++
++// the models turning in the panels: entities added to the frame, placed and lit in front of the view
++void ArsUI_SetView( const float *origin, const float *angles );
++void ArsUI_CreateEntities( void );
++void ArsUI_DrawBackdrops( void );
++bool ArsUI_IsPreview( struct cl_entity_s *ent );
++bool ArsUI_PreviewTransform( struct cl_entity_s *ent, float matrix[3][4] );
++void ArsUI_PreviewLighting( struct cl_entity_s *ent, struct alight_s *lighting );
++bool ArsUI_HidesViewModel( void );
++
++#endif // ARSENAL_UI_H
 diff --git a/cl_dll/cs_wpn/cs_weapons.cpp b/cl_dll/cs_wpn/cs_weapons.cpp
 index e824bc2..fdc8dff 100644
 --- a/cl_dll/cs_wpn/cs_weapons.cpp
@@ -211,6 +1815,27 @@ index e824bc2..fdc8dff 100644
  
  
  // CS Weapon placeholder entities
+diff --git a/cl_dll/entity.cpp b/cl_dll/entity.cpp
+index 254100f..bebe9cb 100644
+--- a/cl_dll/entity.cpp
++++ b/cl_dll/entity.cpp
+@@ -10,6 +10,7 @@
+ #include <memory.h>
+ 
+ #include "hud.h"
++#include "arsenal_ui.h"
+ #include "pm_defs.h"
+ #include "pmtrace.h"
+ #include "pm_shared.h"
+@@ -227,6 +228,8 @@ void DLLEXPORT HUD_CreateEntities( void )
+ 	// Add in any game specific objects
+ 
+ 	GetClientVoiceHud()->CreateEntities();
++
++	ArsUI_CreateEntities();
+ }
+ 
+ /*
 diff --git a/cl_dll/ev_common.cpp b/cl_dll/ev_common.cpp
 index 7d887ba..c0f9706 100644
 --- a/cl_dll/ev_common.cpp
@@ -731,10 +2356,18 @@ index 0000000..98cc8d1
 +		gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, HL_EGON_SOUND_OFF, 0.98, ATTN_NORM, 0, 100 );
 +}
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 8d29ddd..6d6de50 100644
+index 8d29ddd..be8fb96 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
-@@ -336,6 +336,8 @@ void CHud :: Init( void )
+@@ -21,6 +21,7 @@
+ #include <new>
+ 
+ #include "hud.h"
++#include "arsenal_ui.h"
+ #include "cl_util.h"
+ #include <string.h>
+ #include <stdio.h>
+@@ -336,6 +337,8 @@ void CHud :: Init( void )
  	m_iFOV = 0;
  
  	m_pSpriteList = NULL;
@@ -743,7 +2376,16 @@ index 8d29ddd..6d6de50 100644
  
  	// Clear any old HUD list
  	for( HUDLIST *pList = m_pHudList; pList; pList = m_pHudList )
-@@ -419,6 +421,28 @@ CHud :: ~CHud()
+@@ -395,6 +398,8 @@ void CHud :: Init( void )
+ 
+ 	InitRain();
+ 
++	ArsUI_Init();
++
+ 	//ServersInit();
+ 
+ 	gEngfuncs.Con_Printf( "%s: ^2CS16Client^7 ver. %s initialized.\n", __FUNCTION__, CVAR_GET_STRING( "cscl_ver" ) );
+@@ -419,6 +424,28 @@ CHud :: ~CHud()
  	m_pHudList = NULL;
  }
  
@@ -772,7 +2414,7 @@ index 8d29ddd..6d6de50 100644
  void CHud :: VidInit( void )
  {
  	static bool firstinit = true;
-@@ -444,6 +468,9 @@ void CHud :: VidInit( void )
+@@ -444,6 +471,9 @@ void CHud :: VidInit( void )
  	{
  		// we need to load the hud.txt, and all sprites within
  		m_pSpriteList = SPR_GetList("sprites/hud.txt", &m_iSpriteCountAllRes);
@@ -782,7 +2424,7 @@ index 8d29ddd..6d6de50 100644
  
  		if( m_pSpriteList )
  		{
-@@ -457,6 +484,12 @@ void CHud :: VidInit( void )
+@@ -457,6 +487,12 @@ void CHud :: VidInit( void )
  				p++;
  			}
  
@@ -795,7 +2437,7 @@ index 8d29ddd..6d6de50 100644
  			// allocated memory for sprite handle arrays
  			m_rghSprites      = new(std::nothrow) HSPRITE[m_iSpriteCount];
  			m_rgrcRects       = new(std::nothrow) wrect_t[m_iSpriteCount];
-@@ -470,7 +503,8 @@ void CHud :: VidInit( void )
+@@ -470,7 +506,8 @@ void CHud :: VidInit( void )
  			}
  
  			p = m_pSpriteList;
@@ -805,7 +2447,7 @@ index 8d29ddd..6d6de50 100644
  			{
  				if ( p->iRes == m_iRes )
  				{
-@@ -485,6 +519,21 @@ void CHud :: VidInit( void )
+@@ -485,6 +522,21 @@ void CHud :: VidInit( void )
  
  				p++;
  			}
@@ -827,7 +2469,7 @@ index 8d29ddd..6d6de50 100644
  		}
  	}
  	else
-@@ -505,6 +554,18 @@ void CHud :: VidInit( void )
+@@ -505,6 +557,18 @@ void CHud :: VidInit( void )
  
  			p++;
  		}
@@ -846,8 +2488,17 @@ index 8d29ddd..6d6de50 100644
  	}
  
  	// assumption: number_1, number_2, etc, are all listed and loaded sequentially
+@@ -541,6 +605,8 @@ void CHud :: VidInit( void )
+ #endif
+ 
+ 	firstinit = false;
++
++	ArsUI_VidInit();
+ }
+ 
+ void CHud::Shutdown( void )
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index b75b3c9..7e3399b 100644
+index b75b3c9..44e68aa 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
 @@ -180,6 +180,7 @@ public:
@@ -858,7 +2509,15 @@ index b75b3c9..7e3399b 100644
  
  
  	void SlotInput( int iSlot );
-@@ -1083,6 +1084,7 @@ public:
+@@ -741,6 +742,7 @@ public:
+ 	int Draw( float flTime );
+ 	CHudMsgFunc(Money);
+ 	CHudMsgFunc(BlinkAcct);
++	int Money( void ) const { return m_iMoneyCount; }
+ 
+ private:
+ 	int m_iMoneyCount;
+@@ -1083,6 +1085,7 @@ public:
  	SCREENINFO  m_truescrinfo;
  
  	int	m_iWeaponBits;
@@ -866,7 +2525,7 @@ index b75b3c9..7e3399b 100644
  	int	m_fPlayerDead;
  	int m_iIntermission;
  	int m_iNoConsolePrint;
-@@ -1106,6 +1108,8 @@ private:
+@@ -1106,6 +1109,8 @@ private:
  	client_sprite_t	*m_pSpriteList;
  	int	m_iSpriteCount;
  	int	m_iSpriteCountAllRes;
@@ -875,6 +2534,36 @@ index b75b3c9..7e3399b 100644
  	float m_flMouseSensitivity;
  	int	m_iConcussionEffect;
  	int	m_iForceCamera;
+diff --git a/cl_dll/hud_redraw.cpp b/cl_dll/hud_redraw.cpp
+index 1f2ad59..8e4ffa2 100644
+--- a/cl_dll/hud_redraw.cpp
++++ b/cl_dll/hud_redraw.cpp
+@@ -17,6 +17,7 @@
+ //
+ #include <math.h>
+ #include "hud.h"
++#include "arsenal_ui.h"
+ #include "cl_util.h"
+ #include "triangleapi.h"
+ 
+@@ -111,11 +112,17 @@ int CHud :: Redraw( float flTime, int intermission )
+ 				if( intermission && !(pList->p->m_iFlags & HUD_INTERMISSION) )
+ 					continue; // skip no-intermission during intermission
+ 
++				// (the Half-Life arsenal's panels: only the chat and the kills beside them)
++				if( ArsUI_HidesHud() && pList->p != &m_SayText && pList->p != &m_DeathNotice )
++					continue;
++
+ 				pList->p->Draw( flTime );
+ 			}
+ 		}
+ 	}
+ 
++	ArsUI_Draw( flTime );
++
+ 	// are we in demo mode? do we need to draw the logo in the top corner?
+ 	if (m_iLogo)
+ 	{
 diff --git a/cl_dll/include/events.h b/cl_dll/include/events.h
 index 36bdf73..c5b1ecf 100644
 --- a/cl_dll/include/events.h
@@ -902,6 +2591,217 @@ index 36bdf73..c5b1ecf 100644
  DECLARE_EVENT(TrainPitchAdjust);
  
  // CZERODS START
+diff --git a/cl_dll/input.cpp b/cl_dll/input.cpp
+index c4305c1..99c197c 100644
+--- a/cl_dll/input.cpp
++++ b/cl_dll/input.cpp
+@@ -12,6 +12,7 @@
+ // Quake is a trademark of Id Software, Inc., (c) 1996 Id Software, Inc. All
+ // rights reserved.
+ #include "hud.h"
++#include "arsenal_ui.h"
+ #include "cl_util.h"
+ #include "camera.h"
+ #include "kbutton.h"
+@@ -365,6 +366,10 @@ Return 1 to allow engine to process the key, otherwise, act on it as needed
+ */
+ int DLLEXPORT HUD_Key_Event( int down, int keynum, const char *pszCurrentBinding )
+ {
++	// (the Half-Life arsenal's panels: the mouse buttons, the number keys...)
++	if( ArsUI_Key( down, keynum, pszCurrentBinding ))
++		return 0;
++
+ 	return 1;
+ }
+ 
+diff --git a/cl_dll/input/input_xash3d.cpp b/cl_dll/input/input_xash3d.cpp
+index 036da3f..90a1950 100644
+--- a/cl_dll/input/input_xash3d.cpp
++++ b/cl_dll/input/input_xash3d.cpp
+@@ -1,4 +1,5 @@
+ #include "hud.h"
++#include "arsenal_ui.h"
+ #include "usercmd.h"
+ #include "cvardef.h"
+ #include "kbutton.h"
+@@ -220,9 +221,27 @@ void IN_Move( float frametime, usercmd_t *cmd )
+ 	ac_movecount = 0;
+ }
+ 
++static int mouse_oldbuttonstate;
++
++// (the buttons held: released, their actions stopped — the Half-Life arsenal's panels take the mouse)
++void IN_ReleaseMouseButtons( void )
++{
++	for( int i = 0; i < 5; i++ )
++	{
++		if( mouse_oldbuttonstate & ( 1 << i ))
++			gEngfuncs.Key_Event( K_MOUSE1 + i, 0 );
++	}
++	mouse_oldbuttonstate = 0;
++}
++
++// (the touch screen's events, the mouse's while a panel of the Half-Life arsenal is open)
++extern "C" int DLLEXPORT IN_ClientTouchEvent( int type, int fingerID, float x, float y, float dx, float dy )
++{
++	return ArsUI_Touch( type, fingerID ) ? 1 : 0;
++}
++
+ void DLLEXPORT IN_MouseEvent( int mstate )
+ {
+-	static int mouse_oldbuttonstate;
+ 	// perform button actions
+ 	for( int i = 0; i < 5; i++ )
+ 	{
+@@ -250,11 +269,13 @@ void DLLEXPORT IN_ClearStates ( void )
+ 
+ void  DLLEXPORT IN_ActivateMouse ( void )
+ {
++	ArsUI_EngineMouse( true );
+ 	//gEngfuncs.Con_Printf("IN_ActivateMouse\n");
+ }
+ 
+ void DLLEXPORT  IN_DeactivateMouse ( void )
+ {
++	ArsUI_EngineMouse( false );
+ 	//gEngfuncs.Con_Printf("IN_DeactivateMouse\n");
+ }
+ 
+diff --git a/cl_dll/menu.cpp b/cl_dll/menu.cpp
+index 582bf28..cec93f1 100644
+--- a/cl_dll/menu.cpp
++++ b/cl_dll/menu.cpp
+@@ -18,6 +18,7 @@
+ // generic menu handler
+ //
+ #include "hud.h"
++#include "arsenal_ui.h"
+ #include "cl_util.h"
+ #include "parsemsg.h"
+ 
+@@ -37,7 +38,9 @@ int KB_ConvertString( char *in, char **ppout );
+ void Touch_CloseMenu()
+ {
+ 	gMobileAPI.pfnTouchRemoveButton( "_menu_*" );
+-	gMobileAPI.pfnTouchSetClientOnly( 0 );
++	// (a panel of the Half-Life arsenal keeps the mouse)
++	if( !ArsUI_Active( ))
++		gMobileAPI.pfnTouchSetClientOnly( 0 );
+ }
+ 
+ int CHudMenu :: Init( void )
+@@ -81,6 +84,13 @@ int CHudMenu :: VidInit( void )
+ 
+ int CHudMenu :: Draw( float flTime )
+ {
++	// (the Half-Life arsenal's look)
++	if ( m_flShutoffTime <= 0 || m_flShutoffTime > gHUD.m_flTime )
++	{
++		if ( ArsUI_DrawTextMenu( g_szMenuString ))
++			return 1;
++	}
++
+ 	// check for if menu is set to disappear
+ 	if ( m_flShutoffTime > 0 )
+ 	{
+@@ -178,15 +188,16 @@ int CHudMenu :: MsgFunc_ShowMenu( const char *pszName, int iSize, void *pbuf )
+ 		{
+ 			if( menustring[6] == 'A' )
+ 			{
+-				ShowVGUIMenu(MENU_RADIOA); return 1;
++				// (the Half-Life arsenal: the radio menus as text menus, not the touch screen's)
++				ShowVGUIMenu(MENU_NUMERICAL_MENU);
+ 			}
+ 			else if( menustring[6] == 'B' )
+ 			{
+-				ShowVGUIMenu(MENU_RADIOB); return 1;
++				ShowVGUIMenu(MENU_NUMERICAL_MENU);
+ 			}
+ 			else if( menustring[6] == 'C' )
+ 			{
+-				ShowVGUIMenu(MENU_RADIOC); return 1;
++				ShowVGUIMenu(MENU_NUMERICAL_MENU);
+ 			}
+ 			else ShowVGUIMenu( MENU_NUMERICAL_MENU ); // we just show touch screen numbers
+ 		}
+@@ -232,12 +243,16 @@ int CHudMenu::MsgFunc_VGUIMenu( const char *pszName, int iSize, void *pbuf )
+ 	int menuType = reader.ReadByte();
+ 	m_bitsValidSlots = reader.ReadShort(); // is ignored
+ 
++	if( ArsUI_ShowVGUIMenu( menuType, m_bitsValidSlots ))
++		return 1;
++
+ 	ShowVGUIMenu(menuType);
+ 	return 1;
+ }
+ 
+ int CHudMenu::MsgFunc_BuyClose(const char *pszName, int iSize, void *pbuf)
+ {
++	ArsUI_CloseBuy();
+ 	Touch_CloseMenu();
+ 
+ 	return 1;
+@@ -358,5 +373,7 @@ void CHudMenu::UserCmd_ShowVGUIMenu()
+ 	}
+ 
+ 	int menuType = atoi(gEngfuncs.Cmd_Argv(1));
++	if( ArsUI_ShowVGUIMenu( menuType, 0x3FF ))
++		return;
+ 	ShowVGUIMenu(menuType);
+ }
+diff --git a/cl_dll/tri.cpp b/cl_dll/tri.cpp
+index 9038c3a..7298d0c 100644
+--- a/cl_dll/tri.cpp
++++ b/cl_dll/tri.cpp
+@@ -7,6 +7,7 @@
+ 
+ // Triangle rendering, if any
+ #include "hud.h"
++#include "arsenal_ui.h"
+ #include "cl_util.h"
+ 
+ // Triangle rendering apis are in gEngfuncs.pTriAPI
+@@ -64,6 +65,8 @@ Render any triangles with transparent rendermode needs here
+ extern bool Rain_Initialized;
+ void DLLEXPORT HUD_DrawTransparentTriangles( void )
+ {
++	ArsUI_DrawBackdrops();
++
+ 	RenderFog();
+ 
+ 	if( Rain_Initialized )
+diff --git a/cl_dll/view.cpp b/cl_dll/view.cpp
+index 579b2d6..1eac2c9 100644
+--- a/cl_dll/view.cpp
++++ b/cl_dll/view.cpp
+@@ -10,6 +10,7 @@
+ #include <string.h>
+ 
+ #include "hud.h"
++#include "arsenal_ui.h"
+ #include "pm_math.h"
+ #include "cl_util.h"
+ #include "cvardef.h"
+@@ -1843,6 +1844,8 @@ void V_CalcThirdPersonRefdef( ref_params_t *pparams )
+ 
+ void DLLEXPORT V_CalcRefdef( struct ref_params_s *pparams )
+ {
++	int mainView = !pparams->nextView;
++
+ 	// intermission / finale rendering
+ 	if ( pparams->intermission )
+ 	{
+@@ -1860,6 +1863,10 @@ void DLLEXPORT V_CalcRefdef( struct ref_params_s *pparams )
+ 	{
+ 		V_CalcNormalRefdef ( pparams );
+ 	}
++
++	// (where the Half-Life arsenal's panels place their models)
++	if( mainView )
++		ArsUI_SetView( pparams->vieworg, pparams->viewangles );
+ }
+ 
+ /*
 diff --git a/dlls/cdll_dll.h b/dlls/cdll_dll.h
 index 2869c1c..e85ae84 100644
 --- a/dlls/cdll_dll.h

@@ -137,9 +137,18 @@ fit();
 // event) and frees it in its menus and console, its cursor shown there. A click captures it again only while the game
 // wants it — its cursor hidden: after the browser released it (Esc) — never in a menu, where the mouse must stay free.
 const wantsMouse = () => session.state === 'running' && $('canvas').style.cursor === 'none';
+// (the engine takes the mouse's position from events of the document, relative to it: the canvas starts below the
+// header, so its events are given the canvas's coordinates — the engine's menus and the games' own get where it points)
+for (const type of ['mousedown', 'mouseup', 'mousemove']) addEventListener(type, (event) => {
+  const rect = $('canvas').getBoundingClientRect();
+  if (!rect.left && !rect.top) return;
+  Object.defineProperty(event, 'clientX', { value: event.clientX - rect.left, configurable: true });
+  Object.defineProperty(event, 'clientY', { value: event.clientY - rect.top, configurable: true });
+}, { capture: true });
 $('canvas').addEventListener('pointerdown', () => { if (wantsMouse() && document.pointerLockElement !== $('canvas')) $('canvas').requestPointerLock()?.catch?.(() => {}); });
 $('canvas').addEventListener('contextmenu', (event) => event.preventDefault());
-document.addEventListener('pointerlockchange', () => { if (!document.pointerLockElement && wantsMouse() && !stopped) toast(S.released, 4000); });
+// (the engine frees the mouse for its menus a moment after the lock ends: only a release by the player is told)
+document.addEventListener('pointerlockchange', () => setTimeout(() => { if (!document.pointerLockElement && wantsMouse() && !stopped) toast(S.released, 4000); }, 150));
 
 // ---------------------------------------------------------------- the header's frame rate
 // (a frame is a main loop iteration that drew: the engine may run some without rendering, under its fps_max)
