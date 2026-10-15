@@ -50,7 +50,7 @@ index 5be847b..bedeac6 100644
  		}
  	}
 diff --git a/regamedll/dlls/client.cpp b/regamedll/dlls/client.cpp
-index b802a2e..58916ff 100644
+index b802a2e..e8e1b43 100644
 --- a/regamedll/dlls/client.cpp
 +++ b/regamedll/dlls/client.cpp
 @@ -83,6 +83,7 @@ int gmsgFog = 0;
@@ -207,21 +207,30 @@ index b802a2e..58916ff 100644
  void EXT_FUNC __API_HOOK(ShowVGUIMenu)(CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu)
  {
  #ifdef REGAMEDLL_ADD
-@@ -1094,6 +1220,13 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
+@@ -1094,6 +1220,22 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
  	if (pPlayer->HasShield() && iWeapon == WEAPON_ELITE)
  		return false;
  
-+	// (the Half-Life arsenal's pistols have no shield animations)
++	// (the Half-Life arsenal's pistols have no shield animations; the Half-Life looks have no shield hitbox: told)
 +	if (pPlayer->HasShield() && IsHLWeapon(iWeapon) && IsSecondaryWeapon(iWeapon))
++	{
++		if (g_bClientPrintEnable)
++			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Buy_This");
 +		return false;
++	}
 +
-+	if (iWeapon == WEAPON_SHIELDGUN && pPlayer->m_rgpPlayerItems[PISTOL_SLOT] && IsHLWeapon(pPlayer->m_rgpPlayerItems[PISTOL_SLOT]->m_iId))
++	if (iWeapon == WEAPON_SHIELDGUN && ((pPlayer->m_rgpPlayerItems[PISTOL_SLOT] && IsHLWeapon(pPlayer->m_rgpPlayerItems[PISTOL_SLOT]->m_iId))
++		|| (pPlayer->CSPlayer()->m_szModel[0] && HL_SkinForTeam(pPlayer->CSPlayer()->m_szModel, pPlayer->m_iTeam))))
++	{
++		if (g_bClientPrintEnable)
++			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Buy_This");
 +		return false;
++	}
 +
  	if (pPlayer->HasShield() && iWeapon == WEAPON_SHIELDGUN)
  		return false;
  
-@@ -1564,6 +1697,10 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
+@@ -1564,6 +1706,10 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
  	if (!CanBuyThis(pPlayer, weaponID))
  		return nullptr;
  
@@ -232,7 +241,7 @@ index b802a2e..58916ff 100644
  	WeaponInfoStruct *info = GetWeaponInfo(weaponID);
  	if (!info || !info->entityName)
  		return nullptr;
-@@ -1615,6 +1752,23 @@ LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slo
+@@ -1615,6 +1761,23 @@ LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slo
  void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int slot)
  {
  	int numSkins = AreRunningCZero() ? CZ_NUM_SKIN : CS_NUM_SKIN;
@@ -256,7 +265,7 @@ index b802a2e..58916ff 100644
  
  	struct
  	{
-@@ -1755,8 +1909,10 @@ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int
+@@ -1755,8 +1918,10 @@ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int
  	pPlayer->pev->body = 0;
  	pPlayer->m_iModelName = appearance.model_id;
  
@@ -269,7 +278,7 @@ index b802a2e..58916ff 100644
  
  	if (CSGameRules()->m_bMapHasVIPSafetyZone)
  	{
-@@ -2095,14 +2251,14 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
+@@ -2095,14 +2260,14 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
  				if (AreRunningCZero())
  					ShowVGUIMenu(pPlayer, VGUI_Menu_Class_CT, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5 | MENU_KEY_6), "#CT_Select");
  				else
@@ -286,7 +295,7 @@ index b802a2e..58916ff 100644
  				break;
  			}
  		}
-@@ -2296,6 +2452,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
+@@ -2296,6 +2461,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
  		return false;
  	}
  
@@ -297,7 +306,7 @@ index b802a2e..58916ff 100644
  	// Purchase the ammo if the player has enough money
  	if (pPlayer->m_iAccount >= info->clipCost)
  	{
-@@ -2421,6 +2581,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
+@@ -2421,6 +2590,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
  	WeaponIdType weaponID = WEAPON_NONE;
  	const char *weaponFailName = BuyAliasToWeaponID(pszCommand, weaponID);
  
@@ -311,7 +320,7 @@ index b802a2e..58916ff 100644
  	// Ok, we have weapon info ID.
  	if (weaponID != WEAPON_NONE)
  	{
-@@ -2935,6 +3102,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -2935,6 +3111,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				{
  					switch (slot)
  					{
@@ -327,7 +336,7 @@ index b802a2e..58916ff 100644
  						case VGUI_MenuSlot_Buy_Pistol:
  						{
  							pPlayer->m_iMenu = Menu_BuyPistol;
-@@ -3064,6 +3240,27 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3064,6 +3249,27 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				}
  				break;
  			}
@@ -355,7 +364,7 @@ index b802a2e..58916ff 100644
  			case Menu_BuyPistol:
  			{
  				if (canOpenOldMenu())
-@@ -3567,7 +3764,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3567,7 +3773,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  			{
  				if (pPlayer->m_signals.GetState() & SIGNAL_BUY)
  				{
@@ -364,7 +373,7 @@ index b802a2e..58916ff 100644
  					pPlayer->m_iMenu = Menu_Buy;
  
  					if (TheBots)
-@@ -4029,6 +4226,13 @@ void ClientPrecache()
+@@ -4029,6 +4235,13 @@ void ClientPrecache()
  	for (i = 0; i < numPlayerModels; i++)
  		PRECACHE_MODEL(sPlayerModelFiles[i]);
  
@@ -378,7 +387,7 @@ index b802a2e..58916ff 100644
  	if (AreRunningCZero())
  	{
  		for (i = FirstCustomSkin; i <= LastCustomSkin; i++)
-@@ -4925,7 +5129,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
+@@ -4925,7 +5138,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
  				weapon->GetItemInfo(&II);
  #endif
  
@@ -387,7 +396,7 @@ index b802a2e..58916ff 100644
  				{
  					auto item = &info[II.iId];
  
-@@ -5084,7 +5288,8 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
+@@ -5084,7 +5297,8 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
  #endif
  				)
  			{
@@ -451,10 +460,10 @@ index 2c6d9fb..6afbdf4 100644
  
 diff --git a/regamedll/dlls/hl_weapons.h b/regamedll/dlls/hl_weapons.h
 new file mode 100644
-index 0000000..f0e28a0
+index 0000000..fbdf777
 --- /dev/null
 +++ b/regamedll/dlls/hl_weapons.h
-@@ -0,0 +1,642 @@
+@@ -0,0 +1,644 @@
 +/*
 +*	Half-Life arsenal: the fourteen Half-Life weapons bought and used in Counter-Strike, ported from the Half-Life SDK
 +*	(crowbar.cpp, glock.cpp, python.cpp, mp5.cpp, shotgun.cpp, crossbow.cpp, rpg.cpp, gauss.cpp, egon.cpp, hornetgun.cpp,
@@ -835,6 +844,7 @@ index 0000000..f0e28a0
 +	virtual void WeaponIdle();
 +
 +	void UpdateSpot();
++	virtual BOOL ShouldWeaponIdle() { return TRUE; } // (the spot follows the aim while the button is held)
 +
 +	CHLLaserSpot *m_pSpot;
 +	int m_fSpotActive;
@@ -1004,6 +1014,7 @@ index 0000000..f0e28a0
 +private:
 +	enum { SATCHEL_IDLE, SATCHEL_READY, SATCHEL_RELOAD };
 +	void Throw();
++	void Detonate();
 +	bool HasCharges();
 +	int m_chargeReady;
 +};
@@ -1143,7 +1154,7 @@ index 2b91a50..5db9af1 100644
  }
  
 diff --git a/regamedll/dlls/player.cpp b/regamedll/dlls/player.cpp
-index 1d04cc9..c7211da 100644
+index 1d04cc9..f69d372 100644
 --- a/regamedll/dlls/player.cpp
 +++ b/regamedll/dlls/player.cpp
 @@ -201,6 +201,20 @@ const char *GetCSModelName(int item_id)
@@ -1167,7 +1178,7 @@ index 1d04cc9..c7211da 100644
  	default:
  		ALERT(at_console, "CBasePlayer::PackDeadPlayerItems(): Unhandled item- not creating weaponbox\n");
  	}
-@@ -267,8 +281,15 @@ void CBasePlayer::SetPlayerModel(BOOL HasC4)
+@@ -267,8 +281,17 @@ void CBasePlayer::SetPlayerModel(BOOL HasC4)
  
  #ifdef REGAMEDLL_ADD
  	auto modelEx = CSPlayer()->m_szModel;
@@ -1176,16 +1187,18 @@ index 1d04cc9..c7211da 100644
 +	// (Half Strike: a Half-Life look follows its player to the other side — the same rank there — and gives way to the
 +	// VIP's model)
 +	const char *hlModel = (modelEx[0] != '\0' && !m_bIsVIP) ? HL_SkinForTeam(modelEx, m_iTeam) : nullptr;
++	if (modelEx[0] != '\0' && m_bIsVIP && Q_strcmp(STRING(pev->model), "models/player/vip/vip.mdl"))
++		SetNewPlayerModel("models/player/vip/vip.mdl"); // (the VIP's own model, its animations and hitboxes with it)
 +	if (hlModel) {
 +		model = (char *)hlModel;
-+		if (Q_strcmp(modelEx, hlModel)) {
++		if (Q_strcmp(modelEx, hlModel))
 +			CSPlayer()->SetPlayerModelEx(hlModel);
++		if (Q_strcmp(STRING(pev->model), HL_SkinPath(hlModel)))
 +			SetNewPlayerModel(HL_SkinPath(hlModel));
-+		}
  	} else
  #endif
  	if (m_iTeam == CT)
-@@ -885,6 +906,10 @@ const char *CBasePlayer::GetKillerWeaponName(entvars_t *pevInflictor, entvars_t
+@@ -885,6 +908,10 @@ const char *CBasePlayer::GetKillerWeaponName(entvars_t *pevInflictor, entvars_t
  	else if (!Q_strncmp(killer_weapon_name, cut_func, sizeof(cut_func) - 1))
  		killer_weapon_name += sizeof(cut_func) - 1;
  
@@ -1196,7 +1209,7 @@ index 1d04cc9..c7211da 100644
  	return killer_weapon_name;
  }
  
-@@ -1228,6 +1253,10 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
+@@ -1228,6 +1255,10 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
  			case WEAPON_AK47:
  				flRatio *= 1.55;
  				break;
@@ -1207,7 +1220,85 @@ index 1d04cc9..c7211da 100644
  			}
  		}
  
-@@ -7495,6 +7524,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -2656,7 +2687,33 @@ int CBasePlayer::GetAnimDesired(const char *szAnim, AnimationType type)
+ 
+ 	char szAnimConstruct[128];
+ 	Q_snprintf(szAnimConstruct, sizeof(szAnimConstruct), "%s%s_%s", refAnim, szAnim, m_szAnimExtention);
+-	return LookupSequence(szAnimConstruct);
++	int seq = LookupSequence(szAnimConstruct);
++
++	// (Half Strike: a model without this weapon's poses — the Half-Life players', or any with a Half-Life weapon — takes
++	// the nearest it has: a blade or something thrown or planted the crowbar's, a pistol the one-handed, a long gun the
++	// MP5's; an action it lacks (reload, the second gun's shot) its aim or its shot. A model with the weapon's own aim
++	// keeps the original answer: SetAnimation has its own fallbacks for what it lacks, "run" one of them)
++	char own[128];
++	Q_snprintf(own, sizeof(own), "ref_aim_%s", m_szAnimExtention);
++	if (seq == -1 && LookupSequence(own) == -1)
++	{
++		const char *ext = m_szAnimExtention;
++		const bool hand = !Q_strcmp(ext, "knife") || !Q_strcmp(ext, "grenade") || !Q_strcmp(ext, "c4") || !Q_strcmp(ext, "trip") || !Q_strcmp(ext, "squeak") || !Q_strcmp(ext, "crowbar");
++		const bool pistol = !Q_strcmp(ext, "onehanded") || !Q_strcmp(ext, "dualpistols") || !Q_strcmp(ext, "pistol") || !Q_strcmp(ext, "python");
++		static const char *const forHand[] = { "crowbar", "onehanded", "mp5" }, *const forPistol[] = { "onehanded", "python", "mp5", "crowbar" }, *const forGun[] = { "mp5", "shotgun", "onehanded", "crowbar" };
++		const char *const *list = hand ? forHand : pistol ? forPistol : forGun;
++		const int count = hand ? 3 : 4;
++		const char *anims[3] = { szAnim, !Q_strcmp(szAnim, "shoot2") ? "shoot" : "aim", "aim" };
++		for (int a = 0; seq == -1 && a < 3; a++)
++		{
++			for (int i = 0; seq == -1 && i < count; i++)
++			{
++				Q_snprintf(szAnimConstruct, sizeof(szAnimConstruct), "%s%s_%s", refAnim, anims[a], list[i]);
++				seq = LookupSequence(szAnimConstruct);
++			}
++		}
++	}
++	return seq;
+ }
+ 
+ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
+@@ -2969,6 +3026,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
+ 					break;
+ 			}
+ 
++			// (Half Strike: a model without flinches keeps its pose)
++			if (animDesired == -1)
++				animDesired = GetAnimDesired("aim", ANIM_CROUCH);
+ 			if (animDesired == -1)
+ 				animDesired = 0;
+ 
+@@ -3100,6 +3160,12 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
+ 					m_iThrowDirection = THROW_GRENADE;
+ 			}
+ 
++			// (Half Strike: a model without that death — the Half-Life players' — falls as it can, never standing)
++			static const Activity deaths[] = { ACT_DIESIMPLE, ACT_DIEBACKWARD, ACT_DIEFORWARD, ACT_DIEVIOLENT, ACT_DIE_HEADSHOT };
++			for (int i = 0; animDesired == -1 && i < int(ARRAYSIZE(deaths)); i++)
++				animDesired = LookupActivity(deaths[i]);
++			if (animDesired == -1)
++				animDesired = LookupSequence("die_simple");
+ 			if (animDesired == -1)
+ 				animDesired = 0;
+ 
+@@ -3365,6 +3431,11 @@ void CWShield::Touch(CBaseEntity *pOther)
+ 		if (pPlayer->m_rgpPlayerItems[PISTOL_SLOT] && pPlayer->m_rgpPlayerItems[PISTOL_SLOT]->m_iId == WEAPON_ELITE)
+ 			return;
+ 
++		// (Half Strike: as bought, none with a Half-Life pistol — no shield animations — nor a Half-Life look — no hitbox)
++		if ((pPlayer->m_rgpPlayerItems[PISTOL_SLOT] && IsHLWeapon(pPlayer->m_rgpPlayerItems[PISTOL_SLOT]->m_iId))
++			|| (pPlayer->CSPlayer()->m_szModel[0] && HL_SkinForTeam(pPlayer->CSPlayer()->m_szModel, pPlayer->m_iTeam)))
++			return;
++
+ 		if (pPlayer->m_pActiveItem)
+ 		{
+ 			if (!pPlayer->m_pActiveItem->CanHolster())
+@@ -5258,6 +5329,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, PostThink)
+ 
+ void EXT_FUNC CBasePlayer::__API_HOOK(PostThink)()
+ {
++
+ 	// intermission or finale
+ 	if (g_pGameRules->IsGameOver())
+ 		goto pt_end;
+@@ -7495,6 +7567,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  	{
  		m_fInitHUD = FALSE;
  		gInitHUD = FALSE;
@@ -1215,7 +1306,7 @@ index 1d04cc9..c7211da 100644
  #ifdef REGAMEDLL_FIXES
  		m_signals.Reset();
  #else
-@@ -7893,6 +7923,25 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -7893,6 +7966,25 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  		m_iLastClientHealth = m_iClientHealth;
  	}
  #endif // #ifdef BUILD_LATEST
@@ -1241,7 +1332,7 @@ index 1d04cc9..c7211da 100644
  }
  
  bool CBasePlayer::ShouldToShowAccount(CBasePlayer *pReceiver) const
-@@ -8374,7 +8423,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
+@@ -8374,7 +8466,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
  		}
  
  		// take item off hud
@@ -1250,7 +1341,7 @@ index 1d04cc9..c7211da 100644
  
  #ifdef REGAMEDLL_FIXES
  		// No more weapon
-@@ -9303,6 +9352,11 @@ void CBasePlayer::SetPrefsFromUserinfo(char *infobuffer)
+@@ -9303,6 +9395,11 @@ void CBasePlayer::SetPrefsFromUserinfo(char *infobuffer)
  	else
  		m_bVGUIMenus = true;
  
@@ -1615,10 +1706,10 @@ index 2005b6a..ceb0506 100644
  
 diff --git a/regamedll/dlls/wpn_shared/wpn_hl.cpp b/regamedll/dlls/wpn_shared/wpn_hl.cpp
 new file mode 100644
-index 0000000..b4aefad
+index 0000000..1920d83
 --- /dev/null
 +++ b/regamedll/dlls/wpn_shared/wpn_hl.cpp
-@@ -0,0 +1,4458 @@
+@@ -0,0 +1,4470 @@
 +// Half-Life arsenal (hl_weapons.h): the Half-Life SDK's weapons on Counter-Strike's weapon classes. Their fire events
 +// reach the shooter too (no FEV_NOTHOST: the client does not predict them); their timers are the decremented ones of
 +// Counter-Strike's weapons, their own delays in game time. Their entities are named with MAKE_STRING_CLASS: the game
@@ -2213,7 +2304,7 @@ index 0000000..b4aefad
 +
 +void CHLPython::SecondaryAttack()
 +{
-+	HL_SetZoom(m_pPlayer, m_pPlayer->m_iFOV != DEFAULT_FOV ? DEFAULT_FOV : 40);
++	HL_SetZoom(m_pPlayer, m_pPlayer->m_iFOV != DEFAULT_FOV ? DEFAULT_FOV : 45); // (above 40: no sniper scope over it)
 +	m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 0.5f;
 +}
 +
@@ -4825,7 +4916,8 @@ index 0000000..b4aefad
 +			SendWeaponAnim(HANDGRENADE_THROW3);
 +
 +		m_pPlayer->SetAnimation(PLAYER_ATTACK1);
-+		m_flReleaseThrow = 0.0f;
++		// (positive: the next idle knows it was just thrown — draws the next, or puts the hand away)
++		m_flReleaseThrow = gpGlobals->time;
 +		m_flStartThrow = 0.0f;
 +		m_flNextPrimaryAttack = GetNextAttackDelay(0.5f);
 +		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.5f;
@@ -5102,14 +5194,23 @@ index 0000000..b4aefad
 +	SendWeaponAnim(m_chargeReady == SATCHEL_READY ? SATCHEL_RADIO_HOLSTER : SATCHEL_DROP);
 +}
 +
++// (as Half-Life's: the click sets off the charges once one is thrown, or throws; the right click throws another)
 +void CHLSatchel::PrimaryAttack()
++{
++	if (m_chargeReady == SATCHEL_READY)
++		Detonate();
++	else if (m_chargeReady != SATCHEL_RELOAD)
++		Throw();
++}
++
++void CHLSatchel::SecondaryAttack()
 +{
 +	if (m_chargeReady != SATCHEL_RELOAD)
 +		Throw();
 +}
 +
 +// (the radio sets off every charge of its holder)
-+void CHLSatchel::SecondaryAttack()
++void CHLSatchel::Detonate()
 +{
 +	if (m_chargeReady != SATCHEL_READY)
 +		return;
@@ -5987,7 +6088,9 @@ index 0000000..b4aefad
 +	else
 +	{
 +		int iAmmo = CBasePlayer::GetAmmoIndex(info->ammoName2);
-+		if (iAmmo >= 0 && pPlayer->m_rgAmmo[iAmmo] >= info->maxRounds)
++		// (a pack sold whole: the snarks come by three)
++		const int pack = weaponID == WEAPON_HL_SNARK ? HL_SNARK_DEFAULT_GIVE : 1;
++		if (iAmmo >= 0 && pPlayer->m_rgAmmo[iAmmo] + pack > info->maxRounds)
 +		{
 +			if (g_bClientPrintEnable)
 +				ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Carry_Anymore");

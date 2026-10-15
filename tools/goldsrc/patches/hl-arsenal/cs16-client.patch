@@ -1,5 +1,5 @@
 diff --git a/cl_dll/StudioModelRenderer.cpp b/cl_dll/StudioModelRenderer.cpp
-index 2c50bca..ebd6f16 100644
+index 2c50bca..6983a76 100644
 --- a/cl_dll/StudioModelRenderer.cpp
 +++ b/cl_dll/StudioModelRenderer.cpp
 @@ -17,6 +17,7 @@
@@ -35,7 +35,18 @@ index 2c50bca..ebd6f16 100644
  	if( g_bHoldingKnife && m_pCurrentEntity == gEngfuncs.GetViewModel() && (flags & STUDIO_RENDER) )
  	{
  		bChangedRightHand = true;
-@@ -928,6 +940,8 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
+@@ -907,6 +919,10 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
+ 
+ 	StudioSaveBones();
+ 
++	// (a preview's first frame: its bones lay it, not drawn)
++	if (bPreview && !ArsUI_PreviewBones(m_pCurrentEntity, (*m_pbonetransform), m_pStudioHeader->numbones))
++		return 1;
++
+ 	if (flags & STUDIO_EVENTS)
+ 	{
+ 		StudioCalcAttachments();
+@@ -928,6 +944,8 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
  		IEngineStudio.StudioDynamicLight(m_pCurrentEntity, &lighting);
  
  		IEngineStudio.StudioEntityLight(&lighting);
@@ -237,10 +248,10 @@ index e77a067..33b67c6 100644
  	void AddWeapon( WEAPON *wp ) 
 diff --git a/cl_dll/arsenal_ui.cpp b/cl_dll/arsenal_ui.cpp
 new file mode 100644
-index 0000000..21f9f37
+index 0000000..e4360ac
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.cpp
-@@ -0,0 +1,1588 @@
+@@ -0,0 +1,1896 @@
 +/*
 +arsenal_ui.cpp - the Half-Life arsenal's own menus, drawn by the client
 +
@@ -270,6 +281,7 @@ index 0000000..21f9f37
 +#include "ammohistory.h"
 +#include "weapontype.h"
 +#include "arsenal_ui.h"
++#include "studio_util.h"
 +#include <string.h>
 +#include <stdio.h>
 +#include <math.h>
@@ -401,7 +413,7 @@ index 0000000..21f9f37
 +	GUN( "rpg", "RPG", "Rocket launcher", "w_rpg", HL_RPG, 3600, ANY, 120, 1, 1.5f, 1, 3, 200, 1.0f, 1.0f, "Laser-guided rockets" ),
 +	GUN( "egon", "Egon", "Gluon gun  -  uranium", "w_egon", HL_EGON, 4400, ANY, 12, 1, 0.1f, 0, 100, 210, 1.5f, 0.6f, "A continuous, searing beam" ),
 +	GUN( "handgrenade", "Hand Grenade", "Explosive", "w_grenade", HL_HANDGRENADE, 250, ANY, 100, 1, 0, 0, 1, 250, 1.0f, 0, "Cooks while held, three seconds" ),
-+	GUN( "satchel", "Satchel Charge", "Explosive  -  2 at most", "w_satchel", HL_SATCHEL, 450, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Throw it, then detonate it" ),
++	GUN( "satchel", "Satchel Charge", "Explosive  -  2 at most", "w_satchel", HL_SATCHEL, 450, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Click: throw, then detonate. Right click: throw another" ),
 +	GUN( "tripmine", "Tripmine", "Explosive  -  2 at most", "p_tripmine", HL_TRIPMINE, 400, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Laser-triggered, on a wall" ),
 +	GUN( "snark", "Snarks", "Creatures  -  3 a box", "w_sqknest", HL_SNARK, 400, ANY, 10, 1, 0, 0, 6, 250, 1.0f, 0, "Hungry: they hunt the nearest enemy" ),
 +};
@@ -480,6 +492,7 @@ index 0000000..21f9f37
 +static bool g_bTouch; // (the client button and the visible cursor are set)
 +static bool g_bInMouse; // (inside the engine call that sets them: the engine's mouse callbacks it makes are ours)
 +static bool g_bSuspended; // (the engine's menu took the mouse: given back when the game takes it again)
++static float g_flSpawned = -1; // (the last HUD reset: ArsUI_Spawned)
 +static bool g_bHeld[256]; // (keys down: the engine passes their auto-repeats on)
 +
 +static float Now( void ) { return gEngfuncs.GetClientTime(); }
@@ -494,6 +507,53 @@ index 0000000..21f9f37
 +	if ( id <= 0 )
 +		return false;
 +	return id < 32 ? !!( gHUD.m_iWeaponBits & ( 1 << id )) : !!( gHUD.m_iWeaponBitsHL & ( 1 << ( id - 32 )));
++}
++
++extern bool g_bOwnsShield;
++
++// The price the server asks: the armor only for what is missing
++static int Price( const BuyItem &it )
++{
++	if ( !strcmp( it.cmd, "vesthelm" ) && gHUD.m_Battery.Armor() >= 100 && !gHUD.m_Battery.Helmet())
++		return 350;
++	if ( !strcmp( it.cmd, "vesthelm" ) && gHUD.m_Battery.Helmet() && gHUD.m_Battery.Armor() > 0 && gHUD.m_Battery.Armor() < 100 )
++		return 650;
++	return it.price;
++}
++
++// The local player's look is one of Half-Life's (no shield hitbox)
++static bool HLLook( void )
++{
++	cl_entity_t *me = gEngfuncs.GetLocalPlayer();
++	if ( !me || !me->model )
++		return false;
++	for ( int t = 0; t < 2; t++ )
++		for ( int i = CS_LOOKS; i < NUM_LOOKS; i++ )
++		{
++			char path[96];
++			snprintf( path, sizeof( path ), "models/player/%s/%s.mdl", g_Looks[t][i].model, g_Looks[t][i].model );
++			if ( !strcmp( me->model->name, path ))
++				return true;
++		}
++	return false;
++}
++
++// What the server refuses whatever the money: Half-Life's pistols and the shield do not go together
++static bool Refused( const BuyItem &it )
++{
++	if (( it.id == HL_GLOCK || it.id == HL_PYTHON ) && g_bOwnsShield )
++		return true;
++	if ( !strcmp( it.cmd, "shield" ) && ( Owned( HL_GLOCK ) || Owned( HL_PYTHON ) || HLLook()))
++		return true;
++	return false;
++}
++
++// What the server refuses as already had: a full vest, and the helmet with it
++static bool Full( const BuyItem &it )
++{
++	const int armor = gHUD.m_Battery.Armor();
++	const bool helmet = gHUD.m_Battery.Helmet() && armor > 0;
++	return ( !strcmp( it.cmd, "vest" ) && armor >= 100 ) || ( !strcmp( it.cmd, "vesthelm" ) && armor >= 100 && helmet );
 +}
 +
 +static bool ItemForTeam( const BuyItem &it )
@@ -742,20 +802,19 @@ index 0000000..21f9f37
 +	float x, y, w, h, t0, yaw, zoom;
 +	float scale; // (of the last frame, for the light)
 +	bool active, failed;
++	bool laid; float layAngle; // (the screen-plane turn that lays a weapon flat: LayAngle, from its first frame's bones)
++	bool fitted; float fitCenter[3], fitHx, fitHz, fitSweep;
++	int measured; float corr; // (the scale corrected once from what its first laid frame drew: PreviewBones)
++	float frameW, frameH, mid[3];
++	float pose0[3][3], m[3][4];
 +	cl_entity_t ent;
 +};
 +
 +// the world models that do not lie as the others: `over` turned over along their length (upside down), `roll` degrees
 +// in the screen's plane, `yaw` degrees around the vertical (their face toward the view)
 +struct Turn { const char *model; bool over; float roll, yaw; };
-+static const Turn g_Turns[] =
-+{
-+	{ "models/w_9mmhandgun.mdl", true, 0, 0 },
-+	{ "models/w_357.mdl", true, 0, 0 },
-+	{ "models/w_shotgun.mdl", true, 0, 0 },
-+	{ "models/w_9mmar.mdl", false, 90, 0 },
-+	{ "models/w_gauss.mdl", true, 0, 0 },
-+};
++static const Turn g_Turns[] = { { "", false, 0, 0 } }; // (none: LayAngle lays them all)
++static const char *const g_Flips[] = { "models/w_9mmhandgun.mdl" };
 +
 +struct Backdrop
 +{
@@ -782,6 +841,9 @@ index 0000000..21f9f37
 +		p.name[sizeof( p.name ) - 1] = 0;
 +		p.model = NULL;
 +		p.failed = false;
++		p.laid = false; p.layAngle = 0;
++		p.fitted = false;
++		p.measured = 0; p.corr = 1;
 +		p.t0 = Now();
 +	}
 +	p.x = x; p.y = y; p.w = w; p.h = h; p.pose = pose; p.yaw = yaw; p.zoom = zoom;
@@ -801,6 +863,10 @@ index 0000000..21f9f37
 +	if ( pose != POSE_UPRIGHT )
 +		return 0;
 +	mstudioseqdesc_t *seq = (mstudioseqdesc_t *)( (byte *)hdr + hdr->seqindex );
++	// (the model's own standing idle: by its activity, then by name — one without blends, which pose the limbs apart)
++	for ( int i = 0; i < hdr->numseq; i++ )
++		if ( seq[i].activity == 1 /* ACT_IDLE */ && seq[i].numblends <= 1 )
++			return i;
 +	for ( int i = 0; i < hdr->numseq; i++ )
 +		if ( !strcmp( seq[i].label, "idle1" ))
 +			return i;
@@ -868,6 +934,13 @@ index 0000000..21f9f37
 +		e->curstate.rendermode = kRenderNormal;
 +		e->curstate.renderamt = 255;
 +		e->curstate.movetype = MOVETYPE_NONE;
++		// (a player model: its bone controllers and blends at their middle, the neutral pose — a weapon's are left at 0,
++		// where its maker posed it)
++		if ( p.pose == POSE_UPRIGHT )
++		{
++			for ( int k = 0; k < 4; k++ ) e->curstate.controller[k] = e->latched.prevcontroller[k] = 127;
++			e->curstate.blending[0] = e->curstate.blending[1] = e->latched.prevblending[0] = e->latched.prevblending[1] = 127;
++		}
 +		e->latched.prevsequence = p.sequence;
 +		float tx, ty;
 +		Projection( tx, ty );
@@ -888,6 +961,88 @@ index 0000000..21f9f37
 +		if ( ent == &g_Previews[i].ent )
 +			return &g_Previews[i];
 +	return NULL;
++}
++
++// The angle, in the screen's plane, that lays a model's length horizontal with its widest overhang down: its vertices,
++// placed by its bones as its sequence poses them (model space), seen in the display frame `pose` gives (x right, z up).
++struct Lay { float angle, center[3], hx, hz, sweep; bool fitted; };
++static Lay LayAngle( studiohdr_t *hdr, const float pose[3][3], float bone[][3][4] )
++{
++	Lay out = { 0, { 0, 0, 0 }, 0, 0, 0, false };
++	vec3_t lo = { 1e9f, 1e9f, 1e9f }, hi = { -1e9f, -1e9f, -1e9f };
++	// (the first body part's first model: the weapon itself)
++	double sx = 0, sz = 0, sxx = 0, szz = 0, sxz = 0; int n = 0;
++	static float px[4096], pz[4096], py[4096];
++	mstudiobodyparts_t *parts = (mstudiobodyparts_t *)( (byte *)hdr + hdr->bodypartindex );
++	for ( int bp = 0; bp < hdr->numbodyparts && n < 4096; bp++ )
++	{
++		if ( parts[bp].nummodels <= 0 )
++			continue;
++		mstudiomodel_t *model = (mstudiomodel_t *)( (byte *)hdr + parts[bp].modelindex );
++		const vec3_t *verts = (const vec3_t *)( (byte *)hdr + model->vertindex );
++		const byte *vbone = (const byte *)hdr + model->vertinfoindex;
++		for ( int v = 0; v < model->numverts && n < 4096; v++ )
++		{
++			const int b = vbone[v] < hdr->numbones ? vbone[v] : 0;
++			vec3_t w;
++			VectorTransform( verts[v], bone[b], w );
++			for ( int k = 0; k < 3; k++ ) { lo[k] = min( lo[k], w[k] ); hi[k] = max( hi[k], w[k] ); }
++			const float x = pose[0][0] * w[0] + pose[0][1] * w[1] + pose[0][2] * w[2];
++			const float z = pose[2][0] * w[0] + pose[2][1] * w[1] + pose[2][2] * w[2];
++			py[n] = pose[1][0] * w[0] + pose[1][1] * w[1] + pose[1][2] * w[2];
++			px[n] = x; pz[n] = z; n++;
++			sx += x; sz += z; sxx += x * x; szz += z * z; sxz += x * z;
++		}
++	}
++	if ( n < 8 )
++		return out;
++	for ( int k = 0; k < 3; k++ ) out.center[k] = ( lo[k] + hi[k] ) / 2;
++	const double mx = sx / n, mz = sz / n, cxx = sxx / n - mx * mx, czz = szz / n - mz * mz, cxz = sxz / n - mx * mz;
++	// (the principal axis; a nearly round item is left as it lies)
++	const double theta = 0.5 * atan2( 2 * cxz, cxx - czz );
++	const double l1 = ( cxx + czz ) / 2 + sqrt(( cxx - czz ) * ( cxx - czz ) / 4 + cxz * cxz ), l2 = cxx + czz - l1;
++	float angle = 0;
++	if ( l1 >= l2 * 1.8 )
++	{
++	// turned by -theta: the axis horizontal; then the farthest overhang (perpendicular) must point down
++	angle = (float)-theta;
++	const float c = cosf( angle ), s = sinf( angle );
++	float up = 0, down = 0;
++	for ( int i = 0; i < n; i++ )
++	{
++		const float z = s * ( px[i] - mx ) + c * ( pz[i] - mz );
++		up = max( up, z ); down = max( down, -z );
++	}
++	if ( up > down )
++		angle += M_PI;
++	}
++	// (the model's own extent once laid: the frame fitted to it, not to its file's box)
++	const float c = cosf( angle ), s = sinf( angle );
++	float x0 = 1e9f, x1 = -1e9f, z0 = 1e9f, z1 = -1e9f;
++	for ( int i = 0; i < n; i++ )
++	{
++		const float x = c * px[i] - s * pz[i], z = s * px[i] + c * pz[i];
++		x0 = min( x0, x ); x1 = max( x1, x ); z0 = min( z0, z ); z1 = max( z1, z );
++	}
++	out.angle = angle; out.hx = ( x1 - x0 ) / 2; out.hz = ( z1 - z0 ) / 2; out.fitted = true;
++	// (how far it reaches from its middle in the plane it turns in — across and in depth: the swing it needs)
++	const float cxm = ( x0 + x1 ) / 2;
++	float y0 = 1e9f, y1 = -1e9f;
++	for ( int i = 0; i < n; i++ ) { y0 = min( y0, py[i] ); y1 = max( y1, py[i] ); }
++	const float cym = ( y0 + y1 ) / 2;
++	for ( int i = 0; i < n; i++ )
++	{
++		const float x = c * px[i] - s * pz[i] - cxm, y = py[i] - cym;
++		out.sweep = max( out.sweep, sqrtf( x * x + y * y ));
++	}
++	// (its middle in model space: the laid frame's middle taken back through the laid axes)
++	const float czm = ( z0 + z1 ) / 2;
++	for ( int k = 0; k < 3; k++ )
++	{
++		const float r0 = c * pose[0][k] - s * pose[2][k], r2 = s * pose[0][k] + c * pose[2][k];
++		out.center[k] = r0 * cxm + pose[1][k] * cym + r2 * czm;
++	}
++	return out;
 +}
 +
 +// the model's frame: its bounding box centered in the rectangle, fitted to it as it turns, the side of a weapon
@@ -954,9 +1109,40 @@ index 0000000..21f9f37
 +		ey += fabs( pose[1][j] ) * half[j];
 +		ez += fabs( pose[2][j] ) * half[j];
 +	}
++	// (a lying weapon laid along the screen: the model's length — its vertices' principal axis in the shown plane —
++	// horizontal, the side reaching furthest from it (grip, magazine, stock) down; the game's files have them at any
++	// angle. Computed once per model.)
++	if ( p->pose == POSE_FLAT )
++	{
++		memcpy( p->pose0, pose, sizeof( p->pose0 )); // (for PreviewBones: the frame before laying)
++		if ( p->laid && p->layAngle )
++		{
++			const float c = cosf( p->layAngle ), sn = sinf( p->layAngle );
++			for ( int j = 0; j < 3; j++ )
++			{
++				const float x = pose[0][j], z = pose[2][j];
++				pose[0][j] = c * x - sn * z; pose[2][j] = sn * x + c * z;
++			}
++			ex = ey = ez = 0;
++			for ( int j = 0; j < 3; j++ )
++			{
++				ex += fabs( pose[0][j] ) * half[j];
++				ey += fabs( pose[1][j] ) * half[j];
++				ez += fabs( pose[2][j] ) * half[j];
++			}
++		}
++		// (fitted to its vertices: their middle at the frame's, their extent filling it)
++		if ( p->laid && p->fitted )
++		{
++			VectorCopy( p->fitCenter, center );
++			ex = p->fitHx; ez = p->fitHz; ey = min( ey, max( ex, ez ));
++		}
++	}
 +	// (small items shown at a sensible size, not blown up to the frame)
 +	ez = max( ez, 4.5f );
 +	float radius = max( (float)sqrt( ex * ex + ey * ey ), 7.0f );
++	if ( p->laid && p->fitted )
++		radius = max( max( p->fitSweep, p->fitHx ), 7.0f ); // (its real swing: never near the view nor past the backdrop)
 +	float tx, ty;
 +	Projection( tx, ty );
 +	float worldW = p->w / ScreenWidth * 2 * tx * PREVIEW_DIST, worldH = p->h / ScreenHeight * 2 * ty * PREVIEW_DIST;
@@ -965,6 +1151,7 @@ index 0000000..21f9f37
 +	float s = min( worldW * 0.94f / ( 2 * radius ), worldH * 0.9f / ( 2 * ez )) * p->zoom * ( 0.86f + 0.14f * intro );
 +	// (never deeper than the backdrop: the model stays between it and the view)
 +	s = min( s, ( BACKDROP_DIST - PREVIEW_DIST - 0.5f ) / radius );
++	s *= p->corr;
 +	p->scale = s;
 +
 +	// (a slow sway around the side that faces the view: a close model turned edge-on would leave the frame)
@@ -993,7 +1180,114 @@ index 0000000..21f9f37
 +		m[i][3] = mid[i] - ( m[i][0] * center[0] + m[i][1] * center[1] + m[i][2] * center[2] );
 +	}
 +	VectorCopy( mid, ent->origin );
++	memcpy( p->m, m, sizeof( p->m ));
++	p->frameW = worldW; p->frameH = worldH; VectorCopy( mid, p->mid );
 +	return true;
++}
++
++// Whether points (across, in depth, up from the frame's middle), scaled by f and swaying around the up axis,
++// stay within the frame
++static bool PreviewFits( const vec3_t *pts, int n, float f, float X0, float D, float Z0, float frameW, float frameH )
++{
++	for ( int k = 0; k <= 12; k++ )
++	{
++		const float c = cosf( k / 12.0f - 0.5f ), sn = sinf( k / 12.0f - 0.5f ); // (the sway: 0.42 either way)
++		for ( int i = 0; i < n; i++ )
++		{
++			const float x = f * ( pts[i][0] * c - pts[i][1] * sn ), y = f * ( pts[i][0] * sn + pts[i][1] * c ), z = f * pts[i][2];
++			const float den = D + y;
++			if ( den < 0.5f )
++				return false;
++			if ( fabsf( D * ( X0 + x ) / den - X0 ) > 0.46f * frameW || fabsf( D * ( Z0 + z ) / den - Z0 ) > 0.42f * frameH )
++				return false;
++		}
++	}
++	return true;
++}
++
++// The preview's bones of this frame (world space, from m): the first frame of a lying weapon lays it — its bones back
++// in model space, then LayAngle — and is not drawn. False: skip drawing.
++bool ArsUI_PreviewBones( cl_entity_t *ent, float bones[][3][4], int count )
++{
++	Preview *p = PreviewOf( ent );
++	if ( !p || p->pose != POSE_FLAT )
++		return true;
++	if ( p->laid )
++	{
++		// (its first laid frame: the vertices where its bones put them, measured across, up and in depth against the
++		// frame and the room before the backdrop; the scale corrected once, and that frame not drawn)
++		if ( p->measured++ )
++			return true;
++		studiohdr_t *hdr = (studiohdr_t *)IEngineStudio.Mod_Extradata( p->model );
++		static vec3_t pts[8192];
++		int n = 0;
++		float ay = 0;
++		mstudiobodyparts_t *parts = (mstudiobodyparts_t *)( (byte *)hdr + hdr->bodypartindex );
++		for ( int bp = 0; bp < hdr->numbodyparts; bp++ )
++		{
++			if ( parts[bp].nummodels <= 0 ) continue;
++			mstudiomodel_t *model = (mstudiomodel_t *)( (byte *)hdr + parts[bp].modelindex );
++			const vec3_t *verts = (const vec3_t *)( (byte *)hdr + model->vertindex );
++			const byte *vbone = (const byte *)hdr + model->vertinfoindex;
++			for ( int v = 0; v < model->numverts; v++ )
++			{
++				const int b = vbone[v] < count ? vbone[v] : 0;
++				vec3_t w; VectorTransform( verts[v], bones[b], w );
++				vec3_t d = { w[0] - p->mid[0], w[1] - p->mid[1], w[2] - p->mid[2] };
++				ay = max( ay, sqrtf( DotProduct( d, d )));
++				if ( n < 8192 )
++				{
++					pts[n][0] = DotProduct( d, g_vRight ); pts[n][1] = DotProduct( d, g_vForward ); pts[n][2] = DotProduct( d, g_vUp );
++					n++;
++				}
++			}
++		}
++		float f = 1;
++		if ( ay > 0.001f ) f = min( f, ( BACKDROP_DIST - PREVIEW_DIST - 0.5f ) / ay ); // (turning, it reaches that far in depth)
++		// (swaying, in the perspective of a frame off the screen's middle: its nearer end grows away from it)
++		vec3_t o; VectorSubtract( p->mid, g_vViewOrg, o );
++		const float X0 = DotProduct( o, g_vRight ), D = DotProduct( o, g_vForward ), Z0 = DotProduct( o, g_vUp );
++		float lo = 0, hi = f;
++		while ( hi - lo > 0.005f && !PreviewFits( pts, n, hi, X0, D, Z0, p->frameW, p->frameH ))
++		{
++			const float m = ( lo + hi ) / 2;
++			if ( PreviewFits( pts, n, m, X0, D, Z0, p->frameW, p->frameH ))
++				lo = m;
++			else
++				hi = m;
++		}
++		p->corr = PreviewFits( pts, n, hi, X0, D, Z0, p->frameW, p->frameH ) ? hi : lo;
++		// (measured during the intro's zoom, which then ends: the correction of the final size)
++		float intro = Clamp01(( Now() - p->t0 ) / 0.25f );
++		intro = 1 - ( 1 - intro ) * ( 1 - intro );
++		p->corr *= 0.86f + 0.14f * intro;
++		return false;
++	}
++	p->laid = true;
++	if ( count <= 0 || count > 128 )
++		return false;
++	// (m = R*s | t, R orthonormal: its inverse is R^T/s | -R^T t / s)
++	float s2 = p->m[0][0] * p->m[0][0] + p->m[1][0] * p->m[1][0] + p->m[2][0] * p->m[2][0];
++	if ( s2 < 1e-12f )
++		return false;
++	float inv[3][4];
++	for ( int i = 0; i < 3; i++ )
++	{
++		for ( int j = 0; j < 3; j++ ) inv[i][j] = p->m[j][i] / s2;
++		inv[i][3] = -( inv[i][0] * p->m[0][3] + inv[i][1] * p->m[1][3] + inv[i][2] * p->m[2][3] );
++	}
++	static float local[128][3][4];
++	for ( int b = 0; b < count; b++ )
++		ConcatTransforms( inv, bones[b], local[b] );
++	const Lay lay = LayAngle( (studiohdr_t *)IEngineStudio.Mod_Extradata( p->model ), p->pose0, local );
++	p->layAngle = lay.angle;
++	// (a few models whose overhang misleads: the other way up)
++	for ( const char *flip : g_Flips )
++		if ( !strcmp( flip, p->name ))
++			p->layAngle += M_PI;
++	p->fitted = lay.fitted; VectorCopy( lay.center, p->fitCenter ); p->fitHx = lay.hx; p->fitHz = lay.hz; p->fitSweep = lay.sweep;
++
++	return false;
 +}
 +
 +// a light of its own: from above the view, on its left
@@ -1289,14 +1583,14 @@ index 0000000..21f9f37
 +	TextRight( x + w, y, text, C_TEXT );
 +}
 +
-+// (the server decides: its price can be lower than the one shown — the helmet alone for a full vest — and it tells
-+// why it refuses; the row flashes red when the shown price is more than the money)
++// (the server decides and tells why it refuses; the row flashes red when the price is more than the money, or for
++// what goes not with the shield)
 +static void Buy( int index )
 +{
 +	const BuyItem &it = g_Items[index];
 +	g_iFlashItem = index;
 +	g_flFlash = Now();
-+	g_bFlashBad = it.price > gHUD.m_Money.Money();
++	g_bFlashBad = Refused( it ) || Full( it ) || Price( it ) > gHUD.m_Money.Money();
 +	ClientCmd( (char *)it.cmd );
 +}
 +
@@ -1426,7 +1720,7 @@ index 0000000..21f9f37
 +		const BuyItem &it = g_Items[items[i]];
 +		bool hover = Hover( lx, ly, listW - 1, rowH );
 +		bool focus = items[i] == g_iFocus;
-+		bool afford = it.price <= money, owned = Owned( it.id );
++		bool refused = Refused( it ) || Full( it ), afford = !refused && Price( it ) <= money, owned = Owned( it.id ) || Full( it );
 +		if ( hover )
 +			hovered = items[i];
 +		float flash = items[i] == g_iFlashItem ? Clamp01( 1 - ( Now() - g_flFlash ) / 0.5f ) : 0;
@@ -1440,7 +1734,7 @@ index 0000000..21f9f37
 +		float cy = ly + ( rowH - lh ) / 2;
 +		KeyBadge( lx + 16, cy, key, ( hover || focus ) && g_iKeyLevel == 1 );
 +		Text( lx + 42, cy, it.name, Alpha( afford ? (( hover || focus ) ? C_GOLDT : C_TEXT ) : C_FAINT, fade ));
-+		snprintf( sz, sizeof( sz ), "$%d", it.price );
++		snprintf( sz, sizeof( sz ), "$%d", Price( it ));
 +		TextRight( lx + listW - 18, cy, sz, Alpha( afford ? C_GREEN : C_RED, fade ));
 +		if ( owned )
 +			TextRight( lx + listW - 26 - TextWidth( sz ), cy, "owned", Alpha( C_DIM, fade ));
@@ -1468,8 +1762,8 @@ index 0000000..21f9f37
 +			TextRight( px + pw - 10, py + ph - lh - 8, "drag to turn", Alpha( C_FAINT, fade ));
 +		float ix = dx + 22, iy = py + ph + 12, iw = dw - 44;
 +		Text( ix, iy, it.name, Alpha( C_GOLDT, fade ), 1.45f );
-+		snprintf( sz, sizeof( sz ), "$%d", it.price );
-+		bool afford = it.price <= money;
++		snprintf( sz, sizeof( sz ), "$%d", Price( it ));
++		bool afford = !Refused( it ) && !Full( it ) && Price( it ) <= money;
 +		TextRight( ix + iw, iy, sz, Alpha( afford ? C_GREEN : C_RED, fade ), 1.45f );
 +		iy += LineHeight( Scaled( 1.45f ) ? 1.45f : 1 ) + 4;
 +		char kind[96];
@@ -1492,7 +1786,7 @@ index 0000000..21f9f37
 +
 +	// (the keys, or why a purchase failed)
 +	if ( g_iFlashItem >= 0 && g_bFlashBad && Now() - g_flFlash < 1.5f )
-+		TextRight( x0 + W - 14 - 130 - 16, fy + ( bh - lh ) / 2, "Not enough money", C_RED );
++		TextRight( x0 + W - 14 - 130 - 16, fy + ( bh - lh ) / 2, Full( g_Items[g_iFlashItem] ) ? "Already have it" : !Refused( g_Items[g_iFlashItem] ) ? "Not enough money" : strcmp( g_Items[g_iFlashItem].cmd, "shield" ) ? "Not with the shield" : "Not with a Half-Life pistol or look", C_RED );
 +	else
 +		TextRight( x0 + W - 14 - 130 - 16, fy + ( bh - lh ) / 2, g_iKeyLevel ? "1-9 buy    0 categories    wheel, arrows: category" : "1-8 category    wheel, arrows: category", Alpha( C_FAINT, fade ));
 +
@@ -1590,6 +1884,8 @@ index 0000000..21f9f37
 +	}
 +}
 +
++static bool PanelKey( int down, int keynum, const char *pszCurrentBinding, bool repeat );
++
 +bool ArsUI_Key( int down, int keynum, const char *pszCurrentBinding )
 +{
 +	bool repeat = false;
@@ -1598,6 +1894,11 @@ index 0000000..21f9f37
 +		repeat = down && g_bHeld[keynum];
 +		g_bHeld[keynum] = !!down;
 +	}
++	return PanelKey( down, keynum, pszCurrentBinding, repeat );
++}
++
++static bool PanelKey( int down, int keynum, const char *pszCurrentBinding, bool repeat )
++{
 +	if ( g_iPanel == P_NONE || !down )
 +		return false; // (releases reach the game: a key held as the panel opened)
 +	const char *b = pszCurrentBinding ? pszCurrentBinding : "";
@@ -1624,6 +1925,7 @@ index 0000000..21f9f37
 +		// (the engine's menu opens: the mouse is its own until the game is back)
 +		Mouse( false );
 +		g_bSuspended = true;
++		memset( g_bHeld, 0, sizeof( g_bHeld )); // (the keys released in the engine's menu: their releases are its own)
 +		return false;
 +	}
 +	if ( keynum >= '0' && keynum <= '9' )
@@ -1656,7 +1958,10 @@ index 0000000..21f9f37
 +void ArsUI_EngineMouse( bool active )
 +{
 +	if ( !g_bInMouse && active )
++	{
 +		g_bSuspended = false;
++		memset( g_bHeld, 0, sizeof( g_bHeld )); // (back from the engine's menu or console: what was released there)
++	}
 +}
 +
 +// A press of the mouse while the touch screen's client-only mode is on: finger 0 the left button, 1 the others
@@ -1708,13 +2013,20 @@ index 0000000..21f9f37
 +	return false;
 +}
 +
++// (the look panel, when the look was chosen elsewhere — the console: closed once the player is alive in the game after
++// a HUD reset; the game also resets it as a player connects and on a round restart, the player then still watching)
++void ArsUI_Spawned( void )
++{
++	g_flSpawned = Now();
++}
++
 +void ArsUI_CloseBuy( void )
 +{
 +	if ( g_iPanel == P_BUY )
 +		Close();
 +}
 +
-+void ArsUI_Draw( float flTime )
++void ArsUI_Draw( float flTime, bool intermission )
 +{
 +	// (what was drawn this frame is what the next one renders)
 +	for ( int i = 0; i < MAX_PREVIEWS; i++ )
@@ -1722,8 +2034,15 @@ index 0000000..21f9f37
 +	g_iBackdropsNext = 0;
 +
 +	// (dead: the death camera, not the shop)
-+	if ( g_iPanel == P_BUY && ( gHUD.m_Health.m_iHealth <= 0 || g_iUser1 || LocalTeam() == 0 ))
++	if ( g_iPanel == P_BUY && ( gHUD.m_Health.m_iHealth <= 0 || g_iUser1 || LocalTeam() == 0 || intermission ))
 +		Close();
++	if ( g_flSpawned >= 0 && ( Now() < g_flSpawned || Now() - g_flSpawned > 1.5f ))
++		g_flSpawned = -1;
++	else if ( g_flSpawned >= 0 && g_iPanel == P_CLASS && gHUD.m_Health.m_iHealth > 0 && !g_iUser1 && LocalTeam() != 0 )
++	{
++		g_flSpawned = -1;
++		Close();
++	}
 +	if ( g_iPanel != P_NONE && !g_bTouch && !g_bSuspended )
 +		Mouse( true );
 +
@@ -1831,10 +2150,10 @@ index 0000000..21f9f37
 +}
 diff --git a/cl_dll/arsenal_ui.h b/cl_dll/arsenal_ui.h
 new file mode 100644
-index 0000000..e2a6d4b
+index 0000000..d1c9a80
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.h
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,39 @@
 +/*
 +arsenal_ui.h - the Half-Life arsenal's own menus (buy, team, appearance), drawn by the client
 +*/
@@ -1847,7 +2166,7 @@ index 0000000..e2a6d4b
 +
 +void ArsUI_Init( void );
 +void ArsUI_VidInit( void );
-+void ArsUI_Draw( float flTime );
++void ArsUI_Draw( float flTime, bool intermission );
 +// whether a panel is open
 +bool ArsUI_Active( void );
 +bool ArsUI_HidesHud( void );
@@ -1856,6 +2175,7 @@ index 0000000..e2a6d4b
 +// a VGUI menu of the server (cdll_dll.h MENU_*): true when one of the panels shows it
 +bool ArsUI_ShowVGUIMenu( int menuType, int bitsValidSlots );
 +void ArsUI_CloseBuy( void );
++void ArsUI_Spawned( void );
 +// the engine's mouse callbacks, and its touch events (the mouse while a panel is open): true when taken
 +void ArsUI_EngineMouse( bool active );
 +bool ArsUI_Touch( int type, int finger );
@@ -1868,12 +2188,13 @@ index 0000000..e2a6d4b
 +void ArsUI_DrawBackdrops( void );
 +bool ArsUI_IsPreview( struct cl_entity_s *ent );
 +bool ArsUI_PreviewTransform( struct cl_entity_s *ent, float matrix[3][4] );
++bool ArsUI_PreviewBones( struct cl_entity_s *ent, float bones[][3][4], int count );
 +void ArsUI_PreviewLighting( struct cl_entity_s *ent, struct alight_s *lighting );
 +bool ArsUI_HidesViewModel( void );
 +
 +#endif // ARSENAL_UI_H
 diff --git a/cl_dll/cs_wpn/cs_weapons.cpp b/cl_dll/cs_wpn/cs_weapons.cpp
-index e824bc2..fdc8dff 100644
+index e824bc2..b70f2a0 100644
 --- a/cl_dll/cs_wpn/cs_weapons.cpp
 +++ b/cl_dll/cs_wpn/cs_weapons.cpp
 @@ -63,7 +63,7 @@ globalvars_t  *gpGlobals;
@@ -1894,6 +2215,27 @@ index e824bc2..fdc8dff 100644
  
  
  // CS Weapon placeholder entities
+@@ -110,6 +110,7 @@ int    g_iWeaponFlags;
+ bool   g_bInBombZone;
+ int    g_iFreezeTimeOver;
+ bool   g_bHoldingShield;
++bool   g_bOwnsShield; // (the shield carried, whatever the weapon in hand: the Half-Life arsenal's buy menu)
+ bool   g_bHoldingKnife;
+ float  g_flPlayerSpeed;
+ int    g_iPlayerFlags;
+@@ -1162,8 +1163,12 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
+ 	}
+ 
+ 	// We are not predicting the current weapon, just bow out here.
++	g_bOwnsShield = ( from->client.iuser3 & PLAYER_HOLDING_SHIELD ) != 0;
+ 	if ( !pWeapon )
++	{
++		g_bHoldingKnife = g_bHoldingShield = false; // (a Half-Life weapon in hand: its model in the right hand)
+ 		return;
++	}
+ 
+ 	for ( i = 0; i < MAX_WEAPONS; i++ )
+ 	{
 diff --git a/cl_dll/entity.cpp b/cl_dll/entity.cpp
 index 254100f..bebe9cb 100644
 --- a/cl_dll/entity.cpp
@@ -1944,10 +2286,10 @@ index 7d887ba..c0f9706 100644
  		HOOK_EVENT( m60, FireM60 );
 diff --git a/cl_dll/events/event_hl.cpp b/cl_dll/events/event_hl.cpp
 new file mode 100644
-index 0000000..98cc8d1
+index 0000000..59fb023
 --- /dev/null
 +++ b/cl_dll/events/event_hl.cpp
-@@ -0,0 +1,486 @@
+@@ -0,0 +1,483 @@
 +/*
 +*	Half-Life arsenal: the client events of the Half-Life SDK's 9mm handgun, .357, MP5, shotgun, crossbow, RPG, Gauss
 +*	and Egon (ev_hldm.cpp), on this client's helpers. These weapons are not predicted: the shooter receives their events
@@ -2387,10 +2729,7 @@ index 0000000..98cc8d1
 +
 +	if ( EV_IsLocal( idx ) )
 +	{
-+		if ( args->iparam1 )
-+			gEngfuncs.pEventAPI->EV_WeaponAnimation( CROSSBOW_FIRE1, 1 );
-+		else if ( args->iparam2 )
-+			gEngfuncs.pEventAPI->EV_WeaponAnimation( CROSSBOW_FIRE3, 1 );
++		gEngfuncs.pEventAPI->EV_WeaponAnimation( args->iparam1 ? CROSSBOW_FIRE1 : CROSSBOW_FIRE3, 1 );
 +	}
 +}
 +
@@ -2577,7 +2916,7 @@ index 8d29ddd..be8fb96 100644
  
  void CHud::Shutdown( void )
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index b75b3c9..44e68aa 100644
+index b75b3c9..741feba 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
 @@ -180,6 +180,7 @@ public:
@@ -2588,7 +2927,16 @@ index b75b3c9..44e68aa 100644
  
  
  	void SlotInput( int iSlot );
-@@ -741,6 +742,7 @@ public:
+@@ -571,6 +572,8 @@ public:
+ 	int Draw(float flTime);
+ 	CHudMsgFunc(Battery);
+ 	CHudMsgFunc(ArmorType);
++	int Armor( void ) { return m_iBat; }
++	bool Helmet( void ) { return m_enArmorType == VestHelm; }
+ 	
+ private:
+ 	enum armortype_t {
+@@ -741,6 +744,7 @@ public:
  	int Draw( float flTime );
  	CHudMsgFunc(Money);
  	CHudMsgFunc(BlinkAcct);
@@ -2596,7 +2944,7 @@ index b75b3c9..44e68aa 100644
  
  private:
  	int m_iMoneyCount;
-@@ -1083,6 +1085,7 @@ public:
+@@ -1083,6 +1087,7 @@ public:
  	SCREENINFO  m_truescrinfo;
  
  	int	m_iWeaponBits;
@@ -2604,7 +2952,7 @@ index b75b3c9..44e68aa 100644
  	int	m_fPlayerDead;
  	int m_iIntermission;
  	int m_iNoConsolePrint;
-@@ -1106,6 +1109,8 @@ private:
+@@ -1106,6 +1111,8 @@ private:
  	client_sprite_t	*m_pSpriteList;
  	int	m_iSpriteCount;
  	int	m_iSpriteCountAllRes;
@@ -2613,8 +2961,29 @@ index b75b3c9..44e68aa 100644
  	float m_flMouseSensitivity;
  	int	m_iConcussionEffect;
  	int	m_iForceCamera;
+diff --git a/cl_dll/hud_msg.cpp b/cl_dll/hud_msg.cpp
+index 0dba92b..e2b9f7a 100644
+--- a/cl_dll/hud_msg.cpp
++++ b/cl_dll/hud_msg.cpp
+@@ -17,6 +17,7 @@
+ //
+ 
+ #include "hud.h"
++#include "arsenal_ui.h"
+ #include "cl_util.h"
+ #include "parsemsg.h"
+ #include "r_efx.h"
+@@ -40,6 +41,8 @@ extern float g_flRoundTime;
+ 
+ int CHud :: MsgFunc_ResetHUD(const char *pszName, int iSize, void *pbuf )
+ {
++	// (Half Strike: a spawn ends the look choice, however it was made)
++	ArsUI_Spawned();
+ 	// clear all hud data
+ 	HUDLIST *pList = m_pHudList;
+ 
 diff --git a/cl_dll/hud_redraw.cpp b/cl_dll/hud_redraw.cpp
-index 1f2ad59..8e4ffa2 100644
+index 1f2ad59..391e642 100644
 --- a/cl_dll/hud_redraw.cpp
 +++ b/cl_dll/hud_redraw.cpp
 @@ -17,6 +17,7 @@
@@ -2625,7 +2994,7 @@ index 1f2ad59..8e4ffa2 100644
  #include "cl_util.h"
  #include "triangleapi.h"
  
-@@ -111,11 +112,17 @@ int CHud :: Redraw( float flTime, int intermission )
+@@ -111,11 +112,21 @@ int CHud :: Redraw( float flTime, int intermission )
  				if( intermission && !(pList->p->m_iFlags & HUD_INTERMISSION) )
  					continue; // skip no-intermission during intermission
  
@@ -2638,7 +3007,11 @@ index 1f2ad59..8e4ffa2 100644
  		}
  	}
  
-+	ArsUI_Draw( flTime );
++	ArsUI_Draw( flTime, intermission != 0 );
++
++	// (the scores, Tab or the intermission, over the panels)
++	if( ArsUI_HidesHud() && m_pCvarDraw->value && ( m_Scoreboard.m_iFlags & HUD_DRAW ) && ( m_Scoreboard.m_bShowscoresHeld || intermission ))
++		m_Scoreboard.Draw( flTime );
 +
  	// are we in demo mode? do we need to draw the logo in the top corner?
  	if (m_iLogo)

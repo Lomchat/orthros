@@ -25,7 +25,7 @@ and several mods are still required; the freely licensed engine example is a sep
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r5` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r6` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -155,7 +155,7 @@ The browser release's game modules were recovered from a deployed build whose so
 `Velaron/cs16-client` at `15278ca` (the commit the recovered build started from) with its submodules — the client,
 `mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). Each of `modules.builds` is a release of its own, its patches
 on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sources give it) and
-`xash3d-web-1.2.2-cs16-15278ca-arsenal-r5` (the Half-Life Arsenal, below). A release holds the engine files of
+`xash3d-web-1.2.2-cs16-15278ca-arsenal-r6` (the Half-Life Arsenal, below). A release holds the engine files of
 `xash3d-web-1.2.2` (checked against the lock) and under `counterstrike/cstrike/` the three WebAssembly modules,
 `dlls/cs.so` (the same server compiled natively for the 32-bit dedicated server: `multiplayer.gameLibrary`) and
 `orthros-bots.pk3` (`goldsrc.extras`).
@@ -207,7 +207,7 @@ the 9mm handgun and the MP5 share Counter-Strike's 9mm, the shotgun its buckshot
 | RPG (`rpg`) | 3, primary | $3600 | 120 blast | follows its laser spot; 3 spare rockets at most |
 | Egon (`egon`) | 3, primary | $4400 | 12 every 0.1 s | a continuous beam |
 | Hand Grenade (`handgrenade`) | 4, grenade | $250 | 100 blast | cooks from the pin, 3 s; 1 at most |
-| Satchel Charge (`satchel`) | 4, grenade | $450 | 150 blast | thrown, set off by its radio (secondary); 2 at most; gone with its owner |
+| Satchel Charge (`satchel`) | 4, grenade | $450 | 150 blast | click: thrown, then set off by its radio; right click: another thrown; 2 at most; gone with its owner |
 | Tripmine (`tripmine`) | 4, grenade | $400 | 150 blast | on a wall; its beam is set off by enemies only, the mine by shots; 2 at most |
 | Snarks (`snark`) | 4, grenade | $400 the 3 | 10 a bite, a growing pop | hunt the nearest enemy for 15 s; 6 at most |
 
@@ -216,7 +216,12 @@ Prices since r5 about a fifth below their Counter-Strike counterparts'; a gun co
 0 at random): on the Terrorists' side Black Mesa's enemies (HECU marine and recon, G-Man, zombie, robo), on the
 Counter-Terrorists' its defenders (Barney, Gordon Freeman with and without his helmet, Gina, a scientist); a look follows
 its player to the other side at the same rank, and gives way to the VIP's model. Bots and auto-join pick one at random
-among all.
+among all. These models have Half-Life's sequences, not Counter-Strike's (`ref_aim_ak47`, `crouch_shoot_c4`, the
+`ACT_DIE*` activities): the server takes the nearest it has — the extension of the weapon's kind (bare hand: `crowbar`,
+`onehanded`; pistol: `onehanded`, `python`; long gun: `mp5`, `shotgun`), then the plain action — and for a death,
+Half-Life's (`ACT_DIESIMPLE`, `ACT_DIEBACKWARD`…, else `die_simple`), so they fall instead of standing in the first
+sequence. No shield with them (no hitbox for it), nor with Half-Life's pistols (no shield animations): the buy menu shows
+these greyed, the server refuses them.
 
 Balance is Counter-Strike's scale, not Half-Life's (a player has 100 health and usually kevlar): the guns' damage as
 their nearest Counter-Strike counterparts', their armor penetration as these (the crowbar the knife's, the .357 the
@@ -267,7 +272,13 @@ original game's are VGUI panels of a library not available in WebAssembly, the t
 - **Buy**: eight tabs (pistols, shotguns, SMGs, rifles, machine gun, equipment, the Half-Life guns, the Half-Life heavy
   weapons and explosives), the items the player's team may buy with their price (red when too dear, "owned"), and the
   hovered one turning in 3D (drag to turn it) with its figures: damage (pellets), fire rate, armor piercing, range
-  (damage kept at 1000 units), mobility (speed), magazine, a line on its use. Click buys (the server's buy aliases);
+  (damage kept at 1000 units), mobility (speed), magazine, a line on its use. Its price is the server's (Kevlar + Helmet:
+the helmet alone, $350, over a full vest), what it would refuse greyed (a full vest again, a shield with a Half-Life
+pistol or look, a Half-Life pistol with a shield). A model lies along its longest axis on the screen (a principal axes fit of its
+vertices where its first frame's bones put them: the files' own orientations are arbitrary, their animation lays them),
+heavier end down, and fills the frame by its vertices — measured again, before being drawn, swaying in the
+perspective of a frame away from the screen's middle, where its nearer end grows; the player models stand in their idle
+sequence, their blends and controllers neutral. Click buys (the server's buy aliases);
   keys: a tab's number then an item's, `0` back, the wheel or arrows change tab, `,`/`.` ammo, `B` or Esc closes.
 - **Other text menus** (radio, the server's): a panel of the same look. The radio menus were not shown at all: the
   client replaced them with touch-screen configurations.
