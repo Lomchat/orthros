@@ -101,6 +101,14 @@ export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null) {
     }
     if (deps.length && catalog.get(id).runtime !== 'goldsrc') catalog.get(id).extraMounts = deps;
   }
+  // (the UDP ports of the dedicated servers and their rooms: one version each)
+  const ports = new Map();
+  for (const [id, m] of catalog) {
+    const mp = m.runtime === 'goldsrc' ? m.goldsrc?.multiplayer : null; if (!mp) continue;
+    const own = [mp.port];
+    if (mp.rooms) for (let p = mp.rooms.ports[0]; p <= mp.rooms.ports[1]; p++) own.push(p);
+    for (const p of own) { if (ports.has(p)) throw new Error(`${id}: port UDP ${p} déjà pris par ${ports.get(p)}`); ports.set(p, id); }
+  }
   // (a GoldSrc version's required versions lie beneath its own files, in order, with theirs: a mod over its game)
   const underlays = (id, seen) => {
     if (seen.includes(id)) throw new Error(`dépendance circulaire: ${[...seen, id].join(' -> ')}`);

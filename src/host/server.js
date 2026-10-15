@@ -27,7 +27,7 @@ import { withDefaults } from './manifest.js';
 import { listGameTree, resolveGameFile } from './game-files.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
-import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, portLaunchUrl, udpRelay } from './goldsrc.js';
+import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
@@ -531,10 +531,13 @@ export function createServer(opts = {}) {
   };
 
   const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game) }) : null;
+  const rooms = roomsApi({ getManifest, ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
     try {
+      // (the multiplayer rooms of a browser port, from its server manager)
+      if (p.startsWith('/api/rooms/') && rooms.handle(req, res, url)) return;
       if (p === '/api/account' || p.startsWith('/api/account/') || p === '/api/cloud' || p.startsWith('/api/cloud/')) {
         if (!accountApi) return send(res, 503, 'accounts unavailable');
         accountApi(req, res).catch((e) => { console.error('account API:', e); if (!res.headersSent) send(res, e.status ?? 500, 'account API error'); else res.destroy(); });

@@ -25,6 +25,7 @@ const STRINGS = {
     modes: { solo: 'Single player', multiplayer: 'Multiplayer' },
     tabs: { all: 'All', windows: 'Windows', recompiled: 'Recompiled', modified: 'Recompiled & modified' },
     tabEmpty: 'No game of this kind on this server.',
+    live: (rooms, humans) => [rooms > 1 ? `${rooms} games online` : null, humans ? `${humans} playing` : null].filter(Boolean).join(', '),
     dlStart: 'Download first', dlPause: 'Pause', dlResume: 'Resume', dlRetry: 'Try again',
     dlTitle: 'Downloads the whole game into this browser now (it resumes where it stopped on your next visit): on a slow connection the game then starts and plays without waiting for the network.',
   },
@@ -41,6 +42,7 @@ const STRINGS = {
     modes: { solo: 'Solo', multiplayer: 'Multijoueur' },
     tabs: { all: 'Tout', windows: 'Windows', recompiled: 'Recompilés', modified: 'Recompilés et modifiés' },
     tabEmpty: 'Aucun jeu de ce genre sur ce serveur.',
+    live: (rooms, humans) => [rooms > 1 ? `${rooms} parties en ligne` : null, humans ? `${humans} en jeu` : null].filter(Boolean).join(', '),
     dlStart: 'Télécharger d’abord', dlPause: 'Pause', dlResume: 'Reprendre', dlRetry: 'Réessayer',
     dlTitle: 'Télécharge tout le jeu dans ce navigateur maintenant (reprend où il s’est arrêté à la visite suivante) : sur une connexion lente, le jeu démarre et se joue ensuite sans attendre le réseau.',
   },
@@ -195,6 +197,9 @@ export function mountHome({ onPlay }) {
   function heat(on_) { menu.toggleAttribute('data-hot', on_); } // (the hound's eyes flare while a game is under the pointer)
 
   const pref = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
+  // (the cards' live counts, refreshed together every 30 s)
+  let liveSyncs = [];
+  cleanup.push((() => { const t = setInterval(() => liveSyncs.forEach((f) => f()), 30000); return () => clearInterval(t); })());
   // the library's tabs: the Windows games (run as they are in the emulator), the ones whose engine is recompiled for the
   // browser, and those also modified (a mod: the manifest's "modified"); "all" in that order
   const KINDS = ['windows', 'recompiled', 'modified'];
@@ -235,7 +240,7 @@ export function mountHome({ onPlay }) {
 
   function card(g, i) {
     const el = h('article', { class: 'hm-card' + (drawn ? ' still' : ''), 'data-name': g.id, style: `--i:${i}`, role: 'group', 'aria-label': g.title });
-    const cover = h('div', { class: 'hm-cover' }), desc = h('p'), meta = h('span', { class: 'hm-meta' }), playBtn = playPill(g), langSlot = h('div', { class: 'hm-slot' });
+    const cover = h('div', { class: 'hm-cover' }), desc = h('p'), meta = h('span', { class: 'hm-meta' }), live = h('span', { class: 'hm-live' }), playBtn = playPill(g), langSlot = h('div', { class: 'hm-slot' });
     // "download the whole game first": status line and its button (download, pause, resume)
     const dlText = h('span', { class: 'hm-dl-text' }), dlBar = h('i'), dlBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
     const dlRow = h('div', { class: 'hm-dl', title: S().dlTitle }, h('div', { class: 'hm-dl-bar' }, dlBar), dlText, dlBtn);
@@ -273,6 +278,7 @@ export function mountHome({ onPlay }) {
       desc.textContent = (lang === 'fr' ? v?.descriptionFr : null) ?? v?.description ?? '';
       const what = v?.exe ?? v?.modes?.map((m) => S().modes[m] ?? m).join(' · ') ?? '';
       meta.textContent = ok ? `${what} · ${S().size(v.bytes)}` : S().missing; meta.title = v?.exe ?? '';
+      syncLive();
       playBtn.hidden = !ok;
       versions?.set(v?.name);
       langRow = v?.languages?.length ? choiceRow({ label: S().gameLanguageShort, aria: S().gameLanguage, max: MAX_LANGS, more: S().others,
@@ -283,9 +289,19 @@ export function mountHome({ onPlay }) {
       syncDownload();
     }
 
+    // the games running on a port's servers (its lobby, /api/rooms): how many, how many play
+    function syncLive() {
+      const v = chosen(g); live.textContent = '';
+      if (!v?.available || !v.modes?.includes('multiplayer')) return;
+      fetch(`/api/rooms/${encodeURIComponent(v.name)}`, { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+        if (chosen(g)?.name !== v.name || !d.rooms) return;
+        live.textContent = S().live(d.rooms.length, d.rooms.reduce((t, r) => t + r.humans, 0));
+      }).catch(() => {});
+    }
+    liveSyncs.push(syncLive);
     el.append(cover, h('div', { class: 'hm-body' }, h('h3', {}, g.title), desc,
       h('div', { class: 'hm-choices' }, versions?.el, langSlot),
-      h('div', { class: 'hm-foot-row' }, meta, playBtn), dlRow));
+      h('div', { class: 'hm-foot-row' }, h('div', { class: 'hm-metas' }, meta, live), playBtn), dlRow));
     sync();
     el.onclick = (e) => { if (chosen(g)?.available && !e.target.closest('select, button, label, .hm-dl')) play(g); };
     for (const [type, fn] of [['mouseenter', () => { if (chosen(g)?.available) { setBackdrop(g.id); heat(true); } }], ['mouseleave', () => { setBackdrop(resume?.id ?? null); heat(false); }],
@@ -325,6 +341,7 @@ export function mountHome({ onPlay }) {
     backdrops.replaceChildren();
     for (const g of games) syncBackdrop(g);
     setBackdrop(resume?.id ?? null);
+    liveSyncs = [];
     cards = shown.map(card);
     drawn = true; // (later drawings — a language change — do not replay the entrance)
     if (!cards.length) { message('empty', S().tabs[tab], S().tabEmpty); return; }

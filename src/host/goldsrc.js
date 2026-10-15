@@ -5,6 +5,7 @@
 // dedicated server, and relays multiplayer: one WebSocket per player to the version's dedicated server on a localhost
 // UDP port. Nothing here names a game: engine release, game directory, modules, maps and ports come from the manifest.
 import dgram from 'node:dgram';
+import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,8 +38,49 @@ export function goldsrcProblem(g) {
     if (mp.maxPlayers !== undefined && (!Number.isInteger(mp.maxPlayers) || mp.maxPlayers < 2 || mp.maxPlayers > 32)) return 'goldsrc.multiplayer.maxPlayers invalide';
     if (mp.gameLibrary !== undefined && !safePath(mp.gameLibrary)) return 'goldsrc.multiplayer.gameLibrary doit être un chemin de la release';
     if (mp.commands !== undefined && !commandsOk(mp.commands)) return 'goldsrc.multiplayer.commands : commandes de console, une par entrée';
+    if (mp.maps !== undefined && (!Array.isArray(mp.maps) || !mp.maps.length || !mp.maps.every((n) => typeof n === 'string' && MAP.test(n)))) return 'goldsrc.multiplayer.maps : noms de cartes';
+    if (mp.rooms !== undefined) {
+      const r = mp.rooms, [first, last] = Array.isArray(r?.ports) ? r.ports : [];
+      if (!isObject(r) || !Number.isInteger(first) || !Number.isInteger(last) || first < 1024 || last > 65535 || last < first || last - first >= 8 || (mp.port >= first && mp.port <= last)) return 'goldsrc.multiplayer.rooms.ports : [premier, dernier], 8 ports au plus, hors du port du serveur';
+      if (r.bots !== undefined && (!isObject(r.bots) || !Number.isInteger(r.bots.max) || r.bots.max < 1 || r.bots.max > 31 || !commandsOk(r.bots.commands ?? []) || !(r.bots.commands ?? []).some((c) => c.includes('{n}')))) return 'goldsrc.multiplayer.rooms.bots : max (1-31) et commands, l\'une avec {n}';
+      if (r.bots?.args !== undefined && (!Array.isArray(r.bots.args) || !r.bots.args.every((a) => typeof a === 'string' && /^-[a-z0-9_]{1,32}$/.test(a)))) return 'goldsrc.multiplayer.rooms.bots.args : options de ligne de commande (-nom)';
+    }
   }
   return null;
+}
+
+// ---------------------------------------------------------------- the rooms: the games players create
+// A version whose multiplayer names `rooms` gets, beside its permanent server (room 0), up to one room per port of its
+// range, created on demand with a name, a map, a size and bots, and stopped once empty (tools/goldsrc/server.mjs).
+
+/** The UDP port of a room. */
+export const roomPort = (mp, index) => (index === 0 ? mp.port : mp.rooms.ports[0] + index - 1);
+/** How many rooms players may create. */
+export const roomSlots = (mp) => (mp.rooms ? mp.rooms.ports[1] - mp.rooms.ports[0] + 1 : 0);
+/** A room's name as players read it: printable, no quotes nor console separators, 32 characters at most. */
+export const roomName = (value) => String(value ?? '').normalize('NFC').replace(/[\u0000-\u001f\u007f"\\;]/g, '').replace(/\s+/g, ' ').trim().slice(0, 32);
+
+/**
+ * A request to create a room, checked: { name, map (one of `maps`), maxPlayers (2 to the server's), bots (0 to the
+ * rooms' max, none without bots) }, or a message saying what is wrong.
+ */
+export function roomRequest(body, mp, maps) {
+  const name = roomName(body?.name), map = String(body?.map ?? ''), maxPlayers = Number(body?.maxPlayers ?? mp.maxPlayers ?? 16), bots = Number(body?.bots ?? 0);
+  if (name.length < 2) return { error: 'name' };
+  if (!maps.includes(map)) return { error: 'map' };
+  if (!Number.isInteger(maxPlayers) || maxPlayers < 2 || maxPlayers > (mp.maxPlayers ?? 16)) return { error: 'maxPlayers' };
+  if (!Number.isInteger(bots) || bots < 0 || bots > (mp.rooms?.bots?.max ?? 0) || bots >= maxPlayers) return { error: 'bots' };
+  return { room: { name, map, maxPlayers, bots } };
+}
+
+/** The answer of a dedicated server to `info 49` (its name, map, clients, maximum), or null. */
+export function parseServerInfo(bytes) {
+  const text = Buffer.from(bytes).toString('latin1');
+  if (!text.startsWith('\xff\xff\xff\xffinfo\n\\')) return null;
+  const parts = text.slice(10).split('\\'), info = {};
+  for (let i = 0; i + 1 < parts.length; i += 2) info[parts[i]] = parts[i + 1];
+  const players = Number(info.numcl), max = Number(info.maxcl);
+  return info.map && Number.isFinite(players) && Number.isFinite(max) ? { name: info.host ?? '', map: info.map, players, max } : null;
 }
 
 /** The modes a version offers, in the page's order. */
@@ -91,10 +133,60 @@ export function linkGameLayers(manifest, dest) {
 }
 
 /**
- * Multiplayer relay: a WebSocket upgrade on /api/udp/<manifest> becomes one UDP socket to the version's dedicated
- * server on 127.0.0.1:<goldsrc.multiplayer.port> — never another destination. Same-origin pages only (a page elsewhere
- * cannot use this server as a relay), at most `maxClients` at once, idle connections closed after two minutes.
- * `accept(req, socket)` completes the WebSocket handshake and returns a peer (lan.js).
+ * The rooms of a version (GET /api/rooms/<manifest>: its servers, maps and limits; POST: a room created, checked here
+ * first), asked of its server manager on 127.0.0.1:<goldsrc.multiplayer.port> over TCP (tools/goldsrc/server.mjs).
+ * A creation needs the page's origin and comes once a minute per address. `handle(req, res, url)` answers or returns false.
+ */
+export function roomsApi({ getManifest, request = managerRequest, now = () => Date.now() }) {
+  const created = new Map();
+  const handle = (req, res, url) => {
+    const m = /^\/api\/rooms\/([^/]+)$/.exec(url.pathname);
+    if (!m) return false;
+    const send = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
+    const man = getManifest(decodeURIComponent(m[1])), mp = man?.runtime === 'goldsrc' ? man.goldsrc?.multiplayer : null;
+    if (!mp) { send(404, { error: 'none' }); return true; }
+    if (req.method === 'GET') {
+      request(mp.port, 'GET', null).then(([, body]) => send(200, { ...body, creatable: !!mp.rooms }), () => send(200, { rooms: [], maps: [], slots: 0, offline: true, creatable: false }));
+      return true;
+    }
+    if (req.method !== 'POST') { send(405, { error: 'method' }); return true; }
+    let sameOrigin = false; try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* no Origin: refused */ }
+    if (!sameOrigin || !mp.rooms) { send(403, { error: 'forbidden' }); return true; }
+    const who = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0].trim();
+    if (now() - (created.get(who) ?? 0) < 60000) { send(429, { error: 'wait' }); return true; }
+    let body = '';
+    req.on('data', (d) => { body += d; if (body.length > 2048) req.destroy(); });
+    req.on('end', () => {
+      let wanted; try { wanted = JSON.parse(body); } catch { send(400, { error: 'json' }); return; }
+      const checked = roomRequest(wanted, mp, [wanted?.map].filter((x) => typeof x === 'string')); // (the map is the manager's to check)
+      if (checked.error && checked.error !== 'map') { send(400, { error: checked.error }); return; }
+      created.set(who, now());
+      request(mp.port, 'POST', { name: wanted.name, map: wanted.map, maxPlayers: wanted.maxPlayers, bots: wanted.bots ?? 0 })
+        .then(([status, out]) => { if (status !== 201) created.delete(who); send(status, out); }, () => { created.delete(who); send(503, { error: 'offline' }); });
+    });
+    return true;
+  };
+  return { handle };
+}
+
+/** An HTTP request to a version's server manager: [status, json]. */
+export function managerRequest(port, method, body) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/rooms', method, timeout: method === 'POST' ? 30000 : 2000, headers: body ? { 'Content-Type': 'application/json' } : {} }, (res) => {
+      let text = ''; res.on('data', (d) => { text += d; }); res.on('end', () => { try { resolve([res.statusCode, JSON.parse(text)]); } catch (error) { reject(error); } });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout'))); req.on('error', reject);
+    req.end(body ? JSON.stringify(body) : undefined);
+  });
+}
+
+/**
+ * Multiplayer relay: a WebSocket upgrade on /api/udp/<manifest> becomes UDP sockets to the version's dedicated servers
+ * on 127.0.0.1 — never another destination. Without `?rooms`, one socket to its permanent server
+ * (goldsrc.multiplayer.port). With `?rooms` (the page's own), each message carries the room it goes to or comes from in
+ * its first byte (255: to every room, the game's LAN search), each room its own socket. Same-origin pages only (a page
+ * elsewhere cannot use this server as a relay), at most `maxClients` at once, idle connections closed after two
+ * minutes. `accept(req, socket)` completes the WebSocket handshake and returns a peer (lan.js).
  */
 export function udpRelay({ getManifest, accept, maxClients = 64, log = () => {} }) {
   const clients = new Set();
@@ -105,19 +197,39 @@ export function udpRelay({ getManifest, accept, maxClients = 64, log = () => {} 
     let sameOrigin = false; try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* no Origin: refused */ }
     // (the refusal, then the socket closed for good: a client keeping its side open would hold it forever)
     if (!mp || !sameOrigin || clients.size >= maxClients) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy()); return true; }
-    const udp = dgram.createSocket('udp4');
-    let ready = false, closed = false;
-    const pending = [];
-    const peer = accept(req, socket, (msg, text) => {
+    const tagged = url.searchParams.has('rooms'), count = 1 + roomSlots(mp);
+    /** @type {Map<number, { udp: any, ready: boolean, pending: Buffer[] }>} */
+    const sockets = new Map();
+    let closed = false, peer = null;
+    const open = (index) => {
+      let s = sockets.get(index);
+      if (s) return s;
+      const udp = dgram.createSocket('udp4');
+      s = { udp, ready: false, pending: [] }; sockets.set(index, s);
+      // (a room that is not running refuses its packets: that socket goes, the others stay)
+      udp.on('error', (e) => { if (index === 0 && !tagged) { log(`udp relay ${m[1]}: ${e.message}`); peer?.close(); } else { sockets.delete(index); try { udp.close(); } catch { /* closed */ } } });
+      udp.on('message', (bytes) => {
+        if (socket.writableLength > 1024 * 1024) { peer?.close(); return; }
+        peer?.send(tagged ? Buffer.concat([Buffer.from([index]), bytes]) : bytes);
+      });
+      udp.connect(roomPort(mp, index), '127.0.0.1', () => { if (closed) return; s.ready = true; for (const p of s.pending.splice(0)) udp.send(p); });
+      return s;
+    };
+    const send = (index, msg) => {
+      const s = open(index);
+      if (s.ready) s.udp.send(msg); else if (s.pending.length < 32) s.pending.push(msg); else peer?.close();
+    };
+    peer = accept(req, socket, (msg, text) => {
       if (text) return;
-      if (ready) udp.send(msg); else if (pending.length < 32) pending.push(msg); else peer.close();
-    }, () => { closed = true; clients.delete(peer); try { udp.close(); } catch { /* not bound */ } });
-    if (!peer) { try { udp.close(); } catch { /* not bound */ } return true; }
+      if (!tagged) { send(0, msg); return; }
+      if (msg.length < 2) return;
+      const index = msg[0], data = msg.subarray(1);
+      if (index === 255) { for (let i = 0; i < count; i++) send(i, data); } else if (index < count) send(index, data);
+    }, () => { closed = true; clients.delete(peer); for (const s of sockets.values()) { try { s.udp.close(); } catch { /* not bound */ } } });
+    if (!peer) return true;
     clients.add(peer);
     socket.setTimeout(120000, () => peer.close());
-    udp.on('error', (e) => { log(`udp relay ${m[1]}: ${e.message}`); peer.close(); });
-    udp.on('message', (bytes) => { if (socket.writableLength > 1024 * 1024) peer.close(); else peer.send(bytes); });
-    udp.connect(mp.port, '127.0.0.1', () => { if (closed) return; ready = true; for (const p of pending.splice(0)) udp.send(p); });
+    if (!tagged) open(0);
     return true;
   };
   return { handle, clients };

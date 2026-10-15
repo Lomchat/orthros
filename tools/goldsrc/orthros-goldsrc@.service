@@ -1,8 +1,9 @@
-# The native dedicated server of a GoldSrc version (docs/browser-ports.md); the instance is the manifest id:
+# The native dedicated servers of a GoldSrc version — its permanent one and the rooms players create (docs/browser-ports.md);
+# the instance is the manifest id:
 #   install -m 644 tools/goldsrc/orthros-goldsrc@.service /etc/systemd/system/ && systemctl daemon-reload
 #   systemctl enable --now orthros-goldsrc@half-life-original-en
 [Unit]
-Description=Orthros GoldSrc dedicated server (%i)
+Description=Orthros GoldSrc dedicated servers (%i)
 After=network.target
 
 [Service]
@@ -17,9 +18,10 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 Restart=on-failure
 RestartSec=5
-TasksMax=32
-CPUQuota=100%
-MemoryMax=768M
+# (the permanent server and up to 8 rooms, ~150 MB and a few threads each)
+TasksMax=192
+CPUQuota=300%
+MemoryMax=1600M
 
 [Install]
 WantedBy=multi-user.target

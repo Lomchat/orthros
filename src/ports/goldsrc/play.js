@@ -8,15 +8,16 @@
 import { pickLang } from '../../host/web/lang.js';
 import { openStorage, readStorage, writeStorage, storageKeys, removeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, PIECE } from './files.js';
+import { createLobby, roomAddress } from './lobby.js';
 
 const STRINGS = {
   en: {
-    games: '☰ Games', gamesTitle: 'quit the game (saves and settings kept) and return to the game list', fullscreen: '⛶ Full screen',
+    lobby: '◉ Online games', lobbyTitle: 'the games running on the servers: join one, or create yours', games: '☰ Games', gamesTitle: 'quit the game (saves and settings kept) and return to the game list', fullscreen: '⛶ Full screen',
     fullscreenTitle: 'full screen: only the game (hold Esc to leave)', perfTitle: 'frames per second, the last minute, the slowest frames',
     name: 'Nickname', play: 'Play', log: 'Launch log', subtitle: 'its original files, on a game engine in your browser',
     loading: 'Loading the game…', preparing: 'Preparing the installation.',
     ready: 'Start the game: single player and multiplayer are in its menu.',
-    readyServer: 'Start the game: single player and multiplayer are in its menu — Orthros\' server is in its LAN games.',
+    readyServer: 'Play: single player and multiplayer are in the game\'s menu — or join a game online below.',
     failed: 'The game could not start: ', isolated: 'This page must be served with the browser isolation headers',
     init: 'Starting the engine…', files: (pct) => `Loading the files · ${pct} %`,
     starting: 'Starting the game…', running: 'Game started. Click in the game to play.',
@@ -34,12 +35,12 @@ const STRINGS = {
     engineFiles: 'Engine resources unavailable', restart: 'Restart the game', paused: 'paused', loadingShort: 'loading',
   },
   fr: {
-    games: '☰ Jeux', gamesTitle: 'quitter la partie (sauvegardes et réglages conservés) et revenir à la liste des jeux', fullscreen: '⛶ Plein écran',
+    lobby: '◉ Parties en ligne', lobbyTitle: 'les parties en cours sur les serveurs : en rejoindre une, ou créer la tienne', games: '☰ Jeux', gamesTitle: 'quitter la partie (sauvegardes et réglages conservés) et revenir à la liste des jeux', fullscreen: '⛶ Plein écran',
     fullscreenTitle: 'plein écran : le jeu seul (maintiens Échap pour sortir)', perfTitle: 'images par seconde, la dernière minute, les images les plus lentes',
     name: 'Pseudo', play: 'Jouer', log: 'Journal de lancement', subtitle: 'ses fichiers d’origine, sur un moteur de jeu dans ton navigateur',
     loading: 'Chargement du jeu…', preparing: 'Préparation de l’installation.',
     ready: 'Lance le jeu : le solo et le multijoueur sont dans son menu.',
-    readyServer: 'Lance le jeu : le solo et le multijoueur sont dans son menu — le serveur d’Orthros est dans ses parties en réseau local (LAN).',
+    readyServer: 'Joue : le solo et le multijoueur sont dans le menu du jeu — ou rejoins une partie en ligne ci-dessous.',
     failed: 'Le jeu n’a pas pu démarrer : ', isolated: 'Cette page doit être servie avec les en-têtes d’isolation du navigateur',
     init: 'Démarrage du moteur…', files: (pct) => `Chargement des fichiers · ${pct} %`,
     starting: 'Lancement du jeu…', running: 'Partie lancée. Clique dans le jeu pour jouer.',
@@ -60,8 +61,8 @@ const STRINGS = {
 const lang = pickLang(), S = STRINGS[lang] ?? STRINGS.en;
 document.documentElement.lang = lang;
 const $ = id => document.getElementById(id);
-for (const [id, key] of [['tbGames', 'games'], ['tbFull', 'fullscreen'], ['nameLabel', 'name'], ['launch', 'play'], ['logLabel', 'log'], ['title', 'loading'], ['subtitle', 'subtitle'], ['status', 'preparing']]) $(id).textContent = S[key];
-$('tbGames').title = S.gamesTitle; $('tbFull').title = S.fullscreenTitle; $('tbPerf').title = S.perfTitle;
+for (const [id, key] of [['tbGames', 'games'], ['tbFull', 'fullscreen'], ['tbLobby', 'lobby'], ['nameLabel', 'name'], ['launch', 'play'], ['logLabel', 'log'], ['title', 'loading'], ['subtitle', 'subtitle'], ['status', 'preparing']]) $(id).textContent = S[key];
+$('tbGames').title = S.gamesTitle; $('tbLobby').title = S.lobbyTitle; $('tbFull').title = S.fullscreenTitle; $('tbPerf').title = S.perfTitle;
 for (const li of document.querySelectorAll('#loader li')) li.children[1].textContent = S.steps[li.dataset.k];
 const loader = $('loader');
 const logs = [], session = { state: 'loading', logs, engine: null, config: null, multiplayer: 'disconnected' };
@@ -125,6 +126,7 @@ function hideLoader() {
   loader.querySelector('.fill').style.width = '100%'; loader.querySelector('.pct').textContent = '100%';
   setTimeout(() => { loader.classList.add('gone'); setTimeout(() => { loader.classList.add('hidden'); fit(); }, 600); }, 250);
   $('status').textContent = S.running;
+  lobby?.hide();
 }
 const fail = error => {
   const crashed = !!engine; // (an engine that ran: its saves are kept, a new start reloads the page — a stopped engine cannot start again)
@@ -223,7 +225,26 @@ function renderHud() {
 const name = decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? '');
 const sessionId = crypto.randomUUID().replaceAll('-', '').slice(0, 24);
 loader.querySelector('.bg').style.backgroundImage = `url(/api/cover/${encodeURIComponent(name)})`;
-let config, files, streamed;
+let config, files, streamed, lobby = null, pendingConnect = null;
+const nickname = () => $('name').value.replace(/[^a-zA-Z0-9 _.-]/g, '').slice(0, 24) || 'Player';
+/** A room of the lobby joined: the engine started first if it was not, or told to connect. */
+function joinRoom(room) {
+  const address = roomAddress(room.index);
+  if (session.state === 'running') { closeLobby(); log(`Joining ${room.name} (${address})`); engine.Cmd_ExecuteString(`connect ${address}`); $('canvas').focus(); return; }
+  pendingConnect = address;
+  if (session.state === 'ready' || session.state === 'error') $('start').requestSubmit();
+}
+// (over the game: the header's button opens it; the keys typed in it stay its own — the engine listens to the page's)
+const lobbyOverlay = $('lobbyOverlay');
+function openLobby() {
+  if (!lobby) return;
+  document.exitPointerLock?.(); lobbyOverlay.querySelector('.panel').prepend(lobby.el); lobby.el.classList.remove('hidden'); lobbyOverlay.classList.remove('hidden'); lobby.show();
+}
+function closeLobby() { if (lobbyOverlay.classList.contains('hidden')) return; lobbyOverlay.classList.add('hidden'); lobby?.hide(); $('canvas').focus(); }
+$('tbLobby').addEventListener('click', () => (lobbyOverlay.classList.contains('hidden') ? openLobby() : closeLobby()));
+lobbyOverlay.addEventListener('click', (event) => { if (event.target === lobbyOverlay) closeLobby(); });
+lobbyOverlay.querySelector('.close').addEventListener('click', closeLobby);
+for (const type of ['keydown', 'keyup', 'keypress']) lobbyOverlay.addEventListener(type, (event) => { event.stopPropagation(); if (type === 'keydown' && event.key === 'Escape') closeLobby(); });
 try {
   const [manifestResponse, treeResponse] = await Promise.all([fetch(`/api/manifest/${encodeURIComponent(name)}`), fetch(`/api/tree/${encodeURIComponent(name)}`)]);
   if (!manifestResponse.ok || !treeResponse.ok) throw new Error(`HTTP ${manifestResponse.ok ? treeResponse.status : manifestResponse.status}`);
@@ -236,6 +257,12 @@ try {
   $('name').value = saved || `Player${100 + Math.floor(Math.random() * 900)}`;
   $('launch').disabled = false;
   status(config.goldsrc.multiplayer ? S.readyServer : S.ready); session.state = 'ready';
+  // (the multiplayer lobby: in the loading screen before the start, over the game after it)
+  if (config.goldsrc.multiplayer) {
+    lobby = createLobby({ name, lang, log, nickname, onJoin: joinRoom });
+    $('start').after(lobby.el); lobby.show();
+    $('tbLobby').classList.remove('hidden');
+  }
   $('launch').focus();
 } catch (error) { fail(error); }
 
@@ -247,27 +274,46 @@ async function save() {
 session.save = save;
 
 /**
- * The multiplayer relay (/api/udp/<manifest>): every packet the engine sends goes to the version's dedicated server,
- * whatever its address — the game's LAN search (a broadcast) reaches it and lists it, its answers come as 127.0.0.1:8080.
- * Opened when the engine starts, opened again at the next packet once closed (the server closes idle ones).
+ * The multiplayer relay (/api/udp/<manifest>?rooms): the version's servers, each packet tagged with its room in its
+ * first byte. The engine reaches room i at 10.87.0.<i+1>:27015 (lobby.js roomAddress; 127.0.0.1:8080 too, room 0); a
+ * broadcast — the game's LAN search — goes to every room, and each answers from its own address, so the game's own
+ * server list shows them all. Opened when the engine starts, opened again at the next packet once closed (the server
+ * closes idle ones).
  */
 class Relay {
-  constructor(url) { this.url = url; this.socket = null; this.queue = []; this.closed = false; this.used = 0; }
+  constructor(url) { this.url = url; this.socket = null; this.queue = []; this.closed = false; this.used = 0; this.from = new Map(); }
   open() {
     if (this.closed || (this.socket && this.socket.readyState <= WebSocket.OPEN)) return;
     const socket = this.socket = new WebSocket(this.url); socket.binaryType = 'arraybuffer';
     socket.onopen = () => { session.multiplayer = 'connected'; for (const data of this.queue.splice(0)) socket.send(data); };
-    socket.onmessage = (event) => { this.used = performance.now(); engine.net.incoming.enqueue({ data: new Uint8Array(event.data), ip: [127, 0, 0, 1], port: 8080 }); };
+    socket.onmessage = (event) => {
+      const bytes = new Uint8Array(event.data); if (bytes.length < 2) return;
+      this.used = performance.now();
+      // (an answer comes from the address the engine used for that room: its connection knows no other)
+      const [ip, port] = this.from.get(bytes[0]) ?? [[10, 87, 0, bytes[0] + 1], 27015];
+      engine.net.incoming.enqueue({ data: bytes.subarray(1), ip, port });
+    };
     socket.onclose = () => {
       session.multiplayer = 'disconnected';
       // (told only when it was in use: a game on the server loses its connection, the next packet opens a new one)
       if (!this.closed && !stopped && performance.now() - this.used < 5000) status(S.lost, true);
     };
   }
-  send(data) {
+  /** The room a packet goes to: 255 for a broadcast; null for an address that is none of theirs (dropped). */
+  room(ip, port) {
+    if (ip[3] === 255 || (ip[0] === 255 && ip[1] === 255)) return 255;
+    if (ip[0] === 10 && ip[1] === 87 && ip[2] === 0 && ip[3] >= 1 && ip[3] <= 9) return ip[3] - 1;
+    if (ip[0] === 127 && ip[1] === 0 && ip[2] === 0 && ip[3] === 1 && port === 8080) return 0;
+    return null;
+  }
+  send(packet) {
+    const index = this.room(packet.ip, packet.port);
+    if (index === null) return;
+    if (index !== 255) this.from.set(index, [[...packet.ip], packet.port]);
+    const data = new Uint8Array(packet.data.length + 1); data[0] = index; data.set(packet.data, 1);
     this.open();
     if (this.socket.readyState === WebSocket.OPEN) { if (this.socket.bufferedAmount < 1024 * 1024) this.socket.send(data); }
-    else if (this.queue.length < 64) this.queue.push(data.slice());
+    else if (this.queue.length < 64) this.queue.push(data);
   }
   close() { this.closed = true; this.socket?.close(); }
 }
@@ -282,9 +328,9 @@ function attachNet(Net) {
       return result;
     }
   }
-  const endpoint = new URL(`/api/udp/${encodeURIComponent(name)}`, location.href); endpoint.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const endpoint = new URL(`/api/udp/${encodeURIComponent(name)}?rooms`, location.href); endpoint.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   relay = new Relay(endpoint);
-  engine.net = new BrowserNet({ sendto: (packet) => relay.send(packet.data) });
+  engine.net = new BrowserNet({ sendto: (packet) => relay.send(packet) });
   relay.open();
 }
 
@@ -319,6 +365,7 @@ $('start').addEventListener('submit', async event => {
   if (engine) { try { localStorage.setItem('orthros.port.nickname', $('name').value); } catch { /* no storage */ } location.reload(); return; }
   $('launch').disabled = true; session.state = 'starting';
   $('start').classList.add('hidden'); for (const el of loader.querySelectorAll('.progress')) el.classList.remove('hidden');
+  lobby?.el.classList.add('hidden'); lobby?.hide();
   try {
     if (!crossOriginIsolated) throw new Error(S.isolated);
     const g = config.goldsrc, base = `/engines/${encodeURIComponent(g.engine)}/`;
@@ -390,12 +437,14 @@ $('start').addEventListener('submit', async event => {
     loadInBackground(plan.filter((e) => !e.startup)).catch((error) => log('Background loading failed: ' + error.message));
     setTimeout(() => reportReads(), 30000); setInterval(() => reportReads(), 120000);
     engine.Cmd_ExecuteString('developer ' + (new URLSearchParams(location.search).has('debug') ? '1' : '0'));
-    const nickname = $('name').value.replace(/[^a-zA-Z0-9 _.-]/g, '').slice(0, 24) || `Player${100 + Math.floor(Math.random() * 900)}`;
-    try { localStorage.setItem('orthros.port.nickname', nickname); } catch { /* no storage */ }
-    engine.Cmd_ExecuteString(`name "${nickname}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
+    const nick = nickname() === 'Player' ? `Player${100 + Math.floor(Math.random() * 900)}` : nickname();
+    try { localStorage.setItem('orthros.port.nickname', nick); } catch { /* no storage */ }
+    engine.Cmd_ExecuteString(`name "${nick}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
     // (the game's main menu: its single player and its multiplayer — a game it creates gets the manifest's settings,
     // bots included; Orthros' server answers its LAN search)
     for (const command of g.solo?.commands ?? []) engine.Cmd_ExecuteString(command);
+    // (a room chosen in the lobby before the start: joined at once)
+    if (pendingConnect) { log(`Joining ${pendingConnect}`); engine.Cmd_ExecuteString(`connect ${pendingConnect}`); pendingConnect = null; }
     session.command = command => engine.Cmd_ExecuteString(command);
     session.state = 'running'; report('start', { engine: g.engine });
     timer = setInterval(() => save().catch(error => { log('Profile save failed: ' + error.message); status(S.saveFailed, true); }), 10000);

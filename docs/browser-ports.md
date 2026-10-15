@@ -117,7 +117,12 @@ files, the game's first images) with their progress, and tips.
   `{ session, reads: [[path, start, end, t]] }`, the reads a page served, `t` in ms since its engine started.
 - `/api/udp/<manifest>` (WebSocket): the multiplayer relay. Each player gets one UDP socket to the version's dedicated
   server on `127.0.0.1:<multiplayer.port>`, never another destination; same-origin pages only, 64 players at once,
-  idle connections closed after two minutes.
+  idle connections closed after two minutes. With `?rooms` (the page's): one socket per room, each message carrying
+  its room in its first byte (255: every room — the game's LAN search).
+- `/api/rooms/<manifest>`: the lobby. GET: the version's games (its permanent server and the rooms players created:
+  name, map, players with the bots, humans, size, bots), the maps and the limits, from its server manager. POST
+  `{ name, map, maxPlayers, bots }`: a room created (the page's origin, one a minute per address), answered once its
+  server answers.
 
 ## Streamed files
 
@@ -176,9 +181,9 @@ on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sour
   first with Valve's `cs.so`, then with the native ReGameDLL, move, see each other and get the same score. Single player
   on a listen server (`solo.commands`): team menu, rounds, bots that play.
 
-## Half-Life Arsenal
+## Half Strike (the Half-Life Arsenal mod)
 
-`counter-strike-hl-arsenal`: Counter-Strike 1.6 with the fourteen Half-Life weapons bought beside its own — the two
+`counter-strike-hl-arsenal` ("Half Strike" since 2026-10-15; its ids unchanged): Counter-Strike 1.6 with the fourteen Half-Life weapons bought beside its own — the two
 Half-Life tabs of its buy menu (below), or the console aliases of the table. Both teams, every map, anywhere and at any
 time of a round (`mp_buy_anywhere 1`, `mp_buytime -1`: the mod's defaults), Counter-Strike's economy (`$800` to start,
 its rewards; `mp_startmoney` among the manifest's commands changes it). Their ammo is bought as any gun's (`,`/`.`):
@@ -278,10 +283,27 @@ only: a port's saves stay in this browser.
 
 ## Multiplayer servers
 
-One native dedicated server per version, `orthros-goldsrc@<manifest>` (systemd, `DynamicUser`, its state in
+One server manager per version, `orthros-goldsrc@<manifest>` (systemd, `DynamicUser`, its state in
 `/var/lib/private/orthros-goldsrc/<manifest>`), runs `tools/goldsrc/server.mjs`: it links the version's files into
-`$STATE_DIRECTORY/game` (the engine reads one directory) and starts the dedicated server on 127.0.0.1 only.
-Half-Life uses UDP 28015, Counter-Strike 28016, Counter-Strike (rebuilt) 28017, Half-Life Arsenal 28018.
+`$STATE_DIRECTORY/game` (the engine reads one directory) and runs native dedicated servers on 127.0.0.1 only — its
+permanent one (room 0: `multiplayer.port`, `multiplayer.map`, the game's map rotation, started again if it stops) and,
+with `multiplayer.rooms`, those players create.
+
+- **Rooms.** A room is a dedicated server of its own on a port of `rooms.ports`, with the name players gave it (its
+  `hostname`), the map they chose (from `multiplayer.maps`, else every map of the game folder; it stays on it), its size
+  and bots (`rooms.bots`: its commands with `{n}`, its command-line `args` — ReGameDLL's `-bots`). It writes to
+  `rooms/<index>/`. A room without a human player for 5 minutes stops (the engine's `info` counts its human clients;
+  the bots are the room's own number). The manager answers on 127.0.0.1:`multiplayer.port` over TCP (the same number
+  as its UDP port): GET and POST `/rooms`, for the Orthros server only. The unit allows 1.6 GB, 3 cores and 192 tasks
+  (a server takes about 150 MB).
+- **The lobby** (`src/ports/goldsrc/lobby.js`): in the page's loading screen and over the game (the header's "Online
+  games"), the version's games with their map and players, joined in a click — the engine started first if it is not —
+  and the form that creates one: a name, a map, a size, bots. Each room is also in the game's own LAN list, under its
+  name: the relay sends the LAN search to every room, room i answers as 10.87.0.<i+1>:27015 (127.0.0.1:8080 too for
+  room 0). The home's cards tell how many games are online and how many play.
+- **Ports.** Half-Life: UDP 28015, rooms 28100-28103; Counter-Strike: 28016, rooms 28110-28113; Counter-Strike
+  (rebuilt): 28017, rooms 28120-28123; Half Strike: 28018, rooms 28130-28133. The catalog refuses a port two versions
+  take.
 
 ```sh
 python3 tools/goldsrc/install-engine.py          # browser engine release -> data_engines/
