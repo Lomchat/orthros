@@ -43,7 +43,17 @@
                   "map": { "type": "string" },
                   "maxPlayers": { "type": "integer", "minimum": 2, "maximum": 32 },
                   "commands": { "type": "array", "items": { "type": "string" }, "description": "Commandes du serveur dédié avant la carte (+commande), une par entrée." },
-                  "gameLibrary": { "type": "string", "description": "Bibliothèque de jeu native du serveur dédié, chemin de la release goldsrc.engine (tools/goldsrc/build-modules.sh), au lieu de celle que nomment les fichiers du jeu." }
+                  "gameLibrary": { "type": "string", "description": "Bibliothèque de jeu native du serveur dédié, chemin de la release goldsrc.engine (tools/goldsrc/build-modules.sh), au lieu de celle que nomment les fichiers du jeu." },
+                  "maps": { "type": "array", "items": { "type": "string" }, "description": "Les cartes d'une partie créée (lobby) : sinon toutes celles du dossier maps/ du jeu." },
+                  "rooms": {
+                    "type": "object",
+                    "required": ["ports"],
+                    "description": "Le lobby : des parties que les joueurs créent (nom, carte, taille, bots), un serveur dédié chacune sur un port de la plage, arrêtée après 5 min sans joueur (tools/goldsrc/server.mjs, docs/browser-ports.md).",
+                    "properties": {
+                      "ports": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "[premier, dernier] : 8 ports UDP au plus, hors de port, d'aucun autre jeu." },
+                      "bots": { "type": "object", "required": ["max", "commands"], "properties": { "max": { "type": "integer", "minimum": 1, "maximum": 31 }, "commands": { "type": "array", "items": { "type": "string" }, "description": "Commandes du serveur pour n bots, {n} remplacé." }, "args": { "type": "array", "items": { "type": "string" }, "description": "Options de ligne de commande d'une partie avec bots (-bots)." } } }
+                    }
+                  }
                 }
               }
             },

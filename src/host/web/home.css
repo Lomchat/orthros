@@ -117,6 +117,10 @@
 #menu .hm-lib-head .count { font: 12px var(--mono); color: var(--faint); }
 #menu .hm-lib-head::after { content: ""; flex: 1; align-self: center; height: 1px; order: 3; background: linear-gradient(90deg, var(--line), transparent); }
 /* the tabs: all, the Windows games, the recompiled ones, the recompiled and modified ones (with their counts) */
+#menu .hm-metas { display: grid; gap: 2px; min-width: 0; }
+#menu .hm-live { font: 11.5px var(--mono); color: #7ec27e; }
+#menu .hm-live:empty { display: none; }
+#menu .hm-live::before { content: "● "; }
 #menu .hm-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
 #menu .hm-tabs[hidden] { display: none; }
 #menu .hm-tab { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 13px; border-radius: 9px; cursor: pointer;

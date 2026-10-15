@@ -5,6 +5,7 @@
   <div class="brand"><img src="/src/host/web/orthros_logo.png" alt=""><span class="name">Orthros</span><span class="sep"></span><span class="game" id="tbGame"></span></div>
   <div class="spacer"></div>
   <div class="perf" id="tbPerf"><span class="fps">–</span><span class="unit">fps</span><canvas width="96" height="24"></canvas><span class="sub"></span></div>
+  <button id="tbLobby" type="button" class="hidden"></button>
   <button id="tbFull" type="button"></button>
   <button id="tbGames" class="quiet" type="button"></button>
 </div>
@@ -19,5 +20,6 @@
   <div class="tip" id="tip"></div>
   <details><summary id="logLabel"></summary><pre id="log"></pre></details>
 </div></div>
+<div id="lobbyOverlay" class="hidden"><div class="panel"><button type="button" class="close" aria-label="close">✕</button></div></div>
 <div id="toast" class="hidden"></div>
 <script type="module" src="/src/ports/goldsrc/play.js"></script></body></html>

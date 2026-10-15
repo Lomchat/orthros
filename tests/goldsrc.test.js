@@ -1,6 +1,6 @@
 // GoldSrc browser ports (src/host/goldsrc.js, docs/browser-ports.md): catalog entries without an executable, the
-// port's page and engine routes, the multiplayer relay to a localhost UDP server, and the linked game tree of the
-// native dedicated server.
+// port's page and engine routes, the multiplayer relay to a localhost UDP server, the rooms players create (the lobby),
+// and the linked game tree of the native dedicated server.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
-import { linkGameLayers } from '../src/host/goldsrc.js';
+import { linkGameLayers, parseServerInfo, roomName, roomPort, roomRequest, roomSlots } from '../src/host/goldsrc.js';
 import { createServer } from '../src/host/server.js';
 
 const ENGINE = 'engine-test-1';
@@ -208,4 +208,88 @@ test('a port requiring another port has its files beneath its own: in the page\'
   const gsDir = path.join(games, 'gs');
   editManifest(gsDir, (spec) => { spec.versions[0].requires = [{ game: 'mod', version: 'mod-1' }]; });
   assert.throws(() => loadGameCatalog(games), /circulaire/);
+});
+
+// ---------------------------------------------------------------- rooms: the games players create (the lobby)
+
+test('rooms: a version\'s rooms are checked, their ports one version\'s each', (t) => {
+  const { games, gs } = fixture(t);
+  const mp = (over = {}) => ({ server: 'srv', port: 27999, map: 'dm', ...over });
+  for (const [rooms, error] of [
+    [{ ports: [28000] }, /rooms.ports/], [{ ports: [28010, 28000] }, /rooms.ports/], [{ ports: [28000, 28010] }, /rooms.ports/], [{ ports: [27999, 28001] }, /rooms.ports/],
+    [{ ports: [28000, 28001], bots: { max: 4, commands: ['bot_quota 4'] } }, /rooms.bots/], [{ ports: [28000, 28001], bots: { max: 40, commands: ['bot_quota {n}'] } }, /rooms.bots/],
+    [{ ports: [28000, 28001], bots: { max: 4, commands: ['bot_quota {n}'], args: ['--evil;'] } }, /rooms.bots.args/],
+  ]) {
+    editManifest(gs, (spec) => { spec.versions[0].goldsrc = goldsrc({ multiplayer: mp({ rooms }) }); });
+    assert.throws(() => loadGameCatalog(games), error);
+  }
+  editManifest(gs, (spec) => { spec.versions[0].goldsrc = goldsrc({ multiplayer: mp({ maps: ['ok', 'bad name'] }) }); });
+  assert.throws(() => loadGameCatalog(games), /multiplayer.maps/);
+  editManifest(gs, (spec) => { spec.versions[0].goldsrc = goldsrc({ multiplayer: mp({ rooms: { ports: [28000, 28003], bots: { max: 6, commands: ['bot_quota {n}'], args: ['-bots'] } } }) }); });
+  const m = loadGameCatalog(games).get('gs-orig').goldsrc.multiplayer;
+  assert.deepEqual([roomSlots(m), roomPort(m, 0), roomPort(m, 1), roomPort(m, 4)], [4, 27999, 28000, 28003]);
+  // (another version whose server takes one of these ports)
+  const other = path.join(games, 'gs2'); fs.cpSync(gs, other, { recursive: true });
+  editManifest(other, (spec) => { spec.id = 'gs2'; spec.defaultVersion = 'gs2-orig'; spec.versions[0].id = 'gs2-orig'; spec.versions[0].goldsrc = goldsrc({ multiplayer: mp({ port: 28002 }) }); });
+  assert.throws(() => loadGameCatalog(games), /port UDP 28002/);
+});
+
+test('rooms: a creation request is checked, a server\'s info read', () => {
+  const mp = { port: 27999, maxPlayers: 12, rooms: { ports: [28000, 28001], bots: { max: 6, commands: ['bot_quota {n}'] } } };
+  assert.equal(roomName('  a "quoted"; \\ name\n with  spaces that goes well past the limit '), 'a quoted name with spaces that g');
+  assert.equal(roomName('Ort\u200bhros\u202e - x\u0085'), 'Orthros - x'); // (no control, invisible or bidi character)
+  assert.deepEqual(roomRequest({ name: 'Dust', map: 'de_dust2', maxPlayers: 10, bots: 4 }, mp, ['de_dust2']), { room: { name: 'Dust', map: 'de_dust2', maxPlayers: 10, bots: 4 } });
+  for (const [body, error] of [[{ name: 'x', map: 'de_dust2' }, 'name'], [{ name: 'Dust', map: 'nope' }, 'map'], [{ name: 'Dust', map: 'de_dust2', maxPlayers: 20 }, 'maxPlayers'],
+    [{ name: 'Dust', map: 'de_dust2', maxPlayers: 4, bots: 4 }, 'bots'], [{ name: 'Dust', map: 'de_dust2', bots: 7 }, 'bots']]) assert.equal(roomRequest(body, mp, ['de_dust2']).error, error);
+  assert.equal(roomRequest({ name: 'Dust', map: 'de_dust2', bots: 1 }, { ...mp, rooms: { ports: [28000, 28001] } }, ['de_dust2']).error, 'bots'); // (no bots: none)
+  assert.deepEqual(parseServerInfo(Buffer.from('\xff\xff\xff\xffinfo\n\\p\\49\\map\\de_nuke\\numcl\\3\\maxcl\\12\\host\\Bots test', 'latin1')), { name: 'Bots test', map: 'de_nuke', players: 3, max: 12 });
+  assert.equal(parseServerInfo(Buffer.from('\xff\xff\xff\xffinfo\nwrong version\n', 'latin1')), null);
+});
+
+test('rooms: the page\'s relay tags each packet with its room, a broadcast reaches every room', async (t) => {
+  const echo = async (tag) => {
+    const udp = dgram.createSocket('udp4'); await new Promise((resolve) => udp.bind(0, '127.0.0.1', resolve)); t.after(() => udp.close());
+    udp.on('message', (msg, from) => udp.send(Buffer.concat([Buffer.from([tag]), msg]), from.port, from.address));
+    return udp.address().port;
+  };
+  const [a, b] = [await echo(0xa0), await echo(0xb1)];
+  const { games, engines } = fixture(t, { goldsrc: goldsrc({ multiplayer: { server: 'srv', port: a, map: 'dm', rooms: { ports: [b, b] } } }) });
+  const base = await serve(t, { gamesDir: games, enginesDir: engines });
+  const ws = await wsConnect(`${base}/api/udp/gs-orig?rooms`);
+  try {
+    let back = ws.receive(); ws.send([1, 9, 9]); assert.deepEqual([...await back], [1, 0xb1, 9, 9]);
+    back = ws.receive(); ws.send([0, 7]); assert.deepEqual([...await back], [0, 0xa0, 7]);
+    ws.send([5, 1, 2]); // (no such room: dropped)
+    ws.send([255, 3]);
+    const both = [await ws.receive(), await ws.receive()].map((m) => [...m]).sort((x, y) => x[0] - y[0]);
+    assert.deepEqual(both, [[0, 0xa0, 3], [1, 0xb1, 3]]);
+  } finally { ws.close(); }
+});
+
+test('rooms: listed and created through the server manager, from the page\'s origin, once a minute per address', async (t) => {
+  const calls = [];
+  const roomsRequest = async (port, method, body) => { calls.push([port, method, body]); return method === 'GET' ? [200, { rooms: [{ index: 0, name: 'Orthros - GS', humans: 1 }], maps: ['dm'] }] : [201, { room: { index: 1, ...body } }]; };
+  const { games, engines } = fixture(t, { goldsrc: goldsrc({ multiplayer: { server: 'srv', port: 27999, map: 'dm', rooms: { ports: [28000, 28001] } } }) });
+  const base = await serve(t, { gamesDir: games, enginesDir: engines, roomsRequest });
+  const list = await (await fetch(`${base}/api/rooms/gs-orig`)).json();
+  assert.equal(list.rooms[0].name, 'Orthros - GS'); assert.equal(list.creatable, true); assert.deepEqual(calls[0], [27999, 'GET', null]);
+  const post = (body, origin = base) => fetch(`${base}/api/rooms/gs-orig`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify(body) });
+  assert.equal((await post({ name: 'Mine', map: 'dm' }, 'http://elsewhere.example')).status, 403);
+  assert.equal((await post({ name: 'M', map: 'dm' })).status, 400);
+  const made = await post({ name: 'Mine', map: 'dm', maxPlayers: 8 });
+  assert.equal(made.status, 201); assert.equal((await made.json()).room.name, 'Mine');
+  assert.equal((await post({ name: 'Again', map: 'dm' })).status, 429);
+  assert.equal(calls.at(-1)[2].by, '127.0.0.1'); // (the creator's address: one live room each, the manager's to keep)
+  assert.equal((await fetch(`${base}/api/rooms/win-1`)).status, 404);
+  assert.equal((await (await fetch(`${base}/api/rooms/gs-orig`, { method: 'PUT' })).json()).error, 'method');
+});
+
+test('rooms: creations sent together from one address: one passes, the others wait', async (t) => {
+  let pending = 0;
+  const roomsRequest = async (port, method, body) => { pending++; await new Promise((r) => setTimeout(r, 50)); return [201, { room: { index: pending, ...body } }]; };
+  const { games, engines } = fixture(t, { goldsrc: goldsrc({ multiplayer: { server: 'srv', port: 27999, map: 'dm', rooms: { ports: [28000, 28007] } } }) });
+  const base = await serve(t, { gamesDir: games, enginesDir: engines, roomsRequest });
+  const post = (name) => fetch(`${base}/api/rooms/gs-orig`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base }, body: JSON.stringify({ name, map: 'dm' }) });
+  const statuses = (await Promise.all(['One', 'Two', 'Three', 'Four'].map(post))).map((r) => r.status).sort();
+  assert.deepEqual(statuses, [201, 429, 429, 429]);
 });
