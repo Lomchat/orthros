@@ -25,7 +25,7 @@ and several mods are still required; the freely licensed engine example is a sep
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r8` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r9` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -155,7 +155,7 @@ The browser release's game modules were recovered from a deployed build whose so
 `Velaron/cs16-client` at `15278ca` (the commit the recovered build started from) with its submodules — the client,
 `mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). Each of `modules.builds` is a release of its own, its patches
 on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sources give it) and
-`xash3d-web-1.2.2-cs16-15278ca-arsenal-r8` (the Half-Life Arsenal, below). A release holds the engine files of
+`xash3d-web-1.2.2-cs16-15278ca-arsenal-r9` (the Half-Life Arsenal, below). A release holds the engine files of
 `xash3d-web-1.2.2` (checked against the lock) and under `counterstrike/cstrike/` the three WebAssembly modules,
 `dlls/cs.so` (the same server compiled natively for the 32-bit dedicated server: `multiplayer.gameLibrary`) and
 `orthros-bots.pk3` (`goldsrc.extras`); a build's `assets` add archives of their own (Half Strike:
@@ -270,7 +270,7 @@ snarks; one ball carried and one Pokémon out at a time; bots do not buy them). 
 bounces, wobbles at rest and opens (lid away from the thrower, a flash): the Pokémon comes out beside it
 (`monster_pokemon`, `wpn_shared/wpn_pokemon.cpp`). It follows its owner (the bots' navigation mesh, else straight
 steering; back beside the owner past 1500 units or stuck), and as soon as the owner fires (the enemy nearest to their
-aim) or the owner or the Pokémon is hurt (the attacker) it charges and attacks within 200 units (5 m) with line of
+aim) or the owner or the Pokémon is hurt (the attacker) it charges and attacks within 400 units (10 m since r9) with line of
 sight, until the target dies, hides 6 s or runs away; then it follows again, after a short victory when its own hit
 killed. Teammates are never hurt (friendly fire: only its target); kills are credited to the owner, weapon `pokemon`.
 
@@ -308,6 +308,25 @@ bones, with expression decals), Charizard (Scarlet/Violet's file with the full o
 textures recoloured to the normal colouring measured on the X/Y model's), Blastoise (its rig, every sequence animated
 on its bones). Without the sources the generated models are built instead. Converted files exist only in the
 release's archive in `data_engines/`, never in Git.
+
+### Le M (r9)
+
+The owner's brother, at his request, in the buy menu's tenth tab, "Others" (key `0` among the categories): `lem`,
+$1500, a companion like the Pokémon (one companion at a time, Pokémon or Le M). It comes as a laptop (weapon 49,
+`models/others/v_laptop.mdl`: the gloved hands typing; its screen's code is one of 24 skins the client turns while it
+types). Firing types for about 1.2 s, Enter, and Le M is summoned where the owner looks, within 400 units and in their
+sight: Matrix code rain (`sprites/others/coderain.spr`), his green lattice hologram (skin 1 of `models/others/lem.mdl`),
+then his body, solid after 1.5 s. Health 150, run 250; "Hack": 18 every 1.2 s, a green code beam from his hand, and the
+victim's screen scrambled for about 0.6 s (`LemHack` message: green blocks, hex and binary, shifted slices). He
+dissolves into pixels when he dies or goes back; kills `lem` (icon `d_lem`). `pk_test lem [spawn|enemy [distance]]`,
+`pk_test hurt [n]` (cheats).
+
+His model comes from his photos: identity-preserving full-body references (fal `nano-banana-pro/edit`), a multi-view
+reconstruction (`meshy/v7/multi-image-to-3d`, chosen over Tripo and Rodin for the face and glasses) rigged with
+animations (`meshy/rigging/multi-animation`), kept in `data_installers/le-m/` (outside Git, pinned in `lock.json`
+"sources", `$LEM_DIR`), converted by `pokemon/lem.py` (decimated to 7200 triangles with UV seams and weights kept,
+4 bone weights, the clips mapped and trimmed, the attack, flinch and spawn authored on his rig); without them a
+stand-in. The fal key lives in `/root/.config/orthros/fal.key`, never in Git.
 
 ### Its own menus
 
