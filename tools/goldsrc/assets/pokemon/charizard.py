@@ -1,23 +1,38 @@
-"""Charizard (Dracaufeu): models/pokemon/charizard.mdl, generated from scratch.
+"""Charizard (Dracaufeu): models/pokemon/charizard.mdl.
 
-Orange fire dragon standing on its hind legs, ~78 units tall at the horns (the half-open wings rise
-to ~83), facing +x, origin on the ground between its feet: cream belly, throat and lower jaw, big
-head with a broad muzzle, brow ridges and eyes readable from the front, two horns, muscular legs
-with clawed three-toed feet, small arms with hands and claws, large wings with teal inner membranes
-(two-sided thin geometry, painted veins) and a long tail ending in an additive, fullbright flame
-that flickers in every sequence.  A fullbright glow lines the throat (seen when the mouth opens).
+Official model (when the sources are installed, $POKEMON_OFFICIAL_DIR, default
+/srv/orthros/data_installers/pokemon-official; see OfficialCharizard at the end): Game Freak's Scarlet / Violet
+Charizard (plain/6-shiny-animated.glb: mesh, 107 of its 128 joints, smooth skinning, official animations), its shiny
+textures recoloured to the normal colouring measured on the X/Y model's textures (plain/6.glb), the tail flame
+additive and fullbright; scaled to 78 units at the horn tips in its relaxed stance (defaultwait01_loop), facing +x,
+origin on the ground.  Sequences (contract order) from the official clips: idle = battlewait01_loop (the stance every
+official one-shot starts / ends in; horns ~65, wings ~78), with one official blink (eye01) layered per loop; walk =
+walk01_loop and run = run01_loop (root motion moved into linearmovement, played at the server's 100 / 240 units/s,
+planted feet fixed); attack = rangeattack02 start (wind-up, to 40 %) + its fire-breathing loop over the stream + the
+start of its end (jaw closing) blended into the idle's first frame, the neck and head pitched down onto the stream;
+flinch = damage01; die = down01_start (ends lying on its belly, wings kept above the ground, last frame held); spawn =
+stepout01 start + stepout01 + end (1.05 s); victory = roar01 (two blinks).  Attachments 0 and 1: between the jaws;
+2: the tail flame.  Hitboxes on the body, neck, limbs, tail base and wing arms.  Nothing of the sources is stored in
+the repository.
 
-Sequences (contract order): idle, walk (~98 u/s native), run (wing-assisted bound, ~245 u/s),
-attack (rears up, then breathes forward from 40 %, head straight, mouth held open to 94 %), flinch, die (collapses
-on its right side, centred on the origin, the tail flame shrinks), spawn (curled with folded wings ->
-stands -> roar), victory (wing-assisted hop + roar).  Attachments 0 and 1: between the jaws;
-2: the tail flame.
+Generated model (without the sources, make_generated_model): orange fire dragon built from scratch, ~78 units tall
+at the horns (the half-open wings rise to ~83), cream belly, throat and lower jaw, big head with a broad muzzle,
+brow ridges and eyes readable from the front, two horns, muscular legs with clawed three-toed feet, small arms with
+hands and claws, large wings with teal inner membranes (two-sided thin geometry, painted veins) and a long tail
+ending in an additive, fullbright flame that flickers in every sequence.  A fullbright glow lines the throat (seen
+when the mouth opens).  Sequences: idle, walk (~98 u/s native), run (wing-assisted bound, ~245 u/s), attack (rears
+up, then breathes forward from 40 %, head straight, mouth held open to 94 %), flinch, die (collapses on its right
+side, centred on the origin, the tail flame shrinks), spawn (curled with folded wings -> stands -> roar), victory
+(wing-assisted hop + roar).  Same attachments.
 """
+import colorsys
 import math
+import os
+import sys
 
 import numpy as np
 
-from .. import builder, mdl, mesh as M, rig as R, sdf, texture as T, xform
+from .. import builder, gltf, mdl, mesh as M, official, rig as R, sdf, texture as T, xform
 
 # ---------------------------------------------------------------------------------------------
 # palette
@@ -412,7 +427,8 @@ EYE_DIR0 = (0.68, 0.7, 0.1)
 EYE_SIZE = (1.62, 1.25)                         # half width, half height (head design units)
 
 
-def make_model():
+def make_generated_model():
+    """The model generated from scratch (used when the official source files are not installed)."""
     rig = make_rig()
     torso = torso_shape()
     head0, jaw0 = head_shapes()                   # head design frame (painted there)
@@ -1045,6 +1061,649 @@ def seq_victory(rig):
 def make_sequences(rig):
     return [seq_idle(rig), seq_gait(rig, "walk", WALK, False), seq_gait(rig, "run", RUN, True), seq_attack(rig),
             seq_flinch(rig), seq_die(rig), seq_spawn(rig), seq_victory(rig)]
+
+
+
+
+# =====================================================================================================================
+# official model: Game Freak's Charizard (the owner's choice).  Mesh, skeleton and animations come from the Scarlet /
+# Violet file (6-shiny-animated.glb: the full official animation set on its 128-joint rig), whose shiny (black)
+# textures are recoloured to the normal colouring measured on the normal model's own textures (6.glb): retargeting
+# the S/V animations onto the older X/Y rig would lose the S/V model's detail and the set's fidelity, a shading-
+# preserving recolour keeps both.  Nothing of the sources is stored here: they are read at build time from
+# $POKEMON_OFFICIAL_DIR (default /srv/orthros/data_installers/pokemon-official); without them, the generated model.
+
+OFFICIAL_FILE = os.path.join("plain", "6-shiny-animated.glb")      # mesh, rig, animations (shiny colouring)
+OFFICIAL_NORMAL_FILE = os.path.join("plain", "6.glb")              # the normal colouring's reference textures
+OFFICIAL_HORNS = 78.0            # idle height at the horn tips (the wings rise above, as on the generated model)
+OFFICIAL_WALK_SPEED = 100.0      # the server's walk / run speeds (the gaits' native ground speed: playback rate 1)
+OFFICIAL_RUN_SPEED = 240.0
+OFFICIAL_FPS = 30.0              # sampling rate of the official clips
+ANIM = "pm0006_00_00_"           # clip name prefix of the S/V set (0xxxx: on the ground)
+
+# normal colouring (fallback when 6.glb is absent): the X/Y model's flat colours
+NORMAL_BODY = (238, 174, 102)
+NORMAL_BELLY = (238, 222, 182)
+NORMAL_MEMBRANE = (62, 158, 182)
+
+# shiny colours of the S/V textures (source keys of the recolour): body greys (with their baked shading), tan belly,
+# crimson membranes and iris; protected: claws / teeth, the dark red mouth, the tongue
+SHINY_BODY = 84                  # the body's typical grey level
+SHINY_BODY_LEVELS = (36, 52, 68, 84, 100, 116)
+SHINY_BELLY = (190, 174, 140)    # the belly's shiny tan (a baked gradient, lighter at the chest)
+SHINY_BELLY_LEVELS = (0.7, 0.85, 1.0, 1.12)
+SHINY_MEMBRANE = (122, 28, 44)
+SHINY_MEMBRANE_LEVELS = (0.6, 0.8, 1.0, 1.18)
+SHINY_IRIS = (116, 28, 40)
+SHINY_KEEP = ((248, 248, 248), (212, 212, 216), (180, 180, 186), (152, 152, 156), (86, 12, 6), (104, 4, 4),
+              (200, 120, 130), (228, 150, 160), (4, 4, 4))
+SV_SATURATION = 1.2              # X/Y flat colours -> the S/V textures' saturation
+BODY_LIFT = 1.05                 # the body's orange a little brighter (HSV value) than the X/Y flat colour
+IRIS_SHADE = 0.66                # the iris: the membranes' blue-green, darker
+RECOLOUR_GAMMA = 0.85            # target = key target x (texel / key brightness) ** gamma: the dark grey shiny
+#                                  texture's small brightness steps (UV seams) are not amplified ~2.7x on the orange
+MIX_STEPS = (0.4, 0.6, 0.8)      # membrane / body border: anti-aliased crimson-grey texels -> teal-orange mixes
+
+# hitboxes on the main bones (group 0; a bone's *_sub helper child counts with it, see OfficialCharizard.hitboxes)
+OFFICIAL_HITBOX_BONES = ("spine_01", "spine_02", "neck_01", "neck_02", "neck_03", "head", "jaw", "hips",
+                         "left_shoulder_sub", "left_arm_01", "left_arm_02", "left_hand",
+                         "right_shoulder_sub", "right_arm_01", "right_arm_02", "right_hand",
+                         "left_crotch_sub", "left_leg_01", "left_leg_02", "left_foot",
+                         "right_crotch_sub", "right_leg_01", "right_leg_02", "right_foot",
+                         "tail_01", "tail_02", "tail_03", "tail_04")
+
+
+def official_source():
+    """Paths (shiny S/V file, normal X/Y file or None) of the official sources, or None when not installed."""
+    d = os.environ.get("POKEMON_OFFICIAL_DIR", "/srv/orthros/data_installers/pokemon-official")
+    p = os.path.join(d, OFFICIAL_FILE)
+    if not os.path.isfile(p):
+        return None
+    n = os.path.join(d, OFFICIAL_NORMAL_FILE)
+    return p, (n if os.path.isfile(n) else None)
+
+
+def _mode_colour(px, sel, fallback):
+    """Most frequent colour (4-level bins) of the selected texels."""
+    if sel.sum() < 64:
+        return fallback
+    q = (px[sel] // 4) * 4 + 2
+    u, c = np.unique(q, axis=0, return_counts=True)
+    return tuple(int(x) for x in u[int(np.argmax(c))])
+
+
+def normal_colours(path):
+    """Body, belly and membrane colours of the normal model's textures (6.glb): the most frequent texel colour in
+    hue / saturation / value windows (orange, cream, teal), measured, else the fallbacks."""
+    if path is None:
+        return NORMAL_BODY, NORMAL_BELLY, NORMAL_MEMBRANE
+    g = gltf.load(path)
+    px = []
+    for m in g.materials:
+        if m.base_texture >= 0:
+            a = np.asarray(g.texture_image(m.base_texture)).reshape(-1, 4)
+            px.append(a[a[:, 3] >= 128, :3])
+    px = np.concatenate(px).astype(np.int64)
+    f = px / 255.0
+    mx, mn = f.max(1), f.min(1)
+    v = mx
+    s = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-9), 0.0)
+    d = np.maximum(mx - mn, 1e-9)
+    r, gg, b = f[:, 0], f[:, 1], f[:, 2]
+    h = np.where(mx == r, ((gg - b) / d) % 6, np.where(mx == gg, (b - r) / d + 2, (r - gg) / d + 4)) * 60.0
+    body = _mode_colour(px, (h >= 20) & (h <= 40) & (s >= 0.45) & (s <= 0.75) & (v >= 0.8), NORMAL_BODY)
+    belly = _mode_colour(px, (h >= 30) & (h <= 60) & (s >= 0.1) & (s <= 0.35) & (v >= 0.85), NORMAL_BELLY)
+    memb = _mode_colour(px, (h >= 180) & (h <= 205) & (s >= 0.5) & (v >= 0.55), NORMAL_MEMBRANE)
+    return body, belly, memb
+
+
+def _scaled(c, k):
+    return tuple(float(min(255.0, x * k)) for x in c)
+
+
+def shade(c, k, warm=False):
+    """Colour c at relative brightness k (HSV value scaled; above white it pales a little instead of clipping
+    one channel, which would shift the hue).  warm: shadows (k < 0.8) turn redder and a little more saturated
+    (up to 9 degrees and x1.18 at k 0.3), as on the normal colouring, instead of a muddy brown."""
+    h, s_, v = colorsys.rgb_to_hsv(*[x / 255.0 for x in c])
+    v *= k
+    if warm and k < 0.8:
+        f = min(1.0, (0.8 - k) / 0.5)
+        h = (h - 9.0 / 360.0 * f) % 1.0
+        s_ = min(1.0, s_ * (1.0 + 0.18 * f))
+    if v > 1.0:
+        s_ *= max(0.55, 1.0 - 0.6 * (v - 1.0))
+        v = 1.0
+    return tuple(255.0 * x for x in colorsys.hsv_to_rgb(h, s_, v))
+
+
+def sv_tone(c):
+    """The X/Y flat colours (made for its toon shader) at the S/V model's saturation (its textures carry their own
+    shading): saturation x SV_SATURATION."""
+    h, s_, v = colorsys.rgb_to_hsv(*[x / 255.0 for x in c])
+    return tuple(255.0 * x for x in colorsys.hsv_to_rgb(h, min(1.0, s_ * SV_SATURATION), v))
+
+
+def recolour_pairs(body, belly, memb, membrane=True):
+    """Shiny -> normal key pairs for official.recolor: ramps over the shading levels of each colour (a key's
+    neighbourhood maps to the same shade of its target), protected colours kept.  membrane False: the crimson
+    is kept (the mouth shares the membranes' shiny colour)."""
+    body, belly, memb = shade(sv_tone(body), BODY_LIFT), sv_tone(belly), sv_tone(memb)
+    pairs = []
+    for lv in SHINY_BODY_LEVELS:
+        k = lv / SHINY_BODY
+        t = shade(body, k, warm=True)
+        # the S/V greys drift a little toward green / yellow in places
+        pairs += [((lv, lv, lv), t), ((lv, lv + 8, lv), t), ((lv + 4, lv + 4, lv - 6), t)]
+    for k in SHINY_BELLY_LEVELS:
+        pairs.append((_scaled(SHINY_BELLY, k), shade(belly, k, warm=True)))
+    for k in SHINY_MEMBRANE_LEVELS:
+        c = _scaled(SHINY_MEMBRANE, k)
+        pairs.append((c, shade(memb, k) if membrane else c))
+    # the anti-aliased border between the membranes and the grey arm / body: mixed keys -> the same mix of the
+    # targets (a teal-orange gradient instead of the muddy grey-brown far from every key); not in the mouth, whose
+    # tongue and gums are such mixes of red and grey
+    for gl in ((52, 84) if membrane else ()):
+        g_src, g_dst = (gl, gl, gl), shade(body, gl / SHINY_BODY, warm=True)
+        for k in (0.6, 1.0):
+            m_src = _scaled(SHINY_MEMBRANE, k)
+            m_dst = shade(memb, k)
+            for t in MIX_STEPS:
+                pairs.append((tuple(t * a + (1 - t) * b for a, b in zip(m_src, g_src)),
+                              tuple(t * a + (1 - t) * b for a, b in zip(m_dst, g_dst)), True))
+    pairs += [(c, c) for c in SHINY_KEEP]
+    return pairs
+
+
+def iris_pairs(memb):
+    """The shiny red iris -> the normal blue-green one (the membranes' hue, darker, as on the X/Y eyes)."""
+    iris = shade(sv_tone(memb), IRIS_SHADE)
+    return [(_scaled(SHINY_IRIS, k), shade(iris, k)) for k in (0.55, 0.8, 1.0, 1.2)] + \
+        [((252, 252, 252), (252, 252, 252)), ((4, 4, 4), (4, 4, 4))]
+
+
+def recolor_soft(rgb, pairs, sigma=28.0, gamma=1.0):
+    """official.recolor's shading-preserving remap ((n, 3) colours) with a softened brightness ratio: each colour
+    becomes its keys' targets scaled by (its brightness / the key's) ** gamma (gamma 1: official.recolor).  A pair
+    with a third element True is matched on chromaticity only (any shade of it, but not the plain RGB neighbours: a
+    crimson-grey mix key would otherwise pull the greys close to it)."""
+    rgb = np.asarray(rgb, dtype=np.float64)
+    src = np.array([p[0] for p in pairs], dtype=np.float64)
+    dst = np.array([p[1] for p in pairs], dtype=np.float64)
+    strict = np.array([len(p) > 2 and bool(p[2]) for p in pairs])
+    d2 = ((rgb[:, None, :] - src) ** 2).sum(-1)
+    chroma = rgb / (rgb.sum(-1, keepdims=True) + 1.0)
+    sch = src / (src.sum(-1, keepdims=True) + 1.0)
+    c2 = ((chroma[:, None, :] - sch) ** 2).sum(-1) * (255.0 ** 2) * 9
+    w = np.exp(-np.where(strict[None], c2 + 0.25 * d2, np.minimum(d2, c2 + 0.25 * d2)) / (2 * sigma * sigma))
+    tot = w.sum(-1, keepdims=True)
+    luma = np.array([0.299, 0.587, 0.114])
+    ratio = ((rgb @ luma + 1.0)[:, None] / (src @ luma + 1.0)[None]) ** gamma
+    mapped = (w[..., None] * dst[None] * ratio[..., None]).sum(1) / np.maximum(tot, 1e-12)
+    keep = np.clip(1.0 - tot, 0.0, 1.0)
+    return np.clip(np.round(mapped * (1.0 - keep) + rgb * keep), 0, 255).astype(np.uint8)
+
+
+def recolour(rgba, pairs, gamma=1.0):
+    """The remap on the image's distinct colours (same result, a fraction of the memory)."""
+    a = np.asarray(rgba)
+    u, inv = np.unique(a[..., :3].reshape(-1, 3), axis=0, return_inverse=True)
+    m = recolor_soft(u, pairs, gamma=gamma)
+    out = a.copy()
+    out[..., :3] = m[inv.reshape(-1)].reshape(a.shape[:-1] + (3,))
+    return out
+
+
+def redness(rgba):
+    """Soft mask (0..1) of the saturated reds (the mouth's crimson, gums and tongue: the same on both colourings) of
+    an image; the greys and the tan around them get 0."""
+    a = np.asarray(rgba)[..., :3].astype(np.float64)
+    mx, mn = a.max(-1), a.min(-1)
+    sat = (mx - mn) / np.maximum(mx, 1.0)
+    red = (a[..., 0] >= mx) & (a[..., 0] - np.maximum(a[..., 1], a[..., 2]) > 0.5 * (mx - mn))
+    return np.where(red, np.clip((sat - 0.25) / 0.2, 0.0, 1.0), 0.0)
+
+
+def fill_gutters(rgba, covered, iters=16):
+    """Texels outside the UV islands (covered False) get the recoloured colours of the nearest island texels: the
+    downscale and bilinear filtering otherwise blend the source's own padding (dark grey / dark red, untouched or
+    recoloured differently) into the island borders, a thin dark line along every seam."""
+    a = np.asarray(rgba).copy()
+    rgb = T.dilate(a[..., :3].astype(np.float64) / 255.0, covered, iters) * 255.0
+    a[..., :3] = np.where(covered[..., None], a[..., :3], np.clip(np.round(rgb), 0, 255)).astype(np.uint8)
+    return a
+
+
+def fire_filter(rgba):
+    """The tail flame (drawn additive and fullbright): its red -> yellow gradient made brighter and warmer, a
+    yellow-white core where the source is orange, deep orange where it is red."""
+    a = np.asarray(rgba).astype(np.float64)
+    t = np.clip(a[..., 1] / 172.0, 0.0, 1.0)          # the source's green channel runs along the gradient
+    # (additive: kept short of white so it stays orange over bright ground such as de_dust's sand)
+    stops = ((0.0, (220, 56, 6)), (0.35, (250, 112, 18)), (0.7, (255, 165, 45)), (1.0, (255, 198, 92)))
+    xs = [x for x, _ in stops]
+    out = a.copy()
+    for c in range(3):
+        out[..., c] = np.interp(t, xs, [col[c] for _, col in stops])
+    return np.clip(np.round(out), 0, 255).astype(np.uint8)
+
+
+def bone_texel_mask(imp, material, bones=None, grow=4):
+    """Texels of a material's source image covered by triangles whose three vertices are mainly on `bones` (None:
+    every triangle of the material)."""
+    g = imp.g
+    mi = [i for i, m in enumerate(g.materials) if m.name == material][0]
+    W, H = g.texture_image(g.materials[mi].base_texture).size
+    mask = np.zeros((H, W), bool)
+    bset = None if bones is None else [imp.bone(b) for b in bones]
+    for s in imp.surfaces:
+        if s.material != mi:
+            continue
+        sel = np.ones(len(s.tris), bool) if bset is None else np.isin(s.main_bone[s.tris], bset).all(1)
+        uv = s.uv[s.tris[sel]]
+        uv = uv - np.floor(uv.min(1, keepdims=True) + 1e-6)
+        _, px, py, _ = T.raster_texels(uv * (W, H), (2 * W, 2 * H))
+        mask[py % H, px % W] = True
+    for _ in range(grow):
+        m = mask.copy()
+        m[1:] |= mask[:-1]
+        m[:-1] |= mask[1:]
+        m[:, 1:] |= mask[:, :-1]
+        m[:, :-1] |= mask[:, 1:]
+        mask = m
+    return mask
+
+
+class OfficialCharizard:
+    """The official model: import, sequences of the contract from the official clips, studio model."""
+
+    def __init__(self, src, normal=None, verbose=False):
+        self.verbose = verbose
+        body, belly, memb = normal_colours(normal)
+        self.colours = (body, belly, memb)
+        g = gltf.load(src)
+        # probe at 1 unit per glTF unit: the scale (horn tips at OFFICIAL_HORNS in the idle's first frame) and the
+        # mouth's texels (triangles on the head's bones): it shares the membranes' shiny crimson and keeps it
+        probe = official.Importer(src, gl=g, scale=1.0, verbose=False)
+        self.scale = OFFICIAL_HORNS / self._horn_top(probe)
+        hb = probe.bone("head")
+        headbones = [n for i, n in enumerate(probe.bone_names) if self._descends(probe, i, hb)]
+        masks = {m: ~bone_texel_mask(probe, m, headbones) for m in ("body_a", "body_b")}
+        islands = {m: bone_texel_mask(probe, m, None, grow=0) for m in ("body_a", "body_b")}
+        p_wing, p_rest, eye = (recolour_pairs(body, belly, memb), recolour_pairs(body, belly, memb, membrane=False),
+                               iris_pairs(memb))
+
+        def body_filter(name):
+            def f(im):
+                # the head keeps its reds (mouth, tongue) softly; elsewhere the crimson is the membranes'
+                k = redness(im)[..., None]
+                mouth = k * np.asarray(im)[..., :3] + (1 - k) * recolour(im, p_rest, RECOLOUR_GAMMA)[..., :3]
+                mouth = np.concatenate([np.round(mouth).astype(np.uint8), np.asarray(im)[..., 3:]], -1)
+                out = np.where(masks[name][..., None], recolour(im, p_wing, RECOLOUR_GAMMA), mouth)
+                return fill_gutters(out, islands[name])
+            return f
+        F = mdl.STUDIO_NF_ADDITIVE | mdl.STUDIO_NF_FULLBRIGHT
+        mats = {"body_a": {"filter": body_filter("body_a")}, "body_b": {"filter": body_filter("body_b")},
+                "l_eye": {"filter": lambda im: recolour(im, eye)}, "fire": {"flags": F, "filter": fire_filter}}
+        self.imp = official.Importer(src, gl=g, scale=self.scale, verbose=verbose, materials=mats)
+        self.weld_positions(("body_a", "body_b"))
+        self.weld_normals(("body_a", "body_b"))
+        self.rig = self.imp.rig
+        self.children = {i: [] for i in range(len(self.imp.bone_names))}
+        for i, p in enumerate(self.imp.parents):
+            if p >= 0:
+                self.children[int(p)].append(i)
+        self.eyelids = [i for i, n in enumerate(self.imp.bone_names) if "eyelid" in n]
+
+    # geometry ---------------------------------------------------------------------------------------------------
+    def weld_positions(self, materials, dist=None):
+        """Vertices closer than `dist` (rest pose, units) snapped together, with the same skinning: the source's body
+        meshes meet along seams (neck, back) whose vertices are a few hundredths of a unit apart, pixel cracks."""
+        dist = WELD_DIST if dist is None else dist
+        imp = self.imp
+        surf = [s for s in imp.surfaces if imp._matname(s.material) in materials]
+        pos = np.concatenate([s.pos for s in surf])
+        parent = np.arange(len(pos))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+        for i0 in range(0, len(pos), 512):
+            d = np.linalg.norm(pos[i0:i0 + 512, None] - pos[None], axis=-1)
+            for i, j in zip(*np.nonzero(d < dist)):
+                a_, b_ = find(i0 + int(i)), find(int(j))
+                if a_ != b_:
+                    parent[max(a_, b_)] = min(a_, b_)
+        root = np.array([find(i) for i in range(len(pos))])
+        moved = int((np.abs(pos[root] - pos).max(1) > 0).sum())
+        # one position and one skinning per welded point (else the seam reopens once animated)
+        pos = pos[root]
+        bones = np.concatenate([s.bw_bones for s in surf])[root]
+        weights = np.concatenate([s.bw_weights for s in surf])[root]
+        o = 0
+        for s in surf:
+            n = len(s.pos)
+            s.pos, s.bw_bones, s.bw_weights = pos[o:o + n].copy(), bones[o:o + n].copy(), weights[o:o + n].copy()
+            s.main_bone = s.bw_bones[:, 0].copy()
+            o += n
+        self.imp._log(f"welded {moved} vertices closer than {dist:g} units")
+
+    def weld_normals(self, materials):
+        """Normals rebuilt over the given materials together: the importer smooths each material on its own, so where
+        the skin passes from one texture to the other (the neck behind the head, the back) the two sides get
+        different normals and the lighting steps along the seam."""
+        imp = self.imp
+        surf = [s for s in imp.surfaces if imp._matname(s.material) in materials]
+        pos = np.concatenate([s.pos for s in surf])
+        offs = np.cumsum([0] + [len(s.pos) for s in surf])
+        tris = np.concatenate([s.tris + o for s, o in zip(surf, offs)])
+        tol = 1e-4 * float(np.ptp(pos, axis=0).max() + 1e-9)
+        _, first, inv = np.unique(np.round(pos / tol).astype(np.int64), axis=0, return_index=True, return_inverse=True)
+        inv = inv.reshape(-1)
+        nrm, corner = M.crease_normals(M.TriMesh(pos[first], inv[tris]), imp.crease)
+        out = np.zeros_like(pos)
+        out[tris.reshape(-1)] = nrm[corner.reshape(-1)]
+        for s, o in zip(surf, offs):
+            s.nrm = out[o:o + len(s.pos)]
+
+    @staticmethod
+    def _skinned(imp, world):
+        """Skinned model-space vertices of every surface for bone matrices `world` (B, 3, 4)."""
+        S = world.copy()
+        S[:, :, 3] = world[:, :, 3] - np.einsum("bij,bj->bi", world[:, :, :3], imp.heads)
+        out = []
+        for s in imp.surfaces:
+            w = np.where(s.bw_bones >= 0, s.bw_weights, 0) / 255.0
+            M = np.einsum("nk,nkij->nij", w, S[np.maximum(s.bw_bones, 0)])
+            out.append((np.einsum("nij,nj->ni", M[:, :, :3], s.pos) + M[:, :, 3], s.bw_bones[:, 0]))
+        return out
+
+    def _horn_top(self, imp):
+        W = imp.bone_world(ANIM + "00000_defaultwait01_loop", 0.0)
+        horns = [imp.bone("left_feeler"), imp.bone("right_feeler")]
+        z = [p[np.isin(b, horns), 2].max() for p, b in self._skinned(imp, W) if np.isin(b, horns).any()]
+        return float(max(z))
+
+    @staticmethod
+    def _descends(imp, i, anc):
+        while i >= 0:
+            if i == anc:
+                return True
+            i = int(imp.parents[i])
+        return False
+
+    def subtree(self, i):
+        out, stack = [], [i]
+        while stack:
+            j = stack.pop()
+            out.append(j)
+            stack.extend(self.children[j])
+        return out
+
+    def turn(self, W, bone, angle_deg, axis=(0.0, 1.0, 0.0)):
+        """Turn a bone and everything it carries about its head by angle_deg around a model-space axis
+        (+y: nose / tip down for a bone pointing +x)."""
+        i = self.imp.bone(bone)
+        Q = xform.axis_angle_matrix(np.asarray(axis, float), angle_deg)
+        pivot = W[i, :, 3].copy()
+        for j in self.subtree(i):
+            W[j, :, :3] = Q @ W[j, :, :3]
+            W[j, :, 3] = pivot + Q @ (W[j, :, 3] - pivot)
+
+    # sequences ----------------------------------------------------------------------------------------------------
+    def clip(self, name):
+        return ANIM + name
+
+    def blend_local(self, Wa, Wb, w):
+        """Bone matrices blended in each bone's parent space (rotations: nearest rotation of the linear mix, offsets
+        lerped, so rigid bone lengths stay constant), then chained back to model space."""
+        out = np.empty_like(Wa)
+        for i, p in enumerate(self.imp.parents):
+            if p < 0:
+                La, Lb = Wa[i], Wb[i]
+                Rp, tp = np.eye(3), np.zeros(3)
+            else:
+                La = np.concatenate([Wa[p, :, :3].T @ Wa[i, :, :3], (Wa[p, :, :3].T @ (Wa[i, :, 3] - Wa[p, :, 3]))[:, None]], 1)
+                Lb = np.concatenate([Wb[p, :, :3].T @ Wb[i, :, :3], (Wb[p, :, :3].T @ (Wb[i, :, 3] - Wb[p, :, 3]))[:, None]], 1)
+                Rp, tp = out[p, :, :3], out[p, :, 3]
+            Rl = official.polar_rotation((1 - w) * La[:, :3] + w * Lb[:, :3])
+            tl = (1 - w) * La[:, 3] + w * Lb[:, 3]
+            out[i, :, :3] = Rp @ Rl
+            out[i, :, 3] = Rp @ tl + tp
+        return out
+
+    def blink(self, W, te):
+        """eye01's eyelid motion at its clip time te added onto the pose W (eyelids: children of the head, their
+        local transform times eye01's change since its first frame)."""
+        E, E0 = self.imp.bone_world(self.clip(EYE_CLIP), te), self.imp.bone_world(self.clip(EYE_CLIP), 0.0)
+
+        def local(M, i):
+            p = int(self.imp.parents[i])
+            R_ = M[p, :, :3].T @ M[i, :, :3]
+            return np.vstack([np.concatenate([R_, (M[p, :, :3].T @ (M[i, :, 3] - M[p, :, 3]))[:, None]], 1),
+                              [0.0, 0.0, 0.0, 1.0]])
+        for i in self.eyelids:
+            p = int(self.imp.parents[i])
+            L = local(W, i) @ np.linalg.inv(local(E0, i)) @ local(E, i)
+            W[i] = np.vstack([W[p], [0.0, 0.0, 0.0, 1.0]])[:3] @ L
+
+    def compose(self, name, segments, activity, fps=OFFICIAL_FPS, loop=False, edit=None, events=(), blinks=()):
+        """A sequence from official clip segments played one after the other: [(clip, t0, t1, seconds)], each
+        segment's clip time [t0, t1] spread over `seconds` (its playback speed); edit(world, u) may adjust the
+        bone matrices at the sequence fraction u in [0, 1]; blinks: sequence times (s) where eye01 (a blink) is
+        layered on the eyelids."""
+        total = sum(sg[3] for sg in segments)
+        n = max(1, int(round(total * fps)))
+        d_eye = self.imp._anim(self.clip(EYE_CLIP)).duration
+        P, Rr = [], []
+        for i in range(n + 1):
+            T = total * i / n
+            acc = 0.0
+            for k, (clip, a0, a1, d) in enumerate(segments):
+                if T <= acc + d + 1e-9 or k == len(segments) - 1:
+                    u = min(max((T - acc) / d, 0.0), 1.0)
+                    t = a0 + (a1 - a0) * u
+                    break
+                acc += d
+            W = self.imp.bone_world(self.clip(clip), t)
+            if edit is not None:
+                edit(W, i / n)
+            for tb in blinks:
+                if tb <= T <= tb + d_eye:
+                    self.blink(W, T - tb)
+            p, r = self.imp.local_from_world(W)
+            P.append(p)
+            Rr.append(r)
+        P, Rr = np.array(P), np.array(Rr)
+        if loop:
+            P[-1], Rr[-1] = P[0], Rr[0]
+        evs = [mdl.Event(frame=int(e[0]), event=int(e[1]), options=str(e[2]) if len(e) > 2 else "") for e in events]
+        seq = mdl.Sequence(name=name, pos=P, rot=Rr, fps=float(n / total), flags=mdl.STUDIO_LOOPING if loop else 0,
+                           activity=activity, actweight=1, events=evs)
+        if self.verbose:
+            print(f"  [charizard] {name}: {n + 1} frames @ {seq.fps:.2f} fps ({total:.3f} s) <- "
+                  + " + ".join(f"{c} [{a:.3f}, {b:.3f}] in {d:.3f} s" for c, a, b, d in segments), file=sys.stderr)
+        return seq
+
+    def gait(self, name, clip, speed, activity, root_motion="extract"):
+        """An official locomotion clip, its root displacement removed from the cycle and its ground speed in
+        linearmovement ("extract": the clip's own root displacement; "feet": the planted toes' backward speed, for
+        a run whose airborne phases make the root outrun its feet), played at the rate that makes that ground speed
+        the server's: the planted feet do not slide."""
+        seq = self.imp.sequence(self.clip(clip), name, fps=OFFICIAL_FPS, loop=True, activity=activity,
+                                root_motion=root_motion, feet=["left_toe", "right_toe"])
+        dur = (seq.numframes - 1) / seq.fps
+        native = float(np.linalg.norm(seq.linearmovement)) / dur
+        seq.fps = float(seq.fps * speed / native)
+        self.gait_info = getattr(self, "gait_info", {})
+        self.gait_info[name] = (native, speed / native)
+        if self.verbose:
+            print(f"  [charizard] {name}: native {native:.1f} units/s, played x{speed / native:.3f} -> {speed:.0f} "
+                  f"units/s ({seq.numframes} frames @ {seq.fps:.2f} fps, {seq.linearmovement[0]:.1f} units a cycle)",
+                  file=sys.stderr)
+        return seq
+
+    def attack(self):
+        """Flamethrower: rangeattack02's wind-up (rears up, inhales) at its own speed up to 40 % of the sequence
+        (the server's hit), then its fire-breathing loop stretched over the stream (the server plays the rest at
+        0.6 x duration / 1 s), then the start of its end (the jaw closes, the head comes down) over the last
+        ATTACK_END seconds, blended into the idle's first frame so the server's switch back to idle does not snap.
+        During the breath the neck and head are pitched down so the jaws aim along the stream (level to slightly
+        down, at the enemy's centre) instead of the clip's raised aim; the tilt fades out with the end."""
+        st, lp, en = "00460_rangeattack02_start", "00461_rangeattack02_loop", "00462_rangeattack02_end"
+        d_start = self.imp._anim(self.clip(st)).duration
+        d_loop = self.imp._anim(self.clip(lp)).duration
+        total = d_start / 0.4
+        hold = total - d_start - ATTACK_END
+        u_end = (d_start + hold) / total
+        u_blend = 1.0 - ATTACK_BLEND / total
+        chain = (("neck_01", 0.2), ("neck_02", 0.25), ("neck_03", 0.25), ("head", 0.3))
+        rest = self.imp.bone_world(self.clip(IDLE_CLIP), 0.0)
+
+        def edit(W, u):
+            w = R.smoothstep(min(max((u - 0.3) / 0.1, 0.0), 1.0))
+            w *= 1.0 - R.smoothstep(min(max((u - u_end) / (1.0 - u_end), 0.0), 1.0))
+            for b, f in chain:
+                self.turn(W, b, ATTACK_AIM_DOWN * f * w)
+            k = R.smoothstep(min(max((u - u_blend) / (1.0 - u_blend), 0.0), 1.0))
+            if k > 0.0:
+                W[:] = self.blend_local(W, rest, k)
+        return self.compose("attack", [(st, 0.0, d_start, d_start), (lp, 0.0, d_loop, hold),
+                                       (en, 0.0, ATTACK_END_CLIP, ATTACK_END)], mdl.ACT["RANGE_ATTACK1"], edit=edit)
+
+    def lift_wings(self, W, clearance=0.3):
+        """Wings resting below the ground (the die's spread wings on a slope of the hull's floor): each wing turned up
+        about its root just enough for its lowest vertex to clear z = 0."""
+        for root in ("left_wing_a_01", "right_wing_a_01"):
+            sub = self.subtree(self.imp.bone(root))
+            for _ in range(2):
+                P = np.concatenate([p[np.isin(b, sub)] for p, b in self._skinned(self.imp, W)])
+                lo = P[np.argmin(P[:, 2])]
+                need = clearance - lo[2]
+                if need <= 1e-3:
+                    break
+                pivot = W[self.imp.bone(root), :, 3]
+                r = lo - pivot
+                h = math.hypot(r[0], r[1])
+                axis = np.cross(r, (0.0, 0.0, 1.0))
+                if h < 1.0 or np.linalg.norm(axis) < 1e-6:
+                    break
+                self.turn(W, root, math.degrees(math.asin(min(1.0, need / h))), axis=axis / np.linalg.norm(axis))
+
+    def sequences(self):
+        A = mdl.ACT
+        idle_d = self.imp._anim(self.clip(IDLE_CLIP)).duration
+        dmg_d = self.imp._anim(self.clip("00500_damage01")).duration
+        down_d = self.imp._anim(self.clip("00520_down01_start")).duration
+        roar_d = self.imp._anim(self.clip("00300_roar01")).duration
+        so = [(c, self.imp._anim(self.clip(c)).duration) for c in
+              ("00145_stepout01_start", "00146_stepout01", "00147_stepout01_end")]
+        return [
+            self.compose("idle", [(IDLE_CLIP, 0.0, idle_d, idle_d)], A["IDLE"], loop=True,
+                         blinks=[f * idle_d for f in IDLE_BLINKS]),
+            self.gait("walk", "00030_walk01_loop", OFFICIAL_WALK_SPEED, A["WALK"]),
+            self.gait("run", "00100_run01_loop", OFFICIAL_RUN_SPEED, A["RUN"], root_motion="feet"),
+            self.attack(),
+            self.compose("flinch", [("00500_damage01", 0.0, dmg_d, dmg_d / FLINCH_SPEED)], A["SMALL_FLINCH"]),
+            self.compose("die", [("00520_down01_start", 0.0, down_d, down_d)], A["DIESIMPLE"],
+                         edit=lambda W, u: self.lift_wings(W)),
+            self.compose("spawn", [(c, 0.0, d, d) for c, d in so], A["ARM"]),
+            self.compose("victory", [("00300_roar01", 0.0, roar_d, roar_d)], A["VICTORY_DANCE"],
+                         blinks=[f * roar_d for f in VICTORY_BLINKS]),
+        ]
+
+    # model ------------------------------------------------------------------------------------------------------
+    def mouth_point(self):
+        """Rest model-space point between the jaws (attachment 0): MOUTH_BACK behind the upper jaw's tip and
+        MOUTH_DOWN under its lip, the middle of the open mouth in the breath frames (the jaw opens ~35 degrees)."""
+        imp = self.imp
+        head = imp.bone("head")
+        # the upper jaw's tip: the frontmost vertices carried by the head / nose bones
+        nb = [head, imp.bone("center_nose"), imp.bone("left_nose"), imp.bone("right_nose")]
+        P = np.concatenate([p[np.isin(b, nb)] for p, b in self._skinned(imp, imp.bone_world(None))])
+        tip = P[:, 0].max()
+        lip = P[P[:, 0] > tip - 6.0, 2].min()       # the upper lip's lowest point near the front
+        return np.array([tip - MOUTH_BACK, 0.0, lip - MOUTH_DOWN])
+
+    def settle(self, seqs):
+        """Channels that only carry float noise (the rigid bone offsets, unanimated rotations) snapped to the rest
+        values: the format scales every channel by its largest delta, noise would cost a full channel per bone."""
+        rest = self.rig.rest_local()
+        for s in seqs:
+            dp = s.pos - rest[None]
+            s.pos = np.where(np.abs(dp).max(0, keepdims=True) < SETTLE_POS, rest[None], s.pos)
+            s.rot = np.where(np.abs(s.rot).max(0, keepdims=True) < SETTLE_ROT, 0.0, s.rot)
+        return seqs
+
+    def build(self):
+        imp = self.imp
+        seqs = self.settle(self.sequences())
+        mouth = self.mouth_point()
+        flame = imp.heads[imp.bone("center_feeler_02")]
+        eye = np.concatenate([s.pos for s in imp.surfaces if imp._matname(s.material) == "l_eye"]).mean(0)
+        st = imp.studio("pokemon/charizard.mdl", seqs,
+                        attachments=[("mouth", "head", mouth), ("mouth2", "head", mouth),
+                                     ("tail_flame", "center_feeler_02", flame)],
+                        hitbox_bones=OFFICIAL_HITBOX_BONES, eyeposition=(float(eye[0]), 0.0, 64.0),
+                        hull=((-16.0, -16.0, 0.0), (16.0, 16.0, 72.0)))
+        st.hitboxes = self.hitboxes(st.bodyparts[0].models[0], OFFICIAL_HITBOX_BONES + HITBOX_EXTRA)
+        return mdl.write(st)
+
+    def hitboxes(self, model, bones):
+        """Hitbox per bone (group 0): the rest-pose extents (bone space) of the vertices weighted at least
+        HITBOX_WEIGHT on the bone and its *_sub helpers (the neck's and the chest's weights are shared with those
+        helpers, so no vertex is dominated by the bone alone and a dominant-bone rule leaves the neck uncovered)."""
+        imp = self.imp
+        V = np.asarray(model.verts)
+        bw = model.vert_weights
+        w = np.where(bw.bones >= 0, bw.weights, 0) / 255.0
+        out = []
+        for name in bones:
+            b = imp.bone(name)
+            group = [b] + [c for c in self.children[b] if imp.bone_names[c] == name + "_sub"]
+            sel = (np.isin(bw.bones, group) * w).sum(1) >= HITBOX_WEIGHT
+            if sel.sum() < HITBOX_MIN_VERTS:
+                continue
+            p = V[sel] - imp.heads[b]
+            out.append(mdl.Hitbox(bone=b, group=0, bbmin=tuple(p.min(0)), bbmax=tuple(p.max(0))))
+        return out
+
+
+ATTACK_AIM_DOWN = 18.0     # degrees the neck + head are pitched down during the breath (the clip aims ~25 deg up)
+FLINCH_SPEED = 1.2         # damage01 played a little faster (0.71 s; the server's flinch lasts at most 0.6 s)
+WELD_DIST = 0.06           # units: body vertices this close are one (the seams between the source's meshes)
+SETTLE_POS = 2e-3          # units: channel deltas below this are noise
+SETTLE_ROT = 2e-4          # radians (0.01 degree)
+MOUTH_BACK = 7.0           # attachment 0: this far (units) behind the upper jaw's tip
+MOUTH_DOWN = 3.0           # and this far under its lip (rest pose)
+ATTACK_END = 0.3           # seconds of the attack spent closing the mouth (rangeattack02_end's start) ...
+ATTACK_END_CLIP = 0.3      # ... over this much of that clip
+ATTACK_BLEND = 0.2         # the attack's last seconds blended into the idle's first frame
+IDLE_CLIP = "00001_battlewait01_loop"   # the stance every official one-shot starts / ends in (the scale is measured
+#                                         on defaultwait01_loop, the relaxed stance: horn tips at OFFICIAL_HORNS)
+EYE_CLIP = "08000_eye01"   # the official blink (eyelids only), layered on the idle and the victory
+IDLE_BLINKS = (0.3,)       # blink start times, fractions of the idle loop (one blink every ~2 s)
+VICTORY_BLINKS = (0.03, 0.8)   # ... of the roar (before it and once it has settled; done before its end)
+HITBOX_EXTRA = ("left_wing_a_01", "left_wing_a_02", "left_wing_a_03", "right_wing_a_01", "right_wing_a_02",
+                "right_wing_a_03")   # the wing arms: the leading edge of the biggest part of the silhouette
+HITBOX_WEIGHT = 0.34       # a vertex counts for a bone's hitbox when the bone (with its *_sub helpers) has this much
+#                            of its weight (the S/V weights blend smoothly: at 0.5 a tail bone keeps a thin ring)
+HITBOX_MIN_VERTS = 6
+
+
+def make_official_model(src, verbose=False):
+    shiny, normal = src
+    return OfficialCharizard(shiny, normal, verbose=verbose).build()
+
+
+def make_model(verbose=False):
+    """The official model when its sources are installed, else the generated one."""
+    src = official_source()
+    if src is not None:
+        return make_official_model(src, verbose=verbose)
+    return make_generated_model()
 
 
 def build(out):

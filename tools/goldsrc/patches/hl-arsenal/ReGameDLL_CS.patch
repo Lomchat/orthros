@@ -1542,10 +1542,10 @@ index 7809834..32621b4 100644
  CWeaponBox *CreateWeaponBox(CBasePlayerItem *pItem, CBasePlayer *pPlayerOwner, const char *modelName, Vector &origin, Vector &angles, Vector &velocity, float lifeTime, bool packAmmo);
 diff --git a/regamedll/dlls/pokemon.h b/regamedll/dlls/pokemon.h
 new file mode 100644
-index 0000000..9298125
+index 0000000..5f5675c
 --- /dev/null
 +++ b/regamedll/dlls/pokemon.h
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,275 @@
 +/*
 +*	Half Strike: Poke Balls. Three grenade-slot items (weapon_pk_pikachu, weapon_pk_charizard, weapon_pk_blastoise),
 +*	thrown like the Half-Life hand grenade; the ball opens and its Pokemon (monster_pokemon) comes out, follows its
@@ -1800,6 +1800,7 @@ index 0000000..9298125
 +	float m_flSlowEnd;
 +	float m_flAirborneEnd;
 +	bool m_bFollowMoving;
++	bool m_bFacingOwner;   // (standing by, its player looking at it: it looks back)
 +	float m_flStuckTime;
 +	float m_flStuckCheck;
 +	Vector m_vecStuckPos;
@@ -6666,10 +6667,10 @@ index 0000000..1920d83
 +}
 diff --git a/regamedll/dlls/wpn_shared/wpn_pokemon.cpp b/regamedll/dlls/wpn_shared/wpn_pokemon.cpp
 new file mode 100644
-index 0000000..1b43d99
+index 0000000..b8471fd
 --- /dev/null
 +++ b/regamedll/dlls/wpn_shared/wpn_pokemon.cpp
-@@ -0,0 +1,3076 @@
+@@ -0,0 +1,3095 @@
 +// Half Strike: Poke Balls and their Pokemon (pokemon.h). A ball is thrown as the Half-Life hand grenade; it opens and
 +// its Pokemon comes out, follows its player and fights the enemies its player shoots at or that hurt it or its player.
 +// Entities are named with MAKE_STRING_CLASS (the game's classname table, as the Half-Life arsenal's), followed by entity
@@ -6802,15 +6803,15 @@ index 0000000..1b43d99
 +	},
 +	{
 +		"Charizard", "weapon_pk_charizard", "PokeBallCharizard", WEAPON_PK_CHARIZARD, PK_CHARIZARD_PRICE, "models/pokemon/charizard.mdl",
-+		160.0f, 240.0f, 100.0f, 420.0f, Vector(-16, -16, 0), Vector(16, 16, 72), 64.0f,
++		160.0f, 240.0f, 65.0f, 420.0f, Vector(-16, -16, 0), Vector(16, 16, 72), 64.0f,
 +		"pokemon/charizard_cry1.wav", "pokemon/charizard_roar.wav", "pokemon/charizard_flame.wav", "pokemon/charizard_hurt.wav", "pokemon/charizard_die.wav",
 +		BLOOD_COLOR_RED, 60.0f, 0.55f, 88, 0.7f
 +	},
 +	{
 +		"Blastoise", "weapon_pk_blastoise", "PokeBallBlastoise", WEAPON_PK_BLASTOISE, PK_BLASTOISE_PRICE, "models/pokemon/blastoise.mdl",
-+		220.0f, 210.0f, 90.0f, 360.0f, Vector(-16, -16, 0), Vector(16, 16, 72), 52.0f,
++		220.0f, 210.0f, 60.0f, 360.0f, Vector(-16, -16, 0), Vector(16, 16, 72), 52.0f,
 +		"pokemon/blastoise_cry1.wav", "pokemon/blastoise_cry1.wav", "pokemon/blastoise_hydro.wav", "pokemon/blastoise_hurt.wav", "pokemon/blastoise_die.wav",
-+		DONT_BLEED, 64.0f, 0.65f, 82, 0.45f
++		DONT_BLEED, 40.0f, 0.65f, 82, 0.45f
 +	},
 +};
 +
@@ -7776,6 +7777,7 @@ index 0000000..1b43d99
 +	m_flFlinchEnd = m_flNextFlinch = 0.0f;
 +	m_flKnockbackEnd = m_flSlowEnd = m_flAirborneEnd = 0.0f;
 +	m_bFollowMoving = false;
++	m_bFacingOwner = false;
 +	m_flStuckTime = 0.0f;
 +	m_flStuckCheck = 0.0f;
 +	m_vecStuckPos = g_vecZero;
@@ -8666,8 +8668,23 @@ index 0000000..1b43d99
 +		return;
 +	}
 +
-+	// (stands by, looking where its player looks)
-+	TurnTowards(pOwner->pev->v_angle.y, dt, info.yawSpeed * 0.25f);
++	// (stands by, looking where its player looks — but looks back at its player looking at it, instead of turning its
++	// back on it: within 40 degrees of its player's view, until past 60)
++	float flYaw = pOwner->pev->v_angle.y;
++	if (vecAway.Length() > 1.0f)
++	{
++		float flFromOwner = UTIL_VecToYaw(Vector(vecAway.x, vecAway.y, 0));
++		float flOff = Q_fabs(UTIL_AngleDiff(UTIL_AngleMod(pOwner->pev->v_angle.y), flFromOwner));
++		if (flOff < 40.0f)
++			m_bFacingOwner = true;
++		else if (flOff > 60.0f)
++			m_bFacingOwner = false;
++
++		if (m_bFacingOwner)
++			flYaw = UTIL_AngleMod(flFromOwner + 180.0f);
++	}
++
++	TurnTowards(flYaw, dt, info.yawSpeed * (m_bFacingOwner ? 0.5f : 0.25f));
 +	UpdateAnimation(0.0f);
 +}
 +
@@ -8720,7 +8737,10 @@ index 0000000..1b43d99
 +		return;
 +	}
 +
-+	int iSeq = (flSpeed > (info.walkSpeed + info.runSpeed) * 0.5f) ? SEQ_RUN : SEQ_WALK;
++	// (it runs above 1.3 times its walking speed — the walk played much faster than its stride scurries —, but not
++	// where the run would play slower than 0.4 times its stride, nor above halfway to its running speed)
++	float flRunAbove = clamp(1.3f * info.walkSpeed, 0.4f * m_flSeqGroundSpeed[SEQ_RUN], (info.walkSpeed + info.runSpeed) * 0.5f);
++	int iSeq = (flSpeed > flRunAbove) ? SEQ_RUN : SEQ_WALK;
 +	float flGround = m_flSeqGroundSpeed[iSeq];
 +	float flRate = flGround > 1.0f ? clamp(flSpeed / flGround, 0.4f, 2.5f) : 1.0f;
 +	if (!(pev->flags & FL_ONGROUND))

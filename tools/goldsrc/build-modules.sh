@@ -10,14 +10,15 @@
 # a copy in scratch where its patches (tools/goldsrc/patches/) are applied. Every module lock.json lists must come out
 # identical. Needs git, Docker, Python 3, Node, cmake, g++ with 32-bit libraries. An installed release is
 # never overwritten.
-# Usage: sh tools/goldsrc/build-modules.sh [<build id>...] [--engines-dir <dir>] [--games-dir <dir>]   (all builds by default)
+# Usage: sh tools/goldsrc/build-modules.sh [<build id>...] [--engines-dir <dir>] [--games-dir <dir>] [--installers-dir <dir>]   (all builds by default)
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
-engines=$root/data_engines games=$root/data_games ids=
+engines=$root/data_engines games=$root/data_games installers=$root/data_installers ids=
 while [ $# -gt 0 ]; do
   case $1 in
     --engines-dir) engines=$2; shift 2 ;;
     --games-dir) games=$2; shift 2 ;;
+    --installers-dir) installers=$2; shift 2 ;;
     *) ids="$ids $1"; shift ;;
   esac
 done
@@ -71,7 +72,7 @@ PY
   node "$root/tools/goldsrc/bot-nav.mjs" "$(sed -n 1p "$build/bots.txt")" --library "$build/native/regamedll/cs.so" \
     --profiles "$build/src/$(sed -n 3p "$build/bots.txt")" --out "$build/navs" --maps "$(sed -n 2p "$build/bots.txt")" \
     --games-dir "$games" --engines-dir "$engines"
-  python3 - "$lock" "$id" "$engines" "$build" "$root/tools/goldsrc" <<'PY'
+  python3 - "$lock" "$id" "$engines" "$build" "$root/tools/goldsrc" "$installers" <<'PY'
 import hashlib, json, pathlib, shutil, sys, zipfile
 lock = json.load(open(sys.argv[1])); mods = lock['modules']
 build_spec = next(b for b in mods['builds'] if b['id'] == sys.argv[2])
@@ -106,10 +107,20 @@ put(None, rel)
 # (generated assets: archives a build's generator writes from our own code — e.g. the Half Strike Pokémon's models,
 # sprites and sounds — deterministic, so the same inputs give the same archive)
 import subprocess
+import os
 for asset in build_spec.get('assets', []):
     rel = f"{mods['gameDir']}/{asset['archive']}"
     (stage / rel).parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(['python3', '-I', str(tools / asset['generator']), str(stage / rel)], check=True, stdout=subprocess.DEVNULL)
+    env = dict(os.environ)
+    # (input files the generator reads from outside Git — e.g. the owner's official models in data_installers/ —
+    # checked against their pinned SHA-256 and handed over in an environment variable)
+    src = asset.get('sources')
+    if src:
+        base = pathlib.Path(sys.argv[6]) / src['dir']
+        for name, digest in src['files'].items():
+            if not (base / name).is_file() or sha(base / name) != digest: sys.exit(f'{base / name}: missing, or not the file lock.json pins')
+        env[src['env']] = str(base)
+    subprocess.run(['python3', '-I', str(tools / asset['generator']), str(stage / rel)], check=True, stdout=subprocess.DEVNULL, env=env)
     put(None, rel)
 dirs = ['patches', 'cmake'] + sorted({a['generator'].split('/')[0] for a in build_spec.get('assets', [])})
 inputs = {str(f.relative_to(tools)): sha(f) for d in dirs for f in sorted((tools / d).rglob('*')) if f.is_file() and '__pycache__' not in f.parts}
