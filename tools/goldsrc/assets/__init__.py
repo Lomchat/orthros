@@ -10,6 +10,10 @@ Modules:
            rasterising paint into the atlas, 256-colour quantisation
   builder  ModelBuilder: parts (SDF + bone + paint) -> complete mdl.Studio
   render   offline software renderer of .mdl bytes to PNG (single view or contact sheet)
+  gltf     glTF 2.0 reader (GLB/JSON, accessors incl. sparse/normalized, nodes, skins, materials, images,
+           LINEAR/STEP/CUBICSPLINE animations)
+  official importer: skinned animated glTF -> smooth-skinned studio model (axes, scale, skeleton pruning,
+           4 weights per vertex, textures, resampled animations with root motion, bounds, hitboxes)
   spr      sprite (IDSP v2) writer/reader
   wav      PCM WAV writer and a small synthesis kit
   icons    antialiased vector painter for HUD icons / sprite frames

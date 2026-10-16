@@ -50,12 +50,26 @@ STUDIO_RLOOP = 0x8000
 
 STUDIO_LOOPING = 0x0001
 
+# header flags of Xash3D's smooth skinning (engine/studio.h): STUDIO_HAS_BONEINFO = an mstudioboneinfo_t
+# (poseToBone matrix, ...) per bone right after the bones; STUDIO_HAS_BONEWEIGHTS = per-model
+# blendvertinfoindex / blendnorminfoindex arrays of mstudioboneweight_t (the renderer skins every vertex
+# with worldtransform = bonetransform * poseToBone, ref/gl/gl_studio.c R_StudioSetupRenderer /
+# R_StudioComputeSkinMatrix).  Without BONEINFO the renderer's worldtransform stays stale: both are required.
+STUDIO_HAS_BONEINFO = 1 << 30
+STUDIO_HAS_BONEWEIGHTS = 1 << 31
+
 # hitbox groups (HITGROUP_* of the game code)
 HITGROUP_GENERIC, HITGROUP_HEAD, HITGROUP_CHEST, HITGROUP_STOMACH = 0, 1, 2, 3
 HITGROUP_LEFTARM, HITGROUP_RIGHTARM, HITGROUP_LEFTLEG, HITGROUP_RIGHTLEG = 4, 5, 6, 7
 
-# limits (classic GoldSrc ones; Xash3D allows more vertices but we stay compatible)
+# limits.  MAXSTUDIOVERTS is the classic GoldSrc one (the SDF builder splits its models at it); the writer
+# and reader enforce Xash3D FWGS' (engine/studio.h MAXSTUDIOVERTS 16384 per submodel) and its GL renderer's
+# per-submodel vertex arrays (arrayverts[MAXSTUDIOVERTS], filled with every strip/fan corner of every mesh of
+# the submodel without a bounds check when r_studio_drawelements is 1, the default).
 MAXSTUDIOVERTS = 2048
+XASH_MAXSTUDIOVERTS = 16384
+XASH_MAXARRAYVERTS = 16384
+MAXSTUDIOBONEWEIGHTS = 4
 MAXSTUDIOBONES = 128
 MAXSTUDIOSEQUENCES = 256
 MAXSTUDIOSKINS = 100
@@ -77,6 +91,7 @@ ACT = {name: i for i, name in enumerate(_ACT_NAMES)}  # e.g. ACT["IDLE"] == 1, A
 # struct sizes (bytes)
 SZ_HDR, SZ_BONE, SZ_CTRL, SZ_BBOX, SZ_SEQGROUP, SZ_SEQ = 244, 112, 24, 32, 104, 176
 SZ_EVENT, SZ_PIVOT, SZ_ATTACH, SZ_ANIM, SZ_BODYPART, SZ_TEXTURE, SZ_MODEL, SZ_MESH = 76, 20, 88, 12, 76, 80, 112, 20
+SZ_BONEINFO, SZ_BONEWEIGHT = 128, 8
 
 
 class MdlError(ValueError):
@@ -182,14 +197,30 @@ class Mesh:
 
 
 @dataclass
+class BoneWeights:
+    """mstudioboneweight_t per vertex (or normal): up to 4 bones, weights 0..255.
+    The engine counts the slots whose bone is not -1 and uses the FIRST that many: used slots come first,
+    unused ones are bone -1 / weight 0.  Weights should sum to 255 (the renderer adds any shortfall below 1.0
+    to slot 0, an excess is not corrected)."""
+    bones: np.ndarray         # (n, 4) int, -1 = unused
+    weights: np.ndarray       # (n, 4) int 0..255
+
+
+@dataclass
 class Model:
     name: str
-    verts: np.ndarray         # (nv, 3) float, bone space
-    vert_bone: np.ndarray     # (nv,) int
-    norms: np.ndarray         # (nn, 3) float, bone space, unit length
+    verts: np.ndarray         # (nv, 3) float, bone space (rigid) / model space at the bind pose (weighted)
+    vert_bone: np.ndarray     # (nv,) int (weighted: the main bone, used by the engine for dynamic lights)
+    norms: np.ndarray         # (nn, 3) float, bone space / model space (weighted), unit length
     norm_bone: np.ndarray     # (nn,) int
     meshes: List[Mesh] = field(default_factory=list)
     type: int = 0
+    vert_weights: Optional[BoneWeights] = None   # smooth skinning (Studio.flags gets STUDIO_HAS_BONEWEIGHTS)
+    norm_weights: Optional[BoneWeights] = None   # defaults to the weights of the vertex using each normal
+
+    @property
+    def weighted(self):
+        return self.vert_weights is not None
 
 
 @dataclass
@@ -216,6 +247,9 @@ class Studio:
     bbmin: tuple = (0.0, 0.0, 0.0)
     bbmax: tuple = (0.0, 0.0, 0.0)
     flags: int = 0
+    # smooth skinning: poseToBone (nb, 3, 4) of each bone (default: inverse of the rest bone matrices, so
+    # weighted vertices are stored in model space at the rest pose).  Written when a model has weights.
+    pose_to_bone: Optional[np.ndarray] = None
 
 
 # ----------------------------------------------------------------------------------------------
@@ -468,10 +502,15 @@ def _check_studio(st):
             raise MdlError(f"bodypart {bp.name} has no model")
         for m in bp.models:
             nv, nn = len(m.verts), len(m.norms)
-            if nv > MAXSTUDIOVERTS or nn > MAXSTUDIOVERTS:
-                raise MdlError(f"model {m.name}: {nv} verts / {nn} normals exceed {MAXSTUDIOVERTS}")
+            if nv > XASH_MAXSTUDIOVERTS or nn > XASH_MAXSTUDIOVERTS:
+                raise MdlError(f"model {m.name}: {nv} verts / {nn} normals exceed {XASH_MAXSTUDIOVERTS}")
             if len(m.vert_bone) != nv or len(m.norm_bone) != nn:
                 raise MdlError(f"model {m.name}: bone info length mismatch")
+            for what, bw, cnt in (("vertex", m.vert_weights, nv), ("normal", m.norm_weights, nn)):
+                if bw is not None:
+                    _check_weights(f"model {m.name} {what}", bw, cnt, nb)
+            if m.norm_weights is not None and m.vert_weights is None:
+                raise MdlError(f"model {m.name}: normal weights without vertex weights")
             if nv and (np.min(m.vert_bone) < 0 or np.max(m.vert_bone) >= nb):
                 raise MdlError(f"model {m.name}: vertex bone out of range")
             if nn and (np.min(m.norm_bone) < 0 or np.max(m.norm_bone) >= nb):
@@ -487,7 +526,65 @@ def _check_studio(st):
                     raise MdlError(f"model {m.name}: vertex/normal index out of range")
                 if len(tr) and (np.abs(tr[..., 2:]).max() > 32767):
                     raise MdlError(f"model {m.name}: s/t out of short range")
+    if st.pose_to_bone is not None and np.asarray(st.pose_to_bone).shape != (nb, 3, 4):
+        raise MdlError(f"pose_to_bone must be ({nb}, 3, 4)")
     return skins
+
+
+def _check_weights(what, bw, count, nb):
+    b = np.asarray(bw.bones)
+    w = np.asarray(bw.weights)
+    if b.shape != (count, 4) or w.shape != (count, 4):
+        raise MdlError(f"{what} weights must be ({count}, 4)")
+    if count == 0:
+        return
+    if b.min() < -1 or b.max() >= min(nb, 128):
+        raise MdlError(f"{what} weight bone out of range")
+    if w.min() < 0 or w.max() > 255:
+        raise MdlError(f"{what} weight value outside 0..255")
+    used = b >= 0
+    if not used[:, 0].all():
+        raise MdlError(f"{what}: slot 0 must hold a bone")
+    if np.any(~used[:, :-1] & used[:, 1:]):
+        raise MdlError(f"{what}: used weight slots must come first")
+    if np.any(w[~used] != 0):
+        raise MdlError(f"{what}: unused weight slots must have weight 0")
+    tot = np.where(used, w, 0).sum(1)
+    if tot.max() > 255 or tot.min() < 1:
+        raise MdlError(f"{what}: weights must sum to 1..255 (got {tot.min()}..{tot.max()})")
+
+
+def is_weighted(st):
+    return any(m.vert_weights is not None for bp in st.bodyparts for m in bp.models)
+
+
+def default_pose_to_bone(bones):
+    """poseToBone = inverse rest bone matrices: weighted vertices stored in model space (rest pose)."""
+    return np.array([xform.invert(m) for m in rest_matrices(bones)])
+
+
+def _norm_weights_from_verts(m: Model):
+    """Weights per normal from the vertices that use it (first use wins)."""
+    nn = len(m.norms)
+    bones = np.full((nn, 4), -1, np.int64)
+    wts = np.zeros((nn, 4), np.int64)
+    bones[:, 0] = np.asarray(m.norm_bone)
+    wts[:, 0] = 255
+    seen = np.zeros(nn, bool)
+    for me in m.meshes:
+        tr = np.asarray(me.tris).reshape(-1, 4)
+        for vi, ni in zip(tr[:, 0], tr[:, 1]):
+            if not seen[ni]:
+                seen[ni] = True
+                bones[ni] = m.vert_weights.bones[vi]
+                wts[ni] = m.vert_weights.weights[vi]
+    return BoneWeights(bones=bones, weights=wts)
+
+
+def _i32(x):
+    """Header flags as a signed 32-bit int (STUDIO_HAS_BONEWEIGHTS is bit 31)."""
+    x = int(x) & 0xFFFFFFFF
+    return x - (1 << 32) if x >= (1 << 31) else x
 
 
 def write(st: Studio) -> bytes:
@@ -508,11 +605,23 @@ def write(st: Studio) -> bytes:
         ctrl_of[c.bone][chan] = ci
 
     # bones
+    weighted = is_weighted(st)
+    flags = int(st.flags) & ~(STUDIO_HAS_BONEINFO | STUDIO_HAS_BONEWEIGHTS)
     boneindex = buf.reserve(SZ_BONE * nb)
     for i, b in enumerate(st.bones):
         vals = _v3(b.pos) + _v3(b.rot)
         struct.pack_into("<32sii6i6f6f", buf.b, boneindex + i * SZ_BONE, _name(b.name, 32), b.parent, b.flags,
                          *ctrl_of[i], *vals, *[float(x) for x in scales[i]])
+    if weighted:
+        # mstudioboneinfo_t[numbones] immediately after the bones (the renderer finds them there)
+        flags |= STUDIO_HAS_BONEINFO | STUDIO_HAS_BONEWEIGHTS
+        p2b = default_pose_to_bone(st.bones) if st.pose_to_bone is None else np.asarray(st.pose_to_bone, float)
+        infoindex = buf.reserve(SZ_BONEINFO * nb)
+        assert infoindex == boneindex + SZ_BONE * nb
+        for i, b in enumerate(st.bones):
+            q = xform.angle_quaternion(_v3(b.rot))
+            struct.pack_into("<12f4fii4f10i", buf.b, infoindex + i * SZ_BONEINFO, *[float(x) for x in p2b[i].reshape(-1)],
+                             0.0, 0.0, 0.0, 1.0, 0, 0, *[float(x) for x in q], *([0] * 10))
 
     ctrlindex = buf.reserve(SZ_CTRL * len(st.controllers))
     for i, c in enumerate(st.controllers):
@@ -597,7 +706,7 @@ def write(st: Studio) -> bytes:
     struct.pack_into(
         "<ii64si3f3f3f3f3fi" + "i" * 26, buf.b, 0,
         IDST, VERSION, _name(st.name, 64), length,
-        *_v3(st.eyeposition), *_v3(st.min), *_v3(st.max), *_v3(st.bbmin), *_v3(st.bbmax), st.flags,
+        *_v3(st.eyeposition), *_v3(st.min), *_v3(st.max), *_v3(st.bbmin), *_v3(st.bbmax), _i32(flags),
         nb, boneindex, len(st.controllers), ctrlindex, len(st.hitboxes), hitindex,
         len(st.sequences), seqindex, 1, seqgroupindex,
         len(st.textures), textureindex, texturedataindex,
@@ -612,7 +721,10 @@ def _write_model(buf, model_off, m: Model):
     verts = np.asarray(m.verts, dtype=np.float64).reshape(-1, 3)
     norms = np.asarray(m.norms, dtype=np.float64).reshape(-1, 3)
     # regroup normals so that each mesh owns a contiguous range (lighting is computed per mesh range)
-    new_norms, new_nbone, mesh_ranges, mesh_tris = [], [], [], []
+    nw = None
+    if m.vert_weights is not None:
+        nw = m.norm_weights if m.norm_weights is not None else _norm_weights_from_verts(m)
+    new_norms, new_nbone, new_nw, mesh_ranges, mesh_tris = [], [], [], [], []
     for me in m.meshes:
         tr = np.asarray(me.tris, dtype=np.int64).copy()
         start = len(new_norms)
@@ -623,35 +735,58 @@ def _write_model(buf, model_off, m: Model):
                 remap[ni] = len(new_norms)
                 new_norms.append(norms[ni])
                 new_nbone.append(int(m.norm_bone[ni]))
+                if nw is not None:
+                    new_nw.append(ni)
         if len(tr):
             tr[..., 1] = np.vectorize(remap.get, otypes=[np.int64])(tr[..., 1])
         mesh_ranges.append((start, len(new_norms) - start))
         mesh_tris.append(tr)
     nn = len(new_norms)
-    if nn > MAXSTUDIOVERTS:
-        raise MdlError(f"model {m.name}: {nn} normals after per-mesh grouping exceed {MAXSTUDIOVERTS}")
+    if nn > XASH_MAXSTUDIOVERTS:
+        raise MdlError(f"model {m.name}: {nn} normals after per-mesh grouping exceed {XASH_MAXSTUDIOVERTS}")
 
     vertinfoindex = buf.put(bytes(int(x) for x in m.vert_bone))
     norminfoindex = buf.put(bytes(new_nbone))
     vertindex = buf.put(verts.astype("<f4").tobytes())
     normindex = buf.put(np.asarray(new_norms, dtype="<f4").reshape(-1, 3).tobytes())
+    blendvert = blendnorm = 0
+    if nw is not None:
+        sel = np.array(new_nw, dtype=np.int64)
+        blendvert = buf.put(_pack_weights(m.vert_weights.bones, m.vert_weights.weights))
+        blendnorm = buf.put(_pack_weights(np.asarray(nw.bones)[sel].reshape(-1, 4),
+                                          np.asarray(nw.weights)[sel].reshape(-1, 4)))
     meshindex = buf.reserve(SZ_MESH * len(m.meshes))
+    corners = 0
     for j, me in enumerate(m.meshes):
         tr = mesh_tris[j]
         disk = [tuple(tuple(int(x) for x in corner) for corner in (t[0], t[2], t[1])) for t in tr]  # flip winding
         cmds = []
         for strip in stripify(disk):
             cmds.append(len(strip))
+            corners += len(strip)
             for corner in strip:
                 cmds.extend(corner)
         cmds.append(0)
+        if corners > XASH_MAXARRAYVERTS:
+            raise MdlError(f"model {m.name}: {corners} strip corners exceed the renderer's {XASH_MAXARRAYVERTS} "
+                           f"array vertices per submodel (split it into bodyparts)")
         triindex = buf.put(struct.pack("<%dh" % len(cmds), *cmds))
         start, cnt = mesh_ranges[j]
         struct.pack_into("<iiiii", buf.b, meshindex + j * SZ_MESH, len(tr), triindex, me.skinref, cnt,
                          normindex + start * 12)
     radius = float(np.max(np.linalg.norm(verts, axis=1))) if len(verts) else 0.0
     struct.pack_into("<64sifiiiiiiiiii", buf.b, model_off, _name(m.name, 64), m.type, radius,
-                     len(m.meshes), meshindex, len(verts), vertinfoindex, vertindex, nn, norminfoindex, normindex, 0, 0)
+                     len(m.meshes), meshindex, len(verts), vertinfoindex, vertindex, nn, norminfoindex, normindex,
+                     blendvert, blendnorm)
+
+
+def _pack_weights(bones, weights):
+    b = np.asarray(bones, dtype=np.int64).reshape(-1, 4)
+    w = np.asarray(weights, dtype=np.int64).reshape(-1, 4)
+    rec = np.zeros((len(b), 8), dtype=np.uint8)
+    rec[:, :4] = w.astype(np.uint8)
+    rec[:, 4:] = b.astype(np.int8).view(np.uint8)
+    return rec.tobytes()
 
 
 # ----------------------------------------------------------------------------------------------
@@ -706,7 +841,7 @@ def read(data, strict=True) -> ParsedModel:
     pm.name = _cstr(name)
     pm.length = length
     pm.eyeposition, pm.min, pm.max, pm.bbmin, pm.bbmax = (tuple(h[4 + 3 * i:7 + 3 * i]) for i in range(5))
-    pm.flags = h[19]
+    pm.flags = h[19] & 0xFFFFFFFF
     (numbones, boneindex, numctrl, ctrlindex, numhit, hitindex, numseq, seqindex, numgroups, groupindex,
      numtex, texindex, texdataindex, numskinref, numskinfam, skinindex, numbp, bpindex, numatt, attindex,
      soundtable, soundindex, soundgroups, soundgroupindex, numtrans, transindex) = h[20:46]
@@ -728,6 +863,18 @@ def read(data, strict=True) -> ParsedModel:
                 if c != -1 and not 0 <= c < numctrl:
                     r.err(f"bone {b.name}: controller {c} invalid")
             pm.bones.append(b)
+
+    pm.pose_to_bone = None
+    weighted = bool(pm.flags & STUDIO_HAS_BONEWEIGHTS)
+    if weighted and not pm.flags & STUDIO_HAS_BONEINFO:
+        r.err("STUDIO_HAS_BONEWEIGHTS without STUDIO_HAS_BONEINFO (the renderer would skin with stale matrices)")
+    if pm.flags & STUDIO_HAS_BONEINFO and 1 <= numbones <= MAXSTUDIOBONES:
+        infoindex = boneindex + numbones * SZ_BONE
+        if r.need(infoindex, numbones * SZ_BONEINFO, "boneinfo", 4):
+            pm.pose_to_bone = np.array([r.unpack("12f", infoindex + i * SZ_BONEINFO) for i in range(numbones)],
+                                       dtype=np.float64).reshape(numbones, 3, 4)
+            if not np.all(np.isfinite(pm.pose_to_bone)):
+                r.err("boneinfo: non-finite poseToBone")
 
     pm.controllers = []
     if r.need(ctrlindex, numctrl * SZ_CTRL, "bonecontrollers", 4):
@@ -839,7 +986,7 @@ def read(data, strict=True) -> ParsedModel:
             if r.need(v[3], v[1] * SZ_MODEL, f"models of {bp.name}", 4):
                 for mi in range(v[1]):
                     bp.models.append(_read_model(r, v[3] + mi * SZ_MODEL, numbones, numskinref, pm.textures,
-                                                 pm.skins))
+                                                 pm.skins, weighted))
             pm.bodyparts.append(bp)
 
     pm.attachments = []
@@ -890,16 +1037,28 @@ def _walk_channel(r, off, numframes, what):
     return o
 
 
-def _read_model(r, off, numbones, numskinref, textures, skins):
+def _read_weights(r, off, count, numbones, what):
+    if not r.need(off, count * SZ_BONEWEIGHT, what, 4):
+        return None
+    rec = np.frombuffer(r.d, np.uint8, count * SZ_BONEWEIGHT, off).reshape(count, 8)
+    bw = BoneWeights(bones=rec[:, 4:].view(np.int8).astype(np.int64), weights=rec[:, :4].astype(np.int64))
+    try:
+        _check_weights(what, bw, count, numbones)
+    except MdlError as e:
+        r.err(str(e))
+    return bw
+
+
+def _read_model(r, off, numbones, numskinref, textures, skins, weighted=False):
     v = r.unpack("64sifiiiiiiiiii", off)
     (name, mtype, radius, nummesh, meshindex, numverts, vertinfoindex, vertindex, numnorms, norminfoindex,
-     normindex, numgroups, groupindex) = v
+     normindex, blendvertinfoindex, blendnorminfoindex) = v
     name = _cstr(name)
     m = Model(name=name, verts=np.zeros((0, 3)), vert_bone=np.zeros(0, np.int64), norms=np.zeros((0, 3)),
               norm_bone=np.zeros(0, np.int64), meshes=[], type=mtype)
     m.boundingradius = radius
-    if numverts > MAXSTUDIOVERTS or numnorms > MAXSTUDIOVERTS:
-        r.err(f"model {name}: {numverts} verts / {numnorms} norms over {MAXSTUDIOVERTS}")
+    if numverts > XASH_MAXSTUDIOVERTS or numnorms > XASH_MAXSTUDIOVERTS:
+        r.err(f"model {name}: {numverts} verts / {numnorms} norms over {XASH_MAXSTUDIOVERTS}")
     if r.need(vertinfoindex, numverts, f"vertinfo {name}") and r.need(vertindex, numverts * 12, f"verts {name}", 4):
         m.vert_bone = np.frombuffer(r.d, np.uint8, numverts, vertinfoindex).astype(np.int64)
         m.verts = np.frombuffer(r.d, "<f4", numverts * 3, vertindex).reshape(-1, 3).astype(np.float64)
@@ -910,15 +1069,25 @@ def _read_model(r, off, numbones, numskinref, textures, skins):
         m.norms = np.frombuffer(r.d, "<f4", numnorms * 3, normindex).reshape(-1, 3).astype(np.float64)
         if numnorms and m.norm_bone.max() >= numbones:
             r.err(f"model {name}: normal bone out of range")
-    if numgroups:
-        r.err(f"model {name}: numgroups {numgroups} unsupported")
+    if weighted:
+        if bool(blendvertinfoindex) != bool(blendnorminfoindex):
+            r.err(f"model {name}: only one of blendvertinfoindex / blendnorminfoindex set")
+        elif blendvertinfoindex:
+            m.vert_weights = _read_weights(r, blendvertinfoindex, numverts, numbones, f"blendvertinfo {name}")
+            m.norm_weights = _read_weights(r, blendnorminfoindex, numnorms, numbones, f"blendnorminfo {name}")
+            if m.vert_weights is None or m.norm_weights is None:
+                m.vert_weights = m.norm_weights = None
+    elif blendvertinfoindex or blendnorminfoindex:
+        r.err(f"model {name}: blend weight offsets without STUDIO_HAS_BONEWEIGHTS (numgroups/groupindex unsupported)")
     normsum = 0
+    corners = 0
     if r.need(meshindex, nummesh * SZ_MESH, f"meshes {name}", 4):
         for j in range(nummesh):
             numtris, triindex, skinref, mnumnorms, mnormindex = r.unpack("iiiii", meshindex + j * SZ_MESH)
             if not 0 <= skinref < max(1, numskinref):
                 r.err(f"model {name} mesh {j}: skinref {skinref} out of range")
             tris, cmds, end = _read_tricmds(r, triindex, f"tricmds {name}/{j}")
+            corners += sum(len(vs) for _, vs in cmds)
             if end is not None:
                 r.ranges.append((triindex, end, f"tricmds {name}/{j}"))
             if len(tris) != numtris:
@@ -934,9 +1103,10 @@ def _read_model(r, off, numbones, numskinref, textures, skins):
                         ti = skins[fam, skinref]
                         if 0 <= ti < len(textures):
                             t = textures[ti]
-                            if (tris[..., 2].min() < 0 or tris[..., 3].min() < 0 or tris[..., 2].max() > t.width
-                                    or tris[..., 3].max() > t.height):
-                                r.err(f"model {name} mesh {j}: s/t outside texture {t.name}")
+                            # studio textures repeat (GL_REPEAT): a triangle may cross one edge
+                            if (tris[..., 2].min() < 0 or tris[..., 3].min() < 0 or tris[..., 2].max() > 2 * t.width
+                                    or tris[..., 3].max() > 2 * t.height):
+                                r.err(f"model {name} mesh {j}: s/t outside texture {t.name} (and its first repeat)")
             normsum += mnumnorms
             mesh = Mesh(tris=tris[:, [0, 2, 1]] if len(tris) else tris, skinref=skinref)  # back to outward CCW
             mesh.cmds = cmds
@@ -944,6 +1114,8 @@ def _read_model(r, off, numbones, numskinref, textures, skins):
             m.meshes.append(mesh)
     if normsum != numnorms:
         r.err(f"model {name}: meshes cover {normsum} normals, model has {numnorms}")
+    if corners > XASH_MAXARRAYVERTS:
+        r.err(f"model {name}: {corners} strip corners overflow the renderer's {XASH_MAXARRAYVERTS} array vertices")
     return m
 
 
@@ -1128,6 +1300,47 @@ def pose(pm, seq_index, frame, controllers=None):
     return setup_bones(pm, pos, q)
 
 
+def skin_transforms(pm, bone_mats):
+    """The renderer's worldtransform: bonetransform * poseToBone (weighted models), else the bone matrices."""
+    if pm.pose_to_bone is None:
+        return bone_mats
+    out = np.empty_like(bone_mats)
+    out[:, :, :3] = bone_mats[:, :, :3] @ pm.pose_to_bone[:, :, :3]
+    out[:, :, 3] = np.einsum("bij,bj->bi", bone_mats[:, :, :3], pm.pose_to_bone[:, :, 3]) + bone_mats[:, :, 3]
+    return out
+
+
+def _blend_matrices(world, bw):
+    """R_StudioComputeSkinMatrix for every entry: weighted sum of the used slots' matrices (weights / 255,
+    shortfall below 1 added to slot 0)."""
+    b = np.asarray(bw.bones)
+    w = np.where(b >= 0, np.asarray(bw.weights), 0).astype(np.float64) / 255.0
+    tot = w.sum(1)
+    w[:, 0] += np.where(tot < 1.0, 1.0 - tot, 0.0)
+    single = (b[:, 1] < 0)
+    w[single] = 0.0
+    w[single, 0] = 1.0   # one bone: the matrix is copied as is
+    return np.einsum("nk,nkij->nij", w, world[np.maximum(b, 0)])
+
+
+def posed_model(pm, m, bone_mats):
+    """(verts (nv, 3), norms (nn, 3)) of model m in the space of bone_mats, exactly as the GL renderer
+    computes them: rigid per-bone transforms, or the blended skin matrices of weighted models (normals
+    rotated by the blended matrix and not renormalised, as the engine lights them)."""
+    if m.vert_weights is not None and pm.flags & STUDIO_HAS_BONEWEIGHTS and pm.pose_to_bone is not None:
+        world = skin_transforms(pm, bone_mats)
+        Mv = _blend_matrices(world, m.vert_weights)
+        v = np.einsum("nij,nj->ni", Mv[:, :, :3], m.verts) + Mv[:, :, 3]
+        Mn = _blend_matrices(world, m.norm_weights)
+        n = np.einsum("nij,nj->ni", Mn[:, :, :3], m.norms)
+        return v, n
+    Wv = bone_mats[m.vert_bone]
+    v = np.einsum("nij,nj->ni", Wv[:, :, :3], m.verts) + Wv[:, :, 3]
+    Wn = bone_mats[m.norm_bone]
+    n = np.einsum("nij,nj->ni", Wn[:, :, :3], m.norms)
+    return v, n
+
+
 def decode_sequence(pm, seq_index):
     """All integer frames of a sequence as (pos (F, B, 3), rot euler (F, B, 3)) - for tests/inspection."""
     s = pm.sequences[seq_index]
@@ -1159,6 +1372,6 @@ def summary(pm):
             nt = sum(len(me.tris) for me in m.meshes)
             ntri += nt
             lines.append(f"  bodypart {bp.name} / model {m.name}: {len(m.verts)} verts, {len(m.norms)} norms, "
-                         f"{nt} tris, {len(m.meshes)} meshes")
+                         f"{nt} tris, {len(m.meshes)} meshes" + (", bone weights" if m.vert_weights is not None else ""))
     lines.append(f"  triangles total: {ntri}; hitboxes {len(pm.hitboxes)}; attachments {len(pm.attachments)}")
     return "\n".join(lines)

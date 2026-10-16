@@ -1,29 +1,43 @@
-"""Pikachu (Half Strike r7 Poke Ball): models/pokemon/pikachu.mdl, generated from scratch.
+"""Pikachu (Half Strike Poke Ball): models/pokemon/pikachu.mdl.
 
-Chubby yellow body, big head, long black-tipped ears, red cheeks, brown back stripes, a lightning-bolt
-tail (round brown stem, flat yellow bolt), big shiny black eyes.  ~34 units tall to the ear tips,
-facing +x, origin on the ground between the feet.
+Two builds, the same contract (sequences idle, walk, run, attack, flinch, die, spawn, victory in that order with
+their activities; facing +x, origin on the ground; attachments 0 and 1 in front of the mouth, where the
+Thunderbolt starts; hitboxes on the main bones, group 0):
 
-Sequences (the model contract's order): idle, walk (bouncy biped jog), run (all-fours half bound),
-attack (crouch, then a Thunderbolt discharge at 40 %), flinch, die (falls on its side), spawn (curled
-ball -> pops up -> "Pika!" pose), victory (hops with a spin and arms up).
+* official_model(): when `$POKEMON_OFFICIAL_DIR/plain/25.glb` exists (default directory
+  /srv/orthros/data_installers/pokemon-official, git-ignored: the files and anything converted from them never go
+  into the repository), Game Freak's model as official.Importer converts it (mesh, textures, smooth skinning,
+  31-bone rig), 30 units tall in its battle stance.  attack is its official Thunderbolt ("Impactrueno"), retimed
+  to the server's 1.1 s with the hit at 40 % and the leap at half height; the others are keyframed here on its
+  real bones: idle (the official battle stance breathing, looking around, ear flicks), walk (a running trot on
+  all fours, 125 u/s) and run (a half-bound dash, 300 u/s) whose planted paws do not slide, flinch, die (faints
+  and falls on its right side, the last frame lies on the floor), spawn (out of the ball curled up, a hop, then
+  "Pika!" with the cheeks sparking), victory (cheering hops, an arm raised).  Six additive spark ribbons on
+  their own bones (children of the head) swing out of the cheeks when needed.  The face changes expression with
+  the official atlas cells (eyes open / half / closed, mouth closed / open / wide, cheeks red / white while
+  sparking): each state is a copy of the official decal with its own texture.  Hidden sparks and states are
+  collapsed to zero-area lines by two extra bones each (Kit), never parked out of sight, so nothing crosses
+  visible space between frames or shows through the translucent corpse; fx_check verifies it at fractional
+  frames on every build.
+* generated_model(): otherwise, our own Pikachu generated from scratch (below), so the repository builds without
+  the sources.
 
-Planted feet and paws do not slide: during a stance the contact point moves backwards in model space
-at exactly the sequence's linearmovement rate (the foot pivots on its toes when the leg cannot reach).
-make_model checks it, the die end pose (torso, head and tail on the ground), and the normals (unit,
-smooth, pointing outward from each part's core, no folded triangles: see normal_report).
-
-Electric effects: additive/fullbright bolts on their own bones, hidden inside the opaque head / body
-at rest and swung out when needed: six cheek sparks (spark_l0..2, spark_r0..2, head) and four aura
-bolts (bolt0..3, spine) for the Thunderbolt release.  Once the body lies dead they are moved under
-the floor, so the death fade (translucent) shows nothing through it.  Attachments 0 and 1: in front
-of the mouth (head bone), where the Thunderbolt beam starts.
+The generated model: chubby yellow body, big head, long black-tipped ears, red cheeks, brown back stripes, a
+lightning-bolt tail (round brown stem, flat yellow bolt), big shiny black eyes.  ~34 units tall to the ear tips.
+Sequences: idle, walk (bouncy biped jog), run (all-fours half bound), attack (crouch, then a Thunderbolt
+discharge at 40 %), flinch, die (falls on its side), spawn (curled ball -> pops up -> "Pika!" pose), victory
+(hops with a spin and arms up).  Planted feet and paws do not slide; generated_model checks it, the die end
+pose and the normals (see normal_report).  Electric effects: additive/fullbright bolts on their own bones,
+hidden inside the opaque head / body at rest and swung out when needed (spark_l0..2, spark_r0..2 on the head,
+bolt0..3 on the spine), moved under the floor once the body lies dead.
 """
+import dataclasses
 import math
+import os
 
 import numpy as np
 
-from .. import builder, mdl, mesh as meshmod, rig as R, sdf, texture as T, xform
+from .. import builder, mdl, mesh as meshmod, official, rig as R, sdf, texture as T, xform
 
 # --------------------------------------------------------------------------------------------
 # palette
@@ -1294,7 +1308,7 @@ def _sub(m, faces_sel, corner_n):
     return meshmod.TriMesh(m.verts[used], remap[f]), corner_n[faces_sel]
 
 
-def make_model(path=None, verbose=False, return_checks=False, strict=True):
+def generated_model(path=None, verbose=False, return_checks=False, strict=True):
     S = shapes()
     cheeks = cheek_points(S["head"])
     bolts = body_bolts(S["body"])
@@ -1422,5 +1436,1267 @@ def make_model(path=None, verbose=False, return_checks=False, strict=True):
     return data
 
 
+# ============================================================================================
+# The official model (Game Freak's, from the owner's local copy; never stored in the repository)
+# ============================================================================================
+#
+# models/pokemon/pikachu.mdl is built from `<POKEMON_OFFICIAL_DIR>/plain/25.glb` when that file exists:
+# its mesh, textures, smooth skinning and 31-bone rig as official.Importer converts them, its one official
+# animation (Thunderbolt, "Impactrueno") retimed for the attack, and the other sequences keyframed here on its
+# real bones.  Without the file, generated_model() above builds our own Pikachu (same contract).
+
+OFFICIAL_ENV = "POKEMON_OFFICIAL_DIR"
+OFFICIAL_DEFAULT = "/srv/orthros/data_installers/pokemon-official"
+OFFICIAL_FILE = ("plain", "25.glb")
+OFFICIAL_ANIM = "Impactrueno"
+OFFICIAL_HEIGHT = 30.0          # the battle stance (the clip's first frame) to the ear tips
+
+
+def official_source():
+    """Path of the official Pikachu glTF, or None when the sources are not installed."""
+    root = os.environ.get(OFFICIAL_ENV) or OFFICIAL_DEFAULT
+    path = os.path.join(root, *OFFICIAL_FILE)
+    return path if os.path.isfile(path) else None
+
+
+def _quat(m):
+    """3x3 rotation -> quaternion (x, y, z, w)."""
+    t = m[0, 0] + m[1, 1] + m[2, 2]
+    if t > 0:
+        s = math.sqrt(t + 1.0) * 2
+        q = ((m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s, (m[1, 0] - m[0, 1]) / s, 0.25 * s)
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = math.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2
+        q = (0.25 * s, (m[0, 1] + m[1, 0]) / s, (m[0, 2] + m[2, 0]) / s, (m[2, 1] - m[1, 2]) / s)
+    elif m[1, 1] > m[2, 2]:
+        s = math.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2
+        q = ((m[0, 1] + m[1, 0]) / s, 0.25 * s, (m[1, 2] + m[2, 1]) / s, (m[0, 2] - m[2, 0]) / s)
+    else:
+        s = math.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2
+        q = ((m[0, 2] + m[2, 0]) / s, (m[1, 2] + m[2, 1]) / s, 0.25 * s, (m[1, 0] - m[0, 1]) / s)
+    return np.array(q)
+
+
+def _slerp_m(a, b, w):
+    q = xform.quaternion_slerp(_quat(a), _quat(b), w)
+    q = np.asarray(q) / np.linalg.norm(q)
+    return xform.quaternion_matrix(q)
+
+
+class OPose:
+    """A pose of the official skeleton: local rotation matrices R (B, 3, 3) and local positions T (B, 3)
+    (parent frame; rest rotations are identity, so at rest every local frame is the model frame)."""
+
+    def __init__(self, kit, R=None, T=None):
+        self.kit = kit
+        n = len(kit.names)
+        self.R = np.tile(np.eye(3), (n, 1, 1)) if R is None else R
+        self.T = kit.rest.copy() if T is None else T
+        # expression (Kit.finalize turns it into the decals' collapse bones): a state name per kind, or an
+        # (L, R) pair; Cheek None = "white" on a side whose sparks are out, else "red"
+        self.face = {"Eye": "open", "Mouth": "closed", "Cheek": None}
+        self.spark_on = set()      # spark bones shown this frame
+        self.spark_set = set()     # spark bones aimed this frame (the others get the frame's fan, collapsed)
+
+    def copy(self):
+        p = OPose(self.kit, self.R.copy(), self.T.copy())
+        p.face = dict(self.face)
+        p.spark_on, p.spark_set = set(self.spark_on), set(self.spark_set)
+        return p
+
+    def expr(self, eye=None, mouth=None, cheek=None):
+        """Set the expression: eye "open" | "half" | "closed", mouth "closed" | "open" | "wide",
+        cheek "red" | "white" (each a state or an (L, R) pair; None keeps it)."""
+        for k, v in (("Eye", eye), ("Mouth", mouth), ("Cheek", cheek)):
+            if v is not None:
+                self.face[k] = v
+        return self
+
+    def rot(self, bone, x=0.0, y=0.0, z=0.0):
+        """Rotate a bone (and its subtree) about its head by euler degrees in its PARENT's frame."""
+        i = self.kit.index(bone)
+        self.R[i] = xform.rot_deg(x, y, z) @ self.R[i]
+        return self
+
+    def spin(self, bone, x=0.0, y=0.0, z=0.0):
+        """Rotate a bone about its own (posed) axes."""
+        i = self.kit.index(bone)
+        self.R[i] = self.R[i] @ xform.rot_deg(x, y, z)
+        return self
+
+    def turn(self, bone, x=0.0, y=0.0, z=0.0, M=None):
+        """Rotate a bone's subtree about its head by a MODEL-space rotation (euler degrees or matrix M)."""
+        i = self.kit.index(bone)
+        M = xform.rot_deg(x, y, z) if M is None else M
+        p = self.kit.parents[i]
+        Rp = self.world()[p][:, :3] if p >= 0 else np.eye(3)
+        self.R[i] = Rp.T @ M @ Rp @ self.R[i]
+        return self
+
+    def move(self, bone, x=0.0, y=0.0, z=0.0):
+        """Offset a bone in its parent's frame (the root: model space)."""
+        self.T[self.kit.index(bone)] += (x, y, z)
+        return self
+
+    def world(self):
+        k = self.kit
+        W = np.empty((len(k.names), 3, 4))
+        for i, p in enumerate(k.parents):
+            if p < 0:
+                W[i, :, :3] = self.R[i]
+                W[i, :, 3] = self.T[i]
+            else:
+                W[i, :, :3] = W[p, :, :3] @ self.R[i]
+                W[i, :, 3] = W[p, :, :3] @ self.T[i] + W[p, :, 3]
+        return W
+
+    def head(self, bone):
+        return self.world()[self.kit.index(bone)][:, 3].copy()
+
+    def arrays(self):
+        rot = np.array([xform.matrix_euler(r) for r in self.R])
+        return self.T.copy(), rot
+
+
+def oblend(a, b, w):
+    """Blend two poses (w = 0: a, 1: b): rotations slerped, positions interpolated."""
+    if w <= 0:
+        return a.copy()
+    if w >= 1:
+        return b.copy()
+    out = a.copy()
+    for i in range(len(a.R)):
+        if not np.allclose(a.R[i], b.R[i], atol=1e-9):
+            out.R[i] = _slerp_m(a.R[i], b.R[i], w)
+    out.T = a.T * (1 - w) + b.T * w
+    return out
+
+
+def _align(a, b):
+    return R._align(a, b)
+
+
+SPARK_SIDES = ("L", "R")
+SPARK_N2 = 3                     # per cheek
+SPARK_LEN2 = 5.2
+SPARK_SINK2 = 0.5
+FX_NAMES = tuple(f"{s}Spark{i}" for s in SPARK_SIDES for i in range(SPARK_N2))
+
+# Expression decals of the official face: (material, kind, per side, {state: cell}).  The official textures are
+# atlases of 4 cells stacked vertically (the games swap them by a UV offset); cell 0 is the one the mesh maps.
+# Every state is a copy of the decal with its own texture (that cell copied over cell 0, same crop and s/t).
+DECALS = (("material", "Eye", True, {"open": 0, "half": 1, "closed": 2}),
+          ("Mouth", "Mouth", False, {"closed": 0, "open": 2, "wide": 3}),
+          ("BodyB", "Cheek", True, {"red": 0, "white": 2}))
+DECAL_CELLS = 4
+COLLAPSE_DEG = 120.0
+
+
+def _decal_name(kind, state, side=None):
+    return f"{kind}_{state}" + (f"_{side}" if side else "")
+
+
+class Kit:
+    """The official skeleton plus the effect bones, its skinned vertices (for the checks) and the official
+    clip, with the posing helpers the sequences use."""
+
+    def __init__(self, imp):
+        self.imp = imp
+        self.nmain = len(imp.bone_names)
+        self.names = list(imp.bone_names)
+        self.parents = [int(p) for p in imp.parents]
+        self.heads = np.array(imp.heads, dtype=np.float64)
+        self._index = {n: i for i, n in enumerate(self.names)}
+        V, B, W, M = [], [], [], []
+        for s in imp.surfaces:
+            V.append(s.pos)
+            B.append(s.bw_bones)
+            W.append(s.bw_weights)
+            M.append(np.full(len(s.pos), s.material))
+        self.V = np.concatenate(V)
+        self.VB = np.concatenate(B)
+        self.VW = np.where(self.VB >= 0, np.concatenate(W), 0) / 255.0
+        self.vmat = np.concatenate(M)
+        self.cheeks = self._find_cheeks()
+        head = self.index("Head")
+        hv = self.V[self.VB[:, 0] == head]
+        self.head_center = (hv.min(0) + hv.max(0)) / 2
+        # Hidden effects and expression states are collapsed, never parked out of sight: each element is
+        # skinned 85/85/85 to its carrier bone and two collapse bones (children with the same head).  Shown, the
+        # collapse bones keep the carrier's frame (the blend is the carrier's matrix); hidden, they turn +-120
+        # degrees about the element's axis, and (I + R(+120) + R(-120)) / 3 projects onto that axis: the
+        # element is a line of zero area, wherever it is, even inside a translucent corpse.  Between two hidden
+        # frames (or blended sequences) it stays a line; shown <-> hidden squashes it toward the axis.
+        self.fx = {}               # element -> (carrier, plus bone, minus bone, axis at rest)
+        for side, (cp, cn) in zip(SPARK_SIDES, self.cheeks):
+            base, inward, _ = self.spark_dirs(side)
+            for i in range(SPARK_N2):
+                nm = f"{side}Spark{i}"
+                self._add(nm, head, base)
+                self._collapser(nm, self.index(nm), base, inward)
+        self.decals = {}           # element -> (material, kind, state, side, cell)
+        self.decal_geo = {}        # (material, side) -> (centre, axis)
+        for mat, kind, per_side, states in DECALS:
+            surf = [s for s in imp.surfaces if imp._matname(s.material) == mat]
+            if not surf:
+                raise ValueError(f"official Pikachu: no {mat} decal")
+            s = surf[0]
+            for side, sy in ((("L", 1), ("R", -1)) if per_side else ((None, 0),)):
+                sel = np.ones(len(s.pos), bool) if sy == 0 else (np.sign(s.pos[:, 1]) == sy)
+                c = s.pos[sel].mean(0)
+                n = s.nrm[sel].mean(0)
+                a = np.cross(n / np.linalg.norm(n), (0.0, 0.0, 1.0))
+                a /= np.linalg.norm(a)
+                self.decal_geo[(mat, side)] = (c, a)
+                for state, cell in states.items():
+                    nm = _decal_name(kind, state, side)
+                    self.decals[nm] = (mat, kind, state, side, cell)
+                    self._collapser(nm, head, c, a)
+        self.rest = np.array([self.heads[i] - (self.heads[p] if p >= 0 else 0.0)
+                              for i, p in enumerate(self.parents)])
+        self._cache = {}
+        self.shown = {}            # sequence name -> shown elements per frame (Kit.finalize)
+        st = self.official(0.0, grounded=False)
+        self.ground = float(self.skin(st)[:, 2].min())
+
+    def _add(self, name, parent, head):
+        self._index[name] = len(self.names)
+        self.names.append(name)
+        self.parents.append(parent)
+        self.heads = np.vstack([self.heads, head])
+
+    def _collapser(self, element, carrier, centre, axis):
+        self._add(element + "+", carrier, centre)
+        self._add(element + "-", carrier, centre)
+        self.fx[element] = (carrier, self.index(element + "+"), self.index(element + "-"),
+                            np.asarray(axis, float) / np.linalg.norm(axis))
+
+    def weights_of(self, element):
+        """Bone slots and weights (4 each) of an element's vertices."""
+        c, ip, im, _ = self.fx[element]
+        return [c, ip, im, -1], [85, 85, 85, 0]
+
+    def want(self, pose, kind, side):
+        """The expression state of a decal kind on one side in a pose."""
+        want = pose.face.get(kind)
+        if kind == "Cheek" and want is None:
+            sparking = any(f"{side}Spark{j}" in pose.spark_on for j in range(SPARK_N2))
+            want = "white" if sparking else "red"
+        if isinstance(want, (tuple, list)):
+            want = want[0 if side == "L" else 1]
+        return want
+
+    def visible(self, pose, element, hide_base=()):
+        """Whether an element is shown in a pose.  The official decal (cell 0) is the base layer, shown under
+        the other states (drawn a little in front of it) so that a state squashing in or out never uncovers
+        the head under the decal; it is collapsed only where a covering state holds (hide_base)."""
+        if element in FX_NAMES:
+            return element in pose.spark_on
+        mat, kind, state, side, cell = self.decals[element]
+        if cell == 0:
+            return element not in hide_base
+        return state == self.want(pose, kind, side)
+
+    def expression_problems(self, name):
+        """A state coincides with the base decal and wins the depth test only while fully shown: shown on
+        both sides of an interval.  So every state must hold >= 2 frames, and go to / come from the base (two
+        states in a row would show the base between them)."""
+        out = []
+        sh = self.shown[name]
+        for el, (mat, kind, state, side, cell) in self.decals.items():
+            if cell == 0:
+                continue
+            on = [el in x for x in sh]
+            for i in range(len(on)):
+                if on[i] and not (i > 0 and on[i - 1]) and not (i + 1 < len(on) and on[i + 1]):
+                    out.append(f"{name}: {el} shown on frame {i} only")
+        for i in range(len(sh) - 1):
+            for el, (mat, kind, state, side, cell) in self.decals.items():
+                if cell == 0 or el not in sh[i] or el in sh[i + 1]:
+                    continue
+                nxt = [e for e in sh[i + 1] if e != el and self.decals.get(e, (None, None, None, None, 0))[1] == kind
+                       and self.decals[e][3] == side and self.decals[e][4] != 0]
+                if nxt:
+                    out.append(f"{name}: {el} -> {nxt[0]} on frames {i} -> {i + 1}")
+        return out
+
+    def auto_cheeks(self, poses, loop):
+        """Cheeks left automatic turn white on a side whose sparks are out on that frame or a neighbour (a
+        state switches on whole frames, so a one-frame crackle still shows its white cheeks)."""
+        n = len(poses)
+        on = [[any(f"{sd}Spark{j}" in q.spark_on for j in range(SPARK_N2)) for sd in SPARK_SIDES] for q in poses]
+        for i, q in enumerate(poses):
+            if q.face.get("Cheek") is not None:
+                continue
+            near = [(j % n) if loop else min(max(j, 0), n - 1) for j in (i - 1, i, i + 1)]
+            q.face["Cheek"] = tuple("white" if any(on[j][k] for j in near) else "red" for k in range(2))
+
+    def base_hidden(self, poses, i, loop):
+        """Base decals collapsible at frame i: one covering state holds on frame i and both neighbours (a
+        sequence's first frame keeps its base, its last frame holds)."""
+        out = set()
+        n = len(poses)
+        for el, (mat, kind, state, side, cell) in self.decals.items():
+            if cell != 0:
+                continue
+            got = []
+            for j in (i - 1, i, i + 1):
+                if loop:
+                    j %= n
+                elif j < 0:
+                    got.append(state)
+                    continue
+                elif j >= n:
+                    j = n - 1
+                got.append(self.want(poses[j], kind, side))
+            if len(set(got)) == 1 and got[0] != state:
+                out.add(el)
+        return out
+
+    def finalize(self, pose, frame_i, hide_base=()):
+        """Aim the sparks not aimed this frame (the frame's fan, collapsed) and set every collapse bone.
+        Returns the set of shown elements."""
+        for sd in SPARK_SIDES:
+            if any(f"{sd}Spark{j}" not in pose.spark_set for j in range(SPARK_N2)):
+                self.sparks(pose, frame_i, 0.0, side=sd, only_unset=True)
+        shown = set()
+        for el, (c, ip, im, a) in self.fx.items():
+            if self.visible(pose, el, hide_base):
+                shown.add(el)
+                pose.R[ip] = np.eye(3)
+                pose.R[im] = np.eye(3)
+            else:
+                pose.R[ip] = xform.axis_angle_matrix(a, COLLAPSE_DEG)
+                pose.R[im] = xform.axis_angle_matrix(a, -COLLAPSE_DEG)
+        return shown
+
+    def index(self, name):
+        return name if isinstance(name, (int, np.integer)) else self._index[name]
+
+    def _find_cheeks(self):
+        """Centre and outward normal of each red cheek disc, from the texture colour at the vertices."""
+        g = self.imp.g
+        out = {}
+        for s in self.imp.surfaces:
+            if s.material < 0 or g.materials[s.material].base_texture is None:
+                continue
+            img = np.asarray(g.texture_image(g.materials[s.material].base_texture)).astype(np.float64) / 255
+            H, W = img.shape[:2]
+            uv = s.uv % 1.0
+            px = img[np.clip((uv[:, 1] * H).astype(int), 0, H - 1), np.clip((uv[:, 0] * W).astype(int), 0, W - 1)]
+            red = (px[:, 0] > 0.6) & (px[:, 1] < 0.3) & (px[:, 2] < 0.3)
+            for sy in (1, -1):
+                sel = red & (np.sign(s.pos[:, 1]) == sy)
+                if sel.sum() >= 4 and sy not in out:
+                    n = s.nrm[sel].mean(0)
+                    out[sy] = (s.pos[sel].mean(0), n / np.linalg.norm(n))
+        if len(out) != 2:
+            raise ValueError("official Pikachu: cheeks not found")
+        return [out[1], out[-1]]
+
+    # poses ------------------------------------------------------------------------------------
+    def rest_pose(self):
+        return OPose(self)
+
+    def official(self, t, grounded=True):
+        """The official clip's pose at time t (s), feet on the ground (the clip floats above z = 0)."""
+        key = round(float(t), 6)
+        if key not in self._cache:
+            pos, rot = self.imp.local_from_world(self.imp.bone_world(OFFICIAL_ANIM, key))
+            p = OPose(self)
+            p.T[:self.nmain] = pos
+            p.R[:self.nmain] = xform.euler_matrix(rot)
+            self._cache[key] = p
+        p = self._cache[key].copy()
+        if grounded:
+            p.T[0, 2] -= self.ground
+        return p
+
+    def skin(self, pose, sel=None):
+        """Skinned positions of the official mesh's vertices (all, or a boolean selection)."""
+        W = pose.world()[:self.nmain]
+        S = W.copy()
+        S[:, :, 3] = W[:, :, 3] - np.einsum("bij,bj->bi", W[:, :, :3], self.heads[:self.nmain])
+        V, B, Wt = (self.V, self.VB, self.VW) if sel is None else (self.V[sel], self.VB[sel], self.VW[sel])
+        M = np.einsum("nk,nkij->nij", Wt, S[np.maximum(B, 0)])
+        return np.einsum("nij,nj->ni", M[:, :, :3], V) + M[:, :, 3]
+
+    def dominated(self, bones):
+        return np.isin(self.VB[:, 0], [self.index(b) for b in bones]) & (self.VW[:, 0] >= 0.5)
+
+    def contact_height(self, bones, Rw):
+        """Height of the end bone's head above the lowest of its (and its children's) vertices when the end
+        bone has world rotation Rw: the IK target height that puts the limb on the floor."""
+        sel = self.dominated(bones)
+        h = self.heads[self.index(bones[0])]
+        return float(-((self.V[sel] - h) @ np.asarray(Rw).T)[:, 2].min())
+
+    def ik(self, pose, upper, lower, end, target, pole, end_rot=None):
+        """Two-bone IK: end's head to `target` (model space), the middle joint toward `pole`; twist kept from
+        the current pose (minimal rotations).  end_rot: world rotation of the end bone (None: keep local)."""
+        iu, il, ie = self.index(upper), self.index(lower), self.index(end)
+        W = pose.world()
+        pu = self.parents[iu]
+        Rp = W[pu][:, :3] if pu >= 0 else np.eye(3)
+        A = W[iu][:, 3]
+        off1, off2 = pose.T[il], pose.T[ie]
+        L1, L2 = float(np.linalg.norm(off1)), float(np.linalg.norm(off2))
+        T = np.asarray(target, dtype=np.float64)
+        d = T - A
+        D0 = float(np.linalg.norm(d))
+        D = min(max(D0, abs(L1 - L2) + 1e-4), L1 + L2 - 1e-4)
+        dn = d / max(D0, 1e-9)
+        pv = np.asarray(pole, dtype=np.float64)
+        pv = pv - dn * (pv @ dn)
+        pv = pv / max(np.linalg.norm(pv), 1e-9)
+        ca = (L1 * L1 + D * D - L2 * L2) / (2 * L1 * D)
+        al = math.acos(max(-1.0, min(1.0, ca)))
+        knee = A + L1 * (math.cos(al) * dn + math.sin(al) * pv)
+        T2 = A + dn * D
+        Wu0 = W[iu][:, :3]
+        Wu = _align(Wu0 @ off1, knee - A) @ Wu0
+        Wl0 = Wu @ pose.R[il]
+        Wl = _align(Wl0 @ off2, T2 - knee) @ Wl0
+        pose.R[iu] = Rp.T @ Wu
+        pose.R[il] = Wu.T @ Wl
+        if end_rot is not None:
+            pose.R[ie] = Wl.T @ np.asarray(end_rot)
+        return D0 - D        # > 0: out of reach by that much
+
+    # effects ------------------------------------------------------------------------------------
+    def spark_dirs(self, side):
+        cp, cn = self.cheeks[SPARK_SIDES.index(side)]
+        base = cp - cn * SPARK_SINK2
+        inward = self.head_center + (0.0, 0.0, 0.5) - base
+        return base, inward / np.linalg.norm(inward), cn
+
+    def sparks(self, pose, frame_i, amount=1.0, forward=0.0, side=None, only_unset=False):
+        """Aim the cheek sparks out of the cheeks (a fan that changes every frame), shown when amount >= 0.5.
+        Hidden ones are aimed too (collapsed): showing them then grows them in place, out of the cheek."""
+        for k, sd in enumerate(SPARK_SIDES):
+            if side is not None and sd != side:
+                continue
+            _, inward, cn = self.spark_dirs(sd)
+            out = cn + np.array([forward, 0.0, 0.25])
+            out /= np.linalg.norm(out)
+            e1 = np.cross(out, (0.0, 0.0, 1.0))
+            e1 /= np.linalg.norm(e1)
+            e2 = np.cross(out, e1)
+            for j in range(SPARK_N2):
+                nm = f"{sd}Spark{j}"
+                if only_unset and nm in pose.spark_set:
+                    continue
+                az = math.radians(120 * j + 77 * frame_i + 50 * k)
+                tilt = math.radians(34 + 14 * ((frame_i + j) % 3 - 1))
+                d = math.cos(tilt) * out + math.sin(tilt) * (math.cos(az) * e1 + math.sin(az) * e2)
+                pose.R[self.index(nm)] = _align(inward, d)
+                pose.spark_set.add(nm)
+                if amount >= 0.5:
+                    pose.spark_on.add(nm)
+                else:
+                    pose.spark_on.discard(nm)
+        return pose
+
+
+def _oseq(kit, name, fn, frames, fps, loop=False, activity=0, linear=None, events=()):
+    """Sample fn(t, i) -> OPose into an mdl.Sequence (loop: `frames` distinct frames + the first again)."""
+    ts = [i / frames for i in range(frames)] if loop else [i / max(frames - 1, 1) for i in range(frames)]
+    P, Rr, shown = [], [], []
+    poses = [fn(t, i).copy() for i, t in enumerate(ts)]
+    kit.auto_cheeks(poses, loop)
+    for i, q in enumerate(poses):
+        shown.append(kit.finalize(q, i, kit.base_hidden(poses, i, loop)))
+        p, r = q.arrays()
+        P.append(p)
+        Rr.append(r)
+    if loop:
+        P.append(P[0])
+        Rr.append(Rr[0])
+        shown.append(shown[0])
+    kit.shown[name] = shown
+    lm = (0.0, 0.0, 0.0) if linear is None else (float(linear), 0.0, 0.0)
+    evs = [e if isinstance(e, mdl.Event) else mdl.Event(frame=int(e[0]), event=int(e[1]),
+                                                         options=str(e[2]) if len(e) > 2 else "") for e in events]
+    return mdl.Sequence(name=name, pos=np.array(P), rot=np.array(Rr), fps=float(fps),
+                        flags=mdl.STUDIO_LOOPING if loop else 0, activity=activity,
+                        actweight=1 if activity else 0, events=evs,
+                        motiontype=mdl.STUDIO_LX if linear else 0, linearmovement=lm)
+
+
+def spark_texture(w=32, h=64):
+    """Additive spark ribbon texture: s across the ribbon (white-hot core, yellow edges), t along it (fading
+    toward the tip); black is nothing (additive)."""
+    s = (np.arange(w) + 0.5) / w
+    t = (np.arange(h) + 0.5) / h
+    across = np.clip(1.0 - np.abs(2 * s - 1), 0, 1)          # 0 at the edges, 1 in the middle
+    along = np.clip(1.15 - 0.85 * t, 0, 1)
+    core = across[None, :] ** 3.0
+    glow = across[None, :] ** 0.8
+    a = along[:, None]
+    rgb = np.stack([(0.95 * glow + 0.05 * core) * a, (0.82 * glow + 0.18 * core) * a,
+                    (0.18 * glow + 0.8 * core) * a], axis=-1)
+    rgb[:, [0, -1]] = 0.0
+    return np.clip(rgb, 0, 1)
+
+
+def _spark_geometry(kit):
+    """Ribbon meshes of the cheek sparks, built along their hidden (inward) rest direction:
+    (verts, faces, st (per vertex, texels), bone per vertex)."""
+    verts, faces, st, bones = [], [], [], []
+    for k, side in enumerate(SPARK_SIDES):
+        base, inward, _ = kit.spark_dirs(side)
+        for j in range(SPARK_N2):
+            m, (pts, widths) = bolt_mesh(base, inward, SPARK_LEN2, seed=101 + 7 * k + j, w0=0.62, w1=0.26, zig=0.8,
+                                         segs=4)
+            nv = len(m.verts)
+            # bolt_mesh: per ribbon 2 vertices per point (+ the same again for the back side), 2 ribbons
+            npts = len(pts)
+            per = 2 * npts
+            s_col, t_row = [], []
+            for v in range(nv):
+                r = v % per
+                s_col.append(0 if r % 2 == 0 else 31)
+                t_row.append(int(round((r // 2) / (npts - 1) * 63)))
+            off = sum(len(v) for v in verts)
+            verts.append(m.verts)
+            faces.append(m.faces + off)
+            st.append(np.c_[s_col, t_row])
+            bones.append(np.full(nv, kit.index(f"{side}Spark{j}")))
+    return np.concatenate(verts), np.concatenate(faces), np.concatenate(st), np.concatenate(bones)
+
+
+def _add_sparks(st, kit):
+    """Append the spark bones' ribbons to the studio: one additive fullbright texture, one mesh in the body
+    model (weighted 255 on their bone, model space at rest as the other weighted vertices)."""
+    verts, faces, stc, vb = _spark_geometry(kit)
+    rgb = spark_texture()
+    idx, pal = official.quantize_texture(rgb)
+    ti = len(st.textures)
+    st.textures.append(mdl.Texture(name="pikachu_spark.bmp", pixels=idx, palette=pal,
+                                   flags=mdl.STUDIO_NF_ADDITIVE | mdl.STUDIO_NF_FULLBRIGHT))
+    _add_texture(st, ti)
+    m = st.bodyparts[0].models[0]
+    v0, n0 = len(m.verts), len(m.norms)
+    fn = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
+    fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
+    tris = np.zeros((len(faces), 3, 4), np.int64)
+    norms, nwb = [], []
+    for f in range(len(faces)):
+        for c in range(3):
+            v = faces[f, c]
+            tris[f, c] = (v0 + v, n0 + len(norms), stc[v, 0], stc[v, 1])
+            norms.append(fn[f])
+            nwb.append(kit.weights_of(kit.names[vb[v]]))
+    vwb = [kit.weights_of(kit.names[b]) for b in vb]
+    _append_vertices(m, verts, vwb, np.array(norms), nwb)
+    m.meshes.append(mdl.Mesh(tris=tris, skinref=ti))
+
+
+def _add_texture(st, ti):
+    if st.skins:
+        for fam in st.skins:
+            fam.append(ti)
+
+
+def _append_vertices(m, verts, vwb, norms, nwb):
+    """Append weighted vertices / normals ((bones, weights) per item) to model m."""
+    vb = np.array([b for b, _ in vwb], np.int64).reshape(-1, 4)
+    vw = np.array([w for _, w in vwb], np.int64).reshape(-1, 4)
+    nb_ = np.array([b for b, _ in nwb], np.int64).reshape(-1, 4)
+    nw = np.array([w for _, w in nwb], np.int64).reshape(-1, 4)
+    m.verts = np.vstack([m.verts, np.asarray(verts, float).reshape(-1, 3)])
+    m.vert_bone = np.concatenate([m.vert_bone, vb[:, 0]])
+    m.norms = np.vstack([m.norms, norms])
+    m.norm_bone = np.concatenate([m.norm_bone, nb_[:, 0]])
+    m.vert_weights = mdl.BoneWeights(np.vstack([m.vert_weights.bones, vb]), np.vstack([m.vert_weights.weights, vw]))
+    m.norm_weights = mdl.BoneWeights(np.vstack([m.norm_weights.bones, nb_]), np.vstack([m.norm_weights.weights, nw]))
+
+
+def _cell_filter(cell):
+    """Copy cell `cell` of a 4-cell vertical atlas over cell 0 (the one the decal maps)."""
+    def f(img):
+        img = np.array(img, copy=True)
+        ch = img.shape[0] // DECAL_CELLS
+        img[:ch] = img[cell * ch:(cell + 1) * ch]
+        return img
+    return f
+
+
+def _add_decals(st, kit, imp, base="pikachu"):
+    """Expression states: the official eye, mouth and cheek decals re-skinned to their collapse bones, and one
+    copy per extra state (same vertices and s/t, its own texture baked from that atlas cell)."""
+    m = st.bodyparts[0].models[0]
+    for mat, kind, per_side, states in DECALS:
+        tname = f"{base}_{mat}.bmp"
+        ti = next(k for k, t in enumerate(st.textures) if t.name == tname)
+        mi = next(k for k, me in enumerate(m.meshes) if me.skinref == ti)
+        mesh = m.meshes[mi]
+        surf = next(s for s in imp.surfaces if imp._matname(s.material) == mat)
+        others = {int(v) for k, me in enumerate(m.meshes) if k != mi for v in me.tris[:, :, 0].ravel()}
+        tv = mesh.tris[:, :, 0]
+        assert not (set(tv.ravel().tolist()) & others), f"{mat}: decal vertices shared with another mesh"
+        sides = (("L", 1), ("R", -1)) if per_side else ((None, 0),)
+        side_of = np.sign(m.verts[tv].mean(1)[:, 1])          # per triangle
+        for state, cell in states.items():
+            if cell == 0:
+                ti_s = ti
+            else:
+                _, _, uv = imp._surface_triangles(surf)
+                idx, pal, flags, _, _, _ = imp._texture_for(surf, uv, extra_filter=_cell_filter(cell))
+                ti_s = len(st.textures)
+                st.textures.append(mdl.Texture(name=f"{base}_{kind}_{state}.bmp", pixels=idx, palette=pal,
+                                               flags=flags))
+                _add_texture(st, ti_s)
+            new_tris = []
+            official_tris = mesh.tris.copy()
+            for side, sy in sides:
+                el = _decal_name(kind, state, side)
+                wb = kit.weights_of(el)
+                sel = np.ones(len(tv), bool) if sy == 0 else (side_of == sy)
+                tr = mesh.tris[sel]
+                vs = sorted(set(tr[:, :, 0].ravel().tolist()))
+                ns = sorted(set(tr[:, :, 1].ravel().tolist()))
+                v0, n0 = len(m.verts), len(m.norms)
+                vmap = {v: v0 + k for k, v in enumerate(vs)}
+                nmap = {n: n0 + k for k, n in enumerate(ns)}
+                if cell == 0:
+                    # the official decal: its own vertices re-skinned (the mouth's few % of a neck bone dropped);
+                    # its normals copied (the importer shares equal normals with the head around it)
+                    m.vert_weights.bones[vs] = wb[0]
+                    m.vert_weights.weights[vs] = wb[1]
+                    m.vert_bone[vs] = wb[0][0]
+                    vmap = {v: v for v in vs}
+                    _append_vertices(m, np.zeros((0, 3)), [], m.norms[ns], [wb] * len(ns))
+                else:
+                    # the same positions as the base decal (and the rim of the face around it: no crack); drawn
+                    # after it, the state wins the depth test (studio meshes are drawn in order, GL_LEQUAL)
+                    _append_vertices(m, m.verts[vs], [wb] * len(vs), m.norms[ns], [wb] * len(ns))
+                tr = tr.copy()
+                tr[:, :, 0] = np.vectorize(vmap.get)(tr[:, :, 0])
+                tr[:, :, 1] = np.vectorize(nmap.get)(tr[:, :, 1])
+                new_tris.append(tr)
+                official_tris[sel] = tr
+            if cell == 0:
+                mesh.tris = official_tris          # same triangle order (side_of stays valid)
+            else:
+                m.meshes.append(mdl.Mesh(tris=np.concatenate(new_tris), skinref=ti_s))
+
+
+def fx_check(pm, kit, step=0.1, eps=1e-3):
+    """Every collapsible element, sampled at fractional frames as the engine interpolates them: the largest
+    area (units^2) of a hidden element (hidden on both sides of the sample), and the smallest area of a shown
+    one.  Hidden must stay below eps everywhere: nothing moves through visible space or shows through a
+    translucent corpse."""
+    m = pm.bodyparts[0].models[0]
+    wb = np.asarray(m.vert_weights.bones)
+    tri_el = {}
+    for me in m.meshes:
+        for tr in me.tris:
+            v = tr[:, 0]
+            b = int(wb[v[0], 1])
+            for el, (c, ip, im, a) in kit.fx.items():
+                if b == ip:
+                    tri_el.setdefault(el, []).append(v)
+                    break
+    tri_el = {k: np.array(v) for k, v in tri_el.items()}
+    missing = set(kit.fx) - set(tri_el)
+    assert not missing, f"elements without triangles: {sorted(missing)}"
+    worst_hidden, worst_where, min_shown = 0.0, None, np.inf
+    names = [s["name"] for s in pm.sequences]
+    for si, name in enumerate(names):
+        shown = kit.shown[name]
+        nf = pm.sequences[si]["numframes"]
+        for f in np.arange(0.0, nf - 1 + 1e-9, step):
+            f = min(float(f), nf - 1.0)
+            a, b = int(math.floor(f + 1e-9)), min(int(math.ceil(f - 1e-9)), nf - 1)
+            V, _ = mdl.posed_model(pm, m, mdl.pose(pm, si, f))
+            for el, T_ in tri_el.items():
+                P = V[T_]
+                area = float(np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1).sum() / 2)
+                hid = el not in shown[a] and el not in shown[b]
+                if hid and area > worst_hidden:
+                    worst_hidden, worst_where = area, (name, round(f, 2), el)
+                if el in shown[a] and el in shown[b]:
+                    min_shown = min(min_shown, area)
+    return worst_hidden, worst_where, min_shown
+
+
+def collapse_consistency(pm, kit):
+    """Largest spread of a collapse bone's decoded local transform (quaternion up to sign, position) over all
+    the frames of all sequences where its element is hidden: 0 means any blend of hidden frames stays hidden."""
+    names = [s["name"] for s in pm.sequences]
+    ref, worst = {}, 0.0
+    for si, name in enumerate(names):
+        shown = kit.shown[name]
+        nf = pm.sequences[si]["numframes"]
+        for fr in range(nf):
+            pos, q = mdl.calc_rotations(pm, si, float(min(fr, nf - 1)))
+            for el, (c, ip, im, a) in kit.fx.items():
+                if el in shown[fr]:
+                    continue
+                for b in (ip, im):
+                    cur = (np.asarray(q[b], float), np.asarray(pos[b], float))
+                    if b not in ref:
+                        ref[b] = cur
+                        continue
+                    q0, p0 = ref[b]
+                    dq = min(np.abs(cur[0] - q0).max(), np.abs(cur[0] + q0).max())
+                    worst = max(worst, float(dq), float(np.abs(cur[1] - p0).max()))
+    return worst
+
+
+HITBOX_BONES = ("Spine1", "Spine2", "Head", "Hips", "LArm", "LForeArm", "LHand", "RArm", "RForeArm", "RHand",
+                "LThigh", "LLeg", "LFoot", "RThigh", "RLeg", "RFoot", "Tail2", "Tail3", "Feeler")
+
+
+def official_model(path=None, verbose=False, return_checks=False, only=None):
+    """models/pokemon/pikachu.mdl from the official glTF (path: default official_source())."""
+    src = path or official_source()
+    imp = official.Importer(src, height=OFFICIAL_HEIGHT, height_pose=(OFFICIAL_ANIM, 0.0),
+                            place=(OFFICIAL_ANIM, 0.0), verbose=verbose)
+    kit = Kit(imp)
+    seqs, checks = official_sequences(kit, only)
+    nm = kit.nmain
+    trimmed = [dataclasses.replace(s, pos=s.pos[:, :nm], rot=s.rot[:, :nm]) for s in seqs]
+    # attack origin: in front of the mouth, between the cheeks
+    head = kit.index("Head")
+    mouth = [s for s in imp.surfaces if imp._matname(s.material) == "Mouth"]
+    mx = max(float(s.pos[:, 0].max()) for s in mouth) if mouth else float(kit.V[kit.VB[:, 0] == head][:, 0].max())
+    zap = np.array([mx + 0.4, 0.0, float(np.mean([c[0][2] for c in kit.cheeks])) + 0.5])
+    st = imp.studio("pokemon/pikachu.mdl", trimmed, attachments=[("zap", "Head", zap), ("zap2", "Head", zap)],
+                    hitbox_bones=HITBOX_BONES, eyeposition=(0.0, 0.0, 20.0), hull=((-16, -16, 0), (16, 16, 36)))
+    for i in range(nm, len(kit.names)):
+        st.bones.append(mdl.Bone(name=kit.names[i], parent=kit.parents[i], pos=tuple(kit.rest[i]), rot=(0.0, 0.0, 0.0)))
+    for s, t in zip(seqs, trimmed):
+        s.bbmin, s.bbmax = t.bbmin, t.bbmax
+    st.sequences = seqs
+    _add_sparks(st, kit)
+    _add_decals(st, kit, imp)
+    data = mdl.write(st)
+    pm = mdl.read(data)
+    # hidden sparks / expression states: zero area at every interpolated frame; states held whole frames
+    hid, where, shown = fx_check(pm, kit)
+    checks["fx_hidden_max_area"] = hid
+    checks["fx_hidden_worst"] = where
+    checks["fx_shown_min_area"] = shown
+    if hid >= 1e-3:
+        raise ValueError(f"official Pikachu: a hidden effect / expression shows ({hid:.4f} units^2 at {where})")
+    # hidden under ANY blend (frame interpolation, the engine's 0.2 s sequence crossfade, per-bone slerp): every
+    # collapse bone has one local transform wherever its element is hidden, in every sequence, so a slerp between
+    # two hidden frames of any sequences is that same transform (the carrier's pose does not matter)
+    xf = collapse_consistency(pm, kit)
+    checks["fx_collapse_spread"] = xf
+    if xf > 1e-4:
+        raise ValueError(f"official Pikachu: collapse bones differ between hidden frames ({xf:.6f})")
+    if "idle" in kit.shown:
+        calm = sorted({e for x in kit.shown["idle"] for e in x if e in FX_NAMES or e.startswith("Cheek_white")})
+        if calm:
+            raise ValueError(f"official Pikachu: idle (the buy menu's preview) shows {calm}")
+    probs = [x for s_ in st.sequences for x in kit.expression_problems(s_.name)]
+    checks["expression_problems"] = probs
+    if probs:
+        raise ValueError("official Pikachu: " + "; ".join(probs))
+    if return_checks:
+        return data, checks
+    return data
+
+
 def build(out):
-    out["models/pokemon/pikachu.mdl"] = make_model()
+    src = official_source()
+    out["models/pokemon/pikachu.mdl"] = official_model(src) if src else generated_model()
+
+
+def pchip(x, xs, ys):
+    """Monotone piecewise-cubic interpolation (Fritsch-Carlson) of the keys (xs, ys) at x (clamped)."""
+    xs = np.asarray(xs, float)
+    ys = np.asarray(ys, float)
+    if x <= xs[0]:
+        return float(ys[0])
+    if x >= xs[-1]:
+        return float(ys[-1])
+    h = np.diff(xs)
+    d = np.diff(ys) / h
+    m = np.zeros(len(xs))
+    for k in range(1, len(xs) - 1):
+        if d[k - 1] * d[k] > 0:
+            w1, w2 = 2 * h[k] + h[k - 1], h[k] + 2 * h[k - 1]
+            m[k] = (w1 + w2) / (w1 / d[k - 1] + w2 / d[k])
+    m[0], m[-1] = d[0], d[-1]
+    k = int(np.searchsorted(xs, x) - 1)
+    u = (x - xs[k]) / h[k]
+    h00, h10, h01, h11 = 2 * u ** 3 - 3 * u ** 2 + 1, u ** 3 - 2 * u ** 2 + u, -2 * u ** 3 + 3 * u ** 2, u ** 3 - u ** 2
+    return float(h00 * ys[k] + h10 * h[k] * m[k] + h01 * ys[k + 1] + h11 * h[k] * m[k + 1])
+
+
+def _ears(p, back=0.0, spread=0.0, twist=0.0, tip=0.0, l=None, r=None):
+    """Both ears (mirrored): back = pitched back (deg), spread = out to the side, twist = turned outward,
+    tip = the upper segments curling back; l / r: extra (back, spread, twist) for one ear."""
+    for side, sx, extra in (("L", 1, l), ("R", -1, r)):
+        b, s_, tw = back, spread, twist
+        if extra is not None:
+            b, s_, tw = b + extra[0], s_ + extra[1], tw + extra[2]
+        p.rot(f"{side}Ear1", x=-sx * s_, y=-b, z=sx * tw)
+        if tip:
+            p.rot(f"{side}Ear2", y=-0.6 * tip)
+            p.rot(f"{side}Ear3", y=-0.4 * tip)
+    return p
+
+
+def _tail(p, angles):
+    """(pitch, yaw) per tail bone: pitch > 0 raises it (toward the back), yaw > 0 swings it to the left."""
+    for b, (pt, yw) in zip(("Tail1", "Tail2", "Tail3"), angles):
+        p.rot(b, y=pt, z=yw)
+    return p
+
+
+def official_sequences(kit, only=None):
+    """The eight contract sequences on the official skeleton, and the measured checks."""
+    seqs, checks = {}, {}
+    W = R.wave
+    stance = kit.official(0.0)
+    Wst = stance.world()
+    LEGS2 = (("L", 1), ("R", -1))
+
+    def leg_chain(s):
+        return (f"{s}Thigh", f"{s}Leg", f"{s}Foot")
+
+    def arm_chain(s):
+        return (f"{s}Arm", f"{s}ForeArm", f"{s}Hand")
+
+    def knee_pole(ref_w, s):
+        a, b, c = (ref_w[kit.index(n)][:, 3] for n in leg_chain(s))
+        d = c - a
+        v = (b - a) - d * ((b - a) @ d) / (d @ d)
+        return v / np.linalg.norm(v)
+
+    def plant(p, ref=stance, offsets=None):
+        """Feet back where they are in `ref` (positions and world rotations), plus model-space offsets."""
+        rw = ref.world()
+        for k, (s, sx) in enumerate(LEGS2):
+            u, l, e = leg_chain(s)
+            tgt = rw[kit.index(e)][:, 3].copy()
+            if offsets is not None:
+                tgt = tgt + offsets[k]
+            kit.ik(p, u, l, e, tgt, knee_pole(rw, s), rw[kit.index(e)][:, :3])
+        return p
+
+    def want(name):
+        return only is None or name in only
+
+    def floor(p):
+        """Nothing below the floor: raise the whole body if a vertex went under z = 0."""
+        mz = float(kit.skin(p)[:, 2].min())
+        if mz < 0:
+            p.T[0, 2] -= mz
+        return p
+
+
+    # ------------------------------------------------------------------ idle (3.2 s loop)
+    IDLE_FRAMES, IDLE_FPS = 48, 15
+
+    def idle(t, i):
+        p = stance.copy()
+        br = R.breathe(t, freq=2)
+        sway = W(t, 1, 0.1)
+        bob = 0.5 - 0.5 * math.cos(2 * math.pi * 2 * t)    # two soft knee bounces a cycle
+        p.move("Waist", y=0.25 * sway, z=-0.35 * bob)
+        p.rot("Waist", x=-1.5 * sway)
+        p.rot("Spine1", y=1.2 * br, x=1.0 * sway)
+        p.rot("Spine2", y=0.8 * br)
+        look = R.keys(t, [(0, 0), (0.15, 0), (0.27, 14), (0.45, 14), (0.57, -9), (0.72, -9), (0.84, 0), (1.0, 0)],
+                      interp="smooth", loop=True)
+        tilt = R.keys(t, [(0, 0), (0.16, 0), (0.28, -8), (0.45, -8), (0.58, 5), (0.72, 5), (0.86, 0), (1.0, 0)],
+                      interp="smooth", loop=True)
+        p.rot("Head", x=tilt + 1.2 * sway, y=-1.4 * br + 1.5 * bob, z=look)
+        f1 = R.pulse(t, 0.30, 0.32, 0.34, 0.40)
+        f2 = R.pulse(t, 0.76, 0.78, 0.80, 0.86)
+        _ears(p, back=1.5 * W(t, 2) - 6 * f2, spread=1.0 * W(t, 2, 0.2), tip=-5 * f2 + 3 * bob,
+              r=(-8 * f1, 6 * f1, -10 * f1))
+        p.rot("LArm", y=-2.0 * bob, x=-1.0 * br)
+        p.rot("RArm", y=-2.0 * bob, x=1.0 * br)
+        tw = R.chain_wave(t, 3, 6, lag=0.1, freq=2)
+        _tail(p, [(2.0 * W(t, 2, 0.3) - 2 * bob, tw[0] - 3 * sway), (1.5 * bob, tw[1]), (0, tw[2])])
+        # a calm stance: no crackle (idle is also the buy menu's preview, which starts at frame 0 and would land on
+        # it ~2 s after opening; sparks and white cheeks belong to attack, spawn and victory)
+        # two blinks a loop (0.13 s)
+        p.expr(eye="closed" if (9 <= i <= 11 or 39 <= i <= 41) else "open")
+        return plant(p)
+
+    if want("idle"):
+        seqs["idle"] = _oseq(kit, "idle", idle, IDLE_FRAMES, IDLE_FPS, loop=True, activity=mdl.ACT["IDLE"])
+
+    # ------------------------------------------------------------------ attack: the official Thunderbolt
+    ATK_FRAMES, ATK_FPS = 34, 30.0        # 1.1 s (the server's Thunderbolt interval), the hit at 40 %
+    ATK_U = (0.0, 0.06, 0.12, 0.22, 0.34, 0.56, 0.68, 0.80, 1.0)
+    ATK_SRC = (0.0, 0.15, 0.80, 0.95, 1.20, 2.40, 2.80, 3.00, 3.40)
+    ATK_HOP = 0.5                         # the leap at half the official height (it repeats every 1.1 s)
+    z_stance = stance.T[0, 2]
+
+    def attack(t, i):
+        src = pchip(t, ATK_U, ATK_SRC)
+        p = kit.official(src)
+        p.T[0, 2] = z_stance + ATK_HOP * (p.T[0, 2] - z_stance) if p.T[0, 2] > z_stance else p.T[0, 2]
+        p = oblend(p, stance, R.window(t, 0.9, 1.0))
+        crackle = 1.0 if (0.14 < t < 0.3 and i % 2 == 0) else 0.0
+        kit.sparks(p, i, max(crackle, R.pulse(t, 0.3, 0.32, 0.62, 0.64)), forward=0.8)
+        # squints charging up, shouts from the anticipation to the release
+        p.expr(eye="half" if 5 <= i <= 8 else "open", mouth="wide" if 9 <= i <= 18 else "closed")
+        return floor(p)
+
+    if want("attack"):
+        seqs["attack"] = _oseq(kit, "attack", attack, ATK_FRAMES, ATK_FPS, activity=mdl.ACT["RANGE_ATTACK1"])
+
+    # ------------------------------------------------------------------ quadruped gaits
+    # On all fours like the games' overworld Pikachu: the whole body pitched forward about the waist, the back
+    # bent down to the shoulders, the hips partly back under it, the head pitched back up to look ahead.
+    # Every planted paw moves backward in model space at exactly the sequence's linearmovement rate (no
+    # sliding: measured on the skinned mesh in checks); a hind foot that cannot reach rolls onto its toes.
+    vs = lambda u: R.smoothstep(R.clamp01(u))
+
+    def quad_body(th, lift=0.0, hips=0.25, spine=(14.0, 6.0), head=0.0, roll=0.0, yaw=0.0, x=0.0):
+        p = kit.rest_pose()
+        p.move("Waist", x=x, z=lift)
+        p.rot("Waist", x=roll, y=th, z=yaw)
+        p.rot("Hips", y=-hips * th)
+        p.rot("Spine1", y=spine[0])
+        p.rot("Spine2", y=spine[1])
+        p.rot("Head", y=-(th + spine[0] + spine[1]) + 14 + head)
+        return p
+
+    H_FOOT = kit.contact_height(("LFoot", "LToe"), np.eye(3))
+    HAND_PITCH = 62.0
+    H_HAND = kit.contact_height(("LHand",), xform.rot_deg(0, HAND_PITCH, 0))
+
+    def toe_pivot(s):
+        """The front of the sole (foot flat, relative to the foot's head): what a foot rolls on."""
+        sel = kit.dominated((f"{s}Foot", f"{s}Toe"))
+        h = kit.heads[kit.index(f"{s}Foot")]
+        v = kit.V[sel] - h
+        sole = v[v[:, 2] < v[:, 2].min() + 0.3]
+        return sole[np.argmax(sole[:, 0])] * (1, 0, 1)
+
+    PIVOT = {s: toe_pivot(s) for s, _ in LEGS2}
+
+    def track(u, duty, S, x_front, lift, back=0.0, reach=0.0, rise=0.85):
+        """Paw path (x, dz, swing fraction or -1 in stance): planted from x_front back by S over the stance,
+        then a swing forward with an arc; `back` = extra trail behind after lift-off, `reach` = overshoot
+        forward before touch-down; rise < 1 lifts the paw off sooner (clear of the floor on the first swing
+        frame, before the body passes it)."""
+        if u < duty:
+            return x_front - S * u / duty, 0.0, -1.0
+        s = (u - duty) / (1 - duty)
+        x = x_front - S + S * vs(s) - back * math.sin(math.pi * R.clamp01(s / 0.6)) \
+            + reach * math.sin(math.pi * R.clamp01((s - 0.45) / 0.55))
+        return x, lift * math.sin(math.pi * s) ** rise, s
+
+    def place_leg(p, s, x, y, dz, pitch, planted):
+        Rw = xform.rot_deg(0, pitch, 0)
+        if not planted:
+            h = kit.contact_height((f"{s}Foot", f"{s}Toe"), Rw)
+            return kit.ik(p, *leg_chain(s), (x, y, h + dz), (1.0, 0.0, 0.0), Rw)
+        # planted: flat, or rolled onto the toes as far as needed to stay in reach
+        piv = np.array([x + PIVOT[s][0], y, H_FOOT + PIVOT[s][2]])
+        for roll in range(0, 75, 3):
+            Rr = xform.rot_deg(0, roll, 0)
+            ankle = piv + Rr @ np.array([-PIVOT[s][0], 0.0, -PIVOT[s][2]])
+            q = p.copy()
+            miss = kit.ik(q, *leg_chain(s), ankle, (1.0, 0.0, 0.0), Rr)
+            if miss <= 1e-6:
+                break
+        p.R[:], p.T[:] = q.R, q.T
+        return miss
+
+    def place_limbs(p, u, duty_h, duty_f, L, specs, rise=0.85):
+        """specs: per limb (kind, side, phase, x_front, y, lift, back, reach, pitch fn(swing fraction))."""
+        miss = 0.0
+        for kind, s, ph, x_front, y, lift, back, reach, pitch_fn in specs:
+            uu = (u - ph) % 1.0
+            duty = duty_h if kind == "leg" else duty_f
+            x, dz, sw = track(uu, duty, duty * L, x_front, lift, back, reach, rise)
+            pitch = pitch_fn(sw)
+            if kind == "leg":
+                m = place_leg(p, s, x, y, dz, pitch, sw < 0)
+            else:
+                Rw = xform.rot_deg(0, pitch, 0)
+                h = H_HAND if sw < 0 else kit.contact_height((f"{s}Hand",), Rw)
+                m = kit.ik(p, *arm_chain(s), (x, y, h + dz), (-1.0, 0.25 * (1 if s == "L" else -1), 0.0), Rw)
+            if sw < 0:
+                miss = max(miss, m)
+        return miss
+
+    def slip(fn, frames, linear, limbs=(("LFoot", "LToe"), ("RFoot", "RToe"), ("LHand",), ("RHand",)), ground=0.1):
+        """Largest sliding of a planted paw (units per frame): the vertices on the ground in two successive
+        frames must move back by exactly linear / frames."""
+        step = linear / frames
+        pts = [kit.skin(fn(i / frames, i)) for i in range(frames + 1)]
+        worst = 0.0
+        for bones in limbs:
+            sel = kit.dominated(bones)
+            for i in range(frames):
+                a, b = pts[i][sel], pts[i + 1][sel]
+                on = (a[:, 2] < ground) & (b[:, 2] < ground)
+                if on.sum() >= 3:
+                    d = (b[on] - a[on]) + (step, 0.0, 0.0)
+                    worst = max(worst, float(np.abs(d[:, :2]).max()))
+        return worst
+
+    def clearance(fn, frames):
+        """Lowest point of the trunk and head over the cycle (the belly must not drag)."""
+        sel = kit.dominated(("Spine1", "Spine2", "Head", "Hips", "Feeler"))
+        return min(float(kit.skin(fn(i / frames, i), sel)[:, 2].min()) for i in range(frames))
+
+    # walk: a brisk running trot (diagonal pairs, short suspensions)
+    WALK_FRAMES, WALK_FPS = 12, 60.0
+    walk_linear = 125.0 * WALK_FRAMES / WALK_FPS          # 25 units per cycle at 125 u/s
+    WALK_DUTY = 0.3
+
+    def walk(t, i):
+        ph2 = (2 * t) % 1.0
+        bob = math.cos(2 * math.pi * (ph2 - 0.15))           # low at mid-stance, up in the suspension
+        side = W(t, 1, 0.0)
+        p = quad_body(60, 0.3 + 0.45 * bob, spine=(14 - 2 * bob, 6), head=-3 * bob, roll=3 * side, yaw=2.5 * side)
+        _ears(p, back=14 - 7 * W(2 * t, 1, -0.1), spread=4, tip=8 + 6 * W(2 * t, 1, -0.2))
+        tw = R.chain_wave(t, 3, 8, lag=0.12)
+        _tail(p, [(-50 + 6 * W(2 * t, 1, -0.1), tw[0]), (4 * W(2 * t, 1, -0.25), tw[1]), (5 * W(2 * t, 1, -0.4), tw[2])])
+        hp = lambda sw: 0.0 if sw < 0 else 45 * math.sin(math.pi * min(1.0, sw / 0.8))
+        fp = lambda sw: HAND_PITCH if sw < 0 else HAND_PITCH + 35 * math.sin(math.pi * sw) - 25 * R.pulse(sw, 0.5, 0.75, 0.85, 1.0)
+        specs = [("leg", "L", 0.0, 4.4, 4.2, 2.4, 1.0, 0.0, hp), ("leg", "R", 0.5, 4.4, -4.4, 2.4, 1.0, 0.0, hp),
+                 ("arm", "L", 0.5, 12.0, 5.4, 2.8, 0.0, 1.0, fp), ("arm", "R", 0.0, 12.0, -5.6, 2.8, 0.0, 1.0, fp)]
+        place_limbs(p, t, WALK_DUTY, WALK_DUTY, walk_linear, specs)
+        return p
+
+    if want("walk"):
+        seqs["walk"] = _oseq(kit, "walk", walk, WALK_FRAMES, WALK_FPS, loop=True, activity=mdl.ACT["WALK"],
+                             linear=walk_linear)
+        checks["walk_slip"] = slip(walk, WALK_FRAMES, walk_linear)
+        checks["walk_clearance"] = clearance(walk, WALK_FRAMES)
+
+    # run: the dash, a half bound (hind feet nearly together, the front paws one after the other)
+    RUN_FRAMES, RUN_FPS = 12, 60.0
+    run_linear = 300.0 * RUN_FRAMES / RUN_FPS             # 60 units per cycle at 300 u/s
+    RUN_DUTY_H, RUN_DUTY_F = 0.15, 0.13
+
+    def run(t, i):
+        ext = R.keys(t, [(0.0, 0.2), (0.15, 0.8), (0.3, 1.0), (0.45, 0.4), (0.6, -0.4), (0.8, -1.0), (1.0, 0.2)], loop=True)
+        up = R.keys(t, [(0.0, 0.1), (0.1, 0.0), (0.3, 1.0), (0.5, 0.0), (0.62, 0.1), (0.82, 0.7), (1.0, 0.1)], loop=True)
+        rock = R.keys(t, [(0.0, -1.0), (0.3, 0.0), (0.55, 1.0), (0.8, 0.0), (1.0, -1.0)], loop=True)
+        p = quad_body(62 + 8 * rock, 0.0 + 3.0 * up, hips=0.25 + 0.2 * ext, spine=(14 - 9 * ext, 6 - 6 * ext),
+                      head=-8 * rock + 3 * ext)
+        lag = R.keys((t - 0.1) % 1.0, [(0.0, 0.1), (0.1, 0.0), (0.3, 1.0), (0.5, 0.0), (0.62, 0.1), (0.82, 0.7),
+                                         (1.0, 0.1)], loop=True)
+        _ears(p, back=50 + 12 * lag, spread=-16, twist=-10, tip=12 - 10 * lag)
+        tw = R.chain_wave(t, 3, 5, lag=0.12)
+        _tail(p, [(-70 + 10 * W(t, 1, 0.05), tw[0]), (4 + 6 * W(t, 1, -0.1), tw[1]), (8 * W(t, 1, -0.25), tw[2])])
+        # swinging hind foot: at most ~25 degrees toe-down, folded up under the haunch (not a spike below it)
+        hp = lambda sw: 0.0 if sw < 0 else 25 * math.sin(math.pi * R.clamp01(sw / 0.7))
+        fp = lambda sw: HAND_PITCH if sw < 0 else HAND_PITCH + 50 * math.sin(math.pi * R.clamp01(sw / 0.6)) - 30 * R.pulse(sw, 0.55, 0.75, 0.9, 1.0)
+        specs = [("leg", "L", 0.0, 6.0, 4.0, 3.4, 1.0, 1.0, hp), ("leg", "R", 0.04, 6.0, -4.2, 3.4, 1.0, 1.0, hp),
+                 ("arm", "L", 0.45, 13.0, 5.2, 3.0, 1.5, 2.0, fp), ("arm", "R", 0.52, 13.0, -5.4, 3.0, 1.5, 2.0, fp)]
+        place_limbs(p, t, RUN_DUTY_H, RUN_DUTY_F, run_linear, specs, rise=0.4)
+        return p
+
+    if want("run"):
+        seqs["run"] = _oseq(kit, "run", run, RUN_FRAMES, RUN_FPS, loop=True, activity=mdl.ACT["RUN"],
+                            linear=run_linear)
+        checks["run_slip"] = slip(run, RUN_FRAMES, run_linear)
+        checks["run_clearance"] = clearance(run, RUN_FRAMES)
+
+    # ------------------------------------------------------------------ helpers for the standing sequences
+    def arm_to(p, s, off, pole=(-0.6, 0.0, -0.8), hand=None):
+        """Hand (its head) to shoulder + off (model space); elbow toward pole (mirrored in y for R)."""
+        sx = 1 if s == "L" else -1
+        sh = p.world()[kit.index(f"{s}Arm")][:, 3]
+        o = np.array([off[0], off[1] * sx, off[2]], float)
+        pl = np.array([pole[0], pole[1] * sx, pole[2]], float)
+        kit.ik(p, *arm_chain(s), sh + o, pl, hand)
+        return p
+
+    def hand_off(p, s):
+        W_ = p.world()
+        sx = 1 if s == "L" else -1
+        d = W_[kit.index(f"{s}Hand")][:, 3] - W_[kit.index(f"{s}Arm")][:, 3]
+        return np.array([d[0], d[1] * sx, d[2]])
+
+    ST_HAND = {s: hand_off(stance, s) for s, _ in LEGS2}
+
+    def arms_blend(p, offs_l, offs_r=None, pole=(-0.6, 0.0, -0.8)):
+        arm_to(p, "L", offs_l, pole)
+        arm_to(p, "R", offs_l if offs_r is None else offs_r, pole)
+        return p
+
+    def lerp(a, b, w):
+        return np.asarray(a, float) * (1 - w) + np.asarray(b, float) * w
+
+    def ground_shift(p, keep=1.0, allow_below=0.0):
+        """Raise / lower the whole body so its lowest vertex touches the floor (weight keep)."""
+        mz = float(kit.skin(p)[:, 2].min())
+        p.T[0, 2] -= keep * (mz + allow_below)
+        return p
+
+    # ------------------------------------------------------------------ flinch (0.37 s)
+    FLINCH_FRAMES, FLINCH_FPS = 12, 30.0
+
+    def flinch(t, i):
+        k = R.keys(t, [(0, 0), (0.14, 1.0), (0.42, 0.7), (0.8, 0.12), (1.0, 0)], interp="smooth")
+        e = R.keys(t, [(0, 0), (0.1, 0.6), (0.24, 1.0), (0.6, 0.5), (1.0, 0)], interp="smooth")
+        p = stance.copy()
+        p.move("Waist", x=-0.9 * k, z=-0.5 * k)
+        p.rot("Waist", y=-9 * k, x=3 * k)
+        p.rot("Spine1", y=-6 * k)
+        p.rot("Spine2", y=-5 * k)
+        p.rot("Head", y=-12 * k, x=10 * k, z=-10 * k)
+        _ears(p, back=34 * e, spread=12 * e, tip=10 * e)
+        plant(p, offsets=((-0.5 * k, 0, 0), (-0.2 * k, 0, 0)))
+        arms_blend(p, lerp(ST_HAND["L"], (2.2, 0.6, 3.6), k), lerp(ST_HAND["R"], (2.6, 0.2, 3.0), k))
+        _tail(p, [(14 * e, 0), (8 * e, 0), (-6 * e, 0)])
+        # eyes squeezed shut, mouth open
+        p.expr(eye="closed" if 1 <= i <= 6 else "open", mouth="open" if 1 <= i <= 6 else "closed")
+        return p
+
+    if want("flinch"):
+        seqs["flinch"] = _oseq(kit, "flinch", flinch, FLINCH_FRAMES, FLINCH_FPS, activity=mdl.ACT["SMALL_FLINCH"])
+
+    # ------------------------------------------------------------------ die: faints, falls on its right side
+    DIE_FRAMES, DIE_FPS = 36, 30.0                         # 1.17 s, the last frame holds
+    LIE_ROLL = 84.0
+
+    def die(t, i):
+        hit = R.keys(t, [(0, 0), (0.08, 1.0), (0.22, 0.6), (0.4, 0.2), (1.0, 0.0)], interp="smooth")
+        buckle = R.keys(t, [(0.12, 0.0), (0.38, 1.0), (1.0, 1.0)], interp="smooth")
+        fall = R.ease_in(R.clamp01((t - 0.36) / 0.3))
+        bounce = R.keys(t, [(0.66, 0.0), (0.74, 1.0), (0.84, 0.0), (0.9, 0.25), (1.0, 0.0)], interp="smooth")
+        limp = R.window(t, 0.5, 0.85)
+        p = stance.copy()
+        # recoil, then the knees give way and it sways to its right
+        p.move("Waist", x=-0.8 * hit, z=-1.6 * buckle)
+        p.rot("Waist", y=-8 * hit + 10 * buckle * (1 - fall), x=6 * buckle * (1 - fall))
+        p.rot("Spine1", y=-5 * hit + 6 * buckle)
+        p.rot("Head", y=-14 * hit + 22 * buckle, x=12 * hit - 6 * buckle, z=-8 * hit)
+        _ears(p, back=30 * hit + 25 * buckle, spread=10 * hit + 25 * limp, tip=10 + 20 * limp)
+        if t < 0.5:
+            plant(p, offsets=((-0.4 * hit, 0, 0), (-0.2 * hit, 0, 0)))
+        arms_blend(p, lerp(lerp(ST_HAND["L"], (2.0, 0.8, 3.2), hit), (1.2, 2.2, -4.2), limp),
+                   lerp(lerp(ST_HAND["R"], (2.4, 0.4, 2.8), hit), (2.6, 0.0, -4.5), limp))
+        # topples about its right foot onto its right side; legs, arms, ears and tail go limp
+        piv = np.array([1.3, -4.6, 0.0])
+        roll = LIE_ROLL * fall - 6 * bounce
+        M = xform.rot_deg(roll, 0, 0)
+        Wst0 = p.world()[0]
+        p.R[0] = M @ p.R[0]
+        p.T[0] = piv + M @ (p.T[0] - piv)
+        p.rot("Head", x=12 * limp, y=-10 * limp)
+        p.rot("LThigh", y=10 * limp, x=-6 * limp)
+        p.rot("RThigh", y=18 * limp, x=6 * limp)
+        p.rot("LLeg", y=-14 * limp)
+        p.rot("RLeg", y=-20 * limp)
+        # both ears flop along the floor, past the top of the head
+        if limp > 0:
+            for side in ("L", "R"):
+                Wd = p.world()
+                Rh = Wd[kit.index("Head")][:, :3]
+                a = Wd[kit.index(f"{side}Ear1")][:, 3]
+                cur = Wd[kit.index(f"{side}Ear3")][:, 3] - a
+                tgt = Rh[:, 2] - 0.18 * np.array([0.0, 0.0, 1.0]) - 0.35 * Rh[:, 0] + (0.25 if side == "L" else -0.1) * Rh[:, 1]
+                M_ = _slerp_m(np.eye(3), _align(cur, tgt), limp)
+                p.turn(f"{side}Ear1", M=M_)
+        # the tail swings down into the body's plane and lies flat on the floor behind it
+        lay = R.window(t, 0.45, 0.8)
+        for b, M_ in (("Tail1", xform.rot_deg(16, -6, 0)), ("Tail2", xform.rot_deg(6, 4, 0)), ("Tail3", np.eye(3))):
+            p.R[kit.index(b)] = _slerp_m(p.R[kit.index(b)], M_, lay)
+        if t > 0.36:
+            ground_shift(p, R.window(t, 0.4, 0.72))
+        # winces with a cry, then faints: eyes closed to the end
+        p.expr(eye="open" if i < 2 else "closed", mouth="wide" if 1 <= i <= 7 else "closed")
+        return floor(p)
+
+    if want("die"):
+        seqs["die"] = _oseq(kit, "die", die, DIE_FRAMES, DIE_FPS, activity=mdl.ACT["DIESIMPLE"])
+        end = die(1.0, DIE_FRAMES - 1)
+        sk = kit.skin(end)
+        checks["die_end_min_z"] = float(sk[:, 2].min())
+        checks["die_end_max_z"] = float(sk[:, 2].max())
+
+    # ------------------------------------------------------------------ spawn: out of the ball, "Pika!" (1 s)
+    SPAWN_FRAMES, SPAWN_FPS = 31, 30.0
+
+    def spawn(t, i):
+        curl = 1 - R.window(t, 0.08, 0.3, R.ease_out)
+        hop = R.keys(t, [(0.0, 0.0), (0.1, 0.0), (0.24, 1.0), (0.38, 0.0), (1.0, 0.0)], interp="smooth")
+        land = R.keys(t, [(0.34, 0.0), (0.42, 1.0), (0.5, 0.3), (1.0, 0.0)], interp="smooth")
+        pika = R.pulse(t, 0.42, 0.52, 0.8, 0.95)
+        buzz = (1 if i % 2 else -1) * R.pulse(t, 0.5, 0.54, 0.76, 0.8)
+        p = stance.copy()
+        p.move("Waist", z=-2.6 * curl - 1.4 * land - 0.9 * pika + 5.5 * hop, x=1.0 * pika)
+        p.rot("Waist", y=26 * curl + 18 * pika, x=0.8 * buzz)
+        p.rot("Spine1", y=10 * curl + 6 * pika)
+        p.rot("Spine2", y=8 * curl + 3 * pika)
+        p.rot("Head", y=26 * curl - 22 * pika - 6 * hop, x=1.5 * buzz, z=0.8 * buzz)
+        _ears(p, back=40 * curl - 16 * pika - 10 * hop, spread=-4 * pika + 10 * curl, tip=-8 * pika + 2 * buzz)
+        if t < 0.12 or t > 0.36:
+            plant(p, offsets=((0.2 * pika, 0.7 * pika, 0), (0.2 * pika, -0.7 * pika, 0)))
+        # arms: tucked in the ball, flung out in the hop, braced out and down at its sides for the "Pika!"
+        off = lerp(ST_HAND["L"], (1.0, -1.2, -1.5), curl)
+        off = lerp(off, (1.5, 2.4, 2.5), hop)
+        off = lerp(off, (1.6, 4.2, -3.2), pika)
+        arms_blend(p, off, pole=(-0.6, 0.3, -0.8))
+        _tail(p, [(-20 * curl + 16 * pika, 6 * W(t, 4) * (1 - curl) + 2 * buzz), (10 * pika, 0), (6 * pika, 0)])
+        kit.sparks(p, i, 1.0 if (pika > 0.45 and i % 3 != 2) else 0.0, forward=0.2)
+        # eyes shut curled up in the ball, open in the hop; "Pika!" with happy closed eyes, mouth wide
+        eye = "closed" if (i <= 4 or 15 <= i <= 24) else "open"
+        p.expr(eye=eye, mouth="wide" if 14 <= i <= 25 else "closed")
+        return floor(p)
+
+    if want("spawn"):
+        seqs["spawn"] = _oseq(kit, "spawn", spawn, SPAWN_FRAMES, SPAWN_FPS, activity=mdl.ACT["ARM"])
+
+    # ------------------------------------------------------------------ victory: cheering hops (2 s)
+    VIC_FRAMES, VIC_FPS = 48, 24.0
+
+    def victory(t, i):
+        hops = [(0.06, 0.3), (0.38, 0.62)]
+        hop = sum(math.sin(math.pi * R.clamp01((t - a) / (b - a))) ** 1.2 for a, b in hops)
+        squash = sum(R.pulse(t, a - 0.06, a, a, a + 0.05) + R.pulse(t, b - 0.02, b + 0.03, b + 0.03, b + 0.1)
+                     for a, b in hops)
+        cheer = R.pulse(t, 0.04, 0.14, 0.62, 0.72)
+        wave_ = R.pulse(t, 0.66, 0.74, 0.9, 0.98)
+        p = stance.copy()
+        p.move("Waist", z=6.0 * hop - 1.0 * squash)
+        p.rot("Waist", y=-6 * hop + 6 * squash, x=4 * W(t, 2) * cheer)
+        p.rot("Spine1", y=-4 * cheer)
+        p.rot("Head", y=-10 * cheer - 4 * hop, x=10 * W(t, 2, 0.2) * (cheer + wave_), z=6 * wave_)
+        _ears(p, back=-8 * cheer - 10 * hop + 8 * squash, spread=4 * W(t, 4) * cheer, tip=-6 * hop)
+        if hop < 1e-6:
+            plant(p)
+        else:
+            rw = stance.world()
+            for s, sx in LEGS2:
+                u, l, e = leg_chain(s)
+                tgt = rw[kit.index(e)][:, 3] + (0.0, 0.0, 6.0 * hop - 1.4 * hop)
+                kit.ik(p, u, l, e, tgt, knee_pole(rw, s), xform.rot_deg(0, 25 * hop, 0) @ rw[kit.index(e)][:, :3])
+        up = (0.6, 4.4, 4.2)
+        offl = lerp(lerp(ST_HAND["L"], up, cheer), (0.2, 5.0, 3.8), wave_)
+        offr = lerp(ST_HAND["R"], up, cheer)
+        arms_blend(p, offl, offr, pole=(-0.5, 0.6, -0.4))
+        if wave_ > 0:
+            p.rot("LHand", z=25 * W(t, 6) * wave_)
+        tw = R.chain_wave(t, 3, 14 * (cheer + wave_), lag=0.12, freq=4)
+        _tail(p, [(6 * cheer, tw[0]), (0, tw[1]), (0, tw[2])])
+        kit.sparks(p, i, 1.0 if (0.2 < t < 0.6 and i % 4 == 0) else 0.0, forward=-0.2)
+        # happy closed eyes and an open smile while cheering, then a wink with the wave
+        eye = "closed" if 3 <= i <= 31 else "open"
+        if 37 <= i <= 42:
+            eye = ("closed", "open")
+        p.expr(eye=eye, mouth="wide" if 3 <= i <= 45 else "closed")
+        return p
+
+    if want("victory"):
+        seqs["victory"] = _oseq(kit, "victory", victory, VIC_FRAMES, VIC_FPS, activity=mdl.ACT["VICTORY_DANCE"])
+
+    order = [("idle", "IDLE"), ("walk", "WALK"), ("run", "RUN"), ("attack", "RANGE_ATTACK1"),
+             ("flinch", "SMALL_FLINCH"), ("die", "DIESIMPLE"), ("spawn", "ARM"), ("victory", "VICTORY_DANCE")]
+    out = []
+    for name, act in order:
+        out.append(seqs[name] if name in seqs else
+                   _oseq(kit, name, lambda t, i: stance, 2, 10, activity=mdl.ACT[act]))
+    out += [s for n, s in seqs.items() if n not in dict(order)]
+    return out, checks

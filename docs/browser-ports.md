@@ -25,7 +25,7 @@ and several mods are still required; the freely licensed engine example is a sep
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r7` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r8` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -155,7 +155,7 @@ The browser release's game modules were recovered from a deployed build whose so
 `Velaron/cs16-client` at `15278ca` (the commit the recovered build started from) with its submodules — the client,
 `mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). Each of `modules.builds` is a release of its own, its patches
 on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sources give it) and
-`xash3d-web-1.2.2-cs16-15278ca-arsenal-r7` (the Half-Life Arsenal, below). A release holds the engine files of
+`xash3d-web-1.2.2-cs16-15278ca-arsenal-r8` (the Half-Life Arsenal, below). A release holds the engine files of
 `xash3d-web-1.2.2` (checked against the lock) and under `counterstrike/cstrike/` the three WebAssembly modules,
 `dlls/cs.so` (the same server compiled natively for the 32-bit dedicated server: `multiplayer.gameLibrary`) and
 `orthros-bots.pk3` (`goldsrc.extras`); a build's `assets` add archives of their own (Half Strike:
@@ -263,7 +263,7 @@ or changed.
   beams follow a predicted aim this client does not have). Explosions are Half-Life's (Counter-Strike's grenade
   explosion is the flashbang's).
 
-### Poké Balls (r7)
+### Poké Balls (r7, official models r8)
 
 Three more items of the grenade slot (`pikachu` $1000, `charizard` $1400, `blastoise` $1300; ids 46 to 48, after the
 snarks; one ball carried and one Pokémon out at a time; bots do not buy them). Thrown like the hand grenade, the ball
@@ -293,10 +293,21 @@ deterministically at the release build: a GoldSrc studio model writer and reader
 signed distance field modelling meshed and decimated per rigid part, painted and baked textures quantised to 256
 colours, keyframed and procedural animations (gaits matched to the server's speeds), sprites (IDSP 2), synthesised
 sounds and HUD icons, and an offline renderer that draws a model's sequences to PNG (`render.py`) — how the models were
-judged before the engine. Models: `models/pokemon/{pikachu,charizard,blastoise}.mdl` (≈3000 triangles each; sequences
-idle, walk, run, attack, flinch, die, spawn, victory), `w_`/`p_`/`v_pokeball.mdl` (the view model: a gloved hand; one
-skin per species); sprites `zap`, `fire`, `water`, `flash` (additive: black only where the palette entry is exactly 0,
-the engine's texture gamma lifting the rest), `hud`, `d_pokemon`; 19 sounds. No file comes from elsewhere.
+judged before the engine. Models: `models/pokemon/{pikachu,charizard,blastoise}.mdl` (sequences idle, walk, run,
+attack, flinch, die, spawn, victory), `w_`/`p_`/`v_pokeball.mdl` (the view model: a gloved hand; the ball neutral, the
+same classic one for the three); sprites `zap`, `fire`, `water`, `flash` (additive: black only where the palette entry
+is exactly 0, the engine's texture gamma lifting the rest), `hud`, `d_pokemon`; 19 sounds.
+
+**Official models (r8, the owner's choice: personal use).** When `$POKEMON_OFFICIAL_DIR` holds them
+(`data_installers/pokemon-official/`, outside Git; the release build checks them against `lock.json` "sources"), the
+three Pokémon are the games' own models, converted by our code (`gltf.py`: a glTF 2.0 reader; `official.py`: axes,
+scale, the rig pruned to what vertices and animations use, four bone weights a vertex, textures quantised to 256
+colours each, animations resampled): Xash3D draws smooth skinning (`STUDIO_HAS_BONEWEIGHTS` with
+`STUDIO_HAS_BONEINFO`, up to 4 weights, 128 bones). Pikachu (its rig, its Thunderbolt; the rest animated on its
+bones, with expression decals), Charizard (Scarlet/Violet's file with the full official animation set, its shiny
+textures recoloured to the normal colouring measured on the X/Y model's), Blastoise (its rig, every sequence animated
+on its bones). Without the sources the generated models are built instead. Converted files exist only in the
+release's archive in `data_engines/`, never in Git.
 
 ### Its own menus
 

@@ -1,7 +1,8 @@
 """Tests of the asset toolchain: python3 -I tools/goldsrc/assets/test_mdl.py
 
 Round-trips a small studio model through the writer and the reader/validator, checks the exact
-animation decoding, strips, corruption detection, and the kit (rig IK, meshing, sprites, wav, zip).
+animation decoding, strips, corruption detection, smooth skinning (bone weights), the glTF reader and
+importer on a tiny synthetic glTF, and the kit (rig IK, meshing, sprites, wav, zip).
 """
 import math
 import os
@@ -15,7 +16,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from assets import build as buildmod  # noqa: E402
-from assets import builder, icons, mdl, mesh, render, rig as R, sdf, spr, texture, wav, xform  # noqa: E402
+from assets import builder, gltf, icons, mdl, mesh, official, render, rig as R, sdf, spr, texture, wav, xform  # noqa: E402
 
 
 def cube_model(bone, center, half, base_uv=(0, 0)):
@@ -389,6 +390,340 @@ class Kit(unittest.TestCase):
             buildmod.write_zip(p2, dict(reversed(list(files.items()))))
             with open(p1, "rb") as f1, open(p2, "rb") as f2:
                 self.assertEqual(f1.read(), f2.read())
+
+
+# ----------------------------------------------------------------------------------------------
+# smooth skinning
+# ----------------------------------------------------------------------------------------------
+
+def make_weighted_studio():
+    """A bar along x on two bones (root at x=0, tip at x=10), vertices blended across the joint."""
+    bones = [mdl.Bone("root", -1, (0, 0, 5), (0, 0, 0)), mdl.Bone("tip", 0, (10, 0, 0), (0, 0, 0))]
+    xs = np.linspace(0, 20, 6)
+    verts, vb, vw = [], [], []
+    for x in xs:
+        for y, z in ((-1, 4), (1, 4), (1, 6), (-1, 6)):
+            verts.append((x, y, z))
+            t = float(np.clip((x - 5) / 10, 0, 1))  # 0 on root .. 1 on tip
+            w1 = int(round(255 * t))
+            if w1 == 0:
+                vb.append((0, -1, -1, -1)); vw.append((255, 0, 0, 0))
+            elif w1 == 255:
+                vb.append((1, -1, -1, -1)); vw.append((255, 0, 0, 0))
+            else:
+                vb.append((1, 0, -1, -1) if w1 > 127 else (0, 1, -1, -1))
+                vw.append((max(w1, 255 - w1), min(w1, 255 - w1), 0, 0))
+    verts = np.array(verts, float)
+    tris = []
+    for i in range(len(xs) - 1):
+        a, b = 4 * i, 4 * (i + 1)
+        for k in range(4):
+            k2 = (k + 1) % 4
+            # quad (a+k, b+k, b+k2, a+k2), outward ccw
+            for t in ((a + k, a + k2, b + k2), (a + k, b + k2, b + k)):
+                tris.append([(v, v, (v % 4) * 8, i * 8) for v in t])
+    norms = verts - np.array([[x, 0, 5] for x in verts[:, 0]])
+    norms /= np.linalg.norm(norms, axis=1, keepdims=True)
+    bw = mdl.BoneWeights(np.array(vb), np.array(vw))
+    model = mdl.Model("bar", verts=verts, vert_bone=bw.bones[:, 0].copy(), norms=norms,
+                      norm_bone=bw.bones[:, 0].copy(), meshes=[mdl.Mesh(np.array(tris, np.int64), 0)],
+                      vert_weights=bw, norm_weights=None)
+    nf = 9
+    P = np.tile(np.array([b.pos for b in bones], float), (nf, 1, 1))
+    Rr = np.zeros_like(P)
+    Rr[:, 1, 2] = np.linspace(0, math.pi / 2, nf)  # tip yaws 90 degrees
+    seq = mdl.Sequence("bend", P, Rr, fps=10)
+    tex = mdl.Texture("bar.bmp", (np.arange(32 * 48) % 200).astype(np.uint8).reshape(48, 32),
+                      np.stack([np.arange(256)] * 3, 1).astype(np.uint8))
+    return mdl.Studio(name="test/bar.mdl", bones=bones, sequences=[seq], textures=[tex],
+                      bodyparts=[mdl.BodyPart("body", [model])], bbmin=(0, -1, 4), bbmax=(20, 1, 6))
+
+
+class Weighted(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.st = make_weighted_studio()
+        cls.data = mdl.write(cls.st)
+        cls.pm = mdl.read(cls.data)
+
+    def test_flags_and_boneinfo(self):
+        pm = self.pm
+        self.assertEqual(pm.errors, [])
+        self.assertTrue(pm.flags & mdl.STUDIO_HAS_BONEWEIGHTS and pm.flags & mdl.STUDIO_HAS_BONEINFO)
+        boneindex = struct.unpack_from("<i", self.data, 64 + 8 + 4 + 15 * 4 + 4 + 4)[0]
+        self.assertEqual(boneindex, mdl.SZ_HDR)
+        # poseToBone = inverse rest matrices, right after the bones
+        rest = mdl.rest_matrices(pm.bones)
+        for i in range(2):
+            np.testing.assert_allclose(xform.concat(rest[i], pm.pose_to_bone[i]), np.eye(4)[:3], atol=1e-6)
+        self.assertEqual(mdl.write(make_weighted_studio()), self.data)  # deterministic
+
+    def test_weights_roundtrip(self):
+        m = self.pm.bodyparts[0].models[0]
+        src = self.st.bodyparts[0].models[0]
+        np.testing.assert_array_equal(m.vert_weights.bones, src.vert_weights.bones)
+        np.testing.assert_array_equal(m.vert_weights.weights, src.vert_weights.weights)
+        self.assertEqual(len(m.norm_weights.bones), len(m.norms))
+        # every normal carries the weights of a vertex that uses it
+        for me in m.meshes:
+            for v, n in me.tris.reshape(-1, 4)[:, :2]:
+                np.testing.assert_array_equal(m.norm_weights.bones[n], m.vert_weights.bones[v])
+
+    def test_skinning_matches_linear_blend(self):
+        pm = self.pm
+        m = pm.bodyparts[0].models[0]
+        for fr in (0, 4, 8):
+            bm = mdl.pose(pm, 0, float(fr))
+            v, n = mdl.posed_model(pm, m, bm)
+            skin = mdl.skin_transforms(pm, bm)
+            for i in range(len(m.verts)):
+                b, w = m.vert_weights.bones[i], m.vert_weights.weights[i] / 255.0
+                exp = sum(w[k] * xform.transform_points(skin[b[k]], m.verts[i:i + 1])[0] for k in range(4) if b[k] >= 0)
+                np.testing.assert_allclose(v[i], exp, atol=1e-4)
+        # rest frame: identity skinning
+        v0, _ = mdl.posed_model(pm, m, mdl.pose(pm, 0, 0.0))
+        np.testing.assert_allclose(v0, m.verts, atol=1e-4)
+        # bent 90 degrees: the far end of the bar (pure tip) ends up along +y from the joint
+        v8, _ = mdl.posed_model(pm, m, mdl.pose(pm, 0, 8.0))
+        far = m.verts[:, 0] > 19
+        np.testing.assert_allclose(v8[far][:, 1].mean(), 10.0, atol=0.05)
+        np.testing.assert_allclose(v8[far][:, 0].mean(), 10.0, atol=0.05)
+
+    def test_validator(self):
+        d = bytearray(self.data)
+        flags_off = 4 + 4 + 64 + 4 + 15 * 4
+        f = struct.unpack_from("<I", d, flags_off)[0]
+        struct.pack_into("<I", d, flags_off, f & ~mdl.STUDIO_HAS_BONEINFO)
+        with self.assertRaises(mdl.MdlError):
+            mdl.read(bytes(d))
+        st = make_weighted_studio()
+        bw = st.bodyparts[0].models[0].vert_weights
+        bw.bones[3] = (-1, 0, -1, -1)
+        with self.assertRaises(mdl.MdlError):
+            mdl.write(st)
+        st = make_weighted_studio()
+        st.bodyparts[0].models[0].vert_weights.weights[5] = (200, 100, 0, 0)
+        with self.assertRaises(mdl.MdlError):
+            mdl.write(st)
+
+    def test_render(self):
+        im = render.render_frame(self.pm, 0, 8.0, size=(96, 96), ss=1)
+        self.assertEqual(im.size, (96, 96))
+
+
+# ----------------------------------------------------------------------------------------------
+# glTF reader and importer (tiny synthetic file)
+# ----------------------------------------------------------------------------------------------
+
+def make_tiny_gltf():
+    """A 2-joint skinned column (glTF axes: +Y up, faces +Z), 1 m tall, weights blended in the middle,
+    an animation (child joint bends 90 deg about X, LINEAR; root translation CUBICSPLINE; STEP scale),
+    normalized ubyte weights, a sparse POSITION accessor, an 8x8 PNG texture with a cut-out (alpha MASK)."""
+    import io as _io
+    from PIL import Image as _Image
+    rows = 5
+    pos, uv, joints, weights = [], [], [], []
+    for r in range(rows):
+        y = r / (rows - 1)
+        for (x, z) in ((-0.1, -0.1), (0.1, -0.1), (0.1, 0.1), (-0.1, 0.1)):
+            pos.append((x, y, z))
+            uv.append((0.5 + x * 2, 1.0 - y))
+            t = min(max((y - 0.25) / 0.5, 0.0), 1.0)
+            joints.append((0, 1, 0, 0))
+            weights.append((int(round(255 * (1 - t))), 255 - int(round(255 * (1 - t))), 0, 0))
+    pos = np.array(pos, np.float32)
+    idx = []
+    for r in range(rows - 1):
+        a, b = 4 * r, 4 * (r + 1)
+        for k in range(4):
+            k2 = (k + 1) % 4
+            idx += [a + k, a + k2, b + k2, a + k, b + k2, b + k]
+    idx = np.array(idx, np.uint16)
+    # outward winding check: flip if needed (glTF front = counter-clockwise seen from outside)
+    tri = idx.reshape(-1, 3)
+    c = pos[tri].mean(1)
+    n = np.cross(pos[tri[:, 1]] - pos[tri[:, 0]], pos[tri[:, 2]] - pos[tri[:, 0]])
+    out = np.einsum("ij,ij->i", n, c - np.c_[np.zeros(len(c)), c[:, 1], np.zeros(len(c))]) < 0
+    tri[out] = tri[out][:, ::-1]
+    idx = tri.reshape(-1).astype(np.uint16)
+    img = np.zeros((8, 8, 4), np.uint8)
+    img[..., 0] = 220
+    img[..., 1] = np.arange(8)[None, :] * 30
+    img[..., 3] = 255
+    img[3:5, 3:5, 3] = 0
+    bio = _io.BytesIO()
+    _Image.fromarray(img, "RGBA").save(bio, "PNG")
+    png = bio.getvalue()
+    # sparse: the stored positions of row 0 are wrong (zeros) and fixed by a sparse substitution
+    stored = pos.copy()
+    stored[0:4] = 0.0
+    sp_idx = np.arange(4, dtype=np.uint8)
+    sp_val = pos[0:4]
+    ibm = np.stack([np.eye(4), np.eye(4)]).astype(np.float32)
+    ibm[1][1, 3] = -0.5                       # joint 1 at y = 0.5 (row-major here, column-major on disk)
+    times = np.array([0.0, 1.0], np.float32)
+    rot = np.array([[0, 0, 0, 1], [math.sin(math.pi / 4), 0, 0, math.cos(math.pi / 4)]], np.float32)
+    # CUBICSPLINE translation: (in, value, out) per key; zero tangents -> smoothstep between the values
+    cub = np.array([[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0.5], [0, 0, 0]], np.float32)
+    step_t = np.array([0.0, 0.5], np.float32)
+    step_s = np.array([[1, 1, 1], [1, 1, 1]], np.float32)
+    blobs, views, accs = [], [], []
+
+    def add(arr, target=None):
+        b = np.ascontiguousarray(arr).tobytes()
+        off = sum(len(x) for x in blobs)
+        pad = (4 - off % 4) % 4
+        if pad:
+            blobs.append(b"\0" * pad)
+            off += pad
+        blobs.append(b)
+        v = {"buffer": 0, "byteOffset": off, "byteLength": len(b)}
+        if target:
+            v["target"] = target
+        views.append(v)
+        return len(views) - 1
+
+    def acc(arr, ctype, typ, normalized=False, sparse=None, minmax=False):
+        a = {"bufferView": add(arr), "componentType": ctype, "count": int(len(arr)), "type": typ}
+        if normalized:
+            a["normalized"] = True
+        if sparse:
+            a["sparse"] = sparse
+        if minmax:
+            a["min"] = arr.min(0).tolist()
+            a["max"] = arr.max(0).tolist()
+        accs.append(a)
+        return len(accs) - 1
+
+    a_pos = acc(stored, 5126, "VEC3", minmax=True)
+    accs[a_pos]["sparse"] = {"count": 4, "indices": {"bufferView": add(sp_idx), "componentType": 5121},
+                             "values": {"bufferView": add(sp_val)}}
+    a_uv = acc(np.array(uv, np.float32), 5126, "VEC2")
+    a_j = acc(np.array(joints, np.uint8), 5121, "VEC4")
+    a_w = acc(np.array(weights, np.uint8), 5121, "VEC4", normalized=True)
+    a_i = acc(idx, 5123, "SCALAR")
+    a_ibm = acc(ibm.transpose(0, 2, 1).reshape(2, 16), 5126, "MAT4")
+    a_t = acc(times, 5126, "SCALAR")
+    a_r = acc(rot, 5126, "VEC4")
+    a_c = acc(cub, 5126, "VEC3")
+    a_st = acc(step_t, 5126, "SCALAR")
+    a_ss = acc(step_s, 5126, "VEC3")
+    img_view = add(np.frombuffer(png, np.uint8))
+    doc = {
+        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0, 3]}],
+        "nodes": [{"name": "Root_1", "children": [1]}, {"name": "Base_2", "children": [2]},
+                  {"name": "Top_3", "translation": [0, 0.5, 0]}, {"name": "Body", "mesh": 0, "skin": 0}],
+        "skins": [{"joints": [1, 2], "inverseBindMatrices": a_ibm}],
+        "meshes": [{"name": "column", "primitives": [{"attributes": {"POSITION": a_pos, "TEXCOORD_0": a_uv,
+                                                                    "JOINTS_0": a_j, "WEIGHTS_0": a_w},
+                                                     "indices": a_i, "material": 0}]}],
+        "materials": [{"name": "skin", "alphaMode": "MASK", "alphaCutoff": 0.5,
+                       "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+        "textures": [{"source": 0}], "images": [{"bufferView": img_view, "mimeType": "image/png"}],
+        "animations": [{"name": "bend", "samplers": [
+            {"input": a_t, "output": a_r, "interpolation": "LINEAR"},
+            {"input": a_t, "output": a_c, "interpolation": "CUBICSPLINE"},
+            {"input": a_st, "output": a_ss, "interpolation": "STEP"}],
+            "channels": [{"sampler": 0, "target": {"node": 2, "path": "rotation"}},
+                         {"sampler": 1, "target": {"node": 1, "path": "translation"}},
+                         {"sampler": 2, "target": {"node": 1, "path": "scale"}}]}],
+    }
+    blob = b"".join(blobs)
+    doc["buffers"] = [{"byteLength": len(blob)}]
+    doc["bufferViews"] = views
+    doc["accessors"] = accs
+    return gltf.write_glb(doc, blob), pos
+
+
+class Gltf(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data, cls.pos = make_tiny_gltf()
+        cls.g = gltf.loads(cls.data)
+
+    def test_reader(self):
+        g = self.g
+        p = g.meshes[0].primitives[0]
+        np.testing.assert_allclose(p.attributes["POSITION"], self.pos, atol=1e-7)  # sparse applied
+        w = p.attributes["WEIGHTS_0"]
+        self.assertEqual(w.dtype, np.float64)
+        np.testing.assert_allclose(w.sum(1), 1.0, atol=1e-6)                   # normalized ubyte
+        self.assertEqual(p.attributes["JOINTS_0"].dtype, np.int64)
+        self.assertEqual(p.triangles.shape, (32, 3))
+        np.testing.assert_allclose(g.skins[0].inverse_bind[1][1, 3], -0.5)     # column-major MAT4
+        a = g.animations[0]
+        self.assertAlmostEqual(a.duration, 1.0)
+        s = a.sample(0.5)
+        np.testing.assert_allclose(s[2]["rotation"], [math.sin(math.pi / 8), 0, 0, math.cos(math.pi / 8)], atol=1e-6)
+        np.testing.assert_allclose(s[1]["translation"], [0, 0, 0.25], atol=1e-6)  # hermite, zero tangents
+        np.testing.assert_allclose(a.sample(0.25)[1]["translation"][2], 0.5 * (3 * 0.25 ** 2 - 2 * 0.25 ** 3),
+                                   atol=1e-6)
+        G = g.world_matrices(a, 1.0)
+        np.testing.assert_allclose(G[2][:3, 3], [0, 0.5, 0.5], atol=1e-6)
+        self.assertEqual(g.texture_image(0).size, (8, 8))
+        with self.assertRaises(gltf.GltfError):
+            gltf.loads(self.data[:40])
+
+    def test_import(self):
+        imp = official.Importer(None, gl=self.g, height=40, verbose=False, min_size=8, max_size=64)
+        self.assertEqual(imp.bone_names, ["Base", "Top"])
+        np.testing.assert_allclose(imp.heads[1], [0, 0, 20], atol=1e-6)        # glTF +Y up -> +Z, 40 units
+        seq = imp.sequence("bend", "bend", fps=10)
+        rest = imp.rest_sequence()
+        st = imp.studio("t/column.mdl", [rest, seq], attachments=[("top", "Top", (0, 0, 40))])
+        data = mdl.write(st)
+        pm = mdl.read(data)
+        self.assertTrue(pm.flags & mdl.STUDIO_HAS_BONEWEIGHTS)
+        m = pm.bodyparts[0].models[0]
+        tot = np.where(m.vert_weights.bones >= 0, m.vert_weights.weights, 0).sum(1)
+        self.assertTrue((tot == 255).all())
+        self.assertTrue(pm.textures[0].flags & mdl.STUDIO_NF_MASKED)
+        self.assertTrue((pm.textures[0].pixels == 255).any())
+        v0, _ = mdl.posed_model(pm, m, mdl.pose(pm, 0, 0.0))
+        self.assertAlmostEqual(float(v0[:, 2].max()), 40.0, places=3)
+        self.assertAlmostEqual(float(v0[:, 2].min()), 0.0, places=3)
+        # last frame of the bend: the top of the column folded 90 deg toward +Z(glTF) = +X (forward)
+        bm = mdl.pose(pm, 1, float(pm.sequences[1]["numframes"] - 1) - 1e-3)
+        v1, _ = mdl.posed_model(pm, m, bm)
+        top = m.verts[:, 2] > 39
+        # truth from the glTF itself (root moved +0.5 m along glTF z = +20 units along x at t = 1)
+        G = self.g.world_matrices(self.g.animations[0], 1.0)
+        S = [imp.C @ G[n] @ np.linalg.inv(imp.rest_world_full[n]) for n in imp.bone_nodes]
+        bw = m.vert_weights
+        exp = np.zeros_like(m.verts)
+        for k in range(4):
+            for i in range(len(m.verts)):
+                if bw.bones[i, k] >= 0:
+                    Mx = S[bw.bones[i, k]]
+                    exp[i] += bw.weights[i, k] / 255.0 * (Mx[:3, :3] @ m.verts[i] + Mx[:3, 3])
+        np.testing.assert_allclose(v1, exp, atol=0.05)
+        self.assertGreater(float(v1[top][:, 0].mean()), 35.0)
+        # attachment on the top joint, bounding boxes cover the bend
+        self.assertEqual(pm.attachments[0].bone, 1)
+        self.assertGreater(pm.sequences[1]["bbmax"][0], 35.0)
+        # skin variant: a recoloured copy of the material's texture in skin family 1
+        inv = lambda img: np.concatenate([255 - img[..., :3], img[..., 3:]], -1)
+        pm2 = mdl.read(mdl.write(imp.studio("t/column.mdl", [rest], skin_variants=[{"skin": inv}])))
+        self.assertEqual(pm2.skins.tolist(), [[0], [1]])
+        a0, a1 = pm2.textures[0], pm2.textures[1]
+        opaque = a0.pixels != 255
+        c0 = a0.palette[a0.pixels[opaque]].astype(int)
+        c1 = a1.palette[a1.pixels[opaque]].astype(int)
+        self.assertLess(np.abs(c0 + c1 - 255).mean(), 3)
+        self.assertEqual(mdl.write(imp.studio("t/column.mdl", [rest])), mdl.write(imp.studio("t/column.mdl", [rest])))
+
+    def test_quantize_and_recolor(self):
+        rng = np.random.default_rng(3)
+        img = (rng.random((32, 32, 3)) * 255).astype(np.uint8)
+        idx, pal = official.quantize_texture(img)
+        err = np.abs(pal[idx].astype(int) - img.astype(int)).mean()
+        self.assertLess(err, 20)
+        grey = np.full((4, 4, 4), 255, np.uint8)
+        grey[..., :3] = 80
+        grey[0, 0, :3] = 40
+        out = official.recolor(grey, [((80, 80, 80), (240, 140, 60))])
+        np.testing.assert_allclose(out[1, 1, :3], (240, 140, 60), atol=2)
+        self.assertTrue((out[0, 0, :3] < out[1, 1, :3]).all())   # darker shade stays darker
 
 
 if __name__ == "__main__":

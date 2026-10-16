@@ -1,7 +1,8 @@
 """Offline software renderer for GoldSrc .mdl files (numpy, vectorised) -> PNG.
 
 Reads the bytes through mdl.read, poses the skeleton with the engine's exact animation decoding,
-skins with the 8-bit textures (nearest), lights like GoldSrc's studio renderer (ambient + one
+skins rigidly or with the bone weights (STUDIO_HAS_BONEWEIGHTS, blended matrices as ref/gl/gl_studio.c),
+textures with the 8-bit textures (nearest), lights like GoldSrc's studio renderer (ambient + one
 directional "shade" light with its hemispherical Lambert, FLATSHADE / FULLBRIGHT honoured, masked
 index 255 cut out, additive meshes added), back-face culls like the engine, z-buffer, ground grid.
 
@@ -172,10 +173,7 @@ def _posed_geometry(pm, seq, frame, body=0, controllers=None):
         m = bp.models[mi]
         if len(m.verts) == 0:
             continue
-        Wv = bm[m.vert_bone]
-        v = np.einsum("nij,nj->ni", Wv[:, :, :3], m.verts) + Wv[:, :, 3]
-        Wn = bm[m.norm_bone]
-        n = np.einsum("nij,nj->ni", Wn[:, :, :3], m.norms)
+        v, n = mdl.posed_model(pm, m, bm)  # rigid, or smooth skinning with the bone weights as the engine
         out.append((m, v, n))
     return out
 
@@ -235,8 +233,8 @@ def render_frame(pm, seq=0, frame=0.0, skin=0, body=0, yaw=35.0, pitch=15.0, dis
             if len(tri) == 0:
                 continue
             st = np.einsum("kc,kcd->kd", bary, stc_[tri])
-            sx = np.clip(np.floor(st[:, 0]).astype(np.int64), 0, tex.width - 1)
-            sy = np.clip(np.floor(st[:, 1]).astype(np.int64), 0, tex.height - 1)
+            sx = np.floor(st[:, 0]).astype(np.int64) % tex.width     # studio textures repeat (GL_REPEAT)
+            sy = np.floor(st[:, 1]).astype(np.int64) % tex.height
             idx = tex.pixels[sy, sx]
             light = np.einsum("kc,kc->k", bary, lvc_[tri])
             col = tex.palette[idx].astype(np.float64) * light[:, None]
@@ -245,7 +243,8 @@ def render_frame(pm, seq=0, frame=0.0, skin=0, body=0, yaw=35.0, pitch=15.0, dis
                 keep = idx != 255
             yield pix[keep], depth[keep], col[keep]
 
-    # opaque: z-buffer resolve
+    # opaque: z-buffer resolve, GL_LEQUAL as the engine draws studio meshes (in mesh order, an equal depth is
+    # won by the later mesh: e.g. an expression decal drawn over the coincident decal it replaces)
     pix_l, dep_l, col_l = [], [], []
     for pix, dep, col in fragments(opaque):
         pix_l.append(pix)
@@ -253,9 +252,10 @@ def render_frame(pm, seq=0, frame=0.0, skin=0, body=0, yaw=35.0, pitch=15.0, dis
         col_l.append(col)
     if pix_l:
         pix, dep, col = np.concatenate(pix_l), np.concatenate(dep_l), np.concatenate(col_l)
+        seq = np.arange(len(pix))
         vis = dep < zbuf[pix]
-        pix, dep, col = pix[vis], dep[vis], col[vis]
-        order = np.lexsort((dep, pix))
+        pix, dep, col, seq = pix[vis], dep[vis], col[vis], seq[vis]
+        order = np.lexsort((-seq, dep, pix))
         pix, dep, col = pix[order], dep[order], col[order]
         first = np.ones(len(pix), dtype=bool)
         first[1:] = pix[1:] != pix[:-1]

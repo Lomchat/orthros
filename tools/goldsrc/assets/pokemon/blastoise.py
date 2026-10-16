@@ -1,18 +1,26 @@
-"""Blastoise (Tortank): models/pokemon/blastoise.mdl, generated from scratch.
+"""Blastoise (Tortank): models/pokemon/blastoise.mdl.
 
-A heavy bipedal turtle about 60 units tall: blue skin, a brown carapace with a raised cream rim, a cream
-segmented plastron, two silver cannons coming out of the shell over the shoulders, small pointed ears,
-thick limbs with cream claws and a short tail.  Facing +x, origin on the ground between the feet.
+Official model (when installed): Game Freak's Blastoise, `plain/9.glb` under $POKEMON_OFFICIAL_DIR (default
+/srv/orthros/data_installers/pokemon-official; owner's decision, never copied into the repository), imported by
+`official.Importer` with its own 42-bone rig, smooth skinning and textures, scaled to 60 units.  The file has no
+animation: the eight sequences are authored below on its real bones (OfficialAnimator).  Without the file, the model
+generated from scratch further down is built instead (make_generated_model).
 
-Sequences (the Pokemon model contract): idle, walk, run, attack (braces, fires both cannons with recoil at
-40 %), flinch, die (falls backward onto its shell), spawn (comes out of its shell), victory (stomps and roars).
-Attachment 0 = left cannon muzzle, 1 = right cannon muzzle.
+Generated model: a heavy bipedal turtle about 60 units tall: blue skin, a brown carapace with a raised cream rim, a
+cream segmented plastron, two silver cannons coming out of the shell over the shoulders, small pointed ears, thick
+limbs with cream claws and a short tail.
+
+Both: facing +x, origin on the ground between the feet.  Sequences (the Pokemon model contract): idle, walk, run,
+attack (braces, fires both cannons with recoil at 40 %), flinch, die (falls backward onto its shell), spawn (comes
+out of its shell with a roar), victory (stomps and roars).  Attachment 0 = left cannon muzzle, 1 = right cannon muzzle.
 """
 import math
+import os
 
 import numpy as np
+from PIL import Image
 
-from .. import builder, mdl, rig as R, sdf, texture as T, xform
+from .. import builder, mdl, official, rig as R, sdf, texture as T, xform
 
 # ---------------------------------------------------------------------------------------------------------------------
 # palette
@@ -522,7 +530,8 @@ def make_builder(verbose=False):
     return b, rig
 
 
-def make_model(verbose=False):
+def make_generated_model(verbose=False):
+    """The model generated from scratch (used when the official source file is not installed)."""
     b, rig = make_builder(verbose)
     b.mesh_parts()
     anim = Animator(rig, b)
@@ -534,6 +543,14 @@ def make_model(verbose=False):
     b.eyeposition = (8.0, 0.0, 52.5)
     b.hull = ((-16.0, -16.0, 0.0), (16.0, 16.0, 72.0))
     return b.write()
+
+
+def make_model(verbose=False):
+    """The official model when its source is installed, else the generated one."""
+    src = official_source()
+    if src is not None:
+        return make_official_model(src, verbose=verbose)
+    return make_generated_model(verbose)
 
 
 def build(out):
@@ -852,3 +869,547 @@ DIE_THIGH, DIE_SHIN = 60.0, 25.0        # limp legs droop toward the ground beyo
 DIE_ARM = (72.0, 10.0, 12.0, 85.0)      # out, swing, bend, twist of the limp arms: lying beside the shell
 DIE_TAIL = -40.0
 DIE_CANNON, DIE_CANNON_IN = 25.0, 2.5
+
+
+# =====================================================================================================================
+# official model: Game Freak's Blastoise (9.glb, the owner's choice), imported with its own rig; the file has no
+# animation, so the eight sequences are authored here on its real bones (identity rest rotations, rig.py conventions)
+
+OFFICIAL_FILE = os.path.join("plain", "9.glb")
+OFFICIAL_HEIGHT = 60.0
+OSIDES = (("L", 1.0), ("R", -1.0))
+OLEGS = [("LThigh", "LLeg", "LFoot"), ("RThigh", "RLeg", "RFoot")]
+OARMS = [("LArm", "LForeArm", "LHand"), ("RArm", "RForeArm", "RHand")]
+HITBOX_BONES = ("Waist", "Head", "Jaw", "LArm", "LForeArm", "LHand", "RArm", "RForeArm", "RHand", "LThigh", "LLeg",
+                "LFoot", "RThigh", "RLeg", "RFoot", "LFeelerC", "RFeelerC", "Tail1", "Tail2")
+
+
+def official_source():
+    """Path of the official source file, or None when it is not installed ($POKEMON_OFFICIAL_DIR)."""
+    d = os.environ.get("POKEMON_OFFICIAL_DIR", "/srv/orthros/data_installers/pokemon-official")
+    p = os.path.join(d, OFFICIAL_FILE)
+    return p if os.path.isfile(p) else None
+
+
+def _erode(m, n):
+    for _ in range(n):
+        e = m.copy()
+        e[1:] &= m[:-1]
+        e[:-1] &= m[1:]
+        e[:, 1:] &= m[:, :-1]
+        e[:, :-1] &= m[:, 1:]
+        m = e
+    return m
+
+
+def _grow(m, within=None, n=1):
+    for _ in range(n):
+        g = m.copy()
+        g[1:] |= m[:-1]
+        g[:-1] |= m[1:]
+        g[:, 1:] |= m[:, :-1]
+        g[:, :-1] |= m[:, 1:]
+        if within is not None:
+            g &= within
+        if (g == m).all():
+            break
+        m = g
+    return m
+
+
+def fill_hidden_flat(rgba, key=(51, 51, 51), tol=10, min_width=4, outline_luma=90.0, outline=10):
+    """Texture regions painted one flat dark key colour (the parts an official model hides under its shell or
+    collar: neck, collar underside) get the colours of what surrounds them, so a pose that uncovers them shows
+    skin instead of a dark void.  Only regions at least 2 * min_width texels wide (small dark details such as the
+    inside of the ears stay), plus the dark outline around them; the source file is untouched."""
+    a = np.asarray(rgba)
+    rgb = a[..., :3].astype(np.float64)
+    core = np.abs(rgb - np.asarray(key, float)).max(-1) <= tol
+    region = _grow(_erode(core, min_width), within=core, n=4096)          # reconstruction of the wide regions
+    luma = rgb @ np.array([0.299, 0.587, 0.114])
+    region = _grow(region, within=region | (luma < outline_luma), n=outline)
+    if not region.any():
+        return a
+    filled = T.dilate(rgb / 255.0, ~region, iters=4096) * 255.0
+    # then smoothed (harmonic: each filled texel the mean of its 4 neighbours) for soft gradients, no streaks
+    for _ in range(300):
+        f = np.pad(filled, ((1, 1), (1, 1), (0, 0)), mode="edge")
+        avg = (f[:-2, 1:-1] + f[2:, 1:-1] + f[1:-1, :-2] + f[1:-1, 2:]) * 0.25
+        filled = np.where(region[..., None], avg, rgb)
+    out = a.copy()
+    out[..., :3] = np.where(region[..., None], np.clip(np.round(filled), 0, 255), rgb).astype(np.uint8)
+    return out
+
+
+def upscale_masked(rgba, factor=4):
+    """A small alpha-masked overlay (an iris) upscaled before the importer cuts its mask: the 1-bit edge then
+    follows the smoothed outline instead of the source's texel staircase."""
+    a = np.asarray(rgba)
+    H, W = a.shape[:2]
+    known = a[..., 3] >= 128
+    rgb = a[..., :3].astype(np.float64) / 255.0
+    if known.any() and not known.all():
+        rgb = T.dilate(rgb, known, iters=64)
+    size = (W * factor, H * factor)
+    im = Image.fromarray(np.clip(np.round(rgb * 255.0), 0, 255).astype(np.uint8), "RGB").resize(size, Image.LANCZOS)
+    al = Image.fromarray(a[..., 3]).resize(size, Image.BICUBIC)
+    return np.dstack([np.asarray(im), np.asarray(al)])
+
+
+# the official materials: #85 skin, #86 shell (carapace, collar, cannons), #87 eye whites, #88 irises (BLEND)
+OFFICIAL_MATERIALS = {
+    "Material #85": {"double_sided": "auto", "filter": fill_hidden_flat},
+    "Material #86": {"double_sided": "auto", "filter": fill_hidden_flat},
+    "Material #88": {"filter": upscale_masked},
+}
+
+
+# gaits: stride (units a planted foot travels per step), stance fraction; linearmovement per cycle = stride / duty
+# walk: native speed 60 units/s, a 0.66 s cycle (a heavy waddle; the server plays it faster at its walking speed);
+# run: a bounding charge, 0.45 s cycle at 210 units/s, airborne 56 % of each step
+O_WALK_STRIDE, O_WALK_DUTY, O_WALK_LIFT, O_WALK_FRAMES, O_WALK_SPEED = 23.0, 0.58, 4.5, 20, 60.0
+O_RUN_STRIDE, O_RUN_DUTY, O_RUN_LIFT, O_RUN_FRAMES, O_RUN_SPEED = 20.8, 0.22, 9.0, 18, 210.0
+O_RUN_HEEL, O_FOOT_BALL = 40.0, (5.2, 1.5)   # heel lift at push-off (degrees); ball of the front toes (x from the
+#                                             ankle, height): where they bend
+O_ATTACK_FRAMES, O_ATTACK_FPS, O_ATTACK_HIT = 36, 24.0, 0.4
+
+
+class OfficialAnimator:
+    """Pose helpers and the eight sequences on the official skeleton."""
+
+    def __init__(self, imp):
+        self.imp = imp
+        self.rig = imp.rig
+        self.V = np.concatenate([s.pos for s in imp.surfaces])
+        self.wb = np.concatenate([s.bw_bones for s in imp.surfaces])
+        self.ww = np.concatenate([s.bw_weights for s in imp.surfaces]) / 255.0
+        main = self.wb[:, 0]
+        # the barrels (cannon bones' own vertices): axis, base (where they leave the shell), muzzle centre
+        self.barrel = {}
+        for s, k in OSIDES:
+            P = self.V[main == imp.bone(f"{s}FeelerC")]
+            c = P.mean(0)
+            ax = np.linalg.svd(P - c)[2][0]
+            ax = ax if ax[0] > 0 else -ax
+            d = (P - c) @ ax
+            self.barrel[s] = (ax, c + ax * d.min(), P[d > d.max() - 0.6].mean(0))
+        self.shoulder = {s: self.rig.head(f"{s}Arm") for s, _ in OSIDES}
+        # what it rolls on when it falls (not the tail: it bends out of the way)
+        self.contact = ~np.isin(main, [imp.bone("Tail1"), imp.bone("Tail2")])
+        # the shell and the body without the legs (what it sits down on)
+        self.shell = self.contact & ~np.isin(main, [imp.bone(f"{s}{b}") for s, _ in OSIDES
+                                                    for b in ("Thigh", "Leg", "Foot", "ToeA", "ToeB", "ToeC", "ToeD")])
+
+    # geometry -------------------------------------------------------------------------------------------------
+    def posed(self, p, sel=None):
+        S = self.rig.skin_matrices(p)
+        wb, ww, V = self.wb, self.ww, self.V
+        if sel is not None:
+            wb, ww, V = wb[sel], ww[sel], V[sel]
+        M = np.einsum("nk,nkij->nij", np.where(wb >= 0, ww, 0.0), S[np.maximum(wb, 0)])
+        return np.einsum("nij,nj->ni", M[:, :, :3], V) + M[:, :, 3]
+
+    def lowest(self, p):
+        return float(self.posed(p)[:, 2].min())
+
+    def carried(self, p, bone, q):
+        """Where the rest model-space point q is when carried by `bone` in pose p."""
+        S = self.rig.skin_matrices(p)[self.rig.index(bone)]
+        return S[:, :3] @ np.asarray(q, float) + S[:, 3]
+
+    def turned(self, p, bone, v):
+        """Rest model-space direction v as turned by `bone` in pose p."""
+        return self.rig.world(p)[self.rig.index(bone)][:, :3] @ np.asarray(v, float)
+
+    def turn(self, p, bone, pivot, x=0.0, y=0.0, z=0.0):
+        """Add euler degrees to `bone` rotating about `pivot` (rest model space) instead of its head."""
+        e0 = p.get_rot(bone)
+        e1 = e0 + (x, y, z)
+        d = np.asarray(pivot, float) - self.rig.head(bone)
+        p.set_rot(bone, *e1)
+        p.move(bone, *((xform.rot_deg(*e0) - xform.rot_deg(*e1)) @ d))
+        return p
+
+    # body parts -------------------------------------------------------------------------------------------------
+    def plant(self, p, targets=None, pitch=(0.0, 0.0), pole=(1.0, 0.0, 0.0)):
+        """Feet flat at their rest spots (or targets), whatever the Waist does; knees forward and a little out."""
+        for i, ((up, lo, end), (s, k)) in enumerate(zip(OLEGS, OSIDES)):
+            t = self.rig.head(end) if targets is None or targets[i] is None else np.asarray(targets[i], float)
+            pl = np.asarray(pole, float) + (0.0, 0.3 * k, 0.0)
+            self.rig.solve_two_bone(p, up, lo, end, t, pole=pl, end_world_rot=xform.rot_deg(0, pitch[i], 0))
+        return p
+
+    def arms(self, p, wrist=((4.0, 5.0, -12.5), (4.0, 5.0, -12.5)), pole=(-0.6, 1.0, -0.3), hand=(0.0, 0.0),
+             hand_x=(0.0, 0.0), fingers=(0.0, 0.0)):
+        """Both arms by IK: wrist offsets from the shoulder (left-side convention, mirrored for the right,
+        in the Waist's frame), elbows toward `pole` (Waist frame, mirrored), then wrist curl / roll and claws."""
+        for (up, lo, end), (s, k), w, h, hx, f in zip(OARMS, OSIDES, wrist, hand, hand_x, fingers):
+            sh = self.shoulder[s]
+            tgt = self.carried(p, "Waist", sh + np.array([w[0], w[1] * k, w[2]]))
+            pl = self.turned(p, "Waist", (pole[0], pole[1] * k, pole[2]))
+            self.rig.solve_two_bone(p, up, lo, end, tgt, pole=pl)
+            p.rot(end, x=hx * k, y=h)
+            for fn in ("FingerA", "FingerB", "FingerC"):
+                p.rot(f"{s}{fn}", y=f)
+        return p
+
+    def cannons(self, p, pitch=0.0, aim_in=0.0, recoil=0.0, sides=(1.0, 1.0)):
+        """Barrels turned about where they leave the shell (pitch + = muzzle down, aim_in + = toward the
+        middle) and pushed back along their axis by `recoil` units."""
+        for (s, k), w in zip(OSIDES, sides):
+            bone = f"{s}FeelerC"
+            ax, base, _ = self.barrel[s]
+            self.turn(p, bone, base, y=pitch * w, z=-aim_in * k * w)
+            d = xform.rot_deg(*p.get_rot(bone)) @ ax
+            p.move(bone, *(-recoil * w * d))
+        return p
+
+    def tail_clear(self, p, floor=0.4):
+        """Lift the tail (Tail1 pitch) until it stays above the ground: a leaning or lowered shell would push it
+        under."""
+        sel = np.isin(self.wb[:, 0], [self.rig.index("Tail1"), self.rig.index("Tail2")])
+        for _ in range(10):
+            z = float(self.posed(p, sel)[:, 2].min())
+            if z >= floor - 0.05:
+                break
+            p.rot("Tail1", y=(floor - z) * 4.0)
+        return p
+
+    def breath(self, p, t, amp=1.0, freq=1):
+        br = R.breathe(t, freq=freq) * amp
+        p.move("Waist", z=0.3 * br)
+        p.rot("Waist", y=-0.9 * br)
+        p.rot("Neck", y=0.5 * br)
+        p.rot("Head", y=0.4 * br)
+        return br
+
+    # sequences --------------------------------------------------------------------------------------------------
+    def idle(self, t):
+        p = R.Pose()
+        u = 2 * math.pi * t
+        br = self.breath(p, t, 1.0, freq=2)
+        bounce = 0.5 + 0.5 * math.cos(2 * u)                 # the official battle-wait bounce, on the knees
+        p.move("Waist", z=-1.2 - 0.7 * bounce)
+        look = R.keys(t, [(0.0, 0.0), (0.16, 0.0), (0.3, 14.0), (0.5, 14.0), (0.64, -10.0), (0.84, -10.0)],
+                      interp="smooth", loop=True)
+        tilt = R.keys(t, [(0.0, 0.0), (0.18, 0.0), (0.32, -4.0), (0.5, -2.0), (0.66, 3.0), (0.84, 0.0)],
+                      interp="smooth", loop=True)
+        p.rot("Neck", z=0.4 * look, y=1.5 * bounce)
+        p.rot("Head", z=0.6 * look, x=tilt, y=-1.0 * bounce)
+        tw = R.chain_wave(t, 2, 6.0, lag=0.15, freq=2)
+        p.rot("Tail1", z=tw[0], y=-2.0 * bounce)
+        p.rot("Tail2", z=tw[1])
+        for s, k in OSIDES:
+            t0 = 0.36 if k > 0 else 0.72
+            flick = R.pulse(t, t0, t0 + 0.025, t0 + 0.05, t0 + 0.12)
+            p.rot(f"{s}Ear", x=-14 * flick * k, y=-8 * flick)
+        self.arms(p, wrist=[(4.0, 5.0 + 0.4 * br, -12.5 + 0.6 * bounce)] * 2, hand=(10.0, 10.0))
+        self.cannons(p, pitch=-0.8 * br + 1.2 * bounce)
+        return self.plant(p)
+
+    def walk(self, t):
+        p = R.Pose()
+        u = 2 * math.pi * t
+        mid = O_WALK_DUTY / 2                                  # left foot's mid-stance
+        c = math.cos(2 * math.pi * (t - mid))                  # +1 over the left foot, -1 over the right
+        land = abs(math.sin(2 * math.pi * (t - 0.03)))         # 0 as each foot strikes: the body drops on it
+        p.move("Waist", z=-3.1 + 1.5 * land, y=1.6 * c)
+        # the hips swing with the legs (longer steps), the shell rolls over the planted foot
+        p.rot("Waist", x=-6.0 * c, z=-12.0 * math.cos(u), y=4.0 + 1.0 * math.cos(2 * u - 0.6))
+        # the head stays level and facing forward over the waddle (a little lag)
+        p.rot("Neck", x=4.5 * math.cos(2 * math.pi * (t - mid - 0.04)), z=9.5 * math.cos(u - 0.25),
+              y=-3.0 + 1.2 * math.cos(2 * u - 1.0))
+        p.rot("Head", y=-1.0 + 1.0 * math.cos(2 * u - 1.4), x=1.0 * c)
+        p.rot("Jaw", y=1.5 * (1 - land))
+        for s, k in OSIDES:
+            sw = math.cos(u - 0.35) * k                       # + when this side's arm is back (its leg forward)
+            p.rot(f"{s}Ear", x=3.0 * math.cos(2 * u - 1.2) * k)
+        self.arms(p, wrist=[(5.5 - 4.5 * math.cos(u - 0.35) * k, 6.0 + 0.6 * c * k, -12.0 + 0.8 * land)
+                            for _, k in OSIDES], hand=(14.0, 14.0))
+        self.cannons(p, pitch=2.0 * math.cos(2 * u - 1.0))
+        tw = R.chain_wave(t, 2, 12.0, lag=0.14)
+        p.rot("Tail1", z=tw[0], y=3 * math.cos(2 * u - 0.8))
+        p.rot("Tail2", z=tw[1])
+        return R.walk_legs(self.rig, p, t, OLEGS, stride=O_WALK_STRIDE, lift=O_WALK_LIFT, duty=O_WALK_DUTY,
+                           phases=[0.0, 0.5], pole=(1.0, 0.0, 0.0), foot_pitch=-14.0)
+
+    def run(self, t):
+        p = R.Pose()
+        # a bounding charge: short stances, long airborne arcs, a heavy landing on each foot (the body sinks and
+        # the shell nods forward on the impact), the head low and looking ahead
+        u = 2 * math.pi * t
+        mid = 2 * math.pi * O_RUN_DUTY * 0.5
+        c = math.cos(u - mid)                                  # +1 over the left foot, -1 over the right
+        sd = O_RUN_DUTY / 0.5                                  # stance share of each half cycle
+        h = (t % 0.5) / 0.5
+        comp = math.sin(math.pi * (h / sd) ** 0.5) if h < sd else 0.0         # lands, sinks, pushes off
+        air = math.sin(math.pi * (h - sd) / (1 - sd)) if h >= sd else 0.0     # airborne arc
+        hl = ((t - 0.04) % 0.5) / 0.5                          # the same, a little later (follow-through)
+        comp_l = math.sin(math.pi * (hl / sd) ** 0.5) if hl < sd else 0.0
+        p.move("Waist", z=-1.6 - 3.4 * comp + 2.2 * air, x=2.4, y=1.0 * c)
+        p.rot("Waist", y=18.0 + 4.0 * comp_l - 1.5 * air, x=-5.0 * c, z=-8.0 * math.cos(u))
+        # the head does not lift off the shell (the neck's dark underside): it stays low, nodding on impacts
+        p.rot("Neck", y=-6.0 - 1.5 * comp_l, z=6.0 * math.cos(u - 0.3), x=3.0 * c)
+        p.rot("Head", y=-1.0 + 1.5 * comp_l)
+        p.rot("Jaw", y=4.0 + 4.0 * comp_l)
+        for s, k in OSIDES:
+            p.rot(f"{s}Ear", y=-14.0 + 4.0 * comp_l)
+        # arms pump; going back they swing out a little and bend instead of reaching behind the shoulder
+        w = []
+        for _, k in OSIDES:
+            sw = math.cos(u - 0.3) * k                         # + when this arm is back
+            w.append((6.0 - 5.0 * sw, 7.0 + 2.0 * max(sw, 0.0), -7.5 + 1.5 * math.sin(u - 0.3) * k - 1.0 * comp_l))
+        self.arms(p, wrist=w, pole=(-1.0, 0.5, -0.4), hand=(-10.0, -10.0))
+        self.cannons(p, pitch=-4.0 + 4.0 * comp_l)
+        tw = R.chain_wave(t, 2, 10.0, lag=0.16)
+        p.rot("Tail1", z=tw[0], y=-12 + 6 * comp_l)
+        p.rot("Tail2", z=tw[1], y=-6 + 6 * comp_l)
+        R.walk_legs(self.rig, p, t, OLEGS, stride=O_RUN_STRIDE, lift=O_RUN_LIFT, duty=O_RUN_DUTY, phases=[0.0, 0.5],
+                    pole=(1.0, 0.0, 0.0), foot_pitch=-24.0)
+        # push-off: late in the stance the heel comes up, the foot rolling over the ball of its toes (which stays
+        # where it was planted), so the shin does not dip into the ground behind the body
+        for (up, lo, end), ph in zip(OLEGS, (0.0, 0.5)):
+            st = ((t + ph) % 1.0) / O_RUN_DUTY
+            if 0.45 < st < 1.0:
+                a = O_RUN_HEEL * R.smoothstep((st - 0.45) / 0.55)
+                dx, _ = R.foot_cycle(t, O_RUN_STRIDE, O_RUN_LIFT, O_RUN_DUTY, ph)
+                ankle = self.rig.head(end) + np.array([dx, 0.0, 0.0])
+                ball = ankle + np.array([O_FOOT_BALL[0], 0.0, O_FOOT_BALL[1] - ankle[2]])
+                rot = xform.rot_deg(0, a, 0)
+                self.rig.solve_two_bone(p, up, lo, end, ball + rot @ (ankle - ball), pole=(1.0, 0.0, 0.0),
+                                        end_world_rot=rot)
+                for toe in ("ToeA", "ToeD"):                   # the front toes stay flat on the ground
+                    p.rot(end[0] + toe, y=-a)
+        return p
+
+    def attack(self, t):
+        p = R.Pose()
+        hit = O_ATTACK_HIT
+        # Hydro Pump: braces wide and low leaning into it, head down and the cannons levelled and converging on the
+        # target, trembling as the pressure builds; at `hit` both barrels kick back and up and the whole body is
+        # shoved back with a roar while the jets pour; it settles and eases back up
+        brace = R.window(t, 0.0, 0.26, R.ease_in_out) * (1.0 - R.window(t, 0.74, 1.0, R.ease_in_out))
+        build = R.window(t, 0.2, hit, R.ease_in) * (t < hit)
+        kick = 0.0
+        if t >= hit:
+            x = (t - hit) / 0.3
+            kick = (1.0 - math.exp(-x * 18.0)) * math.exp(-2.2 * x) * math.cos(3.0 * x) * (1.0 - R.window(t, 0.72, 1.0))
+        pour = R.pulse(t, hit, hit + 0.03, 0.62, 0.76)
+        shake = math.sin(t * 2 * math.pi * 17) * (0.6 * build + 1.0 * pour)
+        p.move("Waist", z=-4.5 * brace - 0.8 * build + 0.8 * kick, x=1.0 * brace - 5.0 * kick - 1.5 * pour,
+               y=0.3 * shake)
+        p.rot("Waist", y=14.0 * brace + 2.0 * build - 15.0 * kick - 3.0 * pour, x=1.0 * shake)
+        p.move("Neck", x=-1.5 * brace, z=-2.0 * brace + 1.0 * kick)
+        p.rot("Neck", y=-5.0 * brace + 6.0 * kick)
+        p.rot("Head", y=-2.0 * brace - 7.0 * kick, z=1.0 * shake)
+        p.rot("Jaw", y=3.0 * brace + 22.0 * R.pulse(t, hit - 0.04, hit + 0.01, 0.6, 0.74))
+        for s, k in OSIDES:
+            p.rot(f"{s}Ear", x=(-10.0 * brace - 14.0 * kick) * k, y=-14.0 * brace)
+        # fists clenched by the hips, elbows out, flung forward a little by the kick
+        w = [(3.0 - 3.0 * brace + 4.0 * kick, 6.5 + 3.0 * brace, -12.0 + 1.5 * brace) for _ in OSIDES]
+        self.arms(p, wrist=w, pole=(-0.6, 1.0, -0.1), hand=(10.0 + 25.0 * brace,) * 2,
+                  fingers=(35.0 * brace,) * 2)
+        self.cannons(p, pitch=-1.0 * brace - 14.0 * kick + 1.0 * shake, aim_in=12.0 * brace,
+                     recoil=4.0 * max(kick, 0.0) + 1.0 * build + 0.3 * shake)
+        p.rot("Tail1", y=8.0 * brace - 10.0 * kick)
+        p.rot("Tail2", y=6.0 * brace - 10.0 * kick)
+        wide = 3.5 * brace
+        targets = [self.rig.head(f"{s}Foot") + np.array([0.8 * brace, wide * k, 0.0]) for s, k in OSIDES]
+        return self.plant(p, targets)
+
+    def flinch(self, t):
+        p = R.Pose()
+        # knocked back, ducks into its shell: peak at frame 2, holds, comes back out with a small overshoot
+        back = R.window(t, 0.0, 2 / 11, R.ease_out) * (1 - R.window(t, 4 / 11, 1.0, R.ease_in_out))
+        over = R.pulse(t, 0.55, 0.72, 0.78, 1.0) * 0.3
+        p.move("Waist", x=-1.6 * back, z=-2.2 * back)
+        p.rot("Waist", y=-7.0 * back + 3.0 * over, x=4.0 * back)
+        p.move("Neck", x=-2.0 * back, z=-3.8 * back)
+        p.rot("Neck", y=-4.0 * back - 4.0 * over, z=6.0 * back)
+        p.rot("Head", y=8.0 * back + 3.0 * over, x=-6.0 * back)
+        p.rot("Jaw", y=9.0 * back)
+        for s, k in OSIDES:
+            p.rot(f"{s}Ear", x=-18.0 * back * k, y=-16 * back)
+        self.arms(p, wrist=[(7.5 * back + 4.0 * (1 - back), 5.0 - 1.0 * back, -12.5 + 8.0 * back)] * 2,
+                  pole=(-0.6, 1.0, -0.6), hand=(10.0 + 25.0 * back,) * 2, fingers=(20.0 * back,) * 2)
+        self.cannons(p, pitch=-7.0 * back + 2.0 * over, recoil=2.0 * back)
+        p.rot("Tail1", y=8.0 * back)
+        return self.plant(p)
+
+    def roll_back(self, p, angle, step=2.0):
+        """Topple the whole body backward by `angle` degrees as a rigid body rolling on the ground: it pivots
+        on its lowest, rearmost point (the heels first, then the rim of the shell, then along the shell), so
+        nothing lifts off and nothing sinks.  The Waist (the root) must only be pitched (y) so far."""
+        sel = self.contact
+        n = max(1, int(math.ceil(abs(angle) / step)))
+        d = -angle / n
+        for _ in range(n):
+            P = self.posed(p, sel)
+            z0 = P[:, 2].min()
+            near = P[:, 2] < z0 + 0.05
+            c = P[near][np.argmin(P[near][:, 0]) if d < 0 else np.argmax(P[near][:, 0])]
+            S = self.rig.skin_matrices(p)[0]
+            q = np.linalg.solve(S[:, :3], c - S[:, 3])
+            self.turn(p, "Waist", q, y=d)
+            low = self.posed(p, sel)[:, 2].min()
+            if low < 0.0:
+                p.move("Waist", z=-low)
+        return p
+
+    def die(self, t):
+        p = R.Pose()
+        # thrown back by the hit with a cry, staggers forward on buckling knees, then its feet slip forward and it
+        # sits down hard on the back rim of its shell (feet still planted), rolls back along the shell onto its back
+        # and rocks on it; the head lolls to the side onto the shell's rim, the limbs go limp, the tail lies flat.
+        # Nothing rises once it starts going down (dev check: top and centre of mass per frame)
+        hitb = R.pulse(t, 0.0, 0.06, 0.1, 0.2, R.ease_out)
+        stag = R.pulse(t, 0.1, 0.2, 0.24, 0.34)
+        crouch = R.window(t, 0.1, 0.22, R.ease_out)            # the knees buckle and stay bent
+        sit = R.window(t, 0.28, 0.46, R.ease_in)
+        roll = R.window(t, 0.44, 0.64, R.ease_in)
+        fall = R.window(t, 0.3, 0.64, R.ease_in)
+        slip = roll
+        rock = 0.0
+        if t > 0.64:
+            x = (t - 0.64) / 0.36
+            rock = math.exp(-4.0 * x) * math.sin(x * 2 * math.pi * 1.4)
+        limp = R.window(t, 0.6, 0.92, R.ease_out)
+        p.rot("Waist", y=-4.0 * hitb + 6.0 * stag - O_DIE_SIT * sit)
+        p.move("Waist", z=-3.0 * hitb - 3.0 * crouch)
+        # the head goes back with the roll (it would swing up otherwise), then lolls to the side
+        whip = R.pulse(t, 0.42, 0.52, 0.6, 0.74)
+        flop = max(limp, R.window(t, 0.38, 0.52))         # the head falls to the side as it goes down
+        duck = R.pulse(t, 0.38, 0.48, 0.58, 0.7)                   # and ducks into the collar while it rolls
+        p.move("Neck", x=-2.0 * duck, z=-4.0 * duck)
+        p.rot("Neck", y=-6.0 * hitb + 8.0 * stag + 10.0 * sit + (O_DIE_NECK - 10.0) * roll - 40.0 * whip,
+              z=5.0 * stag + O_DIE_ROLL * 0.45 * flop)
+        p.rot("Head", y=-8.0 * hitb + 4.0 * stag + 6.0 * sit - 10.0 * roll - 14.0 * whip - 5.0 * rock,
+              z=O_DIE_ROLL * 0.55 * flop, x=-6.0 * limp)
+        p.rot("Jaw", y=22.0 * R.pulse(t, 0.0, 0.07, 0.3, 0.5) + 8.0 * R.window(t, 0.5, 0.8) + 4.0 * limp)
+        for s, k in OSIDES:
+            p.rot(f"{s}Ear", x=-16.0 * hitb * k, y=-14 * hitb - 10 * limp)
+        w = [(4.0 + 3.0 * hitb + 2.0 * stag - 6.0 * fall, 5.0 + 6.0 * hitb + 5.0 * fall + 4.0 * limp,
+              -12.5 + 6.0 * hitb + 9.0 * fall) for _ in OSIDES]
+        self.arms(p, wrist=w, pole=(-0.6, 1.0, -0.3 + 0.9 * fall), hand=(10.0 - 25.0 * limp,) * 2,
+                  hand_x=(-20.0 * limp,) * 2)
+        self.cannons(p, pitch=-6.0 * hitb + 10.0 * fall, recoil=1.5 * fall)
+        p.rot("Tail1", y=-60.0 * fall + 8.0 * rock)
+        p.rot("Tail2", y=-12.0 * fall)
+        # sitting down: the shell's back rim goes down to the ground (the legs fold under it, feet planted)
+        if sit > 0.0:
+            low = float(self.posed(p, self.shell)[:, 2].min())
+            p.move("Waist", z=-low * sit)
+        slipped = [self.rig.head(f"{s}Foot") + np.array([O_DIE_FEET_SLIP * sit, 0.0, 0.0]) for s, _ in OSIDES]
+        self.plant(p, slipped, pole=(1.0, 0.5 * stag, 0.0))
+        # rolling: the legs leave the ground with the body and go limp
+        for s, k in OSIDES:
+            for bone, limp_rot in ((f"{s}Thigh", (14.0 * k, -10.0 + 6 * rock, 0.0)), (f"{s}Leg", (0.0, 50.0, 0.0)),
+                                   (f"{s}Foot", (10.0 * k, 25.0, 0.0))):
+                e = np.asarray(p.get_rot(bone), float)
+                p.set_rot(bone, *(e + (np.asarray(limp_rot) - e) * roll))
+        self.roll_back(p, (O_DIE_ANGLE - O_DIE_SIT) * roll - 9.0 * rock)
+        p.move("Waist", x=O_DIE_SLIDE * slip)
+        self.tail_clear(p)
+        # safety only (the roll keeps it on the ground): nothing under the ground
+        low = self.lowest(p)
+        if low < 0.0:
+            p.move("Waist", z=-low)
+        return p
+
+    def spawn(self, t):
+        p = R.Pose()
+        # withdrawn in its shell -> pops out (overshoot) -> roars, flexing, cannons up -> settles to idle
+        tuck = 1.0 - R.window(t, 0.1, 0.38, R.ease_out_back)
+        legs = 1.0 - R.window(t, 0.1, 0.32, R.ease_out)
+        flex = R.pulse(t, 0.38, 0.52, 0.8, 0.98, R.ease_in_out)
+        cry = R.pulse(t, 0.44, 0.54, 0.76, 0.88)
+        shake = math.sin(t * 2 * math.pi * 10) * R.pulse(t, 0.52, 0.58, 0.74, 0.8)
+        p.move("Waist", z=-5.0 * legs + 0.6 * flex)
+        p.rot("Waist", y=6.0 * tuck - 14.0 * flex)
+        p.move("Neck", x=-2.0 * tuck, z=-3.5 * tuck)
+        p.rot("Neck", y=4.0 * tuck - 3.0 * flex)
+        p.rot("Head", y=12.0 * tuck - 4.0 * flex + 1.5 * shake, z=3.0 * shake)
+        p.rot("Jaw", y=24.0 * cry)
+        for s, k in OSIDES:
+            p.rot(f"{s}Ear", x=(-12.0 * tuck + 8.0 * flex) * k, y=-20 * tuck)
+        rest = np.array((4.0, 5.0, -12.5))
+        tucked = np.array((-2.0, -1.0, -8.0))
+        flexed = np.array((3.0, 9.0, 0.0))
+        w = rest + (tucked - rest) * tuck + (flexed - rest) * flex
+        self.arms(p, wrist=[tuple(w)] * 2, pole=(-0.6, 1.0, -0.4 - 0.6 * flex), hand=(20.0 * tuck + 30.0 * flex,) * 2,
+                  fingers=(30.0 * flex,) * 2)
+        self.cannons(p, pitch=8.0 * tuck - 18.0 * flex + 1.0 * shake, recoil=4.0 * tuck)
+        p.rot("Tail1", y=-14.0 * tuck)
+        return self.plant(p, pole=(1.0, 0.8, 0.0))
+
+    def victory(self, t):
+        p = R.Pose()
+        # stomp left, stomp right, then both fists up pumping in turn, a roar to the sky with the cannons raised
+        st_l = R.pulse(t, 0.03, 0.12, 0.14, 0.2, R.ease_out)
+        st_r = R.pulse(t, 0.22, 0.31, 0.33, 0.39, R.ease_out)
+        land = R.pulse(t, 0.19, 0.2, 0.21, 0.27) + R.pulse(t, 0.38, 0.39, 0.4, 0.46)
+        roar = R.pulse(t, 0.46, 0.58, 0.84, 0.98, R.ease_in_out)
+        held = R.pulse(t, 0.54, 0.62, 0.82, 0.9)
+        shake = math.sin(t * 2 * math.pi * 9) * R.pulse(t, 0.58, 0.62, 0.8, 0.84)
+        sway = 2.4 * (st_r - st_l)
+        p.move("Waist", y=sway * 0.6, z=-1.0 - 0.6 * (st_l + st_r) - 1.4 * land + 0.8 * roar)
+        p.rot("Waist", x=sway * 1.6, y=-18.0 * roar + 3.0 * (st_l + st_r) + 3.0 * land)
+        p.rot("Neck", y=-3.0 * roar, x=-sway)
+        p.rot("Head", y=-4.0 * roar + 2.0 * shake + 4.0 * land, z=3.0 * shake)
+        p.rot("Jaw", y=26.0 * roar + 3.0 * shake)
+        w = []
+        for (s, k), lift_ in zip(OSIDES, (st_l, st_r)):
+            pump = math.sin(2 * math.pi * (6.0 * t) + (0.0 if k > 0 else math.pi)) * held   # ~3 Hz, in turn
+            rest = np.array((4.0, 5.0, -12.5))
+            up = np.array((3.0, 8.0, 12.0 + 2.5 * pump))
+            w.append(tuple(rest + (up - rest) * roar + np.array((2.0, 2.0, 4.0)) * lift_))
+            p.rot(f"{s}Ear", x=(-12.0 * roar) * k)
+        self.arms(p, wrist=w, pole=(-0.3, 1.0, -0.8 * roar), hand=(10.0 - 30.0 * roar,) * 2,
+                  fingers=(25.0 * roar,) * 2)
+        self.cannons(p, pitch=-30.0 * roar + 1.5 * shake + 3.0 * land)
+        tw = R.chain_wave(t, 2, 10.0 * roar + 4.0, lag=0.15, freq=4)
+        p.rot("Tail1", z=tw[0])
+        p.rot("Tail2", z=tw[1])
+        targets = [self.rig.head(f"{s}Foot") + np.array([1.2 * lf, 0.4 * k * lf, 6.0 * lf])
+                   for (s, k), lf in zip(OSIDES, (st_l, st_r))]
+        return self.plant(p, targets, pitch=(-12 * st_l, -12 * st_r))
+
+    def sequences(self):
+        rig, A = self.rig, mdl.ACT
+
+        def mk(r, name, fn, **kw):
+            return R.make_sequence(r, name, fn if name == "die" else (lambda t: self.tail_clear(fn(t))), **kw)
+
+        walk_lm = R.gait_linear_movement(O_WALK_STRIDE, O_WALK_DUTY)
+        run_lm = R.gait_linear_movement(O_RUN_STRIDE, O_RUN_DUTY)
+        return [
+            mk(rig, "idle", self.idle, frames=60, fps=20, loop=True, activity=A["IDLE"]),
+            mk(rig, "walk", self.walk, frames=O_WALK_FRAMES, fps=O_WALK_FRAMES * O_WALK_SPEED / walk_lm, loop=True,
+               activity=A["WALK"], linear=walk_lm),
+            mk(rig, "run", self.run, frames=O_RUN_FRAMES, fps=O_RUN_FRAMES * O_RUN_SPEED / run_lm, loop=True,
+               activity=A["RUN"], linear=run_lm),
+            mk(rig, "attack", self.attack, frames=O_ATTACK_FRAMES, fps=O_ATTACK_FPS, activity=A["RANGE_ATTACK1"]),
+            mk(rig, "flinch", self.flinch, frames=12, fps=24, activity=A["SMALL_FLINCH"]),
+            mk(rig, "die", self.die, frames=40, fps=24, activity=A["DIESIMPLE"]),
+            mk(rig, "spawn", self.spawn, frames=30, fps=26, activity=A["ARM"]),
+            mk(rig, "victory", self.victory, frames=41, fps=20, activity=A["VICTORY_DANCE"]),
+        ]
+
+
+O_DIE_SLIDE, O_DIE_ANGLE, O_DIE_SIT, O_DIE_FEET_SLIP = 40.0, 96.0, 2.0, 6.0
+O_DIE_NECK, O_DIE_ROLL = -32.0, 36.0     # limp: the neck bends back a little, the head lolls to the side
+
+
+def official_importer(src, verbose=False):
+    return official.Importer(src, height=OFFICIAL_HEIGHT, verbose=verbose, materials=OFFICIAL_MATERIALS)
+
+
+def make_official_model(src, verbose=False):
+    imp = official_importer(src, verbose)
+    anim = OfficialAnimator(imp)
+    atts = [(f"cannon_{s.lower()}", f"{s}FeelerC", tuple(anim.barrel[s][2])) for s, _ in OSIDES]
+    st = imp.studio("pokemon/blastoise.mdl", anim.sequences(), attachments=atts, hitbox_bones=HITBOX_BONES,
+                    eyeposition=(24.0, 0.0, 52.0), hull=((-16.0, -16.0, 0.0), (16.0, 16.0, 72.0)))
+    data = mdl.write(st)
+    mdl.read(data)
+    return data

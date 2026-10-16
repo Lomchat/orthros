@@ -180,7 +180,8 @@ max, bbmin, bbmax, flags)` with `Bone(name, parent, pos, rot)`, `BoneController`
 `Hitbox(bone, bbmin, bbmax, group)`, `Event(frame, event, type, options)`, `Sequence(name, pos, rot, fps, flags,
 activity, actweight, events, motiontype, motionbone, linearmovement, bbmin, bbmax)`, `Texture(name, pixels,
 palette, flags)`, `BodyPart(name, models)`, `Model(name, verts, vert_bone, norms, norm_bone, meshes)`,
-`Mesh(tris (n, 3, 4) = (vert, norm, s, t), skinref)`; verts/norms in their bone's rest space.
+`Mesh(tris (n, 3, 4) = (vert, norm, s, t), skinref)`; verts/norms in their bone's rest space (rigid) or in
+model space at the rest pose (weighted, below).
 
 - `write(studio) -> bytes`: MDL v10, one sequence group, RLE `mstudioanimvalue_t` animations with per-bone
   per-channel scales, greedy triangle strips, normals regrouped per mesh as the engine's lighting loop needs.
@@ -191,6 +192,80 @@ palette, flags)`, `BodyPart(name, models)`, `Model(name, verts, vert_bone, norms
 - Constants: `ACT["IDLE"|"WALK"|"RUN"|"RANGE_ATTACK1"|"SMALL_FLINCH"|"DIESIMPLE"|"ARM"|"VICTORY_DANCE"...]`,
   `STUDIO_LOOPING`, `STUDIO_LX`, `STUDIO_NF_FLATSHADE|CHROME|FULLBRIGHT|ADDITIVE|MASKED`, `HITGROUP_*`.
 
+### Smooth skinning (Xash3D bone weights)
+
+`Model(..., vert_weights=BoneWeights(bones (nv, 4), weights (nv, 4)), norm_weights=None)`: up to 4 bones per
+vertex (`-1` = unused slot, used slots first), weights 0..255 summing to 255 (the renderer adds a shortfall to
+slot 0, an excess is not corrected). `norm_weights` defaults to the weights of the vertex using each normal.
+Any weighted model makes the writer set `STUDIO_HAS_BONEINFO | STUDIO_HAS_BONEWEIGHTS`, write an
+`mstudioboneinfo_t` per bone right after the bones (`Studio.pose_to_bone`, default: inverse rest bone matrices)
+and the model's `blendvertinfoindex` / `blendnorminfoindex` arrays (in place of the unused numgroups/groupindex).
+Weighted vertices and normals are stored in **model space at the rest pose**; `vert_bone` keeps the main bone.
+The reader parses and validates them (`pm.pose_to_bone`, `model.vert_weights`); `mdl.posed_model(pm, model,
+bone_mats)` skins exactly as `ref/gl/gl_studio.c` (worldtransform = bonetransform · poseToBone, matrices blended,
+normals rotated by the blended matrix, not renormalised) and `render.py` uses it. Rigid models are unchanged.
+
+Engine facts (Xash3D FWGS): `STUDIO_HAS_BONEWEIGHTS` without `STUDIO_HAS_BONEINFO` skins with stale matrices
+(the validator refuses it); MAXSTUDIOBONES 128 (bone indices are int8 in the weights), MAXSTUDIOVERTS 16384 per
+submodel and the GL renderer's 16384 array vertices per submodel (every strip/fan corner of every mesh, no
+bounds check: the writer refuses more); textures up to 8192 (NPOT fine on WebGL2), wrapped with GL_REPEAT (the
+validator accepts s/t up to one repeat); `STUDIO_NF_TWOSIDE` is ignored by the GL renderer (back faces are
+always culled: double-sided surfaces need back faces in the mesh); bones are rigid (no scale); dynamic lights
+on weighted models use `vert_bone` with model-space vertices (slightly off, ambient/shade lighting is exact).
+
+## gltf.py — reading glTF 2.0
+
+```python
+g = gltf.load("model.glb")              # or gltf.loads(bytes); untrusted input, bounds-checked, GltfError
+g.nodes[i].name / .parent / .children / .translation / .rotation (x, y, z, w) / .scale / .mesh / .skin
+g.meshes[m].primitives[k].attributes["POSITION" | "NORMAL" | "TEXCOORD_0" | "JOINTS_0" | "WEIGHTS_0"]
+g.meshes[m].primitives[k].triangles     # (t, 3), strips/fans converted; .material
+g.skins[s].joints (node indices), .inverse_bind (J, 4, 4)
+g.materials[i].name / .base_color / .base_texture / .texcoord / .alpha_mode / .alpha_cutoff / .double_sided / .unlit
+g.texture_image(tex) -> PIL RGBA (source or EXT_texture_webp); g.image(i)
+g.animations[a].name / .duration / .sample(t) -> {node: {"translation"|"rotation"|"scale": v}}
+g.world_matrices(animation=None, t=0.0) -> (N, 4, 4); g.mesh_instances(); g.summary()
+gltf.write_glb(doc, bin) (tests)
+```
+Accessors: every component type, `normalized`, byteStride, sparse; MAT4 column-major handled. Draco/meshopt
+compressed files must be decoded first (`extensionsRequired` is checked).
+
+## official.py — importing skinned glTF models
+
+```python
+imp = official.Importer(path, height=30, up="+y", forward="+z", place=None, materials={...})
+imp.rig, imp.bone_names, imp.heads          # the kept official joints as a rig.Rig (identity rest rotations)
+imp.joint_report(); imp.report; imp.animation_names()
+idle = imp.sequence("defaultwait01_loop", "idle", fps=30, loop=True, activity=mdl.ACT["IDLE"])
+walk = imp.sequence("walk01_loop", "walk", fps=30, loop=True, activity=mdl.ACT["WALK"],
+                    root_motion="extract", feet=["left_foot", "right_foot"])   # or "feet" / "lock"
+pose = imp.pose_at("roar01", 0.8)           # rig.Pose of an official frame, editable with rig helpers
+spawn = R.make_sequence(imp.rig, "spawn", fn, frames=30, fps=30)          # authored on the official skeleton
+st = imp.studio("pokemon/pikachu.mdl", [idle, walk, spawn], attachments=[("mouth", "Head", (9, 0, 26))],
+                hitbox_groups={"Head": mdl.HITGROUP_HEAD}, hitbox_bones=None)
+data = mdl.write(st)
+```
+- Axes: glTF +Y up / +Z forward → GoldSrc +Z up / +X forward (`up`, `forward`, `yaw` for exports that differ);
+  uniform scale to `height` (or `scale`); feet on z = 0, x/y at the glTF origin (`origin="bbox"`: centred).
+- Rest pose = the bind pose (inverse bind matrices), placed by the trunk joint of the default node pose, or of
+  `place=(animation, time)` when the file's animations re-orient container nodes above the skeleton (an
+  animation undoing a converter's axis fix): rest and animations then share one frame.
+- Skeleton: joints with vertices plus those between them; the rest is folded into the kept joints' world
+  matrices; least-weighted leaves merged above 128 bones; exporter suffixes `_<digits>` stripped from names.
+- Weights: 4 strongest per vertex, renormalised to 255. Missing normals rebuilt (welded, `crease` angle).
+- Animations: sampled at `fps` (evenly over the clip, fps adjusted), rigid part of each joint's model-space
+  skinning matrix; joints with animated scale get the rigid motion closest to their vertices' true motion
+  (weighted Kabsch). Root motion: `extract` (motion bone displacement → linearmovement, removed from the cycle),
+  `feet` (linearmovement from the planted feet's backward speed after that removal), `lock`.
+- Textures: base colour × factor, wrapped UVs normalised per triangle, cropped to the used area (powers of two),
+  `max_size` (512) / `min_size` (256, small eye/mouth cells are upscaled so integer s/t are finer), 256-colour
+  quantisation per texture (`quantize_texture`), MASK/BLEND alpha → `STUDIO_NF_MASKED`. Per material:
+  `materials={"name": {"flags": ..., "filter": fn, "max_size": n, "min_size": n, "crop": b,
+  "double_sided": b|"auto", "exclude": True}}`; `texture_filter(name, rgba)` for all;
+  `recolor(rgba, [(src, dst), ...])` (shading-preserving colour remap), `fire_tint(rgba)` (flame masks).
+- Double-sided materials: faces found to be thin sheets (a ray inward from the face meets no back face) get a
+  back face; decals lying on another surface do not. Coincident duplicate triangles are dropped.
+
 ## render.py — looking at the result
 
 `render_frame(pm, seq=0, frame=0.0, skin=0, body=0, yaw=35, pitch=15, dist=None, size=(512, 512), ss=2,
@@ -198,7 +273,7 @@ bounds=None, ambient=80, shade=120, lightvec=(-0.35, -0.45, -0.82), fov=38, eye=
 label=None) -> PIL.Image`, `contact_sheet(pm, frames=6, cell=220, skin=0)`, `views_sheet(pm)`.
 Poses with the engine's decoding, nearest texture sampling, the engine's ambient + shade light with its
 hemispherical Lambert (FLATSHADE/FULLBRIGHT honoured, MASKED index 255 cut, ADDITIVE meshes added), back faces
-culled as in game, z-buffer, ground grid (8/32 units, red = +x, green = +y). Chrome is drawn as a plain texture.
+culled as in game, z-buffer (GL_LEQUAL in mesh order: a coincident later mesh wins, as in the engine), ground grid (8/32 units, red = +x, green = +y). Chrome is drawn as a plain texture.
 Look at every model with `--sheet` and `--views` before handing it over.
 
 ## spr.py, icons.py — sprites and HUD icons
