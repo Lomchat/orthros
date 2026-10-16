@@ -28,11 +28,10 @@ RING = T.rgb("#1b1b1f")
 INSIDE = T.rgb("#d9d6cc")
 
 # per skin: (name, main colour, light colour, dark outline)
-SPECIES = [
-    ("pikachu", T.rgb("#ffd21a"), T.rgb("#fff3a0"), T.rgb("#5a3a00")),
-    ("charizard", T.rgb("#ff7417"), T.rgb("#ffd36a"), T.rgb("#4a1300")),
-    ("blastoise", T.rgb("#2f8dff"), T.rgb("#a9e2ff"), T.rgb("#06214a")),
-]
+# (a Poké Ball stays neutral, the owner's choice: the three skins are the same classic ball — no emblem, a plain band,
+# a white button — the species only told by the HUD and the buy menu)
+NEUTRAL = (BAND, T.rgb("#f4f4f0"), T.rgb("#2a2a2e"))
+SPECIES = [(name,) + NEUTRAL for name in ("pikachu", "charizard", "blastoise")]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -293,7 +292,7 @@ class BallPaint:
 
     local = Rm^T (P' - c) with P' = P mirrored back when the model is authored mirrored."""
 
-    def __init__(self, spec, Rm=np.eye(3), c=(0, 0, 0), mirror=False, emblem_size=0.42, light=(0.45, 0.35, 0.82),
+    def __init__(self, spec, Rm=np.eye(3), c=(0, 0, 0), mirror=False, emblem_size=0.0, light=(0.45, 0.35, 0.82),
                  seam=False, emblem_lat=50.0, gloss=0.55, sheen=0.10):
         """gloss / sheen: painted specular highlight (fixed in ball space: keep it low on balls that spin)."""
         self.seam = seam
