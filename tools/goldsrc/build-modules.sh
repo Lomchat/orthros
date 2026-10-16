@@ -4,7 +4,8 @@
 # (checked against lock.json "browser"); the client, menu and server modules compiled to WebAssembly in the pinned
 # Emscripten image (no network); the server library compiled natively (32-bit Linux) for the dedicated server
 # (goldsrc.multiplayer.gameLibrary); the bots' archive (goldsrc.extras): their profiles and the navigation meshes the
-# native server learns for the game's maps (bot-nav.mjs, the game's files and the dedicated-server release needed).
+# native server learns for the game's maps (bot-nav.mjs, the game's files and the dedicated-server release needed); a
+# build's "assets": archives its generator writes (Python 3 with numpy and Pillow, tools/goldsrc/assets/).
 # Sources are cloned with their submodules in data_engines/src/<repository name> and stay as pinned; each build works on
 # a copy in scratch where its patches (tools/goldsrc/patches/) are applied. Every module lock.json lists must come out
 # identical. Needs git, Docker, Python 3, Node, cmake, g++ with 32-bit libraries. An installed release is
@@ -102,7 +103,16 @@ with zipfile.ZipFile(stage / rel, 'w', zipfile.ZIP_DEFLATED) as z:
         info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0)); info.compress_type = zipfile.ZIP_DEFLATED; info.external_attr = 0o644 << 16
         z.writestr(info, src.read_bytes())
 put(None, rel)
-inputs = {str(f.relative_to(tools)): sha(f) for d in ['patches', 'cmake'] for f in sorted((tools / d).rglob('*')) if f.is_file()}
+# (generated assets: archives a build's generator writes from our own code — e.g. the Half Strike Pokémon's models,
+# sprites and sounds — deterministic, so the same inputs give the same archive)
+import subprocess
+for asset in build_spec.get('assets', []):
+    rel = f"{mods['gameDir']}/{asset['archive']}"
+    (stage / rel).parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['python3', '-I', str(tools / asset['generator']), str(stage / rel)], check=True, stdout=subprocess.DEVNULL)
+    put(None, rel)
+dirs = ['patches', 'cmake'] + sorted({a['generator'].split('/')[0] for a in build_spec.get('assets', [])})
+inputs = {str(f.relative_to(tools)): sha(f) for d in dirs for f in sorted((tools / d).rglob('*')) if f.is_file() and '__pycache__' not in f.parts}
 release = {k: mods[k] for k in ('engine', 'repository', 'commit', 'submodules', 'emsdk')}
 (stage / 'release.json').write_text(json.dumps({'id': build_spec['id'], **release, 'patches': build_spec['patches'], 'inputs': inputs, 'files': files}, indent=2) + '\n')
 PY

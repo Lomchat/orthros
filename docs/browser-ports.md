@@ -25,7 +25,7 @@ and several mods are still required; the freely licensed engine example is a sep
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r6` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r7` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -155,10 +155,11 @@ The browser release's game modules were recovered from a deployed build whose so
 `Velaron/cs16-client` at `15278ca` (the commit the recovered build started from) with its submodules — the client,
 `mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). Each of `modules.builds` is a release of its own, its patches
 on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sources give it) and
-`xash3d-web-1.2.2-cs16-15278ca-arsenal-r6` (the Half-Life Arsenal, below). A release holds the engine files of
+`xash3d-web-1.2.2-cs16-15278ca-arsenal-r7` (the Half-Life Arsenal, below). A release holds the engine files of
 `xash3d-web-1.2.2` (checked against the lock) and under `counterstrike/cstrike/` the three WebAssembly modules,
 `dlls/cs.so` (the same server compiled natively for the 32-bit dedicated server: `multiplayer.gameLibrary`) and
-`orthros-bots.pk3` (`goldsrc.extras`).
+`orthros-bots.pk3` (`goldsrc.extras`); a build's `assets` add archives of their own (Half Strike:
+`orthros-pokemon.pk3`, below).
 
 - **Sources.** `data_engines/src/cs16-client` stays at the pinned commits (checked, clean); a build works on a copy in
   scratch, where its patches (`tools/goldsrc/patches/`) are applied. The common ones: a few one-line portability fixes
@@ -261,6 +262,41 @@ or changed.
 - **Effects.** The Egon's beams are the server's for every player, its shooter included (the Half-Life client's own
   beams follow a predicted aim this client does not have). Explosions are Half-Life's (Counter-Strike's grenade
   explosion is the flashbang's).
+
+### Poké Balls (r7)
+
+Three more items of the grenade slot (`pikachu` $1000, `charizard` $1400, `blastoise` $1300; ids 46 to 48, after the
+snarks; one ball carried and one Pokémon out at a time; bots do not buy them). Thrown like the hand grenade, the ball
+bounces, wobbles at rest and opens (lid away from the thrower, a flash): the Pokémon comes out beside it
+(`monster_pokemon`, `wpn_shared/wpn_pokemon.cpp`). It follows its owner (the bots' navigation mesh, else straight
+steering; back beside the owner past 1500 units or stuck), and as soon as the owner fires (the enemy nearest to their
+aim) or the owner or the Pokémon is hurt (the attacker) it charges and attacks within 200 units (5 m) with line of
+sight, until the target dies, hides 6 s or runs away; then it follows again, after a short victory when its own hit
+killed. Teammates are never hurt (friendly fire: only its target); kills are credited to the owner, weapon `pokemon`.
+
+| Pokémon | Health | Speed | Attack |
+|---|---|---|---|
+| Pikachu | 90 | 300 | Thunderbolt: 22 every 1.1 s, a beam from its cheeks, the target at half speed 0.4 s |
+| Charizard | 160 | 240 | Flamethrower: 1 s stream, 7 every 0.15 s in a 25° cone, then 2 s cooldown; burning 2 every 0.5 s for 2 s |
+| Blastoise | 220 | 210 | Hydro Pump: 34 every 1.9 s from both cannons, pushed back 380 units/s |
+
+It flinches when hurt, dies (falls, stays 3 s, fades), goes back to its ball (a red flash) when its owner dies,
+disconnects or changes side; a round restart removes Pokémon and balls. Health goes to the clients in the `PokeHP`
+message (entity, percent, species, team, owner), at each change and after each HUD reset: the client draws a bar
+above each visible Pokémon (name · owner; green for one's own with a gold frame, red for enemies', a trail of the lost
+health; fading with distance, hidden behind walls) and keeps Pokémon models lit at least as a dim room would (32/64)
+— otherwise near black in the maps' shade. The buy menu's ninth tab shows the three, turning, with their figures.
+`pk_test <species> [spawn|enemy]`, `pk_test info|clear` (with `sv_cheats 1`) give a ball, spawn one, arm an enemy bot.
+
+**Assets from our own code.** `tools/goldsrc/assets/` (Python 3, numpy and Pillow) writes `orthros-pokemon.pk3`
+deterministically at the release build: a GoldSrc studio model writer and reader (MDL 10, checked by `test_mdl.py`),
+signed distance field modelling meshed and decimated per rigid part, painted and baked textures quantised to 256
+colours, keyframed and procedural animations (gaits matched to the server's speeds), sprites (IDSP 2), synthesised
+sounds and HUD icons, and an offline renderer that draws a model's sequences to PNG (`render.py`) — how the models were
+judged before the engine. Models: `models/pokemon/{pikachu,charizard,blastoise}.mdl` (≈3000 triangles each; sequences
+idle, walk, run, attack, flinch, die, spawn, victory), `w_`/`p_`/`v_pokeball.mdl` (the view model: a gloved hand; one
+skin per species); sprites `zap`, `fire`, `water`, `flash` (additive: black only where the palette entry is exactly 0,
+the engine's texture gamma lifting the rest), `hud`, `d_pokemon`; 19 sounds. No file comes from elsewhere.
 
 ### Its own menus
 

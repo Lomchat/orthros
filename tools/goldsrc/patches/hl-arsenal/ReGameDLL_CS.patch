@@ -1,12 +1,13 @@
 diff --git a/regamedll/CMakeLists.txt b/regamedll/CMakeLists.txt
-index 70bf349..36e981f 100644
+index 70bf349..9d80d9a 100644
 --- a/regamedll/CMakeLists.txt
 +++ b/regamedll/CMakeLists.txt
-@@ -269,6 +269,7 @@ set(GAMEDLL_SRCS
+@@ -269,6 +269,8 @@ set(GAMEDLL_SRCS
  	"dlls/wpn_shared/wpn_deagle.cpp"
  	"dlls/wpn_shared/wpn_elite.cpp"
  	"dlls/wpn_shared/wpn_famas.cpp"
 +	"dlls/wpn_shared/wpn_hl.cpp"
++	"dlls/wpn_shared/wpn_pokemon.cpp"
  	"dlls/wpn_shared/wpn_fiveseven.cpp"
  	"dlls/wpn_shared/wpn_flashbang.cpp"
  	"dlls/wpn_shared/wpn_g3sg1.cpp"
@@ -50,18 +51,19 @@ index 5be847b..bedeac6 100644
  		}
  	}
 diff --git a/regamedll/dlls/client.cpp b/regamedll/dlls/client.cpp
-index b802a2e..e8e1b43 100644
+index b802a2e..5884be0 100644
 --- a/regamedll/dlls/client.cpp
 +++ b/regamedll/dlls/client.cpp
-@@ -83,6 +83,7 @@ int gmsgFog = 0;
+@@ -83,6 +83,8 @@ int gmsgFog = 0;
  int gmsgShowTimer = 0;
  int gmsgAccount = 0;
  int gmsgHealthInfo = 0;
 +int gmsgHLWeapons = 0;
++int gmsgPokeHP = 0;
  bool g_bClientPrintEnable = true;
  
  char *sPlayerModelFiles[] =
-@@ -101,6 +102,37 @@ char *sPlayerModelFiles[] =
+@@ -101,6 +103,37 @@ char *sPlayerModelFiles[] =
  	"models/player/militia/militia.mdl"    // CZ
  };
  
@@ -99,17 +101,20 @@ index b802a2e..e8e1b43 100644
  bool g_skipCareerInitialSpawn = false;
  
  static entity_field_alias_t entity_field_alias[] =
-@@ -230,6 +262,9 @@ void LinkUserMessages()
+@@ -230,6 +263,12 @@ void LinkUserMessages()
  	gmsgAccount       = REG_USER_MSG("Account", 5);
  	gmsgHealthInfo    = REG_USER_MSG("HealthInfo", 5);
  #endif
 +
 +	// (the Half-Life arsenal weapons a player owns, past the 32 bits of its weapons field: hl_weapons.h)
 +	gmsgHLWeapons     = REG_USER_MSG("HLWeapons", 4);
++
++	// (Half Strike's Pokemon: their health bars — pokemon.h)
++	gmsgPokeHP        = REG_USER_MSG("PokeHP", 6);
  }
  
  void WriteSigonMessages()
-@@ -399,6 +434,97 @@ void EXT_FUNC __API_HOOK(ShowMenu)(CBasePlayer *pPlayer, int bitsValidSlots, int
+@@ -399,6 +438,98 @@ void EXT_FUNC __API_HOOK(ShowMenu)(CBasePlayer *pPlayer, int bitsValidSlots, int
  
  LINK_HOOK_VOID_CHAIN(ShowVGUIMenu, (CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu), pPlayer, MenuType, BitMask, szOldMenu);
  
@@ -146,6 +151,7 @@ index b802a2e..e8e1b43 100644
 +	{ "Rifles", { { "MP5", WEAPON_HL_MP5, HL_MP5_PRICE }, { "Shotgun", WEAPON_HL_SHOTGUN, HL_SHOTGUN_PRICE }, { "Crossbow", WEAPON_HL_CROSSBOW, HL_CROSSBOW_PRICE } } },
 +	{ "Heavy weapons", { { "Hornet Gun", WEAPON_HL_HORNETGUN, HL_HORNETGUN_PRICE }, { "Gauss", WEAPON_HL_GAUSS, HL_GAUSS_PRICE }, { "RPG", WEAPON_HL_RPG, HL_RPG_PRICE }, { "Egon", WEAPON_HL_EGON, HL_EGON_PRICE } } },
 +	{ "Explosives", { { "Hand Grenade", WEAPON_HL_HANDGRENADE, HL_HANDGRENADE_PRICE }, { "MP5 Grenade", WEAPON_NONE, HL_ARGRENADE_PRICE }, { "Satchel Charge", WEAPON_HL_SATCHEL, HL_SATCHEL_PRICE }, { "Tripmine", WEAPON_HL_TRIPMINE, HL_TRIPMINE_PRICE }, { "3 Snarks", WEAPON_HL_SNARK, HL_SNARK_PRICE } } },
++	{ "Pokemon", { { "Pikachu", WEAPON_PK_PIKACHU, PK_PIKACHU_PRICE }, { "Charizard", WEAPON_PK_CHARIZARD, PK_CHARIZARD_PRICE }, { "Blastoise", WEAPON_PK_BLASTOISE, PK_BLASTOISE_PRICE } } },
 +};
 +
 +// (a long menu in several messages, as their size is limited)
@@ -207,7 +213,7 @@ index b802a2e..e8e1b43 100644
  void EXT_FUNC __API_HOOK(ShowVGUIMenu)(CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu)
  {
  #ifdef REGAMEDLL_ADD
-@@ -1094,6 +1220,22 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
+@@ -1094,6 +1225,22 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
  	if (pPlayer->HasShield() && iWeapon == WEAPON_ELITE)
  		return false;
  
@@ -230,10 +236,14 @@ index b802a2e..e8e1b43 100644
  	if (pPlayer->HasShield() && iWeapon == WEAPON_SHIELDGUN)
  		return false;
  
-@@ -1564,6 +1706,10 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
+@@ -1564,6 +1711,14 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
  	if (!CanBuyThis(pPlayer, weaponID))
  		return nullptr;
  
++	// (Half Strike's Poke Balls: one ball, one Pokemon at a time)
++	if (IsPokeBall(weaponID))
++		return PK_BuyBall(pPlayer, weaponID);
++
 +	// (the Half-Life arsenal's of the knife and grenade slots: no gun of the player's to drop for them)
 +	if (IsHLWeapon(weaponID) && !IsPrimaryWeapon(weaponID) && !IsSecondaryWeapon(weaponID))
 +		return HL_BuyEquipment(pPlayer, weaponID);
@@ -241,7 +251,7 @@ index b802a2e..e8e1b43 100644
  	WeaponInfoStruct *info = GetWeaponInfo(weaponID);
  	if (!info || !info->entityName)
  		return nullptr;
-@@ -1615,6 +1761,23 @@ LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slo
+@@ -1615,6 +1770,23 @@ LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slo
  void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int slot)
  {
  	int numSkins = AreRunningCZero() ? CZ_NUM_SKIN : CS_NUM_SKIN;
@@ -265,7 +275,7 @@ index b802a2e..e8e1b43 100644
  
  	struct
  	{
-@@ -1755,8 +1918,10 @@ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int
+@@ -1755,8 +1927,10 @@ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int
  	pPlayer->pev->body = 0;
  	pPlayer->m_iModelName = appearance.model_id;
  
@@ -278,7 +288,7 @@ index b802a2e..e8e1b43 100644
  
  	if (CSGameRules()->m_bMapHasVIPSafetyZone)
  	{
-@@ -2095,14 +2260,14 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
+@@ -2095,14 +2269,14 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
  				if (AreRunningCZero())
  					ShowVGUIMenu(pPlayer, VGUI_Menu_Class_CT, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5 | MENU_KEY_6), "#CT_Select");
  				else
@@ -295,7 +305,7 @@ index b802a2e..e8e1b43 100644
  				break;
  			}
  		}
-@@ -2296,6 +2461,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
+@@ -2296,6 +2470,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
  		return false;
  	}
  
@@ -306,7 +316,7 @@ index b802a2e..e8e1b43 100644
  	// Purchase the ammo if the player has enough money
  	if (pPlayer->m_iAccount >= info->clipCost)
  	{
-@@ -2421,6 +2590,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
+@@ -2421,6 +2599,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
  	WeaponIdType weaponID = WEAPON_NONE;
  	const char *weaponFailName = BuyAliasToWeaponID(pszCommand, weaponID);
  
@@ -320,7 +330,7 @@ index b802a2e..e8e1b43 100644
  	// Ok, we have weapon info ID.
  	if (weaponID != WEAPON_NONE)
  	{
-@@ -2935,6 +3111,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -2935,6 +3120,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				{
  					switch (slot)
  					{
@@ -336,7 +346,7 @@ index b802a2e..e8e1b43 100644
  						case VGUI_MenuSlot_Buy_Pistol:
  						{
  							pPlayer->m_iMenu = Menu_BuyPistol;
-@@ -3064,6 +3249,27 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3064,6 +3258,28 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				}
  				break;
  			}
@@ -353,6 +363,7 @@ index b802a2e..e8e1b43 100644
 +			case Menu_BuyHLCategory + 1:
 +			case Menu_BuyHLCategory + 2:
 +			case Menu_BuyHLCategory + 3:
++			case Menu_BuyHLCategory + 4:
 +			{
 +				if (canOpenOldMenu())
 +				{
@@ -364,7 +375,7 @@ index b802a2e..e8e1b43 100644
  			case Menu_BuyPistol:
  			{
  				if (canOpenOldMenu())
-@@ -3567,7 +3773,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3567,7 +3783,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  			{
  				if (pPlayer->m_signals.GetState() & SIGNAL_BUY)
  				{
@@ -373,7 +384,19 @@ index b802a2e..e8e1b43 100644
  					pPlayer->m_iMenu = Menu_Buy;
  
  					if (TheBots)
-@@ -4029,6 +4235,13 @@ void ClientPrecache()
+@@ -3646,6 +3862,11 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+ 				}
+ 			}
+ #endif
++			// (Half Strike's Pokemon test command: sv_cheats only)
++			else if (FStrEq(pcmd, "pk_test"))
++			{
++				PK_TestCommand(pPlayer);
++			}
+ 			else
+ 			{
+ 				if (HandleBuyAliasCommands(pPlayer, pcmd))
+@@ -4029,6 +4250,13 @@ void ClientPrecache()
  	for (i = 0; i < numPlayerModels; i++)
  		PRECACHE_MODEL(sPlayerModelFiles[i]);
  
@@ -387,7 +410,7 @@ index b802a2e..e8e1b43 100644
  	if (AreRunningCZero())
  	{
  		for (i = FirstCustomSkin; i <= LastCustomSkin; i++)
-@@ -4925,7 +5138,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
+@@ -4925,7 +5153,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
  				weapon->GetItemInfo(&II);
  #endif
  
@@ -396,7 +419,7 @@ index b802a2e..e8e1b43 100644
  				{
  					auto item = &info[II.iId];
  
-@@ -5084,7 +5297,8 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
+@@ -5084,7 +5312,8 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
  #endif
  				)
  			{
@@ -407,7 +430,7 @@ index b802a2e..e8e1b43 100644
  				if ((unsigned int)weapon->m_iPrimaryAmmoType < MAX_AMMO_SLOTS)
  				{
 diff --git a/regamedll/dlls/client.h b/regamedll/dlls/client.h
-index d873bd2..f291712 100644
+index d873bd2..b3d2934 100644
 --- a/regamedll/dlls/client.h
 +++ b/regamedll/dlls/client.h
 @@ -131,6 +131,9 @@ void respawn(entvars_t *pev, BOOL fCopyCorpse = FALSE);
@@ -420,13 +443,14 @@ index d873bd2..f291712 100644
  void ListPlayers(CBasePlayer *current);
  void ProcessKickVote(CBasePlayer *pVotingPlayer, CBasePlayer *pKickPlayer);
  void CheckStartMoney();
-@@ -292,3 +295,4 @@ extern int gmsgFog;
+@@ -292,3 +295,5 @@ extern int gmsgFog;
  extern int gmsgShowTimer;
  extern int gmsgAccount;
  extern int gmsgHealthInfo;
 +extern int gmsgHLWeapons;
++extern int gmsgPokeHP;
 diff --git a/regamedll/dlls/game.cpp b/regamedll/dlls/game.cpp
-index 2c6d9fb..6afbdf4 100644
+index 2c6d9fb..298da0d 100644
 --- a/regamedll/dlls/game.cpp
 +++ b/regamedll/dlls/game.cpp
 @@ -25,7 +25,8 @@ cvar_t infiniteAmmo          = { "mp_infinite_ammo", "0", FCVAR_SERVER, 0.0f, nu
@@ -458,12 +482,22 @@ index 2c6d9fb..6afbdf4 100644
  cvar_t give_player_c4               = { "mp_give_player_c4", "1", FCVAR_SERVER, 0.0f, nullptr };
  cvar_t weapons_allow_map_placed     = { "mp_weapons_allow_map_placed", "1", FCVAR_SERVER, 0.0f, nullptr };
  
+@@ -385,6 +387,9 @@ void EXT_FUNC GameDLLInit()
+ 	ADD_SERVER_COMMAND("endround", GameDLL_EndRound_f);
+ 	ADD_SERVER_COMMAND("swapteams", GameDLL_SwapTeams_f);
+ 
++	// (Half Strike's Pokemon tests: pokemon.h)
++	PK_RegisterServerCommands();
++
+ 	CVAR_REGISTER(&game_version);
+ 	CVAR_REGISTER(&maxmoney);
+ 	CVAR_REGISTER(&round_infinite);
 diff --git a/regamedll/dlls/hl_weapons.h b/regamedll/dlls/hl_weapons.h
 new file mode 100644
-index 0000000..fbdf777
+index 0000000..5e5a536
 --- /dev/null
 +++ b/regamedll/dlls/hl_weapons.h
-@@ -0,0 +1,644 @@
+@@ -0,0 +1,645 @@
 +/*
 +*	Half-Life arsenal: the fourteen Half-Life weapons bought and used in Counter-Strike, ported from the Half-Life SDK
 +*	(crowbar.cpp, glock.cpp, python.cpp, mp5.cpp, shotgun.cpp, crossbow.cpp, rpg.cpp, gauss.cpp, egon.cpp, hornetgun.cpp,
@@ -478,7 +512,8 @@ index 0000000..fbdf777
 +*/
 +#pragma once
 +
-+inline bool IsHLWeapon(int id) { return id >= WEAPON_HL_FIRST && id <= WEAPON_HL_LAST; }
++// (the arsenal's weapons past Counter-Strike's 32: Half-Life's, and Half Strike's Poke Balls — pokemon.h — after them)
++inline bool IsHLWeapon(int id) { return id >= WEAPON_HL_FIRST && id <= WEAPON_PK_LAST; }
 +
 +// The bit of a weapon in pev->weapons, none for the Half-Life weapons
 +inline int WeaponBit(int id) { return (id >= 0 && id < 32) ? (1 << id) : 0; }
@@ -1109,20 +1144,23 @@ index 0000000..fbdf777
 +	int m_fJustThrown;
 +};
 diff --git a/regamedll/dlls/multiplay_gamerules.cpp b/regamedll/dlls/multiplay_gamerules.cpp
-index 2b91a50..5db9af1 100644
+index 2b91a50..e80ac37 100644
 --- a/regamedll/dlls/multiplay_gamerules.cpp
 +++ b/regamedll/dlls/multiplay_gamerules.cpp
-@@ -658,6 +658,9 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(CleanUpMap)()
+@@ -658,6 +658,12 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(CleanUpMap)()
  	// Remove grenades and C4
  	UTIL_RemoveOther("grenade");
  
 +	// (and what the Half-Life arsenal left: its grenades, charges, mines, snarks, hornets, rockets and bolts)
 +	HL_CleanUpMap();
 +
++	// (and Half Strike's Poke Balls and Pokemon)
++	PK_CleanUpMap();
++
  #ifndef REGAMEDLL_FIXES
  	// Remove defuse kit
  	// Old code only removed 4 kits and stopped.
-@@ -3798,8 +3801,8 @@ void CHalfLifeMultiplay::PlayerThink(CBasePlayer *pPlayer)
+@@ -3798,8 +3804,8 @@ void CHalfLifeMultiplay::PlayerThink(CBasePlayer *pPlayer)
  			{
  				if (slot != MENU_SLOT_TEAM_SPECT && (IsCareer() || m_bSkipShowMenu))
  				{
@@ -1133,7 +1171,7 @@ index 2b91a50..5db9af1 100644
  				}
  			}
  			else
-@@ -3818,7 +3821,7 @@ void CHalfLifeMultiplay::PlayerThink(CBasePlayer *pPlayer)
+@@ -3818,7 +3824,7 @@ void CHalfLifeMultiplay::PlayerThink(CBasePlayer *pPlayer)
  			if (slot != MENU_SLOT_TEAM_SPECT && IsCareer())
  			{
  				// slot 6 - chooses randomize the appearance to model player
@@ -1142,7 +1180,7 @@ index 2b91a50..5db9af1 100644
  			}
  #endif
  		}
-@@ -4259,6 +4262,10 @@ LINK_HOOK_CLASS_CUSTOM_CHAIN(BOOL, CHalfLifeMultiplay, CSGameRules, CanHavePlaye
+@@ -4259,6 +4265,10 @@ LINK_HOOK_CLASS_CUSTOM_CHAIN(BOOL, CHalfLifeMultiplay, CSGameRules, CanHavePlaye
  // Returns FALSE if the player is not allowed to pick up this weapon
  BOOL EXT_FUNC CHalfLifeMultiplay::__API_HOOK(CanHavePlayerItem)(CBasePlayer *pPlayer, CBasePlayerItem *pItem)
  {
@@ -1154,7 +1192,7 @@ index 2b91a50..5db9af1 100644
  }
  
 diff --git a/regamedll/dlls/player.cpp b/regamedll/dlls/player.cpp
-index 1d04cc9..f69d372 100644
+index 1d04cc9..7dba03d 100644
 --- a/regamedll/dlls/player.cpp
 +++ b/regamedll/dlls/player.cpp
 @@ -201,6 +201,20 @@ const char *GetCSModelName(int item_id)
@@ -1209,7 +1247,32 @@ index 1d04cc9..f69d372 100644
  	return killer_weapon_name;
  }
  
-@@ -1228,6 +1255,10 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
+@@ -1056,6 +1083,9 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
+ 				TheBots->OnEvent(EVENT_PLAYER_TOOK_DAMAGE, this, pAttack);
+ 			}
+ 
++			// (Half Strike: its Pokemon turns on whoever hurt it)
++			PK_OnPlayerHurt(this, pevInflictor, pevAttacker);
++
+ 			if (TheCareerTasks)
+ 			{
+ 				CBasePlayer *pPlayerAttacker = CBasePlayer::Instance(pevAttacker);
+@@ -1190,7 +1220,13 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
+ #endif
+ 		}
+ 
+-		if (pAttack->m_pActiveItem)
++		// (Half Strike: a Pokemon's attack goes through armour as its own, not as its owner's gun in hand)
++		if (PK_IsPokemon(pevInflictor))
++		{
++			flRatio += flShieldRatio;
++			flRatio *= PK_ARMOR_RATIO;
++		}
++		else if (pAttack->m_pActiveItem)
+ 		{
+ 			iGunType = pAttack->m_pActiveItem->m_iId;
+ 			flRatio += flShieldRatio;
+@@ -1228,6 +1264,10 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
  			case WEAPON_AK47:
  				flRatio *= 1.55;
  				break;
@@ -1220,7 +1283,47 @@ index 1d04cc9..f69d372 100644
  			}
  		}
  
-@@ -2656,7 +2687,33 @@ int CBasePlayer::GetAnimDesired(const char *szAnim, AnimationType type)
+@@ -1314,6 +1354,9 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
+ 			TheBots->OnEvent(EVENT_PLAYER_TOOK_DAMAGE, this, pAttack);
+ 		}
+ 
++		// (Half Strike: its Pokemon turns on whoever hurt it)
++		PK_OnPlayerHurt(this, pevInflictor, pevAttacker);
++
+ 		if (TheCareerTasks)
+ 		{
+ 			CBasePlayer *pPlayerAttacker = CBasePlayer::Instance(pevAttacker);
+@@ -1447,6 +1490,10 @@ CWeaponBox *EXT_FUNC __API_HOOK(CreateWeaponBox)(CBasePlayerItem *pItem, CBasePl
+ 		}
+ 
+ 		pWeaponBox->SetModel(modelName);
++
++		// (Half Strike: a Poke Ball — never dropped, but if ever packed — shows its species' band)
++		if (IsPokeBall(pItem->m_iId))
++			pWeaponBox->pev->skin = pItem->m_iId - WEAPON_PK_FIRST;
+ 	}
+ 
+ 	return pWeaponBox;
+@@ -1480,7 +1527,7 @@ CWeaponBox *PackPlayerItem(CBasePlayer *pPlayer, CBasePlayerItem *pItem, bool pa
+ #ifdef REGAMEDLL_ADD
+ void PackPlayerNade(CBasePlayer *pPlayer, CBasePlayerItem *pItem, bool packAmmo)
+ {
+-	if (!pItem)
++	if (!pItem || IsPokeBall(pItem->m_iId)) // (Half Strike: a Poke Ball is never dropped)
+ 		return;
+ 
+ 	if (pItem->m_flStartThrow != 0.0f || pPlayer->m_rgAmmo[pItem->PrimaryAmmoIndex()] <= 0) {
+@@ -1621,7 +1668,8 @@ void CBasePlayer::PackDeadPlayerItems()
+ 						}
+ 					}
+ 					// drop a grenade after death
+-					else if (pPlayerItem->iItemSlot() == GRENADE_SLOT)
++					// (Half Strike: not a Poke Ball — never dropped, one carried in total — it goes with its player)
++					else if (pPlayerItem->iItemSlot() == GRENADE_SLOT && !IsPokeBall(pPlayerItem->m_iId))
+ 					{
+ 						if (AreRunningCZero())
+ 						{
+@@ -2656,7 +2704,33 @@ int CBasePlayer::GetAnimDesired(const char *szAnim, AnimationType type)
  
  	char szAnimConstruct[128];
  	Q_snprintf(szAnimConstruct, sizeof(szAnimConstruct), "%s%s_%s", refAnim, szAnim, m_szAnimExtention);
@@ -1255,7 +1358,18 @@ index 1d04cc9..f69d372 100644
  }
  
  void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
-@@ -2969,6 +3026,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
+@@ -2666,6 +2740,10 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
+ 	int hopSeq;
+ 	int leapSeq;
+ 
++	// (Half Strike: a player's shot sends its Pokemon at the enemy it aims at)
++	if (playerAnim == PLAYER_ATTACK1 || playerAnim == PLAYER_ATTACK2)
++		PK_OnPlayerAttack(this);
++
+ 	if (!pev->modelindex)
+ 		return;
+ 
+@@ -2969,6 +3047,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
  					break;
  			}
  
@@ -1265,7 +1379,7 @@ index 1d04cc9..f69d372 100644
  			if (animDesired == -1)
  				animDesired = 0;
  
-@@ -3100,6 +3160,12 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
+@@ -3100,6 +3181,12 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
  					m_iThrowDirection = THROW_GRENADE;
  			}
  
@@ -1278,7 +1392,7 @@ index 1d04cc9..f69d372 100644
  			if (animDesired == -1)
  				animDesired = 0;
  
-@@ -3365,6 +3431,11 @@ void CWShield::Touch(CBaseEntity *pOther)
+@@ -3365,6 +3452,11 @@ void CWShield::Touch(CBaseEntity *pOther)
  		if (pPlayer->m_rgpPlayerItems[PISTOL_SLOT] && pPlayer->m_rgpPlayerItems[PISTOL_SLOT]->m_iId == WEAPON_ELITE)
  			return;
  
@@ -1290,7 +1404,21 @@ index 1d04cc9..f69d372 100644
  		if (pPlayer->m_pActiveItem)
  		{
  			if (!pPlayer->m_pActiveItem->CanHolster())
-@@ -5258,6 +5329,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, PostThink)
+@@ -4645,6 +4737,13 @@ void EXT_FUNC CBasePlayer::__API_HOOK(PreThink)()
+ 	m_afButtonPressed  = (buttonsChanged & pev->button);		// The changed ones still down are "pressed"
+ 	m_afButtonReleased = (buttonsChanged & (~pev->button));		// The ones not down are "released"
+ 
++	// (Half Strike: a Pikachu's slow wears off, the last one's end, whatever became of the Pikachus)
++	if (m_flPokeSlowUntil != 0.0f && gpGlobals->time >= m_flPokeSlowUntil)
++	{
++		m_flPokeSlowUntil = 0.0f;
++		ResetMaxSpeed();
++	}
++
+ 	// Hint messages should be updated even if the game is over
+ 	m_hintMessageQueue.Update(this);
+ 	g_pGameRules->PlayerThink(this);
+@@ -5258,6 +5357,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, PostThink)
  
  void EXT_FUNC CBasePlayer::__API_HOOK(PostThink)()
  {
@@ -1298,7 +1426,15 @@ index 1d04cc9..f69d372 100644
  	// intermission or finale
  	if (g_pGameRules->IsGameOver())
  		goto pt_end;
-@@ -7495,6 +7567,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -5690,6 +5790,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Spawn)()
+ #endif
+ 
+ 	m_iGaitsequence = 0;
++	m_flPokeSlowUntil = 0;
+ 
+ 	m_flGaitframe = 0;
+ 	m_flGaityaw = 0;
+@@ -7495,6 +7596,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  	{
  		m_fInitHUD = FALSE;
  		gInitHUD = FALSE;
@@ -1306,7 +1442,17 @@ index 1d04cc9..f69d372 100644
  #ifdef REGAMEDLL_FIXES
  		m_signals.Reset();
  #else
-@@ -7893,6 +7966,25 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -7504,6 +7606,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+ 		MESSAGE_BEGIN(MSG_ONE, gmsgResetHUD, nullptr, pev);
+ 		MESSAGE_END();
+ 
++		// (Half Strike: the health of the Pokemon out, after the reset)
++		PK_SendAllTo(this);
++
+ 		if (!m_fGameHUDInitialized)
+ 		{
+ 			MESSAGE_BEGIN(MSG_ONE, gmsgInitHUD, nullptr, pev);
+@@ -7893,6 +7998,29 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  		m_iLastClientHealth = m_iClientHealth;
  	}
  #endif // #ifdef BUILD_LATEST
@@ -1329,10 +1475,25 @@ index 1d04cc9..f69d372 100644
 +		MESSAGE_END();
 +		m_iHLWeaponsSent = hlWeapons;
 +	}
++
++	// (Half Strike: a Poke Ball in hand shows its species — the skin of its third-person model, drawn with the player's;
++	// the player models themselves are drawn with skin 0 by the client)
++	pev->skin = (m_pActiveItem && IsPokeBall(m_pActiveItem->m_iId)) ? (m_pActiveItem->m_iId - WEAPON_PK_FIRST) : 0;
  }
  
  bool CBasePlayer::ShouldToShowAccount(CBasePlayer *pReceiver) const
-@@ -8374,7 +8466,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
+@@ -8028,6 +8156,10 @@ void EXT_FUNC CBasePlayer::__API_HOOK(ResetMaxSpeed)()
+ 		speed = 240;
+ 	}
+ 
++	// (Half Strike: slowed by a Pikachu's Thunderbolt, whatever its weapon in hand)
++	if (m_flPokeSlowUntil > gpGlobals->time && GetObserverMode() == OBS_NONE && speed > 1.0f)
++		speed *= 0.5f;
++
+ 	pev->maxspeed = speed;
+ }
+ 
+@@ -8374,7 +8506,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
  		}
  
  		// take item off hud
@@ -1341,7 +1502,7 @@ index 1d04cc9..f69d372 100644
  
  #ifdef REGAMEDLL_FIXES
  		// No more weapon
-@@ -9303,6 +9395,11 @@ void CBasePlayer::SetPrefsFromUserinfo(char *infobuffer)
+@@ -9303,6 +9435,11 @@ void CBasePlayer::SetPrefsFromUserinfo(char *infobuffer)
  	else
  		m_bVGUIMenus = true;
  
@@ -1354,7 +1515,7 @@ index 1d04cc9..f69d372 100644
  
  	if (Q_strcmp(pszKeyVal, "") != 0)
 diff --git a/regamedll/dlls/player.h b/regamedll/dlls/player.h
-index 7809834..7d45dd9 100644
+index 7809834..32621b4 100644
 --- a/regamedll/dlls/player.h
 +++ b/regamedll/dlls/player.h
 @@ -196,7 +196,10 @@ enum _Menu
@@ -1364,25 +1525,306 @@ index 7809834..7d45dd9 100644
 -	Menu_ClientBuy
 +	Menu_ClientBuy,
 +	Menu_BuyHL,         // (the Half-Life arsenal's buy menu: its categories,
-+	Menu_BuyHLCategory, // then the items of each: this one and the three after it)
-+	Menu_BuyHLCategoryLast = Menu_BuyHLCategory + 3
++	Menu_BuyHLCategory, // then the items of each: this one and the four after it)
++	Menu_BuyHLCategoryLast = Menu_BuyHLCategory + 4 // (the fifth: Half Strike's Poke Balls)
  };
  
  enum TeamName
-@@ -922,6 +925,8 @@ public:
+@@ -922,6 +925,9 @@ public:
  	int m_iLastClientHealth;
  	float m_tmNextAccountHealthUpdate;
  #endif
 +
 +	int m_iHLWeaponsSent; // (the Half-Life arsenal weapons the client was last told of, -1 to tell again)
++	float m_flPokeSlowUntil; // (Half Strike: slowed to half pace by a Pikachu's Thunderbolt until then, whichever Pikachu)
  };
  
  CWeaponBox *CreateWeaponBox(CBasePlayerItem *pItem, CBasePlayer *pPlayerOwner, const char *modelName, Vector &origin, Vector &angles, Vector &velocity, float lifeTime, bool packAmmo);
+diff --git a/regamedll/dlls/pokemon.h b/regamedll/dlls/pokemon.h
+new file mode 100644
+index 0000000..9298125
+--- /dev/null
++++ b/regamedll/dlls/pokemon.h
+@@ -0,0 +1,274 @@
++/*
++*	Half Strike: Poke Balls. Three grenade-slot items (weapon_pk_pikachu, weapon_pk_charizard, weapon_pk_blastoise),
++*	thrown like the Half-Life hand grenade; the ball opens and its Pokemon (monster_pokemon) comes out, follows its
++*	player, and charges the enemy its player shoots at or that hurts its player or itself, with its own attack.
++*
++*	Their ids follow the Half-Life arsenal's (weapontype.h): IsHLWeapon covers them too, so they reach the client by the
++*	HLWeapons message, are not predicted, and bots neither buy nor pick them up.
++*
++*	The client draws the health bars from the PokeHP message: short entity index (two bytes, low first), byte health
++*	percent (0: gone), byte species (0 Pikachu, 1 Charizard, 2 Blastoise), byte team (1 T, 2 CT, 0 none), byte owner
++*	player index. Sent to all on spawn, at each change of the percent and at death or removal, and to each client at its
++*	HUD reset (all Pokemon out).
++*
++*	The models, sprites and sounds are Half Strike's own (the asset generator), under models/pokemon, sprites/pokemon
++*	and sound/pokemon.
++*/
++#pragma once
++
++enum PokemonSpecies
++{
++	PK_PIKACHU = 0,
++	PK_CHARIZARD,
++	PK_BLASTOISE,
++	PK_NUM_SPECIES
++};
++
++#define PK_PIKACHU_PRICE    1000
++#define PK_CHARIZARD_PRICE  1400
++#define PK_BLASTOISE_PRICE  1300
++#define PK_BALL_MAX_CARRY   1
++#define PK_BALL_WEIGHT      1
++#define PK_BALL_MAX_SPEED   250.0f
++
++// The share of a Pokemon's hit an armored player takes (Counter-Strike's ratio: 0.5 times this)
++#define PK_ARMOR_RATIO      1.4f
++
++inline bool IsPokeBall(int id) { return id >= WEAPON_PK_FIRST && id <= WEAPON_PK_LAST; }
++
++// Whether an entity is a Pokemon (its attacks are inflicted by it, credited to its player)
++bool PK_IsPokemon(entvars_t *pev);
++
++// Buying a ball (client.cpp's BuyWeaponByWeaponID): one ball carried, one Pokemon out
++CBaseEntity *PK_BuyBall(CBasePlayer *pPlayer, WeaponIdType weaponID);
++
++// Player events (player.cpp): it fired; it was hurt; its HUD was reset
++void PK_OnPlayerAttack(CBasePlayer *pPlayer);
++void PK_OnPlayerHurt(CBasePlayer *pVictim, entvars_t *pevInflictor, entvars_t *pevAttacker);
++void PK_SendAllTo(CBasePlayer *pPlayer);
++
++// Removes every ball and Pokemon, at each round restart
++void PK_CleanUpMap();
++
++// "pk_test" (a player's), "pk_spawn", "pk_info", "pk_clear" (the server console's): cheats only (sv_cheats 1)
++void PK_TestCommand(CBasePlayer *pPlayer);
++void PK_RegisterServerCommands();
++
++// The ball in hand
++class CPokeBallWeapon: public CHLWeapon
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int GetItemInfo(ItemInfo *p);
++	virtual BOOL Deploy();
++	virtual BOOL CanHolster() { return m_flStartThrow == 0; }
++	virtual void Holster(int skiplocal = 0);
++	virtual BOOL CanDrop() { return FALSE; }
++	virtual float GetMaxSpeed() { return PK_BALL_MAX_SPEED; }
++	virtual int iItemSlot() { return GRENADE_SLOT; }
++	virtual void PrimaryAttack();
++	virtual void WeaponIdle();
++
++private:
++	int Species() const;
++	void Throw();
++};
++
++// The ball thrown: it bounces, comes to rest or opens on its own after a while
++class CPokeBall: public CBaseAnimating
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int ObjectCaps() { return FCAP_DONT_SAVE; }
++
++	static CPokeBall *Launch(CBasePlayer *pOwner, int iSpecies, const Vector &vecSrc, const Vector &vecVelocity);
++	void EXPORT BounceTouch(CBaseEntity *pOther);
++	void EXPORT FlyThink();
++	void EXPORT OpenThink();
++
++	bool IsOwnedBy(CBasePlayer *pPlayer) { return m_hOwner.IsValid() && m_hOwner == pPlayer; }
++	bool IsOpened() const { return m_bReleased; } // (done: its Pokemon out, or the ball back in hand)
++
++private:
++	void Land();
++	void Open();
++	void Release();
++	void GiveBack();
++	void SetSequenceByName(const char *pszName, int iDefault);
++
++	EntityHandle<CBasePlayer> m_hOwner;
++	int m_iSpecies;
++	int m_iTeam;
++	float m_flOpenTime;     // (opens at the latest then; once at rest, after its wobble)
++	float m_flReleaseTime;  // (its Pokemon comes out then, the lid at its widest)
++	float m_flRemoveTime;
++	float m_flNextBounceSound;
++	float m_flYaw;          // (from its thrower towards the ball)
++	bool m_bLanded;         // (touched the ground: the floor-origin sequences from then on)
++	bool m_bResting;        // (wobbling, about to open)
++	bool m_bOpened;         // (the lid opening)
++	bool m_bReleased;       // (its Pokemon out, or the ball back in hand)
++};
++
++// A Pokemon's ongoing effect on a victim: Charizard's burn (Pikachu's slow is the victim's own: m_flPokeSlowUntil)
++struct PokemonAffliction
++{
++	EHANDLE hVictim;
++	float flUntil;
++	float flNext;
++};
++
++#define PK_MAX_AFFLICTED 8
++
++class CPokemon: public CBaseMonster
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int ObjectCaps() { return FCAP_DONT_SAVE; }
++	virtual int Classify() { return CLASS_NONE; }
++	virtual BOOL IsAlive() { return pev->deadflag == DEAD_NO && m_iState != STATE_DYING && m_iState != STATE_RETURNING; }
++	virtual int BloodColor() { return m_bloodColor; }
++	virtual void TraceAttack(entvars_t *pevAttacker, float flDamage, Vector vecDir, TraceResult *ptr, int bitsDamageType);
++	virtual BOOL TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType);
++	virtual void Killed(entvars_t *pevAttacker, int iGib);
++
++	// Out of a ball near a spot (none: no room there)
++	static CPokemon *Create(int iSpecies, CBasePlayer *pOwner, const Vector &vecNear, float flYaw);
++
++	void EXPORT LiveThink();
++	void EXPORT DeadThink();
++	void EXPORT ReturnThink();
++
++	CBasePlayer *Owner() const;
++	bool IsOut() const { return m_iState != STATE_DYING && m_iState != STATE_RETURNING; }
++	bool IsOwnedBy(CBasePlayer *pPlayer) const { return m_hOwner.IsValid() && m_hOwner.Get() == pPlayer->edict(); }
++	bool IsEnemy(CBaseEntity *pEntity);
++	int Species() const { return m_iSpecies; }
++
++	void OnOwnerAttack();
++	void OnProvoked(CBaseEntity *pAggressor);
++	void GoBack();          // back into its ball (its player gone, dead or on the other side)
++	void Vanish();          // removed at once (round restart)
++	void SendHealth(edict_t *pTo);  // PokeHP, to one or all (null)
++	void Report(CBasePlayer *pTo);  // pk_test info (null: the server console)
++
++	enum State
++	{
++		STATE_SPAWNING = 0,
++		STATE_FOLLOW,
++		STATE_CHASE,
++		STATE_ATTACK,
++		STATE_VICTORY,
++		STATE_DYING,
++		STATE_RETURNING
++	};
++
++	enum Sequence
++	{
++		SEQ_IDLE = 0,
++		SEQ_WALK,
++		SEQ_RUN,
++		SEQ_ATTACK,
++		SEQ_FLINCH,
++		SEQ_DIE,
++		SEQ_SPAWN,
++		SEQ_VICTORY,
++		SEQ_COUNT
++	};
++
++private:
++	void StartLife();
++	void LoadSequences();
++	void SetSeq(int iSeq, float flFrameRate, bool bRestart);
++	void SetState(int iState);
++	bool StartVictory();    // its target down by its hand: a short celebration (false: none due)
++	bool FindRoom(const Vector &vecNear, Vector &vecOut);
++	bool TeleportToOwner(CBasePlayer *pOwner);
++	void Flash(const Vector &vecPos, int r, int g, int b);
++
++	// targets
++	void SetEnemy(CBaseEntity *pEnemy);
++	CBaseEntity *FindAimTarget(CBasePlayer *pOwner);
++	bool CanSee(CBaseEntity *pEntity);
++	bool CheckEnemy();
++	bool CanBeHurtBy(CBaseEntity *pAttacker);
++
++	// movement
++	void Follow(CBasePlayer *pOwner, float dt);
++	void Chase(float dt);
++	float MoveTo(const Vector &vecGoal, float flSpeed, float flStopDist, float dt);
++	float Step(float flYaw, float flDist, const Vector &vecPoint, float flSpeed, bool &bLeapt);
++	bool TryJumpOrDrop(float flYaw, const Vector &vecGoal, float flSpeed);
++	bool EdgeStep(float flYaw, float flStep);
++	bool DirectlyReachable(const Vector &vecGoal);
++	bool NextWaypoint(const Vector &vecGoal, Vector &vecPoint);
++	void TurnTowards(float flYaw, float dt, float flRate);
++	void NoteProgress(bool bWantMove);
++	void UpdateAnimation(float flSpeed);
++
++	// attacks
++	Vector AttackOrigin(int iAttachment);
++	void StartAttack();
++	void UpdateAttack();
++	void FireThunderbolt();
++	void FireHydroPump();
++	void FlameTick();
++	void FlameEffects();
++	void DealDamage(CBaseEntity *pVictim, float flDamage, int bitsDamageType);
++	void Afflict(CBaseEntity *pVictim, float flUntil, float flFirstTick);
++	void UpdateAfflictions();
++	void ClearAfflictions();
++
++	int m_iSpecies;
++	int m_iState;
++	int m_iTeam;
++	EntityHandle<CBasePlayer> m_hOwner;
++
++	int m_iSeq[SEQ_COUNT];
++	float m_flSeqDuration[SEQ_COUNT];
++	float m_flSeqGroundSpeed[SEQ_COUNT];
++	int m_iCurSeq;
++
++	float m_flLastThink;
++	float m_flStateEnd;
++	float m_flEnemySeen;
++	float m_flEnemySince;
++	float m_flNextAimCheck;
++	float m_flNextAttack;
++	float m_flAttackStart;
++	float m_flAttackHit;
++	float m_flAttackEnd;
++	float m_flStreamEnd;
++	float m_flNextFlameTick;
++	float m_flNextFlameFx;
++	bool m_bAttackFired;
++	bool m_bKilledEnemy;
++	float m_flFlinchEnd;
++	float m_flNextFlinch;
++	float m_flKnockbackEnd;
++	float m_flSlowEnd;
++	float m_flAirborneEnd;
++	bool m_bFollowMoving;
++	float m_flStuckTime;
++	float m_flStuckCheck;
++	Vector m_vecStuckPos;
++	float m_flNextTeleport;
++	float m_flStepDist;
++	float m_flNextIdleSound;
++	float m_flNextBattleCry;
++	float m_flGlowEnd;
++	float m_flDeathTime;
++	int m_iHealthSent;
++	float m_flSpeedNow;
++
++	CNavPath m_path;
++	int m_iPathIndex;
++	Vector m_vecPathGoal;
++	Vector m_vecWaypoint;
++	float m_flNextRepath;
++
++	PokemonAffliction m_afflicted[PK_MAX_AFFLICTED];
++};
 diff --git a/regamedll/dlls/weapons.cpp b/regamedll/dlls/weapons.cpp
-index ac57533..3e61940 100644
+index ac57533..caa13cd 100644
 --- a/regamedll/dlls/weapons.cpp
 +++ b/regamedll/dlls/weapons.cpp
-@@ -378,6 +378,22 @@ void WeaponsPrecache()
+@@ -378,6 +378,27 @@ void WeaponsPrecache()
  	UTIL_PrecacheOtherWeapon("weapon_galil");
  	UTIL_PrecacheOtherWeapon("weapon_famas");
  
@@ -1402,10 +1844,15 @@ index ac57533..3e61940 100644
 +	UTIL_PrecacheOtherWeapon("weapon_tripmine");
 +	UTIL_PrecacheOtherWeapon("weapon_snark");
 +
++	// Half Strike's Poke Balls, their ammo after Half-Life's (AmmoType)
++	UTIL_PrecacheOtherWeapon("weapon_pk_pikachu");
++	UTIL_PrecacheOtherWeapon("weapon_pk_charizard");
++	UTIL_PrecacheOtherWeapon("weapon_pk_blastoise");
++
  	if (g_pGameRules->IsDeathmatch())
  	{
  		// container for dropped deathmatch weapons
-@@ -958,7 +974,7 @@ void CBasePlayerWeapon::HandleInfiniteAmmo()
+@@ -958,7 +979,7 @@ void CBasePlayerWeapon::HandleInfiniteAmmo()
  	else if ((nInfiniteAmmo == WPNMODE_INFINITE_BPAMMO
  #ifdef REGAMEDLL_API
  		&&
@@ -1414,7 +1861,7 @@ index ac57533..3e61940 100644
  #endif
  		)
  		|| (IsGrenadeWeapon(m_iId) && infiniteGrenades.value == 1.0f))
-@@ -1220,7 +1236,7 @@ bool CBasePlayerItem::DestroyItem()
+@@ -1220,7 +1241,7 @@ bool CBasePlayerItem::DestroyItem()
  				m_pPlayer->SetProgressBarTime(0);
  			}
  
@@ -1423,7 +1870,7 @@ index ac57533..3e61940 100644
  
  			// No more weapon
  			if ((m_pPlayer->pev->weapons & ~(1 << WEAPON_SUIT)) == 0) {
-@@ -1323,7 +1339,7 @@ int CBasePlayerWeapon::AddDuplicate(CBasePlayerItem *pOriginal)
+@@ -1323,7 +1344,7 @@ int CBasePlayerWeapon::AddDuplicate(CBasePlayerItem *pOriginal)
  int CBasePlayerWeapon::AddToPlayer(CBasePlayer *pPlayer)
  {
  	m_pPlayer = pPlayer;
@@ -1432,7 +1879,7 @@ index ac57533..3e61940 100644
  
  	if (!m_iPrimaryAmmoType)
  	{
-@@ -2032,6 +2048,19 @@ void CWeaponBox::Touch(CBaseEntity *pOther)
+@@ -2032,6 +2053,19 @@ void CWeaponBox::Touch(CBaseEntity *pOther)
  	if (pPlayer->m_bIsVIP || pPlayer->m_bShieldDrawn)
  		return;
  
@@ -1466,10 +1913,10 @@ index f7294b7..05d2be8 100644
  #define ITEM_FLAG_SELECTONEMPTY     		BIT(0)
  #define ITEM_FLAG_NOAUTORELOAD      		BIT(1)
 diff --git a/regamedll/dlls/weapontype.cpp b/regamedll/dlls/weapontype.cpp
-index cc341d7..0ecc4ba 100644
+index cc341d7..e5431a4 100644
 --- a/regamedll/dlls/weapontype.cpp
 +++ b/regamedll/dlls/weapontype.cpp
-@@ -32,6 +32,22 @@ WeaponStruct g_weaponStruct[MAX_WEAPONS] =
+@@ -32,6 +32,27 @@ WeaponStruct g_weaponStruct[MAX_WEAPONS] =
  
  	{ WEAPON_SHIELDGUN, SHIELDGUN_PRICE,    TERRORIST,      AUTOBUYCLASS_PRIMARY,   0                   },
  
@@ -1489,10 +1936,15 @@ index cc341d7..0ecc4ba 100644
 +	{ WEAPON_HL_TRIPMINE,    HL_TRIPMINE_PRICE,    TERRORIST|CT, AUTOBUYCLASS_GRENADE,   0                   },
 +	{ WEAPON_HL_SNARK,       HL_SNARK_PRICE,       TERRORIST|CT, AUTOBUYCLASS_GRENADE,   0                   },
 +
++	// Poke Balls (never bought automatically)
++	{ WEAPON_PK_PIKACHU,     PK_PIKACHU_PRICE,     TERRORIST|CT, AUTOBUYCLASS_NONE,      0                   },
++	{ WEAPON_PK_CHARIZARD,   PK_CHARIZARD_PRICE,   TERRORIST|CT, AUTOBUYCLASS_NONE,      0                   },
++	{ WEAPON_PK_BLASTOISE,   PK_BLASTOISE_PRICE,   TERRORIST|CT, AUTOBUYCLASS_NONE,      0                   },
++
  	{ 0, 0, 0, 0, 0 },
  	{ 0, 0, 0, 0, 0 },
  	{ 0, 0, 0, 0, 0 },
-@@ -119,6 +135,20 @@ WeaponAliasInfo g_weaponAliasInfo[] =
+@@ -119,6 +140,23 @@ WeaponAliasInfo g_weaponAliasInfo[] =
  	{ "elite",      WEAPON_ELITE        },
  	{ "fiveseven",  WEAPON_FIVESEVEN    },
  	{ "mp5navy",    WEAPON_MP5N         },
@@ -1510,10 +1962,13 @@ index cc341d7..0ecc4ba 100644
 +	{ "satchel",    WEAPON_HL_SATCHEL   },
 +	{ "tripmine",   WEAPON_HL_TRIPMINE  },
 +	{ "snark",      WEAPON_HL_SNARK     },
++	{ "pk_pikachu",   WEAPON_PK_PIKACHU   },
++	{ "pk_charizard", WEAPON_PK_CHARIZARD },
++	{ "pk_blastoise", WEAPON_PK_BLASTOISE },
  	{ nullptr,      WEAPON_NONE         },
  };
  
-@@ -166,6 +196,25 @@ WeaponBuyAliasInfo g_weaponBuyAliasInfo[] =
+@@ -166,6 +204,28 @@ WeaponBuyAliasInfo g_weaponBuyAliasInfo[] =
  	{ "p90",        WEAPON_P90,         "#FNP90"               },
  	{ "c90",        WEAPON_P90,         "#FNP90"               },
  	{ "m249",       WEAPON_M249,        "#M249"                },
@@ -1536,10 +1991,13 @@ index cc341d7..0ecc4ba 100644
 +	{ "tripmine",   WEAPON_HL_TRIPMINE, "Tripmine"               },
 +	{ "snark",      WEAPON_HL_SNARK,    "Snarks"                 },
 +	{ "snarks",     WEAPON_HL_SNARK,    "Snarks"                 },
++	{ "pikachu",    WEAPON_PK_PIKACHU,  "Pikachu"                },
++	{ "charizard",  WEAPON_PK_CHARIZARD, "Charizard"             },
++	{ "blastoise",  WEAPON_PK_BLASTOISE, "Blastoise"             },
  	{ nullptr,      WEAPON_NONE,        nullptr                },
  };
  
-@@ -208,6 +257,20 @@ WeaponClassAliasInfo g_weaponClassAliasInfo[] =
+@@ -208,6 +268,23 @@ WeaponClassAliasInfo g_weaponClassAliasInfo[] =
  	{ "elite",      WEAPONCLASS_PISTOL          },
  	{ "fiveseven",  WEAPONCLASS_PISTOL          },
  	{ "mp5navy",    WEAPONCLASS_SUBMACHINEGUN   },
@@ -1557,10 +2015,13 @@ index cc341d7..0ecc4ba 100644
 +	{ "satchel",    WEAPONCLASS_GRENADE         },
 +	{ "tripmine",   WEAPONCLASS_GRENADE         },
 +	{ "snark",      WEAPONCLASS_GRENADE         },
++	{ "pk_pikachu",   WEAPONCLASS_GRENADE       },
++	{ "pk_charizard", WEAPONCLASS_GRENADE       },
++	{ "pk_blastoise", WEAPONCLASS_GRENADE       },
  	{ "grenade",    WEAPONCLASS_GRENADE         },
  	{ "pistol",     WEAPONCLASS_PISTOL          },
  	{ "SMG",        WEAPONCLASS_SUBMACHINEGUN   },
-@@ -263,6 +326,22 @@ WeaponInfoStruct g_weaponInfo_default[] =
+@@ -263,6 +340,27 @@ WeaponInfoStruct g_weaponInfo_default[] =
  #endif
  
  	{ WEAPON_SHIELDGUN,      SHIELDGUN_PRICE,                   0,                       0,                     0,                  0,                      AMMO_NONE,          "weapon_shield",       nullptr,           nullptr        },
@@ -1580,10 +2041,15 @@ index cc341d7..0ecc4ba 100644
 +	{ WEAPON_HL_SATCHEL,     HL_SATCHEL_PRICE,     0,                   0,                 WEAPON_NOCLIP,       HL_SATCHEL_MAX_CARRY,     AMMO_HL_SATCHEL,     "weapon_satchel",     nullptr,         "Satchel Charge" },
 +	{ WEAPON_HL_TRIPMINE,    HL_TRIPMINE_PRICE,    0,                   0,                 WEAPON_NOCLIP,       HL_TRIPMINE_MAX_CARRY,    AMMO_HL_TRIPMINE,    "weapon_tripmine",    nullptr,         "Trip Mine"      },
 +	{ WEAPON_HL_SNARK,       HL_SNARK_PRICE,       0,                   0,                 WEAPON_NOCLIP,       HL_SNARK_MAX_CARRY,       AMMO_HL_SNARKS,      "weapon_snark",       nullptr,         "Snarks"         },
++
++	// Poke Balls
++	{ WEAPON_PK_PIKACHU,     PK_PIKACHU_PRICE,     0,                   0,                 WEAPON_NOCLIP,       PK_BALL_MAX_CARRY,        AMMO_PK_PIKACHU,     "weapon_pk_pikachu",   nullptr,        "PokeBallPikachu"   },
++	{ WEAPON_PK_CHARIZARD,   PK_CHARIZARD_PRICE,   0,                   0,                 WEAPON_NOCLIP,       PK_BALL_MAX_CARRY,        AMMO_PK_CHARIZARD,   "weapon_pk_charizard", nullptr,        "PokeBallCharizard" },
++	{ WEAPON_PK_BLASTOISE,   PK_BLASTOISE_PRICE,   0,                   0,                 WEAPON_NOCLIP,       PK_BALL_MAX_CARRY,        AMMO_PK_BLASTOISE,   "weapon_pk_blastoise", nullptr,        "PokeBallBlastoise" },
  #ifndef REGAMEDLL_FIXES
  	{ 0,                     0,                                 0,                       0,                     0,                  0,                      AMMO_NONE,          nullptr,               nullptr,           nullptr        },
  #endif
-@@ -286,6 +365,16 @@ AmmoInfoStruct g_ammoInfo_default[] =
+@@ -286,6 +384,19 @@ AmmoInfoStruct g_ammoInfo_default[] =
  	{ AMMO_HEGRENADE,    AMMO_HEGRENADE_PRICE,    AMMO_HEGRENADE_BUY,    MAX_AMMO_HEGRENADE,    nullptr,           "HEGrenade"    },
  	{ AMMO_SMOKEGRENADE, AMMO_SMOKEGRENADE_PRICE, AMMO_SMOKEGRENADE_BUY, MAX_AMMO_SMOKEGRENADE, nullptr,           "SmokeGrenade" },
  	{ AMMO_C4,           0,                       0,                     MAX_AMMO_C4,           nullptr,           "C4"           },
@@ -1597,10 +2063,13 @@ index cc341d7..0ecc4ba 100644
 +	{ AMMO_HL_SATCHEL,   HL_SATCHEL_PRICE,        1,                     HL_SATCHEL_MAX_CARRY,  nullptr,           "Satchel Charge" },
 +	{ AMMO_HL_TRIPMINE,  HL_TRIPMINE_PRICE,       1,                     HL_TRIPMINE_MAX_CARRY, nullptr,           "Trip Mine"    },
 +	{ AMMO_HL_SNARKS,    HL_SNARK_PRICE,          HL_SNARK_DEFAULT_GIVE, HL_SNARK_MAX_CARRY,    nullptr,           "Snarks"       },
++	{ AMMO_PK_PIKACHU,   PK_PIKACHU_PRICE,        1,                     PK_BALL_MAX_CARRY,     nullptr,           "PokeBallPikachu"   },
++	{ AMMO_PK_CHARIZARD, PK_CHARIZARD_PRICE,      1,                     PK_BALL_MAX_CARRY,     nullptr,           "PokeBallCharizard" },
++	{ AMMO_PK_BLASTOISE, PK_BLASTOISE_PRICE,      1,                     PK_BALL_MAX_CARRY,     nullptr,           "PokeBallBlastoise" },
  };
  
  AmmoInfoStruct g_ammoInfo[ARRAYSIZE(g_ammoInfo_default)];
-@@ -322,6 +411,20 @@ WeaponSlotInfo g_weaponSlotInfo_default[] = {
+@@ -322,6 +433,23 @@ WeaponSlotInfo g_weaponSlotInfo_default[] = {
  	{ WEAPON_AK47,          PRIMARY_WEAPON_SLOT,    "weapon_ak47"           },
  	{ WEAPON_P90,           PRIMARY_WEAPON_SLOT,    "weapon_p90"            },
  	{ WEAPON_SHIELDGUN,     NONE_SLOT,              "weapon_shield"         },
@@ -1618,10 +2087,13 @@ index cc341d7..0ecc4ba 100644
 +	{ WEAPON_HL_SATCHEL,    GRENADE_SLOT,           "weapon_satchel"        },
 +	{ WEAPON_HL_TRIPMINE,   GRENADE_SLOT,           "weapon_tripmine"       },
 +	{ WEAPON_HL_SNARK,      GRENADE_SLOT,           "weapon_snark"          },
++	{ WEAPON_PK_PIKACHU,    GRENADE_SLOT,           "weapon_pk_pikachu"     },
++	{ WEAPON_PK_CHARIZARD,  GRENADE_SLOT,           "weapon_pk_charizard"   },
++	{ WEAPON_PK_BLASTOISE,  GRENADE_SLOT,           "weapon_pk_blastoise"   },
  };
  
  WeaponSlotInfo g_weaponSlotInfo[ARRAYSIZE(g_weaponSlotInfo_default)];
-@@ -466,6 +569,13 @@ bool IsPrimaryWeapon(int id)
+@@ -466,6 +594,13 @@ bool IsPrimaryWeapon(int id)
  	case WEAPON_AK47:
  	case WEAPON_P90:
  	case WEAPON_SHIELDGUN:
@@ -1635,7 +2107,7 @@ index cc341d7..0ecc4ba 100644
  		return true;
  	default:
  		break;
-@@ -485,6 +595,8 @@ bool IsSecondaryWeapon(int id)
+@@ -485,6 +620,8 @@ bool IsSecondaryWeapon(int id)
  	case WEAPON_USP:
  	case WEAPON_GLOCK18:
  	case WEAPON_DEAGLE:
@@ -1644,7 +2116,7 @@ index cc341d7..0ecc4ba 100644
  		return true;
  	default:
  		break;
-@@ -595,6 +707,10 @@ WeaponSlotInfo *GetWeaponSlot(const char *weaponName)
+@@ -595,6 +732,10 @@ WeaponSlotInfo *GetWeaponSlot(const char *weaponName)
  
  bool CanBuyWeaponByMaptype(int playerTeam, WeaponIdType weaponID, bool useAssasinationRestrictions)
  {
@@ -1656,10 +2128,10 @@ index cc341d7..0ecc4ba 100644
  	{
  		if (playerTeam == CT)
 diff --git a/regamedll/dlls/weapontype.h b/regamedll/dlls/weapontype.h
-index 2005b6a..ceb0506 100644
+index 2005b6a..eccb0be 100644
 --- a/regamedll/dlls/weapontype.h
 +++ b/regamedll/dlls/weapontype.h
-@@ -61,6 +61,25 @@ enum WeaponIdType
+@@ -61,6 +61,32 @@ enum WeaponIdType
  	WEAPON_AK47,
  	WEAPON_KNIFE,
  	WEAPON_P90,
@@ -1682,10 +2154,17 @@ index 2005b6a..ceb0506 100644
 +	WEAPON_HL_SNARK,
 +	WEAPON_HL_LAST = WEAPON_HL_SNARK,
 +
++	// Half Strike's Poke Balls (pokemon.h): the arsenal's too, after Half-Life's
++	WEAPON_PK_PIKACHU,
++	WEAPON_PK_CHARIZARD,
++	WEAPON_PK_BLASTOISE,
++	WEAPON_PK_FIRST = WEAPON_PK_PIKACHU,
++	WEAPON_PK_LAST = WEAPON_PK_BLASTOISE,
++
  	WEAPON_SHIELDGUN = 99
  };
  
-@@ -284,6 +303,18 @@ enum AmmoType
+@@ -284,6 +310,23 @@ enum AmmoType
  	AMMO_SMOKEGRENADE,
  	AMMO_C4,
  
@@ -1700,6 +2179,11 @@ index 2005b6a..ceb0506 100644
 +	AMMO_HL_SATCHEL,
 +	AMMO_HL_TRIPMINE,
 +	AMMO_HL_SNARKS,
++
++	// Poke Balls: one ball of each, registered after Half-Life's
++	AMMO_PK_PIKACHU,
++	AMMO_PK_CHARIZARD,
++	AMMO_PK_BLASTOISE,
 +
  	AMMO_MAX_TYPES
  };
@@ -6180,14 +6664,3099 @@ index 0000000..1920d83
 +	UTIL_RemoveOther("hornet");
 +	UTIL_RemoveOther("crossbow_bolt");
 +}
+diff --git a/regamedll/dlls/wpn_shared/wpn_pokemon.cpp b/regamedll/dlls/wpn_shared/wpn_pokemon.cpp
+new file mode 100644
+index 0000000..1b43d99
+--- /dev/null
++++ b/regamedll/dlls/wpn_shared/wpn_pokemon.cpp
+@@ -0,0 +1,3076 @@
++// Half Strike: Poke Balls and their Pokemon (pokemon.h). A ball is thrown as the Half-Life hand grenade; it opens and
++// its Pokemon comes out, follows its player and fights the enemies its player shoots at or that hurt it or its player.
++// Entities are named with MAKE_STRING_CLASS (the game's classname table, as the Half-Life arsenal's), followed by entity
++// handles, think every 0.1 s (the clients interpolate a step monster between thinks), allocate nothing while they live.
++#include "precompiled.h"
++
++extern bool g_bClientPrintEnable; // (client.cpp)
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Tuning (balance: contract of Half Strike r7)
++
++#define PK_THINK_INTERVAL      0.1f
++#define PK_ATTACK_RANGE        200.0f   // 5 m
++#define PK_FOLLOW_NEAR         110.0f   // stops by its player (the 80 to 180 band)
++#define PK_FOLLOW_FAR          180.0f   // and sets off again past this
++#define PK_FOLLOW_TOO_CLOSE    56.0f    // makes way
++#define PK_FOLLOW_RUN          320.0f   // runs to catch up past this
++#define PK_TELEPORT_DIST       1500.0f
++#define PK_STUCK_TIME          4.0f
++#define PK_AGGRO_RANGE         1500.0f  // the enemy its player aims at, seen by its player within this
++#define PK_AGGRO_CONE          25.0f    // (degrees off its player's aim, plus the target's own size)
++#define PK_LOSE_RANGE          2000.0f
++#define PK_LOSE_SIGHT          6.0f
++#define PK_FLINCH_EVERY        1.0f
++#define PK_CORPSE_TIME         3.0f
++#define PK_FADE_TIME           1.0f
++#define PK_RETURN_TIME         0.4f
++#define PK_TARGET_RADIUS       16.0f    // (a player's half width: the range counts to its side, not its center)
++
++// Pikachu: Thunderbolt
++#define PK_ZAP_DAMAGE          22.0f
++#define PK_ZAP_INTERVAL        1.1f
++#define PK_ZAP_SLOW_TIME       0.4f
++#define PK_ZAP_FRAMES          8        // (zap.spr)
++#define PK_ZAP_FRAMERATE       200      // (tenths: 20 frames a second)
++// Charizard: Flamethrower
++#define PK_FLAME_DAMAGE        7.0f
++#define PK_FLAME_TICK          0.15f
++#define PK_FLAME_STREAM        1.0f
++#define PK_FLAME_COOLDOWN      2.0f
++#define PK_FLAME_HALF_CONE     12.5f    // (degrees: a 25 degree cone)
++#define PK_BURN_DAMAGE         2.0f
++#define PK_BURN_TICK           0.5f
++#define PK_BURN_TIME           2.0f
++// (its stream's look: fire.spr puffs, small and close together at the mouth, bigger and further apart along it)
++#define PK_FLAME_PUFFS         22       // (at most, a tenth of a second: enough to reach 200 units at any phase)
++#define PK_FLAME_PUFF_FIRST    6.0f     // (its puffs at PK_FLAME_PUFF_FIRST * PK_FLAME_PUFF_STEP^k - 2 units)
++#define PK_FLAME_PUFF_STEP     1.18f    // (spacing ~0.18 d for a diameter ~6 + 0.4 d: they overlap all along, seen
++                                        // from the side as well as head-on)
++#define PK_FLAME_RADIUS_MOUTH  3.0f     // (a puff's radius: this, growing by PK_FLAME_RADIUS_GROWTH a unit)
++#define PK_FLAME_RADIUS_GROWTH 0.2f
++#define PK_FLAME_EYE_CLEAR     6.0f     // (a puff never nearer anyone's eye than this plus 2.5 times its radius:
++#define PK_EYE_FACTOR          0.4f     // radius <= PK_EYE_FACTOR * (eye distance - PK_FLAME_EYE_CLEAR); 4 times
++#define PK_EYE_FACTOR_NEAR     0.25f    // its radius in an attack on a player at close range)
++#define PK_FLAME_NEAR          240.0f   // (a stream on a player this close to its mouth — eye distance: all its range —
++                                        // seen by him: smaller puffs, thinner towards him: half its bright area on his screen)
++#define PK_FLAME_NEAR_FADE     0.3f     // (its last 30 % thinned out to PK_FLAME_NEAR_KEEP of its puffs)
++#define PK_FLAME_NEAR_KEEP     0.6f
++#define PK_FLAME_IMPACT_EYE    40.0f    // (no impact puff that close to anyone's eye)
++#define PK_FIRE_UNITS          25.6f    // (fire.spr: a puff's radius in units at scale 1 — 64 pixels, filled to ~80 %)
++// Blastoise: Hydro Pump
++#define PK_HYDRO_DAMAGE        34.0f
++#define PK_HYDRO_INTERVAL      1.9f
++#define PK_HYDRO_KNOCKBACK     380.0f
++#define PK_HYDRO_LIFT          150.0f   // (a player: on the ground CS friction would cancel a flat push at once)
++#define PK_HYDRO_LIFT_POKEMON  60.0f
++// (its jets' look: a thin blue core beam under water puffs, the beam's square start inside the cannon under a small
++// muzzle puff; on a player, beam and jet puffs stop short of him — a constant-width beam aimed at his eye would fill
++// his screen —, only the splash and the droplets reaching him)
++#define PK_HYDRO_BEAM_WIDTH    55       // (tenths of units)
++#define PK_HYDRO_BEAM_BRIGHT   140
++#define PK_HYDRO_BEAM_BACK     3.5f     // (its start, inside the cannon)
++#define PK_HYDRO_MUZZLE_RADIUS 5.0f
++#define PK_HYDRO_SHORT_FRAC    0.35f    // (on a player: stopped clamp(0.35 * length, 16, 40) short of the hit point)
++#define PK_HYDRO_SHORT_MIN     16.0f
++#define PK_HYDRO_SHORT_MAX     40.0f
++
++// The ball
++#define PK_BALL_OPEN_TIME      1.2f     // (opens then if still rolling or in the air)
++#define PK_BALL_WOBBLE_TIME    0.7f     // (at rest: wobbles, then opens — w_pokeball's wobble settles at 0.72 s)
++#define PK_BALL_RELEASE_DELAY  0.25f    // (its Pokemon out with the lid at its widest: open frames 6 to 8)
++#define PK_BALL_KEEP_TIME      0.35f    // (the open ball stays after)
++#define PK_BALL_RELEASE_AHEAD  28.0f    // (its Pokemon out that far ahead of the ball, away from its thrower)
++
++// Sprite sizes (TE_SPRITE scale in tenths; the generated sprites are 64 to 128 pixels)
++#define PK_WATER_UNITS         25.6f    // (water.spr: a puff's radius in units at scale 1 — 64 pixels, ~80 % filled)
++#define PK_WATER_JET_PUFFS     5        // (along each jet, about a fifth of its length apart, ~0.25 s each)
++#define PK_FLASH_SCALE         5        // (flash.spr, 128 pixels: 64 units across at 5, its glow ~55)
++#define PK_FLASH_PIXELS        128.0f
++#define PK_FLASH_BRIGHTNESS    180
++#define PK_FLASH_MIN_HEIGHT    24.0f    // (a flash's centre at least this, and its half-size, above the floor)
++// A Pokemon's glow shell coming out of the ball: a soft blue-white, fading out
++#define PK_SPAWN_GLOW_TIME     0.3f
++#define PK_SPAWN_GLOW_AMOUNT   4.0f
++
++struct PokemonInfo
++{
++	const char *name;
++	const char *weaponName;
++	const char *ammoName;
++	WeaponIdType weaponId;
++	int price;
++	const char *model;
++	float health;
++	float runSpeed;
++	float walkSpeed;
++	float yawSpeed;      // degrees a second
++	Vector mins;         // (a Counter-Strike hull: the crouched one, or the standing one)
++	Vector maxs;
++	float eyeHeight;
++	const char *sndCry;
++	const char *sndCry2; // (its call when it charges, and its victory)
++	const char *sndAttack;
++	const char *sndHurt;
++	const char *sndDie;
++	int bloodColor;
++	float stepDistance;
++	float stepVolume;
++	int stepPitch;
++	float knockback;     // (the share of Hydro Pump's push it takes, by its weight: never thrown onto high ground)
++};
++
++static const PokemonInfo g_PokemonInfo[PK_NUM_SPECIES] =
++{
++	{
++		"Pikachu", "weapon_pk_pikachu", "PokeBallPikachu", WEAPON_PK_PIKACHU, PK_PIKACHU_PRICE, "models/pokemon/pikachu.mdl",
++		90.0f, 300.0f, 125.0f, 720.0f, Vector(-16, -16, 0), Vector(16, 16, 36), 26.0f,
++		"pokemon/pikachu_cry1.wav", "pokemon/pikachu_cry2.wav", "pokemon/pikachu_zap.wav", "pokemon/pikachu_hurt.wav", "pokemon/pikachu_die.wav",
++		DONT_BLEED, 34.0f, 0.3f, 120, 0.5f
++	},
++	{
++		"Charizard", "weapon_pk_charizard", "PokeBallCharizard", WEAPON_PK_CHARIZARD, PK_CHARIZARD_PRICE, "models/pokemon/charizard.mdl",
++		160.0f, 240.0f, 100.0f, 420.0f, Vector(-16, -16, 0), Vector(16, 16, 72), 64.0f,
++		"pokemon/charizard_cry1.wav", "pokemon/charizard_roar.wav", "pokemon/charizard_flame.wav", "pokemon/charizard_hurt.wav", "pokemon/charizard_die.wav",
++		BLOOD_COLOR_RED, 60.0f, 0.55f, 88, 0.7f
++	},
++	{
++		"Blastoise", "weapon_pk_blastoise", "PokeBallBlastoise", WEAPON_PK_BLASTOISE, PK_BLASTOISE_PRICE, "models/pokemon/blastoise.mdl",
++		220.0f, 210.0f, 90.0f, 360.0f, Vector(-16, -16, 0), Vector(16, 16, 72), 52.0f,
++		"pokemon/blastoise_cry1.wav", "pokemon/blastoise_cry1.wav", "pokemon/blastoise_hydro.wav", "pokemon/blastoise_hurt.wav", "pokemon/blastoise_die.wav",
++		DONT_BLEED, 64.0f, 0.65f, 82, 0.45f
++	},
++};
++
++// The model contract's sequences, by name, else at these indices
++static const char *const g_PokemonSeqNames[CPokemon::SEQ_COUNT] = { "idle", "walk", "run", "attack", "flinch", "die", "spawn", "victory" };
++
++static const char *const PK_StateNames[] = { "spawning", "follow", "chase", "attack", "victory", "dying", "returning" };
++
++// (set at each map's precache)
++static int s_iSprZap;
++static int s_iSprFire;
++static int s_iSprWater;
++static int s_iSprDrops;
++static int s_iSprFlash;
++
++static const PokemonInfo &PK_Info(int iSpecies)
++{
++	return g_PokemonInfo[clamp(iSpecies, 0, PK_NUM_SPECIES - 1)];
++}
++
++static int PK_SpeciesOfWeapon(const char *classname)
++{
++	for (int i = 0; i < PK_NUM_SPECIES; i++)
++	{
++		if (classname && !Q_stricmp(classname, g_PokemonInfo[i].weaponName))
++			return i;
++	}
++
++	return PK_PIKACHU;
++}
++
++static bool PK_FreeForAll()
++{
++#ifdef REGAMEDLL_ADD
++	return CSGameRules()->IsFreeForAll() != FALSE;
++#else
++	return false;
++#endif
++}
++
++// A player still in the game, alive, on a side
++static bool PK_PlayerPlaying(CBasePlayer *pPlayer)
++{
++	return pPlayer && UTIL_IsValidPlayer(pPlayer) && !pPlayer->has_disconnected && pPlayer->IsAlive()
++		&& (pPlayer->m_iTeam == TERRORIST || pPlayer->m_iTeam == CT);
++}
++
++static Vector PK_Feet(CBaseEntity *pEntity)
++{
++	return pEntity->pev->origin + Vector(0, 0, pEntity->pev->mins.z);
++}
++
++bool PK_IsPokemon(entvars_t *pev)
++{
++	return pev && FClassnameIs(pev, "monster_pokemon");
++}
++
++// Its Pokemon out (not dying nor going back), if any
++static CPokemon *PK_PokemonOf(CBasePlayer *pPlayer)
++{
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "monster_pokemon")))
++	{
++		CPokemon *pPokemon = static_cast<CPokemon *>(pEntity);
++		if (pPokemon->IsOut() && pPokemon->IsOwnedBy(pPlayer))
++			return pPokemon;
++	}
++
++	return nullptr;
++}
++
++// A ball of its in flight
++static bool PK_BallInFlight(CBasePlayer *pPlayer)
++{
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "pokeball")))
++	{
++		CPokeBall *pBall = static_cast<CPokeBall *>(pEntity);
++		if (pBall->IsOwnedBy(pPlayer) && !pBall->IsOpened() && !(pEntity->pev->flags & FL_KILLME))
++			return true;
++	}
++
++	return false;
++}
++
++static bool PK_HasOut(CBasePlayer *pPlayer)
++{
++	return PK_PokemonOf(pPlayer) || PK_BallInFlight(pPlayer);
++}
++
++// A ball in hand (its item, with the ball in it)
++static CBasePlayerItem *PK_BallCarried(CBasePlayer *pPlayer)
++{
++	for (CBasePlayerItem *pItem = pPlayer->m_rgpPlayerItems[GRENADE_SLOT]; pItem; pItem = pItem->m_pNext)
++	{
++		if (IsPokeBall(pItem->m_iId) && pPlayer->m_rgAmmo[pItem->PrimaryAmmoIndex()] > 0)
++			return pItem;
++	}
++
++	return nullptr;
++}
++
++static void PK_CenterPrint(CBasePlayer *pPlayer, const char *msg)
++{
++	if (g_bClientPrintEnable && pPlayer && !pPlayer->IsBot())
++		ClientPrint(pPlayer->pev, HUD_PRINTCENTER, msg);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Effects (temporary entities)
++
++static void PK_FxSprite(const Vector &pos, int iSprite, int iScale, int iBrightness)
++{
++	MESSAGE_BEGIN(MSG_PVS, SVC_TEMPENTITY, pos);
++		WRITE_BYTE(TE_SPRITE);
++		WRITE_COORD(pos.x);
++		WRITE_COORD(pos.y);
++		WRITE_COORD(pos.z);
++		WRITE_SHORT(iSprite);
++		WRITE_BYTE(clamp(iScale, 1, 255));
++		WRITE_BYTE(clamp(iBrightness, 0, 255));
++	MESSAGE_END();
++}
++
++// Where a flash of this half-size is drawn near pos: a sprite is depth-tested, so the floor under it would cut it flat
++// (and a ceiling over it): its centre at least its half-size (and flMinHeight) above the floor, under the ceiling when
++// there is room for it
++static Vector PK_FlashSpot(const Vector &pos, float flHalf, float flMinHeight, edict_t *pIgnore)
++{
++	float flLift = Q_max(flHalf, flMinHeight);
++	Vector vecSpot = pos;
++
++	TraceResult tr;
++	UTIL_TraceLine(pos + Vector(0, 0, 1), pos - Vector(0, 0, flLift), ignore_monsters, pIgnore, &tr);
++	if (tr.fStartSolid)
++		return pos;
++
++	float flFloor = (tr.flFraction < 1.0f) ? tr.vecEndPos.z : pos.z - flLift;
++	vecSpot.z = Q_max(pos.z, flFloor + flLift);
++
++	UTIL_TraceLine(Vector(pos.x, pos.y, flFloor + 1.0f), Vector(pos.x, pos.y, vecSpot.z + flHalf), ignore_monsters, pIgnore, &tr);
++	if (tr.flFraction < 1.0f && !tr.fStartSolid)
++		vecSpot.z = Q_max(flFloor + Q_min(flLift, 0.5f * (tr.vecEndPos.z - flFloor)), Q_min(vecSpot.z, tr.vecEndPos.z - flHalf));
++
++	return vecSpot;
++}
++
++// flash.spr (white, additive) at TE_SPRITE scale iScale (tenths), lifted clear of the floor
++static void PK_FxFlash(const Vector &pos, int iScale, int iBrightness, float flMinHeight, edict_t *pIgnore)
++{
++	float flHalf = 0.5f * PK_FLASH_PIXELS * 0.1f * iScale;
++	PK_FxSprite(PK_FlashSpot(pos, flHalf, flMinHeight, pIgnore), s_iSprFlash, iScale, iBrightness);
++}
++
++// The spawn glow shell's colour, fading with k (1 at the start, 0 at the end)
++static Vector PK_SpawnGlowColour(float k)
++{
++	return Vector(120, 170, 255) * k;
++}
++
++static void PK_FxLight(const Vector &pos, int iRadius, int r, int g, int b, int iLife, int iDecay)
++{
++	MESSAGE_BEGIN(MSG_PVS, SVC_TEMPENTITY, pos);
++		WRITE_BYTE(TE_DLIGHT);
++		WRITE_COORD(pos.x);
++		WRITE_COORD(pos.y);
++		WRITE_COORD(pos.z);
++		WRITE_BYTE(iRadius);  // (tens of units)
++		WRITE_BYTE(r);
++		WRITE_BYTE(g);
++		WRITE_BYTE(b);
++		WRITE_BYTE(iLife);    // (tenths of seconds)
++		WRITE_BYTE(iDecay);   // (tens of units a second)
++	MESSAGE_END();
++}
++
++static void PK_FxSparks(const Vector &pos)
++{
++	MESSAGE_BEGIN(MSG_PVS, SVC_TEMPENTITY, pos);
++		WRITE_BYTE(TE_SPARKS);
++		WRITE_COORD(pos.x);
++		WRITE_COORD(pos.y);
++		WRITE_COORD(pos.z);
++	MESSAGE_END();
++}
++
++static void PK_FxBeam(const Vector &start, const Vector &end, int iSprite, int iStartFrame, int iFrameRate, int iLife, int iWidth, int iNoise, int r, int g, int b, int iBrightness, int iScroll)
++{
++	MESSAGE_BEGIN(MSG_PVS, SVC_TEMPENTITY, start);
++		WRITE_BYTE(TE_BEAMPOINTS);
++		WRITE_COORD(start.x);
++		WRITE_COORD(start.y);
++		WRITE_COORD(start.z);
++		WRITE_COORD(end.x);
++		WRITE_COORD(end.y);
++		WRITE_COORD(end.z);
++		WRITE_SHORT(iSprite);
++		WRITE_BYTE(iStartFrame); // starting frame
++		WRITE_BYTE(iFrameRate);  // (tenths of frames a second)
++		WRITE_BYTE(iLife);       // (tenths of seconds)
++		WRITE_BYTE(iWidth);      // (tenths of units)
++		WRITE_BYTE(iNoise);      // (hundredths)
++		WRITE_BYTE(r);
++		WRITE_BYTE(g);
++		WRITE_BYTE(b);
++		WRITE_BYTE(iBrightness);
++		WRITE_BYTE(iScroll);
++	MESSAGE_END();
++}
++
++// Pikachu's bolt: a wide yellow beam and a thin white core (30 % of it) along a zig-zag through randomly offset points —
++// the engine's beam noise grows with a beam's length, so a short beam alone would be a straight rod —, each from its own
++// frame of zap.spr (any of its 8 stands alone), flickering through them at 20 frames a second, the wide one scrolling.
++// One bolt with a hot core: the core rides the kinked line itself (no noise: two noisy beams would wander apart and
++// read as two bolts), only the wide glow crackles around it; the glow's legs run on 3 units past each kink so that
++// neighbouring legs overlap (no dark notch where two square ends meet at an angle).
++static void PK_FxBolt(const Vector &vecSrc, const Vector &vecEnd)
++{
++	Vector vecDelta = vecEnd - vecSrc;
++	float flLen = vecDelta.Length();
++	if (flLen < 1.0f)
++		return;
++
++	Vector vecDir = vecDelta * (1.0f / flLen);
++	Vector vecSide = CrossProduct(vecDir, Vector(0, 0, 1));
++	if (vecSide.Length() < 0.1f)
++		vecSide = Vector(1, 0, 0);
++
++	vecSide = vecSide.Normalize();
++	Vector vecUp = CrossProduct(vecSide, vecDir).Normalize();
++
++	// (2 to 4 legs, a kink at least every 70 units; its points off the line by 5 to 12 units, alternating sides)
++	const int MAX_LEGS = 4;
++	int iLegs = clamp(int(flLen / 70.0f) + 2, 2, MAX_LEGS);
++	float flOffset = clamp(flLen * 0.07f, 5.0f, 12.0f);
++	Vector vecPoints[MAX_LEGS + 1];
++	vecPoints[0] = vecSrc;
++	vecPoints[iLegs] = vecEnd;
++	float flSign = RANDOM_LONG(0, 1) ? 1.0f : -1.0f;
++	for (int i = 1; i < iLegs; i++)
++	{
++		float flAlong = (float(i) + RANDOM_FLOAT(-0.2f, 0.2f)) / float(iLegs);
++		float flAngle = RANDOM_FLOAT(-0.6f, 0.6f);
++		float flAmount = flSign * flOffset * RANDOM_FLOAT(0.6f, 1.0f);
++		vecPoints[i] = vecSrc + vecDelta * flAlong + (vecSide * cosf(flAngle) + vecUp * sinf(flAngle)) * flAmount;
++		flSign = -flSign;
++	}
++
++	int iFrame = RANDOM_LONG(0, PK_ZAP_FRAMES - 1);
++	int iCoreFrame = (iFrame + RANDOM_LONG(1, PK_ZAP_FRAMES - 1)) % PK_ZAP_FRAMES;
++	for (int i = 0; i < iLegs; i++)
++	{
++		// (the engine's noise: about noise * length / 5000 units off the leg, none at its ends; a crackle of ~1.5 units)
++		Vector vecLeg = vecPoints[i + 1] - vecPoints[i];
++		float flLeg = vecLeg.Length();
++		int iNoise = clamp(int(7500.0f / Q_max(flLeg, 1.0f)), 30, 255);
++		Vector vecLegDir = vecLeg * (1.0f / Q_max(flLeg, 1.0f));
++		Vector vecGlowStart = (i > 0) ? vecPoints[i] - vecLegDir * 3.0f : vecPoints[i];
++		Vector vecGlowEnd = (i < iLegs - 1) ? vecPoints[i + 1] + vecLegDir * 3.0f : vecPoints[i + 1];
++		PK_FxBeam(vecGlowStart, vecGlowEnd, s_iSprZap, iFrame, PK_ZAP_FRAMERATE, 2, 50, iNoise, 255, 230, 80, 255, 35);
++		PK_FxBeam(vecPoints[i], vecPoints[i + 1], s_iSprZap, iCoreFrame, PK_ZAP_FRAMERATE, 2, 15, 0, 255, 255, 255, 255, 60);
++	}
++}
++
++// (the distance from pos to the nearest living player's eye)
++static float PK_FxEyeDistance(const Vector &pos)
++{
++	float flNearest = 1e9f;
++	for (int i = 1; i <= gpGlobals->maxClients; i++)
++	{
++		CBasePlayer *pPlayer = UTIL_PlayerByIndex(i);
++		if (!pPlayer || !UTIL_IsValidPlayer(pPlayer) || pPlayer->has_disconnected || !pPlayer->IsAlive())
++			continue;
++
++		flNearest = Q_min(flNearest, float((pos - (pPlayer->pev->origin + pPlayer->pev->view_ofs)).Length()));
++	}
++
++	return flNearest;
++}
++
++// (a puff's radius, shrunk so that it never reaches into anyone's eye: at most flFactor of its distance to it, less
++// PK_FLAME_EYE_CLEAR)
++static float PK_FxEyeClear(const Vector &pos, float flRadius, float flFactor = PK_EYE_FACTOR)
++{
++	for (int i = 1; i <= gpGlobals->maxClients; i++)
++	{
++		CBasePlayer *pPlayer = UTIL_PlayerByIndex(i);
++		if (!pPlayer || !UTIL_IsValidPlayer(pPlayer) || pPlayer->has_disconnected || !pPlayer->IsAlive())
++			continue;
++
++		float flEye = (pos - (pPlayer->pev->origin + pPlayer->pev->view_ofs)).Length();
++		flRadius = Q_min(flRadius, (flEye - PK_FLAME_EYE_CLEAR) * flFactor);
++	}
++
++	return flRadius;
++}
++
++// (the free distance from pos along dir, up to flMax: the world only)
++static float PK_FxFree(const Vector &pos, const Vector &dir, float flMax)
++{
++	TraceResult tr;
++	UTIL_TraceLine(pos, pos + dir * flMax, ignore_monsters, nullptr, &tr);
++	if (tr.fStartSolid || tr.fAllSolid)
++		return 0.0f;
++
++	return flMax * tr.flFraction;
++}
++
++// A puff: an effect sprite played once at its own pace (TE_EXPLOSION without its light, sound and particles: TE_SPRITE
++// plays at 10 frames a second, ~1 s for fire.spr or water.spr, and lingers), additive (the engine's 180). Never in
++// anyone's face: near a player's eye it shrinks (flEyeFactor: PK_FxEyeClear), so that a victim standing in the stream
++// still sees (no white-out). Never cut by the world in a hard seam (a sprite is a depth-tested billboard facing its
++// viewer, so any surface within its radius, seen from the side, slices it): one within its radius of the floor is
++// lifted clear of it, then it shrinks to its free distance (less 2 units) to the walls around and the ceiling, and
++// along pvecDir (where it goes: the crate behind a target); one left too small is not drawn.
++static void PK_FxPuff(const Vector &vecPos, int iSprite, float flUnits, float flRadius, int iFrameRate,
++	float flEyeFactor = PK_EYE_FACTOR, const Vector *pvecDir = nullptr)
++{
++	const float flMin = 0.5f * flUnits * 0.1f;
++	Vector pos = vecPos;
++	flRadius = PK_FxEyeClear(pos, flRadius, flEyeFactor);
++	if (flRadius < flMin)
++		return;
++
++	TraceResult tr;
++	UTIL_TraceLine(pos, pos - Vector(0, 0, flRadius), ignore_monsters, nullptr, &tr);
++	if (tr.fStartSolid)
++		return;
++
++	if (tr.flFraction < 1.0f)
++	{
++		pos.z = tr.vecEndPos.z + flRadius;
++		flRadius = PK_FxEyeClear(pos, flRadius, flEyeFactor);
++		if (flRadius < flMin)
++			return;
++	}
++
++	static const Vector s_vecAround[] = { Vector(1, 0, 0), Vector(-1, 0, 0), Vector(0, 1, 0), Vector(0, -1, 0), Vector(0, 0, 1) };
++	float flFree = flRadius + 2.0f;
++	for (const Vector &dir : s_vecAround)
++		flFree = PK_FxFree(pos, dir, flFree);
++
++	if (pvecDir)
++		flFree = PK_FxFree(pos, *pvecDir, flFree);
++
++	flRadius = Q_min(flRadius, flFree - 2.0f);
++	if (flRadius < flMin)
++		return;
++
++	MESSAGE_BEGIN(MSG_PVS, SVC_TEMPENTITY, pos);
++		WRITE_BYTE(TE_EXPLOSION);
++		WRITE_COORD(pos.x);
++		WRITE_COORD(pos.y);
++		WRITE_COORD(pos.z - 10.0f); // (an explosion's sprite is drawn 10 units up)
++		WRITE_SHORT(iSprite);
++		WRITE_BYTE(clamp(int(flRadius / flUnits * 10.0f + 0.25f), 1, 255));
++		WRITE_BYTE(clamp(iFrameRate, 1, 255));
++		WRITE_BYTE(TE_EXPLFLAG_NODLIGHTS | TE_EXPLFLAG_NOSOUND | TE_EXPLFLAG_NOPARTICLES);
++	MESSAGE_END();
++}
++
++// A puff of fire (fire.spr, 12 frames: ~0.25 to 0.4 s at 30 to 44 frames a second)
++static void PK_FxFlame(const Vector &pos, float flRadius, int iFrameRate, float flEyeFactor = PK_EYE_FACTOR, const Vector *pvecDir = nullptr)
++{
++	PK_FxPuff(pos, s_iSprFire, PK_FIRE_UNITS, flRadius, iFrameRate, flEyeFactor, pvecDir);
++}
++
++// A puff of water (water.spr, 8 frames: ~0.25 s at 28 frames a second)
++static void PK_FxWater(const Vector &pos, float flRadius, int iFrameRate, float flEyeFactor = PK_EYE_FACTOR, const Vector *pvecDir = nullptr)
++{
++	PK_FxPuff(pos, s_iSprWater, PK_WATER_UNITS, flRadius, iFrameRate, flEyeFactor, pvecDir);
++}
++
++// The red glow of a return to the ball: flash.spr tinted (a temporary env_sprite: TE_SPRITE cannot tint)
++// (lifted clear of the floor as the white flashes)
++static void PK_FxReturnFlash(const Vector &pos, float flScale, float flMinHeight, edict_t *pIgnore)
++{
++	Vector vecSpot = PK_FlashSpot(pos, 0.5f * PK_FLASH_PIXELS * flScale, flMinHeight, pIgnore);
++	CSprite *pSprite = CSprite::SpriteCreate("sprites/pokemon/flash.spr", vecSpot, FALSE);
++	if (!pSprite)
++		return;
++
++	pSprite->SetTransparency(kRenderTransAdd, 255, 50, 40, PK_FLASH_BRIGHTNESS, kRenderFxNoDissipation);
++	pSprite->SetScale(flScale);
++	pSprite->pev->frame = 0;
++	pSprite->AnimateAndDie(12.0f);
++}
++
++// A shower of moving sprites (additive), along a direction
++static void PK_FxSpray(const Vector &pos, const Vector &dir, int iSprite, int iCount, int iSpeed, int iNoise)
++{
++	MESSAGE_BEGIN(MSG_PVS, SVC_TEMPENTITY, pos);
++		WRITE_BYTE(TE_SPRAY);
++		WRITE_COORD(pos.x);
++		WRITE_COORD(pos.y);
++		WRITE_COORD(pos.z);
++		WRITE_COORD(dir.x);
++		WRITE_COORD(dir.y);
++		WRITE_COORD(dir.z);
++		WRITE_SHORT(iSprite);
++		WRITE_BYTE(iCount);
++		WRITE_BYTE(iSpeed);
++		WRITE_BYTE(iNoise);
++		WRITE_BYTE(kRenderTransAdd);
++	MESSAGE_END();
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// The ball in hand
++
++enum pk_ball_e
++{
++	PKBALL_IDLE = 0,
++	PKBALL_DRAW,
++	PKBALL_PINPULL,   // wind-up, held
++	PKBALL_THROW,
++	PKBALL_HOLSTER
++};
++
++LINK_ENTITY_TO_CLASS(weapon_pk_pikachu, CPokeBallWeapon, CCSPlayerWeapon)
++LINK_ENTITY_TO_CLASS(weapon_pk_charizard, CPokeBallWeapon, CCSPlayerWeapon)
++LINK_ENTITY_TO_CLASS(weapon_pk_blastoise, CPokeBallWeapon, CCSPlayerWeapon)
++
++// (from its class name: precaching reads its info before any spawn)
++int CPokeBallWeapon::Species() const
++{
++	return PK_SpeciesOfWeapon(STRING(pev->classname));
++}
++
++void CPokeBallWeapon::Spawn()
++{
++	Precache();
++	m_iId = PK_Info(Species()).weaponId;
++	SET_MODEL(edict(), "models/pokemon/w_pokeball.mdl");
++	pev->skin = Species();
++	m_iDefaultAmmo = 1;
++	FallInit();
++	CBasePlayerWeapon::Spawn();
++}
++
++void CPokeBallWeapon::Precache()
++{
++	PRECACHE_MODEL("models/pokemon/w_pokeball.mdl");
++	PRECACHE_MODEL("models/pokemon/v_pokeball.mdl");
++	PRECACHE_MODEL("models/pokemon/p_pokeball.mdl");
++	PRECACHE_SOUND("pokemon/ball_throw.wav");
++
++	UTIL_PrecacheOther("pokeball");
++	UTIL_PrecacheOther("monster_pokemon");
++}
++
++int CPokeBallWeapon::GetItemInfo(ItemInfo *p)
++{
++	const PokemonInfo &info = PK_Info(Species());
++	p->pszName = STRING(pev->classname);
++	p->pszAmmo1 = info.ammoName;
++	p->iMaxAmmo1 = PK_BALL_MAX_CARRY;
++	p->pszAmmo2 = nullptr;
++	p->iMaxAmmo2 = -1;
++	p->iMaxClip = WEAPON_NOCLIP;
++	p->iSlot = 3;
++	p->iPosition = 8 + Species(); // (after the snarks)
++	p->iId = m_iId = info.weaponId;
++	p->iFlags = ITEM_FLAG_LIMITINWORLD | ITEM_FLAG_EXHAUSTIBLE;
++	p->iWeight = PK_BALL_WEIGHT;
++	return 1;
++}
++
++BOOL CPokeBallWeapon::Deploy()
++{
++	m_flReleaseThrow = -1;
++	m_flStartThrow = 0;
++	return DefaultDeploy("models/pokemon/v_pokeball.mdl", "models/pokemon/p_pokeball.mdl", PKBALL_DRAW, "grenade", 0);
++}
++
++void CPokeBallWeapon::Holster(int skiplocal)
++{
++	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 0.5f;
++	m_flStartThrow = 0.0f;
++	m_flReleaseThrow = 0.0f;
++
++	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++		SendWeaponAnim(PKBALL_HOLSTER);
++	else
++		DestroyItem();
++}
++
++void CPokeBallWeapon::PrimaryAttack()
++{
++	if (m_flStartThrow || m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0 || !CanFire())
++		return;
++
++	// (one Pokemon at a time)
++	if (PK_HasOut(m_pPlayer))
++	{
++		PK_CenterPrint(m_pPlayer, "Your Pokemon is already out");
++		m_flNextPrimaryAttack = GetNextAttackDelay(1.0f);
++		return;
++	}
++
++	// (the wind-up, held while the button is)
++	m_flStartThrow = gpGlobals->time;
++	m_flReleaseThrow = 0.0f;
++	SendWeaponAnim(PKBALL_PINPULL);
++	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.4f;
++}
++
++void CPokeBallWeapon::Throw()
++{
++	// (thrown harder upwards than downwards, a softer lob than a grenade's)
++	Vector angThrow = m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle;
++	if (angThrow.x < 0.0f)
++		angThrow.x = -10.0f + angThrow.x * ((90.0f - 10.0f) / 90.0f);
++	else
++		angThrow.x = -10.0f + angThrow.x * ((90.0f + 10.0f) / 90.0f);
++
++	float flVel = (90.0f - angThrow.x) * 6.0f;
++	if (flVel > 800.0f)
++		flVel = 800.0f;
++
++	Vector vecFwd;
++	UTIL_MakeVectorsPrivate(angThrow, vecFwd, nullptr, nullptr);
++
++	// (out where the view model's ball leaves the hand, at the same spot of the screen and the same apparent size:
++	// v_pokeball's throw ends with its ball at view (forward 15.5, right 4.5, up 0.5), on the line of sight to here)
++	Vector vecViewFwd, vecViewRight, vecViewUp;
++	UTIL_MakeVectorsPrivate(m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle, vecViewFwd, vecViewRight, vecViewUp);
++	Vector vecEye = m_pPlayer->pev->origin + m_pPlayer->pev->view_ofs;
++	Vector vecSrc = vecEye + vecViewFwd * 34.0f + vecViewRight * 10.0f + vecViewUp * 1.0f;
++
++	// (not into a wall, nor into someone, in front of the face)
++	TraceResult tr;
++	UTIL_TraceLine(vecEye, vecSrc, dont_ignore_monsters, m_pPlayer->edict(), &tr);
++	if (tr.flFraction < 1.0f || tr.fStartSolid)
++	{
++		vecSrc = tr.vecEndPos - vecViewFwd * 5.0f;
++		UTIL_TraceLine(vecEye, vecSrc, dont_ignore_monsters, m_pPlayer->edict(), &tr);
++		if (tr.flFraction < 1.0f || tr.fStartSolid)
++			vecSrc = vecEye;
++	}
++
++	Vector vecThrow = vecFwd * flVel + m_pPlayer->pev->velocity;
++	CPokeBall::Launch(m_pPlayer, Species(), vecSrc, vecThrow);
++
++	EMIT_SOUND(ENT(m_pPlayer->pev), CHAN_WEAPON, "pokemon/ball_throw.wav", VOL_NORM, ATTN_NORM);
++	SendWeaponAnim(PKBALL_THROW);
++	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
++}
++
++void CPokeBallWeapon::WeaponIdle()
++{
++	if (m_flReleaseThrow == 0.0f && m_flStartThrow)
++		m_flReleaseThrow = gpGlobals->time;
++
++	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
++		return;
++
++	if (m_flStartThrow)
++	{
++		m_flStartThrow = 0.0f;
++
++		// (someone else's ball came out meanwhile: kept)
++		if (PK_HasOut(m_pPlayer))
++		{
++			SendWeaponAnim(PKBALL_DRAW);
++			m_flReleaseThrow = -1.0f;
++			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 1.0f;
++			return;
++		}
++
++		Throw();
++
++		// (positive: the next idle knows it was just thrown)
++		m_flReleaseThrow = gpGlobals->time;
++		m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]--;
++		m_flTimeWeaponIdle = m_flNextSecondaryAttack = m_flNextPrimaryAttack = GetNextAttackDelay(0.6f);
++		return;
++	}
++	else if (m_flReleaseThrow > 0.0f)
++	{
++		// (just thrown: none left, or the ball came back)
++		if (!m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++		{
++			RetireWeapon();
++			return;
++		}
++
++		SendWeaponAnim(PKBALL_DRAW);
++		m_flReleaseThrow = -1.0f;
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++		return;
++	}
++
++	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
++	{
++		SendWeaponAnim(PKBALL_IDLE);
++		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + UTIL_SharedRandomFloat(m_pPlayer->random_seed, 10.0f, 15.0f);
++	}
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// The ball thrown
++
++LINK_ENTITY_TO_CLASS(pokeball, CPokeBall, CCSAnimating)
++
++void CPokeBall::Spawn()
++{
++	Precache();
++	MAKE_STRING_CLASS("pokeball", pev);
++	pev->movetype = MOVETYPE_BOUNCE;
++	pev->solid = SOLID_BBOX;
++
++	SET_MODEL(edict(), "models/pokemon/w_pokeball.mdl");
++	UTIL_SetSize(pev, g_vecZero, g_vecZero);
++
++	pev->gravity = 0.6f;
++	pev->friction = 0.6f;
++	m_iSpecies = PK_PIKACHU;
++	m_iTeam = UNASSIGNED;
++	m_flOpenTime = gpGlobals->time + PK_BALL_OPEN_TIME;
++	m_flReleaseTime = 0.0f;
++	m_flRemoveTime = 0.0f;
++	m_flNextBounceSound = 0.0f;
++	m_flYaw = 0.0f;
++	m_bLanded = false;
++	m_bResting = false;
++	m_bOpened = false;
++	m_bReleased = false;
++}
++
++void CPokeBall::Precache()
++{
++	PRECACHE_MODEL("models/pokemon/w_pokeball.mdl");
++	PRECACHE_SOUND("pokemon/ball_bounce.wav");
++	PRECACHE_SOUND("pokemon/ball_open.wav");
++	PRECACHE_SOUND("pokemon/ball_return.wav");
++	s_iSprFlash = PRECACHE_MODEL("sprites/pokemon/flash.spr");
++}
++
++// (w_pokeball: 0 idle, 1 wobble, 2 open — origin on the floor under the ball —, 3 fly — origin at its centre)
++void CPokeBall::SetSequenceByName(const char *pszName, int iDefault)
++{
++	int seq = LookupSequence(pszName);
++	pev->sequence = seq >= 0 ? seq : iDefault;
++	pev->frame = 0;
++	ResetSequenceInfo();
++}
++
++CPokeBall *CPokeBall::Launch(CBasePlayer *pOwner, int iSpecies, const Vector &vecSrc, const Vector &vecVelocity)
++{
++	CPokeBall *pBall = GetClassPtr<CCSAnimating>((CPokeBall *)nullptr);
++	pBall->Spawn();
++	UTIL_SetOrigin(pBall->pev, vecSrc);
++	pBall->pev->velocity = vecVelocity;
++	pBall->pev->angles = Vector(0, pOwner->pev->v_angle.y, 0);
++	pBall->pev->avelocity = Vector(-540, 0, 0); // (rolls forward)
++	pBall->pev->owner = pOwner->edict();         // (does not hit its thrower)
++	pBall->pev->skin = iSpecies;
++
++	pBall->m_hOwner = pOwner;
++	pBall->m_iSpecies = iSpecies;
++	pBall->m_iTeam = pOwner->m_iTeam;
++
++	// (tumbles about its centre in the air)
++	pBall->SetSequenceByName("fly", 3);
++
++	pBall->SetTouch(&CPokeBall::BounceTouch);
++	pBall->SetThink(&CPokeBall::FlyThink);
++	pBall->pev->nextthink = gpGlobals->time + 0.1f;
++	return pBall;
++}
++
++void CPokeBall::BounceTouch(CBaseEntity *pOther)
++{
++	if (pOther->edict() == pev->owner)
++		return;
++
++	float flSpeed = pev->velocity.Length();
++	if (flSpeed > 60.0f && gpGlobals->time >= m_flNextBounceSound)
++	{
++		EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, "pokemon/ball_bounce.wav", clamp(flSpeed / 500.0f, 0.25f, 0.9f), ATTN_NORM, 0, 95 + RANDOM_LONG(0, 12));
++		m_flNextBounceSound = gpGlobals->time + 0.15f;
++	}
++
++	// (loses its momentum quickly, and its spin on the ground)
++	pev->velocity = pev->velocity * 0.6f;
++	if (pev->flags & FL_ONGROUND)
++	{
++		pev->velocity = pev->velocity * 0.7f;
++		pev->avelocity = pev->avelocity * 0.5f;
++	}
++}
++
++// On the ground for the first time: upright, the floor-origin sequences from now on
++void CPokeBall::Land()
++{
++	m_bLanded = true;
++	pev->angles.x = 0.0f;
++	pev->angles.z = 0.0f;
++	pev->avelocity = g_vecZero;
++	SetSequenceByName("idle", 0);
++}
++
++void CPokeBall::FlyThink()
++{
++	pev->nextthink = gpGlobals->time + 0.1f;
++	StudioFrameAdvance();
++
++	if (!IsInWorld())
++	{
++		GiveBack();
++		UTIL_Remove(this);
++		return;
++	}
++
++	// (its thrower gone, dead or on the other side: it fizzles)
++	CBasePlayer *pOwner = m_hOwner;
++	if (!PK_PlayerPlaying(pOwner) || pOwner->m_iTeam != m_iTeam)
++	{
++		PK_FxFlash(pev->origin, 3, 120, 0.0f, edict());
++		UTIL_Remove(this);
++		return;
++	}
++
++	if (pev->waterlevel != 0)
++		pev->velocity = pev->velocity * 0.5f;
++
++	if (!m_bLanded && (pev->flags & FL_ONGROUND))
++		Land();
++
++	// (at rest: it wobbles, then opens)
++	if (m_bResting)
++	{
++		pev->velocity = g_vecZero;
++		if (gpGlobals->time >= m_flOpenTime)
++			Open();
++
++		return;
++	}
++
++	if (m_bLanded && (pev->flags & FL_ONGROUND) && pev->velocity.Length() < 30.0f)
++	{
++		m_bResting = true;
++		SetTouch(nullptr);
++		pev->velocity = g_vecZero;
++		pev->avelocity = g_vecZero;
++		SetSequenceByName("wobble", 1);
++		m_flOpenTime = gpGlobals->time + PK_BALL_WOBBLE_TIME;
++		return;
++	}
++
++	// (still rolling or in the air after a while: it opens at once)
++	if (gpGlobals->time >= m_flOpenTime)
++		Open();
++}
++
++// The ball opens; its Pokemon comes out a moment later, the lid at its widest (Release)
++void CPokeBall::Open()
++{
++	m_bOpened = true;
++	SetTouch(nullptr);
++	pev->velocity = g_vecZero;
++	pev->avelocity = g_vecZero;
++	pev->movetype = MOVETYPE_NONE;
++	pev->solid = SOLID_NOT;
++
++	CBasePlayer *pOwner = m_hOwner;
++	Vector vecDir = pev->origin - pOwner->pev->origin;
++	vecDir.z = 0.0f;
++	m_flYaw = vecDir.Length() > 1.0f ? UTIL_VecToYaw(vecDir) : pOwner->pev->v_angle.y;
++
++	// (the lid opens away from its thrower, its light towards him)
++	pev->angles = Vector(0, m_flYaw + 180.0f, 0);
++
++	// (on the floor: the open sequence's origin is under the ball)
++	TraceResult tr;
++	UTIL_TraceLine(pev->origin + Vector(0, 0, 2), pev->origin - Vector(0, 0, 8), ignore_monsters, edict(), &tr);
++	if (tr.flFraction < 1.0f && !tr.fStartSolid)
++		UTIL_SetOrigin(pev, tr.vecEndPos);
++
++	SetSequenceByName("open", 2);
++	EMIT_SOUND(ENT(pev), CHAN_VOICE, "pokemon/ball_open.wav", VOL_NORM, ATTN_NORM);
++
++	m_flReleaseTime = gpGlobals->time + PK_BALL_RELEASE_DELAY;
++	m_flRemoveTime = m_flReleaseTime + PK_BALL_KEEP_TIME;
++	pev->rendermode = kRenderNormal;
++	pev->renderamt = 255;
++	SetThink(&CPokeBall::OpenThink);
++	pev->nextthink = gpGlobals->time + 0.05f;
++}
++
++// Its Pokemon out where there is room (a little ahead of the ball, away from its thrower), or the ball goes back
++void CPokeBall::Release()
++{
++	m_bReleased = true;
++
++	CBasePlayer *pOwner = m_hOwner;
++	if (!PK_PlayerPlaying(pOwner) || pOwner->m_iTeam != m_iTeam)
++	{
++		PK_FxFlash(pev->origin, 3, 120, 0.0f, edict());
++		m_flRemoveTime = Q_min(m_flRemoveTime, gpGlobals->time + 0.2f);
++		return;
++	}
++
++	// (the light coming out: centred at its Pokemon's mid-height at least, clear of the floor)
++	PK_FxFlash(pev->origin, PK_FLASH_SCALE, PK_FLASH_BRIGHTNESS, Q_max(PK_FLASH_MIN_HEIGHT, 0.5f * PK_Info(m_iSpecies).maxs.z), edict());
++	PK_FxLight(pev->origin + Vector(0, 0, 24), 20, 255, 255, 240, 4, 60);
++
++	Vector vecFwd;
++	UTIL_MakeVectorsPrivate(Vector(0, m_flYaw, 0), vecFwd, nullptr, nullptr);
++	Vector vecNear = pev->origin;
++	TraceResult tr;
++	UTIL_TraceLine(pev->origin + Vector(0, 0, 4), pev->origin + Vector(0, 0, 4) + vecFwd * PK_BALL_RELEASE_AHEAD, ignore_monsters, edict(), &tr);
++	if (tr.flFraction >= 1.0f && !tr.fStartSolid)
++		vecNear = pev->origin + vecFwd * PK_BALL_RELEASE_AHEAD;
++
++	if (!CPokemon::Create(m_iSpecies, pOwner, vecNear, m_flYaw) && (vecNear == pev->origin || !CPokemon::Create(m_iSpecies, pOwner, pev->origin, m_flYaw)))
++	{
++		// (no room: back into its thrower's hand)
++		EMIT_SOUND(ENT(pev), CHAN_ITEM, "pokemon/ball_return.wav", VOL_NORM, ATTN_NORM);
++		PK_FxLight(pev->origin + Vector(0, 0, 16), 12, 255, 60, 40, 3, 60);
++		PK_FxReturnFlash(pev->origin, 0.3f, PK_FLASH_MIN_HEIGHT, edict());
++		GiveBack();
++		m_flRemoveTime = Q_min(m_flRemoveTime, gpGlobals->time + 0.3f);
++	}
++}
++
++void CPokeBall::OpenThink()
++{
++	StudioFrameAdvance();
++	pev->nextthink = gpGlobals->time + 0.05f;
++
++	if (!m_bReleased && gpGlobals->time >= m_flReleaseTime - 0.001f)
++		Release();
++
++	// (fades in its last tenths)
++	float flLeft = m_flRemoveTime - gpGlobals->time;
++	if (m_bReleased && flLeft <= 0.0f)
++	{
++		UTIL_Remove(this);
++		return;
++	}
++
++	if (m_bReleased && flLeft < 0.2f)
++	{
++		pev->rendermode = kRenderTransTexture;
++		pev->renderamt = clamp(flLeft / 0.2f * 255.0f, 0.0f, 255.0f);
++	}
++}
++
++void CPokeBall::GiveBack()
++{
++	CBasePlayer *pOwner = m_hOwner;
++	if (!PK_PlayerPlaying(pOwner) || pOwner->m_iTeam != m_iTeam || PK_BallCarried(pOwner))
++		return;
++
++	const PokemonInfo &info = PK_Info(m_iSpecies);
++	if (pOwner->HasNamedPlayerItem(info.weaponName))
++		pOwner->GiveAmmo(1, (char *)info.ammoName, PK_BALL_MAX_CARRY);
++	else
++		pOwner->GiveNamedItem(info.weaponName);
++
++	char msg[96];
++	Q_snprintf(msg, sizeof(msg), "No room for %s: the ball came back", info.name);
++	PK_CenterPrint(pOwner, msg);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// The Pokemon
++
++// (its path on the bots' navigation mesh: no ladder; the crouch-only areas for the small one only)
++class PokemonPathCost
++{
++public:
++	PokemonPathCost(bool bTall) : m_bTall(bTall) {}
++
++	float operator()(CNavArea *area, CNavArea *fromArea, const CNavLadder *ladder)
++	{
++		if (!fromArea)
++			return 0.0f;
++
++		if (ladder)
++			return -1.0f;
++
++		if (m_bTall && (area->GetAttributes() & NAV_CROUCH))
++			return -1.0f;
++
++		float dist = (*area->GetCenter() - *fromArea->GetCenter()).Length();
++		float cost = dist + fromArea->GetCostSoFar();
++		if (area->GetAttributes() & NAV_JUMP)
++			cost += 2.0f * dist;
++
++		return cost;
++	}
++
++private:
++	bool m_bTall;
++};
++
++LINK_ENTITY_TO_CLASS(monster_pokemon, CPokemon, CCSMonster)
++
++void CPokemon::Precache()
++{
++	for (int i = 0; i < PK_NUM_SPECIES; i++)
++	{
++		const PokemonInfo &info = g_PokemonInfo[i];
++		PRECACHE_MODEL(info.model);
++		PRECACHE_SOUND(info.sndCry);
++		PRECACHE_SOUND(info.sndCry2);
++		PRECACHE_SOUND(info.sndAttack);
++		PRECACHE_SOUND(info.sndHurt);
++		PRECACHE_SOUND(info.sndDie);
++	}
++
++	PRECACHE_SOUND("pokemon/pikachu_cry2.wav");
++	PRECACHE_SOUND("pokemon/pk_step.wav");
++	PRECACHE_SOUND("pokemon/ball_return.wav");
++
++	s_iSprZap = PRECACHE_MODEL("sprites/pokemon/zap.spr");
++	s_iSprFire = PRECACHE_MODEL("sprites/pokemon/fire.spr");
++	s_iSprWater = PRECACHE_MODEL("sprites/pokemon/water.spr");
++	s_iSprDrops = PRECACHE_MODEL("sprites/pokemon/drops.spr");
++	s_iSprFlash = PRECACHE_MODEL("sprites/pokemon/flash.spr");
++}
++
++void CPokemon::Spawn()
++{
++	Precache();
++	MAKE_STRING_CLASS("monster_pokemon", pev);
++
++	const PokemonInfo &info = PK_Info(m_iSpecies);
++	pev->movetype = MOVETYPE_STEP;
++	pev->solid = SOLID_NOT; // (solid once in place: StartLife)
++	pev->takedamage = DAMAGE_NO;
++	pev->flags |= FL_MONSTER;
++	pev->deadflag = DEAD_NO;
++	pev->gravity = 1.0f;
++	pev->friction = 1.0f;
++
++	SET_MODEL(edict(), info.model);
++	UTIL_SetSize(pev, info.mins, info.maxs);
++	pev->skin = 0;
++	pev->max_health = pev->health = info.health;
++	pev->view_ofs = Vector(0, 0, info.eyeHeight);
++
++	m_bloodColor = info.bloodColor;
++	m_flFieldOfView = 0.0f;
++	m_LastHitGroup = HITGROUP_GENERIC;
++	m_hEnemy = nullptr;
++
++	m_iState = STATE_SPAWNING;
++	m_iTeam = UNASSIGNED;
++	m_iCurSeq = -1;
++	m_flLastThink = gpGlobals->time;
++	m_flStateEnd = 0.0f;
++	m_flEnemySeen = m_flEnemySince = 0.0f;
++	m_flNextAimCheck = 0.0f;
++	m_flNextAttack = 0.0f;
++	m_flAttackStart = m_flAttackHit = m_flAttackEnd = 0.0f;
++	m_flStreamEnd = m_flNextFlameTick = m_flNextFlameFx = 0.0f;
++	m_bAttackFired = false;
++	m_bKilledEnemy = false;
++	m_flFlinchEnd = m_flNextFlinch = 0.0f;
++	m_flKnockbackEnd = m_flSlowEnd = m_flAirborneEnd = 0.0f;
++	m_bFollowMoving = false;
++	m_flStuckTime = 0.0f;
++	m_flStuckCheck = 0.0f;
++	m_vecStuckPos = g_vecZero;
++	m_flNextTeleport = 0.0f;
++	m_flStepDist = 0.0f;
++	m_flNextIdleSound = 0.0f;
++	m_flNextBattleCry = 0.0f;
++	m_flGlowEnd = 0.0f;
++	m_flDeathTime = 0.0f;
++	m_iHealthSent = -1;
++	m_flSpeedNow = 0.0f;
++	m_path.Invalidate();
++	m_iPathIndex = 0;
++	m_vecPathGoal = g_vecZero;
++	m_vecWaypoint = g_vecZero;
++	m_flNextRepath = 0.0f;
++	ClearAfflictions();
++
++	LoadSequences();
++
++	// (one spawned by other means than a ball has no player: it goes at its first think)
++	SetThink(&CPokemon::LiveThink);
++	pev->nextthink = gpGlobals->time + PK_THINK_INTERVAL;
++}
++
++// Its sequences by the model contract's names (else its indices), their lengths and ground speeds
++void CPokemon::LoadSequences()
++{
++	studiohdr_t *pStudio = (studiohdr_t *)GET_MODEL_PTR(edict());
++	for (int i = 0; i < SEQ_COUNT; i++)
++	{
++		int seq = LookupSequence(g_PokemonSeqNames[i]);
++		if (seq < 0)
++			seq = (pStudio && i < pStudio->numseq) ? i : 0;
++
++		m_iSeq[i] = seq;
++		m_flSeqDuration[i] = 1.0f;
++		m_flSeqGroundSpeed[i] = 0.0f;
++
++		if (pStudio && seq < pStudio->numseq)
++		{
++			mstudioseqdesc_t *pDesc = (mstudioseqdesc_t *)((byte *)pStudio + pStudio->seqindex) + seq;
++			if (pDesc->numframes > 1 && pDesc->fps > 0.0f)
++			{
++				m_flSeqDuration[i] = (pDesc->numframes - 1) / pDesc->fps;
++				m_flSeqGroundSpeed[i] = Vector(pDesc->linearmovement[0], pDesc->linearmovement[1], pDesc->linearmovement[2]).Length() / m_flSeqDuration[i];
++			}
++		}
++	}
++}
++
++CPokemon *CPokemon::Create(int iSpecies, CBasePlayer *pOwner, const Vector &vecNear, float flYaw)
++{
++	if (!PK_PlayerPlaying(pOwner))
++		return nullptr;
++
++	CPokemon *pPokemon = GetClassPtr<CCSMonster>((CPokemon *)nullptr);
++	pPokemon->m_iSpecies = clamp(iSpecies, 0, PK_NUM_SPECIES - 1);
++	pPokemon->pev->owner = pOwner->edict(); // (it and its player go through each other, and its player's shots through it)
++	pPokemon->Spawn();
++
++	Vector vecPos;
++	if (!pPokemon->FindRoom(vecNear, vecPos))
++	{
++		pPokemon->SetThink(nullptr);
++		UTIL_Remove(pPokemon);
++		return nullptr;
++	}
++
++	UTIL_SetOrigin(pPokemon->pev, vecPos);
++	pPokemon->pev->angles = Vector(0, flYaw, 0);
++	pPokemon->m_hOwner = pOwner;
++	pPokemon->m_iTeam = pOwner->m_iTeam;
++	pPokemon->StartLife();
++	return pPokemon;
++}
++
++// A standing spot for its hull near a point, in sight of it: the point itself, else around it
++bool CPokemon::FindRoom(const Vector &vecNear, Vector &vecOut)
++{
++	static const float radii[] = { 0.0f, 36.0f, 72.0f, 108.0f };
++	TraceResult tr;
++
++	for (int r = 0; r < int(ARRAYSIZE(radii)); r++)
++	{
++		const int count = radii[r] > 0.0f ? 8 : 1;
++		for (int k = 0; k < count; k++)
++		{
++			float a = (k * 45.0f + r * 22.5f) * (M_PI / 180.0f);
++			Vector xy = vecNear + Vector(Q_cos(a) * radii[r], Q_sin(a) * radii[r], 0.0f);
++
++			// (not behind a wall from the ball)
++			UTIL_TraceLine(vecNear + Vector(0, 0, 4), xy + Vector(0, 0, 4), ignore_monsters, edict(), &tr);
++			if (tr.flFraction < 1.0f || tr.fStartSolid)
++				continue;
++
++			// (the ground under it)
++			UTIL_TraceLine(xy + Vector(0, 0, 4), xy - Vector(0, 0, 256), ignore_monsters, edict(), &tr);
++			if (tr.flFraction >= 1.0f || tr.fStartSolid || tr.fAllSolid)
++				continue;
++
++			// (room for its hull there, players and monsters included)
++			Vector vecFloor = tr.vecEndPos + Vector(0, 0, 1);
++			TRACE_MONSTER_HULL(edict(), vecFloor, vecFloor, dont_ignore_monsters, edict(), &tr);
++			if (tr.fStartSolid || tr.fAllSolid)
++				continue;
++
++			vecOut = vecFloor;
++			return true;
++		}
++	}
++
++	return false;
++}
++
++void CPokemon::StartLife()
++{
++	const PokemonInfo &info = PK_Info(m_iSpecies);
++
++	pev->solid = SOLID_SLIDEBOX;
++	pev->takedamage = DAMAGE_YES;
++	UTIL_SetOrigin(pev, pev->origin);
++	DROP_TO_FLOOR(edict());
++
++	SetSeq(SEQ_SPAWN, 1.0f, true);
++	SetState(STATE_SPAWNING);
++	m_flStateEnd = gpGlobals->time + clamp(m_flSeqDuration[SEQ_SPAWN], 0.5f, 2.0f);
++
++	// (out of the light of the ball: a soft blue-white shell, fading out — SpawnGlow)
++	pev->renderfx = kRenderFxGlowShell;
++	pev->rendercolor = PK_SpawnGlowColour(1.0f);
++	pev->renderamt = PK_SPAWN_GLOW_AMOUNT;
++	m_flGlowEnd = gpGlobals->time + PK_SPAWN_GLOW_TIME;
++
++	EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, info.sndCry, VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
++	m_flNextIdleSound = gpGlobals->time + RANDOM_FLOAT(12.0f, 25.0f);
++	m_flNextBattleCry = gpGlobals->time + 3.0f;
++
++	m_flLastThink = gpGlobals->time;
++	SendHealth(nullptr);
++
++	SetThink(&CPokemon::LiveThink);
++	pev->nextthink = gpGlobals->time + PK_THINK_INTERVAL;
++}
++
++CBasePlayer *CPokemon::Owner() const
++{
++	CBasePlayer *pOwner = m_hOwner;
++	return pOwner;
++}
++
++void CPokemon::SetState(int iState)
++{
++	m_iState = iState;
++	m_flStuckTime = 0.0f;
++	m_flStuckCheck = gpGlobals->time + 1.0f;
++	m_vecStuckPos = pev->origin;
++}
++
++// Stuck: wanting to go somewhere, not a step away from where it was a second ago (sliding to and fro included)
++void CPokemon::NoteProgress(bool bWantMove)
++{
++	const float now = gpGlobals->time;
++	if (!bWantMove)
++	{
++		m_flStuckTime = 0.0f;
++		m_vecStuckPos = pev->origin;
++		m_flStuckCheck = now + 1.0f;
++		return;
++	}
++
++	if (now < m_flStuckCheck || !(pev->flags & FL_ONGROUND))
++		return;
++
++	if ((pev->origin - m_vecStuckPos).Length() < 24.0f)
++		m_flStuckTime += 1.0f;
++	else
++		m_flStuckTime = 0.0f;
++
++	m_vecStuckPos = pev->origin;
++	m_flStuckCheck = now + 1.0f;
++}
++
++// Its target down by its hand (and no other target yet): its victory sequence and call, then back to following
++bool CPokemon::StartVictory()
++{
++	// (its victim: no longer an enemy — dead — though its handle may last until the next look at it)
++	CBaseEntity *pEnemy = m_hEnemy;
++	if (!m_bKilledEnemy || (pEnemy && IsEnemy(pEnemy)))
++		return false;
++
++	m_bKilledEnemy = false;
++	m_hEnemy = nullptr;
++	SetState(STATE_VICTORY);
++	SetSeq(SEQ_VICTORY, 1.0f, true);
++	m_flStateEnd = gpGlobals->time + clamp(m_flSeqDuration[SEQ_VICTORY], 0.5f, 2.5f);
++	EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, PK_Info(m_iSpecies).sndCry2, VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
++	return true;
++}
++
++void CPokemon::SetSeq(int iSeq, float flFrameRate, bool bRestart)
++{
++	int seq = m_iSeq[iSeq];
++	if (bRestart || pev->sequence != seq || m_iCurSeq != iSeq)
++	{
++		// (walk and run blend into each other at the same point of the stride)
++		bool bGait = (m_iCurSeq == SEQ_WALK || m_iCurSeq == SEQ_RUN) && (iSeq == SEQ_WALK || iSeq == SEQ_RUN);
++		float flFrame = pev->frame;
++
++		pev->sequence = seq;
++		ResetSequenceInfo();
++		pev->frame = (bGait && !bRestart) ? flFrame : 0.0f;
++		m_iCurSeq = iSeq;
++	}
++
++	pev->framerate = flFrameRate;
++}
++
++void CPokemon::SendHealth(edict_t *pTo)
++{
++	int percent = 0;
++	if (IsOut() && pev->health > 0.0f)
++		percent = clamp(int(ceil(pev->health * 100.0f / pev->max_health)), 1, 100);
++
++	CBasePlayer *pOwner = Owner();
++	int index = entindex();
++	int team = (m_iTeam == TERRORIST || m_iTeam == CT) ? m_iTeam : 0;
++
++	if (pTo)
++	{
++		MESSAGE_BEGIN(MSG_ONE, gmsgPokeHP, nullptr, pTo);
++	}
++	else
++	{
++		MESSAGE_BEGIN(MSG_ALL, gmsgPokeHP);
++	}
++
++	WRITE_BYTE(index & 0xFF);
++	WRITE_BYTE((index >> 8) & 0xFF);
++	WRITE_BYTE(percent);
++	WRITE_BYTE(m_iSpecies);
++	WRITE_BYTE(team);
++	WRITE_BYTE(pOwner ? pOwner->entindex() : 0);
++	MESSAGE_END();
++
++	if (!pTo)
++		m_iHealthSent = percent;
++}
++
++void CPokemon::Flash(const Vector &vecPos, int r, int g, int b)
++{
++	PK_FxFlash(vecPos, PK_FLASH_SCALE, PK_FLASH_BRIGHTNESS, PK_FLASH_MIN_HEIGHT, edict());
++	PK_FxLight(vecPos, 14, r, g, b, 3, 50);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Friends and enemies
++
++bool CPokemon::IsEnemy(CBaseEntity *pEntity)
++{
++	if (!pEntity || pEntity == this)
++		return false;
++
++	CBasePlayer *pOwner = Owner();
++
++	if (pEntity->IsPlayer())
++	{
++		CBasePlayer *pPlayer = static_cast<CBasePlayer *>(pEntity);
++		if (pPlayer == pOwner || !PK_PlayerPlaying(pPlayer))
++			return false;
++
++		if (PK_FreeForAll())
++			return true;
++
++		// (a teammate only as the target it was set on, with friendly fire: one who hurt it or its player)
++		if (pPlayer->m_iTeam == m_iTeam)
++			return friendlyfire.value != 0.0f && m_hEnemy.IsValid() && m_hEnemy == pEntity;
++
++		return true;
++	}
++
++	if (PK_IsPokemon(pEntity->pev))
++	{
++		CPokemon *pOther = static_cast<CPokemon *>(pEntity);
++		if (!pOther->IsAlive() || (pOwner && pOther->IsOwnedBy(pOwner)))
++			return false;
++
++		if (PK_FreeForAll())
++			return true;
++
++		if (pOther->m_iTeam == m_iTeam)
++			return friendlyfire.value != 0.0f && m_hEnemy.IsValid() && m_hEnemy == pEntity;
++
++		return true;
++	}
++
++	return false;
++}
++
++bool CPokemon::CanBeHurtBy(CBaseEntity *pAttacker)
++{
++	if (!pAttacker || !pAttacker->IsPlayer())
++		return true; // (the world: falls, hazards)
++
++	CBasePlayer *pPlayer = static_cast<CBasePlayer *>(pAttacker);
++	if (IsOwnedBy(pPlayer))
++		return false;
++
++	if (PK_FreeForAll() || pPlayer->m_iTeam != m_iTeam)
++		return true;
++
++	return friendlyfire.value != 0.0f;
++}
++
++bool CPokemon::CanSee(CBaseEntity *pEntity)
++{
++	TraceResult tr;
++	Vector vecEye = pev->origin + pev->view_ofs;
++
++	UTIL_TraceLine(vecEye, pEntity->Center(), ignore_monsters, edict(), &tr);
++	if (tr.flFraction >= 1.0f || tr.pHit == pEntity->edict())
++		return true;
++
++	UTIL_TraceLine(vecEye, pEntity->EyePosition(), ignore_monsters, edict(), &tr);
++	return tr.flFraction >= 1.0f || tr.pHit == pEntity->edict();
++}
++
++void CPokemon::SetEnemy(CBaseEntity *pEnemy)
++{
++	if (!pEnemy)
++		return;
++
++	bool bNew = !(m_hEnemy.IsValid() && m_hEnemy == pEnemy);
++	m_hEnemy = pEnemy;
++	m_flEnemySeen = gpGlobals->time;
++	m_bKilledEnemy = false;
++
++	if (bNew)
++	{
++		m_flEnemySince = gpGlobals->time;
++		m_path.Invalidate();
++		m_flNextRepath = 0.0f;
++	}
++
++	if (m_iState == STATE_FOLLOW || m_iState == STATE_VICTORY)
++		SetState(STATE_CHASE);
++
++	// (its call as it charges)
++	if (bNew && gpGlobals->time >= m_flNextBattleCry)
++	{
++		EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, PK_Info(m_iSpecies).sndCry2, 0.9f, ATTN_NORM, 0, PITCH_NORM + RANDOM_LONG(-4, 4));
++		m_flNextBattleCry = gpGlobals->time + 4.0f;
++	}
++}
++
++// The enemy nearest to its player's aim that its player sees
++CBaseEntity *CPokemon::FindAimTarget(CBasePlayer *pOwner)
++{
++	// (its own vectors: called from its player's SetAnimation, in the middle of weapon code reading gpGlobals->v_forward)
++	Vector vecAim;
++	UTIL_MakeVectorsPrivate(pOwner->pev->v_angle + pOwner->pev->punchangle, vecAim, nullptr, nullptr);
++	const Vector vecEye = pOwner->EyePosition();
++	const float flCone = PK_AGGRO_CONE * (M_PI / 180.0f);
++
++	CBaseEntity *pBest = nullptr;
++	float flBest = flCone;
++
++	auto consider = [&](CBaseEntity *pEntity)
++	{
++		if (!IsEnemy(pEntity))
++			return;
++
++		Vector vecTo = pEntity->Center() - vecEye;
++		float flDist = vecTo.Length();
++		if (flDist < 1.0f || flDist > PK_AGGRO_RANGE)
++			return;
++
++		float flCos = clamp(float(DotProduct(vecTo / flDist, vecAim)), -1.0f, 1.0f);
++		float flOff = Q_acos(flCos) - Q_atan2(PK_TARGET_RADIUS, flDist);
++		if (flOff >= flBest)
++			return;
++
++		TraceResult tr;
++		UTIL_TraceLine(vecEye, pEntity->Center(), ignore_monsters, pOwner->edict(), &tr);
++		if (tr.flFraction < 1.0f && tr.pHit != pEntity->edict())
++			return;
++
++		pBest = pEntity;
++		flBest = flOff;
++	};
++
++	for (int i = 1; i <= gpGlobals->maxClients; i++)
++	{
++		CBasePlayer *pPlayer = UTIL_PlayerByIndex(i);
++		if (pPlayer)
++			consider(pPlayer);
++	}
++
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "monster_pokemon")))
++		consider(pEntity);
++
++	return pBest;
++}
++
++void CPokemon::OnOwnerAttack()
++{
++	if (!IsOut() || gpGlobals->time < m_flNextAimCheck)
++		return;
++
++	m_flNextAimCheck = gpGlobals->time + 0.2f;
++
++	CBasePlayer *pOwner = Owner();
++	if (!PK_PlayerPlaying(pOwner))
++		return;
++
++	CBaseEntity *pTarget = FindAimTarget(pOwner);
++	if (pTarget)
++		SetEnemy(pTarget);
++}
++
++// Hurt, or its player hurt, by this one
++void CPokemon::OnProvoked(CBaseEntity *pAggressor)
++{
++	if (!IsOut() || !pAggressor)
++		return;
++
++	// (with friendly fire, a teammate who hurt it or its player becomes a target)
++	bool bTeammateAttack = false;
++	if (friendlyfire.value != 0.0f && !PK_FreeForAll())
++	{
++		if (pAggressor->IsPlayer() && PK_PlayerPlaying(static_cast<CBasePlayer *>(pAggressor)) && !IsOwnedBy(static_cast<CBasePlayer *>(pAggressor))
++			&& static_cast<CBasePlayer *>(pAggressor)->m_iTeam == m_iTeam)
++			bTeammateAttack = true;
++	}
++
++	if (!bTeammateAttack && !IsEnemy(pAggressor))
++		return;
++
++	// (keeps on a target it fights, seen and set on lately)
++	if (m_hEnemy.IsValid() && !(m_hEnemy == pAggressor) && IsEnemy(m_hEnemy) && gpGlobals->time - m_flEnemySeen < 1.0f && gpGlobals->time - m_flEnemySince < 2.0f)
++		return;
++
++	SetEnemy(pAggressor);
++}
++
++// The target: still alive, an enemy, in reach, seen lately
++bool CPokemon::CheckEnemy()
++{
++	CBaseEntity *pEnemy = m_hEnemy;
++	if (!pEnemy)
++		return false;
++
++	if (!IsEnemy(pEnemy) || (pEnemy->Center() - Center()).Length() > PK_LOSE_RANGE)
++	{
++		m_hEnemy = nullptr;
++		return false;
++	}
++
++	if (CanSee(pEnemy))
++		m_flEnemySeen = gpGlobals->time;
++	else if (gpGlobals->time - m_flEnemySeen > PK_LOSE_SIGHT)
++	{
++		m_hEnemy = nullptr;
++		return false;
++	}
++
++	return true;
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Damage taken
++
++void CPokemon::TraceAttack(entvars_t *pevAttacker, float flDamage, Vector vecDir, TraceResult *ptr, int bitsDamageType)
++{
++	if (!IsAlive() || !CanBeHurtBy(CBaseEntity::Instance(pevAttacker)))
++		return;
++
++	CBaseMonster::TraceAttack(pevAttacker, flDamage, vecDir, ptr, bitsDamageType);
++
++	// (the bloodless ones spark where they are hit)
++	if (BloodColor() == DONT_BLEED && (bitsDamageType & (DMG_BULLET | DMG_SLASH | DMG_CLUB)) && RANDOM_LONG(0, 2) == 0)
++		PK_FxSparks(ptr->vecEndPos - vecDir * 4.0f);
++}
++
++BOOL CPokemon::TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType)
++{
++	if (!IsAlive() || pev->takedamage == DAMAGE_NO || flDamage <= 0.0f)
++		return FALSE;
++
++	CBaseEntity *pAttacker = pevAttacker ? CBaseEntity::Instance(pevAttacker) : nullptr;
++	if (!CanBeHurtBy(pAttacker))
++		return FALSE;
++
++	pev->health -= flDamage;
++
++	if (pev->health <= 0.0f)
++	{
++		pev->health = 0.0f;
++		Killed(pevAttacker, GIB_NEVER);
++		return TRUE;
++	}
++
++	int percent = clamp(int(ceil(pev->health * 100.0f / pev->max_health)), 1, 100);
++	if (percent != m_iHealthSent)
++		SendHealth(nullptr);
++
++	// (a flinch and a cry, not too often, and not in the middle of its attack)
++	if (gpGlobals->time >= m_flNextFlinch)
++	{
++		m_flNextFlinch = gpGlobals->time + PK_FLINCH_EVERY;
++		EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, PK_Info(m_iSpecies).sndHurt, VOL_NORM, ATTN_NORM, 0, PITCH_NORM + RANDOM_LONG(-5, 5));
++
++		if (m_iState != STATE_ATTACK && m_iState != STATE_SPAWNING)
++		{
++			SetSeq(SEQ_FLINCH, 1.0f, true);
++			m_flFlinchEnd = gpGlobals->time + clamp(m_flSeqDuration[SEQ_FLINCH], 0.2f, 0.6f);
++		}
++	}
++
++	// (turns on what hurt it: an enemy Pokemon itself, else its player)
++	CBaseEntity *pInflictor = pevInflictor ? CBaseEntity::Instance(pevInflictor) : nullptr;
++	OnProvoked((pInflictor && PK_IsPokemon(pInflictor->pev)) ? pInflictor : pAttacker);
++	return TRUE;
++}
++
++void CPokemon::Killed(entvars_t *pevAttacker, int iGib)
++{
++	if (m_iState == STATE_DYING || m_iState == STATE_RETURNING)
++		return;
++
++	SetState(STATE_DYING);
++	pev->deadflag = DEAD_DYING;
++	pev->takedamage = DAMAGE_NO;
++	pev->solid = SOLID_NOT;
++	pev->health = 0.0f;
++	pev->renderfx = kRenderFxNone;
++	pev->velocity.x = pev->velocity.y = 0.0f;
++	UTIL_SetOrigin(pev, pev->origin);
++
++	m_hEnemy = nullptr;
++	ClearAfflictions();
++	SetSeq(SEQ_DIE, 1.0f, true);
++	EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, PK_Info(m_iSpecies).sndDie, VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
++	SendHealth(nullptr);
++
++	m_flDeathTime = gpGlobals->time;
++	SetThink(&CPokemon::DeadThink);
++	pev->nextthink = gpGlobals->time + PK_THINK_INTERVAL;
++}
++
++// Lies there a while, then fades out
++void CPokemon::DeadThink()
++{
++	StudioFrameAdvance();
++	pev->nextthink = gpGlobals->time + PK_THINK_INTERVAL;
++
++	float flSince = gpGlobals->time - m_flDeathTime;
++	if (flSince < PK_CORPSE_TIME)
++		return;
++
++	pev->rendermode = kRenderTransTexture;
++	pev->renderamt = clamp(255.0f * (1.0f - (flSince - PK_CORPSE_TIME) / PK_FADE_TIME), 0.0f, 255.0f);
++	if (pev->renderamt <= 0.0f)
++		UTIL_Remove(this);
++}
++
++void CPokemon::GoBack()
++{
++	if (m_iState == STATE_RETURNING)
++		return;
++
++	bool bWasOut = IsOut();
++	SetState(STATE_RETURNING);
++	pev->takedamage = DAMAGE_NO;
++	pev->solid = SOLID_NOT;
++	pev->velocity = g_vecZero;
++	m_hEnemy = nullptr;
++	ClearAfflictions();
++
++	// (a red light draws it back into its ball)
++	pev->renderfx = kRenderFxGlowShell;
++	pev->rendercolor = Vector(255, 50, 40);
++	pev->renderamt = 14;
++	EMIT_SOUND(ENT(pev), CHAN_ITEM, "pokemon/ball_return.wav", VOL_NORM, ATTN_NORM);
++	PK_FxLight(Center(), 14, 255, 50, 40, 4, 40);
++	PK_FxReturnFlash(Center(), clamp((pev->maxs.z - pev->mins.z) / 160.0f, 0.25f, 0.45f), PK_FLASH_MIN_HEIGHT, edict());
++
++	if (bWasOut)
++		SendHealth(nullptr);
++
++	m_flStateEnd = gpGlobals->time + PK_RETURN_TIME;
++	SetThink(&CPokemon::ReturnThink);
++	pev->nextthink = gpGlobals->time + PK_THINK_INTERVAL;
++}
++
++void CPokemon::ReturnThink()
++{
++	StudioFrameAdvance();
++	pev->nextthink = gpGlobals->time + PK_THINK_INTERVAL;
++
++	float flLeft = m_flStateEnd - gpGlobals->time;
++	pev->rendermode = kRenderTransTexture;
++	pev->renderamt = clamp(255.0f * flLeft / PK_RETURN_TIME, 0.0f, 255.0f);
++
++	if (flLeft <= 0.0f)
++	{
++		PK_FxLight(Center(), 12, 255, 60, 40, 3, 50);
++		UTIL_Remove(this);
++	}
++}
++
++void CPokemon::Vanish()
++{
++	bool bWasOut = IsOut();
++	SetState(STATE_RETURNING);
++	ClearAfflictions();
++	if (bWasOut)
++		SendHealth(nullptr);
++
++	SetThink(nullptr);
++	UTIL_Remove(this);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Burns (Charizard's; Pikachu's slows are its victims' own)
++
++void CPokemon::ClearAfflictions()
++{
++	for (int i = 0; i < PK_MAX_AFFLICTED; i++)
++	{
++		PokemonAffliction &a = m_afflicted[i];
++
++		a.hVictim = nullptr;
++		a.flUntil = 0.0f;
++		a.flNext = 0.0f;
++	}
++}
++
++void CPokemon::Afflict(CBaseEntity *pVictim, float flUntil, float flFirstTick)
++{
++	int iFree = -1;
++	for (int i = 0; i < PK_MAX_AFFLICTED; i++)
++	{
++		PokemonAffliction &a = m_afflicted[i];
++		if (a.hVictim.IsValid() && a.hVictim == pVictim)
++		{
++			// (burnt again: no burn tick before the new stream is over)
++			a.flUntil = Q_max(a.flUntil, flUntil);
++			a.flNext = Q_max(a.flNext, flFirstTick);
++			return;
++		}
++
++		if (iFree < 0 && !a.hVictim.IsValid())
++			iFree = i;
++	}
++
++	if (iFree < 0)
++		return; // (as many as it can follow)
++
++	PokemonAffliction &a = m_afflicted[iFree];
++	a.hVictim = pVictim;
++	a.flUntil = flUntil;
++	a.flNext = flFirstTick;
++}
++
++void CPokemon::UpdateAfflictions()
++{
++	const float now = gpGlobals->time;
++	for (int i = 0; i < PK_MAX_AFFLICTED; i++)
++	{
++		PokemonAffliction &a = m_afflicted[i];
++		CBaseEntity *pVictim = a.hVictim;
++		if (!pVictim)
++			continue;
++
++		bool bAlive = pVictim->IsPlayer() ? PK_PlayerPlaying(static_cast<CBasePlayer *>(pVictim)) : pVictim->IsAlive();
++
++		// (Charizard's burn, once its stream is over: small hits while it lasts — every one, the last included, whatever
++		// the think times — and a flame on the victim)
++		if (!bAlive)
++		{
++			a.hVictim = nullptr;
++			continue;
++		}
++
++		if (now < a.flNext - PK_BURN_TICK)
++			continue;
++
++		// (on its body, below the eyes)
++		if (RANDOM_LONG(0, 1))
++			PK_FxFlame(pVictim->Center() + Vector(RANDOM_FLOAT(-8, 8), RANDOM_FLOAT(-8, 8), RANDOM_FLOAT(-22, 0)), 6.0f, 28);
++
++		while (a.hVictim.IsValid() && now >= a.flNext && a.flNext <= a.flUntil + 0.01f)
++		{
++			a.flNext += PK_BURN_TICK;
++			DealDamage(pVictim, PK_BURN_DAMAGE, DMG_BURN);
++		}
++
++		if (a.flNext > a.flUntil + 0.01f)
++			a.hVictim = nullptr;
++	}
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Thinking
++
++void CPokemon::LiveThink()
++{
++	const float now = gpGlobals->time;
++	float dt = clamp(now - m_flLastThink, 0.0f, 0.25f);
++	m_flLastThink = now;
++	pev->nextthink = now + PK_THINK_INTERVAL;
++
++	StudioFrameAdvance();
++
++	if (!IsInWorld())
++	{
++		Vanish();
++		return;
++	}
++
++	// (its player gone, dead or on the other side: back into the ball)
++	CBasePlayer *pOwner = Owner();
++	if (!PK_PlayerPlaying(pOwner) || pOwner->m_iTeam != m_iTeam)
++	{
++		GoBack();
++		return;
++	}
++
++	if (m_flGlowEnd && now >= m_flGlowEnd)
++	{
++		pev->renderfx = kRenderFxNone;
++		m_flGlowEnd = 0.0f;
++	}
++	else if (m_flGlowEnd)
++	{
++		float flLeft = clamp((m_flGlowEnd - now) / PK_SPAWN_GLOW_TIME, 0.0f, 1.0f);
++		pev->rendercolor = PK_SpawnGlowColour(flLeft);
++		pev->renderamt = Q_max(1.0f, PK_SPAWN_GLOW_AMOUNT * flLeft);
++	}
++
++	// (on its feet: still between steps; knocked or jumping: the physics carries it)
++	if ((pev->flags & FL_ONGROUND) && now >= m_flKnockbackEnd && now >= m_flAirborneEnd)
++	{
++		pev->velocity.x = pev->velocity.y = 0.0f;
++		if (pev->velocity.z < 0.0f)
++			pev->velocity.z = 0.0f;
++	}
++
++	UpdateAfflictions();
++	m_flSpeedNow = 0.0f;
++
++	if (m_iState == STATE_SPAWNING)
++	{
++		if (now >= m_flStateEnd)
++			SetState(STATE_FOLLOW);
++		else
++			return;
++	}
++
++	bool bHasEnemy = CheckEnemy();
++
++	if (m_iState == STATE_ATTACK)
++	{
++		UpdateAttack();
++		return;
++	}
++
++	if (m_iState == STATE_VICTORY)
++	{
++		if (now < m_flStateEnd && !bHasEnemy)
++			return;
++
++		SetState(STATE_FOLLOW);
++	}
++
++	// (a flinch holds it a moment)
++	if (now < m_flFlinchEnd)
++		return;
++
++	if (bHasEnemy)
++	{
++		if (m_iState != STATE_CHASE)
++			SetState(STATE_CHASE);
++
++		Chase(dt);
++	}
++	else
++	{
++		// (its target down by its hand while it chased it — a burn, after its attack: a little celebration)
++		if (m_iState == STATE_CHASE && StartVictory())
++			return;
++
++		if (m_iState != STATE_FOLLOW)
++			SetState(STATE_FOLLOW);
++
++		Follow(pOwner, dt);
++	}
++
++	// (stuck: next to its player again — given up on its target first)
++	if (m_flStuckTime >= PK_STUCK_TIME)
++	{
++		if (CVAR_GET_FLOAT("developer") >= 2.0f)
++		{
++			// (what is in its way, for the logs)
++			TraceResult trLow, trHigh;
++			Vector vecFwd;
++			UTIL_MakeVectorsPrivate(Vector(0, UTIL_VecToYaw(m_vecWaypoint - pev->origin), 0), vecFwd, nullptr, nullptr);
++			TRACE_MONSTER_HULL(edict(), pev->origin + Vector(0, 0, 2), pev->origin + Vector(0, 0, 2) + vecFwd * 24.0f, dont_ignore_monsters, edict(), &trLow);
++			TRACE_MONSTER_HULL(edict(), pev->origin + Vector(0, 0, 20), pev->origin + Vector(0, 0, 20) + vecFwd * 24.0f, dont_ignore_monsters, edict(), &trHigh);
++			TraceResult trFloor;
++			TRACE_MONSTER_HULL(edict(), pev->origin + Vector(0, 0, 2) + vecFwd * 24.0f, pev->origin + vecFwd * 24.0f - Vector(0, 0, 400), ignore_monsters, edict(), &trFloor);
++			Vector vecSave = pev->origin;
++			int iWalk = WALK_MOVE(edict(), UTIL_VecToYaw(m_vecWaypoint - pev->origin), 16.0f, WALKMOVE_CHECKONLY);
++			UTIL_SetOrigin(pev, vecSave);
++			ALERT(at_aiconsole, "pokemon #%d: floor ahead %.1f (start %d frac %.2f n%.2f), walk %d, yaw %.0f\n", entindex(), trFloor.vecEndPos.z, trFloor.fStartSolid, trFloor.flFraction, trFloor.vecPlaneNormal.z, iWalk, pev->angles.y);
++			ALERT(at_aiconsole, "pokemon #%d: stuck at %.0f %.0f %.0f (%s, path %d/%d, waypoint %.0f %.0f %.0f; ahead low %.2f n%.2f %s, high %.2f %s; onground %d)\n",
++				entindex(), pev->origin.x, pev->origin.y, pev->origin.z, PK_StateNames[m_iState], m_path.IsValid() ? m_iPathIndex : 0,
++				m_path.IsValid() ? m_path.GetSegmentCount() : 0, m_vecWaypoint.x, m_vecWaypoint.y, m_vecWaypoint.z,
++				trLow.flFraction, trLow.vecPlaneNormal.z, trLow.pHit ? STRING(trLow.pHit->v.classname) : "-", trHigh.flFraction, trHigh.pHit ? STRING(trHigh.pHit->v.classname) : "-",
++				(pev->flags & FL_ONGROUND) ? 1 : 0);
++		}
++
++		m_flStuckTime = 0.0f;
++		if (m_iState == STATE_CHASE)
++		{
++			m_hEnemy = nullptr;
++			SetState(STATE_FOLLOW);
++		}
++		else
++			TeleportToOwner(pOwner);
++	}
++
++	// (now and then, a call)
++	if (m_iState == STATE_FOLLOW && !m_bFollowMoving && now >= m_flNextIdleSound)
++	{
++		EMIT_SOUND_DYN(ENT(pev), CHAN_VOICE, PK_Info(m_iSpecies).sndCry, 0.55f, ATTN_IDLE, 0, PITCH_NORM + RANDOM_LONG(-3, 3));
++		m_flNextIdleSound = now + RANDOM_FLOAT(15.0f, 30.0f);
++	}
++}
++
++void CPokemon::Follow(CBasePlayer *pOwner, float dt)
++{
++	const PokemonInfo &info = PK_Info(m_iSpecies);
++	Vector vecGoal = PK_Feet(pOwner);
++	float flDist = (vecGoal - pev->origin).Length();
++
++	if (flDist > PK_TELEPORT_DIST)
++	{
++		TeleportToOwner(pOwner);
++		return;
++	}
++
++	if (m_bFollowMoving)
++	{
++		if (flDist < PK_FOLLOW_NEAR && CanSee(pOwner))
++			m_bFollowMoving = false;
++	}
++	else if (flDist > PK_FOLLOW_FAR)
++		m_bFollowMoving = true;
++
++	if (m_bFollowMoving)
++	{
++		// (runs to catch up, walks when close)
++		float flSpeed = info.walkSpeed;
++		if (flDist > PK_FOLLOW_RUN)
++			flSpeed = info.runSpeed;
++		else if (flDist > PK_FOLLOW_FAR + 40.0f)
++			flSpeed = clamp(float(pOwner->pev->velocity.Length2D()) + 40.0f, info.walkSpeed, info.runSpeed);
++
++		MoveTo(vecGoal, flSpeed, PK_FOLLOW_NEAR - 20.0f, dt);
++		NoteProgress(true);
++		UpdateAnimation(m_flSpeedNow);
++		return;
++	}
++
++	NoteProgress(false);
++
++	// (makes way for its player walking into it)
++	Vector2D vecAway = (pev->origin - pOwner->pev->origin).Make2D();
++	if (flDist < PK_FOLLOW_TOO_CLOSE && vecAway.Length() > 0.1f && DotProduct(pOwner->pev->velocity.Make2D(), vecAway) > 0.0f)
++	{
++		Vector2D dir = vecAway.Normalize();
++		Vector vecAside = pev->origin + Vector(dir.x, dir.y, 0) * 64.0f;
++		MoveTo(vecAside, info.walkSpeed, 8.0f, dt);
++		UpdateAnimation(m_flSpeedNow);
++		return;
++	}
++
++	// (stands by, looking where its player looks)
++	TurnTowards(pOwner->pev->v_angle.y, dt, info.yawSpeed * 0.25f);
++	UpdateAnimation(0.0f);
++}
++
++void CPokemon::Chase(float dt)
++{
++	const PokemonInfo &info = PK_Info(m_iSpecies);
++	CBaseEntity *pEnemy = m_hEnemy;
++
++	Vector vecTarget = pEnemy->Center();
++	Vector vecFrom = pev->origin + pev->view_ofs;
++	float flDist = (vecTarget - vecFrom).Length() - PK_TARGET_RADIUS;
++	bool bSeen = (m_flEnemySeen == gpGlobals->time);
++
++	if (flDist <= PK_ATTACK_RANGE && bSeen)
++	{
++		// (in reach: faces it, attacks when ready)
++		float flYaw = UTIL_VecToYaw(vecTarget - pev->origin);
++		TurnTowards(flYaw, dt, info.yawSpeed);
++		NoteProgress(false);
++		UpdateAnimation(0.0f);
++
++		if (gpGlobals->time >= m_flNextAttack && Q_fabs(UTIL_AngleDiff(flYaw, pev->angles.y)) < 20.0f)
++			StartAttack();
++
++		return;
++	}
++
++	MoveTo(PK_Feet(pEnemy), info.runSpeed, 0.0f, dt);
++	NoteProgress(true);
++	UpdateAnimation(m_flSpeedNow);
++}
++
++void CPokemon::TurnTowards(float flYaw, float dt, float flRate)
++{
++	pev->angles.x = 0.0f;
++	pev->angles.z = 0.0f;
++	pev->angles.y = UTIL_ApproachAngle(flYaw, pev->angles.y, flRate * dt);
++}
++
++// Its gait matched to its pace: walk or run, played as fast as it covers ground
++void CPokemon::UpdateAnimation(float flSpeed)
++{
++	if (gpGlobals->time < m_flFlinchEnd)
++		return;
++
++	const PokemonInfo &info = PK_Info(m_iSpecies);
++	if (flSpeed < 8.0f && (pev->flags & FL_ONGROUND))
++	{
++		SetSeq(SEQ_IDLE, 1.0f, false);
++		return;
++	}
++
++	int iSeq = (flSpeed > (info.walkSpeed + info.runSpeed) * 0.5f) ? SEQ_RUN : SEQ_WALK;
++	float flGround = m_flSeqGroundSpeed[iSeq];
++	float flRate = flGround > 1.0f ? clamp(flSpeed / flGround, 0.4f, 2.5f) : 1.0f;
++	if (!(pev->flags & FL_ONGROUND))
++		flRate = 1.0f; // (in the air)
++
++	SetSeq(iSeq, flRate, false);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Movement: steps of the engine's monster walk (stairs, slopes, no walking off ledges), turned smoothly, along the
++// bots' navigation mesh when the map has one; jumps up and drops down when its way needs it
++
++// Steps of the walk toward a point (the distance covered): blocked straight ahead, it jumps up or drops down when its
++// way needs it, else slides along what blocks it
++float CPokemon::Step(float flYaw, float flDist, const Vector &vecPoint, float flSpeed, bool &bLeapt)
++{
++	static const float deflections[] = { 35.0f, -35.0f, 70.0f, -70.0f };
++	Vector vecStart = pev->origin;
++	bLeapt = false;
++
++	float flLeft = flDist;
++	while (flLeft > 0.1f)
++	{
++		float flStep = Q_min(16.0f, flLeft); // (more and stairs stop working)
++		if (!WALK_MOVE(edict(), flYaw, flStep, WALKMOVE_NORMAL) && !EdgeStep(flYaw, flStep))
++		{
++			if (TryJumpOrDrop(flYaw, vecPoint, flSpeed))
++			{
++				bLeapt = true;
++				break;
++			}
++
++			bool bMoved = false;
++			for (int i = 0; i < int(ARRAYSIZE(deflections)) && !bMoved; i++)
++				bMoved = WALK_MOVE(edict(), flYaw + deflections[i], flStep * 0.7f, WALKMOVE_NORMAL) != 0;
++
++			if (!bMoved)
++				break;
++		}
++
++		flLeft -= flStep;
++	}
++
++	return (pev->origin - vecStart).Length2D();
++}
++
++// The walk refuses a step with a corner of the hull over a drop; a player walks there, along a ledge or a narrow way:
++// so does it, while the middle of its step has ground within a step under it
++bool CPokemon::EdgeStep(float flYaw, float flStep)
++{
++	Vector vecFwd;
++	UTIL_MakeVectorsPrivate(Vector(0, flYaw, 0), vecFwd, nullptr, nullptr);
++	Vector vecMid = pev->origin + vecFwd * flStep;
++
++	TraceResult tr;
++	UTIL_TraceLine(vecMid + Vector(0, 0, 18), vecMid - Vector(0, 0, 20), ignore_monsters, edict(), &tr);
++	if (tr.fStartSolid || tr.flFraction >= 1.0f)
++		return false;
++
++	pev->flags |= FL_PARTIALGROUND;
++	bool bMoved = WALK_MOVE(edict(), flYaw, flStep, WALKMOVE_NORMAL) != 0;
++	pev->flags &= ~FL_PARTIALGROUND;
++	pev->flags |= FL_ONGROUND; // (its middle is on the ground)
++	return bMoved;
++}
++
++bool CPokemon::DirectlyReachable(const Vector &vecGoal)
++{
++	if (Q_fabs(vecGoal.z - pev->origin.z) > 40.0f)
++		return false;
++
++	TraceResult tr;
++	TRACE_MONSTER_HULL(edict(), pev->origin + Vector(0, 0, 18), vecGoal + Vector(0, 0, 18), ignore_monsters, edict(), &tr);
++	return !tr.fStartSolid && tr.flFraction >= 1.0f;
++}
++
++// The point to head for: straight to the goal when it is in reach, else along a path on the navigation mesh
++bool CPokemon::NextWaypoint(const Vector &vecGoal, Vector &vecPoint)
++{
++	vecPoint = vecGoal;
++
++	if (TheNavAreaList.empty() || DirectlyReachable(vecGoal))
++	{
++		m_path.Invalidate();
++		return true;
++	}
++
++	// (computed again sparingly: when the goal moved away from the path's end, or the path ran out)
++	const float now = gpGlobals->time;
++	bool bStale = !m_path.IsValid() || m_iPathIndex >= m_path.GetSegmentCount() || (vecGoal - m_vecPathGoal).Length() > 120.0f;
++	if (bStale && now >= m_flNextRepath)
++	{
++		PokemonPathCost cost(PK_Info(m_iSpecies).maxs.z > 40.0f);
++		Vector vecStart = pev->origin + Vector(0, 0, 16);
++		Vector vecEnd = vecGoal + Vector(0, 0, 16);
++		m_vecPathGoal = vecGoal;
++		m_iPathIndex = 1;
++		m_flNextRepath = now + 1.0f;
++		if (!m_path.Compute(&vecStart, &vecEnd, cost))
++		{
++			m_path.Invalidate();
++			m_flNextRepath = now + 0.5f;
++		}
++	}
++
++	if (!m_path.IsValid())
++		return true;
++
++	// (past the points reached, and the next one when it is in a straight line)
++	int count = m_path.GetSegmentCount();
++	while (m_iPathIndex < count && (m_path[m_iPathIndex]->pos - pev->origin).Length2D() < 24.0f)
++		m_iPathIndex++;
++
++	if (m_iPathIndex + 1 < count && DirectlyReachable(m_path[m_iPathIndex + 1]->pos))
++		m_iPathIndex++;
++
++	if (m_iPathIndex >= count)
++		return true;
++
++	vecPoint = m_path[m_iPathIndex]->pos;
++	return true;
++}
++
++// Toward a goal at a pace, stopping at a distance; the distance covered
++float CPokemon::MoveTo(const Vector &vecGoal, float flSpeed, float flStopDist, float dt)
++{
++	const PokemonInfo &info = PK_Info(m_iSpecies);
++	const float now = gpGlobals->time;
++
++	if (now < m_flSlowEnd)
++		flSpeed *= 0.5f;
++
++	// (in the air: the physics carries it, it only turns)
++	if (!(pev->flags & FL_ONGROUND))
++	{
++		m_flSpeedNow = pev->velocity.Length2D();
++		return 1.0f;
++	}
++
++	Vector vecPoint;
++	NextWaypoint(vecGoal, vecPoint);
++	m_vecWaypoint = vecPoint;
++
++	Vector vecTo = vecPoint - pev->origin;
++	float flDist2D = vecTo.Length2D();
++	if (vecPoint == vecGoal && flDist2D <= flStopDist)
++		return 1.0f;
++
++	float flYaw = UTIL_VecToYaw(vecTo);
++	TurnTowards(flYaw, dt, info.yawSpeed);
++
++	// (slows into sharp turns, turns on the spot past a right angle)
++	float flOff = Q_fabs(UTIL_AngleDiff(flYaw, pev->angles.y));
++	float flFactor = flOff >= 85.0f ? 0.0f : Q_cos(flOff * (M_PI / 180.0f));
++	float flDist = flSpeed * flFactor * dt;
++	if (vecPoint == vecGoal)
++		flDist = Q_min(flDist, flDist2D - flStopDist);
++
++	if (flDist <= 0.5f)
++	{
++		m_flSpeedNow = 0.0f;
++		return flFactor > 0.0f ? 0.0f : 1.0f; // (turning on the spot is not being stuck)
++	}
++
++	bool bLeapt;
++	float flMoved = Step(flYaw, flDist, vecPoint, flSpeed, bLeapt);
++	if (bLeapt)
++		flMoved = flDist;
++
++	// (footsteps)
++	m_flStepDist += flMoved;
++	if (m_flStepDist >= info.stepDistance)
++	{
++		m_flStepDist = 0.0f;
++		EMIT_SOUND_DYN(ENT(pev), CHAN_BODY, "pokemon/pk_step.wav", info.stepVolume, ATTN_STATIC, 0, info.stepPitch + RANDOM_LONG(-6, 6));
++	}
++
++	m_flSpeedNow = dt > 0.0f ? flMoved / dt : 0.0f;
++	return flMoved;
++}
++
++// Blocked: up onto a ledge within a jump, or down from one toward a lower goal
++bool CPokemon::TryJumpOrDrop(float flYaw, const Vector &vecGoal, float flSpeed)
++{
++	TraceResult tr;
++	Vector vecFwd;
++	UTIL_MakeVectorsPrivate(Vector(0, flYaw, 0), vecFwd, nullptr, nullptr);
++
++	const float flJump = 60.0f; // (a little more than a player's: the nav mesh's jumps)
++	if (vecGoal.z > pev->origin.z - 16.0f)
++	{
++		// (something at its feet ahead, else no jump helps)
++		Vector vecLow = pev->origin + Vector(0, 0, 2);
++		TRACE_MONSTER_HULL(edict(), vecLow, vecLow + vecFwd * 20.0f, ignore_monsters, edict(), &tr);
++		if (!tr.fStartSolid && tr.flFraction >= 1.0f)
++			goto drop;
++
++		// (room above it, and over it)
++		Vector vecUp = pev->origin + Vector(0, 0, flJump + 2.0f);
++		TRACE_MONSTER_HULL(edict(), pev->origin, vecUp, ignore_monsters, edict(), &tr);
++		if (tr.fStartSolid || tr.flFraction < 1.0f)
++			return false;
++
++		Vector vecOver = vecUp + vecFwd * 28.0f;
++		TRACE_MONSTER_HULL(edict(), vecUp, vecOver, ignore_monsters, edict(), &tr);
++		if (tr.fStartSolid || tr.flFraction < 1.0f)
++			return false;
++
++		// (the top of the obstacle, and where it lands: not lower than a step down)
++		TRACE_MONSTER_HULL(edict(), vecUp + vecFwd * 14.0f, Vector(pev->origin.x, pev->origin.y, pev->origin.z) + vecFwd * 14.0f, ignore_monsters, edict(), &tr);
++		float flTop = (tr.flFraction < 1.0f && !tr.fStartSolid) ? tr.vecEndPos.z : pev->origin.z;
++
++		TRACE_MONSTER_HULL(edict(), vecOver, vecOver - Vector(0, 0, flJump + 2.0f + 18.0f), ignore_monsters, edict(), &tr);
++		if (tr.fStartSolid || tr.flFraction >= 1.0f)
++			return false;
++
++		float flHeight = Q_max(flTop, float(tr.vecEndPos.z)) - pev->origin.z + 10.0f;
++		if (flHeight > flJump + 2.0f)
++			return false;
++
++		pev->velocity = vecFwd * Q_min(flSpeed, 180.0f);
++		pev->velocity.z = Q_sqrt(2.0f * 800.0f * Q_max(flHeight, 24.0f));
++		pev->flags &= ~FL_ONGROUND;
++		m_flAirborneEnd = gpGlobals->time + 0.3f;
++		return true;
++	}
++
++drop:
++	if (vecGoal.z < pev->origin.z - 20.0f)
++	{
++		// (no wall ahead: an edge the walk does not step over — a ledge, or a corner of it over one — with ground below,
++		// not a pit)
++		Vector vecAhead = pev->origin + Vector(0, 0, 2) + vecFwd * 24.0f;
++		TRACE_MONSTER_HULL(edict(), pev->origin + Vector(0, 0, 2), vecAhead, ignore_monsters, edict(), &tr);
++		if (tr.fStartSolid || tr.flFraction < 1.0f)
++			return false;
++
++		TRACE_MONSTER_HULL(edict(), vecAhead + vecFwd * 16.0f, vecAhead + vecFwd * 16.0f - Vector(0, 0, 400), ignore_monsters, edict(), &tr);
++		if (tr.fStartSolid || tr.flFraction >= 1.0f)
++			return false;
++
++		// (no hurting liquid below)
++		int contents = UTIL_PointContents(tr.vecEndPos + Vector(0, 0, 2));
++		if (contents == CONTENTS_LAVA || contents == CONTENTS_SLIME)
++			return false;
++
++		pev->velocity = vecFwd * Q_min(flSpeed, 200.0f);
++		pev->velocity.z = 60.0f;
++		pev->flags &= ~FL_ONGROUND;
++		m_flAirborneEnd = gpGlobals->time + 0.3f;
++		return true;
++	}
++
++	return false;
++}
++
++// Beside its player again, in a light
++bool CPokemon::TeleportToOwner(CBasePlayer *pOwner)
++{
++	// (tried again in a while when there is no room by its player)
++	if (gpGlobals->time < m_flNextTeleport)
++		return false;
++
++	m_flNextTeleport = gpGlobals->time + 1.0f;
++
++	static const float offsets[][2] = { { -60, 50 }, { -60, -50 }, { 0, 64 }, { 0, -64 }, { -80, 0 }, { 50, 50 }, { 50, -50 }, { 70, 0 } };
++
++	Vector vecFwd, vecRight;
++	UTIL_MakeVectorsPrivate(Vector(0, pOwner->pev->v_angle.y, 0), vecFwd, vecRight, nullptr);
++	Vector vecFeet = PK_Feet(pOwner);
++	Vector vecEye = pOwner->EyePosition();
++	TraceResult tr;
++
++	for (int i = 0; i < int(ARRAYSIZE(offsets)); i++)
++	{
++		Vector vecSpot = vecFeet + vecFwd * offsets[i][0] + vecRight * offsets[i][1];
++
++		UTIL_TraceLine(vecEye, vecSpot + Vector(0, 0, 24), ignore_monsters, pOwner->edict(), &tr);
++		if (tr.flFraction < 1.0f)
++			continue;
++
++		TRACE_MONSTER_HULL(edict(), vecSpot + Vector(0, 0, 24), vecSpot - Vector(0, 0, 64), dont_ignore_monsters, edict(), &tr);
++		if (tr.fStartSolid || tr.fAllSolid || tr.flFraction >= 1.0f)
++			continue;
++
++		ALERT(at_aiconsole, "pokemon #%d: teleported to its player (%.0f units away)\n", entindex(), (pOwner->pev->origin - pev->origin).Length());
++		Flash(pev->origin, 255, 255, 240);
++		UTIL_SetOrigin(pev, tr.vecEndPos);
++		pev->velocity = g_vecZero;
++		pev->angles.y = pOwner->pev->v_angle.y;
++		DROP_TO_FLOOR(edict());
++		Flash(pev->origin, 255, 255, 240);
++
++		m_path.Invalidate();
++		m_flStuckTime = 0.0f;
++		m_bFollowMoving = false;
++		return true;
++	}
++
++	return false;
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Attacks: the attack sequence, the hit at 40 % of it
++
++Vector CPokemon::AttackOrigin(int iAttachment)
++{
++	Vector vecOrigin, vecAngles;
++	GetAttachment(iAttachment, vecOrigin, vecAngles);
++
++	// (a model without it: from its eyes)
++	if ((vecOrigin - pev->origin).Length() > 160.0f || vecOrigin == g_vecZero)
++		vecOrigin = pev->origin + pev->view_ofs;
++
++	return vecOrigin;
++}
++
++void CPokemon::StartAttack()
++{
++	const float now = gpGlobals->time;
++	float flDuration = clamp(m_flSeqDuration[SEQ_ATTACK], 0.3f, 3.0f);
++	float flRate = 1.0f;
++
++	// (Pikachu and Blastoise: the sequence fits their rate)
++	float flInterval = (m_iSpecies == PK_PIKACHU) ? PK_ZAP_INTERVAL : PK_HYDRO_INTERVAL;
++	if (m_iSpecies != PK_CHARIZARD && flDuration > flInterval)
++		flRate = flDuration / flInterval;
++
++	SetState(STATE_ATTACK);
++	SetSeq(SEQ_ATTACK, flRate, true);
++
++	m_flAttackStart = now;
++	m_flAttackHit = now + 0.4f * flDuration / flRate;
++	m_flAttackEnd = now + flDuration / flRate;
++	m_bAttackFired = false;
++
++	if (m_iSpecies == PK_CHARIZARD)
++	{
++		// (its stream from the 40 % of the sequence, the rest of which is spread over the stream)
++		m_flStreamEnd = m_flAttackHit + PK_FLAME_STREAM;
++		m_flAttackEnd = m_flStreamEnd;
++		m_flNextAttack = m_flStreamEnd + PK_FLAME_COOLDOWN;
++	}
++	else
++		m_flNextAttack = now + flInterval;
++
++	pev->nextthink = Q_min(pev->nextthink, m_flAttackHit);
++}
++
++void CPokemon::UpdateAttack()
++{
++	const float now = gpGlobals->time;
++	const PokemonInfo &info = PK_Info(m_iSpecies);
++	CBaseEntity *pEnemy = m_hEnemy;
++
++	// (keeps facing its target, slower while it fires)
++	if (pEnemy)
++		TurnTowards(UTIL_VecToYaw(pEnemy->Center() - pev->origin), PK_THINK_INTERVAL, m_bAttackFired ? info.yawSpeed * 0.5f : info.yawSpeed);
++
++	if (!m_bAttackFired)
++	{
++		// (its target gone before the hit: the attack stops)
++		if (!pEnemy && m_iSpecies != PK_CHARIZARD)
++		{
++			if (!StartVictory())
++				SetState(STATE_FOLLOW);
++			return;
++		}
++
++		if (now >= m_flAttackHit - 0.001f)
++		{
++			m_bAttackFired = true;
++			switch (m_iSpecies)
++			{
++			case PK_PIKACHU:   FireThunderbolt(); break;
++			case PK_BLASTOISE: FireHydroPump(); break;
++			case PK_CHARIZARD:
++			{
++				EMIT_SOUND_DYN(ENT(pev), CHAN_WEAPON, info.sndAttack, VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
++				m_flNextFlameTick = now;
++				m_flNextFlameFx = now;
++
++				// (the rest of the sequence spread over the stream)
++				float flLeft = 0.6f * clamp(m_flSeqDuration[SEQ_ATTACK], 0.3f, 3.0f);
++				pev->framerate = clamp(flLeft / PK_FLAME_STREAM, 0.3f, 1.5f);
++				break;
++			}
++			}
++		}
++	}
++
++	if (m_bAttackFired && m_iSpecies == PK_CHARIZARD)
++	{
++		if (now < m_flStreamEnd && now >= m_flNextFlameFx)
++		{
++			FlameEffects();
++			m_flNextFlameFx = now + PK_THINK_INTERVAL - 0.01f;
++		}
++
++		// (every tick of the stream, whatever the think times)
++		while (now >= m_flNextFlameTick && m_flNextFlameTick <= m_flStreamEnd + 0.001f)
++		{
++			FlameTick();
++			m_flNextFlameTick += PK_FLAME_TICK;
++		}
++	}
++
++	if (now >= m_flAttackEnd)
++	{
++		// (its target killed by this attack — the usual end of a fight: a little celebration)
++		if (StartVictory())
++			return;
++
++		SetState(m_hEnemy.IsValid() ? STATE_CHASE : STATE_FOLLOW);
++		SetSeq(SEQ_IDLE, 1.0f, false);
++	}
++}
++
++void CPokemon::DealDamage(CBaseEntity *pVictim, float flDamage, int bitsDamageType)
++{
++	CBasePlayer *pOwner = Owner();
++	if (!pVictim || !pOwner || !pVictim->IsAlive())
++		return;
++
++	// (not a headshot: a body hit, armour as for any)
++	if (pVictim->IsPlayer())
++		static_cast<CBasePlayer *>(pVictim)->m_LastHitGroup = HITGROUP_GENERIC;
++
++	// (its player is the attacker — the kill and its money are its player's — and the Pokemon the inflictor)
++	pVictim->TakeDamage(pev, pOwner->pev, flDamage, bitsDamageType);
++
++	if (!pVictim->IsAlive() && m_hEnemy.IsValid() && m_hEnemy == pVictim)
++		m_bKilledEnemy = true;
++}
++
++// Pikachu: a bolt from its cheeks to its target, which it slows a moment
++void CPokemon::FireThunderbolt()
++{
++	CBaseEntity *pEnemy = m_hEnemy;
++	Vector vecSrc = AttackOrigin(0);
++
++	EMIT_SOUND_DYN(ENT(pev), CHAN_WEAPON, PK_Info(m_iSpecies).sndAttack, VOL_NORM, ATTN_NORM, 0, PITCH_NORM + RANDOM_LONG(-3, 3));
++
++	TraceResult tr;
++	Vector vecEnd;
++	bool bHit = false;
++	if (pEnemy)
++	{
++		vecEnd = pEnemy->Center() + Vector(RANDOM_FLOAT(-4, 4), RANDOM_FLOAT(-4, 4), RANDOM_FLOAT(0, 10));
++		UTIL_TraceLine(vecSrc, vecEnd, ignore_monsters, edict(), &tr);
++		bHit = ((vecEnd - vecSrc).Length() <= PK_ATTACK_RANGE + 2.0f * PK_TARGET_RADIUS) && (tr.flFraction >= 1.0f || tr.pHit == pEnemy->edict());
++		if (!bHit)
++			vecEnd = tr.vecEndPos;
++	}
++	else
++	{
++		Vector vecFwd;
++		UTIL_MakeVectorsPrivate(pev->angles, vecFwd, nullptr, nullptr);
++		UTIL_TraceLine(vecSrc, vecSrc + vecFwd * 96.0f, ignore_monsters, edict(), &tr);
++		vecEnd = tr.vecEndPos;
++	}
++
++	PK_FxBolt(vecSrc, vecEnd);
++	PK_FxLight(vecSrc, 10, 255, 240, 120, 2, 50);
++	PK_FxLight(vecEnd, 15, 255, 230, 100, 3, 60);
++	PK_FxSparks(vecEnd);
++
++	if (!bHit)
++		return;
++
++	DealDamage(pEnemy, PK_ZAP_DAMAGE, DMG_SHOCK);
++
++	// (slowed: half pace a moment)
++	if (pEnemy->IsAlive())
++	{
++		float flUntil = gpGlobals->time + PK_ZAP_SLOW_TIME;
++		if (pEnemy->IsPlayer())
++		{
++			// (the victim's own: several Pikachus' slows overlap, it wears off on its own — CBasePlayer::PreThink)
++			CBasePlayer *pPlayer = static_cast<CBasePlayer *>(pEnemy);
++			pPlayer->m_flPokeSlowUntil = Q_max(pPlayer->m_flPokeSlowUntil, flUntil);
++			pPlayer->ResetMaxSpeed();
++		}
++		else if (PK_IsPokemon(pEnemy->pev))
++		{
++			CPokemon *pOther = static_cast<CPokemon *>(pEnemy);
++			pOther->m_flSlowEnd = Q_max(pOther->m_flSlowEnd, flUntil);
++		}
++	}
++}
++
++// Blastoise: two jets from its cannons, a hit that pushes its target away
++void CPokemon::FireHydroPump()
++{
++	CBaseEntity *pEnemy = m_hEnemy;
++	EMIT_SOUND_DYN(ENT(pev), CHAN_WEAPON, PK_Info(m_iSpecies).sndAttack, VOL_NORM, ATTN_NORM, 0, PITCH_NORM + RANDOM_LONG(-3, 3));
++
++	Vector vecTarget;
++	if (pEnemy)
++		vecTarget = pEnemy->Center();
++	else
++	{
++		Vector vecFwd;
++		UTIL_MakeVectorsPrivate(pev->angles, vecFwd, nullptr, nullptr);
++		vecTarget = pev->origin + pev->view_ofs + vecFwd * 160.0f;
++	}
++
++	bool bHit = false;
++	TraceResult tr;
++	for (int i = 0; i < 2; i++)
++	{
++		Vector vecSrc = AttackOrigin(i);
++		Vector vecEnd = vecTarget + Vector(RANDOM_FLOAT(-5, 5), RANDOM_FLOAT(-5, 5), RANDOM_FLOAT(-4, 8));
++		UTIL_TraceLine(vecSrc, vecEnd, ignore_monsters, edict(), &tr);
++		bool bClear = (tr.flFraction >= 1.0f || (pEnemy && tr.pHit == pEnemy->edict()));
++		if (!bClear)
++			vecEnd = tr.vecEndPos;
++
++		if (pEnemy && bClear && (vecEnd - vecSrc).Length() <= PK_ATTACK_RANGE + 2.0f * PK_TARGET_RADIUS)
++			bHit = true;
++
++		// (the jet: a thin flowing blue core beam, short-lived water puffs along it — small at the cannon, a little
++		// wider downstream —, a small splash short of the target and a few droplets thrown on past it, falling; on a
++		// player the beam and the jet's puffs stop short of him, PK_HYDRO_BEAM_*: seen by him, a beam to his chest
++		// would fill the bottom of his screen; every puff clear of the world, the splash of the crate behind him)
++		Vector vecDir = (vecEnd - vecSrc).Normalize();
++		float flLen = (vecEnd - vecSrc).Length();
++		float flJet = flLen;
++		bool bOnPlayer = (pEnemy && bClear && pEnemy->IsPlayer());
++		if (bOnPlayer)
++			flJet = Q_max(flLen - clamp(PK_HYDRO_SHORT_FRAC * flLen, PK_HYDRO_SHORT_MIN, PK_HYDRO_SHORT_MAX), 0.0f);
++
++		float flEyeFactor = bOnPlayer ? PK_EYE_FACTOR_NEAR : PK_EYE_FACTOR;
++		PK_FxBeam(vecSrc - vecDir * PK_HYDRO_BEAM_BACK, vecSrc + vecDir * flJet, g_sModelIndexLaser, 0, 0, 4,
++			PK_HYDRO_BEAM_WIDTH, 4, 90, 170, 255, PK_HYDRO_BEAM_BRIGHT, 150);
++		PK_FxWater(vecSrc, PK_HYDRO_MUZZLE_RADIUS, 30, flEyeFactor, &vecDir);
++		for (int k = 1; k <= PK_WATER_JET_PUFFS; k++)
++		{
++			float f = (k - 0.5f + RANDOM_FLOAT(-0.3f, 0.3f)) / PK_WATER_JET_PUFFS;
++			PK_FxWater(vecSrc + vecDir * (flJet * f), 4.5f + 0.045f * flJet * f, 30 - 2 * k, flEyeFactor, &vecDir);
++		}
++
++		for (int j = 0; j < 2; j++)
++		{
++			Vector vecJitter(RANDOM_FLOAT(-3, 3), RANDOM_FLOAT(-3, 3), RANDOM_FLOAT(-2, 4));
++			PK_FxWater(vecEnd - vecDir * (8.0f + 6.0f * j) + vecJitter, 11.0f - 3.0f * j, 26, flEyeFactor, &vecDir);
++		}
++
++		PK_FxSpray(vecEnd - vecDir * 4.0f, (vecDir + Vector(0, 0, -0.25f)).Normalize(), s_iSprDrops, 3, 90, 30);
++	}
++
++	if (!bHit)
++		return;
++
++	DealDamage(pEnemy, PK_HYDRO_DAMAGE, DMG_GENERIC);
++
++	// (pushed away from it)
++	if (pEnemy->IsAlive())
++	{
++		Vector2D vecAway = (pEnemy->pev->origin - pev->origin).Make2D();
++		vecAway = vecAway.Length() > 0.1f ? vecAway.Normalize() : Vector2D(1, 0);
++		float flPush = PK_HYDRO_KNOCKBACK;
++		float flLift = PK_HYDRO_LIFT;
++		if (PK_IsPokemon(pEnemy->pev))
++		{
++			// (a Pokemon by its weight, barely lifted: pushed back along the ground, not onto crates)
++			CPokemon *pOther = static_cast<CPokemon *>(pEnemy);
++			flPush *= PK_Info(pOther->m_iSpecies).knockback;
++			flLift = PK_HYDRO_LIFT_POKEMON;
++			pOther->m_flKnockbackEnd = gpGlobals->time + 0.5f;
++		}
++
++		pEnemy->pev->velocity.x += vecAway.x * flPush;
++		pEnemy->pev->velocity.y += vecAway.y * flPush;
++		pEnemy->pev->velocity.z = Q_max(float(pEnemy->pev->velocity.z), flLift);
++		pEnemy->pev->flags &= ~FL_ONGROUND;
++	}
++}
++
++// Charizard: a tick of its stream, on the enemies in its cone
++void CPokemon::FlameTick()
++{
++	Vector vecMouth = AttackOrigin(0);
++	CBaseEntity *pEnemy = m_hEnemy;
++
++	Vector vecAim;
++	if (pEnemy)
++		vecAim = (pEnemy->Center() - vecMouth).Normalize();
++	else
++	{
++		UTIL_MakeVectorsPrivate(pev->angles, vecAim, nullptr, nullptr);
++	}
++
++	// (its aim is where it faces, pitched at its target)
++	Vector vecFacing;
++	UTIL_MakeVectorsPrivate(Vector(0, pev->angles.y, 0), vecFacing, nullptr, nullptr);
++	Vector2D aim2D = vecAim.Make2D();
++	float flHoriz = aim2D.Length();
++	vecAim = Vector(vecFacing.x * flHoriz, vecFacing.y * flHoriz, vecAim.z).Normalize();
++
++	const float flHalfCone = PK_FLAME_HALF_CONE * (M_PI / 180.0f);
++
++	auto burn = [&](CBaseEntity *pEntity)
++	{
++		if (!IsEnemy(pEntity))
++			return;
++
++		Vector vecTo = pEntity->Center() - vecMouth;
++		float flDist = vecTo.Length();
++		if (flDist > PK_ATTACK_RANGE + PK_TARGET_RADIUS || flDist < 1.0f)
++			return;
++
++		float flCos = clamp(float(DotProduct(vecTo / flDist, vecAim)), -1.0f, 1.0f);
++		if (Q_acos(flCos) > flHalfCone + Q_atan2(PK_TARGET_RADIUS, flDist))
++			return;
++
++		TraceResult tr;
++		UTIL_TraceLine(vecMouth, pEntity->Center(), ignore_monsters, edict(), &tr);
++		if (tr.flFraction < 1.0f && tr.pHit != pEntity->edict())
++			return;
++
++		// (then it burns for a while after the stream: its first burn tick one tick after the stream's end)
++		DealDamage(pEntity, PK_FLAME_DAMAGE, DMG_BURN);
++		if (pEntity->IsAlive())
++		{
++			float flAfter = Q_max(m_flStreamEnd, float(gpGlobals->time));
++			Afflict(pEntity, flAfter + PK_BURN_TIME, flAfter + PK_BURN_TICK);
++		}
++	};
++
++	for (int i = 1; i <= gpGlobals->maxClients; i++)
++	{
++		CBasePlayer *pPlayer = UTIL_PlayerByIndex(i);
++		if (pPlayer)
++			burn(pPlayer);
++	}
++
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "monster_pokemon")))
++		burn(pEntity);
++}
++
++// Charizard: the flames of its stream — small, dense and quick at its mouth, swelling as they go —, up to the first
++// wall, player or Pokemon in their way
++void CPokemon::FlameEffects()
++{
++	Vector vecMouth = AttackOrigin(0);
++	CBaseEntity *pEnemy = m_hEnemy;
++
++	Vector vecFacing;
++	UTIL_MakeVectorsPrivate(Vector(0, pev->angles.y, 0), vecFacing, nullptr, nullptr);
++	float flPitchZ = 0.0f;
++	if (pEnemy)
++	{
++		Vector vecTo = (pEnemy->Center() - vecMouth).Normalize();
++		flPitchZ = vecTo.z;
++	}
++
++	Vector vecAim = Vector(vecFacing.x, vecFacing.y, flPitchZ).Normalize();
++	Vector vecSide = CrossProduct(vecAim, Vector(0, 0, 1));
++	vecSide = vecSide.Length() > 0.01f ? vecSide.Normalize() : Vector(1, 0, 0);
++	Vector vecUp = CrossProduct(vecSide, vecAim);
++
++	TraceResult tr;
++	UTIL_TraceLine(vecMouth, vecMouth + vecAim * PK_ATTACK_RANGE, dont_ignore_monsters, edict(), &tr);
++	float flReach = PK_ATTACK_RANGE * tr.flFraction;
++
++	// (on a player at close range, seen by him: smaller puffs, PK_EYE_FACTOR_NEAR, and its last 30 % thinned out
++	// — fewer puffs stacked along his line of sight, dimmer —, the impact puff dropped near his eye: the dynamic light
++	// and his burning icon tell him)
++	bool bNear = false;
++	if (pEnemy && pEnemy->IsPlayer())
++		bNear = ((pEnemy->pev->origin + pEnemy->pev->view_ofs) - vecMouth).Length() <= PK_FLAME_NEAR;
++
++	float flEyeFactor = bNear ? PK_EYE_FACTOR_NEAR : PK_EYE_FACTOR;
++
++	// (a new phase along the stream each tenth: the puffs of the last few — each lives a third of a second — fill each
++	// other's gaps)
++	float flPhase = RANDOM_FLOAT(0.0f, 1.0f);
++	float flLastRadius = PK_FLAME_RADIUS_MOUTH;
++	for (int k = 0; k < PK_FLAME_PUFFS; k++)
++	{
++		float d = PK_FLAME_PUFF_FIRST * Q_pow(PK_FLAME_PUFF_STEP, k + flPhase) - 2.0f;
++		float r = PK_FLAME_RADIUS_MOUTH + PK_FLAME_RADIUS_GROWTH * d;
++		if (d + 0.5f * r > flReach)
++			break;
++
++		flLastRadius = r;
++
++		if (bNear)
++		{
++			float t = (d / Q_max(flReach, 1.0f) - (1.0f - PK_FLAME_NEAR_FADE)) / PK_FLAME_NEAR_FADE;
++			if (t > 0.0f && RANDOM_FLOAT(0.0f, 1.0f) > 1.0f - (1.0f - PK_FLAME_NEAR_KEEP) * Q_min(t, 1.0f))
++				continue;
++		}
++
++		float spread = 0.35f * r;
++		Vector pos = vecMouth + vecAim * d + vecSide * RANDOM_FLOAT(-spread, spread) + vecUp * (0.7f * RANDOM_FLOAT(-spread, spread));
++
++		// (quicker at the mouth, where the stream is fast)
++		PK_FxFlame(pos, r, 44 - int(14.0f * d / PK_ATTACK_RANGE), flEyeFactor, &vecAim);
++	}
++
++	// (where it hits: a puff spreading on it, short of it, no bigger than the stream's last one; none near an eye)
++	if (tr.flFraction < 1.0f && flReach > 24.0f)
++	{
++		float r = Q_min(PK_FLAME_RADIUS_MOUTH + PK_FLAME_RADIUS_GROWTH * flReach, flLastRadius);
++		Vector pos = tr.vecEndPos - vecAim * (0.8f * r + 2.0f);
++		if (PK_FxEyeDistance(pos) >= PK_FLAME_IMPACT_EYE)
++			PK_FxFlame(pos, r, 30, flEyeFactor, &vecAim);
++	}
++
++	PK_FxLight(vecMouth + vecAim * Q_min(0.5f * flReach, 80.0f), 14, 255, 130, 40, 2, 40);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// Buying, player events, the round restart
++
++CBaseEntity *PK_BuyBall(CBasePlayer *pPlayer, WeaponIdType weaponID)
++{
++	if (!pPlayer->CanPlayerBuy(true) || pPlayer->IsBot())
++		return nullptr;
++
++	const PokemonInfo &info = PK_Info(weaponID - WEAPON_PK_FIRST);
++
++	if (PK_BallCarried(pPlayer))
++	{
++		PK_CenterPrint(pPlayer, "You already carry a Poke Ball");
++		return nullptr;
++	}
++
++	if (PK_HasOut(pPlayer))
++	{
++		PK_CenterPrint(pPlayer, "Your Pokemon is already out");
++		return nullptr;
++	}
++
++	if (pPlayer->m_iAccount < info.price)
++	{
++		if (g_bClientPrintEnable)
++		{
++			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Not_Enough_Money");
++			BlinkAccount(pPlayer);
++		}
++
++		return nullptr;
++	}
++
++	CBaseEntity *pEntity = pPlayer->GiveNamedItem(info.weaponName);
++	pPlayer->AddAccount(-info.price, RT_PLAYER_BOUGHT_SOMETHING);
++
++	if (TheTutor)
++		TheTutor->OnEvent(EVENT_PLAYER_BOUGHT_SOMETHING, pPlayer);
++
++	return pEntity;
++}
++
++void PK_OnPlayerAttack(CBasePlayer *pPlayer)
++{
++	CPokemon *pPokemon = PK_PokemonOf(pPlayer);
++	if (pPokemon)
++		pPokemon->OnOwnerAttack();
++}
++
++void PK_OnPlayerHurt(CBasePlayer *pVictim, entvars_t *pevInflictor, entvars_t *pevAttacker)
++{
++	if (!pevAttacker)
++		return;
++
++	CPokemon *pPokemon = PK_PokemonOf(pVictim);
++	if (!pPokemon)
++		return;
++
++	// (an enemy Pokemon's attack: that Pokemon, else the attacker)
++	CBaseEntity *pInflictor = pevInflictor ? CBaseEntity::Instance(pevInflictor) : nullptr;
++	CBaseEntity *pAggressor = (pInflictor && PK_IsPokemon(pInflictor->pev)) ? pInflictor : CBaseEntity::Instance(pevAttacker);
++	pPokemon->OnProvoked(pAggressor);
++}
++
++void PK_SendAllTo(CBasePlayer *pPlayer)
++{
++	if (!pPlayer || pPlayer->IsBot())
++		return;
++
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "monster_pokemon")))
++	{
++		CPokemon *pPokemon = static_cast<CPokemon *>(pEntity);
++		if (pPokemon->IsOut() && !(pEntity->pev->flags & FL_KILLME))
++			pPokemon->SendHealth(pPlayer->edict());
++	}
++}
++
++void PK_CleanUpMap()
++{
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "monster_pokemon")))
++		static_cast<CPokemon *>(pEntity)->Vanish();
++
++	UTIL_RemoveOther("pokeball");
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// pk_test (sv_cheats 1): pk_test <pikachu|charizard|blastoise> [spawn|enemy]; pk_test clear; pk_test info
++
++
++void CPokemon::Report(CBasePlayer *pTo)
++{
++	CBasePlayer *pOwner = Owner();
++	CBaseEntity *pEnemy = m_hEnemy;
++	char line[256];
++	Q_snprintf(line, sizeof(line), "#%d %s owner=%s team=%d hp=%d/%d state=%s enemy=%s nav=%s path=%d/%d pos=%.0f,%.0f,%.0f owner_dist=%.0f\n",
++		entindex(), PK_Info(m_iSpecies).name, pOwner ? STRING(pOwner->pev->netname) : "-", m_iTeam, int(pev->health), int(pev->max_health),
++		PK_StateNames[clamp(m_iState, 0, int(ARRAYSIZE(PK_StateNames)) - 1)],
++		pEnemy ? (pEnemy->IsPlayer() ? STRING(pEnemy->pev->netname) : STRING(pEnemy->pev->classname)) : "-",
++		TheNavAreaList.empty() ? "none" : "yes", m_path.IsValid() ? m_iPathIndex : 0, m_path.IsValid() ? m_path.GetSegmentCount() : 0,
++		pev->origin.x, pev->origin.y, pev->origin.z, pOwner ? (pOwner->pev->origin - pev->origin).Length() : 0.0f);
++	if (pTo)
++		ClientPrint(pTo->pev, HUD_PRINTCONSOLE, line);
++	else
++		SERVER_PRINT(line);
++}
++
++void PK_TestCommand(CBasePlayer *pPlayer)
++{
++	if (CVAR_GET_FLOAT("sv_cheats") == 0.0f)
++	{
++		ClientPrint(pPlayer->pev, HUD_PRINTCONSOLE, "pk_test needs sv_cheats 1\n");
++		return;
++	}
++
++	const char *arg1 = CMD_ARGC() > 1 ? CMD_ARGV(1) : "";
++	const char *arg2 = CMD_ARGC() > 2 ? CMD_ARGV(2) : "";
++
++	if (!Q_stricmp(arg1, "clear"))
++	{
++		PK_CleanUpMap();
++		return;
++	}
++
++	if (!Q_stricmp(arg1, "info"))
++	{
++		CBaseEntity *pEntity = nullptr;
++		while ((pEntity = UTIL_FindEntityByClassname(pEntity, "monster_pokemon")))
++			static_cast<CPokemon *>(pEntity)->Report(pPlayer);
++
++		return;
++	}
++
++	int iSpecies = -1;
++	for (int i = 0; i < PK_NUM_SPECIES; i++)
++	{
++		if (!Q_stricmp(arg1, g_PokemonInfo[i].name))
++			iSpecies = i;
++	}
++
++	if (iSpecies < 0)
++	{
++		ClientPrint(pPlayer->pev, HUD_PRINTCONSOLE, "usage: pk_test <pikachu|charizard|blastoise> [spawn|enemy] | pk_test clear | pk_test info\n");
++		return;
++	}
++
++	if (!PK_PlayerPlaying(pPlayer))
++		return;
++
++	Vector vecFwd;
++	UTIL_MakeVectorsPrivate(pPlayer->pev->v_angle, vecFwd, nullptr, nullptr);
++	TraceResult tr;
++	UTIL_TraceLine(pPlayer->EyePosition(), pPlayer->EyePosition() + vecFwd * 160.0f, ignore_monsters, pPlayer->edict(), &tr);
++	Vector vecSpot = tr.vecEndPos - vecFwd * 24.0f;
++
++	// (a Pokemon for the nearest enemy player — a bot — in front of you, set on you)
++	if (!Q_stricmp(arg2, "enemy"))
++	{
++		CBasePlayer *pBest = nullptr;
++		float flBest = 1e9f;
++		for (int i = 1; i <= gpGlobals->maxClients; i++)
++		{
++			CBasePlayer *pOther = UTIL_PlayerByIndex(i);
++			if (!PK_PlayerPlaying(pOther) || pOther == pPlayer || (pOther->m_iTeam == pPlayer->m_iTeam && !PK_FreeForAll()) || PK_PokemonOf(pOther))
++				continue;
++
++			float flDist = (pOther->pev->origin - pPlayer->pev->origin).Length();
++			if (flDist < flBest)
++			{
++				flBest = flDist;
++				pBest = pOther;
++			}
++		}
++
++		if (!pBest)
++		{
++			ClientPrint(pPlayer->pev, HUD_PRINTCONSOLE, "pk_test: no enemy player without a Pokemon (add a bot: bot_add)\n");
++			return;
++		}
++
++		CPokemon *pPokemon = CPokemon::Create(iSpecies, pBest, vecSpot, pPlayer->pev->v_angle.y + 180.0f);
++		if (!pPokemon)
++			ClientPrint(pPlayer->pev, HUD_PRINTCONSOLE, "pk_test: no room there\n");
++		else
++			pPokemon->OnProvoked(pPlayer);
++
++		return;
++	}
++
++	if (PK_HasOut(pPlayer) || PK_BallCarried(pPlayer))
++	{
++		ClientPrint(pPlayer->pev, HUD_PRINTCONSOLE, "pk_test: you already have a ball or a Pokemon (pk_test clear)\n");
++		return;
++	}
++
++	// (your own, out at once in front of you)
++	if (!Q_stricmp(arg2, "spawn"))
++	{
++		if (!CPokemon::Create(iSpecies, pPlayer, vecSpot, pPlayer->pev->v_angle.y))
++			ClientPrint(pPlayer->pev, HUD_PRINTCONSOLE, "pk_test: no room there\n");
++
++		return;
++	}
++
++	// (the ball, free)
++	pPlayer->GiveNamedItem(PK_Info(iSpecies).weaponName);
++}
++
++// The server console's: pk_spawn <species> <owner> [enemy] (players by a part of their name, or #index);
++// pk_info; pk_clear — for tests with bots on a dedicated server
++static CBasePlayer *PK_PlayerByArg(const char *arg)
++{
++	if (!arg || !arg[0])
++		return nullptr;
++
++	if (arg[0] == '#')
++	{
++		CBasePlayer *pPlayer = UTIL_PlayerByIndex(Q_atoi(arg + 1));
++		return PK_PlayerPlaying(pPlayer) ? pPlayer : nullptr;
++	}
++
++	for (int i = 1; i <= gpGlobals->maxClients; i++)
++	{
++		CBasePlayer *pPlayer = UTIL_PlayerByIndex(i);
++		if (!PK_PlayerPlaying(pPlayer))
++			continue;
++
++		char name[64], want[64];
++		Q_strlcpy(name, STRING(pPlayer->pev->netname));
++		Q_strlcpy(want, arg);
++		Q_strlwr(name);
++		Q_strlwr(want);
++		if (Q_strstr(name, want))
++			return pPlayer;
++	}
++
++	return nullptr;
++}
++
++static void PK_ServerSpawn_f()
++{
++	if (CVAR_GET_FLOAT("sv_cheats") == 0.0f)
++	{
++		SERVER_PRINT("pk_spawn needs sv_cheats 1\n");
++		return;
++	}
++
++	int iSpecies = -1;
++	for (int i = 0; i < PK_NUM_SPECIES; i++)
++	{
++		if (CMD_ARGC() > 1 && !Q_stricmp(CMD_ARGV(1), g_PokemonInfo[i].name))
++			iSpecies = i;
++	}
++
++	CBasePlayer *pOwner = CMD_ARGC() > 2 ? PK_PlayerByArg(CMD_ARGV(2)) : nullptr;
++	if (iSpecies < 0 || !pOwner)
++	{
++		SERVER_PRINT("usage: pk_spawn <pikachu|charizard|blastoise> <owner name|#index> [<enemy name|#index> [near]] (living players on a side; near: out by the enemy)\n");
++		return;
++	}
++
++	CPokemon *pOld = PK_PokemonOf(pOwner);
++	if (pOld)
++		pOld->Vanish();
++
++	// (by its player, or by the enemy with "near")
++	CBasePlayer *pEnemy = CMD_ARGC() > 3 ? PK_PlayerByArg(CMD_ARGV(3)) : nullptr;
++	CBasePlayer *pBy = (pEnemy && CMD_ARGC() > 4 && !Q_stricmp(CMD_ARGV(4), "near")) ? pEnemy : pOwner;
++	Vector vecFwd;
++	UTIL_MakeVectorsPrivate(Vector(0, pBy->pev->v_angle.y, 0), vecFwd, nullptr, nullptr);
++	CPokemon *pPokemon = CPokemon::Create(iSpecies, pOwner, PK_Feet(pBy) + vecFwd * 96.0f + Vector(0, 0, 8), pBy->pev->v_angle.y + (pBy == pOwner ? 0.0f : 180.0f));
++	if (!pPokemon)
++	{
++		SERVER_PRINT("pk_spawn: no room by that player\n");
++		return;
++	}
++
++	if (pEnemy)
++		pPokemon->OnProvoked(pEnemy);
++
++	pPokemon->Report(nullptr);
++}
++
++static void PK_ServerInfo_f()
++{
++	CBaseEntity *pEntity = nullptr;
++	int count = 0;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "monster_pokemon")))
++	{
++		static_cast<CPokemon *>(pEntity)->Report(nullptr);
++		count++;
++	}
++
++	if (!count)
++		SERVER_PRINT("pk_info: no Pokemon\n");
++}
++
++static void PK_ServerClear_f()
++{
++	if (CVAR_GET_FLOAT("sv_cheats") != 0.0f)
++		PK_CleanUpMap();
++}
++
++void PK_RegisterServerCommands()
++{
++	ADD_SERVER_COMMAND("pk_spawn", PK_ServerSpawn_f);
++	ADD_SERVER_COMMAND("pk_info", PK_ServerInfo_f);
++	ADD_SERVER_COMMAND("pk_clear", PK_ServerClear_f);
++}
 diff --git a/regamedll/regamedll/dlls.h b/regamedll/regamedll/dlls.h
-index 2bef63d..4e65706 100644
+index 2bef63d..a3f53cb 100644
 --- a/regamedll/regamedll/dlls.h
 +++ b/regamedll/regamedll/dlls.h
-@@ -164,3 +164,6 @@ using FloatRef = float;
+@@ -164,3 +164,9 @@ using FloatRef = float;
  #include "r_studioint.h"
  
  #include "shake.h"
 +
 +// Half-Life arsenal
 +#include "hl_weapons.h"
++
++// Half Strike: Poke Balls and their Pokemon
++#include "pokemon.h"
