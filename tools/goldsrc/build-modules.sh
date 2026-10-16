@@ -114,8 +114,7 @@ for asset in build_spec.get('assets', []):
     env = dict(os.environ)
     # (input files the generator reads from outside Git — e.g. the owner's official models in data_installers/ —
     # checked against their pinned SHA-256 and handed over in an environment variable)
-    src = asset.get('sources')
-    if src:
+    for src in asset.get('sources', []):
         base = pathlib.Path(sys.argv[6]) / src['dir']
         for name, digest in src['files'].items():
             if not (base / name).is_file() or sha(base / name) != digest: sys.exit(f'{base / name}: missing, or not the file lock.json pins')

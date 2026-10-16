@@ -316,10 +316,10 @@ index e77a067..33b67c6 100644
  	void AddWeapon( WEAPON *wp ) 
 diff --git a/cl_dll/arsenal_ui.cpp b/cl_dll/arsenal_ui.cpp
 new file mode 100644
-index 0000000..6997c25
+index 0000000..1aa5cac
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.cpp
-@@ -0,0 +1,2643 @@
+@@ -0,0 +1,2871 @@
 +/*
 +arsenal_ui.cpp - the Half-Life arsenal's own menus, drawn by the client
 +
@@ -354,6 +354,7 @@ index 0000000..6997c25
 +#include "pm_defs.h"
 +#include "pmtrace.h"
 +#include "event_api.h"
++#include "pm_shared.h"
 +#include <string.h>
 +#include <stdio.h>
 +#include <math.h>
@@ -381,10 +382,13 @@ index 0000000..6997c25
 +{
 +	HL_PYTHON = 32, HL_CROSSBOW, HL_RPG, HL_GAUSS, HL_EGON, HL_CROWBAR, HL_GLOCK, HL_MP5, HL_SHOTGUN, HL_HORNETGUN,
 +	HL_HANDGRENADE, HL_SATCHEL, HL_TRIPMINE, HL_SNARK,
-+	PK_PIKACHU, PK_CHARIZARD, PK_BLASTOISE // (Half Strike's Poke Balls)
++	PK_PIKACHU, PK_CHARIZARD, PK_BLASTOISE, // (Half Strike's Poke Balls)
++	LEM_LAPTOP // (Half Strike's laptop: Le M, summoned)
 +};
 +
 +static bool IsBall( int id ) { return id >= PK_PIKACHU && id <= PK_BLASTOISE; }
++// (what brings a companion out — a ball, the laptop: one companion at a time, whichever)
++static bool IsCompanionItem( int id ) { return id >= PK_PIKACHU && id <= LEM_LAPTOP; }
 +
 +//
 +// Look
@@ -439,6 +443,9 @@ index 0000000..6997c25
 +// its range in units, its speed)
 +#define POKE( cmd, name, kind, model, id, price, health, dmg, ticks, cyc, rng, spd, note ) \
 +	{ cmd, name, kind, "models/pokemon/" model ".mdl", id, price, ANY, POSE_UPRIGHT, dmg, ticks, cyc, 0, 0, spd, 0, rng, note, health }
++// (another companion: the same figures, its model elsewhere)
++#define OTHER( cmd, name, kind, model, id, price, health, dmg, ticks, cyc, rng, spd, note ) \
++	{ cmd, name, kind, "models/others/" model ".mdl", id, price, ANY, POSE_UPRIGHT, dmg, ticks, cyc, 0, 0, spd, 0, rng, note, health }
 +
 +static const BuyItem g_Items[] =
 +{
@@ -498,9 +505,11 @@ index 0000000..6997c25
 +	GUN( "tripmine", "Tripmine", "Explosive  -  2 at most", "p_tripmine", HL_TRIPMINE, 400, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Laser-triggered, on a wall" ),
 +	GUN( "snark", "Snarks", "Creatures  -  3 a box", "w_sqknest", HL_SNARK, 400, ANY, 10, 1, 0, 0, 6, 250, 1.0f, 0, "Hungry: they hunt the nearest enemy" ),
 +	// Half Strike's Poke Balls: thrown, the Pokemon comes out and fights beside its player (the server's figures)
-+	POKE( "pikachu", "Pikachu", "Pok\xC3\xA9 Ball  -  Electric", "pikachu", PK_PIKACHU, 1000, 90, 22, 1, 1.1f, 200, 300, "Thunderbolt: a bolt that slows its target" ),
-+	POKE( "charizard", "Charizard", "Pok\xC3\xA9 Ball  -  Fire", "charizard", PK_CHARIZARD, 1400, 160, 7, 7, 3.0f, 200, 240, "Flamethrower: a cone of fire for a second, then burns" ),
-+	POKE( "blastoise", "Blastoise", "Pok\xC3\xA9 Ball  -  Water", "blastoise", PK_BLASTOISE, 1300, 220, 34, 1, 1.9f, 200, 210, "Hydro Pump: two jets that throw enemies back" ),
++	POKE( "pikachu", "Pikachu", "Pok\xC3\xA9 Ball  -  Electric", "pikachu", PK_PIKACHU, 1000, 90, 22, 1, 1.1f, 400, 300, "Thunderbolt: a bolt that slows its target" ),
++	POKE( "charizard", "Charizard", "Pok\xC3\xA9 Ball  -  Fire", "charizard", PK_CHARIZARD, 1400, 160, 7, 7, 3.0f, 400, 240, "Flamethrower: a cone of fire for a second, then burns" ),
++	POKE( "blastoise", "Blastoise", "Pok\xC3\xA9 Ball  -  Water", "blastoise", PK_BLASTOISE, 1300, 220, 34, 1, 1.9f, 400, 210, "Hydro Pump: two jets that throw enemies back" ),
++	// Half Strike's others: Le M, typed into being on a laptop, fights as a Pokemon does (the server's figures)
++	OTHER( "lem", "Le M", "Laptop  -  Summoned", "lem", LEM_LAPTOP, 1500, 150, 18, 1, 1.2f, 400, 250, "Hack: green code bolts that scramble the target's screen" ),
 +};
 +
 +struct BuyTab
@@ -520,7 +529,8 @@ index 0000000..6997c25
 +	{ "Equipment", "Equipment", 24, 8, VGUI_BUY_ITEM },
 +	{ "Half-Life guns", "Half-Life arsenal: guns", 32, 7, 0 },
 +	{ "Half-Life heavy", "Half-Life arsenal: heavy weapons", 39, 8, 0 },
-+	{ "Pok\xC3\xA9mon", "Pok\xC3\xA9mon: one ball, one Pok\xC3\xA9mon out", 47, 3, 0 },
++	{ "Pok\xC3\xA9mon", "Pok\xC3\xA9mon: one companion at a time", 47, 3, 0 },
++	{ "Others", "Others: one companion at a time", 50, 1, 0 }, // (the tenth: key 0 among the categories)
 +};
 +#define NUM_TABS ( (int)( sizeof( g_Tabs ) / sizeof( g_Tabs[0] )))
 +#define NUM_ITEMS ( (int)( sizeof( g_Items ) / sizeof( g_Items[0] )))
@@ -605,14 +615,23 @@ index 0000000..6997c25
 +extern bool g_bOwnsShield;
 +
 +//
-+// Half Strike's Pokemon, from the server's PokeHP messages: entity index (short), health percent (0: gone), species,
-+// team, owner (a player's index)
++// Half Strike's Pokemon (and Le M, a companion as they are), from the server's PokeHP messages: entity index (short),
++// health percent (0: gone), species, team, owner (a player's index)
 +//
-+enum { SPECIES_PIKACHU, SPECIES_CHARIZARD, SPECIES_BLASTOISE, NUM_SPECIES };
++enum { SPECIES_PIKACHU, SPECIES_CHARIZARD, SPECIES_BLASTOISE, SPECIES_LEM, NUM_SPECIES };
 +static const struct { const char *name; float height; } g_Species[NUM_SPECIES] =
 +{
-+	{ "Pikachu", 30 }, { "Charizard", 78 }, { "Blastoise", 60 }, // (their models' standing heights)
++	{ "Pikachu", 30 }, { "Charizard", 78 }, { "Blastoise", 60 }, { "Le M", 72 }, // (their models' standing heights)
 +};
++
++// (the species an item brings out: the balls in their order, then the laptop)
++static int ItemSpecies( int id ) { return IsCompanionItem( id ) ? id - PK_PIKACHU : -1; }
++
++// a companion's model: a Pokemon's (its ball's too, which no PokeHP names), Le M's
++static bool CompanionModel( const char *name )
++{
++	return name && ( strstr( name, "models/pokemon/" ) || strstr( name, "models/others/lem" ));
++}
 +
 +#define MAX_POKEMON 64
 +
@@ -635,6 +654,10 @@ index 0000000..6997c25
 +static float g_flBallThrown = -1; // (the local player's ball thrown, not opened yet: its time, -1 none)
 +static int g_iBallThrown, g_iBallHeld; // (its weapon id; the ball last seen in hand)
 +static float g_flBallHeld = -1;
++// (Le M's Hack on the local player: its screen scrambled from g_flHackStart, -1 none — ArsUI_DrawHackScramble)
++static float g_flHackStart = -1, g_flHackLength, g_flHackStrength;
++static int g_iHackWatched; // (the player watched through its eyes when it came — a spectator's —, 0 the local one's own)
++static int LemHack_Msg( const char *pszName, int iSize, void *pbuf );
 +
 +// The table kept across the client's VidInits (a window resize is one): emptied when the level changes or the
 +// connection ends; after a HUD reset (each spawn, each connection) the server sends its live Pokemon again, so those
@@ -752,16 +775,17 @@ index 0000000..6997c25
 +		if ( g_Pokemon[i].ent && g_Pokemon[i].gone < 0 && g_Pokemon[i].stale < 0 && g_Pokemon[i].owner == me )
 +			return g_Pokemon[i].species;
 +	if ( g_flBallThrown >= 0 )
-+		return g_iBallThrown - PK_PIKACHU;
++		return ItemSpecies( g_iBallThrown );
 +	return -1;
 +}
 +
-+// The local player's weapons changed (HLWeapons, bit 0 for id 32): a ball gone from the hand that held it was thrown
++// The local player's weapons changed (HLWeapons, bit 0 for id 32): a ball gone from the hand that held it was thrown,
++// the laptop gone from it has typed Le M out
 +void ArsUI_WeaponBits( int oldBits, int newBits )
 +{
 +	const float now = Now();
 +	int balls = 0;
-+	for ( int id = PK_PIKACHU; id <= PK_BLASTOISE; id++ )
++	for ( int id = PK_PIKACHU; id <= LEM_LAPTOP; id++ )
 +	{
 +		const int bit = 1 << ( id - 32 );
 +		balls |= newBits & bit;
@@ -775,11 +799,20 @@ index 0000000..6997c25
 +	}
 +	if ( balls )
 +		g_flBallThrown = -1; // (a ball carried again: it came back, no room to come out)
++	// (the laptop goes 0.5 s after Le M came — his PokeHP before it —: the one out already said so)
++	if ( g_flBallThrown >= 0 )
++	{
++		const int me = LocalIndex();
++		for ( int i = 0; i < MAX_POKEMON; i++ )
++			if ( g_Pokemon[i].ent && g_Pokemon[i].gone < 0 && g_Pokemon[i].stale < 0 && g_Pokemon[i].owner == me )
++				g_flBallThrown = -1;
++	}
 +}
 +
-+static bool OwnsBall( void )
++// a ball or the laptop carried
++static bool OwnsCompanionItem( void )
 +{
-+	for ( int id = PK_PIKACHU; id <= PK_BLASTOISE; id++ )
++	for ( int id = PK_PIKACHU; id <= LEM_LAPTOP; id++ )
 +		if ( Owned( id ))
 +			return true;
 +	return false;
@@ -819,8 +852,8 @@ index 0000000..6997c25
 +		return true;
 +	if ( !strcmp( it.cmd, "shield" ) && ( Owned( HL_GLOCK ) || Owned( HL_PYTHON ) || HLLook()))
 +		return true;
-+	// (one Poke Ball carried, one Pokemon out)
-+	if ( IsBall( it.id ) && ( OwnsBall() || PokemonOut() >= 0 ))
++	// (one companion: a ball or the laptop carried, or a Pokemon or Le M out)
++	if ( IsCompanionItem( it.id ) && ( OwnsCompanionItem() || PokemonOut() >= 0 ))
 +		return true;
 +	return false;
 +}
@@ -838,10 +871,18 @@ index 0000000..6997c25
 +{
 +	if ( Full( it ))
 +		return "Already have it";
-+	if ( IsBall( it.id ) && PokemonOut() >= 0 )
-+		return "Your Pok\xC3\xA9mon is already out";
-+	if ( IsBall( it.id ) && OwnsBall())
-+		return "One Pok\xC3\xA9 Ball at a time";
++	if ( IsCompanionItem( it.id ))
++	{
++		const int out = PokemonOut();
++		if ( out == SPECIES_LEM )
++			return "Le M is already out: one companion at a time";
++		if ( out >= 0 )
++			return "Your Pok\xC3\xA9mon is already out: one companion at a time";
++		if ( Owned( LEM_LAPTOP ))
++			return it.id == LEM_LAPTOP ? "You already carry the laptop" : "You carry the laptop: one companion at a time";
++		if ( OwnsCompanionItem())
++			return IsBall( it.id ) ? "You already carry a Pok\xC3\xA9 Ball" : "You carry a Pok\xC3\xA9 Ball: one companion at a time";
++	}
 +	if ( !Refused( it ))
 +		return "Not enough money";
 +	return strcmp( it.cmd, "shield" ) ? "Not with the shield" : "Not with a Half-Life pistol or look";
@@ -850,16 +891,18 @@ index 0000000..6997c25
 +// a row's short tag where "owned" goes, for a refusal that is not about the money (null: none)
 +static const char *RefusalTag( const BuyItem &it )
 +{
-+	if ( IsBall( it.id ))
++	if ( IsCompanionItem( it.id ))
 +	{
 +		const int out = PokemonOut();
-+		if ( out == it.id - PK_PIKACHU )
++		if ( out == ItemSpecies( it.id ))
 +			return "out";
 +		if ( Owned( it.id ))
 +			return "owned";
 +		if ( out >= 0 )
-+			return "Pok\xC3\xA9mon out";
-+		if ( OwnsBall())
++			return out == SPECIES_LEM ? "Le M out" : "Pok\xC3\xA9mon out";
++		if ( Owned( LEM_LAPTOP ))
++			return "laptop";
++		if ( OwnsCompanionItem())
 +			return "one ball";
 +		return 0;
 +	}
@@ -1299,6 +1342,13 @@ index 0000000..6997c25
 +		if ( !p.model )
 +		{
 +			p.model = IEngineStudio.Mod_ForName( p.name, 0 );
++			if (( !p.model || p.model->type != mod_studio ) && !strncmp( p.name, "models/others/", 14 ))
++			{
++				// (Half Strike's others: in the Pokemon's folder, if that is where they were put)
++				char alt[64];
++				snprintf( alt, sizeof( alt ), "models/pokemon/%s", p.name + 14 );
++				p.model = IEngineStudio.Mod_ForName( alt, 0 );
++			}
 +			if ( !p.model || p.model->type != mod_studio )
 +			{
 +				p.model = NULL;
@@ -2092,7 +2142,7 @@ index 0000000..6997c25
 +	TextRight( x0 + W - 18, hy, sz, Alpha( C_GREEN, fade ), 1.7f );
 +
 +	// tabs
-+	float ty = bodyY + 8, tabH = min( lh * 2.25f, ( bodyH - 16 ) / NUM_TABS - 2 ); // (nine: fitted to a short screen)
++	float ty = bodyY + 8, tabH = min( lh * 2.25f, ( bodyH - 16 ) / NUM_TABS - 2 ); // (ten: fitted to a short screen)
 +	for ( int t = 0; t < NUM_TABS; t++ )
 +	{
 +		int items[16], n = TabItems( t, items );
@@ -2102,7 +2152,7 @@ index 0000000..6997c25
 +		if ( sel )
 +			Fill( x0 + 1, ty, 3, tabH, C_GOLD );
 +		char key[4];
-+		snprintf( key, sizeof( key ), "%d", t + 1 );
++		snprintf( key, sizeof( key ), "%d", ( t + 1 ) % 10 ); // (the tenth: 0)
 +		KeyBadge( x0 + 14, ty + ( tabH - lh ) / 2, key, sel && g_iKeyLevel == 0 );
 +		Text( x0 + 40, ty + ( tabH - lh ) / 2, g_Tabs[t].title, Alpha( sel ? C_GOLDT : hover ? C_TEXT : C_DIM, fade ));
 +		snprintf( key, sizeof( key ), "%d", n );
@@ -2207,7 +2257,9 @@ index 0000000..6997c25
 +	{
 +		char hint[80];
 +		if ( g_iKeyLevel )
-+			snprintf( hint, sizeof( hint ), "1-%d buy    0 categories    wheel, arrows: category", min( max( n, 1 ), 9 ));
++			snprintf( hint, sizeof( hint ), n > 1 ? "1-%d buy    0 categories    wheel, arrows: category" : "%d buy    0 categories    wheel, arrows: category", min( max( n, 1 ), 9 ));
++		else if ( NUM_TABS >= 10 )
++			snprintf( hint, sizeof( hint ), "1-9, 0 category    wheel, arrows: category" );
 +		else
 +			snprintf( hint, sizeof( hint ), "1-%d category    wheel, arrows: category", NUM_TABS );
 +		TextRight( x0 + W - 14 - 130 - 16, fy + ( bh - lh ) / 2, hint, Alpha( C_FAINT, fade ));
@@ -2245,6 +2297,7 @@ index 0000000..6997c25
 +	gEngfuncs.pfnAddCommand( "+ars_click", ClickDown );
 +	gEngfuncs.pfnAddCommand( "-ars_click", ClickUp );
 +	HOOK_MESSAGE_FUNC( "PokeHP", PokeHP_Msg );
++	HOOK_MESSAGE_FUNC( "LemHack", LemHack_Msg );
 +}
 +
 +void ArsUI_VidInit( void )
@@ -2282,12 +2335,15 @@ index 0000000..6997c25
 +	}
 +	else if ( g_iPanel == P_BUY )
 +	{
-+		if ( key == 10 )
++		// (0: back to the categories from the items; among the categories, the tenth — B, Esc, a right click close)
++		if ( key == 10 && g_iKeyLevel == 1 )
 +		{
-+			if ( g_iKeyLevel == 1 )
-+				g_iKeyLevel = 0;
-+			else
-+				Close();
++			g_iKeyLevel = 0;
++			return;
++		}
++		if ( key == 10 && NUM_TABS < 10 )
++		{
++			Close();
 +			return;
 +		}
 +		if ( g_iKeyLevel == 0 )
@@ -2448,6 +2504,7 @@ index 0000000..6997c25
 +		if ( g_Pokemon[i].ent && g_Pokemon[i].gone < 0 )
 +			g_Pokemon[i].stale = g_flSpawned;
 +	g_flBallThrown = -1;
++	g_flHackStart = -1; // (a scramble does not outlive its victim)
 +}
 +
 +// The server's centre messages while the buy panel is open (a purchase refused: "You have insufficient funds!"...):
@@ -2618,6 +2675,7 @@ index 0000000..6997c25
 +#define POKE_MIN_AMBIENT 32     // (a Pokemon's light in the darkest shade: its unlit side...)
 +#define POKE_MIN_SHADE 64       // (...and its lit side over it)
 +#define POKE_BAR_LIFT 3.0f     // (over its model's top, in units: the same for all)
++#define LEM_BAR_AFTER 0.55f    // (Le M's bar shown once he is past his hologram: the server's LEM_HOLO_END)
 +#define POKE_BAR_GAP 6.0f      // (and that far on the screen)
 +
 +// whether the point is seen from the view: the world and the brush entities in between (not the studio models — the
@@ -2739,7 +2797,7 @@ index 0000000..6997c25
 +// the Pokemon's highest bone, each time its model is set up (its bar follows it down when it crouches, lies...)
 +void ArsUI_StudioBones( cl_entity_t *ent, float bones[][3][4], int count )
 +{
-+	if ( !ent || ent->index <= 0 || count <= 0 || !ent->model || !strstr( ent->model->name, "models/pokemon/" ))
++	if ( !ent || ent->index <= 0 || count <= 0 || !ent->model || !CompanionModel( ent->model->name ))
 +		return;
 +	Pokemon *p = PokemonSlot( ent->index, false );
 +	if ( !p )
@@ -2757,7 +2815,7 @@ index 0000000..6997c25
 +// bar showed); full light, dynamic lights untouched
 +void ArsUI_StudioLighting( cl_entity_t *ent, alight_t *lighting )
 +{
-+	if ( !ent || !ent->model || !lighting || !strstr( ent->model->name, "models/pokemon/" ) || strstr( ent->model->name, "pokeball" ))
++	if ( !ent || !ent->model || !lighting || !CompanionModel( ent->model->name ) || strstr( ent->model->name, "pokeball" ))
 +		return;
 +	lighting->ambientlight = max( lighting->ambientlight, POKE_MIN_AMBIENT );
 +	lighting->shadelight = max( lighting->shadelight, POKE_MIN_SHADE );
@@ -2799,7 +2857,7 @@ index 0000000..6997c25
 +	PokemonPurge();
 +	{
 +		const int id = gHUD.m_Ammo.CurrentWeaponId(); // (the ball in hand, for ArsUI_WeaponBits)
-+		if ( IsBall( id ))
++		if ( IsCompanionItem( id ))
 +		{
 +			g_iBallHeld = id;
 +			g_flBallHeld = now;
@@ -2857,6 +2915,9 @@ index 0000000..6997c25
 +			continue;
 +		}
 +		if ( e->curstate.rendermode != kRenderNormal && e->curstate.renderamt < 40 )
++			continue;
++		// (Le M still a hologram — his first 0.55 s, the server's LEM_HOLO_END —: his bar once he compiles)
++		if ( p.species == SPECIES_LEM && p.gone < 0 && now - p.born < LEM_BAR_AFTER && now >= p.born )
 +			continue;
 +		const float height = BarHeight( p, e, now, dt );
 +		vec3_t top, mid, d;
@@ -2952,23 +3013,190 @@ index 0000000..6997c25
 +	model_t *m = weaponModelIndex ? gEngfuncs.hudGetModelByIndex( weaponModelIndex ) : NULL;
 +	if ( !m || !strstr( m->name, "pokemon/p_pokeball" ))
 +		return -1;
-+	return ( holderSkin >= 0 && holderSkin < NUM_SPECIES ) ? holderSkin : 0;
++	return ( holderSkin >= 0 && holderSkin <= SPECIES_BLASTOISE ) ? holderSkin : 0; // (the balls' species)
 +}
++
++// The laptop in hand (v_laptop): its screen's code scrolls — its skins are the frames of it, shown in turn
++#define LAPTOP_SCREEN_RATE 12.0f // (frames a second)
 +
 +void ArsUI_ViewModelSkin( cl_entity_t *view )
 +{
-+	if ( !view || !view->model || !strstr( view->model->name, "pokemon/v_pokeball" ))
++	if ( !view || !view->model )
++		return;
++	if ( strstr( view->model->name, "others/v_laptop" ))
++	{
++		studiohdr_t *hdr = (studiohdr_t *)IEngineStudio.Mod_Extradata( view->model );
++		const int skins = hdr ? hdr->numskinfamilies : 1;
++		const float t = Now();
++		// (the skins carry the typing: they turn only while its hands type, "type" and "deploy"; else the still code)
++		bool typing = false;
++		if ( hdr && view->curstate.sequence >= 0 && view->curstate.sequence < hdr->numseq )
++		{
++			const mstudioseqdesc_t *seq = (const mstudioseqdesc_t *)( (byte *)hdr + hdr->seqindex ) + view->curstate.sequence;
++			typing = !strcmp( seq->label, "type" ) || !strcmp( seq->label, "deploy" );
++		}
++		view->curstate.skin = typing && skins > 1 && t > 0 ? (int)( t * LAPTOP_SCREEN_RATE ) % skins : 0;
++		return;
++	}
++	if ( !strstr( view->model->name, "pokemon/v_pokeball" ))
 +		return;
 +	const int id = gHUD.m_Ammo.CurrentWeaponId();
 +	if ( IsBall( id ))
 +		view->curstate.skin = id - PK_PIKACHU;
 +}
++
++//
++// Le M's Hack: the victim's screen scrambled a moment (the server's LemHack message: byte duration in hundredths of a
++// second, 0 ends it; byte strength, 255 full) — green glitch blocks, scanlines, torn slices, the view jolted; the
++// screen never hidden whole (at most a third of it covered at the peak, most of that see-through)
++//
++static int LemHack_Msg( const char *pszName, int iSize, void *pbuf )
++{
++	BufferReader reader( pszName, pbuf, iSize );
++	const int length = reader.ReadByte(), strength = reader.ReadByte();
++	if ( length <= 0 )
++	{
++		g_flHackStart = -1;
++		return 1;
++	}
++	const float now = Now(), k = strength > 0 ? strength / 255.0f : 1.0f;
++	// (hit again while scrambled: the longer of the two, the stronger)
++	if ( g_flHackStart >= 0 && now >= g_flHackStart && now < g_flHackStart + g_flHackLength )
++	{
++		g_flHackLength = max( g_flHackStart + g_flHackLength, now + length / 100.0f ) - g_flHackStart;
++		g_flHackStrength = max( g_flHackStrength, k );
++		return 1;
++	}
++	g_flHackStart = now;
++	g_flHackLength = length / 100.0f;
++	g_flHackStrength = k;
++	g_iHackWatched = g_iUser1 == OBS_IN_EYE ? g_iUser2 : 0;
++	return 1;
++}
++
++// the scramble's strength now: up fast, held, faded over its last 40 %; 0 none
++static float HackLevel( float now )
++{
++	if ( g_flHackStart < 0 || g_flHackLength <= 0 )
++		return 0;
++	const float t = now - g_flHackStart;
++	// (it ends with its victim's life — the local player's; a spectator's own health is 0: as long as it watches the
++	// same one through its eyes)
++	const bool gone = g_iHackWatched ? ( g_iUser1 != OBS_IN_EYE || g_iUser2 != g_iHackWatched ) :
++		( g_iUser1 || gHUD.m_Health.m_iHealth <= 0 );
++	if ( t < 0 || t >= g_flHackLength || gone )
++	{
++		g_flHackStart = -1;
++		return 0;
++	}
++	const float u = t / g_flHackLength;
++	return g_flHackStrength * Clamp01( t / 0.04f ) * ( u < 0.6f ? 1.0f : 1.0f - ( u - 0.6f ) / 0.4f );
++}
++
++// (a cheap hash: the same draw for a step of time, another for the next)
++static unsigned HackHash( unsigned a, unsigned b )
++{
++	unsigned h = a * 0x9E3779B1u ^ ( b + 0x7F4A7C15u + ( a << 6 ) + ( a >> 2 ));
++	h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
++	return h;
++}
++static float HackRand( unsigned a, unsigned b ) { return ( HackHash( a, b ) & 0xFFFFFF ) / (float)0x1000000; }
++
++static const Col C_CODE  = { 70, 255, 120, 255 };
++static const Col C_CODE2 = { 20, 150, 60, 255 };
++static const Col C_CODEW = { 200, 255, 210, 255 };
++static const Col C_BLACK = { 0, 0, 0, 255 };
++
++void ArsUI_HackView( float *origin, float *angles )
++{
++	const float k = HackLevel( Now());
++	if ( k <= 0 )
++		return;
++	// (jolted at 25 steps a second, a little: the whole picture torn sideways)
++	const unsigned step = (unsigned)( Now() * 25 );
++	angles[1] += ( HackRand( step, 1 ) - 0.5f ) * 2.4f * k; // (yaw, pitch, roll)
++	angles[0] += ( HackRand( step, 2 ) - 0.5f ) * 1.2f * k;
++	angles[2] += ( HackRand( step, 3 ) - 0.5f ) * 2.0f * k;
++	(void)origin;
++}
++
++void ArsUI_DrawHackScramble( float flTime )
++{
++	const float now = Now(), k = HackLevel( now );
++	if ( k <= 0 )
++		return;
++	const float sw = ScreenWidth, sh = ScreenHeight;
++	const unsigned step = (unsigned)( now * 20 ); // (the blocks redrawn 20 times a second)
++	const float t = now - g_flHackStart;
++
++	// (a green cast over all, strongest at the hit)
++	Fill( 0, 0, sw, sh, Alpha( C_CODE2, k * ( 0.10f + 0.12f * Clamp01( 1 - t / 0.12f ))));
++
++	// (scanlines: a dark line every 4 units, rolling down)
++	const int roll = (int)( now * 60 ) & 3;
++	for ( float y = (float)roll; y < sh; y += 4 )
++		Fill( 0, y, sw, 1, Alpha( C_BLACK, 0.28f * k ));
++
++	// (torn slices: a band shifted sideways — its edge dark where the picture left, a green ghost where it went)
++	const int slices = 3 + (int)( 4 * k );
++	for ( int i = 0; i < slices; i++ )
++	{
++		const float y = HackRand( step, 10 + i ) * sh, h = 4 + HackRand( step, 30 + i ) * sh * 0.05f;
++		const float shift = ( HackRand( step, 50 + i ) - 0.5f ) * sw * 0.12f * k;
++		const float ax = fabs( shift );
++		const float x0 = shift > 0 ? 0 : sw - ax;
++		Fill( x0, y, ax, h, Alpha( C_BLACK, 0.55f * k ));
++		GradH( shift > 0 ? ax : sw - ax - sw * 0.35f, y, sw * 0.35f, h, Alpha( C_CODE, shift > 0 ? 0.20f * k : 0 ), Alpha( C_CODE, shift > 0 ? 0 : 0.20f * k ));
++		Fill( 0, y, sw, 1, Alpha( C_CODEW, 0.35f * k ));
++		Fill( 0, y + h - 1, sw, 1, Alpha( C_CODE2, 0.45f * k ));
++	}
++
++	// (glitch blocks: green and black rectangles in rows, some lit, most see-through)
++	const int blocks = (int)( 14 + 34 * k );
++	for ( int i = 0; i < blocks; i++ )
++	{
++		const float bw = 12 + HackRand( step, 100 + i ) * HackRand( step, 200 + i ) * sw * 0.35f;
++		const float bh = 3 + HackRand( step, 300 + i ) * HackRand( step, 400 + i ) * sh * 0.10f;
++		const float bx = HackRand( step, 500 + i ) * ( sw - bw ), by = HackRand( step, 600 + i ) * ( sh - bh );
++		const float kind = HackRand( step, 700 + i );
++		if ( kind < 0.45f )
++			Fill( bx, by, bw, bh, Alpha( C_CODE, ( 0.18f + 0.30f * HackRand( step, 800 + i )) * k ));
++		else if ( kind < 0.75f )
++			Fill( bx, by, bw, bh, Alpha( C_BLACK, ( 0.35f + 0.35f * HackRand( step, 800 + i )) * k ));
++		else
++		{
++			Fill( bx, by, bw, bh, Alpha( C_CODE2, 0.35f * k ));
++			Frame( bx, by, bw, bh, Alpha( C_CODEW, 0.5f * k ));
++		}
++	}
++	FlushShapes();
++
++	// (code: rows of hex and binary in the font, flickering)
++	static const char digits[] = "0123456789ABCDEF";
++	const int lines = (int)( 4 + 8 * k );
++	const int lh = LineHeight();
++	for ( int i = 0; i < lines; i++ )
++	{
++		char row[40];
++		const int len = 8 + (int)( HackRand( step, 900 + i ) * 24 );
++		const bool binary = HackRand( step, 950 + i ) < 0.4f;
++		for ( int c = 0; c < len; c++ )
++		{
++			const unsigned r = HackHash( step * 64 + i, c );
++			row[c] = ( c % 3 == 2 && !binary ) ? ' ' : binary ? ( r & 1 ? '1' : '0' ) : digits[r & 15];
++		}
++		row[len] = 0;
++		const float x = HackRand( step, 1000 + i ) * sw * 0.8f, y = HackRand( step, 1100 + i ) * ( sh - lh );
++		Text( x, y, row, Alpha( HackRand( step, 1200 + i ) < 0.3f ? C_CODEW : C_CODE, ( 0.55f + 0.45f * HackRand( step, 1300 + i )) * k ));
++	}
++	FlushTexts();
++}
 diff --git a/cl_dll/arsenal_ui.h b/cl_dll/arsenal_ui.h
 new file mode 100644
-index 0000000..f368730
+index 0000000..ae1b2e7
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.h
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,54 @@
 +/*
 +arsenal_ui.h - the Half-Life arsenal's own menus (buy, team, appearance), drawn by the client
 +*/
@@ -3009,13 +3237,16 @@ index 0000000..f368730
 +
 +// Half Strike's Pokemon: their health bars (PokeHP message), the Poke Ball's view model skin (the ball in hand)
 +void ArsUI_DrawPokemonBars( float flTime );
-+void ArsUI_ViewModelSkin( struct cl_entity_s *view );
++void ArsUI_ViewModelSkin( struct cl_entity_s *view ); // (and the laptop's screen code: its skins in turn)
 +void ArsUI_WeaponBits( int oldBits, int newBits );
 +int ArsUI_HeldBallSkin( int weaponModelIndex, int holderSkin );
 +// a studio model's bones set up (world space): a Pokemon's bar follows its pose
 +void ArsUI_StudioBones( struct cl_entity_s *ent, float bones[][3][4], int count );
 +// a world model's light (the map's): a Pokemon kept readable in the shade
 +void ArsUI_StudioLighting( struct cl_entity_s *ent, struct alight_s *lighting );
++// Le M's Hack on the local player (LemHack message): its screen scrambled, its view jolted, a moment
++void ArsUI_DrawHackScramble( float flTime );
++void ArsUI_HackView( float *origin, float *angles );
 +// the server's centre messages: true when a panel shows it (the buy panel: a purchase refused)
 +bool ArsUI_CenterPrint( const char *text );
 +
@@ -3601,7 +3832,7 @@ index 0000000..59fb023
 +		gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, HL_EGON_SOUND_OFF, 0.98, ATTN_NORM, 0, 100 );
 +}
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 8d29ddd..6d9e3bd 100644
+index 8d29ddd..9fa3ab0 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
 @@ -21,6 +21,7 @@
@@ -3630,7 +3861,7 @@ index 8d29ddd..6d9e3bd 100644
  	//ServersInit();
  
  	gEngfuncs.Con_Printf( "%s: ^2CS16Client^7 ver. %s initialized.\n", __FUNCTION__, CVAR_GET_STRING( "cscl_ver" ) );
-@@ -419,6 +424,49 @@ CHud :: ~CHud()
+@@ -419,6 +424,50 @@ CHud :: ~CHud()
  	m_pHudList = NULL;
  }
  
@@ -3657,10 +3888,11 @@ index 8d29ddd..6d9e3bd 100644
 +}
 +
 +// Half Strike's own HUD icons, outside any hud.txt: a whole sprite each (its first frame), named for GetSpriteIndex
-+// (d_pokemon: the death notice of a kill by a Pokemon, weapon "pokemon")
++// (d_pokemon: the death notice of a kill by a Pokemon, weapon "pokemon"; d_lem: by Le M, weapon "lem")
 +static const struct { const char *name, *sprite; } g_ExtraSprites[] =
 +{
 +	{ "d_pokemon", "sprites/pokemon/d_pokemon.spr" },
++	{ "d_lem", "sprites/others/d_lem.spr" }, // (a kill by Le M, weapon "lem": a laptop with its prompt)
 +};
 +#define NUM_EXTRA_SPRITES ( (int)( sizeof( g_ExtraSprites ) / sizeof( g_ExtraSprites[0] )))
 +
@@ -3680,7 +3912,7 @@ index 8d29ddd..6d9e3bd 100644
  void CHud :: VidInit( void )
  {
  	static bool firstinit = true;
-@@ -444,6 +492,9 @@ void CHud :: VidInit( void )
+@@ -444,6 +493,9 @@ void CHud :: VidInit( void )
  	{
  		// we need to load the hud.txt, and all sprites within
  		m_pSpriteList = SPR_GetList("sprites/hud.txt", &m_iSpriteCountAllRes);
@@ -3690,7 +3922,7 @@ index 8d29ddd..6d9e3bd 100644
  
  		if( m_pSpriteList )
  		{
-@@ -457,6 +508,13 @@ void CHud :: VidInit( void )
+@@ -457,6 +509,13 @@ void CHud :: VidInit( void )
  				p++;
  			}
  
@@ -3704,7 +3936,7 @@ index 8d29ddd..6d9e3bd 100644
  			// allocated memory for sprite handle arrays
  			m_rghSprites      = new(std::nothrow) HSPRITE[m_iSpriteCount];
  			m_rgrcRects       = new(std::nothrow) wrect_t[m_iSpriteCount];
-@@ -470,7 +528,8 @@ void CHud :: VidInit( void )
+@@ -470,7 +529,8 @@ void CHud :: VidInit( void )
  			}
  
  			p = m_pSpriteList;
@@ -3714,7 +3946,7 @@ index 8d29ddd..6d9e3bd 100644
  			{
  				if ( p->iRes == m_iRes )
  				{
-@@ -485,6 +544,24 @@ void CHud :: VidInit( void )
+@@ -485,6 +545,24 @@ void CHud :: VidInit( void )
  
  				p++;
  			}
@@ -3739,7 +3971,7 @@ index 8d29ddd..6d9e3bd 100644
  		}
  	}
  	else
-@@ -505,6 +582,21 @@ void CHud :: VidInit( void )
+@@ -505,6 +583,21 @@ void CHud :: VidInit( void )
  
  			p++;
  		}
@@ -3761,7 +3993,7 @@ index 8d29ddd..6d9e3bd 100644
  	}
  
  	// assumption: number_1, number_2, etc, are all listed and loaded sequentially
-@@ -541,6 +633,8 @@ void CHud :: VidInit( void )
+@@ -541,6 +634,8 @@ void CHud :: VidInit( void )
  #endif
  
  	firstinit = false;
@@ -3839,7 +4071,7 @@ index 0dba92b..e2b9f7a 100644
  	HUDLIST *pList = m_pHudList;
  
 diff --git a/cl_dll/hud_redraw.cpp b/cl_dll/hud_redraw.cpp
-index 1f2ad59..1f38f4e 100644
+index 1f2ad59..a340183 100644
 --- a/cl_dll/hud_redraw.cpp
 +++ b/cl_dll/hud_redraw.cpp
 @@ -17,6 +17,7 @@
@@ -3850,7 +4082,7 @@ index 1f2ad59..1f38f4e 100644
  #include "cl_util.h"
  #include "triangleapi.h"
  
-@@ -102,6 +103,10 @@ int CHud :: Redraw( float flTime, int intermission )
+@@ -102,6 +103,14 @@ int CHud :: Redraw( float flTime, int intermission )
  
  	UpdateDefaultHUDColor();
  
@@ -3858,10 +4090,14 @@ index 1f2ad59..1f38f4e 100644
 +	if ( m_pCvarDraw->value && !intermission && !(m_iHideHUDDisplay & HIDEHUD_ALL) )
 +		ArsUI_DrawPokemonBars( flTime );
 +
++	// (Half Strike: Le M's Hack scrambling the screen, under the HUD — which stays readable over it)
++	if ( !intermission )
++		ArsUI_DrawHackScramble( flTime );
++
  	if ( m_pCvarDraw->value && (intermission || !(m_iHideHUDDisplay & HIDEHUD_ALL) ) )
  	{
  		for( HUDLIST *pList = m_pHudList; pList; pList = pList->pNext )
-@@ -111,11 +116,21 @@ int CHud :: Redraw( float flTime, int intermission )
+@@ -111,11 +120,21 @@ int CHud :: Redraw( float flTime, int intermission )
  				if( intermission && !(pList->p->m_iFlags & HUD_INTERMISSION) )
  					continue; // skip no-intermission during intermission
  
@@ -4112,7 +4348,7 @@ index 9038c3a..7298d0c 100644
  
  	if( Rain_Initialized )
 diff --git a/cl_dll/view.cpp b/cl_dll/view.cpp
-index 579b2d6..1eac2c9 100644
+index 579b2d6..005ce2c 100644
 --- a/cl_dll/view.cpp
 +++ b/cl_dll/view.cpp
 @@ -10,6 +10,7 @@
@@ -4132,10 +4368,14 @@ index 579b2d6..1eac2c9 100644
  	// intermission / finale rendering
  	if ( pparams->intermission )
  	{
-@@ -1860,6 +1863,10 @@ void DLLEXPORT V_CalcRefdef( struct ref_params_s *pparams )
+@@ -1860,6 +1863,14 @@ void DLLEXPORT V_CalcRefdef( struct ref_params_s *pparams )
  	{
  		V_CalcNormalRefdef ( pparams );
  	}
++
++	// (Half Strike: Le M's Hack jolts the view of its victim a moment)
++	if( mainView && !pparams->intermission )
++		ArsUI_HackView( pparams->vieworg, pparams->viewangles );
 +
 +	// (where the Half-Life arsenal's panels place their models)
 +	if( mainView )

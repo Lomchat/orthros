@@ -268,8 +268,8 @@
         ]
       },
       {
-        "id": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r8",
-        "purpose": "The Half-Life arsenal: the fourteen Half-Life weapons bought in Counter-Strike, at its scale, anywhere and anytime, with its own team, appearance and buy menus (hl-arsenal patches); Poké Balls with Pikachu, Charizard and Blastoise, the Pokémon's official game models (the owner's files, data_installers/pokemon-official, converted by tools/goldsrc/assets), the balls, sprites and sounds generated there.",
+        "id": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r9",
+        "purpose": "The Half-Life arsenal: the fourteen Half-Life weapons bought in Counter-Strike, at its scale, anywhere and anytime, with its own team, appearance and buy menus (hl-arsenal patches); Poké Balls with Pikachu, Charizard and Blastoise, the Pokémon's official game models (the owner's files, data_installers/pokemon-official, converted by tools/goldsrc/assets), the balls, sprites and sounds generated there; Le M (the owner's brother, at his request), his AI reconstruction kept in data_installers/le-m, summoned with a laptop.",
         "patches": [
           [
             ".",
@@ -291,7 +291,7 @@
         "files": [
           {
             "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
-            "sha256": "047aa837f3469955bac321cb7b550b814f881bb4a87bd32b34d394c89bab5d73"
+            "sha256": "332f4e1e5b6d9d82ecc74a1fc8ab9baeb782ddaac5e90b3c277d9965209d9f74"
           },
           {
             "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
@@ -299,27 +299,36 @@
           },
           {
             "path": "counterstrike/cstrike/dlls/cs_emscripten_wasm32.wasm",
-            "sha256": "90563b00deb4a7ec8c0b829c33480932ee921e3b2cb325f9101317fad3053e1a"
+            "sha256": "42a74ae631c7c3dac0250dbc90ff86615e7fddaa706af6fc0756cd84fe2b0551"
           },
           {
             "path": "counterstrike/cstrike/orthros-pokemon.pk3",
-            "sha256": "f90dbd2c4f5bf1a169d8d685ecb7a0698188754c62e60cfa963f8564ab017ccb"
+            "sha256": "8ca2a9cd10a780190432d1466d76eeb25e7712f695c31ac6dfb6bed1ac03a25f"
           }
         ],
         "assets": [
           {
             "archive": "orthros-pokemon.pk3",
             "generator": "assets/build.py",
-            "sources": {
-              "env": "POKEMON_OFFICIAL_DIR",
-              "dir": "pokemon-official",
-              "files": {
-                "plain/25.glb": "bf4b7d04ea250d3e8a5188e8977908dc07e6742a65962551bea92e8c7eec03c6",
-                "plain/6.glb": "bd1a7cfcde068b560bf3fefbdb25a46f172cbcc1c75c0c5c754c6254dc359af9",
-                "plain/6-shiny-animated.glb": "d4c6a1ccbd5a9a272ada3cc7b5efb81dbefcfc617405a4347c3005a14b977731",
-                "plain/9.glb": "c65ae71afc26328d9ef13e81565a5a48f2a8f084c40be9dbb4cb8443a01893c3"
+            "sources": [
+              {
+                "env": "POKEMON_OFFICIAL_DIR",
+                "dir": "pokemon-official",
+                "files": {
+                  "plain/25.glb": "bf4b7d04ea250d3e8a5188e8977908dc07e6742a65962551bea92e8c7eec03c6",
+                  "plain/6.glb": "bd1a7cfcde068b560bf3fefbdb25a46f172cbcc1c75c0c5c754c6254dc359af9",
+                  "plain/6-shiny-animated.glb": "d4c6a1ccbd5a9a272ada3cc7b5efb81dbefcfc617405a4347c3005a14b977731",
+                  "plain/9.glb": "c65ae71afc26328d9ef13e81565a5a48f2a8f084c40be9dbb4cb8443a01893c3"
+                }
+              },
+              {
+                "env": "LEM_DIR",
+                "dir": "le-m",
+                "files": {
+                  "rigged/lem_rigged.glb": "6213d4e75c54ed9fed4ddf7f85883da0bfb91dd4a981dca00a8ca1292c53fb19"
+                }
               }
-            }
+            ]
           }
         ]
       }
