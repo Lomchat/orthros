@@ -1,5 +1,40 @@
+diff --git a/cl_dll/GameStudioModelRenderer.cpp b/cl_dll/GameStudioModelRenderer.cpp
+index 9b28a0e..2d57a64 100644
+--- a/cl_dll/GameStudioModelRenderer.cpp
++++ b/cl_dll/GameStudioModelRenderer.cpp
+@@ -25,6 +25,7 @@
+ #include "cl_entity.h"
+ #include "dlight.h"
+ #include "triangleapi.h"
++#include "arsenal_ui.h"
+ 
+ #include <stdio.h>
+ #include <string.h>
+@@ -984,13 +985,22 @@ int CGameStudioModelRenderer::_StudioDrawPlayer(int flags, entity_state_t *pplay
+ 
+ 		IEngineStudio.StudioSetRemapColors(m_nTopColor, m_nBottomColor);
+ 
++		// (Half Strike: a Poke Ball holder's skin is its ball's, the player's look keeps its own)
++		const int bodySkin = m_pCurrentEntity->curstate.skin;
++		const int ballSkin = ArsUI_HeldBallSkin(pplayer->weaponmodel, bodySkin);
++		if (ballSkin >= 0)
++			m_pCurrentEntity->curstate.skin = 0;
++
+ 		StudioRenderModel(dir);
+ 		m_pPlayerInfo = NULL;
++		m_pCurrentEntity->curstate.skin = bodySkin;
+ 
+ 		if (pplayer->weaponmodel)
+ 		{
+ 			studiohdr_t *saveheader = m_pStudioHeader;
+ 			cl_entity_t saveent = *m_pCurrentEntity;
++			if (ballSkin >= 0)
++				m_pCurrentEntity->curstate.skin = ballSkin;
+ 
+ 			model_t *pweaponmodel = IEngineStudio.GetModelByIndex(pplayer->weaponmodel);
+ 
 diff --git a/cl_dll/StudioModelRenderer.cpp b/cl_dll/StudioModelRenderer.cpp
-index 2c50bca..6983a76 100644
+index 2c50bca..3f543ae 100644
 --- a/cl_dll/StudioModelRenderer.cpp
 +++ b/cl_dll/StudioModelRenderer.cpp
 @@ -17,6 +17,7 @@
@@ -20,13 +55,15 @@ index 2c50bca..6983a76 100644
  }
  
  float CStudioModelRenderer::StudioEstimateInterpolant(void)
-@@ -838,6 +842,14 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
+@@ -838,6 +842,16 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
  
  	m_pCurrentEntity = IEngineStudio.GetCurrentEntity();
  
 +	// (the Half-Life arsenal's panels: the weapon in hand hidden, their models without events)
 +	if( m_pCurrentEntity == gEngfuncs.GetViewModel() && ArsUI_HidesViewModel() )
 +		return 0;
++	if( m_pCurrentEntity == gEngfuncs.GetViewModel() )
++		ArsUI_ViewModelSkin( m_pCurrentEntity );
 +
 +	bool bPreview = ArsUI_IsPreview( m_pCurrentEntity );
 +	if( bPreview && !( flags & STUDIO_RENDER ))
@@ -35,10 +72,13 @@ index 2c50bca..6983a76 100644
  	if( g_bHoldingKnife && m_pCurrentEntity == gEngfuncs.GetViewModel() && (flags & STUDIO_RENDER) )
  	{
  		bChangedRightHand = true;
-@@ -907,6 +919,10 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
+@@ -907,6 +921,13 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
  
  	StudioSaveBones();
  
++	if (!bPreview && m_pCurrentEntity->index > 0)
++		ArsUI_StudioBones(m_pCurrentEntity, (*m_pbonetransform), m_pStudioHeader->numbones); // (Half Strike's Pokemon bars)
++
 +	// (a preview's first frame: its bones lay it, not drawn)
 +	if (bPreview && !ArsUI_PreviewBones(m_pCurrentEntity, (*m_pbonetransform), m_pStudioHeader->numbones))
 +		return 1;
@@ -46,20 +86,30 @@ index 2c50bca..6983a76 100644
  	if (flags & STUDIO_EVENTS)
  	{
  		StudioCalcAttachments();
-@@ -928,6 +944,8 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
+@@ -928,6 +949,10 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
  		IEngineStudio.StudioDynamicLight(m_pCurrentEntity, &lighting);
  
  		IEngineStudio.StudioEntityLight(&lighting);
 +		if( bPreview )
 +			ArsUI_PreviewLighting( m_pCurrentEntity, &lighting );
++		else
++			ArsUI_StudioLighting( m_pCurrentEntity, &lighting );
  		IEngineStudio.StudioSetupLighting(&lighting);
  
  		m_nTopColor = m_pCurrentEntity->curstate.colormap & 0xFF;
 diff --git a/cl_dll/ammo.cpp b/cl_dll/ammo.cpp
-index a78ad14..ac66fa8 100644
+index a78ad14..906f618 100644
 --- a/cl_dll/ammo.cpp
 +++ b/cl_dll/ammo.cpp
-@@ -99,7 +99,23 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -33,6 +33,7 @@
+ #include "draw_util.h"
+ #include "triangleapi.h"
+ #include "weapontype.h"
++#include "arsenal_ui.h"
+ 
+ #ifndef M_PI
+ #define M_PI		3.14159265358979323846	// matches value in gcc v2 math.h
+@@ -99,9 +100,34 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	pWeapon->hAmmo = 0;
  	pWeapon->hAmmo2 = 0;
  
@@ -83,8 +133,19 @@ index a78ad14..ac66fa8 100644
 +	snprintf(sz, sizeof(sz), txtFormat, szName);
  	client_sprite_t *pList = SPR_GetList(sz, &i);
  
++	// (Half Strike's own, from id 32 too — the Poke Balls: their sheets in the mod's folder)
++	if ( !pList && pWeapon->iId >= 32 )
++	{
++		txtFormat = "sprites/%s.txt";
++		sprFormat = "sprites/%s.spr";
++		snprintf(sz, sizeof(sz), txtFormat, szName);
++		pList = SPR_GetList(sz, &i);
++	}
++
  	if (!pList)
-@@ -110,7 +126,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+ 		return;
+ 
+@@ -110,7 +136,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList( pList, "crosshair", iRes, i );
  	if (p)
  	{
@@ -93,7 +154,7 @@ index a78ad14..ac66fa8 100644
  		pWeapon->hCrosshair = SPR_Load(sz);
  		pWeapon->rcCrosshair = p->rc;
  	}
-@@ -120,7 +136,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -120,7 +146,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "autoaim", iRes, i);
  	if (p)
  	{
@@ -102,7 +163,7 @@ index a78ad14..ac66fa8 100644
  		pWeapon->hAutoaim = SPR_Load(sz);
  		pWeapon->rcAutoaim = p->rc;
  	}
-@@ -130,7 +146,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -130,7 +156,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList( pList, "zoom", iRes, i );
  	if (p)
  	{
@@ -111,7 +172,7 @@ index a78ad14..ac66fa8 100644
  		pWeapon->hZoomedCrosshair = SPR_Load(sz);
  		pWeapon->rcZoomedCrosshair = p->rc;
  	}
-@@ -143,7 +159,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -143,7 +169,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "zoom_autoaim", iRes, i);
  	if (p)
  	{
@@ -120,7 +181,7 @@ index a78ad14..ac66fa8 100644
  		pWeapon->hZoomedAutoaim = SPR_Load(sz);
  		pWeapon->rcZoomedAutoaim = p->rc;
  	}
-@@ -156,7 +172,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -156,7 +182,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "weapon", iRes, i);
  	if (p)
  	{
@@ -129,7 +190,7 @@ index a78ad14..ac66fa8 100644
  		pWeapon->hInactive = SPR_Load(sz);
  		pWeapon->rcInactive = p->rc;
  
-@@ -168,7 +184,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -168,7 +194,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "weapon_s", iRes, i);
  	if (p)
  	{
@@ -138,7 +199,7 @@ index a78ad14..ac66fa8 100644
  		pWeapon->hActive = SPR_Load(sz);
  		pWeapon->rcActive = p->rc;
  	}
-@@ -178,7 +194,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -178,7 +204,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "ammo", iRes, i);
  	if (p)
  	{
@@ -147,7 +208,7 @@ index a78ad14..ac66fa8 100644
  		pWeapon->hAmmo = SPR_Load(sz);
  		pWeapon->rcAmmo = p->rc;
  
-@@ -190,7 +206,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
+@@ -190,7 +216,7 @@ void WeaponsResource :: LoadWeaponSprites( WEAPON *pWeapon )
  	p = GetSpriteList(pList, "ammo2", iRes, i);
  	if (p)
  	{
@@ -156,7 +217,7 @@ index a78ad14..ac66fa8 100644
  		pWeapon->hAmmo2 = SPR_Load(sz);
  		pWeapon->rcAmmo2 = p->rc;
  
-@@ -256,6 +272,7 @@ int CHudAmmo::Init(void)
+@@ -256,6 +282,7 @@ int CHudAmmo::Init(void)
  	HOOK_MESSAGE(gHUD.m_Ammo, AmmoX);
  	HOOK_MESSAGE(gHUD.m_Ammo, Crosshair);
  	HOOK_MESSAGE(gHUD.m_Ammo, Brass);
@@ -164,7 +225,7 @@ index a78ad14..ac66fa8 100644
  
  	HOOK_COMMAND(gHUD.m_Ammo, "slot1", Slot1);
  	HOOK_COMMAND(gHUD.m_Ammo, "slot2", Slot2);
-@@ -362,9 +379,10 @@ void CHudAmmo::Think(void)
+@@ -362,9 +389,10 @@ void CHudAmmo::Think(void)
  	if ( gHUD.m_fPlayerDead )
  		return;
  
@@ -176,7 +237,7 @@ index a78ad14..ac66fa8 100644
  
  		for (int i = 0; i < MAX_WEAPONS-1; i++ )
  		{
-@@ -372,7 +390,8 @@ void CHudAmmo::Think(void)
+@@ -372,7 +400,8 @@ void CHudAmmo::Think(void)
  
  			if ( p )
  			{
@@ -186,22 +247,29 @@ index a78ad14..ac66fa8 100644
  				{
  					gWR.PickupWeapon( p );
  				}
-@@ -659,6 +678,14 @@ int CHudAmmo::MsgFunc_WeaponList(const char *pszName, int iSize, void *pbuf )
+@@ -659,6 +688,21 @@ int CHudAmmo::MsgFunc_WeaponList(const char *pszName, int iSize, void *pbuf )
  
  }
  
++int CHudAmmo::CurrentWeaponId( void )
++{
++	return m_pWeapon ? m_pWeapon->iId : 0;
++}
++
 +// The Half-Life arsenal's weapons the player owns (bit 0 for id 32)
 +int CHudAmmo::MsgFunc_HLWeapons(const char *pszName, int iSize, void *pbuf)
 +{
 +	BufferReader reader( pszName, pbuf, iSize );
++	const int old = gHUD.m_iWeaponBitsHL;
 +	gHUD.m_iWeaponBitsHL = reader.ReadLong();
++	ArsUI_WeaponBits( old, gHUD.m_iWeaponBitsHL ); // (Half Strike: a Poke Ball thrown)
 +	return 1;
 +}
 +
  int CHudAmmo::MsgFunc_Crosshair(const char *pszName, int iSize, void *pbuf)
  {
  	BufferReader reader( pszName, pbuf, iSize );
-@@ -1122,8 +1149,14 @@ int CHudAmmo::Draw(float flTime)
+@@ -1122,8 +1166,14 @@ int CHudAmmo::Draw(float flTime)
  		// Do we have secondary ammo?
  		if ((pw->iAmmo2Type != 0) && (gWR.CountAmmo(pw->iAmmo2Type) > 0))
  		{
@@ -248,10 +316,10 @@ index e77a067..33b67c6 100644
  	void AddWeapon( WEAPON *wp ) 
 diff --git a/cl_dll/arsenal_ui.cpp b/cl_dll/arsenal_ui.cpp
 new file mode 100644
-index 0000000..e4360ac
+index 0000000..6997c25
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.cpp
-@@ -0,0 +1,1896 @@
+@@ -0,0 +1,2643 @@
 +/*
 +arsenal_ui.cpp - the Half-Life arsenal's own menus, drawn by the client
 +
@@ -282,6 +350,10 @@ index 0000000..e4360ac
 +#include "weapontype.h"
 +#include "arsenal_ui.h"
 +#include "studio_util.h"
++#include "parsemsg.h"
++#include "pm_defs.h"
++#include "pmtrace.h"
++#include "event_api.h"
 +#include <string.h>
 +#include <stdio.h>
 +#include <math.h>
@@ -308,8 +380,11 @@ index 0000000..e4360ac
 +enum
 +{
 +	HL_PYTHON = 32, HL_CROSSBOW, HL_RPG, HL_GAUSS, HL_EGON, HL_CROWBAR, HL_GLOCK, HL_MP5, HL_SHOTGUN, HL_HORNETGUN,
-+	HL_HANDGRENADE, HL_SATCHEL, HL_TRIPMINE, HL_SNARK
++	HL_HANDGRENADE, HL_SATCHEL, HL_TRIPMINE, HL_SNARK,
++	PK_PIKACHU, PK_CHARIZARD, PK_BLASTOISE // (Half Strike's Poke Balls)
 +};
++
++static bool IsBall( int id ) { return id >= PK_PIKACHU && id <= PK_BLASTOISE; }
 +
 +//
 +// Look
@@ -334,6 +409,7 @@ index 0000000..e4360ac
 +static const Col C_BAR     = { 255, 255, 255, 22 };
 +static const Col C_SHADE   = { 6, 7, 10, 150 };
 +static const Col C_WHITE   = { 255, 250, 238, 255 };
++static const Col C_EDGE    = { 255, 255, 255, 60 };
 +
 +static Col Alpha( Col c, float f ) { c.a = (unsigned char)( c.a * ( f < 0 ? 0 : f > 1 ? 1 : f )); return c; }
 +static Col Mix( Col a, Col b, float t ) { Col c = { (unsigned char)( a.r + ( b.r - a.r ) * t ), (unsigned char)( a.g + ( b.g - a.g ) * t ), (unsigned char)( a.b + ( b.b - a.b ) * t ), (unsigned char)( a.a + ( b.a - a.a ) * t ) }; return c; }
@@ -352,12 +428,17 @@ index 0000000..e4360ac
 +	int id, price, team, pose;
 +	float damage; int pellets; float cycle; int clip, reserve; float speed, armor, range;
 +	const char *note;
++	int health; // (a Pokemon's: its figures are a creature's, its preview its own model)
 +};
 +
 +#define GUN( cmd, name, kind, model, id, price, team, dmg, pel, cyc, clip, res, spd, arm, rng, note ) \
 +	{ cmd, name, kind, "models/" model ".mdl", id, price, team, POSE_FLAT, dmg, pel, cyc, clip, res, spd, arm, rng, note }
 +#define ITEM( cmd, name, kind, model, id, price, team, note ) \
 +	{ cmd, name, kind, model, id, price, team, POSE_FLAT, 0, 0, 0, 0, 0, 0, 0, 0, note }
++// (a Poke Ball: the Pokemon standing, its figures — damage a hit, `ticks` hits an attack, an attack every `cyc` seconds,
++// its range in units, its speed)
++#define POKE( cmd, name, kind, model, id, price, health, dmg, ticks, cyc, rng, spd, note ) \
++	{ cmd, name, kind, "models/pokemon/" model ".mdl", id, price, ANY, POSE_UPRIGHT, dmg, ticks, cyc, 0, 0, spd, 0, rng, note, health }
 +
 +static const BuyItem g_Items[] =
 +{
@@ -416,6 +497,10 @@ index 0000000..e4360ac
 +	GUN( "satchel", "Satchel Charge", "Explosive  -  2 at most", "w_satchel", HL_SATCHEL, 450, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Click: throw, then detonate. Right click: throw another" ),
 +	GUN( "tripmine", "Tripmine", "Explosive  -  2 at most", "p_tripmine", HL_TRIPMINE, 400, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Laser-triggered, on a wall" ),
 +	GUN( "snark", "Snarks", "Creatures  -  3 a box", "w_sqknest", HL_SNARK, 400, ANY, 10, 1, 0, 0, 6, 250, 1.0f, 0, "Hungry: they hunt the nearest enemy" ),
++	// Half Strike's Poke Balls: thrown, the Pokemon comes out and fights beside its player (the server's figures)
++	POKE( "pikachu", "Pikachu", "Pok\xC3\xA9 Ball  -  Electric", "pikachu", PK_PIKACHU, 1000, 90, 22, 1, 1.1f, 200, 300, "Thunderbolt: a bolt that slows its target" ),
++	POKE( "charizard", "Charizard", "Pok\xC3\xA9 Ball  -  Fire", "charizard", PK_CHARIZARD, 1400, 160, 7, 7, 3.0f, 200, 240, "Flamethrower: a cone of fire for a second, then burns" ),
++	POKE( "blastoise", "Blastoise", "Pok\xC3\xA9 Ball  -  Water", "blastoise", PK_BLASTOISE, 1300, 220, 34, 1, 1.9f, 200, 210, "Hydro Pump: two jets that throw enemies back" ),
 +};
 +
 +struct BuyTab
@@ -435,6 +520,7 @@ index 0000000..e4360ac
 +	{ "Equipment", "Equipment", 24, 8, VGUI_BUY_ITEM },
 +	{ "Half-Life guns", "Half-Life arsenal: guns", 32, 7, 0 },
 +	{ "Half-Life heavy", "Half-Life arsenal: heavy weapons", 39, 8, 0 },
++	{ "Pok\xC3\xA9mon", "Pok\xC3\xA9mon: one ball, one Pok\xC3\xA9mon out", 47, 3, 0 },
 +};
 +#define NUM_TABS ( (int)( sizeof( g_Tabs ) / sizeof( g_Tabs[0] )))
 +#define NUM_ITEMS ( (int)( sizeof( g_Items ) / sizeof( g_Items[0] )))
@@ -486,6 +572,7 @@ index 0000000..e4360ac
 +static int g_iTab, g_iHover = -1, g_iFocus = -1, g_iKeyLevel; // (keys: 0 the tabs, 1 the items)
 +static float g_flHoverSince;
 +static int g_iFlashItem = -1; static float g_flFlash; static bool g_bFlashBad;
++static char g_szNote[128]; static float g_flNote = -1; static bool g_bNoteBad; // (the server's centre message, shown in the buy panel)
 +static float g_cx, g_cy; // the mouse, in HUD units
 +static bool g_bClick, g_bMouseDown;
 +static float g_flDragYaw, g_flDragLastX; static bool g_bDragging;
@@ -499,7 +586,13 @@ index 0000000..e4360ac
 +
 +static int LocalTeam( void )
 +{
-+	return g_PlayerExtraInfo[gHUD.m_Scoreboard.m_iPlayerNum].teamnumber;
++	// (the scoreboard's index of the local player is only set once it has read the players' info: the local
++	// entity's own index until then)
++	int team = g_PlayerExtraInfo[gHUD.m_Scoreboard.m_iPlayerNum].teamnumber;
++	cl_entity_t *me = gEngfuncs.GetLocalPlayer();
++	if ( me && me->index > 0 && me->index <= MAX_PLAYERS && ( !team || !gHUD.m_Scoreboard.m_iPlayerNum ))
++		team = g_PlayerExtraInfo[me->index].teamnumber;
++	return team;
 +}
 +
 +static bool Owned( int id )
@@ -510,6 +603,187 @@ index 0000000..e4360ac
 +}
 +
 +extern bool g_bOwnsShield;
++
++//
++// Half Strike's Pokemon, from the server's PokeHP messages: entity index (short), health percent (0: gone), species,
++// team, owner (a player's index)
++//
++enum { SPECIES_PIKACHU, SPECIES_CHARIZARD, SPECIES_BLASTOISE, NUM_SPECIES };
++static const struct { const char *name; float height; } g_Species[NUM_SPECIES] =
++{
++	{ "Pikachu", 30 }, { "Charizard", 78 }, { "Blastoise", 60 }, // (their models' standing heights)
++};
++
++#define MAX_POKEMON 64
++
++struct Pokemon
++{
++	int ent; // (0: a free slot)
++	int species, team, owner;
++	float hp;              // (the server's, 0 to 1)
++	float shown, trail;    // (the bar, eased; the health just lost, fading behind it)
++	float lastHit, born, gone; // (gone: since its 0 came, the bar fading out; -1 alive)
++	float vis, nextTrace; bool clear; // (seen from the view: the last traces, eased)
++	float stale; // (a HUD reset's time, until the server sends it again: -1 confirmed)
++	float boneTop, boneTime; int boneSeq; // (its highest bone over its origin and its sequence, when last drawn: ArsUI_StudioBones)
++	float topGap; // (its model's top over its highest bone, standing: from its idle sequence's box; 0 not seen yet)
++	float barTop; // (the bar's height over its origin, eased: 0 not placed yet)
++};
++
++static Pokemon g_Pokemon[MAX_POKEMON];
++static char g_szPokemonLevel[64]; // (the level the table is for: another one, or none, empties it)
++static float g_flBallThrown = -1; // (the local player's ball thrown, not opened yet: its time, -1 none)
++static int g_iBallThrown, g_iBallHeld; // (its weapon id; the ball last seen in hand)
++static float g_flBallHeld = -1;
++
++// The table kept across the client's VidInits (a window resize is one): emptied when the level changes or the
++// connection ends; after a HUD reset (each spawn, each connection) the server sends its live Pokemon again, so those
++// it does not confirm within a second are dropped (a reconnection to the same map, one missed while away)
++static void PokemonPurge( void )
++{
++	const float now = gEngfuncs.GetClientTime();
++	const char *level = gEngfuncs.pfnGetLevelName();
++	if ( !level )
++		level = "";
++	if ( strncmp( level, g_szPokemonLevel, sizeof( g_szPokemonLevel ) - 1 ))
++	{
++		memset( g_Pokemon, 0, sizeof( g_Pokemon ));
++		snprintf( g_szPokemonLevel, sizeof( g_szPokemonLevel ), "%s", level );
++		g_flBallThrown = g_flBallHeld = -1;
++	}
++	for ( int i = 0; i < MAX_POKEMON; i++ )
++	{
++		Pokemon &p = g_Pokemon[i];
++		if ( p.ent && p.stale >= 0 && ( now - p.stale > 1.0f || now < p.stale ))
++			p.ent = 0;
++	}
++	if ( g_flBallThrown >= 0 && ( now - g_flBallThrown > 3.0f || now < g_flBallThrown ))
++		g_flBallThrown = -1; // (it opened, or came back: what the server says rules again)
++}
++
++static Pokemon *PokemonSlot( int ent, bool create )
++{
++	Pokemon *free = NULL;
++	for ( int i = 0; i < MAX_POKEMON; i++ )
++	{
++		if ( g_Pokemon[i].ent == ent )
++			return &g_Pokemon[i];
++		if ( !g_Pokemon[i].ent && !free )
++			free = &g_Pokemon[i];
++	}
++	if ( !create )
++		return NULL;
++	if ( !free ) // (full: the one fading out the longest)
++	{
++		for ( int i = 0; i < MAX_POKEMON; i++ )
++			if ( g_Pokemon[i].gone >= 0 && ( !free || g_Pokemon[i].gone < free->gone ))
++				free = &g_Pokemon[i];
++		if ( !free )
++			return NULL;
++	}
++	memset( free, 0, sizeof( *free ));
++	free->ent = ent;
++	free->gone = free->stale = -1;
++	return free;
++}
++
++static int PokeHP_Msg( const char *pszName, int iSize, void *pbuf )
++{
++	BufferReader reader( pszName, pbuf, iSize );
++	int lo = reader.ReadByte(), hi = reader.ReadByte();
++	int ent = lo | ( hi << 8 );
++	int hp = reader.ReadByte(), species = reader.ReadByte(), team = reader.ReadByte(), owner = reader.ReadByte();
++	if ( ent <= 0 )
++		return 1;
++	PokemonPurge();
++	float now = gEngfuncs.GetClientTime();
++	Pokemon *p = PokemonSlot( ent, hp > 0 );
++	if ( !p )
++		return 1;
++	if ( hp <= 0 )
++	{
++		if ( p->gone < 0 )
++		{
++			p->hp = 0;
++			p->gone = now;
++			p->lastHit = now;
++		}
++		return 1;
++	}
++	bool fresh = p->gone >= 0 || !p->born || p->born > now || p->species != min( species, NUM_SPECIES - 1 ) ||
++		p->owner != owner;
++	if ( fresh ) // (a new one, maybe in a slot just freed by the server; or the clock went back)
++	{
++		memset( p, 0, sizeof( *p ));
++		p->ent = ent;
++		p->gone = p->stale = -1;
++		p->born = now;
++		p->shown = p->trail = min( hp, 100 ) / 100.0f;
++		p->nextTrace = 0;
++	}
++	float v = min( hp, 100 ) / 100.0f;
++	if ( v < p->hp )
++		p->lastHit = now;
++	p->hp = v;
++	if ( p->trail < v )
++		p->trail = v;
++	p->species = min( species, NUM_SPECIES - 1 );
++	p->team = team;
++	p->owner = owner;
++	p->stale = -1;
++	if ( gEngfuncs.GetLocalPlayer() && owner == gEngfuncs.GetLocalPlayer()->index )
++		g_flBallThrown = -1; // (the ball thrown has opened: this is its Pokemon)
++	return 1;
++}
++
++static int LocalIndex( void )
++{
++	cl_entity_t *me = gEngfuncs.GetLocalPlayer();
++	return me ? me->index : 0;
++}
++
++// the local player's Pokemon out (its species), -1 none; a ball thrown and not opened yet counts (the server's rule:
++// one Pokemon out, its ball in flight included)
++static int PokemonOut( void )
++{
++	PokemonPurge();
++	int me = LocalIndex();
++	for ( int i = 0; i < MAX_POKEMON; i++ )
++		if ( g_Pokemon[i].ent && g_Pokemon[i].gone < 0 && g_Pokemon[i].stale < 0 && g_Pokemon[i].owner == me )
++			return g_Pokemon[i].species;
++	if ( g_flBallThrown >= 0 )
++		return g_iBallThrown - PK_PIKACHU;
++	return -1;
++}
++
++// The local player's weapons changed (HLWeapons, bit 0 for id 32): a ball gone from the hand that held it was thrown
++void ArsUI_WeaponBits( int oldBits, int newBits )
++{
++	const float now = Now();
++	int balls = 0;
++	for ( int id = PK_PIKACHU; id <= PK_BLASTOISE; id++ )
++	{
++		const int bit = 1 << ( id - 32 );
++		balls |= newBits & bit;
++		const bool held = gHUD.m_Ammo.CurrentWeaponId() == id ||
++			( g_iBallHeld == id && g_flBallHeld >= 0 && now - g_flBallHeld < 1.0f && now >= g_flBallHeld );
++		if (( oldBits & bit ) && !( newBits & bit ) && held && gHUD.m_Health.m_iHealth > 0 )
++		{
++			g_flBallThrown = now;
++			g_iBallThrown = id;
++		}
++	}
++	if ( balls )
++		g_flBallThrown = -1; // (a ball carried again: it came back, no room to come out)
++}
++
++static bool OwnsBall( void )
++{
++	for ( int id = PK_PIKACHU; id <= PK_BLASTOISE; id++ )
++		if ( Owned( id ))
++			return true;
++	return false;
++}
 +
 +// The price the server asks: the armor only for what is missing
 +static int Price( const BuyItem &it )
@@ -545,6 +819,9 @@ index 0000000..e4360ac
 +		return true;
 +	if ( !strcmp( it.cmd, "shield" ) && ( Owned( HL_GLOCK ) || Owned( HL_PYTHON ) || HLLook()))
 +		return true;
++	// (one Poke Ball carried, one Pokemon out)
++	if ( IsBall( it.id ) && ( OwnsBall() || PokemonOut() >= 0 ))
++		return true;
 +	return false;
 +}
 +
@@ -554,6 +831,43 @@ index 0000000..e4360ac
 +	const int armor = gHUD.m_Battery.Armor();
 +	const bool helmet = gHUD.m_Battery.Helmet() && armor > 0;
 +	return ( !strcmp( it.cmd, "vest" ) && armor >= 100 ) || ( !strcmp( it.cmd, "vesthelm" ) && armor >= 100 && helmet );
++}
++
++// why the server refuses an item, or would (the row flashed red)
++static const char *RefusalText( const BuyItem &it )
++{
++	if ( Full( it ))
++		return "Already have it";
++	if ( IsBall( it.id ) && PokemonOut() >= 0 )
++		return "Your Pok\xC3\xA9mon is already out";
++	if ( IsBall( it.id ) && OwnsBall())
++		return "One Pok\xC3\xA9 Ball at a time";
++	if ( !Refused( it ))
++		return "Not enough money";
++	return strcmp( it.cmd, "shield" ) ? "Not with the shield" : "Not with a Half-Life pistol or look";
++}
++
++// a row's short tag where "owned" goes, for a refusal that is not about the money (null: none)
++static const char *RefusalTag( const BuyItem &it )
++{
++	if ( IsBall( it.id ))
++	{
++		const int out = PokemonOut();
++		if ( out == it.id - PK_PIKACHU )
++			return "out";
++		if ( Owned( it.id ))
++			return "owned";
++		if ( out >= 0 )
++			return "Pok\xC3\xA9mon out";
++		if ( OwnsBall())
++			return "one ball";
++		return 0;
++	}
++	if ( Owned( it.id ) || Full( it ))
++		return "owned";
++	if ( Refused( it ))
++		return !strcmp( it.cmd, "shield" ) ? "HL pistol" : "shield";
++	return 0;
 +}
 +
 +static bool ItemForTeam( const BuyItem &it )
@@ -601,6 +915,15 @@ index 0000000..e4360ac
 +	q.x[0] = q.x[1] = SC( x ); q.x[2] = q.x[3] = SC( x + w );
 +	q.y[0] = q.y[3] = SC( y ); q.y[1] = q.y[2] = SC( y + h );
 +	q.c[0] = c00; q.c[1] = c01; q.c[2] = c11; q.c[3] = c10;
++}
++
++// a quadrilateral of any shape (HUD units), one colour
++static void QuadPts( const float *xs, const float *ys, Col c )
++{
++	if ( g_iQuads >= MAX_QUADS || !c.a )
++		return;
++	Quad &q = g_Quads[g_iQuads++];
++	for ( int k = 0; k < 4; k++ ) { q.x[k] = SC( xs[k] ); q.y[k] = SC( ys[k] ); q.c[k] = c; }
 +}
 +
 +static void Color( Col c ) { gEngfuncs.pTriAPI->Color4f( c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f ); }
@@ -686,7 +1009,46 @@ index 0000000..e4360ac
 +
 +static int LineHeight( float scale = 1 ) { return (int)( gHUD.GetCharHeight() * scale ); }
 +
-+static int TextWidth( const char *s, float scale = 1 ) { return (int)( DrawUtils::HudStringLen( s ) * scale ); }
++// The HUD font is ASCII: an e acute (UTF-8) is drawn as an e with its accent drawn over it (Pokemon). Returns the
++// accents' places in out.
++static int Latin( const char *s, char *out, int size, int *accents, int maxAccents )
++{
++	int n = 0, a = 0;
++	while ( *s && n < size - 1 )
++	{
++		const unsigned char c = (unsigned char)s[0];
++		if ( c == 0xC3 && (unsigned char)s[1] == 0xA9 )
++		{
++			if ( a < maxAccents )
++				accents[a++] = n;
++			out[n++] = 'e';
++			s += 2;
++			continue;
++		}
++		// (any other UTF-8 sequence passed on whole, for the engine's own decoding — or not at all when it does not fit)
++		int len = 1;
++		if ( c >= 0xC0 && c < 0xE0 ) len = 2;
++		else if ( c >= 0xE0 && c < 0xF0 ) len = 3;
++		else if ( c >= 0xF0 && c < 0xF8 ) len = 4;
++		int k = 1;
++		while ( k < len && ( (unsigned char)s[k] & 0xC0 ) == 0x80 )
++			k++;
++		if ( n + k > size - 1 )
++			break;
++		memcpy( out + n, s, k );
++		n += k;
++		s += k;
++	}
++	out[n] = 0;
++	return a;
++}
++
++static int TextWidth( const char *s, float scale = 1 )
++{
++	char buf[128]; int accents[4];
++	Latin( s, buf, sizeof( buf ), accents, 4 );
++	return (int)( DrawUtils::HudStringLen( buf ) * scale );
++}
 +
 +static bool Scaled( float scale ) { return scale != 1 && g_iMobileAPIVersion; }
 +
@@ -694,6 +1056,7 @@ index 0000000..e4360ac
 +{
 +	if ( g_iTexts >= MAX_TEXTS || !c.a || !s[0] )
 +		return;
++	const Col accentColour = c;
 +	if ( c.a < 255 )
 +	{
 +		float f = c.a / 255.0f;
@@ -701,8 +1064,27 @@ index 0000000..e4360ac
 +	}
 +	QueuedText &t = g_Texts[g_iTexts++];
 +	t.x = x; t.y = y; t.maxX = maxX; t.scale = Scaled( scale ) ? scale : 0.0f; t.c = c;
-+	strncpy( t.s, s, sizeof( t.s ) - 1 );
-+	t.s[sizeof( t.s ) - 1] = 0;
++	int accents[4];
++	const int na = Latin( s, t.s, sizeof( t.s ), accents, 4 );
++	// (the accents: a short stroke rising to the right, centred over their e a pixel above its x-height, in the
++	// text's colour. The font's x-height is about 0.35 of its line, from 0.30 of it down; the stroke is 60 % of that)
++	const float k = t.scale ? t.scale : 1.0f, lh = gHUD.GetCharHeight() * k, cw = gHUD.GetCharWidth( 'e' ) * k;
++	for ( int i = 0; i < na; i++ )
++	{
++		char prefix[96];
++		memcpy( prefix, t.s, accents[i] );
++		prefix[accents[i]] = 0;
++		const float ex = x + DrawUtils::HudStringLen( prefix ) * k;
++		if ( ex + cw > maxX )
++			break;
++		const float xh = lh * 0.35f, len = max( 2.5f, xh * 0.6f );
++		const float tw = max( 1.2f, lh * 0.075f ); // (the stroke's width, across)
++		const float dy = len * 0.86f, dx = len * 0.5f; // (rising at 60 degrees)
++		const float cx = ex + cw * 0.5f, yb = y + lh * 0.30f - 2, yt = yb - dy; // (a pixel clear of the e)
++		const float x0 = cx - dx / 2 - tw / 2, x1 = cx + dx / 2 - tw / 2;
++		const float xs[4] = { x0, x0 + tw, x1 + tw, x1 }, ys[4] = { yb, yb, yt, yt };
++		QuadPts( xs, ys, accentColour );
++	}
 +}
 +
 +static void Text( float x, float y, const char *s, Col c, float scale = 1 ) { TextClip( x, y, 100000, s, c, scale ); }
@@ -1599,6 +1981,31 @@ index 0000000..e4360ac
 +	int lh = LineHeight();
 +	float row = lh * 1.55f;
 +	char text[48];
++	if ( it.health > 0 )
++	{
++		// (a Pokemon: its health, its attack's damage and pace, its reach, its speed)
++		snprintf( text, sizeof( text ), "%d", it.health );
++		StatRow( x, y, w, "Health", it.health / 240.0f, text, C_GREEN );
++		y += row;
++		if ( it.pellets > 1 )
++			snprintf( text, sizeof( text ), "%d x %d", (int)it.damage, it.pellets );
++		else
++			snprintf( text, sizeof( text ), "%d", (int)it.damage );
++		StatRow( x, y, w, "Damage", it.damage * it.pellets / 60.0f, text, C_RED );
++		y += row;
++		snprintf( text, sizeof( text ), "every %.1f s", it.cycle );
++		StatRow( x, y, w, "Attack", 1.0f / it.cycle, text, C_GOLD );
++		y += row;
++		snprintf( text, sizeof( text ), "%d m", (int)( it.range * 0.0254f + 0.5f )); // (inches)
++		StatRow( x, y, w, "Range", it.range / 800.0f, text, C_CTCOL );
++		y += row;
++		snprintf( text, sizeof( text ), "%d", (int)it.speed );
++		StatRow( x, y, w, "Speed", ( it.speed - 180 ) / 140.0f, text, C_TEXT );
++		y += row;
++		TextFit( x, y + 2, it.note, w, C_TEXT );
++		TextFit( x, y + 2 + lh * 1.35f, "Follows you; charges whoever you shoot or who hurts you", w, C_FAINT );
++		return;
++	}
 +	if ( !it.damage )
 +	{
 +		Text( x, y, it.note, C_TEXT );
@@ -1685,7 +2092,7 @@ index 0000000..e4360ac
 +	TextRight( x0 + W - 18, hy, sz, Alpha( C_GREEN, fade ), 1.7f );
 +
 +	// tabs
-+	float ty = bodyY + 8, tabH = lh * 2.25f;
++	float ty = bodyY + 8, tabH = min( lh * 2.25f, ( bodyH - 16 ) / NUM_TABS - 2 ); // (nine: fitted to a short screen)
 +	for ( int t = 0; t < NUM_TABS; t++ )
 +	{
 +		int items[16], n = TabItems( t, items );
@@ -1733,11 +2140,13 @@ index 0000000..e4360ac
 +		snprintf( key, sizeof( key ), "%d", i + 1 );
 +		float cy = ly + ( rowH - lh ) / 2;
 +		KeyBadge( lx + 16, cy, key, ( hover || focus ) && g_iKeyLevel == 1 );
-+		Text( lx + 42, cy, it.name, Alpha( afford ? (( hover || focus ) ? C_GOLDT : C_TEXT ) : C_FAINT, fade ));
++		// (red only for the money; refused for another reason: dimmed, with why in a word)
++		Text( lx + 42, cy, it.name, Alpha( afford ? (( hover || focus ) ? C_GOLDT : C_TEXT ) : refused ? C_DIM : C_FAINT, fade ));
 +		snprintf( sz, sizeof( sz ), "$%d", Price( it ));
-+		TextRight( lx + listW - 18, cy, sz, Alpha( afford ? C_GREEN : C_RED, fade ));
-+		if ( owned )
-+			TextRight( lx + listW - 26 - TextWidth( sz ), cy, "owned", Alpha( C_DIM, fade ));
++		TextRight( lx + listW - 18, cy, sz, Alpha( afford ? C_GREEN : refused ? C_DIM : C_RED, fade ));
++		const char *tag = ( refused || owned ) ? RefusalTag( it ) : 0;
++		if ( tag )
++			TextRight( lx + listW - 26 - TextWidth( sz ), cy, tag, Alpha( !strcmp( tag, "out" ) ? C_GOLD : C_DIM, fade ));
 +		if ( hover && g_bClick )
 +			Buy( items[i] );
 +		ly += rowH + 3;
@@ -1763,8 +2172,8 @@ index 0000000..e4360ac
 +		float ix = dx + 22, iy = py + ph + 12, iw = dw - 44;
 +		Text( ix, iy, it.name, Alpha( C_GOLDT, fade ), 1.45f );
 +		snprintf( sz, sizeof( sz ), "$%d", Price( it ));
-+		bool afford = !Refused( it ) && !Full( it ) && Price( it ) <= money;
-+		TextRight( ix + iw, iy, sz, Alpha( afford ? C_GREEN : C_RED, fade ), 1.45f );
++		bool refused = Refused( it ) || Full( it ), afford = !refused && Price( it ) <= money;
++		TextRight( ix + iw, iy, sz, Alpha( afford ? C_GREEN : refused ? C_DIM : C_RED, fade ), 1.45f );
 +		iy += LineHeight( Scaled( 1.45f ) ? 1.45f : 1 ) + 4;
 +		char kind[96];
 +		snprintf( kind, sizeof( kind ), "%s%s", it.kind, it.team == ONLY_T ? "  -  Terrorists only" : it.team == ONLY_CT ? "  -  Counter-Terrorists only" : "" );
@@ -1784,11 +2193,25 @@ index 0000000..e4360ac
 +	if ( Button( x0 + W - 14 - 130, fy, 130, bh, "B", "Close", true, C_GOLD ))
 +		Close();
 +
-+	// (the keys, or why a purchase failed)
-+	if ( g_iFlashItem >= 0 && g_bFlashBad && Now() - g_flFlash < 1.5f )
-+		TextRight( x0 + W - 14 - 130 - 16, fy + ( bh - lh ) / 2, Full( g_Items[g_iFlashItem] ) ? "Already have it" : !Refused( g_Items[g_iFlashItem] ) ? "Not enough money" : strcmp( g_Items[g_iFlashItem].cmd, "shield" ) ? "Not with the shield" : "Not with a Half-Life pistol or look", C_RED );
++	// (the keys, or why a purchase failed: the server's word when it sent one, else what it would say; a centre
++	// message of the server that came while the panel is open)
++	const float noteRight = x0 + W - 14 - 130 - 16, noteLeft = x0 + 14 + 200 + 200 + 14;
++	if ( g_flNote >= 0 && Now() >= g_flNote && Now() - g_flNote < 2.5f && g_szNote[0] )
++	{
++		const float w = min( (float)TextWidth( g_szNote ), noteRight - noteLeft );
++		TextFit( noteRight - w, fy + ( bh - lh ) / 2, g_szNote, noteRight - noteLeft, g_bNoteBad ? C_RED : C_GOLDT );
++	}
++	else if ( g_iFlashItem >= 0 && g_bFlashBad && Now() - g_flFlash < 1.5f )
++		TextRight( noteRight, fy + ( bh - lh ) / 2, RefusalText( g_Items[g_iFlashItem] ), C_RED );
 +	else
-+		TextRight( x0 + W - 14 - 130 - 16, fy + ( bh - lh ) / 2, g_iKeyLevel ? "1-9 buy    0 categories    wheel, arrows: category" : "1-8 category    wheel, arrows: category", Alpha( C_FAINT, fade ));
++	{
++		char hint[80];
++		if ( g_iKeyLevel )
++			snprintf( hint, sizeof( hint ), "1-%d buy    0 categories    wheel, arrows: category", min( max( n, 1 ), 9 ));
++		else
++			snprintf( hint, sizeof( hint ), "1-%d category    wheel, arrows: category", NUM_TABS );
++		TextRight( x0 + W - 14 - 130 - 16, fy + ( bh - lh ) / 2, hint, Alpha( C_FAINT, fade ));
++	}
 +
 +	// dragging the model turns it
 +	if ( g_bMouseDown && ( g_bDragging || Hover( px, py, pw, ph )))
@@ -1821,6 +2244,7 @@ index 0000000..e4360ac
 +	gEngfuncs.pfnRegisterVariable( "_ars_ui", "1", FCVAR_USERINFO );
 +	gEngfuncs.pfnAddCommand( "+ars_click", ClickDown );
 +	gEngfuncs.pfnAddCommand( "-ars_click", ClickUp );
++	HOOK_MESSAGE_FUNC( "PokeHP", PokeHP_Msg );
 +}
 +
 +void ArsUI_VidInit( void )
@@ -1829,6 +2253,7 @@ index 0000000..e4360ac
 +	memset( g_Previews, 0, sizeof( g_Previews ));
 +	g_iBackdrops = g_iBackdropsNext = 0;
 +	g_bView = false;
++	// (the Pokemon kept: a VidInit may be a mere resize — PokemonPurge empties them for another level)
 +}
 +
 +bool ArsUI_Active( void ) { return g_iPanel != P_NONE; }
@@ -2018,6 +2443,42 @@ index 0000000..e4360ac
 +void ArsUI_Spawned( void )
 +{
 +	g_flSpawned = Now();
++	// (the server sends its live Pokemon again right after each HUD reset: those it does not are gone)
++	for ( int i = 0; i < MAX_POKEMON; i++ )
++		if ( g_Pokemon[i].ent && g_Pokemon[i].gone < 0 )
++			g_Pokemon[i].stale = g_flSpawned;
++	g_flBallThrown = -1;
++}
++
++// The server's centre messages while the buy panel is open (a purchase refused: "You have insufficient funds!"...):
++// in the panel's footer, the item just bought flashed red, instead of over the panel
++bool ArsUI_CenterPrint( const char *text )
++{
++	if ( g_iPanel != P_BUY || !text )
++		return false;
++	// (on one line, trimmed)
++	int n = 0;
++	for ( const char *c = text; *c && n < (int)sizeof( g_szNote ) - 1; c++ )
++	{
++		const char ch = ( *c == '\n' || *c == '\r' || *c == '\t' ) ? ' ' : *c;
++		if ( ch == ' ' && ( !n || g_szNote[n - 1] == ' ' ))
++			continue;
++		g_szNote[n++] = ch;
++	}
++	while ( n > 0 && g_szNote[n - 1] == ' ' )
++		n--;
++	g_szNote[n] = 0;
++	if ( !n )
++		return true;
++	const float now = Now();
++	g_flNote = now;
++	g_bNoteBad = g_iFlashItem >= 0 && now >= g_flFlash && now - g_flFlash < 1.5f; // (the answer to a purchase)
++	if ( g_bNoteBad && !g_bFlashBad ) // (refused for a reason the panel did not see: flashed red after all)
++	{
++		g_bFlashBad = true;
++		g_flFlash = now;
++	}
++	return true;
 +}
 +
 +void ArsUI_CloseBuy( void )
@@ -2148,12 +2609,366 @@ index 0000000..e4360ac
 +	FlushTexts();
 +	return true;
 +}
++
++//
++// Half Strike's Pokemon: a health bar over each one in sight
++//
++#define POKE_BAR_RANGE 1500.0f // (further: hidden)
++#define POKE_BAR_FADE 400.0f   // (fading out over the last of it)
++#define POKE_MIN_AMBIENT 32     // (a Pokemon's light in the darkest shade: its unlit side...)
++#define POKE_MIN_SHADE 64       // (...and its lit side over it)
++#define POKE_BAR_LIFT 3.0f     // (over its model's top, in units: the same for all)
++#define POKE_BAR_GAP 6.0f      // (and that far on the screen)
++
++// whether the point is seen from the view: the world and the brush entities in between (not the studio models — the
++// Pokemon itself, players —, not glass)
++static bool SeenFromView( const float *point )
++{
++	pmtrace_t tr;
++	gEngfuncs.pEventAPI->EV_PlayerTrace( g_vViewOrg, (float *)point, PM_STUDIO_IGNORE | PM_GLASS_IGNORE, -1, &tr );
++	return tr.fraction >= 0.99f || ( !tr.startsolid && fabs( tr.endpos[0] - point[0] ) + fabs( tr.endpos[1] - point[1] ) + fabs( tr.endpos[2] - point[2] ) < 4 );
++}
++
++static float Approach( float v, float target, float speed, float dt )
++{
++	if ( v < target ) return min( target, v + speed * dt );
++	return max( target, v - speed * dt );
++}
++
++struct BarDraw
++{
++	Pokemon *p;
++	float sx, sy, dist, alpha, size; // (sy: the bar's bottom)
++	char owner[48];                  // (its player's name, cut to fit)
++	float wName, wOwner, total;      // (the label's widths)
++	float bw, bh, halfW, above;      // (the bar's size; its box around sx and above sy, the label included)
++};
++
++#define POKE_BAR_SMALL 0.78f // (the owner's name)
++#define POKE_BAR_EDGE 4.0f   // (kept that far inside the screen's edges)
++
++// the bar's and its label's sizes
++static void BarLayout( BarDraw &d )
++{
++	const Pokemon &p = *d.p;
++	const float k = d.size;
++	d.owner[0] = 0;
++	if ( p.owner > 0 && p.owner <= MAX_PLAYERS && g_PlayerInfoList[p.owner].name )
++	{
++		strncpy( d.owner, g_PlayerInfoList[p.owner].name, sizeof( d.owner ) - 1 );
++		d.owner[sizeof( d.owner ) - 1] = 0;
++		for ( int len = strlen( d.owner ); len > 3 && TextW( d.owner, POKE_BAR_SMALL ) > 110; len-- ) // (a long name cut)
++			strcpy( d.owner + len - 3, ".." );
++	}
++	const float gap = 5, dot = 3;
++	d.wName = TextWidth( g_Species[p.species].name );
++	d.wOwner = d.owner[0] ? TextW( d.owner, POKE_BAR_SMALL ) : 0;
++	d.total = d.wName + ( d.wOwner > 0 ? gap * 2 + dot + d.wOwner : 0 );
++	d.bw = 72 * k;
++	d.bh = max( 4.0f, 7 * k );
++	d.halfW = max( d.bw / 2 + 2, d.total / 2 );
++	d.above = d.bh + 3 + LineHeight();
++}
++
++// the radar's box on the screen (HUD units), when it is drawn: false otherwise
++static bool RadarBox( float *w, float *h )
++{
++	if ( !( gHUD.m_Radar.m_iFlags & HUD_DRAW ) || ( gHUD.m_iHideHUDDisplay & HIDEHUD_HEALTH ) ||
++		gEngfuncs.IsSpectateOnly() || !( gHUD.m_iWeaponBits & ( 1 << WEAPON_SUIT )) || gHUD.m_fPlayerDead )
++		return false;
++	const wrect_t &r = gHUD.m_Radar.m_hRadarOpaque.rect;
++	*w = r.right - r.left;
++	*h = r.bottom - r.top;
++	return *w > 0 && *h > 0;
++}
++
++static void DrawPokemonBar( const BarDraw &d, float now )
++{
++	const Pokemon &p = *d.p;
++	const float k = d.size, a = d.alpha;
++	const int me = LocalIndex(), myTeam = LocalTeam();
++	const bool own = p.owner == me && me > 0;
++	Col c;
++	if ( own || ( p.team && p.team == myTeam && ( myTeam == TEAM_TERRORIST || myTeam == TEAM_CT )))
++		c = C_GREEN; // (one's own, whatever the team known: a teammate's)
++	else if ( g_iUser1 || myTeam == TEAM_SPECTATOR ) // (a spectator: the sides' colours)
++		c = p.team == TEAM_TERRORIST ? C_TCOL : p.team == TEAM_CT ? C_CTCOL : C_TEXT;
++	else if ( myTeam == TEAM_TERRORIST || myTeam == TEAM_CT )
++		c = C_RED;
++	else
++		c = C_TEXT; // (one's team not known yet: neither friend nor foe)
++
++	const float bw = d.bw, bh = d.bh;
++	const float x = (int)( d.sx - bw / 2 ), y = (int)( d.sy - bh );
++	// (the backing and its shadow)
++	Fill( x - 2, y - 2, bw + 4, bh + 4, Alpha( C_SHADE, a * 0.85f ));
++	Fill( x, y, bw, bh, Alpha( C_PANEL2, a ));
++	// (the health just lost, then the health)
++	if ( p.trail > p.shown )
++		Fill( x + bw * p.shown, y, bw * ( p.trail - p.shown ), bh, Alpha( Mix( c, C_WHITE, 0.6f ), a * 0.75f ));
++	if ( p.shown > 0 )
++	{
++		Col fill = c;
++		if ( p.hp > 0 && p.hp < 0.3f ) // (low: a slow pulse)
++			fill = Mix( c, C_WHITE, 0.22f * ( 0.5f + 0.5f * sinf( now * 7.0f )));
++		Grad( x, y, bw * p.shown, bh, Alpha( Mix( fill, C_WHITE, 0.28f ), a ), Alpha( Mix( fill, C_SHADE, 0.18f ), a ));
++		Fill( x, y, bw * p.shown, max( 1.0f, bh * 0.18f ), Alpha( C_WHITE, a * 0.22f )); // (its gloss)
++	}
++	// (quarters)
++	for ( int q = 1; q < 4; q++ )
++		Fill( x + (int)( bw * q / 4 ), y, 1, bh, Alpha( C_SHADE, a * 0.55f ));
++	// (its frame: gold around one's own)
++	if ( own )
++		Frame( x - 2, y - 2, bw + 4, bh + 4, Alpha( C_GOLD, a ), max( 1.0f, 1.5f * k ));
++	else
++		Frame( x - 1, y - 1, bw + 2, bh + 2, Alpha( C_EDGE, a ));
++
++	// (its name, and its player's, small)
++	const int lh = LineHeight(), lhs = Scaled( POKE_BAR_SMALL ) ? LineHeight( POKE_BAR_SMALL ) : lh;
++	const float gap = 5, dot = 3;
++	float tx = (int)( d.sx - d.total / 2 ), ty = y - 3 - lh;
++	Text( tx, ty, g_Species[p.species].name, Alpha( own ? C_GOLDT : C_TEXT, a ));
++	if ( d.wOwner > 0 )
++	{
++		float dx = tx + d.wName + gap;
++		Fill( dx, ty + lh * 0.55f - dot / 2, dot, dot, Alpha( C_DIM, a ));
++		Text( dx + dot + gap, ty + lh - lhs, d.owner, Alpha( C_DIM, a ), POKE_BAR_SMALL );
++	}
++}
++
++// the Pokemon's highest bone, each time its model is set up (its bar follows it down when it crouches, lies...)
++void ArsUI_StudioBones( cl_entity_t *ent, float bones[][3][4], int count )
++{
++	if ( !ent || ent->index <= 0 || count <= 0 || !ent->model || !strstr( ent->model->name, "models/pokemon/" ))
++		return;
++	Pokemon *p = PokemonSlot( ent->index, false );
++	if ( !p )
++		return;
++	float top = bones[0][2][3];
++	for ( int i = 1; i < count; i++ )
++		top = max( top, bones[i][2][3] );
++	p->boneTop = top - ent->origin[2];
++	p->boneSeq = ent->curstate.sequence;
++	p->boneTime = Now();
++}
++
++// a Pokemon's light from the map, before it is set up: kept over a floor so that it reads in the shade (the map's light
++// there can be next to nothing — ambient 3, shade 25 under dust2's arches —, where its colours went black and only its
++// bar showed); full light, dynamic lights untouched
++void ArsUI_StudioLighting( cl_entity_t *ent, alight_t *lighting )
++{
++	if ( !ent || !ent->model || !lighting || !strstr( ent->model->name, "models/pokemon/" ) || strstr( ent->model->name, "pokeball" ))
++		return;
++	lighting->ambientlight = max( lighting->ambientlight, POKE_MIN_AMBIENT );
++	lighting->shadelight = max( lighting->shadelight, POKE_MIN_SHADE );
++}
++
++// the bar's height over the Pokemon's origin: its model's standing height (its idle sequence's box), lower while its
++// bones are (crouched coming out, lying dead), eased
++static float BarHeight( Pokemon &p, cl_entity_t *e, float now, float dt )
++{
++	float stand = g_Species[p.species].height;
++	studiohdr_t *hdr = (studiohdr_t *)IEngineStudio.Mod_Extradata( e->model );
++	if ( hdr && hdr->numseq > 0 )
++	{
++		const mstudioseqdesc_t *seq = (const mstudioseqdesc_t *)( (byte *)hdr + hdr->seqindex );
++		if ( seq[0].bbmax[2] > 4 && seq[0].bbmax[2] < 400 )
++			stand = seq[0].bbmax[2];
++	}
++	float target = stand;
++	if ( p.boneTime > 0 && now >= p.boneTime && now - p.boneTime < 0.5f )
++	{
++		// (standing — idle, sequence 0 —, its box's top over its highest bone: an ear's tip over the ear's bone...;
++		// the same gap kept over that bone when it crouches, lies)
++		if ( p.boneSeq == 0 && p.boneTop > 0 && p.boneTop < stand )
++			p.topGap = min( stand * 0.5f, max( 0.5f, stand - p.boneTop ));
++		const float gap = p.topGap > 0 ? p.topGap : stand * 0.12f;
++		target = min( stand, max( stand * 0.25f, p.boneTop + gap ));
++	}
++	if ( p.barTop <= 0 )
++		p.barTop = target;
++	else
++		p.barTop = Approach( p.barTop, target, stand * 3.0f, dt );
++	return p.barTop;
++}
++
++void ArsUI_DrawPokemonBars( float flTime )
++{
++	static float s_flLast, s_flInfo;
++	const float now = Now(), dt = Clamp01( now - s_flLast ) ; s_flLast = now;
++	PokemonPurge();
++	{
++		const int id = gHUD.m_Ammo.CurrentWeaponId(); // (the ball in hand, for ArsUI_WeaponBits)
++		if ( IsBall( id ))
++		{
++			g_iBallHeld = id;
++			g_flBallHeld = now;
++		}
++	}
++	if ( !g_bView || g_iPanel != P_NONE )
++		return;
++	cl_entity_t *local = gEngfuncs.GetLocalPlayer();
++	if ( !local )
++		return;
++
++	// (the players' names, now and then)
++	if ( now - s_flInfo > 0.5f || now < s_flInfo )
++	{
++		for ( int i = 0; i < MAX_POKEMON; i++ )
++			if ( g_Pokemon[i].ent )
++			{
++				gHUD.m_Scoreboard.GetAllPlayersInfo();
++				s_flInfo = now;
++				break;
++			}
++	}
++
++	float radarW = 0, radarH = 0;
++	const bool radar = RadarBox( &radarW, &radarH );
++	const float lh = LineHeight();
++
++	BarDraw draws[MAX_POKEMON];
++	int n = 0;
++	bool traced = false;
++	for ( int i = 0; i < MAX_POKEMON; i++ )
++	{
++		Pokemon &p = g_Pokemon[i];
++		if ( !p.ent || p.stale >= 0 )
++			continue;
++		// (the bar eased toward the health, the lost part held a moment then drained)
++		p.shown = Approach( p.shown, p.hp, 2.5f, dt );
++		if ( p.trail > p.shown && now - p.lastHit > 0.45f )
++			p.trail = Approach( p.trail, p.shown, 0.9f, dt );
++		float life = 1;
++		if ( p.gone >= 0 )
++		{
++			life = 1 - Clamp01(( now - p.gone - 0.35f ) / 0.4f );
++			if ( life <= 0 || now < p.gone )
++			{
++				p.ent = 0; // (faded out: the slot freed)
++				continue;
++			}
++		}
++		// (in this frame's packet — in the PVS —, drawn, shown)
++		cl_entity_t *e = gEngfuncs.GetEntityByIndex( p.ent );
++		if ( !e || !e->model || e->curstate.messagenum != local->curstate.messagenum || ( e->curstate.effects & EF_NODRAW ))
++		{
++			p.vis = 0;
++			continue;
++		}
++		if ( e->curstate.rendermode != kRenderNormal && e->curstate.renderamt < 40 )
++			continue;
++		const float height = BarHeight( p, e, now, dt );
++		vec3_t top, mid, d;
++		VectorCopy( e->origin, top ); top[2] += height + POKE_BAR_LIFT;
++		VectorCopy( e->origin, mid ); mid[2] += height * 0.6f;
++		VectorSubtract( mid, g_vViewOrg, d );
++		const float dist = sqrtf( DotProduct( d, d ));
++		if ( dist > POKE_BAR_RANGE )
++		{
++			p.vis = 0;
++			continue;
++		}
++		// (hidden behind the walls: traced from the view a few times a second, each in its turn)
++		if ( now >= p.nextTrace || now < p.nextTrace - 1 )
++		{
++			if ( !traced )
++			{
++				gEngfuncs.pEventAPI->EV_SetUpPlayerPrediction( false, true );
++				gEngfuncs.pEventAPI->EV_PushPMStates();
++				gEngfuncs.pEventAPI->EV_SetSolidPlayers( -1 );
++				gEngfuncs.pEventAPI->EV_SetTraceHull( 2 );
++				traced = true;
++			}
++			p.clear = SeenFromView( mid ) || SeenFromView( top );
++			p.nextTrace = now + 0.1f + ( i & 3 ) * 0.015f;
++		}
++		p.vis = Approach( p.vis, p.clear ? 1.0f : 0.0f, p.clear ? 6.0f : 9.0f, dt );
++		if ( p.vis <= 0 )
++			continue;
++		// (placed over its top; its top off the screen but its body in sight: held at the screen's top edge over it)
++		float screen[3], body[3];
++		const bool topIn = !gEngfuncs.pTriAPI->WorldToScreen( top, screen ) && fabs( screen[0] ) <= 1.2f && fabs( screen[1] ) <= 1.2f;
++		vec3_t low;
++		VectorCopy( e->origin, low ); low[2] += height * 0.3f;
++		const bool bodyIn = !gEngfuncs.pTriAPI->WorldToScreen( low, body ) && fabs( body[0] ) <= 1.0f && fabs( body[1] ) <= 1.0f;
++		if ( !topIn && !bodyIn )
++			continue; // (behind the view, or off the screen)
++		BarDraw &b = draws[n++];
++		b.p = &p;
++		b.sx = ( 1 + ( topIn ? screen[0] : body[0] )) * ScreenWidth / 2;
++		b.sy = topIn ? ( 1 - screen[1] ) * ScreenHeight / 2 - POKE_BAR_GAP : 0;
++		b.dist = dist;
++		b.size = 1.0f - 0.25f * Clamp01(( dist - 250 ) / 1000 ); // (a little smaller far away)
++		b.alpha = p.vis * life * Clamp01(( POKE_BAR_RANGE - dist ) / POKE_BAR_FADE ) * Clamp01(( now - p.born ) / 0.3f );
++		BarLayout( b );
++
++		// (kept inside the screen, the label whole: held at the edge a little past it, faded out further)
++		float push = 0;
++		const float minX = POKE_BAR_EDGE + b.halfW, maxX = ScreenWidth - POKE_BAR_EDGE - b.halfW;
++		const float minY = POKE_BAR_EDGE + b.above, maxY = ScreenHeight - POKE_BAR_EDGE - 2;
++		if ( minX <= maxX )
++		{
++			if ( b.sx < minX ) { push = max( push, minX - b.sx ); b.sx = minX; }
++			if ( b.sx > maxX ) { push = max( push, b.sx - maxX ); b.sx = maxX; }
++		}
++		if ( b.sy < minY ) { push = max( push, minY - b.sy ); b.sy = minY; }
++		if ( b.sy > maxY ) { push = max( push, b.sy - maxY ); b.sy = maxY; }
++		if ( !bodyIn )
++			b.alpha *= 1 - Clamp01(( push - lh ) / ( lh * 4 ));
++		// (not over the radar, in the top left corner: faded out as it nears it)
++		if ( radar )
++		{
++			const float out = max( b.sx - b.halfW - radarW, b.sy - b.above - radarH );
++			b.alpha *= Clamp01( out / 12 );
++		}
++	}
++	if ( traced )
++		gEngfuncs.pEventAPI->EV_PopPMStates();
++	if ( !n )
++		return;
++
++	// (the furthest first: the nearer over them)
++	for ( int i = 1; i < n; i++ )
++		for ( int j = i; j > 0 && draws[j].dist > draws[j - 1].dist; j-- )
++		{
++			BarDraw t = draws[j]; draws[j] = draws[j - 1]; draws[j - 1] = t;
++		}
++	for ( int i = 0; i < n; i++ )
++	{
++		if ( draws[i].alpha <= 0.01f )
++			continue;
++		DrawPokemonBar( draws[i], now );
++		FlushShapes(); // (each over the ones behind it, its name too)
++		FlushTexts();
++	}
++}
++
++// The Poke Ball in hand: its skin the ball's (0 Pikachu, 1 Charizard, 2 Blastoise)
++// The Poke Ball held in third person (p_pokeball): its skin is the holder's (the server sets the holder's skin to the
++// ball's species, 0 to 2, while one is in hand); -1 for any other weapon model, the holder then drawn as it is
++int ArsUI_HeldBallSkin( int weaponModelIndex, int holderSkin )
++{
++	model_t *m = weaponModelIndex ? gEngfuncs.hudGetModelByIndex( weaponModelIndex ) : NULL;
++	if ( !m || !strstr( m->name, "pokemon/p_pokeball" ))
++		return -1;
++	return ( holderSkin >= 0 && holderSkin < NUM_SPECIES ) ? holderSkin : 0;
++}
++
++void ArsUI_ViewModelSkin( cl_entity_t *view )
++{
++	if ( !view || !view->model || !strstr( view->model->name, "pokemon/v_pokeball" ))
++		return;
++	const int id = gHUD.m_Ammo.CurrentWeaponId();
++	if ( IsBall( id ))
++		view->curstate.skin = id - PK_PIKACHU;
++}
 diff --git a/cl_dll/arsenal_ui.h b/cl_dll/arsenal_ui.h
 new file mode 100644
-index 0000000..d1c9a80
+index 0000000..f368730
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.h
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,51 @@
 +/*
 +arsenal_ui.h - the Half-Life arsenal's own menus (buy, team, appearance), drawn by the client
 +*/
@@ -2191,6 +3006,18 @@ index 0000000..d1c9a80
 +bool ArsUI_PreviewBones( struct cl_entity_s *ent, float bones[][3][4], int count );
 +void ArsUI_PreviewLighting( struct cl_entity_s *ent, struct alight_s *lighting );
 +bool ArsUI_HidesViewModel( void );
++
++// Half Strike's Pokemon: their health bars (PokeHP message), the Poke Ball's view model skin (the ball in hand)
++void ArsUI_DrawPokemonBars( float flTime );
++void ArsUI_ViewModelSkin( struct cl_entity_s *view );
++void ArsUI_WeaponBits( int oldBits, int newBits );
++int ArsUI_HeldBallSkin( int weaponModelIndex, int holderSkin );
++// a studio model's bones set up (world space): a Pokemon's bar follows its pose
++void ArsUI_StudioBones( struct cl_entity_s *ent, float bones[][3][4], int count );
++// a world model's light (the map's): a Pokemon kept readable in the shade
++void ArsUI_StudioLighting( struct cl_entity_s *ent, struct alight_s *lighting );
++// the server's centre messages: true when a panel shows it (the buy panel: a purchase refused)
++bool ArsUI_CenterPrint( const char *text );
 +
 +#endif // ARSENAL_UI_H
 diff --git a/cl_dll/cs_wpn/cs_weapons.cpp b/cl_dll/cs_wpn/cs_weapons.cpp
@@ -2774,7 +3601,7 @@ index 0000000..59fb023
 +		gEngfuncs.pEventAPI->EV_PlaySound( idx, origin, CHAN_WEAPON, HL_EGON_SOUND_OFF, 0.98, ATTN_NORM, 0, 100 );
 +}
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 8d29ddd..be8fb96 100644
+index 8d29ddd..6d9e3bd 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
 @@ -21,6 +21,7 @@
@@ -2803,7 +3630,7 @@ index 8d29ddd..be8fb96 100644
  	//ServersInit();
  
  	gEngfuncs.Con_Printf( "%s: ^2CS16Client^7 ver. %s initialized.\n", __FUNCTION__, CVAR_GET_STRING( "cscl_ver" ) );
-@@ -419,6 +424,28 @@ CHud :: ~CHud()
+@@ -419,6 +424,49 @@ CHud :: ~CHud()
  	m_pHudList = NULL;
  }
  
@@ -2829,10 +3656,31 @@ index 8d29ddd..be8fb96 100644
 +	strncpy( dest, p->szName, MAX_SPRITE_NAME_LENGTH );
 +}
 +
++// Half Strike's own HUD icons, outside any hud.txt: a whole sprite each (its first frame), named for GetSpriteIndex
++// (d_pokemon: the death notice of a kill by a Pokemon, weapon "pokemon")
++static const struct { const char *name, *sprite; } g_ExtraSprites[] =
++{
++	{ "d_pokemon", "sprites/pokemon/d_pokemon.spr" },
++};
++#define NUM_EXTRA_SPRITES ( (int)( sizeof( g_ExtraSprites ) / sizeof( g_ExtraSprites[0] )))
++
++static void Extra_LoadSprite( int i, HSPRITE *handle, wrect_t *rect, char *name )
++{
++	*handle = SPR_Load( g_ExtraSprites[i].sprite );
++	if ( rect )
++	{
++		rect->left = rect->top = 0;
++		rect->right = *handle ? SPR_Width( *handle, 0 ) : 0;
++		rect->bottom = *handle ? SPR_Height( *handle, 0 ) : 0;
++	}
++	if ( name )
++		strncpy( name, g_ExtraSprites[i].name, MAX_SPRITE_NAME_LENGTH );
++}
++
  void CHud :: VidInit( void )
  {
  	static bool firstinit = true;
-@@ -444,6 +471,9 @@ void CHud :: VidInit( void )
+@@ -444,6 +492,9 @@ void CHud :: VidInit( void )
  	{
  		// we need to load the hud.txt, and all sprites within
  		m_pSpriteList = SPR_GetList("sprites/hud.txt", &m_iSpriteCountAllRes);
@@ -2842,7 +3690,7 @@ index 8d29ddd..be8fb96 100644
  
  		if( m_pSpriteList )
  		{
-@@ -457,6 +487,12 @@ void CHud :: VidInit( void )
+@@ -457,6 +508,13 @@ void CHud :: VidInit( void )
  				p++;
  			}
  
@@ -2851,11 +3699,12 @@ index 8d29ddd..be8fb96 100644
 +				if ( HL_WantedSprite( &m_pSpriteListHL[j], m_iRes ) )
 +					m_iSpriteCount++;
 +			}
++			m_iSpriteCount += NUM_EXTRA_SPRITES;
 +
  			// allocated memory for sprite handle arrays
  			m_rghSprites      = new(std::nothrow) HSPRITE[m_iSpriteCount];
  			m_rgrcRects       = new(std::nothrow) wrect_t[m_iSpriteCount];
-@@ -470,7 +506,8 @@ void CHud :: VidInit( void )
+@@ -470,7 +528,8 @@ void CHud :: VidInit( void )
  			}
  
  			p = m_pSpriteList;
@@ -2865,7 +3714,7 @@ index 8d29ddd..be8fb96 100644
  			{
  				if ( p->iRes == m_iRes )
  				{
-@@ -485,6 +522,21 @@ void CHud :: VidInit( void )
+@@ -485,6 +544,24 @@ void CHud :: VidInit( void )
  
  				p++;
  			}
@@ -2884,10 +3733,13 @@ index 8d29ddd..be8fb96 100644
 +					index++;
 +				}
 +			}
++
++			for ( int j = 0; j < NUM_EXTRA_SPRITES; j++, index++ )
++				Extra_LoadSprite( j, &m_rghSprites[index], &m_rgrcRects[index], &m_rgszSpriteNames[index * MAX_SPRITE_NAME_LENGTH] );
  		}
  	}
  	else
-@@ -505,6 +557,18 @@ void CHud :: VidInit( void )
+@@ -505,6 +582,21 @@ void CHud :: VidInit( void )
  
  			p++;
  		}
@@ -2903,10 +3755,13 @@ index 8d29ddd..be8fb96 100644
 +				index++;
 +			}
 +		}
++
++		for ( int j = 0; j < NUM_EXTRA_SPRITES; j++, index++ )
++			Extra_LoadSprite( j, &m_rghSprites[index], NULL, NULL );
  	}
  
  	// assumption: number_1, number_2, etc, are all listed and loaded sequentially
-@@ -541,6 +605,8 @@ void CHud :: VidInit( void )
+@@ -541,6 +633,8 @@ void CHud :: VidInit( void )
  #endif
  
  	firstinit = false;
@@ -2916,18 +3771,19 @@ index 8d29ddd..be8fb96 100644
  
  void CHud::Shutdown( void )
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index b75b3c9..741feba 100644
+index b75b3c9..6cb1051 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
-@@ -180,6 +180,7 @@ public:
+@@ -180,6 +180,8 @@ public:
  	CHudMsgFunc(HideWeapon);
  	CHudMsgFunc(Crosshair);
  	CHudMsgFunc(Brass);
 +	CHudMsgFunc(HLWeapons);
++	int CurrentWeaponId( void ); // (the weapon in hand, 0 none: Half Strike's view model skins)
  
  
  	void SlotInput( int iSlot );
-@@ -571,6 +572,8 @@ public:
+@@ -571,6 +573,8 @@ public:
  	int Draw(float flTime);
  	CHudMsgFunc(Battery);
  	CHudMsgFunc(ArmorType);
@@ -2936,7 +3792,7 @@ index b75b3c9..741feba 100644
  	
  private:
  	enum armortype_t {
-@@ -741,6 +744,7 @@ public:
+@@ -741,6 +745,7 @@ public:
  	int Draw( float flTime );
  	CHudMsgFunc(Money);
  	CHudMsgFunc(BlinkAcct);
@@ -2944,7 +3800,7 @@ index b75b3c9..741feba 100644
  
  private:
  	int m_iMoneyCount;
-@@ -1083,6 +1087,7 @@ public:
+@@ -1083,6 +1088,7 @@ public:
  	SCREENINFO  m_truescrinfo;
  
  	int	m_iWeaponBits;
@@ -2952,7 +3808,7 @@ index b75b3c9..741feba 100644
  	int	m_fPlayerDead;
  	int m_iIntermission;
  	int m_iNoConsolePrint;
-@@ -1106,6 +1111,8 @@ private:
+@@ -1106,6 +1112,8 @@ private:
  	client_sprite_t	*m_pSpriteList;
  	int	m_iSpriteCount;
  	int	m_iSpriteCountAllRes;
@@ -2983,7 +3839,7 @@ index 0dba92b..e2b9f7a 100644
  	HUDLIST *pList = m_pHudList;
  
 diff --git a/cl_dll/hud_redraw.cpp b/cl_dll/hud_redraw.cpp
-index 1f2ad59..391e642 100644
+index 1f2ad59..1f38f4e 100644
 --- a/cl_dll/hud_redraw.cpp
 +++ b/cl_dll/hud_redraw.cpp
 @@ -17,6 +17,7 @@
@@ -2994,7 +3850,18 @@ index 1f2ad59..391e642 100644
  #include "cl_util.h"
  #include "triangleapi.h"
  
-@@ -111,11 +112,21 @@ int CHud :: Redraw( float flTime, int intermission )
+@@ -102,6 +103,10 @@ int CHud :: Redraw( float flTime, int intermission )
+ 
+ 	UpdateDefaultHUDColor();
+ 
++	// (Half Strike: the Pokemon's health bars, in the world's place under the HUD)
++	if ( m_pCvarDraw->value && !intermission && !(m_iHideHUDDisplay & HIDEHUD_ALL) )
++		ArsUI_DrawPokemonBars( flTime );
++
+ 	if ( m_pCvarDraw->value && (intermission || !(m_iHideHUDDisplay & HIDEHUD_ALL) ) )
+ 	{
+ 		for( HUDLIST *pList = m_pHudList; pList; pList = pList->pNext )
+@@ -111,11 +116,21 @@ int CHud :: Redraw( float flTime, int intermission )
  				if( intermission && !(pList->p->m_iFlags & HUD_INTERMISSION) )
  					continue; // skip no-intermission during intermission
  
@@ -3201,6 +4068,28 @@ index 582bf28..cec93f1 100644
 +		return;
  	ShowVGUIMenu(menuType);
  }
+diff --git a/cl_dll/text_message.cpp b/cl_dll/text_message.cpp
+index 90af501..ebb6c25 100644
+--- a/cl_dll/text_message.cpp
++++ b/cl_dll/text_message.cpp
+@@ -28,6 +28,7 @@
+ #include "vgui_parser.h"
+ #include "ctype.h"
+ #include "draw_util.h"
++#include "arsenal_ui.h"
+ 
+ int CHudTextMessage::Init(void)
+ {
+@@ -216,6 +217,9 @@ int CHudTextMessage::MsgFunc_TextMsg( const char *pszName, int iSize, void *pbuf
+ 
+ 		ConvertCRtoNL( psz );
+ 
++		if( ArsUI_CenterPrint( psz )) // (the buy panel open: shown in it, not under it)
++			break;
++
+ 		int len = DrawUtils::ConsoleStringLen( psz );
+ 
+ 		DrawUtils::DrawConsoleString( (ScreenWidth - len) / 2, ScreenHeight / 3, psz );
 diff --git a/cl_dll/tri.cpp b/cl_dll/tri.cpp
 index 9038c3a..7298d0c 100644
 --- a/cl_dll/tri.cpp
