@@ -268,8 +268,8 @@
         ]
       },
       {
-        "id": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r9",
-        "purpose": "The Half-Life arsenal: the fourteen Half-Life weapons bought in Counter-Strike, at its scale, anywhere and anytime, with its own team, appearance and buy menus (hl-arsenal patches); Poké Balls with Pikachu, Charizard and Blastoise, the Pokémon's official game models (the owner's files, data_installers/pokemon-official, converted by tools/goldsrc/assets), the balls, sprites and sounds generated there; Le M (the owner's brother, at his request), his AI reconstruction kept in data_installers/le-m, summoned with a laptop.",
+        "id": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r11",
+        "purpose": "The Half-Life arsenal: the fourteen Half-Life weapons bought in Counter-Strike, at its scale, anywhere and anytime, with its own team, appearance and buy menus (hl-arsenal patches); Poké Balls with Pikachu, Charizard and Blastoise, the Pokémon's official game models (the owner's files, data_installers/pokemon-official, converted by tools/goldsrc/assets), the balls, sprites and sounds generated there; Le M (the owner's brother, at his request), his AI reconstruction kept in data_installers/le-m, summoned with a laptop; bricks from impacts, Fortnite-style building (F) and its destruction.",
         "patches": [
           [
             ".",
@@ -291,7 +291,7 @@
         "files": [
           {
             "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
-            "sha256": "332f4e1e5b6d9d82ecc74a1fc8ab9baeb782ddaac5e90b3c277d9965209d9f74"
+            "sha256": "6ca7b79c39f1aba6faf5cdd6e5c1d347c8b5d103310819521172d981187a3b42"
           },
           {
             "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
@@ -299,11 +299,11 @@
           },
           {
             "path": "counterstrike/cstrike/dlls/cs_emscripten_wasm32.wasm",
-            "sha256": "42a74ae631c7c3dac0250dbc90ff86615e7fddaa706af6fc0756cd84fe2b0551"
+            "sha256": "eda00f4c5bc09aec859c4d89f6f5c58a7780e0af5e5b4f00305528ab50b6f08e"
           },
           {
             "path": "counterstrike/cstrike/orthros-pokemon.pk3",
-            "sha256": "8ca2a9cd10a780190432d1466d76eeb25e7712f695c31ac6dfb6bed1ac03a25f"
+            "sha256": "5767f7552590b6ddd31a137b7bd6ad1373df7d84f5f49520e249e682d4a06a3d"
           }
         ],
         "assets": [

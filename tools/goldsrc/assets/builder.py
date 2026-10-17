@@ -61,12 +61,19 @@ class Part:
 
 
 class TextureGroup:
-    def __init__(self, name, size=(256, 256), flags=0, dither=0.0, pack="shelf"):
+    def __init__(self, name, size=(256, 256), flags=0, dither=0.0, pack="shelf", gutter=None, skin_flags=None):
         self.name = name
         self.size = tuple(size)
         self.flags = flags
         self.dither = dither
         self.pack = pack
+        self.gutter = gutter
+        self.skin_flags = dict(skin_flags or {})
+
+    def gutter_for(self, skin):
+        """Colour of the atlas texels no chart reaches (beyond the islands' dilation), or None (their mean)."""
+        g = self.gutter(skin) if callable(self.gutter) else self.gutter
+        return None if g is None else np.asarray(g, dtype=np.float64)
 
     @property
     def masked(self):
@@ -99,13 +106,16 @@ class ModelBuilder:
         self.controllers = []
         self.eyeposition = None
         self.hull = None
+        self.flags = 0              # header flags (mdl.STUDIO_AMBIENT_LIGHT, ...)
         self.verbose = verbose
         self.report = []
 
     # declaration ------------------------------------------------------------------------------
-    def group(self, name, size=(256, 256), flags=0, dither=0.0, pack="shelf"):
-        """Texture group (one atlas): pack="skyline" packs the UV charts denser than the default "shelf"."""
-        self.groups[name] = TextureGroup(name, size, flags, dither, pack)
+    def group(self, name, size=(256, 256), flags=0, dither=0.0, pack="shelf", gutter=None, skin_flags=None):
+        """Texture group (one atlas): pack="skyline" packs the UV charts denser than the default "shelf".
+        gutter: rgb (or skin -> rgb / None) for the unused atlas space (default: the mean colour), e.g. black for
+        additive skins; skin_flags: {skin: extra texture flags} (e.g. STUDIO_NF_FULLBRIGHT on one skin only)."""
+        self.groups[name] = TextureGroup(name, size, flags, dither, pack, gutter, skin_flags)
         return self.groups[name]
 
     def add(self, part):
@@ -214,14 +224,16 @@ class ModelBuilder:
                 return (col, alpha) if masked else col
 
             for skin in range(self.skins):
-                img, alpha, _ = texture.bake(grp.size, st, pos, nrm, dispatch, skin, extra=tags)
+                img, alpha, _ = texture.bake(grp.size, st, pos, nrm, dispatch, skin, extra=tags,
+                                             gutter=grp.gutter_for(skin))
+                tflags = grp.flags | grp.skin_flags.get(skin, 0)
                 transparent = (alpha < 0.5) if alpha is not None else None
                 idx, pal = texture.quantize(img, 256, transparent=transparent, dither=grp.dither)
-                key = idx.tobytes() + pal.tobytes()
+                key = idx.tobytes() + pal.tobytes() + bytes([tflags & 0xFF, tflags >> 8 & 0xFF])
                 if key not in tex_keys:
                     tex_keys[key] = len(textures)
                     textures.append(mdl.Texture(name=f"{base}_{g}{skin}.bmp"[:63], pixels=idx, palette=pal,
-                                                flags=grp.flags))
+                                                flags=tflags))
                 skin_table[skin][gi] = tex_keys[key]
 
         # --- geometry: one model per bodypart; parts are distributed so that limits hold
@@ -322,7 +334,8 @@ class ModelBuilder:
         return mdl.Studio(name=self.name, bones=bones, sequences=self.sequences, textures=textures,
                           bodyparts=bodyparts, skins=skin_table, controllers=self.controllers,
                           attachments=self.attachments, hitboxes=hitboxes, eyeposition=tuple(eye),
-                          min=tuple(hmin), max=tuple(hmax), bbmin=tuple(hdr_lo), bbmax=tuple(hdr_hi))
+                          min=tuple(hmin), max=tuple(hmax), bbmin=tuple(hdr_lo), bbmax=tuple(hdr_hi),
+                          flags=self.flags)
 
     def write(self, path=None):
         """Build, serialise and validate; returns the bytes (and writes them to path if given)."""
