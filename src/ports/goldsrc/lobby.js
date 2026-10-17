@@ -8,22 +8,24 @@
 const STRINGS = {
   en: {
     title: 'Online games', create: '+ Create a game', join: 'Join', full: 'Full', starting: 'Starting…',
+    close: 'Close', closing: 'Closing…', mine: 'your game', closeConfirm: (n) => `Close “${n}”? Its players go back to the menu.`, closeFailed: 'The game could not be closed.',
     players: (n, max) => `${n}/${max} players`, bots: (n) => `${n} bot${n > 1 ? 's' : ''}`, permanent: 'Always on', since: (m) => (m < 1 ? 'just created' : `created ${m} min ago`),
     empty: 'No game yet: create the first one.', offline: 'The game servers are not reachable right now.', online: (n) => `${n} playing`,
     name: 'Name', map: 'Map', size: 'Players', botsLabel: 'Bots', none: 'None', cancel: 'Cancel', submit: 'Create and join', maps: (n) => `${n} maps`,
     defaultName: (nick) => `${nick}'s game`, creating: 'Creating the game…', less: 'fewer', more: 'more',
     errors: { name: 'Give it a name (2 characters at least).', map: 'Choose a map.', maxPlayers: 'Invalid number of players.', bots: 'Too many bots for that many players.', options: 'Invalid settings.',
-      taken: 'A game already has that name.', owned: 'You already have a game running: join it, or wait for it to end.', full: 'Every game slot is taken: join one, or wait for one to end.', wait: 'One game a minute: wait a moment.',
+      taken: 'A game already has that name.', owned: 'You already have a game running: join it, or wait for it to end.', ownedHere: 'You already have a game running: join it, or close it.', full: 'Every game slot is taken: join one, or wait for one to end.', wait: 'One game a minute: wait a moment.',
       start: 'The game server did not start. Try again.', offline: 'The game servers are not reachable right now.', forbidden: 'Creating games is not offered here.' },
   },
   fr: {
     title: 'Parties en ligne', create: '+ Créer une partie', join: 'Rejoindre', full: 'Pleine', starting: 'Démarrage…',
+    close: 'Fermer', closing: 'Fermeture…', mine: 'ta partie', closeConfirm: (n) => `Fermer « ${n} » ? Ses joueurs reviennent au menu.`, closeFailed: 'La partie n’a pas pu être fermée.',
     players: (n, max) => `${n}/${max} joueurs`, bots: (n) => `${n} bot${n > 1 ? 's' : ''}`, permanent: 'Permanente', since: (m) => (m < 1 ? 'à l’instant' : `créée il y a ${m} min`),
     empty: 'Aucune partie pour l’instant : crée la première.', offline: 'Les serveurs de jeu sont injoignables pour le moment.', online: (n) => `${n} en jeu`,
     name: 'Nom', map: 'Carte', size: 'Joueurs', botsLabel: 'Bots', none: 'Aucun', cancel: 'Annuler', submit: 'Créer et rejoindre', maps: (n) => `${n} cartes`,
     defaultName: (nick) => `Partie de ${nick}`, creating: 'Création de la partie…', less: 'moins', more: 'plus',
     errors: { name: 'Donne-lui un nom (2 caractères au moins).', map: 'Choisis une carte.', maxPlayers: 'Nombre de joueurs invalide.', bots: 'Trop de bots pour ce nombre de joueurs.', options: 'Réglages invalides.',
-      taken: 'Une partie porte déjà ce nom.', owned: 'Tu as déjà une partie en cours : rejoins-la, ou attends qu’elle se termine.', full: 'Toutes les places de parties sont prises : rejoins-en une, ou attends qu’une se termine.', wait: 'Une partie par minute : patiente un instant.',
+      taken: 'Une partie porte déjà ce nom.', owned: 'Tu as déjà une partie en cours : rejoins-la, ou attends qu’elle se termine.', ownedHere: 'Tu as déjà une partie en cours : rejoins-la, ou ferme-la.', full: 'Toutes les places de parties sont prises : rejoins-en une, ou attends qu’une se termine.', wait: 'Une partie par minute : patiente un instant.',
       start: 'Le serveur de jeu n’a pas démarré. Réessaie.', offline: 'Les serveurs de jeu sont injoignables pour le moment.', forbidden: 'La création de parties n’est pas proposée ici.' },
   },
 };
@@ -166,6 +168,25 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
     syncAll();
   }
 
+  // (the rooms this browser created: their keys, kept to close them — index -> { key, since })
+  const keysName = `orthros-rooms:${name}`;
+  const keys = () => { try { return JSON.parse(localStorage.getItem(keysName) ?? '{}') ?? {}; } catch { return {}; } };
+  const saveKeys = (k) => { try { localStorage.setItem(keysName, JSON.stringify(k)); } catch { /* private mode: not kept */ } };
+  let closeFailedAt = 0; const closingNow = new Set(); // (rooms whose closing this page sent: their button stays disabled)
+  const keyOf = (r) => { const k = keys()[r.index]; return k && k.since === r.since ? k.key : null; };
+  async function closeRoom(r, button) {
+    const key = keyOf(r); if (!key || !confirm(S.closeConfirm(r.name))) return;
+    if (closingNow.has(r.index)) return;
+    closingNow.add(r.index); button.disabled = true; button.textContent = S.closing;
+    try {
+      const res = await fetch(`/api/rooms/${encodeURIComponent(name)}/${r.index}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+      if (res.status !== 200 && res.status !== 404) throw new Error(String(res.status));
+      const k = keys(); delete k[r.index]; saveKeys(k);
+    } catch (error) { log('Lobby: closing ' + error.message); closeFailedAt = Date.now(); }
+    closingNow.delete(r.index);
+    await refresh();
+  }
+
   /** The room's shown settings (its options with `show`), by their labels. */
   const shownOptions = (r) => (data?.options ?? []).filter((o) => o.show && (!o.bots || r.bots > 0) && r.options?.[o.id]).map((o) => label(o.choices.find((c) => c.id === r.options[o.id])?.label));
   function render() {
@@ -173,19 +194,31 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
     const humans = rooms.reduce((t, r) => t + r.humans, 0);
     online.textContent = humans ? S.online(humans) : '';
     createButton.classList.toggle('hidden', !data?.creatable || !form.classList.contains('hidden'));
-    note.textContent = data?.offline ? S.offline : !rooms.length ? S.empty : '';
+    note.textContent = data?.offline ? S.offline : Date.now() - closeFailedAt < 8000 ? S.closeFailed : !rooms.length ? S.empty : '';
     list.replaceChildren(...rooms.map((r) => {
       const full = r.players >= r.maxPlayers;
       const meta = [r.map, S.players(r.players, r.maxPlayers), r.bots ? S.bots(r.bots) : null, ...shownOptions(r), r.permanent ? S.permanent : S.since(Math.floor((Date.now() - r.since) / 60000))].filter(Boolean).join(' · ');
       const thumb = data?.mapImages ? el('span', { class: 'thumb' }) : null;
       if (thumb) mapThumb(name, r.map).then((url) => { if (url) thumb.style.backgroundImage = `url(${url})`; });
-      return el('li', { class: 'room' + (r.permanent ? ' permanent' : '') }, thumb,
-        el('div', { class: 'info' }, el('b', {}, r.name), el('span', {}, meta)),
-        el('button', { type: 'button', class: 'join', disabled: full || !r.up, onclick: () => onJoin(r) }, !r.up ? S.starting : full ? S.full : S.join));
+      const mine = !r.permanent && !!keyOf(r);
+      const close = mine ? el('button', { type: 'button', class: 'end', disabled: !!r.closing || closingNow.has(r.index), title: S.close, onclick: (e) => closeRoom(r, e.currentTarget) }, r.closing || closingNow.has(r.index) ? S.closing : S.close) : null;
+      return el('li', { class: 'room' + (r.permanent ? ' permanent' : '') + (mine ? ' mine' : '') }, thumb,
+        el('div', { class: 'info' }, el('b', {}, r.name), el('span', {}, mine ? `${S.mine} · ${meta}` : meta)), close,
+        el('button', { type: 'button', class: 'join', disabled: full || !r.up, onclick: () => onJoin(r) }, r.closing ? S.closing : !r.up ? S.starting : full ? S.full : S.join));
     }));
+    // (the keys of rooms gone: forgotten)
+    if (data && !data.offline && Array.isArray(data.rooms)) {
+      const k = keys(), live = new Set(rooms.map((r) => `${r.index}:${r.since}`));
+      const kept = Object.fromEntries(Object.entries(k).filter(([i, v]) => live.has(`${i}:${v?.since}`)));
+      if (Object.keys(kept).length !== Object.keys(k).length) saveKeys(kept);
+    }
   }
   async function refresh() {
-    try { data = await (await fetch(`/api/rooms/${encodeURIComponent(name)}`, { cache: 'no-store' })).json(); }
+    try {
+      const res = await fetch(`/api/rooms/${encodeURIComponent(name)}`, { cache: 'no-store' });
+      data = await res.json();
+      if (!res.ok || !Array.isArray(data?.rooms)) data = { rooms: [], maps: [], offline: true };
+    }
     catch (error) { log('Lobby: ' + error.message); data = { rooms: [], maps: [], offline: true }; }
     try { fillForm(); } finally { render(); }
   }
@@ -196,7 +229,11 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
       const res = await fetch(`/api/rooms/${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: nameInput.value, map: choice.map, maxPlayers: choice.maxPlayers, bots: choice.bots, options: choice.options }) });
       const out = await res.json().catch(() => ({}));
-      if (res.status !== 201) { message.textContent = S.errors[out.error] ?? S.errors.start; message.classList.add('error'); return; }
+      if (res.status !== 201) {
+        const here = out.error === 'owned' && (data?.rooms ?? []).some((r) => !r.permanent && keyOf(r));
+        message.textContent = (here ? S.errors.ownedHere : S.errors[out.error]) ?? S.errors.start; message.classList.add('error'); return;
+      }
+      if (out.key && out.room) saveKeys({ ...keys(), [out.room.index]: { key: out.key, since: out.room.since } });
       toggleForm(false); await refresh(); onJoin(out.room);
     } catch { message.textContent = S.errors.offline; message.classList.add('error'); }
     finally { busy = false; submit.disabled = false; }

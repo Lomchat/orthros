@@ -176,17 +176,33 @@ export function linkGameLayers(manifest, dest) {
 
 /**
  * The rooms of a version (GET /api/rooms/<manifest>: its servers, maps and limits; POST: a room created, checked here
- * first), asked of its server manager on 127.0.0.1:<goldsrc.multiplayer.port> over TCP (tools/goldsrc/server.mjs).
- * A creation needs the page's origin and comes once a minute per address. `handle(req, res, url)` answers or returns false.
+ * first, its answer carrying the room's key; DELETE /api/rooms/<manifest>/<index> { key }: a created room closed by
+ * whoever holds its key), asked of its server manager on 127.0.0.1:<goldsrc.multiplayer.port> over TCP
+ * (tools/goldsrc/server.mjs). A creation or a closing needs the page's origin; a creation comes once a minute per
+ * address. `handle(req, res, url)` answers or returns false.
  */
 export function roomsApi({ getManifest, request = managerRequest, now = () => Date.now() }) {
   const created = new Map(), recent = []; // (per address; every creation of the last minute: 6 at most, all addresses)
   const handle = (req, res, url) => {
-    const m = /^\/api\/rooms\/([^/]+)$/.exec(url.pathname);
+    const m = /^\/api\/rooms\/([^/]+)(?:\/(\d{1,2}))?$/.exec(url.pathname);
     if (!m) return false;
     const send = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
     const man = getManifest(decodeURIComponent(m[1])), mp = man?.runtime === 'goldsrc' ? man.goldsrc?.multiplayer : null;
     if (!mp) { send(404, { error: 'none' }); return true; }
+    if (m[2] !== undefined) {
+      // (a room closed: its key, checked by the manager)
+      let sameOrigin = false; try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* no Origin: refused */ }
+      if (req.method !== 'DELETE') { send(405, { error: 'method' }); return true; }
+      if (!sameOrigin || !mp.rooms) { send(403, { error: 'forbidden' }); return true; }
+      let body = '';
+      req.on('data', (d) => { body += d; if (body.length > 512) req.destroy(); });
+      req.on('end', () => {
+        let key; try { key = JSON.parse(body)?.key; } catch { send(400, { error: 'json' }); return; }
+        if (typeof key !== 'string' || !/^[0-9a-f]{32}$/.test(key)) { send(403, { error: 'forbidden' }); return; }
+        request(mp.port, 'DELETE', { key }, `/rooms/${Number(m[2])}`).then(([status, out]) => send(status, out), () => send(503, { error: 'offline' }));
+      });
+      return true;
+    }
     if (req.method === 'GET') {
       // (the options' choices for the page: ids and labels, not their commands)
       const options = (mp.rooms?.options ?? []).map((o) => ({ id: o.id, label: o.label, default: o.default, bots: !!o.bots, show: !!o.show, choices: o.choices.map((c) => ({ id: c.id, label: c.label })) }));
@@ -218,13 +234,14 @@ export function roomsApi({ getManifest, request = managerRequest, now = () => Da
 }
 
 /** An HTTP request to a version's server manager: [status, json]. */
-export function managerRequest(port, method, body) {
+export function managerRequest(port, method, body, where = '/rooms') {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path: '/rooms', method, timeout: method === 'POST' ? 30000 : 2000, headers: body ? { 'Content-Type': 'application/json' } : {} }, (res) => {
+    const data = body ? Buffer.from(JSON.stringify(body)) : null; // (its length given: Node sends a DELETE's body unframed otherwise)
+    const req = http.request({ host: '127.0.0.1', port, path: where, method, timeout: method === 'POST' ? 30000 : 2000, headers: data ? { 'Content-Type': 'application/json', 'Content-Length': data.length } : {} }, (res) => {
       let text = ''; res.on('data', (d) => { text += d; }); res.on('end', () => { try { resolve([res.statusCode, JSON.parse(text)]); } catch (error) { reject(error); } });
     });
     req.on('timeout', () => req.destroy(new Error('timeout'))); req.on('error', reject);
-    req.end(body ? JSON.stringify(body) : undefined);
+    req.end(data ?? undefined);
   });
 }
 

@@ -127,7 +127,9 @@ files, the game's first images) with their progress, and tips.
 - `/api/rooms/<manifest>`: the lobby. GET: the version's games (its permanent server and the rooms players created:
   name, map, players with the bots, humans, size, bots), the maps and the limits, from its server manager. POST
   `{ name, map, maxPlayers, bots }`: a room created (the page's origin, one a minute per address), answered once its
-  server answers.
+  server answers, with the room's secret `key`. `DELETE /api/rooms/<manifest>/<index>` `{ key }` (the page's origin):
+  that room closed — its server stopped, its players back to the menu; room 0 never. The lobby keeps the keys of the
+  rooms its browser created (`localStorage`, `orthros-rooms:<manifest>`) and shows those a Close button.
 
 ## Streamed files
 
@@ -383,7 +385,8 @@ with `multiplayer.rooms`, those players create.
   and bots (`rooms.bots`: its commands with `{n}`, its command-line `args` — ReGameDLL's `-bots`). It writes to
   `rooms/<index>/`. A room without a human player for 5 minutes stops (the engine's `info` counts its human clients;
   the bots are the room's own number). The manager answers on 127.0.0.1:`multiplayer.port` over TCP (the same number
-  as its UDP port): GET and POST `/rooms`, for the Orthros server only. The unit allows 1.6 GB, 3 cores and 192 tasks
+  as its UDP port): GET and POST `/rooms`, DELETE `/rooms/<index>` with the room's key (compared in constant time), for
+  the Orthros server only. The unit allows 1.6 GB, 3 cores and 192 tasks
   (a server takes about 150 MB).
 - **The lobby** (`src/ports/goldsrc/lobby.js`): in the page's loading screen and over the game (the header's "Online
   games"), the version's games with their map and players, joined in a click — the engine started first if it is not —
