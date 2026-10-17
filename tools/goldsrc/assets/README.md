@@ -151,6 +151,8 @@ markings are crisp and continuous across parts and UV seams.
 b = builder.ModelBuilder("pokemon/pikachu.mdl", rig, skins=1)
 b.group("main", size=(512, 256))                                   # one atlas + one mesh per group
 b.group("fx", size=(64, 64), flags=mdl.STUDIO_NF_ADDITIVE | mdl.STUDIO_NF_FULLBRIGHT)
+# gutter=(0, 0, 0) (or skin -> rgb / None): colour of the atlas space no chart uses (default: the mean colour);
+# skin_flags={3: mdl.STUDIO_NF_FULLBRIGHT}: texture flags added on some skins only
 b.add(builder.Part("body", body_sdf, bone="spine", paint=paint_body, budget=900))
 b.add(builder.Part("head", head_sdf, bone="head", paint=paint_head, budget=1100, density=1.5, hitgroup=1))
 b.add(builder.Part("tail", tail_sdf, bones=["tail1", "tail2", "tail3"], paint=paint_tail, budget=300))
@@ -270,7 +272,8 @@ data = mdl.write(st)
 
 `render_frame(pm, seq=0, frame=0.0, skin=0, body=0, yaw=35, pitch=15, dist=None, size=(512, 512), ss=2,
 bounds=None, ambient=80, shade=120, lightvec=(-0.35, -0.45, -0.82), fov=38, eye=None, target=None, grid=True,
-label=None) -> PIL.Image`, `contact_sheet(pm, frames=6, cell=220, skin=0)`, `views_sheet(pm)`.
+label=None) -> PIL.Image`, `contact_sheet(pm, frames=6, cell=220, skin=0, body=0, viewmodel=False)` (viewmodel: the
+first-person camera of `--viewmodel`; `build.py --render` uses it for `v_*` models), `views_sheet(pm, body=0)`.
 Poses with the engine's decoding, nearest texture sampling, the engine's ambient + shade light with its
 hemispherical Lambert (FLATSHADE/FULLBRIGHT honoured, MASKED index 255 cut, ADDITIVE meshes added), back faces
 culled as in game, z-buffer (GL_LEQUAL in mesh order: a coincident later mesh wins, as in the engine), ground grid (8/32 units, red = +x, green = +y). Chrome is drawn as a plain texture.

@@ -281,8 +281,9 @@ def all_bounds(pm):
     return lo, hi
 
 
-def contact_sheet(pm, frames=6, cell=220, skin=0, body=0, yaw=35.0, pitch=15.0, ss=2, seqs=None):
-    """Grid: one row per sequence, `frames` evenly spaced frames, common framing for all cells."""
+def contact_sheet(pm, frames=6, cell=220, skin=0, body=0, yaw=35.0, pitch=15.0, ss=2, seqs=None, viewmodel=False):
+    """Grid: one row per sequence, `frames` evenly spaced frames, common framing for all cells (viewmodel: the
+    first-person camera of --viewmodel instead of the orbit one)."""
     seq_ids = list(range(len(pm.sequences))) if seqs is None else seqs
     lo, hi = all_bounds(pm)
     label_w = 150
@@ -313,21 +314,25 @@ def contact_sheet(pm, frames=6, cell=220, skin=0, body=0, yaw=35.0, pitch=15.0, 
             d.text((8, y + 66), "ev " + ",".join(str(e.frame) for e in s["events"][:6]), fill=(170, 170, 175))
         for col, f in enumerate(fs):
             fr = min(f, nf - 1)
-            im = render_frame(pm, si, fr, skin=skin, body=body, yaw=yaw, pitch=pitch, size=(cell, cell), ss=ss,
-                              bounds=(lo, hi), label=f"f{fr:.1f}")
+            if viewmodel:
+                im = render_frame(pm, si, fr, skin=skin, body=body, size=(cell, cell), ss=ss, eye=(0, 0, 0),
+                                  target=(1, 0, 0), fov=90.0, grid=False, label=f"f{fr:.1f}")
+            else:
+                im = render_frame(pm, si, fr, skin=skin, body=body, yaw=yaw, pitch=pitch, size=(cell, cell), ss=ss,
+                                  bounds=(lo, hi), label=f"f{fr:.1f}")
             sheet.paste(im, (label_w + col * cell, y))
     return sheet
 
 
-def views_sheet(pm, seq=0, frame=0.0, cell=300, skin=0, ss=2):
+def views_sheet(pm, seq=0, frame=0.0, cell=300, skin=0, ss=2, body=0):
     """Reference views of one pose: front, 3/4 front, side, back, 3/4 back, top."""
     lo, hi = all_bounds(pm)
     views = [("front", 0, 8), ("3/4", 35, 15), ("side", 90, 5), ("back", 180, 10), ("3/4 back", 215, 20),
              ("top", 0, 85)]
     sheet = Image.new("RGB", (cell * 3, cell * 2), (24, 24, 27))
     for i, (name, yaw, pitch) in enumerate(views):
-        im = render_frame(pm, seq, frame, skin=skin, yaw=yaw, pitch=pitch, size=(cell, cell), ss=ss, bounds=(lo, hi),
-                          label=name)
+        im = render_frame(pm, seq, frame, skin=skin, body=body, yaw=yaw, pitch=pitch, size=(cell, cell), ss=ss,
+                          bounds=(lo, hi), label=name)
         sheet.paste(im, ((i % 3) * cell, (i // 3) * cell))
     return sheet
 
@@ -362,7 +367,7 @@ def main(argv=None):
         im = contact_sheet(pm, frames=a.frames, cell=a.cell, skin=a.skin, body=a.body, yaw=a.yaw, pitch=a.pitch,
                            ss=a.ss)
     elif a.views:
-        im = views_sheet(pm, skin=a.skin, cell=a.cell if a.cell != 220 else 300, ss=a.ss)
+        im = views_sheet(pm, skin=a.skin, cell=a.cell if a.cell != 220 else 300, ss=a.ss, body=a.body)
     else:
         seq = int(a.seq) if a.seq.isdigit() else a.seq
         if a.viewmodel:

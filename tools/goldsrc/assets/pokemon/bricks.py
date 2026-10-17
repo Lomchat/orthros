@@ -10,8 +10,10 @@ PIECE CONTRACT (the server's grid and the client's blueprint use exactly these n
                           above the level, like the walls' 8 thickness centred on the edge line).
   models/build/ramp.mdl   x -64..64, y -64..64, z 0..128: origin at the tile centre at the level's height; rises
                           towards +x, eight stairs of 16 x 16 (step i = 0..7: x -64+16i .. -48+16i, top at
-                          z = 16(i+1)); the visual underside is the plane z = x + 56 (clipped at 0), so a thin
-                          collision box per step (z 16i .. 16(i+1)) matches the visual stairs exactly.
+                          z = 16(i+1)); the visual underside is the plane z = x + 56 (clipped at 0).  Thin
+                          collision boxes per step (z 16i .. 16(i+1)) match the treads and risers exactly and the
+                          underside within +-8 units (the sloped underside crosses each box's flat bottom: up to 8
+                          below it on a step's low half, up to 8 above it on its high half).
   models/build/roof.mdl   x -64..64, y -64..64, z 0..64: origin at the tile centre at the level's height (on top
                           of the walls below); a pyramid shell, apex (0, 0, 64), faces at 45 degrees, 8 thick
                           (vertically).  Suggested collision steps i = 0..3: half-size 56-16i, z 16i .. 16(i+1).
@@ -79,12 +81,16 @@ STONE = T.rgb("#9b968c")
 STONE_LIGHT = T.rgb("#c2bdb1")
 STONE_JOINT = T.rgb("#5d5850")
 SOOT = T.rgb("#2a221d")
-BP_FILL = np.array([0.035, 0.12, 0.26])
-BP_LINE = np.array([0.30, 0.66, 1.00])
-BP_EDGE = np.array([0.62, 0.90, 1.00])
-RED_FILL = np.array([0.24, 0.025, 0.02])
-RED_LINE = np.array([0.95, 0.24, 0.16])
-RED_EDGE = np.array([1.00, 0.55, 0.45])
+CHIP_CORE = T.rgb("#c8805a")         # a brick's fresh broken core
+STONE_CHIP = T.rgb("#cdc8bc")        # fresh stone where the frame is chipped
+# blueprints (added to the scene: kRenderTransAdd): the key channel strong in the fill so the hue survives bright
+# backgrounds (dust2's sand, the sky); lines and edges saturated (little of the other channels)
+BP_FILL = np.array([0.0, 0.13, 0.52])
+BP_LINE = np.array([0.05, 0.42, 1.00])
+BP_EDGE = np.array([0.20, 0.68, 1.00])
+RED_FILL = np.array([0.56, 0.0, 0.0])
+RED_LINE = np.array([1.00, 0.10, 0.04])
+RED_EDGE = np.array([1.00, 0.30, 0.18])
 
 
 def _sstep(e0, e1, x):
@@ -332,7 +338,10 @@ def _slab_surf(P, N, n_ax, u_ax, v_ax, v0):
     S.cu, S.cv = S.u.copy(), S.v.copy()
     du = 64.0 - np.abs(pu)
     dv = np.minimum(pv, 128.0 - pv)
-    S.edge = np.where(main, np.minimum(du, dv), np.minimum(np.minimum(du, dv), WALL_T / 2 - np.abs(pn)))
+    # on a face across the slab, the distance to that face's own border (one of du / dv is 0 there)
+    depth_n = WALL_T / 2 - np.abs(pn)
+    side_u = ~main & (np.abs(N[:, u_ax]) > 0.7)
+    S.edge = np.where(main, np.minimum(du, dv), np.minimum(np.where(side_u, dv, du), depth_n))
     S.inner = np.where(infill, np.minimum(du, dv) - FRAME, np.where(main, FRAME - np.minimum(du, dv), 99.0))
     horiz_bar = dv < FRAME + 0.01
     S.along = np.where(horiz_bar, pu + 64.0, pv)
@@ -544,25 +553,18 @@ def brick_cells(u, v):
 
 
 class PiecePaint:
-    def __init__(self, surf, seed, domains, crack_len=(48.0, 80.0), systems=(4, 7), holes=(0, 9)):
+    def __init__(self, surf, seed, domains, crack_len=(56.0, 80.0), systems=(6, 7)):
         self.surf = surf
         self.seed = seed
         # every domain (a roof's four faces) gets its share of the crack systems
         per = len(domains)
-        self.cracks = {lv: sum((crack_paths(seed + lv + 10 * j, [d], max(1, round(systems[lv - 1] / per + 0.3)),
-                                            crack_len[lv - 1]) for j, d in enumerate(domains)), [])
-                       for lv in (1, 2)}
-        # level 2 keeps the level 1 cracks (wider) and adds its own
-        self.cracks[1] = [(p, w * 0.85) for p, w in self.cracks[1]]
-        self.cracks[2] = [(p, w * 1.6) for p, w in self.cracks[1]] + self.cracks[2]
-        rng = np.random.default_rng(seed + 3)
-        pts = np.concatenate([p for p, _ in self.cracks[2]])
-        pick = rng.choice(len(pts), size=min(holes[1], len(pts)), replace=False)
-        self.holes = [(pts[i] + rng.uniform(-2, 2, 2), rng.uniform(2.8, 5.5), rng.uniform(0.6, 1.3, 7))
-                      for i in pick]
-        p1 = np.concatenate([p for p, _ in self.cracks[1]])
-        pick1 = rng.choice(len(p1), size=min(3, len(p1)), replace=False)
-        self.chips1 = [(p1[i] + rng.uniform(-1, 1, 2), rng.uniform(1.6, 2.6), rng.uniform(0.6, 1.3, 7)) for i in pick1]
+        raw = {lv: sum((crack_paths(seed + lv + 10 * j, [d], max(1, round(systems[lv - 1] / per + 0.3)),
+                                    crack_len[lv - 1]) for j, d in enumerate(domains)), [])
+               for lv in (1, 2)}
+        # level 1 must read at gameplay range (~500 units, mipmapped): wide dark main cracks; level 2 keeps them
+        # (wider still) and adds its own
+        self.cracks = {1: [(p, w * 1.35) for p, w in raw[1]],
+                       2: [(p, w * 1.6) for p, w in raw[1]] + raw[2]}
 
     # bricks and mortar ------------------------------------------------------------------------
     def bricks(self, P, S, sel):
@@ -612,6 +614,47 @@ class PiecePaint:
         return c
 
     # damage -----------------------------------------------------------------------------------
+    def chips(self, P, S, d, c, level):
+        """Impact chips cut into the bricks' corners and edges near the cracks: the exposed (lighter, rough) core of
+        the brick in a jagged crater with a dark broken rim.  Returns the new colours of the brick points."""
+        b = S.brick & np.isfinite(S.u) & (d < (9.0 if level == 1 else 12.0))
+        if not b.any():
+            return c
+        row, col, fu, fv = brick_cells(S.u[b], S.v[b])
+        h = _hash(row, col, self.seed + 601 + level)
+        pick = h < (0.24 if level == 1 else 0.30)
+        if not pick.any():
+            return c
+        idx = np.nonzero(b)[0][pick]
+        row, col, fu, fv = row[pick], col[pick], fu[pick], fv[pick]
+        k = _hash(row, col, self.seed + 611)
+        g = _hash(row, col, self.seed + 613)
+        # where the chip bites: a corner (most), or the middle of the top / bottom edge
+        corner = k < 0.75
+        cu0 = np.where(corner, np.where(_hash(row, col, self.seed + 617) < 0.5, 0.0, BL), BL * (0.3 + 0.4 * g))
+        cv0 = np.where(_hash(row, col, self.seed + 619) < 0.5, 0.0, BH)
+        big = 1.15 if level == 1 else 1.35
+        ra = np.where(corner, 3.6 + 3.0 * g, 2.6 + 2.0 * g) * big
+        rb = np.where(corner, 2.6 + 2.0 * _hash(row, col, self.seed + 623), 1.8 + 1.2 * g) * big
+        a, bb = np.abs(fu - cu0) / ra, np.abs(fv - cv0) / rb
+        Pp = P[idx]
+        jag = 0.16 * _vnoise3(Pp, 0.9, self.seed + 631) + 0.08 * _vnoise3(Pp, 0.35, self.seed + 633)
+        sdist = np.hypot(a, bb) * 0.55 + (a + bb) * 0.45 - jag      # rounded-diamond crater, jagged outline
+        inside = sdist < 1.0
+        rim = (sdist >= 1.0) & (sdist < 1.0 + 0.9 / np.minimum(ra, rb) + 0.08)
+        core = CHIP_CORE * (0.88 + 0.22 * (0.5 + 0.5 * _vnoise3(Pp, 0.45, self.seed + 637)))[:, None]
+        # a shallow crater lit from the top: its lower slope bright, a shadow under the broken top edge
+        up = np.where(cv0 > 0, -1.0, 1.0)              # +1: the crater opens upwards from the bottom edge
+        vrel = (fv - cv0) * up / rb                     # 0 at the edge, 1 at the crater's far side
+        shade = 1.0 - 0.30 * np.clip(1.0 - sdist, 0, 1) * (up < 0) + 0.12 * np.clip(vrel, 0, 1) * (up > 0)
+        edge_shadow = np.exp(-np.maximum(1.0 - sdist, 0) / 0.08) * 0.35
+        core = core * (shade - edge_shadow)[:, None]
+        cc = c[idx]
+        cc = np.where(inside[:, None], core, cc)
+        cc = np.where(rim[:, None], cc * 0.42, cc)
+        c[idx] = cc
+        return c
+
     def damage(self, P, S, c, level):
         d = crack_field(S.cu, S.cv, self.cracks[level])
         # broken bricks along the worst cracks (level 2): the brick's face gone, its cavity in shadow
@@ -631,43 +674,29 @@ class PiecePaint:
                 c[b] = cc
                 dd = d[b]
                 dd[gone] = np.minimum(dd[gone], 0.6)       # no crack line drawn inside the cavity
+                d[b] = dd
+        c = self.chips(P, S, d, c, level)
+        # soot and dust: a soft dark gradient along the cracks (what makes them read from afar) and patches
+        near = np.where(np.isfinite(d), np.exp(-np.maximum(d, 0) / (2.6 if level == 1 else 3.2)), 0.0)
+        c = c * (1.0 - (0.30 if level == 1 else 0.38) * near)[:, None]
         core = d < 0
-        halo = (d >= 0) & (d < 0.8)
-        crack_c = np.array([0.09, 0.06, 0.05])
-        c = np.where(halo[:, None], c * (0.80 + 0.25 * np.clip(d / 0.8, 0, 1))[:, None], c)
+        halo = (d >= 0) & (d < 1.2)
+        crack_c = np.array([0.07, 0.045, 0.04])
+        c = np.where(halo[:, None], c * (0.62 + 0.38 * np.clip(d / 1.2, 0, 1))[:, None], c)
         c = np.where(core[:, None], crack_c * (1 + 0.4 * np.clip(-d, 0, 1))[:, None], c)
-        # dust / soot
-        dirt = np.clip(_fbm3(P, 18.0, self.seed + 211) * 1.6 - (0.25 if level == 1 else -0.05), 0, 1)
-        c = T.mix(c, c * 0.55 + SOOT * 0.25, (dirt * (0.22 if level == 1 else 0.45))[:, None] * np.ones((1, 3)))
-        ok = np.isfinite(S.cu)
-        for (hc, r, hs) in (self.holes if level >= 2 else self.chips1):
-            du = np.where(ok, S.cu - hc[0], 99.0)
-            dv = np.where(ok, S.cv - hc[1], 99.0)
-            near = (np.abs(du) < r * 1.5 + 2) & (np.abs(dv) < r * 1.5 + 2)
-            if not near.any():
-                continue
-            ang = np.arctan2(dv[near], du[near])
-            rr = np.hypot(du[near], dv[near])
-            # an angular outline: radii at 7 corners, straight-ish between them
-            a7 = (ang + math.pi) / (2 * math.pi) * 7
-            i7 = np.floor(a7).astype(np.int64) % 7
-            f7 = a7 - np.floor(a7)
-            edge_r = r * (hs[i7] * (1 - f7) + hs[(i7 + 1) % 7] * f7)
-            inside = rr < edge_r
-            rim = (rr >= edge_r) & (rr < edge_r + 0.8)
-            cc = c[near]
-            core_c = BRICK_CORE * (0.70 + 0.40 * (0.5 + 0.5 * _vnoise3(P[near], 0.8, int(hs[0] * 1000))))[:, None]
-            # a chipped crater: lit on its lower inner slope, shadowed under its top edge
-            lit = np.clip(-np.sin(ang), 0, 1) * np.clip((rr / edge_r - 0.5) / 0.5, 0, 1)
-            shad = np.clip(np.sin(ang), 0, 1) * np.clip((rr / edge_r - 0.4) / 0.6, 0, 1)
-            core_c = core_c * (1 + 0.6 * lit - 0.55 * shad)[:, None]
-            cc = np.where(inside[:, None], core_c, cc)
-            cc = np.where(rim[:, None], cc * 0.75, cc)
-            c[near] = cc
-        if level >= 2:
-            # chipped outer edges of the frame
-            chip = (S.edge < 1.5) & (_vnoise3(P, 3.0, self.seed + 307) > 0.42)
-            c = np.where(chip[:, None], c * 0.55 + np.array([0.06, 0.05, 0.045]), c)
+        dirt = np.clip(_fbm3(P, 18.0, self.seed + 211) * 1.6 - (0.15 if level == 1 else -0.05), 0, 1)
+        c = T.mix(c, c * 0.55 + SOOT * 0.25, (dirt * (0.30 if level == 1 else 0.45))[:, None] * np.ones((1, 3)))
+        # the stone frame: pale chips knocked off its outer edges (lighter fresh stone with a dark broken lip)
+        if level < 2:
+            return np.clip(c, 0, 1)
+        nb = ~S.brick
+        nz = _vnoise3(P, 3.0, self.seed + 307)
+        thr, lim = 0.36, 2.0
+        chip = nb & (S.edge < lim * (0.6 + 0.4 * np.clip((nz - thr) / 0.15, 0, 1))) & (nz > thr)
+        lip = nb & ~chip & (nz > thr - 0.04) & (S.edge < lim + 0.35)
+        fresh = STONE_CHIP * (0.92 + 0.12 * _vnoise3(P, 0.5, self.seed + 309))[:, None]
+        c = np.where(chip[:, None], fresh, c)
+        c = np.where(lip[:, None], c * 0.6, c)
         return np.clip(c, 0, 1)
 
     # blueprint --------------------------------------------------------------------------------
@@ -738,7 +767,10 @@ def piece_model(name, meshes, surf, seed, domains, box_, size, density=None):
     rig = _piece_rig()
     paint = PiecePaint(surf, seed, domains)
     b = builder.ModelBuilder(name, rig, skins=PIECE_SKINS, verbose=False)
-    b.group("brick", size=size, pack="skyline")
+    # the blueprint skins are drawn additively: their unused atlas space is black (no halo from mips / filtering)
+    # and they are fullbright (unlit if the client draws them kRenderTransTexture instead)
+    b.group("brick", size=size, pack="skyline", gutter=lambda skin: (0.0, 0.0, 0.0) if skin >= SKIN_BLUEPRINT else None,
+            skin_flags={SKIN_BLUEPRINT: mdl.STUDIO_NF_FULLBRIGHT, SKIN_BLOCKED: mdl.STUDIO_NF_FULLBRIGHT})
     k = 0
     for i, m in enumerate(meshes):
         for sub, frame in planar_parts(m):
@@ -765,13 +797,13 @@ def build_floor():
 
 
 def build_ramp():
-    return piece_model("build/ramp.mdl", ramp_meshes(), ramp_surf, 1300, [(0, 128, 20, 250)], RAMP_BOX, (768, 512))
+    return piece_model("build/ramp.mdl", ramp_meshes(), ramp_surf, 1300, [(0, 128, 20, 250)], RAMP_BOX, (1024, 512))
 
 
 def build_roof():
     doms = [(160 * k + 20, 160 * k + 108, 10, 60) for k in range(4)]
-    return piece_model("build/roof.mdl", roof_meshes(), roof_surf, 1400, doms, ROOF_BOX, (768, 640),
-                       density=[1.0, 0.55])
+    return piece_model("build/roof.mdl", roof_meshes(), roof_surf, 1400, doms, ROOF_BOX, (512, 512),
+                       density=[1.0, 0.35])
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1227,6 +1259,9 @@ TAB_CENTER = np.array([14.0, 0.0, -6.2])
 TAB_TILT = 42.0                    # the screen leans back (top away from the eye)
 SCREEN_HALF = (5.0, 3.15)
 V_FPS = 30
+THUMB_LIFT = (16.0, 12.0)          # f_thumb of a thumb lifted off the screen (place, rotate)
+THUMB_TAP = (-2.0, -4.0)           # f_thumb of a thumb touching the screen (its pad on the glass)
+THUMB_HOVER = 1.10                 # the thumb tip joint's height over the screen at rest (its pad clears it)
 TABLET_BODY = T.rgb("#2c3036")
 TABLET_EDGE = T.rgb("#4a5058")
 BUMPER = T.rgb("#d0682e")
@@ -1275,7 +1310,7 @@ def grip_layout(Q, W, Tm, Tc):
     # the thumb: its tip on the bezel near the right edge, the IP joint just outside the edge, in front
     tx, ty, tz = Tm[:, 0], Tm[:, 1], Tm[:, 2]
     mcp_v = Q @ np.asarray(B.THUMB_MCP) + W
-    tip_v = Tc + tx * (TAB_HALF[0] - 1.7) - ty * 0.9 + tz * (TAB_HALF[2] + 0.30)
+    tip_v = Tc + tx * (TAB_HALF[0] - 1.7) - ty * 0.9 + tz * (TAB_HALF[2] + THUMB_HOVER)
     ip_v, tip_v = _two_bone(mcp_v, tip_v, B.THUMB_LEN[0], B.THUMB_LEN[1], tx * 0.5 + tz * 2.0)
     out["thumb"] = [np.asarray(B.THUMB_CMC, dtype=np.float64), np.asarray(B.THUMB_MCP, dtype=np.float64),
                     Q.T @ (ip_v - W), Q.T @ (tip_v - W)]
@@ -1414,7 +1449,6 @@ def _sample_img(img, u, v):
 
 def v_sequences(vm):
     """[(name, pose_fn(t), frames, fps, loop)], design space."""
-    tz = vm.Tm[:, 2]
     yv = np.array([0.0, 1.0, 0.0])
     from . import laptop as LP
 
@@ -1422,8 +1456,9 @@ def v_sequences(vm):
         return {"right": kr, "left": LP.mirror_key(kr if kl is None else kl)}
 
     def idle(t):
-        st = both({"f_thumb": (2.0 * R.wave(t, phase=0.2), 1.5 * R.wave(t, phase=0.3))},
-                  {"f_thumb": (2.0 * R.wave(t, phase=0.6), 1.5 * R.wave(t, phase=0.7))})
+        # thumbs resting just over the screen (f_thumb > 0 lifts them off it, < 0 presses them in)
+        st = both({"f_thumb": (1.5 + 1.5 * R.wave(t, phase=0.2), 1.0 + 1.0 * R.wave(t, phase=0.3))},
+                  {"f_thumb": (1.5 + 1.5 * R.wave(t, phase=0.6), 1.0 + 1.0 * R.wave(t, phase=0.7))})
         st["tablet_dW"] = np.array([0.05 * R.wave(t, phase=0.3), 0.04 * R.wave(t, phase=0.1), 0.14 * R.breathe(t)])
         st["tablet_rot"] = (yv, 0.8 * R.wave(t, phase=0.45))
         return vm.pose(st)
@@ -1432,41 +1467,45 @@ def v_sequences(vm):
 
     def draw(t):
         e = R.ease_out_back(min(max(t / 0.85, 0.0), 1.0)) if t > 0 else 0.0
-        st = both({"f_thumb": (-12.0 * (1 - e), -10.0 * (1 - e))})
+        st = both({"f_thumb": (12.0 * (1 - e), 10.0 * (1 - e))})
         st["tablet_dW"] = LOW * (1 - e)
         st["tablet_rot"] = (yv, 32.0 * (1 - e))
         return vm.pose(st)
 
     def holster(t):
         e = R.smoothstep(t)
-        st = both({"f_thumb": (-12.0 * e, -10.0 * e)})
+        st = both({"f_thumb": (12.0 * e, 10.0 * e)})
         st["tablet_dW"] = LOW * e
         st["tablet_rot"] = (yv, 32.0 * e)
         return vm.pose(st)
 
-    # place (0.4 s): the right thumb lifts (f0-3), taps the screen (f4), the screen flashes (f4-7), the tablet
-    # takes a little push forward and settles
+    # place (0.4 s): the right thumb lifts (f0-3), taps the screen (f4: touching it, never through it), the screen
+    # flashes (f4-7), the tablet takes a little push forward and settles.  Only the thumb moves on the tablet (the
+    # arm stays: its fingers lie on the tablet's back)
     PL = 12
 
     def place(t):
         f = t * (PL - 1)
-        lift = R.keys(f, [(0, 0.0), (2.5, 1.0), (4.0, -0.35), (6.5, 0.0), (PL - 1, 0.0)], interp="smooth")
-        kr = {"f_thumb": (-16.0 * lift, -14.0 * lift), "dW": tz * 0.5 * max(lift, 0)}
-        st = both(kr, {"f_thumb": (2.0 * max(-lift, 0), 2.0 * max(-lift, 0))})
+        lift = R.keys(f, [(0, 0.0), (2.5, 1.0), (4.0, -1.0), (6.5, 0.0), (PL - 1, 0.0)], interp="smooth")
+        kr = {"f_thumb": (THUMB_LIFT[0] * lift, THUMB_LIFT[1] * lift) if lift > 0 else
+              (THUMB_TAP[0] * -lift, THUMB_TAP[1] * -lift)}
+        st = both(kr, {"f_thumb": (3.0 * max(-lift, 0), 2.0 * max(-lift, 0))})
         push = R.keys(f, [(0, 0.0), (3.5, 0.0), (5.0, 1.0), (8.0, -0.2), (PL - 1, 0.0)], interp="smooth")
         st["tablet_dW"] = np.array([0.9, 0.0, -0.25]) * push
         st["tablet_rot"] = (yv, -2.0 * push)
         st["flash"] = 4 <= round(f) <= 7
         return vm.pose(st)
 
-    # rotate (0.4 s): the right thumb swipes across the screen's corner, the tablet rolls a little
+    # rotate (0.4 s): the right thumb lifts, comes down on the screen and drags (the tablet rolls under it), lifts
+    # again and settles
     RT = 12
 
     def rotate(t):
         f = t * (RT - 1)
-        sw = R.keys(f, [(0, 0.0), (3.0, 1.0), (7.0, -1.0), (RT - 1, 0.0)], interp="smooth")
-        lift = R.keys(f, [(0, 0.0), (2.0, 0.6), (3.0, 0.0), (7.0, 0.0), (9.0, 0.5), (RT - 1, 0.0)], interp="smooth")
-        kr = {"f_thumb": (-10.0 * lift + 8.0 * sw, -6.0 * lift - 6.0 * sw)}
+        lift = R.keys(f, [(0, 0.0), (2.0, 0.7), (3.5, -1.0), (6.5, -1.0), (8.5, 0.5), (RT - 1, 0.0)],
+                      interp="smooth")
+        kr = {"f_thumb": (THUMB_LIFT[0] * lift, THUMB_LIFT[1] * lift) if lift > 0 else
+              (THUMB_TAP[0] * -lift, THUMB_TAP[1] * -lift)}
         st = both(kr)
         st["tablet_rot"] = (vm.Tm[:, 2], 4.0 * R.keys(f, [(0, 0.0), (5.0, 1.0), (RT - 1, 0.0)], interp="smooth"))
         return vm.pose(st)
@@ -1689,9 +1728,17 @@ def snd_break(i):
 
 
 def snd_deny():
-    beep = W.lowpass(W.osc(185, 0.09, shape="square"), 1400) * W.env_points([(0, 0), (0.006, 1), (0.07, 0.8), (0.09, 0)],
-                                                                            W._n(0.09))
-    return W.finish(W.mix((beep, 0.0, 1.0), (beep, 0.13, 0.9)), peak=0.6, fade_out=0.01)
+    """A soft low double buzz (the refusal plays locally on every denied click): a rounded square (its odd
+    harmonics filtered off), a short attack and an 18 ms release on each beep, about as loud as the other sounds."""
+    def beep(f, dur):
+        n = W._n(dur)
+        tone = W.osc(f, dur, shape="square") * 0.55 + W.osc(f, dur, shape="sine") * 0.45
+        tone = W.lowpass(W.lowpass(tone, 900), 1300)
+        return tone * W.env_points([(0, 0), (0.008, 1), (dur - 0.018, 0.75), (dur, 0)], n)
+    x = W.mix((beep(190, 0.085), 0.0, 1.0), (beep(160, 0.10), 0.125, 0.95))
+    x = W.finish(x, peak=0.5, fade_out=0.018)
+    rms = math.sqrt(float(np.mean(x * x)))
+    return x * (10 ** (-18.0 / 20) / rms)            # RMS -18 dBFS
 
 
 def snd_select():

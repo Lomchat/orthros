@@ -472,8 +472,9 @@ def raster_texels(st, size):
     return tri[inside], px[inside], py[inside], np.stack([l0, l1, l2], axis=1)[inside]
 
 
-def dilate(img, mask, iters=16):
-    """Grow covered texels into empty ones (gutters) by averaging covered neighbours."""
+def dilate(img, mask, iters=16, fill=None):
+    """Grow covered texels into empty ones (gutters) by averaging covered neighbours; what stays empty after
+    `iters` rings gets `fill` (default: the mean covered colour)."""
     img = img.copy()
     m = mask.copy()
     H, W = m.shape
@@ -500,17 +501,21 @@ def dilate(img, mask, iters=16):
         img[grow] = acc[grow] / cnt[grow][:, None]
         m = m | grow
     if not m.all():
-        fillc = img[m].mean(0) if m.any() else np.zeros(img.shape[-1])
+        if fill is not None:
+            fillc = np.asarray(fill, dtype=np.float64)
+        else:
+            fillc = img[m].mean(0) if m.any() else np.zeros(img.shape[-1])
         img[~m] = fillc
     return img
 
 
-def bake(size, st, pos, nrm, paint, skin=0, extra=None):
+def bake(size, st, pos, nrm, paint, skin=0, extra=None, gutter=None):
     """Rasterise a paint function into an RGB(A) float image.
 
     st (T, 3, 2) pixel corners, pos (T, 3, 3) model-space corner positions, nrm (T, 3, 3) corner normals.
     paint(P, N, skin) -> colours (K, 3) or (colours, alpha).  extra: optional (T,) int array passed as
-    paint.ctx["tri_tag"] (e.g. the part index) when paint accepts a 4th argument.
+    paint.ctx["tri_tag"] (e.g. the part index) when paint accepts a 4th argument.  gutter: rgb of the texels
+    beyond the islands' dilation (default: the mean colour).
     Returns (rgb (H, W, 3), alpha (H, W) or None, covered mask (H, W))."""
     W, H = size
     tri, px, py, bary = raster_texels(st, size)
@@ -532,7 +537,7 @@ def bake(size, st, pos, nrm, paint, skin=0, extra=None):
     covered = np.zeros((H, W), dtype=bool)
     img[py, px] = np.clip(np.asarray(col, dtype=np.float64), 0.0, 1.0)
     covered[py, px] = True
-    img = dilate(img, covered)
+    img = dilate(img, covered, fill=gutter)
     if alpha is not None:
         alpha = dilate(alpha[..., None], covered)[..., 0]
     return img, alpha, covered

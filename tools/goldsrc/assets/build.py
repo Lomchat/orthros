@@ -149,7 +149,8 @@ def main(argv=None):
             if p.lower().endswith(".mdl"):
                 pm = mdl.read(files[p])
                 dst = os.path.join(a.render, os.path.basename(p)[:-4] + ".png")
-                render.contact_sheet(pm, frames=6, cell=200).save(dst)
+                vm = os.path.basename(p).lower().startswith("v_")      # view models: the first-person camera
+                render.contact_sheet(pm, frames=6, cell=200, viewmodel=vm).save(dst)
                 print(f"rendered {dst}")
     return 0
 
