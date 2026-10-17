@@ -17,6 +17,9 @@ PIECE CONTRACT (the server's grid and the client's blueprint use exactly these n
   models/build/roof.mdl   x -64..64, y -64..64, z 0..64: origin at the tile centre at the level's height (on top
                           of the walls below); a pyramid shell, apex (0, 0, 64), faces at 45 degrees, 8 thick
                           (vertically).  Suggested collision steps i = 0..3: half-size 56-16i, z 16i .. 16(i+1).
+  Hitboxes: walls and floors their box; ramps and roofs one per collision step (the boxes above), never the
+  whole cube — Xash3D's server traces points (bullets, the grid's aim) through a studio entity's hitboxes, its
+  client (and every hull trace, movement included) through the entity's box (the step's): the two must agree.
   Skins (all four pieces): 0 intact, 1 cracked, 2 badly cracked, 3 blueprint (light-blue grid, meant for
   kRenderTransAdd), 4 blueprint blocked (the same grid in red).
 
@@ -763,7 +766,17 @@ def planar_parts(m):
     return out
 
 
-def piece_model(name, meshes, surf, seed, domains, box_, size, density=None):
+def ramp_hitboxes():
+    # (the collision steps: step i x -64+16i .. -48+16i, z 16i .. 16(i+1) — the server's build_step_box)
+    return [((-64 + 16 * i, -64, 16 * i), (-48 + 16 * i, 64, 16 * (i + 1))) for i in range(RAMP_STEPS)]
+
+
+def roof_hitboxes():
+    # (nested slabs: half-size 56-16i, z 16i .. 16(i+1))
+    return [((-(56 - 16 * i), -(56 - 16 * i), 16 * i), (56 - 16 * i, 56 - 16 * i, 16 * (i + 1))) for i in range(4)]
+
+
+def piece_model(name, meshes, surf, seed, domains, box_, size, density=None, hitboxes=None):
     rig = _piece_rig()
     paint = PiecePaint(surf, seed, domains)
     b = builder.ModelBuilder(name, rig, skins=PIECE_SKINS, verbose=False)
@@ -780,7 +793,8 @@ def piece_model(name, meshes, surf, seed, domains, box_, size, density=None):
             k += 1
     b.add_sequence(R.make_sequence(rig, "idle", lambda t: R.Pose(), frames=1, fps=10, loop=True,
                                    activity=mdl.ACT["IDLE"]))
-    b.hitbox("piece", box_[0], box_[1])
+    for lo, hi in hitboxes or [box_]:
+        b.hitbox("piece", lo, hi)
     b.hull = box_
     b.eyeposition = (0, 0, 0)
     data = b.write()
@@ -797,13 +811,14 @@ def build_floor():
 
 
 def build_ramp():
-    return piece_model("build/ramp.mdl", ramp_meshes(), ramp_surf, 1300, [(0, 128, 20, 250)], RAMP_BOX, (1024, 512))
+    return piece_model("build/ramp.mdl", ramp_meshes(), ramp_surf, 1300, [(0, 128, 20, 250)], RAMP_BOX, (1024, 512),
+                       hitboxes=ramp_hitboxes())
 
 
 def build_roof():
     doms = [(160 * k + 20, 160 * k + 108, 10, 60) for k in range(4)]
     return piece_model("build/roof.mdl", roof_meshes(), roof_surf, 1400, doms, ROOF_BOX, (512, 512),
-                       density=[1.0, 0.35])
+                       density=[1.0, 0.35], hitboxes=roof_hitboxes())
 
 
 # ---------------------------------------------------------------------------------------------
