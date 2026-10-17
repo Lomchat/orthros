@@ -8,8 +8,9 @@
 // 127.0.0.1:<goldsrc.multiplayer.port> (TCP), for the Orthros server only (src/host/goldsrc.js roomsProxy):
 //   GET /rooms  -> { rooms: [{ index, port, name, map, players (bots included), humans, maxPlayers, bots, permanent, since, up }], maps,
 //                    slots, maxPlayers, bots: { max } | null }
-//   POST /rooms { name, map, maxPlayers, bots, options, by } -> 201 { room } once the server answers, or 400/409/503 (`by`: the
-//                    creator's address — one live room each)
+//   POST /rooms { name, map, maxPlayers, bots, options, by } -> 201 { room, key } once the server answers, or 400/409/503
+//                    (`by`: the creator's address — one live room each; `key`: the room's secret, its creator's to close it)
+//   DELETE /rooms/<index> { key } -> 200 { closed } (its server stopped), 403 (room 0, or not its key) or 404
 // The game library is the one the game's files name, or goldsrc.multiplayer.gameLibrary: a native build in the browser
 // release (tools/goldsrc/build-modules.sh). The writable state (configuration, logs, the linked game files) goes to
 // $STATE_DIRECTORY, or --state <dir>; a room's to rooms/<index>/ there.
@@ -19,6 +20,7 @@ import path from 'node:path';
 import http from 'node:http';
 import dgram from 'node:dgram';
 import { spawn } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/host/game-catalog.js';
 import { DEFAULT_ENGINES_DIR, engineFile, linkGameLayers, parseServerInfo, roomOptionCommands, roomPort, roomRequest, roomSlots, sameRoomName } from '../../src/host/goldsrc.js';
 
@@ -122,7 +124,7 @@ const poll = setInterval(() => {
 
 const view = (r) => ({ index: r.index, port: r.port, name: r.info?.name || r.name, map: r.info?.map ?? r.map, players: (r.info?.players ?? 0) + r.bots,
   humans: r.info?.players ?? 0, maxPlayers: r.maxPlayers, bots: r.bots, options: r.options ?? {}, permanent: r.permanent, since: r.since,
-  up: !!r.child && Date.now() - (r.seen ?? 0) < 15000 });
+  up: !!r.child && !r.stopping && Date.now() - (r.seen ?? 0) < 15000, closing: !!r.stopping });
 
 /** A new room: the first free index, its server started, answered once it answers its info (20 s at most). */
 async function create(request) {
@@ -130,14 +132,14 @@ async function create(request) {
   if (checked.error) return [400, { error: checked.error }];
   const { room: spec } = checked, by = typeof request?.by === 'string' ? request.by.slice(0, 64) : '';
   if ([...rooms.values()].some((r) => sameRoomName(r.name, spec.name) || (r.info?.name && sameRoomName(r.info.name, spec.name)))) return [409, { error: 'taken' }];
-  if (by && [...rooms.values()].some((r) => r.by === by)) return [409, { error: 'owned' }];
+  if (by && [...rooms.values()].some((r) => r.by === by && !r.stopping)) return [409, { error: 'owned' }]; // (a closing one: not anymore)
   let index = 1; while (rooms.has(index) && index <= roomSlots(mp)) index++;
   if (index > roomSlots(mp)) return [503, { error: 'full' }];
-  const room = { index, port: roomPort(mp, index), ...spec, by, permanent: false, since: Date.now(), child: null, info: null, seen: 0, idleSince: Date.now() };
+  const room = { index, port: roomPort(mp, index), ...spec, by, key: randomBytes(16).toString('hex'), permanent: false, since: Date.now(), child: null, info: null, seen: 0, idleSince: Date.now() };
   rooms.set(index, room);
   try { launch(room); } catch (error) { rooms.delete(index); console.error(`room ${index}: ${error.message}`); return [503, { error: 'start' }]; }
   console.log(`room ${index} "${room.name}" on ${room.map}, ${room.maxPlayers} players, ${room.bots} bots`);
-  for (let t = 0; t < 40 && rooms.get(index) === room; t++) { ask(room); await new Promise((r) => setTimeout(r, 500)); if (room.seen) return [201, { room: view(room) }]; }
+  for (let t = 0; t < 40 && rooms.get(index) === room; t++) { ask(room); await new Promise((r) => setTimeout(r, 500)); if (room.seen) return [201, { room: view(room), key: room.key }]; }
   if (room.child) room.child.kill('SIGKILL'); else rooms.delete(index);
   return [503, { error: 'start' }];
 }
@@ -150,6 +152,21 @@ const control = http.createServer((req, res) => {
     req.on('end', () => {
       let request; try { request = JSON.parse(body); } catch { return send(400, { error: 'json' }); }
       create(request).then(([status, out]) => send(status, out), (error) => { console.error(`create: ${error.message}`); send(500, { error: 'start' }); });
+    });
+    return;
+  }
+  // (a created room closed by its creator: the key its creation answered)
+  const del = /^\/rooms\/(\d{1,2})$/.exec(req.url ?? '');
+  if (del && req.method === 'DELETE') {
+    let body = ''; req.on('data', (d) => { body += d; if (body.length > 512) req.destroy(); });
+    req.on('end', () => {
+      let key; try { key = JSON.parse(body)?.key; } catch { return send(400, { error: 'json' }); }
+      const room = rooms.get(Number(del[1]));
+      if (!room) return send(404, { error: 'none' });
+      const given = Buffer.from(typeof key === 'string' ? key : ''), own = Buffer.from(room.key ?? '');
+      if (room.permanent || !own.length || given.length !== own.length || !timingSafeEqual(given, own)) return send(403, { error: 'forbidden' });
+      if (room.child) stop(room, 'closed by its creator'); else rooms.delete(room.index);
+      send(200, { closed: room.index });
     });
     return;
   }

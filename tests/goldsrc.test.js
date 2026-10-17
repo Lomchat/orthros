@@ -246,6 +246,28 @@ test('rooms: a creation request is checked, a server\'s info read', () => {
   assert.equal(parseServerInfo(Buffer.from('\xff\xff\xff\xffinfo\nwrong version\n', 'latin1')), null);
 });
 
+test('rooms: a created room is closed with its key, from the page\'s origin only', async (t) => {
+  const seen = [];
+  const manager = http.createServer((req, res) => {
+    let body = ''; req.on('data', (d) => { body += d; });
+    req.on('end', () => { seen.push([req.method, req.url, body]); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"closed":2}'); });
+  });
+  await new Promise((resolve) => manager.listen(0, '127.0.0.1', resolve)); t.after(() => manager.close());
+  const port = manager.address().port;
+  const { games, engines } = fixture(t, { goldsrc: goldsrc({ multiplayer: { server: 'srv', port, map: 'dm', rooms: { ports: [port + 1, port + 2] } } }) });
+  const base = await serve(t, { gamesDir: games, enginesDir: engines });
+  const key = 'ab'.repeat(16);
+  const del = (headers, body) => fetch(`${base}/api/rooms/gs-orig/2`, { method: 'DELETE', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  assert.equal((await del({}, { key })).status, 403); // (no Origin)
+  assert.equal((await del({ Origin: 'http://elsewhere.example' }, { key })).status, 403);
+  assert.equal((await del({ Origin: base }, { key: 'not-a-key' })).status, 403);
+  assert.equal(seen.length, 0);
+  const res = await del({ Origin: base }, { key });
+  assert.equal(res.status, 200); assert.deepEqual(await res.json(), { closed: 2 });
+  assert.deepEqual(seen, [['DELETE', '/rooms/2', JSON.stringify({ key })]]);
+  assert.equal((await fetch(`${base}/api/rooms/gs-orig/2`)).status, 405);
+});
+
 test('rooms: the page\'s relay tags each packet with its room, a broadcast reaches every room', async (t) => {
   const echo = async (tag) => {
     const udp = dgram.createSocket('udp4'); await new Promise((resolve) => udp.bind(0, '127.0.0.1', resolve)); t.after(() => udp.close());
