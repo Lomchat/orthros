@@ -288,7 +288,7 @@ test('rooms: the page\'s relay tags each packet with its room, a broadcast reach
   } finally { ws.close(); }
 });
 
-test('rooms: listed and created through the server manager, from the page\'s origin, once a minute per address', async (t) => {
+test('rooms: listed and created through the server manager, from the page\'s origin, no delay between one\'s creations', async (t) => {
   const calls = [];
   const roomsRequest = async (port, method, body) => { calls.push([port, method, body]); return method === 'GET' ? [200, { rooms: [{ index: 0, name: 'Orthros - GS', humans: 1 }], maps: ['dm'] }] : [201, { room: { index: 1, ...body } }]; };
   const { games, engines } = fixture(t, { goldsrc: goldsrc({ multiplayer: { server: 'srv', port: 27999, map: 'dm', rooms: { ports: [28000, 28001] } } }) });
@@ -300,7 +300,7 @@ test('rooms: listed and created through the server manager, from the page\'s ori
   assert.equal((await post({ name: 'M', map: 'dm' })).status, 400);
   const made = await post({ name: 'Mine', map: 'dm', maxPlayers: 8 });
   assert.equal(made.status, 201); assert.equal((await made.json()).room.name, 'Mine');
-  assert.equal((await post({ name: 'Again', map: 'dm' })).status, 429);
+  assert.equal((await post({ name: 'Again', map: 'dm' })).status, 201); // (one live room each: the manager's to refuse)
   assert.equal(calls.at(-1)[2].by, '127.0.0.1'); // (the creator's address: one live room each, the manager's to keep)
   assert.equal((await fetch(`${base}/api/rooms/win-1`)).status, 404);
   assert.equal((await (await fetch(`${base}/api/rooms/gs-orig`, { method: 'PUT' })).json()).error, 'method');

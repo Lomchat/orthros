@@ -178,11 +178,13 @@ export function linkGameLayers(manifest, dest) {
  * The rooms of a version (GET /api/rooms/<manifest>: its servers, maps and limits; POST: a room created, checked here
  * first, its answer carrying the room's key; DELETE /api/rooms/<manifest>/<index> { key }: a created room closed by
  * whoever holds its key), asked of its server manager on 127.0.0.1:<goldsrc.multiplayer.port> over TCP
- * (tools/goldsrc/server.mjs). A creation or a closing needs the page's origin; a creation comes once a minute per
- * address. `handle(req, res, url)` answers or returns false.
+ * (tools/goldsrc/server.mjs). A creation or a closing needs the page's origin; an address has one creation in flight
+ * at a time (30 a minute in all). `handle(req, res, url)` answers or returns false.
  */
 export function roomsApi({ getManifest, request = managerRequest, now = () => Date.now() }) {
-  const created = new Map(), recent = []; // (per address; every creation of the last minute: 6 at most, all addresses)
+  // (per address, the creation it has in flight — one at a time; every creation of the last minute, all addresses: a
+  // flood guard. No delay between one's creations: one live room each is the manager's rule)
+  const inFlight = new Set(), recent = [], PER_MINUTE = 30;
   const handle = (req, res, url) => {
     const m = /^\/api\/rooms\/([^/]+)(?:\/(\d{1,2}))?$/.exec(url.pathname);
     if (!m) return false;
@@ -214,10 +216,13 @@ export function roomsApi({ getManifest, request = managerRequest, now = () => Da
     if (!sameOrigin || !mp.rooms) { send(403, { error: 'forbidden' }); return true; }
     const who = clientAddress(req), t = now();
     while (recent.length && t - recent[0] > 60000) recent.shift();
-    if (t - (created.get(who) ?? -Infinity) < 60000 || recent.length >= 6) { send(429, { error: 'wait' }); return true; }
+    if (inFlight.has(who) || recent.length >= PER_MINUTE) { send(429, { error: 'wait' }); return true; }
     // (the slot taken at once: requests sent together cannot all pass the check)
-    created.set(who, t); recent.push(t);
-    const release = () => { created.delete(who); const i = recent.indexOf(t); if (i >= 0) recent.splice(i, 1); };
+    inFlight.add(who); recent.push(t);
+    let done = false;
+    const finish = () => { if (!done) { done = true; inFlight.delete(who); } };
+    const release = () => { finish(); const i = recent.indexOf(t); if (i >= 0) recent.splice(i, 1); };
+    res.on('close', finish);
     let body = '';
     req.on('data', (d) => { body += d; if (body.length > 2048) { release(); req.destroy(); } });
     req.on('end', () => {

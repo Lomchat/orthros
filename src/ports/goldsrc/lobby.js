@@ -14,7 +14,7 @@ const STRINGS = {
     name: 'Name', map: 'Map', size: 'Players', botsLabel: 'Bots', none: 'None', cancel: 'Cancel', submit: 'Create and join', maps: (n) => `${n} maps`,
     defaultName: (nick) => `${nick}'s game`, creating: 'Creating the game…', less: 'fewer', more: 'more',
     errors: { name: 'Give it a name (2 characters at least).', map: 'Choose a map.', maxPlayers: 'Invalid number of players.', bots: 'Too many bots for that many players.', options: 'Invalid settings.',
-      taken: 'A game already has that name.', owned: 'You already have a game running: join it, or wait for it to end.', ownedHere: 'You already have a game running: join it, or close it.', full: 'Every game slot is taken: join one, or wait for one to end.', wait: 'One game a minute: wait a moment.',
+      taken: 'A game already has that name.', owned: 'You already have a game running: join it, or wait for it to end.', ownedHere: 'You already have a game running: join it, or close it.', full: 'Every game slot is taken: join one, or wait for one to end.', wait: 'A game is already being created: wait a moment.',
       start: 'The game server did not start. Try again.', offline: 'The game servers are not reachable right now.', forbidden: 'Creating games is not offered here.' },
   },
   fr: {
@@ -25,7 +25,7 @@ const STRINGS = {
     name: 'Nom', map: 'Carte', size: 'Joueurs', botsLabel: 'Bots', none: 'Aucun', cancel: 'Annuler', submit: 'Créer et rejoindre', maps: (n) => `${n} cartes`,
     defaultName: (nick) => `Partie de ${nick}`, creating: 'Création de la partie…', less: 'moins', more: 'plus',
     errors: { name: 'Donne-lui un nom (2 caractères au moins).', map: 'Choisis une carte.', maxPlayers: 'Nombre de joueurs invalide.', bots: 'Trop de bots pour ce nombre de joueurs.', options: 'Réglages invalides.',
-      taken: 'Une partie porte déjà ce nom.', owned: 'Tu as déjà une partie en cours : rejoins-la, ou attends qu’elle se termine.', ownedHere: 'Tu as déjà une partie en cours : rejoins-la, ou ferme-la.', full: 'Toutes les places de parties sont prises : rejoins-en une, ou attends qu’une se termine.', wait: 'Une partie par minute : patiente un instant.',
+      taken: 'Une partie porte déjà ce nom.', owned: 'Tu as déjà une partie en cours : rejoins-la, ou attends qu’elle se termine.', ownedHere: 'Tu as déjà une partie en cours : rejoins-la, ou ferme-la.', full: 'Toutes les places de parties sont prises : rejoins-en une, ou attends qu’une se termine.', wait: 'Une partie est déjà en cours de création : patiente un instant.',
       start: 'Le serveur de jeu n’a pas démarré. Réessaie.', offline: 'Les serveurs de jeu sont injoignables pour le moment.', forbidden: 'La création de parties n’est pas proposée ici.' },
   },
 };

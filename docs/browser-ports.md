@@ -126,7 +126,7 @@ files, the game's first images) with their progress, and tips.
   its room in its first byte (255: every room — the game's LAN search).
 - `/api/rooms/<manifest>`: the lobby. GET: the version's games (its permanent server and the rooms players created:
   name, map, players with the bots, humans, size, bots), the maps and the limits, from its server manager. POST
-  `{ name, map, maxPlayers, bots }`: a room created (the page's origin, one a minute per address), answered once its
+  `{ name, map, maxPlayers, bots }`: a room created (the page's origin; one creation in flight per address, 30 a minute in all), answered once its
   server answers, with the room's secret `key`. `DELETE /api/rooms/<manifest>/<index>` `{ key }` (the page's origin):
   that room closed — its server stopped, its players back to the menu; room 0 never. The lobby keeps the keys of the
   rooms its browser created (`localStorage`, `orthros-rooms:<manifest>`) and shows those a Close button.
