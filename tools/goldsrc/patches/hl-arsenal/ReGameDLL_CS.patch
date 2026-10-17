@@ -1,13 +1,14 @@
 diff --git a/regamedll/CMakeLists.txt b/regamedll/CMakeLists.txt
-index 70bf349..9d80d9a 100644
+index 70bf349..d428791 100644
 --- a/regamedll/CMakeLists.txt
 +++ b/regamedll/CMakeLists.txt
-@@ -269,6 +269,8 @@ set(GAMEDLL_SRCS
+@@ -269,6 +269,9 @@ set(GAMEDLL_SRCS
  	"dlls/wpn_shared/wpn_deagle.cpp"
  	"dlls/wpn_shared/wpn_elite.cpp"
  	"dlls/wpn_shared/wpn_famas.cpp"
 +	"dlls/wpn_shared/wpn_hl.cpp"
 +	"dlls/wpn_shared/wpn_pokemon.cpp"
++	"dlls/wpn_shared/build.cpp"
  	"dlls/wpn_shared/wpn_fiveseven.cpp"
  	"dlls/wpn_shared/wpn_flashbang.cpp"
  	"dlls/wpn_shared/wpn_g3sg1.cpp"
@@ -37,11 +38,253 @@ index 8c7c7a1..4fcb447 100644
  
  		HandleMenu_ChooseAppearance(pBot, skin);
  
+diff --git a/regamedll/dlls/build.h b/regamedll/dlls/build.h
+new file mode 100644
+index 0000000..76928cd
+--- /dev/null
++++ b/regamedll/dlls/build.h
+@@ -0,0 +1,173 @@
++/*
++*	Half Strike r11: bricks and Fortnite-style building (wpn_shared/build.cpp; the grid: wpn_shared/build_grid.h, shared
++*	with the client's blueprint).
++*
++*	Bricks: one count per player (0..BUILD_MAX_BRICKS), set to mp_build_bricks at each new round (and at a player's
++*	first spawn). A bullet impact on the world or a brush entity (not a player, a Pokemon nor a built piece) drops a pile
++*	of BUILD_DROP bricks on the ground below it, a little towards the shooter: once per shot and surface (FireBullets3:
++*	its first brush hit; a shotgun's pellets: once per brush entity hit by the blast); an explosion near a brush surface
++*	drops one pile. Piles merge (one per BUILD_PILE_MERGE units, up to BUILD_PILE_MAX bricks), vanish after
++*	BUILD_PILE_LIFE s, at most BUILD_PILE_CAP of them (the oldest goes); humans pick them up by walking over them.
++*	Nothing drops and nothing is built with mp_build 0.
++*
++*	Building: the client asks `build_mode 0|1` (the weapon holstered, v_build in hand, the weapon's frame skipped) and
++*	`build_place <piece> <ox> <oy> <oz> <yaw> [turns]`; the server recomputes the spot (build_aim from its own view),
++*	checks it (reach, world, players and Pokemon, slot, caps, bricks) and builds (BUILD_COST bricks) or answers BuildDeny.
++*	Pieces (build_piece) grow in BUILD_GROW_TIME from a third of their health; ramps and roofs collide as steps
++*	(build_step, invisible, their damage routed to the piece). Every damage hurts them (blasts twice), except a
++*	teammate's (and its builder's own) without mp_friendlyfire; three skins by damage; destroyed: brick debris, sound,
++*	gone with its steps. All removed at each new round. Per player BUILD_PLAYER_CAP pieces, BUILD_GLOBAL_CAP in all, and
++*	BUILD_EDICT_MARGIN edicts always left free (and, for pieces, room for every pile; a new pile is not dropped past it).
++*
++*	Messages: Bricks (short count, byte picked up — 0: another change), BuildMode (byte: 1 in build mode, 2 building on),
++*	BuildDeny (byte: build_grid.h's reason).
++*/
++#pragma once
++
++#include "wpn_shared/build_grid.h"
++
++#define BUILD_DROP          5       // bricks per impact
++#define BUILD_PILE_MERGE    48.0f   // a drop this close to a pile joins it
++#define BUILD_PILE_MAX      250     // bricks in a pile at most (the Bricks message's byte)
++#define BUILD_PILE_LIFE     60.0f
++#define BUILD_PILE_CAP      120
++#define BUILD_HEALTH        300.0f  // every piece, grown
++#define BUILD_GROW_TIME     0.4f
++#define BUILD_PLAYER_CAP    60
++#define BUILD_GLOBAL_CAP    400
++// build entities (pieces and steps) at most: the client's prediction keeps MAX_PHYSENTS 600 - maxclients physents (568
++// at 32 players; map brush entities first, the rest dropped), so pieces and steps stay well under it
++#define BUILD_ENTITY_CAP    420
++#define BUILD_STEP_SEND     1024.0f // steps (invisible: prediction only) sent within that distance of a client
++#define BUILD_EDICT_MARGIN  150     // edicts left free for the game (pieces: also room for BUILD_PILE_CAP piles)
++#define BUILD_PLACE_DELAY   0.08f   // between two pieces of a player (the client's held fire: 0.12 s)
++#define BUILD_BLAST_FACTOR  2.0f    // explosions hurt pieces that much more
++
++extern cvar_t build_enabled;   // mp_build
++extern cvar_t build_start_bricks;    // mp_build_bricks
++
++extern int gmsgBricks;
++extern int gmsgBuildMode;
++extern int gmsgBuildDeny;
++
++void BUILD_RegisterCvars();
++void BUILD_RegisterMessages();
++void BUILD_Precache();
++
++// The player's state (player.cpp): spawned, killed, a new round, its frame (true: in build mode, the weapon's frame
++// skipped), its client data (the messages), a weapon picked (true: it was in build mode, the weapon is back in hand)
++void BUILD_PlayerSpawn(CBasePlayer *pPlayer);
++void BUILD_PlayerSpawned(CBasePlayer *pPlayer);   // (at its spawn spot: pieces it would be stuck in break)
++void BUILD_PlayerKilled(CBasePlayer *pPlayer);
++void BUILD_PlayerNewRound(CBasePlayer *pPlayer);
++bool BUILD_PlayerItemFrame(CBasePlayer *pPlayer);
++void BUILD_PlayerUpdateClient(CBasePlayer *pPlayer, bool bInitHUD);
++bool BUILD_LeaveForWeapon(CBasePlayer *pPlayer, CBasePlayerItem *pNext);
++inline bool BUILD_InMode(const CBasePlayer *pPlayer) { return pPlayer->m_bBuildMode; }
++
++// build_mode, build_place, build_give (client.cpp's commands): true if it was one
++bool BUILD_ClientCommand(CBasePlayer *pPlayer, const char *pcmd);
++
++// Removes every piece and pile (a new round)
++void BUILD_CleanUpMap();
++
++// Impacts: a bullet's on a surface (its trace), an explosion's (its centre and radius)
++void BUILD_BulletImpact(entvars_t *pevAttacker, const Vector &vecSrc, TraceResult *ptr);
++// (a shot of several pellets: once per brush entity, those already met in pHits[iHits], up to iMax)
++void BUILD_ImpactOnce(entvars_t *pevAttacker, const Vector &vecSrc, TraceResult *ptr, edict_t **pHits, int &iHits, int iMax);
++void BUILD_ExplosionImpact(entvars_t *pevAttacker, const Vector &vecSrc, float flRadius, float flDamage);
++
++// A piece or one of its steps
++bool BUILD_IsPiece(const edict_t *pEdict);
++inline bool BUILD_IsPiece(CBaseEntity *pEntity) { return pEntity && BUILD_IsPiece(pEntity->edict()); }
++
++// A line as UTIL_TraceLine's ignore_monsters (the world, brush entities) that stops on built pieces too
++void BUILD_TraceLineSolid(const Vector &vecStart, const Vector &vecEnd, edict_t *pIgnore, TraceResult *ptr);
++
++// Whether a piece (a ramp's or a roof's own box is only its first step) is seen through one of its other steps
++bool BUILD_PieceVisible(edict_t *pEdict, unsigned char *pSet);
++
++// The built piece (its own entity, a step's routed to it) a line from vecSrc to vecEnd meets first, through players and
++// monsters (pIgnore: skipped too), before the world; null: none
++CBaseEntity *BUILD_PieceOnLine(const Vector &vecSrc, const Vector &vecEnd, edict_t *pIgnore);
++
++// A blast's distance to an entity (a piece: its nearest point) and whether a piece shields the entity from it
++float BUILD_BlastDistance(CBaseEntity *pEntity, const Vector &vecSrc, float flDefault);
++bool BUILD_BlastShielded(CBaseEntity *pEntity, const Vector &vecSrc, const Vector &vecSpot, edict_t *pInflictor);
++
++class CBuildPiece: public CBaseEntity
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int ObjectCaps() { return FCAP_DONT_SAVE; }
++	virtual int Classify() { return CLASS_NONE; }
++	virtual int BloodColor() { return DONT_BLEED; }
++	virtual BOOL IsAlive() { return FALSE; }
++	virtual void TraceAttack(entvars_t *pevAttacker, float flDamage, Vector vecDir, TraceResult *ptr, int bitsDamageType);
++	virtual BOOL TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType);
++
++	static CBuildPiece *Create(CBasePlayer *pOwner, const build_spot_t &spot);
++	void EXPORT GrowThink();
++
++	void Destroy();
++	void Vanish();               // removed at once with its steps (a new round)
++	bool IsOwnedBy(CBasePlayer *pPlayer) const { return m_hOwner.IsValid() && m_hOwner.Get() == pPlayer->edict(); }
++	int Piece() const { return m_iPiece; }
++	int Yaw() const { return m_iYaw; }
++	int Entities() const { return 1 + m_iNumSteps; }
++	bool StepVisible(unsigned char *pSet) const;
++
++	void Chips(const Vector &vecPos, const Vector &vecDir);   // a hit's brick chips and sound
++
++private:
++	float GrownFraction() const;
++	void UpdateHealth();
++
++	EntityHandle<CBasePlayer> m_hOwner;
++	int m_iTeam;
++	int m_iPiece;
++	int m_iYaw;
++	float m_flBornTime;
++	float m_flDamage;            // taken so far
++	bool m_bGrowing;
++	bool m_bDestroyed;
++	EHANDLE m_hSteps[8];
++	int m_iNumSteps;
++	float m_flLastHitTime;       // (a blast: once per inflictor and frame, through every step of a ramp)
++	edict_t *m_pLastInflictor;
++	float m_flLastHitDamage;
++	float m_flNextHitSound;
++	float m_flNextChips;
++};
++
++class CBuildStep: public CBaseEntity
++{
++public:
++	virtual void Spawn();
++	virtual int ObjectCaps() { return FCAP_DONT_SAVE; }
++	virtual int Classify() { return CLASS_NONE; }
++	virtual int BloodColor() { return DONT_BLEED; }
++	virtual BOOL IsAlive() { return FALSE; }
++	virtual void TraceAttack(entvars_t *pevAttacker, float flDamage, Vector vecDir, TraceResult *ptr, int bitsDamageType);
++	virtual BOOL TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType);
++
++	CBuildPiece *Parent() const;
++	EHANDLE m_hParent;
++};
++
++class CBrickPile: public CBaseEntity
++{
++public:
++	virtual void Spawn();
++	virtual void Precache();
++	virtual int ObjectCaps() { return FCAP_DONT_SAVE; }
++	virtual void Touch(CBaseEntity *pOther);
++	void EXPORT ExpireThink();
++
++	static void Drop(const Vector &vecGround, int iAmount);
++	void SetAmount(int iAmount);
++
++	int m_iAmount;
++	float m_flBornTime;
++};
 diff --git a/regamedll/dlls/cbase.cpp b/regamedll/dlls/cbase.cpp
-index 5be847b..bedeac6 100644
+index 5be847b..522a904 100644
 --- a/regamedll/dlls/cbase.cpp
 +++ b/regamedll/dlls/cbase.cpp
-@@ -1616,7 +1616,7 @@ void OnFreeEntPrivateData(edict_t *pEnt)
+@@ -1039,6 +1039,10 @@ void CBaseEntity::__API_HOOK(FireBullets)(ULONG cShots, VectorRef vecSrc, Vector
+ 	ClearMultiDamage();
+ 	gMultiDamage.type = (DMG_BULLET | DMG_NEVERGIB);
+ 
++	// (Half Strike r11: bricks once per shot and brush entity hit, however many pellets)
++	edict_t *pBrickHits[4];
++	int iBrickHits = 0;
++
+ 	for (ULONG iShot = 1; iShot <= cShots; iShot++)
+ 	{
+ 		int spark = 0;
+@@ -1099,6 +1103,8 @@ void CBaseEntity::__API_HOOK(FireBullets)(ULONG cShots, VectorRef vecSrc, Vector
+ 		{
+ 			CBaseEntity *pEntity = CBaseEntity::Instance(tr.pHit);
+ 
++			BUILD_ImpactOnce(pevAttacker, vecSrc, &tr, pBrickHits, iBrickHits, ARRAYSIZE(pBrickHits));
++
+ 			if (iDamage)
+ 			{
+ 				pEntity->TraceAttack(pevAttacker, iDamage, vecDir, &tr, DMG_BULLET | ((iDamage > 16) ? DMG_ALWAYSGIB : DMG_NEVERGIB));
+@@ -1187,6 +1193,10 @@ void CBaseEntity::__API_HOOK(FireBuckshots)(ULONG cShots, VectorRef vecSrc, Vect
+ 	ClearMultiDamage();
+ 	gMultiDamage.type = (DMG_BULLET | DMG_NEVERGIB);
+ 
++	// (Half Strike r11: bricks once per shot and brush entity hit, however many pellets)
++	edict_t *pBrickHits[4];
++	int iBrickHits = 0;
++
+ 	for (ULONG iShot = 1; iShot <= cShots; iShot++)
+ 	{
+ 		// get circular gaussian spread
+@@ -1245,6 +1255,7 @@ void CBaseEntity::__API_HOOK(FireBuckshots)(ULONG cShots, VectorRef vecSrc, Vect
+ 		{
+ 			CBaseEntity *pEntity = CBaseEntity::Instance(tr.pHit);
+ 			float flDamage = ((1 - tr.flFraction) * iDamage);
++			BUILD_ImpactOnce(pevAttacker, vecSrc, &tr, pBrickHits, iBrickHits, ARRAYSIZE(pBrickHits));
+ 			pEntity->TraceAttack(pevAttacker, int(flDamage), vecDir, &tr, DMG_BULLET);
+ 		}
+ 
+@@ -1361,6 +1372,7 @@ VectorRef CBaseEntity::__API_HOOK(FireBullets3)(VectorRef vecSrc, VectorRef vecD
+ 	float flDamageModifier = 0.5;
+ 
+ 	int iStartPenetration = iPenetration;
++	bool bBricksDropped = false; // (Half Strike r11: bricks at the bullet's first brush hit only)
+ 	while (iPenetration != 0)
+ 	{
+ 		ClearMultiDamage();
+@@ -1441,6 +1453,15 @@ VectorRef CBaseEntity::__API_HOOK(FireBullets3)(VectorRef vecSrc, VectorRef vecD
+ 			if (!bIsPenatrable)
+ 				iPenetration = 0;
+ 
++			// (Half Strike r11: a built piece stops the bullet; the first brush hit drops bricks)
++			if (BUILD_IsPiece(tr.pHit))
++				iPenetration = 0;
++			else if (!bBricksDropped && VARS(tr.pHit)->solid == SOLID_BSP)
++			{
++				bBricksDropped = true;
++				BUILD_BulletImpact(pevAttacker, vecSrc, &tr);
++			}
++
+ 			if (tr.iHitgroup == HITGROUP_SHIELD)
+ 			{
+ 				EMIT_SOUND(pEntity->edict(), CHAN_VOICE, (RANDOM_LONG(0, 1) == 1) ? "weapons/ric_metal-1.wav" : "weapons/ric_metal-2.wav", VOL_NORM, ATTN_NORM);
+@@ -1616,7 +1637,7 @@ void OnFreeEntPrivateData(edict_t *pEnt)
  				if (IsGrenadeWeapon(pItem->m_iId) || pItem->m_iId == WEAPON_C4)
  					pOwner->m_rgAmmo[pItem->PrimaryAmmoIndex()] = 0;
  
@@ -51,7 +294,7 @@ index 5be847b..bedeac6 100644
  		}
  	}
 diff --git a/regamedll/dlls/client.cpp b/regamedll/dlls/client.cpp
-index b802a2e..bf7463f 100644
+index b802a2e..42d5f60 100644
 --- a/regamedll/dlls/client.cpp
 +++ b/regamedll/dlls/client.cpp
 @@ -83,6 +83,9 @@ int gmsgFog = 0;
@@ -102,7 +345,7 @@ index b802a2e..bf7463f 100644
  bool g_skipCareerInitialSpawn = false;
  
  static entity_field_alias_t entity_field_alias[] =
-@@ -230,6 +264,15 @@ void LinkUserMessages()
+@@ -230,6 +264,18 @@ void LinkUserMessages()
  	gmsgAccount       = REG_USER_MSG("Account", 5);
  	gmsgHealthInfo    = REG_USER_MSG("HealthInfo", 5);
  #endif
@@ -115,10 +358,13 @@ index b802a2e..bf7463f 100644
 +
 +	// (Le M's Hack: its victim's screen scrambled a moment — byte duration in hundredths of a second, byte intensity)
 +	gmsgLemHack       = REG_USER_MSG("LemHack", 2);
++
++	// (Half Strike r11: bricks, build mode, a refused piece — build.h)
++	BUILD_RegisterMessages();
  }
  
  void WriteSigonMessages()
-@@ -399,6 +442,102 @@ void EXT_FUNC __API_HOOK(ShowMenu)(CBasePlayer *pPlayer, int bitsValidSlots, int
+@@ -399,6 +445,102 @@ void EXT_FUNC __API_HOOK(ShowMenu)(CBasePlayer *pPlayer, int bitsValidSlots, int
  
  LINK_HOOK_VOID_CHAIN(ShowVGUIMenu, (CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu), pPlayer, MenuType, BitMask, szOldMenu);
  
@@ -221,7 +467,7 @@ index b802a2e..bf7463f 100644
  void EXT_FUNC __API_HOOK(ShowVGUIMenu)(CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu)
  {
  #ifdef REGAMEDLL_ADD
-@@ -1094,6 +1233,22 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
+@@ -1094,6 +1236,22 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
  	if (pPlayer->HasShield() && iWeapon == WEAPON_ELITE)
  		return false;
  
@@ -244,7 +490,7 @@ index b802a2e..bf7463f 100644
  	if (pPlayer->HasShield() && iWeapon == WEAPON_SHIELDGUN)
  		return false;
  
-@@ -1564,6 +1719,14 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
+@@ -1564,6 +1722,14 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
  	if (!CanBuyThis(pPlayer, weaponID))
  		return nullptr;
  
@@ -259,7 +505,7 @@ index b802a2e..bf7463f 100644
  	WeaponInfoStruct *info = GetWeaponInfo(weaponID);
  	if (!info || !info->entityName)
  		return nullptr;
-@@ -1615,6 +1778,23 @@ LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slo
+@@ -1615,6 +1781,23 @@ LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slo
  void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int slot)
  {
  	int numSkins = AreRunningCZero() ? CZ_NUM_SKIN : CS_NUM_SKIN;
@@ -283,7 +529,7 @@ index b802a2e..bf7463f 100644
  
  	struct
  	{
-@@ -1755,8 +1935,10 @@ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int
+@@ -1755,8 +1938,10 @@ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int
  	pPlayer->pev->body = 0;
  	pPlayer->m_iModelName = appearance.model_id;
  
@@ -296,7 +542,7 @@ index b802a2e..bf7463f 100644
  
  	if (CSGameRules()->m_bMapHasVIPSafetyZone)
  	{
-@@ -2095,14 +2277,14 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
+@@ -2095,14 +2280,14 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
  				if (AreRunningCZero())
  					ShowVGUIMenu(pPlayer, VGUI_Menu_Class_CT, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5 | MENU_KEY_6), "#CT_Select");
  				else
@@ -313,7 +559,7 @@ index b802a2e..bf7463f 100644
  				break;
  			}
  		}
-@@ -2296,6 +2478,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
+@@ -2296,6 +2481,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
  		return false;
  	}
  
@@ -324,7 +570,7 @@ index b802a2e..bf7463f 100644
  	// Purchase the ammo if the player has enough money
  	if (pPlayer->m_iAccount >= info->clipCost)
  	{
-@@ -2421,6 +2607,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
+@@ -2421,6 +2610,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
  	WeaponIdType weaponID = WEAPON_NONE;
  	const char *weaponFailName = BuyAliasToWeaponID(pszCommand, weaponID);
  
@@ -338,7 +584,7 @@ index b802a2e..bf7463f 100644
  	// Ok, we have weapon info ID.
  	if (weaponID != WEAPON_NONE)
  	{
-@@ -2935,6 +3128,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -2935,6 +3131,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				{
  					switch (slot)
  					{
@@ -354,7 +600,7 @@ index b802a2e..bf7463f 100644
  						case VGUI_MenuSlot_Buy_Pistol:
  						{
  							pPlayer->m_iMenu = Menu_BuyPistol;
-@@ -3064,6 +3266,29 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3064,6 +3269,29 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				}
  				break;
  			}
@@ -384,7 +630,7 @@ index b802a2e..bf7463f 100644
  			case Menu_BuyPistol:
  			{
  				if (canOpenOldMenu())
-@@ -3567,7 +3792,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3567,7 +3795,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  			{
  				if (pPlayer->m_signals.GetState() & SIGNAL_BUY)
  				{
@@ -393,10 +639,14 @@ index b802a2e..bf7463f 100644
  					pPlayer->m_iMenu = Menu_Buy;
  
  					if (TheBots)
-@@ -3646,6 +3871,11 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3646,6 +3874,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				}
  			}
  #endif
++			// (Half Strike r11: build_mode, build_place, build_give, build_info)
++			else if (BUILD_ClientCommand(pPlayer, pcmd))
++			{
++			}
 +			// (Half Strike's Pokemon test command: sv_cheats only)
 +			else if (FStrEq(pcmd, "pk_test"))
 +			{
@@ -405,10 +655,13 @@ index b802a2e..bf7463f 100644
  			else
  			{
  				if (HandleBuyAliasCommands(pPlayer, pcmd))
-@@ -4029,6 +4259,13 @@ void ClientPrecache()
+@@ -4029,6 +4266,16 @@ void ClientPrecache()
  	for (i = 0; i < numPlayerModels; i++)
  		PRECACHE_MODEL(sPlayerModelFiles[i]);
  
++	// (Half Strike r11: building's models and sounds)
++	BUILD_Precache();
++
 +	// (Half Strike: the Half-Life looks)
 +	for (i = 0; i < HL_NUM_SKIN; i++)
 +	{
@@ -419,7 +672,43 @@ index b802a2e..bf7463f 100644
  	if (AreRunningCZero())
  	{
  		for (i = FirstCustomSkin; i <= LastCustomSkin; i++)
-@@ -4925,7 +5162,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
+@@ -4493,7 +4740,10 @@ BOOL EXT_FUNC AddToFullPack(struct entity_state_s *state, int e, edict_t *ent, e
+ {
+ 	if (ent != host)
+ 	{
+-		if ((ent->v.effects & EF_NODRAW) == EF_NODRAW)
++		// (Half Strike r11: a ramp's or a roof's invisible steps still go to the clients near them, for their movement
++		// prediction)
++		if ((ent->v.effects & EF_NODRAW) == EF_NODRAW
++			&& (!FClassnameIs(&ent->v, "build_step") || (ent->v.origin - host->v.origin).Length() > BUILD_STEP_SEND))
+ 			return FALSE;
+ 
+ #ifdef REGAMEDLL_ADD
+@@ -4526,15 +4776,19 @@ BOOL EXT_FUNC AddToFullPack(struct entity_state_s *state, int e, edict_t *ent, e
+ 	{
+ 		if (ent != host)
+ 		{
+-			if (!CheckEntityRecentlyInPVS(hostnum, e, gpGlobals->time))
++			// (Half Strike r11: an index past the cache's size checked every time; a built piece seen through its steps)
++			const bool bCached = (e >= 0 && e < MAX_ENTITIES);
++			if (!bCached || !CheckEntityRecentlyInPVS(hostnum, e, gpGlobals->time))
+ 			{
+-				if (!ENGINE_CHECK_VISIBILITY(ent, pSet))
++				if (!ENGINE_CHECK_VISIBILITY(ent, pSet) && !BUILD_PieceVisible(ent, pSet))
+ 				{
+-					MarkEntityInPVS(hostnum, e, 0, false);
++					if (bCached)
++						MarkEntityInPVS(hostnum, e, 0, false);
+ 					return FALSE;
+ 				}
+ 
+-				MarkEntityInPVS(hostnum, e, gpGlobals->time, true);
++				if (bCached)
++					MarkEntityInPVS(hostnum, e, gpGlobals->time, true);
+ 			}
+ 		}
+ 	}
+@@ -4925,7 +5179,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
  				weapon->GetItemInfo(&II);
  #endif
  
@@ -428,20 +717,33 @@ index b802a2e..bf7463f 100644
  				{
  					auto item = &info[II.iId];
  
-@@ -5084,7 +5321,8 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
+@@ -5084,7 +5338,12 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
  #endif
  				)
  			{
 -				cd->m_iId = II.iId;
 +				// (a Half-Life arsenal weapon is not predicted: its id does not fit the 5 bits of this field)
 +				cd->m_iId = IsHLWeapon(II.iId) ? WEAPON_NONE : II.iId;
++
++				// (Half Strike r11: in build mode, the weapon holstered: nothing predicted)
++				if (BUILD_InMode(pPlayer))
++					cd->m_iId = WEAPON_NONE;
  
  				if ((unsigned int)weapon->m_iPrimaryAmmoType < MAX_AMMO_SLOTS)
  				{
 diff --git a/regamedll/dlls/client.h b/regamedll/dlls/client.h
-index d873bd2..7f42771 100644
+index d873bd2..31b6157 100644
 --- a/regamedll/dlls/client.h
 +++ b/regamedll/dlls/client.h
+@@ -83,7 +83,7 @@ typedef struct
+ 
+ } ENTITYPVSSTATUS;
+ 
+-const int MAX_ENTITIES = 1380;
++const int MAX_ENTITIES = MAX_EDICTS; // (Half Strike r11: was 1380, under liblist.gam's edicts; AddToFullPack skips the cache past it)
+ struct PLAYERPVSSTATUS
+ {
+ 	ENTITYPVSSTATUS m_Status[MAX_ENTITIES];
 @@ -131,6 +131,9 @@ void respawn(entvars_t *pev, BOOL fCopyCorpse = FALSE);
  void ClientKill(edict_t *pEntity);
  void ShowMenu(CBasePlayer *pPlayer, int bitsValidSlots, int nDisplayTime, BOOL fNeedMore, char *pszText);
@@ -459,8 +761,44 @@ index d873bd2..7f42771 100644
 +extern int gmsgHLWeapons;
 +extern int gmsgPokeHP;
 +extern int gmsgLemHack;
+diff --git a/regamedll/dlls/combat.cpp b/regamedll/dlls/combat.cpp
+index 8c66a47..3cf5fa5 100644
+--- a/regamedll/dlls/combat.cpp
++++ b/regamedll/dlls/combat.cpp
+@@ -260,6 +260,9 @@ void RadiusDamage(Vector vecSrc, entvars_t *pevInflictor, entvars_t *pevAttacker
+ 	if (!pevAttacker)
+ 		pevAttacker = pevInflictor;
+ 
++	// (Half Strike r11: a blast by a wall drops bricks)
++	BUILD_ExplosionImpact(pevAttacker, vecSrc, flRadius, flDamage);
++
+ 	// iterate on all entities in the vicinity.
+ 	while ((pEntity = UTIL_FindEntityInSphere(pEntity, vecSrc, flRadius)))
+ 	{
+@@ -294,6 +297,11 @@ void RadiusDamage(Vector vecSrc, entvars_t *pevInflictor, entvars_t *pevAttacker
+ #endif
+ 				length = (vecSrc - pEntity->pev->origin).Length();
+ 
++			// (Half Strike r11: a built piece by its nearest point; a player or a monster behind one is shielded)
++			length = BUILD_BlastDistance(pEntity, vecSrc, length);
++			if (BUILD_BlastShielded(pEntity, vecSrc, pEntity->BodyTarget(vecSrc), ENT(pevInflictor)))
++				continue;
++
+ 			if (useLOS)
+ 			{
+ 				if (!flRadius)
+@@ -354,6 +362,9 @@ void RadiusDamage2(Vector vecSrc, entvars_t *pevInflictor, entvars_t *pevAttacke
+ 	if (!pevAttacker)
+ 		pevAttacker = pevInflictor;
+ 
++	// (Half Strike r11: a blast by a wall drops bricks)
++	BUILD_ExplosionImpact(pevAttacker, vecSrc, flRadius, flDamage);
++
+ 	// iterate on all entities in the vicinity.
+ 	while ((pEntity = UTIL_FindEntityInSphere(pEntity, vecSrc, flRadius)))
+ 	{
 diff --git a/regamedll/dlls/game.cpp b/regamedll/dlls/game.cpp
-index 2c6d9fb..298da0d 100644
+index 2c6d9fb..8351330 100644
 --- a/regamedll/dlls/game.cpp
 +++ b/regamedll/dlls/game.cpp
 @@ -25,7 +25,8 @@ cvar_t infiniteAmmo          = { "mp_infinite_ammo", "0", FCVAR_SERVER, 0.0f, nu
@@ -492,12 +830,15 @@ index 2c6d9fb..298da0d 100644
  cvar_t give_player_c4               = { "mp_give_player_c4", "1", FCVAR_SERVER, 0.0f, nullptr };
  cvar_t weapons_allow_map_placed     = { "mp_weapons_allow_map_placed", "1", FCVAR_SERVER, 0.0f, nullptr };
  
-@@ -385,6 +387,9 @@ void EXT_FUNC GameDLLInit()
+@@ -385,6 +387,12 @@ void EXT_FUNC GameDLLInit()
  	ADD_SERVER_COMMAND("endround", GameDLL_EndRound_f);
  	ADD_SERVER_COMMAND("swapteams", GameDLL_SwapTeams_f);
  
 +	// (Half Strike's Pokemon tests: pokemon.h)
 +	PK_RegisterServerCommands();
++
++	// (Half Strike r11: building — mp_build, mp_build_bricks)
++	BUILD_RegisterCvars();
 +
  	CVAR_REGISTER(&game_version);
  	CVAR_REGISTER(&maxmoney);
@@ -1155,10 +1496,10 @@ index 0000000..c09f4fb
 +	int m_fJustThrown;
 +};
 diff --git a/regamedll/dlls/multiplay_gamerules.cpp b/regamedll/dlls/multiplay_gamerules.cpp
-index 2b91a50..e80ac37 100644
+index 2b91a50..4842db4 100644
 --- a/regamedll/dlls/multiplay_gamerules.cpp
 +++ b/regamedll/dlls/multiplay_gamerules.cpp
-@@ -658,6 +658,12 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(CleanUpMap)()
+@@ -658,6 +658,15 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(CleanUpMap)()
  	// Remove grenades and C4
  	UTIL_RemoveOther("grenade");
  
@@ -1168,10 +1509,23 @@ index 2b91a50..e80ac37 100644
 +	// (and Half Strike's Poke Balls and Pokemon)
 +	PK_CleanUpMap();
 +
++	// (and Half Strike's built pieces and brick piles)
++	BUILD_CleanUpMap();
++
  #ifndef REGAMEDLL_FIXES
  	// Remove defuse kit
  	// Old code only removed 4 kits and stopped.
-@@ -3798,8 +3804,8 @@ void CHalfLifeMultiplay::PlayerThink(CBasePlayer *pPlayer)
+@@ -1997,6 +2006,9 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
+ 		pPlayer->m_iNumSpawns = 0;
+ 		pPlayer->m_bTeamChanged = false;
+ 
++		// (Half Strike r11: bricks to the start value, out of build mode)
++		BUILD_PlayerNewRound(pPlayer);
++
+ #ifndef REGAMEDLL_FIXES
+ 		// NOTE: unreachable code
+ 		if (!pPlayer->IsPlayer())
+@@ -3798,8 +3810,8 @@ void CHalfLifeMultiplay::PlayerThink(CBasePlayer *pPlayer)
  			{
  				if (slot != MENU_SLOT_TEAM_SPECT && (IsCareer() || m_bSkipShowMenu))
  				{
@@ -1182,7 +1536,7 @@ index 2b91a50..e80ac37 100644
  				}
  			}
  			else
-@@ -3818,7 +3824,7 @@ void CHalfLifeMultiplay::PlayerThink(CBasePlayer *pPlayer)
+@@ -3818,7 +3830,7 @@ void CHalfLifeMultiplay::PlayerThink(CBasePlayer *pPlayer)
  			if (slot != MENU_SLOT_TEAM_SPECT && IsCareer())
  			{
  				// slot 6 - chooses randomize the appearance to model player
@@ -1191,7 +1545,7 @@ index 2b91a50..e80ac37 100644
  			}
  #endif
  		}
-@@ -4259,6 +4265,10 @@ LINK_HOOK_CLASS_CUSTOM_CHAIN(BOOL, CHalfLifeMultiplay, CSGameRules, CanHavePlaye
+@@ -4259,6 +4271,10 @@ LINK_HOOK_CLASS_CUSTOM_CHAIN(BOOL, CHalfLifeMultiplay, CSGameRules, CanHavePlaye
  // Returns FALSE if the player is not allowed to pick up this weapon
  BOOL EXT_FUNC CHalfLifeMultiplay::__API_HOOK(CanHavePlayerItem)(CBasePlayer *pPlayer, CBasePlayerItem *pItem)
  {
@@ -1203,7 +1557,7 @@ index 2b91a50..e80ac37 100644
  }
  
 diff --git a/regamedll/dlls/player.cpp b/regamedll/dlls/player.cpp
-index 1d04cc9..bbf3149 100644
+index 1d04cc9..d6aecea 100644
 --- a/regamedll/dlls/player.cpp
 +++ b/regamedll/dlls/player.cpp
 @@ -201,6 +201,20 @@ const char *GetCSModelName(int item_id)
@@ -1339,7 +1693,17 @@ index 1d04cc9..bbf3149 100644
  					{
  						if (AreRunningCZero())
  						{
-@@ -2656,7 +2709,33 @@ int CBasePlayer::GetAnimDesired(const char *szAnim, AnimationType type)
+@@ -2240,6 +2293,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Killed)(entvars_t *pevAttacker, int iGib)
+ {
+ 	m_canSwitchObserverModes = false;
+ 
++	// (Half Strike r11: out of build mode)
++	BUILD_PlayerKilled(this);
++
+ 	if (m_LastHitGroup == HITGROUP_HEAD)
+ 		m_bHeadshotKilled = true;
+ 
+@@ -2656,7 +2712,33 @@ int CBasePlayer::GetAnimDesired(const char *szAnim, AnimationType type)
  
  	char szAnimConstruct[128];
  	Q_snprintf(szAnimConstruct, sizeof(szAnimConstruct), "%s%s_%s", refAnim, szAnim, m_szAnimExtention);
@@ -1374,7 +1738,7 @@ index 1d04cc9..bbf3149 100644
  }
  
  void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
-@@ -2666,6 +2745,10 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
+@@ -2666,6 +2748,10 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
  	int hopSeq;
  	int leapSeq;
  
@@ -1385,7 +1749,7 @@ index 1d04cc9..bbf3149 100644
  	if (!pev->modelindex)
  		return;
  
-@@ -2969,6 +3052,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
+@@ -2969,6 +3055,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
  					break;
  			}
  
@@ -1395,7 +1759,7 @@ index 1d04cc9..bbf3149 100644
  			if (animDesired == -1)
  				animDesired = 0;
  
-@@ -3100,6 +3186,12 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
+@@ -3100,6 +3189,12 @@ void EXT_FUNC CBasePlayer::__API_HOOK(SetAnimation)(PLAYER_ANIM playerAnim)
  					m_iThrowDirection = THROW_GRENADE;
  			}
  
@@ -1408,7 +1772,7 @@ index 1d04cc9..bbf3149 100644
  			if (animDesired == -1)
  				animDesired = 0;
  
-@@ -3365,6 +3457,11 @@ void CWShield::Touch(CBaseEntity *pOther)
+@@ -3365,6 +3460,11 @@ void CWShield::Touch(CBaseEntity *pOther)
  		if (pPlayer->m_rgpPlayerItems[PISTOL_SLOT] && pPlayer->m_rgpPlayerItems[PISTOL_SLOT]->m_iId == WEAPON_ELITE)
  			return;
  
@@ -1420,7 +1784,7 @@ index 1d04cc9..bbf3149 100644
  		if (pPlayer->m_pActiveItem)
  		{
  			if (!pPlayer->m_pActiveItem->CanHolster())
-@@ -4645,6 +4742,13 @@ void EXT_FUNC CBasePlayer::__API_HOOK(PreThink)()
+@@ -4645,6 +4745,13 @@ void EXT_FUNC CBasePlayer::__API_HOOK(PreThink)()
  	m_afButtonPressed  = (buttonsChanged & pev->button);		// The changed ones still down are "pressed"
  	m_afButtonReleased = (buttonsChanged & (~pev->button));		// The ones not down are "released"
  
@@ -1434,7 +1798,7 @@ index 1d04cc9..bbf3149 100644
  	// Hint messages should be updated even if the game is over
  	m_hintMessageQueue.Update(this);
  	g_pGameRules->PlayerThink(this);
-@@ -5258,6 +5362,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, PostThink)
+@@ -5258,6 +5365,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, PostThink)
  
  void EXT_FUNC CBasePlayer::__API_HOOK(PostThink)()
  {
@@ -1442,23 +1806,86 @@ index 1d04cc9..bbf3149 100644
  	// intermission or finale
  	if (g_pGameRules->IsGameOver())
  		goto pt_end;
-@@ -5690,6 +5795,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Spawn)()
+@@ -5690,6 +5798,8 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Spawn)()
  #endif
  
  	m_iGaitsequence = 0;
 +	m_flPokeSlowUntil = 0;
++	BUILD_PlayerSpawn(this); // (Half Strike r11: out of build mode; bricks at a first spawn in the round)
  
  	m_flGaitframe = 0;
  	m_flGaityaw = 0;
-@@ -7495,6 +7601,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -5893,6 +6003,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Spawn)()
+ 	if (!g_skipCareerInitialSpawn)
+ 	{
+ 		g_pGameRules->GetPlayerSpawnSpot(this);
++		BUILD_PlayerSpawned(this); // (Half Strike r11)
+ 	}
+ 
+ 	if (!pev->modelindex)
+@@ -6273,6 +6384,13 @@ void CBasePlayer::SelectItem(const char *pstr)
+ #endif
+ 
+ 	auto pItem = GetItemByName(pstr);
++
++	// (Half Strike r11: out of build mode — the weapon in hand back if it is the one asked, or if the one asked cannot be
++	// deployed)
++	CBasePlayerItem *pBuildNext = (pItem && pItem != m_pActiveItem && pItem->CanDeploy()) ? pItem : nullptr;
++	if (BUILD_LeaveForWeapon(this, pBuildNext) && !pBuildNext)
++		return;
++
+ 	if (!pItem || pItem == m_pActiveItem)
+ 		return;
+ 
+@@ -6306,6 +6424,10 @@ void CBasePlayer::SelectItem(const char *pstr)
+ 
+ void CBasePlayer::SelectLastItem()
+ {
++	// (Half Strike r11: in build mode, the last weapon is the one in hand)
++	if (BUILD_LeaveForWeapon(this, nullptr))
++		return;
++
+ 	if (m_pActiveItem && !m_pActiveItem->CanHolster())
+ 		return;
+ 
+@@ -7319,7 +7441,7 @@ void CBasePlayer::ItemPreFrame()
+ 		return;
+ #endif
+ 
+-	if (!m_pActiveItem)
++	if (!m_pActiveItem || m_bBuildMode)
+ 		return;
+ 
+ 	m_pActiveItem->ItemPreFrame();
+@@ -7334,6 +7456,18 @@ void CBasePlayer::ItemPostFrame()
+ 	if (m_pTank)
+ 		return;
+ 
++	// (Half Strike r11: in build mode, the weapon is holstered: its frame skipped)
++	if (BUILD_PlayerItemFrame(this))
++	{
++#ifdef CLIENT_WEAPONS
++		if (m_flNextAttack <= 0)
++#else
++		if (gpGlobals->time >= m_flNextAttack)
++#endif
++			ImpulseCommands();
++		return;
++	}
++
+ 	if (m_pActiveItem)
+ 	{
+ 		if (HasShield() && IsReloading())
+@@ -7495,6 +7629,8 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  	{
  		m_fInitHUD = FALSE;
  		gInitHUD = FALSE;
 +		m_iHLWeaponsSent = -1;
++		BUILD_PlayerUpdateClient(this, true);
  #ifdef REGAMEDLL_FIXES
  		m_signals.Reset();
  #else
-@@ -7504,6 +7611,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -7504,6 +7640,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  		MESSAGE_BEGIN(MSG_ONE, gmsgResetHUD, nullptr, pev);
  		MESSAGE_END();
  
@@ -1468,7 +1895,7 @@ index 1d04cc9..bbf3149 100644
  		if (!m_fGameHUDInitialized)
  		{
  			MESSAGE_BEGIN(MSG_ONE, gmsgInitHUD, nullptr, pev);
-@@ -7893,6 +8003,29 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
+@@ -7893,6 +8032,32 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
  		m_iLastClientHealth = m_iClientHealth;
  	}
  #endif // #ifdef BUILD_LATEST
@@ -1495,10 +1922,13 @@ index 1d04cc9..bbf3149 100644
 +	// (Half Strike: a Poke Ball in hand shows its species — the skin of its third-person model, drawn with the player's;
 +	// the player models themselves are drawn with skin 0 by the client)
 +	pev->skin = (m_pActiveItem && IsPokeBall(m_pActiveItem->m_iId)) ? (m_pActiveItem->m_iId - WEAPON_PK_FIRST) : 0;
++
++	// (Half Strike r11: bricks and build mode)
++	BUILD_PlayerUpdateClient(this, false);
  }
  
  bool CBasePlayer::ShouldToShowAccount(CBasePlayer *pReceiver) const
-@@ -8028,6 +8161,10 @@ void EXT_FUNC CBasePlayer::__API_HOOK(ResetMaxSpeed)()
+@@ -8028,6 +8193,10 @@ void EXT_FUNC CBasePlayer::__API_HOOK(ResetMaxSpeed)()
  		speed = 240;
  	}
  
@@ -1509,7 +1939,7 @@ index 1d04cc9..bbf3149 100644
  	pev->maxspeed = speed;
  }
  
-@@ -8374,7 +8511,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
+@@ -8374,7 +8543,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
  		}
  
  		// take item off hud
@@ -1518,7 +1948,7 @@ index 1d04cc9..bbf3149 100644
  
  #ifdef REGAMEDLL_FIXES
  		// No more weapon
-@@ -9303,6 +9440,11 @@ void CBasePlayer::SetPrefsFromUserinfo(char *infobuffer)
+@@ -9303,6 +9472,11 @@ void CBasePlayer::SetPrefsFromUserinfo(char *infobuffer)
  	else
  		m_bVGUIMenus = true;
  
@@ -1531,7 +1961,7 @@ index 1d04cc9..bbf3149 100644
  
  	if (Q_strcmp(pszKeyVal, "") != 0)
 diff --git a/regamedll/dlls/player.h b/regamedll/dlls/player.h
-index 7809834..0362271 100644
+index 7809834..58a1f84 100644
 --- a/regamedll/dlls/player.h
 +++ b/regamedll/dlls/player.h
 @@ -196,7 +196,10 @@ enum _Menu
@@ -1546,19 +1976,29 @@ index 7809834..0362271 100644
  };
  
  enum TeamName
-@@ -922,6 +925,9 @@ public:
+@@ -922,6 +925,19 @@ public:
  	int m_iLastClientHealth;
  	float m_tmNextAccountHealthUpdate;
  #endif
 +
 +	int m_iHLWeaponsSent; // (the Half-Life arsenal weapons the client was last told of, -1 to tell again)
 +	float m_flPokeSlowUntil; // (Half Strike: slowed to half pace by a Pikachu's Thunderbolt until then, whichever Pikachu)
++
++	// (Half Strike r11: bricks and building — build.h)
++	int m_iBricks;
++	int m_iBricksRound;          // (the round its bricks were set for)
++	int m_iBricksSent;           // (-1: to tell again)
++	int m_iBricksPicked;         // (picked up since last told: the "+N")
++	int m_iBuildModeSent;        // (-1: to tell again)
++	bool m_bBuildMode;
++	CBasePlayerItem *m_pBuildItem; // (the weapon holstered for build mode)
++	float m_flNextBuild;
  };
  
  CWeaponBox *CreateWeaponBox(CBasePlayerItem *pItem, CBasePlayer *pPlayerOwner, const char *modelName, Vector &origin, Vector &angles, Vector &velocity, float lifeTime, bool packAmmo);
 diff --git a/regamedll/dlls/pokemon.h b/regamedll/dlls/pokemon.h
 new file mode 100644
-index 0000000..bc4ab31
+index 0000000..beeaa64
 --- /dev/null
 +++ b/regamedll/dlls/pokemon.h
 @@ -0,0 +1,346 @@
@@ -1847,7 +2287,7 @@ index 0000000..bc4ab31
 +	void FireHydroPump();
 +	void FlameTick();
 +	void FlameEffects();
-+	void DealDamage(CBaseEntity *pVictim, float flDamage, int bitsDamageType);
++	void DealDamage(CBaseEntity *pVictim, float flDamage, int bitsDamageType, bool bThroughPieces = false); // (a built piece in the way takes it, but for a burn's tick)
 +	void Afflict(CBaseEntity *pVictim, float flUntil, float flFirstTick);
 +	void UpdateAfflictions();
 +	void ClearAfflictions();
@@ -2291,12 +2731,1920 @@ index 2005b6a..1a525f6 100644
  	AMMO_MAX_TYPES
  };
  
+diff --git a/regamedll/dlls/wpn_shared/build.cpp b/regamedll/dlls/wpn_shared/build.cpp
+new file mode 100644
+index 0000000..cc9e72c
+--- /dev/null
++++ b/regamedll/dlls/wpn_shared/build.cpp
+@@ -0,0 +1,1561 @@
++// Half Strike r11: bricks and Fortnite-style building (build.h). The grid — where a piece goes from a player's view and
++// the checks of a spot — is build_grid.h, shared with the client's blueprint: the server runs the same build_aim from
++// its own view of the player, never trusting a client's coordinates beyond the spot the server itself finds.
++
++#include "precompiled.h"
++
++cvar_t build_enabled = { "mp_build", "1", FCVAR_SERVER, 1.0f, nullptr };
++cvar_t build_start_bricks  = { "mp_build_bricks", "0", FCVAR_SERVER, 0.0f, nullptr };
++
++int gmsgBricks = 0;
++int gmsgBuildMode = 0;
++int gmsgBuildDeny = 0;
++
++static const char *const BUILD_Models[BUILD_PIECES] =
++{
++	"models/build/wall.mdl",
++	"models/build/floor.mdl",
++	"models/build/ramp.mdl",
++	"models/build/roof.mdl",
++};
++
++// (precached optional — "!": a missing file is no client's fatal error)
++static const char *const BUILD_ModelsOptional[BUILD_PIECES] =
++{
++	"!models/build/wall.mdl",
++	"!models/build/floor.mdl",
++	"!models/build/ramp.mdl",
++	"!models/build/roof.mdl",
++};
++
++#define BUILD_VIEW_MODEL  "models/build/v_build.mdl"
++#define BUILD_PILE_MODEL  "models/build/brick_pile.mdl"
++#define BUILD_GIBS_MODEL  "models/build/gibs_brick.mdl"
++
++// v_build's sequences (the assets' contract)
++enum { BUILD_VSEQ_IDLE = 0, BUILD_VSEQ_DRAW, BUILD_VSEQ_PLACE };
++
++static int s_iGibsModel = 0;
++static int s_iBuildRound = 1;   // (a new round: every player's bricks to the start value again)
++
++static inline bool BUILD_On() { return build_enabled.value != 0.0f; }
++
++static int BUILD_StartBricks()
++{
++	return clamp(int(build_start_bricks.value), 0, BUILD_MAX_BRICKS);
++}
++
++static void BUILD_TestCommand();
++
++void BUILD_RegisterCvars()
++{
++	CVAR_REGISTER(&build_enabled);
++	CVAR_REGISTER(&build_start_bricks);
++	ADD_SERVER_COMMAND("build_test", BUILD_TestCommand);
++}
++
++void BUILD_RegisterMessages()
++{
++	gmsgBricks    = REG_USER_MSG("Bricks", 3);
++	gmsgBuildMode = REG_USER_MSG("BuildMode", 1);
++	gmsgBuildDeny = REG_USER_MSG("BuildDeny", 1);
++}
++
++static void BUILD_ForgetPiles();
++
++void BUILD_Precache()
++{
++	BUILD_ForgetPiles(); // (a new map: the last one's piles are gone)
++	for (int i = 0; i < BUILD_PIECES; i++)
++		PRECACHE_MODEL(BUILD_ModelsOptional[i]);
++
++	PRECACHE_MODEL("!" BUILD_VIEW_MODEL);
++	PRECACHE_MODEL("!" BUILD_PILE_MODEL);
++	s_iGibsModel = PRECACHE_MODEL("!" BUILD_GIBS_MODEL);
++
++	PRECACHE_SOUND("build/pickup.wav");
++	PRECACHE_SOUND("build/place.wav");
++	PRECACHE_SOUND("build/build_loop.wav");
++	PRECACHE_SOUND("build/hit1.wav");
++	PRECACHE_SOUND("build/hit2.wav");
++	PRECACHE_SOUND("build/hit3.wav");
++	PRECACHE_SOUND("build/break1.wav");
++	PRECACHE_SOUND("build/break2.wav");
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// traces: the grid's engine (build_grid.h's build_engine_t)
++
++bool BUILD_IsPiece(const edict_t *pEdict)
++{
++	if (!pEdict || pEdict->free || !pEdict->pvPrivateData)
++		return false;
++
++	const char *name = STRING(pEdict->v.classname);
++	return name && (!Q_strcmp(name, "build_piece") || !Q_strcmp(name, "build_step"));
++}
++
++struct BuildTraceCtx
++{
++	edict_t *pIgnore;    // (the player: never hit)
++	edict_t *pLastHit;   // (what the last trace stopped on)
++};
++
++// A line through players, monsters and anything else but the world, brush entities and built pieces (worldOnly: the
++// world and brush entities — doors, func_wall, breakables — alone), as the client's grid trace; its fraction, end,
++// whether it started in a solid (the world, a brush entity, or without worldOnly a built piece)
++static float BUILD_TraceLine(BuildTraceCtx *ctx, const Vector &vecStart, const Vector &vecEnd, bool bWorldOnly, Vector &vecHit, bool &bStartSolid)
++{
++	TraceResult tr;
++	edict_t *pIgnore = ctx->pIgnore;
++	Vector vecFrom = vecStart;
++	const float flTotal = (vecEnd - vecStart).Length();
++
++	ctx->pLastHit = nullptr;
++	bStartSolid = false;
++	vecHit = vecEnd;
++
++	for (int i = 0; i < 8; i++)
++	{
++		UTIL_TraceLine(vecFrom, vecEnd, bWorldOnly ? ignore_monsters : dont_ignore_monsters, pIgnore, &tr);
++		if (i == 0 && (tr.fStartSolid || tr.fAllSolid))
++		{
++			// (inside the world, a brush entity or a piece: the start is in a solid; inside another entity: the trace
++			// starts again past it)
++			if (!tr.pHit || ENTINDEX(tr.pHit) == 0 || VARS(tr.pHit)->solid == SOLID_BSP || (!bWorldOnly && BUILD_IsPiece(tr.pHit)))
++			{
++				bStartSolid = true;
++				vecHit = vecStart;
++				ctx->pLastHit = tr.pHit;
++				return 0.0f;
++			}
++		}
++
++		if (tr.flFraction >= 1.0f || !tr.pHit)
++			break;
++
++		edict_t *pHit = tr.pHit;
++		const bool bWorld = (ENTINDEX(pHit) == 0);
++		const bool bTakes = bWorld || pHit->v.solid == SOLID_BSP || (!bWorldOnly && BUILD_IsPiece(pHit));
++		if (bTakes)
++		{
++			vecHit = tr.vecEndPos;
++			ctx->pLastHit = pHit;
++			return flTotal > 0.0f ? clamp(float((tr.vecEndPos - vecStart).Length() / flTotal), 0.0f, 0.999f) : 0.0f;
++		}
++
++		// (through it: on from where it was met, past it)
++		vecFrom = tr.vecEndPos;
++		pIgnore = pHit;
++	}
++
++	return 1.0f;
++}
++
++static float BUILD_EngineTrace(void *ctx, const float *start, const float *end, int worldOnly, float *endpos, int *startsolid)
++{
++	Vector vecHit;
++	bool bStartSolid;
++	float f = BUILD_TraceLine((BuildTraceCtx *)ctx, Vector(start[0], start[1], start[2]), Vector(end[0], end[1], end[2]), worldOnly != 0, vecHit, bStartSolid);
++	endpos[0] = vecHit.x;
++	endpos[1] = vecHit.y;
++	endpos[2] = vecHit.z;
++	*startsolid = bStartSolid ? 1 : 0;
++	return f;
++}
++
++static int BUILD_EnginePiece(void *ctx, float *origin_z)
++{
++	edict_t *pHit = ((BuildTraceCtx *)ctx)->pLastHit;
++	if (!BUILD_IsPiece(pHit))
++		return 0;
++
++	*origin_z = pHit->v.origin.z;
++	return 1;
++}
++
++static build_engine_t BUILD_Engine(BuildTraceCtx *ctx)
++{
++	build_engine_t e;
++	e.ctx = ctx;
++	e.trace = BUILD_EngineTrace;
++	e.piece = BUILD_EnginePiece;
++	return e;
++}
++
++CBaseEntity *BUILD_PieceOnLine(const Vector &vecSrc, const Vector &vecEnd, edict_t *pIgnore)
++{
++	BuildTraceCtx ctx = { pIgnore, nullptr };
++	Vector vecHit;
++	bool bStartSolid;
++	if (BUILD_TraceLine(&ctx, vecSrc, vecEnd, false, vecHit, bStartSolid) >= 1.0f || !BUILD_IsPiece(ctx.pLastHit))
++		return nullptr;
++
++	CBaseEntity *pHit = CBaseEntity::Instance(ctx.pLastHit);
++	if (pHit && FClassnameIs(pHit->pev, "build_step"))
++		return static_cast<CBuildStep *>(pHit)->Parent();
++
++	return pHit;
++}
++
++void BUILD_TraceLineSolid(const Vector &vecStart, const Vector &vecEnd, edict_t *pIgnore, TraceResult *ptr)
++{
++	UTIL_TraceLine(vecStart, vecEnd, ignore_monsters, pIgnore, ptr);
++	if (ptr->fStartSolid || ptr->fAllSolid)
++		return;
++
++	// (a piece before what that met: the line stops there)
++	BuildTraceCtx ctx = { pIgnore, nullptr };
++	Vector vecHit;
++	bool bStartSolid;
++	BUILD_TraceLine(&ctx, vecStart, ptr->vecEndPos, false, vecHit, bStartSolid);
++	if (!BUILD_IsPiece(ctx.pLastHit))
++		return;
++
++	const float flTotal = (vecEnd - vecStart).Length();
++	ptr->pHit = ctx.pLastHit;
++	ptr->vecEndPos = vecHit;
++	ptr->flFraction = flTotal > 0.0f ? clamp(float((vecHit - vecStart).Length() / flTotal), 0.0f, 0.999f) : 0.0f;
++	ptr->vecPlaneNormal = flTotal > 0.0f ? (vecStart - vecEnd) / flTotal : Vector(0, 0, 1);
++	if (bStartSolid)
++	{
++		ptr->fStartSolid = TRUE;
++		ptr->flFraction = 0.0f;
++	}
++}
++
++bool BUILD_PieceVisible(edict_t *pEdict, unsigned char *pSet)
++{
++	if (pEdict->v.solid != SOLID_BBOX || !FClassnameIs(&pEdict->v, "build_piece"))
++		return false;
++
++	CBuildPiece *pPiece = static_cast<CBuildPiece *>(CBaseEntity::Instance(pEdict));
++	return pPiece && pPiece->StepVisible(pSet);
++}
++
++bool CBuildPiece::StepVisible(unsigned char *pSet) const
++{
++	for (int i = 0; i < m_iNumSteps; i++)
++	{
++		CBaseEntity *pStep = m_hSteps[i];
++		if (pStep && ENGINE_CHECK_VISIBILITY(pStep->edict(), pSet))
++			return true;
++	}
++	return false;
++}
++
++float BUILD_BlastDistance(CBaseEntity *pEntity, const Vector &vecSrc, float flDefault)
++{
++	if (!BUILD_IsPiece(pEntity))
++		return flDefault;
++
++	// (a piece: its nearest point, whatever its size)
++	Vector d;
++	for (int k = 0; k < 3; k++)
++	{
++		float v = vecSrc[k];
++		d[k] = v < pEntity->pev->absmin[k] ? pEntity->pev->absmin[k] - v : v > pEntity->pev->absmax[k] ? v - pEntity->pev->absmax[k] : 0.0f;
++	}
++	return d.Length();
++}
++
++bool BUILD_BlastShielded(CBaseEntity *pEntity, const Vector &vecSrc, const Vector &vecSpot, edict_t *pInflictor)
++{
++	if (!pEntity || BUILD_IsPiece(pEntity) || !(pEntity->pev->flags & (FL_CLIENT | FL_FAKECLIENT | FL_MONSTER)))
++		return false;
++
++	CBaseEntity *pPiece = BUILD_PieceOnLine(vecSrc, vecSpot, pInflictor);
++	return pPiece != nullptr;
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// brick piles
++
++LINK_ENTITY_TO_CLASS(build_bricks, CBrickPile, CCSEntity)
++
++void CBrickPile::Precache()
++{
++	PRECACHE_MODEL("!" BUILD_PILE_MODEL);
++	PRECACHE_SOUND("build/pickup.wav");
++}
++
++void CBrickPile::Spawn()
++{
++	Precache();
++	MAKE_STRING_CLASS("build_bricks", pev);
++	pev->movetype = MOVETYPE_TOSS;
++	pev->solid = SOLID_TRIGGER;
++	pev->takedamage = DAMAGE_NO;
++	pev->gravity = 1.0f;
++	SET_MODEL(ENT(pev), BUILD_PILE_MODEL);
++	UTIL_SetSize(pev, Vector(-14, -14, 0), Vector(14, 14, 12));
++	pev->angles = Vector(0, RANDOM_FLOAT(0, 360), 0);
++	m_flBornTime = gpGlobals->time;
++	SetThink(&CBrickPile::ExpireThink);
++	pev->nextthink = gpGlobals->time + BUILD_PILE_LIFE;
++}
++
++void CBrickPile::SetAmount(int iAmount)
++{
++	m_iAmount = clamp(iAmount, 0, BUILD_PILE_MAX);
++	// (the model's bodies: small, medium, large)
++	pev->body = m_iAmount < 20 ? 0 : m_iAmount < 60 ? 1 : 2;
++}
++
++void CBrickPile::ExpireThink()
++{
++	UTIL_Remove(this);
++}
++
++void CBrickPile::Touch(CBaseEntity *pOther)
++{
++	if (!pOther || !pOther->IsPlayer() || !pOther->IsAlive() || !BUILD_On() || m_iAmount <= 0)
++		return;
++
++	CBasePlayer *pPlayer = static_cast<CBasePlayer *>(pOther);
++	if (pPlayer->IsBot() || pPlayer->GetObserverMode() != OBS_NONE || (pPlayer->m_iTeam != TERRORIST && pPlayer->m_iTeam != CT))
++		return;
++
++	int iTake = Q_min(m_iAmount, BUILD_MAX_BRICKS - pPlayer->m_iBricks);
++	if (iTake <= 0)
++		return;
++
++	pPlayer->m_iBricks += iTake;
++	pPlayer->m_iBricksPicked += iTake;
++	EMIT_SOUND_DYN(pPlayer->edict(), CHAN_ITEM, "build/pickup.wav", VOL_NORM, ATTN_NORM, 0, PITCH_NORM + RANDOM_LONG(-4, 4));
++
++	SetAmount(m_iAmount - iTake);
++	if (m_iAmount <= 0)
++	{
++		pev->solid = SOLID_NOT;
++		UTIL_Remove(this);
++	}
++}
++
++// The piles there are (no scan of every edict per impact): the live ones first, iPiles of them
++static EHANDLE s_hPiles[BUILD_PILE_CAP];
++static int s_iPiles = 0;
++
++static void BUILD_ForgetPiles()
++{
++	for (int i = 0; i < BUILD_PILE_CAP; i++)
++		s_hPiles[i] = nullptr;
++	s_iPiles = 0;
++}
++
++static int BUILD_LivePiles()
++{
++	int n = 0;
++	for (int i = 0; i < s_iPiles; i++)
++	{
++		CBaseEntity *pPile = s_hPiles[i];
++		if (pPile && !(pPile->pev->flags & FL_KILLME))
++			s_hPiles[n++] = pPile;
++	}
++
++	for (int i = n; i < s_iPiles; i++)
++		s_hPiles[i] = nullptr;
++
++	s_iPiles = n;
++	return n;
++}
++
++void CBrickPile::Drop(const Vector &vecGround, int iAmount)
++{
++	const int iPiles = BUILD_LivePiles();
++
++	// (into a pile near enough, while it has room)
++	for (int i = 0; i < iPiles && iAmount > 0; i++)
++	{
++		CBrickPile *pPile = static_cast<CBrickPile *>((CBaseEntity *)s_hPiles[i]);
++		if ((pPile->pev->origin - vecGround).Length() > BUILD_PILE_MERGE)
++			continue;
++
++		int iAdd = Q_min(iAmount, BUILD_PILE_MAX - pPile->m_iAmount);
++		if (iAdd <= 0)
++			continue;
++
++		pPile->SetAmount(pPile->m_iAmount + iAdd);
++		pPile->pev->nextthink = gpGlobals->time + BUILD_PILE_LIFE; // (a growing pile lives on)
++		iAmount -= iAdd;
++	}
++
++	if (iAmount <= 0)
++		return;
++
++	// (a new one: the oldest goes past the cap; none when the edicts left are the game's — the engine's end otherwise)
++	int iOldest = -1;
++	for (int i = 0; i < iPiles; i++)
++	{
++		if (iOldest < 0 || static_cast<CBrickPile *>((CBaseEntity *)s_hPiles[i])->m_flBornTime < static_cast<CBrickPile *>((CBaseEntity *)s_hPiles[iOldest])->m_flBornTime)
++			iOldest = i;
++	}
++
++	if (iPiles < BUILD_PILE_CAP && NUMBER_OF_ENTITIES() + BUILD_EDICT_MARGIN >= gpGlobals->maxEntities)
++		return;
++
++	if (iPiles >= BUILD_PILE_CAP && iOldest >= 0)
++	{
++		CBaseEntity *pOldest = s_hPiles[iOldest];
++		pOldest->pev->solid = SOLID_NOT;
++		UTIL_Remove(pOldest);
++		s_hPiles[iOldest] = s_hPiles[--s_iPiles];
++		s_hPiles[s_iPiles] = nullptr;
++	}
++
++	CBrickPile *pPile = GetClassPtr<CCSEntity>((CBrickPile *)nullptr);
++	if (!pPile)
++		return;
++
++	pPile->Spawn();
++	pPile->SetAmount(iAmount);
++	UTIL_SetOrigin(pPile->pev, vecGround);
++	if (s_iPiles < BUILD_PILE_CAP)
++		s_hPiles[s_iPiles++] = pPile;
++}
++
++// Bricks for an impact at vecPos (out of the surface, on its near side): a pile on the ground below, a little towards
++// vecToward
++static void BUILD_DropBelow(const Vector &vecPos, const Vector &vecToward)
++{
++	Vector vecBack = vecToward - vecPos;
++	vecBack.z = 0;
++	float flLen = vecBack.Length();
++	Vector vecStart = vecPos;
++	if (flLen > 0.1f)
++	{
++		Vector vecTry = vecPos + vecBack * (Q_min(16.0f, flLen) / flLen);
++		TraceResult tr;
++		UTIL_TraceLine(vecPos, vecTry, ignore_monsters, nullptr, &tr);
++		vecStart = tr.vecEndPos;
++	}
++
++	if (UTIL_PointContents(vecStart) == CONTENTS_SOLID || UTIL_PointContents(vecStart) == CONTENTS_SKY)
++		return;
++
++	// (down onto the world, a brush or a built floor: the players in between are passed through)
++	BuildTraceCtx ctx = { nullptr, nullptr };
++	Vector vecGround;
++	bool bStartSolid;
++	if (BUILD_TraceLine(&ctx, vecStart, vecStart - Vector(0, 0, 4096), false, vecGround, bStartSolid) >= 1.0f || bStartSolid)
++		return;
++
++	CBrickPile::Drop(vecGround + Vector(0, 0, 1), BUILD_DROP);
++}
++
++// A brush surface that drops bricks when hit: the world (not its sky) or a brush entity
++static bool BUILD_BrickSurface(TraceResult *ptr, const Vector &vecSrc)
++{
++	edict_t *pHit = ptr->pHit;
++	if (!pHit || ptr->flFraction >= 1.0f || pHit->v.solid != SOLID_BSP || (pHit->v.flags & (FL_CLIENT | FL_FAKECLIENT | FL_MONSTER)))
++		return false;
++
++	if (ENTINDEX(pHit) == 0)
++	{
++		Vector vecDir = (ptr->vecEndPos - vecSrc).Normalize();
++		const char *pszTexture = TRACE_TEXTURE(pHit, ptr->vecEndPos - vecDir * 4, ptr->vecEndPos + vecDir * 8);
++		if (pszTexture && !Q_stricmp(pszTexture, "sky"))
++			return false;
++	}
++
++	return true;
++}
++
++void BUILD_BulletImpact(entvars_t *pevAttacker, const Vector &vecSrc, TraceResult *ptr)
++{
++	if (!BUILD_On() || !ptr || !BUILD_BrickSurface(ptr, vecSrc))
++		return;
++
++	BUILD_DropBelow(ptr->vecEndPos + ptr->vecPlaneNormal * 4.0f, vecSrc);
++}
++
++void BUILD_ImpactOnce(entvars_t *pevAttacker, const Vector &vecSrc, TraceResult *ptr, edict_t **pHits, int &iHits, int iMax)
++{
++	if (!ptr || !ptr->pHit || ptr->flFraction >= 1.0f || ptr->pHit->v.solid != SOLID_BSP)
++		return;
++
++	for (int i = 0; i < iHits; i++)
++	{
++		if (pHits[i] == ptr->pHit)
++			return;
++	}
++
++	if (iHits >= iMax)
++		return;
++
++	pHits[iHits++] = ptr->pHit;
++	BUILD_BulletImpact(pevAttacker, vecSrc, ptr);
++}
++
++void BUILD_ExplosionImpact(entvars_t *pevAttacker, const Vector &vecSrc, float flRadius, float flDamage)
++{
++	// (a real blast — not the Egon's beam end, its small radius — by a player)
++	if (!BUILD_On() || flRadius <= 128.0f || flDamage < 20.0f || !pevAttacker)
++		return;
++
++	CBaseEntity *pAttacker = CBaseEntity::Instance(pevAttacker);
++	if (!pAttacker || !pAttacker->IsPlayer())
++		return;
++
++	// (the nearest brush surface around it, within 96 units)
++	static const Vector dirs[] = { Vector(0, 0, -1), Vector(1, 0, 0), Vector(-1, 0, 0), Vector(0, 1, 0), Vector(0, -1, 0), Vector(0, 0, 1) };
++	TraceResult best;
++	best.flFraction = 1.0f;
++	for (int i = 0; i < int(ARRAYSIZE(dirs)); i++)
++	{
++		TraceResult tr;
++		UTIL_TraceLine(vecSrc, vecSrc + dirs[i] * 96.0f, ignore_monsters, nullptr, &tr);
++		if (tr.fStartSolid || tr.flFraction >= best.flFraction || !BUILD_BrickSurface(&tr, vecSrc))
++			continue;
++
++		best = tr;
++	}
++
++	if (best.flFraction >= 1.0f)
++		return;
++
++	BUILD_DropBelow(best.vecEndPos + best.vecPlaneNormal * 4.0f, vecSrc);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// pieces
++
++LINK_ENTITY_TO_CLASS(build_piece, CBuildPiece, CCSEntity)
++LINK_ENTITY_TO_CLASS(build_step, CBuildStep, CCSEntity)
++
++void CBuildPiece::Precache()
++{
++	for (int i = 0; i < BUILD_PIECES; i++)
++		PRECACHE_MODEL(BUILD_ModelsOptional[i]);
++}
++
++void CBuildPiece::Spawn()
++{
++	Precache();
++	MAKE_STRING_CLASS("build_piece", pev);
++	pev->movetype = MOVETYPE_NONE;
++	pev->solid = SOLID_BBOX;
++	pev->takedamage = DAMAGE_YES;
++	pev->max_health = BUILD_HEALTH;
++	pev->health = BUILD_HEALTH / 3.0f;
++}
++
++CBuildPiece *CBuildPiece::Create(CBasePlayer *pOwner, const build_spot_t &spot)
++{
++	CBuildPiece *pPiece = GetClassPtr<CCSEntity>((CBuildPiece *)nullptr);
++	if (!pPiece)
++		return nullptr;
++
++	pPiece->Spawn();
++	entvars_t *pev = pPiece->pev;
++
++	pPiece->m_hOwner = pOwner;
++	pPiece->m_iTeam = pOwner ? pOwner->m_iTeam : UNASSIGNED;
++	pPiece->m_iPiece = spot.piece;
++	pPiece->m_iYaw = spot.yaw;
++	pPiece->m_flBornTime = gpGlobals->time;
++	pPiece->m_flDamage = 0;
++	pPiece->m_bGrowing = true;
++	pPiece->m_bDestroyed = false;
++	pPiece->m_iNumSteps = 0;
++	pPiece->m_flLastHitTime = -1;
++	pPiece->m_pLastInflictor = nullptr;
++	pPiece->m_flLastHitDamage = 0;
++	pPiece->m_flNextHitSound = 0;
++	pPiece->m_flNextChips = 0;
++
++	const Vector vecOrigin(spot.origin[0], spot.origin[1], spot.origin[2]);
++	SET_MODEL(ENT(pev), BUILD_Models[spot.piece]);
++	pev->angles = Vector(0, float(spot.yaw), 0);
++	pev->iuser1 = spot.piece;
++	pev->skin = 0;
++	UTIL_SetOrigin(pev, vecOrigin);
++
++	// (its own box: the first step — the whole box for a wall or a floor)
++	float lo[3], hi[3];
++	build_step_box(&spot, 0, lo, hi);
++	UTIL_SetSize(pev, Vector(lo[0], lo[1], lo[2]) - vecOrigin, Vector(hi[0], hi[1], hi[2]) - vecOrigin);
++
++	// (growing: see-through, then whole; the model's "build" sequence if it has one)
++	pev->rendermode = kRenderTransTexture;
++	pev->renderamt = 90;
++	studiohdr_t *pStudio = (studiohdr_t *)GET_MODEL_PTR(ENT(pev));
++	if (pStudio && pStudio->numseq > 1)
++	{
++		pev->sequence = 1;
++		pev->frame = 0;
++		pev->framerate = 1.0f;
++		pev->animtime = gpGlobals->time;
++	}
++
++	// (the invisible steps of a ramp or a roof, their damage routed to it)
++	const int n = Q_min(build_steps(spot.piece), int(ARRAYSIZE(pPiece->m_hSteps)) + 1);
++	for (int i = 1; i < n; i++)
++	{
++		CBuildStep *pStep = GetClassPtr<CCSEntity>((CBuildStep *)nullptr);
++		if (!pStep)
++			break;
++
++		pStep->Spawn();
++		pStep->m_hParent = pPiece;
++		SET_MODEL(ENT(pStep->pev), BUILD_Models[spot.piece]);
++		pStep->pev->effects |= EF_NODRAW;
++		pStep->pev->angles = pev->angles;
++		UTIL_SetOrigin(pStep->pev, vecOrigin);
++		build_step_box(&spot, i, lo, hi);
++		UTIL_SetSize(pStep->pev, Vector(lo[0], lo[1], lo[2]) - vecOrigin, Vector(hi[0], hi[1], hi[2]) - vecOrigin);
++		pPiece->m_hSteps[pPiece->m_iNumSteps++] = pStep;
++	}
++
++	EMIT_SOUND_DYN(ENT(pev), CHAN_ITEM, "build/place.wav", VOL_NORM, ATTN_NORM, 0, PITCH_NORM + RANDOM_LONG(-3, 3));
++	EMIT_SOUND_DYN(ENT(pev), CHAN_BODY, "build/build_loop.wav", 0.8f, ATTN_NORM, 0, PITCH_NORM);
++
++	pPiece->UpdateHealth();
++	pPiece->SetThink(&CBuildPiece::GrowThink);
++	pev->nextthink = gpGlobals->time + 0.05f;
++	return pPiece;
++}
++
++float CBuildPiece::GrownFraction() const
++{
++	return clamp(float((gpGlobals->time - m_flBornTime) / BUILD_GROW_TIME), 0.0f, 1.0f);
++}
++
++void CBuildPiece::UpdateHealth()
++{
++	const float f = m_bGrowing ? GrownFraction() : 1.0f;
++	pev->health = BUILD_HEALTH * (1.0f + 2.0f * f) / 3.0f - m_flDamage;
++
++	// (its cracks by the damage taken)
++	const float flTaken = m_flDamage / BUILD_HEALTH;
++	pev->skin = flTaken < 1.0f / 3.0f ? 0 : flTaken < 2.0f / 3.0f ? 1 : 2;
++}
++
++void CBuildPiece::GrowThink()
++{
++	if (m_bDestroyed)
++		return;
++
++	const float f = GrownFraction();
++	pev->renderamt = 90 + int(165 * f);
++	UpdateHealth();
++
++	if (f >= 1.0f)
++	{
++		m_bGrowing = false;
++		pev->rendermode = kRenderNormal;
++		pev->renderamt = 255;
++		pev->sequence = 0;
++		pev->framerate = 0;
++		pev->frame = 0;
++		pev->animtime = gpGlobals->time;
++		UpdateHealth();
++		SetThink(nullptr);
++		return;
++	}
++
++	pev->nextthink = gpGlobals->time + 0.05f;
++}
++
++void CBuildPiece::Chips(const Vector &vecPos, const Vector &vecDir)
++{
++	if (gpGlobals->time >= m_flNextChips && s_iGibsModel)
++	{
++		m_flNextChips = gpGlobals->time + 0.1f;
++		Vector vecVel = vecDir * -60.0f;
++		MESSAGE_BEGIN(MSG_PVS, SVC_TEMPENTITY, vecPos);
++			WRITE_BYTE(TE_BREAKMODEL);
++			WRITE_COORD(vecPos.x);
++			WRITE_COORD(vecPos.y);
++			WRITE_COORD(vecPos.z);
++			WRITE_COORD(4);
++			WRITE_COORD(4);
++			WRITE_COORD(4);
++			WRITE_COORD(vecVel.x);
++			WRITE_COORD(vecVel.y);
++			WRITE_COORD(vecVel.z);
++			WRITE_BYTE(6);    // random velocity (x10)
++			WRITE_SHORT(s_iGibsModel);
++			WRITE_BYTE(2);    // count
++			WRITE_BYTE(8);    // life (x0.1 s)
++			WRITE_BYTE(BREAK_CONCRETE);
++		MESSAGE_END();
++	}
++
++	if (gpGlobals->time >= m_flNextHitSound)
++	{
++		m_flNextHitSound = gpGlobals->time + 0.15f;
++		static const char *const sounds[] = { "build/hit1.wav", "build/hit2.wav", "build/hit3.wav" };
++		EMIT_SOUND_DYN(ENT(pev), CHAN_BODY, sounds[RANDOM_LONG(0, 2)], 0.7f, ATTN_NORM, 0, PITCH_NORM + RANDOM_LONG(-5, 5));
++	}
++}
++
++void CBuildPiece::TraceAttack(entvars_t *pevAttacker, float flDamage, Vector vecDir, TraceResult *ptr, int bitsDamageType)
++{
++	if (m_bDestroyed)
++		return;
++
++	if (ptr)
++		Chips(ptr->vecEndPos - vecDir * 2.0f, vecDir);
++
++	CBaseEntity::TraceAttack(pevAttacker, flDamage, vecDir, ptr, bitsDamageType);
++}
++
++BOOL CBuildPiece::TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType)
++{
++	if (m_bDestroyed || pev->takedamage == DAMAGE_NO || flDamage <= 0.0f)
++		return FALSE;
++
++	// (a teammate's only with friendly fire; its builder may always break their own — the owner's choice: a misplaced
++	// piece is shot away)
++	CBaseEntity *pAttacker = pevAttacker ? CBaseEntity::Instance(pevAttacker) : nullptr;
++	if (pAttacker && pAttacker->IsPlayer() && friendlyfire.value == 0.0f)
++	{
++		CBasePlayer *pPlayer = static_cast<CBasePlayer *>(pAttacker);
++		if (!IsOwnedBy(pPlayer) && !CSGameRules()->IsFreeForAll() && m_iTeam != UNASSIGNED && pPlayer->m_iTeam == m_iTeam)
++			return FALSE;
++	}
++
++	if (bitsDamageType & (DMG_BLAST | DMG_EXPLOSION))
++		flDamage *= BUILD_BLAST_FACTOR;
++
++	// (an area damage meets a ramp's every step: once per inflictor and frame, the most of them)
++	if (!(bitsDamageType & (DMG_BULLET | DMG_CLUB | DMG_SLASH)) && pevInflictor)
++	{
++		if (m_flLastHitTime == gpGlobals->time && m_pLastInflictor == ENT(pevInflictor))
++		{
++			if (flDamage <= m_flLastHitDamage)
++				return FALSE;
++
++			float flMore = flDamage - m_flLastHitDamage;
++			m_flLastHitDamage = flDamage;
++			flDamage = flMore;
++		}
++		else
++		{
++			m_flLastHitTime = gpGlobals->time;
++			m_pLastInflictor = ENT(pevInflictor);
++			m_flLastHitDamage = flDamage;
++		}
++	}
++
++	m_flDamage += flDamage;
++	UpdateHealth();
++
++	if (!(bitsDamageType & (DMG_BULLET | DMG_CLUB | DMG_SLASH)) && gpGlobals->time >= m_flNextHitSound)
++	{
++		m_flNextHitSound = gpGlobals->time + 0.15f;
++		static const char *const sounds[] = { "build/hit1.wav", "build/hit2.wav", "build/hit3.wav" };
++		EMIT_SOUND_DYN(ENT(pev), CHAN_BODY, sounds[RANDOM_LONG(0, 2)], 0.8f, ATTN_NORM, 0, PITCH_NORM + RANDOM_LONG(-5, 5));
++	}
++
++	if (pev->health <= 0.0f)
++		Destroy();
++
++	return TRUE;
++}
++
++// What rested on a piece (a pile, a dropped weapon) falls with it
++static void BUILD_WakeResting(const Vector &vecMins, const Vector &vecMaxs, CBuildPiece *pPiece, EHANDLE *pSteps, int iNumSteps)
++{
++	CBaseEntity *pList[64];
++	int n = UTIL_EntitiesInBox(pList, ARRAYSIZE(pList), vecMins - Vector(1, 1, 1), vecMaxs + Vector(1, 1, 24), 0);
++	for (int i = 0; i < n; i++)
++	{
++		entvars_t *pevOther = pList[i]->pev;
++		if (!pevOther->groundentity || (pevOther->flags & FL_CLIENT))
++			continue;
++
++		bool bOurs = (pevOther->groundentity == pPiece->edict());
++		for (int k = 0; !bOurs && k < iNumSteps; k++)
++			bOurs = pSteps[k].IsValid() && pevOther->groundentity == pSteps[k].Get();
++
++		if (!bOurs)
++			continue;
++
++		pevOther->flags &= ~FL_ONGROUND;
++		pevOther->groundentity = nullptr;
++	}
++}
++
++void CBuildPiece::Destroy()
++{
++	if (m_bDestroyed)
++		return;
++
++	m_bDestroyed = true;
++
++	build_spot_t spot = {};
++	spot.piece = m_iPiece;
++	spot.yaw = m_iYaw;
++	spot.origin[0] = pev->origin.x;
++	spot.origin[1] = pev->origin.y;
++	spot.origin[2] = pev->origin.z;
++	build_box(m_iPiece, m_iYaw, spot.origin, spot.mins, spot.maxs);
++	Vector vecMins(spot.mins[0], spot.mins[1], spot.mins[2]), vecMaxs(spot.maxs[0], spot.maxs[1], spot.maxs[2]);
++	Vector vecCenter = (vecMins + vecMaxs) * 0.5f, vecSize = vecMaxs - vecMins;
++
++	if (s_iGibsModel)
++	{
++		static const int counts[BUILD_PIECES] = { 14, 12, 16, 12 };
++		MESSAGE_BEGIN(MSG_PVS, SVC_TEMPENTITY, vecCenter);
++			WRITE_BYTE(TE_BREAKMODEL);
++			WRITE_COORD(vecCenter.x);
++			WRITE_COORD(vecCenter.y);
++			WRITE_COORD(vecCenter.z);
++			WRITE_COORD(vecSize.x);
++			WRITE_COORD(vecSize.y);
++			WRITE_COORD(vecSize.z);
++			WRITE_COORD(0);
++			WRITE_COORD(0);
++			WRITE_COORD(40);
++			WRITE_BYTE(12);   // random velocity (x10)
++			WRITE_SHORT(s_iGibsModel);
++			WRITE_BYTE(counts[clamp(m_iPiece, 0, BUILD_PIECES - 1)]);
++			WRITE_BYTE(25);   // life (x0.1 s)
++			WRITE_BYTE(BREAK_CONCRETE);
++		MESSAGE_END();
++	}
++
++	// (the sound from a point entity's place: the piece itself is gone this frame)
++	UTIL_EmitAmbientSound(ENT(0), vecCenter, RANDOM_LONG(0, 1) ? "build/break1.wav" : "build/break2.wav", VOL_NORM, ATTN_NORM, 0, PITCH_NORM + RANDOM_LONG(-5, 5));
++
++	BUILD_WakeResting(vecMins, vecMaxs, this, m_hSteps, m_iNumSteps);
++	Vanish();
++}
++
++void CBuildPiece::Vanish()
++{
++	m_bDestroyed = true;
++	pev->takedamage = DAMAGE_NO;
++
++	for (int i = 0; i < m_iNumSteps; i++)
++	{
++		CBaseEntity *pStep = m_hSteps[i];
++		if (!pStep)
++			continue;
++
++		pStep->pev->solid = SOLID_NOT;
++		pStep->pev->takedamage = DAMAGE_NO;
++		UTIL_SetOrigin(pStep->pev, pStep->pev->origin);
++		UTIL_Remove(pStep);
++	}
++
++	m_iNumSteps = 0;
++	pev->solid = SOLID_NOT;
++	UTIL_SetOrigin(pev, pev->origin);
++	SetThink(nullptr);
++	UTIL_Remove(this);
++}
++
++void CBuildStep::Spawn()
++{
++	MAKE_STRING_CLASS("build_step", pev);
++	pev->movetype = MOVETYPE_NONE;
++	pev->solid = SOLID_BBOX;
++	pev->takedamage = DAMAGE_YES;
++	pev->health = 1;
++}
++
++CBuildPiece *CBuildStep::Parent() const
++{
++	CBaseEntity *pParent = m_hParent;
++	return pParent ? static_cast<CBuildPiece *>(pParent) : nullptr;
++}
++
++void CBuildStep::TraceAttack(entvars_t *pevAttacker, float flDamage, Vector vecDir, TraceResult *ptr, int bitsDamageType)
++{
++	CBuildPiece *pParent = Parent();
++	if (pParent)
++		pParent->TraceAttack(pevAttacker, flDamage, vecDir, ptr, bitsDamageType);
++}
++
++BOOL CBuildStep::TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType)
++{
++	CBuildPiece *pParent = Parent();
++	return pParent ? pParent->TakeDamage(pevInflictor, pevAttacker, flDamage, bitsDamageType) : FALSE;
++}
++
++void BUILD_CleanUpMap()
++{
++	s_iBuildRound++;
++
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "build_piece")))
++		static_cast<CBuildPiece *>(pEntity)->Vanish();
++
++	pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "build_step")))
++	{
++		pEntity->pev->solid = SOLID_NOT;
++		UTIL_SetOrigin(pEntity->pev, pEntity->pev->origin);
++		UTIL_Remove(pEntity);
++	}
++
++	UTIL_RemoveOther("build_bricks");
++	BUILD_ForgetPiles();
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// players: bricks, build mode
++
++static void BUILD_Deny(CBasePlayer *pPlayer, int iReason)
++{
++	MESSAGE_BEGIN(MSG_ONE, gmsgBuildDeny, nullptr, pPlayer->pev);
++		WRITE_BYTE(iReason);
++	MESSAGE_END();
++}
++
++static void BUILD_WeaponAnim(CBasePlayer *pPlayer, int iAnim)
++{
++	pPlayer->pev->weaponanim = iAnim;
++	MESSAGE_BEGIN(MSG_ONE, SVC_WEAPONANIM, nullptr, pPlayer->pev);
++		WRITE_BYTE(iAnim);
++		WRITE_BYTE(0);
++	MESSAGE_END();
++}
++
++static bool BUILD_CanPlay(CBasePlayer *pPlayer)
++{
++	return pPlayer->IsAlive() && pPlayer->GetObserverMode() == OBS_NONE && (pPlayer->m_iTeam == TERRORIST || pPlayer->m_iTeam == CT)
++		&& !pPlayer->IsBot();
++}
++
++static void BUILD_Leave(CBasePlayer *pPlayer, bool bRedeploy)
++{
++	if (!pPlayer->m_bBuildMode)
++		return;
++
++	pPlayer->m_bBuildMode = false;
++	pPlayer->m_pBuildItem = nullptr;
++
++	if (!bRedeploy)
++		return;
++
++	if (pPlayer->m_pActiveItem && pPlayer->IsAlive())
++	{
++		pPlayer->m_pActiveItem->Deploy();
++		pPlayer->m_pActiveItem->UpdateItemInfo();
++		pPlayer->ResetMaxSpeed();
++	}
++	else
++	{
++		pPlayer->pev->viewmodel = iStringNull;
++		pPlayer->pev->weaponmodel = iStringNull;
++	}
++}
++
++static int BUILD_Enter(CBasePlayer *pPlayer)
++{
++	if (!BUILD_On())
++		return BUILD_DISABLED;
++
++	if (!BUILD_CanPlay(pPlayer) || pPlayer->m_pTank)
++		return BUILD_CANNOT;
++
++	if (pPlayer->m_bBuildMode)
++		return BUILD_OK;
++
++	CBasePlayerItem *pItem = pPlayer->m_pActiveItem;
++	if (pItem && !pItem->CanHolster())
++		return BUILD_CANNOT;
++
++	if (pPlayer->m_bIsDefusing)
++		return BUILD_CANNOT;
++
++	if (pItem)
++		pItem->Holster();
++
++	// (a drawn shield down, the zoom off — and the speed they gave)
++	if (pItem && pItem->IsWeapon())
++		static_cast<CBasePlayerWeapon *>(pItem)->m_iWeaponState &= ~WPNSTATE_SHIELD_DRAWN;
++	if (pPlayer->m_bShieldDrawn)
++	{
++		pPlayer->m_bShieldDrawn = false;
++		pPlayer->UpdateShieldCrosshair(true);
++	}
++
++	pPlayer->m_bBuildMode = true;
++	pPlayer->m_pBuildItem = pItem;
++	pPlayer->m_iFOV = pPlayer->m_iLastZoom = DEFAULT_FOV;
++	pPlayer->pev->fov = DEFAULT_FOV;
++	pPlayer->m_bResumeZoom = false;
++	pPlayer->ResetMaxSpeed();
++	pPlayer->pev->viewmodel = MAKE_STRING(BUILD_VIEW_MODEL);
++	pPlayer->pev->weaponmodel = iStringNull;
++	BUILD_WeaponAnim(pPlayer, BUILD_VSEQ_DRAW);
++	pPlayer->m_flNextBuild = Q_max(pPlayer->m_flNextBuild, gpGlobals->time + 0.2f);
++	return BUILD_OK;
++}
++
++// (a new round or a spawn in build mode — a survivor keeps its weapon, never deployed again by Spawn —: back to it)
++static void BUILD_LeaveForRound(CBasePlayer *pPlayer)
++{
++	if (!pPlayer->m_bBuildMode)
++		return;
++
++	pPlayer->m_bBuildMode = false;
++	pPlayer->m_pBuildItem = nullptr;
++	if (pPlayer->m_pActiveItem)
++	{
++		pPlayer->m_pActiveItem->Deploy();
++		pPlayer->m_pActiveItem->UpdateItemInfo();
++	}
++	else
++	{
++		pPlayer->pev->viewmodel = iStringNull;
++		pPlayer->pev->weaponmodel = iStringNull;
++	}
++}
++
++void BUILD_PlayerSpawn(CBasePlayer *pPlayer)
++{
++	BUILD_LeaveForRound(pPlayer);
++	pPlayer->m_bBuildMode = false;
++	pPlayer->m_pBuildItem = nullptr;
++	pPlayer->m_flNextBuild = 0;
++
++	if (pPlayer->m_iBricksRound != s_iBuildRound)
++	{
++		pPlayer->m_iBricks = BUILD_StartBricks();
++		pPlayer->m_iBricksRound = s_iBuildRound;
++	}
++}
++
++// a player just put at its spawn spot (mid-round: joining, a forced respawn): the pieces it would be stuck in break
++void BUILD_PlayerSpawned(CBasePlayer *pPlayer)
++{
++	// (not a client just connected: ClientPutInServer spawns it at a spawn spot, then makes it a spectator)
++	if (pPlayer->m_bJustConnected || (pPlayer->m_iTeam != TERRORIST && pPlayer->m_iTeam != CT))
++		return;
++
++	const Vector vecMins = pPlayer->pev->origin + VEC_HULL_MIN, vecMaxs = pPlayer->pev->origin + VEC_HULL_MAX + Vector(0, 0, 1);
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "build_piece")))
++	{
++		if (pEntity->pev->flags & FL_KILLME)
++			continue;
++
++		CBuildPiece *pPiece = static_cast<CBuildPiece *>(pEntity);
++		build_spot_t spot = {};
++		spot.piece = pPiece->Piece();
++		spot.yaw = pPiece->Yaw();
++		spot.origin[0] = pEntity->pev->origin.x;
++		spot.origin[1] = pEntity->pev->origin.y;
++		spot.origin[2] = pEntity->pev->origin.z;
++		build_box(spot.piece, spot.yaw, spot.origin, spot.mins, spot.maxs);
++		if (build_overlaps_box(&spot, vecMins, vecMaxs))
++			pPiece->Destroy();
++	}
++}
++
++void BUILD_PlayerKilled(CBasePlayer *pPlayer)
++{
++	BUILD_Leave(pPlayer, false);
++}
++
++void BUILD_PlayerNewRound(CBasePlayer *pPlayer)
++{
++	BUILD_LeaveForRound(pPlayer);
++	pPlayer->m_iBricks = BUILD_StartBricks();
++	pPlayer->m_iBricksRound = s_iBuildRound;
++}
++
++bool BUILD_PlayerItemFrame(CBasePlayer *pPlayer)
++{
++	if (!pPlayer->m_bBuildMode)
++		return false;
++
++	// (out of it: building off, dead, or another weapon in hand — bought, picked —: that one stays)
++	if (!BUILD_On() || !BUILD_CanPlay(pPlayer) || pPlayer->m_pActiveItem != pPlayer->m_pBuildItem)
++	{
++		BUILD_Leave(pPlayer, BUILD_CanPlay(pPlayer) && pPlayer->m_pActiveItem == pPlayer->m_pBuildItem);
++		return false;
++	}
++
++	if (!FStrEq(STRING(pPlayer->pev->viewmodel), BUILD_VIEW_MODEL))
++		pPlayer->pev->viewmodel = MAKE_STRING(BUILD_VIEW_MODEL);
++
++	pPlayer->pev->weaponmodel = iStringNull;
++	return true;
++}
++
++bool BUILD_LeaveForWeapon(CBasePlayer *pPlayer, CBasePlayerItem *pNext)
++{
++	if (!pPlayer->m_bBuildMode)
++		return false;
++
++	BUILD_Leave(pPlayer, !pNext || pNext == pPlayer->m_pActiveItem);
++	return true;
++}
++
++void BUILD_PlayerUpdateClient(CBasePlayer *pPlayer, bool bInitHUD)
++{
++	if (bInitHUD)
++	{
++		pPlayer->m_iBricksSent = -1;
++		pPlayer->m_iBuildModeSent = -1;
++		return;
++	}
++
++	if (pPlayer->IsBot())
++		return;
++
++	if (pPlayer->m_iBricks != pPlayer->m_iBricksSent || pPlayer->m_iBricksPicked > 0)
++	{
++		MESSAGE_BEGIN(MSG_ONE, gmsgBricks, nullptr, pPlayer->pev);
++			WRITE_SHORT(pPlayer->m_iBricks);
++			WRITE_BYTE(Q_min(pPlayer->m_iBricksPicked, 255));
++		MESSAGE_END();
++		pPlayer->m_iBricksSent = pPlayer->m_iBricks;
++		pPlayer->m_iBricksPicked = 0;
++	}
++
++	int iMode = (pPlayer->m_bBuildMode ? 1 : 0) | (BUILD_On() ? 2 : 0);
++	if (iMode != pPlayer->m_iBuildModeSent)
++	{
++		MESSAGE_BEGIN(MSG_ONE, gmsgBuildMode, nullptr, pPlayer->pev);
++			WRITE_BYTE(iMode);
++		MESSAGE_END();
++		pPlayer->m_iBuildModeSent = iMode;
++	}
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// placing a piece
++
++static void BUILD_EyeOf(CBasePlayer *pPlayer, float *eye, float *angles, float &feet)
++{
++	Vector vecEye = pPlayer->pev->origin + pPlayer->pev->view_ofs;
++	eye[0] = vecEye.x;
++	eye[1] = vecEye.y;
++	eye[2] = vecEye.z;
++	angles[0] = pPlayer->pev->v_angle.x;
++	angles[1] = pPlayer->pev->v_angle.y;
++	angles[2] = 0;
++	feet = pPlayer->pev->origin.z + pPlayer->pev->mins.z;
++}
++
++// Why a spot may not be built for this player (0: it may)
++static int BUILD_Check(CBasePlayer *pPlayer, const build_engine_t *e, const build_spot_t &spot, const float *eye)
++{
++	if (pPlayer->m_iBricks < BUILD_COST)
++		return BUILD_NO_BRICKS;
++
++	// (the caps: the player's pieces, all pieces, their entities, the edicts left)
++	int iMine = 0, iAll = 0, iEntities = 0;
++	bool bTaken = false;
++	CBaseEntity *pEntity = nullptr;
++	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "build_piece")))
++	{
++		if (pEntity->pev->flags & FL_KILLME)
++			continue;
++
++		CBuildPiece *pPiece = static_cast<CBuildPiece *>(pEntity);
++		iAll++;
++		iEntities += pPiece->Entities();
++		if (pPiece->IsOwnedBy(pPlayer))
++			iMine++;
++
++		float o[3] = { pEntity->pev->origin.x, pEntity->pev->origin.y, pEntity->pev->origin.z };
++		if (build_same_slot(&spot, pPiece->Piece(), pPiece->Yaw(), o))
++			bTaken = true;
++	}
++
++	if (iMine >= BUILD_PLAYER_CAP)
++		return BUILD_MY_CAP;
++
++	// (the edicts: the game's margin kept, and room for every pile there may be)
++	const int iNeed = build_steps(spot.piece);
++	if (iAll >= BUILD_GLOBAL_CAP || iEntities + iNeed > BUILD_ENTITY_CAP
++		|| NUMBER_OF_ENTITIES() + iNeed + BUILD_EDICT_MARGIN + BUILD_PILE_CAP - BUILD_LivePiles() > gpGlobals->maxEntities)
++		return BUILD_ALL_CAP;
++
++	if (!build_in_reach(&spot, eye))
++		return BUILD_TOO_FAR;
++
++	if (bTaken)
++		return BUILD_BLOCKED;
++
++	// (players, hostages and Pokemon in its steps)
++	CBaseEntity *pList[64];
++	int n = UTIL_EntitiesInBox(pList, ARRAYSIZE(pList), Vector(spot.mins[0], spot.mins[1], spot.mins[2]), Vector(spot.maxs[0], spot.maxs[1], spot.maxs[2]), FL_CLIENT | FL_FAKECLIENT | FL_MONSTER);
++	for (int i = 0; i < n; i++)
++	{
++		entvars_t *pevOther = pList[i]->pev;
++		if (pevOther->solid == SOLID_NOT || pevOther->deadflag != DEAD_NO || pevOther->health <= 0.0f)
++			continue;
++
++		if (build_overlaps_box(&spot, pevOther->absmin, pevOther->absmax))
++			return BUILD_BLOCKED;
++	}
++
++	// (spawn points: not refused — the client could not show it, and a spawn area is where a round's building starts;
++	// a player spawning into pieces later in a round breaks them: BUILD_PlayerSpawned)
++
++	if (build_world_blocked(e, &spot))
++		return BUILD_BLOCKED;
++
++	return BUILD_OK;
++}
++
++// The spot the server finds for a player: its own aim with the piece (turns: the one giving the client's spot, if the
++// client sent one and any does; aimed at the client's spot's centre if the view moved since — latency —; else the
++// turns giving the client's yaw, or 0)
++static void BUILD_FindSpot(CBasePlayer *pPlayer, const build_engine_t *e, int iPiece, const build_spot_t *pAsked, int iTurns, build_spot_t &spot)
++{
++	float eye[3], angles[3], feet;
++	BUILD_EyeOf(pPlayer, eye, angles, feet);
++
++	if (pAsked)
++	{
++		build_spot_t trySpot;
++		for (int t = 0; t < 4; t++)
++		{
++			build_aim(e, eye, angles, feet, iPiece, t, &trySpot);
++			if (build_same_slot(&trySpot, pAsked->piece, pAsked->yaw, pAsked->origin))
++			{
++				spot = trySpot;
++				return;
++			}
++		}
++
++		// (the view at the asked spot's centre, from the same eye)
++		float c[3];
++		build_box(pAsked->piece, pAsked->yaw, pAsked->origin, c, trySpot.maxs);
++		for (int k = 0; k < 3; k++)
++			c[k] = (c[k] + trySpot.maxs[k]) / 2 - eye[k];
++
++		float flHoriz = Q_sqrt(c[0] * c[0] + c[1] * c[1]);
++		if (flHoriz > 1.0f)
++		{
++			float aimed[3] = { float(-Q_atan2(c[2], flHoriz) * 180.0 / M_PI), float(Q_atan2(c[1], c[0]) * 180.0 / M_PI), 0 };
++			// (only a small correction: a view the player had a moment ago)
++			float dyaw = Q_fabs(UTIL_AngleDiff(aimed[1], angles[1])), dpitch = Q_fabs(aimed[0] - angles[0]);
++			if (dyaw < 30.0f && dpitch < 30.0f)
++			{
++				for (int t = 0; t < 4; t++)
++				{
++					build_aim(e, eye, aimed, feet, iPiece, t, &trySpot);
++					if (build_same_slot(&trySpot, pAsked->piece, pAsked->yaw, pAsked->origin))
++					{
++						spot = trySpot;
++						return;
++					}
++				}
++			}
++		}
++
++		// (its own, the turns that give the asked yaw)
++		for (int t = 0; t < 4; t++)
++		{
++			build_aim(e, eye, angles, feet, iPiece, t, &trySpot);
++			if (trySpot.yaw == pAsked->yaw)
++			{
++				spot = trySpot;
++				return;
++			}
++		}
++	}
++
++	build_aim(e, eye, angles, feet, iPiece, iTurns & 3, &spot);
++}
++
++static void BUILD_Place(CBasePlayer *pPlayer, int iPiece, const build_spot_t *pAsked, int iTurns)
++{
++	if (!BUILD_On())
++	{
++		BUILD_Deny(pPlayer, BUILD_DISABLED);
++		return;
++	}
++
++	if (!pPlayer->m_bBuildMode || !BUILD_CanPlay(pPlayer) || iPiece < 0 || iPiece >= BUILD_PIECES)
++	{
++		BUILD_Deny(pPlayer, BUILD_CANNOT);
++		return;
++	}
++
++	// (a moment between two: the quiet way to refuse a held button's repeats)
++	if (gpGlobals->time < pPlayer->m_flNextBuild)
++		return;
++
++	BuildTraceCtx ctx = { pPlayer->edict(), nullptr };
++	build_engine_t e = BUILD_Engine(&ctx);
++
++	build_spot_t spot;
++	BUILD_FindSpot(pPlayer, &e, iPiece, pAsked, iTurns, spot);
++
++	float eye[3], angles[3], feet;
++	BUILD_EyeOf(pPlayer, eye, angles, feet);
++	int iReason = BUILD_Check(pPlayer, &e, spot, eye);
++	if (iReason != BUILD_OK)
++	{
++		pPlayer->m_flNextBuild = gpGlobals->time + 0.1f;
++		BUILD_Deny(pPlayer, iReason);
++		return;
++	}
++
++	if (!CBuildPiece::Create(pPlayer, spot))
++	{
++		BUILD_Deny(pPlayer, BUILD_ALL_CAP);
++		return;
++	}
++
++	pPlayer->m_iBricks -= BUILD_COST;
++	pPlayer->m_flNextBuild = gpGlobals->time + BUILD_PLACE_DELAY;
++	BUILD_WeaponAnim(pPlayer, BUILD_VSEQ_PLACE);
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// commands
++
++bool BUILD_ClientCommand(CBasePlayer *pPlayer, const char *pcmd)
++{
++	if (FStrEq(pcmd, "build_mode"))
++	{
++		bool bOn = CMD_ARGC() > 1 ? Q_atoi(CMD_ARGV(1)) != 0 : !pPlayer->m_bBuildMode;
++
++		// (each one answered by a BuildMode, the state as it is then — the client counts its answers)
++		pPlayer->m_iBuildModeSent = -1;
++		if (!bOn)
++		{
++			BUILD_Leave(pPlayer, true);
++			return true;
++		}
++
++		int iReason = BUILD_Enter(pPlayer);
++		if (iReason != BUILD_OK)
++			BUILD_Deny(pPlayer, iReason);
++		return true;
++	}
++
++	if (FStrEq(pcmd, "build_place"))
++	{
++		int iPiece = CMD_ARGC() > 1 ? Q_atoi(CMD_ARGV(1)) : 0;
++		build_spot_t asked = {};
++		const build_spot_t *pAsked = nullptr;
++		int iTurns = 0;
++		if (CMD_ARGC() > 5)
++		{
++			asked.piece = iPiece;
++			asked.origin[0] = float(Q_atof(CMD_ARGV(2)));
++			asked.origin[1] = float(Q_atof(CMD_ARGV(3)));
++			asked.origin[2] = float(Q_atof(CMD_ARGV(4)));
++			asked.yaw = ((Q_atoi(CMD_ARGV(5)) % 360) + 360) % 360;
++			pAsked = &asked;
++			if (CMD_ARGC() > 6)
++				iTurns = Q_atoi(CMD_ARGV(6));
++		}
++		else if (CMD_ARGC() > 2)
++			iTurns = Q_atoi(CMD_ARGV(2));
++
++		BUILD_Place(pPlayer, iPiece, pAsked, iTurns);
++		return true;
++	}
++
++	if (FStrEq(pcmd, "build_give"))
++	{
++		if (CVAR_GET_FLOAT("sv_cheats") == 0.0f)
++		{
++			ClientPrint(pPlayer->pev, HUD_PRINTCONSOLE, "build_give needs sv_cheats 1\n");
++			return true;
++		}
++
++		int n = CMD_ARGC() > 1 ? Q_atoi(CMD_ARGV(1)) : 100;
++		pPlayer->m_iBricks = clamp(pPlayer->m_iBricks + n, 0, BUILD_MAX_BRICKS);
++		return true;
++	}
++
++	if (FStrEq(pcmd, "build_info"))
++	{
++		int iMine = 0, iAll = 0, iEntities = 0, iPiles = 0;
++		CBaseEntity *pEntity = nullptr;
++		while ((pEntity = UTIL_FindEntityByClassname(pEntity, "build_piece")))
++		{
++			CBuildPiece *pPiece = static_cast<CBuildPiece *>(pEntity);
++			iAll++;
++			iEntities += pPiece->Entities();
++			if (pPiece->IsOwnedBy(pPlayer))
++				iMine++;
++		}
++
++		pEntity = nullptr;
++		while ((pEntity = UTIL_FindEntityByClassname(pEntity, "build_bricks")))
++			iPiles++;
++
++		char line[256];
++		Q_snprintf(line, sizeof(line), "build: mp_build %d, bricks %d, build mode %d, pieces %d mine / %d all (%d entities), piles %d, edicts %d/%d\n",
++			int(build_enabled.value), pPlayer->m_iBricks, pPlayer->m_bBuildMode ? 1 : 0, iMine, iAll, iEntities, iPiles, NUMBER_OF_ENTITIES(), gpGlobals->maxEntities);
++		ClientPrint(pPlayer->pev, HUD_PRINTCONSOLE, line);
++		return true;
++	}
++
++	return false;
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++// build_test (the server console's, sv_cheats 1): place [piece] — every living player, bots too, builds where it looks
++// (its reason printed when refused); hurt <n> — every piece hurt by the world; status; clear
++
++static void BUILD_TestCommand()
++{
++	if (CVAR_GET_FLOAT("sv_cheats") == 0.0f)
++	{
++		SERVER_PRINT("build_test needs sv_cheats 1\n");
++		return;
++	}
++
++	const char *arg1 = CMD_ARGC() > 1 ? CMD_ARGV(1) : "status";
++	char line[256];
++
++	if (!Q_stricmp(arg1, "place"))
++	{
++		int iAsked = CMD_ARGC() > 2 ? Q_atoi(CMD_ARGV(2)) : -1;
++		for (int i = 1; i <= gpGlobals->maxClients; i++)
++		{
++			CBasePlayer *pPlayer = UTIL_PlayerByIndex(i);
++			if (!pPlayer || !pPlayer->IsAlive() || pPlayer->GetObserverMode() != OBS_NONE)
++				continue;
++
++			int iPiece = iAsked >= 0 ? iAsked % BUILD_PIECES : RANDOM_LONG(0, BUILD_PIECES - 1);
++			BuildTraceCtx ctx = { pPlayer->edict(), nullptr };
++			build_engine_t e = BUILD_Engine(&ctx);
++			build_spot_t spot;
++			BUILD_FindSpot(pPlayer, &e, iPiece, nullptr, 0, spot);
++
++			float eye[3], angles[3], feet;
++			BUILD_EyeOf(pPlayer, eye, angles, feet);
++			int iBricks = pPlayer->m_iBricks;
++			pPlayer->m_iBricks = BUILD_MAX_BRICKS;
++			int iReason = BUILD_Check(pPlayer, &e, spot, eye);
++			pPlayer->m_iBricks = iBricks;
++
++			CBuildPiece *pPiece = iReason == BUILD_OK ? CBuildPiece::Create(pPlayer, spot) : nullptr;
++			Q_snprintf(line, sizeof(line), "build_test: %s piece %d at %.0f %.0f %.0f yaw %d (eye %.0f %.0f %.0f view %.0f %.0f): %s %d\n",
++				STRING(pPlayer->pev->netname), iPiece, spot.origin[0], spot.origin[1], spot.origin[2], spot.yaw, eye[0], eye[1], eye[2], angles[0], angles[1],
++				pPiece ? "built #" : "refused, reason", pPiece ? pPiece->entindex() : iReason);
++			SERVER_PRINT(line);
++		}
++	}
++	else if (!Q_stricmp(arg1, "hurt"))
++	{
++		float flDamage = CMD_ARGC() > 2 ? float(Q_atof(CMD_ARGV(2))) : 100.0f;
++		CBaseEntity *pEntity = nullptr;
++		while ((pEntity = UTIL_FindEntityByClassname(pEntity, "build_piece")))
++		{
++			if (!(pEntity->pev->flags & FL_KILLME))
++				pEntity->TakeDamage(VARS(INDEXENT(0)), VARS(INDEXENT(0)), flDamage, DMG_GENERIC);
++		}
++	}
++	else if (!Q_stricmp(arg1, "clear"))
++	{
++		BUILD_CleanUpMap();
++	}
++	else if (!Q_stricmp(arg1, "rain"))
++	{
++		// (n drops on a grid of 64 units over the first living player: no two merge — the cap's check)
++		int n = CMD_ARGC() > 2 ? Q_atoi(CMD_ARGV(2)) : 150;
++		for (int i = 1; i <= gpGlobals->maxClients; i++)
++		{
++			CBasePlayer *pPlayer = UTIL_PlayerByIndex(i);
++			if (!pPlayer || !pPlayer->IsAlive())
++				continue;
++
++			for (int k = 0; k < n; k++)
++				CBrickPile::Drop(pPlayer->pev->origin + Vector(float((k % 16) * 64 - 512), float((k / 16) * 64 - 512), 0), BUILD_DROP);
++			break;
++		}
++	}
++	else if (!Q_stricmp(arg1, "boom"))
++	{
++		// (a grenade's blast — 100, radius 350, by the first living player — 48 units in front of every piece's middle)
++		CBasePlayer *pBy = nullptr;
++		for (int i = 1; i <= gpGlobals->maxClients && !pBy; i++)
++		{
++			CBasePlayer *pPlayer = UTIL_PlayerByIndex(i);
++			if (pPlayer && pPlayer->IsAlive())
++				pBy = pPlayer;
++		}
++
++		if (!pBy)
++			return;
++
++		CBaseEntity *pList[256];
++		int n = 0;
++		CBaseEntity *pEntity = nullptr;
++		while (n < int(ARRAYSIZE(pList)) && (pEntity = UTIL_FindEntityByClassname(pEntity, "build_piece")))
++		{
++			if (!(pEntity->pev->flags & FL_KILLME))
++				pList[n++] = pEntity;
++		}
++
++		for (int i = 0; i < n; i++)
++		{
++			CBuildPiece *pPiece = static_cast<CBuildPiece *>(pList[i]);
++			build_spot_t spot = {};
++			spot.piece = pPiece->Piece();
++			spot.yaw = pPiece->Yaw();
++			spot.origin[0] = pPiece->pev->origin.x;
++			spot.origin[1] = pPiece->pev->origin.y;
++			spot.origin[2] = pPiece->pev->origin.z;
++			build_box(spot.piece, spot.yaw, spot.origin, spot.mins, spot.maxs);
++			Vector vecMid((spot.mins[0] + spot.maxs[0]) / 2, (spot.mins[1] + spot.maxs[1]) / 2, (spot.mins[2] + spot.maxs[2]) / 2);
++			Vector vecAt = vecMid + Vector(0, 0, 48);
++			float flBefore = pPiece->pev->health;
++			::RadiusDamage(vecAt, pBy->pev, pBy->pev, 100, 350, CLASS_NONE, DMG_EXPLOSION);
++			Q_snprintf(line, sizeof(line), "build_test: boom on #%d piece %d: health %.0f -> %.0f\n", pPiece->entindex(), spot.piece, flBefore,
++				(pPiece->pev->flags & FL_KILLME) ? 0.0f : float(pPiece->pev->health));
++			SERVER_PRINT(line);
++		}
++	}
++	else
++	{
++		int iPieces = 0, iSteps = 0, iPiles = 0, iBricks = 0;
++		CBaseEntity *pEntity = nullptr;
++		while ((pEntity = UTIL_FindEntityByClassname(pEntity, "build_piece")))
++		{
++			if (pEntity->pev->flags & FL_KILLME)
++				continue;
++
++			CBuildPiece *pPiece = static_cast<CBuildPiece *>(pEntity);
++			iPieces++;
++			Q_snprintf(line, sizeof(line), "build_test: #%d piece %d at %.0f %.0f %.0f yaw %d health %.0f skin %d render %d/%.0f box %.0f %.0f %.0f .. %.0f %.0f %.0f entities %d\n",
++				pPiece->entindex(), pPiece->Piece(), pEntity->pev->origin.x, pEntity->pev->origin.y, pEntity->pev->origin.z, pPiece->Yaw(),
++				pEntity->pev->health, pEntity->pev->skin, pEntity->pev->rendermode, pEntity->pev->renderamt,
++				pEntity->pev->absmin.x, pEntity->pev->absmin.y, pEntity->pev->absmin.z, pEntity->pev->absmax.x, pEntity->pev->absmax.y, pEntity->pev->absmax.z,
++				pPiece->Entities());
++			SERVER_PRINT(line);
++		}
++
++		pEntity = nullptr;
++		while ((pEntity = UTIL_FindEntityByClassname(pEntity, "build_step")))
++		{
++			if (!(pEntity->pev->flags & FL_KILLME))
++				iSteps++;
++		}
++
++		pEntity = nullptr;
++		while ((pEntity = UTIL_FindEntityByClassname(pEntity, "build_bricks")))
++		{
++			if (pEntity->pev->flags & FL_KILLME)
++				continue;
++
++			iPiles++;
++			iBricks += static_cast<CBrickPile *>(pEntity)->m_iAmount;
++		}
++
++		Q_snprintf(line, sizeof(line), "build_test: mp_build %d mp_build_bricks %d, %d pieces, %d steps, %d piles (%d bricks), edicts %d/%d\n",
++			int(build_enabled.value), BUILD_StartBricks(), iPieces, iSteps, iPiles, iBricks, NUMBER_OF_ENTITIES(), gpGlobals->maxEntities);
++		SERVER_PRINT(line);
++
++		for (int i = 1; i <= gpGlobals->maxClients; i++)
++		{
++			CBasePlayer *pPlayer = UTIL_PlayerByIndex(i);
++			if (!pPlayer)
++				continue;
++
++			Q_snprintf(line, sizeof(line), "build_test: player %s bricks %d build mode %d\n", STRING(pPlayer->pev->netname), pPlayer->m_iBricks, pPlayer->m_bBuildMode ? 1 : 0);
++			SERVER_PRINT(line);
++		}
++	}
++}
+diff --git a/regamedll/dlls/wpn_shared/build_grid.h b/regamedll/dlls/wpn_shared/build_grid.h
+new file mode 100644
+index 0000000..88d283d
+--- /dev/null
++++ b/regamedll/dlls/wpn_shared/build_grid.h
+@@ -0,0 +1,335 @@
++/*
++build_grid.h - Half Strike's building grid: where a piece goes from a player's view, and the checks of a spot.
++Shared, header-only, by the game (dlls/wpn_shared/build.cpp) and the client (cl_dll/arsenal_ui.cpp: the blueprint):
++the same function on both sides, the engine reached through callbacks only (no engine header here).
++
++The grid: tiles of BUILD_TILE (128) units, anchored to the world in x and y. In z, a cell's base is the ground under
++it (a trace down at its centre — the world, or a built piece: then that piece's levels), then levels of 128 over it.
++Pieces, each in its own frame (origin = the bottom centre of its cell; models and collision boxes match it):
++  wall   x -64..64, y -4..4, z 0..128          (yaw 0: along x; yaw 90: along y), on a tile edge
++  floor  x -64..64, y -64..64, z -4..4          (centred on the level's plane, as walls on their edge: a floor on top
++                                               of walls is level 1)
++  ramp   x -64..64, y -64..64, z 0..128        rising toward +x of its frame (yaw: the way it rises): 8 stairs of
++                                               16 x 16, step i: x -64+16i..-48+16i, z 16i..16i+16 (its underside
++                                               open: the visual's plane z = x + 56)
++  roof   x -64..64, y -64..64, z 0..64         a pyramid shell, apex (0, 0, 64); steps i = 0..3: half 56-16i,
++                                               z 16i..16i+16
++Ramps and roofs collide as those steps (build_step_box): solid boxes a player walks up. The numbers are the models'
++(tools/goldsrc/assets/pokemon/bricks.py, its PIECE CONTRACT).
++A slot (what may not be built twice): the same piece at the same origin (and, for a wall, the same axis).
++A piece is never built on the far side of what the view hit (a wall's grid line past a world wall, a floor or a roof
++rounded up over a ceiling): build_aim takes the nearer line or the lower level then, and build_world_blocked refuses a
++piece neither the aim point nor the eye reaches (the world and brush entities between them).
++*/
++#ifndef BUILD_GRID_H
++#define BUILD_GRID_H
++
++#include <math.h>
++
++#define BUILD_TILE        128
++#define BUILD_WALL_THICK  8
++#define BUILD_FLOOR_THICK 8
++#define BUILD_ROOF_HEIGHT 64
++#define BUILD_STEP        16
++#define BUILD_COST        10
++#define BUILD_REACH       ( 4 * BUILD_TILE )       // (the aim traced that far; a piece's centre at most that far + 64)
++#define BUILD_NOHIT       ( 1.5f * BUILD_TILE )    // (the aim at nothing: the point that far along it)
++#define BUILD_CLIP        34.0f                    // (the world check: the box shrunk by that much on its sides — x and
++                                                   // y: a piece may clip a quarter tile into world walls (and 2 units, a
++                                                   // face exactly there: touching), as the grid is not the map's;
++                                                   // build_reached keeps it from passing through them —...)
++#define BUILD_SHRINK      2.0f                     // (...by that much at its top...)
++#define BUILD_SINK        10.0f                    // (...and its bottom raised by that much: pieces rest on the ground)
++#define BUILD_MAX_BRICKS  999
++
++enum { BUILD_WALL, BUILD_FLOOR, BUILD_RAMP, BUILD_ROOF, BUILD_PIECES };
++
++// the steps of a piece (ramps 8, roofs 4; walls and floors: their box, 1)
++static inline int build_steps( int piece ) { return piece == BUILD_RAMP ? BUILD_TILE / BUILD_STEP : piece == BUILD_ROOF ? BUILD_ROOF_HEIGHT / BUILD_STEP : 1; }
++
++typedef struct
++{
++	int piece;
++	int yaw;          // degrees, 0/90/180/270 (walls: 0 or 90)
++	float origin[3];  // the bottom centre of the cell (walls: of the edge); integers
++	float mins[3], maxs[3]; // the whole piece's box, world (absolute)
++	int aimed;        // set by build_aim: aim (the view's hit, a unit back) and eye kept for build_world_blocked's
++	float aim[3], eye[3];   // reach check (spots made otherwise: aimed 0, no such check)
++} build_spot_t;
++
++// The engine, for build_aim / build_check: a line traced (world and brush entities, built pieces included — not
++// players; worldOnly: the world and brush entities alone), the fraction of it travelled and where it stopped; the start
++// inside a solid (a built piece too, without worldOnly): startsolid set.
++typedef struct
++{
++	void *ctx;
++	// returns the fraction (1: nothing hit), end filled, *startsolid set
++	float ( *trace )( void *ctx, const float *start, const float *end, int worldOnly, float *endpos, int *startsolid );
++	// optional (NULL: none): whether the last trace stopped on a built piece or one of its steps, and that piece's
++	// origin z (steps share their piece's origin) — a cell over a piece takes its levels (origin_z + n * 128)
++	int ( *piece )( void *ctx, float *origin_z );
++} build_engine_t;
++
++// the box of a piece at an origin and yaw (absolute)
++static inline void build_box( int piece, int yaw, const float *o, float *mins, float *maxs )
++{
++	float hx = BUILD_TILE / 2, hy = BUILD_TILE / 2, z0 = 0, z1 = BUILD_TILE;
++	if ( piece == BUILD_WALL )
++	{
++		if ( yaw % 180 == 0 ) hy = BUILD_WALL_THICK / 2;
++		else hx = BUILD_WALL_THICK / 2;
++	}
++	else if ( piece == BUILD_FLOOR ) { z0 = -BUILD_FLOOR_THICK / 2; z1 = BUILD_FLOOR_THICK / 2; }
++	else if ( piece == BUILD_ROOF ) z1 = BUILD_ROOF_HEIGHT;
++	mins[0] = o[0] - hx; maxs[0] = o[0] + hx;
++	mins[1] = o[1] - hy; maxs[1] = o[1] + hy;
++	mins[2] = o[2] + z0; maxs[2] = o[2] + z1;
++}
++
++// the i-th collision step of a piece (absolute): ramps' stairs (16 x 16 each, rising), roofs' nested slabs
++static inline void build_step_box( const build_spot_t *s, int i, float *mins, float *maxs )
++{
++	build_box( s->piece, s->yaw, s->origin, mins, maxs );
++	const float *o = s->origin;
++	if ( s->piece == BUILD_RAMP )
++	{
++		const float half = BUILD_TILE / 2, from = -half + i * BUILD_STEP, to = from + BUILD_STEP; // (along the way it rises)
++		mins[2] = o[2] + i * BUILD_STEP; maxs[2] = mins[2] + BUILD_STEP;
++		switch ((( s->yaw % 360 ) + 360 ) % 360 )
++		{
++		case 0:   mins[0] = o[0] + from; maxs[0] = o[0] + to; break;
++		case 90:  mins[1] = o[1] + from; maxs[1] = o[1] + to; break;
++		case 180: mins[0] = o[0] - to; maxs[0] = o[0] - from; break;
++		default:  mins[1] = o[1] - to; maxs[1] = o[1] - from; break;
++		}
++	}
++	else if ( s->piece == BUILD_ROOF )
++	{
++		const float half = BUILD_TILE / 2 - 8 - i * BUILD_STEP; // (56, 40, 24, 8)
++		mins[0] = o[0] - half; maxs[0] = o[0] + half;
++		mins[1] = o[1] - half; maxs[1] = o[1] + half;
++		mins[2] = o[2] + i * BUILD_STEP; maxs[2] = mins[2] + BUILD_STEP;
++	}
++}
++
++static inline int build_cell( float v ) { return (int)floorf( v / BUILD_TILE ); }
++
++// the base of a cell: the ground under the point (x, y), traced down from z (a solid start: fallback)
++static inline float build_base( const build_engine_t *e, float x, float y, float z, float fallback )
++{
++	float a[3] = { x, y, z }, b[3] = { x, y, z - 3 * BUILD_TILE }, end[3];
++	int startsolid = 0;
++	const float f = e->trace( e->ctx, a, b, 0, end, &startsolid );
++	if ( startsolid || f >= 1.0f )
++		return floorf( fallback + 0.5f );
++	float pz;
++	if ( e->piece && e->piece( e->ctx, &pz ))
++		return floorf( pz + floorf(( end[2] - pz + 8.0f ) / BUILD_TILE ) * BUILD_TILE + 0.5f ); // (on a piece: its levels)
++	return floorf( end[2] + 0.5f );
++}
++
++// the box build_world_blocked checks: the piece's, shrunk on its sides (by BUILD_CLIP: a wall's thickness to its middle
++// plane), its bottom raised (a floor: just over its top)
++static inline void build_check_box( const build_spot_t *s, float *lo, float *hi )
++{
++	for ( int k = 0; k < 2; k++ )
++	{
++		lo[k] = s->mins[k] + BUILD_CLIP; hi[k] = s->maxs[k] - BUILD_CLIP;
++		if ( lo[k] > hi[k] ) lo[k] = hi[k] = ( s->mins[k] + s->maxs[k] ) / 2;
++	}
++	lo[2] = s->mins[2] + BUILD_SINK; hi[2] = s->maxs[2] - BUILD_SHRINK;
++	if ( lo[2] > hi[2] ) lo[2] = hi[2] = s->maxs[2] + 1; // (a floor: just over its top, where it is stood on)
++}
++
++// whether the aim point or the eye reaches the piece (the nearest point of its check box), the world and brush
++// entities between them counted (worldOnly traces): no piece behind a wall or over a ceiling the view hit
++static inline int build_reached( const build_engine_t *e, const build_spot_t *s )
++{
++	float lo[3], hi[3], p[3];
++	build_check_box( s, lo, hi );
++	for ( int from = 0; from < 2; from++ )
++	{
++		const float *a = from ? s->eye : s->aim;
++		float d2 = 0;
++		for ( int k = 0; k < 3; k++ )
++		{
++			p[k] = a[k] < lo[k] ? lo[k] : a[k] > hi[k] ? hi[k] : a[k];
++			d2 += ( p[k] - a[k] ) * ( p[k] - a[k] );
++		}
++		if ( d2 < 1.0f )
++			return 1;
++		float end[3];
++		int startsolid = 0;
++		const float f = e->trace( e->ctx, a, p, 1, end, &startsolid );
++		if ( !startsolid && f >= 1.0f )
++			return 1;
++	}
++	return 0;
++}
++
++// the spot for an aim point (nearer: the wall's grid line one tile toward the eye, the level one lower)
++static inline void build_spot_at( const build_engine_t *e, const float *eye, const float *aim, float yawdeg, float feet, int piece, int turns, int nearer, build_spot_t *s )
++{
++	// (the player's facing, to the nearest quarter: 0 +x, 1 +y, 2 -x, 3 -y)
++	float yaw = fmodf( yawdeg, 360.0f );
++	if ( yaw < 0 ) yaw += 360;
++	const int facing = (int)floorf(( yaw + 45 ) / 90 ) & 3;
++	const int T = BUILD_TILE;
++	s->piece = piece;
++	float o[3];
++	if ( piece == BUILD_WALL )
++	{
++		// (across the facing — or along it, turned once —, on the grid line nearest the aim, in the aim's cell)
++		const int across = ( facing + turns ) & 1; // (0: across x — on a line x = n*128, along y; 1: across y)
++		const int ax = across, other = 1 - ax;
++		float line = floorf( aim[ax] / T + 0.5f ) * T;
++		if ( nearer )
++			line += ( eye[ax] < aim[ax] ? -T : T ) * nearer;
++		o[ax] = line;
++		o[other] = build_cell( aim[other] ) * T + T / 2;
++		// (its base: the ground of the cell on the player's side of the line)
++		float sample[2];
++		sample[ax] = line + ( eye[ax] >= line ? T / 2 : -T / 2 );
++		sample[other] = o[other];
++		const float base = build_base( e, sample[0], sample[1], eye[2], feet );
++		const int level = (int)floorf(( aim[2] - base ) / T );
++		o[2] = base + ( level > 0 ? level : 0 ) * T;
++		s->yaw = across ? 0 : 90; // (across x: the wall spans y, yaw 90)
++	}
++	else
++	{
++		o[0] = build_cell( aim[0] ) * T + T / 2;
++		o[1] = build_cell( aim[1] ) * T + T / 2;
++		const float base = build_base( e, o[0], o[1], eye[2], feet );
++		const float h = ( aim[2] - base ) / T;
++		// (ramps in the level aimed at; floors on a level line — the aim straight ahead: at the feet, at the top of a
++		// wall: over it —; roofs on the walls of the level aimed at)
++		int level = piece == BUILD_FLOOR ? (int)floorf( h + 0.25f ) : piece == BUILD_ROOF ? (int)floorf( h + 0.75f ) : (int)floorf( h );
++		if ( nearer )
++			level--;
++		o[2] = base + ( level > 0 ? level : 0 ) * T;
++		s->yaw = piece == BUILD_RAMP ? (( facing + turns ) & 3 ) * 90 : 0; // (floors and roofs: square, whichever way)
++	}
++	for ( int k = 0; k < 3; k++ ) { s->origin[k] = o[k]; s->aim[k] = aim[k]; s->eye[k] = eye[k]; }
++	s->aimed = 1;
++	build_box( piece, s->yaw, s->origin, s->mins, s->maxs );
++}
++
++static inline int build_world_blocked( const build_engine_t *e, const build_spot_t *s );
++
++// Where a piece goes: the view (eye, angles in degrees: pitch, yaw), the player's feet height, the piece and the
++// player's turns of it (R: 0..3). Always gives a spot (build_world_blocked says whether the world lets it be built).
++// A spot past what the view hit (not reached: build_reached) gives way to the nearer line or the lower level.
++static inline void build_aim( const build_engine_t *e, const float *eye, const float *angles, float feet, int piece, int turns, build_spot_t *s )
++{
++	const float pr = angles[0] * 3.14159265f / 180, yr = angles[1] * 3.14159265f / 180;
++	const float fwd[3] = { cosf( pr ) * cosf( yr ), cosf( pr ) * sinf( yr ), -sinf( pr ) };
++	float end[3], aim[3];
++	for ( int k = 0; k < 3; k++ ) end[k] = eye[k] + fwd[k] * BUILD_REACH;
++	int startsolid = 0;
++	const float f = e->trace( e->ctx, eye, end, 0, aim, &startsolid );
++	if ( f >= 1.0f || startsolid )
++		for ( int k = 0; k < 3; k++ ) aim[k] = eye[k] + fwd[k] * BUILD_NOHIT;
++	else
++		for ( int k = 0; k < 3; k++ ) aim[k] -= fwd[k]; // (a unit back: on the near side of what it hit)
++
++	build_spot_at( e, eye, aim, angles[1], feet, piece, turns, 0, s );
++	if ( !build_reached( e, s ))
++	{
++		build_spot_at( e, eye, aim, angles[1], feet, piece, turns, 1, s );
++		return;
++	}
++	// (the slot aimed at cuts into the map — a wall aimed at a map wall falls on its grid line, inside it —: the one a
++	// tile nearer, as Fortnite builds in front of what is aimed at, when the world lets it be built)
++	// (walls: up to 3 lines nearer, never past the player's own cell's line)
++	const int tries = piece == BUILD_WALL ? 3 : 1;
++	for ( int n = 1; n <= tries && build_world_blocked( e, s ); n++ )
++	{
++		build_spot_t nearer;
++		build_spot_at( e, eye, aim, angles[1], feet, piece, turns, n, &nearer );
++		if ( piece == BUILD_WALL )
++		{
++			const int ax = nearer.yaw ? 0 : 1; // (yaw 90: on a line x = n*128; yaw 0: on a line y = n*128)
++			if (( eye[ax] < aim[ax] ) ? nearer.origin[ax] < eye[ax] - BUILD_TILE : nearer.origin[ax] > eye[ax] + BUILD_TILE )
++				break;
++		}
++		if ( !build_world_blocked( e, &nearer ))
++			*s = nearer;
++	}
++}
++
++// whether two boxes overlap (by more than a unit)
++static inline int build_boxes_overlap( const float *amin, const float *amax, const float *bmin, const float *bmax )
++{
++	for ( int k = 0; k < 3; k++ )
++		if ( amin[k] >= bmax[k] - 1 || bmin[k] >= amax[k] - 1 )
++			return 0;
++	return 1;
++}
++
++// whether a box (a player's, absolute) cuts into a piece: its steps for ramps and roofs (a player in the empty part
++// over a ramp's low end does not block it), its box for the others
++static inline int build_overlaps_box( const build_spot_t *s, const float *mins, const float *maxs )
++{
++	const int n = build_steps( s->piece );
++	for ( int i = 0; i < n; i++ )
++	{
++		float lo[3], hi[3];
++		build_step_box( s, i, lo, hi );
++		if ( build_boxes_overlap( lo, hi, mins, maxs ))
++			return 1;
++	}
++	return 0;
++}
++
++// whether two spots are the same slot
++static inline int build_same_slot( const build_spot_t *a, int piece, int yaw, const float *origin )
++{
++	if ( a->piece != piece )
++		return 0;
++	for ( int k = 0; k < 3; k++ )
++		if ( fabsf( a->origin[k] - origin[k] ) > 2 )
++			return 0;
++	return piece != BUILD_WALL || ( a->yaw % 180 ) == ( yaw % 180 );
++}
++
++// in reach of the eye
++static inline int build_in_reach( const build_spot_t *s, const float *eye )
++{
++	float c[3], d2 = 0;
++	for ( int k = 0; k < 3; k++ ) { c[k] = ( s->mins[k] + s->maxs[k] ) / 2 - eye[k]; d2 += c[k] * c[k]; }
++	return d2 <= ( BUILD_REACH + 64.0f ) * ( BUILD_REACH + 64.0f );
++}
++
++// whether the world and brush entities (worldOnly traces; pieces are slots, players are checked apart) cut into the
++// piece's box, shrunk (build_check_box: pieces clip up to BUILD_CLIP into walls on their sides): its 12 edges and 4
++// diagonals traced; or (a spot from build_aim) whether the piece is on the far
++// side of them from the aim point and the eye (build_reached)
++static inline int build_world_blocked( const build_engine_t *e, const build_spot_t *s )
++{
++	float lo[3], hi[3];
++	build_check_box( s, lo, hi );
++	float c[8][3];
++	for ( int i = 0; i < 8; i++ )
++	{
++		c[i][0] = ( i & 1 ) ? hi[0] : lo[0];
++		c[i][1] = ( i & 2 ) ? hi[1] : lo[1];
++		c[i][2] = ( i & 4 ) ? hi[2] : lo[2];
++	}
++	static const int lines[16][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 },
++		{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }, { 0, 7 }, { 1, 6 }, { 2, 5 }, { 3, 4 } };
++	for ( int i = 0; i < 16; i++ )
++	{
++		float end[3];
++		int startsolid = 0;
++		const float f = e->trace( e->ctx, c[lines[i][0]], c[lines[i][1]], 1, end, &startsolid );
++		if ( startsolid || f < 1.0f )
++			return 1;
++	}
++	return s->aimed == 1 && !build_reached( e, s );
++}
++
++// why a spot may not be built (the server's BuildDeny reasons); 0: it may
++enum { BUILD_OK, BUILD_NO_BRICKS, BUILD_BLOCKED, BUILD_TOO_FAR, BUILD_MY_CAP, BUILD_ALL_CAP, BUILD_DISABLED, BUILD_CANNOT };
++
++#endif // BUILD_GRID_H
 diff --git a/regamedll/dlls/wpn_shared/wpn_hl.cpp b/regamedll/dlls/wpn_shared/wpn_hl.cpp
 new file mode 100644
-index 0000000..1920d83
+index 0000000..969b195
 --- /dev/null
 +++ b/regamedll/dlls/wpn_shared/wpn_hl.cpp
-@@ -0,0 +1,4470 @@
+@@ -0,0 +1,4477 @@
 +// Half-Life arsenal (hl_weapons.h): the Half-Life SDK's weapons on Counter-Strike's weapon classes. Their fire events
 +// reach the shooter too (no FEV_NOTHOST: the client does not predict them); their timers are the decremented ones of
 +// Counter-Strike's weapons, their own delays in game time. Their entities are named with MAKE_STRING_CLASS: the game
@@ -2399,6 +4747,9 @@ index 0000000..1920d83
 +	bool bInWater = (UTIL_PointContents(vecSrc) == CONTENTS_WATER);
 +	vecSrc.z += 1.0f; // (in case it lies on the ground)
 +
++	// (Half Strike r11: a blast by a wall drops bricks)
++	BUILD_ExplosionImpact(pevAttacker, vecSrc, flRadius, flDamage);
++
 +	CBaseEntity *pEntity = nullptr;
 +	while ((pEntity = UTIL_FindEntityInSphere(pEntity, vecSrc, flRadius)))
 +	{
@@ -2425,7 +4776,11 @@ index 0000000..1920d83
 +		if (tr.fStartSolid)
 +			tr.vecEndPos = vecSrc;
 +
-+		float flAdjustedDamage = flDamage - (vecSrc - tr.vecEndPos).Length() * falloff;
++		// (Half Strike r11: a player or a monster behind a built piece is shielded; a piece by its nearest point)
++		if (BUILD_BlastShielded(pEntity, vecSrc, vecSpot, ENT(pevInflictor)))
++			continue;
++
++		float flAdjustedDamage = flDamage - BUILD_BlastDistance(pEntity, vecSrc, (vecSrc - tr.vecEndPos).Length()) * falloff;
 +		if (flAdjustedDamage < 1.0f)
 +			continue;
 +
@@ -6769,10 +9124,10 @@ index 0000000..1920d83
 +}
 diff --git a/regamedll/dlls/wpn_shared/wpn_pokemon.cpp b/regamedll/dlls/wpn_shared/wpn_pokemon.cpp
 new file mode 100644
-index 0000000..e78836a
+index 0000000..e864dfe
 --- /dev/null
 +++ b/regamedll/dlls/wpn_shared/wpn_pokemon.cpp
-@@ -0,0 +1,3929 @@
+@@ -0,0 +1,3940 @@
 +// Half Strike: Poke Balls and their Pokemon (pokemon.h). A ball is thrown as the Half-Life hand grenade; it opens and
 +// its Pokemon comes out, follows its player and fights the enemies its player shoots at or that hurt it or its player.
 +// Le M, summoned with a laptop, is a companion of the same kind (species PK_LEM): his own parts are marked "Le M".
@@ -8416,13 +10771,13 @@ index 0000000..e78836a
 +			float a = (k * 45.0f + r * 22.5f) * (M_PI / 180.0f);
 +			Vector xy = vecNear + Vector(Q_cos(a) * radii[r], Q_sin(a) * radii[r], 0.0f);
 +
-+			// (not behind a wall from the ball)
-+			UTIL_TraceLine(vecNear + Vector(0, 0, 4), xy + Vector(0, 0, 4), ignore_monsters, edict(), &tr);
++			// (not behind a wall from the ball — built pieces count, BUILD_TraceLineSolid)
++			BUILD_TraceLineSolid(vecNear + Vector(0, 0, 4), xy + Vector(0, 0, 4), edict(), &tr);
 +			if (tr.flFraction < 1.0f || tr.fStartSolid)
 +				continue;
 +
 +			// (the ground under it)
-+			UTIL_TraceLine(xy + Vector(0, 0, 4), xy - Vector(0, 0, 256), ignore_monsters, edict(), &tr);
++			BUILD_TraceLineSolid(xy + Vector(0, 0, 4), xy - Vector(0, 0, 256), edict(), &tr);
 +			if (tr.flFraction >= 1.0f || tr.fStartSolid || tr.fAllSolid)
 +				continue;
 +
@@ -8434,10 +10789,10 @@ index 0000000..e78836a
 +
 +			if (pvecSeenFrom)
 +			{
-+				UTIL_TraceLine(*pvecSeenFrom, vecFloor + Vector(0, 0, 0.5f * flHeight), ignore_monsters, edict(), &tr);
++				BUILD_TraceLineSolid(*pvecSeenFrom, vecFloor + Vector(0, 0, 0.5f * flHeight), edict(), &tr);
 +				if (tr.flFraction < 1.0f || tr.fStartSolid)
 +				{
-+					UTIL_TraceLine(*pvecSeenFrom, vecFloor + Vector(0, 0, Q_max(flHeight - 8.0f, 0.5f * flHeight)), ignore_monsters, edict(), &tr);
++					BUILD_TraceLineSolid(*pvecSeenFrom, vecFloor + Vector(0, 0, Q_max(flHeight - 8.0f, 0.5f * flHeight)), edict(), &tr);
 +					if (tr.flFraction < 1.0f || tr.fStartSolid)
 +						continue;
 +				}
@@ -9085,7 +11440,7 @@ index 0000000..e78836a
 +		while (a.hVictim.IsValid() && now >= a.flNext && a.flNext <= a.flUntil + 0.01f)
 +		{
 +			a.flNext += PK_BURN_TICK;
-+			DealDamage(pVictim, PK_BURN_DAMAGE, DMG_BURN);
++			DealDamage(pVictim, PK_BURN_DAMAGE, DMG_BURN, true);
 +		}
 +
 +		if (a.flNext > a.flUntil + 0.01f)
@@ -9785,11 +12140,22 @@ index 0000000..e78836a
 +	}
 +}
 +
-+void CPokemon::DealDamage(CBaseEntity *pVictim, float flDamage, int bitsDamageType)
++void CPokemon::DealDamage(CBaseEntity *pVictim, float flDamage, int bitsDamageType, bool bThroughPieces)
 +{
 +	CBasePlayer *pOwner = Owner();
 +	if (!pVictim || !pOwner || !pVictim->IsAlive())
 +		return;
++
++	// (Half Strike r11: a built piece between it and its target takes the hit)
++	if (!bThroughPieces)
++	{
++		CBaseEntity *pPiece = BUILD_PieceOnLine(AttackOrigin(0), pVictim->Center(), edict());
++		if (pPiece)
++		{
++			pPiece->TakeDamage(pev, pOwner->pev, flDamage, bitsDamageType);
++			return;
++		}
++	}
 +
 +	// (not a headshot: a body hit, armour as for any)
 +	if (pVictim->IsPlayer())
@@ -10703,10 +13069,10 @@ index 0000000..e78836a
 +	ADD_SERVER_COMMAND("pk_clear", PK_ServerClear_f);
 +}
 diff --git a/regamedll/regamedll/dlls.h b/regamedll/regamedll/dlls.h
-index 2bef63d..a3f53cb 100644
+index 2bef63d..8e6e41e 100644
 --- a/regamedll/regamedll/dlls.h
 +++ b/regamedll/regamedll/dlls.h
-@@ -164,3 +164,9 @@ using FloatRef = float;
+@@ -164,3 +164,12 @@ using FloatRef = float;
  #include "r_studioint.h"
  
  #include "shake.h"
@@ -10716,3 +13082,6 @@ index 2bef63d..a3f53cb 100644
 +
 +// Half Strike: Poke Balls and their Pokemon
 +#include "pokemon.h"
++
++// Half Strike r11: bricks and building
++#include "build.h"

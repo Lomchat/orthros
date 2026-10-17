@@ -316,10 +316,10 @@ index e77a067..33b67c6 100644
  	void AddWeapon( WEAPON *wp ) 
 diff --git a/cl_dll/arsenal_ui.cpp b/cl_dll/arsenal_ui.cpp
 new file mode 100644
-index 0000000..1aa5cac
+index 0000000..5469c42
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.cpp
-@@ -0,0 +1,2871 @@
+@@ -0,0 +1,3810 @@
 +/*
 +arsenal_ui.cpp - the Half-Life arsenal's own menus, drawn by the client
 +
@@ -355,9 +355,11 @@ index 0000000..1aa5cac
 +#include "pmtrace.h"
 +#include "event_api.h"
 +#include "pm_shared.h"
++#include "kbutton.h"
 +#include <string.h>
 +#include <stdio.h>
 +#include <math.h>
++#include "../3rdparty/ReGameDLL_CS/regamedll/dlls/wpn_shared/build_grid.h" // (Half Strike's building: the server's grid)
 +
 +extern engine_studio_api_t IEngineStudio;
 +extern int g_iMobileAPIVersion;
@@ -385,6 +387,21 @@ index 0000000..1aa5cac
 +	PK_PIKACHU, PK_CHARIZARD, PK_BLASTOISE, // (Half Strike's Poke Balls)
 +	LEM_LAPTOP // (Half Strike's laptop: Le M, summoned)
 +};
++
++// (Half Strike's building, at the end)
++static void BuildInit( void );
++static void BuildVidInit( void );
++static void BuildNewLevel( void );
++static bool BuildKey( int down, int keynum, const char *b, bool repeat );
++static void BuildThink( void );
++static bool BuildHidesViewModel( void );
++static void BuildCreateGhost( void );
++static bool BuildGhostLighting( struct cl_entity_s *ent, struct alight_s *lighting );
++static void BuildDrawHud( float now, bool intermission );
++static void BuildSpawned( void );
++static int BuildSelectedPiece( void );
++static void BuildKeyPressed( int keynum );
++static void BuildKeysLost( void );
 +
 +static bool IsBall( int id ) { return id >= PK_PIKACHU && id <= PK_BLASTOISE; }
 +// (what brings a companion out — a ball, the laptop: one companion at a time, whichever)
@@ -1334,6 +1351,8 @@ index 0000000..1aa5cac
 +{
 +	if ( !g_bView )
 +		return;
++	BuildThink();
++	BuildCreateGhost();
 +	for ( int i = 0; i < MAX_PREVIEWS; i++ )
 +	{
 +		Preview &p = g_Previews[i];
@@ -1772,7 +1791,7 @@ index 0000000..1aa5cac
 +
 +bool ArsUI_HidesViewModel( void )
 +{
-+	return g_iPanel != P_NONE;
++	return g_iPanel != P_NONE || BuildHidesViewModel(); // (build mode: the weapon put away — the build hands shown)
 +}
 +
 +//
@@ -2298,6 +2317,7 @@ index 0000000..1aa5cac
 +	gEngfuncs.pfnAddCommand( "-ars_click", ClickUp );
 +	HOOK_MESSAGE_FUNC( "PokeHP", PokeHP_Msg );
 +	HOOK_MESSAGE_FUNC( "LemHack", LemHack_Msg );
++	BuildInit();
 +}
 +
 +void ArsUI_VidInit( void )
@@ -2306,6 +2326,7 @@ index 0000000..1aa5cac
 +	memset( g_Previews, 0, sizeof( g_Previews ));
 +	g_iBackdrops = g_iBackdropsNext = 0;
 +	g_bView = false;
++	BuildVidInit();
 +	// (the Pokemon kept: a VidInit may be a mere resize — PokemonPurge empties them for another level)
 +}
 +
@@ -2375,6 +2396,11 @@ index 0000000..1aa5cac
 +		repeat = down && g_bHeld[keynum];
 +		g_bHeld[keynum] = !!down;
 +	}
++	// (build mode's keys, no panel open — the releases of those it took, whatever)
++	if ( down && !repeat )
++		BuildKeyPressed( keynum );
++	if (( !down || g_iPanel == P_NONE ) && BuildKey( down, keynum, pszCurrentBinding ? pszCurrentBinding : "", repeat ))
++		return true;
 +	return PanelKey( down, keynum, pszCurrentBinding, repeat );
 +}
 +
@@ -2435,9 +2461,14 @@ index 0000000..1aa5cac
 +	return false;
 +}
 +
++// the engine's key state cleared (the window's focus lost)
++void ArsUI_ClearStates( void ) { BuildKeysLost(); }
++
 +// The engine's mouse callbacks (the client's IN_ActivateMouse / IN_DeactivateMouse): the game has the mouse again
 +void ArsUI_EngineMouse( bool active )
 +{
++	if ( !active )
++		BuildKeysLost(); // (the engine's menu, the console, the chat: the keys are no longer the game's)
 +	if ( !g_bInMouse && active )
 +	{
 +		g_bSuspended = false;
@@ -2505,6 +2536,7 @@ index 0000000..1aa5cac
 +			g_Pokemon[i].stale = g_flSpawned;
 +	g_flBallThrown = -1;
 +	g_flHackStart = -1; // (a scramble does not outlive its victim)
++	BuildSpawned();
 +}
 +
 +// The server's centre messages while the buy panel is open (a purchase refused: "You have insufficient funds!"...):
@@ -2571,6 +2603,18 @@ index 0000000..1aa5cac
 +		g_cx = mx / gHUD.m_flScale;
 +		g_cy = my / gHUD.m_flScale;
 +	}
++
++	// (Half Strike's build bar, or the brick count; a level of its own: what the last one said forgotten)
++	{
++		static char s_szLevel[64];
++		const char *level = gEngfuncs.pfnGetLevelName();
++		if ( level && strcmp( level, s_szLevel ))
++		{
++			strncpy( s_szLevel, level, sizeof( s_szLevel ) - 1 );
++			BuildNewLevel();
++		}
++	}
++	BuildDrawHud( Now(), intermission );
 +
 +	switch ( g_iPanel )
 +	{
@@ -2815,6 +2859,8 @@ index 0000000..1aa5cac
 +// bar showed); full light, dynamic lights untouched
 +void ArsUI_StudioLighting( cl_entity_t *ent, alight_t *lighting )
 +{
++	if ( BuildGhostLighting( ent, lighting ))
++		return;
 +	if ( !ent || !ent->model || !lighting || !CompanionModel( ent->model->name ) || strstr( ent->model->name, "pokeball" ))
 +		return;
 +	lighting->ambientlight = max( lighting->ambientlight, POKE_MIN_AMBIENT );
@@ -3038,6 +3084,11 @@ index 0000000..1aa5cac
 +		view->curstate.skin = typing && skins > 1 && t > 0 ? (int)( t * LAPTOP_SCREEN_RATE ) % skins : 0;
 +		return;
 +	}
++	if ( strstr( view->model->name, "build/v_build" ))
++	{
++		view->curstate.skin = BuildSelectedPiece(); // (its tablet shows the piece chosen)
++		return;
++	}
 +	if ( !strstr( view->model->name, "pokemon/v_pokeball" ))
 +		return;
 +	const int id = gHUD.m_Ammo.CurrentWeaponId();
@@ -3191,12 +3242,900 @@ index 0000000..1aa5cac
 +	}
 +	FlushTexts();
 +}
++
++//
++// Half Strike's building (Fortnite-like): F (the flashlight's "impulse 100") toggles build mode — the weapon put away,
++// a build bar at the bottom (wall, floor, stairs, roof: the wheel or 1-4 choose, R turns the piece), a blueprint of
++// the piece where it would go (blue: it may be built; red: blocked, too far, not enough bricks), a click builds
++// (build_place, the spot the blueprint shows: the server checks it again with the same code, build_grid.h). The
++// server's messages: Bricks (the count, the bricks just picked up), BuildMode (build mode on, building allowed),
++// BuildDeny (why a piece was refused).
++//
++static const char *const g_BuildModels[BUILD_PIECES] = { "models/build/wall.mdl", "models/build/floor.mdl", "models/build/ramp.mdl", "models/build/roof.mdl" };
++static const char *const g_BuildNames[BUILD_PIECES] = { "Wall", "Floor", "Stairs", "Roof" };
++#define BUILD_HUD_SPRITE "sprites/build/hud.spr" // (one frame, 512 x 64, grey on black: the icons' rectangles below)
++#define BUILD_ICON_BRICK 4
++#define BUILD_ICON_BRICK_SMALL 5
++static const struct { float x, y, w, h; } g_BuildIconRects[] = { { 0, 0, 64, 64 }, { 64, 0, 64, 64 }, { 128, 0, 64, 64 }, { 192, 0, 64, 64 },
++	{ 256, 0, 48, 48 }, { 304, 0, 24, 24 } }; // (wall, floor, stairs, roof, brick, small brick)
++#define BUILD_ATLAS_W 512.0f
++#define BUILD_ATLAS_H 64.0f
++#define BUILD_REPEAT 0.16f   // (fire held: another piece where the blueprint moved, at most that often — the server
++                             // drops, silently, a player's pieces closer than BUILD_PLACE_DELAY 0.12 s: a margin for jitter)
++#define BUILD_ENTER_DELAY 0.25f // (the server takes no piece for 0.2 s after entering build mode: a click before, held)
++#define BUILD_RETRY 0.5f     // (a piece sent, neither built — no bricks spent — nor refused after that long: sent again)
++#define BUILD_SERVER_GRACE 1.0f // (after a toggle of ours, the server's other word waits that long: it may be older)
++#define MAX_BRICK_POPUPS 4
++
++static const Col C_BRICK  = { 196, 96, 64, 255 };
++static const Col C_BRICK2 = { 140, 62, 40, 255 };
++static const Col C_BLUEP  = { 92, 176, 255, 255 };
++
++static bool g_bBuild;              // (build mode, ours: the server's BuildMode follows)
++static bool g_bBuildEnabled = true; // (building allowed in this game: BuildMode's bit 1 — allowed until told)
++static bool g_bBuildKnown;         // (a BuildMode message seen since the level began)
++static bool g_bBuildServer;        // (the server's build mode, its last BuildMode — ours follows it once our toggles settle)
++static float g_flBuildToggled = -10; // (our last build_mode command)
++static float g_flBuildEntered = -10; // (our last build_mode 1)
++static int g_iBuildPiece, g_iBuildTurns;
++static int BuildSelectedPiece( void ) { return g_iBuildPiece; }
++static int g_iBricks;
++static bool g_bBricksKnown;
++static float g_flBricksChanged = -10;
++static struct { int amount; float t; } g_BrickPopups[MAX_BRICK_POPUPS];
++static int g_iBuildDeny; static float g_flBuildDeny = -10;
++// (fire held: the client's own +attack button, in_attack — its release always reaches it, even in the console or chat;
++// in build mode it never reaches the server, CL_CreateMove takes it out: ArsUI_BuildMasksAttack)
++extern kbutton_t in_attack;
++static float g_flBuildPlaced = -10; static bool g_bBuildClickQueued;
++static int g_iBuildBricksAtPlace; static bool g_bBuildPlaceAnswered; // (the last piece sent: bricks then; built or refused since)
++static build_spot_t g_BuildSpot, g_BuildLastPlaced; static bool g_bBuildSpot, g_bBuildPlacedOnce;
++static int g_iBuildReason; // (the blueprint's: BUILD_OK or why not)
++static bool g_bBuildSlotOnly; // (blocked only by a piece already in that slot — the one just built, as a rule: its blueprint faint)
++static bool g_bBuildSwallowed[256]; // (keys whose press build mode took: their release too)
++static cl_entity_t g_BuildGhost;
++static model_t *g_pBuildModels[BUILD_PIECES]; static bool g_bBuildModelTried[BUILD_PIECES];
++static HSPRITE g_hBuildHud; static bool g_bBuildHudTried;
++static int g_iDollarSprite = -1;
++
++static void BuildSound( const char *name, float volume )
++{
++	gEngfuncs.pfnPlaySoundByName( (char *)name, volume );
++}
++
++static bool BuildCanUse( void )
++{
++	return gHUD.m_Health.m_iHealth > 0 && !g_iUser1 && !gHUD.m_fPlayerDead && ( LocalTeam() == TEAM_TERRORIST || LocalTeam() == TEAM_CT ) && !gEngfuncs.IsSpectateOnly();
++}
++
++static bool BuildFireHeld( void ) { return ( in_attack.state & 1 ) != 0; }
++
++static bool BuildGraceOver( float now ) { return now - g_flBuildToggled > BUILD_SERVER_GRACE || now < g_flBuildToggled; }
++
++static void BuildSet( bool on, bool tell )
++{
++	if ( on == g_bBuild )
++		return;
++	g_bBuild = on;
++	g_bBuildPlacedOnce = false;
++	g_bBuildClickQueued = false;
++	if ( tell )
++	{
++		g_flBuildToggled = Now();
++		if ( on )
++			g_flBuildEntered = g_flBuildToggled;
++		ClientCmd( on ? "build_mode 1" : "build_mode 0" );
++	}
++	// (a button held as it opens: its action stopped — its release passes; as it closes: a click of building does not
++	// go on as the weapon's fire)
++	ClientCmd( on ? "-attack\n-attack2\n-reload" : "-attack" );
++	if ( tell )
++		BuildSound( "build/toggle.wav", 0.6f );
++}
++
++// whether CL_CreateMove takes the fire buttons out of the commands sent: in build mode (fire builds, through BuildThink)
++bool ArsUI_BuildMasksAttack( void ) { return g_bBuild; }
++
++static int Bricks_Msg( const char *pszName, int iSize, void *pbuf )
++{
++	BufferReader reader( pszName, pbuf, iSize );
++	const int count = reader.ReadShort();
++	const int picked = iSize >= 3 ? reader.ReadByte() : 0;
++	g_iBricks = count < 0 ? 0 : count > BUILD_MAX_BRICKS ? BUILD_MAX_BRICKS : count;
++	if ( g_iBricks < g_iBuildBricksAtPlace )
++		g_bBuildPlaceAnswered = true; // (bricks spent: the piece sent last built)
++	g_bBricksKnown = true;
++	g_flBricksChanged = Now();
++	if ( picked > 0 )
++	{
++		const float now = Now();
++		int slot = -1;
++		for ( int i = 0; i < MAX_BRICK_POPUPS; i++ ) // (one picked a moment ago, still rising: added to it)
++			if ( g_BrickPopups[i].amount > 0 && now >= g_BrickPopups[i].t && now - g_BrickPopups[i].t < 0.3f )
++				slot = i;
++		if ( slot >= 0 )
++			g_BrickPopups[slot].amount += picked;
++		else
++		{
++			slot = 0; // (a free one, or the oldest)
++			for ( int i = 1; i < MAX_BRICK_POPUPS && g_BrickPopups[slot].amount; i++ )
++				if ( !g_BrickPopups[i].amount || g_BrickPopups[i].t < g_BrickPopups[slot].t )
++					slot = i;
++			g_BrickPopups[slot].amount = picked;
++		}
++		g_BrickPopups[slot].t = now;
++	}
++	return 1;
++}
++
++static int BuildMode_Msg( const char *pszName, int iSize, void *pbuf )
++{
++	BufferReader reader( pszName, pbuf, iSize );
++	const int flags = reader.ReadByte();
++	g_bBuildKnown = true;
++	g_bBuildEnabled = !!( flags & 2 );
++	g_bBuildServer = ( flags & 1 ) && g_bBuildEnabled;
++	// (the server's state, sent when it changes — not once per command of ours: right after a toggle of ours it may
++	// be older than the toggle; then, if it disagrees, BuildThink takes it once the grace is over. Building turned
++	// off: at once)
++	if ( !g_bBuildEnabled || BuildGraceOver( Now()) || g_bBuildServer == g_bBuild )
++		BuildSet( g_bBuildServer, false );
++	return 1;
++}
++
++static int BuildDeny_Msg( const char *pszName, int iSize, void *pbuf )
++{
++	BufferReader reader( pszName, pbuf, iSize );
++	g_iBuildDeny = reader.ReadByte();
++	g_flBuildDeny = Now();
++	g_bBuildPlaceAnswered = true; // (the piece sent last refused: not sent again)
++	BuildSound( "build/deny.wav", 0.8f );
++	if ( g_iBuildDeny == BUILD_DISABLED )
++		g_bBuildEnabled = false;
++	if ( g_iBuildDeny == BUILD_DISABLED || g_iBuildDeny == BUILD_CANNOT )
++	{
++		// (refused build mode, or a piece asked for out of it: the server is not in build mode — ours left at once,
++		// the server's word since taken as it comes)
++		g_bBuildServer = false;
++		g_flBuildToggled = -10;
++		BuildSet( false, false );
++	}
++	return 1;
++}
++
++static const char *BuildReasonText( int reason )
++{
++	switch ( reason )
++	{
++	case BUILD_NO_BRICKS: return "Not enough bricks";
++	case BUILD_BLOCKED: return "Blocked";
++	case BUILD_TOO_FAR: return "Too far";
++	case BUILD_MY_CAP: return "You have built too many pieces";
++	case BUILD_ALL_CAP: return "Too many pieces in this game";
++	case BUILD_DISABLED: return "Building is off in this game";
++	case BUILD_CANNOT: return "You can't build now";
++	}
++	return "";
++}
++
++static void BuildDenyLocal( int reason )
++{
++	g_iBuildDeny = reason;
++	g_flBuildDeny = Now();
++	BuildSound( "build/deny.wav", 0.8f );
++}
++
++static cvar_t *g_pBuildDebug; static float g_flBuildDebugNext; // (build_debug 1: the blueprint's checks printed twice a second)
++
++static void BuildInit( void )
++{
++	HOOK_MESSAGE_FUNC( "Bricks", Bricks_Msg );
++	HOOK_MESSAGE_FUNC( "BuildMode", BuildMode_Msg );
++	HOOK_MESSAGE_FUNC( "BuildDeny", BuildDeny_Msg );
++	g_pBuildDebug = gEngfuncs.pfnRegisterVariable( "build_debug", "0", 0 );
++}
++
++// (a VidInit may be a mere resize, a window or fullscreen change: build mode — the server's too — goes on; the
++// models and sprites loaded again. Another level: BuildNewLevel)
++static void BuildVidInit( void )
++{
++	memset( g_pBuildModels, 0, sizeof( g_pBuildModels ));
++	memset( g_bBuildModelTried, 0, sizeof( g_bBuildModelTried ));
++	g_hBuildHud = 0; g_bBuildHudTried = false;
++	g_iDollarSprite = -1;
++	g_bBuildSpot = false;
++}
++
++// a HUD reset (a spawn, a new round): the popups and refusals of before gone (build mode: as the server's BuildMode says)
++static void BuildSpawned( void )
++{
++	memset( g_BrickPopups, 0, sizeof( g_BrickPopups ));
++	g_iBuildDeny = 0;
++	g_bBuildClickQueued = false;
++}
++
++// a new level: what the last one's server said forgotten (BuildMode and Bricks come again)
++static void BuildNewLevel( void )
++{
++	BuildSet( false, false ); // (a new player on that server: out of build mode — its BuildMode says so again)
++	g_bBuildKnown = false;
++	g_bBuildServer = false;
++	g_bBuildEnabled = true;
++	g_bBricksKnown = false;
++	g_iBricks = 0;
++	g_bBuildPlaceAnswered = true;
++	memset( g_BrickPopups, 0, sizeof( g_BrickPopups ));
++	g_flBuildDeny = g_flBricksChanged = g_flBuildToggled = g_flBuildEntered = g_flBuildPlaced = -10;
++}
++
++// the blueprint and its checks: the world traced as the player moves
++static int BuildPieceOfName( const char *name )
++{
++	if ( !name || strncmp( name, "models/build/", 13 ))
++		return -1;
++	for ( int i = 0; i < BUILD_PIECES; i++ )
++		if ( !strcmp( name, g_BuildModels[i] ))
++			return i;
++	return -1;
++}
++
++static int BuildPieceOfModel( const model_t *m ) { return m ? BuildPieceOfName( m->name ) : -1; }
++
++static bool g_bBuildTraceOnPiece; static float g_flBuildTracePieceZ; // (the last trace: stopped on a piece or one of its steps)
++
++// What the grid's traces meet — the server's (BUILD_TraceLine): the world, brush entities (a physent with a brush
++// model: SOLID_BSP) and built pieces with their steps (SOLID_BBOX: no model pointer in their physent, their model's
++// name); through anything else (players, Pokemon, C4, satchels, grenades, bolts...). worldOnly: the world and brush
++// entities (doors, func_wall, breakables: a piece may not be built into them either)
++static int BuildIgnorePiecesToo( physent_t *pe ) { return !pe->model && BuildPieceOfName( pe->name ) < 0; }
++static int BuildIgnoreAllButBrushes( physent_t *pe ) { return !pe->model; }
++
++// (Xash3D's event API goes on past the SDK's event_api_t: its first extension, a trace with a filter)
++struct BuildEventApiExt
++{
++	event_api_t sdk;
++	void ( *EV_PlayerTraceExt )( float *start, float *end, int traceFlags, int ( *pfnIgnore )( physent_t *pe ), pmtrace_t *tr );
++};
++
++static float BuildTrace( void *, const float *start, const float *end, int worldOnly, float *endpos, int *startsolid )
++{
++	pmtrace_t tr;
++	const BuildEventApiExt *api = (const BuildEventApiExt *)gEngfuncs.pEventAPI;
++	if ( api->EV_PlayerTraceExt )
++		api->EV_PlayerTraceExt( (float *)start, (float *)end, PM_NORMAL, worldOnly ? BuildIgnoreAllButBrushes : BuildIgnorePiecesToo, &tr );
++	else // (not Xash3D: the old filter — players and Pokemon left out, other boxes not)
++		gEngfuncs.pEventAPI->EV_PlayerTrace( (float *)start, (float *)end, worldOnly ? PM_WORLD_ONLY : PM_STUDIO_IGNORE, -1, &tr );
++	VectorCopy( tr.endpos, endpos );
++	*startsolid = tr.startsolid || tr.allsolid;
++	g_bBuildTraceOnPiece = false;
++	// (the start inside the world, a brush entity or a piece: startsolid — build_grid.h's contract, the server's too)
++	if ( tr.fraction < 1.0f && !*startsolid && !worldOnly && tr.ent > 0 )
++	{
++		// (its steps carry its model and its origin)
++		physent_t *pe = gEngfuncs.pEventAPI->EV_GetPhysent( tr.ent );
++		if ( pe && !pe->model && BuildPieceOfName( pe->name ) >= 0 )
++		{
++			g_bBuildTraceOnPiece = true;
++			g_flBuildTracePieceZ = pe->origin[2];
++		}
++	}
++	return tr.fraction;
++}
++
++static int BuildTracePiece( void *, float *origin_z )
++{
++	if ( !g_bBuildTraceOnPiece )
++		return 0;
++	*origin_z = g_flBuildTracePieceZ;
++	return 1;
++}
++
++// a piece built there already (the pieces in sight: the server's own, their origin and yaw the spot's)
++static bool BuildSlotTaken( const build_spot_t &s, cl_entity_t *local )
++{
++	for ( int i = gEngfuncs.GetMaxClients() + 1; i < 4096; i++ )
++	{
++		cl_entity_t *e = gEngfuncs.GetEntityByIndex( i );
++		if ( !e )
++			break;
++		if ( !e->model || e->curstate.messagenum != local->curstate.messagenum || ( e->curstate.effects & EF_NODRAW ))
++			continue;
++		const int piece = BuildPieceOfModel( e->model );
++		if ( piece != s.piece )
++			continue;
++		int yaw = (int)floorf( e->curstate.angles[1] + 0.5f ) % 360;
++		if ( yaw < 0 ) yaw += 360;
++		if ( build_same_slot( &s, piece, yaw, e->curstate.origin ))
++			return true;
++	}
++	return false;
++}
++
++// a player in the way (the living ones in sight, the local one included)
++static bool BuildPlayerInside( const build_spot_t &s, cl_entity_t *local )
++{
++	const int maxClients = gEngfuncs.GetMaxClients();
++	for ( int i = 1; i <= maxClients; i++ )
++	{
++		cl_entity_t *e = gEngfuncs.GetEntityByIndex( i );
++		if ( !e || !e->player || !e->model )
++			continue;
++		if ( e != local && ( e->curstate.messagenum != local->curstate.messagenum || e->curstate.solid == SOLID_NOT || ( e->curstate.effects & EF_NODRAW )))
++			continue;
++		const bool ducked = e->curstate.usehull == 1;
++		const float *o = e->origin;
++		const float mins[3] = { o[0] - 16, o[1] - 16, o[2] - ( ducked ? 18.0f : 36.0f ) };
++		const float maxs[3] = { o[0] + 16, o[1] + 16, o[2] + ( ducked ? 18.0f : 36.0f ) };
++		if ( build_overlaps_box( &s, mins, maxs ))
++			return true;
++	}
++	return false;
++}
++
++// the view the spot is computed from: the local player's eye and angles (those the server has: no punch, no bob)
++static bool BuildView( float *eye, float *angles, float *feet )
++{
++	cl_entity_t *local = gEngfuncs.GetLocalPlayer();
++	if ( !local )
++		return false;
++	float ofs[3];
++	gEngfuncs.pEventAPI->EV_LocalPlayerViewheight( ofs );
++	VectorAdd( local->origin, ofs, eye );
++	gEngfuncs.GetViewAngles( angles );
++	float mins[3], maxs[3];
++	gEngfuncs.pEventAPI->EV_LocalPlayerBounds( local->curstate.usehull == 1 ? 1 : 0, mins, maxs );
++	*feet = local->origin[2] + mins[2];
++	return true;
++}
++
++static void BuildUpdateSpot( void )
++{
++	g_bBuildSpot = false;
++	cl_entity_t *local = gEngfuncs.GetLocalPlayer();
++	float eye[3], angles[3], feet;
++	if ( !local || !BuildView( eye, angles, &feet ))
++		return;
++	build_engine_t e = { NULL, BuildTrace, BuildTracePiece };
++	gEngfuncs.pEventAPI->EV_SetUpPlayerPrediction( false, true );
++	gEngfuncs.pEventAPI->EV_PushPMStates();
++	gEngfuncs.pEventAPI->EV_SetSolidPlayers( -1 );
++	gEngfuncs.pEventAPI->EV_SetTraceHull( 2 );
++	build_aim( &e, eye, angles, feet, g_iBuildPiece, g_iBuildTurns, &g_BuildSpot );
++	int reason = BUILD_OK;
++	bool slotOnly = false;
++	if ( !g_bBuildEnabled ) reason = BUILD_DISABLED;
++	else if ( !build_in_reach( &g_BuildSpot, eye )) reason = BUILD_TOO_FAR;
++	else
++	{
++		const bool slot = BuildSlotTaken( g_BuildSpot, local );
++		const bool other = BuildPlayerInside( g_BuildSpot, local ) || build_world_blocked( &e, &g_BuildSpot );
++		if ( slot || other ) reason = BUILD_BLOCKED;
++		else if ( g_iBricks < BUILD_COST ) reason = BUILD_NO_BRICKS;
++		slotOnly = slot && !other;
++	}
++	if ( g_pBuildDebug && g_pBuildDebug->value > 0 && Now() >= g_flBuildDebugNext )
++	{
++		g_flBuildDebugNext = Now() + 0.5f;
++		const build_spot_t &s = g_BuildSpot;
++		build_spot_t u = s; u.aimed = 0;
++		gEngfuncs.Con_Printf( "build_debug: piece %d at %.0f %.0f %.0f yaw %d aim %.0f %.0f %.0f eye %.0f %.0f %.0f feet %.0f: reason %d (slot %d player %d world %d reached %d)\n",
++			s.piece, s.origin[0], s.origin[1], s.origin[2], s.yaw, s.aim[0], s.aim[1], s.aim[2], eye[0], eye[1], eye[2], feet, reason,
++			BuildSlotTaken( s, local ), BuildPlayerInside( s, local ), build_world_blocked( &e, &u ), build_reached( &e, &s ));
++	}
++	gEngfuncs.pEventAPI->EV_PopPMStates();
++	g_iBuildReason = reason;
++	g_bBuildSlotOnly = slotOnly;
++	g_bBuildSpot = true;
++}
++
++static bool BuildSameSpot( const build_spot_t &a, const build_spot_t &b )
++{
++	return a.piece == b.piece && a.yaw == b.yaw && a.origin[0] == b.origin[0] && a.origin[1] == b.origin[1] && a.origin[2] == b.origin[2];
++}
++
++// a click: the blueprint's spot asked for; refused at once when the blueprint says why (the server would)
++static void BuildPlace( bool repeat )
++{
++	if ( !g_bBuildSpot )
++		BuildUpdateSpot();
++	if ( !g_bBuildSpot )
++		return;
++	if ( g_iBuildReason != BUILD_OK )
++	{
++		if ( !repeat )
++			BuildDenyLocal( g_iBuildReason );
++		return;
++	}
++	if ( repeat && g_bBuildPlacedOnce && BuildSameSpot( g_BuildSpot, g_BuildLastPlaced ))
++		return;
++	const float now = Now();
++	if ( now - g_flBuildEntered < BUILD_ENTER_DELAY && now >= g_flBuildEntered )
++	{
++		// (just entered: the server would drop it, silently — held until it takes pieces)
++		if ( !repeat )
++			g_bBuildClickQueued = true;
++		return;
++	}
++	g_bBuildClickQueued = false;
++	char cmd[96];
++	snprintf( cmd, sizeof( cmd ), "build_place %d %d %d %d %d %d", g_BuildSpot.piece, (int)g_BuildSpot.origin[0], (int)g_BuildSpot.origin[1], (int)g_BuildSpot.origin[2], g_BuildSpot.yaw, g_iBuildTurns );
++	ClientCmd( cmd );
++	g_BuildLastPlaced = g_BuildSpot;
++	g_bBuildPlacedOnce = true;
++	g_flBuildPlaced = now;
++	g_iBuildBricksAtPlace = g_iBricks;
++	g_bBuildPlaceAnswered = false;
++}
++
++static void BuildChoose( int piece )
++{
++	piece = ( piece % BUILD_PIECES + BUILD_PIECES ) % BUILD_PIECES;
++	if ( piece != g_iBuildPiece )
++		BuildSound( "build/select.wav", 0.6f );
++	g_iBuildPiece = piece;
++	g_bBuildPlacedOnce = false;
++}
++
++// the keys: true when build mode took it (its release then taken too)
++// (a release swallowed only after a press swallowed: ArsUI_Key forgets each key's flag as it is pressed again — a
++// release that never came, in the console or the menu, leaves no stale flag)
++static bool BuildKey( int down, int keynum, const char *b, bool repeat )
++{
++	const bool inRange = keynum >= 0 && keynum < 256;
++	if ( !down )
++	{
++		if ( inRange && g_bBuildSwallowed[keynum] )
++		{
++			g_bBuildSwallowed[keynum] = false;
++			return true;
++		}
++		return false;
++	}
++	bool took = false;
++	if ( !strcmp( b, "impulse 100" ))
++	{
++		// (F: build mode on and off; building off in this game: the flashlight's own)
++		if ( !g_bBuildEnabled && !g_bBuild )
++			return false;
++		if ( !repeat )
++		{
++			if ( !g_bBuild && !BuildCanUse())
++				BuildDenyLocal( BUILD_CANNOT );
++			else
++				BuildSet( !g_bBuild, true );
++		}
++		took = true;
++	}
++	else if ( g_bBuild )
++	{
++		// (a text menu shown — the radio's, an old-style one —: the slot keys are its own)
++		const bool menu = gHUD.m_Menu.m_fMenuDisplayed != 0;
++		if (( keynum == K_MWHEELUP || keynum == K_MWHEELDOWN ) && ( !b[0] || !strcmp( b, "invnext" ) || !strcmp( b, "invprev" )))
++		{
++			// (the wheel, when it chooses weapons — bound to +jump or another action: that one, as ever)
++			BuildChoose( g_iBuildPiece + ( keynum == K_MWHEELUP ? -1 : 1 ));
++			took = true;
++		}
++		else if ( menu && !strncmp( b, "slot", 4 ))
++			took = false;
++		else if ( !strncmp( b, "slot", 4 ) && b[4] >= '1' && b[4] <= '4' && !b[5] )
++		{
++			if ( !repeat )
++				BuildChoose( b[4] - '1' );
++			took = true;
++		}
++		else if ( !strcmp( b, "+reload" ))
++		{
++			if ( !repeat )
++			{
++				g_iBuildTurns = ( g_iBuildTurns + 1 ) & 3;
++				g_bBuildPlacedOnce = false;
++				BuildSound( "build/select.wav", 0.5f );
++			}
++			took = true;
++		}
++		else if ( !strcmp( b, "+attack" ))
++		{
++			// (a piece at once; the key passed on: its +attack and -attack keep in_attack, held fire, BuildThink —
++			// the button never sent to the server in build mode, ArsUI_BuildMasksAttack)
++			if ( !repeat )
++				BuildPlace( false );
++		}
++		else if ( !strcmp( b, "+attack2" ))
++			took = true; // (nothing in build mode: no scope, no second fire)
++		else if ( !strncmp( b, "slot", 4 ) || !strcmp( b, "lastinv" ) || !strcmp( b, "invnext" ) || !strcmp( b, "invprev" ) || !strncmp( b, "weapon_", 7 ) || !strcmp( b, "drop" ))
++			BuildSet( false, true ); // (another weapon asked for: build mode left, the key passed on)
++	}
++	if ( took && inRange )
++		g_bBuildSwallowed[keynum] = true;
++	return took;
++}
++
++// a key pressed: its last press's swallowing forgotten (BuildKey takes the new one, if it does)
++static void BuildKeyPressed( int keynum )
++{
++	if ( keynum >= 0 && keynum < 256 )
++		g_bBuildSwallowed[keynum] = false;
++}
++
++// the game's keys lost — the console, the chat, the engine's menu, the window's focus —: the fire button let go (its
++// release may never come back to the game; in build mode, no piece built behind the player's back)
++static void BuildKeysLost( void )
++{
++	if ( g_bBuild && BuildFireHeld())
++		ClientCmd( "-attack" );
++	g_bBuildClickQueued = false;
++}
++
++// each frame: build mode left when it may not go on; fire held builds on
++static void BuildThink( void )
++{
++	// (the server's build mode, when it disagrees with ours once our toggles are settled: a refusal, a weapon bought
++	// or picked up, as ours was toggled)
++	if ( g_bBuildKnown && g_bBuildServer != g_bBuild && BuildGraceOver( Now()))
++		BuildSet( g_bBuildServer, false );
++	if ( g_bBuild && ( !BuildCanUse() || g_iPanel != P_NONE || !g_bBuildEnabled ))
++		BuildSet( false, true );
++	if ( !g_bBuild )
++	{
++		g_bBuildSpot = false;
++		return;
++	}
++	BuildUpdateSpot();
++	const float now = Now();
++	// (a piece sent neither built nor refused — dropped, sent too soon after another —: it may be sent again)
++	if ( g_bBuildPlacedOnce && !g_bBuildPlaceAnswered && ( now - g_flBuildPlaced >= BUILD_RETRY || now < g_flBuildPlaced ))
++	{
++		g_bBuildPlacedOnce = false;
++		g_bBuildPlaceAnswered = true;
++	}
++	if ( g_bBuildClickQueued && !( now - g_flBuildEntered < BUILD_ENTER_DELAY && now >= g_flBuildEntered ))
++		BuildPlace( false );
++	else if ( BuildFireHeld() && ( now - g_flBuildPlaced >= BUILD_REPEAT || now < g_flBuildPlaced ))
++		BuildPlace( true );
++}
++
++static bool BuildHidesViewModel( void )
++{
++	if ( !g_bBuild )
++		return false;
++	cl_entity_t *view = gEngfuncs.GetViewModel();
++	return !( view && view->model && strstr( view->model->name, "build/v_build" )); // (the server's build hands shown)
++}
++
++// the blueprint: the piece's model where it would go, see-through, blue or red (its fourth skin, the blueprint's grid,
++// when it has one; lit in that colour: ArsUI_StudioLighting)
++static void BuildCreateGhost( void )
++{
++	if ( !g_bBuild || !g_bBuildSpot )
++		return;
++	const int piece = g_BuildSpot.piece;
++	if ( !g_pBuildModels[piece] && !g_bBuildModelTried[piece] )
++	{
++		g_bBuildModelTried[piece] = true;
++		model_t *m = IEngineStudio.Mod_ForName( g_BuildModels[piece], 0 );
++		g_pBuildModels[piece] = ( m && m->type == mod_studio ) ? m : NULL;
++	}
++	model_t *m = g_pBuildModels[piece];
++	if ( !m )
++		return;
++	cl_entity_t *e = &g_BuildGhost;
++	memset( e, 0, sizeof( *e ));
++	e->model = m;
++	studiohdr_t *hdr = (studiohdr_t *)IEngineStudio.Mod_Extradata( m );
++	const int skins = hdr ? hdr->numskinfamilies : 1;
++	const bool ok = g_iBuildReason == BUILD_OK;
++	e->curstate.skin = skins >= 5 ? ( ok ? 3 : 4 ) : skins >= 4 ? 3 : 0;
++	const float pulse = 0.5f + 0.5f * sinf( Now() * 5.0f );
++	e->curstate.rendermode = skins >= 5 ? kRenderTransAdd : kRenderTransTexture;
++	e->curstate.renderamt = skins >= 5 ? (int)( 150 + 60 * pulse ) : (int)( 110 + 40 * pulse );
++	if ( g_bBuildSlotOnly )
++	{
++		// (that slot built already — the piece just placed, as a rule —: only a faint outline over it, the piece and
++		// its growth seen through, not a red ghost)
++		e->curstate.rendermode = kRenderTransAdd;
++		e->curstate.renderamt = (int)( 28 + 12 * pulse );
++	}
++	e->curstate.rendercolor.r = ok ? C_BLUEP.r : C_RED.r;
++	e->curstate.rendercolor.g = ok ? C_BLUEP.g : C_RED.g;
++	e->curstate.rendercolor.b = ok ? C_BLUEP.b : C_RED.b;
++	e->curstate.movetype = MOVETYPE_NONE;
++	e->curstate.framerate = 0;
++	VectorCopy( g_BuildSpot.origin, e->origin );
++	VectorCopy( e->origin, e->curstate.origin );
++	e->angles[1] = e->curstate.angles[1] = (float)g_BuildSpot.yaw;
++	gEngfuncs.CL_CreateVisibleEntity( ET_NORMAL, e );
++}
++
++static bool BuildGhostLighting( cl_entity_t *ent, alight_t *lighting )
++{
++	if ( ent != &g_BuildGhost )
++		return false;
++	const bool ok = g_iBuildReason == BUILD_OK;
++	lighting->ambientlight = 150;
++	lighting->shadelight = 60;
++	lighting->color[0] = ok ? 0.45f : 1.0f;
++	lighting->color[1] = ok ? 0.75f : 0.32f;
++	lighting->color[2] = ok ? 1.0f : 0.28f;
++	return true;
++}
++
++//
++// The build bar
++//
++struct BuildIcon { float x, y, w, h; int frame; Col c; };
++#define MAX_BUILD_ICONS 16
++static BuildIcon g_BuildIcons[MAX_BUILD_ICONS];
++static int g_iBuildIcons;
++
++static const model_t *BuildHudSprite( void )
++{
++	if ( !g_hBuildHud && !g_bBuildHudTried )
++	{
++		g_bBuildHudTried = true;
++		g_hBuildHud = SPR_Load( BUILD_HUD_SPRITE );
++	}
++	if ( !g_hBuildHud )
++		return NULL;
++	const model_t *m = gEngfuncs.GetSpritePointer( g_hBuildHud );
++	if ( !m )
++		return NULL;
++	return SPR_Width( g_hBuildHud, 0 ) >= 320 ? m : NULL; // (the atlas: another sprite of that name, drawn as shapes)
++}
++
++// the icons drawn as shapes, when the sprite is not there: a wall of bricks, a floor slab, stairs, a roof
++static void BuildShapeIcon( int frame, float x, float y, float s, Col c )
++{
++	const float u = s / 12;
++	switch ( frame )
++	{
++	case BUILD_WALL:
++		for ( int r = 0; r < 4; r++ )
++			for ( int k = 0; k < 3; k++ )
++			{
++				const float off = ( r & 1 ) ? -2 * u : 0;
++				const float bx = x + u + off + k * 4 * u, bw = 3.4f * u;
++				const float x0 = max( x + u, bx ), x1 = min( x + 11 * u, bx + bw );
++				Fill( x0, y + u + r * 2.6f * u, x1 - x0, 2.0f * u, c );
++			}
++		break;
++	case BUILD_FLOOR:
++	{
++		const float xs[4] = { x + 3 * u, x + 0.5f * u, x + 9 * u, x + 11.5f * u }, ys[4] = { y + 4 * u, y + 8 * u, y + 8 * u, y + 4 * u };
++		QuadPts( xs, ys, c );
++		Fill( x + 0.5f * u, y + 8 * u, 8.5f * u, 1.2f * u, Alpha( c, 0.7f ));
++		break;
++	}
++	case BUILD_RAMP:
++		for ( int k = 0; k < 4; k++ )
++			Fill( x + u + k * 2.5f * u, y + 11 * u - ( k + 1 ) * 2.5f * u, ( 4 - k ) * 2.5f * u, 2.0f * u, c );
++		break;
++	case BUILD_ROOF:
++	{
++		const float xs[4] = { x + 0.5f * u, x + 6 * u, x + 6 * u, x + 11.5f * u }, ys[4] = { y + 9 * u, y + 2.5f * u, y + 2.5f * u, y + 9 * u };
++		QuadPts( xs, ys, c );
++		Fill( x + 0.5f * u, y + 9 * u, 11 * u, 1.2f * u, Alpha( c, 0.7f ));
++		break;
++	}
++	default: // (a brick)
++		Fill( x + u, y + 3 * u, 10 * u, 6 * u, c );
++		Fill( x + u, y + 3 * u, 10 * u, 1.2f * u, Alpha( C_WHITE, c.a / 255.0f * 0.35f ));
++		Fill( x + u, y + 8 * u, 10 * u, 1.0f * u, Alpha( C_SHADE, c.a / 255.0f * 0.6f ));
++		break;
++	}
++}
++
++static void BuildIconAdd( int frame, float x, float y, float s, Col c )
++{
++	if ( !BuildHudSprite())
++	{
++		BuildShapeIcon( frame >= BUILD_ICON_BRICK ? BUILD_ICON_BRICK : frame, x, y, s, frame >= BUILD_ICON_BRICK ? Alpha( C_BRICK, c.a / 255.0f ) : c );
++		return;
++	}
++	if ( g_iBuildIcons >= MAX_BUILD_ICONS || !c.a )
++		return;
++	BuildIcon &i = g_BuildIcons[g_iBuildIcons++];
++	i.x = x; i.y = y; i.w = i.h = s; i.frame = frame; i.c = c;
++}
++
++static void BuildFlushIcons( void )
++{
++	const model_t *m = BuildHudSprite();
++	if ( !m || !g_iBuildIcons )
++	{
++		g_iBuildIcons = 0;
++		return;
++	}
++	gEngfuncs.pTriAPI->RenderMode( kRenderTransAdd );
++	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
++	for ( int n = 0; n < g_iBuildIcons; n++ )
++	{
++		const BuildIcon &i = g_BuildIcons[n];
++		if ( !gEngfuncs.pTriAPI->SpriteTexture( (struct model_s *)m, 0 ))
++			break;
++		const float f = i.c.a / 255.0f;
++		// (its rectangle of the atlas, half a texel in)
++		const float u0 = ( g_BuildIconRects[i.frame].x + 0.5f ) / BUILD_ATLAS_W, u1 = ( g_BuildIconRects[i.frame].x + g_BuildIconRects[i.frame].w - 0.5f ) / BUILD_ATLAS_W;
++		const float v0 = ( g_BuildIconRects[i.frame].y + 0.5f ) / BUILD_ATLAS_H, v1 = ( g_BuildIconRects[i.frame].y + g_BuildIconRects[i.frame].h - 0.5f ) / BUILD_ATLAS_H;
++		gEngfuncs.pTriAPI->Color4f( i.c.r / 255.0f * f, i.c.g / 255.0f * f, i.c.b / 255.0f * f, 1.0f );
++		gEngfuncs.pTriAPI->Begin( TRI_QUADS );
++		gEngfuncs.pTriAPI->TexCoord2f( u0, v0 ); gEngfuncs.pTriAPI->Vertex3f( SC( i.x ), SC( i.y ), 0 );
++		gEngfuncs.pTriAPI->TexCoord2f( u0, v1 ); gEngfuncs.pTriAPI->Vertex3f( SC( i.x ), SC( i.y + i.h ), 0 );
++		gEngfuncs.pTriAPI->TexCoord2f( u1, v1 ); gEngfuncs.pTriAPI->Vertex3f( SC( i.x + i.w ), SC( i.y + i.h ), 0 );
++		gEngfuncs.pTriAPI->TexCoord2f( u1, v0 ); gEngfuncs.pTriAPI->Vertex3f( SC( i.x + i.w ), SC( i.y ), 0 );
++		gEngfuncs.pTriAPI->End();
++	}
++	gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
++	g_iBuildIcons = 0;
++}
++
++static void BuildFlush( void )
++{
++	FlushShapes();
++	BuildFlushIcons();
++	FlushTexts();
++}
++
++// the "+5"s of bricks picked up, rising from a point (the count's), fading
++static void BuildDrawPopups( float x, float y, float now )
++{
++	const int lh = LineHeight();
++	for ( int i = 0; i < MAX_BRICK_POPUPS; i++ )
++	{
++		if ( g_BrickPopups[i].amount <= 0 )
++			continue;
++		const float t = now - g_BrickPopups[i].t;
++		if ( t < 0 || t > 1.4f )
++		{
++			g_BrickPopups[i].amount = 0;
++			continue;
++		}
++		char s[16];
++		snprintf( s, sizeof( s ), "+%d", g_BrickPopups[i].amount );
++		const float a = Clamp01( t / 0.08f ) * ( 1 - Clamp01(( t - 0.8f ) / 0.6f ));
++		const float rise = lh * 1.3f * ( 1 - ( 1 - Clamp01( t / 0.9f )) * ( 1 - Clamp01( t / 0.9f )));
++		TextRight( x, y - lh - rise, s, Alpha( C_GREEN, a ));
++	}
++}
++
++// out of build mode: the brick count by the money, small
++static void BuildDrawCountSmall( float now )
++{
++	if (( gHUD.m_iHideHUDDisplay & HIDEHUD_HEALTH ) || !( gHUD.m_iWeaponBits & ( 1 << WEAPON_SUIT )))
++		return;
++	if ( g_iDollarSprite < 0 )
++		g_iDollarSprite = gHUD.GetSpriteIndex( "dollar" );
++	float dollarW = 24;
++	if ( g_iDollarSprite >= 0 )
++	{
++		const wrect_t &r = gHUD.GetSpriteRect( g_iDollarSprite );
++		dollarW = (float)( r.right - r.left );
++	}
++	const int lh = LineHeight();
++	const float fh = (float)gHUD.m_iFontHeight;
++	const float rx = ScreenWidth - dollarW * 7 - 12, y = ScreenHeight - 3 * fh + ( fh - lh ) / 2;
++	char s[16];
++	snprintf( s, sizeof( s ), "%d", g_iBricks );
++	const float flash = 1 - Clamp01(( now - g_flBricksChanged ) / 0.8f );
++	const float tw = TextWidth( s ), icon = lh * 1.15f;
++	Fill( rx - tw - icon - 14, y - 3, tw + icon + 18, lh + 6, Alpha( C_SHADE, 0.45f + 0.2f * flash ));
++	BuildIconAdd( BUILD_ICON_BRICK, rx - tw - icon - 8, y + ( lh - icon ) / 2, icon, Alpha( C_WHITE, 0.85f ));
++	TextRight( rx, y, s, Mix( Alpha( C_TEXT, 0.8f ), C_GOLDT, flash ));
++	BuildDrawPopups( rx, y, now );
++}
++
++static void BuildDrawBar( float now )
++{
++	const int lh = LineHeight();
++	const float fh = (float)gHUD.m_iFontHeight;
++	const float S = max( 44.0f, lh * 2.8f ), gap = max( 5.0f, S * 0.1f ), W = S * BUILD_PIECES + gap * ( BUILD_PIECES - 1 );
++	const float x0 = (int)( ScreenWidth / 2 - W / 2 ), y0 = (int)( ScreenHeight - 2 * fh - S - 10 );
++	const bool afford = g_iBricks >= BUILD_COST;
++
++	// (the backing, a strip under the slots)
++	Grad( x0 - 10, y0 - 8, W + 20, S + 16, Alpha( C_PANEL, 0.0f ), Alpha( C_PANEL, 0.75f ));
++	for ( int i = 0; i < BUILD_PIECES; i++ )
++	{
++		const bool sel = i == g_iBuildPiece;
++		const float x = x0 + i * ( S + gap ), y = y0 - ( sel ? 4 : 0 );
++		Grad( x, y, S, S, Alpha( sel ? C_PANEL2 : C_PANEL, 0.92f ), Alpha( C_PANEL, 0.92f ));
++		if ( sel )
++		{
++			Fill( x, y, S, S, C_SEL );
++			Frame( x - 1, y - 1, S + 2, S + 2, C_GOLD, 2 );
++			Fill( x, y, S, 3, C_GOLDT );
++		}
++		else
++			Frame( x, y, S, S, C_SOFT );
++		const float is = S * 0.58f;
++		BuildIconAdd( i, x + ( S - is ) / 2, y + S * 0.12f, is, sel ? C_WHITE : Alpha( C_TEXT, 0.6f ));
++		// (its key, top left; its cost, bottom right — red when the bricks are short)
++		char key[2] = { (char)( '1' + i ), 0 };
++		Text( x + 4, y + 2, key, sel ? C_GOLDT : C_FAINT, 0.8f );
++		char cost[8];
++		snprintf( cost, sizeof( cost ), "%d", BUILD_COST );
++		const float bi = lh * 0.8f;
++		const Col cc = afford ? ( sel ? C_TEXT : C_DIM ) : C_RED;
++		TextRight( x + S - 4, y + S - lh - 1, cost, cc, 0.8f );
++		BuildIconAdd( BUILD_ICON_BRICK_SMALL, x + S - 6 - TextW( cost, 0.8f ) - bi, y + S - lh - 1 + ( lh - bi ) / 2, bi, Alpha( C_WHITE, afford ? 0.8f : 0.45f ));
++	}
++
++	// (the bricks, to the right: big)
++	char s[16];
++	snprintf( s, sizeof( s ), "%d", g_iBricks );
++	const float flash = 1 - Clamp01(( now - g_flBricksChanged ) / 0.8f );
++	const float big = 1.35f, icon = lh * 1.6f;
++	const float bx = x0 + W + 16, lhb = Scaled( big ) ? LineHeight( big ) : lh;
++	Fill( bx - 4, y0 + S / 2 - icon / 2 - 5, icon + TextW( s, big ) + 18, icon + 10, Alpha( C_PANEL, 0.8f ));
++	Fill( bx - 4, y0 + S / 2 - icon / 2 - 5, 3, icon + 10, afford ? C_BRICK : C_RED );
++	BuildIconAdd( BUILD_ICON_BRICK, bx + 2, y0 + S / 2 - icon / 2, icon, C_WHITE );
++	Text( bx + icon + 8, y0 + S / 2 - lhb / 2, s, Mix( afford ? C_TEXT : C_RED, C_GOLDT, flash ), big );
++	BuildDrawPopups( bx + icon + 8 + TextW( s, big ), y0 + S / 2 - lhb / 2, now );
++
++	// (the piece's name and, in red under it, why it may not go where the blueprint is: in the bar's row, right of the
++	// bricks — not over the build tablet's screen, whose picture is the bar's middle; on a screen too narrow for that,
++	// over the bar as a last resort)
++	const char *name = g_BuildNames[g_iBuildPiece];
++	char title[64];
++	snprintf( title, sizeof( title ), "%s", name );
++	for ( char *c = title; *c; c++ ) if ( *c >= 'a' && *c <= 'z' ) *c -= 32;
++	const bool denied = g_iBuildDeny && now - g_flBuildDeny < 1.6f && now >= g_flBuildDeny;
++	const char *why = denied ? BuildReasonText( g_iBuildDeny ) : ( g_bBuildSpot && g_iBuildReason != BUILD_OK ) ? BuildReasonText( g_iBuildReason ) : NULL;
++	if ( why && !why[0] )
++		why = NULL;
++	const float wa = !why ? 0 : denied ? 1.0f - Clamp01(( now - g_flBuildDeny - 1.1f ) / 0.5f ) : 0.75f;
++	const float lx = bx - 4 + icon + TextW( s, big ) + 18 + 14;
++	const float lw = max( (float)TextWidth( title ), why ? (float)TextWidth( why ) : 0.0f );
++	if ( lx + lw + 8 <= ScreenWidth )
++	{
++		const float ly = y0 + S / 2 - lh - 2;
++		Fill( lx - 6, ly - 4, lw + 12, 2 * lh + 12, Alpha( C_PANEL, 0.7f ));
++		Fill( lx - 6, ly - 4, 2, 2 * lh + 12, why ? Alpha( C_RED, max( wa, 0.4f )) : C_GOLD );
++		Text( lx, ly, title, C_GOLDT );
++		if ( why )
++			Text( lx, ly + lh + 4, why, Alpha( C_RED, wa ));
++	}
++	else
++	{
++		TextCenter( ScreenWidth / 2, y0 - lh - 12, title, C_GOLDT );
++		if ( why )
++			TextCenter( ScreenWidth / 2, y0 - 2 * lh - 16, why, Alpha( C_RED, wa ));
++	}
++
++	// (the keys, to the left)
++	const float kx = x0 - 16;
++	const char *const hints[3][2] = { { "R", "Rotate" }, { "LMB", "Build" }, { "F", "Exit" } };
++	for ( int i = 0; i < 3; i++ )
++	{
++		const float y = y0 + S / 2 - 1.5f * ( lh + 6 ) + i * ( lh + 6 ) + 3;
++		const float lw = TextWidth( hints[i][1] ), kw = TextWidth( hints[i][0] ) + 10;
++		TextRight( kx, y, hints[i][1], C_DIM );
++		KeyBadge( kx - lw - 8 - kw, y, hints[i][0], false );
++	}
++}
++
++static void BuildDrawHud( float now, bool intermission )
++{
++	if ( intermission || g_iPanel != P_NONE || !gHUD.m_pCvarDraw->value || ( gHUD.m_iHideHUDDisplay & HIDEHUD_ALL ))
++		return;
++	if ( g_bBuild )
++		BuildDrawBar( now );
++	else if ( g_bBuildEnabled && BuildCanUse() && ( g_bBricksKnown || g_bBuildKnown ))
++		BuildDrawCountSmall( now );
++	else if ( g_iBuildDeny && now - g_flBuildDeny < 1.6f && now >= g_flBuildDeny )
++	{
++		// (F refused out of build mode: why, over the timer)
++		const int lh = LineHeight();
++		TextCenter( ScreenWidth / 2, ScreenHeight - 2 * gHUD.m_iFontHeight - lh - 10, BuildReasonText( g_iBuildDeny ), Alpha( C_RED, 1.0f - Clamp01(( now - g_flBuildDeny - 1.1f ) / 0.5f )));
++	}
++	BuildFlush();
++}
 diff --git a/cl_dll/arsenal_ui.h b/cl_dll/arsenal_ui.h
 new file mode 100644
-index 0000000..ae1b2e7
+index 0000000..78bf822
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.h
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,58 @@
 +/*
 +arsenal_ui.h - the Half-Life arsenal's own menus (buy, team, appearance), drawn by the client
 +*/
@@ -3221,6 +4160,10 @@ index 0000000..ae1b2e7
 +void ArsUI_Spawned( void );
 +// the engine's mouse callbacks, and its touch events (the mouse while a panel is open): true when taken
 +void ArsUI_EngineMouse( bool active );
++// the engine's key states cleared (IN_ClearStates: the window's focus lost)
++void ArsUI_ClearStates( void );
++// Half Strike's build mode: the fire buttons kept out of the commands sent (fire builds, the client's own)
++bool ArsUI_BuildMasksAttack( void );
 +bool ArsUI_Touch( int type, int finger );
 +// the server's text menus, styled; true when drawn
 +bool ArsUI_DrawTextMenu( const char *pszMenu );
@@ -4147,7 +5090,7 @@ index 36bdf73..c5b1ecf 100644
  
  // CZERODS START
 diff --git a/cl_dll/input.cpp b/cl_dll/input.cpp
-index c4305c1..99c197c 100644
+index c4305c1..8ff162a 100644
 --- a/cl_dll/input.cpp
 +++ b/cl_dll/input.cpp
 @@ -12,6 +12,7 @@
@@ -4169,8 +5112,19 @@ index c4305c1..99c197c 100644
  	return 1;
  }
  
+@@ -727,6 +732,10 @@ void DLLEXPORT CL_CreateMove ( float frametime, struct usercmd_s *cmd, int activ
+ 	if ( GetClientVoice()->IsInSquelchMode() )
+ 		cmd->buttons &= ~IN_ATTACK;
+ 
++	// (Half Strike's build mode: fire builds — the client's own, arsenal_ui.cpp —, the weapon's buttons not sent)
++	if ( ArsUI_BuildMasksAttack() )
++		cmd->buttons &= ~( IN_ATTACK | IN_ATTACK2 | IN_RELOAD );
++
+ 	// Using joystick?
+ 	if ( in_joystick->value )
+ 	{
 diff --git a/cl_dll/input/input_xash3d.cpp b/cl_dll/input/input_xash3d.cpp
-index 036da3f..90a1950 100644
+index 036da3f..6a44c93 100644
 --- a/cl_dll/input/input_xash3d.cpp
 +++ b/cl_dll/input/input_xash3d.cpp
 @@ -1,4 +1,5 @@
@@ -4208,7 +5162,13 @@ index 036da3f..90a1950 100644
  	// perform button actions
  	for( int i = 0; i < 5; i++ )
  	{
-@@ -250,11 +269,13 @@ void DLLEXPORT IN_ClearStates ( void )
+@@ -245,16 +264,19 @@ void DLLEXPORT IN_MouseEvent( int mstate )
+ 
+ void DLLEXPORT IN_ClearStates ( void )
+ {
++	ArsUI_ClearStates();
+ 	//gEngfuncs.Con_Printf("IN_ClearStates\n");
+ }
  
  void  DLLEXPORT IN_ActivateMouse ( void )
  {

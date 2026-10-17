@@ -25,7 +25,7 @@ and several mods are still required; the freely licensed engine example is a sep
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r9` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r11` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -157,7 +157,7 @@ The browser release's game modules were recovered from a deployed build whose so
 `Velaron/cs16-client` at `15278ca` (the commit the recovered build started from) with its submodules — the client,
 `mainui_cpp` (the menu), `ReGameDLL_CS` (the game server). Each of `modules.builds` is a release of its own, its patches
 on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sources give it) and
-`xash3d-web-1.2.2-cs16-15278ca-arsenal-r9` (the Half-Life Arsenal, below). A release holds the engine files of
+`xash3d-web-1.2.2-cs16-15278ca-arsenal-r11` (the Half-Life Arsenal, below). A release holds the engine files of
 `xash3d-web-1.2.2` (checked against the lock) and under `counterstrike/cstrike/` the three WebAssembly modules,
 `dlls/cs.so` (the same server compiled natively for the 32-bit dedicated server: `multiplayer.gameLibrary`) and
 `orthros-bots.pk3` (`goldsrc.extras`); a build's `assets` add archives of their own (Half Strike:
@@ -329,6 +329,30 @@ animations (`meshy/rigging/multi-animation`), kept in `data_installers/le-m/` (o
 "sources", `$LEM_DIR`), converted by `pokemon/lem.py` (decimated to 7200 triangles with UV seams and weights kept,
 4 bone weights, the clips mapped and trimmed, the attack, flinch and spawn authored on his rig); without them a
 stand-in. The fal key lives in `/root/.config/orthros/fal.key`, never in Git.
+
+### Bricks and building (r11)
+
+Fortnite-style building, on or off per room (`mp_build`, the lobby's "Building"; on in solo), with one resource:
+bricks (`mp_build_bricks`, the lobby's "Starting bricks": each player's count at every new round, 999 at most).
+
+- **Bricks.** A bullet impact on the map or a brush entity (not a player, a Pokémon nor a built piece) drops a pile of
+  5 bricks below it, a little towards the shooter — once per shot and surface (a shotgun blast: once per surface) —,
+  an explosion near a wall one pile. Piles merge within 48 units (250 at most), vanish after 60 s, 120 at most (the
+  oldest goes); walking over one picks it up (`Bricks` message, the HUD's count, a "+n").
+- **Building.** F (the flashlight's key) toggles build mode: the weapon holstered, a blueprint tablet in hand
+  (`models/build/v_build.mdl`), the build bar (wall, floor, ramp, roof; 1–4 or the wheel; R turns the piece), and the
+  blueprint — the piece's model, additive, blue where it may be built, red where not (the reason beside the bar) — on
+  a 128-unit grid at the aim. Fire builds it for 10 bricks; it grows in 0.4 s from a third of its 300 health. The
+  grid is `wpn_shared/build_grid.h`, shared by the server (which recomputes the spot from its own view of the player
+  and checks reach, the world, players and Pokémon, the slot, caps and bricks) and the client's blueprint; a slot that
+  cuts into the map gives way to the one a tile nearer (walls: up to three). Walls and floors are boxes; ramps and
+  roofs collide as invisible 16-unit steps (the engine's collisions are axis-aligned boxes), climbed as a ramp.
+  60 pieces a player, 400 in all, entity margins kept.
+- **Destruction.** Everything that damages hurts pieces (explosions twice): bullets, knife, grenades and the Half-Life
+  explosives, Pokémon and Le M; a teammate's only with friendly fire, a builder's own always. Two crack skins, then
+  brick debris (`TE_BREAKMODEL`) and a sound; whatever rested on it falls. Every piece and pile goes at a new round.
+- `build_give <n>` (cheats), `build_info`, `build_debug 1` (why the blueprint is refused). Models, sprites and sounds:
+  `pokemon/bricks.py`.
 
 ### Its own menus
 
