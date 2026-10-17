@@ -106,6 +106,7 @@ class ModelBuilder:
         self.controllers = []
         self.eyeposition = None
         self.hull = None
+        self.flags = 0              # header flags (mdl.STUDIO_AMBIENT_LIGHT, ...)
         self.verbose = verbose
         self.report = []
 
@@ -333,7 +334,8 @@ class ModelBuilder:
         return mdl.Studio(name=self.name, bones=bones, sequences=self.sequences, textures=textures,
                           bodyparts=bodyparts, skins=skin_table, controllers=self.controllers,
                           attachments=self.attachments, hitboxes=hitboxes, eyeposition=tuple(eye),
-                          min=tuple(hmin), max=tuple(hmax), bbmin=tuple(hdr_lo), bbmax=tuple(hdr_hi))
+                          min=tuple(hmin), max=tuple(hmax), bbmin=tuple(hdr_lo), bbmax=tuple(hdr_hi),
+                          flags=self.flags)
 
     def write(self, path=None):
         """Build, serialise and validate; returns the bytes (and writes them to path if given)."""

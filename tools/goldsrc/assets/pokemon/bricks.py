@@ -22,6 +22,9 @@ PIECE CONTRACT (the server's grid and the client's blueprint use exactly these n
   client (and every hull trace, movement included) through the entity's box (the step's): the two must agree.
   Skins (all four pieces): 0 intact, 1 cracked, 2 badly cracked, 3 blueprint (light-blue grid, meant for
   kRenderTransAdd), 4 blueprint blocked (the same grid in red).
+  Lighting: the pieces, piles and gibs carry the header flag STUDIO_AMBIENT_LIGHT (Xash3D: 40 % ambient, 60 %
+  directional instead of ~10 / 90 %), so their sides away from the light stay readable in dim places.  A client
+  wanting them brighter still can draw them kRenderFxLightMultiplier with iuser4 > 10 (scales the floor light).
 
 OTHER FILES
   models/build/brick_pile.mdl  pickup lying on the ground (origin on the ground, centred): bodypart "pile", body
@@ -75,17 +78,21 @@ MORTAR = 0.65                  # half width of a mortar joint
 # palette
 # ---------------------------------------------------------------------------------------------
 
+# (lit by Xash3D's studio lighting from the floor under the origin, models render darker than the lightmapped map
+# around them in dim places: the bricks are a light terracotta and the frame a warm sandstone (dust2's yellow sun
+# turned a neutral grey olive), and the models carry STUDIO_AMBIENT_LIGHT)
+BRICK_LIFT = 1.12
 BRICKS = np.array([T.rgb(c) for c in ("#b2532f", "#c0603a", "#a24829", "#93402a", "#c86f45", "#ad5634",
-                                      "#7f3825", "#bb5a35")])
+                                      "#7f3825", "#bb5a35")]) * BRICK_LIFT
 BRICK_W = np.array([0.20, 0.17, 0.16, 0.12, 0.09, 0.14, 0.05, 0.07])
 BRICK_CORE = T.rgb("#5a2618")
 MORTAR_C = T.rgb("#c4bcaa")
-STONE = T.rgb("#9b968c")
-STONE_LIGHT = T.rgb("#c2bdb1")
-STONE_JOINT = T.rgb("#5d5850")
+STONE = T.rgb("#b9a28e")
+STONE_LIGHT = T.rgb("#d6c4b0")
+STONE_JOINT = T.rgb("#6d5f53")
 SOOT = T.rgb("#2a221d")
 CHIP_CORE = T.rgb("#c8805a")         # a brick's fresh broken core
-STONE_CHIP = T.rgb("#cdc8bc")        # fresh stone where the frame is chipped
+STONE_CHIP = T.rgb("#e0d2c2")        # fresh stone where the frame is chipped
 # blueprints (added to the scene: kRenderTransAdd): the key channel strong in the fill so the hue survives bright
 # backgrounds (dust2's sand, the sky); lines and edges saturated (little of the other channels)
 BP_FILL = np.array([0.0, 0.13, 0.52])
@@ -780,6 +787,7 @@ def piece_model(name, meshes, surf, seed, domains, box_, size, density=None, hit
     rig = _piece_rig()
     paint = PiecePaint(surf, seed, domains)
     b = builder.ModelBuilder(name, rig, skins=PIECE_SKINS, verbose=False)
+    b.flags = mdl.STUDIO_AMBIENT_LIGHT
     # the blueprint skins are drawn additively: their unused atlas space is black (no halo from mips / filtering)
     # and they are fullbright (unlit if the client draws them kRenderTransTexture instead)
     b.group("brick", size=size, pack="skyline", gutter=lambda skin: (0.0, 0.0, 0.0) if skin >= SKIN_BLUEPRINT else None,
@@ -1018,6 +1026,7 @@ def build_pile():
     rig = R.Rig()
     rig.add("pile", None, (0, 0, 0), tail=(0, 0, 8))
     b = builder.ModelBuilder("build/brick_pile.mdl", rig, skins=1, verbose=False)
+    b.flags = mdl.STUDIO_AMBIENT_LIGHT
     b.group("brick", size=(256, 256), pack="skyline")
     rng = np.random.default_rng(2101)
     variants = []
@@ -1069,6 +1078,7 @@ def build_gibs():
     rig = R.Rig()
     rig.add("gib", None, (0, 0, 0), tail=(0, 0, 4))
     b = builder.ModelBuilder("build/gibs_brick.mdl", rig, skins=1, verbose=False)
+    b.flags = mdl.STUDIO_AMBIENT_LIGHT
     b.group("brick", size=(256, 256), pack="skyline")
     I3 = np.eye(3)
     items = []

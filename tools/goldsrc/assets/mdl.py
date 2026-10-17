@@ -50,6 +50,10 @@ STUDIO_RLOOP = 0x8000
 
 STUDIO_LOOPING = 0x0001
 
+# header flag (engine/studio.h): Xash3D lights the model with 40 % ambient and 60 % directional light instead of
+# ~10 % / 90 % (ref/common/ref_light.c R_EntityDynamicLight): the faces turned away from the light stay readable
+STUDIO_AMBIENT_LIGHT = 1 << 8
+
 # header flags of Xash3D's smooth skinning (engine/studio.h): STUDIO_HAS_BONEINFO = an mstudioboneinfo_t
 # (poseToBone matrix, ...) per bone right after the bones; STUDIO_HAS_BONEWEIGHTS = per-model
 # blendvertinfoindex / blendnorminfoindex arrays of mstudioboneweight_t (the renderer skins every vertex
