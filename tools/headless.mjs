@@ -50,6 +50,7 @@ let pagePointer = null, benchDone = false; // (the pointer position of the pagec
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
 if (control) fs.writeFileSync(control.file, '');
 // --input-file <file>: the scenario from a file (new lines separate steps as ';' does, '#' lines are comments)
+// --account <name>:<password>: signed in to an Orthros account before the game (see below)
 const inputText = opt('input-file') ? fs.readFileSync(opt('input-file'), 'utf8').split('\n').filter((l) => !l.trim().startsWith('#')).map((l) => l.trim()).join(';') : opt('input', '') || '';
 const inputs = inputText.split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'uiclick' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
@@ -171,6 +172,19 @@ async function saveProfile() {
   } catch (e) { console.log(`[profile] save failed: ${e.message.split('\n')[0]}`); }
 }
 if (args.includes('--ui') && !args.includes('--quiet-page')) await page.addInitScript(() => { window.__orthrosConsoleLog = true; }); // (the page's log in the run's log file; --quiet-page: not)
+// --account <name>:<password>: the page signed in to that Orthros account first (created when it does not exist yet) — its
+// saves restored before the game and sent while it runs (src/host/web/cloud-sync.js); the server needs accounts
+// (--server-port of one started with --accounts)
+if (opt('account')) {
+  const [username, password] = opt('account').split(':');
+  await page.goto(`http://127.0.0.1:${port}/?menu`);
+  const signed = await page.evaluate(async (c) => {
+    const post = (route) => fetch(route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
+    let r = await post('/api/account/login'); if (r.status === 401) r = await post('/api/account/register');
+    return r.status;
+  }, { username, password });
+  console.log(`[account] ${username}: ${signed === 200 ? 'signed in' : 'HTTP ' + signed}`);
+}
 await page.goto(`http://127.0.0.1:${port}/?${q}`);
 if (bench && args.includes('--ui')) { await page.locator('#benchStart').click({ timeout: 30000 }).then(() => console.log('[bench] started'), (e) => console.log(`[bench] no start button: ${e.message.split('\n')[0]}`)); }
 const t0 = Date.now();

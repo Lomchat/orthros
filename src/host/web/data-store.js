@@ -202,3 +202,73 @@ export async function hashBytes(bytes) {
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
+
+// ---------------------------------------------------------------- the browser ports' storage
+// IndexedDB, named after the installation (the manifest's saveKey): a GoldSrc port's database ('profile': the engine's
+// writable tree — saves, settings —, 'content': the game files fetched, whole or as 64 KiB pieces, their size in their
+// key), an OpenMW port's IDBFS databases (the installation's, and one per account: saveKey:user:<scope>).
+const PORT_PIECE = 1 << 16;
+const portDbs = async (saveKey) => (await indexedDB.databases?.() ?? []).map((d) => d.name).filter((n) => n === saveKey || n?.startsWith(saveKey + ':'));
+function openDb(name) {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open(name);
+    r.onupgradeneeded = () => { r.transaction.abort(); }; // (never one that does not exist yet)
+    r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error);
+  });
+}
+const req = (r) => new Promise((resolve, reject) => { r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+const sizeOf = (v) => (v == null ? 0 : ArrayBuffer.isView(v) || v instanceof ArrayBuffer ? v.byteLength : typeof v === 'string' ? v.length
+  : Array.isArray(v) ? v.reduce((n, e) => n + sizeOf(e?.data ?? e), 0) : typeof v === 'object' ? sizeOf(v.contents ?? v.data) : 0);
+/** Each port's data in this browser: [{ game, profile (bytes of saves), cache (bytes of game files), port: true }]. */
+export async function scanPorts(ports) {
+  const rows = [];
+  for (const { name, saveKey } of ports) {
+    let profile = 0, cache = 0;
+    for (const dbName of await portDbs(saveKey)) {
+      let db; try { db = await openDb(dbName); } catch { continue; }
+      try {
+        for (const store of db.objectStoreNames) {
+          const os = db.transaction(store).objectStore(store);
+          if (store === 'content') {
+            for (const k of await req(os.getAllKeys())) { const m = /\n(\d+)\n[^\n]*(\n#\d+)?$/.exec(String(k)); cache += m ? (m[2] ? PORT_PIECE : Number(m[1])) : 0; }
+          } else for (const v of await req(os.getAll())) profile += sizeOf(v);
+        }
+      } finally { db.close(); }
+    }
+    if (profile || cache) rows.push({ game: name, profile, cache, files: 0, locked: 0, port: true });
+  }
+  return rows;
+}
+/** A port's saves as the account keeps them (cloud-sync.js): [{ path, data }] — GoldSrc's tree, OpenMW's /userdata. */
+export async function portFiles(saveKey) {
+  const files = [];
+  for (const dbName of await portDbs(saveKey)) {
+    let db; try { db = await openDb(dbName); } catch { continue; }
+    try {
+      if ([...db.objectStoreNames].includes('profile')) {
+        for (const f of await req(db.transaction('profile').objectStore('profile').get('files')) ?? []) if (f.path.startsWith('/rwdir/')) files.push({ path: f.path.slice(7), data: f.data });
+      } else if ([...db.objectStoreNames].includes('FILE_DATA')) {
+        const os = db.transaction('FILE_DATA').objectStore('FILE_DATA'), keys = await req(os.getAllKeys()), values = await req(os.getAll());
+        // (an account's database: its files under a folder of its own name)
+        const prefix = dbName === saveKey ? '' : dbName.slice(saveKey.length + 1).replace(/[^A-Za-z0-9._-]/g, '_') + '/';
+        keys.forEach((k, i) => { const v = values[i]; if (v?.contents && String(k).startsWith('/userdata/')) files.push({ path: prefix + String(k).slice(10), data: new Uint8Array(v.contents) }); });
+      }
+    } finally { db.close(); }
+  }
+  return files;
+}
+/** A port's game files fetched in this browser, deleted (fetched again when needed). */
+export async function clearPortCache(saveKey) {
+  for (const dbName of await portDbs(saveKey)) {
+    const db = await openDb(dbName);
+    try { if ([...db.objectStoreNames].includes('content')) await req(db.transaction('content', 'readwrite').objectStore('content').clear()); } finally { db.close(); }
+  }
+}
+/** A port's saves in this browser, deleted (GoldSrc's profile entries, OpenMW's IDBFS databases). */
+export async function clearPortSaves(saveKey) {
+  for (const dbName of await portDbs(saveKey)) {
+    const db = await openDb(dbName), stores = [...db.objectStoreNames];
+    try { if (stores.includes('profile')) await req(db.transaction('profile', 'readwrite').objectStore('profile').clear()); } finally { db.close(); }
+    if (!stores.includes('profile') && stores.includes('FILE_DATA')) await req(indexedDB.deleteDatabase(dbName));
+  }
+}

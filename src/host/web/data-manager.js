@@ -1,11 +1,11 @@
 // "My data": what the browser keeps for the visitor — the saves and settings of each game, the game files already
 // downloaded — and the optional account that copies the saves online. A window over the page (opened from the home
 // screen and from the in-game header); it follows the page language.
-import { archiveProfile, download, parseArchive, removeCache, removeProfile, restoreProfile, scanStorage, profileFiles, replaceProfile } from './data-store.js';
+import { archiveProfile, download, parseArchive, removeCache, removeProfile, restoreProfile, scanStorage, profileFiles, replaceProfile, scanPorts, portFiles, clearPortCache, clearPortSaves } from './data-store.js';
 import { pickLang } from './lang.js';
 import { h } from './dom.js';
 import { errorText, accountChanged, onAccountChange } from './account.js';
-import { CloudSave, MAX_BACKUP } from './cloud-sync.js';
+import { CloudSave, MAX_BACKUP, encodeProfile } from './cloud-sync.js';
 
 // ---------------------------------------------------------------- text
 const TEXT = {
@@ -30,6 +30,7 @@ const TEXT = {
     cleanCache: 'Vider le cache', cleanCacheText: 'Les fichiers du jeu seront téléchargés de nouveau au prochain lancement.',
     cleanSaves: 'Effacer les sauvegardes', cleanSavesText: 'Supprime définitivement les parties et réglages de cet appareil.',
     playing: 'Jeu en cours : l’import et le nettoyage seront possibles après l’avoir quitté.',
+    portOpen: 'Ferme ce jeu dans tes autres onglets avant de nettoyer ses données.',
     noData: (n) => `Jeux sans données sur cet appareil (${n})`, noGames: 'Aucun jeu', noGamesText: 'Les jeux apparaîtront ici dès que le serveur les proposera.',
     asides: 'Copies de secours', asidesText: 'Gardées automatiquement avant une restauration. Supprime-les quand tu n’en as plus besoin.',
     delete: 'Supprimer', more: 'Plus d’options',
@@ -94,6 +95,7 @@ const TEXT = {
     cleanCache: 'Clear the cache', cleanCacheText: 'The game files will be downloaded again at the next launch.',
     cleanSaves: 'Erase the saves', cleanSavesText: 'Permanently deletes the games and settings on this device.',
     playing: 'Game running: import and clean-up are possible once you have left it.',
+    portOpen: 'Close this game in your other tabs before cleaning its data.',
     noData: (n) => `Games with no data on this device (${n})`, noGames: 'No games', noGamesText: 'Games will show up here as soon as the server offers them.',
     asides: 'Safety copies', asidesText: 'Kept automatically before a restore. Delete them when you no longer need them.',
     delete: 'Delete', more: 'More options',
@@ -184,8 +186,10 @@ async function refresh({ account = false } = {}) {
     try { app.account = app.accountsOn ? (await jsonApi('/api/account')).user : null; } catch { app.account = null; }
   }
   const [storage, manifests] = await Promise.all([scanStorage(), fetch('/api/manifests').then((r) => r.json()).catch(() => [])]);
+  app.games = new Map(manifests.map((m) => [m.name, { title: m.title ?? m.name, version: m.runtime === 'openmw' ? [m.version, (m.contentLanguages ?? m.languages ?? []).join('/').toUpperCase()].filter(Boolean).join(' · ') : m.version ?? null, hidden: !!m.hidden, runtime: m.runtime, launchUrl: m.launchUrl, saveKey: m.saveKey ?? null }]));
+  // (the browser ports' data: their own databases, beside the Windows games' OPFS folders)
+  try { storage.games.push(...await scanPorts(manifests.filter((m) => m.saveKey).map((m) => ({ name: m.name, saveKey: m.saveKey })))); } catch { /* IndexedDB unavailable */ }
   app.storage = storage;
-  app.games = new Map(manifests.map((m) => [m.name, { title: m.title ?? m.name, version: m.runtime === 'openmw' ? [m.version, (m.contentLanguages ?? m.languages ?? []).join('/').toUpperCase()].filter(Boolean).join(' · ') : m.version ?? null, hidden: !!m.hidden, runtime: m.runtime, launchUrl: m.launchUrl }]));
   if (app.account) {
     try { app.cloud = new Map((await jsonApi('/api/cloud')).games.map((g) => [g.game, g])); } catch { app.cloud = new Map(); }
   } else app.cloud = new Map();
@@ -316,11 +320,13 @@ function gameRow(game, data) {
     has ? h('div', { class: 'dm-figs' },
       h('span', {}, t('saves'), h('b', {}, fmtBytes(data.profile ?? 0))),
       h('span', { title: t('cacheHelp') }, t('cache'), h('b', {}, fmtBytes(data.cache ?? 0)))) : null));
+  // (a browser port: its saves come back from the account at its start — no import here)
   card.append(row(data?.profile ? btn(t('export'), () => exportLocal(game), { variant: 'primary', ico: 'download', key: 'export:' + game, small: true }) : null,
-    btn(t('import'), () => pickImport(game), { variant: 'ghost', ico: 'upload', key: 'import:' + game, small: true })));
+    port ? null : btn(t('import'), () => pickImport(game), { variant: 'ghost', ico: 'upload', key: 'import:' + game, small: true })));
   if (has) card.append(fold('clean:' + game, t('clean'),
     data.cache ? h('div', { class: 'dm-clean' }, h('div', {}, h('strong', {}, t('cleanCache') + ' · ' + fmtBytes(data.cache)), h('p', {}, t('cleanCacheText'))), btn(t('cleanCache'), () => clearCache(game), { variant: 'danger', ico: 'trash', key: 'cache:' + game, small: true })) : null,
     data.profile ? h('div', { class: 'dm-clean' }, h('div', {}, h('strong', {}, t('cleanSaves') + ' · ' + fmtBytes(data.profile)), h('p', {}, t('cleanSavesText'))), btn(t('cleanSaves'), () => clearProfile(game), { variant: 'danger', ico: 'trash', key: 'saves:' + game, small: true })) : null));
+  if (port && has) card.append(h('p', { class: 'dm-playing' }, icon('alert'), t('portOpen')));
   if (activeGame(game)) card.append(h('p', { class: 'dm-playing' }, icon('alert'), t('playing')));
   return card;
 }
@@ -450,9 +456,15 @@ function render() {
 }
 
 // ---------------------------------------------------------------- actions
+const portKey = (game) => app.games.get(game)?.saveKey ?? null;
+/** A port's saves as one archive (the account's format): null when it has none. */
+async function archivePort(game) {
+  const files = await portFiles(portKey(game)); if (!files.length) return null;
+  return new Uint8Array(await new Response(new Blob([encodeProfile(game, files)]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+}
 async function exportLocal(game) {
   return run(t('wExport'), async () => {
-    const bytes = await archiveProfile(game, state());
+    const bytes = portKey(game) ? await archivePort(game) : await archiveProfile(game, state());
     if (!bytes) throw new Error(t('rNoSave'));
     download(bytes, game + '-' + new Date().toISOString().slice(0, 10) + '.orthros-save');
     return t('rExported', fmtBytes(bytes.length));
@@ -477,13 +489,15 @@ picker.onchange = () => {
 function clearCache(game) {
   return run(t('wCache'), async () => {
     if (!await ask({ title: t('cacheAsk', nameOf(game)), text: t('cacheAskText'), ok: t('cacheOk'), danger: true })) return t('cancelled');
-    await removeCache(game, state()); return t('rCache');
+    if (portKey(game)) await clearPortCache(portKey(game)); else await removeCache(game, state());
+    return t('rCache');
   });
 }
 function clearProfile(game) {
   return run(t('wSaves'), async () => {
     if (!await ask({ title: t('savesAsk', nameOf(game)), text: t('savesAskText'), ok: t('savesOk'), danger: true })) return t('cancelled');
-    await removeProfile(game, state()); return t('rSaves');
+    if (portKey(game)) await clearPortSaves(portKey(game)); else await removeProfile(game, state());
+    return t('rSaves');
   });
 }
 function removeAside(item) {

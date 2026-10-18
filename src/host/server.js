@@ -603,7 +603,7 @@ export function createServer(opts = {}) {
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name), runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
-            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes,
+            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, saveKey: port ? m.saveKey ?? null : null,
             available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });

@@ -14,7 +14,7 @@ const LOGO = '/src/host/web/orthros_logo.png';
 
 const STRINGS = {
   en: {
-    tagline: 'Your games, directly in your browser.',
+    over: 'Windows games and recompiled engines · in your browser', tagline: 'Your games, directly in your browser.',
     p1: 'Nothing to install', p2: 'The original game files', p3: 'Saves on your Orthros account',
     warn: 'You are not signed in: your progress will not be saved on an account — it stays only in this browser and can be lost.', warnAction: 'Sign in',
     signedAs: (u) => `Signed in as ${u}: your progress is saved on your account.`,
@@ -33,7 +33,7 @@ const STRINGS = {
     dlTitle: 'Downloads the whole game into this browser now (it resumes where it stopped on your next visit): on a slow connection the game then starts and plays without waiting for the network.',
   },
   fr: {
-    tagline: 'Tes jeux, directement dans ton navigateur.',
+    over: 'Jeux Windows et moteurs recompilés · dans ton navigateur', tagline: 'Tes jeux, directement dans ton navigateur.',
     p1: 'Rien à installer', p2: 'Les fichiers d’origine du jeu', p3: 'Sauvegardes sur ton compte Orthros',
     warn: 'Tu n’es pas connecté : ta progression ne sera pas sauvegardée sur un compte — elle reste seulement dans ce navigateur et peut être perdue.', warnAction: 'Se connecter',
     signedAs: (u) => `Connecté en tant que ${u} : ta progression est sauvegardée sur ton compte.`,

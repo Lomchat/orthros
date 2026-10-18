@@ -42,8 +42,11 @@ export const openmwModes = (o) => ['solo', ...(o.multiplayer ? ['multiplayer'] :
 
 // Only the upstream browser pages are adapted. Guest filesystem paths (/mwdata, /userdata)
 // and the generated Emscripten JS must retain their original meaning.
-/** An engine page with the Orthros page's meter (src/ports/openmw/frame-meter.js: its frame rate and the mouse). */
-export const withFrameMeter = (html) => html.replace('<head>', '<head><script src="/src/ports/openmw/frame-meter.js"></script>');
+/**
+ * An engine page with the Orthros page's meter (src/ports/openmw/frame-meter.js: its frame rate and the mouse) and the
+ * engine interface's texts in the Orthros page's language (src/ports/openmw/ui-l10n.js).
+ */
+export const withFrameMeter = (html) => html.replace('<head>', '<head><script src="/src/ports/openmw/frame-meter.js"></script><script src="/src/ports/openmw/ui-l10n.js"></script>');
 
 export function openmwWebText(text, base, saveKey) {
   // Native EM_ASM in the untouched engine glue uses the upstream storage keys too.
