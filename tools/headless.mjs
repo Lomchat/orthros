@@ -184,6 +184,7 @@ if (opt('account')) {
     return r.status;
   }, { username, password });
   console.log(`[account] ${username}: ${signed === 200 ? 'signed in' : 'HTTP ' + signed}`);
+  if (!args.includes('--ui')) q.set('cloud', '1'); // (without the header too: the saves restored and sent as a player's)
 }
 await page.goto(`http://127.0.0.1:${port}/?${q}`);
 if (bench && args.includes('--ui')) { await page.locator('#benchStart').click({ timeout: 30000 }).then(() => console.log('[bench] started'), (e) => console.log(`[bench] no start button: ${e.message.split('\n')[0]}`)); }

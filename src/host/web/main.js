@@ -11,6 +11,7 @@ import { PointerInput, winButton, cursorView } from './pointer.js';
 import { SNAPSHOT_PREFIX, profileFiles, replaceProfile } from './data-store.js';
 import { createShell } from './shell.js';
 import { CloudSave } from './cloud-sync.js';
+import { accountState } from './account.js';
 import { pickLang } from './lang.js';
 
 const $ = (id) => document.getElementById(id);
@@ -208,6 +209,15 @@ async function start(name, language = null) {
       let prefer = null; try { prefer = sessionStorage.getItem('orthros.preferAccount.' + name); sessionStorage.removeItem('orthros.preferAccount.' + name); } catch { /* none */ }
       const what = await cloud.pull().catch((e) => { log('warn', `account saves: ${e.message}`); return 'offline'; });
       if (what === 'conflict') { if (prefer) await cloud.resolve('account'); else await shell.resolveConflict(cloud); }
+    }
+  } else if (headless && params.get('cloud') === '1') {
+    // (a harness run without the header, signed in: the account's saves as a player's — a conflict keeps the account's)
+    const st = await accountState();
+    if (st.user) {
+      cloud = newCloud(name, st.user.username);
+      const what = await cloud.pull().catch((e) => { log('warn', `account saves: ${e.message}`); return 'offline'; });
+      if (what === 'conflict') await cloud.resolve('account');
+      log('loader', `account saves (${st.user.username}): ${what}`);
     }
   }
   const tree = await treeReq;
@@ -462,7 +472,7 @@ function makeShell(name, manifest, language) {
 /** The account's copy of this game's profile (cloud-sync.js): this browser's OPFS copy, or the running game's own. */
 function newCloud(name, username) {
   const running = () => (['running', 'starting'].includes(state.status) && state.manifest === name ? state : null);
-  return new CloudSave({ game: name, user: username, read: () => profileFiles(name, running()), write: (files) => replaceProfile(name, files, running()), onStatus: (s) => shell?.setSave(s) });
+  return new CloudSave({ game: name, user: username, read: () => profileFiles(name, running()), write: (files) => replaceProfile(name, files, running()), onStatus: (s) => { shell?.setSave(s); if (!shell) log('loader', `account saves: ${s.state}${s.version ? ' v' + s.version : ''}`); } });
 }
 /** The profile sent to the account now (back to the games, the page hidden): false when it could not be. */
 async function saveNow() {

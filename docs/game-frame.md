@@ -16,7 +16,7 @@ From left to right:
 | mouse | **captured** by the game (pointer lock) or **free**; a click gives it to the game | ✓ | ✓ | ✓ (told by `frame-meter.js` in the engine's page) |
 | saves | where the progress goes: not saved (no account: a warning), saving, saved at hh:mm, not sent, conflict, too large, saved by the world (OpenMW multiplayer) | ✓ | ✓ | ✓ |
 | frame rate | fps, p99 and the slowest frame, the last minute's graph | ✓ (+ details panel) | ✓ | ✓ (`frame-meter.js`) |
-| settings | the data window (`data-manager.js`): online saves and account; launch options and this browser's storage on the Windows games' page | ✓ | ✓ | ✓ |
+| settings | the data window (`data-manager.js`): online saves and account; launch options and this browser's storage — the Windows games' OPFS folders and the ports' IndexedDB databases, exported or cleaned — on the Windows games' page | ✓ | ✓ | ✓ |
 | full screen, games | full screen (mouse captured, Esc held to leave); back to the list, asked first while a game runs, the progress saved first | ✓ | ✓ | ✓ |
 
 Narrow windows keep the indicators' icons; their words go (their titles still say them).
@@ -54,3 +54,10 @@ Windows games through their registry (`languageRegistryKey`, also on a required 
 base game speak the same language), OpenMW through its language versions, GoldSrc through
 `goldsrc.languages.<code>` (`args`, `commands`, `extras` of the engine release, `overlays`: the language's folders over
 the game's — docs/browser-ports.md, "Languages").
+OpenMW's own engine interface (its loading screen, multiplayer tour, social panel, chat, messages, the character
+choice) follows the Orthros page's language: `src/ports/openmw/ui-l10n.js`, put into the engine's pages with
+`frame-meter.js`, replaces the engine's known English phrases (exact phrase, or a phrase's start when it ends with a
+name), never a script or the game.
+
+Harness runs: `tools/headless.mjs --account <name>:<password>` signs the page in first (created if needed); without
+`--ui` the page then uses the account's saves too (`?cloud=1`): restored before the game, sent while it runs.
