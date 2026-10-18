@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { StreamedFiles, learnedPlan, treeFiles, BLOCK, PIECE, STARTUP_GAP_MS } from '../src/ports/goldsrc/files.js';
+import { StreamedFiles, learnedPlan, treeFiles, languageFiles, BLOCK, PIECE, STARTUP_GAP_MS } from '../src/ports/goldsrc/files.js';
 import { BLOCK as SERVER_BLOCK, CHUNK as SERVER_PIECE } from '../src/vfs/http-backend.js';
 import { createServer } from '../src/host/server.js';
 
@@ -124,4 +124,15 @@ test('a page\'s read reports teach the server\'s learned list, in the page\'s ow
   const game = base.replace('/api/prefetch/', '/gamez/') + '/valve/bom.txt?r=0-6';
   assert.deepEqual([...new Uint8Array(await (await fetch(game + '&pad=1')).arrayBuffer())], [0, 0xff, 0xfe, 0x41, 0, 0x42, 0]);
   assert.deepEqual([...new Uint8Array(await (await fetch(game)).arrayBuffer())], [0xff, 0xfe, 0x41, 0, 0x42, 0]);
+});
+
+test('a language\'s folders are mounted over the ones they translate; without it, out of the engine\'s tree', () => {
+  const files = [{ path: 'valve/titles.txt', size: 10 }, { path: 'valve/sound/vox/a.wav', size: 5 }, { path: 'valve/maps/c0a0.bsp', size: 99 },
+    { path: 'valve_french/Titles.txt', size: 12 }, { path: 'valve_french/sound/vox/a.wav', size: 6 }, { path: 'valve_french/resource/gameui_french.txt', size: 3 }];
+  const fr = languageFiles(files, { valve_french: 'valve' }, ['valve_french']);
+  const at = (f) => f.at ?? f.path;
+  assert.deepEqual(fr.map(at).sort(), ['valve/Titles.txt', 'valve/maps/c0a0.bsp', 'valve/resource/gameui_french.txt', 'valve/sound/vox/a.wav']);
+  assert.equal(fr.find((f) => at(f) === 'valve/sound/vox/a.wav').path, 'valve_french/sound/vox/a.wav', 'fetched from its own folder');
+  const en = languageFiles(files, undefined, ['valve_french']);
+  assert.deepEqual(en.map(at).sort(), ['valve/maps/c0a0.bsp', 'valve/sound/vox/a.wav', 'valve/titles.txt']);
 });

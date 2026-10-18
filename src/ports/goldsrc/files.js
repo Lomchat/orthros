@@ -25,6 +25,31 @@ export function treeFiles(tree) {
 }
 
 /**
+ * The game's files as a language shows them (goldsrc.languages.<code>.overlays: { "valve_french": "valve" }): each file of
+ * a language folder is mounted at the same place in the folder it translates (`at`), over the original of that path
+ * (compared without case, as the engine finds files); the language folders themselves are not mounted otherwise.
+ * Without overlays, the files as they are, the language folders left out of the engine's tree.
+ */
+export function languageFiles(files, overlays = {}, known = []) {
+  const lower = (p) => p.toLowerCase(), top = (p) => lower(p.split('/')[0]);
+  const over = new Map(Object.entries(overlays).map(([from, to]) => [lower(from), to]));
+  const hidden = new Set([...known.map(lower)].filter((d) => !over.has(d)));
+  const translated = new Map();
+  for (const f of files) {
+    const to = over.get(top(f.path)); if (!to) continue;
+    const at = to + f.path.slice(f.path.indexOf('/'));
+    translated.set(lower(at), { ...f, at });
+  }
+  const out = [];
+  for (const f of files) {
+    const t = top(f.path);
+    if (over.has(t) || hidden.has(t)) continue;
+    if (!translated.has(lower(f.path))) out.push(f);
+  }
+  return [...out, ...translated.values()];
+}
+
+/**
  * The learned list ([path, block, mask, t] by earliest first read) as files to load (`files`: those of the
  * StreamedFiles, whose nodes the engine reads), in order: per file, its pieces
  * (null: the whole file — read for the most part, or small), and its first time. `startup`: the leading entries up
@@ -113,9 +138,10 @@ export class StreamedFiles {
   mount(FS, root) {
     const self = this;
     for (const f of this.files.values()) {
-      const slash = f.path.lastIndexOf('/'), dir = root + (slash < 0 ? '' : '/' + f.path.slice(0, slash));
+      const at = f.at ?? f.path; // (a language's file: mounted where the file it translates is, languageFiles)
+      const slash = at.lastIndexOf('/'), dir = root + (slash < 0 ? '' : '/' + at.slice(0, slash));
       FS.mkdirTree(dir);
-      const node = FS.createFile(dir, f.path.slice(slash + 1), {}, true, false);
+      const node = FS.createFile(dir, at.slice(slash + 1), {}, true, false);
       Object.defineProperty(node, 'usedBytes', { get: () => f.size });
       Object.defineProperty(node, 'contents', { get: () => f.data, set: () => {} }); // (whole, once here: mmap reads it)
       const ops = node.stream_ops, own = { ...ops };

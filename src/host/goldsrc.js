@@ -37,8 +37,9 @@ export function goldsrcProblem(g) {
   if (g.languages !== undefined && (!isObject(g.languages) || !Object.entries(g.languages).every(([code, l]) => /^[a-z]{2}$/.test(code) && isObject(l)
     && (l.args === undefined || (Array.isArray(l.args) && l.args.every((a) => typeof a === 'string' && /^[-+]?[A-Za-z0-9_.]{1,40}$/.test(a))))
     && (l.commands === undefined || commandsOk(l.commands))
-    && (l.extras === undefined || (Array.isArray(l.extras) && l.extras.every((e) => safePath(e) && /\.pk3$/i.test(e)))))))
-    return 'goldsrc.languages : { <langue>: { args, commands, extras } }';
+    && (l.extras === undefined || (Array.isArray(l.extras) && l.extras.every((e) => safePath(e) && /\.pk3$/i.test(e))))
+    && (l.overlays === undefined || (isObject(l.overlays) && Object.entries(l.overlays).every(([from, to]) => [from, to].every((d) => typeof d === 'string' && safePath(d) && !d.includes('/')) && from.toLowerCase() !== to.toLowerCase()))))))
+    return 'goldsrc.languages : { <langue>: { args, commands, extras, overlays: { <dossier traduit>: <dossier du jeu> } } }';
   if (g.multiplayer !== undefined) {
     const mp = g.multiplayer;
     if (!isObject(mp) || !MAP.test(mp.map ?? '') || !Number.isInteger(mp.port) || mp.port < 1024 || mp.port > 65535 || !ID.test(mp.server ?? '')) return 'goldsrc.multiplayer : server, port (1024-65535) et map obligatoires';

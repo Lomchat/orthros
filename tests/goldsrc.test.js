@@ -58,7 +58,7 @@ test('a GoldSrc version needs no executable and is checked by its own rules', (t
   assert.equal(man.coverPath, path.join(gs, 'cover.svg'));
   assert.equal(loadGameCatalog(games).get('win-1').runtime, 'win32');
   // (a language's own arguments, commands and archives)
-  editManifest(gs, (spec) => { spec.versions[0].goldsrc.languages = { fr: { args: ['-language', 'french'], commands: ['ars_lang fr'], extras: ['mod/fr.pk3'] } }; });
+  editManifest(gs, (spec) => { spec.versions[0].goldsrc.languages = { fr: { args: ['-language', 'french'], commands: ['ars_lang fr'], extras: ['mod/fr.pk3'], overlays: { valve_french: 'valve' } } }; });
   assert.deepEqual(loadGameCatalog(games).get('gs-orig').goldsrc.languages.fr.commands, ['ars_lang fr']);
   for (const [edit, error] of [
     [(v) => { v.goldsrc.modules.client = '../client.wasm'; }, /goldsrc.modules/],
@@ -73,6 +73,8 @@ test('a GoldSrc version needs no executable and is checked by its own rules', (t
     [(v) => { v.goldsrc.languages = { fr: { commands: ['ars_lang fr; quit'] } }; }, /goldsrc.languages/],
     [(v) => { v.goldsrc.languages = { french: { args: ['-language', 'french'] } }; }, /goldsrc.languages/],
     [(v) => { v.goldsrc.languages = { fr: { extras: ['../fr.pk3'] } }; }, /goldsrc.languages/],
+    [(v) => { v.goldsrc.languages = { fr: { overlays: { 'valve_french/x': 'valve' } } }; }, /goldsrc.languages/],
+    [(v) => { v.goldsrc.languages = { fr: { overlays: { valve: 'VALVE' } } }; }, /goldsrc.languages/],
     [(v) => { v.requires = [{ game: 'win', version: 'win-1', mount: 'C:\\Win' }]; }, /requires invalide/],
     [(v) => { v.runtime = 'dos'; }, /runtime inconnu/],
     [(v) => { v.coverFile = '../cover.svg'; }, /coverFile/],

@@ -10,7 +10,7 @@ import { pickLang } from '../../host/web/lang.js';
 import { createShell } from '../../host/web/shell.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, storageKeys, removeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
-import { StreamedFiles, treeFiles, learnedPlan, PIECE } from './files.js';
+import { StreamedFiles, treeFiles, learnedPlan, languageFiles, PIECE } from './files.js';
 import { createLobby, roomAddress } from './lobby.js';
 
 const STRINGS = {
@@ -455,8 +455,10 @@ async function start() {
   // (the game's writable folder, with its maps folder: files the game writes there, as its bots' navigation meshes)
   FS.mkdirTree('/rodir'); FS.mkdirTree('/rwdir/' + g.gameDir + '/maps');
   restoreSnapshot(FS, await readStorage(db, 'profile', 'files'));
-  // (the game's files: its whole tree now, what earlier sessions read first loaded before the start, the rest later)
-  streamed = session.files = new StreamedFiles({ name, files, log, store: {
+  // (the game's files: its whole tree now — a language's folders over the ones they translate —, what earlier sessions
+  // read first loaded before the start, the rest later)
+  const shown = languageFiles(files, own.overlays, Object.values(g.languages ?? {}).flatMap((l) => Object.keys(l.overlays ?? {})));
+  streamed = session.files = new StreamedFiles({ name, files: shown, log, store: {
     read: (key) => readStorage(db, 'content', key), write: (key, bytes) => writeStorage(db, 'content', key, bytes),
     keys: () => storageKeys(db, 'content'), remove: (keys) => removeStorage(db, 'content', keys) } });
   streamed.mount(FS, '/rodir');
