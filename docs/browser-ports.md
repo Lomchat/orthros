@@ -125,7 +125,8 @@ files, the game's first images) with their progress, and tips.
   idle connections closed after two minutes. With `?rooms` (the page's): one socket per room, each message carrying
   its room in its first byte (255: every room — the game's LAN search).
 - `/api/rooms/<manifest>`: the lobby. GET: the version's games (its permanent server and the rooms players created:
-  name, map, players with the bots, humans, size, bots), the maps and the limits, from its server manager. POST
+  name, map, players with the bots, humans, size, bots), the maps and the limits, from its server manager, with the
+  manifest's options (without their commands) and map groups (`multiplayer.mapGroups`). POST
   `{ name, map, maxPlayers, bots }`: a room created (the page's origin; one creation in flight per address, 30 a minute in all), answered once its
   server answers, with the room's secret `key`. `DELETE /api/rooms/<manifest>/<index>` `{ key }` (the page's origin):
   that room closed — its server stopped, its players back to the menu; room 0 never. The lobby keeps the keys of the
@@ -416,7 +417,15 @@ with `multiplayer.rooms`, those players create.
   games"), the version's games with their map and players, joined in a click — the engine started first if it is not —
   and the form that creates one: a name, a map picked on its picture, a size and bots (− and + buttons), the version's
   options as buttons side by side (`rooms.options`: Counter-Strike's bots' team, `bot_join_team`, and starting money,
-  `mp_startmoney`). A map's picture is the game's own overview (`multiplayer.mapImage`, `/api/map-image/<manifest>/<map>`,
+  `mp_startmoney`); beside them, the chosen map large with the game's name over it and a summary of the game (its size,
+  bots, options and places), which follows the form as it scrolls; its buttons stay at the bottom of the box. Escape
+  closes the form (over the game, a first Escape the form, a second the overlay); an error on a field (the name) marks
+  and focuses it. The maps come by group when the version names
+  `multiplayer.mapGroups` (Counter-Strike's classic modes: bomb defusal `de_`, hostage rescue `cs_`, VIP assassination
+  `as_`): each group a title above its cards, a filter above the maps and a badge on its cards (`short`, `icon`), its
+  `description` under the chosen map's picture; a map goes to the first group naming it (`maps`), else to the first
+  with one of its `prefix`es, the others last ("Other maps"). Nothing in the page names a group: they come with
+  `GET /api/rooms` (`mapGroups`). A map's picture is the game's own overview (`multiplayer.mapImage`, `/api/map-image/<manifest>/<map>`,
   compressed once by the server), drawn smaller by the page with its keyed pure green turned into the panel's dark, and
   loaded when its card comes into view; a map without one gets its name on a pattern. Each room is also in the game's own LAN list, under its
   name: the relay sends the LAN search to every room, room i answers as 10.87.0.<i+1>:27015 (127.0.0.1:8080 too for
