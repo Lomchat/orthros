@@ -255,7 +255,19 @@ extend the earlier English two-client gameplay proof into a full French campaign
 The final French Chromium check reached `Joined` with `simReady=1`, loaded
 `Navire-prison impérial`, and rendered the opening with the native simulator starting from
 `-2,-9` in about two seconds. The check used the pinned engine's low-render-cost flags and
-skipped the opening video. It verifies the French launch and server handshake; two-player
-French campaign travel and full manual character creation remain unverified. The general
+skipped the opening video. It verifies the French launch and server handshake. The subsequent two-client check below
+extends coverage to a shared French party; full manual character creation remains unverified. The general
 suite passed (`make test`: 1,084 passed, zero failures, three TODOs); focused account, cloud
 and localization checks passed after the final changes.
+
+The final HTTPS public check registered two independent Orthros accounts, completed character
+creation through the pinned QA hooks, moved both clients outside and used friend request/accept
+and Party travel. The native gateway reported both human usernames in the same party world.
+Both engine mirrors reported `Joined`, `simReady=1`, the same exterior cell, and a puppet for the
+other player; their NPC mirrors contained 42 and 61 simulated actors respectively. Each native
+account still owned one persistent character after both browsers exited. The first diagnostic
+wait incorrectly treated the puppet map as an array; corrected object-map assertions were
+run against the captured client states and matched the live gateway roster. This is a party
+handshake/travel and persistence check, with QA character creation, not a full campaign proof.
+All temporary Orthros/native accounts and worlds were removed; both gateways returned to zero
+active worlds. Evidence is retained in `build/proof/openmw-accounts-fr-20261018/`.
