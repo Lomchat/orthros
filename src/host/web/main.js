@@ -484,9 +484,9 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 async function lateSignIn(name, user) {
   if (cloud) return;
   cloud = newCloud(name, user.username);
-  const remote = await cloud.fetchRemote().catch(() => null);
-  cloud.remoteHash = remote?.hash ?? null;
-  if (!remote) { cloud.push(); return; }
+  const head = await cloud.remoteHead().catch(() => null);
+  cloud.remoteHash = head;
+  if (!head) { cloud.push(); return; }
   const choice = await shell.ask({ title: TEXT.lateTitle, text: TEXT.lateText(state.title), buttons: [{ value: 'account', label: TEXT.lateAccount, primary: true }, { value: 'device', label: TEXT.lateDevice }] });
   if (choice === 'account') { try { sessionStorage.setItem('orthros.preferAccount.' + name, '1'); } catch { /* none */ } location.reload(); }
   else if (choice === 'device') cloud.resolve('device');

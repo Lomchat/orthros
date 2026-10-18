@@ -71,12 +71,13 @@ try {
     nicknames[i] = await signIn(context, i);
     const page = await context.newPage();
     page.on('pageerror', (error) => console.log('PAGE ERROR', error.message));
+    page.on('dialog', (dialog) => { console.log('DIALOG', dialog.type(), dialog.message()); dialog.accept().catch(() => {}); });
     page.on('console', (message) => { if (message.type() === 'error') console.log('CONSOLE', message.text().slice(0, 300)); });
     clients.push({ context, page });
     if (i === 0) { // (the first player arrives from the home, as a visitor does)
       await page.goto(`${base}/?menu`);
       await page.locator(`[data-name="${manifest.gameId}"] .hm-play`).click();
-      await page.waitForURL(`**/ports/goldsrc/${encodeURIComponent(name)}/`);
+      await page.waitForURL((u) => u.pathname === `/ports/goldsrc/${encodeURIComponent(name)}/`);
       console.log('HOME', 'the card opened', page.url());
       await page.goto(pageUrl);
     } else await page.goto(pageUrl);
@@ -132,7 +133,7 @@ try {
     const page = clients[0].page, saves = `/rwdir/${manifest.goldsrc.gameDir}/save`;
     await focusGame(page); await page.keyboard.down('w'); await page.waitForTimeout(1000); await page.keyboard.up('w');
     await page.evaluate(() => { portSession.command('save orthros_qa'); portSession.command('host_writeconfig'); });
-    const listSaves = (dir) => { const FS = portSession.engine.em.FS; try { return FS.readdir(dir).filter((f) => f.startsWith('orthros_qa')).map((f) => ({ f, size: FS.stat(dir + '/' + f).size })); } catch { return []; } };
+    const listSaves = (dir) => { const FS = portSession.engine.em.FS; try { return FS.readdir(dir).filter((f) => f.startsWith('orthros_qa')).sort().map((f) => ({ f, size: FS.stat(dir + '/' + f).size })); } catch { return []; } };
     await page.waitForFunction((dir) => { try { return portSession.engine.em.FS.readdir(dir).some((f) => f.startsWith('orthros_qa')); } catch { return false; } }, saves, { timeout: 15000 });
     await page.evaluate(() => portSession.save());
     await page.evaluate(() => portSession.command('load orthros_qa')); await page.waitForTimeout(5000);
@@ -159,7 +160,7 @@ try {
       await again.waitForTimeout(3000); await enter(again);
       await again.waitForFunction(() => renderProbe.draws > 50, null, { timeout: 30000 });
       const restored = await again.evaluate(listSaves, saves);
-      if (JSON.stringify(restored) !== JSON.stringify(saved)) throw new Error('Saved files changed across quit and relaunch' + (nicknames[0] ? ' on another device' : ''));
+      if (JSON.stringify(restored) !== JSON.stringify(saved)) throw new Error('Saved files changed across quit and relaunch' + (nicknames[0] ? ' on another device' : '') + `: ${JSON.stringify({ saved, restored })}`);
       await again.evaluate(() => portSession.command('load orthros_qa')); await again.waitForTimeout(5000);
       console.log('PERSISTENCE', JSON.stringify({ saved, restored, otherDevice: !!nicknames[0] }));
     }

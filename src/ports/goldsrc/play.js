@@ -302,17 +302,17 @@ async function lateSignIn(user) {
   if (config?.goldsrc.multiplayer) toast(S.online(user.username), 5000);
   if (cloud || !db) return;
   cloud = newCloud(user.username);
-  const remote = await cloud.fetchRemote().catch(() => null);
-  cloud.remoteHash = remote?.hash ?? null;
-  if (!remote) { if (session.state === 'running') await save(); cloud.push(); return; }
+  const head = await cloud.remoteHead().catch(() => null);
+  cloud.remoteHash = head;
+  if (!head) { if (session.state === 'running') await save(); cloud.push(); return; }
   const choice = await shell.ask({ title: S.lateTitle, text: S.lateText(config.name), buttons: [{ value: 'account', label: S.lateAccount, primary: true }, { value: 'device', label: S.lateDevice }] });
-  if (choice === 'account') { stopped = true; try { await cloud.applyRemote(remote); } finally { location.reload(); } }
+  if (choice === 'account') { stopped = true; if (timer) clearInterval(timer); if (cloudTimer) clearInterval(cloudTimer); try { const remote = await cloud.fetchRemote(); if (remote) await cloud.applyRemote(remote); } finally { location.reload(); } }
   else if (choice === 'device') { await save(); cloud.resolve('device'); }
   else cloud.set({ state: 'conflict' });
 }
 
 async function save() {
-  if (!db || !engine?.em || saving) return saving;
+  if (!db || !engine?.em || saving || stopped) return saving; // (stopped: the page goes, or the account's copy replaces this one)
   saving = writeStorage(db, 'profile', 'files', writableSnapshot(engine.em.FS));
   try { await saving; session.lastSaveAt = Date.now(); } finally { saving = null; }
 }
@@ -509,19 +509,16 @@ async function start() {
   $('canvas').focus();
 }
 
-/** Back to the games: the game's settings written, the profile kept here and on the account; false when it was not sent. */
+/**
+ * Back to the games: the game's settings written, the profile kept here and on the account; false when it could not
+ * be sent. (The engine is not asked to quit: the page goes, and this release's quit can stop on an error of its own.)
+ */
 async function quit() {
   if (session.state !== 'running') return true;
-  stopped = true; if (timer) clearInterval(timer); if (cloudTimer) clearInterval(cloudTimer); endReport();
   try {
     engine?.Cmd_ExecuteString('host_writeconfig'); await save();
     const sent = cloud ? await cloud.push() : null;
-    try { engine?.quit(); } catch (error) {
-      // Emscripten ends its main loop by unwinding; this is successful shutdown.
-      if (error !== Infinity && error !== 'unwind' && error?.name !== 'ExitStatus') throw error;
-    }
-    relay?.close(); db?.close(); session.state = 'stopped';
-    return !sent || !['error', 'toobig'].includes(sent.state);
+    return !sent || !['error', 'toobig', 'conflict'].includes(sent.state);
   } catch (error) { log('Quit: ' + (error?.message ?? error)); return false; }
 }
 

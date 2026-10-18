@@ -8,7 +8,8 @@ The engine, its corresponding source and native simulation image are pinned by
 ## Current installation
 
 - Browser engine, corresponding source and native simulation image remain pinned to v1.5.3.
-  The freely licensed example keeps its separate `openmw-example-1.5.3` card.
+  The freely licensed example card (`openmw-example-1.5.3`) was removed by the owner on 2026-10-18 (its manifest in
+  `data_installers/removed-2026-10-18/`).
 - On 2026-10-18 the user's two encrypted RAR volumes were successfully extracted. Their
   multilingual ISO installer was run in a disposable, network-isolated filesystem to recover
   the English GOTY data. Only its `Data Files` directory was copied into an empty
@@ -152,11 +153,23 @@ the engine glue’s upstream `omwmp:*` storage accesses through its Storage meth
 native resume token and HTML ticket cleanup refer to the same installation-specific key.
 
 ```sh
-tools/with-browser-slot.sh node tools/openmw/check.mjs openmw-example-1.5.3 \
+tools/with-browser-slot.sh node tools/openmw/check.mjs morrowind-goty-en \
   --url https://orthros.chalco.website --seconds 3
 ```
 
-This check is explicitly the free example, **not** a Morrowind multiplayer success claim.
+This check is a solo smoke check (the engine draws, the Orthros frame shows its frame rate and the mouse), **not** a
+Morrowind multiplayer or gameplay success claim. (Until 2026-10-18 it ran on the free example.)
+
+### The page (2026-10-18)
+
+The port's page has the frame of every Orthros game (`docs/game-frame.md`): the header (game, version · language, mouse,
+saves, frame rate, settings, full screen, back to the games) over the engine's page in a frame, and the loading screen
+where the player chooses the game's language (its language versions), solo or with friends (an Orthros account
+required), with the engine's licence. The engine's pages get `frame-meter.js` (the frame rate and the pointer lock,
+told by messages) besides `cloud.js`, whose save states (saving, saved, error, conflict) feed the header's indicator;
+leaving by « Games » asks it to send what is not on the account yet (`orthros-flush`), 15 s at most. In multiplayer the
+indicator says the world's server keeps the character. The engine's own overlays (the multiplayer onboarding) stay in
+English: they are the upstream portal's.
 Initial validation: `make test` passed (1,073 passed, 3 skipped, 2 todo); targeted catalog/proxy
 checks passed after the final changes. Chromium reached the example's Village from the home
 card, drew 8,515 WebGL calls and opened the expected installation-specific IDBFS database.

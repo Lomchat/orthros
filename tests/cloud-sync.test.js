@@ -23,19 +23,22 @@ function world(remoteFiles = null) {
   const sha = (b) => createHash('sha256').update(b).digest('hex');
   let head = null, puts = 0;
   if (remoteFiles) { const gz = gzipSync(Buffer.from(encodeProfile('g', remoteFiles))); head = { gz, hash: sha(gz) }; }
+  let downloads = 0;
   const fetchImpl = async (url, o = {}) => {
+    if (url === '/api/cloud') return new Response(JSON.stringify({ games: head ? [{ game: 'g', hash: head.hash }] : [] }));
     if (o.method === 'PUT') {
       const parent = o.headers['X-Orthros-Parent-Hash'], actual = head?.hash ?? 'none';
       if (parent !== actual) return new Response(JSON.stringify({ error: 'Une autre sauvegarde existe en ligne.', remoteHash: actual }), { status: 409 });
       const gz = Buffer.from(o.body); head = { gz, hash: sha(gz) }; puts++;
       return new Response(JSON.stringify({ hash: head.hash, version: puts }), { status: 201 });
     }
+    if (head) downloads++;
     return head ? new Response(head.gz, { headers: { 'X-Orthros-Backup-Hash': head.hash } }) : new Response('{}', { status: 404 });
   };
   const store = new Map(), storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
   const device = { files: [] };
   const save = (user = 'ana') => new CloudSave({ game: 'g', user, storage, fetchImpl, read: async () => device.files.map((f) => ({ ...f })), write: async (files) => { device.files = files; } });
-  return { save, device, store, get head() { return head; }, get puts() { return puts; }, remote: () => JSON.parse(gunzipSync(head.gz)).files.map((f) => f.path) };
+  return { save, device, store, get head() { return head; }, get puts() { return puts; }, get downloads() { return downloads; }, remote: () => JSON.parse(gunzipSync(head.gz)).files.map((f) => f.path) };
 }
 const file = (path, ...bytes) => ({ path, data: new Uint8Array(bytes) });
 
@@ -45,6 +48,7 @@ test('CloudSave: a new device gets the account\'s saves before the game starts, 
   assert.equal(await c.pull(), 'restore');
   assert.deepEqual(w.device.files.map((f) => f.path), ['save/a.sav']);
   assert.equal((await c.push()).state, 'saved'); assert.equal(w.puts, 0, 'nothing new: nothing sent');
+  assert.equal(await w.save().pull(), 'same'); assert.equal(w.downloads, 1, 'in step: the account\'s copy not downloaded again');
   w.device.files.push(file('save/b.sav', 3));
   const st = await c.push();
   assert.equal(st.state, 'saved'); assert.equal(st.version, 1); assert.deepEqual(w.remote(), ['save/a.sav', 'save/b.sav']);

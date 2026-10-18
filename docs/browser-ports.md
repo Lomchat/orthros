@@ -14,8 +14,9 @@ Nothing in the code names a game: engine release, game directory, modules, maps 
 
 OpenMW ports use `runtime: "openmw"`, their own page and a pinned OpenMW-Web engine. Their
 multiplayer uses a native world gateway and simulation peers, proxied on the same origin.
-See [OpenMW installation, pending data and validation](openmw.md). The original game files
-and several mods are still required; the freely licensed engine example is a separate card.
+See [OpenMW installation, pending data and validation](openmw.md). Several mods of the Vanilla+ profile are still
+missing. Every game page — Windows games and ports — has the same frame (header, loading screen, account, saves):
+[docs/game-frame.md](game-frame.md).
 
 ## Where things are
 
@@ -24,7 +25,7 @@ and several mods are still required; the freely licensed engine example is a sep
 | `src/host/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
-| `data_games/<game>/` | `manifest.json`, `cover.svg`, `base/` (the original files), `versions/<version>/` | no |
+| `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
 | `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r11` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
 
@@ -74,18 +75,20 @@ Counter-Strike at its title screen in single player, whichever server module.
 
 ## The page
 
-`src/ports/goldsrc/play.html` looks as the Windows games' page (`src/host/web/player.css`, shared with `index.html`):
-the header (brand, game, frame rate with its last minute and slowest frames, full screen, back to the games), and the
-loading screen over the game's blurred cover — first the nickname and "Play", then the start's steps (engine, game
-files, the game's first images) with their progress, and tips.
+`src/ports/goldsrc/play.html` has the frame of every Orthros game page (`src/host/web/shell.js`, docs/game-frame.md):
+the header (game, mouse captured or free, saves, frame rate, the online games, settings, full screen, back to the
+games) and the loading screen over the game's blurred cover — who plays (the Orthros account, or a warning), the
+online games, the start's steps (engine, game files, the game's first images) with their progress, and tips. The game
+starts at once.
 
 - **The game's own main menu.** No mode to choose before the start: the engine starts on the game's menu, where the
   player picks single player (Half-Life's new game; Counter-Strike's multiplayer, create game) or multiplayer. The
   manifest's `solo.commands` run at the start (bots, game settings): a game the menu creates gets them; `solo.map` is
-  only `check.mjs`'s. The nickname is remembered by the page, and is never the games' default "Player", which their
-  multiplayer menus refuse.
-- **Orthros' server in the LAN games.** With `multiplayer`, the page opens the relay (`/api/udp/<manifest>`) as the
-  engine starts and sends it every packet the engine sends, whatever its address: the menu's LAN search (a broadcast)
+  only `check.mjs`'s. The player's name in the game is the Orthros account's (a player not signed in is `GuestNNN`,
+  without multiplayer).
+- **Orthros' server in the LAN games.** With `multiplayer` and a signed-in player (the server refuses the relay and
+  room creation otherwise), the page opens the relay (`/api/udp/<manifest>`) as the engine starts and sends it every
+  packet the engine sends, whatever its address: the menu's LAN search (a broadcast)
   reaches the version's dedicated server, whose answer comes as `127.0.0.1:8080` and lists it, with its map and players;
   joining it connects there. The server closes an idle relay after two minutes: the next packet opens a new one.
 
@@ -107,7 +110,8 @@ files, the game's first images) with their progress, and tips.
 - **The menu module.** Counter-Strike's manifests name none: the engine's (`engine/libmenu.wasm`) shows the game's own
   title screens and takes the mouse; cs16-client's `mainui_cpp` (still built, `modules.builds`) wants the images of its
   `cs16client-extras` package and gets no mouse position from this engine.
-- "Back to the games" saves the profile and quits the engine once the player confirmed (`check.mjs --reload` accepts).
+- "Back to the games" writes the game's settings, saves the profile here and on the account once the player confirmed;
+  the engine is not asked to quit (this release's quit can stop on a double free of its own; the page goes anyway).
 
 ## Server routes
 
@@ -394,8 +398,10 @@ sequence, their blends and controllers neutral. Click buys (the server's buy ali
 IndexedDB database `orthros-port:<game>:<version folder>` (the installation; unchanged since the first release):
 `profile` holds the engine's writable tree (saves, configuration), written every 10 s, when the page is hidden and on
 quit; `content` holds the game files fetched, whole (`<path>\n<size>\n<mtime>`) or as 64 KiB pieces (the same key and
-`\n#<piece>`); entries of other files or older versions are deleted at the start. The settings' device tab and the account's online copies handle the Windows games' profiles
-only: a port's saves stay in this browser.
+`\n#<piece>`); entries of other files or older versions are deleted at the start. A signed-in player's profile is
+also on the account (`src/host/web/cloud-sync.js`: the game's writable tree less logs, screenshots, bots' navigation
+meshes and the decals' cache): restored before the engine starts when the account's is newer, sent every minute when it
+changed and when leaving; a profile replaced so is kept aside in `profile` under `aside-<date>`.
 
 ## Multiplayer servers
 
@@ -430,18 +436,18 @@ with `multiplayer.rooms`, those players create.
   loaded when its card comes into view; a map without one gets its name on a pattern. Each room is also in the game's own LAN list, under its
   name: the relay sends the LAN search to every room, room i answers as 10.87.0.<i+1>:27015 (127.0.0.1:8080 too for
   room 0). The home's cards tell how many games are online and how many play.
-- **Ports.** Half-Life: UDP 28015, rooms 28100-28103; Counter-Strike: 28016, rooms 28110-28113; Counter-Strike
-  (rebuilt): 28017, rooms 28120-28123; Half Strike: 28018, rooms 28130-28133. The catalog refuses a port two versions
-  take.
+- **Ports.** Half-Life: UDP 28015, rooms 28100-28103; Counter-Strike (rebuilt): 28017, rooms 28120-28123; Half
+  Strike: 28018, rooms 28130-28133 (28016 and 28110-28113 were the recovered Counter-Strike's, removed on 2026-10-18).
+  The catalog refuses a port two versions take.
 
 ```sh
 python3 tools/goldsrc/install-engine.py          # browser engine release -> data_engines/
 sh tools/goldsrc/build-server.sh                 # dedicated server -> data_engines/ (gcc, 32-bit libraries)
 sh tools/goldsrc/build-modules.sh                # Counter-Strike modules from source -> data_engines/ (Docker, g++ -m32, the game's files)
 install -m 644 tools/goldsrc/orthros-goldsrc@.service /etc/systemd/system/ && systemctl daemon-reload
-systemctl enable --now orthros-goldsrc@half-life-original-en orthros-goldsrc@counter-strike-original-en
+systemctl enable --now orthros-goldsrc@half-life-original-en orthros-goldsrc@counter-strike-rebuilt-en orthros-goldsrc@counter-strike-hl-arsenal-en
 tools/with-browser-slot.sh node tools/goldsrc/check.mjs half-life-original-en solo --url https://orthros.chalco.website --reload
-tools/with-browser-slot.sh node tools/goldsrc/check.mjs counter-strike-original-en multiplayer --url https://orthros.chalco.website --join-keys "{n},1"
+tools/with-browser-slot.sh node tools/goldsrc/check.mjs counter-strike-hl-arsenal-en multiplayer --url https://orthros.chalco.website --join-keys "{n},1"
 ```
 
 ## Same origin
@@ -449,6 +455,12 @@ tools/with-browser-slot.sh node tools/goldsrc/check.mjs counter-strike-original-
 The ports share the Win32 runtime's origin (the owner's choice): their engine code can read this origin's browser
 storage and call the account's online-save API with the visitor's session. Account changes still require the password.
 The engine files are pinned by SHA-256 in `lock.json` and served only from releases a manifest names.
+
+## The recovered Counter-Strike removed (2026-10-18)
+
+The owner removed the game `counter-strike` (its recovered browser modules, kept to compare). Its original files
+(`cstrike/`, `valve/` from the HLDS release) are now the base of `counter-strike-rebuilt`, which Half Strike requires;
+its manifest went to `data_installers/removed-2026-10-18/` with the free OpenMW example's.
 
 ## State (2026-10-14)
 

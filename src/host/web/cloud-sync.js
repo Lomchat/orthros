@@ -82,6 +82,16 @@ export class CloudSave {
   set(status) { this.status = status; try { this.onStatus(status); } catch (e) { console.error(e); } }
   url(tail = '') { return `/api/cloud/${encodeURIComponent(this.game)}${tail}`; }
 
+  /**
+   * The account's latest copy's hash, from the account's list (a few hundred bytes: on a slow link, the copy itself is
+   * downloaded only when it is needed); null when there is none.
+   */
+  async remoteHead() {
+    const r = await this.fetchImpl('/api/cloud', { cache: 'no-store', credentials: 'same-origin' });
+    if (r.status === 401) throw Object.assign(new Error('signed out'), { status: 401 });
+    if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
+    return (await r.json()).games?.find((g) => g.game === this.game)?.hash ?? null;
+  }
   /** The account's latest copy: its gzip bytes and hash, or null when there is none. */
   async fetchRemote() {
     const r = await this.fetchImpl(this.url(), { cache: 'no-store', credentials: 'same-origin' });
@@ -99,9 +109,9 @@ export class CloudSave {
    */
   async pull() {
     if (!this.user) return 'none';
-    let remote, files, raw;
+    let head, remote = null, files, raw;
     try {
-      [remote, files] = await Promise.all([this.fetchRemote(), this.read()]);
+      [head, files] = await Promise.all([this.remoteHead(), this.read()]);
     } catch (e) {
       if (e.status === 401) { this.user = null; this.set({ state: 'off' }); return 'none'; }
       this.set({ state: 'error', message: e.message }); return 'offline';
@@ -110,7 +120,11 @@ export class CloudSave {
     const localHash = await sha256(raw), known = this.known, owner = this.owner();
     // (a profile last in step with another account: not this player's — kept aside, the account's own put in place)
     const foreign = !!owner && owner !== this.user && files.length > 0;
-    let what = foreign ? (remote ? 'restore' : 'reset') : decide({ known, remoteHash: remote?.hash ?? null, localEmpty: files.length === 0, localUnchanged: known?.local === localHash });
+    let what = foreign ? (head ? 'restore' : 'reset') : decide({ known, remoteHash: head, localEmpty: files.length === 0, localUnchanged: known?.local === localHash });
+    if (['restore', 'compare', 'conflict'].includes(what)) {
+      try { remote = await this.fetchRemote(); } catch (e) { this.set({ state: 'error', message: e.message }); return 'offline'; }
+      if (!remote) what = files.length ? 'push' : 'none'; // (gone meanwhile)
+    } else if (head) remote = { hash: head };
     let decoded = null;
     if (what === 'compare') {
       decoded = await decodeProfile(this.game, remote.bytes).catch(() => null);

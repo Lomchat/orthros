@@ -205,7 +205,7 @@ export function createShell(o) {
     const s = saveState, u = shell.account?.username ?? '';
     let cls = '', text = '', title = '', icon = 'cloud';
     if (shell.accounts === false) { text = S.saveLocal; title = S.saveLocalTitle; }
-    else if (!shell.account || s.state === 'off') { cls = 'warn'; icon = 'alert'; text = S.saveOff; title = S.saveOffTitle; }
+    else if (!shell.account) { cls = 'warn'; icon = 'alert'; text = S.saveOff; title = S.saveOffTitle; }
     else if (s.state === 'saving') { cls = 'busy'; text = S.saveSaving; title = S.saveSavingTitle; }
     else if (s.state === 'saved') { cls = 'ok'; icon = 'check'; text = S.saveSaved(clock(s.at)); title = S.saveSavedTitle(u, clock(s.at)); }
     else if (s.state === 'error') { cls = 'bad'; icon = 'alert'; text = S.saveError; title = S.saveErrorTitle(s.message ?? '?'); }
