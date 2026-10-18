@@ -283,7 +283,8 @@ lobbyOverlay.querySelector('.close').addEventListener('click', closeLobby);
 for (const type of ['keydown', 'keyup', 'keypress']) {
   addEventListener(type, (event) => {
     if (lobbyOverlay.classList.contains('hidden')) return;
-    if (type === 'keydown' && event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closeLobby(); return; }
+    // (Escape: the creation form first, when it shows, then the overlay)
+    if (type === 'keydown' && event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); if (!lobby?.closeForm()) closeLobby(); return; }
     if (!lobbyOverlay.contains(event.target)) { event.stopImmediatePropagation(); lobbyOverlay.querySelector('.close').focus(); }
   }, { capture: true });
   lobbyOverlay.addEventListener(type, (event) => event.stopPropagation());

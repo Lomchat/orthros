@@ -40,6 +40,7 @@ export function goldsrcProblem(g) {
     if (mp.commands !== undefined && !commandsOk(mp.commands)) return 'goldsrc.multiplayer.commands : commandes de console, une par entrée';
     if (mp.mapImage !== undefined && (typeof mp.mapImage !== 'string' || !mp.mapImage.includes('{map}') || !safePath(mp.mapImage.replaceAll('{map}', 'm')))) return 'goldsrc.multiplayer.mapImage : chemin du dossier du jeu avec {map}';
     if (mp.maps !== undefined && (!Array.isArray(mp.maps) || !mp.maps.length || !mp.maps.every((n) => typeof n === 'string' && MAP.test(n)))) return 'goldsrc.multiplayer.maps : noms de cartes';
+    if (mp.mapGroups !== undefined && !mapGroupsOk(mp.mapGroups)) return 'goldsrc.multiplayer.mapGroups : [{ id, label, prefix et/ou maps, short, icon, description }], ids distincts';
     if (mp.rooms !== undefined) {
       const r = mp.rooms, [first, last] = Array.isArray(r?.ports) ? r.ports : [];
       if (!isObject(r) || !Number.isInteger(first) || !Number.isInteger(last) || first < 1024 || last > 65535 || last < first || last - first >= 8 || (mp.port >= first && mp.port <= last)) return 'goldsrc.multiplayer.rooms.ports : [premier, dernier], 8 ports au plus, hors du port du serveur';
@@ -52,13 +53,32 @@ export function goldsrcProblem(g) {
 }
 
 const OPTION_ID = /^[A-Za-z0-9_-]{1,32}$/;
-const labelOk = (l) => typeof l === 'string' ? l.length > 0 && l.length <= 60 : isObject(l) && Object.entries(l).length > 0 && Object.entries(l).every(([k, v]) => /^[a-z]{2}$/.test(k) && typeof v === 'string' && v.length > 0 && v.length <= 60);
+const idOk = (id) => typeof id === 'string' && OPTION_ID.test(id);
+const labelOk = (l, max = 60) => typeof l === 'string' ? l.length > 0 && l.length <= max : isObject(l) && Object.entries(l).length > 0 && Object.entries(l).every(([k, v]) => /^[a-z]{2}$/.test(k) && typeof v === 'string' && v.length > 0 && v.length <= max);
+const PREFIX = /^[A-Za-z0-9_.-]{1,32}$/;
+/**
+ * The lobby's map groups (multiplayer.mapGroups: a game's classic modes, say): each an id, a label, the maps it holds —
+ * those whose name begins with its `prefix` (one or several) and/or those it names (`maps`) — and, for the page, a
+ * `short` label (the map cards' badge), an `icon` and a `description`. A map goes to the first group naming it, else to
+ * the first whose prefix it has; the others are the page's "other maps".
+ */
+function mapGroupsOk(groups) {
+  if (!Array.isArray(groups) || !groups.length || groups.length > 12 || new Set(groups.map((g) => g?.id)).size !== groups.length) return false;
+  return groups.every((g) => isObject(g) && idOk(g.id) && labelOk(g.label)
+    && (g.short === undefined || labelOk(g.short, 16)) && (g.description === undefined || labelOk(g.description, 160))
+    && (g.icon === undefined || (typeof g.icon === 'string' && /^[^\p{Cc}]{1,16}$/u.test(g.icon)))
+    && (g.prefix !== undefined || g.maps !== undefined)
+    && (g.prefix === undefined || (typeof g.prefix === 'string' ? PREFIX.test(g.prefix) : Array.isArray(g.prefix) && g.prefix.length > 0 && g.prefix.length <= 8 && g.prefix.every((p) => typeof p === 'string' && PREFIX.test(p))))
+    && (g.maps === undefined || (Array.isArray(g.maps) && g.maps.length > 0 && g.maps.length <= 500 && g.maps.every((n) => typeof n === 'string' && MAP.test(n)))));
+}
+/** The map groups as the page gets them (GET /api/rooms). */
+export const mapGroupsFor = (mp) => (mp.mapGroups ?? []).map(({ id, label, short, icon, description, prefix, maps }) => ({ id, label, short, icon, description, prefix, maps }));
 /** A room's settings a player chooses (rooms.options): each a few choices, each its server commands. */
 function roomOptionsOk(options) {
   if (!Array.isArray(options) || options.length > 8 || new Set(options.map((o) => o?.id)).size !== options.length) return false;
-  return options.every((o) => isObject(o) && OPTION_ID.test(o.id ?? '') && labelOk(o.label) && [o.bots, o.show].every((b) => b === undefined || typeof b === 'boolean')
+  return options.every((o) => isObject(o) && idOk(o.id) && labelOk(o.label) && [o.bots, o.show].every((b) => b === undefined || typeof b === 'boolean')
     && Array.isArray(o.choices) && o.choices.length >= 2 && o.choices.length <= 12
-    && o.choices.every((c) => isObject(c) && OPTION_ID.test(c.id ?? '') && labelOk(c.label) && commandsOk(c.commands ?? []))
+    && o.choices.every((c) => isObject(c) && idOk(c.id) && labelOk(c.label) && commandsOk(c.commands ?? []))
     && new Set(o.choices.map((c) => c.id)).size === o.choices.length && o.choices.some((c) => c.id === o.default));
 }
 
@@ -206,9 +226,10 @@ export function roomsApi({ getManifest, request = managerRequest, now = () => Da
       return true;
     }
     if (req.method === 'GET') {
-      // (the options' choices for the page: ids and labels, not their commands)
+      // (the options' choices for the page: ids and labels, not their commands; the maps' groups)
       const options = (mp.rooms?.options ?? []).map((o) => ({ id: o.id, label: o.label, default: o.default, bots: !!o.bots, show: !!o.show, choices: o.choices.map((c) => ({ id: c.id, label: c.label })) }));
-      request(mp.port, 'GET', null).then(([, body]) => send(200, { ...body, options, mapImages: !!mp.mapImage, creatable: !!mp.rooms }), () => send(200, { rooms: [], maps: [], options, slots: 0, offline: true, creatable: false }));
+      const mapGroups = mapGroupsFor(mp);
+      request(mp.port, 'GET', null).then(([, body]) => send(200, { ...body, options, mapGroups, mapImages: !!mp.mapImage, creatable: !!mp.rooms }), () => send(200, { rooms: [], maps: [], options, mapGroups, slots: 0, offline: true, creatable: false }));
       return true;
     }
     if (req.method !== 'POST') { send(405, { error: 'method' }); return true; }

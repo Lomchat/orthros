@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { linkGameLayers, parseServerInfo, roomName, roomOptionCommands, roomPort, roomRequest, roomSlots } from '../src/host/goldsrc.js';
 import { createServer } from '../src/host/server.js';
+import { groupMaps } from '../src/ports/goldsrc/lobby.js';
 
 const ENGINE = 'engine-test-1';
 const goldsrc = (over = {}) => ({ engine: ENGINE, gameDir: 'valve', modules: { client: 'mod/client.wasm', server: 'mod/server.wasm' }, solo: { map: 'start' }, ...over });
@@ -335,9 +336,37 @@ test('rooms: options a player chooses, each choice its commands; a map picture f
   assert.equal((await picture.arrayBuffer()).byteLength, 5000); // (sent compressed, read whole)
   for (const bad of ['nope', '..%2Fsecret', 'a%20b']) assert.equal((await fetch(`${base}/api/map-image/gs-orig/${bad}`)).status, 404);
   const listed = await (await fetch(`${base}/api/rooms/gs-orig`)).json();
+  assert.deepEqual(listed.mapGroups, []); // (no map groups in the manifest: none, the page shows its maps ungrouped)
   assert.equal(listed.mapImages, true); assert.deepEqual(listed.options.map((o) => [o.id, o.choices.length, o.choices[0].commands]), [['team', 2, undefined], ['money', 2, undefined]]); // (no commands sent out)
   editManifest(gs, (spec) => { spec.versions[0].goldsrc.multiplayer.rooms.options[0].default = 'none'; });
   assert.throws(() => loadGameCatalog(games), /rooms.options/);
+  editManifest(gs, (spec) => { spec.versions[0].goldsrc.multiplayer.rooms.options[0].default = 'any'; spec.versions[0].goldsrc.multiplayer.rooms.options[1].id = 5; });
+  assert.throws(() => loadGameCatalog(games), /rooms.options/); // (an id is a string)
+  editManifest(gs, (spec) => { spec.versions[0].goldsrc.multiplayer.rooms.options[1].id = 'money'; });
   editManifest(gs, (spec) => { spec.versions[0].goldsrc.multiplayer.rooms.options[0].default = 'any'; spec.versions[0].goldsrc.multiplayer.mapImage = '../{map}.bmp'; });
   assert.throws(() => loadGameCatalog(games), /mapImage/);
+});
+
+test('rooms: the maps by group (multiplayer.mapGroups), from the manifest to the page', async (t) => {
+  const mapGroups = [
+    { id: 'defusal', label: { en: 'Bomb defusal', fr: 'Désamorçage' }, short: 'Bomb', icon: '💣', prefix: 'de_', description: { en: 'Plant or defuse.' } },
+    { id: 'hostage', label: 'Hostage rescue', prefix: ['cs_', 'hr_'], maps: ['de_hostage'] },
+  ];
+  // (a map named by a group goes there first, else to the first group with its prefix, any case; the others last, by name)
+  assert.deepEqual(groupMaps(['de_b', 'cs_a', 'De_A', 'de_hostage', 'hr_x', 'fy_2', 'fy_10'], mapGroups).map((s) => [s.group?.id ?? null, s.maps]),
+    [['defusal', ['De_A', 'de_b']], ['hostage', ['cs_a', 'de_hostage', 'hr_x']], [null, ['fy_2', 'fy_10']]]);
+  assert.deepEqual(groupMaps(['b', 'a']).map((s) => [s.group, s.maps]), [[null, ['a', 'b']]]); // (no groups: one section)
+  assert.deepEqual(groupMaps(['de_x'], mapGroups).map((s) => s.group.id), ['defusal']); // (empty groups dropped)
+  const { games, engines, gs } = fixture(t, { goldsrc: goldsrc({ multiplayer: { server: 'srv', port: 27999, map: 'dm', mapGroups, rooms: { ports: [28000, 28001] } } }) });
+  const base = await serve(t, { gamesDir: games, enginesDir: engines, roomsRequest: async () => [200, { rooms: [], maps: ['de_b'] }] });
+  assert.deepEqual((await (await fetch(`${base}/api/rooms/gs-orig`)).json()).mapGroups, mapGroups);
+  const offline = await serve(t, { gamesDir: games, enginesDir: engines, roomsRequest: async () => { throw new Error('down'); } });
+  const down = await (await fetch(`${offline}/api/rooms/gs-orig`)).json();
+  assert.equal(down.offline, true); assert.deepEqual(down.mapGroups, mapGroups); // (the room manager unreachable: the groups still sent)
+  for (const bad of [[], [{ id: 'x', label: 'X' }], [{ id: 'x', label: 'X', prefix: 'de_' }, { id: 'x', label: 'Y', prefix: 'cs_' }], [{ id: 'x', label: 'X', prefix: 'a b' }],
+    [{ id: 'x', label: 'X', maps: ['../m'] }], [{ id: 'x', label: 'X', prefix: 'de_', short: 'far too long for a badge' }], [{ id: 'x', label: 'X', prefix: 'de_', icon: '\n' }],
+    [{ id: 5, label: 'X', prefix: 'de_' }], [{ id: ['a'], label: 'X', prefix: 'de_' }], [{ id: 'x', label: 'X', prefix: 'de_', maps: Array(501).fill('m') }]]) {
+    editManifest(gs, (spec) => { spec.versions[0].goldsrc.multiplayer.mapGroups = bad; });
+    assert.throws(() => loadGameCatalog(games), /mapGroups/, JSON.stringify(bad));
+  }
 });
