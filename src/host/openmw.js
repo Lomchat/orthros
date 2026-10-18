@@ -16,6 +16,7 @@ export function openmwProblem(o) {
   if (o.example && (o.files.length || o.multiplayer)) return 'openmw.example est le monde de démonstration solo du moteur';
   if (o.mods !== undefined && (!Array.isArray(o.mods) || !o.mods.every((m) => m && MOD_ID.test(m.id ?? '') && typeof m.name === 'string' && typeof m.installed === 'boolean') || new Set(o.mods.map((m) => m.id)).size !== o.mods.length)) return 'openmw.mods doit lister les mods et leur état, avec des ids distincts';
   if ((o.mods ?? []).some((m) => m.parts !== undefined && (!Array.isArray(m.parts) || !m.parts.every((p, i) => p && p.dir === `mods/${m.id}-${i}` && safePath(p.sentinel) && Array.isArray(p.plugins) && p.plugins.every(safePath) && Array.isArray(p.archives) && p.archives.every(safePath))))) return 'openmw.mods.parts invalide';
+  if (o.languageVersions !== undefined && (!o.languageVersions || Array.isArray(o.languageVersions) || typeof o.languageVersions !== 'object' || !Object.entries(o.languageVersions).every(([code, id]) => /^[a-z]{2}$/.test(code) && typeof id === 'string' && ID.test(id)))) return 'openmw.languageVersions invalide';
   if (o.multiplayer !== undefined) {
     const mp = o.multiplayer;
     if (!mp || !Number.isInteger(mp.port) || mp.port < 1024 || mp.port > 65535) return 'openmw.multiplayer.port invalide';
@@ -44,7 +45,7 @@ export const openmwModes = (o) => ['solo', ...(o.multiplayer ? ['multiplayer'] :
 export function openmwWebText(text, base, saveKey) {
   // Native EM_ASM in the untouched engine glue uses the upstream storage keys too.
   // HTML-only replacements would clear a different resume token than the engine reads.
-  if (text.includes('async function rebootIntoWorld(wsUrl){')) text = text.replace('<script>', `<script>
+  if (text.includes('async function rebootIntoWorld(wsUrl){') || text.includes('omw-mp-session')) text = text.replace('<script>', `<script>
     (function(){ ['getItem', 'setItem', 'removeItem'].forEach(function(method){
       var original = Storage.prototype[method];
       Storage.prototype[method] = function(){
@@ -92,12 +93,12 @@ const OMIT_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', '
 const isolation = { 'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp', 'cross-origin-resource-policy': 'same-origin' };
 function upstreamHeaders(req) {
   const headers = { ...req.headers, 'accept-encoding': 'identity', 'x-forwarded-for': clientAddress(req) };
-  for (const key of ['cf-connecting-ip', 'true-client-ip', 'x-omw-client-ip', 'forwarded']) delete headers[key];
+  for (const key of ['cf-connecting-ip', 'true-client-ip', 'x-omw-client-ip', 'forwarded', 'cookie']) delete headers[key];
   return headers;
 }
 
 /** A namespaced bridge to one manifest's localhost gateway. Never accepts a target URL from a visitor. */
-export function openmwProxy({ getManifest }) {
+export function openmwProxy({ getManifest, session, ownsToken }) {
   function target(url) {
     const m = /^\/ports\/openmw\/([^/]+)\/app(\/.*)$/.exec(url.pathname);
     if (!m) return null;
@@ -112,6 +113,25 @@ export function openmwProxy({ getManifest }) {
         res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ serverName: t.man.name, setup: { deploymentMode: 'multiplayer', deliveryModel: 'serve' } })); return true;
       }
       if (!t || !proxyPath(t.path)) return false;
+      // Hosted data is public for solo. Game sessions and lockers require Orthros identity.
+      if (session && /^\/(auth|worlds|locker|saves)(\/|$)/.test(t.path)) {
+        const user = session(req);
+        if (!user || t.path.startsWith('/auth/') && !/^\/auth\/(profile|ticket|characters|friends-playing|providers)$/.test(t.path)) {
+          res.writeHead(user ? 403 : 401, { ...isolation, 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.end(JSON.stringify({ error: 'Connexion Orthros requise depuis la page du jeu.' })); return true;
+        }
+        const bearer = /^Bearer (.+)$/i.exec(req.headers.authorization ?? '')?.[1];
+        if (bearer && ownsToken && !ownsToken(user, t.id, bearer)) {
+          res.writeHead(403, { ...isolation, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Cette partie appartient à un autre compte ou doit être relancée.' })); return true;
+        }
+        if (!['GET', 'HEAD'].includes(req.method)) {
+          let origin; try { origin = new URL(req.headers.origin); } catch { /* refused below */ }
+          if (!origin || origin.host !== req.headers.host || !['https:', 'http:'].includes(origin.protocol)) {
+            res.writeHead(403, isolation); res.end('Origine refusée.'); return true;
+          }
+        }
+      }
       const upstream = http.request({ hostname: '127.0.0.1', port: t.man.openmw.multiplayer.port,
         path: t.path + url.search, method: req.method, headers: upstreamHeaders(req) }, (reply) => {
         const headers = { ...isolation, 'cache-control': 'no-store' };
@@ -140,6 +160,7 @@ export function openmwProxy({ getManifest }) {
     upgrade(req, socket, url, head) {
       const t = target(url);
       if (!t || !/^\/w\/[a-zA-Z0-9_-]+$/.test(t.path)) return false;
+      if (session && !session(req)) { socket.destroy(); return true; }
       // Same origin is required before forwarding a player's credentials or opening a world.
       let origin; try { origin = new URL(req.headers.origin); } catch { socket.destroy(); return true; }
       if (!['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host) { socket.destroy(); return true; }

@@ -108,8 +108,8 @@ node tools/openmw/create-account.mjs morrowind-goty-vanilla-plus-en Alice --pass
 Finish stdin with EOF after entering the password, or redirect a private file. The first run
 creates a random local operator credential in `build/openmw/<manifest>/operator.json` (0600).
 Players have no administration role. The public proxy never forwards operator API requests.
-Sign in on the port's multiplayer page, create a character, switch the world to Party and add
-friends. Party visits advance the host's campaign. Multiplayer is experimental.
+This tool remains available for local diagnostics. Normal players use their Orthros account
+on the port page; switch the world to Party and add friends. Party visits advance the host's campaign. Multiplayer is experimental.
 
 ## Runtime boundary and validation
 
@@ -190,3 +190,72 @@ remain to be checked. The complete Vanilla+ profile must remain unavailable unti
 archives and compatibility checks are finished. Small screenshots, state receipts and the test
 log are retained under `build/proof/openmw-goty-20261018/` for that follow-up; disposable installer
 copies, browser profiles and test accounts are removed.
+
+## Orthros accounts, cloud saves and language selection (2026-10-18)
+
+The multiplayer button requires an Orthros account and offers registration or login in place.
+An existing Orthros session enters directly; no separate game password or email is requested.
+`POST /api/openmw/<manifest>/launch` provisions an unprivileged native player, completes its
+profile, and returns a single-use ticket and locker session. The launch fragment hands them
+straight to the pinned launcher. Native login identifiers derive from the immutable Orthros
+user id, never from a claim to an existing native username. A shared nickname cannot take over
+an older account. Unsupported public password/OIDC entry points are blocked. Locker tokens
+are hashed in the accounts database and bound to the Orthros user and installation; cookie
+sessions also gate game APIs and new WebSocket connections. Existing connected sockets are
+not forcibly disconnected by logout; new requests and reconnects require a valid session.
+
+The host reads `<accountsDir>/openmw.json` (0600, owned by the host service) with a durable
+random `secret` and `operators: { "<manifest>": { "name": "...", "password": "..." } }`.
+Operator credentials stay server-side; the Orthros password is never forwarded to OpenMW.
+The installed configuration covers the original English and French profiles. Preserve this
+file together with `accounts.sqlite` and native `build/openmw/<manifest>/` state in backups:
+replacing its secret makes the derived native passwords unusable. Original manually prepared
+native accounts are independent; they are not automatically adopted by nickname.
+
+Signed-in engine pages use an account-specific IDBFS database and session-storage namespace.
+The browser sync wrapper restores `/userdata` from the Orthros account before allowing boot,
+and uploads changes after successful IDBFS flushes through the existing versioned cloud API
+(20 versions, 64 MiB compressed per copy, 512 MiB per user). Game files, transient logs and screenshots are excluded. Account
+scope headers prevent an old tab from uploading into a newly selected account. Optimistic
+parent hashes protect other devices; conflicts suspend uploads and retain the local copy.
+Failed initial cloud reads or conflicting unsent local data block boot rather than silently
+starting from the wrong state. The header reports sync status and warns before closing with
+unsent changes. Anonymous solo continues using its prior browser-only save database; those
+older anonymous saves are not automatically imported into a signed-in account. Native
+multiplayer characters and host worlds persist in the native state directory under the linked
+identity, independently of the browser's settings backup. Deleting an Orthros account removes
+its cloud copies and token bindings; native state still requires operator cleanup, and cannot
+be claimed by re-registering the same Orthros username.
+
+The home cloud window lists OpenMW copies and downloadable history. It opens the port for
+automatic restoration instead of writing an OpenMW archive into the Win32 runtime's OPFS tree.
+
+The French payload was recovered from the same user-supplied ISO (`elamigos-french.bin`) by
+running its installer with `/LANG=french` in a disposable network-isolated filesystem. Only
+files differing from the English base were imported into `versions/goty-fr`: 6,465 files,
+844,559,725 bytes. Original base files remain untouched; hashes and provenance are recorded in
+`data_installers/openmw/import-fr-receipt.json`. The French original profile is
+`morrowind-goty-fr`, port 28102, service `orthros-openmw@morrowind-goty-fr`. It is hidden as a
+separate home version and reachable through the original profile's language selector.
+`openmw.languageVersions` maps language codes to installation ids from the same game. The
+server only advertises installed matching localizations, and supplies `languageLaunchUrls`
+to the home and port launchers. The French simulator uses the manifest initial cell `-2,-9` rather than the upstream English
+city name: the original localized masters do not contain that English cell name. New native
+configs seed `[simPeer].startCell` from `openmw.startCell`.
+Different localized masters use separate simulations and save
+histories; friends must select the same language. The full Vanilla+ stack remains unavailable.
+
+Validation includes the account gate, separate identities, token ownership, logout, account
+switches, distinct caches, language routing, binary cloud round trips and conflict preservation.
+A real Chromium run signed into the native English gateway, uploaded actual engine user files,
+and restored a binary marker into a second context with empty browser storage. French launch
+and native simulation checks are recorded with the accompanying browser proof. This does not
+extend the earlier English two-client gameplay proof into a full French campaign validation.
+
+The final French Chromium check reached `Joined` with `simReady=1`, loaded
+`Navire-prison impérial`, and rendered the opening with the native simulator starting from
+`-2,-9` in about two seconds. The check used the pinned engine's low-render-cost flags and
+skipped the opening video. It verifies the French launch and server handshake; two-player
+French campaign travel and full manual character creation remain unverified. The general
+suite passed (`make test`: 1,084 passed, zero failures, three TODOs); focused account, cloud
+and localization checks passed after the final changes.

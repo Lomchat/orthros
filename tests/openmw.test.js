@@ -153,3 +153,86 @@ test('the WebSocket bridge forwards the world handshake and rejects a different 
   assert.equal(await dial(base), 101); assert.equal(upgrades, 1);
   assert.equal(await dial('https://elsewhere.invalid'), 0); assert.equal(upgrades, 1);
 });
+
+test('Orthros sessions provision isolated players, protect tokens, scope caches and revoke port access', async (t) => {
+  const players = new Map(), lockers = new Map(); let adminCreates = 0;
+  const backend = http.createServer(async (req, res) => {
+    let raw = ''; for await (const c of req) raw += c;
+    const body = raw ? JSON.parse(raw) : {};
+    const send = (status, value) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
+    if (req.url === '/auth/password') {
+      if (players.get(body.name)?.password !== body.password) return send(401, {});
+      const locker = 'locker-' + Math.random(); lockers.set(locker, body.name);
+      return send(200, { ticket: 'ticket-' + Math.random(), locker, account: body.name });
+    }
+    if (req.url === '/admin/api/login') return send(200, { token: 'owner' });
+    if (req.url === '/admin/api/logout') return send(200, {});
+    if (req.url === '/admin/api/accounts/create') {
+      assert.equal(body.role, ''); assert.equal(req.headers.authorization, 'Bearer owner'); adminCreates++;
+      players.set(body.name, { password: body.password }); return send(200, {});
+    }
+    if (req.url === '/auth/profile') {
+      const name = lockers.get(req.headers.authorization?.slice(7));
+      if (!name) return send(401, {});
+      if (req.method === 'POST') players.get(name).username = body.username;
+      return send(200, { needsProfile: !players.get(name).username, username: players.get(name).username });
+    }
+    return send(200, {});
+  });
+  await listen(t, backend);
+  const f = fixture(t, { files: ['Game.esm'], multiplayer: { port: backend.address().port } });
+  const accounts = path.join(f.root, 'accounts'); fs.mkdirSync(accounts);
+  fs.writeFileSync(path.join(accounts, 'openmw.json'), JSON.stringify({ secret: 'test-only-secret-must-be-at-least-32-characters', operators: { 'sample-1': { name: 'owner', password: 'private' } } }));
+  fs.writeFileSync(path.join(f.engines, 'test-engine/index.html'), "<head></head><script>FS.mount(IDBFS, {}, '/userdata');</script>");
+  const base = await listen(t, createServer({ gamesDir: f.games, enginesDir: f.engines, accountsDir: accounts }));
+  async function request(route, method = 'GET', cookie, body) {
+    return fetch(base + route, { method, headers: { Origin: base, ...(cookie ? { Cookie: cookie } : {}), 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  }
+  const launch = '/api/openmw/sample-1/launch', prefix = '/ports/openmw/sample-1/app';
+  assert.equal((await request(launch, 'POST')).status, 401);
+  const register = async (username) => {
+    const r = await request('/api/account/register', 'POST', null, { username, password: 'orthros-only-password' });
+    assert.match(r.headers.get('set-cookie'), /Path=\/;/);
+    return r.headers.get('set-cookie').split(';')[0];
+  };
+  const a = await register('player.one'), b = await register('player_two');
+  const l1 = await (await request(launch, 'POST', a)).json();
+  const l2 = await (await request(launch, 'POST', b)).json();
+  const again = await (await request(launch, 'POST', a)).json();
+  assert.notEqual(l1.account, l2.account); assert.equal(again.account, l1.account); assert.notEqual(again.ticket, l1.ticket);
+  assert.equal(adminCreates, 2); assert.ok([...players.values()].every((p) => p.password !== 'orthros-only-password' && p.username));
+  assert.equal((await fetch(base + launch, { method: 'POST', headers: { Origin: 'https://evil.invalid', Cookie: a } })).status, 403);
+  assert.equal((await request(prefix + '/auth/password', 'POST', a)).status, 403);
+  assert.equal((await request(prefix + '/worlds')).status, 401);
+  assert.equal((await request(prefix + '/worlds', 'GET', a)).status, 200);
+  const bearer = (cookie, token) => fetch(base + prefix + '/auth/profile', { headers: { Cookie: cookie, Authorization: 'Bearer ' + token } });
+  assert.equal((await bearer(a, l1.locker)).status, 200);
+  assert.equal((await bearer(b, l1.locker)).status, 403);
+  const pageA = await request(prefix + '/index.html', 'GET', a), pageB = await request(prefix + '/index.html', 'GET', b);
+  const htmlA = await pageA.text(), htmlB = await pageB.text();
+  assert.match(htmlA, /orthrosCloudInstall/); assert.notEqual(htmlA, htmlB);
+  assert.match(pageA.headers.get('cache-control'), /private, no-store/);
+  assert.match(htmlA, /cloud.js/);
+  assert.equal((await fetch(base + '/api/cloud/sample-1', { headers: { Cookie: a, 'X-Orthros-Player-Scope': 'other-account' } })).status, 401);
+  await request('/api/account/logout', 'POST', a);
+  assert.equal((await request(launch, 'POST', a)).status, 401);
+  assert.equal((await request(prefix + '/worlds', 'GET', a)).status, 401);
+});
+
+test('localized OpenMW profiles share a launcher language choice with distinct save and server targets', async (t) => {
+  const f = fixture(t, { files: [], example: true });
+  const original = f.spec.versions[0]; original.languages = ['en'];
+  original.openmw.languageVersions = { en: 'sample-1', fr: 'sample-fr' };
+  const french = structuredClone(original); french.id = 'sample-fr'; french.dir = 'fr'; french.languages = ['fr']; french.hidden = true;
+  f.spec.versions.push(french); fs.mkdirSync(path.join(f.game, 'versions/fr')); fs.writeFileSync(f.file, JSON.stringify(f.spec));
+  const base = await listen(t, createServer({ gamesDir: f.games, enginesDir: f.engines }));
+  const man = await (await fetch(base + '/api/manifest/sample-1')).json();
+  assert.deepEqual(man.languages, ['en', 'fr']); assert.deepEqual(man.contentLanguages, ['en']);
+  assert.equal(man.languageLaunchUrls.fr, '/ports/openmw/sample-fr/');
+  const fr = await (await fetch(base + '/api/manifest/sample-fr')).json();
+  assert.notEqual(man.saveKey, fr.saveKey); assert.deepEqual(fr.contentLanguages, ['fr']);
+  const catalog = await (await fetch(base + '/api/manifests')).json();
+  assert.deepEqual(catalog.find((e) => e.name === 'sample-1').languages, ['en', 'fr']);
+  assert.equal(catalog.find((e) => e.name === 'sample-fr').hidden, true);
+  assert.ok(openmwProblem({ engine: 'test', files: [], example: true, languageVersions: { fr: '../outside' } }));
+});

@@ -1,5 +1,5 @@
 // Optional accounts and versioned cloud backups for the browser runtime.
-// The game never requires a session: this API only handles user-created backups.
+// Browser ports can also use the session resolver for their multiplayer identity.
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
@@ -26,7 +26,7 @@ function reply(res, status, value, headers = {}) {
   res.end(body);
 }
 function cookie(token, secure, maxAge = Math.floor(SESSION_MS / 1000)) {
-  return `${COOKIE}=${token}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+  return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
 }
 function requestToken(req) {
   const raw = req.headers.cookie?.split(';').map((x) => x.trim()).find((x) => x.startsWith(`${COOKIE}=`));
@@ -83,6 +83,10 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
       token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       expires_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS port_tokens (
+      token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      installation TEXT NOT NULL, expires_at INTEGER NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
     CREATE TABLE IF NOT EXISTS backups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,10 +131,10 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     db.prepare('DELETE FROM sessions WHERE expires_at<=?').run(Date.now());
     db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
       .run(sha256(token), user.id, Date.now() + SESSION_MS);
-    reply(res, 200, { user: { username: user.username } }, { 'Set-Cookie': cookie(token, secure) });
+    reply(res, 200, { user: { username: user.username } }, { 'Set-Cookie': [cookie(token, secure), `${COOKIE}=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`] });
   }
 
-  return async (req, res) => {
+  const api = async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
     if (req.method !== 'GET' && req.headers.origin &&
@@ -140,7 +144,9 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     const secure = req.headers.origin?.startsWith('https:') || req.headers['x-forwarded-proto'] === 'https';
     if (p === '/api/account' && req.method === 'GET') {
       const user = session(req);
-      return reply(res, 200, { user: user ? { username: user.username } : null });
+      // Migrate older cookies scoped to /api before entering a browser port.
+      const token = requestToken(req);
+      return reply(res, 200, { user: user ? { username: user.username } : null }, user ? { 'Set-Cookie': [cookie(token, secure), `${COOKIE}=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`] } : {});
     }
     if (p === '/api/account/register' && req.method === 'POST') {
       if (limited(req, 'register', 5, 15 * 60_000)) return reply(res, 429, { error: 'Trop de tentatives. Réessaie plus tard.' });
@@ -163,7 +169,7 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     if (p === '/api/account/logout' && req.method === 'POST') {
       const token = requestToken(req);
       if (token) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha256(token));
-      return reply(res, 200, { ok: true }, { 'Set-Cookie': cookie('', secure, 0) });
+      return reply(res, 200, { ok: true }, { 'Set-Cookie': [cookie('', secure, 0), `${COOKIE}=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`] });
     }
     if (p === '/api/account/password' && req.method === 'POST') {
       const user = session(req); if (!user) return reply(res, 401, { error: 'Connexion requise.' });
@@ -183,10 +189,12 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
       if (!record || typeof body?.password !== 'string' || !await verifyPassword(body.password, record.password_hash))
         return reply(res, 403, { error: 'Mot de passe incorrect.' });
       db.prepare('DELETE FROM users WHERE id=?').run(user.id);
-      return reply(res, 200, { ok: true }, { 'Set-Cookie': cookie('', secure, 0) });
+      return reply(res, 200, { ok: true }, { 'Set-Cookie': [cookie('', secure, 0), `${COOKIE}=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`] });
     }
     if (!p.startsWith('/api/cloud')) return reply(res, 404, { error: 'Introuvable.' });
     const user = session(req); if (!user) return reply(res, 401, { error: 'Connexion requise.' });
+    const scope = req.headers['x-orthros-player-scope'];
+    if (scope && scope !== sha256(user.id).slice(0, 24)) return reply(res, 401, { error: 'Le compte actif a changé. Relance le jeu depuis ton compte.' });
     if (p === '/api/cloud' && req.method === 'GET') {
       const rows = db.prepare(`SELECT b.game_id game, b.version, b.hash, b.size, b.created_at updatedAt
         FROM backups b JOIN (SELECT game_id, MAX(version) version FROM backups WHERE user_id=? GROUP BY game_id) h
@@ -238,4 +246,12 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     }
     return reply(res, 405, { error: 'Méthode refusée.' });
   };
+  api.session = session;
+  api.registerPortToken = (user, installation, token) => {
+    db.prepare('DELETE FROM port_tokens WHERE expires_at<=?').run(Date.now());
+    db.prepare('INSERT OR REPLACE INTO port_tokens VALUES(?,?,?,?)').run(sha256(token), user.id, installation, Date.now() + SESSION_MS);
+  };
+  api.ownsPortToken = (user, installation, token) => !!db.prepare('SELECT 1 FROM port_tokens WHERE token_hash=? AND user_id=? AND installation=? AND expires_at>?')
+    .get(sha256(token), user.id, installation, Date.now());
+  return api;
 }

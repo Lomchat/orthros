@@ -118,7 +118,7 @@ async function start(name, language = null) {
   try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ }
   const sourcesReq = snapshotsOn() ? fetch('/api/snapshot-sources').then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
-  if (manifest.launchUrl) { location.href = manifest.launchUrl; return; } // (a browser port: its own page, docs/browser-ports.md)
+  if (manifest.launchUrl) { const portUrl = new URL(manifest.languageLaunchUrls?.[language] ?? manifest.launchUrl, location.href); if (language) portUrl.searchParams.set('gameLang', language); location.href = portUrl.href; return; } // (a browser port: its own page, docs/browser-ports.md)
   const options = manifest.languages ?? [];
   if (!options.includes(language)) {
     try { language = localStorage.getItem('orthros.gameLanguage.' + (manifest.gameId ?? name)); } catch { language = null; }

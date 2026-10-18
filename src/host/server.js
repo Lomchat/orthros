@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK } from '../vfs/http-backend.js';
 import { createAccountApi } from './accounts.js';
+import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
@@ -532,14 +533,28 @@ export function createServer(opts = {}) {
   };
 
   const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game) }) : null;
+  // Localized OpenMW masters need separate simulations, caches and save histories.
+  function portLanguages(man, id) {
+    if (man.runtime !== 'openmw' || !man.openmw.languageVersions) return {};
+    const languageLaunchUrls = {};
+    for (const [code, target] of Object.entries(man.openmw.languageVersions)) {
+      const other = getManifest(target);
+      if (other?.runtime === 'openmw' && other.gameId === man.gameId && other.languages?.includes(code) && openmwInstalled(other, enginesDir))
+        languageLaunchUrls[code] = portLaunchUrl(target, other);
+    }
+    // Keep the current language visible even while another localization is incomplete.
+    for (const code of man.languages ?? []) languageLaunchUrls[code] ??= portLaunchUrl(id, man);
+    return { languages: Object.keys(languageLaunchUrls), contentLanguages: man.languages ?? [], languageLaunchUrls };
+  }
   const mapImages = new Map(); // (the lobby's map pictures, compressed: file|mtime -> { raw, gzip, zstd })
   const rooms = roomsApi({ getManifest, ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
-  const openmw = openmwProxy({ getManifest });
+  const openmw = openmwProxy({ getManifest, session: accountApi?.session, ownsToken: accountApi?.ownsPortToken });
+  const openmwAccounts = accountBridge({ accountsDir: opts.accountsDir, accountApi, getManifest });
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
     try {
-      if (openmw.handle(req, res, url)) return;
+      if (openmwAccounts.handle(req, res, url) || openmw.handle(req, res, url)) return;
       // (the multiplayer rooms of a browser port, from its server manager)
       if (p.startsWith('/api/rooms/') && rooms.handle(req, res, url)) return;
       // (a map's picture for the lobby: the game's own overview, multiplayer.mapImage)
@@ -585,7 +600,7 @@ export function createServer(opts = {}) {
           try { if (fs.existsSync(m.folder) && (!m.baseFolder || fs.existsSync(m.baseFolder))) { if (!treeObjs.has(name)) treeObjs.set(name, listGameTree(m)); bytes = sizeOf(treeObjs.get(name)); } } catch { /* folder missing */ }
           const runtime = runtimeOf(m), port = runtime !== 'win32';
           return { name, title: m.name ?? name, gameId: m.gameId ?? name, version: m.version ?? null,
-            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], runtime, exe: port ? null : m.exe,
+            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name), runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
             hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes,
@@ -597,7 +612,7 @@ export function createServer(opts = {}) {
       if (m) {
         const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
         const launchUrl = runtimeOf(man) !== 'win32' ? portLaunchUrl(m[1], man) : undefined;
-        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, saveDir: undefined, coverPath: undefined, launchUrl }), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
@@ -753,10 +768,20 @@ export function createServer(opts = {}) {
         if (rel === 'clientlog' && req.method === 'POST' && !man.openmw.multiplayer) { req.resume(); return send(res, 204, ''); }
         // The upstream operator dashboard is local only. No arbitrary files from a server installation.
         if (!/^(index\.html|launcher\.html|join|play|admin\/static\/(play\.js|providers\.js)|e\/[a-f0-9]+\/(openmw\.(js|wasm|data)(\.br)?|streamfs\.js)|moddata\/openmw-web-assets\.bsa|LICENSE|NOTICE|AUTHORS\.md|THIRD-PARTY-LICENSES\.md|CREDITS-DEMO-DATA\.txt)$/.test(rel)) return send(res, 404, 'not found');
+        if (accountApi && (rel === 'play' || rel === 'join' && !accountApi.session(req))) { res.writeHead(302, headers({ Location: `/ports/openmw/${encodeURIComponent(m[1])}/`, 'Cache-Control': 'no-store' })); return res.end(); }
         const asset = rel === 'join' ? 'launcher.html' : rel === 'play' ? 'portal/play.html' : rel.startsWith('admin/static/') ? 'portal/' + rel.split('/').at(-1) : rel;
         const f = engineFile(enginesDir, man.openmw.engine, asset);
         if (!f) return send(res, 404, 'engine not installed');
-        if (asset.endsWith('.html') || asset.startsWith('portal/')) return send(res, 200, openmwWebText(fs.readFileSync(f, 'utf8'), base, man.saveKey), { 'Content-Type': MIME[path.extname(asset)] });
+        if (asset.endsWith('.html') || asset.startsWith('portal/')) {
+          const user = accountApi?.session(req), scope = user ? playerScope(user) : null;
+          const saveKey = scope ? `${man.saveKey}:user:${scope}` : man.saveKey;
+          let page = openmwWebText(fs.readFileSync(f, 'utf8'), base, saveKey);
+          if (asset === 'index.html' && scope) {
+            page = page.replace('<head>', '<head><script src="/src/ports/openmw/cloud.js"></script>');
+            page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(m[1])}, ${JSON.stringify(scope)});`);
+          }
+          return send(res, 200, page, { 'Content-Type': MIME[path.extname(asset)], 'Cache-Control': 'private, no-store', 'Vary': 'Cookie' });
+        }
         const raw = f.endsWith('.br') ? f.slice(0, -3) : f;
         return sendFile(req, res, f, MIME[path.extname(raw)] ?? 'application/octet-stream', { ...(f.endsWith('.br') ? { 'Content-Encoding': 'br' } : {}), 'Cache-Control': 'public, max-age=86400' });
       }
