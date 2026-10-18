@@ -57,6 +57,9 @@ test('a GoldSrc version needs no executable and is checked by its own rules', (t
   assert.equal(man.saveKey, 'orthros-port:gs:orig'); // (the installation: game and version folders)
   assert.equal(man.coverPath, path.join(gs, 'cover.svg'));
   assert.equal(loadGameCatalog(games).get('win-1').runtime, 'win32');
+  // (a language's own arguments, commands and archives)
+  editManifest(gs, (spec) => { spec.versions[0].goldsrc.languages = { fr: { args: ['-language', 'french'], commands: ['ars_lang fr'], extras: ['mod/fr.pk3'] } }; });
+  assert.deepEqual(loadGameCatalog(games).get('gs-orig').goldsrc.languages.fr.commands, ['ars_lang fr']);
   for (const [edit, error] of [
     [(v) => { v.goldsrc.modules.client = '../client.wasm'; }, /goldsrc.modules/],
     [(v) => { delete v.goldsrc.solo; }, /solo ou goldsrc.multiplayer/],
@@ -67,6 +70,9 @@ test('a GoldSrc version needs no executable and is checked by its own rules', (t
     [(v) => { v.goldsrc.extras = ['mod/bots.zip']; }, /extras/],
     [(v) => { v.goldsrc.extras = ['mod/bots.pk3', 'other/BOTS.pk3']; }, /extras/],
     [(v) => { v.goldsrc.solo.commands = ['bot_quota 4; quit']; }, /solo.commands/],
+    [(v) => { v.goldsrc.languages = { fr: { commands: ['ars_lang fr; quit'] } }; }, /goldsrc.languages/],
+    [(v) => { v.goldsrc.languages = { french: { args: ['-language', 'french'] } }; }, /goldsrc.languages/],
+    [(v) => { v.goldsrc.languages = { fr: { extras: ['../fr.pk3'] } }; }, /goldsrc.languages/],
     [(v) => { v.requires = [{ game: 'win', version: 'win-1', mount: 'C:\\Win' }]; }, /requires invalide/],
     [(v) => { v.runtime = 'dos'; }, /runtime inconnu/],
     [(v) => { v.coverFile = '../cover.svg'; }, /coverFile/],

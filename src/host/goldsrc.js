@@ -32,6 +32,13 @@ export function goldsrcProblem(g) {
   if (g.solo !== undefined && (!isObject(g.solo) || !MAP.test(g.solo.map ?? ''))) return 'goldsrc.solo.map invalide';
   if (g.solo?.commands !== undefined && !commandsOk(g.solo.commands)) return 'goldsrc.solo.commands : commandes de console, une par entrée';
   if (g.extras !== undefined && (!Array.isArray(g.extras) || !g.extras.every((e) => safePath(e) && /\.pk3$/i.test(e)) || new Set(g.extras.map((e) => path.posix.basename(e).toLowerCase())).size !== g.extras.length)) return 'goldsrc.extras : archives .pk3 de la release, de noms distincts';
+  // (a game language's own: engine arguments, console commands at the start, release archives — the player's choice of
+  // the version's `languages`, docs/game-frame.md)
+  if (g.languages !== undefined && (!isObject(g.languages) || !Object.entries(g.languages).every(([code, l]) => /^[a-z]{2}$/.test(code) && isObject(l)
+    && (l.args === undefined || (Array.isArray(l.args) && l.args.every((a) => typeof a === 'string' && /^[-+]?[A-Za-z0-9_.]{1,40}$/.test(a))))
+    && (l.commands === undefined || commandsOk(l.commands))
+    && (l.extras === undefined || (Array.isArray(l.extras) && l.extras.every((e) => safePath(e) && /\.pk3$/i.test(e)))))))
+    return 'goldsrc.languages : { <langue>: { args, commands, extras } }';
   if (g.multiplayer !== undefined) {
     const mp = g.multiplayer;
     if (!isObject(mp) || !MAP.test(mp.map ?? '') || !Number.isInteger(mp.port) || mp.port < 1024 || mp.port > 65535 || !ID.test(mp.server ?? '')) return 'goldsrc.multiplayer : server, port (1024-65535) et map obligatoires';
