@@ -316,10 +316,10 @@ index e77a067..33b67c6 100644
  	void AddWeapon( WEAPON *wp ) 
 diff --git a/cl_dll/arsenal_ui.cpp b/cl_dll/arsenal_ui.cpp
 new file mode 100644
-index 0000000..5469c42
+index 0000000..1a290b5
 --- /dev/null
 +++ b/cl_dll/arsenal_ui.cpp
-@@ -0,0 +1,3810 @@
+@@ -0,0 +1,4272 @@
 +/*
 +arsenal_ui.cpp - the Half-Life arsenal's own menus, drawn by the client
 +
@@ -437,6 +437,21 @@ index 0000000..5469c42
 +static float Clamp01( float f ) { return f < 0 ? 0 : f > 1 ? 1 : f; }
 +
 +//
++// Languages: the ars_lang cvar (en, the default, or fr — the page sets it from the language the player chose; in the
++// user info, the server's messages follow it too). Every text of the mod is a pair, chosen as it is drawn: a change
++// shows at the next frame. (fr null: the same in both — a weapon's name)
++//
++static cvar_t *g_pLang;
++static bool French( void ) { return g_pLang && g_pLang->string && !strcmp( g_pLang->string, "fr" ); } // (exactly: the server's test)
++
++struct Str { const char *en, *fr; };
++#define TR( en, fr ) { en, fr }
++#define SAME( s ) { s, NULL }
++
++static const char *L( const char *en, const char *fr ) { return French() && fr ? fr : en; }
++static const char *L( const Str &s ) { return L( s.en, s.fr ); }
++
++//
 +// The catalog: Counter-Strike's figures from its server sources (weapons.h, weapontype.cpp, player.cpp's armor
 +// ratios), the Half-Life arsenal's from hl_weapons.h; a cycle is the time between two shots
 +//
@@ -445,10 +460,10 @@ index 0000000..5469c42
 +
 +struct BuyItem
 +{
-+	const char *cmd, *name, *kind, *model;
++	const char *cmd; Str name, kind; const char *model;
 +	int id, price, team, pose;
 +	float damage; int pellets; float cycle; int clip, reserve; float speed, armor, range;
-+	const char *note;
++	Str note;
 +	int health; // (a Pokemon's: its figures are a creature's, its preview its own model)
 +};
 +
@@ -467,94 +482,145 @@ index 0000000..5469c42
 +static const BuyItem g_Items[] =
 +{
 +	// pistols
-+	GUN( "glock", "Glock 18", "Pistol  -  9mm", "w_glock18", WEAPON_GLOCK18, 400, ANY, 25, 1, 0.15f, 20, 120, 250, 1.05f, 0.75f, "Semi-automatic, or three-round bursts" ),
-+	GUN( "usp", "USP .45", "Pistol  -  .45 ACP", "w_usp", WEAPON_USP, 500, ANY, 34, 1, 0.15f, 12, 100, 250, 1.0f, 0.79f, "Accurate, with a removable silencer" ),
-+	GUN( "p228", "P228", "Pistol  -  .357 SIG", "w_p228", WEAPON_P228, 600, ANY, 32, 1, 0.15f, 13, 52, 250, 1.25f, 0.8f, "Compact, steady, a good grip on armor" ),
-+	GUN( "deagle", "Desert Eagle", "Pistol  -  .50 AE", "w_deagle", WEAPON_DEAGLE, 650, ANY, 54, 1, 0.225f, 7, 35, 250, 1.5f, 0.81f, "The heaviest handgun: a headshot kills" ),
-+	GUN( "elites", "Dual Elites", "Pistols  -  9mm", "w_elite", WEAPON_ELITE, 800, ONLY_T, 36, 1, 0.122f, 30, 120, 250, 1.05f, 0.75f, "Two Berettas, thirty rounds" ),
-+	GUN( "fn57", "Five-SeveN", "Pistol  -  5.7mm", "w_fiveseven", WEAPON_FIVESEVEN, 750, ONLY_CT, 20, 1, 0.15f, 20, 100, 250, 1.5f, 0.885f, "Light rounds that go through armor" ),
++	GUN( "glock", SAME( "Glock 18" ), TR( "Pistol  -  9mm", "Pistolet  -  9 mm" ), "w_glock18", WEAPON_GLOCK18, 400, ANY, 25, 1, 0.15f, 20, 120, 250, 1.05f, 0.75f,
++		TR( "Semi-automatic, or three-round bursts", "Semi-automatique, ou rafales de trois" )),
++	GUN( "usp", SAME( "USP .45" ), TR( "Pistol  -  .45 ACP", "Pistolet  -  .45 ACP" ), "w_usp", WEAPON_USP, 500, ANY, 34, 1, 0.15f, 12, 100, 250, 1.0f, 0.79f,
++		TR( "Accurate, with a removable silencer", "Pr\xC3\xA9" "cis, avec un silencieux amovible" )),
++	GUN( "p228", SAME( "P228" ), TR( "Pistol  -  .357 SIG", "Pistolet  -  .357 SIG" ), "w_p228", WEAPON_P228, 600, ANY, 32, 1, 0.15f, 13, 52, 250, 1.25f, 0.8f,
++		TR( "Compact, steady, a good grip on armor", "Compact, stable, efficace contre l'armure" )),
++	GUN( "deagle", SAME( "Desert Eagle" ), TR( "Pistol  -  .50 AE", "Pistolet  -  .50 AE" ), "w_deagle", WEAPON_DEAGLE, 650, ANY, 54, 1, 0.225f, 7, 35, 250, 1.5f, 0.81f,
++		TR( "The heaviest handgun: a headshot kills", "Le plus lourd : un tir dans la t\xC3\xAAte tue" )),
++	GUN( "elites", SAME( "Dual Elites" ), TR( "Pistols  -  9mm", "Pistolets  -  9 mm" ), "w_elite", WEAPON_ELITE, 800, ONLY_T, 36, 1, 0.122f, 30, 120, 250, 1.05f, 0.75f,
++		TR( "Two Berettas, thirty rounds", "Deux Beretta, trente balles" )),
++	GUN( "fn57", SAME( "Five-SeveN" ), TR( "Pistol  -  5.7mm", "Pistolet  -  5,7 mm" ), "w_fiveseven", WEAPON_FIVESEVEN, 750, ONLY_CT, 20, 1, 0.15f, 20, 100, 250, 1.5f, 0.885f,
++		TR( "Light rounds that go through armor", "Des balles l\xC3\xA9g\xC3\xA8res qui percent l'armure" )),
 +	// shotguns
-+	GUN( "m3", "M3 Super 90", "Shotgun  -  12 gauge", "w_m3", WEAPON_M3, 1700, ANY, 20, 9, 0.875f, 8, 32, 230, 1.0f, 0.3f, "Pump action: nine pellets a shot" ),
-+	GUN( "xm1014", "XM1014", "Shotgun  -  12 gauge", "w_xm1014", WEAPON_XM1014, 3000, ANY, 20, 6, 0.25f, 7, 32, 240, 1.0f, 0.3f, "Semi-automatic shotgun" ),
++	GUN( "m3", SAME( "M3 Super 90" ), TR( "Shotgun  -  12 gauge", "Fusil \xC3\xA0 pompe  -  calibre 12" ), "w_m3", WEAPON_M3, 1700, ANY, 20, 9, 0.875f, 8, 32, 230, 1.0f, 0.3f,
++		TR( "Pump action: nine pellets a shot", "\xC3\x80 pompe : neuf plombs par tir" )),
++	GUN( "xm1014", SAME( "XM1014" ), TR( "Shotgun  -  12 gauge", "Fusil de combat  -  calibre 12" ), "w_xm1014", WEAPON_XM1014, 3000, ANY, 20, 6, 0.25f, 7, 32, 240, 1.0f, 0.3f,
++		TR( "Semi-automatic shotgun", "Fusil semi-automatique" )),
 +	// sub-machine guns
-+	GUN( "mac10", "MAC-10", "SMG  -  .45 ACP", "w_mac10", WEAPON_MAC10, 1400, ONLY_T, 29, 1, 0.07f, 30, 100, 250, 0.95f, 0.82f, "Fastest fire, hard to hold" ),
-+	GUN( "tmp", "TMP", "SMG  -  9mm", "w_tmp", WEAPON_TMP, 1250, ONLY_CT, 20, 1, 0.07f, 30, 120, 250, 1.0f, 0.85f, "Silent: no tracer gives you away" ),
-+	GUN( "mp5", "MP5 Navy", "SMG  -  9mm", "w_mp5", WEAPON_MP5N, 1500, ANY, 26, 1, 0.075f, 30, 120, 250, 1.0f, 0.84f, "Accurate all-rounder" ),
-+	GUN( "ump45", "UMP45", "SMG  -  .45 ACP", "w_ump45", WEAPON_UMP45, 1700, ANY, 30, 1, 0.1f, 25, 100, 250, 1.0f, 0.82f, "Slower, harder hitting" ),
-+	GUN( "p90", "P90", "SMG  -  5.7mm", "w_p90", WEAPON_P90, 2350, ANY, 21, 1, 0.066f, 50, 100, 245, 1.5f, 0.885f, "Fifty rounds that pierce armor" ),
++	GUN( "mac10", SAME( "MAC-10" ), TR( "SMG  -  .45 ACP", "Mitraillette  -  .45 ACP" ), "w_mac10", WEAPON_MAC10, 1400, ONLY_T, 29, 1, 0.07f, 30, 100, 250, 0.95f, 0.82f,
++		TR( "Fastest fire, hard to hold", "Le tir le plus rapide, dur \xC3\xA0 tenir" )),
++	GUN( "tmp", SAME( "TMP" ), TR( "SMG  -  9mm", "Mitraillette  -  9 mm" ), "w_tmp", WEAPON_TMP, 1250, ONLY_CT, 20, 1, 0.07f, 30, 120, 250, 1.0f, 0.85f,
++		TR( "Silent: no tracer gives you away", "Silencieuse : aucun tra\xC3\xA7" "ant ne te trahit" )),
++	GUN( "mp5", SAME( "MP5 Navy" ), TR( "SMG  -  9mm", "Mitraillette  -  9 mm" ), "w_mp5", WEAPON_MP5N, 1500, ANY, 26, 1, 0.075f, 30, 120, 250, 1.0f, 0.84f,
++		TR( "Accurate all-rounder", "Polyvalente et pr\xC3\xA9" "cise" )),
++	GUN( "ump45", SAME( "UMP45" ), TR( "SMG  -  .45 ACP", "Mitraillette  -  .45 ACP" ), "w_ump45", WEAPON_UMP45, 1700, ANY, 30, 1, 0.1f, 25, 100, 250, 1.0f, 0.82f,
++		TR( "Slower, harder hitting", "Plus lente, plus puissante" )),
++	GUN( "p90", SAME( "P90" ), TR( "SMG  -  5.7mm", "Mitraillette  -  5,7 mm" ), "w_p90", WEAPON_P90, 2350, ANY, 21, 1, 0.066f, 50, 100, 245, 1.5f, 0.885f,
++		TR( "Fifty rounds that pierce armor", "Cinquante balles qui percent l'armure" )),
 +	// rifles
-+	GUN( "galil", "Galil", "Assault rifle  -  5.56mm", "w_galil", WEAPON_GALIL, 2000, ONLY_T, 30, 1, 0.0875f, 35, 90, 240, 1.55f, 0.98f, "The cheapest rifle, thirty-five rounds" ),
-+	GUN( "famas", "FAMAS", "Assault rifle  -  5.56mm", "w_famas", WEAPON_FAMAS, 2250, ONLY_CT, 30, 1, 0.0825f, 25, 90, 240, 1.4f, 0.96f, "Automatic, or three-round bursts" ),
-+	GUN( "ak47", "AK-47", "Assault rifle  -  7.62mm", "w_ak47", WEAPON_AK47, 2500, ONLY_T, 36, 1, 0.0955f, 30, 90, 221, 1.55f, 0.98f, "A headshot kills, even through a helmet" ),
-+	GUN( "m4a1", "M4A1", "Assault rifle  -  5.56mm", "w_m4a1", WEAPON_M4A1, 3100, ONLY_CT, 32, 1, 0.0875f, 30, 90, 230, 1.4f, 0.97f, "Precise, with a removable silencer" ),
-+	GUN( "sg552", "SG 552", "Assault rifle  -  5.56mm", "w_sg552", WEAPON_SG552, 3500, ONLY_T, 33, 1, 0.0825f, 30, 90, 235, 1.4f, 0.955f, "With a 2x scope" ),
-+	GUN( "aug", "AUG", "Assault rifle  -  5.56mm", "w_aug", WEAPON_AUG, 3500, ONLY_CT, 32, 1, 0.0825f, 30, 90, 240, 1.4f, 0.96f, "With a 2x scope" ),
-+	GUN( "scout", "Scout", "Sniper rifle  -  7.62mm", "w_scout", WEAPON_SCOUT, 2750, ANY, 75, 1, 1.25f, 10, 90, 260, 1.7f, 0.98f, "Light bolt-action: run and snipe" ),
-+	GUN( "awp", "AWP", "Sniper rifle  -  .338 Magnum", "w_awp", WEAPON_AWP, 4750, ANY, 115, 1, 1.45f, 10, 30, 210, 1.95f, 0.99f, "One shot, one kill" ),
-+	GUN( "g3sg1", "G3/SG-1", "Sniper rifle  -  7.62mm", "w_g3sg1", WEAPON_G3SG1, 5000, ONLY_T, 80, 1, 0.25f, 20, 90, 210, 1.65f, 0.98f, "Automatic sniper rifle" ),
-+	GUN( "sg550", "SG 550", "Sniper rifle  -  5.56mm", "w_sg550", WEAPON_SG550, 4200, ONLY_CT, 70, 1, 0.25f, 30, 90, 210, 1.45f, 0.98f, "Automatic sniper rifle" ),
++	GUN( "galil", SAME( "Galil" ), TR( "Assault rifle  -  5.56mm", "Fusil d'assaut  -  5,56 mm" ), "w_galil", WEAPON_GALIL, 2000, ONLY_T, 30, 1, 0.0875f, 35, 90, 240, 1.55f, 0.98f,
++		TR( "The cheapest rifle, thirty-five rounds", "Le fusil le moins cher, trente-cinq balles" )),
++	GUN( "famas", SAME( "FAMAS" ), TR( "Assault rifle  -  5.56mm", "Fusil d'assaut  -  5,56 mm" ), "w_famas", WEAPON_FAMAS, 2250, ONLY_CT, 30, 1, 0.0825f, 25, 90, 240, 1.4f, 0.96f,
++		TR( "Automatic, or three-round bursts", "Automatique, ou rafales de trois" )),
++	GUN( "ak47", SAME( "AK-47" ), TR( "Assault rifle  -  7.62mm", "Fusil d'assaut  -  7,62 mm" ), "w_ak47", WEAPON_AK47, 2500, ONLY_T, 36, 1, 0.0955f, 30, 90, 221, 1.55f, 0.98f,
++		TR( "A headshot kills, even through a helmet", "Tue d'une balle dans la t\xC3\xAAte, m\xC3\xAAme \xC3\xA0 travers un casque" )),
++	GUN( "m4a1", SAME( "M4A1" ), TR( "Assault rifle  -  5.56mm", "Fusil d'assaut  -  5,56 mm" ), "w_m4a1", WEAPON_M4A1, 3100, ONLY_CT, 32, 1, 0.0875f, 30, 90, 230, 1.4f, 0.97f,
++		TR( "Precise, with a removable silencer", "Pr\xC3\xA9" "cis, avec un silencieux amovible" )),
++	GUN( "sg552", SAME( "SG 552" ), TR( "Assault rifle  -  5.56mm", "Fusil d'assaut  -  5,56 mm" ), "w_sg552", WEAPON_SG552, 3500, ONLY_T, 33, 1, 0.0825f, 30, 90, 235, 1.4f, 0.955f,
++		TR( "With a 2x scope", "Avec une lunette x2" )),
++	GUN( "aug", SAME( "AUG" ), TR( "Assault rifle  -  5.56mm", "Fusil d'assaut  -  5,56 mm" ), "w_aug", WEAPON_AUG, 3500, ONLY_CT, 32, 1, 0.0825f, 30, 90, 240, 1.4f, 0.96f,
++		TR( "With a 2x scope", "Avec une lunette x2" )),
++	GUN( "scout", SAME( "Scout" ), TR( "Sniper rifle  -  7.62mm", "Fusil de pr\xC3\xA9" "cision  -  7,62 mm" ), "w_scout", WEAPON_SCOUT, 2750, ANY, 75, 1, 1.25f, 10, 90, 260, 1.7f, 0.98f,
++		TR( "Light bolt-action: run and snipe", "L\xC3\xA9ger, \xC3\xA0 verrou : on court et on tire" )),
++	GUN( "awp", SAME( "AWP" ), TR( "Sniper rifle  -  .338 Magnum", "Fusil de pr\xC3\xA9" "cision  -  .338 Magnum" ), "w_awp", WEAPON_AWP, 4750, ANY, 115, 1, 1.45f, 10, 30, 210, 1.95f, 0.99f,
++		TR( "One shot, one kill", "Une balle, un mort" )),
++	GUN( "g3sg1", SAME( "G3/SG-1" ), TR( "Sniper rifle  -  7.62mm", "Fusil de pr\xC3\xA9" "cision  -  7,62 mm" ), "w_g3sg1", WEAPON_G3SG1, 5000, ONLY_T, 80, 1, 0.25f, 20, 90, 210, 1.65f, 0.98f,
++		TR( "Automatic sniper rifle", "Fusil de pr\xC3\xA9" "cision automatique" )),
++	GUN( "sg550", SAME( "SG 550" ), TR( "Sniper rifle  -  5.56mm", "Fusil de pr\xC3\xA9" "cision  -  5,56 mm" ), "w_sg550", WEAPON_SG550, 4200, ONLY_CT, 70, 1, 0.25f, 30, 90, 210, 1.45f, 0.98f,
++		TR( "Automatic sniper rifle", "Fusil de pr\xC3\xA9" "cision automatique" )),
 +	// machine gun
-+	GUN( "m249", "M249", "Machine gun  -  5.56mm", "w_m249", WEAPON_M249, 5750, ANY, 32, 1, 0.1f, 100, 200, 220, 1.5f, 0.97f, "A hundred-round belt" ),
++	GUN( "m249", SAME( "M249" ), TR( "Machine gun  -  5.56mm", "Mitrailleuse  -  5,56 mm" ), "w_m249", WEAPON_M249, 5750, ANY, 32, 1, 0.1f, 100, 200, 220, 1.5f, 0.97f,
++		TR( "A hundred-round belt", "Une bande de cent balles" )),
 +	// equipment
-+	ITEM( "vest", "Kevlar Vest", "Armor  -  100 points", "models/w_kevlar.mdl", 0, 650, ANY, "Halves the damage of most hits to the body" ),
-+	ITEM( "vesthelm", "Kevlar + Helmet", "Armor  -  100 points", "models/w_assault.mdl", 0, 1000, ANY, "The vest, and a helmet against headshots" ),
-+	ITEM( "flash", "Flashbang", "Grenade", "models/w_flashbang.mdl", WEAPON_FLASHBANG, 200, ANY, "Blinds whoever looks at it; two at most" ),
-+	ITEM( "hegren", "HE Grenade", "Grenade", "models/w_hegrenade.mdl", WEAPON_HEGRENADE, 300, ANY, "Explodes after a short fuse" ),
-+	ITEM( "sgren", "Smoke Grenade", "Grenade", "models/w_smokegrenade.mdl", WEAPON_SMOKEGRENADE, 300, ANY, "A cloud that hides a passage" ),
-+	ITEM( "defuser", "Defusal Kit", "Equipment", "models/w_thighpack.mdl", 0, 200, ONLY_CT, "Defuses the bomb in five seconds, not ten" ),
-+	ITEM( "nvgs", "Night Vision", "Equipment", "", 0, 1250, ANY, "See in the dark (N)" ),
-+	ITEM( "shield", "Tactical Shield", "Equipment", "models/w_shield.mdl", 0, 2200, ONLY_CT, "Stops bullets; a pistol in the other hand" ),
++	ITEM( "vest", TR( "Kevlar Vest", "Gilet pare-balles" ), TR( "Armor  -  100 points", "Armure  -  100 points" ), "models/w_kevlar.mdl", 0, 650, ANY,
++		TR( "Halves the damage of most hits to the body", "Divise par deux les d\xC3\xA9g\xC3\xA2ts au corps" )),
++	ITEM( "vesthelm", TR( "Kevlar + Helmet", "Gilet pare-balles + casque" ), TR( "Armor  -  100 points", "Armure  -  100 points" ), "models/w_assault.mdl", 0, 1000, ANY,
++		TR( "The vest, and a helmet against headshots", "Le gilet, et un casque contre les tirs \xC3\xA0 la t\xC3\xAAte" )),
++	ITEM( "flash", TR( "Flashbang", "Grenade flash" ), SAME( "Grenade" ), "models/w_flashbang.mdl", WEAPON_FLASHBANG, 200, ANY,
++		TR( "Blinds whoever looks at it, two at most", "Aveugle qui la regarde, deux au plus" )),
++	ITEM( "hegren", TR( "HE Grenade", "Grenade HE" ), SAME( "Grenade" ), "models/w_hegrenade.mdl", WEAPON_HEGRENADE, 300, ANY,
++		TR( "Explodes after a short fuse", "Explose apr\xC3\xA8s un court d\xC3\xA9lai" )),
++	ITEM( "sgren", TR( "Smoke Grenade", "Grenade fumig\xC3\xA8ne" ), SAME( "Grenade" ), "models/w_smokegrenade.mdl", WEAPON_SMOKEGRENADE, 300, ANY,
++		TR( "A cloud that hides a passage", "Un nuage qui masque un passage" )),
++	ITEM( "defuser", TR( "Defusal Kit", "Kit de d\xC3\xA9samor\xC3\xA7" "age" ), TR( "Equipment", "\xC3\x89quipement" ), "models/w_thighpack.mdl", 0, 200, ONLY_CT,
++		TR( "Defuses the bomb in five seconds, not ten", "D\xC3\xA9samorce la bombe en 5 s au lieu de 10" )),
++	ITEM( "nvgs", TR( "Night Vision", "Vision nocturne" ), TR( "Equipment", "\xC3\x89quipement" ), "", 0, 1250, ANY,
++		TR( "See in the dark (N)", "Pour voir dans le noir (N)" )),
++	ITEM( "shield", TR( "Tactical Shield", "Bouclier tactique" ), TR( "Equipment", "\xC3\x89quipement" ), "models/w_shield.mdl", 0, 2200, ONLY_CT,
++		TR( "Stops bullets, a pistol in the other hand", "Arr\xC3\xAAte les balles, un pistolet dans l'autre main" )),
 +	// the Half-Life arsenal: guns
-+	GUN( "crowbar", "Crowbar", "Melee  -  Black Mesa", "w_crowbar", HL_CROWBAR, 200, ANY, 25, 1, 0.5f, 0, 0, 250, 1.7f, 0, "Swings beside the knife" ),
-+	GUN( "9mmhandgun", "9mm Handgun", "Pistol  -  9mm", "w_9mmhandgun", HL_GLOCK, 300, ANY, 22, 1, 0.25f, 17, 120, 250, 1.05f, 0.75f, "Right click: rapid, wilder fire" ),
-+	GUN( "python", ".357 Magnum", "Revolver  -  .357", "w_357", HL_PYTHON, 700, ANY, 65, 1, 0.75f, 6, 36, 250, 1.5f, 0.85f, "Six heavy rounds" ),
-+	GUN( "9mmAR", "MP5", "SMG  -  9mm", "w_9mmar", HL_MP5, 1450, ANY, 21, 1, 0.1f, 50, 120, 240, 1.0f, 0.84f, "Right click: contact grenades" ),
-+	GUN( "argrenade", "MP5 Grenades", "Ammunition  -  2 at most", "grenade", 0, 250, ANY, 100, 1, 1.0f, 0, 2, 0, 1.0f, 0, "Explode on contact, for the MP5" ),
-+	GUN( "shotgun", "Shotgun", "Shotgun  -  buckshot", "w_shotgun", HL_SHOTGUN, 1600, ANY, 18, 6, 0.75f, 8, 32, 230, 1.0f, 0.3f, "Right click: both barrels" ),
-+	GUN( "crossbow", "Crossbow", "Crossbow  -  bolts", "w_crossbow", HL_CROSSBOW, 2400, ANY, 100, 1, 0.75f, 5, 30, 230, 1.7f, 0.99f, "Scoped bolts; explosive unscoped" ),
++	GUN( "crowbar", TR( "Crowbar", "Pied-de-biche" ), TR( "Melee  -  Black Mesa", "Corps \xC3\xA0 corps  -  Black Mesa" ), "w_crowbar", HL_CROWBAR, 200, ANY, 25, 1, 0.5f, 0, 0, 250, 1.7f, 0,
++		TR( "Swings beside the knife", "Frappe, en plus du couteau" )),
++	GUN( "9mmhandgun", TR( "9mm Handgun", "Pistolet 9 mm" ), TR( "Pistol  -  9mm", "Pistolet  -  9 mm" ), "w_9mmhandgun", HL_GLOCK, 300, ANY, 22, 1, 0.25f, 17, 120, 250, 1.05f, 0.75f,
++		TR( "Right click: rapid, wilder fire", "Clic droit : tir rapide, moins pr\xC3\xA9" "cis" )),
++	GUN( "python", SAME( ".357 Magnum" ), TR( "Revolver  -  .357", "Revolver  -  .357" ), "w_357", HL_PYTHON, 700, ANY, 65, 1, 0.75f, 6, 36, 250, 1.5f, 0.85f,
++		TR( "Six heavy rounds", "Six balles lourdes" )),
++	GUN( "9mmAR", SAME( "MP5" ), TR( "SMG  -  9mm", "Mitraillette  -  9 mm" ), "w_9mmar", HL_MP5, 1450, ANY, 21, 1, 0.1f, 50, 120, 240, 1.0f, 0.84f,
++		TR( "Right click: contact grenades", "Clic droit : grenades \xC3\xA0 impact" )),
++	GUN( "argrenade", TR( "MP5 Grenades", "Grenades MP5" ), TR( "Ammunition  -  2 at most", "Munitions  -  2 au plus" ), "grenade", 0, 250, ANY, 100, 1, 1.0f, 0, 2, 0, 1.0f, 0,
++		TR( "Explode on contact, for the MP5", "Explosent \xC3\xA0 l'impact, pour le MP5" )),
++	GUN( "shotgun", TR( "Shotgun", "Fusil \xC3\xA0 pompe" ), TR( "Shotgun  -  buckshot", "Fusil \xC3\xA0 pompe  -  chevrotine" ), "w_shotgun", HL_SHOTGUN, 1600, ANY, 18, 6, 0.75f, 8, 32, 230, 1.0f, 0.3f,
++		TR( "Right click: both barrels", "Clic droit : les deux canons" )),
++	GUN( "crossbow", TR( "Crossbow", "Arbal\xC3\xA8te" ), TR( "Crossbow  -  bolts", "Arbal\xC3\xA8te  -  carreaux" ), "w_crossbow", HL_CROSSBOW, 2400, ANY, 100, 1, 0.75f, 5, 30, 230, 1.7f, 0.99f,
++		TR( "Scoped bolts, explosive unscoped", "Carreaux \xC3\xA0 la lunette, explosifs sans lunette" )),
 +	// the Half-Life arsenal: heavy weapons and explosives
-+	GUN( "hornetgun", "Hornet Gun", "Bio-weapon  -  hornets", "w_hgun", HL_HORNETGUN, 2000, ANY, 15, 1, 0.25f, 0, 8, 240, 1.0f, 0.9f, "Homing hornets; it breeds its own" ),
-+	GUN( "gauss", "Gauss", "Tau cannon  -  uranium", "w_gauss", HL_GAUSS, 3200, ANY, 20, 1, 0.2f, 0, 100, 220, 1.5f, 1.0f, "Hold right click: up to 200 damage" ),
-+	GUN( "rpg", "RPG", "Rocket launcher", "w_rpg", HL_RPG, 3600, ANY, 120, 1, 1.5f, 1, 3, 200, 1.0f, 1.0f, "Laser-guided rockets" ),
-+	GUN( "egon", "Egon", "Gluon gun  -  uranium", "w_egon", HL_EGON, 4400, ANY, 12, 1, 0.1f, 0, 100, 210, 1.5f, 0.6f, "A continuous, searing beam" ),
-+	GUN( "handgrenade", "Hand Grenade", "Explosive", "w_grenade", HL_HANDGRENADE, 250, ANY, 100, 1, 0, 0, 1, 250, 1.0f, 0, "Cooks while held, three seconds" ),
-+	GUN( "satchel", "Satchel Charge", "Explosive  -  2 at most", "w_satchel", HL_SATCHEL, 450, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Click: throw, then detonate. Right click: throw another" ),
-+	GUN( "tripmine", "Tripmine", "Explosive  -  2 at most", "p_tripmine", HL_TRIPMINE, 400, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0, "Laser-triggered, on a wall" ),
-+	GUN( "snark", "Snarks", "Creatures  -  3 a box", "w_sqknest", HL_SNARK, 400, ANY, 10, 1, 0, 0, 6, 250, 1.0f, 0, "Hungry: they hunt the nearest enemy" ),
++	GUN( "hornetgun", SAME( "Hornet Gun" ), TR( "Bio-weapon  -  hornets", "Arme biologique  -  frelons" ), "w_hgun", HL_HORNETGUN, 2000, ANY, 15, 1, 0.25f, 0, 8, 240, 1.0f, 0.9f,
++		TR( "Homing hornets that refill on their own", "Frelons \xC3\xA0 t\xC3\xAAte chercheuse, qui se rechargent seuls" )),
++	GUN( "gauss", SAME( "Gauss" ), TR( "Tau cannon  -  uranium", "Canon tau  -  uranium" ), "w_gauss", HL_GAUSS, 3200, ANY, 20, 1, 0.2f, 0, 100, 220, 1.5f, 1.0f,
++		TR( "Hold right click: up to 200 damage", "Clic droit maintenu : jusqu'\xC3\xA0 200 points de d\xC3\xA9g\xC3\xA2ts" )),
++	GUN( "rpg", SAME( "RPG" ), TR( "Rocket launcher", "Lance-roquettes" ), "w_rpg", HL_RPG, 3600, ANY, 120, 1, 1.5f, 1, 3, 200, 1.0f, 1.0f,
++		TR( "Laser-guided rockets", "Roquettes guid\xC3\xA9" "es au laser" )),
++	GUN( "egon", SAME( "Egon" ), TR( "Gluon gun  -  uranium", "Canon \xC3\xA0 gluons  -  uranium" ), "w_egon", HL_EGON, 4400, ANY, 12, 1, 0.1f, 0, 100, 210, 1.5f, 0.6f,
++		TR( "A continuous, searing beam", "Un rayon continu et br\xC3\xBBlant" )),
++	GUN( "handgrenade", TR( "Hand Grenade", "Grenade \xC3\xA0 main" ), TR( "Explosive", "Explosif" ), "w_grenade", HL_HANDGRENADE, 250, ANY, 100, 1, 0, 0, 1, 250, 1.0f, 0,
++		TR( "Cooks while held, three seconds", "D\xC3\xA9goupill\xC3\xA9" "e en main : explose en trois secondes" )),
++	GUN( "satchel", TR( "Satchel Charge", "Charge explosive" ), TR( "Explosive  -  2 at most", "Explosif  -  2 au plus" ), "w_satchel", HL_SATCHEL, 450, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0,
++		TR( "Click: throw, then detonate. Right click: throw another", "Clic : lancer puis faire sauter. Clic droit : une autre" )),
++	GUN( "tripmine", TR( "Tripmine", "Mine laser" ), TR( "Explosive  -  2 at most", "Explosif  -  2 au plus" ), "p_tripmine", HL_TRIPMINE, 400, ANY, 150, 1, 0, 0, 2, 250, 1.0f, 0,
++		TR( "Laser-triggered, on a wall", "D\xC3\xA9" "clench\xC3\xA9" "e par un laser, sur un mur" )),
++	GUN( "snark", SAME( "Snarks" ), TR( "Creatures  -  3 a box", "Cr\xC3\xA9" "atures  -  3 par nid" ), "w_sqknest", HL_SNARK, 400, ANY, 10, 1, 0, 0, 6, 250, 1.0f, 0,
++		TR( "Hungry: they hunt the nearest enemy", "Affam\xC3\xA9s : ils chassent l'ennemi le plus proche" )),
 +	// Half Strike's Poke Balls: thrown, the Pokemon comes out and fights beside its player (the server's figures)
-+	POKE( "pikachu", "Pikachu", "Pok\xC3\xA9 Ball  -  Electric", "pikachu", PK_PIKACHU, 1000, 90, 22, 1, 1.1f, 400, 300, "Thunderbolt: a bolt that slows its target" ),
-+	POKE( "charizard", "Charizard", "Pok\xC3\xA9 Ball  -  Fire", "charizard", PK_CHARIZARD, 1400, 160, 7, 7, 3.0f, 400, 240, "Flamethrower: a cone of fire for a second, then burns" ),
-+	POKE( "blastoise", "Blastoise", "Pok\xC3\xA9 Ball  -  Water", "blastoise", PK_BLASTOISE, 1300, 220, 34, 1, 1.9f, 400, 210, "Hydro Pump: two jets that throw enemies back" ),
++	POKE( "pikachu", SAME( "Pikachu" ), TR( "Pok\xC3\xA9 Ball  -  Electric", "Pok\xC3\xA9 Ball  -  \xC3\x89lectrik" ), "pikachu", PK_PIKACHU, 1000, 90, 22, 1, 1.1f, 400, 300,
++		TR( "Thunderbolt: a bolt that slows its target", "Tonnerre : un \xC3\xA9" "clair qui ralentit sa cible" )),
++	POKE( "charizard", TR( "Charizard", "Dracaufeu" ), TR( "Pok\xC3\xA9 Ball  -  Fire", "Pok\xC3\xA9 Ball  -  Feu" ), "charizard", PK_CHARIZARD, 1400, 160, 7, 7, 3.0f, 400, 240,
++		TR( "Flamethrower: a cone of fire for a second, then burns", "Lance-Flammes : c\xC3\xB4ne de feu, puis br\xC3\xBBlures" )),
++	POKE( "blastoise", TR( "Blastoise", "Tortank" ), TR( "Pok\xC3\xA9 Ball  -  Water", "Pok\xC3\xA9 Ball  -  Eau" ), "blastoise", PK_BLASTOISE, 1300, 220, 34, 1, 1.9f, 400, 210,
++		TR( "Hydro Pump: two jets that throw enemies back", "Hydrocanon : deux jets qui repoussent les ennemis" )),
 +	// Half Strike's others: Le M, typed into being on a laptop, fights as a Pokemon does (the server's figures)
-+	OTHER( "lem", "Le M", "Laptop  -  Summoned", "lem", LEM_LAPTOP, 1500, 150, 18, 1, 1.2f, 400, 250, "Hack: green code bolts that scramble the target's screen" ),
++	OTHER( "lem", SAME( "Le M" ), TR( "Laptop  -  Summoned", "Ordinateur portable  -  Invocation" ), "lem", LEM_LAPTOP, 1500, 150, 18, 1, 1.2f, 400, 250,
++		TR( "Hack: green code bolts that scramble the target's screen", "Piratage : des \xC3\xA9" "clairs de code vert qui brouillent l'\xC3\xA9" "cran de la cible" )),
 +};
 +
 +struct BuyTab
 +{
-+	const char *title, *menuTitle;
++	Str title, menuTitle;
 +	int first, count;
 +	int vgui; // (the server's menu that opens it)
 +};
 +
 +static const BuyTab g_Tabs[] =
 +{
-+	{ "Pistols", "Pistols", 0, 6, VGUI_BUY_PISTOL },
-+	{ "Shotguns", "Shotguns", 6, 2, VGUI_BUY_SHOTGUN },
-+	{ "SMGs", "Sub-machine guns", 8, 5, VGUI_BUY_SMG },
-+	{ "Rifles", "Rifles", 13, 10, VGUI_BUY_RIFLE },
-+	{ "Machine gun", "Machine gun", 23, 1, VGUI_BUY_MG },
-+	{ "Equipment", "Equipment", 24, 8, VGUI_BUY_ITEM },
-+	{ "Half-Life guns", "Half-Life arsenal: guns", 32, 7, 0 },
-+	{ "Half-Life heavy", "Half-Life arsenal: heavy weapons", 39, 8, 0 },
-+	{ "Pok\xC3\xA9mon", "Pok\xC3\xA9mon: one companion at a time", 47, 3, 0 },
-+	{ "Others", "Others: one companion at a time", 50, 1, 0 }, // (the tenth: key 0 among the categories)
++	{ TR( "Pistols", "Pistolets" ), TR( "Pistols", "Pistolets" ), 0, 6, VGUI_BUY_PISTOL },
++	{ TR( "Shotguns", "Fusils \xC3\xA0 pompe" ), TR( "Shotguns", "Fusils \xC3\xA0 pompe" ), 6, 2, VGUI_BUY_SHOTGUN },
++	{ TR( "SMGs", "Mitraillettes" ), TR( "Sub-machine guns", "Mitraillettes" ), 8, 5, VGUI_BUY_SMG },
++	{ TR( "Rifles", "Fusils" ), TR( "Rifles", "Fusils" ), 13, 10, VGUI_BUY_RIFLE },
++	{ TR( "Machine gun", "Mitrailleuse" ), TR( "Machine gun", "Mitrailleuse" ), 23, 1, VGUI_BUY_MG },
++	{ TR( "Equipment", "\xC3\x89quipement" ), TR( "Equipment", "\xC3\x89quipement" ), 24, 8, VGUI_BUY_ITEM },
++	{ TR( "Half-Life guns", "Armes HL" ), TR( "Half-Life arsenal: guns", "Arsenal Half-Life : armes" ), 32, 7, 0 },
++	{ TR( "Half-Life heavy", "Armes lourdes HL" ), TR( "Half-Life arsenal: heavy weapons", "Arsenal Half-Life : armes lourdes" ), 39, 8, 0 },
++	{ SAME( "Pok\xC3\xA9mon" ), TR( "Pok\xC3\xA9mon: one companion at a time", "Pok\xC3\xA9mon : un compagnon \xC3\xA0 la fois" ), 47, 3, 0 },
++	{ TR( "Others", "Autres" ), TR( "Others: one companion at a time", "Autres : un compagnon \xC3\xA0 la fois" ), 50, 1, 0 }, // (the tenth: key 0 among the categories)
 +};
 +#define NUM_TABS ( (int)( sizeof( g_Tabs ) / sizeof( g_Tabs[0] )))
 +#define NUM_ITEMS ( (int)( sizeof( g_Items ) / sizeof( g_Items[0] )))
 +
 +struct Look
 +{
-+	const char *model, *name, *note;
++	const char *model; Str name, note;
 +};
 +
 +// (a side's looks: Counter-Strike's four, then Half-Life's five — the server's slots 1 to 9: Black Mesa's defenders on
@@ -564,26 +630,26 @@ index 0000000..5469c42
 +static const Look g_Looks[2][NUM_LOOKS] =
 +{
 +	{
-+		{ "terror", "Phoenix Connexion", "Ruthless, well funded, never seen coming" },
-+		{ "leet", "Elite Crew", "A tight crew of mercenaries" },
-+		{ "arctic", "Arctic Avengers", "Trained in the cold of the north" },
-+		{ "guerilla", "Guerilla Warfare", "At home in any rough terrain" },
-+		{ "hgrunt", "HECU Marine", "Sent to silence Black Mesa" },
-+		{ "recon", "HECU Recon", "Scouts ahead of the marines" },
-+		{ "gman", "G-Man", "He has plans for everyone" },
-+		{ "zombie", "Zombie", "What a headcrab leaves" },
-+		{ "robo", "Robo", "Built for war, feels nothing" },
++		{ "terror", SAME( "Phoenix Connexion" ), TR( "Ruthless, well funded, never seen coming", "Impitoyables, riches, insaisissables" ) },
++		{ "leet", SAME( "Elite Crew" ), TR( "A tight crew of mercenaries", "Une bande soud\xC3\xA9" "e de mercenaires" ) },
++		{ "arctic", SAME( "Arctic Avengers" ), TR( "Trained in the cold of the north", "Form\xC3\xA9s dans le froid du Nord" ) },
++		{ "guerilla", SAME( "Guerilla Warfare" ), TR( "At home in any rough terrain", "\xC3\x80 l'aise sur tous les terrains" ) },
++		{ "hgrunt", TR( "HECU Marine", "Marine du HECU" ), TR( "Sent to silence Black Mesa", "Envoy\xC3\xA9 pour faire taire Black Mesa" ) },
++		{ "recon", TR( "HECU Recon", "\xC3\x89" "claireur HECU" ), TR( "Scouts ahead of the marines", "Ouvre la voie aux marines" ) },
++		{ "gman", SAME( "G-Man" ), TR( "He has plans for everyone", "Il a des plans pour tout le monde" ) },
++		{ "zombie", SAME( "Zombie" ), TR( "What a headcrab leaves", "Ce que laisse un headcrab" ) },
++		{ "robo", SAME( "Robo" ), TR( "Built for war, feels nothing", "Con\xC3\xA7u pour la guerre, insensible" ) },
 +	},
 +	{
-+		{ "urban", "Seal Team 6", "Navy special forces, masters of assault" },
-+		{ "gsg9", "GSG-9", "Border police, precise and methodical" },
-+		{ "sas", "SAS", "The oldest special forces of all" },
-+		{ "gign", "GIGN", "Specialists of hostage rescue" },
-+		{ "barney", "Barney", "Black Mesa security, on duty" },
-+		{ "gordon", "Gordon Freeman", "Physicist in his HEV suit" },
-+		{ "helmet", "Freeman, helmet on", "The HEV suit, fully sealed" },
-+		{ "gina", "Gina Cross", "Hazard course instructor" },
-+		{ "scientist", "Scientist", "Black Mesa research staff" },
++		{ "urban", SAME( "Seal Team 6" ), TR( "Navy special forces, masters of assault", "Forces sp\xC3\xA9" "ciales de la Navy, as de l'assaut" ) },
++		{ "gsg9", SAME( "GSG-9" ), TR( "Border police, precise and methodical", "Police des fronti\xC3\xA8res, pr\xC3\xA9" "cise et m\xC3\xA9thodique" ) },
++		{ "sas", SAME( "SAS" ), TR( "The oldest special forces of all", "Les plus anciennes forces sp\xC3\xA9" "ciales" ) },
++		{ "gign", SAME( "GIGN" ), TR( "Specialists of hostage rescue", "Sp\xC3\xA9" "cialistes du sauvetage d'otages" ) },
++		{ "barney", SAME( "Barney" ), TR( "Black Mesa security, on duty", "S\xC3\xA9" "curit\xC3\xA9 de Black Mesa, en service" ) },
++		{ "gordon", SAME( "Gordon Freeman" ), TR( "Physicist in his HEV suit", "Physicien en combinaison HEV" ) },
++		{ "helmet", TR( "Freeman, helmet on", "Freeman, casqu\xC3\xA9" ), TR( "The HEV suit, fully sealed", "La combinaison HEV, enti\xC3\xA8rement ferm\xC3\xA9" "e" ) },
++		{ "gina", SAME( "Gina Cross" ), TR( "Hazard course instructor", "Monitrice du parcours HEV" ) },
++		{ "scientist", TR( "Scientist", "Scientifique" ), TR( "Black Mesa research staff", "Chercheur de Black Mesa" ) },
 +	},
 +};
 +
@@ -636,9 +702,9 @@ index 0000000..5469c42
 +// health percent (0: gone), species, team, owner (a player's index)
 +//
 +enum { SPECIES_PIKACHU, SPECIES_CHARIZARD, SPECIES_BLASTOISE, SPECIES_LEM, NUM_SPECIES };
-+static const struct { const char *name; float height; } g_Species[NUM_SPECIES] =
++static const struct { Str name; float height; } g_Species[NUM_SPECIES] =
 +{
-+	{ "Pikachu", 30 }, { "Charizard", 78 }, { "Blastoise", 60 }, { "Le M", 72 }, // (their models' standing heights)
++	{ SAME( "Pikachu" ), 30 }, { TR( "Charizard", "Dracaufeu" ), 78 }, { TR( "Blastoise", "Tortank" ), 60 }, { SAME( "Le M" ), 72 }, // (their models' standing heights)
 +};
 +
 +// (the species an item brings out: the balls in their order, then the laptop)
@@ -887,23 +953,29 @@ index 0000000..5469c42
 +static const char *RefusalText( const BuyItem &it )
 +{
 +	if ( Full( it ))
-+		return "Already have it";
++		return L( "Already have it", "Tu l'as d\xC3\xA9j\xC3\xA0" );
 +	if ( IsCompanionItem( it.id ))
 +	{
 +		const int out = PokemonOut();
 +		if ( out == SPECIES_LEM )
-+			return "Le M is already out: one companion at a time";
++			return L( "Le M is already out: one companion at a time", "Le M est d\xC3\xA9j\xC3\xA0 sorti : un compagnon \xC3\xA0 la fois" );
 +		if ( out >= 0 )
-+			return "Your Pok\xC3\xA9mon is already out: one companion at a time";
++			return L( "Your Pok\xC3\xA9mon is already out: one companion at a time", "Ton Pok\xC3\xA9mon est d\xC3\xA9j\xC3\xA0 sorti : un compagnon \xC3\xA0 la fois" );
 +		if ( Owned( LEM_LAPTOP ))
-+			return it.id == LEM_LAPTOP ? "You already carry the laptop" : "You carry the laptop: one companion at a time";
++			return it.id == LEM_LAPTOP ? L( "You already carry the laptop", "Tu portes d\xC3\xA9j\xC3\xA0 l'ordinateur" ) :
++				L( "You carry the laptop: one companion at a time", "Tu portes l'ordinateur : un compagnon \xC3\xA0 la fois" );
 +		if ( OwnsCompanionItem())
-+			return IsBall( it.id ) ? "You already carry a Pok\xC3\xA9 Ball" : "You carry a Pok\xC3\xA9 Ball: one companion at a time";
++			return IsBall( it.id ) ? L( "You already carry a Pok\xC3\xA9 Ball", "Tu portes d\xC3\xA9j\xC3\xA0 une Pok\xC3\xA9 Ball" ) :
++				L( "You carry a Pok\xC3\xA9 Ball: one companion at a time", "Tu portes une Pok\xC3\xA9 Ball : un compagnon \xC3\xA0 la fois" );
 +	}
 +	if ( !Refused( it ))
-+		return "Not enough money";
-+	return strcmp( it.cmd, "shield" ) ? "Not with the shield" : "Not with a Half-Life pistol or look";
++		return L( "Not enough money", "Pas assez d'argent" );
++	return strcmp( it.cmd, "shield" ) ? L( "Not with the shield", "Pas avec le bouclier" ) :
++		L( "Not with a Half-Life pistol or look", "Pas avec un pistolet ou une apparence Half-Life" );
 +}
++
++// whether the item's companion is the one out (its row's tag in gold)
++static bool CompanionOut( const BuyItem &it ) { return IsCompanionItem( it.id ) && PokemonOut() == ItemSpecies( it.id ); }
 +
 +// a row's short tag where "owned" goes, for a refusal that is not about the money (null: none)
 +static const char *RefusalTag( const BuyItem &it )
@@ -912,21 +984,21 @@ index 0000000..5469c42
 +	{
 +		const int out = PokemonOut();
 +		if ( out == ItemSpecies( it.id ))
-+			return "out";
++			return L( "out", "sorti" );
 +		if ( Owned( it.id ))
-+			return "owned";
++			return L( "owned", "poss\xC3\xA9" "d\xC3\xA9" );
 +		if ( out >= 0 )
-+			return out == SPECIES_LEM ? "Le M out" : "Pok\xC3\xA9mon out";
++			return out == SPECIES_LEM ? L( "Le M out", "Le M sorti" ) : L( "Pok\xC3\xA9mon out", "Pok\xC3\xA9mon sorti" );
 +		if ( Owned( LEM_LAPTOP ))
-+			return "laptop";
++			return L( "laptop", "ordinateur" );
 +		if ( OwnsCompanionItem())
-+			return "one ball";
++			return L( "one Pok\xC3\xA9 Ball", "une Pok\xC3\xA9 Ball" );
 +		return 0;
 +	}
 +	if ( Owned( it.id ) || Full( it ))
-+		return "owned";
++		return L( "owned", "poss\xC3\xA9" "d\xC3\xA9" );
 +	if ( Refused( it ))
-+		return !strcmp( it.cmd, "shield" ) ? "HL pistol" : "shield";
++		return !strcmp( it.cmd, "shield" ) ? L( "HL pistol", "pistolet HL" ) : L( "shield", "bouclier" );
 +	return 0;
 +}
 +
@@ -960,7 +1032,7 @@ index 0000000..5469c42
 +#define MAX_TEXTS 320
 +
 +struct Quad { float x[4], y[4]; Col c[4]; };
-+struct QueuedText { float x, y, maxX, scale; Col c; char s[96]; };
++struct QueuedText { float x, y, maxX, scale; Col c; char s[160]; };
 +
 +static Quad g_Quads[MAX_QUADS];
 +static int g_iQuads;
@@ -1069,19 +1141,100 @@ index 0000000..5469c42
 +
 +static int LineHeight( float scale = 1 ) { return (int)( gHUD.GetCharHeight() * scale ); }
 +
-+// The HUD font is ASCII: an e acute (UTF-8) is drawn as an e with its accent drawn over it (Pokemon). Returns the
-+// accents' places in out.
-+static int Latin( const char *s, char *out, int size, int *accents, int maxAccents )
++// The HUD font is ASCII: a French letter (UTF-8) is drawn as its plain letter with its accent drawn over it — or its
++// cedilla under it: é è ê ë à â ä ç î ï ô ö ù û ü, their capitals; œ as oe, a typographic apostrophe as '. Returns
++// the accents (their places in out, their kinds). Also ä ï ö ÿ and Ä Ï Ö Ÿ (BuildDrawBar's capitals).
++enum { ACC_ACUTE, ACC_GRAVE, ACC_CIRC, ACC_DIAER, ACC_CEDIL };
++struct Accent { int at; char kind; bool upper; };
++#define MAX_ACCENTS 24
++
++// (the second byte of a letter after 0xC3: its plain letter, its accent)
++static const struct { unsigned char b; char letter, kind; } g_LatinLetters[] =
++{
++	{ 0xA0, 'a', ACC_GRAVE }, { 0xA2, 'a', ACC_CIRC }, { 0xA4, 'a', ACC_DIAER }, { 0xA7, 'c', ACC_CEDIL },
++	{ 0xA8, 'e', ACC_GRAVE }, { 0xA9, 'e', ACC_ACUTE }, { 0xAA, 'e', ACC_CIRC }, { 0xAB, 'e', ACC_DIAER },
++	{ 0xAE, 'i', ACC_CIRC }, { 0xAF, 'i', ACC_DIAER }, { 0xB4, 'o', ACC_CIRC }, { 0xB6, 'o', ACC_DIAER },
++	{ 0xB9, 'u', ACC_GRAVE }, { 0xBB, 'u', ACC_CIRC }, { 0xBC, 'u', ACC_DIAER }, { 0xBF, 'y', ACC_DIAER },
++	{ 0x80, 'A', ACC_GRAVE }, { 0x82, 'A', ACC_CIRC }, { 0x84, 'A', ACC_DIAER }, { 0x87, 'C', ACC_CEDIL },
++	{ 0x88, 'E', ACC_GRAVE }, { 0x89, 'E', ACC_ACUTE }, { 0x8A, 'E', ACC_CIRC }, { 0x8B, 'E', ACC_DIAER },
++	{ 0x8E, 'I', ACC_CIRC }, { 0x8F, 'I', ACC_DIAER }, { 0x94, 'O', ACC_CIRC }, { 0x96, 'O', ACC_DIAER },
++	{ 0x99, 'U', ACC_GRAVE }, { 0x9B, 'U', ACC_CIRC }, { 0x9C, 'U', ACC_DIAER },
++};
++#define NUM_LATIN_LETTERS (int)( sizeof( g_LatinLetters ) / sizeof( g_LatinLetters[0] ))
++
++// the length of the UTF-8 sequence at s that Latin() draws as a letter (or as ' or a space), 0 for any other
++static int LatinSeq( const unsigned char *s )
++{
++	if ( s[0] == 0xC3 )
++	{
++		for ( int k = 0; k < NUM_LATIN_LETTERS; k++ )
++			if ( g_LatinLetters[k].b == s[1] )
++				return 2;
++		return 0;
++	}
++	if ( s[0] == 0xC5 && ( s[1] == 0x92 || s[1] == 0x93 || s[1] == 0xB8 )) // (Œ œ Ÿ)
++		return 2;
++	if ( s[0] == 0xE2 && s[1] == 0x80 && ( s[2] == 0x98 || s[2] == 0x99 )) // (‘ ’)
++		return 3;
++	if ( s[0] == 0xC2 && s[1] == 0xA0 ) // (a no-break space)
++		return 2;
++	return 0;
++}
++
++static int Latin( const char *s, char *out, int size, Accent *accents, int maxAccents )
 +{
 +	int n = 0, a = 0;
 +	while ( *s && n < size - 1 )
 +	{
-+		const unsigned char c = (unsigned char)s[0];
-+		if ( c == 0xC3 && (unsigned char)s[1] == 0xA9 )
++		const unsigned char c = (unsigned char)s[0], c1 = c ? (unsigned char)s[1] : 0;
++		if ( c == 0xC3 )
++		{
++			int k = 0;
++			while ( k < NUM_LATIN_LETTERS && g_LatinLetters[k].b != c1 )
++				k++;
++			if ( k < NUM_LATIN_LETTERS )
++			{
++				if ( a < maxAccents )
++				{
++					accents[a].at = n;
++					accents[a].kind = g_LatinLetters[k].kind;
++					accents[a].upper = g_LatinLetters[k].letter < 'a';
++					a++;
++				}
++				out[n++] = g_LatinLetters[k].letter;
++				s += 2;
++				continue;
++			}
++		}
++		if ( c == 0xC5 && c1 == 0xB8 ) // (Ÿ)
 +		{
 +			if ( a < maxAccents )
-+				accents[a++] = n;
-+			out[n++] = 'e';
++			{
++				accents[a].at = n;
++				accents[a].kind = ACC_DIAER;
++				accents[a].upper = true;
++				a++;
++			}
++			out[n++] = 'Y';
++			s += 2;
++			continue;
++		}
++		if ( c == 0xC5 && ( c1 == 0x93 || c1 == 0x92 ) && n < size - 2 ) // (œ, Œ)
++		{
++			out[n++] = c1 == 0x93 ? 'o' : 'O';
++			out[n++] = c1 == 0x93 ? 'e' : 'E';
++			s += 2;
++			continue;
++		}
++		if ( c == 0xE2 && c1 == 0x80 && ( (unsigned char)s[2] == 0x98 || (unsigned char)s[2] == 0x99 )) // (‘ ’)
++		{
++			out[n++] = '\'';
++			s += 3;
++			continue;
++		}
++		if ( c == 0xC2 && c1 == 0xA0 ) // (a no-break space)
++		{
++			out[n++] = ' ';
 +			s += 2;
 +			continue;
 +		}
@@ -1105,12 +1258,59 @@ index 0000000..5469c42
 +
 +static int TextWidth( const char *s, float scale = 1 )
 +{
-+	char buf[128]; int accents[4];
-+	Latin( s, buf, sizeof( buf ), accents, 4 );
++	char buf[192]; Accent accents[1];
++	Latin( s, buf, sizeof( buf ), accents, 0 );
 +	return (int)( DrawUtils::HudStringLen( buf ) * scale );
 +}
 +
 +static bool Scaled( float scale ) { return scale != 1 && g_iMobileAPIVersion; }
++
++// an accent over (or under) the letter at x: in the text's colour, one or two quads. The font's x-height is about
++// 0.35 of its line, from 0.30 of it down, its capitals from about 0.10, its baseline at about 0.66
++static void AccentAdd( const Accent &acc, float x, float y, float lh, float cw, Col c )
++{
++	const float xh = lh * 0.35f, len = max( 2.5f, xh * 0.6f );
++	const float tw = max( 1.2f, lh * 0.075f ); // (a stroke's width, across)
++	const float cx = x + cw * 0.5f;
++	const float yb = acc.upper ? y + lh * 0.10f - 1 : y + lh * 0.30f - 2; // (the accent's bottom: a pixel clear of its letter)
++	const float l = acc.upper ? len * 0.8f : len;
++	const float dy = l * 0.86f, dx = l * 0.5f; // (a stroke rising at 60 degrees)
++	switch ( acc.kind )
++	{
++	case ACC_ACUTE:
++	case ACC_GRAVE:
++	{
++		const bool acute = acc.kind == ACC_ACUTE;
++		const float x0 = cx - dx / 2 - tw / 2, x1 = cx + dx / 2 - tw / 2; // (bottom left to top right; the grave mirrored)
++		const float xs[4] = { acute ? x0 : x1, ( acute ? x0 : x1 ) + tw, ( acute ? x1 : x0 ) + tw, acute ? x1 : x0 }, ys[4] = { yb, yb, yb - dy, yb - dy };
++		QuadPts( xs, ys, c );
++		break;
++	}
++	case ACC_CIRC:
++	{
++		const float h = dy * 0.8f, half = max( 1.5f, cw * 0.28f );
++		const float xs1[4] = { cx - half - tw / 2, cx - half + tw / 2, cx + tw / 2, cx - tw / 2 }, ys1[4] = { yb, yb, yb - h, yb - h };
++		const float xs2[4] = { cx - tw / 2, cx + tw / 2, cx + half + tw / 2, cx + half - tw / 2 }, ys2[4] = { yb - h, yb - h, yb, yb };
++		QuadPts( xs1, ys1, c );
++		QuadPts( xs2, ys2, c );
++		break;
++	}
++	case ACC_DIAER:
++	{
++		const float d = max( 1.5f, tw * 1.2f ), off = max( 1.5f, cw * 0.22f );
++		Fill( cx - off - d / 2, yb - d, d, d, c );
++		Fill( cx + off - d / 2, yb - d, d, d, c );
++		break;
++	}
++	case ACC_CEDIL:
++	{
++		const float top = y + lh * 0.66f, h = max( 2.0f, lh * 0.16f );
++		const float xs[4] = { cx - tw / 2, cx + tw / 2, cx - tw / 2 - h * 0.5f + tw, cx - tw / 2 - h * 0.5f }, ys[4] = { top, top, top + h, top + h };
++		QuadPts( xs, ys, c );
++		break;
++	}
++	}
++}
 +
 +static void TextClip( float x, float y, float maxX, const char *s, Col c, float scale = 1 )
 +{
@@ -1124,26 +1324,18 @@ index 0000000..5469c42
 +	}
 +	QueuedText &t = g_Texts[g_iTexts++];
 +	t.x = x; t.y = y; t.maxX = maxX; t.scale = Scaled( scale ) ? scale : 0.0f; t.c = c;
-+	int accents[4];
-+	const int na = Latin( s, t.s, sizeof( t.s ), accents, 4 );
-+	// (the accents: a short stroke rising to the right, centred over their e a pixel above its x-height, in the
-+	// text's colour. The font's x-height is about 0.35 of its line, from 0.30 of it down; the stroke is 60 % of that)
-+	const float k = t.scale ? t.scale : 1.0f, lh = gHUD.GetCharHeight() * k, cw = gHUD.GetCharWidth( 'e' ) * k;
++	Accent accents[MAX_ACCENTS];
++	const int na = Latin( s, t.s, sizeof( t.s ), accents, MAX_ACCENTS );
++	const float k = t.scale ? t.scale : 1.0f, lh = gHUD.GetCharHeight() * k;
 +	for ( int i = 0; i < na; i++ )
 +	{
-+		char prefix[96];
-+		memcpy( prefix, t.s, accents[i] );
-+		prefix[accents[i]] = 0;
-+		const float ex = x + DrawUtils::HudStringLen( prefix ) * k;
++		char prefix[sizeof( t.s )];
++		memcpy( prefix, t.s, accents[i].at );
++		prefix[accents[i].at] = 0;
++		const float ex = x + DrawUtils::HudStringLen( prefix ) * k, cw = gHUD.GetCharWidth( (unsigned char)t.s[accents[i].at] ) * k;
 +		if ( ex + cw > maxX )
 +			break;
-+		const float xh = lh * 0.35f, len = max( 2.5f, xh * 0.6f );
-+		const float tw = max( 1.2f, lh * 0.075f ); // (the stroke's width, across)
-+		const float dy = len * 0.86f, dx = len * 0.5f; // (rising at 60 degrees)
-+		const float cx = ex + cw * 0.5f, yb = y + lh * 0.30f - 2, yt = yb - dy; // (a pixel clear of the e)
-+		const float x0 = cx - dx / 2 - tw / 2, x1 = cx + dx / 2 - tw / 2;
-+		const float xs[4] = { x0, x0 + tw, x1 + tw, x1 }, ys[4] = { yb, yb, yt, yt };
-+		QuadPts( xs, ys, accentColour );
++		AccentAdd( accents[i], ex, y, lh, cw, accentColour );
 +	}
 +}
 +
@@ -1177,26 +1369,104 @@ index 0000000..5469c42
 +
 +static void TextRight( float rx, float y, const char *s, Col c, float scale = 1 ) { Text( rx - TextW( s, scale ), y, s, c, scale ); }
 +
-+// the text cut at a width, with an ellipsis
-+static void TextFit( float x, float y, const char *s, float w, Col c )
++// the length of s cut to at most n bytes, at a letter's start (not inside a UTF-8 sequence)
++static int CutAt( const char *s, int n )
 +{
-+	char buf[96];
-+	strncpy( buf, s, sizeof( buf ) - 1 );
-+	buf[sizeof( buf ) - 1] = 0;
++	while ( n > 0 && ( (unsigned char)s[n] & 0xC0 ) == 0x80 )
++		n--;
++	return n;
++}
++
++// the text cut at a width, with an ellipsis
++static void FitInto( const char *s, float w, char *buf, int size )
++{
++	int len = strlen( s );
++	if ( len > size - 1 )
++		len = CutAt( s, size - 1 );
++	memcpy( buf, s, len );
++	buf[len] = 0;
 +	if ( TextWidth( buf ) <= w )
-+	{
-+		Text( x, y, buf, c );
 +		return;
-+	}
-+	for ( int n = strlen( buf ); n > 0; n-- )
++	for ( int n = strlen( buf ); n > 0; n = CutAt( buf, n - 1 ))
 +	{
 +		buf[n] = 0;
++		while ( n > 0 && buf[n - 1] == ' ' )
++			buf[--n] = 0;
++		if ( n + 4 > size )
++			continue;
 +		strcat( buf, "..." );
 +		if ( TextWidth( buf ) <= w )
-+			break;
++			return;
 +		buf[n] = 0;
 +	}
++	buf[0] = 0;
++}
++
++static void TextFit( float x, float y, const char *s, float w, Col c )
++{
++	char buf[160];
++	FitInto( s, w, buf, sizeof( buf ));
 +	Text( x, y, buf, c );
++}
++
++// The text in lines of at most a width, cut at its spaces: at most maxLines (the last cut with an ellipsis if it is
++// still too long). Returns the lines' count.
++#define WRAP_LEN 160
++static int WrapLines( const char *s, float w, char lines[][WRAP_LEN], int maxLines )
++{
++	int n = 0;
++	while ( *s == ' ' )
++		s++;
++	while ( *s && n < maxLines )
++	{
++		if ( n == maxLines - 1 || TextWidth( s ) <= w )
++		{
++			FitInto( s, w, lines[n++], WRAP_LEN );
++			break;
++		}
++		// (the longest start of it, cut at a space, that fits; none: cut anywhere)
++		int best = 0;
++		for ( int i = 1; s[i] && i < WRAP_LEN - 1; i++ )
++		{
++			if ( s[i] != ' ' )
++				continue;
++			char part[WRAP_LEN];
++			memcpy( part, s, i );
++			part[i] = 0;
++			if ( TextWidth( part ) > w )
++				break;
++			best = i;
++		}
++		if ( !best )
++		{
++			FitInto( s, w, lines[n++], WRAP_LEN );
++			break;
++		}
++		memcpy( lines[n], s, best );
++		lines[n][best] = 0;
++		n++;
++		s += best;
++		while ( *s == ' ' )
++			s++;
++	}
++	return n;
++}
++
++// a text wrapped to a width, from its top left (align 0), right edge (1) or centre (2); returns the lines drawn
++static int TextWrap( float x, float y, const char *s, float w, Col c, int maxLines, float lineH, int align = 0 )
++{
++	char lines[4][WRAP_LEN];
++	const int n = WrapLines( s, w, lines, min( maxLines, 4 ));
++	for ( int i = 0; i < n; i++ )
++	{
++		if ( align == 1 )
++			TextRight( x, y + i * lineH, lines[i], c );
++		else if ( align == 2 )
++			TextCenter( x, y + i * lineH, lines[i], c );
++		else
++			Text( x, y + i * lineH, lines[i], c );
++	}
++	return n;
 +}
 +
 +static bool Hover( float x, float y, float w, float h ) { return g_cx >= x && g_cx < x + w && g_cy >= y && g_cy < y + h; }
@@ -1876,13 +2146,28 @@ index 0000000..5469c42
 +		TextCenter( cx, ty + 10, subtitle, Alpha( C_DIM, fade ));
 +}
 +
-+// a card: a model turning over its backdrop, its name under it; returns whether it was clicked
++// a card: a model turning over its backdrop, its name under it; returns whether it was clicked. wrap: its last line
++// on two lines (the cards of a row all alike, as their caller decides)
 +static bool Card( int slot, float x, float y, float w, float h, const char *model, int pose, const char *key, const char *name,
-+	const char *line1, const char *line2, Col accent, bool enabled, float fade )
++	const char *line1, const char *line2, Col accent, bool enabled, float fade, bool wrap = false )
 +{
 +	bool hover = enabled && Hover( x, y, w, h );
 +	int lh = LineHeight();
-+	float infoH = lh * ( line2 ? 4.6f : 3.4f );
++	// (its info lines under its name: line1 dim, line2 faint)
++	const char *info[3] = { line1, line2, NULL };
++	Col cols[3] = { C_DIM, C_FAINT, C_FAINT };
++	int count = line2 ? 2 : line1 ? 1 : 0;
++	char lines[2][WRAP_LEN];
++	if ( wrap && count )
++	{
++		const int last = count - 1;
++		const int n = WrapLines( info[last], w - 24, lines, 2 );
++		info[last] = n > 0 ? lines[0] : "";
++		info[last + 1] = n > 1 ? lines[1] : "";
++		cols[last + 1] = cols[last];
++		count++;
++	}
++	float infoH = lh * ( 2.2f + 1.2f * count );
 +	float hx = x + 1, hy = y + 1, hw = w - 2, hh = h - infoH - 1;
 +	Col back = hover ? Mix( C_PANEL, accent, 0.10f ) : C_PANEL;
 +	BackdropAdd( hx, hy, hw, hh, Alpha( back, fade * 0.92f ));
@@ -1896,11 +2181,18 @@ index 0000000..5469c42
 +	if ( key )
 +		KeyBadge( x + 12, ty, key, hover );
 +	Text( x + ( key ? 22 + TextWidth( key ) : 12 ), ty, name, Alpha( enabled ? ( hover ? C_GOLDT : C_TEXT ) : C_FAINT, fade ));
-+	if ( line1 )
-+		TextFit( x + 12, ty + lh * 1.3f, line1, w - 24, Alpha( C_DIM, fade ));
-+	if ( line2 )
-+		TextFit( x + 12, ty + lh * 2.4f, line2, w - 24, Alpha( C_FAINT, fade ));
++	for ( int i = 0; i < count; i++ )
++		TextFit( x + 12, ty + lh * ( 1.3f + 1.1f * i ), info[i], w - 24, Alpha( cols[i], fade ));
 +	return enabled && Clicked( x, y, w, h );
++}
++
++// "3 players"
++static void Players( char *buf, int size, int n )
++{
++	if ( French())
++		snprintf( buf, size, "%d joueur%s", n, n > 1 ? "s" : "" );
++	else
++		snprintf( buf, size, "%d player%s", n, n == 1 ? "" : "s" );
 +}
 +
 +// the team panel: the two sides, their models turning, how many play in each; auto-select, spectate
@@ -1908,7 +2200,7 @@ index 0000000..5469c42
 +{
 +	float fade = Fade();
 +	float sw = ScreenWidth, sh = ScreenHeight;
-+	Title( sh * 0.08f, "CHOOSE YOUR SIDE", "Click a side, or press its key", fade );
++	Title( sh * 0.08f, L( "CHOOSE YOUR SIDE", "CHOISIS TON CAMP" ), L( "Click a side, or press its key", "Clique sur un camp, ou appuie sur sa touche" ), fade );
 +	float cw = min( 340.0f, sw * 0.28f ), ch = min( 470.0f, sh * 0.6f ), gap = min( 48.0f, sw * 0.04f );
 +	float x0 = sw / 2 - cw - gap / 2, y0 = sh * 0.22f;
 +	float xs[2] = { x0, x0 + cw + gap };
@@ -1918,17 +2210,20 @@ index 0000000..5469c42
 +	int look = (int)( Now() / 3.5f ) % NUM_LOOKS; // (the side's looks, in turn)
 +	char model[64];
 +
-+	snprintf( l1, sizeof( l1 ), "%d player%s", nT, nT == 1 ? "" : "s" );
++	const char *goals[2] = { L( "Plant the bomb, hold the hostages", "Pose la bombe, garde les otages" ),
++		L( "Defuse the bomb, rescue the hostages", "D\xC3\xA9samorce la bombe, lib\xC3\xA8re les otages" ) };
++	const bool wrap = TextWidth( goals[0] ) > cw - 24 || TextWidth( goals[1] ) > cw - 24; // (a goal too long: both on two lines)
++	Players( l1, sizeof( l1 ), nT );
 +	snprintf( model, sizeof( model ), "models/player/%s/%s.mdl", g_Looks[0][look].model, g_Looks[0][look].model );
-+	if ( Card( 0, x0, y0, cw, ch, model, POSE_UPRIGHT, "1", "Terrorists", l1, "Plant the bomb, hold the hostages", C_TCOL, Allowed( 1 ), fade ))
++	if ( Card( 0, x0, y0, cw, ch, model, POSE_UPRIGHT, "1", L( "Terrorists", "Terroristes" ), l1, goals[0], C_TCOL, Allowed( 1 ), fade, wrap ))
 +	{
 +		Command( "jointeam %d", 1 );
 +		Close();
 +		return;
 +	}
-+	snprintf( l1, sizeof( l1 ), "%d player%s", nCT, nCT == 1 ? "" : "s" );
++	Players( l1, sizeof( l1 ), nCT );
 +	snprintf( model, sizeof( model ), "models/player/%s/%s.mdl", g_Looks[1][look].model, g_Looks[1][look].model );
-+	if ( Card( 1, x0 + cw + gap, y0, cw, ch, model, POSE_UPRIGHT, "2", "Counter-Terrorists", l1, "Defuse the bomb, rescue the hostages", C_CTCOL, Allowed( 2 ), fade ))
++	if ( Card( 1, x0 + cw + gap, y0, cw, ch, model, POSE_UPRIGHT, "2", L( "Counter-Terrorists", "Anti-terroristes" ), l1, goals[1], C_CTCOL, Allowed( 2 ), fade, wrap ))
 +	{
 +		Command( "jointeam %d", 2 );
 +		Close();
@@ -1938,7 +2233,7 @@ index 0000000..5469c42
 +	float by = y0 + ch + 22, bh = LineHeight() * 2.2f, bw = min( 210.0f, cw * 0.62f );
 +	int buttons = 1 + Allowed( 3 ) + Allowed( 6 ) + Allowed( 10 );
 +	float bx = sw / 2 - ( buttons * bw + ( buttons - 1 ) * 14 ) / 2;
-+	if ( Button( bx, by, bw, bh, "5", "Auto-select", Allowed( 5 ), C_GOLD ))
++	if ( Button( bx, by, bw, bh, "5", L( "Auto-select", "S\xC3\xA9lection auto" ), Allowed( 5 ), C_GOLD ))
 +	{
 +		Command( "jointeam %d", 5 );
 +		Close();
@@ -1957,7 +2252,7 @@ index 0000000..5469c42
 +	}
 +	if ( Allowed( 6 ))
 +	{
-+		if ( Button( bx, by, bw, bh, "6", "Spectate", true, C_GOLD ))
++		if ( Button( bx, by, bw, bh, "6", L( "Spectate", "Spectateur" ), true, C_GOLD ))
 +		{
 +			Command( "jointeam %d", 6 );
 +			Close();
@@ -1965,7 +2260,7 @@ index 0000000..5469c42
 +		}
 +		bx += bw + 14;
 +	}
-+	if ( Allowed( 10 ) && Button( bx, by, bw, bh, "0", "Cancel", true, C_GOLD ))
++	if ( Allowed( 10 ) && Button( bx, by, bw, bh, "0", L( "Cancel", "Annuler" ), true, C_GOLD ))
 +		Close();
 +}
 +
@@ -1975,7 +2270,7 @@ index 0000000..5469c42
 +	float fade = Fade();
 +	float sw = ScreenWidth, sh = ScreenHeight;
 +	int team = g_iClassTeam, lh = LineHeight();
-+	Title( sh * 0.06f, "CHOOSE YOUR LOOK", team ? "Counter-Terrorists" : "Terrorists", fade );
++	Title( sh * 0.06f, L( "CHOOSE YOUR LOOK", "CHOISIS TON APPARENCE" ), team ? L( "Counter-Terrorists", "Anti-terroristes" ) : L( "Terrorists", "Terroristes" ), fade );
 +	Col accent = team ? C_CTCOL : C_TCOL;
 +	// (two rows: Counter-Strike's looks, Half-Life's; keys 1 to 9, 0 at random)
 +	const int counts[2] = { CS_LOOKS, NUM_LOOKS - CS_LOOKS };
@@ -1991,6 +2286,9 @@ index 0000000..5469c42
 +		for ( int i = 0; i < counts[r]; i++ ) xs[r][i] = x0 + i * ( cw + gap );
 +	}
 +	ShadeAroundRows( xs[0], counts[0], cw, ys[0], ch, xs[1], counts[1], cw, ys[1], ch, Alpha( C_SHADE, fade ));
++	bool wrap = false; // (a note too long for one line: two for all)
++	for ( int i = 0; i < NUM_LOOKS; i++ )
++		wrap |= TextWidth( L( g_Looks[team][i].note )) > cw - 24;
 +	int index = 0;
 +	for ( int r = 0; r < 2; r++ )
 +	{
@@ -2001,7 +2299,7 @@ index 0000000..5469c42
 +			char model[64], key[4];
 +			snprintf( model, sizeof( model ), "models/player/%s/%s.mdl", l.model, l.model );
 +			snprintf( key, sizeof( key ), "%d", index + 1 );
-+			if ( Card( index, xs[r][i], ys[r], cw, ch, model, POSE_UPRIGHT, key, l.name, l.note, NULL, accent, Allowed( index + 1 ), fade ))
++			if ( Card( index, xs[r][i], ys[r], cw, ch, model, POSE_UPRIGHT, key, L( l.name ), L( l.note ), NULL, accent, Allowed( index + 1 ), fade, wrap ))
 +			{
 +				Command( "joinclass %d", index + 1 );
 +				Close();
@@ -2010,7 +2308,7 @@ index 0000000..5469c42
 +		}
 +	}
 +	float bw = 230;
-+	if ( Button( sw / 2 - bw / 2, ys[1] + ch + 16, bw, bh, "0", "Auto-select", Allowed( 10 ), C_GOLD ))
++	if ( Button( sw / 2 - bw / 2, ys[1] + ch + 16, bw, bh, "0", L( "Auto-select", "S\xC3\xA9lection auto" ), Allowed( 10 ), C_GOLD ))
 +	{
 +		Command( "joinclass %d", 10 );
 +		Close();
@@ -2029,8 +2327,10 @@ index 0000000..5469c42
 +{
 +	int lh = LineHeight();
 +	Text( x, y, label, C_DIM );
-+	float bx = x + w * 0.34f, bw = w * 0.42f;
-+	Bar( bx, y + lh / 2 - 3, bw, 6, value, c );
++	// (the bar shortened for a long figure: never under it)
++	float bx = x + max( w * 0.34f, TextWidth( label ) + 12.0f ), bw = min( w * 0.42f, x + w - TextWidth( text ) - 12 - bx );
++	if ( bw > 12 )
++		Bar( bx, y + lh / 2 - 3, bw, 6, value, c );
 +	TextRight( x + w, y, text, C_TEXT );
 +}
 +
@@ -2045,71 +2345,99 @@ index 0000000..5469c42
 +	ClientCmd( (char *)it.cmd );
 +}
 +
-+static void ItemFigures( float x, float y, float w, const BuyItem &it )
++// a decimal number as the language writes it: 1.5, 1,5
++static void Decimal( char *buf, int size, const char *fmt, float v )
++{
++	snprintf( buf, size, fmt, v );
++	if ( French())
++		for ( char *c = buf; *c; c++ )
++			if ( *c == '.' && c > buf && c[-1] >= '0' && c[-1] <= '9' )
++				*c = ',';
++}
++
++// (the lines of a text, lineH apart, that fit from y to bottom)
++static int LinesFit( float y, float bottom, float lineH )
++{
++	const float room = bottom - y, lh = LineHeight();
++	return room < lh ? 0 : 1 + (int)(( room - lh ) / lineH );
++}
++
++// (the figures from y down, to bottom at most: the notes wrapped in the room left)
++static void ItemFigures( float x, float y, float w, float bottom, const BuyItem &it )
 +{
 +	int lh = LineHeight();
-+	float row = lh * 1.55f;
 +	char text[48];
++	// (the rows closer on a short screen: the note's first line kept in the panel)
++	const int rows = it.health > 0 ? 5 : !it.damage ? 0 : 1 + ( it.cycle > 0 ) + ( it.armor > 0 && it.speed > 0 ) + ( it.range > 0 ) + ( it.speed > 0 ) + ( it.clip > 0 || it.reserve > 0 );
++	float row = lh * 1.55f;
++	// (a companion's two notes — its own, how it follows —, an item's one: their room kept first)
++	const float notes = it.health > 0 ? lh * 2.6f : lh * 1.3f;
++	if ( rows && y + rows * row + notes > bottom )
++		row = max( lh * 1.05f, ( bottom - y - notes ) / rows );
 +	if ( it.health > 0 )
 +	{
 +		// (a Pokemon: its health, its attack's damage and pace, its reach, its speed)
 +		snprintf( text, sizeof( text ), "%d", it.health );
-+		StatRow( x, y, w, "Health", it.health / 240.0f, text, C_GREEN );
++		StatRow( x, y, w, L( "HP", "PV" ), it.health / 240.0f, text, C_GREEN );
 +		y += row;
 +		if ( it.pellets > 1 )
 +			snprintf( text, sizeof( text ), "%d x %d", (int)it.damage, it.pellets );
 +		else
 +			snprintf( text, sizeof( text ), "%d", (int)it.damage );
-+		StatRow( x, y, w, "Damage", it.damage * it.pellets / 60.0f, text, C_RED );
++		StatRow( x, y, w, L( "Damage", "D\xC3\xA9g\xC3\xA2ts" ), it.damage * it.pellets / 60.0f, text, C_RED );
 +		y += row;
-+		snprintf( text, sizeof( text ), "every %.1f s", it.cycle );
-+		StatRow( x, y, w, "Attack", 1.0f / it.cycle, text, C_GOLD );
++		Decimal( text, sizeof( text ), L( "every %.1f s", "toutes les %.1f s" ), it.cycle );
++		StatRow( x, y, w, L( "Attack", "Attaque" ), 1.0f / it.cycle, text, C_GOLD );
 +		y += row;
 +		snprintf( text, sizeof( text ), "%d m", (int)( it.range * 0.0254f + 0.5f )); // (inches)
-+		StatRow( x, y, w, "Range", it.range / 800.0f, text, C_CTCOL );
++		StatRow( x, y, w, L( "Range", "Port\xC3\xA9" "e" ), it.range / 800.0f, text, C_CTCOL );
 +		y += row;
 +		snprintf( text, sizeof( text ), "%d", (int)it.speed );
-+		StatRow( x, y, w, "Speed", ( it.speed - 180 ) / 140.0f, text, C_TEXT );
++		StatRow( x, y, w, L( "Speed", "Vitesse" ), ( it.speed - 180 ) / 140.0f, text, C_TEXT );
 +		y += row;
-+		TextFit( x, y + 2, it.note, w, C_TEXT );
-+		TextFit( x, y + 2 + lh * 1.35f, "Follows you; charges whoever you shoot or who hurts you", w, C_FAINT );
++		const float noteH = lh * 1.25f;
++		const int room = LinesFit( y + 2, bottom, noteH );
++		y += TextWrap( x, y + 2, L( it.note ), w, C_TEXT, room > 0 ? min( 2, max( 1, room - 1 )) : 0, noteH ) * noteH;
++		const int left = LinesFit( y + 2, bottom, noteH );
++		if ( left > 0 )
++			TextWrap( x, y + 2, L( "Follows you, charges whoever you shoot or who hurts you", "Te suit, attaque ta cible ou qui te blesse" ), w, C_FAINT, min( 2, left ), noteH );
 +		return;
 +	}
 +	if ( !it.damage )
 +	{
-+		Text( x, y, it.note, C_TEXT );
++		TextWrap( x, y, L( it.note ), w, C_TEXT, min( 3, LinesFit( y, bottom, lh * 1.35f )), lh * 1.35f );
 +		return;
 +	}
 +	if ( it.pellets > 1 )
 +		snprintf( text, sizeof( text ), "%d x %d", (int)it.damage, it.pellets );
 +	else
 +		snprintf( text, sizeof( text ), "%d", (int)it.damage );
-+	StatRow( x, y, w, "Damage", it.damage * it.pellets / 120.0f, text, C_RED );
++	StatRow( x, y, w, L( "Damage", "D\xC3\xA9g\xC3\xA2ts" ), it.damage * it.pellets / 120.0f, text, C_RED );
 +	y += row;
 +	if ( it.cycle > 0 )
 +	{
-+		snprintf( text, sizeof( text ), "%d rpm", (int)( 60 / it.cycle + 0.5f ));
-+		StatRow( x, y, w, "Fire rate", 60 / it.cycle / 900.0f, text, C_GOLD );
++		snprintf( text, sizeof( text ), L( "%d rpm", "%d coups/min" ), (int)( 60 / it.cycle + 0.5f ));
++		StatRow( x, y, w, L( "Fire rate", "Cadence" ), 60 / it.cycle / 900.0f, text, C_GOLD );
 +		y += row;
 +	}
 +	if ( it.armor > 0 && it.speed > 0 )
 +	{
 +		float pen = min( 1.0f, it.armor * 0.5f );
 +		snprintf( text, sizeof( text ), "%d%%", (int)( pen * 100 + 0.5f ));
-+		StatRow( x, y, w, "Armor piercing", pen, text, C_CTCOL );
++		StatRow( x, y, w, L( "Armor piercing", "Perforation" ), pen, text, C_CTCOL );
 +		y += row;
 +	}
 +	if ( it.range > 0 )
 +	{
 +		float kept = it.range * it.range; // (damage kept at 1000 units)
 +		snprintf( text, sizeof( text ), "%d%%", (int)( kept * 100 + 0.5f ));
-+		StatRow( x, y, w, "Range", kept, text, C_GREEN );
++		StatRow( x, y, w, L( "Range", "Port\xC3\xA9" "e" ), kept, text, C_GREEN );
 +		y += row;
 +	}
 +	if ( it.speed > 0 )
 +	{
 +		snprintf( text, sizeof( text ), "%d", (int)it.speed );
-+		StatRow( x, y, w, "Mobility", ( it.speed - 180 ) / 80.0f, text, C_TEXT );
++		StatRow( x, y, w, L( "Mobility", "Mobilit\xC3\xA9" ), ( it.speed - 180 ) / 80.0f, text, C_TEXT );
 +		y += row;
 +	}
 +	if ( it.clip > 0 || it.reserve > 0 )
@@ -2118,11 +2446,11 @@ index 0000000..5469c42
 +			snprintf( text, sizeof( text ), "%d / %d", it.clip, it.reserve );
 +		else
 +			snprintf( text, sizeof( text ), "%d", it.reserve );
-+		Text( x, y, it.clip > 0 ? "Magazine" : "Carried", C_DIM );
++		Text( x, y, it.clip > 0 ? L( "Magazine", "Chargeur" ) : L( "Carried", "En r\xC3\xA9serve" ), C_DIM );
 +		TextRight( x + w, y, text, C_TEXT );
 +		y += row;
 +	}
-+	Text( x, y + 2, it.note, C_FAINT );
++	TextWrap( x, y + 2, L( it.note ), w, C_FAINT, min( 2, LinesFit( y + 2, bottom, lh * 1.25f )), lh * 1.25f );
 +}
 +
 +// the buy panel: the categories, their items, the hovered one turning with its figures
@@ -2154,11 +2482,14 @@ index 0000000..5469c42
 +
 +	// header
 +	float hy = y0 + ( headH - LineHeight( Scaled( 1.7f ) ? 1.7f : 1 )) / 2;
-+	Text( x0 + 18, hy, "BUY", Alpha( C_GOLDT, fade ), 1.7f );
-+	Text( x0 + 22 + TextW( "BUY", 1.7f ) + 10, hy + LineHeight( Scaled( 1.7f ) ? 1.7f : 1 ) - lh - 1, "Anywhere, anytime  -  B, Esc or right click closes", Alpha( C_DIM, fade ));
++	const char *buy = L( "BUY", "ACHAT" );
++	Text( x0 + 18, hy, buy, Alpha( C_GOLDT, fade ), 1.7f );
 +	char sz[48];
 +	snprintf( sz, sizeof( sz ), "$ %d", money );
 +	TextRight( x0 + W - 18, hy, sz, Alpha( C_GREEN, fade ), 1.7f );
++	const float subX = x0 + 22 + TextW( buy, 1.7f ) + 10;
++	TextFit( subX, hy + LineHeight( Scaled( 1.7f ) ? 1.7f : 1 ) - lh - 1, L( "Anywhere, anytime  -  B, Esc or right click closes",
++		"Partout, \xC3\xA0 tout moment  -  B, \xC3\x89" "chap ou clic droit pour fermer" ), x0 + W - 18 - TextW( sz, 1.7f ) - 20 - subX, Alpha( C_DIM, fade ));
 +
 +	// tabs
 +	float ty = bodyY + 8, tabH = min( lh * 2.25f, ( bodyH - 16 ) / NUM_TABS - 2 ); // (ten: fitted to a short screen)
@@ -2173,8 +2504,8 @@ index 0000000..5469c42
 +		char key[4];
 +		snprintf( key, sizeof( key ), "%d", ( t + 1 ) % 10 ); // (the tenth: 0)
 +		KeyBadge( x0 + 14, ty + ( tabH - lh ) / 2, key, sel && g_iKeyLevel == 0 );
-+		Text( x0 + 40, ty + ( tabH - lh ) / 2, g_Tabs[t].title, Alpha( sel ? C_GOLDT : hover ? C_TEXT : C_DIM, fade ));
 +		snprintf( key, sizeof( key ), "%d", n );
++		TextFit( x0 + 40, ty + ( tabH - lh ) / 2, L( g_Tabs[t].title ), tabsW - 40 - 12 - TextWidth( key ) - 6, Alpha( sel ? C_GOLDT : hover ? C_TEXT : C_DIM, fade ));
 +		TextRight( x0 + tabsW - 12, ty + ( tabH - lh ) / 2, key, Alpha( C_FAINT, fade ));
 +		if ( Clicked( x0, ty, tabsW, tabH ) && t != g_iTab )
 +		{
@@ -2188,7 +2519,7 @@ index 0000000..5469c42
 +	// items
 +	int items[16], n = TabItems( g_iTab, items );
 +	float lx = x0 + tabsW + 1, ly = bodyY + 8, rowH = lh * 2.4f;
-+	Text( lx + 14, ly + 2, g_Tabs[g_iTab].menuTitle, Alpha( C_GOLDT, fade ));
++	TextFit( lx + 14, ly + 2, L( g_Tabs[g_iTab].menuTitle ), listW - 28, Alpha( C_GOLDT, fade ));
 +	ly += lh * 1.8f;
 +	int hovered = -1;
 +	for ( int i = 0; i < n; i++ )
@@ -2210,12 +2541,16 @@ index 0000000..5469c42
 +		float cy = ly + ( rowH - lh ) / 2;
 +		KeyBadge( lx + 16, cy, key, ( hover || focus ) && g_iKeyLevel == 1 );
 +		// (red only for the money; refused for another reason: dimmed, with why in a word)
-+		Text( lx + 42, cy, it.name, Alpha( afford ? (( hover || focus ) ? C_GOLDT : C_TEXT ) : refused ? C_DIM : C_FAINT, fade ));
 +		snprintf( sz, sizeof( sz ), "$%d", Price( it ));
 +		TextRight( lx + listW - 18, cy, sz, Alpha( afford ? C_GREEN : refused ? C_DIM : C_RED, fade ));
 +		const char *tag = ( refused || owned ) ? RefusalTag( it ) : 0;
++		float nameRight = lx + listW - 26 - TextWidth( sz );
 +		if ( tag )
-+			TextRight( lx + listW - 26 - TextWidth( sz ), cy, tag, Alpha( !strcmp( tag, "out" ) ? C_GOLD : C_DIM, fade ));
++		{
++			TextRight( nameRight, cy, tag, Alpha( CompanionOut( it ) ? C_GOLD : C_DIM, fade ));
++			nameRight -= TextWidth( tag ) + 10;
++		}
++		TextFit( lx + 42, cy, L( it.name ), nameRight - lx - 42, Alpha( afford ? (( hover || focus ) ? C_GOLDT : C_TEXT ) : refused ? C_DIM : C_FAINT, fade ));
 +		if ( hover && g_bClick )
 +			Buy( items[i] );
 +		ly += rowH + 3;
@@ -2235,53 +2570,88 @@ index 0000000..5469c42
 +		if ( it.model[0] )
 +			PreviewAdd( 0, it.model, px + 10, py + 10, pw - 20, ph - 20, it.pose, 0 );
 +		else
-+			TextCenter( px + pw / 2, py + ph / 2 - lh / 2, "no model to show", Alpha( C_FAINT, fade ));
++			TextCenter( px + pw / 2, py + ph / 2 - lh / 2, L( "no model to show", "aucun mod\xC3\xA8le \xC3\xA0 afficher" ), Alpha( C_FAINT, fade ));
 +		if ( Hover( px, py, pw, ph ))
-+			TextRight( px + pw - 10, py + ph - lh - 8, "drag to turn", Alpha( C_FAINT, fade ));
++			TextRight( px + pw - 10, py + ph - lh - 8, L( "drag to turn", "glisser pour tourner" ), Alpha( C_FAINT, fade ));
 +		float ix = dx + 22, iy = py + ph + 12, iw = dw - 44;
-+		Text( ix, iy, it.name, Alpha( C_GOLDT, fade ), 1.45f );
++		Text( ix, iy, L( it.name ), Alpha( C_GOLDT, fade ), 1.45f );
 +		snprintf( sz, sizeof( sz ), "$%d", Price( it ));
 +		bool refused = Refused( it ) || Full( it ), afford = !refused && Price( it ) <= money;
 +		TextRight( ix + iw, iy, sz, Alpha( afford ? C_GREEN : refused ? C_DIM : C_RED, fade ), 1.45f );
 +		iy += LineHeight( Scaled( 1.45f ) ? 1.45f : 1 ) + 4;
-+		char kind[96];
-+		snprintf( kind, sizeof( kind ), "%s%s", it.kind, it.team == ONLY_T ? "  -  Terrorists only" : it.team == ONLY_CT ? "  -  Counter-Terrorists only" : "" );
-+		Text( ix, iy, kind, Alpha( C_DIM, fade ));
++		// (its kind and the side it is for: on one line, or two when that is too long)
++		const char *side = it.team == ONLY_T ? L( "Terrorists only", "Terroristes uniquement" ) :
++			it.team == ONLY_CT ? L( "Counter-Terrorists only", "Anti-terroristes uniquement" ) : NULL;
++		char kind[160];
++		snprintf( kind, sizeof( kind ), "%s%s%s", L( it.kind ), side ? "  -  " : "", side ? side : "" );
++		if ( side && TextWidth( kind ) > iw )
++		{
++			TextFit( ix, iy, L( it.kind ), iw, Alpha( C_DIM, fade ));
++			iy += lh * 1.25f;
++			TextFit( ix, iy, side, iw, Alpha( C_DIM, fade ));
++		}
++		else
++			TextFit( ix, iy, kind, iw, Alpha( C_DIM, fade ));
 +		iy += lh * 1.9f;
-+		ItemFigures( ix, iy, iw, it );
++		ItemFigures( ix, iy, iw, y0 + H - footH - 4, it );
 +	}
 +
 +	// footer: ammo, close
 +	float fy = y0 + H - footH + ( footH - lh * 2.1f ) / 2, bh = lh * 2.1f;
++	// (the buttons as wide as their labels need, at least their usual widths)
++	const char *prim = L( "Primary ammo", "Munitions principales" ), *sec = L( "Secondary ammo", "Munitions secondaires" ), *close = L( "Close", "Fermer" );
++	const float pw1 = max( 190.0f, TextWidth( prim ) + TextWidth( "," ) + 46.0f ), pw2 = max( 200.0f, TextWidth( sec ) + TextWidth( "." ) + 46.0f );
++	const float cw1 = max( 130.0f, TextWidth( close ) + TextWidth( "B" ) + 46.0f );
 +	float bx = x0 + 14;
-+	if ( Button( bx, fy, 190, bh, ",", "Primary ammo", true, C_GOLD ))
++	if ( Button( bx, fy, pw1, bh, ",", prim, true, C_GOLD ))
 +		ClientCmd( "primammo" );
-+	bx += 200;
-+	if ( Button( bx, fy, 200, bh, ".", "Secondary ammo", true, C_GOLD ))
++	bx += pw1 + 10;
++	if ( Button( bx, fy, pw2, bh, ".", sec, true, C_GOLD ))
 +		ClientCmd( "secammo" );
-+	if ( Button( x0 + W - 14 - 130, fy, 130, bh, "B", "Close", true, C_GOLD ))
++	if ( Button( x0 + W - 14 - cw1, fy, cw1, bh, "B", close, true, C_GOLD ))
 +		Close();
 +
 +	// (the keys, or why a purchase failed: the server's word when it sent one, else what it would say; a centre
-+	// message of the server that came while the panel is open)
-+	const float noteRight = x0 + W - 14 - 130 - 16, noteLeft = x0 + 14 + 200 + 200 + 14;
++	// message of the server that came while the panel is open — on two lines when one is not enough)
++	const float noteRight = x0 + W - 14 - cw1 - 16, noteLeft = bx + pw2 + 14, noteW = noteRight - noteLeft;
++	const char *note = NULL; Col noteCol = C_FAINT;
++	char hint[96];
 +	if ( g_flNote >= 0 && Now() >= g_flNote && Now() - g_flNote < 2.5f && g_szNote[0] )
 +	{
-+		const float w = min( (float)TextWidth( g_szNote ), noteRight - noteLeft );
-+		TextFit( noteRight - w, fy + ( bh - lh ) / 2, g_szNote, noteRight - noteLeft, g_bNoteBad ? C_RED : C_GOLDT );
++		note = g_szNote;
++		noteCol = g_bNoteBad ? C_RED : C_GOLDT;
 +	}
 +	else if ( g_iFlashItem >= 0 && g_bFlashBad && Now() - g_flFlash < 1.5f )
-+		TextRight( noteRight, fy + ( bh - lh ) / 2, RefusalText( g_Items[g_iFlashItem] ), C_RED );
++	{
++		note = RefusalText( g_Items[g_iFlashItem] );
++		noteCol = C_RED;
++	}
 +	else
 +	{
-+		char hint[80];
-+		if ( g_iKeyLevel )
-+			snprintf( hint, sizeof( hint ), n > 1 ? "1-%d buy    0 categories    wheel, arrows: category" : "%d buy    0 categories    wheel, arrows: category", min( max( n, 1 ), 9 ));
-+		else if ( NUM_TABS >= 10 )
-+			snprintf( hint, sizeof( hint ), "1-9, 0 category    wheel, arrows: category" );
-+		else
-+			snprintf( hint, sizeof( hint ), "1-%d category    wheel, arrows: category", NUM_TABS );
-+		TextRight( x0 + W - 14 - 130 - 16, fy + ( bh - lh ) / 2, hint, Alpha( C_FAINT, fade ));
++		// (the hint, shorter when the whole one does not fit)
++		const int keys = min( max( n, 1 ), 9 );
++		for ( int shorter = 0; shorter < 2; shorter++ )
++		{
++			const char *more = shorter ? "" : L( "    wheel, arrows: category", "    molette, fl\xC3\xA8" "ches : cat\xC3\xA9gorie" );
++			if ( g_iKeyLevel )
++				snprintf( hint, sizeof( hint ), n > 1 ? L( "1-%d: buy    0: categories%s", "1-%d : acheter    0 : cat\xC3\xA9gories%s" ) : L( "%d: buy    0: categories%s", "%d : acheter    0 : cat\xC3\xA9gories%s" ), keys, more );
++			else if ( NUM_TABS >= 10 )
++				snprintf( hint, sizeof( hint ), L( "1-9, 0 category%s", "1-9, 0 cat\xC3\xA9gorie%s" ), more );
++			else
++				snprintf( hint, sizeof( hint ), L( "1-%d category%s", "1-%d cat\xC3\xA9gorie%s" ), NUM_TABS, more );
++			if ( TextWidth( hint ) <= noteW )
++				break;
++		}
++		note = hint;
++		noteCol = Alpha( C_FAINT, fade );
++	}
++	if ( note && noteW > 0 )
++	{
++		char lines[2][WRAP_LEN];
++		const int nl = WrapLines( note, noteW, lines, 2 );
++		const float lineH = lh * 1.1f, top = fy + ( bh - lh - ( nl - 1 ) * lineH ) / 2;
++		for ( int i = 0; i < nl; i++ )
++			TextRight( noteRight, top + i * lineH, lines[i], noteCol );
 +	}
 +
 +	// dragging the model turns it
@@ -2313,6 +2683,7 @@ index 0000000..5469c42
 +void ArsUI_Init( void )
 +{
 +	gEngfuncs.pfnRegisterVariable( "_ars_ui", "1", FCVAR_USERINFO );
++	g_pLang = gEngfuncs.pfnRegisterVariable( "ars_lang", "en", FCVAR_ARCHIVE | FCVAR_USERINFO ); // (en, fr: the mod's texts)
 +	gEngfuncs.pfnAddCommand( "+ars_click", ClickDown );
 +	gEngfuncs.pfnAddCommand( "-ars_click", ClickUp );
 +	HOOK_MESSAGE_FUNC( "PokeHP", PokeHP_Msg );
@@ -2387,6 +2758,7 @@ index 0000000..5469c42
 +}
 +
 +static bool PanelKey( int down, int keynum, const char *pszCurrentBinding, bool repeat );
++static bool EngineKeyDown( int keynum, const char *pszCurrentBinding, bool repeat );
 +
 +bool ArsUI_Key( int down, int keynum, const char *pszCurrentBinding )
 +{
@@ -2401,7 +2773,32 @@ index 0000000..5469c42
 +		BuildKeyPressed( keynum );
 +	if (( !down || g_iPanel == P_NONE ) && BuildKey( down, keynum, pszCurrentBinding ? pszCurrentBinding : "", repeat ))
 +		return true;
-+	return PanelKey( down, keynum, pszCurrentBinding, repeat );
++	if ( PanelKey( down, keynum, pszCurrentBinding, repeat ))
++		return true;
++	if ( down && keynum >= 0 && keynum < 256 )
++		return EngineKeyDown( keynum, pszCurrentBinding, repeat );
++	return false;
++}
++
++// A press the client did not take: the engine passes its release on only for a press the client took (key_game,
++// keys[].gamedown) — so, declined, B's "buy" opening the shop would leave B held here, its next press (closing the
++// shop) seen as an auto-repeat and swallowed. A binding of commands run on the press only (no +button) is run here,
++// as the engine would (Key_AddKeyCommands: Cbuf, the press only, its auto-repeats ignored), and the press taken: its
++// release comes back. The others (+buttons, the keys the engine handles itself or repeats): left to the engine, the
++// key forgotten (its release will not come).
++static bool EngineKeyDown( int keynum, const char *pszCurrentBinding, bool repeat )
++{
++	const char *b = pszCurrentBinding;
++	const bool own = keynum == K_ESCAPE || keynum == '`' || keynum == '~' || keynum == K_BACKSPACE || keynum == K_PAUSE
++		|| keynum == K_PGUP || keynum == K_KP_PGUP || keynum == K_PGDN || keynum == K_KP_PGDN;
++	if ( own || !b || !b[0] || strchr( b, '+' ))
++	{
++		g_bHeld[keynum] = false;
++		return false;
++	}
++	if ( !repeat )
++		ClientCmd( (char *)b );
++	return true;
 +}
 +
 +static bool PanelKey( int down, int keynum, const char *pszCurrentBinding, bool repeat )
@@ -2541,10 +2938,38 @@ index 0000000..5469c42
 +
 +// The server's centre messages while the buy panel is open (a purchase refused: "You have insufficient funds!"...):
 +// in the panel's footer, the item just bought flashed red, instead of over the panel
++static char g_szCenter[192]; static float g_flCenter = -1;
++static void DrawCenterMessage( void );
++
 +bool ArsUI_CenterPrint( const char *text )
 +{
-+	if ( g_iPanel != P_BUY || !text )
++	if ( !text )
 +		return false;
++	if ( g_iPanel != P_BUY )
++	{
++		// (a message with letters the engine's font lacks — the mod's own, in French: drawn here, where the engine's go;
++		// any other, Counter-Strike's included — a player's name in Cyrillic...: left to the engine, as it was)
++		bool latin = false;
++		for ( const unsigned char *c = (const unsigned char *)text; *c; )
++		{
++			if ( *c < 0x80 )
++			{
++				c++;
++				continue;
++			}
++			const int n = LatinSeq( c );
++			if ( !n )
++				return false;
++			latin = true;
++			c += n;
++		}
++		if ( !latin )
++			return false;
++		strncpy( g_szCenter, text, sizeof( g_szCenter ) - 1 );
++		g_szCenter[sizeof( g_szCenter ) - 1] = 0;
++		g_flCenter = Now();
++		return true;
++	}
 +	// (on one line, trimmed)
 +	int n = 0;
 +	for ( const char *c = text; *c && n < (int)sizeof( g_szNote ) - 1; c++ )
@@ -2622,6 +3047,7 @@ index 0000000..5469c42
 +	case P_CLASS: DrawClass(); break;
 +	case P_BUY: DrawBuy(); break;
 +	}
++	DrawCenterMessage();
 +	FlushShapes();
 +	FlushTexts();
 +	g_bClick = false;
@@ -2640,6 +3066,34 @@ index 0000000..5469c42
 +	}
 +	memcpy( g_Backdrops, g_BackdropsNext, sizeof( g_Backdrops ));
 +	g_iBackdrops = g_iBackdropsNext;
++}
++
++// a centre message drawn by the mod (ArsUI_CenterPrint): its lines centred, as the engine's, for a moment
++static void DrawCenterMessage( void )
++{
++	const float now = Now(), t = now - g_flCenter;
++	if ( g_flCenter < 0 || t < 0 || t > 2.5f || !g_szCenter[0] )
++	{
++		g_flCenter = -1;
++		return;
++	}
++	const int lh = LineHeight();
++	const Col c = Alpha( C_WHITE, 1 - Clamp01(( t - 2.0f ) / 0.5f ));
++	float y = ScreenHeight / 3; // (the engine's own centre messages' height)
++	for ( const char *p = g_szCenter; *p; )
++	{
++		char line[WRAP_LEN];
++		int len = 0;
++		while ( p[len] && p[len] != '\n' )
++			len++;
++		const int n = CutAt( p, min( len, WRAP_LEN - 1 ));
++		memcpy( line, p, n );
++		line[n] = 0;
++		y += TextWrap( ScreenWidth / 2, y, line, ScreenWidth - 40, c, 3, lh * 1.2f, 2 ) * lh * 1.2f;
++		p += len;
++		if ( *p == '\n' )
++			p++;
++	}
 +}
 +
 +// the server's text menus: a panel on the left, its title in gold, its keys as badges
@@ -2763,7 +3217,7 @@ index 0000000..5469c42
 +			strcpy( d.owner + len - 3, ".." );
 +	}
 +	const float gap = 5, dot = 3;
-+	d.wName = TextWidth( g_Species[p.species].name );
++	d.wName = TextWidth( L( g_Species[p.species].name ));
 +	d.wOwner = d.owner[0] ? TextW( d.owner, POKE_BAR_SMALL ) : 0;
 +	d.total = d.wName + ( d.wOwner > 0 ? gap * 2 + dot + d.wOwner : 0 );
 +	d.bw = 72 * k;
@@ -2829,7 +3283,7 @@ index 0000000..5469c42
 +	const int lh = LineHeight(), lhs = Scaled( POKE_BAR_SMALL ) ? LineHeight( POKE_BAR_SMALL ) : lh;
 +	const float gap = 5, dot = 3;
 +	float tx = (int)( d.sx - d.total / 2 ), ty = y - 3 - lh;
-+	Text( tx, ty, g_Species[p.species].name, Alpha( own ? C_GOLDT : C_TEXT, a ));
++	Text( tx, ty, L( g_Species[p.species].name ), Alpha( own ? C_GOLDT : C_TEXT, a ));
 +	if ( d.wOwner > 0 )
 +	{
 +		float dx = tx + d.wName + gap;
@@ -3252,7 +3706,7 @@ index 0000000..5469c42
 +// BuildDeny (why a piece was refused).
 +//
 +static const char *const g_BuildModels[BUILD_PIECES] = { "models/build/wall.mdl", "models/build/floor.mdl", "models/build/ramp.mdl", "models/build/roof.mdl" };
-+static const char *const g_BuildNames[BUILD_PIECES] = { "Wall", "Floor", "Stairs", "Roof" };
++static const Str g_BuildNames[BUILD_PIECES] = { TR( "Wall", "Mur" ), TR( "Floor", "Sol" ), TR( "Stairs", "Escalier" ), TR( "Roof", "Toit" ) };
 +#define BUILD_HUD_SPRITE "sprites/build/hud.spr" // (one frame, 512 x 64, grey on black: the icons' rectangles below)
 +#define BUILD_ICON_BRICK 4
 +#define BUILD_ICON_BRICK_SMALL 5
@@ -3407,13 +3861,13 @@ index 0000000..5469c42
 +{
 +	switch ( reason )
 +	{
-+	case BUILD_NO_BRICKS: return "Not enough bricks";
-+	case BUILD_BLOCKED: return "Blocked";
-+	case BUILD_TOO_FAR: return "Too far";
-+	case BUILD_MY_CAP: return "You have built too many pieces";
-+	case BUILD_ALL_CAP: return "Too many pieces in this game";
-+	case BUILD_DISABLED: return "Building is off in this game";
-+	case BUILD_CANNOT: return "You can't build now";
++	case BUILD_NO_BRICKS: return L( "Not enough bricks", "Pas assez de briques" );
++	case BUILD_BLOCKED: return L( "Blocked", "Bloqu\xC3\xA9" );
++	case BUILD_TOO_FAR: return L( "Too far", "Trop loin" );
++	case BUILD_MY_CAP: return L( "You have built too many pieces", "Tu as construit trop de pi\xC3\xA8" "ces" );
++	case BUILD_ALL_CAP: return L( "Too many pieces in this game", "Trop de pi\xC3\xA8" "ces dans cette partie" );
++	case BUILD_DISABLED: return L( "Building is off in this game", "Construction d\xC3\xA9sactiv\xC3\xA9" "e dans cette partie" );
++	case BUILD_CANNOT: return L( "You can't build now", "Impossible de construire maintenant" );
 +	}
 +	return "";
 +}
@@ -4075,10 +4529,18 @@ index 0000000..5469c42
 +	// (the piece's name and, in red under it, why it may not go where the blueprint is: in the bar's row, right of the
 +	// bricks — not over the build tablet's screen, whose picture is the bar's middle; on a screen too narrow for that,
 +	// over the bar as a last resort)
-+	const char *name = g_BuildNames[g_iBuildPiece];
++	const char *name = L( g_BuildNames[g_iBuildPiece] );
 +	char title[64];
 +	snprintf( title, sizeof( title ), "%s", name );
-+	for ( char *c = title; *c; c++ ) if ( *c >= 'a' && *c <= 'z' ) *c -= 32;
++	for ( unsigned char *c = (unsigned char *)title; *c; c++ ) // (in capitals: a UTF-8 é to É too)
++	{
++		if ( *c >= 'a' && *c <= 'z' )
++			*c -= 32;
++		else if ( *c == 0xC3 && c[1] >= 0xA0 && c[1] <= 0xBE && c[1] != 0xB7 )
++			*++c -= 32;
++		else if ( *c == 0xC5 && c[1] == 0x93 ) // (œ to Œ)
++			*++c = 0x92;
++	}
 +	const bool denied = g_iBuildDeny && now - g_flBuildDeny < 1.6f && now >= g_flBuildDeny;
 +	const char *why = denied ? BuildReasonText( g_iBuildDeny ) : ( g_bBuildSpot && g_iBuildReason != BUILD_OK ) ? BuildReasonText( g_iBuildReason ) : NULL;
 +	if ( why && !why[0] )
@@ -4104,7 +4566,7 @@ index 0000000..5469c42
 +
 +	// (the keys, to the left)
 +	const float kx = x0 - 16;
-+	const char *const hints[3][2] = { { "R", "Rotate" }, { "LMB", "Build" }, { "F", "Exit" } };
++	const char *const hints[3][2] = { { "R", L( "Rotate", "Tourner" ) }, { L( "LMB", "Clic G" ), L( "Build", "Construire" ) }, { "F", L( "Exit", "Quitter" ) } };
 +	for ( int i = 0; i < 3; i++ )
 +	{
 +		const float y = y0 + S / 2 - 1.5f * ( lh + 6 ) + i * ( lh + 6 ) + 3;

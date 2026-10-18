@@ -25,6 +25,35 @@ index cab27a4..6671695 100644
  					return true;
  				}
  			}
+diff --git a/regamedll/dlls/ars_lang.h b/regamedll/dlls/ars_lang.h
+new file mode 100644
+index 0000000..1efba27
+--- /dev/null
++++ b/regamedll/dlls/ars_lang.h
+@@ -0,0 +1,23 @@
++/*
++*	Half Strike r12: English and French. The mod's client registers ars_lang (en, the default, or fr — the page sets it
++*	from the language the player chose) in the user info: the mod's own messages to a player follow that player's
++*	language (Counter-Strike's own, the game's titles.txt ones, are the game's). Bots and other clients: English.
++*/
++
++#pragma once
++
++// whether the player reads French (ars_lang fr in its user info)
++inline bool ARS_French(CBasePlayer *pPlayer)
++{
++	if (!pPlayer || !pPlayer->edict() || pPlayer->IsBot())
++		return false;
++
++	const char *pszLang = GET_KEY_VALUE(GET_INFO_BUFFER(pPlayer->edict()), "ars_lang");
++	return pszLang && !Q_strcmp(pszLang, "fr"); // (exactly fr, as the client's French())
++}
++
++// a message in the player's language
++inline const char *ARS_L(CBasePlayer *pPlayer, const char *pszEn, const char *pszFr)
++{
++	return ARS_French(pPlayer) ? pszFr : pszEn;
++}
 diff --git a/regamedll/dlls/bot/cs_bot_manager.cpp b/regamedll/dlls/bot/cs_bot_manager.cpp
 index 8c7c7a1..4fcb447 100644
 --- a/regamedll/dlls/bot/cs_bot_manager.cpp
@@ -294,10 +323,16 @@ index 5be847b..522a904 100644
  		}
  	}
 diff --git a/regamedll/dlls/client.cpp b/regamedll/dlls/client.cpp
-index b802a2e..42d5f60 100644
+index b802a2e..6203ec4 100644
 --- a/regamedll/dlls/client.cpp
 +++ b/regamedll/dlls/client.cpp
-@@ -83,6 +83,9 @@ int gmsgFog = 0;
+@@ -1,4 +1,5 @@
+ #include "precompiled.h"
++#include "ars_lang.h"
+ 
+ int gmsgWeapPickup = 0;
+ int gmsgHudText = 0;
+@@ -83,6 +84,9 @@ int gmsgFog = 0;
  int gmsgShowTimer = 0;
  int gmsgAccount = 0;
  int gmsgHealthInfo = 0;
@@ -307,7 +342,7 @@ index b802a2e..42d5f60 100644
  bool g_bClientPrintEnable = true;
  
  char *sPlayerModelFiles[] =
-@@ -101,6 +104,37 @@ char *sPlayerModelFiles[] =
+@@ -101,6 +105,37 @@ char *sPlayerModelFiles[] =
  	"models/player/militia/militia.mdl"    // CZ
  };
  
@@ -345,7 +380,7 @@ index b802a2e..42d5f60 100644
  bool g_skipCareerInitialSpawn = false;
  
  static entity_field_alias_t entity_field_alias[] =
-@@ -230,6 +264,18 @@ void LinkUserMessages()
+@@ -230,6 +265,18 @@ void LinkUserMessages()
  	gmsgAccount       = REG_USER_MSG("Account", 5);
  	gmsgHealthInfo    = REG_USER_MSG("HealthInfo", 5);
  #endif
@@ -364,7 +399,7 @@ index b802a2e..42d5f60 100644
  }
  
  void WriteSigonMessages()
-@@ -399,6 +445,102 @@ void EXT_FUNC __API_HOOK(ShowMenu)(CBasePlayer *pPlayer, int bitsValidSlots, int
+@@ -399,6 +446,110 @@ void EXT_FUNC __API_HOOK(ShowMenu)(CBasePlayer *pPlayer, int bitsValidSlots, int
  
  LINK_HOOK_VOID_CHAIN(ShowVGUIMenu, (CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu), pPlayer, MenuType, BitMask, szOldMenu);
  
@@ -378,31 +413,37 @@ index b802a2e..42d5f60 100644
 +	}
 +
 +	ShowMenu(pPlayer, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5 | MENU_KEY_6 | MENU_KEY_7 | MENU_KEY_8 | MENU_KEY_9 | MENU_KEY_0), -1, FALSE,
-+		"\\yBuy Item\\w\n\n1. Handgun\n2. Shotgun\n3. Sub-Machine Gun\n4. Rifle\n5. Machine Gun\n\n6. Primary weapon ammo\n7. Secondary weapon ammo\n\n8. Equipment\n9. Half-Life arsenal\n\n0. Exit");
++		(char *)ARS_L(pPlayer,
++			"\\yBuy Item\\w\n\n1. Handgun\n2. Shotgun\n3. Sub-Machine Gun\n4. Rifle\n5. Machine Gun\n\n6. Primary weapon ammo\n7. Secondary weapon ammo\n\n8. Equipment\n9. Half-Life arsenal\n\n0. Exit",
++			"\\yAcheter\\w\n\n1. Pistolet\n2. Fusil \xC3\xA0 pompe\n3. Mitraillette\n4. Fusil\n5. Mitrailleuse\n\n6. Munitions principales\n7. Munitions secondaires\n\n8. \xC3\x89quipement\n9. Arsenal Half-Life\n\n0. Quitter"));
 +}
 +
 +// Its categories, then their items (WEAPON_NONE: the MP5's grenades)
 +struct HLBuyItem
 +{
-+	const char *name;
++	const char *name, *nameFr; // (nameFr null: the same)
 +	WeaponIdType id;
 +	int price;
 +};
 +
 +struct HLBuyCategory
 +{
-+	const char *title;
++	const char *title, *titleFr;
 +	HLBuyItem items[5];
 +};
 +
 +static const HLBuyCategory HL_BuyCategories[] =
 +{
-+	{ "Melee and handguns", { { "Crowbar", WEAPON_HL_CROWBAR, HL_CROWBAR_PRICE }, { "9mm Handgun", WEAPON_HL_GLOCK, HL_GLOCK_PRICE }, { ".357 Magnum", WEAPON_HL_PYTHON, HL_PYTHON_PRICE } } },
-+	{ "Rifles", { { "MP5", WEAPON_HL_MP5, HL_MP5_PRICE }, { "Shotgun", WEAPON_HL_SHOTGUN, HL_SHOTGUN_PRICE }, { "Crossbow", WEAPON_HL_CROSSBOW, HL_CROSSBOW_PRICE } } },
-+	{ "Heavy weapons", { { "Hornet Gun", WEAPON_HL_HORNETGUN, HL_HORNETGUN_PRICE }, { "Gauss", WEAPON_HL_GAUSS, HL_GAUSS_PRICE }, { "RPG", WEAPON_HL_RPG, HL_RPG_PRICE }, { "Egon", WEAPON_HL_EGON, HL_EGON_PRICE } } },
-+	{ "Explosives", { { "Hand Grenade", WEAPON_HL_HANDGRENADE, HL_HANDGRENADE_PRICE }, { "MP5 Grenade", WEAPON_NONE, HL_ARGRENADE_PRICE }, { "Satchel Charge", WEAPON_HL_SATCHEL, HL_SATCHEL_PRICE }, { "Tripmine", WEAPON_HL_TRIPMINE, HL_TRIPMINE_PRICE }, { "3 Snarks", WEAPON_HL_SNARK, HL_SNARK_PRICE } } },
-+	{ "Pokemon", { { "Pikachu", WEAPON_PK_PIKACHU, PK_PIKACHU_PRICE }, { "Charizard", WEAPON_PK_CHARIZARD, PK_CHARIZARD_PRICE }, { "Blastoise", WEAPON_PK_BLASTOISE, PK_BLASTOISE_PRICE } } },
-+	{ "Others", { { "Le M", WEAPON_LEM_LAPTOP, LEM_PRICE } } },
++	{ "Melee and handguns", "Corps \xC3\xA0 corps et pistolets", { { "Crowbar", "Pied-de-biche", WEAPON_HL_CROWBAR, HL_CROWBAR_PRICE }, { "9mm Handgun", "Pistolet 9 mm", WEAPON_HL_GLOCK, HL_GLOCK_PRICE },
++		{ ".357 Magnum", nullptr, WEAPON_HL_PYTHON, HL_PYTHON_PRICE } } },
++	{ "Rifles", "Fusils", { { "MP5", nullptr, WEAPON_HL_MP5, HL_MP5_PRICE }, { "Shotgun", "Fusil \xC3\xA0 pompe", WEAPON_HL_SHOTGUN, HL_SHOTGUN_PRICE }, { "Crossbow", "Arbal\xC3\xA8te", WEAPON_HL_CROSSBOW, HL_CROSSBOW_PRICE } } },
++	{ "Heavy weapons", "Armes lourdes", { { "Hornet Gun", nullptr, WEAPON_HL_HORNETGUN, HL_HORNETGUN_PRICE }, { "Gauss", nullptr, WEAPON_HL_GAUSS, HL_GAUSS_PRICE }, { "RPG", nullptr, WEAPON_HL_RPG, HL_RPG_PRICE },
++		{ "Egon", nullptr, WEAPON_HL_EGON, HL_EGON_PRICE } } },
++	{ "Explosives", "Explosifs", { { "Hand Grenade", "Grenade \xC3\xA0 main", WEAPON_HL_HANDGRENADE, HL_HANDGRENADE_PRICE }, { "MP5 Grenade", "Grenade MP5", WEAPON_NONE, HL_ARGRENADE_PRICE },
++		{ "Satchel Charge", "Charge explosive", WEAPON_HL_SATCHEL, HL_SATCHEL_PRICE }, { "Tripmine", "Mine laser", WEAPON_HL_TRIPMINE, HL_TRIPMINE_PRICE }, { "3 Snarks", nullptr, WEAPON_HL_SNARK, HL_SNARK_PRICE } } },
++	{ "Pokemon", "Pok\xC3\xA9mon", { { "Pikachu", nullptr, WEAPON_PK_PIKACHU, PK_PIKACHU_PRICE }, { "Charizard", "Dracaufeu", WEAPON_PK_CHARIZARD, PK_CHARIZARD_PRICE },
++		{ "Blastoise", "Tortank", WEAPON_PK_BLASTOISE, PK_BLASTOISE_PRICE } } },
++	{ "Others", "Autres", { { "Le M", nullptr, WEAPON_LEM_LAPTOP, LEM_PRICE } } },
 +};
 +
 +// (one menu id per category: Menu_BuyHLCategory to Menu_BuyHLCategoryLast, and a case for each in menuselect)
@@ -422,15 +463,16 @@ index b802a2e..42d5f60 100644
 +
 +static void HL_ShowArsenalMenu(CBasePlayer *pPlayer)
 +{
-+	char text[256] = "\\yHalf-Life arsenal\\w\n\n";
++	char text[384];
++	Q_strlcpy(text, ARS_L(pPlayer, "\\yHalf-Life arsenal\\w\n\n", "\\yArsenal Half-Life\\w\n\n"));
 +	int bits = MENU_KEY_0;
 +	for (int i = 0; i < int(ARRAYSIZE(HL_BuyCategories)); i++)
 +	{
-+		Q_snprintf(text + Q_strlen(text), sizeof(text) - Q_strlen(text), "%d. %s\n", i + 1, HL_BuyCategories[i].title);
++		Q_snprintf(text + Q_strlen(text), sizeof(text) - Q_strlen(text), "%d. %s\n", i + 1, ARS_L(pPlayer, HL_BuyCategories[i].title, HL_BuyCategories[i].titleFr));
 +		bits |= 1 << i;
 +	}
 +
-+	Q_strlcat(text, "\n0. Exit");
++	Q_strlcat(text, ARS_L(pPlayer, "\n0. Exit", "\n0. Quitter"));
 +	HL_ShowMenuText(pPlayer, bits, text);
 +}
 +
@@ -438,16 +480,17 @@ index b802a2e..42d5f60 100644
 +{
 +	const HLBuyCategory &category = HL_BuyCategories[iCategory];
 +	char text[512];
-+	Q_snprintf(text, sizeof(text), "\\yHalf-Life arsenal: %s\\w\n\n", category.title);
++	Q_snprintf(text, sizeof(text), ARS_L(pPlayer, "\\yHalf-Life arsenal: %s\\w\n\n", "\\yArsenal Half-Life : %s\\w\n\n"), ARS_L(pPlayer, category.title, category.titleFr));
 +
 +	int bits = MENU_KEY_0;
 +	for (int i = 0; i < int(ARRAYSIZE(category.items)) && category.items[i].name; i++)
 +	{
-+		Q_snprintf(text + Q_strlen(text), sizeof(text) - Q_strlen(text), "%d. %s\\R$%d\n", i + 1, category.items[i].name, category.items[i].price);
++		const HLBuyItem &item = category.items[i];
++		Q_snprintf(text + Q_strlen(text), sizeof(text) - Q_strlen(text), "%d. %s\\R$%d\n", i + 1, (item.nameFr && ARS_French(pPlayer)) ? item.nameFr : item.name, item.price);
 +		bits |= 1 << i;
 +	}
 +
-+	Q_strlcat(text, "\n0. Exit");
++	Q_strlcat(text, ARS_L(pPlayer, "\n0. Exit", "\n0. Quitter"));
 +	HL_ShowMenuText(pPlayer, bits, text);
 +}
 +
@@ -467,7 +510,7 @@ index b802a2e..42d5f60 100644
  void EXT_FUNC __API_HOOK(ShowVGUIMenu)(CBasePlayer *pPlayer, int MenuType, int BitMask, char *szOldMenu)
  {
  #ifdef REGAMEDLL_ADD
-@@ -1094,6 +1236,22 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
+@@ -1094,6 +1245,22 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
  	if (pPlayer->HasShield() && iWeapon == WEAPON_ELITE)
  		return false;
  
@@ -490,7 +533,7 @@ index b802a2e..42d5f60 100644
  	if (pPlayer->HasShield() && iWeapon == WEAPON_SHIELDGUN)
  		return false;
  
-@@ -1564,6 +1722,14 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
+@@ -1564,6 +1731,14 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
  	if (!CanBuyThis(pPlayer, weaponID))
  		return nullptr;
  
@@ -505,7 +548,7 @@ index b802a2e..42d5f60 100644
  	WeaponInfoStruct *info = GetWeaponInfo(weaponID);
  	if (!info || !info->entityName)
  		return nullptr;
-@@ -1615,6 +1781,23 @@ LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slo
+@@ -1615,6 +1790,23 @@ LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slo
  void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int slot)
  {
  	int numSkins = AreRunningCZero() ? CZ_NUM_SKIN : CS_NUM_SKIN;
@@ -529,7 +572,7 @@ index b802a2e..42d5f60 100644
  
  	struct
  	{
-@@ -1755,8 +1938,10 @@ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int
+@@ -1755,8 +1947,10 @@ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int
  	pPlayer->pev->body = 0;
  	pPlayer->m_iModelName = appearance.model_id;
  
@@ -542,7 +585,7 @@ index b802a2e..42d5f60 100644
  
  	if (CSGameRules()->m_bMapHasVIPSafetyZone)
  	{
-@@ -2095,14 +2280,14 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
+@@ -2095,14 +2289,14 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
  				if (AreRunningCZero())
  					ShowVGUIMenu(pPlayer, VGUI_Menu_Class_CT, (MENU_KEY_1 | MENU_KEY_2 | MENU_KEY_3 | MENU_KEY_4 | MENU_KEY_5 | MENU_KEY_6), "#CT_Select");
  				else
@@ -559,7 +602,7 @@ index b802a2e..42d5f60 100644
  				break;
  			}
  		}
-@@ -2296,6 +2481,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
+@@ -2296,6 +2490,10 @@ bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weap
  		return false;
  	}
  
@@ -570,7 +613,7 @@ index b802a2e..42d5f60 100644
  	// Purchase the ammo if the player has enough money
  	if (pPlayer->m_iAccount >= info->clipCost)
  	{
-@@ -2421,6 +2610,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
+@@ -2421,6 +2619,13 @@ BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
  	WeaponIdType weaponID = WEAPON_NONE;
  	const char *weaponFailName = BuyAliasToWeaponID(pszCommand, weaponID);
  
@@ -584,7 +627,7 @@ index b802a2e..42d5f60 100644
  	// Ok, we have weapon info ID.
  	if (weaponID != WEAPON_NONE)
  	{
-@@ -2935,6 +3131,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -2935,6 +3140,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				{
  					switch (slot)
  					{
@@ -600,7 +643,7 @@ index b802a2e..42d5f60 100644
  						case VGUI_MenuSlot_Buy_Pistol:
  						{
  							pPlayer->m_iMenu = Menu_BuyPistol;
-@@ -3064,6 +3269,29 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3064,6 +3278,29 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				}
  				break;
  			}
@@ -630,7 +673,7 @@ index b802a2e..42d5f60 100644
  			case Menu_BuyPistol:
  			{
  				if (canOpenOldMenu())
-@@ -3567,7 +3795,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3567,7 +3804,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  			{
  				if (pPlayer->m_signals.GetState() & SIGNAL_BUY)
  				{
@@ -639,7 +682,7 @@ index b802a2e..42d5f60 100644
  					pPlayer->m_iMenu = Menu_Buy;
  
  					if (TheBots)
-@@ -3646,6 +3874,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
+@@ -3646,6 +3883,15 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
  				}
  			}
  #endif
@@ -655,7 +698,7 @@ index b802a2e..42d5f60 100644
  			else
  			{
  				if (HandleBuyAliasCommands(pPlayer, pcmd))
-@@ -4029,6 +4266,16 @@ void ClientPrecache()
+@@ -4029,6 +4275,16 @@ void ClientPrecache()
  	for (i = 0; i < numPlayerModels; i++)
  		PRECACHE_MODEL(sPlayerModelFiles[i]);
  
@@ -672,7 +715,7 @@ index b802a2e..42d5f60 100644
  	if (AreRunningCZero())
  	{
  		for (i = FirstCustomSkin; i <= LastCustomSkin; i++)
-@@ -4493,7 +4740,10 @@ BOOL EXT_FUNC AddToFullPack(struct entity_state_s *state, int e, edict_t *ent, e
+@@ -4493,7 +4749,10 @@ BOOL EXT_FUNC AddToFullPack(struct entity_state_s *state, int e, edict_t *ent, e
  {
  	if (ent != host)
  	{
@@ -684,7 +727,7 @@ index b802a2e..42d5f60 100644
  			return FALSE;
  
  #ifdef REGAMEDLL_ADD
-@@ -4526,15 +4776,19 @@ BOOL EXT_FUNC AddToFullPack(struct entity_state_s *state, int e, edict_t *ent, e
+@@ -4526,15 +4785,19 @@ BOOL EXT_FUNC AddToFullPack(struct entity_state_s *state, int e, edict_t *ent, e
  	{
  		if (ent != host)
  		{
@@ -708,7 +751,7 @@ index b802a2e..42d5f60 100644
  			}
  		}
  	}
-@@ -4925,7 +5179,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
+@@ -4925,7 +5188,7 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
  				weapon->GetItemInfo(&II);
  #endif
  
@@ -717,7 +760,7 @@ index b802a2e..42d5f60 100644
  				{
  					auto item = &info[II.iId];
  
-@@ -5084,7 +5338,12 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
+@@ -5084,7 +5347,12 @@ void EXT_FUNC UpdateClientData(const edict_t *ent, int sendweapons, struct clien
  #endif
  				)
  			{
@@ -4641,15 +4684,16 @@ index 0000000..88d283d
 +#endif // BUILD_GRID_H
 diff --git a/regamedll/dlls/wpn_shared/wpn_hl.cpp b/regamedll/dlls/wpn_shared/wpn_hl.cpp
 new file mode 100644
-index 0000000..969b195
+index 0000000..fc82046
 --- /dev/null
 +++ b/regamedll/dlls/wpn_shared/wpn_hl.cpp
-@@ -0,0 +1,4477 @@
+@@ -0,0 +1,4478 @@
 +// Half-Life arsenal (hl_weapons.h): the Half-Life SDK's weapons on Counter-Strike's weapon classes. Their fire events
 +// reach the shooter too (no FEV_NOTHOST: the client does not predict them); their timers are the decremented ones of
 +// Counter-Strike's weapons, their own delays in game time. Their entities are named with MAKE_STRING_CLASS: the game
 +// finds entities by classname in a table of its own, which a bare pev->classname does not enter.
 +#include "precompiled.h"
++#include "ars_lang.h"
 +
 +extern bool g_bClientPrintEnable; // (client.cpp)
 +
@@ -9070,7 +9114,7 @@ index 0000000..969b195
 +	if (!pPlayer->HasNamedPlayerItem("weapon_9mmAR"))
 +	{
 +		if (g_bClientPrintEnable)
-+			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "The MP5 grenades need the MP5");
++			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, ARS_L(pPlayer, "The MP5 grenades need the MP5", "Il faut le MP5 pour ses grenades"));
 +
 +		return false;
 +	}
@@ -9124,16 +9168,17 @@ index 0000000..969b195
 +}
 diff --git a/regamedll/dlls/wpn_shared/wpn_pokemon.cpp b/regamedll/dlls/wpn_shared/wpn_pokemon.cpp
 new file mode 100644
-index 0000000..e864dfe
+index 0000000..f38c69c
 --- /dev/null
 +++ b/regamedll/dlls/wpn_shared/wpn_pokemon.cpp
-@@ -0,0 +1,3940 @@
+@@ -0,0 +1,3950 @@
 +// Half Strike: Poke Balls and their Pokemon (pokemon.h). A ball is thrown as the Half-Life hand grenade; it opens and
 +// its Pokemon comes out, follows its player and fights the enemies its player shoots at or that hurt it or its player.
 +// Le M, summoned with a laptop, is a companion of the same kind (species PK_LEM): his own parts are marked "Le M".
 +// Entities are named with MAKE_STRING_CLASS (the game's classname table, as the Half-Life arsenal's), followed by entity
 +// handles, think every 0.1 s (the clients interpolate a step monster between thinks), allocate nothing while they live.
 +#include "precompiled.h"
++#include "ars_lang.h"
 +
 +extern bool g_bClientPrintEnable; // (client.cpp)
 +
@@ -9435,17 +9480,26 @@ index 0000000..e864dfe
 +	return nullptr;
 +}
 +
++// (a species' name in the player's language: Pikachu, Dracaufeu, Tortank, Le M in French)
++static const char *PK_NameFor(CBasePlayer *pPlayer, int iSpecies)
++{
++	static const char *const namesFr[PK_NUM_SPECIES] = { "Pikachu", "Dracaufeu", "Tortank", "Le M" };
++	return ARS_L(pPlayer, PK_Info(iSpecies).name, namesFr[clamp(iSpecies, 0, PK_NUM_SPECIES - 1)]);
++}
++
 +// (what is in the way of another companion, for a message)
 +static const char *PK_OutMessage(CBasePlayer *pPlayer)
 +{
 +	CPokemon *pOut = PK_PokemonOf(pPlayer);
-+	return (pOut && PK_IsLeM(pOut->Species())) ? "Le M is already out" : "Your Pokemon is already out";
++	return (pOut && PK_IsLeM(pOut->Species())) ? ARS_L(pPlayer, "Le M is already out", "Le M est d\xC3\xA9j\xC3\xA0 sorti") :
++		ARS_L(pPlayer, "Your Pokemon is already out", "Ton Pok\xC3\xA9mon est d\xC3\xA9j\xC3\xA0 sorti");
 +}
 +
 +static const char *PK_CarriedMessage(CBasePlayer *pPlayer)
 +{
 +	CBasePlayerItem *pItem = PK_BallCarried(pPlayer);
-+	return (pItem && pItem->m_iId == WEAPON_LEM_LAPTOP) ? "You already carry Le M's laptop" : "You already carry a Poke Ball";
++	return (pItem && pItem->m_iId == WEAPON_LEM_LAPTOP) ? ARS_L(pPlayer, "You already carry Le M's laptop", "Tu portes d\xC3\xA9j\xC3\xA0 l'ordinateur de Le M") :
++		ARS_L(pPlayer, "You already carry a Poke Ball", "Tu portes d\xC3\xA9j\xC3\xA0 une Pok\xC3\xA9 Ball");
 +}
 +
 +static void PK_CenterPrint(CBasePlayer *pPlayer, const char *msg)
@@ -9945,7 +9999,7 @@ index 0000000..e864dfe
 +	// (one Pokemon at a time)
 +	if (PK_HasOut(m_pPlayer))
 +	{
-+		PK_CenterPrint(m_pPlayer, "Your Pokemon is already out");
++		PK_CenterPrint(m_pPlayer, ARS_L(m_pPlayer, "Your Pokemon is already out", "Ton Pok\xC3\xA9mon est d\xC3\xA9j\xC3\xA0 sorti"));
 +		m_flNextPrimaryAttack = GetNextAttackDelay(1.0f);
 +		return;
 +	}
@@ -10258,7 +10312,7 @@ index 0000000..e864dfe
 +		else
 +		{
 +			// (the screen back to the code at once: never "LE M ONLINE" when he is not)
-+			PK_CenterPrint(m_pPlayer, PK_HasOut(m_pPlayer) ? PK_OutMessage(m_pPlayer) : "No room for Le M there");
++			PK_CenterPrint(m_pPlayer, PK_HasOut(m_pPlayer) ? PK_OutMessage(m_pPlayer) : ARS_L(m_pPlayer, "No room for Le M there", "Pas de place pour Le M ici"));
 +			SendWeaponAnim(Seq(SEQ_IDLE));
 +			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + LEM_NO_ROOM_TIME;
 +			m_flNextPrimaryAttack = m_flNextSecondaryAttack = GetNextAttackDelay(LEM_NO_ROOM_TIME);
@@ -10560,7 +10614,7 @@ index 0000000..e864dfe
 +		pOwner->GiveNamedItem(info.weaponName);
 +
 +	char msg[96];
-+	Q_snprintf(msg, sizeof(msg), "No room for %s: the ball came back", info.name);
++	Q_snprintf(msg, sizeof(msg), ARS_L(pOwner, "No room for %s: the ball came back", "Pas de place pour %s : la Pok\xC3\xA9 Ball est revenue"), PK_NameFor(pOwner, m_iSpecies));
 +	PK_CenterPrint(pOwner, msg);
 +}
 +
