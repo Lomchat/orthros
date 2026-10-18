@@ -464,6 +464,27 @@ The ports share the Win32 runtime's origin (the owner's choice): their engine co
 storage and call the account's online-save API with the visitor's session. Account changes still require the password.
 The engine files are pinned by SHA-256 in `lock.json` and served only from releases a manifest names.
 
+## Languages (2026-10-18)
+
+A version offers French when its manifest says so: `"languages": ["en", "fr"]` and, in `goldsrc.languages.fr`, the
+engine's arguments (`-language french`: the menu's strings in `resource/*_french.txt`) and the folders laid over the
+game's (`overlays`: `{ "valve_french": "valve", "cstrike_french": "cstrike" }`). The page mounts each file of such a
+folder where the file it translates is (`languageFiles`, src/ports/goldsrc/files.js), and hides the language folders
+otherwise; the player's choice comes from the home card (`?gameLang=`).
+
+The French files are Valve's own, from the Steam depots of 2004-2009 kept on archive.org (Half-Life 72, Counter-Strike
+12, Blue Shift 131 for the newer shared menu strings; provenance and hashes in `data_installers/goldsrc-fr/provenance/`):
+Half-Life's subtitles and HUD texts (`titles.txt`), menus, chapter titles, loading pictures and its French voices
+(1,136 clips; about 18 sentence clips exist nowhere), Counter-Strike's HUD, menus and messages
+(`cstrike_french.txt`, 1,369 of 1,373 keys), its text menus, map briefings (19 of 26) and radio voices. Orthros adds
+what the engine's own menu needs: its strings (`tools/goldsrc/l10n/mainui-fr.py` → `mainui_french.txt`), its banner
+titles in the style of the English ones (`tools/goldsrc/l10n/banners.py` → `gfx/shell/head_*.tga`) and, in the
+French folders, the engine's conversion of the game's `liblist.gam` (`fs_make_gameinfo`) with
+`render_picbutton_text 1` — the main menu's buttons drawn as the official French words instead of the English
+pictures. `python3 -I tools/goldsrc/install-l10n.py data_installers/goldsrc-fr --apply` puts it all into
+`data_games/<game>/base/` (never replacing a different file). Counter-Strike's old text menus have no accents in
+Valve's French either (« Choisir une equipe »).
+
 ## The recovered Counter-Strike removed (2026-10-18)
 
 The owner removed the game `counter-strike` (its recovered browser modules, kept to compare). Its original files

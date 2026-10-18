@@ -52,4 +52,5 @@ Pages in English or French (`lang.js`: the visitor's choice on the home screen, 
 language is chosen on its home card among the version's (`languages`), shown in the header's tag:
 Windows games through their registry (`languageRegistryKey`, also on a required game's key — an expansion and its
 base game speak the same language), OpenMW through its language versions, GoldSrc through
-`goldsrc.languages.<code>` (`args`, `commands`, `extras` of the engine release) once French files exist for them.
+`goldsrc.languages.<code>` (`args`, `commands`, `extras` of the engine release, `overlays`: the language's folders over
+the game's — docs/browser-ports.md, "Languages").
