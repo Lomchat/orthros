@@ -257,8 +257,12 @@ async function start(m) {
   };
   const main = await mountFiles(manifestName, m.tree, true);
   gameStore = main.store; gameFilesStats = main.files.stats; primaryFiles = main.files;
+  // (a language's view of the game folder: files read under another name — languageFileAliases — and the files of the
+  // other languages left out — languageFiles: a patch's files for one language only, which its launcher would not install)
   const aliases = manifest.languageFileAliases?.[m.opts.gameLanguage];
-  const gameFiles = aliases ? new FileAliasBackend(main.files, aliases) : main.files;
+  const hidden = Object.entries(manifest.languageFiles ?? {}).filter(([code]) => code !== m.opts.gameLanguage).flatMap(([, paths]) => paths)
+    .filter((p) => !(manifest.languageFiles?.[m.opts.gameLanguage] ?? []).includes(p));
+  const gameFiles = aliases || hidden.length ? new FileAliasBackend(main.files, aliases ?? {}, hidden) : main.files;
   vfs.mount(manifest.mount, gameFiles);
   mountGameCdrom(vfs, manifest, gameFiles);
   for (const dependency of manifest.extraMounts ?? []) {

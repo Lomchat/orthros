@@ -82,6 +82,14 @@ export function loadGameFolder(gameDir) {
         }
       }
     }
+    // (files of the version for one language only — hidden from the game in the others)
+    if (manifest.languageFiles !== undefined) {
+      const lf = manifest.languageFiles;
+      if (!lf || Array.isArray(lf) || typeof lf !== 'object') fail(file, `${id}: languageFiles invalide`);
+      for (const [language, paths] of Object.entries(lf)) {
+        if (!manifest.languages?.includes(language) || !Array.isArray(paths) || !paths.every((p) => safePath(p) && resolveGameFile(manifest, p))) fail(file, `${id}: languageFiles.${language} : fichiers du jeu pour une langue de la version`);
+      }
+    }
     versions.set(id, { manifest, requires: requires ?? [] });
   }
   if (!versions.has(spec.defaultVersion)) fail(file, 'defaultVersion doit désigner une version');

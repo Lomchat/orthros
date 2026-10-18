@@ -8,7 +8,7 @@
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
     "defaultVersion": { "$ref": "#/$defs/id" },
-    "defaults": { "type": "object", "description": "Champs communs aux versions : runtime, goldsrc, mount, display, cover, coverFile, registry, cdrom, profileSeed, languageFileAliases, glWorker (false ou 0 : rendu Direct3D dans le fil de l'émulateur au lieu du worker de rendu, docs/render-worker.md), etc." },
+    "defaults": { "type": "object", "description": "Champs communs aux versions : runtime, goldsrc, mount, display, cover, coverFile, registry, cdrom, profileSeed, languageFileAliases, languageFiles, glWorker (false ou 0 : rendu Direct3D dans le fil de l'émulateur au lieu du worker de rendu, docs/render-worker.md), etc." },
     "versions": {
       "type": "array",
       "minItems": 1,
@@ -144,6 +144,12 @@
                 "additionalProperties": false
               }
             },
+            "additionalProperties": false
+          },
+          "languageFiles": {
+            "type": "object",
+            "description": "Pour chaque langue proposée, les fichiers du jeu propres à cette langue (un patch de traduction que son installeur ne pose que dans cette langue) : cachés au jeu quand une autre langue est choisie, sans modifier les fichiers installés. Également accepté dans defaults.",
+            "patternProperties": { "^[a-z]{2}(-[A-Z]{2})?$": { "type": "array", "items": { "type": "string", "minLength": 1 } } },
             "additionalProperties": false
           },
           "profileSeed": { "type": "boolean", "description": "false : aucun profil de premier lancement partagé pour ce jeu (src/host/profile-seed.js) — ni proposé à un profil vide, ni appris. Aussi dans defaults." },
