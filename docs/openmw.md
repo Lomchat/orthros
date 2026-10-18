@@ -92,6 +92,67 @@ The GOTY edition is available from [GOG](https://www.gog.com/en/game/the_elder_s
 and [Steam](https://store.steampowered.com/app/22320/). OpenMW is free; the retail game is not
 included. Keep installers and downloaded mod archives in `data_installers/openmw/`.
 
+## Interface addons
+
+The graphical English and French profiles also use these pinned, script-only UI addons:
+
+- [UI Modes](https://gitlab.com/modding-openmw/ui-modes), version 1.2,
+  commit `0ab8a8ea270b3ed354ab021ba766780a596e0bc7`. The author's package-registry
+  archive matches its published SHA-256
+  `1ac662d42e997313e1e083966729ee784f1100f867420536d9358bb767e611ed`.
+- [Questman](https://github.com/fixer-m/morrowind-questman), commit
+  `d96b75a5892ca9eea9eb282483506541e69b2ee8` (the source includes the 1.5 changes).
+  Its `src/` directory is the data root. This includes the French/German quest-detection
+  correction, absent from the older 1.3 GitHub release. Quest names, entries, NPC names and
+  faction names come from the loaded game data; the addon itself currently supplies English,
+  Russian and Polish labels, so French game text does not imply French addon buttons.
+- [Advanced World Map](https://github.com/Diject/openmw_advanced_world_map), commit
+  `951c05e92541630f108c94b9af290dddb1b8092d`. Install the repository's data root, including
+  its bundled world-map textures. The optional full local-map texture packages are separate.
+
+The engine already loads the MysticCards, DemonicLetters and DejaVuLGC Sans Mono TrueType
+fonts; no older font bundle is required. Quest Markers Plus is **not installed**: the Nexus
+archive requires authenticated download access; a normal sign-in submission failed its CAPTCHA,
+and no complete public source was found.
+Its downloaded dependencies alone must not be advertised as the compass addon.
+
+The addons are activated in both live Vanilla+ profiles; the original profiles stay unchanged.
+UI Modes opens the journal with `X` and the classic map with `M`. Advanced World Map has its
+own configurable map hotkey under Options → Scripts → Advanced World Map. Its default can
+also become `M`, so choose a free key such as `N` there if both map menus react. In its key
+widget, the first click clears an existing binding; click again to record a replacement.
+
+Validation on 2026-10-18: two real Chromium clients joined the same French Party, reached
+`Joined` / `simReady=1`, and listed each other, with no JavaScript or Lua errors. Questman
+visibly displayed “Rapport à Caius Cosadès”. One English client also joined successfully and
+registered all three addon settings pages. This validates startup and the French journal;
+it does not validate an entire campaign or every map feature. The full unit suite passed
+1,096 tests, zero failures, with three existing TODOs. Sanitized receipts and screenshots are
+kept in `build/proof/openmw-ui-20261018/`; original archives and the pre-install manifest are
+kept in `data_installers/openmw/`.
+
+### Headless simulation compatibility
+
+The pinned engine identifies its native simulation peers through `openmw.mp.isSystem()`.
+Unadapted UI scripts can reach graphics APIs on these peers and crash before `simReady`.
+`tools/openmw/guard-client-ui.mjs` accepts explicitly selected UI-only mods and adds a final
+`client-ui-compat` data root. It replaces their script configuration entry points with tiny
+wrappers: native simulation peers return an empty handler table, while browser clients
+execute the author's original module in the same context. Both sides load identical plugin
+bytes; no content-manifest exception or authentication bypass is introduced.
+Explicitly attached `CUSTOM` scripts retain their original registered filenames, so addon
+calls to `addScript`, `hasScript` and `removeScript` continue to resolve them.
+
+```sh
+node tools/openmw/guard-client-ui.mjs data_games/morrowind morrowind-goty-vanilla-plus-fr \
+  ui-modes questman advanced-world-map
+```
+
+Run this only after installing all selected UI addons. It preserves every original addon file,
+moves the enabled plugin selections into the generated root, and refuses an existing patch or
+unsupported declarations before changing the manifest. It must never be used to disable
+gameplay or quest scripts on the simulation peer.
+
 ## Installation and completion
 
 Use Node 24+ (`/usr/local/bin/node` on this server). All browser checks must use the shared slot wrapper.
