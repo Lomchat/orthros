@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { createServer } from '../src/host/server.js';
 import { openmwProblem, openmwWebText } from '../src/host/openmw.js';
@@ -71,6 +72,21 @@ test('the web adaptation namespaces HTTP paths and saves without changing guest 
   assert.match(result, /FS.readFile\('\/mwdata\/a'\)/);
   assert.match(result, /orthrosGetDB.call\(IDBFS, name === '\/userdata' \? "orthros-port:a:1"/);
   assert.match(result, /orthros-port:a:1:mp:bootfrag/);
+});
+
+test('world travel scopes destinations received through the engine protocol before rebooting', async () => {
+  const base = '/ports/openmw/sample-1/app';
+  const code = openmwWebText('async function rebootIntoWorld(wsUrl){ return wsUrl; }', base, 'save');
+  const context = { URL, location: new URL('https://games.example' + base + '/index.html') };
+  runInNewContext(code, context);
+  const travel = (url) => context.rebootIntoWorld(url);
+  assert.equal(await travel('wss://games.example/w/friend-1'), 'wss://games.example' + base + '/w/friend-1');
+  assert.equal(await travel('wss://games.example' + base + '/w/home'), 'wss://games.example' + base + '/w/home');
+  assert.equal(await travel('wss://elsewhere.example/w/friend-1'), 'wss://elsewhere.example/w/friend-1');
+  assert.equal(await travel('https://games.example/w/friend-1'), 'https://games.example/w/friend-1');
+  assert.equal(await travel('wss://games.example:8443/w/friend-1'), 'wss://games.example:8443/w/friend-1');
+  context.location = new URL('http://localhost:8080' + base + '/index.html');
+  assert.equal(await travel('ws://localhost:8080/w/local'), 'ws://localhost:8080' + base + '/w/local');
 });
 
 test('gateway HTTP proxy preserves streamed bytes, scopes world paths and cookies, and hides administration', async (t) => {

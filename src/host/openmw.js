@@ -49,7 +49,17 @@ export function openmwWebText(text, base, saveKey) {
     .replace(/(['"])omw-mp-session\1/g, (_m, q) => `${q}${saveKey}:session${q}`)
     .replace(/(['"])omw-launcher\1/g, (_m, q) => `${q}${saveKey}:launcher${q}`)
     // IDBFS normally names the database after its guest mount point (/userdata).
-    .replace("FS.mount(IDBFS, {}, '/userdata');", `var orthrosGetDB = IDBFS.getDB; IDBFS.getDB = function(name, callback) { return orthrosGetDB.call(IDBFS, name === '/userdata' ? ${JSON.stringify(saveKey)} : name, callback); }; FS.mount(IDBFS, {}, '/userdata');`);
+    .replace("FS.mount(IDBFS, {}, '/userdata');", `var orthrosGetDB = IDBFS.getDB; IDBFS.getDB = function(name, callback) { return orthrosGetDB.call(IDBFS, name === '/userdata' ? ${JSON.stringify(saveKey)} : name, callback); }; FS.mount(IDBFS, {}, '/userdata');`)
+    // JoinFriend also arrives inside the engine's WebSocket protocol, beyond the HTTP JSON
+    // adaptation below. Scope its destination at the page's world-travel boundary, before
+    // it is parked in the next boot fragment. Already scoped and foreign targets stay intact.
+    .replace('async function rebootIntoWorld(wsUrl){', `async function rebootIntoWorld(wsUrl){
+      var orthrosWorld = new URL(wsUrl, location.href);
+      if (/^wss?:$/.test(orthrosWorld.protocol) && orthrosWorld.host === location.host
+          && /^\\/w\\/[a-zA-Z0-9_-]+$/.test(orthrosWorld.pathname)) {
+        orthrosWorld.pathname = ${JSON.stringify(base)} + orthrosWorld.pathname;
+        wsUrl = orthrosWorld.href;
+      }`);
 }
 
 function responseJson(body, base) {
