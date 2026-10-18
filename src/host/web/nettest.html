@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<title>Orthros — test réseau</title>
+<title>Orthros</title>
 <style>
   body { background: #0b0e14; color: #dde3ea; font: 15px/1.5 system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; }
   h1 { font-size: 20px; color: #f0c674; }
@@ -12,16 +12,35 @@
 </style>
 </head>
 <body>
-<h1>Orthros — test du réseau (environ 1 minute)</h1>
-<p>Mesure la latence et le débit réel entre ce navigateur et le serveur, avec les mêmes requêtes que les jeux
-(plages de fichiers de jeu), puis envoie le résultat au serveur. Ne rien télécharger d'autre pendant le test.</p>
-<p><button id="go">Lancer le test</button></p>
+<h1 id="h"></h1>
+<p id="lead"></p>
+<p><button id="go"></button></p>
 <div id="sum" class="big"></div>
 <pre id="out"></pre>
 <script type="module">
 // Network diagnostic: latency (small API requests), then throughput of game-file ranges (/gamez/, as the games read
 // them) one at a time and four at a time; the result is shown and sent to /api/telemetry (event 'nettest').
+import { pickLang } from '/src/host/web/lang.js';
 const BLOCK = 1 << 20;
+// (the page's words: English or French, as the rest of Orthros — lang.js)
+const FR = pickLang() === 'fr';
+const T = FR ? {
+  h: 'Orthros — test du réseau (environ 1 minute)', go: 'Lancer le test', running: 'Test en cours…',
+  lead: 'Mesure la latence et le débit réel entre ce navigateur et le serveur, avec les mêmes requêtes que les jeux (plages de fichiers de jeu), puis envoie le résultat au serveur. Ne rien télécharger d’autre pendant le test.',
+  lat: (l) => `Latence (aller-retour) : min ${l.min} ms, médiane ${l.p50} ms, max ${l.max} ms`, req: (n, kb, ms) => `  requête ${n} : ${kb} Ko en ${ms} ms`,
+  seq: (r) => `Une requête à la fois : ${r.mbitps} Mbit/s (${r.mb} Mo en ${r.seconds} s)`, four: (mb, ms) => `  4 requêtes : ${mb} Mo en ${ms} ms`,
+  par: (r) => `Quatre requêtes à la fois : ${r.mbitps} Mbit/s (${r.mb} Mo en ${r.seconds} s)`, sum: (b, l) => `Débit : ${b} Mbit/s (≈ ${(b / 8).toFixed(1)} Mo/s) · latence ${l} ms`,
+  sent: '\nRésultat envoyé au serveur. Merci !', notSent: (x) => `\nEnvoi impossible (${x}).`, error: 'Erreur : ',
+} : {
+  h: 'Orthros — network test (about 1 minute)', go: 'Start the test', running: 'Testing…',
+  lead: 'Measures the latency and the real throughput between this browser and the server, with the same requests as the games (game file ranges), then sends the result to the server. Download nothing else during the test.',
+  lat: (l) => `Latency (round trip): min ${l.min} ms, median ${l.p50} ms, max ${l.max} ms`, req: (n, kb, ms) => `  request ${n}: ${kb} KB in ${ms} ms`,
+  seq: (r) => `One request at a time: ${r.mbitps} Mbit/s (${r.mb} MB in ${r.seconds} s)`, four: (mb, ms) => `  4 requests: ${mb} MB in ${ms} ms`,
+  par: (r) => `Four requests at a time: ${r.mbitps} Mbit/s (${r.mb} MB in ${r.seconds} s)`, sum: (b, l) => `Throughput: ${b} Mbit/s (≈ ${(b / 8).toFixed(1)} MB/s) · latency ${l} ms`,
+  sent: '\nResult sent to the server. Thank you!', notSent: (x) => `\nCould not send it (${x}).`, error: 'Error: ',
+};
+document.documentElement.lang = FR ? 'fr' : 'en';
+document.getElementById('h').textContent = T.h; document.getElementById('lead').textContent = T.lead; document.getElementById('go').textContent = T.go;
 const out = document.getElementById('out'), sum = document.getElementById('sum');
 const line = (s) => { out.textContent += s + '\n'; };
 const now = () => performance.now();
@@ -42,31 +61,31 @@ async function get(manifest, { path, block }, blocks) {
   return { ms, wire: wire || body.byteLength, raw: body.byteLength, ok: r.ok };
 }
 async function run() {
-  document.getElementById('go').disabled = true; out.textContent = ''; sum.textContent = 'Test en cours…';
+  document.getElementById('go').disabled = true; out.textContent = ''; sum.textContent = T.running;
   const res = { event: 'nettest', at: new Date().toISOString(), ua: navigator.userAgent, conn: navigator.connection ? { type: navigator.connection.effectiveType, downlink: navigator.connection.downlink, rtt: navigator.connection.rtt } : null };
   // latency
   const lat = [];
   for (let i = 0; i < 10; i++) { const t0 = now(); await fetch('/api/config', { cache: 'no-store' }); lat.push(now() - t0); }
   lat.sort((a, b) => a - b); res.latencyMs = { min: Math.round(lat[0]), p50: Math.round(lat[5]), max: Math.round(lat[9]) };
-  line(`Latence (aller-retour) : min ${res.latencyMs.min} ms, médiane ${res.latencyMs.p50} ms, max ${res.latencyMs.max} ms`);
+  line(T.lat(res.latencyMs));
   const { manifest, picks } = await ranges(); let k = 0;
   const next = () => picks[(k++) % picks.length];
   // one request at a time, 1 MiB each, for ~15 s or 40 requests
   let t0 = now(), wire = 0, n = 0; const seq = [];
-  while (n < 40 && now() - t0 < 15000) { const r = await get(manifest, next(), 1); wire += r.wire; n++; seq.push(Math.round(r.ms)); line(`  requête ${n} : ${(r.wire / 1024).toFixed(0)} Ko en ${Math.round(r.ms)} ms`); }
+  while (n < 40 && now() - t0 < 15000) { const r = await get(manifest, next(), 1); wire += r.wire; n++; seq.push(Math.round(r.ms)); line(T.req(n, (r.wire / 1024).toFixed(0), Math.round(r.ms))); }
   res.sequential = { requests: n, mb: +(wire / 1048576).toFixed(2), seconds: +((now() - t0) / 1000).toFixed(1), mbitps: +((wire * 8 / 1e6) / ((now() - t0) / 1000)).toFixed(2), ms: seq };
-  line(`Une requête à la fois : ${res.sequential.mbitps} Mbit/s (${res.sequential.mb} Mo en ${res.sequential.seconds} s)`);
+  line(T.seq(res.sequential));
   // four at a time, 1 MiB each, for ~20 s or 160 requests
   t0 = now(); wire = 0; n = 0;
-  while (now() - t0 < 20000 && n < 160) { const rs = await Promise.all([0, 1, 2, 3].map(() => get(manifest, next(), 1))); for (const r of rs) { wire += r.wire; n++; } line(`  4 requêtes : ${(rs.reduce((s, r) => s + r.wire, 0) / 1048576).toFixed(1)} Mo en ${Math.round(Math.max(...rs.map((r) => r.ms)))} ms`); }
+  while (now() - t0 < 20000 && n < 160) { const rs = await Promise.all([0, 1, 2, 3].map(() => get(manifest, next(), 1))); for (const r of rs) { wire += r.wire; n++; } line(T.four((rs.reduce((s, r) => s + r.wire, 0) / 1048576).toFixed(1), Math.round(Math.max(...rs.map((r) => r.ms))))); }
   res.parallel = { requests: n, mb: +(wire / 1048576).toFixed(2), seconds: +((now() - t0) / 1000).toFixed(1), mbitps: +((wire * 8 / 1e6) / ((now() - t0) / 1000)).toFixed(2) };
-  line(`Quatre requêtes à la fois : ${res.parallel.mbitps} Mbit/s (${res.parallel.mb} Mo en ${res.parallel.seconds} s)`);
+  line(T.par(res.parallel));
   const best = Math.max(res.sequential.mbitps, res.parallel.mbitps);
-  sum.textContent = `Débit : ${best} Mbit/s (≈ ${(best / 8).toFixed(1)} Mo/s) · latence ${res.latencyMs.p50} ms`;
-  try { const r = await fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: 'net-' + Math.random().toString(36).slice(2, 10), game: 'nettest', samples: [res] }) }); line(r.ok ? '\nRésultat envoyé au serveur. Merci !' : `\nEnvoi impossible (${r.status}).`); } catch (e) { line(`\nEnvoi impossible : ${e.message}`); }
+  sum.textContent = T.sum(best, res.latencyMs.p50);
+  try { const r = await fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: 'net-' + Math.random().toString(36).slice(2, 10), game: 'nettest', samples: [res] }) }); line(r.ok ? T.sent : T.notSent(r.status)); } catch (e) { line(T.notSent(e.message)); }
   document.getElementById('go').disabled = false;
 }
-document.getElementById('go').onclick = () => run().catch((e) => { line('Erreur : ' + (e?.message ?? e)); document.getElementById('go').disabled = false; });
+document.getElementById('go').onclick = () => run().catch((e) => { line(T.error + (e?.message ?? e)); document.getElementById('go').disabled = false; });
 </script>
 </body>
 </html>

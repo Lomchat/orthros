@@ -7,6 +7,33 @@ import { PerfWindow, compactPhase } from '../perf-summary.js';
 import { scanCodeOfVk } from '../../win32/vk-scan.js';
 import { benchNetwork, fmtRate, fmtBytes, received } from './net-status.js';
 import { AudioStats } from './sound.js';
+import { pickLang } from './lang.js';
+
+// (the page's words: English or French, as the rest of the page — lang.js)
+const FR = pickLang() === 'fr';
+const W = FR ? {
+  noList: (st) => `la liste des mesures est indisponible (HTTP ${st})`, noBench: (n, list) => `aucune mesure nommée « ${n} » — disponibles : ${list}`,
+  notFor: (n, m, v) => `la mesure « ${n} » est pour ${m}, pas ${v}`, cannot: (f, why) => `le scénario ${f} ne peut pas être joué ici : ${why}`, harnessOnly: (src) => `étape « ${src} » (banc de test seulement)`,
+  title: 'Mesure de performance', about: (m) => `Environ ${m} minute${m > 1 ? 's' : ''} (plus au premier lancement : les fichiers du jeu se téléchargent d’abord). Le jeu est joué automatiquement : ne touche ni à la souris ni au clavier et garde cet onglet au premier plan jusqu’au bilan.`,
+  start: 'Lancer la mesure', cancel: 'Annuler', running: 'Mesure en cours — ne touche à rien', stop: 'Arrêter la mesure', stoppedByPlayer: 'arrêtée par le joueur',
+  done: (ok, why) => (ok ? 'Mesure terminée' : `Mesure arrêtée (${why})`), gpuUnknown: 'GPU inconnu', cores: 'cœurs', render: 'rendu', inThread: 'dans le fil', display: 'affichage',
+  connection: 'connexion', roundTrip: 'aller-retour', receivedLine: (all, game, bg) => `${all} reçus (lectures du jeu ${game}, arrière-plan ${bg})`,
+  hidden: (s, b) => `attention : l’onglet a été masqué ${s} s / a perdu le focus ${b} fois : ces phases ne sont pas représentatives`,
+  head: ['phase', 'durée', 'img/s', 'image ms p50 / p90 / p99', '&gt;33 ms /min', '&gt;50', '&gt;100', 'GPU ms p50 / p99', 'dessins /image', 'image moyenne (ms)'],
+  sent: 'Les résultats ont été envoyés au serveur. Merci !', notSent: 'Les résultats n’ont pas pu être envoyés (télémétrie désactivée sur ce serveur) : utilise « Copier les résultats ».',
+  yours: 'Le jeu est à toi maintenant : clique dedans pour capturer la souris, Échap la libère.', copy: 'Copier les résultats', close: 'Fermer et jouer', copied: 'Copié', copyFailed: 'Échec de la copie',
+} : {
+  noList: (st) => `the list of measurements is unavailable (HTTP ${st})`, noBench: (n, list) => `no measurement named "${n}" — available: ${list}`,
+  notFor: (n, m, v) => `the measurement "${n}" is for ${m}, not ${v}`, cannot: (f, why) => `the scenario ${f} cannot be played here: ${why}`, harnessOnly: (src) => `step "${src}" (harness only)`,
+  title: 'Performance measurement', about: (m) => `About ${m} minute${m > 1 ? 's' : ''} (longer on a first launch: the game files download first). The game is played automatically: do not touch the mouse or the keyboard and keep this tab in front until the summary appears.`,
+  start: 'Start the measurement', cancel: 'Cancel', running: 'Measurement in progress — do not touch', stop: 'Stop the measurement', stoppedByPlayer: 'stopped by the player',
+  done: (ok, why) => (ok ? 'Measurement complete' : `Measurement stopped (${why})`), gpuUnknown: 'GPU unknown', cores: 'cores', render: 'render', inThread: 'in-thread', display: 'display',
+  connection: 'connection', roundTrip: 'round trip', receivedLine: (all, game, bg) => `${all} received (game reads ${game}, background ${bg})`,
+  hidden: (s, b) => `warning: the tab was hidden ${s} s / lost the focus ${b} time(s): those phases are not representative`,
+  head: ['phase', 'time', 'fps', 'frame ms p50 / p90 / p99', '&gt;33 ms /min', '&gt;50', '&gt;100', 'GPU ms p50 / p99', 'draws /frame', 'mean frame (ms)'],
+  sent: 'The results were sent to the server. Thank you!', notSent: 'The results could not be sent (telemetry is off on this server): use "Copy the results".',
+  yours: 'The game is yours now: click it to capture the mouse, Escape releases it.', copy: 'Copy the results', close: 'Close and play', copied: 'Copied', copyFailed: 'Copy failed',
+};
 
 export const BENCH_DIR = '/tools/scenarios/bench/';
 /** the pointer steps, and the least time between two of them (ms) */
@@ -18,15 +45,15 @@ const INPUT_KINDS = new Set(['move', 'click', 'rclick', 'down', 'up']), INPUT_GA
  */
 export async function loadBench(name, manifest = null, fetcher = fetch) {
   const res = await fetcher(BENCH_DIR + 'index.json');
-  if (!res.ok) throw new Error(`the list of measurements is unavailable (HTTP ${res.status})`);
+  if (!res.ok) throw new Error(W.noList(res.status));
   const list = (await res.json()).benches ?? [];
   const def = list.find((b) => b.name === name);
-  if (!def) throw new Error(`no measurement named "${name}" — available: ${list.map((b) => b.name).join(', ')}`);
-  if (manifest && !def.manifests.includes(manifest)) throw new Error(`the measurement "${name}" is for ${def.manifests.join(', ')}, not ${manifest}`);
+  if (!def) throw new Error(W.noBench(name, list.map((b) => b.name).join(', ')));
+  if (manifest && !def.manifests.includes(manifest)) throw new Error(W.notFor(name, def.manifests.join(', '), manifest));
   const text = await (await fetcher(BENCH_DIR + def.file)).text();
   const { steps, errors } = parseScenario(text);
   const bad = unsupportedSteps(steps);
-  if (errors.length || bad.length) throw new Error(`the scenario ${def.file} cannot be played here: ${[...errors, ...bad.map((s) => `step "${s.src}" (harness only)`)].join('; ')}`);
+  if (errors.length || bad.length) throw new Error(W.cannot(def.file, [...errors, ...bad.map((s) => W.harnessOnly(s.src))].join('; ')));
   return { ...def, manifest: manifest ?? def.manifests[0], steps };
 }
 
@@ -63,15 +90,15 @@ export class BenchRun {
   /** The banner before the start: what will happen; `onStart` once the player agrees (a click: audio may start). */
   intro(onStart, onCancel) {
     const minutes = Math.max(1, Math.round((this.def.minutes ?? this.def.maxSeconds / 60)));
-    this.el.innerHTML = `<div><b>Performance measurement</b> — ${esc(this.def.title ?? this.def.name)}</div><div class="st">About ${minutes} minute${minutes > 1 ? 's' : ''} (longer on a first launch: the game files download first). The game is played automatically: do not touch the mouse or the keyboard and keep this tab in front until the summary appears.</div><button id="benchStart">Start the measurement</button><button class="quiet" id="benchCancel">Cancel</button>`;
+    this.el.innerHTML = `<div><b>${W.title}</b> — ${esc(this.def.title ?? this.def.name)}</div><div class="st">${W.about(minutes)}</div><button id="benchStart">${W.start}</button><button class="quiet" id="benchCancel">${W.cancel}</button>`;
     this.el.querySelector('#benchStart').onclick = () => onStart();
     this.el.querySelector('#benchCancel').onclick = () => { this.el.remove(); onCancel?.(); };
   }
   /** The game is starting: the scenario's clock begins (its times count from the launch, as in the harness). */
   begin() {
     this.t0 = performance.now(); this.state.benchActive = true;
-    this.el.innerHTML = '<div><b>Measurement in progress — do not touch</b></div><div class="st"></div><button class="quiet" id="benchAbort">Stop the measurement</button>';
-    this.el.querySelector('#benchAbort').onclick = () => this.finish('aborted', 'stopped by the player');
+    this.el.innerHTML = `<div><b>${W.running}</b></div><div class="st"></div><button class="quiet" id="benchAbort">${W.stop}</button>`;
+    this.el.querySelector('#benchAbort').onclick = () => this.finish('aborted', W.stoppedByPlayer);
     this.onVis = () => { if (document.visibilityState === 'hidden') this.hiddenAt = performance.now(); else if (this.hiddenAt) { this.hiddenSeconds += (performance.now() - this.hiddenAt) / 1000; this.hiddenAt = null; } };
     this.onBlur = () => { this.blurs++; };
     document.addEventListener('visibilitychange', this.onVis); addEventListener('blur', this.onBlur);
@@ -165,14 +192,14 @@ export class BenchRun {
     const cls = (fps) => (fps >= 29.5 ? 'good' : fps >= 20 ? 'warn' : 'bad');
     const rows = r.phases.map((p) => `<tr><td>${esc(p.label)}</td><td>${p.seconds ?? '–'} s</td><td class="${cls(p.fps ?? 0)}">${p.fps ?? '–'}</td><td>${p.dt ? `${p.dt.p50} / ${p.dt.p90} / ${p.dt.p99}` : '–'}</td><td>${p.per33 ?? '–'}</td><td>${p.per50 ?? '–'}</td><td>${p.per100 ?? '–'}</td><td>${p.gpu?.state === 'on' && p.gpu.frames ? `${p.gpu.p50} / ${p.gpu.p99}` : p.gpu?.state === 'unavailable' ? 'n/a' : '–'}</td><td>${p.drawsPerFrame ?? '–'}</td><td class="l">${p.mean ? Object.entries(p.mean).slice(0, 3).map(([k, v]) => `${k} ${v}`).join(', ') : ''}</td></tr>`).join('');
     const e = r.env ?? {};
-    el.innerHTML = `<h2>Measurement ${r.outcome === 'done' ? 'complete' : `stopped (${esc(r.outcome)})`} — ${esc(r.title ?? r.bench)}</h2>
-<div class="m">${esc(r.detail ?? '')}${r.detail ? '\n' : ''}${esc(e.gpu ?? 'GPU unknown')} · ${e.cores ?? '?'} cores${e.memGB ? ` · ${e.memGB} GB` : ''} · ${esc(e.screen ?? '')} · render ${r.options?.renderWorker ? 'worker' : 'in-thread'} · display ${esc(r.display ?? '?')}${r.network?.bw ? `\nconnection ${fmtRate(r.network.bw)}${r.network.rtt ? `, round trip ${r.network.rtt} ms` : ''}: ${fmtBytes(r.network.demandBytes + r.network.bgBytes)} received (game reads ${fmtBytes(r.network.demandBytes)}, background ${fmtBytes(r.network.bgBytes)})` : ''}${r.interrupted.hiddenSeconds || r.interrupted.blurs ? `\nwarning: the tab was hidden ${r.interrupted.hiddenSeconds} s / lost the focus ${r.interrupted.blurs} time(s): those phases are not representative` : ''}</div>
-<table><tr><th>phase</th><th>time</th><th>fps</th><th>frame ms p50 / p90 / p99</th><th>&gt;33 ms /min</th><th>&gt;50</th><th>&gt;100</th><th>GPU ms p50 / p99</th><th>draws /frame</th><th>mean frame (ms)</th></tr>${rows}</table>
-<div class="m">${r.sent ? 'The results were sent to the server. Thank you!' : 'The results could not be sent (telemetry is off on this server): use "Copy the results".'}</div>
-<div class="m">The game is yours now: click it to capture the mouse, Escape releases it.</div>
-<button id="benchCopy">Copy the results</button><button class="quiet" id="benchClose">Close and play</button>`;
+    el.innerHTML = `<h2>${W.done(r.outcome === 'done', esc(r.outcome))} — ${esc(r.title ?? r.bench)}</h2>
+<div class="m">${esc(r.detail ?? '')}${r.detail ? '\n' : ''}${esc(e.gpu ?? W.gpuUnknown)} · ${e.cores ?? '?'} ${W.cores}${e.memGB ? ` · ${e.memGB} GB` : ''} · ${esc(e.screen ?? '')} · ${W.render} ${r.options?.renderWorker ? 'worker' : W.inThread} · ${W.display} ${esc(r.display ?? '?')}${r.network?.bw ? `\n${W.connection} ${fmtRate(r.network.bw)}${r.network.rtt ? `, ${W.roundTrip} ${r.network.rtt} ms` : ''}: ${W.receivedLine(fmtBytes(r.network.demandBytes + r.network.bgBytes), fmtBytes(r.network.demandBytes), fmtBytes(r.network.bgBytes))}` : ''}${r.interrupted.hiddenSeconds || r.interrupted.blurs ? `\n${W.hidden(r.interrupted.hiddenSeconds, r.interrupted.blurs)}` : ''}</div>
+<table><tr>${W.head.map((x) => `<th>${x}</th>`).join('')}</tr>${rows}</table>
+<div class="m">${r.sent ? W.sent : W.notSent}</div>
+<div class="m">${W.yours}</div>
+<button id="benchCopy">${W.copy}</button><button class="quiet" id="benchClose">${W.close}</button>`;
     document.body.appendChild(el);
-    el.querySelector('#benchCopy').onclick = async (ev) => { try { await navigator.clipboard.writeText(JSON.stringify(r, null, 1)); ev.target.textContent = 'Copied'; } catch { ev.target.textContent = 'Copy failed'; } };
+    el.querySelector('#benchCopy').onclick = async (ev) => { try { await navigator.clipboard.writeText(JSON.stringify(r, null, 1)); ev.target.textContent = W.copied; } catch { ev.target.textContent = W.copyFailed; } };
     // (the game is the player's from here: closing the summary captures the mouse, as a click in the game does)
     el.querySelector('#benchClose').onclick = () => { el.remove(); this.d.capture?.(); };
   }
