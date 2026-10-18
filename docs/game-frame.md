@@ -51,7 +51,8 @@ figures, a tip, the launch log. Windows and GoldSrc games start at once; OpenMW 
 Pages in English or French (`lang.js`: the visitor's choice on the home screen, else the browser's). The game's own
 language is chosen on its home card among the version's (`languages`), shown in the header's tag:
 Windows games through their registry (`languageRegistryKey`, also on a required game's key — an expansion and its
-base game speak the same language), OpenMW through its language versions, GoldSrc through
+base game speak the same language; a translation patch's own files, `languageFiles`, hidden in the other languages as
+its launcher would not install them; files read under another name, `languageFileAliases`), OpenMW through its language versions, GoldSrc through
 `goldsrc.languages.<code>` (`args`, `commands`, `extras` of the engine release, `overlays`: the language's folders over
 the game's — docs/browser-ports.md, "Languages").
 OpenMW's own engine interface (its loading screen, multiplayer tour, social panel, chat, messages, the character

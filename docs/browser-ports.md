@@ -475,8 +475,10 @@ otherwise; the player's choice comes from the home card (`?gameLang=`).
 The French files are Valve's own, from the Steam depots of 2004-2009 kept on archive.org (Half-Life 72, Counter-Strike
 12, Blue Shift 131 for the newer shared menu strings; provenance and hashes in `data_installers/goldsrc-fr/provenance/`):
 Half-Life's subtitles and HUD texts (`titles.txt`), menus, chapter titles, loading pictures and its French voices
-(1,136 clips; about 18 sentence clips exist nowhere), Counter-Strike's HUD, menus and messages
-(`cstrike_french.txt`, 1,369 of 1,373 keys), its text menus, map briefings (19 of 26) and radio voices. Orthros adds
+(1,136 clips; 18 sentence clips exist in no French release), Counter-Strike's HUD, menus and messages, its text
+menus, map briefings (all 25) and radio voices. `cstrike_french.txt` and six briefings are Valve's 2015 SteamPipe files
+(archive.org item `cs-1.6-language`: only the files dated by Valve's build, every other one byte-identical to the depots'):
+1,370 of 1,373 keys — the scoreboard's Money, HP and D. Kit came in English after 2015, never translated. Orthros adds
 what the engine's own menu needs: its strings (`tools/goldsrc/l10n/mainui-fr.py` → `mainui_french.txt`), its banner
 titles in the style of the English ones (`tools/goldsrc/l10n/banners.py` → `gfx/shell/head_*.tga`) and, in the
 French folders, the engine's conversion of the game's `liblist.gam` (`fs_make_gameinfo`) with
