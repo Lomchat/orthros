@@ -79,6 +79,12 @@ The engine, its corresponding source and native simulation image are pinned by
   The same two Orthros accounts then repeated the party check with the French graphics
   profile: both players present, reciprocal puppets, 41/61 mirrored actors and 850 mod asset
   URLs, with no page errors. Both clients were closed between language-profile tests.
+  Four characters were then retrieved through their Orthros sessions after both browsers
+  closed. The English graphical solo profile booted from its home card (6,585 observed draws).
+  A returning French character was selected with a normal pointer click after fixing the
+  covering loader, and reached `Joined` with `simReady=1`. The complete test suite passes:
+  1,094 passed, zero failed, three pre-existing TODOs. QA worlds and accounts were removed;
+  small proofs and pinned source receipts remain under `build/proof/openmw-full-mods-20261018/`.
 - A complete campaign and GPU performance on the player's machine remain unvalidated.
   Do not activate Atlas/MOP compatibility patches in the original profiles on their own.
 
