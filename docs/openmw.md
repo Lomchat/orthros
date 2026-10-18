@@ -130,7 +130,9 @@ paths, cookies, and WebSocket forwarding/origin rejection.
 World-travel replies can also arrive through the engine's WebSocket protocol, with a root
 `/w/<world>` destination. The served page scopes same-host WebSocket destinations at its
 reboot boundary before building the next boot fragment. HTTP JSON rewriting alone cannot
-cover this path. Already scoped URLs and other hosts/ports/protocols are left intact.
+cover this path. Already scoped URLs and other hosts/ports/protocols are left intact. The game page also scopes
+the engine glue’s upstream `omwmp:*` storage accesses through its Storage methods, so the
+native resume token and HTML ticket cleanup refer to the same installation-specific key.
 
 ```sh
 tools/with-browser-slot.sh node tools/openmw/check.mjs openmw-example-1.5.3 \
@@ -149,3 +151,42 @@ without a page error. Those accounts and worlds were scratch only and were remov
 Before marking Morrowind ready, verify two real browser clients in the same party: mutual
 movement, NPC simulation/combat, quest progression and saves after both clients reconnect.
 Also verify solo save/load and the selected visual mods. Measure client GPU performance then.
+
+
+### GOTY completion check, 2026-10-18
+
+`make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.
+The new world-travel regression exercises the adapted page function with a root WebSocket
+URL received from the engine, an already scoped URL, another host/port and both ws/wss.
+The fixes are deployed on the public HTTPS origin. A subsequent storage regression check
+also passed (all seven OpenMW tests): native-style token writes, HTML cleanup, legacy local
+storage cleanup and installation isolation use the same key.
+
+The original GOTY profile was checked with two separate account sessions in isolated Chromium
+contexts. Both came through the real password sign-in and character selector. New-game loading
+reached the prison ship; QA hooks were used to advance creation for the subsequent network
+checks, so this is not a full manual playthrough of the opening. Both characters were restored
+on fresh sign-in, became friends, and the guest joined the host's Party world through the
+engine's real `JoinFriend` event. Each client saw the other's player and 70 simulated actors.
+Real W-key input moved the host 236 units and the guest 143 units; the guest's position differed
+from its representation on the host by 6.6 units. A journal entry advanced through the engine
+from stage 10 to 20 and reached both clients. Both characters subsequently reconnected and
+recovered stage 20. This tests propagation and individual persistence, not the quest’s dialogue
+or simultaneous recovery after both clients disconnect.
+
+The native engine wrote its resume token under the installation-specific key in the actual
+browser. The pinned Lua client skips direct resume when a character id is explicit; reloads
+can therefore recover through a fresh ticket and another load. That recovery restored the
+same character and stage 20. Direct resume is not claimed. QA reloads replayed the parked
+fragment explicitly because the upstream automatic fragment gate ignores nonempty QA queries.
+
+These are software-rendering checks, not a client GPU benchmark: 640x480 initially, low tier,
+shadows/post-processing disabled, 4,096-unit view distance, and a smaller viewport for reconnect
+checks. The original browser settings remain available to players. The normal browser loading
+path and three GOTY masters/archives were exercised, without editing game files.
+
+The complete visual stack, full combat, long sessions, campaign completion and solo save/load
+remain to be checked. The complete Vanilla+ profile must remain unavailable until its missing
+archives and compatibility checks are finished. Small screenshots, state receipts and the test
+log are retained under `build/proof/openmw-goty-20261018/` for that follow-up; disposable installer
+copies, browser profiles and test accounts are removed.
