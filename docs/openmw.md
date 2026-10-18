@@ -27,10 +27,27 @@ The engine, its corresponding source and native simulation image are pinned by
   `234709b8b0f603430251eb4259eac355b400454413fb6c685b6d58a60738fb7b`.
   Selected parts: Core, Lake Fjalding Anti-Suck, Chuzei Fix, Better Vanilla Textures,
   Graphic Herbalism patch; the two supplied ESPs are enabled in that future stack.
-- Five mods are still missing: Patch for Purists, Morrowind Enhanced Textures, Glow in the
-  Dahrk, Graphic Herbalism and Familiar Faces. Nexus login was attempted with the supplied
-  account, but its CAPTCHA failed before authentication; the credentials were not verified
-  or saved. Obtain the five mod archives through a normal signed-in browser session.
+- Glow in the Dahrk 3.3.0 and Graphic Herbalism 1.04 are staged from the French Confrérie
+  des Traducteurs packages, translated by Redondepremière. The Glow mirror is linked by the
+  original author; Graphic Herbalism permits redistribution with attribution. Only the core
+  meshes, textures and documentation were copied; no MWSE scripts or optional plugins.
+  Archives, SHA-256 hashes, source selections and receipts are in `data_installers/openmw/`.
+  The source pages are [Brille dans le Noyr](https://www.confrerie-des-traducteurs.fr/morrowind/mods/1890/graphisme/environnement/brille_dans_le_noyr)
+  and [Récolte réaliste](https://www.confrerie-des-traducteurs.fr/morrowind/mods/1973/jouabilite/recolte_realiste).
+  Glow 3.x supports basic OpenMW window glow, but its author recommends 2.11.2: sunrays in
+  3.x cannot be toggled and the new MWSE interior-light features are unavailable. The staged
+  core remains unvalidated in the complete stack; prefer 2.11.2 when its archive is available.
+- Three mods remain missing: [Patch for Purists](https://www.nexusmods.com/morrowind/mods/45096?tab=files),
+  [Morrowind Enhanced Textures](https://www.nexusmods.com/morrowind/mods/46221?tab=files) and
+  [Familiar Faces](https://www.nexusmods.com/morrowind/mods/50093?tab=files). The MET 6.1 main
+  archive is listed as 2.4 GB; the optional MET 6 Atlas textures (279 MB) replace the older MET
+  textures shipped with Atlas and should load after it. Current original-asset profiles stay
+  available while the Vanilla+ profile remains incomplete. Nexus login previously failed at
+  its CAPTCHA before authentication; credentials have not been verified or saved. The public
+  GitHub repositories examined do not contain complete releases of these three mods. A fresh
+  ordinary Chromium login attempt also left Turnstile unverified; no CAPTCHA bypass tools
+  or third-party solvers were installed. Archive integrity and all 323 copied files were
+  checked, and the nine OpenMW tests pass. This is staging evidence, not full-stack play validation.
 - Neither the complete graphics stack nor a complete campaign has been validated. Do not
   activate Atlas/MOP compatibility patches in the original profile without their dependencies.
 
