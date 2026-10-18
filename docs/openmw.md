@@ -2,7 +2,7 @@
 
 The owner authorized an OpenMW port with faithful visual mods and multiplayer on 2026-10-15.
 This extends the third-party engine exception of D069. It does not change the Win32 runtime.
-The engine, its corresponding source and native simulation image are pinned by
+The engine release, source archive and native simulation image are pinned by
 `tools/openmw/lock.json` (OpenMW-Web v1.5.3). No third-party source is committed here.
 
 ## Current installation
@@ -130,6 +130,52 @@ it does not validate an entire campaign or every map feature. The full unit suit
 1,096 tests, zero failures, with three existing TODOs. Sanitized receipts and screenshots are
 kept in `build/proof/openmw-ui-20261018/`; original archives and the pre-install manifest are
 kept in `data_installers/openmw/`.
+
+### Additional quality-of-life addons
+
+The Vanilla+ language profiles also include four author-source packages, pinned on 2026-10-18:
+
+| Addon | Revision | Purpose |
+| --- | --- | --- |
+| [QuickSelect](https://github.com/voshond/openmw-quick-select) 1.0.28 | `cf36cf7b50b38a1cc2a5d8880164e18cd0992cbf` | Visible hotbars for items and spells; configurable assignments and counts |
+| [Take All](https://github.com/voshond/openmw-takeall) | `7ad8a014917898951e80dfb6d2150a12189efd4a` | One-key container/book pickup |
+| [Smart Ammo](https://gitlab.com/modding-openmw/smart-ammo) | `f7ed77ad8001b98ba37e8ae89a3bf22be466ae3b` | Automatically equips compatible ammunition and replaces an exhausted stack |
+| [RUN!](https://gitlab.com/modding-openmw/RUN) | `b09f87c35187aa203ef31c05587857d6b3aa361c` | Configurable sprinting that drains fatigue |
+
+Only the authors' release data roots are installed, excluding presentation content, videos,
+websites and developer tools. QuickSelect's generated `build_info.lua` follows its packaging
+script and identifies version 1.0.28. Source archives and SHA-256 receipts are kept in
+`data_installers/openmw/`. The four addons themselves total 404,344 uncompressed bytes.
+The original game data and original unmodded profiles remain unchanged.
+
+QuickSelect's `QuickKeys` window registration raises a Lua error on the headless simulation
+player. A separate `qol-client-ui-compat` root guards its six UI entry points with the same
+`openmw.mp.isSystem()` check as the earlier UI layer, using a distinct wrapper namespace.
+Take All's GLOBAL/CONTAINER declarations and Smart Ammo's GLOBAL declaration remain exactly
+as shipped; RUN's original player controller remains enabled. All clients and simulation peers
+use the same plugin bytes and content hashes.
+
+A separate player script supplies missing input bindings once: `R` for Take All, and Left Alt
+for RUN. It skips simulation peers, preserves an existing binding and records each migration
+so later player edits, including clearing a key, stay intact. Both are adjustable in Options →
+Scripts. QuickSelect opens its assignment window through the game's quick-key menu (`F1`);
+its hotbars use the number row, with Shift/Ctrl for the additional bars.
+
+Validation: QuickSelect's assignment window renders in French, Take All transfers a local
+container item, and Smart Ammo changes the equipped ammunition stack. Two isolated Chrome
+clients with the four addons joined the same French Party and exposed reciprocal player IDs.
+The final two-client check also loaded an experimental container overlay; it is **not** part of
+the installed pack. RUN loads and its binding is configured, but sustained sprinting has not
+been functionally confirmed. This does not validate a full campaign or every addon action.
+The full `make test` suite passes: 1,097 successful tests, no failures and three existing TODOs.
+
+Known limitation in the pinned multiplayer engine: its container watcher expires after
+15 seconds even while the container window remains open. A late local transfer can leave the
+server's contents stale. An experimental UI lease overlay passed a stubbed regression but did
+not establish a successful browser fix; it remains undeployed. Avoid leaving a shared loot
+window open for a long time. Diagnostic sources and receipts, marked NOT DEPLOYED, are kept
+in `build/proof/openmw-qol-20261018/`. Original packaged engine Lua hashes match the native
+image; the source archive's `fsroot` copies differ and must not be used as a patch base.
 
 ### Headless simulation compatibility
 
