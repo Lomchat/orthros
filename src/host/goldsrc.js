@@ -201,7 +201,7 @@ export function linkGameLayers(manifest, dest) {
  * (tools/goldsrc/server.mjs). A creation or a closing needs the page's origin; an address has one creation in flight
  * at a time (30 a minute in all). `handle(req, res, url)` answers or returns false.
  */
-export function roomsApi({ getManifest, request = managerRequest, now = () => Date.now() }) {
+export function roomsApi({ getManifest, request = managerRequest, now = () => Date.now(), identify = () => undefined }) {
   // (per address, the creation it has in flight — one at a time; every creation of the last minute, all addresses: a
   // flood guard. No delay between one's creations: one live room each is the manager's rule)
   const inFlight = new Set(), recent = [], PER_MINUTE = 30;
@@ -235,6 +235,8 @@ export function roomsApi({ getManifest, request = managerRequest, now = () => Da
     if (req.method !== 'POST') { send(405, { error: 'method' }); return true; }
     let sameOrigin = false; try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* no Origin: refused */ }
     if (!sameOrigin || !mp.rooms) { send(403, { error: 'forbidden' }); return true; }
+    // (on a server with accounts, a room is created by a signed-in player: identify() null)
+    if (identify(req) === null) { send(401, { error: 'signin' }); return true; }
     const who = clientAddress(req), t = now();
     while (recent.length && t - recent[0] > 60000) recent.shift();
     if (inFlight.has(who) || recent.length >= PER_MINUTE) { send(429, { error: 'wait' }); return true; }
@@ -279,7 +281,7 @@ export function managerRequest(port, method, body, where = '/rooms') {
  * elsewhere cannot use this server as a relay), at most `maxClients` at once, idle connections closed after two
  * minutes. `accept(req, socket)` completes the WebSocket handshake and returns a peer (lan.js).
  */
-export function udpRelay({ getManifest, accept, maxClients = 64, log = () => {} }) {
+export function udpRelay({ getManifest, accept, identify = () => undefined, maxClients = 64, log = () => {} }) {
   const clients = new Set();
   let serial = 0;
   const handle = (req, socket, url) => {
@@ -288,7 +290,8 @@ export function udpRelay({ getManifest, accept, maxClients = 64, log = () => {} 
     const man = getManifest(decodeURIComponent(m[1])), mp = man?.runtime === 'goldsrc' ? man.goldsrc?.multiplayer : null;
     let sameOrigin = false; try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* no Origin: refused */ }
     // (the refusal, then the socket closed for good: a client keeping its side open would hold it forever)
-    if (!mp || !sameOrigin || clients.size >= maxClients) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy()); return true; }
+    // (on a server with accounts, a signed-in player only: identify() null)
+    if (!mp || !sameOrigin || clients.size >= maxClients || identify(req) === null) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy()); return true; }
     const tagged = url.searchParams.has('rooms'), count = 1 + roomSlots(mp);
     // (each player its own loopback address: the engine limits queries and connections per address — one for all
     // would let one player's queries starve everyone's, the manager's included; 127.64.0.0/16, never 127.0.0.1)

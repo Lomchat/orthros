@@ -282,8 +282,9 @@ export function defineWinsock(WS, vm) {
   }];
 
   // ---- names: the own host has the LAN address
-  // (short: games take the host name as the default player name, in fields of ~10 characters)
-  const hostName = () => { const ip = lan()?.ip; if (!ip) return 'Orthros'; const [, , a, b] = ip.split('.').map(Number); return `Guest${a * 256 + b - 1}`; };
+  // (short: games take the host name as the default player name, in fields of ~10 characters — the player's Orthros
+  // account name as the server gave it, else GuestN)
+  const hostName = () => { const l = lan(), ip = l?.ip; if (!ip) return 'Orthros'; if (l.name) return l.name; const [, , a, b] = ip.split('.').map(Number); return `Guest${a * 256 + b - 1}`; };
   WS.gethostname = [2, (c) => { const n = hostName(); if (c.arg(1) <= n.length) return err(c, E.FAULT); mem.writeCString(c.arg(0), n, c.arg(1)); return 0; }];
   /** one hostent per process, rewritten by each call (as Windows' per-thread buffer) */
   const hostent = (c, name, ip) => {

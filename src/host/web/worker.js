@@ -138,6 +138,7 @@ async function flushProfile(force = false) {
     try { if (profile.dirs.has(k)) await dirOf(parts, true); else await (await dirOf(parts.slice(0, -1), false)).removeEntry(profile.names.get(k) ?? parts[parts.length - 1]); }
     catch { /* already so */ }
   }
+  if (dirty.size || changes.length) post({ type: 'profile-changed' }); // (the page sends the profile to the player's account a while after)
   for (const [key, f] of dirty) {
     try {
       const parts = key.split('/');
@@ -342,6 +343,8 @@ async function start(m) {
   // The player's pre-launch choice wins over settings saved by an earlier run of this version.
   if (manifest.languageRegistryKey && ['en', 'fr'].includes(m.opts.gameLanguage) && manifest.languages?.includes(m.opts.gameLanguage)) {
     vm.registry.setString(manifest.languageRegistryKey, 'Language', m.opts.gameLanguage === 'fr' ? 'French' : 'English');
+    // (a game mounted with it — an expansion's base game — speaks the same language)
+    for (const dep of manifest.extraMounts ?? []) if (dep.languageRegistryKey && dep.languages?.includes(m.opts.gameLanguage)) vm.registry.setString(dep.languageRegistryKey, 'Language', m.opts.gameLanguage === 'fr' ? 'French' : 'English');
   }
   const exePath = normalizeWin(manifest.mount + '\\' + manifest.exe);
   // (a snapshot of this game's machine, docs/snapshot.md: it goes on from there instead of starting)
@@ -924,7 +927,8 @@ function connectLan(h, room) {
     ws.onmessage = (e) => {
       if (typeof e.data === 'string') {
         let m; try { m = JSON.parse(e.data); } catch { return; }
-        if (m.type === 'hello') { lan.ip = m.ip; log('net', `LAN: address ${m.ip}, ${m.peers} player${m.peers > 1 ? 's' : ''} of this game on the server`); }
+        if (m.type === 'hello') { lan.ip = m.ip; lan.name = m.name ?? null; log('net', `LAN: address ${m.ip}${m.name ? ` (${m.name})` : ''}, ${m.peers} player${m.peers > 1 ? 's' : ''} of this game on the server`); }
+        if (m.type === 'refused') { lan.refused = true; log('net', `LAN: ${m.reason ?? 'refused'}`); post({ type: 'lan', ip: null, peers: 0, refused: true }); }
         if (m.peers !== undefined) { lan.peers = m.peers; post({ type: 'lan', ip: lan.ip, peers: m.peers }); }
         return;
       }
@@ -934,7 +938,8 @@ function connectLan(h, room) {
       vm?.lanDeliver?.(f[0], { ip: dv.getUint32(1, true), port: dv.getUint16(5) }, { ip: dv.getUint32(7, true), port: dv.getUint16(11) }, f.subarray(LAN.HEADER));
       h.wake?.();
     };
-    ws.onclose = (e) => { lan.ws = null; log('net', `LAN: link closed (${e.code}${e.reason ? ' ' + e.reason : ''}), reconnecting`); post({ type: 'lan', ip: null, peers: 0 }); setTimeout(open, 3000); };
+    // (refused — no Orthros account signed in: not again until the next start)
+    ws.onclose = (e) => { lan.ws = null; if (lan.refused) return; log('net', `LAN: link closed (${e.code}${e.reason ? ' ' + e.reason : ''}), reconnecting`); post({ type: 'lan', ip: null, peers: 0 }); setTimeout(open, 3000); };
   };
   open();
 }

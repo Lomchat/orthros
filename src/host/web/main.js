@@ -8,22 +8,89 @@ import { SummaryClock } from '../perf-summary.js';
 import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
 import { resumeOnGesture, soundHintNeeded, AudioStats } from './sound.js';
 import { PointerInput, winButton, cursorView } from './pointer.js';
-import { SNAPSHOT_PREFIX } from './data-store.js';
+import { SNAPSHOT_PREFIX, profileFiles, replaceProfile } from './data-store.js';
+import { createShell } from './shell.js';
+import { CloudSave } from './cloud-sync.js';
+import { pickLang } from './lang.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const headless = params.get('headless') === '1';
 const state = { status: 'menu', loadT0: performance.now(), loadPct: 0, stats: null, logs: [], exitCode: null, crash: null, worker: null, ctl: null, inputRing: null, head: 0, mode: { width: 1024, height: 768 }, pointerLocked: false };
 window.orthros = state;
+/** The frame around the game (shell.js): created when a game starts, none headless. */
+let shell = null, cloud = null;
+
+// ---------------------------------------------------------------- the page's words (English or French: lang.js)
+const lang = pickLang();
+const TEXT = {
+  en: {
+    cannotRun: 'Orthros cannot run here', noBench: 'This measurement cannot run',
+    exited: (t) => `${t} has exited`, exitCode: (c, r) => `exit code ${c}${r ? ` (${r})` : ''}`,
+    crashed: (t) => `${t} stopped on an emulation error`, crashDetail: 'the report below describes the state at the fault',
+    restart: 'Restart', fresh: 'Restart with a fresh game profile', freshTitle: 'the saved settings and saves are moved aside (kept), the game starts as on its first launch', back: 'Back to the games', freshing: 'moving the saved profile aside…',
+    noIsolation: 'the page is not cross-origin isolated (SharedArrayBuffer unavailable): serve it with Orthros\' server (COOP/COEP headers)',
+    noWebgl: 'WebGL 2 is unavailable (hardware acceleration disabled?)', noTail: 'this browser lacks WebAssembly tail calls: use a recent Chrome',
+    subtitle: 'running from its original files, in your browser',
+    steps: { files: 'Downloading the game files', code: 'Preparing the game\'s code', gfx: 'Compiling graphics shaders', boot: 'Starting the game' },
+    tips: [
+      'The first launch downloads the game files into this browser: the next ones start from its own copy, much faster.',
+      'Full screen (button above, or Alt+Enter) gives the game the whole screen and keeps the mouse in it; hold Esc to leave.',
+      'Signed in to Orthros, everyone playing this game on the server is on the same local network: in the game, Multiplayer → LAN shows their games.',
+      'The game runs entirely in your browser, from its original files: nothing is installed.',
+      'Signed in, your saves follow you: they are kept on your Orthros account and come back on any computer.',
+    ],
+    connecting: 'Connecting…', account: 'Checking your account\'s saves…', capture: 'Click the game to capture the mouse · Esc releases it · ⛶ for full screen',
+    downloading: (mb) => `Downloading the game files — ${mb}`, preparing: 'Preparing the game\'s code…', starting: 'Starting the game…', read: 'read', received: 'received',
+    paused: (t) => `${t} is paused while its window is inactive <small>click the game to resume</small>`,
+    loading: (t, s, mips, mb) => `${t} is loading…<br><small>${s} s · emulated CPU ${mips} MIPS · game files ${mb}</small>`,
+    preload: 'preloading', preloadTitle: 'game files downloaded ahead in the background: later screens and maps load faster',
+    lan: (ip, n) => `The local network of the players of this game on this server — your address: ${ip}. ${n} player${n > 1 ? 's' : ''} connected: in the game, Multiplayer → LAN / Network shows their games.`,
+    lanOff: 'Multiplayer: sign in to Orthros to join the local network of this game\'s players', lanOffShort: 'offline',
+    again: 'Click the game again to capture the mouse', released: 'Mouse released · click the game to capture it again',
+    lateTitle: 'A save on your account', lateText: (t) => `Your account already has a save of ${t}, different from this browser's. Restart with your account's save, or send this browser's one over it (the account's stays in its history)?`,
+    lateAccount: 'Restart with the account\'s save', lateDevice: 'Keep this browser\'s save',
+    panel: (f, mx, p99, s33, mips, disp, files, gl, clock) => `frame rate   ${f} fps\nworst frame  ${mx} ms (p99 ${p99} ms)\n>33 ms       ${s33} in the last 0.5 s\nemulated CPU ${mips} MIPS\ndisplay      ${disp}\ngame files   ${files}${gl}\n${clock}`,
+  },
+  fr: {
+    cannotRun: 'Orthros ne peut pas fonctionner ici', noBench: 'Cette mesure ne peut pas être lancée',
+    exited: (t) => `${t} s’est arrêté`, exitCode: (c, r) => `code de sortie ${c}${r ? ` (${r})` : ''}`,
+    crashed: (t) => `${t} s’est arrêté sur une erreur d’émulation`, crashDetail: 'le rapport ci-dessous décrit l’état au moment de l’erreur',
+    restart: 'Relancer', fresh: 'Relancer avec un profil de jeu neuf', freshTitle: 'les réglages et sauvegardes sont mis de côté (conservés), le jeu démarre comme à son premier lancement', back: 'Retour aux jeux', freshing: 'mise de côté du profil…',
+    noIsolation: 'la page n’est pas isolée (SharedArrayBuffer indisponible) : servez-la avec le serveur d’Orthros (en-têtes COOP/COEP)',
+    noWebgl: 'WebGL 2 est indisponible (accélération matérielle désactivée ?)', noTail: 'ce navigateur ne gère pas les appels terminaux WebAssembly : utilisez un Chrome récent',
+    subtitle: 'depuis ses fichiers d’origine, dans ton navigateur',
+    steps: { files: 'Téléchargement des fichiers du jeu', code: 'Préparation du code du jeu', gfx: 'Compilation des shaders', boot: 'Démarrage du jeu' },
+    tips: [
+      'Le premier lancement télécharge les fichiers du jeu dans ce navigateur : les suivants partent de sa copie, bien plus vite.',
+      'Le plein écran (bouton en haut, ou Alt+Entrée) donne tout l’écran au jeu et y garde la souris ; maintiens Échap pour en sortir.',
+      'Connecté à Orthros, tous ceux qui jouent à ce jeu sur le serveur sont sur le même réseau local : dans le jeu, Multijoueur → LAN montre leurs parties.',
+      'Le jeu tourne entièrement dans ton navigateur, depuis ses fichiers d’origine : rien n’est installé.',
+      'Connecté, tes sauvegardes te suivent : elles sont gardées sur ton compte Orthros et reviennent sur n’importe quel ordinateur.',
+    ],
+    connecting: 'Connexion…', account: 'Vérification des sauvegardes de ton compte…', capture: 'Clique dans le jeu pour capturer la souris · Échap la libère · ⛶ pour le plein écran',
+    downloading: (mb) => `Téléchargement des fichiers du jeu — ${mb}`, preparing: 'Préparation du code du jeu…', starting: 'Démarrage du jeu…', read: 'lus', received: 'reçus',
+    paused: (t) => `${t} est en pause tant que sa fenêtre est inactive <small>clique dans le jeu pour reprendre</small>`,
+    loading: (t, s, mips, mb) => `${t} charge…<br><small>${s} s · processeur émulé ${mips} MIPS · fichiers du jeu ${mb}</small>`,
+    preload: 'préchargement', preloadTitle: 'fichiers du jeu téléchargés d’avance en arrière-plan : les écrans et cartes suivants chargent plus vite',
+    lan: (ip, n) => `Le réseau local des joueurs de ce jeu sur ce serveur — ton adresse : ${ip}. ${n} joueur${n > 1 ? 's' : ''} connecté${n > 1 ? 's' : ''} : dans le jeu, Multijoueur → LAN / Réseau montre leurs parties.`,
+    lanOff: 'Multijoueur : connecte-toi à Orthros pour rejoindre le réseau local des joueurs de ce jeu', lanOffShort: 'hors ligne',
+    again: 'Clique de nouveau dans le jeu pour capturer la souris', released: 'Souris libérée · clique dans le jeu pour la capturer de nouveau',
+    lateTitle: 'Une sauvegarde sur ton compte', lateText: (t) => `Ton compte a déjà une sauvegarde de ${t}, différente de celle de ce navigateur. Relancer avec celle du compte, ou envoyer celle de ce navigateur par-dessus (celle du compte reste dans son historique) ?`,
+    lateAccount: 'Relancer avec celle du compte', lateDevice: 'Garder celle de ce navigateur',
+    panel: (f, mx, p99, s33, mips, disp, files, gl, clock) => `images/s      ${f}\npire image    ${mx} ms (p99 ${p99} ms)\n>33 ms        ${s33} sur les 0,5 dernières s\nCPU émulé     ${mips} MIPS\naffichage     ${disp}\nfichiers      ${files}${gl}\n${clock}`,
+  },
+}[lang];
 
 /** Centered message over the stage: progress while the game starts, or an error (with its report) that stays. */
 function showStatus(title, detail = '', report = null, error = false, restart = false) {
   const el = $('status');
   el.classList.remove('hidden'); el.classList.toggle('error', error);
   const [b, fresh, back] = el.querySelectorAll('button'); b.classList.toggle('hidden', !restart); b.onclick = () => location.reload();
+  b.textContent = TEXT.restart; fresh.textContent = TEXT.fresh; fresh.title = TEXT.freshTitle; back.textContent = TEXT.back;
   back.classList.toggle('hidden', !restart || headless); back.onclick = backToGames;
   fresh.classList.toggle('hidden', !restart || !state.manifest || headless);
-  fresh.onclick = async () => { fresh.disabled = true; fresh.textContent = 'moving the saved profile aside…'; await setProfileAside(state.manifest).catch(() => {}); location.reload(); };
+  fresh.onclick = async () => { fresh.disabled = true; fresh.textContent = TEXT.freshing; await setProfileAside(state.manifest).catch(() => {}); location.reload(); };
   el.querySelector('.title').textContent = title; el.querySelector('.detail').textContent = detail;
   const pre = el.querySelector('pre'); pre.classList.toggle('hidden', !report); pre.textContent = report ?? '';
 }
@@ -54,17 +121,17 @@ async function setProfileAside(name) {
 }
 /** What Orthros needs from the browser; the first missing piece, or null. */
 function missingFeature() {
-  if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') return 'the page is not cross-origin isolated (SharedArrayBuffer unavailable): serve it with Orthros\' server (COOP/COEP headers)';
-  if (typeof OffscreenCanvas === 'undefined' || !new OffscreenCanvas(1, 1).getContext('webgl2')) return 'WebGL 2 is unavailable (hardware acceleration disabled?)';
+  if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') return TEXT.noIsolation;
+  if (typeof OffscreenCanvas === 'undefined' || !new OffscreenCanvas(1, 1).getContext('webgl2')) return TEXT.noWebgl;
   // WASM tail calls (return_call_indirect): a module using one validates only where they are supported
   const tail = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 4, 4, 1, 112, 0, 1, 10, 9, 1, 7, 0, 65, 0, 19, 0, 0, 11]);
-  if (!WebAssembly.validate(tail)) return 'this browser lacks WebAssembly tail calls: use a recent Chrome';
+  if (!WebAssembly.validate(tail)) return TEXT.noTail;
   return null;
 }
 
 async function main() {
   const missing = missingFeature();
-  if (missing) { $('menu').classList.add('hidden'); showStatus('Orthros cannot run here', missing, null, true); return; }
+  if (missing) { $('menu').classList.add('hidden'); showStatus(TEXT.cannotRun, missing, null, true); return; }
   const config = await fetch('/api/config').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
   state.telemetry = !!config.telemetry && !headless;
   state.version = config.version ?? null; // (the served build: telemetry is read with it)
@@ -75,7 +142,6 @@ async function main() {
   state.prefetch = !!config.prefetch && state.encodedRanges && params.get('prefetch') !== '0'; // (learned background prefetch; ?prefetch=0: off) // (compressed game file ranges; ?encoded=0: plain Range requests)
   $('logToggle').onchange = () => { $('log').style.display = $('logToggle').checked ? 'block' : 'none'; };
   if (state.telemetry || params.has('bench')) state.envPromise = machine().then((e) => (state.env = e)); // (the machine, once: sent with the first telemetry batch)
-  $('tbPerf').onclick = () => $('perfPanel').classList.toggle('hidden');
   // ?bench=<name>: a scripted measurement of tools/scenarios/bench (bench.js, docs/real-machine-bench.md); ?manifest= picks one of its versions
   if (params.has('bench')) { await startBench(params.get('bench'), params.get('manifest')); return; }
   // the server's default game starts directly (a deployment for players); ?menu shows the picker
@@ -86,7 +152,7 @@ async function main() {
 /** Bench mode: the banner (a click starts it: audio may then play), then the game with the scenario's player. */
 async function startBench(name, manifest) {
   let def;
-  try { def = await loadBench(name, manifest); } catch (e) { showStatus('This measurement cannot run', e.message ?? String(e), null, true); return; }
+  try { def = await loadBench(name, manifest); } catch (e) { showStatus(TEXT.noBench, e.message ?? String(e), null, true); return; }
   const run = state.bench = new BenchRun(def, {
     state, push, EV, typeText, headless, log, capture: () => capturePointer(),
     postWorker: (m) => state.worker?.postMessage(m),
@@ -126,13 +192,26 @@ async function start(name, language = null) {
   if (!options.includes(language)) language = options.includes('en') ? 'en' : options[0] ?? null;
   state.gameLanguage = language;
   if (!headless) { const u = new URL(location.href); u.searchParams.delete('menu'); u.searchParams.set('manifest', name); if (language) u.searchParams.set('gameLang', language); history.replaceState(null, '', u.toString()); } // (a reload keeps the selected version and language)
-  const tree = await (await fetch(`/api/tree/${name}`)).json();
-  state.status = 'starting'; state.manifest = name;
+  const treeReq = fetch(`/api/tree/${name}`).then((r) => r.json());
   home?.destroy(); home = null; $('stage').classList.remove('hidden');
   state.title = manifest.name ?? name;
   // (headless: no header nor loading screen — the harness reads the stats, and screenshots the frame alone)
   if (headless) document.body.classList.add('nobar');
-  else { $('topbar').classList.remove('hidden'); $('tbGame').textContent = state.title; showLoader(name); }
+  else { makeShell(name, manifest, language); showLoader(name); }
+  // the player's saves on the account (cloud-sync.js): the account's copy in place before the game reads its profile
+  if (shell) {
+    const st = await shell.ready;
+    if (st.user) {
+      shell.progress(null, TEXT.account);
+      cloud = newCloud(name, st.user.username);
+      // (a restart asked to take the account's copy: so, without asking again)
+      let prefer = null; try { prefer = sessionStorage.getItem('orthros.preferAccount.' + name); sessionStorage.removeItem('orthros.preferAccount.' + name); } catch { /* none */ }
+      const what = await cloud.pull().catch((e) => { log('warn', `account saves: ${e.message}`); return 'offline'; });
+      if (what === 'conflict') { if (prefer) await cloud.resolve('account'); else await shell.resolveConflict(cloud); }
+    }
+  }
+  const tree = await treeReq;
+  state.status = 'starting'; state.manifest = name;
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
   state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer'); state.ctxVideo = $('vid').getContext('bitmaprenderer'); $('vid').style.visibility = 'hidden'; // (no movie from a previous run)
   resizeTo(manifest.display.width, manifest.display.height);
@@ -169,7 +248,7 @@ function resizeTo(w, h) {
 }
 function fit() {
   const { width: w, height: h } = state.mode;
-  const bar = headless || document.fullscreenElement || $('topbar').classList.contains('hidden') ? 0 : $('topbar').offsetHeight;
+  const bar = headless || document.fullscreenElement || !shell ? 0 : shell.bar.offsetHeight;
   const s = Math.min(innerWidth / w, (innerHeight - bar) / h, headless ? 1 : Infinity);
   const frame = $('frame');
   frame.style.transform = `scale(${s})`; frame.style.transformOrigin = 'center';
@@ -282,7 +361,8 @@ function onWorkerMessage(m) {
     case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : m.layer === 'video' ? 'vid' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : m.layer === 'video' ? state.ctxVideo : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
     case 'video': $('vid').style.visibility = m.visible ? 'visible' : 'hidden'; break; // (a movie's video window, above the game's layers: quartz.js)
     case 'mode': resizeTo(m.width, m.height); break;
-    case 'lan': { state.lan = { ip: m.ip, peers: m.peers }; const el = $('tbLan'); el.classList.toggle('hidden', !m.ip || headless); el.querySelector('b').textContent = m.peers; el.title = `Local network of the players of this game on this server — your address: ${m.ip}. ${m.peers} player${m.peers > 1 ? 's' : ''} connected: in the game, Multiplayer → LAN / Network shows their games.`; break; }
+    case 'lan': { state.lan = { ip: m.ip, peers: m.peers, refused: !!m.refused }; const el = $('tbLan'); if (!el) break; el.classList.toggle('hidden', (!m.ip && !m.refused) || headless); el.classList.toggle('off', !!m.refused); el.querySelector('b').textContent = m.refused ? TEXT.lanOffShort : m.peers; el.title = m.refused ? TEXT.lanOff : TEXT.lan(m.ip, m.peers); break; }
+    case 'profile-changed': profileChanged(); break;
     case 'title': document.title = m.title || 'Orthros'; break;
     case 'cursor': state.cursorVisible = m.visible; applyCursor(); break;
     case 'cursor-pos': pointer.cursorReport(m.x, m.y, m.seq); if (state.pointerLocked) drawSoftCursor(); break; // (the guest cursor: SetCursorPos warps, clipping, the moves taken)
@@ -290,8 +370,8 @@ function onWorkerMessage(m) {
     case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
     case 'audio-voices': state.audioVoices = { type: 'voices', memory: m.memory, voices: m.voices }; state.audioNode?.port.postMessage(state.audioVoices); break; // (the AudioWorklet mixes the game's sound buffers itself)
-    case 'exit': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(`${state.title} has exited`, `exit code ${m.code}${m.reason ? ` (${m.reason})` : ''}`, null, m.code !== 0, true); break;
-    case 'crash': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(`${state.title} stopped on an emulation error`, 'the report below describes the state at the fault', m.report, true, true); break;
+    case 'exit': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(TEXT.exited(state.title), TEXT.exitCode(m.code, m.reason), null, m.code !== 0, true); cloud?.push(); break;
+    case 'crash': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(TEXT.crashed(state.title), TEXT.crashDetail, m.report, true, true); break;
     case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
     case 'corpus': state.corpus = m.text; break;
@@ -360,33 +440,72 @@ function noteNet(net) {
 const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const netWaiting = (s) => !!s?.net && (s.net.waiting || Date.now() - (state.netWaitAt ?? 0) < 2000);
 
+// ---------------------------------------------------------------- the frame around the game (shell.js)
+/**
+ * The header over the game (its indicators: the background preload, the players of the game's local network), the
+ * loading screen, the passing messages; quitting saves the profile on the account first.
+ */
+function makeShell(name, manifest, language) {
+  const pre = document.createElement('div');
+  pre.className = 'pill hidden'; pre.id = 'tbPreload'; pre.title = TEXT.preloadTitle; pre.innerHTML = `${TEXT.preload} <b>0%</b><i><u></u></i>`;
+  const lan = document.createElement('div');
+  lan.className = 'pill hidden'; lan.id = 'tbLan'; lan.innerHTML = '<span class="dot"></span>LAN <b>1</b>';
+  shell = createShell({
+    title: state.title, version: manifest.version, gameLanguage: language, cover: manifest.cover || manifest.coverFile ? `/api/cover/${encodeURIComponent(name)}` : null,
+    subtitle: TEXT.subtitle, steps: Object.entries(TEXT.steps).map(([k, label]) => ({ k, label })), tips: TEXT.tips, extras: [pre, lan],
+    onPerf: () => $('perfPanel').classList.toggle('hidden'), onFullscreen: () => enterPlayMode(), onMouse: () => capturePointer(),
+    onQuit: () => saveNow(), saves: () => cloud,
+    onSignedIn: (user) => lateSignIn(name, user),
+  });
+  window.orthrosShell = shell;
+}
+/** The account's copy of this game's profile (cloud-sync.js): this browser's OPFS copy, or the running game's own. */
+function newCloud(name, username) {
+  const running = () => (['running', 'starting'].includes(state.status) && state.manifest === name ? state : null);
+  return new CloudSave({ game: name, user: username, read: () => profileFiles(name, running()), write: (files) => replaceProfile(name, files, running()), onStatus: (s) => shell?.setSave(s) });
+}
+/** The profile sent to the account now (back to the games, the page hidden): false when it could not be. */
+async function saveNow() {
+  if (!cloud) return true;
+  const st = await cloud.push().catch(() => null);
+  return !!st && !['error', 'toobig'].includes(st.state);
+}
+/** The game's profile changed (the worker wrote it to this browser's copy): sent to the account a while after. */
+function profileChanged() {
+  if (!cloud || state.cloudTimer) return;
+  state.cloudTimer = setTimeout(() => { state.cloudTimer = null; cloud?.push(); }, 45000);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && cloud && state.status === 'running') cloud.push(); });
+/**
+ * Signed in while the game runs: its profile sent to the account, unless the account already has another one — then
+ * the player chooses: restart with the account's (the page starts again, the copy put in place before the game), or
+ * this browser's sent over it.
+ */
+async function lateSignIn(name, user) {
+  if (cloud) return;
+  cloud = newCloud(name, user.username);
+  const remote = await cloud.fetchRemote().catch(() => null);
+  cloud.remoteHash = remote?.hash ?? null;
+  if (!remote) { cloud.push(); return; }
+  const choice = await shell.ask({ title: TEXT.lateTitle, text: TEXT.lateText(state.title), buttons: [{ value: 'account', label: TEXT.lateAccount, primary: true }, { value: 'device', label: TEXT.lateDevice }] });
+  if (choice === 'account') { try { sessionStorage.setItem('orthros.preferAccount.' + name, '1'); } catch { /* none */ } location.reload(); }
+  else if (choice === 'device') cloud.resolve('device');
+  else cloud.set({ state: 'conflict' });
+}
+
 // ---------------------------------------------------------------- loading screen
-const TIPS = [
-  'The first launch downloads the game files into this browser: the next ones start from its own copy, much faster.',
-  'Full screen (button above, or Alt+Enter) gives the game the whole screen and keeps the mouse in it; hold Esc to leave.',
-  'Everyone playing on this server is on the same local network: in the game, Multiplayer → LAN shows their games.',
-  'The game runs entirely in your browser, from its original files: nothing is installed.',
-];
 /** The loading screen of a game: its cover blurred behind, the progress of the work done before its first image. */
-function showLoader(name) {
-  const el = $('loader');
-  el.querySelector('.bg').style.backgroundImage = `url(/api/cover/${encodeURIComponent(name)})`;
-  el.querySelector('.title').textContent = state.title;
-  el.querySelector('.subtitle').textContent = 'running from its original files, in your browser';
-  el.querySelector('.tip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
-  el.classList.remove('hidden', 'gone');
+function showLoader() {
+  shell.showLoader(); shell.progress(0, TEXT.connecting);
   state.loadT0 = performance.now(); state.loadPct = 0;
-  state.tipTimer = setInterval(() => { const t = el.querySelector('.tip'); t.textContent = TIPS[(TIPS.indexOf(t.textContent) + 1) % TIPS.length]; }, 9000);
 }
 function hideLoader(now = false) {
-  const el = $('loader'); if (el.classList.contains('hidden')) return;
-  clearInterval(state.tipTimer);
-  const done = () => el.classList.add('hidden');
-  if (now) { done(); return; }
-  try { localStorage.setItem('orthros.boot.' + state.manifest, String(Math.round((performance.now() - state.loadT0) / 1000))); } catch { /* no storage */ }
-  el.querySelector('.fill').style.width = '100%'; el.querySelector('.pct').textContent = '100%'; el.querySelector('.phase').textContent = 'Ready';
-  setTimeout(() => { el.classList.add('gone'); setTimeout(done, 600); }, 250);
-  if (!state.benchActive) toast('Click the game to capture the mouse · Esc releases it · ⛶ for full screen', 7000); // (a bench plays alone: its summary says it)
+  if (!shell || shell.loader.classList.contains('hidden')) return;
+  if (!now) { try { localStorage.setItem('orthros.boot.' + state.manifest, String(Math.round((performance.now() - state.loadT0) / 1000))); } catch { /* no storage */ } }
+  shell.hideLoader(now);
+  if (now) return;
+  shell.running = true; shell.setMouse(state.pointerLocked);
+  if (!state.benchActive) toast(TEXT.capture, 7000); // (a bench plays alone: its summary says it)
 }
 const fmtMB = (mb) => (mb >= 1000 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB');
 /**
@@ -395,9 +514,9 @@ const fmtMB = (mb) => (mb >= 1000 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(
  * weighs by its usual share of the wait; parts without anything to do are left out; the bar never goes back.
  */
 function updateLoader(m) {
-  const el = $('loader'); if (el.classList.contains('hidden')) return;
+  if (!shell || shell.loader.classList.contains('hidden')) return;
   const L = m.load ?? {}, now = performance.now(), secs = (now - state.loadT0) / 1000;
-  const set = (k, st, v) => { const li = el.querySelector(`li[data-k="${k}"]`); li.className = st; li.querySelector('.v').textContent = v; };
+  const set = (k, st, v) => shell.step(k, st, v);
   const parts = [];
   // files
   const pf = L.pfTotal ? Math.min(1, L.pfDone / L.pfTotal) : null;
@@ -405,8 +524,8 @@ function updateLoader(m) {
   const speed = prev && now > prev.t ? Math.max(0, (state.lastLoad.mb - prev.mb) / ((now - prev.t) / 1000)) : 0;
   state.speed = state.speed == null ? speed : state.speed * 0.7 + speed * 0.3;
   if (pf !== null) { parts.push([0.45, pf]); set('files', L.pfFinished || pf >= 1 ? 'done' : 'active', `${fmtMB(L.pfMB ?? 0)}${!L.pfFinished && state.speed > 0.05 ? ` · ${state.speed.toFixed(1)} MB/s` : ''}`); }
-  else set('files', (m.ioMB ?? 0) > 0 ? 'active' : '', `${fmtMB(m.ioMB ?? 0)} read`);
-  if (m.net && (m.net.bw > 0 || received(m.net) > 0)) set('files', netWaiting(m) ? 'active' : el.querySelector('li[data-k="files"]').className, `${fmtBytes(received(m.net))} received${m.net.bw > 0 ? ` · ${fmtRate(m.net.bw)}` : ''}`);
+  else set('files', (m.ioMB ?? 0) > 0 ? 'active' : '', `${fmtMB(m.ioMB ?? 0)} ${TEXT.read}`);
+  if (m.net && (m.net.bw > 0 || received(m.net) > 0)) set('files', netWaiting(m) ? 'active' : shell.loader.querySelector('li[data-k="files"]').className, `${fmtBytes(received(m.net))} ${TEXT.received}${m.net.bw > 0 ? ` · ${fmtRate(m.net.bw)}` : ''}`);
   // code
   const rg = L.rgTotal ? Math.min(1, L.rgDone / L.rgTotal) : null;
   if (rg !== null) { parts.push([0.15, rg]); set('code', rg >= 1 ? 'done' : 'active', `${Math.round(rg * 100)}%`); } else set('code', 'skip', '');
@@ -420,16 +539,10 @@ function updateLoader(m) {
   parts.push([0.4, boot]); set('boot', 'active', `${Math.round(secs)} s · ${Math.round(m.mips)} MIPS`);
   const wsum = parts.reduce((a, [w]) => a + w, 0), p = parts.reduce((a, [w, f]) => a + w * f, 0) / wsum;
   state.loadPct = Math.max(state.loadPct, Math.min(99, Math.floor(p * 100)));
-  el.querySelector('.fill').style.width = state.loadPct + '%';
-  el.querySelector('.pct').textContent = state.loadPct + '%';
-  const nw = netWaiting(m) ? netWaitText({ ...m.net, waiting: true }) : null;
-  el.querySelector('.phase').textContent = nw ? `${nw.title} · ${nw.detail}` : pf !== null && pf < 1 && !L.pfFinished ? `Downloading the game files — ${fmtMB(L.pfMB ?? 0)}` : rg !== null && rg < 1 ? 'Preparing the game\'s code…' : 'Starting the game…';
+  const nw = netWaiting(m) ? netWaitText({ ...m.net, waiting: true }, lang) : null;
+  shell.progress(state.loadPct, nw ? `${nw.title} · ${nw.detail}` : pf !== null && pf < 1 && !L.pfFinished ? TEXT.downloading(fmtMB(L.pfMB ?? 0)) : rg !== null && rg < 1 ? TEXT.preparing : TEXT.starting);
 }
-function toast(text, ms = 5000) {
-  if (headless) return;
-  const el = $('toast'); el.textContent = text; el.classList.remove('hidden'); el.style.opacity = '1';
-  clearTimeout(state.toastTimer); state.toastTimer = setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.classList.add('hidden'), 700); }, ms);
-}
+function toast(text, ms = 5000) { shell?.toast(text, ms); }
 state.toast = toast;
 
 /**
@@ -437,24 +550,24 @@ state.toast = toast;
  * frame and p99; the background preload; click for details. Also the game's own loading waits (#busy).
  */
 function renderHud() {
-  const s = state.stats; if (!s || headless) return;
-  const bar = $('topbar'), fpsEl = bar.querySelector('.fps'), sub = bar.querySelector('.sub'), panel = $('perfPanel');
-  const clock = new Date().toLocaleTimeString();
+  const s = state.stats; if (!s || !shell) return;
+  const bar = shell.bar, fpsEl = bar.querySelector('.fps'), sub = bar.querySelector('.sub'), panel = $('perfPanel');
+  const clock = new Date().toLocaleTimeString(lang);
   const still = s.frames > 0 && state.lastNewFrameAt ? (Date.now() - state.lastNewFrameAt) / 1000 : 0;
-  const busy = $('busy'), paused = !document.hasFocus(), showBusy = state.status === 'running' && $('loader').classList.contains('hidden') && (still >= 3 || (paused && s.frames > 0));
+  const busy = $('busy'), paused = !document.hasFocus(), showBusy = state.status === 'running' && shell.loader.classList.contains('hidden') && (still >= 3 || (paused && s.frames > 0));
   busy.classList.toggle('hidden', !showBusy);
-  const nw = showBusy && !paused && netWaiting(s) ? netWaitText({ ...s.net, waiting: true }) : null;
-  if (showBusy) busy.innerHTML = paused ? `${state.title ?? 'The game'} is paused while its window is inactive <small>click the game to resume</small>`
+  const nw = showBusy && !paused && netWaiting(s) ? netWaitText({ ...s.net, waiting: true }, lang) : null;
+  if (showBusy) busy.innerHTML = paused ? TEXT.paused(esc(state.title))
     : nw ? `${esc(nw.title)}<br><small>${esc(nw.detail)} · ${Math.round(still)} s</small>`
-    : `${state.title ?? 'The game'} is loading…<br><small>${Math.round(still)} s · emulated CPU ${Math.round(s.mips)} MIPS · game files ${fmtMB(s.ioMB ?? 0)}</small>`;
+    : TEXT.loading(esc(state.title), Math.round(still), Math.round(s.mips), fmtMB(s.ioMB ?? 0));
   // background preload still going after the start
   const L = s.load ?? {}, pre = $('tbPreload');
   const pending = L.pfTotal > 0 && !L.pfFinished && L.pfDone < L.pfTotal && s.frames > 0;
   pre.classList.toggle('hidden', !pending);
   if (pending) { const q = Math.floor(100 * L.pfDone / L.pfTotal); pre.querySelector('b').textContent = q + '%'; pre.querySelector('u').style.width = q + '%'; }
   let f = 0, cls = '';
-  if (paused && s.frames > 0) { fpsEl.textContent = '❚❚'; fpsEl.className = 'fps'; sub.textContent = 'paused'; }
-  else if (!(s.frames > 0) || (still >= 3 && s.frames < 300)) { fpsEl.textContent = '…'; fpsEl.className = 'fps'; sub.textContent = `loading\n${Math.round(s.mips)} MIPS`; }
+  if (paused && s.frames > 0) { fpsEl.textContent = '❚❚'; fpsEl.className = 'fps'; sub.textContent = shell.S.paused; }
+  else if (!(s.frames > 0) || (still >= 3 && s.frames < 300)) { fpsEl.textContent = '…'; fpsEl.className = 'fps'; sub.textContent = `${shell.S.loadingShort}\n${Math.round(s.mips)} MIPS`; }
   else {
     f = hudFps(); cls = f >= 29.5 ? 'good' : f >= 20 ? 'warn' : 'bad';
     fpsEl.textContent = f.toFixed(0); fpsEl.className = 'fps ' + cls;
@@ -466,7 +579,8 @@ function renderHud() {
   if (!panel.classList.contains('hidden')) {
     drawHudGraph(panel.querySelector('canvas'), true);
     const last = state.samples[state.samples.length - 1];
-    panel.querySelector('.txt').textContent = `frame rate   ${f.toFixed(1)} fps\nworst frame  ${Math.round(last?.max ?? 0)} ms (p99 ${Math.round(s.frameP99)} ms)\n>33 ms       ${last?.s33 ?? 0} in the last 0.5 s\nemulated CPU ${Math.round(s.mips)} MIPS\ndisplay      ${s.d3d ? `${s.d3d.w}x${s.d3d.h}` : '-'}\ngame files   ${fmtMB(s.ioMB ?? 0)}${L.pfTotal ? ` (+${fmtMB(L.pfMB ?? 0)} ahead)` : ''}${s.gl ? `\nrender ${s.gl.replayMs !== undefined ? 'worker' : ''}  waits ${Math.round(s.gl.gpuWaitMs)} ms, replay ${Math.round(s.gl.replayMs ?? 0)} ms (totals)` : ''}\n${clock}`;
+    panel.querySelector('.txt').textContent = TEXT.panel(f.toFixed(1), Math.round(last?.max ?? 0), Math.round(s.frameP99), last?.s33 ?? 0, Math.round(s.mips), s.d3d ? `${s.d3d.w}x${s.d3d.h}` : '-',
+      `${fmtMB(s.ioMB ?? 0)}${L.pfTotal ? ` (+${fmtMB(L.pfMB ?? 0)})` : ''}`, s.gl ? `\nrender ${s.gl.replayMs !== undefined ? 'worker' : ''}  waits ${Math.round(s.gl.gpuWaitMs)} ms, replay ${Math.round(s.gl.replayMs ?? 0)} ms` : '', clock);
   }
 }
 /** frames per second over the last second (the stats arrive every ~0.5 s) */
@@ -588,7 +702,7 @@ function screenPos(e) {
 async function capturePointer() {
   if (document.pointerLockElement || headless) return;
   try { await $('c2d').requestPointerLock(); }
-  catch { if (state.status === 'running') toast('Click the game again to capture the mouse', 3000); } // (denied: released a moment ago, or no gesture)
+  catch { if (state.status === 'running') toast(TEXT.again, 3000); } // (denied: released a moment ago, or no gesture)
 }
 state.capturePointer = capturePointer;
 async function enterPlayMode() {
@@ -651,14 +765,13 @@ function setupInput() {
     const was = state.pointerLocked;
     state.pointerLocked = document.pointerLockElement === c;
     if (state.pointerLocked) { pointer.locked(); state.lockFresh = true; } else pointer.unlocked();
-    if (was && !state.pointerLocked && state.status === 'running') toast('Mouse released · click the game to capture it again', 4000);
+    if (was && !state.pointerLocked && state.status === 'running') toast(TEXT.released, 4000);
+    if (shell?.running) shell.setMouse(state.pointerLocked);
     applyCursor();
   });
-  document.addEventListener('pointerlockerror', () => { if (state.status === 'running') toast('Click the game again to capture the mouse', 3000); });
+  document.addEventListener('pointerlockerror', () => { if (state.status === 'running') toast(TEXT.again, 3000); });
   if (!headless) addEventListener('keydown', (e) => { if (e.code === 'F11' || (e.code === 'Enter' && e.altKey)) { e.preventDefault(); e.stopImmediatePropagation(); if (document.fullscreenElement) { document.exitPointerLock(); document.exitFullscreen(); } else enterPlayMode(); } }, true);
   document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) navigator.keyboard?.unlock?.(); });
-  $('tbFull').addEventListener('click', (e) => { e.preventDefault(); enterPlayMode(); });
-  $('tbGames').addEventListener('click', (e) => { e.preventDefault(); if (state.status !== 'running' || confirm(`Quit ${state.title}? Unsaved progress is lost.`)) backToGames(); });
 }
 
 /**
@@ -675,7 +788,7 @@ async function setupAudio(audioSab, ctlSab) {
     if (ctx.state === 'running') state.audioNotRunningSince = null; else state.audioNotRunningSince ??= performance.now();
     updateSoundHint();
   });
-  $('soundHint').onclick = () => ctx.resume().then(updateSoundHint, () => {}); // (the gesture listeners resume too: this one hides the button at once)
+  if ($('soundHint')) $('soundHint').onclick = () => ctx.resume().then(updateSoundHint, () => {}); // (the gesture listeners resume too: this one hides the button at once)
   ctx.addEventListener('error', (e) => { const why = e.error?.message ?? e.message ?? 'output device'; state.audioStats.noteError(`context error: ${why}`); log('warn', `audio output error: ${why}`); }); // (Chrome: the output device failed)
   await ctx.audioWorklet.addModule('/src/host/web/audio-worklet.js');
   const node = new AudioWorkletNode(ctx, 'orthros-output', { outputChannelCount: [2], processorOptions: { audio: audioSab, ctl: ctlSab, frames: AUDIO_RING_FRAMES, write: CTL.AUDIO_WRITE, read: CTL.AUDIO_READ, underruns: CTL.AUDIO_UNDERRUNS } });

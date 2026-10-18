@@ -1,4 +1,6 @@
-// Short browser smoke check. Always invoke through tools/with-browser-slot.sh.
+// Short browser smoke check of an OpenMW port: from its home card, the Orthros frame (shell.js) around it, solo, the
+// engine drawing, the frame's header told its frame rate and the mouse (frame-meter.js). Not a multiplayer or gameplay
+// validation. Always invoke through tools/with-browser-slot.sh.
 // Usage: tools/with-browser-slot.sh node tools/openmw/check.mjs <manifest> [--url origin] [--seconds N]
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,7 +15,6 @@ fs.mkdirSync(dir, { recursive: true }); process.env.TMPDIR = dir;
 const catalog = await (await fetch(base + '/api/manifests')).json(), entry = catalog.find((m) => m.name === id);
 if (!entry?.available || entry.runtime !== 'openmw') throw new Error('OpenMW installation is not available');
 const man = await (await fetch(base + `/api/manifest/${encodeURIComponent(id)}`)).json();
-if (!man.openmw.example) throw new Error('This check covers the free engine example. Real Morrowind/multiplayer needs its own gameplay validation.');
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const faults = [];
 try {
@@ -28,7 +29,7 @@ try {
   });
   await page.goto(base + '/?menu');
   await page.locator(`[data-name="${man.gameId}"] .hm-play`).click();
-  await page.waitForURL(`**/ports/openmw/${id}/`); await page.click('#solo');
+  await page.waitForURL((u) => u.pathname === `/ports/openmw/${id}/`); await page.click('#solo');
   const frame = page.frameLocator('#game');
   await frame.locator('#loading.hide').waitFor({ state: 'attached', timeout: 90000 });
   await page.waitForTimeout(seconds * 1000);
@@ -36,11 +37,14 @@ try {
     isolated: crossOriginIsolated, draws: window.orthrosDraws, args: window.Module?.arguments,
     databases: (await indexedDB.databases()).map((d) => d.name), log: document.querySelector('#log')?.textContent.slice(-1600),
   }));
+  const header = await page.evaluate(() => ({ fps: Number(document.querySelector('#tbPerf .fps')?.textContent), mouse: document.querySelector('#tbMouse')?.textContent, save: document.querySelector('#tbSave')?.textContent, loader: document.querySelector('#loader')?.classList.contains('hidden') }));
+  Object.assign(state, { header });
   assert.equal(state.isolated, true); assert.ok(state.draws > 100, `Only ${state.draws} draws`);
+  assert.ok(header.fps > 0, 'The header shows the engine\'s frame rate'); assert.ok(header.mouse, 'The mouse indicator'); assert.ok(header.loader, 'The loading screen gone once the engine draws');
   assert.ok(state.databases.includes(man.saveKey), 'Installation-specific browser saves');
   if (man.openmw.startCell) assert.ok(state.args?.includes(man.openmw.startCell), 'The manifest start cell reaches the engine');
   assert.deepEqual(faults, []);
   fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(state, null, 2));
-  await page.screenshot({ path: path.join(dir, 'example.png') });
+  await page.screenshot({ path: path.join(dir, 'solo.png') });
   console.log(JSON.stringify({ ok: true, manifest: id, draws: state.draws, isolated: state.isolated, output: dir }));
 } finally { await browser.close(); }

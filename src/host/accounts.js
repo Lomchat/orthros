@@ -70,7 +70,7 @@ function validBackup(bytes, game) {
   } catch { return false; }
 }
 
-export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGame = () => true } = {}) {
+export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGame = () => true, maxUserBytes = MAX_USER_BYTES } = {}) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path.join(dir, 'accounts.sqlite'));
   db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
@@ -233,8 +233,17 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
         if (actual !== parent) { db.exec('ROLLBACK'); return reply(res, 409, { error: 'Une autre sauvegarde existe en ligne.', remoteHash: actual }); }
         if (actual === hash) { db.exec('ROLLBACK'); return reply(res, 200, { hash, unchanged: true }); }
         const version = (head?.version ?? 0) + 1;
-        const bytesUsed = db.prepare('SELECT COALESCE(SUM(size),0) total FROM backups WHERE user_id=?').get(user.id).total;
-        if (bytesUsed + bytes.length > MAX_USER_BYTES) { db.exec('ROLLBACK'); return reply(res, 413, { error: 'Espace cloud plein (512 Mo). Supprime une ancienne copie en ligne.' }); }
+        let bytesUsed = db.prepare('SELECT COALESCE(SUM(size),0) total FROM backups WHERE user_id=?').get(user.id).total;
+        // (over the account's space: its oldest versions go first — never a game's latest — before the upload is refused;
+        // the saves are sent automatically while playing, the history is the part that can give way)
+        if (bytesUsed + bytes.length > maxUserBytes) {
+          const old = db.prepare(`SELECT b.id, b.size FROM backups b WHERE b.user_id=? AND b.version < (SELECT MAX(version) FROM backups x WHERE x.user_id=b.user_id AND x.game_id=b.game_id) ORDER BY b.created_at`).all(user.id);
+          for (const row of old) {
+            if (bytesUsed + bytes.length <= maxUserBytes) break;
+            db.prepare('DELETE FROM backups WHERE id=?').run(row.id); bytesUsed -= row.size;
+          }
+        }
+        if (bytesUsed + bytes.length > maxUserBytes) { db.exec('ROLLBACK'); return reply(res, 413, { error: 'Espace cloud plein (512 Mo). Supprime une ancienne copie en ligne.' }); }
         const siteBytes = db.prepare('SELECT COALESCE(SUM(size),0) total FROM backups').get().total;
         if (siteBytes + bytes.length > MAX_SITE_BYTES) { db.exec('ROLLBACK'); return reply(res, 507, { error: 'L’espace cloud du site est plein.' }); }
         db.prepare('INSERT INTO backups(user_id,game_id,version,hash,size,created_at,data) VALUES(?,?,?,?,?,?,?)')

@@ -37,13 +37,13 @@ function browser(remote = null, state = null) {
     },
   });
   window.orthrosCloudInstall(FS, 'game', 'user');
-  return { FS, files, storage, messages, writes, events, fail: () => fail = true,
+  return { FS, files, storage, messages, writes, events, window, fail: () => fail = true,
     cloud: () => JSON.parse(gunzipSync(cloud)), sync: () => new Promise((r) => FS.syncfs(false, r)),
     ready: () => new Promise((r) => FS.syncfs(true, r)) };
 }
 async function uploaded(b, count) {
-  for (let n = 0; n < 100 && (b.writes.length < count || !b.messages.at(-1)?.message.includes('enregistrées')); n++) await tick();
-  assert.equal(b.writes.length, count); assert.match(b.messages.at(-1).message, /enregistrées/);
+  for (let n = 0; n < 100 && (b.writes.length < count || b.messages.at(-1)?.state !== 'saved'); n++) await tick();
+  assert.equal(b.writes.length, count); assert.equal(b.messages.at(-1).state, 'saved');
 }
 
 test('OpenMW restores full account files before boot and uploads binary saves with optimistic hashes', async () => {
@@ -68,7 +68,7 @@ test('OpenMW cloud conflicts preserve local saves, suspend uploads and warn befo
   const b = browser(); await b.ready();
   b.files.set('/userdata/save', new Uint8Array([9])); b.fail(); await b.sync();
   for (let n = 0; n < 100 && !b.messages.at(-1)?.error; n++) await tick();
-  assert.match(b.messages.at(-1).message, /Conflit/);
+  assert.match(b.messages.at(-1).message, /Conflit/); assert.equal(b.messages.at(-1).state, 'conflict');
   assert.deepEqual([...b.files.get('/userdata/save')], [9]);
   assert.equal(JSON.parse([...b.storage.values()][0]).dirty, true);
   let warned = false; b.events.beforeunload({ preventDefault() { warned = true; } }); assert.ok(warned);
@@ -82,4 +82,16 @@ test('OpenMW refuses boot when an unsent local copy conflicts with another devic
   for (let n = 0; n < 100 && !b.messages.at(-1)?.error; n++) await tick();
   assert.equal(booted, false); assert.match(b.messages.at(-1).message, /Conflit/);
   assert.deepEqual([...b.files.get('/userdata/save')], [9]); assert.equal(b.writes.length, 0);
+});
+
+test('OpenMW answers the Orthros page\'s flush once the account has the saves', async () => {
+  const b = browser(); await b.ready();
+  b.files.set('/userdata/saves/a.omwsave', new Uint8Array([1, 2]));
+  b.events.message({ origin: 'https://orthros.test', source: {}, data: { type: 'orthros-flush' } }); // (not the page around it: ignored)
+  await tick(); assert.equal(b.messages.filter((m) => m.type === 'orthros-flushed').length, 0);
+  b.events.message({ origin: 'https://orthros.test', source: b.window.parent, data: { type: 'orthros-flush' } });
+  for (let n = 0; n < 100 && !b.messages.some((m) => m.type === 'orthros-flushed'); n++) await tick();
+  assert.equal(b.messages.find((m) => m.type === 'orthros-flushed').ok, true);
+  assert.equal(b.writes.length, 1);
+  assert.equal(b.cloud().files[0].path, 'saves/a.omwsave');
 });

@@ -1,5 +1,5 @@
-// Import a purchased Data Files folder, or initialize the pending installation and the free
-// engine example. Original files are copied only into an empty base; never overwritten.
+// Import a purchased Data Files folder, or initialize the pending installation. Original files
+// are copied only into an empty base; never overwritten.
 // Usage: node tools/openmw/install-game.mjs [--games-dir dir] [--data-files folder]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,10 +18,6 @@ function writeGame(spec) {
 }
 const spec = JSON.parse(fs.readFileSync(path.join(here, 'manifest.json')));
 const game = writeGame(spec);
-writeGame({ schemaVersion: 1, id: 'openmw-example', name: 'OpenMW · Free example', defaultVersion: 'openmw-example-1.5.3',
-  defaults: { runtime: 'openmw', coverFile: 'cover.svg' }, versions: [{ id: 'openmw-example-1.5.3', dir: '1.5.3', version: 'Démo libre · OpenMW-Web 1.5.3',
-    description: 'A small freely licensed example world. This is not Morrowind.', descriptionFr: 'Un petit monde de démonstration libre. Le jeu Morrowind est à installer séparément.',
-    openmw: { engine: lock.id, example: true, files: [], startCell: 'Village' } }] });
 const input = arg('--data-files');
 if (input) {
   const source = fs.realpathSync(input), dest = path.join(game, 'base');

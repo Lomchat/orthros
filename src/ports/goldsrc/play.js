@@ -1,72 +1,74 @@
 // The page of a GoldSrc browser port (src/host/goldsrc.js, docs/browser-ports.md), /ports/goldsrc/<manifest>/: the
 // pinned engine release the manifest names (/engines/<release>/), the version's game files streamed (files.js: what
 // the game reads first loaded before it starts, the rest as it goes; kept in IndexedDB), the writable profile (saves,
-// settings) in IndexedDB under the installation's key, multiplayer through the server's relay (/api/udp/<manifest>).
-// Around the game, the page of the Windows games' look (/src/host/web/player.css): the header (frame rate, full screen,
-// back to the games), the loading screen — the player's choices first, then the start's progress — and the game filling
-// the rest of the window. It never loads the Win32 runtime, and nothing here names a game.
+// settings) in IndexedDB under the installation's key and on the player's Orthros account (cloud-sync.js), multiplayer
+// through the server's relay (/api/udp/<manifest>) for a signed-in player — the account is the player's name.
+// Around the game, the frame every Orthros game has (/src/host/web/shell.js): the header (the mouse, the saves, the
+// frame rate, the online games, full screen, back to the games), the loading screen, the game filling the rest of the
+// window. It never loads the Win32 runtime, and nothing here names a game.
 import { pickLang } from '../../host/web/lang.js';
+import { createShell } from '../../host/web/shell.js';
+import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, storageKeys, removeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, PIECE } from './files.js';
 import { createLobby, roomAddress } from './lobby.js';
 
 const STRINGS = {
   en: {
-    soundOff: '🔇 Sound off — click to turn it on', lobby: '◉ Online games', lobbyTitle: 'the games running on the servers: join one, or create yours', games: '☰ Games', gamesTitle: 'quit the game (saves and settings kept) and return to the game list', fullscreen: '⛶ Full screen',
-    fullscreenTitle: 'full screen: only the game (hold Esc to leave)', perfTitle: 'frames per second, the last minute, the slowest frames',
-    name: 'Nickname', play: 'Play', log: 'Launch log', subtitle: 'its original files, on a game engine in your browser',
-    loading: 'Loading the game…', preparing: 'Preparing the installation.',
-    ready: 'Start the game: single player and multiplayer are in its menu.',
-    readyServer: 'Play: single player and multiplayer are in the game\'s menu — or join a game online below.',
+    lobby: '◉ Online games', lobbyTitle: 'the games running on the servers: join one, or create yours',
+    subtitle: 'its original files, on a game engine in your browser',
     failed: 'The game could not start: ', isolated: 'This page must be served with the browser isolation headers',
-    init: 'Starting the engine…', files: (pct) => `Loading the files · ${pct} %`,
+    init: 'Starting the engine…', files: (pct) => `Loading the files · ${pct} %`, account: 'Checking your account\'s saves…',
     starting: 'Starting the game…', running: 'Game started. Click in the game to play.',
     steps: { engine: 'Starting the engine', files: 'Downloading the game files', game: 'Starting the game' },
     capture: 'Click the game to capture the mouse · Esc releases it · ⛶ for full screen',
-    released: 'Mouse released · click the game to capture it again', quit: (title) => `Quit ${title}? Saves and settings are kept.`,
+    released: 'Mouse released · click the game to capture it again',
     tips: [
       'The first launch downloads the game files into this browser: the next ones start from its own copy, much faster.',
       'Full screen (button above) gives the game the whole screen; hold Esc to leave it.',
       'In the game, a click captures the mouse; Esc releases it, and in the menus the mouse is free.',
+      'Signed in to Orthros, your saves follow you, and the game\'s multiplayer menu lists the online games.',
       'The game runs entirely in your browser, from its original files: nothing is installed.',
     ],
-    saveFailed: 'Saving in the browser failed. Keep this page open to retry.', stopped: 'Game over. Saves and settings are kept.',
-    cannotSave: 'Cannot save: ', lost: 'Connection to the multiplayer server lost: join it again from the game\'s multiplayer menu (LAN games).',
-    engineFiles: 'Engine resources unavailable', restart: 'Restart the game', paused: 'paused', loadingShort: 'loading',
+    saveFailed: 'Saving in the browser failed. Keep this page open to retry.',
+    lost: 'Connection to the multiplayer server lost: join it again from the game\'s multiplayer menu (LAN games).',
+    engineFiles: 'Engine resources unavailable', restart: 'Restart the game',
+    needAccount: 'Multiplayer needs an Orthros account', needAccountText: 'Sign in (or create an account) to join or create online games: your account is your name in the game.',
+    signIn: 'Sign in', later: 'Not now', online: (u) => `Signed in as ${u}: the online games are open.`,
+    lateTitle: 'A save on your account', lateText: (t) => `Your account already has a save of ${t}, different from this browser's. Restart with your account's save, or send this browser's one over it (the account's stays in its history)?`,
+    lateAccount: 'Restart with the account\'s save', lateDevice: 'Keep this browser\'s save',
   },
   fr: {
-    soundOff: '🔇 Son coupé — clique pour l’activer', lobby: '◉ Parties en ligne', lobbyTitle: 'les parties en cours sur les serveurs : en rejoindre une, ou créer la tienne', games: '☰ Jeux', gamesTitle: 'quitter la partie (sauvegardes et réglages conservés) et revenir à la liste des jeux', fullscreen: '⛶ Plein écran',
-    fullscreenTitle: 'plein écran : le jeu seul (maintiens Échap pour sortir)', perfTitle: 'images par seconde, la dernière minute, les images les plus lentes',
-    name: 'Pseudo', play: 'Jouer', log: 'Journal de lancement', subtitle: 'ses fichiers d’origine, sur un moteur de jeu dans ton navigateur',
-    loading: 'Chargement du jeu…', preparing: 'Préparation de l’installation.',
-    ready: 'Lance le jeu : le solo et le multijoueur sont dans son menu.',
-    readyServer: 'Joue : le solo et le multijoueur sont dans le menu du jeu — ou rejoins une partie en ligne ci-dessous.',
+    lobby: '◉ Parties en ligne', lobbyTitle: 'les parties en cours sur les serveurs : en rejoindre une, ou créer la tienne',
+    subtitle: 'ses fichiers d’origine, sur un moteur de jeu dans ton navigateur',
     failed: 'Le jeu n’a pas pu démarrer : ', isolated: 'Cette page doit être servie avec les en-têtes d’isolation du navigateur',
-    init: 'Démarrage du moteur…', files: (pct) => `Chargement des fichiers · ${pct} %`,
+    init: 'Démarrage du moteur…', files: (pct) => `Chargement des fichiers · ${pct} %`, account: 'Vérification des sauvegardes de ton compte…',
     starting: 'Lancement du jeu…', running: 'Partie lancée. Clique dans le jeu pour jouer.',
     steps: { engine: 'Démarrage du moteur', files: 'Téléchargement des fichiers du jeu', game: 'Lancement du jeu' },
     capture: 'Clique dans le jeu pour capturer la souris · Échap la libère · ⛶ pour le plein écran',
-    released: 'Souris libérée · clique dans le jeu pour la capturer de nouveau', quit: (title) => `Quitter ${title} ? Les sauvegardes et réglages sont conservés.`,
+    released: 'Souris libérée · clique dans le jeu pour la capturer de nouveau',
     tips: [
       'Le premier lancement télécharge les fichiers du jeu dans ce navigateur : les suivants partent de sa copie, bien plus vite.',
       'Le plein écran (bouton en haut) donne tout l’écran au jeu ; maintiens Échap pour en sortir.',
       'En jeu, un clic capture la souris ; Échap la libère, et dans les menus la souris reste libre.',
+      'Connecté à Orthros, tes sauvegardes te suivent, et le menu multijoueur du jeu liste les parties en ligne.',
       'Le jeu tourne entièrement dans ton navigateur, depuis ses fichiers d’origine : rien n’est installé.',
     ],
-    saveFailed: 'La sauvegarde navigateur a échoué. Garde cette page ouverte pour réessayer.', stopped: 'Partie terminée. Les sauvegardes et réglages sont conservés.',
-    cannotSave: 'Enregistrement impossible : ', lost: 'Connexion au serveur multijoueur perdue : rejoins-le depuis le menu multijoueur du jeu (parties LAN).',
-    engineFiles: 'Ressources du moteur indisponibles', restart: 'Relancer le jeu', paused: 'en pause', loadingShort: 'chargement',
+    saveFailed: 'La sauvegarde navigateur a échoué. Garde cette page ouverte pour réessayer.',
+    lost: 'Connexion au serveur multijoueur perdue : rejoins-le depuis le menu multijoueur du jeu (parties LAN).',
+    engineFiles: 'Ressources du moteur indisponibles', restart: 'Relancer le jeu',
+    needAccount: 'Le multijoueur demande un compte Orthros', needAccountText: 'Connecte-toi (ou crée un compte) pour rejoindre ou créer des parties en ligne : ton compte est ton nom dans le jeu.',
+    signIn: 'Se connecter', later: 'Plus tard', online: (u) => `Connecté en tant que ${u} : les parties en ligne sont ouvertes.`,
+    lateTitle: 'Une sauvegarde sur ton compte', lateText: (t) => `Ton compte a déjà une sauvegarde de ${t}, différente de celle de ce navigateur. Relancer avec celle du compte, ou envoyer celle de ce navigateur par-dessus (celle du compte reste dans son historique) ?`,
+    lateAccount: 'Relancer avec celle du compte', lateDevice: 'Garder celle de ce navigateur',
   },
 };
 const lang = pickLang(), S = STRINGS[lang] ?? STRINGS.en;
-document.documentElement.lang = lang;
-const $ = id => document.getElementById(id);
-for (const [id, key] of [['tbGames', 'games'], ['tbFull', 'fullscreen'], ['tbLobby', 'lobby'], ['nameLabel', 'name'], ['launch', 'play'], ['logLabel', 'log'], ['title', 'loading'], ['subtitle', 'subtitle'], ['status', 'preparing']]) $(id).textContent = S[key];
-$('tbGames').title = S.gamesTitle; $('tbLobby').title = S.lobbyTitle; $('tbFull').title = S.fullscreenTitle; $('tbPerf').title = S.perfTitle;
-for (const li of document.querySelectorAll('#loader li')) li.children[1].textContent = S.steps[li.dataset.k];
-const loader = $('loader');
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
 const logs = [], session = { state: 'loading', logs, engine: null, config: null, multiplayer: 'disconnected' };
 window.portSession = session;
+let shell = null, cloud = null;
 // Async asset loading outlives the original click. Resume the engine's audio on the next user gesture.
 const audioContexts = new Set(), NativeAudioContext = globalThis.AudioContext;
 if (NativeAudioContext) globalThis.AudioContext = class extends NativeAudioContext {
@@ -97,12 +99,11 @@ document.addEventListener('keydown', resumeAudio, { capture: true });
 // (the browser keeps the sound off until the page is used: told, with a button, while it is)
 function soundHint() {
   const blocked = session.state === 'running' && [...audioContexts].some((c) => c.state === 'suspended');
-  $('soundHint').classList.toggle('hidden', !blocked);
+  shell?.sound.classList.toggle('hidden', !blocked);
 }
 setInterval(soundHint, 1000);
-$('soundHint').textContent = S.soundOff; $('soundHint').addEventListener('click', resumeAudio);
-let engine, db, relay, timer, saving, stopped = false;
-const log = line => { logs.push(String(line)); if (logs.length > 500) logs.shift(); $('log').textContent = logs.slice(-100).join('\n'); };
+let engine, db, relay, timer, cloudTimer, saving, stopped = false;
+function log(line) { logs.push(String(line)); if (logs.length > 500) logs.shift(); shell?.log(String(line)); }
 window.addEventListener('error', event => {
   if (stopped && (event.error === Infinity || event.error === 'unwind')) { event.preventDefault(); return; }
   if (event.error === 'unwind') return; // (the engine's normal exits from its main loop)
@@ -123,43 +124,34 @@ function report(event, data = {}) {
 }
 
 // ---------------------------------------------------------------- the loading screen and passing messages
-const tips = S.tips; let tipTimer = null;
-const showTip = (i) => { $('tip').textContent = tips[i % tips.length]; $('tip').dataset.i = String(i % tips.length); };
-showTip(Math.floor(Math.random() * tips.length));
-tipTimer = setInterval(() => showTip(Number($('tip').dataset.i) + 1), 9000);
-const toast = (text, ms = 5000) => {
-  const el = $('toast'); el.textContent = text; el.classList.remove('hidden'); el.style.opacity = '1';
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.classList.add('hidden'), 700); }, ms);
-};
+const toast = (text, ms = 5000) => shell?.toast(text, ms);
 /** A status line: in the loading screen while it shows, then as a passing message over the game. */
-const status = (text, error = false) => {
-  $('status').textContent = text; $('status').classList.toggle('error', error);
-  if (loader.classList.contains('hidden') && text) toast(text, error ? 9000 : 5000);
-};
-/** The start's steps (engine, network, files, game), each weighing its usual share of the wait; never going back. */
-const progress = { weights: { engine: 0.2, files: 0.6, game: 0.2 }, parts: {}, pct: 0 };
+const status = (text, error = false) => shell?.phase(text, error);
+/** The start's steps (engine, files, game), each weighing its usual share of the wait; never going back. */
+const progress = { weights: { engine: 0.2, files: 0.6, game: 0.2 }, parts: {} };
 function step(k, state, value = '', fraction = undefined) {
-  const li = loader.querySelector(`li[data-k="${k}"]`); li.className = state; li.querySelector('.v').textContent = value;
+  shell.step(k, state, value);
   progress.parts[k] = state === 'skip' ? null : fraction ?? (state === 'done' ? 1 : progress.parts[k] ?? 0);
   let weight = 0, done = 0;
   for (const [key, f] of Object.entries(progress.parts)) if (f !== null) { weight += progress.weights[key]; done += progress.weights[key] * f; }
-  progress.pct = Math.max(progress.pct, Math.min(99, Math.floor(weight ? done / weight * 100 : 0)));
-  loader.querySelector('.fill').style.width = progress.pct + '%'; loader.querySelector('.pct').textContent = progress.pct + '%';
+  shell.progress(weight ? done / weight * 100 : 0);
 }
 function hideLoader() {
-  if (loader.classList.contains('hidden')) return;
-  clearInterval(tipTimer);
-  loader.querySelector('.fill').style.width = '100%'; loader.querySelector('.pct').textContent = '100%';
-  setTimeout(() => { loader.classList.add('gone'); setTimeout(() => { loader.classList.add('hidden'); fit(); }, 600); }, 250);
-  $('status').textContent = S.running;
+  if (!shell || shell.loader.classList.contains('hidden')) return;
+  shell.hideLoader();
+  shell.running = true; shell.watchPointer(document);
+  status(S.running);
   if (lobbyOverlay.classList.contains('hidden')) lobby?.hide();
 }
 const fail = error => {
   const crashed = !!engine; // (an engine that ran: its saves are kept, a new start reloads the page — a stopped engine cannot start again)
-  session.state = 'error'; loader.classList.remove('hidden', 'gone'); status(S.failed + (error.message ?? error), true); log(error.stack ?? error);
+  session.state = 'error'; shell?.showLoader(); status(S.failed + (error.message ?? error), true); log(error.stack ?? error);
   report('crash', { message: String(error.message ?? error).slice(0, 300), crashed, log: logs.slice(-30).map((l) => l.slice(0, 200)) });
-  $('start').classList.remove('hidden'); $('launch').disabled = false; relay?.close(); if (timer) clearInterval(timer);
-  if (crashed) { $('launch').textContent = S.restart; save().catch((e) => log('Profile save failed: ' + e.message)); }
+  relay?.close(); if (timer) clearInterval(timer);
+  if (shell) shell.choices.replaceChildren(Object.assign(document.createElement('div'), { className: 'acts' }));
+  const again = document.createElement('button'); again.type = 'button'; again.className = 'primary'; again.textContent = S.restart; again.onclick = () => location.reload();
+  shell?.choices.querySelector('.acts')?.append(again);
+  if (crashed) save().then(() => cloud?.push()).catch((e) => log('Profile save failed: ' + e.message));
 };
 
 // ---------------------------------------------------------------- the game's place: the window under the header
@@ -173,7 +165,7 @@ function fit() {
   if (session.state === 'running') queueMicrotask(() => dispatchEvent(new Event('resize')));
 }
 addEventListener('resize', fit);
-document.addEventListener('fullscreenchange', () => { fit(); if (!document.fullscreenElement) navigator.keyboard?.unlock?.(); });
+document.addEventListener('fullscreenchange', fit);
 // (the engine's glue resets the canvas' style when it sets its size: put back)
 new MutationObserver(fit).observe($('canvas'), { attributes: true, attributeFilter: ['style', 'width', 'height'] });
 fit();
@@ -193,6 +185,11 @@ $('canvas').addEventListener('pointerdown', () => { if (wantsMouse() && document
 $('canvas').addEventListener('contextmenu', (event) => event.preventDefault());
 // (the engine frees the mouse for its menus a moment after the lock ends: only a release by the player is told)
 document.addEventListener('pointerlockchange', () => setTimeout(() => { if (!document.pointerLockElement && wantsMouse() && !stopped) toast(S.released, 4000); }, 150));
+/** The header's mouse indicator clicked: the game gets the mouse when it wants it, else the keys. */
+function giveMouse() {
+  $('canvas').focus();
+  if (wantsMouse()) $('canvas').requestPointerLock()?.catch?.(() => {}); else toast(S.capture, 5000);
+}
 
 // ---------------------------------------------------------------- the header's frame rate
 // (a frame is a main loop iteration that drew: the engine may run some without rendering, under its fps_max)
@@ -216,7 +213,7 @@ setInterval(() => {
   const gaps = recent.slice(1).map((t, i) => t - recent[i]).sort((a, b) => a - b);
   perf.samples.push({ fps: recent.length * 2, max: gaps.at(-1) ?? 0, p99: gaps[Math.floor(gaps.length * 0.99)] ?? 0 });
   if (perf.samples.length > 120) perf.samples.shift();
-  renderHud();
+  shell?.setFps(perf.samples, session.state !== 'running' || perf.started < 10 ? 'loading' : document.hidden ? 'paused' : 'running');
 }, 500);
 /** The session's end, once: its length and frame rate. */
 function endReport() { if (telemetry.ended) return; telemetry.ended = true; report('end', { frames: frameStats(), audio: audioState() }); }
@@ -225,44 +222,32 @@ function frameStats() {
   const a = perf.samples.filter((x) => x.fps > 0); if (!a.length) return null;
   return { fps: Math.round(a.reduce((t, x) => t + x.fps, 0) / a.length), p99: Math.round(Math.max(...a.map((x) => x.p99))) };
 }
-function renderHud() {
-  const bar = $('topbar'), fpsEl = bar.querySelector('.fps'), sub = bar.querySelector('.sub'), a = perf.samples;
-  const ms = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`);
-  if (session.state !== 'running' || perf.started < 10) { fpsEl.textContent = '…'; fpsEl.className = 'fps'; sub.textContent = S.loadingShort; }
-  else if (document.hidden) { fpsEl.textContent = '❚❚'; fpsEl.className = 'fps'; sub.textContent = S.paused; }
-  else {
-    const f = ((a.at(-1)?.fps ?? 0) + (a.at(-2)?.fps ?? 0)) / 2;
-    fpsEl.textContent = f.toFixed(0); fpsEl.className = 'fps ' + (f >= 29.5 ? 'good' : f >= 20 ? 'warn' : 'bad');
-    const last2 = a.slice(-2);
-    sub.textContent = `p99 ${ms(Math.max(...last2.map((s) => s.p99)))}\nmax ${ms(Math.max(...last2.map((s) => s.max)))}`;
-  }
-  const cv = bar.querySelector('canvas'), g = cv.getContext('2d'), w = cv.width, h = cv.height, top = 60, span = 120;
-  const y = (v) => h - 1 - Math.min(v, top) / top * (h - 2);
-  g.clearRect(0, 0, w, h); g.fillStyle = 'rgba(255,255,255,0.04)'; g.fillRect(0, 0, w, h);
-  g.strokeStyle = 'rgba(255,255,255,0.25)'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(0, y(30)); g.lineTo(w, y(30)); g.stroke(); g.setLineDash([]);
-  const shown = perf.started >= 10 ? a : [], x0 = w - Math.min(shown.length, span) * (w / span);
-  g.strokeStyle = '#8fd18f'; g.beginPath();
-  shown.slice(-span).forEach((p, i) => { const x = x0 + i * (w / span); if (i) g.lineTo(x, y(p.fps)); else g.moveTo(x, y(p.fps)); });
-  g.stroke();
-  g.fillStyle = '#ff6b6b'; shown.slice(-span).forEach((p, i) => { if (p.max > 50) g.fillRect(x0 + i * (w / span), 0, 2, 4); });
+
+// ---------------------------------------------------------------- the player: the Orthros account
+/** The name in the game: the account's (letters, digits, '.', '_', '-'), or a guest's for a player not signed in. */
+const guestName = `Guest${100 + Math.floor(Math.random() * 900)}`;
+const playerName = () => (shell?.account?.username ?? '').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 24) || guestName;
+const signedIn = () => !!shell?.account || shell?.accounts === false;
+/** Multiplayer without an account: asked to sign in (the account window), or not now. */
+async function needAccount() {
+  const choice = await shell.ask({ title: S.needAccount, text: S.needAccountText, buttons: [{ value: 'in', label: S.signIn, primary: true }, { value: null, label: S.later }] });
+  if (choice) window.orthrosData?.open?.('account');
 }
 
 // ---------------------------------------------------------------- the installation
 const name = decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? '');
 const sessionId = crypto.randomUUID().replaceAll('-', '').slice(0, 24);
-loader.querySelector('.bg').style.backgroundImage = `url(/api/cover/${encodeURIComponent(name)})`;
 let config, files, streamed, lobby = null, pendingConnect = null;
-const nickname = () => $('name').value.replace(/[^a-zA-Z0-9 _.-]/g, '').slice(0, 24) || 'Player';
-/** A room of the lobby joined: the engine started first if it was not, or told to connect. */
+/** A room of the lobby joined: the engine told to connect, or once it runs. */
 function joinRoom(room) {
   const address = roomAddress(room.index);
   closeLobby();
-  if (session.state === 'running') { closeLobby(); log(`Joining ${room.name} (${address})`); engine.Cmd_ExecuteString(`connect ${address}`); $('canvas').focus(); return; }
+  if (session.state === 'running') { log(`Joining ${room.name} (${address})`); engine.Cmd_ExecuteString(`connect ${address}`); $('canvas').focus(); return; }
   pendingConnect = address;
-  if (session.state === 'ready' || session.state === 'error') $('start').requestSubmit();
 }
 // (over the game: the header's button opens it; the keys typed in it stay its own — the engine listens to the page's)
 const lobbyOverlay = $('lobbyOverlay');
+const lobbyButton = Object.assign(document.createElement('button'), { type: 'button', id: 'tbLobby', className: 'pill rooms hidden', textContent: S.lobby, title: S.lobbyTitle });
 function openLobby() {
   if (!lobby) return;
   document.exitPointerLock?.(); lobbyOverlay.querySelector('.panel').prepend(lobby.el); lobby.el.classList.remove('hidden'); lobbyOverlay.classList.remove('hidden'); lobby.show();
@@ -271,11 +256,11 @@ function openLobby() {
 function closeLobby() {
   if (lobbyOverlay.classList.contains('hidden')) return;
   lobbyOverlay.classList.add('hidden'); lobby?.hide();
-  // (before the start: back in the loading screen, under its form)
-  if (session.state !== 'running') { $('start').after(lobby.el); if (!$('start').classList.contains('hidden')) lobby.show(); else lobby.el.classList.add('hidden'); }
+  // (before the game shows: back in the loading screen, among its choices)
+  if (session.state !== 'running' || !shell.loader.classList.contains('hidden')) { shell.choices.append(lobby.el); lobby.show(); }
   else $('canvas').focus();
 }
-$('tbLobby').addEventListener('click', () => (lobbyOverlay.classList.contains('hidden') ? openLobby() : closeLobby()));
+lobbyButton.addEventListener('click', () => (lobbyOverlay.classList.contains('hidden') ? openLobby() : closeLobby()));
 lobbyOverlay.addEventListener('click', (event) => { if (event.target === lobbyOverlay) closeLobby(); });
 lobbyOverlay.querySelector('.close').addEventListener('click', closeLobby);
 // (while it shows, no key reaches the engine: keys aimed elsewhere are caught before the engine's listeners; those of
@@ -289,26 +274,42 @@ for (const type of ['keydown', 'keyup', 'keypress']) {
   }, { capture: true });
   lobbyOverlay.addEventListener(type, (event) => event.stopPropagation());
 }
-try {
-  const [manifestResponse, treeResponse] = await Promise.all([fetch(`/api/manifest/${encodeURIComponent(name)}`), fetch(`/api/tree/${encodeURIComponent(name)}`)]);
-  if (!manifestResponse.ok || !treeResponse.ok) throw new Error(`HTTP ${manifestResponse.ok ? treeResponse.status : manifestResponse.status}`);
-  config = session.config = await manifestResponse.json();
-  if (config.runtime !== 'goldsrc') throw new Error('not a GoldSrc installation');
-  files = treeFiles(await treeResponse.json());
-  $('title').textContent = config.name; $('tbGame').textContent = config.name; document.title = config.name + ' · Orthros';
-  // (the last nickname, else one of its own: the games' menus refuse their default "Player" for multiplayer)
-  let saved = null; try { saved = localStorage.getItem('orthros.port.nickname'); } catch { /* no storage */ }
-  $('name').value = saved || `Player${100 + Math.floor(Math.random() * 900)}`;
-  $('launch').disabled = false;
-  status(config.goldsrc.multiplayer ? S.readyServer : S.ready); session.state = 'ready';
-  // (the multiplayer lobby: in the loading screen before the start, over the game after it)
-  if (config.goldsrc.multiplayer) {
-    lobby = createLobby({ name, lang, log, nickname, onJoin: joinRoom });
-    $('start').after(lobby.el); lobby.show();
-    $('tbLobby').classList.remove('hidden');
-  }
-  $('launch').focus();
-} catch (error) { fail(error); }
+
+// ---------------------------------------------------------------- the profile on the account (cloud-sync.js)
+// (what the account keeps: the game's writable folder less what the engine makes again — logs, screenshots, bots'
+// navigation meshes, the decals' cache)
+const KEEP = (path) => !/(^|\/)(screenshots|logs)\//i.test(path) && !/\.(log|nav|hpk)$/i.test(path);
+const toCloud = (list) => (list ?? []).filter((f) => f.path.startsWith('/rwdir/')).map((f) => ({ path: f.path.slice(7), data: f.data })).filter((f) => KEEP(f.path));
+function newCloud(username) {
+  return new CloudSave({
+    game: name, user: username, onStatus: (s) => shell.setSave(s),
+    read: async () => toCloud(engine?.em && session.state === 'running' ? writableSnapshot(engine.em.FS) : await readStorage(db, 'profile', 'files')),
+    // (before the engine starts only: the previous profile kept aside in the same store)
+    write: async (list) => {
+      const old = await readStorage(db, 'profile', 'files');
+      if (old?.length) await writeStorage(db, 'profile', `aside-${new Date().toISOString()}`, old);
+      await writeStorage(db, 'profile', 'files', list.map((f) => ({ path: '/rwdir/' + f.path, data: f.data })));
+    },
+  });
+}
+/**
+ * Signed in while the game runs: its name and multiplayer opened; its profile sent to the account, unless the account
+ * has another one — then the player chooses: restart with the account's, or this browser's sent over it.
+ */
+async function lateSignIn(user) {
+  if (engine && session.state === 'running') engine.Cmd_ExecuteString(`name "${playerName()}"`);
+  if (relay) { relay.enabled = true; relay.open(); }
+  if (config?.goldsrc.multiplayer) toast(S.online(user.username), 5000);
+  if (cloud || !db) return;
+  cloud = newCloud(user.username);
+  const remote = await cloud.fetchRemote().catch(() => null);
+  cloud.remoteHash = remote?.hash ?? null;
+  if (!remote) { if (session.state === 'running') await save(); cloud.push(); return; }
+  const choice = await shell.ask({ title: S.lateTitle, text: S.lateText(config.name), buttons: [{ value: 'account', label: S.lateAccount, primary: true }, { value: 'device', label: S.lateDevice }] });
+  if (choice === 'account') { stopped = true; try { await cloud.applyRemote(remote); } finally { location.reload(); } }
+  else if (choice === 'device') { await save(); cloud.resolve('device'); }
+  else cloud.set({ state: 'conflict' });
+}
 
 async function save() {
   if (!db || !engine?.em || saving) return saving;
@@ -321,13 +322,13 @@ session.save = save;
  * The multiplayer relay (/api/udp/<manifest>?rooms): the version's servers, each packet tagged with its room in its
  * first byte. The engine reaches room i at 10.87.0.<i+1>:27015 (lobby.js roomAddress; 127.0.0.1:8080 too, room 0); a
  * broadcast — the game's LAN search — goes to every room, and each answers from its own address, so the game's own
- * server list shows them all. Opened when the engine starts, opened again at the next packet once closed (the server
- * closes idle ones).
+ * server list shows them all. Opened when the engine starts with a signed-in player (`enabled`), opened again at the
+ * next packet once closed (the server closes idle ones).
  */
 class Relay {
-  constructor(url) { this.url = url; this.socket = null; this.queue = []; this.closed = false; this.used = 0; this.from = new Map(); }
+  constructor(url, enabled) { this.url = url; this.enabled = enabled; this.socket = null; this.queue = []; this.closed = false; this.used = 0; this.from = new Map(); }
   open() {
-    if (this.closed || (this.socket && this.socket.readyState <= WebSocket.OPEN)) return;
+    if (this.closed || !this.enabled || (this.socket && this.socket.readyState <= WebSocket.OPEN)) return;
     const socket = this.socket = new WebSocket(this.url); socket.binaryType = 'arraybuffer';
     socket.onopen = () => { session.multiplayer = 'connected'; for (const data of this.queue.splice(0)) socket.send(data); };
     socket.onmessage = (event) => {
@@ -351,6 +352,7 @@ class Relay {
     return null;
   }
   send(packet) {
+    if (!this.enabled) return; // (no account: no multiplayer — the game's LAN search finds nothing)
     const index = this.room(packet.ip, packet.port);
     if (index === null) return;
     if (index !== 255) this.from.set(index, [[...packet.ip], packet.port]);
@@ -373,7 +375,7 @@ function attachNet(Net) {
     }
   }
   const endpoint = new URL(`/api/udp/${encodeURIComponent(name)}?rooms`, location.href); endpoint.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  relay = new Relay(endpoint);
+  relay = new Relay(endpoint, signedIn());
   engine.net = new BrowserNet({ sendto: (packet) => relay.send(packet) });
   relay.open();
 }
@@ -403,122 +405,156 @@ function hudScale(width, height) {
   return factor > 1 ? Math.round(width / factor) : 0;
 }
 
-const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)} MB`;
-$('start').addEventListener('submit', async event => {
-  event.preventDefault(); if (!config || session.state === 'starting' || session.state === 'running') return;
-  if (engine) { try { localStorage.setItem('orthros.port.nickname', $('name').value); } catch { /* no storage */ } location.reload(); return; }
-  $('launch').disabled = true; session.state = 'starting';
-  $('start').classList.add('hidden'); for (const el of loader.querySelectorAll('.progress')) el.classList.remove('hidden');
-  lobby?.el.classList.add('hidden'); lobby?.hide();
-  try {
-    if (!crossOriginIsolated) throw new Error(S.isolated);
-    const g = config.goldsrc, base = `/engines/${encodeURIComponent(g.engine)}/`;
-    step('engine', 'active'); step('files', ''); step('game', '');
-    status(S.init);
-    db = await openStorage(config.saveKey);
-    const { Xash3D, Net, DEFAULT_SERVER_LIBRARY } = await import(base + 'engine/index.js');
-    const width = $('canvas').clientWidth || 1024, height = $('canvas').clientHeight || 768;
-    engine = session.engine = new Xash3D({
-      canvas: $('canvas'),
-      // (-dll: the engine opens the server module under the name the wrapper preloaded it with, not the one the game's
-      // liblist.gam names — another name finds no library and the local server never starts; the size, the canvas'
-      // on the page — SDL takes it again on every change;
-      // ?debug: the engine's developer messages from its start)
-      // (the HUD's scale from the largest size the game takes — full screen: the engine reads it at its start only, and
-      // its virtual width still fits a smaller window)
-      arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-dll', DEFAULT_SERVER_LIBRARY, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', String(width), '-height', String(height), ...(new URLSearchParams(location.search).has('debug') ? ['-dev', '2'] : []), '+hud_scale', String(hudScale(Math.max(width, screen.width), Math.max(height, screen.height)))],
-      libraries: {
-        xash: base + 'engine/xash.wasm', filesystem: base + 'engine/filesystem_stdio.wasm',
-        menu: base + (g.modules.menu ?? 'engine/libmenu.wasm'), client: base + g.modules.client, server: base + g.modules.server,
-        render: { gl4es: base + 'engine/libref_webgl2.wasm' }
-      },
-      module: { print: log, printErr: log, onAbort: reason => fail(new Error(String(reason))), postMainLoop: onFrame }
-    });
-    if (g.multiplayer) attachNet(Net);
-    const t = performance.now();
-    await engine.init();
-    step('engine', 'done', `${((performance.now() - t) / 1000).toFixed(1)} s`);
-    const FS = engine.em.FS;
-    // (the game's writable folder, with its maps folder: files the game writes there, as its bots' navigation meshes)
-    FS.mkdirTree('/rodir'); FS.mkdirTree('/rwdir/' + g.gameDir + '/maps');
-    restoreSnapshot(FS, await readStorage(db, 'profile', 'files'));
-    // (the game's files: its whole tree now, what earlier sessions read first loaded before the start, the rest later)
-    streamed = session.files = new StreamedFiles({ name, files, log, store: {
-      read: (key) => readStorage(db, 'content', key), write: (key, bytes) => writeStorage(db, 'content', key, bytes),
-      keys: () => storageKeys(db, 'content'), remove: (keys) => removeStorage(db, 'content', keys) } });
-    streamed.mount(FS, '/rodir');
-    const t0 = performance.now();
-    const [learned] = await Promise.all([fetch(`/api/prefetch/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : [])).catch(() => []), streamed.openLocal().catch((error) => log('Content cache unavailable: ' + error.message))]);
-    const plan = learnedPlan(learned, [...streamed.files.values()]), first = plan.filter((e) => e.startup);
-    const bytesOf = (e) => (e.pieces ? Math.min(e.file.size, e.pieces.length * PIECE) : e.file.size), total = first.reduce((sum, e) => sum + bytesOf(e), 0);
-    let loaded = 0;
-    step('files', 'active', fmtMB(0), 0);
-    await StreamedFiles.pool(first.map((e) => async () => {
-      await streamed.load(e.file, e.pieces); loaded += bytesOf(e);
-      const f = loaded / Math.max(1, total), secs = (performance.now() - t0) / 1000;
-      step('files', 'active', `${fmtMB(loaded)}${secs > 1 ? ` · ${(loaded / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
-    }), 6);
-    session.startup = { files: first.length, bytes: total, ms: Math.round(performance.now() - t0), ...streamed.stats };
-    log(`Startup files: ${JSON.stringify(session.startup)}`);
-    // (the release's archives the engine mounts from the game folder: its own extras by default, goldsrc.extras)
-    for (const extra of g.extras ?? ['engine/valve/extras.pk3']) {
-      const extrasResponse = await fetch(base + extra);
-      if (!extrasResponse.ok) throw new Error(S.engineFiles);
-      FS.writeFile(`/rodir/${g.gameDir}/${extra.split('/').pop()}`, new Uint8Array(await extrasResponse.arrayBuffer()));
-    }
-    step('files', 'done', fmtMB(total));
-    FS.chdir('/rwdir');
-    step('game', 'active', '', 0.2); status(S.starting);
-    // (main() only schedules the engine's start: it runs once the engine's WebAssembly libraries are loaded, which
-    // can be after this — no console command before it has run; the reads are learned from its start)
-    const M = engine.em.Module, started = new Promise((resolve) => {
-      const initialized = M.onRuntimeInitialized; M.onRuntimeInitialized = () => { streamed.start(); initialized?.(); };
-      M.postRun = [...(Array.isArray(M.postRun) ? M.postRun : M.postRun ? [M.postRun] : []), resolve];
-    });
-    engine.main();
-    await started;
-    step('game', 'active', '', 0.6);
-    loadInBackground(plan.filter((e) => !e.startup)).catch((error) => log('Background loading failed: ' + error.message));
-    setTimeout(() => reportReads(), 30000); setInterval(() => reportReads(), 120000);
-    engine.Cmd_ExecuteString('developer ' + (new URLSearchParams(location.search).has('debug') ? '1' : '0'));
-    const nick = nickname() === 'Player' ? `Player${100 + Math.floor(Math.random() * 900)}` : nickname();
-    try { localStorage.setItem('orthros.port.nickname', nick); } catch { /* no storage */ }
-    engine.Cmd_ExecuteString(`name "${nick}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
-    // (the game's main menu: its single player and its multiplayer — a game it creates gets the manifest's settings,
-    // bots included; Orthros' server answers its LAN search)
-    for (const command of g.solo?.commands ?? []) engine.Cmd_ExecuteString(command);
-    // (a room chosen in the lobby before the start: joined at once)
-    if (pendingConnect) { log(`Joining ${pendingConnect}`); engine.Cmd_ExecuteString(`connect ${pendingConnect}`); pendingConnect = null; }
-    session.command = command => engine.Cmd_ExecuteString(command);
-    session.state = 'running'; report('start', { engine: g.engine });
-    setTimeout(() => report('audio', audioState()), 60000); // (a minute in: is the game heard?)
-    timer = setInterval(() => save().catch(error => { log('Profile save failed: ' + error.message); status(S.saveFailed, true); }), 10000);
-    $('canvas').focus();
-  } catch (error) { fail(error); }
-});
+/** The game's language: the one chosen on the home screen (?gameLang=, else remembered), among the version's. */
+function gameLanguage(man) {
+  const options = man.languages ?? [];
+  let wanted = params.get('gameLang'); if (!options.includes(wanted)) { try { wanted = localStorage.getItem('orthros.gameLanguage.' + (man.gameId ?? name)); } catch { wanted = null; } }
+  return options.includes(wanted) ? wanted : options.includes(lang) ? lang : options.includes('en') ? 'en' : options[0] ?? null;
+}
 
-// ---------------------------------------------------------------- the header's buttons
-$('tbFull').addEventListener('click', async () => {
-  try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (error) { status(error.message, true); return; }
-  try { await navigator.keyboard?.lock?.(['Escape']); } catch { /* keyboard lock unavailable: Esc leaves the full screen */ }
+const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)} MB`;
+/** The game started at once: the account's saves first, then the engine, the files, the game's own start. */
+async function start() {
+  session.state = 'starting';
+  if (!crossOriginIsolated) throw new Error(S.isolated);
+  const g = config.goldsrc, base = `/engines/${encodeURIComponent(g.engine)}/`, language = gameLanguage(config);
+  step('engine', 'active'); step('files', ''); step('game', '');
+  db = await openStorage(config.saveKey);
+  const who = await shell.ready;
+  if (who.user) {
+    status(S.account);
+    cloud = newCloud(who.user.username);
+    const what = await cloud.pull().catch((e) => { log('Account saves: ' + e.message); return 'offline'; });
+    if (what === 'conflict') await shell.resolveConflict(cloud);
+  }
+  status(S.init);
+  const { Xash3D, Net, DEFAULT_SERVER_LIBRARY } = await import(base + 'engine/index.js');
+  const width = $('canvas').clientWidth || 1024, height = $('canvas').clientHeight || 768;
+  // (a language's own arguments and folders, goldsrc.languages.<code> — the engine's, as the version's release has them)
+  const own = g.languages?.[language] ?? {};
+  engine = session.engine = new Xash3D({
+    canvas: $('canvas'),
+    // (-dll: the engine opens the server module under the name the wrapper preloaded it with, not the one the game's
+    // liblist.gam names — another name finds no library and the local server never starts; the size, the canvas'
+    // on the page — SDL takes it again on every change; ?debug: the engine's developer messages from its start)
+    // (the HUD's scale from the largest size the game takes — full screen: the engine reads it at its start only, and
+    // its virtual width still fits a smaller window)
+    arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-dll', DEFAULT_SERVER_LIBRARY, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', String(width), '-height', String(height), ...(own.args ?? []), ...(params.has('debug') ? ['-dev', '2'] : []), '+hud_scale', String(hudScale(Math.max(width, screen.width), Math.max(height, screen.height)))],
+    libraries: {
+      xash: base + 'engine/xash.wasm', filesystem: base + 'engine/filesystem_stdio.wasm',
+      menu: base + (g.modules.menu ?? 'engine/libmenu.wasm'), client: base + g.modules.client, server: base + g.modules.server,
+      render: { gl4es: base + 'engine/libref_webgl2.wasm' }
+    },
+    module: { print: log, printErr: log, onAbort: reason => fail(new Error(String(reason))), postMainLoop: onFrame }
+  });
+  if (g.multiplayer) attachNet(Net);
+  const t = performance.now();
+  await engine.init();
+  step('engine', 'done', `${((performance.now() - t) / 1000).toFixed(1)} s`);
+  const FS = engine.em.FS;
+  // (the game's writable folder, with its maps folder: files the game writes there, as its bots' navigation meshes)
+  FS.mkdirTree('/rodir'); FS.mkdirTree('/rwdir/' + g.gameDir + '/maps');
+  restoreSnapshot(FS, await readStorage(db, 'profile', 'files'));
+  // (the game's files: its whole tree now, what earlier sessions read first loaded before the start, the rest later)
+  streamed = session.files = new StreamedFiles({ name, files, log, store: {
+    read: (key) => readStorage(db, 'content', key), write: (key, bytes) => writeStorage(db, 'content', key, bytes),
+    keys: () => storageKeys(db, 'content'), remove: (keys) => removeStorage(db, 'content', keys) } });
+  streamed.mount(FS, '/rodir');
+  const t0 = performance.now();
+  const [learned] = await Promise.all([fetch(`/api/prefetch/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : [])).catch(() => []), streamed.openLocal().catch((error) => log('Content cache unavailable: ' + error.message))]);
+  const plan = learnedPlan(learned, [...streamed.files.values()]), first = plan.filter((e) => e.startup);
+  const bytesOf = (e) => (e.pieces ? Math.min(e.file.size, e.pieces.length * PIECE) : e.file.size), total = first.reduce((sum, e) => sum + bytesOf(e), 0);
+  let loaded = 0;
+  step('files', 'active', fmtMB(0), 0);
+  await StreamedFiles.pool(first.map((e) => async () => {
+    await streamed.load(e.file, e.pieces); loaded += bytesOf(e);
+    const f = loaded / Math.max(1, total), secs = (performance.now() - t0) / 1000;
+    step('files', 'active', `${fmtMB(loaded)}${secs > 1 ? ` · ${(loaded / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
+  }), 6);
+  session.startup = { files: first.length, bytes: total, ms: Math.round(performance.now() - t0), ...streamed.stats };
+  log(`Startup files: ${JSON.stringify(session.startup)}`);
+  // (the release's archives the engine mounts from the game folder: its own extras by default, goldsrc.extras)
+  for (const extra of [...(g.extras ?? ['engine/valve/extras.pk3']), ...(own.extras ?? [])]) {
+    const extrasResponse = await fetch(base + extra);
+    if (!extrasResponse.ok) throw new Error(S.engineFiles);
+    FS.writeFile(`/rodir/${g.gameDir}/${extra.split('/').pop()}`, new Uint8Array(await extrasResponse.arrayBuffer()));
+  }
+  step('files', 'done', fmtMB(total));
+  FS.chdir('/rwdir');
+  step('game', 'active', '', 0.2); status(S.starting);
+  // (main() only schedules the engine's start: it runs once the engine's WebAssembly libraries are loaded, which
+  // can be after this — no console command before it has run; the reads are learned from its start)
+  const M = engine.em.Module, started = new Promise((resolve) => {
+    const initialized = M.onRuntimeInitialized; M.onRuntimeInitialized = () => { streamed.start(); initialized?.(); };
+    M.postRun = [...(Array.isArray(M.postRun) ? M.postRun : M.postRun ? [M.postRun] : []), resolve];
+  });
+  engine.main();
+  await started;
+  step('game', 'active', '', 0.6);
+  loadInBackground(plan.filter((e) => !e.startup)).catch((error) => log('Background loading failed: ' + error.message));
+  setTimeout(() => reportReads(), 30000); setInterval(() => reportReads(), 120000);
+  engine.Cmd_ExecuteString('developer ' + (params.has('debug') ? '1' : '0'));
+  engine.Cmd_ExecuteString(`name "${playerName()}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
+  // (the game's main menu: its single player and its multiplayer — a game it creates gets the manifest's settings,
+  // bots included; Orthros' server answers its LAN search; the language's own commands)
+  for (const command of [...(g.solo?.commands ?? []), ...(own.commands ?? [])]) engine.Cmd_ExecuteString(command);
+  // (a room chosen in the lobby during the loading: joined at once)
+  if (pendingConnect) { log(`Joining ${pendingConnect}`); engine.Cmd_ExecuteString(`connect ${pendingConnect}`); pendingConnect = null; }
+  session.command = command => engine.Cmd_ExecuteString(command);
+  session.state = 'running'; report('start', { engine: g.engine, signedIn: !!shell.account });
+  setTimeout(() => report('audio', audioState()), 60000); // (a minute in: is the game heard?)
+  timer = setInterval(() => save().catch(error => { log('Profile save failed: ' + error.message); status(S.saveFailed, true); }), 10000);
+  // (the account's copy: a minute after a change at most — CloudSave sends only what changed)
+  cloudTimer = setInterval(() => { if (cloud && session.state === 'running') cloud.push(); }, 60000);
   $('canvas').focus();
-  if (wantsMouse()) $('canvas').requestPointerLock()?.catch?.(() => {}); // (in the game: the mouse captured at once, as the Windows games')
-});
-$('tbGames').addEventListener('click', async () => {
-  if (session.state !== 'running') { location.href = '/?menu'; return; }
-  if (!confirm(S.quit(config?.name ?? ''))) return;
-  $('tbGames').disabled = true; stopped = true; if (timer) clearInterval(timer); endReport();
+}
+
+/** Back to the games: the game's settings written, the profile kept here and on the account; false when it was not sent. */
+async function quit() {
+  if (session.state !== 'running') return true;
+  stopped = true; if (timer) clearInterval(timer); if (cloudTimer) clearInterval(cloudTimer); endReport();
   try {
     engine?.Cmd_ExecuteString('host_writeconfig'); await save();
+    const sent = cloud ? await cloud.push() : null;
     try { engine?.quit(); } catch (error) {
       // Emscripten ends its main loop by unwinding; this is successful shutdown.
       if (error !== Infinity && error !== 'unwind' && error?.name !== 'ExitStatus') throw error;
     }
-    await save(); relay?.close(); db?.close();
-    session.state = 'stopped'; status(S.stopped); location.href = '/?menu';
-  } catch (error) { stopped = false; $('tbGames').disabled = false; status(S.cannotSave + (error?.message ?? String(error)), true); }
-});
-document.addEventListener('visibilitychange', () => { if (document.hidden) save().catch(log); });
+    relay?.close(); db?.close(); session.state = 'stopped';
+    return !sent || !['error', 'toobig'].includes(sent.state);
+  } catch (error) { log('Quit: ' + (error?.message ?? error)); return false; }
+}
+
+async function fullscreen() {
+  try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (error) { status(error.message, true); return; }
+  try { await navigator.keyboard?.lock?.(['Escape']); } catch { /* keyboard lock unavailable: Esc leaves the full screen */ }
+  $('canvas').focus();
+  if (wantsMouse()) $('canvas').requestPointerLock()?.catch?.(() => {}); // (in the game: the mouse captured at once, as the Windows games')
+}
+
+try {
+  const [manifestResponse, treeResponse] = await Promise.all([fetch(`/api/manifest/${encodeURIComponent(name)}`), fetch(`/api/tree/${encodeURIComponent(name)}`)]);
+  if (!manifestResponse.ok || !treeResponse.ok) throw new Error(`HTTP ${manifestResponse.ok ? treeResponse.status : manifestResponse.status}`);
+  config = session.config = await manifestResponse.json();
+  if (config.runtime !== 'goldsrc') throw new Error('not a GoldSrc installation');
+  files = treeFiles(await treeResponse.json());
+  shell = createShell({
+    title: config.name, version: config.version, gameLanguage: gameLanguage(config), cover: `/api/cover/${encodeURIComponent(name)}`, subtitle: S.subtitle,
+    steps: Object.entries(S.steps).map(([k, label]) => ({ k, label })), tips: S.tips, extras: [lobbyButton],
+    onQuit: quit, onFullscreen: fullscreen, onMouse: giveMouse, onSignedIn: lateSignIn, saves: () => cloud,
+    onLoaderHidden: fit,
+  });
+  shell.sound.addEventListener('click', resumeAudio);
+  // (the multiplayer lobby: among the loading screen's choices while the game loads, over the game after it)
+  if (config.goldsrc.multiplayer) {
+    lobby = createLobby({ name, lang, log, nickname: playerName, signedIn, needAccount, onJoin: joinRoom });
+    shell.choices.append(lobby.el); lobby.show();
+    lobbyButton.classList.remove('hidden');
+  }
+  await start();
+} catch (error) { if (shell) fail(error); else document.body.textContent = S.failed + (error.message ?? error); }
+
+document.addEventListener('visibilitychange', () => { if (document.hidden && session.state === 'running') save().then(() => cloud?.push()).catch(log); });
 window.addEventListener('pagehide', () => {
   if (session.state === 'running') endReport();
   stopped = true; if (timer) clearInterval(timer); relay?.close(); reportReads(true); });

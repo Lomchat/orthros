@@ -54,3 +54,80 @@ html:fullscreen #topbar { display: none; }
 #loader li .v { font: 11.5px ui-monospace, monospace; color: #8a8f9c; }
 @keyframes spin { to { transform: rotate(360deg); } }
 #loader .tip { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.07); font-size: 12px; color: #8a8f9c; line-height: 1.5; }
+/* ---- the frame shared by every game page (shell.js): the header's indicators, who plays, questions */
+#topbar .brand .tag { font: 11px ui-monospace, monospace; color: #8a8f9c; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); padding: 2px 7px; border-radius: 6px; white-space: nowrap; }
+#topbar .brand .tag[hidden] { display: none; }
+#topbar .extras { display: flex; align-items: center; gap: 8px; }
+#topbar .extras:empty { display: none; }
+#topbar .ic { display: inline-flex; width: 15px; height: 15px; flex: none; }
+#topbar .ic svg { width: 100%; height: 100%; }
+#topbar button.pill { font: 600 12px system-ui; color: #aab0bd; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); padding: 4px 10px; border-radius: 999px; }
+#topbar button.pill:hover { background: rgba(255,255,255,.11); }
+#topbar .pill.mouse.on { color: #f2dfae; background: rgba(201,165,90,.18); border-color: rgba(224,189,110,.55); }
+#topbar .pill.mouse.wait { opacity: .55; }
+#topbar .pill.save.ok { color: #9fd99f; border-color: rgba(126,224,126,.3); }
+#topbar .pill.save.busy { color: #e7e9ee; }
+#topbar .pill.save.warn { color: #ffcf7a; background: rgba(244,180,60,.12); border-color: rgba(244,180,60,.5); }
+#topbar .pill.save.bad { color: #ff9c8f; background: rgba(255,107,107,.1); border-color: rgba(255,107,107,.45); }
+#topbar button.icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 30px; padding: 0; background: transparent; border-color: rgba(255,255,255,.14); color: #b8bcc8; }
+#topbar button.icon .ic { width: 17px; height: 17px; }
+#topbar button.icon:hover { background: rgba(255,255,255,.08); }
+#topbar .perf.still { cursor: default; }
+#topbar .perf.still:hover { background: none; }
+/* narrow windows: the indicators keep their icon, their words go (their title still says it) */
+#topbar .pill.off .dot { background: #8a8f9c; box-shadow: none; }
+@media (max-width: 1440px) { #topbar .brand .tag { display: none; } }
+@media (max-width: 1280px) { #topbar .perf .sub { display: none; } }
+@media (max-width: 1180px) { #topbar .pill.mouse span:not(.ic) { display: none; } }
+@media (max-width: 980px) { #topbar .pill.save span:not(.ic), #topbar .perf canvas, #topbar .perf .sub { display: none; } #topbar .brand .name { display: none; } }
+@media (max-width: 720px) { #topbar .brand .sep, #topbar .perf .unit { display: none; } #topbar { gap: 7px; } }
+/* the sound turned off by the browser: one click turns it on */
+#soundHint { position: fixed; left: 50%; top: calc(var(--bar) + 58px); transform: translateX(-50%); z-index: 45; display: flex; align-items: center; gap: 9px; font: 600 14px system-ui, sans-serif; color: #f2ead6; background: rgba(14,15,20,.94); border: 1px solid rgba(224,189,110,.7); padding: 9px 18px; border-radius: 999px; cursor: pointer; box-shadow: 0 8px 26px rgba(0,0,0,.6); animation: soundPulse 2s ease-in-out infinite; }
+#soundHint:hover { background: rgba(40,34,22,.96); }
+#soundHint .ic, #soundHint svg { width: 20px; height: 20px; flex: none; display: inline-flex; }
+html:fullscreen #soundHint { top: 12px; }
+@keyframes soundPulse { 50% { box-shadow: 0 8px 26px rgba(0,0,0,.6), 0 0 0 4px rgba(224,189,110,.25); } }
+.hidden { display: none !important; }
+/* the loading screen's parts: who plays, the runtime's choices, the start's progress, the launch log */
+#loader .box { max-height: calc(100vh - var(--bar) - 60px); overflow: auto; scrollbar-width: thin; scrollbar-color: #3a3f4b transparent; }
+#loader .who { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; margin: 0 0 18px; padding: 12px 14px; border-radius: 10px; font-size: 13px; line-height: 1.45; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); color: #c9ccd4; }
+#loader .who:empty { display: none; }
+#loader .who p { margin: 0; }
+#loader .who b { color: #f2ead6; }
+#loader .who .ic { display: inline-flex; width: 20px; height: 20px; margin-top: 1px; }
+#loader .who .ic svg { width: 100%; height: 100%; }
+#loader .who.in { border-color: rgba(126,224,126,.28); } #loader .who.in .ic { color: #8fd18f; }
+#loader .who.off { background: rgba(244,180,60,.08); border-color: rgba(244,180,60,.45); color: #f0dcb5; } #loader .who.off .ic { color: #ffcf7a; }
+#loader .who .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+#loader .who button, #loader .choices > .acts button, #ask button { font: 600 13px system-ui, sans-serif; border-radius: 8px; padding: 8px 15px; cursor: pointer; border: 1px solid rgba(255,255,255,.16); background: rgba(255,255,255,.06); color: #e8e2d2; }
+#loader .who button:hover, #loader .choices > .acts button:hover, #ask button:hover { background: rgba(255,255,255,.12); }
+#loader .who button.primary, #loader .choices > .acts button.primary, #ask button.primary { color: #15100b; border-color: transparent; background: linear-gradient(180deg, #e0bd6e, #b98f3f); }
+#loader .who button.primary:hover, #loader .choices > .acts button.primary:hover, #ask button.primary:hover { filter: brightness(1.08); }
+#loader .who button.ghost { background: transparent; border-color: transparent; color: #a3a8b4; }
+#loader .who button:disabled, #loader .choices > .acts button:disabled { opacity: .5; cursor: default; }
+#ask button.danger { color: #fff; border-color: transparent; background: #b4473b; }
+#loader .who button:focus-visible, #loader .choices > .acts button:focus-visible, #ask button:focus-visible, #loader .who input:focus { outline: 2px solid rgba(224,189,110,.7); outline-offset: 2px; }
+#loader .signin { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 8px; margin-top: 10px; }
+#loader .signin[hidden] { display: none; }
+#loader .signin input { font: 13px system-ui, sans-serif; min-width: 0; border-radius: 8px; padding: 8px 10px; border: 1px solid rgba(255,255,255,.16); background: rgba(0,0,0,.35); color: #eee; }
+#loader .signin .err { grid-column: 1 / -1; margin: 0; color: #ff9c8f; font-size: 12.5px; }
+#loader .signin .err:empty { display: none; }
+#loader .signin small { grid-column: 1 / -1; color: #8a8f9c; font-size: 11.5px; }
+#loader .choices:empty { display: none; }
+#loader .choices { display: grid; gap: 12px; margin: 0 0 18px; }
+#loader .choices .acts { display: flex; gap: 10px; flex-wrap: wrap; }
+#loader .choices .acts button { padding: 11px 22px; font-size: 14px; }
+#loader .choices p { margin: 0; font-size: 12.5px; color: #9aa0ab; }
+#loader .progress[hidden] { display: none; }
+#loader .phase.error { color: #ff8b8b; }
+#loader details.log { margin-top: 12px; font-size: 11.5px; color: #6f7480; }
+#loader details.log summary { cursor: pointer; }
+#loader details.log pre { max-height: 180px; overflow: auto; margin: 8px 0 0; font: 10.5px/1.35 ui-monospace, monospace; white-space: pre-wrap; color: #9aa0ab; background: rgba(0,0,0,.4); padding: 8px; border-radius: 6px; }
+@media (max-width: 640px) { #loader .signin { grid-template-columns: 1fr; } }
+/* a question to the player, over everything */
+#ask { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: rgba(4,5,8,.62); backdrop-filter: blur(3px); }
+#ask .card { width: min(480px, 90vw); padding: 24px 26px 20px; border-radius: 14px; background: #12141a; border: 1px solid rgba(201,165,90,.35); box-shadow: 0 24px 70px rgba(0,0,0,.7); color: #d9dce3; }
+#ask h3 { margin: 0 0 10px; font: 700 20px/1.25 var(--serif); color: #f2ead6; }
+#ask p { margin: 0 0 18px; font-size: 13.5px; line-height: 1.55; color: #b8bcc8; }
+#ask .acts { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+body.nobar #stage, body.nobar #loader { top: 0; }

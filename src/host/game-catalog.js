@@ -104,7 +104,9 @@ export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null) {
     const deps = [];
     for (const dep of source.requires) {
       if (dep.version === id || sources.get(dep.version)?.game !== dep.game) throw new Error(`${id}: dépendance introuvable ou invalide: ${dep.game}/${dep.version}`);
-      deps.push({ mount: dep.mount, manifest: dep.version });
+      // (the required game's language key too: the player's language set on both, as their installers do)
+      const req = catalog.get(dep.version);
+      deps.push({ mount: dep.mount, manifest: dep.version, ...(req.languageRegistryKey ? { languageRegistryKey: req.languageRegistryKey, languages: req.languages ?? [] } : {}) });
     }
     if (deps.length && catalog.get(id).runtime !== 'goldsrc') catalog.get(id).extraMounts = deps;
   }

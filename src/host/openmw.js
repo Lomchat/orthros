@@ -42,6 +42,9 @@ export const openmwModes = (o) => ['solo', ...(o.multiplayer ? ['multiplayer'] :
 
 // Only the upstream browser pages are adapted. Guest filesystem paths (/mwdata, /userdata)
 // and the generated Emscripten JS must retain their original meaning.
+/** An engine page with the Orthros page's meter (src/ports/openmw/frame-meter.js: its frame rate and the mouse). */
+export const withFrameMeter = (html) => html.replace('<head>', '<head><script src="/src/ports/openmw/frame-meter.js"></script>');
+
 export function openmwWebText(text, base, saveKey) {
   // Native EM_ASM in the untouched engine glue uses the upstream storage keys too.
   // HTML-only replacements would clear a different resume token than the engine reads.
@@ -146,7 +149,7 @@ export function openmwProxy({ getManifest, session, ownsToken }) {
         reply.on('data', (c) => { bytes += c.length; if (bytes > 8 * 1024 * 1024) reply.destroy(new Error('OpenMW response too large')); else chunks.push(c); });
         reply.on('end', () => {
           let body = Buffer.concat(chunks).toString('utf8');
-          try { body = /application\/json/.test(type) ? responseJson(body, t.base) : openmwWebText(body, t.base, t.man.saveKey); }
+          try { body = /application\/json/.test(type) ? responseJson(body, t.base) : openmwWebText(body, t.base, t.man.saveKey); if (/text\/html/.test(type)) body = withFrameMeter(body); }
           catch { res.writeHead(502, isolation); res.end('Invalid OpenMW response'); return; }
           res.writeHead(reply.statusCode, headers); res.end(body);
         });

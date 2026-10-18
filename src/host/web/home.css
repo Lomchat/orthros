@@ -115,6 +115,13 @@
 #menu .hm-lib-head { display: flex; align-items: baseline; gap: 14px; margin: 0 0 12px; }
 #menu .hm-lib-head h2 { margin: 0; font: 700 12.5px var(--mono); letter-spacing: .26em; text-transform: uppercase; color: var(--bone); }
 #menu .hm-lib-head .count { font: 12px var(--mono); color: var(--faint); }
+/* who plays: the Orthros account, or a warning that nothing is saved on one */
+#menu .hm-who { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 0 0 14px; padding: 10px 14px; border-radius: 12px; font-size: 13.5px; color: #b9c2d6; background: rgba(126,224,126,.05); border: 1px solid rgba(126,224,126,.18); }
+#menu .hm-who[hidden] { display: none; }
+#menu .hm-who.warn { color: #f0dcb5; background: rgba(244,180,60,.08); border-color: rgba(244,180,60,.45); }
+#menu .hm-who.warn::before { content: "⚠"; color: #ffcf7a; font-size: 16px; }
+#menu .hm-who span { flex: 1; min-width: 240px; }
+#menu .hm-who .hm-btn { height: 32px; }
 #menu .hm-lib-head::after { content: ""; flex: 1; align-self: center; height: 1px; order: 3; background: linear-gradient(90deg, var(--line), transparent); }
 /* the tabs: all, the Windows games, the recompiled ones, the recompiled and modified ones (with their counts) */
 #menu .hm-metas { display: grid; gap: 2px; min-width: 0; }

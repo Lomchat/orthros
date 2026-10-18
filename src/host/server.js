@@ -29,7 +29,7 @@ import { listGameTree, resolveGameFile } from './game-files.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
-import { openmwInstalled, openmwModes, openmwProxy, openmwWebText } from './openmw.js';
+import { openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter } from './openmw.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
@@ -532,7 +532,7 @@ export function createServer(opts = {}) {
     });
   };
 
-  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game) }) : null;
+  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game), ...(opts.accountMaxUserBytes ? { maxUserBytes: opts.accountMaxUserBytes } : {}) }) : null;
   // Localized OpenMW masters need separate simulations, caches and save histories.
   function portLanguages(man, id) {
     if (man.runtime !== 'openmw' || !man.openmw.languageVersions) return {};
@@ -547,7 +547,7 @@ export function createServer(opts = {}) {
     return { languages: Object.keys(languageLaunchUrls), contentLanguages: man.languages ?? [], languageLaunchUrls };
   }
   const mapImages = new Map(); // (the lobby's map pictures, compressed: file|mtime -> { raw, gzip, zstd })
-  const rooms = roomsApi({ getManifest, ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
+  const rooms = roomsApi({ getManifest, identify: (req) => (accountApi ? accountApi.session(req) ?? null : undefined), ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
   const openmw = openmwProxy({ getManifest, session: accountApi?.session, ownsToken: accountApi?.ownsPortToken });
   const openmwAccounts = accountBridge({ accountsDir: opts.accountsDir, accountApi, getManifest });
   const server = http.createServer((req, res) => {
@@ -776,6 +776,7 @@ export function createServer(opts = {}) {
           const user = accountApi?.session(req), scope = user ? playerScope(user) : null;
           const saveKey = scope ? `${man.saveKey}:user:${scope}` : man.saveKey;
           let page = openmwWebText(fs.readFileSync(f, 'utf8'), base, saveKey);
+          if (asset.endsWith('.html')) page = withFrameMeter(page);
           if (asset === 'index.html' && scope) {
             page = page.replace('<head>', '<head><script src="/src/ports/openmw/cloud.js"></script>');
             page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(m[1])}, ${JSON.stringify(scope)});`);
@@ -804,7 +805,9 @@ export function createServer(opts = {}) {
     }
   });
   // WebSockets: the virtual LAN of the Win32 games (/api/lan) and the multiplayer relay of the ports (/api/udp/<manifest>)
-  const upgrades = [lanUpgrades(opts.lanLog ?? ((m) => console.log(m))), udpRelay({ getManifest, accept: acceptWebSocket, log: (m) => console.log(m) })];
+  // (the Orthros account is a player's only identity: on a server with accounts, multiplayer is for signed-in players)
+  const identify = (req) => (accountApi ? accountApi.session(req) ?? null : undefined);
+  const upgrades = [lanUpgrades(opts.lanLog ?? ((m) => console.log(m)), { identify }), udpRelay({ getManifest, accept: acceptWebSocket, identify, log: (m) => console.log(m) })];
   server.on('upgrade', (req, socket, head) => {
     let url; try { url = new URL(req.url, 'http://x'); } catch { socket.destroy(); return; }
     if (openmw.upgrade(req, socket, url, head)) return;

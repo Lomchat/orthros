@@ -209,7 +209,7 @@
     "bots": {
       "archive": "orthros-bots.pk3",
       "profiles": "3rdparty/cs16client-extras/BotProfile.db",
-      "game": "counter-strike-original-en",
+      "game": "counter-strike-rebuilt-en",
       "maps": [
         "as_oilrig",
         "cs_747",

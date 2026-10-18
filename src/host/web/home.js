@@ -4,6 +4,7 @@ import { startEmbers } from './embers.js';
 import { UI_LANGS, browserLangs, explicitLang, pickLang, endonym } from './lang.js';
 import { h } from './dom.js';
 import { Downloads, downloadStatus } from './download.js';
+import { accountState, onAccountChange } from './account.js';
 
 /** the "download the whole game first" downloads (one at a time, see download.js) */
 const downloads = new Downloads();
@@ -14,7 +15,9 @@ const LOGO = '/src/host/web/orthros_logo.png';
 const STRINGS = {
   en: {
     tagline: 'Your games, directly in your browser.',
-    p1: 'Nothing to install', p2: 'The original game files', p3: 'Saves stay in your browser',
+    p1: 'Nothing to install', p2: 'The original game files', p3: 'Saves on your Orthros account',
+    warn: 'You are not signed in: your progress will not be saved on an account — it stays only in this browser and can be lost.', warnAction: 'Sign in',
+    signedAs: (u) => `Signed in as ${u}: your progress is saved on your account.`,
     library: 'Library', games: (n) => `${n} game${n > 1 ? 's' : ''}`,
     resume: 'Continue', first: 'Play', play: 'Play', lastPlayed: 'Last played',
     playAria: (t) => `Play ${t}`, missing: 'Game files not found on the server',
@@ -30,12 +33,14 @@ const STRINGS = {
     dlTitle: 'Downloads the whole game into this browser now (it resumes where it stopped on your next visit): on a slow connection the game then starts and plays without waiting for the network.',
   },
   fr: {
-    tagline: 'Vos jeux, directement dans le navigateur.',
-    p1: 'Rien à installer', p2: 'Les fichiers d’origine du jeu', p3: 'Sauvegardes dans votre navigateur',
+    tagline: 'Tes jeux, directement dans ton navigateur.',
+    p1: 'Rien à installer', p2: 'Les fichiers d’origine du jeu', p3: 'Sauvegardes sur ton compte Orthros',
+    warn: 'Tu n’es pas connecté : ta progression ne sera pas sauvegardée sur un compte — elle reste seulement dans ce navigateur et peut être perdue.', warnAction: 'Se connecter',
+    signedAs: (u) => `Connecté en tant que ${u} : ta progression est sauvegardée sur ton compte.`,
     library: 'Bibliothèque', games: (n) => `${n} jeu${n > 1 ? 'x' : ''}`,
     resume: 'Reprendre', first: 'Jouer à', play: 'Jouer', lastPlayed: 'Dernière partie',
     playAria: (t) => `Jouer à ${t}`, missing: 'Fichiers du jeu introuvables sur le serveur',
-    emptyTitle: 'Aucun jeu disponible', emptyText: 'Ce serveur ne propose aucun jeu pour l’instant. Ajoutez-en un avec',
+    emptyTitle: 'Aucun jeu disponible', emptyText: 'Ce serveur ne propose aucun jeu pour l’instant. Ajoutes-en un avec',
     errorTitle: 'Serveur injoignable', retry: 'Réessayer',
     settings: 'Paramètres', account: 'Compte', language: 'Langue', gameLanguage: 'Langue du jeu', gameLanguageShort: 'Langue', gameVersion: 'Version', others: 'Autres',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1).replace('.', ',')} Go` : `${Math.round(b / 1e6)} Mo`),
@@ -182,8 +187,22 @@ export function mountHome({ onPlay }) {
       $(id).setAttribute('aria-label', label); $(id).title = user ? `${label} · ${user}` : label;
     }
     $('hmLang').setAttribute('aria-label', S().language);
+    renderWho();
     renderView();
   }
+  // who plays: a warning while no Orthros account is signed in (nothing is then saved on an account), else the name
+  let who = { accounts: null, user: null };
+  const whoEl = h('div', { class: 'hm-who', role: 'status' });
+  $('hmLibTitle').closest('.hm-lib-head').after(whoEl);
+  function renderWho() {
+    whoEl.className = 'hm-who' + (who.accounts && !who.user ? ' warn' : '');
+    whoEl.hidden = !who.accounts;
+    if (!who.accounts) { whoEl.replaceChildren(); return; }
+    whoEl.replaceChildren(who.user ? h('span', {}, S().signedAs(who.user.username))
+      : h('span', {}, S().warn), who.user ? null : h('button', { type: 'button', class: 'hm-btn', onclick: () => window.orthrosData?.open?.('account') }, S().warnAction));
+  }
+  accountState().then((st) => { who = st; renderWho(); });
+  cleanup.push(onAccountChange((st) => { who = st; renderWho(); }));
   // the flags of the languages the page speaks: the browser's language is the default, a click chooses (and is remembered)
   $('hmLang').replaceChildren(...UI_LANGS.map((code) => h('button', { type: 'button', 'data-lang': code, lang: code, title: endonym(code), 'aria-label': endonym(code),
     onclick: () => { lang = explicit = code; try { localStorage.setItem('orthros.lang', code); } catch { /* no storage */ } applyLang(); } }, flagEl(code))));
@@ -292,7 +311,7 @@ export function mountHome({ onPlay }) {
     // the games running on a port's servers (its lobby, /api/rooms): how many, how many play
     function syncLive() {
       const v = chosen(g); live.textContent = '';
-      if (!v?.available || !v.modes?.includes('multiplayer')) return;
+      if (!v?.available || v.runtime !== 'goldsrc' || !v.modes?.includes('multiplayer')) return; // (the rooms: the GoldSrc ports' servers)
       fetch(`/api/rooms/${encodeURIComponent(v.name)}`, { cache: 'no-store' }).then((r) => r.json()).then((d) => {
         if (chosen(g)?.name !== v.name || !d.rooms) return;
         live.textContent = S().live(d.rooms.length, d.rooms.reduce((t, r) => t + r.humans, 0));

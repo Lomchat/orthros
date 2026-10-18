@@ -5,18 +5,6 @@ html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px/
 #stage { position: absolute; left: 0; right: 0; bottom: 0; top: var(--bar); display: flex; align-items: center; justify-content: center; }
 html:fullscreen #stage { top: 0; }
 #stage #canvas { display: block; outline: none; background: #000; }
-#loader #start { display: grid; grid-template-columns: 1fr auto; gap: 12px 14px; align-items: end; margin-bottom: 18px; }
-#loader #start label { display: grid; gap: 5px; font-size: 12px; color: #8a8f9c; }
-#loader #start label:first-child { grid-column: 1 / -1; }
-#loader #start input, #loader #start select, #loader #start button { font: 14px system-ui, sans-serif; border-radius: 8px; padding: 10px 13px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05); color: #e8e2d2; }
-#loader #start input:focus, #loader #start select:focus, #loader #start button:focus-visible , .lobby input:focus, .lobby select:focus, .lobby button:focus-visible { outline: 2px solid rgba(224,189,110,.7); outline-offset: 2px; }
-#loader #start button.primary { font-weight: 700; cursor: pointer; color: #15100b; border-color: transparent; background: linear-gradient(180deg, #e0bd6e, #b98f3f); padding: 10px 26px; }
-#loader #start button.primary:disabled { opacity: .5; cursor: default; }
-#loader .phase.error { color: #ff8b8b; }
-#loader .row { margin-top: 0; }
-#loader details { margin-top: 12px; font-size: 11.5px; color: #6f7480; }
-#loader summary { cursor: pointer; }
-#loader pre { max-height: 180px; overflow: auto; margin: 8px 0 0; font: 10.5px/1.35 ui-monospace, monospace; white-space: pre-wrap; color: #9aa0ab; background: rgba(0,0,0,.4); padding: 8px; border-radius: 6px; }
 /* the multiplayer lobby: in the loading screen's box, then over the game (#lobbyOverlay) — their heights, padding and
    border included, within the window less 14 px above and below */
 #loader .box:has(.lobby:not(.hidden)) { width: min(680px, 92vw); }
@@ -24,6 +12,7 @@ html body #loader { overflow: clip; } /* (not a scroller: a control scrolled int
 #loader .box { max-height: calc(100vh - var(--bar) - 86px); overflow: auto; scrollbar-width: thin; scrollbar-color: #3a3f4b transparent; }
 #lobbyOverlay .panel { max-height: calc(100vh - var(--bar) - 60px); display: flex; flex-direction: column; overflow: hidden; }
 #lobbyOverlay .panel .lobby { overflow: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: #3a3f4b transparent; }
+.lobby input:focus, .lobby select:focus, .lobby button:focus-visible { outline: 2px solid rgba(224,189,110,.7); outline-offset: 2px; }
 .lobby { margin: 4px 0 18px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,.08); }
 .lobby header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .lobby h3 { margin: 0; font: 700 11.5px ui-monospace, monospace; letter-spacing: .22em; text-transform: uppercase; color: #ecd9ae; }

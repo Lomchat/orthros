@@ -6,7 +6,9 @@
 //
 // Frame (binary WebSocket message): type u8, source address (4 bytes, a.b.c.d), source port (u16, big-endian),
 // destination address, destination port, payload. Control messages (text, JSON) from the server: {type:'hello', ip,
-// peers} on joining, {type:'peers', peers} when the room changes.
+// peers, name} on joining (name: the player's Orthros account, the emulated machine's host name), {type:'peers', peers}
+// when the room changes, {type:'refused', reason} before closing — on a server with accounts, only a signed-in player
+// joins (the Orthros account is a player's only identity).
 import crypto from 'node:crypto';
 import { LAN } from './lan-proto.js';
 export { LAN };
@@ -60,13 +62,25 @@ export function acceptWebSocket(req, socket, onMessage, onClose, log) {
   return new WsPeer(socket, onMessage, onClose, log);
 }
 
-/** WebSocket upgrades on /api/lan: the virtual LAN of each game (room). handle() returns false for other paths. */
-export function lanUpgrades(log = () => {}) {
+/** A host name from an account name: what Windows allows in one (letters, digits, dash), 12 characters at most. */
+export const lanName = (username) => String(username ?? '').replace(/[^A-Za-z0-9-]/g, '').slice(0, 12) || null;
+
+/**
+ * WebSocket upgrades on /api/lan: the virtual LAN of each game (room). handle() returns false for other paths.
+ * `identify(req)`: the signed-in player ({ username }), null when none, undefined on a server without accounts.
+ */
+export function lanUpgrades(log = () => {}, { identify = () => undefined } = {}) {
   const rooms = new Map(); // room -> Map(ip string -> peer)
   const ipOf = (b, o) => `${b[o]}.${b[o + 1]}.${b[o + 2]}.${b[o + 3]}`;
   const handle = (req, socket, url) => {
     if (url.pathname !== '/api/lan') return false;
     if ((req.headers.upgrade ?? '').toLowerCase() !== 'websocket' || !req.headers['sec-websocket-key']) { socket.destroy(); return true; }
+    const user = identify(req);
+    if (user === null) {
+      const ws = acceptWebSocket(req, socket, () => {}, () => {}, log);
+      ws?.send(JSON.stringify({ type: 'refused', reason: 'sign-in' })); ws?.close();
+      return true;
+    }
     const roomName = (url.searchParams.get('room') ?? 'default').slice(0, 64);
     const room = rooms.get(roomName) ?? new Map(); rooms.set(roomName, room);
     let n = 2; while (room.has(`10.77.${n >> 8}.${n & 255}`) || (n & 255) === 0 || (n & 255) === 255) n++;
@@ -88,7 +102,7 @@ export function lanUpgrades(log = () => {}) {
       }
     }, () => { room.delete(ip); if (!room.size) rooms.delete(roomName); else announce(); log(`lan: ${ip} left ${roomName} (${peer.ws.why ?? '?'}; ${room.size} left)`); });
     room.set(ip, peer);
-    peer.ws.send(JSON.stringify({ type: 'hello', ip, peers: room.size }));
+    peer.ws.send(JSON.stringify({ type: 'hello', ip, peers: room.size, name: lanName(user?.username) }));
     announce();
     log(`lan: ${ip} joined ${roomName} (${room.size} in the room)`);
     return true;

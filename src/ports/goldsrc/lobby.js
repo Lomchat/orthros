@@ -19,7 +19,7 @@ const STRINGS = {
     slots: (free, bots) => `${free} place${free > 1 ? 's' : ''} for players` + (bots ? ` · ${bots} bot${bots > 1 ? 's' : ''}` : ''),
     errors: { name: 'Give it a name (2 characters at least).', map: 'Choose a map.', maxPlayers: 'Invalid number of players.', bots: 'Too many bots for that many players.', options: 'Invalid settings.',
       taken: 'A game already has that name.', owned: 'You already have a game running: join it, or wait for it to end.', ownedHere: 'You already have a game running: join it, or close it.', full: 'Every game slot is taken: join one, or wait for one to end.', wait: 'A game is already being created: wait a moment.',
-      start: 'The game server did not start. Try again.', offline: 'The game servers are not reachable right now.', forbidden: 'Creating games is not offered here.' },
+      start: 'The game server did not start. Try again.', offline: 'The game servers are not reachable right now.', forbidden: 'Creating games is not offered here.', signin: 'Sign in to Orthros to create a game.' },
   },
   fr: {
     title: 'Parties en ligne', create: '+ Créer une partie', join: 'Rejoindre', full: 'Pleine', starting: 'Démarrage…',
@@ -33,7 +33,7 @@ const STRINGS = {
     slots: (free, bots) => `${free} place${free > 1 ? 's' : ''} pour des joueurs` + (bots ? ` · ${bots} bot${bots > 1 ? 's' : ''}` : ''),
     errors: { name: 'Donne-lui un nom (2 caractères au moins).', map: 'Choisis une carte.', maxPlayers: 'Nombre de joueurs invalide.', bots: 'Trop de bots pour ce nombre de joueurs.', options: 'Réglages invalides.',
       taken: 'Une partie porte déjà ce nom.', owned: 'Tu as déjà une partie en cours : rejoins-la, ou attends qu’elle se termine.', ownedHere: 'Tu as déjà une partie en cours : rejoins-la, ou ferme-la.', full: 'Toutes les places de parties sont prises : rejoins-en une, ou attends qu’une se termine.', wait: 'Une partie est déjà en cours de création : patiente un instant.',
-      start: 'Le serveur de jeu n’a pas démarré. Réessaie.', offline: 'Les serveurs de jeu sont injoignables pour le moment.', forbidden: 'La création de parties n’est pas proposée ici.' },
+      start: 'Le serveur de jeu n’a pas démarré. Réessaie.', offline: 'Les serveurs de jeu sont injoignables pour le moment.', forbidden: 'La création de parties n’est pas proposée ici.', signin: 'Connecte-toi à Orthros pour créer une partie.' },
   },
 };
 
@@ -94,9 +94,10 @@ const el = (tag, props = {}, ...children) => {
 
 /**
  * The lobby of a version: `onJoin(room)` when the player joins one; `nickname()` the player's name (the default game
- * name). Returns its element and what shows, hides and refreshes it.
+ * name); `signedIn()` whether an Orthros account is signed in — multiplayer is for signed-in players: joining or
+ * creating without one calls `needAccount()` instead. Returns its element and what shows, hides and refreshes it.
  */
-export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
+export function createLobby({ name, lang, onJoin, nickname, signedIn = () => true, needAccount = () => {}, log = () => {} }) {
   const S = STRINGS[lang] ?? STRINGS.en;
   const label = (l) => (typeof l === 'string' ? l : l?.[lang] ?? l?.en ?? Object.values(l ?? {})[0] ?? '');
   const list = el('ul', { class: 'lb-rooms' }), note = el('p', { class: 'lb-note' }), online = el('span', { class: 'lb-online' });
@@ -134,6 +135,7 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
   let groupOf = () => null; // (a map's group, once the maps are known)
 
   function toggleForm(open) {
+    if (open && !signedIn()) { needAccount(); return; }
     const was = !form.classList.contains('hidden');
     form.classList.toggle('hidden', !open); createButton.classList.toggle('hidden', open); root.classList.toggle('creating', open); clearError();
     if (open) {
@@ -371,7 +373,7 @@ export function createLobby({ name, lang, onJoin, nickname, log = () => {} }) {
       const close = mine ? el('button', { type: 'button', class: 'end', disabled: !!r.closing || closingNow.has(r.index), title: S.close, onclick: (e) => closeRoom(r, e.currentTarget) }, r.closing || closingNow.has(r.index) ? S.closing : S.close) : null;
       return el('li', { class: 'room' + (r.permanent ? ' permanent' : '') + (mine ? ' mine' : '') }, thumb,
         el('div', { class: 'info' }, el('b', {}, r.name), el('span', {}, mine ? `${S.mine} · ${meta}` : meta)), close,
-        el('button', { type: 'button', class: 'join', disabled: full || !r.up, onclick: () => onJoin(r) }, r.closing ? S.closing : !r.up ? S.starting : full ? S.full : S.join));
+        el('button', { type: 'button', class: 'join', disabled: full || !r.up, onclick: () => (signedIn() ? onJoin(r) : needAccount()) }, r.closing ? S.closing : !r.up ? S.starting : full ? S.full : S.join));
     }));
     // (the keys of rooms gone: forgotten)
     if (data && !data.offline && Array.isArray(data.rooms)) {

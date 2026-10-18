@@ -5,9 +5,11 @@
     const original = FS.syncfs.bind(FS), key = `orthros.openmw.cloud.${scope}.${game}`;
     const endpoint = `/api/cloud/${encodeURIComponent(game)}`;
     let parent = 'none', uploading = false, queued = false, blocked = false, lastHash = null;
-    const notify = (message, error = false) => {
-      if (window.parent !== window) window.parent.postMessage({ type: 'orthros-save-status', message, error }, location.origin);
+    // (told to the Orthros page around the engine: its header's save indicator — states as cloud-sync.js's)
+    const notify = (state, message = '') => {
+      if (window.parent !== window) window.parent.postMessage({ type: 'orthros-save-status', state, message, error: state === 'error' || state === 'conflict' }, location.origin);
     };
+    let pending = Promise.resolve(true);
     const digest = async (bytes) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (b) => b.toString(16).padStart(2, '0')).join('');
     async function transform(bytes, decompress = false) {
       return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(decompress ? new DecompressionStream('gzip') : new CompressionStream('gzip'))).arrayBuffer());
@@ -36,7 +38,7 @@
       }
     }
     async function restore() {
-      notify('Chargement des sauvegardes du compte…');
+      notify('saving');
       const r = await fetch(endpoint, { cache: 'no-store', headers: { 'X-Orthros-Player-Scope': scope } });
       if (!r.ok && r.status !== 404) throw new Error('Impossible de charger les sauvegardes du compte. Réessaie avant de jouer.');
       const remote = r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
@@ -59,7 +61,7 @@
         await new Promise((resolve, reject) => original(false, (e) => e ? reject(e) : resolve()));
       }
       remember(!!local.dirty);
-      notify('Sauvegardes liées au compte Orthros.');
+      notify(local.dirty ? 'idle' : 'saved');
     }
     async function upload() {
       if (blocked) return;
@@ -69,7 +71,7 @@
         const raw = new TextEncoder().encode(JSON.stringify({ format: 'orthros-profile', version: 1, game, files: collect() }));
         const hash = await digest(raw);
         if (hash === lastHash) { remember(false); return; }
-        remember(true); notify('Envoi des sauvegardes sur le compte…');
+        remember(true); notify('saving');
         const bytes = await transform(raw);
         const r = await fetch(endpoint, { method: 'PUT', headers: { 'X-Orthros-Player-Scope': scope, 'X-Orthros-Parent-Hash': parent, 'Content-Type': 'application/octet-stream' }, body: bytes });
         if (!r.ok) {
@@ -77,20 +79,28 @@
           throw new Error(r.status === 409 ? 'Conflit : une autre sauvegarde existe en ligne. La copie locale est conservée ; synchronisation suspendue.' : 'Sauvegarde conservée sur cet appareil. Envoi au compte impossible ; garde cet onglet ouvert pour réessayer.');
         }
         parent = (await r.json()).hash; lastHash = hash; remember(false);
-        notify('Sauvegardes enregistrées sur le compte Orthros.');
-      } catch (e) { notify(e.message, true); }
+        notify('saved');
+        return true;
+      } catch (e) { notify(blocked && /Conflit/.test(e.message) ? 'conflict' : 'error', e.message); return false; }
       finally { uploading = false; if (queued) { queued = false; upload(); } }
     }
     FS.syncfs = (populate, callback) => original(populate, (err) => {
       if (err) return callback?.(err);
       if (populate) {
         restore().then(() => callback?.(null)).catch((e) => {
-          blocked = true; notify(e.message, true);
+          blocked = true; notify(/Conflit/.test(e.message) ? 'conflict' : 'error', e.message);
           // Never start the engine with missing or conflicting account data.
           const panel = document.createElement('p'); panel.setAttribute('role', 'alert'); panel.textContent = e.message;
           document.body.prepend(panel);
         });
-      } else { callback?.(null); remember(true); upload(); }
+      } else { remember(true); pending = upload(); callback?.(null); }
+    });
+    // (the Orthros page leaves: what the engine wrote synced, then sent — answered with whether it reached the account)
+    window.addEventListener('message', (e) => {
+      if (e.origin !== location.origin || e.source !== window.parent || e.data?.type !== 'orthros-flush') return;
+      const answer = (ok) => window.parent.postMessage({ type: 'orthros-flushed', ok }, location.origin);
+      if (blocked) { answer(false); return; }
+      try { FS.syncfs(false, () => Promise.resolve(pending).then((ok) => answer(ok !== false && !blocked && !savedState().dirty), () => answer(false))); } catch { answer(false); }
     });
     window.addEventListener('online', () => { if (!blocked) upload(); });
     window.addEventListener('beforeunload', (event) => {

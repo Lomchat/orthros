@@ -1,9 +1,11 @@
 // "My data": what the browser keeps for the visitor — the saves and settings of each game, the game files already
 // downloaded — and the optional account that copies the saves online. A window over the page (opened from the home
 // screen and from the in-game header); it follows the page language.
-import { archiveProfile, download, hashBytes, parseArchive, removeCache, removeProfile, restoreProfile, scanStorage } from './data-store.js';
+import { archiveProfile, download, parseArchive, removeCache, removeProfile, restoreProfile, scanStorage, profileFiles, replaceProfile } from './data-store.js';
 import { pickLang } from './lang.js';
 import { h } from './dom.js';
+import { errorText, accountChanged, onAccountChange } from './account.js';
+import { CloudSave, MAX_BACKUP } from './cloud-sync.js';
 
 // ---------------------------------------------------------------- text
 const TEXT = {
@@ -11,64 +13,64 @@ const TEXT = {
     title: 'Paramètres', subtitle: 'Options et sauvegardes', close: 'Fermer',
     tabGeneral: 'Général', tabDevice: 'Cet appareil', tabCloud: 'En ligne', tabAccount: 'Compte',
     hintGeneral: 'Options du lanceur', hintUsed: (b) => `${b} utilisés`, hintReading: 'Lecture…', hintCloud: 'Synchronisation', hintCloudOff: 'Compte requis',
-    sideNote: 'Le solo fonctionne sans compte. Certains ports multijoueurs en demandent un. Vos parties restent dans ce navigateur tant que vous ne les envoyez pas.',
+    sideNote: 'Connecté, tes parties sont sauvegardées automatiquement sur ton compte et le multijoueur est ouvert. Sans compte, elles restent seulement dans ce navigateur.',
     // general
-    generalTitle: 'Options du lanceur', generalLead: 'Quelques réglages valables pour tous vos jeux. Vos sauvegardes et le stockage sont dans les onglets suivants.',
+    generalTitle: 'Options du lanceur', generalLead: 'Quelques réglages valables pour tous tes jeux. Tes sauvegardes et le stockage sont dans les onglets suivants.',
     offline: 'Copie hors ligne', offlineText: 'Télécharge tout le dossier du jeu dans le stockage du navigateur, en arrière-plan : les lancements suivants ne lisent plus rien sur le réseau.',
     log: 'Journal de débogage', logText: 'Affiche le journal de l’émulateur par-dessus le jeu.', nextLaunch: ' S’applique au prochain lancement.',
     // this device
     deviceTitle: 'Sauvegardes et cache des jeux',
-    deviceLead: 'Vos parties et réglages, ainsi que les fichiers de jeu déjà téléchargés, sont rangés dans ce navigateur. Exportez vos sauvegardes pour les garder ailleurs.',
+    deviceLead: 'Tes parties et réglages, ainsi que les fichiers de jeu déjà téléchargés, sont rangés dans ce navigateur. Exporte tes sauvegardes pour les garder ailleurs.',
     used: 'Espace utilisé', ofQuota: (b) => `sur ${b} disponibles`, quotaUnknown: 'Quota indisponible',
     protection: 'Protection du stockage', protectionOn: 'Activée', protectionOnText: 'Le navigateur évitera d’effacer ces données.',
     protectionOff: 'À activer', protectionOffText: 'Sinon, le navigateur peut les effacer s’il manque de place.', protectionAsk: 'Activer la protection',
     protectionWork: 'Demande de protection', protectionDone: 'Protection activée.', protectionDenied: 'Le navigateur a refusé la demande.',
-    games: 'Vos jeux', saves: 'Sauvegardes', cache: 'Cache', cacheHelp: 'Fichiers du jeu déjà téléchargés : ils peuvent l’être de nouveau.',
+    games: 'Tes jeux', saves: 'Sauvegardes', cache: 'Cache', cacheHelp: 'Fichiers du jeu déjà téléchargés : ils peuvent l’être de nouveau.',
     export: 'Exporter', import: 'Importer', clean: 'Nettoyer',
     cleanCache: 'Vider le cache', cleanCacheText: 'Les fichiers du jeu seront téléchargés de nouveau au prochain lancement.',
     cleanSaves: 'Effacer les sauvegardes', cleanSavesText: 'Supprime définitivement les parties et réglages de cet appareil.',
     playing: 'Jeu en cours : l’import et le nettoyage seront possibles après l’avoir quitté.',
     noData: (n) => `Jeux sans données sur cet appareil (${n})`, noGames: 'Aucun jeu', noGamesText: 'Les jeux apparaîtront ici dès que le serveur les proposera.',
-    asides: 'Copies de secours', asidesText: 'Gardées automatiquement avant une restauration. Supprimez-les quand vous n’en avez plus besoin.',
+    asides: 'Copies de secours', asidesText: 'Gardées automatiquement avant une restauration. Supprime-les quand tu n’en as plus besoin.',
     delete: 'Supprimer', more: 'Plus d’options',
     // online
     cloudTitle: 'Sauvegarde en ligne', portSaves: 'Restauration automatique au lancement. Les copies précédentes peuvent être téléchargées dans l’historique.', playPort: 'Ouvrir le jeu',
-    cloudLead: 'Copiez vos sauvegardes sur votre compte pour les retrouver sur un autre appareil. Les fichiers des jeux ne sont jamais envoyés.',
-    cloudOffTitle: 'Retrouvez vos parties partout', cloudOffText: 'Connectez-vous pour garder une copie de vos sauvegardes en ligne. Le solo peut aussi se jouer sans compte.',
+    cloudLead: 'Tes sauvegardes sont envoyées sur ton compte pendant que tu joues et reprises au lancement, sur n’importe quel appareil. Les fichiers des jeux ne sont jamais envoyés.',
+    cloudOffTitle: 'Attention : rien n’est sauvegardé sur un compte', cloudOffText: 'Sans compte, tes parties restent seulement dans ce navigateur et peuvent être perdues. Connecte-toi pour qu’elles soient sauvegardées automatiquement.',
     signIn: 'Se connecter ou créer un compte', accountsOff: 'Les comptes ne sont pas activés sur ce serveur.',
     toCloud: 'Mes sauvegardes en ligne', signedAs: (n) => `Connecté : ${n}`, keeps: 'Jusqu’à 20 versions conservées par jeu.', syncAll: 'Synchroniser maintenant',
     online: 'En ligne', version: (v) => `version ${v}`, noCopy: 'Pas encore de copie en ligne',
     send: 'Envoyer', restore: 'Restaurer', downloadBtn: 'Télécharger', history: 'Historique', deleteOnline: 'Effacer en ligne',
-    noSaves: 'Aucune sauvegarde pour le moment', noSavesText: 'Lancez un jeu, puis revenez ici pour créer sa première copie en ligne.',
-    conflictNote: 'Si cet appareil et le serveur diffèrent, rien n’est écrasé automatiquement : vous choisissez la version à garder.',
+    noSaves: 'Aucune sauvegarde pour le moment', noSavesText: 'Lance un jeu en étant connecté : sa sauvegarde arrive ici toute seule.',
+    conflictNote: 'Si cet appareil et le serveur diffèrent, rien n’est écrasé automatiquement : tu choisis la version à garder.',
     // account
-    accountTitle: 'Votre compte', accountLead: 'Il garde vos sauvegardes en ligne et permet de jouer aux ports multijoueurs qui demandent un compte.',
+    accountTitle: 'Ton compte', accountLead: 'Ton identité sur Orthros : il garde tes sauvegardes et t’ouvre le multijoueur de tous les jeux.',
     signedIn: 'Connecté', signOut: 'Se déconnecter', signOutDone: 'Déconnecté. Les sauvegardes de cet appareil restent ici.',
     changePassword: 'Changer le mot de passe', oldPassword: 'Mot de passe actuel', newPassword: 'Nouveau mot de passe', changePasswordBtn: 'Modifier le mot de passe', passwordChanged: 'Mot de passe modifié.',
     deleteAccount: 'Supprimer le compte', deleteAccountText: 'Efface toutes les copies en ligne. Les données de cet appareil restent intactes.', deleteAccountBtn: 'Supprimer mon compte',
     login: 'Se connecter', register: 'Créer un compte', username: 'Identifiant', password: 'Mot de passe', createBtn: 'Créer mon compte',
-    accountRules: 'Identifiant de 3 à 32 caractères ; mot de passe d’au moins 10 caractères. Notez-le : la récupération par e-mail n’existe pas encore.',
-    accountsOffText: 'Ce serveur ne propose pas de comptes : vos sauvegardes restent sur cet appareil, exportez-les pour les garder ailleurs.',
-    connected: 'Compte connecté. Vos données locales restent sur cet appareil.',
+    accountRules: 'Identifiant de 3 à 32 caractères ; mot de passe d’au moins 10 caractères. Note-le : la récupération par e-mail n’existe pas encore.',
+    accountsOffText: 'Ce serveur ne propose pas de comptes : tes sauvegardes restent sur cet appareil, exporte-les pour les garder ailleurs.',
+    connected: 'Compte connecté. Tes données locales restent sur cet appareil.',
     // questions
     cancel: 'Annuler', cancelled: 'Annulé.', done: 'Terminé.',
     importAsk: (g) => `Restaurer la sauvegarde de ${g} ?`, importAskText: 'Les données actuelles de cet appareil seront gardées dans une copie de secours.', importOk: 'Restaurer',
-    cacheAsk: (g) => `Vider le cache de ${g} ?`, cacheAskText: 'Les fichiers du jeu seront téléchargés de nouveau si besoin. Vos sauvegardes ne sont pas touchées.', cacheOk: 'Vider le cache',
-    savesAsk: (g) => `Effacer les sauvegardes de ${g} ?`, savesAskText: 'C’est définitif sur cet appareil. Exportez-les d’abord si vous voulez les garder.', savesOk: 'Effacer',
+    cacheAsk: (g) => `Vider le cache de ${g} ?`, cacheAskText: 'Les fichiers du jeu seront téléchargés de nouveau si besoin. Tes sauvegardes ne sont pas touchées.', cacheOk: 'Vider le cache',
+    savesAsk: (g) => `Effacer les sauvegardes de ${g} ?`, savesAskText: 'C’est définitif sur cet appareil. Exporte-les d’abord si tu veux les garder.', savesOk: 'Effacer',
     asideAsk: 'Supprimer cette copie de secours ?', asideAskText: 'Elle sera supprimée définitivement.',
     publishAsk: 'Publier les données de cet appareil ?', publishAskText: 'Elles deviennent la nouvelle version en ligne ; la précédente reste dans l’historique.', publishOk: 'Publier',
     restoreAsk: (g) => `Restaurer la copie en ligne de ${g} ?`, restoreAskText: 'Les données actuelles de cet appareil seront gardées dans une copie de secours.',
     deleteOnlineAsk: (g) => `Effacer les copies en ligne de ${g} ?`, deleteOnlineAskText: 'Toutes les versions en ligne disparaissent. Les sauvegardes de cet appareil ne sont pas touchées.',
-    accountAsk: 'Supprimer votre compte ?', accountAskText: 'Toutes les copies en ligne seront effacées ; les données de cet appareil restent intactes. Saisissez votre mot de passe pour confirmer.',
+    accountAsk: 'Supprimer ton compte ?', accountAskText: 'Toutes les copies en ligne seront effacées ; les données de cet appareil restent intactes. Saisis ton mot de passe pour confirmer.',
     finalAsk: 'Dernière confirmation', finalAskText: 'Le compte et toutes ses sauvegardes en ligne seront supprimés définitivement.', finalOk: 'Oui, supprimer',
     // work and results
     wExport: 'Préparation de la sauvegarde', wImport: 'Import de la sauvegarde', wCache: 'Nettoyage du cache', wSaves: 'Suppression des sauvegardes', wAside: 'Suppression de la copie',
     wSend: 'Envoi de la sauvegarde', wSync: 'Synchronisation', wRestore: 'Restauration depuis le cloud', wDownload: 'Téléchargement de la version', wDeleteOnline: 'Suppression de la copie en ligne',
     wHistory: 'Chargement de l’historique', wLogin: 'Connexion', wRegister: 'Création du compte', wLogout: 'Déconnexion', wPassword: 'Modification du mot de passe', wAccount: 'Suppression du compte',
-    rExported: (s) => `Sauvegarde téléchargée : ${s}.`, rNoSave: 'Ce jeu n’a pas encore de sauvegarde sur cet appareil.', rQuit: 'Quittez ce jeu avant d’importer, de restaurer ou de nettoyer.',
+    rExported: (s) => `Sauvegarde téléchargée : ${s}.`, rNoSave: 'Ce jeu n’a pas encore de sauvegarde sur cet appareil.', rQuit: 'Quitte ce jeu avant d’importer, de restaurer ou de nettoyer.',
     rImported: (a) => 'Sauvegarde restaurée.' + (a ? ' Une copie des données précédentes a été gardée.' : ''), rCache: 'Cache vidé, sauvegardes conservées.', rSaves: 'Sauvegardes de cet appareil supprimées.', rAside: 'Copie supprimée.',
     rTooBig: 'Cette sauvegarde dépasse la limite de 64 Mo de la copie en ligne. L’export reste possible.', rAlready: 'Cette sauvegarde est déjà en ligne.',
-    rDiffers: 'La copie en ligne diffère de celle de cet appareil. Choisissez « Envoyer » pour la remplacer ou « Restaurer » pour la récupérer.',
+    rDiffers: 'La copie en ligne diffère de celle de cet appareil. Choisis « Envoyer » pour la remplacer ou « Restaurer » pour la récupérer.',
     rSent: (v) => 'Sauvegarde envoyée' + (v ? ` (version ${v})` : '') + '.', rSynced: (n, c) => `${n} sauvegarde(s) envoyée(s).` + (c ? ` ${c} conflit(s) à examiner dans l’onglet En ligne.` : ''),
     rRestored: (a) => 'Sauvegarde restaurée.' + (a ? ' L’ancienne copie de cet appareil a été gardée.' : ''), rVersion: (v) => `Version ${v} téléchargée.`, rDeleted: 'Copies en ligne supprimées ; les données de cet appareil restent intactes.',
     rHistory: 'Historique chargé.', rAccountDeleted: 'Compte supprimé. Les sauvegardes de cet appareil sont conservées.', errConnection: 'Erreur de connexion.',
@@ -77,7 +79,7 @@ const TEXT = {
     title: 'Settings', subtitle: 'Options and saves', close: 'Close',
     tabGeneral: 'General', tabDevice: 'This device', tabCloud: 'Online', tabAccount: 'Account',
     hintGeneral: 'Launcher options', hintUsed: (b) => `${b} used`, hintReading: 'Reading…', hintCloud: 'Sync', hintCloudOff: 'Account needed',
-    sideNote: 'Solo works without an account. Some multiplayer ports require one.',
+    sideNote: 'Signed in, your games are saved on your account automatically and multiplayer is open. Without an account, they stay in this browser only.',
     generalTitle: 'Launcher options', generalLead: 'A few settings for all your games. Saves and storage are in the next tabs.',
     offline: 'Offline copy', offlineText: 'Downloads the whole game folder into this browser’s storage in the background: later launches read nothing from the network.',
     log: 'Debug log', logText: 'Shows the emulator’s log over the game.', nextLaunch: ' Applies at the next launch.',
@@ -96,15 +98,15 @@ const TEXT = {
     asides: 'Safety copies', asidesText: 'Kept automatically before a restore. Delete them when you no longer need them.',
     delete: 'Delete', more: 'More options',
     cloudTitle: 'Online backup', portSaves: 'Restored automatically when launching. Previous copies can be downloaded from history.', playPort: 'Open game',
-    cloudLead: 'Copy your saves to your account to find them on another device. Game files are never uploaded.',
-    cloudOffTitle: 'Find your games anywhere', cloudOffText: 'Sign in to keep a copy of your saves online. Solo play is also available without an account.',
+    cloudLead: 'Your saves are sent to your account while you play and come back at launch, on any device. Game files are never uploaded.',
+    cloudOffTitle: 'Warning: nothing is saved on an account', cloudOffText: 'Without an account, your games stay in this browser only and can be lost. Sign in to have them saved automatically.',
     signIn: 'Sign in or create an account', accountsOff: 'Accounts are not enabled on this server.',
     toCloud: 'My online saves', signedAs: (n) => `Signed in: ${n}`, keeps: 'Up to 20 versions kept per game.', syncAll: 'Sync now',
     online: 'Online', version: (v) => `version ${v}`, noCopy: 'No online copy yet',
     send: 'Send', restore: 'Restore', downloadBtn: 'Download', history: 'History', deleteOnline: 'Delete online',
-    noSaves: 'No saves yet', noSavesText: 'Start a game, then come back here to make its first online copy.',
+    noSaves: 'No saves yet', noSavesText: 'Play a game while signed in: its save arrives here by itself.',
     conflictNote: 'If this device and the server differ, nothing is overwritten automatically: you choose which version to keep.',
-    accountTitle: 'Your account', accountLead: 'Keeps your saves online and signs you into multiplayer ports that require an account.',
+    accountTitle: 'Your account', accountLead: 'Your identity on Orthros: it keeps your saves and opens the multiplayer of every game.',
     signedIn: 'Signed in', signOut: 'Sign out', signOutDone: 'Signed out. The saves on this device stay here.',
     changePassword: 'Change password', oldPassword: 'Current password', newPassword: 'New password', changePasswordBtn: 'Change password', passwordChanged: 'Password changed.',
     deleteAccount: 'Delete account', deleteAccountText: 'Erases every online copy. The data on this device is untouched.', deleteAccountBtn: 'Delete my account',
@@ -134,17 +136,6 @@ const TEXT = {
     rHistory: 'History loaded.', rAccountDeleted: 'Account deleted. The saves on this device are kept.', errConnection: 'Connection error.',
   },
 };
-/** The accounts API answers in French: its known messages, for the English window. */
-const ERR_EN = {
-  'Origine refusée.': 'Origin refused.', 'Origine requise.': 'Origin required.', 'Trop de tentatives. Réessaie plus tard.': 'Too many attempts. Try again later.', 'Trop de tentatives.': 'Too many attempts.',
-  'Identifiant : 3 à 32 caractères, lettres, chiffres, point, tiret ou souligné.': 'Username: 3 to 32 characters, letters, digits, dot, dash or underscore.',
-  'Le mot de passe doit contenir de 10 à 128 caractères.': 'The password must be 10 to 128 characters long.', 'Cet identifiant est déjà pris.': 'This username is already taken.',
-  'Identifiant ou mot de passe incorrect.': 'Wrong username or password.', 'Connexion requise.': 'Sign-in required.', 'Le nouveau mot de passe doit contenir de 10 à 128 caractères.': 'The new password must be 10 to 128 characters long.',
-  'Mot de passe actuel incorrect.': 'Current password is wrong.', 'Mot de passe incorrect.': 'Wrong password.', 'Introuvable.': 'Not found.', 'Jeu introuvable.': 'Game not found.', 'Sauvegarde introuvable.': 'Save not found.',
-  'Trop d’envois. Réessaie dans une minute.': 'Too many uploads. Try again in a minute.', 'Version de départ invalide.': 'Invalid starting version.', 'Sauvegarde trop volumineuse.': 'Save too large.',
-  'Fichier de sauvegarde invalide.': 'Invalid save file.', 'Contenu de sauvegarde invalide.': 'Invalid save content.', 'Une autre sauvegarde existe en ligne.': 'Another save exists online.',
-  'Espace cloud plein (512 Mo). Supprime une ancienne copie en ligne.': 'Cloud space full (512 MB). Delete an old online copy.', 'L’espace cloud du site est plein.': 'The site’s cloud space is full.', 'Méthode refusée.': 'Method not allowed.',
-};
 let lang = pickLang();
 const t = (key, ...args) => { const v = TEXT[lang][key] ?? TEXT.en[key] ?? key; return typeof v === 'function' ? v(...args) : v; };
 const fmtBytes = (n) => {
@@ -165,16 +156,19 @@ const state = () => window.orthros;
 const activeGame = (game) => state()?.manifest === game && ['running', 'loading', 'starting'].includes(state()?.status);
 const nameOf = (game) => app.games.get(game)?.title ?? game;
 const versionOf = (game) => app.games.get(game)?.version ?? null;
-const knownKey = (game) => 'orthros.cloud.' + app.account?.username + '.' + game;
-const getKnown = (game) => localStorage.getItem(knownKey(game));
-const setKnown = (game, hash) => localStorage.setItem(knownKey(game), hash);
+/** The account's copy of a Windows game's profile kept in this browser (cloud-sync.js), with its latest hash as listed. */
+const cloudFor = (game) => {
+  const c = new CloudSave({ game, user: app.account?.username, read: () => profileFiles(game, state()), write: (files) => replaceProfile(game, files, state()) });
+  c.remoteHash = app.cloud.get(game)?.hash ?? null;
+  return c;
+};
 
 // ---------------------------------------------------------------- server
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...options });
   if (!response.ok) {
     let error; try { error = (await response.json()).error; } catch { error = null; }
-    const issue = new Error((lang === 'fr' ? error : ERR_EN[error] ?? error) || t('errConnection'));
+    const issue = new Error(errorText(error, lang) || t('errConnection'));
     issue.status = response.status;
     throw issue;
   }
@@ -260,7 +254,10 @@ const status = h('div', { class: 'dm-status', role: 'status', 'aria-live': 'poli
 const asking = h('div', { class: 'dm-ask', hidden: true });
 const closeBtn = h('button', { type: 'button', class: 'dm-close', onclick: () => dialog.close() });
 const brandTitle = h('strong', { id: 'dmTitle' }), brandSub = h('span'), sideNote = h('p', { class: 'dm-side-note' });
-const parking = document.getElementById('dmParking');
+// (the Windows games' page has the launch options and the browser's storage; a browser port's page, the online saves and
+// the account only — its own options are the game's)
+const winPage = !!document.getElementById('dmParking');
+const parking = document.getElementById('dmParking') ?? document.body.appendChild(h('div', { id: 'dmParking', hidden: true }, h('input', { type: 'checkbox', id: 'offlineToggle' }), h('input', { type: 'checkbox', id: 'logToggle' })));
 dialog.append(h('div', { class: 'dm-shell' },
   h('aside', { class: 'dm-side' }, h('div', { class: 'dm-brand' }, h('img', { src: '/src/host/web/orthros_logo.png', alt: '', width: 140, height: 143 }), h('div', {}, brandTitle, brandSub)), nav, sideNote),
   h('section', { class: 'dm-main' }, closeBtn, content, status, asking)));
@@ -312,7 +309,7 @@ function renderGeneral() {
 // ---------------------------------------------------------------- tab: this device
 function gameRow(game, data) {
   const has = !!(data?.profile || data?.cache), card = h('article', { class: 'dm-game' + (has ? '' : ' empty') });
-  const version = versionOf(game), port = app.games.get(game)?.runtime === 'openmw';
+  const version = versionOf(game), port = (app.games.get(game)?.runtime ?? 'win32') !== 'win32';
   card.append(h('div', { class: 'dm-game-top' },
     h('div', { class: 'dm-game-icon', 'aria-hidden': 'true' }, (nameOf(game)[0] ?? 'O').toUpperCase()),
     h('div', { class: 'dm-game-id' }, h('strong', {}, nameOf(game)), version ? h('span', { class: 'dm-tag' }, version) : null),
@@ -364,7 +361,7 @@ function renderDevice() {
 // ---------------------------------------------------------------- tab: online
 function cloudRow(game) {
   const remote = app.cloud.get(game), local = app.storage?.games.find((g) => g.game === game), card = h('article', { class: 'dm-game cloud' });
-  const version = versionOf(game), port = app.games.get(game)?.runtime === 'openmw';
+  const version = versionOf(game), port = (app.games.get(game)?.runtime ?? 'win32') !== 'win32';
   card.append(h('div', { class: 'dm-game-top' },
     h('div', { class: 'dm-game-icon', 'aria-hidden': 'true' }, icon('cloud')),
     h('div', { class: 'dm-game-id' }, h('strong', {}, nameOf(game)), version ? h('span', { class: 'dm-tag' }, version) : null),
@@ -409,7 +406,7 @@ function renderAccount() {
     content.append(h('div', { class: 'dm-who' }, h('div', { class: 'dm-avatar', 'aria-hidden': 'true' }, (app.account.username[0] ?? '?').toUpperCase()),
       h('div', {}, h('strong', {}, app.account.username), h('small', {}, t('signedIn'))),
       row(btn(t('toCloud'), () => { app.tab = 'cloud'; render(); }, { variant: 'primary', ico: 'cloud', key: 'tocloud', small: true }),
-        btn(t('signOut'), () => run(t('wLogout'), async () => { await jsonApi('/api/account/logout', 'POST'); app.account = null; app.cloud.clear(); updateAccountButton(); return t('signOutDone'); }), { variant: 'ghost', key: 'logout', small: true }))));
+        btn(t('signOut'), () => run(t('wLogout'), async () => { await jsonApi('/api/account/logout', 'POST'); app.account = null; app.cloud.clear(); updateAccountButton(); accountChanged(null); return t('signOutDone'); }), { variant: 'ghost', key: 'logout', small: true }))));
     const pw = h('form', { class: 'dm-form' }, field(t('oldPassword'), 'password', 'oldPassword', 'current-password'), field(t('newPassword'), 'password', 'newPassword', 'new-password'),
       h('button', { type: 'submit', class: 'dm-btn primary', disabled: app.busy }, t('changePasswordBtn')));
     pw.onsubmit = (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(pw)); run(t('wPassword'), async () => { await jsonApi('/api/account/password', 'POST', data); pw.reset(); return t('passwordChanged'); }, false); };
@@ -426,7 +423,7 @@ function renderAccount() {
     event.preventDefault(); const data = Object.fromEntries(new FormData(form));
     run(app.accountMode === 'login' ? t('wLogin') : t('wRegister'), async () => {
       const result = await jsonApi('/api/account/' + app.accountMode, 'POST', data);
-      app.account = result.user; form.reset(); updateAccountButton();
+      app.account = result.user; form.reset(); updateAccountButton(); accountChanged(result.user);
       await refresh(); await syncAll(); return t('connected');
     });
   };
@@ -434,7 +431,7 @@ function renderAccount() {
 }
 
 // ---------------------------------------------------------------- drawing
-const TABS = [['general', 'settings', 'tabGeneral'], ['device', 'device', 'tabDevice'], ['cloud', 'cloud', 'tabCloud']];
+const TABS = [['general', 'settings', 'tabGeneral'], ['device', 'device', 'tabDevice'], ['cloud', 'cloud', 'tabCloud']].filter(([id]) => winPage || id === 'cloud');
 function render() {
   const keep = document.activeElement?.dataset?.k, scroll = content.scrollTop;
   parking.append(switches.offline.label, switches.log.label); // (before the content is cleared: they never leave the document)
@@ -497,35 +494,29 @@ function removeAside(item) {
 }
 async function uploadGame(game, force = false) {
   return run(t('wSend'), async () => {
-    const bytes = await archiveProfile(game, state());
-    if (!bytes) throw new Error(t('rNoSave'));
-    if (bytes.length > 64 * 1024 * 1024) throw new Error(t('rTooBig'));
-    const hash = await hashBytes(bytes), remote = app.cloud.get(game), parent = remote?.hash ?? 'none';
-    if (hash === parent) { setKnown(game, hash); return t('rAlready'); }
-    if (remote && getKnown(game) !== parent && !force) throw new Error(t('rDiffers'));
+    const remote = app.cloud.get(game), c = cloudFor(game);
     if (remote && force && !await ask({ title: t('publishAsk'), text: t('publishAskText'), ok: t('publishOk') })) return t('cancelled');
-    const response = await api('/api/cloud/' + encodeURIComponent(game), { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'X-Orthros-Parent-Hash': parent }, body: bytes });
-    const result = await response.json();
-    setKnown(game, result.hash);
-    return t('rSent', result.version);
+    const st = force ? await c.resolve('device') : await c.push();
+    return outcome(st, true);
   });
 }
+/** A CloudSave status as the window's result line (or its error). */
+function outcome(st, sent) {
+  if (st.state === 'saved') return sent ? t('rSent', st.version) : t('rAlready');
+  if (st.state === 'conflict') throw new Error(t('rDiffers'));
+  if (st.state === 'toobig') throw new Error(t('rTooBig'));
+  if (st.state === 'error') throw new Error(errorText(st.message, lang) || t('errConnection'));
+  if (st.state === 'off') throw new Error(t('cloudOffText'));
+  return t('done');
+}
+/** Every Windows game's profile kept in this browser sent when it changed; the conflicts left for the player. */
 async function syncAll() {
-  const rows = (app.storage?.games ?? []).filter((g) => g.profile > 0);
+  const rows = (app.storage?.games ?? []).filter((g) => g.profile > 0 && !activeGame(g.game) && (app.games.get(g.game)?.runtime ?? 'win32') === 'win32');
   let uploaded = 0, conflicts = 0;
   for (const item of rows) {
-    const game = item.game, bytes = await archiveProfile(game, state());
-    if (!bytes || bytes.length > 64 * 1024 * 1024) continue;
-    const hash = await hashBytes(bytes), remote = app.cloud.get(game), parent = remote?.hash ?? 'none';
-    if (hash === parent) { setKnown(game, hash); continue; }
-    if (remote && getKnown(game) !== parent) { conflicts++; continue; }
-    try {
-      const response = await api('/api/cloud/' + encodeURIComponent(game), { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'X-Orthros-Parent-Hash': parent }, body: bytes });
-      const result = await response.json();
-      setKnown(game, result.hash);
-      app.cloud.set(game, { game, hash: result.hash, version: result.version ?? remote?.version, size: bytes.length, updatedAt: Date.now() });
-      uploaded++;
-    } catch (error) { if (error.status === 409) conflicts++; else throw error; }
+    const c = cloudFor(item.game), st = await c.push();
+    if (st.state === 'conflict') conflicts++;
+    else if (st.state === 'saved' && st.version) { uploaded++; app.cloud.set(item.game, { game: item.game, hash: c.remoteHash, version: st.version, size: 0, updatedAt: Date.now() }); }
   }
   return t('rSynced', uploaded, conflicts);
 }
@@ -533,12 +524,10 @@ async function restoreCloud(game, version) {
   return run(t('wRestore'), async () => {
     if (activeGame(game)) throw new Error(t('rQuit'));
     if (!await ask({ title: t('restoreAsk', nameOf(game)), text: t('restoreAskText'), ok: t('importOk') })) return t('cancelled');
-    const url = '/api/cloud/' + encodeURIComponent(game) + (version ? '/' + version : '');
-    const archive = await parseArchive(new Uint8Array(await (await api(url)).arrayBuffer()), game);
-    const aside = await restoreProfile(game, archive, state());
-    const latest = app.cloud.get(game);
-    if (latest) setKnown(game, latest.hash);
-    return t('rRestored', aside);
+    if (!version || version === app.cloud.get(game)?.version) { await cloudFor(game).resolve('account'); return t('rRestored', true); }
+    // (an older version of the history: put in place, this device's copy kept aside; the account's latest unchanged)
+    const archive = await parseArchive(new Uint8Array(await (await api('/api/cloud/' + encodeURIComponent(game) + '/' + version)).arrayBuffer()), game);
+    return t('rRestored', await restoreProfile(game, archive, state()));
   });
 }
 async function downloadCloud(game, version) {
@@ -551,7 +540,7 @@ async function deleteCloud(game) {
   return run(t('wDeleteOnline'), async () => {
     if (!await ask({ title: t('deleteOnlineAsk', nameOf(game)), text: t('deleteOnlineAskText'), ok: t('delete'), danger: true })) return t('cancelled');
     await api('/api/cloud/' + encodeURIComponent(game), { method: 'DELETE' });
-    localStorage.removeItem(knownKey(game));
+    try { localStorage.removeItem(`orthros.sync.${app.account?.username}.${game}`); } catch { /* storage off */ }
     return t('rDeleted');
   });
 }
@@ -568,7 +557,7 @@ async function deleteAccount() {
     if (!password) return t('cancelled');
     if (!await ask({ title: t('finalAsk'), text: t('finalAskText'), ok: t('finalOk'), danger: true })) return t('cancelled');
     await jsonApi('/api/account', 'DELETE', { password });
-    app.account = null; app.cloud.clear(); updateAccountButton();
+    app.account = null; app.cloud.clear(); updateAccountButton(); accountChanged(null);
     return t('rAccountDeleted');
   });
 }
@@ -576,25 +565,21 @@ async function deleteAccount() {
 // ---------------------------------------------------------------- entry points
 function open(tab = 'general') {
   if (document.pointerLockElement) document.exitPointerLock();
+  if (!winPage && tab !== 'account') tab = 'cloud';
   lang = pickLang();
   app.tab = tab; app.open = true; app.message = ''; app.tone = 'info'; asking.hidden = true;
   render();
   dialog.showModal();
   refresh({ account: true }).then(updateAccountButton).catch((error) => { app.tone = 'error'; app.message = error.message; render(); });
 }
-// home screen: the two buttons of its header (see index.html); in game: one in the game header
+// home screen: the two buttons of its header (see index.html); in a game: the header's settings and save indicator
+// (shell.js) open it through window.orthrosData
 document.getElementById('hmSettingsBtn')?.addEventListener('click', () => open('general'));
 document.getElementById('hmAccountBtn')?.addEventListener('click', () => open('account'));
-const gear = icon('settings'); gear.classList.add('dm-bar-ico');
-document.querySelector('#topbar')?.insertBefore(h('button', { type: 'button', class: 'dm-bar-entry', onclick: () => open('general') }, gear, t('title')), document.querySelector('#tbFull'));
+window.orthrosData = { open };
 // is a session open? (a cheap question; the answer only lights the dot of the little person)
 fetch('/api/config').then((r) => r.json()).then(async (c) => { app.accountsOn = !!c.accounts; if (c.accounts) app.account = (await jsonApi('/api/account')).user; updateAccountButton(); }).catch(() => {});
-
-setInterval(() => {
-  if (app.account && !app.busy) refresh().then(() => syncAll()).then((message) => {
-    if (app.open) { app.tone = 'ok'; app.message = message; render(); }
-  }).catch((error) => { if (app.open) { app.tone = 'error'; app.message = error.message; render(); } });
-}, 5 * 60 * 1000);
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden' && app.account && !app.busy) refresh().then(syncAll).catch(() => {});
-});
+// (signed in or out from a game's loading screen: the same here)
+onAccountChange(({ user }) => { app.account = user; updateAccountButton(); if (app.open) refresh(); });
+// (the home screen: what was played without an account, or offline, sent once signed in; a running game sends its own)
+if (document.getElementById('menu')) setTimeout(() => { if (app.account && !state()?.manifest) refresh().then(syncAll).catch(() => {}); }, 4000);

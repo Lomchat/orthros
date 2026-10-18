@@ -92,6 +92,24 @@ async function activeFiles(game, state) {
     worker.postMessage({ type: 'profile-dump' });
   });
 }
+/**
+ * The profile's files a player keeps (cloud-sync.js): [{ path, data: Uint8Array }], from the running game when it is
+ * this one, else from this browser's copy. The profile's Temp folder is left out (the game's scratch files).
+ */
+export async function profileFiles(game, state) {
+  let files = await activeFiles(game, state);
+  if (!files) {
+    const root = await navigator.storage.getDirectory();
+    let dir; try { dir = await root.getDirectoryHandle(PROFILE_PREFIX + game); } catch { return []; }
+    files = [];
+    await collect(dir, '', files);
+  }
+  return files.filter((f) => !/^temp(\/|$)/i.test(f.path)).map((f) => ({ path: f.path, data: unbase64(f.data) }));
+}
+/** This browser's profile of the game replaced by `files` ([{ path, data: Uint8Array }]); the previous one kept aside. */
+export async function replaceProfile(game, files, state) {
+  return restoreProfile(game, { files: files.map((f) => ({ path: f.path, data: base64(f.data) })) }, state);
+}
 export async function archiveProfile(game, state) {
   let files = await activeFiles(game, state);
   if (!files) {
