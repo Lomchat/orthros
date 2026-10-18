@@ -42,6 +42,19 @@ export const openmwModes = (o) => ['solo', ...(o.multiplayer ? ['multiplayer'] :
 // Only the upstream browser pages are adapted. Guest filesystem paths (/mwdata, /userdata)
 // and the generated Emscripten JS must retain their original meaning.
 export function openmwWebText(text, base, saveKey) {
+  // Native EM_ASM in the untouched engine glue uses the upstream storage keys too.
+  // HTML-only replacements would clear a different resume token than the engine reads.
+  if (text.includes('async function rebootIntoWorld(wsUrl){')) text = text.replace('<script>', `<script>
+    (function(){ ['getItem', 'setItem', 'removeItem'].forEach(function(method){
+      var original = Storage.prototype[method];
+      Storage.prototype[method] = function(){
+        var args = Array.prototype.slice.call(arguments);
+        if (typeof args[0] === 'string' && args[0].indexOf('omwmp:') === 0)
+          args[0] = ${JSON.stringify(saveKey + ':mp:')} + args[0].slice(6);
+        return original.apply(this, args);
+      };
+    }); })();
+  `);
   return text.replace(/ · <a href="\/admin">server administration<\/a>/, '')
     .replace(/(["'`])\/(auth(?:\/|["'`])|worlds(?:\/|["'`])|locker(?:\/|["'`])|saves(?:\/|["'`])|w\/|ws(?=["'`])|clientlog(?=["'`])|admin(?:\/|["'`])|mwdata-(?:manifest|mods)\.json|index\.html|launcher\.html|join(?=["'`])|play(?=["'`]))/g, `$1${base}/$2`)
     .replace(/(location\.(?:href\s*=\s*|replace\(\s*))["']\/["']/g, `$1'${base}/'`)

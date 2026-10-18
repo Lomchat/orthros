@@ -89,6 +89,28 @@ test('world travel scopes destinations received through the engine protocol befo
   assert.equal(await travel('ws://localhost:8080/w/local'), 'ws://localhost:8080' + base + '/w/local');
 });
 
+test('native engine storage and adapted HTML share an installation-specific resume token', () => {
+  class Storage {
+    constructor() { this.items = new Map(); }
+    getItem(key) { return this.items.get(key) ?? null; }
+    setItem(key, value) { this.items.set(key, String(value)); }
+    removeItem(key) { this.items.delete(key); }
+  }
+  const html = '<script>async function rebootIntoWorld(wsUrl){ return wsUrl; }</script>';
+  const adapted = openmwWebText(html, '/ports/openmw/a/app', 'save-a');
+  runInNewContext(adapted.match(/<script>([\s\S]*?)<\/script>/)[1], { Storage, URL });
+  const session = new Storage(), local = new Storage();
+  session.setItem('omwmp:resume', 'native-token');
+  assert.equal(session.getItem('save-a:mp:resume'), 'native-token');
+  assert.equal(session.getItem('save-b:mp:resume'), null);
+  assert.equal(session.items.has('omwmp:resume'), false);
+  session.removeItem('save-a:mp:resume');
+  assert.equal(session.getItem('omwmp:resume'), null, 'fresh HTML ticket clears the native token');
+  local.setItem('omwmp:resume', 'old-local-token'); local.removeItem('save-a:mp:resume');
+  assert.equal(local.getItem('omwmp:resume'), null, 'legacy token cleanup shares the namespace');
+  session.setItem('unrelated', 'kept'); assert.equal(session.getItem('unrelated'), 'kept');
+});
+
 test('gateway HTTP proxy preserves streamed bytes, scopes world paths and cookies, and hides administration', async (t) => {
   let seen;
   const backend = http.createServer((req, res) => {
