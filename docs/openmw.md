@@ -17,8 +17,8 @@ The engine, its corresponding source and native simulation image are pinned by
   `data_games`, in `data_installers/openmw/`; an import receipt records the master/archive hashes.
 - The original profile `morrowind-goty-en` shares that base, declares no mods, and uses the
   gateway on localhost port 28101 (`orthros-openmw@morrowind-goty-en`, enabled). The full
-  `morrowind-goty-vanilla-plus-en` profile keeps its original id and remains unavailable until
-  every declared mod is installed; its separate service remains disabled.
+  `morrowind-goty-vanilla-plus-en` profile keeps its original id and now contains all seven mods.
+  Its enabled gateway uses localhost port 28100. Saves/worlds stay separate from the original profiles.
 - Project Atlas is installed from its authors' public repository, commit
   `68a838650fb177afb5e6a63c558dc4ae6bf29b56`, SHA-256
   `364c5896a4b181def2420e1b30f54043b3c0ef35812db24b53fe79f1aa1a92f5`.
@@ -27,8 +27,8 @@ The engine, its corresponding source and native simulation image are pinned by
   `09951b376ad8e57d8bdca64fca92c83db732a32b`, SHA-256
   `234709b8b0f603430251eb4259eac355b400454413fb6c685b6d58a60738fb7b`.
   Selected parts: Core, Lake Fjalding Anti-Suck, Chuzei Fix, Better Vanilla Textures,
-  Graphic Herbalism patch; the two supplied ESPs are enabled in that future stack.
-- Glow in the Dahrk 3.3.0 and Graphic Herbalism 1.04 are staged from the French Confrérie
+  Graphic Herbalism patch; the two supplied ESPs are enabled in the Vanilla+ stack.
+- Glow in the Dahrk 3.3.0 and Graphic Herbalism 1.04 are installed from the French Confrérie
   des Traducteurs packages, translated by Redondepremière. The Glow mirror is linked by the
   original author; Graphic Herbalism permits redistribution with attribution. Only the core
   meshes, textures and documentation were copied; no MWSE scripts or optional plugins.
@@ -37,20 +37,50 @@ The engine, its corresponding source and native simulation image are pinned by
   and [Récolte réaliste](https://www.confrerie-des-traducteurs.fr/morrowind/mods/1973/jouabilite/recolte_realiste).
   Glow 3.x supports basic OpenMW window glow, but its author recommends 2.11.2: sunrays in
   3.x cannot be toggled and the new MWSE interior-light features are unavailable. The staged
-  core remains unvalidated in the complete stack; prefer 2.11.2 when its archive is available.
-- Three mods remain missing: [Patch for Purists](https://www.nexusmods.com/morrowind/mods/45096?tab=files),
-  [Morrowind Enhanced Textures](https://www.nexusmods.com/morrowind/mods/46221?tab=files) and
-  [Familiar Faces](https://www.nexusmods.com/morrowind/mods/50093?tab=files). The MET 6.1 main
-  archive is listed as 2.4 GB; the optional MET 6 Atlas textures (279 MB) replace the older MET
-  textures shipped with Atlas and should load after it. Current original-asset profiles stay
-  available while the Vanilla+ profile remains incomplete. Nexus login previously failed at
-  its CAPTCHA before authentication; credentials have not been verified or saved. The public
-  GitHub repositories examined do not contain complete releases of these three mods. A fresh
-  ordinary Chromium login attempt also left Turnstile unverified; no CAPTCHA bypass tools
-  or third-party solvers were installed. Archive integrity and all 323 copied files were
-  checked, and the nine OpenMW tests pass. This is staging evidence, not full-stack play validation.
-- Neither the complete graphics stack nor a complete campaign has been validated. Do not
-  activate Atlas/MOP compatibility patches in the original profile without their dependencies.
+  core is included in the startup/party checks below; these do not exercise every window effect.
+  Prefer 2.11.2 when its archive is available if the documented 3.x limitations matter.
+- Familiar Faces 2.1 is installed from [Portmod's public mirror](https://gitlab.com/portmod-mirrors/openmw/-/raw/master/Familiar_Faces-50093-2-1-1678377705.zip),
+  with the optional Redguard female teeth texture fix. Archive size and MD5 match the
+  [Portmod package manifest](https://gitlab.com/portmod/openmw-mods/-/raw/master/assets-misc/familiar-faces-by-caleb/Manifest);
+  SHA-256 is `650f44032fec42a423a11b06f550b38d878c1b2f92b62ac6d94329287364d162`.
+- Patch for Purists 4.0.2 is installed from a [community archive](https://www.mediafire.com/file/xl5qun6xu46uiuz/Patch_for_Purists.zip/file).
+  All 67 extracted files match the XXH64 hashes and lengths from Kezyma's independently
+  maintained Morrowind Remastered Legacy Wabbajack installation manifest, commit
+  `817d04cdd785a1533ebedab682f4a7063a631ec1`. The core `Patch for Purists.esm` is enabled;
+  the optional Book Typos and Semi-Purist ESPs are not included. Archive SHA-256:
+  `341ec4659d1b0625888623d0a467c2e4c641f4104efa1b40332636319c121dc4`.
+- Morrowind Enhanced Textures 4.1 is downloaded from the [SourceForge mirror](https://sourceforge.net/app/morrowind-enhanced-textures/files/windows/MET_4.1-46221-4-1-1587244159.7z/download).
+  This deliberately uses an older complete release, rather than pretending the Nexus-only
+  6.1 release has been obtained. Archive size: 1,119,672,974 bytes, MD5
+  `2f8190b8eb70483438cafd09caba5f87`, recorded in the
+  [Portmod package manifest](https://gitlab.com/portmod/openmw-mods/-/raw/master/assets-textures/morrowind-enhanced-textures/Manifest).
+  BLAKE3 also matches Portmod; SHA-256 is
+  `618f6da234f40749d725858ec8307c56f44e2528bd1d0f3c0d268afa71adba93`.
+  Atlas retains its bundled MET atlases; the separate optional MET 6 Atlas update is not installed.
+  Load order follows Atlas's authors: PfP, MOP, GitD, GH, MET, Atlas, then Familiar Faces.
+- These mirror downloads do not require a Nexus session. No CAPTCHA solvers or third-party
+  account services were installed, and no Nexus password is stored. SHA-256 receipts and
+  reference metadata remain in `data_installers/openmw/`.
+- The hidden `morrowind-goty-vanilla-plus-fr` profile is the French language target of the
+  Vanilla+ launcher. It uses the French masters/voices and six visual mods: MOP core/textures/GH
+  meshes, GitD, GH, MET, Atlas and Familiar Faces. No English PfP master or MOP ESP is enabled.
+  Localized data and identical mod assets are hardlinked into its version overlay; original files
+  are unchanged and the native containers mount game data read-only. Its enabled gateway uses
+  localhost port 28103 and the existing Orthros account bridge, with coordinate start cell `-2,-9`.
+  The original EN/FR profiles keep their ids, language routes, saves and native worlds.
+  The two graphical language profiles have separate saves/worlds too; friends choose the same
+  language. English includes the additional gameplay bug-fix plugins. English mod data totals
+  2,674,097,631 bytes, above the 1,126,510,640-byte GOTY base.
+- Validation of the complete English stack: two fresh Orthros accounts entered the same
+  Party through public HTTPS; the native roster confirmed both connected, both clients had
+  the other player's puppet and 41/62 mirrored actors. The browser requested 855 mod asset
+  URLs and raised no page errors. Character creation was advanced with QA hooks; this is
+  a startup/social/simulation check, not a manual tutorial or full campaign test.
+  The same two Orthros accounts then repeated the party check with the French graphics
+  profile: both players present, reciprocal puppets, 41/61 mirrored actors and 850 mod asset
+  URLs, with no page errors. Both clients were closed between language-profile tests.
+- A complete campaign and GPU performance on the player's machine remain unvalidated.
+  Do not activate Atlas/MOP compatibility patches in the original profiles on their own.
 
 The GOTY edition is available from [GOG](https://www.gog.com/en/game/the_elder_scrolls_iii_morrowind_goty_edition)
 and [Steam](https://store.steampowered.com/app/22320/). OpenMW is free; the retail game is not
@@ -97,7 +127,7 @@ After importing the real game and all mods:
 install -m 644 tools/openmw/orthros-openmw@.service /etc/systemd/system/
 # /etc/orthros-openmw.env: ORTHROS_ORIGIN=https://orthros.chalco.website
 systemctl daemon-reload
-systemctl enable --now orthros-openmw@morrowind-goty-vanilla-plus-en
+systemctl enable --now orthros-openmw@morrowind-goty-vanilla-plus-en orthros-openmw@morrowind-goty-vanilla-plus-fr
 ```
 
 The runner refuses an incomplete manifest. It generates a linked read-only game tree and mod
@@ -109,9 +139,9 @@ Back up that state directory. Do not delete it when updating the engine.
 
 For the currently installed original profile, the active unit is
 `orthros-openmw@morrowind-goty-en` (port 28101) and the public entry point is
-`https://orthros.chalco.website/ports/openmw/morrowind-goty-en/`. The full Vanilla+ unit above
-must stay disabled while its five downloads are missing. Accounts and saves belong to each
-profile separately. The owner's two requested player accounts are provisioned on the original
+`https://orthros.chalco.website/ports/openmw/morrowind-goty-en/`. The complete Vanilla+ profile
+is now enabled too, with its French language target on port 28103. Accounts and saves belong
+to each profile separately. The owner's two requested player accounts are provisioned on the original
 profile; their generated credentials are in `build/openmw/morrowind-goty-en/player-access.json`
 (mode 0600, outside Git). Their public usernames are already set, with local placeholder email
 addresses; no Nexus credential is reused or stored.
@@ -136,6 +166,11 @@ the engine id, required files, optional example/start cell, mod stack and localh
 port. Every installation has its own URL `/ports/openmw/<manifest>/app/` and its own IDBFS
 database (`saveKey`). Pages, browser assets, range requests, auth and WebSockets use the same
 Orthros origin; the Win32 emulator never imports the engine.
+
+The common loading screen yields to the upstream launcher when its frame loads: returning
+players must be able to click their existing character before an engine can produce frames.
+It returns for the initial engine page and hides after rendering begins. A browser regression
+uses a real pointer click on a character selector, then checks the loading/rendering transition.
 
 The upstream browser pages are adapted while serving: HTTP paths and world socket paths get
 the installation prefix; guest filesystem paths stay intact. The dedicated server is unchanged.
@@ -215,11 +250,11 @@ shadows/post-processing disabled, 4,096-unit view distance, and a smaller viewpo
 checks. The original browser settings remain available to players. The normal browser loading
 path and three GOTY masters/archives were exercised, without editing game files.
 
-The complete visual stack, full combat, long sessions, campaign completion and solo save/load
-remain to be checked. The complete Vanilla+ profile must remain unavailable until its missing
-archives and compatibility checks are finished. Small screenshots, state receipts and the test
-log are retained under `build/proof/openmw-goty-20261018/` for that follow-up; disposable installer
-copies, browser profiles and test accounts are removed.
+Those original-only checks did not exercise the full visual stack; the later modded party
+checks are recorded above. Full combat, long sessions, campaign completion and solo save/load
+remain to be checked. Small screenshots, state receipts and the original test log remain under
+`build/proof/openmw-goty-20261018/`; disposable installer copies, browser profiles and test
+accounts are removed.
 
 ## Orthros accounts, cloud saves and language selection (2026-10-18)
 
@@ -273,7 +308,9 @@ to the home and port launchers. The French simulator uses the manifest initial c
 city name: the original localized masters do not contain that English cell name. New native
 configs seed `[simPeer].startCell` from `openmw.startCell`.
 Different localized masters use separate simulations and save
-histories; friends must select the same language. The full Vanilla+ stack remains unavailable.
+histories; friends must select the same language. The complete graphical pair is now available
+as `morrowind-goty-vanilla-plus-en` / `morrowind-goty-vanilla-plus-fr`, with the same language
+routing and account isolation.
 
 Validation includes the account gate, separate identities, token ownership, logout, account
 switches, distinct caches, language routing, binary cloud round trips and conflict preservation.

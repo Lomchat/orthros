@@ -54,6 +54,19 @@ const frame = $('#game');
 let shell = null, man = null, mode = null, samples = [], drawn = false;
 const session = window.portSession = { state: 'loading', mode: null };
 
+// Returning players must choose a character in the upstream launcher before the engine can
+// draw. Keep that page clickable; restore the common loading screen when the engine loads.
+frame.addEventListener('load', () => {
+  if (!shell || mode !== 'multi') return;
+  let pathname;
+  try { pathname = frame.contentWindow.location.pathname; } catch { return; }
+  const base = `/ports/openmw/${encodeURIComponent(id)}/app/`;
+  if (['join', 'launcher.html', 'play'].some((name) => pathname === base + name)) shell.hideLoader(true);
+  else if (pathname === base + 'index.html' && !drawn) {
+    shell.showLoader(); shell.progress(20, S.launching);
+  }
+});
+
 async function api(route, method = 'GET', body) {
   const r = await fetch(route, { method, cache: 'no-store', headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`); return data;

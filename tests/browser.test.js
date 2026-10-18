@@ -13,6 +13,35 @@ try { ({ chromium } = await import('playwright')); } catch { /* playwright not i
 const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;
 const skip = !chromium ? 'playwright missing' : !fs.existsSync(PE_DIR + 'dx.exe') ? 'build/pe missing (make pe-tests)' : false;
 
+test('OpenMW launcher: a returning player can select a character before the loading screen waits for frames', { skip: !chromium, timeout: 30000 }, async () => {
+  const server = createServer({ manifests: path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/manifests') });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const origin = `http://127.0.0.1:${server.address().port}`, base = '/ports/openmw/ui-test/app/';
+  const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
+  try {
+    const page = await browser.newPage();
+    const json = (route, value) => route.fulfill({ json: value });
+    await page.route('**/api/config', (r) => json(r, { accounts: true }));
+    await page.route('**/api/account', (r) => json(r, { user: { username: 'returning-player' } }));
+    await page.route('**/api/manifest/ui-test', (r) => json(r, { name: 'Sample', version: '1', languages: ['en'], openmw: { multiplayer: { port: 28100 } } }));
+    await page.route('**/api/manifests', (r) => json(r, [{ name: 'ui-test', available: true }]));
+    await page.route('**/api/openmw/ui-test/launch', (r) => json(r, { ticket: 'test-ticket', account: 'test-account', locker: 'test-locker' }));
+    await page.route('**/ports/openmw/ui-test/?mode=multi', (r) => r.fulfill({ contentType: 'text/html', body: fs.readFileSync(new URL('../src/ports/openmw/play.html', import.meta.url), 'utf8') }));
+    await page.route('**' + base + 'join', (r) => r.fulfill({ contentType: 'text/html', body: '<button id="character" onclick="location.href=\'index.html\'">Continue character</button>' }));
+    await page.route('**' + base + 'index.html', (r) => r.fulfill({ contentType: 'text/html', body: '<p>World</p>' }));
+    await page.goto(origin + '/ports/openmw/ui-test/?mode=multi');
+    // A real pointer click catches an overlay intercepting the character selector.
+    await page.frameLocator('#game').locator('#character').click({ timeout: 5000 });
+    await page.waitForFunction((base) => document.querySelector('#game').contentWindow.location.pathname === base + 'index.html'
+      && !document.querySelector('#loader').classList.contains('hidden'), base);
+    await page.frameLocator('#game').locator('p').evaluate(() => parent.postMessage({ type: 'orthros-frames', fps: 30, p99: 20, max: 20 }, location.origin));
+    await page.waitForFunction(() => document.querySelector('#loader').classList.contains('hidden'), null, { timeout: 5000 });
+  } finally {
+    await browser.close();
+    server.closeAllConnections(); await new Promise((r) => server.close(r));
+  }
+});
+
 async function runManifest(name, seconds, query = '') {
   const server = createServer({ manifests: path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/manifests') });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
