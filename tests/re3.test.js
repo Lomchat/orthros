@@ -86,7 +86,7 @@ test('an re3 version needs no executable and is checked by its own rules', (t) =
     [(v) => { v.re3.languages = { fr: { ini: { 'game.ini': { General: { Language: '1 ' } } } } }; }, /re3.languages/],
     [(v) => { v.re3.languages = { fr: { ini: { 'game.ini': { General: {} } } } }; }, /re3.languages/],
     [(v) => { v.re3.solo = 'yes'; }, /re3.solo/],
-    [(v) => { v.requires = [{ game: 'win', version: 'win-1', mount: 'C:\\Win' }]; }, /re3 n'a pas de requires/],
+    [(v) => { v.requires = [{ game: 'win', version: 'win-1', mount: 'C:\\Win' }]; }, /requires invalide/],
     [(v) => { v.overlays = ['/etc']; }, /overlays est généré/],
   ]) {
     editManifest(gm, (spec) => { spec.versions[0] = { id: 'gm-web', dir: 'web', version: 'Web', re3: re3() }; edit(spec.versions[0]); });
@@ -200,6 +200,38 @@ test('the release\'s own game files lie over the version\'s, whatever their case
   assert.equal(await (await fetch(`${base}/gamez/gm-web/TEXT/american.gxt?r=0-13`)).text(), 'engine text 2');
   assert.equal((await fetch(prefetch, { method: 'POST', body: JSON.stringify({ session: 's3', reads: [['models/new.txd', 0, 3, 1]] }) })).status, 204);
   assert.equal((await learned()).includes('models/new.txd'), true);
+});
+
+test('an re3 game of its own over another game\'s files (requires): beneath its own, the engine\'s over all, no Windows mount', async (t) => {
+  const { games, engines } = fixture(t);
+  // (a second game on the home, empty: its version requires the Win32 game's version — the original files, no copy)
+  const own = path.join(games, 'gm-re3');
+  fs.mkdirSync(path.join(own, 'base'), { recursive: true });
+  write(path.join(own, 'versions', 'r', 'data', 'own.dat'), 'its own');
+  write(path.join(games, 'win', 'base', 'data', 'x.dat'), 'win x');
+  write(path.join(games, 'win', 'base', 'Text', 'american.gxt'), 'win text');
+  write(path.join(own, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'gm-re3', name: 'GM recompiled', defaultVersion: 'gm-r', defaults: { runtime: 're3' },
+    versions: [{ id: 'gm-r', dir: 'r', version: 'R', re3: re3(), requires: [{ game: 'win', version: 'win-1' }] }] }));
+  const catalog = loadGameCatalog(games, null, { enginesDir: engines });
+  const m = catalog.get('gm-r');
+  assert.equal(m.extraMounts, undefined);
+  assert.deepEqual(m.underlays, [path.join(games, 'win', 'versions', '1'), path.join(games, 'win', 'base')]);
+  assert.equal(m.saveKey, 'orthros-port:gm-re3:r');
+  const base = await serve(t, { gamesDir: games, enginesDir: engines });
+  assert.equal(await (await fetch(`${base}/game/gm-r/data/x.dat`)).text(), 'win x');
+  assert.equal(await (await fetch(`${base}/game/gm-r/data/own.dat`)).text(), 'its own');
+  assert.equal(await (await fetch(`${base}/game/gm-r/text/american.gxt`)).text(), 'engine text');
+  const tree = await (await fetch(`${base}/api/tree/gm-r`)).json();
+  assert.ok(tree.dirs.data.files['x.dat'] && tree.dirs.data.files['own.dat'] && tree.files['game.exe']);
+  // (two cards: each game its own, the Win32 one unchanged)
+  const listed = await (await fetch(`${base}/api/manifests`)).json();
+  assert.deepEqual(listed.filter((v) => ['gm-r', 'win-1'].includes(v.name)).map((v) => [v.name, v.gameId, v.runtime]).sort(), [['gm-r', 'gm-re3', 're3'], ['win-1', 'win', 'win32']]);
+  // (a mount is the Win32 games' way, refused here; a GoldSrc port still requires GoldSrc ports only)
+  editManifest(own, (spec) => { spec.versions[0].requires[0].mount = 'D:\\'; });
+  assert.throws(() => loadGameCatalog(games, null, { enginesDir: engines }), /requires invalide/);
+  editManifest(own, (spec) => { delete spec.versions[0].requires[0].mount; });
+  editManifest(path.join(games, 'gs'), (spec) => { spec.versions[0].requires = [{ game: 'win', version: 'win-1' }]; });
+  assert.throws(() => loadGameCatalog(games, null, { enginesDir: engines }), /n'est pas un portage goldsrc/);
 });
 
 // ---------------------------------------------------------------- a language's settings in the engine's ini files

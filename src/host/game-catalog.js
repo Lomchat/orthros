@@ -48,8 +48,9 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     if (!RUNTIMES.includes(runtime)) fail(file, `${entry.id}: runtime inconnu: ${runtime}`);
     if (runtime === 'win32' && !safePath(entry.exe)) fail(file, `${entry.id}: exe doit être un chemin relatif sûr`);
     if (entry.languages !== undefined && (!Array.isArray(entry.languages) || !entry.languages.length || !entry.languages.every((v) => typeof v === 'string' && /^[a-z]{2}(?:-[A-Z]{2})?$/.test(v)))) fail(file, `${entry.id}: languages invalide`);
-    // (win32: another game's version mounted at its own drive path; goldsrc: its files beneath this version's, no mount)
-    if (entry.requires !== undefined && (!Array.isArray(entry.requires) || !entry.requires.every((d) => d && ID.test(d.game ?? '') && ID.test(d.version ?? '') && (runtime === 'goldsrc' ? d.mount === undefined : WIN_MOUNT.test(d.mount ?? ''))))) fail(file, `${entry.id}: requires invalide`);
+    // (win32: another game's version mounted at its own drive path; goldsrc, re3: its files beneath this version's, no mount)
+    const layered = runtime === 'goldsrc' || runtime === 're3';
+    if (entry.requires !== undefined && (!Array.isArray(entry.requires) || !entry.requires.every((d) => d && ID.test(d.game ?? '') && ID.test(d.version ?? '') && (layered ? d.mount === undefined : WIN_MOUNT.test(d.mount ?? ''))))) fail(file, `${entry.id}: requires invalide`);
     for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey', 'overlays']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
     const { id, dir, requires, ...version } = entry;
     const manifest = withDefaults({ ...defaults, ...version, runtime, name: spec.name, gameId: spec.id,
@@ -72,7 +73,6 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     if (runtime === 're3') {
       const problem = re3Problem(manifest.re3);
       if (problem) fail(file, `${id}: ${problem}`);
-      if (requires?.length) fail(file, `${id}: re3 n'a pas de requires`);
       manifest.saveKey = `orthros-port:${spec.id}:${dir}`;
       // (the engine release's own game files over the version's, whatever their case — none while it is not installed)
       manifest.overlays = [re3GameFiles(enginesDir, manifest.re3.engine)];
@@ -129,7 +129,7 @@ export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null, { engine
       const req = catalog.get(dep.version);
       deps.push({ mount: dep.mount, manifest: dep.version, ...(req.languageRegistryKey ? { languageRegistryKey: req.languageRegistryKey, languages: req.languages ?? [] } : {}) });
     }
-    if (deps.length && catalog.get(id).runtime !== 'goldsrc') catalog.get(id).extraMounts = deps;
+    if (deps.length && catalog.get(id).runtime === 'win32') catalog.get(id).extraMounts = deps;
   }
   // (the UDP ports of the dedicated servers and their rooms: one version each)
   const ports = new Map();
@@ -145,17 +145,21 @@ export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null, { engine
     if (mp.rooms) for (let p = mp.rooms.ports[0]; p <= mp.rooms.ports[1]; p++) own.push(p);
     for (const p of own) { if (ports.has(p)) throw new Error(`${id}: port UDP ${p} déjà pris par ${ports.get(p)}`); ports.set(p, id); }
   }
-  // (a GoldSrc version's required versions lie beneath its own files, in order, with theirs: a mod over its game)
+  // (a GoldSrc version's required versions lie beneath its own files, in order, with theirs: a mod over its game; an
+  // re3 version's, of any runtime, the same way — a recompiled engine over the original game's files, as a game of its
+  // own on the home without a copy of them; a required version's own requires followed for a port only)
   const underlays = (id, seen) => {
     if (seen.includes(id)) throw new Error(`dépendance circulaire: ${[...seen, id].join(' -> ')}`);
+    const own = catalog.get(id).runtime;
     return sources.get(id).requires.flatMap((dep) => {
       const m = catalog.get(dep.version);
-      if (m.runtime !== 'goldsrc') throw new Error(`${id}: ${dep.version} n'est pas un portage goldsrc`);
-      return [m.folder, m.baseFolder, ...underlays(dep.version, [...seen, id])];
+      if (own === 'goldsrc' && m.runtime !== 'goldsrc') throw new Error(`${id}: ${dep.version} n'est pas un portage goldsrc`);
+      return [m.folder, m.baseFolder, ...(m.runtime === 'goldsrc' || m.runtime === 're3' ? underlays(dep.version, [...seen, id]) : [])];
     });
   };
   for (const [id, source] of sources) {
-    if (source.requires.length && catalog.get(id).runtime === 'goldsrc') catalog.get(id).underlays = underlays(id, []);
+    const runtime = catalog.get(id).runtime;
+    if (source.requires.length && (runtime === 'goldsrc' || runtime === 're3')) catalog.get(id).underlays = underlays(id, []);
   }
   for (const [id, manifest] of extra ?? []) catalog.set(id, manifest);
   return catalog;

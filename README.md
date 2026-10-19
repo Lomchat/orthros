@@ -8,7 +8,8 @@ sa propre page (`src/ports/goldsrc/`), sans passer par l'émulateur ; le multijo
 (Half-Life, Counter-Strike 1.6). Moteurs installés hors Git dans `data_engines/` : voir
 [docs/browser-ports.md](docs/browser-ports.md). Même principe pour les portages re3 (`"runtime": "re3"`, un objet `re3`
 à la place de `exe`) : un moteur décompilé de la famille re3 (reVC pour GTA Vice City) compilé en WebAssembly, en solo,
-dans sa page `src/ports/re3/`.
+dans sa page `src/ports/re3/` — moteur construit depuis notre fork public [Lomchat/reVC](https://github.com/Lomchat/reVC)
+(branche `orthros`), une carte à part sur l'accueil, sur les fichiers de la version Windows du jeu.
 
 - `CLAUDE.md` — contraintes, architecture, conventions.
 - `DECISIONS.md` — journal des décisions d'architecture.

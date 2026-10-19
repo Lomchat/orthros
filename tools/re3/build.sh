@@ -1,8 +1,9 @@
 #!/bin/sh
 # Build the re3-family engine of an "re3" browser port (docs/browser-ports.md, "re3 ports") from pinned sources
-# (lock.json "engine") into a release data_engines/<id>/ per build of "builds": the engine compiled to WebAssembly
-# (engine/revc.mjs, an Emscripten ES module, and engine/revc.wasm) with the build's patches (tools/re3/patches/), the
-# engine's own game files (gamefiles/: laid over the game's by the server) and the sources' licence notices (notices/).
+# (lock.json "engine": Orthros' fork, its browser branch — the browser build defined there) into a release
+# data_engines/<id>/ per build of "builds": the engine compiled to WebAssembly (engine/revc.mjs, an Emscripten ES module,
+# and engine/revc.wasm), with a build's patches if it names any (tools/re3/patches/), the engine's own game files
+# (gamefiles/: laid over the game's by the server) and the sources' licence notices (notices/).
 # The sources are cloned with their submodules in data_engines/src/<repository name> and stay as pinned; a build works
 # on a copy in scratch. The compiler is the pinned Emscripten image, without network; its SDL2 and mpg123 ports come
 # from a cache in data_engines/ (made once, with network, the archives checked against the lock). The pinned commit's
@@ -56,7 +57,7 @@ for name, digest in json.load(open(sys.argv[1]))['engine']['emscriptenPorts'].it
 PY
 
 export SOURCE_DATE_EPOCH="$(git -C "$source" log -1 --format=%ct)"
-cmake_args=$(field cmake); link_flags=$(field link)
+cmake_args=$(field cmake)
 for id in $ids; do
   release=$engines/$id
   if [ -e "$release/release.json" ]; then echo "$id: already installed; preserving it."; continue; fi
@@ -70,11 +71,9 @@ build = next(b for b in json.load(open(sys.argv[1]))['builds'] if b['id'] == sys
 for repo, patch in build['patches']:
     subprocess.run(['git', '-C', f'{sys.argv[3]}/{repo}', 'apply', f'{sys.argv[4]}/{patch}'], check=True)
 PY
-  docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH -e CMAKE_ARGS="$cmake_args" -e LINK_FLAGS="$link_flags" \
-    -v "$build/src:/revc" -v "$build/wasm:/build" -v "$root/tools/re3/cmake:/cmake:ro" -v "$root/tools/re3/js:/js:ro" \
-    -v "$cache:/emsdk/upstream/emscripten/cache" -w /revc "$image" sh -c '
-    emcmake cmake -S /revc -B /build $CMAKE_ARGS -DCMAKE_PROJECT_INCLUDE=/cmake/emscripten.cmake -DCMAKE_EXE_LINKER_FLAGS="$LINK_FLAGS" &&
-    cmake --build /build -j8'
+  docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH -e CMAKE_ARGS="$cmake_args" \
+    -v "$build/src:/revc" -v "$build/wasm:/build" -v "$cache:/emsdk/upstream/emscripten/cache" -w /revc "$image" sh -c '
+    emcmake cmake -S /revc -B /build $CMAKE_ARGS && cmake --build /build -j8'
   python3 - "$lock" "$id" "$build" "$release" "$root/tools/re3/patches" <<'PY'
 import hashlib, json, pathlib, shutil, sys
 lock = json.load(open(sys.argv[1])); spec = next(b for b in lock['builds'] if b['id'] == sys.argv[2])
@@ -94,9 +93,8 @@ built = {k: v for k, v in files.items() if k.startswith('engine/')} # (the game 
 if want and want != built:
     diff = sorted(k for k in set(want) | set(built) if want.get(k) != built.get(k))
     shutil.rmtree(staging); sys.exit(f'{spec["id"]}: files differ from lock.json: {diff}')
-info = {'id': spec['id'], 'engine': {k: lock['engine'][k] for k in ('repository', 'commit', 'submodules', 'emsdk', 'emscriptenPorts', 'cmake', 'link')},
-        'patches': [{'repo': r, 'patch': p, 'sha256': sha(patches / p)} for r, p in spec['patches']],
-        'jsLibraries': [{'file': f.name, 'sha256': sha(f)} for f in sorted((patches.parent / 'js').glob('*.js'))], 'files': files}
+info = {'id': spec['id'], 'engine': {k: lock['engine'][k] for k in ('repository', 'commit', 'upstream', 'submodules', 'emsdk', 'emscriptenPorts', 'cmake')},
+        'patches': [{'repo': r, 'patch': p, 'sha256': sha(patches / p)} for r, p in spec['patches']], 'files': files}
 (staging / 'release.json').write_text(json.dumps(info, indent=2) + '\n')
 staging.rename(release)
 if not want: print(json.dumps(built, indent=2))

@@ -1,10 +1,14 @@
 {
   "schemaVersion": 1,
   "engine": {
-    "repository": "https://github.com/mrxenginner/reVC",
-    "commit": "a26fff4af555a8a425ac9f17d1dd718d00d1f942",
+    "repository": "https://github.com/Lomchat/reVC",
+    "commit": "ecc4c1083a0f553b83aa678ce24cb0fd31f8bfb2",
+    "upstream": {
+      "repository": "https://github.com/mrxenginner/reVC",
+      "commit": "a26fff4af555a8a425ac9f17d1dd718d00d1f942"
+    },
     "submodules": {
-      "vendor/librw": "0ad67ee226ea51beb3f465cb8857195e4db16029",
+      "vendor/librw": "9585e79167c1fe5d088aa508ea20726718798460",
       "vendor/ogg": "684c73773e7e2683245ffd6aa75f04115b51123a",
       "vendor/opus": "6bae366f9fef25191fc812c430e8abd40a13a233",
       "vendor/opusfile": "6452e838e68e8f4fc0b3599523c760ac6276ce89"
@@ -23,45 +27,15 @@
       "-DLIBRW_GL3_GFXLIB=SDL2",
       "-DLIBRW_TOOLS=OFF",
       "-DLIBRW_INSTALL=OFF"
-    ],
-    "link": [
-      "-sMODULARIZE=1",
-      "-sEXPORT_ES6=1",
-      "-sEXPORT_NAME=createReVC",
-      "-sENVIRONMENT=web",
-      "-sJSPI=1",
-      "-sALLOW_MEMORY_GROWTH=1",
-      "-sINITIAL_MEMORY=268435456",
-      "-sMAXIMUM_MEMORY=4294967296",
-      "-sSTACK_SIZE=8388608",
-      "-sMIN_WEBGL_VERSION=2",
-      "-sMAX_WEBGL_VERSION=2",
-      "-sGL_ENABLE_GET_PROC_ADDRESS=1",
-      "-sFORCE_FILESYSTEM=1",
-      "-sEXIT_RUNTIME=1",
-      "-sINVOKE_RUN=0",
-      "-sEXPORTED_RUNTIME_METHODS=FS,ENV,callMain,HEAPU8",
-      "-sASSERTIONS=0",
-      "--profiling-funcs",
-      "--js-library=/js/orthros-fs.js"
     ]
   },
   "builds": [
     {
-      "id": "revc-web-a26fff4-r6",
-      "patches": [
-        [
-          ".",
-          "revc-browser.patch"
-        ],
-        [
-          "vendor/librw",
-          "librw-webgl2.patch"
-        ]
-      ],
+      "id": "revc-web-ecc4c10-r1",
+      "patches": [],
       "files": {
         "engine/revc.mjs": "308f1e336268527eb83ffbe51f9bb365ca263f461944aa2627cab38c51d1c0ad",
-        "engine/revc.wasm": "2081aa0399387ba85e31252e892bc327c3f9a0ac6803910c098600b068f48de8"
+        "engine/revc.wasm": "b7f1b11508ffe88f502baf219bec384a9dc42f15aa84ceb6c62ec77e1c5665b8"
       }
     }
   ]
