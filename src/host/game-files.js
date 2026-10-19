@@ -1,10 +1,12 @@
-// A game's base installation and a version's overrides form one read-only folder.
+// A game's base installation and a version's overrides form one read-only folder (an re3 port's engine files over
+// both, the files of the versions a GoldSrc port requires beneath).
 import fs from 'node:fs';
 import path from 'node:path';
 
 export function gameLayers(manifest) {
-  // (underlays: the folders of versions a GoldSrc port requires, beneath its own — game-catalog.js)
-  return [...(manifest.baseFolder ? [manifest.folder, manifest.baseFolder] : [manifest.folder]), ...(manifest.underlays ?? [])];
+  // (underlays: the folders of versions a GoldSrc port requires, beneath its own; overlays: folders over the version's
+  // own, an re3 port's engine files — both from game-catalog.js)
+  return [...(manifest.overlays ?? []), ...(manifest.baseFolder ? [manifest.folder, manifest.baseFolder] : [manifest.folder]), ...(manifest.underlays ?? [])];
 }
 
 /** List one layer, replacing same-named entries without changing the guest-visible path. */

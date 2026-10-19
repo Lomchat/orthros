@@ -25,7 +25,7 @@ const STRINGS = {
     errorTitle: 'Cannot reach the server', retry: 'Try again',
     settings: 'Settings', account: 'Account', language: 'Language', gameLanguage: 'Game language', gameLanguageShort: 'Language', gameVersion: 'Version', others: 'Others',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`),
-    modes: { solo: 'Single player', multiplayer: 'Multiplayer' },
+    modes: { solo: 'Single player', multiplayer: 'Multiplayer' }, runtimes: { re3: 'Recompiled engine' },
     tabs: { all: 'All', windows: 'Windows', recompiled: 'Recompiled', modified: 'Recompiled & modified' },
     tabEmpty: 'No game of this kind on this server.',
     live: (rooms, humans) => [rooms > 1 ? `${rooms} games online` : null, humans ? `${humans} playing` : null].filter(Boolean).join(', '),
@@ -44,7 +44,7 @@ const STRINGS = {
     errorTitle: 'Serveur injoignable', retry: 'Réessayer',
     settings: 'Paramètres', account: 'Compte', language: 'Langue', gameLanguage: 'Langue du jeu', gameLanguageShort: 'Langue', gameVersion: 'Version', others: 'Autres',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1).replace('.', ',')} Go` : `${Math.round(b / 1e6)} Mo`),
-    modes: { solo: 'Solo', multiplayer: 'Multijoueur' },
+    modes: { solo: 'Solo', multiplayer: 'Multijoueur' }, runtimes: { re3: 'Moteur recompilé' },
     tabs: { all: 'Tout', windows: 'Windows', recompiled: 'Recompilés', modified: 'Recompilés et modifiés' },
     tabEmpty: 'Aucun jeu de ce genre sur ce serveur.',
     live: (rooms, humans) => [rooms > 1 ? `${rooms} parties en ligne` : null, humans ? `${humans} en jeu` : null].filter(Boolean).join(', '),
@@ -220,9 +220,13 @@ export function mountHome({ onPlay }) {
   let liveSyncs = [];
   cleanup.push((() => { const t = setInterval(() => liveSyncs.forEach((f) => f()), 30000); return () => clearInterval(t); })());
   // the library's tabs: the Windows games (run as they are in the emulator), the ones whose engine is recompiled for the
-  // browser, and those also modified (a mod: the manifest's "modified"); "all" in that order
+  // browser, and those also modified (a mod: the manifest's "modified"); "all" in that order. A game with a Windows
+  // version and a recompiled one is in both tabs.
   const KINDS = ['windows', 'recompiled', 'modified'];
-  const kindOf = (g) => g.variants.every((v) => (v.runtime ?? 'win32') === 'win32') ? 'windows' : g.variants.some((v) => v.modified) ? 'modified' : 'recompiled';
+  const kindsOf = (g) => {
+    const ports = g.variants.filter((v) => (v.runtime ?? 'win32') !== 'win32');
+    return [...(ports.length < g.variants.length ? ['windows'] : []), ...(ports.length ? [ports.some((v) => v.modified) ? 'modified' : 'recompiled'] : [])];
+  };
   let tab = ['all', ...KINDS].includes(pref('orthros.libTab')) ? pref('orthros.libTab') : 'all';
   const savePref = (key, value) => { try { localStorage.setItem(key, value); } catch { /* storage disabled */ } };
   const chosen = (g) => g.variants.find((v) => v.name === pref('orthros.version.' + g.id) && v.available)
@@ -295,7 +299,8 @@ export function mountHome({ onPlay }) {
       cover.querySelector('.hm-badge')?.remove();
       if (v?.name === last && ok) cover.append(h('span', { class: 'hm-badge' }, S().lastPlayed));
       desc.textContent = (lang === 'fr' ? v?.descriptionFr : null) ?? v?.description ?? '';
-      const what = v?.exe ?? v?.modes?.map((m) => S().modes[m] ?? m).join(' · ') ?? '';
+      // (a runtime's own label first: re3's, whose games have their Windows version too)
+      const what = v?.exe ?? [S().runtimes[v?.runtime], ...(v?.modes ?? []).map((m) => S().modes[m] ?? m)].filter(Boolean).join(' · ');
       meta.textContent = ok ? `${what} · ${S().size(v.bytes)}` : S().missing; meta.title = v?.exe ?? '';
       syncLive();
       playBtn.hidden = !ok;
@@ -346,7 +351,7 @@ export function mountHome({ onPlay }) {
     } else renderGames();
   }
   function renderTabs() {
-    const count = (k) => (k === 'all' ? games : games.filter((g) => kindOf(g) === k)).length;
+    const count = (k) => (k === 'all' ? games : games.filter((g) => kindsOf(g).includes(k))).length;
     $('hmTabs').replaceChildren(...['all', ...KINDS].map((k) => h('button', { type: 'button', role: 'tab', class: 'hm-tab', 'aria-selected': String(k === tab), 'data-tab': k,
       onclick: () => { tab = k; savePref('orthros.libTab', k); renderView(); $('hmTabs').querySelector(`[data-tab="${k}"]`)?.focus(); } }, S().tabs[k], h('span', { class: 'n' }, String(count(k))))));
   }
@@ -354,7 +359,7 @@ export function mountHome({ onPlay }) {
     const focused = document.activeElement?.dataset?.name;
     renderCta();
     renderTabs();
-    const shown = games.filter((g) => tab === 'all' || kindOf(g) === tab);
+    const shown = games.filter((g) => tab === 'all' || kindsOf(g).includes(tab));
     $('hmCount').textContent = S().games(shown.length);
     // covers behind the page: the one of the game under the pointer, else the resumable one
     backdrops.replaceChildren();
@@ -420,7 +425,7 @@ export function mountHome({ onPlay }) {
         if (!groups.has(id)) groups.set(id, { id, title: variant.title, variants: [] });
         groups.get(id).variants.push(variant);
       }
-      games = [...groups.values()].sort((a, b) => KINDS.indexOf(kindOf(a)) - KINDS.indexOf(kindOf(b))); // (stable: the server's order within a kind)
+      games = [...groups.values()].sort((a, b) => KINDS.indexOf(kindsOf(a)[0]) - KINDS.indexOf(kindsOf(b)[0])); // (stable: the server's order within a kind)
       for (const group of games) group.variants.sort((a, b) => (b.versionOrder ?? 0) - (a.versionOrder ?? 0));
       last = lastPlayed; view = { kind: 'games' };
       applyLang();

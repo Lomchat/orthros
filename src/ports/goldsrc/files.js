@@ -1,10 +1,10 @@
-// The game files of a GoldSrc port, streamed (docs/browser-ports.md): the engine sees the whole tree from the start
-// (names and sizes), a file's bytes come when it reads them. Before the engine starts, the page loads what earlier
-// sessions read first (the server's learned list, /api/prefetch/<manifest>: menu, first map); the rest of that list
-// follows in the background while the game runs; a read of bytes not here yet fetches them on the spot — the engine
-// is synchronous, so does that fetch (a synchronous XHR: the page waits, mostly during a map load). Files kept in the
-// browser (IndexedDB) are read from there. The page reports the reads it served (path, range, time since the engine
-// started) and the server orders the list by them.
+// The game files of a GoldSrc port (an re3 port's too), streamed (docs/browser-ports.md): the engine sees the whole
+// tree from the start (names and sizes), a file's bytes come when it reads them. Before the engine starts, the page
+// loads what earlier sessions read first (the server's learned list, /api/prefetch/<manifest>: menu, first map); the
+// rest of that list follows in the background while the game runs; a read of bytes not here yet fetches them on the
+// spot — the engine is synchronous, so does that fetch (a synchronous XHR: the page waits, mostly during a map load).
+// Files kept in the browser (IndexedDB) are read from there. The page reports the reads it served (path, range, time
+// since the engine started) and the server orders the list by them.
 
 /** The learned list's units: 1 MiB blocks, 64 KiB pieces (src/host/server.js, src/vfs/http-backend.js). */
 export const BLOCK = 1 << 20, PIECE = 1 << 16;
@@ -107,9 +107,11 @@ export class StreamedFiles {
    * @param {(url: string, size: number) => Uint8Array} [o.syncGet] a synchronous range fetch
    * @param {(url: string) => Promise<Uint8Array>} [o.get] an asynchronous one
    * @param {() => number} [o.now]
+   * @param {number} [o.readAhead] after a read fetched synchronously, this many of the file's next missing pieces
+   *   loaded in the background (one such load per file at a time: the engine never waits for it); 0, none
    */
-  constructor({ name, files, store, syncGet = fetchSync, get = defaultGet, now = () => performance.now(), log = () => {} }) {
-    this.name = name; this.store = store; this.syncGet = syncGet; this.get = get; this.now = now; this.log = log;
+  constructor({ name, files, store, syncGet = fetchSync, get = defaultGet, now = () => performance.now(), log = () => {}, readAhead = 0 }) {
+    this.name = name; this.store = store; this.syncGet = syncGet; this.get = get; this.now = now; this.log = log; this.readAhead = readAhead;
     this.files = new Map(files.map((f) => [f.path, { ...f, key: `${f.path}\n${f.size}\n${f.mtime}`, data: null, pieces: null, local: null, seen: null }]));
     this.t0 = null; // (the engine's start: reads are learned from it)
     this.reads = []; // [path, start, end, t] not reported yet
@@ -141,7 +143,7 @@ export class StreamedFiles {
       const at = f.at ?? f.path; // (a language's file: mounted where the file it translates is, languageFiles)
       const slash = at.lastIndexOf('/'), dir = root + (slash < 0 ? '' : '/' + at.slice(0, slash));
       FS.mkdirTree(dir);
-      const node = FS.createFile(dir, at.slice(slash + 1), {}, true, false);
+      const node = f.node = FS.createFile(dir, at.slice(slash + 1), {}, true, false);
       Object.defineProperty(node, 'usedBytes', { get: () => f.size });
       Object.defineProperty(node, 'contents', { get: () => f.data, set: () => {} }); // (whole, once here: mmap reads it)
       const ops = node.stream_ops, own = { ...ops };
@@ -173,8 +175,9 @@ export class StreamedFiles {
   /** The bytes [start, end) of `f` here, fetched now (synchronously) when missing. */
   ensure(f, start, end) {
     if (f.data) return;
-    let runStart = -1;
+    let runStart = -1, fetched = false;
     const fetchRun = (a, b) => { // (pieces a..b-1, one request per MAX_RANGE)
+      fetched = true;
       for (let s = a * PIECE, e = Math.min(f.size, b * PIECE); s < e; s += MAX_RANGE) {
         const until = Math.min(e, s + MAX_RANGE), t = this.now();
         const bytes = this.syncGet(this.url(f, s, until, false), until - s);
@@ -189,6 +192,20 @@ export class StreamedFiles {
       if (missing && runStart < 0) runStart = p;
       if (!missing && runStart >= 0) { fetchRun(runStart, p); runStart = -1; if (f.data) return; }
     }
+    if (fetched && this.readAhead > 0) this.ahead(f, last);
+  }
+
+  /**
+   * After a read that waited for the network: the next `readAhead` pieces of `f` still missing from piece `from` on,
+   * loaded in the background — a file read as a stream finds its next bytes here. One such load per file at a time.
+   */
+  ahead(f, from) {
+    if (f.ahead || f.data) return;
+    const pieces = [];
+    for (let p = from; p * PIECE < f.size && pieces.length < this.readAhead; p++) if (!f.pieces?.has(p)) pieces.push(p);
+    if (!pieces.length) return;
+    this.stats.ahead = (this.stats.ahead ?? 0) + 1;
+    f.ahead = this.load(f, pieces).catch((e) => this.log(`${f.path}: ${e.message}`)).finally(() => { f.ahead = null; });
   }
 
   /** Bytes of `f` from offset `at` (a piece boundary): whole when they are, else as pieces; kept in the browser. */

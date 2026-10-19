@@ -30,6 +30,7 @@ import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
 import { openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter } from './openmw.js';
+import { re3Installed, re3Modes, re3Module } from './re3.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
@@ -96,7 +97,7 @@ export function createServer(opts = {}) {
   const manifestDir = opts.manifests ? path.resolve(opts.manifests) : null;
   const gamesDir = path.resolve(opts.gamesDir ?? DEFAULT_GAMES_DIR);
   const enginesDir = path.resolve(opts.enginesDir ?? DEFAULT_ENGINES_DIR);
-  const readCatalog = () => manifestDir ? loadManifests(manifestDir, opts.extra) : loadGameCatalog(gamesDir, opts.extra);
+  const readCatalog = () => manifestDir ? loadManifests(manifestDir, opts.extra) : loadGameCatalog(gamesDir, opts.extra, { enginesDir });
   let manifests = readCatalog();
   const trees = new Map(), treeObjs = new Map();
   const refreshCatalog = () => { manifests = readCatalog(); trees.clear(); treeObjs.clear(); };
@@ -601,10 +602,10 @@ export function createServer(opts = {}) {
           const runtime = runtimeOf(m), port = runtime !== 'win32';
           return { name, title: m.name ?? name, gameId: m.gameId ?? name, version: m.version ?? null,
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name), runtime, exe: port ? null : m.exe,
-            modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
+            modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : runtime === 're3' ? re3Modes(m.re3) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
             hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, saveKey: port ? m.saveKey ?? null : null,
-            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir)) };
+            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
       }
@@ -612,7 +613,9 @@ export function createServer(opts = {}) {
       if (m) {
         const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
         const launchUrl = runtimeOf(man) !== 'win32' ? portLaunchUrl(m[1], man) : undefined;
-        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
+        // (an re3 port: the engine module its page imports, a path of its release — the manifest's, else the release's own)
+        const re3 = runtimeOf(man) === 're3' ? { re3: { ...man.re3, module: re3Module(man, enginesDir) } } : {};
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, overlays: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
@@ -790,7 +793,7 @@ export function createServer(opts = {}) {
       if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendFile(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
       m = /^\/engines\/([^/]+)\/(.+)$/.exec(p);
       if (m) {
-        if (![...manifests.values()].some((man) => man.goldsrc?.engine === m[1] || man.openmw?.engine === m[1])) return send(res, 404, 'no such engine');
+        if (![...manifests.values()].some((man) => man.goldsrc?.engine === m[1] || man.openmw?.engine === m[1] || (man.runtime === 're3' && man.re3?.engine === m[1]))) return send(res, 404, 'no such engine');
         const file = engineFile(enginesDir, m[1], m[2]); if (!file) return send(res, 404, 'not found');
         return sendFile(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream', { 'Cache-Control': 'public, max-age=31536000, immutable' });
       }

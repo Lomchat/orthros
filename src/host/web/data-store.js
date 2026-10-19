@@ -204,9 +204,10 @@ export async function hashBytes(bytes) {
 }
 
 // ---------------------------------------------------------------- the browser ports' storage
-// IndexedDB, named after the installation (the manifest's saveKey): a GoldSrc port's database ('profile': the engine's
-// writable tree — saves, settings —, 'content': the game files fetched, whole or as 64 KiB pieces, their size in their
-// key), an OpenMW port's IDBFS databases (the installation's, and one per account: saveKey:user:<scope>).
+// IndexedDB, named after the installation (the manifest's saveKey): a GoldSrc or re3 port's database ('profile': the
+// engine's writable files — saves, settings: GoldSrc's under /rwdir/, re3's relative to its game folder —, 'content':
+// the game files fetched, whole or as 64 KiB pieces, their size in their key), an OpenMW port's IDBFS databases (the
+// installation's, and one per account: saveKey:user:<scope>).
 const PORT_PIECE = 1 << 16;
 const portDbs = async (saveKey) => (await indexedDB.databases?.() ?? []).map((d) => d.name).filter((n) => n === saveKey || n?.startsWith(saveKey + ':'));
 function openDb(name) {
@@ -239,14 +240,17 @@ export async function scanPorts(ports) {
   }
   return rows;
 }
-/** A port's saves as the account keeps them (cloud-sync.js): [{ path, data }] — GoldSrc's tree, OpenMW's /userdata. */
+/** A port's saves as the account keeps them (cloud-sync.js): [{ path, data }] — GoldSrc's tree, re3's, OpenMW's /userdata. */
 export async function portFiles(saveKey) {
   const files = [];
   for (const dbName of await portDbs(saveKey)) {
     let db; try { db = await openDb(dbName); } catch { continue; }
     try {
       if ([...db.objectStoreNames].includes('profile')) {
-        for (const f of await req(db.transaction('profile').objectStore('profile').get('files')) ?? []) if (f.path.startsWith('/rwdir/')) files.push({ path: f.path.slice(7), data: f.data });
+        for (const f of await req(db.transaction('profile').objectStore('profile').get('files')) ?? []) {
+          if (f.path.startsWith('/rwdir/')) files.push({ path: f.path.slice(7), data: f.data });
+          else if (!f.path.startsWith('/')) files.push({ path: f.path, data: f.data }); // (re3: relative already)
+        }
       } else if ([...db.objectStoreNames].includes('FILE_DATA')) {
         const os = db.transaction('FILE_DATA').objectStore('FILE_DATA'), keys = await req(os.getAllKeys()), values = await req(os.getAll());
         // (an account's database: its files under a folder of its own name)

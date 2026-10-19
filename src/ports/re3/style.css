@@ -1,0 +1,10 @@
+/* An re3 port's page (play.html): the game under the page's header (/src/host/web/player.css, as the Windows games'),
+   its loading in the loading screen's box. (No rule here begins with "canvas", as on the GoldSrc ports' page: an
+   engine's glue may rewrite those of the page's first style sheet when it hides the mouse.) */
+html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; color-scheme: dark; }
+#stage { position: absolute; left: 0; right: 0; bottom: 0; top: var(--bar); display: flex; align-items: center; justify-content: center; }
+html:fullscreen #stage { top: 0; }
+#stage #canvas { display: block; outline: none; background: #000; }
+/* (the end of the game, an error: its buttons side by side) */
+#loader .choices > .acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.hidden { display: none !important; }

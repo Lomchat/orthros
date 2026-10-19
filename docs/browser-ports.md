@@ -9,6 +9,8 @@ which kind it is:
 - **`goldsrc`**: a browser port. The game's original files run on a pinned third-party GoldSrc engine, Xash3D FWGS
   compiled to WebAssembly, with the game's client/server/menu modules compiled to WebAssembly too. Its page is
   `src/ports/goldsrc/`; it never loads the Win32 runtime, and the Win32 runtime never imports it.
+- **`re3`**: a browser port. The game's original files run on a decompiled engine of the re3 family (reVC: Grand Theft
+  Auto: Vice City's) compiled to WebAssembly, single player. Its page is `src/ports/re3/`; see "re3 ports" below.
 
 Nothing in the code names a game: engine release, game directory, modules, maps and server ports come from the manifest.
 
@@ -24,6 +26,7 @@ missing. Every game page — Windows games and ports — has the same frame (hea
 | --- | --- | --- |
 | `src/host/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
+| `src/host/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `ini.js`, `style.css`) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
 | `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
@@ -118,7 +121,7 @@ starts at once.
 - `/api/manifests`: every version, with `runtime`; a port also has `launchUrl` and `modes`, and is `available` only
   when its files, its engine release and the modules it names are installed. The home starts a port by opening its
   `launchUrl` (`src/host/web/main.js`); the Windows pre-download row is for `win32` versions only.
-- `/ports/goldsrc/<manifest>/`: the port's page.
+- `/ports/goldsrc/<manifest>/`, `/ports/re3/<manifest>/`: the port's page.
 - `/engines/<release>/<path>`: engine files, only of releases a manifest names, cached as immutable.
 - `/gamez/<manifest>/...?r=<start>-<end>`: the game's files, compressed when that saves bytes, as for Windows games
   (see "Streamed files" below). Native binaries (`.exe`, `.dll`, `.so`) are not part of the engine's tree.
@@ -507,6 +510,114 @@ the same calls as Counter-Strike's weapons, not checked by aiming at one. Not ch
 sessions, voice chat, `counter-strike`'s single player (its manifest offers none: it keeps the recovered modules, to
 compare). Known upstream messages: Half-Life's optional `ReqState` voice message has no handler; Counter-Strike warns
 about its HUD sprite count.
+
+## re3 ports
+
+A version whose `runtime` is `re3` runs the game's original files on a decompiled engine of the re3 family compiled to
+WebAssembly (owner's decision D099, 2026-10-19): reVC for Grand Theft Auto: Vice City, the first, beside the game's
+Windows version. Single player only for now; nothing in it prevents a multiplayer later. The engine release is built by
+`tools/re3/build.sh` into `data_engines/<release>/`, outside Git like the GoldSrc engines. Nothing in the server or the
+page names a game: release, arguments, environment and settings come from the manifest, the module's name from the
+release.
+
+### Manifest
+
+```json
+{
+  "id": "vice-city-re3", "dir": "re3", "version": "1.1 · Recompiled engine", "runtime": "re3", "languages": ["en", "fr"],
+  "re3": {
+    "engine": "revc-web-a26fff4-r1",
+    "args": [],
+    "languages": { "fr": { "env": { "<NAME>": "<value>" }, "ini": { "<file>.ini": { "<Section>": { "<Key>": "<value>" } } } } }
+  }
+}
+```
+
+`src/host/re3.js` (`re3Problem`) checks it; the contract is in `game-manifest.schema.json`. No `exe`, no `requires`; the
+saved profile's key is the installation's, `orthros-port:<game>:<version folder>`, as the other ports'.
+
+- `engine` (required): the release, `/^[a-z0-9][a-z0-9._-]*$/`.
+- `module`: the engine's ES module, a path of the release. By default the release's only `engine/<name>.mjs` with its
+  `engine/<name>.wasm` beside it (a worker's module has none): the code never names the engine's files.
+- `args`: the game's command line (`callMain`), each `/^[-+]?[A-Za-z0-9_.=]{1,64}$/`, 32 at most.
+- `languages.<code>`, for the language the player chose on the home card among the version's `languages`: `env`, the
+  engine's environment variables (`Module.ENV`, before `callMain`; names `/^[A-Z_][A-Z0-9_]{0,31}$/`, printable ASCII
+  values of 64 characters at most); `ini`, settings put in the profile's ini files before the start (`{ <file relative
+  to the game root>: { <section>: { <key>: <value> } } }`, printable ASCII, no `]` in a section, no `=` in a key).
+- `solo`: reserved.
+
+### Engine release
+
+`data_engines/<release>/`: `release.json` (present once installed), the Emscripten ES module and its WebAssembly
+(`engine/revc.mjs`, `engine/revc.wasm`: `MODULARIZE` + `EXPORT_ES6`, `export default function (overrides)` returning a
+promise of the Module, which exposes `FS`, `ENV` and `callMain`), and `gamefiles/`, the engine's own extra game files
+(its text files, its textures). The page passes `canvas`, `print`, `printErr`, `locateFile` (the module's folder in
+the release), `noInitialRun: true`, `onAbort`, `onExit` and `orthrosFrame`, which the engine calls after each frame it
+displays. The engine uses JSPI (Chrome): `callMain(args)` starts the game and returns a promise that settles when its
+`main()` returns — the player quit the game from its menu. Input and rendering are SDL2's (Emscripten port) on the
+canvas, WebGL 2; audio OpenAL on WebAudio. The engine reads the game's files relative to its current directory,
+whatever their case (it lists folders itself), and writes its own there: its `userfiles/` folder (saves, settings), an
+ini file at the root, maybe caches.
+
+### The engine's files over the version's
+
+The release's `gamefiles/` is the top layer of the version's game tree: over `versions/<dir>/` and `base/`, its files
+replacing same-named ones whatever their case, as a version's replace the base's. The catalog puts it in the manifest's
+`overlays` (`gameLayers`, `src/host/game-files.js`), from the server's engines folder (`--engines-dir`): `/api/tree`,
+`/game/`, `/gamez/` and the learned reads (`/api/prefetch`) see one tree. A release not installed adds no layer. The
+other runtimes' trees are unchanged.
+
+### Server routes
+
+- `/api/manifests`: `runtime: "re3"`, `modes: ["solo"]`, `launchUrl` `/ports/re3/<manifest>/`; `available` when the
+  game's files are there and the release is installed (`release.json`, the module and its WebAssembly, `re3Installed`).
+- `/api/manifest/<manifest>`: `re3.module`, the module the page imports (the manifest's, else the release's; `null`
+  when there is none or several).
+- `/ports/re3/<manifest>/`: the page. `/engines/<release>/...`: the release's files, for a release an re3 version names
+  (`gamefiles/` included), cached as immutable.
+
+### The page
+
+`src/ports/re3/play.js` is the GoldSrc page without what is GoldSrc's own (lobby, relay, console commands, HUD scale):
+the same frame (`createShell`: header, loading screen with the steps engine, files, game, tips; English or French),
+the account's saves pulled before the start (a conflict settled by the player), the same mouse (the engine captures
+it in SDL's relative mode — pointer lock at the next click, the canvas' CSS cursor `none` while the game wants it; a
+click captures it again only then; the header's indicator; full screen with the keyboard locked), the same canvas
+sizing (the stage under the header; a window `resize` event when it changes without the window's), the same sound
+handling (contexts resumed at the next gesture, the "sound off" button, a level meter for the session's report), the
+same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame rate).
+
+- **Start.** The module imported from the release, the Module created; the game's root `/game` made, the version's
+  tree mounted there as streamed files (`src/ports/goldsrc/files.js`: the learned startup set loaded first, the rest
+  in the background, misses fetched synchronously, the reads reported to `/api/prefetch`), with read-ahead: after a
+  read that waited, the file's next 16 missing pieces (1 MiB) load in the background, one such load per file (a
+  stream's next bytes are there when the engine reads them). Then the profile put back, the language's `ini` settings
+  and `env`, `chdir('/game')`, `callMain(re3.args)`.
+- **Frames.** Counted by `Module.orthrosFrame`: the header's frame rate; the loading screen hides after the first ten.
+- **Saves.** Every 10 s in this browser, every minute on the account when changed, when the page is hidden, when
+  leaving by "Games".
+- **The game ends** (`callMain`'s promise settles, or `onExit`): the profile saved here and on the account, then the
+  loading screen says "The game has ended", with "Restart the game" (the page reloaded: an engine that ended cannot
+  start again in it) and "Back to the games".
+- **Errors.** An abort or a failed start: the loading screen with the error and "Restart the game"; an engine that ran
+  has its profile saved first.
+
+### The profile
+
+The engine writes among the mounted game files, so the profile is every regular file under `/game` that is not a
+mounted game file — created by the engine, or a game file it replaced (`src/ports/re3/profile.js`; the game files'
+nodes are skipped, never read). Kept as `{ path relative to the root, data }`: IndexedDB `orthros-port:<game>:<version
+folder>` (`profile` / `files`, `content` for the game files fetched, as GoldSrc's), and on the account without logs and
+screenshots. Put back before `callMain`, each file in place of a game file of the same path. A language's `ini`
+settings are written in the profile's file of that name (found whatever its case), else in a copy of the game's own,
+else in a new file (`src/ports/re3/ini.js`: keys set in place, missing ones added to their section, missing sections
+at the end; the rest kept byte for byte).
+
+### State (2026-10-19)
+
+Server, catalog, page and tests written before the first engine release: `tests/re3.test.js` (catalog checks,
+availability, engine routes, the engine's layer over the game tree, the ini editor, the profile) and the read-ahead
+test in `tests/goldsrc-streaming.test.js`. Not run in a browser yet: no release was installed.
 
 ## Third-party components
 

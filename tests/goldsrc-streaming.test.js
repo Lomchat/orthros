@@ -24,14 +24,14 @@ function fakeFS() {
     },
   };
 }
-/** Files over a fake server: `content` by path; requests counted; a store in a Map. */
-function setup(content, { local = new Map() } = {}) {
+/** Files over a fake server: `content` by path; requests counted; a store in a Map; `readAhead`: the option's. */
+function setup(content, { local = new Map(), readAhead = undefined } = {}) {
   const files = [...content].map(([p, data]) => ({ path: p, size: data.length, mtime: 5 }));
   const requests = [], range = (url) => { const u = new URL(url, 'http://x'), [s, e] = u.searchParams.get('r').split('-').map(Number); return [decodeURIComponent(u.pathname.split('/').slice(3).join('/')), s, e]; };
   const writes = [], removed = [];
   let clock = 1000;
   const sf = new StreamedFiles({
-    name: 'gs', files, now: () => clock,
+    name: 'gs', files, now: () => clock, readAhead,
     syncGet: (url, size) => { const [p, s, e] = range(url); requests.push(['sync', p, s, e]); assert.equal(size, e - s); return content.get(p).slice(s, e); },
     get: async (url) => { const [p, s, e] = range(url); requests.push(['async', p, s, e]); return content.get(p).slice(s, e); },
     store: { read: async (k) => local.get(k), write: async (k, v) => { writes.push(k); local.set(k, v); }, keys: async () => [...local.keys()], remove: async (ks) => { removed.push(...ks); } },
@@ -99,6 +99,37 @@ test('the browser\'s copy serves before the network; entries of older files are 
   assert.deepEqual(sf.files.get('big').data, big);
   const nb = node('big');
   assert.deepEqual(nb.stream_ops.mmap({ node: nb }).data, big); assert.equal(nb.usedBytes, big.length);
+});
+
+test('read-ahead (opt-in): after a read that waited, the file\'s next missing pieces load in the background, one load per file', async () => {
+  const big = bytes(3 * BLOCK), small = bytes(5 * PIECE, 3);
+  const { sf, read, requests } = setup(new Map([['stream.adf', big], ['short.adf', small]]), { readAhead: 16 });
+  sf.start();
+  assert.deepEqual(read('stream.adf', 0, 100), big.subarray(0, 100));
+  // (the read's own piece at once; the next sixteen, from the server, without the engine waiting)
+  assert.deepEqual(requests, [['sync', 'stream.adf', 0, PIECE], ['async', 'stream.adf', PIECE, 17 * PIECE]]);
+  const f = sf.files.get('stream.adf'), inFlight = f.ahead;
+  assert.deepEqual(read('stream.adf', 40 * PIECE, 10), big.subarray(40 * PIECE, 40 * PIECE + 10));
+  assert.deepEqual(requests.slice(2), [['sync', 'stream.adf', 40 * PIECE, 41 * PIECE]], 'one load per file at a time');
+  await inFlight;
+  assert.equal(f.ahead, null);
+  assert.deepEqual(read('stream.adf', PIECE + 7, 16 * PIECE - 7), big.subarray(PIECE + 7, 17 * PIECE)); // (all here)
+  assert.equal(requests.length, 3);
+  read('stream.adf', 17 * PIECE, 10);
+  assert.deepEqual(requests.slice(3), [['sync', 'stream.adf', 17 * PIECE, 18 * PIECE], ['async', 'stream.adf', 18 * PIECE, 34 * PIECE]]);
+  await f.ahead;
+  // (a short file: its last pieces, then it is whole)
+  read('short.adf', 0, 10);
+  assert.deepEqual(requests.slice(5), [['sync', 'short.adf', 0, PIECE], ['async', 'short.adf', PIECE, 5 * PIECE]]);
+  await sf.files.get('short.adf').ahead;
+  assert.deepEqual(sf.files.get('short.adf').data, small);
+  assert.equal(sf.stats.ahead, 3);
+  // (the reads learned are the engine's own, not the loads ahead)
+  assert.deepEqual(sf.takeReads().map((r) => r.slice(0, 3)), [['stream.adf', 0, PIECE], ['stream.adf', 40 * PIECE, 41 * PIECE], ['stream.adf', PIECE, 17 * PIECE], ['stream.adf', 17 * PIECE, 18 * PIECE], ['short.adf', 0, PIECE]]);
+  // (off by default: a read fetches what it needs, nothing more)
+  const off = setup(new Map([['stream.adf', big]]));
+  off.read('stream.adf', 0, 100);
+  assert.deepEqual(off.requests, [['sync', 'stream.adf', 0, PIECE]]);
 });
 
 test('a page\'s read reports teach the server\'s learned list, in the page\'s own times', async (t) => {
