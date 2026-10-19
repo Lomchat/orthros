@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "engine": {
+    "repository": "https://github.com/mrxenginner/reVC",
+    "commit": "a26fff4af555a8a425ac9f17d1dd718d00d1f942",
+    "submodules": {
+      "vendor/librw": "0ad67ee226ea51beb3f465cb8857195e4db16029",
+      "vendor/ogg": "684c73773e7e2683245ffd6aa75f04115b51123a",
+      "vendor/opus": "6bae366f9fef25191fc812c430e8abd40a13a233",
+      "vendor/opusfile": "6452e838e68e8f4fc0b3599523c760ac6276ce89"
+    },
+    "emsdk": "emscripten/emsdk:4.0.23@sha256:86537645c51e44899812d29820ee3b64b96c321ebb2aba4416a04ceeb1bcde62",
+    "emscriptenCache": "src/emscripten-4.0.23-cache",
+    "emscriptenPorts": {
+      "sdl2.32.8.zip": "80193a6ec899ba00b5914adefecdd669e32a14b067500ad063c80156611f9366",
+      "mpg123.26.2.tar.bz2": "00f7bf7ea64fcec2c9d07751d6ad8849343ee09c282ea3b0d5dd486e886e2ff3"
+    },
+    "cmake": [
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DREVC_AUDIO=OAL",
+      "-DREVC_VENDORED_LIBRW=ON",
+      "-DLIBRW_PLATFORM=GL3",
+      "-DLIBRW_GL3_GFXLIB=SDL2",
+      "-DLIBRW_TOOLS=OFF",
+      "-DLIBRW_INSTALL=OFF"
+    ],
+    "link": [
+      "-sMODULARIZE=1",
+      "-sEXPORT_ES6=1",
+      "-sEXPORT_NAME=createReVC",
+      "-sENVIRONMENT=web",
+      "-sJSPI=1",
+      "-sALLOW_MEMORY_GROWTH=1",
+      "-sINITIAL_MEMORY=268435456",
+      "-sMAXIMUM_MEMORY=4294967296",
+      "-sSTACK_SIZE=8388608",
+      "-sMIN_WEBGL_VERSION=2",
+      "-sMAX_WEBGL_VERSION=2",
+      "-sGL_ENABLE_GET_PROC_ADDRESS=1",
+      "-sFORCE_FILESYSTEM=1",
+      "-sEXIT_RUNTIME=1",
+      "-sINVOKE_RUN=0",
+      "-sEXPORTED_RUNTIME_METHODS=FS,ENV,callMain,HEAPU8",
+      "-sASSERTIONS=0",
+      "--profiling-funcs"
+    ]
+  },
+  "builds": [
+    {
+      "id": "revc-web-a26fff4-r5",
+      "patches": [
+        [
+          ".",
+          "revc-browser.patch"
+        ],
+        [
+          "vendor/librw",
+          "librw-webgl2.patch"
+        ]
+      ],
+      "files": {
+        "engine/revc.mjs": "b9e8b5be7cdb2270f94344ca87a5c1b9ec4537e1bb1a3d14bda6e07df91b7e6a",
+        "engine/revc.wasm": "2081aa0399387ba85e31252e892bc327c3f9a0ac6803910c098600b068f48de8"
+      }
+    }
+  ]
+}

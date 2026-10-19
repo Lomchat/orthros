@@ -27,10 +27,11 @@ missing. Every game page — Windows games and ports — has the same frame (hea
 | `src/host/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `src/host/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `ini.js`, `style.css`) | yes |
+| `tools/re3/` | `lock.json` (the engine's pinned sources, image, Emscripten ports, build flags and digests), `build.sh` (the engine from source), `patches/` (the browser build), `cmake/`, `check.mjs` (browser check) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server) | no |
-| `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-a26fff4-r5` (reVC built from source) | no |
+| `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
 carry their own licenses (notices below), and the browser game modules were recovered from a deployed build whose
@@ -524,14 +525,20 @@ release.
 
 ```json
 {
-  "id": "vice-city-re3", "dir": "re3", "version": "1.1 · Recompiled engine", "runtime": "re3", "languages": ["en", "fr"],
+  "id": "vice-city-revc", "dir": "1.1-revc", "version": "1.1 · reVC", "versionOrder": 2, "runtime": "re3",
+  "languages": ["en", "fr"], "profileSeed": true,
   "re3": {
-    "engine": "revc-web-a26fff4-r1",
-    "args": [],
-    "languages": { "fr": { "env": { "<NAME>": "<value>" }, "ini": { "<file>.ini": { "<Section>": { "<Key>": "<value>" } } } } }
+    "engine": "revc-web-a26fff4-r5",
+    "languages": {
+      "en": { "env": { "LANG": "en_US.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "0" } } } },
+      "fr": { "env": { "LANG": "fr_FR.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "1" } } } }
+    }
   }
 }
 ```
+
+(Vice City's: its `base/` is the Windows version's, `versions/1.1-revc/` is empty. reVC takes its language from its
+ini file, else from the locale; `0` is American English, `1` French.)
 
 `src/host/re3.js` (`re3Problem`) checks it; the contract is in `game-manifest.schema.json`. No `exe`, no `requires`; the
 saved profile's key is the installation's, `orthros-port:<game>:<version folder>`, as the other ports'.
@@ -558,8 +565,9 @@ saved profile's key is the installation's, `orthros-port:<game>:<version folder>
 (`engine/revc.mjs`, `engine/revc.wasm`: `MODULARIZE` + `EXPORT_ES6`, `export default function (overrides)` returning a
 promise of the Module, which exposes `FS`, `ENV` and `callMain`), and `gamefiles/`, the engine's own extra game files
 (its text files, its textures). The page passes `canvas`, `print`, `printErr`, `locateFile` (the module's folder in
-the release), `noInitialRun: true`, `onAbort`, `onExit` and `orthrosFrame`, which the engine calls after each frame it
-displays. The engine uses JSPI (Chrome): `callMain(args)` starts the game and returns a promise that settles when its
+the release), `noInitialRun: true`, `onAbort`, `onExit`, `orthrosFrame`, which the engine calls after each frame it
+displays, and `orthrosMouse(relative)`, which it calls when the game takes the mouse (relative motion) or frees it (its
+menus). The engine uses JSPI (Chrome): `callMain(args)` starts the game and returns a promise that settles when its
 `main()` returns — the player quit the game from its menu. Input and rendering are SDL2's (Emscripten port) on the
 canvas, WebGL 2; audio OpenAL on WebAudio. The engine reads the game's files relative to its current directory,
 whatever their case (it lists folders itself), and writes its own there: its `userfiles/` folder (saves, settings), an
@@ -589,8 +597,10 @@ server lists a tree once, and again when the catalog is read (`/api/manifests`) 
 `src/ports/re3/play.js` is the GoldSrc page without what is GoldSrc's own (lobby, relay, console commands, HUD scale):
 the same frame (`createShell`: header, loading screen with the steps engine, files, game, tips; English or French),
 the account's saves pulled before the start (a conflict settled by the player), the same mouse (the engine captures
-it in SDL's relative mode — pointer lock at the next click, the canvas' CSS cursor `none` while the game wants it; a
-click captures it again only then; the header's indicator; full screen with the keyboard locked), the same canvas
+it in SDL's relative mode — pointer lock at the next click — and says so, `Module.orthrosMouse`: the game draws its
+own cursor in its menus over a hidden one, so the canvas' CSS cursor, GoldSrc's sign, would have the page lock the
+mouse there and leave the menus' cursor in a corner; a click captures it again only while the game wants it; the
+header's indicator; full screen with the keyboard locked), the same canvas
 sizing (the stage under the header; a window `resize` event when it changes without the window's), the same sound
 handling (contexts resumed at the next gesture, the "sound off" button, a level meter for the session's report), the
 same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame rate).
@@ -603,6 +613,11 @@ same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame r
   hook, before the runtime starts. Then the profile put back, the `ini` settings, `chdir('/game')`,
   `callMain(re3.args)`.
 - **Frames.** Counted by `Module.orthrosFrame`: the header's frame rate; the loading screen hides after the first ten.
+- **Shared first-launch profile** (the manifest's `profileSeed`, as the Windows games'; `?profileseed=0` turns it off):
+  an empty profile gets, before the engine starts, the small files first sessions of the version wrote identical
+  (`/api/profile-seed/<manifest>?lang=`, the server's quorum); else the session reports its own, taken at the player's
+  first input and sent once it has gone on playing (`SeedWatch`). The ini files the languages name stay out of it: the
+  player's settings, the screen's size among them.
 - **Saves.** Every 10 s in this browser, every minute on the account when changed, when the page is hidden, when
   leaving by "Games". At the game's end, an error or "Games", a save in flight is waited for and a new snapshot taken
   (the engine may have written since that save's).
@@ -615,6 +630,62 @@ same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame r
   engine's files are not replaced under it. The running game's are kept aside in IndexedDB, its saves stop, the
   account's files take the profile's place and the page reloads to start on them. The game over, they wait for its
   restart.
+
+### The engine, built from source
+
+`tools/re3/build.sh` builds the engine of an re3 version from the sources pinned in `tools/re3/lock.json`: reVC
+(`github.com/mrxenginner/reVC`, the owner's choice — D099) at `a26fff4` with its submodules (librw, ogg, opus,
+opusfile), in the pinned image `emscripten/emsdk:4.0.23`, without network. Emscripten's SDL2 and mpg123 ports come
+from a cache made once (`data_engines/src/emscripten-4.0.23-cache`, the archives checked against the lock). Two builds
+give the same `revc.mjs` and `revc.wasm` (the pinned commit's time is the build time; checked 2026-10-19): the script
+refuses one that differs from the lock. A release holds `engine/revc.mjs` and `engine/revc.wasm` (3.8 MiB),
+`gamefiles/` (the sources' own game files: updated `TEXT/*.gxt` with the strings of reVC's new menu options, controller
+button textures, `neo/` tables, `data/freeroam_miami.scm`, `gamecontrollerdb.txt`), `notices/` and `release.json`.
+
+The patches (`tools/re3/patches/`) make the desktop build a browser one, nothing about a game:
+
+- **One thread, the browser's turn** (`revc-browser.patch`): the game's main loop is kept as it is; with JSPI its
+  WebAssembly stack is suspended once per iteration until the browser's next frame (`OrthrosFrameYield`,
+  `src/skel/orthros_web.cpp`), and during long loads every 50 ms at most (`OrthrosLoadingYield`, in `LoadingScreen`) —
+  events, painting and fetches go on meanwhile. The CD image streaming (`CdStream_posix.cpp`) reads at once instead of
+  on a thread; streamed audio files are read on the game's thread (`MULTITHREADED_AUDIO`, `FLUSHABLE_STREAMING` off).
+- **The clock**: `psTimer` uses `emscripten_get_now()` — the browser has no `CLOCK_MONOTONIC_RAW`, whose
+  `clock_gettime` failed and left the game's time standing still (a black menu: its fade-in never progressed).
+- **The window**: always the windowed video mode, the canvas' box on the page, never an exclusive one (the screen's
+  size: `CameraSize` then took the game's screen for the monitor's — the 3D view's aspect ratio and the menus' hit
+  areas off by the header's height, a click on "Start game" missing it); SDL's size changes
+  (`SDL_WINDOWEVENT_SIZE_CHANGED`) resize it (`resizeCB`), full screen being the page's.
+- **No `models/txd.img`** (`USE_TXD_CDIMAGE` off): on OpenGL the game takes the card for one without DXT and converts
+  every texture of the CD image into that file at its first new game ("Converting textures to optimal format…"), a
+  file the browser would hold in memory, put in the player's profile and make again each session (and ~250 MB more
+  read); the textures load from the CD image as the original's, WebGL taking their DXT as it is.
+- **Its folders**: `userfiles/` (saves, `gta_vc.set`) is created even where `realpath` leaves its buffer empty for a
+  folder not there yet — musl's, the browser's C library (glibc fills it): saves could not be written.
+- **The mouse**: the game's switches between relative motion and its menus' cursor are told to the page
+  (`Module.orthrosMouse`).
+- **Memory**: the streaming budget of a 256 MB machine (the browser tells no free memory; `sysinfo` is absent).
+- **Sound**: the browser's OpenAL enumerates no device: its default one is described without being opened (a probe
+  would leave an AudioContext running — Emscripten's `alcDestroyContext` does not close its own); no EFX lookup.
+- **WebGL 2** (`librw-webgl2.patch`): an OpenGL ES 3.0 context and GLSL ES 3.00 shaders (`#version 300 es`; librw knew
+  ES 2.0 and 3.1), S3TC through `WEBGL_compressed_texture_s3tc` (the game's DXT textures stay compressed), compressed
+  textures defined by their levels' uploads (WebGL refuses `texImage2D` with a compressed format), no swap interval
+  (the browser's frame), `Module.orthrosFrame()` after each frame shown.
+- **Callbacks' types**: librw's `Atomic::RenderCB` returns the atomic, as RenderWare's: the game's render callbacks
+  (`RpAtomic *(*)(RpAtomic *)`) were called through a `void` type — harmless on x86, a trap in WebAssembly ("function
+  signature mismatch", the first frame of a new game).
+
+Measured (headless Chromium, SwiftShader, 1280 × 720): the menu at 60 frames a second; in the city the engine's own
+work is about 1 % of the page's time (CPU profile: the rest is SwiftShader's rendering) — a GPU decides the frame rate.
+First start of a new browser, the learned list made by sessions with the shared first-launch profile (below): 19 MB
+on the wire before the menu (the sound bank `Audio/sfx.raw`, the menu's textures and fonts, the engine), about 20 MB
+more for a new game's first scene (`models/gta3.img`). With Chrome's network emulation, 50 ms round trip: 85 KB/s, the
+menu after 224 s; 1 MB/s, the menu after 21 s and the first scene 33 s after "New game". The rest of the learned list
+then loads in the background, and the browser keeps everything: later starts read its copy.
+
+The shared first-launch profile (`profileSeed` in the manifest, `src/host/profile-seed.js`) matters here: the game's
+first start reads the header of each of its ~1,200 audio files to build `Audio/sound.cache` (a few KiB each, a 64 KiB
+piece each on the wire: ~80 MB). Once two sessions reported the same cache, a new player's empty profile gets it and
+the game reads none of them.
 
 ### The profile
 
@@ -636,9 +707,21 @@ keeps the rest byte for byte. The same settings set again change nothing.
 
 ### State (2026-10-19)
 
-Server, catalog, page and tests written before the first engine release: `tests/re3.test.js` (catalog checks,
-availability, engine routes, the engine's layer over the game tree, the ini editor, the profile) and the read-ahead
-test in `tests/goldsrc-streaming.test.js`. Not run in a browser yet: no release was installed.
+Vice City's `vice-city-revc` (`1.1 · reVC`) is on the home, release `revc-web-a26fff4-r5`. Checked in headless
+Chromium (SwiftShader) with `tools/re3/check.mjs --new-game --reload` from the server: the home lists it available,
+the page starts it on the game's menu (60 frames a second, the mouse free there), sound on after the first gesture, a
+new game's first scene, back to the games saving here and on the account, the same profile found by another browser
+context signed in to that account. With the bench page (the engine alone): the intro cutscene, free play on foot and
+in a car (Flash FM playing, a crash into a shop front, bailing out), the keyboard, the mouse look (relative motion),
+French menus (`?gameLang=fr`), 1280 × 720 and 1280 × 756 screens. The shared first-launch profile: two sessions
+reported the same `Audio/sound.cache` (English and French), a third empty profile got it.
+
+Not checked: a save at a safe house and its load (no automated way there yet: the profile mechanism that carries
+`userfiles/GTAVCsf*.b` is checked with the ini and the cache), a whole mission, long sessions, a real GPU (the frame
+rate on the owner's Iris Xe), Firefox/Safari (JSPI: Chrome only). Three times in about forty runs on 2026-10-19 the
+headless browser process itself stopped on an internal check (`trap int3` in `chrome-headless-shell`; five such stops
+the day before in other Orthros runs): not reproduced in three runs made to catch it; noted here, not explained. No
+multiplayer (reVC has none).
 
 ## Third-party components
 
@@ -654,4 +737,9 @@ test in `tests/goldsrc-streaming.test.js`. Not run in a browser yet: no release 
   `xash3d-web-1.2.2-cs16-15278ca-*` releases, built by `build-modules.sh`; their notices are in the checkout. The
   Half-Life Arsenal's weapons and events are ported from the Half-Life SDK (`FWGS/hlsdk-portable`): its licence allows
   non-commercial enhancements to Valve's products only.
+- reVC (`github.com/mrxenginner/reVC` at `a26fff4`, the owner's choice — D099: a decompilation of Grand Theft Auto:
+  Vice City, MIT with a "proof of usage" condition, see the release's `notices/reVC-LICENSE.md` and
+  `notices/reVC-PROOF_OF_USAGE.md`) with its submodule librw (aap, MIT, `notices/librw-LICENSE`): the engine of the
+  `revc-web-*` releases, built by `tools/re3/build.sh`; OpenAL Soft's headers from reVC's `vendor/` (LGPL 2), Emscripten's
+  ports SDL2 2.32.8 (zlib) and mpg123 (LGPL 2.1) linked in.
 - The game files are the games' own, never modified; their provenance is recorded in each manifest's `installedFrom`.

@@ -1,0 +1,150 @@
+diff --git a/src/clump.cpp b/src/clump.cpp
+index f228298..33031e7 100644
+--- a/src/clump.cpp
++++ b/src/clump.cpp
+@@ -621,10 +621,11 @@ Atomic::uninstance(void)
+ 	this->geometry->flags &= ~Geometry::NATIVE;
+ }
+ 
+-void
++Atomic*
+ Atomic::defaultRenderCB(Atomic *atomic)
+ {
+ 	atomic->getPipeline()->render(atomic);
++	return atomic;
+ }
+ 
+ // Atomic Rights plugin
+diff --git a/src/gl/gl3device.cpp b/src/gl/gl3device.cpp
+index 6a4c8dd..225e1cb 100644
+--- a/src/gl/gl3device.cpp
++++ b/src/gl/gl3device.cpp
+@@ -15,6 +15,11 @@
+ #include "rwgl3.h"
+ #include "rwgl3shader.h"
+ #include "rwgl3impl.h"
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#include <emscripten/html5.h>
++extern "C" void OrthrosCanvasSize(int *width, int *height); // (the game's, src/skel/orthros_web.cpp)
++#endif
+ 
+ #define PLUGIN_ID 0
+ 
+@@ -91,6 +96,14 @@ const char *shaderDecl100es =
+ "#define FRAGCOLOR(c) (gl_FragColor = c)\n"
+ "precision highp float;\n"
+ "precision highp int;\n";
++const char *shaderDecl300es =
++"#version 300 es\n"
++"#define VSIN(index) layout(location = index) in\n"
++"#define VSOUT out\n"
++"#define FSIN in\n"
++"#define FRAGCOLOR(c) (fragColor = c)\n"
++"precision highp float;\n"
++"precision highp int;\n";
+ const char *shaderDecl310es =
+ "#version 310 es\n"
+ "#define VSIN(index) layout(location = index) in\n"
+@@ -1407,11 +1420,17 @@ showRaster(Raster *raster, uint32 flags)
+ //		raster->width, raster->height);
+ 
+ #ifdef LIBRW_SDL2
++#ifndef __EMSCRIPTEN__
+ 	if(flags & Raster::FLIPWAITVSYNCH)
+ 		SDL_GL_SetSwapInterval(1);
+ 	else
+ 		SDL_GL_SetSwapInterval(0);
++#endif
++	// (the browser: the page shows a frame when the game gives it its turn, at its refresh rate — orthros_web.h)
+ 	SDL_GL_SwapWindow(glGlobals.window);
++#ifdef __EMSCRIPTEN__
++	EM_ASM({ if (Module.orthrosFrame) Module.orthrosFrame(); });
++#endif
+ #else
+ 	if(flags & Raster::FLIPWAITVSYNCH)
+ 		glfwSwapInterval(1);
+@@ -1532,6 +1551,9 @@ static struct {
+ 	int gl;
+ 	int major, minor;
+ } profiles[] = {
++#ifdef __EMSCRIPTEN__
++	{ SDL_GL_CONTEXT_PROFILE_ES, 3, 0 }, // (WebGL 2)
++#endif
+ 	{ SDL_GL_CONTEXT_PROFILE_CORE, 3, 3 },
+ 	{ SDL_GL_CONTEXT_PROFILE_CORE, 2, 1 },
+ 	{ SDL_GL_CONTEXT_PROFILE_ES, 3, 1 },
+@@ -1556,6 +1578,14 @@ startSDL2(void)
+ 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, profiles[i].major);
+ 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, profiles[i].minor);
+ 
++#ifdef __EMSCRIPTEN__
++		// (the browser: a window the size of the canvas on the page, which SDL follows; the page does full screen)
++		if(1) {
++			int w, h;
++			OrthrosCanvasSize(&w, &h);
++			win = SDL_CreateWindow(glGlobals.winTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL);
++		} else
++#endif
+ 		if(mode->flags & VIDEOMODEEXCLUSIVE) {
+ 			win = SDL_CreateWindow(glGlobals.winTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, mode->mode.w, mode->mode.h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+ 			if (win)
+@@ -1789,12 +1819,18 @@ initOpenGL(void)
+ 	}
+ */
+ 	gl3Caps.dxtSupported = !!GLAD_GL_EXT_texture_compression_s3tc;
++#ifdef __EMSCRIPTEN__
++	gl3Caps.dxtSupported = emscripten_webgl_enable_extension(emscripten_webgl_get_current_context(), "WEBGL_compressed_texture_s3tc");
++	emscripten_webgl_enable_extension(emscripten_webgl_get_current_context(), "EXT_texture_filter_anisotropic");
++#endif
+ 	gl3Caps.astcSupported = !!GLAD_GL_KHR_texture_compression_astc_ldr;
+ 
+ 	glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &gl3Caps.maxAnisotropy);
+ 
+ 	if(gl3Caps.gles){
+-		if(gl3Caps.glversion >= 30)
++		if(gl3Caps.glversion == 30)
++			shaderDecl = shaderDecl300es;
++		else if(gl3Caps.glversion >= 30)
+ 			shaderDecl = shaderDecl310es;
+ 		else
+ 			shaderDecl = shaderDecl100es;
+diff --git a/src/gl/gl3raster.cpp b/src/gl/gl3raster.cpp
+index b7c3941..2ca9820 100644
+--- a/src/gl/gl3raster.cpp
++++ b/src/gl/gl3raster.cpp
+@@ -319,9 +319,12 @@ allocateDXT(Raster *raster, int32 dxt, int32 numLevels, bool32 hasAlpha)
+ 
+ 	glGenTextures(1, &natras->texid);
+ 	uint32 prev = bindTexture(natras->texid);
++#ifndef __EMSCRIPTEN__
++	// (WebGL takes no compressed format here: the levels' uploads define the texture — rasterUnlock)
+ 	glTexImage2D(GL_TEXTURE_2D, 0, natras->internalFormat,
+ 	             raster->width, raster->height,
+ 	             0, natras->format, natras->type, nil);
++#endif
+ 	// TODO: allocate other levels...probably
+ 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, natras->numLevels-1);
+ 	natras->filterMode = 0;
+diff --git a/src/rwobjects.h b/src/rwobjects.h
+index 96394c2..0830774 100644
+--- a/src/rwobjects.h
++++ b/src/rwobjects.h
+@@ -607,7 +607,7 @@ struct World;
+ struct Atomic
+ {
+ 	PLUGINBASE
+-	typedef void (*RenderCB)(Atomic *atomic);
++	typedef Atomic *(*RenderCB)(Atomic *atomic); // (returns the atomic, as RenderWare's: the game's callbacks are called through it)
+ 	enum { ID = 1 };
+ 	enum {
+ 	// flags
+@@ -661,7 +661,7 @@ struct Atomic
+ 	bool streamWriteClump(Stream *stream, FrameList_ *frmlst);
+ 	uint32 streamGetSize(void);
+ 
+-	static void defaultRenderCB(Atomic *atomic);
++	static Atomic *defaultRenderCB(Atomic *atomic);
+ };
+ 
+ void registerAtomicRightsPlugin(void);

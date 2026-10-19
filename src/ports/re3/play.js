@@ -13,6 +13,7 @@ import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, storageKeys, removeStorage } from '../goldsrc/storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, PIECE } from '../goldsrc/files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
+import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../../host/profile-seed.js';
 
 const STRINGS = {
   en: {
@@ -207,15 +208,21 @@ fit();
 
 // ---------------------------------------------------------------- the mouse
 // The engine captures the mouse itself when the game takes it (SDL's relative mode: pointer lock at the next input
-// event), its cursor hidden then (the canvas' CSS cursor), shown where the mouse is free. A click captures it again only
-// while the game wants it — after the browser released it (Esc) — never where the mouse must stay free.
-const wantsMouse = () => session.state === 'running' && $('canvas').style.cursor === 'none';
+// event) and tells the page (Module.orthrosMouse: true in the game, false in its menus — where it may draw its own
+// cursor over a hidden one, so the canvas' CSS cursor tells nothing); for an engine that does not tell, its hidden
+// cursor. A click captures it again only while the game wants it — after the browser released it (Esc) — never where the
+// mouse must stay free.
+let engineMouse = null;
+const wantsMouse = () => session.state === 'running' && (engineMouse ?? $('canvas').style.cursor === 'none');
 // (how to capture the mouse: told the first time the game wants it)
 let captureTold = false;
-new MutationObserver(() => {
+function tellCapture() {
   if (captureTold || !wantsMouse() || document.pointerLockElement) return;
   captureTold = true; toast(S.capture, 7000);
-}).observe($('canvas'), { attributes: true, attributeFilter: ['style'] });
+}
+new MutationObserver(tellCapture).observe($('canvas'), { attributes: true, attributeFilter: ['style'] });
+/** The engine took the mouse (the game) or freed it (a menu). */
+function onMouseMode(relative) { engineMouse = relative; tellCapture(); }
 $('canvas').addEventListener('pointerdown', () => { if (wantsMouse() && document.pointerLockElement !== $('canvas')) $('canvas').requestPointerLock()?.catch?.(() => {}); });
 $('canvas').addEventListener('contextmenu', (event) => event.preventDefault());
 // (the engine may free the mouse a moment after the lock ends: only a release by the player is told)
@@ -240,6 +247,7 @@ setInterval(() => {
   perf.samples.push({ fps: recent.length * 2, max: gaps.at(-1) ?? 0, p99: gaps[Math.floor(gaps.length * 0.99)] ?? 0 });
   if (perf.samples.length > 120) perf.samples.shift();
   shell?.setFps(perf.samples, session.state !== 'running' || perf.started < 10 ? 'loading' : document.hidden ? 'paused' : 'running');
+  const seed = seedWatch?.step(now, perf.started); if (seed) reportSeed(seed);
 }, 500);
 /** The session's end, once: its length and frame rate. */
 function endReport() { if (telemetry.ended) return; telemetry.ended = true; report('end', { frames: frameStats(), audio: audioState() }); }
@@ -328,6 +336,38 @@ async function loadInBackground(rest) {
   log(`Background loading done: ${JSON.stringify(session.background)}`);
 }
 
+// ---------------------------------------------------------------- the shared first-launch profile (profile-seed.js)
+// A game's first start may write caches before the player does anything (a sound cache built by reading the header of
+// every audio file: a long first start on a slow link). With the manifest's `profileSeed`, an empty profile gets the
+// small files first sessions of the version wrote identical (the server's quorum), in place before the engine starts;
+// else this session reports its own, taken at the player's first input, once it has gone on playing (SeedWatch). The
+// ini files the version's languages name are left out: the player's settings, the screen's size among them.
+let seedWatch = null, seedLanguage = null;
+/** The files a seed may hold now: the profile's but its ini files. */
+const seedFiles = (iniNames) => profileSnapshot(FS, ROOT, gameNodes).filter((f) => !iniNames.has(f.path.toLowerCase()));
+/** The server's set put in the empty profile (true), or a watch of this first session set (false). */
+async function seedProfile(language, iniNames) {
+  const url = `/api/profile-seed/${encodeURIComponent(name)}?lang=${encodeURIComponent(language ?? '')}`;
+  let files = [];
+  try {
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 3000); // (never holds the start long)
+    const r = await fetch(url, { signal: ac.signal }).finally(() => clearTimeout(timer));
+    const j = r.ok ? await r.json() : null;
+    files = (Array.isArray(j?.files) ? j.files : []).map((f) => ({ path: f?.path, data: fromBase64(f?.data) })).filter((f) => f.data && seedPathOk(f.path) && !iniNames.has(f.path.toLowerCase()));
+  } catch { /* none: learned below */ }
+  if (files.length) { restoreProfile(FS, ROOT, files, log); log(`Profile: ${files.length} file(s) first sessions wrote put in place (shared first-launch profile)`); return true; }
+  seedLanguage = language ?? '';
+  seedWatch = new SeedWatch({ files: () => seedFiles(iniNames) });
+  return false;
+}
+function reportSeed(files) {
+  fetch(`/api/profile-seed/${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lang: seedLanguage, session: sessionId, files: files.map((f) => ({ path: f.path, data: toBase64(f.data) })) }) }).catch(() => {});
+}
+// (the player's first input: what the game wrote until then, before anything typed)
+document.addEventListener('pointerdown', () => seedWatch?.input(performance.now(), perf.started, false), { capture: true });
+document.addEventListener('keydown', (event) => seedWatch?.input(performance.now(), perf.started, event.key.length === 1), { capture: true });
+
 /** The game's language: the one chosen on the home screen (?gameLang=, else remembered), among the version's. */
 function gameLanguage(man) {
   const options = man.languages ?? [];
@@ -359,7 +399,7 @@ async function start() {
   const { default: createEngine } = await import(moduleUrl);
   engine = session.engine = await createEngine({
     canvas: $('canvas'), print: log, printErr: log, locateFile: (file) => dir + file, noInitialRun: true,
-    onAbort: (reason) => fail(new Error(String(reason))), onExit: (code) => ended(code), orthrosFrame: onFrame,
+    onAbort: (reason) => fail(new Error(String(reason))), onExit: (code) => ended(code), orthrosFrame: onFrame, orthrosMouse: onMouseMode,
     preRun: [envPreRun(own.env, log)], // (the language's environment, before the runtime copies it)
   });
   step('engine', 'done', `${((performance.now() - t) / 1000).toFixed(1)} s`);
@@ -390,7 +430,11 @@ async function start() {
   // (the profile in the game's folder, over the game's files it replaced; the language's settings — re3.languages.<code>,
   // the player's choice of the version's languages —, in every ini file a language names: a game's own copied into the
   // profile even when it has these settings, for the engine to write in)
-  restoreProfile(FS, ROOT, await readStorage(db, 'profile', 'files'), log);
+  const kept = (await readStorage(db, 'profile', 'files')) ?? [];
+  if (config.profileSeed && params.get('profileseed') !== '0' && !kept.length) {
+    await seedProfile(language, new Set(languageIni(r.languages, language).map(([file]) => file.toLowerCase())));
+  }
+  restoreProfile(FS, ROOT, kept, log);
   profileReady = true;
   for (const [file, sections] of languageIni(r.languages, language)) {
     try { log(`${file}: ${setProfileIni(FS, ROOT, file, sections, gameNodes)} (${language})`); } catch (error) { log(`${file}: not set (${error.message})`); }
