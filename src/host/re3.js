@@ -20,13 +20,15 @@ const text = (value, min, max) => typeof value === 'string' && value.length >= m
 // (an ini file's section and key names: one line each, nothing that would open a section, end a name or start a comment)
 const sectionOk = (name) => text(name, 1, 64) && !/[[\]]/.test(name) && name.trim() === name;
 const keyOk = (name) => text(name, 1, 64) && !/[=[\]]/.test(name) && !/^[;#]/.test(name) && name.trim() === name;
+// (a value as an ini reader reads it: without spaces around, which the line's own spacing would merge with)
+const valueOk = (value) => text(value, 0, 128) && value.trim() === value;
 const within = (obj, max) => isObject(obj) && Object.keys(obj).length <= max;
 
 /** The settings a language puts in the profile's ini files: { <file>: { <section>: { <key>: <value> } } }. */
 function iniOk(ini) {
   return within(ini, 8) && Object.entries(ini).every(([file, sections]) => safePath(file) && within(sections, 16)
     && Object.entries(sections).every(([section, keys]) => sectionOk(section) && within(keys, 32) && Object.keys(keys).length > 0
-      && Object.entries(keys).every(([key, value]) => keyOk(key) && text(value, 0, 128))));
+      && Object.entries(keys).every(([key, value]) => keyOk(key) && valueOk(value))));
 }
 
 /** What is wrong with a version's `re3` entry, or null. */

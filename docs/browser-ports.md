@@ -537,13 +537,19 @@ release.
 saved profile's key is the installation's, `orthros-port:<game>:<version folder>`, as the other ports'.
 
 - `engine` (required): the release, `/^[a-z0-9][a-z0-9._-]*$/`.
-- `module`: the engine's ES module, a path of the release. By default the release's only `engine/<name>.mjs` with its
+- `module`: the engine's ES module, a relative path of the release (`/`-separated printable ASCII, 128 characters at
+  most, no empty part, none starting with `.`, no `\`). By default the release's only `engine/<name>.mjs` with its
   `engine/<name>.wasm` beside it (a worker's module has none): the code never names the engine's files.
 - `args`: the game's command line (`callMain`), each `/^[-+]?[A-Za-z0-9_.=]{1,64}$/`, 32 at most.
-- `languages.<code>`, for the language the player chose on the home card among the version's `languages`: `env`, the
-  engine's environment variables (`Module.ENV`, before `callMain`; names `/^[A-Z_][A-Z0-9_]{0,31}$/`, printable ASCII
-  values of 64 characters at most); `ini`, settings put in the profile's ini files before the start (`{ <file relative
-  to the game root>: { <section>: { <key>: <value> } } }`, printable ASCII, no `]` in a section, no `=` in a key).
+- `languages.<code>`, for the language the player chose on the home card among the version's `languages` (16
+  languages at most): `env`, the engine's environment variables (set in `Module.ENV` by a `preRun` hook, before the
+  runtime starts: its C library copies the environment once, as its constructors run; 32 at most, names
+  `/^[A-Z_][A-Z0-9_]{0,31}$/`, printable ASCII values of 64 characters at most); `ini`, settings put in the profile's
+  ini files before the start (`{ <file>: { <section>: { <key>: <value> } } }`, printable ASCII: 8 files, 16 sections a
+  file and 1 to 32 keys a section at most). A file is a path relative to the game root, with `module`'s rules; a
+  section 1 to 64 characters, no `[` or `]`; a key 1 to 64 characters, no `=`, `[` or `]`, not starting with `;` or
+  `#`; a value 128 characters at most. Sections, keys and values have no space at either end (an ini reader trims
+  them). The schema's patterns say the same; `tests/re3.test.js` checks they agree.
 - `solo`: reserved.
 
 ### Engine release
@@ -565,7 +571,9 @@ The release's `gamefiles/` is the top layer of the version's game tree: over `ve
 replacing same-named ones whatever their case, as a version's replace the base's. The catalog puts it in the manifest's
 `overlays` (`gameLayers`, `src/host/game-files.js`), from the server's engines folder (`--engines-dir`): `/api/tree`,
 `/game/`, `/gamez/` and the learned reads (`/api/prefetch`) see one tree. A release not installed adds no layer. The
-other runtimes' trees are unchanged.
+server lists a tree once, and again when the catalog is read (`/api/manifests`) or when a folder laid over it changed
+(its inode, change or modification time: a release installed, removed or rebuilt while the server runs), so
+`/api/tree` follows the release as `/game/` does. The other runtimes' trees are unchanged.
 
 ### Server routes
 
@@ -591,16 +599,22 @@ same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame r
   tree mounted there as streamed files (`src/ports/goldsrc/files.js`: the learned startup set loaded first, the rest
   in the background, misses fetched synchronously, the reads reported to `/api/prefetch`), with read-ahead: after a
   read that waited, the file's next 16 missing pieces (1 MiB) load in the background, one such load per file (a
-  stream's next bytes are there when the engine reads them). Then the profile put back, the language's `ini` settings
-  and `env`, `chdir('/game')`, `callMain(re3.args)`.
+  stream's next bytes are there when the engine reads them). The language's `env` is set by the Module's `preRun`
+  hook, before the runtime starts. Then the profile put back, the `ini` settings, `chdir('/game')`,
+  `callMain(re3.args)`.
 - **Frames.** Counted by `Module.orthrosFrame`: the header's frame rate; the loading screen hides after the first ten.
 - **Saves.** Every 10 s in this browser, every minute on the account when changed, when the page is hidden, when
-  leaving by "Games".
+  leaving by "Games". At the game's end, an error or "Games", a save in flight is waited for and a new snapshot taken
+  (the engine may have written since that save's).
 - **The game ends** (`callMain`'s promise settles, or `onExit`): the profile saved here and on the account, then the
-  loading screen says "The game has ended", with "Restart the game" (the page reloaded: an engine that ended cannot
-  start again in it) and "Back to the games".
+  loading screen says "The game has ended", with "Restart the game" (the page reloaded once that save is done: an
+  engine that ended cannot start again in it) and "Back to the games".
 - **Errors.** An abort or a failed start: the loading screen with the error and "Restart the game"; an engine that ran
-  has its profile saved first.
+  has its profile saved first (the restart waits for it).
+- **The account's save chosen from the header** while the game runs (a conflict the player settles there): the
+  engine's files are not replaced under it. The running game's are kept aside in IndexedDB, its saves stop, the
+  account's files take the profile's place and the page reloads to start on them. The game over, they wait for its
+  restart.
 
 ### The profile
 
@@ -608,10 +622,17 @@ The engine writes among the mounted game files, so the profile is every regular 
 mounted game file — created by the engine, or a game file it replaced (`src/ports/re3/profile.js`; the game files'
 nodes are skipped, never read). Kept as `{ path relative to the root, data }`: IndexedDB `orthros-port:<game>:<version
 folder>` (`profile` / `files`, `content` for the game files fetched, as GoldSrc's), and on the account without logs and
-screenshots. Put back before `callMain`, each file in place of a game file of the same path. A language's `ini`
-settings are written in the profile's file of that name (found whatever its case), else in a copy of the game's own,
-else in a new file (`src/ports/re3/ini.js`: keys set in place, missing ones added to their section, missing sections
-at the end; the rest kept byte for byte).
+screenshots. Put back before `callMain`, each file in place of a game file of the same path. The mounted game files
+are read-only, except that a game file the engine opens to write anew (`O_TRUNC`, fopen's `"w"`) is replaced by an
+empty file of its own, which joins the profile (`StreamedFiles`' `rewritable` option, off for GoldSrc; opened to be
+changed in place, a game file stays read-only).
+
+Every ini file a language names (in any of `re3.languages`) is set up in the profile before the start, with the
+player's language's settings, if it has any. The file used is the profile's own of that name, found whatever its case.
+Failing that, a copy of the game's own is made, even when it already has these settings: the engine writes its
+settings there. Failing that, a new file is created in the folders that are there, whatever their case.
+`src/ports/re3/ini.js` sets keys in place, adds missing ones to their section and missing sections at the end, and
+keeps the rest byte for byte. The same settings set again change nothing.
 
 ### State (2026-10-19)
 

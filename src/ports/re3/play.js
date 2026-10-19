@@ -12,7 +12,7 @@ import { createShell } from '../../host/web/shell.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, storageKeys, removeStorage } from '../goldsrc/storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, PIECE } from '../goldsrc/files.js';
-import { profileSnapshot, restoreProfile, setProfileIni, toCloud } from './profile.js';
+import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
 
 const STRINGS = {
   en: {
@@ -99,7 +99,7 @@ function soundHint() {
   shell?.sound.classList.toggle('hidden', !blocked);
 }
 setInterval(soundHint, 1000);
-let engine, FS = null, db, timer, cloudTimer, saving, stopped = false, profileReady = false, finalSave = null;
+let engine, FS = null, db, timer, cloudTimer, saving, stopped = false, profileReady = false, finalSave = null, reloadWhenSaved = false;
 /** The nodes of the mounted game files: never part of the profile. */
 let gameNodes = new Set();
 function log(line) { logs.push(String(line)); if (logs.length > 500) logs.shift(); shell?.log(String(line)); }
@@ -165,8 +165,8 @@ const fail = (error) => {
   report('crash', { message: String(error?.message ?? error).slice(0, 300), crashed, log: logs.slice(-30).map((l) => l.slice(0, 200)) });
   if (timer) clearInterval(timer); if (cloudTimer) clearInterval(cloudTimer);
   if (!shell) return;
-  showEnd(S.failed + (error?.message ?? error), true, [{ label: S.restart, primary: true, onclick: () => location.reload() }]);
-  if (crashed) save().then(() => cloud?.push()).catch((e) => log('Profile save failed: ' + e.message));
+  showEnd(S.failed + (error?.message ?? error), true, [{ label: S.restart, primary: true, onclick: restart }]);
+  if (crashed) finalSave = saveAndPush();
 };
 /**
  * The game ended (the player quit it from its menu: main() returned, or the engine exited): the profile saved here and
@@ -179,11 +179,14 @@ function ended(code) {
   session.state = 'ended'; session.exitCode = code ?? 0;
   if (timer) clearInterval(timer); if (cloudTimer) clearInterval(cloudTimer);
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  showEnd(S.ended, false, [{ label: S.restart, primary: true, onclick: () => location.reload() }, { label: S.back, onclick: () => shell.quit() }]);
-  finalSave = (async () => {
-    try { await save(); const sent = cloud ? await cloud.push() : null; return !sent || !['error', 'toobig', 'conflict'].includes(sent.state); }
-    catch (error) { log('Profile save failed: ' + (error?.message ?? error)); return false; }
-  })();
+  showEnd(S.ended, false, [{ label: S.restart, primary: true, onclick: restart }, { label: S.back, onclick: () => shell.quit() }]);
+  finalSave = saveAndPush();
+}
+/** Start again: the page reloaded (an engine that ran cannot start again in it) once the profile's last save is done. */
+async function restart(event) {
+  if (event?.currentTarget) event.currentTarget.disabled = true;
+  await finalSave;
+  location.reload();
 }
 
 // ---------------------------------------------------------------- the game's place: the window under the header
@@ -250,17 +253,29 @@ function frameStats() {
 const name = decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? '');
 const sessionId = crypto.randomUUID().replaceAll('-', '').slice(0, 24);
 let config, files, streamed;
-/** The profile now: the engine's tree once it is in place, else the one kept in this browser. */
-const currentProfile = async () => (profileReady ? profileSnapshot(FS, ROOT, gameNodes) : (await readStorage(db, 'profile', 'files')) ?? []);
+/**
+ * The profile now: the engine's tree once it is in place, else — before, or once saves of it stopped (the page goes, or
+ * the account's copy replaced it) — the one kept in this browser.
+ */
+const currentProfile = async () => (profileReady && !stopped ? profileSnapshot(FS, ROOT, gameNodes) : (await readStorage(db, 'profile', 'files')) ?? []);
 function newCloud(username) {
   return new CloudSave({
-    game: name, user: username, onStatus: (s) => shell.setSave(s),
+    game: name, user: username,
+    // (the account's copy put in place while the game runs: recorded as in step, the page reloaded to start on it)
+    onStatus: (s) => { shell.setSave(s); if (reloadWhenSaved && s.state === 'saved') location.reload(); },
     read: async () => toCloud(await currentProfile()),
-    // (before the engine starts only: the previous profile kept aside in the same store)
+    // The account's files in place of the profile, the previous one kept aside in the same store: before the engine
+    // starts; or once it has, a conflict settled from the header — the engine's files are not replaced under it: no
+    // more saves of them, and the page reloads to start on the account's (the game over: they wait for its restart).
     write: async (list) => {
-      const old = await readStorage(db, 'profile', 'files');
-      if (old?.length) await writeStorage(db, 'profile', `aside-${new Date().toISOString()}`, old);
-      await writeStorage(db, 'profile', 'files', list.map((f) => ({ path: f.path, data: f.data })));
+      const replacing = profileReady && !stopped;
+      if (replacing) stopped = true;
+      try {
+        const old = replacing ? profileSnapshot(FS, ROOT, gameNodes) : await readStorage(db, 'profile', 'files');
+        if (old?.length) await writeStorage(db, 'profile', `aside-${new Date().toISOString()}`, old);
+        await writeStorage(db, 'profile', 'files', list.map((f) => ({ path: f.path, data: f.data })));
+      } catch (error) { if (replacing) stopped = false; throw error; }
+      if (replacing && session.state === 'running') reloadWhenSaved = true;
     },
   });
 }
@@ -286,6 +301,15 @@ async function save() {
   try { await saving; session.lastSaveAt = Date.now(); } finally { saving = null; }
 }
 session.save = save;
+/** The profile saved as it is now — after a save in flight, whose snapshot may be older — then sent to the account. */
+async function saveAndPush() {
+  try {
+    while (saving) await saving.catch(() => {});
+    await save();
+    const sent = cloud ? await cloud.push() : null;
+    return !sent || !['error', 'toobig', 'conflict'].includes(sent.state);
+  } catch (error) { log('Profile save failed: ' + (error?.message ?? error)); return false; }
+}
 
 /** The reads the game made since the last report, to the server's learned list (sendBeacon when the page goes). */
 function reportReads(beacon = false) {
@@ -317,7 +341,7 @@ async function start() {
   session.state = 'starting';
   if (!crossOriginIsolated) throw new Error(S.isolated);
   if (typeof WebAssembly.Suspending !== 'function') throw new Error(S.noJspi);
-  const r = config.re3, base = `/engines/${encodeURIComponent(r.engine)}/`, language = gameLanguage(config);
+  const r = config.re3, base = `/engines/${encodeURIComponent(r.engine)}/`, language = gameLanguage(config), own = r.languages?.[language] ?? {};
   if (!r.module) throw new Error(S.noModule);
   step('engine', 'active'); step('files', ''); step('game', '');
   db = await openStorage(config.saveKey);
@@ -336,13 +360,15 @@ async function start() {
   engine = session.engine = await createEngine({
     canvas: $('canvas'), print: log, printErr: log, locateFile: (file) => dir + file, noInitialRun: true,
     onAbort: (reason) => fail(new Error(String(reason))), onExit: (code) => ended(code), orthrosFrame: onFrame,
+    preRun: [envPreRun(own.env, log)], // (the language's environment, before the runtime copies it)
   });
   step('engine', 'done', `${((performance.now() - t) / 1000).toFixed(1)} s`);
   FS = engine.FS;
   FS.mkdirTree(ROOT);
   // (the game's files: its whole tree now — the release's own over the version's, as the server lists it —, what
-  // earlier sessions read first loaded before the start, the rest later; a stream's next bytes read ahead)
-  streamed = session.files = new StreamedFiles({ name, files, log, readAhead: 16, store: {
+  // earlier sessions read first loaded before the start, the rest later; a stream's next bytes read ahead; a game file
+  // the engine writes anew, a file of the profile in its place)
+  streamed = session.files = new StreamedFiles({ name, files, log, readAhead: 16, rewritable: true, store: {
     read: (key) => readStorage(db, 'content', key), write: (key, bytes) => writeStorage(db, 'content', key, bytes),
     keys: () => storageKeys(db, 'content'), remove: (keys) => removeStorage(db, 'content', keys) } });
   streamed.mount(FS, ROOT);
@@ -361,15 +387,14 @@ async function start() {
   session.startup = { files: first.length, bytes: total, ms: Math.round(performance.now() - t0), ...streamed.stats };
   log(`Startup files: ${JSON.stringify(session.startup)}`);
   step('files', 'done', fmtMB(total));
-  // (the profile in the game's folder, over the game's files it replaced; the language's settings and environment —
-  // re3.languages.<code>, the player's choice of the version's languages)
+  // (the profile in the game's folder, over the game's files it replaced; the language's settings — re3.languages.<code>,
+  // the player's choice of the version's languages —, in every ini file a language names: a game's own copied into the
+  // profile even when it has these settings, for the engine to write in)
   restoreProfile(FS, ROOT, await readStorage(db, 'profile', 'files'), log);
   profileReady = true;
-  const own = r.languages?.[language] ?? {};
-  for (const [file, sections] of Object.entries(own.ini ?? {})) {
+  for (const [file, sections] of languageIni(r.languages, language)) {
     try { log(`${file}: ${setProfileIni(FS, ROOT, file, sections, gameNodes)} (${language})`); } catch (error) { log(`${file}: not set (${error.message})`); }
   }
-  for (const [key, value] of Object.entries(own.env ?? {})) { if (engine.ENV) engine.ENV[key] = value; else log(`${key}: the engine exposes no environment`); }
   FS.chdir(ROOT);
   step('game', 'active', '', 0.3); status(S.starting);
   streamed.start(); // (the reads are learned from the engine's start)
@@ -392,13 +417,9 @@ async function start() {
  * asked to quit: the page goes.)
  */
 async function quit() {
-  if (session.state === 'ended') return finalSave ?? true;
+  if (session.state === 'ended' || session.state === 'error') return finalSave ?? true;
   if (session.state !== 'running') return true;
-  try {
-    await save();
-    const sent = cloud ? await cloud.push() : null;
-    return !sent || !['error', 'toobig', 'conflict'].includes(sent.state);
-  } catch (error) { log('Quit: ' + (error?.message ?? error)); return false; }
+  return saveAndPush();
 }
 
 async function fullscreen() {

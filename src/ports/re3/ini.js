@@ -21,15 +21,16 @@ export const textToBytes = (text) => Uint8Array.from(text, (c) => c.charCodeAt(0
 /**
  * `text` with each key of `sections` ({ <section>: { <key>: <value> } }) set: in place where the section has it (in
  * every section of that name, every line of that key: whichever one the engine reads), else added after the section's
- * last line, a missing section added at the end. Section and key names compare without case, as ini readers do.
- * Nothing to change: `text` itself.
+ * last line, a missing section added at the end. Section and key names compare without case, as ini readers do; a
+ * value is written and compared without the spaces around it, as they read it (the line's own spacing kept). Nothing to
+ * change: `text` itself — the same settings set again change nothing.
  */
 export function setIni(text, sections) {
   const bom = text.startsWith(BOM) ? BOM : '', body = text.slice(bom.length);
   const lines = body.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   const eol = /\r\n/.test(body) ? '\r\n' : '\n';
   const wanted = new Map(Object.entries(sections).map(([name, keys]) => [name.toLowerCase(),
-    { name, last: -1, keys: new Map(Object.entries(keys).map(([key, value]) => [key.toLowerCase(), { key, value, found: false }])) }]));
+    { name, last: -1, keys: new Map(Object.entries(keys).map(([key, value]) => [key.toLowerCase(), { key, value: String(value).trim(), found: false }])) }]));
   let current = null;
   lines.forEach((line, i) => {
     const content = line.replace(/\r?\n$/, ''), end = line.slice(content.length);

@@ -11,7 +11,7 @@ import { gameLayers } from '../src/host/game-files.js';
 import { re3Problem } from '../src/host/re3.js';
 import { createServer } from '../src/host/server.js';
 import { setIni, bytesToText, textToBytes } from '../src/ports/re3/ini.js';
-import { profileSnapshot, restoreProfile, setProfileIni, toCloud, findPath } from '../src/ports/re3/profile.js';
+import { profileSnapshot, restoreProfile, setProfileIni, toCloud, findPath, casePath, languageIni, envPreRun } from '../src/ports/re3/profile.js';
 import { StreamedFiles } from '../src/ports/goldsrc/files.js';
 
 const ENGINE = 'eng-test-1';
@@ -82,6 +82,8 @@ test('an re3 version needs no executable and is checked by its own rules', (t) =
     [(v) => { v.re3.languages = { fr: { ini: { 'game.ini': { General: { 'Lang=uage': '1' } } } } }; }, /re3.languages/],
     [(v) => { v.re3.languages = { fr: { ini: { 'game.ini': { General: { ';Language': '1' } } } } }; }, /re3.languages/],
     [(v) => { v.re3.languages = { fr: { ini: { 'game.ini': { General: { Language: '1\n[Other]' } } } } }; }, /re3.languages/],
+    [(v) => { v.re3.languages = { fr: { ini: { 'game.ini': { General: { Language: ' 1' } } } } }; }, /re3.languages/],
+    [(v) => { v.re3.languages = { fr: { ini: { 'game.ini': { General: { Language: '1 ' } } } } }; }, /re3.languages/],
     [(v) => { v.re3.languages = { fr: { ini: { 'game.ini': { General: {} } } } }; }, /re3.languages/],
     [(v) => { v.re3.solo = 'yes'; }, /re3.solo/],
     [(v) => { v.requires = [{ game: 'win', version: 'win-1', mount: 'C:\\Win' }]; }, /re3 n'a pas de requires/],
@@ -92,6 +94,28 @@ test('an re3 version needs no executable and is checked by its own rules', (t) =
   }
   editManifest(gm, (spec) => { spec.versions[0] = { id: 'gm-web', dir: 'web', version: 'Web', re3: re3() }; spec.defaults.overlays = ['/etc']; });
   assert.throws(() => loadGameCatalog(games, null, { enginesDir: engines }), /defaults.overlays est réservé/);
+});
+
+test('the manifest schema\'s re3 rules are the catalog\'s: what one accepts, the other does', () => {
+  const schema = JSON.parse(fs.readFileSync(new URL('../docs/game-manifest.schema.json', import.meta.url), 'utf8'));
+  const r = schema.properties.versions.items.properties.re3.properties, ini = r.languages.additionalProperties.properties.ini;
+  const rule = (o) => (value) => value.length <= o.maxLength && new RegExp(o.pattern).test(value);
+  const long = (n) => 'x'.repeat(n);
+  const slots = {
+    module: [rule(r.module), (v) => ({ module: v }), ['engine/main.mjs', 'a.mjs', 'e ngine/m.mjs', '../../x.mjs', '/abs.mjs', './m.mjs', 'engine/.x.mjs', '.mjs', 'a\\b.mjs', 'engine//m.mjs', 'engine/main.js', `${long(124)}.mjs`, `${long(125)}.mjs`, 'm\n.mjs', '\u00e9.mjs']],
+    file: [rule(ini.propertyNames), (v) => ({ languages: { fr: { ini: { [v]: { S: { k: 'v' } } } } } }), ['game.ini', 'sub/a.ini', 'a b.ini', '../game.ini', '/game.ini', '.hidden', 'sub/.x', 'a//b', 'a/', 'a\\b', long(128), long(129), 'a\tb', '\u00e9']],
+    section: [rule(ini.additionalProperties.propertyNames), (v) => ({ languages: { fr: { ini: { 'a.ini': { [v]: { k: 'v' } } } } } }), ['General', 'Main Section', 'a=b', ';c', '#c', 'Gen]eral', '[A', ' A', 'A ', '', long(64), long(65), 'a\tb', '\u00e9']],
+    key: [rule(ini.additionalProperties.additionalProperties.propertyNames), (v) => ({ languages: { fr: { ini: { 'a.ini': { S: { [v]: 'v' } } } } } }), ['Language', 'Some key', 'a#b', 'a;b', 'Lang=uage', ';Language', '#k', ' k', 'k ', 'k[', 'k]', '', long(64), long(65), '\u00e9']],
+    value: [rule(ini.additionalProperties.additionalProperties.additionalProperties), (v) => ({ languages: { fr: { ini: { 'a.ini': { S: { k: v } } } } } }), ['', '1', 'v w', 'a=b', '[x]', ' 1', '1 ', '1\n[Other]', long(128), long(129), '\u00e9']],
+  };
+  for (const [slot, [schemaOk, entry, samples]] of Object.entries(slots)) {
+    let accepted = 0;
+    for (const v of samples) {
+      const ok = re3Problem({ engine: ENGINE, ...entry(v) }) === null; accepted += ok;
+      assert.equal(schemaOk(v), ok, `${slot} ${JSON.stringify(v)}: catalog ${ok ? 'accepts' : 'refuses'} it`);
+    }
+    assert.ok(accepted > 1 && accepted < samples.length, slot);
+  }
 });
 
 test('the home lists an re3 port with its page and single player; available once its engine release is installed', async (t) => {
@@ -131,6 +155,8 @@ test('engine files are served for the releases an re3 manifest names, immutable'
   assert.equal((await fetch(`${base}/engines/other-1/engine/main.mjs`)).status, 404, 'a release no manifest names');
   // (only a version whose runtime is re3 names one by its re3 entry)
   editManifest(path.join(games, 'win'), (spec) => { spec.versions[0].re3 = { engine: 'other-1' }; });
+  await fetch(`${base}/api/manifests`); // (the catalog read again: the Win32 version names it in an re3 entry)
+  assert.equal((await (await fetch(`${base}/api/manifest/win-1`)).json()).re3.engine, 'other-1');
   assert.equal((await fetch(`${base}/engines/other-1/engine/main.mjs`)).status, 404);
   editManifest(path.join(games, 'gm'), (spec) => { spec.versions[0].re3.engine = 'other-1'; });
   await fetch(`${base}/api/manifests`); // (the catalog read again)
@@ -155,11 +181,25 @@ test('the release\'s own game files lie over the version\'s, whatever their case
   assert.deepEqual(await (await fetch(prefetch)).json(), [['TEXT/american.gxt', 0, 1, 3], ['models/extra.txd', 0, 1, 12]]);
   // (a GoldSrc port on the same release gets none of them)
   assert.equal((await fetch(`${base}/game/gs-1/TEXT/american.gxt`)).status, 404);
-  // (the release not installed: no layer, the game's own file)
+  // (the release not installed: no layer, the game's own file — the tree listed again by itself, as /game/ resolves:
+  // the page reads both, the home page not loaded since)
   fs.rmSync(path.join(release, 'gamefiles'), { recursive: true });
-  await fetch(`${base}/api/manifests`); // (the trees listed again)
   assert.equal(await (await fetch(`${base}/game/gm-web/text/american.gxt`)).text(), 'base text');
-  assert.equal((await (await fetch(`${base}/api/tree/gm-web`)).json()).dirs.models, undefined);
+  let again = await (await fetch(`${base}/api/tree/gm-web`)).json();
+  assert.equal(again.dirs.models, undefined);
+  assert.equal(again.dirs.Text.files['AMERICAN.GXT'].size, 'base text'.length);
+  const learned = async () => (await (await fetch(prefetch)).json()).map((r) => r[0]);
+  assert.equal((await fetch(prefetch, { method: 'POST', body: JSON.stringify({ session: 's2', reads: [['models/new.txd', 0, 3, 1]] }) })).status, 204);
+  assert.equal((await learned()).includes('models/new.txd'), false, 'not a file of the game now');
+  // (installed again, its own files changed: the tree follows without the home page either, the reads of its files learned)
+  write(path.join(release, 'gamefiles', 'TEXT', 'american.gxt'), 'engine text 2');
+  write(path.join(release, 'gamefiles', 'models', 'new.txd'), 'new');
+  again = await (await fetch(`${base}/api/tree/gm-web`)).json();
+  assert.equal(again.dirs.TEXT.files['american.gxt'].size, 'engine text 2'.length);
+  assert.deepEqual(Object.keys(again.dirs.models.files), ['new.txd']);
+  assert.equal(await (await fetch(`${base}/gamez/gm-web/TEXT/american.gxt?r=0-13`)).text(), 'engine text 2');
+  assert.equal((await fetch(prefetch, { method: 'POST', body: JSON.stringify({ session: 's3', reads: [['models/new.txd', 0, 3, 1]] }) })).status, 204);
+  assert.equal((await learned()).includes('models/new.txd'), true);
 });
 
 // ---------------------------------------------------------------- a language's settings in the engine's ini files
@@ -178,6 +218,14 @@ test('the INI editor sets keys in place and keeps everything else byte for byte'
   assert.equal(setIni('[A]\nk=1\n[B]\nk=1\n[a]\n  K\t=\t1\n', { A: { k: '2' } }), '[A]\nk=2\n[B]\nk=1\n[a]\n  K\t=\t2\n');
   // (comments and look-alikes are not keys; a value may hold '=')
   assert.equal(setIni('[A]\n;k=1\n#k=1\nk = a=b\n', { A: { k: 'c' } }), '[A]\n;k=1\n#k=1\nk = c\n');
+  // (the same settings set again: nothing changes — a value's spaces around it are not the line's)
+  for (const [before, sections] of [[text, { General: { Language: '3' } }], ['[General]\nLanguage=0\n', { General: { Language: ' 1' } }], ['[A]\nk =  v  \n', { A: { k: 'w ' } }], ['', { S: { k: ' v ' } }]]) {
+    const once = setIni(before, sections);
+    assert.notEqual(once, before);
+    assert.equal(setIni(once, sections), once, JSON.stringify(once));
+  }
+  assert.equal(setIni('[General]\nLanguage=0\n', { General: { Language: ' 1' } }), '[General]\nLanguage=1\n');
+  assert.equal(setIni('[A]\nk =  v  \n', { A: { k: 'v' } }), '[A]\nk =  v  \n');
   // (a byte-order mark kept; the file's other bytes, whatever they are, too)
   const bytes = Uint8Array.from([0xef, 0xbb, 0xbf, ...Buffer.from('[A]\nk=1\nname=\xe9t\xe9\n', 'latin1')]);
   const out = textToBytes(setIni(bytesToText(bytes), { a: { K: '2' } }));
@@ -202,6 +250,15 @@ function memFS() {
     mkdirTree(p) { let n = top; for (const part of split(p)) { let next = n.children?.get(part); if (!next) { if (!n.children) throw new Error(`ENOTDIR ${p}`); n.children.set(part, next = { mode: DIR | 0o755, children: new Map() }); } n = next; } },
     // (a streamed game file's node, ../src/ports/goldsrc/files.js mount())
     createFile(dir, name) { const node = { mode: FILE | 0o444, stream_ops: {} }; get(dir).children.set(name, node); return node; },
+    // (open's checks: permissions, O_CREAT 0o100, O_EXCL 0o200, O_TRUNC 0o1000; fopen's modes as strings)
+    open(p, flags) {
+      const f = typeof flags === 'string' ? { r: 0, 'r+': 2, w: 0o1101, 'w+': 0o1102, wx: 0o1301, a: 0o2101 }[flags] : flags;
+      const n = get(p);
+      if (n && (f & 0o300) === 0o300) throw new FS.ErrnoError('EEXIST');
+      if (n && (f & 3) && !(n.mode & 0o222)) throw new FS.ErrnoError('EACCES');
+      if (!n) { if (!(f & 0o100)) throw new FS.ErrnoError('ENOENT'); FS.writeFile(p, new Uint8Array(0)); } else if (f & 0o1000) n.data = new Uint8Array(0);
+      return { node: get(p) };
+    },
     ErrnoError: class extends Error {},
   };
   return FS;
@@ -242,15 +299,80 @@ test('the streamed game files mounted in the game\'s folder are never part of th
   assert.deepEqual(fetched, []);
 });
 
+test('a game file the engine writes anew becomes a file of the profile (rewritable streamed files); in place, read-only', () => {
+  const FS = memFS(), fetched = [];
+  const files = [{ path: 'settings.ini', size: 4, mtime: 1 }, { path: 'data/x.dat', size: 4, mtime: 1 }, { path: 'data/y.dat', size: 4, mtime: 1 }, { path: 'data/z.dat', size: 4, mtime: 1 }];
+  const sf = new StreamedFiles({ name: 'gm-web', files, store: null, rewritable: true, syncGet: (url) => { fetched.push(url); throw new Error('no network'); } });
+  FS.mkdirTree('/game'); sf.mount(FS, '/game');
+  const game = new Set([...sf.files.values()].map((f) => f.node)), isGame = (p) => game.has(FS.lookupPath(p).node);
+  FS.open('/game/settings.ini', 0o1101); // (O_WRONLY | O_CREAT | O_TRUNC: fopen's "w")
+  FS.open('/game/data/z.dat', 'w+');
+  assert.equal(isGame('/game/settings.ini'), false); assert.equal(isGame('/game/data/z.dat'), false);
+  assert.equal(FS.readFile('/game/settings.ini').length, 0);
+  assert.throws(() => FS.open('/game/data/x.dat', 2), /EACCES/, 'read-write: changed in place');
+  assert.throws(() => FS.open('/game/data/x.dat', 'a'), /EACCES/);
+  assert.throws(() => FS.open('/game/data/x.dat', 0o1301), /EEXIST/, 'O_EXCL: there');
+  assert.throws(() => FS.open('/game/data/x.dat', 'wx'), /EEXIST/);
+  FS.open('/game/data/y.dat', 0);
+  assert.equal(isGame('/game/data/x.dat'), true); assert.equal(isGame('/game/data/y.dat'), true);
+  assert.deepEqual(profileSnapshot(FS, '/game', game).map((f) => f.path).sort(), ['data/z.dat', 'settings.ini']);
+  assert.deepEqual(fetched, [], 'a file written anew is never fetched');
+  // (by default — GoldSrc's — the game files stay read-only)
+  const FS2 = memFS(); FS2.mkdirTree('/game'); new StreamedFiles({ name: 'gs-1', files, store: null }).mount(FS2, '/game');
+  assert.throws(() => FS2.open('/game/settings.ini', 0o1101), /EACCES/);
+});
+
 test('a language\'s settings go into the profile\'s ini file, the game\'s own copied first, found whatever its case', () => {
   const FS = memFS(), game = new Set();
   FS.mkdirTree('/game'); FS.writeFile('/game/Settings.INI', text('; game\n[General]\nLanguage=0\nWidth=640\n')); game.add(FS.lookupPath('/game/Settings.INI').node);
   assert.equal(findPath(FS, '/game', 'settings.ini'), 'Settings.INI');
+  // (the game's own file, its settings already these: still copied into the profile — a game file is read-only, and
+  // the engine writes its settings there)
+  assert.equal(setProfileIni(FS, '/game', 'settings.ini', { General: { Language: '0' } }, game), 'copied');
+  assert.equal(game.has(FS.lookupPath('/game/Settings.INI').node), false, 'the profile\'s own copy');
+  assert.equal(new TextDecoder().decode(FS.readFile('/game/Settings.INI')), '; game\n[General]\nLanguage=0\nWidth=640\n');
   assert.equal(setProfileIni(FS, '/game', 'settings.ini', { General: { Language: '0' } }, game), 'same');
-  assert.equal(game.has(FS.lookupPath('/game/Settings.INI').node), true, 'unchanged: still the game\'s');
   assert.equal(setProfileIni(FS, '/game', 'settings.ini', { General: { Language: '1' } }, game), 'set');
   assert.equal(new TextDecoder().decode(FS.readFile('/game/Settings.INI')), '; game\n[General]\nLanguage=1\nWidth=640\n');
+  assert.equal(setProfileIni(FS, '/game', 'settings.ini', { General: { Language: '1' } }, game), 'same', 'set again: nothing to write');
   assert.deepEqual(profileSnapshot(FS, '/game', game).map((f) => f.path), ['Settings.INI']);
+  // (a game file a language sets nothing in: copied as it is; a missing one with nothing to set: none made)
+  FS.writeFile('/game/other.ini', text('[A]\nk=1\n')); game.add(FS.lookupPath('/game/other.ini').node);
+  assert.equal(setProfileIni(FS, '/game', 'OTHER.ini', {}, game), 'copied');
+  assert.equal(setProfileIni(FS, '/game', 'none.ini', {}, game), 'same');
+  assert.equal(findPath(FS, '/game', 'none.ini'), null);
   assert.equal(setProfileIni(FS, '/game', 'sub/new.ini', { A: { k: 'v' } }, game), 'created');
   assert.equal(new TextDecoder().decode(FS.readFile('/game/sub/new.ini')), '[A]\nk=v\n');
+  // (a new file in a folder that is there under another case: in that folder, not in a second one of the same name)
+  FS.mkdirTree('/game/UserFiles/Saves');
+  assert.equal(setProfileIni(FS, '/game', 'userfiles/saves/new.ini', { A: { k: 'v' } }, game), 'created');
+  assert.equal(setProfileIni(FS, '/game', 'userfiles/conf/new.ini', { A: { k: 'v' } }, game), 'created');
+  assert.deepEqual(FS.readdir('/game').filter((n) => n.toLowerCase() === 'userfiles'), ['UserFiles']);
+  assert.deepEqual(profileSnapshot(FS, '/game', game).map((f) => f.path).sort(), ['Settings.INI', 'UserFiles/Saves/new.ini', 'UserFiles/conf/new.ini', 'other.ini', 'sub/new.ini'].sort());
+  assert.deepEqual(casePath(FS, '/game', 'userfiles/SAVES/x/y.ini'), { path: 'UserFiles/Saves/x/y.ini', found: false });
+});
+
+test('a language\'s ini settings cover every file the version\'s languages name, the others\' copied as they are', () => {
+  const languages = { en: { ini: { 'game.ini': { General: { Language: '0' } } } }, fr: { env: { A: 'b' }, ini: { 'Game.ini': { General: { Language: '1' } }, 'fr.ini': { S: { k: 'v' } } } }, de: {} };
+  assert.deepEqual(languageIni(languages, 'fr'), [['Game.ini', { General: { Language: '1' } }], ['fr.ini', { S: { k: 'v' } }]]);
+  assert.deepEqual(languageIni(languages, 'en'), [['game.ini', { General: { Language: '0' } }], ['fr.ini', {}]]);
+  assert.deepEqual(languageIni(languages, 'de'), [['game.ini', {}], ['fr.ini', {}]]);
+  assert.deepEqual(languageIni(undefined, 'en'), []);
+});
+
+test('a language\'s environment is set before the engine\'s runtime starts, as its C library copies it then', async () => {
+  // (an Emscripten module's order: the page's overrides, ENV exported, preRun hooks, the constructors — libc's copy of
+  // the environment —, then the Module handed over)
+  const createEngine = async (overrides) => {
+    const M = { ...overrides, ENV: { HOME: '/home/web_user' } };
+    for (const hook of [].concat(M.preRun ?? [])) hook(M);
+    const environ = Object.entries(M.ENV).map(([k, v]) => `${k}=${v}`);
+    return { ...M, getenv: (k) => environ.find((e) => e.startsWith(k + '='))?.slice(k.length + 1) ?? null };
+  };
+  const engine = await createEngine({ noInitialRun: true, preRun: [envPreRun({ GAME_LANG: 'fr', EMPTY: '' })] });
+  assert.equal(engine.getenv('GAME_LANG'), 'fr'); assert.equal(engine.getenv('EMPTY'), ''); assert.equal(engine.getenv('HOME'), '/home/web_user');
+  const told = [];
+  envPreRun({ A: 'b' }, (line) => told.push(line))({});
+  assert.deepEqual(told, ['A: the engine exposes no environment']);
+  envPreRun(undefined)({ ENV: {} });
 });

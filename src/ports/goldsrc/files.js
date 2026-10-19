@@ -13,6 +13,8 @@ export const STARTUP_GAP_MS = 2000;
 /** Native binaries of an installation: useless to the WebAssembly engine, never part of its tree. */
 const NATIVE = /\.(exe|dll|so|dylib)$/i;
 const MAX_RANGE = 32 * 1024 * 1024; // (per request: the server answers 64 MiB at most)
+/** open()'s flags (Emscripten's, musl's values). */
+const O_ACCMODE = 3, O_EXCL = 0o200, O_TRUNC = 0o1000;
 
 /** The files of a tree from /api/tree (dot files and native binaries left out). */
 export function treeFiles(tree) {
@@ -109,9 +111,11 @@ export class StreamedFiles {
    * @param {() => number} [o.now]
    * @param {number} [o.readAhead] after a read fetched synchronously, this many of the file's next missing pieces
    *   loaded in the background (one such load per file at a time: the engine never waits for it); 0, none
+   * @param {boolean} [o.rewritable] a game file the engine opens to write it anew (O_TRUNC: fopen's "w") replaced by a
+   *   file of its own, empty, in its place (mount()); else, and opened to be changed in place, read-only (EACCES)
    */
-  constructor({ name, files, store, syncGet = fetchSync, get = defaultGet, now = () => performance.now(), log = () => {}, readAhead = 0 }) {
-    this.name = name; this.store = store; this.syncGet = syncGet; this.get = get; this.now = now; this.log = log; this.readAhead = readAhead;
+  constructor({ name, files, store, syncGet = fetchSync, get = defaultGet, now = () => performance.now(), log = () => {}, readAhead = 0, rewritable = false }) {
+    this.name = name; this.store = store; this.syncGet = syncGet; this.get = get; this.now = now; this.log = log; this.readAhead = readAhead; this.rewritable = rewritable;
     this.files = new Map(files.map((f) => [f.path, { ...f, key: `${f.path}\n${f.size}\n${f.mtime}`, data: null, pieces: null, local: null, seen: null }]));
     this.t0 = null; // (the engine's start: reads are learned from it)
     this.reads = []; // [path, start, end, t] not reported yet
@@ -153,6 +157,20 @@ export class StreamedFiles {
       own.mmap = (...a) => io(() => { self.ensure(f, 0, f.size); return ops.mmap(...a); });
       own.write = () => { throw new FS.ErrnoError(69); }; // (EROFS: the game files are read-only)
       node.stream_ops = own;
+    }
+    // (rewritable: a game file opened to be written anew — its bytes not wanted, never fetched — unlinked first, an
+    // empty file of the engine's own in its place, as in a game folder the player may write in. Not when the open
+    // must create the file (O_EXCL: it fails as it is), nor to change it in place (read-write, append): read-only.)
+    if (this.rewritable) {
+      const nodes = new Set([...this.files.values()].map((f) => f.node)), open = FS.open;
+      const anew = (flags) => (typeof flags === 'string' ? flags[0] === 'w' && !flags.includes('x') : (flags & O_TRUNC) && (flags & O_ACCMODE) && !(flags & O_EXCL));
+      FS.open = function (at, flags, mode) {
+        if (typeof at === 'string' && anew(flags)) {
+          let node = null; try { node = FS.lookupPath(at, { follow: true }).node; } catch { /* not there */ }
+          if (node && nodes.has(node)) { FS.unlink(at); FS.writeFile(at, new Uint8Array(0)); }
+        }
+        return open.call(this, at, flags, mode);
+      };
     }
   }
 

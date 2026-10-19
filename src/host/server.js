@@ -101,6 +101,19 @@ export function createServer(opts = {}) {
   let manifests = readCatalog();
   const trees = new Map(), treeObjs = new Map();
   const refreshCatalog = () => { manifests = readCatalog(); trees.clear(); treeObjs.clear(); };
+  // (a game's tree, listed once: again when the catalog is read, or when a folder laid over it is not the one it was
+  // listed with — an re3 engine release installed, removed or rebuilt while the server runs: its gamefiles/, whose
+  // files /game/ and /gamez/ resolve at each request)
+  const overlayStamp = (man) => (man.overlays ?? []).map((dir) => { try { const s = fs.statSync(dir); return `${s.ino}:${s.ctimeMs}:${s.mtimeMs}`; } catch { return '-'; } }).join('|');
+  const gameTree = (id, man) => {
+    const stamp = overlayStamp(man), cached = treeObjs.get(id);
+    if (cached?.stamp === stamp) return cached.tree;
+    const tree = listGameTree(man);
+    treeObjs.set(id, { stamp, tree }); trees.delete(id);
+    return tree;
+  };
+  /** The tree as /api/tree sends it. */
+  const gameTreeJson = (id, man) => { const tree = gameTree(id, man); if (!trees.has(id)) trees.set(id, JSON.stringify(tree)); return trees.get(id); };
   const getManifest = (id) => { if (!manifests.has(id) && !manifestDir) refreshCatalog(); return manifests.get(id); };
   const coverFile = (man) => man.coverPath ?? (man.cover && resolveGameFile(man, man.cover));
   const runtimeOf = (man) => man.runtime ?? 'win32';
@@ -598,7 +611,7 @@ export function createServer(opts = {}) {
         const sizeOf = (t) => Object.values(t.files).reduce((a, f) => a + f.size, 0) + Object.values(t.dirs).reduce((a, d) => a + sizeOf(d), 0);
         const out = [...manifests].map(([name, m]) => {
           let bytes = null;
-          try { if (fs.existsSync(m.folder) && (!m.baseFolder || fs.existsSync(m.baseFolder))) { if (!treeObjs.has(name)) treeObjs.set(name, listGameTree(m)); bytes = sizeOf(treeObjs.get(name)); } } catch { /* folder missing */ }
+          try { if (fs.existsSync(m.folder) && (!m.baseFolder || fs.existsSync(m.baseFolder))) bytes = sizeOf(gameTree(name, m)); } catch { /* folder missing */ }
           const runtime = runtimeOf(m), port = runtime !== 'win32';
           return { name, title: m.name ?? name, gameId: m.gameId ?? name, version: m.version ?? null,
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name), runtime, exe: port ? null : m.exe,
@@ -628,7 +641,7 @@ export function createServer(opts = {}) {
         return;
       }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
-      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); if (!trees.has(m[1])) { if (!treeObjs.has(m[1])) treeObjs.set(m[1], listGameTree(man)); trees.set(m[1], JSON.stringify(treeObjs.get(m[1]))); } return send(res, 200, trees.get(m[1]), { 'Content-Type': 'application/json' }); }
+      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, gameTreeJson(m[1], man), { 'Content-Type': 'application/json' }); }
       // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd or gzip
       // when that saves enough (Content-Encoding: the browser decodes before the page sees them), else sent as they are
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
@@ -745,8 +758,7 @@ export function createServer(opts = {}) {
             if (size > 2 * 1024 * 1024) return send(res, 413, 'too large');
             let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
             if (typeof rec?.session !== 'string' || !rec.session || rec.session.length > 40 || !Array.isArray(rec.reads)) return send(res, 400, 'bad report');
-            if (!treeObjs.has(m[1])) treeObjs.set(m[1], listGameTree(man));
-            const tree = treeObjs.get(m[1]);
+            const tree = gameTree(m[1], man);
             for (const r of rec.reads.slice(0, 50000)) {
               if (!Array.isArray(r) || typeof r[0] !== 'string' || r[0].length > 512) continue;
               const [rel, start, end, t] = r, size2 = treeFileSize(tree, rel);

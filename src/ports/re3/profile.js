@@ -46,34 +46,70 @@ export function restoreProfile(FS, root, files, log = () => {}) {
   }
 }
 
-/** The path under `root` that `rel` names, whatever the case of its parts (the engine's own way: it lists folders), or null. */
-export function findPath(FS, root, rel) {
-  let dir = root, out = '';
-  for (const part of rel.split('/')) {
-    let names; try { names = FS.readdir(dir); } catch { return null; }
-    const hit = names.find((n) => n === part) ?? names.find((n) => n.toLowerCase() === part.toLowerCase());
-    if (!hit) return null;
-    dir = `${dir}/${hit}`; out += (out ? '/' : '') + hit;
-  }
-  return out;
+/**
+ * `rel` under `root` spelled as what is there, whatever the case of its parts (the engine's own way: it lists folders):
+ * `found`, the whole path is there; else its parts from the first missing one on as `rel` has them.
+ */
+export function casePath(FS, root, rel) {
+  let dir = root, found = true;
+  const parts = rel.split('/').map((part) => {
+    let hit = null;
+    if (found) {
+      let names = null; try { names = FS.readdir(dir); } catch { /* not a folder */ }
+      hit = names && (names.find((n) => n === part) ?? names.find((n) => n.toLowerCase() === part.toLowerCase()));
+      if (!hit) found = false;
+    }
+    dir = `${dir}/${hit ?? part}`;
+    return hit ?? part;
+  });
+  return { path: parts.join('/'), found };
 }
+
+/** The path under `root` that `rel` names, whatever the case of its parts, or null. */
+export const findPath = (FS, root, rel) => { const p = casePath(FS, root, rel); return p.found ? p.path : null; };
 
 /**
  * A language's settings put in the ini file `rel` of the profile (setIni: the rest of the file kept as it is): the
- * file the profile has under that name whatever its case, else the game's own (then the profile's copy of it), else a
- * new one. Returns what was done: 'same', 'set' or 'created'.
+ * file the profile has under that name whatever its case; else the game's own, copied into the profile even when its
+ * settings are already these — a mounted game file is read-only, and the engine writes its settings there; else a new
+ * one, in the folders there whatever their case. Returns what was done: 'same', 'set', 'copied' or 'created'.
  */
 export function setProfileIni(FS, root, rel, sections, game) {
-  const found = findPath(FS, root, rel), at = `${root}/${found ?? rel}`, node = found ? nodeAt(FS, at) : null;
+  const { path: p, found } = casePath(FS, root, rel), at = `${root}/${p}`, node = found ? nodeAt(FS, at) : null;
   if (node && !FS.isFile(node.mode)) return 'same';
   const before = node ? bytesToText(FS.readFile(at)) : '', after = setIni(before, sections);
-  if (after === before && node) return 'same';
-  if (!node && !after) return 'same';
-  if (node && game.has(node)) FS.unlink(at); // (a game file: the profile's own copy from now on)
-  if (!node) FS.mkdirTree(at.slice(0, at.lastIndexOf('/')));
+  if (!node) {
+    if (!after) return 'same';
+    FS.mkdirTree(at.slice(0, at.lastIndexOf('/')));
+    FS.writeFile(at, textToBytes(after));
+    return 'created';
+  }
+  if (game.has(node)) FS.unlink(at); // (a game file: the profile's own copy from now on)
+  else if (after === before) return 'same';
   FS.writeFile(at, textToBytes(after));
-  return node ? 'set' : 'created';
+  return after === before ? 'copied' : 'set';
 }
+
+/**
+ * The ini settings a game language puts in the profile ([file, sections]): for every file one of the version's
+ * languages names (re3.languages.<code>.ini, file names without case), this language's sections, else none — the
+ * game's own file then still copied into the profile (setProfileIni), whichever language the player chose.
+ */
+export function languageIni(languages, language) {
+  const out = new Map();
+  for (const own of Object.values(languages ?? {})) for (const file of Object.keys(own?.ini ?? {})) if (!out.has(file.toLowerCase())) out.set(file.toLowerCase(), [file, {}]);
+  for (const [file, sections] of Object.entries(languages?.[language]?.ini ?? {})) out.set(file.toLowerCase(), [file, sections]);
+  return [...out.values()];
+}
+
+/**
+ * A language's environment variables (re3.languages.<code>.env) as the Module's preRun hook: set in its ENV before the
+ * runtime starts — the C library copies the environment once, as its constructors run, before the Module is handed
+ * over: set later, getenv() never sees it.
+ */
+export const envPreRun = (env, log = () => {}) => (M) => {
+  for (const [key, value] of Object.entries(env ?? {})) { if (M.ENV) M.ENV[key] = value; else log(`${key}: the engine exposes no environment`); }
+};
 
 // What the account keeps of a profile (src/host/web/cloud-sync.js): its files less what the engine makes again —
 // logs and screenshots.
