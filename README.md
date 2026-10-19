@@ -6,7 +6,9 @@ Second type de jeu, sur le même accueil et le même serveur : les **portages na
 manifeste). Les fichiers d'origine du jeu y tournent sur un moteur GoldSrc tiers épinglé, compilé en WebAssembly, dans
 sa propre page (`src/ports/goldsrc/`), sans passer par l'émulateur ; le multijoueur passe par un serveur dédié natif
 (Half-Life, Counter-Strike 1.6). Moteurs installés hors Git dans `data_engines/` : voir
-[docs/browser-ports.md](docs/browser-ports.md).
+[docs/browser-ports.md](docs/browser-ports.md). Même principe pour les portages re3 (`"runtime": "re3"`, un objet `re3`
+à la place de `exe`) : un moteur décompilé de la famille re3 (reVC pour GTA Vice City) compilé en WebAssembly, en solo,
+dans sa page `src/ports/re3/`.
 
 - `CLAUDE.md` — contraintes, architecture, conventions.
 - `DECISIONS.md` — journal des décisions d'architecture.
