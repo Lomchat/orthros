@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { StreamedFiles, learnedPlan, treeFiles, languageFiles, BLOCK, PIECE, STARTUP_GAP_MS } from '../src/ports/goldsrc/files.js';
+import { StreamedFiles, learnedPlan, treeFiles, languageFiles, BLOCK, PIECE, STARTUP_GAP_MS, QUIET_MS } from '../src/ports/goldsrc/files.js';
 import { BLOCK as SERVER_BLOCK, CHUNK as SERVER_PIECE } from '../src/vfs/http-backend.js';
 import { createServer } from '../src/host/server.js';
 
@@ -25,21 +25,27 @@ function fakeFS() {
   };
 }
 /** Files over a fake server: `content` by path; requests counted; a store in a Map; `readAhead`: the option's. */
-function setup(content, { local = new Map(), readAhead = undefined } = {}) {
+function setup(content, { local = new Map(), readAhead = undefined, held = false, ...options } = {}) {
   const files = [...content].map(([p, data]) => ({ path: p, size: data.length, mtime: 5 }));
   const requests = [], range = (url) => { const u = new URL(url, 'http://x'), [s, e] = u.searchParams.get('r').split('-').map(Number); return [decodeURIComponent(u.pathname.split('/').slice(3).join('/')), s, e]; };
-  const writes = [], removed = [];
+  const writes = [], removed = [], pending = [], backgrounds = [];
   let clock = 1000;
   const sf = new StreamedFiles({
-    name: 'gs', files, now: () => clock, readAhead,
+    name: 'gs', files, now: () => clock, readAhead, ...options,
     syncGet: (url, size) => { const [p, s, e] = range(url); requests.push(['sync', p, s, e]); assert.equal(size, e - s); return content.get(p).slice(s, e); },
-    get: async (url) => { const [p, s, e] = range(url); requests.push(['async', p, s, e]); return content.get(p).slice(s, e); },
+    // (held: each answer waits for release() — a slow link)
+    get: async (url) => {
+      const [p, s, e] = range(url); requests.push(['async', p, s, e]); backgrounds.push(url.includes('&p=1'));
+      if (held) await new Promise((r) => pending.push(r));
+      return content.get(p).slice(s, e);
+    },
     store: { read: async (k) => local.get(k), write: async (k, v) => { writes.push(k); local.set(k, v); }, keys: async () => [...local.keys()], remove: async (ks) => { removed.push(...ks); } },
   });
   const FS = fakeFS(); sf.mount(FS, '/rodir');
   const node = (p) => FS.nodes.get(`/rodir/${p.split('/').slice(0, -1).join('/')}`.replace(/\/$/, '') + '/' + p.split('/').at(-1)) ?? FS.nodes.get(`/rodir/${p}`);
   const read = (p, position, length) => { const buf = new Uint8Array(length); const n = node(p).stream_ops.read({ node: node(p) }, buf, 0, length, position); return buf.subarray(0, n); };
-  return { sf, FS, node, read, requests, writes, removed, local, tick: (ms) => { clock += ms; } };
+  const release = async () => { while (pending.length) pending.shift()(); await new Promise((r) => setTimeout(r, 0)); };
+  return { sf, FS, node, read, requests, backgrounds, writes, removed, local, release, tick: (ms) => { clock += ms; } };
 }
 
 test('the learned-list units are the server\'s', () => {
@@ -166,4 +172,55 @@ test('a language\'s folders are mounted over the ones they translate; without it
   assert.equal(fr.find((f) => at(f) === 'valve/sound/vox/a.wav').path, 'valve_french/sound/vox/a.wav', 'fetched from its own folder');
   const en = languageFiles(files, undefined, ['valve_french']);
   assert.deepEqual(en.map(at).sort(), ['valve/maps/c0a0.bsp', 'valve/sound/vox/a.wav', 'valve/titles.txt']);
+});
+
+test('asyncReads (opt-in): a file node tells its missing bytes and fetches them without a synchronous request', async () => {
+  const big = bytes(3 * BLOCK);
+  const local = new Map([[`stream.adf\n${big.length}\n5\n#2`, big.slice(2 * PIECE, 3 * PIECE)]]);
+  const { sf, node, read, requests, backgrounds } = setup(new Map([['stream.adf', big]]), { local, asyncReads: true, readAhead: 4 });
+  await sf.openLocal(); sf.start();
+  const io = node('stream.adf').orthrosStreamed;
+  assert.equal(io.missing(10, 100), true);
+  await io.ensure(PIECE - 5, 15); // (pieces 0 and 1: the engine's own read, not a background load)
+  assert.deepEqual(requests[0], ['async', 'stream.adf', 0, 2 * PIECE]);
+  assert.equal(io.missing(10, 100), false);
+  assert.deepEqual(read('stream.adf', PIECE - 5, 15), big.subarray(PIECE - 5, PIECE + 10)); // (no synchronous request)
+  assert.ok(!requests.some((r) => r[0] === 'sync'));
+  await sf.files.get('stream.adf').ahead; // (then read ahead: pieces 2 to 5, the kept one from the browser's copy)
+  assert.deepEqual(requests.slice(1), [['async', 'stream.adf', 3 * PIECE, 6 * PIECE]]);
+  assert.deepEqual(backgrounds, [false, true]);
+  assert.equal(sf.stats.waits, 1);
+  // (off by default: no hook on the nodes)
+  assert.equal(setup(new Map([['x', bytes(10)]])).node('x').orthrosStreamed, undefined);
+});
+
+test('a piece another load is fetching is waited for, not fetched twice', async () => {
+  const big = bytes(2 * BLOCK);
+  const { sf, node, requests, release } = setup(new Map([['f.bin', big]]), { asyncReads: true, held: true });
+  const f = sf.files.get('f.bin');
+  const background = sf.load(f, [0, 1, 2, 3]);
+  await new Promise((r) => setTimeout(r, 0));
+  const wait = node('f.bin').orthrosStreamed.ensure(PIECE + 1, 10);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(requests, [['async', 'f.bin', 0, 4 * PIECE]]);
+  await release(); await Promise.all([background, wait]);
+  assert.equal(requests.length, 1);
+  assert.equal(node('f.bin').orthrosStreamed.missing(PIECE + 1, 10), false);
+});
+
+test('demandFirst (opt-in): background loads wait while the engine waits for bytes, in requests of backgroundRange', async () => {
+  const a = bytes(BLOCK), b = bytes(BLOCK, 9);
+  const { sf, node, requests, release, tick } = setup(new Map([['a', a], ['b', b]]), { asyncReads: true, demandFirst: true, backgroundRange: 4 * PIECE, held: true });
+  const demand = node('a').orthrosStreamed.ensure(0, 10);
+  const background = sf.load(sf.files.get('b'));
+  await new Promise((r) => setTimeout(r, 120));
+  assert.deepEqual(requests, [['async', 'a', 0, PIECE]], 'the background load waits its turn');
+  await release(); await demand;
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(requests.length, 1, 'and a moment after');
+  tick(QUIET_MS);
+  for (let i = 0; i < 4; i++) { await new Promise((r) => setTimeout(r, 80)); await release(); }
+  await background;
+  assert.deepEqual(requests.slice(1), [0, 4, 8, 12].map((p) => ['async', 'b', p * PIECE, (p + 4) * PIECE]));
+  assert.deepEqual(sf.files.get('b').data, b);
 });

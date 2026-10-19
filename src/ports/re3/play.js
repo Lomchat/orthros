@@ -34,6 +34,7 @@ const STRINGS = {
     ],
     saveFailed: 'Saving in the browser failed. Keep this page open to retry.',
     restart: 'Restart the game', back: 'Back to the games', ended: 'The game has ended.',
+    waiting: (mb) => `Loading the game's files · ${mb} MB`,
     lateTitle: 'A save on your account', lateText: (t) => `Your account already has a save of ${t}, different from this browser's. Restart with your account's save, or send this browser's one over it (the account's stays in its history)?`,
     lateAccount: 'Restart with the account\'s save', lateDevice: 'Keep this browser\'s save',
   },
@@ -55,6 +56,7 @@ const STRINGS = {
     ],
     saveFailed: 'La sauvegarde navigateur a échoué. Garde cette page ouverte pour réessayer.',
     restart: 'Relancer le jeu', back: 'Revenir aux jeux', ended: 'Le jeu s’est terminé.',
+    waiting: (mb) => `Chargement des fichiers du jeu · ${mb} Mo`,
     lateTitle: 'Une sauvegarde sur ton compte', lateText: (t) => `Ton compte a déjà une sauvegarde de ${t}, différente de celle de ce navigateur. Relancer avec celle du compte, ou envoyer celle de ce navigateur par-dessus (celle du compte reste dans son historique) ?`,
     lateAccount: 'Relancer avec celle du compte', lateDevice: 'Garder celle de ce navigateur',
   },
@@ -248,7 +250,17 @@ setInterval(() => {
   if (perf.samples.length > 120) perf.samples.shift();
   shell?.setFps(perf.samples, session.state !== 'running' || perf.started < 10 ? 'loading' : document.hidden ? 'paused' : 'running');
   const seed = seedWatch?.step(now, perf.started); if (seed) reportSeed(seed);
+  showWait(now);
 }, 500);
+// (the game waiting for its files — a load over a thin link, its image still meanwhile: told after 1.5 s, with the
+// bytes come since, until its reads stop waiting)
+let waitSince = null, waitBytes = 0;
+function showWait(now) {
+  const s = streamed?.stats, waiting = session.state === 'running' && streamed && (streamed.demand > 0 || now - streamed.demandEnd < 500);
+  if (!waiting) { waitSince = null; return; }
+  if (waitSince === null) { waitSince = now; waitBytes = s.fetchedBytes + s.localBytes; return; }
+  if (now - waitSince > 1500) toast(S.waiting(((s.fetchedBytes + s.localBytes - waitBytes) / 1048576).toFixed(1)), 1500);
+}
 /** The session's end, once: its length and frame rate. */
 function endReport() { if (telemetry.ended) return; telemetry.ended = true; report('end', { frames: frameStats(), audio: audioState() }); }
 /** The last minute's frame rate and slowest frames, for the session's report. */
@@ -408,7 +420,10 @@ async function start() {
   // (the game's files: its whole tree now — the release's own over the version's, as the server lists it —, what
   // earlier sessions read first loaded before the start, the rest later; a stream's next bytes read ahead; a game file
   // the engine writes anew, a file of the profile in its place)
-  streamed = session.files = new StreamedFiles({ name, files, log, readAhead: 16, rewritable: true, store: {
+  // (asyncReads: a read waiting for bytes suspends the engine — JSPI — instead of holding the page over a synchronous
+  // request; demandFirst: the background loads wait while it does, in requests of 1 MiB at most — a thin link's bytes
+  // go to the game's reads first)
+  streamed = session.files = new StreamedFiles({ name, files, log, readAhead: 16, rewritable: true, asyncReads: true, demandFirst: true, backgroundRange: 1 << 20, store: {
     read: (key) => readStorage(db, 'content', key), write: (key, bytes) => writeStorage(db, 'content', key, bytes),
     keys: () => storageKeys(db, 'content'), remove: (keys) => removeStorage(db, 'content', keys) } });
   streamed.mount(FS, ROOT);

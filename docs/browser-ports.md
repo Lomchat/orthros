@@ -30,7 +30,7 @@ missing. Every game page — Windows games and ports — has the same frame (hea
 | `tools/re3/` | `lock.json` (the engine's pinned sources, image, Emscripten ports, build flags and digests), `build.sh` (the engine from source), `patches/` (the browser build), `cmake/`, `check.mjs` (browser check) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-a26fff4-r5` (reVC built from source) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-a26fff4-r6` (reVC built from source) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -528,7 +528,7 @@ release.
   "id": "vice-city-revc", "dir": "1.1-revc", "version": "1.1 · reVC", "versionOrder": 2, "runtime": "re3",
   "languages": ["en", "fr"], "profileSeed": true,
   "re3": {
-    "engine": "revc-web-a26fff4-r5",
+    "engine": "revc-web-a26fff4-r6",
     "languages": {
       "en": { "env": { "LANG": "en_US.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "0" } } } },
       "fr": { "env": { "LANG": "fr_FR.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "1" } } } }
@@ -607,9 +607,13 @@ same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame r
 
 - **Start.** The module imported from the release, the Module created; the game's root `/game` made, the version's
   tree mounted there as streamed files (`src/ports/goldsrc/files.js`: the learned startup set loaded first, the rest
-  in the background, misses fetched synchronously, the reads reported to `/api/prefetch`), with read-ahead: after a
-  read that waited, the file's next 16 missing pieces (1 MiB) load in the background, one such load per file (a
-  stream's next bytes are there when the engine reads them). The language's `env` is set by the Module's `preRun`
+  in the background, the reads reported to `/api/prefetch`), with three options GoldSrc has not: `asyncReads` — a read
+  of bytes not here suspends the engine (JSPI) while they come, from the browser's copy or the server, instead of a
+  synchronous request that holds the page (the engine's `fd_read` / `fd_pread`, `tools/re3/js/orthros-fs.js`, ask the
+  file's node, `orthrosStreamed`); `demandFirst` — the background loads wait while the engine waits and 300 ms after,
+  in requests of 1 MiB at most (`backgroundRange`): on a thin link the game's reads have it alone; read-ahead — after
+  a read that waited, the file's next 16 missing pieces load in the background, one such load per file. Two loads never
+  fetch the same piece. While the game waits more than 1.5 s, a passing message says so with the bytes come since. The language's `env` is set by the Module's `preRun`
   hook, before the runtime starts. Then the profile put back, the `ini` settings, `chdir('/game')`,
   `callMain(re3.args)`.
 - **Frames.** Counted by `Module.orthrosFrame`: the header's frame rate; the loading screen hides after the first ten.
@@ -670,6 +674,12 @@ The patches (`tools/re3/patches/`) make the desktop build a browser one, nothing
   ES 2.0 and 3.1), S3TC through `WEBGL_compressed_texture_s3tc` (the game's DXT textures stay compressed), compressed
   textures defined by their levels' uploads (WebGL refuses `texImage2D` with a compressed format), no swap interval
   (the browser's frame), `Module.orthrosFrame()` after each frame shown.
+- **Reads without holding the page** (`tools/re3/js/orthros-fs.js`, an Emscripten JS library linked in): `fd_read` and
+  `fd_pread` are asynchronous imports (JSPI): a read of bytes the page has not got yet returns the page's promise, the
+  engine suspended until they are here; else it reads at once, as Emscripten's own. Before, a game read over a thin
+  link held the page for seconds in a synchronous request: the page unresponsive, the link shared with the background
+  loads (18 KB/s of an 85 KB/s link for a new game's first scene), and the headless browser stopping on an internal
+  check during such loads.
 - **Callbacks' types**: librw's `Atomic::RenderCB` returns the atomic, as RenderWare's: the game's render callbacks
   (`RpAtomic *(*)(RpAtomic *)`) were called through a `void` type — harmless on x86, a trap in WebAssembly ("function
   signature mismatch", the first frame of a new game).
@@ -679,8 +689,9 @@ work is about 1 % of the page's time (CPU profile: the rest is SwiftShader's ren
 First start of a new browser, the learned list made by sessions with the shared first-launch profile (below): 19 MB
 on the wire before the menu (the sound bank `Audio/sfx.raw`, the menu's textures and fonts, the engine), about 20 MB
 more for a new game's first scene (`models/gta3.img`). With Chrome's network emulation, 50 ms round trip: 85 KB/s, the
-menu after 224 s; 1 MB/s, the menu after 21 s and the first scene 33 s after "New game". The rest of the learned list
-then loads in the background, and the browser keeps everything: later starts read its copy.
+menu after 234 s and the first scene 235 s after "New game" (the link used at ~82 KB/s); 1 MB/s, the menu after 26 s
+and the first scene 25 s after "New game". The rest of the learned list then loads in the background, and the
+browser keeps everything: later starts read its copy.
 
 The shared first-launch profile (`profileSeed` in the manifest, `src/host/profile-seed.js`) matters here: the game's
 first start reads the header of each of its ~1,200 audio files to build `Audio/sound.cache` (a few KiB each, a 64 KiB
@@ -707,7 +718,7 @@ keeps the rest byte for byte. The same settings set again change nothing.
 
 ### State (2026-10-19)
 
-Vice City's `vice-city-revc` (`1.1 · reVC`) is on the home, release `revc-web-a26fff4-r5`. Checked in headless
+Vice City's `vice-city-revc` (`1.1 · reVC`) is on the home, release `revc-web-a26fff4-r6`. Checked in headless
 Chromium (SwiftShader) with `tools/re3/check.mjs --new-game --reload` from the server: the home lists it available,
 the page starts it on the game's menu (60 frames a second, the mouse free there), sound on after the first gesture, a
 new game's first scene, back to the games saving here and on the account, the same profile found by another browser
@@ -718,10 +729,11 @@ reported the same `Audio/sound.cache` (English and French), a third empty profil
 
 Not checked: a save at a safe house and its load (no automated way there yet: the profile mechanism that carries
 `userfiles/GTAVCsf*.b` is checked with the ini and the cache), a whole mission, long sessions, a real GPU (the frame
-rate on the owner's Iris Xe), Firefox/Safari (JSPI: Chrome only). Three times in about forty runs on 2026-10-19 the
-headless browser process itself stopped on an internal check (`trap int3` in `chrome-headless-shell`; five such stops
-the day before in other Orthros runs): not reproduced in three runs made to catch it; noted here, not explained. No
-multiplayer (reVC has none).
+rate on the owner's Iris Xe), Firefox/Safari (JSPI: Chrome only). Four times in about forty runs on 2026-10-19 the
+headless browser process stopped on an internal check (`trap int3` in `chrome-headless-shell`; five such stops the day
+before in other Orthros runs), each during a load made of synchronous reads (a cold new game, a thin link); none in
+the runs since the reads became asynchronous (r6: the check, the 85 KB/s and 1 MB/s runs) — the cause is not
+established. No multiplayer (reVC has none).
 
 ## Third-party components
 

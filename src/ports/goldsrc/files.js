@@ -13,6 +13,8 @@ export const STARTUP_GAP_MS = 2000;
 /** Native binaries of an installation: useless to the WebAssembly engine, never part of its tree. */
 const NATIVE = /\.(exe|dll|so|dylib)$/i;
 const MAX_RANGE = 32 * 1024 * 1024; // (per request: the server answers 64 MiB at most)
+/** demandFirst: a background load starts again this long after the engine's last read that waited. */
+export const QUIET_MS = 300;
 /** open()'s flags (Emscripten's, musl's values). */
 const O_ACCMODE = 3, O_EXCL = 0o200, O_TRUNC = 0o1000;
 
@@ -113,13 +115,22 @@ export class StreamedFiles {
    *   loaded in the background (one such load per file at a time: the engine never waits for it); 0, none
    * @param {boolean} [o.rewritable] a game file the engine opens to write it anew (O_TRUNC: fopen's "w") replaced by a
    *   file of its own, empty, in its place (mount()); else, and opened to be changed in place, read-only (EACCES)
+   * @param {boolean} [o.asyncReads] each mounted file's node tells its missing bytes and fetches them without holding
+   *   the page (`node.orthrosStreamed`: { missing(position, length), ensure(position, length): Promise }) — an engine
+   *   that suspends while it waits (JSPI) reads so instead of over a synchronous request
+   * @param {boolean} [o.demandFirst] the background loads wait their turn while the engine waits for bytes, and a
+   *   moment after (QUIET_MS): on a thin link the game's reads have it alone
+   * @param {number} [o.backgroundRange] the bytes a background request asks for at most (a game read waits behind the one
+   *   in flight)
    */
-  constructor({ name, files, store, syncGet = fetchSync, get = defaultGet, now = () => performance.now(), log = () => {}, readAhead = 0, rewritable = false }) {
+  constructor({ name, files, store, syncGet = fetchSync, get = defaultGet, now = () => performance.now(), log = () => {}, readAhead = 0, rewritable = false, asyncReads = false, demandFirst = false, backgroundRange = MAX_RANGE }) {
     this.name = name; this.store = store; this.syncGet = syncGet; this.get = get; this.now = now; this.log = log; this.readAhead = readAhead; this.rewritable = rewritable;
+    this.asyncReads = asyncReads; this.demandFirst = demandFirst; this.backgroundRange = Math.max(PIECE, Math.min(MAX_RANGE, backgroundRange));
+    this.demand = 0; this.demandEnd = -Infinity; // (the engine's reads waiting for bytes now; when the last one ended)
     this.files = new Map(files.map((f) => [f.path, { ...f, key: `${f.path}\n${f.size}\n${f.mtime}`, data: null, pieces: null, local: null, seen: null }]));
     this.t0 = null; // (the engine's start: reads are learned from it)
     this.reads = []; // [path, start, end, t] not reported yet
-    this.stats = { syncFetches: 0, syncBytes: 0, syncMs: 0, fetched: 0, fetchedBytes: 0, local: 0, localBytes: 0 };
+    this.stats = { syncFetches: 0, syncBytes: 0, syncMs: 0, fetched: 0, fetchedBytes: 0, local: 0, localBytes: 0, waits: 0, waitBytes: 0, waitMs: 0 };
   }
 
   /** A range of `f` from the server, compressed when that saves bytes (`ahead`: a background load, else a read). */
@@ -157,6 +168,7 @@ export class StreamedFiles {
       own.mmap = (...a) => io(() => { self.ensure(f, 0, f.size); return ops.mmap(...a); });
       own.write = () => { throw new FS.ErrnoError(69); }; // (EROFS: the game files are read-only)
       node.stream_ops = own;
+      if (this.asyncReads) node.orthrosStreamed = { missing: (position, length) => self.missing(f, position, position + length), ensure: (position, length) => self.ensureAsync(f, position, position + length) };
     }
     // (rewritable: a game file opened to be written anew — its bytes not wanted, never fetched — unlinked first, an
     // empty file of the engine's own in its place, as in a game folder the player may write in. Not when the open
@@ -213,6 +225,40 @@ export class StreamedFiles {
     if (fetched && this.readAhead > 0) this.ahead(f, last);
   }
 
+  /** Some of the bytes [start, end) of `f` are not here yet. */
+  missing(f, start, end) {
+    if (f.data) return false;
+    end = Math.min(f.size, end);
+    for (let p = Math.floor(start / PIECE); p * PIECE < end; p++) if (!f.pieces?.has(p)) return true;
+    return false;
+  }
+
+  /**
+   * The bytes [start, end) of `f` here, without holding the page (asyncReads: the engine waits suspended): from the
+   * browser's copy, else the server, as the engine's own read (not a background load: no turn to wait); then, as a
+   * synchronous read does, the file's next pieces read ahead.
+   */
+  async ensureAsync(f, start, end) {
+    end = Math.min(f.size, end);
+    const want = [];
+    for (let p = Math.floor(start / PIECE); p * PIECE < end; p++) if (!f.data && !f.pieces?.has(p)) want.push(p);
+    if (!want.length) return;
+    const t = this.now(), before = this.stats.fetchedBytes + this.stats.localBytes;
+    this.demand++;
+    try { await this.load(f, want, true); }
+    finally {
+      this.demand--; this.demandEnd = this.now();
+      this.stats.waits++; this.stats.waitBytes += this.stats.fetchedBytes + this.stats.localBytes - before; this.stats.waitMs += this.now() - t;
+    }
+    if (this.readAhead > 0) this.ahead(f, Math.ceil(end / PIECE));
+  }
+
+  /** A background load's turn (demandFirst): none while the engine waits for bytes, nor QUIET_MS after. */
+  async turn() {
+    if (!this.demandFirst) return;
+    while (this.demand > 0 || this.now() - this.demandEnd < QUIET_MS) await new Promise((r) => setTimeout(r, 50));
+  }
+
   /**
    * After a read that waited for the network: the next `readAhead` pieces of `f` still missing from piece `from` on,
    * loaded in the background — a file read as a stream finds its next bytes here. One such load per file at a time.
@@ -263,9 +309,14 @@ export class StreamedFiles {
   /** The reads to report (taken: reported once). */
   takeReads() { const r = this.reads; this.reads = []; return r; }
 
-  /** Load `f` (or its `pieces`) from the browser's copy, else from the server. */
-  async load(f, pieces = null) {
+  /**
+   * Load `f` (or its `pieces`) from the browser's copy, else from the server — `demand`: for the engine waiting on them,
+   * else a background load (its turn first, its requests within backgroundRange). Pieces another load is fetching are
+   * waited for, not fetched twice.
+   */
+  async load(f, pieces = null, demand = false) {
     if (f.data) return;
+    if (!demand && this.demandFirst) { await this.turn(); if (f.data) return; }
     if (f.local?.whole) {
       const bytes = await this.store.read(f.key);
       if (bytes?.length === f.size) { this.stats.local++; this.stats.localBytes += f.size; this.put(f, 0, bytes, false); return; }
@@ -278,19 +329,33 @@ export class StreamedFiles {
       if (bytes && bytes.length === Math.min(PIECE, f.size - p * PIECE)) { this.stats.localBytes += bytes.length; this.put(f, p * PIECE, bytes, false); } else missing.push(p);
     }
     if (f.data || !missing.length) return;
-    if (!pieces && missing.length === want.length) { // (nothing of it here: the whole file, compressed, in one request)
-      const bytes = await this.get(this.url(f, 0, f.size));
-      if (bytes.length !== f.size) throw new Error(`${f.path}: incomplete`);
-      this.stats.fetched++; this.stats.fetchedBytes += bytes.length; this.put(f, 0, bytes, true);
-      return;
+    // (pieces another load is fetching: waited for, then only what is still missing)
+    const others = new Set(missing.map((p) => f.inflight?.get(p)).filter(Boolean));
+    if (others.size) {
+      await Promise.allSettled([...others]);
+      const still = missing.filter((p) => !f.data && !f.pieces?.has(p));
+      if (f.data || !still.length) return;
+      missing.splice(0, missing.length, ...still);
     }
+    const limit = demand ? MAX_RANGE : this.backgroundRange;
+    const fetchRange = async (s, e) => {
+      const first = s / PIECE, count = Math.ceil((e - s) / PIECE);
+      const done = (async () => {
+        const bytes = await this.get(this.url(f, s, e, !demand));
+        if (bytes.length !== e - s) throw new Error(`${f.path}: incomplete`);
+        this.stats.fetched++; this.stats.fetchedBytes += bytes.length; this.put(f, s, bytes, true);
+      })();
+      f.inflight ??= new Map();
+      for (let p = first; p < first + count; p++) f.inflight.set(p, done);
+      try { await done; } finally { for (let p = first; p < first + count; p++) if (f.inflight.get(p) === done) f.inflight.delete(p); }
+    };
+    // (nothing of it here and within one request: the whole file, compressed, in one request)
+    if (!pieces && missing.length === want.length && f.size <= limit) return fetchRange(0, f.size);
     for (let i = 0; i < missing.length;) { // (runs of consecutive pieces)
-      let j = i + 1; while (j < missing.length && missing[j] === missing[j - 1] + 1 && (j - i) * PIECE < MAX_RANGE) j++;
-      const s = missing[i] * PIECE, e = Math.min(f.size, missing[j - 1] * PIECE + PIECE);
-      const bytes = await this.get(this.url(f, s, e));
-      if (bytes.length !== e - s) throw new Error(`${f.path}: incomplete`);
-      this.stats.fetched++; this.stats.fetchedBytes += bytes.length; this.put(f, s, bytes, true);
+      let j = i + 1; while (j < missing.length && missing[j] === missing[j - 1] + 1 && (j - i + 1) * PIECE <= limit) j++;
+      await fetchRange(missing[i] * PIECE, Math.min(f.size, missing[j - 1] * PIECE + PIECE));
       i = j;
+      if (!demand && this.demandFirst && i < missing.length) await this.turn(); // (a game read that came meanwhile goes first)
     }
   }
 

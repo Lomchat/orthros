@@ -71,7 +71,7 @@ for repo, patch in build['patches']:
     subprocess.run(['git', '-C', f'{sys.argv[3]}/{repo}', 'apply', f'{sys.argv[4]}/{patch}'], check=True)
 PY
   docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH -e CMAKE_ARGS="$cmake_args" -e LINK_FLAGS="$link_flags" \
-    -v "$build/src:/revc" -v "$build/wasm:/build" -v "$root/tools/re3/cmake:/cmake:ro" \
+    -v "$build/src:/revc" -v "$build/wasm:/build" -v "$root/tools/re3/cmake:/cmake:ro" -v "$root/tools/re3/js:/js:ro" \
     -v "$cache:/emsdk/upstream/emscripten/cache" -w /revc "$image" sh -c '
     emcmake cmake -S /revc -B /build $CMAKE_ARGS -DCMAKE_PROJECT_INCLUDE=/cmake/emscripten.cmake -DCMAKE_EXE_LINKER_FLAGS="$LINK_FLAGS" &&
     cmake --build /build -j8'
@@ -95,7 +95,8 @@ if want and want != built:
     diff = sorted(k for k in set(want) | set(built) if want.get(k) != built.get(k))
     shutil.rmtree(staging); sys.exit(f'{spec["id"]}: files differ from lock.json: {diff}')
 info = {'id': spec['id'], 'engine': {k: lock['engine'][k] for k in ('repository', 'commit', 'submodules', 'emsdk', 'emscriptenPorts', 'cmake', 'link')},
-        'patches': [{'repo': r, 'patch': p, 'sha256': sha(patches / p)} for r, p in spec['patches']], 'files': files}
+        'patches': [{'repo': r, 'patch': p, 'sha256': sha(patches / p)} for r, p in spec['patches']],
+        'jsLibraries': [{'file': f.name, 'sha256': sha(f)} for f in sorted((patches.parent / 'js').glob('*.js'))], 'files': files}
 (staging / 'release.json').write_text(json.dumps(info, indent=2) + '\n')
 staging.rename(release)
 if not want: print(json.dumps(built, indent=2))

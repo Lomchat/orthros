@@ -42,12 +42,13 @@
       "-sINVOKE_RUN=0",
       "-sEXPORTED_RUNTIME_METHODS=FS,ENV,callMain,HEAPU8",
       "-sASSERTIONS=0",
-      "--profiling-funcs"
+      "--profiling-funcs",
+      "--js-library=/js/orthros-fs.js"
     ]
   },
   "builds": [
     {
-      "id": "revc-web-a26fff4-r5",
+      "id": "revc-web-a26fff4-r6",
       "patches": [
         [
           ".",
@@ -59,7 +60,7 @@
         ]
       ],
       "files": {
-        "engine/revc.mjs": "b9e8b5be7cdb2270f94344ca87a5c1b9ec4537e1bb1a3d14bda6e07df91b7e6a",
+        "engine/revc.mjs": "308f1e336268527eb83ffbe51f9bb365ca263f461944aa2627cab38c51d1c0ad",
         "engine/revc.wasm": "2081aa0399387ba85e31252e892bc327c3f9a0ac6803910c098600b068f48de8"
       }
     }
