@@ -93,7 +93,7 @@ const T = {
     welcome: (n) => (n ? `Bienvenue, ${n} !` : 'Bienvenue !'), newLead: 'Choisis ton identifiant Orthros : c’est ton nom dans les parties en ligne. Tu te connecteras ensuite avec Google.',
     username: 'Identifiant', create: 'Créer mon compte', rules: '3 à 32 caractères : lettres minuscules, chiffres, point, tiret ou souligné.',
     haveAccount: 'J’ai déjà un compte Orthros', haveLead: 'Lie Google à ton compte existant : ses sauvegardes restent les mêmes.', password: 'Mot de passe', link: 'Lier et me connecter',
-    working: 'Un instant…', error: 'Erreur de connexion.',
+    working: 'Un instant…', error: 'Erreur de connexion.', privacy: 'Confidentialité', terms: 'Conditions d’utilisation',
   },
   en: {
     title: 'Sign in with Google', close: 'Close this window', back: 'Back to Orthros',
@@ -104,7 +104,7 @@ const T = {
     welcome: (n) => (n ? `Welcome, ${n}!` : 'Welcome!'), newLead: 'Choose your Orthros username: it is your name in online games. You will then sign in with Google.',
     username: 'Username', create: 'Create my account', rules: '3 to 32 characters: lowercase letters, digits, dot, dash or underscore.',
     haveAccount: 'I already have an Orthros account', haveLead: 'Link Google to your existing account: its saves stay the same.', password: 'Password', link: 'Link and sign in',
-    working: 'One moment…', error: 'Connection error.',
+    working: 'One moment…', error: 'Connection error.', privacy: 'Privacy', terms: 'Terms of use',
   },
 };
 export const pageText = (lang) => T[lang === 'fr' ? 'fr' : 'en'];
@@ -126,12 +126,14 @@ button, a.btn { display: inline-flex; justify-content: center; align-items: cent
   border: 1px solid rgba(255,190,110,.55); background: linear-gradient(180deg, #ffa445, #f0790f); color: #1a0f05; }
 button.ghost, a.btn.ghost { border-color: #2b3347; background: rgba(27,35,64,.7); color: #eceef5; } button:disabled { opacity: .55; cursor: progress; }
 small { display: block; margin: -4px 0 14px; color: #7a84a3; font-size: 12.5px; }
+.legal { margin: 18px 0 0; text-align: center; font-size: 12px; } .legal a { color: #7a84a3; }
 details { margin-top: 18px; border-top: 1px solid #1c2440; padding-top: 14px; } summary { cursor: pointer; color: #ffb56b; font-weight: 600; margin-bottom: 10px; }
 `;
 function page(lang, body, script = '') {
   return `<!doctype html><html lang="${lang === 'fr' ? 'fr' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex"><title>Orthros — ${esc(pageText(lang).title)}</title><style>${STYLE}</style></head>
-<body><main><div class="brand"><img src="/src/host/web/orthros_logo.png" alt=""><b>ORTHROS</b></div>${body}</main>${script ? `<script>${script}</script>` : ''}</body></html>`;
+<body><main><div class="brand"><img src="/src/host/web/orthros_logo.png" alt=""><b>ORTHROS</b></div>${body}
+<p class="legal"><a href="/privacy?lang=${lang === 'fr' ? 'fr' : 'en'}" target="_blank" rel="noopener">${esc(pageText(lang).privacy)}</a> · <a href="/terms?lang=${lang === 'fr' ? 'fr' : 'en'}" target="_blank" rel="noopener">${esc(pageText(lang).terms)}</a></p></main>${script ? `<script>${script}</script>` : ''}</body></html>`;
 }
 // (the outcome reaches the page that opened the window — over a channel of the origin: the window's opener is cut off by
 // the pages' cross-origin isolation — then the window closes; without a window, the page itself comes back)

@@ -244,3 +244,4 @@ div#status button:hover { background: #ffb56b; }
 .dm-or::before, .dm-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .dm-google strong { display: flex !important; align-items: center; gap: 8px; } .dm-google p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
 .dm-zone.dm-google { border-color: var(--line); background: linear-gradient(180deg, rgba(22, 30, 52, .7), rgba(14, 20, 36, .7)); } .dm-zone.dm-google strong { color: #f6efdc; }
+.dm-legal a { color: var(--faint); } .dm-legal a:hover { color: var(--muted); }

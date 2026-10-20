@@ -122,6 +122,8 @@
 #menu .hm-who.warn::before { content: "⚠"; color: #ffcf7a; font-size: 16px; }
 #menu .hm-who span { flex: 1; min-width: 240px; }
 #menu .hm-who .hm-btn { height: 32px; }
+#menu .hm-lib-head .hm-legal { order: 4; color: var(--faint); font: 12px var(--sans); white-space: nowrap; }
+#menu .hm-legal a { color: var(--faint); text-decoration: none; } #menu .hm-legal a:hover, #menu .hm-legal a:focus-visible { color: var(--muted); text-decoration: underline; }
 #menu .hm-lib-head::after { content: ""; flex: 1; align-self: center; height: 1px; order: 3; background: linear-gradient(90deg, var(--line), transparent); }
 /* the tabs: all, the Windows games, the recompiled ones, the recompiled and modified ones (with their counts) */
 #menu .hm-metas { display: grid; gap: 2px; min-width: 0; }

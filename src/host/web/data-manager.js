@@ -51,6 +51,7 @@ const TEXT = {
     deleteAccount: 'Supprimer le compte', deleteAccountText: 'Efface toutes les copies en ligne. Les données de cet appareil restent intactes.', deleteAccountBtn: 'Supprimer mon compte',
     login: 'Se connecter', register: 'Créer un compte', username: 'Identifiant', password: 'Mot de passe', createBtn: 'Créer mon compte',
     accountRules: 'Identifiant de 3 à 32 caractères ; mot de passe d’au moins 10 caractères. Note-le : la récupération par e-mail n’existe pas encore.',
+    privacy: 'Règles de confidentialité', terms: 'Conditions d’utilisation',
     google: 'Continuer avec Google', or: 'ou avec un identifiant', googleWindow: 'Termine la connexion dans la fenêtre Google.',
     googleTitle: 'Compte Google', googleLinked: (e) => `Lié${e === true ? '' : ` à ${e}`} : tu te connectes en un clic.`, googleNone: 'Pas lié : lie-le pour te connecter en un clic, sans mot de passe.',
     googleLink: 'Lier mon compte Google', googleUnlink: 'Délier', wUnlink: 'Déliaison du compte Google', googleUnlinked: 'Compte Google délié.',
@@ -120,6 +121,7 @@ const TEXT = {
     deleteAccount: 'Delete account', deleteAccountText: 'Erases every online copy. The data on this device is untouched.', deleteAccountBtn: 'Delete my account',
     login: 'Sign in', register: 'Create account', username: 'Username', password: 'Password', createBtn: 'Create my account',
     accountRules: 'Username of 3 to 32 characters; password of at least 10 characters. Write it down: there is no e-mail recovery yet.',
+    privacy: 'Privacy policy', terms: 'Terms of use',
     google: 'Continue with Google', or: 'or with a username', googleWindow: 'Finish signing in in the Google window.',
     googleTitle: 'Google account', googleLinked: (e) => `Linked${e === true ? '' : ` to ${e}`}: you sign in with one click.`, googleNone: 'Not linked: link it to sign in with one click, without a password.',
     googleLink: 'Link my Google account', googleUnlink: 'Unlink', wUnlink: 'Unlinking the Google account', googleUnlinked: 'Google account unlinked.',
@@ -420,6 +422,7 @@ function field(label, type, name, autocomplete) {
   const input = h('input', { class: 'dm-input', type, name, required: true, autocomplete, minlength: type === 'password' ? 10 : null, maxlength: type === 'password' ? 128 : null });
   return h('label', { class: 'dm-field' }, h('span', {}, label), input);
 }
+const legal = () => h('p', { class: 'dm-foot dm-legal' }, h('a', { href: '/privacy', target: '_blank', rel: 'noopener' }, t('privacy')), ' · ', h('a', { href: '/terms', target: '_blank', rel: 'noopener' }, t('terms')));
 function renderAccount() {
   content.append(head(t('tabAccount'), t('accountTitle'), t('accountLead')));
   if (app.accountsOn === false) { content.append(panel('user', t('accountsOff'), t('accountsOffText'))); return; }
@@ -440,7 +443,7 @@ function renderAccount() {
     pw.onsubmit = (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(pw)); run(t('wPassword'), async () => { await jsonApi('/api/account/password', 'POST', data); pw.reset(); if (!hasPassword) { app.account = { ...app.account, password: true }; accountChanged(app.account); } return hasPassword ? t('passwordChanged') : t('passwordSet'); }, false); };
     content.append(fold('password', hasPassword ? t('changePassword') : t('setPassword'), pw));
     content.append(h('div', { class: 'dm-zone' }, h('div', {}, h('strong', {}, t('deleteAccount')), h('p', {}, t('deleteAccountText'))),
-      btn(t('deleteAccountBtn'), () => deleteAccount(), { variant: 'danger', ico: 'trash', key: 'delaccount' })));
+      btn(t('deleteAccountBtn'), () => deleteAccount(), { variant: 'danger', ico: 'trash', key: 'delaccount' })), legal());
     return;
   }
   const seg = h('div', { class: 'dm-seg', role: 'tablist' }, ['login', 'register'].map((mode) => h('button', { type: 'button', role: 'tab', 'aria-selected': String(app.accountMode === mode), class: app.accountMode === mode ? 'on' : '', disabled: app.busy,
@@ -456,7 +459,7 @@ function renderAccount() {
     });
   };
   if (app.google) content.append(h('button', { type: 'button', class: 'dm-google-btn', disabled: app.busy, 'data-k': 'google', onclick: () => withGoogle(false) }, googleMark(), t('google')), h('div', { class: 'dm-or' }, h('span', {}, t('or'))));
-  content.append(seg, form, h('p', { class: 'dm-foot' }, t('accountRules')));
+  content.append(seg, form, h('p', { class: 'dm-foot' }, t('accountRules')), legal());
 }
 const googleMark = () => { const s = h('span', { class: 'dm-g', 'aria-hidden': 'true' }); s.innerHTML = GOOGLE_G; return s; };
 /** Google in its own window: the status line waits for it without blocking this one (the player may close it). */

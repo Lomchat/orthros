@@ -1,0 +1,23 @@
+/* The privacy policy and the terms of use (/privacy, /terms): the night blue, ember and bone of the home screen. */
+:root { color-scheme: dark; --fg: #eceef5; --muted: #9aa3bd; --faint: #7a84a3; --line: #2b3347; --ember: #f8901f; --ember-hi: #ffb56b; --bone: #ecd9ae;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--fg); font: 15.5px/1.65 var(--sans);
+  background: radial-gradient(60% 40% at 92% 0%, rgba(248, 144, 31, .10), transparent 70%), linear-gradient(180deg, #0f1528, #080c17 480px), #080c17; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: min(820px, 100% - 40px); margin: 0 auto; padding: 22px 0 10px; }
+.brand { display: flex; align-items: center; gap: 12px; color: var(--bone); text-decoration: none; font: 700 13px/1 var(--sans); letter-spacing: .32em; }
+.brand img { width: 40px; height: 41px; }
+.langs { display: flex; gap: 4px; padding: 3px; border-radius: 10px; border: 1px solid var(--line); background: rgba(8, 12, 23, .6); }
+.langs a { padding: 4px 11px; border-radius: 7px; color: var(--muted); font: 600 12.5px var(--sans); text-decoration: none; }
+.langs a.on { background: rgba(248, 144, 31, .16); color: var(--ember-hi); }
+main { width: min(820px, 100% - 40px); margin: 0 auto 60px; padding: 34px 40px 40px; border-radius: 20px; border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(22, 30, 52, .78), rgba(14, 20, 36, .78)); box-shadow: 0 30px 90px rgba(0, 0, 0, .45); }
+h1 { margin: 0 0 4px; font: 700 30px/1.2 var(--serif); color: #f6efdc; }
+.date { margin: 0 0 22px; color: var(--faint); font-size: 13px; }
+h2 { margin: 30px 0 8px; font: 700 19px/1.3 var(--serif); color: var(--bone); }
+p, li { color: #cfd4e3; } p { margin: 0 0 12px; } ul { margin: 0 0 12px; padding-left: 22px; } li { margin: 0 0 7px; }
+strong { color: var(--fg); }
+a { color: var(--ember-hi); } a:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; border-radius: 3px; }
+.lead { font-size: 16.5px; color: var(--fg); }
+.foot { width: min(820px, 100% - 40px); margin: -40px auto 40px; color: var(--faint); font-size: 13px; text-align: center; }
+@media (max-width: 640px) { main { padding: 24px 20px 28px; } h1 { font-size: 25px; } }

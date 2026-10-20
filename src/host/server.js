@@ -606,6 +606,8 @@ export function createServer(opts = {}) {
         return;
       }
       if (p === '/' || p === '/index.html') return sendFile(req, res, path.join(ROOT, 'src/host/web/index.html'), MIME['.html']);
+      // (the privacy policy and the terms of use, at public addresses: the home screen, the account window and Google's sign-in link to them)
+      if (p === '/privacy' || p === '/terms') return sendFile(req, res, path.join(ROOT, `src/host/web/${p.slice(1)}.html`), MIME['.html']);
       if (p === '/api/manifests') {
         refreshCatalog();
         const sizeOf = (t) => Object.values(t.files).reduce((a, f) => a + f.size, 0) + Object.values(t.dirs).reduce((a, d) => a + sizeOf(d), 0);
