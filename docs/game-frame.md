@@ -48,6 +48,16 @@ to the games.
   account's; OpenMW's worlds already required it (`src/ports/openmw/account-bridge.js`).
 - Without an account, games run and their progress stays in this browser; the home screen, the loading screen and
   the header say so.
+- **Signing in with Google** (when the server has a Google client — `google.json` beside the accounts' database, README):
+  « Continue with Google » on the loading screen and in the account window opens a small window; the page keeps running
+  and hears the outcome over a `BroadcastChannel` of the origin (the window's opener is cut off by the pages'
+  cross-origin isolation), then the window closes (blocked window: the whole page goes and comes back). A new player
+  chooses a username there — or gives an existing account's password to link Google to it. The Orthros account stays
+  the identity: Google is a way into it (`identities` table), linked or unlinked in the account window; an account
+  made with Google has no password until one is set (it is then unlinkable), and is deleted with its name typed again.
+  All server side (`src/host/google-signin.js`: OpenID Connect code flow with PKCE, the flow bound to its browser by a
+  cookie, the ID token checked — issuer, audience, expiry, nonce — as it comes straight from Google over TLS); no Google
+  script in the pages.
 
 ## Languages
 

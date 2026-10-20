@@ -8,7 +8,7 @@
 // The page drives it (createShell(...) and the methods it returns); it never names a game. Styles: player.css.
 import { pickLang } from './lang.js';
 import { h } from './dom.js';
-import { accountState, signIn, onAccountChange } from './account.js';
+import { accountState, signIn, onAccountChange, googleSignIn, googleText, GOOGLE_G } from './account.js';
 
 const LOGO = '/src/host/web/orthros_logo.png';
 const STRINGS = {
@@ -29,7 +29,7 @@ const STRINGS = {
     whoIn: (u) => [`Signed in as `, h('b', {}, u), ` — your progress is saved on your account.`],
     whoOff: 'You are not signed in: your progress will not be saved on an account. It stays only in this browser and can be lost.',
     whoLocal: 'This server has no accounts: your progress stays in this browser.',
-    signIn: 'Sign in', register: 'Create an account', username: 'Username', password: 'Password', go: 'Continue', cancel: 'Cancel',
+    signIn: 'Sign in', register: 'Create an account', username: 'Username', password: 'Password', go: 'Continue', cancel: 'Cancel', google: 'Continue with Google',
     rules: 'Username: 3 to 32 characters. Password: at least 10 characters. There is no e-mail recovery: write it down.',
     signedIn: (u) => `Signed in as ${u}.`,
     conflictTitle: 'Two different saves', conflictText: (g) => `Your account has a save of ${g} made elsewhere, and this browser has another one that was never sent. Which one do you want to play with? The other one stays in your account's history.`,
@@ -55,7 +55,7 @@ const STRINGS = {
     whoIn: (u) => ['Connecté en tant que ', h('b', {}, u), ' — ta progression est sauvegardée sur ton compte.'],
     whoOff: 'Tu n’es pas connecté : ta progression ne sera pas sauvegardée sur un compte. Elle reste seulement dans ce navigateur et peut être perdue.',
     whoLocal: 'Ce serveur n’a pas de comptes : ta progression reste dans ce navigateur.',
-    signIn: 'Se connecter', register: 'Créer un compte', username: 'Identifiant', password: 'Mot de passe', go: 'Continuer', cancel: 'Annuler',
+    signIn: 'Se connecter', register: 'Créer un compte', username: 'Identifiant', password: 'Mot de passe', go: 'Continuer', cancel: 'Annuler', google: 'Continuer avec Google',
     rules: 'Identifiant : 3 à 32 caractères. Mot de passe : au moins 10 caractères. Pas de récupération par e-mail : note-le.',
     signedIn: (u) => `Connecté en tant que ${u}.`,
     conflictTitle: 'Deux sauvegardes différentes', conflictText: (g) => `Ton compte a une sauvegarde de ${g} faite ailleurs, et ce navigateur en a une autre jamais envoyée. Avec laquelle veux-tu jouer ? L’autre reste dans l’historique de ton compte.`,
@@ -168,9 +168,12 @@ export function createShell(o) {
       try { await signIn(mode, user.value, pass.value, lang); } catch (x) { err.textContent = x.message; } finally { submit.disabled = false; }
     };
     for (const type of ['keydown', 'keyup', 'keypress']) form.addEventListener(type, (e) => e.stopPropagation()); // (the game's key handlers never see what is typed here)
+    // (Google: a small window, the page stays — signIn's listeners run when it says so)
+    const gErr = h('p', { class: 'gerr', role: 'alert' }), g = h('span', { class: 'g', 'aria-hidden': 'true' }); g.innerHTML = GOOGLE_G;
+    const google = shell.google ? h('button', { type: 'button', class: 'google', onclick: async () => { gErr.textContent = ''; const r = await googleSignIn(lang); if (!r.ok) gErr.textContent = googleText(r, lang); } }, g, S.google) : null;
     who.append(svg('alert'), h('div', {}, h('p', {}, S.whoOff), h('div', { class: 'acts' },
       h('button', { type: 'button', class: 'primary', onclick: () => open('login') }, S.signIn),
-      h('button', { type: 'button', onclick: () => open('register') }, S.register)), form));
+      h('button', { type: 'button', onclick: () => open('register') }, S.register), google), gErr, form));
     shell.openSignIn = open;
   }
   onAccountChange(({ user }) => {
@@ -178,7 +181,7 @@ export function createShell(o) {
     if (user && user.username !== was) { shell.toast(S.signedIn(user.username), 4000); o.onSignedIn?.(user); }
   });
   /** Who plays, asked of the server: { accounts, user }. */
-  shell.ready = accountState().then((st) => { shell.accounts = st.accounts; shell.account = st.user; renderWho(); renderSave(); return st; });
+  shell.ready = accountState().then((st) => { shell.accounts = st.accounts; shell.google = st.google; shell.account = st.user; renderWho(); renderSave(); return st; });
 
   // ---------------------------------------------------------------- the mouse
   /** true: the game has the mouse (pointer lock), false: free, null: no game yet. */

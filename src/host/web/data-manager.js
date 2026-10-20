@@ -4,7 +4,7 @@
 import { archiveProfile, download, parseArchive, removeCache, removeProfile, restoreProfile, scanStorage, profileFiles, replaceProfile, scanPorts, portFiles, clearPortCache, clearPortSaves } from './data-store.js';
 import { pickLang } from './lang.js';
 import { h } from './dom.js';
-import { errorText, accountChanged, onAccountChange } from './account.js';
+import { errorText, accountChanged, onAccountChange, googleSignIn, googleText, GOOGLE_G } from './account.js';
 import { CloudSave, MAX_BACKUP, encodeProfile } from './cloud-sync.js';
 
 // ---------------------------------------------------------------- text
@@ -51,6 +51,12 @@ const TEXT = {
     deleteAccount: 'Supprimer le compte', deleteAccountText: 'Efface toutes les copies en ligne. Les données de cet appareil restent intactes.', deleteAccountBtn: 'Supprimer mon compte',
     login: 'Se connecter', register: 'Créer un compte', username: 'Identifiant', password: 'Mot de passe', createBtn: 'Créer mon compte',
     accountRules: 'Identifiant de 3 à 32 caractères ; mot de passe d’au moins 10 caractères. Note-le : la récupération par e-mail n’existe pas encore.',
+    google: 'Continuer avec Google', or: 'ou avec un identifiant', googleWindow: 'Termine la connexion dans la fenêtre Google.',
+    googleTitle: 'Compte Google', googleLinked: (e) => `Lié${e === true ? '' : ` à ${e}`} : tu te connectes en un clic.`, googleNone: 'Pas lié : lie-le pour te connecter en un clic, sans mot de passe.',
+    googleLink: 'Lier mon compte Google', googleUnlink: 'Délier', wUnlink: 'Déliaison du compte Google', googleUnlinked: 'Compte Google délié.',
+    setPassword: 'Définir un mot de passe', setPasswordBtn: 'Définir le mot de passe', passwordSet: 'Mot de passe défini : tu peux aussi te connecter avec ton identifiant.',
+    noPasswordNote: 'Ton compte se connecte avec Google. Un mot de passe te permet aussi de te connecter avec ton identifiant, et de délier Google.',
+    accountAskTextName: 'Toutes les copies en ligne seront effacées ; les données de cet appareil restent intactes. Saisis ton identifiant pour confirmer.',
     accountsOffText: 'Ce serveur ne propose pas de comptes : tes sauvegardes restent sur cet appareil, exporte-les pour les garder ailleurs.',
     connected: 'Compte connecté. Tes données locales restent sur cet appareil.',
     // questions
@@ -114,6 +120,12 @@ const TEXT = {
     deleteAccount: 'Delete account', deleteAccountText: 'Erases every online copy. The data on this device is untouched.', deleteAccountBtn: 'Delete my account',
     login: 'Sign in', register: 'Create account', username: 'Username', password: 'Password', createBtn: 'Create my account',
     accountRules: 'Username of 3 to 32 characters; password of at least 10 characters. Write it down: there is no e-mail recovery yet.',
+    google: 'Continue with Google', or: 'or with a username', googleWindow: 'Finish signing in in the Google window.',
+    googleTitle: 'Google account', googleLinked: (e) => `Linked${e === true ? '' : ` to ${e}`}: you sign in with one click.`, googleNone: 'Not linked: link it to sign in with one click, without a password.',
+    googleLink: 'Link my Google account', googleUnlink: 'Unlink', wUnlink: 'Unlinking the Google account', googleUnlinked: 'Google account unlinked.',
+    setPassword: 'Set a password', setPasswordBtn: 'Set the password', passwordSet: 'Password set: you can also sign in with your username.',
+    noPasswordNote: 'Your account signs in with Google. A password also lets you sign in with your username, and unlink Google.',
+    accountAskTextName: 'Every online copy will be erased; the data on this device is untouched. Type your username to confirm.',
     accountsOffText: 'This server has no accounts: your saves stay on this device, export them to keep them elsewhere.',
     connected: 'Signed in. Your local data stays on this device.',
     cancel: 'Cancel', cancelled: 'Cancelled.', done: 'Done.',
@@ -182,7 +194,8 @@ async function jsonApi(path, method = 'GET', body) {
 }
 async function refresh({ account = false } = {}) {
   if (account) {
-    app.accountsOn = await fetch('/api/config').then((r) => r.json()).then((c) => !!c.accounts).catch(() => false);
+    const config = await fetch('/api/config').then((r) => r.json()).catch(() => ({}));
+    app.accountsOn = !!config.accounts; app.google = !!config.google;
     try { app.account = app.accountsOn ? (await jsonApi('/api/account')).user : null; } catch { app.account = null; }
   }
   const [storage, manifests] = await Promise.all([scanStorage(), fetch('/api/manifests').then((r) => r.json()).catch(() => [])]);
@@ -276,11 +289,13 @@ dialog.addEventListener('click', (event) => { if (event.target === dialog) dialo
 let askEscapedAt = 0;
 dialog.addEventListener('cancel', (event) => { if (!asking.hidden || Date.now() - askEscapedAt < 150) event.preventDefault(); }); // (Escape closes a question first, not the window)
 
-/** A question inside the window. Resolves to true / false, or to the typed password when `password` is set (null if cancelled). */
+/** A question inside the window. Resolves to true / false, or to the typed password when `password` is set — the typed
+ * username when `password` is 'username' — (null if cancelled). */
 function ask({ title, text, ok, danger = false, password = false }) {
   return new Promise((resolve) => {
     const finish = (value) => { asking.hidden = true; asking.replaceChildren(); resolve(value); };
-    const input = password ? h('input', { type: 'password', class: 'dm-input', autocomplete: 'current-password', 'aria-label': t('password') }) : null;
+    const input = password === 'username' ? h('input', { type: 'text', class: 'dm-input', autocomplete: 'off', 'aria-label': t('username') })
+      : password ? h('input', { type: 'password', class: 'dm-input', autocomplete: 'current-password', 'aria-label': t('password') }) : null;
     const no = h('button', { type: 'button', class: 'dm-btn ghost', onclick: () => finish(password ? null : false) }, t('cancel'));
     const yes = h('button', { type: 'button', class: 'dm-btn ' + (danger ? 'danger solid' : 'primary'), onclick: () => finish(password ? (input.value || null) : true) }, ok);
     asking.replaceChildren(h('div', { class: 'dm-ask-card' + (danger ? ' danger' : ''), role: 'alertdialog', 'aria-modal': 'true', 'aria-label': title },
@@ -413,10 +428,17 @@ function renderAccount() {
       h('div', {}, h('strong', {}, app.account.username), h('small', {}, t('signedIn'))),
       row(btn(t('toCloud'), () => { app.tab = 'cloud'; render(); }, { variant: 'primary', ico: 'cloud', key: 'tocloud', small: true }),
         btn(t('signOut'), () => run(t('wLogout'), async () => { await jsonApi('/api/account/logout', 'POST'); app.account = null; app.cloud.clear(); updateAccountButton(); accountChanged(null); return t('signOutDone'); }), { variant: 'ghost', key: 'logout', small: true }))));
-    const pw = h('form', { class: 'dm-form' }, field(t('oldPassword'), 'password', 'oldPassword', 'current-password'), field(t('newPassword'), 'password', 'newPassword', 'new-password'),
-      h('button', { type: 'submit', class: 'dm-btn primary', disabled: app.busy }, t('changePasswordBtn')));
-    pw.onsubmit = (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(pw)); run(t('wPassword'), async () => { await jsonApi('/api/account/password', 'POST', data); pw.reset(); return t('passwordChanged'); }, false); };
-    content.append(fold('password', t('changePassword'), pw));
+    // (Google: linked — unlinked only with a password set —, or a button to link it)
+    const g = app.account.google;
+    if (g || app.google) content.append(h('div', { class: 'dm-zone dm-google' }, h('div', {}, h('strong', {}, googleMark(), t('googleTitle')), h('p', {}, g ? t('googleLinked', g) : t('googleNone'))),
+      g ? (app.account.password ? btn(t('googleUnlink'), () => run(t('wUnlink'), async () => { const r = await jsonApi('/api/account/google/unlink', 'POST', {}); app.account = r.user; accountChanged(r.user); return t('googleUnlinked'); }), { variant: 'ghost', key: 'gunlink', small: true }) : null)
+        : btn(t('googleLink'), () => withGoogle(true), { key: 'glink', small: true })));
+    // (an account made with Google: its first password needs no current one)
+    const hasPassword = app.account.password !== false;
+    const pw = h('form', { class: 'dm-form' }, hasPassword ? field(t('oldPassword'), 'password', 'oldPassword', 'current-password') : h('p', { class: 'dm-foot' }, t('noPasswordNote')), field(t('newPassword'), 'password', 'newPassword', 'new-password'),
+      h('button', { type: 'submit', class: 'dm-btn primary', disabled: app.busy }, hasPassword ? t('changePasswordBtn') : t('setPasswordBtn')));
+    pw.onsubmit = (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(pw)); run(t('wPassword'), async () => { await jsonApi('/api/account/password', 'POST', data); pw.reset(); if (!hasPassword) { app.account = { ...app.account, password: true }; accountChanged(app.account); } return hasPassword ? t('passwordChanged') : t('passwordSet'); }, false); };
+    content.append(fold('password', hasPassword ? t('changePassword') : t('setPassword'), pw));
     content.append(h('div', { class: 'dm-zone' }, h('div', {}, h('strong', {}, t('deleteAccount')), h('p', {}, t('deleteAccountText'))),
       btn(t('deleteAccountBtn'), () => deleteAccount(), { variant: 'danger', ico: 'trash', key: 'delaccount' })));
     return;
@@ -433,7 +455,17 @@ function renderAccount() {
       await refresh(); await syncAll(); return t('connected');
     });
   };
+  if (app.google) content.append(h('button', { type: 'button', class: 'dm-google-btn', disabled: app.busy, 'data-k': 'google', onclick: () => withGoogle(false) }, googleMark(), t('google')), h('div', { class: 'dm-or' }, h('span', {}, t('or'))));
   content.append(seg, form, h('p', { class: 'dm-foot' }, t('accountRules')));
+}
+const googleMark = () => { const s = h('span', { class: 'dm-g', 'aria-hidden': 'true' }); s.innerHTML = GOOGLE_G; return s; };
+/** Google in its own window: the status line waits for it without blocking this one (the player may close it). */
+async function withGoogle(link) {
+  app.tone = 'info'; app.message = t('googleWindow'); render();
+  const r = await googleSignIn(lang, { link });
+  if (!r.ok) { app.tone = 'error'; app.message = googleText(r, lang); render(); return; }
+  if (link) { app.tone = 'ok'; app.message = googleText(r, lang); await refresh({ account: true }); return; }
+  await run(t('wLogin'), async () => { await refresh({ account: true }); updateAccountButton(); await syncAll(); return t('connected'); });
 }
 
 // ---------------------------------------------------------------- drawing
@@ -567,10 +599,12 @@ async function toggleHistory(game) {
 }
 async function deleteAccount() {
   return run(t('wAccount'), async () => {
-    const password = await ask({ title: t('accountAsk'), text: t('accountAskText'), ok: t('deleteAccountBtn'), danger: true, password: true });
-    if (!password) return t('cancelled');
+    // (an account made with Google, without a password: its name typed again)
+    const byName = app.account?.password === false;
+    const answer = await ask({ title: t('accountAsk'), text: byName ? t('accountAskTextName') : t('accountAskText'), ok: t('deleteAccountBtn'), danger: true, password: byName ? 'username' : true });
+    if (!answer) return t('cancelled');
     if (!await ask({ title: t('finalAsk'), text: t('finalAskText'), ok: t('finalOk'), danger: true })) return t('cancelled');
-    await jsonApi('/api/account', 'DELETE', { password });
+    await jsonApi('/api/account', 'DELETE', byName ? { username: answer.trim().toLowerCase() } : { password: answer });
     app.account = null; app.cloud.clear(); updateAccountButton(); accountChanged(null);
     return t('rAccountDeleted');
   });

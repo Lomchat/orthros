@@ -223,16 +223,24 @@ html, body { background: var(--dm-ink); color: var(--dm-fg); }
 #loader .pct, #loader li.active .ic { color: var(--dm-ember); border-color: var(--dm-ember); }
 #loader li.done .ic { background: #4fd6a0; }
 #busy { border-color: #f8901f55; background: #0e1424e8; color: var(--dm-fg); }
-#busy small, #status .detail { color: var(--dm-muted); }
-#status .title { color: var(--dm-fg); }
-#status.error { background: #070a14e8; }
-#status.error .title { color: var(--dm-danger); }
-#status pre { background: var(--dm-surface); color: var(--dm-muted); border: 1px solid var(--dm-border); }
-#status button { background: var(--dm-ember); color: #1a0f05; border-color: var(--dm-ember); }
-#status button:hover { background: #ffb56b; }
+#busy small, div#status .detail { color: var(--dm-muted); }
+div#status .title { color: var(--dm-fg); }
+div#status.error { background: #070a14e8; }
+div#status.error .title { color: var(--dm-danger); }
+div#status pre { background: var(--dm-surface); color: var(--dm-muted); border: 1px solid var(--dm-border); }
+div#status button { background: var(--dm-ember); color: #1a0f05; border-color: var(--dm-ember); }
+div#status button:hover { background: #ffb56b; }
 
 /* the settings button of the in-game header */
 .dm-bar-entry { display: inline-flex; align-items: center; gap: 6px; margin-right: 8px; white-space: nowrap; background: #f8901f !important; color: #1a0f05 !important; border: 1px solid #f8901f !important; }
 #topbar .dm-bar-entry:hover { background: #ffb56b !important; }
 @media (max-width: 720px) { .dm-bar-entry { font-size: 11px; } }
 .dm-bar-ico svg { width: 14px; height: 14px; }
+/* Google: the sign-in button (Google's dark style), the line under it, the linked account */
+.dm-google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; max-width: 420px; height: 42px; margin: 0 0 4px; border-radius: 10px; border: 1px solid #8e918f; background: #131314; color: #e3e3e3; font: 600 14px var(--sans); cursor: pointer; transition: background .2s; }
+.dm-google-btn:hover:not(:disabled) { background: #1f1f21; } .dm-google-btn:disabled { opacity: .55; cursor: progress; } .dm-google-btn:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.dm-g { display: inline-flex; width: 18px; height: 18px; flex: none; } .dm-g svg { width: 100%; height: 100%; }
+.dm-or { display: flex; align-items: center; gap: 12px; max-width: 420px; margin: 14px 0; color: var(--faint); font-size: 12.5px; }
+.dm-or::before, .dm-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.dm-google strong { display: flex !important; align-items: center; gap: 8px; } .dm-google p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.dm-zone.dm-google { border-color: var(--line); background: linear-gradient(180deg, rgba(22, 30, 52, .7), rgba(14, 20, 36, .7)); } .dm-zone.dm-google strong { color: #f6efdc; }

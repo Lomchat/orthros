@@ -546,7 +546,7 @@ export function createServer(opts = {}) {
     });
   };
 
-  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game), ...(opts.accountMaxUserBytes ? { maxUserBytes: opts.accountMaxUserBytes } : {}) }) : null;
+  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game), ...(opts.accountMaxUserBytes ? { maxUserBytes: opts.accountMaxUserBytes } : {}), ...(opts.accountGoogle ? { google: opts.accountGoogle } : {}) }) : null;
   // Localized OpenMW masters need separate simulations, caches and save histories.
   function portLanguages(man, id) {
     if (man.runtime !== 'openmw' || !man.openmw.languageVersions) return {};
@@ -589,7 +589,7 @@ export function createServer(opts = {}) {
         accountApi(req, res).catch((e) => { console.error('account API:', e); if (!res.headersSent) send(res, e.status ?? 500, 'account API error'); else res.destroy(); });
         return;
       }
-      if (p === '/api/config') return send(res, 200, JSON.stringify({ version: buildVersion(), defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, encodedRanges: true, prefetch: true, programCache: true, regionCache: true, profileSeed: true }), { 'Content-Type': 'application/json' });
+      if (p === '/api/config') return send(res, 200, JSON.stringify({ version: buildVersion(), defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, google: !!accountApi?.googleEnabled(), encodedRanges: true, prefetch: true, programCache: true, regionCache: true, profileSeed: true }), { 'Content-Type': 'application/json' });
       // (the sources snapshots depend on, docs/snapshot.md: a page keeps its snapshot of a game only while they are the same)
       if (p === '/api/snapshot-sources') return send(res, 200, JSON.stringify(snapshotSourcesHash(ROOT)), { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
       if (p === '/api/telemetry' && req.method === 'POST') {

@@ -101,6 +101,13 @@ Pour activer les comptes sur une instance auto-hébergée, ajouter `--accounts <
 dossier contient la base SQLite et doit être persistant. Sur l'instance publique, il se trouve sous
 `/var/lib/private/orthros2/accounts` ; ne pas le placer dans le répertoire servi au navigateur.
 
+Connexion avec Google (facultative) : dans la console Google Cloud, créer un écran de consentement OAuth (externe,
+champs d'application `openid`, `email`, `profile`) puis un identifiant client OAuth de type « Application Web » dont
+l'URI de redirection autorisée est `<origine publique>/api/account/google/callback`
+(`https://orthros.chalco.website/api/account/google/callback` sur l'instance publique). Écrire
+`{ "clientId": "…", "clientSecret": "…" }` dans `google.json`, à côté de la base des comptes (lisible par le service
+seulement) : le bouton « Continuer avec Google » apparaît sans redémarrage, et disparaît si le fichier est retiré.
+
 ## Diagnostic (harnais `tools/headless.mjs <manifeste | dossier>`)
 
 - Scénarios : `--input "t:click:x,y;…"` (étapes `click`, `rclick`, `move`, `down`/`up`, `key`, `text`, `shot`, ancres

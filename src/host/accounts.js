@@ -6,9 +6,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
+import { googleClient, suggestUsername, resultPage, choosePage, pageText } from './google-signin.js';
 
 const scrypt = promisify(scryptCallback);
 const COOKIE = 'orthros_session';
+const OAUTH_COOKIE = 'orthros_oauth', SIGNUP_COOKIE = 'orthros_google'; // (a Google sign-in under way; a new player choosing a name)
+const FLOW_MS = 10 * 60 * 1000;
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_BACKUP = 64 * 1024 * 1024;
 const MAX_HISTORY = 20;
@@ -28,11 +31,18 @@ function reply(res, status, value, headers = {}) {
 function cookie(token, secure, maxAge = Math.floor(SESSION_MS / 1000)) {
   return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
 }
-function requestToken(req) {
-  const raw = req.headers.cookie?.split(';').map((x) => x.trim()).find((x) => x.startsWith(`${COOKIE}=`));
-  const token = raw?.slice(COOKIE.length + 1) ?? '';
+function requestToken(req, name = COOKIE) {
+  const raw = req.headers.cookie?.split(';').map((x) => x.trim()).find((x) => x.startsWith(`${name}=`));
+  const token = raw?.slice(name.length + 1) ?? '';
   return /^[a-f0-9]{64}$/.test(token) ? token : null;
 }
+function html(res, status, body, headers = {}) {
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', ...headers });
+  res.end(body);
+}
+/** A page's own address to come back to (a path of this site), or the home screen. */
+const backPath = (value) => (typeof value === 'string' && value.length <= 2048 && value.startsWith('/') && !value.startsWith('//') && !value.includes('\\') ? value : '/');
 function sendBytes(res, row) {
   res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': row.data.length,
     'Cache-Control': 'private, no-store', 'X-Orthros-Backup-Hash': row.hash,
@@ -70,7 +80,7 @@ function validBackup(bytes, game) {
   } catch { return false; }
 }
 
-export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGame = () => true, maxUserBytes = MAX_USER_BYTES } = {}) {
+export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGame = () => true, maxUserBytes = MAX_USER_BYTES, google: googleSettings = null } = {}) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path.join(dir, 'accounts.sqlite'));
   db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
@@ -96,7 +106,23 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
       UNIQUE(user_id, game_id, version)
     );
     CREATE INDEX IF NOT EXISTS backups_latest ON backups(user_id, game_id, version DESC);
+    -- (other ways to sign in to an account: Google, its subject; an account made with Google has no password, '')
+    CREATE TABLE IF NOT EXISTS identities (
+      provider TEXT NOT NULL, subject TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      email TEXT, created_at INTEGER NOT NULL, PRIMARY KEY(provider, subject)
+    );
+    CREATE INDEX IF NOT EXISTS identities_user ON identities(user_id);
   `);
+  const google = googleClient(dir, googleSettings);
+  const redirectUri = `${publicOrigin}/api/account/google/callback`;
+  const flows = new Map(), signups = new Map(); // (Google sign-ins under way: by state; new players choosing a name: by cookie)
+  const keep = (map, key, value) => {
+    const now = Date.now();
+    if (map.size > 500) for (const [k, v] of map) if (v.expires <= now) map.delete(k);
+    if (map.size > 2000) map.delete(map.keys().next().value);
+    map.set(key, { ...value, expires: now + FLOW_MS });
+  };
+  const take = (map, key) => { const v = key ? map.get(key) : null; if (key) map.delete(key); return v && v.expires > Date.now() ? v : null; };
   const allowedOrigins = new Set([publicOrigin]);
   const limits = new Map();
   const sessionStmt = db.prepare(`SELECT u.id, u.username FROM sessions s JOIN users u ON u.id=s.user_id
@@ -118,6 +144,7 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     return `${salt}:${hash.toString('hex')}`;
   }
   async function verifyPassword(password, stored) {
+    if (!stored) { await passwordHash('no-password'); return false; } // (an account made with Google: no password yet)
     const [salt, expected] = stored.split(':');
     const hash = await passwordHash(password, salt);
     return timingSafeEqual(Buffer.from(hash.split(':')[1], 'hex'), Buffer.from(expected, 'hex'));
@@ -126,12 +153,125 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     const bytes = await readBody(req, 4096);
     try { return JSON.parse(bytes.toString('utf8')); } catch { return null; }
   }
-  function signIn(res, user, secure) {
+  /** What a page knows of its player: the name, the Google address linked (or null), whether a password is set. */
+  function publicUser(user) {
+    const g = db.prepare("SELECT email FROM identities WHERE user_id=? AND provider='google'").get(user.id);
+    const record = db.prepare('SELECT password_hash FROM users WHERE id=?').get(user.id);
+    return { username: user.username, google: g ? g.email || true : null, password: !!record?.password_hash };
+  }
+  /** A new session's cookies (and the older /api-scoped one cleared). */
+  function sessionCookies(user, secure) {
     const token = randomBytes(32).toString('hex');
     db.prepare('DELETE FROM sessions WHERE expires_at<=?').run(Date.now());
     db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
       .run(sha256(token), user.id, Date.now() + SESSION_MS);
-    reply(res, 200, { user: { username: user.username } }, { 'Set-Cookie': [cookie(token, secure), `${COOKIE}=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`] });
+    return [cookie(token, secure), `${COOKIE}=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`];
+  }
+  function signIn(res, user, secure) {
+    reply(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookies(user, secure) });
+  }
+  const flowCookie = (name, value, secure, sameSite, maxAge = FLOW_MS / 1000) =>
+    `${name}=${value}; Path=/api/account/google; HttpOnly; SameSite=${sameSite}; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+  const linkGoogle = (userId, { sub, email }) => db.prepare("INSERT INTO identities(provider,subject,user_id,email,created_at) VALUES('google',?,?,?,?)")
+    .run(sub, userId, typeof email === 'string' ? email.slice(0, 320) : null, Date.now());
+
+  // ---------------------------------------------------------------- Google (google-signin.js)
+  // start: the window goes to Google, a cookie binding the flow to this browser; callback: the player known — signed
+  // in —, Google added to the signed-in account (link), or a new player choosing a name (complete: a new account, or an
+  // existing one with its password); unlink: an account with a password only.
+  const SAY_EN = { 'Trop de tentatives. Réessaie plus tard.': 'Too many attempts. Try again later.', 'Identifiant ou mot de passe incorrect.': 'Wrong username or password.',
+    'Identifiant : 3 à 32 caractères, lettres, chiffres, point, tiret ou souligné.': 'Username: 3 to 32 characters, letters, digits, dot, dash or underscore.', 'Cet identifiant est déjà pris.': 'This username is already taken.' };
+  async function googleRoute(req, res, url, secure) {
+    const p = url.pathname, webSecure = publicOrigin.startsWith('https:');
+    if (p === '/api/account/google/unlink' && req.method === 'POST') {
+      const user = session(req); if (!user) return reply(res, 401, { error: 'Connexion requise.' });
+      if (!publicUser(user).password) return reply(res, 409, { error: 'Définis d’abord un mot de passe : sans Google, ce sera ta seule façon de te connecter.' });
+      db.prepare("DELETE FROM identities WHERE provider='google' AND user_id=?").run(user.id);
+      return reply(res, 200, { user: publicUser(user) });
+    }
+    if (!google.enabled()) return reply(res, 404, { error: 'Connexion avec Google indisponible.' });
+    const browserLang = /^fr\b/i.test(String(req.headers['accept-language'] ?? '')) ? 'fr' : 'en';
+    if (p === '/api/account/google/start' && req.method === 'GET') {
+      const q = url.searchParams, lang = q.get('lang') === 'fr' || q.get('lang') === 'en' ? q.get('lang') : browserLang;
+      const ctx = { popup: q.get('popup') === '1', back: backPath(q.get('back')), flow: /^[a-z0-9]{8,32}$/.test(q.get('flow') ?? '') ? q.get('flow') : null };
+      if (limited(req, 'google', 30, 10 * 60_000)) return html(res, 429, resultPage(lang, { ...ctx, result: 'failed', ok: false }));
+      let link = null;
+      if (q.get('link') === '1') {
+        const user = session(req); if (!user) return html(res, 401, resultPage(lang, { ...ctx, result: 'needSession', ok: false }));
+        link = user.id;
+      }
+      const state = randomBytes(24).toString('hex'), binding = randomBytes(32).toString('hex'), verifier = randomBytes(32).toString('base64url'), nonce = randomBytes(16).toString('hex');
+      keep(flows, state, { binding: sha256(binding), verifier, nonce, link, lang, ...ctx });
+      const challenge = createHash('sha256').update(verifier).digest('base64url');
+      // (Lax: the cookie comes back with Google's redirection, a navigation from another site)
+      res.writeHead(302, { Location: google.authUrl({ state, nonce, challenge, redirectUri, lang }), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+        'Set-Cookie': flowCookie(OAUTH_COOKIE, binding, webSecure, 'Lax') });
+      return res.end();
+    }
+    if (p === '/api/account/google/callback' && req.method === 'GET') {
+      const q = url.searchParams, state = q.get('state') ?? '';
+      const st = take(flows, /^[a-f0-9]{48}$/.test(state) ? state : null), binding = requestToken(req, OAUTH_COOKIE), lang = st?.lang ?? browserLang;
+      const ctx = { popup: !!st?.popup, back: st?.back ?? '/', flow: st?.flow ?? null };
+      const clear = flowCookie(OAUTH_COOKIE, '', webSecure, 'Lax', 0);
+      const done = (status, outcome, cookies = []) => html(res, status, resultPage(lang, { ...ctx, ...outcome }), { 'Set-Cookie': [clear, ...cookies] });
+      if (!st || !binding || sha256(binding) !== st.binding) return done(400, { result: 'expired', ok: false });
+      if (q.get('error')) return done(200, { result: 'cancelled', ok: false });
+      let claims;
+      try { claims = await google.exchange({ code: q.get('code') ?? '', verifier: st.verifier, redirectUri, nonce: st.nonce }); }
+      catch (e) { console.error('Google sign-in:', e.message); return done(502, { result: 'failed', ok: false }); }
+      const email = typeof claims.email === 'string' ? claims.email.slice(0, 320) : null;
+      const known = db.prepare("SELECT user_id FROM identities WHERE provider='google' AND subject=?").get(claims.sub);
+      if (known) db.prepare("UPDATE identities SET email=? WHERE provider='google' AND subject=?").run(email, claims.sub);
+      if (st.link) {
+        if (known && known.user_id !== st.link) return done(409, { result: 'taken', ok: false });
+        if (!known) {
+          if (!db.prepare('SELECT 1 FROM users WHERE id=?').get(st.link)) return done(400, { result: 'expired', ok: false });
+          if (db.prepare("SELECT 1 FROM identities WHERE provider='google' AND user_id=?").get(st.link)) return done(409, { result: 'hasOther', ok: false });
+          linkGoogle(st.link, claims);
+        }
+        return done(200, { result: 'linked', ok: true });
+      }
+      if (known) {
+        const user = db.prepare('SELECT id, username FROM users WHERE id=?').get(known.user_id);
+        return done(200, { result: 'signed-in', ok: true, username: user.username }, sessionCookies(user, webSecure));
+      }
+      const token = randomBytes(32).toString('hex');
+      keep(signups, sha256(token), { sub: claims.sub, email, lang, ...ctx });
+      const suggestion = suggestUsername(claims, (name) => !!db.prepare('SELECT 1 FROM users WHERE username=?').get(name));
+      return html(res, 200, choosePage(lang, { name: typeof claims.given_name === 'string' ? claims.given_name.slice(0, 64) : '', email, suggestion, ...ctx }),
+        { 'Set-Cookie': [clear, flowCookie(SIGNUP_COOKIE, token, webSecure, 'Strict')] });
+    }
+    if (p === '/api/account/google/complete' && req.method === 'POST') {
+      const token = requestToken(req, SIGNUP_COOKIE), key = token ? sha256(token) : null, pending = key ? signups.get(key) : null;
+      const S = pageText(pending?.lang ?? browserLang), say = (fr) => (pending?.lang === 'fr' ? fr : SAY_EN[fr] ?? fr);
+      if (!pending || pending.expires <= Date.now()) return reply(res, 400, { error: S.expired });
+      const body = await jsonBody(req), username = String(body?.username ?? '').trim().toLowerCase();
+      let user, created = false;
+      if (body?.mode === 'existing') {
+        if (limited(req, 'login', 10, 60_000)) return reply(res, 429, { error: say('Trop de tentatives. Réessaie plus tard.') });
+        const record = USERNAME.test(username) ? db.prepare('SELECT * FROM users WHERE username=?').get(username) : null;
+        const valid = typeof body.password === 'string' && body.password.length <= 128 && await verifyPassword(body.password, record?.password_hash ?? await passwordHash('invalid-password'));
+        if (!record || !valid) return reply(res, 401, { error: say('Identifiant ou mot de passe incorrect.') });
+        user = { id: record.id, username: record.username };
+      } else {
+        if (limited(req, 'register', 5, 15 * 60_000)) return reply(res, 429, { error: say('Trop de tentatives. Réessaie plus tard.') });
+        if (!USERNAME.test(username)) return reply(res, 400, { error: say('Identifiant : 3 à 32 caractères, lettres, chiffres, point, tiret ou souligné.') });
+        user = { id: randomUUID(), username }; created = true;
+      }
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (db.prepare("SELECT 1 FROM identities WHERE provider='google' AND subject=?").get(pending.sub)) { db.exec('ROLLBACK'); signups.delete(key); return reply(res, 409, { error: S.taken }); }
+        if (!created && db.prepare("SELECT 1 FROM identities WHERE provider='google' AND user_id=?").get(user.id)) { db.exec('ROLLBACK'); return reply(res, 409, { error: S.hasOther }); }
+        if (created && db.prepare('SELECT 1 FROM users WHERE username=?').get(username)) { db.exec('ROLLBACK'); return reply(res, 409, { error: say('Cet identifiant est déjà pris.') }); }
+        if (created) db.prepare('INSERT INTO users(id,username,password_hash,created_at) VALUES(?,?,?,?)').run(user.id, username, '', Date.now());
+        linkGoogle(user.id, pending);
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+      signups.delete(key);
+      return reply(res, 200, { user: publicUser(user), title: S.title, message: S.signedIn(user.username) },
+        { 'Set-Cookie': [...sessionCookies(user, secure), flowCookie(SIGNUP_COOKIE, '', secure, 'Strict', 0)] });
+    }
+    return reply(res, 404, { error: 'Introuvable.' });
   }
 
   const api = async (req, res) => {
@@ -146,8 +286,9 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
       const user = session(req);
       // Migrate older cookies scoped to /api before entering a browser port.
       const token = requestToken(req);
-      return reply(res, 200, { user: user ? { username: user.username } : null }, user ? { 'Set-Cookie': [cookie(token, secure), `${COOKIE}=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`] } : {});
+      return reply(res, 200, { user: user ? publicUser(user) : null }, user ? { 'Set-Cookie': [cookie(token, secure), `${COOKIE}=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`] } : {});
     }
+    if (p.startsWith('/api/account/google/')) return googleRoute(req, res, url, secure);
     if (p === '/api/account/register' && req.method === 'POST') {
       if (limited(req, 'register', 5, 15 * 60_000)) return reply(res, 429, { error: 'Trop de tentatives. Réessaie plus tard.' });
       const body = await jsonBody(req), username = String(body?.username ?? '').trim().toLowerCase(), password = body?.password;
@@ -177,7 +318,8 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
       const body = await jsonBody(req), oldPassword = body?.oldPassword, newPassword = body?.newPassword;
       if (typeof newPassword !== 'string' || newPassword.length < 10 || newPassword.length > 128) return reply(res, 400, { error: 'Le nouveau mot de passe doit contenir de 10 à 128 caractères.' });
       const record = db.prepare('SELECT password_hash FROM users WHERE id=?').get(user.id);
-      if (!record || typeof oldPassword !== 'string' || !await verifyPassword(oldPassword, record.password_hash)) return reply(res, 403, { error: 'Mot de passe actuel incorrect.' });
+      // (an account made with Google sets its first password without one)
+      if (!record || (record.password_hash && (typeof oldPassword !== 'string' || !await verifyPassword(oldPassword, record.password_hash)))) return reply(res, 403, { error: 'Mot de passe actuel incorrect.' });
       db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(await passwordHash(newPassword), user.id);
       db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash<>?').run(user.id, sha256(requestToken(req)));
       return reply(res, 200, { ok: true });
@@ -186,8 +328,10 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
       const user = session(req); if (!user) return reply(res, 401, { error: 'Connexion requise.' });
       const body = await jsonBody(req);
       const record = db.prepare('SELECT password_hash FROM users WHERE id=?').get(user.id);
-      if (!record || typeof body?.password !== 'string' || !await verifyPassword(body.password, record.password_hash))
-        return reply(res, 403, { error: 'Mot de passe incorrect.' });
+      if (!record) return reply(res, 403, { error: 'Mot de passe incorrect.' });
+      // (without a password — an account made with Google — its name typed again confirms)
+      if (!record.password_hash ? body?.username !== user.username : typeof body?.password !== 'string' || !await verifyPassword(body.password, record.password_hash))
+        return reply(res, 403, { error: record.password_hash ? 'Mot de passe incorrect.' : 'Saisis ton identifiant pour confirmer.' });
       db.prepare('DELETE FROM users WHERE id=?').run(user.id);
       return reply(res, 200, { ok: true }, { 'Set-Cookie': [cookie('', secure, 0), `${COOKIE}=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`] });
     }
@@ -256,6 +400,7 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     return reply(res, 405, { error: 'Méthode refusée.' });
   };
   api.session = session;
+  api.googleEnabled = () => google.enabled();
   api.registerPortToken = (user, installation, token) => {
     db.prepare('DELETE FROM port_tokens WHERE expires_at<=?').run(Date.now());
     db.prepare('INSERT OR REPLACE INTO port_tokens VALUES(?,?,?,?)').run(sha256(token), user.id, installation, Date.now() + SESSION_MS);
