@@ -285,7 +285,7 @@ document.body.append(dialog);
 dialog.addEventListener('close', () => { app.open = false; });
 // (the game behind must not get the keys and the mouse used here — its own key handler cancels every key, Escape included)
 dialog.addEventListener('keydown', (event) => { event.stopPropagation(); if (event.key === 'Escape' && asking.hidden) { event.preventDefault(); dialog.close(); } });
-dialog.addEventListener('keyup', (event) => event.stopPropagation());
+for (const type of ['keyup', 'keypress']) dialog.addEventListener(type, (event) => event.stopPropagation()); // (keypress: a game's text input — SDL's)
 for (const type of ['mousedown', 'mouseup', 'mousemove', 'click', 'wheel']) dialog.addEventListener(type, (e) => e.stopPropagation());
 dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
 let askEscapedAt = 0;
@@ -624,10 +624,11 @@ function open(tab = 'general') {
   refresh({ account: true }).then(updateAccountButton).catch((error) => { app.tone = 'error'; app.message = error.message; render(); });
 }
 // home screen: the two buttons of its header (see index.html); in a game: the header's settings and save indicator
-// (shell.js) open it through window.orthrosData
+// (shell.js) open it through window.orthrosData — and a game asking for a sign-in (the shared world's link, re3
+// play.js), which closes it once signed in
 document.getElementById('hmSettingsBtn')?.addEventListener('click', () => open('general'));
 document.getElementById('hmAccountBtn')?.addEventListener('click', () => open('account'));
-window.orthrosData = { open };
+window.orthrosData = { open, close: () => { if (dialog.open) dialog.close(); } };
 // is a session open? (a cheap question; the answer only lights the dot of the little person)
 fetch('/api/config').then((r) => r.json()).then(async (c) => { app.accountsOn = !!c.accounts; if (c.accounts) app.account = (await jsonApi('/api/account')).user; updateAccountButton(); }).catch(() => {});
 // (signed in or out from a game's loading screen: the same here)

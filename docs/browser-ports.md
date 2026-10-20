@@ -661,6 +661,16 @@ same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame r
   engine's files are not replaced under it. The running game's are kept aside in IndexedDB, its saves stop, the
   account's files take the profile's place and the page reloads to start on them. The game over, they wait for its
   restart.
+- **Shared world** (a version with `mmo`, docs/mmo.md): `Module.orthrosNet` is the shared link
+  (`src/host/web/mmo-link.js`, the same for any runtime: WebSocket `/api/mmo/<version>/ws`, whole messages queued for
+  the engine's `drain`, reconnection with backoff and the LINK_RESET pseudo-record, PING every 15 s, AWAY when the tab
+  is hidden, closed when the page goes) with what only the page knows: `user()`, `signIn()` (the account window, a
+  modal over the game — full screen too —, closed once signed in; a sign-in, sign-out or another account closes the
+  link, and the engine opens it again as the account now signed in), `testing` (`?mmotest`), `testCommands`, `debug`.
+  The link opens only when the engine asks. While a world is joined the header's saves say "Saved by the world".
+  `window.orthrosMmo` (`link`, the engine's last debug `state`, `command(text)`) is what `tools/re3/mmo-check.mjs` — two
+  players in one Chromium, `tools/with-browser-slot.sh node tools/re3/mmo-check.mjs --url <server> --scenario all` —
+  drives.
 
 ### The engine, built from source
 

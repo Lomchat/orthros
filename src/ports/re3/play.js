@@ -3,7 +3,9 @@
 // WebAudio, JSPI), the version's game files streamed into the game's folder with the release's own over them
 // (../goldsrc/files.js: what the game reads first loaded before it starts, the rest as it goes; kept in IndexedDB), and
 // the files the engine writes there — saves, settings, its ini file — as the player's profile (profile.js), in
-// IndexedDB under the installation's key and on the player's Orthros account (cloud-sync.js). Single player only.
+// IndexedDB under the installation's key and on the player's Orthros account (cloud-sync.js). A version with `mmo` has
+// a shared world on the server besides (docs/mmo.md): the engine reaches it through Module.orthrosNet, the shared link
+// (../../host/web/mmo-link.js) and what the engine asks of the page (who plays, a sign-in, its test hooks).
 // Around the game, the frame every Orthros game has (/src/host/web/shell.js): the header (the mouse, the saves, the
 // frame rate, full screen, back to the games), the loading screen, the game filling the rest of the window. It never
 // loads the Win32 runtime, and nothing here names a game.
@@ -11,6 +13,8 @@ import { pickLang } from '../../host/web/lang.js';
 import { createShell, lockKeys } from '../../host/web/shell.js';
 import { escapeToGame } from '../../host/web/escape.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
+import { onAccountChange } from '../../host/web/account.js';
+import { createMmoLink, LINK } from '../../host/web/mmo-link.js';
 import { openStorage, readStorage, writeStorage, writeManyStorage, storageKeys, removeStorage } from '../goldsrc/storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, PIECE } from '../goldsrc/files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
@@ -41,6 +45,8 @@ const STRINGS = {
     lateAccount: 'Restart with the account\'s save', lateDevice: 'Keep this browser\'s save',
     modes: { story: 'Story', free: 'Free mode', solo: 'Play' },
     modeNotes: { story: 'The game from its beginning, its saves at the safe houses.', free: 'The game completed at 100 %: the whole city open, every property bought, everything unlocked. Save from the pause menu, anywhere.' },
+    worldLost: 'Multiplayer: connection to the world lost, reconnecting…', worldBack: 'Multiplayer: connected to the world again',
+    worldSignIn: 'Multiplayer needs an Orthros account: sign in from the games\' page, then come back',
   },
   fr: {
     subtitle: 'ses fichiers d’origine, sur un moteur recompilé dans ton navigateur',
@@ -65,6 +71,8 @@ const STRINGS = {
     lateAccount: 'Relancer avec celle du compte', lateDevice: 'Garder celle de ce navigateur',
     modes: { story: 'Histoire', free: 'Mode libre', solo: 'Jouer' },
     modeNotes: { story: 'Le jeu depuis son début, ses sauvegardes dans les planques.', free: 'Le jeu fini à 100 % : toute la ville ouverte, toutes les propriétés achetées, tout débloqué. Sauvegarde depuis le menu pause, n’importe où.' },
+    worldLost: 'Multijoueur : connexion au monde perdue, reconnexion…', worldBack: 'Multijoueur : de nouveau connecté au monde',
+    worldSignIn: 'Le multijoueur demande un compte Orthros : connecte-toi depuis la page des jeux, puis reviens',
   },
 };
 const lang = pickLang(), S = STRINGS[lang] ?? STRINGS.en;
@@ -170,7 +178,7 @@ function showEnd(text, error, buttons) {
 const fail = (error) => {
   if (session.state === 'error') { log(error?.stack ?? error); return; } // (one report: an abort then its rejection)
   const crashed = profileReady; // (an engine that ran: its profile is kept; a new start reloads the page — a stopped engine cannot start again)
-  session.state = 'error'; log(error?.stack ?? error);
+  session.state = 'error'; log(error?.stack ?? error); world?.link.close();
   report('crash', { message: String(error?.message ?? error).slice(0, 300), crashed, log: logs.slice(-30).map((l) => l.slice(0, 200)) });
   if (timer) clearInterval(timer); if (cloudTimer) clearInterval(cloudTimer);
   if (!shell) return;
@@ -185,7 +193,7 @@ function ended(code) {
   if (session.state === 'ended' || session.state === 'error' || !shell) return;
   log(`The game ended (${code ?? 0})`);
   endReport();
-  session.state = 'ended'; session.exitCode = code ?? 0;
+  session.state = 'ended'; session.exitCode = code ?? 0; world?.link.close();
   if (timer) clearInterval(timer); if (cloudTimer) clearInterval(cloudTimer);
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   showEnd(S.ended, false, [{ label: S.restart, primary: true, onclick: restart }, { label: S.back, onclick: () => shell.quit() }]);
@@ -302,7 +310,7 @@ function newCloud(username) {
   return new CloudSave({
     game: name, user: username,
     // (the account's copy put in place while the game runs: recorded as in step, the page reloaded to start on it)
-    onStatus: (s) => { shell.setSave(s); if (reloadWhenSaved && s.state === 'saved') location.reload(); },
+    onStatus: (s) => { if (!world?.link.joined()) shell.setSave(s); if (reloadWhenSaved && s.state === 'saved') location.reload(); },
     read: async () => toCloud(await currentProfile()),
     // The account's files in place of the profile, the previous one kept aside in the same store: before the engine
     // starts; or once it has, a conflict settled from the header — the engine's files are not replaced under it: no
@@ -406,6 +414,69 @@ function reportSeed(files) {
 document.addEventListener('pointerdown', () => seedWatch?.input(performance.now(), perf.started, false), { capture: true });
 document.addEventListener('keydown', (event) => seedWatch?.input(performance.now(), perf.started, event.key.length === 1), { capture: true });
 
+// ---------------------------------------------------------------- the shared world (docs/mmo.md, section 6)
+// A version with `mmo` has a world on the server (src/host/mmo.js, /api/mmo/<version>/ws). The engine owns its rules and
+// every record; the page gives it, as Module.orthrosNet, the shared link (mmo-link.js: open, close, state, refusal,
+// send, drain, away…) and what only the page knows: user() the Orthros account's name ('' when none); signIn() the
+// account window over the game; `testing` (a boolean: ?mmotest in the page's address); `testCommands` (strings the
+// engine takes one a frame) and debug(json) (the engine's state, every 500 ms under test). The link opens when the
+// engine asks — its main menu's Multiplayer —, never before. A sign-in, a sign-out or another account on this page
+// closes it: state() 0 again, and the engine — waiting on a sign-in, or in the world as the account that left — opens
+// it again by itself, as the account now signed in (or is refused). window.orthrosMmo: { link, state (the engine's last
+// debug object), updates, at, command(text) } — tools/re3/mmo-check.mjs drives two pages through it.
+/** @type {{ link: ReturnType<typeof createMmoLink>, net: object } | null} */
+let world = null, signInAsked = false;
+function createWorld(versionId, username) {
+  const url = new URL(`/api/mmo/${encodeURIComponent(versionId)}/ws`, location.href);
+  url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  let last = LINK.CLOSED, lostInWorld = false, shownJoined = false;
+  const link = createMmoLink({ url, log: (line) => log(`Shared world: ${line}`), onState: (state, l) => {
+    session.world = { state, refusal: l.refusal(), joined: l.joined() };
+    if (state !== last) {
+      if (state === LINK.WAITING && last === LINK.OPEN && l.joined()) { lostInWorld = true; toast(S.worldLost, 6000); }
+      else if (state === LINK.OPEN && lostInWorld) { lostInWorld = false; toast(S.worldBack, 3000); }
+      else if (state === LINK.CLOSED || state === LINK.REFUSED) lostInWorld = false;
+      last = state;
+    }
+    // (the header's saves: the world's server keeps the character while one is in the world)
+    if (l.joined() !== shownJoined) { shownJoined = l.joined(); shell?.setSave(shownJoined ? { state: 'server' } : cloud?.status ?? null); }
+  } });
+  link.away(document.hidden);
+  const probe = { link, state: null, updates: 0, at: 0, command: (text) => net.testCommands.push(String(text)) };
+  const net = {
+    ...link,
+    user: () => shell?.account?.username ?? '',
+    signIn: () => askSignIn(),
+    testing: params.has('mmotest'),
+    testCommands: [],
+    debug: (json) => {
+      try { probe.state = JSON.parse(json); } catch { probe.state = { error: 'not JSON', text: String(json).slice(0, 300) }; }
+      probe.updates++; probe.at = performance.now();
+    },
+  };
+  window.orthrosMmo = probe;
+  let account = username;
+  onAccountChange(({ user }) => {
+    const now = user?.username ?? null;
+    if (now === account) return;
+    account = now;
+    if (user && signInAsked) { signInAsked = false; window.orthrosData?.close?.(); $('canvas').focus(); } // (back to the game)
+    if (link.state() !== LINK.CLOSED) link.close();
+  });
+  return { link, net };
+}
+/**
+ * The engine asks for a sign-in (its multiplayer needs an Orthros account): the account window (data-manager.js) — a
+ * modal dialog, over the game in full screen too (the top layer); the mouse freed; closed once signed in.
+ */
+function askSignIn() {
+  if (shell?.account || !shell?.accounts) return; // (signed in already, or a server without accounts: the engine shows the refusal)
+  signInAsked = true;
+  if (document.pointerLockElement) document.exitPointerLock();
+  if (window.orthrosData?.open) window.orthrosData.open('account');
+  else toast(S.worldSignIn, 9000);
+}
+
 /** The game's language: the one chosen on the home screen (?gameLang=, else remembered), among the version's. */
 function gameLanguage(man) {
   const options = man.languages ?? [];
@@ -433,6 +504,7 @@ async function start(mode = null) {
     const what = await cloud.pull().catch((e) => { log('Account saves: ' + e.message); return 'offline'; });
     if (what === 'conflict') await shell.resolveConflict(cloud);
   }
+  world = config.mmo ? createWorld(name, who.user?.username ?? null) : null;
   status(S.init);
   // (the module's own files — its WebAssembly — beside it in the release)
   const moduleUrl = base + r.module.split('/').map(encodeURIComponent).join('/'), dir = moduleUrl.slice(0, moduleUrl.lastIndexOf('/') + 1);
@@ -441,6 +513,7 @@ async function start(mode = null) {
   engine = session.engine = await createEngine({
     canvas: $('canvas'), print: log, printErr: log, locateFile: (file) => dir + file, noInitialRun: true,
     onAbort: (reason) => fail(new Error(String(reason))), onExit: (code) => ended(code), orthrosFrame: onFrame, orthrosMouse: onMouseMode,
+    ...(world ? { orthrosNet: world.net } : {}), // (the shared world: the engine's way to it)
     preRun: [envPreRun(own.env, log)], // (the language's environment, before the runtime copies it)
   });
   step('engine', 'done', `${((performance.now() - t) / 1000).toFixed(1)} s`);
@@ -565,8 +638,12 @@ try {
   else await start(modes.length ? (modes.includes(params.get('mode')) ? params.get('mode') : modes[0]) : null);
 } catch (error) { if (shell) fail(error); else document.body.textContent = S.failed + (error.message ?? error); }
 
-document.addEventListener('visibilitychange', () => { if (document.hidden && session.state === 'running') save().then(() => cloud?.push()).catch(log); });
+document.addEventListener('visibilitychange', () => {
+  world?.link.away(document.hidden); // (the engine stops with the page's frames: the others are told, its entities go to them)
+  if (document.hidden && session.state === 'running') save().then(() => cloud?.push()).catch(log);
+});
 window.addEventListener('pagehide', () => {
+  world?.link.close();
   if (session.state === 'running') endReport();
   stopped = true; if (timer) clearInterval(timer); if (cloudTimer) clearInterval(cloudTimer); reportReads(true);
 });
