@@ -1,7 +1,7 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue]
+// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue]
 //   --engines-dir: the installed engine releases of the browser ports (default data_engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
@@ -15,6 +15,8 @@
 //            player makes it (tools/snapshot-publish.mjs, one at a time, through the project's browser slots);
 //            --snapshot-queue: the request is only queued, in <learn>/snapshots/queue.json, for tools/snapshot-jobs.mjs
 //            (a sandboxed server: no browser from it)
+//   --mmo: where the shared worlds of the versions with an `mmo` entry keep their characters and world state
+//            (default <accounts>/mmo; without --accounts there is no shared world: the Orthros account is its identity)
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -31,6 +33,7 @@ import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
 import { openmwInstalled, openmwModes, openmwProxy, openmwReads, openmwSpans, openmwWebText, withFrameMeter, withSharedEngine, withStreaming } from './openmw.js';
 import { re3Installed, re3Modes, re3Module } from './re3.js';
+import { mmoApi } from './mmo.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
@@ -562,6 +565,11 @@ export function createServer(opts = {}) {
   };
 
   const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game), ...(opts.accountMaxUserBytes ? { maxUserBytes: opts.accountMaxUserBytes } : {}), ...(opts.accountGoogle ? { google: opts.accountGoogle } : {}) }) : null;
+  // (the Orthros account is a player's only identity: undefined on a server without accounts, null when nobody is signed in)
+  const identify = (req) => (accountApi ? accountApi.session(req) ?? null : undefined);
+  // the shared worlds of the versions whose manifest has an `mmo` entry (src/host/mmo.js): none without accounts
+  const mmoDir = accountApi ? path.resolve(opts.mmoDir ?? path.join(opts.accountsDir, 'mmo')) : null;
+  const mmo = mmoApi({ getManifest, identify, dir: mmoDir, log: opts.mmoLog ?? ((m) => console.log(m)), ...(opts.mmoNow ? { now: opts.mmoNow } : {}) });
   // Localized OpenMW masters need separate simulations, caches and save histories.
   function portLanguages(man, id) {
     if (man.runtime !== 'openmw' || !man.openmw.languageVersions) return {};
@@ -576,7 +584,7 @@ export function createServer(opts = {}) {
     return { languages: Object.keys(languageLaunchUrls), contentLanguages: man.languages ?? [], languageLaunchUrls };
   }
   const mapImages = new Map(); // (the lobby's map pictures, compressed: file|mtime -> { raw, gzip, zstd })
-  const rooms = roomsApi({ getManifest, identify: (req) => (accountApi ? accountApi.session(req) ?? null : undefined), ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
+  const rooms = roomsApi({ getManifest, identify, ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
   const openmw = openmwProxy({ getManifest, session: accountApi?.session, ownsToken: accountApi?.ownsPortToken });
   const openmwAccounts = accountBridge({ accountsDir: opts.accountsDir, accountApi, getManifest });
   const spans = openmwSpans({ getManifest, enginesDir, headers }), openmwLearned = openmwReads({ getManifest, enginesDir, learnDir: opts.learnDir, headers });
@@ -584,7 +592,7 @@ export function createServer(opts = {}) {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
     try {
-      if (openmwAccounts.handle(req, res, url) || spans.handle(req, res, url) || openmwLearned.handle(req, res, url) || openmw.handle(req, res, url)) return;
+      if (openmwAccounts.handle(req, res, url) || spans.handle(req, res, url) || openmwLearned.handle(req, res, url) || openmw.handle(req, res, url) || mmo.handle(req, res, url)) return;
       // (the multiplayer rooms of a browser port, from its server manager)
       if (p.startsWith('/api/rooms/') && rooms.handle(req, res, url)) return;
       // (a map's picture for the lobby: the game's own overview, multiplayer.mapImage)
@@ -605,7 +613,7 @@ export function createServer(opts = {}) {
         accountApi(req, res).catch((e) => { console.error('account API:', e); if (!res.headersSent) send(res, e.status ?? 500, 'account API error'); else res.destroy(); });
         return;
       }
-      if (p === '/api/config') return send(res, 200, JSON.stringify({ version: buildVersion(), defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, google: !!accountApi?.googleEnabled(), encodedRanges: true, prefetch: true, programCache: true, regionCache: true, profileSeed: true }), { 'Content-Type': 'application/json' });
+      if (p === '/api/config') return send(res, 200, JSON.stringify({ version: buildVersion(), defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, google: !!accountApi?.googleEnabled(), mmo: !!mmoDir, encodedRanges: true, prefetch: true, programCache: true, regionCache: true, profileSeed: true }), { 'Content-Type': 'application/json' });
       // (the sources snapshots depend on, docs/snapshot.md: a page keeps its snapshot of a game only while they are the same)
       if (p === '/api/snapshot-sources') return send(res, 200, JSON.stringify(snapshotSourcesHash(ROOT)), { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
       if (p === '/api/telemetry' && req.method === 'POST') {
@@ -635,7 +643,7 @@ export function createServer(opts = {}) {
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name), runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : runtime === 're3' ? re3Modes(m.re3) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
-            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, saveKey: port ? m.saveKey ?? null : null,
+            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
             available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
@@ -840,16 +848,22 @@ export function createServer(opts = {}) {
       return send(res, 500, String(e.stack || e));
     }
   });
-  // WebSockets: the virtual LAN of the Win32 games (/api/lan) and the multiplayer relay of the ports (/api/udp/<manifest>)
-  // (the Orthros account is a player's only identity: on a server with accounts, multiplayer is for signed-in players)
-  const identify = (req) => (accountApi ? accountApi.session(req) ?? null : undefined);
-  const upgrades = [lanUpgrades(opts.lanLog ?? ((m) => console.log(m)), { identify }), udpRelay({ getManifest, accept: acceptWebSocket, identify, log: (m) => console.log(m) })];
+  // WebSockets: the virtual LAN of the Win32 games (/api/lan), the multiplayer relay of the ports (/api/udp/<manifest>)
+  // and the shared worlds (/api/mmo/<version>/ws) (on a server with accounts, multiplayer is for signed-in players)
+  const upgrades = [lanUpgrades(opts.lanLog ?? ((m) => console.log(m)), { identify }), udpRelay({ getManifest, accept: acceptWebSocket, identify, log: (m) => console.log(m) }),
+    { handle: (req, socket, url) => mmo.upgrade(req, socket, url) }];
   server.on('upgrade', (req, socket, head) => {
     let url; try { url = new URL(req.url, 'http://x'); } catch { socket.destroy(); return; }
     if (openmw.upgrade(req, socket, url, head)) return;
     if (!upgrades.some((u) => u.handle(req, socket, url))) socket.destroy();
   });
   server.snapshotJobs = snapshotJobs; // (tools/snapshot-shared-check.mjs: waits for the publishing sessions)
+  // (the shared worlds saved and their connections closed when the server closes — first: close() waits for the upgraded
+  // sockets, which closeAllConnections() leaves open)
+  server.mmo = mmo;
+  const closeServer = server.close.bind(server);
+  server.close = (cb) => { mmo.close(); return closeServer(cb); };
+  server.on('close', () => mmo.close());
   return server;
 }
 
@@ -857,8 +871,10 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const port = Number(args[args.indexOf('--port') + 1] || 8080) || 8080;
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
-  const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts');
-  for (const d of [telemetryDir, learnDir, accountsDir]) if (d) fs.mkdirSync(d, { recursive: true });
-  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
+  const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts'), mmoDir = arg('--mmo');
+  for (const d of [telemetryDir, learnDir, accountsDir, mmoDir]) if (d) fs.mkdirSync(d, { recursive: true });
+  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
+  // (a restart — every deployment — saves the shared worlds' last changes first: they are written a few seconds after)
+  for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.mmo.flush(); } catch (e) { console.error('mmo flush:', e); } finally { process.exit(0); } });
 }
