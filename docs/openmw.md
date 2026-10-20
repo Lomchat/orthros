@@ -298,19 +298,48 @@ Loading (2026-10-20, after the owner's "stuck at 20 %" and a New Game freeze). T
 them (39 MB; no `Content-Length`, so Emscripten's progress counts against the decoded package size),
 from `/engines/<release>/e/<hash>/` (immutable, one browser copy for every installation:
 `withSharedEngine`). The page adaptation drops the upstream `?v=2` from the base game's StreamFS
-URLs: with a query, streamfs.js keeps none of the pieces it read, and every session read
-Morrowind.esm and the archives over the network again. The engine reads those files synchronously
-on the page's thread, 2 MB per miss: the first boot of Vanilla+ reads 237 MB that way, a first New
-Game ~150 MB more; the page cannot paint meanwhile and Chrome may offer to close it. The Orthros
-loading screen shows the package download (received / size, rate) and switches to "reading the game
-data" at its end; `stream-meter.js` (injected with the frame meter) tells a worker about each piece the
-page's thread is about to wait for, and the worker draws an indicator in an OffscreenCanvas over the
-Orthros page — its frames reach the screen while the page's thread is held (verified in a headed
-Chrome under Xvfb; headless screenshots cannot show it, they need that thread). Measured through a
-2 MB/s link (vanilla-plus-fr): first launch 150 s to the menu (130 s of frozen reads), second 15 s
-(2.6 s of reads, everything from the browser's caches), first New Game 35 s frozen with the indicator
-up, then the intro movie and the character creation. Not done: a learned read-ahead of the opening's
-pieces while the player is idle.
+URLs (with a query the upstream streamfs.js kept none of the pieces it read). The engine reads its
+game files synchronously on the page's thread (1–8 KB reads through its own buffers); the page
+cannot paint meanwhile and Chrome may offer to close it. The Orthros loading screen shows the
+package download (received / size, rate) and switches to "reading the game data" at its end;
+`stream-meter.js` (injected with the frame meter) draws an indicator from a worker in an
+OffscreenCanvas over the Orthros page — its frames reach the screen while the page's thread is held
+(verified in a headed Chrome under Xvfb; headless screenshots cannot show it, they need that thread):
+data received (the streaming's shared byte counter), rate, seconds, and "choose Wait" once Chrome
+may ask.
+
+The engine page's file streaming is Orthros' own (`src/ports/openmw/streamfs.js` and
+`streamfs-worker.js`, same interface as the release's, swapped by `withStreaming`; `?sfs=upstream`
+on the port's page keeps the release's). Measured first (vanilla-plus-fr, boot + New Game): the
+upstream fetched 2 MB per miss, raw — 58 MB for 8 MB of archive records, the masters again after a
+New Game evicted them, ~300 small files one round trip each. Now: 64 KB blocks in the page's memory;
+a miss is planned by the worker — a small file (≤ 1 MB) whole, a TES3 BSA record whole (its file
+table, read once), a file read in order further and further ahead (up to what the link carries in
+2 s) with the next stretch fetched while the engine works; fetched compressed from
+`app/z/<mwdata|moddata>/<file>?r=a-b&s=size` (`openmwSpans`: brotli 5, 2–5× smaller for masters and
+archives, ~40 MB/s per core; 412 when the size changed, then the plain range); kept in OPFS
+(`orthros-streamfs-1/`: a copy of each file at its offsets plus a block map; small files whole), so a
+returning player reads from disk. The upstream's Cache API pieces (`mwdata-chunks-v1`) are taken
+over when met. The worker reports the blocks the engine used first (the page's thread tells it) to
+`POST /api/openmw/<manifest>/reads`; `GET …/prefetch` gives a new session that order (mean time over
+sessions, blocks a single session read dropped once three are known, 400 MB, first 30 minutes;
+`<learnDir>/openmw-reads-<manifest>.json`), fetched ahead from the engine's first read on (not during
+its own download), two at a time (one while the page waits), no more than 15 s of link ahead of the
+engine while it keeps reading, to the end once it is idle 3 s (the menu). A "Preloading %" pill in the
+header shows it.
+
+Measured through a 2 MB/s link (tools: a throttling proxy; headless Chromium, SwiftShader):
+
+| vanilla-plus-fr | upstream streaming | Orthros streaming |
+|---|---|---|
+| new player, launch → menu | 160 s, 328 MB with the New Game's start | 63 s (no list yet: 84 s) |
+| new player, first New Game: longest freeze | ~35 s | 6.3 s (no list yet: 25 s) |
+| new player, boot + New Game + 2 min | ~410 MB | 174 MB |
+| returning player, launch → menu | 15 s | 14 s; New Game 6.9 s, 16 MB |
+| upstream cache taken over | — | 16 s to the menu, 33 MB |
+
+Unthrottled the launch takes 16 s (the engine's own work). Not validated: multiplayer and the locker
+(signed addresses, a player's own files) with the new streaming; real GPUs.
 
 World-travel replies can also arrive through the engine's WebSocket protocol, with a root
 `/w/<world>` destination. The served page scopes same-host WebSocket destinations at its

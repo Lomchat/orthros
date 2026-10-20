@@ -18,6 +18,8 @@
     if (this !== meter && m && typeof m.gen === 'number' && typeof m.start === 'number' && typeof m.end === 'number') send.call(meter, { read: m.end - m.start });
     return send.call(this, m, ...rest);
   };
+  // (Orthros' file streaming, src/ports/openmw/streamfs.js, hands over its counter of the bytes arriving: read live)
+  window.orthrosStreamMeter = { attach(buffer) { send.call(meter, { arrived: buffer }); } };
   let last = 0;
   const beat = (t) => { if (t - last > 100) { last = t; send.call(meter, { beat: 1 }); } requestAnimationFrame(beat); };
   requestAnimationFrame(beat);

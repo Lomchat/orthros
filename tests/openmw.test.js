@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { createServer } from '../src/host/server.js';
-import { openmwProblem, openmwWebText } from '../src/host/openmw.js';
+import { openmwProblem, openmwWebText, withStreaming } from '../src/host/openmw.js';
 
 function fixture(t, options = { example: true, files: [] }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-openmw-'));
@@ -261,4 +261,100 @@ test('localized OpenMW profiles share a launcher language choice with distinct s
   assert.deepEqual(catalog.find((e) => e.name === 'sample-1').languages, ['en', 'fr']);
   assert.equal(catalog.find((e) => e.name === 'sample-fr').hidden, true);
   assert.ok(openmwProblem({ engine: 'test', files: [], example: true, languageVersions: { fr: '../outside' } }));
+});
+
+test('the served game files read as compressed spans: exact bytes, the size checked, bounds refused', async (t) => {
+  const f = fixture(t, { files: ['Game.esm'] });
+  const master = Buffer.from('TES3 record '.repeat(40000)), archive = Buffer.alloc(200000, 7);
+  fs.writeFileSync(path.join(f.game, 'base/Game.esm'), master);
+  fs.mkdirSync(path.join(f.engines, 'test-engine/moddata')); fs.writeFileSync(path.join(f.engines, 'test-engine/moddata/openmw-web-assets.bsa'), archive);
+  const base = await listen(t, createServer({ gamesDir: f.games, enginesDir: f.engines }));
+  const span = (rel, q, headers = { 'accept-encoding': 'br' }) => new Promise((resolve) => http.get(`${base}/ports/openmw/sample-1/app/z/${rel}?${q}`, { headers }, (r) => {
+    const c = []; r.on('data', (d) => c.push(d)); r.on('end', () => resolve({ r, body: Buffer.concat(c) }));
+  }));
+  const a = await span('mwdata/Game.esm', `r=65536-262144&s=${master.length}`);
+  assert.equal(a.r.statusCode, 200); assert.equal(a.r.headers['content-encoding'], 'br'); assert.ok(a.body.length < 20000, 'compressed');
+  assert.deepEqual((await import('node:zlib')).brotliDecompressSync(a.body), master.subarray(65536, 262144));
+  const pack = await span('moddata/openmw-web-assets.bsa', `r=0-200000&s=${archive.length}`);
+  assert.deepEqual((await import('node:zlib')).brotliDecompressSync(pack.body), archive);
+  assert.equal((await span('mwdata/Game.esm', `r=0-10&s=${master.length + 1}`)).r.statusCode, 412, 'another size: the plain range instead');
+  for (const q of [`r=10-5&s=${master.length}`, `r=0-${master.length + 1}&s=${master.length}`, `r=0-1.5&s=${master.length}`, `s=${master.length}`])
+    assert.equal((await span('mwdata/Game.esm', q)).r.statusCode, 416, q);
+  for (const rel of ['mwdata/../manifest.json', 'mwdata/Missing.esm', 'moddata/other.bsa']) assert.equal((await span(rel, 'r=0-1&s=1')).r.statusCode, 404, rel);
+});
+
+test('sessions teach the order of the blocks the engine used; a new session gets it, valid files only', async (t) => {
+  const f = fixture(t, { files: ['Game.esm'] });
+  fs.writeFileSync(path.join(f.game, 'base/Game.esm'), Buffer.alloc(300000)); fs.writeFileSync(path.join(f.game, 'base/Small.dds'), Buffer.alloc(1000));
+  const learn = path.join(f.root, 'learn'); fs.mkdirSync(learn);
+  const base = await listen(t, createServer({ gamesDir: f.games, enginesDir: f.engines, learnDir: learn }));
+  const post = (session, reads) => fetch(base + '/api/openmw/sample-1/reads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session, reads }) });
+  const list = async () => (await fetch(base + '/api/openmw/sample-1/prefetch')).json();
+  assert.deepEqual(await list(), []);
+  assert.equal((await post('session1aaaa', [['mwdata/Game.esm', 300000, 65536, 196608, 900], ['mwdata/Small.dds', 1000, 0, 1000, 100],
+    ['mwdata/Game.esm', 299999, 0, 65536, 1], ['mwdata/Nothing.esm', 10, 0, 10, 1], ['mwdata/Game.esm', 300000, 100, 200, 1], ['mwdata/Game.esm', 300000, 262144, 300000, 99999999]])).status, 200);
+  assert.deepEqual(await list(), [['mwdata/Small.dds', 1000, 0, 1000], ['mwdata/Game.esm', 300000, 65536, 196608]], 'in time order, the wrong sizes and paths and bounds left out');
+  assert.equal((await post('x', [])).status, 400);
+  // (three sessions known: a block a single one used is left out)
+  await post('session2bbbb', [['mwdata/Game.esm', 300000, 65536, 131072, 50]]); await post('session3cccc', [['mwdata/Game.esm', 300000, 65536, 131072, 50]]);
+  assert.deepEqual(await list(), [['mwdata/Game.esm', 300000, 65536, 131072]]);
+});
+
+test('the engine page streams its files with Orthros\' own reader, the release\'s on request', () => {
+  const html = '<script src="e/0123abcd/streamfs.js"></script>';
+  assert.equal(withStreaming(html), '<script src="/src/ports/openmw/streamfs.js"></script>');
+  assert.equal(withStreaming(html, true), html);
+});
+
+/** A worker script of the OpenMW page run in a context of its own, with what it uses stubbed. */
+function workerContext(file, extra = {}) {
+  const ctx = { performance, setTimeout, clearTimeout, setInterval: () => 0, Intl, Math, Atomics, Int32Array, Uint8Array, Float64Array, DataView,
+    SharedArrayBuffer, URL, Response, AbortController, crypto: globalThis.crypto, navigator: {}, location: { origin: 'http://x' }, postMessage: () => {}, ...extra };
+  ctx.self = ctx;
+  runInNewContext(fs.readFileSync(new URL('../src/ports/openmw/' + file, import.meta.url), 'utf8'), ctx);
+  return ctx;
+}
+
+test('the data indicator\'s worker counts arriving bytes and survives its ticks', () => {
+  let tick = null;
+  const ctx = workerContext('stream-meter-worker.js', { setInterval: (fn) => { tick = fn; } });
+  const shared = new SharedArrayBuffer(16), counter = new Int32Array(shared);
+  ctx.onmessage({ data: { arrived: shared } }); Atomics.add(counter, 2, 500000);
+  tick(); ctx.onmessage({ data: { read: 65536 } }); tick(); ctx.onmessage({ data: { beat: 1 } }); tick();
+});
+
+test('the streaming worker reads whole blocks, more ahead of a file read in order, an archive record whole, a small file whole', async () => {
+  const file = (n) => Uint8Array.from({ length: n }, (_, i) => (i * 7 + (i >> 9)) & 255);
+  // (a TES3 archive: version, hash table offset, file count, then size and offset of each file)
+  const count = 2, hashAt = 8 * count + 4 * count + 16, dataAt = 12 + hashAt + 8 * count, bsa = file(dataAt + 300000);
+  const head = new DataView(bsa.buffer);
+  head.setUint32(0, 0x100, true); head.setUint32(4, hashAt, true); head.setUint32(8, count, true);
+  head.setUint32(12, 100000, true); head.setUint32(16, 0, true); head.setUint32(20, 200000, true); head.setUint32(24, 100000, true);
+  const files = { '/ports/openmw/x/app/z/mwdata/Big.esm': file(3000000), '/ports/openmw/x/app/z/mwdata/Data.bsa': bsa, '/ports/openmw/x/app/z/mwdata/Small.dds': file(5000) };
+  const asked = [];
+  const fetch = async (url) => {
+    const u = new URL(url, 'http://x');
+    if (u.pathname.startsWith('/api/')) return new Response('[]');
+    const [a, b] = u.searchParams.get('r').split('-').map(Number); asked.push([u.pathname.split('/').pop(), a, b]);
+    return new Response(files[u.pathname].slice(a, b));
+  };
+  const ctx = workerContext('streamfs-worker.js', { fetch });
+  const ctrl = new Int32Array(new SharedArrayBuffer(16)), data = new Uint8Array(new SharedArrayBuffer(16 << 20));
+  ctx.onmessage({ data: { init: { ctrl: ctrl.buffer, data: data.buffer, page: '/ports/openmw/x/app/index.html' } } });
+  for (const [id, name] of [[1, 'Big.esm'], [2, 'Data.bsa'], [3, 'Small.dds']])
+    ctx.onmessage({ data: { mount: { id, size: files['/ports/openmw/x/app/z/mwdata/' + name].length, url: 'http://x/ports/openmw/x/app/mwdata/' + name, mtime: 0 } } });
+  let gen = 0;
+  const read = async (id, start, end, run = 0) => {
+    ctx.onmessage({ data: { gen: ++gen, id, start, end, run, limit: 1 << 30 } });
+    while (Atomics.load(ctrl, 0) !== gen) await new Promise((r) => setImmediate(r));
+    return data.slice(0, ctrl[1]);
+  };
+  const esm = files['/ports/openmw/x/app/z/mwdata/Big.esm'];
+  assert.deepEqual(await read(1, 0, 100), esm.subarray(0, 65536), 'a block');
+  assert.deepEqual(await read(1, 65536, 65600, 1 << 20), esm.subarray(65536, 65536 + (1 << 20)), 'read in order: 1 MB ahead');
+  assert.ok(asked.every(([, a, b]) => Number.isInteger(a) && Number.isInteger(b)));
+  // (the second file's record ends with the archive: from its first block to the end, in one answer)
+  const first = Math.floor((dataAt + 100000) / 65536) * 65536;
+  assert.deepEqual(await read(2, first, dataAt + 100010), bsa.subarray(first), 'the record whole');
+  assert.deepEqual(await read(3, 0, 10), files['/ports/openmw/x/app/z/mwdata/Small.dds'], 'a small file whole');
 });

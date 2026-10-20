@@ -13,6 +13,14 @@ let ctx = null, dpr = 1, S = TEXT.en, num = new Intl.NumberFormat('en', { maximu
 let beat = performance.now(), hidden = false, shown = false;
 let reads = 0, done = 0, pending = 0, lastRead = 0, held = 0;
 const marks = [];   // [time, bytes received] of the last seconds: the rate
+let arrived = null, seen = 0;   // (Orthros' streaming: its count of the bytes arrived, shared — exact, live)
+
+/** Data asked for or arriving (a pause of 5 s: a new count). */
+function arrive(now, bytes) {
+  if (now - lastRead > 5000) { reads = done = pending = 0; marks.length = 0; }
+  reads++; done += bytes; lastRead = now;
+  marks.push([now, done]); while (marks.length > 2 && marks[0][0] < now - 4000) marks.shift();
+}
 
 onmessage = (e) => {
   const m = e.data, now = performance.now();
@@ -24,16 +32,16 @@ onmessage = (e) => {
   }
   if (m.beat) { beat = now; if (shown) clear(); return; }
   if ('hidden' in m) { hidden = !!m.hidden; beat = now; return; }
+  if (m.arrived) { arrived = new Int32Array(m.arrived); seen = Atomics.load(arrived, 2); return; }
   if (m.read) {
-    // (one read at a time: a new piece asked for is the end of the previous one)
-    if (now - lastRead > 5000) { reads = done = pending = 0; marks.length = 0; }
-    reads++; done += pending; pending = m.read; lastRead = now;
-    marks.push([now, done]); while (marks.length > 2 && marks[0][0] < now - 4000) marks.shift();
+    // (one read at a time: a new piece asked for is the end of the previous one — counted so when no exact count)
+    if (arrived) arrive(now, 0); else { arrive(now, pending); pending = m.read; }
   }
 };
 
 setInterval(() => {
   const now = performance.now(); held = now - beat;
+  if (arrived) { const cur = Atomics.load(arrived, 2), d = (cur - seen) | 0; seen = cur; if (d > 1) arrive(now, d); }
   const reading = reads > 0 && now - lastRead < held + 500;
   if (ctx && !hidden && (held > 1000 && reading || held > 3000)) draw(now, reading); else if (shown) clear();
 }, 100);

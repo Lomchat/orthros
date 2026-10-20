@@ -25,6 +25,7 @@ const STRINGS = {
     preparing: 'Preparing the game…', launching: 'Starting the engine…', world: 'Opening the world…',
     download: (got, total, rate) => `Downloading the engine · ${got} / ${total} MB${rate ? ` · ${rate} MB/s` : ''}`,
     reading: 'Reading the game data… up to a minute the first time',
+    ahead: 'Preloading', aheadTitle: 'The game downloads ahead what players need next (the start of a new game): waiting a little before it makes it faster.',
     capture: 'Click in the game to give it the mouse · Esc releases it',
     saveServer: 'the world\'s server keeps your character on your account',
     failed: 'The game could not start: ',
@@ -45,6 +46,7 @@ const STRINGS = {
     preparing: 'Préparation de la partie…', launching: 'Démarrage du moteur…', world: 'Ouverture du monde…',
     download: (got, total, rate) => `Téléchargement du moteur · ${got} / ${total} Mo${rate ? ` · ${rate} Mo/s` : ''}`,
     reading: 'Lecture des données du jeu… jusqu’à une minute la première fois',
+    ahead: 'Préchargement', aheadTitle: 'Le jeu télécharge à l’avance ce dont les joueurs ont besoin ensuite (le début d’une nouvelle partie) : attendre un peu avant la rend plus rapide.',
     capture: 'Clique dans le jeu pour lui donner la souris · Échap la libère',
     saveServer: 'le serveur du monde garde ton personnage sur ton compte',
     failed: 'Le jeu n’a pas pu démarrer : ',
@@ -95,6 +97,8 @@ async function enter(chosen) {
       if (shell.account) shell.setSave({ state: 'idle' });
     }
     shell.progress(20, S.launching);
+    // (?sfs=upstream on this page: the engine release's own file streaming, for a comparison or around a fault)
+    if (params.get('sfs') === 'upstream' && src.startsWith('app/index.html')) src += '&sfs=upstream';
     frame.src = src; frame.hidden = false;
     session.state = 'running';
   } catch (e) { session.state = 'ready'; shell.phase(S.failed + e.message, true); shell.choices.querySelectorAll('button').forEach((b) => { b.disabled = false; }); }
@@ -138,6 +142,21 @@ function status(text) {
   } else if (/^Running/.test(text)) shell.progress(62, S.reading);
 }
 
+/** The files fetched ahead (src/ports/openmw/streamfs-worker.js): a pill in the header until they are all there. */
+let pill = null;
+function preload(done, total) {
+  if (!shell || !(total > 0)) return;
+  if (!pill) {
+    pill = document.createElement('span'); pill.className = 'pill'; pill.title = S.aheadTitle;
+    pill.append(document.createElement('span'), document.createElement('i'), document.createElement('b'));
+    pill.children[0].textContent = S.ahead; pill.children[1].append(document.createElement('u'));
+    shell.extras.append(pill);
+  }
+  const pct = Math.min(100, Math.floor(done / total * 100));
+  pill.children[1].firstChild.style.width = pct + '%'; pill.children[2].textContent = pct + ' %';
+  pill.hidden = done >= total;
+}
+
 addEventListener('message', (event) => {
   if (event.origin !== location.origin || event.source !== frame.contentWindow) return;
   const m = event.data ?? {};
@@ -146,6 +165,7 @@ addEventListener('message', (event) => {
     if (m.fps > 0 && !drawn) { drawn = true; shell.step('engine', 'done'); shell.step('world', 'active'); shell.progress(70, S.world); setTimeout(() => { shell.step('world', 'done'); shell.hideLoader(); shell.running = true; shell.setMouse(false); shell.toast(S.capture, 6000); frame.focus(); }, 1500); }
     shell.setFps(samples, !drawn ? 'loading' : document.hidden ? 'paused' : 'running');
   } else if (m.type === 'orthros-status') { if (!drawn) status(String(m.text ?? '')); }
+  else if (m.type === 'orthros-ahead') preload(Number(m.done), Number(m.total));
   else if (m.type === 'orthros-pointer') { if (shell.running) shell.setMouse(!!m.locked); }
   else if (m.type === 'orthros-save-status') shell.setSave(m.state ? { state: m.state, at: Date.now(), message: m.message } : { state: m.error ? 'error' : 'saved', at: Date.now(), message: m.message });
 });

@@ -2,6 +2,8 @@
 // stays on the Orthros origin, beneath the selected installation's URL.
 import http from 'node:http';
 import fs from 'node:fs';
+import path from 'node:path';
+import zlib from 'node:zlib';
 import { engineFile, clientAddress } from './goldsrc.js';
 import { resolveGameFile } from './game-files.js';
 
@@ -55,6 +57,13 @@ export const withFrameMeter = (html) => html
  * The engine build's files from the release's own URL (/engines/<release>/e/<hash>/, immutable) instead of beneath
  * each installation's: one browser copy for every version of a game, never downloaded again.
  */
+/**
+ * The engine page's file streaming: Orthros' own (src/ports/openmw/streamfs.js) in place of the release's, unless the
+ * page is asked for the upstream one (?sfs=upstream: a comparison, a way around a fault).
+ */
+export const withStreaming = (html, upstream = false) => upstream ? html
+  : html.replace(/<script src="e\/[0-9a-f]+\/streamfs\.js"><\/script>/, '<script src="/src/ports/openmw/streamfs.js"></script>');
+
 export const withSharedEngine = (html, release) => html.replace('("e/" + __ENGINE_VER + "/")', `(${JSON.stringify(`/engines/${release}/e/`)} + __ENGINE_VER + "/")`);
 
 export function openmwWebText(text, base, saveKey) {
@@ -195,6 +204,168 @@ export function openmwProxy({ getManifest, session, ownsToken }) {
       });
       up.on('response', (reply) => { reply.resume(); socket.destroy(); });
       up.on('error', () => socket.destroy()); socket.on('close', () => up.destroy()); up.end();
+      return true;
+    },
+  };
+}
+
+/**
+ * Bytes [a, b) of a game file an OpenMW installation serves, brotli-compressed when that saves enough: how the page's
+ * file streaming (src/ports/openmw/streamfs.js) reads them, the archives' records and the masters about 2 to 5 times
+ * smaller than through the gateway's ranges. GET /ports/openmw/<manifest>/app/z/mwdata/<file>?r=<a>-<b>&s=<size>
+ * (z/moddata/<file>: the engine release's own data). A whole answer, not a range: the browser decodes it before the page
+ * sees it, through any proxy on the way. The file is the one the gateway serves (the installation's layered files),
+ * its size the one the page knows (else 412: the page reads the plain range instead).
+ */
+export function openmwSpans({ getManifest, enginesDir, headers }) {
+  const MAX = 16 << 20, JOBS = 4;
+  let running = 0; const waiting = [];
+  const take = () => running < JOBS ? (running++, Promise.resolve()) : new Promise((go) => waiting.push(go));
+  const give = () => { const next = waiting.shift(); if (next) next(); else running--; };
+  const fail = (res, code, text) => { res.writeHead(code, headers({ 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' })); res.end(text); };
+  return {
+    handle(req, res, url) {
+      const m = /^\/ports\/openmw\/([^/]+)\/app\/z\/(mwdata|moddata)\/(.+)$/.exec(url.pathname);
+      if (!m || !['GET', 'HEAD'].includes(req.method)) return false;
+      let id, rel; try { id = decodeURIComponent(m[1]); rel = decodeURIComponent(m[3]); } catch { fail(res, 400, 'bad path'); return true; }
+      const man = getManifest(id);
+      if (man?.runtime !== 'openmw' || !safePath(rel)) { fail(res, 404, 'not found'); return true; }
+      const file = m[2] === 'mwdata' ? resolveGameFile(man, rel) : rel === 'openmw-web-assets.bsa' ? engineFile(enginesDir, man.openmw.engine, 'moddata/' + rel) : null;
+      const r = /^(\d+)-(\d+)$/.exec(url.searchParams.get('r') ?? ''), size = Number(url.searchParams.get('s'));
+      if (!file) { fail(res, 404, 'not found'); return true; }
+      let st; try { st = fs.statSync(file); } catch { fail(res, 404, 'not found'); return true; }
+      const a = r ? Number(r[1]) : NaN, b = r ? Number(r[2]) : NaN;
+      if (!(a >= 0 && b > a && b <= st.size && b - a <= MAX)) { fail(res, 416, 'bad span'); return true; }
+      if (size !== st.size) { fail(res, 412, 'size changed'); return true; }
+      (async () => {
+        await take();
+        try {
+          const raw = Buffer.alloc(b - a), fd = await fs.promises.open(file, 'r');
+          try { await fd.read(raw, 0, raw.length, a); } finally { await fd.close(); }
+          const packed = await new Promise((ok, no) => zlib.brotliCompress(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_LGWIN]: 22, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: raw.length } }, (e, out) => e ? no(e) : ok(out)));
+          const body = packed.length < raw.length * 0.95 ? packed : raw;
+          res.writeHead(200, headers({ 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'Content-Length': body.length, ...(body === packed ? { 'Content-Encoding': 'br' } : {}) }));
+          res.end(req.method === 'HEAD' ? undefined : body);
+        } catch { if (!res.headersSent) fail(res, 500, 'read failed'); else res.destroy(); }
+        finally { give(); }
+      })();
+      return true;
+    },
+  };
+}
+
+/**
+ * The order in which earlier sessions' file streaming (src/ports/openmw/streamfs-worker.js) read an installation's
+ * files, and the list a new session fetches ahead from it: the opening every player goes through (the engine's start,
+ * the menu, a new game), on its way while the engine still downloads or the player reads the menu, instead of piece by
+ * piece while the page waits. POST /api/openmw/<manifest>/reads { session, reads: [[file, size, from, to, ms], …] }
+ * (file: the path beneath the installation's app/ — mwdata/…, moddata/…; from/to: 64 KB block bounds; ms: the time in
+ * its session); GET /api/openmw/<manifest>/prefetch: [[file, size, from, to], …], each block at the mean time its
+ * sessions needed it (a block a single session read is left out once three sessions are known), 400 MB at most, the
+ * first 30 minutes of a session. Kept in <learnDir>/openmw-reads-<manifest>.json when there is one.
+ */
+export function openmwReads({ getManifest, enginesDir, learnDir, headers }) {
+  const BLOCK = 65536, CAP = 400 << 20, UNTIL = 30 * 60000, PER_SESSION = 20000;
+  const all = new Map();   // manifest -> { sessions, files: Map(key "file|size" -> Map(block -> [sum of ms, sessions, last session])), list }
+  const counts = new Map();   // session -> reads taken (bounded)
+  const fileOf = (id) => id.replace(/[^A-Za-z0-9._-]/g, '_');
+  const store = (id) => learnDir && path.join(learnDir, `openmw-reads-${fileOf(id)}.json`);
+  const send = (res, code, body) => { res.writeHead(code, headers({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); res.end(JSON.stringify(body)); };
+  function of(id) {
+    let l = all.get(id);
+    if (l) return l;
+    l = { sessions: 0, seen: new Set(), files: new Map(), sizes: new Map(), list: null, dirty: false };
+    try {
+      const saved = JSON.parse(fs.readFileSync(store(id), 'utf8'));
+      l.sessions = saved.sessions | 0;
+      for (const [key, blocks] of Object.entries(saved.files ?? {})) l.files.set(key, new Map(blocks.map(([b, t, n]) => [b, [t, n, null]])));
+    } catch { /* none yet */ }
+    all.set(id, l); return l;
+  }
+  let timer = null;
+  const save = () => {
+    timer ??= setTimeout(() => {
+      timer = null;
+      for (const [id, l] of all) {
+        if (!l.dirty || !store(id)) continue;
+        l.dirty = false;
+        const files = {};
+        for (const [key, blocks] of l.files) files[key] = [...blocks].map(([b, [t, n]]) => [b, t, n]);
+        try { fs.writeFileSync(store(id) + '.tmp', JSON.stringify({ sessions: l.sessions, files })); fs.renameSync(store(id) + '.tmp', store(id)); } catch { /* next time */ }
+      }
+    }, 10000);
+    timer.unref?.();
+  };
+  /** The size of a file the installation serves at that path beneath app/, or null. */
+  function sizeOf(man, l, file) {
+    if (l.sizes.has(file)) return l.sizes.get(file);
+    let found = null;
+    try {
+      const rel = decodeURIComponent(file);
+      const f = rel.startsWith('mwdata/') && safePath(rel.slice(7)) ? resolveGameFile(man, rel.slice(7))
+        : rel === 'moddata/openmw-web-assets.bsa' ? engineFile(enginesDir, man.openmw.engine, rel) : null;
+      if (f) found = fs.statSync(f).size;
+    } catch { /* not served */ }
+    if (l.sizes.size < 50000) l.sizes.set(file, found);
+    return found;
+  }
+  function list(l) {
+    if (l.list) return l.list;
+    const quorum = l.sessions >= 3 ? 2 : 1, blocks = [];
+    for (const [key, map] of l.files) {
+      const cut = key.lastIndexOf('|'), file = key.slice(0, cut), size = Number(key.slice(cut + 1));
+      for (const [b, [t, n]] of map) if (n >= quorum) blocks.push([t / n, file, size, b]);
+    }
+    blocks.sort((x, y) => x[0] - y[0]);
+    const out = []; let bytes = 0;
+    for (const [, file, size, b] of blocks) {
+      const from = b * BLOCK, to = Math.min(size, from + BLOCK), last = out.at(-1);
+      if (bytes + (to - from) > CAP) break;
+      bytes += to - from;
+      if (last && last[0] === file && last[3] === from && last[3] - last[2] < 4 << 20) last[3] = to; else out.push([file, size, from, to]);
+    }
+    l.list = JSON.stringify(out);
+    setTimeout(() => { l.list = null; }, 30000).unref?.();
+    return l.list;
+  }
+  return {
+    handle(req, res, url) {
+      const m = /^\/api\/openmw\/([^/]+)\/(reads|prefetch)$/.exec(url.pathname);
+      if (!m) return false;
+      let id; try { id = decodeURIComponent(m[1]); } catch { send(res, 400, { error: 'bad id' }); return true; }
+      const man = getManifest(id);
+      if (man?.runtime !== 'openmw') { send(res, 404, { error: 'no such installation' }); return true; }
+      const l = of(id);
+      if (m[2] === 'prefetch') {
+        if (req.method !== 'GET') { send(res, 405, { error: 'GET' }); return true; }
+        res.writeHead(200, headers({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); res.end(list(l)); return true;
+      }
+      if (req.method !== 'POST') { send(res, 405, { error: 'POST' }); return true; }
+      const chunks = []; let size = 0;
+      req.on('data', (c) => { size += c.length; if (size > 1 << 20) req.destroy(); else chunks.push(c); });
+      req.on('end', () => {
+        let body; try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { send(res, 400, { error: 'json' }); return; }
+        const session = typeof body?.session === 'string' && /^[a-z0-9]{8,32}$/.test(body.session) ? body.session : null;
+        if (!session || !Array.isArray(body.reads)) { send(res, 400, { error: 'session, reads' }); return; }
+        if (!l.seen.has(session)) { l.seen.add(session); l.sessions++; if (l.seen.size > 10000) l.seen.clear(); }
+        let taken = counts.get(session) ?? 0;
+        for (const r of body.reads) {
+          if (taken >= PER_SESSION) break;
+          if (!Array.isArray(r) || r.length !== 5 || typeof r[0] !== 'string' || r[0].length > 600) continue;
+          const [file, fsize, from, to, ms] = r;
+          if (![fsize, from, to, ms].every(Number.isInteger) || ms < 0 || ms > UNTIL || from < 0 || to <= from || to > fsize || from % BLOCK) continue;
+          if (sizeOf(man, l, file) !== fsize) continue;
+          const key = file + '|' + fsize, blocks = l.files.get(key) ?? l.files.set(key, new Map()).get(key);
+          for (let b = from / BLOCK; b * BLOCK < to && taken < PER_SESSION; b++, taken++) {
+            const e = blocks.get(b);
+            if (!e) blocks.set(b, [ms, 1, session]);
+            else if (e[2] !== session) { e[0] += ms; e[1]++; e[2] = session; }
+          }
+        }
+        counts.set(session, taken); if (counts.size > 10000) counts.clear();
+        l.dirty = true; l.list = null; save();
+        send(res, 200, { ok: true });
+      });
       return true;
     },
   };
