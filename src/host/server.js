@@ -29,7 +29,7 @@ import { listGameTree, resolveGameFile } from './game-files.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
-import { openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter } from './openmw.js';
+import { openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withSharedEngine } from './openmw.js';
 import { re3Installed, re3Modes, re3Module } from './re3.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
@@ -149,6 +149,21 @@ export function createServer(opts = {}) {
     res.writeHead(200, { ...h, 'Content-Length': st.size });
     if (req.method === 'HEAD') return res.end();
     fs.createReadStream(file).pipe(res);
+  };
+  /**
+   * An engine release's file, or its precompressed sibling (<file>.br, as releases ship them: OpenMW's 204 MB package is
+   * 33 MB) when the browser takes brotli and asks for the whole file. No Content-Length then: a loader counting the
+   * decoded bytes against it (Emscripten's package download) falls back to the decoded size it knows.
+   */
+  const sendEngineFile = (req, res, file, cache) => {
+    const mime = MIME[path.extname(file)] ?? 'application/octet-stream';
+    let br = null;
+    try { if (fs.statSync(file + '.br').mtimeMs >= fs.statSync(file).mtimeMs) br = file + '.br'; } catch { /* none */ }
+    if (!br) return sendFile(req, res, file, mime, { 'Cache-Control': cache });
+    if (req.headers.range || !/\bbr\b/.test(String(req.headers['accept-encoding'] ?? ''))) return sendFile(req, res, file, mime, { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' });
+    res.writeHead(200, headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Cache-Control': cache, 'Vary': 'Accept-Encoding', 'Last-Modified': fs.statSync(br).mtime.toUTCString() }));
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(br).pipe(res);
   };
 
   /**
@@ -794,14 +809,17 @@ export function createServer(opts = {}) {
           const saveKey = scope ? `${man.saveKey}:user:${scope}` : man.saveKey;
           let page = openmwWebText(fs.readFileSync(f, 'utf8'), base, saveKey);
           if (asset.endsWith('.html')) page = withFrameMeter(page);
+          if (asset === 'index.html') page = withSharedEngine(page, man.openmw.engine);
           if (asset === 'index.html' && scope) {
             page = page.replace('<head>', '<head><script src="/src/ports/openmw/cloud.js"></script>');
             page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(m[1])}, ${JSON.stringify(scope)});`);
           }
           return send(res, 200, page, { 'Content-Type': MIME[path.extname(asset)], 'Cache-Control': 'private, no-store', 'Vary': 'Cookie' });
         }
-        const raw = f.endsWith('.br') ? f.slice(0, -3) : f;
-        return sendFile(req, res, f, MIME[path.extname(raw)] ?? 'application/octet-stream', { ...(f.endsWith('.br') ? { 'Content-Encoding': 'br' } : {}), 'Cache-Control': 'public, max-age=86400' });
+        // (e/<hash>/: the engine build's own content-versioned directory)
+        const cache = rel.startsWith('e/') ? 'public, max-age=31536000, immutable' : 'public, max-age=86400';
+        if (f.endsWith('.br')) return sendFile(req, res, f, MIME[path.extname(f.slice(0, -3))] ?? 'application/octet-stream', { 'Content-Encoding': 'br', 'Cache-Control': cache });
+        return sendEngineFile(req, res, f, cache);
       }
       m = /^\/ports\/([a-z0-9]+)\/([^/]+)\/$/.exec(p);
       if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendFile(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
@@ -809,7 +827,7 @@ export function createServer(opts = {}) {
       if (m) {
         if (![...manifests.values()].some((man) => man.goldsrc?.engine === m[1] || man.openmw?.engine === m[1] || (man.runtime === 're3' && man.re3?.engine === m[1]))) return send(res, 404, 'no such engine');
         const file = engineFile(enginesDir, m[1], m[2]); if (!file) return send(res, 404, 'not found');
-        return sendFile(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream', { 'Cache-Control': 'public, max-age=31536000, immutable' });
+        return sendEngineFile(req, res, file, 'public, max-age=31536000, immutable');
       }
       if (p.startsWith('/src/') || p.startsWith('/tools/') || p.startsWith('/tests/')) {
         const file = path.join(ROOT, p);

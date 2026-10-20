@@ -74,6 +74,32 @@ test('the web adaptation namespaces HTTP paths and saves without changing guest 
   assert.match(result, /orthros-port:a:1:mp:bootfrag/);
 });
 
+test('the engine page loads the build from the release, brotli when taken, and keeps the streamed game files', async (t) => {
+  const f = fixture(t), release = path.join(f.engines, 'test-engine');
+  fs.writeFileSync(path.join(release, 'index.html'), `<head></head><script>var __ENGINE_DIR = (__ENGINE_VER.charAt(0) === "_") ? "" : ("e/" + __ENGINE_VER + "/");`
+    + `var Module = { setStatus: (t)=>{ if(t){ append(t); } } };StreamFS.mount('/mwdata/' + f.p, 'mwdata/' + encodeURI(f.p) + '?v=2', f.s);</script>`);
+  const wasm = 'wasm-test'.repeat(1000);
+  fs.writeFileSync(path.join(release, 'e/abc/openmw.wasm'), wasm);
+  fs.writeFileSync(path.join(release, 'e/abc/openmw.wasm.br'), (await import('node:zlib')).brotliCompressSync(wasm));
+  const base = await listen(t, createServer({ gamesDir: f.games, enginesDir: f.engines }));
+  const page = await (await fetch(base + '/ports/openmw/sample-1/app/index.html')).text();
+  assert.match(page, /\("\/engines\/test-engine\/e\/" \+ __ENGINE_VER \+ "\/"\)/, 'one URL for every installation');
+  assert.match(page, /'mwdata\/' \+ encodeURI\(f\.p\), f\.s\)/, 'no query: the engine keeps the pieces it streamed');
+  assert.match(page, /setStatus: \(t\)=>\{ window\.orthrosStatus\?\.\(t\); if\(t\)\{/);
+  assert.match(page, /src\/ports\/openmw\/stream-meter\.js/);
+  for (const url of ['/engines/test-engine/e/abc/openmw.wasm', '/ports/openmw/sample-1/app/e/abc/openmw.wasm']) {
+    const raw = (opts) => new Promise((resolve) => http.get(base + url, opts, (r) => { const c = []; r.on('data', (d) => c.push(d)); r.on('end', () => resolve({ r, body: Buffer.concat(c) })); }));
+    const br = await raw({ headers: { 'accept-encoding': 'gzip, deflate, br, zstd' } });
+    assert.equal(br.r.headers['content-encoding'], 'br', url); assert.equal(br.r.headers['content-length'], undefined, 'the loader counts the decoded size');
+    assert.equal((await import('node:zlib')).brotliDecompressSync(br.body).toString(), wasm);
+    assert.match(br.r.headers['cache-control'], /immutable/); assert.equal(br.r.headers.vary, 'Accept-Encoding');
+    const plain = await raw({ headers: { 'accept-encoding': 'gzip' } });
+    assert.equal(plain.r.headers['content-encoding'], undefined); assert.equal(plain.body.toString(), wasm);
+    const part = await raw({ headers: { 'accept-encoding': 'br', range: 'bytes=0-3' } });
+    assert.equal(part.r.statusCode, 206); assert.equal(part.r.headers['content-encoding'], undefined); assert.equal(part.body.toString(), 'wasm');
+  }
+});
+
 test('world travel scopes destinations received through the engine protocol before rebooting', async () => {
   const base = '/ports/openmw/sample-1/app';
   const code = openmwWebText('async function rebootIntoWorld(wsUrl){ return wsUrl; }', base, 'save');

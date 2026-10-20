@@ -43,10 +43,19 @@ export const openmwModes = (o) => ['solo', ...(o.multiplayer ? ['multiplayer'] :
 // Only the upstream browser pages are adapted. Guest filesystem paths (/mwdata, /userdata)
 // and the generated Emscripten JS must retain their original meaning.
 /**
- * An engine page with the Orthros page's meter (src/ports/openmw/frame-meter.js: its frame rate and the mouse) and the
+ * An engine page with the Orthros page's meter (src/ports/openmw/frame-meter.js: its frame rate, the mouse and the
+ * engine's loading status), the indicator of the game data it waits for (src/ports/openmw/stream-meter.js) and the
  * engine interface's texts in the Orthros page's language (src/ports/openmw/ui-l10n.js).
  */
-export const withFrameMeter = (html) => html.replace('<head>', '<head><script src="/src/ports/openmw/frame-meter.js"></script><script src="/src/ports/openmw/ui-l10n.js"></script>');
+export const withFrameMeter = (html) => html
+  .replace('<head>', '<head><script src="/src/ports/openmw/frame-meter.js"></script><script src="/src/ports/openmw/stream-meter.js"></script><script src="/src/ports/openmw/ui-l10n.js"></script>')
+  .replace('setStatus: (t)=>{ if(t){', 'setStatus: (t)=>{ window.orthrosStatus?.(t); if(t){');
+
+/**
+ * The engine build's files from the release's own URL (/engines/<release>/e/<hash>/, immutable) instead of beneath
+ * each installation's: one browser copy for every version of a game, never downloaded again.
+ */
+export const withSharedEngine = (html, release) => html.replace('("e/" + __ENGINE_VER + "/")', `(${JSON.stringify(`/engines/${release}/e/`)} + __ENGINE_VER + "/")`);
 
 export function openmwWebText(text, base, saveKey) {
   // Native EM_ASM in the untouched engine glue uses the upstream storage keys too.
@@ -68,6 +77,10 @@ export function openmwWebText(text, base, saveKey) {
     .replace(/(['"])omwmp:([^'"]+)\1/g, (_m, q, k) => `${q}${saveKey}:mp:${k}${q}`)
     .replace(/(['"])omw-mp-session\1/g, (_m, q) => `${q}${saveKey}:session${q}`)
     .replace(/(['"])omw-launcher\1/g, (_m, q) => `${q}${saveKey}:launcher${q}`)
+    // The pieces of the served game files the engine streams are kept in its browser cache only for URLs without a
+    // query (streamfs.js): the upstream's ?v=2 (a workaround for its CDN) kept none of Morrowind's own, so every
+    // session read Morrowind.esm and the archives over the network again, the page frozen meanwhile.
+    .replace("'mwdata/' + encodeURI(f.p) + '?v=2'", "'mwdata/' + encodeURI(f.p)")
     // IDBFS normally names the database after its guest mount point (/userdata).
     .replace("FS.mount(IDBFS, {}, '/userdata');", `var orthrosGetDB = IDBFS.getDB; IDBFS.getDB = function(name, callback) { return orthrosGetDB.call(IDBFS, name === '/userdata' ? ${JSON.stringify(saveKey)} : name, callback); }; FS.mount(IDBFS, {}, '/userdata');`)
     // JoinFriend also arrives inside the engine's WebSocket protocol, beyond the HTTP JSON

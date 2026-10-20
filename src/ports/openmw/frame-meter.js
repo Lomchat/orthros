@@ -1,6 +1,7 @@
 // Put into the OpenMW engine's pages by the Orthros server (src/host/server.js): what the Orthros page around the
 // engine shows in its header — the frame rate (a frame: an animation frame in which the engine drew) and whether the
-// game has the mouse. Told to the page by messages of its origin; nothing changes in the engine.
+// game has the mouse — and on its loading screen (the engine's download). Told to the page by messages of its origin;
+// nothing changes in the engine.
 (() => {
   if (window.parent === window) return;
   const tell = (m) => window.parent.postMessage(m, location.origin);
@@ -19,6 +20,15 @@
     const recent = frames.filter((t) => t > now - 500), gaps = recent.slice(1).map((t, i) => t - recent[i]).sort((a, b) => a - b);
     tell({ type: 'orthros-frames', fps: recent.length * 2, max: gaps.at(-1) ?? 0, p99: gaps[Math.floor(gaps.length * 0.99)] ?? 0, total: draws > 0 });
   }, 500);
+  // the engine's loading status (Module.setStatus, src/host/openmw.js): its package download, "Downloading data...
+  // (x/y)" many times a second (a few told), then "Running..."
+  let told = 0;
+  window.orthrosStatus = (text) => {
+    if (!text) return;
+    const now = performance.now(), got = /\((\d+)\/(\d+)\)/.exec(text);
+    if (got && +got[1] < +got[2] && now - told < 250) return;   // (the last one always: the download's end)
+    told = now; tell({ type: 'orthros-status', text: String(text) });
+  };
   const lock = () => tell({ type: 'orthros-pointer', locked: !!document.pointerLockElement });
   document.addEventListener('pointerlockchange', lock);
   // (the page asks: the game gets the mouse — a click on its canvas does the same)

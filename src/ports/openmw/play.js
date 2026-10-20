@@ -23,6 +23,8 @@ const STRINGS = {
     notInstalled: 'The game or engine files are not installed on this server yet.', missing: 'files not installed',
     engine: 'Engine', license: 'GPLv3', experimental: 'Multiplayer is experimental.',
     preparing: 'Preparing the game…', launching: 'Starting the engine…', world: 'Opening the world…',
+    download: (got, total, rate) => `Downloading the engine · ${got} / ${total} MB${rate ? ` · ${rate} MB/s` : ''}`,
+    reading: 'Reading the game data… up to a minute the first time',
     capture: 'Click in the game to give it the mouse · Esc releases it',
     saveServer: 'the world\'s server keeps your character on your account',
     failed: 'The game could not start: ',
@@ -41,6 +43,8 @@ const STRINGS = {
     notInstalled: 'Les fichiers du jeu ou du moteur ne sont pas encore installés sur ce serveur.', missing: 'fichiers non installés',
     engine: 'Moteur', license: 'GPLv3', experimental: 'Le multijoueur est expérimental.',
     preparing: 'Préparation de la partie…', launching: 'Démarrage du moteur…', world: 'Ouverture du monde…',
+    download: (got, total, rate) => `Téléchargement du moteur · ${got} / ${total} Mo${rate ? ` · ${rate} Mo/s` : ''}`,
+    reading: 'Lecture des données du jeu… jusqu’à une minute la première fois',
     capture: 'Clique dans le jeu pour lui donner la souris · Échap la libère',
     saveServer: 'le serveur du monde garde ton personnage sur ton compte',
     failed: 'Le jeu n’a pas pu démarrer : ',
@@ -120,6 +124,20 @@ function languageChoice(entry) {
 }
 
 // ---------------------------------------------------------------- what the engine's page tells (frame-meter.js, cloud.js)
+/** The engine's loading status on the loading screen: its package download (received / size, rate), then the read. */
+const mb = new Intl.NumberFormat(lang, { maximumFractionDigits: 1 }), seen = [];
+function status(text) {
+  const got = /^Downloading data\.\.\. \((\d+)\/(\d+)\)/.exec(text);
+  if (got) {
+    const bytes = Number(got[1]), size = Number(got[2]), now = performance.now();
+    seen.push([now, bytes]); while (seen.length > 2 && seen[0][0] < now - 3000) seen.shift();
+    const rate = now - seen[0][0] > 500 ? (bytes - seen[0][1]) / (now - seen[0][0]) * 1000 / 1048576 : 0;
+    // (at its end the engine reads the game data at once, the page frozen until then: said now, while it can be)
+    if (bytes >= size) shell.progress(62, S.reading);
+    else shell.progress(20 + 40 * bytes / size, S.download(mb.format(bytes / 1048576), mb.format(size / 1048576), rate > 0 ? mb.format(rate) : ''));
+  } else if (/^Running/.test(text)) shell.progress(62, S.reading);
+}
+
 addEventListener('message', (event) => {
   if (event.origin !== location.origin || event.source !== frame.contentWindow) return;
   const m = event.data ?? {};
@@ -127,7 +145,8 @@ addEventListener('message', (event) => {
     samples.push({ fps: m.fps, max: m.max, p99: m.p99 }); if (samples.length > 120) samples.shift();
     if (m.fps > 0 && !drawn) { drawn = true; shell.step('engine', 'done'); shell.step('world', 'active'); shell.progress(70, S.world); setTimeout(() => { shell.step('world', 'done'); shell.hideLoader(); shell.running = true; shell.setMouse(false); shell.toast(S.capture, 6000); frame.focus(); }, 1500); }
     shell.setFps(samples, !drawn ? 'loading' : document.hidden ? 'paused' : 'running');
-  } else if (m.type === 'orthros-pointer') { if (shell.running) shell.setMouse(!!m.locked); }
+  } else if (m.type === 'orthros-status') { if (!drawn) status(String(m.text ?? '')); }
+  else if (m.type === 'orthros-pointer') { if (shell.running) shell.setMouse(!!m.locked); }
   else if (m.type === 'orthros-save-status') shell.setSave(m.state ? { state: m.state, at: Date.now(), message: m.message } : { state: m.error ? 'error' : 'saved', at: Date.now(), message: m.message });
 });
 
