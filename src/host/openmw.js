@@ -260,7 +260,7 @@ export function openmwSpans({ getManifest, enginesDir, headers }) {
  * the menu, a new game), on its way while the engine still downloads or the player reads the menu, instead of piece by
  * piece while the page waits. POST /api/openmw/<manifest>/reads { session, reads: [[file, size, from, to, ms], …] }
  * (file: the path beneath the installation's app/ — mwdata/…, moddata/…; from/to: 64 KB block bounds; ms: the time in
- * its session); GET /api/openmw/<manifest>/prefetch: [[file, size, from, to], …], each block at the mean time its
+ * its session); GET /api/openmw/<manifest>/prefetch: [[file, size, from, to, ms], …], each block at the mean time its
  * sessions needed it (a block a single session read is left out once three sessions are known), 400 MB at most, the
  * first 30 minutes of a session. Kept in <learnDir>/openmw-reads-<manifest>.json when there is one.
  */
@@ -318,11 +318,11 @@ export function openmwReads({ getManifest, enginesDir, learnDir, headers }) {
     }
     blocks.sort((x, y) => x[0] - y[0]);
     const out = []; let bytes = 0;
-    for (const [, file, size, b] of blocks) {
+    for (const [t, file, size, b] of blocks) {
       const from = b * BLOCK, to = Math.min(size, from + BLOCK), last = out.at(-1);
       if (bytes + (to - from) > CAP) break;
       bytes += to - from;
-      if (last && last[0] === file && last[3] === from && last[3] - last[2] < 4 << 20) last[3] = to; else out.push([file, size, from, to]);
+      if (last && last[0] === file && last[3] === from && last[3] - last[2] < 4 << 20) last[3] = to; else out.push([file, size, from, to, Math.round(t)]);
     }
     l.list = JSON.stringify(out);
     setTimeout(() => { l.list = null; }, 30000).unref?.();

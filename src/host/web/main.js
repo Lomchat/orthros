@@ -10,6 +10,7 @@ import { resumeOnGesture, soundHintNeeded, AudioStats } from './sound.js';
 import { PointerInput, winButton, cursorView } from './pointer.js';
 import { SNAPSHOT_PREFIX, profileFiles, replaceProfile } from './data-store.js';
 import { createShell, lockKeys } from './shell.js';
+import { escapeToGame } from './escape.js';
 import { CloudSave } from './cloud-sync.js';
 import { accountState } from './account.js';
 import { pickLang } from './lang.js';
@@ -41,7 +42,7 @@ const TEXT = {
       'The game runs entirely in your browser, from its original files: nothing is installed.',
       'Signed in, your saves follow you: they are kept on your Orthros account and come back on any computer.',
     ],
-    connecting: 'Connecting…', account: 'Checking your account\'s saves…', capture: 'Click the game to capture the mouse · Esc releases it · ⛶ for full screen',
+    connecting: 'Connecting…', account: 'Checking your account\'s saves…', capture: 'Click the game to capture the mouse · Esc goes to the game (in full screen, twice releases the mouse) · ⛶ for full screen',
     downloading: (mb) => `Downloading the game files — ${mb}`, preparing: 'Preparing the game\'s code…', starting: 'Starting the game…', read: 'read', received: 'received',
     paused: (t) => `${t} is paused while its window is inactive <small>click the game to resume</small>`,
     loading: (t, s, mips, mb) => `${t} is loading…<br><small>${s} s · emulated CPU ${mips} MIPS · game files ${mb}</small>`,
@@ -69,7 +70,7 @@ const TEXT = {
       'Le jeu tourne entièrement dans ton navigateur, depuis ses fichiers d’origine : rien n’est installé.',
       'Connecté, tes sauvegardes te suivent : elles sont gardées sur ton compte Orthros et reviennent sur n’importe quel ordinateur.',
     ],
-    connecting: 'Connexion…', account: 'Vérification des sauvegardes de ton compte…', capture: 'Clique dans le jeu pour capturer la souris · Échap la libère · ⛶ pour le plein écran',
+    connecting: 'Connexion…', account: 'Vérification des sauvegardes de ton compte…', capture: 'Clique dans le jeu pour capturer la souris · Échap va au jeu (en plein écran, deux fois libère la souris) · ⛶ pour le plein écran',
     downloading: (mb) => `Téléchargement des fichiers du jeu — ${mb}`, preparing: 'Préparation du code du jeu…', starting: 'Démarrage du jeu…', read: 'lus', received: 'reçus',
     paused: (t) => `${t} est en pause tant que sa fenêtre est inactive <small>clique dans le jeu pour reprendre</small>`,
     loading: (t, s, mips, mb) => `${t} charge…<br><small>${s} s · processeur émulé ${mips} MIPS · fichiers du jeu ${mb}</small>`,
@@ -748,6 +749,7 @@ function vkOf(e) {
 
 function setupInput() {
   const c = $('c2d');
+  if (!headless) escapeToGame(window); // (the first Escape to the game, the next frees the mouse)
   // (a bench running: the player's mouse, keys and focus changes do not reach the game — bench.js plays the scenario)
   const live = () => state.status === 'running' && !state.benchActive;
   document.addEventListener('mousemove', (e) => {
@@ -762,7 +764,7 @@ function setupInput() {
   c.addEventListener('mousedown', (e) => {
     if (!live()) return;
     pointer.button(true, winButton(e.button), state.pointerLocked, ...screenPos(e)); e.preventDefault();
-    // a click in the game captures the mouse (it stays in the game, which gets all of its motion; Escape releases it)
+    // a click in the game captures the mouse (it stays in the game, which gets all of its motion; escape.js: Escape)
     if (!state.pointerLocked) capturePointer();
   });
   c.addEventListener('mouseup', (e) => { if (!live()) return; pointer.button(false, winButton(e.button), state.pointerLocked, ...screenPos(e)); e.preventDefault(); });

@@ -9,6 +9,7 @@
 // loads the Win32 runtime, and nothing here names a game.
 import { pickLang } from '../../host/web/lang.js';
 import { createShell, lockKeys } from '../../host/web/shell.js';
+import { escapeToGame } from '../../host/web/escape.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, writeManyStorage, storageKeys, removeStorage } from '../goldsrc/storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, PIECE } from '../goldsrc/files.js';
@@ -24,7 +25,7 @@ const STRINGS = {
     init: 'Starting the engine…', files: (pct) => `Loading the files · ${pct} %`, account: 'Checking your account\'s saves…',
     starting: 'Starting the game…', running: 'Game started. Click in the game to play.',
     steps: { engine: 'Starting the engine', files: 'Downloading the game files', game: 'Starting the game' },
-    capture: 'Click the game to capture the mouse · Esc releases it · ⛶ for full screen',
+    capture: 'Click the game to capture the mouse · Esc goes to the game (in full screen, twice releases the mouse) · ⛶ for full screen',
     released: 'Mouse released · click the game to capture it again',
     tips: [
       'The first launch downloads the game files into this browser: the next ones start from its own copy, much faster.',
@@ -48,7 +49,7 @@ const STRINGS = {
     init: 'Démarrage du moteur…', files: (pct) => `Chargement des fichiers · ${pct} %`, account: 'Vérification des sauvegardes de ton compte…',
     starting: 'Lancement du jeu…', running: 'Partie lancée. Clique dans le jeu pour jouer.',
     steps: { engine: 'Démarrage du moteur', files: 'Téléchargement des fichiers du jeu', game: 'Lancement du jeu' },
-    capture: 'Clique dans le jeu pour capturer la souris · Échap la libère · ⛶ pour le plein écran',
+    capture: 'Clique dans le jeu pour capturer la souris · Échap va au jeu (en plein écran, deux fois libère la souris) · ⛶ pour le plein écran',
     released: 'Souris libérée · clique dans le jeu pour la capturer de nouveau',
     tips: [
       'Le premier lancement télécharge les fichiers du jeu dans ce navigateur : les suivants partent de sa copie, bien plus vite.',
@@ -230,6 +231,7 @@ function tellCapture() {
 new MutationObserver(tellCapture).observe($('canvas'), { attributes: true, attributeFilter: ['style'] });
 /** The engine took the mouse (the game) or freed it (a menu). */
 function onMouseMode(relative) { engineMouse = relative; tellCapture(); }
+escapeToGame(window); // (the first Escape to the game, the next frees the mouse)
 $('canvas').addEventListener('pointerdown', () => { if (wantsMouse() && document.pointerLockElement !== $('canvas')) $('canvas').requestPointerLock()?.catch?.(() => {}); });
 $('canvas').addEventListener('contextmenu', (event) => event.preventDefault());
 // (the engine may free the mouse a moment after the lock ends: only a release by the player is told)

@@ -22,6 +22,17 @@ From left to right:
 
 Narrow windows keep the indicators' icons; their words go (their titles still say them).
 
+**Escape and the mouse** (`src/host/web/escape.js`, every runtime; the owner's rule, 2026-10-20): the first Escape goes
+to the game, the next one frees the mouse — a game's own Escape (its menu, closing a window) must not cost the mouse. In
+full screen the keyboard is locked, so the page decides: the first press passes to the game with the mouse still
+captured, the next is kept from the game and frees it (a press with the mouse free goes to the game; holding Escape
+leaves full screen as before). Out of full screen Chrome frees the mouse at the first press and keeps the key from the
+page — no page can change that (checked with real key presses, Chrome 153: no keydown reaches the page, and capturing
+again needs a click): the game is sent that Escape all the same (a synthesized press and release), a click captures the
+mouse again. Nothing is sent when the page or the game freed the mouse itself, the window lost the focus, the tab was
+left or full screen was left. `tools/escape-check.mjs` replays these cases with real key presses (xdotool, a headed
+Chrome under Xvfb).
+
 ## The loading screen
 
 The game's cover blurred behind, then in one box: the game, **who plays** (the Orthros account, or a warning that

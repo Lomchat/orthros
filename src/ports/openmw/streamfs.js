@@ -101,7 +101,7 @@
       if (!self.crossOriginIsolated) throw new Error('streamfs needs crossOriginIsolated (COOP/COEP)');
       // (the page's memory tier: the upstream's slots were "about 1 MB each")
       S.budget = ((window.__omwLruDefault | 0) || 128) * 1048576;
-      S.ctrl = new Int32Array(new SharedArrayBuffer(16));
+      S.ctrl = new Int32Array(new SharedArrayBuffer(32));   // (4, 5: the step's KB there and to come, for the indicator)
       S.data = new Uint8Array(new SharedArrayBuffer(SPAN));
       S.worker = new Worker('/src/ports/openmw/streamfs-worker.js');
       S.worker.postMessage({ init: { ctrl: S.ctrl.buffer, data: S.data.buffer, page: location.pathname } });

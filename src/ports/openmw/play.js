@@ -6,6 +6,7 @@
 // The engine's page tells its frames and the mouse (frame-meter.js) and its saves (cloud.js) by messages.
 import { pickLang } from '../../host/web/lang.js';
 import { createShell } from '../../host/web/shell.js';
+import { escapeToGame } from '../../host/web/escape.js';
 import { endonym } from '../../host/web/lang.js';
 
 const STRINGS = {
@@ -26,7 +27,7 @@ const STRINGS = {
     download: (got, total, rate) => `Downloading the engine · ${got} / ${total} MB${rate ? ` · ${rate} MB/s` : ''}`,
     reading: 'Reading the game data… up to a minute the first time',
     ahead: 'Preloading', aheadTitle: 'The game downloads ahead what players need next (the start of a new game): waiting a little before it makes it faster.',
-    capture: 'Click in the game to give it the mouse · Esc releases it',
+    capture: 'Click in the game to give it the mouse · Esc goes to the game (in full screen, twice releases the mouse)',
     saveServer: 'the world\'s server keeps your character on your account',
     failed: 'The game could not start: ',
   },
@@ -47,7 +48,7 @@ const STRINGS = {
     download: (got, total, rate) => `Téléchargement du moteur · ${got} / ${total} Mo${rate ? ` · ${rate} Mo/s` : ''}`,
     reading: 'Lecture des données du jeu… jusqu’à une minute la première fois',
     ahead: 'Préchargement', aheadTitle: 'Le jeu télécharge à l’avance ce dont les joueurs ont besoin ensuite (le début d’une nouvelle partie) : attendre un peu avant la rend plus rapide.',
-    capture: 'Clique dans le jeu pour lui donner la souris · Échap la libère',
+    capture: 'Clique dans le jeu pour lui donner la souris · Échap va au jeu (en plein écran, deux fois libère la souris)',
     saveServer: 'le serveur du monde garde ton personnage sur ton compte',
     failed: 'Le jeu n’a pas pu démarrer : ',
   },
@@ -63,7 +64,7 @@ const session = window.portSession = { state: 'loading', mode: null };
 // Returning players must choose a character in the upstream launcher before the engine can
 // draw. Keep that page clickable; restore the common loading screen when the engine loads.
 frame.addEventListener('load', () => {
-  try { shell?.watchKeys(frame.contentDocument); } catch { /* not the engine's page */ }
+  try { shell?.watchKeys(frame.contentDocument); escapeToGame(frame.contentWindow); } catch { /* not the engine's page */ }
   if (!shell || mode !== 'multi') return;
   let pathname;
   try { pathname = frame.contentWindow.location.pathname; } catch { return; }

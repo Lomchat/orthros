@@ -1,6 +1,7 @@
 // The worker of the OpenMW engine page's file streaming (streamfs.js): the page's thread asks it for blocks of a file and
 // waits on shared memory (ctrl[0]: the request answered, ctrl[1]: bytes delivered or -1, ctrl[2]: bytes arrived so far,
-// the page's proof the request is alive). For a file of the server it keeps a copy of every 64 KB block it got in the
+// the page's proof the request is alive; ctrl[4], ctrl[5]: KB of the current step of the list below already here, and
+// in all — for the indicator, stream-meter-worker.js). For a file of the server it keeps a copy of every 64 KB block it got in the
 // browser's private files (OPFS: <hash>.d, the blocks at their offsets, and <hash>.m, which of them are there — a small
 // file is kept whole, without a map), fetches the missing ones compressed when the server offers it (z/: src/host/
 // openmw.js, openmwSpans) else as a plain range, and decides how far to read: a small file whole, an archive's record
@@ -198,9 +199,13 @@ function learn() {
   fetch(`/api/openmw/${id}/prefetch`, { cache: 'no-store' }).then((r) => r.ok ? r.json() : []).then((list) => {
     if (!Array.isArray(list)) return;
     ahead.list = list;
-    let sum = 0;
-    list.forEach(([path, , a, b], i) => { ahead.sums.push(sum); sum += b - a; (ahead.where.get(path) ?? ahead.where.set(path, []).get(path)).push([i, a, b]); });
-    ahead.sums.push(sum);
+    let sum = 0, k = 0;
+    list.forEach(([path, , a, b, t], i) => {
+      ahead.sums.push(sum); sum += b - a; (ahead.where.get(path) ?? ahead.where.set(path, []).get(path)).push([i, a, b]);
+      if (i && t - list[i - 1][4] > 4000) k++;
+      ahead.steps.push(k); ahead.stepSize[k] = (ahead.stepSize[k] ?? 0) + (b - a); ahead.stepDone[k] ??= 0;
+    });
+    ahead.sums.push(sum); ahead.here = new Uint8Array(list.length);
     ahead.pump();
   }).catch(() => {});
 }
@@ -217,7 +222,19 @@ const ahead = {
     this.asked = performance.now(); this.started = true; this.seen(f, a, b);
     clearTimeout(this.idle); this.idle = setTimeout(() => this.pump(), 3100);
   },
-  seen(f, a, b) { for (const [i, s, e] of this.where.get(f.path) ?? []) if (s < b && a < e && i > this.at) this.at = i; },
+  seen(f, a, b) {
+    for (const [i, s, e] of this.where.get(f.path) ?? []) if (s < b && a < e) { if (i > this.at) this.at = i; this.got(i); }
+    this.step();
+  },
+  // (the list in steps: the reads of a start, a game loading, an area — apart by more than 4 s of the sessions' mean time;
+  // an entry is here once fetched ahead, or read)
+  steps: [], here: null, stepDone: [], stepSize: [],
+  got(i) { if (this.here && !this.here[i]) { this.here[i] = 1; this.stepDone[this.steps[i]] += this.list[i][3] - this.list[i][2]; } },
+  step() {
+    const k = this.steps[this.at];
+    if (k === undefined || !ctrl || ctrl.length < 6) return;
+    Atomics.store(ctrl, 4, Math.round(this.stepDone[k] / 1024)); Atomics.store(ctrl, 5, Math.round(this.stepSize[k] / 1024));
+  },
   told: 0,
   tell(force) {
     const now = performance.now(), total = this.sums.at(-1) ?? 0;
@@ -234,12 +251,11 @@ const ahead = {
       // (not mounted yet: on with the list when it is — or past it, once nothing was mounted for 3 s)
       if (!f && performance.now() - this.mounted < 3000) return;
       this.next++;
-      if (!f) continue;
-      if (f.size !== size) continue;
-      const job = fetchAhead(f, a, b);
-      if (!job) continue;
+      if (!f || f.size !== size) { this.got(this.next - 1); continue; }   // (not this installation's: nothing to wait for)
+      const i = this.next - 1, job = fetchAhead(f, a, b);
+      if (!job) { this.got(i); this.step(); continue; }
       this.running++;
-      job.finally(() => { this.running--; this.pump(); });
+      job.finally(() => { this.running--; this.got(i); this.step(); this.pump(); });
     }
   },
 };

@@ -293,11 +293,11 @@ test('sessions teach the order of the blocks the engine used; a new session gets
   assert.deepEqual(await list(), []);
   assert.equal((await post('session1aaaa', [['mwdata/Game.esm', 300000, 65536, 196608, 900], ['mwdata/Small.dds', 1000, 0, 1000, 100],
     ['mwdata/Game.esm', 299999, 0, 65536, 1], ['mwdata/Nothing.esm', 10, 0, 10, 1], ['mwdata/Game.esm', 300000, 100, 200, 1], ['mwdata/Game.esm', 300000, 262144, 300000, 99999999]])).status, 200);
-  assert.deepEqual(await list(), [['mwdata/Small.dds', 1000, 0, 1000], ['mwdata/Game.esm', 300000, 65536, 196608]], 'in time order, the wrong sizes and paths and bounds left out');
+  assert.deepEqual(await list(), [['mwdata/Small.dds', 1000, 0, 1000, 100], ['mwdata/Game.esm', 300000, 65536, 196608, 900]], 'in time order, the wrong sizes and paths and bounds left out');
   assert.equal((await post('x', [])).status, 400);
   // (three sessions known: a block a single one used is left out)
   await post('session2bbbb', [['mwdata/Game.esm', 300000, 65536, 131072, 50]]); await post('session3cccc', [['mwdata/Game.esm', 300000, 65536, 131072, 50]]);
-  assert.deepEqual(await list(), [['mwdata/Game.esm', 300000, 65536, 131072]]);
+  assert.deepEqual(await list(), [['mwdata/Game.esm', 300000, 65536, 131072, (900 + 50 + 50) / 3 | 0]]);
 });
 
 test('the engine page streams its files with Orthros\' own reader, the release\'s on request', () => {
@@ -315,12 +315,18 @@ function workerContext(file, extra = {}) {
   return ctx;
 }
 
-test('the data indicator\'s worker counts arriving bytes and survives its ticks', () => {
-  let tick = null;
-  const ctx = workerContext('stream-meter-worker.js', { setInterval: (fn) => { tick = fn; } });
-  const shared = new SharedArrayBuffer(16), counter = new Int32Array(shared);
-  ctx.onmessage({ data: { arrived: shared } }); Atomics.add(counter, 2, 500000);
-  tick(); ctx.onmessage({ data: { read: 65536 } }); tick(); ctx.onmessage({ data: { beat: 1 } }); tick();
+test('the data indicator\'s worker draws what arrived of the step and its percentage while the page is held', () => {
+  let tick = null, now = 0;
+  const texts = [], c2d = new Proxy({}, { get: (o, k) => k === 'fillText' ? (t) => texts.push(t) : k === 'canvas' ? { width: 960, height: 180 } : k in o ? o[k] : () => ({ addColorStop() {} }), set: (o, k, v) => { o[k] = v; return true; } });
+  const ctx = workerContext('stream-meter-worker.js', { setInterval: (fn) => { tick = fn; }, performance: { now: () => now } });
+  const shared = new SharedArrayBuffer(32), counter = new Int32Array(shared);
+  ctx.onmessage({ data: { canvas: { getContext: () => c2d }, dpr: 2, lang: 'fr' } });
+  ctx.onmessage({ data: { arrived: shared } }); ctx.onmessage({ data: { beat: 1 } });
+  now = 1500; Atomics.store(counter, 4, 46080); Atomics.store(counter, 5, 122880); Atomics.add(counter, 2, 500000);
+  ctx.onmessage({ data: { read: 65536 } }); tick();
+  assert.ok(texts.includes('37 %'), texts.join(' | '));
+  assert.ok(texts.some((t) => /^45 \/ 120 Mo/.test(t)), texts.join(' | '));
+  texts.length = 0; now = 1600; ctx.onmessage({ data: { beat: 1 } }); tick(); assert.deepEqual(texts, [], 'gone at the next frame');
 });
 
 test('the streaming worker reads whole blocks, more ahead of a file read in order, an archive record whole, a small file whole', async () => {
@@ -339,7 +345,7 @@ test('the streaming worker reads whole blocks, more ahead of a file read in orde
     return new Response(files[u.pathname].slice(a, b));
   };
   const ctx = workerContext('streamfs-worker.js', { fetch });
-  const ctrl = new Int32Array(new SharedArrayBuffer(16)), data = new Uint8Array(new SharedArrayBuffer(16 << 20));
+  const ctrl = new Int32Array(new SharedArrayBuffer(32)), data = new Uint8Array(new SharedArrayBuffer(16 << 20));
   ctx.onmessage({ data: { init: { ctrl: ctrl.buffer, data: data.buffer, page: '/ports/openmw/x/app/index.html' } } });
   for (const [id, name] of [[1, 'Big.esm'], [2, 'Data.bsa'], [3, 'Small.dds']])
     ctx.onmessage({ data: { mount: { id, size: files['/ports/openmw/x/app/z/mwdata/' + name].length, url: 'http://x/ports/openmw/x/app/mwdata/' + name, mtime: 0 } } });
@@ -357,4 +363,33 @@ test('the streaming worker reads whole blocks, more ahead of a file read in orde
   const first = Math.floor((dataAt + 100000) / 65536) * 65536;
   assert.deepEqual(await read(2, first, dataAt + 100010), bsa.subarray(first), 'the record whole');
   assert.deepEqual(await read(3, 0, 10), files['/ports/openmw/x/app/z/mwdata/Small.dds'], 'a small file whole');
+});
+
+test('the streaming worker fetches the learned list ahead and tells how far the current step is', async () => {
+  const big = Uint8Array.from({ length: 300000 }, (_, i) => i & 255), small = new Uint8Array(5000).fill(9);
+  const files = { '/ports/openmw/x/app/z/mwdata/Big.esm': big, '/ports/openmw/x/app/z/mwdata/Small.dds': small };
+  // (two steps: the first two entries close in time, the third 9 s later)
+  const list = [['mwdata/Big.esm', big.length, 0, 65536, 100], ['mwdata/Big.esm', big.length, 65536, 131072, 300], ['mwdata/Small.dds', small.length, 0, small.length, 9300]];
+  const fetch = async (url) => {
+    const u = new URL(url, 'http://x');
+    if (u.pathname.endsWith('/prefetch')) return new Response(JSON.stringify(list));
+    if (u.pathname.startsWith('/api/')) return new Response('{}');
+    const [a, b] = u.searchParams.get('r').split('-').map(Number);
+    return new Response(files[u.pathname].slice(a, b));
+  };
+  const ctx = workerContext('streamfs-worker.js', { fetch });
+  const ctrl = new Int32Array(new SharedArrayBuffer(32)), data = new Uint8Array(new SharedArrayBuffer(16 << 20));
+  ctx.onmessage({ data: { init: { ctrl: ctrl.buffer, data: data.buffer, page: '/ports/openmw/x/app/index.html' } } });
+  ctx.onmessage({ data: { mount: { id: 1, size: big.length, url: 'http://x/ports/openmw/x/app/mwdata/Big.esm', mtime: 0 } } });
+  ctx.onmessage({ data: { mount: { id: 2, size: small.length, url: 'http://x/ports/openmw/x/app/mwdata/Small.dds', mtime: 0 } } });
+  const until = async (ok) => { for (let i = 0; i < 500 && !ok(); i++) await new Promise((r) => setTimeout(r, 2)); assert.ok(ok()); };
+  await until(() => true);
+  ctx.onmessage({ data: { gen: 1, id: 1, start: 0, end: 100, run: 0, limit: 1 << 30 } });
+  await until(() => Atomics.load(ctrl, 0) === 1);
+  assert.equal(Atomics.load(ctrl, 5), 128, 'the first step: 128 KB');
+  await until(() => Atomics.load(ctrl, 4) === 128);
+  // (the next step, once the engine reads its data: 5000 bytes)
+  ctx.onmessage({ data: { gen: 2, id: 2, start: 0, end: 10, run: 0, limit: 1 << 30 } });
+  await until(() => Atomics.load(ctrl, 0) === 2);
+  assert.deepEqual([Atomics.load(ctrl, 4), Atomics.load(ctrl, 5)], [5, 5]);
 });
