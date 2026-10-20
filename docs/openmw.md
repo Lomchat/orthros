@@ -293,6 +293,25 @@ WebSockets require a matching Origin; the bridge fixes the target port from the 
 replaces client address headers. Unit tests cover isolation, missing files/mods, ranges, world
 paths, cookies, and WebSocket forwarding/origin rejection.
 
+Loading (2026-10-20, after the owner's "stuck at 20 %" and a New Game freeze). The engine build
+(`openmw.{js,wasm,data}`, 238 MB) is sent as the release's own brotli siblings when the browser takes
+them (39 MB; no `Content-Length`, so Emscripten's progress counts against the decoded package size),
+from `/engines/<release>/e/<hash>/` (immutable, one browser copy for every installation:
+`withSharedEngine`). The page adaptation drops the upstream `?v=2` from the base game's StreamFS
+URLs: with a query, streamfs.js keeps none of the pieces it read, and every session read
+Morrowind.esm and the archives over the network again. The engine reads those files synchronously
+on the page's thread, 2 MB per miss: the first boot of Vanilla+ reads 237 MB that way, a first New
+Game ~150 MB more; the page cannot paint meanwhile and Chrome may offer to close it. The Orthros
+loading screen shows the package download (received / size, rate) and switches to "reading the game
+data" at its end; `stream-meter.js` (injected with the frame meter) tells a worker about each piece the
+page's thread is about to wait for, and the worker draws an indicator in an OffscreenCanvas over the
+Orthros page — its frames reach the screen while the page's thread is held (verified in a headed
+Chrome under Xvfb; headless screenshots cannot show it, they need that thread). Measured through a
+2 MB/s link (vanilla-plus-fr): first launch 150 s to the menu (130 s of frozen reads), second 15 s
+(2.6 s of reads, everything from the browser's caches), first New Game 35 s frozen with the indicator
+up, then the intro movie and the character creation. Not done: a learned read-ahead of the opening's
+pieces while the player is idle.
+
 World-travel replies can also arrive through the engine's WebSocket protocol, with a root
 `/w/<world>` destination. The served page scopes same-host WebSocket destinations at its
 reboot boundary before building the next boot fragment. HTTP JSON rewriting alone cannot
