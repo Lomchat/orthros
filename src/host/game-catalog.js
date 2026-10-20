@@ -8,6 +8,7 @@ import { resolveGameFile } from './game-files.js';
 import { goldsrcProblem, DEFAULT_ENGINES_DIR } from './goldsrc.js';
 import { openmwProblem } from './openmw.js';
 import { re3Problem, re3GameFiles } from './re3.js';
+import { mmoProblem } from './mmo.js';
 
 export const DEFAULT_GAMES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data_games');
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
@@ -58,6 +59,8 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
       saveDir: path.resolve(gameDir, '../../build/saves', id) });
     if (!WIN_MOUNT.test(manifest.mount)) fail(file, `${id}: mount invalide`);
     if (manifest.modified !== undefined && typeof manifest.modified !== 'boolean') fail(file, `${id}: modified doit être un booléen`);
+    // (a shared world, any runtime: src/host/mmo.js)
+    { const problem = mmoProblem(manifest.mmo); if (problem) fail(file, `${id}: ${problem}`); }
     if (runtime === 'win32' && !resolveGameFile(manifest, manifest.exe)) fail(file, `${id}: exécutable ${manifest.exe} absent de base/ et versions/${dir}/`);
     if (runtime === 'goldsrc') {
       const problem = goldsrcProblem(manifest.goldsrc);

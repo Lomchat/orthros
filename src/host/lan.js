@@ -16,8 +16,9 @@ const MAX_FRAME = 256 * 1024;
 
 /** A minimal RFC 6455 server side over the socket of an HTTP upgrade (text/binary messages, ping/pong, close). */
 class WsPeer {
-  constructor(socket, onMessage, onClose, log = () => {}) {
+  constructor(socket, onMessage, onClose, log = () => {}, maxMessage = Infinity) {
     this.socket = socket; this.onMessage = onMessage; this.onClose = onClose; this.buf = Buffer.alloc(0); this.parts = []; this.closed = false; this.log = log;
+    this.maxMessage = maxMessage; this.partBytes = 0; // (a message's frames so far: a fragmented message is capped as a whole)
     socket.on('data', (d) => { this.buf = this.buf.length ? Buffer.concat([this.buf, d]) : d; try { this.parse(); } catch (e) { this.why = `error: ${e.message}`; this.close(); } });
     socket.on('close', () => { this.why ??= 'connection closed'; this.finish(); }); socket.on('error', (e) => { this.why ??= `socket error: ${e.message}`; this.finish(); });
     // (an upgraded socket of the HTTP server stays half open when the page's side ends without a close message)
@@ -31,6 +32,7 @@ class WsPeer {
       let len = b[1] & 127, o = 2;
       if (len === 126) { if (b.length < 4) return; len = b.readUInt16BE(2); o = 4; } else if (len === 127) { if (b.length < 10) return; len = Number(b.readBigUInt64BE(2)); o = 10; }
       if (len > MAX_FRAME) { this.why = `frame of ${len} bytes`; this.close(); return; }
+      if (op < 8 && this.partBytes + len > this.maxMessage) { this.why = `message over ${this.maxMessage} bytes`; this.close(); return; }
       if (b.length < o + (masked ? 4 : 0) + len) return;
       const mask = masked ? b.subarray(o, o + 4) : null; o += masked ? 4 : 0;
       const data = Buffer.from(b.subarray(o, o + len)); if (mask) for (let i = 0; i < len; i++) data[i] ^= mask[i & 3];
@@ -39,8 +41,8 @@ class WsPeer {
       if (op === 9) { this.sendRaw(10, data); continue; }
       if (op === 10) continue;
       if (op !== 0) this.op = op;
-      this.parts.push(data);
-      if (fin) { const msg = this.parts.length === 1 ? this.parts[0] : Buffer.concat(this.parts); this.parts = []; this.onMessage(msg, this.op === 1); }
+      this.parts.push(data); this.partBytes += len;
+      if (fin) { const msg = this.parts.length === 1 ? this.parts[0] : Buffer.concat(this.parts); this.parts = []; this.partBytes = 0; this.onMessage(msg, this.op === 1); }
     }
   }
   sendRaw(op, data) {
@@ -53,13 +55,16 @@ class WsPeer {
   finish() { if (this.closed) return; this.closed = true; this.onClose(); }
 }
 
-/** Complete the WebSocket handshake of an HTTP upgrade: a peer, or null (the socket destroyed) when it is not one. */
-export function acceptWebSocket(req, socket, onMessage, onClose, log) {
+/**
+ * Complete the WebSocket handshake of an HTTP upgrade: a peer, or null (the socket destroyed) when it is not one.
+ * `maxMessage`: the largest message taken (all its frames together); a bigger one closes the connection.
+ */
+export function acceptWebSocket(req, socket, onMessage, onClose, log, { maxMessage = Infinity } = {}) {
   const key = req.headers['sec-websocket-key'];
   if ((req.headers.upgrade ?? '').toLowerCase() !== 'websocket' || !key) { socket.destroy(); return null; }
   const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-  return new WsPeer(socket, onMessage, onClose, log);
+  return new WsPeer(socket, onMessage, onClose, log, maxMessage);
 }
 
 /** A host name from an account name: what Windows allows in one (letters, digits, dash), 12 characters at most. */
