@@ -533,6 +533,7 @@ release.
     "requires": [{ "game": "vice-city", "version": "vice-city-1.1-elamigos-2014" }],
     "re3": {
       "engine": "revc-web-6f038e2-r1",
+      "defaults": { "reVC.ini": { "Display": { "Subtitles": "1" } } },
       "languages": {
         "en": { "env": { "LANG": "en_US.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "0" } } } },
         "fr": { "env": { "LANG": "fr_FR.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "1" } } } }
@@ -761,6 +762,15 @@ Failing that, a copy of the game's own is made, even when it already has these s
 settings there. Failing that, a new file is created in the folders that are there, whatever their case.
 `src/ports/re3/ini.js` sets keys in place, adds missing ones to their section and missing sections at the end, and
 keeps the rest byte for byte. The same settings set again change nothing.
+
+A version's `re3.defaults` (`{ <file>: { <section>: { <key>: <value> } } }`, the same rules) are settings a profile gets
+once, the player's own choice afterwards: a key takes its default when the file has not had it yet, and the file
+records it in a section of its own, `[OrthrosDefaults]` (`<section>.<key>=<value>` each — the engine keeps it, as any
+section of its file it reads and writes back whole); a default the manifest changes is set once more. Vice City reVC:
+`{ "reVC.ini": { "Display": { "Subtitles": "1" } } }` — the cutscenes' subtitles, off in the engine's defaults, on for
+new profiles and, once, for the profiles that already had them off (checked in headless Chromium 2026-10-20: a new
+profile, one with `Subtitles = 0`, one turned off again after its default). The files a version's defaults name stay
+out of the shared first-launch profile, as the languages' do.
 
 ### State (2026-10-20)
 

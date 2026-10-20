@@ -72,12 +72,13 @@ export const findPath = (FS, root, rel) => { const p = casePath(FS, root, rel); 
  * A language's settings put in the ini file `rel` of the profile (setIni: the rest of the file kept as it is): the
  * file the profile has under that name whatever its case; else the game's own, copied into the profile even when its
  * settings are already these — a mounted game file is read-only, and the engine writes its settings there; else a new
- * one, in the folders there whatever their case. Returns what was done: 'same', 'set', 'copied' or 'created'.
+ * one, in the folders there whatever their case. Returns what was done: 'same', 'set', 'copied' or 'created'. `edit`:
+ * how the settings go in (setIni; setIniDefaults: defaults set once).
  */
-export function setProfileIni(FS, root, rel, sections, game) {
+export function setProfileIni(FS, root, rel, sections, game, edit = setIni) {
   const { path: p, found } = casePath(FS, root, rel), at = `${root}/${p}`, node = found ? nodeAt(FS, at) : null;
   if (node && !FS.isFile(node.mode)) return 'same';
-  const before = node ? bytesToText(FS.readFile(at)) : '', after = setIni(before, sections);
+  const before = node ? bytesToText(FS.readFile(at)) : '', after = edit(before, sections);
   if (!node) {
     if (!after) return 'same';
     FS.mkdirTree(at.slice(0, at.lastIndexOf('/')));

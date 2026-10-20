@@ -43,6 +43,10 @@ export function re3Problem(r) {
     && (l.env === undefined || (within(l.env, 32) && Object.entries(l.env).every(([name, value]) => ENV_NAME.test(name) && text(value, 0, 64))))
     && (l.ini === undefined || iniOk(l.ini)))))
     return 're3.languages : { <langue>: { env: { <NOM>: <valeur> }, ini: { <fichier>: { <section>: { <clé>: <valeur> } } } } }';
+  // (defaults set once in a profile, then the player's choice: their record's key is `<section>.<key>` — a section
+  // without '=' and not opening a comment, as a key)
+  if (r.defaults !== undefined && (!iniOk(r.defaults) || !Object.values(r.defaults).every((sections) => Object.keys(sections).every((section) => !/=|^[;#]/.test(section)))))
+    return 're3.defaults : { <fichier>: { <section>: { <clé>: <valeur> } } } (section sans « = » ni « ; » ou « # » au début)';
   if (r.solo !== undefined && !isObject(r.solo)) return 're3.solo doit être un objet';
   return null;
 }

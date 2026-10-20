@@ -167,6 +167,7 @@
                   }
                 }
               },
+              "defaults": {"type": "object", "maxProperties": 8, "description": "Réglages par défaut posés une fois dans les fichiers ini du profil, puis le choix du joueur : une clé prend sa valeur par défaut si le fichier ne l'a pas encore eue (la section OrthrosDefaults du fichier garde « <section>.<clé>=<valeur> » de chacune) ; une valeur par défaut changée est posée une fois de plus. Mêmes règles que languages.<code>.ini ; une section sans « = », ne commençant ni par « ; » ni par « # ».", "propertyNames": {"maxLength": 128, "pattern": "^(?:[\\x20-\\x2d\\x30-\\x5b\\x5d-\\x7e][\\x20-\\x2e\\x30-\\x5b\\x5d-\\x7e]*/)*[\\x20-\\x2d\\x30-\\x5b\\x5d-\\x7e][\\x20-\\x2e\\x30-\\x5b\\x5d-\\x7e]*$"}, "additionalProperties": {"type": "object", "maxProperties": 16, "propertyNames": {"maxLength": 64, "pattern": "^[\\x21\\x22\\x24-\\x3a\\x3c\\x3e-\\x5a\\x5c\\x5e-\\x7e](?:[\\x20-\\x3c\\x3e-\\x5a\\x5c\\x5e-\\x7e]*[\\x21-\\x3c\\x3e-\\x5a\\x5c\\x5e-\\x7e])?$"}, "additionalProperties": {"type": "object", "minProperties": 1, "maxProperties": 32, "propertyNames": {"maxLength": 64, "pattern": "^[\\x21\\x22\\x24-\\x3a\\x3c\\x3e-\\x5a\\x5c\\x5e-\\x7e](?:[\\x20-\\x3c\\x3e-\\x5a\\x5c\\x5e-\\x7e]*[\\x21-\\x3c\\x3e-\\x5a\\x5c\\x5e-\\x7e])?$"}, "additionalProperties": {"type": "string", "maxLength": 128, "pattern": "^(?:[\\x21-\\x7e](?:[\\x20-\\x7e]*[\\x21-\\x7e])?)?$"}}}},
               "solo": { "type": "object", "description": "Réservé (réglages du solo)." }
             }
           },

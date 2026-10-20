@@ -58,3 +58,34 @@ export function setIni(text, sections) {
   const out = bom + lines.join('');
   return out === text ? text : out;
 }
+
+/** `text`'s keys: section (lowercase) → key (lowercase) → value, without the spaces around; a key's last line wins. */
+export function readIni(text) {
+  const out = new Map(); let current = null;
+  for (const line of text.replace(/^\xef\xbb\xbf/, '').split(/\r?\n/)) {
+    const s = SECTION.exec(line);
+    if (s) { const name = s[1].trim().toLowerCase(); current = out.get(name) ?? new Map(); out.set(name, current); continue; }
+    const k = current && KEY.exec(line);
+    if (k) current.set(k[2].toLowerCase(), k[4].trim());
+  }
+  return out;
+}
+
+/** The section where an ini file records the defaults it got (setIniDefaults): `<section>.<key>=<value>` each. */
+export const DEFAULTS_SECTION = 'OrthrosDefaults';
+/**
+ * `text` with defaults ({ <section>: { <key>: <value> } }) set once: a key whose default the file has not got yet takes
+ * it, and the file records it (DEFAULTS_SECTION, which the engine keeps as any section of its file); afterwards the
+ * player's own choice stays. A default the manifest changes is set once more.
+ */
+export function setIniDefaults(text, defaults) {
+  const got = readIni(text).get(DEFAULTS_SECTION.toLowerCase()) ?? new Map(), set = {}, marks = {};
+  for (const [section, keys] of Object.entries(defaults)) {
+    for (const [key, value] of Object.entries(keys)) {
+      const mark = `${section}.${key}`;
+      if (got.get(mark.toLowerCase()) === String(value).trim()) continue;
+      (set[section] ??= {})[key] = value; marks[mark] = value;
+    }
+  }
+  return Object.keys(marks).length ? setIni(setIni(text, set), { [DEFAULTS_SECTION]: marks }) : text;
+}

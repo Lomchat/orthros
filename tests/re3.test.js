@@ -10,7 +10,7 @@ import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { gameLayers } from '../src/host/game-files.js';
 import { re3Problem } from '../src/host/re3.js';
 import { createServer } from '../src/host/server.js';
-import { setIni, bytesToText, textToBytes } from '../src/ports/re3/ini.js';
+import { setIni, setIniDefaults, readIni, bytesToText, textToBytes } from '../src/ports/re3/ini.js';
 import { profileSnapshot, restoreProfile, setProfileIni, toCloud, findPath, casePath, languageIni, envPreRun } from '../src/ports/re3/profile.js';
 import { StreamedFiles } from '../src/ports/goldsrc/files.js';
 
@@ -64,6 +64,9 @@ test('an re3 version needs no executable and is checked by its own rules', (t) =
   assert.equal(gameLayers(loadGameCatalog(games, null, { enginesDir: engines }).get('gs-1')).length, 2, 'a GoldSrc port gets no engine layer');
   assert.equal(re3Problem({ engine: ENGINE }), null);
   assert.equal(re3Problem({ engine: ENGINE, module: 'engine/main.mjs', args: ['+set', 'a=b', '-x.y'], solo: {}, languages: { en: {}, fr: { env: { A_1: '' }, ini: { 'sub/a.ini': { 'Main Section': { 'Some key': 'v w' } } } } } }), null);
+  assert.equal(re3Problem({ engine: ENGINE, defaults: { 'reVC.ini': { Display: { Subtitles: '1' } } } }), null);
+  for (const defaults of [{ 'a.ini': { 'a=b': { k: '1' } } }, { 'a.ini': { ';S': { k: '1' } } }, { 'a.ini': { S: {} } }, { '../a.ini': { S: { k: '1' } } }, { 'a.ini': { S: { k: ' 1' } } }, []])
+    assert.match(re3Problem({ engine: ENGINE, defaults }), /re3.defaults/, JSON.stringify(defaults));
   for (const [edit, error] of [
     [(v) => { delete v.re3; }, /re3 obligatoire/],
     [(v) => { v.re3.engine = '../x'; }, /re3.engine/],
@@ -98,7 +101,7 @@ test('an re3 version needs no executable and is checked by its own rules', (t) =
 
 test('the manifest schema\'s re3 rules are the catalog\'s: what one accepts, the other does', () => {
   const schema = JSON.parse(fs.readFileSync(new URL('../docs/game-manifest.schema.json', import.meta.url), 'utf8'));
-  const r = schema.properties.versions.items.properties.re3.properties, ini = r.languages.additionalProperties.properties.ini;
+  const r = schema.properties.versions.items.properties.re3.properties, ini = r.languages.additionalProperties.properties.ini, defaults = r.defaults;
   const rule = (o) => (value) => value.length <= o.maxLength && new RegExp(o.pattern).test(value);
   const long = (n) => 'x'.repeat(n);
   const slots = {
@@ -107,6 +110,8 @@ test('the manifest schema\'s re3 rules are the catalog\'s: what one accepts, the
     section: [rule(ini.additionalProperties.propertyNames), (v) => ({ languages: { fr: { ini: { 'a.ini': { [v]: { k: 'v' } } } } } }), ['General', 'Main Section', 'a=b', ';c', '#c', 'Gen]eral', '[A', ' A', 'A ', '', long(64), long(65), 'a\tb', '\u00e9']],
     key: [rule(ini.additionalProperties.additionalProperties.propertyNames), (v) => ({ languages: { fr: { ini: { 'a.ini': { S: { [v]: 'v' } } } } } }), ['Language', 'Some key', 'a#b', 'a;b', 'Lang=uage', ';Language', '#k', ' k', 'k ', 'k[', 'k]', '', long(64), long(65), '\u00e9']],
     value: [rule(ini.additionalProperties.additionalProperties.additionalProperties), (v) => ({ languages: { fr: { ini: { 'a.ini': { S: { k: v } } } } } }), ['', '1', 'v w', 'a=b', '[x]', ' 1', '1 ', '1\n[Other]', long(128), long(129), '\u00e9']],
+    defaultSection: [rule(defaults.additionalProperties.propertyNames), (v) => ({ defaults: { 'a.ini': { [v]: { k: 'v' } } } }), ['General', 'Main Section', 'a=b', ';c', '#c', 'Gen]eral', ' A', 'A ', '', long(64), long(65), '\u00e9']],
+    defaultValue: [rule(defaults.additionalProperties.additionalProperties.additionalProperties), (v) => ({ defaults: { 'a.ini': { S: { k: v } } } }), ['', '1', 'v w', ' 1', '1 ', long(128), long(129)]],
   };
   for (const [slot, [schemaOk, entry, samples]] of Object.entries(slots)) {
     let accepted = 0;
@@ -235,6 +240,19 @@ test('an re3 game of its own over another game\'s files (requires): beneath its 
 });
 
 // ---------------------------------------------------------------- a language's settings in the engine's ini files
+
+test('defaults go in an ini file once, recorded there: then the player\'s choice stays; a changed default once more', () => {
+  const defaults = { Display: { Subtitles: '1' } };
+  const first = setIniDefaults('[General]\r\nLanguage=0\r\n[Display]\r\nSubtitles = 0\r\n', defaults);
+  assert.equal(first, '[General]\r\nLanguage=0\r\n[Display]\r\nSubtitles = 1\r\n\r\n[OrthrosDefaults]\r\nDisplay.Subtitles=1\r\n');
+  assert.equal(setIniDefaults(first, defaults), first, 'got already: nothing changes');
+  // (the player turned them off — the engine wrote its file again, the record kept, its case its own)
+  const off = '[general]\nlanguage=0\n[display]\nsubtitles=0\n[orthrosdefaults]\ndisplay.subtitles=1\n';
+  assert.equal(setIniDefaults(off, defaults), off);
+  assert.equal(setIniDefaults(off, { Display: { Subtitles: '2' } }), '[general]\nlanguage=0\n[display]\nsubtitles=2\n[orthrosdefaults]\ndisplay.subtitles=2\n');
+  assert.equal(setIniDefaults('', defaults), '[Display]\nSubtitles=1\n\n[OrthrosDefaults]\nDisplay.Subtitles=1\n', 'a new file');
+  assert.deepEqual([...readIni('\xef\xbb\xbf[A]\nk = v \n;c=1\n[a]\nK=w\nx=a=b').get('a')], [['k', 'w'], ['x', 'a=b']]);
+});
 
 test('the INI editor sets keys in place and keeps everything else byte for byte', () => {
   const text = '; settings\r\n[General]\r\nLanguage = 0  \r\nother=1\r\n\r\n[Graphics]\r\nWidth=640\r\n';

@@ -13,6 +13,7 @@ import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, writeManyStorage, storageKeys, removeStorage } from '../goldsrc/storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, PIECE } from '../goldsrc/files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
+import { setIniDefaults } from './ini.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../../host/profile-seed.js';
 
 const STRINGS = {
@@ -372,7 +373,7 @@ async function loadInBackground(rest) {
 // every audio file: a long first start on a slow link). With the manifest's `profileSeed`, an empty profile gets the
 // small files first sessions of the version wrote identical (the server's quorum), in place before the engine starts;
 // else this session reports its own, taken at the player's first input, once it has gone on playing (SeedWatch). The
-// ini files the version's languages name are left out: the player's settings, the screen's size among them.
+// ini files the version's languages and defaults name are left out: the player's settings, the screen's size among them.
 let seedWatch = null, seedLanguage = null;
 /** The files a seed may hold now: the profile's but its ini files. */
 const seedFiles = (iniNames) => profileSnapshot(FS, ROOT, gameNodes).filter((f) => !iniNames.has(f.path.toLowerCase()));
@@ -466,12 +467,16 @@ async function start() {
   // profile even when it has these settings, for the engine to write in)
   const kept = (await readStorage(db, 'profile', 'files')) ?? [];
   if (config.profileSeed && params.get('profileseed') !== '0' && !kept.length) {
-    await seedProfile(language, new Set(languageIni(r.languages, language).map(([file]) => file.toLowerCase())));
+    await seedProfile(language, new Set([...languageIni(r.languages, language).map(([file]) => file), ...Object.keys(r.defaults ?? {})].map((file) => file.toLowerCase())));
   }
   restoreProfile(FS, ROOT, kept, log);
   profileReady = true; watchProfileWrites();
   for (const [file, sections] of languageIni(r.languages, language)) {
     try { log(`${file}: ${setProfileIni(FS, ROOT, file, sections, gameNodes)} (${language})`); } catch (error) { log(`${file}: not set (${error.message})`); }
+  }
+  // (the version's defaults — re3.defaults —, set once in a profile: the player's later choice stays)
+  for (const [file, sections] of Object.entries(r.defaults ?? {})) {
+    try { log(`${file}: ${setProfileIni(FS, ROOT, file, sections, gameNodes, setIniDefaults)} (defaults)`); } catch (error) { log(`${file}: defaults not set (${error.message})`); }
   }
   FS.chdir(ROOT);
   step('game', 'active', '', 0.3); status(S.starting);
