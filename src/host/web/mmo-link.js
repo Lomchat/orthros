@@ -34,10 +34,12 @@
 // onState(state, link) is called at every change of state() or joined() (a lost connection: state 4 first, joined()
 // still telling whether a world was joined, then joined() false).
 
+import { MMO_C, MMO_S, mmoClientRecord, mmoServerRecords } from '../mmo-proto.js';
+
 /** state() values */
 export const LINK = Object.freeze({ CLOSED: 0, CONNECTING: 1, OPEN: 2, REFUSED: 3, WAITING: 4 });
-/** record types the page writes or reads (docs/mmo.md, section 5) */
-export const RECORD = Object.freeze({ PING: 0x07, AWAY: 0x08, REFUSED: 0x80, WELCOME: 0x85, LEFT: 0x86, LINK_RESET: 0xFE });
+/** record types the page writes or reads (docs/mmo.md, section 5: src/host/mmo-proto.js, shared with the server) */
+export const RECORD = Object.freeze({ PING: MMO_C.PING, AWAY: MMO_C.AWAY, REFUSED: MMO_S.REFUSED, WELCOME: MMO_S.WELCOME, LEFT: MMO_S.LEFT, LINK_RESET: MMO_S.LINK_RESET });
 /** AWAY's source for the page (the engine's own is 0: its pause menu) */
 export const AWAY_SOURCE_PAGE = 1;
 export const LIMITS = Object.freeze({
@@ -52,12 +54,8 @@ export const BACKOFF_MS = Object.freeze([1000, 2000, 4000, 8000, 15000]);
 
 /** The LINK_RESET pseudo-record, as the server's records are framed (from 255: the server). */
 export const linkResetRecord = () => Uint8Array.of(2, 0, RECORD.LINK_RESET, 255);
-/** A client record: `u16 len | u8 type | body`. */
-export function clientRecord(type, body = []) {
-  const out = new Uint8Array(3 + body.length);
-  out[0] = (body.length + 1) & 255; out[1] = (body.length + 1) >> 8; out[2] = type; out.set(body, 3);
-  return out;
-}
+/** A client record: `u16 len | u8 type | body` (the protocol's own framing). */
+export const clientRecord = mmoClientRecord;
 /** PING with the page's clock (the engine's own clock too: performance.now(), so a PONG is a valid sample for it). */
 export function pingRecord(clientMs) {
   const out = clientRecord(RECORD.PING, new Uint8Array(8));
@@ -66,20 +64,8 @@ export function pingRecord(clientMs) {
 }
 export const awayRecord = (away) => clientRecord(RECORD.AWAY, [AWAY_SOURCE_PAGE, away ? 1 : 0]);
 
-/**
- * The server records of one message: { type, from, body } each (a truncated record ends the walk).
- * @param {Uint8Array} bytes
- */
-export function serverRecords(bytes) {
-  const out = [];
-  for (let o = 0; o + 4 <= bytes.length;) {
-    const len = bytes[o] | (bytes[o + 1] << 8);
-    if (len < 2 || o + 2 + len > bytes.length) break;
-    out.push({ type: bytes[o + 2], from: bytes[o + 3], body: bytes.subarray(o + 4, o + 2 + len) });
-    o += 2 + len;
-  }
-  return out;
-}
+/** The server records of one message: { type, from, body } each (the protocol's own reader). */
+export const serverRecords = mmoServerRecords;
 /** REFUSED's body: u8 reason, str8 detail. */
 export function parseRefused(body) {
   const reason = body[0] ?? 0, n = body[1] ?? 0;
