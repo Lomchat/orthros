@@ -800,6 +800,37 @@ export class HttpBackend {
     } catch { return null; } finally { this.fgPending--; this.lastSyncFetchAt = performance.now(); this.net.end(tok, wire, end - start, ok); }
   }
 
+  /**
+   * The game reads `path` at random as it goes (a streaming archive, a sound bank): all of its blocks wanted, downloaded
+   * by the background fill after the game's own reads (not on a thin link: the game's reads alone there).
+   */
+  wantWhole(path) {
+    const r = this.lookup(path); if (!r?.file) return;
+    const size = r.file.size, mtime = r.file.mtime ?? 0;
+    for (let i = 0; i * BLOCK < size; i++) {
+      const k = `${r.path}#${i}`;
+      if (!this.cache.has(k) && !this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) this.want.set(k, { path: r.path, size, mtime, index: i });
+    }
+    this.fillBackground();
+  }
+
+  /**
+   * Bytes of a file kept elsewhere before (a store an earlier page used), from offset `at` (a piece's start), into the
+   * store as if downloaded: whole blocks as blocks, the rest as 64 KiB pieces (whole, or the file's tail).
+   */
+  keep(path, size, mtime, at, bytes) {
+    const store = this.store; if (!store || at % CHUNK) return;
+    const end = Math.min(size, at + bytes.length);
+    for (let pos = at; pos < end;) {
+      const bi = Math.floor(pos / BLOCK), bEnd = Math.min(size, (bi + 1) * BLOCK);
+      if (pos === bi * BLOCK && end >= bEnd) { store.put(`${path}#${size}#${mtime}#${bi}`, bytes.subarray(pos - at, bEnd - at)); pos = bEnd; continue; }
+      const c = pos / CHUNK, cEnd = Math.min(size, pos + CHUNK);
+      if (end < cEnd) break; // (a piece cut short: not kept)
+      if (!store.map.has(`${path}#${size}#${mtime}#${bi}`)) store.put(this.pieceKey(path, size, mtime, c), bytes.subarray(pos - at, cEnd - at));
+      pos = cEnd;
+    }
+  }
+
   /** Download the wanted blocks, one at a time, while the game is not reading synchronously. */
   async fillBackground() {
     if (this.filling || typeof fetch !== 'function') return;

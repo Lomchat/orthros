@@ -47,7 +47,8 @@ onmessage = (e) => {
 setInterval(() => {
   const now = performance.now(); held = now - beat;
   if (arrived) { const cur = Atomics.load(arrived, 2), d = (cur - seen) | 0; seen = cur; if (d > 1) arrive(now, d); }
-  const reading = reads > 0 && now - lastRead < held + 500;
+  // (reading: the page's reads wait for the network — the game data's counter — or bytes arrived during this hold)
+  const reading = (arrived && Atomics.load(arrived, 6) > 0) || (reads > 0 && now - lastRead < held + 500);
   if (ctx && !hidden && (held > 1000 && reading || held > 3000)) draw(now, reading); else if (shown) clear();
 }, 100);
 

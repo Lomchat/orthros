@@ -36,7 +36,7 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
   if (!Array.isArray(spec.versions) || !spec.versions.length) fail(file, 'versions doit contenir au moins une version');
   if (spec.defaults !== undefined && (!spec.defaults || Array.isArray(spec.defaults) || typeof spec.defaults !== 'object')) fail(file, 'defaults doit être un objet');
   const defaults = spec.defaults ?? {};
-  for (const key of ['folder', 'baseFolder', 'gameId', 'id', 'dir', 'requires', 'extraMounts', 'saveDir', 'coverPath', 'saveKey', 'overlays']) if (own(defaults, key)) fail(file, `defaults.${key} est réservé`);
+  for (const key of ['folder', 'baseFolder', 'gameId', 'id', 'dir', 'requires', 'extraMounts', 'saveDir', 'coverPath', 'saveKey', 'overlays', 'dataMounts']) if (own(defaults, key)) fail(file, `defaults.${key} est réservé`);
   const versions = new Map();
   for (const entry of spec.versions) {
     if (!entry || Array.isArray(entry) || typeof entry !== 'object') fail(file, 'entrée de version invalide');
@@ -51,7 +51,7 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     // (win32: another game's version mounted at its own drive path; goldsrc, re3: its files beneath this version's, no mount)
     const layered = runtime === 'goldsrc' || runtime === 're3';
     if (entry.requires !== undefined && (!Array.isArray(entry.requires) || !entry.requires.every((d) => d && ID.test(d.game ?? '') && ID.test(d.version ?? '') && (layered ? d.mount === undefined : WIN_MOUNT.test(d.mount ?? ''))))) fail(file, `${entry.id}: requires invalide`);
-    for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey', 'overlays']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
+    for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey', 'overlays', 'dataMounts']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
     const { id, dir, requires, ...version } = entry;
     const manifest = withDefaults({ ...defaults, ...version, runtime, name: spec.name, gameId: spec.id,
       folder: path.join(gameDir, 'versions', dir), baseFolder: path.join(gameDir, 'base'),
@@ -69,6 +69,8 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
       if (problem) fail(file, `${id}: ${problem}`);
       if (requires?.length) fail(file, `${id}: openmw utilise sa propre pile de mods, sans requires`);
       manifest.saveKey = `orthros-port:${spec.id}:${dir}`;
+      // (the engine release's own data — its asset pack — served with the game's files, under _engine/)
+      manifest.dataMounts = [{ at: '_engine', dir: path.join(enginesDir, manifest.openmw.engine, 'moddata') }];
     }
     if (runtime === 're3') {
       const problem = re3Problem(manifest.re3);

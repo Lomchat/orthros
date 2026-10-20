@@ -29,7 +29,7 @@ import { listGameTree, resolveGameFile } from './game-files.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
-import { openmwInstalled, openmwModes, openmwProxy, openmwReads, openmwSpans, openmwWebText, withFrameMeter, withSharedEngine, withStreaming } from './openmw.js';
+import { openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withSharedEngine, withStreaming } from './openmw.js';
 import { re3Installed, re3Modes, re3Module } from './re3.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
@@ -579,12 +579,11 @@ export function createServer(opts = {}) {
   const rooms = roomsApi({ getManifest, identify: (req) => (accountApi ? accountApi.session(req) ?? null : undefined), ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
   const openmw = openmwProxy({ getManifest, session: accountApi?.session, ownsToken: accountApi?.ownsPortToken });
   const openmwAccounts = accountBridge({ accountsDir: opts.accountsDir, accountApi, getManifest });
-  const spans = openmwSpans({ getManifest, enginesDir, headers }), openmwLearned = openmwReads({ getManifest, enginesDir, learnDir: opts.learnDir, headers });
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
     try {
-      if (openmwAccounts.handle(req, res, url) || spans.handle(req, res, url) || openmwLearned.handle(req, res, url) || openmw.handle(req, res, url)) return;
+      if (openmwAccounts.handle(req, res, url) || openmw.handle(req, res, url)) return;
       // (the multiplayer rooms of a browser port, from its server manager)
       if (p.startsWith('/api/rooms/') && rooms.handle(req, res, url)) return;
       // (a map's picture for the lobby: the game's own overview, multiplayer.mapImage)

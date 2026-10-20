@@ -32,13 +32,27 @@ function mergeDir(layers) {
   return node;
 }
 
+/**
+ * The game's files as the browsers read them: its layers, and the folders of its engine's release it serves beside them
+ * (`dataMounts`: [{ at, dir }] — an engine's own data, as OpenMW's asset pack, under a folder of its own, `at`; not part
+ * of the game's layers, which a native server laying out the game reads too).
+ */
 export function listGameTree(manifest) {
-  return mergeDir(gameLayers(manifest));
+  const tree = mergeDir(gameLayers(manifest));
+  for (const { at, dir } of manifest.dataMounts ?? []) if (fs.existsSync(dir)) tree.dirs[at] = mergeDir([dir]);
+  return tree;
 }
 
-/** Resolve a guest path through all layers, with the version taking precedence. */
+/** Resolve a guest path through all layers, with the version taking precedence (a data mount's under its folder). */
 export function resolveGameFile(manifest, rel) {
-  let dirs = gameLayers(manifest);
+  const top = rel.replace(/\\/g, '/').split('/').filter(Boolean)[0];
+  const mount = (manifest.dataMounts ?? []).find((m) => m.at === top);
+  if (mount) return resolveIn([mount.dir], rel.replace(/\\/g, '/').split('/').filter(Boolean).slice(1).join('/'));
+  return resolveIn(gameLayers(manifest), rel);
+}
+
+function resolveIn(layers, rel) {
+  let dirs = layers;
   const parts = rel.replace(/\\/g, '/').split('/').filter(Boolean);
   if (!parts.length || parts.some((p) => p === '.' || p === '..')) return null;
   for (let i = 0; i < parts.length; i++) {

@@ -308,27 +308,21 @@ OffscreenCanvas over the Orthros page — its frames reach the screen while the 
 data received (the streaming's shared byte counter), rate, seconds, and "choose Wait" once Chrome
 may ask.
 
-The engine page's file streaming is Orthros' own (`src/ports/openmw/streamfs.js` and
-`streamfs-worker.js`, same interface as the release's, swapped by `withStreaming`; `?sfs=upstream`
-on the port's page keeps the release's). Measured first (vanilla-plus-fr, boot + New Game): the
-upstream fetched 2 MB per miss, raw — 58 MB for 8 MB of archive records, the masters again after a
-New Game evicted them, ~300 small files one round trip each. Now: 64 KB blocks in the page's memory;
-a miss is planned by the worker — a small file (≤ 1 MB) whole, a TES3 BSA record whole (its file
-table, read once), a file read in order further and further ahead (up to what the link carries in
-2 s) with the next stretch fetched while the engine works; fetched compressed from
-`app/z/<mwdata|moddata>/<file>?r=a-b&s=size` (`openmwSpans`: brotli 5, 2–5× smaller for masters and
-archives, ~40 MB/s per core; 412 when the size changed, then the plain range); kept in OPFS
-(`orthros-streamfs-1/`: a copy of each file at its offsets plus a block map; small files whole), so a
-returning player reads from disk. The upstream's Cache API pieces (`mwdata-chunks-v1`) are taken
-over when met. The worker reports the blocks the engine used first (the page's thread tells it) to
-`POST /api/openmw/<manifest>/reads`; `GET …/prefetch` gives a new session that order (mean time over
-sessions, blocks a single session read dropped once three are known, 400 MB, first 30 minutes;
-`<learnDir>/openmw-reads-<manifest>.json`), fetched ahead from the engine's first read on (not during
-its own download), two at a time (one while the page waits), no more than 15 s of link ahead of the
-engine while it keeps reading, to the end once it is idle 3 s (the menu). A "Preloading %" pill in the
-header shows it.
+The engine page's file streaming is the game data every Orthros game reads (CLAUDE.md "Standardization";
+docs/slow-network.md): `src/ports/openmw/streamfs.js` keeps the engine page's StreamFS interface (swapped for the
+release's by `withStreaming`; `?sfs=upstream` on the port's page keeps the release's) and maps its mounts onto the
+version's tree — `mwdata/<file>` → `<file>`, `mwdata/mods/<part>/<file>` → `mods/<part>/<file>`, `moddata/<file>` →
+`_engine/<file>` (the release's asset pack: a `dataMounts` entry of the manifest, served by `/api/tree` and `/gamez` with
+the game's files, not laid out for the native gateway). The bytes come from the data worker (`src/vfs/data-worker.js`:
+the Windows games' reader — compressed ranges, the link's measure and regimes, the learned order fetched ahead from the
+game's position, the OPFS block store `orthros-files-<manifest>`, the whole download) through `data-client.js` and
+`emscripten-files.js`; the learned order is the server's `/api/prefetch`, fed by the pieces the engine used (reported by
+the worker). Files of elsewhere (a signed address, a file the player picked) go through the same worker. The copies the
+page kept before (2026-10-20: OPFS `orthros-streamfs-1`, the release's Cache API `mwdata-chunks-v1`) are taken into
+the store before each file's first read (`legacy-copies.js`): measured, a second visit after the earlier page fetched
+28 MB instead of 166.
 
-Measured through a 2 MB/s link (tools: a throttling proxy; headless Chromium, SwiftShader):
+Measured with the page's own streaming (before the shared game data, same day) through a 2 MB/s link (tools: a throttling proxy; headless Chromium, SwiftShader):
 
 | vanilla-plus-fr | upstream streaming | Orthros streaming |
 |---|---|---|
@@ -338,6 +332,9 @@ Measured through a 2 MB/s link (tools: a throttling proxy; headless Chromium, Sw
 | returning player, launch → menu | 15 s | 14 s; New Game 6.9 s, 16 MB |
 | upstream cache taken over | — | 16 s to the menu, 33 MB |
 
+With the shared game data (same harness, a learned order of one session): new player 70 s to the menu, first New Game's
+longest freeze 7.4 s, 207 MB (148 MB of them fetched ahead in the background, 4 MB the game waited for; the learned
+prefetch takes whole blocks beyond the pieces sessions read — to tune in the shared reader, for every game).
 Unthrottled the launch takes 16 s (the engine's own work). Not validated: multiplayer and the locker
 (signed addresses, a player's own files) with the new streaming; real GPUs.
 
