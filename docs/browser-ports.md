@@ -30,7 +30,7 @@ missing. Every game page — Windows games and ports — has the same frame (hea
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-60f6e27-r1` (reVC built from source) and `revc-web-60f6e27-plus-r1` (with Orthros' additions) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-d0f8957-r1` (reVC built from source) and `revc-web-d0f8957-plus-r1` (with Orthros' additions) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` (Orthros' fork) with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -534,7 +534,7 @@ release.
     "id": "vice-city-revc", "dir": "1.1-revc", "version": "1.1 · reVC", "languages": ["en", "fr"], "profileSeed": true,
     "requires": [{ "game": "vice-city", "version": "vice-city-1.1-elamigos-2014" }],
     "re3": {
-      "engine": "revc-web-60f6e27-r1",
+      "engine": "revc-web-d0f8957-r1",
       "defaults": { "reVC.ini": { "Display": { "Subtitles": "1" } } },
       "languages": {
         "en": { "env": { "LANG": "en_US.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "0" } } } },
@@ -668,7 +668,7 @@ The engine is Orthros' public fork of reVC, `github.com/Lomchat/reVC`, branch `o
 `mrxenginner/reVC` at `a26fff4`, the owner's choice — D099), with its librw submodule from `github.com/Lomchat/librw`,
 branch `orthros`: the browser build is defined there (`src/CMakeLists.txt`, `cmake/EmscriptenDeps.cmake`,
 `src/skel/orthros_*`; the fork's README, "Browser build"). `tools/re3/build.sh` builds it from the commit pinned in
-`tools/re3/lock.json` (`60f6e27`, its submodules too) in the pinned image `emscripten/emsdk:4.0.23`, without network.
+`tools/re3/lock.json` (`d0f8957`, its submodules too) in the pinned image `emscripten/emsdk:4.0.23`, without network.
 Emscripten's SDL2 and mpg123 ports come from a cache made once (`data_engines/src/emscripten-4.0.23-cache`, the
 archives checked against the lock). Two builds give the same `revc.mjs` and `revc.wasm` (the pinned commit's time is
 the build time; checked 2026-10-19 and 2026-10-20): the script refuses one that differs from the lock. A release holds
@@ -760,7 +760,7 @@ the game reads none of them.
 
 `vice-city-orthros` ("Grand Theft Auto: Vice City — Orthros Edition", `1.1 · Orthros`, over the Windows card's files
 as reVC's; `"modified": true`: the library's "Recompiled & modified" tab, "Recompiled and modified engine" on its card)
-runs the release `revc-web-60f6e27-plus-r1`: the same fork commit as reVC's `revc-web-60f6e27-r1`, built with
+runs the release `revc-web-d0f8957-plus-r1`: the same fork commit as reVC's `revc-web-d0f8957-r1`, built with
 `-DREVC_ORTHROS_EXTRAS=ON` (lock.json: a build's own `cmake`). That option compiles `src/extras/orthros_extras.cpp` in
 and its hooks (all under `ORTHROS_EXTRAS`: the reVC card's build has none of them). Everything is in the game itself:
 the page starts it as any re3 version (no `modes`).
@@ -770,8 +770,12 @@ the page starts it as any re3 version (no `modes`).
   kind (weapons and health, police, vehicles, traffic and driving, weather and time, pedestrians, Tommy, other),
   sorted, each with what it does, in English or French as the game (the French accents at the codes the game's French
   text uses). The game's fonts and colours: the menu's pink title, the HUD's blue for the kinds, the codes in white,
-  their effect in the menus' pink; two or three columns and a size to fit the screen. HELP again, Enter, Backspace or
-  Esc close it — at the key, whatever the frame rate, and that Esc does not open the pause menu.
+  their effect in the menus' pink; two or three columns and a size to fit the screen. The mouse is free over it (the
+  system's cursor, the page's pointer lock released): the code under it has the menus' green selection behind it, and
+  a click closes the list and gives the code's letters to the cheats' reader as if typed (HELP's own line only closes
+  the list); that click is not the game's until released, and the mouse's moves over the list do not turn the camera.
+  HELP again, Enter, Backspace or Esc close it — at the key, whatever the frame rate, and that Esc does not open the
+  pause menu.
 - **The free mode**, a game of its own in the main menu: "Free Mode" ("Mode libre") between "Start Game" and
   "Options", its page as the start page is the story's (`MENUPAGE_FREE_MODE`, defined as the game's own pages are):
   "Continue" (its most recent save; the first time, the game completed at 100 %), "New Free Game" (the game completed
@@ -788,7 +792,15 @@ the page starts it as any re3 version (no `modes`).
 - The version folder's `orthros/freemode.b` is a 100 % save of the PC game (retail Windows script) from GTA Save N
   Play (`gtasnp.com/Go49AJ`, unmodified: "Keep your Friends Close…", 100 %, $654,319, 200/200 health and armour),
   201,828 bytes, sha256 `99106509…ef7c9b35` (the manifest's `installedFrom`). It loads in reVC as it is: Tommy in his
-  mansion on Starfish Island.
+  mansion on Starfish Island. Its site's checklist has all 109 items done (story, assets, Phil Cassidy, side
+  missions, packages, rampages, jumps); what the game leaves open after 100 % stays (Sunshine Autos' races, the
+  stadium, the shooting range, RC vans, ice cream sales, the Boatyard's runs: the owner's choice, 2026-10-20). Its
+  player had left five of the cell phone's calls unanswered — story conversations, the phone ringing for them every
+  20 to 60 s (`main.scm`'s CELL thread: a call rings until answered). A free game loaded has them marked made
+  (`OrthrosExtras::GameLoaded`: `$1139`, `$1140`, `$1158`, `$1162`, `$1164`, for the PC script whose main part is
+  204,596 bytes). Found by replaying that thread on the save's variables (its every condition evaluated, the player
+  answering): only these five, wherever Tommy is; none once they are made. All of GTA Save N Play's 100 % saves of
+  the PC script have the same pending state.
 - Its learned prefetch list and shared first-launch profile started as the reVC card's (2026-10-20, the server
   stopped meanwhile: it keeps both in memory): the same game files, the same `Audio/sound.cache`. Learned from its own
   first sessions, before any seed, the list put the ~1,200 audio files the game reads to build that cache first —
@@ -834,7 +846,7 @@ out of the shared first-launch profile, as the languages' do.
 ### State (2026-10-20)
 
 Vice City's `vice-city-revc` ("Grand Theft Auto: Vice City — reVC", `1.1 · reVC`) is a card of its own on the home,
-release `revc-web-60f6e27-r1` (the same engine as `6f038e2`'s, of a later commit whose additions it leaves out).
+release `revc-web-d0f8957-r1` (the same engine as `6f038e2`'s, of a later commit whose additions it leaves out).
 Checked in headless
 Chromium (SwiftShader) with `tools/re3/check.mjs --new-game --reload` from the server: the home lists it available,
 the page starts it on the game's menu (60 frames a second, the mouse free there), sound on after the first gesture, a
