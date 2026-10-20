@@ -8,9 +8,9 @@
 // frame rate, full screen, back to the games), the loading screen, the game filling the rest of the window. It never
 // loads the Win32 runtime, and nothing here names a game.
 import { pickLang } from '../../host/web/lang.js';
-import { createShell } from '../../host/web/shell.js';
+import { createShell, lockKeys } from '../../host/web/shell.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
-import { openStorage, readStorage, writeStorage, storageKeys, removeStorage } from '../goldsrc/storage.js';
+import { openStorage, readStorage, writeStorage, writeManyStorage, storageKeys, removeStorage } from '../goldsrc/storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, PIECE } from '../goldsrc/files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../../host/profile-seed.js';
@@ -277,7 +277,20 @@ let config, files, streamed;
  * The profile now: the engine's tree once it is in place, else — before, or once saves of it stopped (the page goes, or
  * the account's copy replaced it) — the one kept in this browser.
  */
-const currentProfile = async () => (profileReady && !stopped ? profileSnapshot(FS, ROOT, gameNodes) : (await readStorage(db, 'profile', 'files')) ?? []);
+// (the profile's snapshot taken again only once the engine changed a file — a walk of the whole game folder, 1,500 files,
+// a hitch in a frame: FS writes, removals and renames mark it)
+let profileDirty = true, profileCache = null;
+function snapshot() {
+  if (profileDirty || !profileCache) { profileCache = profileSnapshot(FS, ROOT, gameNodes); profileDirty = false; }
+  return profileCache;
+}
+function watchProfileWrites() {
+  for (const op of ['write', 'unlink', 'rename', 'rmdir', 'mkdir', 'truncate', 'ftruncate', 'symlink']) {
+    const original = FS[op]; if (typeof original !== 'function') continue;
+    FS[op] = function (...a) { profileDirty = true; return original.apply(this, a); };
+  }
+}
+const currentProfile = async () => (profileReady && !stopped ? snapshot() : (await readStorage(db, 'profile', 'files')) ?? []);
 function newCloud(username) {
   return new CloudSave({
     game: name, user: username,
@@ -291,7 +304,7 @@ function newCloud(username) {
       const replacing = profileReady && !stopped;
       if (replacing) stopped = true;
       try {
-        const old = replacing ? profileSnapshot(FS, ROOT, gameNodes) : await readStorage(db, 'profile', 'files');
+        const old = replacing ? snapshot() : await readStorage(db, 'profile', 'files');
         if (old?.length) await writeStorage(db, 'profile', `aside-${new Date().toISOString()}`, old);
         await writeStorage(db, 'profile', 'files', list.map((f) => ({ path: f.path, data: f.data })));
       } catch (error) { if (replacing) stopped = false; throw error; }
@@ -315,10 +328,13 @@ async function lateSignIn(user) {
   else cloud.set({ state: 'conflict' });
 }
 
+let savedSnapshot = null;
 async function save() {
   if (!db || !profileReady || saving || stopped) return saving; // (stopped: the page goes, or the account's copy replaces this one)
-  saving = writeStorage(db, 'profile', 'files', profileSnapshot(FS, ROOT, gameNodes));
-  try { await saving; session.lastSaveAt = Date.now(); } finally { saving = null; }
+  const files = snapshot();
+  if (files === savedSnapshot) return; // (nothing written since the last save)
+  saving = writeStorage(db, 'profile', 'files', files);
+  try { await saving; savedSnapshot = files; session.lastSaveAt = Date.now(); } finally { saving = null; }
 }
 session.save = save;
 /** The profile saved as it is now — after a save in flight, whose snapshot may be older — then sent to the account. */
@@ -344,6 +360,9 @@ async function loadInBackground(rest) {
   const t = performance.now(), jobs = (list) => list.map((e) => () => streamed.load(e.file, e.pieces).catch((error) => log(`${e.file.path}: ${error.message}`)));
   await StreamedFiles.pool(jobs(streamed.localNotLoaded()), 2);
   await StreamedFiles.pool(jobs(rest), 3);
+  // (then the files the engine reads at random as it goes, whole — its streaming archive, its sound bank: no wait for
+  // them in the game once here; their turn after the game's own reads, demandFirst)
+  await streamed.completeWanted(2);
   session.background = { ms: Math.round(performance.now() - t), ...streamed.stats };
   log(`Background loading done: ${JSON.stringify(session.background)}`);
 }
@@ -424,7 +443,7 @@ async function start() {
   // request; demandFirst: the background loads wait while it does, in requests of 1 MiB at most — a thin link's bytes
   // go to the game's reads first)
   streamed = session.files = new StreamedFiles({ name, files, log, readAhead: 16, rewritable: true, asyncReads: true, demandFirst: true, backgroundRange: 1 << 20, store: {
-    read: (key) => readStorage(db, 'content', key), write: (key, bytes) => writeStorage(db, 'content', key, bytes),
+    read: (key) => readStorage(db, 'content', key), write: (key, bytes) => writeStorage(db, 'content', key, bytes), writeMany: (entries) => writeManyStorage(db, 'content', entries),
     keys: () => storageKeys(db, 'content'), remove: (keys) => removeStorage(db, 'content', keys) } });
   streamed.mount(FS, ROOT);
   gameNodes = new Set([...streamed.files.values()].map((f) => f.node));
@@ -450,7 +469,7 @@ async function start() {
     await seedProfile(language, new Set(languageIni(r.languages, language).map(([file]) => file.toLowerCase())));
   }
   restoreProfile(FS, ROOT, kept, log);
-  profileReady = true;
+  profileReady = true; watchProfileWrites();
   for (const [file, sections] of languageIni(r.languages, language)) {
     try { log(`${file}: ${setProfileIni(FS, ROOT, file, sections, gameNodes)} (${language})`); } catch (error) { log(`${file}: not set (${error.message})`); }
   }
@@ -483,7 +502,7 @@ async function quit() {
 
 async function fullscreen() {
   try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (error) { status(error.message, true); return; }
-  try { await navigator.keyboard?.lock?.(['Escape']); } catch { /* keyboard lock unavailable: Esc leaves the full screen */ }
+  await lockKeys();
   $('canvas').focus();
   if (wantsMouse()) $('canvas').requestPointerLock()?.catch?.(() => {}); // (in the game: the mouse captured at once, as the Windows games')
 }

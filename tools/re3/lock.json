@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "engine": {
     "repository": "https://github.com/Lomchat/reVC",
-    "commit": "ecc4c1083a0f553b83aa678ce24cb0fd31f8bfb2",
+    "commit": "6f038e21bdcbaf84a3671c9547c567a8577abfa7",
     "upstream": {
       "repository": "https://github.com/mrxenginner/reVC",
       "commit": "a26fff4af555a8a425ac9f17d1dd718d00d1f942"
@@ -31,11 +31,11 @@
   },
   "builds": [
     {
-      "id": "revc-web-ecc4c10-r1",
+      "id": "revc-web-6f038e2-r1",
       "patches": [],
       "files": {
-        "engine/revc.mjs": "308f1e336268527eb83ffbe51f9bb365ca263f461944aa2627cab38c51d1c0ad",
-        "engine/revc.wasm": "b7f1b11508ffe88f502baf219bec384a9dc42f15aa84ceb6c62ec77e1c5665b8"
+        "engine/revc.mjs": "6db617b975ede00813f83471980d30b21e90b3cb19ed7407ea65e1225057b58d",
+        "engine/revc.wasm": "33d366a6e7c027731c7f0adf58baf491cc9b131cd381f224ce69c887d837db15"
       }
     }
   ]

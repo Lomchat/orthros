@@ -18,6 +18,14 @@ export function writeStorage(db, store, key, value) {
     tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
   });
 }
+/** Several entries ([key, value]) in one transaction. */
+export function writeManyStorage(db, store, entries) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite'), os = tx.objectStore(store);
+    for (const [key, value] of entries) os.put(value, key);
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
+  });
+}
 export function storageKeys(db, store) {
   return new Promise((resolve, reject) => {
     const request = db.transaction(store).objectStore(store).getAllKeys();

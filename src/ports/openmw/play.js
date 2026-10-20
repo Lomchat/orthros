@@ -57,6 +57,7 @@ const session = window.portSession = { state: 'loading', mode: null };
 // Returning players must choose a character in the upstream launcher before the engine can
 // draw. Keep that page clickable; restore the common loading screen when the engine loads.
 frame.addEventListener('load', () => {
+  try { shell?.watchKeys(frame.contentDocument); } catch { /* not the engine's page */ }
   if (!shell || mode !== 'multi') return;
   let pathname;
   try { pathname = frame.contentWindow.location.pathname; } catch { return; }

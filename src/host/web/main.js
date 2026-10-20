@@ -9,7 +9,7 @@ import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
 import { resumeOnGesture, soundHintNeeded, AudioStats } from './sound.js';
 import { PointerInput, winButton, cursorView } from './pointer.js';
 import { SNAPSHOT_PREFIX, profileFiles, replaceProfile } from './data-store.js';
-import { createShell } from './shell.js';
+import { createShell, lockKeys } from './shell.js';
 import { CloudSave } from './cloud-sync.js';
 import { accountState } from './account.js';
 import { pickLang } from './lang.js';
@@ -703,7 +703,8 @@ function screenPos(e) {
 }
 /**
  * Play mode: fullscreen + pointer lock (the mouse cannot leave the game, screen-edge scrolling works) + keyboard lock
- * (Escape reaches the game; holding it leaves fullscreen). The guest cursor is then drawn by the page (#softcursor).
+ * (Escape and the browser's shortcut keys reach the game; holding Esc leaves fullscreen — lockKeys). The guest cursor
+ * is then drawn by the page (#softcursor).
  */
 /**
  * Capture the mouse (pointer lock): it stays in the game, which gets its moves, the page draws the guest cursor
@@ -717,7 +718,7 @@ async function capturePointer() {
 state.capturePointer = capturePointer;
 async function enterPlayMode() {
   try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch { /* not allowed */ }
-  try { await navigator.keyboard?.lock?.(['Escape']); } catch { /* keyboard lock unavailable */ }
+  await lockKeys();
   await capturePointer();
 }
 function drawSoftCursor() {

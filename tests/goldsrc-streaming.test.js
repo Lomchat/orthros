@@ -24,8 +24,11 @@ function fakeFS() {
     },
   };
 }
-/** Files over a fake server: `content` by path; requests counted; a store in a Map; `readAhead`: the option's. */
-function setup(content, { local = new Map(), readAhead = undefined, held = false, ...options } = {}) {
+/**
+ * Files over a fake server: `content` by path; requests counted; a store in a Map; `readAhead`: the option's;
+ * `batches`: a store that writes many at once (its batches' keys listed there); `failing`: paths whose requests fail.
+ */
+function setup(content, { local = new Map(), readAhead = undefined, held = false, batches = null, failing = [], ...options } = {}) {
   const files = [...content].map(([p, data]) => ({ path: p, size: data.length, mtime: 5 }));
   const requests = [], range = (url) => { const u = new URL(url, 'http://x'), [s, e] = u.searchParams.get('r').split('-').map(Number); return [decodeURIComponent(u.pathname.split('/').slice(3).join('/')), s, e]; };
   const writes = [], removed = [], pending = [], backgrounds = [];
@@ -37,9 +40,13 @@ function setup(content, { local = new Map(), readAhead = undefined, held = false
     get: async (url) => {
       const [p, s, e] = range(url); requests.push(['async', p, s, e]); backgrounds.push(url.includes('&p=1'));
       if (held) await new Promise((r) => pending.push(r));
+      if (failing.includes(p)) throw new Error('HTTP 503');
       return content.get(p).slice(s, e);
     },
-    store: { read: async (k) => local.get(k), write: async (k, v) => { writes.push(k); local.set(k, v); }, keys: async () => [...local.keys()], remove: async (ks) => { removed.push(...ks); } },
+    store: {
+      read: async (k) => local.get(k), write: async (k, v) => { writes.push(k); local.set(k, v); }, keys: async () => [...local.keys()], remove: async (ks) => { removed.push(...ks); },
+      ...(batches ? { writeMany: async (entries) => { batches.push(entries.map(([k]) => k.split('#')[1])); for (const [k, v] of entries) local.set(k, v); } } : {}),
+    },
   });
   const FS = fakeFS(); sf.mount(FS, '/rodir');
   const node = (p) => FS.nodes.get(`/rodir/${p.split('/').slice(0, -1).join('/')}`.replace(/\/$/, '') + '/' + p.split('/').at(-1)) ?? FS.nodes.get(`/rodir/${p}`);
@@ -223,4 +230,26 @@ test('demandFirst (opt-in): background loads wait while the engine waits for byt
   await background;
   assert.deepEqual(requests.slice(1), [0, 4, 8, 12].map((p) => ['async', 'b', p * PIECE, (p + 4) * PIECE]));
   assert.deepEqual(sf.files.get('b').data, b);
+});
+
+test('a file the engine reads at random loads whole in the background once asked, each response kept in one write', async () => {
+  const img = bytes(5 * PIECE + 3), sfx = bytes(3 * PIECE, 4), batches = [];
+  const { sf, node, requests, backgrounds, writes } = setup(new Map([['models/img', img], ['audio/sfx', sfx]]), { asyncReads: true, backgroundRange: 2 * PIECE, batches, failing: ['audio/sfx'] });
+  await node('models/img').orthrosStreamed.ensure(2 * PIECE, 10); // (the engine's own read first)
+  node('models/img').orthrosStreamed.complete(); node('audio/sfx').orthrosStreamed.complete();
+  assert.equal(requests.length, 1, 'nothing until the page lets them load (after the learned list)');
+  await sf.completeWanted(2);
+  assert.deepEqual(requests.slice(1).filter((r) => r[1] === 'models/img'), [['async', 'models/img', 0, 2 * PIECE], ['async', 'models/img', 3 * PIECE, 5 * PIECE], ['async', 'models/img', 5 * PIECE, img.length]]);
+  assert.ok(backgrounds.slice(1).every(Boolean));
+  assert.deepEqual(sf.files.get('models/img').data, img);
+  assert.deepEqual(batches.filter((b) => b.length > 1), [['0', '1'], ['3', '4']]);
+  assert.equal(writes.length, 0);
+  assert.equal(sf.stats.completed, 1);
+  // (a file whose loads failed is not tried again in a loop: its pieces wait for the engine's reads)
+  const tried = requests.length;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(requests.length, tried);
+  assert.equal(node('audio/sfx').orthrosStreamed.missing(0, 10), true);
+  node('models/img').orthrosStreamed.complete(); await sf.completeWanted(2);
+  assert.equal(requests.length, tried);
 });

@@ -7,7 +7,7 @@
 // frame rate, the online games, full screen, back to the games), the loading screen, the game filling the rest of the
 // window. It never loads the Win32 runtime, and nothing here names a game.
 import { pickLang } from '../../host/web/lang.js';
-import { createShell } from '../../host/web/shell.js';
+import { createShell, lockKeys } from '../../host/web/shell.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, storageKeys, removeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, languageFiles, PIECE } from './files.js';
@@ -526,7 +526,7 @@ async function quit() {
 
 async function fullscreen() {
   try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (error) { status(error.message, true); return; }
-  try { await navigator.keyboard?.lock?.(['Escape']); } catch { /* keyboard lock unavailable: Esc leaves the full screen */ }
+  await lockKeys();
   $('canvas').focus();
   if (wantsMouse()) $('canvas').requestPointerLock()?.catch?.(() => {}); // (in the game: the mouse captured at once, as the Windows games')
 }

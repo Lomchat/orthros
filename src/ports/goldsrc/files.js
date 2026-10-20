@@ -13,6 +13,10 @@ export const STARTUP_GAP_MS = 2000;
 /** Native binaries of an installation: useless to the WebAssembly engine, never part of its tree. */
 const NATIVE = /\.(exe|dll|so|dylib)$/i;
 const MAX_RANGE = 32 * 1024 * 1024; // (per request: the server answers 64 MiB at most)
+/** A file whose every piece is here becomes one array up to this size (mmap reads it); a bigger one stays in pieces. */
+const COALESCE_MAX = 64 * 1024 * 1024;
+/** Every byte of `f` here: one array, or all its pieces. */
+const whole = (f) => !!f.data || (f.pieces?.size ?? 0) * PIECE >= f.size;
 /** demandFirst: a background load starts again this long after the engine's last read that waited. */
 export const QUIET_MS = 300;
 /** open()'s flags (Emscripten's, musl's values). */
@@ -107,7 +111,8 @@ export class StreamedFiles {
    * @param {object} o
    * @param {string} o.name the manifest
    * @param {{path: string, size: number, mtime: number}[]} o.files
-   * @param {{read: Function, write: Function, keys: Function, remove: Function}|null} o.store the browser's copy (IndexedDB)
+   * @param {{read: Function, write: Function, writeMany?: Function, keys: Function, remove: Function}|null} o.store the
+   *   browser's copy (IndexedDB); `writeMany([[key, bytes]])`, when there, keeps a response's pieces in one transaction
    * @param {(url: string, size: number) => Uint8Array} [o.syncGet] a synchronous range fetch
    * @param {(url: string) => Promise<Uint8Array>} [o.get] an asynchronous one
    * @param {() => number} [o.now]
@@ -127,6 +132,7 @@ export class StreamedFiles {
     this.name = name; this.store = store; this.syncGet = syncGet; this.get = get; this.now = now; this.log = log; this.readAhead = readAhead; this.rewritable = rewritable;
     this.asyncReads = asyncReads; this.demandFirst = demandFirst; this.backgroundRange = Math.max(PIECE, Math.min(MAX_RANGE, backgroundRange));
     this.demand = 0; this.demandEnd = -Infinity; // (the engine's reads waiting for bytes now; when the last one ended)
+    this.wholeWanted = new Set(); this.completed = new Set(); this.completing = null; this.completeWidth = 0; // (files the engine wants whole: complete())
     this.files = new Map(files.map((f) => [f.path, { ...f, key: `${f.path}\n${f.size}\n${f.mtime}`, data: null, pieces: null, local: null, seen: null }]));
     this.t0 = null; // (the engine's start: reads are learned from it)
     this.reads = []; // [path, start, end, t] not reported yet
@@ -165,10 +171,10 @@ export class StreamedFiles {
       // (bytes that cannot be fetched: a read error for the engine (EIO), not an exception through its code)
       const io = (fn) => { try { return fn(); } catch (e) { if (e instanceof FS.ErrnoError) throw e; self.log(`${f.path}: ${e.message}`); throw new FS.ErrnoError(29); } };
       own.read = (stream, buffer, offset, length, position) => io(() => self.read(f, buffer, offset, length, position));
-      own.mmap = (...a) => io(() => { self.ensure(f, 0, f.size); return ops.mmap(...a); });
+      own.mmap = (...a) => io(() => { self.ensure(f, 0, f.size); self.join(f); return ops.mmap(...a); });
       own.write = () => { throw new FS.ErrnoError(69); }; // (EROFS: the game files are read-only)
       node.stream_ops = own;
-      if (this.asyncReads) node.orthrosStreamed = { missing: (position, length) => self.missing(f, position, position + length), ensure: (position, length) => self.ensureAsync(f, position, position + length) };
+      if (this.asyncReads) node.orthrosStreamed = { missing: (position, length) => self.missing(f, position, position + length), ensure: (position, length) => self.ensureAsync(f, position, position + length), complete: () => self.wantWhole(f) };
     }
     // (rewritable: a game file opened to be written anew — its bytes not wanted, never fetched — unlinked first, an
     // empty file of the engine's own in its place, as in a game folder the player may write in. Not when the open
@@ -253,6 +259,37 @@ export class StreamedFiles {
     if (this.readAhead > 0) this.ahead(f, Math.ceil(end / PIECE));
   }
 
+  /**
+   * The engine reads `f` at random as it goes (a streaming archive, a sound bank): all of it loaded in the background,
+   * once completeWanted() runs — after what earlier sessions read first —, its turn as any background load's.
+   */
+  wantWhole(f) {
+    if (whole(f) || this.wholeWanted.has(f)) return;
+    this.wholeWanted.add(f);
+    if (this.completeWidth) this.completeWanted(this.completeWidth);
+  }
+
+  /**
+   * The files wanted whole loaded, `width` requests at a time; later wishes too (one run at a time). Each file once: a
+   * piece whose load failed waits for the engine's read.
+   */
+  completeWanted(width = 2) {
+    this.completeWidth = width;
+    this.completing ??= (async () => {
+      for (const f of this.wholeWanted) { // (a wish made meanwhile joins this loop)
+        if (this.completed.has(f)) continue;
+        this.completed.add(f);
+        if (whole(f)) continue;
+        const pieces = []; for (let p = 0; p * PIECE < f.size; p++) if (!f.pieces?.has(p)) pieces.push(p);
+        const per = Math.max(1, Math.floor(this.backgroundRange / PIECE)), runs = [];
+        for (let i = 0; i < pieces.length; i += per) runs.push(pieces.slice(i, i + per));
+        await StreamedFiles.pool(runs.map((run) => () => this.load(f, run).catch((e) => this.log(`${f.path}: ${e.message}`))), width);
+        if (whole(f)) this.stats.completed = (this.stats.completed ?? 0) + 1;
+      }
+    })().finally(() => { this.completing = null; if ([...this.wholeWanted].some((f) => !this.completed.has(f))) this.completeWanted(width); });
+    return this.completing;
+  }
+
   /** A background load's turn (demandFirst): none while the engine waits for bytes, nor QUIET_MS after. */
   async turn() {
     if (!this.demandFirst) return;
@@ -281,17 +318,26 @@ export class StreamedFiles {
       return;
     }
     f.pieces ??= new Map();
+    const kept = [];
     for (let o = 0; o < bytes.length; o += PIECE) {
       const p = (at + o) / PIECE, piece = bytes.subarray(o, Math.min(bytes.length, o + PIECE));
       if (f.pieces.has(p)) continue;
       f.pieces.set(p, piece);
-      if (keep && this.store) this.store.write(`${f.key}\n#${p}`, piece.slice()).catch((e) => this.log(`cache: ${e.message}`));
+      if (keep && this.store) kept.push([`${f.key}\n#${p}`, piece.slice()]);
     }
-    if (f.pieces.size * PIECE >= f.size) { // (every piece here: one array)
-      const all = new Uint8Array(f.size);
-      for (const [p, piece] of f.pieces) all.set(piece, p * PIECE);
-      f.data = all; f.pieces = null;
-    }
+    // (the browser's copy: the response's pieces in one transaction when the store can — a transaction a piece costs the
+    // page's thread as many round trips)
+    if (kept.length && this.store.writeMany) this.store.writeMany(kept).catch((e) => this.log(`cache: ${e.message}`));
+    else for (const [key, piece] of kept) this.store.write(key, piece).catch((e) => this.log(`cache: ${e.message}`));
+    if (f.size <= COALESCE_MAX) this.join(f); // (a big file stays in pieces: its copy a hitch)
+  }
+
+  /** Every piece of `f` here: one array (mmap needs it). */
+  join(f) {
+    if (f.data || !whole(f)) return;
+    const all = new Uint8Array(f.size);
+    for (const [p, piece] of f.pieces) all.set(piece, p * PIECE);
+    f.data = all; f.pieces = null;
   }
 
   /** The engine read [start, end) of `f`: pieces not reported yet are learned with the time since its start. */

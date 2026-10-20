@@ -75,6 +75,17 @@ const ICON = {
   sound: '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="m22 9-6 6M16 9l6 6"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',
 };
+/**
+ * Full screen: the keyboard locked (Keyboard Lock) — Esc and the keys the browser's shortcuts are made of reach the game
+ * (Ctrl+W, Ctrl+R, Ctrl+T, Alt+←, F5…: a game holds Ctrl to fire or crouch while letters move); holding Esc leaves the
+ * full screen. Tab, Alt, the system key, F4 and F11 stay the system's (Alt+Tab, Alt+F4).
+ */
+export async function lockKeys() {
+  const codes = ['Escape', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'F1', 'F2', 'F3', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F12'];
+  for (let i = 0; i < 26; i++) codes.push('Key' + String.fromCharCode(65 + i));
+  for (let i = 0; i < 10; i++) codes.push('Digit' + i);
+  try { await navigator.keyboard?.lock?.(codes); } catch { /* keyboard lock unavailable: Esc leaves the full screen */ }
+}
 const svg = (name) => { const s = h('span', { class: 'ic', 'aria-hidden': 'true' }); s.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICON[name]}</svg>`; return s; };
 
 /**
@@ -281,7 +292,7 @@ export function createShell(o) {
     e.preventDefault();
     if (o.onFullscreen) return o.onFullscreen();
     try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch { return; }
-    try { await navigator.keyboard?.lock?.(['Escape']); } catch { /* Esc then leaves the full screen */ }
+    await lockKeys();
   };
   document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) navigator.keyboard?.unlock?.(); });
   let quitting = false;
@@ -302,6 +313,16 @@ export function createShell(o) {
     location.href = '/?menu';
   };
   games.onclick = (e) => { e.preventDefault(); shell.quit(); };
+  // (out of full screen the browser keeps its shortcuts: a page left with Ctrl or ⌘ held while the game runs — Ctrl+W,
+  // Ctrl+R in the middle of a fight — asks first; watchKeys(doc): a frame's document the game's keys go to)
+  let held = false;
+  shell.watchKeys = (doc) => {
+    const note = (e) => { held = e.ctrlKey || e.metaKey; };
+    doc.addEventListener('keydown', note, true); doc.addEventListener('keyup', note, true);
+    doc.defaultView?.addEventListener('blur', () => { held = false; });
+  };
+  shell.watchKeys(document);
+  addEventListener('beforeunload', (e) => { if (held && shell.running && !quitting && !o.headless) { e.preventDefault(); e.returnValue = ''; } });
   // (the header and its windows keep their clicks: the game under them never sees them)
   for (const type of ['mousedown', 'mouseup', 'click', 'contextmenu', 'wheel']) bar.addEventListener(type, (e) => e.stopPropagation());
 

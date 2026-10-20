@@ -30,7 +30,7 @@ missing. Every game page — Windows games and ports — has the same frame (hea
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-ecc4c10-r1` (reVC built from source) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-6f038e2-r1` (reVC built from source) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` (Orthros' fork) with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -532,7 +532,7 @@ release.
     "id": "vice-city-revc", "dir": "1.1-revc", "version": "1.1 · reVC", "languages": ["en", "fr"], "profileSeed": true,
     "requires": [{ "game": "vice-city", "version": "vice-city-1.1-elamigos-2014" }],
     "re3": {
-      "engine": "revc-web-ecc4c10-r1",
+      "engine": "revc-web-6f038e2-r1",
       "languages": {
         "en": { "env": { "LANG": "en_US.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "0" } } } },
         "fr": { "env": { "LANG": "fr_FR.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "1" } } } }
@@ -622,7 +622,12 @@ same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame r
   file's node, `orthrosStreamed`); `demandFirst` — the background loads wait while the engine waits and 300 ms after,
   in requests of 1 MiB at most (`backgroundRange`): on a thin link the game's reads have it alone; read-ahead — after
   a read that waited, the file's next 16 missing pieces load in the background, one such load per file. Two loads never
-  fetch the same piece. While the game waits more than 1.5 s, a passing message says so with the bytes come since. The language's `env` is set by the Module's `preRun`
+  fetch the same piece. The engine can also ask without waiting (`missing`, then `ensure` in the background: its
+  streaming, below) and name a file it reads at random as it plays (`complete`: the CD image, the sound bank) — after
+  the learned list, such files load whole in the background, two runs of 1 MiB at a time, behind the engine's own
+  reads. A file loaded whole stays in pieces above 64 MiB (one array for `models/gta3.img`, 327 MB, would be a copy of
+  the whole and a hitch); the pieces fetched are written to IndexedDB one transaction per fetch, not per piece. While
+  the game waits more than 1.5 s, a passing message says so with the bytes come since. The language's `env` is set by the Module's `preRun`
   hook, before the runtime starts. Then the profile put back, the `ini` settings, `chdir('/game')`,
   `callMain(re3.args)`.
 - **Frames.** Counted by `Module.orthrosFrame`: the header's frame rate; the loading screen hides after the first ten.
@@ -631,8 +636,9 @@ same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame r
   (`/api/profile-seed/<manifest>?lang=`, the server's quorum); else the session reports its own, taken at the player's
   first input and sent once it has gone on playing (`SeedWatch`). The ini files the languages name stay out of it: the
   player's settings, the screen's size among them.
-- **Saves.** Every 10 s in this browser, every minute on the account when changed, when the page is hidden, when
-  leaving by "Games". At the game's end, an error or "Games", a save in flight is waited for and a new snapshot taken
+- **Saves.** Every 10 s in this browser when the engine wrote since (its file system's writes, renames and deletions
+  mark the profile changed: an unchanged profile is neither walked again nor written), every minute on the account
+  when changed, when the page is hidden, when leaving by "Games". At the game's end, an error or "Games", a save in flight is waited for and a new snapshot taken
   (the engine may have written since that save's).
 - **The game ends** (`callMain`'s promise settles, or `onExit`): the profile saved here and on the account, then the
   loading screen says "The game has ended", with "Restart the game" (the page reloaded once that save is done: an
@@ -650,10 +656,10 @@ The engine is Orthros' public fork of reVC, `github.com/Lomchat/reVC`, branch `o
 `mrxenginner/reVC` at `a26fff4`, the owner's choice — D099), with its librw submodule from `github.com/Lomchat/librw`,
 branch `orthros`: the browser build is defined there (`src/CMakeLists.txt`, `cmake/EmscriptenDeps.cmake`,
 `src/skel/orthros_*`; the fork's README, "Browser build"). `tools/re3/build.sh` builds it from the commit pinned in
-`tools/re3/lock.json` (`ecc4c10`, its submodules too) in the pinned image `emscripten/emsdk:4.0.23`, without network.
+`tools/re3/lock.json` (`6f038e2`, its submodules too) in the pinned image `emscripten/emsdk:4.0.23`, without network.
 Emscripten's SDL2 and mpg123 ports come from a cache made once (`data_engines/src/emscripten-4.0.23-cache`, the
 archives checked against the lock). Two builds give the same `revc.mjs` and `revc.wasm` (the pinned commit's time is
-the build time; checked 2026-10-19): the script refuses one that differs from the lock. A release holds
+the build time; checked 2026-10-19 and 2026-10-20): the script refuses one that differs from the lock. A release holds
 `engine/revc.mjs` and `engine/revc.wasm` (3.8 MiB), `gamefiles/` (the sources' own game files: updated `TEXT/*.gxt` with
 the strings of reVC's new menu options, controller button textures, `neo/` tables, `data/freeroam_miami.scm`,
 `gamecontrollerdb.txt`), `notices/` and `release.json`.
@@ -663,12 +669,19 @@ The fork's commits make the desktop build a browser one, nothing about a game (a
 - **One thread, the browser's turn**: the game's main loop is kept as it is; with JSPI its
   WebAssembly stack is suspended once per iteration until the browser's next frame (`OrthrosFrameYield`,
   `src/skel/orthros_web.cpp`), and during long loads every 50 ms at most (`OrthrosLoadingYield`, in `LoadingScreen`) —
-  events, painting and fetches go on meanwhile. The CD image streaming (`CdStream_posix.cpp`) reads at once instead of
-  on a thread; streamed audio files are read on the game's thread (`MULTITHREADED_AUDIO`, `FLUSHABLE_STREAMING` off).
-- **Frames on the browser's frames**: the 30 frames a second limiter (the original's default) meets its period at the
-  browser's frame — the game's timer counts whole milliseconds, 33 ms after two 60 Hz frames is under 1000/30, and it
-  waited a third frame every other time: 20 to 30 frames a second instead of a steady 30 (not measured on a GPU here:
-  SwiftShader stays under 30).
+  events, painting and fetches go on meanwhile. Streamed audio files are read on the game's thread
+  (`MULTITHREADED_AUDIO`, `FLUSHABLE_STREAMING` off).
+- **Streaming that never stops the game** (`CdStream_posix.cpp`, `OrthrosFileReady` / `OrthrosFileWait` /
+  `OrthrosFileComplete` in `orthros_web.cpp`): with no streaming thread, a model's read is done at once when its bytes
+  are here; else the page fetches them in the background and the game goes on — `CdStreamGetStatus` reports the read
+  under way and does it once they are here, as the original's thread would have; only `CdStreamSync` (the game
+  needing a model now: a loading screen, a cutscene) waits. The CD images and the sound bank are named to the page as
+  files read at random (loaded whole in the background). A pedestrian's comment whose bytes are not here is not said
+  that time (`LoadPedComment`), rather than waiting for them; a mission's audio still waits.
+- **Frames on the browser's frames**: the frame limiter at 60 frames a second (the original's 30 judders on a 60 Hz
+  screen: a frame shown twice, then once), meeting its period at the browser's frame — the game's timer counts whole
+  milliseconds, and a period met a millisecond late waited a whole browser frame more (20 to 30 frames a second
+  instead of a steady 30 before). The menu's "Frame limiter" off: every browser frame.
 - **The clock**: `psTimer` uses `emscripten_get_now()` — the browser has no `CLOCK_MONOTONIC_RAW`, whose
   `clock_gettime` failed and left the game's time standing still (a black menu: its fade-in never progressed).
 - **The window**: always the windowed video mode, the canvas' box on the page, never an exclusive one (the screen's
@@ -682,7 +695,11 @@ The fork's commits make the desktop build a browser one, nothing about a game (a
 - **Its folders**: `userfiles/` (saves, `gta_vc.set`) is created even where `realpath` leaves its buffer empty for a
   folder not there yet — musl's, the browser's C library (glibc fills it): saves could not be written.
 - **The mouse**: the game's switches between relative motion and its menus' cursor are told to the page
-  (`Module.orthrosMouse`).
+  (`Module.orthrosMouse`). The game binds the mouse's buttons only if it sees a mouse at its start
+  (`GetMouseSetUp`: a cursor position not 0); SDL in the browser knows no position before the first move, so no
+  button was bound — no fire, no punch on the left button — and these bindings were saved in `reVC.ini`. A mouse is
+  taken as there, and bindings without any mouse button (an earlier build's) get the mouse's defaults back, the keys
+  as they are.
 - **Memory**: the streaming budget of a 256 MB machine (the browser tells no free memory; `sysinfo` is absent).
 - **Sound**: the browser's OpenAL enumerates no device: its default one is described without being opened (a probe
   would leave an AudioContext running — Emscripten's `alcDestroyContext` does not close its own); no EFX lookup.
@@ -714,6 +731,13 @@ more for a new game's first scene (`models/gta3.img`). With Chrome's network emu
 menu after 234 s and the first scene 235 s after "New game" (the link used at ~82 KB/s); 1 MB/s, the menu after 26 s
 and the first scene 25 s after "New game". The rest of the learned list then loads in the background, and the
 browser keeps everything: later starts read its copy.
+Playing in a part of the city the browser has not got yet (2026-10-20: `perf.mjs --drive --warm 25 --seconds 45
+--net 1024`, a new browser, 1 MB/s, the intro's last loading screen out of the measure; the same server and machine):
+with the streaming that waited (`revc-web-ecc4c10-r1`), 11 gaps over 250 ms between frames shown in 45 s, the
+longest 5.6 s, the engine's longest frame 2.2 s; with the streaming that goes on (`revc-web-6f038e2-r1`), the game
+waited for no file (0 ms), 2 gaps over 250 ms (317 ms the longest — SwiftShader's rendering in the GPU process, no
+JavaScript or WebAssembly running), the longest frame 245 ms, 50 MB loaded in the background meanwhile. In the
+measure that kept the loading screen, the game waited 0.2 to 0.4 s in all, for that screen's own files.
 
 The shared first-launch profile (`profileSeed` in the manifest, `src/host/profile-seed.js`) matters here: the game's
 first start reads the header of each of its ~1,200 audio files to build `Audio/sound.cache` (a few KiB each, a 64 KiB
@@ -738,17 +762,22 @@ settings there. Failing that, a new file is created in the folders that are ther
 `src/ports/re3/ini.js` sets keys in place, adds missing ones to their section and missing sections at the end, and
 keeps the rest byte for byte. The same settings set again change nothing.
 
-### State (2026-10-19)
+### State (2026-10-20)
 
 Vice City's `vice-city-revc` ("Grand Theft Auto: Vice City — reVC", `1.1 · reVC`) is a card of its own on the home,
-release `revc-web-ecc4c10-r1`. Checked in headless
+release `revc-web-6f038e2-r1`. Checked in headless
 Chromium (SwiftShader) with `tools/re3/check.mjs --new-game --reload` from the server: the home lists it available,
 the page starts it on the game's menu (60 frames a second, the mouse free there), sound on after the first gesture, a
 new game's first scene, back to the games saving here and on the account, the same profile found by another browser
 context signed in to that account. With the bench page (the engine alone): the intro cutscene, free play on foot and
 in a car (Flash FM playing, a crash into a shop front, bailing out), the keyboard, the mouse look (relative motion),
 French menus (`?gameLang=fr`), 1280 × 720 and 1280 × 756 screens. The shared first-launch profile: two sessions
-reported the same `Audio/sound.cache` (English and French), a third empty profile got it.
+reported the same `Audio/sound.cache` (English and French), a third empty profile got it. The mouse's bindings
+(2026-10-20): fire on the left button in a new profile's `reVC.ini`, and in one an earlier build had saved without it.
+Every game page (2026-10-20): in full screen the keys of the browser's shortcuts are the game's (Keyboard Lock);
+out of it, leaving with Ctrl or ⌘ held while a game runs asks first (`src/host/web/shell.js`): checked in the re3
+page (Ctrl held after a click, its `beforeunload` cancelled); the browser's dialog itself and the keyboard lock are not
+(headless Chromium shows neither).
 
 Not checked: a save at a safe house and its load (no automated way there yet: the profile mechanism that carries
 `userfiles/GTAVCsf*.b` is checked with the ini and the cache), a whole mission, long sessions, a real GPU (the frame
