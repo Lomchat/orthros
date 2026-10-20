@@ -25,7 +25,7 @@ const STRINGS = {
     errorTitle: 'Cannot reach the server', retry: 'Try again',
     settings: 'Settings', account: 'Account', language: 'Language', gameLanguage: 'Game language', gameLanguageShort: 'Language', gameVersion: 'Version', others: 'Others',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`),
-    modes: { solo: 'Single player', multiplayer: 'Multiplayer', story: 'Story', free: 'Free mode' }, runtimes: { re3: 'Recompiled engine' },
+    modes: { solo: 'Single player', multiplayer: 'Multiplayer', story: 'Story', free: 'Free mode' }, runtimes: { re3: 'Recompiled engine', re3Modified: 'Recompiled and modified engine' },
     tabs: { all: 'All', windows: 'Windows', recompiled: 'Recompiled', modified: 'Recompiled & modified' },
     tabEmpty: 'No game of this kind on this server.',
     live: (rooms, humans) => [rooms > 1 ? `${rooms} games online` : null, humans ? `${humans} playing` : null].filter(Boolean).join(', '),
@@ -44,7 +44,7 @@ const STRINGS = {
     errorTitle: 'Serveur injoignable', retry: 'Réessayer',
     settings: 'Paramètres', account: 'Compte', language: 'Langue', gameLanguage: 'Langue du jeu', gameLanguageShort: 'Langue', gameVersion: 'Version', others: 'Autres',
     size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1).replace('.', ',')} Go` : `${Math.round(b / 1e6)} Mo`),
-    modes: { solo: 'Solo', multiplayer: 'Multijoueur', story: 'Histoire', free: 'Mode libre' }, runtimes: { re3: 'Moteur recompilé' },
+    modes: { solo: 'Solo', multiplayer: 'Multijoueur', story: 'Histoire', free: 'Mode libre' }, runtimes: { re3: 'Moteur recompilé', re3Modified: 'Moteur recompilé et modifié' },
     tabs: { all: 'Tout', windows: 'Windows', recompiled: 'Recompilés', modified: 'Recompilés et modifiés' },
     tabEmpty: 'Aucun jeu de ce genre sur ce serveur.',
     live: (rooms, humans) => [rooms > 1 ? `${rooms} parties en ligne` : null, humans ? `${humans} en jeu` : null].filter(Boolean).join(', '),
@@ -300,7 +300,7 @@ export function mountHome({ onPlay }) {
       if (v?.name === last && ok) cover.append(h('span', { class: 'hm-badge' }, S().lastPlayed));
       desc.textContent = (lang === 'fr' ? v?.descriptionFr : null) ?? v?.description ?? '';
       // (a runtime's own label first: re3's, whose games have their Windows version too)
-      const what = v?.exe ?? [S().runtimes[v?.runtime], ...(v?.modes ?? []).map((m) => S().modes[m] ?? m)].filter(Boolean).join(' · ');
+      const what = v?.exe ?? [(v?.modified && S().runtimes[v.runtime + 'Modified']) || S().runtimes[v?.runtime], ...(v?.modes ?? []).map((m) => S().modes[m] ?? m)].filter(Boolean).join(' · ');
       meta.textContent = ok ? `${what} · ${S().size(v.bytes)}` : S().missing; meta.title = v?.exe ?? '';
       syncLive();
       playBtn.hidden = !ok;

@@ -7,10 +7,12 @@
 // finds the same profile there. The player is an Orthros QA account (/tmp/orthros-scratch/qa-accounts.json, shared with
 // tools/goldsrc/check.mjs); --guest: not signed in. --mode <id>: one of the version's ways to play (re3.modes, ?mode=; the
 // first one by default); `free` starts in the city, without the menu: checked there instead of the menu and the new game.
+// --keys k1,k2,…: keys pressed in the game's menu once it draws (Playwright's names, a third of a second each), then the
+// city expected — a menu entry that starts a game (Orthros' Vice City: ArrowDown,Enter,Enter, its free mode).
 // Evidence under /tmp/orthros-scratch/re3-check-<manifest>/.
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/re3/check.mjs <manifest> [--url http://127.0.0.1:8080] [--new-game] [--reload]
-//     [--guest] [--lang fr] [--menu "x,y;x,y"] [--mode story|free]
+//     [--guest] [--lang fr] [--menu "x,y;x,y"] [--mode story|free] [--keys ArrowDown,Enter,Enter]
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -78,6 +80,7 @@ const drawRate = async (page, ms = 3000) => {
 };
 async function boot(context) {
   const page = await context.newPage();
+  page.setDefaultTimeout(180000); // (a screenshot of the city waits for SwiftShader's frame: seconds)
   page.on('pageerror', (error) => console.log('PAGE ERROR', error.message));
   page.on('console', (message) => { if (message.type() === 'error') console.log('CONSOLE', message.text().slice(0, 300)); });
   page.on('crash', () => console.log('CRASH', 'the page crashed'));
@@ -125,6 +128,16 @@ try {
     if (locked) throw new Error('the mouse is captured in the game\'s menu');
     const buffer = await page.evaluate(() => { const c = document.querySelector('#canvas'); return { width: c.width, height: c.height, css: [c.clientWidth, c.clientHeight] }; });
     console.log('MENU', JSON.stringify({ ...menuDraws, canvas, buffer, locked }));
+  }
+  if (arg('--keys') && !inCity) {
+    // (the menu's keys: the game reads them once a frame — the menu draws at the screen's rate)
+    for (const key of arg('--keys').split(',')) { await page.keyboard.down(key); await page.waitForTimeout(350); await page.keyboard.up(key); await page.waitForTimeout(1500); }
+    await page.screenshot({ path: path.join(root, 'keys.png') });
+    const t = Date.now(); let rate = { perFrame: 0 };
+    while (Date.now() - t < 300000) { rate = await drawRate(page, 5000); if (rate.perFrame > 60) break; }
+    await page.screenshot({ path: path.join(root, 'city.png') });
+    if (rate.perFrame <= 60) throw new Error(`no city after the keys ${arg('--keys')} (${JSON.stringify(rate)})`);
+    console.log('CITY', JSON.stringify({ keys: arg('--keys'), ...rate, seconds: Math.round((Date.now() - t) / 1000) }));
   }
   if (args.includes('--new-game') && !inCity) {
     for (const [i, p] of menu.entries()) { await page.mouse.move(...at(p), { steps: 4 }); await page.waitForTimeout(400); await page.mouse.down(); await page.waitForTimeout(150); await page.mouse.up(); await page.waitForTimeout(2500); await page.screenshot({ path: path.join(root, `menu-click-${i}.png`) }); }
