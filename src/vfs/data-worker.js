@@ -205,12 +205,28 @@ async function startup() {
 }
 const popcount = (m) => { let n = 0; while (m) { n += m & 1; m >>>= 1; } return n; };
 
-/** The whole learned order, in the background from the game's position in it (HttpBackend.prefetch), every part's. */
+/**
+ * The whole learned order, in the background from the game's position in it (HttpBackend.prefetch), every part's; its
+ * progress to the page every second ({ ahead: { done, total, finished } }: entries of the order passed, of all).
+ */
 async function prefetchAll() {
   if (W.prefetching) return;
   W.prefetching = true;
-  const lists = await order();
-  W.version.parts.forEach((p, i) => { if (lists[i].length) p.files.prefetch(lists[i], { bytes: 0, blocks: 0, done: false }, () => W.stop).catch(() => {}); });
+  const lists = await order(), runs = [];
+  W.version.parts.forEach((p, i) => {
+    if (!lists[i].length) return;
+    const progress = { bytes: 0, blocks: 0, done: false };
+    runs.push({ p, progress, job: p.files.prefetch(lists[i], progress, () => W.stop).catch(() => {}) });
+  });
+  if (!runs.length) return;
+  const tell = () => {
+    let done = 0, total = 0;
+    for (const { p, progress } of runs) { const n = p.files.learned?.entries.length ?? 0; total += n; done += progress.done ? n : Math.min(n, Math.max(0, (progress.k ?? -1) + 1)); }
+    postMessage({ ahead: { done, total, finished: runs.every((r) => r.progress.done) } });
+  };
+  const tick = setInterval(tell, 1000);
+  await Promise.all(runs.map((r) => r.job));
+  clearInterval(tick); tell();
 }
 
 /** The whole version (and the ones it requires) into the browser's copy, in the background, after the game's reads. */

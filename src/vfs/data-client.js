@@ -7,6 +7,16 @@
 import { treeFile } from './game-tree.js';
 
 export const PIECE = 1 << 16;
+
+/**
+ * The player's choice, for every game (the settings' "offline copy"): each game kept whole in this browser, downloaded
+ * in the background while it runs. Kept in this browser.
+ */
+// snapshot: no state — the page's preference, read from the browser's storage each time
+export const offlineCopy = {
+  get() { try { return localStorage.getItem('orthros.offlineCopy') === '1'; } catch { return false; } },
+  set(on) { try { localStorage.setItem('orthros.offlineCopy', on ? '1' : '0'); } catch { /* storage off */ } },
+};
 /** The most bytes one answer of the worker carries (its shared buffer). */
 const SPAN = 16 << 20;
 /** A read the engine waits for fails once the worker's heartbeat stopped this long (it died). */
@@ -38,7 +48,7 @@ export class GameData {
     const ctrl = this.ctrl;
     this.stats = { hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0, syncFetches: 0, get waits() { return this.misses; }, get waitMs() { return this.stallMs; },
       get waitBytes() { return this.bytes; }, get fetchedBytes() { return Atomics.load(ctrl, 2); } };
-    this.listeners = { startup: [], whole: [] };
+    this.listeners = { startup: [], whole: [], ahead: [] };
     // (o.worker: a test's stand-in, { postMessage, onmessage })
     this.worker = o.worker ?? new Worker(new URL('./data-worker.js', import.meta.url), { type: 'module' });
     this.ready = new Promise((resolve, reject) => {
@@ -49,11 +59,14 @@ export class GameData {
         else if (m.id) { const a = this.asks.get(m.id); this.asks.delete(m.id); if (a) m.error ? a.reject(new Error(m.error)) : a.resolve(m.bytes); }
         else if (m.startup) for (const f of this.listeners.startup) f(m.startup);
         else if (m.whole) for (const f of this.listeners.whole) f(m.whole);
+        else if (m.ahead) for (const f of this.listeners.ahead) f(m.ahead);
         else if (m.log) this.log(m.log);
       };
     });
     this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', bw: o.bw, prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
     this.timer = setInterval(() => { if (this.used.length) this.worker.postMessage({ used: this.used.splice(0) }); }, 2000);
+    // (the page's loading indicator, src/host/web/data-meter.js, when it has one: these counters, read live)
+    globalThis.orthrosDataMeter?.attach?.(this.ctrl.buffer);
   }
 
   /** A file of the version `name` (or of one it requires), found without case: its handle, or null. */
@@ -94,8 +107,20 @@ export class GameData {
     return h;
   }
 
-  /** The engine starts: its reads are learned from now; the learned order loads in the background ('start'). */
-  start() { this.worker.postMessage({ start: true }); }
+  /**
+   * The engine starts: its reads are learned from now; the learned order loads in the background ('start'), and the
+   * whole game after it when the player chose so (offlineCopy).
+   */
+  start() { this.worker.postMessage({ start: true }); if (offlineCopy.get()) this.download(true); }
+
+  /**
+   * The loading in the background, as it goes: `fn({ kind: 'ahead', done, total, finished })` — the learned order —, and
+   * `fn({ kind: 'whole', bytes, total, done })` — the whole game.
+   */
+  onProgress(fn) {
+    this.listeners.ahead.push((p) => fn({ kind: 'ahead', ...p }));
+    this.listeners.whole.push((p) => fn({ kind: 'whole', ...p }));
+  }
 
   /** What earlier sessions read first, loaded before the engine starts; `onProgress({ bytes, total, done })`. */
   startup(onProgress = () => {}) {
@@ -124,8 +149,6 @@ export class GameData {
   /** Bytes a page kept elsewhere before ([{ name, path, at, bytes }]): into the browser's copy. */
   migrate(list) { this.worker.postMessage({ migrate: list }, [...new Set(list.map((e) => e.bytes.buffer))]); }
 
-  /** The reader's counters for an indicator (stream-meter.js): the shared buffer, read live from another thread. */
-  get counters() { return this.ctrl.buffer; }
   /** The engine's reads wait for the network now. */
   get waiting() { return Atomics.load(this.ctrl, 6) > 0; }
   /** Bytes the worker received (decoded). */

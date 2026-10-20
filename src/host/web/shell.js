@@ -37,6 +37,8 @@ const STRINGS = {
     quitTitle: (g) => `Quit ${g}?`, quitSaved: 'Your progress is saved on your account.', quitLocal: 'You are not signed in: your progress stays in this browser only.', quit: 'Quit', stay: 'Keep playing',
     quitSaving: 'Saving your progress…', quitFailed: 'Your progress could not be sent to your account. Quit anyway? It stays in this browser.',
     soundOff: 'Sound is off — click to turn it on', log: 'Launch log', ready: 'Ready',
+    ahead: 'Preloading', aheadTitle: 'The game downloads ahead what players need next (what earlier sessions read): waiting a little before going on makes it faster.',
+    whole: 'Game downloaded', wholeTitle: 'The whole game is being kept in this browser (settings: offline copy): once done it plays without waiting for the network.',
   },
   fr: {
     games: '☰ Jeux', gamesTitle: 'quitter la partie et revenir à la liste des jeux', fullscreen: '⛶ Plein écran', fullscreenTitle: 'plein écran : le jeu seul, la souris capturée (maintiens Échap pour sortir)',
@@ -63,6 +65,8 @@ const STRINGS = {
     quitTitle: (g) => `Quitter ${g} ?`, quitSaved: 'Ta progression est sauvegardée sur ton compte.', quitLocal: 'Tu n’es pas connecté : ta progression reste seulement dans ce navigateur.', quit: 'Quitter', stay: 'Continuer à jouer',
     quitSaving: 'Sauvegarde de ta progression…', quitFailed: 'Ta progression n’a pas pu être envoyée sur ton compte. Quitter quand même ? Elle reste dans ce navigateur.',
     soundOff: 'Le son est coupé — clique pour l’activer', log: 'Journal de lancement', ready: 'Prêt',
+    ahead: 'Préchargement', aheadTitle: 'Le jeu télécharge à l’avance ce dont les joueurs ont besoin ensuite (ce que les sessions précédentes ont lu) : attendre un peu avant de continuer le rend plus rapide.',
+    whole: 'Jeu téléchargé', wholeTitle: 'Le jeu entier est gardé dans ce navigateur (réglages : copie hors ligne) : une fois fini, il se joue sans attendre le réseau.',
   },
 };
 const ICON = {
@@ -204,6 +208,25 @@ export function createShell(o) {
     mouse.setAttribute('aria-label', mouse.title);
   };
   shell.setMouse(null);
+
+  // ---------------------------------------------------------------- the game data loading in the background
+  /**
+   * A pill in the header while the game data loads in the background (src/vfs/data-client.js onProgress, every
+   * runtime): { kind: 'ahead', done, total, finished } — the learned order —, { kind: 'whole', bytes, total, done } — the
+   * whole game kept in this browser; gone once done.
+   */
+  const pills = {};
+  shell.setData = (p) => {
+    const kind = p.kind === 'whole' ? 'whole' : 'ahead';
+    let pill = pills[kind];
+    if (!pill) {
+      pill = pills[kind] = h('span', { class: 'pill data', title: S[kind + 'Title'] }, h('span', {}, S[kind]), h('i', {}, h('u')), h('b'));
+      extras.append(pill);
+    }
+    const frac = kind === 'whole' ? p.bytes / Math.max(1, p.total) : p.done / Math.max(1, p.total), pct = Math.min(100, Math.floor(frac * 100));
+    pill.querySelector('u').style.width = pct + '%'; pill.querySelector('b').textContent = pct + ' %';
+    pill.hidden = kind === 'whole' ? !!p.done || p.stopped : !!p.finished || !p.total;
+  };
   mouse.onclick = () => o.onMouse?.();
   /** Follows the pointer lock of `doc` (the page's, or a frame's of the same origin). */
   shell.watchPointer = (doc = document) => {

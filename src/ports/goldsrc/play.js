@@ -448,7 +448,7 @@ async function start() {
   const t0 = performance.now();
   step('files', 'active', fmtMB(0), 0);
   ({ data: gameData } = await openPortFiles({ name, tree, files: shown, FS, root: '/rodir', session: sessionId, log, db,
-    onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0) }));
+    onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
   session.files = gameData;
   const loaded = await gameData.startup((p) => {
     const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;

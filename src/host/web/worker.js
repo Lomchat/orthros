@@ -7,9 +7,10 @@ import { Vm, GuestCrash } from '../../core/vm.js';
 import { RealClock } from '../../core/clock.js';
 import { Vfs, MemBackend, normalizeWin, mountGameCdrom } from '../../vfs/vfs.js';
 import { FileAliasBackend } from '../../vfs/file-alias-backend.js';
-import { HttpBackend, BLOCK } from '../../vfs/http-backend.js';
+import { BLOCK } from '../../vfs/http-backend.js';
+import { openData, openStore, learnedOrder } from '../../vfs/game-data.js';
 import { NetLink } from '../../vfs/net-link.js';
-import { OpfsBlockStore, MemBlockStore } from '../../vfs/opfs-store.js';
+import { MemBlockStore } from '../../vfs/opfs-store.js';
 import { Registry } from '../../win32/registry.js';
 import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from '../browser-host.js';
 import { VOICE_TABLE_BYTES, audioPlaying } from '../../win32/dsound.js';
@@ -222,25 +223,26 @@ async function start(m) {
   const root = new MemBackend();
   vfs.mount('C:\\', root);
   for (const d of ['Windows', 'Windows/System32', 'Windows/Temp', 'Users', 'Users/Player', 'Program Files', 'Program Files/Common Files', 'Game']) root.mkdir(d);
-  // game files over HTTP, kept in a persistent OPFS block store (pages; headless runs with a persistent profile, --opfs);
+  // game files over HTTP (the game data every Orthros game reads, src/vfs/game-data.js), kept in a persistent OPFS block
+  // store (pages; headless runs with a persistent profile, --opfs);
   // the games the manifest requires (mounted beside it) the same way: their own store, learned prefetch and read logs,
   // and one connection shared with the game's folder (the game's reads through either come first, see HttpBackend.link)
   const link = new Set();
   netLink = new NetLink({ bw: Number(m.opts.netBw) || undefined }); // (the rate this browser measured last time, until measured)
   const mountFiles = async (name, tree, primary) => {
-    let store = !m.opts.headless || m.opts.opfs ? await OpfsBlockStore.open('orthros-files-' + name) : null;
+    let store = !m.opts.headless || m.opts.opfs ? await openStore(name) : null;
     if (!store && m.opts.memPrefetch) store = new MemBlockStore((primary ? 1536 : 1024) * 1048576); // (harness: prefetch measured without a persistent profile)
     const tag = primary ? '' : ` (${name})`;
     if (store) log('file', `block store${tag}: ${store.map.size} blocks (${Math.round((store.end ?? store.bytes ?? 0) / 1048576)} MiB) from earlier runs${store.resetReason ? ` (emptied: ${store.resetReason})` : ''}`);
     if (store) fileStores.push(store);
     if (store) store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log('warn', `block store${tag}: a stored block did not read back as written, fetched again: ${key}`); };
     const pf = primary ? prefetch : { bytes: 0, blocks: 0, total: 0, done: false }, rank = new Map();
-    const files = new HttpBackend(`/game/${name}/`, tree, { cacheBlocks: m.opts.cacheBlocks ?? 256, store, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', link, net: netLink,
+    const { files } = await openData(name, { tree, store, cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', link, net: netLink,
       onFetch: m.opts.netLog ? (f) => log('net', `t=${(performance.now() / 1000).toFixed(1)}s ${f.async ? 'parked' : 'sync'} ${primary ? '' : name + ':'}${f.path} [${f.start}, ${f.end}) ${Math.round(f.ms)}ms; learned rank ${rank.get(`${f.path}#${Math.floor(f.start / BLOCK)}`) ?? '-'}, prefetch at ${pf.k ?? '-'}`) : null,
       onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
     // learned prefetch: the blocks earlier sessions read, in the order they needed them, downloaded in the background
     if (store && m.opts.prefetch && !m.opts.offline) {
-      fetch(`/api/prefetch/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : [])).then((list) => {
+      learnedOrder(name).then((list) => {
         pf.total = list.length; pf.t0 = performance.now();
         if (m.opts.netLog) list.forEach(([p, b], i) => rank.set(`${p}#${b}`, i));
         if (list.length) log('file', `prefetch${tag}: ${list.length} blocks learned from earlier sessions`);
@@ -267,9 +269,7 @@ async function start(m) {
   mountGameCdrom(vfs, manifest, gameFiles);
   for (const dependency of manifest.extraMounts ?? []) {
     root.mkdir(dependency.mount.replace(/^C:\\/, ''));
-    const treeResponse = await fetch(`/api/tree/${encodeURIComponent(dependency.manifest)}`);
-    if (!treeResponse.ok) throw new Error(`dependency ${dependency.manifest}: HTTP ${treeResponse.status}`);
-    const dep = await mountFiles(dependency.manifest, await treeResponse.json(), false);
+    const dep = await mountFiles(dependency.manifest, undefined, false); // (its tree fetched: openData)
     vfs.mount(dependency.mount, dep.files);
     (extraFilesStats ??= []).push(dep.files.stats);
   }

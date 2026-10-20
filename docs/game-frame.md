@@ -13,7 +13,8 @@ From left to right:
 | Part | What it says | Windows games | GoldSrc | re3 | OpenMW |
 |---|---|---|---|---|---|
 | Orthros, game, version · language | which installation runs | ✓ | ✓ | ✓ | ✓ |
-| runtime indicators | the runtime's own | background preload, players of the game's LAN | online games (the lobby) | — | — |
+| game data | the loading in the background (the learned order, the whole game: `shell.setData`); over the page while the game waits for its data, `data-meter.js` | background preload (its own) | ✓ | ✓ | ✓ |
+| runtime indicators | the runtime's own | players of the game's LAN | online games (the lobby) | — | — |
 | mouse | **captured** by the game (pointer lock) or **free**; a click gives it to the game | ✓ | ✓ | ✓ | ✓ (told by `frame-meter.js` in the engine's page) |
 | saves | where the progress goes: not saved (no account: a warning), saving, saved at hh:mm, not sent, conflict, too large, saved by the world (OpenMW multiplayer) | ✓ | ✓ | ✓ | ✓ |
 | frame rate | fps, p99 and the slowest frame, the last minute's graph | ✓ (+ details panel) | ✓ | ✓ (`Module.orthrosFrame`) | ✓ (`frame-meter.js`) |

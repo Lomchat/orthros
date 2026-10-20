@@ -302,7 +302,7 @@ URLs (with a query the upstream streamfs.js kept none of the pieces it read). Th
 game files synchronously on the page's thread (1–8 KB reads through its own buffers); the page
 cannot paint meanwhile and Chrome may offer to close it. The Orthros loading screen shows the
 package download (received / size, rate) and switches to "reading the game data" at its end;
-`stream-meter.js` (injected with the frame meter) draws an indicator from a worker in an
+`src/host/web/data-meter.js` (every game's; injected with the frame meter) draws an indicator from a worker in an
 OffscreenCanvas over the Orthros page — its frames reach the screen while the page's thread is held
 (verified in a headed Chrome under Xvfb; headless screenshots cannot show it, they need that thread):
 data received (the streaming's shared byte counter), rate, seconds, and "choose Wait" once Chrome

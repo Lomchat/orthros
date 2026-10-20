@@ -38,7 +38,6 @@ const STRINGS = {
     ],
     saveFailed: 'Saving in the browser failed. Keep this page open to retry.',
     restart: 'Restart the game', back: 'Back to the games', ended: 'The game has ended.',
-    waiting: (mb) => `Loading the game's files · ${mb} MB`,
     lateTitle: 'A save on your account', lateText: (t) => `Your account already has a save of ${t}, different from this browser's. Restart with your account's save, or send this browser's one over it (the account's stays in its history)?`,
     lateAccount: 'Restart with the account\'s save', lateDevice: 'Keep this browser\'s save',
     modes: { story: 'Story', free: 'Free mode', solo: 'Play' },
@@ -62,7 +61,6 @@ const STRINGS = {
     ],
     saveFailed: 'La sauvegarde navigateur a échoué. Garde cette page ouverte pour réessayer.',
     restart: 'Relancer le jeu', back: 'Revenir aux jeux', ended: 'Le jeu s’est terminé.',
-    waiting: (mb) => `Chargement des fichiers du jeu · ${mb} Mo`,
     lateTitle: 'Une sauvegarde sur ton compte', lateText: (t) => `Ton compte a déjà une sauvegarde de ${t}, différente de celle de ce navigateur. Relancer avec celle du compte, ou envoyer celle de ce navigateur par-dessus (celle du compte reste dans son historique) ?`,
     lateAccount: 'Relancer avec celle du compte', lateDevice: 'Garder celle de ce navigateur',
     modes: { story: 'Histoire', free: 'Mode libre', solo: 'Jouer' },
@@ -259,17 +257,7 @@ setInterval(() => {
   if (perf.samples.length > 120) perf.samples.shift();
   shell?.setFps(perf.samples, session.state !== 'running' || perf.started < 10 ? 'loading' : document.hidden ? 'paused' : 'running');
   const seed = seedWatch?.step(now, perf.started); if (seed) reportSeed(seed);
-  showWait(now);
 }, 500);
-// (the game waiting for its files — a load over a thin link, its image still meanwhile: told after 1.5 s, with the
-// bytes come since, until its reads stop waiting)
-let waitSince = null, waitBytes = 0;
-function showWait(now) {
-  const waiting = session.state === 'running' && gameData?.waiting;
-  if (!waiting) { waitSince = null; return; }
-  if (waitSince === null) { waitSince = now; waitBytes = gameData.received; return; }
-  if (now - waitSince > 1500) toast(S.waiting(((gameData.received - waitBytes) / 1048576).toFixed(1)), 1500);
-}
 /** The session's end, once: its length and frame rate. */
 function endReport() { if (telemetry.ended) return; telemetry.ended = true; report('end', { frames: frameStats(), audio: audioState() }); }
 /** The last minute's frame rate and slowest frames, for the session's report. */
@@ -437,7 +425,7 @@ async function start(mode = null) {
   step('files', 'active', fmtMB(0), 0);
   let nodes;
   ({ data: gameData, nodes } = await openPortFiles({ name, tree, files, FS, root: ROOT, session: sessionId, log, db, asyncReads: true, rewritable: true,
-    onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0) }));
+    onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
   session.files = gameData; gameNodes = nodes;
   const loaded = await gameData.startup((p) => {
     const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;

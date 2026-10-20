@@ -160,6 +160,12 @@ order fetched ahead from the game's position.
 - **Learning.** The worker reports the pieces the engine used (path, range, time since its start) to `/api/prefetch`.
 - **Earlier copies.** The IndexedDB copy an earlier page kept (`content`) is handed to the block store at the next
   start, then removed.
+- **What the player sees.** Every game's indicators (`src/host/web/data-meter.js`, `shell.setData`): over the page,
+  "Loading the game data" with the MB received, the rate, the step's percentage when the learned order tells its size —
+  drawn by a worker, so it moves while the page's thread waits (GoldSrc) and shows once the engine's reads have waited
+  1.5 s (re3: the page goes on painting) —; in the header, a pill while the learned order or the whole game loads in
+  the background. The home screen's "download first" and the settings' offline copy (`offlineCopy`, kept in this
+  browser for every game) fill the same store.
 
 ## Game modules built from source
 

@@ -1,6 +1,7 @@
 // "My data": what the browser keeps for the visitor — the saves and settings of each game, the game files already
 // downloaded — and the optional account that copies the saves online. A window over the page (opened from the home
 // screen and from the in-game header); it follows the page language.
+import { offlineCopy } from '../../vfs/data-client.js';
 import { archiveProfile, download, parseArchive, removeCache, removeProfile, restoreProfile, scanStorage, profileFiles, replaceProfile, scanPorts, portFiles, clearPortCache, clearPortSaves } from './data-store.js';
 import { pickLang } from './lang.js';
 import { h } from './dom.js';
@@ -320,6 +321,8 @@ function makeSwitch(id) {
   return { label, title, text };
 }
 const switches = { offline: makeSwitch('offlineToggle'), log: makeSwitch('logToggle') };
+// (the offline copy: the player's choice for every game, kept in this browser — src/vfs/data-client.js offlineCopy)
+{ const box = document.getElementById('offlineToggle'); box.checked = box.checked || offlineCopy.get(); box.addEventListener('change', () => offlineCopy.set(box.checked)); }
 function renderGeneral() {
   content.append(head(t('tabGeneral'), t('generalTitle'), t('generalLead')));
   const playing = ['running', 'loading', 'starting'].includes(state()?.status);

@@ -44,11 +44,11 @@ export const openmwModes = (o) => ['solo', ...(o.multiplayer ? ['multiplayer'] :
 // and the generated Emscripten JS must retain their original meaning.
 /**
  * An engine page with the Orthros page's meter (src/ports/openmw/frame-meter.js: its frame rate, the mouse and the
- * engine's loading status), the indicator of the game data it waits for (src/ports/openmw/stream-meter.js) and the
+ * engine's loading status), the indicator of the game data it waits for (src/host/web/data-meter.js, every game's) and the
  * engine interface's texts in the Orthros page's language (src/ports/openmw/ui-l10n.js).
  */
 export const withFrameMeter = (html) => html
-  .replace('<head>', '<head><script src="/src/ports/openmw/frame-meter.js"></script><script src="/src/ports/openmw/stream-meter.js"></script><script src="/src/ports/openmw/ui-l10n.js"></script>')
+  .replace('<head>', '<head><script src="/src/ports/openmw/frame-meter.js"></script><script src="/src/host/web/data-meter.js"></script><script src="/src/ports/openmw/ui-l10n.js"></script>')
   .replace('setStatus: (t)=>{ if(t){', 'setStatus: (t)=>{ window.orthrosStatus?.(t); if(t){');
 
 /**

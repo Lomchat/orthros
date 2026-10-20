@@ -86,7 +86,7 @@ test('the engine page loads the build from the release, brotli when taken, and k
   assert.match(page, /\("\/engines\/test-engine\/e\/" \+ __ENGINE_VER \+ "\/"\)/, 'one URL for every installation');
   assert.match(page, /'mwdata\/' \+ encodeURI\(f\.p\), f\.s\)/, 'no query: the engine keeps the pieces it streamed');
   assert.match(page, /setStatus: \(t\)=>\{ window\.orthrosStatus\?\.\(t\); if\(t\)\{/);
-  assert.match(page, /src\/ports\/openmw\/stream-meter\.js/);
+  assert.match(page, /src\/host\/web\/data-meter\.js/);
   for (const url of ['/engines/test-engine/e/abc/openmw.wasm', '/ports/openmw/sample-1/app/e/abc/openmw.wasm']) {
     const raw = (opts) => new Promise((resolve) => http.get(base + url, opts, (r) => { const c = []; r.on('data', (d) => c.push(d)); r.on('end', () => resolve({ r, body: Buffer.concat(c) })); }));
     const br = await raw({ headers: { 'accept-encoding': 'gzip, deflate, br, zstd' } });
@@ -281,7 +281,7 @@ function workerContext(file, extra = {}) {
 test('the data indicator\'s worker draws what arrived of the step and its percentage while the page is held', () => {
   let tick = null, now = 0;
   const texts = [], c2d = new Proxy({}, { get: (o, k) => k === 'fillText' ? (t) => texts.push(t) : k === 'canvas' ? { width: 960, height: 180 } : k in o ? o[k] : () => ({ addColorStop() {} }), set: (o, k, v) => { o[k] = v; return true; } });
-  const ctx = workerContext('stream-meter-worker.js', { setInterval: (fn) => { tick = fn; }, performance: { now: () => now } });
+  const ctx = workerContext('../../host/web/data-meter-worker.js', { setInterval: (fn) => { tick = fn; }, performance: { now: () => now } });
   const shared = new SharedArrayBuffer(32), counter = new Int32Array(shared);
   ctx.onmessage({ data: { canvas: { getContext: () => c2d }, dpr: 2, lang: 'fr' } });
   ctx.onmessage({ data: { arrived: shared } }); ctx.onmessage({ data: { beat: 1 } });

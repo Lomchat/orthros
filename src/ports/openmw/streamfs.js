@@ -31,7 +31,8 @@
       S.data = new M.GameData({ name, session: Math.random().toString(36).slice(2, 14), prefetch: 'first-read', cacheBytes: ((window.__omwLruDefault | 0) || 128) << 20,
         log: (t) => console.warn('[streamfs]', t) });
       S.data.start();
-      window.orthrosStreamMeter?.attach?.(S.data.counters);
+      // (the loading in the background, for the Orthros page around the engine: its header's pill)
+      if (window.parent !== window) S.data.onProgress((p) => window.parent.postMessage({ type: 'orthros-data', ...p }, location.origin));
       try { Object.defineProperty(window, '__streamfsStats', { configurable: true, get: () => S.data.snapshot() }); } catch { /* defined */ }
     }
     return S.data;

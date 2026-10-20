@@ -78,6 +78,11 @@ this server (localhost), where none of this shows.
   stored blocks are skipped; the progress is kept in `localStorage['orthros.download.<manifest>']`). Starting a game
   stops it first (the game's worker opens the same stores). The settings' "offline copy" still downloads in the
   background while the game runs (now through the same turns, after everything else).
+- **Every runtime the same** (CLAUDE.md "Standardization", 2026-10-20): the browser ports read the same game data
+  (`src/vfs/game-data.js` opens a version for the Windows games' worker, the download worker and the ports' data
+  worker, `src/vfs/data-worker.js`); the download first and the offline copy (one choice for every game:
+  `offlineCopy` in `src/vfs/data-client.js`) fill the same stores; the ports show the same indicator
+  (`src/host/web/data-meter.js`) and the header's pill for the loading in the background (`shell.setData`).
 
 ## Measuring
 
