@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "engine": {
     "repository": "https://github.com/Lomchat/reVC",
-    "commit": "6f038e21bdcbaf84a3671c9547c567a8577abfa7",
+    "commit": "79ac2d07d456e293320b23e346a1417ab4fd35d3",
     "upstream": {
       "repository": "https://github.com/mrxenginner/reVC",
       "commit": "a26fff4af555a8a425ac9f17d1dd718d00d1f942"
@@ -31,11 +31,22 @@
   },
   "builds": [
     {
-      "id": "revc-web-6f038e2-r1",
+      "id": "revc-web-79ac2d0-r1",
       "patches": [],
       "files": {
         "engine/revc.mjs": "6db617b975ede00813f83471980d30b21e90b3cb19ed7407ea65e1225057b58d",
-        "engine/revc.wasm": "33d366a6e7c027731c7f0adf58baf491cc9b131cd381f224ce69c887d837db15"
+        "engine/revc.wasm": "56001218e9bc0be6bfae716ed10da3659dfbb3ae238fb7446de3e34d4d1f7a64"
+      }
+    },
+    {
+      "id": "revc-web-79ac2d0-plus-r1",
+      "patches": [],
+      "cmake": [
+        "-DREVC_ORTHROS_EXTRAS=ON"
+      ],
+      "files": {
+        "engine/revc.mjs": "64aa3945febd204e2360b303c930ebc2679b3d2658a7d3281ec73468c3f9406c",
+        "engine/revc.wasm": "dd1f43121586bcf70f8fedc71cc422a2d660a3e55ac5cd3b1db546b6c773a943"
       }
     }
   ]

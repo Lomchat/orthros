@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { gameLayers } from '../src/host/game-files.js';
-import { re3Problem } from '../src/host/re3.js';
+import { re3Problem, re3Modes } from '../src/host/re3.js';
 import { createServer } from '../src/host/server.js';
 import { setIni, setIniDefaults, readIni, bytesToText, textToBytes } from '../src/ports/re3/ini.js';
 import { profileSnapshot, restoreProfile, setProfileIni, toCloud, findPath, casePath, languageIni, envPreRun } from '../src/ports/re3/profile.js';
@@ -65,6 +65,12 @@ test('an re3 version needs no executable and is checked by its own rules', (t) =
   assert.equal(re3Problem({ engine: ENGINE }), null);
   assert.equal(re3Problem({ engine: ENGINE, module: 'engine/main.mjs', args: ['+set', 'a=b', '-x.y'], solo: {}, languages: { en: {}, fr: { env: { A_1: '' }, ini: { 'sub/a.ini': { 'Main Section': { 'Some key': 'v w' } } } } } }), null);
   assert.equal(re3Problem({ engine: ENGINE, defaults: { 'reVC.ini': { Display: { Subtitles: '1' } } } }), null);
+  // (ways to play: their own arguments, in order; none, a single game)
+  assert.equal(re3Problem({ engine: ENGINE, modes: { story: {}, free: { args: ['-freemode'] } } }), null);
+  assert.deepEqual(re3Modes({ engine: ENGINE, modes: { story: {}, free: {} } }), ['story', 'free']);
+  assert.deepEqual(re3Modes({ engine: ENGINE }), ['solo']);
+  for (const modes of [{}, { Free: {} }, { 'a b': {} }, { free: { args: ['bad arg'] } }, { free: { args: '-x' } }, { a: {}, b: {}, c: {}, d: {}, e: {} }, { free: 1 }])
+    assert.match(re3Problem({ engine: ENGINE, modes }), /re3.modes/, JSON.stringify(modes));
   for (const defaults of [{ 'a.ini': { 'a=b': { k: '1' } } }, { 'a.ini': { ';S': { k: '1' } } }, { 'a.ini': { S: {} } }, { '../a.ini': { S: { k: '1' } } }, { 'a.ini': { S: { k: ' 1' } } }, []])
     assert.match(re3Problem({ engine: ENGINE, defaults }), /re3.defaults/, JSON.stringify(defaults));
   for (const [edit, error] of [
@@ -112,6 +118,8 @@ test('the manifest schema\'s re3 rules are the catalog\'s: what one accepts, the
     value: [rule(ini.additionalProperties.additionalProperties.additionalProperties), (v) => ({ languages: { fr: { ini: { 'a.ini': { S: { k: v } } } } } }), ['', '1', 'v w', 'a=b', '[x]', ' 1', '1 ', '1\n[Other]', long(128), long(129), '\u00e9']],
     defaultSection: [rule(defaults.additionalProperties.propertyNames), (v) => ({ defaults: { 'a.ini': { [v]: { k: 'v' } } } }), ['General', 'Main Section', 'a=b', ';c', '#c', 'Gen]eral', ' A', 'A ', '', long(64), long(65), '\u00e9']],
     defaultValue: [rule(defaults.additionalProperties.additionalProperties.additionalProperties), (v) => ({ defaults: { 'a.ini': { S: { k: v } } } }), ['', '1', 'v w', ' 1', '1 ', long(128), long(129)]],
+    mode: [rule({ maxLength: 16, pattern: r.modes.propertyNames.pattern }), (v) => ({ modes: { [v]: {} } }), ['story', 'free', 'free-2', 'Free', '2free', 'a b', '', long(16), long(17), 'f\u00e9']],
+    modeArg: [rule({ maxLength: 64, pattern: r.modes.additionalProperties.properties.args.items.pattern }), (v) => ({ modes: { free: { args: [v] } } }), ['-freemode', '+set', 'a=b', 'bad arg', '', '--x', long(64), long(65)]],
   };
   for (const [slot, [schemaOk, entry, samples]] of Object.entries(slots)) {
     let accepted = 0;

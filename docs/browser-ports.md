@@ -30,7 +30,7 @@ missing. Every game page — Windows games and ports — has the same frame (hea
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-6f038e2-r1` (reVC built from source) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-79ac2d0-r1` (reVC built from source) and `revc-web-79ac2d0-plus-r1` (with Orthros' additions) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` (Orthros' fork) with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -517,7 +517,9 @@ about its HUD sprite count.
 A version whose `runtime` is `re3` runs the game's original files on a decompiled engine of the re3 family compiled to
 WebAssembly (owner's decision D099, 2026-10-19): reVC for Grand Theft Auto: Vice City, the first — a game of its own
 on the home (`vice-city-revc`, "Grand Theft Auto: Vice City — reVC"), over the files of the Windows game's card
-(`vice-city`), without a copy of them. Single player only for now; nothing in it prevents a multiplayer later. The engine release is built by
+(`vice-city`), without a copy of them. A second card, `vice-city-orthros` ("Grand Theft Auto: Vice City — Orthros
+Edition"), runs the same engine built with Orthros' additions (the HELP cheat, a free mode: below, "Orthros' modified
+Vice City"), the first left as reVC is. Single player only for now; nothing in it prevents a multiplayer later. The engine release is built by
 `tools/re3/build.sh` into `data_engines/<release>/`, outside Git like the GoldSrc engines. Nothing in the server or the
 page names a game: release, arguments, environment and settings come from the manifest, the module's name from the
 release.
@@ -532,7 +534,7 @@ release.
     "id": "vice-city-revc", "dir": "1.1-revc", "version": "1.1 · reVC", "languages": ["en", "fr"], "profileSeed": true,
     "requires": [{ "game": "vice-city", "version": "vice-city-1.1-elamigos-2014" }],
     "re3": {
-      "engine": "revc-web-6f038e2-r1",
+      "engine": "revc-web-79ac2d0-r1",
       "defaults": { "reVC.ini": { "Display": { "Subtitles": "1" } } },
       "languages": {
         "en": { "env": { "LANG": "en_US.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "0" } } } },
@@ -567,6 +569,12 @@ followed (they are drives of its emulated machine). The saved profile's key is t
   section 1 to 64 characters, no `[` or `]`; a key 1 to 64 characters, no `=`, `[` or `]`, not starting with `;` or
   `#`; a value 128 characters at most. Sections, keys and values have no space at either end (an ini reader trims
   them). The schema's patterns say the same; `tests/re3.test.js` checks they agree.
+- `defaults`: settings a profile gets once (`{ <file>: { <section>: { <key>: <value> } } }`, `ini`'s rules; a section
+  without `=`, not starting with `;` or `#`), the player's own choice afterwards (below, "The profile").
+- `modes`: the ways to play the version (1 to 4, `/^[a-z][a-z0-9-]{0,15}$/`, in the page's order), each `args` (8 at
+  most, `args`' rules) put after `args`. With more than one, the loading screen asks (a button each, its note under
+  them, the last one chosen first; `?mode=<mode>` chooses at once), and the home card names them (`story`: Story,
+  `free`: Free mode). Without, a single game (`solo`).
 - `solo`: reserved.
 
 ### Engine release
@@ -629,14 +637,16 @@ same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame r
   reads. A file loaded whole stays in pieces above 64 MiB (one array for `models/gta3.img`, 327 MB, would be a copy of
   the whole and a hitch); the pieces fetched are written to IndexedDB one transaction per fetch, not per piece. While
   the game waits more than 1.5 s, a passing message says so with the bytes come since. The language's `env` is set by the Module's `preRun`
-  hook, before the runtime starts. Then the profile put back, the `ini` settings, `chdir('/game')`,
-  `callMain(re3.args)`.
+  hook, before the runtime starts. Then the profile put back, the `ini` settings, the defaults the profile has not had
+  yet, `chdir('/game')`, `callMain(re3.args)` (and the chosen mode's). Once the engine runs, the background requests
+  fetch 6 MB a second at most (`backgroundRate`; the engine's own reads at once): on a fast link they took everything
+  at once before — 765 MB in about ten seconds, each response copied and written to IndexedDB on the page's thread.
 - **Frames.** Counted by `Module.orthrosFrame`: the header's frame rate; the loading screen hides after the first ten.
 - **Shared first-launch profile** (the manifest's `profileSeed`, as the Windows games'; `?profileseed=0` turns it off):
   an empty profile gets, before the engine starts, the small files first sessions of the version wrote identical
   (`/api/profile-seed/<manifest>?lang=`, the server's quorum); else the session reports its own, taken at the player's
-  first input and sent once it has gone on playing (`SeedWatch`). The ini files the languages name stay out of it: the
-  player's settings, the screen's size among them.
+  first input and sent once it has gone on playing (`SeedWatch`). The ini files the languages and the defaults name stay
+  out of it: the player's settings, the screen's size among them.
 - **Saves.** Every 10 s in this browser when the engine wrote since (its file system's writes, renames and deletions
   mark the profile changed: an unchanged profile is neither walked again nor written), every minute on the account
   when changed, when the page is hidden, when leaving by "Games". At the game's end, an error or "Games", a save in flight is waited for and a new snapshot taken
@@ -657,7 +667,7 @@ The engine is Orthros' public fork of reVC, `github.com/Lomchat/reVC`, branch `o
 `mrxenginner/reVC` at `a26fff4`, the owner's choice — D099), with its librw submodule from `github.com/Lomchat/librw`,
 branch `orthros`: the browser build is defined there (`src/CMakeLists.txt`, `cmake/EmscriptenDeps.cmake`,
 `src/skel/orthros_*`; the fork's README, "Browser build"). `tools/re3/build.sh` builds it from the commit pinned in
-`tools/re3/lock.json` (`6f038e2`, its submodules too) in the pinned image `emscripten/emsdk:4.0.23`, without network.
+`tools/re3/lock.json` (`79ac2d0`, its submodules too) in the pinned image `emscripten/emsdk:4.0.23`, without network.
 Emscripten's SDL2 and mpg123 ports come from a cache made once (`data_engines/src/emscripten-4.0.23-cache`, the
 archives checked against the lock). Two builds give the same `revc.mjs` and `revc.wasm` (the pinned commit's time is
 the build time; checked 2026-10-19 and 2026-10-20): the script refuses one that differs from the lock. A release holds
@@ -745,6 +755,42 @@ first start reads the header of each of its ~1,200 audio files to build `Audio/s
 piece each on the wire: ~80 MB). Once two sessions reported the same cache, a new player's empty profile gets it and
 the game reads none of them.
 
+### Orthros' modified Vice City
+
+`vice-city-orthros` ("Grand Theft Auto: Vice City — Orthros Edition", `1.1 · Orthros`, over the Windows card's files
+as reVC's) runs the release `revc-web-79ac2d0-plus-r1`: the same fork commit as reVC's `revc-web-79ac2d0-r1`, built
+with `-DREVC_ORTHROS_EXTRAS=ON` (lock.json: a build's own `cmake`). That option compiles `src/extras/orthros_extras.cpp`
+in and its hooks (all under `ORTHROS_EXTRAS`: the reVC card's build has none of them). Its manifest has two `modes`:
+`story` (the game as it is) and `free` (`-freemode`).
+
+- **HELP**, a cheat code like the game's (typed while playing, in both modes): the game pauses under a list of its
+  62 cheats — the original's and reVC's own (`KANGAROO`, `CARSAREHELI`, `SPIDERCAR`; not its debugging ones) — by
+  kind (weapons and health, police, vehicles, traffic and driving, weather and time, pedestrians, Tommy, other),
+  sorted, each with what it does, in English or French as the game (the French accents at the codes the game's French
+  text uses). The game's fonts and colours: the menu's pink title, the HUD's blue for the kinds, the codes in white,
+  their effect in the menus' pink; two or three columns and a size to fit the screen. HELP again, Enter, Backspace or
+  Esc close it — at the key, whatever the frame rate, and that Esc does not open the pause menu.
+- **The free mode**: the game completed at 100 % — the whole city open, every property bought with its income,
+  everything unlocked (200 health and armour, the rewards at the mansion). Its saves are its own files,
+  `userfiles/GTAVCfree<n>.b` (the story's stay `GTAVCsf<n>.b`, in the same profile); it starts, without the main menu,
+  on the most recent of them, as the menu's "load" does. The first time it has none, it copies a game completed at
+  100 % found among the game's files, `orthros/freemode.b` (the version folder's), into its first slot. The pause
+  menu has "Save Game" (the game's own text, `GMSAVE`): a safe house's save screen anywhere, except during a mission
+  (greyed out: its script would be saved half way), without the six hours a safe house's save lets pass.
+- The version folder's `orthros/freemode.b` is a 100 % save of the PC game (retail Windows script) from GTA Save N
+  Play (`gtasnp.com/Go49AJ`, unmodified: "Keep your Friends Close…", 100 %, $654,319, 200/200 health and armour),
+  201,828 bytes, sha256 `99106509…ef7c9b35` (the manifest's `installedFrom`). It loads in reVC as it is: Tommy in his
+  mansion on Starfish Island.
+
+Checked 2026-10-20 in headless Chromium (SwiftShader), the engine's state read from a trace of the development build
+(menu, page, option, fade): the free mode in the mansion in 25-40 s on a fast link, HELP in English and French at
+1280 × 720, 1024 × 768 and 800 × 480, the pause menu's "Sauvegarder partie" through the save screen to "Sauvegarde
+terminée" (`GTAVCfree2.b` written), `tools/re3/check.mjs --mode free --reload` (the city, the free mode's save in the
+profile, the same profile on another browser signed in to the account) and `--mode story --new-game`. Under
+SwiftShader the mansion draws under a frame a second (the page's thread idle 93 % of the time: the GPU process's
+rendering), and the game lets its pause menu open only once its screen has faded in after the load — several minutes
+there, a second or two at 60 frames a second.
+
 ### The profile
 
 The engine writes among the mounted game files, so the profile is every regular file under `/game` that is not a
@@ -775,7 +821,8 @@ out of the shared first-launch profile, as the languages' do.
 ### State (2026-10-20)
 
 Vice City's `vice-city-revc` ("Grand Theft Auto: Vice City — reVC", `1.1 · reVC`) is a card of its own on the home,
-release `revc-web-6f038e2-r1`. Checked in headless
+release `revc-web-79ac2d0-r1` (the same engine as `6f038e2`'s, of a later commit whose additions it leaves out).
+Checked in headless
 Chromium (SwiftShader) with `tools/re3/check.mjs --new-game --reload` from the server: the home lists it available,
 the page starts it on the game's menu (60 frames a second, the mouse free there), sound on after the first gesture, a
 new game's first scene, back to the games saving here and on the account, the same profile found by another browser
@@ -794,9 +841,10 @@ Not checked: a save at a safe house and its load (no automated way there yet: th
 rate on the owner's Iris Xe), Firefox/Safari (JSPI: Chrome only). Four times in about forty runs on 2026-10-19 the
 headless browser process stopped on an internal check (`trap int3` in `chrome-headless-shell`; five such stops the day
 before in other Orthros runs), each during a load made of synchronous reads (a cold new game, a thin link). With
-asynchronous reads, twice in about fifteen runs on 2026-10-20 (once while the intro's cutscenes were skipped), the
-same place in the browser process's code each time (offset `0x5a35a88` of build 1243) and nothing in Chromium's log
-of a run with `--enable-logging` that did not stop — the cause is not established. No multiplayer (reVC has none).
+asynchronous reads, several times on 2026-10-20, the same place in the browser process's code each time (offset
+`0x5a35a88` of build 1243): every time in the free mode's city a minute or so after it loads, with or without the
+page's IndexedDB writes or audio output; Chromium itself (Playwright's `channel: 'chromium'`, its new headless mode)
+never stopped there, and `tools/re3/check.mjs` uses it — a fault of the headless shell, the cause not established. No multiplayer (reVC has none).
 
 ## Third-party components
 
@@ -818,4 +866,7 @@ of a run with `--enable-logging` that did not stop — the cause is not establis
   forks `Lomchat/reVC` and `Lomchat/librw` (branch `orthros`, the browser build): the engine of the `revc-web-*`
   releases, built by `tools/re3/build.sh`; OpenAL Soft's headers from reVC's `vendor/` (LGPL 2), Emscripten's
   ports SDL2 2.32.8 (zlib) and mpg123 (LGPL 2.1) linked in.
+- A saved game of Vice City completed at 100 %, from GTA Save N Play (`gtasnp.com/Go49AJ`, a player's upload,
+  downloaded unmodified on 2026-10-20 at the owner's request): the free mode's start, `orthros/freemode.b` in the
+  `vice-city-orthros` version folder, outside Git; its source and digest in that manifest's `installedFrom`.
 - The game files are the games' own, never modified; their provenance is recorded in each manifest's `installedFrom`.

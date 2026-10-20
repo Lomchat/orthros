@@ -38,6 +38,8 @@ const STRINGS = {
     waiting: (mb) => `Loading the game's files · ${mb} MB`,
     lateTitle: 'A save on your account', lateText: (t) => `Your account already has a save of ${t}, different from this browser's. Restart with your account's save, or send this browser's one over it (the account's stays in its history)?`,
     lateAccount: 'Restart with the account\'s save', lateDevice: 'Keep this browser\'s save',
+    modes: { story: 'Story', free: 'Free mode', solo: 'Play' },
+    modeNotes: { story: 'The game from its beginning, its saves at the safe houses.', free: 'The game completed at 100 %: the whole city open, every property bought, everything unlocked. Save from the pause menu, anywhere.' },
   },
   fr: {
     subtitle: 'ses fichiers d’origine, sur un moteur recompilé dans ton navigateur',
@@ -60,6 +62,8 @@ const STRINGS = {
     waiting: (mb) => `Chargement des fichiers du jeu · ${mb} Mo`,
     lateTitle: 'Une sauvegarde sur ton compte', lateText: (t) => `Ton compte a déjà une sauvegarde de ${t}, différente de celle de ce navigateur. Relancer avec celle du compte, ou envoyer celle de ce navigateur par-dessus (celle du compte reste dans son historique) ?`,
     lateAccount: 'Relancer avec celle du compte', lateDevice: 'Garder celle de ce navigateur',
+    modes: { story: 'Histoire', free: 'Mode libre', solo: 'Jouer' },
+    modeNotes: { story: 'Le jeu depuis son début, ses sauvegardes dans les planques.', free: 'Le jeu fini à 100 % : toute la ville ouverte, toutes les propriétés achetées, tout débloqué. Sauvegarde depuis le menu pause, n’importe où.' },
   },
 };
 const lang = pickLang(), S = STRINGS[lang] ?? STRINGS.en;
@@ -408,9 +412,12 @@ function gameLanguage(man) {
 }
 
 const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)} MB`;
-/** The game started at once: the account's saves first, then the engine, the files, the profile, the game's own start. */
-async function start() {
-  session.state = 'starting';
+/**
+ * The game started: the account's saves first, then the engine, the files, the profile, the game's own start; `mode`:
+ * one of the version's ways to play it (re3.modes: its arguments after re3.args), or none.
+ */
+async function start(mode = null) {
+  session.state = 'starting'; session.mode = mode;
   if (!crossOriginIsolated) throw new Error(S.isolated);
   if (typeof WebAssembly.Suspending !== 'function') throw new Error(S.noJspi);
   const r = config.re3, base = `/engines/${encodeURIComponent(r.engine)}/`, language = gameLanguage(config), own = r.languages?.[language] ?? {};
@@ -481,7 +488,10 @@ async function start() {
   FS.chdir(ROOT);
   step('game', 'active', '', 0.3); status(S.starting);
   streamed.start(); // (the reads are learned from the engine's start)
-  session.state = 'running'; report('start', { engine: r.engine, signedIn: !!shell.account });
+  // (from now on the background loads leave the page its frames: 6 MB a second at most — on a fast link everything at
+  // once held the page's thread a minute, the game at a frame every few seconds; the owner's link stays under it)
+  streamed.backgroundRate = 6 << 20;
+  session.state = 'running'; report('start', { engine: r.engine, mode, signedIn: !!shell.account });
   loadInBackground(plan.filter((e) => !e.startup)).catch((error) => log('Background loading failed: ' + error.message));
   setTimeout(() => reportReads(), 30000); setInterval(() => reportReads(), 120000);
   setTimeout(() => report('audio', audioState()), 60000); // (a minute in: is the game heard?)
@@ -491,7 +501,7 @@ async function start() {
   $('canvas').focus();
   // (main() runs until the player quits the game: its promise settles then — JSPI; an engine on a main loop returns at
   // once and ends through onExit)
-  const run = engine.callMain([...(r.args ?? [])]);
+  const run = engine.callMain([...(r.args ?? []), ...(r.modes?.[mode]?.args ?? [])]);
   if (typeof run?.then === 'function') run.then((code) => ended(code), (error) => (isExit(error) ? ended(error.status) : fail(error)));
 }
 
@@ -503,6 +513,29 @@ async function quit() {
   if (session.state === 'ended' || session.state === 'error') return finalSave ?? true;
   if (session.state !== 'running') return true;
   return saveAndPush();
+}
+
+/**
+ * The version's ways to play the game, on the loading screen: one button each (the last one chosen focused), its
+ * note under them; the game starts on the one chosen (?mode= chooses at once).
+ */
+function chooseMode(modes) {
+  session.state = 'choosing'; shell.showProgress(false);
+  const key = 'orthros.re3Mode.' + name;
+  let last = null; try { last = localStorage.getItem(key); } catch { /* none */ }
+  const note = Object.assign(document.createElement('p'), { className: 'note' }), acts = Object.assign(document.createElement('div'), { className: 'acts' });
+  const buttons = modes.map((m, i) => Object.assign(document.createElement('button'), {
+    type: 'button', id: 'mode-' + m, className: (last ?? modes[0]) === m ? 'primary' : '', textContent: S.modes[m] ?? m,
+    onfocus: () => { note.textContent = S.modeNotes[m] ?? ''; }, onmouseenter: () => { note.textContent = S.modeNotes[m] ?? ''; },
+    onclick: () => {
+      try { localStorage.setItem(key, m); } catch { /* not kept */ }
+      shell.choices.replaceChildren(); shell.showProgress(true);
+      start(m).catch((error) => fail(error));
+    },
+  }));
+  acts.append(...buttons);
+  shell.choices.replaceChildren(acts, note);
+  (buttons[modes.indexOf(last)] ?? buttons[0]).focus();
 }
 
 async function fullscreen() {
@@ -525,7 +558,9 @@ try {
     onLoaderHidden: fit,
   });
   shell.sound.addEventListener('click', resumeAudio);
-  await start();
+  const modes = Object.keys(config.re3.modes ?? {});
+  if (modes.length > 1 && !modes.includes(params.get('mode'))) chooseMode(modes);
+  else await start(modes.length ? (modes.includes(params.get('mode')) ? params.get('mode') : modes[0]) : null);
 } catch (error) { if (shell) fail(error); else document.body.textContent = S.failed + (error.message ?? error); }
 
 document.addEventListener('visibilitychange', () => { if (document.hidden && session.state === 'running') save().then(() => cloud?.push()).catch(log); });

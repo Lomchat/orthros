@@ -127,11 +127,15 @@ export class StreamedFiles {
    *   moment after (QUIET_MS): on a thin link the game's reads have it alone
    * @param {number} [o.backgroundRange] the bytes a background request asks for at most (a game read waits behind the one
    *   in flight)
+   * @param {number} [o.backgroundRate] the bytes a second background requests fetch at most (0: as fast as the link
+   *   goes) — on a fast link, hundreds of MB a minute kept in the browser hold the page's thread and the game with it;
+   *   a field, set once the engine runs (its first files as fast as they come)
    */
-  constructor({ name, files, store, syncGet = fetchSync, get = defaultGet, now = () => performance.now(), log = () => {}, readAhead = 0, rewritable = false, asyncReads = false, demandFirst = false, backgroundRange = MAX_RANGE }) {
+  constructor({ name, files, store, syncGet = fetchSync, get = defaultGet, now = () => performance.now(), log = () => {}, readAhead = 0, rewritable = false, asyncReads = false, demandFirst = false, backgroundRange = MAX_RANGE, backgroundRate = 0 }) {
     this.name = name; this.store = store; this.syncGet = syncGet; this.get = get; this.now = now; this.log = log; this.readAhead = readAhead; this.rewritable = rewritable;
     this.asyncReads = asyncReads; this.demandFirst = demandFirst; this.backgroundRange = Math.max(PIECE, Math.min(MAX_RANGE, backgroundRange));
     this.demand = 0; this.demandEnd = -Infinity; // (the engine's reads waiting for bytes now; when the last one ended)
+    this.backgroundRate = backgroundRate; this.backgroundAt = -Infinity; // (when the next background byte may be fetched)
     this.wholeWanted = new Set(); this.completed = new Set(); this.completing = null; this.completeWidth = 0; // (files the engine wants whole: complete())
     this.files = new Map(files.map((f) => [f.path, { ...f, key: `${f.path}\n${f.size}\n${f.mtime}`, data: null, pieces: null, local: null, seen: null }]));
     this.t0 = null; // (the engine's start: reads are learned from it)
@@ -296,6 +300,13 @@ export class StreamedFiles {
     while (this.demand > 0 || this.now() - this.demandEnd < QUIET_MS) await new Promise((r) => setTimeout(r, 50));
   }
 
+  /** A background request of `bytes`, at backgroundRate: it waits until the bytes before it had their time. */
+  async pace(bytes) {
+    const now = this.now(), at = Math.max(this.backgroundAt, now);
+    this.backgroundAt = at + bytes / this.backgroundRate * 1000;
+    if (at > now) { this.stats.pacedMs = (this.stats.pacedMs ?? 0) + (at - now); await new Promise((r) => setTimeout(r, at - now)); }
+  }
+
   /**
    * After a read that waited for the network: the next `readAhead` pieces of `f` still missing from piece `from` on,
    * loaded in the background — a file read as a stream finds its next bytes here. One such load per file at a time.
@@ -387,6 +398,7 @@ export class StreamedFiles {
     const fetchRange = async (s, e) => {
       const first = s / PIECE, count = Math.ceil((e - s) / PIECE);
       const done = (async () => {
+        if (!demand && this.backgroundRate > 0) await this.pace(e - s);
         const bytes = await this.get(this.url(f, s, e, !demand));
         if (bytes.length !== e - s) throw new Error(`${f.path}: incomplete`);
         this.stats.fetched++; this.stats.fetchedBytes += bytes.length; this.put(f, s, bytes, true);

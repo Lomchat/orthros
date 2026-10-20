@@ -253,3 +253,17 @@ test('a file the engine reads at random loads whole in the background once asked
   node('models/img').orthrosStreamed.complete(); await sf.completeWanted(2);
   assert.equal(requests.length, tried);
 });
+
+test('backgroundRate: background requests at that many bytes a second at most, the engine\'s own at once', async () => {
+  const big = bytes(4 * PIECE);
+  const { sf, node, requests } = setup(new Map([['f.bin', big]]), { asyncReads: true, backgroundRange: PIECE });
+  sf.backgroundRate = 20 * PIECE; // (a piece every 50 ms)
+  const t = performance.now();
+  await sf.load(sf.files.get('f.bin'), [0, 1, 2]);
+  assert.ok(performance.now() - t >= 90, 'the second and third pieces waited their time');
+  assert.ok(sf.stats.pacedMs >= 90);
+  const own = performance.now();
+  await node('f.bin').orthrosStreamed.ensure(3 * PIECE, 10);
+  assert.ok(performance.now() - own < 40, 'a read of the engine does not wait');
+  assert.equal(requests.length, 4);
+});

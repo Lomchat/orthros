@@ -5,10 +5,12 @@
 // and waits for its first scene (many draws a frame); --reload goes back to the games from the header (saving here and
 // on the account), starts the game again in a new browser context — another device, signed in to the same account — and
 // finds the same profile there. The player is an Orthros QA account (/tmp/orthros-scratch/qa-accounts.json, shared with
-// tools/goldsrc/check.mjs); --guest: not signed in. Evidence under /tmp/orthros-scratch/re3-check-<manifest>/.
+// tools/goldsrc/check.mjs); --guest: not signed in. --mode <id>: one of the version's ways to play (re3.modes, ?mode=; the
+// first one by default); `free` starts in the city, without the menu: checked there instead of the menu and the new game.
+// Evidence under /tmp/orthros-scratch/re3-check-<manifest>/.
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/re3/check.mjs <manifest> [--url http://127.0.0.1:8080] [--new-game] [--reload]
-//     [--guest] [--lang fr] [--menu "x,y;x,y"]
+//     [--guest] [--lang fr] [--menu "x,y;x,y"] [--mode story|free]
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -25,7 +27,11 @@ if (manifest.runtime !== 're3') throw new Error(`${name} is not an re3 version`)
 const listed = (await (await fetch(`${base}/api/manifests`)).json()).find((m) => m.name === name);
 if (!listed?.available) throw new Error(`${name} is not available on the home: ${JSON.stringify(listed)}`);
 console.log('HOME', JSON.stringify({ title: listed.title, version: listed.version, launchUrl: listed.launchUrl, modes: listed.modes }));
-const pageUrl = `${base}${listed.launchUrl}${arg('--lang') ? `?gameLang=${arg('--lang')}` : ''}`;
+const mode = arg('--mode') ?? (listed.modes?.length > 1 ? listed.modes[0] : null);
+if (mode && !listed.modes?.includes(mode)) throw new Error(`${name} has no mode ${mode}: ${JSON.stringify(listed.modes)}`);
+const query = new URLSearchParams({ ...(arg('--lang') ? { gameLang: arg('--lang') } : {}), ...(mode ? { mode } : {}) }).toString();
+const pageUrl = `${base}${listed.launchUrl}${query ? `?${query}` : ''}`;
+const inCity = mode === 'free'; // (the free mode starts in the city: no menu, no new game)
 // (the menu's places: "Start game", then "New game" — fractions of the canvas, the game's menu being centred)
 const menu = (arg('--menu') ?? '0.5,0.401;0.5,0.365').split(';').map((p) => p.split(',').map(Number));
 
@@ -84,7 +90,9 @@ async function boot(context) {
   await page.waitForFunction(() => document.querySelector('#loader')?.classList.contains('hidden') || renderProbe.draws > 200, null, { timeout: 120000 });
   return page;
 }
-const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+// (Chromium itself, headless: Playwright's lighter headless shell stops on an internal check of its browser process a
+// minute or so into the free mode's city — docs/browser-ports.md, "re3 ports", State)
+const browser = await chromium.launch({ headless: true, channel: 'chromium', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const heartbeat = setInterval(async () => {
   for (const ctx of browser.contexts()) for (const page of ctx.pages()) try { console.log('PROGRESS', await page.evaluate(() => ({ state: portSession?.state, draws: renderProbe?.draws }))); } catch { /* closing */ }
 }, 15000);
@@ -100,15 +108,25 @@ try {
   // highlighted option, the original's way)
   await page.mouse.click(canvas.x + canvas.width * 0.3, canvas.y / 2);
   await page.waitForTimeout(1500);
-  await page.screenshot({ path: path.join(root, 'menu.png') });
-  const menuDraws = await drawRate(page);
-  if (menuDraws.frames < 10 || menuDraws.perFrame < 3) throw new Error(`the menu does not draw (${JSON.stringify(menuDraws)} in 3 s)`);
-  // (the menus keep the mouse free: the game's own cursor follows it)
-  const locked = await page.evaluate(() => !!document.pointerLockElement);
-  if (locked) throw new Error('the mouse is captured in the game\'s menu');
-  const buffer = await page.evaluate(() => { const c = document.querySelector('#canvas'); return { width: c.width, height: c.height, css: [c.clientWidth, c.clientHeight] }; });
-  console.log('MENU', JSON.stringify({ ...menuDraws, canvas, buffer, locked }));
-  if (args.includes('--new-game')) {
+  if (inCity) {
+    // (the city at once: many draws a frame, once its models are streamed in)
+    const t = Date.now(); let rate = { perFrame: 0 };
+    while (Date.now() - t < 300000) { rate = await drawRate(page, 5000); if (rate.perFrame > 60) break; }
+    await page.screenshot({ path: path.join(root, 'city.png') });
+    if (rate.perFrame <= 60) throw new Error(`no city in the ${mode} mode (${JSON.stringify(rate)})`);
+    console.log('CITY', JSON.stringify({ mode, ...rate, seconds: Math.round((Date.now() - t) / 1000) }));
+  }
+  if (!inCity) await page.screenshot({ path: path.join(root, 'menu.png') });
+  if (!inCity) {
+    const menuDraws = await drawRate(page);
+    if (menuDraws.frames < 10 || menuDraws.perFrame < 3) throw new Error(`the menu does not draw (${JSON.stringify(menuDraws)} in 3 s)`);
+    // (the menus keep the mouse free: the game's own cursor follows it)
+    const locked = await page.evaluate(() => !!document.pointerLockElement);
+    if (locked) throw new Error('the mouse is captured in the game\'s menu');
+    const buffer = await page.evaluate(() => { const c = document.querySelector('#canvas'); return { width: c.width, height: c.height, css: [c.clientWidth, c.clientHeight] }; });
+    console.log('MENU', JSON.stringify({ ...menuDraws, canvas, buffer, locked }));
+  }
+  if (args.includes('--new-game') && !inCity) {
     for (const [i, p] of menu.entries()) { await page.mouse.move(...at(p), { steps: 4 }); await page.waitForTimeout(400); await page.mouse.down(); await page.waitForTimeout(150); await page.mouse.up(); await page.waitForTimeout(2500); await page.screenshot({ path: path.join(root, `menu-click-${i}.png`) }); }
     // (the first scene: many draws a frame, once its models are streamed in)
     const t = Date.now(); let rate = { perFrame: 0 };

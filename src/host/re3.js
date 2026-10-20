@@ -4,8 +4,9 @@
 // data_engines/<release>/: its ES module and WebAssembly under engine/, and the engine's own extra game files under
 // gamefiles/, laid over the version's files (game-files.js gameLayers: the catalog puts that folder in the manifest's
 // `overlays`). This module checks such a manifest entry, tells whether its release is installed and which module the
-// page imports. Single player only for now. Nothing here names a game: release, arguments, environment and settings
-// come from the manifest; the module's name from the release.
+// page imports. Single player only for now: one game, or several ways to play it (`modes`: their own command-line
+// arguments, the player's choice on the page). Nothing here names a game: release, arguments, environment, settings
+// and modes come from the manifest; the module's name from the release.
 import fs from 'node:fs';
 import path from 'node:path';
 import { engineFile } from './goldsrc.js';
@@ -13,6 +14,7 @@ import { engineFile } from './goldsrc.js';
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
 const ARG = /^[-+]?[A-Za-z0-9_.=]{1,64}$/;
 const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,31}$/;
+const MODE = /^[a-z][a-z0-9-]{0,15}$/;
 const PRINTABLE = /^[\x20-\x7e]*$/; // (ASCII: an ini file is edited byte for byte, the environment as C strings)
 const isObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 const safePath = (value) => typeof value === 'string' && value.length > 0 && value.length <= 128 && PRINTABLE.test(value) && !path.isAbsolute(value) && !value.includes('\\') && value.split('/').every((part) => part && part !== '.' && part !== '..' && !part.startsWith('.'));
@@ -47,12 +49,16 @@ export function re3Problem(r) {
   // without '=' and not opening a comment, as a key)
   if (r.defaults !== undefined && (!iniOk(r.defaults) || !Object.values(r.defaults).every((sections) => Object.keys(sections).every((section) => !/=|^[;#]/.test(section)))))
     return 're3.defaults : { <fichier>: { <section>: { <clé>: <valeur> } } } (section sans « = » ni « ; » ou « # » au début)';
+  // (ways to play the game, in the page's order: each its command-line arguments after re3.args)
+  if (r.modes !== undefined && (!within(r.modes, 4) || Object.keys(r.modes).length < 1 || !Object.entries(r.modes).every(([id, m]) => MODE.test(id) && isObject(m)
+    && (m.args === undefined || (Array.isArray(m.args) && m.args.length <= 8 && m.args.every((a) => typeof a === 'string' && ARG.test(a)))))))
+    return 're3.modes : { <mode>: { args: [<argument>] } }, 1 à 4 modes ([a-z][a-z0-9-]*, 16 caractères au plus)';
   if (r.solo !== undefined && !isObject(r.solo)) return 're3.solo doit être un objet';
   return null;
 }
 
-/** The modes a version offers: single player only for now. */
-export const re3Modes = () => ['solo'];
+/** The modes a version offers: its own (re3.modes, in order), else single player. */
+export const re3Modes = (r) => (r?.modes ? Object.keys(r.modes) : ['solo']);
 
 /** The release's folder of the engine's own game files, laid over the version's (present or not). */
 export const re3GameFiles = (enginesDir, release) => path.join(enginesDir, release, 'gamefiles');

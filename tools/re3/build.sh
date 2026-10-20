@@ -1,6 +1,7 @@
 #!/bin/sh
 # Build the re3-family engine of an "re3" browser port (docs/browser-ports.md, "re3 ports") from pinned sources
-# (lock.json "engine": Orthros' fork, its browser branch — the browser build defined there) into a release
+# (lock.json "engine": Orthros' fork, its browser branch — the browser build defined there; a build may add its own
+# CMake options, "cmake": Orthros' modified game's -DREVC_ORTHROS_EXTRAS=ON) into a release
 # data_engines/<id>/ per build of "builds": the engine compiled to WebAssembly (engine/revc.mjs, an Emscripten ES module,
 # and engine/revc.wasm), with a build's patches if it names any (tools/re3/patches/), the engine's own game files
 # (gamefiles/: laid over the game's by the server) and the sources' licence notices (notices/).
@@ -71,7 +72,9 @@ build = next(b for b in json.load(open(sys.argv[1]))['builds'] if b['id'] == sys
 for repo, patch in build['patches']:
     subprocess.run(['git', '-C', f'{sys.argv[3]}/{repo}', 'apply', f'{sys.argv[4]}/{patch}'], check=True)
 PY
-  docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH -e CMAKE_ARGS="$cmake_args" \
+  # (a build's own CMake options after the engine's: Orthros' modified game, say)
+  build_args="$cmake_args $(python3 -c "import json,sys; print(' '.join(next(b for b in json.load(open(sys.argv[1]))['builds'] if b['id'] == sys.argv[2]).get('cmake', [])))" "$lock" "$id")"
+  docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH -e CMAKE_ARGS="$build_args" \
     -v "$build/src:/revc" -v "$build/wasm:/build" -v "$cache:/emsdk/upstream/emscripten/cache" -w /revc "$image" sh -c '
     emcmake cmake -S /revc -B /build $CMAKE_ARGS && cmake --build /build -j8'
   python3 - "$lock" "$id" "$build" "$release" "$root/tools/re3/patches" <<'PY'
@@ -93,7 +96,7 @@ built = {k: v for k, v in files.items() if k.startswith('engine/')} # (the game 
 if want and want != built:
     diff = sorted(k for k in set(want) | set(built) if want.get(k) != built.get(k))
     shutil.rmtree(staging); sys.exit(f'{spec["id"]}: files differ from lock.json: {diff}')
-info = {'id': spec['id'], 'engine': {k: lock['engine'][k] for k in ('repository', 'commit', 'upstream', 'submodules', 'emsdk', 'emscriptenPorts', 'cmake')},
+info = {'id': spec['id'], 'engine': {k: lock['engine'][k] for k in ('repository', 'commit', 'upstream', 'submodules', 'emsdk', 'emscriptenPorts', 'cmake')}, 'cmake': spec.get('cmake', []),
         'patches': [{'repo': r, 'patch': p, 'sha256': sha(patches / p)} for r, p in spec['patches']], 'files': files}
 (staging / 'release.json').write_text(json.dumps(info, indent=2) + '\n')
 staging.rename(release)
