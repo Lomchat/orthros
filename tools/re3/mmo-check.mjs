@@ -128,6 +128,8 @@ export function respawnChecks(beforeDeath, deathPos, after) {
     { name: 'respawn: at another place (the hospital)', ok: distance(deathPos, after?.pos) > 5, detail: { death: vec(deathPos), now: vec(after?.pos) } },
   ];
 }
+/** The shared world's forced weather as the engine publishes it (world.weather.var; a top-level weather else). */
+export const weatherOf = (state) => state?.world?.weather?.var ?? state?.weather ?? null;
 /** An admins file this check may change: never the live server's state. */
 export function adminsPathAllowed(file) {
   const abs = path.resolve(file);
@@ -414,6 +416,7 @@ async function main() {
         await until(B, 60000, (s) => distance(s?.pos, offset(PLACES.hotel, 5)) < 5);
       },
       async world() {
+        await together('world', PLACES.hotel, 6);
         if (o.admins && A.admin && B.admin) {
           // (B an ordinary player for these checks: off the list, joined again so that its engine knows)
           let list = []; try { list = JSON.parse(fs.readFileSync(o.admins, 'utf8')); } catch { /* none */ }
@@ -425,17 +428,16 @@ async function main() {
           await check('world', 'B joins again as an ordinary player', r.ok && !B.admin, { admin: r.state?.admin });
         }
         const admin = clients.find((c) => c.admin) ?? null, other = clients.find((c) => !c.admin) ?? null;
-        await together('world', PLACES.hotel, 6);
         if (other) {
           const before = await other.read();
           await other.cmd('cheat YOUWONTTAKEMEALIVE');
           await sleep(Math.min(6000, Math.max(0, left())));
           const after = await other.read();
           await check('world', `a cheat refused for a non-admin (${other.tag})`, (after?.wanted ?? 0) <= (before?.wanted ?? 0), { before: before?.wanted, after: after?.wanted });
-          if (Number.isFinite(after?.weather) || after?.weather != null) {
+          if (weatherOf(after) != null) {
             await other.cmd('cheat CATSANDDOGS'); await sleep(4000);
             const w = await other.read();
-            await check('world', 'a world cheat refused for a non-admin', JSON.stringify(w?.weather) === JSON.stringify(after?.weather), { before: after?.weather, after: w?.weather });
+            await check('world', 'a world cheat refused for a non-admin', JSON.stringify(weatherOf(w)) === JSON.stringify(weatherOf(after)), { before: weatherOf(after), after: weatherOf(w) });
           }
         } else await skip('world', 'a cheat refused for a non-admin', 'both players are admins');
         if (admin) {
@@ -449,15 +451,16 @@ async function main() {
           const around = census(await watcher.read());
           await check('world', 'police around the wanted player seen by the other (copies)', around.puppets > 0, around);
           const s0 = await admin.read();
-          if (s0?.weather != null) {
+          if (weatherOf(s0) != null) {
             await admin.cmd('cheat CATSANDDOGS');
-            const changed = await until(admin, 15000, (s) => JSON.stringify(s?.weather) !== JSON.stringify(s0.weather));
-            const same = await until(watcher, 15000, (s) => JSON.stringify(s?.weather) === JSON.stringify(changed.state?.weather));
-            await check('world', 'an admin\'s world cheat applied on both', changed.ok && same.ok, { admin: changed.state?.weather, other: same.state?.weather });
+            const changed = await until(admin, 15000, (s) => JSON.stringify(weatherOf(s)) !== JSON.stringify(weatherOf(s0)));
+            const same = await until(watcher, 15000, (s) => JSON.stringify(weatherOf(s)) === JSON.stringify(weatherOf(changed.state)));
+            await check('world', 'an admin\'s world cheat applied on both', changed.ok && same.ok, { admin: weatherOf(changed.state), other: weatherOf(same.state) });
+            await admin.cmd('cheat CATSANDDOGS'); // (back to the game's own weather)
           } else await skip('world', 'an admin\'s world cheat applied on both', 'the engine publishes no weather');
           // (the teleport list: for everyone, a wanted level too)
           const t0 = await admin.read();
-          await admin.cmd('teleport 0');
+          await admin.cmd('teleport 2');
           const p0 = await until(admin, 45000, (s) => distance(s?.pos, t0?.pos) > 20);
           await admin.cmd('teleport 1');
           const p1 = await until(admin, 45000, (s) => distance(s?.pos, p0.state?.pos) > 20);
@@ -466,7 +469,7 @@ async function main() {
         } else {
           await skip('world', 'an admin\'s cheats', 'no admin (--admins <test server admins.json>)');
           const t0 = await B.read();
-          await B.cmd('teleport 0');
+          await B.cmd('teleport 2');
           const p0 = await until(B, 45000, (s) => distance(s?.pos, t0?.pos) > 20);
           await check('world', 'the teleport list moves the player', p0.ok, { from: vec(t0?.pos), to: vec(p0.state?.pos) });
         }
