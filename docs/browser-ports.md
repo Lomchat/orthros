@@ -783,9 +783,10 @@ Not checked: a save at a safe house and its load (no automated way there yet: th
 `userfiles/GTAVCsf*.b` is checked with the ini and the cache), a whole mission, long sessions, a real GPU (the frame
 rate on the owner's Iris Xe), Firefox/Safari (JSPI: Chrome only). Four times in about forty runs on 2026-10-19 the
 headless browser process stopped on an internal check (`trap int3` in `chrome-headless-shell`; five such stops the day
-before in other Orthros runs), each during a load made of synchronous reads (a cold new game, a thin link); none in
-the runs since the reads became asynchronous (r6: the check, the 85 KB/s and 1 MB/s runs) — the cause is not
-established. No multiplayer (reVC has none).
+before in other Orthros runs), each during a load made of synchronous reads (a cold new game, a thin link). With
+asynchronous reads, twice in about fifteen runs on 2026-10-20 (once while the intro's cutscenes were skipped), the
+same place in the browser process's code each time (offset `0x5a35a88` of build 1243) and nothing in Chromium's log
+of a run with `--enable-logging` that did not stop — the cause is not established. No multiplayer (reVC has none).
 
 ## Third-party components
 
