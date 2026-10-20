@@ -1,7 +1,8 @@
 // The page of an re3 browser port (src/host/re3.js, docs/browser-ports.md "re3 ports"), /ports/re3/<manifest>/: the
 // pinned engine release the manifest names (/engines/<release>/: an Emscripten ES module — SDL2 on WebGL 2, OpenAL on
 // WebAudio, JSPI), the version's game files streamed into the game's folder with the release's own over them
-// (../goldsrc/files.js: what the game reads first loaded before it starts, the rest as it goes; kept in IndexedDB), and
+// (../port-files.js: the game data every Orthros game reads — what the game reads first loaded before it starts, the
+// rest as it goes, kept in the browser), and
 // the files the engine writes there — saves, settings, its ini file — as the player's profile (profile.js), in
 // IndexedDB under the installation's key and on the player's Orthros account (cloud-sync.js). Single player only.
 // Around the game, the frame every Orthros game has (/src/host/web/shell.js): the header (the mouse, the saves, the
@@ -11,8 +12,9 @@ import { pickLang } from '../../host/web/lang.js';
 import { createShell, lockKeys } from '../../host/web/shell.js';
 import { escapeToGame } from '../../host/web/escape.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
-import { openStorage, readStorage, writeStorage, writeManyStorage, storageKeys, removeStorage } from '../goldsrc/storage.js';
-import { StreamedFiles, treeFiles, learnedPlan, PIECE } from '../goldsrc/files.js';
+import { openStorage, readStorage, writeStorage } from '../goldsrc/storage.js';
+import { treeFiles } from '../../vfs/game-tree.js';
+import { openPortFiles } from '../port-files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
 import { setIniDefaults } from './ini.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../../host/profile-seed.js';
@@ -263,10 +265,10 @@ setInterval(() => {
 // bytes come since, until its reads stop waiting)
 let waitSince = null, waitBytes = 0;
 function showWait(now) {
-  const s = streamed?.stats, waiting = session.state === 'running' && streamed && (streamed.demand > 0 || now - streamed.demandEnd < 500);
+  const waiting = session.state === 'running' && gameData?.waiting;
   if (!waiting) { waitSince = null; return; }
-  if (waitSince === null) { waitSince = now; waitBytes = s.fetchedBytes + s.localBytes; return; }
-  if (now - waitSince > 1500) toast(S.waiting(((s.fetchedBytes + s.localBytes - waitBytes) / 1048576).toFixed(1)), 1500);
+  if (waitSince === null) { waitSince = now; waitBytes = gameData.received; return; }
+  if (now - waitSince > 1500) toast(S.waiting(((gameData.received - waitBytes) / 1048576).toFixed(1)), 1500);
 }
 /** The session's end, once: its length and frame rate. */
 function endReport() { if (telemetry.ended) return; telemetry.ended = true; report('end', { frames: frameStats(), audio: audioState() }); }
@@ -279,7 +281,7 @@ function frameStats() {
 // ---------------------------------------------------------------- the profile, here and on the account (cloud-sync.js)
 const name = decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? '');
 const sessionId = crypto.randomUUID().replaceAll('-', '').slice(0, 24);
-let config, files, streamed;
+let config, tree, files, gameData;
 /**
  * The profile now: the engine's tree once it is in place, else — before, or once saves of it stopped (the page goes, or
  * the account's copy replaced it) — the one kept in this browser.
@@ -352,26 +354,6 @@ async function saveAndPush() {
     const sent = cloud ? await cloud.push() : null;
     return !sent || !['error', 'toobig', 'conflict'].includes(sent.state);
   } catch (error) { log('Profile save failed: ' + (error?.message ?? error)); return false; }
-}
-
-/** The reads the game made since the last report, to the server's learned list (sendBeacon when the page goes). */
-function reportReads(beacon = false) {
-  const reads = streamed?.takeReads(); if (!reads?.length) return;
-  const url = `/api/prefetch/${encodeURIComponent(name)}`, body = (list) => JSON.stringify({ session: sessionId, reads: list });
-  if (!beacon) { fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(reads) }).catch((error) => log('Read report failed: ' + error.message)); return; }
-  for (let i = 0; i < reads.length; i += 500) navigator.sendBeacon(url, new Blob([body(reads.slice(i, i + 500))], { type: 'application/json' })); // (a beacon carries 64 KiB at most)
-}
-
-/** After the start: the files kept in this browser, then the rest of the learned list, into the engine's tree. */
-async function loadInBackground(rest) {
-  const t = performance.now(), jobs = (list) => list.map((e) => () => streamed.load(e.file, e.pieces).catch((error) => log(`${e.file.path}: ${error.message}`)));
-  await StreamedFiles.pool(jobs(streamed.localNotLoaded()), 2);
-  await StreamedFiles.pool(jobs(rest), 3);
-  // (then the files the engine reads at random as it goes, whole — its streaming archive, its sound bank: no wait for
-  // them in the game once here; their turn after the game's own reads, demandFirst)
-  await streamed.completeWanted(2);
-  session.background = { ms: Math.round(performance.now() - t), ...streamed.stats };
-  log(`Background loading done: ${JSON.stringify(session.background)}`);
 }
 
 // ---------------------------------------------------------------- the shared first-launch profile (profile-seed.js)
@@ -449,28 +431,21 @@ async function start(mode = null) {
   // (the game's files: its whole tree now — the release's own over the version's, as the server lists it —, what
   // earlier sessions read first loaded before the start, the rest later; a stream's next bytes read ahead; a game file
   // the engine writes anew, a file of the profile in its place)
-  // (asyncReads: a read waiting for bytes suspends the engine — JSPI — instead of holding the page over a synchronous
-  // request; demandFirst: the background loads wait while it does, in requests of 1 MiB at most — a thin link's bytes
-  // go to the game's reads first)
-  streamed = session.files = new StreamedFiles({ name, files, log, readAhead: 16, rewritable: true, asyncReads: true, demandFirst: true, backgroundRange: 1 << 20, store: {
-    read: (key) => readStorage(db, 'content', key), write: (key, bytes) => writeStorage(db, 'content', key, bytes), writeMany: (entries) => writeManyStorage(db, 'content', entries),
-    keys: () => storageKeys(db, 'content'), remove: (keys) => removeStorage(db, 'content', keys) } });
-  streamed.mount(FS, ROOT);
-  gameNodes = new Set([...streamed.files.values()].map((f) => f.node));
+  // (asyncReads: a read waiting for bytes suspends the engine — JSPI — instead of holding the page; rewritable: a game file
+  // the engine writes anew, a file of the profile in its place)
   const t0 = performance.now();
-  const [learned] = await Promise.all([fetch(`/api/prefetch/${encodeURIComponent(name)}`).then((res) => (res.ok ? res.json() : [])).catch(() => []), streamed.openLocal().catch((error) => log('Content cache unavailable: ' + error.message))]);
-  const plan = learnedPlan(learned, [...streamed.files.values()]), first = plan.filter((e) => e.startup);
-  const bytesOf = (e) => (e.pieces ? Math.min(e.file.size, e.pieces.length * PIECE) : e.file.size), total = first.reduce((sum, e) => sum + bytesOf(e), 0);
-  let loaded = 0;
   step('files', 'active', fmtMB(0), 0);
-  await StreamedFiles.pool(first.map((e) => async () => {
-    await streamed.load(e.file, e.pieces); loaded += bytesOf(e);
-    const f = loaded / Math.max(1, total), secs = (performance.now() - t0) / 1000;
-    step('files', 'active', `${fmtMB(loaded)}${secs > 1 ? ` · ${(loaded / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
-  }), 6);
-  session.startup = { files: first.length, bytes: total, ms: Math.round(performance.now() - t0), ...streamed.stats };
+  let nodes;
+  ({ data: gameData, nodes } = await openPortFiles({ name, tree, files, FS, root: ROOT, session: sessionId, log, db, asyncReads: true, rewritable: true,
+    onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0) }));
+  session.files = gameData; gameNodes = nodes;
+  const loaded = await gameData.startup((p) => {
+    const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;
+    step('files', 'active', `${fmtMB(p.bytes)}${secs > 1 ? ` · ${(p.bytes / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
+  });
+  session.startup = { ...gameData.snapshot(), startupBytes: loaded.total, ms: Math.round(performance.now() - t0) };
   log(`Startup files: ${JSON.stringify(session.startup)}`);
-  step('files', 'done', fmtMB(total));
+  step('files', 'done', fmtMB(loaded.total));
   // (the profile in the game's folder, over the game's files it replaced; the language's settings — re3.languages.<code>,
   // the player's choice of the version's languages —, in every ini file a language names: a game's own copied into the
   // profile even when it has these settings, for the engine to write in)
@@ -489,13 +464,8 @@ async function start(mode = null) {
   }
   FS.chdir(ROOT);
   step('game', 'active', '', 0.3); status(S.starting);
-  streamed.start(); // (the reads are learned from the engine's start)
-  // (from now on the background loads leave the page its frames: 6 MB a second at most — on a fast link everything at
-  // once held the page's thread a minute, the game at a frame every few seconds; the owner's link stays under it)
-  streamed.backgroundRate = 6 << 20;
+  gameData.start(); // (the reads are learned from the engine's start; the learned order loads in the data worker)
   session.state = 'running'; report('start', { engine: r.engine, mode, signedIn: !!shell.account });
-  loadInBackground(plan.filter((e) => !e.startup)).catch((error) => log('Background loading failed: ' + error.message));
-  setTimeout(() => reportReads(), 30000); setInterval(() => reportReads(), 120000);
   setTimeout(() => report('audio', audioState()), 60000); // (a minute in: is the game heard?)
   timer = setInterval(() => save().catch((error) => { log('Profile save failed: ' + error.message); status(S.saveFailed, true); }), 10000);
   // (the account's copy: a minute after a change at most — CloudSave sends only what changed)
@@ -552,7 +522,7 @@ try {
   if (!manifestResponse.ok || !treeResponse.ok) throw new Error(`HTTP ${manifestResponse.ok ? treeResponse.status : manifestResponse.status}`);
   config = session.config = await manifestResponse.json();
   if (config.runtime !== 're3') throw new Error('not an re3 installation');
-  files = treeFiles(await treeResponse.json());
+  tree = await treeResponse.json(); files = treeFiles(tree);
   shell = createShell({
     title: config.name, version: config.version, gameLanguage: gameLanguage(config), cover: `/api/cover/${encodeURIComponent(name)}`, subtitle: S.subtitle,
     steps: Object.entries(S.steps).map(([k, label]) => ({ k, label })), tips: S.tips,
@@ -568,5 +538,5 @@ try {
 document.addEventListener('visibilitychange', () => { if (document.hidden && session.state === 'running') save().then(() => cloud?.push()).catch(log); });
 window.addEventListener('pagehide', () => {
   if (session.state === 'running') endReport();
-  stopped = true; if (timer) clearInterval(timer); if (cloudTimer) clearInterval(cloudTimer); reportReads(true);
+  stopped = true; if (timer) clearInterval(timer); if (cloudTimer) clearInterval(cloudTimer); gameData?.close();
 });

@@ -101,6 +101,8 @@ export class HttpBackend {
     this.want = new Map(); this.filling = false;
     /** blocks next to missed ones, wanted at the lowest priority (see NEAR_BLOCKS): same entries as `want` */
     this.near = new Map();
+    /** blocks of files the game wants whole (see wantWhole), after `want` and `near`: same entries */
+    this.later = new Map();
     /** the background downloads in flight (prefetch, block fill): their AbortControllers, aborted when the game
      * needs the network (see abortBackground) */
     this.bgAborts = new Set();
@@ -182,9 +184,10 @@ export class HttpBackend {
    * from the start — sessions of different speeds (and menu times) interleave phases in the learned order, so the head
    * of the list is often a phase this session has not reached, or has passed without needing it. Meanwhile the learned
    * pieces of the entries just past the game's position are fetched ahead (see pumpAhead). `progress` gets
-   * { bytes, blocks, done, k }.
+   * { bytes, blocks, done, k }. `opts.learnedOnly`: on a link that is not fast, the learned pieces only (not the rest of
+   * their blocks) — what a page waits for before the game starts.
    */
-  async prefetch(list, progress, stop = () => false) {
+  async prefetch(list, progress, stop = () => false, opts = {}) {
     const store = this.store; if (!store || typeof fetch !== 'function') return;
     progress.bytes = 0; progress.blocks = 0; progress.done = false;
     /** @type {{path: string, size: number, mtime: number, index: number, mask: number, seen?: boolean, ahead?: boolean, skip?: boolean}[]} */
@@ -212,13 +215,14 @@ export class HttpBackend {
     // of the link's size (see NetLink), each piece kept as it comes
     const nextPart = () => {
       // (a thin link: the learned pieces only — whole blocks are for links that can afford them)
-      for (const tier of this.net.thin() ? [1] : [1, 2]) {
+      for (const tier of this.net.thin() || opts.learnedOnly ? [1] : [1, 2]) {
         for (let pass = 0; pass < 2; pass++) {
           const from = pass === 0 ? L.pos + 1 : 0, to = pass === 0 ? entries.length : Math.min(entries.length, L.pos + 1);
           for (let r = from; r < to; r++) {
-            const e = entries[r];
-            if (stored(e) || (tier === 1 && (!e.mask || e.maskDone)) || this.doneWith(e.path)) continue;
-            const run = this.missingRun(e.path, e.size, e.mtime, e.index, tier === 1 ? e.mask : 0);
+            // (learnedOnly: an entry learned without its pieces — an older list — was read whole)
+            const e = entries[r], mask = e.mask || (opts.learnedOnly ? 0xffff : 0);
+            if (stored(e) || (tier === 1 && (!mask || e.maskDone)) || this.doneWith(e.path)) continue;
+            const run = this.missingRun(e.path, e.size, e.mtime, e.index, tier === 1 ? mask : 0);
             if (run) return { r, e, run };
             if (tier === 1) { let fly = false; for (let c = e.index * 16; c < e.index * 16 + 16; c++) if (this.flights.has(`${e.path}#${c}`)) fly = true; if (!fly) { e.maskDone = true; progress.blocks++; } }
           }
@@ -627,7 +631,7 @@ export class HttpBackend {
     const k = `${path}#${index}`;
     this.cache.set(k, bytes);
     this.store?.put(skey, bytes);
-    this.want.delete(k); this.near.delete(k);
+    this.want.delete(k); this.near.delete(k); this.later.delete(k);
     const pk = skey.slice(0, skey.lastIndexOf('#')) + '#c';
     for (let c = (index * BLOCK) / CHUNK, e = c + BLOCK / CHUNK; c < e; c++) {
       const ck = `${path}#${c}`, p = this.chunks.get(ck); if (p) { this.chunks.delete(ck); this.chunkBytes -= p.length; }
@@ -802,14 +806,15 @@ export class HttpBackend {
 
   /**
    * The game reads `path` at random as it goes (a streaming archive, a sound bank): all of its blocks wanted, downloaded
-   * by the background fill after the game's own reads (not on a thin link: the game's reads alone there).
+   * by the background fill last — after the blocks the game touched and those near them, the link quiet for NEAR_QUIET_MS
+   * (not on a thin link: the game's reads alone there).
    */
   wantWhole(path) {
     const r = this.lookup(path); if (!r?.file) return;
     const size = r.file.size, mtime = r.file.mtime ?? 0;
     for (let i = 0; i * BLOCK < size; i++) {
       const k = `${r.path}#${i}`;
-      if (!this.cache.has(k) && !this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) this.want.set(k, { path: r.path, size, mtime, index: i });
+      if (!this.cache.has(k) && !this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) this.later.set(k, { path: r.path, size, mtime, index: i });
     }
     this.fillBackground();
   }
@@ -836,22 +841,22 @@ export class HttpBackend {
     if (this.filling || typeof fetch !== 'function') return;
     this.filling = true;
     try {
-      while (this.want.size || this.near.size) {
-        // (the blocks next to missed ones last, after a longer quiet time)
+      while (this.want.size || this.near.size || this.later.size) {
+        // (the blocks next to missed ones, then those of files wanted whole, after a longer quiet time)
         while (this.gameBusy(this.want.size ? 150 : NEAR_QUIET_MS)) await new Promise((res) => setTimeout(res, 50));
-        const q = this.want.size ? this.want : this.near;
+        const q = this.want.size ? this.want : this.near.size ? this.near : this.later;
         if (!q.size) continue; // (fetched whole meanwhile by a sequential read)
         const [k, w] = q.entries().next().value;
         // (here already: fetched whole by a read, or stored by the learned prefetch)
         // (or on its way, fetched ahead of a sequential reader)
         if (this.cache.has(k) || this.blockFlights.has(k) || this.store?.map.has(`${w.path}#${w.size}#${w.mtime}#${w.index}`)) { q.delete(k); continue; }
-        if (this.net.thin()) { this.want.clear(); this.near.clear(); break; } // (queued before the link was measured thin)
+        if (this.net.thin()) { this.want.clear(); this.near.clear(); this.later.clear(); break; } // (queued before the link was measured thin)
         if (!this.net.fast()) {
           // (a link that is not fast: the block's missing pieces, a background request of the link's size at a time —
           // what came is kept whatever happens next, and the block is installed whole once all its pieces are here)
           const run = this.missingRun(w.path, w.size, w.mtime, w.index);
           if (!run) { if (this.flights.size) await new Promise((res) => setTimeout(res, 50)); else q.delete(k); continue; }
-          const r = await this.fetchPartBg(w.path, w.size, w.mtime, run[0], run[1], q === this.want ? PRIO.fill : PRIO.near);
+          const r = await this.fetchPartBg(w.path, w.size, w.mtime, run[0], run[1], q === this.want ? PRIO.fill : q === this.near ? PRIO.near : PRIO.offline);
           if (r === null) break; // (network down: the next random read queues it again)
           if (r === false) continue;
           if (r === undefined) q.delete(k);

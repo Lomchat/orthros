@@ -33,7 +33,11 @@ export class GameData {
     this.data = new Uint8Array(new SharedArrayBuffer(SPAN));
     this.cache = new Map(); this.held = 0; this.budget = o.cacheBytes ?? 256 << 20;
     this.files = new Map(); this.byId = []; this.gen = 0; this.used = []; this.asks = new Map(); this.nextAsk = 1;
-    this.stats = { hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0 };
+    // (waits: the reads that waited for the worker — waitMs, waitBytes their time and bytes, syncFetches those that held
+    // the page; fetchedBytes: what the worker received)
+    const ctrl = this.ctrl;
+    this.stats = { hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0, syncFetches: 0, get waits() { return this.misses; }, get waitMs() { return this.stallMs; },
+      get waitBytes() { return this.bytes; }, get fetchedBytes() { return Atomics.load(ctrl, 2); } };
     this.listeners = { startup: [], whole: [] };
     // (o.worker: a test's stand-in, { postMessage, onmessage })
     this.worker = o.worker ?? new Worker(new URL('./data-worker.js', import.meta.url), { type: 'module' });
@@ -48,7 +52,7 @@ export class GameData {
         else if (m.log) this.log(m.log);
       };
     });
-    this.worker.postMessage({ init: { name: o.name, session: o.session ?? '', bw: o.bw, prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
+    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', bw: o.bw, prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
     this.timer = setInterval(() => { if (this.used.length) this.worker.postMessage({ used: this.used.splice(0) }); }, 2000);
   }
 
@@ -122,12 +126,16 @@ export class GameData {
 
   /** The reader's counters for an indicator (stream-meter.js): the shared buffer, read live from another thread. */
   get counters() { return this.ctrl.buffer; }
+  /** The engine's reads wait for the network now. */
+  get waiting() { return Atomics.load(this.ctrl, 6) > 0; }
+  /** Bytes the worker received (decoded). */
+  get received() { return Atomics.load(this.ctrl, 2); }
 
   /** The worker stopped (its pending reports sent first). */
   close() { clearInterval(this.timer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
 
   /** The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes }. */
-  snapshot() { return Object.assign({ cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE) }, this.stats); }
+  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes }; }
 
   // ---------------------------------------------------------------- reads
 
@@ -204,7 +212,7 @@ export class GameData {
       const b = Atomics.load(ctrl, 3), now = performance.now();
       if (b !== beat) { beat = b; beatAt = now; } else if (now - beatAt > DEAD_MS) throw new Error('the game data worker stopped answering');
     }
-    this.stats.misses++; this.stats.stallMs += performance.now() - t0;
+    this.stats.misses++; this.stats.syncFetches++; this.stats.stallMs += performance.now() - t0;
     const n = ctrl[1];
     if (n < 0) throw new Error(`${h.path}: read failed at ${start}`);
     this.keep(h, p, this.data.subarray(0, n));

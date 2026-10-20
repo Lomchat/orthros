@@ -70,7 +70,7 @@ function dispatch(m) {
 async function init(o) {
   W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.prefetchAt = o.prefetch ?? 'none';
   const kept = {};
-  W.version = await openVersion(o.name, { bw: o.bw, cacheBlocks: o.cacheBlocks, store: async (n) => {
+  W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, cacheBlocks: o.cacheBlocks, store: async (n) => {
     const s = await openStore(n); kept[n] = !!s;
     return s ?? new MemBlockStore(o.memBytes ?? 512 << 20);
   } });
@@ -199,7 +199,8 @@ async function startup() {
   const total = head.reduce((n, [, , mask]) => n + (mask ? popcount(mask) * CHUNK : BLOCK), 0);
   const tick = setInterval(() => postMessage({ startup: { bytes: progress.bytes, total, done: false } }), 250);
   if (!head.length) { clearInterval(tick); postMessage({ startup: { bytes: 0, total: 0, done: true } }); return; }
-  try { await part.files.prefetch(head, progress, () => W.stop); }
+  // (the pieces sessions read only: the rest of their blocks comes with the learned order, once the engine runs)
+  try { await part.files.prefetch(head, progress, () => W.stop, { learnedOnly: true }); }
   finally { clearInterval(tick); postMessage({ startup: { bytes: progress.bytes, total, done: true } }); }
 }
 const popcount = (m) => { let n = 0; while (m) { n += m & 1; m >>>= 1; } return n; };

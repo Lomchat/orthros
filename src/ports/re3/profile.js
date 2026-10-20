@@ -1,6 +1,6 @@
 // The player's profile of an re3 port (docs/browser-ports.md, "re3 ports"). The engine reads the game's files and
 // writes its own — saves and settings (its "userfiles" folder), its ini file, maybe caches — in one folder, the game
-// root, where the page mounted the game's files (../goldsrc/files.js). The profile is every regular file there that is
+// root, where the page mounted the game's files (../port-files.js). The profile is every regular file there that is
 // not a mounted game file: created by the engine, or a game file it replaced. It is kept as { path relative to the
 // root, data }, in IndexedDB and on the player's account, and put back before the engine starts.
 import { bytesToText, textToBytes, setIni } from './ini.js';

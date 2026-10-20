@@ -22,8 +22,8 @@ export function fileNode(FS, at, data, h, o = {}) {
   const node = FS.createFile(dir, at.slice(slash + 1), {}, true, false);
   Object.defineProperty(node, 'usedBytes', { get: () => h.size });
   Object.defineProperty(node, 'contents', { get: () => h.whole, set: () => {} }); // (whole once mapped: mmap reads it)
-  const getattr = node.node_ops.getattr;
-  node.node_ops = { ...node.node_ops, getattr(n) { const a = getattr(n); a.size = h.size; return a; } };
+  const getattr = node.node_ops?.getattr;
+  if (getattr) node.node_ops = { ...node.node_ops, getattr(n) { const a = getattr(n); a.size = h.size; return a; } };
   const ops = node.stream_ops, own = { ...ops };
   // (bytes that cannot be had: a read error for the engine (EIO), not an exception through its code)
   const io = (fn) => { try { return fn(); } catch (e) { if (e instanceof FS.ErrnoError) throw e; o.log?.(`${h.path}: ${e.message}`); throw new FS.ErrnoError(29); } };

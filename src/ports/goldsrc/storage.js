@@ -32,6 +32,14 @@ export function storageKeys(db, store) {
     request.onerror = () => reject(request.error); request.onsuccess = () => resolve(request.result);
   });
 }
+/** Every entry of `store`, in one pass (a cursor): fn(key, value) for each; resolved at the end. */
+export function eachStorage(db, store, fn) {
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(store).objectStore(store).openCursor();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => { const c = request.result; if (!c) { resolve(); return; } try { fn(c.key, c.value); } catch (e) { reject(e); return; } c.continue(); };
+  });
+}
 export function removeStorage(db, store, keys) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(store, 'readwrite'), os = tx.objectStore(store);
