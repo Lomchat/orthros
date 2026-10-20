@@ -237,8 +237,10 @@ async function main() {
       if (!adminsPathAllowed(o.admins)) throw new Error(`--admins ${o.admins}: not the live server's state — give the test server's <mmo dir>/admins.json`);
       let list = []; try { list = JSON.parse(fs.readFileSync(o.admins, 'utf8')); } catch { /* new */ }
       fs.mkdirSync(path.dirname(path.resolve(o.admins)), { recursive: true });
-      fs.writeFileSync(o.admins, JSON.stringify(withAdmin(list, A.username)) + '\n');
-      console.log('ADMIN', A.username, 'in', o.admins);
+      // (both: in a shared world the test commands that set a player's state — money, tp, weapon, car — are an
+      // administrator's only, like the cheats; the world scenario takes B's rights away for its non-admin checks)
+      fs.writeFileSync(o.admins, JSON.stringify(withAdmin(withAdmin(list, A.username), B.username)) + '\n');
+      console.log('ADMIN', A.username, B.username, 'in', o.admins);
     }
 
     /** waits until `predicate(state)` holds (polled every 500 ms), at most `ms` and never past the run's budget */
@@ -412,6 +414,16 @@ async function main() {
         await until(B, 60000, (s) => distance(s?.pos, offset(PLACES.hotel, 5)) < 5);
       },
       async world() {
+        if (o.admins && A.admin && B.admin) {
+          // (B an ordinary player for these checks: off the list, joined again so that its engine knows)
+          let list = []; try { list = JSON.parse(fs.readFileSync(o.admins, 'utf8')); } catch { /* none */ }
+          fs.writeFileSync(o.admins, JSON.stringify(list.filter((u) => String(u).toLowerCase() !== B.username.toLowerCase())) + '\n');
+          await B.cmd('leave');
+          await until(B, 60000, (s) => s?.inWorld !== true);
+          const r = await join(B);
+          B.admin = !!r.state?.admin;
+          await check('world', 'B joins again as an ordinary player', r.ok && !B.admin, { admin: r.state?.admin });
+        }
         const admin = clients.find((c) => c.admin) ?? null, other = clients.find((c) => !c.admin) ?? null;
         await together('world', PLACES.hotel, 6);
         if (other) {
