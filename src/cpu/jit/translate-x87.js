@@ -176,7 +176,7 @@ function roundPC(E, op, insn, narrowOps = false) {
   c.get(L_FPC).eqz().get(L_I64A).i64(1n).i64shl().i64eqz().and().br_if(done);
   // directed rounding (down / up / toward zero) of an f64-normal result
   c.get(L_FPC).i32(0xc00).and().i32(0).ne();
-  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7ff00000).and().i32(0x00100000).sub().i32(0x7fe00000).lt_u().and();
+  c.get(L_I64A).i64(31n).i64shr_u().wrap().i32(1 << 21).sub().i32((0x7ff - 1) * (1 << 21) | 0).lt_u().and(); // (exponent field in [1, 0x7fe]: see roundTowardZero24)
   const directed = c.hint(true).if_();
   c.get(L_I64A).wrap().i32(0x1fffffff).and();
   const offGrid = c.if_();
@@ -269,7 +269,9 @@ function roundTowardZero24(E, op, insn, narrowOps) {
   const done = c.block();
   const cold = c.block();
   // the exponent field of s outside [2, 0x7fe] (zero, denormal, the lowest normal binade, infinite, NaN)
-  const pushOutOfRange = () => { c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7ff00000).and().i32(0x00200000).sub().i32(0x7fd00000).ge_u(); };
+  // (on the pattern shifted right by 31: the exponent field times 2^21, the significand's top bits below it — no mask:
+  // field in [2, 0x7fe] iff that word is in [2 << 21, 0x7ff << 21))
+  const pushOutOfRange = () => { c.get(L_I64A).i64(31n).i64shr_u().wrap().i32(2 << 21).sub().i32((0x7ff - 2) * (1 << 21) | 0).ge_u(); };
   const pushMasked = () => { pushCut24(E, L_F64C, L_I64A); c.set(L_F64D); };
   const exactProduct = narrowOps && (op === 1 || op === 6 || op === 7);
   if (exactProduct) {
