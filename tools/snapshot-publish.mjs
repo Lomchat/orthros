@@ -30,15 +30,16 @@ try {
   const own = await page.evaluate(() => window.orthros.snapshotKey);
   if (own !== key) throw new Error(`this session's key is ${own}, the server was asked for ${key}: nothing to publish`);
   log(`${name} (${lang || 'no language'}) running, key ${key}`);
-  const until = t0 + at * 1000;
+  const until = t0 + at * 1000, shown = new Set();
   for (;;) {
-    const s = await page.evaluate(() => ({ status: window.orthros.status, kept: window.orthros.snapshotsKept ?? 0, published: window.orthros.snapshotsPublished ?? 0, at: window.orthros.snapshotKeptAt ?? 0, pending: !!window.orthros.snapshotPending }));
+    const s = await page.evaluate(() => ({ status: window.orthros.status, kept: window.orthros.snapshotsKept ?? 0, published: window.orthros.snapshotsPublished ?? 0, at: window.orthros.snapshotKeptAt ?? 0, pending: !!window.orthros.snapshotPending || (window.orthros.snapshotPublishing ?? 0) > 0 }));
+    // (the snapshot lines as they come: a session that ends badly — the page crashed — has said how far it got)
+    for (const l of await page.evaluate(() => window.orthros.logs.filter((x) => /snapshot/.test(x)).slice(-8))) if (!shown.has(l)) { shown.add(l); log('  ' + l.slice(0, 300)); }
     if (s.status !== 'running') throw new Error(`the game stopped (${s.status})`);
     if (s.kept && !s.pending && Date.now() - s.at > settle * 1000) { log(`done: ${s.kept} kept, ${s.published} published`); break; }
     if (Date.now() > until) { log(`time is up: ${s.kept} kept, ${s.published} published`); break; }
     await page.waitForTimeout(5000);
   }
-  for (const l of await page.evaluate(() => window.orthros.logs.filter((x) => /snapshot/.test(x)).slice(-20))) console.log('  ' + l.slice(0, 300));
 } catch (e) {
   log(`failed: ${e.message.split('\n')[0]}`); process.exitCode = 1;
 } finally {

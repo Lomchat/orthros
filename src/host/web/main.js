@@ -314,8 +314,13 @@ async function loadSnapshot(name, key) {
 async function storeSnapshot(name, key, bytes) {
   const dir = await snapshotDir(name, true);
   await dir.removeEntry('machine.json').catch(() => {});
-  const b = await (await dir.getFileHandle('machine.bin', { create: true })).createWritable(); await b.write(bytes); await b.close();
+  // (in pieces: one write of the whole buffer copies it whole first — a few hundred MiB beside the 2 GB guest)
+  const file = await dir.getFileHandle('machine.bin', { create: true }), b = await file.createWritable();
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  for (let at = 0; at < u8.length; at += 16 << 20) await b.write(u8.subarray(at, Math.min(u8.length, at + (16 << 20))));
+  await b.close();
   const j = await (await dir.getFileHandle('machine.json', { create: true })).createWritable(); await j.write(JSON.stringify({ key, bytes: bytes.byteLength, at: new Date().toISOString() })); await j.close();
+  return file;
 }
 /** Has this browser a profile of game `name` (files the game wrote)? */
 async function hasProfile(name) {
@@ -351,12 +356,19 @@ function onWorkerMessage(m) {
       break;
     case 'snapshot-keep': {
       const bytes = state.snapshotPending; state.snapshotPending = null;
-      if (bytes && state.snapshotKey) storeSnapshot(state.manifest, state.snapshotKey, bytes).then(() => { state.snapshotStored = true; state.snapshotsKept = (state.snapshotsKept ?? 0) + 1; state.snapshotKeptAt = Date.now(); log('loader', 'snapshot kept: the next start of this game goes on from it'); }, (e) => log('warn', `snapshot not kept: ${e.message}`));
-      // (the server's publishing session: the server keeps it for new players, stage 3)
-      if (bytes && state.snapshotKey && params.get('snapshot') === 'publish') {
-        fetch(`/api/snapshot/${encodeURIComponent(state.manifest)}?key=${state.snapshotKey}&lang=${encodeURIComponent(state.gameLanguage ?? '')}&token=${encodeURIComponent(params.get('publishToken') ?? '')}`, { method: 'POST', body: bytes })
-          .then((r) => { state.snapshotsPublished = (state.snapshotsPublished ?? 0) + (r.ok ? 1 : 0); log('loader', `snapshot published: HTTP ${r.status}`); }, (e) => log('warn', `snapshot not published: ${e.message}`));
-      }
+      if (!bytes || !state.snapshotKey) break;
+      // (the server's publishing session: the server keeps it for new players, stage 3 — posted once kept, from the file
+      // kept: a body of the bytes themselves was copied whole again, and with the 2 GB guest the page ran out of memory)
+      const publish = params.get('snapshot') === 'publish', key = state.snapshotKey;
+      if (publish) state.snapshotPublishing = (state.snapshotPublishing ?? 0) + 1;
+      storeSnapshot(state.manifest, key, bytes).then(async (file) => {
+        state.snapshotStored = true; state.snapshotsKept = (state.snapshotsKept ?? 0) + 1; state.snapshotKeptAt = Date.now(); log('loader', 'snapshot kept: the next start of this game goes on from it');
+        if (!publish) return;
+        try {
+          const r = await fetch(`/api/snapshot/${encodeURIComponent(state.manifest)}?key=${key}&lang=${encodeURIComponent(state.gameLanguage ?? '')}&token=${encodeURIComponent(params.get('publishToken') ?? '')}`, { method: 'POST', body: await file.getFile() });
+          state.snapshotsPublished = (state.snapshotsPublished ?? 0) + (r.ok ? 1 : 0); log('loader', `snapshot published: HTTP ${r.status}`);
+        } catch (e) { log('warn', `snapshot not published: ${e.message}`); }
+      }, (e) => log('warn', `snapshot not kept: ${e.message}`)).finally(() => { if (publish) state.snapshotPublishing--; });
       break;
     }
     case 'snapshot-stale': state.sharedSnapshotCopy = null; dropSnapshot(state.manifest); break; // (the worker said why in its log; a new one is taken)
