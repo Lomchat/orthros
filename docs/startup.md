@@ -335,6 +335,16 @@ lists of `bfme1-108` (prefetch, programs, regions, heat), shared 48-core server 
 - Unseeded, during the benchmark (`--profile 25:20`, 35 706 samples): 97.2 % WebAssembly; the visit-flag harvest
   (`harvestVisitsStep` 0.02 %, `heatDue` + `heatStep` 0.05 %) and the transition fold (`Jit.harvest` 0.04 %) are
   negligible — the 1.7 % an audit saw for "harvest" is not there now, so its cadence was left as it is.
+- Background translations installed at idle moments instead of on arrival (tried, not kept): an answered batch held
+  (`Jit.bgHold`), installed in the guest's waits (`BrowserHost.waitEvent`'s idle work, the pump's sleeps), at a miss
+  on one of its blocks, or after 50 ms without a wait; the feed counted held batches as answered. Seeded starts, three
+  alternated pairs (`--profile 4:20`, `?dbg=ORTHROS_BG_HOLD=0` for A): `bgTranslator.onmessage` inclusive 4.1-4.2 % →
+  2.6 %, but its self time stays 2.1-2.2 % in both (the message's deserialization: a WebAssembly module and the code
+  bytes per region, before any handler code), and of the 1.8-1.9 % of installing that moved, 0.8 % landed in waits
+  (the rest at the pump's start or at misses). First Direct3D frame 18, 17, 16 s (A) / 17, 16 s (B; the third B run
+  at load 68 is not comparable), steady menu 31, 28, 28 / 30, 27 s: no difference beyond the spread. Left out (≈0.15 s
+  of worker time over 20 s for added state). What would remove the 2.2 % is a cheaper message (fewer, larger batches
+  or the code bytes compared in the background worker), not its timing.
 
 ## A version that exits 2 s after its start: BFME2 1.06 (traced 2026-10-21)
 
