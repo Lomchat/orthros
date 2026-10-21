@@ -30,7 +30,7 @@ missing. Every game page — Windows games and ports — has the same frame (hea
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-e3bf84d-r1` (reVC built from source) and `revc-web-e3bf84d-plus-r1` (with Orthros' additions) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-3141ff3-r1` (reVC built from source) and `revc-web-3141ff3-plus-r1` (with Orthros' additions) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` (Orthros' fork) with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -547,7 +547,7 @@ release.
     "id": "vice-city-revc", "dir": "1.1-revc", "version": "1.1 · reVC", "languages": ["en", "fr"], "profileSeed": true,
     "requires": [{ "game": "vice-city", "version": "vice-city-1.1-elamigos-2014" }],
     "re3": {
-      "engine": "revc-web-e3bf84d-r1",
+      "engine": "revc-web-3141ff3-r1",
       "defaults": { "reVC.ini": { "Display": { "Subtitles": "1" } } },
       "languages": {
         "en": { "env": { "LANG": "en_US.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "0" } } } },
@@ -771,7 +771,7 @@ the game reads none of them.
 
 `vice-city-orthros` ("Grand Theft Auto: Vice City — Orthros Edition", `1.1 · Orthros`, over the Windows card's files
 as reVC's; `"modified": true`: the library's "Recompiled & modified" tab, "Recompiled and modified engine" on its card)
-runs the release `revc-web-e3bf84d-plus-r1`: the same fork commit as reVC's `revc-web-e3bf84d-r1`, built with
+runs the release `revc-web-3141ff3-plus-r1`: the same fork commit as reVC's `revc-web-3141ff3-r1`, built with
 `-DREVC_ORTHROS_EXTRAS=ON` (lock.json: a build's own `cmake`). That option compiles `src/extras/orthros_extras.cpp` in
 and its hooks (all under `ORTHROS_EXTRAS`: the reVC card's build has none of them). Everything is in the game itself:
 the page starts it as any re3 version (no `modes`).

@@ -1,12 +1,13 @@
-// Two-client check of an re3 port's shared world (docs/mmo.md, section 8): one Chromium, two browser contexts — two
-// devices, each signed in to its own Orthros account (the QA accounts of /tmp/orthros-scratch/qa-accounts.json, shared
+// Multi-client check of an re3 port's shared world (docs/mmo.md, section 8): one Chromium, two browser contexts (up to
+// four: --players) — two devices, each signed in to its own Orthros account (the QA accounts of /tmp/orthros-scratch/qa-accounts.json, shared
 // with tools/re3/check.mjs and tools/goldsrc/check.mjs; made through the account API when missing) — each on the
 // version's play page with ?mmotest, small windows. The engine then reads one test command a frame
 // (window.orthrosMmo.command) and publishes its state every 500 ms (window.orthrosMmo.state: mode, link, slot, admin,
 // inWorld, pos, health, money, wanted, weapon, vehicle, players, owned, puppets, chat…); every step here is a command,
 // every check a wait on those states, every wait bounded (and the whole run by --seconds).
 //
-// Scenarios (--scenario, a comma list or all; both players join first, whatever the scenario):
+// Scenarios (--scenario, a comma list or all; every player joins first, whatever the scenario but freemode; the
+// two-player scenarios use A and B, the others idle in the world):
 //   basic       each sees the other at its place (2 m), away from the page shown to the other, leave + join again keeps
 //               the money and the place, a dropped connection comes back (the engine joins again) — a server restart's
 //               effect on the page
@@ -16,22 +17,44 @@
 //   world       cheats: refused for a non-admin, an admin's wanted level shown to the other (stars), world cheats on both
 //               (when the engine publishes `weather`), the teleport list
 //   garage      a car stored in a hideout by A, found there by B
+// Run only when named (--scenario crowd,perks or all,crowd…):
+//   crowd       --players 3 or 4 (one more device each, every one an administrator of the test server with --admins):
+//               every player lists and sees every other at one place (2 m, its copy with its name), every line seen by
+//               all, an admin's wanted stars seen by all, the shared entities audited (each network id owned by one
+//               client, a copy on the others near it, no copy of an id nobody owns), A kills B while the others watch
+//               (the kill line on all, B back with 200 health, $100 less, no weapon), the last player leaves (dropped by
+//               all, its entities taken over) and comes back (its money and place), a world cheat on all, a car stored
+//               in a hideout by C known by all
+//   perks       every character: 200 health at most and the infinite sprint; a new character (made, checked, deleted):
+//               200 health, $5000 and a pistol at the hotel, a sprint that does not tire
+//   freemode    alone, one page and no shared world: the menu's free mode (ArrowDown, Enter, Enter as check.mjs --keys),
+//               "teleport" typed (the cheats' reader), a place chosen with the arrows and Enter, the player moved there
 // Results: one CHECK line (JSON) per check, RESULTS (JSON) at the end; exit 0 when every check passed. On a failed check
 // both pages are photographed, with their last states and logs, under /tmp/orthros-scratch/mmo-check/<run>/.
 //
 // Start it through the browser slot guard (CLAUDE.md, "Shared server budget"):
 //   tools/with-browser-slot.sh node tools/re3/mmo-check.mjs [vice-city-orthros] --url http://127.0.0.1:8080
-//     [--seconds 900] [--scenario basic|chat|combat|population|world|garage|all] [--admins <test server's admins.json>]
+//     [--seconds 900] [--scenario basic|chat|combat|population|world|garage|crowd|perks|freemode|all] [--players 2..4]
+//     [--admins <test server's admins.json>]
 //     [--lang en] [--skin <model>] [--weapon 26] [--car 130] [--exit-key f] [--width 480 --height 300]
-// --admins: the first player made an admin of the test server (its <mmo dir>/admins.json, re-read by the server) before
-// it joins; never the live server's. Without it, the admin checks are skipped.
+// --admins: every player made an admin of the test server (its <mmo dir>/admins.json, re-read by the server) before
+// it joins; never the live server's. Without it, the admin checks are skipped. A QA account the test server does not
+// know (its accounts made anew) is replaced by a new one.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 export const SCENARIOS = Object.freeze(['basic', 'chat', 'combat', 'combatx', 'combatp', 'combatv', 'population', 'world', 'garage']);
+/** Scenarios run only when named (not in `all`): crowd (3 players or more), perks (a new character), freemode (alone). */
+export const NAMED_SCENARIOS = Object.freeze(['crowd', 'perks', 'freemode']);
+export const MAX_PLAYERS = 4;
+/** The players' tags, in their order (the first one the most senior). */
+export const TAGS = Object.freeze(['A', 'B', 'C', 'D']);
 export const OUT_ROOT = '/tmp/orthros-scratch/mmo-check';
+// (a death to its respawn is ~8 s of the game's time, which advances at most ~60 ms a frame: at the test machine's 0.1–0.5
+// frame a second, up to 10 minutes or more)
+const RESPAWN_MS = 900000;
 /** Places of Vice City the scenarios use (a test tool's knowledge of the game it checks — never the runtime's). */
 export const PLACES = Object.freeze({
   hotel: [233.5, -1278.45, 11.0],     // the Ocean View hotel's door, Ocean Drive (new characters start here)
@@ -49,11 +72,17 @@ export function parseArgs(argv) {
     if (!Number.isFinite(v) || v < min || v > max) throw new Error(`--${k}: a number from ${min} to ${max}`);
     return v;
   };
+  const scenarios = scenarioList(opt('scenario', 'all'));
+  const freemode = scenarios.includes('freemode');
+  if (freemode && scenarios.length > 1) throw new Error('--scenario freemode: alone (one page, no shared world)');
+  const players = num('players', freemode ? 1 : 2, freemode ? 1 : 2, MAX_PLAYERS);
+  if (scenarios.includes('crowd') && players < 3) throw new Error('--scenario crowd: --players 3 or more');
   return {
     manifest: positional[0] ?? 'vice-city-orthros',
     url: String(opt('url', 'http://127.0.0.1:8080')).replace(/\/+$/, ''),
     seconds: num('seconds', 900, 30, 7200),
-    scenarios: scenarioList(opt('scenario', 'all')),
+    scenarios,
+    players,
     admins: opt('admins', null),
     lang: opt('lang', 'en'),
     skin: opt('skin', null),
@@ -64,13 +93,14 @@ export function parseArgs(argv) {
     height: num('height', 300, 240, 2160),
   };
 }
-const VALUED = new Set(['url', 'seconds', 'scenario', 'admins', 'lang', 'skin', 'weapon', 'car', 'exit-key', 'width', 'height']);
-/** 'all', one scenario or a comma list → the scenarios in their order. */
+const VALUED = new Set(['url', 'seconds', 'scenario', 'players', 'admins', 'lang', 'skin', 'weapon', 'car', 'exit-key', 'width', 'height']);
+/** 'all' (the two-player scenarios, then any named one), one scenario or a comma list → the scenarios in their order. */
 export function scenarioList(text) {
   const wanted = String(text).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-  if (!wanted.length || wanted.includes('all')) return [...SCENARIOS];
-  for (const s of wanted) if (!SCENARIOS.includes(s)) throw new Error(`unknown scenario ${s} (${SCENARIOS.join(', ')}, all)`);
-  return SCENARIOS.filter((s) => wanted.includes(s));
+  const known = [...SCENARIOS, ...NAMED_SCENARIOS];
+  for (const s of wanted) if (s !== 'all' && !known.includes(s)) throw new Error(`unknown scenario ${s} (${known.join(', ')}, all)`);
+  if (!wanted.length || wanted.includes('all')) return [...SCENARIOS, ...NAMED_SCENARIOS.filter((s) => wanted.includes(s))];
+  return known.filter((s) => wanted.includes(s));
 }
 /** A position as [x, y, z]: from [x, y, z] or { x, y, z }; null when none. */
 export function vec(p) {
@@ -157,6 +187,79 @@ export function summarize(checks) {
   return { passed: failed === 0 && checks.some((c) => c.ok), failed, checks: checks.length, skipped: checks.filter((c) => c.skipped).length, scenarios };
 }
 
+/** The engine's id lists stop at this many (mmo_entities.cpp MAX_IDS): a full list may leave ids out. */
+export const MAX_LISTED_IDS = 96;
+/**
+ * The shared entities' network ids across the players' states at one moment ([{ tag, slot, state }]): each id owned by
+ * one client exactly, copies of it on the others near it, no copy of an id nobody owns.
+ *   owners      { id: [tags owning it] }
+ *   duplicates  ids owned by two clients or more
+ *   ghosts      [{ tag, id, owner }]: a copy whose id no client owns (judged only when every owned list is complete)
+ *   wrongOwner  [{ tag, id, owner, actual }]: a copy that names another owner than the one that has it
+ *   coverage    { expected, present, missing: [{ tag, id, owner }] }: entities owned by one, within `radius` of
+ *               another player, a copy there
+ */
+export function entityAudit(entries, radius = 50) {
+  const ids = (o) => (Array.isArray(o?.ids) ? o.ids.map(Number) : []);
+  const near = (s) => (Array.isArray(s?.near) ? s.near : []);
+  const owners = {}, ownedBy = new Map(), puppetsOf = new Map(), complete = entries.every((e) => ids(e.state?.owned).length < MAX_LISTED_IDS);
+  for (const { tag, state } of entries) {
+    const mine = new Set(ids(state?.owned));
+    for (const e of near(state)) if (e && e.copy === false) mine.add(Number(e.id));
+    ownedBy.set(tag, mine);
+    const copies = new Map(ids(state?.puppets).map((id) => [id, null]));
+    for (const e of near(state)) if (e && e.copy === true) copies.set(Number(e.id), Number.isFinite(e.o) ? e.o : null);
+    puppetsOf.set(tag, copies);
+    for (const id of mine) (owners[id] ??= []).push(tag);
+  }
+  const duplicates = Object.keys(owners).filter((id) => owners[id].length > 1).map(Number);
+  const bySlot = new Map(entries.map((e) => [e.slot, e.tag]));
+  const ghosts = [], wrongOwner = [];
+  for (const { tag } of entries)
+    for (const [id, owner] of puppetsOf.get(tag)) {
+      const actual = owners[id] ?? [];
+      if (!actual.length) { if (complete) ghosts.push({ tag, id, owner }); continue; }
+      if (owner != null && bySlot.has(owner) && !actual.includes(bySlot.get(owner))) wrongOwner.push({ tag, id, owner, actual });
+    }
+  const coverage = { expected: 0, present: 0, missing: [] };
+  for (const { tag: ownerTag, state } of entries)
+    for (const e of near(state)) {
+      if (!e || e.copy !== false || !vec(e.p)) continue;
+      for (const other of entries) {
+        if (other.tag === ownerTag || distance(e.p, other.state?.pos) > radius || ownedBy.get(other.tag).has(Number(e.id))) continue; // (owned twice: a duplicate)
+        coverage.expected++;
+        if (puppetsOf.get(other.tag).has(Number(e.id))) coverage.present++;
+        else coverage.missing.push({ tag: other.tag, id: Number(e.id), owner: ownerTag });
+      }
+    }
+  return { owners, duplicates, ghosts, wrongOwner, coverage, complete };
+}
+/** What stays wrong in every one of several audits (a moment's handover is no fault): ids found in all of them. */
+export function persistentFaults(audits) {
+  if (!audits.length) return { duplicates: [], ghosts: [], wrongOwner: [] };
+  const keyed = (list, key) => new Set(list.map(key));
+  const inAll = (pick, key) => {
+    const sets = audits.map((a) => keyed(pick(a), key));
+    return pick(audits[audits.length - 1]).filter((x) => sets.every((s) => s.has(key(x))));
+  };
+  return {
+    duplicates: inAll((a) => a.duplicates, (x) => String(x)),
+    ghosts: inAll((a) => a.ghosts, (x) => `${x.tag}:${x.id}`),
+    wrongOwner: inAll((a) => a.wrongOwner, (x) => `${x.tag}:${x.id}`),
+  };
+}
+/** Places `count` players `apart` meters from one another around `place` (a line east-west, then north). */
+export function gathering(place, count, apart = 3) {
+  return Array.from({ length: count }, (_, i) => offset(place, (i % 2) * apart, Math.floor(i / 2) * apart));
+}
+/** The kill line of a death ("<killer> killed <victim>" / "<killer> a tué <victim>") among a state's chat lines. */
+export function killLine(state, victim, killer = null) {
+  return (Array.isArray(state?.chat) ? state.chat : []).find((l) => {
+    const t = typeof l === 'string' ? l : JSON.stringify(l);
+    return /killed|a tu/.test(t) && t.includes(victim) && (!killer || t.includes(killer));
+  }) ?? null;
+}
+
 // ---------------------------------------------------------------- the run (a browser: never on import)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function main() {
@@ -202,14 +305,17 @@ async function main() {
   let qa = []; try { qa = JSON.parse(fs.readFileSync(qaFile, 'utf8'))[o.url] ?? []; } catch { /* none yet */ }
   async function signIn(context, i) {
     const page = await context.newPage(); await page.goto(`${o.url}/?menu`, { timeout: 60000 });
-    const known = qa[i];
-    const account = known ?? { username: `qa-check-${i + 1}-${Math.random().toString(36).slice(2, 7)}`, password: Array.from(crypto.getRandomValues(new Uint8Array(18)), (b) => b.toString(16).padStart(2, '0')).join('') };
-    const result = await page.evaluate(async ({ a, create }) => {
+    const fresh = () => ({ username: `qa-check-${i + 1}-${Math.random().toString(36).slice(2, 7)}`, password: Array.from(crypto.getRandomValues(new Uint8Array(18)), (b) => b.toString(16).padStart(2, '0')).join('') });
+    const call = (a, create) => page.evaluate(async ({ a, create }) => {
       const r = await fetch(create ? '/api/account/register' : '/api/account/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: a.username, password: a.password }) });
       return { status: r.status, body: await r.json().catch(() => ({})) };
-    }, { a: account, create: !known });
+    }, { a, create });
+    let account = qa[i] ?? fresh(), created = !qa[i];
+    let result = await call(account, created);
+    // (a test server's accounts made anew — its accounts directory emptied —: the QA account made again there)
+    if (result.status !== 200 && !created && result.status !== 429) { console.log('QA ACCOUNT', account.username, 'unknown here:', result.status, '— a new one'); account = fresh(); created = true; result = await call(account, true); }
     if (result.status !== 200) throw new Error(`QA account ${account.username}: ${result.status} ${JSON.stringify(result.body)}`);
-    if (!known) { qa[i] = account; let all = {}; try { all = JSON.parse(fs.readFileSync(qaFile, 'utf8')); } catch { /* new */ } all[o.url] = qa; fs.writeFileSync(qaFile, JSON.stringify(all, null, 1), { mode: 0o600 }); }
+    if (created) { qa[i] = account; let all = {}; try { all = JSON.parse(fs.readFileSync(qaFile, 'utf8')); } catch { /* new */ } all[o.url] = qa; fs.writeFileSync(qaFile, JSON.stringify(all, null, 1), { mode: 0o600 }); }
     const world = await page.evaluate((id) => fetch(`/api/mmo/${encodeURIComponent(id)}`, { cache: 'no-store' }).then((r) => r.json()).catch((e) => ({ error: e.message })), o.manifest);
     await page.close();
     return { username: result.body?.user?.username ?? account.username, world };
@@ -224,8 +330,8 @@ async function main() {
     console.log('PROGRESS', Math.round((Date.now() - started) / 1000), JSON.stringify(line));
   }, 15000);
   try {
-    // ---- two devices, two players
-    for (const [i, tag] of [[0, 'A'], [1, 'B']]) {
+    // ---- one device per player (two by default; --players up to four)
+    for (const [i, tag] of TAGS.slice(0, o.players).entries()) {
       const context = await browser.newContext({ viewport: { width: o.width, height: o.height } });
       const who = await signIn(context, i);
       const c = { tag, context, page: null, username: who.username, name: characterName(who.username), world: who.world };
@@ -239,15 +345,16 @@ async function main() {
     }
     const [A, B] = clients;
     console.log('PLAYERS', JSON.stringify(clients.map((c) => ({ tag: c.tag, username: c.username, name: c.name, world: c.world }))));
-    if (!A.world?.enabled) throw new Error(`the server's world for ${o.manifest} is not enabled: ${JSON.stringify(A.world)}`);
+    if (!A.world?.enabled && !o.scenarios.includes('freemode')) throw new Error(`the server's world for ${o.manifest} is not enabled: ${JSON.stringify(A.world)}`);
     if (o.admins) {
       if (!adminsPathAllowed(o.admins)) throw new Error(`--admins ${o.admins}: not the live server's state — give the test server's <mmo dir>/admins.json`);
       let list = []; try { list = JSON.parse(fs.readFileSync(o.admins, 'utf8')); } catch { /* new */ }
       fs.mkdirSync(path.dirname(path.resolve(o.admins)), { recursive: true });
-      // (both: in a shared world the test commands that set a player's state — money, tp, weapon, car — are an
+      // (every player: in a shared world the test commands that set a player's state — money, tp, weapon, car — are an
       // administrator's only, like the cheats; the world scenario takes B's rights away for its non-admin checks)
-      fs.writeFileSync(o.admins, JSON.stringify(withAdmin(withAdmin(list, A.username), B.username)) + '\n');
-      console.log('ADMIN', A.username, B.username, 'in', o.admins);
+      for (const c of clients) list = withAdmin(list, c.username);
+      fs.writeFileSync(o.admins, JSON.stringify(list) + '\n');
+      console.log('ADMIN', clients.map((c) => c.username).join(' '), 'in', o.admins);
     }
 
     /** waits until `predicate(state)` holds (polled every 500 ms), at most `ms` and never past the run's budget */
@@ -273,6 +380,28 @@ async function main() {
         if (value || Date.now() >= end) return { ok: !!value, a, b };
         await sleep(500);
       }
+    }
+
+    /** every player's state, read at once (the clients' order) */
+    const everyone = async (list = clients) => Promise.all(list.map((c) => c.read().catch(() => null)));
+    /** waits until `predicate(states)` holds for the players of `list`, as until() */
+    async function untilAll(ms, predicate, list = clients) {
+      const end = Math.min(Date.now() + ms, deadline);
+      for (;;) {
+        const states = await everyone(list);
+        let value = false; try { value = predicate(states); } catch { value = false; }
+        if (value || Date.now() >= end) return { ok: !!value, states };
+        await sleep(500);
+      }
+    }
+    /** for every ordered pair (observer, target) of `list`: whether the observer sees the target within 2 m, a copy */
+    const pairs = (list) => list.flatMap((x) => list.filter((y) => y !== x).map((y) => [x, y]));
+    function crowdSight(list, states) {
+      const at = new Map(list.map((c, i) => [c, states[i]]));
+      return pairs(list).map(([x, y]) => {
+        const s = seesAt(at.get(x), at.get(y), y.name), entry = playerIn(at.get(x), y.name);
+        return { seer: x.tag, seen: y.tag, ...s, puppet: entry?.puppet ?? null, ok: s.ok && entry?.puppet === true };
+      });
     }
 
     // ---- the pages: the engine at its main menu, publishing its state
@@ -303,16 +432,18 @@ async function main() {
       }
       return { ok: false };
     }
-    for (const c of clients) {
+    const freeOnly = o.scenarios.includes('freemode'); // (the free mode: no shared world joined)
+    for (const c of freeOnly ? [] : clients) {
       const r = await join(c);
       c.slot = r.state?.slot;
       if (!await check('setup', `${c.tag} joins the world as ${c.name}`, r.ok, { slot: r.state?.slot, admin: r.state?.admin, refused: r.refused ?? null, mode: r.state?.mode })) throw new Error(`${c.tag} could not join`);
       c.admin = !!r.state?.admin;
     }
-    {
-      const [a, b] = await both();
-      await check('setup', 'the players have their own slots', Number.isFinite(a?.slot) && Number.isFinite(b?.slot) && a.slot !== b.slot, { A: a?.slot, B: b?.slot });
-      A.slot = a?.slot; B.slot = b?.slot;
+    if (!freeOnly) {
+      const states = await Promise.all(clients.map((c) => c.read()));
+      const slots = states.map((s) => s?.slot);
+      await check('setup', 'the players have their own slots', slots.every(Number.isFinite) && new Set(slots).size === slots.length, Object.fromEntries(clients.map((c, i) => [c.tag, slots[i]])));
+      clients.forEach((c, i) => { c.slot = slots[i]; });
     }
     /** both at `place` (B a few meters east), each seeing the other there */
     async function together(scenario, place, apart = 3) {
@@ -327,7 +458,7 @@ async function main() {
     /** both alive (a respawn waited for) and healed (the health cheat: both are administrators of the test server) */
     async function healed() {
       for (const c of clients) {
-        await until(c, 400000, (s) => !dead(s) && Number.isFinite(s?.health) && s.health > 0 && s?.inWorld !== false);
+        await until(c, RESPAWN_MS, (s) => !dead(s) && Number.isFinite(s?.health) && s.health > 0 && s?.inWorld !== false);
         await c.cmd('cheat ASPIRINE');
       }
       await untilBoth(20000, (a, b) => a?.health >= 99 && b?.health >= 99);
@@ -407,7 +538,7 @@ async function main() {
         if (!killed) { await B.cmd('die'); beforeDeath = await B.read(); await until(B, 20000, dead); }
         const deathPos = vec(beforeDeath?.pos) ?? vec(start?.pos);
         // (a death to its respawn is ~8 s of game time; the engine advances at most ~60 ms a frame at the test machine's fps)
-        const respawned = await until(B, 400000, (s) => !dead(s) && distance(s?.pos, deathPos) > 5 && s?.inWorld !== false);
+        const respawned = await until(B, RESPAWN_MS, (s) => !dead(s) && distance(s?.pos, deathPos) > 5 && s?.inWorld !== false);
         for (const c of respawnChecks(beforeDeath, deathPos, respawned.state)) await check('combat', c.name, c.ok && respawned.ok, c.detail);
         const seen = await untilBoth(30000, (a, bb) => seesAt(a, bb, B.name).ok);
         await check('combat', 'A sees B where B respawned', seen.ok, seesAt(seen.a, seen.b, B.name));
@@ -446,7 +577,7 @@ async function main() {
         const feedA = await until(A, 30000, (s) => (s?.chat ?? []).some((l) => /killed|a tu/.test(JSON.stringify(l)) && JSON.stringify(l).includes(B.name)));
         const feedB = await until(B, 30000, (s) => (s?.chat ?? []).some((l) => /killed|a tu/.test(JSON.stringify(l)) && JSON.stringify(l).includes(B.name)));
         await check('combatx', 'kill line on both', feedA.ok && feedB.ok, { A: feedA.state?.chat?.slice?.(-3), B: feedB.state?.chat?.slice?.(-3) });
-        const respawned = await until(B, 400000, (s) => !dead(s) && s?.health > 0 && s?.inWorld !== false && Number.isFinite(s?.health) && s.health >= 99);
+        const respawned = await until(B, RESPAWN_MS, (s) => !dead(s) && s?.health > 0 && s?.inWorld !== false && Number.isFinite(s?.health) && s.health >= 99);
         await check('combatx', 'B respawned', respawned.ok, { health: respawned.state?.health, pos: vec(respawned.state?.pos), money: respawned.state?.money, weapon: respawned.state?.weapon });
         await dump('respawned');
         if (!(await together('combatx', PLACES.hotel, 4))) return;
@@ -460,13 +591,13 @@ async function main() {
       async combatp() {
         await healed();
         // (pickups made and taken, a grenade seen and its blast, a flame)
-        const dump = async (tag) => { const [a, b] = await both(); console.log('COMBAT', tag, JSON.stringify({ A: { h: a?.health, m: a?.money, seen: a?.combat?.seen, pk: a?.combat?.pickups, pr: a?.combat?.projectiles, ev: a?.combat?.eventsSent }, B: { h: b?.health, m: b?.money, seen: b?.combat?.seen, pk: b?.combat?.pickups, pr: b?.combat?.projectiles, dead: b?.dead, blast: b?.combat?.lastBlast, fn: b?.combat?.flameNearest, ign: b?.combat?.ignitions, me: b?.combat?.me, wanted: b?.wanted, pos: b?.pos }, Apos: a?.pos })); return [a, b]; };
+        const dump = async (tag) => { const [a, b] = await both(); console.log('COMBAT', tag, JSON.stringify({ A: { h: a?.health, m: a?.money, seen: a?.combat?.seen, pk: a?.combat?.pickups, pr: a?.combat?.projectiles, ev: a?.combat?.eventsSent }, B: { h: b?.health, m: b?.money, seen: b?.combat?.seen, pk: b?.combat?.pickups, pc: b?.combat?.pickupCopies, pr: b?.combat?.projectiles, dead: b?.dead, blast: b?.combat?.lastBlast, fn: b?.combat?.flameNearest, ign: b?.combat?.ignitions, me: b?.combat?.me, wanted: b?.wanted, pos: b?.pos }, Apos: a?.pos })); return [a, b]; };
         if (!(await together('combatp', PLACES.hotel, 4))) return;
         await dump('start');
         // pickups
         const [a0, b0] = await both();
         await A.cmd('pickup 10');
-        const made = await until(B, 30000, (s) => (s?.combat?.seen?.pickupsMade ?? 0) > (b0?.combat?.seen?.pickupsMade ?? 0));
+        const made = await until(B, 120000, (s) => (s?.combat?.seen?.pickupsMade ?? 0) > (b0?.combat?.seen?.pickupsMade ?? 0));
         const [a1, b1] = await dump('pickup made');
         await check('combatp', 'a pickup A dropped is made on B too', made.ok, { A: a1?.combat?.pickups, B: b1?.combat?.pickups });
         if (made.ok) {
@@ -480,14 +611,23 @@ async function main() {
           await B.cmd(tpCommand(offset(PLACES.hotel, 4)));
           await until(B, 30000, (s) => distance(s?.pos, offset(PLACES.hotel, 4)) < 3);
         }
-        // a flame
+        // a flame (on a player in control, as the game's flames set fire: one knocked down by the blast before gets up
+        // first — game seconds, minutes at the test machine's fps)
+        await until(B, 300000, (s) => s?.combat?.me?.inControl === true);
         const b3 = await B.read();
         if (!dead(b3)) {
           await A.cmd('weapon 31 500');
           await until(A, 15000, (s) => s?.weapon === 31);
-          for (let i = 0; i < 6; i++) { await A.cmd(`fire ${B.slot}`); await sleep(400); }
-          const flames = await until(B, 30000, (s) => (s?.combat?.seen?.flames ?? 0) > (b3?.combat?.seen?.flames ?? 0));
-          const burnt = await until(B, 40000, (s) => Number.isFinite(s?.health) && s.health < b3.health);
+          // (a flame's shot advances by the game's time step: at 0.1–1 frame a second it may leap over the player —
+          // up to three bursts)
+          let flames = { ok: false }, burnt = { ok: false };
+          for (let burst = 0; burst < 3 && !burnt.ok && left() > 120000; burst++) {
+            await A.cmd(`aim ${B.slot}`); await sleep(1000);
+            for (let i = 0; i < 6; i++) { await A.cmd(`fire ${B.slot}`); await sleep(400); }
+            flames = await until(B, 30000, (s) => (s?.combat?.seen?.flames ?? 0) > (b3?.combat?.seen?.flames ?? 0));
+            burnt = await until(B, 40000, (s) => Number.isFinite(s?.health) && s.health < b3.health);
+            console.log('FLAMES', burst, JSON.stringify({ flames: flames.ok, burnt: burnt.ok, nearest: burnt.state?.combat?.flameNearest, ignitions: burnt.state?.combat?.ignitions }));
+          }
           await dump('flame');
           await check('combatp', 'A\'s flames seen by B, B burns', flames.ok && burnt.ok, { flames: flames.ok, health: [b3?.health, burnt.state?.health] });
         } else await skip('combatp', 'A\'s flames seen by B, B burns', 'B dead from the grenade');
@@ -497,7 +637,7 @@ async function main() {
         const [, b2] = await dump('grenade armed');
         await A.cmd(`fire ${B.slot}`);
         const proj = await until(B, 30000, (s) => (s?.combat?.seen?.projectiles ?? 0) > (b2?.combat?.seen?.projectiles ?? 0));
-        const blast = await until(B, 40000, (s) => (s?.combat?.seen?.explosions ?? 0) > (b2?.combat?.seen?.explosions ?? 0));
+        const blast = await until(B, 120000, (s) => (s?.combat?.seen?.explosions ?? 0) > (b2?.combat?.seen?.explosions ?? 0));
         const hurt = await until(B, 20000, (s) => Number.isFinite(s?.health) && s.health < b2.health);
         await dump('grenade');
         await check('combatp', 'A\'s grenade seen by B, its blast replayed, B hurt', proj.ok && blast.ok && hurt.ok, { proj: proj.ok, blast: blast.ok, hurt: [b2?.health, hurt.state?.health] });
@@ -519,7 +659,8 @@ async function main() {
         const shot = await until(A, 30000, (s) => (s?.combat?.hitsApplied ?? 0) > (a0?.combat?.hitsApplied ?? 0));
         [a0, b0] = await dump('B shot A in its car');
         await check('combatv', 'B\'s shots at A in its car applied by A (car or driver)', shot.ok, { vh: [shot.state?.combat?.vehicleHealth], health: shot.state?.health, hits: shot.state?.combat?.hitsApplied });
-        // A runs into B
+        // A runs into B (B's copy there first: a special model streamed in frames — minutes at 0.1 frame a second)
+        await until(A, 180000, (s) => playerIn(s, B.name)?.puppet === true);
         let rammed = false;
         for (let i = 0; i < 3 && !rammed; i++) {
           const bh = await B.read();
@@ -541,7 +682,15 @@ async function main() {
         await healed();
         if (!(await together('population', PLACES.hotel, 5))) return;
         await sleep(Math.min(25000, Math.max(0, left()))); // (the streets fill)
-        const [a, b] = await both();
+        let [a, b] = await both();
+        // (one of them killed meanwhile — a burning wreck of the scenario before, the police —: both brought back together)
+        for (let again = 0; again < 2 && distance(a?.pos, b?.pos) > 30 && left() > 120000; again++) {
+          console.log('POPULATION apart', JSON.stringify({ A: vec(a?.pos), B: vec(b?.pos) }));
+          await healed();
+          await together('population', PLACES.hotel, 5);
+          await sleep(Math.min(25000, Math.max(0, left())));
+          [a, b] = await both();
+        }
         const ca = census(a), cb = census(b);
         await check('population', 'ambient peds and cars owned around them', ca.owned + cb.owned > 0, { A: ca, B: cb });
         await check('population', 'each has copies of the other\'s', ca.puppets > 0 && cb.puppets > 0, { A: ca, B: cb });
@@ -599,13 +748,20 @@ async function main() {
             await check('world', 'an admin\'s world cheat applied on both', changed.ok && same.ok, { admin: weatherOf(changed.state), other: weatherOf(same.state) });
             await admin.cmd('cheat CATSANDDOGS'); // (back to the game's own weather)
           } else await skip('world', 'an admin\'s world cheat applied on both', 'the engine publishes no weather');
-          // (the teleport list: for everyone, a wanted level too)
+          // (the teleport list: for everyone, a wanted level too — once alive: the police may have killed the player)
+          await until(admin, RESPAWN_MS, (s) => !dead(s) && s?.inWorld === true);
           const t0 = await admin.read();
           await admin.cmd('teleport 2');
-          const p0 = await until(admin, 45000, (s) => distance(s?.pos, t0?.pos) > 20);
+          // (the next teleport once this one's fade is over: one asked meanwhile is not taken — the list cannot be
+          // opened either while a teleport goes on)
+          const p0 = await until(admin, 90000, (s) => distance(s?.pos, t0?.pos) > 20 && s?.teleporting === false);
           await admin.cmd('teleport 1');
-          const p1 = await until(admin, 45000, (s) => distance(s?.pos, p0.state?.pos) > 20);
-          await check('world', 'the teleport list moves the player, wanted or not', p0.ok && p1.ok, { from: vec(t0?.pos), first: vec(p0.state?.pos), second: vec(p1.state?.pos), wanted: p1.state?.wanted });
+          const p1 = await until(admin, 90000, (s) => distance(s?.pos, p0.state?.pos) > 20);
+          // (the list's rows 2 and 1: mmo_social.cpp's third and second safehouses — not wherever a death or an arrest
+          // by the police that came for the wanted player would put it)
+          const rows = { 2: [428.4, 609.1, 12.0], 1: [-377.06, -545.43, 16.0] };
+          await check('world', 'the teleport list moves the player there, wanted or not', p0.ok && p1.ok && distance(p0.state?.pos, rows[2]) < 6 && distance(p1.state?.pos, rows[1]) < 6,
+            { from: vec(t0?.pos), first: vec(p0.state?.pos), second: vec(p1.state?.pos), expected: rows, wanted: [p0.state?.wanted, p1.state?.wanted] });
           await admin.cmd('cheat LEAVEMEALONE');
         } else {
           await skip('world', 'an admin\'s cheats', 'no admin (--admins <test server admins.json>)');
@@ -635,12 +791,252 @@ async function main() {
         const known = await until(B, 60000, (s) => stored(s) > stored(b0));
         await check('garage', 'B knows the hideout holds A\'s car', known.ok, { before: stored(b0), after: stored(known.state) });
       },
+      async perks() {
+        // (the owner's rule: every character has 200 health at most and the infinite sprint; a new one starts at 200)
+        const states = await everyone();
+        await check('perks', 'every character: 200 health at most and the infinite sprint', states.every((s) => s?.maxHealth === 200 && s?.infiniteSprint === true),
+          Object.fromEntries(clients.map((c, i) => [c.tag, { maxHealth: states[i]?.maxHealth ?? null, infiniteSprint: states[i]?.infiniteSprint ?? null, health: states[i]?.health }])));
+        const P = clients[clients.length - 1], fresh = `nc-${Math.random().toString(36).slice(2, 8)}`;
+        await P.cmd('leave');
+        await until(P, 90000, (s) => s?.inWorld === false);
+        await P.cmd(`join ${fresh}`);
+        const r = await until(P, 300000, (s) => s?.inWorld === true && s?.char === fresh);
+        const s = r.state;
+        await check('perks', 'a new character: 200 health and the infinite sprint', r.ok && s?.health === 200 && s?.maxHealth === 200 && s?.infiniteSprint === true,
+          { char: s?.char, health: s?.health, maxHealth: s?.maxHealth, infiniteSprint: s?.infiniteSprint });
+        await check('perks', 'a new character: $5000 and a pistol, at the hotel', r.ok && s?.money === 5000 && (s?.weapons ?? []).some((w) => w?.[0] === 17) && distance(s?.pos, PLACES.hotel) < 5,
+          { money: s?.money, weapons: s?.weapons, pos: vec(s?.pos) });
+        if (r.ok) {
+          // (sprinting longer than a stamina lasts: 4 s of the game's time, which empties 150 points at the test machine's fps)
+          // (once the join's fade is over: the controls are the player's again)
+          const spot = offset(PLACES.hotel, 3, 20);
+          await P.cmd(tpCommand(spot)); await until(P, 60000, (x) => distance(x?.pos, spot) < 3);
+          await until(P, 240000, (x) => x?.fade === 0);
+          const s0 = await P.read();
+          await P.cmd('sprint 6');
+          let low = s0?.stamina ?? null, moved = 0;
+          const end = Date.now() + Math.min(300000, Math.max(0, left() - 60000));
+          while (Date.now() < end) {
+            const x = await P.read();
+            if (Number.isFinite(x?.stamina)) low = Math.min(low ?? x.stamina, x.stamina);
+            moved = Math.max(moved, distance(x?.pos, s0?.pos));
+            if (moved > 15) break;
+            await sleep(500);
+          }
+          await sleep(3000);
+          const s1 = await P.read();
+          if (Number.isFinite(s1?.stamina)) low = Math.min(low, s1.stamina);
+          await check('perks', 'a sprint does not tire (the stamina kept)', moved > 4 && Number.isFinite(low) && low >= (s0?.stamina ?? 0) - 1,
+            { moved: Math.round(moved * 10) / 10, stamina: { start: s0?.stamina, lowest: low, end: s1?.stamina } });
+        }
+        // (the test character deleted, the player's own joined again)
+        await P.cmd('leave');
+        // (leaving closes the link: the menu's Multiplayer page opens it again, its character list)
+        await until(P, 120000, (x) => x?.inWorld === false && x?.menuActive === true);
+        await P.cmd('mpmenu');
+        const listedAgain = await until(P, 90000, (x) => x?.lobby?.valid === true && (x.lobby.characters ?? []).some((c) => c?.name === fresh));
+        if (!listedAgain.ok) console.log('LOBBY', JSON.stringify({ lobby: listedAgain.state?.lobby ?? null, menu: listedAgain.state?.lobbyMenu ?? null }));
+        await P.cmd(`mpdelete ${fresh}`);
+        const gone = await until(P, 30000, (x) => !(x?.lobby?.characters ?? []).some((c) => c?.name === fresh));
+        await check('perks', 'the test character deleted', gone.ok, { characters: (gone.state?.lobby?.characters ?? []).map((c) => c?.name) });
+        const back = await join(P);
+        P.slot = back.state?.slot ?? P.slot;
+        await check('perks', `${P.tag} joins again as ${P.name}`, back.ok && back.state?.char === P.name, { char: back.state?.char });
+      },
+      async crowd() {
+        // (three players or more together: every one sees every other, its lines, its stars; the shared entities owned
+        // once; a fight watched by a third; one leaving and coming back; a world cheat and a garage known by all)
+        const N = clients.length, [C] = clients.slice(2);
+        const listed = await untilAll(60000, (st) => clients.every((c, i) => clients.every((d) => d === c || !!playerIn(st[i], d.name))));
+        await check('crowd', `each lists the ${N - 1} others`, listed.ok, Object.fromEntries(clients.map((c, i) => [c.tag, (listed.states[i]?.players ?? []).map((p) => p.name)])));
+        // -- all gathered at one place
+        async function gather(place) {
+          const spots = gathering(place, N, 3);
+          for (const [i, c] of clients.entries()) await c.cmd(tpCommand(spots[i]));
+          const there = await untilAll(90000, (st) => st.every((s, i) => distance(s?.pos, spots[i]) < 3));
+          if (!there.ok) { await check('crowd', 'all teleported together', false, Object.fromEntries(clients.map((c, i) => [c.tag, vec(there.states[i]?.pos)]))); return false; }
+          const seen = await untilAll(60000, (st) => crowdSight(clients, st).every((x) => x.ok));
+          const sight = crowdSight(clients, seen.states);
+          return check('crowd', 'each sees every other where it is (2 m), a copy with its name', seen.ok, { failing: sight.filter((x) => !x.ok), pairs: sight.length });
+        }
+        await healedAll();
+        await gather(PLACES.hotel);
+        // -- every player's line seen by all
+        const tag = Math.random().toString(36).slice(2, 7);
+        for (const c of clients) await c.cmd(`say crowd ${c.tag} ${tag}`);
+        const lines = await untilAll(60000, (st) => st.every((s) => clients.every((c) => chatHas(s, `crowd ${c.tag} ${tag}`))));
+        await check('crowd', 'every player\'s line seen by all', lines.ok,
+          Object.fromEntries(clients.map((c, i) => [c.tag, clients.filter((d) => !chatHas(lines.states[i], `crowd ${d.tag} ${tag}`)).map((d) => d.tag)])));
+        // -- the shared entities: one owner each, copies on the others near them, no copy of nobody's
+        await sleep(Math.min(20000, Math.max(0, left()))); // (the streets fill)
+        const audits = [];
+        for (let i = 0; i < 6; i++) {
+          const st = await everyone();
+          audits.push(entityAudit(clients.map((c, k) => ({ tag: c.tag, slot: c.slot, state: st[k] }))));
+          await sleep(2500);
+        }
+        const last = audits[audits.length - 1], faults = persistentFaults(audits), counts = (await everyone()).map(census);
+        await check('crowd', 'shared peds and cars present (owned here, copies there)', counts.some((x) => x.owned > 0) && counts.filter((x) => x.puppets > 0).length >= N - 1,
+          Object.fromEntries(clients.map((c, i) => [c.tag, counts[i]])));
+        await check('crowd', 'every network id owned by one client only (no duplicate)', faults.duplicates.length === 0,
+          { duplicates: faults.duplicates.map((id) => ({ id, owners: last.owners[id] })), lastSample: last.duplicates.length });
+        await check('crowd', 'no copy of an entity nobody owns (no ghost)', last.complete ? faults.ghosts.length === 0 : true,
+          { ghosts: faults.ghosts.slice(0, 20), complete: last.complete, lastSample: last.ghosts.length });
+        await check('crowd', 'every copy names its real owner', faults.wrongOwner.length === 0, { wrongOwner: faults.wrongOwner.slice(0, 20), lastSample: last.wrongOwner.length });
+        const cov = audits.reduce((b, a) => (a.coverage.expected && a.coverage.present / a.coverage.expected > (b.coverage.expected ? b.coverage.present / b.coverage.expected : -1) ? a : b), audits[0]).coverage;
+        await check('crowd', 'an entity near another player is a copy there (80 % or more)', cov.expected > 0 && cov.present / cov.expected >= 0.8,
+          { expected: cov.expected, present: cov.present, missing: cov.missing.slice(0, 15) });
+        // -- the wanted stars of one, seen by every other
+        await A.cmd('cheat YOUWONTTAKEMEALIVE');
+        const wanted = await until(A, 30000, (s) => (s?.wanted ?? 0) >= 2);
+        const stars = await untilAll(40000, (st) => clients.every((c, i) => c === A || (playerIn(st[i], A.name)?.stars ?? 0) >= 2));
+        await check('crowd', 'an admin\'s wanted level: its stars seen by every other', wanted.ok && stars.ok,
+          { wanted: wanted.state?.wanted, stars: Object.fromEntries(clients.map((c, i) => [c.tag, playerIn(stars.states[i], A.name)?.stars ?? null])) });
+        await A.cmd('cheat LEAVEMEALONE');
+        await until(A, 30000, (s) => (s?.wanted ?? 0) === 0);
+        // -- a fight: A kills B, C watches
+        await healedAll();
+        await gather(PLACES.hotel);
+        const b0 = await B.read();
+        if (!Number.isFinite(b0?.money) || b0.money < 200) { await B.cmd('money 1000'); await until(B, 15000, (s) => s?.money === 1000); }
+        await A.cmd(`weapon ${o.weapon} 500`);
+        await until(A, 15000, (s) => s?.weapon === o.weapon);
+        await A.cmd(`aim ${B.slot}`); await sleep(1000);
+        let start = await B.read(), beforeDeath = start, killed = false, hurt = false, shots = 0;
+        for (; shots < 150 && left() > 120000 && !killed; shots++) {
+          if (shots % 8 === 7) await A.cmd(`aim ${B.slot}`);
+          const f0 = (await A.read())?.combat?.fires ?? 0;
+          await A.cmd(`fire ${B.slot}`);
+          await until(A, 30000, (sa) => (sa?.combat?.fires ?? 0) > f0);
+          const s = await B.read();
+          if (!dead(s)) beforeDeath = s;
+          if (Number.isFinite(s?.health) && s.health < start.health) hurt = true;
+          if (dead(s)) killed = true;
+        }
+        await check('crowd', 'A\'s shots hurt B, B dies', hurt && killed, { shots, start: start?.health, last: beforeDeath?.health });
+        if (killed) {
+          const deathPos = vec(beforeDeath?.pos);
+          const feed = await untilAll(60000, (st) => st.every((s) => !!killLine(s, B.name, A.name)));
+          await check('crowd', 'the kill line on every player (the watcher too)', feed.ok, Object.fromEntries(clients.map((c, i) => [c.tag, killLine(feed.states[i], B.name) ?? (feed.states[i]?.chat ?? []).slice(-3)])));
+          const respawned = await until(B, RESPAWN_MS, (s) => !dead(s) && distance(s?.pos, deathPos) > 5 && s?.inWorld !== false && Number.isFinite(s?.health) && s.health > 0);
+          for (const r of respawnChecks(beforeDeath, deathPos, respawned.state)) await check('crowd', r.name, r.ok && respawned.ok, r.detail);
+          await check('crowd', 'respawn: 200 health (the new rule)', respawned.ok && respawned.state?.health === 200, { health: respawned.state?.health, maxHealth: respawned.state?.maxHealth });
+          const watched = await untilAll(60000, (st) => clients.every((c, i) => c === B || distance(playerIn(st[i], B.name)?.pos, respawned.state?.pos) < 3));
+          await check('crowd', 'every other sees B where it respawned', watched.ok, Object.fromEntries(clients.map((c, i) => [c.tag, c === B ? null : seesAt(watched.states[i], respawned.state, B.name)])));
+        }
+        // -- one leaves (the last: C or D): the others drop it and take over its entities; it comes back to its place
+        const L = clients[N - 1], stay = clients.filter((c) => c !== L);
+        await healedAll();
+        await gather(PLACES.hotel);
+        await sleep(Math.min(15000, Math.max(0, left())));
+        const money = 3000 + Math.floor(Math.random() * 999), spot = offset(PLACES.hotel, 7, 6);
+        await L.cmd(`money ${money}`); await L.cmd(tpCommand(spot));
+        await until(L, 30000, (s) => s?.money === money && distance(s?.pos, spot) < 3);
+        await sleep(Math.min(12000, Math.max(0, left()))); // (the character saved)
+        const before = await everyone();
+        const lAudit = entityAudit(clients.map((c, k) => ({ tag: c.tag, slot: c.slot, state: before[k] })));
+        const lOwned = Object.keys(lAudit.owners).filter((id) => lAudit.owners[id].includes(L.tag)).map(Number);
+        const copiedElsewhere = lOwned.filter((id) => stay.some((c, k) => netids(before[clients.indexOf(c)], 'puppets')?.has(id)));
+        await L.cmd('leave');
+        const out = await until(L, 90000, (s) => s?.inWorld === false);
+        const dropped = await untilAll(40000, (st) => st.every((s) => !playerIn(s, L.name)), stay);
+        await check('crowd', `${L.tag} leaves: every other drops it`, out.ok && dropped.ok, Object.fromEntries(stay.map((c, i) => [c.tag, (dropped.states[i]?.players ?? []).map((p) => p.name)])));
+        await sleep(Math.min(8000, Math.max(0, left())));
+        const takeover = await untilAll(40000, (st) => {
+          const a = entityAudit(stay.map((c, k) => ({ tag: c.tag, slot: c.slot, state: st[k] })));
+          return copiedElsewhere.every((id) => (a.owners[id]?.length ?? 0) === 1 || !stay.some((c, k) => netids(st[k], 'puppets')?.has(id)));
+        }, stay);
+        const ta = entityAudit(stay.map((c, k) => ({ tag: c.tag, slot: c.slot, state: takeover.states[k] })));
+        const taken = copiedElsewhere.filter((id) => ta.owners[id]?.length === 1).length;
+        const stillCopies = copiedElsewhere.filter((id) => !ta.owners[id] && stay.some((c, k) => netids(takeover.states[k], 'puppets')?.has(id)));
+        await check('crowd', `${L.tag}'s entities taken over by those who stay (none left a copy of nobody's)`, takeover.ok && (copiedElsewhere.length === 0 || taken > 0),
+          { owned: lOwned.length, copiedElsewhere: copiedElsewhere.length, takenOver: taken, stillCopies: stillCopies.slice(0, 20), duplicates: ta.duplicates });
+        const again = await join(L);
+        const kept = await until(L, 60000, (s) => s?.money === money && distance(s?.pos, spot) < 5);
+        await check('crowd', `${L.tag} joins again: its money and its place`, again.ok && kept.ok, { money: kept.state?.money, pos: vec(kept.state?.pos), expected: { money, pos: spot } });
+        L.slot = kept.state?.slot ?? again.state?.slot ?? L.slot;
+        const relisted = await untilAll(60000, (st) => clients.every((c, i) => c === L || !!playerIn(st[i], L.name)));
+        await check('crowd', `every other lists ${L.tag} again`, relisted.ok, {});
+        // -- a world cheat on every player
+        const w0 = await everyone();
+        if (weatherOf(w0[0]) != null) {
+          await A.cmd('cheat CATSANDDOGS');
+          const changed = await until(A, 20000, (s) => JSON.stringify(weatherOf(s)) !== JSON.stringify(weatherOf(w0[0])));
+          const same = await untilAll(30000, (st) => st.every((s) => JSON.stringify(weatherOf(s)) === JSON.stringify(weatherOf(changed.state))));
+          await check('crowd', 'an admin\'s world cheat applied on every player', changed.ok && same.ok, Object.fromEntries(clients.map((c, i) => [c.tag, weatherOf(same.states[i])])));
+          await A.cmd('cheat CATSANDDOGS');
+          await untilAll(20000, (st) => st.every((s) => JSON.stringify(weatherOf(s)) === JSON.stringify(weatherOf(w0[0]))));
+        } else await skip('crowd', 'an admin\'s world cheat applied on every player', 'the engine publishes no weather');
+        // -- a garage: a car stored by C (or B), known by every player
+        const G = C ?? B, stored = (s) => (s?.world?.garages ?? s?.garages ?? []).reduce((n, g) => n + (g?.record ?? 0), 0);
+        const g0 = await everyone();
+        await G.cmd(tpCommand(PLACES.garageOut));
+        await until(G, 120000, (s) => distance(s?.pos, PLACES.garageOut) < 4);
+        await G.cmd(`car ${o.car}`);
+        const inCar = await until(G, 120000, (s) => !!s?.vehicle);
+        if (!await check('crowd', `${G.tag} in a car of its own (garage)`, inCar.ok, { vehicle: inCar.state?.vehicle })) return;
+        await G.cmd(tpCommand(PLACES.garageIn));
+        await sleep(Math.min(15000, Math.max(0, left())));
+        // (a scene loading in one page slows them all — one GPU process —: down to 0.1 frame a second, the exit key
+        // pressed again while the player is still in)
+        let outCar = { ok: false };
+        for (let i = 0; i < 3 && !outCar.ok && left() > 120000; i++) { await G.cmd(`key ${o.exitKey}`); outCar = await until(G, 120000, (s) => !s?.vehicle); }
+        if (!await check('crowd', `${G.tag} out of the car, in the hideout`, outCar.ok, { vehicle: outCar.state?.vehicle, pos: vec(outCar.state?.pos) })) return;
+        await G.cmd(tpCommand(offset(PLACES.garageOut, -8)));
+        const keptCar = await until(G, 240000, (s) => stored(s) > stored(g0[clients.indexOf(G)]));
+        const known = await untilAll(60000, (st) => st.every((s, i) => stored(s) > stored(g0[i])));
+        await check('crowd', `a car stored by ${G.tag} known by every player`, outCar.ok && keptCar.ok && known.ok,
+          { before: g0.map(stored), after: known.states.map(stored) });
+      },
+      async freemode() {
+        // (one page, no shared world: the game's free mode from its main menu, then "teleport" typed, a place chosen
+        // with the arrows and Enter, the player moved there)
+        const [P] = clients;
+        // (the keys check.mjs --keys gives — ArrowDown, Enter, Enter —, each sent again until the menu shows it was read:
+        // the menu's page and row, lobbyMenu in the engine's state)
+        const menu = await until(P, 120000, (s) => s?.menuActive === true && s?.lobbyMenu?.page === 'start' && (s.lobbyMenu.rows ?? []).includes('ORT_FRE'));
+        if (!await check('freemode', 'the main menu', menu.ok, { menuActive: menu.state?.menuActive, menu: menu.state?.lobbyMenu ?? null })) return;
+        const row = menu.state.lobbyMenu.rows.indexOf('ORT_FRE');
+        let r = { ok: false };
+        for (let i = 0; i < 6 && !r.ok; i++) { await P.cmd('key DOWN'); r = await until(P, 20000, (s) => s?.lobbyMenu?.cursor === row); }
+        for (let i = 0; i < 6 && r.ok; i++) { await P.cmd('key ENTER'); r = await until(P, 20000, (s) => s?.lobbyMenu?.page !== 'start'); if (r.ok) break; }
+        await check('freemode', 'the menu\'s free mode page (ArrowDown, Enter)', r.ok, { menu: r.state?.lobbyMenu ?? null });
+        await sleep(3000);
+        await P.cmd('key ENTER'); // (its first row: Continue — a new free game on a new profile)
+        const inGame = await until(P, 400000, (s) => !!vec(s?.freeMode?.pos) && s?.menuActive === false);
+        if (!await check('freemode', 'the free mode: a player in the city', inGame.ok, { freeMode: inGame.state?.freeMode ?? null, menuActive: inGame.state?.menuActive })) return;
+        await sleep(Math.min(20000, Math.max(0, left()))); // (the start's fade)
+        const p0 = vec((await P.read())?.freeMode?.pos);
+        await P.cmd('cheat TELEPORT');
+        const open = await until(P, 60000, (s) => s?.teleportList === true);
+        if (!await check('freemode', '"teleport" typed opens the list', open.ok, { teleportList: open.state?.teleportList })) return;
+        await P.cmd('key DOWN'); await sleep(3000); await P.cmd('key ENTER');
+        const closed = await until(P, 60000, (s) => s?.teleportList === false);
+        // (the list's second row: the safehouses' second, the Vercetti Estate — mmo_social.cpp's list)
+        const estate = [-377.06, -545.43, 16.0];
+        const moved = await until(P, 180000, (s) => distance(s?.freeMode?.pos, p0) > 20 && s?.teleporting === false);
+        await check('freemode', 'a place chosen with the arrows and Enter: the player moved there', closed.ok && moved.ok && distance(moved.state?.freeMode?.pos, estate) < 6,
+          { from: p0, to: vec(moved.state?.freeMode?.pos), expected: estate, dist: Math.round(distance(moved.state?.freeMode?.pos, estate) * 10) / 10 });
+      },
     };
+    /** every player alive and healed (the health cheat: all are administrators of the test server) */
+    async function healedAll() {
+      for (const c of clients) {
+        await until(c, RESPAWN_MS, (s) => !dead(s) && Number.isFinite(s?.health) && s.health > 0 && s?.inWorld !== false);
+        await c.cmd('cheat ASPIRINE');
+      }
+      await untilAll(30000, (st) => st.every((s) => s?.health >= 99));
+    }
     for (const name of o.scenarios) {
       if (left() < 30000) { await check(name, 'run', false, { why: 'out of time (--seconds)' }); continue; }
       console.log('SCENARIO', name);
       try { await scenarios[name](); } catch (error) { await check(name, 'run', false, { error: error.message }); }
     }
+    // (each page's link over the run: what a player's connection carried, in bytes a second)
+    const secs = Math.max(1, (Date.now() - started) / 1000);
+    const links = await Promise.all(clients.map((c) => c.read().then((s) => s?._page?.stats ?? null).catch(() => null)));
+    console.log('BANDWIDTH', JSON.stringify(Object.fromEntries(clients.map((c, i) => [c.tag, links[i] && {
+      upBs: Math.round(links[i].sentBytes / secs), downBs: Math.round(links[i].receivedBytes / secs), connections: links[i].connections }]))));
     for (const c of clients) await c.cmd('leave').catch(() => {});
     await sleep(2000);
   } catch (error) {
