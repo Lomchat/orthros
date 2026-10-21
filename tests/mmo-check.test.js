@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseArgs, scenarioList, SCENARIOS, vec, distance, offset, tpCommand, characterName, playerIn, seesAt, chatHas, census, netids, unarmed, dead,
   respawnChecks, adminsPathAllowed, withAdmin, summarize } from '../tools/re3/mmo-check.mjs';
+import { MMO_NAME } from '../src/host/mmo.js';
 
 test('mmo check: its command line', () => {
   const d = parseArgs([]);
@@ -66,8 +67,8 @@ test('mmo check: the admins file — a test server\'s only, the name added once,
 });
 
 test('mmo check: character names follow the server\'s rule', () => {
-  const rule = /^[A-Za-z0-9][A-Za-z0-9 _.-]{1,15}$/;
-  for (const u of ['qa-check-1-zr60d', 'qa-check-22-abcdefgh', '._x', 'a', 'lomchat']) assert.match(characterName(u), rule, u);
+  for (const u of ['qa-check-1-zr60d', 'qa-check-22-abcdefgh', '._x', 'a', 'lomchat', 'qa-check-12-abcd-x', 'a..b__', 'x-', '-'])
+    assert.match(characterName(u), MMO_NAME, u);
   assert.equal(characterName('qa-check-1-zr60d'), 'qa-check-1-zr60d');
 });
 

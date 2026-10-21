@@ -198,7 +198,12 @@
             "description": "Un monde partagé (« MMO ») pour cette version, quel que soit son runtime (src/host/mmo.js) : le serveur garde les personnages des comptes Orthros, leur état opaque, l'horloge et les variables du monde, et relaie les enregistrements du moteur par le WebSocket /api/mmo/<version>/ws. Sans mmo : pas de monde partagé. /api/manifests le dit (mmo: true). Aussi dans defaults.",
             "properties": {
               "maxCharacters": { "type": "integer", "minimum": 1, "maximum": 16, "default": 8, "description": "Personnages par compte." },
-              "maxPlayers": { "type": "integer", "minimum": 2, "maximum": 32, "default": 16, "description": "Joueurs à la fois dans le monde." }
+              "maxPlayers": { "type": "integer", "minimum": 2, "maximum": 32, "default": 16, "description": "Joueurs à la fois dans le monde." },
+              "records": {
+                "type": "array", "minItems": 1, "maxItems": 64,
+                "description": "Les clés d'enregistrements (verrous et données du monde, LOCK/STORE) que le moteur utilise : des intervalles [première, dernière] de 0 à 65535 ; toute autre clé est refusée. Sans records : toutes.",
+                "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "integer", "minimum": 0, "maximum": 65535 } }
+              }
             }
           },
           "profileSeed": { "type": "boolean", "description": "false : aucun profil de premier lancement partagé pour ce jeu (src/host/profile-seed.js) — ni proposé à un profil vide, ni appris. Aussi dans defaults." },

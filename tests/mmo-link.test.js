@@ -304,6 +304,34 @@ test('mmo link: close() forgets everything and stays closed; drop() reconnects a
   assert.equal(link.open(), LINK.CONNECTING); assert.equal(s.all.length, 3);
 });
 
+test('mmo link: renew() — the account changed: a link in use connects again (LINK_RESET, the engine says HELLO as the new account), a refused one opens again, a closed one stays closed', () => {
+  const { c, s, link, states } = setup();
+  assert.equal(link.renew(), LINK.CLOSED); assert.equal(s.all.length, 0, 'closed: the engine has not asked for it');
+  // (refused — the engine waits on a sign-in —, then signed in: open again, a first connection)
+  link.open(); s.last().accept(); link.send(HELLO);
+  s.last().receive(refusedRecord(1, 'sign-in needed'));
+  assert.equal(link.state(), LINK.REFUSED);
+  assert.equal(link.renew(), LINK.CONNECTING); assert.equal(s.all.length, 2);
+  assert.equal(link.refusal(), 0);
+  s.last().accept(); assert.equal(link.state(), LINK.OPEN);
+  assert.equal(drainAll(link), 0, 'nothing of the refused session left for the engine (its REFUSED read late would end the new one)');
+  // (in the world, then signed out or another account: connected again at once — the engine told by LINK_RESET)
+  link.send(HELLO);
+  s.last().receive(serverRecord(RECORD.WELCOME, 255, [0]));
+  drainAll(link);
+  states.length = 0;
+  link.renew();
+  assert.equal(s.all[1].closedWith, 4000);
+  assert.deepEqual(states[0], [LINK.WAITING, true], 'state 4 first, joined() still true');
+  c.advance(BACKOFF_MS[0]); s.last().accept();
+  assert.equal(s.all.length, 3); assert.equal(link.state(), LINK.OPEN);
+  assert.deepEqual(drainAll(link).map((m) => [...m]), [[...linkResetRecord()]]);
+  // (renewed while connecting: that attempt dropped, the next one made)
+  link.renew(); assert.equal(link.state(), LINK.WAITING);
+  c.advance(BACKOFF_MS[1]); assert.equal(s.all.length, 4);
+  link.close();
+});
+
 test('mmo link: a socket that cannot be made is retried like a failed connection', () => {
   const c = clock(); let made = 0;
   class Throwing { constructor() { made++; throw new Error('bad url'); } }

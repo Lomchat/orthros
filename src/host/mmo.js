@@ -5,10 +5,13 @@
 // with locks, a world clock and world variables (opaque ids and values), checks admins (admins.json) for world changes,
 // and saves all of it under its directory. Wire protocol: src/host/mmo-proto.js.
 //
-// Files under `dir`: admins.json (["name", ...], lowercase account names, re-read when it changes; none: no admin);
+// Files under `dir`: admins.json (["name" or { name, id }, ...]: account names whatever their case, re-read when it
+// changes; none: no admin) and admin-ids.json ({ name: account id }: a listed name without its id is bound to the first
+// account that signs in under it — an account deleted and its name registered again is no admin);
 // <versionId>/characters.json { nextId, characters: [{ id, user (account id), name, skin, money, state (base64),
 // createdAt, updatedAt }] }; <versionId>/world.json { minutes, msPerMinute, vars: { id: value }, records: { key:
-// base64 } }. Written atomically (temporary file, fsync, rename), 5 s after a change, when a world's last player leaves,
+// base64 }, recordsBy: { key: the character that stored it } }. A file that cannot be read is never taken for an empty
+// one (refused, read again at the next try). Written atomically (temporary file, fsync, rename), 5 s after a change, when a world's last player leaves,
 // on flush() and on close().
 //
 // A world is loaded at its first JOIN and unloaded (saved) when its last player leaves: its clock only runs while
@@ -20,25 +23,36 @@ import { acceptWebSocket } from './lan.js';
 import { MMO_PROTOCOL, MMO_C as C, MMO_S as S, MMO_REFUSED as R, MMO_RESULT as CR, MMO_DENIED as D, MMO_NOBODY as NOBODY } from './mmo-proto.js';
 
 const VERSION_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
-/** A character's name (2 to 16 ASCII characters, unique per version whatever the case) and a skin's (a model name). */
-export const MMO_NAME = /^[A-Za-z0-9][A-Za-z0-9 _.-]{1,15}$/;
+/**
+ * A character's name (2 to 16 ASCII characters: letters and digits, single separators — space _ . - — between them; unique
+ * per version whatever the case and the separators: mmoNameKey) and a skin's (a model name).
+ */
+export const MMO_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9]|[ _.-](?=[A-Za-z0-9])){1,15}$/;
+/** What makes two names the same name: 'Tom my', 'tom_my' and 'TOMMY' are one. */
+export const mmoNameKey = (name) => String(name).toLowerCase().replace(/[ _.-]/g, '');
 export const MMO_SKIN = /^[A-Za-z0-9_]{1,20}$/;
 export const MMO_LIMITS = Object.freeze({
   frame: 65536, // (an inbound message; bigger: the connection closes)
   state: 4096, // (a character's state; a record's data)
   recordKeys: 4096, // (records per world)
+  recordBytes: 1 << 20, // (the data of a world's records together)
+  recordsPerChar: 16, recordBytesPerChar: 64 * 1024, // (records a character last stored, their data together)
+  locksPerSlot: 16, // (locks a player holds at once)
+  locksPerSec: 4, locksBurst: 8, // (LOCK, STORE, UNLOCK)
+  keptLockMs: 120000, // (a departed holder's locks kept for its character: its game may still hold what it took out)
   owners: 65536, // (ownership entries and known entity states per world)
   chatLines: 20, chatBytes: 120,
   recordsPerSec: 800, bytesPerSec: 256 * 1024, lobbyPerSec: 5, chatPerSec: 1, chatBurst: 5,
   backlog: 1 << 20, // (a socket's unsent bytes over which its realtime records are dropped)
   backlogClose: 8 << 20, // (... and over which it is closed)
   outMessage: 65536, // (an outbound message: a turn's records, split at record boundaries)
-  silenceMs: 45000, recheckMs: 60000, sweepMs: 5000, saveMs: 5000,
+  silenceMs: 45000, pingMs: 15000, helloMs: 10000, recheckMs: 60000, sweepMs: 5000, saveMs: 5000,
   stateRecentMs: 15000, ownerIdleMs: 60000, handoverRange: 300,
-  socketsPerUser: 4, socketsPerPlayer: 4,
+  socketsPerUser: 4, lobbySocketsPerUser: 2, socketsPerPlayer: 4,
   playerState: 12 + 240, entityState: 18 + 400, entityGone: 64, event: 1 + 1000, targeted: 5 + 1000,
 });
-const DEFAULTS = Object.freeze({ maxCharacters: 8, maxPlayers: 16 });
+const DEFAULTS = Object.freeze({ maxCharacters: 8, maxPlayers: 16, records: null });
+const LOCK_TYPES = new Set([C.LOCK, C.STORE, C.UNLOCK]);
 const NEW_WORLD_MINUTES = 720, DEFAULT_MS_PER_MINUTE = 1000;
 const PLAYER_IDS = 0xfff00000;
 const LOBBY_TYPES = new Set([C.HELLO, C.CHAR_CREATE, C.CHAR_SKIN, C.CHAR_DELETE, C.JOIN, C.LEAVE]);
@@ -48,12 +62,17 @@ const EMPTY = Buffer.alloc(0);
 export function mmoProblem(m) {
   if (m === undefined) return null;
   const int = (v, lo, hi) => v === undefined || (Number.isInteger(v) && v >= lo && v <= hi);
+  const ranges = (v) => v === undefined || (Array.isArray(v) && v.length >= 1 && v.length <= 64
+    && v.every((r) => Array.isArray(r) && r.length === 2 && r.every((k) => Number.isInteger(k) && k >= 0 && k <= 0xffff) && r[0] <= r[1]));
   const ok = !!m && typeof m === 'object' && !Array.isArray(m) && Object.keys(m).every((k) => k in DEFAULTS)
-    && int(m.maxCharacters, 1, 16) && int(m.maxPlayers, 2, 32);
-  return ok ? null : 'mmo : { maxCharacters: 1 à 16 (8 par défaut), maxPlayers: 2 à 32 (16 par défaut) }';
+    && int(m.maxCharacters, 1, 16) && int(m.maxPlayers, 2, 32) && ranges(m.records);
+  return ok ? null : 'mmo : { maxCharacters: 1 à 16 (8 par défaut), maxPlayers: 2 à 32 (16 par défaut), records: [[première clé, dernière clé], …] (0 à 65535 ; toutes par défaut) }';
 }
-/** A version's shared world settings, its defaults filled in. */
-export const mmoSettings = (m) => ({ maxCharacters: m?.maxCharacters ?? DEFAULTS.maxCharacters, maxPlayers: m?.maxPlayers ?? DEFAULTS.maxPlayers });
+/** A version's shared world settings, its defaults filled in (`records`: the record keys allowed, only when it says). */
+export const mmoSettings = (m) => ({ maxCharacters: m?.maxCharacters ?? DEFAULTS.maxCharacters, maxPlayers: m?.maxPlayers ?? DEFAULTS.maxPlayers,
+  ...(m?.records ? { records: m.records.map((r) => [r[0], r[1]]) } : {}) });
+/** Whether a version's settings allow a record key. */
+const keyAllowed = (cfg, key) => !cfg.records || cfg.records.some(([lo, hi]) => key >= lo && key <= hi);
 
 /** Bytes of a record body, built little-endian. */
 class Out {
@@ -133,7 +152,8 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
   const sessions = new Set();
   const pending = new Set(); // (sessions with records to send at the end of this turn)
   let flushScheduled = false, closed = false;
-  const admins = { stamp: null, names: new Set() };
+  /** admins.json's names (lowercase) → the account id it gives, or null (bound at the first sign-in: admin-ids.json) */
+  const admins = { stamp: null, names: new Map(), bound: null };
 
   const settingsOf = (id) => {
     if (!VERSION_ID.test(id)) return null;
@@ -143,31 +163,59 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
     if (problem) { log(`mmo: ${id}: ${problem}`); return null; }
     return mmoSettings(m);
   };
-  /** admins.json, read again whenever it changed; missing or unreadable: nobody. */
+  /**
+   * admins.json, read again whenever it changed; missing or unreadable: nobody. An admin is an account, not a name: a
+   * name listed without its id is bound to the first account signed in under it (admin-ids.json), for good.
+   */
   const isAdmin = (user) => {
     if (!enabled || !user) return false;
     const file = path.join(dir, 'admins.json');
     let st = null; try { st = fs.statSync(file); } catch { /* none */ }
     const stamp = st ? `${st.ino}:${st.size}:${st.mtimeMs}` : null;
     if (stamp !== admins.stamp) {
-      admins.stamp = stamp; admins.names = new Set();
+      admins.stamp = stamp; admins.names = new Map();
       if (st) {
         try {
           const list = JSON.parse(fs.readFileSync(file, 'utf8'));
           if (!Array.isArray(list)) throw new Error('not a list');
-          for (const n of list) if (typeof n === 'string') admins.names.add(n.toLowerCase());
+          for (const n of list) {
+            if (typeof n === 'string') admins.names.set(n.toLowerCase(), null);
+            else if (typeof n?.name === 'string' && typeof n.id === 'string') admins.names.set(n.name.toLowerCase(), n.id);
+          }
         } catch (e) { log(`mmo: admins.json unreadable (${e.message}): no admin`); }
       }
     }
-    return admins.names.has(String(user.username ?? '').toLowerCase());
+    const name = String(user.username ?? '').toLowerCase();
+    if (!admins.names.has(name)) return false;
+    const id = admins.names.get(name);
+    if (id) return id === String(user.id);
+    const boundFile = path.join(dir, 'admin-ids.json');
+    if (!admins.bound) {
+      let raw = null;
+      try { raw = JSON.parse(fs.readFileSync(boundFile, 'utf8')); } catch (e) {
+        if (e.code !== 'ENOENT') { log(`mmo: admin-ids.json unreadable (${e.message}): no admin`); return false; }
+      }
+      admins.bound = new Map(Object.entries(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}).filter(([, v]) => typeof v === 'string'));
+    }
+    const bound = admins.bound.get(name);
+    if (bound !== undefined) return bound === String(user.id);
+    try {
+      admins.bound.set(name, String(user.id));
+      writeAtomic(boundFile, JSON.stringify(Object.fromEntries(admins.bound), null, 1));
+      log(`mmo: admin ${name} is the account ${user.id}`);
+      return true;
+    } catch (e) { admins.bound.delete(name); log(`mmo: admin-ids.json not saved (${e.message}): not an admin yet`); return false; }
   };
 
   // ------------------------------------------------------------------------------------------------ persistence
   const charsFile = (id) => path.join(dir, id, 'characters.json');
   const worldFile = (id) => path.join(dir, id, 'world.json');
-  /** A JSON file, or null when there is none; a broken one is set aside (never overwritten) and reads as none. */
+  /**
+   * A JSON file, or null when there is none; a broken one is set aside (never overwritten) and reads as none. A file
+   * that cannot be read (EMFILE, EIO, EACCES…) throws: never taken for an empty one, which the next save would replace.
+   */
   const readJson = (file) => {
-    let text; try { text = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') log(`mmo: ${file}: ${e.message}`); return null; }
+    let text; try { text = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return null; log(`mmo: ${file}: ${e.message}`); throw e; }
     try { return JSON.parse(text); } catch (e) {
       const aside = `${file}.broken-${Date.now()}`;
       try { fs.renameSync(file, aside); } catch { /* left there */ }
@@ -186,7 +234,8 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
         createdAt: Number(c.createdAt) || 0, updatedAt: Number(c.updatedAt) || 0, session: null });
     }
     const nextId = Math.max(Number.isInteger(raw?.nextId) ? raw.nextId : 1, ...chars.map((c) => c.id + 1));
-    v = { id, chars, nextId, charsDirty: false, world: null, worldDirty: false, timer: null, sockets: new Set(), chat: [], nextRank: 1, nextTag: 1 };
+    // (kept: record key → { char, until } — the locks of holders gone, kept for their characters a while)
+    v = { id, chars, nextId, charsDirty: false, world: null, worldDirty: false, timer: null, sockets: new Set(), chat: [], nextRank: 1, nextTag: 1, kept: new Map() };
     versions.set(id, v);
     return v;
   };
@@ -202,10 +251,10 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
       const w = v.world;
       if (w && (v.worldDirty || force)) {
         v.worldDirty = false;
-        const records = {};
-        for (const [key, r] of [...w.records].sort((a, b) => a[0] - b[0])) if (r.data.length) records[key] = r.data.toString('base64');
+        const records = {}, recordsBy = {};
+        for (const [key, r] of [...w.records].sort((a, b) => a[0] - b[0])) if (r.data.length) { records[key] = r.data.toString('base64'); if (r.by) recordsBy[key] = r.by; }
         const minutes = minutesAt(w, now());
-        writeAtomic(worldFile(v.id), JSON.stringify({ minutes, msPerMinute: w.msPerMinute, vars: Object.fromEntries([...w.vars].sort((a, b) => a[0] - b[0])), records }));
+        writeAtomic(worldFile(v.id), JSON.stringify({ minutes, msPerMinute: w.msPerMinute, vars: Object.fromEntries([...w.vars].sort((a, b) => a[0] - b[0])), records, recordsBy }));
         // (nobody there: saved, the world leaves memory — its clock stops)
         if (!w.count) { v.world = null; log(`mmo: ${v.id}: world saved and frozen (minute ${Math.floor(minutes)})`); }
       }
@@ -218,17 +267,20 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
 
   // ------------------------------------------------------------------------------------------------ worlds
   const loadWorld = (v, cfg) => {
-    const raw = readJson(worldFile(v.id)) ?? {};
+    const raw = readJson(worldFile(v.id)) ?? {}; // (unreadable: thrown, nothing loaded — the JOIN refused, tried again at the next)
     const vars = new Map(), records = new Map();
+    let recordBytes = 0;
     for (const [k, val] of Object.entries(raw.vars ?? {})) { const id = Number(k); if (Number.isInteger(id) && id >= 0 && id <= 255 && Number.isInteger(val) && vars.size < 255) vars.set(id, val | 0); }
-    for (const [k, data] of Object.entries(raw.records ?? {})) {
-      const key = Number(k);
-      if (Number.isInteger(key) && key >= 0 && key <= 0xffff && typeof data === 'string' && records.size < MMO_LIMITS.recordKeys)
-        records.set(key, { data: Buffer.from(data, 'base64').subarray(0, MMO_LIMITS.state), holder: NOBODY });
+    for (const [k, text] of Object.entries(raw.records ?? {})) {
+      const key = Number(k), data = typeof text === 'string' ? Buffer.from(text, 'base64').subarray(0, MMO_LIMITS.state) : EMPTY;
+      if (!Number.isInteger(key) || key < 0 || key > 0xffff || !data.length || records.size >= MMO_LIMITS.recordKeys || recordBytes + data.length > MMO_LIMITS.recordBytes) continue;
+      const by = raw.recordsBy?.[k];
+      records.set(key, { data, holder: NOBODY, by: Number.isInteger(by) && by > 0 ? by : 0 });
+      recordBytes += data.length;
     }
     const msPerMinute = Number.isFinite(raw.msPerMinute) && raw.msPerMinute >= 30 && raw.msPerMinute <= 60000 ? Math.fround(raw.msPerMinute) : DEFAULT_MS_PER_MINUTE;
     const w = { v, cfg, baseMinutes: Number.isFinite(raw.minutes) ? raw.minutes : NEW_WORLD_MINUTES, baseMs: now(), msPerMinute, vars, records,
-      slots: new Array(cfg.maxPlayers).fill(null), count: 0, tags: new Map(), owners: new Map(), states: new Map() };
+      recordBytes, slots: new Array(cfg.maxPlayers).fill(null), count: 0, tags: new Map(), owners: new Map(), states: new Map(), ownersWarned: false };
     v.world = w;
     log(`mmo: ${v.id}: world loaded (minute ${Math.floor(w.baseMinutes)})`);
     return w;
@@ -289,8 +341,30 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
       toWorld(w, ownerRecord(id, owner, from));
     }
   };
-  const releaseLocks = (w, slot) => {
-    for (const [key, r] of w.records) if (r.holder === slot) { r.holder = NOBODY; toWorld(w, recordOf(key, r)); }
+  /** A record nobody holds and without data is no record: forgotten (unless kept for a departed holder). */
+  const forgetEmpty = (w, key, r) => { if (!r.data.length && r.holder === NOBODY && !w.v.kept.has(key)) w.records.delete(key); };
+  /**
+   * The locks of a player leaving the world: free for the others to see, but kept for its character a while (its game
+   * may still hold what it took out under the lock — a garage's cars —, and stores it back once there again: its
+   * JOIN gives them back); nobody else gets them until then.
+   */
+  const releaseLocks = (w, slot, charId) => {
+    for (const [key, r] of [...w.records]) {
+      if (r.holder !== slot) continue;
+      r.holder = NOBODY;
+      if (charId) w.v.kept.set(key, { char: charId, until: now() + MMO_LIMITS.keptLockMs });
+      toWorld(w, recordOf(key, r));
+      forgetEmpty(w, key, r);
+    }
+  };
+  /** Whether `s` may take the lock of `key`: none kept for another character (expired ones forgotten). */
+  const keptFromOthers = (s, key) => {
+    const k = s.v.kept.get(key);
+    if (!k) return false;
+    if (k.char === s.char.id) return false;
+    if (now() <= k.until) return true;
+    s.v.kept.delete(key);
+    return false;
   };
   const freeTag = (v, w) => {
     const used = new Set(w.tags.keys());
@@ -302,18 +376,21 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
     }
     return 0;
   };
-  /** A player out of its world (LEAVE, its socket closed, another JOIN): the others told, its locks and entities handed on. */
-  const depart = (s, why) => {
+  /**
+   * A player out of its world (LEAVE, its socket closed, another JOIN): the others told, its locks released (`keep`: kept
+   * for its character a while — not after a LEAVE, its game has left the world) and its entities handed on.
+   */
+  const depart = (s, why, keep = true) => {
     const w = s.world;
     if (!w) return;
-    const slot = s.slot, owned = ownedBy(w, slot, s.tag);
+    const slot = s.slot, owned = ownedBy(w, slot, s.tag), charId = s.char.id;
     w.slots[slot] = null; w.count--; w.tags.delete(s.tag);
     s.char.session = null;
     s.world = null; s.slot = NOBODY; s.tag = 0; s.pos = null;
     log(`mmo: ${s.v.id}: ${s.user.username} (${s.char.name}, slot ${slot}) left: ${why} (${w.count} in the world)`);
     s.char = null;
     toWorld(w, record(S.PLAYER_LEAVE, NOBODY, Buffer.from([slot])));
-    releaseLocks(w, slot);
+    releaseLocks(w, slot, keep ? charId : 0);
     handOver(w, owned, slot);
     if (!w.count) unloadWorld(s.v);
   };
@@ -360,6 +437,12 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
     queue(s, record(S.DENIED, NOBODY, Buffer.from([type, reason])));
   };
 
+  /**
+   * What a record broadcast from `s` costs the others, taken from its bytes a second (a small record of its own that the
+   * server sends big to every player — a record's data — is paid as such); false: not enough left (nothing taken).
+   */
+  const charge = (s, bytes) => take(s.rate.bytes, bytes, now());
+
   // ------------------------------------------------------------------------------------------------ lobby
   const mine = (s) => s.v.chars.filter((c) => c.user === s.user.id);
   const sendLobby = (s) => {
@@ -376,7 +459,9 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
     if (!cfg) return refuse(s, R.NO_WORLD, 'no shared world for this version');
     if (s.world) depart(s, 'joined again');
     if (c.session) refuse(c.session, R.ELSEWHERE, 'this character joined from another connection');
-    const v = s.v, w = v.world ?? loadWorld(v, cfg);
+    const v = s.v;
+    let w = v.world;
+    if (!w) { try { w = loadWorld(v, cfg); } catch (e) { log(`mmo: ${v.id}: world not loaded: ${e.message}`); return result(s, 5, CR.ERROR, id); } }
     const slot = w.slots.indexOf(null), tag = slot < 0 ? 0 : freeTag(v, w);
     if (slot < 0 || !tag) { if (!w.count) unloadWorld(v); return result(s, 5, slot < 0 ? CR.WORLD_FULL : CR.ERROR, id); }
     Object.assign(s, { world: w, slot, tag, rank: v.nextRank++, char: c, skin: c.skin, admin: isAdmin(s.user), pos: null });
@@ -391,6 +476,16 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
     for (const line of v.chat) queue(s, chatRecord(line, NOBODY));
     for (const [netid, e] of w.owners) if (e.owner !== NOBODY) queue(s, ownerRecord(netid, e.owner, e.owner));
     toWorld(w, record(S.PLAYER_JOIN, NOBODY, playerInfo(s).done()), s);
+    // (the locks its character held when it went: its again, everyone told)
+    for (const [key, k] of [...v.kept]) {
+      if (k.char !== c.id) continue;
+      v.kept.delete(key);
+      const r = w.records.get(key) ?? { data: EMPTY, holder: NOBODY, by: 0 };
+      if (r.holder !== NOBODY) continue;
+      w.records.set(key, r); r.holder = slot;
+      toWorld(w, recordOf(key, r, slot), s);
+      queue(s, recordOf(key, r, slot));
+    }
     log(`mmo: ${v.id}: ${s.user.username} joined as ${c.name} (slot ${slot}, ${w.count} in the world)`);
   };
 
@@ -399,6 +494,7 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
     const r = new In(body), w = s.world;
     if (!s.hello && type !== C.HELLO && type !== C.PING && type !== C.AWAY) { if (type <= C.PLAYER_INFO || isRealtime(type)) deny(s, type, D.INVALID); return; }
     if (LOBBY_TYPES.has(type) && !take(s.rate.lobby, 1, now())) return deny(s, type, D.RATE);
+    if (LOCK_TYPES.has(type) && !take(s.rate.locks, 1, now())) return deny(s, type, D.RATE);
     switch (type) {
       case C.HELLO: {
         const protocol = r.u16();
@@ -409,7 +505,7 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
       case C.CHAR_CREATE: {
         const name = r.str8().toString('latin1'), skin = r.str8().toString('latin1'), list = mine(s), cfg = settingsOf(s.v.id) ?? s.cfg;
         const status = !MMO_NAME.test(name) ? CR.INVALID_NAME : !MMO_SKIN.test(skin) ? CR.INVALID_SKIN : list.length >= cfg.maxCharacters ? CR.TOO_MANY
-          : s.v.chars.some((c) => c.name.toLowerCase() === name.toLowerCase()) ? CR.NAME_TAKEN : s.v.nextId > 0xffffffff ? CR.ERROR : CR.OK;
+          : s.v.chars.some((c) => mmoNameKey(c.name) === mmoNameKey(name)) ? CR.NAME_TAKEN : s.v.nextId > 0xffffffff ? CR.ERROR : CR.OK;
         let id = 0;
         if (status === CR.OK) {
           id = s.v.nextId++;
@@ -440,7 +536,7 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
       }
       case C.JOIN: return join(s, r.u32());
       case C.LEAVE: {
-        depart(s, 'left');
+        depart(s, 'left', false);
         queue(s, record(S.LEFT, NOBODY));
         return sendLobby(s);
       }
@@ -453,7 +549,8 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
         const is = s.awayBits !== 0;
         if (!w || was === is) return;
         toWorld(w, record(S.PLAYER_AWAY, NOBODY, Buffer.from([s.slot, is ? 1 : 0])), s);
-        if (is) { releaseLocks(w, s.slot); handOver(w, ownedBy(w, s.slot, s.tag), s.slot); }
+        // (its entities to the others; its locks stay its own: what it took out under them is still in its game)
+        if (is) handOver(w, ownedBy(w, s.slot, s.tag), s.slot);
         return;
       }
     }
@@ -500,13 +597,20 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
         return toWorld(w, record(S.WORLD_EVENT, s.slot, new Out().u8(id).i32(arg).done()));
       }
       case C.LOCK: {
-        const key = r.u16();
+        const key = r.u16(), cfg = w.cfg;
         let rec = w.records.get(key);
-        if (!rec) {
-          if (w.records.size >= MMO_LIMITS.recordKeys) return deny(s, type, D.INVALID);
-          rec = { data: EMPTY, holder: NOBODY }; w.records.set(key, rec);
+        if (rec && rec.holder !== NOBODY && rec.holder !== s.slot) return queue(s, recordOf(key, rec));
+        // (a key the version does not use, a lock kept for a departed holder's character, too many held: denied)
+        if (!keyAllowed(cfg, key) || keptFromOthers(s, key)) return deny(s, type, D.INVALID);
+        if (rec?.holder !== s.slot) {
+          let held = 0;
+          for (const x of w.records.values()) if (x.holder === s.slot) held++;
+          if (held >= MMO_LIMITS.locksPerSlot || (!rec && w.records.size >= MMO_LIMITS.recordKeys)) return deny(s, type, D.INVALID);
         }
-        if (rec.holder !== NOBODY && rec.holder !== s.slot) return queue(s, recordOf(key, rec));
+        const out = recordOf(key, rec ?? { data: EMPTY, holder: s.slot }, s.slot);
+        if (!charge(s, out.length * w.count)) return deny(s, type, D.RATE);
+        if (!rec) { rec = { data: EMPTY, holder: NOBODY, by: 0 }; w.records.set(key, rec); }
+        s.v.kept.delete(key);
         rec.holder = s.slot;
         return toWorld(w, recordOf(key, rec, s.slot));
       }
@@ -515,15 +619,26 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
         if (n > MMO_LIMITS.state) return deny(s, type, D.INVALID);
         const data = Buffer.from(r.take(n)), rec = w.records.get(key);
         if (!rec || rec.holder !== s.slot) return deny(s, type, D.INVALID);
-        rec.data = data; rec.holder = NOBODY;
+        // (the world's records together, and those each character stored, within their limits)
+        let mineKeys = n ? 1 : 0, mineBytes = n;
+        for (const [k, x] of w.records) if (k !== key && x.by === s.char.id && x.data.length) { mineKeys++; mineBytes += x.data.length; }
+        if (w.recordBytes - rec.data.length + n > MMO_LIMITS.recordBytes || mineKeys > MMO_LIMITS.recordsPerChar || mineBytes > MMO_LIMITS.recordBytesPerChar)
+          return deny(s, type, D.INVALID);
+        if (!charge(s, (9 + n) * w.count)) return deny(s, type, D.RATE);
+        w.recordBytes += n - rec.data.length;
+        rec.data = data; rec.holder = NOBODY; rec.by = n ? s.char.id : 0;
         worldChanged(s.v);
-        return toWorld(w, recordOf(key, rec, s.slot));
+        toWorld(w, recordOf(key, rec, s.slot));
+        return forgetEmpty(w, key, rec);
       }
       case C.UNLOCK: {
         const key = r.u16(), rec = w.records.get(key);
         if (!rec || rec.holder !== s.slot) return deny(s, type, D.INVALID);
+        const out = recordOf(key, { data: rec.data, holder: NOBODY }, s.slot);
+        if (!charge(s, out.length * w.count)) return deny(s, type, D.RATE);
         rec.holder = NOBODY;
-        return toWorld(w, recordOf(key, rec, s.slot));
+        toWorld(w, out);
+        return forgetEmpty(w, key, rec);
       }
       case C.OWN: {
         const netid = r.u32(), op = r.u8(), to = r.left() ? r.u8() : NOBODY;
@@ -588,6 +703,7 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
     if (closed || !s.user || s.peer.closed) return;
     s.lastIn = now();
     if (text) return;
+    s.lastRecord = s.lastIn;
     try {
       for (let o = 0; o < msg.length;) {
         if (o + 3 > msg.length) return refuse(s, R.PROTOCOL, 'truncated record');
@@ -622,8 +738,11 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
       world: null, slot: NOBODY, tag: 0, rank: 0, char: null, skin: '', admin: false, awayBits: 0, pos: null,
       out: [], overflow: false, deniedAt: new Map(),
       rate: { records: bucket(MMO_LIMITS.recordsPerSec, MMO_LIMITS.recordsPerSec * 2, t), bytes: bucket(MMO_LIMITS.bytesPerSec, MMO_LIMITS.bytesPerSec * 2, t),
-        lobby: bucket(MMO_LIMITS.lobbyPerSec, MMO_LIMITS.lobbyPerSec, t), chat: bucket(MMO_LIMITS.chatPerSec, MMO_LIMITS.chatBurst, t) } };
-    s.peer = acceptWebSocket(req, socket, (msg, text) => onMessage(s, msg, text), () => onClose(s), log, { maxMessage: MMO_LIMITS.frame });
+        lobby: bucket(MMO_LIMITS.lobbyPerSec, MMO_LIMITS.lobbyPerSec, t), chat: bucket(MMO_LIMITS.chatPerSec, MMO_LIMITS.chatBurst, t),
+        locks: bucket(MMO_LIMITS.locksPerSec, MMO_LIMITS.locksBurst, t) },
+      openedAt: t, lastRecord: t, pingAt: t };
+    // (a pong is a sign of life: a hidden tab's timers may wait a minute between its PINGs, its browser answers at once)
+    s.peer = acceptWebSocket(req, socket, (msg, text) => onMessage(s, msg, text), () => onClose(s), log, { maxMessage: MMO_LIMITS.frame, onPong: () => { s.lastIn = now(); } });
     if (!s.peer) return true;
     sessions.add(s);
     try {
@@ -631,9 +750,17 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
       if (!cfg || user === undefined) { refuse(s, R.NO_WORLD, 'no shared world for this version'); return true; }
       if (!user) { refuse(s, R.SIGN_IN, 'sign-in needed'); return true; }
       const v = versionOf(versionId);
-      if (v.sockets.size >= cfg.maxPlayers * MMO_LIMITS.socketsPerPlayer) { refuse(s, R.FULL, 'too many connections to this world'); return true; }
-      const own = [...v.sockets].filter((x) => x.user.id === user.id);
-      if (own.length >= MMO_LIMITS.socketsPerUser) refuse(own[0], R.ELSEWHERE, 'connected again elsewhere');
+      // (an account's connections: 4 at most, 2 of them outside the world; the oldest goes)
+      const own = [...v.sockets].filter((x) => x.user.id === user.id), ownLobby = own.filter((x) => !x.world);
+      if (ownLobby.length >= MMO_LIMITS.lobbySocketsPerUser) refuse(ownLobby[0], R.ELSEWHERE, 'connected again elsewhere');
+      else if (own.length >= MMO_LIMITS.socketsPerUser) refuse(own[0], R.ELSEWHERE, 'connected again elsewhere');
+      // (the version's: at the limit, the connection outside the world idle the longest makes room — never one in it)
+      if (v.sockets.size >= cfg.maxPlayers * MMO_LIMITS.socketsPerPlayer) {
+        let idle = null;
+        for (const x of v.sockets) if (!x.world && (!idle || x.lastRecord < idle.lastRecord)) idle = x;
+        if (!idle) { refuse(s, R.FULL, 'too many connections to this world'); return true; }
+        refuse(idle, R.FULL, 'too many connections to this world: the idlest closed');
+      }
       Object.assign(s, { v, user, cfg });
       v.sockets.add(s);
     } catch (e) { log(`mmo: ${versionId}: ${e.stack ?? e}`); refuse(s, R.ERROR, 'server error'); }
@@ -661,6 +788,9 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
     for (const s of [...sessions]) {
       if (s.peer.closed) continue;
       if (t - s.lastIn > MMO_LIMITS.silenceMs) { s.peer.why = 'silent'; s.peer.close(); continue; }
+      // (the protocol opens with HELLO: a socket that never says it is closed — its page connects again if it wants)
+      if (s.user && !s.hello && t - s.openedAt > MMO_LIMITS.helloMs) { s.peer.why = 'no HELLO'; s.peer.close(); continue; }
+      if (t - s.pingAt >= MMO_LIMITS.pingMs) { s.pingAt = t; s.peer.ping(); }
       if (s.user && t - s.checkedAt >= MMO_LIMITS.recheckMs) {
         s.checkedAt = t;
         let user = null; try { user = identify(s.req); } catch (e) { log(`mmo: session check: ${e.message}`); continue; }
@@ -670,7 +800,24 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
     for (const v of versions.values()) {
       const w = v.world; if (!w) continue;
       for (const [id, st] of w.states) if (t - st.at > MMO_LIMITS.ownerIdleMs) w.states.delete(id);
-      for (const [id, e] of w.owners) if (e.owner === NOBODY && t - e.at > MMO_LIMITS.ownerIdleMs) w.owners.delete(id);
+      for (const [id, e] of [...w.owners]) {
+        if (t - e.at <= MMO_LIMITS.ownerIdleMs) continue;
+        if (e.owner === NOBODY) { w.owners.delete(id); continue; }
+        // (an entity given to a present player that has said nothing of it for a minute — gone from its game unannounced,
+        // or out of everyone's sight —: orphaned, everyone told; its owner renews it if it still has it)
+        if (w.states.has(id)) continue;
+        setOwner(w, id, NOBODY);
+        toWorld(w, ownerRecord(id, NOBODY, e.owner));
+      }
+      if (!w.ownersWarned && w.owners.size > MMO_LIMITS.owners * 0.9) { w.ownersWarned = true; log(`mmo: ${v.id}: ${w.owners.size} ownership entries (limit ${MMO_LIMITS.owners})`); }
+    }
+    for (const v of versions.values()) {
+      for (const [key, k] of [...v.kept]) {
+        if (t <= k.until) continue;
+        v.kept.delete(key);
+        const r = v.world?.records.get(key);
+        if (r) forgetEmpty(v.world, key, r);
+      }
     }
   };
   const sweepTimer = setInterval(() => { try { sweep(); } catch (e) { log(`mmo: sweep: ${e.stack ?? e}`); } }, MMO_LIMITS.sweepMs);

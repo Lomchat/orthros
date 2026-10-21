@@ -13,7 +13,7 @@ import { pickLang } from '../../host/web/lang.js';
 import { createShell, lockKeys } from '../../host/web/shell.js';
 import { escapeToGame } from '../../host/web/escape.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
-import { onAccountChange } from '../../host/web/account.js';
+import { onAccountChange, accountState } from '../../host/web/account.js';
 import { createMmoLink, LINK } from '../../host/web/mmo-link.js';
 import { openStorage, readStorage, writeStorage, writeManyStorage, storageKeys, removeStorage } from '../goldsrc/storage.js';
 import { StreamedFiles, treeFiles, learnedPlan, PIECE } from '../goldsrc/files.js';
@@ -421,11 +421,12 @@ document.addEventListener('keydown', (event) => seedWatch?.input(performance.now
 // account window over the game; `testing` (a boolean: ?mmotest in the page's address); `testCommands` (strings the
 // engine takes one a frame) and debug(json) (the engine's state, every 500 ms under test). The link opens when the
 // engine asks — its main menu's Multiplayer —, never before. A sign-in, a sign-out or another account on this page
-// closes it: state() 0 again, and the engine — waiting on a sign-in, or in the world as the account that left — opens
-// it again by itself, as the account now signed in (or is refused). window.orthrosMmo: { link, state (the engine's last
+// renews it (link.renew()): a link in use connects again as the account now signed in — the engine says HELLO again
+// and is accepted, or refused (a sign-out: REFUSED 1, the world left) —, a refused one (waiting on a sign-in) opens
+// again; a closed one stays closed. window.orthrosMmo: { link, state (the engine's last
 // debug object), updates, at, command(text) } — tools/re3/mmo-check.mjs drives two pages through it.
 /** @type {{ link: ReturnType<typeof createMmoLink>, net: object } | null} */
-let world = null, signInAsked = false;
+let world = null, signInAsked = false, signInAsking = false;
 function createWorld(versionId, username) {
   const url = new URL(`/api/mmo/${encodeURIComponent(versionId)}/ws`, location.href);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -461,18 +462,25 @@ function createWorld(versionId, username) {
     if (now === account) return;
     account = now;
     if (user && signInAsked) { signInAsked = false; window.orthrosData?.close?.(); $('canvas').focus(); } // (back to the game)
-    if (link.state() !== LINK.CLOSED) link.close();
+    link.renew();
   });
   return { link, net };
 }
 /**
- * The engine asks for a sign-in (its multiplayer needs an Orthros account): the account window (data-manager.js) — a
- * modal dialog, over the game in full screen too (the top layer); the mouse freed; closed once signed in.
+ * The engine asks for a sign-in (its multiplayer needs an Orthros account; the server refused the link with 1): who is
+ * signed in asked of the server again — the page's own idea may be stale (a session ended elsewhere) —; signed in
+ * there after all: the link tried again; else the account window (data-manager.js) — a modal dialog, over the game in
+ * full screen too (the top layer); the mouse freed; closed once signed in.
  */
-function askSignIn() {
-  if (shell?.account || !shell?.accounts) return; // (signed in already, or a server without accounts: the engine shows the refusal)
-  signInAsked = true;
+async function askSignIn() {
+  if (signInAsking) return; // (the server's answer on its way)
   if (document.pointerLockElement) document.exitPointerLock();
+  signInAsking = true;
+  const st = await accountState({ fresh: true }).catch(() => null);
+  signInAsking = false;
+  if (st && !st.accounts) return; // (a server without accounts: the engine shows the refusal)
+  if (st?.user) { world?.link.renew(); return; }
+  signInAsked = true;
   if (window.orthrosData?.open) window.orthrosData.open('account');
   else toast(S.worldSignIn, 9000);
 }

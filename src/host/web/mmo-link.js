@@ -29,6 +29,11 @@
 //   away(bool) the page's source of AWAY (the tab hidden); sent at once, and again with each heartbeat while away (the
 //           server takes it as a state, not an event).
 //   close() closes and forgets everything waiting (both ways), the refusal included: state 0.
+//   renew() the page's account changed (a sign-in, a sign-out, another account): a link in use connects again with the
+//           new credentials — open, connecting or waiting: as after a network failure (LINK_RESET, the engine says
+//           HELLO again and is accepted, or refused as the account now is); refused: open() again (a sign-in after
+//           REFUSED 1), what the refused session left for the engine dropped. Closed: nothing (the engine has not
+//           asked for it).
 //   drop()  (tests) closes the socket as a network failure would: the link reconnects as after a real one.
 //   joined() whether a WELCOME came on the current connection and no LEFT since; stats() counters.
 // onState(state, link) is called at every change of state() or joined() (a lost connection: state 4 first, joined()
@@ -210,6 +215,13 @@ export function createMmoLink({ url, log = () => {}, onState = () => {}, WebSock
       outQueue = []; outBytes = 0; inQueue = []; inBytes = 0; overflow = false; resetRecord = null;
       refusal = 0; detail = ''; spoke = false;
       setState(LINK.CLOSED); setJoined(false);
+    },
+    renew() {
+      // (what the refused session left for the engine is not the new one's: its REFUSED read late would end it)
+      if (st === LINK.REFUSED) { inQueue = []; inBytes = 0; overflow = false; resetRecord = null; return link.open(); }
+      if (st === LINK.CLOSED) return st;
+      if (ws) { try { ws.close(4000, 'account changed'); } catch { /* closing */ } }
+      return st;
     },
     drop() { if (ws) { try { ws.close(4000, 'dropped'); } catch { /* closing */ } } },
     state: () => st,

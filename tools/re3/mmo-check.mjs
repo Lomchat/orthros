@@ -84,9 +84,14 @@ export function distance(a, b) {
 }
 export const offset = (p, dx = 0, dy = 0, dz = 0) => { const v = vec(p); return [v[0] + dx, v[1] + dy, v[2] + dz]; };
 export const tpCommand = (p) => `tp ${vec(p).map((v) => v.toFixed(2)).join(' ')}`;
-/** A character's name for an account: the server's rule (2–16 of A-Z a-z 0-9 space _ . -, a letter or digit first). */
+/**
+ * A character's name for an account: the server's rule (2–16 of A-Z a-z 0-9 and single separators — space _ . - —
+ * between them, a letter or digit first and last).
+ */
 export function characterName(username) {
-  let n = String(username).replace(/[^A-Za-z0-9 _.-]/g, '').replace(/^[^A-Za-z0-9]+/, '').slice(0, 16);
+  const trim = (x) => x.replace(/^[ _.-]+|[ _.-]+$/g, '');
+  let n = trim(String(username).replace(/[^A-Za-z0-9 _.-]/g, '').replace(/([ _.-])[ _.-]+/g, '$1')).slice(0, 16);
+  n = trim(n);
   if (n.length < 2) n = ('qa' + n).slice(0, 16);
   return n;
 }

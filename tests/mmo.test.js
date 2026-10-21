@@ -173,11 +173,14 @@ function rawUpgrade(base, route, headers) {
 }
 
 test('a version\'s `mmo` entry: checked by the catalog (any runtime) and the schema alike, its defaults', (t) => {
-  for (const ok of [undefined, {}, { maxCharacters: 1 }, { maxCharacters: 16, maxPlayers: 2 }, { maxPlayers: 32 }]) assert.equal(mmoProblem(ok), null, JSON.stringify(ok));
-  for (const bad of [null, [], 'yes', true, { maxCharacters: 0 }, { maxCharacters: 17 }, { maxCharacters: 2.5 }, { maxCharacters: '8' }, { maxPlayers: 1 }, { maxPlayers: 33 }, { maxPlayers: 16, world: 'x' }])
+  for (const ok of [undefined, {}, { maxCharacters: 1 }, { maxCharacters: 16, maxPlayers: 2 }, { maxPlayers: 32 }, { records: [[256, 267]] }, { records: [[0, 0], [5, 65535]] }])
+    assert.equal(mmoProblem(ok), null, JSON.stringify(ok));
+  for (const bad of [null, [], 'yes', true, { maxCharacters: 0 }, { maxCharacters: 17 }, { maxCharacters: 2.5 }, { maxCharacters: '8' }, { maxPlayers: 1 }, { maxPlayers: 33 }, { maxPlayers: 16, world: 'x' },
+    { records: [] }, { records: [[2, 1]] }, { records: [[0, 65536]] }, { records: [[1]] }, { records: [256, 267] }, { records: [[1.5, 2]] }, { records: Array(65).fill([0, 1]) }])
     assert.match(mmoProblem(bad), /^mmo :/, JSON.stringify(bad));
   assert.deepEqual(mmoSettings({}), { maxCharacters: 8, maxPlayers: 16 });
   assert.deepEqual(mmoSettings({ maxPlayers: 4 }), { maxCharacters: 8, maxPlayers: 4 });
+  assert.deepEqual(mmoSettings({ records: [[256, 267]] }), { maxCharacters: 8, maxPlayers: 16, records: [[256, 267]] });
   const f = fixture(t);
   const catalog = loadGameCatalog(f.games, null, { enginesDir: f.engines });
   assert.deepEqual(catalog.get('city-online').mmo, { maxCharacters: 2, maxPlayers: 3 });
@@ -194,7 +197,8 @@ test('a version\'s `mmo` entry: checked by the catalog (any runtime) and the sch
   // (the schema says the same)
   const schema = JSON.parse(fs.readFileSync(new URL('../docs/game-manifest.schema.json', import.meta.url), 'utf8')).properties.versions.items.properties.mmo;
   assert.equal(schema.additionalProperties, false);
-  assert.deepEqual(Object.keys(schema.properties).sort(), ['maxCharacters', 'maxPlayers']);
+  assert.deepEqual(Object.keys(schema.properties).sort(), ['maxCharacters', 'maxPlayers', 'records']);
+  assert.deepEqual([schema.properties.records.minItems, schema.properties.records.maxItems, schema.properties.records.items.items.minimum, schema.properties.records.items.items.maximum], [1, 64, 0, 65535]);
   for (const [key, [lo, hi, def]] of Object.entries({ maxCharacters: [1, 16, 8], maxPlayers: [2, 32, 16] })) {
     const s = schema.properties[key];
     assert.deepEqual([s.type, s.minimum, s.maximum, s.default], ['integer', lo, hi, def]);
@@ -253,14 +257,15 @@ test('the lobby: characters per account, their names\' rules, unique names, the 
   const a = await Peer.open(ctx, await ctx.account('alice')), b = await Peer.open(ctx, await ctx.account('bob'));
   assert.deepEqual(await hello(a), { admin: 0, maxCharacters: 2, username: 'alice', characters: [] });
   await hello(b);
-  for (const name of ['a', ' ab', 'ab!', '-ab', 'x'.repeat(17), 'caf\xe9', 'a\tb', ''])
+  for (const name of ['a', ' ab', 'ab!', '-ab', 'x'.repeat(17), 'caf\xe9', 'a\tb', '', 'Tommy ', 'Tommy.', 'Tom  my', 'Tom._my', 'ab-'])
     assert.equal((await create(ctx, a, name)).status, CR.INVALID_NAME, JSON.stringify(name));
   for (const skin of ['', 'bad skin', 'x'.repeat(21), 'a-b']) assert.equal((await create(ctx, a, 'Tommy', skin)).status, CR.INVALID_SKIN, skin);
   const tommy = await create(ctx, a, 'Tommy', 'player');
   assert.deepEqual([tommy.op, tommy.status], [2, CR.OK]); assert.ok(tommy.id > 0);
   assert.deepEqual(tommy.lobby.characters, [{ id: tommy.id, name: 'Tommy', skin: 'player', money: 0, online: 0 }]);
   assert.equal((await create(ctx, b, 'TOMMY')).status, CR.NAME_TAKEN, 'names are unique whatever their case');
-  const lance = await create(ctx, a, 'Lance V.', 'hmyst');
+  for (const same of ['Tom my', 'tom_my', 'T.o.m.m.y', 'to-mmy']) assert.equal((await create(ctx, b, same)).status, CR.NAME_TAKEN, `${same}: whatever its separators`);
+  const lance = await create(ctx, a, 'Lance V', 'hmyst');
   assert.equal(lance.status, CR.OK); assert.equal(lance.lobby.characters.length, 2);
   assert.equal((await create(ctx, a, 'Third')).status, CR.TOO_MANY);
   // (skins: the account's own characters only)
@@ -272,7 +277,7 @@ test('the lobby: characters per account, their names\' rules, unique names, the 
   assert.equal((await lobbyRequest(ctx, b, C.CHAR_DELETE, w().u32(lance.id).done())).status, CR.NOT_FOUND);
   const gone = await lobbyRequest(ctx, a, C.CHAR_DELETE, w().u32(lance.id).done());
   assert.deepEqual([gone.op, gone.status], [4, CR.OK]); assert.deepEqual(gone.lobby.characters.map((c) => c.name), ['Tommy']);
-  assert.equal((await create(ctx, b, 'lance v.')).status, CR.OK, 'a deleted character\'s name is free again');
+  assert.equal((await create(ctx, b, 'lance.v')).status, CR.OK, 'a deleted character\'s name is free again');
   // (a character in the world is not deleted)
   await join(ctx, a, tommy.id);
   assert.equal((await lobbyRequest(ctx, a, C.CHAR_DELETE, w().u32(tommy.id).done())).status, CR.ERROR);
@@ -465,14 +470,20 @@ test('departures and absences: a player\'s entities to the nearest present playe
   ctx.now.skip(61000);
   for (const p of [b.p, c.p]) p.send([C.PING, w().f64(1).done()]);
   await b.p.next(S.PONG); await c.p.next(S.PONG);
+  b.p.clear();
   ctx.server.mmo.sweep();
+  // (the entities b was given and said nothing of for a minute: orphaned, everyone told — the contract's 60 s)
+  const idle = new Map();
+  for (let i = 0; i < 3; i++) { const o = ownerOf((await b.p.next(S.OWNER)).body); idle.set(o.netid, [o.owner, o.previous]); }
+  assert.deepEqual(idle, new Map([[id(1), [NOBODY, sb]], [id(2), [NOBODY, sb]], [cEntity, [NOBODY, sb]]]));
+  await b.p.quiet(S.OWNER, 50);
   c.p.send([C.ENTITY_STATE, estate(id(4), 0, 1000, 0, 0)]);
   await b.p.quiet(C.ENTITY_STATE);
   c.p.send([C.OWN, w().u32(id(4)).u8(1).u8(NOBODY).done()]);
   assert.deepEqual(ownerOf((await b.p.next(S.OWNER)).body), { netid: id(4), owner: sc, previous: NOBODY }, 'its tag\'s session gone: nobody\'s');
 });
 
-test('records and locks: LOCK, STORE by the holder, UNLOCK; replayed after WELCOME; released when the holder goes away', async (t) => {
+test('records and locks: LOCK, STORE by the holder, UNLOCK; replayed after WELCOME; kept while the holder is away', async (t) => {
   const f = fixture(t), ctx = await serve(t, f);
   const a = await player(ctx, await ctx.account('alice'), 'Tommy'), b = await player(ctx, await ctx.account('bob'), 'Lance');
   const sa = a.welcome.slot, key = 0x0105;
@@ -496,13 +507,22 @@ test('records and locks: LOCK, STORE by the holder, UNLOCK; replayed after WELCO
   await a.p.next(S.RECORD); await b.p.next(S.RECORD);
   b.p.send([C.UNLOCK, w().u16(key).done()]);
   assert.deepEqual(recordOf((await a.p.next(S.RECORD)).body), { key, holder: NOBODY, data });
-  // (the holder away: released, data unchanged)
+  // (the holder away — its pause menu, its tab hidden —: its locks stay its own, what it took out under them is still in
+  // its game; the others still told who holds them)
+  ctx.now.skip(2000);
   b.p.send([C.LOCK, w().u16(key).done()], [C.LOCK, w().u16(7).done()]);
   await a.p.next(S.RECORD); await a.p.next(S.RECORD); a.p.clear();
   b.p.send([C.AWAY, w().u8(1).u8(1).done()]);
   await a.p.next(S.PLAYER_AWAY);
-  const released = [recordOf((await a.p.next(S.RECORD)).body), recordOf((await a.p.next(S.RECORD)).body)].sort((x, y) => x.key - y.key);
-  assert.deepEqual(released, [{ key: 7, holder: NOBODY, data: Buffer.alloc(0) }, { key, holder: NOBODY, data }]);
+  await a.p.quiet(S.RECORD);
+  ctx.now.skip(2000);
+  a.p.send([C.LOCK, w().u16(key).done()]);
+  assert.equal(recordOf((await a.p.next(S.RECORD)).body).holder, b.welcome.slot, 'still b\'s');
+  // (back, and stored: the record as b's game has it)
+  b.p.send([C.AWAY, w().u8(1).u8(0).done()], [C.STORE, w().u16(key).u16(data.length).bytes(data).done()], [C.UNLOCK, w().u16(7).done()]);
+  await a.p.next(S.PLAYER_AWAY);
+  assert.deepEqual(recordOf((await a.p.next(S.RECORD)).body), { key, holder: NOBODY, data });
+  assert.deepEqual(recordOf((await a.p.next(S.RECORD)).body), { key: 7, holder: NOBODY, data: Buffer.alloc(0) }, 'an empty record let go: forgotten');
   // (a newcomer: every record after WELCOME — with data or a holder)
   a.p.send([C.LOCK, w().u16(9).done()]);
   await a.p.next(S.RECORD);
@@ -794,4 +814,195 @@ test('a player that stops reading: its realtime records dropped once 1 MB waits 
   const got = slow.counts.get(C.PLAYER_STATE) ?? 0;
   assert.equal(slow.counts.get(S.CHAT), 1, 'control records go through');
   assert.ok(got > 1000 && got < sent, `${got} of ${sent} realtime records: the rest dropped`);
+});
+
+test('a departed holder\'s locks: kept for its character (its game may still hold what it took out), given back at its JOIN; not after LEAVE; for two minutes at most', async (t) => {
+  const f = fixture(t), ctx = await serve(t, f);
+  const alice = await ctx.account('alice'), bob = await ctx.account('bob');
+  let a = await player(ctx, alice, 'Tommy');
+  const b = await player(ctx, bob, 'Lance');
+  const key = 0x0102, cars = Buffer.alloc(160, 0x33);
+  // (a's garage: its record stored, then opened again — the cars out in a's game, the record still listing them)
+  a.p.send([C.LOCK, w().u16(key).done()], [C.STORE, w().u16(key).u16(cars.length).bytes(cars).done()], [C.LOCK, w().u16(key).done()]);
+  for (let i = 0; i < 3; i++) await b.p.next(S.RECORD);
+  // (its connection lost: the others see the lock free, nobody gets it)
+  await a.p.close();
+  await b.p.next(S.PLAYER_LEAVE);
+  assert.deepEqual(recordOf((await b.p.next(S.RECORD)).body), { key, holder: NOBODY, data: cars });
+  b.p.send([C.LOCK, w().u16(key).done()]);
+  assert.deepEqual([...(await b.p.next(S.DENIED)).body], [C.LOCK, D.INVALID], 'kept for a\'s character');
+  // (a back as the same character: the lock is its again, everyone told — its STORE of what came back in goes through)
+  a = await player(ctx, alice, 'Tommy');
+  const back = await b.p.next(S.RECORD);
+  assert.deepEqual([back.from, recordOf(back.body).holder], [a.welcome.slot, a.welcome.slot]);
+  const mine = [recordOf((await a.p.next(S.RECORD)).body), recordOf((await a.p.next(S.RECORD)).body)];
+  assert.deepEqual(mine.map((r) => r.holder), [NOBODY, a.welcome.slot], 'the replay, then the lock given back');
+  const less = Buffer.alloc(160, 0x11);
+  a.p.send([C.STORE, w().u16(key).u16(less.length).bytes(less).done()]);
+  assert.deepEqual(recordOf((await b.p.next(S.RECORD)).body), { key, holder: NOBODY, data: less });
+  // (LEAVE: its game left the world, nothing out — the lock free for everyone at once)
+  a.p.send([C.LOCK, w().u16(key).done()]);
+  await b.p.next(S.RECORD);
+  ctx.now.skip(250); a.p.send([C.LEAVE]);
+  await a.p.next(S.LEFT);
+  assert.equal(recordOf((await b.p.next(S.RECORD)).body).holder, NOBODY);
+  b.p.send([C.LOCK, w().u16(key).done()]);
+  assert.equal(recordOf((await b.p.next(S.RECORD)).body).holder, b.welcome.slot);
+  b.p.send([C.UNLOCK, w().u16(key).done()]);
+  await b.p.next(S.RECORD);
+  // (kept two minutes at most)
+  const c = await player(ctx, await ctx.account('carol'), 'Mercedes');
+  c.p.send([C.LOCK, w().u16(key).done()]);
+  await b.p.next(S.RECORD);
+  await c.p.close();
+  await b.p.next(S.RECORD);
+  ctx.now.skip(60000);
+  b.p.send([C.LOCK, w().u16(key).done()]);
+  assert.deepEqual([...(await b.p.next(S.DENIED)).body], [C.LOCK, D.INVALID]);
+  ctx.now.skip(61000);
+  b.p.send([C.PING, w().f64(0).done()]); await b.p.next(S.PONG);
+  ctx.server.mmo.sweep();
+  b.p.send([C.LOCK, w().u16(key).done()]);
+  assert.equal(recordOf((await b.p.next(S.RECORD)).body).holder, b.welcome.slot);
+});
+
+test('records\' limits: LOCK/STORE/UNLOCK 4 a second (8 at once); keys the version declares; locks a player holds, records a character stored, a world\'s data', async (t) => {
+  const f = fixture(t, { maxPlayers: 3, records: [[0, 99], [256, 267]] });
+  const ctx = await serve(t, f);
+  const a = await player(ctx, await ctx.account('alice'), 'Tommy'), b = await player(ctx, await ctx.account('bob'), 'Lance');
+  // (a burst: 8, then denied)
+  for (let i = 0; i < 9; i++) a.p.send([i % 2 ? C.UNLOCK : C.LOCK, w().u16(256).done()]);
+  for (let i = 0; i < 8; i++) await b.p.next(S.RECORD);
+  assert.deepEqual([...(await a.p.next(S.DENIED)).body], [C.LOCK, D.RATE]);
+  await b.p.quiet(S.RECORD);
+  // (keys outside the version's ranges: denied)
+  ctx.now.skip(2000);
+  a.p.send([C.LOCK, w().u16(100).done()], [C.LOCK, w().u16(0x0300).done()]);
+  assert.deepEqual([...(await a.p.next(S.DENIED)).body], [C.LOCK, D.INVALID]);
+  await b.p.quiet(S.RECORD);
+  // (16 locks held at once)
+  a.p.clear();
+  for (let k = 0; k < 16; k++) { ctx.now.skip(250); a.p.send([C.LOCK, w().u16(k).done()]); assert.equal(recordOf((await b.p.next(S.RECORD)).body).key, k); }
+  ctx.now.skip(250); a.p.send([C.LOCK, w().u16(16).done()]);
+  assert.deepEqual([...(await a.p.next(S.DENIED)).body], [C.LOCK, D.INVALID]);
+  // (16 records with data per character: the 17th STORE denied — 15 stored here, one more on a key it then frees)
+  for (let k = 0; k < 16; k++) { ctx.now.skip(250); a.p.send([C.STORE, w().u16(k).u16(1).bytes([k]).done()]); assert.equal(recordOf((await b.p.next(S.RECORD)).body).data[0], k); }
+  ctx.now.skip(250); a.p.send([C.LOCK, w().u16(20).done()]); await b.p.next(S.RECORD);
+  ctx.now.skip(250); a.p.send([C.STORE, w().u16(20).u16(1).bytes([1]).done()]);
+  assert.deepEqual([...(await a.p.next(S.DENIED)).body], [C.STORE, D.INVALID]);
+  // (an empty STORE frees a key: the character may store again)
+  ctx.now.skip(250); a.p.send([C.LOCK, w().u16(3).done()]); await b.p.next(S.RECORD);
+  ctx.now.skip(250); a.p.send([C.STORE, w().u16(3).u16(0).done()]);
+  assert.deepEqual(recordOf((await b.p.next(S.RECORD)).body), { key: 3, holder: NOBODY, data: Buffer.alloc(0) });
+  ctx.now.skip(250); a.p.send([C.STORE, w().u16(20).u16(1).bytes([1]).done()]);
+  assert.equal(recordOf((await b.p.next(S.RECORD)).body).key, 20);
+  // (the world's data: 1 MB together — characters each within theirs, the world full all the same)
+  await ctx.close();
+  const raw = JSON.parse(fs.readFileSync(path.join(f.mmoDir, 'city-online', 'world.json'), 'utf8'));
+  assert.equal(Object.keys(raw.records).length, 16);
+  assert.equal(Object.values(raw.recordsBy).every((id) => id === a.id), true, 'who stored each, kept');
+  // (a world.json over 1 MB of records: what fits is loaded)
+  const big = Buffer.alloc(4096, 7).toString('base64'), preset = {};
+  for (let k = 0; k < 300; k++) preset[k] = big;
+  const g = fixture(t, { maxPlayers: 3 });
+  fs.mkdirSync(path.join(g.mmoDir, 'city-online'), { recursive: true });
+  fs.writeFileSync(path.join(g.mmoDir, 'city-online', 'world.json'), JSON.stringify({ minutes: 720, msPerMinute: 1000, vars: {}, records: preset }));
+  const ctx2 = await serve(t, g);
+  const c = await player(ctx2, await ctx2.account('carol'), 'Mercedes');
+  await sleep(100);
+  assert.equal(c.p.inbox.filter((r) => r.type === S.RECORD).length, 256, '1 MB of records loaded, the rest left out');
+  c.p.clear();
+  c.p.send([C.LOCK, w().u16(1000).done()]); await c.p.next(S.RECORD);
+  c.p.send([C.STORE, w().u16(1000).u16(1).bytes([1]).done()]);
+  assert.deepEqual([...(await c.p.next(S.DENIED)).body], [C.STORE, D.INVALID]);
+  c.p.send([C.STORE, w().u16(5).u16(1).bytes([1]).done()]);
+  assert.deepEqual([...(await c.p.next(S.DENIED)).body], [C.STORE, D.INVALID], 'not the holder');
+  c.p.send([C.LOCK, w().u16(5).done()], [C.STORE, w().u16(5).u16(10).bytes(Buffer.alloc(10)).done()]);
+  await c.p.next(S.RECORD);
+  assert.deepEqual(recordOf((await c.p.next(S.RECORD)).body), { key: 5, holder: NOBODY, data: Buffer.alloc(10) }, 'smaller: within the world\'s data');
+});
+
+test('an unreadable characters.json or world.json is never taken for an empty one: refused, read again at the next try', async (t) => {
+  const f = fixture(t), dir = path.join(f.mmoDir, 'city-online');
+  fs.mkdirSync(path.join(dir, 'characters.json'), { recursive: true }); // (EISDIR: as EIO or EMFILE would)
+  const ctx = await serve(t, f);
+  const alice = await ctx.account('alice');
+  const p = await Peer.open(ctx, alice);
+  assert.equal((await p.next(S.REFUSED)).body[0], R.ERROR);
+  await p.done;
+  assert.ok(fs.statSync(path.join(dir, 'characters.json')).isDirectory(), 'left as it was');
+  fs.rmdirSync(path.join(dir, 'characters.json'));
+  const userId = (await (await fetch(`${ctx.base}/api/account`, { headers: { Cookie: alice } })).json()).user?.id;
+  fs.writeFileSync(path.join(dir, 'characters.json'), JSON.stringify({ nextId: 8, characters: [{ id: 7, user: userId ?? 'x', name: 'Kept', skin: 'player', money: 5 }] }));
+  fs.mkdirSync(path.join(dir, 'world.json'));
+  const q = await Peer.open(ctx, alice);
+  const lobby = await hello(q);
+  if (userId) assert.deepEqual(lobby.characters.map((c) => c.name), ['Kept'], 'read again: not cached empty');
+  const id = userId ? 7 : (await create(ctx, q, 'Tommy')).id;
+  ctx.now.skip(250); q.send([C.JOIN, w().u32(id).done()]);
+  assert.deepEqual(resultOf((await q.next(S.CHAR_RESULT)).body), { op: 5, status: CR.ERROR, id });
+  fs.rmdirSync(path.join(dir, 'world.json'));
+  fs.writeFileSync(path.join(dir, 'world.json'), JSON.stringify({ minutes: 100, msPerMinute: 1000, vars: { 3: 9 }, records: {} }));
+  const welcome = await join(ctx, q, id);
+  assert.deepEqual([Math.floor(welcome.world.baseMinutes), welcome.world.vars], [100, { 3: 9 }]);
+});
+
+test('admins are accounts: a listed name is bound to the first account signed in under it; a new account of that name is none', async (t) => {
+  const f = fixture(t), ctx = await serve(t, f);
+  fs.mkdirSync(f.mmoDir, { recursive: true });
+  fs.writeFileSync(path.join(f.mmoDir, 'admins.json'), JSON.stringify(['Boss']));
+  const status = async (cookie) => (await (await fetch(`${ctx.base}/api/mmo/city-online`, { headers: { Cookie: cookie } })).json()).admin;
+  const boss = await ctx.account('boss');
+  assert.equal(await status(boss), true);
+  const bound = JSON.parse(fs.readFileSync(path.join(f.mmoDir, 'admin-ids.json'), 'utf8'));
+  assert.equal(typeof bound.boss, 'string');
+  const del = await fetch(`${ctx.base}/api/account`, { method: 'DELETE', headers: { Origin: ctx.base, 'Content-Type': 'application/json', Cookie: boss }, body: JSON.stringify({ password: 'orthros-test-password' }) });
+  assert.equal(del.status, 200);
+  const again = await ctx.account('boss');
+  assert.equal(await status(again), false, 'the name registered again: not the admin');
+  // ({ name, id } entries: that account only)
+  fs.writeFileSync(path.join(f.mmoDir, 'admins.json'), JSON.stringify([{ name: 'boss', id: 'someone-else' }, { name: 'Chief', id: bound.boss }]));
+  assert.equal(await status(again), false);
+  const chief = await ctx.account('chief');
+  assert.equal(await status(chief), false, 'the id is another account\'s');
+});
+
+test('connections: two outside the world per account; at the version\'s limit the idlest outside the world makes room; no HELLO in 10 s closed; pongs are signs of life', async (t) => {
+  const f = fixture(t, { maxCharacters: 2, maxPlayers: 2 }), ctx = await serve(t, f); // (8 connections at most)
+  const alice = await ctx.account('alice');
+  const l1 = await Peer.open(ctx, alice); await hello(l1);
+  const l2 = await Peer.open(ctx, alice); await hello(l2);
+  const l3 = await Peer.open(ctx, alice); await hello(l3);
+  assert.equal((await l1.next(S.REFUSED)).body[0], R.ELSEWHERE, 'a third outside the world: the oldest goes');
+  assert.equal(l2.closed, false);
+  // (others fill the version: 7 connections, then 8 with one in the world)
+  const others = [];
+  for (const [name, n] of [['bob', 2], ['carol', 2], ['dave', 1]]) { const c = await ctx.account(name); for (let i = 0; i < n; i++) { ctx.now.skip(10); const p = await Peer.open(ctx, c); await hello(p); others.push(p); } }
+  ctx.now.skip(10);
+  const inWorld = await player(ctx, await ctx.account('erin'), 'Erin');
+  assert.equal([l2, l3, ...others].some((p) => p.closed), false);
+  // (l2 has been idle the longest outside the world: closed for a newcomer, who is let in)
+  ctx.now.skip(10);
+  l3.send([C.PING, w().f64(0).done()]); await l3.next(S.PONG);
+  const late = await Peer.open(ctx, await ctx.account('frank'));
+  assert.equal((await l2.next(S.REFUSED)).body[0], R.FULL);
+  await hello(late);
+  assert.equal([l3, inWorld.p, ...others].some((p) => p.closed), false, 'only the idlest closed, never one in the world');
+  // (no HELLO within 10 s: closed — not refused, a page connects again if it wants)
+  const mute = await Peer.open(ctx, await ctx.account('gina'));
+  await l2.done;
+  ctx.now.skip(11000);
+  for (const p of [l3, late, inWorld.p, ...others]) if (!p.closed) { p.send([C.PING, w().f64(0).done()]); await p.next(S.PONG); }
+  ctx.server.mmo.sweep();
+  await mute.done;
+  assert.equal(mute.inbox.filter((r) => r.type === S.REFUSED).length, 0);
+  assert.equal(late.closed, false);
+  // (a peer that sends nothing for 46 s but answers the server's pings stays)
+  ctx.now.skip(30000);
+  ctx.server.mmo.sweep(); // (pings)
+  await sleep(150);
+  ctx.now.skip(16000);
+  ctx.server.mmo.sweep();
+  await sleep(50);
+  assert.equal(late.closed, false, 'its pongs kept it');
 });
