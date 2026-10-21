@@ -9,7 +9,8 @@ import path from 'node:path';
 import { createServer } from '../src/host/server.js';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';
-import { forLink, startupHead, launchSet, setBytes, launchSummary, PRE_PLAYABLE, WIRE_RATIO } from '../src/vfs/launch-set.js';
+import { NetLink } from '../src/vfs/net-link.js';
+import { forLink, startupHead, launchSet, launchFirst, setBytes, launchSummary, PRE_PLAYABLE, WIRE_RATIO } from '../src/vfs/launch-set.js';
 import { createDataWorker } from '../src/vfs/data-worker.js';
 import { launchFor, launchStatus } from '../src/host/web/download.js';
 
@@ -30,6 +31,36 @@ test('the startup set: the entries flagged read before playable when the order h
   // (a light copy earlier sessions read: on a fast link the file itself, every block, with the entry's flag)
   const lightRead = [['.light/tex.dds', 0, 3, 10, 1]];
   assert.deepEqual(forLink(files, lightRead, true), [['tex.dds', 0, 0, 10, 1], ['tex.dds', 1, 0, 10, 1]]);
+});
+
+test('the learned order fetched ahead puts its launch set first (a player in the menu: a new game\'s load before later reads), media last', () => {
+  const files = new HttpBackend('/game/m/', tree());
+  const order = [['data.bsa', 0, 1, 0, 1], ['late.esp', 0, 1, 50, 0], ['Video/intro.bik', 0, 0, 60, 1], ['tex.dds', 0, 0xffff, 100, 1], ['data.bsa', 2, 1, 9000, 0], ['data.bsa', 1, 1, 3000, 1]];
+  const key = (l) => l.map((e) => e[0] + '#' + e[1]);
+  assert.deepEqual(key(launchFirst(files, order, true)), ['data.bsa#0', 'Video/intro.bik#0', 'tex.dds#0', 'data.bsa#1', 'late.esp#0', 'data.bsa#2']);
+  assert.deepEqual(key(launchFirst(files, order, false)), ['data.bsa#0', '.light/tex.dds#0', 'data.bsa#1', 'late.esp#0', 'data.bsa#2', 'Video/intro.bik#0'], 'not fast: light copies, the movie last');
+  const plain = order.map((e) => e.slice(0, 4));
+  assert.deepEqual(launchFirst(files, plain, true), forLink(files, plain, true), 'no flags: the order as it is');
+  // (the game's step after the launch set's end: the order starting again is not part of it)
+  const store = new MemBlockStore(64 * MiB), b = new HttpBackend('/game/m/', tree(), { store });
+  b.learned = { entries: launchFirst(b, order, true).map(([p, i, mask, t]) => ({ path: p, size: tree().files[p]?.size ?? 3 * MiB, mtime: 1, index: i, mask, t })), pos: 2 };
+  assert.equal(b.stepEstimate().bytes, CHUNK, 'data.bsa#1 only, not late.esp read earlier in the timeline');
+});
+
+test('a media file the game streams (a menu\'s music) does not move the background pass to the order\'s media tail', async () => {
+  const tr = { dirs: { Music: { dirs: {}, files: { 'title.mp3': { size: BLOCK, mtime: 1, media: true } } } }, files: { 'data.bsa': { size: 3 * BLOCK, mtime: 1 } } };
+  const store = new MemBlockStore(64 * MiB), b = new HttpBackend('/game/m/', tr, { store, net: new NetLink({ bw: 85000 }) });
+  assert.equal(b.net.fast(), false);
+  const order = [['data.bsa', 0, 1, 0, 1], ['Music/title.mp3', 0, 1, 50, 1], ['data.bsa', 1, 1, 100, 1], ['data.bsa', 2, 1, 9000, 0]];
+  const list = launchFirst(b, order, false);
+  assert.deepEqual(list.map((e) => e[0] + '#' + e[1]), ['data.bsa#0', 'data.bsa#1', 'data.bsa#2', 'Music/title.mp3#0']);
+  await b.prefetch(list, {}, () => true); // (the entries only: stopped at once)
+  b.noteBlock('data.bsa', 0);
+  assert.equal(b.learned.pos, 0);
+  b.noteBlock('Music/title.mp3', 0);
+  assert.equal(b.learned.pos, 0, 'the game is still where it was in the order: data.bsa#1 comes next, not the media after the music');
+  b.noteBlock('data.bsa', 1);
+  assert.equal(b.learned.pos, 1);
 });
 
 test('a set\'s bytes, those here, and a launch\'s cost with and without light copies, its wire bytes from the units known', () => {
@@ -273,4 +304,35 @@ test('a page that waits for the startup set (prefetch: \'startup\') gets the res
   handle({ start: true });
   await until(() => asked.some(([p]) => p === 'b.dat') && asked.some(([p, a]) => p === 'a.dat' && a === BLOCK), 'the rest of the learned order');
   await until(() => out.some((m) => m.ahead?.finished), 'the learned order loaded');
+});
+
+test('the data worker loads the launch set first and tells the way to playable: its bytes, those here, the time left', async (t) => {
+  const asked = [];
+  const tr = { dirs: {}, files: { 'a.dat': { size: 2 * BLOCK, mtime: 5 }, 'b.dat': { size: BLOCK, mtime: 5 } } };
+  const learned = [['a.dat', 0, 1, 0, 1], ['b.dat', 0, 1, 100, 0], ['a.dat', 1, 1, 5000, 1]];
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(url, 'http://x');
+    if (u.pathname === '/api/manifest/v') return Response.json({ name: 'v' });
+    if (u.pathname === '/api/tree/v') return Response.json(tr);
+    if (u.pathname === '/api/prefetch/v') return init.method === 'POST' ? new Response(null, { status: 204 }) : Response.json(learned);
+    const m = /^\/gamez\/v\/(.+)$/.exec(u.pathname);
+    if (m) { const [a, b] = u.searchParams.get('r').split('-').map(Number); asked.push([m[1], a]); await new Promise((r) => setTimeout(r, 30)); const body = new Uint8Array(b - a); return new Response(body, { status: 200, headers: { 'content-length': String(body.length) } }); }
+    return new Response('no', { status: 404 });
+  };
+  const out = [], handle = createDataWorker((m) => out.push(m));
+  const ctrl = new Int32Array(new SharedArrayBuffer(64)), data = new Uint8Array(new SharedArrayBuffer(1 << 20));
+  handle({ init: { name: 'v', session: 's2', prefetch: 'start', bw: 85000, ctrl: ctrl.buffer, data: data.buffer } });
+  const until = async (ok, what) => { for (let i = 0; i < 3000 && !ok(); i++) await new Promise((r) => setTimeout(r, 2)); assert.ok(ok(), what); };
+  await until(() => out.some((m) => m.ready), 'ready');
+  t.after(() => handle({ close: true }));
+  handle({ start: true });
+  await until(() => out.some((m) => m.launch), 'told');
+  const first = out.find((m) => m.launch).launch;
+  assert.equal(first.bytes, 2 * CHUNK, 'the flagged entries\' learned pieces');
+  assert.ok(first.here < first.bytes && !first.done && first.wireLeft > 0, JSON.stringify(first));
+  await until(() => out.some((m) => m.launch?.done), 'all of it here');
+  assert.equal(out.findLast((m) => m.launch).launch.here, 2 * CHUNK);
+  const a1 = asked.findIndex(([p, a]) => p === 'a.dat' && a === BLOCK), b0 = asked.findIndex(([p]) => p === 'b.dat');
+  assert.ok(a1 >= 0 && (b0 < 0 || a1 < b0), `the launch set before the rest: ${JSON.stringify(asked)}`);
 });

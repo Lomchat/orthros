@@ -23,15 +23,19 @@ const known = new Map();
  * on, up to `size` in all — or null (not a format Orthros lightens, or nothing to gain).
  */
 export function lightCopy(file, st) {
-  if (!/\.dds$/i.test(file)) return null;
+  const dds = /\.dds$/i.test(file);
+  if (!dds && !/\.tga$/i.test(file)) return null;
   const key = `${file}\0${st.size}\0${st.mtimeMs}`;
   let c = known.get(key);
   if (c !== undefined) { known.delete(key); known.set(key, c); return c; }
   c = null;
   try {
     const fd = fs.openSync(file, 'r');
-    try { const head = Buffer.alloc(148); const n = fs.readSync(fd, head, 0, 148, 0); c = lightDds(head.subarray(0, n), st.size); }
-    finally { fs.closeSync(fd); }
+    try {
+      const head = Buffer.alloc(148); const n = fs.readSync(fd, head, 0, 148, 0);
+      if (dds) c = lightDds(head.subarray(0, n), st.size);
+      else { const t = lightTga(head.subarray(0, n), st.size); if (t) c = tgaCopy(file, st, t); }
+    } finally { fs.closeSync(fd); }
   } catch { return null; } // (a failure to read it — a file being replaced, no descriptor left —: not remembered)
   known.set(key, c);
   if (known.size > MAX_KNOWN) known.delete(known.keys().next().value);
@@ -112,4 +116,72 @@ export function lightDds(head, size) {
   if (flags & DDSD_LINEARSIZE) out.writeUInt32LE(levelBytes(k), 20);
   else if (flags & DDSD_PITCH) out.writeUInt32LE(compressed ? Math.max(1, Math.ceil(lw / 4)) * unit : lw * unit, 20);
   return { size: headLen + total - skipped, head: out, from: headLen + skipped };
+}
+
+// ---------------------------------------------------------------- TGA: a picture of a screen's size, uncompressed
+
+/**
+ * A TGA picture is lightened from this longest side on: a picture of a screen's size, 3 MB and more as it is (a loading
+ * screen's, a map's) — a smaller one may be a picture drawn at its own size (a menu's, an icon), left as it is.
+ */
+export const TGA_LIGHT_FROM = 1024;
+/** The generated light pictures kept (bytes), least recently used out first: made again from the file when needed. */
+const TGA_KEPT_BYTES = 32 << 20;
+const tgaKept = new Map();
+let tgaKeptBytes = 0;
+
+/**
+ * The light shape of an uncompressed TGA picture whose file starts with `head` (its first 18 bytes at least) and has
+ * `size` bytes: { w, h, px, at, step, lw, lh, size } — the picture `step` times smaller on each side (a power of two),
+ * its longest side LIGHT_SIDE at most, `size` bytes as a TGA of its own (the same pixel format and origin, no image ID) —
+ * or null: not a truecolour (24/32-bit) or greyscale (8-bit) picture stored as it is (a colour map, run-length encoding,
+ * interleaved rows), smaller than TGA_LIGHT_FROM, or not as its header says.
+ */
+export function lightTga(head, size) {
+  if (head.length < 18) return null;
+  const idLen = head[0], cmap = head[1], type = head[2], w = head.readUInt16LE(12), h = head.readUInt16LE(14), bpp = head[16], desc = head[17];
+  if (cmap !== 0 || !(type === 2 ? bpp === 24 || bpp === 32 : type === 3 && bpp === 8) || desc & 0xc0) return null;
+  if (!w || !h || Math.max(w, h) < TGA_LIGHT_FROM) return null;
+  const px = bpp / 8, at = 18 + idLen;
+  if (at + w * h * px > size) return null;
+  let step = 1; while (Math.max(w, h) / step > LIGHT_SIDE) step *= 2;
+  const lw = Math.max(1, Math.floor(w / step)), lh = Math.max(1, Math.floor(h / step));
+  return { w, h, px, at, step, lw, lh, size: 18 + lw * lh * px };
+}
+
+/**
+ * The light picture of a TGA (`t`: its lightTga shape, `bytes`: the file): its header (no image ID), then each pixel the
+ * mean of the `step` × `step` pixels it stands for, channel by channel, the rows in the file's order.
+ */
+export function tgaLight(bytes, t) {
+  const out = Buffer.alloc(t.size), { w, px, at, step, lw, lh } = t, n = step * step;
+  bytes.copy(out, 0, 0, 18); out[0] = 0;
+  out.writeUInt16LE(0, 8); out.writeUInt16LE(0, 10); out.writeUInt16LE(lw, 12); out.writeUInt16LE(lh, 14);
+  const sum = new Uint32Array(lw * px);
+  for (let y = 0; y < lh; y++) {
+    sum.fill(0);
+    for (let dy = 0; dy < step; dy++) {
+      let i = at + ((y * step + dy) * w) * px;
+      for (let x = 0; x < lw; x++) for (let dx = 0; dx < step; dx++) for (let c = 0; c < px; c++) sum[x * px + c] += bytes[i++];
+    }
+    const row = 18 + y * lw * px;
+    for (let k = 0; k < lw * px; k++) out[row + k] = Math.round(sum[k] / n);
+  }
+  return out;
+}
+
+/** A TGA's light copy for readLight: all of it in `head`, made from the file when read (kept a while: tgaKept). */
+function tgaCopy(file, st, t) {
+  const key = `${file}\0${st.size}\0${st.mtimeMs}`;
+  return {
+    size: t.size, from: st.size,
+    get head() {
+      let b = tgaKept.get(key);
+      if (b) { tgaKept.delete(key); tgaKept.set(key, b); return b; }
+      b = tgaLight(fs.readFileSync(file), t);
+      tgaKept.set(key, b); tgaKeptBytes += b.length;
+      for (const [k, v] of tgaKept) { if (tgaKeptBytes <= TGA_KEPT_BYTES || k === key) break; tgaKept.delete(k); tgaKeptBytes -= v.length; }
+      return b;
+    },
+  };
 }

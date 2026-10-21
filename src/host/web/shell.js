@@ -39,6 +39,8 @@ const STRINGS = {
     soundOff: 'Sound is off — click to turn it on', log: 'Launch log', ready: 'Ready',
     ahead: 'Preloading', aheadTitle: 'The game downloads ahead what players need next (what earlier sessions read): waiting a little before going on makes it faster.',
     whole: 'Game downloaded', wholeTitle: 'The whole game is being kept in this browser (settings: offline copy): once done it plays without waiting for the network.',
+    launch: 'Ready to play', launchTitle: 'What the game still reads before it plays without freezing (a new game\'s first load too) is downloading now: waiting in the menu until then spares you the long freeze.',
+    launchLeft: (s, wire) => (s === null || s === undefined ? `${Math.max(1, Math.ceil(wire / 1e6))} MB left` : s < 60 ? 'in < 1 min' : `in ~${Math.round(s / 60)} min`),
   },
   fr: {
     games: '☰ Jeux', gamesTitle: 'quitter la partie et revenir à la liste des jeux', fullscreen: '⛶ Plein écran', fullscreenTitle: 'plein écran : le jeu seul, la souris capturée (maintiens Échap pour sortir)',
@@ -67,6 +69,8 @@ const STRINGS = {
     soundOff: 'Le son est coupé — clique pour l’activer', log: 'Journal de lancement', ready: 'Prêt',
     ahead: 'Préchargement', aheadTitle: 'Le jeu télécharge à l’avance ce dont les joueurs ont besoin ensuite (ce que les sessions précédentes ont lu) : attendre un peu avant de continuer le rend plus rapide.',
     whole: 'Jeu téléchargé', wholeTitle: 'Le jeu entier est gardé dans ce navigateur (réglages : copie hors ligne) : une fois fini, il se joue sans attendre le réseau.',
+    launch: 'Prêt à jouer', launchTitle: 'Ce que le jeu lit encore avant de tourner sans se figer (le premier chargement d’une nouvelle partie aussi) se télécharge maintenant : attendre dans le menu jusque-là t’évite le long gel.',
+    launchLeft: (s, wire) => (s === null || s === undefined ? `encore ${Math.max(1, Math.ceil(wire / 1e6))} Mo` : s < 60 ? 'dans < 1 min' : `dans ~${Math.round(s / 60)} min`),
   },
 };
 const ICON = {
@@ -218,16 +222,26 @@ export function createShell(o) {
    * whole game kept in this browser; gone once done.
    */
   const pills = {};
+  let launching = false;
   shell.setData = (p) => {
-    const kind = p.kind === 'whole' ? 'whole' : 'ahead';
+    const kind = p.kind === 'whole' ? 'whole' : p.kind === 'launch' ? 'launch' : 'ahead';
     let pill = pills[kind];
     if (!pill) {
       pill = pills[kind] = h('span', { class: 'pill data', title: S[kind + 'Title'] }, h('span', {}, S[kind]), h('i', {}, h('u')), h('b'));
       extras.append(pill);
     }
-    const frac = kind === 'whole' ? p.bytes / Math.max(1, p.total) : p.done / Math.max(1, p.total), pct = Math.min(100, Math.floor(frac * 100));
-    pill.querySelector('u').style.width = pct + '%'; pill.querySelector('b').textContent = pct + ' %';
-    pill.hidden = kind === 'whole' ? !!p.done || p.stopped : !!p.finished || !p.total;
+    const frac = kind === 'whole' ? p.bytes / Math.max(1, p.total) : kind === 'launch' ? p.here / Math.max(1, p.bytes) : p.done / Math.max(1, p.total), pct = Math.min(100, Math.floor(frac * 100));
+    pill.querySelector('u').style.width = pct + '%';
+    pill.querySelector('b').textContent = kind === 'launch' ? S.launchLeft(p.seconds, p.wireLeft) : pct + ' %';
+    if (kind === 'launch') {
+      // (the way to playable said while it lasts: the learned order's own pill comes back after it)
+      launching = !p.done && p.here < p.bytes;
+      pill.hidden = !launching;
+      if (pills.ahead) pills.ahead.hidden = launching || pills.ahead.dataset.over === '1';
+      return;
+    }
+    if (kind === 'ahead') pill.dataset.over = p.finished || !p.total ? '1' : '';
+    pill.hidden = kind === 'whole' ? !!p.done || p.stopped : !!p.finished || !p.total || launching;
   };
   mouse.onclick = () => o.onMouse?.();
   /** Follows the pointer lock of `doc` (the page's, or a frame's of the same origin). */

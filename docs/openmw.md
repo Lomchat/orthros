@@ -309,6 +309,20 @@ OffscreenCanvas over the Orthros page — its frames reach the screen while the 
 data received (the streaming's shared byte counter), rate, seconds, and "choose Wait" once Chrome
 may ask.
 
+The engine's package without the example world (2026-10-21, `src/host/openmw-lean.js`). The release's `openmw.data`
+(204 MB, 33.4 MB in brotli) holds the engine's resources (3.3 MB), ICU's data twice (`/icudt68l.dat` and
+`/icu/icudt68l.dat`, 28.6 MB each) and the free example world the page boots with `?nomw` (`/gamedata/`, 144 MB:
+22 MB of the brotli). Every data path of the engine page for a game of its own (hosted, local folder, locker) writes an
+`openmw.cfg` without `data=/gamedata`, yet a new Morrowind player downloaded it before the menu (4-5 min at 85 KB/s).
+The server makes, once per release, the same package with the example world's bytes zeroed — same size and offsets, so
+the metadata inside `openmw.js` stays as it is — at brotli quality 11 (a niced child, `openmw-lean-worker.js`, 207 s
+on the loaded test machine; orthros-r1: 14.9 MB), kept in `<br-cache>/engines/<release>/lean<rule>/<build>/` and
+served immutable as `/engines/<release>/lean<rule>/<build>/openmw.data`; the engine page of a version that is not the
+example (`withLeanPackage`) has `locateFile` give that address for `openmw.data` unless it boots `?nomw`. Until it is made
+(the first page after a release is installed starts it) pages load the release's own package. The home's engine size
+counts it once made (`openmwEngineWire`). Not done: ICU's second copy (the page sets `ICU_DATA=/`, so `/icu/` looks
+unused — another 6-7 MB — not zeroed without a check that nothing reads it).
+
 The engine page's file streaming is the game data every Orthros game reads (CLAUDE.md "Standardization";
 docs/slow-network.md): `src/ports/openmw/streamfs.js` keeps the engine page's StreamFS interface (swapped for the
 release's by `withStreaming`; `?sfs=upstream` on the port's page keeps the release's) and maps its mounts onto the

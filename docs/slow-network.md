@@ -73,6 +73,13 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   fewer levels, the remaining levels as they are, two at least (an engine meeting a compressed texture without stored
   levels may turn its mipmapping filter off for good, even once the file replaces it in place; a texture of fewer
   than three levels is not lightened, nor one drawn without levels — a menu's).
+  A TGA picture of a screen's size (2026-10-21: uncompressed truecolour or greyscale, its longest side
+  `TGA_LIGHT_FROM` = 1024 or more — a loading screen's, a map's; a smaller one may be a menu's picture drawn at its own
+  size) has one too: a TGA of its own, its sides halved until the longest is `LIGHT_SIDE`, each pixel the mean of those
+  it stands for (`lightTga`, `tgaLight`; made from the file when read, the last 32 MB of them kept). Morrowind's eleven
+  loading screens are 1024 × 1024 × 24-bit, 3 MB each (2.8 MB on the wire): its loading screen shows a new random one
+  every 5 s while the game is not started (OpenMW's `LoadingScreen::changeWallpaper`), so at 85 KB/s each new picture
+  held the page ~33 s more (8 of them in a New Game's first load: 21 MB of its 28); light, 197 KB each.
   Derived at each request (a header of its own, then a run of the file: nothing stored, the game files never changed),
   served as `/gamez/<manifest>/.light/<path>` (compressed ranges, read reports learned like the file's). The tree tells
   each such file's light size (`light`). For the browser ports only (`manifest.lightCopies`, the catalog's: `false` in a
@@ -190,6 +197,46 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   download.
 - Not measured yet: the launch sizes on the live server (no session marked before this change), and whether OpenMW's
   in-world mark comes as described (no browser run).
+  `HttpBackend.prefetch` with `learnedOnly`, the pieces as the startup set fetches them) into the same OPFS store; pause
+  and resume (the pieces here are skipped; the progress is kept in `localStorage['orthros.launch.<manifest>']`, the
+  pieces here counted again each half second — `setBytes`). Starting a game stops it first, as the whole download.
+- Not measured yet: the launch sizes on the live server (no session marked before this change). OpenMW's in-world mark
+  was seen in a browser on 2026-10-21 (the 85 KB/s run below: `playable-<manifest>.json` `{ marks: 1 }`, 446 of the
+  French order's 1781 entries flagged).
+- **While the player waits** (2026-10-21): the learned order fetched in the background puts its launch set first
+  (`launchFirst`: the flagged entries, then the others, each in its order; the media still last on a link not fast) —
+  followed from the game's position, a player sitting in the menu gets the rest of the way to playable (a new game's
+  first load) before what sessions read later. The data worker tells the page the way left while the game is not
+  playable (`launchWatch`: `{ launch: { bytes, here, wireLeft, seconds, done } }` every 2 s — the launch set's bytes,
+  those here, the wire bytes left at the link's measured wire/decoded ratio, their time at its measured rate), and the
+  header shows it (`shell.setData` kind `launch`: « Prêt à jouer dans ~N min » / "Ready to play in ~N min", the
+  learned order's own pill hidden meanwhile; gone once all of it is here or the game is playable). Every runtime whose
+  page forwards `GameData.onProgress` (OpenMW's header today). The wire ratio is `WIRE_RATIO` at least: the session's
+  own (its master files compress to ~25 %) said "< 1 min" for a load of 86 s.
+- **A streamed media file does not move the game's position** (`HttpBackend.noteBlock`, entries marked `tail`): on a link
+  that is not fast the media entries are the order's tail; the menu's music, streamed while the player waited, moved the
+  position there, and the background pass went on through every movie and track of the tail (measured: 10.5 min in
+  Morrowind's menu at 85 KB/s fetched 32.8 MB of intro movies — not played, `&novid` — and 14.6 MB of music, none of the
+  launch set's last 6 MB; the pill stayed at "~1 min", the New Game hold 84 s after the wait as without it). Fixed after
+  that run; covered by a unit test, not measured in a browser yet.
+
+### Measured at 85 KB/s (2026-10-21)
+
+Morrowind GOTY Vanilla+ FR through a throttling proxy (a scratch tool: one link of 85,000 B/s shared by the answers,
+80 ms round trip, Cloudflare's `Accept-Encoding: gzip, br`), fresh Chromium profile (headless, SwiftShader), the live server's learned order and
+precompressed units of that morning; New Game clicked 10 s after the menu's music started. "Before" is main at 5dbd24e;
+"after" the TGA light copies, the lean engine package and the launch set first (its flags those the "before" session
+marked, on the same order).
+
+| | before | after |
+|---|---|---|
+| Play solo → main menu | 20.5 min (93.5 MB on the wire: engine 39.1 MB, Morrowind.esm 34.6 MB, Splash 4.1 MB) | 16.0 min (70.4 MB: engine 20.6 MB, Splash 0.2 MB) |
+| New Game → in the world (the page held in one block) | 359 s (longest hold 349 s), 27.9 MB: 21.2 MB of loading-screen pictures | 96 s (longest 86 s), 7.2 MB: 1.3 MB of light pictures |
+| same, after 10.5 min in the menu (second "after" run, before the position fix) | — | 84 s, 6.2 MB |
+
+Unexplained, not network: in the world, with no read waiting (0.3 MB of the game's own reads in 4 min), the page was
+held 1-10 s every ~10 s in all three runs (sum 204 s / 240 s before, 133 s after) — SwiftShader on a machine loaded at
+24-30, to look at on a real GPU.
 
 ## Precompressed units (2026-10-21)
 

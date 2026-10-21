@@ -270,7 +270,9 @@ export class HttpBackend {
       const k = `${r.path}#${b}`; if (rankOf.has(k)) continue;
       rankOf.set(k, entries.length);
       // (t: when the earliest session first needed it, ms from its start — absent from older servers)
-      entries.push({ path: r.path, size: r.file.size, mtime: r.file.mtime ?? 0, index: b, mask: typeof mask === 'number' ? mask & 0xffff : 0, t: Number.isFinite(t) ? t : null });
+      // (tail: a media file's entry on a link that is not fast — launch-set.js forLink put it after all the others, out of
+      // the game's timeline: the game streaming it says nothing of where the game is — see noteBlock)
+      entries.push({ path: r.path, size: r.file.size, mtime: r.file.mtime ?? 0, index: b, mask: typeof mask === 'number' ? mask & 0xffff : 0, t: Number.isFinite(t) ? t : null, tail: !!r.file.media && !this.net.fast() });
     }
     const L = this.learned = { entries, rankOf, pos: -1, inFlight: 0, stop };
     const skey = (e, i = e.index) => `${e.path}#${e.size}#${e.mtime}#${i}`;
@@ -355,7 +357,8 @@ export class HttpBackend {
     let bytes = 0, prevT = L.pos >= 0 ? L.entries[L.pos].t : null;
     for (let r = L.pos + 1, n = 0; r < L.entries.length && n < 4096; r++, n++) {
       const e = L.entries[r];
-      if (e.t === null || (prevT !== null && e.t - prevT > STEP_GAP_MS)) break;
+      // (an earlier time: the order starts again — its launch set first, then the rest, launch-set.js launchFirst)
+      if (e.t === null || (prevT !== null && (e.t - prevT > STEP_GAP_MS || e.t < prevT))) break;
       prevT = e.t;
       if (this.peekBlockHere(e.path, e.size, e.mtime, e.index)) continue;
       const P = BLOCK / CHUNK, c0 = e.index * P, pieces = Math.ceil((Math.min(e.size, (e.index + 1) * BLOCK) - e.index * BLOCK) / CHUNK);
@@ -372,7 +375,9 @@ export class HttpBackend {
     const L = this.learned; if (!L) return;
     const r = L.rankOf.get(`${path}#${index}`); if (r === undefined) return;
     const e = L.entries[r]; if (e.seen) return;
-    e.seen = true; L.pos = r;
+    // (a media file's entry at the order's tail does not move the position: a menu's music, streamed while the player
+    // waits, sent the background pass on through every movie and track of the tail before the rest of the way to playable)
+    e.seen = true; if (!e.tail) L.pos = r;
     this.pumpAhead();
   }
 

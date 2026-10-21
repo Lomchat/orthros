@@ -66,6 +66,20 @@ export function startupHead(files, list, fast) {
 export const launchSet = (files, list, fast) => startupHead(files, forLink(files, list, fast), fast);
 
 /**
+ * A learned order as this link reads it (forLink's), its launch set first when it has flags: the entries earlier
+ * sessions read before their game was playable, then the others, each part in its order (the media files last still,
+ * on a link that is not fast). Followed from the game's position (HttpBackend.prefetch), a session that waits in its
+ * menu loads what the rest of the way to playable needs (a new game's first load) before what sessions read later.
+ */
+export function launchFirst(files, list, fast) {
+  const all = forLink(files, list, fast);
+  if (!flagged(all)) return all;
+  const first = [], rest = [];
+  for (const e of all) ((e[4] & PRE_PLAYABLE) !== 0 && (fast || !files.lookup(e[0])?.file?.media) ? first : rest).push(e);
+  return first.concat(rest);
+}
+
+/**
  * The 64 KiB pieces an entry stands for: { path (the tree's), size, mtime, block, pieces: [chunk index] } — its learned
  * ones (all of the block's when its mask is unknown) —, or null (not in the tree).
  */

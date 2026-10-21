@@ -87,7 +87,7 @@ test('server: a unit missed goes the dynamic way and is made; then served precom
     for (const [u, want] of unitUrls) {
       const a = await get(base + u, 'gzip, br');
       assert.equal(a.r.headers['content-encoding'], 'br', `dynamic brotli (no zstd asked): ${u}`);
-      assert.equal(a.r.headers['x-orthros-unit'], undefined, 'a miss: no unit header');
+      assert.equal(a.r.headers['x-orthros-unit'], 'miss', 'a miss says so (the reader counts it against cutting)');
       assert.deepEqual(plain(a), want);
     }
     assert.equal((await stats()).brHits, 0);

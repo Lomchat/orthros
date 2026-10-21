@@ -19,12 +19,14 @@ import { openVersion, openStore, learnedOrder } from './game-data.js';
 import { MemBlockStore } from './opfs-store.js';
 import { BLOCK, CHUNK } from './http-backend.js';
 import { LIGHT_DIR, treeFiles } from './game-tree.js';
-import { forLink, launchSet, setBytes } from './launch-set.js';
+import { flagged, launchFirst, launchSet, setBytes, WIRE_RATIO } from './launch-set.js';
 
 /** The reads the engine used, sent to the server's learned order every so often. */
 const REPORT_MS = 15000;
 /** The most reads a report that carries a mark sends (the server takes 50000). */
 const MARK_READS = 40000;
+/** How often the way to playable (launchWatch) is told to the page while the game is not there. */
+const LAUNCH_TELL_MS = 2000;
 /** After this long without a read waiting, the next wait is a new step for the indicator. */
 const STEP_PAUSE_MS = 3000;
 
@@ -248,10 +250,12 @@ async function prefetchAll() {
   W.version.parts.forEach((p, i) => {
     if (!lists[i].length) return;
     const progress = { bytes: 0, blocks: 0, done: false };
-    runs.push({ p, progress, job: p.files.prefetch(forLink(p.files, lists[i], W.version.net.fast()), progress, () => W.stop).catch(() => {}) });
+    // (its launch set first: a player waiting in the menu gets what the way to playable still needs first — launchFirst)
+    runs.push({ p, progress, job: p.files.prefetch(launchFirst(p.files, lists[i], W.version.net.fast()), progress, () => W.stop).catch(() => {}) });
   });
   W.runs = runs;
   if (!runs.length) return;
+  launchWatch(lists);
   const tell = () => {
     let done = 0, total = 0;
     for (const { p, progress } of runs) { const n = p.files.learned?.entries.length ?? 0; total += n; done += progress.done ? n : Math.min(n, Math.max(0, (progress.k ?? -1) + 1)); }
@@ -260,6 +264,34 @@ async function prefetchAll() {
   const tick = setInterval(tell, 1000);
   await Promise.all(runs.map((r) => r.job));
   clearInterval(tick); tell();
+}
+
+/**
+ * The way to playable, told to the page every LAUNCH_TELL_MS while the game is not there yet ({ launch: { bytes, here,
+ * wireLeft, seconds, done } }): the launch set of every part as this link reads it (launch-set.js: what earlier
+ * sessions read before their game was playable — a new game's first load included), its bytes here already, the wire
+ * bytes left (the link's measured ratio of wire to decoded bytes, else WIRE_RATIO) and the seconds they take at the
+ * link's measured rate (null until measured). Only for an order with flags (a session marked the version playable);
+ * over once all of it is here or the game is playable (the page's mark).
+ */
+function launchWatch(lists) {
+  if (!lists.some(flagged)) return;
+  let sets = null, fastWas = null, timer = null;
+  const tell = () => {
+    const net = W.version.net, fast = net.fast();
+    if (fast !== fastWas) { fastWas = fast; sets = W.version.parts.map((p, i) => ({ p, set: launchSet(p.files, lists[i], fast) })); }
+    let bytes = 0, here = 0;
+    for (const { p, set } of sets) { const s = setBytes(p.files, set); bytes += s.bytes; here += s.here; }
+    // (WIRE_RATIO at least: the session's own ratio so far is a game's master files', which compress far better than the
+    // textures and models of a first load — measured at 85 KB/s, it said "< 1 min" for a load of 86 s)
+    const ratio = Math.max(WIRE_RATIO, net.totals.rawBytes >= 1 << 20 ? net.ratio() : 0), wireLeft = Math.round(Math.max(0, bytes - here) * ratio);
+    const seconds = net.measured && net.bw > 0 ? Math.ceil(wireLeft / net.bw) : null;
+    const done = here >= bytes || W.marks.has('playable') || W.stop;
+    postMessage({ launch: { bytes, here, wireLeft, seconds, done } });
+    if (done && timer !== null) clearInterval(timer);
+    return done;
+  };
+  if (!tell()) W.timers.push(timer = setInterval(tell, LAUNCH_TELL_MS));
 }
 
 /** The whole version (and the ones it requires) into the browser's copy, in the background, after the game's reads. */

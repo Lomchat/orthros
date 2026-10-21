@@ -37,6 +37,7 @@ import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcEngineFiles, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
 import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withProgressiveView, withSharedEngine, withStreaming } from './openmw.js';
+import { leanPackages, withLeanPackage } from './openmw-lean.js';
 import { re3EngineFiles, re3Installed, re3Modes, re3Module } from './re3.js';
 import { mmoApi } from './mmo.js';
 import { SimLink } from './sim-link.js';
@@ -363,6 +364,10 @@ export function createServer(opts = {}) {
     let wire = 0; const urls = [];
     for (const rel of files) {
       const f = engineFile(enginesDir, release, rel); if (!f) continue;
+      // (a game of its own loads OpenMW's package without the example world once this server made it: openmw-lean.js)
+      const leanUrl = man.runtime === 'openmw' && rel.endsWith('/openmw.data') && !man.openmw.example ? lean?.url(release) : null;
+      const leanBytes = leanUrl ? lean.size(release) : null;
+      if (leanBytes) { wire += leanBytes; urls.push(leanUrl + 'openmw.data'); continue; }
       try {
         const st = fs.statSync(f); let n = st.size;
         try { const br = fs.statSync(f + '.br'); if (br.mtimeMs >= st.mtimeMs) n = br.size; } catch { /* none */ }
@@ -419,6 +424,8 @@ export function createServer(opts = {}) {
       .sort(([, a], [, b]) => (runtimeOf(a) === 'win32') - (runtimeOf(b) === 'win32'))
       .map(([name, man]) => ({ name, units: () => brSeedUnits(man, prefetchList(name)) })),
   }) : null;
+  /** OpenMW engine packages without the example world (openmw-lean.js), kept beside the units: none without them. */
+  const lean = opts.brCacheDir ? leanPackages({ dir: path.join(opts.brCacheDir, 'engines'), enginesDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
 
   /**
    * Learned GL programs, per manifest: the programs sessions had to build at a draw (key, GLSL sources, attribute
@@ -1038,7 +1045,7 @@ export function createServer(opts = {}) {
           const saveKey = scope ? `${man.saveKey}:user:${scope}` : man.saveKey;
           let page = openmwWebText(fs.readFileSync(f, 'utf8'), base, saveKey);
           if (asset.endsWith('.html')) page = withFrameMeter(page);
-          if (asset === 'index.html') page = withProgressiveView(withStreaming(withSharedEngine(page, man.openmw.engine), url.searchParams.get('sfs') === 'upstream'));
+          if (asset === 'index.html') page = withProgressiveView(withStreaming(withLeanPackage(withSharedEngine(page, man.openmw.engine), man.openmw.example ? null : lean?.url(man.openmw.engine)), url.searchParams.get('sfs') === 'upstream'));
           if (asset === 'index.html' && scope) {
             page = page.replace('<head>', '<head><script src="/src/ports/openmw/cloud.js"></script>');
             page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(m[1])}, ${JSON.stringify(scope)});`);
@@ -1055,6 +1062,15 @@ export function createServer(opts = {}) {
       m = /^\/engines\/([^/]+)\/(.+)$/.exec(p);
       if (m) {
         if (![...manifests.values()].some((man) => man.goldsrc?.engine === m[1] || man.openmw?.engine === m[1] || (man.runtime === 're3' && man.re3?.engine === m[1]))) return send(res, 404, 'no such engine');
+        // (an OpenMW release's lean package, made by this server: brotli only — a browser that takes none decodes nothing)
+        const leanFile = lean?.file(m[1], m[2]);
+        if (leanFile) {
+          const cache = 'public, max-age=31536000, immutable';
+          if (/\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !req.headers.range) return sendFile(req, res, leanFile, 'application/octet-stream', { 'Content-Encoding': 'br', 'Cache-Control': cache, 'Vary': 'Accept-Encoding' });
+          res.writeHead(200, headers({ 'Content-Type': 'application/octet-stream', 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }));
+          if (req.method === 'HEAD') return res.end();
+          return void pipeline(fs.createReadStream(leanFile), zlib.createBrotliDecompress(), res).catch(() => res.destroy());
+        }
         const file = engineFile(enginesDir, m[1], m[2]); if (!file) return send(res, 404, 'not found');
         return sendEngineFile(req, res, file, 'public, max-age=31536000, immutable');
       }
