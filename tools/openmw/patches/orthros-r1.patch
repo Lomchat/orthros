@@ -1,0 +1,221 @@
+diff --git a/openmw/apps/openmw/engine.cpp b/openmw/apps/openmw/engine.cpp
+index 771132c..210679d 100644
+--- a/openmw/apps/openmw/engine.cpp
++++ b/openmw/apps/openmw/engine.cpp
+@@ -16,6 +16,12 @@
+ #endif
+ 
+ #include <cerrno>
++#include <algorithm>
++#include <cmath>
++#include <deque>
++#include <mutex>
++#include <string>
++#include <string_view>
+ #include <chrono>
+ #include <future>
+ #include <system_error>
+@@ -38,6 +44,8 @@
+ #include <components/sdlutil/imagetosurface.hpp>
+ #include <components/sdlutil/sdlgraphicswindow.hpp>
+ 
++#include <components/misc/pathhelpers.hpp>
++#include <components/resource/imagemanager.hpp>
+ #include <components/resource/resourcesystem.hpp>
+ #include <components/resource/scenemanager.hpp>
+ #include <components/resource/stats.hpp>
+@@ -99,6 +107,7 @@
+ 
+ #include "mwrender/vismask.hpp"
+ #include "mwrender/camera.hpp"
++#include "mwrender/renderingmanager.hpp"
+ #include "mwbase/world.hpp"
+ #include "mwbase/environment.hpp"
+ #include "mwbase/mechanicsmanager.hpp"
+@@ -1293,6 +1302,44 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_set_clipboard(const char* text)
+         SDL_SetClipboardText(text);
+ }
+ 
++// Orthros (tools/openmw/patches/orthros-r1.patch). A file of the engine's file system replaced by the page (a
++// texture's light copy by the file itself): its cached image is read again and updated in place, between frames, a few
++// at a time (g_orthrosReloadBudget decoded bytes a frame, at least one file) — EmscriptenLoop::reloadUpdated.
++// `path`: within a data folder (textures/tx_a.dds) or in the engine's file system (/mwdata/Data Files/Textures/tx_a.dds),
++// any case or separator. Returns 1 when queued (a DDS file), 0 otherwise. Progress: globalThis.__orthrosTexReloads.
++namespace
++{
++    std::mutex g_orthrosUpdatedMutex;
++    std::deque<std::string> g_orthrosUpdated;
++    constexpr std::size_t g_orthrosReloadBudget = std::size_t(4) << 20;
++}
++extern "C" EMSCRIPTEN_KEEPALIVE int orthros_file_updated(const char* path)
++{
++    if (!path)
++        return 0;
++    std::string name = VFS::Path::Normalized(std::string_view(path)).value();
++    if (Misc::getFileExtension(name) != "dds")
++        return 0;
++    std::lock_guard<std::mutex> lock(g_orthrosUpdatedMutex);
++    if (std::find(g_orthrosUpdated.begin(), g_orthrosUpdated.end(), name) == g_orthrosUpdated.end())
++        g_orthrosUpdated.push_back(std::move(name));
++    return 1;
++}
++
++// Orthros: the rendering's view distance (game units), as the Lua camera.setViewDistance(): applied at the next frame,
++// not saved in the settings (Options' "viewing distance" applies the setting's again). Returns 1 when applied, 0 before
++// the game's main loop or for a distance that is not a positive finite number.
++extern "C" EMSCRIPTEN_KEEPALIVE int orthros_set_view_distance(float distance)
++{
++    if (!g_emArg || !std::isfinite(distance) || !(distance > 0.f))
++        return 0;
++    MWRender::RenderingManager* rendering = MWBase::Environment::get().getWorld()->getRenderingManager();
++    if (!rendering)
++        return 0;
++    rendering->setViewDistance(distance, true);
++    return 1;
++}
++
+ // Debug: point the camera (yaw/pitch in degrees) so we can verify object rendering without mouse-look.
+ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_look(float yawDeg, float pitchDeg)
+ {
+@@ -1569,6 +1616,62 @@ void OMW::Engine::go()
+         Misc::FrameRateLimiter* frameRateLimiter;
+         std::chrono::steady_clock::duration maxSimulationInterval;
+ 
++        // Orthros: the images of the files orthros_file_updated() named, read again, within the frame's budget
++        static void reloadUpdated(OMW::Engine* self)
++        {
++            std::size_t spent = 0;
++            int updated = 0, skipped = 0;
++            std::size_t pending = 0;
++            while (true)
++            {
++                std::string path;
++                {
++                    std::lock_guard<std::mutex> lock(g_orthrosUpdatedMutex);
++                    pending = g_orthrosUpdated.size();
++                    if (pending == 0 || spent >= g_orthrosReloadBudget)
++                        break;
++                    path = std::move(g_orthrosUpdated.front());
++                    g_orthrosUpdated.pop_front();
++                    --pending;
++                }
++                // A path of the engine's file system names the file of a data folder: its leading folders off until
++                // the VFS knows it (/mwdata/data files/textures/a.dds -> textures/a.dds)
++                std::string_view rest = path;
++                while (!rest.empty() && !self->mVFS->exists(VFS::Path::Normalized(rest)))
++                {
++                    const std::size_t slash = rest.find('/');
++                    rest = slash == std::string_view::npos ? std::string_view() : rest.substr(slash + 1);
++                }
++                std::size_t bytes = 0;
++                try
++                {
++                    if (!rest.empty())
++                        bytes = self->mResourceSystem->getImageManager()->reloadImage(VFS::Path::Normalized(rest));
++                }
++                catch (const std::exception& e)
++                {
++                    Log(Debug::Error) << "orthros_file_updated: " << path << ": " << e.what();
++                }
++                if (bytes)
++                    ++updated;
++                else
++                    ++skipped;
++                spent += bytes;
++            }
++            if (updated || skipped)
++            {
++                // clang-format off
++                EM_ASM({
++                    var s = globalThis.__orthrosTexReloads || (globalThis.__orthrosTexReloads = { updated: 0, skipped: 0, bytes: 0, pending: 0 });
++                    s.updated += $0;
++                    s.skipped += $1;
++                    s.bytes += $2;
++                    s.pending = $3;
++                }, updated, skipped, static_cast<double>(spent), static_cast<int>(pending));
++                // clang-format on
++            }
++        }
++
+         static void tick(void* arg)
+         {
+             auto& ctx = *static_cast<EmscriptenLoop*>(arg);
+@@ -1600,6 +1703,7 @@ void OMW::Engine::go()
+                     EM_ASM({ Module.__omwRunning = $0; }, running);
+                 }
+             }
++            reloadUpdated(self);
+             const double dt = std::chrono::duration_cast<std::chrono::duration<double>>(
+                                   std::min(ctx.frameRateLimiter->getLastFrameDuration(), ctx.maxSimulationInterval))
+                                   .count()
+diff --git a/openmw/components/resource/imagemanager.cpp b/openmw/components/resource/imagemanager.cpp
+index 964cca1..85f4c77 100644
+--- a/openmw/components/resource/imagemanager.cpp
++++ b/openmw/components/resource/imagemanager.cpp
+@@ -7,6 +7,7 @@
+ #endif
+ 
+ #include <cstdlib>
++#include <cstring>
+ 
+ #include <cassert>
+ #include <osgDB/Registry>
+@@ -309,6 +310,38 @@ namespace Resource
+         }
+     }
+ 
++    std::size_t ImageManager::reloadImage(VFS::Path::NormalizedView path)
++    {
++        if (Misc::getFileExtension(path.value()) != "dds")
++            return 0;
++        osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(path);
++        if (!obj)
++            return 0;
++        osg::ref_ptr<osg::Image> image(static_cast<osg::Image*>(obj.get()));
++        if (image == mWarningImage)
++        {
++            // (shared by every image that failed: never updated in place; the next load reads the new file)
++            mCache->removeFromObjectCache(path.value());
++            return 0;
++        }
++        // Decoded exactly as a first load, then the cached object (the one the textures hold) put back in the cache
++        mCache->removeFromObjectCache(path.value());
++        osg::ref_ptr<osg::Image> fresh = getImage(path);
++        mCache->addEntryToObjectCache(std::string(path.value()), image);
++        if (fresh == mWarningImage || !fresh->data() || !fresh->isDataContiguous())
++            return 0;
++        const std::size_t size = fresh->getTotalSizeInBytesIncludingMipmaps();
++        unsigned char* data = new unsigned char[size];
++        std::memcpy(data, fresh->data(), size);
++        // setImage() frees the old data, drops the old mipmap offsets and marks the image modified (dirty())
++        image->setImage(fresh->s(), fresh->t(), fresh->r(), fresh->getInternalTextureFormat(), fresh->getPixelFormat(),
++            fresh->getDataType(), data, osg::Image::USE_NEW_DELETE, fresh->getPacking(), fresh->getRowLength());
++        image->setMipmapLevels(fresh->getMipmapLevels());
++        image->setOrigin(fresh->getOrigin());
++        image->dirty();
++        return size;
++    }
++
+     osg::Image* ImageManager::getWarningImage()
+     {
+         return mWarningImage;
+diff --git a/openmw/components/resource/imagemanager.hpp b/openmw/components/resource/imagemanager.hpp
+index 8183c8d..d4d1adc 100644
+--- a/openmw/components/resource/imagemanager.hpp
++++ b/openmw/components/resource/imagemanager.hpp
+@@ -31,6 +31,15 @@ namespace Resource
+ 
+         osg::Image* getWarningImage();
+ 
++        /// Orthros: read again an image already loaded whose file has been replaced since (a texture's light copy by
++        /// the file itself, say) and update the cached osg::Image in place, so that every texture using it shows the
++        /// new one at its next apply (OSG compares the image's modified count; a new size or mipmap count makes it
++        /// create the texture object again). Only DDS files, decoded as getImage() does.
++        /// @return the bytes decoded, 0 when nothing was updated (not a DDS file, not loaded: the next load reads
++        /// the new file; failed to load before or now: the cached image is left as it is).
++        /// @note Call between frames, from the thread that renders.
++        std::size_t reloadImage(VFS::Path::NormalizedView path);
++
+         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
+ 
+     private:
