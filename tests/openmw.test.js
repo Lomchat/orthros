@@ -289,5 +289,8 @@ test('the data indicator\'s worker draws what arrived of the step and its percen
   ctx.onmessage({ data: { read: 65536 } }); tick();
   assert.ok(texts.includes('37 %'), texts.join(' | '));
   assert.ok(texts.some((t) => /^45 \/ 120 Mo/.test(t)), texts.join(' | '));
-  texts.length = 0; now = 1600; ctx.onmessage({ data: { beat: 1 } }); tick(); assert.deepEqual(texts, [], 'gone at the next frame');
+  // (the page paints again: it stays a moment — reasons that come and go do not make it blink —, then goes)
+  texts.length = 0; now = 1600; ctx.onmessage({ data: { beat: 1 } }); tick(); assert.ok(texts.length > 0, 'kept a moment');
+  for (; now < 3300; now += 100) { ctx.onmessage({ data: { beat: 1 } }); tick(); }
+  texts.length = 0; ctx.onmessage({ data: { beat: 1 } }); tick(); assert.deepEqual(texts, [], 'gone once the moment is over');
 });

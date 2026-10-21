@@ -1,7 +1,8 @@
 // The indicator data-meter.js shows while a game waits for its game data, drawn here so that it moves while the page's
 // thread is held by the engine's read: shown when the page has painted nothing for a second and asked for game data
 // meanwhile (or for three seconds whatever it does), or when the engine's reads have waited for the network a second
-// and a half (an engine that suspends meanwhile: the page goes on painting); gone once neither holds.
+// and a half (an engine that suspends meanwhile: the page goes on painting); gone once neither has held for a moment
+// (LINGER_MS: reasons that come and go do not make it blink).
 const TEXT = {
   en: { data: 'Loading the game data', busy: 'Loading…', mb: 'MB', rate: 'MB/s',
     dataNote: 'Not stuck: the game is receiving its files. Faster next time.', busyNote: 'Not stuck: the game is working.',
@@ -11,8 +12,10 @@ const TEXT = {
     wait: 'Si Chrome dit que la page ne répond pas, choisis « Attendre ».' },
 };
 let ctx = null, dpr = 1, S = TEXT.en, num = new Intl.NumberFormat('en', { maximumFractionDigits: 1 });
-let beat = performance.now(), hidden = false, shown = false;
-let reads = 0, done = 0, pending = 0, lastRead = 0, held = 0;
+/** once shown, the indicator stays this long (ms) after its reasons are gone, its "reading" line too */
+const LINGER_MS = 1500;
+let beat = performance.now(), hidden = false, shown = false, since = 0, wanted = 0, readingAt = -Infinity;
+let reads = 0, done = 0, pending = 0, lastRead = 0;
 const marks = [];   // [time, bytes received] of the last seconds: the rate
 let arrived = null, seen = 0, waitSince = null, waitLast = 0;   // (Orthros' streaming: its count of the bytes arrived, shared — exact, live)
 
@@ -36,7 +39,7 @@ onmessage = (e) => {
     for (const at of [300, 3000]) setTimeout(warm, at);
     return;
   }
-  if (m.beat) { beat = now; if (shown) clear(); return; }
+  if (m.beat) { beat = now; return; }
   if ('hidden' in m) { hidden = !!m.hidden; beat = now; return; }
   if (m.arrived) { arrived = new Int32Array(m.arrived); seen = Atomics.load(arrived, 2); return; }
   if (m.read) {
@@ -53,9 +56,12 @@ setInterval(() => {
   if (waiting) { waitSince ??= now; waitLast = now; } else if (now - waitLast > 1000) waitSince = null;
   // (since the page's last frame — its thread held —, or since the engine's reads began to wait — the page painting)
   const sinceFrame = now - beat, sinceWait = waitSince === null ? 0 : now - waitSince;
-  held = Math.max(sinceFrame, sinceWait);
+  const held = Math.max(sinceFrame, sinceWait);
   const reading = waiting || (reads > 0 && now - lastRead < sinceFrame + 500);
-  if (ctx && !hidden && ((sinceFrame > 1000 && reading) || sinceFrame > 3000 || sinceWait > 1500)) draw(now, reading); else if (shown) clear();
+  const want = !!ctx && !hidden && ((sinceFrame > 1000 && reading) || sinceFrame > 3000 || sinceWait > 1500);
+  // (its seconds counted from the start of the wait it shows, not reset by a frame the page paints meanwhile)
+  if (want) { if (!shown) since = now - held; wanted = now; if (reading) readingAt = now; }
+  if (ctx && !hidden && (want || (shown && now - wanted < LINGER_MS))) draw(now, now - readingAt < LINGER_MS); else if (shown) clear();
 }, 100);
 
 const FONTS = ['600 15px system-ui, "Segoe UI", sans-serif', '700 17px system-ui, "Segoe UI", sans-serif', '600 13px system-ui, "Segoe UI", sans-serif', '12.5px system-ui, "Segoe UI", sans-serif'];
@@ -66,7 +72,7 @@ function warm() {
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 }
 
-function clear() { ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); shown = false; }
+function clear() { ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); shown = false; readingAt = -Infinity; }
 
 function draw(now, reading) {
   shown = true;
@@ -74,9 +80,12 @@ function draw(now, reading) {
   c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, W, H);
   c.fillStyle = 'rgba(12,14,20,0.9)'; c.strokeStyle = 'rgba(214,166,92,0.55)'; c.lineWidth = 1;
   c.beginPath(); c.roundRect(0.5, 0.5, W - 1, H - 1, 10); c.fill(); c.stroke();
-  // (the step of the game's data being read, when earlier sessions tell how much it is: Orthros' streaming, ctrl[4], [5])
+  // (the step of the game's data being read, when earlier sessions tell how much of it remains: Orthros' streaming,
+  // ctrl[4], [5]; once all they learned has come, the step goes on with no known end — no total, no percentage)
   const kb = arrived ? Atomics.load(arrived, 4) : 0, of = arrived ? Atomics.load(arrived, 5) : 0;
-  const pct = reading && of > 0 ? Math.min(99, Math.floor(kb / of * 100)) : -1;
+  const known = reading && of > 0 && num.format(kb / 1024) !== num.format(of / 1024);
+  const pct = known ? Math.min(99, Math.floor(kb / of * 100)) : -1;
+  const held = now - since;
   // the bar: filled as far as the step is, a light running along it — the proof the page is alive
   const bx = 16, by = H - 12, bw = W - 32, run = ((now / 1400) % 1) * (bw + 120) - 120;
   c.fillStyle = 'rgba(255,255,255,0.08)'; c.beginPath(); c.roundRect(bx, by, bw, 5, 2.5); c.fill();
@@ -92,7 +101,7 @@ function draw(now, reading) {
   let rate = 0;
   if (marks.length > 1 && now - marks[0][0] > 800) rate = (done - marks[0][1]) / ((now - marks[0][0]) / 1000) / 1048576;
   const parts = [];
-  if (reading) parts.push(pct >= 0 ? `${num.format(kb / 1024)} / ${num.format(of / 1024)} ${S.mb}` : `${num.format(done / 1048576)} ${S.mb}`);
+  if (reading) parts.push(known ? `${num.format(kb / 1024)} / ${num.format(of / 1024)} ${S.mb}` : `${num.format(kb > 0 ? kb / 1024 : done / 1048576)} ${S.mb}`);
   if (reading && rate > 0.05) parts.push(`${num.format(rate)} ${S.rate}`);
   parts.push(`${Math.floor(held / 1000)} s`);
   c.font = '600 13px system-ui, "Segoe UI", sans-serif'; c.fillStyle = '#f0aa46'; c.fillText(parts.join(' · '), 16, 46);
