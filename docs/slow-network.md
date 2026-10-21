@@ -95,9 +95,11 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   (`forLink`: a copy of the file's size stands for the same pieces, not for all of it); the units of such a copy are a
   version of their own (`lightFormat` in br-cache.js's key). GoldSrc does not load a file again in place, so the copy
   is read only on a thin link (`readsReal`), and the file replaces it at the next map load once downloaded (the whole
-  file, last of all, as any light copy). Measured on the launch sets (thin link, 2026-10-21): Counter-Strike Arsenal
-  9.6 MB of WAD pieces, brotli 11 ~7.0 MB → ~3.4 MB light; Counter-Strike rebuilt 4.2 MB → ~−1.8 MB; Half-Life 1.0 MB
-  (mostly small WADs without textures to lighten) → ~−0.2 MB (see "Audio units" for the method's numbers).
+  file, last of all, as any light copy). Measured on the launch sets (thin link, 2026-10-21; each WAD's brotli-11
+  ratio over its blocks, applied to its learned bytes): Counter-Strike Arsenal 9.6 MB of WAD pieces, 6.85 → 3.52 MB on
+  the wire (−3.3 MB, ~−39 s at 85 KB/s; every texture redrawn there, small ones too — the copy as made leaves those
+  under 64 × 64, a little less); Counter-Strike rebuilt 3.3 of its 4.2 MB measured, 2.26 → 1.20 MB; Half-Life 1.0 MB,
+  mostly WADs without textures to lighten, ~−0.2 MB. Not measured in a browser at 85 KB/s.
   Derived at each request (a header of its own, then a run of the file: nothing stored, the game files never changed),
   served as `/gamez/<manifest>/.light/<path>` (compressed ranges, read reports learned like the file's). The tree tells
   each such file's light size (`light`). For the browser ports only (`manifest.lightCopies`, the catalog's: `false` in a
