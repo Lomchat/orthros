@@ -4,6 +4,7 @@
 // bounded LRU cache with read-ahead for sequential access.
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { NetLink } from './net-link.js';
+import { LIGHT_DIR } from './game-tree.js';
 
 export const BLOCK = 1 << 20; // 1 MiB
 /**
@@ -37,6 +38,11 @@ const MISSED_BLOCK_FLIGHTS = 2;
  * game's next misses are often next to its last ones: the parts of an archive one scene needs). At most NEAR_MAX wanted.
  */
 const NEAR_BLOCKS = 2, NEAR_QUIET_MS = 500, NEAR_MAX = 64;
+/**
+ * the files whose light copy the game read (see upgrade): fetched once the game has read nothing for this long (ms) — the
+ * player in an area loaded already, not between two reads of a load (an engine computes for seconds between them)
+ */
+const UPGRADE_QUIET_MS = 8000;
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
 /** learned pieces fetched ahead of the game (see pumpAhead): requests in flight at most, entries past its position */
 const AHEAD_REQUESTS = 3, AHEAD_WINDOW = 32;
@@ -101,6 +107,10 @@ export class HttpBackend {
     this.want = new Map(); this.filling = false;
     /** blocks next to missed ones, wanted at the lowest priority (see NEAR_BLOCKS): same entries as `want` */
     this.near = new Map();
+    /** blocks of files the game wants whole (see wantWhole), after `want` and `near`: same entries */
+    this.later = new Map();
+    /** blocks of files whose light copy the game read (see upgrade), last of all: same entries, the latest last */
+    this.upgrades = new Map();
     /** the background downloads in flight (prefetch, block fill): their AbortControllers, aborted when the game
      * needs the network (see abortBackground) */
     this.bgAborts = new Set();
@@ -122,8 +132,15 @@ export class HttpBackend {
     this.streams = new Set();
   }
 
-  /** Walk the tree case-insensitively; returns { node, dirNode, name, path } or null. */
+  /**
+   * Walk the tree case-insensitively; returns { node, dirNode, name, path } or null. A file's light copy (LIGHT_DIR/<path>,
+   * src/host/light-copies.js) is a file of its own: its size the tree's `light`.
+   */
   lookup(rel) {
+    if (rel.startsWith(LIGHT_DIR + '/')) {
+      const r = this.lookup(rel.slice(LIGHT_DIR.length + 1));
+      return r?.file?.light ? { file: { size: r.file.light, mtime: r.file.mtime ?? 0 }, name: r.name, path: `${LIGHT_DIR}/${r.path}` } : null;
+    }
     const parts = rel.split(/[\\/]/).filter(Boolean);
     let node = this.tree; const realParts = [];
     for (let i = 0; i < parts.length; i++) {
@@ -182,9 +199,10 @@ export class HttpBackend {
    * from the start — sessions of different speeds (and menu times) interleave phases in the learned order, so the head
    * of the list is often a phase this session has not reached, or has passed without needing it. Meanwhile the learned
    * pieces of the entries just past the game's position are fetched ahead (see pumpAhead). `progress` gets
-   * { bytes, blocks, done, k }.
+   * { bytes, blocks, done, k }. `opts.learnedOnly`: on a link that is not fast, the learned pieces only (not the rest of
+   * their blocks) — what a page waits for before the game starts.
    */
-  async prefetch(list, progress, stop = () => false) {
+  async prefetch(list, progress, stop = () => false, opts = {}) {
     const store = this.store; if (!store || typeof fetch !== 'function') return;
     progress.bytes = 0; progress.blocks = 0; progress.done = false;
     /** @type {{path: string, size: number, mtime: number, index: number, mask: number, seen?: boolean, ahead?: boolean, skip?: boolean}[]} */
@@ -212,13 +230,14 @@ export class HttpBackend {
     // of the link's size (see NetLink), each piece kept as it comes
     const nextPart = () => {
       // (a thin link: the learned pieces only — whole blocks are for links that can afford them)
-      for (const tier of this.net.thin() ? [1] : [1, 2]) {
+      for (const tier of this.net.thin() || opts.learnedOnly ? [1] : [1, 2]) {
         for (let pass = 0; pass < 2; pass++) {
           const from = pass === 0 ? L.pos + 1 : 0, to = pass === 0 ? entries.length : Math.min(entries.length, L.pos + 1);
           for (let r = from; r < to; r++) {
-            const e = entries[r];
-            if (stored(e) || (tier === 1 && (!e.mask || e.maskDone)) || this.doneWith(e.path)) continue;
-            const run = this.missingRun(e.path, e.size, e.mtime, e.index, tier === 1 ? e.mask : 0);
+            // (learnedOnly: an entry learned without its pieces — an older list — was read whole)
+            const e = entries[r], mask = e.mask || (opts.learnedOnly ? 0xffff : 0);
+            if (stored(e) || (tier === 1 && (!mask || e.maskDone)) || this.doneWith(e.path)) continue;
+            const run = this.missingRun(e.path, e.size, e.mtime, e.index, tier === 1 ? mask : 0);
             if (run) return { r, e, run };
             if (tier === 1) { let fly = false; for (let c = e.index * 16; c < e.index * 16 + 16; c++) if (this.flights.has(`${e.path}#${c}`)) fly = true; if (!fly) { e.maskDone = true; progress.blocks++; } }
           }
@@ -409,6 +428,12 @@ export class HttpBackend {
     return false;
   }
   ownBusy(ms) { return this.fgPending > 0 || this.readAheadPending > 0 || performance.now() - (this.lastSyncFetchAt ?? -1e9) < ms; }
+  /** The game has read nothing for `ms` (from the network or not), through this backend nor those sharing its link. */
+  gameQuiet(ms) {
+    const now = performance.now();
+    for (const b of this.link ?? [this]) if (b.fgPending > 0 || now - (b.lastReadAt ?? -1e9) < ms) return false;
+    return true;
+  }
 
   /**
    * A sequential reader of `path` (a file read whole) is at `end`: when fewer than READ_AHEAD_LOW bytes past it are here
@@ -627,7 +652,7 @@ export class HttpBackend {
     const k = `${path}#${index}`;
     this.cache.set(k, bytes);
     this.store?.put(skey, bytes);
-    this.want.delete(k); this.near.delete(k);
+    this.want.delete(k); this.near.delete(k); this.later.delete(k); this.upgrades.delete(k);
     const pk = skey.slice(0, skey.lastIndexOf('#')) + '#c';
     for (let c = (index * BLOCK) / CHUNK, e = c + BLOCK / CHUNK; c < e; c++) {
       const ck = `${path}#${c}`, p = this.chunks.get(ck); if (p) { this.chunks.delete(ck); this.chunkBytes -= p.length; }
@@ -802,14 +827,39 @@ export class HttpBackend {
 
   /**
    * The game reads `path` at random as it goes (a streaming archive, a sound bank): all of its blocks wanted, downloaded
-   * by the background fill after the game's own reads (not on a thin link: the game's reads alone there).
+   * by the background fill last — after the blocks the game touched and those near them, the link quiet for NEAR_QUIET_MS
+   * (not on a thin link: the game's reads alone there).
    */
   wantWhole(path) {
     const r = this.lookup(path); if (!r?.file) return;
     const size = r.file.size, mtime = r.file.mtime ?? 0;
     for (let i = 0; i * BLOCK < size; i++) {
       const k = `${r.path}#${i}`;
-      if (!this.cache.has(k) && !this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) this.want.set(k, { path: r.path, size, mtime, index: i });
+      if (!this.cache.has(k) && !this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) this.later.set(k, { path: r.path, size, mtime, index: i });
+    }
+    this.fillBackground();
+  }
+
+  /** Every block of `path` is here (memory, store): its reads need no network. */
+  isWhole(path) {
+    const r = this.lookup(path); if (!r?.file) return false;
+    const size = r.file.size, mtime = r.file.mtime ?? 0;
+    for (let i = 0; i * BLOCK < size; i++) if (!this.cache.has(`${r.path}#${i}`) && !this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) return false;
+    return true;
+  }
+
+  /**
+   * The game read `path`'s light copy (a link that is not fast: src/vfs/data-client.js): the file itself downloaded in
+   * the background for its next load, last of all — after every other background download, the link quiet for
+   * UPGRADE_QUIET_MS, a thin link too (by pieces) —, the latest files first (the player is near them: loaded again soonest).
+   */
+  upgrade(path) {
+    const r = this.lookup(path); if (!r?.file) return;
+    const size = r.file.size, mtime = r.file.mtime ?? 0;
+    for (let i = 0; i * BLOCK < size; i++) {
+      const k = `${r.path}#${i}`;
+      if (this.cache.has(k) || this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) continue;
+      this.upgrades.delete(k); this.upgrades.set(k, { path: r.path, size, mtime, index: i });
     }
     this.fillBackground();
   }
@@ -836,22 +886,26 @@ export class HttpBackend {
     if (this.filling || typeof fetch !== 'function') return;
     this.filling = true;
     try {
-      while (this.want.size || this.near.size) {
-        // (the blocks next to missed ones last, after a longer quiet time)
-        while (this.gameBusy(this.want.size ? 150 : NEAR_QUIET_MS)) await new Promise((res) => setTimeout(res, 50));
-        const q = this.want.size ? this.want : this.near;
+      while (this.want.size || this.near.size || this.later.size || this.upgrades.size) {
+        // (the blocks next to missed ones, then those of files wanted whole, after a longer quiet time, then the files
+        // whose light copy the game read, after a longer one still)
+        const quiet = () => (this.want.size ? 150 : this.near.size || this.later.size ? NEAR_QUIET_MS : 0);
+        const queued = () => this.want.size || this.near.size || this.later.size || this.upgrades.size;
+        while (queued() && (quiet() ? this.gameBusy(quiet()) : !this.gameQuiet(UPGRADE_QUIET_MS))) await new Promise((res) => setTimeout(res, 50));
+        const q = this.want.size ? this.want : this.near.size ? this.near : this.later.size ? this.later : this.upgrades;
         if (!q.size) continue; // (fetched whole meanwhile by a sequential read)
-        const [k, w] = q.entries().next().value;
+        const [k, w] = q === this.upgrades ? [...q].at(-1) : q.entries().next().value;
         // (here already: fetched whole by a read, or stored by the learned prefetch)
         // (or on its way, fetched ahead of a sequential reader)
         if (this.cache.has(k) || this.blockFlights.has(k) || this.store?.map.has(`${w.path}#${w.size}#${w.mtime}#${w.index}`)) { q.delete(k); continue; }
-        if (this.net.thin()) { this.want.clear(); this.near.clear(); break; } // (queued before the link was measured thin)
+        // (queued before the link was measured thin — the files whose light copy the game read stay: by pieces, below)
+        if (this.net.thin() && q !== this.upgrades) { this.want.clear(); this.near.clear(); this.later.clear(); continue; }
         if (!this.net.fast()) {
           // (a link that is not fast: the block's missing pieces, a background request of the link's size at a time —
           // what came is kept whatever happens next, and the block is installed whole once all its pieces are here)
           const run = this.missingRun(w.path, w.size, w.mtime, w.index);
           if (!run) { if (this.flights.size) await new Promise((res) => setTimeout(res, 50)); else q.delete(k); continue; }
-          const r = await this.fetchPartBg(w.path, w.size, w.mtime, run[0], run[1], q === this.want ? PRIO.fill : PRIO.near);
+          const r = await this.fetchPartBg(w.path, w.size, w.mtime, run[0], run[1], q === this.want ? PRIO.fill : q === this.near ? PRIO.near : PRIO.offline);
           if (r === null) break; // (network down: the next random read queues it again)
           if (r === false) continue;
           if (r === undefined) q.delete(k);
@@ -956,6 +1010,7 @@ class HttpFile {
   }
   /** The blocks of [off, end) are touched: the game's position in the learned prefetch list (see noteBlock). */
   note(off, end) {
+    this.b.lastReadAt = performance.now(); // (the game reads: see gameQuiet)
     if (!this.b.learned) return;
     for (let bi = Math.floor(off / BLOCK), e = Math.floor((end - 1) / BLOCK); bi <= e; bi++) if (bi !== this.noted) { this.noted = bi; this.b.noteBlock(this.path, bi); }
   }

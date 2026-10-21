@@ -268,8 +268,8 @@ export function mountHome({ onPlay }) {
     const dlText = h('span', { class: 'hm-dl-text' }), dlBar = h('i'), dlBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
     const dlRow = h('div', { class: 'hm-dl', title: S().dlTitle }, h('div', { class: 'hm-dl-bar' }, dlBar), dlText, dlBtn);
     function syncDownload() {
-      // (the Windows games' block store only: a browser port keeps its files in its own page's cache)
-      const v = chosen(g); dlRow.hidden = !v?.available || (v.runtime ?? 'win32') !== 'win32'; if (dlRow.hidden) return;
+      // (every runtime: the game data's block store, the one each game reads — src/vfs/game-data.js)
+      const v = chosen(g); dlRow.hidden = !v?.available; if (dlRow.hidden) return;
       const st = downloadStatus(downloads.get(v.name), v.bytes, lang);
       dlText.textContent = st.text; dlBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
       dlRow.dataset.state = st.state;

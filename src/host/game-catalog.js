@@ -61,6 +61,10 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     if (manifest.modified !== undefined && typeof manifest.modified !== 'boolean') fail(file, `${id}: modified doit être un booléen`);
     // (a shared world, any runtime: src/host/mmo.js)
     { const problem = mmoProblem(manifest.mmo); if (problem) fail(file, `${id}: ${problem}`); }
+    // (light copies of the textures for a slow link, src/host/light-copies.js: the browser ports — a Windows game reads
+    // its files as they are —, unless the version says false)
+    if (manifest.lightCopies !== undefined && typeof manifest.lightCopies !== 'boolean') fail(file, `${id}: lightCopies doit être un booléen`);
+    manifest.lightCopies = runtime !== 'win32' && manifest.lightCopies !== false;
     if (runtime === 'win32' && !resolveGameFile(manifest, manifest.exe)) fail(file, `${id}: exécutable ${manifest.exe} absent de base/ et versions/${dir}/`);
     if (runtime === 'goldsrc') {
       const problem = goldsrcProblem(manifest.goldsrc);

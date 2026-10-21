@@ -142,22 +142,33 @@ starts at once.
 
 ## Streamed files
 
-The page does not download a game before starting it (`src/ports/goldsrc/files.js`). The engine sees the whole tree
-at once (names and sizes from `/api/tree`); a file's bytes arrive at its first read:
+The page does not download a game before starting it: its files are the game data every Orthros game reads
+(CLAUDE.md "Standardization", docs/slow-network.md) — `src/ports/port-files.js` opens it (`src/vfs/data-client.js`)
+and mounts the version's tree in the engine's file system (`src/vfs/emscripten-files.js`: names and sizes at once, a
+file's bytes at its first read). The bytes come from the data worker (`src/vfs/data-worker.js`), the Windows games'
+reader in a worker of its own: the server's compressed ranges (`/gamez`), the link's measure and its regimes, the
+browser's OPFS block store (`orthros-files-<manifest>`, the same the home screen's whole download fills), the learned
+order fetched ahead from the game's position.
 
-- **Startup set.** The server's learned list orders the files and 64 KiB pieces sessions read, by the earliest time
-  since their engine started. Before starting the engine the page loads its leading part, up to the first pause of
-  2 s between two learned reads: what the engine reads from its start to its first idle moment (init, menu, and the
-  first map when the page asks for one). Six requests at a time, from the browser's copy when it has them.
-- **The rest in the background.** Once the engine runs: the files this browser keeps, then the rest of the learned
-  list in its order, three requests at a time. A big file of which sessions read a small part (a map list reading
-  headers) comes as those pieces only.
-- **Reads not there yet.** The engine is synchronous and runs in the page: a read of bytes not loaded yet fetches them
-  at once over a synchronous request (the page waits; mostly during a map load), whole runs of missing pieces per
-  request.
-- **Learning.** The page reports the pieces the engine read (path, range, time since its start) 30 s after the start,
-  every 2 minutes and when it is closed. The first session of a version, without a learned list, starts at once and
-  fetches every read; it teaches the next ones.
+- **Startup set.** The server's learned order (`/api/prefetch`) up to its first pause of 2 s: loaded before the engine
+  starts (what it reads from its start to its first idle moment: init, menu, the first map when the page asks).
+- **The rest in the background.** Once the engine runs: the learned order from the game's position, then what the
+  reader's policies add (blocks around a miss, a file read in order ahead of its reader).
+- **Reads not there yet.** A read of bytes not in the page waits for the worker on shared memory (the page's thread
+  waits — GoldSrc), or suspends the engine (JSPI — re3); the worker answers with what was asked and as much of the file
+  as it has here already.
+- **Learning.** The worker reports the pieces the engine used (path, range, time since its start) to `/api/prefetch`.
+- **Light copies.** On a link that is not fast, a large texture's load reads its light copy first (the texture
+  without its finest levels), the file itself following in the background for its next load (docs/slow-network.md
+  "Light copies"; `lightCopies: false` in a version turns them off).
+- **Earlier copies.** The IndexedDB copy an earlier page kept (`content`) is handed to the block store at the next
+  start, then removed.
+- **What the player sees.** Every game's indicators (`src/host/web/data-meter.js`, `shell.setData`): over the page,
+  "Loading the game data" with the MB received, the rate, the step's percentage when the learned order tells its size —
+  drawn by a worker, so it moves while the page's thread waits (GoldSrc) and shows once the engine's reads have waited
+  1.5 s (re3: the page goes on painting) —; in the header, a pill while the learned order or the whole game loads in
+  the background. The home screen's "download first" and the settings' offline copy (`offlineCopy`, kept in this
+  browser for every game) fill the same store.
 
 ## Game modules built from source
 
@@ -473,7 +484,7 @@ The engine files are pinned by SHA-256 in `lock.json` and served only from relea
 A version offers French when its manifest says so: `"languages": ["en", "fr"]` and, in `goldsrc.languages.fr`, the
 engine's arguments (`-language french`: the menu's strings in `resource/*_french.txt`) and the folders laid over the
 game's (`overlays`: `{ "valve_french": "valve", "cstrike_french": "cstrike" }`). The page mounts each file of such a
-folder where the file it translates is (`languageFiles`, src/ports/goldsrc/files.js), and hides the language folders
+folder where the file it translates is (`languageFiles`, src/vfs/game-tree.js), and hides the language folders
 otherwise; the player's choice comes from the home card (`?gameLang=`).
 
 The French files are Valve's own, from the Steam depots of 2004-2009 kept on archive.org (Half-Life 72, Counter-Strike
@@ -625,23 +636,11 @@ handling (contexts resumed at the next gesture, the "sound off" button, a level 
 same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame rate).
 
 - **Start.** The module imported from the release, the Module created; the game's root `/game` made, the version's
-  tree mounted there as streamed files (`src/ports/goldsrc/files.js`: the learned startup set loaded first, the rest
-  in the background, the reads reported to `/api/prefetch`), with three options GoldSrc has not: `asyncReads` — a read
-  of bytes not here suspends the engine (JSPI) while they come, from the browser's copy or the server, instead of a
-  synchronous request that holds the page (the engine's `fd_read` / `fd_pread`, `src/skel/orthros_fs.js` in the fork, ask the
-  file's node, `orthrosStreamed`); `demandFirst` — the background loads wait while the engine waits and 300 ms after,
-  in requests of 1 MiB at most (`backgroundRange`): on a thin link the game's reads have it alone; read-ahead — after
-  a read that waited, the file's next 16 missing pieces load in the background, one such load per file. Two loads never
-  fetch the same piece. The engine can also ask without waiting (`missing`, then `ensure` in the background: its
-  streaming, below) and name a file it reads at random as it plays (`complete`: the CD image, the sound bank) — after
-  the learned list, such files load whole in the background, two runs of 1 MiB at a time, behind the engine's own
-  reads. A file loaded whole stays in pieces above 64 MiB (one array for `models/gta3.img`, 327 MB, would be a copy of
-  the whole and a hitch); the pieces fetched are written to IndexedDB one transaction per fetch, not per piece. While
-  the game waits more than 1.5 s, a passing message says so with the bytes come since. The language's `env` is set by the Module's `preRun`
-  hook, before the runtime starts. Then the profile put back, the `ini` settings, the defaults the profile has not had
-  yet, `chdir('/game')`, `callMain(re3.args)` (and the chosen mode's). Once the engine runs, the background requests
-  fetch 6 MB a second at most (`backgroundRate`; the engine's own reads at once): on a fast link they took everything
-  at once before — 765 MB in about ten seconds, each response copied and written to IndexedDB on the page's thread.
+  tree mounted there from the game data (`src/ports/port-files.js`, as GoldSrc: the learned startup set loaded first,
+  the rest in the background), with two options GoldSrc has not: `asyncReads` — a read of bytes not here suspends the
+  engine (JSPI) while they come instead of holding the page (the engine's `fd_read` / `fd_pread`, `src/skel/orthros_fs.js`
+  in the fork, ask the file's node, `orthrosStreamed`: missing, ensure, complete — a file the engine reads at random
+  wanted whole in the background); `rewritable` — a game file the engine writes anew becomes a file of the profile.
 - **Frames.** Counted by `Module.orthrosFrame`: the header's frame rate; the loading screen hides after the first ten.
 - **Shared first-launch profile** (the manifest's `profileSeed`, as the Windows games'; `?profileseed=0` turns it off):
   an empty profile gets, before the engine starts, the small files first sessions of the version wrote identical

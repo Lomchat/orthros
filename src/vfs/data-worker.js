@@ -5,10 +5,15 @@
 // memory (ctrl[0] the request answered, ctrl[1] the bytes delivered or -1), one it can wait for (JSPI) by message.
 // Counters shared with the page's indicator: ctrl[2] bytes received (decoded), ctrl[3] this worker's heartbeat,
 // ctrl[4] / ctrl[5] KB of the current step here / in all (the learned order: HttpBackend.stepEstimate), ctrl[6] the
-// page's reads waiting for the network.
+// page's reads waiting for the network. The link, for the page: ctrl[7] 1 when it is fast (the files themselves read,
+// not their light copies), ctrl[8] its measured rate (KB/s, 0 until measured).
+// Light copies (src/host/light-copies.js): on a link that is not fast, the page reads a texture's light copy unless the
+// file itself is here (told: { real: [keys] }); the learned order brings the light copies; the files whose light copy
+// the engine read come last, in the background (HttpBackend.upgrade).
 import { openVersion, openStore, learnedOrder } from './game-data.js';
 import { MemBlockStore } from './opfs-store.js';
 import { BLOCK, CHUNK } from './http-backend.js';
+import { LIGHT_DIR, treeFiles } from './game-tree.js';
 
 /** The startup set (loaded before the engine starts, when the page asks): the learned order up to its first pause this long. */
 const STARTUP_GAP_MS = 2000;
@@ -31,7 +36,7 @@ export function createDataWorker(post) {
     ctrl: null, data: null, version: null, parts: new Map(), handles: new Map(), ready: null, timers: [],
     session: '', t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null,
     prefetchAt: 'none', prefetching: false, stop: false, whole: null, learned: null,
-    legacy: new Map(), adopters: new Map(), sources: new Map(),
+    legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(),
   };
   return (m) => {
     if (m.init) {
@@ -58,6 +63,7 @@ function dispatch(m) {
   if (m.start) { W.t0 = performance.now(); if (W.prefetchAt === 'start') prefetchAll(); return; }
   if (m.startup) { startup(); return; }
   if (m.wantWhole) { W.parts.get(m.wantWhole.name)?.files.wantWhole(m.wantWhole.path); return; }
+  if (m.light) { upgrade(m.light.name, m.light.path); return; }
   if ('whole' in m) { m.whole ? wholeDownload() : (W.whole && (W.whole.stop = true)); return; }
   if (m.migrate) { migrate(m.migrate); return; }
   if (m.close) { W.stop = true; report(true); for (const t of W.timers) clearInterval(t); for (const p of W.parts.values()) try { p.store?.close(); } catch { /* closed */ } }
@@ -70,13 +76,20 @@ function dispatch(m) {
 async function init(o) {
   W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.prefetchAt = o.prefetch ?? 'none';
   const kept = {};
-  W.version = await openVersion(o.name, { bw: o.bw, cacheBlocks: o.cacheBlocks, store: async (n) => {
+  W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, cacheBlocks: o.cacheBlocks, store: async (n) => {
     const s = await openStore(n); kept[n] = !!s;
     return s ?? new MemBlockStore(o.memBytes ?? 512 << 20);
   } });
   for (const p of W.version.parts) W.parts.set(p.name, p);
-  W.timers.push(setInterval(monitor, 100), setInterval(report, REPORT_MS));
-  postMessage({ ready: { trees: Object.fromEntries(W.version.parts.map((p) => [p.name, p.tree])), kept, manifest: W.version.manifest } });
+  W.timers.push(setInterval(monitor, 100), setInterval(report, REPORT_MS), setInterval(lightWatch, 1000));
+  // (the files that have a light copy: those here whole the page reads themselves; the others watched — lightWatch)
+  const real = [];
+  for (const p of W.version.parts) for (const f of treeFiles(p.tree)) {
+    if (!f.light) continue;
+    if (p.files.isWhole(f.path)) real.push(lightKey(p.name, f.path)); else W.light.set(lightKey(p.name, f.path), { part: p, path: f.path, told: false });
+  }
+  postMessage({ ready: { trees: Object.fromEntries(W.version.parts.map((p) => [p.name, p.tree])), kept, manifest: W.version.manifest, real } });
+  lightWatch();
 }
 
 /** The file `path` of version `name`, opened once. */
@@ -189,9 +202,33 @@ function report(final = false) {
 /** The learned order of the version: what earlier sessions read first, the startup set its head. */
 const order = () => (W.learned ??= Promise.all(W.version.parts.map((p) => learnedOrder(p.name))));
 
+/**
+ * A learned order as this link reads it: on a link that is not fast, a texture's light copy (whole, once) in place of
+ * the file — unless the file is here —; on a fast one, the files themselves in place of light copies earlier sessions
+ * read.
+ */
+function forLink(part, list) {
+  const fast = W.version.net.fast(), out = [], seen = new Set();
+  const add = (path, block, mask, t) => { const k = path + '#' + block; if (!seen.has(k)) { seen.add(k); out.push([path, block, mask, t]); } };
+  for (const e of list) {
+    const [path, , , t] = e, light = path.startsWith(LIGHT_DIR + '/');
+    const r = part.files.lookup(light ? path.slice(LIGHT_DIR.length + 1) : path);
+    if (!r?.file?.light) { if (!light) add(...e); continue; }
+    if (fast || part.files.isWhole(r.path)) {
+      if (!light) add(...e); else for (let b = 0; b * BLOCK < r.file.size; b++) add(r.path, b, 0, t);
+    } else {
+      for (let b = 0; b * BLOCK < r.file.light; b++) {
+        const n = Math.ceil((Math.min(BLOCK, r.file.light - b * BLOCK)) / CHUNK);
+        add(`${LIGHT_DIR}/${r.path}`, b, n >= 16 ? 0xffff : (1 << n) - 1, t);
+      }
+    }
+  }
+  return out;
+}
+
 /** The startup set loaded (before the engine starts): progress { bytes, total, done } to the page. */
 async function startup() {
-  const lists = await order(), part = W.version.parts[0], list = lists[0];
+  const lists = await order(), part = W.version.parts[0], list = forLink(part, lists[0]);
   let end = list.length;
   for (let i = 1; i < list.length; i++) if (list[i][3] - list[i - 1][3] > STARTUP_GAP_MS) { end = i; break; }
   const head = list.slice(0, end);
@@ -199,17 +236,34 @@ async function startup() {
   const total = head.reduce((n, [, , mask]) => n + (mask ? popcount(mask) * CHUNK : BLOCK), 0);
   const tick = setInterval(() => postMessage({ startup: { bytes: progress.bytes, total, done: false } }), 250);
   if (!head.length) { clearInterval(tick); postMessage({ startup: { bytes: 0, total: 0, done: true } }); return; }
-  try { await part.files.prefetch(head, progress, () => W.stop); }
+  // (the pieces sessions read only: the rest of their blocks comes with the learned order, once the engine runs)
+  try { await part.files.prefetch(head, progress, () => W.stop, { learnedOnly: true }); }
   finally { clearInterval(tick); postMessage({ startup: { bytes: progress.bytes, total, done: true } }); }
 }
 const popcount = (m) => { let n = 0; while (m) { n += m & 1; m >>>= 1; } return n; };
 
-/** The whole learned order, in the background from the game's position in it (HttpBackend.prefetch), every part's. */
+/**
+ * The whole learned order, in the background from the game's position in it (HttpBackend.prefetch), every part's; its
+ * progress to the page every second ({ ahead: { done, total, finished } }: entries of the order passed, of all).
+ */
 async function prefetchAll() {
   if (W.prefetching) return;
   W.prefetching = true;
-  const lists = await order();
-  W.version.parts.forEach((p, i) => { if (lists[i].length) p.files.prefetch(lists[i], { bytes: 0, blocks: 0, done: false }, () => W.stop).catch(() => {}); });
+  const lists = await order(), runs = [];
+  W.version.parts.forEach((p, i) => {
+    if (!lists[i].length) return;
+    const progress = { bytes: 0, blocks: 0, done: false };
+    runs.push({ p, progress, job: p.files.prefetch(forLink(p, lists[i]), progress, () => W.stop).catch(() => {}) });
+  });
+  if (!runs.length) return;
+  const tell = () => {
+    let done = 0, total = 0;
+    for (const { p, progress } of runs) { const n = p.files.learned?.entries.length ?? 0; total += n; done += progress.done ? n : Math.min(n, Math.max(0, (progress.k ?? -1) + 1)); }
+    postMessage({ ahead: { done, total, finished: runs.every((r) => r.progress.done) } });
+  };
+  const tick = setInterval(tell, 1000);
+  await Promise.all(runs.map((r) => r.job));
+  clearInterval(tick); tell();
 }
 
 /** The whole version (and the ones it requires) into the browser's copy, in the background, after the game's reads. */
@@ -236,6 +290,7 @@ function monitor() {
   const { ctrl } = W, net = W.version.net, raw = net.totals.rawBytes;
   Atomics.store(ctrl, 2, raw % 0x7fffffff);
   Atomics.store(ctrl, 6, W.waiting);
+  Atomics.store(ctrl, 7, net.fast() ? 1 : 0); Atomics.store(ctrl, 8, net.measured && net.bw > 0 ? Math.round(net.bw / 1024) : 0);
   // (the current step: from the first wait after a pause, the bytes received, and those the learned order says remain)
   const now = performance.now();
   if (W.waiting > 0) {
@@ -245,6 +300,32 @@ function monitor() {
     const done = raw - W.step.base;
     Atomics.store(ctrl, 4, Math.round(done / 1024)); Atomics.store(ctrl, 5, rest === null ? 0 : Math.round((done + rest) / 1024));
   } else if (W.step && now - W.lastWait > STEP_PAUSE_MS) { W.step = null; Atomics.store(ctrl, 4, 0); Atomics.store(ctrl, 5, 0); }
+}
+
+// ---------------------------------------------------------------- light copies: the files themselves after them
+
+/** The key the page knows a file by (data-client.js). */
+const lightKey = (name, path) => name + '\n' + path.toLowerCase();
+
+/** The engine read the light copy of `path`: the file itself in the background (HttpBackend.upgrade), told once here. */
+function upgrade(name, path) {
+  const part = W.parts.get(name), r = part?.files.lookup(path); if (!r?.file) return;
+  part.files.upgrade(r.path);
+}
+
+/**
+ * The files that have a light copy, as they come (every second): one here whole now — upgraded, or brought by the
+ * whole download, the learned order, a read — is told to the page (`real`: read itself from its next load); one whose
+ * light copy is here whole (`lightHere`: read light even on a fast link — the learned order brought it before the link
+ * was measured — until the file itself is here).
+ */
+function lightWatch() {
+  const real = [], lightHere = [];
+  for (const [k, e] of W.light) {
+    if (e.part.files.isWhole(e.path)) { real.push(k); W.light.delete(k); }
+    else if (!e.told && e.part.files.isWhole(`${LIGHT_DIR}/${e.path}`)) { e.told = true; lightHere.push(k); }
+  }
+  if (real.length || lightHere.length) postMessage({ real, lightHere });
 }
 
 // ---------------------------------------------------------------- copies kept by earlier versions of the page

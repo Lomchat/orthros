@@ -1,6 +1,12 @@
 // A game version's tree as the server lists it (/api/tree/<manifest>: { dirs, files: { name: { size, mtime } } }), for
 // every runtime (CLAUDE.md "Standardization"): its files as a list, its size, a language's view of it.
 
+/**
+ * The light copies' folder in a version's paths (src/host/light-copies.js: a texture without its finest levels, for a
+ * slow link — the tree tells a file's light size, `light`; read as `.light/<path>`).
+ */
+export const LIGHT_DIR = '.light';
+
 /** Native binaries of an installation: useless to a WebAssembly engine, never part of its files. */
 const NATIVE = /\.(exe|dll|so|dylib)$/i;
 
@@ -12,12 +18,12 @@ export function treeBytes(node) {
   return n;
 }
 
-/** The files of a tree ({ path, size, mtime }), dot files and native binaries left out. */
+/** The files of a tree ({ path, size, mtime, light? }), dot files and native binaries left out. */
 export function treeFiles(tree) {
   const files = [];
   (function walk(node, prefix) {
     for (const [dir, sub] of Object.entries(node.dirs ?? {})) if (!dir.startsWith('.')) walk(sub, prefix + dir + '/');
-    for (const [file, st] of Object.entries(node.files ?? {})) if (!file.startsWith('.') && !NATIVE.test(file)) files.push({ path: prefix + file, size: st.size, mtime: st.mtime ?? 0 });
+    for (const [file, st] of Object.entries(node.files ?? {})) if (!file.startsWith('.') && !NATIVE.test(file)) files.push({ path: prefix + file, size: st.size, mtime: st.mtime ?? 0, ...(st.light ? { light: st.light } : {}) });
   })(tree, '');
   return files;
 }
@@ -47,7 +53,7 @@ export function languageFiles(files, overlays = {}, known = []) {
   return [...out, ...translated.values()];
 }
 
-/** The file at `rel` in a tree, found without case: { path (its real names), size, mtime }, or null. */
+/** The file at `rel` in a tree, found without case: { path (its real names), size, mtime, light? }, or null. */
 export function treeFile(tree, rel) {
   let node = tree;
   const parts = rel.split('/').filter(Boolean), real = [];
@@ -59,7 +65,9 @@ export function treeFile(tree, rel) {
       node = node.dirs[name]; real.push(name); continue;
     }
     const name = node.files?.[p] !== undefined ? p : Object.keys(node.files ?? {}).find((n) => n.toLowerCase() === low);
-    return name === undefined ? null : { path: [...real, name].join('/'), size: node.files[name].size, mtime: node.files[name].mtime ?? 0 };
+    if (name === undefined) return null;
+    const f = node.files[name];
+    return { path: [...real, name].join('/'), size: f.size, mtime: f.mtime ?? 0, ...(f.light ? { light: f.light } : {}) };
   }
   return null;
 }

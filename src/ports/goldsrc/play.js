@@ -1,6 +1,7 @@
 // The page of a GoldSrc browser port (src/host/goldsrc.js, docs/browser-ports.md), /ports/goldsrc/<manifest>/: the
-// pinned engine release the manifest names (/engines/<release>/), the version's game files streamed (files.js: what
-// the game reads first loaded before it starts, the rest as it goes; kept in IndexedDB), the writable profile (saves,
+// pinned engine release the manifest names (/engines/<release>/), the version's game files streamed (../port-files.js:
+// the game data every Orthros game reads — what the game reads first loaded before it starts, the rest as it goes, kept
+// in the browser), the writable profile (saves,
 // settings) in IndexedDB under the installation's key and on the player's Orthros account (cloud-sync.js), multiplayer
 // through the server's relay (/api/udp/<manifest>) for a signed-in player — the account is the player's name.
 // Around the game, the frame every Orthros game has (/src/host/web/shell.js): the header (the mouse, the saves, the
@@ -10,8 +11,9 @@ import { pickLang } from '../../host/web/lang.js';
 import { createShell, lockKeys } from '../../host/web/shell.js';
 import { escapeToGame } from '../../host/web/escape.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
-import { openStorage, readStorage, writeStorage, storageKeys, removeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
-import { StreamedFiles, treeFiles, learnedPlan, languageFiles, PIECE } from './files.js';
+import { openStorage, readStorage, writeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
+import { treeFiles, languageFiles } from '../../vfs/game-tree.js';
+import { openPortFiles } from '../port-files.js';
 import { createLobby, roomAddress } from './lobby.js';
 
 const STRINGS = {
@@ -239,7 +241,7 @@ async function needAccount() {
 // ---------------------------------------------------------------- the installation
 const name = decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? '');
 const sessionId = crypto.randomUUID().replaceAll('-', '').slice(0, 24);
-let config, files, streamed, lobby = null, pendingConnect = null;
+let config, tree, files, gameData, lobby = null, pendingConnect = null;
 /** A room of the lobby joined: the engine told to connect, or once it runs. */
 function joinRoom(room) {
   const address = roomAddress(room.index);
@@ -382,23 +384,6 @@ function attachNet(Net) {
   relay.open();
 }
 
-/** The reads the game made since the last report, to the server's learned list (sendBeacon when the page goes). */
-function reportReads(beacon = false) {
-  const reads = streamed?.takeReads(); if (!reads?.length) return;
-  const url = `/api/prefetch/${encodeURIComponent(name)}`, body = (list) => JSON.stringify({ session: sessionId, reads: list });
-  if (!beacon) { fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(reads) }).catch((error) => log('Read report failed: ' + error.message)); return; }
-  for (let i = 0; i < reads.length; i += 500) navigator.sendBeacon(url, new Blob([body(reads.slice(i, i + 500))], { type: 'application/json' })); // (a beacon carries 64 KiB at most)
-}
-
-/** After the start: the files kept in this browser, then the rest of the learned list, into the engine's tree. */
-async function loadInBackground(rest) {
-  const t = performance.now(), jobs = (list) => list.map((e) => () => streamed.load(e.file, e.pieces).catch((error) => log(`${e.file.path}: ${error.message}`)));
-  await StreamedFiles.pool(jobs(streamed.localNotLoaded()), 2);
-  await StreamedFiles.pool(jobs(rest), 3);
-  session.background = { ms: Math.round(performance.now() - t), ...streamed.stats };
-  log(`Background loading done: ${JSON.stringify(session.background)}`);
-}
-
 // The HUD's scale (the engine's hud_scale: the width of a virtual screen the HUD is drawn on, which the engine scales to
 // the game's width): none up to about 1920 × 1080, then by half steps — 1.5 at 2560 × 1440, 2.5 at 3840 × 2160 — so its
 // texts and menus keep their size on a large screen instead of shrinking; 0 turns it off. Read at the engine's start.
@@ -460,22 +445,16 @@ async function start() {
   // (the game's files: its whole tree now — a language's folders over the ones they translate —, what earlier sessions
   // read first loaded before the start, the rest later)
   const shown = languageFiles(files, own.overlays, Object.values(g.languages ?? {}).flatMap((l) => Object.keys(l.overlays ?? {})));
-  streamed = session.files = new StreamedFiles({ name, files: shown, log, store: {
-    read: (key) => readStorage(db, 'content', key), write: (key, bytes) => writeStorage(db, 'content', key, bytes),
-    keys: () => storageKeys(db, 'content'), remove: (keys) => removeStorage(db, 'content', keys) } });
-  streamed.mount(FS, '/rodir');
   const t0 = performance.now();
-  const [learned] = await Promise.all([fetch(`/api/prefetch/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : [])).catch(() => []), streamed.openLocal().catch((error) => log('Content cache unavailable: ' + error.message))]);
-  const plan = learnedPlan(learned, [...streamed.files.values()]), first = plan.filter((e) => e.startup);
-  const bytesOf = (e) => (e.pieces ? Math.min(e.file.size, e.pieces.length * PIECE) : e.file.size), total = first.reduce((sum, e) => sum + bytesOf(e), 0);
-  let loaded = 0;
   step('files', 'active', fmtMB(0), 0);
-  await StreamedFiles.pool(first.map((e) => async () => {
-    await streamed.load(e.file, e.pieces); loaded += bytesOf(e);
-    const f = loaded / Math.max(1, total), secs = (performance.now() - t0) / 1000;
-    step('files', 'active', `${fmtMB(loaded)}${secs > 1 ? ` · ${(loaded / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
-  }), 6);
-  session.startup = { files: first.length, bytes: total, ms: Math.round(performance.now() - t0), ...streamed.stats };
+  ({ data: gameData } = await openPortFiles({ name, tree, files: shown, FS, root: '/rodir', session: sessionId, log, db,
+    onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
+  session.files = gameData;
+  const loaded = await gameData.startup((p) => {
+    const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;
+    step('files', 'active', `${fmtMB(p.bytes)}${secs > 1 ? ` · ${(p.bytes / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
+  });
+  session.startup = { ...gameData.snapshot(), startupBytes: loaded.total, ms: Math.round(performance.now() - t0) };
   log(`Startup files: ${JSON.stringify(session.startup)}`);
   // (the release's archives the engine mounts from the game folder: its own extras by default, goldsrc.extras)
   for (const extra of [...(g.extras ?? ['engine/valve/extras.pk3']), ...(own.extras ?? [])]) {
@@ -483,20 +462,18 @@ async function start() {
     if (!extrasResponse.ok) throw new Error(S.engineFiles);
     FS.writeFile(`/rodir/${g.gameDir}/${extra.split('/').pop()}`, new Uint8Array(await extrasResponse.arrayBuffer()));
   }
-  step('files', 'done', fmtMB(total));
+  step('files', 'done', fmtMB(loaded.total));
   FS.chdir('/rwdir');
   step('game', 'active', '', 0.2); status(S.starting);
   // (main() only schedules the engine's start: it runs once the engine's WebAssembly libraries are loaded, which
   // can be after this — no console command before it has run; the reads are learned from its start)
   const M = engine.em.Module, started = new Promise((resolve) => {
-    const initialized = M.onRuntimeInitialized; M.onRuntimeInitialized = () => { streamed.start(); initialized?.(); };
+    const initialized = M.onRuntimeInitialized; M.onRuntimeInitialized = () => { gameData.start(); initialized?.(); };
     M.postRun = [...(Array.isArray(M.postRun) ? M.postRun : M.postRun ? [M.postRun] : []), resolve];
   });
   engine.main();
   await started;
   step('game', 'active', '', 0.6);
-  loadInBackground(plan.filter((e) => !e.startup)).catch((error) => log('Background loading failed: ' + error.message));
-  setTimeout(() => reportReads(), 30000); setInterval(() => reportReads(), 120000);
   engine.Cmd_ExecuteString('developer ' + (params.has('debug') ? '1' : '0'));
   engine.Cmd_ExecuteString(`name "${playerName()}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
   // (the game's main menu: its single player and its multiplayer — a game it creates gets the manifest's settings,
@@ -538,7 +515,7 @@ try {
   if (!manifestResponse.ok || !treeResponse.ok) throw new Error(`HTTP ${manifestResponse.ok ? treeResponse.status : manifestResponse.status}`);
   config = session.config = await manifestResponse.json();
   if (config.runtime !== 'goldsrc') throw new Error('not a GoldSrc installation');
-  files = treeFiles(await treeResponse.json());
+  tree = await treeResponse.json(); files = treeFiles(tree);
   shell = createShell({
     title: config.name, version: config.version, gameLanguage: gameLanguage(config), cover: `/api/cover/${encodeURIComponent(name)}`, subtitle: S.subtitle,
     steps: Object.entries(S.steps).map(([k, label]) => ({ k, label })), tips: S.tips, extras: [lobbyButton],
@@ -558,4 +535,4 @@ try {
 document.addEventListener('visibilitychange', () => { if (document.hidden && session.state === 'running') save().then(() => cloud?.push()).catch(log); });
 window.addEventListener('pagehide', () => {
   if (session.state === 'running') endReport();
-  stopped = true; if (timer) clearInterval(timer); relay?.close(); reportReads(true); });
+  stopped = true; if (timer) clearInterval(timer); relay?.close(); gameData?.close(); });

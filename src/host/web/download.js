@@ -2,11 +2,12 @@
 // (download-worker.js), its progress kept in localStorage so a later visit shows where it stopped and resumes from
 // there (the blocks already stored are skipped). The home screen draws it (home.js); starting a game stops it first.
 import { fmtRate, fmtBytes, fmtDuration } from './net-status.js';
+import { linkRate } from '../../vfs/data-client.js';
 
 const KEY = (name) => 'orthros.download.' + name;
 const load = (name) => { try { return JSON.parse(localStorage.getItem(KEY(name)) ?? 'null'); } catch { return null; } };
 const save = (name, v) => { try { localStorage.setItem(KEY(name), JSON.stringify(v)); } catch { /* storage off */ } };
-const savedBw = () => { try { const v = Number(localStorage.getItem('orthros.netBw')); return v > 0 ? v : null; } catch { return null; } };
+const savedBw = () => linkRate.get() ?? null;
 
 /**
  * What a game version's download looks like now: { state: 'none' | 'running' | 'paused' | 'done' | 'error', bytes,
@@ -45,7 +46,7 @@ export class Downloads {
       if (m.type === 'progress') {
         const v = { bytes: m.bytes, total: m.total, bw: m.bw, ratio: m.ratio, running: !!m.running, done: !!m.done, error: m.error ?? null, at: Date.now() };
         this.live.set(name, v); save(name, { ...v, running: false });
-        if (m.bw > 0) { try { localStorage.setItem('orthros.netBw', String(Math.round(m.bw))); } catch { /* storage off */ } }
+        linkRate.set(m.bw);
         this.emit(name);
       } else if (m.type === 'stopped') {
         const v = this.live.get(name); if (v) { v.running = false; save(name, v); }

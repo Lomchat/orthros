@@ -27,7 +27,8 @@ import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
-import { listGameTree, resolveGameFile } from './game-files.js';
+import { listGameTree, resolveGameFile, resolveLightFile } from './game-files.js';
+import { LIGHT_DIR, readLight } from './light-copies.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
@@ -48,10 +49,12 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 export const listTree = (dir) => listGameTree({ folder: dir });
 /** The size of the file at `rel` ('/'-separated, exact names) in a tree of listGameTree, or null. */
 const treeFileSize = (tree, rel) => {
-  const parts = rel.split('/');
+  const parts = rel.split('/'), light = parts[0] === LIGHT_DIR; // (a light copy's: its size the file's `light`)
+  if (light) parts.shift();
   let node = tree;
   for (let i = 0; i < parts.length - 1; i++) { node = Object.hasOwn(node.dirs, parts[i]) ? node.dirs[parts[i]] : null; if (!node) return null; }
-  return Object.hasOwn(node.files, parts.at(-1)) ? node.files[parts.at(-1)].size : null;
+  const f = Object.hasOwn(node.files, parts.at(-1)) ? node.files[parts.at(-1)] : null;
+  return !f ? null : light ? f.light ?? null : f.size;
 };
 
 export function loadManifests(dir, extra = null) {
@@ -514,19 +517,20 @@ export function createServer(opts = {}) {
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
   const encodedCache = new Map(); let encodedBytes = 0;
   const ENCODED_CACHE_MAX = opts.encodedCacheBytes ?? 256 * 1024 * 1024;
-  const sendRangeEncoded = (req, res, file, r, kind = 'demand') => {
+  // (`light`: a light copy of `file` — resolveLightFile — its bytes instead of the file's)
+  const sendRangeEncoded = (req, res, file, r, kind = 'demand', light = null) => {
     const tReq = performance.now();
-    let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
+    let st = light?.st; if (!st) try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
     const rm = /^(\d+)-(\d+)$/.exec(r);
     if (!rm) return send(res, 400, 'bad range');
-    const start = Number(rm[1]), end = Math.min(Number(rm[2]), st.size);
+    const start = Number(rm[1]), end = Math.min(Number(rm[2]), light ? light.copy.size : st.size);
     if (!(start < end) || end - start > 64 * 1024 * 1024) return send(res, 416, 'bad range');
     const accept = String(req.headers['accept-encoding'] ?? '');
     const enc = zlib.zstdCompress && /\bzstd\b/.test(accept) ? 'zstd' : /\bgzip\b/.test(accept) ? 'gzip' : null;
     // (&pad=1: one byte (0) before the range — a page that reads it as text, the only synchronous binary read of a
     // window, x-user-defined, drops it; without it a range starting with a byte-order mark would be decoded as UTF-8/16)
     const pad = /[?&]pad=1(&|$)/.test(req.url) ? 1 : 0;
-    const key = `${file}|${st.mtimeMs}|${start}-${end}|${enc}|${pad}`;
+    const key = `${light ? LIGHT_DIR + '|' : ''}${file}|${st.mtimeMs}|${start}-${end}|${enc}|${pad}`;
     const reply = (body, encoding) => {
       netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
       const k = netStats[kind]; k.requests++;
@@ -543,24 +547,24 @@ export function createServer(opts = {}) {
     const hit = encodedCache.get(key);
     if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
     const buf = Buffer.alloc(end - start + pad);
-    fs.open(file, 'r', (err, fd) => {
+    const read = light ? (done) => readLight(file, light.copy, start, end, buf, pad, done) : (done) => fs.open(file, 'r', (err, fd) => {
+      if (err) return done(err);
+      fs.read(fd, buf, pad, end - start, start, (err2, n) => { fs.close(fd, () => {}); done(err2 ?? (n === end - start ? null : new Error('short read'))); });
+    });
+    read((err) => {
       if (err) return send(res, 500, String(err));
-      fs.read(fd, buf, pad, end - start, start, (err2, n) => {
-        fs.close(fd, () => {});
-        if (err2 || n !== end - start) return send(res, 500, String(err2 ?? 'short read'));
-        if (!enc) return reply(buf, null);
-        const t0 = performance.now();
-        const done = (err3, out) => {
-          netStats.encodeMs += performance.now() - t0;
-          // (not worth it: sent as is — the encoded form is still cached, as the raw bytes)
-          const entry = !err3 && out.length < buf.length * 0.92 ? { body: out, encoding: enc } : { body: buf, encoding: null };
-          encodedCache.set(key, entry); encodedBytes += entry.body.length;
-          for (const [k, v] of encodedCache) { if (encodedBytes <= ENCODED_CACHE_MAX) break; encodedCache.delete(k); encodedBytes -= v.body.length; }
-          reply(entry.body, entry.encoding);
-        };
-        if (enc === 'zstd') zlib.zstdCompress(buf, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }, done);
-        else zlib.gzip(buf, { level: 4 }, done);
-      });
+      if (!enc) return reply(buf, null);
+      const t0 = performance.now();
+      const done = (err3, out) => {
+        netStats.encodeMs += performance.now() - t0;
+        // (not worth it: sent as is — the encoded form is still cached, as the raw bytes)
+        const entry = !err3 && out.length < buf.length * 0.92 ? { body: out, encoding: enc } : { body: buf, encoding: null };
+        encodedCache.set(key, entry); encodedBytes += entry.body.length;
+        for (const [k, v] of encodedCache) { if (encodedBytes <= ENCODED_CACHE_MAX) break; encodedCache.delete(k); encodedBytes -= v.body.length; }
+        reply(entry.body, entry.encoding);
+      };
+      if (enc === 'zstd') zlib.zstdCompress(buf, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }, done);
+      else zlib.gzip(buf, { level: 4 }, done);
     });
   };
 
@@ -668,14 +672,16 @@ export function createServer(opts = {}) {
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
       if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, gameTreeJson(m[1], man), { 'Content-Type': 'application/json' }); }
       // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd or gzip
-      // when that saves enough (Content-Encoding: the browser decodes before the page sees them), else sent as they are
+      // when that saves enough (Content-Encoding: the browser decodes before the page sees them), else sent as they are;
+      // /gamez/<manifest>/.light/<path>: the file's light copy (light-copies.js), when the version has them
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
       if (m) {
         const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
-        const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found');
+        const light = m[2].startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, m[2]) : null;
+        const file = light ? light.file : resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found');
         const r = url.searchParams.get('r') ?? '', rm = /^(\d+)-(\d+)$/.exec(r);
         if (rm && !url.searchParams.get('p')) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
-        return sendRangeEncoded(req, res, file, r, url.searchParams.get('p') || url.searchParams.get('a') ? 'bg' : 'demand');
+        return sendRangeEncoded(req, res, file, r, url.searchParams.get('p') || url.searchParams.get('a') ? 'bg' : 'demand', light);
       }
       m = /^\/api\/regions\/([^/]+)$/.exec(p);
       if (m) {

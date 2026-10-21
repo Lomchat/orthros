@@ -12,7 +12,7 @@ import { re3Problem, re3Modes } from '../src/host/re3.js';
 import { createServer } from '../src/host/server.js';
 import { setIni, setIniDefaults, readIni, bytesToText, textToBytes } from '../src/ports/re3/ini.js';
 import { profileSnapshot, restoreProfile, setProfileIni, toCloud, findPath, casePath, languageIni, envPreRun } from '../src/ports/re3/profile.js';
-import { StreamedFiles } from '../src/ports/goldsrc/files.js';
+import { mountFiles } from '../src/vfs/emscripten-files.js';
 
 const ENGINE = 'eng-test-1';
 const re3 = (over = {}) => ({ engine: ENGINE, ...over });
@@ -306,7 +306,7 @@ function memFS() {
     writeFile(p, data) { const [dir, name] = parent(p); const old = dir.children.get(name); if (old?.children) throw new Error('EISDIR'); if (old) old.data = Uint8Array.from(data); else dir.children.set(name, { mode: FILE | 0o644, data: Uint8Array.from(data) }); },
     unlink(p) { const [dir, name] = parent(p); dir.children.delete(name); },
     mkdirTree(p) { let n = top; for (const part of split(p)) { let next = n.children?.get(part); if (!next) { if (!n.children) throw new Error(`ENOTDIR ${p}`); n.children.set(part, next = { mode: DIR | 0o755, children: new Map() }); } n = next; } },
-    // (a streamed game file's node, ../src/ports/goldsrc/files.js mount())
+    // (a streamed game file's node, ../src/vfs/emscripten-files.js)
     createFile(dir, name) { const node = { mode: FILE | 0o444, stream_ops: {} }; get(dir).children.set(name, node); return node; },
     // (open's checks: permissions, O_CREAT 0o100, O_EXCL 0o200, O_TRUNC 0o1000; fopen's modes as strings)
     open(p, flags) {
@@ -322,6 +322,8 @@ function memFS() {
   return FS;
 }
 const text = (s) => new TextEncoder().encode(s);
+/** The game data of `files` with no network: a read is recorded and fails (src/vfs/data-client.js's interface). */
+const gameData = (files, fetched) => ({ file: (name, p) => ({ ...files.find((f) => f.path === p) }), read: (h) => { fetched.push(h.path); throw new Error('no network'); } });
 
 test('the profile is every file the engine wrote among the game\'s, put back over the game files it replaced', () => {
   const FS = memFS(), game = new Set(), mount = (p, s) => { FS.mkdirTree(p.slice(0, p.lastIndexOf('/'))); FS.writeFile(p, text(s)); game.add(FS.lookupPath(p).node); };
@@ -348,9 +350,8 @@ test('the profile is every file the engine wrote among the game\'s, put back ove
 test('the streamed game files mounted in the game\'s folder are never part of the profile, nor fetched for it', () => {
   const FS = memFS(), fetched = [];
   const files = [{ path: 'data/x.dat', size: 10, mtime: 1 }, { path: 'TEXT/american.gxt', size: 20, mtime: 1 }];
-  const sf = new StreamedFiles({ name: 'gm-web', files, store: null, syncGet: (url) => { fetched.push(url); throw new Error('no network'); }, get: async (url) => { fetched.push(url); throw new Error('no network'); } });
-  FS.mkdirTree('/game'); sf.mount(FS, '/game');
-  const game = new Set([...sf.files.values()].map((f) => f.node));
+  FS.mkdirTree('/game');
+  const game = mountFiles(FS, '/game', gameData(files, fetched), 'gm-web', files);
   assert.equal(game.size, 2); assert.ok([...game].every(Boolean));
   FS.mkdirTree('/game/userfiles'); FS.writeFile('/game/userfiles/save1.b', text('save')); FS.writeFile('/game/settings.ini', text('[A]\n'));
   assert.deepEqual(profileSnapshot(FS, '/game', game).map((f) => f.path).sort(), ['settings.ini', 'userfiles/save1.b']);
@@ -360,9 +361,8 @@ test('the streamed game files mounted in the game\'s folder are never part of th
 test('a game file the engine writes anew becomes a file of the profile (rewritable streamed files); in place, read-only', () => {
   const FS = memFS(), fetched = [];
   const files = [{ path: 'settings.ini', size: 4, mtime: 1 }, { path: 'data/x.dat', size: 4, mtime: 1 }, { path: 'data/y.dat', size: 4, mtime: 1 }, { path: 'data/z.dat', size: 4, mtime: 1 }];
-  const sf = new StreamedFiles({ name: 'gm-web', files, store: null, rewritable: true, syncGet: (url) => { fetched.push(url); throw new Error('no network'); } });
-  FS.mkdirTree('/game'); sf.mount(FS, '/game');
-  const game = new Set([...sf.files.values()].map((f) => f.node)), isGame = (p) => game.has(FS.lookupPath(p).node);
+  FS.mkdirTree('/game');
+  const game = mountFiles(FS, '/game', gameData(files, fetched), 'gm-web', files, { rewritable: true }), isGame = (p) => game.has(FS.lookupPath(p).node);
   FS.open('/game/settings.ini', 0o1101); // (O_WRONLY | O_CREAT | O_TRUNC: fopen's "w")
   FS.open('/game/data/z.dat', 'w+');
   assert.equal(isGame('/game/settings.ini'), false); assert.equal(isGame('/game/data/z.dat'), false);
@@ -376,7 +376,7 @@ test('a game file the engine writes anew becomes a file of the profile (rewritab
   assert.deepEqual(profileSnapshot(FS, '/game', game).map((f) => f.path).sort(), ['data/z.dat', 'settings.ini']);
   assert.deepEqual(fetched, [], 'a file written anew is never fetched');
   // (by default — GoldSrc's — the game files stay read-only)
-  const FS2 = memFS(); FS2.mkdirTree('/game'); new StreamedFiles({ name: 'gs-1', files, store: null }).mount(FS2, '/game');
+  const FS2 = memFS(); FS2.mkdirTree('/game'); mountFiles(FS2, '/game', gameData(files, []), 'gs-1', files);
   assert.throws(() => FS2.open('/game/settings.ini', 0o1101), /EACCES/);
 });
 

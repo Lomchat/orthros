@@ -1,6 +1,7 @@
-// The indicator stream-meter.js shows while the OpenMW engine's page waits for its game data, drawn here so that it
-// moves while that page's thread is held by the engine's read: shown when the page has painted nothing for a second
-// and asked for game data meanwhile (or for three seconds whatever it does), gone at its next frame.
+// The indicator data-meter.js shows while a game waits for its game data, drawn here so that it moves while the page's
+// thread is held by the engine's read: shown when the page has painted nothing for a second and asked for game data
+// meanwhile (or for three seconds whatever it does), or when the engine's reads have waited for the network a second
+// and a half (an engine that suspends meanwhile: the page goes on painting); gone once neither holds.
 const TEXT = {
   en: { data: 'Loading the game data', busy: 'Loading…', mb: 'MB', rate: 'MB/s',
     dataNote: 'Not stuck: the game is receiving its files. Faster next time.', busyNote: 'Not stuck: the game is working.',
@@ -13,7 +14,7 @@ let ctx = null, dpr = 1, S = TEXT.en, num = new Intl.NumberFormat('en', { maximu
 let beat = performance.now(), hidden = false, shown = false;
 let reads = 0, done = 0, pending = 0, lastRead = 0, held = 0;
 const marks = [];   // [time, bytes received] of the last seconds: the rate
-let arrived = null, seen = 0;   // (Orthros' streaming: its count of the bytes arrived, shared — exact, live)
+let arrived = null, seen = 0, waitSince = null, waitLast = 0;   // (Orthros' streaming: its count of the bytes arrived, shared — exact, live)
 
 /** Data asked for or arriving (a pause of 5 s: a new count). */
 function arrive(now, bytes) {
@@ -45,11 +46,16 @@ onmessage = (e) => {
 };
 
 setInterval(() => {
-  const now = performance.now(); held = now - beat;
+  const now = performance.now();
   if (arrived) { const cur = Atomics.load(arrived, 2), d = (cur - seen) | 0; seen = cur; if (d > 1) arrive(now, d); }
-  // (reading: the page's reads wait for the network — the game data's counter — or bytes arrived during this hold)
-  const reading = (arrived && Atomics.load(arrived, 6) > 0) || (reads > 0 && now - lastRead < held + 500);
-  if (ctx && !hidden && (held > 1000 && reading || held > 3000)) draw(now, reading); else if (shown) clear();
+  const waiting = !!arrived && Atomics.load(arrived, 6) > 0;
+  // (a wait goes on while the engine's reads wait one after the other: over once none has waited for a second)
+  if (waiting) { waitSince ??= now; waitLast = now; } else if (now - waitLast > 1000) waitSince = null;
+  // (since the page's last frame — its thread held —, or since the engine's reads began to wait — the page painting)
+  const sinceFrame = now - beat, sinceWait = waitSince === null ? 0 : now - waitSince;
+  held = Math.max(sinceFrame, sinceWait);
+  const reading = waiting || (reads > 0 && now - lastRead < sinceFrame + 500);
+  if (ctx && !hidden && ((sinceFrame > 1000 && reading) || sinceFrame > 3000 || sinceWait > 1500)) draw(now, reading); else if (shown) clear();
 }, 100);
 
 const FONTS = ['600 15px system-ui, "Segoe UI", sans-serif', '700 17px system-ui, "Segoe UI", sans-serif', '600 13px system-ui, "Segoe UI", sans-serif', '12.5px system-ui, "Segoe UI", sans-serif'];
