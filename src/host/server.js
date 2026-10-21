@@ -52,6 +52,10 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8', '.lua': 'text/plain; charset=utf-8' };
 
 export const listTree = (dir) => listGameTree({ folder: dir });
+/** A file version's validator (weak: the same for its encoded answers — a brotli body decodes to the same bytes). */
+const etagOf = (st) => `W/"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+/** the page's own text files (src/): sent brotli 11 once made (srcBrotli) */
+const SRC_TEXT = /\.(m?js|html|css|json|svg|txt)$/;
 /** The size of the file at `rel` ('/'-separated, exact names) in a tree of listGameTree, or null. */
 const treeFileSize = (tree, rel) => {
   const parts = rel.split('/'), light = parts[0] === LIGHT_DIR; // (a light copy's: its size the file's `light`)
@@ -157,11 +161,25 @@ export function createServer(opts = {}) {
   const link = opts.net ? new SimLink(opts.net) : null;
   const viaLink = (res, bytes, go, onStart = null) => { const cancel = link.send(bytes, go, onStart); res.on('close', cancel); };
   const send = (res, code, body, extra) => { res.writeHead(code, headers({ 'Content-Type': 'text/plain; charset=utf-8', ...extra })); res.end(body); };
+  /**
+   * A whole file's answer when the browser has it already (its validators, revalidated: Cache-Control no-cache): 304,
+   * no body. The Win32 page's workers each load their module graph (380 fetches of 150 modules, 8.3 MB per visit,
+   * measured): every one of them a revalidation once the browser has the module.
+   */
+  const notModified = (req, st, etag) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+    const inm = req.headers['if-none-match'];
+    if (inm !== undefined) return String(inm).split(',').some((t) => { t = t.trim(); return t === '*' || t.replace(/^W\//, '') === etag.replace(/^W\//, ''); });
+    const ims = Date.parse(String(req.headers['if-modified-since'] ?? ''));
+    return Number.isFinite(ims) && Math.floor(st.mtimeMs / 1000) * 1000 <= ims;
+  };
+  const sendNotModified = (res, h) => { const { 'Content-Length': _l, 'Content-Range': _r, ...rest } = h; res.writeHead(304, rest); res.end(); };
   const sendFile = (req, res, file, mime, extra = {}) => {
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
     if (!st.isFile()) return send(res, 404, 'not found');
-    const range = req.headers.range;
-    const h = headers({ 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Last-Modified': st.mtime.toUTCString(), ...extra });
+    const range = req.headers.range, etag = etagOf(st);
+    const h = headers({ 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Last-Modified': st.mtime.toUTCString(), 'ETag': etag, ...extra });
+    if (!range && notModified(req, st, etag)) return sendNotModified(res, h);
     if (range) {
       const m = /^bytes=(\d*)-(\d*)$/.exec(range);
       if (!m) return send(res, 416, 'bad range', { 'Content-Range': `bytes */${st.size}` });
@@ -186,10 +204,51 @@ export function createServer(opts = {}) {
    */
   const sendBrotli = (req, res, br, mime, extra = {}, decoded = null) => {
     let st; try { st = fs.statSync(br); } catch { return send(res, 404, 'not found'); }
-    res.writeHead(200, headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Last-Modified': st.mtime.toUTCString(), ...extra,
-      'X-Orthros-Wire-Length': String(st.size), ...(decoded > 0 ? { 'X-Orthros-Decoded-Length': String(decoded) } : {}) }));
+    const etag = etagOf(st), h = headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Last-Modified': st.mtime.toUTCString(), 'ETag': etag, ...extra,
+      'X-Orthros-Wire-Length': String(st.size), ...(decoded > 0 ? { 'X-Orthros-Decoded-Length': String(decoded) } : {}) });
+    if (notModified(req, st, etag)) return sendNotModified(res, h);
+    res.writeHead(200, h);
     if (req.method === 'HEAD') return res.end();
     fs.createReadStream(br).pipe(res);
+  };
+  /**
+   * The page's own files (src/, and the pages: no build step, the browser loads the modules as they are): revalidated
+   * at each load (Cache-Control no-cache: a new tree is new code at once), 304 when unchanged (sendFile), and a text
+   * file sent brotli 11 once made — 0.90 MB for the Win32 page's 3.26 MB of modules where the reverse proxy's gzip
+   * makes 1.03 MB (measured, docs/slow-network.md). Made in the background at its first request (brotli 11: a few
+   * hundred ms of a core for the largest modules, on libuv's pool), that one sent as it is; kept in memory by the
+   * file's size and mtime (the tree's text is ~4 MB, its brotli ~1 MB), checked again once made.
+   */
+  const srcBr = new Map(); // file -> { size, mtimeMs, br (Buffer | null: not worth it | undefined: being made) }
+  let srcBrBytes = 0;
+  const SRC_BR_MAX = 64 << 20;
+  const srcBrotli = (file, st) => {
+    const c = srcBr.get(file);
+    if (c && c.size === st.size && c.mtimeMs === st.mtimeMs) return c.br ?? null;
+    if (c) { srcBrBytes -= c.br?.length ?? 0; srcBr.delete(file); }
+    if (st.size > 8 << 20 || st.size < 512) return null; // (small: brotli's gain under a header's size)
+    const e = { size: st.size, mtimeMs: st.mtimeMs, br: undefined };
+    srcBr.set(file, e);
+    fs.readFile(file, (err, buf) => {
+      if (err || buf.length !== st.size) { srcBr.delete(file); return; }
+      zlib.brotliCompress(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11, [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length } }, (err2, out) => {
+        let now = null; try { now = fs.statSync(file); } catch { /* gone */ }
+        if (err2 || srcBr.get(file) !== e || !now || now.size !== e.size || now.mtimeMs !== e.mtimeMs) { if (srcBr.get(file) === e) srcBr.delete(file); return; }
+        e.br = out.length <= buf.length * 0.92 ? out : null;
+        srcBrBytes += e.br?.length ?? 0;
+        for (const [k, v] of srcBr) { if (srcBrBytes <= SRC_BR_MAX) break; if (v.br) { srcBrBytes -= v.br.length; srcBr.delete(k); } } // (oldest out)
+      });
+    });
+    return null;
+  };
+  const sendSource = (req, res, file, mime) => {
+    let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
+    if (!st.isFile() || req.headers.range || !SRC_TEXT.test(file)) return sendFile(req, res, file, mime);
+    const etag = etagOf(st), vary = { 'Vary': 'Accept-Encoding' };
+    const br = /\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !notModified(req, st, etag) ? srcBrotli(file, st) : null;
+    if (!br) return sendFile(req, res, file, mime, vary);
+    res.writeHead(200, headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Content-Length': br.length, 'Last-Modified': st.mtime.toUTCString(), 'ETag': etag, ...vary }));
+    res.end(req.method === 'HEAD' ? undefined : br);
   };
   /**
    * An engine release's file, or its precompressed sibling (<file>.br, as releases ship them: OpenMW's 204 MB package is
@@ -879,7 +938,7 @@ export function createServer(opts = {}) {
         });
         return;
       }
-      if (p === '/' || p === '/index.html') return sendFile(req, res, path.join(ROOT, 'src/host/web/index.html'), MIME['.html']);
+      if (p === '/' || p === '/index.html') return sendSource(req, res, path.join(ROOT, 'src/host/web/index.html'), MIME['.html']);
       // (the privacy policy and the terms of use, at public addresses: the home screen, the account window and Google's sign-in link to them)
       if (p === '/privacy' || p === '/terms') return sendFile(req, res, path.join(ROOT, `src/host/web/${p.slice(1)}.html`), MIME['.html']);
       if (p === '/api/manifests') {
@@ -1089,7 +1148,7 @@ export function createServer(opts = {}) {
         return sendEngineFile(req, res, f, cache);
       }
       m = /^\/ports\/([a-z0-9]+)\/([^/]+)\/$/.exec(p);
-      if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendFile(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
+      if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendSource(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
       m = /^\/engines\/([^/]+)\/(.+)$/.exec(p);
       if (m) {
         if (![...manifests.values()].some((man) => man.goldsrc?.engine === m[1] || man.openmw?.engine === m[1] || (man.runtime === 're3' && man.re3?.engine === m[1]))) return send(res, 404, 'no such engine');
@@ -1108,7 +1167,7 @@ export function createServer(opts = {}) {
       if (p.startsWith('/src/') || p.startsWith('/tools/') || p.startsWith('/tests/')) {
         const file = path.join(ROOT, p);
         if (!file.startsWith(ROOT)) return send(res, 403, 'forbidden');
-        return sendFile(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream');
+        return sendSource(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream');
       }
       return send(res, 404, 'not found');
     } catch (e) {
