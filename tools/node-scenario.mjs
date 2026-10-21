@@ -1,6 +1,7 @@
 // Harness scenarios (tools/scenarios/*.txt, the language of tools/headless.mjs --input) played in Node without a page:
 // tools/startbench.mjs --input <file>. Mouse and keyboard events are queued on the headless host as the browser host
-// queues them; `waitframe:min,max` anchors on the Direct3D device's draws per frame (vm.d3dDevice), `mark:<label>` closes
+// queues them (the steps parsed by the page's own src/host/scenario.js: `#` comment lines, new lines or `;` between
+// steps); `waitframe:min,max[,min2,max2...]` anchors on the Direct3D device's draws per frame (vm.d3dDevice), `mark:<label>` closes
 // a phase and prints its guest instructions and the guest category's time per instruction (frame accounting, as the
 // browser's phase reports), its frame-time percentiles and the APIs that took the most time ([apitop]: ms and calls per
 // frame, µs per call), `dbg:ORTHROS_JIT_AB=<json>` switches the JIT's translation options (Jit.switchOpts), the
@@ -12,6 +13,7 @@ import { acct, C as ACCT } from '../src/core/frame-acct.js';
 import { scanCodeOfVk } from '../src/win32/dinput8.js';
 import { BLOCK_COUNTS_BASE } from '../src/cpu/memory.js';
 import { refreshApiOpt } from '../src/core/api-opt.js';
+import { parseScenario, inRanges } from '../src/host/scenario.js';
 
 export class NodeScenario {
   /**
@@ -21,13 +23,9 @@ export class NodeScenario {
    */
   constructor(text, vm, log, nowMs = () => performance.now()) {
     this.vm = vm; this.log = log; this.nowMs = nowMs; // (the time base: wall time, or a virtual clock's for a deterministic run)
-    let afterWait = false;
-    this.events = text.split(';').map((e) => e.trim()).filter(Boolean).map((e) => {
-      const [t, kind, ...rest] = e.split(':'); const a = rest.join(':');
-      const ev = { t: Number(t.replace(/^\+/, '')), rel: t.startsWith('+'), anchored: afterWait, kind, args: ['text', 'mark', 'dbg'].includes(kind) ? [a] : a.split(',').map(Number), done: false };
-      if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true;
-      return ev;
-    });
+    const { steps, errors } = parseScenario(text);
+    if (errors.length) throw new Error(`scenario: ${errors.join('; ')}`);
+    this.events = steps.map((st) => ({ t: st.t, rel: st.rel, anchored: st.anchored, kind: st.kind, args: st.args, done: false }));
     this.t0 = this.nowMs(); this.anchorAt = null; this.firstFrameAt = null;
     this.pending = []; // [time ms, input event] (button releases, key ups)
     this.phase = null; this.nextCheck = 0;
@@ -59,7 +57,7 @@ export class NodeScenario {
         const prev = ev.prev; ev.prev = { draws: d3d.draws, frames: d3d.frames }; ev.at = t;
         if (!prev || d3d.frames === prev.frames) break;
         const dpf = (d3d.draws - prev.draws) / (d3d.frames - prev.frames);
-        ev.streak = dpf >= ev.args[0] && dpf <= ev.args[1] ? (ev.streak ?? 0) + 1 : 0;
+        ev.streak = inRanges(dpf, ev.args) ? (ev.streak ?? 0) + 1 : 0; // (min,max[,min2,max2...]: any of the ranges)
         if (ev.streak >= 3) { ev.done = true; this.anchorAt = t; this.log(`[input] waitframe ${ev.args.join(',')}: ${dpf.toFixed(0)} draws/frame, anchor at ${t.toFixed(0)}s`); }
         break;
       }

@@ -13,7 +13,7 @@
 // Stack faults (empty register access) are not emulated here (D014): the tags are maintained for
 // the interpreter and FNSTENV/FNSAVE/FXAM, not checked (an FLD m80 onto a full stack or an FSTP m80
 // of an empty ST(0) behaves as FLD/FSTP m64 do, where the interpreter substitutes the indefinite).
-import { L_ST0, L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, PF, L_SW } from './translate.js';
+import { L_ST0, L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, PF, L_SW, L_CUT24 } from './translate.js';
 import { HANDLERS, L_STATE, L_EFLAGS, L_TA, L_TV, L_T4, L_I64A, L_I64B, L_F64A, L_F64B, L_FTW, L_FPC, L_TOP, L_T3, L_T5, L_T6, L_T7, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, IMP_X87_ARITHF32, IMP_X87_ROUNDF32, IMP_X87_NANARITH, L_F64C } from './translate.js';
 import { emitRaise, emitNanF64, emitArithF32Cold, emitRoundF32Rare } from './fpmath-x87cold.js';
 import { emitF80Load, emitF80Store } from './fpmath-f80.js';
@@ -261,7 +261,7 @@ function roundTowardZero24(E, op, insn, narrowOps) {
   const cold = c.block();
   // the exponent field of s outside [2, 0x7fe] (zero, denormal, the lowest normal binade, infinite, NaN)
   const pushOutOfRange = () => { c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7ff00000).and().i32(0x00200000).sub().i32(0x7fd00000).ge_u(); };
-  const pushMasked = () => { c.get(L_I64A).i64(~0x1fffffffn).i64and().f64reinterpret_i64().set(L_F64D); };
+  const pushMasked = () => { pushCut24(E, L_F64C, L_I64A); c.set(L_F64D); };
   const exactProduct = narrowOps && (op === 1 || op === 6 || op === 7);
   if (exactProduct) {
     pushOutOfRange(); c.hint(false).br_if(cold);
@@ -286,6 +286,20 @@ function roundTowardZero24(E, op, insn, narrowOps) {
   E.stepExit(insn);
   c.end(); // done
   c.get(L_F64D);
+}
+const CUT24 = new Uint8Array(16); new BigUint64Array(CUT24.buffer).fill(~0x1fffffffn & 0xffffffffffffffffn);
+/**
+ * f64 on the stack <- the f64 local `f` with its 29 low significand bits cleared (`bits`: an i64 local holding f's bit
+ * pattern, for the scalar form). A vector AND on the value (Emitter.x87VecMask): it stays in its XMM register — the
+ * integer form moved it to a general register and back, two domain crossings (~3 cycles each) on the dependency chain
+ * of every arithmetic instruction of a truncating x87 computation; the bit tests that decide the path still read the
+ * integer pattern, off that chain (predicted branches).
+ */
+function pushCut24(E, f, bits) {
+  const c = E.c;
+  if (E.x87VecMask && E.fpcAssume === 0xc00) c.get(f).f64x2splat().get(L_CUT24).v128and().f64x2extractlane(0); // (the prologue's mask)
+  else if (E.x87VecMask) c.get(f).f64x2splat().v128const(CUT24).v128and().f64x2extractlane(0);
+  else c.get(bits).i64(~0x1fffffffn).i64and().f64reinterpret_i64();
 }
 /** roundPC leaves no NaN result: the static directed 24-bit path (roundDirected24) exits for every non-normal result but zeros */
 function roundPCExcludesNaN(E) { return E.fpcStatic !== null && (E.fpcStatic & 0x300) === 0 && E.fpcStatic !== 0; }

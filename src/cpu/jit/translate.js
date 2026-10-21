@@ -59,10 +59,14 @@ const L_SPECF = L_IFR0 + IFCVT_SLOTS, L_NCK = L_SPECF + 1;
 // the x87 status word (x87 regions: loaded with the stack cache, written back with it), so that the compares, FNSTSW and
 // the condition codes' updates chain through a register instead of a store and a load of the state block each
 const L_SW = L_NCK + 1;
+// the mask clearing an f64's 29 low significand bits in both lanes (x87 regions translated for a static truncating 24-bit
+// mode: translate-x87.js pushCut24), set once by the prologue
+const L_CUT24 = L_SW + 1;
+const CUT24_BYTES = new Uint8Array(new BigUint64Array([0xffffffffe0000000n, 0xffffffffe0000000n]).buffer);
 const L_FIRST_DECLARED = 16;
 const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32), ...Array(8).fill(T.f64),
-  T.i32, ...Array(2 * IFCVT_SLOTS).fill(T.i32), T.i32, T.i32, T.i32]; // indices 16..113
-if (LOCAL_TYPES.length !== L_SW + 1 - L_FIRST_DECLARED || L_IC !== L_XD0 + 8 || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+  T.i32, ...Array(2 * IFCVT_SLOTS).fill(T.i32), T.i32, T.i32, T.i32, T.v128]; // indices 16..114
+if (LOCAL_TYPES.length !== L_CUT24 + 1 - L_FIRST_DECLARED || L_IC !== L_XD0 + 8 || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 /**
  * Instructions whose handlers access their XMM operands only through the lane-0 shadow helpers of
  * translate-sse-common.js (scalarF32 / xmmStoreF32 / xmmShadowStore...), filled by translate-sse-float.js: the scalar
@@ -130,7 +134,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -936,6 +940,15 @@ class Emitter {
     // exits rotate the x87 stack locals to shift 0 like in-region transfers (the earlier exits, for measurement): see
     // x87ExitState
     this.x87ExitRotate = !!(opts.x87ExitRotate ?? JIT_DEFAULTS.x87ExitRotate);
+    // directed 24-bit rounding cuts an f64 result's significand with a vector AND (the value stays in its XMM register)
+    // instead of a round trip through a general register (false: the earlier code, for measurement): see
+    // translate-x87.js pushCut24
+    this.x87VecMask = !!(opts.x87VecMask ?? JIT_DEFAULTS.x87VecMask);
+    // only the x87 stack registers the region's code touches are loaded at its entry (and after fallbacks) and written
+    // back at its exits: see x87LiveSites
+    this.x87Live = !!(opts.x87Live ?? JIT_DEFAULTS.x87Live);
+    /** byte ranges [start, end, register] of the per-register loads and stores of the x87 stack cache (x87LiveSites) */
+    this.x87Sites = [];
     this.stats = { native: 0, fallback: 0, x87Planned: 0, ifcvt: 0 }; // (x87Planned: blocks entered with a planned x87 shift; ifcvt: if-converted branches)
     /** planned x87 shift at each block's entry (x87EntryPlan), null: every block entered at shift 0 */
     this.x87Plan = null;
@@ -992,6 +1005,10 @@ class Emitter {
     // the FS base (TEB) only in regions reading it: an FS-segment operand, an API run inline (its TEB fields)
     this.usesFs = blocks.some((b) => b.insns.some((i) => i.inlineApi || i.seg === SEG.FS || i.ops.some((o) => o.seg === SEG.FS)));
     if (this.usesFs) c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
+    if (this.usesX87 && this.x87Live) c.track(L_ST0, 8); // (which stack locals the body touches: x87LiveSites)
+    // (the truncation mask of translate-x87.js pushCut24, built once: TurboFan keeps it in a register or a spill slot
+    // instead of rebuilding the constant at every arithmetic instruction)
+    if (this.usesX87 && this.x87VecMask && this.fpcAssume === 0xc00) c.v128const(CUT24_BYTES).set(L_CUT24);
     if (this.usesX87) { // (TOP: x87 regions only, the others never change it)
       c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.x87EntryTop();
       // (specialized for the stack top: the stack is loaded once the guard below has made L_TOP a constant)
@@ -1092,6 +1109,7 @@ class Emitter {
       c.get(L_STATE).get(L_T2).i32store(ST.EXIT);
       c.i32(0);
     }
+    if (this.usesX87 && this.x87Live) this.x87LiveSites();
     // module
     // the function body is kept so several regions can later be packed into one module (see Jit.consolidate)
     this.stats.calls = c.callsTo ? c.callsTo.slice() : null; // [import, guest op] of every call (a call anywhere costs spills in the whole function)
@@ -1399,13 +1417,35 @@ class Emitter {
   stSlot(i) { const c = this.c; c.get(L_STATE).get(L_T3); if (i) c.i32(8 * i).add().i32(63).and(); c.add(); }
   /** L_ST0..7 <- FPR[(L_TOP+i)&7] (shift 0, L_TOP current; clobbers L_T3). */
   loadX87Regs() {
-    this.c.get(L_TOP).i32(3).shl().set(L_T3);
-    for (let i = 0; i < 8; i++) { this.stSlot(i); this.c.f64load(ST.FPR).set(L_ST0 + i); }
+    const c = this.c, n = c.trackN;
+    c.get(L_TOP).i32(3).shl().set(L_T3);
+    c.trackN = 0; // (the cache's own loads and stores are not uses: see x87LiveSites)
+    for (let i = 0; i < 8; i++) { const at = c.len; this.stSlot(i); c.f64load(ST.FPR).set(L_ST0 + i); this.x87Sites.push(at, c.len, i); }
+    c.trackN = n;
   }
   /** FPR[(L_TOP+i)&7] <- L_ST0..7 (shift 0; clobbers L_T3). */
   flushX87Regs() {
-    this.c.get(L_TOP).i32(3).shl().set(L_T3);
-    for (let i = 0; i < 8; i++) { this.stSlot(i); this.c.get(L_ST0 + i).f64store(ST.FPR); }
+    const c = this.c, n = c.trackN;
+    c.get(L_TOP).i32(3).shl().set(L_T3);
+    c.trackN = 0;
+    for (let i = 0; i < 8; i++) { const at = c.len; this.stSlot(i); c.get(L_ST0 + i).f64store(ST.FPR); this.x87Sites.push(at, c.len, i); }
+    c.trackN = n;
+  }
+  /**
+   * Once the body is emitted (opts.x87Live): the loads and stores of the stack locals the body never touches become
+   * `nop`s (the same length: no offset recorded in the body moves — branch hints, the alt slot, visit flags). Local
+   * L_ST0+k always holds physical register (L_TOP + k) & 7 for the current L_TOP: the locals only move between each
+   * other through x87Rotate, whose gets and sets mark all eight, and L_TOP changes otherwise only where the cache is
+   * written back and reloaded (fallbacks, FLDENV / FRSTOR, TOP resets) — so a local no instruction reads or writes holds
+   * nothing the region needs, and the register's copy in the state block stays the right one. Fewer loads at the
+   * entry and stores at the exits (every chained transition of an x87 region), and fewer live values for TurboFan.
+   */
+  x87LiveSites() {
+    const c = this.c, used = c.used, s = this.x87Sites;
+    c.trackN = 0;
+    this.stats.x87Live = used;
+    if (used === 0xff) return;
+    for (let j = 0; j < s.length; j += 3) if (!((used >> s[j + 2]) & 1)) c.buf.fill(0x01, s[j], s[j + 1]);
   }
   /** x87 region entry / after the interpreter ran: stack values, tag word and PC/RC bits from the state block. */
   loadX87() {
@@ -2993,5 +3033,5 @@ function strOp(kind) {
 HANDLERS[OP.MOVS] = strOp('movs'); HANDLERS[OP.STOS] = strOp('stos'); HANDLERS[OP.LODS] = strOp('lods');
 HANDLERS[OP.SCAS] = strOp('scas'); HANDLERS[OP.CMPS] = strOp('cmps');
 
-export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, L_SW, L_XS0, L_XD0, XMM_SHADOW_OPS, XMM_SHADOW64_OPS, Emitter, PF };
+export { L_S32, L_F32A, L_F32B, L_F32C, L_F64D, L_F64E, L_F64G, L_F64H, L_SW, L_CUT24, L_XS0, L_XD0, XMM_SHADOW_OPS, XMM_SHADOW64_OPS, Emitter, PF };
 export { HANDLERS, L_STATE, L_REG, L_EFLAGS, L_LZOP, L_LZRES, L_LZA, L_LZB, L_TA, L_TV, L_T2, L_T3, L_T4, L_T5, L_T6, L_T7, L_XSH, L_I64A, L_I64B, L_F64A, L_F64B, L_TOP, L_FS, L_V0, L_V1, L_V2, L_XMM0, L_ST0, L_FTW, L_FPC, L_F64C, IMP_FLAGS, IMP_ROUND24, IMP_FALLBACK, IMP_EXP2M1, IMP_LOG2, IMP_LOG2P1, IMP_SCALB, IMP_SIN, IMP_COS, IMP_TAN, IMP_ATAN2, IMP_SINCOS, IMP_NAN2, IMP_ARITH24, IMP_F32RC, IMP_X87_ARITHF32, IMP_X87_ROUNDF32, IMP_X87_NANARITH, MASK, SIGN, BITS, touchesFpu };
