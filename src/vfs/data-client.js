@@ -63,8 +63,9 @@ export function readsReal({ here, lightHere, fast, thin, measured, prefer = null
 export class GameData {
   /**
    * The data of version `name` (and the versions it requires), its worker started and its files listed.
-   * @param {{ name: string, session?: string, bw?: number, prefetch?: 'startup'|'start'|'first-read'|'none',
+   * @param {{ name: string, session?: string, lang?: string|null, bw?: number, prefetch?: 'startup'|'start'|'first-read'|'none',
    *   cacheBytes?: number, memBytes?: number, cacheBlocks?: number, reloads?: boolean, log?: (text: string) => void }} o
+   *   lang: the game's language (its sessions' own launch set: the startup set, and the mark it adds to — launch-set.js)
    *   prefetch: when the learned order starts loading in the background — with the startup set (startup() then start()),
    *   at the engine's start, or at its first read (an engine that downloads itself first: its download comes first);
    *   reloads: the engine loads a file again in place (see reloads)
@@ -114,7 +115,7 @@ export class GameData {
         else if (m.log) this.log(m.log);
       };
     });
-    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
+    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', lang: o.lang ?? null, bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
     this.timer = setInterval(() => { if (this.used.length) this.worker.postMessage({ used: this.used.splice(0) }); }, 2000);
     // (the page's loading indicator, src/host/web/data-meter.js, when it has one: these counters, read live)
     globalThis.orthrosDataMeter?.attach?.(this.ctrl.buffer);

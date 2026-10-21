@@ -20,7 +20,7 @@ async function json(url) {
 export const openStore = (name) => OpfsBlockStore.open('orthros-files-' + name);
 
 /** The order earlier sessions read a version in (/api/prefetch: [path, block, pieces mask, ms]); [] when none. */
-export const learnedOrder = (name) => fetch(`/api/prefetch/${enc(name)}`).then((r) => (r.ok ? r.json() : [])).then((l) => (Array.isArray(l) ? l : [])).catch(() => []);
+export const learnedOrder = (name, lang = null) => fetch(`/api/prefetch/${enc(name)}${lang ? `?lang=${enc(lang)}` : ''}`).then((r) => (r.ok ? r.json() : [])).then((l) => (Array.isArray(l) ? l : [])).catch(() => []);
 
 /**
  * One version's data: { name, tree, store, files (its HttpBackend), total (bytes) }.

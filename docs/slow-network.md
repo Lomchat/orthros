@@ -141,6 +141,12 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   it (`pre`, the 5th element of a row of `prefetch-<manifest>.json`), the version counts its marking sessions
   (`playable-<manifest>.json`, `{ marks }`). Once one marked, each entry of `/api/prefetch` carries a 5th element, its
   flags: bit 0 (`PRE_PLAYABLE`) when it was read before playable in at least half the marking sessions.
+- **Per game language**: a page tells its game's language (`GameData.open({ lang })`, the GoldSrc and re3 pages; the
+  mark's `lang`), the server counts the marks and each entry's `pre` per language too (`by`, the 6th element of a row;
+  `{ marks, by }`), and `/api/prefetch/<manifest>?lang=<code>` flags by that language's marking sessions (all of them
+  while none of that language marked). Measured on the live server (2026-10-21): a French Half-Life start waited for
+  its 10 `valve_french/` files (149 KB on the wire, read by French sessions only — one in three marks: below half),
+  a French Vice City start for `TEXT/french.gxt` (122 KB) after a full Prepare.
 - **The launch set** (`launchSet`: `startupHead(forLink(order))`): the flagged entries as this link reads them (light
   copies on a link not fast, no media there); an order without flags falls back to its first pause. It is the startup
   set the GoldSrc and re3 pages wait for (`startup()` in the data worker). A version that requires others as separate
@@ -168,14 +174,20 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   `launchSummary`; null until a session marked it; made again when the order changes, at most every minute): `bytes`
   the launch set's learned pieces on a fast link, `lightBytes` with light copies (a link not fast), the `wire` bytes
   those of the precompressed units already made (`brCache.size`; a unit brotli could not shrink: its range's bytes),
-  else 0.75 of the bytes. The card says "Playable
+  else 0.75 of the bytes; `langs: { <code>: … }` each game language's own (`launchFor`: the card's language's); `engine`
+  and `engineFiles` a browser port's engine release (its wire bytes and URLs: 8.0 MB for Half-Life, 4.2 MB for Vice
+  City, measured, none of it in the launch set — 80 of the 105 s a first French Half-Life launch took at 100 KB/s). The
+  card says "Playable
   after 80 MB, about 10 min at your link (100 KB/s)" (`launchStatus` in `src/host/web/download.js`, the rate
   `linkRate`; the size only while none was measured), above the whole download's line, hidden once the whole game is
   here or downloading.
 - **Prepare** (the line's button): the download worker fetches the launch set only (`{ type: 'launch' }`:
-  `HttpBackend.prefetch` with `learnedOnly`, the pieces as the startup set fetches them) into the same OPFS store; pause
-  and resume (the pieces here are skipped; the progress is kept in `localStorage['orthros.launch.<manifest>']`, the
-  pieces here counted again each half second — `setBytes`). Starting a game stops it first, as the whole download.
+  `HttpBackend.prefetch` with `learnedOnly`, the pieces as the startup set fetches them) into the same OPFS store —
+  the card's game language's set, and first the engine release's files into the HTTP cache (immutable URLs: the page's
+  first launch finds them there; `only-if-cached` skips those already here); pause and resume (the pieces here are
+  skipped; the progress is kept in `localStorage['orthros.launch.<manifest>[.<lang>]']`, the pieces here counted again
+  each half second — `setBytes` — with the engine's bytes, `engine`). Starting a game stops it first, as the whole
+  download.
 - Not measured yet: the launch sizes on the live server (no session marked before this change), and whether OpenMW's
   in-world mark comes as described (no browser run).
 

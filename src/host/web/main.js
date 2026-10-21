@@ -175,7 +175,8 @@ async function showMenu() {
     home.setLoading();
     try {
       const res = await fetch('/api/manifests'); if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      home.setGames((await res.json()).filter((g) => !g.hidden || params.has('all')), last);
+      const all = await res.json();
+      home.setGames(all.filter((g) => !g.hidden || params.has('all')), last, all);
     } catch (e) { home.setError(String(e.message ?? e), load); }
   };
   await load();

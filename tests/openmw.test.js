@@ -260,6 +260,8 @@ test('localized OpenMW profiles share a launcher language choice with distinct s
   const catalog = await (await fetch(base + '/api/manifests')).json();
   assert.deepEqual(catalog.find((e) => e.name === 'sample-1').languages, ['en', 'fr']);
   assert.equal(catalog.find((e) => e.name === 'sample-fr').hidden, true);
+  // (the version a game language runs, for the home's card: its launch line, Prepare and the whole download are that one's)
+  assert.deepEqual(catalog.find((e) => e.name === 'sample-1').languageVersions, { fr: 'sample-fr' });
   assert.ok(openmwProblem({ engine: 'test', files: [], example: true, languageVersions: { fr: '../outside' } }));
 });
 
