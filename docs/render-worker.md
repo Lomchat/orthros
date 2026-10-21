@@ -474,6 +474,11 @@ frame comparison.
   worker terminated, every device given the in-thread backend (`renderInThread` in the worker: resources are
   uploaded again from guest memory on use, render-target contents lost once, as after a lost context). Testing:
   harness `dbg:ORTHROS_RW_STALL=1` stops the render worker's loop.
+- `dbg:ORTHROS_RW_NO_PRESENT=1` (measurement): frames rendered but not handed to the page (each bitmap closed) — the
+  cost of the hand-off to the page's main thread, in one session. BFME 1.08 play (2026-10-22, harness with a Chrome
+  trace, `--gl-discard`): the page's main thread ran ~5 major garbage collections per second (~45 ms of GC per second)
+  with and without the hand-off (19 per 4 s either way; its JavaScript calls 62 → 31 per second): the frames are not
+  what drives them — still to explain (the harness's own polling and logging are the suspects).
 - A command that throws in the render worker is logged (`render worker: <command> failed`) and skipped; presents
   and readbacks are answered even then, so the emulator never waits for a dead command.
 - Context loss happens in the render worker (its canvas's events: `contextRestored()` as in-thread, the epoch word

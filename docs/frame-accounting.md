@@ -58,6 +58,11 @@ report prints the accounting's own clock reads per frame.
   by their largest excess, the worst frames with their categories, the frames of 150 ms and more counted by their
   largest category (`hitches`: e.g. `ioWait 3, guest 2`), and the APIs that took the most time (estimated from the
   samples). `--phases <file>` writes the reports as JSON. The report also gives the guest instructions executed in the phase (as charged to the executors' budgets, `Vm.guestInsns`) and the `guest` time per million of them (`guestMsPerMInsn`, i.e. ns per guest instruction): the speed of the translated code whatever the scene asks of it — the measure to compare code-generator variants with (`dbg:ORTHROS_JIT_AB=<json>` switches translation options within a session).
+- **Node** (`tools/startbench.mjs --input <scenario>`, tools/node-scenario.mjs): each mark gets the same `[frames]`
+  report (the page's `FrameStats` over the Direct3D presents); `--gfx recorder` puts the render worker's recording on the
+  thread as in the page (`backend`: the in-thread WebGL backend over a no-op context; tools/node-gfx.mjs, shared with
+  framebench), `--slow-apis <ms>` adds the APIs' time in the frames longer than that (`[slowapis]`), `--gc <ms>` this
+  thread's garbage collections per phase and in those frames (`[gc]`, V8's GCProfiler).
 - **Slow-frame log lines** (`[slowframe]`): the frame's categories in brackets after its duration.
 - **Telemetry** (`--telemetry`): each ~0.5 s sample gains `w` (mean work per frame, ms), `c` (mean ms per frame by
   category), and when frames were slow `sc` (their categories summed, ms) and `wf` (the worst one: [ms, work ms,
@@ -83,6 +88,21 @@ tools/with-browser-slot.sh node tools/headless.mjs bfme2 --seconds 520 --profile
 `later` one minute into the match (the `play` phase is then the first minute of play: start-up and first-use
 measurements, `--stop-on "mark later:"` ends the run there); `bfme2-first.txt` is BFME2's for the settings a first
 launch writes (800x600, 2D menu: no profile, or the shared first-launch profile of src/host/profile-seed.js).
+
+`bfme1-108-phases.txt` is the validation target's criterion: BFME 1.08, menu, a skirmish, ten minutes of play (orders,
+camera scrolls; the same steps as the bench `bfme1-108-skirmish`, docs/real-machine-bench.md). Measured 2026-10-22
+(warm 800x600 High profile, a copy of the live learned data, headless Chromium `--gl-discard --memprefetch`, load
+20-30; the play split in ten 60 s windows): every window 30.0-30.2 fps, frame p99 37.7-40.9 ms, > 33 ms 714-781 per
+minute of which 97-99 % paced (work under 33.4 ms: BFME 1.08 paces itself at 30 fps with `Sleep(0)` + `timeGetTime`, the
+frame ending up to 1-3 ms past its 33.3 ms), > 40 ms 7-24 per minute, > 50 ms 0-7, > 100 ms 0-1; work p99 22-36 ms.
+The slow frames' excess: guest 47-66 %, api 16-25 % (the deferred queue's drain, ~3 ms in a slow frame against 1.2 ms
+on average: heavier frames, not a stall), draw 5-8 %, late 2-12 %, host 3-5 %. The worst frames (100-220 ms): a game
+file read on the network missing from the learned prefetch (`ioWait` + `late`, 8 reads in 10 min), new code
+(`jit` + `interp`), game work (`guest`). Garbage collection of the emulator thread: 0.02 ms per frame (Node
+`startbench --gc`), 217 ms in 40 s with none over 10 ms (Chrome trace). In Node (`startbench --gfx recorder --cold`, the
+same scenario): 30.0 fps, p99 39.0-42.3 ms, > 40 ms 12-33 per minute, slow frames' excess guest 81 %, api 12 %, draw
+4 %. A run during a load spike of the shared machine (load 40-86) showed render-worker waits of 300-500 ms (the GPU
+process starved) and 28.4 fps over the ten minutes: measure at a quiet moment.
 
 `rotwk-phases.txt` (rotwk-202, 1024x768) needs a rotwk profile; `bfme-phases.txt` (bfme-vanilla, 800x600) a profile
 saved by an earlier run (`/tmp/orthros-profiles/bfme-vanilla`). `--gl-discard` measures the CPU side (headless
