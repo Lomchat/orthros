@@ -196,7 +196,12 @@ on the request path. So the server keeps **units** compressed ahead, for every g
 - **Client** (`HttpBackend.fetchBackgroundNow`, `rangeUnits`): a compressed background range that covers several units
   goes as one request per unit, in parallel (HTTP/2 through Cloudflare: ~300 B of headers each), joined — whole blocks
   where they fit, else pieces (runs across a block boundary too), at most 16 parts; the download fails if any part
-  does. The game's own reads are unchanged: the synchronous XHR of a Windows game stays one request (on a slow link it
+  does. Only while the server has the units: a hit is answered with `X-Orthros-Unit: hit` (a unit known not to
+  compress too), and a backend cuts its ranges while at least 2/3 of its recent parts hit (a moving share, 0.3 the
+  latest request's), else one request in 8 — a probe, whose misses ask the server to make their units. Cut without
+  units, a range costs more (pieces compressed alone; BFME2's archives, 384 KiB ranges: brotli-5 0.560 of the raw
+  bytes by pieces against 0.533 whole, zstd-3 0.586 against 0.557; a brotli-11 piece 0.519): measured at 1 MB/s on
+  BFME1/RotWK/BFME2 (headless, no br-cache, 2026-10-21), +3.9-4.9 % wire for the same files on 7 times the requests. The game's own reads are unchanged: the synchronous XHR of a Windows game stays one request (on a slow link it
   is mostly a single piece already: a unit), and so do the parked asynchronous reads (`fetchForeground`).
 - **Measured** (one 1 MiB sample block per file, against gzip-4's bytes): brotli 11 per block 72 % (Morrowind.bsa
   40-69 %, gta3.img 67-68 %, Morrowind.esm 77 %, halflife.wad 86 %), per independent piece 80 %, brotli 5 on the fly
