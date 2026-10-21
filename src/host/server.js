@@ -315,8 +315,7 @@ export function createServer(opts = {}) {
    * Precompressed transport units (br-cache.js, docs/slow-network.md "Precompressed units"): opts.brCacheDir, at most
    * opts.brCacheBytes. Made first for the requests that missed them, then from each manifest's learned order (its
    * earliest reads first: the launch sets, pinned) — the browser ports' first, a listed texture's light copy before
-   * the file. A learned block whose pieces are all known (or not known) is a block unit, else its pieces are — and,
-   * after the whole order, the block too.
+   * the file. A learned block whose pieces are all known (or not known) is a block unit, else its pieces are.
    */
   /** The files of a version's paths (a light copy's too), resolved once: rel -> { file, st, light, size } | null. */
   const unitFile = (man) => {
@@ -335,7 +334,7 @@ export function createServer(opts = {}) {
     };
   };
   const brSeedUnits = function* (man, list) {
-    const at = unitFile(man), lights = new Set(), partial = [];
+    const at = unitFile(man), lights = new Set();
     for (const [rel, block, mask] of list) {
       // (a light copy is read on a link that is not fast, by pieces: its pieces — one block when it is one piece)
       if (man.lightCopies && !rel.startsWith(LIGHT_DIR + '/') && !lights.has(rel)) {
@@ -348,12 +347,10 @@ export function createServer(opts = {}) {
       const pieces = Math.ceil(Math.min(LEARN_BLOCK, f.size - b0) / LEARN_CHUNK), all = pieces >= 32 ? 0xffffffff : (2 ** pieces - 1);
       if (!mask || ((mask & all) >>> 0) === all) { yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'b', index: block } }; continue; }
       for (let c = 0; c < pieces; c++) if (mask & (1 << c)) yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'p', index: block * (LEARN_BLOCK / LEARN_CHUNK) + c } };
-      partial.push([f, block]);
     }
-    // then those blocks whole, the shape a fast link asks for them (its learned prefetch downloads whole blocks;
-    // measured, Half-Life on a fast link: 59 % of the bytes it asked were blocks learned by pieces), after the whole
-    // order — the pieces are what a slower link waits for
-    for (const [f, block] of partial) yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'b', index: block } };
+    // (not the blocks learned by pieces whole as well, the shape a fast link asks for them — measured, Half-Life on a
+    // fast link: 59 % of the bytes it asked: 1473 of Morrowind's 1830 learned blocks are known by pieces, which would
+    // make its order about three times the brotli work; a fast link's misses ask for them, made after the launch sets)
   };
   const brCache = opts.brCacheDir ? createBrCache({
     dir: opts.brCacheDir, maxBytes: opts.brCacheBytes, log: opts.brCacheLog ?? ((m) => console.log(m)), ...opts.brCacheOptions,

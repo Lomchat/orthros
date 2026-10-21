@@ -183,14 +183,13 @@ test('server: the learned order seeds the units ahead of any request', async () 
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
     await server.brCache.ready; await new Promise((r) => setTimeout(r, 20)); await server.brCache.drain();
-    // (block 0 whole too, after the order: the shape a fast link asks for it)
-    assert.equal(server.brCache.stats().units, 4);
-    for (const [a, e] of [[BLOCK, 2 * BLOCK], [0, CHUNK], [2 * CHUNK, 3 * CHUNK], [0, BLOCK]]) {
+    assert.equal(server.brCache.stats().units, 3);
+    for (const [a, e] of [[BLOCK, 2 * BLOCK], [0, CHUNK], [2 * CHUNK, 3 * CHUNK]]) {
       const r = await get(`${base}/gamez/g/a.big?r=${a}-${e}&p=1`, 'br');
       assert.equal(r.r.headers['x-orthros-unit'], 'hit');
       assert.deepEqual(plain(r), big.subarray(a, e));
     }
-    assert.equal(JSON.parse((await get(`${base}/api/netstats`, '')).body).brHits, 4);
+    assert.equal(JSON.parse((await get(`${base}/api/netstats`, '')).body).brHits, 3);
     assert.equal((await get(`${base}/gamez/g/a.big?r=0-${2 * CHUNK}&p=1`, 'br')).r.headers['x-orthros-unit'], 'none', 'not a unit');
     assert.ok(server.brCache.stats().pinnedBytes > 0, 'the launch set pinned');
   } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
