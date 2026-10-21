@@ -455,7 +455,14 @@ frame comparison.
     reads, plus the layout's element extent — for an indexed draw the lowest and highest index **of the index data**
     (cached per first index until the index buffer is written), never the call's `MinIndex` / `NumVertices`, which
     games understate. Anything that cannot be bounded copies the whole buffer. Bytes written again before any draw
-    reads them, or never read, never travel: BFME1 menu 3.75 → 2.26 MB per frame (Node framebench).
+    reads them, or never read, never travel. A copy has a cost of its own, so a pending range of at most 16 KiB that a
+    draw meets goes whole, and a buffer with at most 32 KiB pending goes whole without bounding the draw (BFME2's
+    menu: 358 copies and 245 index scans per frame otherwise, against 36 copies at `Unlock`, for the same 72 KB).
+  - Measured (Node framebench `--ab ORTHROS_VB_LAZY=0:25`: blocks of 25 frames alternated within one run, same
+    scene): BFME1 menu at 820 draws per frame 2.42 → 1.58 MB per frame copied, api + draw 3.88 → 3.80 ms; at 1 540
+    draws 3.30 → 2.01 MB, api + draw 4.77 → 4.31 ms (first version of the policy). BFME2 menu: 72 KB either way,
+    api + draw 2.02 → 2.17 ms (noise level). The copy left the emulator thread's `Unlock` for its draws: the gain is
+    the bytes that no longer travel, not the calls.
   - Upload calls differ from in-thread (other ranges, other bytes in the never-read parts); what every draw reads
     does not. The tests compare the WebGL draws by the bytes they read (`fakeGl({ reads: true })`), and
     `ORTHROS_VB_LAZY=0` (a worker debug global) copies at `Unlock` again, with the exact-call comparisons.
