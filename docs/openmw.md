@@ -296,7 +296,9 @@ paths, cookies, and WebSocket forwarding/origin rejection.
 Loading (2026-10-20, after the owner's "stuck at 20 %" and a New Game freeze). The engine build
 (`openmw.{js,wasm,data}`, 238 MB) is sent as the release's own brotli siblings when the browser takes
 them (39 MB; Orthros' own builds, tools/openmw/build.sh, make them at brotli quality 11: orthros-r1's openmw.data
-33 MB, 40 MB at 9; no `Content-Length`, so Emscripten's progress counts against the decoded package size),
+33 MB, 40 MB at 9; no `Content-Length`, so Emscripten's progress counts against the decoded package size — the
+server's `sendBrotli`, which says the sizes in `X-Orthros-Wire-Length` / `X-Orthros-Decoded-Length` instead: Prepare's
+download worker counts the decoded body in wire bytes from them, the unit of the card's engine size),
 from `/engines/<release>/e/<hash>/` (immutable, one browser copy for every installation:
 `withSharedEngine`). The page adaptation drops the upstream `?v=2` from the base game's StreamFS
 URLs (with a query the upstream streamfs.js kept none of the pieces it read). The engine reads its
@@ -318,9 +320,13 @@ The server makes, once per release, the same package with the example world's by
 the metadata inside `openmw.js` stays as it is — at brotli quality 11 (a niced child, `openmw-lean-worker.js`, 207 s
 on the loaded test machine; orthros-r1: 14.9 MB), kept in `<br-cache>/engines/<release>/lean<rule>/<build>/` and
 served immutable as `/engines/<release>/lean<rule>/<build>/openmw.data`; the engine page of a version that is not the
-example (`withLeanPackage`) has `locateFile` give that address for `openmw.data` unless it boots `?nomw`. Until it is made
-(the first page after a release is installed starts it) pages load the release's own package. The home's engine size
-counts it once made (`openmwEngineWire`). Not done: ICU's second copy (the page sets `ICU_DATA=/`, so `/icu/` looks
+example (`withLeanPackage`) has `locateFile` give that address for `openmw.data` unless it boots `?nomw`, answered as
+brotli without `Content-Length` like the release's own (`sendBrotli`). The server starts making it at its start for
+every installed game of its own (else the first card or page asking for it does); until it is made pages load the
+release's own package, and the card's engine files (`launch.engineFiles`, what Prepare caches) leave the package out
+(`pending`: a Prepare meanwhile would cache a URL the page stops asking for once the lean one is there). The home's
+engine size counts it once made (`engineOf`); a Prepare whose engine files are no longer the card's (`engineFiles` kept
+with its progress) shows as not ready, its engine to fetch again. Not done: ICU's second copy (the page sets `ICU_DATA=/`, so `/icu/` looks
 unused — another 6-7 MB — not zeroed without a check that nothing reads it).
 
 The engine page's file streaming is the game data every Orthros game reads (CLAUDE.md "Standardization";

@@ -13,6 +13,7 @@ import { NetLink } from '../src/vfs/net-link.js';
 import { forLink, startupHead, launchSet, launchFirst, setBytes, launchSummary, PRE_PLAYABLE, WIRE_RATIO } from '../src/vfs/launch-set.js';
 import { createDataWorker } from '../src/vfs/data-worker.js';
 import { launchFor, launchStatus } from '../src/host/web/download.js';
+import { engineSizes, wireOf } from '../src/host/web/download-worker.js';
 
 const MiB = 1 << 20;
 const tree = () => ({
@@ -61,6 +62,33 @@ test('a media file the game streams (a menu\'s music) does not move the backgrou
   assert.equal(b.learned.pos, 0, 'the game is still where it was in the order: data.bsa#1 comes next, not the media after the music');
   b.noteBlock('data.bsa', 1);
   assert.equal(b.learned.pos, 1);
+});
+
+test('a read past the launch set (a loading picture) does not send the background pass through the rest before the launch set\'s missing entries', async (t) => {
+  const tr = { dirs: {}, files: { 'a.dat': { size: BLOCK, mtime: 1 }, 'c.dat': { size: BLOCK, mtime: 1 }, 'b.dat': { size: 3 * BLOCK, mtime: 1 } } };
+  // (pieces not known: whole blocks, nothing fetched ahead of the game's position — the background pass's order only)
+  const order = [['a.dat', 0, 0, 0, PRE_PLAYABLE], ['b.dat', 0, 0, 10, 0], ['c.dat', 0, 0, 20, PRE_PLAYABLE], ['b.dat', 1, 0, 9000, 0], ['b.dat', 2, 0, 9100, 0]];
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  for (const bw of [100 * MiB, MiB]) {
+    const asked = [];
+    globalThis.fetch = async (url) => {
+      const u = new URL(url, 'http://x'), [a, b] = u.searchParams.get('r').split('-').map(Number);
+      asked.push(`${u.pathname.replace(/^\/gamez\/m\//, '')}@${Math.floor(a / BLOCK)}`);
+      return new Response(new Uint8Array(b - a), { status: 200, headers: { 'content-length': String(b - a) } });
+    };
+    const store = new MemBlockStore(64 * MiB), b = new HttpBackend('/game/m/', tr, { store, net: new NetLink({ bw }), encoded: true });
+    const list = launchFirst(b, order, true);
+    assert.deepEqual(list.map((e) => e[0] + '#' + e[1]), ['a.dat#0', 'c.dat#0', 'b.dat#0', 'b.dat#1', 'b.dat#2']);
+    assert.equal(list.first, 2, 'the launch set\'s length');
+    // (the game busy reading while the pass starts: it reads an entry of the rest, the launch set not here yet)
+    let busy = true; b.gameBusy = () => busy;
+    const job = b.prefetch(list, {}, () => false, { first: list.first });
+    b.noteBlock('b.dat', 0);
+    assert.equal(b.learned.pos, 2);
+    busy = false; await job;
+    assert.deepEqual(asked.slice(0, 2), ['a.dat@0', 'c.dat@0'], `${bw}: the launch set's missing entries first, then the rest (${asked.join(' ')})`);
+    assert.ok(asked.includes('b.dat@1'));
+  }
 });
 
 test('a set\'s bytes, those here, and a launch\'s cost with and without light copies, its wire bytes from the units known', () => {
@@ -257,6 +285,9 @@ test('a game language\'s own launch set (its sessions\' marks: its translated fi
   assert.deepEqual(launch.engineFiles, ['/engines/e-1/engine/index.js', '/engines/e-1/engine/xash.wasm', '/engines/e-1/cl/c.wasm', '/engines/e-1/dl/s.wasm', '/engines/e-1/engine/valve/extras.pk3']);
   assert.equal(launch.langs.fr.engine, launch.engine);
   assert.equal(launchFor(launch, 'fr'), launch.langs.fr); assert.equal(launchFor(launch, 'de'), launch); assert.equal(launchFor(null, 'fr'), null);
+  // (a language the version does not declare: counted in all the sessions' marks, not as a language of its own)
+  await post({ session: 'x1', reads: [['valve/a.pak', 0, 10, 5]], mark: { kind: 'playable', lang: 'qqqqqqqqqqqqqqqq' } });
+  assert.deepEqual(Object.keys((await (await fetch(`${s.base}/api/manifests`)).json()).find((m) => m.name === 'gs-orig').launch.langs), ['en', 'fr']);
   // (the tree every start and Prepare fetch: compressed when the browser takes it)
   for (const enc of ['br', 'gzip']) {
     const r = await fetch(`${s.base}/api/tree/gs-orig`, { headers: { 'accept-encoding': enc } });
@@ -264,6 +295,7 @@ test('a game language\'s own launch set (its sessions\' marks: its translated fi
   }
   // (kept: the languages' marks and counts)
   await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(learn, 'playable-gs-orig.json'), 'utf8')), { marks: 4, by: { en: 2, fr: 1 } });
   const fr = await order('?lang=fr');
   await s.close();
   s = await start(); t.after(() => s.close());
@@ -275,6 +307,27 @@ test('the card\'s line once "Prepare" fetched the engine too: its bytes counted 
   const paused = launchStatus(launch, { bw: 1 * MiB, st: { bytes: 5 * MiB, total: 15 * MiB, engine: 5 * MiB } }, 'en');
   assert.equal(paused.state, 'paused'); assert.equal(paused.pct, 33);
   assert.match(paused.text, /^Playable after 10 MB more \(33% ready\)/, paused.text); assert.ok(Math.abs(paused.eta - 20 / 3) < 0.01, String(paused.eta));
+  // (prepared with the engine files the launch still names: ready; with others — an OpenMW game's lean package made
+  // since —: its engine to fetch again, the launch set here)
+  const files = ['/engines/e/e/1/openmw.js', '/engines/e/lean1/1/openmw.data'];
+  const prepared = { bytes: 15 * MiB, total: 15 * MiB, engine: 5 * MiB, done: true };
+  assert.equal(launchStatus({ ...launch, engineFiles: files }, { bw: 1 * MiB, st: { ...prepared, engineFiles: files } }, 'en').state, 'done');
+  assert.equal(launchStatus({ ...launch, engineFiles: files }, { bw: 1 * MiB, st: prepared }, 'en').state, 'done', 'a progress kept before: as it says');
+  const stale = launchStatus({ ...launch, engineFiles: files }, { bw: 1 * MiB, st: { ...prepared, engineFiles: files.slice(0, 1) } }, 'en');
+  assert.equal(stale.state, 'paused'); assert.match(stale.text, /^Playable after 5 MB more/, stale.text);
+});
+
+test('"Prepare" counts an engine file\'s progress in wire bytes, the unit of its total, its body coming decoded', () => {
+  const h = (o) => new Headers(o);
+  // (a brotli answer: its sizes said by the server — a 33 MB package of 204 MB; one with a Content-Length of the brotli)
+  assert.deepEqual(engineSizes(h({ 'content-encoding': 'br', 'x-orthros-wire-length': '33', 'x-orthros-decoded-length': '204' })), { wire: 33, decoded: 204 });
+  assert.deepEqual(engineSizes(h({ 'content-encoding': 'br', 'content-length': '33' })), { wire: 33, decoded: 0 });
+  assert.deepEqual(engineSizes(h({ 'content-length': '50' })), { wire: 50, decoded: 50 });
+  assert.deepEqual(engineSizes(h({})), { wire: 0, decoded: 0 });
+  assert.equal(wireOf(102, 33, 204), 17, 'half the decoded bytes: half the wire');
+  assert.equal(wireOf(204, 33, 204), 33);
+  assert.equal(wireOf(300, 33, 0), 33, 'decoded size unknown: at most the wire');
+  assert.equal(wireOf(300, 0, 0), 300, 'nothing said: as it came');
 });
 
 test('a page that waits for the startup set (prefetch: \'startup\') gets the rest of the learned order in the background once its engine runs', async (t) => {

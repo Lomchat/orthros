@@ -179,19 +179,29 @@ export function createServer(opts = {}) {
     fs.createReadStream(file).pipe(res);
   };
   /**
+   * A brotli file sent whole as its decoded content (Content-Encoding: br). No Content-Length: a loader counting the
+   * decoded bytes against it (Emscripten's package download) falls back to the decoded size it knows. Its sizes said
+   * instead, for a client counting the transfer (download-worker.js fetchEngine: the body comes decoded):
+   * X-Orthros-Wire-Length (the brotli bytes) and X-Orthros-Decoded-Length (`decoded`, when known).
+   */
+  const sendBrotli = (req, res, br, mime, extra = {}, decoded = null) => {
+    let st; try { st = fs.statSync(br); } catch { return send(res, 404, 'not found'); }
+    res.writeHead(200, headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Last-Modified': st.mtime.toUTCString(), ...extra,
+      'X-Orthros-Wire-Length': String(st.size), ...(decoded > 0 ? { 'X-Orthros-Decoded-Length': String(decoded) } : {}) }));
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(br).pipe(res);
+  };
+  /**
    * An engine release's file, or its precompressed sibling (<file>.br, as releases ship them: OpenMW's 204 MB package is
-   * 33 MB) when the browser takes brotli and asks for the whole file. No Content-Length then: a loader counting the
-   * decoded bytes against it (Emscripten's package download) falls back to the decoded size it knows.
+   * 33 MB) when the browser takes brotli and asks for the whole file (sendBrotli).
    */
   const sendEngineFile = (req, res, file, cache) => {
     const mime = MIME[path.extname(file)] ?? 'application/octet-stream';
-    let br = null;
-    try { if (fs.statSync(file + '.br').mtimeMs >= fs.statSync(file).mtimeMs) br = file + '.br'; } catch { /* none */ }
+    let br = null, st = null;
+    try { st = fs.statSync(file); if (fs.statSync(file + '.br').mtimeMs >= st.mtimeMs) br = file + '.br'; } catch { /* none */ }
     if (!br) return sendFile(req, res, file, mime, { 'Cache-Control': cache });
     if (req.headers.range || !/\bbr\b/.test(String(req.headers['accept-encoding'] ?? ''))) return sendFile(req, res, file, mime, { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' });
-    res.writeHead(200, headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Cache-Control': cache, 'Vary': 'Accept-Encoding', 'Last-Modified': fs.statSync(br).mtime.toUTCString() }));
-    if (req.method === 'HEAD') return res.end();
-    fs.createReadStream(br).pipe(res);
+    sendBrotli(req, res, br, mime, { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }, st.size);
   };
 
   /**
@@ -344,8 +354,9 @@ export function createServer(opts = {}) {
     };
     const sum = summed(null);
     if (!sum) return sum;
-    // (the languages some marking sessions told, of this version or of one it requires)
-    const langs = new Set([name, ...required.map(([rn]) => rn)].flatMap((n) => Object.keys(playableOf(n).by)));
+    // (the languages some marking sessions told, of this version or of one it requires — those the version declares:
+    // markLang; marks kept from before it are left out)
+    const langs = new Set([name, ...required.map(([rn]) => rn)].flatMap((n) => Object.keys(playableOf(n).by)).filter((l) => markLang(man, l) === l));
     if (langs.size) sum.langs = Object.fromEntries([...langs].sort().map((l) => [l, summed(l)]));
     // (the engine's own download at a first launch: told apart, a browser that ran it before has it)
     const engine = engineOf(man);
@@ -365,9 +376,13 @@ export function createServer(opts = {}) {
     for (const rel of files) {
       const f = engineFile(enginesDir, release, rel); if (!f) continue;
       // (a game of its own loads OpenMW's package without the example world once this server made it: openmw-lean.js)
-      const leanUrl = man.runtime === 'openmw' && rel.endsWith('/openmw.data') && !man.openmw.example ? lean?.url(release) : null;
+      const leanable = man.runtime === 'openmw' && rel.endsWith('/openmw.data') && !man.openmw.example;
+      const leanUrl = leanable ? lean?.url(release) : null;
       const leanBytes = leanUrl ? lean.size(release) : null;
       if (leanBytes) { wire += leanBytes; urls.push(leanUrl + 'openmw.data'); continue; }
+      // (while it is being made: none — "Prepare" would cache the release's own package, which the page stops asking for
+      // once the lean one is there; it comes at the first launch, or with a later "Prepare")
+      if (leanable && lean?.pending(release)) continue;
       try {
         const st = fs.statSync(f); let n = st.size;
         try { const br = fs.statSync(f + '.br'); if (br.mtimeMs >= st.mtimeMs) n = br.size; } catch { /* none */ }
@@ -426,6 +441,8 @@ export function createServer(opts = {}) {
   }) : null;
   /** OpenMW engine packages without the example world (openmw-lean.js), kept beside the units: none without them. */
   const lean = opts.brCacheDir ? leanPackages({ dir: path.join(opts.brCacheDir, 'engines'), enginesDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
+  // (made from the start for the installed games of their own: not first at a card or a page, the window without it short)
+  if (lean) for (const m of manifests.values()) if (m.runtime === 'openmw' && !m.openmw?.example && openmwInstalled(m, enginesDir)) lean.url(m.openmw.engine);
 
   /**
    * Learned GL programs, per manifest: the programs sessions had to build at a draw (key, GLSL sources, attribute
@@ -600,6 +617,15 @@ export function createServer(opts = {}) {
     seedsTimer.unref?.();
   };
   const seedLang = (l) => (typeof l === 'string' && /^[A-Za-z-]{0,16}$/.test(l) ? l.toLowerCase() : null);
+  /**
+   * A game language a page told for version `man` (a playable mark, a launch set asked for): one the manifest declares
+   * (its `languages`), lowercased, else null — not any word a client makes up (each one a stored count and a launch set
+   * summed on every list of the versions).
+   */
+  const markLang = (man, l) => {
+    const s = seedLang(l ?? '');
+    return s && (Array.isArray(man?.languages) ? man.languages : []).some((x) => String(x).toLowerCase() === s) ? s : null;
+  };
   /**
    * Who reported a set, for the quorum: the client's address (behind the reverse proxy, the first X-Forwarded-For hop;
    * hashed, not stored as such), so that one client cannot make up the quorum with invented session ids; on a loopback
@@ -1017,12 +1043,12 @@ export function createServer(opts = {}) {
               if (size2 === null || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > size2 || !Number.isFinite(t) || t < 0 || t > 6 * 3600e3) continue;
               learnRead(m[1], rel, start, end, 'r:' + rec.session, Math.round(t));
             }
-            if (rec.mark && typeof rec.mark === 'object') learnMark(m[1], 'r:' + rec.session, rec.mark.kind, seedLang(rec.mark.lang ?? '') || null);
+            if (rec.mark && typeof rec.mark === 'object') learnMark(m[1], 'r:' + rec.session, rec.mark.kind, markLang(man, rec.mark.lang));
             send(res, 204, '');
           });
           return;
         }
-        return send(res, 200, JSON.stringify(prefetchList(m[1], seedLang(url.searchParams.get('lang') ?? '') || null)), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify(prefetchList(m[1], markLang(man, url.searchParams.get('lang')))), { 'Content-Type': 'application/json' });
       }
       if (p === '/api/netstats') return send(res, 200, JSON.stringify({ ...netStats, ...(brCache ? { brCache: brCache.stats() } : {}) }), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
@@ -1054,7 +1080,12 @@ export function createServer(opts = {}) {
         }
         // (e/<hash>/: the engine build's own content-versioned directory)
         const cache = rel.startsWith('e/') ? 'public, max-age=31536000, immutable' : 'public, max-age=86400';
-        if (f.endsWith('.br')) return sendFile(req, res, f, MIME[path.extname(f.slice(0, -3))] ?? 'application/octet-stream', { 'Content-Encoding': 'br', 'Cache-Control': cache });
+        if (f.endsWith('.br')) {
+          const mime = MIME[path.extname(f.slice(0, -3))] ?? 'application/octet-stream';
+          if (req.headers.range) return sendFile(req, res, f, mime, { 'Content-Encoding': 'br', 'Cache-Control': cache });
+          let decoded = null; try { decoded = fs.statSync(f.slice(0, -3)).size; } catch { /* the release ships the brotli only */ }
+          return sendBrotli(req, res, f, mime, { 'Cache-Control': cache }, decoded);
+        }
         return sendEngineFile(req, res, f, cache);
       }
       m = /^\/ports\/([a-z0-9]+)\/([^/]+)\/$/.exec(p);
@@ -1066,7 +1097,7 @@ export function createServer(opts = {}) {
         const leanFile = lean?.file(m[1], m[2]);
         if (leanFile) {
           const cache = 'public, max-age=31536000, immutable';
-          if (/\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !req.headers.range) return sendFile(req, res, leanFile, 'application/octet-stream', { 'Content-Encoding': 'br', 'Cache-Control': cache, 'Vary': 'Accept-Encoding' });
+          if (/\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !req.headers.range) return sendBrotli(req, res, leanFile, 'application/octet-stream', { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }, lean.decoded(m[1]));
           res.writeHead(200, headers({ 'Content-Type': 'application/octet-stream', 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }));
           if (req.method === 'HEAD') return res.end();
           return void pipeline(fs.createReadStream(leanFile), zlib.createBrotliDecompress(), res).catch(() => res.destroy());

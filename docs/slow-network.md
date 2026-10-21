@@ -76,7 +76,8 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   A TGA picture of a screen's size (2026-10-21: uncompressed truecolour or greyscale, its longest side
   `TGA_LIGHT_FROM` = 1024 or more — a loading screen's, a map's; a smaller one may be a menu's picture drawn at its own
   size) has one too: a TGA of its own, its sides halved until the longest is `LIGHT_SIDE`, each pixel the mean of those
-  it stands for (`lightTga`, `tgaLight`; made from the file when read, the last 32 MB of them kept). Morrowind's eleven
+  it stands for (none for a strip thinner than one such square — a 1024 × 1 ramp: its rows would be averaged with bytes
+  past the picture —; `lightTga`, `tgaLight`; made from the file when read, the last 32 MB of them kept). Morrowind's eleven
   loading screens are 1024 × 1024 × 24-bit, 3 MB each (2.8 MB on the wire): its loading screen shows a new random one
   every 5 s while the game is not started (OpenMW's `LoadingScreen::changeWallpaper`), so at 85 KB/s each new picture
   held the page ~33 s more (8 of them in a New Game's first load: 21 MB of its 28); light, 197 KB each.
@@ -149,7 +150,8 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   (`playable-<manifest>.json`, `{ marks }`). Once one marked, each entry of `/api/prefetch` carries a 5th element, its
   flags: bit 0 (`PRE_PLAYABLE`) when it was read before playable in at least half the marking sessions.
 - **Per game language**: a page tells its game's language (`GameData.open({ lang })`, the GoldSrc and re3 pages; the
-  mark's `lang`), the server counts the marks and each entry's `pre` per language too (`by`, the 6th element of a row;
+  mark's `lang`: one of the version's `languages` — another is counted with all the sessions only, `markLang`), the
+  server counts the marks and each entry's `pre` per language too (`by`, the 6th element of a row;
   `{ marks, by }`), and `/api/prefetch/<manifest>?lang=<code>` flags by that language's marking sessions (all of them
   while none of that language marked). Measured on the live server (2026-10-21): a French Half-Life start waited for
   its 10 `valve_french/` files (149 KB on the wire, read by French sessions only — one in three marks: below half),
@@ -193,8 +195,10 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   the card's game language's set, and first the engine release's files into the HTTP cache (immutable URLs: the page's
   first launch finds them there; `only-if-cached` skips those already here); pause and resume (the pieces here are
   skipped; the progress is kept in `localStorage['orthros.launch.<manifest>[.<lang>]']`, the pieces here counted again
-  each half second — `setBytes` — with the engine's bytes, `engine`). Starting a game stops it first, as the whole
-  download.
+  each half second — `setBytes` — with the engine's bytes, `engine`, in wire bytes as the card's size: a brotli answer
+  comes decoded, counted in proportion to the sizes its headers say, `X-Orthros-Wire-Length` / `-Decoded-Length`, the
+  server's `sendBrotli`; and the engine URLs it cached, `engineFiles`: once the card's differ, it is not ready). Starting
+  a game stops it first, as the whole download.
 - Not measured yet: the launch sizes on the live server (no session marked before this change), and whether OpenMW's
   in-world mark comes as described (no browser run).
   `HttpBackend.prefetch` with `learnedOnly`, the pieces as the startup set fetches them) into the same OPFS store; pause
@@ -206,7 +210,9 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
 - **While the player waits** (2026-10-21): the learned order fetched in the background puts its launch set first
   (`launchFirst`: the flagged entries, then the others, each in its order; the media still last on a link not fast) —
   followed from the game's position, a player sitting in the menu gets the rest of the way to playable (a new game's
-  first load) before what sessions read later. The data worker tells the page the way left while the game is not
+  first load) before what sessions read later. A position past the launch set (a read of the rest while some of it is
+  missing: a random loading picture, a save list) does not send the pass through the rest first: the launch set's
+  missing entries come before (`prefetch`'s `first`, the launch set's length — `launchFirst`'s `first`). The data worker tells the page the way left while the game is not
   playable (`launchWatch`: `{ launch: { bytes, here, wireLeft, seconds, done } }` every 2 s — the launch set's bytes,
   those here, the wire bytes left at the link's measured wire/decoded ratio, their time at its measured rate), and the
   header shows it (`shell.setData` kind `launch`: « Prêt à jouer dans ~N min » / "Ready to play in ~N min", the

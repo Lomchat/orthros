@@ -17,6 +17,19 @@ let stopping = false, running = false, abort = null;
 const post = (m) => self.postMessage(m);
 
 /**
+ * An engine file's answer's sizes: { wire (bytes on the wire, 0 when not said), decoded (bytes of its body, 0 when not
+ * said) } — a brotli answer says them in X-Orthros-Wire-Length / X-Orthros-Decoded-Length (server.js sendBrotli), its
+ * Content-Length (when it has one) being the wire's; a plain one's Content-Length is both.
+ */
+export function engineSizes(h) {
+  const enc = h.get('content-encoding'), len = Number(h.get('content-length')) || 0;
+  const wire = Number(h.get('x-orthros-wire-length')) || len;
+  return { wire, decoded: Number(h.get('x-orthros-decoded-length')) || (enc ? 0 : wire) };
+}
+/** `raw` decoded bytes of an engine file as wire bytes: in proportion when both sizes are known, else as they are. */
+export const wireOf = (raw, wire, decoded) => (wire && decoded ? Math.min(wire, Math.round(raw * wire / decoded)) : wire ? Math.min(wire, raw) : raw);
+
+/**
  * The engine release's files into the HTTP cache (`progress`: { bytes, total }, their wire bytes as far as known); true
  * once all came, false when stopped.
  */
@@ -31,13 +44,13 @@ async function fetchEngine(urls, progress) {
     try {
       const r = await fetch(url, { signal: abort.signal });
       if (!r.ok || !r.body) throw new Error(`the engine file ${url} could not be downloaded (${r.status})`);
-      const wire = Number(r.headers.get('content-length')) || 0, reader = r.body.getReader();
-      // (what came, counted against the file's wire bytes when its answer says them: the body comes decoded)
+      const reader = r.body.getReader(), { wire, decoded } = engineSizes(r.headers);
+      // (what came, in wire bytes — the unit of the total, /api/manifests launch.engine —: the body comes decoded)
       let raw = 0;
       for (;;) {
         const { done, value } = await reader.read(); if (done) break;
         raw += value.length;
-        progress.bytes = before + (wire ? Math.min(wire, raw) : raw);
+        progress.bytes = before + wireOf(raw, wire, decoded);
       }
       progress.bytes = before + (wire || raw);
     } catch (e) {
@@ -117,7 +130,8 @@ async function download(name, bw, kind = 'whole', lang = null, engine = null) {
   }
 }
 
-self.onmessage = (e) => {
+// (a worker's; imported elsewhere — a test — its helpers only)
+if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) self.onmessage = (e) => {
   const m = e.data ?? {};
   if (m.type === 'stop') { stopping = true; abort?.abort(); if (!running) post({ type: 'stopped', name: m.name ?? null }); return; }
   if ((m.type === 'download' || m.type === 'launch') && !running) {

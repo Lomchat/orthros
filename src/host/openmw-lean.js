@@ -37,7 +37,9 @@ function buildOf(enginesDir, release) {
 /**
  * The lean packages of the installed engine releases, kept in `dir` (<dir>/<release>/lean<rule>/<build>/openmw.data.br).
  * `url(release)`: the page's address of the release's lean package once made (its making started otherwise: null until
- * then); `file(release, rest)`: the file for a request of /engines/<release>/<rest>, or null.
+ * then); `pending(release)`: its making runs (the page will ask for the lean package once it is there, not for the
+ * release's own: nothing to prepare meanwhile); `file(release, rest)`: the file for a request of
+ * /engines/<release>/<rest>, or null; `decoded(release)`: its decoded bytes (the release's own package's: the same size).
  */
 export function leanPackages({ dir, enginesDir, log = () => {} }) {
   const making = new Map(); // release -> true while its child runs, false once it failed (not tried again this run)
@@ -65,6 +67,11 @@ export function leanPackages({ dir, enginesDir, log = () => {} }) {
       if (fs.existsSync(outOf(release, build))) return `/engines/${release}/lean${LEAN_RULE}/${build}/`;
       make(release, build);
       return null;
+    },
+    pending(release) { return making.get(release) === true; },
+    decoded(release) {
+      const build = buildOf(enginesDir, release), f = build && engineFile(enginesDir, release, `e/${build}/openmw.data`);
+      try { return f ? fs.statSync(f).size : null; } catch { return null; }
     },
     /** The bytes of the release's lean package (brotli), or null when it is not made. */
     size(release) {

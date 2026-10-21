@@ -251,7 +251,8 @@ async function prefetchAll() {
     if (!lists[i].length) return;
     const progress = { bytes: 0, blocks: 0, done: false };
     // (its launch set first: a player waiting in the menu gets what the way to playable still needs first — launchFirst)
-    runs.push({ p, progress, job: p.files.prefetch(launchFirst(p.files, lists[i], W.version.net.fast()), progress, () => W.stop).catch(() => {}) });
+    const list = launchFirst(p.files, lists[i], W.version.net.fast());
+    runs.push({ p, progress, job: p.files.prefetch(list, progress, () => W.stop, { first: list.first }).catch(() => {}) });
   });
   W.runs = runs;
   if (!runs.length) return;

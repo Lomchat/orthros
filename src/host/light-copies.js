@@ -145,7 +145,8 @@ export function lightTga(head, size) {
   const px = bpp / 8, at = 18 + idLen;
   if (at + w * h * px > size) return null;
   let step = 1; while (Math.max(w, h) / step > LIGHT_SIDE) step *= 2;
-  const lw = Math.max(1, Math.floor(w / step)), lh = Math.max(1, Math.floor(h / step));
+  if (Math.min(w, h) < step) return null; // (a strip thinner than a block — 1024 × 1, a ramp —: left as it is)
+  const lw = Math.floor(w / step), lh = Math.floor(h / step);
   return { w, h, px, at, step, lw, lh, size: 18 + lw * lh * px };
 }
 

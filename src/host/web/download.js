@@ -44,11 +44,15 @@ export const launchFor = (launch, gameLang) => (gameLang && launch?.langs?.[game
  * the launch set here), total, eta (s, null while the link is not measured), pct, text }. `o.bw`: the link's rate (wire
  * bytes/s; linkRate's by default) — on a link that is not fast the light copies' set, the files' on a fast one; `o.st`:
  * the "Prepare" progress (Downloads.get(name, 'launch', lang): its engine's bytes, `engine`, counted in its own); `o.whole`:
- * the whole download's (done: nothing to wait for).
+ * the whole download's (done: nothing to wait for). A "Prepare" whose engine files (`engineFiles`) are no longer the
+ * launch's (an OpenMW game's lean package made since: the page asks for it, not for the package that was cached) is not
+ * done: its engine is to fetch again (the launch set is here).
  */
 export function launchStatus(launch, o = {}, lang = 'en') {
   if (!launch || !(launch.bytes > 0)) return null;
-  const bw = o.bw === undefined ? savedBw() : o.bw, fast = bw >= FAST_BPS, st = o.st ?? null;
+  const bw = o.bw === undefined ? savedBw() : o.bw, fast = bw >= FAST_BPS;
+  let st = o.st ?? null;
+  if (st?.done && Array.isArray(st.engineFiles) && !sameFiles(st.engineFiles, launch.engineFiles ?? [])) st = { ...st, done: false, bytes: Math.max(0, (st.bytes ?? 0) - (st.engine ?? 0)) };
   const size = fast ? launch.bytes : launch.lightBytes ?? launch.bytes, wire = (fast ? launch.wire : launch.lightWire ?? launch.wire) ?? size * 0.75;
   // (what "Prepare" already brought: its own count of the set it fetched — and of the engine's files, when it fetched
   // them —, the rest in proportion)
@@ -66,6 +70,8 @@ export function launchStatus(launch, o = {}, lang = 'en') {
     : (fr ? `Jouable après ${B(size)}${eta !== null ? `, ${D(eta)} à ta connexion (${R(bw)})` : ''}${engine}` : `Playable after ${B(size)}${eta !== null ? `, ${D(eta)} at your link (${R(bw)})` : ''}${engine}`);
   return { state, bytes, total: t, eta, pct, text };
 }
+
+const sameFiles = (a, b) => a.length === b.length && a.every((u, i) => u === b[i]);
 
 export class Downloads {
   constructor() { this.worker = null; this.name = null; this.kind = null; this.lang = null; this.listeners = new Set(); this.live = new Map(); }
@@ -88,10 +94,11 @@ export class Downloads {
     const w = this.worker = new Worker(new URL('./download-worker.js', import.meta.url), { type: 'module' });
     const key = KEY(name, kind, lang);
     this.name = name; this.kind = kind; this.lang = lang;
+    const engine = kind === 'launch' && o.launch?.engineFiles?.length ? { files: o.launch.engineFiles, bytes: o.launch.engine ?? 0 } : null;
     w.onmessage = (e) => {
       const m = e.data;
       if (m.type === 'progress') {
-        const v = { bytes: m.bytes, total: m.total, engine: m.engine ?? 0, bw: m.bw, ratio: m.ratio, running: !!m.running, done: !!m.done, error: m.error ?? null, at: Date.now() };
+        const v = { bytes: m.bytes, total: m.total, engine: m.engine ?? 0, ...(kind === 'launch' ? { engineFiles: engine?.files ?? [] } : {}), bw: m.bw, ratio: m.ratio, running: !!m.running, done: !!m.done, error: m.error ?? null, at: Date.now() };
         this.live.set(key, v); save(name, kind, lang, { ...v, running: false });
         linkRate.set(m.bw);
         this.emit(name);
@@ -103,7 +110,6 @@ export class Downloads {
       }
     };
     w.onerror = (e) => { const v = { ...(this.get(name, kind, lang) ?? {}), running: false, error: e.message || 'the download stopped' }; this.live.set(key, v); w.terminate(); if (this.worker === w) { this.worker = null; this.name = null; this.kind = null; this.lang = null; } this.emit(name); };
-    const engine = kind === 'launch' && o.launch?.engineFiles?.length ? { files: o.launch.engineFiles, bytes: o.launch.engine ?? 0 } : null;
     w.postMessage({ type: kind === 'launch' ? 'launch' : 'download', name, bw: savedBw(), lang, engine });
     this.live.set(key, { ...(load(name, kind, lang) ?? {}), running: true, error: null, done: false }); this.emit(name);
   }

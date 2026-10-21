@@ -258,29 +258,36 @@ export class HttpBackend {
    * of the list is often a phase this session has not reached, or has passed without needing it. Meanwhile the learned
    * pieces of the entries just past the game's position are fetched ahead (see pumpAhead). `progress` gets
    * { bytes, blocks, done, k }. `opts.learnedOnly`: on a link that is not fast, the learned pieces only (not the rest of
-   * their blocks) — what a page waits for before the game starts.
+   * their blocks) — what a page waits for before the game starts. `opts.first`: the list's first entries are its launch
+   * set (launch-set.js launchFirst): while one of them is missing, a position past them (a read the way to playable does
+   * not need, e.g. a loading picture) does not send the pass on through the rest first.
    */
   async prefetch(list, progress, stop = () => false, opts = {}) {
     const store = this.store; if (!store || typeof fetch !== 'function') return;
     progress.bytes = 0; progress.blocks = 0; progress.done = false;
     /** @type {{path: string, size: number, mtime: number, index: number, mask: number, seen?: boolean, ahead?: boolean, skip?: boolean}[]} */
     const entries = [], rankOf = new Map();
-    for (const [p, b, mask, t] of list) {
+    let first = 0; // (the launch set's entries kept: entries[0..first))
+    for (let i = 0; i < list.length; i++) {
+      const [p, b, mask, t] = list[i];
       const r = this.lookup(p); if (!r || !r.file || !(b * BLOCK < r.file.size)) continue;
       const k = `${r.path}#${b}`; if (rankOf.has(k)) continue;
       rankOf.set(k, entries.length);
+      if (i < (opts.first ?? 0)) first++;
       // (t: when the earliest session first needed it, ms from its start — absent from older servers)
       // (tail: a media file's entry on a link that is not fast — launch-set.js forLink put it after all the others, out of
       // the game's timeline: the game streaming it says nothing of where the game is — see noteBlock)
       entries.push({ path: r.path, size: r.file.size, mtime: r.file.mtime ?? 0, index: b, mask: typeof mask === 'number' ? mask & 0xffff : 0, t: Number.isFinite(t) ? t : null, tail: !!r.file.media && !this.net.fast() });
     }
-    const L = this.learned = { entries, rankOf, pos: -1, inFlight: 0, stop };
+    const L = this.learned = { entries, rankOf, first, pos: -1, inFlight: 0, stop };
     const skey = (e, i = e.index) => `${e.path}#${e.size}#${e.mtime}#${i}`;
     const stored = (e) => e.skip || store.map.has(skey(e)) || this.cache.has(`${e.path}#${e.index}`);
     // (the block the fill is downloading is left to it: it stores it too)
     const todo = (e) => !stored(e) && this.bgCur?.key !== `${e.path}#${e.index}` && !this.blockFlights.has(`${e.path}#${e.index}`) && !this.flights.has(`${e.path}#${e.index * (BLOCK / CHUNK)}`);
-    // the entry to download next: the first one past the game's position not stored yet, else the first one
+    // the entry to download next: the first one past the game's position not stored yet, else the first one — the
+    // launch set's first when the position is past it (opts.first)
     const next = () => {
+      if (L.pos >= L.first) for (let r = 0; r < L.first; r++) if (todo(entries[r])) return r;
       for (let r = L.pos + 1; r < entries.length; r++) if (todo(entries[r])) return r;
       for (let r = 0; r <= L.pos && r < entries.length; r++) if (todo(entries[r])) return r;
       return -1;
@@ -291,8 +298,9 @@ export class HttpBackend {
     const nextPart = () => {
       // (a thin link: the learned pieces only — whole blocks are for links that can afford them)
       for (const tier of this.net.thin() || opts.learnedOnly ? [1] : [1, 2]) {
-        for (let pass = 0; pass < 2; pass++) {
-          const from = pass === 0 ? L.pos + 1 : 0, to = pass === 0 ? entries.length : Math.min(entries.length, L.pos + 1);
+        // (pass 0: the launch set while the position is past it — next's order)
+        for (let pass = L.pos >= L.first ? 0 : 1; pass < 3; pass++) {
+          const from = pass === 1 ? L.pos + 1 : 0, to = pass === 0 ? L.first : pass === 1 ? entries.length : Math.min(entries.length, L.pos + 1);
           for (let r = from; r < to; r++) {
             // (learnedOnly: an entry learned without its pieces — an older list — was read whole)
             const e = entries[r], mask = e.mask || (opts.learnedOnly ? 0xffff : 0);

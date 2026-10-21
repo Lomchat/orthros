@@ -103,10 +103,13 @@ test('a TGA picture of a screen\'s size has a light copy: a smaller TGA of its o
   assert.deepEqual([rgba.lw, rgba.lh, rgba.step, rgba.px], [256, 64, 8, 4]);
   const grey = tga({ w: 1024, h: 768, bpp: 8, type: 3, pixel: (x) => (x & 1 ? 100 : 0) });
   assert.deepEqual([...tgaLight(grey, lightTga(grey, grey.length)).subarray(18, 22)], [50, 50, 50, 50]);
-  // (none: a smaller picture — a menu's, an icon —, a colour map, run-length encoded, interleaved, cut short)
+  // (none: a smaller picture — a menu's, an icon —, a colour map, run-length encoded, interleaved, a strip thinner than
+  // a block — its rows would be averaged with bytes past the picture —, cut short)
   const rle = tga({ w: 1024, h: 1024 }); rle[2] = 10;
   for (const [what, x] of [['small', tga({ w: 512, h: 512 })], ['colour map', tga({ w: 1024, h: 1024, bpp: 8, type: 1, cmap: 1 })],
-    ['run-length', rle], ['interleaved', tga({ w: 1024, h: 1024, desc: 0x40 })]]) assert.equal(lightTga(x, x.length), null, what);
+    ['run-length', rle], ['interleaved', tga({ w: 1024, h: 1024, desc: 0x40 })], ['a ramp', tga({ w: 1024, h: 1, bpp: 32, pixel: () => 200 })],
+    ['a tall strip', tga({ w: 3, h: 2048 })]]) assert.equal(lightTga(x, x.length), null, what);
+  assert.equal(lightTga(tga({ w: 2048, h: 8 }), 18 + 2048 * 8 * 3).lh, 1, 'a strip as thick as a block: its one row');
   assert.equal(lightTga(big, big.length - 1), null, 'cut short');
   // (the server's copy: all of it made from the file, read by ranges)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-light-tga-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
