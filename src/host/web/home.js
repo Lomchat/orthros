@@ -221,7 +221,8 @@ export function mountHome({ onPlay }) {
 
   const pref = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
   // (the cards' live counts, refreshed together every 30 s)
-  let liveSyncs = [];
+  let liveSyncs = [], cardCleanup = [];
+  cleanup.push(() => cardCleanup.forEach((fn) => fn()));
   cleanup.push((() => { const t = setInterval(() => liveSyncs.forEach((f) => f()), 30000); return () => clearInterval(t); })());
   // the library's tags, on the cards and as its filters: the kind of game (the Windows games, run as they are in the
   // emulator; the ones whose engine is recompiled for the browser; those also modified — the manifest's "modified") and
@@ -233,15 +234,24 @@ export function mountHome({ onPlay }) {
   const groupOf = (t) => (KINDS.includes(t) ? 'kind' : 'mode');
   const tagLabel = (t) => S().kinds[t] ?? S().modes[t] ?? t;
   const savePref = (key, value) => { try { localStorage.setItem(key, value); } catch { /* storage disabled */ } };
-  // (the filters chosen, kept; the single tab chosen before them, once)
-  const picked = new Set((() => { try { const a = JSON.parse(pref('orthros.libTags')); if (Array.isArray(a)) return a; } catch { /* none */ } return KINDS.includes(pref('orthros.libTab')) ? [pref('orthros.libTab')] : []; })());
+  // (the filters chosen: in the page's address — a link shows the same games, ?tags=recompiled,multiplayer —, none on
+  // arrival)
+  const TAG = /^[a-z][a-z0-9-]{0,31}$/, rankOf = (t) => { const i = [...KINDS, ...MODES].indexOf(t); return i < 0 ? 99 : i; };
+  const byRank = (a, b) => rankOf(a) - rankOf(b) || a.localeCompare(b);
+  const picked = new Set((new URLSearchParams(location.search).get('tags') ?? '').split(',').filter((t) => TAG.test(t)));
+  function writeUrl() {
+    const rest = location.search.slice(1).split('&').filter((p) => p && !/^tags(=|$)/.test(p));
+    if (picked.size) rest.push('tags=' + [...picked].sort(byRank).join(','));
+    history.replaceState(history.state, '', location.pathname + (rest.length ? '?' + rest.join('&') : '') + location.hash);
+  }
   /** The game passes the filters (`but`: one group's left out — the count shown beside each of its tags). */
   const passes = (g, but = null) => {
     const tags = gameTags(g);
     return ['kind', 'mode'].every((grp) => { const want = [...picked].filter((t) => groupOf(t) === grp); return grp === but || !want.length || want.some((t) => tags.has(t)); });
   };
-  const setFilter = (change) => { change(); savePref('orthros.libTags', JSON.stringify([...picked])); renderView(); };
-  const toggle = (t) => { setFilter(() => { if (!picked.delete(t)) picked.add(t); }); $('hmTabs').querySelector(`[data-tag="${t}"]`)?.focus({ preventScroll: true }); };
+  // (a card shown again by a filter: no second entrance)
+  const setFilter = (change) => { change(); writeUrl(); for (const el of cards) el.classList.add('still'); applyFilter(); };
+  const toggle = (t) => setFilter(() => { if (!picked.delete(t)) picked.add(t); });
   const chosen = (g) => g.variants.find((v) => v.name === pref('orthros.version.' + g.id) && v.available)
     ?? g.variants.find((v) => v.name === last && v.available)
     ?? g.variants.find((v) => v.available) ?? g.variants[0];
@@ -310,7 +320,7 @@ export function mountHome({ onPlay }) {
       dlBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().dlStart;
       dlBtn.onclick = (e) => { e.stopPropagation(); if (st.state === 'running') downloads.stop(); else downloads.start(v.name); };
     }
-    cleanup.push(downloads.onChange((name) => { if (name === chosen(g)?.name) syncDownload(); }));
+    cardCleanup.push(downloads.onChange((name) => { if (name === chosen(g)?.name) syncDownload(); }));
     let shown = null, langRow = null;
     // one row for the versions (chips, the oldest in a select past three), one for the game's languages (flags)
     const versions = g.variants.length && g.variants.some((v) => v.version) ? choiceRow({ label: S().gameVersion, aria: S().gameVersion, max: MAX_VERSIONS, more: S().others,
@@ -385,50 +395,75 @@ export function mountHome({ onPlay }) {
       message('empty', S().emptyTitle, [S().emptyText + ' ', h('code', {}, 'orthros run <folder>')]);
     } else renderGames();
   }
-  /** The filters: all, then the tags the library has, by group, each with the games it would show. */
+  /** The filters: all, then the tags the library has, by group (their counts and states: applyFilter). */
   function renderTabs() {
-    const present = new Set(games.flatMap((g) => [...gameTags(g)]));
-    for (const t of picked) if (!present.has(t)) picked.delete(t); // (a tag no game has any more)
-    const order = [...KINDS, ...MODES, ...[...present].filter((t) => !KINDS.includes(t) && !MODES.includes(t))].filter((t) => present.has(t));
-    const count = (t) => games.filter((g) => gameTags(g).has(t) && passes(g, groupOf(t))).length;
+    const order = [...new Set(games.flatMap((g) => [...gameTags(g)]))].sort(byRank);
     $('hmTabs').replaceChildren(
-      h('button', { type: 'button', class: 'hm-tab', 'aria-pressed': String(!picked.size), onclick: () => setFilter(() => picked.clear()) }, S().all, h('span', { class: 'n' }, String(games.length))),
+      h('button', { type: 'button', class: 'hm-tab', onclick: () => setFilter(() => picked.clear()) }, S().all, h('span', { class: 'n' }, String(games.length))),
       ...order.flatMap((t, i) => [i === 0 || groupOf(t) !== groupOf(order[i - 1]) ? h('span', { class: 'sep', 'aria-hidden': 'true' }) : null,
-        h('button', { type: 'button', class: 'hm-tab' + (count(t) || picked.has(t) ? '' : ' none'), 'data-tag': t, 'aria-pressed': String(picked.has(t)), title: S().kindTitles[t] ?? null, onclick: () => toggle(t) },
-          tagLabel(t), h('span', { class: 'n' }, String(count(t))))]).filter(Boolean));
+        h('button', { type: 'button', class: 'hm-tab', 'data-tag': t, title: S().kindTitles[t] ?? null, onclick: () => toggle(t) }, tagLabel(t), h('span', { class: 'n' }))]).filter(Boolean));
   }
+  /** Every game's card, built once (a language change builds them again); the filters only show or hide them. */
+  let noneEl = null;
   function renderGames() {
     const focused = document.activeElement?.dataset?.name;
     renderCta();
     renderTabs();
-    const shown = games.filter((g) => passes(g));
-    $('hmCount').textContent = S().games(shown.length);
     // covers behind the page: the one of the game under the pointer, else the resumable one
     backdrops.replaceChildren();
     for (const g of games) syncBackdrop(g);
     setBackdrop(resume?.id ?? null);
-    liveSyncs = [];
-    cards = shown.map(card);
+    for (const fn of cardCleanup) fn();
+    cardCleanup = []; liveSyncs = [];
+    cards = games.map(card);
     drawn = true; // (later drawings — a language change — do not replay the entrance)
-    if (!cards.length) { message('empty', S().filterEmpty, '', h('button', { class: 'hm-btn', onclick: () => setFilter(() => picked.clear()) }, S().showAll)); return; }
-    grid.style.setProperty('--n', shown.length);
-    grid.replaceChildren(...cards);
+    noneEl = emptyEl('empty', S().filterEmpty, '', h('button', { class: 'hm-btn', onclick: () => setFilter(() => picked.clear()) }, S().showAll));
+    grid.replaceChildren(...cards, noneEl);
     grid.setAttribute('aria-busy', 'false');
-    if (focused) grid.querySelector(`[data-name="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+    applyFilter();
+    if (focused) grid.querySelector(`[data-name="${CSS.escape(focused)}"]:not([hidden])`)?.focus({ preventScroll: true });
+  }
+  /** The filters applied: the cards they let through shown (nothing rebuilt), the counts, the address. */
+  function applyFilter() {
+    if (view.kind !== 'games' || !games.length) return;
+    const present = new Set(games.flatMap((g) => [...gameTags(g)]));
+    const gone = [...picked].filter((t) => !present.has(t)); // (a tag no game has: a link from another server)
+    if (gone.length) { gone.forEach((t) => picked.delete(t)); writeUrl(); }
+    for (const b of $('hmTabs').querySelectorAll('button')) {
+      const t = b.dataset.tag;
+      if (!t) { b.setAttribute('aria-pressed', String(!picked.size)); continue; }
+      const n = games.filter((g) => gameTags(g).has(t) && passes(g, groupOf(t))).length;
+      b.setAttribute('aria-pressed', String(picked.has(t))); b.classList.toggle('none', !n && !picked.has(t)); b.querySelector('.n').textContent = String(n);
+    }
+    const byId = new Map(games.map((g) => [g.id, g]));
+    let shown = 0, left = false;
+    for (const el of cards) {
+      const on = passes(byId.get(el.dataset.name));
+      if (!on && el.matches(':hover, :focus-within')) left = true;
+      el.hidden = !on; shown += on;
+    }
+    for (const b of grid.querySelectorAll('.hm-tag')) b.setAttribute('aria-pressed', String(picked.has(b.dataset.tag)));
+    if (left) { setBackdrop(resume?.id ?? null); heat(false); } // (the card under the pointer hidden: no mouseleave)
+    noneEl.hidden = shown > 0;
+    grid.style.setProperty('--n', shown || 2);
+    $('hmCount').textContent = S().games(shown);
   }
 
+  function emptyEl(kind, title, text, action) {
+    return h('div', { class: 'hm-empty ' + kind },
+      h('img', { src: LOGO, alt: '', width: 70, height: 71, draggable: 'false' }),
+      h('div', {}, h('h3', {}, title), h('p', {}, text), action));
+  }
   function message(kind, title, text, action) {
     grid.style.setProperty('--n', 2);
-    grid.replaceChildren(h('div', { class: 'hm-empty ' + kind },
-      h('img', { src: LOGO, alt: '', width: 70, height: 71, draggable: 'false' }),
-      h('div', {}, h('h3', {}, title), h('p', {}, text), action)));
+    grid.replaceChildren(emptyEl(kind, title, text, action));
     grid.setAttribute('aria-busy', 'false');
   }
 
   // ---- keyboard: arrows move between the games (nearest card in that direction), Enter / Space plays
   on(menu, 'keydown', (e) => {
     if (e.target.closest?.('input, textarea, select')) return;
-    const list = cards.filter((c) => !c.classList.contains('unavailable')), i = list.indexOf(document.activeElement);
+    const list = cards.filter((c) => !c.hidden && !c.classList.contains('unavailable')), i = list.indexOf(document.activeElement);
     if ((e.key === 'Enter' || e.key === ' ') && i >= 0) { e.preventDefault(); play(games.find((g) => g.id === list[i].dataset.name)); return; }
     if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) || !list.length) return;
     if (i < 0 && document.activeElement !== document.body && document.activeElement !== menu) return; // (arrows on a button stay the button's)
@@ -476,7 +511,7 @@ export function mountHome({ onPlay }) {
       for (const group of games) group.variants.sort((a, b) => (b.versionOrder ?? 0) - (a.versionOrder ?? 0));
       last = lastPlayed; view = { kind: 'games' };
       applyLang();
-      (cards.find((c) => c.dataset.name === resume?.id) ?? cards.find((c) => !c.classList.contains('unavailable')))?.focus({ preventScroll: true });
+      (cards.find((c) => !c.hidden && c.dataset.name === resume?.id) ?? cards.find((c) => !c.hidden && !c.classList.contains('unavailable')))?.focus({ preventScroll: true });
     },
     setError(text, retry) { view = { kind: 'error', text, retry }; renderView(); },
     setLoading() { view = { kind: 'loading' }; renderView(); },

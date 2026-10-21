@@ -147,8 +147,9 @@ async function main() {
   if (state.telemetry || params.has('bench')) state.envPromise = machine().then((e) => (state.env = e)); // (the machine, once: sent with the first telemetry batch)
   // ?bench=<name>: a scripted measurement of tools/scenarios/bench (bench.js, docs/real-machine-bench.md); ?manifest= picks one of its versions
   if (params.has('bench')) { await startBench(params.get('bench'), params.get('manifest')); return; }
-  // the server's default game starts directly (a deployment for players); ?menu shows the picker
-  const auto = params.get('manifest') ?? (params.has('menu') ? null : config.defaultManifest);
+  // the server's default game starts directly (a deployment for players); ?menu shows the picker (?tags too: a link to
+  // the library's filters, home.js)
+  const auto = params.get('manifest') ?? (params.has('menu') || params.has('tags') ? null : config.defaultManifest);
   if (auto) start(auto, params.get('gameLang')); else await showMenu();
 }
 
@@ -195,7 +196,7 @@ async function start(name, language = null) {
   }
   if (!options.includes(language)) language = options.includes('en') ? 'en' : options[0] ?? null;
   state.gameLanguage = language;
-  if (!headless) { const u = new URL(location.href); u.searchParams.delete('menu'); u.searchParams.set('manifest', name); if (language) u.searchParams.set('gameLang', language); history.replaceState(null, '', u.toString()); } // (a reload keeps the selected version and language)
+  if (!headless) { const u = new URL(location.href); u.searchParams.delete('menu'); u.searchParams.delete('tags'); u.searchParams.set('manifest', name); if (language) u.searchParams.set('gameLang', language); history.replaceState(null, '', u.toString()); } // (a reload keeps the selected version and language)
   const treeReq = fetch(`/api/tree/${name}`).then((r) => r.json());
   home?.destroy(); home = null; $('stage').classList.remove('hidden');
   state.title = manifest.name ?? name;
