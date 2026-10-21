@@ -16,8 +16,11 @@ export const VIEW = {
   step: 2048,
   /** no read waited for the network this long before a raise (and after one: the step is loaded) */
   quietMs: 3000,
-  /** a frame longer than this (the frame meter's p99 over half a second, frame-meter.js) holds the next raise… */
-  longFrameMs: 50,
+  /**
+   * a frame longer than this, and than `longFactor` times the page's usual one (the median of the frame meter's p99 over
+   * the last half minute, frame-meter.js: a slow machine's frames are all long), holds the next raise…
+   */
+  longFrameMs: 50, longFactor: 2.5,
   /** …for this long after it */
   holdMs: 3000,
   /** the page's look at the game data and the script's reports */
@@ -69,7 +72,7 @@ export function growStep(s, { report, exterior, quiet, framesOk, now }) {
 export async function install(win = globalThis, o = {}) {
   const lua = o.lua ?? await fetch(new URL('./view.lua', import.meta.url)).then((r) => { if (!r.ok) throw new Error(`view.lua: HTTP ${r.status}`); return r.text(); });
   const slow = o.slow ?? !linkRate.fast(), now = o.now ?? (() => performance.now());
-  const s = { phase: 'off', start: 0, target: 0, value: 0, since: 0, longAt: -Infinity };
+  const s = { phase: 'off', start: 0, target: 0, value: 0, since: 0, longAt: -Infinity, p99s: [] };
   let FS = null, timer = null;
   win.orthrosViewState = () => ({ ...s });
   win.orthrosViewBoot = (tierDistance) => {
@@ -87,7 +90,12 @@ export async function install(win = globalThis, o = {}) {
   const tick = () => {
     const data = win.StreamFS?.data?.(); if (!data) return;
     const t = now(), f = win.orthrosFrames;
-    if (f && f.p99 > VIEW.longFrameMs) s.longAt = t;
+    if (f && Number.isFinite(f.p99)) {
+      s.p99s.push(f.p99); if (s.p99s.length > 60) s.p99s.shift();
+      // (the usual frame once known — 5 s of samples —, else the fixed bound alone)
+      const usual = s.p99s.length >= 10 ? [...s.p99s].sort((a, b) => a - b)[s.p99s.length >> 1] : 0;
+      if (f.p99 > Math.max(VIEW.longFrameMs, VIEW.longFactor * usual)) s.longAt = t;
+    }
     const state = win.omw?.state ?? {};
     const r = growStep(s, { now: t, report: parseView(state['orthros.view']), exterior: !!state['orthros.cell'], quiet: data.quiet(VIEW.quietMs), framesOk: t - s.longAt >= VIEW.holdMs });
     if (r.write !== undefined) write(r.write);
