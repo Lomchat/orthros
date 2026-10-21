@@ -37,6 +37,24 @@ export function openmwInstalled(man, enginesDir) {
   } catch { return false; }
 }
 
+/**
+ * The bytes a page downloads for the engine itself at its first launch (its release's e/ files, brotli when served so:
+ * the home's "playable after", which a browser that ran this engine release before does not pay again), or 0.
+ */
+export function openmwEngineWire(man, enginesDir) {
+  try {
+    const release = JSON.parse(fs.readFileSync(engineFile(enginesDir, man.openmw.engine, 'release.json'), 'utf8'));
+    let n = 0;
+    for (const f of release.files ?? []) {
+      if (!/^e\/[^/]+\/[^/]+\.(js|wasm|data)$/.test(f)) continue;
+      const p = engineFile(enginesDir, man.openmw.engine, f); if (!p) continue;
+      const br = p + '.br';
+      n += fs.existsSync(br) ? fs.statSync(br).size : fs.statSync(p).size;
+    }
+    return n;
+  } catch { return 0; }
+}
+
 export const openmwBase = (id) => `/ports/openmw/${encodeURIComponent(id)}/app`;
 export const openmwModes = (o) => ['solo', ...(o.multiplayer ? ['multiplayer'] : [])];
 

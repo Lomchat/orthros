@@ -57,7 +57,8 @@ test('the home card\'s line: playable after X at the link\'s rate, preparing, pr
   assert.match(slow.text, /^Playable after 80 MB, about 10 min at your link \(100 KB\/s\)$/);
   assert.match(launchStatus(launch, { bw: 4 * MiB }, 'en').text, /^Playable after 200 MB, about 40 s/, 'a fast link: the files themselves');
   assert.equal(launchStatus(launch, { bw: null }, 'en').text, 'Playable after 80 MB', 'no rate measured: the size only');
-  assert.match(launchStatus(launch, { bw: 100 * 1024 }, 'fr').text, /^Jouable après 80 MB, environ 10 min à ta connexion/);
+  assert.equal(launchStatus({ ...launch, engine: 40 * MiB }, { bw: null }, 'fr').text, 'Jouable après 80 Mo (+ 40 Mo de moteur au premier lancement)', 'the engine at a first launch, said beside');
+  assert.match(launchStatus(launch, { bw: 100 * 1024 }, 'fr').text, /^Jouable après 80 Mo, environ 10 min à ta connexion/);
   const half = launchStatus(launch, { bw: 100 * 1024, st: { bytes: 40 * MiB, total: 80 * MiB } }, 'en');
   assert.equal(half.state, 'paused'); assert.equal(half.pct, 50); assert.match(half.text, /^Playable after 40 MB more \(50% ready\), about 5 min/);
   assert.equal(launchStatus(launch, { bw: 100 * 1024, st: { bytes: 40 * MiB, total: 80 * MiB, running: true } }, 'en').state, 'running');

@@ -22,7 +22,7 @@ export function downloadStatus(st, total, lang = 'en', ratio = 0.75) {
   const left = Math.max(0, t - bytes), eta = bw ? left * (st?.ratio ?? ratio) / bw : null;
   const state = st?.done ? 'done' : st?.error ? 'error' : st?.running ? 'running' : bytes > 0 ? 'paused' : 'none';
   const pct = t ? Math.floor(100 * bytes / t) : 0;
-  const fr = lang === 'fr', B = fmtBytes, R = fmtRate, D = (s) => (fr ? fmtDuration(s).replace('about', 'environ') : fmtDuration(s));
+  const fr = lang === 'fr', B = (n) => fmtBytes(n, lang), R = (b) => fmtRate(b, lang), D = (s) => fmtDuration(s, lang);
   const text = state === 'done' ? (fr ? `Dans ce navigateur (${B(t)}) : démarre sans téléchargement` : `In this browser (${B(t)}): starts without downloading`)
     : state === 'running' ? `${B(bytes)} / ${B(t)} (${pct} %)${bw ? ` · ${R(bw)}` : ''}${eta !== null ? ` · ${D(eta)}${fr ? ' restantes' : ' left'}` : ''}`
     : state === 'paused' ? (fr ? `${pct} % téléchargé (${B(bytes)} / ${B(t)})${eta !== null ? ` · encore ${D(eta)} à ${R(bw)}` : ''}` : `${pct}% downloaded (${B(bytes)} of ${B(t)})${eta !== null ? ` · ${D(eta)} more at ${R(bw)}` : ''}`)
@@ -46,12 +46,14 @@ export function launchStatus(launch, o = {}, lang = 'en') {
   const t = st?.total || size, bytes = Math.min(t, st?.bytes ?? 0), left = Math.max(0, 1 - bytes / t);
   const eta = bw > 0 ? wire * left / bw : null, pct = Math.floor(100 * bytes / t);
   const state = o.whole?.done || st?.done ? 'done' : st?.error ? 'error' : st?.running ? 'running' : bytes > 0 ? 'paused' : 'none';
-  const fr = lang === 'fr', B = fmtBytes, R = fmtRate, D = (s) => fmtDuration(s, lang);
+  const fr = lang === 'fr', B = (n) => fmtBytes(n, lang), R = (b) => fmtRate(b, lang), D = (s) => fmtDuration(s, lang);
+  // (the engine's own download, at a first launch only: said beside, not counted — a browser that ran it has it)
+  const engine = launch.engine > 0 && state === 'none' ? (fr ? ` (+ ${B(launch.engine)} de moteur au premier lancement${bw > 0 ? `, ${D(launch.engine / bw)}` : ''})` : ` (+ ${B(launch.engine)} of engine at the first launch${bw > 0 ? `, ${D(launch.engine / bw)}` : ''})`) : '';
   const text = state === 'done' ? (fr ? `Prêt : démarre sans attendre le réseau (${B(size)} dans ce navigateur)` : `Ready: starts without waiting for the network (${B(size)} in this browser)`)
     : state === 'running' ? (fr ? `Préparation : ${B(bytes)} / ${B(t)} (${pct} %)${eta !== null ? ` · ${D(eta)} restantes` : ''}` : `Preparing: ${B(bytes)} of ${B(t)} (${pct}%)${eta !== null ? ` · ${D(eta)} left` : ''}`)
     : state === 'error' ? (fr ? `Préparation arrêtée : ${st.error}` : `Preparing stopped: ${st.error}`)
     : state === 'paused' ? (fr ? `Jouable après encore ${B(size * left)} (${pct} % prêt)${eta !== null ? `, ${D(eta)} à ta connexion (${R(bw)})` : ''}` : `Playable after ${B(size * left)} more (${pct}% ready)${eta !== null ? `, ${D(eta)} at your link (${R(bw)})` : ''}`)
-    : (fr ? `Jouable après ${B(size)}${eta !== null ? `, ${D(eta)} à ta connexion (${R(bw)})` : ''}` : `Playable after ${B(size)}${eta !== null ? `, ${D(eta)} at your link (${R(bw)})` : ''}`);
+    : (fr ? `Jouable après ${B(size)}${eta !== null ? `, ${D(eta)} à ta connexion (${R(bw)})` : ''}${engine}` : `Playable after ${B(size)}${eta !== null ? `, ${D(eta)} at your link (${R(bw)})` : ''}${engine}`);
   return { state, bytes, total: t, eta, pct, text };
 }
 

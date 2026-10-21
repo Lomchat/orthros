@@ -36,7 +36,7 @@ import { LIGHT_DIR, readLight } from './light-copies.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
-import { openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withProgressiveView, withSharedEngine, withStreaming } from './openmw.js';
+import { openmwEngineWire, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withProgressiveView, withSharedEngine, withStreaming } from './openmw.js';
 import { re3Installed, re3Modes, re3Module } from './re3.js';
 import { mmoApi } from './mmo.js';
 import { SimLink } from './sim-link.js';
@@ -306,6 +306,8 @@ export function createServer(opts = {}) {
       const r = rm ? ownLaunchOf(d.manifest, rm) : null;
       if (r) for (const k of ['bytes', 'lightBytes', 'wire', 'lightWire', 'entries']) sum[k] += r[k];
     }
+    // (the engine's own download at a first launch: told apart, a browser that ran it before has it)
+    sum.engine = man.runtime === 'openmw' ? openmwEngineWire(man, enginesDir) : 0;
     return sum;
   };
 

@@ -4,15 +4,17 @@
 // waiting overlay and the bench banner.
 
 /** "85 KB/s", "1.2 MB/s" (bytes per second) */
-export function fmtRate(bps) {
+export function fmtRate(bps, lang = 'en') {
   if (!(bps > 0)) return '—';
-  return bps >= 1048576 ? `${(bps / 1048576).toFixed(bps >= 10 * 1048576 ? 0 : 1)} MB/s` : `${Math.max(1, Math.round(bps / 1024))} KB/s`;
+  return frUnits(bps >= 1048576 ? `${(bps / 1048576).toFixed(bps >= 10 * 1048576 ? 0 : 1)} MB/s` : `${Math.max(1, Math.round(bps / 1024))} KB/s`, lang);
 }
-/** "14 MB", "1.3 GB", "640 KB" (bytes) */
-export function fmtBytes(n) {
-  if (!(n > 0)) return '0 MB';
-  return n >= 1e9 ? `${(n / 1073741824).toFixed(1)} GB` : n >= 1048576 ? `${Math.round(n / 1048576)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+/** "14 MB", "1.3 GB", "640 KB" (bytes; `lang` 'fr': "14 Mo", "1,3 Go") */
+export function fmtBytes(n, lang = 'en') {
+  if (!(n > 0)) return frUnits('0 MB', lang);
+  return frUnits(n >= 1e9 ? `${(n / 1073741824).toFixed(1)} GB` : n >= 1048576 ? `${Math.round(n / 1048576)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`, lang);
 }
+/** French units: octets, a decimal comma. */
+const frUnits = (t, lang) => (lang === 'fr' ? t.replace(/(\d)\.(\d)/, '$1,$2').replace(/([KMG])B/, '$1o') : t);
 /** "about 4 min", "about 40 s", "about 2 h 10 min" (seconds; `lang` 'fr': "environ 4 min") */
 export function fmtDuration(s, lang = 'en') {
   if (!Number.isFinite(s) || s < 0) return '';
@@ -36,11 +38,11 @@ export const received = (net) => (net ? (net.demandBytes ?? 0) + (net.bgBytes ??
 export function netWaitText(net, lang = 'en') {
   if (!net || !net.waiting) return null;
   const fr = lang === 'fr';
-  const parts = [`${fmtBytes(received(net))} ${fr ? 'reçus' : 'received'}`];
+  const parts = [`${fmtBytes(received(net), lang)} ${fr ? 'reçus' : 'received'}`];
   const eta = etaSeconds(net.stepWire, net);
-  if (eta !== null && eta >= 5) parts.push(fr ? `${fmtDuration(eta, lang)} pour cette étape (${fmtBytes(net.stepWire)} à venir)` : `${fmtDuration(eta)} for this step (${fmtBytes(net.stepWire)} to come)`);
+  if (eta !== null && eta >= 5) parts.push(fr ? `${fmtDuration(eta, lang)} pour cette étape (${fmtBytes(net.stepWire, lang)} à venir)` : `${fmtDuration(eta)} for this step (${fmtBytes(net.stepWire)} to come)`);
   if (net.bw > 0 && net.bw < 512 * 1024) parts.push(fr ? 'connexion lente : l’accueil peut d’abord télécharger tout le jeu' : 'a slow connection: the home screen can download the whole game first');
-  const rate = net.bw > 0 ? fmtRate(net.bw) : fr ? 'mesure de la connexion' : 'measuring the connection';
+  const rate = net.bw > 0 ? fmtRate(net.bw, lang) : fr ? 'mesure de la connexion' : 'measuring the connection';
   return { title: fr ? `Téléchargement des données du jeu — ${rate}` : `Downloading game data — ${rate}`, detail: parts.join(' · ') };
 }
 

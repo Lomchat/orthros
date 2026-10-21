@@ -537,7 +537,7 @@ function updateLoader(m) {
   state.speed = state.speed == null ? speed : state.speed * 0.7 + speed * 0.3;
   if (pf !== null) { parts.push([0.45, pf]); set('files', L.pfFinished || pf >= 1 ? 'done' : 'active', `${fmtMB(L.pfMB ?? 0)}${!L.pfFinished && state.speed > 0.05 ? ` · ${state.speed.toFixed(1)} MB/s` : ''}`); }
   else set('files', (m.ioMB ?? 0) > 0 ? 'active' : '', `${fmtMB(m.ioMB ?? 0)} ${TEXT.read}`);
-  if (m.net && (m.net.bw > 0 || received(m.net) > 0)) set('files', netWaiting(m) ? 'active' : shell.loader.querySelector('li[data-k="files"]').className, `${fmtBytes(received(m.net))} ${TEXT.received}${m.net.bw > 0 ? ` · ${fmtRate(m.net.bw)}` : ''}`);
+  if (m.net && (m.net.bw > 0 || received(m.net) > 0)) set('files', netWaiting(m) ? 'active' : shell.loader.querySelector('li[data-k="files"]').className, `${fmtBytes(received(m.net), lang)} ${TEXT.received}${m.net.bw > 0 ? ` · ${fmtRate(m.net.bw, lang)}` : ''}`);
   // code
   const rg = L.rgTotal ? Math.min(1, L.rgDone / L.rgTotal) : null;
   if (rg !== null) { parts.push([0.15, rg]); set('code', rg >= 1 ? 'done' : 'active', `${Math.round(rg * 100)}%`); } else set('code', 'skip', '');
