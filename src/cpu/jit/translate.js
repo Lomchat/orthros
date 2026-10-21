@@ -134,7 +134,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -937,6 +937,7 @@ class Emitter {
     this.smc = opts.smc !== false;
     this.logicRes = !!(opts.logicRes ?? JIT_DEFAULTS.logicRes); // (see binArith)
     this.lzaFree = !!(opts.lzaFree ?? JIT_DEFAULTS.lzaFree); // (see LZA_FREE)
+    this.lzaSub = this.lzaFree && !!(opts.lzaSub ?? JIT_DEFAULTS.lzaSub); // (SUB as SUBR: see LZA_FREE)
     this.ifcvt = opts.ifcvt ?? JIT_DEFAULTS.ifcvt; // (see ifcvtPlan: true, 'all' or false)
     this.spec = 0; // emitting an if-converted arm: its loads read address 0 unless the arm is the path taken (see loadMem)
     this.ncPlan = null; // null-page checks of the block being emitted (planNullChecks)
@@ -985,7 +986,7 @@ class Emitter {
     this.blocks = blocks;
     this.byEip = byEip;
     if (this.opts.flagsAcrossBlocks !== false) regionFlagsLiveness(blocks, byEip);
-    if (this.opts.lazyPredict !== false) regionLazyPrediction(blocks, byEip, this.lzaFree);
+    if (this.opts.lazyPredict !== false) regionLazyPrediction(blocks, byEip, this.lzaSub);
     /** x87 region: the register stack, tag word and precision control live in locals (L_ST0..) */
     this.usesX87 = blocks.some((b) => b.insns.some(touchesFpu));
     if (!this.usesX87) this.fpcAssume = this.topAssume = null; // (nothing to specialize; L_FPC is not even loaded)
@@ -2296,7 +2297,7 @@ function maskTo(E, size) { if (size !== 4) E.c.i32(MASK[size]).and(); }
 function binArith(kind0, opEmit, store = true) {
   return (E, insn) => {
     const d = insn.ops[0], s = insn.ops[1]; const size = d.size;
-    const kind = kind0 === LZ.SUB && store && E.lzaFree ? LZ.SUBR : kind0; // (a SUB writing its destination: see LZA_FREE)
+    const kind = kind0 === LZ.SUB && store && E.lzaSub ? LZ.SUBR : kind0; // (a SUB writing its destination: see LZA_FREE)
     loadDst(E, d); E.c.set(L_LZA);
     E.loadOp(s); E.c.set(L_LZB);
     E.c.get(L_LZA).get(L_LZB); opEmit(E.c); maskTo(E, size); E.c.set(L_LZRES);

@@ -97,10 +97,10 @@ test('lzaFree: random ADD / SUB / INC / DEC / NEG programs match the interpreter
     const EI = makeExec(null); EI.load(code, regs); const ri = EI.run(end, 1e5);
     const snap = (E) => [E.cpu.eax, E.cpu.ecx, E.cpu.edx, E.cpu.ebx, E.cpu.esi, E.cpu.edi, E.cpu.eflags & 0x8d5, E.cpu.eip, E.mem.read32(DATA + 0x100)].map((x) => (x >>> 0).toString(16)).join(' ');
     const a = snap(EI);
-    for (const lzaFree of [true, false]) for (const slice of [0, 2, 5, 13]) {
-      const EJ = makeExec({ lzaFree }); EJ.load(code, regs); let r, k = 0;
+    for (const [lzaFree, lzaSub] of [[true, true], [true, false], [false, false]]) for (const slice of [0, 2, 5, 13]) {
+      const EJ = makeExec({ lzaFree, lzaSub }); EJ.load(code, regs); let r, k = 0;
       while ((r = EJ.run(end, slice || 1e5)) === EXIT.TIMESLICE && ++k < 1e5);
-      const what = `program ${t}, lzaFree ${lzaFree}, slices ${slice}: ${Buffer.from(code).toString('hex')} regs ${regs.map((x) => x.toString(16)).join(' ')}`;
+      const what = `program ${t}, lzaFree ${lzaFree} lzaSub ${lzaSub}, slices ${slice}: ${Buffer.from(code).toString('hex')} regs ${regs.map((x) => x.toString(16)).join(' ')}`;
       assert.equal(r, ri, what);
       assert.equal(snap(EJ), a, what);
     }
