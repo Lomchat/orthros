@@ -125,6 +125,8 @@ export class Vm {
       __seh_return: [0, (ctx) => this.seh.onHandlerReturn(ctx), { noreturn: true }],
       __mm_timer: [0, (ctx) => this.mmTimerTick(ctx), { noreturn: true }],
     });
+    /** the frame accounting's per-API entry of the deferred queue's drain (dispatchThunk): the index after the last thunk */
+    this.drainAcctIdx = this.api.thunks.length;
     this.returnThunk = this.api.thunkFor('orthros.dll', '__return');
     this.callbackReturnThunk = this.api.thunkFor('orthros.dll', '__callback_return');
     this.exitThreadThunk = this.api.thunkFor('orthros.dll', '__exit_thread');
@@ -611,10 +613,22 @@ export class Vm {
    * the others are counted and estimated).
    */
   dispatchThunk(thread, idx) {
+    // (the deferred queue drained first, as the call's own first step — dispatchThunkBody — but timed as an entry of its
+    // own, `drainAcctIdx`: charged to the call, the queued Direct3D calls made whichever call followed them look slow)
+    if (this.mem.u32[DEFER_QUEUE >>> 2]) this.drainTimed(thread);
     if (!acct.apiTimed(idx)) return this.dispatchThunkBody(thread, idx);
     const outer = acct.cur !== ACCT.api, p = acct.enter(ACCT.api), a0 = acct.acc[ACCT.api], d0 = acct.acc[ACCT.draw], n0 = acct.nestApi, m0 = acct.nestDraw;
     try { return this.dispatchThunkBody(thread, idx); } finally { acct.apiEnd(p, idx, a0, d0, outer, n0, m0); }
   }
+  /** drainDeferred, timed on a sample of the drains like an API call (the frame accounting's entry `drainAcctIdx`) */
+  drainTimed(thread) {
+    const idx = this.drainAcctIdx;
+    if (!acct.apiTimed(idx)) return this.drainDeferred(thread);
+    const outer = acct.cur !== ACCT.api, p = acct.enter(ACCT.api), a0 = acct.acc[ACCT.api], d0 = acct.acc[ACCT.draw], n0 = acct.nestApi, m0 = acct.nestDraw;
+    try { this.drainDeferred(thread); } finally { acct.apiEnd(p, idx, a0, d0, outer, n0, m0); }
+  }
+  /** an API's name in the accounting's per-API table (an index of dispatchThunk's entries) */
+  acctApiName(idx) { return idx === this.drainAcctIdx ? '(deferred queue drain)' : this.api.thunk(idx)?.name ?? String(idx); }
   dispatchThunkBody(thread, idx) {
     if (this.mem.u32[DEFER_QUEUE >>> 2]) this.drainDeferred(thread);
     const t = this.api.thunk(idx);
