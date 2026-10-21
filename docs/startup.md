@@ -315,3 +315,30 @@ An intermediate build that kept the data file's flush at each sync point: 3 218 
 against 3 558 and 3 846 ms for A — the syncs' cost was the data file's write-back, not the JSON. The remaining ~1.2 s is
 the 1 MiB block writes themselves. No Direct3D frame came within the 50 s of a BFME2 first launch in any run (its
 first-launch work), so first-frame and `late` times were not comparable there.
+
+## A version that exits 2 s after its start: BFME2 1.06 (traced 2026-10-21)
+
+`bfme2-106` runs `base/game.dat` (the original 1.06 executable; `versions/1.06-vanilla` is empty) and calls
+`ExitProcess(0)` 2 s after its start, before any Direct3D call, in Node (`startbench`) as in the browser (and in the
+publishing session of its shared snapshot). Orthros' trace (`ORTHROS_TRACE_API=2`, `--log crash,warn,file,seh,api`)
+and the code around the calls:
+
+- After its splash screen, `WinMain` (`game.dat` VA `0x4030b0`) calls a check at `0x632bed`: `CreateMutexA(0, 0,
+  name)`, `GetLastError() == ERROR_ALREADY_EXISTS (0xb7)`, `CloseHandle`. Only when the mutex **already existed** does
+  it go on, to `0x632c1f`: `PeekMessage` / `OpenEvent(EVENT_MODIFY_STATE)` + `SetEvent` for 60 s at most, then a
+  thread message `0xBEEF` whose parameter is a file-mapping handle it maps (`MapViewOfFile`, `FILE_MAP_ALL_ACCESS`,
+  kept at `0xdfe724`). Otherwise it frees what it made and returns from `WinMain` (`profile-high.csv` written in the
+  game folder at exit — refused: read-only — then the C runtime's `ExitProcess(0)`).
+- That is the hand-shake of the game's launcher (`lotrbfme2.exe`, in `base/`): it creates the mutex, starts `game.dat`
+  and posts it the mapping. Run alone on Windows, `game.dat` 1.06 exits the same way: the emulation is faithful
+  (`WinVerifyTrust`'s "certificate table past the end of the file", logged just before, is answered the same in 1.09
+  and plays no part).
+- `bfme2` (1.09) runs its own `versions/1.09-v3.01/game.dat`, whose same check is patched out (`0x402c75`:
+  `je` / `jmp` to the same continuation, no `jne`): it starts without the launcher.
+- Started through `lotrbfme2.exe` (a copy of the manifest with `"exe": "lotrbfme2.exe"`, scratch games dir), the
+  launcher reads `lotrbfme2.lcf` and `game2.dat`, then `CreateProcess(game.dat)` is refused: the Win32 runtime runs one
+  process (no child processes), and the launcher gives up (`ShellExecute(errors.txt)`).
+
+So the cure is not in the emulator's fidelity: either the runtime learns to run a child process in its own address
+space (a large piece of work: a second 2 GB guest, handles and window messages across processes), or the version's
+folder gets a 1.06 `game.dat` that starts without its launcher, as the 1.09 one does (a data change for the owner).
