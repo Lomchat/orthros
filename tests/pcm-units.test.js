@@ -102,11 +102,11 @@ test('backend: an audio unit is decoded before the reader keeps it; a bad one tu
   const FILE = Buffer.concat([sound(BLOCK / 2, 9), sound(BLOCK / 2, 10)]);
   const tree = { dirs: {}, files: { 'a.raw': { size: FILE.length, mtime: 1 } } };
   const realFetch = globalThis.fetch, asked = [];
-  let corrupt = false;
+  let corrupt = false, dropHeader = false;
   globalThis.fetch = async (url) => {
     const [, a, e] = /\?r=(\d+)-(\d+)/.exec(url), pc = /&pc=1(&|$)/.test(url); asked.push([+a, +e, pc]);
     let body = new Uint8Array(FILE.subarray(+a, +e)), codec = null;
-    if (pc) { body = encodePcm(body, [{ at: 0, len: body.length, bits: 16, ch: 1 }]); codec = 'pcm1'; if (corrupt) body[body.length >> 1] ^= 0x55; }
+    if (pc) { body = encodePcm(body, [{ at: 0, len: body.length, bits: 16, ch: 1 }]); codec = dropHeader ? null : 'pcm1'; if (corrupt) body[body.length >> 1] ^= 0x55; }
     return { status: 200, headers: { get: (h) => (h === 'x-orthros-codec' ? codec : h === 'content-length' ? String(body.length) : null) }, arrayBuffer: async () => body.slice().buffer };
   };
   try {
@@ -117,6 +117,9 @@ test('backend: an audio unit is decoded before the reader keeps it; a bad one tu
     assert.equal(b.stats.pcmUnits, 2);
     const fg = await b.fetchForeground('a.raw', CHUNK, 2 * CHUNK);
     assert.equal(sha(fg), sha(FILE.subarray(CHUNK, 2 * CHUNK)));
+    dropHeader = true; // (a proxy that drops X-Orthros-Codec: the container told by its length and magic)
+    assert.equal(sha(await b.fetchBackground('a.raw', BLOCK, 2 * BLOCK, null)), sha(FILE.subarray(BLOCK)));
+    dropHeader = false;
     corrupt = true; asked.length = 0;
     assert.equal(await b.fetchBackground('a.raw', 0, BLOCK, null), undefined, 'a bad unit: no bytes');
     assert.equal(b.pcm, false);

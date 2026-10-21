@@ -341,6 +341,42 @@ on the request path. So the server keeps **units** compressed ahead, for every g
   ~1.4 GB of file bytes an hour; the live server ~76 units a minute while not paused. Brotli 10 instead of 11 (sample
   blocks of Morrowind, GTA, Half-Life data): 2 % more bytes for 0.6× the time — kept at 11.
 
+## Audio units (2026-10-21)
+
+Uncompressed sound (PCM) is what brotli does worst: a waveform has almost no repeated strings (Vice City's
+`Audio/sfx.RAW`, 15 MB of its 17.5 MB launch set: brotli 11 per block 0.81 of the bytes). A unit that holds sound has
+a second form made beside its brotli one, coded by linear prediction and Rice codes of the residuals — lossless,
+written from scratch (`src/vfs/pcm-codec.js`) —, for every game and runtime alike:
+
+- **Which bytes are sound** (`src/host/pcm-units.js`, by format, no file name looked at): every RIFF WAVE sound in a
+  file — a `.wav`, or one stored as it is inside an archive (EA's `.big`: BFME's sounds are 16-bit WAVE members) — whose
+  format chunk says integer PCM (tag 1, or WAVE_FORMAT_EXTENSIBLE's PCM subtype), 8 or 16 bits, mono or stereo: its data
+  chunk (found by one scan of the file per version, kept in the unit directory's `waves.json`). ADPCM, MP3 and the rest
+  are left alone. A file with no such sound (a raw bank such as `sfx.RAW`, its rates in another file) is tried as
+  16-bit mono, 16-bit stereo and 8-bit mono — the most promising by a quick order-2 estimate, coded only if the estimate
+  is under 0.9 of the brotli unit —: the coding is lossless whatever the bytes are, so the only proof asked of "this is
+  sound" is that it codes smaller.
+- **The codec** (container `OPC1`: segments of bytes as they are and of coded samples, the decoded length and its
+  CRC-32): frames of 2048 sample frames, per channel the cheapest of constant, verbatim, fixed polynomial predictors of
+  order 0-4 and linear predictors of order 2/4/8/12 (Levinson-Durbin over a windowed autocorrelation, coefficients of 12
+  or 14 bits), the residuals Rice-coded in 2^p partitions with an escape to fixed width; stereo as left/right,
+  left/side, side/right or mid/side. Higher orders (to 32) gained 0.7 %, 4096-sample frames lost 0.5 %.
+- **Made** by the units' generator (`br-cache-worker.js`), after the brotli unit (or alone for a unit made before):
+  checked by decoding it, brotli on top (quality 4 — coded samples do not compress —, 11 when a twentieth of the unit or
+  more is other bytes: headers, other members), kept as `<unit>.pcm.br` when it is at most 0.95 of the brotli unit's
+  wire bytes, else an empty `<unit>.pcm.raw` (never tried again). Not tried when sound is under 15 % of the unit; never
+  for a light copy. Cost: ~0.5 s of a core per MiB on top of brotli 11's ~2.9 s.
+- **Asked and served**: the shared reader (`HttpBackend`, every runtime's) adds `&pc=1` to its compressed ranges; the
+  server answers such a unit-shaped request with the audio form when it has one (`Content-Encoding: br`,
+  `X-Orthros-Codec: pcm1`, `X-Orthros-Unit: hit`), else as before — an older page never gets one. The reader decodes it
+  (`unitBody`) before the bytes reach its blocks, the store or the game; an answer that does not decode (or whose CRC
+  does not match) turns the audio units off for that backend and the range is asked again without. A body of the
+  wrong length that starts as a container is decoded too (a proxy that dropped the header). The home's "playable
+  after" counts the audio form's bytes (`brCache.size`).
+- **Measured** (`tools/audio-units.mjs`, the live learned orders of 2026-10-21, every container decoded and compared):
+  see the table below. Decoding: ~50 MB/s of decoded bytes on one core of this machine under load 25-30 (a MiB unit
+  in ~20 ms — 0.2 % of the second it takes to cross a 1 MB/s link).
+
 ## The page, the engines and the covers (2026-10-21)
 
 Measured with headless Chromium on a local server (Playwright, every response's body bytes):

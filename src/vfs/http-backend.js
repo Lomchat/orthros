@@ -5,7 +5,7 @@
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { NetLink } from './net-link.js';
 import { LIGHT_DIR, isVideoFile } from './game-tree.js';
-import { decodePcm } from './pcm-codec.js';
+import { decodePcm, PCM_MAGIC } from './pcm-codec.js';
 
 export const BLOCK = 1 << 20; // 1 MiB
 /**
@@ -261,9 +261,11 @@ export class HttpBackend {
   /**
    * The bytes of an answer: `codec` its X-Orthros-Codec — pcm1: an audio unit, decoded (src/vfs/pcm-codec.js, its CRC
    * checked) —; null when it does not decode (the audio units off from then on: the request is made again without).
+   * `want`: the range's length — an answer of another length that starts as a container is one whose header a proxy
+   * dropped.
    */
-  unitBody(data, codec) {
-    if (codec !== 'pcm1') return data;
+  unitBody(data, codec, want) {
+    if (codec !== 'pcm1' && !(this.pcm && data.length !== want && data.length >= 14 && (data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24)) === PCM_MAGIC)) return data;
     const t0 = performance.now();
     try { data = decodePcm(data); } catch { this.pcm = false; this.stats.pcmFailed = (this.stats.pcmFailed ?? 0) + 1; return null; }
     this.stats.pcmUnits = (this.stats.pcmUnits ?? 0) + 1; this.stats.pcmBytes = (this.stats.pcmBytes ?? 0) + data.length;
@@ -693,7 +695,7 @@ export class HttpBackend {
         for (let i = 0; i < parts.length; i++) {
           let d = new Uint8Array(bodies[i]);
           wire += wireOf(d.length, ress[i].headers?.get?.('content-length'));
-          d = this.unitBody(d, ress[i].headers?.get?.('x-orthros-codec'));
+          d = this.unitBody(d, ress[i].headers?.get?.('x-orthros-codec'), parts[i][1] - parts[i][0]);
           if (!d || d.length !== parts[i][1] - parts[i][0]) return undefined;
           data.set(d, parts[i][0] - start);
         }
@@ -707,7 +709,7 @@ export class HttpBackend {
       if (res.status !== 206 && res.status !== 200) return undefined;
       let data = new Uint8Array(await res.arrayBuffer());
       wire = wireOf(data.length, res.headers?.get?.('content-length'));
-      data = this.unitBody(data, res.headers?.get?.('x-orthros-codec'));
+      data = this.unitBody(data, res.headers?.get?.('x-orthros-codec'), end - start);
       if (!data) return undefined;
       if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
       ok = data.length === end - start;
@@ -744,7 +746,7 @@ export class HttpBackend {
       let data = null;
       if (!problem && xhr.status !== 206 && xhr.status !== 200) problem = `status ${xhr.status}`;
       if (!problem) {
-        data = this.unitBody(new Uint8Array(xhr.response), xhr.getResponseHeader?.('X-Orthros-Codec'));
+        data = this.unitBody(new Uint8Array(xhr.response), xhr.getResponseHeader?.('X-Orthros-Codec'), end - start);
         if (!data) problem = 'audio unit not decoded';
         else if (xhr.status === 200 && !this.encoded) data = data.subarray(start, end);
         if (data && data.length !== end - start) problem = `${data.length} bytes of ${end - start}`;
@@ -960,7 +962,7 @@ export class HttpBackend {
       if (res.status !== 206 && res.status !== 200) return null;
       let data = new Uint8Array(await res.arrayBuffer());
       wire = wireOf(data.length, res.headers?.get?.('content-length'));
-      data = this.unitBody(data, res.headers?.get?.('x-orthros-codec'));
+      data = this.unitBody(data, res.headers?.get?.('x-orthros-codec'), end - start);
       if (!data) return null;
       if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
       if (data.length !== end - start) return null;
