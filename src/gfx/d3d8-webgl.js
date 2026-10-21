@@ -5,9 +5,9 @@
 // viewport onto GL. DX8 and DX9 devices share the state model; DX9 adds vertex declarations,
 // sampler states, shader objects (SM 1.x–2.x), stream offsets, base vertices, MRT/scissor.
 import { FMT, surfacePitch, surfaceBytes } from '../win32/d3d8.js';
-import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, translateVertexShader, translatePixelShader, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
+import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, ffProgramFromKey, flatVaryings, translateVertexShader, translatePixelShader, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
 import { translateVertexShader9, translatePixelShader9, semName, disasmShader9 } from './d3d9-shaders.js';
-import { programSourceKey, programSourceId } from './program-id.js';
+import { programSourceKey, programSourceId, PROGRAM_GLSL_VERSION } from './program-id.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { apiOpt } from '../core/api-opt.js';
 import { GpuProbe } from './gpu-probe.js';
@@ -840,7 +840,8 @@ export class WebGLDevice {
     }
     const lightTypes = [];
     if (lighting) for (const i of [...dev.lightEnabled].sort((a, b) => a - b)) { const l = dev.lights.get(i); if (l) lightTypes.push(l[0] | 0); }
-    const layoutKey = L.layout.dx9 ? 'd' + [...L.layout.streams.entries()].map(([n, s]) => n + ':' + s.attrs.map((a) => a.name + '@' + a.offset + a.type + a.comps).join(',')).join('|') : 'f' + (dev.api9 ? dev.fvf : dev.vertexShader);
+    // ('f<fvf>': an FVF layout, from the code alone; 'h<handle>': a Direct3D 8 declaration without a function)
+    const layoutKey = L.layout.dx9 ? 'd' + [...L.layout.streams.entries()].map(([n, s]) => n + ':' + s.attrs.map((a) => a.name + '@' + a.offset + a.type + a.comps).join(',')).join('|') : (L.shader ? 'h' : 'f') + (dev.api9 ? dev.fvf : dev.vertexShader);
     const vsKey = L.code ? `vs${L.dx9 ? 9 : 8}:${L.shader.handle}:${layoutKey}` : `ff:${layoutKey}:${lighting ? 1 : 0}:${lightTypes.join(',')}:${this.rs(RS.COLORVERTEX, 1)}:${this.rs(RS.DIFFUSEMATERIALSOURCE, 1)}:${this.rs(RS.SPECULARMATERIALSOURCE, 2)}:${this.rs(RS.AMBIENTMATERIALSOURCE, 0)}:${this.rs(RS.EMISSIVEMATERIALSOURCE, 0)}:${this.rs(RS.SPECULARENABLE, 0)}:${this.rs(RS.LOCALVIEWER, 1)}:${this.rs(RS.NORMALIZENORMALS, 0)}:${fog === -1 ? vertexMode : 0}:${this.rs(RS.RANGEFOGENABLE, 0)}:${stages.map((s) => `${s.tci}/${s.ttff}`).join(',')}:${this.rs(RS.VERTEXBLEND, 0)}`;
     const alphaTest = this.rs(RS.ALPHATESTENABLE, 0) ? this.rs(RS.ALPHAFUNC, 8) : 0; // applies after pixel shaders too
     const fsKey = ps ? `ps${dev.api9 ? 9 : 8}:${ps.handle}:${stages.map((s) => (s.cube ? 'c' : s.volume ? 'v' : s.projected ? 'p' : 't')).join('')}:${fog}:${alphaTest}` : `ff:${stages.map((s) => `${s.colorOp},${s.colorArg1},${s.colorArg2},${s.colorArg0},${s.alphaOp},${s.alphaArg1},${s.alphaArg2},${s.alphaArg0},${s.resultTemp ? 1 : 0},${s.cube ? 1 : 0},${s.projected ? 1 : 0},${s.bound ? 1 : 0}`).join(';')}:${alphaTest}:${this.rs(RS.SPECULARENABLE, 0)}:${fog}`;
@@ -850,7 +851,11 @@ export class WebGLDevice {
     let p = this.programs.get(key);
     if (p) return { p, L, stages, lighting, fog, lightTypes, ps };
     let vsSrc, attrNames;
-    if (L.code && L.dx9) {
+    // (fixed function over an FVF layout: the sources from the key, as a later session regenerates a learned program)
+    const ff = !L.code && !ps && !L.shader && !L.layout.dx9 ? ffProgramFromKey(key) : null;
+    if (ff) {
+      vsSrc = ff.vs; attrNames = ff.attrs;
+    } else if (L.code && L.dx9) {
       // (the D3DCOLOR inputs, named as attrSpecs binds them: a declaration's streams, or an FVF's attributes)
       const all = L.layout.streams ? [...L.layout.streams.values()].flatMap((s) => s.attrs) : L.layout.attrs ?? [];
       const t = translateVertexShader9(L.code, new Set(all.filter((a) => a.type === 'color').map((a) => a.sem ?? FVF_SEM[a.name] ?? a.name)));
@@ -862,8 +867,8 @@ export class WebGLDevice {
       attrNames = L.layout.attrs.map((a) => 'a_' + a.name);
     }
     const env = { cube: stages.map((s) => s.cube), volume: stages.map((s) => s.volume), projected: stages.map((s) => s.projected), fog, alphaTest };
-    let fsSrc = ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
-    if (flat) { vsSrc = vsSrc.replace('out vec4 v_color0; out vec4 v_color1;', 'flat out vec4 v_color0; flat out vec4 v_color1;'); fsSrc = fsSrc.replace('in vec4 v_color0; in vec4 v_color1;', 'flat in vec4 v_color0; flat in vec4 v_color1;'); }
+    let fsSrc = ff ? ff.fs : ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
+    if (flat && !ff) ({ vs: vsSrc, fs: fsSrc } = flatVaryings(vsSrc, fsSrc)); // (ffProgramFromKey: done)
     // the same sources as a program built for another key (another shader object with the same code, a state the
     // key records but these sources ignore): that program, without a new compile and link
     const srcKey = programSourceKey(vsSrc, fsSrc, attrNames);
@@ -1726,10 +1731,15 @@ function prewarmPrograms(gl, pc, built) {
   const t0 = performance.now();
   for (let n = pc.parallel ? 8 : 2; n > 0 && pc.queue.length; n--) {
     const e = pc.queue.shift();
-    if (typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs)) continue;
-    const srcKey = programSourceKey(e.vs, e.fs, e.attrs);
+    // (a fixed-function program: rebuilt from its key by this translator, whatever sources it was learned with; any
+    // other: its sources, unless another translator version made them — no draw builds those any more)
+    const ff = ffProgramFromKey(e.key), vs = ff ? ff.vs : e.vs, fs = ff ? ff.fs : e.fs, attrs = ff ? ff.attrs : e.attrs;
+    if (typeof vs !== 'string' || typeof fs !== 'string' || !Array.isArray(attrs)) continue;
+    if (!ff && e.v != null && e.v !== PROGRAM_GLSL_VERSION) { pc.stale = (pc.stale ?? 0) + 1; continue; }
+    if (ff) pc.regenerated = (pc.regenerated ?? 0) + 1;
+    const srcKey = programSourceKey(vs, fs, attrs);
     if (pc.ready.has(srcKey) || built?.has(srcKey)) continue;
-    pc.ready.set(srcKey, { ...startProgram(gl, e.vs, e.fs, e.attrs), id: typeof e.id === 'string' ? e.id : null, vsSrc: e.vs, fsSrc: e.fs, attrs: e.attrs, rec: null, ok: false });
+    pc.ready.set(srcKey, { ...startProgram(gl, vs, fs, attrs), id: typeof e.id === 'string' ? e.id : null, vsSrc: vs, fsSrc: fs, attrs, rec: null, ok: false });
     pc.started++; pc.pending = (pc.pending ?? 0) + 1;
   }
   pc.startMs = (pc.startMs ?? 0) + performance.now() - t0;

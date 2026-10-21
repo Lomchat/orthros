@@ -36,7 +36,7 @@ import { openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMete
 import { re3Installed, re3Modes, re3Module } from './re3.js';
 import { mmoApi } from './mmo.js';
 import { SimLink } from './sim-link.js';
-import { programSourceId } from '../gfx/program-id.js';
+import { programSourceId, ffKeyRegenerable } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
@@ -241,23 +241,29 @@ export function createServer(opts = {}) {
    * programs-<manifest>.json, the list of the first format (by key), is only read: its programs missing from the new
    * list are added at each start (a server of the first format may still run on the same directory: neither server
    * rewrites the other's file).
+   * Each entry carries the translator version (program-id.js PROGRAM_GLSL_VERSION) of the last session that built or
+   * used it: a session asking with ?v=<its version> gets the entries of that version only, plus the fixed-function
+   * ones it regenerates from their key (ffKeyRegenerable) and, for PROGRAMS_UNSTAMPED_SESSIONS sessions after their
+   * last use, entries learned before versions existed — the sources an older translator made are not compiled ahead
+   * for nothing (a session that builds the same sources again at a draw stamps them with its version).
    */
   const programsLearned = new Map(); // manifest -> { sessions, m: Map(id -> { key, vs, fs, attrs, t, n, s }) }
   const learnName = (name) => name.replace(/[^A-Za-z0-9._-]/g, '_');
   const programsFile = (name) => opts.learnDir && path.join(opts.learnDir, `programs2-${learnName(name)}.json`);
   const programsFileV1 = (name) => opts.learnDir && path.join(opts.learnDir, `programs-${learnName(name)}.json`);
-  const PROGRAMS_MAX = 4096, PROGRAM_SRC_MAX = 64 * 1024, PROGRAMS_KEEP_SESSIONS = 64;
+  const PROGRAMS_MAX = 4096, PROGRAM_SRC_MAX = 64 * 1024, PROGRAMS_KEEP_SESSIONS = 64, PROGRAMS_UNSTAMPED_SESSIONS = 4;
+  const versionOf = (v) => (Number.isInteger(v) && v > 0 ? v : null);
   const programsOf = (name) => {
     let L = programsLearned.get(name);
     if (!L) {
       L = { sessions: 0, m: new Map() }; programsLearned.set(name, L);
       const read = (f) => { try { return f ? JSON.parse(fs.readFileSync(f, 'utf8')) : null; } catch { return null; } };
-      const add = (id0, key, vs, fs2, attrs, t, n, s) => {
+      const add = (id0, key, vs, fs2, attrs, t, n, s, v = null) => {
         if (typeof vs !== 'string' || typeof fs2 !== 'string' || !Array.isArray(attrs) || !attrs.every((a) => typeof a === 'string')) return;
         const id = typeof id0 === 'string' ? id0 : programSourceId(vs, fs2, attrs), old = L.m.get(id);
         t = Number.isFinite(t) ? t : 1e9; n = Number.isFinite(n) ? n : 1; s = Number.isFinite(s) ? s : L.sessions;
-        if (old) { old.t = Math.min(old.t, t); old.n = Math.max(old.n, n); old.s = Math.max(old.s, s); }
-        else if (L.m.size < PROGRAMS_MAX) L.m.set(id, { key: typeof key === 'string' ? key : '', vs, fs: fs2, attrs, t, n, s });
+        if (old) { old.t = Math.min(old.t, t); old.n = Math.max(old.n, n); old.s = Math.max(old.s, s); old.v ??= versionOf(v); }
+        else if (L.m.size < PROGRAMS_MAX) L.m.set(id, { key: typeof key === 'string' ? key : '', vs, fs: fs2, attrs, t, n, s, v: versionOf(v) });
       };
       const j = read(programsFile(name));
       if (j && Array.isArray(j.programs)) {
@@ -285,37 +291,43 @@ export function createServer(opts = {}) {
       programsTimer = null;
       for (const n of programsDirty) {
         const f = programsFile(n), L = programsOf(n);
-        try { fs.writeFileSync(f + '.tmp', JSON.stringify({ sessions: L.sessions, v1: L.v1 ?? null, programs: [...L.m].map(([id, v]) => [id, v.key, v.vs, v.fs, v.attrs, v.t, v.n, v.s]) })); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
+        try { fs.writeFileSync(f + '.tmp', JSON.stringify({ sessions: L.sessions, v1: L.v1 ?? null, programs: [...L.m].map(([id, v]) => [id, v.key, v.vs, v.fs, v.attrs, v.t, v.n, v.s, v.v]) })); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
       }
       programsDirty = new Set();
     }, opts.learnWriteMs ?? 20000); // (tests: sooner)
     programsTimer.unref?.();
   };
-  const learnPrograms = (name, list, used) => {
-    const L = programsOf(name), m = L.m;
+  const learnPrograms = (name, list, used, version) => {
+    const L = programsOf(name), m = L.m, ver = versionOf(version);
     for (const e of Array.isArray(list) ? list : []) {
       if (!e || typeof e.key !== 'string' || typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs) || !e.attrs.every((a) => typeof a === 'string')) continue;
       if (e.key.length > 4096 || e.vs.length > PROGRAM_SRC_MAX || e.fs.length > PROGRAM_SRC_MAX || e.attrs.length > 32) continue;
       const t = Number.isFinite(e.t) ? Math.max(0, e.t) : 1e9, id = programSourceId(e.vs, e.fs, e.attrs), old = m.get(id);
-      if (old) { old.t = Math.min(old.t, t); old.n++; old.s = L.sessions; continue; }
+      if (old) { old.t = Math.min(old.t, t); old.n++; old.s = L.sessions; if (ver) old.v = ver; continue; }
       if (m.size >= PROGRAMS_MAX) { // (full: the least recently used one leaves, unless all were used this session)
         let lru = null;
         for (const [k, v] of m) if (!lru || v.s < lru[1].s) lru = [k, v];
         if (lru[1].s >= L.sessions) continue;
         m.delete(lru[0]);
       }
-      m.set(id, { key: e.key, vs: e.vs, fs: e.fs, attrs: e.attrs, t, n: 1, s: L.sessions });
+      m.set(id, { key: e.key, vs: e.vs, fs: e.fs, attrs: e.attrs, t, n: 1, s: L.sessions, v: ver });
     }
-    for (const id of Array.isArray(used) ? used.slice(0, PROGRAMS_MAX) : []) { const v = typeof id === 'string' ? m.get(id) : null; if (v) v.s = L.sessions; }
+    // (a learned program a session took was found by its exact sources: they are those of its version — except a
+    // fixed-function one, regenerated from its key whatever sources it carries)
+    for (const id of Array.isArray(used) ? used.slice(0, PROGRAMS_MAX) : []) { const v = typeof id === 'string' ? m.get(id) : null; if (v) { v.s = L.sessions; if (ver && !ffKeyRegenerable(v.key)) v.v = ver; } }
     programsChanged(name);
   };
-  /** The list a new session compiles ahead (a session starts: the entries unused for too long are dropped first). */
-  const programsList = (name) => {
-    const L = programsOf(name);
+  /**
+   * The list a new session compiles ahead (a session starts: the entries unused for too long are dropped first);
+   * `version`: the session's translator version (none: every entry, as before versions existed).
+   */
+  const programsList = (name, version = null) => {
+    const L = programsOf(name), ver = versionOf(version);
     L.sessions++;
     for (const [id, v] of L.m) if (v.s < L.sessions - PROGRAMS_KEEP_SESSIONS) L.m.delete(id);
     programsChanged(name);
-    return [...L.m].sort((a, b) => a[1].t - b[1].t).map(([id, v]) => ({ id, key: v.key, vs: v.vs, fs: v.fs, attrs: v.attrs }));
+    const keep = (v) => !ver || v.v === ver || ffKeyRegenerable(v.key) || (v.v === null && v.s >= L.sessions - PROGRAMS_UNSTAMPED_SESSIONS);
+    return [...L.m].filter(([, v]) => keep(v)).sort((a, b) => a[1].t - b[1].t).map(([id, v]) => ({ id, key: v.key, vs: v.vs, fs: v.fs, attrs: v.attrs, v: v.v }));
   };
 
   /**
@@ -724,12 +736,12 @@ export function createServer(opts = {}) {
           req.on('end', () => {
             if (size > 8 * 1024 * 1024) return send(res, 413, 'too large');
             let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
-            learnPrograms(m[1], rec?.programs, rec?.used);
+            learnPrograms(m[1], rec?.programs, rec?.used, rec?.v);
             send(res, 204, '');
           });
           return;
         }
-        return send(res, 200, JSON.stringify(programsList(m[1])), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify(programsList(m[1], url.searchParams.has('v') ? Number(url.searchParams.get('v')) : null)), { 'Content-Type': 'application/json' });
       }
       // a new player's starting point (snapshot-store.js): the shared snapshot of this key, language and first-launch
       // profile; none yet: a publishing session queued. Published by that session only (its token).

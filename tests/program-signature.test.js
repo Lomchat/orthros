@@ -95,8 +95,10 @@ test('program cache: learned programs compiled ahead are used at the first draw 
   assert.equal(b.W.program().p.key, key);
   assert.equal(b.W.stats.programs, 0, 'no build at the draw'); assert.equal(c2.hits, 1); assert.equal(c2.learned.length, 0, 'nothing new learned');
   assert.deepEqual(c2.used, ['x1'], 'its use reported by id');
-  const c3 = cache(), d = mk(c3);
-  c3.queue.push({ ...c1.learned[0], vs: c1.learned[0].vs + '\n// other translator' });
+  // (a fixed-function program over an FVF layout is regenerated from its key — tests/program-version.test.js: the
+  // same with a key that names a shader object, whose sources cannot be)
+  const c3 = cache(), d = mk(c3), shaderKey = 'vs9:1234|ps9:77:tttttttttttttttt:0:0';
+  c3.queue.push({ ...c1.learned[0], key: shaderKey, vs: c1.learned[0].vs + '\n// other translator' });
   d.W.prewarmStep();
   assert.equal(d.W.program().p.key, key);
   assert.equal(c3.hits, 0); assert.equal(d.W.stats.programs, 1, 'built from the current sources'); assert.equal(c3.learned.length, 1);
