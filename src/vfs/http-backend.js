@@ -17,8 +17,6 @@ const MAX_CHUNK_BYTES = 64 << 20;
 const STREAM_BYTES = 1 << 20;
 /** sequential bytes and reads after which a file is a stream for the learned prefetch (see doneWith) */
 const STREAM_SKIP = 256 << 10, STREAM_READS = 16;
-/** a file other than a media file stops being a stream for the learned prefetch once unread this long (see doneWith) */
-const STREAM_IDLE_MS = 2000;
 /** at most this many bytes fetched ahead of a stream's read while the game waits (the rest comes in the background) */
 const STREAM_WINDOW = 256 << 10; // pieces kept in memory (the blocks fetched behind them replace them)
 /**
@@ -194,8 +192,6 @@ export class HttpBackend {
     this.opened = new Map();
     /** files the game reads as a stream (in sequence, past STREAM_SKIP bytes): fetched ahead of their reader only */
     this.streams = new Set();
-    /** when each stream was last read (see doneWith) */
-    this.streamAt = new Map();
   }
 
   /**
@@ -475,16 +471,9 @@ export class HttpBackend {
    * not fetched ahead (a movie skipped, a file parsed then closed) until the game opens it again. Nor, on a link that is
    * not fast, a file the game reads as a stream (a movie, music): its next bytes come ahead of its reader (readAhead),
    * and not at all once the game stops reading it — earlier sessions that played a movie through read all of it, this
-   * one may skip it; a file not a media file is so only while it is read in sequence (STREAM_IDLE_MS).
+   * one may skip it.
    */
-  doneWith(path) {
-    if (this.opened.get(path) === 0) return true;
-    if (!this.streams.has(path) || this.net.fast()) return false;
-    // (an archive's member read in sequence — a texture of a game's .big, by small reads — is a stream while it is read
-    // only: replayed on BFME's start, Textures.big stayed flagged through the computation after its loading, 11 % of the
-    // game's reads, and the learned pass skipped the archive while the link was idle; a movie or music stays so)
-    return this.isMedia(path) || performance.now() - (this.streamAt.get(path) ?? -1e9) < STREAM_IDLE_MS;
-  }
+  doneWith(path) { return this.opened.get(path) === 0 || (this.streams.has(path) && !this.net.fast()); }
   /** `path` is a media file (the tree's `media`, by format: src/vfs/game-tree.js isMediaFile — a movie, music). */
   isMedia(path) { return !!this.lookup(path)?.file?.media; }
   /**
@@ -1194,7 +1183,7 @@ class HttpFile {
     // (a stream: many reads in sequence — a movie, music; an archive entry loaded in one go is not, and a read elsewhere
     // in the file ends it)
     this.runReads = sequential ? (this.runReads ?? 0) + 1 : 0;
-    if (this.run >= STREAM_SKIP && this.runReads >= STREAM_READS) { this.b.streams.add(this.path); this.b.streamAt.set(this.path, performance.now()); }
+    if (this.run >= STREAM_SKIP && this.runReads >= STREAM_READS) this.b.streams.add(this.path);
     else if (!sequential && this.b.streams.size) this.b.streams.delete(this.path);
     const fast = this.b.net.fast(), bulk = sequential && this.run >= STREAM_BYTES;
     let pos = off;

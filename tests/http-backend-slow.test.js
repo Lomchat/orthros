@@ -179,18 +179,3 @@ test('a link between thin and fast: a learned block wanted whole goes as the blo
   await s.prefetch([['f.big', 2, 0xffff, 0]], {}, () => false, { learnedOnly: true });
   assert.ok(calls.length > 1 && calls.every((c) => c.end - c.start <= s.net.backgroundBytes()), `by pieces: ${calls.map((c) => (c.end - c.start) >> 10)} KiB`);
 }));
-
-test('a stream for the learned pass: an archive read in sequence only while it is read; a movie until read elsewhere', () => {
-  const tr = { dirs: {}, files: { 'Textures.big': { size: 8 * MiB, mtime: 3 }, 'intro.bik': { size: 8 * MiB, mtime: 3, media: true } } };
-  const b = new HttpBackend('/game/p/', tr, { store: new MemBlockStore(), net: new NetLink({ bw: 1e6, fixed: true }) });
-  const real = performance.now; let now = 1000; performance.now = () => now;
-  try {
-    for (const f of ['Textures.big', 'intro.bik']) { b.open(f); b.streams.add(f); b.streamAt.set(f, now); }
-    assert.ok(b.doneWith('Textures.big') && b.doneWith('intro.bik'), 'both being read in sequence');
-    now += 2500;
-    assert.ok(!b.doneWith('Textures.big'), 'the archive unread for a while: its learned blocks come again');
-    assert.ok(b.doneWith('intro.bik'), 'a movie: still not fetched ahead');
-    b.net = new NetLink({ bw: 50e6, fixed: true });
-    assert.ok(!b.doneWith('intro.bik'), 'a fast link: as before');
-  } finally { performance.now = real; }
-});

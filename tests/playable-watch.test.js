@@ -10,11 +10,11 @@ import { createServer } from '../src/host/server.js';
 
 /** Feeds a watch a timeline: each step 250 ms, `fps` frames a second, `bps` bytes read a second; the first step it fires. */
 function run(w, phases) {
-  let now = 0, frames = 0, bytes = 1, videoBytes = 0, requests = 0, busyMs = 0;
+  let now = 0, frames = 0, bytes = 1, videoBytes = 0, requests = 0, pacingMs = 0;
   for (const p of phases) {
     for (let t = 0; t < p.ms; t += 250) {
-      now += 250; frames += (p.fps ?? 30) / 4; bytes += (p.bps ?? 0) / 4; videoBytes += (p.video ?? 0) / 4; requests += p.net ? 1 : 0; busyMs += 250 * (p.busy ?? 0.3);
-      if (w.step(now, { frames: Math.floor(frames), bytes: Math.floor(bytes), videoBytes: Math.floor(videoBytes), requests, busyMs })) return now;
+      now += 250; frames += (p.fps ?? 30) / 4; bytes += (p.bps ?? 0) / 4; videoBytes += (p.video ?? 0) / 4; requests += p.net ? 1 : 0; pacingMs += 250 * (1 - (p.busy ?? 0.3));
+      if (w.step(now, { frames: Math.floor(frames), bytes: Math.floor(bytes), videoBytes: Math.floor(videoBytes), requests, pacingMs })) return now;
     }
   }
   return null;

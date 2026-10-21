@@ -9,6 +9,7 @@ import { Vfs, MemBackend, normalizeWin, mountGameCdrom } from '../../vfs/vfs.js'
 import { FileAliasBackend } from '../../vfs/file-alias-backend.js';
 import { BLOCK } from '../../vfs/http-backend.js';
 import { openData, openStore, learnedOrder } from '../../vfs/game-data.js';
+import { launchFirst } from '../../vfs/launch-set.js';
 import { NetLink } from '../../vfs/net-link.js';
 import { MemBlockStore } from '../../vfs/opfs-store.js';
 import { Registry } from '../../win32/registry.js';
@@ -246,11 +247,14 @@ async function start(m) {
       onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
     // learned prefetch: the blocks earlier sessions read, in the order they needed them, downloaded in the background
     if (store && m.opts.prefetch && !m.opts.offline) {
-      learnedOrder(name).then((list) => {
+      // (its launch set first once sessions marked it playable, as the engines that run in the page take it: a player
+      // waiting in the menu gets the rest of the way to playable first — launch-set.js launchFirst; flags by language)
+      learnedOrder(name, m.opts.gameLanguage || null).then((order) => {
+        const list = launchFirst(files, order, netLink.fast());
         pf.total = list.length; pf.t0 = performance.now();
         if (m.opts.netLog) list.forEach(([p, b], i) => rank.set(`${p}#${b}`, i));
         if (list.length) log('file', `prefetch${tag}: ${list.length} blocks learned from earlier sessions`);
-        return files.prefetch(list, pf, () => stopped).then(() => log('file', `prefetch${tag}: ${pf.done ? 'done' : 'stopped'}, ${pf.blocks} blocks (${Math.round(pf.bytes / 1048576)} MB) downloaded in ${((performance.now() - pf.t0) / 1000).toFixed(0)} s; store writes ${Math.round(store.stats.putMs ?? 0)} ms (${store.stats.flushes ?? 0} index flushes, ${Math.round(store.stats.flushMs ?? 0)} ms)`));
+        return files.prefetch(list, pf, () => stopped, { first: list.first ?? 0 }).then(() => log('file', `prefetch${tag}: ${pf.done ? 'done' : 'stopped'}, ${pf.blocks} blocks (${Math.round(pf.bytes / 1048576)} MB) downloaded in ${((performance.now() - pf.t0) / 1000).toFixed(0)} s; store writes ${Math.round(store.stats.putMs ?? 0)} ms (${store.stats.flushes ?? 0} index flushes, ${Math.round(store.stats.flushMs ?? 0)} ms)`));
       }).catch(() => {});
     }
     // offline copy (opt-in): the whole folder into the block store, in the background while the game runs
@@ -417,7 +421,7 @@ function netInfo() {
 }
 let lastProf = {};
 let statsAt = 0, lastApi = 0, lastSlices = 0, lastFrames = 0, lastHist = new Map(), lastFallbacks = 0, lastFbHist = new Map();
-const pumpStats = { runs: 0, sleeps: 0, idles: 0, sleepMs: 0, runMs: 0, runTotal: 0 }; // how the worker spends its time between slices
+const pumpStats = { runs: 0, sleeps: 0, idles: 0, sleepMs: 0, runMs: 0 }; // how the worker spends its time between slices
 let longSliceStart = 0, longSliceLogs = 0, longWaitLogs = 0, longWaitMin = 1000, idleFrameLogs = 0;
 /**
  * The next pump: at once (a message: the event loop still runs in between) or after `ms` (a timer). One pending at a
@@ -596,7 +600,7 @@ function playableStep(now) {
   if (playableWatch) {
     let bytes = 0, videoBytes = 0;
     for (const f of readBackends.values()) { bytes += f.reads.bytes; videoBytes += f.reads.videoBytes; }
-    if (playableWatch.step(now, { frames: host.framesPresented, bytes, videoBytes, requests: netStat('requests'), busyMs: pumpStats.runTotal })) {
+    if (playableWatch.step(now, { frames: host.framesPresented, bytes, videoBytes, requests: netStat('requests'), pacingMs: acct.acc[ACCT.wait] + acct.acc[ACCT.sleep] })) {
       playableWatch = null;
       const sent = reportReads(now, { kind: 'playable', t: Math.round(now - (readLog.t0 ?? now)) });
       log('file', `playable at t=${(now / 1000).toFixed(1)}s (${Math.round(bytes / 1048576)} MB read): marked with the reads before it (${sent.join(', ') || 'none'})`);
@@ -666,7 +670,7 @@ function pump() {
   host.audioHook ??= () => { const p = acct.enter(ACCT.audio); host.renderAudio(vm); acct.leave(p); };
   host.idleWork ??= heatSlack; // (a nested wait of the guest: the heat harvest's steps, see heatSlack)
   const now = acct.stamp();
-  pumpStats.runs++; pumpStats.runMs += now - tRun; pumpStats.runTotal += now - tRun;
+  pumpStats.runs++; pumpStats.runMs += now - tRun;
   if (programSink && (host.gfx.programCache.learned.length || host.gfx.programCache.used.length) && now - programsPostedAt > 5000) { programsPostedAt = now; programSink(host.gfx.programCache.learned.splice(0), host.gfx.programCache.used.splice(0)); }
   if (regionSink && (vm.jit?.learned?.length || vm.jit?.coveredLearned?.length) && now - regionsPostedAt > 10000) {
     regionsPostedAt = now;

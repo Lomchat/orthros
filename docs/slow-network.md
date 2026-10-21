@@ -55,6 +55,11 @@ this server (localhost), where none of this shows.
   is not fast, a file the game opened and closed again (a movie skipped, a file parsed), or reads as a stream (16 reads
   and 256 KiB in sequence: a movie, music), is not fetched ahead from the learned order (earlier sessions that played a
   movie through read all of it; this one may skip it) — a stream's next bytes come ahead of its reader only.
+  (2026-10-21, BFME's start replayed in Node through these rules: its archives stay open — one handle each, never
+  closed —, Textures.big is flagged a stream once, 11 % of the game's reads; a version where a file that is not a media
+  file stays a stream only while it is read did not measurably change BFME's first launch at 1 MB/s — the same 16.3 MB
+  of demand reads, +10 MB of background —: not kept. The idle link the audit saw from t=80 to 180 s was the harness
+  without a block store: no learned prefetch at all; with `--memprefetch` the link stays busy, 15 MB per 20 s.)
 - **Learned order**: the server's prefetch list (`/api/prefetch/<manifest>`: `[path, block, mask, t]`, sorted by the
   time `t` the earliest sessions needed it) drives the pieces fetched ahead of the game's position in it and the
   background pass; `t` also gives the current step's size (`HttpBackend.stepEstimate`: the learned pieces past the
@@ -144,7 +149,20 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   re3: where their loading screen hides (`hideLoader`); OpenMW: when the player is first in the world (Orthros'
   PLAYER script, `view.lua`, tells its view from its first poll: after the menu and the load, `streamfs.js`). The data
   worker sends it once per session with every read before it (`{ session, reads, mark: { kind, t } }` to
-  `/api/prefetch/<manifest>`). The Windows games do not mark yet.
+  `/api/prefetch/<manifest>`). The Windows games (2026-10-21): their page knows nothing of the game's menus, so the
+  worker marks when the game first looks playable (`src/vfs/playable-watch.js` `PlayableWatch`, the same for every
+  game): the last 10 s — and each half of it — drawn at 20 fps or more, none of its reads waiting for the network, at
+  most 96 KB/s of its files read (menu music streamed from an archive) and nothing of a movie, the game pacing itself
+  a fifth of the time at least (its threads waiting for their timers, frame-acct.js `wait` / `sleep`: a loading that
+  computes draws its splash screen between steps without waiting). Seen on BFME's first start: with 5 s at 10 fps it
+  marked its splash screen (69 MB read, two minutes of computation before the menu); the worker's pump time is no
+  measure of it (busy all along in the menu too, where the game waits 50-80 % of each frame). The worker's learned
+  prefetch takes the launch set first (`launchFirst`, as the data worker), its flags by the game's language. The worker also
+  reports every read of the game, as the data worker does (`ReadLog`, every 15 s and with the mark: whatever answered
+  it — the server's `/gamez` learning sees only the reads that reach the network, so blocks a session found in its
+  copy or got from the learned prefetch were never learned again, nor masked: the mask-less orders below). A session
+  started from a snapshot does not report (it skips the start's reads). One session marks each version it mounts
+  (the versions it requires too): the server keeps a session's reads per version (`learnMark`).
 - **The server** (`learnMark` in `src/host/server.js`): each learned block the marking session had read by then counts
   it (`pre`, the 5th element of a row of `prefetch-<manifest>.json`), the version counts its marking sessions
   (`playable-<manifest>.json`, `{ marks }`). Once one marked, each entry of `/api/prefetch` carries a 5th element, its
@@ -264,8 +282,11 @@ on the request path. So the server keeps **units** compressed ahead, for every g
   bytes than gzip-4 for ~+8 ms per MiB), else gzip-4 — and asks for its unit.
 - **Made** by a forked child (`src/host/br-cache-worker.js`) niced to 19, one unit at a time (one core at most),
   pausing while the 1-minute load average is ≥ 24 or the disk is over 85 % full (it evicts meanwhile). Order: first
-  the **launch sets** — each manifest's learned order (`/api/prefetch`, earliest `t` first) up to its share of the first
-  half of the budget, pinned (evicted last), the manifests walked side by side (the one with the fewest bytes made
+  the **launch sets** — each manifest's learned order (`/api/prefetch`, its launch set first, then earliest `t` first)
+  up to its share of the first half of the budget, pinned (evicted last); the share by the launch set's size when a
+  session marked the version (`pinShares`, 2026-10-21: an equal part of 768 MiB each held Morrowind Vanilla+'s ~156 MB
+  launch set to 48 MB, evictable, while Half-Life's 2 MB left its part unused — with the live orders Morrowind gets
+  220 MB, Half-Life 3.5, Vice City 24, the unmarked versions 44 each), the manifests walked side by side (the one with the fewest bytes made
   next: every head before any tail) —; then the live misses, the most asked first; then more of each order while the
   cache is under its low mark. A block learned whole (or without its pieces' mask) is a block unit, else its learned
   pieces are; a listed texture's light copy first (by pieces: a light copy is read on a link that is not fast). Rebuilt
@@ -319,6 +340,37 @@ on the request path. So the server keeps **units** compressed ahead, for every g
 - **Measured, generation**: 3020 units (600 MB of file bytes, 300 MB made) in 26.5 minutes of one niced core,
   ~1.4 GB of file bytes an hour; the live server ~76 units a minute while not paused. Brotli 10 instead of 11 (sample
   blocks of Morrowind, GTA, Half-Life data): 2 % more bytes for 0.6× the time — kept at 11.
+
+## The page, the engines and the covers (2026-10-21)
+
+Measured with headless Chromium on a local server (Playwright, every response's body bytes):
+
+- **The page's own files** (`src/`, no build step: the browser loads the modules as they are; `sendSource` in
+  `server.js`): `Cache-Control: no-cache` (a new tree is new code at once), now with an `ETag` (`W/"size-mtime"`)
+  and `If-None-Match` / `If-Modified-Since` answered 304; a text file goes brotli 11 once made (in the background at
+  its first request, kept in memory by size and mtime: the tree's text is ~4 MB). The Win32 page loads 381 modules
+  (150 unique: each worker loads its graph again): 8313 KB of bodies at every visit before; 845 KB on a first visit
+  (warm server), 0 on a return (every module a 304). The home: 500 KB, then 164, then 0. (A versioned, immutable
+  `/src` would also save the ~380 conditional requests of a return; not done: the absolute `/src/` URLs of the pages
+  and workers would load a module twice under two URLs.)
+- **Engine releases**: `tools/engine-br.mjs <release>` writes `<file>.br` (brotli 11) beside each compressible file
+  (not the archives, not `gamefiles/`, which the server lays over the game's files); the install and build scripts run
+  it (`tools/goldsrc/install-engine.py`, `build-modules.sh`, `tools/re3/build.sh`). The server already sends a newer
+  `.br` to a browser that takes it and counts it on the card. Card: Half-Life 7.60 → 3.20 MB, the arsenal
+  19.70 → 14.35, Counter-Strike rebuilt 13.18 → 8.08, Vice City 4.05 → 1.02. Half-Life shown at 1 MB/s (CDP
+  throttle, fresh browser, local server sending the engine as it is): 26.8 / 22.4 s → 14.9 / 14.5 s; the arsenal
+  39.9 / 41.5 → 34.5 / 37.2 s. (Behind the reverse proxy the engine went gzip on the fly: the gain there is the
+  brotli-11 / gzip difference, 0.4-0.6 MB per engine.) Starting the arsenal's extras (12.9 MB of pk3) beside the
+  startup files instead of after them: 43.5 / 43.4 s against 39.9 / 41.5 (no gain on a saturated link): not kept.
+- **Covers**: `/api/cover/<version>` sends a light copy once made (`src/host/light-covers.js`: 960 px wide at most,
+  WebP, made by ffmpeg in the background, one at a time, niced, kept in `--covers <dir>`, default
+  `<learn>/../covers`; `?full` the image itself; without ffmpeg the covers go as they are): the home's nine covers
+  1737 → 388 KB.
+- **Mask-less learned orders**: `tools/learn-prune.mjs <learn dir>` lists each order's mask-less entries (learned
+  before masks: whole blocks — a thin link's learned pass skips them, a between link fetches them whole) and, with
+  `--write`, drops them from the orders that have enough masked entries (a backup kept; the server stopped meanwhile:
+  it writes its orders back). Live orders: bfme-vanilla 663 of 698 entries (663 MB of whole blocks, 18 MB masked),
+  bfme2 636 of 860 (76 MB masked), none elsewhere.
 
 ## What the page says
 

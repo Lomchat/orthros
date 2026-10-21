@@ -6,11 +6,13 @@
 //   - none of its reads waited for the network (a loading over a slow link, its frames drawn by another thread);
 //   - it read little of its files, `maxReadBps` at most on average (a loading from this browser's copy reads megabytes a
 //     second; music streamed from an archive tens of KB a second), and nothing of a movie (an intro playing);
-//   - it waits part of the time, `maxBusy` of it running at most (a menu waits for its next frame; a loading that
-//     computes draws its splash screen between steps of work).
+//   - it paces itself, `minPacing` of the time at least (its threads waiting for their timers — frame-acct.js `wait`
+//     and `sleep`: a menu waits for its next frame; a loading that computes draws its splash screen between steps of
+//     work without waiting).
 // Seen on BFME's first start (headless, 2026-10-21): with 5 s at 10 fps it marked its splash screen (69 MB read, two
 // minutes of computation before its menu): a splash fading at 10-23 fps, idle half the time, for 5-10 s — hence 10 s at
-// 20 fps; its menu draws at 30 fps, idle three quarters of the time.
+// 20 fps; its menu draws at 30 fps, waiting 50-80 % of each frame (the worker's pump itself is busy all along: not a
+// measure of it).
 // ReadLog keeps what the game reads, by 64 KiB pieces, as the server learns reads (`[path, start, end, t]`, t: ms from
 // the session's first read): reported every so often, as the engines that run in the page do (data-worker.js) — the
 // server sees only the reads that reach the network, not those this browser's copy or the learned prefetch answered —,
@@ -18,16 +20,16 @@
 import { CHUNK } from './http-backend.js';
 
 export class PlayableWatch {
-  /** @param {{ quietMs?: number, minFps?: number, maxReadBps?: number, maxBusy?: number }} [o] */
-  constructor({ quietMs = 10000, minFps = 20, maxReadBps = 96 * 1024, maxBusy = 0.8 } = {}) {
-    this.quietMs = quietMs; this.minFps = minFps; this.maxReadBps = maxReadBps; this.maxBusy = maxBusy;
-    this.samples = []; // ({ at, frames, bytes, videoBytes, requests, busyMs }: the last quietMs of steps)
+  /** @param {{ quietMs?: number, minFps?: number, maxReadBps?: number, minPacing?: number }} [o] */
+  constructor({ quietMs = 10000, minFps = 20, maxReadBps = 96 * 1024, minPacing = 0.2 } = {}) {
+    this.quietMs = quietMs; this.minFps = minFps; this.maxReadBps = maxReadBps; this.minPacing = minPacing;
+    this.samples = []; // ({ at, frames, bytes, videoBytes, requests, pacingMs }: the last quietMs of steps)
     this.done = false;
   }
   /**
    * Each step of the page (every few hundred ms): true once, when the game is playable. `s`: { frames (presented so
    * far), bytes (read of its files so far), videoBytes (of movies), requests (reads that went to the network so far),
-   * busyMs (ms the game ran so far: its threads not all waiting) }.
+   * pacingMs (ms the game spent pacing itself so far: its threads waiting for their timers) }.
    */
   step(now, s) {
     if (this.done) return false;
@@ -42,11 +44,11 @@ export class PlayableWatch {
     this.done = true; this.samples = [];
     return true;
   }
-  /** From sample `a` to `b`: frames at minFps, no read waited for the network, no movie, few bytes read, waits. */
+  /** From sample `a` to `b`: frames at minFps, no read waited for the network, no movie, few bytes read, pacing. */
   quiet(a, b) {
     const ms = b.at - a.at; if (ms <= 0) return true;
     return b.requests === a.requests && b.videoBytes === a.videoBytes && b.bytes - a.bytes <= (ms / 1000) * this.maxReadBps
-      && b.frames - a.frames >= (ms / 1000) * this.minFps && (b.busyMs ?? 0) - (a.busyMs ?? 0) <= ms * this.maxBusy;
+      && b.frames - a.frames >= (ms / 1000) * this.minFps && (b.pacingMs ?? ms) - (a.pacingMs ?? 0) >= ms * this.minPacing;
   }
 }
 
