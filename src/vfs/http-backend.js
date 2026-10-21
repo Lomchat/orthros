@@ -395,6 +395,14 @@ export class HttpBackend {
    * one may skip it.
    */
   doneWith(path) { return this.opened.get(path) === 0 || (this.streams.has(path) && !this.net.fast()); }
+  /** `path` is a media file (the tree's `media`, by format: src/vfs/game-tree.js isMediaFile — a movie, music). */
+  isMedia(path) { return !!this.lookup(path)?.file?.media; }
+  /**
+   * Blocks of `path` may be fetched on a guess (the blocks near a missed one, the next ones of a read): not for a media
+   * file the game is not streaming now — a movie skipped, a track probed — its bytes come when it is read (readAhead
+   * while it is streamed), or with the offline copy, last.
+   */
+  speculate(path) { return this.streams.has(path) || !this.isMedia(path); }
   /** A handle of the game on `path` closed: when it was the last one, the background requests for the file go away. */
   noteClose(path) {
     const n = (this.opened.get(path) ?? 1) - 1;
@@ -491,8 +499,8 @@ export class HttpBackend {
    */
   noteMiss(path, size, mtime, index) {
     if (typeof fetch !== 'function' || this.net.thin()) return;
-    const k = `${path}#${index}`;
-    for (let j = Math.max(0, index - NEAR_BLOCKS); j <= index + NEAR_BLOCKS && j * BLOCK < size; j++) {
+    const k = `${path}#${index}`, guess = this.speculate(path);
+    for (let j = Math.max(0, index - NEAR_BLOCKS); guess && j <= index + NEAR_BLOCKS && j * BLOCK < size; j++) {
       const nk = `${path}#${j}`;
       if (j === index || this.near.has(nk) || this.cache.has(nk) || this.store?.map.has(`${path}#${size}#${mtime}#${j}`)) continue;
       this.near.set(nk, { path, size, mtime, index: j });
@@ -743,7 +751,9 @@ export class HttpBackend {
       out.set(piece.subarray(a - c * CHUNK, b - c * CHUNK), outOff + (a - pos));
     }
     // the block, and for a stream the next ones, in the background (not on a thin link: there the bandwidth goes to
-    // what the game reads and what earlier sessions read next — a whole block for a piece read is 16 times the bytes)
+    // what the game reads and what earlier sessions read next — a whole block for a piece read is 16 times the bytes;
+    // not the next ones of a media file the game is not streaming: see speculate)
+    if (ahead && !this.speculate(path)) ahead = 0;
     for (let i = index; i <= index + ahead && i * BLOCK < size && !this.net.thin(); i++) {
       const wk = `${path}#${i}`;
       if (!this.want.has(wk) && (i === index || !this.peekBlock(path, size, i, mtime))) this.want.set(wk, { path, size, mtime, index: i });
@@ -933,7 +943,7 @@ export class HttpBackend {
    * Offline copy: fetch every block of every file of the listing that the store does not hold yet, in the background,
    * yielding to the game's reads (its turn on the link like the other background downloads, after them). The blocks of
    * the learned list `opts.order` ([path, block, ...], the order earlier sessions needed them) come first, then the
-   * rest file by file. Requests carry up to 4 blocks when the game is not running (`opts.alone`: the page downloads the
+   * rest file by file; the media files' blocks (isMedia: movies, music) after all the others, in the same order. Requests carry up to 4 blocks when the game is not running (`opts.alone`: the page downloads the
    * game before playing) or the link is fast, else the link's background size (pieces, assembled into blocks). A
    * download stopped (page closed) resumes where it was: the stored blocks are skipped. `progress` is updated
    * ({ bytes, total, stored (bytes already here at the start), done }); stops at `stop()` or when the store fails (quota).
@@ -942,20 +952,21 @@ export class HttpBackend {
     const store = this.store; if (!store || typeof fetch !== 'function') return;
     const files = [], byPath = new Map();
     const walk = (node, rel) => {
-      for (const [n, f] of Object.entries(node.files ?? {})) { const e = { path: rel ? `${rel}/${n}` : n, size: f.size, mtime: f.mtime ?? 0 }; files.push(e); byPath.set(e.path, e); }
+      for (const [n, f] of Object.entries(node.files ?? {})) { const e = { path: rel ? `${rel}/${n}` : n, size: f.size, mtime: f.mtime ?? 0, media: !!f.media }; files.push(e); byPath.set(e.path, e); }
       for (const [n, d] of Object.entries(node.dirs ?? {})) walk(d, rel ? `${rel}/${n}` : n);
     };
     walk(this.tree, '');
     const key = (f, i) => `${f.path}#${f.size}#${f.mtime}#${i}`;
     const blockBytes = (f, i) => Math.min(f.size, (i + 1) * BLOCK) - i * BLOCK;
-    // the blocks in download order: learned ones first, then every other one
-    const jobs = [], queued = new Set();
+    // the blocks in download order: learned ones first, then every other one; media files' after all of those
+    const main = [], media = [], queued = new Set();
     for (const it of opts.order ?? []) {
       const r = Array.isArray(it) && typeof it[0] === 'string' ? this.lookup(it[0]) : null, f = r?.file ? byPath.get(r.path) : null;
       if (!f || !Number.isInteger(it[1]) || it[1] < 0 || it[1] * BLOCK >= f.size || queued.has(key(f, it[1]))) continue;
-      queued.add(key(f, it[1])); jobs.push([f, it[1]]);
+      queued.add(key(f, it[1])); (r.file.media ? media : main).push([f, it[1]]);
     }
-    for (const f of files) for (let i = 0; i * BLOCK < f.size; i++) if (!queued.has(key(f, i))) jobs.push([f, i]);
+    for (const f of files) for (let i = 0; i * BLOCK < f.size; i++) if (!queued.has(key(f, i))) (f.media ? media : main).push([f, i]);
+    const jobs = main.concat(media);
     progress.total = files.reduce((a, f) => a + f.size, 0); progress.done = false;
     progress.bytes = 0; for (const [f, i] of jobs) if (store.map.has(key(f, i))) progress.bytes += blockBytes(f, i);
     progress.stored = progress.bytes;

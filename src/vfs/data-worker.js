@@ -204,15 +204,18 @@ const order = () => (W.learned ??= Promise.all(W.version.parts.map((p) => learne
 
 /**
  * A learned order as this link reads it: on a link that is not fast, a texture's light copy (whole, once) in place of
- * the file — unless the file is here —; on a fast one, the files themselves in place of light copies earlier sessions
- * read.
+ * the file — unless the file is here —, and the media files' entries (the tree's `media`: movies, music — game-tree.js)
+ * after all the others, in their order (a movie earlier sessions watched while this one may skip it, a track the engine
+ * streams itself: not ahead of what the game waits for); on a fast one, the files themselves in place of light copies
+ * earlier sessions read (exported for the tests).
  */
-function forLink(part, list) {
-  const fast = W.version.net.fast(), out = [], seen = new Set();
+export function forLink(part, list, fast = W.version.net.fast()) {
+  const out = [], tail = [], seen = new Set();
   const add = (path, block, mask, t) => { const k = path + '#' + block; if (!seen.has(k)) { seen.add(k); out.push([path, block, mask, t]); } };
   for (const e of list) {
     const [path, , , t] = e, light = path.startsWith(LIGHT_DIR + '/');
     const r = part.files.lookup(light ? path.slice(LIGHT_DIR.length + 1) : path);
+    if (!fast && !light && r?.file?.media) { const k = path + '#' + e[1]; if (!seen.has(k)) { seen.add(k); tail.push(e); } continue; }
     if (!r?.file?.light) { if (!light) add(...e); continue; }
     if (fast || part.files.isWhole(r.path)) {
       if (!light) add(...e); else for (let b = 0; b * BLOCK < r.file.size; b++) add(r.path, b, 0, t);
@@ -223,15 +226,13 @@ function forLink(part, list) {
       }
     }
   }
-  return out;
+  return tail.length ? out.concat(tail) : out;
 }
 
 /** The startup set loaded (before the engine starts): progress { bytes, total, done } to the page. */
 async function startup() {
-  const lists = await order(), part = W.version.parts[0], list = forLink(part, lists[0]);
-  let end = list.length;
-  for (let i = 1; i < list.length; i++) if (list[i][3] - list[i - 1][3] > STARTUP_GAP_MS) { end = i; break; }
-  const head = list.slice(0, end);
+  const lists = await order(), part = W.version.parts[0], fast = W.version.net.fast();
+  const head = startupHead(part, forLink(part, lists[0], fast), fast);
   const progress = { bytes: 0, blocks: 0, done: false };
   const total = head.reduce((n, [, , mask]) => n + (mask ? popcount(mask) * CHUNK : BLOCK), 0);
   const tick = setInterval(() => postMessage({ startup: { bytes: progress.bytes, total, done: false } }), 250);
@@ -239,6 +240,17 @@ async function startup() {
   // (the pieces sessions read only: the rest of their blocks comes with the learned order, once the engine runs)
   try { await part.files.prefetch(head, progress, () => W.stop, { learnedOnly: true }); }
   finally { clearInterval(tick); postMessage({ startup: { bytes: progress.bytes, total, done: true } }); }
+}
+/**
+ * The startup set of a learned order as this link reads it (forLink): its entries up to the first pause of
+ * STARTUP_GAP_MS — on a link that is not fast, without the media files (they are not needed to start the game). Exported
+ * for the tests.
+ */
+export function startupHead(part, list, fast) {
+  if (!fast) list = list.filter(([path]) => !part.files.lookup(path)?.file?.media);
+  let end = list.length;
+  for (let i = 1; i < list.length; i++) if (list[i][3] - list[i - 1][3] > STARTUP_GAP_MS) { end = i; break; }
+  return list.slice(0, end);
 }
 const popcount = (m) => { let n = 0; while (m) { n += m & 1; m >>>= 1; } return n; };
 

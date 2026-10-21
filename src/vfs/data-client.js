@@ -7,6 +7,7 @@
 // On a link that is not fast, a texture's load reads its light copy (src/host/light-copies.js: the texture without its
 // finest levels) unless the file itself is here; the file comes in the background, for its next load.
 import { treeFile, LIGHT_DIR } from './game-tree.js';
+import { FAST_BPS } from './net-link.js';
 
 export const PIECE = 1 << 16;
 
@@ -27,6 +28,8 @@ export const offlineCopy = {
 export const linkRate = {
   get() { try { const v = Number(localStorage.getItem('orthros.netBw')); return v > 0 ? v : undefined; } catch { return undefined; } },
   set(bw) { if (bw > 0) try { localStorage.setItem('orthros.netBw', String(Math.round(bw))); } catch { /* storage off */ } },
+  /** The link was fast last time (FAST_BPS, net-link.js): a page's choice before its game data opens — unknown is not fast. */
+  fast() { return this.get() >= FAST_BPS; },
 };
 /** The most bytes one answer of the worker carries (its shared buffer). */
 const SPAN = 16 << 20;

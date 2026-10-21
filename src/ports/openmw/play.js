@@ -8,6 +8,7 @@ import { pickLang } from '../../host/web/lang.js';
 import { createShell } from '../../host/web/shell.js';
 import { escapeToGame } from '../../host/web/escape.js';
 import { endonym } from '../../host/web/lang.js';
+import { linkRate } from '../../vfs/data-client.js';
 
 const STRINGS = {
   en: {
@@ -29,6 +30,7 @@ const STRINGS = {
     capture: 'Click in the game to give it the mouse · Esc goes to the game (in full screen, twice releases the mouse)',
     saveServer: 'the world\'s server keeps your character on your account',
     failed: 'The game could not start: ',
+    noVideo: 'Intro videos skipped: slow connection',
   },
   fr: {
     subtitle: 'le jeu d’origine, sur le moteur OpenMW dans ton navigateur',
@@ -49,6 +51,7 @@ const STRINGS = {
     capture: 'Clique dans le jeu pour lui donner la souris · Échap va au jeu (en plein écran, deux fois libère la souris)',
     saveServer: 'le serveur du monde garde ton personnage sur ton compte',
     failed: 'Le jeu n’a pas pu démarrer : ',
+    noVideo: 'Vidéos d’intro passées : connexion lente',
   },
 };
 const lang = pickLang(), S = STRINGS[lang] ?? STRINGS.en;
@@ -93,6 +96,9 @@ async function enter(chosen) {
       shell.setSave({ state: 'server' });
     } else {
       src = man.openmw.example ? `app/index.html?nomw${man.openmw.startCell ? '&start=' + encodeURIComponent(man.openmw.startCell) : ''}` : 'app/index.html?src=hosted';
+      // (on a link not fast last time, or not measured yet, the intro videos are not played: the engine page's ?novid —
+      // tens of MB before the menu; ?video=1 on this page plays them all the same)
+      if (!man.openmw.example && !linkRate.fast() && params.get('video') !== '1') { src += '&novid'; shell.toast(S.noVideo, 5000); }
       if (shell.account) shell.setSave({ state: 'idle' });
     }
     shell.progress(20, S.launching);

@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { LIGHT_DIR, lightCopy } from './light-copies.js';
+import { isMediaFile } from '../vfs/game-tree.js';
 
 export function gameLayers(manifest) {
   // (underlays: the folders of versions a GoldSrc port requires, beneath its own; overlays: folders over the version's
@@ -31,7 +32,11 @@ function mergeDir(layers, mark = null) {
   }
   for (const entry of entries.values()) {
     if (entry.dirs) node.dirs[entry.name] = mergeDir(entry.dirs, mark);
-    else { const st = fs.statSync(entry.file); node.files[entry.name] = { size: st.size, mtime: st.mtimeMs }; mark?.(entry.file, st, node.files[entry.name]); }
+    else {
+      const st = fs.statSync(entry.file), e = node.files[entry.name] = { size: st.size, mtime: st.mtimeMs };
+      if (isMediaFile(entry.name, st.size)) e.media = true; // (game-tree.js: after the rest on a link that is not fast)
+      mark?.(entry.file, st, e);
+    }
   }
   return node;
 }
@@ -40,7 +45,8 @@ function mergeDir(layers, mark = null) {
  * The game's files as the browsers read them: its layers, and the folders of its engine's release it serves beside them
  * (`dataMounts`: [{ at, dir }] — an engine's own data, as OpenMW's asset pack, under a folder of its own, `at`; not part
  * of the game's layers, which a native server laying out the game reads too). With manifest.lightCopies, a file that has
- * a light copy (light-copies.js) tells its size: `light`.
+ * a light copy (light-copies.js) tells its size: `light`. A media file by its format (isMediaFile, game-tree.js) is
+ * marked `media: true`.
  */
 export function listGameTree(manifest) {
   const mark = manifest.lightCopies ? (file, st, e) => { const c = lightCopy(file, st); if (c) e.light = c.size; } : null;

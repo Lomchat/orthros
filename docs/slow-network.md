@@ -89,6 +89,21 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   149 → 85 s; on the wire 368 → 264 MB (textures 199 → 70 MB: 13 MB of light copies, the rest small textures and the
   files upgraded once the game was idle). Over the version: 3746 textures, 2329 MB → 135 MB light.
 
+## Media files after the rest (2026-10-21)
+
+Movies and music are not what the game waits for to start; on a link that is not fast they come after it:
+
+- **Server** (`src/host/game-files.js` `listGameTree`, the rule `isMediaFile` in `src/vfs/game-tree.js`): a tree file
+  is marked `media: true` by its format — `.bik .bk2 .mp3 .ogg .avi .mpg .mpeg .wmv .smk .webm`, and `.wav` from
+  512 KB (`MEDIA_WAV_BYTES`: music, speech; smaller ones are sound effects). Every game, every runtime.
+- **Learned order** (`src/vfs/data-worker.js` `forLink`): on a link that is not fast, the media files' entries move
+  after all the others, in their order (earlier sessions played a movie through; this one may skip it); the startup set
+  (`startupHead`) leaves them out.
+- **Offline copy** (`HttpBackend.downloadAll`): the media files' blocks after every other block, on every link.
+- **Guesses** (`HttpBackend.speculate`): no blocks near a missed one, nor the next blocks of a read, for a media file
+  the game is not streaming now (`HttpBackend.streams`); a stream keeps its read-ahead.
+- A read of a media file is never answered with made-up bytes: it waits for the network as any other.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

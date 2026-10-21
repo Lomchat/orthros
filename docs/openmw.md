@@ -363,6 +363,10 @@ told by messages) besides `cloud.js`, whose save states (saving, saved, error, c
 leaving by « Games » asks it to send what is not on the account yet (`orthros-flush`), 15 s at most. In multiplayer the
 indicator says the world's server keeps the character. The engine's own overlays (the multiplayer onboarding) stay in
 English: they are the upstream portal's.
+Alone (hosted game), on a link that was not fast last time (`linkRate.fast()`, `src/vfs/data-client.js`: below
+`FAST_BPS`, or not measured yet) the page adds `&novid` to the engine page's address: the intro videos (the two logos,
+the new game's movie, tens of MB before the menu) are not played, and a toast says so. `?video=1` on the port's page
+plays them all the same.
 Initial validation: `make test` passed (1,073 passed, 3 skipped, 2 todo); targeted catalog/proxy
 checks passed after the final changes. Chromium reached the example's Village from the home
 card, drew 8,515 WebGL calls and opened the expected installation-specific IDBFS database.
