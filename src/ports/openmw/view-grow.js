@@ -38,6 +38,16 @@ export function parseView(text) {
 }
 
 /**
+ * The player is in the world (streamfs.js marks the session playable then): alone, the first report of Orthros'
+ * script (view.lua, 'orthros.view'); in multiplayer — no Orthros script there, the world's content list is its own —
+ * the multiplayer script's world joined and simulated (its 'simReady').
+ */
+export function inWorld(win) {
+  const state = win.omw?.state ?? {};
+  return state['orthros.view'] !== undefined || (!!win.__omwMPEnabled && state.state === 'Joined' && state.simReady === '1');
+}
+
+/**
  * One look of the growth `s` ({ phase: 'wait'|'loading'|'done'|'stopped', start, target, value, since }) at the game:
  * `report` (parseView: null before the player is in the world), `exterior`, `quiet`, `framesOk`, `now`. Changes `s`;
  * returns what to do: { write } the view distance for the script, { prefer } the loads' kind (GameData.prefer).
