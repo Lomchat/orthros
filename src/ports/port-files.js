@@ -14,13 +14,13 @@ const BATCH = 16 << 20;
 /**
  * The installation's game data: { data (GameData), nodes } once its files are mounted under `root`.
  * @param {{ name: string, tree: object, files: { path: string, at?: string }[], FS: object, root: string,
- *   session: string, log: (text: string) => void, db?: IDBDatabase, asyncReads?: boolean, rewritable?: boolean,
+ *   session: string, lang?: string, log: (text: string) => void, db?: IDBDatabase, asyncReads?: boolean, rewritable?: boolean,
  *   onCopy?: (bytes: number) => void, onProgress?: (p: object) => void }} o
  *   files: the tree's files as the engine sees them (a language's view: languageFiles); db: the installation's IndexedDB,
  *   whose 'content' store an earlier page kept the game files in (handed over, then emptied)
  */
 export async function openPortFiles(o) {
-  const data = await GameData.open({ name: o.name, tree: o.tree, session: o.session, prefetch: 'startup', log: o.log });
+  const data = await GameData.open({ name: o.name, tree: o.tree, session: o.session, lang: o.lang, prefetch: 'startup', log: o.log });
   if (o.onProgress) data.onProgress(o.onProgress); // (the loading in the background: the shell's pill, shell.setData)
   if (o.db) await handOver(data, o.name, o.db, o.log, o.onCopy);
   const nodes = mountFiles(o.FS, o.root, data, o.name, o.files, { asyncReads: o.asyncReads, rewritable: o.rewritable, log: o.log });

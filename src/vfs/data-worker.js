@@ -40,7 +40,7 @@ export function createDataWorker(post) {
   postMessage = post;
   W = {
     ctrl: null, data: null, version: null, parts: new Map(), handles: new Map(), ready: null, timers: [],
-    session: '', t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null,
+    session: '', lang: null, t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null,
     prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null,
     legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(),
   };
@@ -77,11 +77,11 @@ function dispatch(m) {
 }
 
 /**
- * { name, session, bw, ctrl, data, prefetch: 'startup' | 'start' | 'first-read' | 'none', memBytes, cacheBlocks }: the
- * version and the ones it requires opened (their stores: OPFS, else in memory — another tab holds them, or no OPFS).
+ * { name, session, lang, bw, ctrl, data, prefetch: 'startup' | 'start' | 'first-read' | 'none', memBytes, cacheBlocks }: the
+ * version and the ones it requires opened (lang: the game's language — its sessions' own launch set, launch-set.js) (their stores: OPFS, else in memory — another tab holds them, or no OPFS).
  */
 async function init(o) {
-  W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.prefetchAt = o.prefetch ?? 'none';
+  W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.lang = typeof o.lang === 'string' && o.lang ? o.lang : null; W.prefetchAt = o.prefetch ?? 'none';
   const kept = {};
   W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, cacheBlocks: o.cacheBlocks, store: async (n) => {
     const s = await openStore(n); kept[n] = !!s;
@@ -212,13 +212,13 @@ function report(final = false, marked = null) {
 function mark(m) {
   const kind = String(m.kind ?? ''); if (!/^[a-z-]{1,20}$/.test(kind) || W.marks.has(kind) || W.t0 === null) return;
   W.marks.add(kind);
-  report(false, { kind, t: Math.round(performance.now() - W.t0) });
+  report(false, { kind, t: Math.round(performance.now() - W.t0), ...(W.lang ? { lang: W.lang } : {}) });
 }
 
 // ---------------------------------------------------------------- loading ahead
 
 /** The learned order of the version: what earlier sessions read first, the startup set its head. */
-const order = () => (W.learned ??= Promise.all(W.version.parts.map((p) => learnedOrder(p.name))));
+const order = () => (W.learned ??= Promise.all(W.version.parts.map((p) => learnedOrder(p.name, W.lang))));
 
 /**
  * The startup set loaded (before the engine starts): every part's launch set — the version's, then those of the versions

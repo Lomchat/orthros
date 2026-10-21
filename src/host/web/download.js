@@ -7,9 +7,10 @@ import { fmtRate, fmtBytes, fmtDuration } from './net-status.js';
 import { linkRate } from '../../vfs/data-client.js';
 import { FAST_BPS } from '../../vfs/net-link.js';
 
-const KEY = (name, kind = 'whole') => (kind === 'launch' ? 'orthros.launch.' : 'orthros.download.') + name;
-const load = (name, kind) => { try { return JSON.parse(localStorage.getItem(KEY(name, kind)) ?? 'null'); } catch { return null; } };
-const save = (name, kind, v) => { try { localStorage.setItem(KEY(name, kind), JSON.stringify(v)); } catch { /* storage off */ } };
+// (a launch set is a game language's own: "Prepare" in one language is not the other's)
+const KEY = (name, kind = 'whole', lang = null) => (kind === 'launch' ? 'orthros.launch.' : 'orthros.download.') + name + (kind === 'launch' && lang ? '.' + lang : '');
+const load = (name, kind, lang) => { try { return JSON.parse(localStorage.getItem(KEY(name, kind, lang)) ?? 'null'); } catch { return null; } };
+const save = (name, kind, lang, v) => { try { localStorage.setItem(KEY(name, kind, lang), JSON.stringify(v)); } catch { /* storage off */ } };
 const savedBw = () => linkRate.get() ?? null;
 
 /**
@@ -32,19 +33,28 @@ export function downloadStatus(st, total, lang = 'en', ratio = 0.75) {
 }
 
 /**
+ * The launch a card shows for game language `gameLang`: that language's own (/api/manifests `launch.langs`: the launch
+ * set its sessions read, e.g. its translated texts), else the version's.
+ */
+export const launchFor = (launch, gameLang) => (gameLang && launch?.langs?.[gameLang]) || launch || null;
+
+/**
  * The card's "playable after X MB" line for a version's launch (/api/manifests `launch`: launch-set.js launchSummary),
  * or null when the server does not know it yet: { state: 'none' | 'running' | 'paused' | 'done' | 'error', bytes (of
  * the launch set here), total, eta (s, null while the link is not measured), pct, text }. `o.bw`: the link's rate (wire
  * bytes/s; linkRate's by default) — on a link that is not fast the light copies' set, the files' on a fast one; `o.st`:
- * the "Prepare" progress (Downloads.get(name, 'launch')); `o.whole`: the whole download's (done: nothing to wait for).
+ * the "Prepare" progress (Downloads.get(name, 'launch', lang): its engine's bytes, `engine`, counted in its own); `o.whole`:
+ * the whole download's (done: nothing to wait for).
  */
 export function launchStatus(launch, o = {}, lang = 'en') {
   if (!launch || !(launch.bytes > 0)) return null;
   const bw = o.bw === undefined ? savedBw() : o.bw, fast = bw >= FAST_BPS, st = o.st ?? null;
   const size = fast ? launch.bytes : launch.lightBytes ?? launch.bytes, wire = (fast ? launch.wire : launch.lightWire ?? launch.wire) ?? size * 0.75;
-  // (what "Prepare" already brought: its own count of the set it fetched, the rest in proportion)
-  const t = st?.total || size, bytes = Math.min(t, st?.bytes ?? 0), left = Math.max(0, 1 - bytes / t);
-  const eta = bw > 0 ? wire * left / bw : null, pct = Math.floor(100 * bytes / t);
+  // (what "Prepare" already brought: its own count of the set it fetched — and of the engine's files, when it fetched
+  // them —, the rest in proportion)
+  const withEngine = st?.engine > 0 ? st.engine : 0;
+  const t = st?.total || size + withEngine, bytes = Math.min(t, st?.bytes ?? 0), left = Math.max(0, 1 - bytes / t);
+  const eta = bw > 0 ? (wire + withEngine) * left / bw : null, pct = Math.floor(100 * bytes / t);
   const state = o.whole?.done || st?.done ? 'done' : st?.error ? 'error' : st?.running ? 'running' : bytes > 0 ? 'paused' : 'none';
   const fr = lang === 'fr', B = (n) => fmtBytes(n, lang), R = (b) => fmtRate(b, lang), D = (s) => fmtDuration(s, lang);
   // (the engine's own download, at a first launch only: said beside, not counted — a browser that ran it has it)
@@ -52,48 +62,56 @@ export function launchStatus(launch, o = {}, lang = 'en') {
   const text = state === 'done' ? (fr ? `Prêt : démarre sans attendre le réseau (${B(size)} dans ce navigateur)` : `Ready: starts without waiting for the network (${B(size)} in this browser)`)
     : state === 'running' ? (fr ? `Préparation : ${B(bytes)} / ${B(t)} (${pct} %)${eta !== null ? ` · ${D(eta)} restantes` : ''}` : `Preparing: ${B(bytes)} of ${B(t)} (${pct}%)${eta !== null ? ` · ${D(eta)} left` : ''}`)
     : state === 'error' ? (fr ? `Préparation arrêtée : ${st.error}` : `Preparing stopped: ${st.error}`)
-    : state === 'paused' ? (fr ? `Jouable après encore ${B(size * left)} (${pct} % prêt)${eta !== null ? `, ${D(eta)} à ta connexion (${R(bw)})` : ''}` : `Playable after ${B(size * left)} more (${pct}% ready)${eta !== null ? `, ${D(eta)} at your link (${R(bw)})` : ''}`)
+    : state === 'paused' ? (fr ? `Jouable après encore ${B(t - bytes)} (${pct} % prêt)${eta !== null ? `, ${D(eta)} à ta connexion (${R(bw)})` : ''}` : `Playable after ${B(t - bytes)} more (${pct}% ready)${eta !== null ? `, ${D(eta)} at your link (${R(bw)})` : ''}`)
     : (fr ? `Jouable après ${B(size)}${eta !== null ? `, ${D(eta)} à ta connexion (${R(bw)})` : ''}${engine}` : `Playable after ${B(size)}${eta !== null ? `, ${D(eta)} at your link (${R(bw)})` : ''}${engine}`);
   return { state, bytes, total: t, eta, pct, text };
 }
 
 export class Downloads {
-  constructor() { this.worker = null; this.name = null; this.kind = null; this.listeners = new Set(); this.live = new Map(); }
-  /** the last known progress of `name` (`kind`: 'whole', else 'launch' — "Prepare"; this visit's, else the one kept from an earlier visit) */
-  get(name, kind = 'whole') { return this.live.get(KEY(name, kind)) ?? load(name, kind); }
+  constructor() { this.worker = null; this.name = null; this.kind = null; this.lang = null; this.listeners = new Set(); this.live = new Map(); }
+  /**
+   * the last known progress of `name` (`kind`: 'whole', else 'launch' — "Prepare", of game language `lang`; this
+   * visit's, else the one kept from an earlier visit)
+   */
+  get(name, kind = 'whole', lang = null) { return this.live.get(KEY(name, kind, lang)) ?? load(name, kind, lang); }
   onChange(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   emit(name) { for (const fn of this.listeners) fn(name); }
-  running(name, kind = 'whole') { return this.name === name && this.kind === kind && !!this.worker; }
-  /** Start (or resume) the download of `name` (`kind` 'launch': its launch set only); another one running stops first. */
-  async start(name, kind = 'whole') {
-    if (this.running(name, kind)) return;
+  running(name, kind = 'whole', lang = null) { return this.name === name && this.kind === kind && (kind !== 'launch' || this.lang === lang) && !!this.worker; }
+  /**
+   * Start (or resume) the download of `name` (`kind` 'launch': its launch set only — `o.lang`'s, and `o.launch`'s engine
+   * files first: /api/manifests launch.engineFiles); another one running stops first.
+   */
+  async start(name, kind = 'whole', o = {}) {
+    const lang = kind === 'launch' ? o.lang ?? null : null;
+    if (this.running(name, kind, lang)) return;
     await this.stop();
     const w = this.worker = new Worker(new URL('./download-worker.js', import.meta.url), { type: 'module' });
-    const key = KEY(name, kind);
-    this.name = name; this.kind = kind;
+    const key = KEY(name, kind, lang);
+    this.name = name; this.kind = kind; this.lang = lang;
     w.onmessage = (e) => {
       const m = e.data;
       if (m.type === 'progress') {
-        const v = { bytes: m.bytes, total: m.total, bw: m.bw, ratio: m.ratio, running: !!m.running, done: !!m.done, error: m.error ?? null, at: Date.now() };
-        this.live.set(key, v); save(name, kind, { ...v, running: false });
+        const v = { bytes: m.bytes, total: m.total, engine: m.engine ?? 0, bw: m.bw, ratio: m.ratio, running: !!m.running, done: !!m.done, error: m.error ?? null, at: Date.now() };
+        this.live.set(key, v); save(name, kind, lang, { ...v, running: false });
         linkRate.set(m.bw);
         this.emit(name);
       } else if (m.type === 'stopped') {
-        const v = this.live.get(key); if (v) { v.running = false; save(name, kind, v); }
-        if (this.worker === w) { w.terminate(); this.worker = null; this.name = null; this.kind = null; }
+        const v = this.live.get(key); if (v) { v.running = false; save(name, kind, lang, v); }
+        if (this.worker === w) { w.terminate(); this.worker = null; this.name = null; this.kind = null; this.lang = null; }
         this.stopped?.(); this.stopped = null;
         this.emit(name);
       }
     };
-    w.onerror = (e) => { const v = { ...(this.get(name, kind) ?? {}), running: false, error: e.message || 'the download stopped' }; this.live.set(key, v); w.terminate(); if (this.worker === w) { this.worker = null; this.name = null; this.kind = null; } this.emit(name); };
-    w.postMessage({ type: kind === 'launch' ? 'launch' : 'download', name, bw: savedBw() });
-    this.live.set(key, { ...(load(name, kind) ?? {}), running: true, error: null, done: false }); this.emit(name);
+    w.onerror = (e) => { const v = { ...(this.get(name, kind, lang) ?? {}), running: false, error: e.message || 'the download stopped' }; this.live.set(key, v); w.terminate(); if (this.worker === w) { this.worker = null; this.name = null; this.kind = null; this.lang = null; } this.emit(name); };
+    const engine = kind === 'launch' && o.launch?.engineFiles?.length ? { files: o.launch.engineFiles, bytes: o.launch.engine ?? 0 } : null;
+    w.postMessage({ type: kind === 'launch' ? 'launch' : 'download', name, bw: savedBw(), lang, engine });
+    this.live.set(key, { ...(load(name, kind, lang) ?? {}), running: true, error: null, done: false }); this.emit(name);
   }
   /** Stop the running download (its stores closed: a game may open them); resolves once stopped. */
   stop() {
     const w = this.worker; if (!w) return Promise.resolve();
     return new Promise((resolve) => {
-      const t = setTimeout(() => { w.terminate(); if (this.worker === w) { this.worker = null; this.name = null; this.kind = null; } resolve(); }, 5000);
+      const t = setTimeout(() => { w.terminate(); if (this.worker === w) { this.worker = null; this.name = null; this.kind = null; this.lang = null; } resolve(); }, 5000);
       this.stopped = () => { clearTimeout(t); resolve(); };
       w.postMessage({ type: 'stop', name: this.name });
     });

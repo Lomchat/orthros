@@ -35,9 +35,9 @@ import { listGameTree, resolveGameFile, resolveLightFile } from './game-files.js
 import { LIGHT_DIR, readLight } from './light-copies.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
-import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
-import { openmwEngineWire, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withProgressiveView, withSharedEngine, withStreaming } from './openmw.js';
-import { re3Installed, re3Modes, re3Module } from './re3.js';
+import { DEFAULT_ENGINES_DIR, engineFile, goldsrcEngineFiles, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
+import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withProgressiveView, withSharedEngine, withStreaming } from './openmw.js';
+import { re3EngineFiles, re3Installed, re3Modes, re3Module } from './re3.js';
 import { mmoApi } from './mmo.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
@@ -199,18 +199,18 @@ export function createServer(opts = {}) {
     if (!m) {
       m = new Map(); learned.set(name, m);
       const f = learnFile(name);
-      if (f) try { for (const [k, t, n, mask, pre] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined, pre: pre || 0 }); } catch { /* none yet */ }
+      if (f) try { for (const [k, t, n, mask, pre, by] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined, pre: pre || 0, ...(by && typeof by === 'object' ? { by } : {}) }); } catch { /* none yet */ }
     }
     return m;
   };
-  const playable = new Map(); // manifest -> { marks }
+  const playable = new Map(); // manifest -> { marks, by: { [game language]: marks } }
   const playableFile = (name) => opts.learnDir && path.join(opts.learnDir, `playable-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
   const playableOf = (name) => {
     let p = playable.get(name);
     if (!p) {
-      p = { marks: 0 }; playable.set(name, p);
+      p = { marks: 0, by: {} }; playable.set(name, p);
       const f = playableFile(name);
-      if (f) try { p.marks = Number(JSON.parse(fs.readFileSync(f, 'utf8')).marks) || 0; } catch { /* none yet */ }
+      if (f) try { const j = JSON.parse(fs.readFileSync(f, 'utf8')); p.marks = Number(j.marks) || 0; if (j.by && typeof j.by === 'object') p.by = j.by; } catch { /* none yet */ }
     }
     return p;
   };
@@ -223,9 +223,9 @@ export function createServer(opts = {}) {
       learnTimer = null;
       for (const n of learnDirty) {
         const f = learnFile(n);
-        try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.pre ? [k, v.t, v.n, v.mask ?? null, v.pre] : v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
+        try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.pre ? [k, v.t, v.n, v.mask ?? null, v.pre, ...(v.by ? [v.by] : [])] : v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
         const pf = playableFile(n), pm = playable.get(n);
-        if (pm?.marks) try { fs.writeFileSync(pf + '.tmp', JSON.stringify({ marks: pm.marks })); fs.renameSync(pf + '.tmp', pf); } catch { /* next time */ }
+        if (pm?.marks) try { fs.writeFileSync(pf + '.tmp', JSON.stringify({ marks: pm.marks, ...(Object.keys(pm.by).length ? { by: pm.by } : {}) })); fs.renameSync(pf + '.tmp', pf); } catch { /* next time */ }
       }
       learnDirty = new Set();
     }, opts.learnWriteMs ?? 20000);
@@ -253,24 +253,35 @@ export function createServer(opts = {}) {
     }
     learnSave(name);
   };
-  /** Session `sid` marked version `name` (`kind`): 'playable' counts the blocks it read until now, once a session. */
-  const learnMark = (name, sid, kind) => {
+  /**
+   * Session `sid` marked version `name` (`kind`): 'playable' counts the blocks it read until now, once a session — and
+   * for its game language (`lang`, when the page tells it: a language's own files, e.g. a game's translated texts, are
+   * read before playable by that language's sessions only).
+   */
+  const learnMark = (name, sid, kind, lang = null) => {
     const ss = sessions.get(sid);
     if (kind !== 'playable' || !ss || ss.marked || !ss.seen.size) return false;
     ss.marked = true;
-    const m = learnedOf(name);
-    for (const k of ss.seen) { const e = m.get(k); if (e) e.pre = (e.pre ?? 0) + 1; }
-    playableOf(name).marks++;
+    const m = learnedOf(name), p = playableOf(name);
+    for (const k of ss.seen) {
+      const e = m.get(k); if (!e) continue;
+      e.pre = (e.pre ?? 0) + 1;
+      if (lang) { e.by ??= {}; e.by[lang] = (e.by[lang] ?? 0) + 1; }
+    }
+    p.marks++;
+    if (lang) p.by[lang] = (p.by[lang] ?? 0) + 1;
     learnSave(name);
     return true;
   };
   // (each entry: [path, block, mask (0: unknown), t (ms from its earliest session's first read)], and once a session
-  // marked the version playable, flags: bit 0 read before playable in at least half the marking sessions)
-  const prefetchList = (name) => {
-    const marks = playableOf(name).marks;
+  // marked the version playable, flags: bit 0 read before playable in at least half the marking sessions — those of
+  // game language `lang` when some of them told it, else all of them)
+  const prefetchList = (name, lang = null) => {
+    const p = playableOf(name), own = lang && p.by[lang] > 0 ? p.by[lang] : 0, marks = own || p.marks;
     return [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k, v]) => {
       const i = k.lastIndexOf('#'), e = [k.slice(0, i), Number(k.slice(i + 1)), v.mask ?? 0, Math.round(v.t)];
-      if (marks) e.push(v.pre && v.pre * 2 >= marks ? PRE_PLAYABLE : 0);
+      const pre = own ? v.by?.[lang] ?? 0 : v.pre;
+      if (marks) e.push(pre && pre * 2 >= marks ? PRE_PLAYABLE : 0);
       return e;
     });
   };
@@ -279,36 +290,69 @@ export function createServer(opts = {}) {
    * and their wire bytes — the precompressed units' when made, br-cache.js), for the home: null until a session marked
    * it playable. Made again once its learned order changed, or a minute later (the units made meanwhile). The versions it
    * requires (manifest.extraMounts: the game reads them too) add their own launch sets, each learned from its own
-   * sessions (a version none of whose sessions was marked playable adds nothing).
+   * sessions (a version none of whose sessions was marked playable adds nothing). Each game language whose sessions
+   * marked it has its own (`langs`: the launch set of that language's sessions, prefetchList). A browser port's engine
+   * release, downloaded at a first launch, is told apart: `engine` (its wire bytes) and `engineFiles` (its URLs, which
+   * "Prepare" fetches too: download-worker.js).
    */
-  const launches = new Map(); // manifest -> { at, v }
-  const ownLaunchOf = (name, man) => {
-    const c = launches.get(name);
+  const launches = new Map(); // manifest -> Map(game language | '' -> { at, v })
+  const ownLaunchOf = (name, man, lang = null) => {
+    let byLang = launches.get(name); if (!byLang) launches.set(name, byLang = new Map());
+    const c = byLang.get(lang ?? '');
     if (c && Date.now() - c.at < 60e3) return c.v;
     let v = null;
     try {
       if (playableOf(name).marks) {
         const at = unitFile(man);
-        v = launchSummary(new HttpBackend(`/game/${name}/`, gameTree(name, man)), prefetchList(name), brCache && ((rel, unit) => {
+        v = launchSummary(new HttpBackend(`/game/${name}/`, gameTree(name, man)), prefetchList(name, lang), brCache && ((rel, unit) => {
           const f = at(rel); return f ? brCache.size(f.file, f.st, f.light, unit) : null;
         }));
       }
     } catch { v = null; }
-    launches.set(name, { at: Date.now(), v });
+    byLang.set(lang ?? '', { at: Date.now(), v });
     return v;
   };
   const launchOf = (name, man) => {
-    const v = ownLaunchOf(name, man);
-    if (!v) return v;
-    const sum = { ...v };
-    for (const d of Array.isArray(man.extraMounts) ? man.extraMounts : []) {
-      const rm = d?.manifest && d.manifest !== name ? manifests.get(d.manifest) : null;
-      const r = rm ? ownLaunchOf(d.manifest, rm) : null;
-      if (r) for (const k of ['bytes', 'lightBytes', 'wire', 'lightWire', 'entries']) sum[k] += r[k];
-    }
+    const required = (Array.isArray(man.extraMounts) ? man.extraMounts : []).map((d) => (d?.manifest && d.manifest !== name ? [d.manifest, manifests.get(d.manifest)] : null)).filter((r) => r?.[1]);
+    const summed = (lang) => {
+      const v = ownLaunchOf(name, man, lang);
+      if (!v) return v;
+      const sum = { ...v };
+      for (const [rn, rm] of required) {
+        const r = ownLaunchOf(rn, rm, lang);
+        if (r) for (const k of ['bytes', 'lightBytes', 'wire', 'lightWire', 'entries']) sum[k] += r[k];
+      }
+      return sum;
+    };
+    const sum = summed(null);
+    if (!sum) return sum;
+    // (the languages some marking sessions told, of this version or of one it requires)
+    const langs = new Set([name, ...required.map(([rn]) => rn)].flatMap((n) => Object.keys(playableOf(n).by)));
+    if (langs.size) sum.langs = Object.fromEntries([...langs].sort().map((l) => [l, summed(l)]));
     // (the engine's own download at a first launch: told apart, a browser that ran it before has it)
-    sum.engine = man.runtime === 'openmw' ? openmwEngineWire(man, enginesDir) : 0;
+    const engine = engineOf(man);
+    sum.engine = engine.wire; sum.engineFiles = engine.urls;
+    if (sum.langs) for (const l of Object.values(sum.langs)) { l.engine = engine.wire; l.engineFiles = engine.urls; }
     return sum;
+  };
+  /**
+   * A browser port's engine release as its page downloads it at a first launch: { wire (bytes, brotli when served so —
+   * sendEngineFile), urls } — none for a Win32 game.
+   */
+  const engineOf = (man) => {
+    const [release, files] = man.runtime === 'openmw' ? [man.openmw?.engine, openmwEngineFiles(man, enginesDir)]
+      : man.runtime === 'goldsrc' ? [man.goldsrc?.engine, goldsrcEngineFiles(man, enginesDir)]
+        : man.runtime === 're3' ? [man.re3?.engine, re3EngineFiles(man, enginesDir)] : [null, []];
+    let wire = 0; const urls = [];
+    for (const rel of files) {
+      const f = engineFile(enginesDir, release, rel); if (!f) continue;
+      try {
+        const st = fs.statSync(f); let n = st.size;
+        try { const br = fs.statSync(f + '.br'); if (br.mtimeMs >= st.mtimeMs) n = br.size; } catch { /* none */ }
+        wire += n; urls.push(`/engines/${encodeURIComponent(release)}/${rel}`);
+      } catch { /* gone */ }
+    }
+    return { wire, urls };
   };
 
   /**
@@ -941,12 +985,12 @@ export function createServer(opts = {}) {
               if (size2 === null || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > size2 || !Number.isFinite(t) || t < 0 || t > 6 * 3600e3) continue;
               learnRead(m[1], rel, start, end, 'r:' + rec.session, Math.round(t));
             }
-            if (rec.mark && typeof rec.mark === 'object') learnMark(m[1], 'r:' + rec.session, rec.mark.kind);
+            if (rec.mark && typeof rec.mark === 'object') learnMark(m[1], 'r:' + rec.session, rec.mark.kind, seedLang(rec.mark.lang ?? '') || null);
             send(res, 204, '');
           });
           return;
         }
-        return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify(prefetchList(m[1], seedLang(url.searchParams.get('lang') ?? '') || null)), { 'Content-Type': 'application/json' });
       }
       if (p === '/api/netstats') return send(res, 200, JSON.stringify({ ...netStats, ...(brCache ? { brCache: brCache.stats() } : {}) }), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);

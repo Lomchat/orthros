@@ -3,7 +3,7 @@
 import { startEmbers } from './embers.js';
 import { UI_LANGS, browserLangs, explicitLang, pickLang, endonym } from './lang.js';
 import { h } from './dom.js';
-import { Downloads, downloadStatus, launchStatus } from './download.js';
+import { Downloads, downloadStatus, launchFor, launchStatus } from './download.js';
 import { accountState, onAccountChange } from './account.js';
 
 /** the "download the whole game first" downloads (one at a time, see download.js) */
@@ -273,14 +273,16 @@ export function mountHome({ onPlay }) {
     const lnText = h('span', { class: 'hm-dl-text' }), lnBar = h('i'), lnBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
     const lnRow = h('div', { class: 'hm-dl hm-launch', title: S().lnTitle }, h('div', { class: 'hm-dl-bar' }, lnBar), lnText, lnBtn);
     function syncLaunch(v, whole) {
-      const st = v?.available ? launchStatus(v.launch, { st: downloads.get(v.name, 'launch'), whole }, lang) : null;
+      // (the game language's own launch: what its sessions read before playable — a language's texts among them)
+      const gl = v?.available ? gameLang(g, v) : null, launch = launchFor(v?.launch, gl);
+      const st = v?.available ? launchStatus(launch, { st: downloads.get(v.name, 'launch', gl), whole }, lang) : null;
       // (the whole game here or on its way: its own line says it)
       lnRow.hidden = !st || whole.state === 'done' || whole.state === 'running'; if (lnRow.hidden) return;
       lnText.textContent = st.text; lnBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
       lnRow.dataset.state = st.state;
       lnBtn.hidden = st.state === 'done';
       lnBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().lnStart;
-      lnBtn.onclick = (e) => { e.stopPropagation(); if (st.state === 'running') downloads.stop(); else downloads.start(v.name, 'launch'); };
+      lnBtn.onclick = (e) => { e.stopPropagation(); if (st.state === 'running') downloads.stop(); else downloads.start(v.name, 'launch', { lang: gl, launch }); };
     }
     function syncDownload() {
       // (every runtime: the game data's block store, the one each game reads — src/vfs/game-data.js)
@@ -323,7 +325,7 @@ export function mountHome({ onPlay }) {
       versions?.set(v?.name);
       langRow = v?.languages?.length ? choiceRow({ label: S().gameLanguageShort, aria: S().gameLanguage, max: MAX_LANGS, more: S().others,
         items: v.languages.map((code) => ({ value: code, flag: code, label: endonym(code) })),
-        onPick: (code) => { savePref('orthros.gameLanguage.' + g.id, code); langRow.set(code); } }) : null;
+        onPick: (code) => { savePref('orthros.gameLanguage.' + g.id, code); langRow.set(code); syncDownload(); } }) : null;
       langRow?.set(gameLang(g, v));
       langSlot.replaceChildren(...(langRow ? [langRow.el] : []));
       syncDownload();

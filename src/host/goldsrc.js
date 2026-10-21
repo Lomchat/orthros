@@ -171,6 +171,17 @@ export function goldsrcInstalled(manifest, enginesDir) {
   return !!engineFile(enginesDir, g.engine, 'release.json') && ['engine/index.js', 'engine/xash.wasm', ...Object.values(g.modules), ...goldsrcExtras(g)].every((f) => engineFile(enginesDir, g.engine, f));
 }
 
+/**
+ * The engine release's files a GoldSrc page loads at its start (src/ports/goldsrc/play.js: the engine's module graph,
+ * its WebAssembly, the renderer, the menu, the game modules and the extras), release-relative: those installed.
+ */
+export function goldsrcEngineFiles(manifest, enginesDir) {
+  const g = manifest.goldsrc;
+  const js = ['index.js', 'constants.js', 'xash3d.js', 'net/index.js', 'net/net.js', 'net/emNet.js', 'generated/xash.js', 'utils/index.js', 'utils/queue.js', 'utils/rb.js'].map((f) => 'engine/' + f);
+  const files = [...js, 'engine/xash.wasm', 'engine/filesystem_stdio.wasm', g.modules.menu ?? 'engine/libmenu.wasm', g.modules.client, g.modules.server, 'engine/libref_webgl2.wasm', ...goldsrcExtras(g)];
+  return [...new Set(files)].filter((f) => typeof f === 'string' && engineFile(enginesDir, g.engine, f));
+}
+
 /** The browser launch page of a port. */
 export const portLaunchUrl = (name, manifest) => `/ports/${manifest.runtime}/${encodeURIComponent(name)}/`;
 

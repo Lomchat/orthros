@@ -11,7 +11,7 @@ import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';
 import { forLink, startupHead, launchSet, setBytes, launchSummary, PRE_PLAYABLE, WIRE_RATIO } from '../src/vfs/launch-set.js';
 import { createDataWorker } from '../src/vfs/data-worker.js';
-import { launchStatus } from '../src/host/web/download.js';
+import { launchFor, launchStatus } from '../src/host/web/download.js';
 
 const MiB = 1 << 20;
 const tree = () => ({
@@ -159,4 +159,84 @@ test('the data worker sends a page\'s mark once, with every read before it, and 
   assert.equal(posts.length, 1, 'once');
   assert.equal(posts[0].mark.kind, 'playable'); assert.ok(posts[0].mark.t >= 0);
   assert.deepEqual(posts[0].reads.map((r) => r.slice(0, 3)), [['a.dat', 0, CHUNK]]);
+});
+
+test('a page of a game language: its startup set is that language\'s, its mark tells it', async (t) => {
+  const posts = [], orders = [];
+  const tr = { dirs: {}, files: { 'a.dat': { size: BLOCK, mtime: 5 } } };
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(url, 'http://x');
+    if (u.pathname === '/api/manifest/v') return Response.json({ name: 'v' });
+    if (u.pathname === '/api/tree/v') return Response.json(tr);
+    if (u.pathname === '/api/prefetch/v') { if (init.method === 'POST') { posts.push(JSON.parse(init.body)); return new Response(null, { status: 204 }); } orders.push(u.search); return Response.json([['a.dat', 0, 1, 0, 1]]); }
+    const m = /^\/gamez\/v\/(.+)$/.exec(u.pathname);
+    if (m) { const [a, b] = u.searchParams.get('r').split('-').map(Number); const body = new Uint8Array(b - a); return new Response(body, { status: 200, headers: { 'content-length': String(body.length) } }); }
+    return new Response('no', { status: 404 });
+  };
+  const out = [], handle = createDataWorker((m) => out.push(m));
+  const ctrl = new Int32Array(new SharedArrayBuffer(64)), data = new Uint8Array(new SharedArrayBuffer(1 << 20));
+  handle({ init: { name: 'v', session: 'sess2', lang: 'fr', prefetch: 'none', ctrl: ctrl.buffer, data: data.buffer } });
+  const until = async (ok, what) => { for (let i = 0; i < 2000 && !ok(); i++) await new Promise((r) => setTimeout(r, 2)); assert.ok(ok(), what); };
+  await until(() => out.some((m) => m.ready), 'ready');
+  t.after(() => handle({ close: true }));
+  handle({ startup: true });
+  await until(() => out.some((m) => m.startup?.done), 'startup');
+  assert.deepEqual(orders, ['?lang=fr']);
+  handle({ start: true });
+  handle({ used: [['v', 'a.dat', 0]], mark: { kind: 'playable' } });
+  await until(() => posts.length, 'reported');
+  assert.equal(posts[0].mark.lang, 'fr');
+});
+
+test('a game language\'s own launch set (its sessions\' marks: its translated files), and a port\'s engine release said and listed', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-launch-lang-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), gs = path.join(games, 'gs'), learn = path.join(root, 'learn'), engines = path.join(root, 'engines');
+  fs.mkdirSync(path.join(gs, 'base', 'valve'), { recursive: true }); fs.mkdirSync(path.join(gs, 'base', 'valve_french'), { recursive: true });
+  fs.mkdirSync(path.join(gs, 'versions', 'orig'), { recursive: true }); fs.mkdirSync(learn);
+  fs.writeFileSync(path.join(gs, 'base', 'valve', 'a.pak'), Buffer.alloc(BLOCK, 1));
+  fs.writeFileSync(path.join(gs, 'base', 'valve_french', 'titles.txt'), Buffer.alloc(1000, 2));
+  fs.writeFileSync(path.join(gs, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'gs', name: 'GS', defaultVersion: 'gs-orig', defaults: { runtime: 'goldsrc' },
+    versions: [{ id: 'gs-orig', dir: 'orig', version: 'O', languages: ['en', 'fr'], goldsrc: { engine: 'e-1', gameDir: 'valve', modules: { client: 'cl/c.wasm', server: 'dl/s.wasm' }, solo: { map: 'start' } } }] }));
+  // (the engine release: its module graph, WebAssembly and modules — one served brotli)
+  const e1 = path.join(engines, 'e-1');
+  for (const [f, n] of [['release.json', 2], ['engine/index.js', 10], ['engine/xash.wasm', 5000], ['cl/c.wasm', 300], ['dl/s.wasm', 200], ['engine/valve/extras.pk3', 40]]) {
+    fs.mkdirSync(path.dirname(path.join(e1, f)), { recursive: true }); fs.writeFileSync(path.join(e1, f), Buffer.alloc(n, 7));
+  }
+  fs.writeFileSync(path.join(e1, 'engine/xash.wasm.br'), Buffer.alloc(1200, 7));
+  const start = async () => {
+    const server = createServer({ gamesDir: games, learnDir: learn, enginesDir: engines, learnWriteMs: 10, lanLog: () => {} });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    return { server, base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }) };
+  };
+  let s = await start();
+  const post = (body) => fetch(`${s.base}/api/prefetch/gs-orig`, { method: 'POST', body: JSON.stringify(body) });
+  const order = async (q = '') => (await (await fetch(`${s.base}/api/prefetch/gs-orig${q}`)).json()).map((e) => `${e[0]}:${e[4]}`).sort();
+  // (two English sessions and a French one, which reads its texts before playable too)
+  await post({ session: 'e1', reads: [['valve/a.pak', 0, 10, 5]], mark: { kind: 'playable', lang: 'en' } });
+  await post({ session: 'f1', reads: [['valve/a.pak', 0, 10, 5], ['valve_french/titles.txt', 0, 1000, 50]], mark: { kind: 'playable', lang: 'fr' } });
+  await post({ session: 'e2', reads: [['valve/a.pak', 0, 10, 5]], mark: { kind: 'playable', lang: 'en' } });
+  assert.deepEqual(await order(), ['valve/a.pak:1', 'valve_french/titles.txt:0'], 'all the sessions: a minority language\'s files left out');
+  assert.deepEqual(await order('?lang=fr'), ['valve/a.pak:1', 'valve_french/titles.txt:1'], 'the French sessions\' own');
+  assert.deepEqual(await order('?lang=en'), ['valve/a.pak:1', 'valve_french/titles.txt:0']);
+  assert.deepEqual(await order('?lang=de'), await order(), 'a language no session told: all the sessions');
+  const launch = (await (await fetch(`${s.base}/api/manifests`)).json()).find((m) => m.name === 'gs-orig').launch;
+  assert.equal(launch.bytes, CHUNK); assert.equal(launch.langs.fr.bytes, CHUNK + 1000); assert.equal(launch.langs.en.bytes, CHUNK);
+  assert.equal(launch.engine, 10 + 1200 + 300 + 200 + 40, 'the engine release at a first launch: brotli when served so');
+  assert.deepEqual(launch.engineFiles, ['/engines/e-1/engine/index.js', '/engines/e-1/engine/xash.wasm', '/engines/e-1/cl/c.wasm', '/engines/e-1/dl/s.wasm', '/engines/e-1/engine/valve/extras.pk3']);
+  assert.equal(launch.langs.fr.engine, launch.engine);
+  assert.equal(launchFor(launch, 'fr'), launch.langs.fr); assert.equal(launchFor(launch, 'de'), launch); assert.equal(launchFor(null, 'fr'), null);
+  // (kept: the languages' marks and counts)
+  await new Promise((r) => setTimeout(r, 100));
+  const fr = await order('?lang=fr');
+  await s.close();
+  s = await start(); t.after(() => s.close());
+  assert.deepEqual(await order('?lang=fr'), fr);
+});
+
+test('the card\'s line once "Prepare" fetched the engine too: its bytes counted in the progress and the time left', () => {
+  const launch = { bytes: 10 * MiB, lightBytes: 10 * MiB, wire: 5 * MiB, lightWire: 5 * MiB, engine: 5 * MiB };
+  const paused = launchStatus(launch, { bw: 1 * MiB, st: { bytes: 5 * MiB, total: 15 * MiB, engine: 5 * MiB } }, 'en');
+  assert.equal(paused.state, 'paused'); assert.equal(paused.pct, 33);
+  assert.match(paused.text, /^Playable after 10 MB more \(33% ready\)/, paused.text); assert.ok(Math.abs(paused.eta - 20 / 3) < 0.01, String(paused.eta));
 });
