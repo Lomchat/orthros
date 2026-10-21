@@ -17,6 +17,7 @@ import { VOICE_TABLE_BYTES, audioPlaying } from '../../win32/dsound.js';
 import { audioDecodeStats } from '../../media/mpeg-source.js';
 import { LAN } from '../lan-proto.js';
 import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
+import { programsUrl, programsPost } from '../../gfx/program-id.js';
 import { createInlineGfx, createRemoteGfx, createCompareGfx, renderMode } from '../../gfx/render-host.js';
 import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
@@ -197,14 +198,14 @@ async function start(m) {
   // new ones are sent back a few seconds after they are built (a render worker does both itself)
   const pcache = host.gfx?.programCache;
   if (pcache && m.opts.programCache && !pcache.remote) {
-    const url = `/api/programs/${encodeURIComponent(manifestName)}`;
+    const url = programsUrl(manifestName);
     fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => {
       if (!Array.isArray(list) || !list.length) return;
       pcache.queue.push(...list);
       log('gfx', `programs: ${list.length} learned from earlier sessions, compiled ahead${pcache.parallel ? ' (parallel compilation)' : ''}`);
     }).catch(() => {});
     // (new builds with their sources; the ids of the learned ones this session used, which the server keeps)
-    programSink = (list, used) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs: list, used }) }).catch(() => {});
+    programSink = (list, used) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: programsPost(list, used) }).catch(() => {});
   }
   if (!m.opts.headless || m.opts.lan) connectLan(host, manifestName); // (the virtual LAN: every player of this game on the server)
   if (m.opts.regionCache) {
@@ -301,7 +302,7 @@ async function start(m) {
     const ch = new MessageChannel(), globals = {};
     for (const k of Object.keys(globalThis)) if (k.startsWith('ORTHROS_') && (typeof globalThis[k] !== 'object' || globalThis[k] === null)) globals[k] = globalThis[k];
     post({ type: 'gl-port', port: ch.port1 }, [ch.port1]);
-    await renderer.start(vm.mem.memory, { width: manifest.display.width, height: manifest.display.height, globals, programs: m.opts.programCache && remoteGl ? `/api/programs/${encodeURIComponent(manifestName)}` : null, compareEvery: remoteGl ? 0 : Number(globalThis.ORTHROS_COMPARE_EVERY) || 60, noPresent: !remoteGl }, ch.port2);
+    await renderer.start(vm.mem.memory, { width: manifest.display.width, height: manifest.display.height, globals, programs: m.opts.programCache && remoteGl ? programsUrl(manifestName) : null, compareEvery: remoteGl ? 0 : Number(globalThis.ORTHROS_COMPARE_EVERY) || 60, noPresent: !remoteGl }, ch.port2);
   }
   if (regionSink && vm.jit) { vm.jit.learned = []; vm.jit.coveredLearned = []; } // (coveredLearned: learned entries found to be blocks of other learned regions, see Jit.bgInstallNow)
   // visit flags in the translations (the heat sent back; ?dbg=ORTHROS_JIT_VISIT=0: off)
