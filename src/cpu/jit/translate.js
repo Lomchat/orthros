@@ -1701,8 +1701,8 @@ class Emitter {
     if (o.seg === SEG.FS) c.get(L_FS).add();
     else if (o.seg === SEG.GS) c.get(L_STATE).i32load(ST.GS_BASE).add();
   }
-  /** address on stack -> value */
-  loadMem(size) {
+  /** address on stack -> value (`signed`: an 8 / 16-bit value sign-extended by the load itself) */
+  loadMem(size, signed = false) {
     const c = this.c;
     if (this.spec) { // (an if-converted arm: see emitIfcvt)
       if (this.specCheck) { // (a null-page load on the path taken: noted — it reads address 0 too — and the arms' effects undone after them, see emitIfcvt)
@@ -1712,7 +1712,7 @@ class Emitter {
         c.get(L_NCK); this.unmappedTest(); c.eqz().and().select();
       } else { c.i32(0).get(L_IC); if (this.spec === 2) c.eqz(); c.select(); }
     }
-    if (size === 4) c.i32load(0, 0); else if (size === 2) c.i32load16u(0); else c.i32load8u(0);
+    if (size === 4) c.i32load(0, 0); else if (size === 2) { if (signed) c.i32load16s(0); else c.i32load16u(0); } else if (signed) c.i32load8s(0); else c.i32load8u(0);
   }
   /** (addr, value) on stack -> store */
   storeMem(size) {
@@ -2611,7 +2611,12 @@ HANDLERS[OP.MOV] = (E, insn) => {
   E.loadOp(s); c.set(L_TV); E.storeRegFrom(d.size, d.r, L_TV);
 };
 HANDLERS[OP.MOVZX] = (E, insn) => { const c = E.c; const d = insn.ops[0], s = insn.ops[1]; E.loadOp(s); c.set(L_TV); E.storeRegFrom(d.size, d.r, L_TV); };
-HANDLERS[OP.MOVSX] = (E, insn) => { const c = E.c; const d = insn.ops[0], s = insn.ops[1]; E.loadOp(s); if (s.size === 1) c.extend8_s(); else c.extend16_s(); c.set(L_TV); E.storeRegFrom(d.size, d.r, L_TV); };
+HANDLERS[OP.MOVSX] = (E, insn) => {
+  const c = E.c; const d = insn.ops[0], s = insn.ops[1];
+  // (a memory source with a sign-extending load: movsx r32, m16 was a zero-extending load and a movsx of the register)
+  if (s.t === OT.MEM) { E.ea(s); E.loadMem(s.size, true); } else { E.loadOp(s); if (s.size === 1) c.extend8_s(); else c.extend16_s(); }
+  c.set(L_TV); E.storeRegFrom(d.size, d.r, L_TV);
+};
 HANDLERS[OP.LEA] = (E, insn) => {
   const c = E.c; const d = insn.ops[0], s = insn.ops[1];
   const o = { ...s, seg: -1 };
