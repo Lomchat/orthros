@@ -184,8 +184,8 @@
         }
       ],
       "files": {
-        "openmw.js": "f366c7b8f23c13e46fac6548b5ca672fcf38f896f9d74151d53a46766fb63237",
-        "openmw.wasm": "1dd7d0c3222d2d6a8364f6c07b0403f46f0c995d7ad575e48b3bda1479a222ea",
+        "openmw.js": "60a5011946616dfcfa2feeb718d1fc1e5af738873cf5633379112414366567b4",
+        "openmw.wasm": "98358bd51693fd67218ab91e7bcb353eadcc9d65b1353b4610c87ab906e2175f",
         "openmw.data": "e659ce681ef67cd124b0180c281152aedbbdab8008bee5e776fb9fa39c39ec53"
       }
     }

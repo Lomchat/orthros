@@ -23,11 +23,11 @@ test('every engine build: its patches present, each build the previous one plus 
   assert.deepEqual(r3.patches, ['orthros-r1.patch', 'orthros-r2.patch', 'orthros-r3.patch']);
 });
 
-test('r3 patch: the cooperative WorkQueue, its per-frame pump, the sliced preloads, the deferred map copy', () => {
+test('r3 patch: the cooperative WorkQueue, its per-frame pump, the sliced preloads, the global map copied back only for saves', () => {
   const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r3.patch'), 'utf8');
   for (const k of ['+++ b/openmw/components/sceneutil/workqueue.cpp', 'void WorkQueue::runCooperative(double budgetMs)',
     'self->mWorkQueue->runCooperative(budgetMs);', 'bool doWorkSlice(std::chrono::steady_clock::time_point deadline) override',
-    'bool QuadTreeWorld::preloadSlice(', 'mTerrainPreloadItem->waitTillDone();', 'void GlobalMap::flushDeferredCopies()',
+    'bool QuadTreeWorld::preloadSlice(', 'mTerrainPreloadItem->waitTillDone();', 'void GlobalMap::syncCpuCopy()', 'mCpuCopyStale = true;',
     "ENV.OPENMW_WORKQUEUE_INLINE='1'", 'preload exterior grid = true'])
     assert.ok(patch.includes(k), k);
 });
