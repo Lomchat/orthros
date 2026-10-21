@@ -18,8 +18,12 @@ if (man?.runtime !== 'openmw' || !man.openmw.multiplayer) throw new Error('Expec
 const missing = man.openmw.files.filter((f) => !resolveGameFile(man, f));
 const engines = path.resolve(arg('--engines-dir') ?? DEFAULT_ENGINES_DIR);
 if (!openmwInstalled(man, engines)) throw new Error(`Installation incomplete: ${missing.join(', ')}; install the engine and finish the declared mod stack before starting multiplayer`);
-const release = JSON.parse(fs.readFileSync(engineFile(engines, man.openmw.engine, 'release.json')));
-if (!/^ghcr\.io\/virtastic\/openmw-web-server@sha256:[a-f0-9]{64}$/.test(release.serverImage ?? '')) throw new Error('No pinned server image in this engine release');
+const releaseOf = (id) => JSON.parse(fs.readFileSync(engineFile(engines, id, 'release.json')));
+const release = releaseOf(man.openmw.engine);
+// (a release built here from the pinned source, build.sh, changes the browser engine only: the native gateway is its
+// upstream release's)
+const serverImage = release.serverImage ?? (release.upstream?.id ? releaseOf(release.upstream.id).serverImage : null);
+if (!/^ghcr\.io\/virtastic\/openmw-web-server@sha256:[a-f0-9]{64}$/.test(serverImage ?? '')) throw new Error('No pinned server image in this engine release');
 const state = path.resolve(arg('--state-dir') ?? path.join(root, 'build/openmw', id));
 const base = `/ports/openmw/${encodeURIComponent(id)}/app`;
 const origin = new URL(arg('--origin') ?? process.env.ORTHROS_ORIGIN ?? 'http://localhost:8080').origin;
@@ -34,7 +38,7 @@ if (!fs.existsSync(path.join(state, 'config.toml'))) fs.writeFileSync(path.join(
 fs.writeFileSync(path.join(state, '.mode'), 'gateway\n');
 const child = spawn('docker', ['run', '--rm', '--init', '--name', `orthros-openmw-${id}`, '--cpus=2', '--memory=4g', '--pids-limit=256',
   '-p', `127.0.0.1:${man.openmw.multiplayer.port}:8080`, '-v', `${state}:/data`, '-v', `${games}:${games}:ro`,
-  '--log-driver=json-file', '--log-opt=max-size=10m', '--log-opt=max-file=3', release.serverImage], { stdio: 'inherit' });
+  '--log-driver=json-file', '--log-opt=max-size=10m', '--log-opt=max-file=3', serverImage], { stdio: 'inherit' });
 // Docker forwards terminal signals to its own container. Never signal another service/process.
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { if (child.exitCode === null) child.kill(signal); });
 child.on('error', (e) => { console.error(e.message); process.exitCode = 1; });
