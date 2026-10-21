@@ -52,6 +52,9 @@ export const MAX_PLAYERS = 4;
 /** The players' tags, in their order (the first one the most senior). */
 export const TAGS = Object.freeze(['A', 'B', 'C', 'D']);
 export const OUT_ROOT = '/tmp/orthros-scratch/mmo-check';
+// (a death to its respawn is ~8 s of the game's time, which advances at most ~60 ms a frame: at the test machine's 0.1–0.5
+// frame a second, up to 10 minutes or more)
+const RESPAWN_MS = 900000;
 /** Places of Vice City the scenarios use (a test tool's knowledge of the game it checks — never the runtime's). */
 export const PLACES = Object.freeze({
   hotel: [233.5, -1278.45, 11.0],     // the Ocean View hotel's door, Ocean Drive (new characters start here)
@@ -455,7 +458,7 @@ async function main() {
     /** both alive (a respawn waited for) and healed (the health cheat: both are administrators of the test server) */
     async function healed() {
       for (const c of clients) {
-        await until(c, 400000, (s) => !dead(s) && Number.isFinite(s?.health) && s.health > 0 && s?.inWorld !== false);
+        await until(c, RESPAWN_MS, (s) => !dead(s) && Number.isFinite(s?.health) && s.health > 0 && s?.inWorld !== false);
         await c.cmd('cheat ASPIRINE');
       }
       await untilBoth(20000, (a, b) => a?.health >= 99 && b?.health >= 99);
@@ -535,7 +538,7 @@ async function main() {
         if (!killed) { await B.cmd('die'); beforeDeath = await B.read(); await until(B, 20000, dead); }
         const deathPos = vec(beforeDeath?.pos) ?? vec(start?.pos);
         // (a death to its respawn is ~8 s of game time; the engine advances at most ~60 ms a frame at the test machine's fps)
-        const respawned = await until(B, 400000, (s) => !dead(s) && distance(s?.pos, deathPos) > 5 && s?.inWorld !== false);
+        const respawned = await until(B, RESPAWN_MS, (s) => !dead(s) && distance(s?.pos, deathPos) > 5 && s?.inWorld !== false);
         for (const c of respawnChecks(beforeDeath, deathPos, respawned.state)) await check('combat', c.name, c.ok && respawned.ok, c.detail);
         const seen = await untilBoth(30000, (a, bb) => seesAt(a, bb, B.name).ok);
         await check('combat', 'A sees B where B respawned', seen.ok, seesAt(seen.a, seen.b, B.name));
@@ -574,7 +577,7 @@ async function main() {
         const feedA = await until(A, 30000, (s) => (s?.chat ?? []).some((l) => /killed|a tu/.test(JSON.stringify(l)) && JSON.stringify(l).includes(B.name)));
         const feedB = await until(B, 30000, (s) => (s?.chat ?? []).some((l) => /killed|a tu/.test(JSON.stringify(l)) && JSON.stringify(l).includes(B.name)));
         await check('combatx', 'kill line on both', feedA.ok && feedB.ok, { A: feedA.state?.chat?.slice?.(-3), B: feedB.state?.chat?.slice?.(-3) });
-        const respawned = await until(B, 400000, (s) => !dead(s) && s?.health > 0 && s?.inWorld !== false && Number.isFinite(s?.health) && s.health >= 99);
+        const respawned = await until(B, RESPAWN_MS, (s) => !dead(s) && s?.health > 0 && s?.inWorld !== false && Number.isFinite(s?.health) && s.health >= 99);
         await check('combatx', 'B respawned', respawned.ok, { health: respawned.state?.health, pos: vec(respawned.state?.pos), money: respawned.state?.money, weapon: respawned.state?.weapon });
         await dump('respawned');
         if (!(await together('combatx', PLACES.hotel, 4))) return;
@@ -588,13 +591,13 @@ async function main() {
       async combatp() {
         await healed();
         // (pickups made and taken, a grenade seen and its blast, a flame)
-        const dump = async (tag) => { const [a, b] = await both(); console.log('COMBAT', tag, JSON.stringify({ A: { h: a?.health, m: a?.money, seen: a?.combat?.seen, pk: a?.combat?.pickups, pr: a?.combat?.projectiles, ev: a?.combat?.eventsSent }, B: { h: b?.health, m: b?.money, seen: b?.combat?.seen, pk: b?.combat?.pickups, pr: b?.combat?.projectiles, dead: b?.dead, blast: b?.combat?.lastBlast, fn: b?.combat?.flameNearest, ign: b?.combat?.ignitions, me: b?.combat?.me, wanted: b?.wanted, pos: b?.pos }, Apos: a?.pos })); return [a, b]; };
+        const dump = async (tag) => { const [a, b] = await both(); console.log('COMBAT', tag, JSON.stringify({ A: { h: a?.health, m: a?.money, seen: a?.combat?.seen, pk: a?.combat?.pickups, pr: a?.combat?.projectiles, ev: a?.combat?.eventsSent }, B: { h: b?.health, m: b?.money, seen: b?.combat?.seen, pk: b?.combat?.pickups, pc: b?.combat?.pickupCopies, pr: b?.combat?.projectiles, dead: b?.dead, blast: b?.combat?.lastBlast, fn: b?.combat?.flameNearest, ign: b?.combat?.ignitions, me: b?.combat?.me, wanted: b?.wanted, pos: b?.pos }, Apos: a?.pos })); return [a, b]; };
         if (!(await together('combatp', PLACES.hotel, 4))) return;
         await dump('start');
         // pickups
         const [a0, b0] = await both();
         await A.cmd('pickup 10');
-        const made = await until(B, 30000, (s) => (s?.combat?.seen?.pickupsMade ?? 0) > (b0?.combat?.seen?.pickupsMade ?? 0));
+        const made = await until(B, 120000, (s) => (s?.combat?.seen?.pickupsMade ?? 0) > (b0?.combat?.seen?.pickupsMade ?? 0));
         const [a1, b1] = await dump('pickup made');
         await check('combatp', 'a pickup A dropped is made on B too', made.ok, { A: a1?.combat?.pickups, B: b1?.combat?.pickups });
         if (made.ok) {
@@ -608,14 +611,23 @@ async function main() {
           await B.cmd(tpCommand(offset(PLACES.hotel, 4)));
           await until(B, 30000, (s) => distance(s?.pos, offset(PLACES.hotel, 4)) < 3);
         }
-        // a flame
+        // a flame (on a player in control, as the game's flames set fire: one knocked down by the blast before gets up
+        // first — game seconds, minutes at the test machine's fps)
+        await until(B, 300000, (s) => s?.combat?.me?.inControl === true);
         const b3 = await B.read();
         if (!dead(b3)) {
           await A.cmd('weapon 31 500');
           await until(A, 15000, (s) => s?.weapon === 31);
-          for (let i = 0; i < 6; i++) { await A.cmd(`fire ${B.slot}`); await sleep(400); }
-          const flames = await until(B, 30000, (s) => (s?.combat?.seen?.flames ?? 0) > (b3?.combat?.seen?.flames ?? 0));
-          const burnt = await until(B, 40000, (s) => Number.isFinite(s?.health) && s.health < b3.health);
+          // (a flame's shot advances by the game's time step: at 0.1–1 frame a second it may leap over the player —
+          // up to three bursts)
+          let flames = { ok: false }, burnt = { ok: false };
+          for (let burst = 0; burst < 3 && !burnt.ok && left() > 120000; burst++) {
+            await A.cmd(`aim ${B.slot}`); await sleep(1000);
+            for (let i = 0; i < 6; i++) { await A.cmd(`fire ${B.slot}`); await sleep(400); }
+            flames = await until(B, 30000, (s) => (s?.combat?.seen?.flames ?? 0) > (b3?.combat?.seen?.flames ?? 0));
+            burnt = await until(B, 40000, (s) => Number.isFinite(s?.health) && s.health < b3.health);
+            console.log('FLAMES', burst, JSON.stringify({ flames: flames.ok, burnt: burnt.ok, nearest: burnt.state?.combat?.flameNearest, ignitions: burnt.state?.combat?.ignitions }));
+          }
           await dump('flame');
           await check('combatp', 'A\'s flames seen by B, B burns', flames.ok && burnt.ok, { flames: flames.ok, health: [b3?.health, burnt.state?.health] });
         } else await skip('combatp', 'A\'s flames seen by B, B burns', 'B dead from the grenade');
@@ -625,7 +637,7 @@ async function main() {
         const [, b2] = await dump('grenade armed');
         await A.cmd(`fire ${B.slot}`);
         const proj = await until(B, 30000, (s) => (s?.combat?.seen?.projectiles ?? 0) > (b2?.combat?.seen?.projectiles ?? 0));
-        const blast = await until(B, 40000, (s) => (s?.combat?.seen?.explosions ?? 0) > (b2?.combat?.seen?.explosions ?? 0));
+        const blast = await until(B, 120000, (s) => (s?.combat?.seen?.explosions ?? 0) > (b2?.combat?.seen?.explosions ?? 0));
         const hurt = await until(B, 20000, (s) => Number.isFinite(s?.health) && s.health < b2.health);
         await dump('grenade');
         await check('combatp', 'A\'s grenade seen by B, its blast replayed, B hurt', proj.ok && blast.ok && hurt.ok, { proj: proj.ok, blast: blast.ok, hurt: [b2?.health, hurt.state?.health] });
@@ -727,13 +739,20 @@ async function main() {
             await check('world', 'an admin\'s world cheat applied on both', changed.ok && same.ok, { admin: weatherOf(changed.state), other: weatherOf(same.state) });
             await admin.cmd('cheat CATSANDDOGS'); // (back to the game's own weather)
           } else await skip('world', 'an admin\'s world cheat applied on both', 'the engine publishes no weather');
-          // (the teleport list: for everyone, a wanted level too)
+          // (the teleport list: for everyone, a wanted level too — once alive: the police may have killed the player)
+          await until(admin, RESPAWN_MS, (s) => !dead(s) && s?.inWorld === true);
           const t0 = await admin.read();
           await admin.cmd('teleport 2');
-          const p0 = await until(admin, 45000, (s) => distance(s?.pos, t0?.pos) > 20);
+          // (the next teleport once this one's fade is over: one asked meanwhile is not taken — the list cannot be
+          // opened either while a teleport goes on)
+          const p0 = await until(admin, 90000, (s) => distance(s?.pos, t0?.pos) > 20 && s?.teleporting === false);
           await admin.cmd('teleport 1');
-          const p1 = await until(admin, 45000, (s) => distance(s?.pos, p0.state?.pos) > 20);
-          await check('world', 'the teleport list moves the player, wanted or not', p0.ok && p1.ok, { from: vec(t0?.pos), first: vec(p0.state?.pos), second: vec(p1.state?.pos), wanted: p1.state?.wanted });
+          const p1 = await until(admin, 90000, (s) => distance(s?.pos, p0.state?.pos) > 20);
+          // (the list's rows 2 and 1: mmo_social.cpp's third and second safehouses — not wherever a death or an arrest
+          // by the police that came for the wanted player would put it)
+          const rows = { 2: [428.4, 609.1, 12.0], 1: [-377.06, -545.43, 16.0] };
+          await check('world', 'the teleport list moves the player there, wanted or not', p0.ok && p1.ok && distance(p0.state?.pos, rows[2]) < 6 && distance(p1.state?.pos, rows[1]) < 6,
+            { from: vec(t0?.pos), first: vec(p0.state?.pos), second: vec(p1.state?.pos), expected: rows, wanted: [p0.state?.wanted, p1.state?.wanted] });
           await admin.cmd('cheat LEAVEMEALONE');
         } else {
           await skip('world', 'an admin\'s cheats', 'no admin (--admins <test server admins.json>)');
@@ -890,7 +909,7 @@ async function main() {
           const deathPos = vec(beforeDeath?.pos);
           const feed = await untilAll(60000, (st) => st.every((s) => !!killLine(s, B.name, A.name)));
           await check('crowd', 'the kill line on every player (the watcher too)', feed.ok, Object.fromEntries(clients.map((c, i) => [c.tag, killLine(feed.states[i], B.name) ?? (feed.states[i]?.chat ?? []).slice(-3)])));
-          const respawned = await until(B, 400000, (s) => !dead(s) && distance(s?.pos, deathPos) > 5 && s?.inWorld !== false && Number.isFinite(s?.health) && s.health > 0);
+          const respawned = await until(B, RESPAWN_MS, (s) => !dead(s) && distance(s?.pos, deathPos) > 5 && s?.inWorld !== false && Number.isFinite(s?.health) && s.health > 0);
           for (const r of respawnChecks(beforeDeath, deathPos, respawned.state)) await check('crowd', r.name, r.ok && respawned.ok, r.detail);
           await check('crowd', 'respawn: 200 health (the new rule)', respawned.ok && respawned.state?.health === 200, { health: respawned.state?.health, maxHealth: respawned.state?.maxHealth });
           const watched = await untilAll(60000, (st) => clients.every((c, i) => c === B || distance(playerIn(st[i], B.name)?.pos, respawned.state?.pos) < 3));
@@ -994,7 +1013,7 @@ async function main() {
     /** every player alive and healed (the health cheat: all are administrators of the test server) */
     async function healedAll() {
       for (const c of clients) {
-        await until(c, 400000, (s) => !dead(s) && Number.isFinite(s?.health) && s.health > 0 && s?.inWorld !== false);
+        await until(c, RESPAWN_MS, (s) => !dead(s) && Number.isFinite(s?.health) && s.health > 0 && s?.inWorld !== false);
         await c.cmd('cheat ASPIRINE');
       }
       await untilAll(30000, (st) => st.every((s) => s?.health >= 99));
@@ -1004,6 +1023,11 @@ async function main() {
       console.log('SCENARIO', name);
       try { await scenarios[name](); } catch (error) { await check(name, 'run', false, { error: error.message }); }
     }
+    // (each page's link over the run: what a player's connection carried, in bytes a second)
+    const secs = Math.max(1, (Date.now() - started) / 1000);
+    const links = await Promise.all(clients.map((c) => c.read().then((s) => s?._page?.stats ?? null).catch(() => null)));
+    console.log('BANDWIDTH', JSON.stringify(Object.fromEntries(clients.map((c, i) => [c.tag, links[i] && {
+      upBs: Math.round(links[i].sentBytes / secs), downBs: Math.round(links[i].receivedBytes / secs), connections: links[i].connections }]))));
     for (const c of clients) await c.cmd('leave').catch(() => {});
     await sleep(2000);
   } catch (error) {
