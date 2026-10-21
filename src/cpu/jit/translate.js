@@ -134,7 +134,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -222,6 +222,17 @@ function flagsLiveBefore(insn, after) {
     case OP.JCC: case OP.SETCC: case OP.CMOVCC: case OP.FCMOVCC: return after | ccFlags(insn.cc);
     default: return FL_ALL;
   }
+}
+/**
+ * The instruction after the one being emitted, in its block, writes every arithmetic flag without reading any (CMP, TEST,
+ * ADD, a shift by a constant...): the flags this one leaves are never observed — no exit of any kind lies between them
+ * (the time-slice and SMC exits of a block are at its end and after stores, the next instruction's own exits after it
+ * has written the flags or before it, where they are still dead) — unlike flagsLive(), which also holds across the stores
+ * of later instructions, whose SMC exit might find code rewritten to read them.
+ */
+function nextOverwritesFlags(E, b) {
+  const next = b?.insns[E.insnIdx];
+  return !!next && flagsLiveBefore(next, FL_ALL) === 0;
 }
 /**
  * Flags live at the end of each block of a region (b.flagsOut), from the blocks it jumps to inside the region: the
@@ -2495,7 +2506,7 @@ HANDLERS[OP.MUL] = (E, insn) => {
   }
   E.setLazy(LZ.MUL, size);
 };
-HANDLERS[OP.IMUL] = (E, insn) => {
+HANDLERS[OP.IMUL] = (E, insn, b) => {
   const c = E.c;
   const sx = (sz) => { if (sz === 1) c.extend8_s(); else if (sz === 2) c.extend16_s(); };
   if (insn.ops.length === 1) {
@@ -2525,7 +2536,12 @@ HANDLERS[OP.IMUL] = (E, insn) => {
   if (d.t === OT.MEM) throw new Error('imul dest must be a register');
   E.loadOp(a); sx(size); c.set(L_T4);
   E.loadOp(bop); sx(size); c.set(L_T5);
-  if (size === 4) {
+  if (size === 4 && (E.opts.imulDead ?? JIT_DEFAULTS.imulDead) && nextOverwritesFlags(E, b)) {
+    // CF / OF (the product not fitting 32 bits) never observed: the low half alone, no 64-bit product (two sign
+    // extensions and a 64-bit multiply, one more register on the hot path), the overflow flag left clear
+    c.get(L_T4).get(L_T5).mul().set(L_LZRES);
+    c.i32(0).set(L_LZB);
+  } else if (size === 4) {
     c.get(L_T4).extend_s().get(L_T5).extend_s().i64mul().set(L_I64A);
     c.get(L_I64A).wrap().set(L_LZRES);
     c.get(L_I64A).get(L_I64A).wrap().extend_s().i64ne().extend_u().wrap().set(L_LZB);
