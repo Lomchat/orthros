@@ -25,15 +25,16 @@ export function openmwProblem(o) {
   return null;
 }
 
-export function openmwInstalled(man, enginesDir) {
+/** The version's engine release and game files are here (`memo`: resolveGameFile's, the folders' listings kept). */
+export function openmwInstalled(man, enginesDir, memo = null) {
   const engine = man.openmw?.engine;
   try {
     const release = JSON.parse(fs.readFileSync(engineFile(enginesDir, engine, 'release.json'), 'utf8'));
     return release.runtime === 'openmw' && Array.isArray(release.files) && release.files.length > 0
       && ['index.html', 'launcher.html', ...release.files].every((f) => engineFile(enginesDir, engine, f))
       && (man.openmw.mods ?? []).every((m) => m.installed && m.parts?.length > 0)
-      && (man.openmw.mods ?? []).flatMap((m) => m.parts ?? []).every((p) => resolveGameFile(man, `${p.dir}/${p.sentinel}`))
-      && man.openmw.files.every((f) => resolveGameFile(man, f));
+      && (man.openmw.mods ?? []).flatMap((m) => m.parts ?? []).every((p) => resolveGameFile(man, `${p.dir}/${p.sentinel}`, memo))
+      && man.openmw.files.every((f) => resolveGameFile(man, f, memo));
   } catch { return false; }
 }
 
