@@ -11,6 +11,9 @@
 //     [--input "3:key:27;10:click:320,192;@12:click:10,10" (seconds after the first frame, or with @ after the start: a
 //     key's virtual-key code, a left click)]
 //     [--prof <file.cpuprofile>: a V8 CPU profile of the measured frames only]
+//     [--api-times: the APIs handled in JavaScript with the most time over the measured frames, ms and calls per frame
+//     (a clock read per call: the frame times are not comparable with runs without it)]
+//     [--dbg NAME=value,...: debug globals set at start, as the harness's --dbg (e.g. ORTHROS_VB_CHECK=1, ORTHROS_VB_LAZY=0)]
 // With --gfx recorder the link's counters per frame follow (bytes of buffer data copied into the ring, fence waits...).
 import fs from 'node:fs';
 import os from 'node:os';
@@ -32,6 +35,7 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const target = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--'));
 if (!target) { console.error('usage: node tools/framebench.mjs <manifest id | manifest.json> [--gfx backend|recorder|none] ...'); process.exit(2); }
 const gfxKind = opt('gfx', 'backend'), minDraws = Number(opt('min-draws', 100)), warm = Number(opt('warm', 300)), frames = Number(opt('frames', 600)), limit = Number(opt('limit', 900));
+for (const kv of (opt('dbg', '') || '').split(',').filter(Boolean)) { const [k, v = ''] = kv.split('='); if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) globalThis[k] = v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); }
 const VK_SCAN = { 13: 0x1c, 27: 1, 32: 0x39 };
 const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, a = ''] = e.split(':'); return { t: Number(t.replace('@', '')), abs: t.startsWith('@'), kind, a: a.split(',').map(Number) }; });
 /** scripted input, as the harness gives it (a key held ~120 ms, a click held ~100 ms), `at` ms on the guest clock */
@@ -53,11 +57,14 @@ const host = new HeadlessHost({ clock, width: manifest.display?.width ?? 1024, h
 if (gfxKind === 'backend') { const gl = noopGl(); host.gfx = { createDevice: (dev) => new WebGLDevice(gl, dev, {}) }; }
 else if (gfxKind === 'recorder') {
   const words = new Int32Array(new SharedArrayBuffer(16 << 20));
-  link = new RenderLink({ words, replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
+  link = new RenderLink({ words, log: (m) => console.log(m), replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
   link.drain = function () { this.w.consumed = this.replayer.reader.consumed = this.w.produced; };
   host.gfx = { createDevice: (dev) => new Recorder(link, dev) };
 }
-const vm = new Vm({ vfs, clock, host, logKinds: process.env.FB_LOG ? process.env.FB_LOG.split(',') : ['crash'] });
+const apiTimes = args.includes('--api-times');
+const vm = new Vm({ vfs, clock, host, apiHist: apiTimes, logKinds: process.env.FB_LOG ? process.env.FB_LOG.split(',') : ['crash'] });
+if (apiTimes) { vm.apiTimes = new Map(); vm.apiTimesPhase = null; }
+let hist0 = null;
 vm.registry = new Registry();
 vm.registry.seed(manifest.registry);
 // (every guest thread waits: the worker would sleep — charged to `sleep`, as there)
@@ -75,6 +82,10 @@ const finish = (why) => {
   const cpu = process.cpuUsage(cpu0), wall = performance.now() - wall0, gi = vm.guestInsns - insn0;
   const mean = CATS.map((c, i) => [c, sums[i] / counted]).filter(([, v]) => v >= 0.005).sort((a, b) => b[1] - a[1]);
   console.log(`${why}: ${manifest.id ?? target} gfx=${gfxKind}: ${counted} frames, ${(drawsSum / counted).toFixed(0)} draws/frame, ${(wall / counted).toFixed(2)} ms/frame wall, ${((cpu.user + cpu.system) / 1000 / counted).toFixed(2)} ms/frame process CPU; mean ms/frame: ${mean.map(([c, v]) => `${c} ${v.toFixed(2)}`).join(', ')}; guest ${(gi / counted / 1e6).toFixed(2)} M instructions/frame`);
+  if (apiTimes) {
+    const hist = vm.apiHist(), calls = new Map(); for (const [k, n] of hist) calls.set(k.slice(k.indexOf('!') + 1), n - (hist0.get(k) ?? 0));
+    console.log(`API time per frame (ms, calls): ${[...vm.apiTimesPhase].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} ${(v / counted).toFixed(3)} (${((calls.get(k) ?? 0) / counted).toFixed(0)})`).join(', ')}`);
+  }
   if (link) console.log(`recorder per frame: ${Object.keys(link.stats).map((k) => [k, (link.stats[k] - stats0[k]) / counted]).filter(([, v]) => v).map(([k, v]) => `${k} ${+v.toFixed(2)}`).join(', ')}`);
   fs.rmSync(saveDir, { recursive: true, force: true });
   process.exit(0);
@@ -88,7 +99,7 @@ host.frameHook = (dev) => {
   const d = dev.draws - lastDraws; lastDraws = dev.draws;
   if (args.includes('--verbose') && dev.frames % 100 === 0) console.log(`[framebench] ${((now - t0) / 1000).toFixed(0)} s: frame ${dev.frames}, ${d} draws in the last, phase ${phase}`);
   if (phase === 'wait') { streak = d >= minDraws ? streak + 1 : 0; if (streak >= 30) { phase = 'warm'; counted = 0; } }
-  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); stats0 = link && { ...link.stats }; insn0 = vm.guestInsns; wall0 = now; session?.post('Profiler.start'); } }
+  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); stats0 = link && { ...link.stats }; insn0 = vm.guestInsns; wall0 = now; session?.post('Profiler.start'); if (apiTimes) { vm.apiTimesPhase = new Map(); hist0 = vm.apiHist(); } } }
   else { counted++; drawsSum += d; for (let i = 0; i < CATS.length; i++) sums[i] += cats[i]; if (counted >= frames) finish('measured'); }
   if (now - t0 > limit * 1000) { console.log(`time limit in phase ${phase} (${counted} frames, last frame ${d} draws)`); if (phase === 'measure' && counted) finish('time limit'); process.exit(1); }
 };

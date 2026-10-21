@@ -51,13 +51,13 @@ test('every ring command round-trips through the table (random arguments, wrappi
 });
 
 /** Boot a test exe with a WebGL backend on a fake context: in-thread, or recorded and replayed inline. */
-function runExe(exeName, mode) {
+function runExe(exeName, mode, glOpts = {}) {
   const vfs = new Vfs(), dir = new MemBackend();
   vfs.mount('C:\\', new MemBackend()); vfs.mount('C:\\Test', dir);
   dir.open(exeName, { create: true }).write(0, fs.readFileSync(PE_DIR + exeName));
   const clock = new VirtualClock(), host = new HeadlessHost({ clock, width: 800, height: 600 });
   const vm = new Vm({ vfs, clock, host, jit: true, logKinds: ['warn', 'crash'] });
-  const G = fakeGl();
+  const G = fakeGl(800, 600, glOpts);
   let link = null;
   if (mode === 'thread') host.gfx = { createDevice: (dev) => new WebGLDevice(G.gl, dev, {}) };
   else {
@@ -72,15 +72,24 @@ function runExe(exeName, mode) {
   return { code, calls: G.calls, out: vm.stdout.join(''), link };
 }
 
-for (const exe of ['dx.exe', 'dx9.exe', 'd3dlost.exe']) {
-  test(`${exe}: the same WebGL calls in-thread and recorded + replayed (inline)`, { skip: skip(exe) }, () => {
-    const a = runExe(exe, 'thread'), b = runExe(exe, 'inline');
+/**
+ * The two ways buffer contents travel in the ring, each test run with both: copied at Unlock (ORTHROS_VB_LAZY=0: the
+ * replayed backend issues exactly the same WebGL calls), and copied when a draw reads them (the default: uploads
+ * differ, so the logs compare what each draw reads — fakeGl `reads` — and the stale-read check must find nothing).
+ */
+const MODES = [{ lazy: false, gl: {} }, { lazy: true, gl: { reads: true } }];
+const withMode = (m, f) => { globalThis.ORTHROS_VB_LAZY = m.lazy ? undefined : 0; globalThis.ORTHROS_VB_CHECK = m.lazy ? 1 : undefined; try { return f(); } finally { globalThis.ORTHROS_VB_LAZY = undefined; globalThis.ORTHROS_VB_CHECK = undefined; } };
+
+for (const exe of ['dx.exe', 'dx9.exe', 'd3dlost.exe']) for (const M of MODES) {
+  test(`${exe}: the same WebGL ${M.lazy ? 'draws (what they read; buffer bytes copied at draws)' : 'calls'} in-thread and recorded + replayed (inline)`, { skip: skip(exe) }, () => withMode(M, () => {
+    const a = runExe(exe, 'thread', M.gl), b = runExe(exe, 'inline', M.gl);
     assert.equal(b.code, a.code);
     assert.equal(b.out, a.out, 'the program saw the same results');
     assert.ok(a.calls.length > 50, `${a.calls.length} GL calls`);
     const d = firstDifference(a.calls, b.calls);
     assert.equal(d, null, d ? `first difference at call ${d.index} (${d.lengths}):\nin-thread\n  ${d.a.join('\n  ')}\nreplayed\n  ${d.b.join('\n  ')}` : '');
-  });
+    if (M.lazy) assert.equal(b.link.stats.vbStale, 0, 'draws that read stale buffer bytes');
+  }));
 }
 void OP;
 
@@ -88,10 +97,10 @@ void OP;
 import { randomSession } from './d3d-random.js';
 import { compareDevice } from '../src/gfx/d3d-mirror.js';
 
-for (const api9 of [true, false]) {
-  test(`Direct3D ${api9 ? 9 : 8}: random call sequences — the mirror equals the device at every draw, and the backend issues the same WebGL calls`, () => {
+for (const api9 of [true, false]) for (const M of MODES) {
+  test(`Direct3D ${api9 ? 9 : 8}: random call sequences — the mirror equals the device at every draw, and the backend issues the same WebGL ${M.lazy ? 'draws (buffer bytes copied at draws)' : 'calls'}`, () => withMode(M, () => {
     for (const seed of (process.env.RW_SEEDS ?? "1,2,3,4,5,6").split(",").map(Number)) {
-      const A = fakeGl(), B = fakeGl();
+      const A = fakeGl(800, 600, M.gl), B = fakeGl(800, 600, M.gl);
       randomSession({ createDevice: (dev) => new WebGLDevice(A.gl, dev, {}) }, seed, api9, () => {});
       const words = new Int32Array(1 << 15), ack = new Int32Array(1 << 16).fill(-1);
       const replayer = new Replayer(words, { mem: null, ack, createBackend: (m) => new WebGLDevice(B.gl, m, {}) });
@@ -108,15 +117,16 @@ for (const api9 of [true, false]) {
       const d = firstDifference(A.calls, B.calls);
       assert.equal(d, null, d ? `seed ${seed}: first difference at call ${d.index} (${d.lengths}):\nin-thread\n  ${d.a.join('\n  ')}\nreplayed\n  ${d.b.join('\n  ')}` : '');
       assert.ok(draws > 100 && A.calls.length > 1000, `${draws} draws, ${A.calls.length} GL calls`);
+      if (M.lazy) assert.equal(link.stats.vbStale, 0, `seed ${seed}: draws that read stale buffer bytes`);
     }
-  });
+  }));
   // replayed late (at presents, waits and when the ring is full, as a render worker would be behind): guest memory
   // written or released meanwhile must not reach the replayed draws (fences, renaming, deferred releases)
-  test(`Direct3D ${api9 ? 9 : 8}: random call sequences replayed late — the same WebGL calls (buffer contents in the ring, surface copies on write or fences)`, () => {
-    const seen = { cows: 0, waits: 0, bufDataBytes: 0, eagerBufs: 0 };
+  test(`Direct3D ${api9 ? 9 : 8}: random call sequences replayed late — the same WebGL ${M.lazy ? 'draws (buffer bytes copied at draws)' : 'calls'} (buffer contents in the ring, surface copies on write or fences)`, () => withMode(M, () => {
+    const seen = { cows: 0, waits: 0, bufDataBytes: 0, eagerBufs: 0, ...(M.lazy ? { vbChecked: 0 } : {}) };
     for (const seed of (process.env.RW_SEEDS ?? '1,2,3,4,5,6').split(',').map(Number)) for (const cow of [true, false]) {
       globalThis.ORTHROS_RW_COW = cow ? undefined : 0;
-      const A = fakeGl(), B = fakeGl();
+      const A = fakeGl(800, 600, M.gl), B = fakeGl(800, 600, M.gl);
       randomSession({ createDevice: (dev) => new WebGLDevice(A.gl, dev, {}) }, seed, api9, () => {});
       const words = new Int32Array(1 << 17), ack = new Int32Array(1 << 16).fill(-1);
       const replayer = new Replayer(words, { mem: null, ack, createBackend: (m) => new WebGLDevice(B.gl, m, {}) });
@@ -125,11 +135,12 @@ for (const api9 of [true, false]) {
       link.publish(true);
       const d = firstDifference(A.calls, B.calls);
       assert.equal(d, null, d ? `seed ${seed}: first difference at call ${d.index} (${d.lengths}):\nin-thread\n  ${d.a.join('\n  ')}\nreplayed\n  ${d.b.join('\n  ')}` : '');
-      for (const k of ['bufDataBytes', 'eagerBufs']) seen[k] += link.stats[k];
+      for (const k of ['bufDataBytes', 'eagerBufs', ...(M.lazy ? ['vbChecked'] : [])]) seen[k] += link.stats[k];
       seen[cow ? 'cows' : 'waits'] += cow ? link.stats.cows : link.stats.waits;
+      if (M.lazy) assert.equal(link.stats.vbStale, 0, `seed ${seed}: draws that read stale buffer bytes`);
       globalThis.ORTHROS_RW_COW = undefined;
     }
     // (every path taken somewhere in the sessions)
     for (const k of Object.keys(seen)) assert.ok(seen[k] > 0, `${k}: ${seen[k]}`);
-  });
+  }));
 }

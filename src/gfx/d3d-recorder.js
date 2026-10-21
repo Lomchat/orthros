@@ -14,6 +14,7 @@
 // the whole buffer.
 import { OP, CTL, VERSION_FIELDS, CONST_FIELDS, RingWriter, TWO32, ACK_SLOTS } from './cmd-ring.js';
 import { copyRectsCpu } from './d3d8-webgl.js';
+import { fvfLayout, declLayout } from './d3d8-shaders.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 
 const READONLY = 0x10, NOOVERWRITE = 0x1000;
@@ -35,6 +36,8 @@ const REC_ENTRIES = ['drawPrimitive', 'drawIndexedPrimitive', 'drawPrimitiveUP',
 const REC_SUBS = ['flush', 'syncTables', 'syncTexture', 'syncStream', 'syncTransforms', 'syncLights', 'syncConsts', 'putVersion', 'workDone', 'noteSet', 'constTouched', 'transformTouched', 'lockBuffer', 'beforeWrite', 'ensureRes'];
 const LINK_SUBS = ['bufData', 'publish', 'mayRead'];
 
+/** index of the first [lo, hi) pair of sorted disjoint ranges `p` (flat) that ends after `x` (p.length: none) */
+const pairAfter = (p, x) => { let a = 0, b = p.length >> 1; while (a < b) { const m = (a + b) >> 1; if (p[2 * m + 1] > x) b = m; else a = m + 1; } return 2 * a; };
 /** the recorded resource (texture of a level, else the resource itself) */
 const recOf = (r) => (r.owner ?? r).rec;
 
@@ -55,8 +58,11 @@ export class RenderLink {
     // (the mirror's ids of shaders and vertex declarations: kept here, not on the guest's objects, which snapshots save)
     this.objIds = new WeakMap();
     this.proc = null; this.failed = false;
+    // (buffers whose contents travel in the ring with written bytes not copied yet — see lazyAdd; the vertex layouts'
+    // streams by declaration object or FVF code — Recorder.streamsRead; the stale-read check, ORTHROS_VB_CHECK)
+    this.lazyN = 0; this.layoutsByObj = new WeakMap(); this.layoutsByFvf = new Map(); this.vbCheck = null; this.checkStep();
     this.published = 0; this.notifiedAt = 0; this.drawsSinceNotify = 0;
-    this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, eagerBufs: 0, bufDataBytes: 0, deferredFrees: 0, cows: 0, cowBytes: 0, fenceTex: 0, fenceBuf: 0 };
+    this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, eagerBufs: 0, bufDataBytes: 0, vbChecked: 0, vbStale: 0, deferredFrees: 0, cows: 0, cowBytes: 0, fenceTex: 0, fenceBuf: 0 };
   }
   /** words the render worker has consumed (its 32-bit counter widened against what was produced) */
   consumedNow() {
@@ -203,7 +209,50 @@ export class RenderLink {
       W.U8.set(u8.subarray(a, a + n), (p + 4) * 4);
     }
     if (end > start) this.stats.bufDataBytes += end - start;
+    const rr = b.rec;
+    if (this.vbCheck !== null && rr) { // (the check's copy of what the mirror buffer holds: its whole contents at the switch, then each copy)
+      if (!rr.model && kind === 1 && start === 0 && end >= b.length) rr.model = new Uint8Array(b.length);
+      if (rr.model && end > start) rr.model.set(u8.subarray((b.mem + start) >>> 0, (b.mem + end) >>> 0), start);
+    }
   }
+  /**
+   * Bytes [lo, hi) of a buffer whose contents travel in the ring were written by the guest: copied when a draw reads
+   * them (lazyTake), not at Unlock — bytes a lock writes but no draw reads before they are written again (or the buffer
+   * is released) never travel. `rr.lz`: the bytes where the mirror's copy may differ from guest memory, sorted
+   * [lo, hi) pairs; past 32 ranges the first two merge (a wider range: more bytes copied, never fewer).
+   */
+  lazyAdd(rr, lo, hi) {
+    if (!(hi > lo)) return;
+    const p = rr.lz ??= [];
+    if (p.length === 0) this.lazyN++;
+    let i = pairAfter(p, lo - 1);
+    let j = i;
+    while (j < p.length && p[j] <= hi) { if (p[j] < lo) lo = p[j]; if (p[j + 1] > hi) hi = p[j + 1]; j += 2; }
+    p.splice(i, j - i, lo, hi);
+    if (p.length > 64) p.splice(0, 4, p[0], Math.max(p[1], p[3]));
+  }
+  /** a draw reads bytes [lo, hi) of buffer `b` (contents in the ring): those not copied yet go now (BUF_DATA, written) */
+  lazyTake(b, rr, lo, hi) {
+    const p = rr.lz;
+    if (!p || p.length === 0 || !(hi > lo)) return;
+    for (let i = pairAfter(p, lo); i < p.length;) {
+      const a = p[i], e = p[i + 1];
+      if (a >= hi) break;
+      const x = a > lo ? a : lo, y = e < hi ? e : hi;
+      this.bufData(b, x, y - x, 0);
+      if (a < x && y < e) { p.splice(i + 2, 0, y, e); p[i + 1] = x; i += 4; } else if (a < x) { p[i + 1] = x; i += 2; } else if (y < e) { p[i] = y; i += 2; } else p.splice(i, 2);
+    }
+    if (p.length === 0) this.lazyN--;
+  }
+  /** ORTHROS_VB_CHECK (at each present): the stale-read check on or off, its counts logged every 600 frames */
+  checkStep() {
+    const on = !!globalThis.ORTHROS_VB_CHECK;
+    if (on && this.vbCheck === null) { this.vbCheck = { frames: 0 }; this.log('render record: VB check on (buffers that switch to ring copies from now on)'); }
+    else if (!on && this.vbCheck !== null) { this.vbCheck = null; this.log(`render record: VB check off: ${this.stats.vbChecked} draws checked, ${this.stats.vbStale} read stale data`); }
+    if (this.vbCheck !== null && ++this.vbCheck.frames % 600 === 0) this.log(`render record: VB check: ${this.stats.vbChecked} draws checked, ${this.stats.vbStale} read stale data (${this.vbCheck.frames} frames)`);
+  }
+  /** a buffer's pending bytes forgotten (released, or its whole contents copied) */
+  lazyDrop(rr) { if (rr.lz?.length) { rr.lz.length = 0; this.lazyN--; } }
   /** do the ranges written but not yet uploaded (generations past the acknowledged one) meet [lo, hi)? */
   pendingOverlap(rr, lo, hi) {
     const p = rr.pend; if (!p) return false;
@@ -317,7 +366,11 @@ export class Recorder {
   textureLod(t) { if (t.rec && !t.rec.destroyed && !this.link.failed) this.w.c2(OP.TEX_LOD, t.id, t.lod >>> 0); }
   bufferUpdated(b, start = 0, size = b.length) {
     const rr = b.rec; if (!rr || rr.destroyed || this.link.failed) return;
-    if (rr.eager) { this.sel(); this.link.bufData(b, start, size, 0); return; }
+    rr.wgen++;
+    if (rr.eager) { // (copied when a draw reads it — ORTHROS_VB_LAZY=0: now, as a whole)
+      if (globalThis.ORTHROS_VB_LAZY === 0) { this.sel(); this.link.bufData(b, start, size, 0); } else this.link.lazyAdd(rr, start, Math.min(b.length, start + size));
+      return;
+    }
     rr.gen = ++this.link.gen;
     // (the ranges not yet uploaded, for lockBuffer: past 16 of them the two oldest merge — a wider range, never a lost one)
     const pend = rr.pend ??= [];
@@ -346,6 +399,7 @@ export class Recorder {
       if (o.lod) W.c2(OP.TEX_LOD, o.id, o.lod >>> 0);
     } else if (o.length !== undefined) { // buffers
       const rr = L.newRec(o, true);
+      rr.buf = o; rr.wgen = 0; rr.lz = null; rr.ix = null; rr.model = null;
       W.put(OP.BUF, o.id, o.type, o.length, o.usage, o.fmt, o.mem, rr.slot >>> 0, rr.gen);
       // (a dynamic buffer, rewritten while draws that read it are pending: its contents travel in the ring)
       if (o.usage & DYNAMIC) { rr.eager = true; L.stats.eagerBufs++; L.bufData(o, 0, o.length, 1); }
@@ -358,6 +412,7 @@ export class Recorder {
   destroyResource(r) {
     const rr = r.rec; if (!rr || rr.destroyed) return;
     rr.destroyed = true;
+    this.link.lazyDrop(rr);
     if (rr.slot >= 0) this.link.freeSlots.push(rr.slot);
     // (destroyed while bound — a state block's texture is not reference-counted — its pointer may come back as
     // another object: every binding is resolved again at the next flush)
@@ -611,6 +666,7 @@ export class Recorder {
   drawPrimitive(type, start, count) {
     this.flush();
     this.noteTarget(this.dev.renderTarget ?? this.dev.backBuffers[0]);
+    if (this.link.lazyN !== 0 || this.link.vbCheck !== null) this.readBuffers(-1, this.vertexCount(type, count), start, 0);
     this.w.c3(OP.DRAW, type, start, count);
     this.workDone();
   }
@@ -618,10 +674,108 @@ export class Recorder {
     this.flush();
     const d = this.dev;
     if (this.s.ibRes) this.noteTarget(d.renderTarget ?? d.backBuffers[0]); // (the backend draws nothing without indices)
+    if (this.s.ibRes && (this.link.lazyN !== 0 || this.link.vbCheck !== null)) this.readBuffers(start, this.vertexCount(type, count), 0, base);
     const W = this.w;
     if ((base >>> 0) === base || (base | 0) === base) { const p = W.begin(OP.DRAW_INDEXED, 7), I = W.I; I[p] = type; I[p + 1] = minIdx; I[p + 2] = numV; I[p + 3] = start; I[p + 4] = count; I[p + 5] = (base >>> 0) === base ? 0 : 1; I[p + 6] = base; }
     else W.put(OP.DRAW_INDEXED, type, minIdx, numV, start, count, base);
     this.workDone();
+  }
+  /**
+   * The vertex streams the current vertex layout reads, flat [stream, bytes of one vertex's elements (the layout's
+   * stride: the end of its last element)]: the layout the backend draws with (WebGLDevice.currentLayout), by
+   * declaration object (Direct3D 9 declarations, Direct3D 8 shader declarations) or FVF code.
+   */
+  streamsRead() {
+    const d = this.dev, L = this.link;
+    const key = d.api9 ? (d.vertexDecl ?? d.fvf) : (d.vertexShaders?.get(d.vertexShader) ?? d.vertexShader);
+    let r = typeof key === 'object' ? L.layoutsByObj.get(key) : L.layoutsByFvf.get(key);
+    if (r !== undefined) return r;
+    const layout = typeof key === 'object' ? (key.layout ?? declLayout(key.decl)) : fvfLayout(key >>> 0);
+    r = [];
+    if (layout.streams) for (const [n, st] of layout.streams) r.push(n, st.stride); else r.push(0, layout.stride);
+    if (typeof key === 'object') L.layoutsByObj.set(key, r); else L.layoutsByFvf.set(key, r);
+    return r;
+  }
+  /**
+   * The lowest and highest index of an index buffer's indices [first, first + n) (guest memory: what the draw reads —
+   * not the call's MinIndex / NumVertices, which may understate it), cached per first index until the buffer is written.
+   * Null: no index read.
+   */
+  indexRange(ib, rr, first, n) {
+    const isz = ib.fmt === 101 ? 2 : 4, a0 = first * isz, a1 = Math.min(ib.length, a0 + n * isz);
+    if (!(a1 > a0)) return null;
+    let c = rr.ix;
+    if (c === null || c.w !== rr.wgen) c = rr.ix = { w: rr.wgen, m: new Map() };
+    let e = c.m.get(first);
+    if (e !== undefined && e[0] === n) return e;
+    const u8 = this.mem.u8, base = (ib.mem + a0) >>> 0, cnt = (a1 - a0) / isz | 0;
+    let lo = Infinity, hi = -1;
+    if (isz === 2 && (base & 1) === 0) { const v = new Uint16Array(u8.buffer, base, cnt); for (let i = 0; i < cnt; i++) { const x = v[i]; if (x < lo) lo = x; if (x > hi) hi = x; } }
+    else if (isz === 4 && (base & 3) === 0) { const v = new Uint32Array(u8.buffer, base, cnt); for (let i = 0; i < cnt; i++) { const x = v[i]; if (x < lo) lo = x; if (x > hi) hi = x; } }
+    else for (let i = 0; i < cnt; i++) { const p = base + i * isz, x = isz === 2 ? u8[p] | u8[p + 1] << 8 : (u8[p] | u8[p + 1] << 8 | u8[p + 2] << 16 | u8[p + 3] << 24) >>> 0; if (x < lo) lo = x; if (x > hi) hi = x; }
+    if (hi < 0) return null;
+    e = [n, lo, hi];
+    if (c.m.size >= 4096) c.m.clear();
+    c.m.set(first, e);
+    return e;
+  }
+  /**
+   * Before a draw (`first` index and `nIdx` indices, or first < 0: `nv` vertices from `start`): the bytes it reads of
+   * buffers whose contents travel in the ring and that were written since their last copy go into the ring now — its
+   * indices, and for each stream of the layout the vertices from the lowest to the highest one it reads (the indices'
+   * own range, from the index data). Anything that cannot be bounded copies the whole buffer.
+   */
+  readBuffers(first, nIdx, start, base) {
+    const d = this.dev, s = this.s, L = this.link;
+    let v0 = start, v1 = start + nIdx - 1, ib = null, ibr = null;
+    if (first >= 0) { // (indexed: nIdx indices from `first`)
+      ibr = s.ibRes; ib = ibr?.buf; if (!ib) return;
+      const isz = ib.fmt === 101 ? 2 : 4;
+      if (ibr.lz?.length) L.lazyTake(ib, ibr, first * isz, first * isz + nIdx * isz);
+      v0 = 0; v1 = -1;
+    }
+    const sr = this.streamsRead(), st = d.streams;
+    for (let k = 0; k < sr.length; k += 2) {
+      const n = sr[k], rr = s.sRes[n], b = rr?.buf;
+      if (!b || !(rr.lz?.length || rr.model)) continue;
+      if (first >= 0 && v1 < v0) { const e = this.indexRange(ib, ibr, first, nIdx); if (e === null) return; v0 = e[1]; v1 = e[2]; }
+      if (v1 < v0) return;
+      const x = st[n], ext = sr[k + 1], stride = x.stride || ext, off = x.offset ?? 0;
+      let lo = off + (base + v0) * stride, hi = off + (base + v1) * stride + ext;
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) { lo = 0; hi = b.length; } // (anything else: the whole buffer)
+      if (lo < 0) lo = 0;
+      if (hi > b.length) hi = b.length;
+      if (rr.lz?.length) L.lazyTake(b, rr, lo, hi);
+    }
+    if (L.vbCheck !== null) this.checkReads(first, nIdx, start, base, ib, ibr);
+  }
+  /**
+   * ORTHROS_VB_CHECK=1 (a worker debug global): after the copies of a draw, every byte it reads of a buffer whose
+   * contents travel in the ring — each index, and each vertex an index (or the vertex range) names, its whole layout
+   * extent — is compared with guest memory through the link's copy of the mirror's contents. A difference is a draw
+   * that would read stale data: counted (stats.vbStale), the first ones logged.
+   */
+  checkReads(first, nIdx, start, base, ib, ibr) {
+    const d = this.dev, s = this.s, L = this.link, u8 = this.mem.u8;
+    const same = (rr, b, lo, hi) => { if (lo < 0) lo = 0; if (hi > b.length) hi = b.length; const m = rr.model, a = b.mem >>> 0; for (let i = lo; i < hi; i++) if (m[i] !== u8[a + i]) return i; return -1; };
+    let bad = null;
+    let idx = null;
+    if (first >= 0) {
+      const isz = ib.fmt === 101 ? 2 : 4, a0 = first * isz, a1 = Math.min(ib.length, a0 + nIdx * isz);
+      if (ibr.model) { const at = same(ibr, ib, a0, a1); if (at >= 0) bad = `index buffer #${ib.id} byte ${at} (indices ${first}+${nIdx})`; }
+      idx = [];
+      for (let p = (ib.mem + a0) >>> 0, e = (ib.mem + a1) >>> 0; p + isz <= e; p += isz) idx.push(isz === 2 ? u8[p] | u8[p + 1] << 8 : (u8[p] | u8[p + 1] << 8 | u8[p + 2] << 16 | u8[p + 3] << 24) >>> 0);
+    }
+    const sr = this.streamsRead();
+    for (let k = 0; k < sr.length && bad === null; k += 2) {
+      const n = sr[k], rr = s.sRes[n], b = rr?.buf;
+      if (!b || !rr.model) continue;
+      const x = d.streams[n], ext = sr[k + 1], stride = x.stride || ext, off = x.offset ?? 0;
+      const one = (v) => { const lo = off + (base + v) * stride, at = same(rr, b, lo, lo + ext); if (at >= 0) bad = `stream ${n} buffer #${b.id} byte ${at} (vertex ${v}, base ${base}, stride ${stride}, offset ${off}${idx ? `, indices ${first}+${nIdx}` : `, vertices ${start}+${nIdx}`})`; };
+      if (idx) { const seen = new Set(); for (const v of idx) { if (seen.has(v)) continue; seen.add(v); one(v); if (bad !== null) break; } } else for (let v = start; v < start + nIdx && bad === null; v++) one(v);
+    }
+    L.stats.vbChecked++;
+    if (bad !== null) { L.stats.vbStale++; if (L.stats.vbStale <= 20) L.log(`render record: VB check: draw ${d.draws} reads stale data: ${bad}`); }
   }
   vertexCount(type, prims) { switch (type) { case 1: return prims; case 2: return prims * 2; case 3: return prims + 1; case 4: return prims * 3; default: return prims + 2; } }
   drawPrimitiveUP(type, count, data, stride) {
@@ -654,6 +808,7 @@ export class Recorder {
     }
     if (L.ctl) Atomics.store(L.ctl, CTL.FRAMES, frame);
     if (L.recTime || globalThis.ORTHROS_REC_TIME) L.recTimeStep();
+    if (L.vbCheck !== null || globalThis.ORTHROS_VB_CHECK) L.checkStep();
     L.publish(true);
     if (L.ctl) L.waitFor(() => Atomics.load(L.ctl, CTL.SHOWN) >= frame - MAX_FRAMES_IN_FLIGHT, CTL.SHOWN, 'frame');
   }

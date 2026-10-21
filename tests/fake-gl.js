@@ -3,7 +3,11 @@ import fs from 'node:fs';
 // A WebGL2 context for Node tests: every call is recorded (objects by creation number, array data by a checksum), the
 // queries answer as a working context would (programs linked, framebuffers complete, no error). Two backends fed
 // the same Direct3D work through two of these must produce the same call log.
-export function fakeGl(width = 800, height = 600) {
+// `{ reads: true }`: buffer contents are kept (bufferData / bufferSubData, with the vertex array objects' attribute
+// pointers and element buffers) but their uploads and bindings are not logged; each draw is logged with a checksum
+// of the bytes it reads instead — its indices and, for every vertex they name, every enabled attribute. Two backends
+// that upload different ranges (a render worker copying only what draws read) must still log the same draws.
+export function fakeGl(width = 800, height = 600, opts = {}) {
   const calls = [], ids = new WeakMap();
   let next = 1;
   const canvas = { width, height };
@@ -36,6 +40,7 @@ export function fakeGl(width = 800, height = 600) {
       if (own?.get) return t[k];
       const f = t[k];
       return (...a) => {
+        if (sim) { const r = sim(k, a); if (r === SKIP) return f ? f(...a) : undefined; if (r !== undefined) { calls.push([k, ...a.map(norm), r]); return f ? f(...a) : undefined; } }
         // (a source view with an offset and length: only that range — the backend passes the whole guest memory)
         let args = a;
         if (k === 'bufferData' && ArrayBuffer.isView(a[1]) && a.length >= 5) args = [a[0], a[1].subarray(a[3], a[3] + a[4]), a[2]];
@@ -45,7 +50,46 @@ export function fakeGl(width = 800, height = 600) {
       };
     },
   });
+  const sim = opts.reads ? readsSim(E) : null;
   return { gl, calls, canvas };
+}
+
+const SKIP = Symbol('skip');
+/** the buffer side of `{ reads: true }`: a call handled (SKIP: not logged; a string: logged with it), else undefined */
+function readsSim(E) {
+  const data = new WeakMap(), vaos = new WeakMap(), none = { eab: null, attrs: [] };
+  let arrayBuf = null, vao = none;
+  const AB = E('ARRAY_BUFFER'), EAB = E('ELEMENT_ARRAY_BUFFER');
+  const size = new Map([[E('FLOAT'), 4], [E('UNSIGNED_BYTE'), 1], [E('SHORT'), 2], [E('UNSIGNED_SHORT'), 2], [E('HALF_FLOAT'), 2], [E('UNSIGNED_INT'), 4]]);
+  const target = (t) => (t === AB ? arrayBuf : t === EAB ? vao.eab : null);
+  const bytes = (v) => new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  const read = (h, buf, lo, n) => { const d = buf ? data.get(buf) : null; if (!d || lo < 0 || lo + n > d.length) return Math.imul(h ^ 0x6f6f62, 0x01000193); for (let i = 0; i < n; i++) h = Math.imul(h ^ d[lo + i], 0x01000193); return h; };
+  const vertex = (h, v) => { for (let i = 0; i < vao.attrs.length; i++) { const x = vao.attrs[i]; if (!x?.on || !x.p) continue; const n = x.p.comps * (size.get(x.p.type) ?? 4); h = read(Math.imul(h ^ i, 0x01000193), x.p.buf, x.p.offset + v * (x.p.stride || n), n); } return h; };
+  const attr = (i) => (vao.attrs[i] ??= { on: false, p: null });
+  return (k, a) => {
+    switch (k) {
+      case 'bindBuffer': if (a[0] === AB) arrayBuf = a[1]; else if (a[0] === EAB) vao.eab = a[1]; return SKIP;
+      case 'bufferData': { const b = target(a[0]); if (!b) return SKIP; const src = a[1]; data.set(b, typeof src === 'number' ? new Uint8Array(src) : bytes(src).slice(a[3] ?? 0, a.length >= 5 ? (a[3] ?? 0) + a[4] : undefined)); return SKIP; }
+      case 'bufferSubData': { const b = target(a[0]), d = b ? data.get(b) : null; if (!d) return SKIP; const src = bytes(a[2]).subarray(a[3] ?? 0, a.length >= 5 ? (a[3] ?? 0) + a[4] : undefined); d.set(src.subarray(0, Math.max(0, Math.min(src.length, d.length - a[1]))), a[1]); return SKIP; }
+      case 'bindVertexArray': if (!a[0]) vao = none; else { let v = vaos.get(a[0]); if (!v) vaos.set(a[0], (v = { eab: null, attrs: [] })); vao = v; } return undefined;
+      case 'enableVertexAttribArray': attr(a[0]).on = true; return undefined;
+      case 'disableVertexAttribArray': attr(a[0]).on = false; return undefined;
+      case 'vertexAttribPointer': attr(a[0]).p = { buf: arrayBuf, comps: a[1], type: a[2], stride: a[4], offset: a[5] }; return undefined;
+      case 'drawArrays': { let h = 0x811c9dc5; for (let v = a[1]; v < a[1] + a[2]; v++) h = vertex(h, v); return `reads:${(h >>> 0).toString(16)}`; }
+      case 'drawElements': {
+        const isz = size.get(a[2]) ?? 2, d = vao.eab ? data.get(vao.eab) : null;
+        let h = 0x811c9dc5;
+        for (let i = 0; i < a[1]; i++) {
+          const p = a[3] + i * isz;
+          if (!d || p + isz > d.length) { h = Math.imul(h ^ 0x6f6f62, 0x01000193); continue; }
+          const v = isz === 2 ? d[p] | d[p + 1] << 8 : isz === 1 ? d[p] : (d[p] | d[p + 1] << 8 | d[p + 2] << 16 | d[p + 3] << 24) >>> 0;
+          h = vertex(Math.imul(h ^ v, 0x01000193), v);
+        }
+        return `reads:${(h >>> 0).toString(16)}`;
+      }
+      default: return undefined;
+    }
+  };
 }
 
 // one numbering for every context, in every thread (their logs compare): the names the backend uses, sorted
