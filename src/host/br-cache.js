@@ -39,10 +39,24 @@ export const unitRange = (u, size) => {
 };
 
 /**
+ * The pinned budget `cap` split between the launch sets (`wants`: each one's bytes when known — its wire size, the
+ * home's "playable after" —, else null): one whose size is known weighs it, one whose size is not an equal part of
+ * the budget (as every one did before: Morrowind's 98 MB launch set was evictable past its 1/16, while small ones
+ * left their part unused); what the known ones leave goes to all equally (the head of each order past its launch set).
+ */
+export function pinShares(wants, cap) {
+  const n = wants.length; if (!n) return [];
+  const equal = cap / n, weights = wants.map((w) => (Number.isFinite(w) && w > 0 ? w : equal));
+  const total = weights.reduce((a, w) => a + w, 0);
+  return total <= cap ? weights.map((w) => w + (cap - total) / n) : weights.map((w) => (w * cap) / total);
+}
+
+/**
  * The cache. opts: { dir, maxBytes (1.5 GiB), lowBytes (0.9 × maxBytes), pinShare (0.5), sources: () => [{ name,
- * units: () => iterator of { file, st, light, unit } }] (the launch sets, in their order: the first `pinShare` of the
- * budget shared between them is pinned, then more of each while under `lowBytes`; walked side by side, made before the
- * live misses for the pinned part, after them for the rest: see nextJob), loadLimit (24: the 1-minute load
+ * units: () => iterator of { file, st, light, unit }, want (bytes of its launch set, or null) }] (the launch sets, in
+ * their order: the first `pinShare` of the budget shared between them by their size (pinShares) is pinned, then more
+ * of each while under `lowBytes`; walked side by side, made before the live misses for the pinned part, after them for
+ * the rest: see nextJob), loadLimit (24: the 1-minute load
  * average generation waits under, half the machine's 48 cores), diskLimit (0.85: the disk's used fraction it waits
  * under), pauseMs (30000), idleMs (60000: the child kept that long without work), sweepMs (hourly: the sweep and the
  * launch sets again), log, onMade (tests: (file, unit) for each unit made) }.
@@ -283,8 +297,8 @@ export function createBrCache(opts) {
   const reseed = () => {
     if (!opts.sources || closed) return;
     let list = []; try { list = opts.sources() ?? []; } catch (e) { log(`br-cache: sources: ${e}`); }
-    const share = list.length ? pinCap / list.length : 0;
-    seeding = list.length ? { sources: list.map((s) => ({ name: s.name, it: s.units()[Symbol.iterator](), used: 0, share, done: false })), pass: 0 } : null;
+    const shares = pinShares(list.map((s) => s.want), pinCap);
+    seeding = list.length ? { sources: list.map((s, i) => ({ name: s.name, it: s.units()[Symbol.iterator](), used: 0, share: shares[i], done: false })), pass: 0 } : null;
     for (const e of entries.values()) for (const u of e.units.values()) u.pinned = false;
     pinnedBytes = 0;
     pump();

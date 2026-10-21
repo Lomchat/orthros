@@ -10,7 +10,7 @@ import http from 'node:http';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { unitOf, rangeUnits, HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
-import { createBrCache } from '../src/host/br-cache.js';
+import { createBrCache, pinShares } from '../src/host/br-cache.js';
 import { createServer } from '../src/host/server.js';
 
 // (the machine's own load and disk never pause the tests' generation)
@@ -261,4 +261,16 @@ test('cache: the launch sets first, side by side, before the live misses; then m
     assert.ok(cache.stats().pinnedBytes <= one * 3.5 + 1);
     cache.close();
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('pinShares: a known launch set weighs its size, an unknown one an equal part, the rest shared', () => {
+  const near = (a, b) => a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) < 1e-6);
+  assert.deepEqual(pinShares([], 100), []);
+  assert.ok(near(pinShares([null, null, null, null], 100), [25, 25, 25, 25]));
+  // (small known ones: their size, the rest of the budget for everyone)
+  assert.ok(near(pinShares([10, null, 2, null], 100), [10 + 38 / 4, 25 + 38 / 4, 2 + 38 / 4, 25 + 38 / 4]));
+  // (over the budget: scaled — a 98 MB launch set no longer held to an equal part)
+  const s = pinShares([98, 1, 7, 13, null], 100);
+  assert.ok(Math.abs(s.reduce((a, b) => a + b, 0) - 100) < 1e-6);
+  assert.ok(s[0] > 40 && s[1] < s[2] && s[2] < s[3] && s[3] < s[4]);
 });

@@ -4,7 +4,7 @@
 // bounded LRU cache with read-ahead for sequential access.
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { NetLink } from './net-link.js';
-import { LIGHT_DIR } from './game-tree.js';
+import { LIGHT_DIR, isVideoFile } from './game-tree.js';
 
 export const BLOCK = 1 << 20; // 1 MiB
 /**
@@ -157,6 +157,10 @@ export class HttpBackend {
     this.session = opts.session ?? '';
     this.store = opts.store ?? null;
     this.stats = { requests: 0, bytes: 0, ms: 0 };
+    /** the game's reads, whatever answered them (this browser's copy, memory, the network): bytes, those of movies */
+    this.reads = { bytes: 0, videoBytes: 0 };
+    /** each game read, as it happens: (path, start, end) — a page learning what its game read (worker.js, the mark) */
+    this.onRead = opts.onRead ?? null;
     /** 64 KiB pieces of blocks not fetched whole yet: "path#chunk" -> bytes (insertion order = LRU) */
     this.chunks = new Map(); this.chunkBytes = 0;
     /** whole blocks wanted in the background (a random read touched them): "path#block" -> {path, size, mtime, index} */
@@ -232,7 +236,9 @@ export class HttpBackend {
     if (!r || r.dir) return null;
     if (opts.write || opts.create || opts.truncate) return null; // read-only mount
     this.opened.set(r.path, (this.opened.get(r.path) ?? 0) + 1);
-    return new HttpFile(this, r.path, r.file.size, r.file.mtime ?? 0);
+    const f = new HttpFile(this, r.path, r.file.size, r.file.mtime ?? 0);
+    if (isVideoFile(r.path)) f.video = true;
+    return f;
   }
   mkdir() { return false; }
   unlink() { return false; }
@@ -1166,6 +1172,8 @@ class HttpFile {
     const end = Math.min(off + len, this.len);
     if (off >= end) return new Uint8Array(0);
     this.note(off, end);
+    this.b.reads.bytes += end - off; if (this.video) this.b.reads.videoBytes += end - off;
+    this.b.onRead?.(this.path, off, end);
     const out = new Uint8Array(end - off);
     const sequential = off === this.lastEnd;
     this.lastEnd = end;

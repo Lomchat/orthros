@@ -26,14 +26,15 @@ export const learnedOrder = (name, lang = null) => fetch(`/api/prefetch/${enc(na
  * One version's data: { name, tree, store, files (its HttpBackend), total (bytes) }.
  * @param {string} name the manifest
  * @param {{ tree?: object, store?: object|null|'opfs', net?: NetLink, link?: Set<HttpBackend>, session?: string,
- *   cacheBlocks?: number, encoded?: boolean, onFetch?: Function, onRetry?: Function }} [o]
- *   store: the block store, 'opfs' for the version's own, null for none; encoded: the compressed ranges (default)
+ *   cacheBlocks?: number, encoded?: boolean, onFetch?: Function, onRetry?: Function, onRead?: Function }} [o]
+ *   store: the block store, 'opfs' for the version's own, null for none; encoded: the compressed ranges (default);
+ *   onRead: each read of the game (path, start, end), whatever answered it
  */
 export async function openData(name, o = {}) {
   const tree = o.tree ?? await json(`/api/tree/${enc(name)}`);
   const store = o.store === 'opfs' ? await openStore(name) : o.store ?? null;
   const files = new HttpBackend(`/game/${name}/`, tree, { cacheBlocks: o.cacheBlocks, store, encoded: o.encoded ?? true, session: o.session ?? '',
-    link: o.link, net: o.net, onFetch: o.onFetch, onRetry: o.onRetry });
+    link: o.link, net: o.net, onFetch: o.onFetch, onRetry: o.onRetry, onRead: o.onRead });
   return { name, tree, store, files, total: treeBytes(tree) };
 }
 
