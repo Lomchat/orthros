@@ -18,6 +18,145 @@
              ctx.frameRateLimiter->limit();
  
          }
+--- a/openmw/apps/openmw/mwgui/mapwindow.cpp
++++ b/openmw/apps/openmw/mwgui/mapwindow.cpp
+@@ -1177,6 +1177,11 @@
+         }
+     }
+ 
++    void MapWindow::flushGlobalMapCopies()
++    {
++        mGlobalMapRender->flushDeferredCopies();
++    }
++
+     void MapWindow::cellExplored(int x, int y)
+     {
+         mGlobalMapRender->cleanupCameras();
+--- a/openmw/apps/openmw/mwgui/mapwindow.hpp
++++ b/openmw/apps/openmw/mwgui/mapwindow.hpp
+@@ -247,6 +247,9 @@
+         // reveals this cell's map on the global map
+         void cellExplored(int x, int y);
+ 
++        /// Orthros (orthros-r3.patch): the global map's deferred CPU copies and drawn cameras, once a frame (web).
++        void flushGlobalMapCopies();
++
+         void setGlobalMapPlayerPosition(float worldX, float worldY);
+         void setGlobalMapPlayerDir(const float x, const float y);
+ 
+--- a/openmw/apps/openmw/mwgui/windowmanagerimp.cpp
++++ b/openmw/apps/openmw/mwgui/windowmanagerimp.cpp
+@@ -917,6 +917,12 @@
+         if (!mLocalMapRender)
+             return;
+ 
++#ifdef __EMSCRIPTEN__
++        // Orthros (orthros-r3.patch): the explored cells' global-map copies, read back a second later (globalmap.cpp)
++        if (mMap)
++            mMap->flushGlobalMapCopies();
++#endif
++
+         MWWorld::ConstPtr player = MWMechanics::getPlayer();
+ 
+         osg::Vec3f playerPosition = player.getRefData().getPosition().asVec3();
+--- a/openmw/apps/openmw/mwrender/globalmap.cpp
++++ b/openmw/apps/openmw/mwrender/globalmap.cpp
+@@ -8,6 +8,7 @@
+ #include <osg/Group>
+ #include <osg/Image>
+ #include <osg/Texture2D>
++#include <osg/Timer>
+ 
+ #include <osgDB/WriteFile>
+ 
+@@ -82,6 +83,13 @@
+         {
+             if (mRendered)
+             {
++#ifdef __EMSCRIPTEN__
++                // Orthros (orthros-r3.patch): drawn once. The single-threaded viewer has finished the camera's draw
++                // (its quad, its CPU copy) by the next update: drawing it again until copyResult's extra frames are
++                // over painted the same quad and, for a CPU copy, read the pixels back again — three readbacks, each
++                // a GPU pipeline drain, at every cell explored.
++                node->setNodeMask(0);
++#endif
+                 if (mParent->copyResult(node, nv->getTraversalNumber()))
+                 {
+                     node->setNodeMask(0);
+@@ -439,8 +447,35 @@
+         if (cellX > mMaxX || cellX < mMinX || cellY > mMaxY || cellY < mMinY)
+             return;
+ 
++#ifdef __EMSCRIPTEN__
++        // Orthros (orthros-r3.patch): the overlay texture is painted now, its CPU copy (mOverlayImage, for saves) read
++        // back later (flushDeferredCopies, about a second on): exploring happens in the frame that crosses into a
++        // cell, whose new textures and buffers the readback would wait for — a pipeline drain measured at 0.2-0.5 s
++        // headless in that frame. A save in that second keeps the cell's previous map square (the map itself shows
++        // it at once).
++        requestOverlayTextureUpdate(
++            originX, mHeight - originY, cellSize, cellSize, std::move(localMapTexture), false, false);
++        mDeferredCopies.push_back(
++            DeferredCopy{ originX, mHeight - originY, cellSize, cellSize, osg::Timer::instance()->tick() });
++#else
+         requestOverlayTextureUpdate(
+             originX, mHeight - originY, cellSize, cellSize, std::move(localMapTexture), false, true);
++#endif
++    }
++
++    void GlobalMap::flushDeferredCopies()
++    {
++        cleanupCameras();
++        if (mDeferredCopies.empty())
++            return;
++        const osg::Timer* timer = osg::Timer::instance();
++        const osg::Timer_t now = timer->tick();
++        // (the oldest first: the copies are queued in time order)
++        auto it = mDeferredCopies.begin();
++        for (; it != mDeferredCopies.end() && timer->delta_s(it->mQueued, now) >= 1.0; ++it)
++            requestOverlayTextureUpdate(it->mX, it->mY, it->mWidth, it->mHeight, osg::ref_ptr<osg::Texture2D>(), false,
++                true);
++        mDeferredCopies.erase(mDeferredCopies.begin(), it);
+     }
+ 
+     void GlobalMap::clear()
+@@ -450,6 +485,7 @@
+         memset(mOverlayImage->data(), 0, mOverlayImage->getTotalSizeInBytes());
+ 
+         mPendingImageDest.clear();
++        mDeferredCopies.clear();
+ 
+         // just push a Camera to clear the FBO, instead of setImage()/dirty()
+         // easier, since we don't need to worry about synchronizing access :)
+--- a/openmw/apps/openmw/mwrender/globalmap.hpp
++++ b/openmw/apps/openmw/mwrender/globalmap.hpp
+@@ -6,6 +6,7 @@
+ #include <vector>
+ 
+ #include <osg/ref_ptr>
++#include <osg/Timer>
+ 
+ namespace osg
+ {
+@@ -74,7 +75,19 @@
+ 
+         void asyncWritePng();
+ 
++        /// Orthros (orthros-r3.patch): the explored cells' CPU copies, read back once they are a second old (web
++        /// build: exploreCell paints the overlay at once and queues its copy). Called once a frame, outside the scene
++        /// traversals; removes the cameras already drawn too (cleanupCameras).
++        void flushDeferredCopies();
++
+     private:
++        struct DeferredCopy
++        {
++            int mX, mY, mWidth, mHeight;
++            osg::Timer_t mQueued;
++        };
++        std::vector<DeferredCopy> mDeferredCopies;
++
+         struct WritePng;
+ 
+         /**
 --- a/openmw/apps/openmw/mwworld/cellpreloader.cpp
 +++ b/openmw/apps/openmw/mwworld/cellpreloader.cpp
 @@ -2,6 +2,7 @@
