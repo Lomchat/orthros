@@ -15,9 +15,9 @@
 // again). Audio units (docs/slow-network.md "Audio units", src/vfs/pcm-codec.js): beside a unit, b<block>.pcm.br /
 // p<piece>.pcm.br — its PCM transport container, brotli on top — for the requests that decode it (`&pc=1`), or an
 // empty .pcm.raw (no sound found there, or it did not pay); waves.json: where the file's RIFF WAVE sounds are
-// (src/host/pcm-units.js, found once per file version). Light copies have none. The index is rebuilt from the disk at start. Least recently used out when over `maxBytes`, down to
-// `lowBytes`; the units of each manifest's launch set (the head of its learned order, `sources`) are pinned — out last,
-// at most `pinShare` of the budget.
+// (src/host/pcm-units.js, found once per file version). Light copies have none. The index is rebuilt from the disk at
+// start. Least recently used out when over `maxBytes`, down to `lowBytes`; the units of each manifest's launch set (the
+// head of its learned order, `sources`) are pinned — out last, at most `pinShare` of the budget.
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -348,10 +348,10 @@ export function createBrCache(opts) {
      */
     lookupPcm(file, st, light, unit) {
       if (!pcmFor(light)) return null;
-      const u = entryOf(file, st, light).units?.get(unitName(unit) + PCM);
+      const e = entryOf(file, st, light), u = e.units?.get(unitName(unit) + PCM);
       if (!u || u.raw) return null;
       counts.pcmHits++; u.lastHit = Date.now();
-      return { path: path.join(entryOf(file, st, light).dir, unitName(unit) + PCM + '.br'), bytes: u.bytes };
+      return { path: path.join(e.dir, unitName(unit) + PCM + '.br'), bytes: u.bytes };
     },
     /**
      * the bytes the unit `unit` of `file` takes on the wire when made (its compressed size, or raw's: its range's; its
