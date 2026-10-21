@@ -28,7 +28,8 @@ missing. Every game page — Windows games and ports — has the same frame (hea
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `src/host/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `ini.js`, `style.css`) | yes |
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
-| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
+| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
+| `tools/port-perf.mjs` | the ports' shared frame measurement (below, "Measuring a port") | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
 | `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-3141ff3-r1` (reVC built from source) and `revc-web-3141ff3-plus-r1` (with Orthros' additions) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` (Orthros' fork) with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
@@ -37,6 +38,21 @@ The engines stay out of Git like the games: the repository is public, the engine
 carry their own licenses (notices below), and the browser game modules were recovered from a deployed build whose
 sources no longer exist. `lock.json` and the install scripts reproduce them while their sources remain available;
 treat `data_engines/` like `data_games/` (the only copy of the recovered modules).
+
+### Measuring a port
+
+`tools/re3/perf.mjs` and `tools/goldsrc/perf.mjs` share `tools/port-perf.mjs`: the browser's flags for a rendering
+mode, a probe in the page before its scripts and its summary — the engine's work a browser frame (from its first
+callback to the engine's request for the next), the gaps between frames shown, the WebGL calls a frame by kind with
+the synchronous ones apart (getError, checkFramebufferStatus, readPixels, shader and program queries… — each one waits
+for the GPU process; `--stacks getError` keeps their callers), the WebGL renderer (the checks print it too) — and a CPU
+profile's summary (`--profile`: self time, the longest busy stretches). The page's telemetry and learning posts stay
+off the server unless `--report`. Headless Chromium here always renders with SwiftShader: ANGLE's null backend
+(`--use-angle=null`) is ignored — the renderer stays SwiftShader's with every flag combination (checked 2026-10-21), so
+`--gl null` is refused. `--gl discard` (the default) keeps RASTERIZER_DISCARD on: every call validated and sent, the
+vertex work done, no pixel drawn — the closest to the engine's own CPU cost a frame here, an upper bound
+(SwiftShader's vertex threads still compete with the page: report the machine's load, several runs). `--gl swiftshader`
+draws (the GPU's share on the CPU); `--gl gpu` adds no flag (a machine's own GPU).
 
 ## Manifest
 
