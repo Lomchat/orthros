@@ -134,7 +134,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -195,6 +195,13 @@ function lazyCondInline(base, kind) {
 // ---- arithmetic flags liveness within a block (FL_CF: CF, FL_REST: OF SF ZF AF PF). Instructions that write
 // part of the flags (ROL/ROR, BT*, INC/DEC, CLC/STC) compute and preserve only what a later instruction of the
 // block may still read; at the block end every flag is live (successors, exits). Unknown instructions read all.
+// LZA_FREE: the lazy states of ADD, INC, DEC and NEG need no first operand — every flag follows from the result and the
+// second operand (ADD: a = res - b, CF = res <u b; INC / DEC: L_LZB is the carry kept; NEG: a = -res), in the inline
+// conditions here and in both flags helpers (runtime.js) — so those instructions write 0 to L_LZA (opts.lzaFree): the
+// destination's old value (an `add esi, 4`, `inc ecx`, `add [edi], eax`'s loaded word) dies with the instruction instead
+// of staying live, in a register or a spill slot, up to the next flag write or to every exit in between (the cold paths of
+// the SMC checks after stores, of the x87 step exits...). The readers ignore L_LZA for those kinds whatever the option,
+// so regions translated either way can pass each other their lazy state.
 const FL_CF = 1, FL_REST = 2, FL_ALL = 3;
 const FLAGS_NONE = new Set(['MOV', 'MOVZX', 'MOVSX', 'LEA', 'XCHG', 'BSWAP', 'NOT', 'PUSH', 'POP', 'PUSHA', 'POPA', 'ENTER', 'LEAVE', 'CBW', 'CWD',
   'NOP', 'PAUSE', 'CLD', 'STD', 'MOVS', 'STOS', 'LODS', 'XLAT', 'LFENCE', 'MFENCE', 'SFENCE', 'PREFETCH', 'CLFLUSH', 'WAIT', 'EMMS',
@@ -929,6 +936,7 @@ class Emitter {
     this.fcmp = null;
     this.smc = opts.smc !== false;
     this.logicRes = !!(opts.logicRes ?? JIT_DEFAULTS.logicRes); // (see binArith)
+    this.lzaFree = !!(opts.lzaFree ?? JIT_DEFAULTS.lzaFree); // (see LZA_FREE)
     this.ifcvt = opts.ifcvt ?? JIT_DEFAULTS.ifcvt; // (see ifcvtPlan: true, 'all' or false)
     this.spec = 0; // emitting an if-converted arm: its loads read address 0 unless the arm is the path taken (see loadMem)
     this.ncPlan = null; // null-page checks of the block being emitted (planNullChecks)
@@ -1844,10 +1852,11 @@ class Emitter {
     c.i32(11).shl().or();
     // AF (bit 4)
     switch (k) {
-      case LZ.ADD: case LZ.SUB: case LZ.ADC: case LZ.SBB: c.get(L_LZA).get(L_LZB).xor().get(L_LZRES).xor().i32(0x10).and().or(); break;
+      case LZ.ADD: c.get(L_LZRES).get(L_LZB).sub().get(L_LZB).xor().get(L_LZRES).xor().i32(0x10).and().or(); break; // (a = res - b: see LZA_FREE)
+      case LZ.SUB: case LZ.ADC: case LZ.SBB: c.get(L_LZA).get(L_LZB).xor().get(L_LZRES).xor().i32(0x10).and().or(); break;
       case LZ.INC: c.get(L_LZRES).i32(0xf).and().eqz().i32(4).shl().or(); break;
       case LZ.DEC: c.get(L_LZRES).i32(0xf).and().i32(0xf).eq().i32(4).shl().or(); break;
-      case LZ.NEG: c.get(L_LZA).i32(0xf).and().i32(0).ne().i32(4).shl().or(); break;
+      case LZ.NEG: c.get(L_LZRES).i32(0xf).and().i32(0).ne().i32(4).shl().or(); break; // (-a & 0xf == 0 iff a & 0xf == 0)
       default: break; // 0
     }
     // ZF (bit 6): BSF's is its source being zero (L_LZA), the others' the result being zero
@@ -1883,7 +1892,7 @@ class Emitter {
     const c = this.c;
     const lz = this.lz;
     if (lz && lz.kind === LZ.SUB) { c.get(L_LZA).get(L_LZB).lt_u(); return; }
-    if (lz && lz.kind === LZ.ADD) { c.get(L_LZRES).get(L_LZA).lt_u(); return; }
+    if (lz && lz.kind === LZ.ADD) { c.get(L_LZRES).get(L_LZB).lt_u(); return; }
     if (lz && lz.kind === LZ.LOGIC) { c.i32(0); return; }
     if (lz && (lz.kind === LZ.INC || lz.kind === LZ.DEC)) { c.get(L_LZB).i32(1).and(); return; }
     if (lz && (lz.kind === LZ.ADC || lz.kind === LZ.SBB || lz.kind === LZ.NEG)) { this.pushCarryOf(lz); return; }
@@ -1959,7 +1968,7 @@ class Emitter {
     const c = this.c;
     switch (lz.kind) {
       case LZ.SUB: c.get(L_LZA).get(L_LZB).lt_u(); return;
-      case LZ.ADD: c.get(L_LZRES).get(L_LZA).lt_u(); return;
+      case LZ.ADD: c.get(L_LZRES).get(L_LZB).lt_u(); return; // (res <u a iff res <u b: a carry out of a + b)
       case LZ.LOGIC: case LZ.BSF: c.i32(0); return;
       case LZ.INC: case LZ.DEC: case LZ.IMUL: c.get(L_LZB).i32(1).and(); return;
       case LZ.SHR: case LZ.SAR: c.get(L_LZA).get(L_LZB).i32(1).sub().shr_u().i32(1).and(); return;
@@ -1973,12 +1982,13 @@ class Emitter {
   pushOverflowOf(lz) {
     const c = this.c, sign = SIGN[1 << lz.sz];
     switch (lz.kind) {
-      case LZ.ADD: case LZ.ADC: c.get(L_LZA).get(L_LZRES).xor().get(L_LZB).get(L_LZRES).xor().and().i32(sign).and().i32(0).ne(); return;
+      case LZ.ADD: c.get(L_LZRES).get(L_LZB).sub().get(L_LZRES).xor().get(L_LZB).get(L_LZRES).xor().and().i32(sign).and().i32(0).ne(); return; // (a = res - b)
+      case LZ.ADC: c.get(L_LZA).get(L_LZRES).xor().get(L_LZB).get(L_LZRES).xor().and().i32(sign).and().i32(0).ne(); return;
       case LZ.SUB: case LZ.SBB: c.get(L_LZA).get(L_LZB).xor().get(L_LZA).get(L_LZRES).xor().and().i32(sign).and().i32(0).ne(); return;
       case LZ.LOGIC: case LZ.SAR: case LZ.BSF: c.i32(0); return;
       case LZ.INC: c.get(L_LZRES).i32(sign | 0).eq(); return;
       case LZ.DEC: c.get(L_LZRES).i32((sign - 1) | 0).eq(); return;
-      case LZ.NEG: c.get(L_LZA).i32(sign | 0).eq(); return;
+      case LZ.NEG: c.get(L_LZRES).i32(sign | 0).eq(); return; // (-a == a == sign)
       case LZ.SHR: c.get(L_LZA).i32(sign).and().i32(0).ne(); return;
       case LZ.MUL: c.get(L_LZA).i32(0).ne(); return;
       case LZ.SHL: c.get(L_LZRES).i32(sign).and().i32(0).ne(); this.pushShlCarry(8 << lz.sz); c.xor(); return;
@@ -1991,7 +2001,7 @@ class Emitter {
    */
   pushCarryOf(lz) {
     const c = this.c;
-    if (lz.kind === LZ.NEG) { c.get(L_LZA).i32(0).ne(); return; }
+    if (lz.kind === LZ.NEG) { c.get(L_LZRES).i32(0).ne(); return; } // (-a != 0 iff a != 0)
     const [x, y] = lz.kind === LZ.ADC ? [L_LZRES, L_LZA] : [L_LZA, L_LZB];
     c.get(x).get(y).lt_u();
     if (lz.kind === LZ.ADC) c.get(L_LZRES).get(L_LZA).sub().get(L_LZB).sub(); else c.get(L_LZA).get(L_LZB).sub().get(L_LZRES).sub();
@@ -2015,7 +2025,7 @@ class Emitter {
       switch (base) {
         case 2: c.get(L_LZRES).eqz(); done = true; break; // E
         case 4: c.get(L_LZRES).i32(sign).and().i32(0).ne(); done = true; break; // S
-        case 1: if (k === LZ.SUB) { c.get(L_LZA).get(L_LZB).lt_u(); done = true; } else if (k === LZ.ADD) { c.get(L_LZRES).get(L_LZA).lt_u(); done = true; } else if (k === LZ.LOGIC) { c.i32(0); done = true; } else if (k === LZ.INC || k === LZ.DEC) { c.get(L_LZB).i32(1).and(); done = true; } else if (k === LZ.ADC || k === LZ.SBB || k === LZ.NEG) { this.pushCarryOf(lz); done = true; } break; // B
+        case 1: if (k === LZ.SUB) { c.get(L_LZA).get(L_LZB).lt_u(); done = true; } else if (k === LZ.ADD) { c.get(L_LZRES).get(L_LZB).lt_u(); done = true; } else if (k === LZ.LOGIC) { c.i32(0); done = true; } else if (k === LZ.INC || k === LZ.DEC) { c.get(L_LZB).i32(1).and(); done = true; } else if (k === LZ.ADC || k === LZ.SBB || k === LZ.NEG) { this.pushCarryOf(lz); done = true; } break; // B
         case 3: if (k === LZ.SUB) { c.get(L_LZA).get(L_LZB).le_u(); done = true; } else if (k === LZ.LOGIC) { c.get(L_LZRES).eqz(); done = true; } break; // BE
         case 6: if (k === LZ.SUB) { sx(L_LZA, lz.sz); sx(L_LZB, lz.sz); c.lt_s(); done = true; } else if (k === LZ.LOGIC) { c.get(L_LZRES).i32(sign).and().i32(0).ne(); done = true; } break; // L
         case 7: if (k === LZ.SUB) { sx(L_LZA, lz.sz); sx(L_LZB, lz.sz); c.le_s(); done = true; } else if (k === LZ.LOGIC) { sx(L_LZRES, lz.sz); c.i32(0).le_s(); done = true; } break; // LE
@@ -2283,6 +2293,7 @@ function binArith(kind, opEmit, store = true) {
     loadDst(E, d); E.c.set(L_LZA);
     E.loadOp(s); E.c.set(L_LZB);
     E.c.get(L_LZA).get(L_LZB); opEmit(E.c); maskTo(E, size); E.c.set(L_LZRES);
+    if (kind === LZ.ADD && E.lzaFree) E.c.i32(0).set(L_LZA); // (no flag reads it: see LZA_FREE)
     // AND/OR/XOR/TEST flags depend on the result alone (CF = OF = AF = 0, as the flags helper and the inline conditions
     // compute them): the result stands in for the lazy operands too (opts.logicRes), one value instead of three where the
     // lazy state stays live (merges, exits) rather than copies of both operands kept in registers of their own
@@ -2321,6 +2332,7 @@ HANDLERS[OP.INC] = (E, insn) => {
   c.set(L_T4);
   loadDst(E, d); c.set(L_LZA);
   c.get(L_LZA).i32(1).add(); maskTo(E, size); c.set(L_LZRES);
+  if (E.lzaFree) c.i32(0).set(L_LZA); // (no flag reads it: see LZA_FREE)
   c.get(L_T4).set(L_LZB);
   E.setLazy(LZ.INC, size); // (before the store: see binArith)
   E.storeOpFrom(d, L_LZRES, insn);
@@ -2331,6 +2343,7 @@ HANDLERS[OP.DEC] = (E, insn) => {
   c.set(L_T4);
   loadDst(E, d); c.set(L_LZA);
   c.get(L_LZA).i32(1).sub(); maskTo(E, size); c.set(L_LZRES);
+  if (E.lzaFree) c.i32(0).set(L_LZA); // (no flag reads it: see LZA_FREE)
   c.get(L_T4).set(L_LZB);
   E.setLazy(LZ.DEC, size); // (before the store: see binArith)
   E.storeOpFrom(d, L_LZRES, insn);
@@ -2339,6 +2352,7 @@ HANDLERS[OP.NEG] = (E, insn) => {
   const c = E.c; const d = insn.ops[0]; const size = d.size;
   loadDst(E, d); c.set(L_LZA);
   c.i32(0).get(L_LZA).sub(); maskTo(E, size); c.set(L_LZRES);
+  if (E.lzaFree) c.i32(0).set(L_LZA); // (no flag reads it: see LZA_FREE)
   E.setLazy(LZ.NEG, size); // (before the store: see binArith)
   E.storeOpFrom(d, L_LZRES, insn);
 };

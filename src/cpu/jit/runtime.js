@@ -308,14 +308,14 @@ export function materializeFlags(op, res, a, b, ef) {
   res = (res & mask) >>> 0; a = (a & mask) >>> 0; b = (b & mask) >>> 0;
   let cf = 0, of = 0, af = 0;
   switch (kind) {
-    case LZ.ADD: cf = res < a ? 1 : 0; of = ((a ^ res) & (b ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break;
+    case LZ.ADD: a = ((res - b) & mask) >>> 0; cf = res < b ? 1 : 0; of = ((a ^ res) & (b ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break; // (from res and b alone: translate.js LZA_FREE)
     case LZ.SUB: cf = a < b ? 1 : 0; of = ((a ^ b) & (a ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break;
     case LZ.ADC: { const cin = ((res - a - b) & mask) !== 0; cf = (cin ? res <= a : res < a) ? 1 : 0; of = ((a ^ res) & (b ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break; }
     case LZ.SBB: { const cin = ((a - b - res) & mask) !== 0; cf = (cin ? a <= b : a < b) ? 1 : 0; of = ((a ^ b) & (a ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break; }
     case LZ.LOGIC: break;
     case LZ.INC: cf = b & 1; of = res === sign ? 1 : 0; af = (res & 0xf) === 0 ? 1 : 0; break;
     case LZ.DEC: cf = b & 1; of = res === (sign - 1) >>> 0 ? 1 : 0; af = (res & 0xf) === 0xf ? 1 : 0; break;
-    case LZ.NEG: cf = a !== 0 ? 1 : 0; of = a === sign ? 1 : 0; af = (a & 0xf) !== 0 ? 1 : 0; break;
+    case LZ.NEG: cf = res !== 0 ? 1 : 0; of = res === sign ? 1 : 0; af = (res & 0xf) !== 0 ? 1 : 0; break; // (res = -a: the same tests)
     case LZ.SHL: cf = b <= bits ? (b === bits ? a & 1 : (a >>> (bits - b)) & 1) : 0; of = (((res & sign) ? 1 : 0) ^ cf); break;
     case LZ.SHR: cf = (a >>> (b - 1)) & 1; of = (a & sign) ? 1 : 0; break;
     case LZ.SAR: cf = (a >>> (b - 1)) & 1; of = 0; break;
@@ -390,12 +390,13 @@ export function buildRuntime(opts = {}) {
       c.end(); // enter code for kind k
       switch (k) {
         case LZ.NONE: break;
-        case LZ.ADD: { c.get(RES).get(A).lt_u(); const i = c.if_(); setCF(); c.end(); void i; c.get(A).get(RES).xor().get(B).get(RES).xor().and().get(SIGN).and(); const j = c.if_(); setOF(); c.end(); void j; afFromXor(); break; }
+        case LZ.ADD: { c.get(RES).get(B).sub().get(MASK).and().set(A); c.get(RES).get(B).lt_u(); // (a from res and b: translate.js LZA_FREE)
+          const i = c.if_(); setCF(); c.end(); void i; c.get(A).get(RES).xor().get(B).get(RES).xor().and().get(SIGN).and(); const j = c.if_(); setOF(); c.end(); void j; afFromXor(); break; }
         case LZ.SUB: { c.get(A).get(B).lt_u(); const i = c.if_(); setCF(); c.end(); void i; c.get(A).get(B).xor().get(A).get(RES).xor().and().get(SIGN).and(); const j = c.if_(); setOF(); c.end(); void j; afFromXor(); break; }
         case LZ.LOGIC: break;
         case LZ.INC: { c.get(B).i32(1).and(); const i = c.if_(); setCF(); c.end(); void i; c.get(RES).get(SIGN).eq(); const j = c.if_(); setOF(); c.end(); void j; c.get(RES).i32(0xf).and().eqz(); const l = c.if_(); setAF(); c.end(); void l; break; }
         case LZ.DEC: { c.get(B).i32(1).and(); const i = c.if_(); setCF(); c.end(); void i; c.get(RES).get(SIGN).i32(1).sub().eq(); const j = c.if_(); setOF(); c.end(); void j; c.get(RES).i32(0xf).and().i32(0xf).eq(); const l = c.if_(); setAF(); c.end(); void l; break; }
-        case LZ.NEG: { c.get(A); const i = c.if_(); setCF(); c.end(); void i; c.get(A).get(SIGN).eq(); const j = c.if_(); setOF(); c.end(); void j; c.get(A).i32(0xf).and(); const l = c.if_(); setAF(); c.end(); void l; break; }
+        case LZ.NEG: { c.get(RES); const i = c.if_(); setCF(); c.end(); void i; c.get(RES).get(SIGN).eq(); const j = c.if_(); setOF(); c.end(); void j; c.get(RES).i32(0xf).and(); const l = c.if_(); setAF(); c.end(); void l; break; }
         case LZ.SHL: {
           // cf = b<=bits ? (b==bits ? a&1 : (a >> (bits-b)) & 1) : 0
           c.get(B).get(BITS).le_u(); const i = c.if_(T.i32);
