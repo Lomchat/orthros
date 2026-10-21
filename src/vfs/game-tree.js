@@ -14,6 +14,10 @@ export const LIGHT_DIR = '.light';
  * data-worker.js). Their bytes are never faked: a read of one waits for the network as any other.
  */
 const MEDIA = /\.(bik|bk2|mp3|ogg|avi|mpg|mpeg|wmv|smk|webm)$/i;
+/** Movies among the media files: a game playing one is not playable yet (playable-watch.js). */
+const VIDEO = /\.(bik|bk2|avi|mpg|mpeg|wmv|smk|webm)$/i;
+/** The file `name` is a movie (by format). */
+export const isVideoFile = (name) => VIDEO.test(name);
 /** A .wav this large or larger is a media file (music, speech); smaller ones are a game's sound effects. */
 export const MEDIA_WAV_BYTES = 512 << 10;
 /** The file `name` of `size` bytes is a media file (see MEDIA). */

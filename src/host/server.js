@@ -335,8 +335,9 @@ export function createServer(opts = {}) {
       let e = m.get(k);
       if (!e) m.set(k, e = { t, n: 0, mask: 0 });
       e.mask = (e.mask ?? 0) | bits; // (every session's pieces, first read of the block or not)
-      if (ss.seen.has(k)) continue;
-      ss.seen.add(k);
+      const sk = `${name}\0${k}`; // (a session reads the versions its game requires too: each one's blocks its own)
+      if (ss.seen.has(sk)) continue;
+      ss.seen.add(sk);
       e.t = Math.min(e.t, t); e.n++;
     }
     learnSave(name);
@@ -347,12 +348,14 @@ export function createServer(opts = {}) {
    * read before playable by that language's sessions only).
    */
   const learnMark = (name, sid, kind, lang = null) => {
-    const ss = sessions.get(sid);
-    if (kind !== 'playable' || !ss || ss.marked || !ss.seen.size) return false;
-    ss.marked = true;
+    const ss = sessions.get(sid), own = `${name}\0`;
+    if (kind !== 'playable' || !ss || ss.marked?.has(name)) return false;
+    const keys = [...ss.seen].filter((sk) => sk.startsWith(own));
+    if (!keys.length) return false;
+    (ss.marked ??= new Set()).add(name); // (once per version: a Windows game marks the versions it requires too)
     const m = learnedOf(name), p = playableOf(name);
-    for (const k of ss.seen) {
-      const e = m.get(k); if (!e) continue;
+    for (const sk of keys) {
+      const e = m.get(sk.slice(own.length)); if (!e) continue;
       e.pre = (e.pre ?? 0) + 1;
       if (lang) { e.by ??= {}; e.by[lang] = (e.by[lang] ?? 0) + 1; }
     }
