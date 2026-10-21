@@ -198,12 +198,15 @@ on the request path. So the server keeps **units** compressed ahead, for every g
   A request that misses goes the dynamic way — zstd-3 if accepted, else **brotli quality 5** if accepted (~14 % fewer
   bytes than gzip-4 for ~+8 ms per MiB), else gzip-4 — and asks for its unit.
 - **Made** by a forked child (`src/host/br-cache-worker.js`) niced to 19, one unit at a time (one core at most),
-  pausing while the 1-minute load average is ≥ 24 or the disk is over 85 % full (it evicts meanwhile). Order: the live
-  misses, the most asked first; then each manifest's learned order (`/api/prefetch`, earliest `t` first), the browser
-  ports' manifests first — a block learned whole (or without its pieces' mask) as a block unit, else its learned pieces;
-  a listed texture's light copy first (by pieces: a light copy is read on a link that is not fast). The first half of
-  the budget, shared between the manifests, is their **launch set**: pinned (evicted last). More of each order is made
-  while the cache is under its low mark. Rebuilt at start and every hour from the learned files.
+  pausing while the 1-minute load average is ≥ 24 or the disk is over 85 % full (it evicts meanwhile). Order: first
+  the **launch sets** — each manifest's learned order (`/api/prefetch`, earliest `t` first) up to its share of the first
+  half of the budget, pinned (evicted last), the manifests walked side by side (the one with the fewest bytes made
+  next: every head before any tail) —; then the live misses, the most asked first; then more of each order while the
+  cache is under its low mark. A block learned whole (or without its pieces' mask) is a block unit, else its learned
+  pieces are; a listed texture's light copy first (by pieces: a light copy is read on a link that is not fast). Rebuilt
+  at start and every hour from the learned files. (The live misses used to come first: on the live server, 47 minutes
+  after a restart, the misses' queue was full — 4044 of its 4096 — and the launch sets had not grown past their first
+  6.3 MB; a miss is one session's read, served already, where every new player asks for the launch set.)
 - **Kept** in `--br-cache <dir>` (default `<learn>/../brcache`, i.e. `/var/lib/orthros2/brcache` on the live server;
   none without `--learn`, `off` for none), at most `--br-cache-bytes` (1.5 GiB): `<k[0:2]>/<k>/` per file version, `k`
   the sha1 of the file's resolved real path, size and mtime (and the light copy's shape: `LIGHT_SIDE`, size, offset —
@@ -214,13 +217,37 @@ on the request path. So the server keeps **units** compressed ahead, for every g
 - **Client** (`HttpBackend.fetchBackgroundNow`, `rangeUnits`): a compressed background range that covers several units
   goes as one request per unit, in parallel (HTTP/2 through Cloudflare: ~300 B of headers each), joined — whole blocks
   where they fit, else pieces (runs across a block boundary too), at most 16 parts; the download fails if any part
-  does. The game's own reads are unchanged: the synchronous XHR of a Windows game stays one request (on a slow link it
-  is mostly a single piece already: a unit), and so do the parked asynchronous reads (`fetchForeground`).
+  does. On a link neither fast nor thin that carries a block in 1.25 s at most (`WHOLE_BLOCK_SECONDS`, `wholeBlockFits`:
+  ~1 MB/s and up), a background run that is a whole block — every piece wanted, none here: the learned prefetch's
+  pieces of a block learned whole, the pieces fetched ahead (`pumpAhead`), a stream's read-ahead from a block's start,
+  the block fill — goes as the block, its unit, though it is more than `backgroundBytes()` (cut at it, the same bytes
+  went as pieces, which the block unit made for them never serves). The game's own reads are unchanged: the
+  synchronous XHR of a Windows game stays one request (on a slow link it is mostly a single piece already: a unit), and
+  so do the parked asynchronous reads (`fetchForeground`).
+- **Seen**: every `/gamez` answer of a server with units says `X-Orthros-Unit: hit | raw | miss | none` (none: not a
+  unit's shape).
 - **Measured** (one 1 MiB sample block per file, against gzip-4's bytes): brotli 11 per block 72 % (Morrowind.bsa
   40-69 %, gta3.img 67-68 %, Morrowind.esm 77 %, halflife.wad 86 %), per independent piece 80 %, brotli 5 on the fly
-  86 %. Not measured yet: the hit rate and the bytes saved on the live server; Cloudflare passing an origin's
-  `Content-Encoding: br` through unchanged was seen for gzip only (to check:
-  `curl -D - -H 'Accept-Encoding: gzip, br' 'https://orthros.chalco.website/gamez/<manifest>/<path>?r=0-65536&p=1'`).
+  86 %. Cloudflare passes a unit through unchanged (2026-10-21: `halflife.wad` block 1 through
+  orthros.chalco.website, `content-encoding: br`, 594,542 bytes — the unit file's size — decoded to the file's bytes).
+- **Measured, shapes** (2026-10-21, fresh profiles through a proxy sending the origin `Accept-Encoding: gzip, br` as
+  Cloudflare does): the requests are units already — Morrowind FR at 1 MB/s 2917 of 2919 (150 s), at full speed 1857
+  of 1857, Vice City reVC 363 of 363, Half-Life 61 of 61, Vice City (Windows) at 1 MB/s 430 of 439 (the 9 others: its
+  synchronous reads of piece runs, 2.4 MB of 34). What missed was **the shape**: the units made from the learned order
+  are blocks for blocks learned whole, but a 1 MB/s link asked them as pieces (`backgroundBytes()` 512 KiB): of the
+  bytes the Morrowind session asked, 82 % were of blocks made as block units, asked by pieces.
+- **Measured, hits** (same script, the cache filled with the two manifests' learned orders first — 3020 units, 300 MB —,
+  Morrowind FR, 1 MB/s, 50 ms, 150 s, solo): before, 221 hits of 2934 requests, 6 % of the bytes, 109.2 MB on the wire
+  for 180.2 MB (0.606), the world in 88.9 s; after, 885 hits of 1274 requests (+132 kept raw), 72 % of the bytes, 124.4
+  MB on the wire for 219.7 MB (0.566), the world in 72.8 s (one run each). Vice City (Windows) at 1 MB/s, 100 s (its
+  intro movies: brotli saves nothing there): its 20 synchronous reads 227 ms on average, 601 ms at most before, 227 and
+  598 after (measured at the client's end of the link); 465 requests before, 334 after, 26.8 and 26.6 MB on the wire. At
+  full speed (no change there) 1566 hits of 1857, 66 % of the bytes; most of the rest, 77 MB, blocks learned by
+  pieces that a fast link asks whole — not made ahead (1473 of Morrowind's 1830 learned blocks are known by pieces:
+  about three times the brotli work), made from the misses after the launch sets.
+- **Measured, generation**: 3020 units (600 MB of file bytes, 300 MB made) in 26.5 minutes of one niced core,
+  ~1.4 GB of file bytes an hour; the live server ~76 units a minute while not paused. Brotli 10 instead of 11 (sample
+  blocks of Morrowind, GTA, Half-Life data): 2 % more bytes for 0.6× the time — kept at 11.
 
 ## What the page says
 

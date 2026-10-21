@@ -348,6 +348,9 @@ export function createServer(opts = {}) {
       if (!mask || ((mask & all) >>> 0) === all) { yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'b', index: block } }; continue; }
       for (let c = 0; c < pieces; c++) if (mask & (1 << c)) yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'p', index: block * (LEARN_BLOCK / LEARN_CHUNK) + c } };
     }
+    // (not the blocks learned by pieces whole as well, the shape a fast link asks for them — measured, Half-Life on a
+    // fast link: 59 % of the bytes it asked: 1473 of Morrowind's 1830 learned blocks are known by pieces, which would
+    // make its order about three times the brotli work; a fast link's misses ask for them, made after the launch sets)
   };
   const brCache = opts.brCacheDir ? createBrCache({
     dir: opts.brCacheDir, maxBytes: opts.brCacheBytes, log: opts.brCacheLog ?? ((m) => console.log(m)), ...opts.brCacheOptions,
@@ -667,6 +670,8 @@ export function createServer(opts = {}) {
       res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind === 'bg' && /[?&]a=1/.test(req.url) ? 'ahead' : kind} ${path.basename(file)} ${start}-${end} ${body.length}`); });
       res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
+      // (X-Orthros-Unit: how the precompressed units saw the request — hit, raw (kept as is), miss, or none: not a unit)
+      if (unitSeen) h['X-Orthros-Unit'] = unitSeen;
       if (encoding) h['Content-Encoding'] = encoding;
       const go = () => { if (!res.headersSent) res.writeHead(200, h); res.end(body); };
       // (simulated link: the headers after the round trip, the body once it crossed — the client's time to the first
@@ -677,11 +682,12 @@ export function createServer(opts = {}) {
     // missed, it is asked for (made in the background) and this request goes the dynamic way
     const unit = brCache && br && !pad ? unitOf(start, end, light ? light.copy.size : st.size) : null;
     const pre = unit && brCache.lookup(file, st, light, unit);
+    let unitSeen = brCache && br && !pad ? (unit ? (pre ? (pre.raw ? 'raw' : 'hit') : 'miss') : 'none') : null;
     if (pre?.raw) enc = null; // (brotli saves too little there: as it is)
     else if (pre) {
       return fs.readFile(pre.path, (err, body) => {
         if (!err && body.length === pre.bytes) { netStats.brHits++; return reply(body, 'br'); }
-        brCache.drop(file, st, light, unit); dynamic();
+        brCache.drop(file, st, light, unit); unitSeen = 'miss'; dynamic();
       });
     } else if (unit) brCache.want(file, st, light, unit);
     dynamic();

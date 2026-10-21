@@ -5,7 +5,8 @@
 // 1 MiB block — the file's tail for its last one — or a single 64 KiB piece (unitOf in src/vfs/http-backend.js: the
 // shapes the shared reader asks for). Brotli 11 costs seconds of a core per MiB: units are made in the background by a
 // forked child niced to 19 (src/host/br-cache-worker.js), one at a time, paused while the machine is loaded or the
-// disk full; a request that misses goes the dynamic way and asks for its unit. Nothing is ever served stale: a unit's
+// disk full — the launch sets first (every manifest's head side by side), then the units requests missed, then more of
+// the learned orders; a request that misses goes the dynamic way and asks for its unit. Nothing is ever served stale: a unit's
 // key is the file's resolved real path, size and mtime (and the light copy's shape), the generator checks the file
 // before and after reading it, and a sweep removes the units of files gone or changed.
 //
@@ -40,10 +41,11 @@ export const unitRange = (u, size) => {
 /**
  * The cache. opts: { dir, maxBytes (1.5 GiB), lowBytes (0.9 × maxBytes), pinShare (0.5), sources: () => [{ name,
  * units: () => iterator of { file, st, light, unit } }] (the launch sets, in their order: the first `pinShare` of the
- * budget shared between them is pinned, then more of each while under `lowBytes`), loadLimit (24: the 1-minute load
+ * budget shared between them is pinned, then more of each while under `lowBytes`; walked side by side, made before the
+ * live misses for the pinned part, after them for the rest: see nextJob), loadLimit (24: the 1-minute load
  * average generation waits under, half the machine's 48 cores), diskLimit (0.85: the disk's used fraction it waits
  * under), pauseMs (30000), idleMs (60000: the child kept that long without work), sweepMs (hourly: the sweep and the
- * launch sets again), log }.
+ * launch sets again), log, onMade (tests: (file, unit) for each unit made) }.
  */
 export function createBrCache(opts) {
   const dir = path.resolve(opts.dir);
@@ -200,30 +202,41 @@ export function createBrCache(opts) {
   };
 
   const has = (file, st, light, unit) => !!entryOf(file, st, light).units?.has(unitName(unit));
-  /** the next unit to make: the most asked live miss, else the next of the launch sets (null: nothing) */
+  /**
+   * The next unit to make: the launch sets' (the first pass of the learned orders, pinned) first — every new player
+   * asks for them, where a live miss is one session's read, that session served already —, then the most asked live
+   * miss, then more of the learned orders (null: nothing). The orders are walked side by side, the one with the fewest
+   * bytes made first: the head of every manifest's order before the tail of any (walked one after the other, the last
+   * manifest's launch set waited for every other's share — hours of brotli 11).
+   */
   const nextJob = async () => {
+    const sd = seeding; // (read again meanwhile, hourly: that walk goes on instead)
+    if (sd && sd.pass === 0) { const j = await nextSeed(sd); if (j || seeding !== sd) return j; }
     let best = null;
     for (const [id, w] of wanted) if (!best || w.count > best[1].count) best = [id, w];
     if (best) { wanted.delete(best[0]); return { ...best[1], pin: false }; }
-    const sd = seeding; // (read again meanwhile, hourly: that walk goes on instead)
-    if (!sd) return null;
+    return sd && seeding === sd ? nextSeed(sd) : null;
+  };
+  /** the next unit of the launch sets' walk `sd` not made yet, in its current pass (see nextJob), or null */
+  const nextSeed = async (sd) => {
     let steps = 0;
-    for (; sd.pass < 2; sd.pass++, sd.i = 0) {
-      for (; sd.i < sd.sources.length; sd.i++) {
-        const s = sd.sources[sd.i];
-        while (!s.done) {
-          if (++steps % 64 === 0) await new Promise((r) => setImmediate(r)); // (the walk resolves paths: in slices)
-          if (closed || seeding !== sd) return null;
-          // first pass: the source's share of the pinned budget; second: more while under lowBytes
-          if (sd.pass === 0 ? s.used >= s.share || pinnedBytes >= pinCap : total >= lowBytes) break;
-          const n = s.it.next();
-          if (n.done) { s.done = true; break; }
-          const { file, st, light, unit } = n.value;
-          const e = entryOf(file, st, light), u = e.units?.get(unitName(unit));
-          if (u) { if (sd.pass === 0) { pin(u); s.used += u.bytes; } continue; }
-          return { file, st, light, unit, pin: sd.pass === 0, source: s };
-        }
+    for (; sd.pass < 2; sd.pass++) {
+      for (;;) {
+        if (++steps % 64 === 0) await new Promise((r) => setImmediate(r)); // (the walk resolves paths: in slices)
+        if (closed || seeding !== sd) return null;
+        // first pass: each source's share of the pinned budget; second: more while under lowBytes
+        if (sd.pass === 0 ? pinnedBytes >= pinCap : total >= lowBytes) break;
+        let s = null;
+        for (const c of sd.sources) if (!c.done && (sd.pass > 0 || c.used < c.share) && (!s || c.used < s.used)) s = c;
+        if (!s) break;
+        const n = s.it.next();
+        if (n.done) { s.done = true; continue; }
+        const { file, st, light, unit } = n.value;
+        const e = entryOf(file, st, light), u = e.units?.get(unitName(unit));
+        if (u) { if (sd.pass === 0) pin(u); s.used += u.bytes; continue; }
+        return { file, st, light, unit, pin: sd.pass === 0, source: s };
       }
+      if (sd.pass === 0) { sd.pass = 1; return null; } // (the live misses before the second pass)
     }
     if (seeding === sd) seeding = null;
     return null;
@@ -246,6 +259,7 @@ export function createBrCache(opts) {
       addUnit(e, name, r.bytes, r.raw, Date.now(), j.pin && pinnedBytes + r.bytes <= pinCap);
       if (j.source) j.source.used += r.bytes;
       counts.generated++;
+      opts.onMade?.(file, unit); // (tests: the order units are made in)
     } finally { job = null; }
     if (total > maxBytes) evict();
   };
@@ -270,7 +284,7 @@ export function createBrCache(opts) {
     if (!opts.sources || closed) return;
     let list = []; try { list = opts.sources() ?? []; } catch (e) { log(`br-cache: sources: ${e}`); }
     const share = list.length ? pinCap / list.length : 0;
-    seeding = list.length ? { sources: list.map((s) => ({ name: s.name, it: s.units()[Symbol.iterator](), used: 0, share, done: false })), pass: 0, i: 0 } : null;
+    seeding = list.length ? { sources: list.map((s) => ({ name: s.name, it: s.units()[Symbol.iterator](), used: 0, share, done: false })), pass: 0 } : null;
     for (const e of entries.values()) for (const u of e.units.values()) u.pinned = false;
     pinnedBytes = 0;
     pump();

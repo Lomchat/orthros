@@ -186,9 +186,11 @@ test('server: the learned order seeds the units ahead of any request', async () 
     assert.equal(server.brCache.stats().units, 3);
     for (const [a, e] of [[BLOCK, 2 * BLOCK], [0, CHUNK], [2 * CHUNK, 3 * CHUNK]]) {
       const r = await get(`${base}/gamez/g/a.big?r=${a}-${e}&p=1`, 'br');
+      assert.equal(r.r.headers['x-orthros-unit'], 'hit');
       assert.deepEqual(plain(r), big.subarray(a, e));
     }
     assert.equal(JSON.parse((await get(`${base}/api/netstats`, '')).body).brHits, 3);
+    assert.equal((await get(`${base}/gamez/g/a.big?r=0-${2 * CHUNK}&p=1`, 'br')).r.headers['x-orthros-unit'], 'none', 'not a unit');
     assert.ok(server.brCache.stats().pinnedBytes > 0, 'the launch set pinned');
   } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -213,4 +215,29 @@ test('cache: a light copy\'s units are its own version, made from its bytes', as
     assert.deepEqual(zlib.brotliDecompressSync(fs.readFileSync(hit.path)), want);
     assert.equal(cache.lookup(file, st, null, unit), null, 'the file itself: another version');
   } finally { cache.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cache: the launch sets first, side by side, before the live misses; then more of the orders', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
+  const file = (n) => { const f = path.join(dir, n); fs.writeFileSync(f, text(CHUNK, n)); return { file: f, st: fs.statSync(f), light: null, unit: { kind: 'p', index: 0 } }; };
+  const a = ['a1', 'a2', 'a3', 'a4'].map(file), b = ['b1', 'b2', 'b3', 'b4'].map(file), miss = file('miss');
+  try {
+    // (one unit's bytes: the pinned share of each source room for about two of them)
+    const probe = createBrCache({ dir: path.join(dir, 'probe'), ...QUIET });
+    probe.want(a[0].file, a[0].st, null, a[0].unit); await probe.drain();
+    const one = probe.stats().bytes; probe.close();
+    const made = [];
+    const cache = createBrCache({ dir: path.join(dir, 'cache'), maxBytes: one * 40, pinShare: (one * 3.5) / (one * 40), ...QUIET,
+      onMade: (f) => made.push(path.basename(f)),
+      sources: () => [{ name: 'A', units: () => a }, { name: 'B', units: () => b }] });
+    cache.want(miss.file, miss.st, null, miss.unit); // (a request missed before the walk began)
+    await cache.ready; await cache.drain();
+    // (the source with the fewest bytes made next: units of about the same size alternate)
+    assert.deepEqual(made.slice(0, 2).sort(), ['a1', 'b1'], `the launch sets side by side: ${made}`);
+    assert.deepEqual(made.slice(0, 4).sort(), ['a1', 'a2', 'b1', 'b2'], `the launch sets side by side: ${made}`);
+    assert.equal(made[4], 'miss', `the live miss once the launch sets are made: ${made}`);
+    assert.deepEqual(made.slice(5).sort(), ['a3', 'a4', 'b3', 'b4'], 'then the rest of the orders');
+    assert.ok(cache.stats().pinnedBytes <= one * 3.5 + 1);
+    cache.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
