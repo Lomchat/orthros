@@ -134,7 +134,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -1431,7 +1431,7 @@ class Emitter {
     const c = this.c, n = c.trackN;
     c.get(L_TOP).i32(3).shl().set(L_T3);
     c.trackN = 0; // (the cache's own loads and stores are not uses: see x87LiveSites)
-    for (let i = 0; i < 8; i++) { const at = c.len; this.stSlot(i); c.f64load(ST.FPR).set(L_ST0 + i); this.x87Sites.push(at, c.len, i); }
+    for (let i = 0; i < 8; i++) { const at = c.len; this.stSlot(i); c.f64load(ST.FPR).set(L_ST0 + i); this.x87Sites.push(at, c.len, i, 0); }
     c.trackN = n;
   }
   /** FPR[(L_TOP+i)&7] <- L_ST0..7 (shift 0; clobbers L_T3). */
@@ -1439,7 +1439,7 @@ class Emitter {
     const c = this.c, n = c.trackN;
     c.get(L_TOP).i32(3).shl().set(L_T3);
     c.trackN = 0;
-    for (let i = 0; i < 8; i++) { const at = c.len; this.stSlot(i); c.get(L_ST0 + i).f64store(ST.FPR); this.x87Sites.push(at, c.len, i); }
+    for (let i = 0; i < 8; i++) { const at = c.len; this.stSlot(i); c.get(L_ST0 + i).f64store(ST.FPR); this.x87Sites.push(at, c.len, i, 1); }
     c.trackN = n;
   }
   /**
@@ -1450,13 +1450,17 @@ class Emitter {
    * written back and reloaded (fallbacks, FLDENV / FRSTOR, TOP resets) — so a local no instruction reads or writes holds
    * nothing the region needs, and the register's copy in the state block stays the right one. Fewer loads at the
    * entry and stores at the exits (every chained transition of an x87 region), and fewer live values for TurboFan.
+   * The stores of the locals the body reads but never sets go too (opts.x87LiveStores): such a local holds what the
+   * cache loaded from its register — at the entry or at a reload, after which the state block is the same — so writing
+   * it back changes nothing (a region consuming a value its caller left in ST(0), an FSTP of it: a load, no store).
    */
   x87LiveSites() {
     const c = this.c, used = c.used, s = this.x87Sites;
+    const stored = (this.opts.x87LiveStores ?? JIT_DEFAULTS.x87LiveStores) ? c.written : used;
     c.trackN = 0;
     this.stats.x87Live = used;
-    if (used === 0xff) return;
-    for (let j = 0; j < s.length; j += 3) if (!((used >> s[j + 2]) & 1)) c.buf.fill(0x01, s[j], s[j + 1]);
+    if (used === 0xff && stored === 0xff) return;
+    for (let j = 0; j < s.length; j += 4) if (!(((s[j + 3] ? stored : used) >> s[j + 2]) & 1)) c.buf.fill(0x01, s[j], s[j + 1]);
   }
   /** x87 region entry / after the interpreter ran: stack values, tag word and PC/RC bits from the state block. */
   loadX87() {
