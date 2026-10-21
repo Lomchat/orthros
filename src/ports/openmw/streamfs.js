@@ -13,7 +13,7 @@
   const modules = Promise.all([import('/src/vfs/data-client.js'), import('/src/vfs/emscripten-files.js')]);
   let M = null; modules.then(([client, files]) => { M = { ...client, ...files }; });
   const app = location.pathname.slice(0, location.pathname.indexOf('/app/') + 5), name = decodeURIComponent(app.split('/')[3]);
-  const S = { data: null, byPath: new Map(), legacy: [] };
+  const S = { data: null, byPath: new Map(), byKey: new Map(), legacy: [] };
 
   /** The tree path of an engine mount's URL (one of this installation's served files), or null. */
   function treePath(url) {
@@ -37,6 +37,23 @@
       // (the player in the world — Orthros' PLAYER script, view.lua, tells its view from its first poll: the game shown in
       // play, after the menu and the load): the launch set's mark, src/vfs/launch-set.js
       const inWorld = setInterval(() => { if (window.omw?.state?.['orthros.view'] !== undefined) { clearInterval(inWorld); S.data.mark('playable'); } }, 500);
+      // (a texture read light, its file here now: loaded again in place by an engine that can — the Orthros build's
+      // orthros_file_updated, docs/slow-network.md "Engines that reload in place" —, that load choosing the file itself;
+      // the rest of a load under way keeps the light copy: repick)
+      const canReload = () => typeof Module !== 'undefined' && !!Module._orthros_file_updated;
+      S.data.onReal((keys) => {
+        const update = canReload() ? (p) => Module.ccall('orthros_file_updated', 'number', ['string'], [p]) : null;
+        for (const k of keys) {
+          const at = S.byKey.get(k), h = at && S.byPath.get(at);
+          if (!h || !S.data.lightRead(h)) continue;
+          S.data.repick(h);
+          try { update?.(at); } catch (e) { console.warn('[streamfs] reload', at, e?.message ?? e); }
+        }
+      });
+      // (an engine that reloads in place: its loads read the light copies first on every link that is not fast, their
+      // files soon after them — GameData.reloads; its export seen once the engine's module is instantiated)
+      if (canReload()) S.data.reloads(true);
+      else { let n = 0; const look = setInterval(() => { if (canReload()) S.data.reloads(true); if (canReload() || ++n >= 240) clearInterval(look); }, 250); }
       try { Object.defineProperty(window, '__streamfsStats', { configurable: true, get: () => S.data.snapshot() }); } catch { /* defined */ }
     }
     return S.data;
@@ -63,6 +80,7 @@
       // (a copy an earlier page kept of it: taken before its first read — legacy-copies.js, in the data worker)
       S.legacy.push({ name, path: rel, module: '/src/ports/openmw/legacy-copies.js', args: { url: new URL(url, location.href).pathname, size, mtime: mtime || 0 } });
       if (S.legacy.length === 1) queueMicrotask(() => data.legacy(S.legacy.splice(0)));
+      S.byKey.set(name + '\n' + rel.toLowerCase(), path);
       return node(path, data.fileAs(name, rel, size));
     },
     /** A new address for a file of elsewhere (signed addresses expire). */

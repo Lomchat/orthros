@@ -101,6 +101,31 @@ test('the server learns the launch set from the sessions\' marks: flags in the l
   assert.deepEqual(await (await fetch(`${s.base}/api/prefetch/gs-orig`)).json(), list, 'kept: the marks and each entry\'s count');
 });
 
+test('a version\'s launch counts the launch sets of the versions it requires (extraMounts), each its own', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-launch-req-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), learn = path.join(root, 'learn'); fs.mkdirSync(learn);
+  for (const [g, file, extra] of [['base', 'big.dat', {}], ['mod', 'mod.dat', { requires: [{ game: 'base', version: 'base-1', mount: 'C:\\BASE' }] }]]) {
+    fs.mkdirSync(path.join(games, g, 'base'), { recursive: true }); fs.mkdirSync(path.join(games, g, 'versions', '1'), { recursive: true });
+    fs.writeFileSync(path.join(games, g, 'base', file), Buffer.alloc(2 * BLOCK, 3)); fs.writeFileSync(path.join(games, g, 'base', 'game.exe'), 'MZ');
+    fs.writeFileSync(path.join(games, g, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: g, name: g, defaultVersion: `${g}-1`,
+      versions: [{ id: `${g}-1`, dir: '1', version: '1', exe: 'game.exe', ...extra }] }));
+  }
+  const server = createServer({ gamesDir: games, learnDir: learn, learnWriteMs: 10, lanLog: () => {} });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r)); t.after(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (v, body) => fetch(`${base}/api/prefetch/${v}`, { method: 'POST', body: JSON.stringify(body) });
+  const launchOf = async (v) => (await (await fetch(`${base}/api/manifests`)).json()).find((m) => m.name === v).launch;
+  await post('mod-1', { session: 'm1', reads: [['mod.dat', 0, 10, 5]], mark: { kind: 'playable' } });
+  assert.equal((await launchOf('mod-1')).bytes, CHUNK, 'the required version not marked yet: the mod\'s own');
+  await post('base-1', { session: 'b1', reads: [['big.dat', 0, 10, 5], ['big.dat', BLOCK, BLOCK + 10, 6]], mark: { kind: 'playable' } });
+  await new Promise((r) => setTimeout(r, 50));
+  // (its summary made again after a minute: a fresh server's view of the same learned lists)
+  const again = createServer({ gamesDir: games, learnDir: learn, learnWriteMs: 10, lanLog: () => {} });
+  await new Promise((r) => again.listen(0, '127.0.0.1', r)); t.after(() => new Promise((r) => { again.closeAllConnections?.(); again.close(r); }));
+  const m = (await (await fetch(`http://127.0.0.1:${again.address().port}/api/manifests`)).json()).find((x) => x.name === 'mod-1');
+  assert.equal(m.launch.bytes, 3 * CHUNK, 'the mod\'s and the required version\'s');
+});
+
 test('the data worker sends a page\'s mark once, with every read before it, and its startup set follows the flags', async (t) => {
   const posts = [], asked = [];
   const tr = { dirs: {}, files: { 'a.dat': { size: 2 * BLOCK, mtime: 5 }, 'b.dat': { size: BLOCK, mtime: 5 } } };

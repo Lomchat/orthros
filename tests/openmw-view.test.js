@@ -79,6 +79,26 @@ test('on a fast link (or the release\'s own streaming) the engine boots at its t
   assert.equal(p.win.orthrosViewBoot('8192'), '8192', 'the low tier: nothing to grow');
 });
 
+test('the baked example world (?nomw) boots at its tier\'s distance, no growth', async () => {
+  for (const extra of [{ location: { search: '?nomw' } }, { location: { search: '?a=1&nomw=1' } }, { __FORCE_NOMW: true }]) {
+    const p = page({ slow: true });
+    Object.assign(p.win, extra);
+    await install(p.win, p.o);
+    assert.equal(p.win.orthrosViewBoot('16384'), '16384'); assert.equal(p.win.orthrosViewStart, 16384);
+    assert.equal(p.win.orthrosViewState().phase, 'off');
+  }
+});
+
+test('a multiplayer world: no growth, and its content list left as the world has it (no Orthros script)', async () => {
+  const p = page({ slow: true });
+  p.win.__omwMPEnabled = true;
+  await install(p.win, p.o);
+  assert.equal(p.win.orthrosViewBoot('16384'), '16384');
+  const cfg = ['data=/mwdata', 'content=Morrowind.esm', 'content=mp.omwscripts'];
+  assert.deepEqual(p.win.orthrosContent(p.FS, [...cfg]), cfg);
+  assert.equal(p.files.size, 0, 'no script written'); assert.equal(p.ticks.length, 0);
+});
+
 test('Orthros\' script reads the page\'s file, sets the camera only, tells the page its view and exterior cell', () => {
   for (const api of ["require('openmw.camera')", "require('openmw.vfs')", "require('openmw.mp')", 'camera.setViewDistance(', 'camera.getBaseViewDistance()',
     "vfs.open('orthros/view.txt')", 'core.getRealTime()', "mp.set(key, value)", "'orthros.view'", "'orthros.cell'", 'cell.gridX', 'onFrame']) assert.ok(LUA.includes(api), api);

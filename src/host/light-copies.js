@@ -73,9 +73,10 @@ function dxgi(f) {
 
 /**
  * The light copy of a DDS texture whose file starts with `head` (its first 148 bytes at least, when there are) and has
- * `size` bytes: its finest mip levels left out, down to LIGHT_SIDE — the same format, its header telling the smaller
- * size and the fewer levels, the remaining levels as they are. Null when the texture is small already, has no levels
- * below (a picture drawn as it is: a menu's), is a cube or a volume, or is not as its header says.
+ * `size` bytes: its finest mip levels left out, down to LIGHT_SIDE and two levels left at least — the same format, its
+ * header telling the smaller size and the fewer levels, the remaining levels as they are. Null when the texture is
+ * small already, has fewer than three levels (a picture drawn as it is: a menu's), is a cube or a volume, or is not as
+ * its header says.
  */
 export function lightDds(head, size) {
   if (head.length < 128 || head.toString('latin1', 0, 4) !== 'DDS ' || head.readUInt32LE(4) !== 124) return null;
@@ -97,8 +98,10 @@ export function lightDds(head, size) {
     const lw = Math.max(1, w >>> i), lh = Math.max(1, h >>> i);
     return compressed ? Math.max(1, Math.ceil(lw / 4)) * Math.max(1, Math.ceil(lh / 4)) * unit : lw * lh * unit;
   };
+  // (two levels kept at least: an engine meeting a compressed texture without stored levels may stop mipmapping it for
+  // good — a mipmapping filter turned off — even once its file replaces the light copy in place)
   let k = 0;
-  while (k < mips - 1 && Math.max(w >>> k, h >>> k) > LIGHT_SIDE) k++;
+  while (k < mips - 2 && Math.max(w >>> k, h >>> k) > LIGHT_SIDE) k++;
   if (k === 0) return null;
   let total = 0, skipped = 0;
   for (let i = 0; i < mips; i++) { const n = levelBytes(i); total += n; if (i < k) skipped += n; }

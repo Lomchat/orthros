@@ -43,6 +43,11 @@ const NEAR_BLOCKS = 2, NEAR_QUIET_MS = 500, NEAR_MAX = 64;
  * player in an area loaded already, not between two reads of a load (an engine computes for seconds between them)
  */
 const UPGRADE_QUIET_MS = 8000;
+/**
+ * …or this long for the files of an engine that loads them again in place (upgrade's `soon`: the player sees the file
+ * replace its light copy at once, a benefit worth an earlier start)
+ */
+const UPGRADE_SOON_QUIET_MS = 1500;
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
 /** learned pieces fetched ahead of the game (see pumpAhead): requests in flight at most, entries past its position */
 const AHEAD_REQUESTS = 3, AHEAD_WINDOW = 32;
@@ -142,6 +147,8 @@ export class HttpBackend {
     this.later = new Map();
     /** blocks of files whose light copy the game read (see upgrade), last of all: same entries, the latest last */
     this.upgrades = new Map();
+    /** the latest upgrade was soon (an engine that reloads in place): the upgrades start after UPGRADE_SOON_QUIET_MS */
+    this.upgradeSoon = false;
     /** the background downloads in flight (prefetch, block fill): their AbortControllers, aborted when the game
      * needs the network (see abortBackground) */
     this.bgAborts = new Set();
@@ -632,7 +639,12 @@ export class HttpBackend {
       if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
       ok = data.length === end - start;
       return ok ? data : undefined;
-    } catch { return ctl?.signal.aborted ? ABORTED : null; } finally { if (ctl) this.bgAborts.delete(ctl); this.net.end(tok, wire, end - start, ok); }
+    } catch { return ctl?.signal.aborted ? ABORTED : null; } finally {
+      // (a failed path — a part refused, one fetch failed, a body short — cancels the requests still running: their
+      // bodies would hold the link while it counts as free)
+      if (ctl) { if (!ok) ctl.abort(); this.bgAborts.delete(ctl); }
+      this.net.end(tok, wire, end - start, ok);
+    }
   }
 
   fetchRange(path, start, end) {
@@ -910,15 +922,17 @@ export class HttpBackend {
   /**
    * The game read `path`'s light copy (a link that is not fast: src/vfs/data-client.js): the file itself downloaded in
    * the background for its next load, last of all — after every other background download, the link quiet for
-   * UPGRADE_QUIET_MS, a thin link too (by pieces) —, the latest files first (the player is near them: loaded again soonest).
+   * UPGRADE_QUIET_MS (UPGRADE_SOON_QUIET_MS when `soon`: an engine that loads it again in place), a thin link too (by
+   * pieces) —, the latest files first (the player is near them: loaded again soonest).
    */
-  upgrade(path) {
+  upgrade(path, { soon = false } = {}) {
     const r = this.lookup(path); if (!r?.file) return;
     const size = r.file.size, mtime = r.file.mtime ?? 0;
     for (let i = 0; i * BLOCK < size; i++) {
       const k = `${r.path}#${i}`;
       if (this.cache.has(k) || this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) continue;
-      this.upgrades.delete(k); this.upgrades.set(k, { path: r.path, size, mtime, index: i });
+      this.upgrades.delete(k); this.upgrades.set(k, { path: r.path, size, mtime, index: i, soon });
+      this.upgradeSoon = soon; // (the latest file's: the next one fetched)
     }
     this.fillBackground();
   }
@@ -950,7 +964,9 @@ export class HttpBackend {
         // whose light copy the game read, after a longer one still)
         const quiet = () => (this.want.size ? 150 : this.near.size || this.later.size ? NEAR_QUIET_MS : 0);
         const queued = () => this.want.size || this.near.size || this.later.size || this.upgrades.size;
-        while (queued() && (quiet() ? this.gameBusy(quiet()) : !this.gameQuiet(UPGRADE_QUIET_MS))) await new Promise((res) => setTimeout(res, 50));
+        // (the next upgrade, the latest file's: soon or not)
+        const upgradeQuiet = () => (this.upgradeSoon ? UPGRADE_SOON_QUIET_MS : UPGRADE_QUIET_MS);
+        while (queued() && (quiet() ? this.gameBusy(quiet()) : !this.gameQuiet(upgradeQuiet()))) await new Promise((res) => setTimeout(res, 50));
         const q = this.want.size ? this.want : this.near.size ? this.near : this.later.size ? this.later : this.upgrades;
         if (!q.size) continue; // (fetched whole meanwhile by a sequential read)
         const [k, w] = q === this.upgrades ? [...q].at(-1) : q.entries().next().value;

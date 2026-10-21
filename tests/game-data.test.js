@@ -50,25 +50,32 @@ test('an OpenMW installation serves its engine\'s asset pack with its game files
 
 /**
  * A server of one version for the data worker: /api/manifest, /api/tree, /api/prefetch, /gamez ranges (`lights`: files'
- * light copies, under .light/); requests logged.
+ * light copies, under .light/); requests logged. `required`: { files, learned } of a version 'r' it requires
+ * (extraMounts), its requests logged as 'r:<path>'.
  */
-function fakeServer(files, learned = [], lights = {}) {
-  const tree = { dirs: {}, files: {} }, posts = [], asked = [];
-  for (const [p, b] of Object.entries(files)) {
-    const parts = p.split('/'); let node = tree;
-    for (const d of parts.slice(0, -1)) node = node.dirs[d] ??= { dirs: {}, files: {} };
-    node.files[parts.at(-1)] = { size: b.length, mtime: 5, ...(lights[p] ? { light: lights[p].length } : {}) };
-  }
-  files = { ...files, ...Object.fromEntries(Object.entries(lights).map(([p, b]) => ['.light/' + p, b])) };
+function fakeServer(files, learned = [], lights = {}, required = null) {
+  const posts = [], asked = [];
+  const version = (files, lights = {}) => {
+    const tree = { dirs: {}, files: {} };
+    for (const [p, b] of Object.entries(files)) {
+      const parts = p.split('/'); let node = tree;
+      for (const d of parts.slice(0, -1)) node = node.dirs[d] ??= { dirs: {}, files: {} };
+      node.files[parts.at(-1)] = { size: b.length, mtime: 5, ...(lights[p] ? { light: lights[p].length } : {}) };
+    }
+    return { tree, files: { ...files, ...Object.fromEntries(Object.entries(lights).map(([p, b]) => ['.light/' + p, b])) } };
+  };
+  const vs = { v: { ...version(files, lights), learned, man: { name: 'v', ...(required ? { extraMounts: [{ manifest: 'r', at: 'C:\\R' }] } : {}) } } };
+  if (required) vs.r = { ...version(required.files), learned: required.learned ?? [], man: { name: 'r' } };
   const fetch = async (url, init = {}) => {
     const u = new URL(url, 'http://x');
-    if (u.pathname === '/api/manifest/v') return Response.json({ name: 'v' });
-    if (u.pathname === '/api/tree/v') return Response.json(tree);
-    if (u.pathname === '/api/prefetch/v') { if (init.method === 'POST') { posts.push(JSON.parse(init.body)); return new Response(null, { status: 204 }); } return Response.json(learned); }
-    const m = /^\/gamez\/v\/(.+)$/.exec(u.pathname);
-    if (m && files[decodeURIComponent(m[1])]) {
-      const [a, b] = u.searchParams.get('r').split('-').map(Number); asked.push([decodeURIComponent(m[1]), a, b, u.searchParams.get('p') ? 'bg' : 'demand']);
-      const body = files[decodeURIComponent(m[1])].slice(a, b);
+    const api = /^\/api\/(manifest|tree|prefetch)\/(\w+)$/.exec(u.pathname), av = api && vs[api[2]];
+    if (av && api[1] === 'manifest') return Response.json(av.man);
+    if (av && api[1] === 'tree') return Response.json(av.tree);
+    if (av && api[1] === 'prefetch') { if (init.method === 'POST') { posts.push(JSON.parse(init.body)); return new Response(null, { status: 204 }); } return Response.json(av.learned); }
+    const m = /^\/gamez\/(\w+)\/(.+)$/.exec(u.pathname), gv = m && vs[m[1]];
+    if (gv && gv.files[decodeURIComponent(m[2])]) {
+      const [a, b] = u.searchParams.get('r').split('-').map(Number); asked.push([(m[1] === 'v' ? '' : m[1] + ':') + decodeURIComponent(m[2]), a, b, u.searchParams.get('p') ? 'bg' : 'demand']);
+      const body = gv.files[decodeURIComponent(m[2])].slice(a, b);
       return new Response(body, { status: 200, headers: { 'content-length': String(body.length) } });
     }
     if (u.pathname === '/elsewhere.bin') { const all = bytes(5000, 9), [, a, b] = /bytes=(\d+)-(\d+)/.exec(init.headers?.Range ?? 'bytes=0-4999').map(Number); return new Response(all.slice(a, b + 1), { status: 206 }); }
@@ -128,6 +135,17 @@ test('the data worker reports the pieces the engine used, loads the startup set,
   assert.equal(server.posts[0].session, 'sess1');
 });
 
+test('the startup set covers the versions a version requires, each from its own learned order', async (t) => {
+  const server = fakeServer({ 'Game.esm': bytes(3 << 20) }, [['Game.esm', 0, 0, 0]], {}, { files: { 'Base.dat': bytes(2 << 20, 5) }, learned: [['Base.dat', 1, 0, 0]] });
+  const w = await startWorker(t, server);
+  assert.deepEqual(Object.keys(w.out.find((m) => m.ready).ready.trees), ['v', 'r']);
+  w.handle({ startup: true });
+  await w.until(() => w.out.some((m) => m.startup?.done), 'startup');
+  assert.equal(w.out.findLast((m) => m.startup).startup.total, 2 << 20, 'a block of each');
+  assert.ok(server.asked.some(([p, a]) => p === 'Game.esm' && a === 0), 'the version\'s');
+  assert.ok(server.asked.some(([p, a]) => p === 'r:Base.dat' && a === 1 << 20), 'the required version\'s, its own order');
+});
+
 test('the page\'s client reads through the worker: pieces kept in the page, asked once, the engine\'s waits by message', async (t) => {
   const esm = bytes(1 << 20), server = fakeServer({ 'Game.esm': esm });
   const realFetch = globalThis.fetch; globalThis.fetch = server.fetch; t.after(() => { globalThis.fetch = realFetch; });
@@ -172,6 +190,16 @@ test('on a link that is not fast a texture\'s load reads its light copy, the fil
   assert.deepEqual(out, tex, 'its next load: the file');
 });
 
+test('an engine that reloads in place gets the file of a texture read light soon (the game quiet 1.5 s, not 8)', async (t) => {
+  const tex = bytes(300000, 2), light = bytes(40000, 8), server = fakeServer({ 'tex.dds': tex }, [], { 'tex.dds': light });
+  const data = await inThread(t, server, { reloads: true }), h = data.file('v', 'tex.dds'), out = new Uint8Array(h.size);
+  const t0 = Date.now();
+  await data.ensure(h, 0, h.size); data.read(h, out, 0, h.size, 0);
+  assert.deepEqual(out.subarray(0, light.length), light);
+  await until(() => data.realHere.has('v\ntex.dds'), 'the file itself here', 6000);
+  assert.ok(Date.now() - t0 < 6000, `${Date.now() - t0} ms`);
+});
+
 test('on a fast link a texture\'s load reads the file; the learned order brings light copies on a link that is not fast', async (t) => {
   const tex = bytes(300000, 2), light = bytes(40000, 8), learned = [['tex.dds', 0, 0, 0]];
   const fast = fakeServer({ 'tex.dds': tex }, learned, { 'tex.dds': light });
@@ -198,6 +226,29 @@ test('a texture\'s load reads the file or its light copy by the link, unless the
   assert.deepEqual(Object.keys(link).map((l) => real(l, { prefer: 'light' })), [false, false, false, false], 'the far ring: light');
   assert.deepEqual(Object.keys(link).map((l) => real(l, { prefer: 'real', lightHere: true })), [true, true, true, true]);
   assert.deepEqual(Object.keys(link).map((l) => real(l, { prefer: 'light', here: true })), [true, true, true, true], 'the file here: itself');
+  // (an engine that loads a file again in place: light first on every link that is not fast)
+  assert.deepEqual(Object.keys(link).map((l) => real(l, { reloads: true })), [false, false, true, false], 'reloads: light unless fast');
+  assert.deepEqual(Object.keys(link).map((l) => real(l, { reloads: true, prefer: 'real' })), [true, true, true, true]);
+});
+
+test('an engine that reloads in place: its loads choose again at the next start (repick), the current one keeps its copy; upgrades soon', () => {
+  const told = [], fake = { onmessage: null, postMessage: (m) => told.push(m), terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    assert.equal(data.reloadsInPlace, false); data.reloads(true); assert.equal(data.reloadsInPlace, true);
+    const c = data.ctrl; c[7] = 0; c[8] = 1000; c[9] = 0; // (a link measured between thin and fast)
+    const h = data.fileAs('v', 'tex.dds', 300000); h.light = 40000;
+    assert.notEqual(data.pick(h, 0), h, 'between thin and fast: light first'); assert.equal(data.lightRead(h), true);
+    assert.deepEqual(told.find((m) => m.light).light, { name: 'v', path: 'tex.dds', soon: true }, 'its upgrade soon');
+    // (the file here, the engine about to reload it: the rest of the load keeps the light copy, the next load the file)
+    data.realHere.add('v\ntex.dds'); data.repick(h);
+    assert.notEqual(data.pick(h, 4096), h, 'mid-load: the light copy still');
+    assert.equal(data.pick(h, 0), h, 'its reload: the file'); assert.equal(data.lightRead(h), false);
+    // (an engine that cannot reload: the file itself on a link between thin and fast, as before)
+    const g = new GameData({ name: 'v', worker: { onmessage: null, postMessage() {}, terminate() {} } });
+    g.ctrl[8] = 1000; const h2 = g.fileAs('v', 'tex.dds', 300000); h2.light = 40000;
+    assert.equal(g.pick(h2, 0), h2); g.close();
+  } finally { data.close(); }
 });
 
 test('the page\'s game data says when nothing waits (no read waited, the learned order idle) and the link\'s kind', async (t) => {

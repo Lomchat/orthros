@@ -47,7 +47,9 @@ export const unitRange = (u, size) => {
  */
 export function createBrCache(opts) {
   const dir = path.resolve(opts.dir);
-  const maxBytes = opts.maxBytes ?? 1536 * 1024 * 1024, lowBytes = opts.lowBytes ?? Math.floor(maxBytes * 0.9);
+  // (a budget that is not a positive number — NaN from a bad flag — would never evict, nor stop seeding: the default)
+  const maxBytes = Number.isFinite(opts.maxBytes) && opts.maxBytes > 0 ? opts.maxBytes : 1536 * 1024 * 1024;
+  const lowBytes = Number.isFinite(opts.lowBytes) && opts.lowBytes >= 0 ? opts.lowBytes : Math.floor(maxBytes * 0.9);
   const pinCap = maxBytes * (opts.pinShare ?? 0.5);
   const loadLimit = opts.loadLimit ?? 24, diskLimit = opts.diskLimit ?? 0.85, pauseMs = opts.pauseMs ?? 30000, idleMs = opts.idleMs ?? 60000;
   const log = opts.log ?? (() => {});
@@ -131,11 +133,14 @@ export function createBrCache(opts) {
     }
   };
 
-  /** least recently used units out, the unpinned ones first, down to `to` bytes */
+  /**
+   * least recently used units out, the unpinned ones first, down to `to` bytes — never the raw markers (empty files:
+   * nothing freed, brotli run again for them later; the sweep removes them once their file changed)
+   */
   const evict = (to = lowBytes) => {
     if (total <= to) return;
     const all = [];
-    for (const e of entries.values()) for (const [name, u] of e.units) all.push([u.pinned ? 1 : 0, u.lastHit, e, name]);
+    for (const e of entries.values()) for (const [name, u] of e.units) if (u.bytes > 0) all.push([u.pinned ? 1 : 0, u.lastHit, e, name]);
     all.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     for (const [, , e, name] of all) {
       if (total <= to) break;
@@ -158,8 +163,14 @@ export function createBrCache(opts) {
     child = fork(WORKER, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'], serialization: 'advanced' });
     try { os.setPriority(child.pid, 19); } catch { /* not allowed: as it is */ }
     const c = child;
-    c.on('message', (m) => { const r = replies.get(m.id); if (r) { replies.delete(m.id); r(m); } });
-    c.on('exit', () => { if (child === c) child = null; for (const [id, r] of replies) { replies.delete(id); r({ id, error: 'generator exited' }); } });
+    // (the ids sent to this child: its exit fails those only — a child started after it, while it was stopping, keeps its own)
+    c.mine = new Set();
+    c.on('message', (m) => { c.mine.delete(m.id); const r = replies.get(m.id); if (r) { replies.delete(m.id); r(m); } });
+    c.on('exit', () => {
+      if (child === c) child = null;
+      for (const id of c.mine) { const r = replies.get(id); replies.delete(id); r?.({ id, error: 'generator exited' }); }
+      c.mine.clear();
+    });
     return c;
   };
   const stopChild = () => { const c = child; child = null; if (c) { try { c.disconnect(); } catch { /* gone */ } c.kill(); } };
@@ -167,8 +178,8 @@ export function createBrCache(opts) {
     clearTimeout(childIdle);
     const c = startChild(), id = nextId++;
     c.channel?.ref?.();
-    replies.set(id, resolve);
-    try { c.send({ ...msg, id }); } catch (e) { replies.delete(id); resolve({ id, error: String(e) }); }
+    replies.set(id, resolve); c.mine.add(id);
+    try { c.send({ ...msg, id }); } catch (e) { replies.delete(id); c.mine.delete(id); resolve({ id, error: String(e) }); }
   }).finally(() => {
     child?.channel?.unref?.(); // (an idle generator keeps no process alive)
     clearTimeout(childIdle); childIdle = setTimeout(stopChild, idleMs); childIdle.unref?.();
@@ -282,8 +293,14 @@ export function createBrCache(opts) {
       counts.hits++; u.lastHit = Date.now();
       return { path: path.join(e.dir, name + (u.raw ? '.raw' : '.br')), bytes: u.bytes, raw: u.raw };
     },
-    /** the bytes the unit `unit` of `file` takes on the wire when made (its compressed size, or raw's), else null: not a hit */
-    size(file, st, light, unit) { return entryOf(file, st, light).units?.get(unitName(unit))?.bytes ?? null; },
+    /** the bytes the unit `unit` of `file` takes on the wire when made (its compressed size, or raw's: its range's), else null: not a hit */
+    size(file, st, light, unit) {
+      const u = entryOf(file, st, light).units?.get(unitName(unit));
+      if (!u) return null;
+      if (!u.raw) return u.bytes;
+      const [start, end] = unitRange(unit, light ? light.copy.size : st.size);
+      return end - start;
+    },
     /** a unit found missing on the disk (evicted meanwhile, removed by hand): out of the index */
     drop(file, st, light, unit) { const e = entryOf(file, st, light); if (e.units) dropUnit(e, unitName(unit), false); },
     /** a request missed the unit: made next (before the launch sets), the most asked first */

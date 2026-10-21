@@ -39,11 +39,14 @@ test('a large DDS texture\'s light copy leaves its finest levels out: the same f
   assert.deepEqual(long.bytes.subarray(cl.from, cl.from + 16), Buffer.alloc(16, 6), 'from its sixth level on');
   // (uncompressed, its pitch; DX10 with a block-compressed format)
   const rgba = dds({ w: 1024, h: 512, mips: 3, rgb: true, bits: 32, pitch: true }), cr = lightDds(rgba.bytes, rgba.bytes.length);
-  assert.deepEqual([cr.head.readUInt32LE(16), cr.head.readUInt32LE(12), cr.head.readUInt32LE(20), cr.head.readUInt32LE(28)], [256, 128, 1024, 1]);
+  assert.deepEqual([cr.head.readUInt32LE(16), cr.head.readUInt32LE(12), cr.head.readUInt32LE(20), cr.head.readUInt32LE(28)], [512, 256, 2048, 2], 'two levels kept at least');
+  // (a short chain: two levels kept, its side above LIGHT_SIDE then)
+  const short = dds({ w: 2048, h: 2048, mips: 4 }), cs = lightDds(short.bytes, short.bytes.length);
+  assert.deepEqual([cs.head.readUInt32LE(16), cs.head.readUInt32LE(28)], [512, 2]);
   const bc7 = dds({ w: 2048, h: 2048, mips: 12, dxgi: 98 }), c7 = lightDds(bc7.bytes, bc7.bytes.length);
   assert.equal(c7.head.length, 148); assert.equal(c7.from, 148 + bc7.levels.slice(0, 3).reduce((n, l) => n + l.length, 0));
   // (nothing to gain, or not as its header says: none)
-  for (const [what, x] of [['small', dds({ w: 256, h: 256, mips: 9 })], ['no levels below', dds({ w: 2048, h: 2048, mips: 1 })],
+  for (const [what, x] of [['small', dds({ w: 256, h: 256, mips: 9 })], ['no levels below', dds({ w: 2048, h: 2048, mips: 1 })], ['two levels only', dds({ w: 1024, h: 1024, mips: 2 })],
     ['a cube', dds({ w: 1024, h: 1024, mips: 11, caps2: 0x200 })], ['cut short', dds({ w: 1024, h: 1024, mips: 11, cut: 9 })]]) assert.equal(lightDds(x.bytes, x.bytes.length), null, what);
   assert.equal(lightDds(Buffer.from('not a texture at all, not at all, no'), 36), null);
 });

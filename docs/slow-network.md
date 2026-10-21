@@ -70,7 +70,9 @@ envoie tout en compressé instantanément, puis en background on charge les gros
 
 - **Server** (`src/host/light-copies.js`): a light copy of a DDS texture whose longest side passes `LIGHT_SIDE` (256)
   and which has mip levels: its finest levels left out — the same format, its header telling the smaller size and the
-  fewer levels, the remaining levels as they are (a texture drawn without levels — a menu's — is never lightened).
+  fewer levels, the remaining levels as they are, two at least (an engine meeting a compressed texture without stored
+  levels may turn its mipmapping filter off for good, even once the file replaces it in place; a texture of fewer
+  than three levels is not lightened, nor one drawn without levels — a menu's).
   Derived at each request (a header of its own, then a run of the file: nothing stored, the game files never changed),
   served as `/gamez/<manifest>/.light/<path>` (compressed ranges, read reports learned like the file's). The tree tells
   each such file's light size (`light`). For the browser ports only (`manifest.lightCopies`, the catalog's: `false` in a
@@ -78,14 +80,21 @@ envoie tout en compressé instantanément, puis en background on charge les gros
 - **Page** (`src/vfs/data-client.js` `pick`, `readsReal`): each load of the file (a read at its start, 2 s after its
   last read) chooses: the file itself when it is here whole; else what the page said its loads are for
   (`GameData.prefer`: `'light'` — loads that can do with less for now, as the far ring of a view that grows —,
-  `'real'`); else, on a fast link (the worker's ctrl[7]) or one measured between thin and fast (ctrl[8] measured,
-  ctrl[9] not thin), the file unless its light copy is here (no wait); on a thin link or one not measured yet, its
-  light copy — zeros past its bytes, up to the file's size (the engine reads what its header says). The choice holds
-  for the whole load. The light copy read, the worker is told once.
+  `'real'`); else, on a fast link (the worker's ctrl[7]) — or, for an engine that cannot load a file again in place,
+  one measured between thin and fast (ctrl[8] measured, ctrl[9] not thin) —, the file unless its light copy is here
+  (no wait); else its light copy — zeros past its bytes, up to the file's size (the engine reads what its header
+  says). The choice holds for the whole load. The light copy read, the worker is told once.
+- **Engines that reload in place** (`GameData.reloads(true)`, or the `reloads` option: OpenMW's Orthros build, whose
+  `orthros_file_updated` export `src/ports/openmw/streamfs.js` sees): light copies first on every link that is not
+  fast, since the file replaces the light copy while it is shown (`onReal`: the page asks the engine to load it again,
+  `repick(h)` making that load choose again — the rest of a load under way keeps the light copy, its offsets that
+  copy's). Measured on a 1 MB/s link: the between → file rule sent 23 MB of full sky textures before the menu
+  (menu 200 s against 126 s). Their upgrades are `soon`: told with the light read, they start once the game has read
+  nothing for 1.5 s instead of 8 s (the player sees the benefit at once), the latest first as any.
 - **Worker** (`src/vfs/data-worker.js`, `HttpBackend.upgrade`): the files whose light copy the engine read are
   downloaded last of all — after every other background download, once the game has read nothing for 8 s (the player
-  in an area already loaded), a thin link too (by pieces), the latest first —; done, the page is told (`real`) and the
-  next load reads the file. The learned order is read for the link (`forLink`): on a link that is not fast, light
+  in an area already loaded; 1.5 s for an engine that reloads in place), a thin link too (by pieces), the latest
+  first —; done, the page is told (`real`) and the next load reads the file. The learned order is read for the link (`forLink`): on a link that is not fast, light
   copies in place of their files (unless here), on a fast one the files themselves.
 - **Measured** (Morrowind Vanilla+ FR, fresh browser, 1 MB/s and 60 ms, the same learned order, light copies at 256):
   menu 163 → 126 s; frozen after New Game (240 s window) 228 → 149 s, longest hold 48 → 21 s; the engine's waits
@@ -134,11 +143,14 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   flags: bit 0 (`PRE_PLAYABLE`) when it was read before playable in at least half the marking sessions.
 - **The launch set** (`launchSet`: `startupHead(forLink(order))`): the flagged entries as this link reads them (light
   copies on a link not fast, no media there); an order without flags falls back to its first pause. It is the startup
-  set the GoldSrc and re3 pages wait for (`startup()` in the data worker).
+  set the GoldSrc and re3 pages wait for (`startup()` in the data worker). A version that requires others as separate
+  parts (`extraMounts`: a Windows game over another's folder; a port's required versions are underlays, in its own
+  tree) adds their launch sets, each from its own learned order — the startup set, the card's sizes and Prepare alike.
 - **The home card** (`/api/manifests` `launch: { bytes, lightBytes, wire, lightWire, entries }` per version,
   `launchSummary`; null until a session marked it; made again when the order changes, at most every minute): `bytes`
   the launch set's learned pieces on a fast link, `lightBytes` with light copies (a link not fast), the `wire` bytes
-  those of the precompressed units already made (`brCache.size`), else 0.75 of the bytes. The card says "Playable
+  those of the precompressed units already made (`brCache.size`; a unit brotli could not shrink: its range's bytes),
+  else 0.75 of the bytes. The card says "Playable
   after 80 MB, about 10 min at your link (100 KB/s)" (`launchStatus` in `src/host/web/download.js`, the rate
   `linkRate`; the size only while none was measured), above the whole download's line, hidden once the whole game is
   here or downloading.

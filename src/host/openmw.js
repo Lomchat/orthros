@@ -66,8 +66,10 @@ export const withStreaming = (html, upstream = false) => upstream ? html
  * The engine page's view distance and Orthros' script in the engine (src/ports/openmw/view-grow.js, view.lua): the
  * module loaded before the engine (its load waits for it), the boot viewing distance its choice (short on a link that
  * is not fast, then raised as the game data allows; distant terrain and object paging as the tier says), and Orthros'
- * content (orthros.omwscripts) in every openmw.cfg the page writes — alone or with friends, whatever the link: saves
- * list their content files. Each hook falls back to the page's own when the module did not load.
+ * content (orthros.omwscripts) in every single-player openmw.cfg the page writes, whatever the link (saves list their
+ * content files). Multiplayer and the baked example world (?nomw) keep the tier's distance and their own content list:
+ * a world refuses a client whose content its own list lacks (BAD_CONTENT). Each hook falls back to the page's own when
+ * the module did not load.
  */
 export const withProgressiveView = (html) => html
   .replace('<head>', `<head><script>window.orthrosViewReady = import('/src/ports/openmw/view-grow.js').then(function (m) { return m.install(window); }).catch(function (e) { console.warn('[orthros view]', e); });</script>`)

@@ -70,7 +70,7 @@ function dispatch(m) {
   if (m.startup) { startup(); return; }
   if (m.mark) { mark(m.mark); return; }
   if (m.wantWhole) { W.parts.get(m.wantWhole.name)?.files.wantWhole(m.wantWhole.path); return; }
-  if (m.light) { upgrade(m.light.name, m.light.path); return; }
+  if (m.light) { upgrade(m.light.name, m.light.path, !!m.light.soon); return; }
   if ('whole' in m) { m.whole ? wholeDownload() : (W.whole && (W.whole.stop = true)); return; }
   if (m.migrate) { migrate(m.migrate); return; }
   if (m.close) { W.stop = true; report(true); for (const t of W.timers) clearInterval(t); for (const p of W.parts.values()) try { p.store?.close(); } catch { /* closed */ } }
@@ -220,17 +220,20 @@ function mark(m) {
 /** The learned order of the version: what earlier sessions read first, the startup set its head. */
 const order = () => (W.learned ??= Promise.all(W.version.parts.map((p) => learnedOrder(p.name))));
 
-/** The startup set loaded (before the engine starts): progress { bytes, total, done } to the page. */
+/**
+ * The startup set loaded (before the engine starts): every part's launch set — the version's, then those of the versions
+ * it requires (the game reads them too), each from its own learned order —; progress { bytes, total, done } to the page.
+ */
 async function startup() {
-  const lists = await order(), part = W.version.parts[0];
-  const head = launchSet(part.files, lists[0], W.version.net.fast());
-  const progress = { bytes: 0, blocks: 0, done: false };
-  const total = setBytes(part.files, head).bytes;
-  const tick = setInterval(() => postMessage({ startup: { bytes: progress.bytes, total, done: false } }), 250);
-  if (!head.length) { clearInterval(tick); postMessage({ startup: { bytes: 0, total: 0, done: true } }); return; }
+  const lists = await order(), fast = W.version.net.fast();
+  const heads = W.version.parts.map((p, i) => ({ p, head: launchSet(p.files, lists[i], fast), progress: { bytes: 0, blocks: 0, done: false } })).filter((h) => h.head.length);
+  const total = heads.reduce((n, h) => n + setBytes(h.p.files, h.head).bytes, 0);
+  const bytes = () => heads.reduce((n, h) => n + h.progress.bytes, 0);
+  if (!heads.length) { postMessage({ startup: { bytes: 0, total: 0, done: true } }); return; }
+  const tick = setInterval(() => postMessage({ startup: { bytes: bytes(), total, done: false } }), 250);
   // (the pieces sessions read only: the rest of their blocks comes with the learned order, once the engine runs)
-  try { await part.files.prefetch(head, progress, () => W.stop, { learnedOnly: true }); }
-  finally { clearInterval(tick); postMessage({ startup: { bytes: progress.bytes, total, done: true } }); }
+  try { for (const h of heads) { if (W.stop) break; await h.p.files.prefetch(h.head, h.progress, () => W.stop, { learnedOnly: true }); } }
+  finally { clearInterval(tick); postMessage({ startup: { bytes: bytes(), total, done: true } }); }
 }
 
 /**
@@ -312,10 +315,13 @@ function aheadIdle() {
 /** The key the page knows a file by (data-client.js). */
 const lightKey = (name, path) => name + '\n' + path.toLowerCase();
 
-/** The engine read the light copy of `path`: the file itself in the background (HttpBackend.upgrade), told once here. */
-function upgrade(name, path) {
+/**
+ * The engine read the light copy of `path`: the file itself in the background (HttpBackend.upgrade), told once here;
+ * `soon` for an engine that loads it again in place (GameData.reloads: the player sees it sharpen).
+ */
+function upgrade(name, path, soon = false) {
   const part = W.parts.get(name), r = part?.files.lookup(path); if (!r?.file) return;
-  part.files.upgrade(r.path);
+  part.files.upgrade(r.path, { soon });
 }
 
 /**

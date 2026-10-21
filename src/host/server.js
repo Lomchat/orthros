@@ -277,10 +277,12 @@ export function createServer(opts = {}) {
   /**
    * What a version's launch costs (launch-set.js launchSummary: its launch set's bytes, with and without light copies,
    * and their wire bytes — the precompressed units' when made, br-cache.js), for the home: null until a session marked
-   * it playable. Made again once its learned order changed, or a minute later (the units made meanwhile).
+   * it playable. Made again once its learned order changed, or a minute later (the units made meanwhile). The versions it
+   * requires (manifest.extraMounts: the game reads them too) add their own launch sets, each learned from its own
+   * sessions (a version none of whose sessions was marked playable adds nothing).
    */
   const launches = new Map(); // manifest -> { at, v }
-  const launchOf = (name, man) => {
+  const ownLaunchOf = (name, man) => {
     const c = launches.get(name);
     if (c && Date.now() - c.at < 60e3) return c.v;
     let v = null;
@@ -294,6 +296,17 @@ export function createServer(opts = {}) {
     } catch { v = null; }
     launches.set(name, { at: Date.now(), v });
     return v;
+  };
+  const launchOf = (name, man) => {
+    const v = ownLaunchOf(name, man);
+    if (!v) return v;
+    const sum = { ...v };
+    for (const d of Array.isArray(man.extraMounts) ? man.extraMounts : []) {
+      const rm = d?.manifest && d.manifest !== name ? manifests.get(d.manifest) : null;
+      const r = rm ? ownLaunchOf(d.manifest, rm) : null;
+      if (r) for (const k of ['bytes', 'lightBytes', 'wire', 'lightWire', 'entries']) sum[k] += r[k];
+    }
+    return sum;
   };
 
   /**
@@ -1013,7 +1026,9 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   // (--br-cache <dir>: the precompressed units, default <learn>/../brcache — off without --learn, or with `off`;
   // --br-cache-bytes: their budget, 1.5 GiB by default)
   const brArg = arg('--br-cache'), brCacheDir = brArg === 'off' ? null : brArg ?? (learnDir ? path.join(learnDir, '..', 'brcache') : null);
-  const server = createServer({ brCacheDir, brCacheBytes: arg('--br-cache-bytes') ? Number(arg('--br-cache-bytes')) : undefined, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
+  const brBytesArg = arg('--br-cache-bytes'), brCacheBytes = brBytesArg === undefined ? undefined : Number(brBytesArg);
+  if (brBytesArg !== undefined && !(Number.isFinite(brCacheBytes) && brCacheBytes > 0)) { console.error(`--br-cache-bytes ${brBytesArg}: expected a positive number of bytes`); process.exit(2); }
+  const server = createServer({ brCacheDir, brCacheBytes, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
   // (a restart — every deployment — saves the shared worlds' last changes first: they are written a few seconds after)
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.mmo.flush(); } catch (e) { console.error('mmo flush:', e); } finally { process.exit(0); } });

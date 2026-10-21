@@ -61,8 +61,9 @@ export function growStep(s, { report, exterior, quiet, framesOk, now }) {
 /**
  * Into the engine page `win` before its engine starts (window.orthrosViewReady holds the engine's load): the hooks its
  * boot calls — orthrosViewBoot(tierDistance) the boot view distance (window.orthrosViewStart, orthrosViewTarget),
- * orthrosContent(FS, cfgLines) Orthros' script written and its content line added — and, on a link that is not fast,
- * the growth. `o.lua`: the script's text (else fetched); `o.slow`: the link's kind (else linkRate, the last measure);
+ * orthrosContent(FS, cfgLines) Orthros' script written and its content line added (single player only: a multiplayer
+ * world's content list is the world's own) — and, on a link that is not fast, the growth (neither in multiplayer nor in
+ * the baked example world, ?nomw). `o.lua`: the script's text (else fetched); `o.slow`: the link's kind (else linkRate, the last measure);
  * `o.now`, `o.setInterval`, `o.clearInterval`: a test's clock.
  */
 export async function install(win = globalThis, o = {}) {
@@ -73,8 +74,11 @@ export async function install(win = globalThis, o = {}) {
   win.orthrosViewState = () => ({ ...s });
   win.orthrosViewBoot = (tierDistance) => {
     const target = Math.round(Number(tierDistance)) || 0;
-    // (the page's own file streaming only: its game data says when it is quiet)
-    const grow = slow && target > VIEW.start && typeof win.StreamFS?.data === 'function';
+    // (the page's own file streaming only: its game data says when it is quiet — never the baked example world, ?nomw,
+    // which reads no game data over the network and writes no openmw.cfg to start the growth; never a multiplayer
+    // world: its content list, the world's own, has no Orthros script to raise the view)
+    const example = !!win.__FORCE_NOMW || /[?&]nomw\b/.test(win.location?.search ?? '');
+    const grow = slow && !example && !win.__omwMPEnabled && target > VIEW.start && typeof win.StreamFS?.data === 'function';
     win.orthrosViewTarget = target; win.orthrosViewStart = grow ? VIEW.start : target;
     if (grow) Object.assign(s, { phase: 'wait', start: VIEW.start, target, value: VIEW.start });
     return String(win.orthrosViewStart);
@@ -91,6 +95,9 @@ export async function install(win = globalThis, o = {}) {
     if (s.phase === 'done' || s.phase === 'stopped') { (o.clearInterval ?? clearInterval)(timer); timer = null; }
   };
   win.orthrosContent = (fs, cfg) => {
+    // (a multiplayer world checks the client's content list against its own — the native simulation's, which has no
+    // orthros.omwscripts: an extra file is refused, BAD_CONTENT)
+    if (win.__omwMPEnabled) return cfg;
     FS = fs;
     fs.mkdirTree(`${ROOT}/scripts/orthros`); fs.mkdirTree(`${ROOT}/orthros`);
     fs.writeFile(`${ROOT}/${CONTENT}`, 'PLAYER: scripts/orthros/view.lua\n');

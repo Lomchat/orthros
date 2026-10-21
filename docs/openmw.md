@@ -295,7 +295,8 @@ paths, cookies, and WebSocket forwarding/origin rejection.
 
 Loading (2026-10-20, after the owner's "stuck at 20 %" and a New Game freeze). The engine build
 (`openmw.{js,wasm,data}`, 238 MB) is sent as the release's own brotli siblings when the browser takes
-them (39 MB; no `Content-Length`, so Emscripten's progress counts against the decoded package size),
+them (39 MB; Orthros' own builds, tools/openmw/build.sh, make them at brotli quality 11: orthros-r1's openmw.data
+33 MB, 40 MB at 9; no `Content-Length`, so Emscripten's progress counts against the decoded package size),
 from `/engines/<release>/e/<hash>/` (immutable, one browser copy for every installation:
 `withSharedEngine`). The page adaptation drops the upstream `?v=2` from the base game's StreamFS
 URLs (with a query the upstream streamfs.js kept none of the pieces it read). The engine reads its
@@ -391,12 +392,15 @@ page (`withProgressiveView`, `src/host/openmw.js`):
   it is there);
 - its `[Camera] viewing distance` comes from `orthrosViewBoot(TIER.vd)`: on a link not fast last time (`linkRate`, the
   same rule as `&novid`) and with Orthros' file streaming, 8192 (`window.orthrosViewStart`; the tier's,
-  `window.orthrosViewTarget`, is reached later); else the tier's. `?vd=N` still fixes it (no growth);
-- every `openmw.cfg` the page writes (hosted, local files, locker; alone and with friends) gets
+  `window.orthrosViewTarget`, is reached later); else the tier's. `?vd=N` still fixes it (no growth). Never in
+  multiplayer (`window.__omwMPEnabled`) nor in the baked example world (`?nomw`, `__FORCE_NOMW`: no game data over the
+  network, no `openmw.cfg` written to start the growth): the tier's distance;
+- every single-player `openmw.cfg` the page writes (hosted, local files, locker) gets
   `content=orthros.omwscripts`, its files written into the engine's `/resources/vfs` (a data folder of the engine's
   own) before it starts: `PLAYER: scripts/orthros/view.lua` (source `src/ports/openmw/view.lua`) and
-  `orthros/view.txt`. Always, whatever the link: saves list their content files. (The example world boots its own
-  cfg: no script there.)
+  `orthros/view.txt`. Always, whatever the link: saves list their content files. Not in multiplayer: a world checks
+  the client's content list against its own (the native simulation's cfg, ending at `mp.omwscripts`) and refuses an
+  extra file (`BAD_CONTENT`). (The example world boots its own cfg: no script there.)
 
 The script, every 0.5 s of real time: reads `orthros/view.txt` (`"<distance> <base>"`, rewritten by the page in
 MEMFS; `"0 0"` leaves the camera alone) and sets the camera's view distance while the player's setting

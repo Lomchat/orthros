@@ -70,17 +70,20 @@ for name, a in b['archives'].items():
     if hashlib.sha256(f.read_bytes()).hexdigest() != a['sha256']: sys.exit(f'{name} differs from lock.json')
 PY
 
-# ---- Emscripten's sysroot and ports (wasm64, threads), cached once (network: the ports' archives)
-if [ ! -d "$cache/ports" ]; then
+# ---- Emscripten's sysroot and ports (wasm64, threads), cached once (network: the ports' archives). The marker is
+# written once both steps succeeded: an interrupted fill (emcc creates ports/ with its first archive) runs again, emcc
+# fetching only the archives still missing.
+if [ ! -f "$cache/.orthros-filled" ]; then
   mkdir -p "$cache"
   docker run --rm -u "$(id -u):$(id -g)" -v "$cache:/cache" "$image" sh -c 'cp -r /emsdk/upstream/emscripten/cache/. /cache/'
-  docker run --rm --cpus 8 -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$cache:/emsdk/upstream/emscripten/cache" "$image" sh -c '
+  docker run --rm --cpus 8 -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$cache:/emsdk/upstream/emscripten/cache" "$image" nice -n 19 sh -c '
     set -e; cd /tmp; printf "int main(){return 0;}\n" > p.c
     emcc -m64 -pthread -sUSE_ICU=1 p.c -o icu.js
     emcc -m64 -pthread -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 p.c -o gl.js
     emcc -m64 -pthread -fwasm-exceptions -sMALLOC=mimalloc -sUSE_SDL=2 -sUSE_FREETYPE=1 -sUSE_HARFBUZZ=1 -sUSE_LIBPNG=1 \
       -sUSE_LIBJPEG=1 -sUSE_ZLIB=1 -sUSE_OGG=1 -sUSE_VORBIS=1 -lopenal p.c -o ports.js
     emcc -m64 -pthread -sUSE_SDL=2 -sUSE_SDL_IMAGE=2 -sSDL2_IMAGE_FORMATS="[\"png\"]" p.c -o img.js'  # (MyGUI's CMake asks for it)
+  touch "$cache/.orthros-filled"
 fi
 python3 - "$lock" "$cache" <<'PY'
 import hashlib, json, pathlib, sys
@@ -138,9 +141,11 @@ for a in json.load(open(sys.argv[1]))['build']['archives'].values():
     if a.get('fetchContent'): print(f\"-DFETCHCONTENT_SOURCE_DIR_{a['fetchContent'].upper()}=/build/deps/fetched/{a['fetchContent'].lower()}\", end=' ')" "$lock")"
   waitload
   start=$(date +%s)
-  nice docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e HOME=/tmp -e FC="$fc" \
+  # (the container's processes are containerd's children, not the docker client's: niced inside — nice -n 19 as its
+  # command, every compile job inheriting it)
+  docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e HOME=/tmp -e FC="$fc" \
     -e ROOT=/build -e EM_LIBEXEC=/emsdk/upstream/emscripten -e EMSDK_BIN=/emsdk/upstream/emscripten -e OMW_WASM64=1 -e JOBS=8 \
-    -v "$work/root:/build" -v "$work/bin:/orthros-bin:ro" -v "$cache:/emsdk/upstream/emscripten/cache" -w /build "$image" sh -c '
+    -v "$work/root:/build" -v "$work/bin:/orthros-bin:ro" -v "$cache:/emsdk/upstream/emscripten/cache" -w /build "$image" nice -n 19 sh -c '
     set -e; export PATH=/orthros-bin:$PATH EMSDK_BIN=/emsdk/upstream/emscripten  # (the image entrypoint drops EMSDK_* from -e)
     bash wasm-build/build-deps.sh em_ports openal_stub sdl2_cfg lz4 lua boost bullet mygui ffmpeg osg
     bash configure-openmw.sh $FC
@@ -184,9 +189,10 @@ info = {'schemaVersion': 1, 'id': spec['id'], 'runtime': 'openmw', 'engineVersio
 if not want: print(json.dumps(built, indent=2))
 PY
   staging=$(cat "$work/staging")
-  # The brotli siblings the server sends a browser asking for a whole file (src/host/server.js)
+  # The brotli siblings the server sends a browser asking for a whole file (src/host/server.js): quality 11 — made once,
+  # sent to every player (openmw.data: 33 MB at 11, 40 MB at 9)
   for f in "$staging"/e/*/openmw.js "$staging"/e/*/openmw.wasm "$staging"/e/*/openmw.data; do
-    nice node -e "const z=require('zlib'),fs=require('fs');fs.writeFileSync(process.argv[1]+'.br',z.brotliCompressSync(fs.readFileSync(process.argv[1]),{params:{[z.constants.BROTLI_PARAM_QUALITY]:9,[z.constants.BROTLI_PARAM_LGWIN]:24,[z.constants.BROTLI_PARAM_SIZE_HINT]:fs.statSync(process.argv[1]).size}}))" "$f"
+    nice -n 19 node -e "const z=require('zlib'),fs=require('fs');fs.writeFileSync(process.argv[1]+'.br',z.brotliCompressSync(fs.readFileSync(process.argv[1]),{params:{[z.constants.BROTLI_PARAM_QUALITY]:11,[z.constants.BROTLI_PARAM_LGWIN]:24,[z.constants.BROTLI_PARAM_SIZE_HINT]:fs.statSync(process.argv[1]).size}}))" "$f"
   done
   mv "$staging" "$release"
   echo "$id: installed in $release"

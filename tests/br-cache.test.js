@@ -146,6 +146,30 @@ test('cache: tiny budget, least recently used out, launch units last; the index 
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('cache: raw markers never evicted (nothing freed), their wire size their range\'s; a budget not a positive number: the default', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
+  const piece = { kind: 'p', index: 0 };
+  const noise = path.join(dir, 'noise'); fs.writeFileSync(noise, crypto.randomBytes(CHUNK - 100));
+  const files = ['a', 'b', 'c'].map((n) => { const f = path.join(dir, n); fs.writeFileSync(f, text(CHUNK, n)); return [f, fs.statSync(f)]; });
+  try {
+    const probe = createBrCache({ dir: path.join(dir, 'probe'), ...QUIET });
+    probe.want(files[0][0], files[0][1], null, piece); await probe.drain();
+    const one = probe.stats().bytes; probe.close();
+    const cache = createBrCache({ dir: path.join(dir, 'cache'), maxBytes: Math.floor(one * 1.5), lowBytes: Math.floor(one * 1.2), ...QUIET });
+    await cache.ready;
+    const nst = fs.statSync(noise);
+    cache.want(noise, nst, null, piece); await cache.drain();
+    assert.equal(cache.lookup(noise, nst, null, piece)?.raw, true, 'a raw marker');
+    assert.equal(cache.size(noise, nst, null, piece), CHUNK - 100, 'sent as it is: its range\'s bytes');
+    for (const [f, st] of files) { cache.want(f, st, null, piece); await cache.drain(); }
+    assert.ok(cache.stats().evicted >= 1);
+    assert.equal(cache.lookup(noise, nst, null, piece)?.raw, true, 'the marker kept');
+    assert.equal(cache.size(files[2][0], files[2][1], null, piece), one, 'a .br unit: its compressed bytes');
+    cache.close();
+    for (const bad of [NaN, 0, -5, Infinity]) { const c = createBrCache({ dir: path.join(dir, 'bad'), maxBytes: bad, ...QUIET }); assert.equal(c.stats().maxBytes, 1536 * 1024 * 1024, String(bad)); c.close(); }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('server: the learned order seeds the units ahead of any request', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
   const big = text(2 * BLOCK);

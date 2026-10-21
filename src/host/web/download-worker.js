@@ -2,9 +2,9 @@
 // and the versions it requires (manifest extraMounts) — into the same OPFS block stores the game's worker reads
 // (orthros-files-<manifest>), before the game runs. The learned order comes first (what the game needs first), then
 // every other block. Stopped and started again (another visit), it resumes: the stored blocks are skipped.
-// "Prepare" (the home's card): the version's launch set only (src/vfs/launch-set.js: what earlier sessions read before
-// their game was playable, as this link reads it), its pieces as the game's own startup set fetches them; resumed the
-// same way (the pieces here are skipped).
+// "Prepare" (the home's card): the launch sets only, the version's and those of the versions it requires
+// (src/vfs/launch-set.js: what earlier sessions read before their game was playable, as this link reads it), their
+// pieces as the game's own startup set fetches them; resumed the same way (the pieces here are skipped).
 // Messages in: { type: 'download' | 'launch', name, bw }, { type: 'stop' }. Out: { type: 'progress', kind ('whole' |
 // 'launch'), bytes, total, stored, bw, ratio, running, done, error }, then { type: 'stopped' } once the stores are
 // closed (the game's worker may open them).
@@ -22,7 +22,10 @@ async function download(name, bw, kind = 'whole') {
     let bytes = parts.reduce((a, p) => a + (p.progress.started ? p.progress.bytes : 0), 0), total = parts.reduce((a, p) => a + p.total, 0);
     let stored = parts.reduce((a, p) => a + (p.progress.stored ?? 0), 0);
     // (the launch set: its pieces here now, counted again — those the reader kept, fetched now or before)
-    if (launch) { const b = setBytes(launch.files, launch.set); bytes = b.here; total = b.bytes; stored = launch.stored; }
+    if (launch) {
+      bytes = 0; total = 0; stored = 0;
+      for (const l of launch) { const b = setBytes(l.files, l.set); bytes += b.here; total += b.bytes; stored += l.stored; }
+    }
     const s = net?.snapshot();
     post({ type: 'progress', kind, name, bytes, total, stored, bw: s?.bw ?? null, ratio: net ? net.ratio() : 1, received: s ? s.bgBytes + s.demandBytes : 0, running, ...extra });
   };
@@ -37,16 +40,21 @@ async function download(name, bw, kind = 'whole') {
     const version = await openVersion(name, { bw, store });
     net = version.net;
     if (kind === 'launch') {
-      // (the version's own learned order: the launch set is its — the versions it requires are read on their own order)
-      const p = version.parts[0], set = launchSet(p.files, await learnedOrder(p.name), net.fast());
-      launch = { files: p.files, set, stored: setBytes(p.files, set).here };
-      const progress = { bytes: 0, blocks: 0, done: false };
+      // (every part's launch set: the version's and those of the versions it requires — the game reads them too —, each
+      // from its own learned order; the version's first)
+      launch = await Promise.all(version.parts.map(async (p) => {
+        const set = launchSet(p.files, await learnedOrder(p.name), net.fast());
+        return { p, files: p.files, set, stored: setBytes(p.files, set).here, progress: { bytes: 0, blocks: 0, done: false } };
+      }));
       timer = setInterval(() => report(), 500);
-      if (set.length) await p.files.prefetch(set, progress, () => stopping, { learnedOnly: true });
-      else progress.done = true;
+      for (const l of launch) {
+        if (l.set.length) await l.files.prefetch(l.set, l.progress, () => stopping, { learnedOnly: true });
+        else l.progress.done = true;
+        if (stopping) break;
+        if (!l.progress.done) { running = false; throw new Error(l.p.store.failed ? 'the browser storage is full or unavailable' : 'the server stopped answering: try again later'); }
+      }
       running = false;
-      if (!stopping && !progress.done) throw new Error(p.store.failed ? 'the browser storage is full or unavailable' : 'the server stopped answering: try again later');
-      report({ done: !stopping && progress.done });
+      report({ done: !stopping && launch.every((l) => l.progress.done) });
       return;
     }
     parts = await Promise.all(version.parts.map(async (p) => ({ ...p, order: await learnedOrder(p.name), progress: { bytes: 0, total: 0, done: false } })));
