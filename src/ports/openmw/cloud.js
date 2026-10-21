@@ -16,20 +16,42 @@
     }
     const savedState = () => { try { return JSON.parse(localStorage.getItem(key) ?? '{}'); } catch { return {}; } };
     const remember = (dirty) => localStorage.setItem(key, JSON.stringify({ parent, dirty }));
-    function collect(root = '/userdata', prefix = '') {
-      const files = [];
+    // (each file's last reading — its size, date and base64 — and the files as the account last took them: a sync that
+    // changed nothing reads, encodes and hashes nothing; the engine page syncs every 15 s, and reading every save each
+    // time cost 78 ms per MB of saves on the page's thread)
+    const known = new Map();
+    let sent = null;
+    const base64 = (bytes) => {
+      if (typeof bytes.toBase64 === 'function') return bytes.toBase64();
+      let data = '';
+      for (let n = 0; n < bytes.length; n += 0x8000) data += String.fromCharCode.apply(null, bytes.subarray(n, n + 0x8000));
+      return btoa(data);
+    };
+    /** The profile's files: { path, full, size, mtime } (mtime: milliseconds, undefined when the file system has none). */
+    function list(root = '/userdata', prefix = '', out = []) {
       for (const name of FS.readdir(root)) {
         if (name === '.' || name === '..' || name.toLowerCase() === 'screenshots' || /\.log(?:\.\d+)?$/i.test(name)) continue;
         const full = `${root}/${name}`, relative = prefix + name, st = FS.stat(full);
-        if (FS.isDir(st.mode)) files.push(...collect(full, relative + '/'));
+        if (FS.isDir(st.mode)) list(full, relative + '/', out);
         else if (FS.isFile(st.mode)) {
-          const bytes = FS.readFile(full); let data = '';
-          for (let n = 0; n < bytes.length; n += 0x8000) data += String.fromCharCode(...bytes.subarray(n, n + 0x8000));
-          files.push({ path: relative, data: btoa(data) });
+          const t = typeof st.mtime?.getTime === 'function' ? st.mtime.getTime() : st.mtime;
+          out.push({ path: relative, full, size: st.size, mtime: Number.isFinite(t) ? t : undefined });
         }
       }
-      return files;
+      return out;
     }
+    /** The profile's files with their base64: a file read again only when its size or date changed. */
+    function collect(files = list()) {
+      return files.map((f) => {
+        const k = known.get(f.path);
+        if (k && f.mtime !== undefined && k.size === f.size && k.mtime === f.mtime) return { path: f.path, data: k.data };
+        const data = base64(FS.readFile(f.full));
+        known.set(f.path, { size: f.size, mtime: f.mtime, data });
+        return { path: f.path, data };
+      });
+    }
+    /** The same files, with the same bytes, as the account last took (a file written again unchanged: the same). */
+    const unchanged = (files) => !!sent && files.length === sent.size && files.every((f) => sent.get(f.path) === f.data);
     function clear(root = '/userdata') {
       for (const n of FS.readdir(root)) {
         if (n === '.' || n === '..') continue;
@@ -68,9 +90,11 @@
       if (uploading) { queued = true; return; }
       uploading = true;
       try {
-        const raw = new TextEncoder().encode(JSON.stringify({ format: 'orthros-profile', version: 1, game, files: collect() }));
+        const files = collect();
+        if (lastHash !== null && unchanged(files)) { remember(false); return; }
+        const raw = new TextEncoder().encode(JSON.stringify({ format: 'orthros-profile', version: 1, game, files }));
         const hash = await digest(raw);
-        if (hash === lastHash) { remember(false); return; }
+        if (hash === lastHash) { sent = new Map(files.map((f) => [f.path, f.data])); remember(false); return; }
         remember(true); notify('saving');
         const bytes = await transform(raw);
         const r = await fetch(endpoint, { method: 'PUT', headers: { 'X-Orthros-Player-Scope': scope, 'X-Orthros-Parent-Hash': parent, 'Content-Type': 'application/octet-stream' }, body: bytes });
@@ -78,7 +102,7 @@
           if (r.status === 409 || r.status === 401) blocked = true;
           throw new Error(r.status === 409 ? 'Conflit : une autre sauvegarde existe en ligne. La copie locale est conservée ; synchronisation suspendue.' : 'Sauvegarde conservée sur cet appareil. Envoi au compte impossible ; garde cet onglet ouvert pour réessayer.');
         }
-        parent = (await r.json()).hash; lastHash = hash; remember(false);
+        parent = (await r.json()).hash; lastHash = hash; sent = new Map(files.map((f) => [f.path, f.data])); remember(false);
         notify('saved');
         return true;
       } catch (e) { notify(blocked && /Conflit/.test(e.message) ? 'conflict' : 'error', e.message); return false; }
