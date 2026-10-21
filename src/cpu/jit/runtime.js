@@ -299,7 +299,7 @@ export const TICK_BASE = 0x1000000;
 
 // Lazy flag op kinds (kind << 2 | sizeLog2)
 // ADC/SBB keep (res, a, b): the carry-in is res - a - b (a - b - res), so no fourth value is needed
-export const LZ = Object.freeze({ NONE: 0, ADD: 1, SUB: 2, LOGIC: 3, INC: 4, DEC: 5, NEG: 6, SHL: 7, SHR: 8, SAR: 9, MUL: 10, IMUL: 11, SHLD: 12, BSF: 13, ADC: 14, SBB: 15 });
+export const LZ = Object.freeze({ NONE: 0, ADD: 1, SUB: 2, LOGIC: 3, INC: 4, DEC: 5, NEG: 6, SHL: 7, SHR: 8, SAR: 9, MUL: 10, IMUL: 11, SHLD: 12, BSF: 13, ADC: 14, SBB: 15, SUBR: 16 }); // (SUBR: a SUB whose first operand is res + b, translate.js LZA_FREE)
 
 /** JS mirror of the WASM flags helper (used when leaving WASM with lazy state pending). */
 export function materializeFlags(op, res, a, b, ef) {
@@ -309,6 +309,8 @@ export function materializeFlags(op, res, a, b, ef) {
   let cf = 0, of = 0, af = 0;
   switch (kind) {
     case LZ.ADD: a = ((res - b) & mask) >>> 0; cf = res < b ? 1 : 0; of = ((a ^ res) & (b ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break; // (from res and b alone: translate.js LZA_FREE)
+    case LZ.SUBR: a = ((res + b) & mask) >>> 0; // (from res and b: translate.js LZA_FREE) falls through
+    // eslint-disable-next-line no-fallthrough
     case LZ.SUB: cf = a < b ? 1 : 0; of = ((a ^ b) & (a ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break;
     case LZ.ADC: { const cin = ((res - a - b) & mask) !== 0; cf = (cin ? res <= a : res < a) ? 1 : 0; of = ((a ^ res) & (b ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break; }
     case LZ.SBB: { const cin = ((a - b - res) & mask) !== 0; cf = (cin ? a <= b : a < b) ? 1 : 0; of = ((a ^ b) & (a ^ res) & sign) ? 1 : 0; af = (a ^ b ^ res) & 0x10 ? 1 : 0; break; }
@@ -375,7 +377,7 @@ export function buildRuntime(opts = {}) {
     // PF: popcnt(res & 0xff) even
     c.get(RES).i32(0xff).and().popcnt().i32(1).and().eqz(); const ifp = c.if_(); c.get(FL).i32(F.PF).or().set(FL); c.end(); void ifp;
     // kind switch: compute cf/of/af into TMP bits (bit0=cf, bit1=of, bit2=af)
-    const kinds = 16;
+    const kinds = 17;
     const done = c.block();
     const labels = [];
     for (let k = 0; k < kinds; k++) labels.push(c.block());
@@ -392,7 +394,8 @@ export function buildRuntime(opts = {}) {
         case LZ.NONE: break;
         case LZ.ADD: { c.get(RES).get(B).sub().get(MASK).and().set(A); c.get(RES).get(B).lt_u(); // (a from res and b: translate.js LZA_FREE)
           const i = c.if_(); setCF(); c.end(); void i; c.get(A).get(RES).xor().get(B).get(RES).xor().and().get(SIGN).and(); const j = c.if_(); setOF(); c.end(); void j; afFromXor(); break; }
-        case LZ.SUB: { c.get(A).get(B).lt_u(); const i = c.if_(); setCF(); c.end(); void i; c.get(A).get(B).xor().get(A).get(RES).xor().and().get(SIGN).and(); const j = c.if_(); setOF(); c.end(); void j; afFromXor(); break; }
+        case LZ.SUBR: case LZ.SUB: { if (k === LZ.SUBR) c.get(RES).get(B).add().get(MASK).and().set(A); // (a from res and b: translate.js LZA_FREE)
+          c.get(A).get(B).lt_u(); const i = c.if_(); setCF(); c.end(); void i; c.get(A).get(B).xor().get(A).get(RES).xor().and().get(SIGN).and(); const j = c.if_(); setOF(); c.end(); void j; afFromXor(); break; }
         case LZ.LOGIC: break;
         case LZ.INC: { c.get(B).i32(1).and(); const i = c.if_(); setCF(); c.end(); void i; c.get(RES).get(SIGN).eq(); const j = c.if_(); setOF(); c.end(); void j; c.get(RES).i32(0xf).and().eqz(); const l = c.if_(); setAF(); c.end(); void l; break; }
         case LZ.DEC: { c.get(B).i32(1).and(); const i = c.if_(); setCF(); c.end(); void i; c.get(RES).get(SIGN).i32(1).sub().eq(); const j = c.if_(); setOF(); c.end(); void j; c.get(RES).i32(0xf).and().i32(0xf).eq(); const l = c.if_(); setAF(); c.end(); void l; break; }

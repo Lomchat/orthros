@@ -1,4 +1,4 @@
-// opts.lzaFree (translate.js LZA_FREE): ADD, INC, DEC and NEG leave 0 as the lazy first operand; every reader derives
+// opts.lzaFree (translate.js LZA_FREE): ADD, SUB (as the SUBR kind), INC, DEC and NEG leave 0 as the lazy first operand; every reader derives
 // what it needs from the result and the second operand. Checked here: randomized programs of those instructions (8 / 16
 // / 32 bits, register and memory destinations, ADD of the same register, values around the carry / overflow / auxiliary
 // boundaries) followed by every kind of flag reader (Jcc and SETcc of all conditions, CMOVcc, ADC / SBB, INC / DEC keeping
@@ -29,7 +29,14 @@ function makeExec(jitOpts) {
 // ADD / INC / DEC / NEG on eax / edx / [ebp] (ecx counts the loop)
 const W = () => {
   const imm = rnd(256);
-  switch (rnd(20)) {
+  switch (rnd(27)) {
+    case 20: return [0x28, 0xd0]; // sub al, dl
+    case 21: return [0x66, 0x29, 0xd0]; // sub ax, dx
+    case 22: return [0x29, 0xd0]; // sub eax, edx
+    case 23: return [0x83, 0xe8, imm]; // sub eax, imm8
+    case 24: return [0x29, 0x45, 0x00]; // sub [ebp], eax
+    case 25: return [0x28, 0x55, 0x01]; // sub [ebp+1], dl
+    case 26: return [0x29, 0xc0]; // sub eax, eax
     case 0: return [0x00, 0xd0]; // add al, dl
     case 1: return [0x00, 0xf4]; // add ah, dh
     case 2: return [0x66, 0x01, 0xd0]; // add ax, dx
@@ -83,7 +90,7 @@ function gen() {
 const V = [0, 1, 0x0f, 0x10, 0x7f, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0xffff, 0x7fffffff, 0x80000000, 0xffffffff, 0x12345678, 0xdeadbeef];
 const val = () => rnd(3) ? V[rnd(V.length)] : (rnd(65536) << 16 | rnd(65536)) >>> 0;
 
-test('lzaFree: random ADD / INC / DEC / NEG programs match the interpreter (on and off, whole and time-sliced)', () => {
+test('lzaFree: random ADD / SUB / INC / DEC / NEG programs match the interpreter (on and off, whole and time-sliced)', () => {
   for (let t = 0; t < 100; t++) {
     const code = gen(); const end = CODE + code.length - 1;
     const regs = [val(), 1 + rnd(20), val(), 0, 0, 0, 0, 0, rnd(0x1000)];
@@ -100,15 +107,15 @@ test('lzaFree: random ADD / INC / DEC / NEG programs match the interpreter (on a
   }
 });
 
-test('lzaFree: both flags helpers ignore the first operand of ADD, INC, DEC and NEG', () => {
+test('lzaFree: both flags helpers ignore the first operand of ADD, SUBR, INC, DEC and NEG', () => {
   const E = makeExec({}); E.jit.cpu = E.cpu;
   const wasmFlags = E.jit.runtime.flags;
   for (let n = 0; n < 4000; n++) {
     const sz = rnd(3), mask = sz === 2 ? 0xffffffff : (1 << (8 << sz)) - 1;
     const a = val() & mask, b = val() & mask, cin = rnd(2), ef = (F.RESERVED1 | (rnd(0x1000) & 0x8d5)) >>> 0;
-    for (const [kind, res, bb, aa] of [[LZ.ADD, (a + b) & mask, b, a], [LZ.INC, (a + 1) & mask, cin, a], [LZ.DEC, (a - 1) & mask, cin, a], [LZ.NEG, (0 - a) & mask, 0, a]]) {
+    for (const [kind, res, bb, aa] of [[LZ.ADD, (a + b) & mask, b, a], [LZ.INC, (a + 1) & mask, cin, a], [LZ.DEC, (a - 1) & mask, cin, a], [LZ.NEG, (0 - a) & mask, 0, a], [LZ.SUBR, (a - b) & mask, b, a]]) {
       const op = (kind << 2) | sz, garbage = val();
-      const want = materializeFlags(op, res, aa, bb, ef);
+      const want = materializeFlags(kind === LZ.SUBR ? (LZ.SUB << 2) | sz : op, res, aa, bb, ef); // (SUBR: the flags of that SUB)
       assert.equal(materializeFlags(op, res, garbage, bb, ef), want, `JS helper, kind ${kind} size ${sz}: a ${aa.toString(16)} b ${bb.toString(16)}`);
       assert.equal(wasmFlags(op, res, aa, bb, ef) >>> 0, want, `WASM helper, kind ${kind} size ${sz}`);
       assert.equal(wasmFlags(op, res, garbage, bb, ef) >>> 0, want, `WASM helper with another first operand, kind ${kind} size ${sz}`);
