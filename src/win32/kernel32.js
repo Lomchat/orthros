@@ -294,14 +294,29 @@ export function registerKernel32(api, vm) {
   // burn the whole worker; after 32 back-to-back yields within 50 µs of each other it sleeps for 1 ms instead —
   // the granularity a Windows timer gives Sleep anyway. One other API call between two Sleep(0)s is part of the
   // pattern (the frame limiter reads timeGetTime each turn: Sleep(0) + timeGetTime = 2 calls); any more resets it.
+  // The throttled sleep is part of the streak: its re-executed call (the thread woken after the 1 ms) completes it and
+  // the streak goes on from the wake-up — a spin that was throttled keeps being throttled at each Sleep(0) until real
+  // work or other calls come between. Measured at the end of each park instead, the 1 ms always broke the streak and
+  // every throttle was followed by 32 more unthrottled turns (tools/sleepspin-bench.mjs: ~480 Sleep(0) and ~1000
+  // scheduling decisions per 16 ms frame). ?dbg=ORTHROS_SLEEP0_KEEP_STREAK=0: the former behaviour (measurement).
   const sleep = (c, ms) => {
-    const t = c.thread, st = t.sleepStats ??= { zero: 0, short: 0, long: 0, streak: 0, last: 0, throttled: 0 };
+    const keepStreak = globalThis.ORTHROS_SLEEP0_KEEP_STREAK === undefined || !!Number(globalThis.ORTHROS_SLEEP0_KEEP_STREAK); // (read each time: in-session A/B)
+    const t = c.thread, st = t.sleepStats ??= { zero: 0, short: 0, long: 0, streak: 0, last: 0, throttled: 0, parked: false };
     if (ms === 0) {
+      if (st.parked) { // (the throttled sleep's re-executed call, after its wake-up: done)
+        st.parked = false;
+        if (t.resuming && keepStreak) { vm.sched.park(t, NEVER, 1, 'sleep'); st.last = vm.clock.now(); st.lastApi = vm.apiCalls; return; }
+      }
       st.zero++;
       const now = vm.clock.now(); // (the guest's clock: the host's time on a real clock, kept in a snapshot)
       st.streak = now - st.last < 0.05 && vm.apiCalls - st.lastApi <= 2 ? st.streak + 1 : 0;
       st.last = now; st.lastApi = vm.apiCalls;
-      if (st.streak >= 32 && !vm.sched.pickRunnable(t)) { st.throttled++; return vm.sched.park(t, NEVER, 1, 'sleep') === PARK ? PARK : undefined; }
+      if (st.streak >= 32 && !vm.sched.pickRunnable(t)) {
+        st.throttled++;
+        if (vm.sched.park(t, NEVER, 1, 'sleep') === PARK) { st.parked = true; return PARK; }
+        if (keepStreak) { st.last = vm.clock.now(); st.lastApi = vm.apiCalls; } // (a nested wait: the 1 ms has passed here)
+        return;
+      }
       vm.sched.yieldFrom(t);
       return;
     }

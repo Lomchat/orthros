@@ -4,3 +4,6 @@ mciSendStringA@16
 mciSendCommandA@16
 mciGetErrorStringA@12
 mciGetDeviceIDA@4
+timeGetTime@0
+timeBeginPeriod@4
+timeEndPeriod@4
