@@ -523,7 +523,7 @@ async function main() {
         let rammed = false;
         for (let i = 0; i < 3 && !rammed; i++) {
           const bh = await B.read();
-          await A.cmd(`ram ${B.slot} 0.35`);
+          await A.cmd(`ram ${B.slot} 0.8`); // (a hit that hurts a player in the game: a hard one)
           const r = await until(B, 25000, (s) => (s?.combat?.hitsApplied ?? 0) > (bh?.combat?.hitsApplied ?? 0));
           rammed = r.ok;
           await dump(`ram ${i}`);

@@ -451,7 +451,11 @@ function createWorld(versionId, username) {
     testing: params.has('mmotest'),
     testCommands: [],
     debug: (json) => {
-      try { probe.state = JSON.parse(json); } catch { probe.state = { error: 'not JSON', text: String(json).slice(0, 300) }; }
+      // (a C float printed as nan/inf is no JSON number: read as null, the rest of the state kept)
+      try { probe.state = JSON.parse(json); } catch {
+        try { probe.state = { ...JSON.parse(String(json).replace(/(?<=[:,\[])\s*-?(?:nan|inf(?:inity)?)\b/gi, 'null')), nonFinite: true }; }
+        catch { probe.state = { error: 'not JSON', text: String(json).slice(0, 65536) }; }
+      }
       probe.updates++; probe.at = performance.now();
     },
   };
