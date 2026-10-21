@@ -66,6 +66,28 @@
     return n;
   }
 
+  /**
+   * The mounted file the engine's VFS knows as `name` (a data folder's path: sound/fx/a.wav, any case): the last one
+   * mounted whose path ends with it (later mounts override, as the engine's later data folders), or null.
+   */
+  function byName(name) {
+    if (S.indexed !== S.byPath.size) {
+      S.names = new Map(); S.indexed = S.byPath.size;
+      for (const [path, h] of S.byPath) {
+        const p = path.toLowerCase();
+        for (let i = p.indexOf('/'); i >= 0; i = p.indexOf('/', i + 1)) S.names.set(p.slice(i), h);
+      }
+    }
+    return S.names.get('/' + String(name).toLowerCase().replace(/\\/g, '/')) ?? null;
+  }
+  // (asked by the Orthros build of the engine before it loads a sound played once, orthros-r2.patch: false — the file
+  // not in the page yet, fetched now in the background — and the engine skips that play instead of the page's thread
+  // waiting for the network; a file not streamed here: true)
+  window.orthrosFileReady = (name) => {
+    const h = S.data && byName(name);
+    return !h || S.data.readable(h);
+  };
+
   window.StreamFS = {
     stats() { return S.data ? S.data.snapshot() : {}; },
     /** The game data (data-client.js GameData), once the engine mounted a file: null before. */

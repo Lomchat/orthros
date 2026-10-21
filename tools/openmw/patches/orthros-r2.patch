@@ -1,0 +1,541 @@
+--- a/openmw/apps/openmw/mwrender/localmap.cpp
++++ b/openmw/apps/openmw/mwrender/localmap.cpp
+@@ -941,12 +941,15 @@
+         // before that stage is pushed, so it would count the main view's bin -- a number that is
+         // always large, always healthy, and says nothing whatsoever about the map. The group adds
+         // no state and no transform; it is a place to stand.
++        //
++        // Orthros (orthros-r2.patch): neither diagnostic is installed any more. MapDrawDiagnostic's
++        // glReadPixels on each new map camera's first draw drained the whole GPU pipeline at every
++        // new map segment (a cell crossing): a 507 ms frame measured headless, one to a few GPU
++        // frames on a real one. MapCullDiagnostic walked the camera's bin on its first cull.
+         osg::ref_ptr<osg::Group> sceneHolder = new osg::Group;
+         sceneHolder->setName("LocalMapSceneHolder");
+-        sceneHolder->setCullCallback(new MapCullDiagnostic);
+         sceneHolder->addChild(mSceneRoot);
+         camera->addChild(sceneHolder);
+-        camera->setFinalDrawCallback(new MapDrawDiagnostic);
+     }
+ 
+     namespace
+--- a/openmw/apps/openmw/mwsound/soundbuffer.cpp
++++ b/openmw/apps/openmw/mwsound/soundbuffer.cpp
+@@ -1,5 +1,9 @@
+ #include "soundbuffer.hpp"
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#endif
++
+ #include "../mwbase/environment.hpp"
+ #include "../mwworld/esmstore.hpp"
+ 
+@@ -78,11 +82,29 @@
+         return nullptr;
+     }
+ 
+-    SoundBuffer* SoundBufferPool::loadSfx(SoundBuffer* sfx)
++    SoundBuffer* SoundBufferPool::loadSfx(SoundBuffer* sfx, bool waitForData)
+     {
+         if (sfx->getHandle() != nullptr)
+             return sfx;
+ 
++#ifdef __EMSCRIPTEN__
++        // Orthros (orthros-r2.patch): a sound played once whose file is not in the page yet is skipped this time (see
++        // load()) — a first footstep held the page 551 ms on a synchronous fetch. A file the page does not stream
++        // (in an archive, say) or a page without the hook: loaded as before.
++        if (!waitForData)
++        {
++            const std::string name(sfx->getResourceName().value());
++            // clang-format off
++            const int ready = EM_ASM_INT({
++                var f = globalThis.orthrosFileReady;
++                try { return f ? (f(UTF8ToString($0)) ? 1 : 0) : 1; } catch (e) { return 1; }
++            }, name.c_str());
++            // clang-format on
++            if (!ready)
++                return {};
++        }
++#endif
++
+         auto [handle, size] = mOutput->loadSound(sfx->getResourceName());
+         if (handle == nullptr)
+             return {};
+@@ -101,7 +123,7 @@
+         return sfx;
+     }
+ 
+-    SoundBuffer* SoundBufferPool::load(const ESM::RefId& soundId)
++    SoundBuffer* SoundBufferPool::load(const ESM::RefId& soundId, bool waitForData)
+     {
+         if (mBufferNameMap.empty())
+         {
+@@ -126,10 +148,10 @@
+             sfx = insertSound(soundId, *sound);
+         }
+ 
+-        return loadSfx(sfx);
++        return loadSfx(sfx, waitForData);
+     }
+ 
+-    SoundBuffer* SoundBufferPool::load(VFS::Path::NormalizedView fileName)
++    SoundBuffer* SoundBufferPool::load(VFS::Path::NormalizedView fileName, bool waitForData)
+     {
+         SoundBuffer* sfx;
+         const auto it = mBufferFileNameMap.find(fileName);
+@@ -138,7 +160,7 @@
+         else
+             sfx = insertSound(fileName);
+ 
+-        return loadSfx(sfx);
++        return loadSfx(sfx, waitForData);
+     }
+ 
+     void SoundBufferPool::clear()
+--- a/openmw/apps/openmw/mwsound/soundbuffer.hpp
++++ b/openmw/apps/openmw/mwsound/soundbuffer.hpp
+@@ -82,10 +82,14 @@
+ 
+         /// Lookup a soundId for its sound data (resource name, local volume,
+         /// minRange, and maxRange), and ensure it's ready for use.
+-        SoundBuffer* load(const ESM::RefId& soundId);
++        /// Orthros (orthros-r2.patch): `waitForData` false — a sound played once, not a loop — and its file's bytes not
++        /// in the browser page yet (the page's globalThis.orthrosFileReady, src/ports/openmw/streamfs.js, which then
++        /// fetches them in the background): not loaded (nullptr, as a sound that failed to load) instead of the page's
++        /// thread waiting for the network; its next play loads it.
++        SoundBuffer* load(const ESM::RefId& soundId, bool waitForData = true);
+ 
+         // Lookup for a sound by file name, and ensure it's ready for use.
+-        SoundBuffer* load(VFS::Path::NormalizedView fileName);
++        SoundBuffer* load(VFS::Path::NormalizedView fileName, bool waitForData = true);
+ 
+         void use(SoundBuffer& sfx)
+         {
+@@ -106,7 +110,7 @@
+         void clear();
+ 
+     private:
+-        SoundBuffer* loadSfx(SoundBuffer* sfx);
++        SoundBuffer* loadSfx(SoundBuffer* sfx, bool waitForData = true);
+ 
+         SoundOutput* mOutput;
+         std::deque<SoundBuffer> mSoundBuffers;
+--- a/openmw/apps/openmw/mwsound/soundmanagerimp.cpp
++++ b/openmw/apps/openmw/mwsound/soundmanagerimp.cpp
+@@ -497,7 +497,7 @@
+         if (!mVFS->exists(fileName))
+             return nullptr;
+ 
+-        SoundBuffer* const sfx = mSoundBuffers.load(fileName);
++        SoundBuffer* const sfx = mSoundBuffers.load(fileName, (mode & PlayMode::Loop) != 0);
+         if (!sfx)
+             return nullptr;
+ 
+@@ -510,7 +510,7 @@
+         if (!mOutput->isInitialized())
+             return nullptr;
+ 
+-        SoundBuffer* sfx = mSoundBuffers.load(soundId);
++        SoundBuffer* sfx = mSoundBuffers.load(soundId, (mode & PlayMode::Loop) != 0);
+         if (!sfx)
+             return nullptr;
+ 
+@@ -578,7 +578,7 @@
+             return nullptr;
+ 
+         // Look up the sound in the ESM data
+-        SoundBuffer* sfx = mSoundBuffers.load(soundId);
++        SoundBuffer* sfx = mSoundBuffers.load(soundId, (mode & PlayMode::Loop) != 0);
+         if (!sfx)
+             return nullptr;
+ 
+@@ -595,7 +595,7 @@
+         if (!mVFS->exists(fileName))
+             return nullptr;
+ 
+-        SoundBuffer* const sfx = mSoundBuffers.load(fileName);
++        SoundBuffer* const sfx = mSoundBuffers.load(fileName, (mode & PlayMode::Loop) != 0);
+         if (!sfx)
+             return nullptr;
+ 
+@@ -609,7 +609,7 @@
+             return nullptr;
+ 
+         // Look up the sound in the ESM data
+-        SoundBuffer* sfx = mSoundBuffers.load(soundId);
++        SoundBuffer* sfx = mSoundBuffers.load(soundId, (mode & PlayMode::Loop) != 0);
+         if (!sfx)
+             return nullptr;
+ 
+--- a/openmw/components/shader/shadermanager.cpp
++++ b/openmw/components/shader/shadermanager.cpp
+@@ -12,7 +12,6 @@
+ #include <filesystem>
+ #include <format>
+ #include <fstream>
+-#include <regex>
+ #include <set>
+ #include <sstream>
+ #include <system_error>
+@@ -28,6 +27,8 @@
+ #include <components/misc/strings/conversion.hpp>
+ #include <components/settings/settings.hpp>
+ 
++#include "glesrewrite.hpp"
++
+ namespace
+ {
+     osg::Shader::Type getShaderType(const std::string& templateName)
+@@ -176,23 +177,28 @@
+         else
+             source = header + source;
+ 
++        // Orthros (orthros-r2.patch): every rewrite below is a plain scan (glesrewrite.hpp) giving the bytes of the
++        // std::regex it replaces (`\b`: word boundary, `\s`: white space).
++        using namespace Shader::GlesRewrite;
+         // Declarations to inject at the prelude marker.
+         std::string prelude;
+         auto convert = [&](const std::string& glName, const std::string& osgName, const std::string& decl) {
+-            if (std::regex_search(source, std::regex("\\b" + glName + "\\b")))
++            // (\bglName\b)
++            bool found = false;
++            std::string replaced = replaceWord(source, glName, osgName, &found);
++            if (found)
+             {
+                 prelude += decl + "\n";
+-                source = std::regex_replace(source, std::regex("\\b" + glName + "\\b"), osgName);
++                source.swap(replaced);
+             }
+         };
+ 
+         // ftransform() only works with fixed-function built-ins; expand it first.
+-        source = std::regex_replace(
+-            source, std::regex("\\bftransform\\s*\\(\\s*\\)"), "(gl_ModelViewProjectionMatrix * gl_Vertex)");
++        // (\bftransform\s*\(\s*\))
++        source = replaceFtransform(source, "(gl_ModelViewProjectionMatrix * gl_Vertex)");
+ 
+         // gl_ModelViewMatrixInverse isn't converted by OSG; derive it (gl_ModelViewMatrix is).
+-        source = std::regex_replace(
+-            source, std::regex("\\bgl_ModelViewMatrixInverse\\b"), "inverse(gl_ModelViewMatrix)");
++        source = replaceWord(source, "gl_ModelViewMatrixInverse", "inverse(gl_ModelViewMatrix)");
+ 
+         // Fixed-function matrices -> uniforms (OSG only converts these in vertex shaders, and
+         // not at all once we've renamed everything ourselves; do it here for both stages so
+@@ -204,21 +210,21 @@
+         convert("gl_NormalMatrix", "osg_NormalMatrix", "uniform mat3 osg_NormalMatrix;");
+ 
+         // Fixed-function texture matrix: OpenMW only uses it as identity here.
+-        source = std::regex_replace(source, std::regex("gl_TextureMatrix\\[[0-9]+\\]"), "mat4(1.0)");
++        source = replaceTextureMatrix(source, "mat4(1.0)"); // (gl_TextureMatrix\[[0-9]+\])
+ 
+         // Legacy texture lookup functions -> ES 3.00 overloads.
+-        source = std::regex_replace(source, std::regex("\\btexture2DLod\\b"), "textureLod");
+-        source = std::regex_replace(source, std::regex("\\btexture2DProjLod\\b"), "textureProjLod");
+-        source = std::regex_replace(source, std::regex("\\btexture2DProj\\b"), "textureProj");
+-        source = std::regex_replace(source, std::regex("\\btexture2DArray\\b"), "texture");
+-        source = std::regex_replace(source, std::regex("\\btexture2D\\b"), "texture");
+-        source = std::regex_replace(source, std::regex("\\btextureCubeLod\\b"), "textureLod");
+-        source = std::regex_replace(source, std::regex("\\btextureCube\\b"), "texture");
++        source = replaceWord(source, "texture2DLod", "textureLod");
++        source = replaceWord(source, "texture2DProjLod", "textureProjLod");
++        source = replaceWord(source, "texture2DProj", "textureProj");
++        source = replaceWord(source, "texture2DArray", "texture");
++        source = replaceWord(source, "texture2D", "texture");
++        source = replaceWord(source, "textureCubeLod", "textureLod");
++        source = replaceWord(source, "textureCube", "texture");
+         // textureSize2D (EXT_gpu_shader4) -> ES 3.00 textureSize; shaders assign the result to
+         // a vec2, so wrap the ivec2 return in a vec2() conversion (ES has no implicit int->float).
+         if (source.find("textureSize2D") != std::string::npos)
+         {
+-            source = std::regex_replace(source, std::regex("\\btextureSize2D\\b"), "omw_textureSize2D");
++            source = replaceWord(source, "textureSize2D", "omw_textureSize2D");
+             prelude += "vec2 omw_textureSize2D(highp sampler2D s, int lod) { return "
+                        "vec2(textureSize(s, lod)); }\n";
+         }
+@@ -228,13 +234,13 @@
+         // direct rename breaks compilation ("field selection on float"). Wrap instead.
+         if (source.find("shadow2DProj") != std::string::npos)
+         {
+-            source = std::regex_replace(source, std::regex("\\bshadow2DProj\\b"), "omw_shadow2DProj");
++            source = replaceWord(source, "shadow2DProj", "omw_shadow2DProj");
+             prelude += "vec4 omw_shadow2DProj(highp sampler2DShadow s, highp vec4 c) { return "
+                        "vec4(textureProj(s, c)); }\n";
+         }
+-        if (std::regex_search(source, std::regex("\\bshadow2D\\b")))
++        if (hasWord(source, "shadow2D"))
+         {
+-            source = std::regex_replace(source, std::regex("\\bshadow2D\\b"), "omw_shadow2D");
++            source = replaceWord(source, "shadow2D", "omw_shadow2D");
+             prelude += "vec4 omw_shadow2D(highp sampler2DShadow s, highp vec3 c) { return "
+                        "vec4(texture(s, c)); }\n";
+         }
+@@ -287,9 +293,7 @@
+                        "uniform vec4 osg_FrontMaterial_diffuse;\nuniform vec4 osg_FrontMaterial_specular;\n"
+                        "uniform float osg_FrontMaterial_shininess;\n";
+             for (const char* m : { "emission", "ambient", "diffuse", "specular", "shininess" })
+-                source = std::regex_replace(source,
+-                    std::regex(std::string("\\bgl_FrontMaterial\\s*\\.\\s*") + m + "\\b"),
+-                    std::string("osg_FrontMaterial_") + m);
++                source = replaceMember(source, "gl_FrontMaterial", m, std::string("osg_FrontMaterial_") + m);
+         }
+         if (source.find("gl_Fog") != std::string::npos)
+         {
+@@ -299,8 +303,7 @@
+             prelude += "uniform vec4 osg_Fog_color;\nuniform float osg_Fog_start;\nuniform float osg_Fog_end;\n"
+                        "uniform float osg_Fog_scale;\nuniform float osg_Fog_density;\n";
+             for (const char* m : { "color", "start", "end", "scale", "density" })
+-                source = std::regex_replace(source,
+-                    std::regex(std::string("\\bgl_Fog\\s*\\.\\s*") + m + "\\b"), std::string("osg_Fog_") + m);
++                source = replaceMember(source, "gl_Fog", m, std::string("osg_Fog_") + m);
+         }
+ 
+         if (type == osg::Shader::VERTEX)
+@@ -318,12 +321,12 @@
+             // gl_ClipVertex was removed in ES 3.00; route writes to a dummy (clipping disabled).
+             convert("gl_ClipVertex", "osg_ClipVertex", "vec4 osg_ClipVertex;");
+ 
+-            source = std::regex_replace(source, std::regex("\\battribute\\b"), "in");
+-            source = std::regex_replace(source, std::regex("\\bvarying\\b"), "out");
++            source = replaceWord(source, "attribute", "in");
++            source = replaceWord(source, "varying", "out");
+         }
+         else if (type == osg::Shader::FRAGMENT)
+         {
+-            source = std::regex_replace(source, std::regex("\\bvarying\\b"), "in");
++            source = replaceWord(source, "varying", "in");
+ 
+             for (int i = 0; i < 4; ++i)
+             {
+@@ -338,7 +341,7 @@
+             if (source.find("gl_FragColor") != std::string::npos)
+             {
+                 prelude += "layout(location=0) out vec4 _fragColor;\n";
+-                source = std::regex_replace(source, std::regex("\\bgl_FragColor\\b"), "_fragColor");
++                source = replaceWord(source, "gl_FragColor", "_fragColor");
+             }
+         }
+ 
+@@ -673,22 +676,12 @@
+         size_t lineEnd = source.find_first_of('\n', endPos);
+         // If lineEnd = npos, this is the last line, so no need to check
+         std::string linkStatement = source.substr(endPos, lineEnd - endPos);
+-        std::regex linkRegex(R"r(\s*"([^"]+)"\s*)r" // Find any quoted string as the link name -> match[1]
+-                             R"r((if\s+)r" // Begin optional condition -> match[2]
+-                             R"r((!)?\s*)r" // Optional ! -> match[3]
+-                             R"r(([_a-zA-Z0-9]+)?)r" // The condition -> match[4]
+-                             R"r()?\s*)r" // End optional condition -> match[2]
+-        );
+-        std::smatch linkMatch;
+-        bool hasCondition = false;
++        // Orthros (orthros-r2.patch): parsed as the regex \s*"([^"]+)"\s*(if\s+(!)?\s*([_a-zA-Z0-9]+)?)?\s* matched
++        // whole did (glesrewrite.hpp), without constructing it for each $link.
++        bool hasCondition = false, negated = false;
+         std::string linkConditionExpression;
+-        if (std::regex_match(linkStatement, linkMatch, linkRegex))
+-        {
+-            linkTarget = linkMatch[1].str();
+-            hasCondition = !linkMatch[2].str().empty();
+-            linkConditionExpression = linkMatch[4].str();
+-        }
+-        else
++        if (!Shader::GlesRewrite::parseLinkStatement(
++                linkStatement, linkTarget, hasCondition, negated, linkConditionExpression))
+         {
+             Log(Debug::Error) << "Shader " << templateName << " error: Expected a shader filename to link";
+             return false;
+@@ -702,7 +695,7 @@
+         if (hasCondition)
+         {
+             bool condition = !(linkConditionExpression.empty() || linkConditionExpression == "0");
+-            if (linkMatch[3].str() == "!")
++            if (negated)
+                 condition = !condition;
+ 
+             if (!condition)
+--- /dev/null
++++ b/openmw/components/shader/glesrewrite.hpp
+@@ -0,0 +1,184 @@
++// Orthros (tools/openmw/patches/orthros-r2.patch): the GLES rewriting of OpenMW's shaders without std::regex.
++// adjustSourceForGLES (shadermanager.cpp) ran about 40 std::regex constructions and passes over each merged shader
++// source, on the page's thread, whenever a shader variant was first asked for (a 213 ms frame measured for the rain's).
++// The same rewrites as plain scans, each giving the bytes its regex gave (tools/openmw/gles-rewrite-check.sh compares
++// them over every shader of the engine and generated sources): `\b` is a boundary between a word character
++// ([A-Za-z0-9_], the "C" locale's) and anything else, `\s` one of " \t\n\v\f\r".
++#ifndef OPENMW_COMPONENTS_SHADER_GLESREWRITE_H
++#define OPENMW_COMPONENTS_SHADER_GLESREWRITE_H
++
++#include <cstddef>
++#include <string>
++#include <string_view>
++
++namespace Shader::GlesRewrite
++{
++    inline bool isWord(char c)
++    {
++        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
++    }
++
++    inline bool isSpace(char c)
++    {
++        return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r';
++    }
++
++    inline std::size_t skipSpace(std::string_view s, std::size_t i)
++    {
++        while (i < s.size() && isSpace(s[i]))
++            ++i;
++        return i;
++    }
++
++    /// The end of a match starting at `at` (npos: none). `boundaryBefore`: `\b` before it.
++    template <class Matcher>
++    std::string replaceAll(const std::string& source, std::string_view first, bool boundaryBefore, Matcher matchRest,
++        std::string_view replacement, bool* found = nullptr)
++    {
++        std::string out;
++        std::size_t copied = 0, from = 0;
++        bool any = false;
++        while (true)
++        {
++            const std::size_t at = source.find(first, from);
++            if (at == std::string::npos)
++                break;
++            std::size_t end = std::string::npos;
++            if (!boundaryBefore || at == 0 || !isWord(source[at - 1]))
++                end = matchRest(std::string_view(source), at + first.size());
++            if (end == std::string::npos)
++            {
++                from = at + 1;
++                continue;
++            }
++            if (!any)
++                out.reserve(source.size() + source.size() / 8);
++            any = true;
++            out.append(source, copied, at - copied);
++            out.append(replacement);
++            copied = from = end;
++        }
++        if (found)
++            *found = any;
++        if (!any)
++            return source;
++        out.append(source, copied, std::string::npos);
++        return out;
++    }
++
++    /// `\bword\b` (a word of word characters) by `replacement`; `found`: whether there was one.
++    inline std::string replaceWord(
++        const std::string& source, std::string_view word, std::string_view replacement, bool* found = nullptr)
++    {
++        return replaceAll(
++            source, word, true,
++            [](std::string_view s, std::size_t i) { return i == s.size() || !isWord(s[i]) ? i : std::string::npos; },
++            replacement, found);
++    }
++
++    inline bool hasWord(const std::string& source, std::string_view word)
++    {
++        for (std::size_t at = source.find(word); at != std::string::npos; at = source.find(word, at + 1))
++        {
++            const std::size_t end = at + word.size();
++            if ((at == 0 || !isWord(source[at - 1])) && (end == source.size() || !isWord(source[end])))
++                return true;
++        }
++        return false;
++    }
++
++    /// `\bftransform\s*\(\s*\)`
++    inline std::string replaceFtransform(const std::string& source, std::string_view replacement)
++    {
++        return replaceAll(
++            source, "ftransform", true,
++            [](std::string_view s, std::size_t i) {
++                i = skipSpace(s, i);
++                if (i == s.size() || s[i] != '(')
++                    return std::string::npos;
++                i = skipSpace(s, i + 1);
++                if (i == s.size() || s[i] != ')')
++                    return std::string::npos;
++                return i + 1;
++            },
++            replacement);
++    }
++
++    /// `gl_TextureMatrix\[[0-9]+\]` (no boundary before)
++    inline std::string replaceTextureMatrix(const std::string& source, std::string_view replacement)
++    {
++        return replaceAll(
++            source, "gl_TextureMatrix[", false,
++            [](std::string_view s, std::size_t i) {
++                const std::size_t digits = i;
++                while (i < s.size() && s[i] >= '0' && s[i] <= '9')
++                    ++i;
++                if (i == digits || i == s.size() || s[i] != ']')
++                    return std::string::npos;
++                return i + 1;
++            },
++            replacement);
++    }
++
++    /// `\bstruct\s*\.\s*member\b` (gl_FrontMaterial.diffuse, gl_Fog . color)
++    inline std::string replaceMember(
++        const std::string& source, std::string_view structName, std::string_view member, std::string_view replacement)
++    {
++        return replaceAll(
++            source, structName, true,
++            [member](std::string_view s, std::size_t i) {
++                i = skipSpace(s, i);
++                if (i == s.size() || s[i] != '.')
++                    return std::string::npos;
++                i = skipSpace(s, i + 1);
++                if (s.substr(i, member.size()) != member)
++                    return std::string::npos;
++                i += member.size();
++                return i == s.size() || !isWord(s[i]) ? i : std::string::npos;
++            },
++            replacement);
++    }
++
++    /// A `$link` statement (what follows "$link" on its line) as the regex
++    /// `\s*"([^"]+)"\s*(if\s+(!)?\s*([_a-zA-Z0-9]+)?)?\s*` matched whole: false when it does not match.
++    inline bool parseLinkStatement(std::string_view s, std::string& target, bool& hasCondition, bool& negated,
++        std::string& conditionExpression)
++    {
++        std::size_t i = skipSpace(s, 0);
++        if (i == s.size() || s[i] != '"')
++            return false;
++        const std::size_t nameStart = ++i;
++        while (i < s.size() && s[i] != '"')
++            ++i;
++        if (i == s.size() || i == nameStart)
++            return false;
++        const std::string_view name = s.substr(nameStart, i - nameStart);
++        i = skipSpace(s, i + 1);
++        bool condition = false, bang = false;
++        std::string_view expression;
++        if (s.substr(i, 2) == "if" && i + 2 < s.size() && isSpace(s[i + 2]))
++        {
++            condition = true;
++            i = skipSpace(s, i + 2);
++            if (i < s.size() && s[i] == '!')
++            {
++                bang = true;
++                i = skipSpace(s, i + 1);
++            }
++            const std::size_t e = i;
++            while (i < s.size() && isWord(s[i]))
++                ++i;
++            expression = s.substr(e, i - e);
++            i = skipSpace(s, i);
++        }
++        if (i != s.size())
++            return false;
++        target = std::string(name);
++        hasCondition = condition;
++        negated = bang;
++        conditionExpression = std::string(expression);
++        return true;
++    }
++}
++
++#endif

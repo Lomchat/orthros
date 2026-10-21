@@ -164,6 +164,23 @@ test('the page\'s client reads through the worker: pieces kept in the page, aske
   assert.ok(data.snapshot().hits > 0);
 });
 
+test('a file not in the page yet is not readable at once: fetched in the background, once, then readable without a wait', async (t) => {
+  const wav = bytes(200000, 3), server = fakeServer({ 'Sound/Fx/step.wav': wav });
+  const data = await inThread(t, server), h = data.file('v', 'sound/fx/STEP.wav');
+  assert.equal(data.readable(h), false); assert.equal(data.readable(h), false, 'asked again meanwhile');
+  const first = h.ensuring; assert.ok(first, 'its fetch under way');
+  await first;
+  assert.equal(data.readable(h), true);
+  const out = new Uint8Array(h.size), asked = server.asked.length;
+  assert.equal(data.read(h, out, 0, h.size, 0), h.size); assert.deepEqual(out, wav);
+  assert.equal(server.asked.length, asked, 'read from the page: no wait');
+  assert.equal(server.asked.filter(([p]) => p === 'Sound/Fx/step.wav').length >= 1, true);
+  // (a fetch that fails: readable — its read waits and says what failed)
+  const gone = data.fileAs('v', 'gone.wav', 1000);
+  assert.equal(data.readable(gone), false); await gone.ensuring.catch?.(() => {}); await new Promise((r) => setTimeout(r, 20));
+  assert.equal(data.readable(gone), true);
+});
+
 /** The page's client and its worker in this thread (asynchronous reads only), on `server`. */
 const nativeFetch = globalThis.fetch;
 async function inThread(t, server, o = {}) {
