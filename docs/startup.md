@@ -325,9 +325,9 @@ and the code around the calls:
 
 - After its splash screen, `WinMain` (`game.dat` VA `0x4030b0`) calls a check at `0x632bed`: `CreateMutexA(0, 0,
   name)`, `GetLastError() == ERROR_ALREADY_EXISTS (0xb7)`, `CloseHandle`. Only when the mutex **already existed** does
-  it go on, to `0x632c1f`: `PeekMessage` / `OpenEvent(EVENT_MODIFY_STATE)` + `SetEvent` for 60 s at most, then a
-  thread message `0xBEEF` whose parameter is a file-mapping handle it maps (`MapViewOfFile`, `FILE_MAP_ALL_ACCESS`,
-  kept at `0xdfe724`). Otherwise it frees what it made and returns from `WinMain` (`profile-high.csv` written in the
+  it go on, to `0x632c1f`: `OpenEventA(EVENT_MODIFY_STATE)` retried (`Sleep(0)`) for 60 s at most (`timeGetTime`),
+  `SetEvent`, then `PeekMessageA` for 10 s at most for a thread message `0xBEEF` whose parameter is a file-mapping
+  handle it maps (`MapViewOfFileEx`, `FILE_MAP_ALL_ACCESS`, kept at `0xdfe724`). Otherwise it frees what it made and returns from `WinMain` (`profile-high.csv` written in the
   game folder at exit — refused: read-only — then the C runtime's `ExitProcess(0)`).
 - That is the hand-shake of the game's launcher (`lotrbfme2.exe`, in `base/`): it creates the mutex, starts `game.dat`
   and posts it the mapping. Run alone on Windows, `game.dat` 1.06 exits the same way: the emulation is faithful
