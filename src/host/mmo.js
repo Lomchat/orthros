@@ -666,7 +666,10 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
       }
       case C.PLAYER_STATE: {
         if (body.length < 12 || body.length > MMO_LIMITS.playerState) return deny(s, type, D.INVALID);
-        s.pos = { x: body.readFloatLE(0), y: body.readFloatLE(4), z: body.readFloatLE(8) };
+        const x = body.readFloatLE(0), y = body.readFloatLE(4), z = body.readFloatLE(8);
+        // (NaN or infinite: never stored nor relayed — the engines index their world by it; their own bounds are theirs)
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return deny(s, type, D.INVALID);
+        s.pos = { x, y, z };
         return toWorld(w, record(type, s.slot, body), s, true);
       }
       case C.ENTITY_STATE: {
