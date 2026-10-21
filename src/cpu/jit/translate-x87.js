@@ -127,6 +127,15 @@ function pushRC(E) { if (E.fpcStatic !== null) E.c.i32(E.fpcStatic >> 10); else 
  * as the interpreter, without double-rounding artefacts (fpmath-round.js).
  * `narrowOps`: both operands are narrow (see narrow), known statically.
  */
+/**
+ * (|f64| bits' high word - 0x38100000, 0x47e00000 - 0x38100000) on the stack, for an unsigned compare (lt_u: the f64 in
+ * local `bits` is in [2^-126, 2^127), the float normal range below the magnitudes that could round up to 2^128) — on
+ * the high word shifted left by one instead of masked (the sign out, the low word's top bit in bit 0, which moves no
+ * bound): `shr 31 ; lea ; cmp` where `shr 32 ; and ; lea ; cmp` took one more instruction on x87 arithmetic's hot path
+ */
+function pushFloatRangeTest(c, bits) {
+  return c.get(bits).i64(31n).i64shr_u().wrap().i32(0x38100000 * 2).sub().i32((0x47e00000 - 0x38100000) * 2);
+}
 function roundPC(E, op, insn, narrowOps = false) {
   const c = E.c;
   // mode known statically (region specialized for it): 53/64-bit precision rounds nothing; 24-bit precision
@@ -138,7 +147,7 @@ function roundPC(E, op, insn, narrowOps = false) {
     const done = c.block();
     const cold = c.block();
     c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).eq().hint(false).br_if(cold);
-    c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).ge_u().hint(false).br_if(cold);
+    pushFloatRangeTest(c, L_I64A).ge_u().hint(false).br_if(cold);
     c.get(L_F64C).f32demote().f64promote().set(L_F64C);
     c.br(done);
     c.end(); // cold: zero is exact, anything else takes the exact kernel
@@ -159,7 +168,7 @@ function roundPC(E, op, insn, narrowOps = false) {
   c.get(L_F64C).i64reinterpret_f64().set(L_I64A); // (the result's bits, read by the cold path whichever test sends there)
   c.get(L_FPC).hint(false).br_if(cold);
   c.get(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).eq().hint(false).br_if(cold);
-  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).ge_u().hint(false).br_if(cold);
+  pushFloatRangeTest(c, L_I64A).ge_u().hint(false).br_if(cold);
   c.get(L_F64C).f32demote().f64promote().set(L_F64C);
   c.br(done);
   c.end(); // cold (L_I64A = the result's bits)
@@ -585,7 +594,10 @@ function arithF32(E, insn, op) {
   E.count(PF.x87Arith); // (profiling translations only, as every count below)
   c.get(x).get(y); F32_OP[op === 5 || op === 7 ? op - 1 : op](c); c.set(L_F32C);
   const done = c.block();
-  c.get(L_F32C).i32reinterpret_f32().i32(23).shr_u().i32(0xff).and().i32(1).sub().i32(254).lt_u().hint(true).br_if(done);
+  // exponent field in [1, 254] (a normal float): the bits shifted left by one (the sign out) are in [2^24, 255 * 2^24) —
+  // `lea -0x1000000(, x, 2) ; cmp ; jb` after the move from the XMM register, where the field extracted by a shift and a
+  // mask then tested (exponent - 1 < 254) took two more instructions on every arithmetic instruction's hot path
+  c.get(L_F32C).i32reinterpret_f32().i32(1).shl().i32(0x01000000).sub().i32(0xfe000000 | 0).lt_u().hint(true).br_if(done);
   E.count(PF.x87ColdEntry);
   if (!coldCall(E)) { emitArithF32Cold(c, cold32(E), op, done); E.stepExit(insn); c.end(); return; }
   // an exact zero (emitArithF32Cold's first test; float compares: the result's bits as an integer, shared with the
@@ -619,14 +631,14 @@ function roundF32(E, insn, op) {
   const done = c.block();
   const cold = c.block();
   c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).wrap().i32(0x1fffffff).and().i32(0x10000000).eq().hint(false).br_if(cold);
-  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).ge_u().hint(false).br_if(cold);
+  pushFloatRangeTest(c, L_I64A).ge_u().hint(false).br_if(cold);
   c.get(L_F64C).f32demote().set(L_F32C);
   c.br(done);
   c.end(); // cold
   E.count(PF.x87ColdEntry);
   c.get(L_F64C).f32demote().set(L_F32C);
   c.get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done); // zero: exact
-  c.get(L_I64A).i64(32n).i64shr_u().wrap().i32(0x7fffffff).and().i32(0x38100000).sub().i32(0x47e00000 - 0x38100000).lt_u();
+  pushFloatRangeTest(c, L_I64A).lt_u();
   c.get(L_F64A).f32demote().f64promote().get(L_F64A).f64eq().and();
   c.get(L_F64B).f32demote().f64promote().get(L_F64B).f64eq().and().br_if(done);
   if (coldCall(E)) { E.count(PF.x87ColdCall); swOut(E); c.get(L_STATE).get(L_F64A).get(L_F64B).get(L_F64C).i32(op).call(IMP_X87_ROUNDF32); swIn(E); settleF32(E, insn, done); }
