@@ -119,7 +119,8 @@ export function compactPhase(ph) {
   if (!ph) return null;
   return {
     label: ph.label, frames: ph.frames ?? 0, seconds: ph.seconds ?? 0, fps: ph.fps ?? 0,
-    slow33: ph.slow33 ?? 0, slow40: ph.slow40 ?? 0, slow50: ph.slow50 ?? 0, slow100: ph.slow100 ?? 0, per33: ph.per33 ?? 0, per50: ph.per50 ?? 0, per100: ph.per100 ?? 0,
+    slow33: ph.slow33 ?? 0, slow40: ph.slow40 ?? 0, slow50: ph.slow50 ?? 0, slow100: ph.slow100 ?? 0, per33: ph.per33 ?? 0, per40: ph.per40 ?? 0, per50: ph.per50 ?? 0, per100: ph.per100 ?? 0,
+    slowPaced: ph.slowPaced ?? null,
     dt: ph.dt ?? null, work: ph.work ?? null, mean: ph.mean ?? null, slowMean: ph.slowMean ?? null, excessShares: ph.excessShares ?? null, hitches: ph.hitches ?? null,
     worst: (ph.worst ?? []).slice(0, 3),
   };

@@ -103,7 +103,8 @@ the GL null mode wraps the methods themselves).
 `aborted`, `exited`, `crashed`) and `detail`, `seconds`, `firstLaunch`, `display`, `options`, `marks` (each phase's
 start, seconds from the launch: the time to the menu, the map load...), `anchors` (when each wait was satisfied),
 `interrupted` (seconds hidden, focus losses), `audio` (as in the summaries, over the whole run), `env` (with `audioDecoder` / `audioWorklet`: WebCodecs audio and AudioWorklet available), and per phase: the worker's phase report (frame-acct.js
-`FrameStats.phase`: frames, fps, slow frames > 33 / 40 / 50 / 100 ms and per minute, frame and work percentiles,
+`FrameStats.phase`: frames, fps, slow frames > 33 / 40 / 50 / 100 ms and per minute (`slowPaced`: those > 33 ms whose
+work fits in 33.4 ms; the summary panel shows > 40 ms per minute too), frame and work percentiles,
 mean time by category, slow frames' excess shares, hitches, the 3 worst frames) with, from the stats of the phase,
 draws per frame, GL calls per frame, GPU time, render worker waits, busy and visible shares. Phases: `start` (launch to
 the first mark: downloads, start-up, intro), then the scenario's marks; the scenario's last mark `end` closes the last

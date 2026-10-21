@@ -19,7 +19,7 @@ const W = FR ? {
   done: (ok, why) => (ok ? 'Mesure terminée' : `Mesure arrêtée (${why})`), gpuUnknown: 'GPU inconnu', cores: 'cœurs', render: 'rendu', inThread: 'dans le fil', display: 'affichage',
   connection: 'connexion', roundTrip: 'aller-retour', receivedLine: (all, game, bg) => `${all} reçus (lectures du jeu ${game}, arrière-plan ${bg})`,
   hidden: (s, b) => `attention : l’onglet a été masqué ${s} s / a perdu le focus ${b} fois : ces phases ne sont pas représentatives`,
-  head: ['phase', 'durée', 'img/s', 'image ms p50 / p90 / p99', '&gt;33 ms /min', '&gt;50', '&gt;100', 'GPU ms p50 / p99', 'dessins /image', 'image moyenne (ms)'],
+  head: ['phase', 'durée', 'img/s', 'image ms p50 / p90 / p99', '&gt;33 ms /min', '&gt;40', '&gt;50', '&gt;100', 'GPU ms p50 / p99', 'dessins /image', 'image moyenne (ms)'],
   sent: 'Les résultats ont été envoyés au serveur. Merci !', notSent: 'Les résultats n’ont pas pu être envoyés (télémétrie désactivée sur ce serveur) : utilise « Copier les résultats ».',
   yours: 'Le jeu est à toi maintenant : clique dedans pour capturer la souris, Échap la libère.', copy: 'Copier les résultats', close: 'Fermer et jouer', copied: 'Copié', copyFailed: 'Échec de la copie',
 } : {
@@ -30,7 +30,7 @@ const W = FR ? {
   done: (ok, why) => (ok ? 'Measurement complete' : `Measurement stopped (${why})`), gpuUnknown: 'GPU unknown', cores: 'cores', render: 'render', inThread: 'in-thread', display: 'display',
   connection: 'connection', roundTrip: 'round trip', receivedLine: (all, game, bg) => `${all} received (game reads ${game}, background ${bg})`,
   hidden: (s, b) => `warning: the tab was hidden ${s} s / lost the focus ${b} time(s): those phases are not representative`,
-  head: ['phase', 'time', 'fps', 'frame ms p50 / p90 / p99', '&gt;33 ms /min', '&gt;50', '&gt;100', 'GPU ms p50 / p99', 'draws /frame', 'mean frame (ms)'],
+  head: ['phase', 'time', 'fps', 'frame ms p50 / p90 / p99', '&gt;33 ms /min', '&gt;40', '&gt;50', '&gt;100', 'GPU ms p50 / p99', 'draws /frame', 'mean frame (ms)'],
   sent: 'The results were sent to the server. Thank you!', notSent: 'The results could not be sent (telemetry is off on this server): use "Copy the results".',
   yours: 'The game is yours now: click it to capture the mouse, Escape releases it.', copy: 'Copy the results', close: 'Close and play', copied: 'Copied', copyFailed: 'Copy failed',
 };
@@ -190,7 +190,7 @@ export class BenchRun {
   showResult(r) {
     const el = document.createElement('div'); el.id = 'benchResult';
     const cls = (fps) => (fps >= 29.5 ? 'good' : fps >= 20 ? 'warn' : 'bad');
-    const rows = r.phases.map((p) => `<tr><td>${esc(p.label)}</td><td>${p.seconds ?? '–'} s</td><td class="${cls(p.fps ?? 0)}">${p.fps ?? '–'}</td><td>${p.dt ? `${p.dt.p50} / ${p.dt.p90} / ${p.dt.p99}` : '–'}</td><td>${p.per33 ?? '–'}</td><td>${p.per50 ?? '–'}</td><td>${p.per100 ?? '–'}</td><td>${p.gpu?.state === 'on' && p.gpu.frames ? `${p.gpu.p50} / ${p.gpu.p99}` : p.gpu?.state === 'unavailable' ? 'n/a' : '–'}</td><td>${p.drawsPerFrame ?? '–'}</td><td class="l">${p.mean ? Object.entries(p.mean).slice(0, 3).map(([k, v]) => `${k} ${v}`).join(', ') : ''}</td></tr>`).join('');
+    const rows = r.phases.map((p) => `<tr><td>${esc(p.label)}</td><td>${p.seconds ?? '–'} s</td><td class="${cls(p.fps ?? 0)}">${p.fps ?? '–'}</td><td>${p.dt ? `${p.dt.p50} / ${p.dt.p90} / ${p.dt.p99}` : '–'}</td><td>${p.per33 ?? '–'}</td><td>${p.per40 ?? '–'}</td><td>${p.per50 ?? '–'}</td><td>${p.per100 ?? '–'}</td><td>${p.gpu?.state === 'on' && p.gpu.frames ? `${p.gpu.p50} / ${p.gpu.p99}` : p.gpu?.state === 'unavailable' ? 'n/a' : '–'}</td><td>${p.drawsPerFrame ?? '–'}</td><td class="l">${p.mean ? Object.entries(p.mean).slice(0, 3).map(([k, v]) => `${k} ${v}`).join(', ') : ''}</td></tr>`).join('');
     const e = r.env ?? {};
     el.innerHTML = `<h2>${W.done(r.outcome === 'done', esc(r.outcome))} — ${esc(r.title ?? r.bench)}</h2>
 <div class="m">${esc(r.detail ?? '')}${r.detail ? '\n' : ''}${esc(e.gpu ?? W.gpuUnknown)} · ${e.cores ?? '?'} ${W.cores}${e.memGB ? ` · ${e.memGB} GB` : ''} · ${esc(e.screen ?? '')} · ${W.render} ${r.options?.renderWorker ? 'worker' : W.inThread} · ${W.display} ${esc(r.display ?? '?')}${r.network?.bw ? `\n${W.connection} ${fmtRate(r.network.bw)}${r.network.rtt ? `, ${W.roundTrip} ${r.network.rtt} ms` : ''}: ${W.receivedLine(fmtBytes(r.network.demandBytes + r.network.bgBytes), fmtBytes(r.network.demandBytes), fmtBytes(r.network.bgBytes))}` : ''}${r.interrupted.hiddenSeconds || r.interrupted.blurs ? `\n${W.hidden(r.interrupted.hiddenSeconds, r.interrupted.blurs)}` : ''}</div>

@@ -52,7 +52,8 @@ report prints the accounting's own clock reads per frame.
 
 - **Harness** (`tools/headless.mjs`): each `mark:<label>` input starts a phase named `<label>`; the previous phase (and
   the last one, as `end`, when the run stops) gets a `[frames]` report: frames > 33 / > 40 / > 50 / > 100 ms (count
-  and per minute), frame and work percentiles, mean time by category over all frames and over the slow (> 33.4 ms) ones, the
+  and per minute; `slowPaced`: the frames > 33 ms whose work fits in 33.4 ms — waiting made them long, e.g. a 30 fps
+  game's frame limiter waking 1-2 ms late, as its Sleep granularity does on Windows), frame and work percentiles, mean time by category over all frames and over the slow (> 33.4 ms) ones, the
   slow frames' excess over the phase's median frame by category (% of the total excess) and the count of slow frames
   by their largest excess, the worst frames with their categories, the frames of 150 ms and more counted by their
   largest category (`hitches`: e.g. `ioWait 3, guest 2`), and the APIs that took the most time (estimated from the
