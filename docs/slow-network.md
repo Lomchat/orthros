@@ -86,6 +86,18 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   loading screens are 1024 × 1024 × 24-bit, 3 MB each (2.8 MB on the wire): its loading screen shows a new random one
   every 5 s while the game is not started (OpenMW's `LoadingScreen::changeWallpaper`), so at 85 KB/s each new picture
   held the page ~33 s more (8 of them in a New Game's first load: 21 MB of its 28); light, 197 KB each.
+  A WAD3 archive (GoldSrc's textures, 2026-10-21: `lightWad`) has a light copy of **its own size and offsets** — the
+  same archive, so that an engine reading part of it as one and part as the other still reads a valid archive —, each
+  uncompressed texture of 64 × 64 pixels or more with its finest level redrawn from the next one (each pixel of level 1
+  twice as wide and high: half the detail on the nearest surfaces, the farther levels as they are), which brotli finds
+  again and again: per 1 MiB block at brotli 11, halflife.wad 0.62 → 0.35 of its bytes, Counter-Strike's map WADs
+  0.70-0.89 → 0.35-0.43 (chateau.wad 0.82 → 0.38, cs_dust.wad 0.89 → 0.43). Its learned order keeps its pieces
+  (`forLink`: a copy of the file's size stands for the same pieces, not for all of it); the units of such a copy are a
+  version of their own (`lightFormat` in br-cache.js's key). GoldSrc does not load a file again in place, so the copy
+  is read only on a thin link (`readsReal`), and the file replaces it at the next map load once downloaded (the whole
+  file, last of all, as any light copy). Measured on the launch sets (thin link, 2026-10-21): Counter-Strike Arsenal
+  9.6 MB of WAD pieces, brotli 11 ~7.0 MB → ~3.4 MB light; Counter-Strike rebuilt 4.2 MB → ~−1.8 MB; Half-Life 1.0 MB
+  (mostly small WADs without textures to lighten) → ~−0.2 MB (see "Audio units" for the method's numbers).
   Derived at each request (a header of its own, then a run of the file: nothing stored, the game files never changed),
   served as `/gamez/<manifest>/.light/<path>` (compressed ranges, read reports learned like the file's). The tree tells
   each such file's light size (`light`). For the browser ports only (`manifest.lightCopies`, the catalog's: `false` in a
@@ -373,9 +385,25 @@ written from scratch (`src/vfs/pcm-codec.js`) —, for every game and runtime al
   does not match) turns the audio units off for that backend and the range is asked again without. A body of the
   wrong length that starts as a container is decoded too (a proxy that dropped the header). The home's "playable
   after" counts the audio form's bytes (`brCache.size`).
-- **Measured** (`tools/audio-units.mjs`, the live learned orders of 2026-10-21, every container decoded and compared):
-  see the table below. Decoding: ~50 MB/s of decoded bytes on one core of this machine under load 25-30 (a MiB unit
-  in ~20 ms — 0.2 % of the second it takes to cross a 1 MB/s link).
+- **Measured** (`tools/audio-units.mjs`, a copy of the live learned orders of 2026-10-21, every container decoded and
+  compared; the units the generator keeps, brotli 11 against the audio form): the launch set as a thin link reads it,
+  and the whole learned order as a fast one does —
+
+  | version | launch set: audio units' brotli 11 → audio form | learned order |
+  |---|---|---|
+  | Vice City reVC / Orthros Edition (re3) | 9.01 → 6.61 MB (−2.39 MB, −27 %; sfx.RAW, by trial) | 13.11 → 10.32 MB (−2.79) |
+  | Vice City (Windows) | — (no flagged launch set) | 15.65 → 12.67 MB (−2.98) |
+  | BFME 1.03 / 1.08 / vanilla (stale, mask-less) | 0.24 → 0.21 / 0.35 → 0.30 / 0.91 → 0.78 MB | 11.71 → 9.38 / 3.69 → 3.17 / 63.16 → 52.58 MB |
+  | BFME2, RotWK 2.01 / 2.02 | 0.27 → 0.25, 0.31 → 0.27 / 0.35 → 0.30 MB | 0.76 → 0.59, 0.31 → 0.27 / 0.40 → 0.33 MB |
+  | Counter-Strike Arsenal / rebuilt, Half-Life (8-bit WAVs) | 0.11 → 0.10 MB each (the sounds come after) | 2.81 → 2.31 / 1.67 → 1.39 / 1.83 → 1.49 MB |
+  | Morrowind GOTY EN / Vanilla+ EN / FR | 0.04 → 0.02 MB | 1.93 → 1.51 / 1.85 → 1.45 / 3.00 → 2.47 MB |
+
+  Vice City reVC's whole launch set through the server (`/gamez` answers of every one of its 41 units, with and
+  without `&pc=1`, their bodies decoded and hashed against the file): 12.82 → 10.44 MB on the wire (−18.6 %; 151 →
+  123 s at 85 KB/s); the shared reader prefetching it decoded its 14 sfx.RAW blocks in 314 ms (47 MB/s). In Chrome
+  (`tools/re3/check.mjs vice-city-revc --new-game` against a server of this tree, its units made first): menu and new
+  game as before. Decoding: ~50 MB/s of decoded bytes on one core of this machine under load 25-30 (a MiB unit in
+  ~20 ms — 2 % of the second it takes to cross a 1 MB/s link).
 
 ## The page, the engines and the covers (2026-10-21)
 

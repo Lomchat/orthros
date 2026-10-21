@@ -875,7 +875,8 @@ export function createServer(opts = {}) {
   /** compressed range transport totals (requests, bytes read, bytes sent, encoding time) */
   // (split by kind: `demand` the game's own reads (&s=), `bg` the background downloads (&p=1); `ms` the time from the
   // request to the last byte handed to the socket, simulated link included)
-  // (testing: opts.netTrace, a file — one line per compressed range answered: start s, duration s, kind, file, range, bytes sent)
+  // (testing: opts.netTrace, a file — one line per compressed range answered: start s, duration s, kind, file, range, bytes sent,
+  // and how the units saw it: hit / raw / miss / none, pcm1 for an audio unit)
   const netTrace = opts.netTrace ? (line) => { try { fs.appendFileSync(opts.netTrace, line + '\n'); } catch { /* no trace */ } } : null;
   const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, brHits: 0, demand: { requests: 0, sent: 0, ms: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
@@ -901,7 +902,7 @@ export function createServer(opts = {}) {
       netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
       const k = netStats[kind]; k.requests++;
       let finished = false;
-      res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind === 'bg' && /[?&]a=1/.test(req.url) ? 'ahead' : kind} ${path.basename(file)} ${start}-${end} ${body.length}`); });
+      res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind === 'bg' && /[?&]a=1/.test(req.url) ? 'ahead' : kind} ${path.basename(file)} ${start}-${end} ${body.length}${unitSeen ? ' ' + unitSeen : ''}${codec ? ' ' + codec : ''}`); });
       res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
       // (X-Orthros-Unit: how the precompressed units saw the request — hit, raw (kept as is), miss, or none: not a unit)
