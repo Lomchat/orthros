@@ -68,7 +68,11 @@ export function leanPackages({ dir, enginesDir, log = () => {} }) {
       make(release, build);
       return null;
     },
-    pending(release) { return making.get(release) === true; },
+    pending(release) {
+      // (made once its file is there, the child's exit seen or not yet)
+      const build = buildOf(enginesDir, release);
+      return making.get(release) === true && !(build && fs.existsSync(outOf(release, build)));
+    },
     decoded(release) {
       const build = buildOf(enginesDir, release), f = build && engineFile(enginesDir, release, `e/${build}/openmw.data`);
       try { return f ? fs.statSync(f).size : null; } catch { return null; }
