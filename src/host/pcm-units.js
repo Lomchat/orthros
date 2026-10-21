@@ -11,6 +11,8 @@
 import fs from 'node:fs';
 
 const SCAN_CHUNK = 4 << 20;
+/** the share of a unit that must be sound for its audio form to be tried (less cannot save the 5 % asked of it) */
+export const PCM_SHARE_MIN = 0.15;
 const PCM_GUID_TAIL = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71]);
 
 /**
@@ -105,3 +107,14 @@ export function estimateCoded(b, layout) {
   }
   return Math.ceil(total / 8);
 }
+
+/**
+ * The layout a range without sound headers is coded as (bytes `b`; `wire`: its brotli unit's wire bytes), or null:
+ * the most promising of trialLayouts by estimateCoded, when it may beat brotli — the estimate runs 5-18 % above the
+ * coding's size on sampled sound (Vice City's sfx.RAW blocks), so it is asked to be under wire / 0.85.
+ */
+export function trialRegion(b, wire) {
+  const best = trialLayouts(b.length).map((l) => [l, estimateCoded(b, l)]).sort((x, y) => x[1] - y[1])[0];
+  return best[1] * TRIAL_ESTIMATE_SLACK < wire ? best[0] : null;
+}
+const TRIAL_ESTIMATE_SLACK = 0.85;

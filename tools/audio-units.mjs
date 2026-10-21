@@ -17,7 +17,7 @@ import { launchSet, forLink, entryPieces } from '../src/vfs/launch-set.js';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { resolveGameFile } from '../src/host/game-files.js';
 import { LIGHT_DIR } from '../src/vfs/game-tree.js';
-import { scanWaves, regionsIn, trialLayouts, estimateCoded } from '../src/host/pcm-units.js';
+import { scanWaves, regionsIn, trialRegion, PCM_SHARE_MIN } from '../src/host/pcm-units.js';
 import { encodePcm, decodePcm, pcmCodedBytes } from '../src/vfs/pcm-codec.js';
 import { PCM_MIN_GAIN } from '../src/host/br-cache.js';
 
@@ -50,14 +50,15 @@ function unitOf(f, size, kind, index) {
   const n = kind === 'b' ? BLOCK : CHUNK, start = index * n, end = Math.min(size, start + n);
   const buf = Buffer.alloc(end - start), fd = fs.openSync(f, 'r'); fs.readSync(fd, buf, 0, buf.length, start); fs.closeSync(fd);
   const u = new Uint8Array(buf.buffer, buf.byteOffset, buf.length);
-  let regions = regionsIn(w, start, end), trial = false, v = null;
-  if (!w.length) { const best = trialLayouts(u.length).map((l) => [l, estimateCoded(u, l)]).sort((a, b) => a[1] - b[1])[0]; if (best[1] < u.length * 0.85) { regions = [best[0]]; trial = true; } }
-  if (regions.reduce((a, r) => a + r.len, 0) >= u.length * 0.15) {
+  // (as the generator: the file's sounds, else a trial against the brotli unit's bytes; brotli measured first)
+  let regions = regionsIn(w, start, end), trial = false, v = null, b = null;
+  if (!w.length) { b = Math.min(br11(u), u.length); const t = trialRegion(u, b); if (t) { regions = [t]; trial = true; } }
+  if (regions.reduce((a, r) => a + r.len, 0) >= u.length * PCM_SHARE_MIN) {
     const c = encodePcm(u, regions);
     if (pcmCodedBytes(c)) {
       const t0 = performance.now(), d = decodePcm(c), decMs = performance.now() - t0;
       if (!Buffer.from(d.buffer, d.byteOffset, d.length).equals(buf)) throw new Error(`round trip differs: ${k}`);
-      const b = Math.min(br11(u), u.length);
+      b ??= Math.min(br11(u), u.length);
       v = { raw: u.length, br: b, pcm: Math.min(c.length, br11(c)), trial, decMs };
     }
   }

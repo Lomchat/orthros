@@ -15,10 +15,8 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { readLight } from './light-copies.js';
 import { encodePcm, decodePcm, pcmCodedBytes } from '../vfs/pcm-codec.js';
-import { scanWaves, regionsIn, trialLayouts, estimateCoded } from './pcm-units.js';
+import { scanWaves, regionsIn, trialRegion, PCM_SHARE_MIN } from './pcm-units.js';
 
-/** the share of a unit that must be sound for its audio form to be tried */
-const PCM_SHARE_MIN = 0.15;
 const same = (st, job) => st.size === job.size && st.mtimeMs === job.mtimeMs;
 const readRange = (job, buf) => new Promise((resolve, reject) => {
   const done = (err) => (err ? reject(err) : resolve());
@@ -48,10 +46,7 @@ const wavesOf = (job) => {
 function audioForm(job, buf, wire) {
   const waves = wavesOf(job), u = new Uint8Array(buf.buffer, buf.byteOffset, buf.length);
   let regions = regionsIn(waves, job.start, job.end);
-  if (!waves.length) { // (no sound headers in the file: the trial layouts, the most promising one if it may pay)
-    const best = trialLayouts(u.length).map((l) => [l, estimateCoded(u, l)]).sort((a, b) => a[1] - b[1])[0];
-    regions = best[1] < wire * 0.9 ? [best[0]] : [];
-  }
+  if (!waves.length) { const t = trialRegion(u, wire); regions = t ? [t] : []; } // (no sound headers in the file: a trial)
   // (sound in a small part of the unit cannot save the 5 % asked of it: not tried — a second brotli 11 run for nothing)
   if (regions.reduce((a, r) => a + r.len, 0) < u.length * PCM_SHARE_MIN) return null;
   const c = encodePcm(u, regions);
