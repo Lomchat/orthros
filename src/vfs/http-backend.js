@@ -100,6 +100,16 @@ export function rangeUnits(start, end, size) {
   }
   return out.length > 1 ? out : null;
 }
+/**
+ * Cutting a range at its units pays only when the server has them: a unit it lacks is compressed on the fly alone, and
+ * independent 64 KiB pieces compress worse than the range whole (BFME2's archives, 384 KiB ranges: brotli-5 0.560 of
+ * the raw bytes by pieces against 0.533 whole, zstd-3 0.586 against 0.557 — +5 %; a precompressed piece, brotli-11,
+ * 0.519: -2.6 %), on as many more requests. So a backend cuts its background ranges while at least UNIT_HIT_MIN of the
+ * parts it asked lately were answered from units (the server's X-Orthros-Unit; a moving share, UNIT_HIT_WEIGHT the
+ * latest request's), and otherwise one request in UNIT_PROBE_EVERY only — a probe: the units it misses are made by the
+ * server (br-cache.js `want`), the next probes find them.
+ */
+const UNIT_HIT_MIN = 0.66, UNIT_HIT_WEIGHT = 0.3, UNIT_PROBE_EVERY = 8;
 
 /** Block the calling worker for `ms` (the reads are synchronous: nothing else can run meanwhile anyway). */
 function pause(ms) {
@@ -133,6 +143,8 @@ export class HttpBackend {
     this.encoded = !!opts.encoded;
     // (a compressed background range cut at its transport units, see rangeUnits; false: one request as asked)
     this.unitRequests = opts.unitRequests ?? true;
+    /** the share of the parts lately answered from the server's units (see UNIT_HIT_MIN), the cut requests since a probe */
+    this.unitHitRate = 1; this.unitSkips = 0;
     /** session id sent with the compressed ranges (the server learns the order blocks are needed in, see prefetch) */
     this.session = opts.session ?? '';
     this.store = opts.store ?? null;
@@ -615,7 +627,9 @@ export class HttpBackend {
     try {
       // (compressed ranges: one request per transport unit the range covers, in parallel — each answered from the
       // server's precompressed units when it has them, see rangeUnits; the parts all here or the download fails)
-      const parts = this.encoded && this.unitRequests ? rangeUnits(start, end, this.lookup(path)?.file?.size ?? 0) : null;
+      // — while the server has them: see UNIT_HIT_MIN)
+      let parts = this.encoded && this.unitRequests ? rangeUnits(start, end, this.lookup(path)?.file?.size ?? 0) : null;
+      if (parts && this.unitHitRate < UNIT_HIT_MIN) { if (++this.unitSkips < UNIT_PROBE_EVERY) parts = null; else this.unitSkips = 0; }
       if (parts) {
         let first = true;
         const ress = await Promise.all(parts.map(([a, b]) => fetch(this.rangeUrl(path, a, b, !learn, learn), { signal: ctl?.signal }).then((r) => { if (first) { first = false; this.net.firstByte(tok); } return r; })));
@@ -628,6 +642,8 @@ export class HttpBackend {
           if (d.length !== parts[i][1] - parts[i][0]) return undefined;
           data.set(d, parts[i][0] - start);
         }
+        const hits = ress.filter((r) => r.headers?.get?.('x-orthros-unit') === 'hit').length;
+        this.unitHitRate += UNIT_HIT_WEIGHT * (hits / parts.length - this.unitHitRate);
         ok = true;
         return data;
       }

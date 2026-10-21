@@ -660,7 +660,10 @@ export function createServer(opts = {}) {
     // (&pad=1: one byte (0) before the range — a page that reads it as text, the only synchronous binary read of a
     // window, x-user-defined, drops it; without it a range starting with a byte-order mark would be decoded as UTF-8/16)
     const pad = /[?&]pad=1(&|$)/.test(req.url) ? 1 : 0;
-    const reply = (body, encoding) => {
+    // (`unit`: answered from a precompressed unit, or a unit known not to compress — X-Orthros-Unit: hit, the reader cuts
+    // its ranges at their units while they hit; unitRaw: the latter)
+    let unitRaw = false;
+    const reply = (body, encoding, unit = unitRaw) => {
       netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
       const k = netStats[kind]; k.requests++;
       let finished = false;
@@ -668,6 +671,7 @@ export function createServer(opts = {}) {
       res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
       if (encoding) h['Content-Encoding'] = encoding;
+      if (unit) h['X-Orthros-Unit'] = 'hit';
       const go = () => { if (!res.headersSent) res.writeHead(200, h); res.end(body); };
       // (simulated link: the headers after the round trip, the body once it crossed — the client's time to the first
       // byte is the round trip, as on a real connection)
@@ -677,10 +681,10 @@ export function createServer(opts = {}) {
     // missed, it is asked for (made in the background) and this request goes the dynamic way
     const unit = brCache && br && !pad ? unitOf(start, end, light ? light.copy.size : st.size) : null;
     const pre = unit && brCache.lookup(file, st, light, unit);
-    if (pre?.raw) enc = null; // (brotli saves too little there: as it is)
+    if (pre?.raw) { enc = null; unitRaw = true; } // (brotli saves too little there: as it is)
     else if (pre) {
       return fs.readFile(pre.path, (err, body) => {
-        if (!err && body.length === pre.bytes) { netStats.brHits++; return reply(body, 'br'); }
+        if (!err && body.length === pre.bytes) { netStats.brHits++; return reply(body, 'br', true); }
         brCache.drop(file, st, light, unit); dynamic();
       });
     } else if (unit) brCache.want(file, st, light, unit);
