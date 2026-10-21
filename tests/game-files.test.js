@@ -40,6 +40,9 @@ test('the folders a tree is listed from tell when it changes; many paths resolve
     assert.deepEqual(dirs.sort(), [baseFolder, path.join(baseFolder, 'Data'), path.join(baseFolder, 'Data', 'Maps'), folder].sort());
     const stamp = dirsStamp(dirs);
     assert.equal(dirsStamp(dirs), stamp, 'nothing changed');
+    // (past the file system's timestamp tick, ~4 ms here: a folder changed within the tick of its first listing keeps
+    // the same times — the test failed one run in two or three)
+    for (const t0 = Date.now(); Date.now() - t0 < 25;);
     fs.writeFileSync(path.join(baseFolder, 'Data', 'Maps', 'b.bsp'), 'b');
     assert.notEqual(dirsStamp(dirs), stamp, 'a file added deep in a folder');
     // (one listing a folder for a run of lookups: the same answers as one by one)
