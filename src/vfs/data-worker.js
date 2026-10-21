@@ -230,8 +230,9 @@ const order = () => (W.learned ??= Promise.all(W.version.parts.map((p) => learne
 async function startup() {
   const lists = await order(), fast = W.version.net.fast();
   const heads = W.version.parts.map((p, i) => ({ p, head: launchSet(p.files, lists[i], fast), progress: { bytes: 0, blocks: 0, done: false } })).filter((h) => h.head.length);
-  const total = heads.reduce((n, h) => n + setBytes(h.p.files, h.head).bytes, 0);
-  const bytes = () => heads.reduce((n, h) => n + h.progress.bytes, 0);
+  // (a fast link fetches the set's blocks whole: counted so; the progress never past its total all the same)
+  const total = heads.reduce((n, h) => n + setBytes(h.p.files, h.head, fast).bytes, 0);
+  const bytes = () => Math.min(total, heads.reduce((n, h) => n + h.progress.bytes, 0));
   if (!heads.length) { postMessage({ startup: { bytes: 0, total: 0, done: true } }); return; }
   const tick = setInterval(() => postMessage({ startup: { bytes: bytes(), total, done: false } }), 250);
   // (the pieces sessions read only: the rest of their blocks comes with the learned order, once the engine runs)

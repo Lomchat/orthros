@@ -389,3 +389,29 @@ test('the data worker loads the launch set first and tells the way to playable: 
   const a1 = asked.findIndex(([p, a]) => p === 'a.dat' && a === BLOCK), b0 = asked.findIndex(([p]) => p === 'b.dat');
   assert.ok(a1 >= 0 && (b0 < 0 || a1 < b0), `the launch set before the rest: ${JSON.stringify(asked)}`);
 });
+
+test('the startup progress on a fast link counts the blocks it fetches whole, never past its total', async (t) => {
+  const tr = { dirs: {}, files: { 'a.dat': { size: 2 * BLOCK, mtime: 5 } } };
+  const learned = [['a.dat', 0, 1, 0, 1], ['a.dat', 1, 1, 100, 1]];
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(url, 'http://x');
+    if (u.pathname === '/api/manifest/v') return Response.json({ name: 'v' });
+    if (u.pathname === '/api/tree/v') return Response.json(tr);
+    if (u.pathname === '/api/prefetch/v') return init.method === 'POST' ? new Response(null, { status: 204 }) : Response.json(learned);
+    const m = /^\/gamez\/v\/(.+)$/.exec(u.pathname);
+    if (m) { const [a, b] = u.searchParams.get('r').split('-').map(Number); const body = new Uint8Array(b - a); return new Response(body, { status: 200, headers: { 'content-length': String(body.length) } }); }
+    return new Response('no', { status: 404 });
+  };
+  const out = [], handle = createDataWorker((m) => out.push(m));
+  const ctrl = new Int32Array(new SharedArrayBuffer(64)), data = new Uint8Array(new SharedArrayBuffer(1 << 20));
+  handle({ init: { name: 'v', session: 's', prefetch: 'none', bw: 50 << 20, ctrl: ctrl.buffer, data: data.buffer } });
+  const until = async (ok, what) => { for (let i = 0; i < 2000 && !ok(); i++) await new Promise((r) => setTimeout(r, 2)); assert.ok(ok(), what); };
+  await until(() => out.some((m) => m.ready), 'ready');
+  t.after(() => handle({ close: true }));
+  handle({ startup: true });
+  await until(() => out.some((m) => m.startup?.done), 'startup');
+  const all = out.filter((m) => m.startup).map((m) => m.startup);
+  assert.equal(all.at(-1).total, 2 * BLOCK, 'its two blocks, whole');
+  assert.ok(all.every((p) => p.bytes <= p.total), JSON.stringify(all));
+});

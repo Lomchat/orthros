@@ -94,13 +94,17 @@ export function entryPieces(files, [path, block, mask]) {
 }
 const pieceBytes = (size, c) => Math.min(CHUNK, size - c * CHUNK);
 
-/** The bytes of a set (decoded), and those of them here already (files' memory or store): { bytes, here }. */
-export function setBytes(files, list) {
+/**
+ * The bytes of a set (decoded), and those of them here already (files' memory or store): { bytes, here }. `whole`: its
+ * blocks counted whole (what a fast link fetches of them: HttpBackend.prefetch), not their learned pieces.
+ */
+export function setBytes(files, list, whole = false) {
   let bytes = 0, here = 0;
   for (const e of list) {
     const p = entryPieces(files, e); if (!p) continue;
     const block = p.block, blockHere = files.peekBlockHere?.(p.path, p.size, p.mtime, block);
-    for (const c of p.pieces) {
+    const pieces = whole ? Array.from({ length: Math.ceil(Math.min(BLOCK, p.size - block * BLOCK) / CHUNK) }, (_, i) => block * PIECES + i) : p.pieces;
+    for (const c of pieces) {
       const n = pieceBytes(p.size, c); bytes += n;
       if (blockHere || files.pieceHere?.(p.path, p.size, p.mtime, c)) here += n;
     }
