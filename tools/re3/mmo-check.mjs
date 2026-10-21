@@ -659,7 +659,8 @@ async function main() {
         const shot = await until(A, 30000, (s) => (s?.combat?.hitsApplied ?? 0) > (a0?.combat?.hitsApplied ?? 0));
         [a0, b0] = await dump('B shot A in its car');
         await check('combatv', 'B\'s shots at A in its car applied by A (car or driver)', shot.ok, { vh: [shot.state?.combat?.vehicleHealth], health: shot.state?.health, hits: shot.state?.combat?.hitsApplied });
-        // A runs into B
+        // A runs into B (B's copy there first: a special model streamed in frames — minutes at 0.1 frame a second)
+        await until(A, 180000, (s) => playerIn(s, B.name)?.puppet === true);
         let rammed = false;
         for (let i = 0; i < 3 && !rammed; i++) {
           const bh = await B.read();
@@ -681,7 +682,15 @@ async function main() {
         await healed();
         if (!(await together('population', PLACES.hotel, 5))) return;
         await sleep(Math.min(25000, Math.max(0, left()))); // (the streets fill)
-        const [a, b] = await both();
+        let [a, b] = await both();
+        // (one of them killed meanwhile — a burning wreck of the scenario before, the police —: both brought back together)
+        for (let again = 0; again < 2 && distance(a?.pos, b?.pos) > 30 && left() > 120000; again++) {
+          console.log('POPULATION apart', JSON.stringify({ A: vec(a?.pos), B: vec(b?.pos) }));
+          await healed();
+          await together('population', PLACES.hotel, 5);
+          await sleep(Math.min(25000, Math.max(0, left())));
+          [a, b] = await both();
+        }
         const ca = census(a), cb = census(b);
         await check('population', 'ambient peds and cars owned around them', ca.owned + cb.owned > 0, { A: ca, B: cb });
         await check('population', 'each has copies of the other\'s', ca.puppets > 0 && cb.puppets > 0, { A: ca, B: cb });

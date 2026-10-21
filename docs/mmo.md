@@ -355,3 +355,15 @@ them loads a scene: they share one GPU process):
 * freemode (`--scenario freemode`, one page, no shared world): the menu's free mode (ArrowDown, Enter, Enter, each sent
   again until the menu's page and row show it was read), "teleport" typed, the second place chosen with the arrows and
   Enter, the player moved there (the debug state's `freeMode.pos`).
+
+Results on the development build (fork commits 79774f94, b09e6439): 3 players 40/40 (crowd 27, perks 6), 4 players
+42/42, free mode 6/6; the two-player scenarios again (`--scenario all`) 59/60 then the failing one passed alone (a
+player killed by the burning wreck the vehicle scenario leaves, out of its place: the population scenario now gathers
+them again; vehicles and population then 14/14). A player's link: ~0.1–0.3 KB/s each way. One engine bug found: a remote pickup's copy waiting for its
+model was dropped after 10 s of wall-clock time, before a slow client (a few frames in that time) had streamed the
+model — never made there, never collectable; now 10 s and at least 120 frames (the debug state's `pickupCopies`: a
+copy made "late" in a 4-player run, which the old rule dropped). Everything else that failed on the way was the
+harness under the test machine's 0.1–1 frame a second: respawns (up to 10 minutes), the exit key missed, flames
+leaping over a player at large time steps, a player knocked down (flames set fire only to one in control, as the
+game's), a second teleport asked during the first one's fade (not taken: the list cannot be opened then either), a ram before
+the other player's copy was made (its special model still streaming).
