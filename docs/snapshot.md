@@ -146,6 +146,17 @@ then makes a new one). Kept with the learned data (`<learn>/snapshots/`), gzip- 
 brotli-compressed, the two most recent keys per game version and language. Not downloaded when it would take longer
 than 60 s at the connection's last measured rate; kept as the player's own once it applied.
 
+The page keeps a snapshot by writing it to OPFS in 16 MiB pieces, and the publishing session posts it once kept, from
+the stored file (a disk-backed body). Until 2026-10-21 the whole buffer went to one OPFS write and, at the same time,
+to the POST as a body of the bytes: copies of a few hundred MiB beside the 2 GB guest, and the publishing sessions of
+the BFME games ended in "Target crashed" (RotWK 2.01 / 2.02 on the live server, 129 and 200 s, each after one
+248 MB snapshot had reached the server). Measured on BFME1 1.08
+fr (seeded first launch, 303.7 MiB snapshot, renderer RSS sampled every 2 s, one run each): before, the RSS climbed
+from 2.0 to 4.39 GB after the keep and the page crashed at 127 s before the store finished; after, 2.47 GB at most,
+kept at 73 s, published at 99 s (318 MB raw, 107 MB gzip, 94 MB brotli), and a new player's session restored it in
+610 ms. `tools/snapshot-publish.mjs` prints the session's snapshot lines as they come (a session that ends badly has
+said how far it got) and waits for a post in flight.
+
 A sandboxed server (the production service: a dynamic user, no home, its own /tmp) does not start browsers: with
 `--snapshot-queue` it only queues the request with its token (`<learn>/snapshots/queue.json`), and
 `tools/snapshot-jobs.mjs --queue <file> --server <url>`, run outside the sandbox (the `orthros-snapshot-jobs` service),

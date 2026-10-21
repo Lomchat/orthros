@@ -316,6 +316,26 @@ against 3 558 and 3 846 ms for A — the syncs' cost was the data file's write-b
 the 1 MiB block writes themselves. No Direct3D frame came within the 50 s of a BFME2 first launch in any run (its
 first-launch work), so first-frame and `late` times were not comparable there.
 
+## Canonical first-launch profile, measured (2026-10-21)
+
+BFME1 1.08 fr, headless Chromium (SwiftShader, `--gl-discard --memprefetch`), a fresh copy per run of the live learned
+lists of `bfme1-108` (prefetch, programs, regions, heat), shared 48-core server at load 15-32.
+
+- `profile-seed-make.mjs make --only bfme1-108:fr --runs 2`: both first launches wrote the same `Options.ini` (High,
+  1024x768, the key `cb962b68271a8e3b1` of the live server's single-reporter candidate): written as the canonical set.
+  Each run: 170 s, one browser slot.
+- Unseeded (those two runs, `--profile-seed 0`): first Direct3D frame at 100 and 95 s, ≥ 27 fps for 3 s from 115 and
+  110 s. Seeded with the canonical set (3 runs): first Direct3D frame at 16, 17, 19 s (median 17), ≥ 27 fps from 27,
+  28, 30 s (median 28): −80 s to the first frame, −84 s to a steady menu.
+- Where the seeded start's worker time goes (`--profile 4:20`, 34 152 samples): waiting 36.4 % (`waitEvent` 23.8 %,
+  all of it called from the top-level `Scheduler.idle` — the ≤ 2 ms timer waits `runFor` blocks for — and `(idle)`
+  12.6 %); guest code 41.3 % in 1 380 regions, of which `msvcr71.dll+0x505dc` 11.9 %; installing the background
+  translations 3.1 % (`bgTranslator.onmessage` 2.2 %, `Jit.register` 0.9 %); `dispatchThunkBody` 5.0 % inclusive; the
+  block store's `put` 1.3 %.
+- Unseeded, during the benchmark (`--profile 25:20`, 35 706 samples): 97.2 % WebAssembly; the visit-flag harvest
+  (`harvestVisitsStep` 0.02 %, `heatDue` + `heatStep` 0.05 %) and the transition fold (`Jit.harvest` 0.04 %) are
+  negligible — the 1.7 % an audit saw for "harvest" is not there now, so its cadence was left as it is.
+
 ## A version that exits 2 s after its start: BFME2 1.06 (traced 2026-10-21)
 
 `bfme2-106` runs `base/game.dat` (the original 1.06 executable; `versions/1.06-vanilla` is empty) and calls
