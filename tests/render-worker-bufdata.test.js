@@ -105,8 +105,8 @@ function partialSession(gfx, seed, api9) {
   assert.equal(com.implAt(d3dPtr).CreateDevice(ctx([d3dPtr, 0, 1, 0, 0x40, pp, out])), 0);
   const devPtr = mem.read32(out), dev = com.implAt(devPtr);
   const call = (name, ...args) => dev[name](ctx([devPtr, ...args]));
-  assert.equal(call('CreateVertexBuffer', 24 * 4096, 0x208, 0x142, 0, out), 0); const vb = mem.read32(out);
-  assert.equal(call('CreateVertexBuffer', 4 * 4096 + 8, 0x208, 0, 0, out), 0); const colors = mem.read32(out);
+  assert.equal(call('CreateVertexBuffer', 24 * 16384, 0x208, 0x142, 0, out), 0); const vb = mem.read32(out);
+  assert.equal(call('CreateVertexBuffer', 4 * 16384 + 8, 0x208, 0, 0, out), 0); const colors = mem.read32(out);
   assert.equal(call('CreateIndexBuffer', 2 * 3000, 0x208, 101, 0, out), 0); const ib = mem.read32(out);
   const lock = (ptr, off, size, flags, f) => { const b = com.implAt(ptr); assert.equal(b.Lock(ctx([ptr, off, size, out, flags])), 0); f(mem.read32(out), size || b.length - off); b.Unlock(ctx([ptr])); };
   const randomBytes = (a, n) => { for (let i = 0; i < n; i++) mem.u8[a + i] = rnd(256); };
@@ -131,7 +131,7 @@ function partialSession(gfx, seed, api9) {
       if (api9) { call('SetIndices', ib); call('DrawIndexedPrimitive', 4, base, lo, 4, start, prims); } else { call('SetIndices', ib, base); call('DrawIndexedPrimitive', 4, lo, 4, start, prims); }
       // a part rewritten without discarding, then a non-indexed draw over another part
       const v0 = rnd(4000);
-      lock(vb, 24 * v0, 24 * Math.min(50, 4096 - v0), 0x1000, randomBytes);
+      lock(vb, 24 * v0, 24 * 50, 0x1000, randomBytes);
       if (api9) { call('SetFVF', 0x142); call('SetStreamSource', 0, vb, 0, 24); call('SetStreamSource', 1, 0, 0, 0); }
       call('DrawPrimitive', 4, rnd(4000), 1 + rnd(30));
     }
@@ -168,7 +168,7 @@ for (const api9 of [true, false]) {
   });
 }
 
-test('pending buffer ranges: random writes and reads against a byte map — reads copy exactly the pending bytes they meet (merged ranges: at least)', () => {
+test('pending buffer ranges: random writes and reads against a byte map — reads copy the pending bytes they meet (and short pending ranges they meet, whole), nothing else', () => {
   let s = 7; const rnd = (n) => { s = (Math.imul(s ^ (s >>> 15), 0x2c1b3c6d) + 0x9e3779b9) | 0; return ((s >>> 0) % n); };
   const link = new RenderLink({ words: new Int32Array(1 << 10), replayer: { reader: { consumed: 0 }, run() {} } });
   const LEN = 5000, copied = new Uint8Array(LEN);
@@ -178,12 +178,16 @@ test('pending buffer ranges: random writes and reads against a byte map — read
     const lo = rnd(LEN), hi = Math.min(LEN, lo + 1 + rnd(step % 7 === 0 ? LEN : 60));
     if (rnd(2)) { link.lazyAdd(rr, lo, hi); pending.fill(1, lo, hi); continue; }
     copied.fill(0);
+    const before = rr.lz ? rr.lz.slice() : [];
     link.lazyTake(b, rr, lo, hi);
     for (let i = 0; i < LEN; i++) {
-      if (i >= lo && i < hi) { if (pending[i]) assert.equal(copied[i], 1, `step ${step}: pending byte ${i} in [${lo}, ${hi}) not copied`); }
-      else assert.equal(copied[i], 0, `step ${step}: byte ${i} outside [${lo}, ${hi}) copied`);
+      if (i >= lo && i < hi && pending[i]) assert.equal(copied[i], 1, `step ${step}: pending byte ${i} in [${lo}, ${hi}) not copied`);
+      if (copied[i] && (i < lo || i >= hi)) { // (outside the read: only within a short pending range the read met)
+        let k = 0; while (k < before.length && before[k + 1] <= i) k += 2;
+        assert.ok(k < before.length && before[k] <= i && before[k + 1] - before[k] <= 16384 && before[k] < hi && lo < before[k + 1], `step ${step}: byte ${i} outside [${lo}, ${hi}) copied`);
+      }
     }
-    pending.fill(0, lo, hi);
+    for (let i = 0; i < LEN; i++) if (copied[i]) pending[i] = 0;
     // (the ranges: sorted, disjoint, every pending byte inside one)
     const p = rr.lz;
     for (let i = 0; i + 2 < p.length; i += 2) assert.ok(p[i] < p[i + 1] && p[i + 1] < p[i + 2], `step ${step}: ranges ${p.slice(i, i + 4)}`);

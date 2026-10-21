@@ -36,6 +36,13 @@ const REC_ENTRIES = ['drawPrimitive', 'drawIndexedPrimitive', 'drawPrimitiveUP',
 const REC_SUBS = ['flush', 'syncTables', 'syncTexture', 'syncStream', 'syncTransforms', 'syncLights', 'syncConsts', 'putVersion', 'workDone', 'noteSet', 'constTouched', 'transformTouched', 'lockBuffer', 'beforeWrite', 'ensureRes'];
 const LINK_SUBS = ['bufData', 'publish', 'mayRead'];
 
+/**
+ * Pending buffer bytes (RenderLink.lazyAdd) copied more widely than a draw reads when that is cheaper than bounding it:
+ * a pending range of at most LAZY_PIECE bytes that a draw meets is copied whole, and a buffer with at most LAZY_ALL
+ * bytes pending is copied whole at a draw that reads it (no index scan). Copying more is always right.
+ */
+const LAZY_PIECE = 16384, LAZY_ALL = 32768;
+const pendingBytes = (p) => { let n = 0; for (let i = 0; i < p.length; i += 2) n += p[i + 1] - p[i]; return n; };
 /** index of the first [lo, hi) pair of sorted disjoint ranges `p` (flat) that ends after `x` (p.length: none) */
 const pairAfter = (p, x) => { let a = 0, b = p.length >> 1; while (a < b) { const m = (a + b) >> 1; if (p[2 * m + 1] > x) b = m; else a = m + 1; } return 2 * a; };
 /** the recorded resource (texture of a level, else the resource itself) */
@@ -60,9 +67,9 @@ export class RenderLink {
     this.proc = null; this.failed = false;
     // (buffers whose contents travel in the ring with written bytes not copied yet — see lazyAdd; the vertex layouts'
     // streams by declaration object or FVF code — Recorder.streamsRead; the stale-read check, ORTHROS_VB_CHECK)
-    this.lazyN = 0; this.layoutsByObj = new WeakMap(); this.layoutsByFvf = new Map(); this.vbCheck = null; this.checkStep();
+    this.u16 = null; this.u32 = null; this.lazyN = 0; this.layoutsByObj = new WeakMap(); this.layoutsByFvf = new Map(); this.vbCheck = null; this.checkStep();
     this.published = 0; this.notifiedAt = 0; this.drawsSinceNotify = 0;
-    this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, eagerBufs: 0, bufDataBytes: 0, vbChecked: 0, vbStale: 0, deferredFrees: 0, cows: 0, cowBytes: 0, fenceTex: 0, fenceBuf: 0 };
+    this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, eagerBufs: 0, bufDataBytes: 0, bufDataCalls: 0, ixScans: 0, ixScanned: 0, vbChecked: 0, vbStale: 0, deferredFrees: 0, cows: 0, cowBytes: 0, fenceTex: 0, fenceBuf: 0 };
   }
   /** words the render worker has consumed (its 32-bit counter widened against what was produced) */
   consumedNow() {
@@ -208,7 +215,7 @@ export class RenderLink {
       I[p] = b.id; I[p + 1] = o; I[p + 2] = kind; I[p + 3] = n;
       W.U8.set(u8.subarray(a, a + n), (p + 4) * 4);
     }
-    if (end > start) this.stats.bufDataBytes += end - start;
+    if (end > start) { this.stats.bufDataBytes += end - start; this.stats.bufDataCalls++; }
     const rr = b.rec;
     if (this.vbCheck !== null && rr) { // (the check's copy of what the mirror buffer holds: its whole contents at the switch, then each copy)
       if (!rr.model && kind === 1 && start === 0 && end >= b.length) rr.model = new Uint8Array(b.length);
@@ -238,7 +245,7 @@ export class RenderLink {
     for (let i = pairAfter(p, lo); i < p.length;) {
       const a = p[i], e = p[i + 1];
       if (a >= hi) break;
-      const x = a > lo ? a : lo, y = e < hi ? e : hi;
+      const whole = e - a <= LAZY_PIECE, x = whole || a > lo ? a : lo, y = whole || e < hi ? e : hi; // (a short range: all of it — one copy, no split)
       this.bufData(b, x, y - x, 0);
       if (a < x && y < e) { p.splice(i + 2, 0, y, e); p[i + 1] = x; i += 4; } else if (a < x) { p[i + 1] = x; i += 2; } else if (y < e) { p[i] = y; i += 2; } else p.splice(i, 2);
     }
@@ -326,6 +333,7 @@ export class Recorder {
     this.mem = dev.proc.mem;
     this.dirtyT = []; this.dirtyK = []; this.nDirty = 0; // state table sets since the last flush (table, key): a count, not the arrays' length (shrinking an array costs)
     this.texHook = 0; this.streamHook = 0; this.shaderHook = false; this.xfDirty = []; this.nXf = 0;
+    this.srKey = undefined; this.sr = null; // (streamsRead: the last layout's streams)
     this.fbos = new Set(); // surfaces the backend holds a framebuffer for (its `fbos` keys): StretchRect's GPU path
     this.s = { api9: !!dev.api9, rs: null, tss: null, samplers: null, pp: null, bb: null, rt: undefined, rtRes: null, vp: null, sc: undefined, fvf: undefined, decl: undefined, vs: undefined, ps: undefined, vs8: undefined, vs8o: undefined, ps8: undefined, ps8o: undefined,
       texArr: null, tex: [], texRes: [], streamsArr: null, sVb: [], sStride: [], sOff: [], sRes: [], indices: null, ib: undefined, ibase: undefined, ibRes: null,
@@ -688,12 +696,14 @@ export class Recorder {
   streamsRead() {
     const d = this.dev, L = this.link;
     const key = d.api9 ? (d.vertexDecl ?? d.fvf) : (d.vertexShaders?.get(d.vertexShader) ?? d.vertexShader);
+    if (key === this.srKey) return this.sr; // (the last draw's layout)
     let r = typeof key === 'object' ? L.layoutsByObj.get(key) : L.layoutsByFvf.get(key);
-    if (r !== undefined) return r;
+    if (r !== undefined) { this.srKey = key; this.sr = r; return r; }
     const layout = typeof key === 'object' ? (key.layout ?? declLayout(key.decl)) : fvfLayout(key >>> 0);
     r = [];
     if (layout.streams) for (const [n, st] of layout.streams) r.push(n, st.stride); else r.push(0, layout.stride);
     if (typeof key === 'object') L.layoutsByObj.set(key, r); else L.layoutsByFvf.set(key, r);
+    this.srKey = key; this.sr = r;
     return r;
   }
   /**
@@ -704,19 +714,24 @@ export class Recorder {
   indexRange(ib, rr, first, n) {
     const isz = ib.fmt === 101 ? 2 : 4, a0 = first * isz, a1 = Math.min(ib.length, a0 + n * isz);
     if (!(a1 > a0)) return null;
-    let c = rr.ix;
-    if (c === null || c.w !== rr.wgen) c = rr.ix = { w: rr.wgen, m: new Map() };
-    let e = c.m.get(first);
-    if (e !== undefined && e[0] === n) return e;
-    const u8 = this.mem.u8, base = (ib.mem + a0) >>> 0, cnt = (a1 - a0) / isz | 0;
+    const cnt = (a1 - a0) / isz | 0, small = cnt <= 64; // (a few indices: scanned again rather than cached)
+    let c = null, e;
+    if (!small) {
+      c = rr.ix;
+      if (c === null || c.w !== rr.wgen) c = rr.ix = { w: rr.wgen, m: new Map() };
+      e = c.m.get(first);
+      if (e !== undefined && e[0] === n) return e;
+    }
+    const u8 = this.mem.u8, base = (ib.mem + a0) >>> 0, L = this.link;
+    L.stats.ixScans++; L.stats.ixScanned += cnt;
+    if (L.u16 === null || L.u16.buffer !== u8.buffer) { L.u16 = new Uint16Array(u8.buffer); L.u32 = new Uint32Array(u8.buffer); } // (whole-memory views)
     let lo = Infinity, hi = -1;
-    if (isz === 2 && (base & 1) === 0) { const v = new Uint16Array(u8.buffer, base, cnt); for (let i = 0; i < cnt; i++) { const x = v[i]; if (x < lo) lo = x; if (x > hi) hi = x; } }
-    else if (isz === 4 && (base & 3) === 0) { const v = new Uint32Array(u8.buffer, base, cnt); for (let i = 0; i < cnt; i++) { const x = v[i]; if (x < lo) lo = x; if (x > hi) hi = x; } }
+    if (isz === 2 && (base & 1) === 0) { const v = L.u16, b = base >>> 1; for (let i = b; i < b + cnt; i++) { const x = v[i]; if (x < lo) lo = x; if (x > hi) hi = x; } }
+    else if (isz === 4 && (base & 3) === 0) { const v = L.u32, b = base >>> 2; for (let i = b; i < b + cnt; i++) { const x = v[i]; if (x < lo) lo = x; if (x > hi) hi = x; } }
     else for (let i = 0; i < cnt; i++) { const p = base + i * isz, x = isz === 2 ? u8[p] | u8[p + 1] << 8 : (u8[p] | u8[p + 1] << 8 | u8[p + 2] << 16 | u8[p + 3] << 24) >>> 0; if (x < lo) lo = x; if (x > hi) hi = x; }
     if (hi < 0) return null;
     e = [n, lo, hi];
-    if (c.m.size >= 4096) c.m.clear();
-    c.m.set(first, e);
+    if (c !== null) { if (c.m.size >= 4096) c.m.clear(); c.m.set(first, e); }
     return e;
   }
   /**
@@ -738,6 +753,7 @@ export class Recorder {
     for (let k = 0; k < sr.length; k += 2) {
       const n = sr[k], rr = s.sRes[n], b = rr?.buf;
       if (!b || !(rr.lz?.length || rr.model)) continue;
+      if (rr.lz?.length && pendingBytes(rr.lz) <= LAZY_ALL) { L.lazyTake(b, rr, 0, b.length); continue; } // (few bytes pending: all of them, without bounding the draw)
       if (first >= 0 && v1 < v0) { const e = this.indexRange(ib, ibr, first, nIdx); if (e === null) return; v0 = e[1]; v1 = e[2]; }
       if (v1 < v0) return;
       const x = st[n], ext = sr[k + 1], stride = x.stride || ext, off = x.offset ?? 0;

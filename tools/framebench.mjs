@@ -13,6 +13,9 @@
 //     [--prof <file.cpuprofile>: a V8 CPU profile of the measured frames only]
 //     [--api-times: the APIs handled in JavaScript with the most time over the measured frames, ms and calls per frame
 //     (a clock read per call: the frame times are not comparable with runs without it)]
+//     [--ab NAME=value[:frames]: A/B within the run — the measured frames alternate, in blocks of `frames` (25), between
+//     the debug global as it is and NAME=value (the scene the same for both, the machine's load too); each side's
+//     categories, draws and recorder counters reported apart]
 //     [--dbg NAME=value,...: debug globals set at start, as the harness's --dbg (e.g. ORTHROS_VB_CHECK=1, ORTHROS_VB_LAZY=0)]
 // With --gfx recorder the link's counters per frame follow (bytes of buffer data copied into the ring, fence waits...).
 import fs from 'node:fs';
@@ -72,6 +75,17 @@ vm.host.waitEvent = (ms) => { const p = acct.enter(C.sleep); try { clock.sleep(M
 const t0 = performance.now();
 let firstFrameAt = null, streak = 0, phase = 'wait', counted = 0, lastDraws = 0, cpu0 = null, insn0 = 0, wall0 = 0;
 const sums = new Float64Array(CATS.length);
+// --ab: the two sides' sums (categories, draws, frames, recorder counters)
+const abOpt = opt('ab', null), ab = abOpt && (() => {
+  const [kv, block = '25'] = abOpt.split(':'), [k, v = ''] = kv.split('=');
+  return { k, a: globalThis[k], b: v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v), block: Number(block), side: 0, sums: [new Float64Array(CATS.length), new Float64Array(CATS.length)], draws: [0, 0], n: [0, 0], stats: [{}, {}], last: null };
+})();
+const abSet = (side) => { ab.side = side; globalThis[ab.k] = side ? ab.b : ab.a; ab.last = link && { ...link.stats }; };
+const abFrame = (cats, d) => {
+  const S = ab.side; ab.n[S]++; ab.draws[S] += d; for (let i = 0; i < CATS.length; i++) ab.sums[S][i] += cats[i];
+  if (link) { for (const k in link.stats) ab.stats[S][k] = (ab.stats[S][k] ?? 0) + link.stats[k] - (ab.last[k] ?? 0); ab.last = { ...link.stats }; }
+  if (counted % ab.block === 0) abSet(1 - S);
+};
 let drawsSum = 0;
 // --prof: the sampling profiler over the measured frames (node:inspector, this thread)
 const profFile = opt('prof', null);
@@ -82,6 +96,10 @@ const finish = (why) => {
   const cpu = process.cpuUsage(cpu0), wall = performance.now() - wall0, gi = vm.guestInsns - insn0;
   const mean = CATS.map((c, i) => [c, sums[i] / counted]).filter(([, v]) => v >= 0.005).sort((a, b) => b[1] - a[1]);
   console.log(`${why}: ${manifest.id ?? target} gfx=${gfxKind}: ${counted} frames, ${(drawsSum / counted).toFixed(0)} draws/frame, ${(wall / counted).toFixed(2)} ms/frame wall, ${((cpu.user + cpu.system) / 1000 / counted).toFixed(2)} ms/frame process CPU; mean ms/frame: ${mean.map(([c, v]) => `${c} ${v.toFixed(2)}`).join(', ')}; guest ${(gi / counted / 1e6).toFixed(2)} M instructions/frame`);
+  if (ab) for (const S of [0, 1]) {
+    const n = ab.n[S], m = CATS.map((c, i) => [c, ab.sums[S][i] / n]).filter(([, v]) => v >= 0.005).sort((a, b) => b[1] - a[1]);
+    console.log(`A/B ${ab.k}=${S ? ab.b : ab.a}: ${n} frames, ${(ab.draws[S] / n).toFixed(0)} draws/frame; mean ms/frame: ${m.map(([c, v]) => `${c} ${v.toFixed(3)}`).join(', ')}${link ? `; recorder per frame: ${Object.entries(ab.stats[S]).filter(([, v]) => v).map(([k, v]) => `${k} ${+(v / n).toFixed(2)}`).join(', ')}` : ''}`);
+  }
   if (apiTimes) {
     const hist = vm.apiHist(), calls = new Map(); for (const [k, n] of hist) calls.set(k.slice(k.indexOf('!') + 1), n - (hist0.get(k) ?? 0));
     console.log(`API time per frame (ms, calls): ${[...vm.apiTimesPhase].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} ${(v / counted).toFixed(3)} (${((calls.get(k) ?? 0) / counted).toFixed(0)})`).join(', ')}`);
@@ -99,8 +117,8 @@ host.frameHook = (dev) => {
   const d = dev.draws - lastDraws; lastDraws = dev.draws;
   if (args.includes('--verbose') && dev.frames % 100 === 0) console.log(`[framebench] ${((now - t0) / 1000).toFixed(0)} s: frame ${dev.frames}, ${d} draws in the last, phase ${phase}`);
   if (phase === 'wait') { streak = d >= minDraws ? streak + 1 : 0; if (streak >= 30) { phase = 'warm'; counted = 0; } }
-  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); stats0 = link && { ...link.stats }; insn0 = vm.guestInsns; wall0 = now; session?.post('Profiler.start'); if (apiTimes) { vm.apiTimesPhase = new Map(); hist0 = vm.apiHist(); } } }
-  else { counted++; drawsSum += d; for (let i = 0; i < CATS.length; i++) sums[i] += cats[i]; if (counted >= frames) finish('measured'); }
+  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); stats0 = link && { ...link.stats }; insn0 = vm.guestInsns; wall0 = now; session?.post('Profiler.start'); if (apiTimes) { vm.apiTimesPhase = new Map(); hist0 = vm.apiHist(); } if (ab) abSet(0); } }
+  else { counted++; drawsSum += d; for (let i = 0; i < CATS.length; i++) sums[i] += cats[i]; if (ab) abFrame(cats, d); if (counted >= frames) finish('measured'); }
   if (now - t0 > limit * 1000) { console.log(`time limit in phase ${phase} (${counted} frames, last frame ${d} draws)`); if (phase === 'measure' && counted) finish('time limit'); process.exit(1); }
 };
 for (const e of inputs) if (e.abs) schedule(e, clock.now() + e.t * 1000); // ('@' times: from the start)
