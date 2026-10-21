@@ -358,7 +358,7 @@ test('the relay: the sender\'s slot stamped, realtime records to the others, one
   a.p.send([C.ENTITY_GONE, w().u32(entity).u8(3).done()]);
   assert.equal((await b.p.next(C.ENTITY_GONE)).from, sa);
   // (malformed realtime records: DENIED, at most once a second)
-  a.p.send([C.PLAYER_STATE, Buffer.alloc(4)], [C.PLAYER_STATE, Buffer.alloc(300)]);
+  a.p.send([C.PLAYER_STATE, Buffer.alloc(4)], [C.PLAYER_STATE, Buffer.alloc(300)], [C.PLAYER_STATE, pstate(NaN, 0, 0)], [C.PLAYER_STATE, pstate(0, Infinity, 0)]);
   assert.deepEqual([...(await a.p.next(S.DENIED)).body], [C.PLAYER_STATE, D.INVALID]);
   await a.p.quiet(S.DENIED); await b.p.quiet(C.PLAYER_STATE, 0);
   // (unknown types: ignored, the connection kept)
