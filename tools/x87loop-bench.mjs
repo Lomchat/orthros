@@ -10,12 +10,14 @@
 // Usage: node tools/x87loop-bench.mjs [iterations] [--runs 7] [--cw 0x7f] [--cases name,...] [--pos|--rand] [--full] [--ab <dir>]
 //   --ab <dir>: A/B in one process — <dir>/src (an extraction of the src tree of an earlier revision) against this
 //   tree's src, runs alternated (base, new, base, new...) so that both see the same machine load.
-//   --stats: interpreter steps (EXIT_STEP) per iteration; --no-warm: no discarded first round.
+//   --stats: interpreter steps (EXIT_STEP) per iteration; --no-warm: no discarded first round; --liftoff: V8's tiers
+//   as they come (default: TurboFan only, see below).
 // On a loaded shared machine wall-clock times drift by +-30 % between runs; cycles spent in the translated region are
 // steadier: run one case with `perf record -e cycles:u` on `node --no-liftoff --perf-prof tools/x87loop-bench.mjs N
 // --runs 1 --no-warm --cases <case> --pos`, `perf inject -j`, and divide the period of the JS:r_* symbols by 2N (each
 // run executes the loop twice: warm-up and timed).
 import './node-wasm-flags.mjs'; // (branch hints honoured, as in Chrome: cold paths out of line)
+import v8 from 'node:v8';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
@@ -38,6 +40,11 @@ const FULL = args.includes('--full');
 // (--src <dir>: the src tree of <dir> instead of this one's — one variant per process, e.g. under perf)
 const NEW = await loadImpl(opt('--src', null) ? path.resolve(opt('--src', null)) : path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const BASE = AB ? await loadImpl(path.resolve(AB)) : null;
+// TurboFan only (--liftoff: the default tiers): the 100 ms wait after the warm-up does not always see a region tiered
+// up — larger regions (24-bit precision, every arithmetic result tested) stayed partly in Liftoff and measured up to 2x
+// slower than their optimized code, mixing V8's tier-up timing into the comparison of control words (2026-10-21: xform
+// 24.8 vs 10.7 ns at 0x7f / 0x27f with the tiers, 14.2 vs 10.6 ns optimized). A hot region of a game runs TurboFan code.
+if (!args.includes('--liftoff')) v8.setFlagsFromString('--no-liftoff');
 const hex = (s) => Uint8Array.from(s.replace(/\s+/g, '').match(/../g).map((h) => parseInt(h, 16)));
 
 // common loop head: mov eax, ecx ; and eax, 1023  (89c8 25ff030000), tail: dec ecx ; jnz L ; hlt
@@ -157,8 +164,8 @@ async function once(impl, bytes, rand) {
 
 console.log(`x87 loops, control word 0x${CW.toString(16)}, ${N} iterations, ${RUNS} runs: median [min..max] ns/iter${AB ? `, A/B against ${AB} (alternated)` : ''}`);
 const impls = BASE ? [BASE, NEW] : [NEW];
-for (const [name, h] of CASES) for (const rand of [false, true]) for (const impl of impls) check(impl, name, loop(h), rand);
 const selected = (name) => !ONLY || ONLY.includes(name.trim());
+for (const [name, h] of CASES) if (selected(name)) for (const rand of [false, true]) for (const impl of impls) check(impl, name, loop(h), rand); // (the cases measured)
 if (!args.includes('--no-warm')) for (const [name, h] of CASES) if (selected(name)) for (const impl of impls) await once(impl, loop(h), true); // discarded round (see flags-bench.mjs)
 const stat = (t) => { t.sort((a, b) => a - b); return `${t[t.length >> 1].toFixed(2).padStart(6)} [${t[0].toFixed(2)}..${t[t.length - 1].toFixed(2)}]`; };
 for (const [name, h] of CASES) {
