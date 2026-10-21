@@ -341,10 +341,13 @@ export class GameData {
     return (h.whole = all);
   }
 
-  /** The bytes [position, position + length) of `h` into the page, without holding it (an engine that waits: JSPI). */
-  async ensure(h, position, length) {
+  /**
+   * The bytes [position, position + length) of `h` into the page, without holding it (an engine that waits: JSPI).
+   * `background`: nothing waits for them (readable()) — not counted among the engine's waits.
+   */
+  async ensure(h, position, length, background = false) {
     const v = this.pick(h, position);
-    if (v !== h) { if (position < v.size) await this.ensure(v, position, Math.min(length, v.size - position)); return; }
+    if (v !== h) { if (position < v.size) await this.ensure(v, position, Math.min(length, v.size - position), background); return; }
     const end = Math.min(h.size, position + length);
     for (let p = Math.floor(position / PIECE); p * PIECE < end;) {
       if (this.cache.has(h.id * PER_FILE + p)) { p++; continue; }
@@ -353,10 +356,21 @@ export class GameData {
         this.asks.set(id, { resolve, reject });
         this.worker.postMessage({ read: { id, ...this.whose(h), off: p * PIECE, len: end - p * PIECE, want: this.want(h, end - p * PIECE) } });
       });
-      this.stats.misses++; this.stats.stallMs += performance.now() - t0;
+      if (!background) { this.stats.misses++; this.stats.stallMs += performance.now() - t0; }
       this.keep(h, p, bytes);
       p = Math.floor((p * PIECE + Math.max(PIECE, bytes.length)) / PIECE);
     }
+  }
+
+  /**
+   * Whether `h` can be read whole without the page's thread waiting: true, or false and its bytes fetched in the
+   * background (ensure, once at a time) — an engine that would rather skip a load than wait (OpenMW's sounds played
+   * once, orthros-r2.patch). A file whose fetch failed: true (its read waits, and says what failed).
+   */
+  readable(h) {
+    if (h.failed || !this.missing(h, 0, h.size)) return true;
+    h.ensuring ??= this.ensure(h, 0, h.size, true).catch((e) => { h.failed = true; this.log(`${h.path}: ${e?.message ?? e}`); }).finally(() => { h.ensuring = null; });
+    return false;
   }
 
   /** A request's file: a game file's version and path, or a source's id. */

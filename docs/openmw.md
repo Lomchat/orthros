@@ -451,6 +451,55 @@ player who stays inside never grows it (the first exterior starts from 8192). No
 release's Lua API was read in its sources (`camerabindings.cpp`, `vfsbindings.cpp`, `mwmp/luabindings.cpp`) and its
 binary's strings, not run.
 
+### Frame time: engine orthros-r2, quality tier, cloud bridge (2026-10-21)
+
+Engine release `openmw-web-v1.5.3-orthros-r2` (`tools/openmw/build.sh`, patches `orthros-r1.patch` +
+`orthros-r2.patch`, files pinned in `lock.json`; 18 min to compile here, plus the brotli siblings). Installed, no
+manifest switched. What r2 changes:
+- the local map's two leftover diagnostics are no longer installed (`localmap.cpp`): `MapDrawDiagnostic` read pixels
+  back (`glReadPixels`, a whole GPU pipeline drain) at each new map camera's first draw, i.e. at every cell crossing;
+  `MapCullDiagnostic` walked the camera's bin. The other readback at a cell change is upstream OpenMW's own (the global
+  map's CPU copy of each explored cell, `GlobalMap::requestOverlayTextureUpdate(cpuCopy)`, what saves keep): left.
+- the GLES rewriting of shaders (`adjustSourceForGLES`, about 40 `std::regex` constructions and passes over each merged
+  source, and the `$link` regex) is plain scans (`components/shader/glesrewrite.hpp`). Byte for byte the regexes'
+  output: `python3 tools/openmw/gles-rewrite-check.py --engines-dir <data_engines>` compiles both natively and compares
+  them over the engine's 76 shaders (whole, as vertex and fragment, merged as `$link` makes them), 200,000 generated
+  sources and 200,000 `$link` statements (0 differences; a one-character mutation of the scans is caught); natively
+  11.4 ms → 0.095 ms per merged source (5.8 KB mean). No persisted cache of rewritten sources: nothing left to save.
+- a sound played once (not a loop) whose file is not in the page yet is skipped instead of the page's thread waiting
+  for it (`SoundBufferPool::loadSfx(sfx, waitForData)`): the engine asks `globalThis.orthrosFileReady(name)`
+  (`streamfs.js`: the mounted file whose path ends with the VFS name), which answers through `GameData.readable(h)`
+  (`src/vfs/data-client.js`, every engine's: false, and the bytes fetched in the background — not counted among the
+  engine's waits —, then true). Its next play loads it; it is learned then too. Loops (ambient, fire) still wait: a
+  skipped loop would stay silent.
+
+Not done, with the reason: VAOs (already forced on by the upstream OSG patch, `State::State()`; the attribute calls
+left are dynamic geometry — upstream's A/B, engine.cpp F48), KHR_parallel_shader_compile (headless shows 11-15 ms
+`getShaderParameter` stalls only; worth it only if a real GPU trace shows compile hitches), cell loading off the frame
+(the threaded WorkQueue was reverted upstream for main-thread freezes: a lock audit, not a setting), wasm32 vs wasm64
+(the JS glue's memory64 share measured about 1.7 %: an A/B costs a second full build for little).
+
+The quality tier (`src/ports/openmw/tier.js`, `withQualityTier`): from the GPU (`src/host/web/gpu-class.js`, WebGL's
+renderer string: software → low, integrated → mid, discrete → high; deviceMemory ≤ 4 still low; unknown GPU: the
+page's own deviceMemory rule), and a minute in the world whose frame-meter p99 median is over 50 ms starts the next
+session a tier lower on the same GPU (`localStorage['orthros.openmw.tier']`). `?tier=` and the player's Options win.
+The owner's 8 GB+ Iris Xe laptop was 'high' (Chrome caps deviceMemory at 8): now 'mid'. Headless SwiftShader: 'low'.
+
+The cloud bridge (`cloud.js`): each file's size, date and base64 kept; a sync that changed nothing reads, encodes and
+hashes nothing (`tools/openmw/cloud-bench.mjs`, Node: 1 MB of saves 74-88 → 0.03-0.05 ms per idle sync; 20 × 2 MB
+2.9-3.7 s → 0.11-0.15 ms).
+
+In-world measurement: `tools/openmw/perf.mjs` (Seyda Neen `?start=-2,-9`, running for 60 s across one cell boundary,
+`--discard` forces rasterizer discard so SwiftShader rasterizes nothing: CPU-side upper bounds; engine work = time in
+`Module._omw_pump_frame`). On the shared test machine (load 22-37, `?tier=high`, morrowind-goty-en, medians; r1: 5
+runs, r2: 3; runs at load 50-70 discarded): drawn frames 19.4 → 24.4 fps, gap p99 217 → 117 ms, gaps over 100 ms
+52 → 24, engine work p50 15.9 → 15.7 ms, p99 51.9 → 29.1 ms, frames over 50 ms of work 13 → 8, readPixels 0.003 →
+0.002 a frame (the global map's copy stays), 9-10 first plays of sounds skipped instead of waited for. The longest frame
+did not move (440-980 ms, both): the inline cell load at the boundary. SwiftShader drawing (no discard, 40 s, r2, 2
+runs each): `?tier=high` 1.47-1.55 fps, gap p99 3.5-6.5 s; the tier chosen now ('low') 2.12-2.22 fps, 2.4-3.3 s.
+`tools/openmw/check.mjs` passes on r2. Not validated: a real GPU (the owner's laptop), the local map screen after r2
+(the change removes callbacks only), a throttled link for the skipped sounds.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.
