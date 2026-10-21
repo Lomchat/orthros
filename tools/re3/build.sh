@@ -103,5 +103,8 @@ staging.rename(release)
 if not want: print(json.dumps(built, indent=2))
 print(f'{spec["id"]}: installed in {release}')
 PY
+  # (each compressible file's brotli 11 beside it — after release.json, whose files are the build's: what the server
+  # sends a browser that takes it, tools/engine-br.mjs)
+  [ -e "$release/release.json" ] && node "$root/tools/engine-br.mjs" "$release" > /dev/null
   rm -rf "$build"
 done
