@@ -50,6 +50,24 @@ test('the backend cuts a compressed background range at its units and joins the 
   } finally { globalThis.fetch = realFetch; }
 });
 
+test('the backend cuts its ranges while the server answers from units, else one request in 8 (a probe)', async () => {
+  const FILE = text(2 * BLOCK);
+  const b = new HttpBackend('/game/g/', { dirs: {}, files: { 'a.big': { size: FILE.length, mtime: 1 } } }, { encoded: true });
+  const realFetch = globalThis.fetch;
+  let asked = 0, hit = false;
+  globalThis.fetch = async (url) => { const [, a, e] = /\?r=(\d+)-(\d+)/.exec(url); asked++; return { status: 200, headers: { get: (h) => (h === 'x-orthros-unit' ? (hit ? 'hit' : null) : null) }, arrayBuffer: async () => new Uint8Array(FILE.subarray(+a, +e)).buffer }; };
+  const requests = async (n) => { const out = []; for (let i = 0; i < n; i++) { asked = 0; const d = await b.fetchBackground('a.big', 2 * CHUNK, 6 * CHUNK, null); assert.deepEqual(Buffer.from(d), FILE.subarray(2 * CHUNK, 6 * CHUNK)); out.push(asked); } return out; };
+  try {
+    // no units on the server: cut until the misses show, then whole but every 8th
+    assert.deepEqual(await requests(2), [4, 4]);
+    assert.deepEqual(await requests(16), [1, 1, 1, 1, 1, 1, 1, 4, 1, 1, 1, 1, 1, 1, 1, 4]);
+    // the units made meanwhile: the probes hit (three raise the share past UNIT_HIT_MIN), cut again from then on
+    hit = true;
+    const probe = [1, 1, 1, 1, 1, 1, 1, 4];
+    assert.deepEqual(await requests(32), [...probe, ...probe, ...probe, 4, 4, 4, 4, 4, 4, 4, 4]);
+  } finally { globalThis.fetch = realFetch; }
+});
+
 const get = (url, enc) => new Promise((res, rej) => http.get(url, { headers: { 'accept-encoding': enc } }, async (r) => { const parts = []; for await (const d of r) parts.push(d); res({ r, body: Buffer.concat(parts) }); }).on('error', rej));
 const plain = ({ r, body }) => (r.headers['content-encoding'] === 'br' ? zlib.brotliDecompressSync(body) : r.headers['content-encoding'] === 'gzip' ? zlib.gunzipSync(body) : body);
 
@@ -69,6 +87,7 @@ test('server: a unit missed goes the dynamic way and is made; then served precom
     for (const [u, want] of unitUrls) {
       const a = await get(base + u, 'gzip, br');
       assert.equal(a.r.headers['content-encoding'], 'br', `dynamic brotli (no zstd asked): ${u}`);
+      assert.equal(a.r.headers['x-orthros-unit'], undefined, 'a miss: no unit header');
       assert.deepEqual(plain(a), want);
     }
     assert.equal((await stats()).brHits, 0);
@@ -77,6 +96,7 @@ test('server: a unit missed goes the dynamic way and is made; then served precom
     for (const [u, want] of unitUrls) {
       const a = await get(base + u, 'gzip, deflate, br, zstd'); // (a unit made ahead beats zstd on the fly)
       assert.equal(a.r.headers['content-encoding'], 'br', u);
+      assert.equal(a.r.headers['x-orthros-unit'], 'hit', `a hit says so (the reader keeps cutting): ${u}`);
       assert.deepEqual(plain(a), want);
     }
     let s = await stats();
@@ -93,6 +113,7 @@ test('server: a unit missed goes the dynamic way and is made; then served precom
     await server.brCache.drain();
     const n = await get(`${base}/gamez/g/noise.bin?r=0-${CHUNK}`, 'br');
     assert.equal(n.r.headers['content-encoding'], undefined);
+    assert.equal(n.r.headers['x-orthros-unit'], 'raw', 'a unit known not to compress: raw, as good as a hit for the reader');
     assert.deepEqual(n.body, noise);
     assert.equal(server.brCache.stats().generated, 5);
     // the file changed (same size, new mtime): its old units never served, the sweep removes them
