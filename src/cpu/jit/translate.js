@@ -1182,33 +1182,41 @@ class Emitter {
     // profiling translations count why a transition is not chained (PROF_OPS_BASE + NOCHAIN_PROF: thunk, stop, budget, miss)
     const why = (k) => { if (this.prof) c.i32(0).i32(0).i32load(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k).i32(1).add().i32store(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k); };
     c.get(L_ICOUNT).i32(0).le_s(); { const t = c.hint(false).if_(); why(2); c.br(noChain); c.end(); void t; }
-    // an API thunk: the dispatcher runs it (fast APIs in WASM, the others in JavaScript)
-    c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u(); { const t = c.if_(); why(0); c.br(noChain); c.end(); void t; }
+    if (this.prof) { // (profiling translations: each reason apart, counted)
+      // an API thunk: the dispatcher runs it (fast APIs in WASM, the others in JavaScript)
+      c.get(L_TV).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u(); { const t = c.if_(); why(0); c.br(noChain); c.end(); void t; }
+      // address 0 (a call through a null pointer) is the key of the empty hash entries: never looked up (the dispatcher
+      // raises the access violation)
+      c.get(L_TV).eqz(); { const t = c.hint(false).if_(); why(3); c.br(noChain); c.end(); void t; }
+    } else {
+      // the same two tests in one compare: address 0 (wrapping to 0xffffffff) and every address from the thunks up (the
+      // thunks — the dispatcher runs them —, the emulator's private area and past the 2 GiB guest space: no translated
+      // code there, the hash probes would miss) leave through the dispatcher
+      c.get(L_TV).i32(1).sub().i32(THUNK_BASE - 1).ge_u(); { const t = c.if_(); c.br(noChain); c.end(); void t; }
+    }
     c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).eq(); { const t = c.hint(false).if_(); why(1); c.br(noChain); c.end(); void t; }
-    // address 0 (a call through a null pointer) is the key of the empty hash entries: never looked up (the dispatcher
-    // raises the access violation)
-    c.get(L_TV).eqz(); { const t = c.hint(false).if_(); why(3); c.br(noChain); c.end(); void t; }
     // hash lookup: home slot in L_T2 (L_T3 in the shared exit tail, where L_T2 holds the exit kind and the x87 stack
-    // was already written back), L_TA = entry address of the probe being tested
+    // was already written back), L_TA = the offset from JIT_HASH_BASE of the entry of the probe being tested (the base in
+    // the loads' static offset: one addition less per probe; the home slot needs no mask, it is below 2^JIT_HASH_BITS)
     const found = c.block(), home = flush ? L_T2 : L_T3;
     c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(home);
     for (let p = 0; p < HASH_PROBES; p++) {
-      c.get(home); if (p) c.i32(p).add();
-      c.i32((1 << JIT_HASH_BITS) - 1).and().i32(HASH_ENTRY).mul().i32(JIT_HASH_BASE).add().tee(L_TA);
-      c.i32load(0).get(L_TV).eq().br_if(found);
+      c.get(home); if (p) c.i32(p).add().i32((1 << JIT_HASH_BITS) - 1).and();
+      c.i32(HASH_ENTRY).mul().tee(L_TA);
+      c.i32load(JIT_HASH_BASE).get(L_TV).eq().br_if(found);
     }
     why(3);
     c.br(noChain);
     c.end(); // found
-    if (this.prof) { c.get(L_TA).i32load(4).i32(this.opts.fnIdx ?? -1).eq(); const i = c.if_(); this.count(PF.chainSelf); c.else_(); this.count(PF.chainOther); c.end(); void i; if (this.usesX87) this.count(PF.chainFromX87); }
+    if (this.prof) { c.get(L_TA).i32load(JIT_HASH_BASE + 4).i32(this.opts.fnIdx ?? -1).eq(); const i = c.if_(); this.count(PF.chainSelf); c.else_(); this.count(PF.chainOther); c.end(); void i; if (this.usesX87) this.count(PF.chainFromX87); }
     // EIP of the region being entered: a trap inside the chained callee reports the callee's
     // entry (same imprecision as the dispatcher path); registers are not written back
     c.get(L_STATE).get(L_TV).i32store(ST.EIP);
     if (flush) { this.flushFpu(true); this.flushXmm(); } // (else written back before: the shared exit tail)
     if (this.opts.countChains !== false) c.get(L_STATE).get(L_STATE).i32load(ST.TRANSITIONS).i32(1).add().i32store(ST.TRANSITIONS); // (stats)
-    c.get(L_TA).i32load(8); // block index in the target region
+    c.get(L_TA).i32load(JIT_HASH_BASE + 8); // block index in the target region
     for (let i = L_STATE; i < L_FIRST_DECLARED; i++) c.get(i);
-    c.get(L_TA).i32load(4).return_call_indirect(REGION_TYPE, 0);
+    c.get(L_TA).i32load(JIT_HASH_BASE + 4).return_call_indirect(REGION_TYPE, 0);
     c.end(); // noChain
   }
 
