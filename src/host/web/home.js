@@ -155,6 +155,8 @@ function choiceRow({ label, aria, items, max, more, onPick }) {
 
 /** Options shown as chips in a row before the rest go into the "Others" select. */
 const MAX_VERSIONS = 3, MAX_LANGS = 6;
+/** A card's download line, shown whole on as many lines as it takes: a figure never apart from its unit, nor ":" or "%" at a line's start. */
+const unbroken = (text) => text.replace(/(\d) (?=\S)/g, '$1\u00a0').replace(/ (?=[:%])/g, '\u00a0');
 
 const ICON = {
   play: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2.6v10.8a.6.6 0 0 0 .92.5l8.5-5.4a.6.6 0 0 0 0-1L4.92 2.1A.6.6 0 0 0 4 2.6z" fill="currentColor"/></svg>',
@@ -280,7 +282,7 @@ export function mountHome({ onPlay }) {
       const st = v?.available ? launchStatus(launch, { st: downloads.get(v.name, 'launch', gl), whole }, lang) : null;
       // (the whole game here or on its way: its own line says it)
       lnRow.hidden = !st || whole.state === 'done' || whole.state === 'running'; if (lnRow.hidden) return;
-      lnText.textContent = st.text; lnBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
+      lnText.textContent = unbroken(st.text); lnBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
       lnRow.dataset.state = st.state;
       lnBtn.hidden = st.state === 'done';
       lnBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().lnStart;
@@ -293,7 +295,7 @@ export function mountHome({ onPlay }) {
       dlRow.hidden = !v?.available; if (dlRow.hidden) { lnRow.hidden = true; return; }
       const st = downloadStatus(downloads.get(v.name), v.bytes, lang);
       syncLaunch(v, st, gl);
-      dlText.textContent = st.text; dlBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
+      dlText.textContent = unbroken(st.text); dlBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
       dlRow.dataset.state = st.state;
       dlBtn.hidden = st.state === 'done';
       dlBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().dlStart;
