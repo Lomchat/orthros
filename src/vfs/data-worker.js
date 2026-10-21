@@ -281,7 +281,9 @@ function launchWatch(lists) {
     if (fast !== fastWas) { fastWas = fast; sets = W.version.parts.map((p, i) => ({ p, set: launchSet(p.files, lists[i], fast) })); }
     let bytes = 0, here = 0;
     for (const { p, set } of sets) { const s = setBytes(p.files, set); bytes += s.bytes; here += s.here; }
-    const ratio = net.totals.rawBytes >= 1 << 20 ? net.ratio() : WIRE_RATIO, wireLeft = Math.round(Math.max(0, bytes - here) * ratio);
+    // (WIRE_RATIO at least: the session's own ratio so far is a game's master files', which compress far better than the
+    // textures and models of a first load — measured at 85 KB/s, it said "< 1 min" for a load of 86 s)
+    const ratio = Math.max(WIRE_RATIO, net.totals.rawBytes >= 1 << 20 ? net.ratio() : 0), wireLeft = Math.round(Math.max(0, bytes - here) * ratio);
     const seconds = net.measured && net.bw > 0 ? Math.ceil(wireLeft / net.bw) : null;
     const done = here >= bytes || W.marks.has('playable') || W.stop;
     postMessage({ launch: { bytes, here, wireLeft, seconds, done } });

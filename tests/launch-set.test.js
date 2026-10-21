@@ -9,6 +9,7 @@ import path from 'node:path';
 import { createServer } from '../src/host/server.js';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';
+import { NetLink } from '../src/vfs/net-link.js';
 import { forLink, startupHead, launchSet, launchFirst, setBytes, launchSummary, PRE_PLAYABLE, WIRE_RATIO } from '../src/vfs/launch-set.js';
 import { createDataWorker } from '../src/vfs/data-worker.js';
 import { launchStatus } from '../src/host/web/download.js';
@@ -44,6 +45,22 @@ test('the learned order fetched ahead puts its launch set first (a player in the
   const store = new MemBlockStore(64 * MiB), b = new HttpBackend('/game/m/', tree(), { store });
   b.learned = { entries: launchFirst(b, order, true).map(([p, i, mask, t]) => ({ path: p, size: tree().files[p]?.size ?? 3 * MiB, mtime: 1, index: i, mask, t })), pos: 2 };
   assert.equal(b.stepEstimate().bytes, CHUNK, 'data.bsa#1 only, not late.esp read earlier in the timeline');
+});
+
+test('a media file the game streams (a menu\'s music) does not move the background pass to the order\'s media tail', async () => {
+  const tr = { dirs: { Music: { dirs: {}, files: { 'title.mp3': { size: BLOCK, mtime: 1, media: true } } } }, files: { 'data.bsa': { size: 3 * BLOCK, mtime: 1 } } };
+  const store = new MemBlockStore(64 * MiB), b = new HttpBackend('/game/m/', tr, { store, net: new NetLink({ bw: 85000 }) });
+  assert.equal(b.net.fast(), false);
+  const order = [['data.bsa', 0, 1, 0, 1], ['Music/title.mp3', 0, 1, 50, 1], ['data.bsa', 1, 1, 100, 1], ['data.bsa', 2, 1, 9000, 0]];
+  const list = launchFirst(b, order, false);
+  assert.deepEqual(list.map((e) => e[0] + '#' + e[1]), ['data.bsa#0', 'data.bsa#1', 'data.bsa#2', 'Music/title.mp3#0']);
+  await b.prefetch(list, {}, () => true); // (the entries only: stopped at once)
+  b.noteBlock('data.bsa', 0);
+  assert.equal(b.learned.pos, 0);
+  b.noteBlock('Music/title.mp3', 0);
+  assert.equal(b.learned.pos, 0, 'the game is still where it was in the order: data.bsa#1 comes next, not the media after the music');
+  b.noteBlock('data.bsa', 1);
+  assert.equal(b.learned.pos, 1);
 });
 
 test('a set\'s bytes, those here, and a launch\'s cost with and without light copies, its wire bytes from the units known', () => {
