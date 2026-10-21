@@ -85,7 +85,7 @@ woke threads at the exact millisecond and ran both tick counters in 1 ms steps. 
 - a guest timeout (Sleep, WaitForSingleObject(Ex), WaitForMultipleObjects(Ex), MsgWaitForMultipleObjects(Ex), blocking
   sockets) ends at the first interrupt at or after it: Sleep(1) lasts one tick (15.6 ms) at the default resolution and 1-2
   ms under `timeBeginPeriod(1)`; a timeout of 0 still polls; the emulator's own short waits (file reads, the Sleep(0)
-  storm throttle, the multimedia timer thread, which keeps the precision timeSetEvent asks for) stay exact;
+  storm throttle — whose re-executed call keeps its streak, docs/api-layer.md "Sleep(0)" —, the multimedia timer thread, which keeps the precision timeSetEvent asks for) stay exact;
 - GetTickCount(64), the message time (GetMessageTime, MSG.time) and DirectInput's `dwTimeStamp` step by the 15.625 ms
   tick (15 or 16 ms) whatever the resolution; timeGetTime and timeGetSystemTime by the current interrupt period;
 - `timeBeginPeriod` / `timeEndPeriod` are counted per period (TIMERR_NOCANDO for 0, or for an end without its begin);
@@ -122,6 +122,18 @@ together with critical sections, mutexes (infinite and timed waits), a spin lock
 consumed its recorded wake result and went on, even when a third thread had parked a new read of that file meanwhile.
 It now consumes the result and looks at the file's owner again.
 
+## Short sleeps and the browser's timer clamp (2026-10-21)
+
+When every guest thread waits more than 2 ms, `Vm.runFor` returns 'sleep' and the worker arms a timer for the next pump
+(src/host/web/worker.js `schedulePump`). The HTML timer nesting clamp makes a `setTimeout` armed from a timer
+callback, five deep, last at least 4 ms: a chain of short sleeps (every pump returning 'sleep') overslept by 1-3 ms each.
+A pump run by its timer that sleeps again for less than 5 ms now arms the next timer from a message task (one
+MessageChannel hop, ~4 µs), where the clamp does not apply. `tools/timer-clamp-check.mjs` (Chromium worker, 200
+sleeps each): 1/2/3 ms sleeps re-armed from the timer callback oversleep 3.07/2.07/1.07 ms; through the hop they fire
+0.8-0.9 ms early on average (setTimeout truncates the fractional delay; runFor waits the rest), p99 +0.08 ms. BFME1
+play is not affected (its pump never returns 'sleep': the 1 ms waits happen inside runFor). `ORTHROS_TIMER_HOP=0`: the
+timer armed directly.
+
 ## Debug switches (`?dbg=NAME=1,...` in the browser, globals in Node)
 
 | switch | what |
@@ -143,6 +155,8 @@ It now consumes the result and looks at the file's owner again.
 | `ORTHROS_READ_DEST_CHECK` | warn when a parked read's destination buffer changes while the read waits |
 | `ORTHROS_READ_SLICE_MS=n` | slice length while a file read is on the network (default 2: the pump and `runFor` end slices early so the read completes; 12: the behaviour before 2026-10-06; docs/startup.md) |
 | `ORTHROS_GDI_BITMAP_FONTS` | GDI text with the built-in bitmap font only |
+| `ORTHROS_SLEEP0_KEEP_STREAK=0` | the Sleep(0) throttle's streak reset by the throttled sleep itself (the behaviour before 2026-10-21) |
+| `ORTHROS_TIMER_HOP=0` | the worker's short-sleep timer armed from the timer callback (the nesting clamp applies; before 2026-10-21) |
 
 Crash reports also show the instructions before each return address and 128 bytes around each register, with the
 region and heap block (and its provenance) it points into.

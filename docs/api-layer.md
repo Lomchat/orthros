@@ -96,6 +96,24 @@ then ran more often, and the time charged to `Sleep` grew (per 20 s, on vs off i
 677 k calls) with no frame-time effect; it was reverted. The existing throttle (32 back-to-back `Sleep(0)` with nothing
 else to run park the thread 1 ms) is what bounds it.
 
+**The throttled sleep keeps the streak (2026-10-21).** The streak was measured from the end of the previous call: the
+throttled call's re-execution after its 1 ms park found 1 ms since the previous `Sleep(0)` and reset it, so every
+throttle was followed by 32 more unthrottled turns (BFME1 play: one throttle per ~62 `Sleep(0)`, 700-800 `Sleep` and
+~1 900 scheduling decisions per frame). The re-executed call now completes the sleep and the streak goes on from the
+wake-up: a throttled spin parks 1 ms at each `Sleep(0)` until work or other calls come between — the same 1 ms pacing
+step as before. `tools/sleepspin-bench.mjs` (tools/pe/sleepspin.c: per 16 ms frame some work, then `Sleep(0)` +
+`timeGetTime` until the next frame, beside a `Sleep(1)` thread; 5 runs): `Sleep(0)` per frame 483 → 48, scheduling
+decisions 1 008 → 137, process CPU per frame 1.35-1.48 → 1.07 ms (medians), frame interval mean 15.98 ms both, p99
+16.76 → 16.46 ms. `?dbg=ORTHROS_SLEEP0_KEEP_STREAK=0` restores the former behaviour (read at each call: in-session A/B,
+tools/scenarios/bfme-sleep0-ab.txt). tests/sleep-throttle.test.js.
+
+**The deferred queue's drain has its own accounting entry.** The calls the JIT queued (Direct3D state setters, D3DX
+parameter setters) run in JavaScript before the next call handled there (`Vm.drainDeferred`); the drain ran inside that
+call's timed window, so whichever call followed a batch (`IDirect3DTexture9::Release`, `GetTransform`...) carried the
+batch's cost in the per-API table. `Vm.dispatchThunk` now drains first, timed on a sample like an API call of its own
+(`Vm.drainAcctIdx`, named `(deferred queue drain)` in the `[apitop]` / phase reports through `Vm.acctApiName`); the
+order of the calls is unchanged. tests/drain-acct.test.js.
+
 ## PeekMessage polling: pacing that now waits (src/win32/user32.js, peekIdle)
 
 Vice City's `api` time (19.5 ms per frame on the owner's PC, 17-19 ms here, 60 % of the emulator thread) was not
