@@ -39,7 +39,9 @@ async function run(job) {
   return { bytes: raw ? 0 : out.length, raw };
 }
 
+// (the server gone meanwhile: the answer dropped — a send on a closed channel would throw EPIPE out of the process)
+const answer = (m) => { if (process.connected) process.send(m, () => {}); };
 process.on('message', (job) => {
-  run(job).then((r) => process.send({ id: job.id, ...r }), (e) => process.send({ id: job.id, error: String(e?.message ?? e) }));
+  run(job).then((r) => answer({ id: job.id, ...r }), (e) => answer({ id: job.id, error: String(e?.message ?? e) }));
 });
 process.on('disconnect', () => process.exit(0)); // (the server gone: nothing to do it for)

@@ -83,6 +83,14 @@ export function unitOf(start, end, size) {
   if (start % CHUNK === 0 && end === Math.min(size, start + CHUNK)) return { kind: 'p', index: start / CHUNK };
   return null;
 }
+/**
+ * On a link that is neither fast nor thin, a background run that is a whole block (every piece of it wanted, none here)
+ * goes as the block — one request, one transport unit — when the link carries a block in this many seconds at most,
+ * though that is more than backgroundBytes(): the server makes a block learned whole as a block unit (br-cache.js), and
+ * the same bytes asked as pieces would miss it (measured, Morrowind at 1 MB/s: 82 % of the bytes the session asked were
+ * of blocks the learned order makes as block units, asked as pieces). See wholeBlockFits.
+ */
+const WHOLE_BLOCK_SECONDS = 1.25;
 /** a background request of more units than this goes as one (see rangeUnits) */
 const MAX_UNIT_PARTS = 16;
 /**
@@ -375,7 +383,9 @@ export class HttpBackend {
       const c0 = e.index * P, pieces = Math.ceil((Math.min(e.size, (e.index + 1) * BLOCK) - e.index * BLOCK) / CHUNK);
       let all = true; for (let i = 0; i < pieces; i++) if (!((e.mask >>> i) & 1)) all = false;
       const want = (i) => ((e.mask >>> i) & 1) === 1 && !this.flights.has(`${e.path}#${c0 + i}`) && !this.hasPiece(e.path, e.size, e.mtime, c0 + i);
-      const most = Math.max(1, this.net.backgroundBytes() / CHUNK);
+      // (every piece of the block learned: the block as one request when the link carries it soon enough — its unit, see
+      // WHOLE_BLOCK_SECONDS)
+      const most = all && this.wholeBlockFits() ? pieces : Math.max(1, this.net.backgroundBytes() / CHUNK);
       for (let i = 0; i < pieces; i++) {
         if (!want(i)) continue;
         let j = i; while (j + 1 < pieces && want(j + 1) && j + 1 - i < most) j++;
@@ -457,6 +467,8 @@ export class HttpBackend {
     const P = BLOCK / CHUNK, c0 = index * P, n = Math.ceil((Math.min(size, (index + 1) * BLOCK) - index * BLOCK) / CHUNK);
     const most = Math.max(1, this.net.backgroundBytes() / CHUNK);
     const need = (i) => (!mask || ((mask >>> i) & 1) === 1) && !this.flights.has(`${path}#${c0 + i}`) && !this.pieceHere(path, size, mtime, c0 + i);
+    // (the whole block wanted, none of it here: the block itself, its unit, when the link carries it soon enough)
+    if (n > most && this.wholeBlockFits()) { let all = true; for (let i = 0; i < n && all; i++) all = need(i); if (all) return [c0, c0 + n - 1]; }
     for (let i = 0; i < n; i++) {
       if (!need(i)) continue;
       let j = i; while (j + 1 < n && need(j + 1) && j + 1 - i < most) j++;
@@ -517,12 +529,19 @@ export class HttpBackend {
       if (this.flights.has(`${path}#${c}`)) { inFlight++; continue; }
       if (this.peekBlockHere(path, size, mtime, Math.floor(c * CHUNK / BLOCK)) || this.pieceHere(path, size, mtime, c)) continue;
       if (inFlight >= 2) return; // (two requests on their way past the reader at most: the link stays the game's)
-      let j = c; while (j + 1 <= last && j + 1 - c < most && Math.floor((j + 1) * CHUNK / BLOCK) === Math.floor(c * CHUNK / BLOCK) && !this.flights.has(`${path}#${j + 1}`) && !this.pieceHere(path, size, mtime, j + 1)) j++;
+      // (from a block's start, the whole block in one request — its unit — when the link carries it soon enough)
+      const n = c % (BLOCK / CHUNK) === 0 && this.wholeBlockFits() ? BLOCK / CHUNK : most;
+      let j = c; while (j + 1 <= last && j + 1 - c < n && Math.floor((j + 1) * CHUNK / BLOCK) === Math.floor(c * CHUNK / BLOCK) && !this.flights.has(`${path}#${j + 1}`) && !this.pieceHere(path, size, mtime, j + 1)) j++;
       this.stats.readAheads = (this.stats.readAheads ?? 0) + 1;
       this.fetchPartBg(path, size, mtime, c, j, PRIO.readAhead, () => false, true);
       inFlight++; c = j;
     }
   }
+  /**
+   * A whole block may go as one background request though it is more than backgroundBytes() (see WHOLE_BLOCK_SECONDS):
+   * a measured link, not thin, that carries it in WHOLE_BLOCK_SECONDS at most.
+   */
+  wholeBlockFits() { return this.net.bw > 0 && !this.net.thin() && this.net.secondsFor(BLOCK) <= WHOLE_BLOCK_SECONDS; }
   /** block `index` is in memory or stored (no read) */
   peekBlockHere(path, size, mtime, index) { return this.cache.has(`${path}#${index}`) || !!this.store?.map.has(`${path}#${size}#${mtime}#${index}`); }
 
