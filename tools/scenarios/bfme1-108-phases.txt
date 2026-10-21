@@ -4,7 +4,8 @@
 # animated background varies); the intro videos are skipped with Escape, and an Escape that reaches the menu opens
 # its "Are you sure you want to exit?" box: the click at 463,367 is its NO (empty background otherwise). The flow
 # (Solo play, Skirmish, the profile name, OK, Start) is 2.22's (bfme-phases.txt). The skirmish setup screen draws
-# ~220 per frame and its loading screen ~85: play is anchored at 300 draws per frame (~450 at its start).
+# ~220 per frame (300 at times in a first launch) and its loading screen ~85: play is anchored at 360 draws per frame
+# (420-540 at its start).
 # Phases: menu, load (from the Start click: the setup's last frames and the loading screen), play (600 s: a unit
 # selected, move orders and camera scrolls with the arrow keys every ~30 s: keys are not scaled with the display, an
 # edge of the screen would be), then end.
@@ -27,7 +28,7 @@
 70:move:338,573
 72:click:338,573
 73:mark:load
-74:waitframe:300,100000
+74:waitframe:360,100000
 0:mark:play
 10:click:400,300
 14:rclick:500,350

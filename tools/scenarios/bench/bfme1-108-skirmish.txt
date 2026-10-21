@@ -21,7 +21,7 @@
 70:move:338,573
 72:click:338,573
 73:mark:load
-74:waitframe:300,100000
+74:waitframe:360,100000
 0:mark:play
 10:click:400,300
 14:rclick:500,350
