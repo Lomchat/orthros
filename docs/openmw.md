@@ -500,6 +500,40 @@ runs each): `?tier=high` 1.47-1.55 fps, gap p99 3.5-6.5 s; the tier chosen now (
 `tools/openmw/check.mjs` passes on r2. Not validated: a real GPU (the owner's laptop), the local map screen after r2
 (the change removes callbacks only), a throttled link for the skipped sounds.
 
+### Cell crossings off the frame: engine orthros-r3 (2026-10-22)
+
+Engine release `openmw-web-v1.5.3-orthros-r3` (patches r1 + r2 + `orthros-r3.patch`, files pinned in `lock.json`).
+Installed in `data_engines/`, no manifest switched. What a crossing cost on r2, from CPU profiles
+(`perf.mjs --profile`, discard mode): the inline cell load (`Scene::changeCellGrid` → `insertCell`: NIF parsing,
+templates, creatures' animations) 100-430 ms, the terrain/object-paging preload of the predicted position run inline
+(`TerrainPreloadItem`, every 128 units walked) up to 120-200 ms, and above all the global map's CPU copy of the
+explored cell (`osg::Image` on a pre-render camera → `glReadPixels`, drawn three times) 0.2-1 s: a readback waits for
+the whole GPU queue, which at a crossing holds the new cell's uploads. What r3 changes:
+- **Cooperative WorkQueue** (`components/sceneutil/workqueue.cpp`, the web default): still no worker thread — so none
+  of the main-thread futex waits that made upstream revert its threaded mode —, but the items are queued and run on
+  the main thread after each frame, 4 ms a frame (`OPENMW_WORKQUEUE_BUDGET_MS`, `?wqbudget=`), at least one step.
+  Long items run in slices (`WorkItem::doWorkSlice`): a cell preload one mesh at a time, a terrain preload a chunk at a
+  time (`Terrain::World::preloadSlice`, `QuadTreeWorld`). The threaded contract holds (asynchronous;
+  `waitTillDone()` finishes an item still queued, on the caller; `syncTerrainLoad` does so before waiting on its
+  reporter). `?wq=inline` restores the old mode, `?wq=threaded` the 2 workers.
+- **The exterior grid is preloaded again** (`preload exterior grid = true` in the page; doors stay off): the next cells'
+  meshes, shapes and terrain are loaded in slices ahead of the player, so the crossing frame finds them cached.
+- **No global-map readback while playing** (`mwrender/globalmap.cpp`): an explored cell paints the overlay texture
+  only; the CPU copy (`mOverlayImage`, what saves keep) is read from that texture once, when a save needs it
+  (`syncCpuCopy`: a framebuffer of its own, bindings restored). The map's cameras are drawn once instead of three times.
+  Checked: a quicksave after r3 holds the same map overlay as r2's (954×864, the explored cell's 18×18 = 324 pixels
+  painted, both).
+
+Measured (`perf.mjs --discard --glide 0,1,300,3000`: the player carried north from Seyda Neen at 300 units/s for
+150 s, 6 cells, 5 crossings; `?tier=high`; load 25-35; medians, r2: 4 runs, r3: 3): longest frame of engine work
+1249 → 223 ms, longest gap between drawn frames 2033 → 433 ms, gaps over 250 ms 14 → 10, over 100 ms 97 → 67, frames
+over 100 ms of work 23 → 13, work p50 11.6 → 10.8 ms, p99 70 → 56 ms, drawn fps 22.4 → 24.2, readPixels 0.0045 → 0 a
+frame. Left in r3's longest frames (profile, 110-220 ms): one object-paging chunk built in a terrain-preload slice (a
+chunk cannot be split), most of it the data streaming's synchronous fetch of a mesh not yet in the page (`fetchSync`:
+170 of the longest 221 ms; 0.6-0.8 s of such waits a run, r2 and r3 alike) — the next step is a preload that asks
+`orthrosFileReady` first and comes back to a mesh whose bytes are still on their way, as sounds do since r2.
+`tools/openmw/check.mjs` passes on r3.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.
