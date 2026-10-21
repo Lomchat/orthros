@@ -17,6 +17,14 @@
 //   world       cheats: refused for a non-admin, an admin's wanted level shown to the other (stars), world cheats on both
 //               (when the engine publishes `weather`), the teleport list
 //   garage      a car stored in a hideout by A, found there by B
+//   away        an away player hurt like anyone: B in its pause menu hurt by A's shots and killed there (the kill line
+//               on A at once), then B's tab hidden (its engine frozen: rAF held, document.hidden, visibilitychange) while
+//               A shoots it: the hits, older than the old 20 s limit, applied when B shows again — B dies of them
+//   aim         the mouse aim, a real click (Playwright's mouse on the canvas): the crosshair's line kept on B's copy
+//               ("look"), A's M4, shotgun and baseball bat hurt B
+//   stars       the wanted level as in the game: a local cop shot by A alone (B far) gives stars, kept when it dies;
+//               a cop of B's (a copy on A) shot by A: hurt at B, A's stars, seen over A by B; a civilian of B's killed
+//               by A: A's crime counted (chaos)
 // Run only when named (--scenario crowd,perks or all,crowd…):
 //   crowd       --players 3 or 4 (one more device each, every one an administrator of the test server with --admins):
 //               every player lists and sees every other at one place (2 m, its copy with its name), every line seen by
@@ -45,13 +53,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-export const SCENARIOS = Object.freeze(['basic', 'chat', 'combat', 'combatx', 'combatp', 'combatv', 'population', 'world', 'garage']);
+export const SCENARIOS = Object.freeze(['basic', 'chat', 'combat', 'combatx', 'combatp', 'combatv', 'away', 'aim', 'stars', 'population', 'world', 'garage']);
 /** Scenarios run only when named (not in `all`): crowd (3 players or more), perks (a new character), freemode (alone). */
 export const NAMED_SCENARIOS = Object.freeze(['crowd', 'perks', 'freemode']);
 export const MAX_PLAYERS = 4;
 /** The players' tags, in their order (the first one the most senior). */
 export const TAGS = Object.freeze(['A', 'B', 'C', 'D']);
-export const OUT_ROOT = '/tmp/orthros-scratch/mmo-check';
+export const OUT_ROOT = process.env.MMO_CHECK_OUT || '/tmp/orthros-scratch/mmo-check';
 // (a death to its respawn is ~8 s of the game's time, which advances at most ~60 ms a frame: at the test machine's 0.1–0.5
 // frame a second, up to 10 minutes or more)
 const RESPAWN_MS = 900000;
@@ -323,7 +331,7 @@ async function main() {
 
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({ headless: true, channel: 'chromium', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
-    '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] });
+    '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', ...(process.env.MMO_CDP_PORT ? [`--remote-debugging-port=${process.env.MMO_CDP_PORT}`] : []), ...(process.env.MMO_JS_FLAGS ? [`--js-flags=${process.env.MMO_JS_FLAGS}`] : [])] });
   const heartbeat = setInterval(async () => {
     const line = [];
     for (const c of clients) line.push(await c.read().then((s) => ({ c: c.tag, mode: s?.mode, link: s?._page?.link, inWorld: s?.inWorld, fps: s?.fps, updates: s?._page?.updates })).catch(() => ({ c: c.tag, closed: true })));
@@ -462,6 +470,77 @@ async function main() {
         await c.cmd('cheat ASPIRINE');
       }
       await untilBoth(20000, (a, b) => a?.health >= 99 && b?.health >= 99);
+    }
+    /**
+     * The tab hidden (on) or shown again, as a browser does it: document.hidden and visibilitychange (the page tells the
+     * world it is away) and the engine frozen — its frames wait for requestAnimationFrame, held meanwhile — while the
+     * page's own tasks (the link, its queue) go on.
+     */
+    async function hideTab(c, on) {
+      await c.pageCall((hide) => {
+        if (!window.__mmoHide) {
+          const raf = window.requestAnimationFrame.bind(window), held = [];
+          const proto = (k) => Object.getOwnPropertyDescriptor(Document.prototype, k);
+          const hidden = proto('hidden'), state = proto('visibilityState');
+          const h = window.__mmoHide = { on: false, held, release: () => { for (const cb of held.splice(0)) raf(cb); } };
+          window.requestAnimationFrame = (cb) => { if (h.on) { held.push(cb); return 0; } return raf(cb); };
+          Object.defineProperty(document, 'hidden', { configurable: true, get: () => h.on || hidden.get.call(document) });
+          Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (h.on ? 'hidden' : state.get.call(document)) });
+        }
+        window.__mmoHide.on = hide;
+        document.dispatchEvent(new Event('visibilitychange'));
+        if (!hide) window.__mmoHide.release();
+      }, on);
+    }
+    /** the mouse on the middle of a page's canvas (where the game's own pointer stays) */
+    async function mouseHome(c) {
+      const box = await c.page.locator('#canvas').boundingBox();
+      c.mouseAt = [box.x + box.width / 2, box.y + box.height / 2];
+      await c.page.mouse.move(...c.mouseAt);
+    }
+    /** a real click of the mouse's left button on the canvas, held until the player's weapon fired (or `ms`) */
+    async function click(c, ms = 30000) {
+      if (!c.mouseAt) await mouseHome(c);
+      const f0 = (await c.read())?.combat?.playerFires ?? 0;
+      await c.page.mouse.down();
+      const r = await until(c, ms, (s) => (s?.combat?.playerFires ?? 0) > f0);
+      await c.page.mouse.up();
+      return r;
+    }
+    /** the crosshair kept on a target ("look": <slot>, e<netid>, spawned), until its line meets it within `deg` */
+    async function lookAt(c, target, deg = 2.5) {
+      if (!c.mouseAt) await mouseHome(c);
+      await c.cmd(`look ${target} 90`);
+      return until(c, 60000, (s) => s?.combat?.look?.active === true && s.combat.look.err >= 0 && s.combat.look.err < deg);
+    }
+    /** clicks (each held until the weapon fired) until `done(state of watched)` or `max` clicks */
+    async function clickUntil(c, watched, done, max = 8, wait = 15000, target = null) {
+      let r = { ok: false }, clicks = 0;
+      for (; clicks < max && !r.ok && left() > 60000; clicks++) {
+        // (a target that moves — a shot cop runs, or comes for the shooter —: the crosshair put on it again first)
+        if (target != null && clicks > 0) await lookAt(c, target);
+        await click(c);
+        r = await until(watched, wait, done);
+      }
+      return { ...r, clicks };
+    }
+    /** the player's wanted level cleared (the cheat: an administrator's) */
+    async function unwanted(c) {
+      await c.cmd('cheat LEAVEMEALONE');
+      return until(c, 30000, (s) => (s?.wanted ?? 0) === 0);
+    }
+    /** shots from `shooter` at `victim` (the "fire" command: one shot each, a lock-on) until done(victim's state) */
+    async function shootUntil(shooter, victim, done, max = 60) {
+      let shots = 0, state = await victim.read();
+      await shooter.cmd(`aim ${victim.slot}`); await sleep(1000);
+      for (; shots < max && left() > 60000 && !done(state); shots++) {
+        if (shots % 8 === 7) await shooter.cmd(`aim ${victim.slot}`);
+        const f0 = (await shooter.read())?.combat?.fires ?? 0;
+        await shooter.cmd(`fire ${victim.slot}`);
+        await until(shooter, 30000, (s) => (s?.combat?.fires ?? 0) > f0);
+        state = await victim.read();
+      }
+      return { shots, state, ok: done(state) };
     }
     // ---------------------------------------------------------------- the scenarios
     const scenarios = {
@@ -677,6 +756,217 @@ async function main() {
         const wreck = await until(B, 120000, (s) => (s?.combat?.wrecked ?? 0) > w0);
         await dump('blast at the car');
         await check('combatv', 'A\'s car blown up there, its copy wrecked on B', wreck.ok, { wrecked: wreck.state?.combat?.wrecked });
+      },
+      async away() {
+        // (an away player is hurt like anyone: in its pause menu, and with its tab hidden — its engine frozen)
+        const C = (s) => s?.combat ?? {};
+        const respawn = async (label, deathPos) => {
+          const r = await until(B, RESPAWN_MS, (s) => !dead(s) && s?.inWorld !== false && Number.isFinite(s?.health) && s.health > 0 && distance(s?.pos, deathPos) > 5);
+          await check('away', `B respawned (${label})`, r.ok, { health: r.state?.health, pos: vec(r.state?.pos) });
+          return r.ok;
+        };
+        // (both alive, together and A armed — what a scenario before left — a burning wreck, the police — may kill one
+        // meanwhile: tried again)
+        const ready = async () => {
+          for (let i = 0; i < 3 && left() > 300000; i++) {
+            await unwanted(A);
+            await healed();
+            if (!(await together('away', PLACES.hotel, 4))) continue;
+            await A.cmd(`weapon ${o.weapon} 500`);
+            const r = await until(A, 15000, (s) => s?.weapon === o.weapon);
+            if (r.ok && !dead(r.state) && distance(r.state?.pos, PLACES.hotel) < 3) return true;
+          }
+          return check('away', 'both ready (alive, together, A armed)', false, {});
+        };
+        // (the kill lines A shows, counted: the same line twice when A kills B again)
+        const kills = (s) => (s?.chat ?? []).filter((l) => /killed|a tu/.test(JSON.stringify(l)) && JSON.stringify(l).includes(B.name)).length;
+        if (!(await ready())) return;
+        // -- the pause menu
+        const b0 = await B.read(), a0 = await A.read(), chaos0 = C(a0).chaos, killsBefore0 = kills(a0);
+        await B.cmd('menu');
+        const paused = await until(B, 180000, (s) => s?.menuActive === true);
+        const shownAway = await until(A, 30000, (s) => playerIn(s, B.name)?.away === true);
+        if (!await check('away', 'B in its pause menu, away for A', paused.ok && shownAway.ok, { menuActive: paused.state?.menuActive, away: playerIn(shownAway.state, B.name)?.away })) return;
+        let hurt = false;
+        const shot = await shootUntil(A, B, (s) => { if (s?.menuActive && Number.isFinite(s?.health) && s.health < b0.health) hurt = true; return dead(s); }, 80);
+        const bp = await B.read();
+        await check('away', 'B hurt by A\'s shots in its pause menu (applied there)', hurt && C(bp).hitsPaused > (C(b0).hitsPaused ?? 0),
+          { shots: shot.shots, health: [b0?.health, bp?.health], hitsPaused: C(bp).hitsPaused, menuActive: bp?.menuActive, applied: C(bp).hitsApplied, dropped: C(bp).hitsDropped });
+        await check('away', 'B dies of them, its menu still open', shot.ok && bp?.menuActive === true, { dead: dead(bp), health: bp?.health, menuActive: bp?.menuActive });
+        const feed = await until(A, 60000, (s) => kills(s) > killsBefore0 && !!killLine(s, B.name, A.name));
+        const stillMenu = await B.read();
+        await check('away', 'the kill line on A at once (B still in its menu)', feed.ok && stillMenu?.menuActive === true, { line: killLine(feed.state, B.name), chat: feed.state?.chat?.slice?.(-3), menuActive: stillMenu?.menuActive });
+        const aState = await A.read();
+        await check('away', 'A\'s shots on a player counted as crimes (A\'s chaos rose)', (C(aState).chaos ?? 0) > (chaos0 ?? 0), { chaos: [chaos0, C(aState).chaos], wanted: aState?.wanted });
+        let closed = { ok: false };
+        // (one Escape at a time, read by the engine before the next: at 0.2 frame a second a second one sent meanwhile
+        // opens the menu again)
+        for (let i = 0; i < 4 && !closed.ok; i++) {
+          await B.cmd('key ESC');
+          closed = await until(B, 180000, (s) => s?.menuActive === false);
+          if (closed.ok) { await sleep(10000); closed = await until(B, 1000, (s) => s?.menuActive === false); }
+        }
+        await check('away', 'B back in the game (its menu closed)', closed.ok, {});
+        if (shot.ok) await respawn('pause menu', vec(bp?.pos));
+        await unwanted(A);
+        // -- the tab hidden
+        if (!(await ready())) return;
+        // (shots for 60 s at most: at the test machine's 0.1–1 frame a second thirty M4 shots take minutes, past the
+        // 120 s a hidden tab's hits are kept)
+        await A.cmd(`weapon ${o.weapon} 500`);
+        await until(A, 15000, (s) => s?.weapon === o.weapon);
+        const h0 = await B.read(), killsBefore = kills(await A.read());
+        await hideTab(B, true);
+        const hiddenAway = await until(A, 30000, (s) => playerIn(s, B.name)?.away === true);
+        await check('away', 'B\'s tab hidden: away for A', hiddenAway.ok, {});
+        const sent0 = C(await A.read()).hitsSent ?? 0;
+        const firstShot = Date.now();
+        let a1 = await A.read(), shots = 0;
+        await A.cmd(`aim ${B.slot}`); await sleep(1000);
+        // (enough hits to kill — 200 health, the player's share of an M4's 40: 16 — within 60 s)
+        for (; shots < 40 && left() > 120000 && Date.now() - firstShot < 60000 && (C(a1).hitsSent ?? 0) - sent0 < 18; shots++) {
+          if (shots % 8 === 7) await A.cmd(`aim ${B.slot}`);
+          const f0 = C(a1).fires ?? 0;
+          await A.cmd(`fire ${B.slot}`);
+          a1 = (await until(A, 30000, (s) => (C(s).fires ?? 0) > f0)).state ?? a1;
+        }
+        const sent = (C(a1).hitsSent ?? 0) - sent0;
+        await check('away', 'A\'s shots hit B\'s copy while B is hidden (sent at once, the blood seen there)', sent > 0, { shots, sent, lastFire: C(a1).lastFire });
+        // (older than the old 20 s limit when B runs again)
+        await sleep(Math.max(0, 25000 - (Date.now() - firstShot)));
+        const before = await B.read();
+        await hideTab(B, false);
+        const applied = await until(B, 180000, (s) => (C(s).hitsApplied ?? 0) > (C(before).hitsApplied ?? 0) && (dead(s) || (Number.isFinite(s?.health) && s.health < h0.health)));
+        await check('away', 'B shown again: the hits sent while hidden (over 20 s old) applied', applied.ok,
+          { waitedMs: Date.now() - firstShot, health: [h0?.health, applied.state?.health], applied: [C(before).hitsApplied, C(applied.state).hitsApplied], dropped: [C(before).hitsDropped, C(applied.state).hitsDropped] });
+        // (a death only when enough hits were sent in the 60 s: 16 of an M4's)
+        const died = await until(B, sent >= 16 ? 120000 : 5000, dead);
+        if (sent >= 16 || died.ok) {
+          await check('away', 'B dies of them', died.ok, { health: died.state?.health, sent });
+          const feed2 = await until(A, 60000, (s) => kills(s) > killsBefore);
+          await check('away', 'the kill line on A', feed2.ok, { chat: feed2.state?.chat?.slice?.(-3) });
+        } else await skip('away', 'B dies of them', `${sent} hits sent in 60 s at this machine's frame rate: not enough to kill`);
+        if (died.ok) await respawn('hidden tab', vec(died.state?.pos) ?? vec(h0?.pos));
+        await unwanted(A);
+      },
+      async aim() {
+        // (the mouse aim with real clicks: the crosshair's line kept on B's copy, A's M4, shotgun and bat)
+        await healed();
+        if (!(await together('aim', PLACES.hotel, 5))) return;
+        await mouseHome(A);
+        for (const [weapon, label, melee] of [[26, 'M4', false], [19, 'shotgun', false], [6, 'baseball bat', true]]) {
+          if (left() < 120000) break;
+          await healed();
+          if (melee) {
+            // (B up again — a shotgun knocks down — and still: A at arm's length from it, as A's copy of B shows it)
+            const b = (await until(B, 300000, (s) => s?.combat?.me?.inControl === true)).state;
+            const spot = offset(b?.pos, -1.2);
+            await A.cmd(tpCommand(spot));
+            const near = await until(A, 60000, (s) => distance(s?.pos, spot) < 1 && distance(playerIn(s, B.name)?.pos, s?.pos) < 1.6);
+            if (!await check('aim', `${label}: A at arm's length from B`, near.ok, { A: vec(near.state?.pos), B: vec(playerIn(near.state, B.name)?.pos) })) continue;
+          }
+          await A.cmd(`weapon ${weapon} 500`);
+          const armed = await until(A, 15000, (s) => s?.weapon === weapon);
+          const aimed = await lookAt(A, B.slot, melee ? 25 : 1.5);
+          const look = aimed.state?.combat?.look;
+          if (!await check('aim', `${label}: the mouse aim's crosshair on B's copy`, armed.ok && aimed.ok && look?.mouse === true, { weapon: aimed.state?.weapon, look })) continue;
+          const b0 = await B.read(), hb = b0?.health, applied0 = b0?.combat?.hitsApplied ?? 0;
+          const sent0 = (await A.read())?.combat?.hitsSent ?? 0;
+          // (A's hit, applied by B: its health down and one more network hit applied there)
+          const r = await clickUntil(A, B, (s) => Number.isFinite(s?.health) && s.health < hb && (s?.combat?.hitsApplied ?? 0) > applied0, 6);
+          // (A's own state a few frames later: published every 500 ms of its frames)
+          const a = (await until(A, 15000, (s) => (s?.combat?.hitsSent ?? 0) > sent0)).state;
+          await check('aim', `${label}: a real click hurts B (the player's own weapon path)`, r.ok && (a?.combat?.hitsSent ?? 0) > sent0,
+            { clicks: r.clicks, health: [hb, r.state?.health], hitsSent: (a?.combat?.hitsSent ?? 0) - sent0, applied: (r.state?.combat?.hitsApplied ?? 0) - applied0,
+              lastSent: a?.combat?.lastSent, received: r.state?.combat?.lastReceived, fires: a?.combat?.playerFires, look: a?.combat?.look });
+        }
+        await A.cmd('look off');
+      },
+      async stars() {
+        // (the wanted level as in the game: a local cop, a copy of another's, a copy civilian killed)
+        const C = (s) => s?.combat ?? {};
+        await healed();
+        await unwanted(A); await unwanted(B);
+        await mouseHome(A);
+        await A.cmd('weapon 17 300');
+        await until(A, 15000, (s) => s?.weapon === 17);
+        // -- a local cop, A alone
+        await B.cmd(tpCommand(PLACES.far));
+        await until(B, 90000, (s) => distance(s?.pos, PLACES.far) < 5);
+        // (A at the hotel's door, the cop 6 m east: open ground, where B stands in the other checks)
+        const alone = PLACES.hotel;
+        await A.cmd(tpCommand(alone));
+        await until(A, 60000, (s) => distance(s?.pos, alone) < 3);
+        await sleep(3000);
+        await A.cmd('spawn cop 6 0');
+        const sp = await until(A, 90000, (s) => C(s).spawned && !C(s).spawned.dead && C(s).spawned.type === 6);
+        if (await check('stars', 'a cop made next to A (alone)', sp.ok, { spawned: C(sp.state).spawned ?? null })) {
+          const aimed = await lookAt(A, 'spawned');
+          const w0 = (await A.read())?.wanted ?? 0, hp = C(sp.state).spawned.health;
+          const hit = aimed.ok ? await clickUntil(A, A, (s) => (C(s).spawned?.health ?? hp) < hp, 6) : { ok: false };
+          // (a cop shot: two stars at once, the game's EVENT_SHOOT_COP — a shot heard near a cop gives one only)
+          const starred = await until(A, 30000, (s) => (s?.wanted ?? 0) >= 2);
+          await check('stars', 'a local cop shot by A (alone): A wanted (2 stars)', hit.ok && starred.ok, { aimed: aimed.ok, health: [hp, C(hit.state).spawned?.health], wanted: [w0, starred.state?.wanted], chaos: C(starred.state).chaos });
+          await A.cmd('weapon 26 300'); await until(A, 15000, (s) => s?.weapon === 26); // (the kill: an M4's burst — a shot ped runs, the crosshair follows it at the test machine's few frames)
+          const killed = await clickUntil(A, A, (s) => C(s).spawned?.dead === true || !C(s).spawned, 20, 15000, 'spawned');
+          const kept = await A.read();
+          await check('stars', 'the local cop killed: A still wanted', killed.ok && (kept?.wanted ?? 0) >= 1, { clicks: killed.clicks, wanted: kept?.wanted, chaos: C(kept).chaos });
+        }
+        await A.cmd('look off');
+        await unwanted(A);
+        // -- a cop of B's: a copy on A
+        await healed();
+        if (!(await together('stars', PLACES.hotel, 6))) return;
+        await A.cmd('weapon 17 300');
+        await until(A, 15000, (s) => s?.weapon === 17);
+        const copShot = async (kind) => {
+          await B.cmd(`spawn ${kind} 5 0`); // (5 m east of B, 11 m east of A: B moves out of the line next)
+          const bs = await until(B, 90000, (s) => (C(s).spawned?.id ?? 0) > 0 && !C(s).spawned.dead && C(s).spawned.type === (kind === 'cop' ? 6 : 4));
+          const id = C(bs.state).spawned?.id;
+          const copy = bs.ok ? await until(A, 90000, (s) => netids(s, 'puppets')?.has(id)) : { ok: false };
+          if (!await check('stars', `B's ${kind}: a copy on A`, bs.ok && copy.ok, { spawned: C(bs.state).spawned ?? null })) return null;
+          // (B out of the line of fire: its ped stands 5 m ahead of it, B maybe between A and it)
+          const aside = offset(bs.state?.pos, 0, 10);
+          await B.cmd(tpCommand(aside));
+          await until(B, 60000, (s) => distance(s?.pos, aside) < 3);
+          const aimed = await lookAt(A, `e${id}`);
+          return { id, aimed, hp: C(bs.state).spawned.health };
+        };
+        const cop = await copShot('cop');
+        if (cop) {
+          const a0 = await A.read();
+          const hit = cop.aimed.ok ? await clickUntil(A, B, (s) => (C(s).spawned?.health ?? cop.hp) < cop.hp, 6) : { ok: false };
+          await check('stars', 'A\'s shot at the copy hurts B\'s cop', hit.ok, { aimed: cop.aimed.ok, look: C(cop.aimed.state).look, health: [cop.hp, C(hit.state).spawned?.health] });
+          const starred = await until(A, 30000, (s) => (s?.wanted ?? 0) >= 2);
+          await check('stars', 'a copy cop shot: A wanted (2 stars)', starred.ok, { wanted: [a0?.wanted, starred.state?.wanted], chaos: [C(a0).chaos, C(starred.state).chaos] });
+          const seen = await until(B, 30000, (s) => (playerIn(s, A.name)?.stars ?? 0) >= 2);
+          await check('stars', 'A\'s stars seen over A by B', seen.ok, { stars: playerIn(seen.state, A.name)?.stars ?? null });
+          await A.cmd('weapon 26 300'); await until(A, 15000, (s) => s?.weapon === 26); // (the kill: an M4's burst — a shot ped runs, the crosshair follows it at the test machine's few frames)
+          const killed = await clickUntil(A, B, (s) => C(s).spawned?.dead === true || !C(s).spawned, 20, 15000, `e${cop.id}`);
+          const k = await A.read();
+          await check('stars', 'B\'s cop killed by A: A still wanted', killed.ok && (k?.wanted ?? 0) >= 1, { clicks: killed.clicks, wanted: k?.wanted, chaos: C(k).chaos });
+        }
+        await A.cmd('look off');
+        await unwanted(A);
+        // -- a civilian of B's, killed by A: A's crime counted as the game does (chaos; stars when the police see it)
+        // (A free again: the police that came may be arresting or killing it — a respawn then)
+        await sleep(Math.min(5000, Math.max(0, left())));
+        await until(A, RESPAWN_MS, (s) => !dead(s) && s?.combat?.me?.inControl === true && s?.inWorld !== false);
+        await unwanted(A);
+        await healed();
+        if (!(await together('stars', PLACES.hotel, 6))) return;
+        await A.cmd('weapon 17 300');
+        await until(A, 15000, (s) => s?.weapon === 17);
+        const civ = await copShot('civ');
+        if (civ) {
+          const a0 = await A.read();
+          await A.cmd('weapon 26 300'); await until(A, 15000, (s) => s?.weapon === 26); // (the kill: an M4's burst — a shot ped runs, the crosshair follows it at the test machine's few frames)
+          const killed = civ.aimed.ok ? await clickUntil(A, B, (s) => C(s).spawned?.dead === true || !C(s).spawned, 20, 15000, `e${civ.id}`) : { ok: false };
+          const k = await until(A, 15000, (s) => (C(s).chaos ?? 0) > (C(a0).chaos ?? 0));
+          await check('stars', 'B\'s civilian killed by A: A\'s crime counted', killed.ok && k.ok, { clicks: killed.clicks, chaos: [C(a0).chaos, C(k.state).chaos], wanted: k.state?.wanted });
+        }
+        await A.cmd('look off');
+        await unwanted(A);
       },
       async population() {
         await healed();

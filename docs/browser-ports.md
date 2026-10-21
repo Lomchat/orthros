@@ -32,7 +32,7 @@ only its mod stack: `requires` puts the original game's version's files beneath 
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/port-perf.mjs` | the ports' shared frame measurement (below, "Measuring a port") | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-3141ff3-r1` (reVC built from source) and `revc-web-3141ff3-plus-r1` (with Orthros' additions) | no |
+| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-e312f97-r1` (reVC built from source) and `revc-web-e312f97-plus-r1` (with Orthros' additions) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` (Orthros' fork) with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
@@ -580,7 +580,7 @@ release.
     "id": "vice-city-revc", "dir": "1.1-revc", "version": "1.1 · reVC", "languages": ["en", "fr"], "profileSeed": true,
     "requires": [{ "game": "vice-city", "version": "vice-city-1.1-elamigos-2014" }],
     "re3": {
-      "engine": "revc-web-3141ff3-r1",
+      "engine": "revc-web-e312f97-r1",
       "defaults": { "reVC.ini": { "Display": { "Subtitles": "1" } } },
       "languages": {
         "en": { "env": { "LANG": "en_US.UTF-8" }, "ini": { "reVC.ini": { "General": { "Language": "0" } } } },
@@ -781,7 +781,7 @@ city the engine's own WebAssembly takes 1.4 ms a frame (CPU profile: the rest is
 decides the frame rate), WebGL calls 4.2 a draw (1,865 for 446 draws a frame) instead of 7.2 (3,397 for 471) before the
 VAOs and single uploads, 18 % more frames a second under SwiftShader. Link-time optimisation and WebAssembly SIMD were
 not kept: at 1.4 ms of engine work a frame, too little to win.
-2026-10-21 (`perf.mjs --drive --warm 10 --seconds 30 --profile`, `revc-web-3141ff3-r1`, load 20-30, one run each — the
+2026-10-21 (`perf.mjs --drive --warm 10 --seconds 30 --profile`, `revc-web-e312f97-r1`, load 20-30, one run each — the
 player on foot in a street with police about): with `--gl discard`, 35 browser frames a second, the engine's work a
 frame p50 8.7 ms, p99 38, max 64; no frame gap over 100 ms; its WebAssembly 1.2 ms a frame (4 % of the time); no
 synchronous WebGL call a frame; the four longest busy stretches (139-238 ms) 92-95 % native time (the GPU process,
@@ -811,7 +811,7 @@ the game reads none of them.
 
 `vice-city-orthros` ("Grand Theft Auto: Vice City — Orthros Edition", `1.1 · Orthros`, over the Windows card's files
 as reVC's; `"modified": true`: the "Modified" tag on its card and among the library's filters)
-runs the release `revc-web-3141ff3-plus-r1`: the same fork commit as reVC's `revc-web-3141ff3-r1`, built with
+runs the release `revc-web-e312f97-plus-r1`: the same fork commit as reVC's `revc-web-e312f97-r1`, built with
 `-DREVC_ORTHROS_EXTRAS=ON` (lock.json: a build's own `cmake`). That option compiles `src/extras/orthros_extras.cpp` in
 and its hooks (all under `ORTHROS_EXTRAS`: the reVC card's build has none of them). Everything is in the game itself:
 the page starts it as any re3 version (no `modes`).

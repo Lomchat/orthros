@@ -367,3 +367,20 @@ harness under the test machine's 0.1–1 frame a second: respawns (up to 10 minu
 leaping over a player at large time steps, a player knocked down (flames set fire only to one in control, as the
 game's), a second teleport asked during the first one's fade (not taken: the list cannot be opened then either), a ram before
 the other player's copy was made (its special model still streaming).
+
+## 11. Away players, crimes on copies, the appearance picker (2026-10-22)
+
+* An away player (pause menu open, or tab hidden) is hurt like anyone: the shooter sends every hit; a client in its
+  pause menu applies hits at once (its death told at once, the fall played when the game runs again); a hidden tab's
+  frozen engine applies the waiting hits when it runs again, up to 120 s old for hits on the player or its vehicle
+  (other entities 20 s), never one stamped before the player's last spawn or join.
+* Crimes: shooting or killing a cop, a ped or a player — a local one or another client's copy — counts as the game
+  counts it (its own code reports the crime on the shooter's side before the hit is forwarded); stars shown to all.
+* Appearance picker (`mmo_skins.cpp`, page `MENUPAGE_MMO_SKINS`): Men / Women / All, 168 skins sorted by category then
+  name (Tommy's outfits, story characters, police and services, gangs, jobs and extras, Vice City's people), a live
+  3D preview turning in its idle stance, keys, mouse, wheel, scrollbar; the models read from the game's archives by the
+  picker itself before any game is loaded (never blocking a frame).
+* Fixed meanwhile: the player's idle animations freed under another player's copy (a crash when two players stood
+  idle together); the browser's streamed sound waiting forever on its two channels (a page frozen at 100 % CPU — also
+  in reVC's card).
+* Checks: `mmo-check.mjs` scenarios `away`, `aim` (real mouse clicks: M4, shotgun, bat), `stars`.
