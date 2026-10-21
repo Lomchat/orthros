@@ -32,7 +32,7 @@ import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
-import { listGameTree, resolveGameFile, resolveLightFile } from './game-files.js';
+import { listGameTree, dirsStamp, resolveGameFile, resolveLightFile } from './game-files.js';
 import { LIGHT_DIR, readLight } from './light-copies.js';
 import { lightCovers } from './light-covers.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
@@ -131,16 +131,24 @@ export function createServer(opts = {}) {
   const readCatalog = () => manifestDir ? loadManifests(manifestDir, opts.extra) : loadGameCatalog(gamesDir, opts.extra, { enginesDir });
   let manifests = readCatalog();
   const trees = new Map(), treeObjs = new Map();
-  const refreshCatalog = () => { manifests = readCatalog(); trees.clear(); treeObjs.clear(); };
-  // (a game's tree, listed once: again when the catalog is read, or when a folder laid over it is not the one it was
-  // listed with — an re3 engine release installed, removed or rebuilt while the server runs: its gamefiles/, whose
-  // files /game/ and /gamez/ resolve at each request)
-  const overlayStamp = (man) => (man.overlays ?? []).map((dir) => { try { const s = fs.statSync(dir); return `${s.ino}:${s.ctimeMs}:${s.mtimeMs}`; } catch { return '-'; } }).join('|');
+  // (the catalog read again — at each /api/manifests: a game added appears —, the trees of the manifests that say the
+  // same kept: listing a game's tree is a stat of each of its files, all of them ~0.5 s that held every request)
+  const refreshCatalog = () => {
+    const before = manifests; manifests = readCatalog();
+    for (const id of [...treeObjs.keys()]) {
+      if (manifests.has(id) && JSON.stringify(manifests.get(id)) === JSON.stringify(before.get(id))) continue;
+      treeObjs.delete(id); trees.delete(id);
+    }
+  };
+  // (a game's tree, listed once: again when one of the folders it was listed from changed — a file added, removed or
+  // renamed there, a version, a map, an re3 engine release installed, removed or rebuilt while the server runs: its
+  // gamefiles/, whose files /game/ and /gamez/ resolve at each request —; looked at each time, one stat a folder: all
+  // the trees of the library 5.6 ms, against 0.5 s to list them)
   const gameTree = (id, man) => {
-    const stamp = overlayStamp(man), cached = treeObjs.get(id);
-    if (cached?.stamp === stamp) return cached.tree;
-    const tree = listGameTree(man);
-    treeObjs.set(id, { stamp, tree }); trees.delete(id);
+    const cached = treeObjs.get(id);
+    if (cached && dirsStamp(cached.dirs) === cached.stamp) return cached.tree;
+    const dirs = [], tree = listGameTree(man, dirs);
+    treeObjs.set(id, { tree, dirs, stamp: dirsStamp(dirs) }); trees.delete(id);
     return tree;
   };
   /** The tree as /api/tree sends it. */
@@ -417,18 +425,20 @@ export function createServer(opts = {}) {
   const launches = new Map(); // manifest -> Map(game language | '' -> { at, v })
   const ownLaunchOf = (name, man, lang = null) => {
     let byLang = launches.get(name); if (!byLang) launches.set(name, byLang = new Map());
-    const c = byLang.get(lang ?? '');
-    if (c && Date.now() - c.at < 60e3) return c.v;
+    // (kept while the game's tree is the same one — what sessions learn forgets it, learnSave —, made again every ten
+    // minutes all the same: the compressed sizes the server comes to know meanwhile)
+    const c = byLang.get(lang ?? ''), tree = gameTree(name, man);
+    if (c && c.tree === tree && Date.now() - c.at < 600e3) return c.v;
     let v = null;
     try {
       if (playableOf(name).marks) {
         const at = unitFile(man);
-        v = launchSummary(new HttpBackend(`/game/${name}/`, gameTree(name, man)), prefetchList(name, lang), brCache && ((rel, unit) => {
+        v = launchSummary(new HttpBackend(`/game/${name}/`, tree), prefetchList(name, lang), brCache && ((rel, unit) => {
           const f = at(rel); return f ? brCache.size(f.file, f.st, f.light, unit) : null;
         }));
       }
     } catch { v = null; }
-    byLang.set(lang ?? '', { at: Date.now(), v });
+    byLang.set(lang ?? '', { at: Date.now(), tree, v });
     return v;
   };
   const launchOf = (name, man) => {
@@ -491,13 +501,13 @@ export function createServer(opts = {}) {
    */
   /** The files of a version's paths (a light copy's too), resolved once: rel -> { file, st, light, size } | null. */
   const unitFile = (man) => {
-    const files = new Map();
+    const files = new Map(), memo = new Map(); // (the folders' listings: a launch set's paths resolved in a row)
     return (rel) => {
       if (!files.has(rel)) {
         let v = null;
         try {
-          const light = rel.startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, rel) : null;
-          const file = light ? light.file : !rel.startsWith(LIGHT_DIR + '/') && resolveGameFile(man, rel);
+          const light = rel.startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, rel, memo) : null;
+          const file = light ? light.file : !rel.startsWith(LIGHT_DIR + '/') && resolveGameFile(man, rel, memo);
           if (file) { const st = light?.st ?? fs.statSync(file); v = { file, st, light, size: light ? light.copy.size : st.size }; }
         } catch { /* gone */ }
         files.set(rel, v);
@@ -950,12 +960,12 @@ export function createServer(opts = {}) {
   const mmoDir = accountApi ? path.resolve(opts.mmoDir ?? path.join(opts.accountsDir, 'mmo')) : null;
   const mmo = mmoApi({ getManifest, identify, dir: mmoDir, log: opts.mmoLog ?? ((m) => console.log(m)), ...(opts.mmoNow ? { now: opts.mmoNow } : {}) });
   // Localized OpenMW masters need separate simulations, caches and save histories.
-  function portLanguages(man, id) {
+  function portLanguages(man, id, memo = null) {
     if (man.runtime !== 'openmw' || !man.openmw.languageVersions) return {};
     const languageLaunchUrls = {}, languageVersions = {};
     for (const [code, target] of Object.entries(man.openmw.languageVersions)) {
       const other = getManifest(target);
-      if (other?.runtime === 'openmw' && other.gameId === man.gameId && other.languages?.includes(code) && openmwInstalled(other, enginesDir)) {
+      if (other?.runtime === 'openmw' && other.gameId === man.gameId && other.languages?.includes(code) && openmwInstalled(other, enginesDir, memo)) {
         languageLaunchUrls[code] = portLaunchUrl(target, other);
         if (target !== id) languageVersions[code] = target; // (the version a language runs: the home's card prepares and downloads it)
       }
@@ -1016,16 +1026,17 @@ export function createServer(opts = {}) {
       if (p === '/api/manifests') {
         refreshCatalog();
         const sizeOf = (t) => Object.values(t.files).reduce((a, f) => a + f.size, 0) + Object.values(t.dirs).reduce((a, d) => a + sizeOf(d), 0);
+        const memo = new Map(); // (the folders' listings, for this answer: the OpenMW versions' checks share their game's)
         const out = [...manifests].map(([name, m]) => {
           let bytes = null;
           try { if (fs.existsSync(m.folder) && (!m.baseFolder || fs.existsSync(m.baseFolder))) bytes = sizeOf(gameTree(name, m)); } catch { /* folder missing */ }
           const runtime = runtimeOf(m), port = runtime !== 'win32';
           return { name, title: m.name ?? name, gameId: m.gameId ?? name, version: m.version ?? null,
-            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name), runtime, exe: port ? null : m.exe,
+            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name, memo), runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : runtime === 're3' ? re3Modes(m.re3) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
             hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
-            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
+            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir, memo)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
       }
