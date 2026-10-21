@@ -15,14 +15,14 @@ export function fmtBytes(n, lang = 'en') {
 }
 /** French units: octets, a decimal comma. */
 const frUnits = (t, lang) => (lang === 'fr' ? t.replace(/(\d)\.(\d)/, '$1,$2').replace(/([KMG])B/, '$1o') : t);
-/** "about 4 min", "about 40 s", "about 2 h 10 min" (seconds; `lang` 'fr': "environ 4 min") */
-export function fmtDuration(s, lang = 'en') {
+/** "about 4 min", "about 40 s", "about 2 h 10 min" (seconds; `lang` 'fr': "environ 4 min"; `short`: "~4 min") */
+export function fmtDuration(s, lang = 'en', short = false) {
   if (!Number.isFinite(s) || s < 0) return '';
-  const about = lang === 'fr' ? 'environ' : 'about';
-  if (s < 90) return `${about} ${Math.max(5, Math.round(s / 5) * 5)} s`;
-  if (s < 3600) return `${about} ${Math.round(s / 60)} min`;
+  const about = short ? '~' : lang === 'fr' ? 'environ ' : 'about ';
+  if (s < 90) return `${about}${Math.max(5, Math.round(s / 5) * 5)} s`;
+  if (s < 3600) return `${about}${Math.round(s / 60)} min`;
   const h = Math.floor(s / 3600), m = Math.round((s - h * 3600) / 60);
-  return `${about} ${h} h${m ? ` ${m} min` : ''}`;
+  return `${about}${h} h${m ? ` ${m} min` : ''}`;
 }
 /** seconds the link needs for `wire` bytes at the measured rate, or null */
 export function etaSeconds(wire, net) { return net?.bw > 0 && wire > 0 ? wire / net.bw : null; }

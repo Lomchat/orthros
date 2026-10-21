@@ -20,9 +20,9 @@ The engine release, source archive and native simulation image are pinned by
   `morrowind-goty-vanilla-plus-en` profile keeps its original id and now contains all seven mods.
   Its enabled gateway uses localhost port 28100. Saves/worlds stay separate from the original profiles.
 - Two games on the home since 2026-10-21 (D103), as Vice City's recompiled and modified cards:
-  `data_games/morrowind` ("The Elder Scrolls III: Morrowind", the original profiles `morrowind-goty-en` / `-fr`, under
-  "Recompiled") holds the game's files; `data_games/morrowind-vanilla-plus` ("… — Vanilla+", `modified`, under
-  "Recompiled & modified") holds only the Vanilla+ profiles' version folders (their mods; the French one its hardlinked
+  `data_games/morrowind` ("The Elder Scrolls III: Morrowind", the original profiles `morrowind-goty-en` / `-fr`, tagged
+  "Recompiled") holds the game's files; `data_games/morrowind-vanilla-plus` ("… — Vanilla+", `modified`, tagged
+  "Modified") holds only the Vanilla+ profiles' version folders (their mods; the French one its hardlinked
   localized files too) and an empty `base/`. Each Vanilla+ profile `requires` the original profile of its language,
   whose files lie beneath its own (`gameLayers`: the page's tree and the gateway's linked tree alike). Their version ids,
   ports, services, native state and cloud saves are unchanged; `formerGame: "morrowind"` keeps their browser saves'

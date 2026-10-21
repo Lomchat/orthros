@@ -17,7 +17,7 @@ Nothing in the code names a game: engine release, game directory, modules, maps 
 OpenMW ports use `runtime: "openmw"`, their own page and a pinned OpenMW-Web engine. Their
 multiplayer uses a native world gateway and simulation peers, proxied on the same origin.
 See [OpenMW installation, pending data and validation](openmw.md). Several mods of the Vanilla+ profile are still
-missing. A modded OpenMW game is a game of its own on the home (`modified`, "Recompiled & modified"), its version holding
+missing. A modded OpenMW game is a game of its own on the home (`modified`: its "Modified" tag), its version holding
 only its mod stack: `requires` puts the original game's version's files beneath it, as for the ports below. Every game page — Windows games and ports — has the same frame (header, loading screen, account, saves):
 [docs/game-frame.md](game-frame.md).
 
@@ -771,7 +771,7 @@ the game reads none of them.
 ### Orthros' modified Vice City
 
 `vice-city-orthros` ("Grand Theft Auto: Vice City — Orthros Edition", `1.1 · Orthros`, over the Windows card's files
-as reVC's; `"modified": true`: the library's "Recompiled & modified" tab, "Recompiled and modified engine" on its card)
+as reVC's; `"modified": true`: the "Modified" tag on its card and among the library's filters)
 runs the release `revc-web-3141ff3-plus-r1`: the same fork commit as reVC's `revc-web-3141ff3-r1`, built with
 `-DREVC_ORTHROS_EXTRAS=ON` (lock.json: a build's own `cmake`). That option compiles `src/extras/orthros_extras.cpp` in
 and its hooks (all under `ORTHROS_EXTRAS`: the reVC card's build has none of them). Everything is in the game itself:

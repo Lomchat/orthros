@@ -113,13 +113,19 @@ test('the home card\'s line: playable after X at the link\'s rate, preparing, pr
   const launch = { bytes: 200 * MiB, lightBytes: 80 * MiB, wire: 150 * MiB, lightWire: 60 * MiB };
   const slow = launchStatus(launch, { bw: 100 * 1024 }, 'en');
   assert.equal(slow.state, 'none');
-  assert.match(slow.text, /^Playable after 80 MB, about 10 min at your link \(100 KB\/s\)$/);
-  assert.match(launchStatus(launch, { bw: 4 * MiB }, 'en').text, /^Playable after 200 MB, about 40 s/, 'a fast link: the files themselves');
+  // (the card's short line; the whole of it — the rate — in its tooltip, `detail`)
+  assert.equal(slow.text, 'Playable after 80 MB · ~10 min');
+  assert.match(slow.detail, /^Playable after 80 MB, about 10 min at your link \(100 KB\/s\)$/);
+  assert.match(launchStatus(launch, { bw: 4 * MiB }, 'en').detail, /^Playable after 200 MB, about 40 s/, 'a fast link: the files themselves');
   assert.equal(launchStatus(launch, { bw: null }, 'en').text, 'Playable after 80 MB', 'no rate measured: the size only');
-  assert.equal(launchStatus({ ...launch, engine: 40 * MiB }, { bw: null }, 'fr').text, 'Jouable après 80 Mo (+ 40 Mo de moteur au premier lancement)', 'the engine at a first launch, said beside');
-  assert.match(launchStatus(launch, { bw: 100 * 1024 }, 'fr').text, /^Jouable après 80 Mo, environ 10 min à ta connexion/);
+  const first = launchStatus({ ...launch, engine: 40 * MiB }, { bw: null }, 'fr');
+  assert.equal(first.text, 'Jouable après 80 Mo (+ 40 Mo de moteur)', 'the engine at a first launch, said beside');
+  assert.equal(first.detail, 'Jouable après 80 Mo (+ 40 Mo de moteur au premier lancement)');
+  assert.equal(launchStatus(launch, { bw: 100 * 1024 }, 'fr').text, 'Jouable après 80 Mo · ~10 min');
+  assert.match(launchStatus(launch, { bw: 100 * 1024 }, 'fr').detail, /^Jouable après 80 Mo, environ 10 min à ta connexion/);
   const half = launchStatus(launch, { bw: 100 * 1024, st: { bytes: 40 * MiB, total: 80 * MiB } }, 'en');
-  assert.equal(half.state, 'paused'); assert.equal(half.pct, 50); assert.match(half.text, /^Playable after 40 MB more \(50% ready\), about 5 min/);
+  assert.equal(half.state, 'paused'); assert.equal(half.pct, 50); assert.equal(half.text, 'Playable after 40 MB more · ~5 min');
+  assert.match(half.detail, /^Playable after 40 MB more \(50% ready\), about 5 min/);
   assert.equal(launchStatus(launch, { bw: 100 * 1024, st: { bytes: 40 * MiB, total: 80 * MiB, running: true } }, 'en').state, 'running');
   assert.equal(launchStatus(launch, { st: { done: true } }, 'en').state, 'done');
   assert.equal(launchStatus(launch, { whole: { state: 'done', done: true } }, 'en').state, 'done');
@@ -306,7 +312,7 @@ test('the card\'s line once "Prepare" fetched the engine too: its bytes counted 
   const launch = { bytes: 10 * MiB, lightBytes: 10 * MiB, wire: 5 * MiB, lightWire: 5 * MiB, engine: 5 * MiB };
   const paused = launchStatus(launch, { bw: 1 * MiB, st: { bytes: 5 * MiB, total: 15 * MiB, engine: 5 * MiB } }, 'en');
   assert.equal(paused.state, 'paused'); assert.equal(paused.pct, 33);
-  assert.match(paused.text, /^Playable after 10 MB more \(33% ready\)/, paused.text); assert.ok(Math.abs(paused.eta - 20 / 3) < 0.01, String(paused.eta));
+  assert.match(paused.detail, /^Playable after 10 MB more \(33% ready\)/, paused.detail); assert.ok(Math.abs(paused.eta - 20 / 3) < 0.01, String(paused.eta));
   // (prepared with the engine files the launch still names: ready; with others — an OpenMW game's lean package made
   // since —: its engine to fetch again, the launch set here)
   const files = ['/engines/e/e/1/openmw.js', '/engines/e/lean1/1/openmw.data'];

@@ -15,7 +15,8 @@ const savedBw = () => linkRate.get() ?? null;
 
 /**
  * What a game version's download looks like now: { state: 'none' | 'running' | 'paused' | 'done' | 'error', bytes,
- * total, bw, eta (s), pct, text } — `text` the line the home screen shows (`lang` 'en' or 'fr').
+ * total, bw, eta (s), pct, text, detail } — `text` the short line the home screen shows (`lang` 'en' or 'fr'), `detail`
+ * the whole of it (its tooltip: the rate, the error).
  */
 export function downloadStatus(st, total, lang = 'en', ratio = 0.75) {
   const bw = st?.bw ?? savedBw();
@@ -23,13 +24,18 @@ export function downloadStatus(st, total, lang = 'en', ratio = 0.75) {
   const left = Math.max(0, t - bytes), eta = bw ? left * (st?.ratio ?? ratio) / bw : null;
   const state = st?.done ? 'done' : st?.error ? 'error' : st?.running ? 'running' : bytes > 0 ? 'paused' : 'none';
   const pct = t ? Math.floor(100 * bytes / t) : 0;
-  const fr = lang === 'fr', B = (n) => fmtBytes(n, lang), R = (b) => fmtRate(b, lang), D = (s) => fmtDuration(s, lang);
-  const text = state === 'done' ? (fr ? `Dans ce navigateur (${B(t)}) : démarre sans téléchargement` : `In this browser (${B(t)}): starts without downloading`)
+  const fr = lang === 'fr', B = (n) => fmtBytes(n, lang), R = (b) => fmtRate(b, lang), D = (s) => fmtDuration(s, lang), T = (s) => fmtDuration(s, lang, true);
+  const text = state === 'done' ? (fr ? `Dans ce navigateur (${B(t)})` : `In this browser (${B(t)})`)
+    : state === 'running' ? `${B(bytes)} / ${B(t)}${eta !== null ? ` · ${T(eta)}${fr ? ' restantes' : ' left'}` : ''}`
+    : state === 'paused' ? (fr ? `${pct} % téléchargé${eta !== null ? ` · encore ${T(eta)}` : ''}` : `${pct}% downloaded${eta !== null ? ` · ${T(eta)} more` : ''}`)
+    : state === 'error' ? (fr ? 'Téléchargement arrêté' : 'Download stopped')
+    : (fr ? `Jeu complet : ${B(t)}${eta !== null ? ` · ${T(eta)}` : ''}` : `Whole game: ${B(t)}${eta !== null ? ` · ${T(eta)}` : ''}`);
+  const detail = state === 'done' ? (fr ? `Dans ce navigateur (${B(t)}) : démarre sans téléchargement` : `In this browser (${B(t)}): starts without downloading`)
     : state === 'running' ? `${B(bytes)} / ${B(t)} (${pct} %)${bw ? ` · ${R(bw)}` : ''}${eta !== null ? ` · ${D(eta)}${fr ? ' restantes' : ' left'}` : ''}`
     : state === 'paused' ? (fr ? `${pct} % téléchargé (${B(bytes)} / ${B(t)})${eta !== null ? ` · encore ${D(eta)} à ${R(bw)}` : ''}` : `${pct}% downloaded (${B(bytes)} of ${B(t)})${eta !== null ? ` · ${D(eta)} more at ${R(bw)}` : ''}`)
     : state === 'error' ? (fr ? `Téléchargement arrêté : ${st.error}` : `Download stopped: ${st.error}`)
     : (fr ? `Tout télécharger d’abord : ${B(t)}${eta !== null ? `, ${D(eta)} à ${R(bw)}` : ''}` : `Download the whole game first: ${B(t)}${eta !== null ? `, ${D(eta)} at ${R(bw)}` : ''}`);
-  return { state, bytes, total: t, bw, eta, pct, text };
+  return { state, bytes, total: t, bw, eta, pct, text, detail };
 }
 
 /**
@@ -41,7 +47,7 @@ export const launchFor = (launch, gameLang) => (gameLang && launch?.langs?.[game
 /**
  * The card's "playable after X MB" line for a version's launch (/api/manifests `launch`: launch-set.js launchSummary),
  * or null when the server does not know it yet: { state: 'none' | 'running' | 'paused' | 'done' | 'error', bytes (of
- * the launch set here), total, eta (s, null while the link is not measured), pct, text }. `o.bw`: the link's rate (wire
+ * the launch set here), total, eta (s, null while the link is not measured), pct, text (short), detail (whole) }. `o.bw`: the link's rate (wire
  * bytes/s; linkRate's by default) — on a link that is not fast the light copies' set, the files' on a fast one; `o.st`:
  * the "Prepare" progress (Downloads.get(name, 'launch', lang): its engine's bytes, `engine`, counted in its own); `o.whole`:
  * the whole download's (done: nothing to wait for). A "Prepare" whose engine files (`engineFiles`) are no longer the
@@ -60,15 +66,22 @@ export function launchStatus(launch, o = {}, lang = 'en') {
   const t = st?.total || size + withEngine, bytes = Math.min(t, st?.bytes ?? 0), left = Math.max(0, 1 - bytes / t);
   const eta = bw > 0 ? (wire + withEngine) * left / bw : null, pct = Math.floor(100 * bytes / t);
   const state = o.whole?.done || st?.done ? 'done' : st?.error ? 'error' : st?.running ? 'running' : bytes > 0 ? 'paused' : 'none';
-  const fr = lang === 'fr', B = (n) => fmtBytes(n, lang), R = (b) => fmtRate(b, lang), D = (s) => fmtDuration(s, lang);
+  const fr = lang === 'fr', B = (n) => fmtBytes(n, lang), R = (b) => fmtRate(b, lang), D = (s) => fmtDuration(s, lang), T = (s) => fmtDuration(s, lang, true);
   // (the engine's own download, at a first launch only: said beside, not counted — a browser that ran it has it)
-  const engine = launch.engine > 0 && state === 'none' ? (fr ? ` (+ ${B(launch.engine)} de moteur au premier lancement${bw > 0 ? `, ${D(launch.engine / bw)}` : ''})` : ` (+ ${B(launch.engine)} of engine at the first launch${bw > 0 ? `, ${D(launch.engine / bw)}` : ''})`) : '';
-  const text = state === 'done' ? (fr ? `Prêt : démarre sans attendre le réseau (${B(size)} dans ce navigateur)` : `Ready: starts without waiting for the network (${B(size)} in this browser)`)
+  const first = launch.engine > 0 && state === 'none', engineShort = first ? (fr ? ` (+ ${B(launch.engine)} de moteur)` : ` (+ ${B(launch.engine)} of engine)`) : '';
+  const after = eta !== null ? ` · ${T(eta)}` : '';
+  const text = state === 'done' ? (fr ? 'Prêt : démarre sans attendre' : 'Ready: starts without waiting')
+    : state === 'running' ? (fr ? `Préparation : ${B(bytes)} / ${B(t)}${after}` : `Preparing: ${B(bytes)} / ${B(t)}${after}`)
+    : state === 'error' ? (fr ? 'Préparation arrêtée' : 'Preparing stopped')
+    : state === 'paused' ? (fr ? `Jouable après encore ${B(t - bytes)}${after}` : `Playable after ${B(t - bytes)} more${after}`)
+    : (fr ? `Jouable après ${B(size)}${engineShort}${after}` : `Playable after ${B(size)}${engineShort}${after}`);
+  const engine = first ? (fr ? ` (+ ${B(launch.engine)} de moteur au premier lancement${bw > 0 ? `, ${D(launch.engine / bw)}` : ''})` : ` (+ ${B(launch.engine)} of engine at the first launch${bw > 0 ? `, ${D(launch.engine / bw)}` : ''})`) : '';
+  const detail = state === 'done' ? (fr ? `Prêt : démarre sans attendre le réseau (${B(size)} dans ce navigateur)` : `Ready: starts without waiting for the network (${B(size)} in this browser)`)
     : state === 'running' ? (fr ? `Préparation : ${B(bytes)} / ${B(t)} (${pct} %)${eta !== null ? ` · ${D(eta)} restantes` : ''}` : `Preparing: ${B(bytes)} of ${B(t)} (${pct}%)${eta !== null ? ` · ${D(eta)} left` : ''}`)
     : state === 'error' ? (fr ? `Préparation arrêtée : ${st.error}` : `Preparing stopped: ${st.error}`)
     : state === 'paused' ? (fr ? `Jouable après encore ${B(t - bytes)} (${pct} % prêt)${eta !== null ? `, ${D(eta)} à ta connexion (${R(bw)})` : ''}` : `Playable after ${B(t - bytes)} more (${pct}% ready)${eta !== null ? `, ${D(eta)} at your link (${R(bw)})` : ''}`)
     : (fr ? `Jouable après ${B(size)}${eta !== null ? `, ${D(eta)} à ta connexion (${R(bw)})` : ''}${engine}` : `Playable after ${B(size)}${eta !== null ? `, ${D(eta)} at your link (${R(bw)})` : ''}${engine}`);
-  return { state, bytes, total: t, eta, pct, text };
+  return { state, bytes, total: t, eta, pct, text, detail };
 }
 
 const sameFiles = (a, b) => a.length === b.length && a.every((u, i) => u === b[i]);
