@@ -126,6 +126,8 @@ inputs = {str(f.relative_to(tools)): sha(f) for d in dirs for f in sorted((tools
 release = {k: mods[k] for k in ('engine', 'repository', 'commit', 'submodules', 'emsdk')}
 (stage / 'release.json').write_text(json.dumps({'id': build_spec['id'], **release, 'patches': build_spec['patches'], 'inputs': inputs, 'files': files}, indent=2) + '\n')
 PY
+  # (each compressible file's brotli 11 beside it: what the server sends a browser that takes it)
+  node "$root/tools/engine-br.mjs" "$build/stage" > /dev/null
   mv "$build/stage" "$release"
   rm -rf "$build"
   echo "Built $release"

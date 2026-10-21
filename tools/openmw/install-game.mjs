@@ -1,5 +1,6 @@
-// Import a purchased Data Files folder, or initialize the pending installation. Original files
-// are copied only into an empty base; never overwritten.
+// Import a purchased Data Files folder, or initialize the pending installation: the original game (manifest.json) and
+// its modded game (manifest-vanilla-plus.json: its mod stack over the original's files, by requires). Original files
+// are copied only into the original game's empty base; never overwritten.
 // Usage: node tools/openmw/install-game.mjs [--games-dir dir] [--data-files folder]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,6 +19,7 @@ function writeGame(spec) {
 }
 const spec = JSON.parse(fs.readFileSync(path.join(here, 'manifest.json')));
 const game = writeGame(spec);
+writeGame(JSON.parse(fs.readFileSync(path.join(here, 'manifest-vanilla-plus.json'))));
 const input = arg('--data-files');
 if (input) {
   const source = fs.realpathSync(input), dest = path.join(game, 'base');

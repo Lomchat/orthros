@@ -160,6 +160,7 @@ function hideLoader() {
   if (!shell || shell.loader.classList.contains('hidden')) return;
   step('game', 'done');
   shell.hideLoader();
+  gameData?.mark('playable'); // (the game shown: what it read until now is its launch set, src/vfs/launch-set.js)
   shell.running = true; shell.watchPointer(document);
   status(S.running);
 }
@@ -509,7 +510,7 @@ async function start(mode = null) {
   const t0 = performance.now();
   step('files', 'active', fmtMB(0), 0);
   let nodes;
-  ({ data: gameData, nodes } = await openPortFiles({ name, tree, files, FS, root: ROOT, session: sessionId, log, db, asyncReads: true, rewritable: true,
+  ({ data: gameData, nodes } = await openPortFiles({ name, tree, files, FS, root: ROOT, session: sessionId, lang: language, log, db, asyncReads: true, rewritable: true,
     onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
   session.files = gameData; gameNodes = nodes;
   const loaded = await gameData.startup((p) => {

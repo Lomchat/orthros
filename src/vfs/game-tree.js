@@ -7,6 +7,22 @@
  */
 export const LIGHT_DIR = '.light';
 
+/**
+ * Media files by format (movies, music, long sounds), for every runtime: the server marks them in the tree (`media:
+ * true`); on a link that is not fast they come after every other file the game reads (learned order, offline copy), are
+ * left out of the startup set, and get no speculative fills unless the game is streaming them (src/vfs/http-backend.js,
+ * data-worker.js). Their bytes are never faked: a read of one waits for the network as any other.
+ */
+const MEDIA = /\.(bik|bk2|mp3|ogg|avi|mpg|mpeg|wmv|smk|webm)$/i;
+/** Movies among the media files: a game playing one is not playable yet (playable-watch.js). */
+const VIDEO = /\.(bik|bk2|avi|mpg|mpeg|wmv|smk|webm)$/i;
+/** The file `name` is a movie (by format). */
+export const isVideoFile = (name) => VIDEO.test(name);
+/** A .wav this large or larger is a media file (music, speech); smaller ones are a game's sound effects. */
+export const MEDIA_WAV_BYTES = 512 << 10;
+/** The file `name` of `size` bytes is a media file (see MEDIA). */
+export function isMediaFile(name, size) { return MEDIA.test(name) || (/\.wav$/i.test(name) && size >= MEDIA_WAV_BYTES); }
+
 /** Native binaries of an installation: useless to a WebAssembly engine, never part of its files. */
 const NATIVE = /\.(exe|dll|so|dylib)$/i;
 
@@ -18,12 +34,12 @@ export function treeBytes(node) {
   return n;
 }
 
-/** The files of a tree ({ path, size, mtime, light? }), dot files and native binaries left out. */
+/** The files of a tree ({ path, size, mtime, light?, media? }), dot files and native binaries left out. */
 export function treeFiles(tree) {
   const files = [];
   (function walk(node, prefix) {
     for (const [dir, sub] of Object.entries(node.dirs ?? {})) if (!dir.startsWith('.')) walk(sub, prefix + dir + '/');
-    for (const [file, st] of Object.entries(node.files ?? {})) if (!file.startsWith('.') && !NATIVE.test(file)) files.push({ path: prefix + file, size: st.size, mtime: st.mtime ?? 0, ...(st.light ? { light: st.light } : {}) });
+    for (const [file, st] of Object.entries(node.files ?? {})) if (!file.startsWith('.') && !NATIVE.test(file)) files.push({ path: prefix + file, size: st.size, mtime: st.mtime ?? 0, ...(st.light ? { light: st.light } : {}), ...(st.media ? { media: true } : {}) });
   })(tree, '');
   return files;
 }

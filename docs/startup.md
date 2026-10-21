@@ -25,6 +25,18 @@ profile (`C:\Users\Player`), so every new player paid it.
   game's defaults, not one player's data. Bounded: 16 sets per manifest (least recently reported out), 32 session
   ids per set. Stored in `<learn dir>/profileseed-<manifest>.json`; a server without this feature ignores the file,
   and the page asks for it only when `/api/config` says `profileSeed: true` (old pages and servers keep working).
+- **Canonical sets** (`tools/profile-seed-make.mjs`, `<learn dir>/seedcanon-<manifest>.json`). What a first-launch
+  benchmark writes depends on the emulated machine's speed (the load of the machine running it, the instrumentation:
+  two runs wrote `AudioLOD = High` and `Low`), so independent players rarely report identical sets and the quorum
+  rarely forms (live data, 2026-10-21: one reporter per set after weeks, nothing served). An operator therefore makes,
+  per version and game language, one set the server offers first, with no reporter and whatever sessions report since
+  (a report only adds a candidate to the learned sets). The tool iterates the catalog (no game named): `plan` lists every
+  Win32 version × declared language and what the learn directory holds; `make` runs `--runs` first launches with an
+  empty profile through the browser slot guard (`headless.mjs --profile-seed 0 --profile-dir`), compares their seed
+  files and writes them when they agree (`--accept first`: the first run's); `put` takes a profile directory (a run's,
+  possibly edited by hand: the settings it carries become every new player's default), `promote` a learned set,
+  `show` / `remove`. The server reads the file again when it changes (no restart). The snapshot key's seed part is
+  the served set's key: shared snapshots made with another seed are made again.
 - **Use.** A session whose profile is empty (first launch in this browser) asks
   `GET /api/profile-seed/<manifest>?lang=<game language>` (3 s at most) and writes the files before the game starts;
   they are then saved to OPFS like the game's own. It does not learn (only unseeded first launches teach).
@@ -151,6 +163,15 @@ a few per frame without waiting for them, and has the background worker translat
 a later phase needs is ready when that phase comes, without taking the game's thread. A game's dependencies (a game
 mounted beside it, e.g. an expansion's base game) have lists of their own, learned from the reads of every game
 mounting them.
+
+- **Learned GL programs and translator changes** (`program-id.js`). The programs are Orthros' own GLSL: a change of
+  the translators makes the learned sources useless. A fixed-function program over an FVF layout (`ff:f<fvf>:…|ff:…`
+  keys, BFME1's 127 of 134) is built from its key alone (`ffProgramFromKey`, the draw path too), so a session rebuilds
+  learned ones with its own translator. Every other entry carries the `PROGRAM_GLSL_VERSION` of the session that built
+  or took it; a session asks `/api/programs/<manifest>?v=<its version>` and gets only those of its version (plus,
+  for a few sessions, entries from before versions existed). `tests/program-version.test.js` hashes the GLSL of a
+  fixed corpus: a translator change that alters it fails until the version is raised. Measured (framebench
+  `--programs`, BFME1 menu, the live list of Oct 1): programs built at a draw 51 → 8, learned ones taken 1 → 44.
 
 - **Learned entries that are blocks of an earlier learned region** (`bg-translate.js`, `Jit.bgInstallNow`). The JIT
   enters a region at any of its blocks (block hash), so a learned entry that is a block of a region installed before
@@ -303,3 +324,60 @@ An intermediate build that kept the data file's flush at each sync point: 3 218 
 against 3 558 and 3 846 ms for A — the syncs' cost was the data file's write-back, not the JSON. The remaining ~1.2 s is
 the 1 MiB block writes themselves. No Direct3D frame came within the 50 s of a BFME2 first launch in any run (its
 first-launch work), so first-frame and `late` times were not comparable there.
+
+## Canonical first-launch profile, measured (2026-10-21)
+
+BFME1 1.08 fr, headless Chromium (SwiftShader, `--gl-discard --memprefetch`), a fresh copy per run of the live learned
+lists of `bfme1-108` (prefetch, programs, regions, heat), shared 48-core server at load 15-32.
+
+- `profile-seed-make.mjs make --only bfme1-108:fr --runs 2`: both first launches wrote the same `Options.ini` (High,
+  1024x768, the key `cb962b68271a8e3b1` of the live server's single-reporter candidate): written as the canonical set.
+  Each run: 170 s, one browser slot.
+- Unseeded (those two runs, `--profile-seed 0`): first Direct3D frame at 100 and 95 s, ≥ 27 fps for 3 s from 115 and
+  110 s. Seeded with the canonical set (3 runs): first Direct3D frame at 16, 17, 19 s (median 17), ≥ 27 fps from 27,
+  28, 30 s (median 28): −80 s to the first frame, −84 s to a steady menu.
+- Where the seeded start's worker time goes (`--profile 4:20`, 34 152 samples): waiting 36.4 % (`waitEvent` 23.8 %,
+  all of it called from the top-level `Scheduler.idle` — the ≤ 2 ms timer waits `runFor` blocks for — and `(idle)`
+  12.6 %); guest code 41.3 % in 1 380 regions, of which `msvcr71.dll+0x505dc` 11.9 %; installing the background
+  translations 3.1 % (`bgTranslator.onmessage` 2.2 %, `Jit.register` 0.9 %); `dispatchThunkBody` 5.0 % inclusive; the
+  block store's `put` 1.3 %.
+- Unseeded, during the benchmark (`--profile 25:20`, 35 706 samples): 97.2 % WebAssembly; the visit-flag harvest
+  (`harvestVisitsStep` 0.02 %, `heatDue` + `heatStep` 0.05 %) and the transition fold (`Jit.harvest` 0.04 %) are
+  negligible — the 1.7 % an audit saw for "harvest" is not there now, so its cadence was left as it is.
+- Background translations installed at idle moments instead of on arrival (tried, not kept): an answered batch held
+  (`Jit.bgHold`), installed in the guest's waits (`BrowserHost.waitEvent`'s idle work, the pump's sleeps), at a miss
+  on one of its blocks, or after 50 ms without a wait; the feed counted held batches as answered. Seeded starts, three
+  alternated pairs (`--profile 4:20`, `?dbg=ORTHROS_BG_HOLD=0` for A): `bgTranslator.onmessage` inclusive 4.1-4.2 % →
+  2.6 %, but its self time stays 2.1-2.2 % in both (the message's deserialization: a WebAssembly module and the code
+  bytes per region, before any handler code), and of the 1.8-1.9 % of installing that moved, 0.8 % landed in waits
+  (the rest at the pump's start or at misses). First Direct3D frame 18, 17, 16 s (A) / 17, 16 s (B; the third B run
+  at load 68 is not comparable), steady menu 31, 28, 28 / 30, 27 s: no difference beyond the spread. Left out (≈0.15 s
+  of worker time over 20 s for added state). What would remove the 2.2 % is a cheaper message (fewer, larger batches
+  or the code bytes compared in the background worker), not its timing.
+
+## A version that exits 2 s after its start: BFME2 1.06 (traced 2026-10-21)
+
+`bfme2-106` runs `base/game.dat` (the original 1.06 executable; `versions/1.06-vanilla` is empty) and calls
+`ExitProcess(0)` 2 s after its start, before any Direct3D call, in Node (`startbench`) as in the browser (and in the
+publishing session of its shared snapshot). Orthros' trace (`ORTHROS_TRACE_API=2`, `--log crash,warn,file,seh,api`)
+and the code around the calls:
+
+- After its splash screen, `WinMain` (`game.dat` VA `0x4030b0`) calls a check at `0x632bed`: `CreateMutexA(0, 0,
+  name)`, `GetLastError() == ERROR_ALREADY_EXISTS (0xb7)`, `CloseHandle`. Only when the mutex **already existed** does
+  it go on, to `0x632c1f`: `OpenEventA(EVENT_MODIFY_STATE)` retried (`Sleep(0)`) for 60 s at most (`timeGetTime`),
+  `SetEvent`, then `PeekMessageA` for 10 s at most for a thread message `0xBEEF` whose parameter is a file-mapping
+  handle it maps (`MapViewOfFileEx`, `FILE_MAP_ALL_ACCESS`, kept at `0xdfe724`). Otherwise it frees what it made and returns from `WinMain` (`profile-high.csv` written in the
+  game folder at exit — refused: read-only — then the C runtime's `ExitProcess(0)`).
+- That is the hand-shake of the game's launcher (`lotrbfme2.exe`, in `base/`): it creates the mutex, starts `game.dat`
+  and posts it the mapping. Run alone on Windows, `game.dat` 1.06 exits the same way: the emulation is faithful
+  (`WinVerifyTrust`'s "certificate table past the end of the file", logged just before, is answered the same in 1.09
+  and plays no part).
+- `bfme2` (1.09) runs its own `versions/1.09-v3.01/game.dat`, whose same check is patched out (`0x402c75`:
+  `je` / `jmp` to the same continuation, no `jne`): it starts without the launcher.
+- Started through `lotrbfme2.exe` (a copy of the manifest with `"exe": "lotrbfme2.exe"`, scratch games dir), the
+  launcher reads `lotrbfme2.lcf` and `game2.dat`, then `CreateProcess(game.dat)` is refused: the Win32 runtime runs one
+  process (no child processes), and the launcher gives up (`ShellExecute(errors.txt)`).
+
+So the cure is not in the emulator's fidelity: either the runtime learns to run a child process in its own address
+space (a large piece of work: a second 2 GB guest, handles and window messages across processes), or the version's
+folder gets a 1.06 `game.dat` that starts without its launcher, as the 1.09 one does (a data change for the owner).

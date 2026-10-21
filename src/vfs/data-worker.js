@@ -6,7 +6,12 @@
 // Counters shared with the page's indicator: ctrl[2] bytes received (decoded), ctrl[3] this worker's heartbeat,
 // ctrl[4] / ctrl[5] KB of the current step here / in all (the learned order: HttpBackend.stepEstimate), ctrl[6] the
 // page's reads waiting for the network. The link, for the page: ctrl[7] 1 when it is fast (the files themselves read,
-// not their light copies), ctrl[8] its measured rate (KB/s, 0 until measured).
+// not their light copies), ctrl[8] its measured rate (KB/s, 0 until measured), ctrl[9] 1 when it is thin (measured
+// below THIN_BPS, net-link.js). The page's quiet (GameData.quiet: a page that loads more of its game when nothing waits):
+// ctrl[10] 1 when the learned order's loading has nothing left for the game's current step (or does not run), ctrl[11]
+// the time since a read last waited for the network (ms, 0 while one waits).
+// A page's mark (GameData.mark('playable'): its game first draws in play) goes to the server with the reads before it:
+// the launch set later sessions wait for and the home announces (launch-set.js).
 // Light copies (src/host/light-copies.js): on a link that is not fast, the page reads a texture's light copy unless the
 // file itself is here (told: { real: [keys] }); the learned order brings the light copies; the files whose light copy
 // the engine read come last, in the background (HttpBackend.upgrade).
@@ -14,11 +19,15 @@ import { openVersion, openStore, learnedOrder } from './game-data.js';
 import { MemBlockStore } from './opfs-store.js';
 import { BLOCK, CHUNK } from './http-backend.js';
 import { LIGHT_DIR, treeFiles } from './game-tree.js';
+import { flagged, launchFirst, launchSet, setBytes, WIRE_RATIO } from './launch-set.js';
+import { ReadReports } from './playable-watch.js';
 
-/** The startup set (loaded before the engine starts, when the page asks): the learned order up to its first pause this long. */
-const STARTUP_GAP_MS = 2000;
 /** The reads the engine used, sent to the server's learned order every so often. */
 const REPORT_MS = 15000;
+/** The most reads a report that carries a mark sends (the server takes 50000). */
+const MARK_READS = 40000;
+/** How often the way to playable (launchWatch) is told to the page while the game is not there. */
+const LAUNCH_TELL_MS = 2000;
 /** After this long without a read waiting, the next wait is a new step for the indicator. */
 const STEP_PAUSE_MS = 3000;
 
@@ -34,9 +43,9 @@ export function createDataWorker(post) {
   postMessage = post;
   W = {
     ctrl: null, data: null, version: null, parts: new Map(), handles: new Map(), ready: null, timers: [],
-    session: '', t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null,
-    prefetchAt: 'none', prefetching: false, stop: false, whole: null, learned: null,
-    legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(),
+    session: '', lang: null, t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null,
+    prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null,
+    legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(), reports: new ReadReports(),
   };
   return (m) => {
     if (m.init) {
@@ -60,21 +69,23 @@ function dispatch(m) {
   if (m.setSource) { const src = W.sources.get(m.setSource.id); if (src) src.url = m.setSource.url; return; }
   if (typeof m.gen === 'number') { answerSync(m); return; }
   if (m.read) { answerAsync(m.read); return; }
-  if (m.start) { W.t0 = performance.now(); if (W.prefetchAt === 'start') prefetchAll(); return; }
+  // ('startup': the startup set before the engine, then the whole learned order once it runs — as 'start')
+  if (m.start) { W.t0 = performance.now(); if (W.prefetchAt === 'start' || W.prefetchAt === 'startup') prefetchAll(); return; }
   if (m.startup) { startup(); return; }
+  if (m.mark) { mark(m.mark); return; }
   if (m.wantWhole) { W.parts.get(m.wantWhole.name)?.files.wantWhole(m.wantWhole.path); return; }
-  if (m.light) { upgrade(m.light.name, m.light.path); return; }
+  if (m.light) { upgrade(m.light.name, m.light.path, !!m.light.soon); return; }
   if ('whole' in m) { m.whole ? wholeDownload() : (W.whole && (W.whole.stop = true)); return; }
   if (m.migrate) { migrate(m.migrate); return; }
   if (m.close) { W.stop = true; report(true); for (const t of W.timers) clearInterval(t); for (const p of W.parts.values()) try { p.store?.close(); } catch { /* closed */ } }
 }
 
 /**
- * { name, session, bw, ctrl, data, prefetch: 'startup' | 'start' | 'first-read' | 'none', memBytes, cacheBlocks }: the
- * version and the ones it requires opened (their stores: OPFS, else in memory — another tab holds them, or no OPFS).
+ * { name, session, lang, bw, ctrl, data, prefetch: 'startup' | 'start' | 'first-read' | 'none', memBytes, cacheBlocks }: the
+ * version and the ones it requires opened (lang: the game's language — its sessions' own launch set, launch-set.js) (their stores: OPFS, else in memory — another tab holds them, or no OPFS).
  */
 async function init(o) {
-  W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.prefetchAt = o.prefetch ?? 'none';
+  W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.lang = typeof o.lang === 'string' && o.lang ? o.lang : null; W.prefetchAt = o.prefetch ?? 'none';
   const kept = {};
   W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, cacheBlocks: o.cacheBlocks, store: async (n) => {
     const s = await openStore(n); kept[n] = !!s;
@@ -191,56 +202,45 @@ function used(list) {
   }
 }
 
-function report(final = false) {
-  if (!W.reads.length || !W.session) return;
-  const reads = W.reads.splice(0, 5000), name = W.version.parts[0].name;
-  fetch(`/api/prefetch/${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: final, body: JSON.stringify({ session: W.session, reads }) }).catch(() => {});
+function report(final = false, marked = null) {
+  if ((!W.reads.length && !marked) || !W.session) return;
+  // (a mark goes with every read before it, in one report: the server flags what the session had read by then)
+  const reads = W.reads.splice(0, marked ? MARK_READS : 5000), name = W.version.parts[0].name;
+  // (in order: a mark after the reports before it; the final one at once, keepalive while small enough — playable-watch.js)
+  W.reports.send(name, W.session, reads, marked, final);
+}
+
+/**
+ * The page's game reached a moment of its own (GameData.mark: 'playable' — it first draws in play): told to the server
+ * once per kind, with the reads before it (the server learns the launch set from it: launch-set.js).
+ */
+function mark(m) {
+  const kind = String(m.kind ?? ''); if (!/^[a-z-]{1,20}$/.test(kind) || W.marks.has(kind) || W.t0 === null) return;
+  W.marks.add(kind);
+  report(false, { kind, t: Math.round(performance.now() - W.t0), ...(W.lang ? { lang: W.lang } : {}) });
 }
 
 // ---------------------------------------------------------------- loading ahead
 
 /** The learned order of the version: what earlier sessions read first, the startup set its head. */
-const order = () => (W.learned ??= Promise.all(W.version.parts.map((p) => learnedOrder(p.name))));
+const order = () => (W.learned ??= Promise.all(W.version.parts.map((p) => learnedOrder(p.name, W.lang))));
 
 /**
- * A learned order as this link reads it: on a link that is not fast, a texture's light copy (whole, once) in place of
- * the file — unless the file is here —; on a fast one, the files themselves in place of light copies earlier sessions
- * read.
+ * The startup set loaded (before the engine starts): every part's launch set — the version's, then those of the versions
+ * it requires (the game reads them too), each from its own learned order —; progress { bytes, total, done } to the page.
  */
-function forLink(part, list) {
-  const fast = W.version.net.fast(), out = [], seen = new Set();
-  const add = (path, block, mask, t) => { const k = path + '#' + block; if (!seen.has(k)) { seen.add(k); out.push([path, block, mask, t]); } };
-  for (const e of list) {
-    const [path, , , t] = e, light = path.startsWith(LIGHT_DIR + '/');
-    const r = part.files.lookup(light ? path.slice(LIGHT_DIR.length + 1) : path);
-    if (!r?.file?.light) { if (!light) add(...e); continue; }
-    if (fast || part.files.isWhole(r.path)) {
-      if (!light) add(...e); else for (let b = 0; b * BLOCK < r.file.size; b++) add(r.path, b, 0, t);
-    } else {
-      for (let b = 0; b * BLOCK < r.file.light; b++) {
-        const n = Math.ceil((Math.min(BLOCK, r.file.light - b * BLOCK)) / CHUNK);
-        add(`${LIGHT_DIR}/${r.path}`, b, n >= 16 ? 0xffff : (1 << n) - 1, t);
-      }
-    }
-  }
-  return out;
-}
-
-/** The startup set loaded (before the engine starts): progress { bytes, total, done } to the page. */
 async function startup() {
-  const lists = await order(), part = W.version.parts[0], list = forLink(part, lists[0]);
-  let end = list.length;
-  for (let i = 1; i < list.length; i++) if (list[i][3] - list[i - 1][3] > STARTUP_GAP_MS) { end = i; break; }
-  const head = list.slice(0, end);
-  const progress = { bytes: 0, blocks: 0, done: false };
-  const total = head.reduce((n, [, , mask]) => n + (mask ? popcount(mask) * CHUNK : BLOCK), 0);
-  const tick = setInterval(() => postMessage({ startup: { bytes: progress.bytes, total, done: false } }), 250);
-  if (!head.length) { clearInterval(tick); postMessage({ startup: { bytes: 0, total: 0, done: true } }); return; }
+  const lists = await order(), fast = W.version.net.fast();
+  const heads = W.version.parts.map((p, i) => ({ p, head: launchSet(p.files, lists[i], fast), progress: { bytes: 0, blocks: 0, done: false } })).filter((h) => h.head.length);
+  // (a fast link fetches the set's blocks whole: counted so; the progress never past its total all the same)
+  const total = heads.reduce((n, h) => n + setBytes(h.p.files, h.head, fast).bytes, 0);
+  const bytes = () => Math.min(total, heads.reduce((n, h) => n + h.progress.bytes, 0));
+  if (!heads.length) { postMessage({ startup: { bytes: 0, total: 0, done: true } }); return; }
+  const tick = setInterval(() => postMessage({ startup: { bytes: bytes(), total, done: false } }), 250);
   // (the pieces sessions read only: the rest of their blocks comes with the learned order, once the engine runs)
-  try { await part.files.prefetch(head, progress, () => W.stop, { learnedOnly: true }); }
-  finally { clearInterval(tick); postMessage({ startup: { bytes: progress.bytes, total, done: true } }); }
+  try { for (const h of heads) { if (W.stop) break; await h.p.files.prefetch(h.head, h.progress, () => W.stop, { learnedOnly: true }); } }
+  finally { clearInterval(tick); postMessage({ startup: { bytes: bytes(), total, done: true } }); }
 }
-const popcount = (m) => { let n = 0; while (m) { n += m & 1; m >>>= 1; } return n; };
 
 /**
  * The whole learned order, in the background from the game's position in it (HttpBackend.prefetch), every part's; its
@@ -253,9 +253,13 @@ async function prefetchAll() {
   W.version.parts.forEach((p, i) => {
     if (!lists[i].length) return;
     const progress = { bytes: 0, blocks: 0, done: false };
-    runs.push({ p, progress, job: p.files.prefetch(forLink(p, lists[i]), progress, () => W.stop).catch(() => {}) });
+    // (its launch set first: a player waiting in the menu gets what the way to playable still needs first — launchFirst)
+    const list = launchFirst(p.files, lists[i], W.version.net.fast());
+    runs.push({ p, progress, job: p.files.prefetch(list, progress, () => W.stop, { first: list.first }).catch(() => {}) });
   });
+  W.runs = runs;
   if (!runs.length) return;
+  launchWatch(lists);
   const tell = () => {
     let done = 0, total = 0;
     for (const { p, progress } of runs) { const n = p.files.learned?.entries.length ?? 0; total += n; done += progress.done ? n : Math.min(n, Math.max(0, (progress.k ?? -1) + 1)); }
@@ -264,6 +268,34 @@ async function prefetchAll() {
   const tick = setInterval(tell, 1000);
   await Promise.all(runs.map((r) => r.job));
   clearInterval(tick); tell();
+}
+
+/**
+ * The way to playable, told to the page every LAUNCH_TELL_MS while the game is not there yet ({ launch: { bytes, here,
+ * wireLeft, seconds, done } }): the launch set of every part as this link reads it (launch-set.js: what earlier
+ * sessions read before their game was playable — a new game's first load included), its bytes here already, the wire
+ * bytes left (the link's measured ratio of wire to decoded bytes, else WIRE_RATIO) and the seconds they take at the
+ * link's measured rate (null until measured). Only for an order with flags (a session marked the version playable);
+ * over once all of it is here or the game is playable (the page's mark).
+ */
+function launchWatch(lists) {
+  if (!lists.some(flagged)) return;
+  let sets = null, fastWas = null, timer = null;
+  const tell = () => {
+    const net = W.version.net, fast = net.fast();
+    if (fast !== fastWas) { fastWas = fast; sets = W.version.parts.map((p, i) => ({ p, set: launchSet(p.files, lists[i], fast) })); }
+    let bytes = 0, here = 0;
+    for (const { p, set } of sets) { const s = setBytes(p.files, set); bytes += s.bytes; here += s.here; }
+    // (WIRE_RATIO at least: the session's own ratio so far is a game's master files', which compress far better than the
+    // textures and models of a first load — measured at 85 KB/s, it said "< 1 min" for a load of 86 s)
+    const ratio = Math.max(WIRE_RATIO, net.totals.rawBytes >= 1 << 20 ? net.ratio() : 0), wireLeft = Math.round(Math.max(0, bytes - here) * ratio);
+    const seconds = net.measured && net.bw > 0 ? Math.ceil(wireLeft / net.bw) : null;
+    const done = here >= bytes || W.marks.has('playable') || W.stop;
+    postMessage({ launch: { bytes, here, wireLeft, seconds, done } });
+    if (done && timer !== null) clearInterval(timer);
+    return done;
+  };
+  if (!tell()) W.timers.push(timer = setInterval(tell, LAUNCH_TELL_MS));
 }
 
 /** The whole version (and the ones it requires) into the browser's copy, in the background, after the game's reads. */
@@ -291,8 +323,11 @@ function monitor() {
   Atomics.store(ctrl, 2, raw % 0x7fffffff);
   Atomics.store(ctrl, 6, W.waiting);
   Atomics.store(ctrl, 7, net.fast() ? 1 : 0); Atomics.store(ctrl, 8, net.measured && net.bw > 0 ? Math.round(net.bw / 1024) : 0);
-  // (the current step: from the first wait after a pause, the bytes received, and those the learned order says remain)
+  Atomics.store(ctrl, 9, net.thin() ? 1 : 0);
   const now = performance.now();
+  Atomics.store(ctrl, 10, aheadIdle() ? 1 : 0);
+  Atomics.store(ctrl, 11, W.waiting > 0 ? 0 : Math.min(0x7fffffff, Math.round(now - W.lastWait)));
+  // (the current step: from the first wait after a pause, the bytes received, and those the learned order says remain)
   if (W.waiting > 0) {
     W.step ??= { base: raw };
     let rest = null;
@@ -302,15 +337,28 @@ function monitor() {
   } else if (W.step && now - W.lastWait > STEP_PAUSE_MS) { W.step = null; Atomics.store(ctrl, 4, 0); Atomics.store(ctrl, 5, 0); }
 }
 
+/**
+ * The learned order's loading has nothing left for the game's current step: it does not run, it is over, or the
+ * entries past the game's position up to its next pause are here (HttpBackend.stepEstimate) — every part's.
+ */
+function aheadIdle() {
+  if (!W.prefetching) return true;
+  if (!W.runs) return false; // (its order on its way)
+  return W.runs.every(({ p, progress }) => progress.done || p.files.stepEstimate()?.bytes === 0);
+}
+
 // ---------------------------------------------------------------- light copies: the files themselves after them
 
 /** The key the page knows a file by (data-client.js). */
 const lightKey = (name, path) => name + '\n' + path.toLowerCase();
 
-/** The engine read the light copy of `path`: the file itself in the background (HttpBackend.upgrade), told once here. */
-function upgrade(name, path) {
+/**
+ * The engine read the light copy of `path`: the file itself in the background (HttpBackend.upgrade), told once here;
+ * `soon` for an engine that loads it again in place (GameData.reloads: the player sees it sharpen).
+ */
+function upgrade(name, path, soon = false) {
   const part = W.parts.get(name), r = part?.files.lookup(path); if (!r?.file) return;
-  part.files.upgrade(r.path);
+  part.files.upgrade(r.path, { soon });
 }
 
 /**

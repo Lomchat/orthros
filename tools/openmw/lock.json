@@ -12,5 +12,151 @@
     "url": "https://github.com/Virtastic/openmw-web/releases/download/v1.5.3/openmw-web-src-v1.5.3.tar.gz",
     "sha256": "894c0fc99a4de6edcf0f13a5439bb784e13eb5c6e1010a9a527143a14abc3878"
   },
-  "serverImage": "ghcr.io/virtastic/openmw-web-server@sha256:3d6bf2250ede928757a4ea79c4ee48301452664f8df9b7cff98ebf54b228924a"
+  "serverImage": "ghcr.io/virtastic/openmw-web-server@sha256:3d6bf2250ede928757a4ea79c4ee48301452664f8df9b7cff98ebf54b228924a",
+  "build": {
+    "baseImage": "emscripten/emsdk:6.0.1@sha256:d0be652409a4d3362b8a36c3279dd1123ff1c9327e603d86d9361aa84f1d2e4c",
+    "image": "orthros/openmw-emsdk:6.0.1",
+    "imagePackages": {
+      "ninja-build": "1.11.1-2",
+      "pkg-config:amd64": "1.8.1-2build1",
+      "pkgconf:amd64": "1.8.1-2build1"
+    },
+    "emscriptenCache": "src/emscripten-6.0.1-cache",
+    "emscriptenPorts": {
+      "freetype.zip": "a7165cb405dfce349ae64d6f59efb2567565ca8edbacbeff2a8d0e4cfa779cf5",
+      "harfbuzz.2.0.tar.xz": "0ada50a1c199bb6f70843ab893c55867743a443b84d087d54df08ad883ebc2cd",
+      "icu.zip": "047e621bf3ddde8682a569ff26cbfdd27225f892adab76d32c56094823323865",
+      "libjpeg.v9f.tar.gz": "04705c110cb2469caa79fb71fba3d7bf834914706e9641a4589485c1f832565b",
+      "libpng.6.58.tar.gz": "8c9b05b675ca7301a458df2c2e46f26e1d41ff36b8863f8c33530bc58c2e6225",
+      "ogg.3.5.zip": "fd4e5ba7e93b84b3ec41cdf01494cc586ef6e912b313dbab25512dd02665dfaf",
+      "sdl2.32.10.zip": "7a3c207b8509edc487d658df357ad764cd852d68fe248d307b25c0741d52fdf0",
+      "sdl2_image.6.0.zip": "ff4b2f76d54ea6c6aecd1c5c5f3708075f51e83b9f748b827b5bc57e2dba87f4",
+      "vorbis.3.7.zip": "57c8bc92d2741934b8dc939af49c2639edc44b8879cba2ec14ad3189e2814582",
+      "zlib.3.2.tar.gz": "b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1"
+    },
+    "deps": "src/openmw-deps",
+    "git": {
+      "osg": {
+        "url": "https://github.com/openscenegraph/OpenSceneGraph.git",
+        "tag": "OpenSceneGraph-3.6.5",
+        "commit": "a827840baf0786d72e11ac16d5338a4ee25779db"
+      },
+      "bullet3": {
+        "url": "https://github.com/bulletphysics/bullet3.git",
+        "tag": "3.25",
+        "commit": "2c204c49e56ed15ec5fcfa71d199ab6d6570b3f5"
+      },
+      "mygui": {
+        "url": "https://github.com/MyGUI/mygui.git",
+        "tag": "MyGUI3.4.3",
+        "commit": "dae9ac4be5a09e672bec509b1a8552b107c40214"
+      }
+    },
+    "archives": {
+      "ffmpeg-6.1.2.tar.xz": {
+        "url": "https://ffmpeg.org/releases/ffmpeg-6.1.2.tar.xz",
+        "sha256": "3b624649725ecdc565c903ca6643d41f33bd49239922e45c9b1442c63dca4e38"
+      },
+      "boost_1_85_0.tar.bz2": {
+        "url": "https://archives.boost.io/release/1.85.0/source/boost_1_85_0.tar.bz2",
+        "sha256": "7009fe1faa1697476bdc7027703a2badb84e849b7b0baad5086b087b971f8617"
+      },
+      "lua-5.4.7.tar.gz": {
+        "url": "https://www.lua.org/ftp/lua-5.4.7.tar.gz",
+        "sha256": "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30"
+      },
+      "lz4-1.10.0.tar.gz": {
+        "url": "https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz",
+        "sha256": "537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b"
+      },
+      "recastnavigation-03259f3287ff8330f0d66fcd98d022edddffaa97.zip": {
+        "url": "https://github.com/OpenMW/recastnavigation/archive/03259f3287ff8330f0d66fcd98d022edddffaa97.zip",
+        "sha256": "b337d8ceebd66641e1a9b9ca2c3dbaebc5aa68a3a30f09435e5c420c177b2c62",
+        "fetchContent": "recastnavigation",
+        "dir": "recastnavigation-03259f3287ff8330f0d66fcd98d022edddffaa97"
+      },
+      "sqlite-amalgamation-3410100.zip": {
+        "url": "https://www.sqlite.org/2023/sqlite-amalgamation-3410100.zip",
+        "sha256": "df0d54bf246521360c8148f64e7e5ad07a4665b4f902339e844f4c493d535ff5",
+        "fetchContent": "sqlite3",
+        "dir": "sqlite-amalgamation-3410100"
+      },
+      "yaml-cpp-c2680200486572baf8221ba052ef50b58ecd816e.zip": {
+        "url": "https://github.com/jbeder/yaml-cpp/archive/c2680200486572baf8221ba052ef50b58ecd816e.zip",
+        "sha256": "9cbd53685951e13eaa3257dd33b9f2cdcdda144488ce93c7f438c72533faf303",
+        "fetchContent": "yaml-cpp",
+        "dir": "yaml-cpp-c2680200486572baf8221ba052ef50b58ecd816e"
+      }
+    },
+    "demoData": {
+      "prefix": "/gamedata/",
+      "packageSha256": "e659ce681ef67cd124b0180c281152aedbbdab8008bee5e776fb9fa39c39ec53"
+    }
+  },
+  "builds": [
+    {
+      "id": "openmw-web-v1.5.3-orthros-r0",
+      "patches": [],
+      "files": {}
+    },
+    {
+      "id": "openmw-web-v1.5.3-orthros-r1",
+      "patches": [
+        "orthros-r1.patch"
+      ],
+      "exports": [
+        {
+          "name": "orthros_file_updated",
+          "returns": "number",
+          "args": [
+            "string"
+          ],
+          "call": "Module.ccall('orthros_file_updated', 'number', ['string'], [path])"
+        },
+        {
+          "name": "orthros_set_view_distance",
+          "returns": "number",
+          "args": [
+            "number"
+          ],
+          "call": "Module.ccall('orthros_set_view_distance', 'number', ['number'], [distance])"
+        }
+      ],
+      "files": {
+        "openmw.js": "145e210bf4318ff0959cf9e648307a53dcfbd610c2b60f854562c90988598a78",
+        "openmw.wasm": "42eeeb31a436b9e924ee6a11513f2c07f209e456f21e8144455f7378d08144c0",
+        "openmw.data": "e659ce681ef67cd124b0180c281152aedbbdab8008bee5e776fb9fa39c39ec53"
+      }
+    },
+    {
+      "id": "openmw-web-v1.5.3-orthros-r2",
+      "patches": [
+        "orthros-r1.patch",
+        "orthros-r2.patch"
+      ],
+      "exports": [
+        {
+          "name": "orthros_file_updated",
+          "returns": "number",
+          "args": [
+            "string"
+          ],
+          "call": "Module.ccall('orthros_file_updated', 'number', ['string'], [path])"
+        },
+        {
+          "name": "orthros_set_view_distance",
+          "returns": "number",
+          "args": [
+            "number"
+          ],
+          "call": "Module.ccall('orthros_set_view_distance', 'number', ['number'], [distance])"
+        }
+      ],
+      "files": {
+        "openmw.js": "95729b44d1e314f47514e8d9384a702444cd2de1894551e2c0a5289c7da971ba",
+        "openmw.wasm": "9698be5112cc1abeff8db0a76e2b1bc0064dd2367fee4008a6972f2a5b8e9486",
+        "openmw.data": "e659ce681ef67cd124b0180c281152aedbbdab8008bee5e776fb9fa39c39ec53"
+      }
+    }
+  ]
 }

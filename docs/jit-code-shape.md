@@ -64,6 +64,8 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   On a game: `startbench --mix` prints the x87 regions apart (`[shape] x87 regions: ...`), and with
   `ORTHROS_X87_DUMP=<dir>` writes every live x87 region's module translated now and with the earlier x87 options
   (`<dir>/new`, `<dir>/old`); `x87-size.mjs --modules <dir>` compiles both sets for their machine code.
+- **x87 kernels** — `tools/x87loop-bench.mjs` runs TurboFan code only (`--liftoff`: V8's tiers as they come; see
+  "x87 regions: the stack cache by use" for why) and checks only the cases it measures.
 - **Hot-path cost of one region** — x87loop-bench's loops under `perf record -e cycles:u,instructions:u` with
   `node --perf-prof --no-liftoff`, `perf inject -j`, the `JS:r_*` symbols' periods divided by the iterations: host
   instructions per iteration are steady on a loaded machine where cycles and wall time are not. x87loop-bench itself
@@ -642,8 +644,64 @@ phase. Vice City in the browser did not reach its drive in either tree in 3 of 4
 (`tools/slow-net-check.mjs --bench vicecity-drive --speeds 1m`, nothing learned): menu 161 s, in game 245 s (main 145 /
 258 s), the bench done.
 
+## x87 regions: the stack cache by use, truncation in vector registers (2026-10-21)
+
+Measured on this shared server under a load average of 20-60 (other projects): Node only (the one rendered browser run
+attempted for bfme1-108 ran its menu at ~5 fps and was useless); medians, concurrent pairs, alternated in-process A/B.
+
+- **The 24-bit precision "gap" was mostly V8's tiers.** x87loop-bench waited 100 ms after its warm-up for TurboFan; the
+  24-bit regions (larger: every result tested) were often still partly in Liftoff, so xform measured 24.8 ns at 0x7f
+  against 10.7 at 0x27f (the "2.4x" of the 2026-10-21 audit). TurboFan only (`--no-liftoff`, now the tool's default;
+  `--liftoff` for the tiers as they come): xform 14.2 vs 10.6 ns, 13.8 vs 12.8 with full 24-bit significands
+  (`--full`); sums of squares 17.4 vs 15-19. What remains at round-to-nearest is the exponent test of every f32 result
+  (off the dependency chain) and, for values carried across a block boundary, the promotion of the f32 shadow at the
+  block's end (dropped at block entry) — a latency-bound recurrence 3.6 vs 2.0 ns. Not changed: keeping f32 shadows
+  across blocks needs a dataflow over the region's entries (any block can be entered from the dispatcher with an
+  f64 from the state block), for at most a few % of the menu's guest time. The truncating mode (0xc7f), BFME1's map
+  load, was the real gap: xform 27.0 vs 12.8 ns at 53-bit.
+- **Truncation cut in the XMM register** (`x87VecMask`, default on; translate-x87.js pushCut24): roundTowardZero24
+  cleared the 29 low significand bits on the integer pattern — `vmovq` to a general register, `and`, `vmovq` back:
+  two domain crossings (~3 cycles each) on the dependency chain of every arithmetic instruction. Now `f64x2.splat ;
+  v128.and ; extract_lane 0` (vmovddup + vpand), the bit tests that choose the path still on the integer copy, off the
+  chain. The mask is a v128 local set by the prologue (`L_CUT24`, regions translated for mode 0xc00 only): built
+  inline at each use, its three-instruction constant ate the gain in the game (one pair: map load +3.7 %).
+  x87loop-bench 0xc7f `--full`, mask on vs off in the same tree (11 runs): sums of squares 39.7 -> 30.0 ns, xform 28.2
+  -> 23.9, arith across blocks 13.3 -> 12.2, recurrence 4.4 -> 3.5.
+- **The stack cache by use** (`x87Live`, default on; Emitter.x87LiveSites): an x87 region loaded all eight stack
+  registers at its entry (and after fallbacks) and wrote all eight back at its exits. Code.track records the body's
+  gets / sets of the eight locals; once the body is emitted, the loads and stores of the locals it never touches are
+  overwritten with `nop`s of the same length (no offset recorded in the body moves: branch hints, the alt slot, visit
+  flags). Exact because local L_ST0+k always holds physical register (L_TOP + k) & 7: the locals only move between
+  each other in x87Rotate, whose gets and sets mark all eight, and L_TOP otherwise changes only around a write-back
+  and reload (fallbacks, FLDENV / FRSTOR, TOP resets). chain-bench x87 call/return 39.3-46.4 -> 29.6-29.9 ns (3
+  alternated runs; integer regions 23-26 ns); tools/x87-size.mjs, 27 regions x 3 control words: TurboFan machine code
+  124 480 -> 98 020 bytes (-21 %), WASM +0.4 % (the prologue's mask). tests/jit-x87-live.test.js (masks; random
+  programs over few registers with every register valued, fallbacks, FNSAVE / FRSTOR, FNSTENV / FLDENV, FDECSTP /
+  FINCSTP, slices; it fails when a used register's load is dropped).
+- Kernels, this branch against main (x87loop-bench `--full --ab`, 9 alternated runs, medians): 0xc7f xform 27.0 ->
+  21.5 ns, sums of squares 36.0 -> 30.4, fild + fmul + fstp 5.4 -> 4.3, recurrence 3.9 -> 3.4, e^x 28.2 -> 25.6, arith
+  across blocks 12.2 -> 10.8; 0x7f and 0x27f within the noise (-15 to +15 % on single cases, both directions).
+- **BFME1 (bfme-vanilla 2.22, the same lotrbfme.exe as 1.08), Node, concurrent pairs** (startbench, copies of the same
+  warm profile, menu 135 s then the map load; guest ns per instruction, map load seconds): both options on vs off —
+  loadscreen 1.037 / 1.055 (43.7 / 44.3 s), 1.063 / 1.077 (43.7 / 45.3 s), 1.213 / 1.234 (51.3 / 53.8 s, load 60);
+  3D menu 1.340 / 1.346, 1.359 / 1.392, 1.452 / 1.505. Vector mask alone (local mask) on / off: loadscreen 1.009 /
+  1.048 (43.2 / 44.7 s), menu 1.303 / 1.296. So -1.5 to -3.7 % on the map load, -0.5 to -3.5 % on the menu: at the
+  edge of the noise (single pairs on a machine at load 20-60), every pair in the same direction on the map load.
+- The map load's hot loop (region e66cde / e66ecb, mode 0xc00: a sums-of-products fitting loop, 84 guest instructions
+  per iteration, 168 M iterations per load: 14 G of the ~40 G instructions) is flat in `perf annotate`: no
+  instruction above 1.6 % of the region. Its x87 arithmetic is ~12-14 host instructions an operation (sub / mul,
+  bit tests, the cut), its FSTP m32 an exact-demote test and the SMC check. No single pattern left to fuse.
+- Not changed: an on-grid but inexact product under truncation (a double operand like 0.9 whose f64 product rounds onto
+  the 24-bit grid: x87loop-bench `fmul m64 0.9` at 0xc7f, 21 % of its iterations) leaves the region for the
+  interpreter (~57 ns an iteration); the BFME1 map load spent 0.01 s in the interpreter, so it does not happen there.
+  A Dekker product's error sign would settle it inline.
+
 ## Measured, not kept
 
+- Branch-free x87 condition codes (2026-10-21: compareCC / compareEflags as `(a<b) << 8 | (a==b) << 14 | unordered *
+  0x4500` instead of nested ifs): x87loop-bench compares with random signs, one run under load 23-36: fcomp + test ah
+  +8.9 %, fcomp + sahf +32 %, fucompp -21.6 %, fcom + fchs + fstp +3.5 % — the nested compares predict as well as the
+  guest's own Jcc; not kept.
 
 - Raising ZE / OE for an infinite result of x87 arithmetic at 53 / 64-bit precision in translated code (X87.arith
   does): the test on the arithmetic hot path cost +15 % on the 53-bit sums-of-squares kernel; left unraised by the JIT

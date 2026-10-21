@@ -4,7 +4,7 @@
 // bounded LRU cache with read-ahead for sequential access.
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { NetLink } from './net-link.js';
-import { LIGHT_DIR } from './game-tree.js';
+import { LIGHT_DIR, isVideoFile } from './game-tree.js';
 
 export const BLOCK = 1 << 20; // 1 MiB
 /**
@@ -43,6 +43,11 @@ const NEAR_BLOCKS = 2, NEAR_QUIET_MS = 500, NEAR_MAX = 64;
  * player in an area loaded already, not between two reads of a load (an engine computes for seconds between them)
  */
 const UPGRADE_QUIET_MS = 8000;
+/**
+ * …or this long for the files of an engine that loads them again in place (upgrade's `soon`: the player sees the file
+ * replace its light copy at once, a benefit worth an earlier start)
+ */
+const UPGRADE_SOON_QUIET_MS = 1500;
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
 /** learned pieces fetched ahead of the game (see pumpAhead): requests in flight at most, entries past its position */
 const AHEAD_REQUESTS = 3, AHEAD_WINDOW = 32;
@@ -66,6 +71,53 @@ const ABORTED = Symbol('aborted');
 const PRIO = { readAhead: [1, 0], ahead: [2, 0], miss: [3, 100], fill: [4, 150], prefetch: [5, 300], near: [6, 500], offline: [7, 500] };
 /** wire length of a response (its encoded body: what crossed the link), else the decoded length */
 const wireOf = (len, header) => { const n = Number(header); return Number.isFinite(n) && n > 0 ? n : len; };
+
+/**
+ * Transport units (docs/slow-network.md "Precompressed units"): the server keeps some ranges of a file compressed ahead
+ * at brotli's best (src/host/br-cache.js) — a whole block (the file's tail for its last one), or a single piece — and
+ * answers a request of exactly that shape from them. unitOf: the unit [start, end) of a file of `size` bytes is (a
+ * block first: a file or a tail of one piece is its block), or null.
+ */
+export function unitOf(start, end, size) {
+  if (start % BLOCK === 0 && end === Math.min(size, start + BLOCK)) return { kind: 'b', index: start / BLOCK };
+  if (start % CHUNK === 0 && end === Math.min(size, start + CHUNK)) return { kind: 'p', index: start / CHUNK };
+  return null;
+}
+/**
+ * On a link that is neither fast nor thin, a background run that is a whole block (every piece of it wanted, none here)
+ * goes as the block — one request, one transport unit — when the link carries a block in this many seconds at most,
+ * though that is more than backgroundBytes(): the server makes a block learned whole as a block unit (br-cache.js), and
+ * the same bytes asked as pieces would miss it (measured, Morrowind at 1 MB/s: 82 % of the bytes the session asked were
+ * of blocks the learned order makes as block units, asked as pieces). See wholeBlockFits.
+ */
+const WHOLE_BLOCK_SECONDS = 1.25;
+/** a background request of more units than this goes as one (see rangeUnits) */
+const MAX_UNIT_PARTS = 16;
+/**
+ * [start, end) of a file of `size` bytes cut at its units — whole blocks where they fit, else pieces —: [[a, b], ...],
+ * or null when it is one unit, not aligned, or more than MAX_UNIT_PARTS of them (the last part may be no unit: a run
+ * of pieces past `end`'s cut, as before).
+ */
+export function rangeUnits(start, end, size) {
+  if (!(start < end) || end > size || start % CHUNK) return null;
+  const out = [];
+  for (let pos = start; pos < end;) {
+    const e = pos % BLOCK === 0 && Math.min(size, pos + BLOCK) <= end ? Math.min(size, pos + BLOCK) : Math.min(end, pos + CHUNK);
+    out.push([pos, e]); pos = e;
+    if (out.length > MAX_UNIT_PARTS) return null;
+  }
+  return out.length > 1 ? out : null;
+}
+/**
+ * Cutting a range at its units pays only when the server has them: a unit it lacks is compressed on the fly alone, and
+ * independent 64 KiB pieces compress worse than the range whole (BFME2's archives, 384 KiB ranges: brotli-5 0.560 of
+ * the raw bytes by pieces against 0.533 whole, zstd-3 0.586 against 0.557 — +5 %; a precompressed piece, brotli-11,
+ * 0.519: -2.6 %), on as many more requests. So a backend cuts its background ranges while at least UNIT_HIT_MIN of the
+ * parts it asked lately were answered from units (the server's X-Orthros-Unit; a moving share, UNIT_HIT_WEIGHT the
+ * latest request's), and otherwise one request in UNIT_PROBE_EVERY only — a probe: the units it misses are made by the
+ * server (br-cache.js `want`), the next probes find them.
+ */
+const UNIT_HIT_MIN = 0.66, UNIT_HIT_WEIGHT = 0.3, UNIT_PROBE_EVERY = 8;
 
 /** Block the calling worker for `ms` (the reads are synchronous: nothing else can run meanwhile anyway). */
 function pause(ms) {
@@ -97,10 +149,18 @@ export class HttpBackend {
     this.retryWaits = opts.retryWaits ?? RETRY_WAITS;
     // the server's compressed ranges (/gamez/...?r=start-end: zstd/gzip Content-Encoding, decoded by the browser)
     this.encoded = !!opts.encoded;
+    // (a compressed background range cut at its transport units, see rangeUnits; false: one request as asked)
+    this.unitRequests = opts.unitRequests ?? true;
+    /** the share of the parts lately answered from the server's units (see UNIT_HIT_MIN), the cut requests since a probe */
+    this.unitHitRate = 1; this.unitSkips = 0;
     /** session id sent with the compressed ranges (the server learns the order blocks are needed in, see prefetch) */
     this.session = opts.session ?? '';
     this.store = opts.store ?? null;
     this.stats = { requests: 0, bytes: 0, ms: 0 };
+    /** the game's reads, whatever answered them (this browser's copy, memory, the network): bytes, those of movies */
+    this.reads = { bytes: 0, videoBytes: 0 };
+    /** each game read, as it happens: (path, start, end) — a page learning what its game read (worker.js, the mark) */
+    this.onRead = opts.onRead ?? null;
     /** 64 KiB pieces of blocks not fetched whole yet: "path#chunk" -> bytes (insertion order = LRU) */
     this.chunks = new Map(); this.chunkBytes = 0;
     /** whole blocks wanted in the background (a random read touched them): "path#block" -> {path, size, mtime, index} */
@@ -111,6 +171,8 @@ export class HttpBackend {
     this.later = new Map();
     /** blocks of files whose light copy the game read (see upgrade), last of all: same entries, the latest last */
     this.upgrades = new Map();
+    /** the latest upgrade was soon (an engine that reloads in place): the upgrades start after UPGRADE_SOON_QUIET_MS */
+    this.upgradeSoon = false;
     /** the background downloads in flight (prefetch, block fill): their AbortControllers, aborted when the game
      * needs the network (see abortBackground) */
     this.bgAborts = new Set();
@@ -174,7 +236,9 @@ export class HttpBackend {
     if (!r || r.dir) return null;
     if (opts.write || opts.create || opts.truncate) return null; // read-only mount
     this.opened.set(r.path, (this.opened.get(r.path) ?? 0) + 1);
-    return new HttpFile(this, r.path, r.file.size, r.file.mtime ?? 0);
+    const f = new HttpFile(this, r.path, r.file.size, r.file.mtime ?? 0);
+    if (isVideoFile(r.path)) f.video = true;
+    return f;
   }
   mkdir() { return false; }
   unlink() { return false; }
@@ -200,27 +264,36 @@ export class HttpBackend {
    * of the list is often a phase this session has not reached, or has passed without needing it. Meanwhile the learned
    * pieces of the entries just past the game's position are fetched ahead (see pumpAhead). `progress` gets
    * { bytes, blocks, done, k }. `opts.learnedOnly`: on a link that is not fast, the learned pieces only (not the rest of
-   * their blocks) — what a page waits for before the game starts.
+   * their blocks) — what a page waits for before the game starts. `opts.first`: the list's first entries are its launch
+   * set (launch-set.js launchFirst): while one of them is missing, a position past them (a read the way to playable does
+   * not need, e.g. a loading picture) does not send the pass on through the rest first.
    */
   async prefetch(list, progress, stop = () => false, opts = {}) {
     const store = this.store; if (!store || typeof fetch !== 'function') return;
     progress.bytes = 0; progress.blocks = 0; progress.done = false;
     /** @type {{path: string, size: number, mtime: number, index: number, mask: number, seen?: boolean, ahead?: boolean, skip?: boolean}[]} */
     const entries = [], rankOf = new Map();
-    for (const [p, b, mask, t] of list) {
+    let first = 0; // (the launch set's entries kept: entries[0..first))
+    for (let i = 0; i < list.length; i++) {
+      const [p, b, mask, t] = list[i];
       const r = this.lookup(p); if (!r || !r.file || !(b * BLOCK < r.file.size)) continue;
       const k = `${r.path}#${b}`; if (rankOf.has(k)) continue;
       rankOf.set(k, entries.length);
+      if (i < (opts.first ?? 0)) first++;
       // (t: when the earliest session first needed it, ms from its start — absent from older servers)
-      entries.push({ path: r.path, size: r.file.size, mtime: r.file.mtime ?? 0, index: b, mask: typeof mask === 'number' ? mask & 0xffff : 0, t: Number.isFinite(t) ? t : null });
+      // (tail: a media file's entry on a link that is not fast — launch-set.js forLink put it after all the others, out of
+      // the game's timeline: the game streaming it says nothing of where the game is — see noteBlock)
+      entries.push({ path: r.path, size: r.file.size, mtime: r.file.mtime ?? 0, index: b, mask: typeof mask === 'number' ? mask & 0xffff : 0, t: Number.isFinite(t) ? t : null, tail: !!r.file.media && !this.net.fast() });
     }
-    const L = this.learned = { entries, rankOf, pos: -1, inFlight: 0, stop };
+    const L = this.learned = { entries, rankOf, first, pos: -1, inFlight: 0, stop };
     const skey = (e, i = e.index) => `${e.path}#${e.size}#${e.mtime}#${i}`;
     const stored = (e) => e.skip || store.map.has(skey(e)) || this.cache.has(`${e.path}#${e.index}`);
     // (the block the fill is downloading is left to it: it stores it too)
     const todo = (e) => !stored(e) && this.bgCur?.key !== `${e.path}#${e.index}` && !this.blockFlights.has(`${e.path}#${e.index}`) && !this.flights.has(`${e.path}#${e.index * (BLOCK / CHUNK)}`);
-    // the entry to download next: the first one past the game's position not stored yet, else the first one
+    // the entry to download next: the first one past the game's position not stored yet, else the first one — the
+    // launch set's first when the position is past it (opts.first)
     const next = () => {
+      if (L.pos >= L.first) for (let r = 0; r < L.first; r++) if (todo(entries[r])) return r;
       for (let r = L.pos + 1; r < entries.length; r++) if (todo(entries[r])) return r;
       for (let r = 0; r <= L.pos && r < entries.length; r++) if (todo(entries[r])) return r;
       return -1;
@@ -231,8 +304,9 @@ export class HttpBackend {
     const nextPart = () => {
       // (a thin link: the learned pieces only — whole blocks are for links that can afford them)
       for (const tier of this.net.thin() || opts.learnedOnly ? [1] : [1, 2]) {
-        for (let pass = 0; pass < 2; pass++) {
-          const from = pass === 0 ? L.pos + 1 : 0, to = pass === 0 ? entries.length : Math.min(entries.length, L.pos + 1);
+        // (pass 0: the launch set while the position is past it — next's order)
+        for (let pass = L.pos >= L.first ? 0 : 1; pass < 3; pass++) {
+          const from = pass === 1 ? L.pos + 1 : 0, to = pass === 0 ? L.first : pass === 1 ? entries.length : Math.min(entries.length, L.pos + 1);
           for (let r = from; r < to; r++) {
             // (learnedOnly: an entry learned without its pieces — an older list — was read whole)
             const e = entries[r], mask = e.mask || (opts.learnedOnly ? 0xffff : 0);
@@ -297,7 +371,8 @@ export class HttpBackend {
     let bytes = 0, prevT = L.pos >= 0 ? L.entries[L.pos].t : null;
     for (let r = L.pos + 1, n = 0; r < L.entries.length && n < 4096; r++, n++) {
       const e = L.entries[r];
-      if (e.t === null || (prevT !== null && e.t - prevT > STEP_GAP_MS)) break;
+      // (an earlier time: the order starts again — its launch set first, then the rest, launch-set.js launchFirst)
+      if (e.t === null || (prevT !== null && (e.t - prevT > STEP_GAP_MS || e.t < prevT))) break;
       prevT = e.t;
       if (this.peekBlockHere(e.path, e.size, e.mtime, e.index)) continue;
       const P = BLOCK / CHUNK, c0 = e.index * P, pieces = Math.ceil((Math.min(e.size, (e.index + 1) * BLOCK) - e.index * BLOCK) / CHUNK);
@@ -314,7 +389,9 @@ export class HttpBackend {
     const L = this.learned; if (!L) return;
     const r = L.rankOf.get(`${path}#${index}`); if (r === undefined) return;
     const e = L.entries[r]; if (e.seen) return;
-    e.seen = true; L.pos = r;
+    // (a media file's entry at the order's tail does not move the position: a menu's music, streamed while the player
+    // waits, sent the background pass on through every movie and track of the tail before the rest of the way to playable)
+    e.seen = true; if (!e.tail) L.pos = r;
     this.pumpAhead();
   }
 
@@ -337,7 +414,9 @@ export class HttpBackend {
       const c0 = e.index * P, pieces = Math.ceil((Math.min(e.size, (e.index + 1) * BLOCK) - e.index * BLOCK) / CHUNK);
       let all = true; for (let i = 0; i < pieces; i++) if (!((e.mask >>> i) & 1)) all = false;
       const want = (i) => ((e.mask >>> i) & 1) === 1 && !this.flights.has(`${e.path}#${c0 + i}`) && !this.hasPiece(e.path, e.size, e.mtime, c0 + i);
-      const most = Math.max(1, this.net.backgroundBytes() / CHUNK);
+      // (every piece of the block learned: the block as one request when the link carries it soon enough — its unit, see
+      // WHOLE_BLOCK_SECONDS)
+      const most = all && this.wholeBlockFits() ? pieces : Math.max(1, this.net.backgroundBytes() / CHUNK);
       for (let i = 0; i < pieces; i++) {
         if (!want(i)) continue;
         let j = i; while (j + 1 < pieces && want(j + 1) && j + 1 - i < most) j++;
@@ -395,6 +474,14 @@ export class HttpBackend {
    * one may skip it.
    */
   doneWith(path) { return this.opened.get(path) === 0 || (this.streams.has(path) && !this.net.fast()); }
+  /** `path` is a media file (the tree's `media`, by format: src/vfs/game-tree.js isMediaFile — a movie, music). */
+  isMedia(path) { return !!this.lookup(path)?.file?.media; }
+  /**
+   * Blocks of `path` may be fetched on a guess (the blocks near a missed one, the next ones of a read): not for a media
+   * file the game is not streaming now — a movie skipped, a track probed — its bytes come when it is read (readAhead
+   * while it is streamed), or with the offline copy, last.
+   */
+  speculate(path) { return this.streams.has(path) || !this.isMedia(path); }
   /** A handle of the game on `path` closed: when it was the last one, the background requests for the file go away. */
   noteClose(path) {
     const n = (this.opened.get(path) ?? 1) - 1;
@@ -411,6 +498,8 @@ export class HttpBackend {
     const P = BLOCK / CHUNK, c0 = index * P, n = Math.ceil((Math.min(size, (index + 1) * BLOCK) - index * BLOCK) / CHUNK);
     const most = Math.max(1, this.net.backgroundBytes() / CHUNK);
     const need = (i) => (!mask || ((mask >>> i) & 1) === 1) && !this.flights.has(`${path}#${c0 + i}`) && !this.pieceHere(path, size, mtime, c0 + i);
+    // (the whole block wanted, none of it here: the block itself, its unit, when the link carries it soon enough)
+    if (n > most && this.wholeBlockFits()) { let all = true; for (let i = 0; i < n && all; i++) all = need(i); if (all) return [c0, c0 + n - 1]; }
     for (let i = 0; i < n; i++) {
       if (!need(i)) continue;
       let j = i; while (j + 1 < n && need(j + 1) && j + 1 - i < most) j++;
@@ -471,12 +560,19 @@ export class HttpBackend {
       if (this.flights.has(`${path}#${c}`)) { inFlight++; continue; }
       if (this.peekBlockHere(path, size, mtime, Math.floor(c * CHUNK / BLOCK)) || this.pieceHere(path, size, mtime, c)) continue;
       if (inFlight >= 2) return; // (two requests on their way past the reader at most: the link stays the game's)
-      let j = c; while (j + 1 <= last && j + 1 - c < most && Math.floor((j + 1) * CHUNK / BLOCK) === Math.floor(c * CHUNK / BLOCK) && !this.flights.has(`${path}#${j + 1}`) && !this.pieceHere(path, size, mtime, j + 1)) j++;
+      // (from a block's start, the whole block in one request — its unit — when the link carries it soon enough)
+      const n = c % (BLOCK / CHUNK) === 0 && this.wholeBlockFits() ? BLOCK / CHUNK : most;
+      let j = c; while (j + 1 <= last && j + 1 - c < n && Math.floor((j + 1) * CHUNK / BLOCK) === Math.floor(c * CHUNK / BLOCK) && !this.flights.has(`${path}#${j + 1}`) && !this.pieceHere(path, size, mtime, j + 1)) j++;
       this.stats.readAheads = (this.stats.readAheads ?? 0) + 1;
       this.fetchPartBg(path, size, mtime, c, j, PRIO.readAhead, () => false, true);
       inFlight++; c = j;
     }
   }
+  /**
+   * A whole block may go as one background request though it is more than backgroundBytes() (see WHOLE_BLOCK_SECONDS):
+   * a measured link, not thin, that carries it in WHOLE_BLOCK_SECONDS at most.
+   */
+  wholeBlockFits() { return this.net.bw > 0 && !this.net.thin() && this.net.secondsFor(BLOCK) <= WHOLE_BLOCK_SECONDS; }
   /** block `index` is in memory or stored (no read) */
   peekBlockHere(path, size, mtime, index) { return this.cache.has(`${path}#${index}`) || !!this.store?.map.has(`${path}#${size}#${mtime}#${index}`); }
 
@@ -491,8 +587,8 @@ export class HttpBackend {
    */
   noteMiss(path, size, mtime, index) {
     if (typeof fetch !== 'function' || this.net.thin()) return;
-    const k = `${path}#${index}`;
-    for (let j = Math.max(0, index - NEAR_BLOCKS); j <= index + NEAR_BLOCKS && j * BLOCK < size; j++) {
+    const k = `${path}#${index}`, guess = this.speculate(path);
+    for (let j = Math.max(0, index - NEAR_BLOCKS); guess && j <= index + NEAR_BLOCKS && j * BLOCK < size; j++) {
       const nk = `${path}#${j}`;
       if (j === index || this.near.has(nk) || this.cache.has(nk) || this.store?.map.has(`${path}#${size}#${mtime}#${j}`)) continue;
       this.near.set(nk, { path, size, mtime, index: j });
@@ -567,6 +663,28 @@ export class HttpBackend {
     if (!abortable) tok.keep = true;
     let wire = 0, ok = false;
     try {
+      // (compressed ranges: one request per transport unit the range covers, in parallel — each answered from the
+      // server's precompressed units when it has them, see rangeUnits; the parts all here or the download fails)
+      // — while the server has them: see UNIT_HIT_MIN)
+      let parts = this.encoded && this.unitRequests ? rangeUnits(start, end, this.lookup(path)?.file?.size ?? 0) : null;
+      if (parts && this.unitHitRate < UNIT_HIT_MIN) { if (++this.unitSkips < UNIT_PROBE_EVERY) parts = null; else this.unitSkips = 0; }
+      if (parts) {
+        let first = true;
+        const ress = await Promise.all(parts.map(([a, b]) => fetch(this.rangeUrl(path, a, b, !learn, learn), { signal: ctl?.signal }).then((r) => { if (first) { first = false; this.net.firstByte(tok); } return r; })));
+        if (ress.some((r) => r.status !== 206 && r.status !== 200)) return undefined;
+        const bodies = await Promise.all(ress.map((r) => r.arrayBuffer()));
+        const data = new Uint8Array(end - start);
+        for (let i = 0; i < parts.length; i++) {
+          const d = new Uint8Array(bodies[i]);
+          wire += wireOf(d.length, ress[i].headers?.get?.('content-length'));
+          if (d.length !== parts[i][1] - parts[i][0]) return undefined;
+          data.set(d, parts[i][0] - start);
+        }
+        const hits = ress.filter((r) => ['hit', 'raw'].includes(r.headers?.get?.('x-orthros-unit'))).length;
+        this.unitHitRate += UNIT_HIT_WEIGHT * (hits / parts.length - this.unitHitRate);
+        ok = true;
+        return data;
+      }
       const res = await fetch(this.rangeUrl(path, start, end, !learn, learn), { ...(this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } }), signal: ctl?.signal });
       this.net.firstByte(tok);
       if (res.status !== 206 && res.status !== 200) return undefined;
@@ -575,7 +693,12 @@ export class HttpBackend {
       if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
       ok = data.length === end - start;
       return ok ? data : undefined;
-    } catch { return ctl?.signal.aborted ? ABORTED : null; } finally { if (ctl) this.bgAborts.delete(ctl); this.net.end(tok, wire, end - start, ok); }
+    } catch { return ctl?.signal.aborted ? ABORTED : null; } finally {
+      // (a failed path — a part refused, one fetch failed, a body short — cancels the requests still running: their
+      // bodies would hold the link while it counts as free)
+      if (ctl) { if (!ok) ctl.abort(); this.bgAborts.delete(ctl); }
+      this.net.end(tok, wire, end - start, ok);
+    }
   }
 
   fetchRange(path, start, end) {
@@ -743,7 +866,9 @@ export class HttpBackend {
       out.set(piece.subarray(a - c * CHUNK, b - c * CHUNK), outOff + (a - pos));
     }
     // the block, and for a stream the next ones, in the background (not on a thin link: there the bandwidth goes to
-    // what the game reads and what earlier sessions read next — a whole block for a piece read is 16 times the bytes)
+    // what the game reads and what earlier sessions read next — a whole block for a piece read is 16 times the bytes;
+    // not the next ones of a media file the game is not streaming: see speculate)
+    if (ahead && !this.speculate(path)) ahead = 0;
     for (let i = index; i <= index + ahead && i * BLOCK < size && !this.net.thin(); i++) {
       const wk = `${path}#${i}`;
       if (!this.want.has(wk) && (i === index || !this.peekBlock(path, size, i, mtime))) this.want.set(wk, { path, size, mtime, index: i });
@@ -851,15 +976,17 @@ export class HttpBackend {
   /**
    * The game read `path`'s light copy (a link that is not fast: src/vfs/data-client.js): the file itself downloaded in
    * the background for its next load, last of all — after every other background download, the link quiet for
-   * UPGRADE_QUIET_MS, a thin link too (by pieces) —, the latest files first (the player is near them: loaded again soonest).
+   * UPGRADE_QUIET_MS (UPGRADE_SOON_QUIET_MS when `soon`: an engine that loads it again in place), a thin link too (by
+   * pieces) —, the latest files first (the player is near them: loaded again soonest).
    */
-  upgrade(path) {
+  upgrade(path, { soon = false } = {}) {
     const r = this.lookup(path); if (!r?.file) return;
     const size = r.file.size, mtime = r.file.mtime ?? 0;
     for (let i = 0; i * BLOCK < size; i++) {
       const k = `${r.path}#${i}`;
       if (this.cache.has(k) || this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) continue;
-      this.upgrades.delete(k); this.upgrades.set(k, { path: r.path, size, mtime, index: i });
+      this.upgrades.delete(k); this.upgrades.set(k, { path: r.path, size, mtime, index: i, soon });
+      this.upgradeSoon = soon; // (the latest file's: the next one fetched)
     }
     this.fillBackground();
   }
@@ -891,7 +1018,9 @@ export class HttpBackend {
         // whose light copy the game read, after a longer one still)
         const quiet = () => (this.want.size ? 150 : this.near.size || this.later.size ? NEAR_QUIET_MS : 0);
         const queued = () => this.want.size || this.near.size || this.later.size || this.upgrades.size;
-        while (queued() && (quiet() ? this.gameBusy(quiet()) : !this.gameQuiet(UPGRADE_QUIET_MS))) await new Promise((res) => setTimeout(res, 50));
+        // (the next upgrade, the latest file's: soon or not)
+        const upgradeQuiet = () => (this.upgradeSoon ? UPGRADE_SOON_QUIET_MS : UPGRADE_QUIET_MS);
+        while (queued() && (quiet() ? this.gameBusy(quiet()) : !this.gameQuiet(upgradeQuiet()))) await new Promise((res) => setTimeout(res, 50));
         const q = this.want.size ? this.want : this.near.size ? this.near : this.later.size ? this.later : this.upgrades;
         if (!q.size) continue; // (fetched whole meanwhile by a sequential read)
         const [k, w] = q === this.upgrades ? [...q].at(-1) : q.entries().next().value;
@@ -933,7 +1062,7 @@ export class HttpBackend {
    * Offline copy: fetch every block of every file of the listing that the store does not hold yet, in the background,
    * yielding to the game's reads (its turn on the link like the other background downloads, after them). The blocks of
    * the learned list `opts.order` ([path, block, ...], the order earlier sessions needed them) come first, then the
-   * rest file by file. Requests carry up to 4 blocks when the game is not running (`opts.alone`: the page downloads the
+   * rest file by file; the media files' blocks (isMedia: movies, music) after all the others, in the same order. Requests carry up to 4 blocks when the game is not running (`opts.alone`: the page downloads the
    * game before playing) or the link is fast, else the link's background size (pieces, assembled into blocks). A
    * download stopped (page closed) resumes where it was: the stored blocks are skipped. `progress` is updated
    * ({ bytes, total, stored (bytes already here at the start), done }); stops at `stop()` or when the store fails (quota).
@@ -942,20 +1071,21 @@ export class HttpBackend {
     const store = this.store; if (!store || typeof fetch !== 'function') return;
     const files = [], byPath = new Map();
     const walk = (node, rel) => {
-      for (const [n, f] of Object.entries(node.files ?? {})) { const e = { path: rel ? `${rel}/${n}` : n, size: f.size, mtime: f.mtime ?? 0 }; files.push(e); byPath.set(e.path, e); }
+      for (const [n, f] of Object.entries(node.files ?? {})) { const e = { path: rel ? `${rel}/${n}` : n, size: f.size, mtime: f.mtime ?? 0, media: !!f.media }; files.push(e); byPath.set(e.path, e); }
       for (const [n, d] of Object.entries(node.dirs ?? {})) walk(d, rel ? `${rel}/${n}` : n);
     };
     walk(this.tree, '');
     const key = (f, i) => `${f.path}#${f.size}#${f.mtime}#${i}`;
     const blockBytes = (f, i) => Math.min(f.size, (i + 1) * BLOCK) - i * BLOCK;
-    // the blocks in download order: learned ones first, then every other one
-    const jobs = [], queued = new Set();
+    // the blocks in download order: learned ones first, then every other one; media files' after all of those
+    const main = [], media = [], queued = new Set();
     for (const it of opts.order ?? []) {
       const r = Array.isArray(it) && typeof it[0] === 'string' ? this.lookup(it[0]) : null, f = r?.file ? byPath.get(r.path) : null;
       if (!f || !Number.isInteger(it[1]) || it[1] < 0 || it[1] * BLOCK >= f.size || queued.has(key(f, it[1]))) continue;
-      queued.add(key(f, it[1])); jobs.push([f, it[1]]);
+      queued.add(key(f, it[1])); (r.file.media ? media : main).push([f, it[1]]);
     }
-    for (const f of files) for (let i = 0; i * BLOCK < f.size; i++) if (!queued.has(key(f, i))) jobs.push([f, i]);
+    for (const f of files) for (let i = 0; i * BLOCK < f.size; i++) if (!queued.has(key(f, i))) (f.media ? media : main).push([f, i]);
+    const jobs = main.concat(media);
     progress.total = files.reduce((a, f) => a + f.size, 0); progress.done = false;
     progress.bytes = 0; for (const [f, i] of jobs) if (store.map.has(key(f, i))) progress.bytes += blockBytes(f, i);
     progress.stored = progress.bytes;
@@ -1042,6 +1172,8 @@ class HttpFile {
     const end = Math.min(off + len, this.len);
     if (off >= end) return new Uint8Array(0);
     this.note(off, end);
+    this.b.reads.bytes += end - off; if (this.video) this.b.reads.videoBytes += end - off;
+    this.b.onRead?.(this.path, off, end);
     const out = new Uint8Array(end - off);
     const sequential = off === this.lastEnd;
     this.lastEnd = end;

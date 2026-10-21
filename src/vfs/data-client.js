@@ -4,9 +4,13 @@
 // A read the engine waits for synchronously waits on shared memory (the page's thread spins: Atomics.wait is not
 // allowed there); one it can wait for (JSPI: `ensure`) by message. The pieces the engine uses are told to the worker,
 // which reports them to the server's learned order. Emscripten engines mount the files with emscripten-files.js.
-// On a link that is not fast, a texture's load reads its light copy (src/host/light-copies.js: the texture without its
-// finest levels) unless the file itself is here; the file comes in the background, for its next load.
+// A texture's load reads its light copy (src/host/light-copies.js: the texture without its finest levels) on a thin link
+// or one not measured yet, unless the file itself is here; the file comes in the background, for its next load. A page
+// may say what its loads are for (prefer): 'light' — the far ring of a view that grows — or 'real'. A page whose engine
+// loads a file again in place once it is here (reloads: a texture made sharp while it is shown) reads the light copies
+// first on every link that is not fast, their files coming soon after them.
 import { treeFile, LIGHT_DIR } from './game-tree.js';
+import { FAST_BPS } from './net-link.js';
 
 export const PIECE = 1 << 16;
 
@@ -27,6 +31,8 @@ export const offlineCopy = {
 export const linkRate = {
   get() { try { const v = Number(localStorage.getItem('orthros.netBw')); return v > 0 ? v : undefined; } catch { return undefined; } },
   set(bw) { if (bw > 0) try { localStorage.setItem('orthros.netBw', String(Math.round(bw))); } catch { /* storage off */ } },
+  /** The link was fast last time (FAST_BPS, net-link.js): a page's choice before its game data opens — unknown is not fast. */
+  fast() { return this.get() >= FAST_BPS; },
 };
 /** The most bytes one answer of the worker carries (its shared buffer). */
 const SPAN = 16 << 20;
@@ -35,14 +41,34 @@ const DEAD_MS = 30000;
 const PER_FILE = 2 ** 21; // (a piece's key: file id × PER_FILE + piece)
 /** A read at a file's start this long after its last read is a new load of it: light copy or file, chosen again. */
 const LOAD_GAP_MS = 2000;
+/** The page's game data is quiet (GameData.quiet) after this long without a read waiting for the network. */
+export const QUIET_MS = 3000;
+
+/**
+ * A load of a file that has a light copy reads the file itself (true) or its light copy (false): the file when it is
+ * here; else as the page prefers (`prefer`: 'real', or 'light' — loads that can do with less for now, as the far ring
+ * of a view that grows); else, the link fast — or, for an engine that cannot load a file again in place (`reloads`
+ * false), measured between thin and fast —, the file unless its light copy is here (the learned order brought it: no
+ * wait); on a thin link or one not measured yet, the light copy. An engine that reloads in place reads the light copy
+ * on every link that is not fast: its file, fetched soon after, replaces it while it is shown (on a link of 1 MB/s,
+ * the files themselves before the menu cost a third more time to it).
+ * @param {{ here: boolean, lightHere: boolean, fast: boolean, thin: boolean, measured: boolean, prefer?: 'real'|'light'|null, reloads?: boolean }} o
+ */
+export function readsReal({ here, lightHere, fast, thin, measured, prefer = null, reloads = false }) {
+  if (here) return true;
+  if (prefer === 'real' || prefer === 'light') return prefer === 'real';
+  return (fast || (!reloads && measured && !thin)) && !lightHere;
+}
 
 export class GameData {
   /**
    * The data of version `name` (and the versions it requires), its worker started and its files listed.
-   * @param {{ name: string, session?: string, bw?: number, prefetch?: 'startup'|'start'|'first-read'|'none',
-   *   cacheBytes?: number, memBytes?: number, cacheBlocks?: number, log?: (text: string) => void }} o
+   * @param {{ name: string, session?: string, lang?: string|null, bw?: number, prefetch?: 'startup'|'start'|'first-read'|'none',
+   *   cacheBytes?: number, memBytes?: number, cacheBlocks?: number, reloads?: boolean, log?: (text: string) => void }} o
+   *   lang: the game's language (its sessions' own launch set: the startup set, and the mark it adds to — launch-set.js)
    *   prefetch: when the learned order starts loading in the background — with the startup set (startup() then start()),
-   *   at the engine's start, or at its first read (an engine that downloads itself first: its download comes first)
+   *   at the engine's start, or at its first read (an engine that downloads itself first: its download comes first);
+   *   reloads: the engine loads a file again in place (see reloads)
    */
   static async open(o) {
     const g = new GameData(o);
@@ -60,12 +86,16 @@ export class GameData {
     this.realHere = new Set();
     /** those whose light copy is here whole (the file not): read light, the link fast or not */
     this.lightHere = new Set();
+    /** what the page says its loads are for now (prefer) */
+    this.preferred = null;
+    /** the page's engine loads a file again in place once it is here (reloads) */
+    this.reloadsInPlace = !!o.reloads;
     // (waits: the reads that waited for the worker — waitMs, waitBytes their time and bytes, syncFetches those that held
     // the page; fetchedBytes: what the worker received)
     const ctrl = this.ctrl;
     this.stats = { hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0, syncFetches: 0, get waits() { return this.misses; }, get waitMs() { return this.stallMs; },
       get waitBytes() { return this.bytes; }, get fetchedBytes() { return Atomics.load(ctrl, 2); } };
-    this.listeners = { startup: [], whole: [], ahead: [] };
+    this.listeners = { startup: [], whole: [], ahead: [], real: [], launch: [] };
     // (o.worker: a test's stand-in, { postMessage, onmessage })
     this.worker = o.worker ?? new Worker(new URL('./data-worker.js', import.meta.url), { type: 'module' });
     this.ready = new Promise((resolve, reject) => {
@@ -77,11 +107,16 @@ export class GameData {
         else if (m.startup) for (const f of this.listeners.startup) f(m.startup);
         else if (m.whole) for (const f of this.listeners.whole) f(m.whole);
         else if (m.ahead) for (const f of this.listeners.ahead) f(m.ahead);
-        else if (m.real) { for (const k of m.real) { this.realHere.add(k); this.lightHere.delete(k); } for (const k of m.lightHere ?? []) if (!this.realHere.has(k)) this.lightHere.add(k); }
+        else if (m.launch) for (const f of this.listeners.launch) f(m.launch);
+        else if (m.real) {
+          for (const k of m.real) { this.realHere.add(k); this.lightHere.delete(k); }
+          for (const k of m.lightHere ?? []) if (!this.realHere.has(k)) this.lightHere.add(k);
+          if (m.real.length) for (const f of this.listeners.real) f(m.real);
+        }
         else if (m.log) this.log(m.log);
       };
     });
-    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
+    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', lang: o.lang ?? null, bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
     this.timer = setInterval(() => { if (this.used.length) this.worker.postMessage({ used: this.used.splice(0) }); }, 2000);
     // (the page's loading indicator, src/host/web/data-meter.js, when it has one: these counters, read live)
     globalThis.orthrosDataMeter?.attach?.(this.ctrl.buffer);
@@ -135,12 +170,39 @@ export class GameData {
   start() { this.worker.postMessage({ start: true }); if (offlineCopy.get()) this.download(true); }
 
   /**
-   * The loading in the background, as it goes: `fn({ kind: 'ahead', done, total, finished })` — the learned order —, and
-   * `fn({ kind: 'whole', bytes, total, done })` — the whole game.
+   * The files that have a light copy and are here whole now, as they come: `fn(keys)` (`name\npath` lower case) — an
+   * engine that can load a file again (a texture in place) does it for those whose light copy it read (lightRead), after
+   * repick(h).
+   */
+  onReal(fn) { this.listeners.real.push(fn); }
+
+  /** `h` was read from its light copy at its last load. */
+  lightRead(h) { return !!h.as; }
+
+  /**
+   * The next load of `h` (its next read at its start) chooses between the light copy and the file again, however soon it
+   * comes: an engine about to load `h` again in place. The rest of a load under way keeps what it read (its offsets are
+   * that copy's).
+   */
+  repick(h) { h.repick = true; }
+
+  /**
+   * The page's engine loads a file again in place once it is here (`on`): the light copies read first on every link
+   * that is not fast (readsReal), their files fetched soon after them (HttpBackend.upgrade's `soon`) — the player sees
+   * them sharpen at once.
+   */
+  reloads(on = true) { this.reloadsInPlace = !!on; }
+
+  /**
+   * The loading in the background, as it goes: `fn({ kind: 'ahead', done, total, finished })` — the learned order —,
+   * `fn({ kind: 'whole', bytes, total, done })` — the whole game —, and `fn({ kind: 'launch', bytes, here, wireLeft,
+   * seconds, done })` — the way to playable (the launch set: what the game still waits for until it plays without
+   * holding; `seconds` at the link's measured rate, null until measured), while the game is not playable yet.
    */
   onProgress(fn) {
     this.listeners.ahead.push((p) => fn({ kind: 'ahead', ...p }));
     this.listeners.whole.push((p) => fn({ kind: 'whole', ...p }));
+    this.listeners.launch.push((p) => fn({ kind: 'launch', ...p }));
   }
 
   /** What earlier sessions read first, loaded before the engine starts; `onProgress({ bytes, total, done })`. */
@@ -151,6 +213,13 @@ export class GameData {
       this.worker.postMessage({ startup: true });
     });
   }
+
+  /**
+   * The game reached a moment of its own: 'playable' — it first draws in play (a port's page: its loading screen hidden,
+   * OpenMW's player in the world). Told to the server once with the pieces used before it: the reads before the mark are
+   * the version's launch set (src/vfs/launch-set.js — the startup set, the home's "playable after X MB").
+   */
+  mark(kind) { this.worker.postMessage({ mark: { kind }, used: this.used.splice(0) }); }
 
   /** The whole version kept in the browser, in the background (`on`: start, else stop); `onProgress({ bytes, total, done })`. */
   download(on = true, onProgress = null) {
@@ -172,6 +241,18 @@ export class GameData {
 
   /** The engine's reads wait for the network now. */
   get waiting() { return Atomics.load(this.ctrl, 6) > 0; }
+  /** The link is thin (measured below THIN_BPS, net-link.js). */
+  get thin() { return Atomics.load(this.ctrl, 9) === 1; }
+  /**
+   * Nothing waits: no read waited for the network for `ms`, and the learned order's loading has nothing left for the
+   * game's current step (data-worker.js) — a page may load more of its game now (a view that grows).
+   */
+  quiet(ms = QUIET_MS) { const c = this.ctrl; return Atomics.load(c, 6) === 0 && Atomics.load(c, 11) >= ms && Atomics.load(c, 10) === 1; }
+  /**
+   * What the next loads are for, until said again (readsReal): 'light' — loads that can do with less for now (the far
+   * ring of a view that grows: their files come after them, for their next loads) —, 'real', or null (the link decides).
+   */
+  prefer(kind = null) { this.preferred = kind === 'real' || kind === 'light' ? kind : null; }
   /** Bytes the worker received (decoded). */
   get received() { return Atomics.load(this.ctrl, 2); }
 
@@ -193,17 +274,19 @@ export class GameData {
 
   /**
    * What a read of `h` at `position` reads: `h`, or its light copy's handle. Chosen at each load of the file (a read at
-   * its start, LOAD_GAP_MS after its last one), kept until its next load: the file when it is here, or when the link is
-   * fast and its light copy is not here (the learned order brought it before the link was measured), else its light copy — the worker then fetches the file in the background (told once).
+   * its start, LOAD_GAP_MS after its last one, or the first after repick), kept until its next load (readsReal); its
+   * light copy read, the worker fetches the file in the background (told once; soon for an engine that reloads).
    */
   pick(h, position) {
     if (!this.lightOf(h)) return h;
     const now = performance.now();
-    if (position === 0 && now - (h.at ?? -Infinity) > LOAD_GAP_MS) {
-      const key = h.name + '\n' + h.path.toLowerCase();
-      const real = this.realHere.has(key) || (Atomics.load(this.ctrl, 7) === 1 && !this.lightHere.has(key));
+    if (position === 0 && (h.repick || now - (h.at ?? -Infinity) > LOAD_GAP_MS)) {
+      h.repick = false;
+      const key = h.name + '\n' + h.path.toLowerCase(), c = this.ctrl;
+      const real = readsReal({ here: this.realHere.has(key), lightHere: this.lightHere.has(key), fast: Atomics.load(c, 7) === 1,
+        thin: Atomics.load(c, 9) === 1, measured: Atomics.load(c, 8) > 0, prefer: this.preferred, reloads: this.reloadsInPlace });
       h.as = real ? null : this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light);
-      if (h.as && !h.told) { h.told = true; this.worker.postMessage({ light: { name: h.name, path: h.path } }); }
+      if (h.as && !h.told) { h.told = true; this.worker.postMessage({ light: { name: h.name, path: h.path, soon: this.reloadsInPlace } }); }
     }
     h.at = now;
     return h.as ?? h;
@@ -258,10 +341,13 @@ export class GameData {
     return (h.whole = all);
   }
 
-  /** The bytes [position, position + length) of `h` into the page, without holding it (an engine that waits: JSPI). */
-  async ensure(h, position, length) {
+  /**
+   * The bytes [position, position + length) of `h` into the page, without holding it (an engine that waits: JSPI).
+   * `background`: nothing waits for them (readable()) — not counted among the engine's waits.
+   */
+  async ensure(h, position, length, background = false) {
     const v = this.pick(h, position);
-    if (v !== h) { if (position < v.size) await this.ensure(v, position, Math.min(length, v.size - position)); return; }
+    if (v !== h) { if (position < v.size) await this.ensure(v, position, Math.min(length, v.size - position), background); return; }
     const end = Math.min(h.size, position + length);
     for (let p = Math.floor(position / PIECE); p * PIECE < end;) {
       if (this.cache.has(h.id * PER_FILE + p)) { p++; continue; }
@@ -270,10 +356,21 @@ export class GameData {
         this.asks.set(id, { resolve, reject });
         this.worker.postMessage({ read: { id, ...this.whose(h), off: p * PIECE, len: end - p * PIECE, want: this.want(h, end - p * PIECE) } });
       });
-      this.stats.misses++; this.stats.stallMs += performance.now() - t0;
+      if (!background) { this.stats.misses++; this.stats.stallMs += performance.now() - t0; }
       this.keep(h, p, bytes);
       p = Math.floor((p * PIECE + Math.max(PIECE, bytes.length)) / PIECE);
     }
+  }
+
+  /**
+   * Whether `h` can be read whole without the page's thread waiting: true, or false and its bytes fetched in the
+   * background (ensure, once at a time) — an engine that would rather skip a load than wait (OpenMW's sounds played
+   * once, orthros-r2.patch). A file whose fetch failed: true (its read waits, and says what failed).
+   */
+  readable(h) {
+    if (h.failed || !this.missing(h, 0, h.size)) return true;
+    h.ensuring ??= this.ensure(h, 0, h.size, true).catch((e) => { h.failed = true; this.log(`${h.path}: ${e?.message ?? e}`); }).finally(() => { h.ensuring = null; });
+    return false;
   }
 
   /** A request's file: a game file's version and path, or a source's id. */

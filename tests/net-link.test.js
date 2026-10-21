@@ -146,6 +146,7 @@ test('net status: the waiting message names the rate, what came and the step\'s 
   assert.match(t.detail, /download the whole game first/);
   assert.equal(fmtRate(5 * 1048576), '5.0 MB/s');
   assert.equal(fmtDuration(7300), 'about 2 h 2 min');
+  assert.equal(fmtDuration(42, 'fr', true), '~40 s');
   assert.deepEqual(Object.keys(benchNetwork({ bw: 5, demandBytes: 1 })).sort(), ['aborted', 'bgBytes', 'bgRequests', 'bw', 'demandBytes', 'demandMs', 'demandRequests', 'measured', 'rtt']);
 });
 
@@ -153,7 +154,8 @@ test('download first: the home screen line from the kept progress', () => {
   assert.equal(downloadStatus(null, 1.5e9, 'en').state, 'none');
   const p = downloadStatus({ bytes: 0.5e9, total: 1.5e9, bw: 85000, ratio: 0.7 }, 1.5e9, 'en');
   assert.equal(p.state, 'paused'); assert.equal(p.pct, 33);
-  assert.match(p.text, /33% downloaded .* more at 83 KB\/s/);
+  assert.equal(p.text, '33% downloaded · ~2 h 17 min more');
+  assert.match(p.detail, /33% downloaded .* more at 83 KB\/s/);
   assert.ok(Math.abs(p.eta - 1e9 * 0.7 / 85000) < 1);
   assert.equal(downloadStatus({ bytes: 1.5e9, total: 1.5e9, done: true }, 1.5e9, 'fr').state, 'done');
   assert.match(downloadStatus({ running: true, bytes: 1e8, total: 1e9, bw: 1e6 }, 1e9, 'fr').text, /restantes/);

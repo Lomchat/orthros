@@ -9,6 +9,7 @@ import { Vfs, MemBackend, normalizeWin, mountGameCdrom } from '../../vfs/vfs.js'
 import { FileAliasBackend } from '../../vfs/file-alias-backend.js';
 import { BLOCK } from '../../vfs/http-backend.js';
 import { openData, openStore, learnedOrder } from '../../vfs/game-data.js';
+import { launchFirst } from '../../vfs/launch-set.js';
 import { NetLink } from '../../vfs/net-link.js';
 import { MemBlockStore } from '../../vfs/opfs-store.js';
 import { Registry } from '../../win32/registry.js';
@@ -17,6 +18,7 @@ import { VOICE_TABLE_BYTES, audioPlaying } from '../../win32/dsound.js';
 import { audioDecodeStats } from '../../media/mpeg-source.js';
 import { LAN } from '../lan-proto.js';
 import { createWebGLBackend } from '../../gfx/d3d8-webgl.js';
+import { programsUrl, programsPost } from '../../gfx/program-id.js';
 import { createInlineGfx, createRemoteGfx, createCompareGfx, renderMode } from '../../gfx/render-host.js';
 import { stateUseReport } from '../../win32/d3d8.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../../cpu/decoder.js';
@@ -30,6 +32,7 @@ import { LearnedHeat } from '../../cpu/jit/heat.js';
 import { captureVm, restoreVm, notQuiet, persistentChanged } from '../../core/vm-snapshot.js';
 import { encodeSnapshot, decodeSnapshot, SnapshotStale } from '../../core/snapshot.js';
 import { SnapshotWatch } from '../snapshot-watch.js';
+import { PlayableWatch, ReadLog, ReadReports } from '../../vfs/playable-watch.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
@@ -58,6 +61,8 @@ let snapshotWatch = null, autoSeen = null; // (this session's automatic snapshot
 let snapshotPublish = false; // (the server's publishing session: its snapshots carry the profile, for new players — docs/snapshot.md stage 3)
 /** shared first-launch profile (profile-seed.js): files offered by the server to an empty profile; a first session's watch */
 let seedWatch = null, seedSink = null, profileSeeded = 0;
+/** the launch set's mark (playable-watch.js): when the game first looks playable, what it read until then to the server */
+let playableWatch = null, readLog = null, readBackends = null, playableMeta = null;
 const channel = new MessageChannel();
 const post = (m, transfer) => self.postMessage(m, transfer);
 const log = (kind, msg) => post({ type: 'log', kind, msg });
@@ -197,14 +202,14 @@ async function start(m) {
   // new ones are sent back a few seconds after they are built (a render worker does both itself)
   const pcache = host.gfx?.programCache;
   if (pcache && m.opts.programCache && !pcache.remote) {
-    const url = `/api/programs/${encodeURIComponent(manifestName)}`;
+    const url = programsUrl(manifestName);
     fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => {
       if (!Array.isArray(list) || !list.length) return;
       pcache.queue.push(...list);
       log('gfx', `programs: ${list.length} learned from earlier sessions, compiled ahead${pcache.parallel ? ' (parallel compilation)' : ''}`);
     }).catch(() => {});
     // (new builds with their sources; the ids of the learned ones this session used, which the server keeps)
-    programSink = (list, used) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs: list, used }) }).catch(() => {});
+    programSink = (list, used) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: programsPost(list, used) }).catch(() => {});
   }
   if (!m.opts.headless || m.opts.lan) connectLan(host, manifestName); // (the virtual LAN: every player of this game on the server)
   if (m.opts.regionCache) {
@@ -238,15 +243,19 @@ async function start(m) {
     if (store) store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log('warn', `block store${tag}: a stored block did not read back as written, fetched again: ${key}`); };
     const pf = primary ? prefetch : { bytes: 0, blocks: 0, total: 0, done: false }, rank = new Map();
     const { files } = await openData(name, { tree, store, cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', link, net: netLink,
+      onRead: readLog ? (p, a, b) => readLog?.add(name, p, a, b, performance.now()) : null,
       onFetch: m.opts.netLog ? (f) => log('net', `t=${(performance.now() / 1000).toFixed(1)}s ${f.async ? 'parked' : 'sync'} ${primary ? '' : name + ':'}${f.path} [${f.start}, ${f.end}) ${Math.round(f.ms)}ms; learned rank ${rank.get(`${f.path}#${Math.floor(f.start / BLOCK)}`) ?? '-'}, prefetch at ${pf.k ?? '-'}`) : null,
       onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
     // learned prefetch: the blocks earlier sessions read, in the order they needed them, downloaded in the background
     if (store && m.opts.prefetch && !m.opts.offline) {
-      learnedOrder(name).then((list) => {
+      // (its launch set first once sessions marked it playable, as the engines that run in the page take it: a player
+      // waiting in the menu gets the rest of the way to playable first — launch-set.js launchFirst; flags by language)
+      learnedOrder(name, m.opts.gameLanguage || null).then((order) => {
+        const list = launchFirst(files, order, netLink.fast());
         pf.total = list.length; pf.t0 = performance.now();
         if (m.opts.netLog) list.forEach(([p, b], i) => rank.set(`${p}#${b}`, i));
         if (list.length) log('file', `prefetch${tag}: ${list.length} blocks learned from earlier sessions`);
-        return files.prefetch(list, pf, () => stopped).then(() => log('file', `prefetch${tag}: ${pf.done ? 'done' : 'stopped'}, ${pf.blocks} blocks (${Math.round(pf.bytes / 1048576)} MB) downloaded in ${((performance.now() - pf.t0) / 1000).toFixed(0)} s; store writes ${Math.round(store.stats.putMs ?? 0)} ms (${store.stats.flushes ?? 0} index flushes, ${Math.round(store.stats.flushMs ?? 0)} ms)`));
+        return files.prefetch(list, pf, () => stopped, { first: list.first ?? 0 }).then(() => log('file', `prefetch${tag}: ${pf.done ? 'done' : 'stopped'}, ${pf.blocks} blocks (${Math.round(pf.bytes / 1048576)} MB) downloaded in ${((performance.now() - pf.t0) / 1000).toFixed(0)} s; store writes ${Math.round(store.stats.putMs ?? 0)} ms (${store.stats.flushes ?? 0} index flushes, ${Math.round(store.stats.flushMs ?? 0)} ms)`));
       }).catch(() => {});
     }
     // offline copy (opt-in): the whole folder into the block store, in the background while the game runs
@@ -255,8 +264,12 @@ async function start(m) {
       if (!primary) offlineDependencies.push(progress);
       files.downloadAll(progress, () => stopped).then(() => log('file', `offline copy${tag}: ${progress.done ? 'complete' : 'stopped'} (${Math.round(progress.bytes / 1048576)} MiB of ${Math.round(progress.total / 1048576)})`));
     }
+    readBackends?.set(name, files);
     return { files, store };
   };
+  // (the reads of this session until its game looks playable: sent with the mark — not by a session restored from a
+  // snapshot, which skips the reads of the start)
+  if (m.opts.session) { readLog = new ReadLog(); readBackends = new Map(); playableMeta = { session: m.opts.session, lang: m.opts.gameLanguage || null }; }
   const main = await mountFiles(manifestName, m.tree, true);
   gameStore = main.store; gameFilesStats = main.files.stats; primaryFiles = main.files;
   // (a language's view of the game folder: files read under another name — languageFileAliases — and the files of the
@@ -301,7 +314,7 @@ async function start(m) {
     const ch = new MessageChannel(), globals = {};
     for (const k of Object.keys(globalThis)) if (k.startsWith('ORTHROS_') && (typeof globalThis[k] !== 'object' || globalThis[k] === null)) globals[k] = globalThis[k];
     post({ type: 'gl-port', port: ch.port1 }, [ch.port1]);
-    await renderer.start(vm.mem.memory, { width: manifest.display.width, height: manifest.display.height, globals, programs: m.opts.programCache && remoteGl ? `/api/programs/${encodeURIComponent(manifestName)}` : null, compareEvery: remoteGl ? 0 : Number(globalThis.ORTHROS_COMPARE_EVERY) || 60, noPresent: !remoteGl }, ch.port2);
+    await renderer.start(vm.mem.memory, { width: manifest.display.width, height: manifest.display.height, globals, programs: m.opts.programCache && remoteGl ? programsUrl(manifestName) : null, compareEvery: remoteGl ? 0 : Number(globalThis.ORTHROS_COMPARE_EVERY) || 60, noPresent: !remoteGl }, ch.port2);
   }
   if (regionSink && vm.jit) { vm.jit.learned = []; vm.jit.coveredLearned = []; } // (coveredLearned: learned entries found to be blocks of other learned regions, see Jit.bgInstallNow)
   // visit flags in the translations (the heat sent back; ?dbg=ORTHROS_JIT_VISIT=0: off)
@@ -378,6 +391,8 @@ async function start(m) {
   // (refined at each later settled stretch until the player acts — a restored session too: snapshot-watch.js)
   if (m.opts.snapshotAuto) snapshotWatch = new SnapshotWatch({ opens: vm.vfs.opens });
   snapshotPublish = !!m.opts.snapshotPublish;
+  if (restored) readLog = readBackends = null;
+  else if (readLog) playableWatch = new PlayableWatch();
   if (!restored) try {
     vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
   } catch (e) { post({ type: 'crash', report: e instanceof GuestCrash ? e.report : String(e.stack || e) }); return; }
@@ -414,9 +429,25 @@ let longSliceStart = 0, longSliceLogs = 0, longWaitLogs = 0, longWaitMin = 1000,
  * time — a wake-up (input, an asynchronous completion) replaces a pending timer instead of starting a second chain.
  */
 let pumpPosted = false, pumpTimer = null;
+/**
+ * Short sleeps and the HTML timer nesting clamp: a setTimeout armed from a timer callback, five deep, waits at least
+ * 4 ms whatever is asked (Chrome: a 1-3 ms timer re-armed from its own callback fires after ~4.07 ms; armed from a
+ * message task it oversleeps by ~0.07 ms). A pump run by a timer that sleeps again for less than that arms its timer
+ * from a message task instead (`armChannel`, one hop of ~4 µs: `timerDue` the time wanted), so a chain of short
+ * sleeps — every pump returning 'sleep' — keeps its length. ?dbg=ORTHROS_TIMER_HOP=0: the timer armed directly (A/B).
+ */
+const TIMER_CLAMP_MS = 5;
+let inPumpTimer = false, timerDue = 0;
+const armChannel = new MessageChannel();
+armChannel.port1.onmessage = () => { if (!timerDue) return; const ms = timerDue - performance.now(); timerDue = 0; pumpTimer = setTimeout(pumpFromTimer, Math.max(0, ms)); };
+function pumpFromTimer() { pumpTimer = null; inPumpTimer = true; try { pump(); } finally { inPumpTimer = false; } }
 function schedulePump(ms) {
   if (pumpTimer !== null) { clearTimeout(pumpTimer); pumpTimer = null; }
-  if (ms > 0) { pumpTimer = setTimeout(() => { pumpTimer = null; pump(); }, ms); return; }
+  timerDue = 0; // (a timer being armed through armChannel: replaced as well)
+  if (ms > 0) {
+    if (inPumpTimer && ms < TIMER_CLAMP_MS && globalThis.ORTHROS_TIMER_HOP !== 0) { timerDue = performance.now() + ms; armChannel.port2.postMessage(0); return; }
+    pumpTimer = setTimeout(pumpFromTimer, ms); return;
+  }
   if (!pumpPosted) { pumpPosted = true; channel.port2.postMessage(0); }
 }
 /** The APIs that took the most time since the previous frame (then reset): what a slow frame spent its time in. */
@@ -434,7 +465,7 @@ function apiPhaseTop() {
     const calls = cur.calls[i] - (prev?.calls[i] ?? 0), n = (cur.n[i] ?? 0) - (prev?.n[i] ?? 0), ms = (cur.ms[i] ?? 0) - (prev?.ms[i] ?? 0);
     if (calls > 0 && n > 0) out.push([i, ms * Math.max(1, calls / n), calls]);
   }
-  return out.sort((a, b) => b[1] - a[1]).slice(0, 12).map(([i, ms, calls]) => { const t = vm.api.thunk(i); return `${t ? t.name : i} ${ms.toFixed(0)} (${calls})`; }).join(', ');
+  return out.sort((a, b) => b[1] - a[1]).slice(0, 12).map(([i, ms, calls]) => `${vm.acctApiName(i)} ${ms.toFixed(0)} (${calls})`).join(', ');
 }
 let idlePartsPrev = { pump: 0, wait: 0 };
 /** Worker time per guest thread since the last call (thread id: % of the interval), busiest first. */
@@ -562,6 +593,39 @@ function takeSnapshot(id) {
     return true;
   } catch (e) { post({ type: 'snapshot', id, error: String(e.message ?? e) }); return false; }
 }
+/**
+ * This session's reads, to the server's learned order (playable-watch.js ReadLog: whatever answered them — the server
+ * sees only those that reach the network), every READS_REPORT_MS, as the engines that run in the page report theirs;
+ * once the game looks playable (PlayableWatch), each mounted version's report carries the mark — the version's launch
+ * set, its "Prepare" and its launch-first order (launch-set.js).
+ */
+const READS_REPORT_MS = 15000;
+let readsReportAt = 0;
+const readReports = new ReadReports(); // (in order: the playable mark after the reads before it; the final one at once)
+function reportReads(now, mark = null, final = false) {
+  readsReportAt = now;
+  const { session, lang } = playableMeta, sent = [];
+  for (const [name, files] of readBackends) {
+    const reads = readLog.take(name, (p) => files.lookup(p)?.file?.size ?? null);
+    if (!reads.length && !mark) continue;
+    sent.push(`${name} ${reads.length}`);
+    readReports.send(name, session, reads, mark ? { ...mark, ...(lang ? { lang } : {}) } : null, final);
+  }
+  return sent;
+}
+function playableStep(now) {
+  if (playableWatch) {
+    let bytes = 0, videoBytes = 0;
+    for (const f of readBackends.values()) { bytes += f.reads.bytes; videoBytes += f.reads.videoBytes; }
+    if (playableWatch.step(now, { frames: host.framesPresented, bytes, videoBytes, requests: netStat('requests'), pacingMs: acct.acc[ACCT.wait] + acct.acc[ACCT.sleep] })) {
+      playableWatch = null;
+      const sent = reportReads(now, { kind: 'playable', t: Math.round(now - (readLog.t0 ?? now)) });
+      log('file', `playable at t=${(now / 1000).toFixed(1)}s (${Math.round(bytes / 1048576)} MB read): marked with the reads before it (${sent.join(', ') || 'none'})`);
+      return;
+    }
+  }
+  if (now - readsReportAt >= READS_REPORT_MS) reportReads(now);
+}
 /** The automatic snapshot (snapshot-watch.js): tried once the game settled, at a quiet point; kept once the session went on. */
 function snapshotAutoStep() {
   const w = snapshotWatch, now = performance.now(), frames = host.framesPresented;
@@ -678,6 +742,7 @@ function pump() {
     pumpStats.runs = pumpStats.sleeps = pumpStats.idles = pumpStats.sleepMs = pumpStats.runMs = 0;
     lastApi = vm.apiCalls; lastSlices = vm.slices; lastFrames = host.framesPresented; host.audioPeak = 0; host.audioMs = 0; host.audioFrames = 0;
     flushProfile();
+    if (readLog) playableStep(now);
     if (seedWatch) { const files = seedWatch.step(now, host.framesPresented); if (files || seedWatch.done) { seedWatch = null; host.onUserInput = null; if (files) { log('file', `profile: ${files.length} file(s) this first session wrote reported to the server (shared first-launch profile)`); seedSink(files); } } }
   }
   // (every guest thread waits: learned GL programs started — before afterSlice's fence, which then covers their builds)
@@ -686,7 +751,7 @@ function pump() {
   host.gfx?.afterSlice?.();
   acct.enter(ACCT.host);
   pumpEndAt = performance.now(); lastPumpReturn = r.state === 'sleep' ? `sleep ${Math.round(r.until - pumpEndAt)}ms` : r.state;
-  if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code, report: vm.exitReport ?? null }); flushProfile(true); return; }
+  if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code, report: vm.exitReport ?? null }); flushProfile(true); if (readLog) reportReads(performance.now(), null, true); return; }
   if (r.state === 'sleep') {
     if (r.until - pumpEndAt >= 3) { acct.enter(ACCT.ahead); prewarmRegions(Math.min(8, r.until - pumpEndAt - 1)); acct.enter(ACCT.host); } // (the wait, used to translate ahead)
     heatSlack(r.until - performance.now());
@@ -835,7 +900,7 @@ function renderInThread(recorders, threadBackend) {
   log('gfx', `render: ${recorders.length} device(s) moved to the in-thread backend`);
 }
 
-function stop(reason) { stopped = true; running = false; flushProfile(true); post({ type: 'exit', code: -1, reason }); }
+function stop(reason) { stopped = true; running = false; flushProfile(true); if (readLog) reportReads(performance.now(), null, true); post({ type: 'exit', code: -1, reason }); }
 
 self.onmessage = (e) => {
   const m = e.data;

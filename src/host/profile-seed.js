@@ -52,6 +52,33 @@ export function seedKey(files) {
   return (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0') + files.length.toString(16);
 }
 
+/**
+ * Canonical sets (made by an operator, tools/profile-seed-make.mjs): per manifest, at most one set per game language
+ * that the server offers before any learned one — whatever the sessions report. File name in the learn directory.
+ */
+export const seedCanonFile = (manifest) => `seedcanon-${String(manifest).replace(/[^A-Za-z0-9._-]/g, '_')}.json`;
+
+/**
+ * The valid sets of a canonical file's JSON ({ v: 1, sets: [{ lang, files: [[path, base64]], at?, note? }] }): each
+ * within the limits (as a reported set: seedSelect keeps every file), one per language (the first; lowercased). Each comes back as
+ * { lang, key, files: [[path, base64]], at, note }.
+ */
+export function canonSets(json, limits = SEED_LIMITS) {
+  const out = [], langs = new Set();
+  for (const s of Array.isArray(json?.sets) ? json.sets : []) {
+    // (the language lowercased, as the server looks it up — server.js seedLang: a manifest may declare 'pt-BR')
+    const lang = typeof s?.lang === 'string' && /^[A-Za-z-]{0,16}$/.test(s.lang) ? s.lang.toLowerCase() : null;
+    if (lang === null || langs.has(lang) || !Array.isArray(s.files)) continue;
+    const files = [];
+    for (const f of s.files) { const data = Array.isArray(f) ? fromBase64(f[1]) : null; if (data && seedPathOk(f[0], limits)) files.push({ path: f[0], data }); else { files.length = 0; break; } }
+    const sel = seedSelect(files, limits);
+    if (!sel.length || sel.length !== s.files.length) continue;
+    langs.add(lang);
+    out.push({ lang, key: seedKey(sel), files: sel.map((f) => [f.path, toBase64(f.data)]), at: Number(s.at) || 0, note: typeof s.note === 'string' ? s.note.slice(0, 200) : '' });
+  }
+  return out;
+}
+
 /** bytes -> base64 (browsers and Node: btoa) */
 export function toBase64(d) {
   let bin = '';

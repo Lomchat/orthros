@@ -125,20 +125,34 @@
 #menu .hm-lib-head .hm-legal { order: 4; color: var(--faint); font: 12px var(--sans); white-space: nowrap; }
 #menu .hm-legal a { color: var(--faint); text-decoration: none; } #menu .hm-legal a:hover, #menu .hm-legal a:focus-visible { color: var(--muted); text-decoration: underline; }
 #menu .hm-lib-head::after { content: ""; flex: 1; align-self: center; height: 1px; order: 3; background: linear-gradient(90deg, var(--line), transparent); }
-/* the tabs: all, the Windows games, the recompiled ones, the recompiled and modified ones (with their counts) */
-#menu .hm-metas { display: grid; gap: 2px; min-width: 0; }
+/* the filters: all, then the library's tags by group (the kind of game, the ways to play it), with their counts */
+#menu .hm-metas { display: grid; gap: 4px; min-width: 0; }
 #menu .hm-live { font: 11.5px var(--mono); color: #7ec27e; }
 #menu .hm-live:empty { display: none; }
 #menu .hm-live::before { content: "● "; }
-#menu .hm-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
+#menu .hm-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 16px; }
+#menu .hm-tabs .sep { width: 1px; height: 20px; margin: 0 4px; background: var(--line); }
 #menu .hm-tabs[hidden] { display: none; }
 #menu .hm-tab { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 13px; border-radius: 9px; cursor: pointer;
   border: 1px solid var(--line); background: rgba(14, 20, 36, .7); color: var(--muted); font: 600 13px var(--sans); transition: color .15s, background .15s, border-color .15s; }
 #menu .hm-tab .n { font: 11.5px var(--mono); color: var(--faint); min-width: 18px; padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, .05); text-align: center; }
 #menu .hm-tab:hover { color: var(--fg); border-color: #3a4560; }
 #menu .hm-tab:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
-#menu .hm-tab[aria-selected="true"] { color: var(--bone); border-color: rgba(248, 144, 31, .55); background: rgba(248, 144, 31, .14); }
-#menu .hm-tab[aria-selected="true"] .n { color: var(--ember-hi); background: rgba(248, 144, 31, .16); }
+#menu .hm-tab[aria-pressed="true"] { color: var(--bone); border-color: rgba(248, 144, 31, .55); background: rgba(248, 144, 31, .14); }
+#menu .hm-tab[aria-pressed="true"] .n { color: var(--ember-hi); background: rgba(248, 144, 31, .16); }
+#menu .hm-tab.none { opacity: .45; }
+#menu .hm-tab[data-tag]::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px color-mix(in srgb, var(--c) 55%, transparent); }
+#menu .hm-tab[data-tag][aria-pressed="true"] { color: var(--c); border-color: var(--c); background: color-mix(in srgb, var(--c) 16%, transparent); }
+#menu .hm-tab[data-tag][aria-pressed="true"] .n { color: var(--c); background: color-mix(in srgb, var(--c) 18%, transparent); }
+/* the tags: one color each, the same on the cards and in the filters */
+#menu :where(.hm-tag, .hm-tab[data-tag]) { --c: var(--muted); }
+#menu [data-tag="windows"] { --c: #6ea8d8; }
+#menu [data-tag="recompiled"] { --c: #4fd6a0; }
+#menu [data-tag="modified"] { --c: #f2b84b; }
+#menu [data-tag="solo"] { --c: #b59cff; }
+#menu [data-tag="multiplayer"] { --c: #ff7aa8; }
+#menu [data-tag="story"] { --c: #7fd4e6; }
+#menu [data-tag="free"] { --c: #f39a6b; }
 #menu .hm-grid { --n: 2; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 24px; max-width: calc(var(--n) * 460px + (var(--n) - 1) * 24px); }
 
 #menu .hm-card { position: relative; display: flex; flex-direction: column; overflow: hidden; border-radius: 18px; border: 1px solid var(--line); cursor: pointer; outline: none;
@@ -146,6 +160,7 @@
   animation: hm-rise .7s var(--ease) backwards; animation-delay: calc(var(--i, 0) * 100ms + 380ms);
   transition: transform .3s var(--ease), border-color .3s, box-shadow .3s; }
 #menu .hm-card.still { animation: none; }
+#menu .hm-card[hidden], #menu .hm-empty[hidden] { display: none; }
 #menu .hm-card:hover, #menu .hm-card:focus-visible { transform: translateY(-5px); border-color: rgba(248, 144, 31, .75); box-shadow: 0 22px 50px rgba(0, 0, 0, .6), 0 0 0 1px rgba(248, 144, 31, .3), 0 0 46px -8px rgba(248, 144, 31, .34); }
 #menu .hm-card:focus-visible { box-shadow: 0 22px 50px rgba(0, 0, 0, .6), 0 0 0 2px var(--ember), 0 0 46px -6px rgba(248, 144, 31, .45); }
 #menu .hm-cover { position: relative; aspect-ratio: 16 / 9; min-height: 120px; max-height: max(120px, calc(100dvh - var(--fixed))); overflow: hidden; background: #0b101c; } /* (16:9, but shorter when the window is: all the library shows without scrolling; --fixed: the rest of its height, tabs included) */
@@ -181,14 +196,21 @@
   background-repeat: no-repeat; background-position: right 10px center; }
 #menu select.hm-opt.on { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23ffb56b' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
 #menu .hm-foot-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 6px; }
-#menu .hm-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--mono); color: var(--faint); }
+#menu .hm-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+#menu .hm-tag { display: inline-flex; align-items: center; height: 21px; padding: 0 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--c) 35%, transparent);
+  background: color-mix(in srgb, var(--c) 11%, transparent); color: var(--c); font: 600 11.5px var(--sans); white-space: nowrap; cursor: pointer; transition: background .15s, border-color .15s; }
+#menu .hm-tag:hover { background: color-mix(in srgb, var(--c) 22%, transparent); border-color: color-mix(in srgb, var(--c) 60%, transparent); }
+#menu .hm-tag[aria-pressed="true"] { border-color: var(--c); background: color-mix(in srgb, var(--c) 24%, transparent); }
+#menu .hm-tag:focus-visible { outline: 2px solid var(--c); outline-offset: 2px; }
+#menu .hm-missing { font: 11.5px var(--mono); color: var(--faint); }
 #menu .hm-play { flex: none; display: inline-flex; align-items: center; gap: 9px; height: 32px; padding: 0 16px 0 12px; border-radius: 9px; border: 1px solid rgba(248, 144, 31, .5);
   background: rgba(248, 144, 31, .12); color: var(--ember-hi); font: 700 13px var(--sans); cursor: pointer; transition: background .25s, color .25s, border-color .25s, box-shadow .25s; }
 #menu .hm-card:hover .hm-play, #menu .hm-card:focus-visible .hm-play { background: var(--ember); border-color: var(--ember); color: #1a0f05; box-shadow: 0 6px 20px rgba(248, 144, 31, .35); }
 #menu .hm-play:focus-visible { outline: 2px solid var(--bone); outline-offset: 2px; }
 #menu .hm-dl { position: relative; display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 6px 8px 8px; border-radius: 8px; background: rgba(255, 255, 255, .03); font: 11.5px var(--mono); color: var(--faint); cursor: default; }
 #menu .hm-dl[hidden] { display: none; }
-#menu .hm-dl-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#menu .hm-launch + .hm-dl { margin-top: 4px; }
+#menu .hm-dl-text { flex: 1; min-width: 0; line-height: 1.45; overflow-wrap: break-word; }
 #menu .hm-dl[data-state="running"] .hm-dl-text, #menu .hm-dl[data-state="done"] .hm-dl-text { color: var(--bone); }
 #menu .hm-dl-bar { position: absolute; left: 8px; right: 8px; bottom: 3px; height: 2px; border-radius: 1px; background: rgba(255, 255, 255, .06); overflow: hidden; }
 #menu .hm-dl-bar i { display: block; height: 100%; width: 0; background: var(--ember); transition: width .4s; }
@@ -234,6 +256,7 @@
   #menu .hm-brand span { display: none; }
   #menu .hm-actions { gap: 8px; }
   #menu .hm-body { padding-inline: 16px; }
+  #menu .hm-tabs .sep { display: none; }
   #menu .hm-empty { flex-direction: column; text-align: center; padding: 26px 20px; }
 }
 @media (prefers-reduced-motion: reduce) {

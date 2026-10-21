@@ -143,6 +143,7 @@ function hideLoader() {
   if (!shell || shell.loader.classList.contains('hidden')) return;
   shell.hideLoader();
   shell.running = true; shell.watchPointer(document);
+  gameData?.mark('playable'); // (the game shown: what it read until now is its launch set, src/vfs/launch-set.js)
   status(S.running);
   if (lobbyOverlay.classList.contains('hidden')) lobby?.hide();
 }
@@ -447,7 +448,7 @@ async function start() {
   const shown = languageFiles(files, own.overlays, Object.values(g.languages ?? {}).flatMap((l) => Object.keys(l.overlays ?? {})));
   const t0 = performance.now();
   step('files', 'active', fmtMB(0), 0);
-  ({ data: gameData } = await openPortFiles({ name, tree, files: shown, FS, root: '/rodir', session: sessionId, log, db,
+  ({ data: gameData } = await openPortFiles({ name, tree, files: shown, FS, root: '/rodir', session: sessionId, lang: language, log, db,
     onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
   session.files = gameData;
   const loaded = await gameData.startup((p) => {
@@ -475,6 +476,13 @@ async function start() {
   await started;
   step('game', 'active', '', 0.6);
   engine.Cmd_ExecuteString('developer ' + (params.has('debug') ? '1' : '0'));
+  // (the renderer's error checks — glGetError after its passes each frame and after each texture upload — only with
+  // ?debug: each one waits for the browser's GPU process, about 10 a frame; docs/browser-ports.md, "Measured")
+  engine.Cmd_ExecuteString('gl_check_errors ' + (params.has('debug') ? '1' : '0'));
+  // (the world's surfaces from buffers the renderer fills once a map, gl_vbo — not re-sent a polygon at a time with
+  // its own buffer upload and state: about 85 draws a frame instead of 700 in Counter-Strike; ?vbo=0, or a manifest's
+  // commands, turn it off)
+  engine.Cmd_ExecuteString('gl_vbo ' + (params.get('vbo') === '0' ? '0' : '1'));
   engine.Cmd_ExecuteString(`name "${playerName()}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
   // (the game's main menu: its single player and its multiplayer — a game it creates gets the manifest's settings,
   // bots included; Orthros' server answers its LAN search; the language's own commands)

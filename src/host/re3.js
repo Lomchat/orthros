@@ -77,6 +77,12 @@ export function re3Module(manifest, enginesDir) {
   return found.length === 1 ? `engine/${found[0]}` : null;
 }
 
+/** The engine release's files an re3 page loads at its start: its module and that module's WebAssembly (installed ones). */
+export function re3EngineFiles(manifest, enginesDir) {
+  const module = re3Module(manifest, enginesDir);
+  return module ? [module, module.slice(0, -4) + '.wasm'].filter((f) => engineFile(enginesDir, manifest.re3.engine, f)) : [];
+}
+
 /** The engine release the version names is installed: its release.json, its module and that module's WebAssembly. */
 export function re3Installed(manifest, enginesDir) {
   const module = re3Module(manifest, enginesDir);

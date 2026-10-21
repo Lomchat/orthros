@@ -3,6 +3,7 @@
 // presented frame to the page. Guest memory is shared with the emulator worker: resource contents are read from it
 // (the emulator's fences keep them stable until read), readback pixels written into it while the emulator waits.
 import { createWebGLBackend } from './d3d8-webgl.js';
+import { programsPost } from './program-id.js';
 import { Replayer } from './d3d-mirror.js';
 import { CTL } from './cmd-ring.js';
 import { replayLoop, publishTail } from './render-loop.js';
@@ -66,6 +67,6 @@ function programSync(url) {
   fetch(url).then((r) => (r.ok ? r.json() : [])).then((list) => { if (Array.isArray(list) && list.length) { pc.queue.push(...list); log(`programs: ${list.length} learned from earlier sessions, compiled ahead in the render worker${pc.parallel ? ' (parallel compilation)' : ''}`); } }).catch(() => {});
   setInterval(() => {
     if (!pc.learned.length && !pc.used.length) return;
-    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ programs: pc.learned.splice(0), used: pc.used.splice(0) }) }).catch(() => {});
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: programsPost(pc.learned.splice(0), pc.used.splice(0)) }).catch(() => {});
   }, 5000);
 }

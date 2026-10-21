@@ -154,7 +154,28 @@ test('download first on a thin link: one block per request (a 4 MiB request woul
   assert.ok(p.done);
   assert.ok(calls.every((c) => c.end - c.start <= BLOCK), `request sizes ${calls.map((c) => (c.end - c.start) >> 10)} KiB`);
   calls.length = 0;
-  const f = new HttpBackend('/game/w2/', tree(), { store: new MemBlockStore(), encoded: true, net: new NetLink({ bw: 20 << 20, fixed: true }) });
+  // (unitRequests off: the 4 MiB download as planned, not cut at its blocks for the server's precompressed units)
+  const f = new HttpBackend('/game/w2/', tree(), { store: new MemBlockStore(), encoded: true, unitRequests: false, net: new NetLink({ bw: 20 << 20, fixed: true }) });
   await f.downloadAll({}, () => false, { alone: true });
   assert.ok(calls.some((c) => c.end - c.start === 4 * BLOCK));
+}));
+
+test('a link between thin and fast: a learned block wanted whole goes as the block (the server\'s unit), not as pieces; a slower one by pieces', () => withFetch(async (calls) => {
+  // 1 MB/s: backgroundBytes() is 320 KiB, a block crosses the link in about 1 s (within WHOLE_BLOCK_SECONDS)
+  const b = new HttpBackend('/game/u/', tree(), { store: new MemBlockStore(), encoded: true, net: new NetLink({ bw: 1e6, fixed: true }) });
+  b.gameBusy = () => false;
+  assert.ok(b.net.backgroundBytes() < BLOCK && b.wholeBlockFits());
+  // block 2 of f.big: every piece learned; block 4: pieces 1 and 2 (no whole block for those)
+  await b.prefetch([['f.big', 2, 0xffff, 0], ['f.big', 4, 0b110, 10]], {}, () => false, { learnedOnly: true });
+  const got = calls.map((c) => [c.start, c.end]);
+  assert.deepEqual(got[0], [2 * MiB, 3 * MiB], `the whole block in one request: ${JSON.stringify(got)}`);
+  assert.deepEqual(got.slice(1), [[4 * MiB + CHUNK, 4 * MiB + 2 * CHUNK], [4 * MiB + 2 * CHUNK, 4 * MiB + 3 * CHUNK]], 'the learned pieces of the other one');
+  assert.ok(b.peekBlockHere('f.big', SIZE, 3, 2), 'the block kept whole');
+  // 300 KB/s: a block would take ~3.5 s — by pieces, backgroundBytes() at a time
+  calls.length = 0;
+  const s = new HttpBackend('/game/u2/', tree(), { store: new MemBlockStore(), encoded: true, net: new NetLink({ bw: 400e3, fixed: true }) });
+  s.gameBusy = () => false;
+  assert.equal(s.wholeBlockFits(), false);
+  await s.prefetch([['f.big', 2, 0xffff, 0]], {}, () => false, { learnedOnly: true });
+  assert.ok(calls.length > 1 && calls.every((c) => c.end - c.start <= s.net.backgroundBytes()), `by pieces: ${calls.map((c) => (c.end - c.start) >> 10)} KiB`);
 }));

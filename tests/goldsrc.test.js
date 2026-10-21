@@ -342,7 +342,8 @@ test('rooms: options a player chooses, each choice its commands; a map picture f
   const picture = await fetch(`${base}/api/map-image/gs-orig/dm`, { headers: { 'Accept-Encoding': 'gzip' } });
   assert.equal(picture.status, 200); assert.equal(picture.headers.get('content-type'), 'image/bmp');
   assert.equal((await picture.arrayBuffer()).byteLength, 5000); // (sent compressed, read whole)
-  for (const bad of ['nope', '..%2Fsecret', 'a%20b']) assert.equal((await fetch(`${base}/api/map-image/gs-orig/${bad}`)).status, 404);
+  for (const bad of ['nope', 'a%20b']) assert.equal((await fetch(`${base}/api/map-image/gs-orig/${bad}`)).status, 404);
+  assert.equal((await fetch(`${base}/api/map-image/gs-orig/..%2Fsecret`)).status, 400); // (a decoded '..': refused before any route)
   const listed = await (await fetch(`${base}/api/rooms/gs-orig`)).json();
   assert.deepEqual(listed.mapGroups, []); // (no map groups in the manifest: none, the page shows its maps ungrouped)
   assert.equal(listed.mapImages, true); assert.deepEqual(listed.options.map((o) => [o.id, o.choices.length, o.choices[0].commands]), [['team', 2, undefined], ['money', 2, undefined]]); // (no commands sent out)
@@ -377,4 +378,13 @@ test('rooms: the maps by group (multiplayer.mapGroups), from the manifest to the
     editManifest(gs, (spec) => { spec.versions[0].goldsrc.multiplayer.mapGroups = bad; });
     assert.throws(() => loadGameCatalog(games), /mapGroups/, JSON.stringify(bad));
   }
+});
+
+test('page: the renderer settings a player gets — no glGetError checks unless ?debug, the world from buffers unless ?vbo=0', () => {
+  const src = fs.readFileSync(new URL('../src/ports/goldsrc/play.js', import.meta.url), 'utf8');
+  const start = src.slice(src.indexOf("Cmd_ExecuteString('developer "), src.indexOf('session.command = command'));
+  assert.match(start, /Cmd_ExecuteString\('gl_check_errors ' \+ \(params\.has\('debug'\) \? '1' : '0'\)\)/);
+  assert.match(start, /Cmd_ExecuteString\('gl_vbo ' \+ \(params\.get\('vbo'\) === '0' \? '0' : '1'\)\)/);
+  // (before the manifest's own commands: a version can still turn either off)
+  assert.ok(start.indexOf('gl_vbo') < start.indexOf('solo?.commands'));
 });

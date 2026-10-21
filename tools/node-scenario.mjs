@@ -1,6 +1,7 @@
 // Harness scenarios (tools/scenarios/*.txt, the language of tools/headless.mjs --input) played in Node without a page:
 // tools/startbench.mjs --input <file>. Mouse and keyboard events are queued on the headless host as the browser host
-// queues them; `waitframe:min,max` anchors on the Direct3D device's draws per frame (vm.d3dDevice), `mark:<label>` closes
+// queues them (the steps parsed by the page's own src/host/scenario.js: `#` comment lines, new lines or `;` between
+// steps); `waitframe:min,max[,min2,max2...]` anchors on the Direct3D device's draws per frame (vm.d3dDevice), `mark:<label>` closes
 // a phase and prints its guest instructions and the guest category's time per instruction (frame accounting, as the
 // browser's phase reports), its frame-time percentiles and the APIs that took the most time ([apitop]: ms and calls per
 // frame, µs per call), `dbg:ORTHROS_JIT_AB=<json>` switches the JIT's translation options (Jit.switchOpts), the
@@ -12,6 +13,7 @@ import { acct, C as ACCT } from '../src/core/frame-acct.js';
 import { scanCodeOfVk } from '../src/win32/dinput8.js';
 import { BLOCK_COUNTS_BASE } from '../src/cpu/memory.js';
 import { refreshApiOpt } from '../src/core/api-opt.js';
+import { parseScenario, inRanges } from '../src/host/scenario.js';
 
 export class NodeScenario {
   /**
@@ -21,13 +23,9 @@ export class NodeScenario {
    */
   constructor(text, vm, log, nowMs = () => performance.now()) {
     this.vm = vm; this.log = log; this.nowMs = nowMs; // (the time base: wall time, or a virtual clock's for a deterministic run)
-    let afterWait = false;
-    this.events = text.split(';').map((e) => e.trim()).filter(Boolean).map((e) => {
-      const [t, kind, ...rest] = e.split(':'); const a = rest.join(':');
-      const ev = { t: Number(t.replace(/^\+/, '')), rel: t.startsWith('+'), anchored: afterWait, kind, args: ['text', 'mark', 'dbg'].includes(kind) ? [a] : a.split(',').map(Number), done: false };
-      if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true;
-      return ev;
-    });
+    const { steps, errors } = parseScenario(text);
+    if (errors.length) throw new Error(`scenario: ${errors.join('; ')}`);
+    this.events = steps.map((st) => ({ t: st.t, rel: st.rel, anchored: st.anchored, kind: st.kind, args: st.args, done: false }));
     this.t0 = this.nowMs(); this.anchorAt = null; this.firstFrameAt = null;
     this.pending = []; // [time ms, input event] (button releases, key ups)
     this.phase = null; this.nextCheck = 0;
@@ -59,7 +57,7 @@ export class NodeScenario {
         const prev = ev.prev; ev.prev = { draws: d3d.draws, frames: d3d.frames }; ev.at = t;
         if (!prev || d3d.frames === prev.frames) break;
         const dpf = (d3d.draws - prev.draws) / (d3d.frames - prev.frames);
-        ev.streak = dpf >= ev.args[0] && dpf <= ev.args[1] ? (ev.streak ?? 0) + 1 : 0;
+        ev.streak = inRanges(dpf, ev.args) ? (ev.streak ?? 0) + 1 : 0; // (min,max[,min2,max2...]: any of the ranges)
         if (ev.streak >= 3) { ev.done = true; this.anchorAt = t; this.log(`[input] waitframe ${ev.args.join(',')}: ${dpf.toFixed(0)} draws/frame, anchor at ${t.toFixed(0)}s`); }
         break;
       }
@@ -149,6 +147,7 @@ export class NodeScenario {
       const dts = this.frameDts.sort((a, b) => a - b), q = (x) => dts.length ? dts[Math.min(dts.length - 1, Math.floor(x * dts.length))] : 0;
       r.dt = { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: dts[dts.length - 1] ?? 0, over34: dts.filter((d) => d > 34).length, over40: dts.filter((d) => d > 40).length };
       r.apiTop = this.apiTop();
+      r.picks = (this.vm.sched?.picks ?? 0) - p.picks; // (scheduling decisions: Sleep(0) spins, yields)
       this.results.push(r);
       this.log(`[frames] node phase ${p.label}: ${secs.toFixed(1)} s, ${frames} frames, ${(g / 1e6).toFixed(0)} M guest instructions, guest ${(cats[ACCT.guest] / 1000).toFixed(2)} s = ${r.guestMsPerMInsn.toFixed(3)} ns per instruction; api ${(cats[ACCT.api] / 1000).toFixed(2)} s, jit ${(cats[ACCT.jit] / 1000).toFixed(2)} s, interp ${(cats[ACCT.interp] / 1000).toFixed(2)} s, wait ${(cats[ACCT.wait] / 1000).toFixed(2)} s, CPU ${cpuS.toFixed(1)} s${threadCpuS !== null ? `, thread CPU ${threadCpuS.toFixed(1)} s` : ''}; frame ms p50 ${r.dt.p50.toFixed(1)} p90 ${r.dt.p90.toFixed(1)} p99 ${r.dt.p99.toFixed(1)} max ${r.dt.max.toFixed(0)}, > 34 ms ${r.dt.over34}, > 40 ms ${r.dt.over40}`);
       this.log(`[apitop] ${p.label} (ms per frame, calls per frame, µs per call): ${r.apiTop.map(([k, ms, c, us]) => `${k} ${(ms / Math.max(1, frames)).toFixed(2)} (${(c / Math.max(1, frames)).toFixed(0)}, ${us.toFixed(1)})`).join(', ')}`);
@@ -161,7 +160,7 @@ export class NodeScenario {
     }
     if (!this.phase) { this.apiTop(); this.jitProf?.(); }
     this.frameDts = [];
-    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now(), locks: { ...(d3d?.lockStats ?? {}) } }; // (epoch ms: phases matched with outside measurements, perf stat -I)
+    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now(), picks: this.vm.sched?.picks ?? 0, locks: { ...(d3d?.lockStats ?? {}) } }; // (epoch ms: phases matched with outside measurements, perf stat -I)
   }
   /**
    * The APIs that took the most time since the previous call (as the browser worker's phase report): each API's timed
@@ -172,7 +171,7 @@ export class NodeScenario {
     const out = [];
     for (let i = 0; i < cur.calls.length; i++) {
       const calls = cur.calls[i] - (prev?.calls[i] ?? 0), k = (cur.n[i] ?? 0) - (prev?.n[i] ?? 0), ms = (cur.ms[i] ?? 0) - (prev?.ms[i] ?? 0);
-      if (calls > 0 && k > 0) { const t = this.vm.api.thunk(i); out.push([t ? t.name : String(i), ms * Math.max(1, calls / k), calls, 1000 * ms / k]); }
+      if (calls > 0 && k > 0) { out.push([this.vm.acctApiName(i), ms * Math.max(1, calls / k), calls, 1000 * ms / k]); }
     }
     return out.sort((a, b) => b[1] - a[1]).slice(0, n);
   }

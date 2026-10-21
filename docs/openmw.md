@@ -19,6 +19,14 @@ The engine release, source archive and native simulation image are pinned by
   gateway on localhost port 28101 (`orthros-openmw@morrowind-goty-en`, enabled). The full
   `morrowind-goty-vanilla-plus-en` profile keeps its original id and now contains all seven mods.
   Its enabled gateway uses localhost port 28100. Saves/worlds stay separate from the original profiles.
+- Two games on the home since 2026-10-21 (D103), as Vice City's recompiled and modified cards:
+  `data_games/morrowind` ("The Elder Scrolls III: Morrowind", the original profiles `morrowind-goty-en` / `-fr`, tagged
+  "Recompiled") holds the game's files; `data_games/morrowind-vanilla-plus` ("… — Vanilla+", `modified`, tagged
+  "Modified") holds only the Vanilla+ profiles' version folders (their mods; the French one its hardlinked
+  localized files too) and an empty `base/`. Each Vanilla+ profile `requires` the original profile of its language,
+  whose files lie beneath its own (`gameLayers`: the page's tree and the gateway's linked tree alike). Their version ids,
+  ports, services, native state and cloud saves are unchanged; `formerGame: "morrowind"` keeps their browser saves'
+  key (`orthros-port:morrowind:<dir>`).
 - Project Atlas is installed from its authors' public repository, commit
   `68a838650fb177afb5e6a63c558dc4ae6bf29b56`, SHA-256
   `364c5896a4b181def2420e1b30f54043b3c0ef35812db24b53fe79f1aa1a92f5`.
@@ -190,7 +198,7 @@ Explicitly attached `CUSTOM` scripts retain their original registered filenames,
 calls to `addScript`, `hasScript` and `removeScript` continue to resolve them.
 
 ```sh
-node tools/openmw/guard-client-ui.mjs data_games/morrowind morrowind-goty-vanilla-plus-fr \
+node tools/openmw/guard-client-ui.mjs data_games/morrowind-vanilla-plus morrowind-goty-vanilla-plus-fr \
   ui-modes questman advanced-world-map
 ```
 
@@ -210,7 +218,9 @@ node tools/openmw/install-game.mjs --data-files '/path/to/Morrowind/Data Files'
 ```
 
 The last command requires the six GOTY master/archive files. It copies into an **empty**
-`data_games/morrowind/base/` and refuses to overwrite an existing installation. A GOG offline
+`data_games/morrowind/base/` and refuses to overwrite an existing installation. It also prepares the modded game
+(`tools/openmw/manifest-vanilla-plus.json`: `data_games/morrowind-vanilla-plus`, an empty base, its mods over the
+original's files by `requires`). A GOG offline
 installer may first be extracted with the tooling `innoextract` into the task's scratch directory.
 The manifest currently selects the English release, matching the recommended English plugins;
 do not import a translated installation under that version id.
@@ -220,7 +230,7 @@ author's archive into task scratch, inspect its installation instructions, and s
 applicable parts and plugins explicitly:
 
 ```sh
-node tools/openmw/install-mod.mjs data_games/morrowind morrowind-goty-vanilla-plus-en \
+node tools/openmw/install-mod.mjs data_games/morrowind-vanilla-plus morrowind-goty-vanilla-plus-en \
   project-atlas /path/to/extracted/Project-Atlas \
   --part '00 Core' --part '01 Textures - MET' \
   --part '06 Glow in the Dahrk Patch' --part '07 Graphic Herbalism Patch' \
@@ -295,7 +305,10 @@ paths, cookies, and WebSocket forwarding/origin rejection.
 
 Loading (2026-10-20, after the owner's "stuck at 20 %" and a New Game freeze). The engine build
 (`openmw.{js,wasm,data}`, 238 MB) is sent as the release's own brotli siblings when the browser takes
-them (39 MB; no `Content-Length`, so Emscripten's progress counts against the decoded package size),
+them (39 MB; Orthros' own builds, tools/openmw/build.sh, make them at brotli quality 11: orthros-r1's openmw.data
+33 MB, 40 MB at 9; no `Content-Length`, so Emscripten's progress counts against the decoded package size — the
+server's `sendBrotli`, which says the sizes in `X-Orthros-Wire-Length` / `X-Orthros-Decoded-Length` instead: Prepare's
+download worker counts the decoded body in wire bytes from them, the unit of the card's engine size),
 from `/engines/<release>/e/<hash>/` (immutable, one browser copy for every installation:
 `withSharedEngine`). The page adaptation drops the upstream `?v=2` from the base game's StreamFS
 URLs (with a query the upstream streamfs.js kept none of the pieces it read). The engine reads its
@@ -308,6 +321,24 @@ OffscreenCanvas over the Orthros page — its frames reach the screen while the 
 data received (the streaming's shared byte counter), rate, seconds, and "choose Wait" once Chrome
 may ask.
 
+The engine's package without the example world (2026-10-21, `src/host/openmw-lean.js`). The release's `openmw.data`
+(204 MB, 33.4 MB in brotli) holds the engine's resources (3.3 MB), ICU's data twice (`/icudt68l.dat` and
+`/icu/icudt68l.dat`, 28.6 MB each) and the free example world the page boots with `?nomw` (`/gamedata/`, 144 MB:
+22 MB of the brotli). Every data path of the engine page for a game of its own (hosted, local folder, locker) writes an
+`openmw.cfg` without `data=/gamedata`, yet a new Morrowind player downloaded it before the menu (4-5 min at 85 KB/s).
+The server makes, once per release, the same package with the example world's bytes zeroed — same size and offsets, so
+the metadata inside `openmw.js` stays as it is — at brotli quality 11 (a niced child, `openmw-lean-worker.js`, 207 s
+on the loaded test machine; orthros-r1: 14.9 MB), kept in `<br-cache>/engines/<release>/lean<rule>/<build>/` and
+served immutable as `/engines/<release>/lean<rule>/<build>/openmw.data`; the engine page of a version that is not the
+example (`withLeanPackage`) has `locateFile` give that address for `openmw.data` unless it boots `?nomw`, answered as
+brotli without `Content-Length` like the release's own (`sendBrotli`). The server starts making it at its start for
+every installed game of its own (else the first card or page asking for it does); until it is made pages load the
+release's own package, and the card's engine files (`launch.engineFiles`, what Prepare caches) leave the package out
+(`pending`: a Prepare meanwhile would cache a URL the page stops asking for once the lean one is there). The home's
+engine size counts it once made (`engineOf`); a Prepare whose engine files are no longer the card's (`engineFiles` kept
+with its progress) shows as not ready, its engine to fetch again. Not done: ICU's second copy (the page sets `ICU_DATA=/`, so `/icu/` looks
+unused — another 6-7 MB — not zeroed without a check that nothing reads it).
+
 The engine page's file streaming is the game data every Orthros game reads (CLAUDE.md "Standardization";
 docs/slow-network.md): `src/ports/openmw/streamfs.js` keeps the engine page's StreamFS interface (swapped for the
 release's by `withStreaming`; `?sfs=upstream` on the port's page keeps the release's) and maps its mounts onto the
@@ -317,7 +348,9 @@ the game's files, not laid out for the native gateway). The bytes come from the 
 the Windows games' reader — compressed ranges, the link's measure and regimes, the learned order fetched ahead from the
 game's position, the OPFS block store `orthros-files-<manifest>`, the whole download) through `data-client.js` and
 `emscripten-files.js`; the learned order is the server's `/api/prefetch`, fed by the pieces the engine used (reported by
-the worker). Files of elsewhere (a signed address, a file the player picked) go through the same worker. The copies the
+the worker); the player first in the world (`view-grow.js` `inWorld`: alone, `view.lua`'s first report; in multiplayer, which has
+no Orthros script, the world joined and simulated — `simReady`) marks the session playable (`GameData.mark`:
+the launch set the home card announces, docs/slow-network.md "Playable after"). Files of elsewhere (a signed address, a file the player picked) go through the same worker. The copies the
 page kept before (2026-10-20: OPFS `orthros-streamfs-1`, the release's Cache API `mwdata-chunks-v1`) are taken into
 the store before each file's first read (`legacy-copies.js`): measured, a second visit after the earlier page fetched
 28 MB instead of 166.
@@ -363,6 +396,10 @@ told by messages) besides `cloud.js`, whose save states (saving, saved, error, c
 leaving by « Games » asks it to send what is not on the account yet (`orthros-flush`), 15 s at most. In multiplayer the
 indicator says the world's server keeps the character. The engine's own overlays (the multiplayer onboarding) stay in
 English: they are the upstream portal's.
+Alone (hosted game), on a link that was not fast last time (`linkRate.fast()`, `src/vfs/data-client.js`: below
+`FAST_BPS`, or not measured yet) the page adds `&novid` to the engine page's address: the intro videos (the two logos,
+the new game's movie, tens of MB before the menu) are not played, and a toast says so. `?video=1` on the port's page
+plays them all the same.
 Initial validation: `make test` passed (1,073 passed, 3 skipped, 2 todo); targeted catalog/proxy
 checks passed after the final changes. Chromium reached the example's Village from the home
 card, drew 8,515 WebGL calls and opened the expected installation-specific IDBFS database.
@@ -375,6 +412,93 @@ Before marking Morrowind ready, verify two real browser clients in the same part
 movement, NPC simulation/combat, quest progression and saves after both clients reconnect.
 Also verify solo save/load and the selected visual mods. Measure client GPU performance then.
 
+
+### View distance: near first, far in the background (2026-10-21)
+
+No engine rebuild: of the engine's settings only the view distance changes while it runs (`camera.setViewDistance`,
+`RenderingManager::setViewDistance`); distant terrain and object paging are chosen once per worldspace, so they stay
+on as the page's quality tier says (`TIER`), and the boot distance is what changes. The server's rewrite of the engine
+page (`withProgressiveView`, `src/host/openmw.js`):
+- loads `src/ports/openmw/view-grow.js` in its head (`window.orthrosViewReady`; the engine's `openmw.js` is added once
+  it is there);
+- its `[Camera] viewing distance` comes from `orthrosViewBoot(TIER.vd)`: on a link not fast last time (`linkRate`, the
+  same rule as `&novid`) and with Orthros' file streaming, 8192 (`window.orthrosViewStart`; the tier's,
+  `window.orthrosViewTarget`, is reached later); else the tier's. `?vd=N` still fixes it (no growth). Never in
+  multiplayer (`window.__omwMPEnabled`) nor in the baked example world (`?nomw`, `__FORCE_NOMW`: no game data over the
+  network, no `openmw.cfg` written to start the growth): the tier's distance;
+- every single-player `openmw.cfg` the page writes (hosted, local files, locker) gets
+  `content=orthros.omwscripts`, its files written into the engine's `/resources/vfs` (a data folder of the engine's
+  own) before it starts: `PLAYER: scripts/orthros/view.lua` (source `src/ports/openmw/view.lua`) and
+  `orthros/view.txt`. Always, whatever the link: saves list their content files. Not in multiplayer: a world checks
+  the client's content list against its own (the native simulation's cfg, ending at `mp.omwscripts`) and refuses an
+  extra file (`BAD_CONTENT`). (The example world boots its own cfg: no script there.)
+
+The script, every 0.5 s of real time: reads `orthros/view.txt` (`"<distance> <base>"`, rewritten by the page in
+MEMFS; `"0 0"` leaves the camera alone) and sets the camera's view distance while the player's setting
+(`camera.getBaseViewDistance()`) is still `<base>` — never Settings, so the engine's save of the settings keeps the
+player's own; tells the page `window.omw.state['orthros.view']` = `"<view distance> <setting>"` and
+`['orthros.cell']` = `"<gridX> <gridY>"` in an exterior, `""` elsewhere (`openmw.mp.set`, registered alone too; it
+never touches `window.omw.queue`, the multiplayer script's).
+
+The page's policy (`view-grow.js` `growStep`, every 0.5 s): in an exterior, the game data quiet
+(`GameData.quiet(3000)`, `docs/slow-network.md`) and no frame over 50 ms (p99 of the last half second,
+`window.orthrosFrames` from `frame-meter.js`) for 3 s, a step of 2048 (`GameData.prefer('light')`: its textures read
+light, their files after them); applied by the script and quiet again for 3 s, the step is loaded (`prefer(null)`),
+the next one may come, up to the tier's distance. The player's own setting not the boot value (saved earlier, or changed
+in Options): stopped, theirs wins. `window.orthrosViewState()` shows the growth.
+Not covered: a move far away once the distance is grown (a fast travel, a teleport) loads the whole view at once; a
+player who stays inside never grows it (the first exterior starts from 8192). Not validated in a browser yet: the
+release's Lua API was read in its sources (`camerabindings.cpp`, `vfsbindings.cpp`, `mwmp/luabindings.cpp`) and its
+binary's strings, not run.
+
+### Frame time: engine orthros-r2, quality tier, cloud bridge (2026-10-21)
+
+Engine release `openmw-web-v1.5.3-orthros-r2` (`tools/openmw/build.sh`, patches `orthros-r1.patch` +
+`orthros-r2.patch`, files pinned in `lock.json`; 18 min to compile here, plus the brotli siblings). Installed, no
+manifest switched. What r2 changes:
+- the local map's two leftover diagnostics are no longer installed (`localmap.cpp`): `MapDrawDiagnostic` read pixels
+  back (`glReadPixels`, a whole GPU pipeline drain) at each new map camera's first draw, i.e. at every cell crossing;
+  `MapCullDiagnostic` walked the camera's bin. The other readback at a cell change is upstream OpenMW's own (the global
+  map's CPU copy of each explored cell, `GlobalMap::requestOverlayTextureUpdate(cpuCopy)`, what saves keep): left.
+- the GLES rewriting of shaders (`adjustSourceForGLES`, about 40 `std::regex` constructions and passes over each merged
+  source, and the `$link` regex) is plain scans (`components/shader/glesrewrite.hpp`). Byte for byte the regexes'
+  output: `python3 tools/openmw/gles-rewrite-check.py --engines-dir <data_engines>` compiles both natively and compares
+  them over the engine's 76 shaders (whole, as vertex and fragment, merged as `$link` makes them), 200,000 generated
+  sources and 200,000 `$link` statements (0 differences; a one-character mutation of the scans is caught); natively
+  11.4 ms → 0.095 ms per merged source (5.8 KB mean). No persisted cache of rewritten sources: nothing left to save.
+- a sound played once (not a loop) whose file is not in the page yet is skipped instead of the page's thread waiting
+  for it (`SoundBufferPool::loadSfx(sfx, waitForData)`): the engine asks `globalThis.orthrosFileReady(name)`
+  (`streamfs.js`: the mounted file whose path ends with the VFS name), which answers through `GameData.readable(h)`
+  (`src/vfs/data-client.js`, every engine's: false, and the bytes fetched in the background — not counted among the
+  engine's waits —, then true). Its next play loads it; it is learned then too. Loops (ambient, fire) still wait: a
+  skipped loop would stay silent.
+
+Not done, with the reason: VAOs (already forced on by the upstream OSG patch, `State::State()`; the attribute calls
+left are dynamic geometry — upstream's A/B, engine.cpp F48), KHR_parallel_shader_compile (headless shows 11-15 ms
+`getShaderParameter` stalls only; worth it only if a real GPU trace shows compile hitches), cell loading off the frame
+(the threaded WorkQueue was reverted upstream for main-thread freezes: a lock audit, not a setting), wasm32 vs wasm64
+(the JS glue's memory64 share measured about 1.7 %: an A/B costs a second full build for little).
+
+The quality tier (`src/ports/openmw/tier.js`, `withQualityTier`): from the GPU (`src/host/web/gpu-class.js`, WebGL's
+renderer string: software → low, integrated → mid, discrete → high; deviceMemory ≤ 4 still low; unknown GPU: the
+page's own deviceMemory rule), and a minute in the world whose frame-meter p99 median is over 50 ms starts the next
+session a tier lower on the same GPU (`localStorage['orthros.openmw.tier']`). `?tier=` and the player's Options win.
+The owner's 8 GB+ Iris Xe laptop was 'high' (Chrome caps deviceMemory at 8): now 'mid'. Headless SwiftShader: 'low'.
+
+The cloud bridge (`cloud.js`): each file's size, date and base64 kept; a sync that changed nothing reads, encodes and
+hashes nothing (`tools/openmw/cloud-bench.mjs`, Node: 1 MB of saves 74-88 → 0.03-0.05 ms per idle sync; 20 × 2 MB
+2.9-3.7 s → 0.11-0.15 ms).
+
+In-world measurement: `tools/openmw/perf.mjs` (Seyda Neen `?start=-2,-9`, running for 60 s across one cell boundary,
+`--discard` forces rasterizer discard so SwiftShader rasterizes nothing: CPU-side upper bounds; engine work = time in
+`Module._omw_pump_frame`). On the shared test machine (load 22-37, `?tier=high`, morrowind-goty-en, medians; r1: 5
+runs, r2: 3; runs at load 50-70 discarded): drawn frames 19.4 → 24.4 fps, gap p99 217 → 117 ms, gaps over 100 ms
+52 → 24, engine work p50 15.9 → 15.7 ms, p99 51.9 → 29.1 ms, frames over 50 ms of work 13 → 8, readPixels 0.003 →
+0.002 a frame (the global map's copy stays), 9-10 first plays of sounds skipped instead of waited for. The longest frame
+did not move (440-980 ms, both): the inline cell load at the boundary. SwiftShader drawing (no discard, 40 s, r2, 2
+runs each): `?tier=high` 1.47-1.55 fps, gap p99 3.5-6.5 s; the tier chosen now ('low') 2.12-2.22 fps, 2.4-3.3 s.
+`tools/openmw/check.mjs` passes on r2. Not validated: a real GPU (the owner's laptop), the local map screen after r2
+(the change removes callbacks only), a throttled link for the skipped sounds.
 
 ### GOTY completion check, 2026-10-18
 

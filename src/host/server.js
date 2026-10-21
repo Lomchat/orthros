@@ -1,7 +1,7 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue]
+// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--covers <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue]
 //   --engines-dir: the installed engine releases of the browser ports (default data_engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
@@ -9,8 +9,11 @@
 //   --learn: the order in which sessions read the game's file blocks is kept there (the prefetch list of later sessions),
 //            the GL programs they built and the code regions they translated (both prepared ahead by later sessions),
 //            and the small profile files first sessions wrote (shared first-launch profile; --profile-seed-quorum: the
-//            distinct sessions that must report a set identical before it is offered, default 2), and the shared snapshots
+//            distinct sessions that must report a set identical before it is offered, default 2; an operator-made set,
+//            seedcanon-<manifest>.json written by tools/profile-seed-make.mjs, is offered first), and the shared snapshots
 //            of the games' machines new players start from (docs/snapshot.md, stage 3)
+//   --br-cache: where /gamez keeps its precompressed transport units (br-cache.js; default <learn>/../brcache, none
+//            without --learn; `off`: none), at most --br-cache-bytes of them (default 1.5 GiB)
 //   --snapshot-jobs: when a page asks for a shared snapshot there is none of, a headless browser session of a new
 //            player makes it (tools/snapshot-publish.mjs, one at a time, through the project's browser slots);
 //            --snapshot-queue: the request is only queued, in <learn>/snapshots/queue.json, for tools/snapshot-jobs.mjs
@@ -21,32 +24,40 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
-import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK } from '../vfs/http-backend.js';
+import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK, unitOf, HttpBackend } from '../vfs/http-backend.js';
+import { launchSummary, PRE_PLAYABLE } from '../vfs/launch-set.js';
+import { createBrCache } from './br-cache.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
-import { listGameTree, resolveGameFile, resolveLightFile } from './game-files.js';
+import { listGameTree, dirsStamp, resolveGameFile, resolveLightFile } from './game-files.js';
 import { LIGHT_DIR, readLight } from './light-copies.js';
+import { lightCovers } from './light-covers.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
-import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
-import { openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withSharedEngine, withStreaming } from './openmw.js';
-import { re3Installed, re3Modes, re3Module } from './re3.js';
+import { DEFAULT_ENGINES_DIR, engineFile, goldsrcEngineFiles, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
+import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withProgressiveView, withQualityTier, withSharedEngine, withStreaming } from './openmw.js';
+import { leanPackages, withLeanPackage } from './openmw-lean.js';
+import { re3EngineFiles, re3Installed, re3Modes, re3Module } from './re3.js';
 import { mmoApi } from './mmo.js';
 import { SimLink } from './sim-link.js';
-import { programSourceId } from '../gfx/program-id.js';
-import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
+import { programSourceId, ffKeyRegenerable } from '../gfx/program-id.js';
+import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64, seedCanonFile, canonSets } from './profile-seed.js';
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
 import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY } from './snapshot-store.js';
 import { pipeline } from 'node:stream/promises';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8', '.lua': 'text/plain; charset=utf-8' };
 
 export const listTree = (dir) => listGameTree({ folder: dir });
+/** A file version's validator (weak: the same for its encoded answers — a brotli body decodes to the same bytes). */
+const etagOf = (st) => `W/"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+/** the page's own text files (src/): sent brotli 11 once made (srcBrotli) */
+const SRC_TEXT = /\.(m?js|html|css|json|svg|txt)$/;
 /** The size of the file at `rel` ('/'-separated, exact names) in a tree of listGameTree, or null. */
 const treeFileSize = (tree, rel) => {
   const parts = rel.split('/'), light = parts[0] === LIGHT_DIR; // (a light copy's: its size the file's `light`)
@@ -99,6 +110,20 @@ export function buildVersion(root = ROOT) {
   return value;
 }
 
+/**
+ * A request's path, decoded, when it is safe to route: never a '..' or '.' segment, a backslash or a NUL once decoded
+ * (WHATWG URL folds a literal '/../' but leaves '..%2f' and '%5c' encoded, so a decoded path could climb out of the
+ * directory a route serves), else null — malformed escapes too.
+ */
+export function requestPath(pathname) {
+  let p; try { p = decodeURIComponent(pathname); } catch { return null; }
+  if (p.includes('\\') || p.includes('\0') || p.split('/').some((s) => s === '..' || s === '.')) return null;
+  return p;
+}
+
+/** `file` is inside the directory `dir` (resolved, a trailing separator: '/srv/orthros2' is not under '/srv/orthros'). */
+export const isUnder = (dir, file) => path.resolve(file).startsWith(path.resolve(dir) + path.sep);
+
 export function createServer(opts = {}) {
   const manifestDir = opts.manifests ? path.resolve(opts.manifests) : null;
   const gamesDir = path.resolve(opts.gamesDir ?? DEFAULT_GAMES_DIR);
@@ -106,20 +131,45 @@ export function createServer(opts = {}) {
   const readCatalog = () => manifestDir ? loadManifests(manifestDir, opts.extra) : loadGameCatalog(gamesDir, opts.extra, { enginesDir });
   let manifests = readCatalog();
   const trees = new Map(), treeObjs = new Map();
-  const refreshCatalog = () => { manifests = readCatalog(); trees.clear(); treeObjs.clear(); };
-  // (a game's tree, listed once: again when the catalog is read, or when a folder laid over it is not the one it was
-  // listed with — an re3 engine release installed, removed or rebuilt while the server runs: its gamefiles/, whose
-  // files /game/ and /gamez/ resolve at each request)
-  const overlayStamp = (man) => (man.overlays ?? []).map((dir) => { try { const s = fs.statSync(dir); return `${s.ino}:${s.ctimeMs}:${s.mtimeMs}`; } catch { return '-'; } }).join('|');
+  // (the catalog read again — at each /api/manifests: a game added appears —, the trees of the manifests that say the
+  // same kept: listing a game's tree is a stat of each of its files, all of them ~0.5 s that held every request)
+  const refreshCatalog = () => {
+    const before = manifests; manifests = readCatalog();
+    for (const id of [...treeObjs.keys()]) {
+      if (manifests.has(id) && JSON.stringify(manifests.get(id)) === JSON.stringify(before.get(id))) continue;
+      treeObjs.delete(id); trees.delete(id);
+    }
+  };
+  // (a game's tree, listed once: again when one of the folders it was listed from changed — a file added, removed or
+  // renamed there, a version, a map, an re3 engine release installed, removed or rebuilt while the server runs: its
+  // gamefiles/, whose files /game/ and /gamez/ resolve at each request —; looked at each time, one stat a folder: all
+  // the trees of the library 5.6 ms, against 0.5 s to list them)
   const gameTree = (id, man) => {
-    const stamp = overlayStamp(man), cached = treeObjs.get(id);
-    if (cached?.stamp === stamp) return cached.tree;
-    const tree = listGameTree(man);
-    treeObjs.set(id, { stamp, tree }); trees.delete(id);
+    const cached = treeObjs.get(id);
+    if (cached && dirsStamp(cached.dirs) === cached.stamp) return cached.tree;
+    const dirs = [], tree = listGameTree(man, dirs);
+    treeObjs.set(id, { tree, dirs, stamp: dirsStamp(dirs) }); trees.delete(id);
     return tree;
   };
   /** The tree as /api/tree sends it. */
   const gameTreeJson = (id, man) => { const tree = gameTree(id, man); if (!trees.has(id)) trees.set(id, JSON.stringify(tree)); return trees.get(id); };
+  /**
+   * The tree, brotli or gzip when the browser takes it (a page fetches it at every start and Prepare: 289 KB for
+   * Half-Life, 1.3 MB for Morrowind — 2.9 and 13 s at 100 KB/s; brotli 9: 43 KB for Half-Life), made once per tree.
+   */
+  const treeEncoded = new Map(); // id -> { json, br, gz }
+  const sendTree = (req, res, id, man) => {
+    const json = gameTreeJson(id, man), accept = String(req.headers['accept-encoding'] ?? '');
+    let c = treeEncoded.get(id);
+    if (c?.json !== json) treeEncoded.set(id, c = { json, br: null, gz: null });
+    const type = { 'Content-Type': 'application/json', 'Vary': 'Accept-Encoding' };
+    if (/\bbr\b/.test(accept)) {
+      c.br ??= zlib.brotliCompressSync(json, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: json.length } });
+      return send(res, 200, c.br, { ...type, 'Content-Encoding': 'br', 'Content-Length': c.br.length });
+    }
+    if (/\bgzip\b/.test(accept)) { c.gz ??= zlib.gzipSync(json); return send(res, 200, c.gz, { ...type, 'Content-Encoding': 'gzip', 'Content-Length': c.gz.length }); }
+    return send(res, 200, json, type);
+  };
   const getManifest = (id) => { if (!manifests.has(id) && !manifestDir) refreshCatalog(); return manifests.get(id); };
   const coverFile = (man) => man.coverPath ?? (man.cover && resolveGameFile(man, man.cover));
   const runtimeOf = (man) => man.runtime ?? 'win32';
@@ -135,11 +185,25 @@ export function createServer(opts = {}) {
   const link = opts.net ? new SimLink(opts.net) : null;
   const viaLink = (res, bytes, go, onStart = null) => { const cancel = link.send(bytes, go, onStart); res.on('close', cancel); };
   const send = (res, code, body, extra) => { res.writeHead(code, headers({ 'Content-Type': 'text/plain; charset=utf-8', ...extra })); res.end(body); };
+  /**
+   * A whole file's answer when the browser has it already (its validators, revalidated: Cache-Control no-cache): 304,
+   * no body. The Win32 page's workers each load their module graph (380 fetches of 150 modules, 8.3 MB per visit,
+   * measured): every one of them a revalidation once the browser has the module.
+   */
+  const notModified = (req, st, etag) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+    const inm = req.headers['if-none-match'];
+    if (inm !== undefined) return String(inm).split(',').some((t) => { t = t.trim(); return t === '*' || t.replace(/^W\//, '') === etag.replace(/^W\//, ''); });
+    const ims = Date.parse(String(req.headers['if-modified-since'] ?? ''));
+    return Number.isFinite(ims) && Math.floor(st.mtimeMs / 1000) * 1000 <= ims;
+  };
+  const sendNotModified = (res, h) => { const { 'Content-Length': _l, 'Content-Range': _r, ...rest } = h; res.writeHead(304, rest); res.end(); };
   const sendFile = (req, res, file, mime, extra = {}) => {
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
     if (!st.isFile()) return send(res, 404, 'not found');
-    const range = req.headers.range;
-    const h = headers({ 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Last-Modified': st.mtime.toUTCString(), ...extra });
+    const range = req.headers.range, etag = etagOf(st);
+    const h = headers({ 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Last-Modified': st.mtime.toUTCString(), 'ETag': etag, ...extra });
+    if (!range && notModified(req, st, etag)) return sendNotModified(res, h);
     if (range) {
       const m = /^bytes=(\d*)-(\d*)$/.exec(range);
       if (!m) return send(res, 416, 'bad range', { 'Content-Range': `bytes */${st.size}` });
@@ -157,19 +221,83 @@ export function createServer(opts = {}) {
     fs.createReadStream(file).pipe(res);
   };
   /**
+   * A brotli file sent whole as its decoded content (Content-Encoding: br). No Content-Length: a loader counting the
+   * decoded bytes against it (Emscripten's package download) falls back to the decoded size it knows. Its sizes said
+   * instead, for a client counting the transfer (download-worker.js fetchEngine: the body comes decoded):
+   * X-Orthros-Wire-Length (the brotli bytes) and X-Orthros-Decoded-Length (`decoded`, when known).
+   */
+  const sendBrotli = (req, res, br, mime, extra = {}, decoded = null) => {
+    let st; try { st = fs.statSync(br); } catch { return send(res, 404, 'not found'); }
+    const etag = etagOf(st), h = headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Last-Modified': st.mtime.toUTCString(), 'ETag': etag, ...extra,
+      'X-Orthros-Wire-Length': String(st.size), ...(decoded > 0 ? { 'X-Orthros-Decoded-Length': String(decoded) } : {}) });
+    if (notModified(req, st, etag)) return sendNotModified(res, h);
+    res.writeHead(200, h);
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(br).pipe(res);
+  };
+  /**
+   * The page's own files (src/, and the pages: no build step, the browser loads the modules as they are): revalidated
+   * at each load (Cache-Control no-cache: a new tree is new code at once), 304 when unchanged (sendFile), and a text
+   * file sent brotli 11 once made — 0.90 MB for the Win32 page's 3.26 MB of modules where the reverse proxy's gzip
+   * makes 1.03 MB (measured, docs/slow-network.md). Made in the background at its first request (brotli 11: a few
+   * hundred ms of a core for the largest modules, on libuv's pool), that one sent as it is; kept in memory by the
+   * file's size and mtime (the tree's text is ~4 MB, its brotli ~1 MB), checked again once made.
+   */
+  const srcBr = new Map(); // file -> { size, mtimeMs, br (Buffer | null: not worth it | undefined: being made) }
+  let srcBrBytes = 0;
+  const SRC_BR_MAX = 64 << 20;
+  // (at most SRC_BR_JOBS made at once: a first load's ~150 modules would otherwise fill libuv's 4-thread pool, the game
+  // data's reads — /gamez, /api ranges — waiting behind them)
+  const SRC_BR_JOBS = 2, srcBrJobs = [];
+  let srcBrRunning = 0, srcBrPeak = 0;
+  const srcBrPump = () => {
+    while (srcBrRunning < SRC_BR_JOBS && srcBrJobs.length) {
+      srcBrRunning++; srcBrPeak = Math.max(srcBrPeak, srcBrRunning);
+      let once = false;
+      srcBrJobs.shift()(() => { if (once) return; once = true; srcBrRunning--; srcBrPump(); });
+    }
+  };
+  const srcBrotli = (file, st) => {
+    const c = srcBr.get(file);
+    if (c && c.size === st.size && c.mtimeMs === st.mtimeMs) return c.br ?? null;
+    if (c) { srcBrBytes -= c.br?.length ?? 0; srcBr.delete(file); }
+    if (st.size > 8 << 20 || st.size < 512) return null; // (small: brotli's gain under a header's size)
+    const e = { size: st.size, mtimeMs: st.mtimeMs, br: undefined };
+    srcBr.set(file, e);
+    srcBrJobs.push((done) => fs.readFile(file, (err, buf) => {
+      if (err || buf.length !== st.size) { if (srcBr.get(file) === e) srcBr.delete(file); return done(); }
+      zlib.brotliCompress(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11, [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length } }, (err2, out) => {
+        done();
+        let now = null; try { now = fs.statSync(file); } catch { /* gone */ }
+        if (err2 || srcBr.get(file) !== e || !now || now.size !== e.size || now.mtimeMs !== e.mtimeMs) { if (srcBr.get(file) === e) srcBr.delete(file); return; }
+        e.br = out.length <= buf.length * 0.92 ? out : null;
+        srcBrBytes += e.br?.length ?? 0;
+        for (const [k, v] of srcBr) { if (srcBrBytes <= SRC_BR_MAX) break; if (v.br) { srcBrBytes -= v.br.length; srcBr.delete(k); } } // (oldest out)
+      });
+    }));
+    srcBrPump();
+    return null;
+  };
+  const sendSource = (req, res, file, mime) => {
+    let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
+    if (!st.isFile() || req.headers.range || !SRC_TEXT.test(file)) return sendFile(req, res, file, mime);
+    const etag = etagOf(st), vary = { 'Vary': 'Accept-Encoding' };
+    const br = /\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !notModified(req, st, etag) ? srcBrotli(file, st) : null;
+    if (!br) return sendFile(req, res, file, mime, vary);
+    res.writeHead(200, headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Content-Length': br.length, 'Last-Modified': st.mtime.toUTCString(), 'ETag': etag, ...vary }));
+    res.end(req.method === 'HEAD' ? undefined : br);
+  };
+  /**
    * An engine release's file, or its precompressed sibling (<file>.br, as releases ship them: OpenMW's 204 MB package is
-   * 33 MB) when the browser takes brotli and asks for the whole file. No Content-Length then: a loader counting the
-   * decoded bytes against it (Emscripten's package download) falls back to the decoded size it knows.
+   * 33 MB) when the browser takes brotli and asks for the whole file (sendBrotli).
    */
   const sendEngineFile = (req, res, file, cache) => {
     const mime = MIME[path.extname(file)] ?? 'application/octet-stream';
-    let br = null;
-    try { if (fs.statSync(file + '.br').mtimeMs >= fs.statSync(file).mtimeMs) br = file + '.br'; } catch { /* none */ }
+    let br = null, st = null;
+    try { st = fs.statSync(file); if (fs.statSync(file + '.br').mtimeMs >= st.mtimeMs) br = file + '.br'; } catch { /* none */ }
     if (!br) return sendFile(req, res, file, mime, { 'Cache-Control': cache });
     if (req.headers.range || !/\bbr\b/.test(String(req.headers['accept-encoding'] ?? ''))) return sendFile(req, res, file, mime, { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' });
-    res.writeHead(200, headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Cache-Control': cache, 'Vary': 'Accept-Encoding', 'Last-Modified': fs.statSync(br).mtime.toUTCString() }));
-    if (req.method === 'HEAD') return res.end();
-    fs.createReadStream(br).pipe(res);
+    sendBrotli(req, res, br, mime, { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }, st.size);
   };
 
   /**
@@ -179,9 +307,13 @@ export function createServer(opts = {}) {
    * background (network otherwise idle while the game computes) before the game asks for them. Kept in
    * opts.learnDir/prefetch-<manifest>.json when set. Each block also carries the mask of the 64 KiB pieces sessions
    * read in it (bit i: piece i; absent for blocks learned before masks): a session fetches those pieces ahead of the
-   * game — a few pieces of each block is what a run of small random reads needs, not whole blocks.
+   * game — a few pieces of each block is what a run of small random reads needs, not whole blocks. A page marks the
+   * moment its game is first playable (a report's `mark`: { kind: 'playable' }, GameData.mark): each block that session
+   * had read by then counts it (`pre`), the version the marking sessions (`marks`, kept in playable-<manifest>.json); once
+   * one marked, each listed block carries flags (bit 0, launch-set.js PRE_PLAYABLE: read before playable in at least
+   * half of them) — the launch set.
    */
-  const learned = new Map(); // manifest -> Map("path#block" -> { t, n, mask })
+  const learned = new Map(); // manifest -> Map("path#block" -> { t, n, mask, pre })
   /** mask of the 64 KiB pieces of a block covered by [a, b) (offsets within the block) */
   const pieceBits = (a, b) => { let m = 0; for (let c = Math.floor(a / LEARN_CHUNK); c * LEARN_CHUNK < b; c++) m |= 1 << c; return m >>> 0; };
   const sessions = new Map(); // session id -> { start, seen: Set }
@@ -191,11 +323,38 @@ export function createServer(opts = {}) {
     if (!m) {
       m = new Map(); learned.set(name, m);
       const f = learnFile(name);
-      if (f) try { for (const [k, t, n, mask] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined }); } catch { /* none yet */ }
+      if (f) try { for (const [k, t, n, mask, pre, by] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined, pre: pre || 0, ...(by && typeof by === 'object' ? { by } : {}) }); } catch { /* none yet */ }
     }
     return m;
   };
+  const playable = new Map(); // manifest -> { marks, by: { [game language]: marks } }
+  const playableFile = (name) => opts.learnDir && path.join(opts.learnDir, `playable-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  const playableOf = (name) => {
+    let p = playable.get(name);
+    if (!p) {
+      p = { marks: 0, by: {} }; playable.set(name, p);
+      const f = playableFile(name);
+      if (f) try { const j = JSON.parse(fs.readFileSync(f, 'utf8')); p.marks = Number(j.marks) || 0; if (j.by && typeof j.by === 'object') p.by = j.by; } catch { /* none yet */ }
+    }
+    return p;
+  };
   let learnDirty = new Set(), learnTimer = null;
+  const learnSave = (name) => {
+    launches.delete(name);
+    if (!learnFile(name)) return;
+    learnDirty.add(name);
+    learnTimer ??= setTimeout(() => {
+      learnTimer = null;
+      for (const n of learnDirty) {
+        const f = learnFile(n);
+        try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.pre ? [k, v.t, v.n, v.mask ?? null, v.pre, ...(v.by ? [v.by] : [])] : v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
+        const pf = playableFile(n), pm = playable.get(n);
+        if (pm?.marks) try { fs.writeFileSync(pf + '.tmp', JSON.stringify({ marks: pm.marks, ...(Object.keys(pm.by).length ? { by: pm.by } : {}) })); fs.renameSync(pf + '.tmp', pf); } catch { /* next time */ }
+      }
+      learnDirty = new Set();
+    }, opts.learnWriteMs ?? 20000);
+    learnTimer.unref?.(); // (does not keep a finished process alive)
+  };
   // (`at`: the read's time as the page measured it — a page reporting the reads it served itself, e.g. a browser port)
   const learnRead = (name, rel, start, end, sid, at = null) => {
     if (!sid || sid.length > 40) return;
@@ -212,22 +371,188 @@ export function createServer(opts = {}) {
       let e = m.get(k);
       if (!e) m.set(k, e = { t, n: 0, mask: 0 });
       e.mask = (e.mask ?? 0) | bits; // (every session's pieces, first read of the block or not)
-      if (ss.seen.has(k)) continue;
-      ss.seen.add(k);
+      const sk = `${name}\0${k}`; // (a session reads the versions its game requires too: each one's blocks its own)
+      if (ss.seen.has(sk)) continue;
+      ss.seen.add(sk);
       e.t = Math.min(e.t, t); e.n++;
     }
-    if (learnFile(name)) {
-      learnDirty.add(name);
-      learnTimer ??= setTimeout(() => {
-        learnTimer = null;
-        for (const n of learnDirty) { const f = learnFile(n); try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ } }
-        learnDirty = new Set();
-      }, 20000);
-      learnTimer.unref?.(); // (does not keep a finished process alive)
-    }
+    learnSave(name);
   };
-  // (each entry: [path, block, mask (0: unknown), t (ms from its earliest session's first read)])
-  const prefetchList = (name) => [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k, v]) => { const i = k.lastIndexOf('#'); return [k.slice(0, i), Number(k.slice(i + 1)), v.mask ?? 0, Math.round(v.t)]; });
+  /**
+   * Session `sid` marked version `name` (`kind`): 'playable' counts the blocks it read until now, once a session — and
+   * for its game language (`lang`, when the page tells it: a language's own files, e.g. a game's translated texts, are
+   * read before playable by that language's sessions only).
+   */
+  const learnMark = (name, sid, kind, lang = null) => {
+    const ss = sessions.get(sid), own = `${name}\0`;
+    if (kind !== 'playable' || !ss || ss.marked?.has(name)) return false;
+    const keys = [...ss.seen].filter((sk) => sk.startsWith(own));
+    if (!keys.length) return false;
+    (ss.marked ??= new Set()).add(name); // (once per version: a Windows game marks the versions it requires too)
+    const m = learnedOf(name), p = playableOf(name);
+    for (const sk of keys) {
+      const e = m.get(sk.slice(own.length)); if (!e) continue;
+      e.pre = (e.pre ?? 0) + 1;
+      if (lang) { e.by ??= {}; e.by[lang] = (e.by[lang] ?? 0) + 1; }
+    }
+    p.marks++;
+    if (lang) p.by[lang] = (p.by[lang] ?? 0) + 1;
+    learnSave(name);
+    return true;
+  };
+  // (each entry: [path, block, mask (0: unknown), t (ms from its earliest session's first read)], and once a session
+  // marked the version playable, flags: bit 0 read before playable in at least half the marking sessions — those of
+  // game language `lang` when some of them told it, else all of them)
+  const prefetchList = (name, lang = null) => {
+    const p = playableOf(name), own = lang && p.by[lang] > 0 ? p.by[lang] : 0, marks = own || p.marks;
+    return [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k, v]) => {
+      const i = k.lastIndexOf('#'), e = [k.slice(0, i), Number(k.slice(i + 1)), v.mask ?? 0, Math.round(v.t)];
+      const pre = own ? v.by?.[lang] ?? 0 : v.pre;
+      if (marks) e.push(pre && pre * 2 >= marks ? PRE_PLAYABLE : 0);
+      return e;
+    });
+  };
+  /**
+   * What a version's launch costs (launch-set.js launchSummary: its launch set's bytes, with and without light copies,
+   * and their wire bytes — the precompressed units' when made, br-cache.js), for the home: null until a session marked
+   * it playable. Made again once its learned order changed, or a minute later (the units made meanwhile). The versions it
+   * requires (manifest.extraMounts: the game reads them too) add their own launch sets, each learned from its own
+   * sessions (a version none of whose sessions was marked playable adds nothing). Each game language whose sessions
+   * marked it has its own (`langs`: the launch set of that language's sessions, prefetchList). A browser port's engine
+   * release, downloaded at a first launch, is told apart: `engine` (its wire bytes) and `engineFiles` (its URLs, which
+   * "Prepare" fetches too: download-worker.js).
+   */
+  const launches = new Map(); // manifest -> Map(game language | '' -> { at, v })
+  const ownLaunchOf = (name, man, lang = null) => {
+    let byLang = launches.get(name); if (!byLang) launches.set(name, byLang = new Map());
+    // (kept while the game's tree is the same one — what sessions learn forgets it, learnSave —, made again every ten
+    // minutes all the same: the compressed sizes the server comes to know meanwhile)
+    const c = byLang.get(lang ?? ''), tree = gameTree(name, man);
+    if (c && c.tree === tree && Date.now() - c.at < 600e3) return c.v;
+    let v = null;
+    try {
+      if (playableOf(name).marks) {
+        const at = unitFile(man);
+        v = launchSummary(new HttpBackend(`/game/${name}/`, tree), prefetchList(name, lang), brCache && ((rel, unit) => {
+          const f = at(rel); return f ? brCache.size(f.file, f.st, f.light, unit) : null;
+        }));
+      }
+    } catch { v = null; }
+    byLang.set(lang ?? '', { at: Date.now(), tree, v });
+    return v;
+  };
+  const launchOf = (name, man) => {
+    const required = (Array.isArray(man.extraMounts) ? man.extraMounts : []).map((d) => (d?.manifest && d.manifest !== name ? [d.manifest, manifests.get(d.manifest)] : null)).filter((r) => r?.[1]);
+    const summed = (lang) => {
+      const v = ownLaunchOf(name, man, lang);
+      if (!v) return v;
+      const sum = { ...v };
+      for (const [rn, rm] of required) {
+        const r = ownLaunchOf(rn, rm, lang);
+        if (r) for (const k of ['bytes', 'lightBytes', 'wire', 'lightWire', 'entries']) sum[k] += r[k];
+      }
+      return sum;
+    };
+    const sum = summed(null);
+    if (!sum) return sum;
+    // (the languages some marking sessions told, of this version or of one it requires — those the version declares:
+    // markLang; marks kept from before it are left out)
+    const langs = new Set([name, ...required.map(([rn]) => rn)].flatMap((n) => Object.keys(playableOf(n).by)).filter((l) => markLang(man, l) === l));
+    if (langs.size) sum.langs = Object.fromEntries([...langs].sort().map((l) => [l, summed(l)]));
+    // (the engine's own download at a first launch: told apart, a browser that ran it before has it)
+    const engine = engineOf(man);
+    sum.engine = engine.wire; sum.engineFiles = engine.urls;
+    if (sum.langs) for (const l of Object.values(sum.langs)) { l.engine = engine.wire; l.engineFiles = engine.urls; }
+    return sum;
+  };
+  /**
+   * A browser port's engine release as its page downloads it at a first launch: { wire (bytes, brotli when served so —
+   * sendEngineFile), urls } — none for a Win32 game.
+   */
+  const engineOf = (man) => {
+    const [release, files] = man.runtime === 'openmw' ? [man.openmw?.engine, openmwEngineFiles(man, enginesDir)]
+      : man.runtime === 'goldsrc' ? [man.goldsrc?.engine, goldsrcEngineFiles(man, enginesDir)]
+        : man.runtime === 're3' ? [man.re3?.engine, re3EngineFiles(man, enginesDir)] : [null, []];
+    let wire = 0; const urls = [];
+    for (const rel of files) {
+      const f = engineFile(enginesDir, release, rel); if (!f) continue;
+      // (a game of its own loads OpenMW's package without the example world once this server made it: openmw-lean.js)
+      const leanable = man.runtime === 'openmw' && rel.endsWith('/openmw.data') && !man.openmw.example;
+      const leanUrl = leanable ? lean?.url(release) : null;
+      const leanBytes = leanUrl ? lean.size(release) : null;
+      if (leanBytes) { wire += leanBytes; urls.push(leanUrl + 'openmw.data'); continue; }
+      // (while it is being made: none — "Prepare" would cache the release's own package, which the page stops asking for
+      // once the lean one is there; it comes at the first launch, or with a later "Prepare")
+      if (leanable && lean?.pending(release)) continue;
+      try {
+        const st = fs.statSync(f); let n = st.size;
+        try { const br = fs.statSync(f + '.br'); if (br.mtimeMs >= st.mtimeMs) n = br.size; } catch { /* none */ }
+        wire += n; urls.push(`/engines/${encodeURIComponent(release)}/${rel}`);
+      } catch { /* gone */ }
+    }
+    return { wire, urls };
+  };
+
+  /**
+   * Precompressed transport units (br-cache.js, docs/slow-network.md "Precompressed units"): opts.brCacheDir, at most
+   * opts.brCacheBytes. Made first for the requests that missed them, then from each manifest's learned order (its
+   * earliest reads first: the launch sets, pinned) — the browser ports' first, a listed texture's light copy before
+   * the file. A learned block whose pieces are all known (or not known) is a block unit, else its pieces are.
+   */
+  /** The files of a version's paths (a light copy's too), resolved once: rel -> { file, st, light, size } | null. */
+  const unitFile = (man) => {
+    const files = new Map(), memo = new Map(); // (the folders' listings: a launch set's paths resolved in a row)
+    return (rel) => {
+      if (!files.has(rel)) {
+        let v = null;
+        try {
+          const light = rel.startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, rel, memo) : null;
+          const file = light ? light.file : !rel.startsWith(LIGHT_DIR + '/') && resolveGameFile(man, rel, memo);
+          if (file) { const st = light?.st ?? fs.statSync(file); v = { file, st, light, size: light ? light.copy.size : st.size }; }
+        } catch { /* gone */ }
+        files.set(rel, v);
+      }
+      return files.get(rel);
+    };
+  };
+  /** A learned order, its launch set first (the entries flagged PRE_PLAYABLE), each part in its order: what is pinned. */
+  const launchFirstOrder = (list) => { const first = [], rest = []; for (const e of list) ((e[4] & PRE_PLAYABLE) !== 0 ? first : rest).push(e); return first.concat(rest); };
+  const brSeedUnits = function* (man, list) {
+    const at = unitFile(man), lights = new Set();
+    for (const [rel, block, mask] of list) {
+      // (a light copy is read on a link that is not fast, by pieces: its pieces — one block when it is one piece)
+      if (man.lightCopies && !rel.startsWith(LIGHT_DIR + '/') && !lights.has(rel)) {
+        lights.add(rel);
+        const l = at(`${LIGHT_DIR}/${rel}`);
+        if (l) for (let c = 0; c * LEARN_CHUNK < l.size; c++) yield { file: l.file, st: l.st, light: l.light, unit: l.size <= LEARN_CHUNK ? { kind: 'b', index: 0 } : { kind: 'p', index: c } };
+      }
+      const f = at(rel), b0 = block * LEARN_BLOCK;
+      if (!f || b0 >= f.size) continue;
+      const pieces = Math.ceil(Math.min(LEARN_BLOCK, f.size - b0) / LEARN_CHUNK), all = pieces >= 32 ? 0xffffffff : (2 ** pieces - 1);
+      if (!mask || ((mask & all) >>> 0) === all) { yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'b', index: block } }; continue; }
+      for (let c = 0; c < pieces; c++) if (mask & (1 << c)) yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'p', index: block * (LEARN_BLOCK / LEARN_CHUNK) + c } };
+    }
+    // (not the blocks learned by pieces whole as well, the shape a fast link asks for them — measured, Half-Life on a
+    // fast link: 59 % of the bytes it asked: 1473 of Morrowind's 1830 learned blocks are known by pieces, which would
+    // make its order about three times the brotli work; a fast link's misses ask for them, made after the launch sets)
+  };
+  const brCache = opts.brCacheDir ? createBrCache({
+    dir: opts.brCacheDir, maxBytes: opts.brCacheBytes, log: opts.brCacheLog ?? ((m) => console.log(m)), ...opts.brCacheOptions,
+    // (each launch set's pinned part from its size, the home's: its own and its light copies' units, both made; the
+    // versions without one — no session marked them — an equal part, after those with one)
+    sources: () => [...manifests].filter(([name]) => learnFile(name) && fs.existsSync(learnFile(name)))
+      .map(([name, man]) => { let l = null; try { l = ownLaunchOf(name, man); } catch { /* none */ } return [name, man, l ? l.wire + (man.lightCopies ? l.lightWire : 0) : null]; })
+      .sort(([, a, wa], [, b, wb]) => (wa === null) - (wb === null) || (runtimeOf(a) === 'win32') - (runtimeOf(b) === 'win32'))
+      .map(([name, man, want]) => ({ name, want, units: () => brSeedUnits(man, launchFirstOrder(prefetchList(name))) })),
+  }) : null;
+  /** The home's light covers (light-covers.js): opts.coverDir, none without it. */
+  const covers = opts.coverDir ? lightCovers({ dir: opts.coverDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
+  // (made from the start, one at a time in the background: the first home after a deploy already has most of them)
+  if (covers) setImmediate(() => { for (const man of manifests.values()) { let f = null; try { f = coverFile(man); } catch { /* none */ } if (f) covers.make(f); } });
+  /** OpenMW engine packages without the example world (openmw-lean.js), kept beside the units: none without them. */
+  const lean = opts.brCacheDir ? leanPackages({ dir: path.join(opts.brCacheDir, 'engines'), enginesDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
+  // (made from the start for the installed games of their own: not first at a card or a page, the window without it short)
+  if (lean) for (const m of manifests.values()) if (m.runtime === 'openmw' && !m.openmw?.example && openmwInstalled(m, enginesDir)) lean.url(m.openmw.engine);
 
   /**
    * Learned GL programs, per manifest: the programs sessions had to build at a draw (key, GLSL sources, attribute
@@ -241,23 +566,29 @@ export function createServer(opts = {}) {
    * programs-<manifest>.json, the list of the first format (by key), is only read: its programs missing from the new
    * list are added at each start (a server of the first format may still run on the same directory: neither server
    * rewrites the other's file).
+   * Each entry carries the translator version (program-id.js PROGRAM_GLSL_VERSION) of the last session that built or
+   * used it: a session asking with ?v=<its version> gets the entries of that version only, plus the fixed-function
+   * ones it regenerates from their key (ffKeyRegenerable) and, for PROGRAMS_UNSTAMPED_SESSIONS sessions after their
+   * last use, entries learned before versions existed — the sources an older translator made are not compiled ahead
+   * for nothing (a session that builds the same sources again at a draw stamps them with its version).
    */
   const programsLearned = new Map(); // manifest -> { sessions, m: Map(id -> { key, vs, fs, attrs, t, n, s }) }
   const learnName = (name) => name.replace(/[^A-Za-z0-9._-]/g, '_');
   const programsFile = (name) => opts.learnDir && path.join(opts.learnDir, `programs2-${learnName(name)}.json`);
   const programsFileV1 = (name) => opts.learnDir && path.join(opts.learnDir, `programs-${learnName(name)}.json`);
-  const PROGRAMS_MAX = 4096, PROGRAM_SRC_MAX = 64 * 1024, PROGRAMS_KEEP_SESSIONS = 64;
+  const PROGRAMS_MAX = 4096, PROGRAM_SRC_MAX = 64 * 1024, PROGRAMS_KEEP_SESSIONS = 64, PROGRAMS_UNSTAMPED_SESSIONS = 4;
+  const versionOf = (v) => (Number.isInteger(v) && v > 0 ? v : null);
   const programsOf = (name) => {
     let L = programsLearned.get(name);
     if (!L) {
       L = { sessions: 0, m: new Map() }; programsLearned.set(name, L);
       const read = (f) => { try { return f ? JSON.parse(fs.readFileSync(f, 'utf8')) : null; } catch { return null; } };
-      const add = (id0, key, vs, fs2, attrs, t, n, s) => {
+      const add = (id0, key, vs, fs2, attrs, t, n, s, v = null) => {
         if (typeof vs !== 'string' || typeof fs2 !== 'string' || !Array.isArray(attrs) || !attrs.every((a) => typeof a === 'string')) return;
         const id = typeof id0 === 'string' ? id0 : programSourceId(vs, fs2, attrs), old = L.m.get(id);
         t = Number.isFinite(t) ? t : 1e9; n = Number.isFinite(n) ? n : 1; s = Number.isFinite(s) ? s : L.sessions;
-        if (old) { old.t = Math.min(old.t, t); old.n = Math.max(old.n, n); old.s = Math.max(old.s, s); }
-        else if (L.m.size < PROGRAMS_MAX) L.m.set(id, { key: typeof key === 'string' ? key : '', vs, fs: fs2, attrs, t, n, s });
+        if (old) { old.t = Math.min(old.t, t); old.n = Math.max(old.n, n); old.s = Math.max(old.s, s); old.v ??= versionOf(v); }
+        else if (L.m.size < PROGRAMS_MAX) L.m.set(id, { key: typeof key === 'string' ? key : '', vs, fs: fs2, attrs, t, n, s, v: versionOf(v) });
       };
       const j = read(programsFile(name));
       if (j && Array.isArray(j.programs)) {
@@ -285,37 +616,43 @@ export function createServer(opts = {}) {
       programsTimer = null;
       for (const n of programsDirty) {
         const f = programsFile(n), L = programsOf(n);
-        try { fs.writeFileSync(f + '.tmp', JSON.stringify({ sessions: L.sessions, v1: L.v1 ?? null, programs: [...L.m].map(([id, v]) => [id, v.key, v.vs, v.fs, v.attrs, v.t, v.n, v.s]) })); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
+        try { fs.writeFileSync(f + '.tmp', JSON.stringify({ sessions: L.sessions, v1: L.v1 ?? null, programs: [...L.m].map(([id, v]) => [id, v.key, v.vs, v.fs, v.attrs, v.t, v.n, v.s, v.v]) })); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
       }
       programsDirty = new Set();
     }, opts.learnWriteMs ?? 20000); // (tests: sooner)
     programsTimer.unref?.();
   };
-  const learnPrograms = (name, list, used) => {
-    const L = programsOf(name), m = L.m;
+  const learnPrograms = (name, list, used, version) => {
+    const L = programsOf(name), m = L.m, ver = versionOf(version);
     for (const e of Array.isArray(list) ? list : []) {
       if (!e || typeof e.key !== 'string' || typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs) || !e.attrs.every((a) => typeof a === 'string')) continue;
       if (e.key.length > 4096 || e.vs.length > PROGRAM_SRC_MAX || e.fs.length > PROGRAM_SRC_MAX || e.attrs.length > 32) continue;
       const t = Number.isFinite(e.t) ? Math.max(0, e.t) : 1e9, id = programSourceId(e.vs, e.fs, e.attrs), old = m.get(id);
-      if (old) { old.t = Math.min(old.t, t); old.n++; old.s = L.sessions; continue; }
+      if (old) { old.t = Math.min(old.t, t); old.n++; old.s = L.sessions; if (ver) old.v = ver; continue; }
       if (m.size >= PROGRAMS_MAX) { // (full: the least recently used one leaves, unless all were used this session)
         let lru = null;
         for (const [k, v] of m) if (!lru || v.s < lru[1].s) lru = [k, v];
         if (lru[1].s >= L.sessions) continue;
         m.delete(lru[0]);
       }
-      m.set(id, { key: e.key, vs: e.vs, fs: e.fs, attrs: e.attrs, t, n: 1, s: L.sessions });
+      m.set(id, { key: e.key, vs: e.vs, fs: e.fs, attrs: e.attrs, t, n: 1, s: L.sessions, v: ver });
     }
-    for (const id of Array.isArray(used) ? used.slice(0, PROGRAMS_MAX) : []) { const v = typeof id === 'string' ? m.get(id) : null; if (v) v.s = L.sessions; }
+    // (a learned program a session took was found by its exact sources: they are those of its version — except a
+    // fixed-function one, regenerated from its key whatever sources it carries)
+    for (const id of Array.isArray(used) ? used.slice(0, PROGRAMS_MAX) : []) { const v = typeof id === 'string' ? m.get(id) : null; if (v) { v.s = L.sessions; if (ver && !ffKeyRegenerable(v.key)) v.v = ver; } }
     programsChanged(name);
   };
-  /** The list a new session compiles ahead (a session starts: the entries unused for too long are dropped first). */
-  const programsList = (name) => {
-    const L = programsOf(name);
+  /**
+   * The list a new session compiles ahead (a session starts: the entries unused for too long are dropped first);
+   * `version`: the session's translator version (none: every entry, as before versions existed).
+   */
+  const programsList = (name, version = null) => {
+    const L = programsOf(name), ver = versionOf(version);
     L.sessions++;
     for (const [id, v] of L.m) if (v.s < L.sessions - PROGRAMS_KEEP_SESSIONS) L.m.delete(id);
     programsChanged(name);
-    return [...L.m].sort((a, b) => a[1].t - b[1].t).map(([id, v]) => ({ id, key: v.key, vs: v.vs, fs: v.fs, attrs: v.attrs }));
+    const keep = (v) => !ver || v.v === ver || ffKeyRegenerable(v.key) || (v.v === null && v.s >= L.sessions - PROGRAMS_UNSTAMPED_SESSIONS);
+    return [...L.m].filter(([, v]) => keep(v)).sort((a, b) => a[1].t - b[1].t).map(([id, v]) => ({ id, key: v.key, vs: v.vs, fs: v.fs, attrs: v.attrs, v: v.v }));
   };
 
   /**
@@ -403,6 +740,15 @@ export function createServer(opts = {}) {
   };
   const seedLang = (l) => (typeof l === 'string' && /^[A-Za-z-]{0,16}$/.test(l) ? l.toLowerCase() : null);
   /**
+   * A game language a page told for version `man` (a playable mark, a launch set asked for): one the manifest declares
+   * (its `languages`), lowercased, else null — not any word a client makes up (each one a stored count and a launch set
+   * summed on every list of the versions).
+   */
+  const markLang = (man, l) => {
+    const s = seedLang(l ?? '');
+    return s && (Array.isArray(man?.languages) ? man.languages : []).some((x) => String(x).toLowerCase() === s) ? s : null;
+  };
+  /**
    * Who reported a set, for the quorum: the client's address (behind the reverse proxy, the first X-Forwarded-For hop;
    * hashed, not stored as such), so that one client cannot make up the quorum with invented session ids; on a loopback
    * connection without a proxy header (the harness, a local server: one machine for every session) the session id.
@@ -457,7 +803,25 @@ export function createServer(opts = {}) {
     : opts.snapshotJobs === 'queue' ? new SnapshotQueue(path.join(snapshots.dir, 'queue.json'))
       : opts.snapshotJobs === true ? new SnapshotJobs({ root: ROOT, url: () => `http://127.0.0.1:${server.address().port}`, logDir: path.join(opts.learnDir, 'snapshots') })
         : opts.snapshotJobs;
+  // operator-made sets (seedcanon-<manifest>.json, tools/profile-seed-make.mjs): offered first, whatever the sessions
+  // report (a first launch's settings depend on the emulated machine's speed, so independent reports rarely agree);
+  // read again when the file changes (written by the tool while this server runs)
+  const canonCache = new Map(); // manifest -> { mtime, sets }
+  const canonFor = (name, lang) => {
+    if (!opts.learnDir) return null;
+    const f = path.join(opts.learnDir, seedCanonFile(name));
+    let mtime = 0; try { const st = fs.statSync(f); mtime = `${st.mtimeMs}:${st.size}:${st.ino}`; } catch { /* none */ }
+    let c = canonCache.get(name);
+    if (!c || c.mtime !== mtime) {
+      let sets = [];
+      if (mtime) { try { sets = canonSets(JSON.parse(fs.readFileSync(f, 'utf8'))); } catch { /* damaged: none */ } }
+      canonCache.set(name, c = { mtime, sets });
+    }
+    return c.sets.find((s) => s.lang === lang) ?? null;
+  };
   const seedFor = (name, lang) => {
+    const canon = canonFor(name, lang);
+    if (canon) return { key: canon.key, files: canon.files.map(([p, d]) => ({ path: p, data: d })) };
     let best = null;
     for (const s of seedsOf(name).sets) if (s.lang === lang && s.sessions.length >= seedQuorum && (!best || s.sessions.length > best.sessions.length || (s.sessions.length === best.sessions.length && s.at > best.at))) best = s;
     return best ? { key: best.key, files: best.files.map(([p, d]) => ({ path: p, data: d })) } : { files: [] };
@@ -513,7 +877,7 @@ export function createServer(opts = {}) {
   // request to the last byte handed to the socket, simulated link included)
   // (testing: opts.netTrace, a file — one line per compressed range answered: start s, duration s, kind, file, range, bytes sent)
   const netTrace = opts.netTrace ? (line) => { try { fs.appendFileSync(opts.netTrace, line + '\n'); } catch { /* no trace */ } } : null;
-  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, demand: { requests: 0, sent: 0, ms: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
+  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, brHits: 0, demand: { requests: 0, sent: 0, ms: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
   const encodedCache = new Map(); let encodedBytes = 0;
   const ENCODED_CACHE_MAX = opts.encodedCacheBytes ?? 256 * 1024 * 1024;
@@ -526,11 +890,13 @@ export function createServer(opts = {}) {
     const start = Number(rm[1]), end = Math.min(Number(rm[2]), light ? light.copy.size : st.size);
     if (!(start < end) || end - start > 64 * 1024 * 1024) return send(res, 416, 'bad range');
     const accept = String(req.headers['accept-encoding'] ?? '');
-    const enc = zlib.zstdCompress && /\bzstd\b/.test(accept) ? 'zstd' : /\bgzip\b/.test(accept) ? 'gzip' : null;
+    // (on the fly: zstd, else brotli at a quality that costs about gzip's time — Cloudflare forwards gzip and br only —,
+    // else gzip)
+    const br = /\bbr\b/.test(accept);
+    let enc = zlib.zstdCompress && /\bzstd\b/.test(accept) ? 'zstd' : br ? 'br' : /\bgzip\b/.test(accept) ? 'gzip' : null;
     // (&pad=1: one byte (0) before the range — a page that reads it as text, the only synchronous binary read of a
     // window, x-user-defined, drops it; without it a range starting with a byte-order mark would be decoded as UTF-8/16)
     const pad = /[?&]pad=1(&|$)/.test(req.url) ? 1 : 0;
-    const key = `${light ? LIGHT_DIR + '|' : ''}${file}|${st.mtimeMs}|${start}-${end}|${enc}|${pad}`;
     const reply = (body, encoding) => {
       netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
       const k = netStats[kind]; k.requests++;
@@ -538,34 +904,53 @@ export function createServer(opts = {}) {
       res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind === 'bg' && /[?&]a=1/.test(req.url) ? 'ahead' : kind} ${path.basename(file)} ${start}-${end} ${body.length}`); });
       res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
+      // (X-Orthros-Unit: how the precompressed units saw the request — hit, raw (kept as is), miss, or none: not a unit)
+      if (unitSeen) h['X-Orthros-Unit'] = unitSeen;
       if (encoding) h['Content-Encoding'] = encoding;
       const go = () => { if (!res.headersSent) res.writeHead(200, h); res.end(body); };
       // (simulated link: the headers after the round trip, the body once it crossed — the client's time to the first
       // byte is the round trip, as on a real connection)
       if (link) viaLink(res, body.length, go, () => { res.writeHead(200, h); res.flushHeaders(); }); else go();
     };
-    const hit = encodedCache.get(key);
-    if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
-    const buf = Buffer.alloc(end - start + pad);
-    const read = light ? (done) => readLight(file, light.copy, start, end, buf, pad, done) : (done) => fs.open(file, 'r', (err, fd) => {
-      if (err) return done(err);
-      fs.read(fd, buf, pad, end - start, start, (err2, n) => { fs.close(fd, () => {}); done(err2 ?? (n === end - start ? null : new Error('short read'))); });
-    });
-    read((err) => {
-      if (err) return send(res, 500, String(err));
-      if (!enc) return reply(buf, null);
-      const t0 = performance.now();
-      const done = (err3, out) => {
-        netStats.encodeMs += performance.now() - t0;
-        // (not worth it: sent as is — the encoded form is still cached, as the raw bytes)
-        const entry = !err3 && out.length < buf.length * 0.92 ? { body: out, encoding: enc } : { body: buf, encoding: null };
-        encodedCache.set(key, entry); encodedBytes += entry.body.length;
-        for (const [k, v] of encodedCache) { if (encodedBytes <= ENCODED_CACHE_MAX) break; encodedCache.delete(k); encodedBytes -= v.body.length; }
-        reply(entry.body, entry.encoding);
-      };
-      if (enc === 'zstd') zlib.zstdCompress(buf, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }, done);
-      else zlib.gzip(buf, { level: 4 }, done);
-    });
+    // a unit made ahead (br-cache.js: a whole block or a single piece, brotli 11) when the request is one and takes br;
+    // missed, it is asked for (made in the background) and this request goes the dynamic way
+    const unit = brCache && br && !pad ? unitOf(start, end, light ? light.copy.size : st.size) : null;
+    const pre = unit && brCache.lookup(file, st, light, unit);
+    let unitSeen = brCache && br && !pad ? (unit ? (pre ? (pre.raw ? 'raw' : 'hit') : 'miss') : 'none') : null;
+    if (pre?.raw) enc = null; // (brotli saves too little there: as it is)
+    else if (pre) {
+      return fs.readFile(pre.path, (err, body) => {
+        if (!err && body.length === pre.bytes) { netStats.brHits++; return reply(body, 'br'); }
+        brCache.drop(file, st, light, unit); unitSeen = 'miss'; dynamic();
+      });
+    } else if (unit) brCache.want(file, st, light, unit);
+    dynamic();
+    function dynamic() {
+      const key = `${light ? LIGHT_DIR + '|' : ''}${file}|${st.mtimeMs}|${start}-${end}|${enc}|${pad}`;
+      const hit = encodedCache.get(key);
+      if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
+      const buf = Buffer.alloc(end - start + pad);
+      const read = light ? (done) => readLight(file, light.copy, start, end, buf, pad, done) : (done) => fs.open(file, 'r', (err, fd) => {
+        if (err) return done(err);
+        fs.read(fd, buf, pad, end - start, start, (err2, n) => { fs.close(fd, () => {}); done(err2 ?? (n === end - start ? null : new Error('short read'))); });
+      });
+      read((err) => {
+        if (err) return send(res, 500, String(err));
+        if (!enc) return reply(buf, null);
+        const t0 = performance.now();
+        const done = (err3, out) => {
+          netStats.encodeMs += performance.now() - t0;
+          // (not worth it: sent as is — the encoded form is still cached, as the raw bytes)
+          const entry = !err3 && out.length < buf.length * 0.92 ? { body: out, encoding: enc } : { body: buf, encoding: null };
+          encodedCache.set(key, entry); encodedBytes += entry.body.length;
+          for (const [k, v] of encodedCache) { if (encodedBytes <= ENCODED_CACHE_MAX) break; encodedCache.delete(k); encodedBytes -= v.body.length; }
+          reply(entry.body, entry.encoding);
+        };
+        if (enc === 'zstd') zlib.zstdCompress(buf, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }, done);
+        else if (enc === 'br') zlib.brotliCompress(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length } }, done);
+        else zlib.gzip(buf, { level: 4 }, done);
+      });
+    }
   };
 
   const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game), ...(opts.accountMaxUserBytes ? { maxUserBytes: opts.accountMaxUserBytes } : {}), ...(opts.accountGoogle ? { google: opts.accountGoogle } : {}) }) : null;
@@ -575,25 +960,28 @@ export function createServer(opts = {}) {
   const mmoDir = accountApi ? path.resolve(opts.mmoDir ?? path.join(opts.accountsDir, 'mmo')) : null;
   const mmo = mmoApi({ getManifest, identify, dir: mmoDir, log: opts.mmoLog ?? ((m) => console.log(m)), ...(opts.mmoNow ? { now: opts.mmoNow } : {}) });
   // Localized OpenMW masters need separate simulations, caches and save histories.
-  function portLanguages(man, id) {
+  function portLanguages(man, id, memo = null) {
     if (man.runtime !== 'openmw' || !man.openmw.languageVersions) return {};
-    const languageLaunchUrls = {};
+    const languageLaunchUrls = {}, languageVersions = {};
     for (const [code, target] of Object.entries(man.openmw.languageVersions)) {
       const other = getManifest(target);
-      if (other?.runtime === 'openmw' && other.gameId === man.gameId && other.languages?.includes(code) && openmwInstalled(other, enginesDir))
+      if (other?.runtime === 'openmw' && other.gameId === man.gameId && other.languages?.includes(code) && openmwInstalled(other, enginesDir, memo)) {
         languageLaunchUrls[code] = portLaunchUrl(target, other);
+        if (target !== id) languageVersions[code] = target; // (the version a language runs: the home's card prepares and downloads it)
+      }
     }
     // Keep the current language visible even while another localization is incomplete.
     for (const code of man.languages ?? []) languageLaunchUrls[code] ??= portLaunchUrl(id, man);
-    return { languages: Object.keys(languageLaunchUrls), contentLanguages: man.languages ?? [], languageLaunchUrls };
+    return { languages: Object.keys(languageLaunchUrls), contentLanguages: man.languages ?? [], languageLaunchUrls, languageVersions };
   }
   const mapImages = new Map(); // (the lobby's map pictures, compressed: file|mtime -> { raw, gzip, zstd })
   const rooms = roomsApi({ getManifest, identify, ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
   const openmw = openmwProxy({ getManifest, session: accountApi?.session, ownsToken: accountApi?.ownsPortToken });
   const openmwAccounts = accountBridge({ accountsDir: opts.accountsDir, accountApi, getManifest });
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url, 'http://x');
-    const p = decodeURIComponent(url.pathname);
+    let url; try { url = new URL(req.url, 'http://x'); } catch { return send(res, 400, 'bad path'); }
+    const p = requestPath(url.pathname);
+    if (p === null) return send(res, 400, 'bad path');
     try {
       if (openmwAccounts.handle(req, res, url) || openmw.handle(req, res, url) || mmo.handle(req, res, url)) return;
       // (the multiplayer rooms of a browser port, from its server manager)
@@ -632,22 +1020,23 @@ export function createServer(opts = {}) {
         });
         return;
       }
-      if (p === '/' || p === '/index.html') return sendFile(req, res, path.join(ROOT, 'src/host/web/index.html'), MIME['.html']);
+      if (p === '/' || p === '/index.html') return sendSource(req, res, path.join(ROOT, 'src/host/web/index.html'), MIME['.html']);
       // (the privacy policy and the terms of use, at public addresses: the home screen, the account window and Google's sign-in link to them)
       if (p === '/privacy' || p === '/terms') return sendFile(req, res, path.join(ROOT, `src/host/web/${p.slice(1)}.html`), MIME['.html']);
       if (p === '/api/manifests') {
         refreshCatalog();
         const sizeOf = (t) => Object.values(t.files).reduce((a, f) => a + f.size, 0) + Object.values(t.dirs).reduce((a, d) => a + sizeOf(d), 0);
+        const memo = new Map(); // (the folders' listings, for this answer: the OpenMW versions' checks share their game's)
         const out = [...manifests].map(([name, m]) => {
           let bytes = null;
           try { if (fs.existsSync(m.folder) && (!m.baseFolder || fs.existsSync(m.baseFolder))) bytes = sizeOf(gameTree(name, m)); } catch { /* folder missing */ }
           const runtime = runtimeOf(m), port = runtime !== 'win32';
           return { name, title: m.name ?? name, gameId: m.gameId ?? name, version: m.version ?? null,
-            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name), runtime, exe: port ? null : m.exe,
+            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name, memo), runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : runtime === 're3' ? re3Modes(m.re3) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
-            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
-            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
+            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
+            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir, memo)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
       }
@@ -663,16 +1052,21 @@ export function createServer(opts = {}) {
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
         const man = getManifest(m[1]), f = man && coverFile(man);
         if (!f) return send(res, 404, 'no cover');
+        // (the home's: a light copy once made, light-covers.js — ?full: the image itself)
+        const light = covers && !url.searchParams.has('full') ? covers.file(f) : null;
+        if (light) return sendFile(req, res, light, 'image/webp', { 'Cache-Control': 'public, max-age=86400' });
         const ext = path.extname(f).toLowerCase();
-        res.writeHead(200, { 'Content-Type': MIME[ext]?.startsWith('image/') ? MIME[ext] : 'image/jpeg', 'Cache-Control': 'public, max-age=86400', 'Cross-Origin-Resource-Policy': 'same-origin',
+        // (the light copy still being made: the full image under the same address, not kept for a day by the browser or a proxy)
+        const pending = !!covers && !url.searchParams.has('full') && covers.pending(f);
+        res.writeHead(200, { 'Content-Type': MIME[ext]?.startsWith('image/') ? MIME[ext] : 'image/jpeg', 'Cache-Control': pending ? 'no-cache' : 'public, max-age=86400', 'Cross-Origin-Resource-Policy': 'same-origin',
           ...(ext === '.svg' ? { 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" } : {}) }); // (an SVG opened by itself runs nothing)
         fs.createReadStream(f).pipe(res);
         return;
       }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
-      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, gameTreeJson(m[1], man), { 'Content-Type': 'application/json' }); }
-      // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd or gzip
-      // when that saves enough (Content-Encoding: the browser decodes before the page sees them), else sent as they are;
+      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return sendTree(req, res, m[1], man); }
+      // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd, brotli
+      // or gzip when that saves enough (a unit made ahead at brotli 11 when there is one: br-cache.js) (Content-Encoding: the browser decodes before the page sees them), else sent as they are;
       // /gamez/<manifest>/.light/<path>: the file's light copy (light-copies.js), when the version has them
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
       if (m) {
@@ -724,12 +1118,12 @@ export function createServer(opts = {}) {
           req.on('end', () => {
             if (size > 8 * 1024 * 1024) return send(res, 413, 'too large');
             let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
-            learnPrograms(m[1], rec?.programs, rec?.used);
+            learnPrograms(m[1], rec?.programs, rec?.used, rec?.v);
             send(res, 204, '');
           });
           return;
         }
-        return send(res, 200, JSON.stringify(programsList(m[1])), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify(programsList(m[1], url.searchParams.has('v') ? Number(url.searchParams.get('v')) : null)), { 'Content-Type': 'application/json' });
       }
       // a new player's starting point (snapshot-store.js): the shared snapshot of this key, language and first-launch
       // profile; none yet: a publishing session queued. Published by that session only (its token).
@@ -796,13 +1190,14 @@ export function createServer(opts = {}) {
               if (size2 === null || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > size2 || !Number.isFinite(t) || t < 0 || t > 6 * 3600e3) continue;
               learnRead(m[1], rel, start, end, 'r:' + rec.session, Math.round(t));
             }
+            if (rec.mark && typeof rec.mark === 'object') learnMark(m[1], 'r:' + rec.session, rec.mark.kind, markLang(man, rec.mark.lang));
             send(res, 204, '');
           });
           return;
         }
-        return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify(prefetchList(m[1], markLang(man, url.searchParams.get('lang')))), { 'Content-Type': 'application/json' });
       }
-      if (p === '/api/netstats') return send(res, 200, JSON.stringify(netStats), { 'Content-Type': 'application/json' });
+      if (p === '/api/netstats') return send(res, 200, JSON.stringify({ ...netStats, ...(brCache ? { brCache: brCache.stats() } : {}) }), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
       if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
       // browser ports: the version's page (its runtime's own, src/ports/<runtime>/), and the engine releases they name,
@@ -823,7 +1218,7 @@ export function createServer(opts = {}) {
           const saveKey = scope ? `${man.saveKey}:user:${scope}` : man.saveKey;
           let page = openmwWebText(fs.readFileSync(f, 'utf8'), base, saveKey);
           if (asset.endsWith('.html')) page = withFrameMeter(page);
-          if (asset === 'index.html') page = withStreaming(withSharedEngine(page, man.openmw.engine), url.searchParams.get('sfs') === 'upstream');
+          if (asset === 'index.html') page = withQualityTier(withProgressiveView(withStreaming(withLeanPackage(withSharedEngine(page, man.openmw.engine), man.openmw.example ? null : lean?.url(man.openmw.engine)), url.searchParams.get('sfs') === 'upstream')));
           if (asset === 'index.html' && scope) {
             page = page.replace('<head>', '<head><script src="/src/ports/openmw/cloud.js"></script>');
             page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(m[1])}, ${JSON.stringify(scope)});`);
@@ -832,21 +1227,37 @@ export function createServer(opts = {}) {
         }
         // (e/<hash>/: the engine build's own content-versioned directory)
         const cache = rel.startsWith('e/') ? 'public, max-age=31536000, immutable' : 'public, max-age=86400';
-        if (f.endsWith('.br')) return sendFile(req, res, f, MIME[path.extname(f.slice(0, -3))] ?? 'application/octet-stream', { 'Content-Encoding': 'br', 'Cache-Control': cache });
+        if (f.endsWith('.br')) {
+          const mime = MIME[path.extname(f.slice(0, -3))] ?? 'application/octet-stream';
+          if (req.headers.range) return sendFile(req, res, f, mime, { 'Content-Encoding': 'br', 'Cache-Control': cache });
+          let decoded = null; try { decoded = fs.statSync(f.slice(0, -3)).size; } catch { /* the release ships the brotli only */ }
+          return sendBrotli(req, res, f, mime, { 'Cache-Control': cache }, decoded);
+        }
         return sendEngineFile(req, res, f, cache);
       }
       m = /^\/ports\/([a-z0-9]+)\/([^/]+)\/$/.exec(p);
-      if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendFile(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
+      if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendSource(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
       m = /^\/engines\/([^/]+)\/(.+)$/.exec(p);
       if (m) {
         if (![...manifests.values()].some((man) => man.goldsrc?.engine === m[1] || man.openmw?.engine === m[1] || (man.runtime === 're3' && man.re3?.engine === m[1]))) return send(res, 404, 'no such engine');
+        // (an OpenMW release's lean package, made by this server: brotli only — a browser that takes none decodes nothing)
+        const leanFile = lean?.file(m[1], m[2]);
+        if (leanFile) {
+          const cache = 'public, max-age=31536000, immutable';
+          if (/\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !req.headers.range) return sendBrotli(req, res, leanFile, 'application/octet-stream', { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }, lean.decoded(m[1]));
+          res.writeHead(200, headers({ 'Content-Type': 'application/octet-stream', 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }));
+          if (req.method === 'HEAD') return res.end();
+          return void pipeline(fs.createReadStream(leanFile), zlib.createBrotliDecompress(), res).catch(() => res.destroy());
+        }
         const file = engineFile(enginesDir, m[1], m[2]); if (!file) return send(res, 404, 'not found');
         return sendEngineFile(req, res, file, 'public, max-age=31536000, immutable');
       }
       if (p.startsWith('/src/') || p.startsWith('/tools/') || p.startsWith('/tests/')) {
-        const file = path.join(ROOT, p);
-        if (!file.startsWith(ROOT)) return send(res, 403, 'forbidden');
-        return sendFile(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream');
+        // (under the tree's own top directory, its real path too: no symlink out of it)
+        const top = path.join(ROOT, p.split('/')[1]), file = path.join(ROOT, p);
+        let real = null; try { real = fs.realpathSync(file); } catch { /* none: 404 below */ }
+        if (!isUnder(top, file) || real && !isUnder(fs.realpathSync(top), real)) return send(res, 403, 'forbidden');
+        return sendSource(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream');
       }
       return send(res, 404, 'not found');
     } catch (e) {
@@ -867,8 +1278,10 @@ export function createServer(opts = {}) {
   // sockets, which closeAllConnections() leaves open)
   server.mmo = mmo;
   const closeServer = server.close.bind(server);
-  server.close = (cb) => { mmo.close(); return closeServer(cb); };
-  server.on('close', () => mmo.close());
+  server.close = (cb) => { mmo.close(); brCache?.close(); return closeServer(cb); };
+  server.on('close', () => { mmo.close(); brCache?.close(); });
+  server.brCache = brCache; // (tests: its state, drain)
+  server.srcBrJobs = () => ({ running: srcBrRunning, queued: srcBrJobs.length, peak: srcBrPeak }); // (tests: the src brotli queue)
   return server;
 }
 
@@ -878,7 +1291,14 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
   const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts'), mmoDir = arg('--mmo');
   for (const d of [telemetryDir, learnDir, accountsDir, mmoDir]) if (d) fs.mkdirSync(d, { recursive: true });
-  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
+  // (--br-cache <dir>: the precompressed units, default <learn>/../brcache — off without --learn, or with `off`;
+  // --br-cache-bytes: their budget, 1.5 GiB by default)
+  const brArg = arg('--br-cache'), brCacheDir = brArg === 'off' ? null : brArg ?? (learnDir ? path.join(learnDir, '..', 'brcache') : null);
+  const brBytesArg = arg('--br-cache-bytes'), brCacheBytes = brBytesArg === undefined ? undefined : Number(brBytesArg);
+  if (brBytesArg !== undefined && !(Number.isFinite(brCacheBytes) && brCacheBytes > 0)) { console.error(`--br-cache-bytes ${brBytesArg}: expected a positive number of bytes`); process.exit(2); }
+  // (--covers <dir>: the home's light covers, default <learn>/../covers — off without --learn, or with `off`)
+  const coverArg = arg('--covers'), coverDir = coverArg === 'off' ? null : coverArg ?? (learnDir ? path.join(learnDir, '..', 'covers') : null);
+  const server = createServer({ coverDir, brCacheDir, brCacheBytes, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
   // (a restart — every deployment — saves the shared worlds' last changes first: they are written a few seconds after)
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.mmo.flush(); } catch (e) { console.error('mmo flush:', e); } finally { process.exit(0); } });

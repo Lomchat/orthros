@@ -11,8 +11,10 @@
 //     [--input "3:key:27;10:click:320,192;@12:click:10,10" (seconds after the first frame, or with @ after the start: a
 //     key's virtual-key code, a left click)]
 //     [--prof <file.cpuprofile>: a V8 CPU profile of the measured frames only]
-//     [--api-times: the APIs handled in JavaScript with the most time over the measured frames, ms and calls per frame
-//     (a clock read per call: the frame times are not comparable with runs without it)]
+//     [--programs <learn dir>/programs2-<manifest>.json [--programs-raw: with their learned sources, not regenerated]]
+//     [--apis <n>: the n APIs with the most time per frame (the accounting's sampled estimate), each with the time the
+//     deferred-queue drain run before it took (vm.drainDeferred, timed on every call) — the drain is part of the
+//     sampled time of whichever JavaScript API follows queued calls]
 //     [--ab NAME=value[:frames]: A/B within the run — the measured frames alternate, in blocks of `frames` (25), between
 //     the debug global as it is and NAME=value (the scene the same for both, the machine's load too); each side's
 //     categories, draws and recorder counters reported apart]
@@ -32,6 +34,8 @@ import { acct, CATS, C } from '../src/core/frame-acct.js';
 import { WebGLDevice } from '../src/gfx/d3d8-webgl.js';
 import { RenderLink, Recorder } from '../src/gfx/d3d-recorder.js';
 import { noopGl } from './noop-gl.mjs';
+import { DEFER_QUEUE } from '../src/cpu/jit/runtime.js';
+import { PROGRAM_GLSL_VERSION, ffKeyRegenerable } from '../src/gfx/program-id.js';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
@@ -57,17 +61,23 @@ const clock = new RealClock();
 /** the recorder's link (--gfx recorder): its counters are reported per frame */
 let link = null, stats0 = null;
 const host = new HeadlessHost({ clock, width: manifest.display?.width ?? 1024, height: manifest.display?.height ?? 768 });
-if (gfxKind === 'backend') { const gl = noopGl(); host.gfx = { createDevice: (dev) => new WebGLDevice(gl, dev, {}) }; }
+// --programs <programs2-<manifest>.json>: the server's learned programs (as its list for this translator version)
+// compiled ahead, as a session does; reported: programs built at a draw, learned ones taken (--gfx backend)
+let pcache = null, gfxDev = null;
+if (opt('programs')) {
+  const j = JSON.parse(fs.readFileSync(opt('programs'), 'utf8')), sessions = Number(j.sessions) || 0;
+  const list = j.programs.filter((r) => r[8] === PROGRAM_GLSL_VERSION || ffKeyRegenerable(r[1]) || ((r[8] ?? null) === null && r[7] >= sessions + 1 - 4)).sort((a, b) => a[5] - b[5]);
+  pcache = { queue: list.map(([id, key, vs, fs2, attrs, , , , v]) => ({ id, key: args.includes('--programs-raw') ? '' : key, vs, fs: fs2, attrs, v })), ready: new Map(), learned: [], used: [], t0: performance.now(), parallel: true, started: 0, pending: 0, hits: 0, devices: new Set() };
+  console.log(`programs: ${list.length} of ${j.programs.length} learned listed${args.includes('--programs-raw') ? ' (keys dropped: their sources as learned)' : ''}`);
+}
+if (gfxKind === 'backend') { const gl = noopGl(); host.gfx = { createDevice: (dev) => (gfxDev = new WebGLDevice(gl, dev, { programCache: pcache })) }; }
 else if (gfxKind === 'recorder') {
   const words = new Int32Array(new SharedArrayBuffer(16 << 20));
   link = new RenderLink({ words, log: (m) => console.log(m), replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
   link.drain = function () { this.w.consumed = this.replayer.reader.consumed = this.w.produced; };
   host.gfx = { createDevice: (dev) => new Recorder(link, dev) };
 }
-const apiTimes = args.includes('--api-times');
-const vm = new Vm({ vfs, clock, host, apiHist: apiTimes, logKinds: process.env.FB_LOG ? process.env.FB_LOG.split(',') : ['crash'] });
-if (apiTimes) { vm.apiTimes = new Map(); vm.apiTimesPhase = null; }
-let hist0 = null;
+const vm = new Vm({ vfs, clock, host, logKinds: process.env.FB_LOG ? process.env.FB_LOG.split(',') : ['crash'] });
 vm.registry = new Registry();
 vm.registry.seed(manifest.registry);
 // (every guest thread waits: the worker would sleep — charged to `sleep`, as there)
@@ -91,7 +101,32 @@ let drawsSum = 0;
 const profFile = opt('prof', null);
 let session = null;
 if (profFile) { const inspector = await import('node:inspector'); session = new inspector.Session(); session.connect(); session.post('Profiler.enable'); session.post('Profiler.setSamplingInterval', { interval: 200 }); }
+// --apis: the drain of the deferred queue timed per API that triggers it (thunk index -> ms, calls)
+const apiTop = Number(opt('apis', 0));
+const drainMs = new Map(), drainN = new Map();
+let acct0 = null;
+if (apiTop) {
+  const body = vm.dispatchThunkBody;
+  vm.dispatchThunkBody = function (thread, idx) {
+    if (phase === 'measure' && this.mem.u32[DEFER_QUEUE >>> 2]) { const t = performance.now(); this.drainDeferred(thread); drainMs.set(idx, (drainMs.get(idx) ?? 0) + performance.now() - t); drainN.set(idx, (drainN.get(idx) ?? 0) + 1); }
+    return body.call(this, thread, idx);
+  };
+}
+const apiTable = () => {
+  const rows = [];
+  for (let i = 0; i < acct.idxCalls.length; i++) {
+    const calls = acct.idxCalls[i] - (acct0.calls[i] ?? 0), n = acct.idxN[i] - (acct0.n[i] ?? 0), ms = acct.idxMs[i] - (acct0.ms[i] ?? 0);
+    if (!calls || !n) continue;
+    const est = ms / n * calls / counted, dr = (drainMs.get(i) ?? 0) / counted, t = vm.api.thunk(i);
+    rows.push([est, `${t?.name ?? i}: ${est.toFixed(3)} ms/frame (${(calls / counted).toFixed(1)} calls, ${(ms / n * 1000).toFixed(2)} us each sampled; drain before it ${dr.toFixed(3)} ms/frame in ${((drainN.get(i) ?? 0) / counted).toFixed(1)} drains, own ${((est - dr) / (calls / counted) * 1000).toFixed(2)} us each)`]);
+  }
+  rows.sort((a, b) => b[0] - a[0]);
+  let tot = 0; for (const v of drainMs.values()) tot += v;
+  console.log(`apis: drain total ${(tot / counted).toFixed(3)} ms/frame\n  ` + rows.slice(0, apiTop).map((r) => r[1]).join('\n  '));
+};
 const finish = (why) => {
+  if (apiTop) apiTable();
+  if (pcache && gfxDev) console.log(`programs: built at a draw ${gfxDev.stats.programs} (${(gfxDev.stats.programMs ?? 0).toFixed(0)} ms), learned compiled ahead ${pcache.started}, taken ${pcache.hits}, regenerated from their key ${pcache.regenerated ?? 0}, other versions skipped ${pcache.stale ?? 0}`);
   if (session) session.post('Profiler.stop', (err, r) => { if (!err) fs.writeFileSync(profFile, JSON.stringify(r.profile)); });
   const cpu = process.cpuUsage(cpu0), wall = performance.now() - wall0, gi = vm.guestInsns - insn0;
   const mean = CATS.map((c, i) => [c, sums[i] / counted]).filter(([, v]) => v >= 0.005).sort((a, b) => b[1] - a[1]);
@@ -99,10 +134,6 @@ const finish = (why) => {
   if (ab) for (const S of [0, 1]) {
     const n = ab.n[S], m = CATS.map((c, i) => [c, ab.sums[S][i] / n]).filter(([, v]) => v >= 0.005).sort((a, b) => b[1] - a[1]);
     console.log(`A/B ${ab.k}=${S ? ab.b : ab.a}: ${n} frames, ${(ab.draws[S] / n).toFixed(0)} draws/frame; mean ms/frame: ${m.map(([c, v]) => `${c} ${v.toFixed(3)}`).join(', ')}${link ? `; recorder per frame: ${Object.entries(ab.stats[S]).filter(([, v]) => v).map(([k, v]) => `${k} ${+(v / n).toFixed(2)}`).join(', ')}` : ''}`);
-  }
-  if (apiTimes) {
-    const hist = vm.apiHist(), calls = new Map(); for (const [k, n] of hist) calls.set(k.slice(k.indexOf('!') + 1), n - (hist0.get(k) ?? 0));
-    console.log(`API time per frame (ms, calls): ${[...vm.apiTimesPhase].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} ${(v / counted).toFixed(3)} (${((calls.get(k) ?? 0) / counted).toFixed(0)})`).join(', ')}`);
   }
   if (link) console.log(`recorder per frame: ${Object.keys(link.stats).map((k) => [k, (link.stats[k] - stats0[k]) / counted]).filter(([, v]) => v).map(([k, v]) => `${k} ${+v.toFixed(2)}`).join(', ')}`);
   fs.rmSync(saveDir, { recursive: true, force: true });
@@ -117,7 +148,7 @@ host.frameHook = (dev) => {
   const d = dev.draws - lastDraws; lastDraws = dev.draws;
   if (args.includes('--verbose') && dev.frames % 100 === 0) console.log(`[framebench] ${((now - t0) / 1000).toFixed(0)} s: frame ${dev.frames}, ${d} draws in the last, phase ${phase}`);
   if (phase === 'wait') { streak = d >= minDraws ? streak + 1 : 0; if (streak >= 30) { phase = 'warm'; counted = 0; } }
-  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); stats0 = link && { ...link.stats }; insn0 = vm.guestInsns; wall0 = now; session?.post('Profiler.start'); if (apiTimes) { vm.apiTimesPhase = new Map(); hist0 = vm.apiHist(); } if (ab) abSet(0); } }
+  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); stats0 = link && { ...link.stats }; insn0 = vm.guestInsns; wall0 = now; acct0 = { calls: [...acct.idxCalls], n: [...acct.idxN], ms: [...acct.idxMs] }; session?.post('Profiler.start'); if (ab) abSet(0); } }
   else { counted++; drawsSum += d; for (let i = 0; i < CATS.length; i++) sums[i] += cats[i]; if (ab) abFrame(cats, d); if (counted >= frames) finish('measured'); }
   if (now - t0 > limit * 1000) { console.log(`time limit in phase ${phase} (${counted} frames, last frame ${d} draws)`); if (phase === 'measure' && counted) finish('time limit'); process.exit(1); }
 };

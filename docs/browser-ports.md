@@ -17,7 +17,8 @@ Nothing in the code names a game: engine release, game directory, modules, maps 
 OpenMW ports use `runtime: "openmw"`, their own page and a pinned OpenMW-Web engine. Their
 multiplayer uses a native world gateway and simulation peers, proxied on the same origin.
 See [OpenMW installation, pending data and validation](openmw.md). Several mods of the Vanilla+ profile are still
-missing. Every game page — Windows games and ports — has the same frame (header, loading screen, account, saves):
+missing. A modded OpenMW game is a game of its own on the home (`modified`: its "Modified" tag), its version holding
+only its mod stack: `requires` puts the original game's version's files beneath it, as for the ports below. Every game page — Windows games and ports — has the same frame (header, loading screen, account, saves):
 [docs/game-frame.md](game-frame.md).
 
 ## Where things are
@@ -28,7 +29,8 @@ missing. Every game page — Windows games and ports — has the same frame (hea
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `src/host/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `ini.js`, `style.css`) | yes |
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
-| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check) | yes |
+| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
+| `tools/port-perf.mjs` | the ports' shared frame measurement (below, "Measuring a port") | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
 | `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-3141ff3-r1` (reVC built from source) and `revc-web-3141ff3-plus-r1` (with Orthros' additions) | no |
 | `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` (Orthros' fork) with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
@@ -37,6 +39,21 @@ The engines stay out of Git like the games: the repository is public, the engine
 carry their own licenses (notices below), and the browser game modules were recovered from a deployed build whose
 sources no longer exist. `lock.json` and the install scripts reproduce them while their sources remain available;
 treat `data_engines/` like `data_games/` (the only copy of the recovered modules).
+
+### Measuring a port
+
+`tools/re3/perf.mjs` and `tools/goldsrc/perf.mjs` share `tools/port-perf.mjs`: the browser's flags for a rendering
+mode, a probe in the page before its scripts and its summary — the engine's work a browser frame (from its first
+callback to the engine's request for the next), the gaps between frames shown, the WebGL calls a frame by kind with
+the synchronous ones apart (getError, checkFramebufferStatus, readPixels, shader and program queries… — each one waits
+for the GPU process; `--stacks getError` keeps their callers), the WebGL renderer (the checks print it too) — and a CPU
+profile's summary (`--profile`: self time, the longest busy stretches). The page's telemetry and learning posts stay
+off the server unless `--report`. Headless Chromium here always renders with SwiftShader: ANGLE's null backend
+(`--use-angle=null`) is ignored — the renderer stays SwiftShader's with every flag combination (checked 2026-10-21), so
+`--gl null` is refused. `--gl discard` (the default) keeps RASTERIZER_DISCARD on: every call validated and sent, the
+vertex work done, no pixel drawn — the closest to the engine's own CPU cost a frame here, an upper bound
+(SwiftShader's vertex threads still compete with the page: report the machine's load, several runs). `--gl swiftshader`
+draws (the GPU's share on the CPU); `--gl gpu` adds no flag (a machine's own GPU).
 
 ## Manifest
 
@@ -111,6 +128,22 @@ starts at once.
 - **Telemetry.** A few reports a session to `/api/telemetry` (`port: "goldsrc"`, `event`: `start`, `error` — a page
   error or an unhandled rejection —, `crash` with the end of the engine's log, `end` with the frame rate). After a crash
   the profile is saved and "Restart the game" reloads the page (an engine that stopped cannot start again in it).- **The frame rate** counts the engine's main loop iterations that drew (`postMainLoop`, draw calls seen).
+- **The renderer's error checks** (`gl_check_errors`, on by default in the engine) are off unless `?debug`: the
+  renderer called `glGetError` after its passes (10 a frame in Half-Life and Counter-Strike) and after each texture
+  upload, and each one waits for the browser's GPU process (71-77 µs on an idle context here; on a real GPU, the CPU and
+  GPU stop working in parallel). Measured (2026-10-21, `tools/goldsrc/perf.mjs --gl discard`, Half Strike de_dust2 with
+  bots, walking, 20 s, three runs each, medians, machine load 18-33): the engine's work a frame 8.5 → 4.9 ms (p90 12.2
+  → 7.7, p99 25.3 → 17.9), synchronous calls 10 → 0 a frame.
+- **The world from buffers** (`gl_vbo 1`, off by default in the engine, "known to be glitchy" upstream; `?vbo=0` or a
+  manifest's commands turn it off): without it the renderer's GLES shim sends the world a polygon at a time — its own
+  buffer upload, attribute setup and vertex array switch each time, about 15 WebGL calls a draw. With it the map's
+  surfaces go to buffers once at its load. Measured the same way (three runs each, medians, load 15-33): draws a frame
+  718 → 86, WebGL calls 10,439 → 1,876, the engine's work a frame 4.9 → 1.7 ms (p90 7.7 → 2.7, p99 17.9 → 4.5); drawn
+  by SwiftShader, the same view 19 → 55 frames a second. Checked on screenshots (SwiftShader, with and without): de_dust2,
+  the same view with bullet decals — identical; Half-Life c1a0 (lightmaps, see-through grates, models; the tram's view
+  turned differently) — the same rendering. Dynamic lights over the world were not compared on purpose.
+  (Measured too, not changed: `getParameter` after each vertex array switch in Emscripten's glue, 70 ns; a buffer
+  upload 0.6 µs either way — a rebuilt shim streaming into one buffer would win little once the world is in buffers.)
 - **The menu module.** Counter-Strike's manifests name none: the engine's (`engine/libmenu.wasm`) shows the game's own
   title screens and takes the mouse; cs16-client's `mainui_cpp` (still built, `modules.builds`) wants the images of its
   `cs16client-extras` package and gets no mouse position from this engine.
@@ -150,8 +183,10 @@ reader in a worker of its own: the server's compressed ranges (`/gamez`), the li
 browser's OPFS block store (`orthros-files-<manifest>`, the same the home screen's whole download fills), the learned
 order fetched ahead from the game's position.
 
-- **Startup set.** The server's learned order (`/api/prefetch`) up to its first pause of 2 s: loaded before the engine
-  starts (what it reads from its start to its first idle moment: init, menu, the first map when the page asks).
+- **Startup set.** The server's learned order (`/api/prefetch`): what earlier sessions read before their game was
+  playable (the page marks it where its loading screen hides, `GameData.mark('playable')`; docs/slow-network.md
+  "Playable after"), else up to its first pause of 2 s — loaded before the engine starts. The home card says its size
+  and time at the visitor's link, and "Prepare" downloads it ahead.
 - **The rest in the background.** Once the engine runs: the learned order from the game's position, then what the
   reader's policies add (blocks around a miss, a file read in order ahead of its reader).
 - **Reads not there yet.** A read of bytes not in the page waits for the worker on shared memory (the page's thread
@@ -746,6 +781,13 @@ city the engine's own WebAssembly takes 1.4 ms a frame (CPU profile: the rest is
 decides the frame rate), WebGL calls 4.2 a draw (1,865 for 446 draws a frame) instead of 7.2 (3,397 for 471) before the
 VAOs and single uploads, 18 % more frames a second under SwiftShader. Link-time optimisation and WebAssembly SIMD were
 not kept: at 1.4 ms of engine work a frame, too little to win.
+2026-10-21 (`perf.mjs --drive --warm 10 --seconds 30 --profile`, `revc-web-3141ff3-r1`, load 20-30, one run each — the
+player on foot in a street with police about): with `--gl discard`, 35 browser frames a second, the engine's work a
+frame p50 8.7 ms, p99 38, max 64; no frame gap over 100 ms; its WebAssembly 1.2 ms a frame (4 % of the time); no
+synchronous WebGL call a frame; the four longest busy stretches (139-238 ms) 92-95 % native time (the GPU process,
+SwiftShader's vertex work), none in the engine's code; the game waited 68 ms in all for its files. With `--gl
+swiftshader` (drawn): 3.5 frames a second, stretches of 0.3-5.7 s — SwiftShader's drawing. Nothing in the engine to
+fix for its hitches here; a real GPU decides them.
 First start of a new browser, the learned list made by sessions with the shared first-launch profile (below): 19 MB
 on the wire before the menu (the sound bank `Audio/sfx.raw`, the menu's textures and fonts, the engine), about 20 MB
 more for a new game's first scene (`models/gta3.img`). With Chrome's network emulation, 50 ms round trip: 85 KB/s, the
@@ -768,7 +810,7 @@ the game reads none of them.
 ### Orthros' modified Vice City
 
 `vice-city-orthros` ("Grand Theft Auto: Vice City — Orthros Edition", `1.1 · Orthros`, over the Windows card's files
-as reVC's; `"modified": true`: the library's "Recompiled & modified" tab, "Recompiled and modified engine" on its card)
+as reVC's; `"modified": true`: the "Modified" tag on its card and among the library's filters)
 runs the release `revc-web-3141ff3-plus-r1`: the same fork commit as reVC's `revc-web-3141ff3-r1`, built with
 `-DREVC_ORTHROS_EXTRAS=ON` (lock.json: a build's own `cmake`). That option compiles `src/extras/orthros_extras.cpp` in
 and its hooks (all under `ORTHROS_EXTRAS`: the reVC card's build has none of them). Everything is in the game itself:

@@ -3,7 +3,7 @@
 import { startEmbers } from './embers.js';
 import { UI_LANGS, browserLangs, explicitLang, pickLang, endonym } from './lang.js';
 import { h } from './dom.js';
-import { Downloads, downloadStatus } from './download.js';
+import { Downloads, downloadStatus, launchFor, launchStatus } from './download.js';
 import { accountState, onAccountChange } from './account.js';
 
 /** the "download the whole game first" downloads (one at a time, see download.js) */
@@ -24,13 +24,14 @@ const STRINGS = {
     emptyTitle: 'No game available', emptyText: 'This server offers no game yet. Add one with',
     errorTitle: 'Cannot reach the server', retry: 'Try again',
     settings: 'Settings', account: 'Account', language: 'Language', gameLanguage: 'Game language', gameLanguageShort: 'Language', gameVersion: 'Version', others: 'Others',
-    size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`),
-    modes: { solo: 'Single player', multiplayer: 'Multiplayer', story: 'Story', free: 'Free mode' }, runtimes: { re3: 'Recompiled engine', re3Modified: 'Recompiled and modified engine' },
-    tabs: { all: 'All', windows: 'Windows', recompiled: 'Recompiled', modified: 'Recompiled & modified' },
-    tabEmpty: 'No game of this kind on this server.',
+    modes: { solo: 'Single player', multiplayer: 'Multiplayer', story: 'Story', free: 'Free mode' },
+    kinds: { windows: 'Windows', recompiled: 'Recompiled', modified: 'Modified' },
+    kindTitles: { windows: 'The original Windows game, run as it is in Orthros’ emulator', recompiled: 'The game’s engine recompiled for the browser', modified: 'The game’s engine recompiled for the browser and modified' },
+    all: 'All', tagFilter: 'Click: show only the games with this tag (again: all of them)', filterEmpty: 'No game has all these tags.', showAll: 'Show all',
     live: (rooms, humans) => [rooms > 1 ? `${rooms} games online` : null, humans ? `${humans} playing` : null].filter(Boolean).join(', '),
     dlStart: 'Download first', dlPause: 'Pause', dlResume: 'Resume', dlRetry: 'Try again',
     dlTitle: 'Downloads the whole game into this browser now (it resumes where it stopped on your next visit): on a slow connection the game then starts and plays without waiting for the network.',
+    lnStart: 'Prepare', lnTitle: 'What earlier players needed before the game was playable, measured at your connection. Prepare downloads only that into this browser now (it resumes where it stopped): the game then starts without waiting.',
   },
   fr: {
     over: 'Jeux Windows et moteurs recompilés · dans ton navigateur', tagline: 'Tes jeux, directement dans ton navigateur.',
@@ -43,13 +44,14 @@ const STRINGS = {
     emptyTitle: 'Aucun jeu disponible', emptyText: 'Ce serveur ne propose aucun jeu pour l’instant. Ajoutes-en un avec',
     errorTitle: 'Serveur injoignable', retry: 'Réessayer',
     settings: 'Paramètres', account: 'Compte', language: 'Langue', gameLanguage: 'Langue du jeu', gameLanguageShort: 'Langue', gameVersion: 'Version', others: 'Autres',
-    size: (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1).replace('.', ',')} Go` : `${Math.round(b / 1e6)} Mo`),
-    modes: { solo: 'Solo', multiplayer: 'Multijoueur', story: 'Histoire', free: 'Mode libre' }, runtimes: { re3: 'Moteur recompilé', re3Modified: 'Moteur recompilé et modifié' },
-    tabs: { all: 'Tout', windows: 'Windows', recompiled: 'Recompilés', modified: 'Recompilés et modifiés' },
-    tabEmpty: 'Aucun jeu de ce genre sur ce serveur.',
+    modes: { solo: 'Solo', multiplayer: 'Multijoueur', story: 'Histoire', free: 'Mode libre' },
+    kinds: { windows: 'Windows', recompiled: 'Recompilé', modified: 'Modifié' },
+    kindTitles: { windows: 'Le jeu Windows d’origine, tel quel dans l’émulateur d’Orthros', recompiled: 'Le moteur du jeu recompilé pour le navigateur', modified: 'Le moteur du jeu recompilé pour le navigateur et modifié' },
+    all: 'Tout', tagFilter: 'Clic : seulement les jeux avec ce tag (encore : tous)', filterEmpty: 'Aucun jeu n’a tous ces tags.', showAll: 'Tout afficher',
     live: (rooms, humans) => [rooms > 1 ? `${rooms} parties en ligne` : null, humans ? `${humans} en jeu` : null].filter(Boolean).join(', '),
     dlStart: 'Télécharger d’abord', dlPause: 'Pause', dlResume: 'Reprendre', dlRetry: 'Réessayer',
     dlTitle: 'Télécharge tout le jeu dans ce navigateur maintenant (reprend où il s’est arrêté à la visite suivante) : sur une connexion lente, le jeu démarre et se joue ensuite sans attendre le réseau.',
+    lnStart: 'Préparer', lnTitle: 'Ce dont les joueurs précédents ont eu besoin avant que le jeu soit jouable, mesuré à ta connexion. Préparer télécharge seulement cela dans ce navigateur maintenant (reprend où il s’est arrêté) : le jeu démarre ensuite sans attendre.',
   },
 };
 
@@ -153,6 +155,8 @@ function choiceRow({ label, aria, items, max, more, onPick }) {
 
 /** Options shown as chips in a row before the rest go into the "Others" select. */
 const MAX_VERSIONS = 3, MAX_LANGS = 6;
+/** A card's download line, shown whole on as many lines as it takes: a figure never apart from its unit, nor ":" or "%" at a line's start. */
+const unbroken = (text) => text.replace(/(\d) (?=\S)/g, '$1\u00a0').replace(/ (?=[:%])/g, '\u00a0');
 
 const ICON = {
   play: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2.6v10.8a.6.6 0 0 0 .92.5l8.5-5.4a.6.6 0 0 0 0-1L4.92 2.1A.6.6 0 0 0 4 2.6z" fill="currentColor"/></svg>',
@@ -165,7 +169,7 @@ const ICON = {
 export function mountHome({ onPlay }) {
   const menu = $('menu'), grid = $('hmGrid'), nav = $('hmNav');
   const cleanup = [];
-  let lang = pickLang(), explicit = explicitLang(), games = [], last = null, cards = [], resume = null, embers = null, drawn = false;
+  let lang = pickLang(), explicit = explicitLang(), games = [], last = null, cards = [], resume = null, embers = null, drawn = false, byName = new Map();
   let view = { kind: 'loading' }; // (loading, games, error)
   const S = () => STRINGS[lang];
   const on = (target, type, fn, o) => { target.addEventListener(type, fn, o); cleanup.push(() => target.removeEventListener(type, fn, o)); };
@@ -217,18 +221,37 @@ export function mountHome({ onPlay }) {
 
   const pref = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
   // (the cards' live counts, refreshed together every 30 s)
-  let liveSyncs = [];
+  let liveSyncs = [], cardCleanup = [];
+  cleanup.push(() => cardCleanup.forEach((fn) => fn()));
   cleanup.push((() => { const t = setInterval(() => liveSyncs.forEach((f) => f()), 30000); return () => clearInterval(t); })());
-  // the library's tabs: the Windows games (run as they are in the emulator), the ones whose engine is recompiled for the
-  // browser, and those also modified (a mod: the manifest's "modified"); "all" in that order. A game with a Windows
-  // version and a recompiled one is in both tabs.
-  const KINDS = ['windows', 'recompiled', 'modified'];
-  const kindsOf = (g) => {
-    const ports = g.variants.filter((v) => (v.runtime ?? 'win32') !== 'win32');
-    return [...(ports.length < g.variants.length ? ['windows'] : []), ...(ports.length ? [ports.some((v) => v.modified) ? 'modified' : 'recompiled'] : [])];
-  };
-  let tab = ['all', ...KINDS].includes(pref('orthros.libTab')) ? pref('orthros.libTab') : 'all';
+  // the library's tags, on the cards and as its filters: the kind of game (the Windows games, run as they are in the
+  // emulator; the ones whose engine is recompiled for the browser; those also modified — the manifest's "modified") and
+  // the ways to play it (the manifest's modes; none: solo). A game has the tags of all its versions; the filters of one
+  // group add up (Windows or Recompiled), those of two groups narrow (Recompiled and Multiplayer).
+  const KINDS = ['windows', 'recompiled', 'modified'], MODES = ['solo', 'multiplayer', 'story', 'free'];
+  const tagsOf = (v) => [(v.runtime ?? 'win32') === 'win32' ? 'windows' : v.modified ? 'modified' : 'recompiled', ...(v.modes?.length ? v.modes : ['solo'])];
+  const gameTags = (g) => new Set(g.variants.flatMap(tagsOf));
+  const groupOf = (t) => (KINDS.includes(t) ? 'kind' : 'mode');
+  const tagLabel = (t) => S().kinds[t] ?? S().modes[t] ?? t;
   const savePref = (key, value) => { try { localStorage.setItem(key, value); } catch { /* storage disabled */ } };
+  // (the filters chosen: in the page's address — a link shows the same games, ?tags=recompiled,multiplayer —, none on
+  // arrival)
+  const TAG = /^[a-z][a-z0-9-]{0,31}$/, rankOf = (t) => { const i = [...KINDS, ...MODES].indexOf(t); return i < 0 ? 99 : i; };
+  const byRank = (a, b) => rankOf(a) - rankOf(b) || a.localeCompare(b);
+  const picked = new Set((new URLSearchParams(location.search).get('tags') ?? '').split(',').filter((t) => TAG.test(t)));
+  function writeUrl() {
+    const rest = location.search.slice(1).split('&').filter((p) => p && !/^tags(=|$)/.test(p));
+    if (picked.size) rest.push('tags=' + [...picked].sort(byRank).join(','));
+    history.replaceState(history.state, '', location.pathname + (rest.length ? '?' + rest.join('&') : '') + location.hash);
+  }
+  /** The game passes the filters (`but`: one group's left out — the count shown beside each of its tags). */
+  const passes = (g, but = null) => {
+    const tags = gameTags(g);
+    return ['kind', 'mode'].every((grp) => { const want = [...picked].filter((t) => groupOf(t) === grp); return grp === but || !want.length || want.some((t) => tags.has(t)); });
+  };
+  // (a card shown again by a filter: no second entrance)
+  const setFilter = (change) => { change(); writeUrl(); for (const el of cards) el.classList.add('still'); applyFilter(); };
+  const toggle = (t) => setFilter(() => { if (!picked.delete(t)) picked.add(t); });
   const chosen = (g) => g.variants.find((v) => v.name === pref('orthros.version.' + g.id) && v.available)
     ?? g.variants.find((v) => v.name === last && v.available)
     ?? g.variants.find((v) => v.available) ?? g.variants[0];
@@ -239,6 +262,8 @@ export function mountHome({ onPlay }) {
     const wanted = explicit ? [explicit, ...browserLangs()] : [...browserLangs(), lang];
     return wanted.find((l) => options.includes(l)) ?? (options.includes('en') ? 'en' : options[0] ?? null);
   };
+  /** The version game language `gl` runs from version `v`: its language's own (languageVersions), else `v`. */
+  const runs = (v, gl) => { const o = gl && v?.languageVersions?.[gl] ? byName.get(v.languageVersions[gl]) : null; return o?.available ? o : v; };
   // (a download running stops first: the game's worker opens the same stores)
   const play = async (g) => { const v = chosen(g); if (!v?.available) return; await downloads.stop(); onPlay(v.name, gameLang(g, v)); };
   function playPill(g) { const el = h('button', { type: 'button', class: 'hm-play', onclick: () => play(g) }); el.innerHTML = `${ICON.play}<span>${S().play}</span>`; return el; }
@@ -263,21 +288,39 @@ export function mountHome({ onPlay }) {
 
   function card(g, i) {
     const el = h('article', { class: 'hm-card' + (drawn ? ' still' : ''), 'data-name': g.id, style: `--i:${i}`, role: 'group', 'aria-label': g.title });
-    const cover = h('div', { class: 'hm-cover' }), desc = h('p'), meta = h('span', { class: 'hm-meta' }), live = h('span', { class: 'hm-live' }), playBtn = playPill(g), langSlot = h('div', { class: 'hm-slot' });
+    const cover = h('div', { class: 'hm-cover' }), desc = h('p'), meta = h('div', { class: 'hm-meta' }), live = h('span', { class: 'hm-live' }), playBtn = playPill(g), langSlot = h('div', { class: 'hm-slot' });
     // "download the whole game first": status line and its button (download, pause, resume)
     const dlText = h('span', { class: 'hm-dl-text' }), dlBar = h('i'), dlBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
     const dlRow = h('div', { class: 'hm-dl', title: S().dlTitle }, h('div', { class: 'hm-dl-bar' }, dlBar), dlText, dlBtn);
+    // "playable after X MB, about Y min at your link" and its button (prepare: the launch set only, pause, resume)
+    const lnText = h('span', { class: 'hm-dl-text' }), lnBar = h('i'), lnBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
+    const lnRow = h('div', { class: 'hm-dl hm-launch', title: S().lnTitle }, h('div', { class: 'hm-dl-bar' }, lnBar), lnText, lnBtn);
+    function syncLaunch(v, whole, gl) {
+      // (the game language's own launch: what its sessions read before playable — a language's texts among them)
+      const launch = launchFor(v?.launch, gl);
+      const st = v?.available ? launchStatus(launch, { st: downloads.get(v.name, 'launch', gl), whole }, lang) : null;
+      // (the whole game here or on its way: its own line says it)
+      lnRow.hidden = !st || whole.state === 'done' || whole.state === 'running'; if (lnRow.hidden) return;
+      lnText.textContent = unbroken(st.text); lnRow.title = `${st.detail}\n\n${S().lnTitle}`; lnBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
+      lnRow.dataset.state = st.state;
+      lnBtn.hidden = st.state === 'done';
+      lnBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().lnStart;
+      lnBtn.onclick = (e) => { e.stopPropagation(); if (st.state === 'running') downloads.stop(); else downloads.start(v.name, 'launch', { lang: gl, launch }); };
+    }
     function syncDownload() {
       // (every runtime: the game data's block store, the one each game reads — src/vfs/game-data.js)
-      const v = chosen(g); dlRow.hidden = !v?.available; if (dlRow.hidden) return;
+      // (the version the game language runs — another one when its language has its own, OpenMW's languageVersions)
+      const shown = chosen(g), gl = shown?.available ? gameLang(g, shown) : null, v = runs(shown, gl);
+      dlRow.hidden = !v?.available; if (dlRow.hidden) { lnRow.hidden = true; return; }
       const st = downloadStatus(downloads.get(v.name), v.bytes, lang);
-      dlText.textContent = st.text; dlBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
+      syncLaunch(v, st, gl);
+      dlText.textContent = unbroken(st.text); dlRow.title = `${st.detail}\n\n${S().dlTitle}`; dlBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
       dlRow.dataset.state = st.state;
       dlBtn.hidden = st.state === 'done';
       dlBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().dlStart;
       dlBtn.onclick = (e) => { e.stopPropagation(); if (st.state === 'running') downloads.stop(); else downloads.start(v.name); };
     }
-    cleanup.push(downloads.onChange((name) => { if (name === chosen(g)?.name) syncDownload(); }));
+    cardCleanup.push(downloads.onChange((name) => { if (name === chosen(g)?.name) syncDownload(); }));
     let shown = null, langRow = null;
     // one row for the versions (chips, the oldest in a select past three), one for the game's languages (flags)
     const versions = g.variants.length && g.variants.some((v) => v.version) ? choiceRow({ label: S().gameVersion, aria: S().gameVersion, max: MAX_VERSIONS, more: S().others,
@@ -299,15 +342,17 @@ export function mountHome({ onPlay }) {
       cover.querySelector('.hm-badge')?.remove();
       if (v?.name === last && ok) cover.append(h('span', { class: 'hm-badge' }, S().lastPlayed));
       desc.textContent = (lang === 'fr' ? v?.descriptionFr : null) ?? v?.description ?? '';
-      // (a runtime's own label first: re3's, whose games have their Windows version too)
-      const what = v?.exe ?? [(v?.modified && S().runtimes[v.runtime + 'Modified']) || S().runtimes[v?.runtime], ...(v?.modes ?? []).map((m) => S().modes[m] ?? m)].filter(Boolean).join(' · ');
-      meta.textContent = ok ? `${what} · ${S().size(v.bytes)}` : S().missing; meta.title = v?.exe ?? '';
+      // (the version's tags, each a filter of the library — a Windows game's executable in its tooltip; the size: the
+      // download line's)
+      meta.replaceChildren(...(ok ? tagsOf(v).map((t) => h('button', { type: 'button', class: 'hm-tag', 'data-tag': t, 'aria-pressed': String(picked.has(t)),
+        title: [S().kindTitles[t] && (t === 'windows' && v.exe ? `${S().kindTitles[t]} (${v.exe})` : S().kindTitles[t]), S().tagFilter].filter(Boolean).join('\n'), onclick: () => toggle(t) }, tagLabel(t)))
+        : [h('span', { class: 'hm-missing' }, S().missing)]));
       syncLive();
       playBtn.hidden = !ok;
       versions?.set(v?.name);
       langRow = v?.languages?.length ? choiceRow({ label: S().gameLanguageShort, aria: S().gameLanguage, max: MAX_LANGS, more: S().others,
         items: v.languages.map((code) => ({ value: code, flag: code, label: endonym(code) })),
-        onPick: (code) => { savePref('orthros.gameLanguage.' + g.id, code); langRow.set(code); } }) : null;
+        onPick: (code) => { savePref('orthros.gameLanguage.' + g.id, code); langRow.set(code); syncDownload(); } }) : null;
       langRow?.set(gameLang(g, v));
       langSlot.replaceChildren(...(langRow ? [langRow.el] : []));
       syncDownload();
@@ -325,7 +370,7 @@ export function mountHome({ onPlay }) {
     liveSyncs.push(syncLive);
     el.append(cover, h('div', { class: 'hm-body' }, h('h3', {}, g.title), desc,
       h('div', { class: 'hm-choices' }, versions?.el, langSlot),
-      h('div', { class: 'hm-foot-row' }, h('div', { class: 'hm-metas' }, meta, live), playBtn), dlRow));
+      h('div', { class: 'hm-foot-row' }, h('div', { class: 'hm-metas' }, meta, live), playBtn), lnRow, dlRow));
     sync();
     el.onclick = (e) => { if (chosen(g)?.available && !e.target.closest('select, button, label, .hm-dl')) play(g); };
     for (const [type, fn] of [['mouseenter', () => { if (chosen(g)?.available) { setBackdrop(g.id); heat(true); } }], ['mouseleave', () => { setBackdrop(resume?.id ?? null); heat(false); }],
@@ -350,43 +395,75 @@ export function mountHome({ onPlay }) {
       message('empty', S().emptyTitle, [S().emptyText + ' ', h('code', {}, 'orthros run <folder>')]);
     } else renderGames();
   }
+  /** The filters: all, then the tags the library has, by group (their counts and states: applyFilter). */
   function renderTabs() {
-    const count = (k) => (k === 'all' ? games : games.filter((g) => kindsOf(g).includes(k))).length;
-    $('hmTabs').replaceChildren(...['all', ...KINDS].map((k) => h('button', { type: 'button', role: 'tab', class: 'hm-tab', 'aria-selected': String(k === tab), 'data-tab': k,
-      onclick: () => { tab = k; savePref('orthros.libTab', k); renderView(); $('hmTabs').querySelector(`[data-tab="${k}"]`)?.focus(); } }, S().tabs[k], h('span', { class: 'n' }, String(count(k))))));
+    const order = [...new Set(games.flatMap((g) => [...gameTags(g)]))].sort(byRank);
+    $('hmTabs').replaceChildren(
+      h('button', { type: 'button', class: 'hm-tab', onclick: () => setFilter(() => picked.clear()) }, S().all, h('span', { class: 'n' }, String(games.length))),
+      ...order.flatMap((t, i) => [i === 0 || groupOf(t) !== groupOf(order[i - 1]) ? h('span', { class: 'sep', 'aria-hidden': 'true' }) : null,
+        h('button', { type: 'button', class: 'hm-tab', 'data-tag': t, title: S().kindTitles[t] ?? null, onclick: () => toggle(t) }, tagLabel(t), h('span', { class: 'n' }))]).filter(Boolean));
   }
+  /** Every game's card, built once (a language change builds them again); the filters only show or hide them. */
+  let noneEl = null;
   function renderGames() {
     const focused = document.activeElement?.dataset?.name;
     renderCta();
     renderTabs();
-    const shown = games.filter((g) => tab === 'all' || kindsOf(g).includes(tab));
-    $('hmCount').textContent = S().games(shown.length);
     // covers behind the page: the one of the game under the pointer, else the resumable one
     backdrops.replaceChildren();
     for (const g of games) syncBackdrop(g);
     setBackdrop(resume?.id ?? null);
-    liveSyncs = [];
-    cards = shown.map(card);
+    for (const fn of cardCleanup) fn();
+    cardCleanup = []; liveSyncs = [];
+    cards = games.map(card);
     drawn = true; // (later drawings — a language change — do not replay the entrance)
-    if (!cards.length) { message('empty', S().tabs[tab], S().tabEmpty); return; }
-    grid.style.setProperty('--n', shown.length);
-    grid.replaceChildren(...cards);
+    noneEl = emptyEl('empty', S().filterEmpty, '', h('button', { class: 'hm-btn', onclick: () => setFilter(() => picked.clear()) }, S().showAll));
+    grid.replaceChildren(...cards, noneEl);
     grid.setAttribute('aria-busy', 'false');
-    if (focused) grid.querySelector(`[data-name="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+    applyFilter();
+    if (focused) grid.querySelector(`[data-name="${CSS.escape(focused)}"]:not([hidden])`)?.focus({ preventScroll: true });
+  }
+  /** The filters applied: the cards they let through shown (nothing rebuilt), the counts, the address. */
+  function applyFilter() {
+    if (view.kind !== 'games' || !games.length) return;
+    const present = new Set(games.flatMap((g) => [...gameTags(g)]));
+    const gone = [...picked].filter((t) => !present.has(t)); // (a tag no game has: a link from another server)
+    if (gone.length) { gone.forEach((t) => picked.delete(t)); writeUrl(); }
+    for (const b of $('hmTabs').querySelectorAll('button')) {
+      const t = b.dataset.tag;
+      if (!t) { b.setAttribute('aria-pressed', String(!picked.size)); continue; }
+      const n = games.filter((g) => gameTags(g).has(t) && passes(g, groupOf(t))).length;
+      b.setAttribute('aria-pressed', String(picked.has(t))); b.classList.toggle('none', !n && !picked.has(t)); b.querySelector('.n').textContent = String(n);
+    }
+    const byId = new Map(games.map((g) => [g.id, g]));
+    let shown = 0, left = false;
+    for (const el of cards) {
+      const on = passes(byId.get(el.dataset.name));
+      if (!on && el.matches(':hover, :focus-within')) left = true;
+      el.hidden = !on; shown += on;
+    }
+    for (const b of grid.querySelectorAll('.hm-tag')) b.setAttribute('aria-pressed', String(picked.has(b.dataset.tag)));
+    if (left) { setBackdrop(resume?.id ?? null); heat(false); } // (the card under the pointer hidden: no mouseleave)
+    noneEl.hidden = shown > 0;
+    grid.style.setProperty('--n', shown || 2);
+    $('hmCount').textContent = S().games(shown);
   }
 
+  function emptyEl(kind, title, text, action) {
+    return h('div', { class: 'hm-empty ' + kind },
+      h('img', { src: LOGO, alt: '', width: 70, height: 71, draggable: 'false' }),
+      h('div', {}, h('h3', {}, title), h('p', {}, text), action));
+  }
   function message(kind, title, text, action) {
     grid.style.setProperty('--n', 2);
-    grid.replaceChildren(h('div', { class: 'hm-empty ' + kind },
-      h('img', { src: LOGO, alt: '', width: 70, height: 71, draggable: 'false' }),
-      h('div', {}, h('h3', {}, title), h('p', {}, text), action)));
+    grid.replaceChildren(emptyEl(kind, title, text, action));
     grid.setAttribute('aria-busy', 'false');
   }
 
   // ---- keyboard: arrows move between the games (nearest card in that direction), Enter / Space plays
   on(menu, 'keydown', (e) => {
     if (e.target.closest?.('input, textarea, select')) return;
-    const list = cards.filter((c) => !c.classList.contains('unavailable')), i = list.indexOf(document.activeElement);
+    const list = cards.filter((c) => !c.hidden && !c.classList.contains('unavailable')), i = list.indexOf(document.activeElement);
     if ((e.key === 'Enter' || e.key === ' ') && i >= 0) { e.preventDefault(); play(games.find((g) => g.id === list[i].dataset.name)); return; }
     if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) || !list.length) return;
     if (i < 0 && document.activeElement !== document.body && document.activeElement !== menu) return; // (arrows on a button stay the button's)
@@ -417,19 +494,24 @@ export function mountHome({ onPlay }) {
   menu.classList.remove('hidden');
 
   return {
-    /** The games to show (`last`: the one played last, for the badge and the resume button). */
-    setGames(list, lastPlayed) {
+    /**
+     * The games to show (`last`: the one played last, for the badge and the resume button; `all`: every version, the
+     * hidden ones too — those a game language runs, `languageVersions`).
+     */
+    setGames(list, lastPlayed, all = list) {
+      byName = new Map(all.map((m) => [m.name, m]));
       const groups = new Map();
       for (const variant of list) {
         const id = variant.gameId ?? variant.name;
         if (!groups.has(id)) groups.set(id, { id, title: variant.title, variants: [] });
         groups.get(id).variants.push(variant);
       }
-      games = [...groups.values()].sort((a, b) => KINDS.indexOf(kindsOf(a)[0]) - KINDS.indexOf(kindsOf(b)[0])); // (stable: the server's order within a kind)
+      const rank = (g) => Math.min(...[...gameTags(g)].map((t) => KINDS.indexOf(t)).filter((i) => i >= 0));
+      games = [...groups.values()].sort((a, b) => rank(a) - rank(b)); // (stable: the server's order within a kind)
       for (const group of games) group.variants.sort((a, b) => (b.versionOrder ?? 0) - (a.versionOrder ?? 0));
       last = lastPlayed; view = { kind: 'games' };
       applyLang();
-      (cards.find((c) => c.dataset.name === resume?.id) ?? cards.find((c) => !c.classList.contains('unavailable')))?.focus({ preventScroll: true });
+      (cards.find((c) => !c.hidden && c.dataset.name === resume?.id) ?? cards.find((c) => !c.hidden && !c.classList.contains('unavailable')))?.focus({ preventScroll: true });
     },
     setError(text, retry) { view = { kind: 'error', text, retry }; renderView(); },
     setLoading() { view = { kind: 'loading' }; renderView(); },

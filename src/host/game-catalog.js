@@ -37,7 +37,7 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
   if (!Array.isArray(spec.versions) || !spec.versions.length) fail(file, 'versions doit contenir au moins une version');
   if (spec.defaults !== undefined && (!spec.defaults || Array.isArray(spec.defaults) || typeof spec.defaults !== 'object')) fail(file, 'defaults doit être un objet');
   const defaults = spec.defaults ?? {};
-  for (const key of ['folder', 'baseFolder', 'gameId', 'id', 'dir', 'requires', 'extraMounts', 'saveDir', 'coverPath', 'saveKey', 'overlays', 'dataMounts']) if (own(defaults, key)) fail(file, `defaults.${key} est réservé`);
+  for (const key of ['folder', 'baseFolder', 'gameId', 'id', 'dir', 'requires', 'formerGame', 'extraMounts', 'saveDir', 'coverPath', 'saveKey', 'overlays', 'dataMounts']) if (own(defaults, key)) fail(file, `defaults.${key} est réservé`);
   const versions = new Map();
   for (const entry of spec.versions) {
     if (!entry || Array.isArray(entry) || typeof entry !== 'object') fail(file, 'entrée de version invalide');
@@ -49,11 +49,15 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     if (!RUNTIMES.includes(runtime)) fail(file, `${entry.id}: runtime inconnu: ${runtime}`);
     if (runtime === 'win32' && !safePath(entry.exe)) fail(file, `${entry.id}: exe doit être un chemin relatif sûr`);
     if (entry.languages !== undefined && (!Array.isArray(entry.languages) || !entry.languages.length || !entry.languages.every((v) => typeof v === 'string' && /^[a-z]{2}(?:-[A-Z]{2})?$/.test(v)))) fail(file, `${entry.id}: languages invalide`);
-    // (win32: another game's version mounted at its own drive path; goldsrc, re3: its files beneath this version's, no mount)
-    const layered = runtime === 'goldsrc' || runtime === 're3';
+    // (win32: another game's version mounted at its own drive path; goldsrc, re3, openmw: its files beneath this
+    // version's, no mount)
+    const layered = runtime === 'goldsrc' || runtime === 're3' || runtime === 'openmw';
     if (entry.requires !== undefined && (!Array.isArray(entry.requires) || !entry.requires.every((d) => d && ID.test(d.game ?? '') && ID.test(d.version ?? '') && (layered ? d.mount === undefined : WIN_MOUNT.test(d.mount ?? ''))))) fail(file, `${entry.id}: requires invalide`);
     for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey', 'overlays', 'dataMounts']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
-    const { id, dir, requires, ...version } = entry;
+    // (a version moved from another game folder: the browser's saves keep that installation's key — the port's saveKey)
+    if (entry.formerGame !== undefined && (!ID.test(entry.formerGame) || entry.formerGame === spec.id)) fail(file, `${entry.id}: formerGame doit nommer un autre dossier de jeu`);
+    const { id, dir, requires, formerGame, ...version } = entry;
+    const installation = `orthros-port:${formerGame ?? spec.id}:${dir}`;
     const manifest = withDefaults({ ...defaults, ...version, runtime, name: spec.name, gameId: spec.id,
       folder: path.join(gameDir, 'versions', dir), baseFolder: path.join(gameDir, 'base'),
       saveDir: path.resolve(gameDir, '../../build/saves', id) });
@@ -69,20 +73,19 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     if (runtime === 'goldsrc') {
       const problem = goldsrcProblem(manifest.goldsrc);
       if (problem) fail(file, `${id}: ${problem}`);
-      manifest.saveKey = `orthros-port:${spec.id}:${dir}`; // (the installation, game/version folder: the page's saved profile)
+      manifest.saveKey = installation; // (the installation, game/version folder: the page's saved profile)
     }
     if (runtime === 'openmw') {
       const problem = openmwProblem(manifest.openmw);
       if (problem) fail(file, `${id}: ${problem}`);
-      if (requires?.length) fail(file, `${id}: openmw utilise sa propre pile de mods, sans requires`);
-      manifest.saveKey = `orthros-port:${spec.id}:${dir}`;
+      manifest.saveKey = installation;
       // (the engine release's own data — its asset pack — served with the game's files, under _engine/)
       manifest.dataMounts = [{ at: '_engine', dir: path.join(enginesDir, manifest.openmw.engine, 'moddata') }];
     }
     if (runtime === 're3') {
       const problem = re3Problem(manifest.re3);
       if (problem) fail(file, `${id}: ${problem}`);
-      manifest.saveKey = `orthros-port:${spec.id}:${dir}`;
+      manifest.saveKey = installation;
       // (the engine release's own game files over the version's, whatever their case — none while it is not installed)
       manifest.overlays = [re3GameFiles(enginesDir, manifest.re3.engine)];
     }
@@ -156,19 +159,20 @@ export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null, { engine
   }
   // (a GoldSrc version's required versions lie beneath its own files, in order, with theirs: a mod over its game; an
   // re3 version's, of any runtime, the same way — a recompiled engine over the original game's files, as a game of its
-  // own on the home without a copy of them; a required version's own requires followed for a port only)
+  // own on the home without a copy of them; an OpenMW version's too — its mod stack over the original game's files;
+  // a required version's own requires followed for a port only)
   const underlays = (id, seen) => {
     if (seen.includes(id)) throw new Error(`dépendance circulaire: ${[...seen, id].join(' -> ')}`);
     const own = catalog.get(id).runtime;
     return sources.get(id).requires.flatMap((dep) => {
       const m = catalog.get(dep.version);
       if (own === 'goldsrc' && m.runtime !== 'goldsrc') throw new Error(`${id}: ${dep.version} n'est pas un portage goldsrc`);
-      return [m.folder, m.baseFolder, ...(m.runtime === 'goldsrc' || m.runtime === 're3' ? underlays(dep.version, [...seen, id]) : [])];
+      return [m.folder, m.baseFolder, ...(m.runtime === 'win32' ? [] : underlays(dep.version, [...seen, id]))];
     });
   };
   for (const [id, source] of sources) {
     const runtime = catalog.get(id).runtime;
-    if (source.requires.length && (runtime === 'goldsrc' || runtime === 're3')) catalog.get(id).underlays = underlays(id, []);
+    if (source.requires.length && runtime !== 'win32') catalog.get(id).underlays = underlays(id, []);
   }
   for (const [id, manifest] of extra ?? []) catalog.set(id, manifest);
   return catalog;

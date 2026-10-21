@@ -62,6 +62,7 @@ fs.mkdirSync(out, { recursive: true });
 // (e.g. --net 50:0.68 ~85 KB/s, 50:8 ~1 MB/s, 50:40 ~5 MB/s; tools/slow-net-check.mjs runs a bench at such speeds);
 // --net-trace <file>: one line per compressed range answered (start s, duration s, demand/bg, file, range, bytes)
 const netOpt = opt('net') ? opt('net').split(':').map(Number) : null;
+// --br-cache <dir>: the server's precompressed transport units there (src/host/br-cache.js; none without it)
 // --learn <dir>: the server keeps the learned prefetch order and GL programs there (see server.js); --programs 0: no
 // programs compiled ahead; --memprefetch: the page prefetches
 // into memory (no persistent profile needed); --prefetch 0: no prefetch
@@ -75,7 +76,7 @@ if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 // --bench <name>: the page's bench mode (?bench=<name>, tools/scenarios/bench, docs/real-machine-bench.md): the page
 // plays the scenario itself (with --ui its banner's start button is clicked); the run ends with the bench's record
 if (opt('telemetry')) fs.mkdirSync(opt('telemetry'), { recursive: true });
-const server = opt('server-port') ? null : createServer({ telemetryDir: opt('telemetry'), extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), gamesDir: opt('games-dir'), learnWriteMs: 2000, netTrace: opt('net-trace'), profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
+const server = opt('server-port') ? null : createServer({ telemetryDir: opt('telemetry'), extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), brCacheDir: opt('br-cache'), gamesDir: opt('games-dir'), learnWriteMs: 2000, netTrace: opt('net-trace'), profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 if (server) await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server ? server.address().port : Number(opt('server-port'));

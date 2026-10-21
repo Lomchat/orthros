@@ -25,16 +25,28 @@ export function openmwProblem(o) {
   return null;
 }
 
-export function openmwInstalled(man, enginesDir) {
+/** The version's engine release and game files are here (`memo`: resolveGameFile's, the folders' listings kept). */
+export function openmwInstalled(man, enginesDir, memo = null) {
   const engine = man.openmw?.engine;
   try {
     const release = JSON.parse(fs.readFileSync(engineFile(enginesDir, engine, 'release.json'), 'utf8'));
     return release.runtime === 'openmw' && Array.isArray(release.files) && release.files.length > 0
       && ['index.html', 'launcher.html', ...release.files].every((f) => engineFile(enginesDir, engine, f))
       && (man.openmw.mods ?? []).every((m) => m.installed && m.parts?.length > 0)
-      && (man.openmw.mods ?? []).flatMap((m) => m.parts ?? []).every((p) => resolveGameFile(man, `${p.dir}/${p.sentinel}`))
-      && man.openmw.files.every((f) => resolveGameFile(man, f));
+      && (man.openmw.mods ?? []).flatMap((m) => m.parts ?? []).every((p) => resolveGameFile(man, `${p.dir}/${p.sentinel}`, memo))
+      && man.openmw.files.every((f) => resolveGameFile(man, f, memo));
   } catch { return false; }
+}
+
+/**
+ * The engine release's files a page downloads for the engine itself at its first launch (its release's e/ files),
+ * release-relative: those installed.
+ */
+export function openmwEngineFiles(man, enginesDir) {
+  try {
+    const release = JSON.parse(fs.readFileSync(engineFile(enginesDir, man.openmw.engine, 'release.json'), 'utf8'));
+    return (release.files ?? []).filter((f) => /^e\/[^/]+\/[^/]+\.(js|wasm|data)$/.test(f) && engineFile(enginesDir, man.openmw.engine, f));
+  } catch { return []; }
 }
 
 export const openmwBase = (id) => `/ports/openmw/${encodeURIComponent(id)}/app`;
@@ -62,7 +74,35 @@ export const withFrameMeter = (html) => html
 export const withStreaming = (html, upstream = false) => upstream ? html
   : html.replace(/<script src="e\/[0-9a-f]+\/streamfs\.js"><\/script>/, '<script src="/src/ports/openmw/streamfs.js"></script>');
 
-export const withSharedEngine = (html, release) => html.replace('("e/" + __ENGINE_VER + "/")', `(${JSON.stringify(`/engines/${release}/e/`)} + __ENGINE_VER + "/")`);
+/**
+ * The engine page's view distance and Orthros' script in the engine (src/ports/openmw/view-grow.js, view.lua): the
+ * module loaded before the engine (its load waits for it), the boot viewing distance its choice (short on a link that
+ * is not fast, then raised as the game data allows; distant terrain and object paging as the tier says), and Orthros'
+ * content (orthros.omwscripts) in every single-player openmw.cfg the page writes, whatever the link (saves list their
+ * content files). Multiplayer and the baked example world (?nomw) keep the tier's distance and their own content list:
+ * a world refuses a client whose content its own list lacks (BAD_CONTENT). Each hook falls back to the page's own when
+ * the module did not load.
+ */
+export const withProgressiveView = (html) => html
+  .replace('<head>', `<head><script>window.orthrosViewReady = import('/src/ports/openmw/view-grow.js').then(function (m) { return m.install(window); }).catch(function (e) { console.warn('[orthros view]', e); });</script>`)
+  .replace("'viewing distance = ' + ((/[?&]vd=(\\d+)/.exec(location.search)||[])[1] || TIER.vd)",
+    "'viewing distance = ' + ((/[?&]vd=(\\d+)/.exec(location.search)||[])[1] || (window.orthrosViewBoot ? window.orthrosViewBoot(TIER.vd) : TIER.vd))")
+  .replace(/FS\.writeFile\('\/openmw\.cfg',\s*cfg\.join\('\\n'\)\)/g, "FS.writeFile('/openmw.cfg', (window.orthrosContent ? window.orthrosContent(FS, cfg) : cfg).join('\\n'))")
+  .replace('document.body.appendChild(s);', 'Promise.all([window.orthrosViewReady, window.orthrosTierReady]).then(function () { document.body.appendChild(s); });');
+
+/**
+ * The engine page's quality tier from the GPU and the frames measured (src/ports/openmw/tier.js) instead of
+ * navigator.deviceMemory alone: the module loaded before the engine (withProgressiveView's hold waits for it too), the
+ * page's tier choice asking it (?tier= first, as before), its log line saying the GPU's kind. The page's own rule when
+ * the module did not load.
+ */
+export const withQualityTier = (html) => html
+  .replace('<head>', `<head><script>window.orthrosTierReady = import('/src/ports/openmw/tier.js').then(function (m) { return m.install(window); }).catch(function (e) { console.warn('[orthros tier]', e); });</script>`)
+  .replace("|| (__devMem >= 8 ? 'high' : (__devMem > 0 && __devMem <= 4 ? 'low' : 'mid'));",
+    "|| (window.orthrosTier ? window.orthrosTier(__devMem) : (__devMem >= 8 ? 'high' : (__devMem > 0 && __devMem <= 4 ? 'low' : 'mid')));")
+  .replace("append('[tier] '+__tier+' (navigator.deviceMemory='", "append('[tier] '+__tier+(window.orthrosTierChoice ? ' (gpu: '+window.orthrosTierChoice.kind+')' : '')+' (navigator.deviceMemory='");
+
+export const withSharedEngine =(html, release) => html.replace('("e/" + __ENGINE_VER + "/")', `(${JSON.stringify(`/engines/${release}/e/`)} + __ENGINE_VER + "/")`);
 
 export function openmwWebText(text, base, saveKey) {
   // Native EM_ASM in the untouched engine glue uses the upstream storage keys too.

@@ -1,10 +1,11 @@
 // Put into the OpenMW engine's pages by the Orthros server (src/host/server.js): what the Orthros page around the
 // engine shows in its header — the frame rate (a frame: an animation frame in which the engine drew) and whether the
 // game has the mouse — and on its loading screen (the engine's download). Told to the page by messages of its origin;
-// nothing changes in the engine.
+// nothing changes in the engine. The frames' last measure is the engine page's too (window.orthrosFrames: its view
+// distance's growth holds while frames are long, view-grow.js).
 (() => {
-  if (window.parent === window) return;
-  const tell = (m) => window.parent.postMessage(m, location.origin);
+  const framed = window.parent !== window;
+  const tell = (m) => { if (framed) window.parent.postMessage(m, location.origin); };
   let draws = 0, seen = 0, frames = [];
   for (const type of [window.WebGL2RenderingContext, window.WebGLRenderingContext]) {
     if (!type) continue;
@@ -18,10 +19,12 @@
   setInterval(() => {
     const now = performance.now(); frames = frames.filter((t) => t > now - 1000);
     const recent = frames.filter((t) => t > now - 500), gaps = recent.slice(1).map((t, i) => t - recent[i]).sort((a, b) => a - b);
-    tell({ type: 'orthros-frames', fps: recent.length * 2, max: gaps.at(-1) ?? 0, p99: gaps[Math.floor(gaps.length * 0.99)] ?? 0, total: draws > 0 });
+    const m = { type: 'orthros-frames', fps: recent.length * 2, max: gaps.at(-1) ?? 0, p99: gaps[Math.floor(gaps.length * 0.99)] ?? 0, total: draws > 0 };
+    window.orthrosFrames = m; tell(m);
   }, 500);
   // the engine's loading status (Module.setStatus, src/host/openmw.js): its package download, "Downloading data...
   // (x/y)" many times a second (a few told), then "Running..."
+  if (!framed) return;
   let told = 0;
   window.orthrosStatus = (text) => {
     if (!text) return;
