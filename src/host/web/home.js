@@ -167,7 +167,7 @@ const ICON = {
 export function mountHome({ onPlay }) {
   const menu = $('menu'), grid = $('hmGrid'), nav = $('hmNav');
   const cleanup = [];
-  let lang = pickLang(), explicit = explicitLang(), games = [], last = null, cards = [], resume = null, embers = null, drawn = false;
+  let lang = pickLang(), explicit = explicitLang(), games = [], last = null, cards = [], resume = null, embers = null, drawn = false, byName = new Map();
   let view = { kind: 'loading' }; // (loading, games, error)
   const S = () => STRINGS[lang];
   const on = (target, type, fn, o) => { target.addEventListener(type, fn, o); cleanup.push(() => target.removeEventListener(type, fn, o)); };
@@ -241,6 +241,8 @@ export function mountHome({ onPlay }) {
     const wanted = explicit ? [explicit, ...browserLangs()] : [...browserLangs(), lang];
     return wanted.find((l) => options.includes(l)) ?? (options.includes('en') ? 'en' : options[0] ?? null);
   };
+  /** The version game language `gl` runs from version `v`: its language's own (languageVersions), else `v`. */
+  const runs = (v, gl) => { const o = gl && v?.languageVersions?.[gl] ? byName.get(v.languageVersions[gl]) : null; return o?.available ? o : v; };
   // (a download running stops first: the game's worker opens the same stores)
   const play = async (g) => { const v = chosen(g); if (!v?.available) return; await downloads.stop(); onPlay(v.name, gameLang(g, v)); };
   function playPill(g) { const el = h('button', { type: 'button', class: 'hm-play', onclick: () => play(g) }); el.innerHTML = `${ICON.play}<span>${S().play}</span>`; return el; }
@@ -272,9 +274,9 @@ export function mountHome({ onPlay }) {
     // "playable after X MB, about Y min at your link" and its button (prepare: the launch set only, pause, resume)
     const lnText = h('span', { class: 'hm-dl-text' }), lnBar = h('i'), lnBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
     const lnRow = h('div', { class: 'hm-dl hm-launch', title: S().lnTitle }, h('div', { class: 'hm-dl-bar' }, lnBar), lnText, lnBtn);
-    function syncLaunch(v, whole) {
+    function syncLaunch(v, whole, gl) {
       // (the game language's own launch: what its sessions read before playable — a language's texts among them)
-      const gl = v?.available ? gameLang(g, v) : null, launch = launchFor(v?.launch, gl);
+      const launch = launchFor(v?.launch, gl);
       const st = v?.available ? launchStatus(launch, { st: downloads.get(v.name, 'launch', gl), whole }, lang) : null;
       // (the whole game here or on its way: its own line says it)
       lnRow.hidden = !st || whole.state === 'done' || whole.state === 'running'; if (lnRow.hidden) return;
@@ -286,9 +288,11 @@ export function mountHome({ onPlay }) {
     }
     function syncDownload() {
       // (every runtime: the game data's block store, the one each game reads — src/vfs/game-data.js)
-      const v = chosen(g); dlRow.hidden = !v?.available; if (dlRow.hidden) { lnRow.hidden = true; return; }
+      // (the version the game language runs — another one when its language has its own, OpenMW's languageVersions)
+      const shown = chosen(g), gl = shown?.available ? gameLang(g, shown) : null, v = runs(shown, gl);
+      dlRow.hidden = !v?.available; if (dlRow.hidden) { lnRow.hidden = true; return; }
       const st = downloadStatus(downloads.get(v.name), v.bytes, lang);
-      syncLaunch(v, st);
+      syncLaunch(v, st, gl);
       dlText.textContent = st.text; dlBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
       dlRow.dataset.state = st.state;
       dlBtn.hidden = st.state === 'done';
@@ -435,8 +439,12 @@ export function mountHome({ onPlay }) {
   menu.classList.remove('hidden');
 
   return {
-    /** The games to show (`last`: the one played last, for the badge and the resume button). */
-    setGames(list, lastPlayed) {
+    /**
+     * The games to show (`last`: the one played last, for the badge and the resume button; `all`: every version, the
+     * hidden ones too — those a game language runs, `languageVersions`).
+     */
+    setGames(list, lastPlayed, all = list) {
+      byName = new Map(all.map((m) => [m.name, m]));
       const groups = new Map();
       for (const variant of list) {
         const id = variant.gameId ?? variant.name;

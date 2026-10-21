@@ -783,15 +783,17 @@ export function createServer(opts = {}) {
   // Localized OpenMW masters need separate simulations, caches and save histories.
   function portLanguages(man, id) {
     if (man.runtime !== 'openmw' || !man.openmw.languageVersions) return {};
-    const languageLaunchUrls = {};
+    const languageLaunchUrls = {}, languageVersions = {};
     for (const [code, target] of Object.entries(man.openmw.languageVersions)) {
       const other = getManifest(target);
-      if (other?.runtime === 'openmw' && other.gameId === man.gameId && other.languages?.includes(code) && openmwInstalled(other, enginesDir))
+      if (other?.runtime === 'openmw' && other.gameId === man.gameId && other.languages?.includes(code) && openmwInstalled(other, enginesDir)) {
         languageLaunchUrls[code] = portLaunchUrl(target, other);
+        if (target !== id) languageVersions[code] = target; // (the version a language runs: the home's card prepares and downloads it)
+      }
     }
     // Keep the current language visible even while another localization is incomplete.
     for (const code of man.languages ?? []) languageLaunchUrls[code] ??= portLaunchUrl(id, man);
-    return { languages: Object.keys(languageLaunchUrls), contentLanguages: man.languages ?? [], languageLaunchUrls };
+    return { languages: Object.keys(languageLaunchUrls), contentLanguages: man.languages ?? [], languageLaunchUrls, languageVersions };
   }
   const mapImages = new Map(); // (the lobby's map pictures, compressed: file|mtime -> { raw, gzip, zstd })
   const rooms = roomsApi({ getManifest, identify, ...(opts.roomsRequest ? { request: opts.roomsRequest } : {}) });
