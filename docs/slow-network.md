@@ -221,7 +221,9 @@ on the request path. So the server keeps **units** compressed ahead, for every g
 - **Measured, hits** (same script, the cache filled with the two manifests' learned orders first — 3020 units, 300 MB —,
   Morrowind FR, 1 MB/s, 50 ms, 150 s, solo): before, 221 hits of 2934 requests, 6 % of the bytes, 109.2 MB on the wire
   for 180.2 MB (0.606), the world in 88.9 s; after, 885 hits of 1274 requests (+132 kept raw), 72 % of the bytes, 124.4
-  MB on the wire for 219.7 MB (0.566), the world in 72.8 s (one run each). At
+  MB on the wire for 219.7 MB (0.566), the world in 72.8 s (one run each). Vice City (Windows) at 1 MB/s, 100 s (its
+  intro movies: brotli saves nothing there): its 20 synchronous reads 227 ms on average, 601 ms at most before, 227 and
+  598 after (measured at the client's end of the link); 465 requests before, 334 after, 26.8 and 26.6 MB on the wire. At
   full speed (no change there) 1566 hits of 1857, 66 % of the bytes; most of the rest, 77 MB, blocks learned by
   pieces that a fast link asks whole — not made ahead (1473 of Morrowind's 1830 learned blocks are known by pieces:
   about three times the brotli work), made from the misses after the launch sets.
