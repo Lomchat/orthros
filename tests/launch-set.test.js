@@ -226,6 +226,11 @@ test('a game language\'s own launch set (its sessions\' marks: its translated fi
   assert.deepEqual(launch.engineFiles, ['/engines/e-1/engine/index.js', '/engines/e-1/engine/xash.wasm', '/engines/e-1/cl/c.wasm', '/engines/e-1/dl/s.wasm', '/engines/e-1/engine/valve/extras.pk3']);
   assert.equal(launch.langs.fr.engine, launch.engine);
   assert.equal(launchFor(launch, 'fr'), launch.langs.fr); assert.equal(launchFor(launch, 'de'), launch); assert.equal(launchFor(null, 'fr'), null);
+  // (the tree every start and Prepare fetch: compressed when the browser takes it)
+  for (const enc of ['br', 'gzip']) {
+    const r = await fetch(`${s.base}/api/tree/gs-orig`, { headers: { 'accept-encoding': enc } });
+    assert.equal(r.headers.get('content-encoding'), enc); assert.ok((await r.json()).dirs.valve_french);
+  }
   // (kept: the languages' marks and counts)
   await new Promise((r) => setTimeout(r, 100));
   const fr = await order('?lang=fr');

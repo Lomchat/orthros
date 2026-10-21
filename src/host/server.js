@@ -124,6 +124,23 @@ export function createServer(opts = {}) {
   };
   /** The tree as /api/tree sends it. */
   const gameTreeJson = (id, man) => { const tree = gameTree(id, man); if (!trees.has(id)) trees.set(id, JSON.stringify(tree)); return trees.get(id); };
+  /**
+   * The tree, brotli or gzip when the browser takes it (a page fetches it at every start and Prepare: 289 KB for
+   * Half-Life, 1.3 MB for Morrowind — 2.9 and 13 s at 100 KB/s; brotli 9: 43 KB for Half-Life), made once per tree.
+   */
+  const treeEncoded = new Map(); // id -> { json, br, gz }
+  const sendTree = (req, res, id, man) => {
+    const json = gameTreeJson(id, man), accept = String(req.headers['accept-encoding'] ?? '');
+    let c = treeEncoded.get(id);
+    if (c?.json !== json) treeEncoded.set(id, c = { json, br: null, gz: null });
+    const type = { 'Content-Type': 'application/json', 'Vary': 'Accept-Encoding' };
+    if (/\bbr\b/.test(accept)) {
+      c.br ??= zlib.brotliCompressSync(json, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: json.length } });
+      return send(res, 200, c.br, { ...type, 'Content-Encoding': 'br', 'Content-Length': c.br.length });
+    }
+    if (/\bgzip\b/.test(accept)) { c.gz ??= zlib.gzipSync(json); return send(res, 200, c.gz, { ...type, 'Content-Encoding': 'gzip', 'Content-Length': c.gz.length }); }
+    return send(res, 200, json, type);
+  };
   const getManifest = (id) => { if (!manifests.has(id) && !manifestDir) refreshCatalog(); return manifests.get(id); };
   const coverFile = (man) => man.coverPath ?? (man.cover && resolveGameFile(man, man.cover));
   const runtimeOf = (man) => man.runtime ?? 'win32';
@@ -859,7 +876,7 @@ export function createServer(opts = {}) {
         return;
       }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
-      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, gameTreeJson(m[1], man), { 'Content-Type': 'application/json' }); }
+      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return sendTree(req, res, m[1], man); }
       // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd, brotli
       // or gzip when that saves enough (a unit made ahead at brotli 11 when there is one: br-cache.js) (Content-Encoding: the browser decodes before the page sees them), else sent as they are;
       // /gamez/<manifest>/.light/<path>: the file's light copy (light-copies.js), when the version has them
