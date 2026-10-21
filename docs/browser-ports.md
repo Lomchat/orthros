@@ -117,6 +117,16 @@ starts at once.
   GPU stop working in parallel). Measured (2026-10-21, `tools/goldsrc/perf.mjs --gl discard`, Half Strike de_dust2 with
   bots, walking, 20 s, three runs each, medians, machine load 18-33): the engine's work a frame 8.5 → 4.9 ms (p90 12.2
   → 7.7, p99 25.3 → 17.9), synchronous calls 10 → 0 a frame.
+- **The world from buffers** (`gl_vbo 1`, off by default in the engine, "known to be glitchy" upstream; `?vbo=0` or a
+  manifest's commands turn it off): without it the renderer's GLES shim sends the world a polygon at a time — its own
+  buffer upload, attribute setup and vertex array switch each time, about 15 WebGL calls a draw. With it the map's
+  surfaces go to buffers once at its load. Measured the same way (three runs each, medians, load 15-33): draws a frame
+  718 → 86, WebGL calls 10,439 → 1,876, the engine's work a frame 4.9 → 1.7 ms (p90 7.7 → 2.7, p99 17.9 → 4.5); drawn
+  by SwiftShader, the same view 19 → 55 frames a second. Checked on screenshots (SwiftShader, with and without): de_dust2,
+  the same view with bullet decals — identical; Half-Life c1a0 (lightmaps, see-through grates, models; the tram's view
+  turned differently) — the same rendering. Dynamic lights over the world were not compared on purpose.
+  (Measured too, not changed: `getParameter` after each vertex array switch in Emscripten's glue, 70 ns; a buffer
+  upload 0.6 µs either way — a rebuilt shim streaming into one buffer would win little once the world is in buffers.)
 - **The menu module.** Counter-Strike's manifests name none: the engine's (`engine/libmenu.wasm`) shows the game's own
   title screens and takes the mouse; cs16-client's `mainui_cpp` (still built, `modules.builds`) wants the images of its
   `cs16client-extras` package and gets no mouse position from this engine.

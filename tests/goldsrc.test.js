@@ -378,3 +378,12 @@ test('rooms: the maps by group (multiplayer.mapGroups), from the manifest to the
     assert.throws(() => loadGameCatalog(games), /mapGroups/, JSON.stringify(bad));
   }
 });
+
+test('page: the renderer settings a player gets — no glGetError checks unless ?debug, the world from buffers unless ?vbo=0', () => {
+  const src = fs.readFileSync(new URL('../src/ports/goldsrc/play.js', import.meta.url), 'utf8');
+  const start = src.slice(src.indexOf("Cmd_ExecuteString('developer "), src.indexOf('session.command = command'));
+  assert.match(start, /Cmd_ExecuteString\('gl_check_errors ' \+ \(params\.has\('debug'\) \? '1' : '0'\)\)/);
+  assert.match(start, /Cmd_ExecuteString\('gl_vbo ' \+ \(params\.get\('vbo'\) === '0' \? '0' : '1'\)\)/);
+  // (before the manifest's own commands: a version can still turn either off)
+  assert.ok(start.indexOf('gl_vbo') < start.indexOf('solo?.commands'));
+});

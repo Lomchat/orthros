@@ -478,6 +478,10 @@ async function start() {
   // (the renderer's error checks — glGetError after its passes each frame and after each texture upload — only with
   // ?debug: each one waits for the browser's GPU process, about 10 a frame; docs/browser-ports.md, "Measured")
   engine.Cmd_ExecuteString('gl_check_errors ' + (params.has('debug') ? '1' : '0'));
+  // (the world's surfaces from buffers the renderer fills once a map, gl_vbo — not re-sent a polygon at a time with
+  // its own buffer upload and state: about 85 draws a frame instead of 700 in Counter-Strike; ?vbo=0, or a manifest's
+  // commands, turn it off)
+  engine.Cmd_ExecuteString('gl_vbo ' + (params.get('vbo') === '0' ? '0' : '1'));
   engine.Cmd_ExecuteString(`name "${playerName()}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
   // (the game's main menu: its single player and its multiplayer — a game it creates gets the manifest's settings,
   // bots included; Orthros' server answers its LAN search; the language's own commands)
