@@ -30,7 +30,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-export const SCENARIOS = Object.freeze(['basic', 'chat', 'combat', 'population', 'world', 'garage']);
+export const SCENARIOS = Object.freeze(['basic', 'chat', 'combat', 'combatx', 'combatp', 'combatv', 'population', 'world', 'garage']);
 export const OUT_ROOT = '/tmp/orthros-scratch/mmo-check';
 /** Places of Vice City the scenarios use (a test tool's knowledge of the game it checks — never the runtime's). */
 export const PLACES = Object.freeze({
@@ -319,6 +319,14 @@ async function main() {
       return check(scenario, 'each sees the other where it is (2 m)', seen.ok, { AseesB: seesAt(seen.a, seen.b, B.name), BseesA: seesAt(seen.b, seen.a, A.name) });
     }
 
+    /** both alive (a respawn waited for) and healed (the health cheat: both are administrators of the test server) */
+    async function healed() {
+      for (const c of clients) {
+        await until(c, 400000, (s) => !dead(s) && Number.isFinite(s?.health) && s.health > 0 && s?.inWorld !== false);
+        await c.cmd('cheat ASPIRINE');
+      }
+      await untilBoth(20000, (a, b) => a?.health >= 99 && b?.health >= 99);
+    }
     // ---------------------------------------------------------------- the scenarios
     const scenarios = {
       async basic() {
@@ -368,6 +376,7 @@ async function main() {
         }
       },
       async combat() {
+        await healed();
         if (!(await together('combat', PLACES.hotel, 4))) return;
         const b = await B.read();
         if (!Number.isFinite(b?.money) || b.money < 200) { await B.cmd('money 1000'); await until(B, 15000, (s) => s?.money === 1000); }
@@ -379,7 +388,9 @@ async function main() {
         let hurt = false, killed = false, last = start, beforeDeath = start;
         for (let shot = 0; shot < 120 && left() > 60000 && !killed; shot++) {
           if (shot % 10 === 9) await A.cmd(`aim ${B.slot}`);
-          await A.cmd('fire'); await sleep(400);
+          const f0 = (await A.read())?.combat?.fires ?? 0;
+          await A.cmd('fire');
+          await until(A, 30000, (sa) => (sa?.combat?.fires ?? 0) > f0); // (one shot at a time: commands pile up under 1 fps)
           const s = await B.read();
           if (!dead(s)) beforeDeath = s;
           if (Number.isFinite(s?.health) && s.health < start.health) hurt = true;
@@ -390,14 +401,139 @@ async function main() {
         await check('combat', 'B dies of them', killed, { health: last?.health, mode: last?.mode });
         if (!killed) { await B.cmd('die'); beforeDeath = await B.read(); await until(B, 20000, dead); }
         const deathPos = vec(beforeDeath?.pos) ?? vec(start?.pos);
-        const respawned = await until(B, 90000, (s) => !dead(s) && distance(s?.pos, deathPos) > 5 && s?.inWorld !== false);
+        // (a death to its respawn is ~8 s of game time; the engine advances at most ~60 ms a frame at the test machine's fps)
+        const respawned = await until(B, 400000, (s) => !dead(s) && distance(s?.pos, deathPos) > 5 && s?.inWorld !== false);
         for (const c of respawnChecks(beforeDeath, deathPos, respawned.state)) await check('combat', c.name, c.ok && respawned.ok, c.detail);
         const seen = await untilBoth(30000, (a, bb) => seesAt(a, bb, B.name).ok);
         await check('combat', 'A sees B where B respawned', seen.ok, seesAt(seen.a, seen.b, B.name));
         const feed = await until(A, 10000, (s) => (s?.chat ?? []).some((l) => JSON.stringify(l).includes(B.name) && !linesBefore.has(JSON.stringify(l))));
         await check('combat', 'the kill told in A\'s lines', feed.ok, { chat: feed.state?.chat?.slice?.(-3) });
       },
+      async combatx() {
+        await healed();
+        // (the combat module's own paths: a TARGETED hit without aiming, shots to the death and the kill line, a blast)
+        const dump = async (tag) => { const [a, b] = await both(); console.log('COMBAT', tag, JSON.stringify({ A: { h: a?.health, ar: a?.armour, c: a?.combat, chat: a?.chat?.slice?.(-3) }, B: { h: b?.health, ar: b?.armour, c: b?.combat, chat: b?.chat?.slice?.(-3), dead: b?.dead } })); return [a, b]; };
+        if (!(await together('combatx', PLACES.hotel, 4))) return;
+        let [, b0] = await dump('start');
+        await A.cmd(`hit ${B.slot} 30`);
+        const hit = await until(B, 30000, (s) => Number.isFinite(s?.health) && s.health < b0.health);
+        await check('combatx', 'hit <slot> hurts B (TARGETED, no aim)', hit.ok, { before: b0?.health, now: hit.state?.health, combat: hit.state?.combat });
+        await dump('after hit');
+        await A.cmd(`weapon ${o.weapon} 500`);
+        await until(A, 15000, (s) => s?.weapon === o.weapon);
+        await A.cmd(`aim ${B.slot}`); await sleep(1000);
+        let killed = false, hurt = false, start = await B.read(), shots = 0;
+        for (; shots < 80 && left() > 90000 && !killed; shots++) {
+          if (shots % 8 === 7) await A.cmd(`aim ${B.slot}`);
+          const f0 = (await A.read())?.combat?.fires ?? 0;
+          await A.cmd(shots % 2 ? 'fire' : `fire ${B.slot}`);
+          const fr = await until(A, 30000, (sa) => (sa?.combat?.fires ?? 0) > f0);
+          const pb = playerIn(fr.state, B.name);
+          console.log('FIRE', shots, JSON.stringify({ fires: fr.state?.combat?.fires, fired: fr.state?.combat?.fired, sent: fr.state?.combat?.hitsSent, ev: fr.state?.combat?.eventsSent, w: fr.state?.weapon, ammo: fr.state?.ammo, last: fr.state?.combat?.lastFire, trace: fr.state?.combat?.lastTrace, apos: fr.state?.pos, bpuppet: pb?.pos }));
+          await sleep(300);
+          const s = await B.read();
+          if (Number.isFinite(s?.health) && s.health < start.health) hurt = true;
+          if (dead(s)) killed = true;
+        }
+        await dump('after shots');
+        await check('combatx', 'A\'s shots hurt B', hurt, { shots });
+        await check('combatx', 'B dies of them', killed, { shots });
+        const feedA = await until(A, 30000, (s) => (s?.chat ?? []).some((l) => /killed|a tu/.test(JSON.stringify(l)) && JSON.stringify(l).includes(B.name)));
+        const feedB = await until(B, 30000, (s) => (s?.chat ?? []).some((l) => /killed|a tu/.test(JSON.stringify(l)) && JSON.stringify(l).includes(B.name)));
+        await check('combatx', 'kill line on both', feedA.ok && feedB.ok, { A: feedA.state?.chat?.slice?.(-3), B: feedB.state?.chat?.slice?.(-3) });
+        const respawned = await until(B, 400000, (s) => !dead(s) && s?.health > 0 && s?.inWorld !== false && Number.isFinite(s?.health) && s.health >= 99);
+        await check('combatx', 'B respawned', respawned.ok, { health: respawned.state?.health, pos: vec(respawned.state?.pos), money: respawned.state?.money, weapon: respawned.state?.weapon });
+        await dump('respawned');
+        if (!(await together('combatx', PLACES.hotel, 4))) return;
+        await A.cmd(`aim ${B.slot}`); await sleep(1500);
+        const b1 = await B.read();
+        await A.cmd('explode');
+        const blast = await until(B, 30000, (s) => Number.isFinite(s?.health) && s.health < b1.health);
+        await check('combatx', 'A\'s blast hurts B (replayed, applied by B)', blast.ok, { before: b1?.health, now: blast.state?.health });
+        await dump('after blast');
+      },
+      async combatp() {
+        await healed();
+        // (pickups made and taken, a grenade seen and its blast, a flame)
+        const dump = async (tag) => { const [a, b] = await both(); console.log('COMBAT', tag, JSON.stringify({ A: { h: a?.health, m: a?.money, seen: a?.combat?.seen, pk: a?.combat?.pickups, pr: a?.combat?.projectiles, ev: a?.combat?.eventsSent }, B: { h: b?.health, m: b?.money, seen: b?.combat?.seen, pk: b?.combat?.pickups, pr: b?.combat?.projectiles, dead: b?.dead, blast: b?.combat?.lastBlast, fn: b?.combat?.flameNearest, ign: b?.combat?.ignitions, me: b?.combat?.me, wanted: b?.wanted, pos: b?.pos }, Apos: a?.pos })); return [a, b]; };
+        if (!(await together('combatp', PLACES.hotel, 4))) return;
+        await dump('start');
+        // pickups
+        const [a0, b0] = await both();
+        await A.cmd('pickup 10');
+        const made = await until(B, 30000, (s) => (s?.combat?.seen?.pickupsMade ?? 0) > (b0?.combat?.seen?.pickupsMade ?? 0));
+        const [a1, b1] = await dump('pickup made');
+        await check('combatp', 'a pickup A dropped is made on B too', made.ok, { A: a1?.combat?.pickups, B: b1?.combat?.pickups });
+        if (made.ok) {
+          const copy = await until(B, 30000, (s) => (s?.combat?.pickups ?? []).length > 0);
+          const spot = (copy.state?.combat?.pickups ?? [])[0] ?? (a1?.combat?.pickups ?? [])[0];
+          if (spot) await B.cmd(tpCommand([spot[0], spot[1], spot[2]]));
+          const taken = await untilBoth(40000, (a, b) => (a?.combat?.pickups ?? []).length === 0 && (b?.combat?.pickups ?? []).length === 0 &&
+            ((a?.money ?? 0) > (a0?.money ?? 0) || (b?.money ?? 0) > (b0?.money ?? 0)));
+          await dump('pickup taken');
+          await check('combatp', 'taken by one (money), gone for both', taken.ok, { money: { A: [a0?.money, taken.a?.money], B: [b0?.money, taken.b?.money] }, seenTaken: { A: taken.a?.combat?.seen?.pickupsTaken, B: taken.b?.combat?.seen?.pickupsTaken } });
+          await B.cmd(tpCommand(offset(PLACES.hotel, 4)));
+          await until(B, 30000, (s) => distance(s?.pos, offset(PLACES.hotel, 4)) < 3);
+        }
+        // a flame
+        const b3 = await B.read();
+        if (!dead(b3)) {
+          await A.cmd('weapon 31 500');
+          await until(A, 15000, (s) => s?.weapon === 31);
+          for (let i = 0; i < 6; i++) { await A.cmd(`fire ${B.slot}`); await sleep(400); }
+          const flames = await until(B, 30000, (s) => (s?.combat?.seen?.flames ?? 0) > (b3?.combat?.seen?.flames ?? 0));
+          const burnt = await until(B, 40000, (s) => Number.isFinite(s?.health) && s.health < b3.health);
+          await dump('flame');
+          await check('combatp', 'A\'s flames seen by B, B burns', flames.ok && burnt.ok, { flames: flames.ok, health: [b3?.health, burnt.state?.health] });
+        } else await skip('combatp', 'A\'s flames seen by B, B burns', 'B dead from the grenade');
+        // a grenade
+        await A.cmd('weapon 12 10');
+        await until(A, 15000, (s) => s?.weapon === 12);
+        const [, b2] = await dump('grenade armed');
+        await A.cmd(`fire ${B.slot}`);
+        const proj = await until(B, 30000, (s) => (s?.combat?.seen?.projectiles ?? 0) > (b2?.combat?.seen?.projectiles ?? 0));
+        const blast = await until(B, 40000, (s) => (s?.combat?.seen?.explosions ?? 0) > (b2?.combat?.seen?.explosions ?? 0));
+        const hurt = await until(B, 20000, (s) => Number.isFinite(s?.health) && s.health < b2.health);
+        await dump('grenade');
+        await check('combatp', 'A\'s grenade seen by B, its blast replayed, B hurt', proj.ok && blast.ok && hurt.ok, { proj: proj.ok, blast: blast.ok, hurt: [b2?.health, hurt.state?.health] });
+      },
+      async combatv() {
+        await healed();
+        // (vehicles: shots at a remote player's car, a car run into a remote player)
+        const dump = async (tag) => { const [a, b] = await both(); console.log('COMBAT', tag, JSON.stringify({ A: { h: a?.health, veh: a?.vehicle, vh: a?.combat?.vehicleHealth, hits: [a?.combat?.hitsSent, a?.combat?.hitsReceived, a?.combat?.hitsApplied, a?.combat?.hitsDropped], last: a?.combat?.lastFire, reg: a?.registry }, B: { h: b?.health, veh: b?.vehicle, vh: b?.combat?.vehicleHealth, hits: [b?.combat?.hitsSent, b?.combat?.hitsReceived, b?.combat?.hitsApplied, b?.combat?.hitsDropped], last: b?.combat?.lastFire, reg: b?.registry, dead: b?.dead } })); return [a, b]; };
+        await A.cmd(tpCommand(PLACES.hotel)); await B.cmd(tpCommand(offset(PLACES.hotel, 14)));
+        await until(A, 60000, (s) => distance(s?.pos, PLACES.hotel) < 3); await until(B, 60000, (s) => distance(s?.pos, offset(PLACES.hotel, 14)) < 3);
+        await A.cmd(`car ${o.car}`);
+        const inCar = await until(A, 60000, (s) => !!s?.vehicle);
+        if (!await check('combatv', 'A in a car of its own', inCar.ok, { vehicle: inCar.state?.vehicle })) return;
+        await sleep(3000);
+        let [a0, b0] = await dump('A in car');
+        // B shoots A's car
+        await B.cmd('weapon 26 500'); await until(B, 15000, (s) => s?.weapon === 26);
+        for (let i = 0; i < 4; i++) { const f0 = (await B.read())?.combat?.fires ?? 0; await B.cmd(`fire ${A.slot}`); await until(B, 30000, (s) => (s?.combat?.fires ?? 0) > f0); }
+        const shot = await until(A, 30000, (s) => (s?.combat?.hitsApplied ?? 0) > (a0?.combat?.hitsApplied ?? 0));
+        [a0, b0] = await dump('B shot A in its car');
+        await check('combatv', 'B\'s shots at A in its car applied by A (car or driver)', shot.ok, { vh: [shot.state?.combat?.vehicleHealth], health: shot.state?.health, hits: shot.state?.combat?.hitsApplied });
+        // A runs into B
+        let rammed = false;
+        for (let i = 0; i < 3 && !rammed; i++) {
+          const bh = await B.read();
+          await A.cmd(`ram ${B.slot} 0.35`);
+          const r = await until(B, 25000, (s) => (s?.combat?.hitsApplied ?? 0) > (bh?.combat?.hitsApplied ?? 0));
+          rammed = r.ok;
+          await dump(`ram ${i}`);
+        }
+        await check('combatv', 'A\'s car hits B (told by the car\'s owner, applied by B)', rammed, {});
+        // B's blast next to A's car: A's car blows up (its owner's), B's copy of it is wrecked with it
+        const w0 = (await B.read())?.combat?.wrecked ?? 0;
+        await B.cmd(`aim ${A.slot}`); await sleep(1500);
+        await B.cmd('explode');
+        const wreck = await until(B, 120000, (s) => (s?.combat?.wrecked ?? 0) > w0);
+        await dump('blast at the car');
+        await check('combatv', 'A\'s car blown up there, its copy wrecked on B', wreck.ok, { wrecked: wreck.state?.combat?.wrecked });
+      },
       async population() {
+        await healed();
         if (!(await together('population', PLACES.hotel, 5))) return;
         await sleep(Math.min(25000, Math.max(0, left()))); // (the streets fill)
         const [a, b] = await both();
@@ -475,22 +611,24 @@ async function main() {
         }
       },
       async garage() {
+        // (at the test machine's fps a teleport loads its scene for tens of seconds: generous waits)
+        const stored = (s) => (s?.world?.garages ?? s?.garages ?? []).reduce((n, g) => n + (g?.record ?? 0), 0);
+        const a0 = await A.read(), b0 = await B.read();
         await A.cmd(tpCommand(PLACES.garageOut));
-        await until(A, 30000, (s) => distance(s?.pos, PLACES.garageOut) < 4);
+        await until(A, 120000, (s) => distance(s?.pos, PLACES.garageOut) < 4);
         await A.cmd(`car ${o.car}`);
-        const inCar = await until(A, 30000, (s) => !!s?.vehicle);
+        const inCar = await until(A, 120000, (s) => !!s?.vehicle);
         if (!await check('garage', 'A in a car of its own', inCar.ok, { vehicle: inCar.state?.vehicle })) return;
         await A.cmd(tpCommand(PLACES.garageIn));
-        await sleep(Math.min(6000, Math.max(0, left())));
+        await sleep(Math.min(15000, Math.max(0, left())));
         await A.cmd(`key ${o.exitKey}`);
-        const out = await until(A, 20000, (s) => !s?.vehicle);
+        const out = await until(A, 90000, (s) => !s?.vehicle);
         if (!await check('garage', 'A out of the car, in the hideout', out.ok, { vehicle: out.state?.vehicle, pos: vec(out.state?.pos) })) return;
         await A.cmd(tpCommand(offset(PLACES.garageOut, -8)));
-        await sleep(Math.min(20000, Math.max(0, left()))); // (the door closes: the car stored, then sent to the world)
-        const b0 = census(await B.read());
-        await B.cmd(tpCommand(PLACES.garageOut));
-        const found = await until(B, 45000, (s) => (s?.garages != null ? JSON.stringify(s.garages).includes(String(o.car)) : census(s).ownedVehicles > b0.ownedVehicles));
-        await check('garage', 'B finds A\'s car in the hideout', found.ok, { before: b0, after: census(found.state), garages: found.state?.garages ?? null });
+        const kept = await until(A, 240000, (s) => stored(s) > stored(a0));
+        await check('garage', 'the door closed on the car: stored on the server', kept.ok, { before: stored(a0), after: stored(kept.state), garages: kept.state?.world?.garages ?? null });
+        const known = await until(B, 60000, (s) => stored(s) > stored(b0));
+        await check('garage', 'B knows the hideout holds A\'s car', known.ok, { before: stored(b0), after: stored(known.state) });
       },
     };
     for (const name of o.scenarios) {
