@@ -63,6 +63,32 @@ this server (localhost), where none of this shows.
   a block whose pieces are all here is assembled and stored whole (its pieces dropped). A second launch reads them
   locally.
 
+## Light copies (2026-10-20)
+
+On a link that is not fast, a large texture is read light first, the file itself after it (the owner's idea: "on
+envoie tout en compressé instantanément, puis en background on charge les grosses textures"):
+
+- **Server** (`src/host/light-copies.js`): a light copy of a DDS texture whose longest side passes `LIGHT_SIDE` (256)
+  and which has mip levels: its finest levels left out — the same format, its header telling the smaller size and the
+  fewer levels, the remaining levels as they are (a texture drawn without levels — a menu's — is never lightened).
+  Derived at each request (a header of its own, then a run of the file: nothing stored, the game files never changed),
+  served as `/gamez/<manifest>/.light/<path>` (compressed ranges, read reports learned like the file's). The tree tells
+  each such file's light size (`light`). For the browser ports only (`manifest.lightCopies`, the catalog's: `false` in a
+  version turns it off): a Windows game reads its files as they are.
+- **Page** (`src/vfs/data-client.js` `pick`): each load of the file (a read at its start, 2 s after its last read)
+  chooses: the file itself when it is here whole or the link is fast (the worker's ctrl[7]), else its light copy —
+  zeros past its bytes, up to the file's size (the engine reads what its header says). The choice holds for the whole
+  load. The light copy read, the worker is told once.
+- **Worker** (`src/vfs/data-worker.js`, `HttpBackend.upgrade`): the files whose light copy the engine read are
+  downloaded last of all — after every other background download, once the game has read nothing for 8 s (the player
+  in an area already loaded), a thin link too (by pieces), the latest first —; done, the page is told (`real`) and the
+  next load reads the file. The learned order is read for the link (`forLink`): on a link that is not fast, light
+  copies in place of their files (unless here), on a fast one the files themselves.
+- **Measured** (Morrowind Vanilla+ FR, fresh browser, 1 MB/s and 60 ms, the same learned order, light copies at 256):
+  menu 163 → 126 s; frozen after New Game (240 s window) 228 → 149 s, longest hold 48 → 21 s; the engine's waits
+  149 → 85 s; on the wire 368 → 264 MB (textures 199 → 70 MB: 13 MB of light copies, the rest small textures and the
+  files upgraded once the game was idle). Over the version: 3746 textures, 2329 MB → 135 MB light.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

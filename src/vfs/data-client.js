@@ -4,7 +4,9 @@
 // A read the engine waits for synchronously waits on shared memory (the page's thread spins: Atomics.wait is not
 // allowed there); one it can wait for (JSPI: `ensure`) by message. The pieces the engine uses are told to the worker,
 // which reports them to the server's learned order. Emscripten engines mount the files with emscripten-files.js.
-import { treeFile } from './game-tree.js';
+// On a link that is not fast, a texture's load reads its light copy (src/host/light-copies.js: the texture without its
+// finest levels) unless the file itself is here; the file comes in the background, for its next load.
+import { treeFile, LIGHT_DIR } from './game-tree.js';
 
 export const PIECE = 1 << 16;
 
@@ -17,11 +19,22 @@ export const offlineCopy = {
   get() { try { return localStorage.getItem('orthros.offlineCopy') === '1'; } catch { return false; } },
   set(on) { try { localStorage.setItem('orthros.offlineCopy', on ? '1' : '0'); } catch { /* storage off */ } },
 };
+/**
+ * The rate this browser measured on its link to the server last time (bytes/s), for every game: the estimate a reader
+ * starts with until it measures its own (src/vfs/net-link.js). Kept in this browser.
+ */
+// snapshot: no state — the browser's storage, read each time
+export const linkRate = {
+  get() { try { const v = Number(localStorage.getItem('orthros.netBw')); return v > 0 ? v : undefined; } catch { return undefined; } },
+  set(bw) { if (bw > 0) try { localStorage.setItem('orthros.netBw', String(Math.round(bw))); } catch { /* storage off */ } },
+};
 /** The most bytes one answer of the worker carries (its shared buffer). */
 const SPAN = 16 << 20;
 /** A read the engine waits for fails once the worker's heartbeat stopped this long (it died). */
 const DEAD_MS = 30000;
 const PER_FILE = 2 ** 21; // (a piece's key: file id × PER_FILE + piece)
+/** A read at a file's start this long after its last read is a new load of it: light copy or file, chosen again. */
+const LOAD_GAP_MS = 2000;
 
 export class GameData {
   /**
@@ -39,10 +52,14 @@ export class GameData {
 
   constructor(o) {
     this.log = o.log ?? (() => {});
-    this.ctrl = new Int32Array(new SharedArrayBuffer(32));
+    this.ctrl = new Int32Array(new SharedArrayBuffer(64));
     this.data = new Uint8Array(new SharedArrayBuffer(SPAN));
     this.cache = new Map(); this.held = 0; this.budget = o.cacheBytes ?? 256 << 20;
     this.files = new Map(); this.byId = []; this.gen = 0; this.used = []; this.asks = new Map(); this.nextAsk = 1;
+    /** the files that have a light copy and are here whole (told by the worker): read themselves */
+    this.realHere = new Set();
+    /** those whose light copy is here whole (the file not): read light, the link fast or not */
+    this.lightHere = new Set();
     // (waits: the reads that waited for the worker — waitMs, waitBytes their time and bytes, syncFetches those that held
     // the page; fetchedBytes: what the worker received)
     const ctrl = this.ctrl;
@@ -54,19 +71,23 @@ export class GameData {
     this.ready = new Promise((resolve, reject) => {
       this.worker.onmessage = (e) => {
         const m = e.data;
-        if (m.ready) { this.trees = m.ready.trees; this.kept = m.ready.kept; this.manifest = m.ready.manifest; this.name = o.name; resolve(this); }
+        if (m.ready) { this.trees = m.ready.trees; this.kept = m.ready.kept; this.manifest = m.ready.manifest; this.name = o.name; for (const k of m.ready.real ?? []) this.realHere.add(k); resolve(this); }
         else if (m.failed) reject(new Error(m.failed));
         else if (m.id) { const a = this.asks.get(m.id); this.asks.delete(m.id); if (a) m.error ? a.reject(new Error(m.error)) : a.resolve(m.bytes); }
         else if (m.startup) for (const f of this.listeners.startup) f(m.startup);
         else if (m.whole) for (const f of this.listeners.whole) f(m.whole);
         else if (m.ahead) for (const f of this.listeners.ahead) f(m.ahead);
+        else if (m.real) { for (const k of m.real) { this.realHere.add(k); this.lightHere.delete(k); } for (const k of m.lightHere ?? []) if (!this.realHere.has(k)) this.lightHere.add(k); }
         else if (m.log) this.log(m.log);
       };
     });
-    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', bw: o.bw, prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
+    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
     this.timer = setInterval(() => { if (this.used.length) this.worker.postMessage({ used: this.used.splice(0) }); }, 2000);
     // (the page's loading indicator, src/host/web/data-meter.js, when it has one: these counters, read live)
     globalThis.orthrosDataMeter?.attach?.(this.ctrl.buffer);
+    // (the link's rate as measured, kept for the next page: ctrl[8], KB/s)
+    this.saveRate = () => linkRate.set(Atomics.load(this.ctrl, 8) * 1024);
+    globalThis.addEventListener?.('pagehide', this.saveRate);
   }
 
   /** A file of the version `name` (or of one it requires), found without case: its handle, or null. */
@@ -155,15 +176,45 @@ export class GameData {
   get received() { return Atomics.load(this.ctrl, 2); }
 
   /** The worker stopped (its pending reports sent first). */
-  close() { clearInterval(this.timer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
+  close() { this.saveRate(); clearInterval(this.timer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
 
   /** The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes }. */
   snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes }; }
+
+  // ---------------------------------------------------------------- light copies
+
+  /** The size of `h`'s light copy (the tree's `light`), 0 when it has none (or not known yet: the file then). */
+  lightOf(h) {
+    if (h.light !== undefined) return h.light;
+    if (h.src !== undefined || h.path.startsWith(LIGHT_DIR + '/')) return (h.light = 0);
+    const tree = this.trees?.[h.name]; if (!tree) return 0;
+    return (h.light = treeFile(tree, h.path)?.light ?? 0);
+  }
+
+  /**
+   * What a read of `h` at `position` reads: `h`, or its light copy's handle. Chosen at each load of the file (a read at
+   * its start, LOAD_GAP_MS after its last one), kept until its next load: the file when it is here, or when the link is
+   * fast and its light copy is not here (the learned order brought it before the link was measured), else its light copy — the worker then fetches the file in the background (told once).
+   */
+  pick(h, position) {
+    if (!this.lightOf(h)) return h;
+    const now = performance.now();
+    if (position === 0 && now - (h.at ?? -Infinity) > LOAD_GAP_MS) {
+      const key = h.name + '\n' + h.path.toLowerCase();
+      const real = this.realHere.has(key) || (Atomics.load(this.ctrl, 7) === 1 && !this.lightHere.has(key));
+      h.as = real ? null : this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light);
+      if (h.as && !h.told) { h.told = true; this.worker.postMessage({ light: { name: h.name, path: h.path } }); }
+    }
+    h.at = now;
+    return h.as ?? h;
+  }
 
   // ---------------------------------------------------------------- reads
 
   /** Some of the bytes [position, position + length) of `h` are not in the page yet. */
   missing(h, position, length) {
+    const v = this.pick(h, position);
+    if (v !== h) return position < v.size && this.missing(v, position, Math.min(length, v.size - position));
     const end = Math.min(h.size, position + length);
     for (let p = Math.floor(position / PIECE); p * PIECE < end; p++) if (!this.cache.has(h.id * PER_FILE + p)) return true;
     return false;
@@ -173,6 +224,14 @@ export class GameData {
   read(h, buffer, offset, length, position) {
     const end = Math.min(h.size, position + length);
     if (!(end > position)) return 0;
+    const v = this.pick(h, position);
+    if (v !== h) {
+      // (the light copy's bytes as the file's — zeros past them, up to the file's size: the engine reads what its
+      // header says)
+      const n = position < v.size ? this.read(v, buffer, offset, Math.min(end, v.size) - position, position) : 0;
+      buffer.fill(0, offset + n, offset + end - position);
+      return end - position;
+    }
     const sequential = position >= h.last - PIECE && position <= h.last + 2 * PIECE;
     h.run = sequential ? h.run + (end - position) : 0;
     h.last = end;
@@ -193,6 +252,7 @@ export class GameData {
   /** The whole file (an engine that maps it: mmap). */
   whole(h) {
     if (h.whole) return h.whole;
+    h.as = null; h.at = performance.now(); // (the file itself, not its light copy: mapped whole)
     const all = new Uint8Array(h.size);
     for (let at = 0; at < h.size; at += SPAN) this.read(h, all, at, Math.min(SPAN, h.size - at), at);
     return (h.whole = all);
@@ -200,6 +260,8 @@ export class GameData {
 
   /** The bytes [position, position + length) of `h` into the page, without holding it (an engine that waits: JSPI). */
   async ensure(h, position, length) {
+    const v = this.pick(h, position);
+    if (v !== h) { if (position < v.size) await this.ensure(v, position, Math.min(length, v.size - position)); return; }
     const end = Math.min(h.size, position + length);
     for (let p = Math.floor(position / PIECE); p * PIECE < end;) {
       if (this.cache.has(h.id * PER_FILE + p)) { p++; continue; }

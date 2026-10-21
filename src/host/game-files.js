@@ -2,6 +2,7 @@
 // both, the files of the versions a GoldSrc port requires beneath).
 import fs from 'node:fs';
 import path from 'node:path';
+import { LIGHT_DIR, lightCopy } from './light-copies.js';
 
 export function gameLayers(manifest) {
   // (underlays: the folders of versions a GoldSrc port requires, beneath its own; overlays: folders over the version's
@@ -9,8 +10,11 @@ export function gameLayers(manifest) {
   return [...(manifest.overlays ?? []), ...(manifest.baseFolder ? [manifest.folder, manifest.baseFolder] : [manifest.folder]), ...(manifest.underlays ?? [])];
 }
 
-/** List one layer, replacing same-named entries without changing the guest-visible path. */
-function mergeDir(layers) {
+/**
+ * List one layer, replacing same-named entries without changing the guest-visible path. `mark(file, entry)`: each
+ * file's entry completed (its light copy's size).
+ */
+function mergeDir(layers, mark = null) {
   const node = { dirs: {}, files: {} }, entries = new Map();
   for (const dir of layers) {
     if (!dir || !fs.existsSync(dir)) continue;
@@ -26,8 +30,8 @@ function mergeDir(layers) {
     }
   }
   for (const entry of entries.values()) {
-    if (entry.dirs) node.dirs[entry.name] = mergeDir(entry.dirs);
-    else { const st = fs.statSync(entry.file); node.files[entry.name] = { size: st.size, mtime: st.mtimeMs }; }
+    if (entry.dirs) node.dirs[entry.name] = mergeDir(entry.dirs, mark);
+    else { const st = fs.statSync(entry.file); node.files[entry.name] = { size: st.size, mtime: st.mtimeMs }; mark?.(entry.file, st, node.files[entry.name]); }
   }
   return node;
 }
@@ -35,12 +39,24 @@ function mergeDir(layers) {
 /**
  * The game's files as the browsers read them: its layers, and the folders of its engine's release it serves beside them
  * (`dataMounts`: [{ at, dir }] — an engine's own data, as OpenMW's asset pack, under a folder of its own, `at`; not part
- * of the game's layers, which a native server laying out the game reads too).
+ * of the game's layers, which a native server laying out the game reads too). With manifest.lightCopies, a file that has
+ * a light copy (light-copies.js) tells its size: `light`.
  */
 export function listGameTree(manifest) {
-  const tree = mergeDir(gameLayers(manifest));
-  for (const { at, dir } of manifest.dataMounts ?? []) if (fs.existsSync(dir)) tree.dirs[at] = mergeDir([dir]);
+  const mark = manifest.lightCopies ? (file, st, e) => { const c = lightCopy(file, st); if (c) e.light = c.size; } : null;
+  const tree = mergeDir(gameLayers(manifest), mark);
+  for (const { at, dir } of manifest.dataMounts ?? []) if (fs.existsSync(dir)) tree.dirs[at] = mergeDir([dir], mark);
   return tree;
+}
+
+/** The light copy of a version's path under LIGHT_DIR: { file, st, copy } (light-copies.js), or null. */
+export function resolveLightFile(manifest, rel) {
+  const parts = rel.replace(/\\/g, '/').split('/').filter(Boolean);
+  if (!manifest.lightCopies || parts[0] !== LIGHT_DIR) return null;
+  const file = resolveGameFile(manifest, parts.slice(1).join('/')); if (!file) return null;
+  let st; try { st = fs.statSync(file); } catch { return null; }
+  const copy = lightCopy(file, st);
+  return copy ? { file, st, copy } : null;
 }
 
 /** Resolve a guest path through all layers, with the version taking precedence (a data mount's under its folder). */

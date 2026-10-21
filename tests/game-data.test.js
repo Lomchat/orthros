@@ -48,14 +48,18 @@ test('an OpenMW installation serves its engine\'s asset pack with its game files
   assert.deepEqual(part, bytes(200000, 7).subarray(1000, 5000));
 });
 
-/** A server of one version for the data worker: /api/manifest, /api/tree, /api/prefetch, /gamez ranges; requests logged. */
-function fakeServer(files, learned = []) {
+/**
+ * A server of one version for the data worker: /api/manifest, /api/tree, /api/prefetch, /gamez ranges (`lights`: files'
+ * light copies, under .light/); requests logged.
+ */
+function fakeServer(files, learned = [], lights = {}) {
   const tree = { dirs: {}, files: {} }, posts = [], asked = [];
   for (const [p, b] of Object.entries(files)) {
     const parts = p.split('/'); let node = tree;
     for (const d of parts.slice(0, -1)) node = node.dirs[d] ??= { dirs: {}, files: {} };
-    node.files[parts.at(-1)] = { size: b.length, mtime: 5 };
+    node.files[parts.at(-1)] = { size: b.length, mtime: 5, ...(lights[p] ? { light: lights[p].length } : {}) };
   }
+  files = { ...files, ...Object.fromEntries(Object.entries(lights).map(([p, b]) => ['.light/' + p, b])) };
   const fetch = async (url, init = {}) => {
     const u = new URL(url, 'http://x');
     if (u.pathname === '/api/manifest/v') return Response.json({ name: 'v' });
@@ -77,7 +81,7 @@ function fakeServer(files, learned = []) {
 async function startWorker(t, server, init = {}) {
   const realFetch = globalThis.fetch; globalThis.fetch = server.fetch; t.after(() => { globalThis.fetch = realFetch; });
   const out = [], handle = createDataWorker((m) => out.push(m));
-  const ctrl = new Int32Array(new SharedArrayBuffer(32)), data = new Uint8Array(new SharedArrayBuffer(16 << 20));
+  const ctrl = new Int32Array(new SharedArrayBuffer(64)), data = new Uint8Array(new SharedArrayBuffer(16 << 20));
   handle({ init: { name: 'v', session: 'sess1', prefetch: 'none', ctrl: ctrl.buffer, data: data.buffer, ...init } });
   const until = async (ok, what) => { for (let i = 0; i < 2000 && !ok(); i++) await new Promise((r) => setTimeout(r, 2)); assert.ok(ok(), what); };
   await until(() => out.some((m) => m.ready || m.failed), 'ready');
@@ -140,6 +144,49 @@ test('the page\'s client reads through the worker: pieces kept in the page, aske
   assert.deepEqual(out, esm.subarray(1000, 101000));
   const asked = server.asked.length; data.read(h, new Uint8Array(10), 0, 10, 5000); assert.equal(server.asked.length, asked, 'kept in the page');
   assert.ok(data.snapshot().hits > 0);
+});
+
+/** The page's client and its worker in this thread (asynchronous reads only), on `server`. */
+const nativeFetch = globalThis.fetch;
+async function inThread(t, server, o = {}) {
+  globalThis.fetch = server.fetch; t.after(() => { globalThis.fetch = nativeFetch; });
+  const fake = { onmessage: null, postMessage: (m) => queueMicrotask(() => handle(m)), terminate() {} };
+  const handle = createDataWorker((m) => queueMicrotask(() => fake.onmessage?.({ data: m })));
+  const data = await GameData.open({ name: 'v', worker: fake, prefetch: 'none', ...o }); t.after(() => data.close());
+  return data;
+}
+const until = async (ok, what, ms = 10000) => { const end = Date.now() + ms; while (!ok() && Date.now() < end) await new Promise((r) => setTimeout(r, 20)); assert.ok(ok(), what); };
+
+test('on a link that is not fast a texture\'s load reads its light copy, the file itself fetched after it for its next load', async (t) => {
+  const tex = bytes(300000, 2), light = bytes(40000, 8), server = fakeServer({ 'tex.dds': tex }, [], { 'tex.dds': light });
+  const data = await inThread(t, server), h = data.file('v', 'TEX.dds'), out = new Uint8Array(h.size);
+  await data.ensure(h, 0, h.size);
+  assert.equal(data.read(h, out, 0, h.size, 0), h.size);
+  assert.deepEqual(out.subarray(0, light.length), light); assert.ok(out.subarray(light.length).every((b) => b === 0), 'zeros past it');
+  assert.ok(!server.asked.some(([p, , , kind]) => p === 'tex.dds' && kind === 'demand'), 'the file itself not waited for');
+  // (the file in the background, the link quiet; told to the page: its next load reads it)
+  await until(() => data.realHere.has('v\ntex.dds'), 'the file itself here');
+  assert.ok(server.asked.some(([p, , , kind]) => p === 'tex.dds' && kind === 'bg'));
+  data.read(h, out, 0, 100, 5000); assert.deepEqual(out.subarray(0, 100), light.subarray(5000, 5100), 'the same load: its light copy still');
+  h.at = -Infinity; await data.ensure(h, 0, h.size); data.read(h, out, 0, h.size, 0);
+  assert.deepEqual(out, tex, 'its next load: the file');
+});
+
+test('on a fast link a texture\'s load reads the file; the learned order brings light copies on a link that is not fast', async (t) => {
+  const tex = bytes(300000, 2), light = bytes(40000, 8), learned = [['tex.dds', 0, 0, 0]];
+  const fast = fakeServer({ 'tex.dds': tex }, learned, { 'tex.dds': light });
+  const data = await inThread(t, fast, { bw: 50 << 20 }), h = data.file('v', 'tex.dds'), out = new Uint8Array(h.size);
+  await until(() => Atomics.load(data.ctrl, 7) === 1, 'the link fast');
+  await data.ensure(h, 0, h.size); data.read(h, out, 0, h.size, 0);
+  assert.deepEqual(out, tex); assert.ok(!fast.asked.some(([p]) => p.startsWith('.light/')));
+  await data.startup(); assert.ok(!fast.asked.some(([p]) => p.startsWith('.light/')), 'the files themselves ahead');
+  data.close(); await new Promise((r) => setTimeout(r, 20)); // (one data worker at a time in this thread: closed first)
+  const slow = fakeServer({ 'tex.dds': tex }, learned, { 'tex.dds': light });
+  const data2 = await inThread(t, slow);
+  await data2.startup();
+  assert.deepEqual(slow.asked.map(([p]) => p), ['.light/tex.dds'], 'its light copy ahead, not the file');
+  // (told to the page: that load reads its light copy, here, even once the link is measured fast)
+  await until(() => data2.lightHere.has('v\ntex.dds'), 'the light copy here');
 });
 
 test('an Emscripten file node reads its bytes through the game data, maps the file whole, refuses writes', () => {

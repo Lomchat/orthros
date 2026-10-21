@@ -14,6 +14,7 @@ import { escapeToGame } from './escape.js';
 import { CloudSave } from './cloud-sync.js';
 import { accountState } from './account.js';
 import { pickLang } from './lang.js';
+import { linkRate } from '../../vfs/data-client.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -440,12 +441,12 @@ function log(kind, msg) {
 
 // ---------------------------------------------------------------- network
 /** the link rate this browser measured last time (bytes/s): the worker's estimate until it measures its own */
-function savedNetBw() { try { const v = Number(localStorage.getItem('orthros.netBw')); return v > 0 ? v : undefined; } catch { return undefined; } }
+const savedNetBw = () => linkRate.get();
 /** The worker's connection figures: the rate kept for the next visit (written when the page goes), the last time the game waited. */
 function noteNet(net) {
   if (!net) return;
   if (net.waiting) state.netWaitAt = Date.now();
-  if (net.measured && net.bw > 0) { state.netBw = Math.round(net.bw); if (!state.netSaveHooked) { state.netSaveHooked = true; addEventListener('pagehide', () => { try { localStorage.setItem('orthros.netBw', String(state.netBw)); } catch { /* storage off */ } }); } }
+  if (net.measured && net.bw > 0) { state.netBw = Math.round(net.bw); if (!state.netSaveHooked) { state.netSaveHooked = true; addEventListener('pagehide', () => linkRate.set(state.netBw)); } }
 }
 /** the game waits for the network now (or did within the last 2 s: no flicker between two reads) */
 const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));

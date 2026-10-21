@@ -158,6 +158,9 @@ order fetched ahead from the game's position.
   waits — GoldSrc), or suspends the engine (JSPI — re3); the worker answers with what was asked and as much of the file
   as it has here already.
 - **Learning.** The worker reports the pieces the engine used (path, range, time since its start) to `/api/prefetch`.
+- **Light copies.** On a link that is not fast, a large texture's load reads its light copy first (the texture
+  without its finest levels), the file itself following in the background for its next load (docs/slow-network.md
+  "Light copies"; `lightCopies: false` in a version turns them off).
 - **Earlier copies.** The IndexedDB copy an earlier page kept (`content`) is handed to the block store at the next
   start, then removed.
 - **What the player sees.** Every game's indicators (`src/host/web/data-meter.js`, `shell.setData`): over the page,
