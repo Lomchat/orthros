@@ -1,7 +1,7 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue]
+// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--covers <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue]
 //   --engines-dir: the installed engine releases of the browser ports (default data_engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
 import { listGameTree, resolveGameFile, resolveLightFile } from './game-files.js';
 import { LIGHT_DIR, readLight } from './light-copies.js';
+import { lightCovers } from './light-covers.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcEngineFiles, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
@@ -473,6 +474,8 @@ export function createServer(opts = {}) {
       return files.get(rel);
     };
   };
+  /** A learned order, its launch set first (the entries flagged PRE_PLAYABLE), each part in its order: what is pinned. */
+  const launchFirstOrder = (list) => { const first = [], rest = []; for (const e of list) ((e[4] & PRE_PLAYABLE) !== 0 ? first : rest).push(e); return first.concat(rest); };
   const brSeedUnits = function* (man, list) {
     const at = unitFile(man), lights = new Set();
     for (const [rel, block, mask] of list) {
@@ -494,10 +497,15 @@ export function createServer(opts = {}) {
   };
   const brCache = opts.brCacheDir ? createBrCache({
     dir: opts.brCacheDir, maxBytes: opts.brCacheBytes, log: opts.brCacheLog ?? ((m) => console.log(m)), ...opts.brCacheOptions,
+    // (each launch set's pinned part from its size, the home's: its own and its light copies' units, both made; the
+    // versions without one — no session marked them — an equal part, after those with one)
     sources: () => [...manifests].filter(([name]) => learnFile(name) && fs.existsSync(learnFile(name)))
-      .sort(([, a], [, b]) => (runtimeOf(a) === 'win32') - (runtimeOf(b) === 'win32'))
-      .map(([name, man]) => ({ name, units: () => brSeedUnits(man, prefetchList(name)) })),
+      .map(([name, man]) => { let l = null; try { l = ownLaunchOf(name, man); } catch { /* none */ } return [name, man, l ? l.wire + (man.lightCopies ? l.lightWire : 0) : null]; })
+      .sort(([, a, wa], [, b, wb]) => (wa === null) - (wb === null) || (runtimeOf(a) === 'win32') - (runtimeOf(b) === 'win32'))
+      .map(([name, man, want]) => ({ name, want, units: () => brSeedUnits(man, launchFirstOrder(prefetchList(name))) })),
   }) : null;
+  /** The home's light covers (light-covers.js): opts.coverDir, none without it. */
+  const covers = opts.coverDir ? lightCovers({ dir: opts.coverDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
   /** OpenMW engine packages without the example world (openmw-lean.js), kept beside the units: none without them. */
   const lean = opts.brCacheDir ? leanPackages({ dir: path.join(opts.brCacheDir, 'engines'), enginesDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
   // (made from the start for the installed games of their own: not first at a card or a page, the window without it short)
@@ -969,6 +977,9 @@ export function createServer(opts = {}) {
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
         const man = getManifest(m[1]), f = man && coverFile(man);
         if (!f) return send(res, 404, 'no cover');
+        // (the home's: a light copy once made, light-covers.js — ?full: the image itself)
+        const light = covers && !url.searchParams.has('full') ? covers.file(f) : null;
+        if (light) return sendFile(req, res, light, 'image/webp', { 'Cache-Control': 'public, max-age=86400' });
         const ext = path.extname(f).toLowerCase();
         res.writeHead(200, { 'Content-Type': MIME[ext]?.startsWith('image/') ? MIME[ext] : 'image/jpeg', 'Cache-Control': 'public, max-age=86400', 'Cross-Origin-Resource-Policy': 'same-origin',
           ...(ext === '.svg' ? { 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" } : {}) }); // (an SVG opened by itself runs nothing)
@@ -1205,7 +1216,9 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const brArg = arg('--br-cache'), brCacheDir = brArg === 'off' ? null : brArg ?? (learnDir ? path.join(learnDir, '..', 'brcache') : null);
   const brBytesArg = arg('--br-cache-bytes'), brCacheBytes = brBytesArg === undefined ? undefined : Number(brBytesArg);
   if (brBytesArg !== undefined && !(Number.isFinite(brCacheBytes) && brCacheBytes > 0)) { console.error(`--br-cache-bytes ${brBytesArg}: expected a positive number of bytes`); process.exit(2); }
-  const server = createServer({ brCacheDir, brCacheBytes, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
+  // (--covers <dir>: the home's light covers, default <learn>/../covers — off without --learn, or with `off`)
+  const coverArg = arg('--covers'), coverDir = coverArg === 'off' ? null : coverArg ?? (learnDir ? path.join(learnDir, '..', 'covers') : null);
+  const server = createServer({ coverDir, brCacheDir, brCacheBytes, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
   // (a restart — every deployment — saves the shared worlds' last changes first: they are written a few seconds after)
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.mmo.flush(); } catch (e) { console.error('mmo flush:', e); } finally { process.exit(0); } });
