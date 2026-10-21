@@ -113,10 +113,12 @@ export function createShell(o) {
   const settings = h('button', { type: 'button', class: 'icon', id: 'tbSettings', title: S.settings, 'aria-label': S.settings, onclick: () => window.orthrosData?.open?.('cloud') }, svg('gear'));
   const full = h('button', { type: 'button', id: 'tbFull', title: S.fullscreenTitle }, S.fullscreen);
   const games = h('button', { type: 'button', id: 'tbGames', class: 'quiet', title: S.gamesTitle }, S.games);
+  // (the logo and the name lead home too, as the games button: asked first while a game runs)
+  const home = h('a', { href: '/?menu', class: 'home', id: 'tbHome', title: S.gamesTitle }, h('img', { src: LOGO, alt: '' }), h('span', { class: 'name' }, 'Orthros'));
   const gameEl = h('span', { class: 'game', id: 'tbGame' }, o.title), tagEl = h('span', { class: 'tag' });
   const extras = h('div', { class: 'extras' }, ...(o.extras ?? []));
   const bar = h('div', { id: 'topbar' },
-    h('div', { class: 'brand' }, h('img', { src: LOGO, alt: '' }), h('span', { class: 'name' }, 'Orthros'), h('span', { class: 'sep' }), gameEl, tagEl),
+    h('div', { class: 'brand' }, home, h('span', { class: 'sep' }), gameEl, tagEl),
     h('div', { class: 'spacer' }), extras, mouse, save, perf, settings, full, games);
   shell.bar = bar; shell.extras = extras;
   shell.setTitle = (title, version = o.version, language = o.gameLanguage) => {
@@ -335,7 +337,7 @@ export function createShell(o) {
     } catch (e) { console.error(e); }
     location.href = '/?menu';
   };
-  games.onclick = (e) => { e.preventDefault(); shell.quit(); };
+  games.onclick = home.onclick = (e) => { e.preventDefault(); shell.quit(); };
   // (out of full screen the browser keeps its shortcuts: a page left with Ctrl or ⌘ held while the game runs — Ctrl+W,
   // Ctrl+R in the middle of a fight — asks first; watchKeys(doc): a frame's document the game's keys go to)
   let held = false;
