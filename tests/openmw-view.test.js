@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { VIEW, VIEW_FILE, CONTENT, growStep, parseView, install } from '../src/ports/openmw/view-grow.js';
+import { VIEW, VIEW_FILE, CONTENT, growStep, parseView, install, inWorld } from '../src/ports/openmw/view-grow.js';
 import { withProgressiveView } from '../src/host/openmw.js';
 import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
 
@@ -124,4 +124,15 @@ test('the engine page loads the view module before its engine, its boot distance
     const real = withProgressiveView(fs.readFileSync(release, 'utf8'));
     for (const [k, n] of [['orthrosViewReady = import', 1], ['orthrosViewBoot(TIER.vd)', 1], ['orthrosContent(FS, cfg)', 3], ['Promise.resolve(window.orthrosViewReady)', 1]]) assert.equal(real.split(k).length - 1, n, k);
   }
+});
+
+test('the player in the world (the session\'s playable mark): Orthros\' script alone, the joined world in multiplayer', () => {
+  assert.equal(inWorld({ omw: { state: {} } }), false, 'menu');
+  assert.equal(inWorld({ omw: { state: { 'orthros.view': '8192 8192' } } }), true, 'alone: the script\'s first report');
+  // (multiplayer has no Orthros script: its world's content list is its own — the multiplayer script's state instead)
+  const mp = (state) => inWorld({ __omwMPEnabled: true, omw: { state } });
+  assert.equal(mp({ state: 'Authing' }), false, 'connecting');
+  assert.equal(mp({ state: 'Joined', simReady: '0' }), false, 'joined, the world not simulated yet');
+  assert.equal(mp({ state: 'Joined', simReady: '1' }), true, 'joined and simulated');
+  assert.equal(inWorld({ omw: { state: { state: 'Joined', simReady: '1' } } }), false, 'alone, only the script tells');
 });

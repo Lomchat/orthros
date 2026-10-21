@@ -10,8 +10,8 @@
   'use strict';
   // (a classic script — the page calls StreamFS synchronously — loading the shared modules at once: they are here long
   // before the engine's first mount, which comes after its own requests)
-  const modules = Promise.all([import('/src/vfs/data-client.js'), import('/src/vfs/emscripten-files.js')]);
-  let M = null; modules.then(([client, files]) => { M = { ...client, ...files }; });
+  const modules = Promise.all([import('/src/vfs/data-client.js'), import('/src/vfs/emscripten-files.js'), import('/src/ports/openmw/view-grow.js')]);
+  let M = null; modules.then(([client, files, view]) => { M = { ...client, ...files, inWorld: view.inWorld }; });
   const app = location.pathname.slice(0, location.pathname.indexOf('/app/') + 5), name = decodeURIComponent(app.split('/')[3]);
   const S = { data: null, byPath: new Map(), byKey: new Map(), legacy: [] };
 
@@ -34,9 +34,10 @@
       S.data.start();
       // (the loading in the background, for the Orthros page around the engine: its header's pill)
       if (window.parent !== window) S.data.onProgress((p) => window.parent.postMessage({ type: 'orthros-data', ...p }, location.origin));
-      // (the player in the world — Orthros' PLAYER script, view.lua, tells its view from its first poll: the game shown in
-      // play, after the menu and the load): the launch set's mark, src/vfs/launch-set.js
-      const inWorld = setInterval(() => { if (window.omw?.state?.['orthros.view'] !== undefined) { clearInterval(inWorld); S.data.mark('playable'); } }, 500);
+      // (the player in the world — alone, Orthros' PLAYER script, view.lua, tells its view from its first poll; in
+      // multiplayer, which has no Orthros script, the world joined and simulated: view-grow.js inWorld — the game shown
+      // in play, after the menu and the load): the launch set's mark, src/vfs/launch-set.js
+      const inWorld = setInterval(() => { if (M.inWorld(window)) { clearInterval(inWorld); S.data.mark('playable'); } }, 500);
       // (a texture read light, its file here now: loaded again in place by an engine that can — the Orthros build's
       // orthros_file_updated, docs/slow-network.md "Engines that reload in place" —, that load choosing the file itself;
       // the rest of a load under way keeps the light copy: repick)
