@@ -64,6 +64,36 @@ test('OpenMW appears in the catalog, serves only browser assets, and refuses mis
   fs.rmSync(path.join(f.engines, 'test-engine/e/abc/openmw.wasm')); assert.equal((await entries()).available, false);
 });
 
+test('a modded OpenMW game of its own over another game\'s files (requires), its moved version\'s saves key kept', async (t) => {
+  const f = fixture(t, { files: ['Game.esm'] });
+  fs.writeFileSync(path.join(f.game, 'base/Game.esm'), 'master');
+  // (a second game on the home: its version only holds its mods, the original game's files beneath them, no copy)
+  const modded = path.join(f.games, 'sample-modded');
+  fs.mkdirSync(path.join(modded, 'base'), { recursive: true }); fs.mkdirSync(path.join(modded, 'versions/plus/mods/fix-0'), { recursive: true });
+  fs.writeFileSync(path.join(modded, 'versions/plus/mods/fix-0/asset.dds'), 'asset');
+  const spec = { schemaVersion: 1, id: 'sample-modded', name: 'Sample modded', defaultVersion: 'sample-plus', defaults: { runtime: 'openmw', modified: true },
+    versions: [{ id: 'sample-plus', dir: 'plus', version: 'Plus', formerGame: 'sample', requires: [{ game: 'sample', version: 'sample-1' }],
+      openmw: { engine: 'test-engine', files: ['Game.esm'], mods: [{ id: 'fix', name: 'Fix', installed: true, parts: [{ dir: 'mods/fix-0', sentinel: 'asset.dds', plugins: [], archives: [] }] }] } }] };
+  const file = path.join(modded, 'manifest.json'); fs.writeFileSync(file, JSON.stringify(spec));
+  const man = loadGameCatalog(f.games, null, { enginesDir: f.engines }).get('sample-plus');
+  assert.deepEqual(man.underlays, [path.join(f.game, 'versions/1'), path.join(f.game, 'base')]);
+  assert.equal(man.saveKey, 'orthros-port:sample:plus', 'the browser saves of the version keep its former installation key');
+  const base = await listen(t, createServer({ gamesDir: f.games, enginesDir: f.engines }));
+  const listed = await (await fetch(base + '/api/manifests')).json();
+  assert.deepEqual(listed.map((v) => [v.name, v.gameId, v.modified, v.available]).sort(), [['sample-1', 'sample', false, true], ['sample-plus', 'sample-modded', true, true]]);
+  assert.equal(await (await fetch(base + '/game/sample-plus/game.esm')).text(), 'master');
+  assert.equal(await (await fetch(base + '/game/sample-plus/mods/fix-0/asset.dds')).text(), 'asset');
+  // (without formerGame, its own installation; a mount is the Win32 games' way; formerGame names another game)
+  delete spec.versions[0].formerGame; fs.writeFileSync(file, JSON.stringify(spec));
+  assert.equal(loadGameCatalog(f.games, null, { enginesDir: f.engines }).get('sample-plus').saveKey, 'orthros-port:sample-modded:plus');
+  for (const [key, value, error] of [['requires', [{ game: 'sample', version: 'sample-1', mount: 'D:\\' }], /requires invalide/], ['formerGame', 'sample-modded', /formerGame/], ['formerGame', '../x', /formerGame/]]) {
+    fs.writeFileSync(file, JSON.stringify({ ...spec, versions: [{ ...spec.versions[0], [key]: value }] }));
+    assert.throws(() => loadGameCatalog(f.games, null, { enginesDir: f.engines }), error);
+  }
+  fs.writeFileSync(file, JSON.stringify({ ...spec, defaults: { ...spec.defaults, formerGame: 'sample' } }));
+  assert.throws(() => loadGameCatalog(f.games, null, { enginesDir: f.engines }), /defaults.formerGame est réservé/);
+});
+
 test('the web adaptation namespaces HTTP paths and saves without changing guest paths', () => {
   const text = `fetch('/auth/profile');const ws='/ws';location.href='/join';location.replace('/');const door=location.pathname === '/join';FS.readFile('/mwdata/a');FS.mount(IDBFS, {}, '/userdata');sessionStorage.getItem('omwmp:bootfrag');`;
   const result = openmwWebText(text, '/ports/openmw/a/app', 'orthros-port:a:1');

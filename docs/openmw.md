@@ -19,6 +19,14 @@ The engine release, source archive and native simulation image are pinned by
   gateway on localhost port 28101 (`orthros-openmw@morrowind-goty-en`, enabled). The full
   `morrowind-goty-vanilla-plus-en` profile keeps its original id and now contains all seven mods.
   Its enabled gateway uses localhost port 28100. Saves/worlds stay separate from the original profiles.
+- Two games on the home since 2026-10-21 (D103), as Vice City's recompiled and modified cards:
+  `data_games/morrowind` ("The Elder Scrolls III: Morrowind", the original profiles `morrowind-goty-en` / `-fr`, under
+  "Recompiled") holds the game's files; `data_games/morrowind-vanilla-plus` ("… — Vanilla+", `modified`, under
+  "Recompiled & modified") holds only the Vanilla+ profiles' version folders (their mods; the French one its hardlinked
+  localized files too) and an empty `base/`. Each Vanilla+ profile `requires` the original profile of its language,
+  whose files lie beneath its own (`gameLayers`: the page's tree and the gateway's linked tree alike). Their version ids,
+  ports, services, native state and cloud saves are unchanged; `formerGame: "morrowind"` keeps their browser saves'
+  key (`orthros-port:morrowind:<dir>`).
 - Project Atlas is installed from its authors' public repository, commit
   `68a838650fb177afb5e6a63c558dc4ae6bf29b56`, SHA-256
   `364c5896a4b181def2420e1b30f54043b3c0ef35812db24b53fe79f1aa1a92f5`.
@@ -190,7 +198,7 @@ Explicitly attached `CUSTOM` scripts retain their original registered filenames,
 calls to `addScript`, `hasScript` and `removeScript` continue to resolve them.
 
 ```sh
-node tools/openmw/guard-client-ui.mjs data_games/morrowind morrowind-goty-vanilla-plus-fr \
+node tools/openmw/guard-client-ui.mjs data_games/morrowind-vanilla-plus morrowind-goty-vanilla-plus-fr \
   ui-modes questman advanced-world-map
 ```
 
@@ -210,7 +218,9 @@ node tools/openmw/install-game.mjs --data-files '/path/to/Morrowind/Data Files'
 ```
 
 The last command requires the six GOTY master/archive files. It copies into an **empty**
-`data_games/morrowind/base/` and refuses to overwrite an existing installation. A GOG offline
+`data_games/morrowind/base/` and refuses to overwrite an existing installation. It also prepares the modded game
+(`tools/openmw/manifest-vanilla-plus.json`: `data_games/morrowind-vanilla-plus`, an empty base, its mods over the
+original's files by `requires`). A GOG offline
 installer may first be extracted with the tooling `innoextract` into the task's scratch directory.
 The manifest currently selects the English release, matching the recommended English plugins;
 do not import a translated installation under that version id.
@@ -220,7 +230,7 @@ author's archive into task scratch, inspect its installation instructions, and s
 applicable parts and plugins explicitly:
 
 ```sh
-node tools/openmw/install-mod.mjs data_games/morrowind morrowind-goty-vanilla-plus-en \
+node tools/openmw/install-mod.mjs data_games/morrowind-vanilla-plus morrowind-goty-vanilla-plus-en \
   project-atlas /path/to/extracted/Project-Atlas \
   --part '00 Core' --part '01 Textures - MET' \
   --part '06 Glow in the Dahrk Patch' --part '07 Graphic Herbalism Patch' \

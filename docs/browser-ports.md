@@ -17,7 +17,8 @@ Nothing in the code names a game: engine release, game directory, modules, maps 
 OpenMW ports use `runtime: "openmw"`, their own page and a pinned OpenMW-Web engine. Their
 multiplayer uses a native world gateway and simulation peers, proxied on the same origin.
 See [OpenMW installation, pending data and validation](openmw.md). Several mods of the Vanilla+ profile are still
-missing. Every game page — Windows games and ports — has the same frame (header, loading screen, account, saves):
+missing. A modded OpenMW game is a game of its own on the home (`modified`, "Recompiled & modified"), its version holding
+only its mod stack: `requires` puts the original game's version's files beneath it, as for the ports below. Every game page — Windows games and ports — has the same frame (header, loading screen, account, saves):
 [docs/game-frame.md](game-frame.md).
 
 ## Where things are

@@ -21,6 +21,7 @@
           "version": { "type": "string", "minLength": 1 },
           "versionOrder": { "type": "number" },
           "lightCopies": { "type": "boolean", "default": true, "description": "false : pas de copies légères des textures (docs/slow-network.md « Light copies ») pour cette version d'un portage navigateur ; sans effet pour un jeu Windows, qui lit toujours ses fichiers tels quels. Aussi dans defaults." },
+          "formerGame": { "$ref": "#/$defs/id", "description": "Portages navigateur : le dossier de jeu où cette version était installée avant d'être déplacée dans celui-ci (un jeu séparé en deux, par exemple). Les données de la version dans le navigateur (sauvegardes, réglages : la clé orthros-port:<jeu>:<dossier>) gardent la clé de cette installation. Pas dans defaults." },
           "modified": { "type": "boolean", "default": false, "description": "true : une version modifiée du jeu (un mod : du contenu ou des règles qui ne sont pas les siennes), rangée sous « Recompilés et modifiés » dans la bibliothèque. Aussi dans defaults." },
           "runtime": { "enum": ["win32", "goldsrc", "openmw", "re3"], "default": "win32", "description": "win32 : le jeu Windows tel quel dans l'émulateur d'Orthros (exe obligatoire). goldsrc : portage navigateur, un moteur GoldSrc tiers épinglé, compilé en WebAssembly, sur les fichiers du jeu (goldsrc obligatoire ; docs/browser-ports.md). openmw : moteur OpenMW-Web épinglé (openmw obligatoire ; docs/openmw.md). re3 : portage navigateur, un moteur décompilé de la famille re3 compilé en WebAssembly, sur les fichiers du jeu, en solo (re3 obligatoire ; docs/browser-ports.md, « re3 ports »). Aussi dans defaults." },
           "exe": { "type": "string", "minLength": 1, "description": "Runtime win32 (obligatoire) : l'exécutable, cherché dans la superposition de base/ et versions/<dir>/." },
@@ -217,7 +218,7 @@
           },
           "requires": {
             "type": "array",
-            "description": "Versions d'autres jeux dont celle-ci a besoin. win32 : chacune montée à son chemin Windows (mount obligatoire). goldsrc : leurs fichiers (de portages goldsrc) sous ceux de la version, dans l'ordre (sans mount) — un mod sur son jeu. re3 : de même, une version de n'importe quel runtime — un moteur recompilé sur les fichiers d'origine d'un autre jeu de l'accueil, sans copie. openmw : refusé.",
+            "description": "Versions d'autres jeux dont celle-ci a besoin. win32 : chacune montée à son chemin Windows (mount obligatoire). goldsrc : leurs fichiers (de portages goldsrc) sous ceux de la version, dans l'ordre (sans mount) — un mod sur son jeu. re3 : de même, une version de n'importe quel runtime — un moteur recompilé sur les fichiers d'origine d'un autre jeu de l'accueil, sans copie. openmw : de même — une pile de mods sur les fichiers d'origine du jeu, en jeu à part sur l'accueil (« Recompilés et modifiés »), sans copie.",
             "items": {
               "type": "object",
               "required": ["game", "version"],
