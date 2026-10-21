@@ -1414,12 +1414,15 @@ class Emitter {
   /** L_FTW <- tag word of the state block rotated to L_TOP-relative order (bit j = slot (L_TOP+j)&7). */
   loadX87Tags() {
     const c = this.c;
-    c.get(L_STATE).i32load16u(ST.FPU_TW).tee(L_T3).get(L_TOP).shr_u().get(L_T3).i32(8).get(L_TOP).sub().shl().or().i32(0xff).and().set(L_FTW);
+    // (the byte doubled, then one variable shift: the same bits as (tw >> TOP | tw << (8 - TOP)) & 0xff, with one shift by
+    // a run-time amount instead of two — x64 takes it in CL — on every x87 region entry)
+    c.get(L_STATE).i32load16u(ST.FPU_TW).tee(L_T3).get(L_T3).i32(8).shl().or().get(L_TOP).shr_u().i32(0xff).and().set(L_FTW);
   }
   /** state block tag word <- L_FTW rotated back to physical order (shift 0). */
   flushX87Tags() {
     const c = this.c;
-    c.get(L_STATE).get(L_FTW).get(L_TOP).shl().get(L_FTW).i32(8).get(L_TOP).sub().shr_u().or().i32(0xff).and().i32store16(ST.FPU_TW);
+    // (rotl8 by TOP as one variable shift of the doubled byte: L_FTW holds 8 bits)
+    c.get(L_STATE).get(L_FTW).get(L_FTW).i32(8).shl().or().get(L_TOP).shl().i32(8).shr_u().i32(0xff).and().i32store16(ST.FPU_TW);
   }
   /** Push the address of the physical slot of ST(i) given L_T3 = L_TOP << 3 (ST.FPR added by the memarg). */
   stSlot(i) { const c = this.c; c.get(L_STATE).get(L_T3); if (i) c.i32(8 * i).add().i32(63).and(); c.add(); }
