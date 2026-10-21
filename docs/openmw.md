@@ -317,7 +317,8 @@ the game's files, not laid out for the native gateway). The bytes come from the 
 the Windows games' reader — compressed ranges, the link's measure and regimes, the learned order fetched ahead from the
 game's position, the OPFS block store `orthros-files-<manifest>`, the whole download) through `data-client.js` and
 `emscripten-files.js`; the learned order is the server's `/api/prefetch`, fed by the pieces the engine used (reported by
-the worker). Files of elsewhere (a signed address, a file the player picked) go through the same worker. The copies the
+the worker); the player first in the world (`view.lua`'s first report) marks the session playable (`GameData.mark`:
+the launch set the home card announces, docs/slow-network.md "Playable after"). Files of elsewhere (a signed address, a file the player picked) go through the same worker. The copies the
 page kept before (2026-10-20: OPFS `orthros-streamfs-1`, the release's Cache API `mwdata-chunks-v1`) are taken into
 the store before each file's first read (`legacy-copies.js`): measured, a second visit after the earlier page fetched
 28 MB instead of 166.

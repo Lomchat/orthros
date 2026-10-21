@@ -188,6 +188,7 @@
 #menu .hm-play:focus-visible { outline: 2px solid var(--bone); outline-offset: 2px; }
 #menu .hm-dl { position: relative; display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 6px 8px 8px; border-radius: 8px; background: rgba(255, 255, 255, .03); font: 11.5px var(--mono); color: var(--faint); cursor: default; }
 #menu .hm-dl[hidden] { display: none; }
+#menu .hm-launch + .hm-dl { margin-top: 4px; }
 #menu .hm-dl-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #menu .hm-dl[data-state="running"] .hm-dl-text, #menu .hm-dl[data-state="done"] .hm-dl-text { color: var(--bone); }
 #menu .hm-dl-bar { position: absolute; left: 8px; right: 8px; bottom: 3px; height: 2px; border-radius: 1px; background: rgba(255, 255, 255, .06); overflow: hidden; }

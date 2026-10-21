@@ -109,13 +109,45 @@ Movies and music are not what the game waits for to start; on a link that is not
 - **Server** (`src/host/game-files.js` `listGameTree`, the rule `isMediaFile` in `src/vfs/game-tree.js`): a tree file
   is marked `media: true` by its format — `.bik .bk2 .mp3 .ogg .avi .mpg .mpeg .wmv .smk .webm`, and `.wav` from
   512 KB (`MEDIA_WAV_BYTES`: music, speech; smaller ones are sound effects). Every game, every runtime.
-- **Learned order** (`src/vfs/data-worker.js` `forLink`): on a link that is not fast, the media files' entries move
+- **Learned order** (`src/vfs/launch-set.js` `forLink`): on a link that is not fast, the media files' entries move
   after all the others, in their order (earlier sessions played a movie through; this one may skip it); the startup set
   (`startupHead`) leaves them out.
 - **Offline copy** (`HttpBackend.downloadAll`): the media files' blocks after every other block, on every link.
 - **Guesses** (`HttpBackend.speculate`): no blocks near a missed one, nor the next blocks of a read, for a media file
   the game is not streaming now (`HttpBackend.streams`); a stream keeps its read-ahead.
 - A read of a media file is never answered with made-up bytes: it waits for the network as any other.
+
+## Playable after (2026-10-21)
+
+The first pause of the learned order (2 s, `STARTUP_GAP_MS`) is not when a game becomes playable: OpenMW's French
+order pauses after 1 MB, its main menu comes at 198 MB. So the pages say when it is, and the server learns from it —
+every runtime, one implementation (`src/vfs/launch-set.js`):
+
+- **The mark**: `GameData.mark('playable')` (`src/vfs/data-client.js`) when the game first draws in play — GoldSrc and
+  re3: where their loading screen hides (`hideLoader`); OpenMW: when the player is first in the world (Orthros'
+  PLAYER script, `view.lua`, tells its view from its first poll: after the menu and the load, `streamfs.js`). The data
+  worker sends it once per session with every read before it (`{ session, reads, mark: { kind, t } }` to
+  `/api/prefetch/<manifest>`). The Windows games do not mark yet.
+- **The server** (`learnMark` in `src/host/server.js`): each learned block the marking session had read by then counts
+  it (`pre`, the 5th element of a row of `prefetch-<manifest>.json`), the version counts its marking sessions
+  (`playable-<manifest>.json`, `{ marks }`). Once one marked, each entry of `/api/prefetch` carries a 5th element, its
+  flags: bit 0 (`PRE_PLAYABLE`) when it was read before playable in at least half the marking sessions.
+- **The launch set** (`launchSet`: `startupHead(forLink(order))`): the flagged entries as this link reads them (light
+  copies on a link not fast, no media there); an order without flags falls back to its first pause. It is the startup
+  set the GoldSrc and re3 pages wait for (`startup()` in the data worker).
+- **The home card** (`/api/manifests` `launch: { bytes, lightBytes, wire, lightWire, entries }` per version,
+  `launchSummary`; null until a session marked it; made again when the order changes, at most every minute): `bytes`
+  the launch set's learned pieces on a fast link, `lightBytes` with light copies (a link not fast), the `wire` bytes
+  those of the precompressed units already made (`brCache.size`), else 0.75 of the bytes. The card says "Playable
+  after 80 MB, about 10 min at your link (100 KB/s)" (`launchStatus` in `src/host/web/download.js`, the rate
+  `linkRate`; the size only while none was measured), above the whole download's line, hidden once the whole game is
+  here or downloading.
+- **Prepare** (the line's button): the download worker fetches the launch set only (`{ type: 'launch' }`:
+  `HttpBackend.prefetch` with `learnedOnly`, the pieces as the startup set fetches them) into the same OPFS store; pause
+  and resume (the pieces here are skipped; the progress is kept in `localStorage['orthros.launch.<manifest>']`, the
+  pieces here counted again each half second — `setBytes`). Starting a game stops it first, as the whole download.
+- Not measured yet: the launch sizes on the live server (no session marked before this change), and whether OpenMW's
+  in-world mark comes as described (no browser run).
 
 ## Precompressed units (2026-10-21)
 
@@ -173,7 +205,8 @@ on the request path. So the server keeps **units** compressed ahead, for every g
   the same OPFS stores before playing (`src/host/web/download-worker.js`, the learned order first, then every block;
   4 MiB requests), with size, measured rate, time left, progress; pause / resume, and resume on a later visit (the
   stored blocks are skipped; the progress is kept in `localStorage['orthros.download.<manifest>']`). Starting a game
-  stops it first (the game's worker opens the same stores). The settings' "offline copy" still downloads in the
+  stops it first (the game's worker opens the same stores). Above it, **Playable after / Prepare** (see "Playable
+  after"): the launch set only. The settings' "offline copy" still downloads in the
   background while the game runs (now through the same turns, after everything else).
 - **Every runtime the same** (CLAUDE.md "Standardization", 2026-10-20): the browser ports read the same game data
   (`src/vfs/game-data.js` opens a version for the Windows games' worker, the download worker and the ports' data

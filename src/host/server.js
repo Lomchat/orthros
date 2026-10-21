@@ -23,7 +23,8 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
-import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK, unitOf } from '../vfs/http-backend.js';
+import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK, unitOf, HttpBackend } from '../vfs/http-backend.js';
+import { launchSummary, PRE_PLAYABLE } from '../vfs/launch-set.js';
 import { createBrCache } from './br-cache.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
@@ -182,9 +183,13 @@ export function createServer(opts = {}) {
    * background (network otherwise idle while the game computes) before the game asks for them. Kept in
    * opts.learnDir/prefetch-<manifest>.json when set. Each block also carries the mask of the 64 KiB pieces sessions
    * read in it (bit i: piece i; absent for blocks learned before masks): a session fetches those pieces ahead of the
-   * game — a few pieces of each block is what a run of small random reads needs, not whole blocks.
+   * game — a few pieces of each block is what a run of small random reads needs, not whole blocks. A page marks the
+   * moment its game is first playable (a report's `mark`: { kind: 'playable' }, GameData.mark): each block that session
+   * had read by then counts it (`pre`), the version the marking sessions (`marks`, kept in playable-<manifest>.json); once
+   * one marked, each listed block carries flags (bit 0, launch-set.js PRE_PLAYABLE: read before playable in at least
+   * half of them) — the launch set.
    */
-  const learned = new Map(); // manifest -> Map("path#block" -> { t, n, mask })
+  const learned = new Map(); // manifest -> Map("path#block" -> { t, n, mask, pre })
   /** mask of the 64 KiB pieces of a block covered by [a, b) (offsets within the block) */
   const pieceBits = (a, b) => { let m = 0; for (let c = Math.floor(a / LEARN_CHUNK); c * LEARN_CHUNK < b; c++) m |= 1 << c; return m >>> 0; };
   const sessions = new Map(); // session id -> { start, seen: Set }
@@ -194,11 +199,38 @@ export function createServer(opts = {}) {
     if (!m) {
       m = new Map(); learned.set(name, m);
       const f = learnFile(name);
-      if (f) try { for (const [k, t, n, mask] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined }); } catch { /* none yet */ }
+      if (f) try { for (const [k, t, n, mask, pre] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined, pre: pre || 0 }); } catch { /* none yet */ }
     }
     return m;
   };
+  const playable = new Map(); // manifest -> { marks }
+  const playableFile = (name) => opts.learnDir && path.join(opts.learnDir, `playable-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  const playableOf = (name) => {
+    let p = playable.get(name);
+    if (!p) {
+      p = { marks: 0 }; playable.set(name, p);
+      const f = playableFile(name);
+      if (f) try { p.marks = Number(JSON.parse(fs.readFileSync(f, 'utf8')).marks) || 0; } catch { /* none yet */ }
+    }
+    return p;
+  };
   let learnDirty = new Set(), learnTimer = null;
+  const learnSave = (name) => {
+    launches.delete(name);
+    if (!learnFile(name)) return;
+    learnDirty.add(name);
+    learnTimer ??= setTimeout(() => {
+      learnTimer = null;
+      for (const n of learnDirty) {
+        const f = learnFile(n);
+        try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.pre ? [k, v.t, v.n, v.mask ?? null, v.pre] : v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
+        const pf = playableFile(n), pm = playable.get(n);
+        if (pm?.marks) try { fs.writeFileSync(pf + '.tmp', JSON.stringify({ marks: pm.marks })); fs.renameSync(pf + '.tmp', pf); } catch { /* next time */ }
+      }
+      learnDirty = new Set();
+    }, opts.learnWriteMs ?? 20000);
+    learnTimer.unref?.(); // (does not keep a finished process alive)
+  };
   // (`at`: the read's time as the page measured it — a page reporting the reads it served itself, e.g. a browser port)
   const learnRead = (name, rel, start, end, sid, at = null) => {
     if (!sid || sid.length > 40) return;
@@ -219,18 +251,50 @@ export function createServer(opts = {}) {
       ss.seen.add(k);
       e.t = Math.min(e.t, t); e.n++;
     }
-    if (learnFile(name)) {
-      learnDirty.add(name);
-      learnTimer ??= setTimeout(() => {
-        learnTimer = null;
-        for (const n of learnDirty) { const f = learnFile(n); try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ } }
-        learnDirty = new Set();
-      }, 20000);
-      learnTimer.unref?.(); // (does not keep a finished process alive)
-    }
+    learnSave(name);
   };
-  // (each entry: [path, block, mask (0: unknown), t (ms from its earliest session's first read)])
-  const prefetchList = (name) => [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k, v]) => { const i = k.lastIndexOf('#'); return [k.slice(0, i), Number(k.slice(i + 1)), v.mask ?? 0, Math.round(v.t)]; });
+  /** Session `sid` marked version `name` (`kind`): 'playable' counts the blocks it read until now, once a session. */
+  const learnMark = (name, sid, kind) => {
+    const ss = sessions.get(sid);
+    if (kind !== 'playable' || !ss || ss.marked || !ss.seen.size) return false;
+    ss.marked = true;
+    const m = learnedOf(name);
+    for (const k of ss.seen) { const e = m.get(k); if (e) e.pre = (e.pre ?? 0) + 1; }
+    playableOf(name).marks++;
+    learnSave(name);
+    return true;
+  };
+  // (each entry: [path, block, mask (0: unknown), t (ms from its earliest session's first read)], and once a session
+  // marked the version playable, flags: bit 0 read before playable in at least half the marking sessions)
+  const prefetchList = (name) => {
+    const marks = playableOf(name).marks;
+    return [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k, v]) => {
+      const i = k.lastIndexOf('#'), e = [k.slice(0, i), Number(k.slice(i + 1)), v.mask ?? 0, Math.round(v.t)];
+      if (marks) e.push(v.pre && v.pre * 2 >= marks ? PRE_PLAYABLE : 0);
+      return e;
+    });
+  };
+  /**
+   * What a version's launch costs (launch-set.js launchSummary: its launch set's bytes, with and without light copies,
+   * and their wire bytes — the precompressed units' when made, br-cache.js), for the home: null until a session marked
+   * it playable. Made again once its learned order changed, or a minute later (the units made meanwhile).
+   */
+  const launches = new Map(); // manifest -> { at, v }
+  const launchOf = (name, man) => {
+    const c = launches.get(name);
+    if (c && Date.now() - c.at < 60e3) return c.v;
+    let v = null;
+    try {
+      if (playableOf(name).marks) {
+        const at = unitFile(man);
+        v = launchSummary(new HttpBackend(`/game/${name}/`, gameTree(name, man)), prefetchList(name), brCache && ((rel, unit) => {
+          const f = at(rel); return f ? brCache.size(f.file, f.st, f.light, unit) : null;
+        }));
+      }
+    } catch { v = null; }
+    launches.set(name, { at: Date.now(), v });
+    return v;
+  };
 
   /**
    * Precompressed transport units (br-cache.js, docs/slow-network.md "Precompressed units"): opts.brCacheDir, at most
@@ -238,9 +302,10 @@ export function createServer(opts = {}) {
    * earliest reads first: the launch sets, pinned) — the browser ports' first, a listed texture's light copy before
    * the file. A learned block whose pieces are all known (or not known) is a block unit, else its pieces are.
    */
-  const brSeedUnits = function* (man, list) {
-    const files = new Map(); // rel -> { file, st, light, size } | null
-    const at = (rel) => {
+  /** The files of a version's paths (a light copy's too), resolved once: rel -> { file, st, light, size } | null. */
+  const unitFile = (man) => {
+    const files = new Map();
+    return (rel) => {
       if (!files.has(rel)) {
         let v = null;
         try {
@@ -252,7 +317,9 @@ export function createServer(opts = {}) {
       }
       return files.get(rel);
     };
-    const lights = new Set();
+  };
+  const brSeedUnits = function* (man, list) {
+    const at = unitFile(man), lights = new Set();
     for (const [rel, block, mask] of list) {
       // (a light copy is read on a link that is not fast, by pieces: its pieces — one block when it is one piece)
       if (man.lightCopies && !rel.startsWith(LIGHT_DIR + '/') && !lights.has(rel)) {
@@ -709,7 +776,7 @@ export function createServer(opts = {}) {
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name), runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : runtime === 're3' ? re3Modes(m.re3) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
-            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
+            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
             available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
@@ -859,6 +926,7 @@ export function createServer(opts = {}) {
               if (size2 === null || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > size2 || !Number.isFinite(t) || t < 0 || t > 6 * 3600e3) continue;
               learnRead(m[1], rel, start, end, 'r:' + rec.session, Math.round(t));
             }
+            if (rec.mark && typeof rec.mark === 'object') learnMark(m[1], 'r:' + rec.session, rec.mark.kind);
             send(res, 204, '');
           });
           return;

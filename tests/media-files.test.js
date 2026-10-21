@@ -12,7 +12,7 @@ import { listGameTree } from '../src/host/game-files.js';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 import { NetLink } from '../src/vfs/net-link.js';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';
-import { forLink, startupHead } from '../src/vfs/data-worker.js';
+import { forLink, startupHead } from '../src/vfs/launch-set.js';
 
 const MiB = 1 << 20;
 const byteAt = (i) => (i * 7 + (i >> 9)) & 0xff;
@@ -51,13 +51,13 @@ test('the server\'s tree marks media files (media: true), and the tree\'s file l
 test('learned order on a link that is not fast: media entries after all the others, in their order; the startup set without them', () => {
   const part = { files: new HttpBackend('/game/m/', tree()) };
   const list = [['Video/intro.bik', 0, 0xffff, 0], ['data.bsa', 0, 1, 100], ['title.mp3', 0, 0xffff, 200], ['data.bsa', 1, 1, 300], ['Video/intro.bik', 1, 0xffff, 400]];
-  assert.deepEqual(forLink(part, list, false).map(([p, b]) => `${p}#${b}`), ['data.bsa#0', 'data.bsa#1', 'Video/intro.bik#0', 'title.mp3#0', 'Video/intro.bik#1']);
-  assert.deepEqual(forLink(part, list, true), list, 'a fast link: the order as learned');
-  assert.deepEqual(startupHead(part, forLink(part, list, false), false).map(([p, b]) => `${p}#${b}`), ['data.bsa#0', 'data.bsa#1']);
+  assert.deepEqual(forLink(part.files, list, false).map(([p, b]) => `${p}#${b}`), ['data.bsa#0', 'data.bsa#1', 'Video/intro.bik#0', 'title.mp3#0', 'Video/intro.bik#1']);
+  assert.deepEqual(forLink(part.files, list, true), list, 'a fast link: the order as learned');
+  assert.deepEqual(startupHead(part.files, forLink(part.files, list, false), false).map(([p, b]) => `${p}#${b}`), ['data.bsa#0', 'data.bsa#1']);
   // (the pause before the media: a gap of the startup set measured between the entries left)
   const paused = [['data.bsa', 0, 1, 0], ['title.mp3', 0, 1, 1000], ['data.bsa', 1, 1, 1900], ['data.bsa', 2, 1, 9000]];
-  assert.deepEqual(startupHead(part, forLink(part, paused, false), false).map(([p, b]) => `${p}#${b}`), ['data.bsa#0', 'data.bsa#1']);
-  assert.deepEqual(startupHead(part, forLink(part, paused, true), true).map(([p, b]) => `${p}#${b}`), ['data.bsa#0', 'title.mp3#0', 'data.bsa#1']);
+  assert.deepEqual(startupHead(part.files, forLink(part.files, paused, false), false).map(([p, b]) => `${p}#${b}`), ['data.bsa#0', 'data.bsa#1']);
+  assert.deepEqual(startupHead(part.files, forLink(part.files, paused, true), true).map(([p, b]) => `${p}#${b}`), ['data.bsa#0', 'title.mp3#0', 'data.bsa#1']);
 });
 
 test('offline copy: the media files\' blocks after every other block, learned ones first among them', async () => {

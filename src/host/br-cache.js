@@ -282,6 +282,8 @@ export function createBrCache(opts) {
       counts.hits++; u.lastHit = Date.now();
       return { path: path.join(e.dir, name + (u.raw ? '.raw' : '.br')), bytes: u.bytes, raw: u.raw };
     },
+    /** the bytes the unit `unit` of `file` takes on the wire when made (its compressed size, or raw's), else null: not a hit */
+    size(file, st, light, unit) { return entryOf(file, st, light).units?.get(unitName(unit))?.bytes ?? null; },
     /** a unit found missing on the disk (evicted meanwhile, removed by hand): out of the index */
     drop(file, st, light, unit) { const e = entryOf(file, st, light); if (e.units) dropUnit(e, unitName(unit), false); },
     /** a request missed the unit: made next (before the launch sets), the most asked first */

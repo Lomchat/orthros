@@ -143,6 +143,7 @@ function hideLoader() {
   if (!shell || shell.loader.classList.contains('hidden')) return;
   shell.hideLoader();
   shell.running = true; shell.watchPointer(document);
+  gameData?.mark('playable'); // (the game shown: what it read until now is its launch set, src/vfs/launch-set.js)
   status(S.running);
   if (lobbyOverlay.classList.contains('hidden')) lobby?.hide();
 }

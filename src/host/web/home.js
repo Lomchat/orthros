@@ -3,7 +3,7 @@
 import { startEmbers } from './embers.js';
 import { UI_LANGS, browserLangs, explicitLang, pickLang, endonym } from './lang.js';
 import { h } from './dom.js';
-import { Downloads, downloadStatus } from './download.js';
+import { Downloads, downloadStatus, launchStatus } from './download.js';
 import { accountState, onAccountChange } from './account.js';
 
 /** the "download the whole game first" downloads (one at a time, see download.js) */
@@ -31,6 +31,7 @@ const STRINGS = {
     live: (rooms, humans) => [rooms > 1 ? `${rooms} games online` : null, humans ? `${humans} playing` : null].filter(Boolean).join(', '),
     dlStart: 'Download first', dlPause: 'Pause', dlResume: 'Resume', dlRetry: 'Try again',
     dlTitle: 'Downloads the whole game into this browser now (it resumes where it stopped on your next visit): on a slow connection the game then starts and plays without waiting for the network.',
+    lnStart: 'Prepare', lnTitle: 'What earlier players needed before the game was playable, measured at your connection. Prepare downloads only that into this browser now (it resumes where it stopped): the game then starts without waiting.',
   },
   fr: {
     over: 'Jeux Windows et moteurs recompilés · dans ton navigateur', tagline: 'Tes jeux, directement dans ton navigateur.',
@@ -50,6 +51,7 @@ const STRINGS = {
     live: (rooms, humans) => [rooms > 1 ? `${rooms} parties en ligne` : null, humans ? `${humans} en jeu` : null].filter(Boolean).join(', '),
     dlStart: 'Télécharger d’abord', dlPause: 'Pause', dlResume: 'Reprendre', dlRetry: 'Réessayer',
     dlTitle: 'Télécharge tout le jeu dans ce navigateur maintenant (reprend où il s’est arrêté à la visite suivante) : sur une connexion lente, le jeu démarre et se joue ensuite sans attendre le réseau.',
+    lnStart: 'Préparer', lnTitle: 'Ce dont les joueurs précédents ont eu besoin avant que le jeu soit jouable, mesuré à ta connexion. Préparer télécharge seulement cela dans ce navigateur maintenant (reprend où il s’est arrêté) : le jeu démarre ensuite sans attendre.',
   },
 };
 
@@ -267,10 +269,24 @@ export function mountHome({ onPlay }) {
     // "download the whole game first": status line and its button (download, pause, resume)
     const dlText = h('span', { class: 'hm-dl-text' }), dlBar = h('i'), dlBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
     const dlRow = h('div', { class: 'hm-dl', title: S().dlTitle }, h('div', { class: 'hm-dl-bar' }, dlBar), dlText, dlBtn);
+    // "playable after X MB, about Y min at your link" and its button (prepare: the launch set only, pause, resume)
+    const lnText = h('span', { class: 'hm-dl-text' }), lnBar = h('i'), lnBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
+    const lnRow = h('div', { class: 'hm-dl hm-launch', title: S().lnTitle }, h('div', { class: 'hm-dl-bar' }, lnBar), lnText, lnBtn);
+    function syncLaunch(v, whole) {
+      const st = v?.available ? launchStatus(v.launch, { st: downloads.get(v.name, 'launch'), whole }, lang) : null;
+      // (the whole game here or on its way: its own line says it)
+      lnRow.hidden = !st || whole.state === 'done' || whole.state === 'running'; if (lnRow.hidden) return;
+      lnText.textContent = st.text; lnBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
+      lnRow.dataset.state = st.state;
+      lnBtn.hidden = st.state === 'done';
+      lnBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().lnStart;
+      lnBtn.onclick = (e) => { e.stopPropagation(); if (st.state === 'running') downloads.stop(); else downloads.start(v.name, 'launch'); };
+    }
     function syncDownload() {
       // (every runtime: the game data's block store, the one each game reads — src/vfs/game-data.js)
-      const v = chosen(g); dlRow.hidden = !v?.available; if (dlRow.hidden) return;
+      const v = chosen(g); dlRow.hidden = !v?.available; if (dlRow.hidden) { lnRow.hidden = true; return; }
       const st = downloadStatus(downloads.get(v.name), v.bytes, lang);
+      syncLaunch(v, st);
       dlText.textContent = st.text; dlBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
       dlRow.dataset.state = st.state;
       dlBtn.hidden = st.state === 'done';
@@ -325,7 +341,7 @@ export function mountHome({ onPlay }) {
     liveSyncs.push(syncLive);
     el.append(cover, h('div', { class: 'hm-body' }, h('h3', {}, g.title), desc,
       h('div', { class: 'hm-choices' }, versions?.el, langSlot),
-      h('div', { class: 'hm-foot-row' }, h('div', { class: 'hm-metas' }, meta, live), playBtn), dlRow));
+      h('div', { class: 'hm-foot-row' }, h('div', { class: 'hm-metas' }, meta, live), playBtn), lnRow, dlRow));
     sync();
     el.onclick = (e) => { if (chosen(g)?.available && !e.target.closest('select, button, label, .hm-dl')) play(g); };
     for (const [type, fn] of [['mouseenter', () => { if (chosen(g)?.available) { setBackdrop(g.id); heat(true); } }], ['mouseleave', () => { setBackdrop(resume?.id ?? null); heat(false); }],

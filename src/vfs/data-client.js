@@ -173,6 +173,13 @@ export class GameData {
     });
   }
 
+  /**
+   * The game reached a moment of its own: 'playable' — it first draws in play (a port's page: its loading screen hidden,
+   * OpenMW's player in the world). Told to the server once with the pieces used before it: the reads before the mark are
+   * the version's launch set (src/vfs/launch-set.js — the startup set, the home's "playable after X MB").
+   */
+  mark(kind) { this.worker.postMessage({ mark: { kind }, used: this.used.splice(0) }); }
+
   /** The whole version kept in the browser, in the background (`on`: start, else stop); `onProgress({ bytes, total, done })`. */
   download(on = true, onProgress = null) {
     if (onProgress) this.listeners.whole.push(onProgress);

@@ -150,8 +150,10 @@ reader in a worker of its own: the server's compressed ranges (`/gamez`), the li
 browser's OPFS block store (`orthros-files-<manifest>`, the same the home screen's whole download fills), the learned
 order fetched ahead from the game's position.
 
-- **Startup set.** The server's learned order (`/api/prefetch`) up to its first pause of 2 s: loaded before the engine
-  starts (what it reads from its start to its first idle moment: init, menu, the first map when the page asks).
+- **Startup set.** The server's learned order (`/api/prefetch`): what earlier sessions read before their game was
+  playable (the page marks it where its loading screen hides, `GameData.mark('playable')`; docs/slow-network.md
+  "Playable after"), else up to its first pause of 2 s — loaded before the engine starts. The home card says its size
+  and time at the visitor's link, and "Prepare" downloads it ahead.
 - **The rest in the background.** Once the engine runs: the learned order from the game's position, then what the
   reader's policies add (blocks around a miss, a file read in order ahead of its reader).
 - **Reads not there yet.** A read of bytes not in the page waits for the worker on shared memory (the page's thread

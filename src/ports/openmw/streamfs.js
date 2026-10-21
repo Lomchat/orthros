@@ -4,7 +4,8 @@
 // (src/vfs/data-client.js, emscripten-files.js — CLAUDE.md "Standardization"), the engine's own mounts mapped onto the
 // version's tree: mwdata/<file> → <file>, mwdata/mods/<part>/<file> → mods/<part>/<file>, moddata/<file> →
 // _engine/<file> (the engine release's asset pack, a data mount of the manifest). Files of elsewhere (a signed address, a file the player picked, a Blob) go through the same worker. A copy
-// an earlier page kept of a file (legacy-copies.js) is taken before its first read.
+// an earlier page kept of a file (legacy-copies.js) is taken before its first read. The player first in the world marks
+// the session playable (GameData.mark).
 (() => {
   'use strict';
   // (a classic script — the page calls StreamFS synchronously — loading the shared modules at once: they are here long
@@ -33,6 +34,9 @@
       S.data.start();
       // (the loading in the background, for the Orthros page around the engine: its header's pill)
       if (window.parent !== window) S.data.onProgress((p) => window.parent.postMessage({ type: 'orthros-data', ...p }, location.origin));
+      // (the player in the world — Orthros' PLAYER script, view.lua, tells its view from its first poll: the game shown in
+      // play, after the menu and the load): the launch set's mark, src/vfs/launch-set.js
+      const inWorld = setInterval(() => { if (window.omw?.state?.['orthros.view'] !== undefined) { clearInterval(inWorld); S.data.mark('playable'); } }, 500);
       try { Object.defineProperty(window, '__streamfsStats', { configurable: true, get: () => S.data.snapshot() }); } catch { /* defined */ }
     }
     return S.data;

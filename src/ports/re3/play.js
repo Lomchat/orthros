@@ -160,6 +160,7 @@ function hideLoader() {
   if (!shell || shell.loader.classList.contains('hidden')) return;
   step('game', 'done');
   shell.hideLoader();
+  gameData?.mark('playable'); // (the game shown: what it read until now is its launch set, src/vfs/launch-set.js)
   shell.running = true; shell.watchPointer(document);
   status(S.running);
 }

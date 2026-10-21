@@ -10,6 +10,8 @@
 // below THIN_BPS, net-link.js). The page's quiet (GameData.quiet: a page that loads more of its game when nothing waits):
 // ctrl[10] 1 when the learned order's loading has nothing left for the game's current step (or does not run), ctrl[11]
 // the time since a read last waited for the network (ms, 0 while one waits).
+// A page's mark (GameData.mark('playable'): its game first draws in play) goes to the server with the reads before it:
+// the launch set later sessions wait for and the home announces (launch-set.js).
 // Light copies (src/host/light-copies.js): on a link that is not fast, the page reads a texture's light copy unless the
 // file itself is here (told: { real: [keys] }); the learned order brings the light copies; the files whose light copy
 // the engine read come last, in the background (HttpBackend.upgrade).
@@ -17,11 +19,12 @@ import { openVersion, openStore, learnedOrder } from './game-data.js';
 import { MemBlockStore } from './opfs-store.js';
 import { BLOCK, CHUNK } from './http-backend.js';
 import { LIGHT_DIR, treeFiles } from './game-tree.js';
+import { forLink, launchSet, setBytes } from './launch-set.js';
 
-/** The startup set (loaded before the engine starts, when the page asks): the learned order up to its first pause this long. */
-const STARTUP_GAP_MS = 2000;
 /** The reads the engine used, sent to the server's learned order every so often. */
 const REPORT_MS = 15000;
+/** The most reads a report that carries a mark sends (the server takes 50000). */
+const MARK_READS = 40000;
 /** After this long without a read waiting, the next wait is a new step for the indicator. */
 const STEP_PAUSE_MS = 3000;
 
@@ -39,7 +42,7 @@ export function createDataWorker(post) {
     ctrl: null, data: null, version: null, parts: new Map(), handles: new Map(), ready: null, timers: [],
     session: '', t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null,
     prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null,
-    legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(),
+    legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(),
   };
   return (m) => {
     if (m.init) {
@@ -65,6 +68,7 @@ function dispatch(m) {
   if (m.read) { answerAsync(m.read); return; }
   if (m.start) { W.t0 = performance.now(); if (W.prefetchAt === 'start') prefetchAll(); return; }
   if (m.startup) { startup(); return; }
+  if (m.mark) { mark(m.mark); return; }
   if (m.wantWhole) { W.parts.get(m.wantWhole.name)?.files.wantWhole(m.wantWhole.path); return; }
   if (m.light) { upgrade(m.light.name, m.light.path); return; }
   if ('whole' in m) { m.whole ? wholeDownload() : (W.whole && (W.whole.stop = true)); return; }
@@ -194,10 +198,21 @@ function used(list) {
   }
 }
 
-function report(final = false) {
-  if (!W.reads.length || !W.session) return;
-  const reads = W.reads.splice(0, 5000), name = W.version.parts[0].name;
-  fetch(`/api/prefetch/${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: final, body: JSON.stringify({ session: W.session, reads }) }).catch(() => {});
+function report(final = false, marked = null) {
+  if ((!W.reads.length && !marked) || !W.session) return;
+  // (a mark goes with every read before it, in one report: the server flags what the session had read by then)
+  const reads = W.reads.splice(0, marked ? MARK_READS : 5000), name = W.version.parts[0].name;
+  fetch(`/api/prefetch/${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: final, body: JSON.stringify({ session: W.session, reads, ...(marked ? { mark: marked } : {}) }) }).catch(() => {});
+}
+
+/**
+ * The page's game reached a moment of its own (GameData.mark: 'playable' — it first draws in play): told to the server
+ * once per kind, with the reads before it (the server learns the launch set from it: launch-set.js).
+ */
+function mark(m) {
+  const kind = String(m.kind ?? ''); if (!/^[a-z-]{1,20}$/.test(kind) || W.marks.has(kind) || W.t0 === null) return;
+  W.marks.add(kind);
+  report(false, { kind, t: Math.round(performance.now() - W.t0) });
 }
 
 // ---------------------------------------------------------------- loading ahead
@@ -205,57 +220,18 @@ function report(final = false) {
 /** The learned order of the version: what earlier sessions read first, the startup set its head. */
 const order = () => (W.learned ??= Promise.all(W.version.parts.map((p) => learnedOrder(p.name))));
 
-/**
- * A learned order as this link reads it: on a link that is not fast, a texture's light copy (whole, once) in place of
- * the file — unless the file is here —, and the media files' entries (the tree's `media`: movies, music — game-tree.js)
- * after all the others, in their order (a movie earlier sessions watched while this one may skip it, a track the engine
- * streams itself: not ahead of what the game waits for); on a fast one, the files themselves in place of light copies
- * earlier sessions read (exported for the tests).
- */
-export function forLink(part, list, fast = W.version.net.fast()) {
-  const out = [], tail = [], seen = new Set();
-  const add = (path, block, mask, t) => { const k = path + '#' + block; if (!seen.has(k)) { seen.add(k); out.push([path, block, mask, t]); } };
-  for (const e of list) {
-    const [path, , , t] = e, light = path.startsWith(LIGHT_DIR + '/');
-    const r = part.files.lookup(light ? path.slice(LIGHT_DIR.length + 1) : path);
-    if (!fast && !light && r?.file?.media) { const k = path + '#' + e[1]; if (!seen.has(k)) { seen.add(k); tail.push(e); } continue; }
-    if (!r?.file?.light) { if (!light) add(...e); continue; }
-    if (fast || part.files.isWhole(r.path)) {
-      if (!light) add(...e); else for (let b = 0; b * BLOCK < r.file.size; b++) add(r.path, b, 0, t);
-    } else {
-      for (let b = 0; b * BLOCK < r.file.light; b++) {
-        const n = Math.ceil((Math.min(BLOCK, r.file.light - b * BLOCK)) / CHUNK);
-        add(`${LIGHT_DIR}/${r.path}`, b, n >= 16 ? 0xffff : (1 << n) - 1, t);
-      }
-    }
-  }
-  return tail.length ? out.concat(tail) : out;
-}
-
 /** The startup set loaded (before the engine starts): progress { bytes, total, done } to the page. */
 async function startup() {
-  const lists = await order(), part = W.version.parts[0], fast = W.version.net.fast();
-  const head = startupHead(part, forLink(part, lists[0], fast), fast);
+  const lists = await order(), part = W.version.parts[0];
+  const head = launchSet(part.files, lists[0], W.version.net.fast());
   const progress = { bytes: 0, blocks: 0, done: false };
-  const total = head.reduce((n, [, , mask]) => n + (mask ? popcount(mask) * CHUNK : BLOCK), 0);
+  const total = setBytes(part.files, head).bytes;
   const tick = setInterval(() => postMessage({ startup: { bytes: progress.bytes, total, done: false } }), 250);
   if (!head.length) { clearInterval(tick); postMessage({ startup: { bytes: 0, total: 0, done: true } }); return; }
   // (the pieces sessions read only: the rest of their blocks comes with the learned order, once the engine runs)
   try { await part.files.prefetch(head, progress, () => W.stop, { learnedOnly: true }); }
   finally { clearInterval(tick); postMessage({ startup: { bytes: progress.bytes, total, done: true } }); }
 }
-/**
- * The startup set of a learned order as this link reads it (forLink): its entries up to the first pause of
- * STARTUP_GAP_MS — on a link that is not fast, without the media files (they are not needed to start the game). Exported
- * for the tests.
- */
-export function startupHead(part, list, fast) {
-  if (!fast) list = list.filter(([path]) => !part.files.lookup(path)?.file?.media);
-  let end = list.length;
-  for (let i = 1; i < list.length; i++) if (list[i][3] - list[i - 1][3] > STARTUP_GAP_MS) { end = i; break; }
-  return list.slice(0, end);
-}
-const popcount = (m) => { let n = 0; while (m) { n += m & 1; m >>>= 1; } return n; };
 
 /**
  * The whole learned order, in the background from the game's position in it (HttpBackend.prefetch), every part's; its
@@ -268,7 +244,7 @@ async function prefetchAll() {
   W.version.parts.forEach((p, i) => {
     if (!lists[i].length) return;
     const progress = { bytes: 0, blocks: 0, done: false };
-    runs.push({ p, progress, job: p.files.prefetch(forLink(p, lists[i]), progress, () => W.stop).catch(() => {}) });
+    runs.push({ p, progress, job: p.files.prefetch(forLink(p.files, lists[i], W.version.net.fast()), progress, () => W.stop).catch(() => {}) });
   });
   W.runs = runs;
   if (!runs.length) return;
