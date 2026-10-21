@@ -414,9 +414,25 @@ let longSliceStart = 0, longSliceLogs = 0, longWaitLogs = 0, longWaitMin = 1000,
  * time — a wake-up (input, an asynchronous completion) replaces a pending timer instead of starting a second chain.
  */
 let pumpPosted = false, pumpTimer = null;
+/**
+ * Short sleeps and the HTML timer nesting clamp: a setTimeout armed from a timer callback, five deep, waits at least
+ * 4 ms whatever is asked (Chrome: a 1-3 ms timer re-armed from its own callback fires after ~4.07 ms; armed from a
+ * message task it oversleeps by ~0.07 ms). A pump run by a timer that sleeps again for less than that arms its timer
+ * from a message task instead (`armChannel`, one hop of ~4 µs: `timerDue` the time wanted), so a chain of short
+ * sleeps — every pump returning 'sleep' — keeps its length. ?dbg=ORTHROS_TIMER_HOP=0: the timer armed directly (A/B).
+ */
+const TIMER_CLAMP_MS = 5;
+let inPumpTimer = false, timerDue = 0;
+const armChannel = new MessageChannel();
+armChannel.port1.onmessage = () => { if (!timerDue) return; const ms = timerDue - performance.now(); timerDue = 0; pumpTimer = setTimeout(pumpFromTimer, Math.max(0, ms)); };
+function pumpFromTimer() { pumpTimer = null; inPumpTimer = true; try { pump(); } finally { inPumpTimer = false; } }
 function schedulePump(ms) {
   if (pumpTimer !== null) { clearTimeout(pumpTimer); pumpTimer = null; }
-  if (ms > 0) { pumpTimer = setTimeout(() => { pumpTimer = null; pump(); }, ms); return; }
+  timerDue = 0; // (a timer being armed through armChannel: replaced as well)
+  if (ms > 0) {
+    if (inPumpTimer && ms < TIMER_CLAMP_MS && globalThis.ORTHROS_TIMER_HOP !== 0) { timerDue = performance.now() + ms; armChannel.port2.postMessage(0); return; }
+    pumpTimer = setTimeout(pumpFromTimer, ms); return;
+  }
   if (!pumpPosted) { pumpPosted = true; channel.port2.postMessage(0); }
 }
 /** The APIs that took the most time since the previous frame (then reset): what a slow frame spent its time in. */
@@ -434,7 +450,7 @@ function apiPhaseTop() {
     const calls = cur.calls[i] - (prev?.calls[i] ?? 0), n = (cur.n[i] ?? 0) - (prev?.n[i] ?? 0), ms = (cur.ms[i] ?? 0) - (prev?.ms[i] ?? 0);
     if (calls > 0 && n > 0) out.push([i, ms * Math.max(1, calls / n), calls]);
   }
-  return out.sort((a, b) => b[1] - a[1]).slice(0, 12).map(([i, ms, calls]) => { const t = vm.api.thunk(i); return `${t ? t.name : i} ${ms.toFixed(0)} (${calls})`; }).join(', ');
+  return out.sort((a, b) => b[1] - a[1]).slice(0, 12).map(([i, ms, calls]) => `${vm.acctApiName(i)} ${ms.toFixed(0)} (${calls})`).join(', ');
 }
 let idlePartsPrev = { pump: 0, wait: 0 };
 /** Worker time per guest thread since the last call (thread id: % of the interval), busiest first. */
