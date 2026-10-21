@@ -293,7 +293,7 @@ Tab closed: the last CHAR_SAVE (every 10 s and at every money/weapon change) is 
 
 With `?mmotest` on the page URL (`OrthrosNetTesting()`), the engine reads one command per frame from
 `orthrosNet.testCommands` and publishes a debug JSON every 500 ms (`window.orthrosMmo.state`): `{ mode, link, slot,
-admin, inWorld, pos, area, health, money, wanted, weapon, vehicle, players: [{slot, name, pos, dist, area, away,
+admin, inWorld, pos, area, health, maxHealth, infiniteSprint, stamina, money, wanted, weapon, vehicle, players: [{slot, name, pos, dist, area, away,
 visible, stars}], owned: {peds, vehicles}, puppets: {peds, vehicles}, lobby: {characters}, chat: [last lines],
 fps }`. Commands: `join <name> [skin]` (create if missing, then join; from the main menu), `leave`,
 `tp <x> <y> <z>`, `weapon <id> <ammo>`, `fire` (one shot), `aim <slot>` (turn to a remote player), `car <model>`,
@@ -334,5 +334,24 @@ fps }`. Commands: `join <name> [skin]` (create if missing, then join; from the m
 * Bandwidth: a player's link carried ~0.3 KB/s on average over a 30-minute run with both players together (states of
   the other player and of ~10–20 shared entities); well under the owner's slowest link (85 KB/s), not measured on a
   throttled link.
-* Not checked in a real browser at 60 frames a second, nor with more than two players, nor on a real GPU: the feel of
-  the remote players' animations and vehicles, and the population's density where three or more players meet.
+* Not checked in a real browser at 60 frames a second, nor on a real GPU: the feel of the remote players' animations
+  and vehicles, and the population's density where three or more players meet.
+
+### Several players (2026-10-21)
+
+`tools/re3/mmo-check.mjs --players 3|4 --scenario crowd,perks --admins <test server's admins.json>` (one Chromium, one
+browser context per player, all administrators of the test server; pages at 0.1–3 frames a second, slower when one of
+them loads a scene: they share one GPU process):
+* crowd: every player lists and sees every other within 2 m (its copy with its name), every chat line seen by all, an
+  administrator's wanted stars seen by all; the shared entities audited over six samples (each network id owned by one
+  client only, no copy of an id nobody owns, every copy naming its real owner, the entities near another player copies
+  there); A kills B while the others watch (the kill line on all; B back at the hospital with 200 health, $100 less, no
+  weapon, seen there by all); the last player leaves (dropped by all, the entities it owned taken over by those who
+  stay, no copy left behind) and comes back (its money and place); a world cheat on all; a car stored in a hideout by
+  C known by all.
+* perks: every character has 200 health at most and the infinite sprint (the debug state's `maxHealth`,
+  `infiniteSprint`, `stamina`); a new character starts with 200 health, $5000 and a pistol at the hotel; a sprint does
+  not tire.
+* freemode (`--scenario freemode`, one page, no shared world): the menu's free mode (ArrowDown, Enter, Enter, each sent
+  again until the menu's page and row show it was read), "teleport" typed, the second place chosen with the arrows and
+  Enter, the player moved there (the debug state's `freeMode.pos`).
