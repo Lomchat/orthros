@@ -75,10 +75,13 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   served as `/gamez/<manifest>/.light/<path>` (compressed ranges, read reports learned like the file's). The tree tells
   each such file's light size (`light`). For the browser ports only (`manifest.lightCopies`, the catalog's: `false` in a
   version turns it off): a Windows game reads its files as they are.
-- **Page** (`src/vfs/data-client.js` `pick`): each load of the file (a read at its start, 2 s after its last read)
-  chooses: the file itself when it is here whole or the link is fast (the worker's ctrl[7]), else its light copy —
-  zeros past its bytes, up to the file's size (the engine reads what its header says). The choice holds for the whole
-  load. The light copy read, the worker is told once.
+- **Page** (`src/vfs/data-client.js` `pick`, `readsReal`): each load of the file (a read at its start, 2 s after its
+  last read) chooses: the file itself when it is here whole; else what the page said its loads are for
+  (`GameData.prefer`: `'light'` — loads that can do with less for now, as the far ring of a view that grows —,
+  `'real'`); else, on a fast link (the worker's ctrl[7]) or one measured between thin and fast (ctrl[8] measured,
+  ctrl[9] not thin), the file unless its light copy is here (no wait); on a thin link or one not measured yet, its
+  light copy — zeros past its bytes, up to the file's size (the engine reads what its header says). The choice holds
+  for the whole load. The light copy read, the worker is told once.
 - **Worker** (`src/vfs/data-worker.js`, `HttpBackend.upgrade`): the files whose light copy the engine read are
   downloaded last of all — after every other background download, once the game has read nothing for 8 s (the player
   in an area already loaded), a thin link too (by pieces), the latest first —; done, the page is told (`real`) and the
@@ -88,6 +91,16 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   menu 163 → 126 s; frozen after New Game (240 s window) 228 → 149 s, longest hold 48 → 21 s; the engine's waits
   149 → 85 s; on the wire 368 → 264 MB (textures 199 → 70 MB: 13 MB of light copies, the rest small textures and the
   files upgraded once the game was idle). Over the version: 3746 textures, 2329 MB → 135 MB light.
+
+## Near first, far in the background (2026-10-21)
+
+A page whose engine can draw less far loads its near world first and the far one when the link is free:
+`GameData.quiet(ms)` (`src/vfs/data-client.js`) says nothing waits — no read waited for the network for `ms` (the
+worker's ctrl[11], ctrl[6]), and the learned order has nothing left for the game's current step (ctrl[10]: it does not
+run, is over, or `HttpBackend.stepEstimate` is 0) —, and `GameData.prefer('light')` makes the loads of a step read the
+light copies of their textures (upgraded later, as any). The OpenMW port uses it for its view distance
+(`src/ports/openmw/view-grow.js`, `docs/openmw.md`): on a link not fast last time the engine boots at 8192 units, then
+grows by 2048 while quiet.
 
 ## Media files after the rest (2026-10-21)
 

@@ -380,6 +380,41 @@ movement, NPC simulation/combat, quest progression and saves after both clients 
 Also verify solo save/load and the selected visual mods. Measure client GPU performance then.
 
 
+### View distance: near first, far in the background (2026-10-21)
+
+No engine rebuild: of the engine's settings only the view distance changes while it runs (`camera.setViewDistance`,
+`RenderingManager::setViewDistance`); distant terrain and object paging are chosen once per worldspace, so they stay
+on as the page's quality tier says (`TIER`), and the boot distance is what changes. The server's rewrite of the engine
+page (`withProgressiveView`, `src/host/openmw.js`):
+- loads `src/ports/openmw/view-grow.js` in its head (`window.orthrosViewReady`; the engine's `openmw.js` is added once
+  it is there);
+- its `[Camera] viewing distance` comes from `orthrosViewBoot(TIER.vd)`: on a link not fast last time (`linkRate`, the
+  same rule as `&novid`) and with Orthros' file streaming, 8192 (`window.orthrosViewStart`; the tier's,
+  `window.orthrosViewTarget`, is reached later); else the tier's. `?vd=N` still fixes it (no growth);
+- every `openmw.cfg` the page writes (hosted, local files, locker; alone and with friends) gets
+  `content=orthros.omwscripts`, its files written into the engine's `/resources/vfs` (a data folder of the engine's
+  own) before it starts: `PLAYER: scripts/orthros/view.lua` (source `src/ports/openmw/view.lua`) and
+  `orthros/view.txt`. Always, whatever the link: saves list their content files. (The example world boots its own
+  cfg: no script there.)
+
+The script, every 0.5 s of real time: reads `orthros/view.txt` (`"<distance> <base>"`, rewritten by the page in
+MEMFS; `"0 0"` leaves the camera alone) and sets the camera's view distance while the player's setting
+(`camera.getBaseViewDistance()`) is still `<base>` — never Settings, so the engine's save of the settings keeps the
+player's own; tells the page `window.omw.state['orthros.view']` = `"<view distance> <setting>"` and
+`['orthros.cell']` = `"<gridX> <gridY>"` in an exterior, `""` elsewhere (`openmw.mp.set`, registered alone too; it
+never touches `window.omw.queue`, the multiplayer script's).
+
+The page's policy (`view-grow.js` `growStep`, every 0.5 s): in an exterior, the game data quiet
+(`GameData.quiet(3000)`, `docs/slow-network.md`) and no frame over 50 ms (p99 of the last half second,
+`window.orthrosFrames` from `frame-meter.js`) for 3 s, a step of 2048 (`GameData.prefer('light')`: its textures read
+light, their files after them); applied by the script and quiet again for 3 s, the step is loaded (`prefer(null)`),
+the next one may come, up to the tier's distance. The player's own setting not the boot value (saved earlier, or changed
+in Options): stopped, theirs wins. `window.orthrosViewState()` shows the growth.
+Not covered: a move far away once the distance is grown (a fast travel, a teleport) loads the whole view at once; a
+player who stays inside never grows it (the first exterior starts from 8192). Not validated in a browser yet: the
+release's Lua API was read in its sources (`camerabindings.cpp`, `vfsbindings.cpp`, `mwmp/luabindings.cpp`) and its
+binary's strings, not run.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

@@ -4,8 +4,9 @@
 // A read the engine waits for synchronously waits on shared memory (the page's thread spins: Atomics.wait is not
 // allowed there); one it can wait for (JSPI: `ensure`) by message. The pieces the engine uses are told to the worker,
 // which reports them to the server's learned order. Emscripten engines mount the files with emscripten-files.js.
-// On a link that is not fast, a texture's load reads its light copy (src/host/light-copies.js: the texture without its
-// finest levels) unless the file itself is here; the file comes in the background, for its next load.
+// A texture's load reads its light copy (src/host/light-copies.js: the texture without its finest levels) on a thin link
+// or one not measured yet, unless the file itself is here; the file comes in the background, for its next load. A page
+// may say what its loads are for (prefer): 'light' — the far ring of a view that grows — or 'real'.
 import { treeFile, LIGHT_DIR } from './game-tree.js';
 import { FAST_BPS } from './net-link.js';
 
@@ -38,6 +39,21 @@ const DEAD_MS = 30000;
 const PER_FILE = 2 ** 21; // (a piece's key: file id × PER_FILE + piece)
 /** A read at a file's start this long after its last read is a new load of it: light copy or file, chosen again. */
 const LOAD_GAP_MS = 2000;
+/** The page's game data is quiet (GameData.quiet) after this long without a read waiting for the network. */
+export const QUIET_MS = 3000;
+
+/**
+ * A load of a file that has a light copy reads the file itself (true) or its light copy (false): the file when it is
+ * here; else as the page prefers (`prefer`: 'real', or 'light' — loads that can do with less for now, as the far ring
+ * of a view that grows); else, the link fast or measured between thin and fast, the file unless its light copy is
+ * here (the learned order brought it: no wait); on a thin link or one not measured yet, the light copy.
+ * @param {{ here: boolean, lightHere: boolean, fast: boolean, thin: boolean, measured: boolean, prefer?: 'real'|'light'|null }} o
+ */
+export function readsReal({ here, lightHere, fast, thin, measured, prefer = null }) {
+  if (here) return true;
+  if (prefer === 'real' || prefer === 'light') return prefer === 'real';
+  return (fast || (measured && !thin)) && !lightHere;
+}
 
 export class GameData {
   /**
@@ -63,6 +79,8 @@ export class GameData {
     this.realHere = new Set();
     /** those whose light copy is here whole (the file not): read light, the link fast or not */
     this.lightHere = new Set();
+    /** what the page says its loads are for now (prefer) */
+    this.preferred = null;
     // (waits: the reads that waited for the worker — waitMs, waitBytes their time and bytes, syncFetches those that held
     // the page; fetchedBytes: what the worker received)
     const ctrl = this.ctrl;
@@ -175,6 +193,18 @@ export class GameData {
 
   /** The engine's reads wait for the network now. */
   get waiting() { return Atomics.load(this.ctrl, 6) > 0; }
+  /** The link is thin (measured below THIN_BPS, net-link.js). */
+  get thin() { return Atomics.load(this.ctrl, 9) === 1; }
+  /**
+   * Nothing waits: no read waited for the network for `ms`, and the learned order's loading has nothing left for the
+   * game's current step (data-worker.js) — a page may load more of its game now (a view that grows).
+   */
+  quiet(ms = QUIET_MS) { const c = this.ctrl; return Atomics.load(c, 6) === 0 && Atomics.load(c, 11) >= ms && Atomics.load(c, 10) === 1; }
+  /**
+   * What the next loads are for, until said again (readsReal): 'light' — loads that can do with less for now (the far
+   * ring of a view that grows: their files come after them, for their next loads) —, 'real', or null (the link decides).
+   */
+  prefer(kind = null) { this.preferred = kind === 'real' || kind === 'light' ? kind : null; }
   /** Bytes the worker received (decoded). */
   get received() { return Atomics.load(this.ctrl, 2); }
 
@@ -196,15 +226,16 @@ export class GameData {
 
   /**
    * What a read of `h` at `position` reads: `h`, or its light copy's handle. Chosen at each load of the file (a read at
-   * its start, LOAD_GAP_MS after its last one), kept until its next load: the file when it is here, or when the link is
-   * fast and its light copy is not here (the learned order brought it before the link was measured), else its light copy — the worker then fetches the file in the background (told once).
+   * its start, LOAD_GAP_MS after its last one), kept until its next load (readsReal); its light copy read, the worker
+   * fetches the file in the background (told once).
    */
   pick(h, position) {
     if (!this.lightOf(h)) return h;
     const now = performance.now();
     if (position === 0 && now - (h.at ?? -Infinity) > LOAD_GAP_MS) {
-      const key = h.name + '\n' + h.path.toLowerCase();
-      const real = this.realHere.has(key) || (Atomics.load(this.ctrl, 7) === 1 && !this.lightHere.has(key));
+      const key = h.name + '\n' + h.path.toLowerCase(), c = this.ctrl;
+      const real = readsReal({ here: this.realHere.has(key), lightHere: this.lightHere.has(key), fast: Atomics.load(c, 7) === 1,
+        thin: Atomics.load(c, 9) === 1, measured: Atomics.load(c, 8) > 0, prefer: this.preferred });
       h.as = real ? null : this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light);
       if (h.as && !h.told) { h.told = true; this.worker.postMessage({ light: { name: h.name, path: h.path } }); }
     }

@@ -1,9 +1,9 @@
 // The OpenMW engine page's file streaming (its StreamFS interface: init, mount, mountLocal, mountBlob, setUrl, stats,
-// window.__streamfsStats — src/host/openmw.js swaps the release's streamfs.js for this file): the installation's files
-// from the game data every Orthros game reads (src/vfs/data-client.js, emscripten-files.js — CLAUDE.md
-// "Standardization"), the engine's own mounts mapped onto the version's tree: mwdata/<file> → <file>, mwdata/mods/<part>
-// /<file> → mods/<part>/<file>, moddata/<file> → _engine/<file> (the engine release's asset pack, a data mount of the
-// manifest). Files of elsewhere (a signed address, a file the player picked, a Blob) go through the same worker. A copy
+// window.__streamfsStats; and data, for the page's view distance, view-grow.js — src/host/openmw.js swaps the
+// release's streamfs.js for this file): the installation's files from the game data every Orthros game reads
+// (src/vfs/data-client.js, emscripten-files.js — CLAUDE.md "Standardization"), the engine's own mounts mapped onto the
+// version's tree: mwdata/<file> → <file>, mwdata/mods/<part>/<file> → mods/<part>/<file>, moddata/<file> →
+// _engine/<file> (the engine release's asset pack, a data mount of the manifest). Files of elsewhere (a signed address, a file the player picked, a Blob) go through the same worker. A copy
 // an earlier page kept of a file (legacy-copies.js) is taken before its first read.
 (() => {
   'use strict';
@@ -46,6 +46,8 @@
 
   window.StreamFS = {
     stats() { return S.data ? S.data.snapshot() : {}; },
+    /** The game data (data-client.js GameData), once the engine mounted a file: null before. */
+    data() { return S.data; },
     init() {
       if (!self.crossOriginIsolated) throw new Error('streamfs needs crossOriginIsolated (COOP/COEP)');
       need();

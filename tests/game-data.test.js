@@ -10,7 +10,7 @@ import { createServer } from '../src/host/server.js';
 import { listGameTree, resolveGameFile } from '../src/host/game-files.js';
 import { treeFile, treeFiles, treeBytes, languageFiles } from '../src/vfs/game-tree.js';
 import { createDataWorker } from '../src/vfs/data-worker.js';
-import { GameData, PIECE } from '../src/vfs/data-client.js';
+import { GameData, PIECE, readsReal } from '../src/vfs/data-client.js';
 import { fileNode, mountFiles } from '../src/vfs/emscripten-files.js';
 import { BLOCK } from '../src/vfs/http-backend.js';
 
@@ -187,6 +187,33 @@ test('on a fast link a texture\'s load reads the file; the learned order brings 
   assert.deepEqual(slow.asked.map(([p]) => p), ['.light/tex.dds'], 'its light copy ahead, not the file');
   // (told to the page: that load reads its light copy, here, even once the link is measured fast)
   await until(() => data2.lightHere.has('v\ntex.dds'), 'the light copy here');
+});
+
+test('a texture\'s load reads the file or its light copy by the link, unless the page says what its loads are for', () => {
+  const link = { thin: { thin: true, measured: true, fast: false }, between: { thin: false, measured: true, fast: false },
+    fast: { thin: false, measured: true, fast: true }, unknown: { thin: false, measured: false, fast: false } };
+  const real = (l, o = {}) => readsReal({ here: false, lightHere: false, ...link[l], ...o });
+  assert.deepEqual(Object.keys(link).map((l) => real(l)), [false, true, true, false], 'light on a thin link or one not measured');
+  assert.deepEqual(Object.keys(link).map((l) => real(l, { lightHere: true })), [false, false, false, false], 'its light copy here: no wait');
+  assert.deepEqual(Object.keys(link).map((l) => real(l, { prefer: 'light' })), [false, false, false, false], 'the far ring: light');
+  assert.deepEqual(Object.keys(link).map((l) => real(l, { prefer: 'real', lightHere: true })), [true, true, true, true]);
+  assert.deepEqual(Object.keys(link).map((l) => real(l, { prefer: 'light', here: true })), [true, true, true, true], 'the file here: itself');
+});
+
+test('the page\'s game data says when nothing waits (no read waited, the learned order idle) and the link\'s kind', async (t) => {
+  const server = fakeServer({ 'Game.esm': bytes(1 << 20) });
+  const w = await startWorker(t, server);
+  await w.until(() => Atomics.load(w.ctrl, 11) > 0, 'its counters');
+  assert.equal(Atomics.load(w.ctrl, 10), 1, 'no learned order running: idle'); assert.equal(Atomics.load(w.ctrl, 9), 0, 'not measured: not thin');
+  const fake = { onmessage: null, postMessage() {}, terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake }); t.after(() => data.close());
+  const c = data.ctrl;
+  c[10] = 1; c[11] = 5000; assert.equal(data.quiet(), true);
+  c[11] = 1000; assert.equal(data.quiet(), false, 'a read waited 1 s ago'); assert.equal(data.quiet(500), true);
+  c[11] = 5000; c[6] = 1; assert.equal(data.quiet(), false, 'a read waits');
+  c[6] = 0; c[10] = 0; assert.equal(data.quiet(), false, 'the learned order busy with the current step');
+  c[9] = 1; assert.equal(data.thin, true);
+  data.prefer('light'); assert.equal(data.preferred, 'light'); data.prefer('nonsense'); assert.equal(data.preferred, null);
 });
 
 test('an Emscripten file node reads its bytes through the game data, maps the file whole, refuses writes', () => {

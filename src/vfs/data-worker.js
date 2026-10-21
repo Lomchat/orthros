@@ -6,7 +6,10 @@
 // Counters shared with the page's indicator: ctrl[2] bytes received (decoded), ctrl[3] this worker's heartbeat,
 // ctrl[4] / ctrl[5] KB of the current step here / in all (the learned order: HttpBackend.stepEstimate), ctrl[6] the
 // page's reads waiting for the network. The link, for the page: ctrl[7] 1 when it is fast (the files themselves read,
-// not their light copies), ctrl[8] its measured rate (KB/s, 0 until measured).
+// not their light copies), ctrl[8] its measured rate (KB/s, 0 until measured), ctrl[9] 1 when it is thin (measured
+// below THIN_BPS, net-link.js). The page's quiet (GameData.quiet: a page that loads more of its game when nothing waits):
+// ctrl[10] 1 when the learned order's loading has nothing left for the game's current step (or does not run), ctrl[11]
+// the time since a read last waited for the network (ms, 0 while one waits).
 // Light copies (src/host/light-copies.js): on a link that is not fast, the page reads a texture's light copy unless the
 // file itself is here (told: { real: [keys] }); the learned order brings the light copies; the files whose light copy
 // the engine read come last, in the background (HttpBackend.upgrade).
@@ -35,7 +38,7 @@ export function createDataWorker(post) {
   W = {
     ctrl: null, data: null, version: null, parts: new Map(), handles: new Map(), ready: null, timers: [],
     session: '', t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null,
-    prefetchAt: 'none', prefetching: false, stop: false, whole: null, learned: null,
+    prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null,
     legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(),
   };
   return (m) => {
@@ -267,6 +270,7 @@ async function prefetchAll() {
     const progress = { bytes: 0, blocks: 0, done: false };
     runs.push({ p, progress, job: p.files.prefetch(forLink(p, lists[i]), progress, () => W.stop).catch(() => {}) });
   });
+  W.runs = runs;
   if (!runs.length) return;
   const tell = () => {
     let done = 0, total = 0;
@@ -303,8 +307,11 @@ function monitor() {
   Atomics.store(ctrl, 2, raw % 0x7fffffff);
   Atomics.store(ctrl, 6, W.waiting);
   Atomics.store(ctrl, 7, net.fast() ? 1 : 0); Atomics.store(ctrl, 8, net.measured && net.bw > 0 ? Math.round(net.bw / 1024) : 0);
-  // (the current step: from the first wait after a pause, the bytes received, and those the learned order says remain)
+  Atomics.store(ctrl, 9, net.thin() ? 1 : 0);
   const now = performance.now();
+  Atomics.store(ctrl, 10, aheadIdle() ? 1 : 0);
+  Atomics.store(ctrl, 11, W.waiting > 0 ? 0 : Math.min(0x7fffffff, Math.round(now - W.lastWait)));
+  // (the current step: from the first wait after a pause, the bytes received, and those the learned order says remain)
   if (W.waiting > 0) {
     W.step ??= { base: raw };
     let rest = null;
@@ -312,6 +319,16 @@ function monitor() {
     const done = raw - W.step.base;
     Atomics.store(ctrl, 4, Math.round(done / 1024)); Atomics.store(ctrl, 5, rest === null ? 0 : Math.round((done + rest) / 1024));
   } else if (W.step && now - W.lastWait > STEP_PAUSE_MS) { W.step = null; Atomics.store(ctrl, 4, 0); Atomics.store(ctrl, 5, 0); }
+}
+
+/**
+ * The learned order's loading has nothing left for the game's current step: it does not run, it is over, or the
+ * entries past the game's position up to its next pause are here (HttpBackend.stepEstimate) — every part's.
+ */
+function aheadIdle() {
+  if (!W.prefetching) return true;
+  if (!W.runs) return false; // (its order on its way)
+  return W.runs.every(({ p, progress }) => progress.done || p.files.stepEstimate()?.bytes === 0);
 }
 
 // ---------------------------------------------------------------- light copies: the files themselves after them

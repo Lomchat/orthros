@@ -32,7 +32,7 @@ import { LIGHT_DIR, readLight } from './light-copies.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
-import { openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withSharedEngine, withStreaming } from './openmw.js';
+import { openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withProgressiveView, withSharedEngine, withStreaming } from './openmw.js';
 import { re3Installed, re3Modes, re3Module } from './re3.js';
 import { mmoApi } from './mmo.js';
 import { SimLink } from './sim-link.js';
@@ -44,7 +44,7 @@ import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY } from './snap
 import { pipeline } from 'node:stream/promises';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.wasm': 'application/wasm', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8', '.lua': 'text/plain; charset=utf-8' };
 
 export const listTree = (dir) => listGameTree({ folder: dir });
 /** The size of the file at `rel` ('/'-separated, exact names) in a tree of listGameTree, or null. */
@@ -823,7 +823,7 @@ export function createServer(opts = {}) {
           const saveKey = scope ? `${man.saveKey}:user:${scope}` : man.saveKey;
           let page = openmwWebText(fs.readFileSync(f, 'utf8'), base, saveKey);
           if (asset.endsWith('.html')) page = withFrameMeter(page);
-          if (asset === 'index.html') page = withStreaming(withSharedEngine(page, man.openmw.engine), url.searchParams.get('sfs') === 'upstream');
+          if (asset === 'index.html') page = withProgressiveView(withStreaming(withSharedEngine(page, man.openmw.engine), url.searchParams.get('sfs') === 'upstream'));
           if (asset === 'index.html' && scope) {
             page = page.replace('<head>', '<head><script src="/src/ports/openmw/cloud.js"></script>');
             page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(m[1])}, ${JSON.stringify(scope)});`);
