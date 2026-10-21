@@ -8,7 +8,7 @@
 // /tmp/orthros-scratch/goldsrc-perf-<manifest>/. Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/goldsrc/perf.mjs <manifest> [--url http://127.0.0.1:8080] [--gl discard]
 //     [--map de_dust2] [--join-keys "2,1"] [--commands "gl_vbo 1;…"] [--seconds 30] [--warm 10] [--walk] [--profile]
-//     [--stacks getError] [--size 1280x720] [--query "a=b"] [--report]
+//     [--stacks getError] [--size 1280x720] [--query "a=b"] [--report] [--tag t]
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -61,7 +61,8 @@ try {
   const profile = cdp ? await stopProfile(cdp, measured.frames) : null;
   if (turning) clearInterval(turning);
   if (walk) await page.keyboard.up('w');
-  await page.screenshot({ path: path.join(root, 'end.png') });
+  const tag = arg('--tag', ''); // (--tag t: the evidence files of this run apart, end-<t>.png)
+  await page.screenshot({ path: path.join(root, `end${tag ? `-${tag}` : ''}.png`) });
   const logs = await page.evaluate(() => portSession.logs.slice(-60));
   fs.writeFileSync(path.join(root, 'logs.json'), JSON.stringify(logs, null, 1));
   if (profile) console.log('PROFILE', JSON.stringify(profile, null, 1));

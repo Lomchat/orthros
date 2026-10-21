@@ -475,6 +475,9 @@ async function start() {
   await started;
   step('game', 'active', '', 0.6);
   engine.Cmd_ExecuteString('developer ' + (params.has('debug') ? '1' : '0'));
+  // (the renderer's error checks — glGetError after its passes each frame and after each texture upload — only with
+  // ?debug: each one waits for the browser's GPU process, about 10 a frame; docs/browser-ports.md, "Measured")
+  engine.Cmd_ExecuteString('gl_check_errors ' + (params.has('debug') ? '1' : '0'));
   engine.Cmd_ExecuteString(`name "${playerName()}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
   // (the game's main menu: its single player and its multiplayer — a game it creates gets the manifest's settings,
   // bots included; Orthros' server answers its LAN search; the language's own commands)

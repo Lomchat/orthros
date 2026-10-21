@@ -111,6 +111,12 @@ starts at once.
 - **Telemetry.** A few reports a session to `/api/telemetry` (`port: "goldsrc"`, `event`: `start`, `error` — a page
   error or an unhandled rejection —, `crash` with the end of the engine's log, `end` with the frame rate). After a crash
   the profile is saved and "Restart the game" reloads the page (an engine that stopped cannot start again in it).- **The frame rate** counts the engine's main loop iterations that drew (`postMainLoop`, draw calls seen).
+- **The renderer's error checks** (`gl_check_errors`, on by default in the engine) are off unless `?debug`: the
+  renderer called `glGetError` after its passes (10 a frame in Half-Life and Counter-Strike) and after each texture
+  upload, and each one waits for the browser's GPU process (71-77 µs on an idle context here; on a real GPU, the CPU and
+  GPU stop working in parallel). Measured (2026-10-21, `tools/goldsrc/perf.mjs --gl discard`, Half Strike de_dust2 with
+  bots, walking, 20 s, three runs each, medians, machine load 18-33): the engine's work a frame 8.5 → 4.9 ms (p90 12.2
+  → 7.7, p99 25.3 → 17.9), synchronous calls 10 → 0 a frame.
 - **The menu module.** Counter-Strike's manifests name none: the engine's (`engine/libmenu.wasm`) shows the game's own
   title screens and takes the mouse; cs16-client's `mainui_cpp` (still built, `modules.builds`) wants the images of its
   `cs16client-extras` package and gets no mouse position from this engine.
