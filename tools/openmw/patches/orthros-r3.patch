@@ -1,0 +1,523 @@
+--- a/openmw/apps/openmw/engine.cpp
++++ b/openmw/apps/openmw/engine.cpp
+@@ -1718,6 +1718,17 @@
+                 timeManager.setSimulationTime(timeManager.getSimulationTime() + dt);
+                 timeManager.setRenderingSimulationTime(timeManager.getRenderingSimulationTime() + dt);
+             }
++            // Orthros (orthros-r3.patch): the cooperative WorkQueue's share of the frame — cell and terrain preloads,
++            // cache trimming, deletions — on this thread, after the frame was drawn (workqueue.cpp).
++            // OPENMW_WORKQUEUE_BUDGET_MS: its milliseconds a frame (default 4).
++            {
++                static const double budgetMs = [] {
++                    const char* v = std::getenv("OPENMW_WORKQUEUE_BUDGET_MS");
++                    const double ms = v != nullptr ? std::atof(v) : 0.0;
++                    return ms > 0.0 ? ms : 4.0;
++                }();
++                self->mWorkQueue->runCooperative(budgetMs);
++            }
+             ctx.frameRateLimiter->limit();
+ 
+         }
+--- a/openmw/apps/openmw/mwworld/cellpreloader.cpp
++++ b/openmw/apps/openmw/mwworld/cellpreloader.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <chrono>
+ #include <limits>
+ #include <span>
+ 
+@@ -92,61 +93,81 @@
+         /// Preload work to be called from the worker thread.
+         void doWork() override
+         {
+-            if (mIsExterior)
++            while (!doWorkSlice(std::chrono::steady_clock::time_point::max()))
+             {
+-                try
+-                {
+-                    mTerrain->cacheCell(mTerrainView.get(), mCellLocation.mX, mCellLocation.mY);
+-                    mPreloadedObjects.insert(mLandManager->getLand(mCellLocation));
+-                }
+-                catch (const std::exception& e)
++            }
++        }
++
++        /// Orthros (orthros-r3.patch): the same work in slices for the web's cooperative WorkQueue (main thread,
++        /// between frames): the terrain first, then the meshes one at a time until the deadline.
++        bool doWorkSlice(std::chrono::steady_clock::time_point deadline) override
++        {
++            if (!mTerrainCached)
++            {
++                mTerrainCached = true;
++                if (mIsExterior)
+                 {
+-                    Log(Debug::Warning) << "Failed to cache terrain for exterior cell " << mCellLocation << ": "
+-                                        << e.what();
++                    try
++                    {
++                        mTerrain->cacheCell(mTerrainView.get(), mCellLocation.mX, mCellLocation.mY);
++                        mPreloadedObjects.insert(mLandManager->getLand(mCellLocation));
++                    }
++                    catch (const std::exception& e)
++                    {
++                        Log(Debug::Warning) << "Failed to cache terrain for exterior cell " << mCellLocation << ": "
++                                            << e.what();
++                    }
+                 }
++                if (std::chrono::steady_clock::now() >= deadline)
++                    return mMeshes.empty();
+             }
+ 
+-            VFS::Path::Normalized mesh;
+-            VFS::Path::Normalized kfname;
+-            for (std::string_view path : mMeshes)
++            while (mNextMesh < mMeshes.size())
+             {
+                 if (mAbort)
++                    return true;
++                preloadMesh(mMeshes[mNextMesh++]);
++                if (std::chrono::steady_clock::now() >= deadline)
+                     break;
++            }
++            return mNextMesh >= mMeshes.size();
++        }
+ 
+-                try
+-                {
+-                    const VFS::Manager& vfs = *mSceneManager->getVFS();
+-                    mesh = Misc::ResourceHelpers::correctMeshPath(VFS::Path::Normalized(path));
+-                    mesh = Misc::ResourceHelpers::correctActorModelPath(mesh, &vfs);
+-
+-                    if (!vfs.exists(mesh))
+-                        continue;
++    private:
++        void preloadMesh(std::string_view path)
++        {
++            try
++            {
++                const VFS::Manager& vfs = *mSceneManager->getVFS();
++                VFS::Path::Normalized mesh = Misc::ResourceHelpers::correctMeshPath(VFS::Path::Normalized(path));
++                mesh = Misc::ResourceHelpers::correctActorModelPath(mesh, &vfs);
+ 
+-                    constexpr VFS::Path::ExtensionView nif("nif");
+-                    if (Misc::getFileName(mesh).starts_with('x') && mesh.extension() == nif)
+-                    {
+-                        kfname = mesh;
+-                        constexpr VFS::Path::ExtensionView kf("kf");
+-                        kfname.changeExtension(kf);
+-                        if (vfs.exists(kfname))
+-                            mPreloadedObjects.insert(mKeyframeManager->get(kfname));
+-                    }
++                if (!vfs.exists(mesh))
++                    return;
+ 
+-                    mPreloadedObjects.insert(mSceneManager->getTemplate(mesh));
+-                    if (mPreloadInstances)
+-                        mPreloadedObjects.insert(mBulletShapeManager->cacheInstance(mesh));
+-                    else
+-                        mPreloadedObjects.insert(mBulletShapeManager->getShape(mesh));
+-                }
+-                catch (const std::exception& e)
++                constexpr VFS::Path::ExtensionView nif("nif");
++                if (Misc::getFileName(mesh).starts_with('x') && mesh.extension() == nif)
+                 {
+-                    Log(Debug::Warning) << "Failed to preload mesh \"" << path << "\" from cell " << mCellId << ": "
+-                                        << e.what();
++                    VFS::Path::Normalized kfname = mesh;
++                    constexpr VFS::Path::ExtensionView kf("kf");
++                    kfname.changeExtension(kf);
++                    if (vfs.exists(kfname))
++                        mPreloadedObjects.insert(mKeyframeManager->get(kfname));
+                 }
++
++                mPreloadedObjects.insert(mSceneManager->getTemplate(mesh));
++                if (mPreloadInstances)
++                    mPreloadedObjects.insert(mBulletShapeManager->cacheInstance(mesh));
++                else
++                    mPreloadedObjects.insert(mBulletShapeManager->getShape(mesh));
++            }
++            catch (const std::exception& e)
++            {
++                Log(Debug::Warning) << "Failed to preload mesh \"" << path << "\" from cell " << mCellId << ": "
++                                    << e.what();
+             }
+         }
+ 
+-    private:
+         bool mIsExterior;
+         ESM::ExteriorCellLocation mCellLocation;
+         ESM::RefId mCellId;
+@@ -159,6 +180,8 @@
+         bool mPreloadInstances;
+ 
+         std::atomic<bool> mAbort;
++        bool mTerrainCached = false;
++        std::size_t mNextMesh = 0;
+ 
+         osg::ref_ptr<Terrain::View> mTerrainView;
+ 
+@@ -189,6 +212,29 @@
+             mLoadingReporter.complete();
+         }
+ 
++        /// Orthros (orthros-r3.patch): the same work in slices for the web's cooperative WorkQueue (main thread,
++        /// between frames): each view's chunks a few at a time until the deadline (Terrain::World::preloadSlice).
++        bool doWorkSlice(std::chrono::steady_clock::time_point deadline) override
++        {
++            while (mView < mTerrainViews.size() && mView < mPreloadPositions.size() && !mAbort)
++            {
++                if (mNext == 0)
++                    mTerrainViews[mView]->reset();
++                const bool viewDone = mWorld->preloadSlice(mTerrainViews[mView], mPreloadPositions[mView].mPosition,
++                    mPreloadPositions[mView].mCellBounds, mAbort, mLoadingReporter, mNext, deadline);
++                if (!viewDone)
++                    return false;
++                ++mView;
++                mNext = 0;
++                if (std::chrono::steady_clock::now() >= deadline)
++                    break;
++            }
++            if (mView < mTerrainViews.size() && mView < mPreloadPositions.size() && !mAbort)
++                return false;
++            mLoadingReporter.complete();
++            return true;
++        }
++
+         void abort() override { mAbort = true; }
+ 
+         void wait(Loading::Listener& listener) const { mLoadingReporter.wait(listener); }
+@@ -199,6 +245,8 @@
+         Terrain::World* mWorld;
+         std::vector<PositionCellGrid> mPreloadPositions;
+         Loading::Reporter mLoadingReporter;
++        std::size_t mView = 0;
++        std::size_t mNext = 0;
+     };
+ 
+     /// Worker thread item: update the resource system's cache, effectively deleting unused entries.
+@@ -371,6 +419,10 @@
+ 
+     void CellPreloader::syncTerrainLoad(Loading::Listener& listener)
+     {
++        // (the web's cooperative WorkQueue: nothing runs the item while the main thread waits on its reporter —
++        // waitTillDone() finishes it first, orthros-r3.patch)
++        if (mTerrainPreloadItem != nullptr && !mTerrainPreloadItem->isDone() && mWorkQueue->isCooperative())
++            mTerrainPreloadItem->waitTillDone();
+         if (mTerrainPreloadItem != nullptr && !mTerrainPreloadItem->isDone())
+             mTerrainPreloadItem->wait(listener);
+     }
+--- a/openmw/components/sceneutil/workqueue.cpp
++++ b/openmw/components/sceneutil/workqueue.cpp
+@@ -17,6 +17,14 @@
+         if (mDone)
+             return;
+ 
++        // (the cooperative queue: nothing else will run the item while the main thread waits — it is finished here)
++        if (WorkQueue* queue = mCooperativeQueue)
++        {
++            queue->finishNow(this);
++            if (mDone)
++                return;
++        }
++
+         std::unique_lock<std::mutex> lock(mMutex);
+         while (!mDone)
+         {
+@@ -59,10 +67,22 @@
+         // weapon). On the single-threaded WebGL2 build a main-thread futex wait on a worker-held
+         // mutex (mSharedStateMutex / object cache / ICO) STARVES the browser event loop = hard
+         // freeze. So default to inline; OPENMW_WORKQUEUE_THREADED=1 opts back into 2 workers.
++        //
++        // Orthros (orthros-r3.patch): the default is now COOPERATIVE — still no worker thread and so no lock shared
++        // with one, but the items are queued and run on the main thread between frames, a few milliseconds a frame
++        // (runCooperative, from the main loop; long items in slices: WorkItem::doWorkSlice). Inline ran every item
++        // inside the frame that queued it: a cell preload, a terrain preload — the whole of it in one frame. The
++        // items' contract is the threaded one (asynchronous; waitTillDone() finishes an item still waiting, on the
++        // caller), with every step on the main thread. OPENMW_WORKQUEUE_INLINE=1 keeps the old inline mode.
+         if (getenv("OPENMW_WORKQUEUE_THREADED") != nullptr)
+             workerThreads = std::min<std::size_t>(std::max<std::size_t>(workerThreads, 1), 2);
+-        else
++        else if (getenv("OPENMW_WORKQUEUE_INLINE") != nullptr)
+             workerThreads = 1;
++        else
++        {
++            mCooperative = true;
++            workerThreads = 0;
++        }
+ #endif
+         {
+             const std::lock_guard lock(mMutex);
+@@ -77,7 +97,15 @@
+         {
+             std::unique_lock<std::mutex> lock(mMutex);
+             while (!mQueue.empty())
++            {
++                // (a cooperative item never run: no one may wait for it forever)
++                if (mCooperative)
++                {
++                    mQueue.back()->mCooperativeQueue = nullptr;
++                    mQueue.back()->signalDone();
++                }
+                 mQueue.pop_back();
++            }
+             mIsReleased = true;
+             mCondition.notify_all();
+         }
+@@ -97,12 +125,14 @@
+         // Inline by default: run the work on the caller (main thread). Avoids the worker/main
+         // getTemplate contention that freezes the browser. OPENMW_WORKQUEUE_THREADED=1 opts into
+         // real worker threads (queued below).
+-        if (getenv("OPENMW_WORKQUEUE_THREADED") == nullptr)
++        if (!mCooperative && getenv("OPENMW_WORKQUEUE_THREADED") == nullptr)
+         {
+             item->doWork();
+             item->signalDone();
+             return;
+         }
++        if (mCooperative)
++            item->mCooperativeQueue = this;
+ #endif
+         std::unique_lock<std::mutex> lock(mMutex);
+         if (front)
+@@ -128,6 +158,57 @@
+         return nullptr;
+     }
+ 
++    void WorkQueue::runCooperative(double budgetMs)
++    {
++        if (!mCooperative)
++            return;
++        const auto deadline = std::chrono::steady_clock::now()
++            + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
++                std::chrono::duration<double, std::milli>(budgetMs));
++        do
++        {
++            osg::ref_ptr<WorkItem> item;
++            {
++                std::unique_lock<std::mutex> lock(mMutex);
++                if (mQueue.empty())
++                    return;
++                item = std::move(mQueue.front());
++                mQueue.pop_front();
++            }
++            // (the item off the queue while it runs: its work may queue others, or wait for others, finishNow)
++            item->mCooperativeQueue = nullptr;
++            const bool done = item->doWorkSlice(deadline);
++            if (done)
++            {
++                item->signalDone();
++                continue;
++            }
++            // (part done: first again at the next frame, waitTillDone() still finishing it if asked)
++            item->mCooperativeQueue = this;
++            std::unique_lock<std::mutex> lock(mMutex);
++            mQueue.push_front(std::move(item));
++            return;
++        } while (std::chrono::steady_clock::now() < deadline);
++    }
++
++    void WorkQueue::finishNow(WorkItem* item)
++    {
++        osg::ref_ptr<WorkItem> held(item);
++        {
++            std::unique_lock<std::mutex> lock(mMutex);
++            const auto found = std::find_if(
++                mQueue.begin(), mQueue.end(), [&](const osg::ref_ptr<WorkItem>& queued) { return queued == item; });
++            if (found == mQueue.end())
++                return;
++            mQueue.erase(found);
++        }
++        item->mCooperativeQueue = nullptr;
++        while (!item->doWorkSlice(std::chrono::steady_clock::time_point::max()))
++        {
++        }
++        item->signalDone();
++    }
++
+     size_t WorkQueue::getNumItems() const
+     {
+         std::unique_lock<std::mutex> lock(mMutex);
+--- a/openmw/components/sceneutil/workqueue.hpp
++++ b/openmw/components/sceneutil/workqueue.hpp
+@@ -5,6 +5,7 @@
+ #include <osg/ref_ptr>
+ 
+ #include <atomic>
++#include <chrono>
+ #include <condition_variable>
+ #include <deque>
+ #include <mutex>
+@@ -13,6 +14,7 @@
+ 
+ namespace SceneUtil
+ {
++    class WorkQueue;
+ 
+     class WorkItem : public osg::Referenced
+     {
+@@ -20,6 +22,15 @@
+         /// Override in a derived WorkItem to perform actual work.
+         virtual void doWork() {}
+ 
++        /// Orthros (orthros-r3.patch): part of the work, until `deadline` (at least one step), for the web's
++        /// cooperative WorkQueue, which runs items on the main thread between frames. Returns true once the work is
++        /// complete. The default does the whole work in one call; an item whose work is long overrides it.
++        virtual bool doWorkSlice(std::chrono::steady_clock::time_point /*deadline*/)
++        {
++            doWork();
++            return true;
++        }
++
+         bool isDone() const;
+ 
+         /// Wait until the work is completed. Usually called from the main thread.
+@@ -32,7 +43,10 @@
+         virtual void abort() {}
+ 
+     private:
++        friend class WorkQueue;
+         std::atomic_bool mDone{ false };
++        /// The cooperative queue holding the item while it waits (or is part done): waitTillDone() finishes it there.
++        WorkQueue* mCooperativeQueue = nullptr;
+         std::mutex mMutex;
+         std::condition_variable mCondition;
+     };
+@@ -66,7 +80,20 @@
+ 
+         size_t getNumActiveThreads() const;
+ 
++        /// Orthros (orthros-r3.patch): true when the queue is the web's cooperative one — no worker thread, its items
++        /// run on the main thread by runCooperative(), between frames.
++        bool isCooperative() const { return mCooperative; }
++
++        /// Cooperative queue: runs queued items (slices of them, WorkItem::doWorkSlice) for about `budgetMs`, at
++        /// least one slice when one is waiting. Called once a frame by the main loop; nothing in any other mode.
++        void runCooperative(double budgetMs);
++
+     private:
++        friend class WorkItem;
++        /// Cooperative queue: the item finished now, on the caller (waitTillDone() on the main thread).
++        void finishNow(WorkItem* item);
++
++        bool mCooperative = false;
+         bool mIsReleased;
+         std::deque<osg::ref_ptr<WorkItem>> mQueue;
+ 
+--- a/openmw/components/terrain/quadtreeworld.cpp
++++ b/openmw/components/terrain/quadtreeworld.cpp
+@@ -566,6 +566,40 @@
+         }
+     }
+ 
++    bool QuadTreeWorld::preloadSlice(View* view, const osg::Vec3f& viewPoint, const osg::Vec4i& grid,
++        std::atomic<bool>& abort, Loading::Reporter& reporter, std::size_t& next,
++        std::chrono::steady_clock::time_point deadline)
++    {
++        // Orthros (orthros-r3.patch): preload() a few chunks at a time. `next`: 0 before the traversal, then 1 + the
++        // next entry to load.
++        const float cellWorldSize = mStorage->getCellWorldSize(mWorldspace);
++        ViewData* vd = static_cast<ViewData*>(view);
++        if (next == 0)
++        {
++            ensureQuadTreeBuilt();
++            vd->setViewPoint(viewPoint);
++            vd->setActiveGrid(grid);
++            DefaultLodCallback lodCallback(mLodFactor, mMinSize, mViewDistance, grid, static_cast<int>(cellWorldSize));
++            mRootNode->traverseNodes(vd, viewPoint, &lodCallback);
++            reporter.addTotal(vd->getNumEntries());
++            next = 1;
++            if (std::chrono::steady_clock::now() >= deadline)
++                return vd->getNumEntries() == 0;
++        }
++        for (unsigned int n = vd->getNumEntries(); next - 1 < n;)
++        {
++            if (abort)
++                return true;
++            ViewDataEntry& entry = vd->getEntry(static_cast<unsigned int>(next - 1));
++            ++next;
++            loadRenderingNode(entry, vd, cellWorldSize, grid, true);
++            reporter.addProgress(1);
++            if (std::chrono::steady_clock::now() >= deadline)
++                break;
++        }
++        return next - 1 >= vd->getNumEntries() || abort;
++    }
++
+     void QuadTreeWorld::reportStats(unsigned int frameNumber, osg::Stats* stats)
+     {
+         if (mCompositeMapRenderer)
+--- a/openmw/components/terrain/quadtreeworld.hpp
++++ b/openmw/components/terrain/quadtreeworld.hpp
+@@ -52,6 +52,8 @@
+         View* createView() override;
+         void preload(View* view, const osg::Vec3f& eyePoint, const osg::Vec4i& cellgrid, std::atomic<bool>& abort,
+             Loading::Reporter& reporter) override;
++        bool preloadSlice(View* view, const osg::Vec3f& eyePoint, const osg::Vec4i& cellgrid, std::atomic<bool>& abort,
++            Loading::Reporter& reporter, std::size_t& next, std::chrono::steady_clock::time_point deadline) override;
+         void rebuildViews() override;
+ 
+         void reportStats(unsigned int frameNumber, osg::Stats* stats) override;
+--- a/openmw/components/terrain/world.hpp
++++ b/openmw/components/terrain/world.hpp
+@@ -5,6 +5,8 @@
+ #include <osg/Vec3f>
+ #include <osg/ref_ptr>
+ 
++#include <chrono>
++#include <cstddef>
+ #include <memory>
+ #include <set>
+ 
+@@ -96,6 +98,17 @@
+         {
+         }
+ 
++        /// Orthros (orthros-r3.patch): preload() in slices, for the web's cooperative WorkQueue (main thread, between
++        /// frames). `next` is the slice's state: 0 at the first call; returns true once the view is preloaded. The
++        /// default preloads the whole view in one call.
++        virtual bool preloadSlice(View* view, const osg::Vec3f& viewPoint, const osg::Vec4i& cellgrid,
++            std::atomic<bool>& abort, Loading::Reporter& reporter, std::size_t& next,
++            std::chrono::steady_clock::time_point deadline)
++        {
++            preload(view, viewPoint, cellgrid, abort, reporter);
++            return true;
++        }
++
+         virtual void rebuildViews() {}
+ 
+         virtual void reportStats(unsigned int frameNumber, osg::Stats* stats) {}
+--- a/play/index.html
++++ b/play/index.html
+@@ -1577,6 +1577,13 @@
+        if (/[?&]rsdbg=1\b/.test(location.search)) ENV.OPENMW_RS_DEBUG='1';
+        // ?perfstats=1 (QA): engine pushes per-frame Cull/Draw ms to window.__omwPhase (no F3 HUD).
+        if (/[?&]perfstats=1\b/.test(location.search)) ENV.OPENMW_PERF_STATS='1';
++       // Orthros (orthros-r3.patch): the WorkQueue is cooperative by default (workqueue.cpp: its items — cell and
++       // terrain preloads — run on the main thread a few ms a frame, between frames). ?wq=inline (the previous
++       // mode: each item inside the frame that queued it) or ?wq=threaded (2 workers) for A/B; ?wqbudget=N: the
++       // cooperative queue's milliseconds a frame (default 4).
++       if (/[?&]wq=inline\b/.test(location.search)) ENV.OPENMW_WORKQUEUE_INLINE='1';
++       if (/[?&]wq=threaded\b/.test(location.search)) ENV.OPENMW_WORKQUEUE_THREADED='1';
++       if (/[?&]wqbudget=(\d+(\.\d+)?)\b/.test(location.search)) ENV.OPENMW_WORKQUEUE_BUDGET_MS=/[?&]wqbudget=(\d+(\.\d+)?)/.exec(location.search)[1];
+        // ?perfkeys=1 (QA): dump the frame's raw osg::Stats attribute keys to window.__omwPhaseKeys
+        // and whether the "engine" collection group is on. Diagnostic for empty __omwPhase buckets.
+        if (/[?&]perfkeys=1/.test(location.search)) ENV.OPENMW_PERF_KEYS='1';
+@@ -2046,9 +2053,15 @@
+            // !! REVERSE THIS once the WorkQueue has real workers — with threads, preloading
+            // aggressively is free and correct. The right value flips sign on that change. !!
+            // ?preload=1 restores the engine defaults for A/B.
++           //
++           // Orthros (orthros-r3.patch): the WorkQueue is now cooperative (not inline): a preload runs a few ms a
++           // frame, between frames, ahead of the player — the exterior grid's next cells are preloaded again, so the
++           // frame that crosses a cell boundary finds their meshes, shapes and terrain ready. Doors stay off (each
++           // door walked past would queue a whole interior, or nine exterior cells, for nothing most of the time).
++           // ?wq=inline (the old inline mode) keeps both off, as before.
+            (/[?&]preload=1\b/.test(location.search) ? '' :
+              ('preload doors = false\n' +
+-              'preload exterior grid = false\n')) +
++              (/[?&]wq=inline\b/.test(location.search) ? 'preload exterior grid = false\n' : 'preload exterior grid = true\n'))) +
+            '[Game]\n' +
+            // MP: 7168 so a friend stays drawn across a cell (backlog 348); solo keeps 4096 on mid/high.
+            'actors processing range = ' + (ENV.OPENMW_MP_URL ? TIER.actors : (TIER.actors === '7168' ? '4096' : TIER.actors)) + '\n' +
