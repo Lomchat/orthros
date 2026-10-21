@@ -10,7 +10,7 @@
 // Evidence under /tmp/orthros-scratch/.
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/goldsrc/check.mjs <manifest> <solo|multiplayer> [--url http://127.0.0.1:8080]
-//     [--reload] [--join-keys "{n},1"] [--no-save] [--min-players n]   (keys each player presses after joining, {n}: its
+//     [--reload] [--join-keys "{n},1"] [--no-save] [--min-players n] [--query "vbo=0"]   (keys each player presses after joining, {n}: its
 //     number — a team menu)
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,7 +25,8 @@ const base = arg('--url') ?? 'http://127.0.0.1:8080';
 const root = `/tmp/orthros-scratch/goldsrc-check-${name}-${mode}`;
 fs.mkdirSync(root, { recursive: true }); process.env.TMPDIR = root;
 const manifest = await (await fetch(`${base}/api/manifest/${encodeURIComponent(name)}`)).json();
-const pageUrl = `${base}/ports/goldsrc/${encodeURIComponent(name)}/?debug=1`;
+// (--query "a=b": the page's own parameters besides ?debug — vbo=0, say)
+const pageUrl = `${base}/ports/goldsrc/${encodeURIComponent(name)}/?debug=1${arg('--query') ? `&${arg('--query')}` : ''}`;
 // (the QA accounts: two, made once on this server and kept with their passwords in the scratch folder)
 const qaFile = '/tmp/orthros-scratch/qa-accounts.json';
 let qa = []; try { qa = JSON.parse(fs.readFileSync(qaFile, 'utf8'))[base] ?? []; } catch { /* none yet */ }
