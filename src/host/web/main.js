@@ -15,6 +15,7 @@ import { CloudSave } from './cloud-sync.js';
 import { accountState } from './account.js';
 import { pickLang } from './lang.js';
 import { linkRate } from '../../vfs/data-client.js';
+import { gpuInfo } from './gpu-class.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -656,8 +657,7 @@ addEventListener('pagehide', () => { if (state.telemetry) flushTelemetry(); });
  * cross-origin isolation, the browser's audio decoder and AudioWorklet. Nothing else is collected.
  */
 function environment() {
-  let gpu = null, gpuVendor = null;
-  try { const gl = new OffscreenCanvas(1, 1).getContext('webgl2'); const ext = gl.getExtension('WEBGL_debug_renderer_info'); gpu = gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER); gpuVendor = gl.getParameter(ext ? ext.UNMASKED_VENDOR_WEBGL : gl.VENDOR); gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* unknown */ }
+  const { renderer: gpu, vendor: gpuVendor } = gpuInfo();
   return { version: state.version ?? null, ua: navigator.userAgent, gpu, gpuVendor, cores: navigator.hardwareConcurrency ?? null, memGB: navigator.deviceMemory ?? null, screen: `${screen.width}x${screen.height}@${devicePixelRatio}`, window: `${innerWidth}x${innerHeight}`, coi: !!globalThis.crossOriginIsolated, audioDecoder: typeof globalThis.AudioDecoder === 'function', audioWorklet: typeof globalThis.AudioWorkletNode === 'function' }; // (audioDecoder: WebCodecs, the MP3 of movies and streams)
 }
 /** environment() with the WebGPU adapter's description when the browser has one (asked once, 2 s at most). */

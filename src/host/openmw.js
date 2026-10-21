@@ -87,7 +87,19 @@ export const withProgressiveView = (html) => html
   .replace("'viewing distance = ' + ((/[?&]vd=(\\d+)/.exec(location.search)||[])[1] || TIER.vd)",
     "'viewing distance = ' + ((/[?&]vd=(\\d+)/.exec(location.search)||[])[1] || (window.orthrosViewBoot ? window.orthrosViewBoot(TIER.vd) : TIER.vd))")
   .replace(/FS\.writeFile\('\/openmw\.cfg',\s*cfg\.join\('\\n'\)\)/g, "FS.writeFile('/openmw.cfg', (window.orthrosContent ? window.orthrosContent(FS, cfg) : cfg).join('\\n'))")
-  .replace('document.body.appendChild(s);', 'Promise.resolve(window.orthrosViewReady).then(function () { document.body.appendChild(s); });');
+  .replace('document.body.appendChild(s);', 'Promise.all([window.orthrosViewReady, window.orthrosTierReady]).then(function () { document.body.appendChild(s); });');
+
+/**
+ * The engine page's quality tier from the GPU and the frames measured (src/ports/openmw/tier.js) instead of
+ * navigator.deviceMemory alone: the module loaded before the engine (withProgressiveView's hold waits for it too), the
+ * page's tier choice asking it (?tier= first, as before), its log line saying the GPU's kind. The page's own rule when
+ * the module did not load.
+ */
+export const withQualityTier = (html) => html
+  .replace('<head>', `<head><script>window.orthrosTierReady = import('/src/ports/openmw/tier.js').then(function (m) { return m.install(window); }).catch(function (e) { console.warn('[orthros tier]', e); });</script>`)
+  .replace("|| (__devMem >= 8 ? 'high' : (__devMem > 0 && __devMem <= 4 ? 'low' : 'mid'));",
+    "|| (window.orthrosTier ? window.orthrosTier(__devMem) : (__devMem >= 8 ? 'high' : (__devMem > 0 && __devMem <= 4 ? 'low' : 'mid')));")
+  .replace("append('[tier] '+__tier+' (navigator.deviceMemory='", "append('[tier] '+__tier+(window.orthrosTierChoice ? ' (gpu: '+window.orthrosTierChoice.kind+')' : '')+' (navigator.deviceMemory='");
 
 export const withSharedEngine =(html, release) => html.replace('("e/" + __ENGINE_VER + "/")', `(${JSON.stringify(`/engines/${release}/e/`)} + __ENGINE_VER + "/")`);
 
