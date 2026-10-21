@@ -66,7 +66,8 @@ function dispatch(m) {
   if (m.setSource) { const src = W.sources.get(m.setSource.id); if (src) src.url = m.setSource.url; return; }
   if (typeof m.gen === 'number') { answerSync(m); return; }
   if (m.read) { answerAsync(m.read); return; }
-  if (m.start) { W.t0 = performance.now(); if (W.prefetchAt === 'start') prefetchAll(); return; }
+  // ('startup': the startup set before the engine, then the whole learned order once it runs — as 'start')
+  if (m.start) { W.t0 = performance.now(); if (W.prefetchAt === 'start' || W.prefetchAt === 'startup') prefetchAll(); return; }
   if (m.startup) { startup(); return; }
   if (m.mark) { mark(m.mark); return; }
   if (m.wantWhole) { W.parts.get(m.wantWhole.name)?.files.wantWhole(m.wantWhole.path); return; }

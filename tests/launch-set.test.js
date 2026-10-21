@@ -160,3 +160,32 @@ test('the data worker sends a page\'s mark once, with every read before it, and 
   assert.equal(posts[0].mark.kind, 'playable'); assert.ok(posts[0].mark.t >= 0);
   assert.deepEqual(posts[0].reads.map((r) => r.slice(0, 3)), [['a.dat', 0, CHUNK]]);
 });
+
+test('a page that waits for the startup set (prefetch: \'startup\') gets the rest of the learned order in the background once its engine runs', async (t) => {
+  const asked = [];
+  const tr = { dirs: {}, files: { 'a.dat': { size: 2 * BLOCK, mtime: 5 }, 'b.dat': { size: BLOCK, mtime: 5 } } };
+  const learned = [['a.dat', 0, 1, 0, 1], ['b.dat', 0, 1, 100, 0], ['a.dat', 1, 1, 5000, 0]];
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(url, 'http://x');
+    if (u.pathname === '/api/manifest/v') return Response.json({ name: 'v' });
+    if (u.pathname === '/api/tree/v') return Response.json(tr);
+    if (u.pathname === '/api/prefetch/v') return init.method === 'POST' ? new Response(null, { status: 204 }) : Response.json(learned);
+    const m = /^\/gamez\/v\/(.+)$/.exec(u.pathname);
+    if (m) { const [a, b] = u.searchParams.get('r').split('-').map(Number); asked.push([m[1], a, b]); const body = new Uint8Array(b - a); return new Response(body, { status: 200, headers: { 'content-length': String(body.length) } }); }
+    return new Response('no', { status: 404 });
+  };
+  const out = [], handle = createDataWorker((m) => out.push(m));
+  const ctrl = new Int32Array(new SharedArrayBuffer(64)), data = new Uint8Array(new SharedArrayBuffer(1 << 20));
+  handle({ init: { name: 'v', session: 'sess1', prefetch: 'startup', ctrl: ctrl.buffer, data: data.buffer } });
+  const until = async (ok, what) => { for (let i = 0; i < 2000 && !ok(); i++) await new Promise((r) => setTimeout(r, 2)); assert.ok(ok(), what); };
+  await until(() => out.some((m) => m.ready), 'ready');
+  t.after(() => handle({ close: true }));
+  handle({ startup: true });
+  await until(() => out.some((m) => m.startup?.done), 'startup');
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(asked.map(([p, a]) => `${p}@${a}`), ['a.dat@0'], 'the startup set only, before the engine');
+  handle({ start: true });
+  await until(() => asked.some(([p]) => p === 'b.dat') && asked.some(([p, a]) => p === 'a.dat' && a === BLOCK), 'the rest of the learned order');
+  await until(() => out.some((m) => m.ahead?.finished), 'the learned order loaded');
+});

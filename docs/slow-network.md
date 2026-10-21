@@ -146,6 +146,24 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   set the GoldSrc and re3 pages wait for (`startup()` in the data worker). A version that requires others as separate
   parts (`extraMounts`: a Windows game over another's folder; a port's required versions are underlays, in its own
   tree) adds their launch sets, each from its own learned order — the startup set, the card's sizes and Prepare alike.
+  Once the engine runs (`start()`), the whole learned order loads in the background from the game's position
+  (`prefetch: 'startup'` behaves as `'start'` after the startup set). Until 2026-10-21 it never did for the GoldSrc and
+  re3 pages: after the startup set the engine read everything on demand, round trip after round trip (Vice City: ~100
+  reads per 10 s, 0.25 MB/s on a 1 MB/s link).
+- **Measured (2026-10-21, 1 MB/s + 60 ms RTT shared link, fresh profile, SwiftShader on a loaded machine, one run
+  each; seconds from the page's load: loader hidden / in control — re3 a new game's first scene, GoldSrc `map c0a0` in
+  play — and the engine's read stalls until control):**
+
+  | policy | Vice City, few flags | Vice City, learned flags (53 MB set) | Half-Life |
+  |---|---|---|---|
+  | launch set, no background (main before) | 156 / 248, 247 s stalled | 80 / 156, 118 s | 21 / 63, 37 s |
+  | first-pause cut, no background (older) | 153 / 254, 252 s | — | 32 / 38, 1 s |
+  | launch set, then the learned order (kept) | 92 / 144, 124 s | **75 / 133, 84 s** | **20 / 27, 2 s** |
+  | first-pause cut, then the learned order | — | 85 / 127, 104 s | 31 / 36, 0 s |
+
+  Waiting for the whole launch set does not delay the drawing: the link is saturated either way, and the first-pause
+  cut fetches what the menu does not need (Half-Life: 18 MB before its menu instead of 2.5 MB, 11 s later). The
+  background order is what removes the freezes later.
 - **The home card** (`/api/manifests` `launch: { bytes, lightBytes, wire, lightWire, entries }` per version,
   `launchSummary`; null until a session marked it; made again when the order changes, at most every minute): `bytes`
   the launch set's learned pieces on a fast link, `lightBytes` with light copies (a link not fast), the `wire` bytes
