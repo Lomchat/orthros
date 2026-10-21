@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { chromium } from 'playwright';
+import { rendererOf } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
 const [name] = args;
@@ -87,7 +88,7 @@ async function boot(context) {
   await page.goto(pageUrl);
   await page.waitForFunction(() => ['running', 'error'].includes(window.portSession?.state), null, { timeout: 300000 });
   const state = await page.evaluate(() => ({ state: portSession.state, status: document.querySelector('#status')?.textContent, startup: portSession.startup }));
-  console.log('BOOT', JSON.stringify(state));
+  console.log('BOOT', JSON.stringify({ ...state, renderer: await rendererOf(page) }));
   if (state.state !== 'running') throw new Error(state.status);
   // (its first images: the loading screen hides after ten)
   await page.waitForFunction(() => document.querySelector('#loader')?.classList.contains('hidden') || renderProbe.draws > 200, null, { timeout: 120000 });

@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { chromium } from 'playwright';
+import { rendererOf } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
 const [name, mode] = args;
@@ -85,7 +86,7 @@ try {
     await page.waitForFunction(() => ['running', 'error'].includes(window.portSession?.state), null, { timeout: 180000 });
     if (await page.evaluate(() => portSession.state) === 'running') { await page.waitForTimeout(3000); await enter(page); }
     const state = await page.evaluate(() => ({ state: portSession.state, status: document.querySelector('#status').textContent, draws: renderProbe.draws, multiplayer: portSession.multiplayer }));
-    console.log('BOOT', i, JSON.stringify(state));
+    console.log('BOOT', i, JSON.stringify({ ...state, renderer: await rendererOf(page) }));
     if (state.state !== 'running') throw new Error(state.status);
     await page.waitForFunction(() => renderProbe.draws > 50, null, { timeout: 30000 });
     await page.waitForTimeout(7000);
