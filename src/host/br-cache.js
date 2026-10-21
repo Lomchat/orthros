@@ -12,7 +12,10 @@
 //
 // Layout: <dir>/<k[0:2]>/<k>/ per file version (k: the key's sha1) — meta.json { path, size, mtimeMs, light, ... } and
 // one file per unit, b<block>.br or p<piece>.br (an empty .raw when brotli saved too little: sent as is, never made
-// again). The index is rebuilt from the disk at start. Least recently used out when over `maxBytes`, down to
+// again). Audio units (docs/slow-network.md "Audio units", src/vfs/pcm-codec.js): beside a unit, b<block>.pcm.br /
+// p<piece>.pcm.br — its PCM transport container, brotli on top — for the requests that decode it (`&pc=1`), or an
+// empty .pcm.raw (no sound found there, or it did not pay); waves.json: where the file's RIFF WAVE sounds are
+// (src/host/pcm-units.js, found once per file version). Light copies have none. The index is rebuilt from the disk at start. Least recently used out when over `maxBytes`, down to
 // `lowBytes`; the units of each manifest's launch set (the head of its learned order, `sources`) are pinned — out last,
 // at most `pinShare` of the budget.
 import fs from 'node:fs';
@@ -32,6 +35,10 @@ const MAX_WANTED = 4096;
 
 /** the unit's file name in its version's directory */
 export const unitName = (u) => `${u.kind}${u.index}`;
+/** the name of a unit's PCM transport form (pcm-codec.js) */
+const PCM = '.pcm';
+/** an audio unit kept when its wire bytes are this much of the brotli unit's at most */
+export const PCM_MIN_GAIN = 0.95;
 /** [start, end) of unit `u` of a file of `size` bytes */
 export const unitRange = (u, size) => {
   const n = u.kind === 'b' ? BLOCK : CHUNK, start = u.index * n;
@@ -69,12 +76,15 @@ export function createBrCache(opts) {
   const pinCap = maxBytes * (opts.pinShare ?? 0.5);
   const loadLimit = opts.loadLimit ?? 24, diskLimit = opts.diskLimit ?? 0.85, pauseMs = opts.pauseMs ?? 30000, idleMs = opts.idleMs ?? 60000;
   const log = opts.log ?? (() => {});
+  // (audio units: on unless opts.pcm is false — never for a light copy)
+  const pcmOn = opts.pcm !== false;
+  const pcmFor = (light) => pcmOn && !light;
   fs.mkdirSync(dir, { recursive: true });
 
   /** k -> { dir, meta, units: Map(name -> { bytes, raw, lastHit, pinned }) } */
   const entries = new Map();
   let total = 0, pinnedBytes = 0;
-  const counts = { hits: 0, misses: 0, generated: 0, stale: 0, failed: 0, evicted: 0, swept: 0 };
+  const counts = { hits: 0, misses: 0, generated: 0, stale: 0, failed: 0, evicted: 0, swept: 0, pcmHits: 0, pcmMade: 0 };
   let paused = null, closed = false;
 
   // ------------------------------------------------------------------------------------------- keys
@@ -131,8 +141,8 @@ export function createBrCache(opts) {
         entries.set(k, e);
         let names; try { names = await fs.promises.readdir(d); } catch { names = []; }
         for (const n of names) {
-          const m = /^([bp]\d+)\.(br|raw)$/.exec(n);
-          if (!m) { if (n !== 'meta.json') fs.unlink(path.join(d, n), () => {}); continue; }
+          const m = /^([bp]\d+(?:\.pcm)?)\.(br|raw)$/.exec(n);
+          if (!m) { if (n !== 'meta.json' && n !== 'waves.json') fs.unlink(path.join(d, n), () => {}); continue; }
           try { const s = await fs.promises.stat(path.join(d, n)); addUnit(e, m[1], s.size, m[2] === 'raw', s.mtimeMs, false); } catch { /* gone */ }
         }
       }
@@ -215,7 +225,12 @@ export function createBrCache(opts) {
     }
   };
 
-  const has = (file, st, light, unit) => !!entryOf(file, st, light).units?.has(unitName(unit));
+  /** what of the unit is still to make: { br, pcm } (each true when missing), or null: nothing */
+  const missing = (file, st, light, unit) => {
+    const us = entryOf(file, st, light).units, name = unitName(unit);
+    const br = !us?.has(name), pcm = pcmFor(light) && !us?.has(name + PCM);
+    return br || pcm ? { br, pcm } : null;
+  };
   /**
    * The next unit to make: the launch sets' (the first pass of the learned orders, pinned) first — every new player
    * asks for them, where a live miss is one session's read, that session served already —, then the most asked live
@@ -246,8 +261,8 @@ export function createBrCache(opts) {
         const n = s.it.next();
         if (n.done) { s.done = true; continue; }
         const { file, st, light, unit } = n.value;
-        const e = entryOf(file, st, light), u = e.units?.get(unitName(unit));
-        if (u) { if (sd.pass === 0) pin(u); s.used += u.bytes; continue; }
+        const e = entryOf(file, st, light), u = e.units?.get(unitName(unit)), up = e.units?.get(unitName(unit) + PCM);
+        if (u && (up || !pcmFor(light))) { if (sd.pass === 0) { pin(u); if (up) pin(up); } s.used += u.bytes + (up?.bytes ?? 0); continue; }
         return { file, st, light, unit, pin: sd.pass === 0, source: s };
       }
       if (sd.pass === 0) { sd.pass = 1; return null; } // (the live misses before the second pass)
@@ -261,17 +276,22 @@ export function createBrCache(opts) {
     let st; try { st = await fs.promises.stat(file); } catch { counts.stale++; return; }
     if (st.size !== j.st.size || st.mtimeMs !== j.st.mtimeMs) { counts.stale++; return; }
     const e = entryOf(file, st, light, true), name = unitName(unit);
-    if (e.units.has(name)) return;
+    const old = e.units.get(name), br = !old, pcm = pcmFor(light) && !e.units.has(name + PCM);
+    if (!br && !pcm) return;
     const [start, end] = unitRange(unit, light ? light.copy.size : st.size);
     if (!(start < end)) return;
     job = e;
     try {
-      const r = await ask({ file, size: st.size, mtimeMs: st.mtimeMs, light: light ? { head: light.copy.head, from: light.copy.from, size: light.copy.size } : null, start, end, dir: e.dir, name, meta: e.meta, minGain: MIN_GAIN });
+      // (the audio form against the brotli unit's wire bytes: the one made now, or the one kept)
+      const r = await ask({ file, size: st.size, mtimeMs: st.mtimeMs, light: light ? { head: light.copy.head, from: light.copy.from, size: light.copy.size } : null, start, end, dir: e.dir, name, meta: e.meta, minGain: MIN_GAIN,
+        br, pcm, brWire: old ? (old.raw ? end - start : old.bytes) : null, pcmGain: PCM_MIN_GAIN });
       if (r.error) { counts.failed++; log(`br-cache: ${file} ${name}: ${r.error}`); return; }
       if (r.stale) { counts.stale++; return; }
       if (closed || entries.get(e.k) !== e) return;
-      addUnit(e, name, r.bytes, r.raw, Date.now(), j.pin && pinnedBytes + r.bytes <= pinCap);
-      if (j.source) j.source.used += r.bytes;
+      const now = Date.now();
+      if (br) addUnit(e, name, r.bytes, r.raw, now, j.pin && pinnedBytes + r.bytes <= pinCap);
+      if (r.pcm) { addUnit(e, name + PCM, r.pcm.bytes, r.pcm.raw, now, j.pin && pinnedBytes + r.pcm.bytes <= pinCap); if (!r.pcm.raw) counts.pcmMade++; }
+      if (j.source) j.source.used += (br ? r.bytes : 0) + (r.pcm?.bytes ?? 0);
       counts.generated++;
       opts.onMade?.(file, unit); // (tests: the order units are made in)
     } finally { job = null; }
@@ -321,19 +341,36 @@ export function createBrCache(opts) {
       counts.hits++; u.lastHit = Date.now();
       return { path: path.join(e.dir, name + (u.raw ? '.raw' : '.br')), bytes: u.bytes, raw: u.raw };
     },
-    /** the bytes the unit `unit` of `file` takes on the wire when made (its compressed size, or raw's: its range's), else null: not a hit */
+    /**
+     * The unit's audio form (a PCM transport container, brotli on top: pcm-codec.js), for a request that decodes it, or
+     * null (none: the brotli unit or the dynamic way then): { path, bytes }.
+     */
+    lookupPcm(file, st, light, unit) {
+      if (!pcmFor(light)) return null;
+      const u = entryOf(file, st, light).units?.get(unitName(unit) + PCM);
+      if (!u || u.raw) return null;
+      counts.pcmHits++; u.lastHit = Date.now();
+      return { path: path.join(entryOf(file, st, light).dir, unitName(unit) + PCM + '.br'), bytes: u.bytes };
+    },
+    /**
+     * the bytes the unit `unit` of `file` takes on the wire when made (its compressed size, or raw's: its range's; its
+     * audio form's when smaller — every page decodes it), else null: not a hit
+     */
     size(file, st, light, unit) {
-      const u = entryOf(file, st, light).units?.get(unitName(unit));
+      const us = entryOf(file, st, light).units, u = us?.get(unitName(unit));
       if (!u) return null;
-      if (!u.raw) return u.bytes;
+      const p = pcmFor(light) ? us.get(unitName(unit) + PCM) : null, pw = p && !p.raw ? p.bytes : Infinity;
+      if (!u.raw) return Math.min(u.bytes, pw);
       const [start, end] = unitRange(unit, light ? light.copy.size : st.size);
-      return end - start;
+      return Math.min(end - start, pw);
     },
     /** a unit found missing on the disk (evicted meanwhile, removed by hand): out of the index */
     drop(file, st, light, unit) { const e = entryOf(file, st, light); if (e.units) dropUnit(e, unitName(unit), false); },
+    /** an audio form found missing or bad: out of the index (made again when asked) */
+    dropPcm(file, st, light, unit) { const e = entryOf(file, st, light); if (e.units) dropUnit(e, unitName(unit) + PCM, true); },
     /** a request missed the unit: made next (before the launch sets), the most asked first */
     want(file, st, light, unit) {
-      if (closed || has(file, st, light, unit)) return;
+      if (closed || !missing(file, st, light, unit)) return;
       const id = `${entryOf(file, st, light).k}#${unitName(unit)}`, w = wanted.get(id);
       if (w) w.count++;
       else {
@@ -347,7 +384,9 @@ export function createBrCache(opts) {
     sweep,
     /** resolves once nothing is left to make (tests) */
     async drain() { await ready; while (pumping) await pumping; },
-    stats: () => ({ units: [...entries.values()].reduce((n, e) => n + e.units.size, 0), bytes: total, pinnedBytes, maxBytes, wanted: wanted.size, seeding: !!seeding, paused, ...counts }),
+    // (units: the brotli ones; pcmUnits: the audio forms made — their tried-and-not-kept markers not counted)
+    stats: () => ({ units: [...entries.values()].reduce((n, e) => n + [...e.units.keys()].filter((k) => !k.endsWith(PCM)).length, 0),
+      pcmUnits: [...entries.values()].reduce((n, e) => n + [...e.units].filter(([k, u]) => k.endsWith(PCM) && !u.raw).length, 0), bytes: total, pinnedBytes, maxBytes, wanted: wanted.size, seeding: !!seeding, paused, ...counts }),
     close() { closed = true; clearInterval(timer); clearTimeout(childIdle); stopChild(); },
   };
 }

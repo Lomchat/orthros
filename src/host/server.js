@@ -906,6 +906,7 @@ export function createServer(opts = {}) {
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
       // (X-Orthros-Unit: how the precompressed units saw the request — hit, raw (kept as is), miss, or none: not a unit)
       if (unitSeen) h['X-Orthros-Unit'] = unitSeen;
+      if (codec) h['X-Orthros-Codec'] = codec;
       if (encoding) h['Content-Encoding'] = encoding;
       const go = () => { if (!res.headersSent) res.writeHead(200, h); res.end(body); };
       // (simulated link: the headers after the round trip, the body once it crossed — the client's time to the first
@@ -915,16 +916,30 @@ export function createServer(opts = {}) {
     // a unit made ahead (br-cache.js: a whole block or a single piece, brotli 11) when the request is one and takes br;
     // missed, it is asked for (made in the background) and this request goes the dynamic way
     const unit = brCache && br && !pad ? unitOf(start, end, light ? light.copy.size : st.size) : null;
-    const pre = unit && brCache.lookup(file, st, light, unit);
-    let unitSeen = brCache && br && !pad ? (unit ? (pre ? (pre.raw ? 'raw' : 'hit') : 'miss') : 'none') : null;
-    if (pre?.raw) enc = null; // (brotli saves too little there: as it is)
-    else if (pre) {
-      return fs.readFile(pre.path, (err, body) => {
-        if (!err && body.length === pre.bytes) { netStats.brHits++; return reply(body, 'br'); }
-        brCache.drop(file, st, light, unit); unitSeen = 'miss'; dynamic();
+    // (&pc=1: the page decodes the audio units — a PCM transport container, X-Orthros-Codec: pcm1, src/vfs/pcm-codec.js —;
+    // one made is sent before the brotli unit, its bytes fewer)
+    let codec = null, unitSeen = null;
+    const pcm = unit && /[?&]pc=1(&|$)/.test(req.url) ? brCache.lookupPcm(file, st, light, unit) : null;
+    if (pcm) {
+      return fs.readFile(pcm.path, (err, body) => {
+        if (!err && body.length === pcm.bytes) { netStats.pcmHits = (netStats.pcmHits ?? 0) + 1; codec = 'pcm1'; unitSeen = 'hit'; return reply(body, 'br'); }
+        brCache.dropPcm(file, st, light, unit); brUnit();
       });
-    } else if (unit) brCache.want(file, st, light, unit);
-    dynamic();
+    }
+    return brUnit();
+    function brUnit() {
+      const pre = unit && brCache.lookup(file, st, light, unit);
+      unitSeen = brCache && br && !pad ? (unit ? (pre ? (pre.raw ? 'raw' : 'hit') : 'miss') : 'none') : null;
+      if (unit) brCache.want(file, st, light, unit); // (made when missing — the unit, or its audio form)
+      if (pre?.raw) enc = null; // (brotli saves too little there: as it is)
+      else if (pre) {
+        return fs.readFile(pre.path, (err, body) => {
+          if (!err && body.length === pre.bytes) { netStats.brHits++; return reply(body, 'br'); }
+          brCache.drop(file, st, light, unit); unitSeen = 'miss'; brCache.want(file, st, light, unit); dynamic();
+        });
+      }
+      dynamic();
+    }
     function dynamic() {
       const key = `${light ? LIGHT_DIR + '|' : ''}${file}|${st.mtimeMs}|${start}-${end}|${enc}|${pad}`;
       const hit = encodedCache.get(key);

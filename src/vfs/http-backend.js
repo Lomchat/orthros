@@ -5,6 +5,7 @@
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { NetLink } from './net-link.js';
 import { LIGHT_DIR, isVideoFile } from './game-tree.js';
+import { decodePcm } from './pcm-codec.js';
 
 export const BLOCK = 1 << 20; // 1 MiB
 /**
@@ -149,6 +150,9 @@ export class HttpBackend {
     this.retryWaits = opts.retryWaits ?? RETRY_WAITS;
     // the server's compressed ranges (/gamez/...?r=start-end: zstd/gzip Content-Encoding, decoded by the browser)
     this.encoded = !!opts.encoded;
+    // (the audio units: a unit-shaped compressed range may come as a PCM transport container, decoded here before any
+    // byte reaches the game — docs/slow-network.md "Audio units"; one that fails its check turns them off for this backend)
+    this.pcm = this.encoded && opts.pcm !== false;
     // (a compressed background range cut at its transport units, see rangeUnits; false: one request as asked)
     this.unitRequests = opts.unitRequests ?? true;
     /** the share of the parts lately answered from the server's units (see UNIT_HIT_MIN), the cut requests since a probe */
@@ -252,7 +256,19 @@ export class HttpBackend {
   rangeUrl(path, start, end, background = false, ahead = false) {
     const rel = path.split('/').map(encodeURIComponent).join('/');
     // (`ahead`: fetched ahead of the game but learned as its own read — the server counts it with the background)
-    return this.encoded ? `${this.base.replace(/\/game\//, '/gamez/')}${rel}?r=${start}-${end}${background ? '&p=1' : this.session ? '&s=' + this.session : ''}${!background && ahead ? '&a=1' : ''}` : this.base + rel;
+    return this.encoded ? `${this.base.replace(/\/game\//, '/gamez/')}${rel}?r=${start}-${end}${background ? '&p=1' : this.session ? '&s=' + this.session : ''}${!background && ahead ? '&a=1' : ''}${this.pcm ? '&pc=1' : ''}` : this.base + rel;
+  }
+  /**
+   * The bytes of an answer: `codec` its X-Orthros-Codec — pcm1: an audio unit, decoded (src/vfs/pcm-codec.js, its CRC
+   * checked) —; null when it does not decode (the audio units off from then on: the request is made again without).
+   */
+  unitBody(data, codec) {
+    if (codec !== 'pcm1') return data;
+    const t0 = performance.now();
+    try { data = decodePcm(data); } catch { this.pcm = false; this.stats.pcmFailed = (this.stats.pcmFailed ?? 0) + 1; return null; }
+    this.stats.pcmUnits = (this.stats.pcmUnits ?? 0) + 1; this.stats.pcmBytes = (this.stats.pcmBytes ?? 0) + data.length;
+    this.stats.pcmMs = (this.stats.pcmMs ?? 0) + performance.now() - t0;
+    return data;
   }
 
   /**
@@ -675,9 +691,10 @@ export class HttpBackend {
         const bodies = await Promise.all(ress.map((r) => r.arrayBuffer()));
         const data = new Uint8Array(end - start);
         for (let i = 0; i < parts.length; i++) {
-          const d = new Uint8Array(bodies[i]);
+          let d = new Uint8Array(bodies[i]);
           wire += wireOf(d.length, ress[i].headers?.get?.('content-length'));
-          if (d.length !== parts[i][1] - parts[i][0]) return undefined;
+          d = this.unitBody(d, ress[i].headers?.get?.('x-orthros-codec'));
+          if (!d || d.length !== parts[i][1] - parts[i][0]) return undefined;
           data.set(d, parts[i][0] - start);
         }
         const hits = ress.filter((r) => ['hit', 'raw'].includes(r.headers?.get?.('x-orthros-unit'))).length;
@@ -690,6 +707,8 @@ export class HttpBackend {
       if (res.status !== 206 && res.status !== 200) return undefined;
       let data = new Uint8Array(await res.arrayBuffer());
       wire = wireOf(data.length, res.headers?.get?.('content-length'));
+      data = this.unitBody(data, res.headers?.get?.('x-orthros-codec'));
+      if (!data) return undefined;
       if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
       ok = data.length === end - start;
       return ok ? data : undefined;
@@ -725,9 +744,10 @@ export class HttpBackend {
       let data = null;
       if (!problem && xhr.status !== 206 && xhr.status !== 200) problem = `status ${xhr.status}`;
       if (!problem) {
-        data = new Uint8Array(xhr.response);
-        if (xhr.status === 200 && !this.encoded) data = data.subarray(start, end);
-        if (data.length !== end - start) problem = `${data.length} bytes of ${end - start}`;
+        data = this.unitBody(new Uint8Array(xhr.response), xhr.getResponseHeader?.('X-Orthros-Codec'));
+        if (!data) problem = 'audio unit not decoded';
+        else if (xhr.status === 200 && !this.encoded) data = data.subarray(start, end);
+        if (data && data.length !== end - start) problem = `${data.length} bytes of ${end - start}`;
       }
       this.net.end(tok, problem ? 0 : wireOf(xhr.response?.byteLength ?? 0, xhr.getResponseHeader?.('Content-Length')), end - start, !problem);
       if (!problem) {
@@ -940,6 +960,8 @@ export class HttpBackend {
       if (res.status !== 206 && res.status !== 200) return null;
       let data = new Uint8Array(await res.arrayBuffer());
       wire = wireOf(data.length, res.headers?.get?.('content-length'));
+      data = this.unitBody(data, res.headers?.get?.('x-orthros-codec'));
+      if (!data) return null;
       if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
       if (data.length !== end - start) return null;
       ok = true;
