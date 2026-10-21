@@ -232,6 +232,10 @@ let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
 // --input <file>: a harness scenario played on the headless host (tools/node-scenario.mjs); the run ends after its last
 // event (--phases <file>: the phase results as JSON)
 const scenario = opt('input') ? new NodeScenario(fs.readFileSync(opt('input'), 'utf8'), vm, (l) => console.log(l), args.includes('--virtual') ? () => clock.now() : undefined) : null;
+// --slow-apis <ms>: with a scenario, the APIs' time in the frames longer than that, per phase ([slowapis] lines)
+if (scenario && opt('slow-apis')) scenario.enableSlowApis(Number(opt('slow-apis')));
+// --gc <ms>: with a scenario, this thread's garbage collections per phase and in the frames longer than that ([gc] lines)
+if (scenario && opt('gc')) scenario.enableGc(Number(opt('gc')), await import('node:v8'));
 // --jit-profile with a scenario: each phase's profile counters (the difference since the previous mark)
 if (scenario && args.includes('--jit-profile') && vm.jit) {
   let last = null;
