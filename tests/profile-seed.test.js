@@ -5,9 +5,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, SeedWatch, toBase64, fromBase64 } from '../src/host/profile-seed.js';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, SeedWatch, toBase64, fromBase64, seedCanonFile, canonSets } from '../src/host/profile-seed.js';
 import { createServer } from '../src/host/server.js';
 
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bytes = (s) => new TextEncoder().encode(s);
 const file = (p, s) => ({ path: p, data: typeof s === 'string' ? bytes(s) : s });
 
@@ -166,4 +169,54 @@ test('profile seed server: bounded set count, quorum option', async () => {
     assert.deepEqual(await seedOf(s, 'g'), [['c/o.ini', 'v']]);
     s.close();
   }, { profileSeedQuorum: 1 });
+});
+
+test('profile seed: canonical file sets validated, one per language', () => {
+  const ok = [['AppData/G/Options.ini', toBase64(bytes('Detail = Medium'))]];
+  const sets = canonSets({ v: 1, sets: [{ lang: 'fr', files: ok, note: 'n' }, { lang: 'fr', files: [['other.ini', toBase64(bytes('x'))]] }, { lang: 'en', files: [['Temp/a.tmp', toBase64(bytes('x'))]] }, { lang: 'de', files: [] }, { lang: 'E N', files: ok }, null] });
+  assert.deepEqual(sets.map((s) => [s.lang, s.files, s.note]), [['fr', ok, 'n']]);
+  assert.equal(sets[0].key, seedKey([file('AppData/G/Options.ini', 'Detail = Medium')]));
+  assert.deepEqual(canonSets(null), []);
+  assert.equal(seedCanonFile('a b/c'), 'seedcanon-a_b_c.json');
+});
+
+test('profile seed server: a canonical set is offered with no reporter and stays ahead of the learned sets', async () => {
+  await withServer(async (start, learn) => {
+    const s = await start();
+    const learned = [['AppData/G/Options.ini', 'Detail = High']];
+    await report(s, 'g', 's1', learned); await report(s, 'g', 's2', learned);
+    assert.deepEqual(await seedOf(s, 'g'), learned);
+    await new Promise((r) => setTimeout(r, 50)); // (the learned file written)
+    // the operator's tool writes the canonical set while the server runs: offered from the next request on
+    const prof = path.join(learn, '..', 'prof');
+    fs.mkdirSync(path.join(prof, 'AppData', 'G'), { recursive: true });
+    fs.writeFileSync(path.join(prof, 'AppData', 'G', 'Options.ini'), 'Detail = Medium');
+    fs.mkdirSync(path.join(prof, 'Temp'), { recursive: true });
+    fs.writeFileSync(path.join(prof, 'Temp', 'scratch.tmp'), 'x');
+    const tool = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'tools', 'profile-seed-make.mjs'), ...a, '--learn', learn], { encoding: 'utf8' });
+    const put = tool('put', 'g', 'en', prof);
+    assert.equal(put.status, 0, put.stderr);
+    assert.match(put.stdout, /Detail = Medium/);
+    assert.deepEqual(await seedOf(s, 'g'), [['AppData/G/Options.ini', 'Detail = Medium']]);
+    assert.deepEqual(await seedOf(s, 'g', 'fr'), []); // (per language)
+    // more sessions reporting other content do not displace it
+    for (let i = 0; i < 5; i++) await report(s, 'g', 'r' + i, learned);
+    assert.deepEqual(await seedOf(s, 'g'), [['AppData/G/Options.ini', 'Detail = Medium']]);
+    // a learned set promoted to canonical for another language (one reporter: below the quorum, offered once promoted)
+    await report(s, 'g', 'f1', learned, 'fr');
+    assert.deepEqual(await seedOf(s, 'g', 'fr'), []);
+    await new Promise((r) => setTimeout(r, 50)); // (the learned file written)
+    const promote = tool('promote', 'g', 'fr');
+    assert.equal(promote.status, 0, promote.stderr);
+    assert.deepEqual(await seedOf(s, 'g', 'fr'), learned);
+    assert.deepEqual(await seedOf(s, 'g'), [['AppData/G/Options.ini', 'Detail = Medium']]); // (the other language's kept)
+    // removed: the learned quorum again
+    assert.equal(tool('remove', 'g', 'en').status, 0);
+    assert.deepEqual(await seedOf(s, 'g'), learned);
+    assert.deepEqual(await seedOf(s, 'g', 'fr'), learned);
+    // a damaged file: no canonical set (the fr learned set has one reporter: nothing)
+    fs.writeFileSync(path.join(learn, seedCanonFile('g')), '{oops');
+    assert.deepEqual(await seedOf(s, 'g', 'fr'), []);
+    s.close();
+  });
 });

@@ -25,6 +25,18 @@ profile (`C:\Users\Player`), so every new player paid it.
   game's defaults, not one player's data. Bounded: 16 sets per manifest (least recently reported out), 32 session
   ids per set. Stored in `<learn dir>/profileseed-<manifest>.json`; a server without this feature ignores the file,
   and the page asks for it only when `/api/config` says `profileSeed: true` (old pages and servers keep working).
+- **Canonical sets** (`tools/profile-seed-make.mjs`, `<learn dir>/seedcanon-<manifest>.json`). What a first-launch
+  benchmark writes depends on the emulated machine's speed (the load of the machine running it, the instrumentation:
+  two runs wrote `AudioLOD = High` and `Low`), so independent players rarely report identical sets and the quorum
+  rarely forms (live data, 2026-10-21: one reporter per set after weeks, nothing served). An operator therefore makes,
+  per version and game language, one set the server offers first, with no reporter and whatever sessions report since
+  (a report only adds a candidate to the learned sets). The tool iterates the catalog (no game named): `plan` lists every
+  Win32 version × declared language and what the learn directory holds; `make` runs `--runs` first launches with an
+  empty profile through the browser slot guard (`headless.mjs --profile-seed 0 --profile-dir`), compares their seed
+  files and writes them when they agree (`--accept first`: the first run's); `put` takes a profile directory (a run's,
+  possibly edited by hand: the settings it carries become every new player's default), `promote` a learned set,
+  `show` / `remove`. The server reads the file again when it changes (no restart). The snapshot key's seed part is
+  the served set's key: shared snapshots made with another seed are made again.
 - **Use.** A session whose profile is empty (first launch in this browser) asks
   `GET /api/profile-seed/<manifest>?lang=<game language>` (3 s at most) and writes the files before the game starts;
   they are then saved to OPFS like the game's own. It does not learn (only unseeded first launches teach).

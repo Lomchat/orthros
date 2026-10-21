@@ -9,7 +9,8 @@
 //   --learn: the order in which sessions read the game's file blocks is kept there (the prefetch list of later sessions),
 //            the GL programs they built and the code regions they translated (both prepared ahead by later sessions),
 //            and the small profile files first sessions wrote (shared first-launch profile; --profile-seed-quorum: the
-//            distinct sessions that must report a set identical before it is offered, default 2), and the shared snapshots
+//            distinct sessions that must report a set identical before it is offered, default 2; an operator-made set,
+//            seedcanon-<manifest>.json written by tools/profile-seed-make.mjs, is offered first), and the shared snapshots
 //            of the games' machines new players start from (docs/snapshot.md, stage 3)
 //   --snapshot-jobs: when a page asks for a shared snapshot there is none of, a headless browser session of a new
 //            player makes it (tools/snapshot-publish.mjs, one at a time, through the project's browser slots);
@@ -37,7 +38,7 @@ import { re3Installed, re3Modes, re3Module } from './re3.js';
 import { mmoApi } from './mmo.js';
 import { SimLink } from './sim-link.js';
 import { programSourceId } from '../gfx/program-id.js';
-import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64 } from './profile-seed.js';
+import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64, seedCanonFile, canonSets } from './profile-seed.js';
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
 import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY } from './snapshot-store.js';
@@ -457,7 +458,25 @@ export function createServer(opts = {}) {
     : opts.snapshotJobs === 'queue' ? new SnapshotQueue(path.join(snapshots.dir, 'queue.json'))
       : opts.snapshotJobs === true ? new SnapshotJobs({ root: ROOT, url: () => `http://127.0.0.1:${server.address().port}`, logDir: path.join(opts.learnDir, 'snapshots') })
         : opts.snapshotJobs;
+  // operator-made sets (seedcanon-<manifest>.json, tools/profile-seed-make.mjs): offered first, whatever the sessions
+  // report (a first launch's settings depend on the emulated machine's speed, so independent reports rarely agree);
+  // read again when the file changes (written by the tool while this server runs)
+  const canonCache = new Map(); // manifest -> { mtime, sets }
+  const canonFor = (name, lang) => {
+    if (!opts.learnDir) return null;
+    const f = path.join(opts.learnDir, seedCanonFile(name));
+    let mtime = 0; try { const st = fs.statSync(f); mtime = `${st.mtimeMs}:${st.size}:${st.ino}`; } catch { /* none */ }
+    let c = canonCache.get(name);
+    if (!c || c.mtime !== mtime) {
+      let sets = [];
+      if (mtime) { try { sets = canonSets(JSON.parse(fs.readFileSync(f, 'utf8'))); } catch { /* damaged: none */ } }
+      canonCache.set(name, c = { mtime, sets });
+    }
+    return c.sets.find((s) => s.lang === lang) ?? null;
+  };
   const seedFor = (name, lang) => {
+    const canon = canonFor(name, lang);
+    if (canon) return { key: canon.key, files: canon.files.map(([p, d]) => ({ path: p, data: d })) };
     let best = null;
     for (const s of seedsOf(name).sets) if (s.lang === lang && s.sessions.length >= seedQuorum && (!best || s.sessions.length > best.sessions.length || (s.sessions.length === best.sessions.length && s.at > best.at))) best = s;
     return best ? { key: best.key, files: best.files.map(([p, d]) => ({ path: p, data: d })) } : { files: [] };
