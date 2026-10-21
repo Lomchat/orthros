@@ -32,3 +32,19 @@ test('waitframe min,max,min2,max2: the second range anchors as well', () => {
 test('a malformed scenario is refused', () => {
   assert.throws(() => new NodeScenario('0:waitframe:1,2,3', fakeVm(), () => {}), /min,max pairs/);
 });
+
+test('phase reports: every presented frame counted as the page counts it (slow frames, percentiles, categories)', () => {
+  let now = 0;
+  const vm = { host: { inputQueue: [] }, d3dDevice: { draws: 0, frames: 0 }, guestInsns: 0, acctApiName: (i) => String(i) };
+  const s = new NodeScenario('0:mark:a;1:mark:end', vm, () => {}, () => now);
+  s.tick(); // (mark a: the phase opens)
+  for (let i = 0; i < 100; i++) { now += i % 10 === 9 ? 50 : 20; vm.d3dDevice.frames++; vm.host.frameHook(); }
+  now = Math.max(now, 1000); s.tick(); // (mark end)
+  const r = s.results.find((x) => x.label === 'a');
+  assert.ok(r, 'phase a reported');
+  assert.equal(r.frameAcct.label, 'a');
+  assert.equal(r.frameAcct.frames, 99); // (the first present opens the count: 99 intervals)
+  assert.equal(r.frameAcct.slow33, 10);
+  assert.equal(r.frameAcct.dt.p50, 20);
+  assert.ok(r.frameAcct.text === undefined && typeof r.frameAcct.mean === 'object');
+});

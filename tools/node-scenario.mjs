@@ -9,7 +9,7 @@
 // the browser worker sets them. Other
 // kinds (shot, profile, capture...) are ignored. Times are real seconds from the start, from the anchor after a wait
 // (or `+t` from the first Direct3D frame), as in the harness.
-import { acct, C as ACCT } from '../src/core/frame-acct.js';
+import { acct, C as ACCT, FrameStats, N_CATS } from '../src/core/frame-acct.js';
 import { scanCodeOfVk } from '../src/win32/dinput8.js';
 import { BLOCK_COUNTS_BASE } from '../src/cpu/memory.js';
 import { refreshApiOpt } from '../src/core/api-opt.js';
@@ -32,7 +32,16 @@ export class NodeScenario {
     this.results = [];
     // (frame intervals per phase, from the Direct3D presents: percentiles in the phase report)
     this.frameDts = []; this.lastPresentAt = 0;
-    if (!vm.host.frameHook) vm.host.frameHook = () => { const n = this.nowMs(); if (this.lastPresentAt) this.frameDts.push(n - this.lastPresentAt); this.lastPresentAt = n; };
+    // (every frame's categories, as the browser host keeps them: the phase reports' slow frames by category, the same
+    // FrameStats report as the page's [frames] lines; the categories summed per phase for its totals)
+    this.frameAcct = new FrameStats(); this.phaseCats = new Float64Array(N_CATS);
+    if (!vm.host.frameHook) vm.host.frameHook = () => this.framePresented();
+  }
+  framePresented() {
+    const n = this.nowMs(), cats = acct.frame();
+    for (let i = 0; i < N_CATS; i++) this.phaseCats[i] += cats[i];
+    if (this.lastPresentAt) { const dt = n - this.lastPresentAt; this.frameDts.push(dt); this.frameAcct.add(dt, cats, n, acct.lastReads); }
+    this.lastPresentAt = n;
   }
   now() { return (this.nowMs() - this.t0) / 1000; }
   push(ev) { this.vm.host.inputQueue.push(ev); }
@@ -134,7 +143,9 @@ export class NodeScenario {
   }
   /** Close the running phase (its guest instructions, guest-category time per instruction) and open `label`. */
   mark(label, t) {
-    const cats = acct.frame(), d3d = this.vm.d3dDevice;
+    // (the phase's frames' categories and the time since the last present; a run without presents: all of it)
+    const rest = acct.frame(), cats = Float64Array.from(this.phaseCats, (v, i) => v + rest[i]), d3d = this.vm.d3dDevice;
+    this.phaseCats.fill(0);
     const cpu = process.cpuUsage();
     // (the emulator thread's own CPU time: unlike the categories' wall-clock time, not inflated while the thread waits
     // for a core on a loaded machine)
@@ -148,7 +159,11 @@ export class NodeScenario {
       r.dt = { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: dts[dts.length - 1] ?? 0, over34: dts.filter((d) => d > 34).length, over40: dts.filter((d) => d > 40).length };
       r.apiTop = this.apiTop();
       r.picks = (this.vm.sched?.picks ?? 0) - p.picks; // (scheduling decisions: Sleep(0) spins, yields)
+      // (the page's phase report over the same frames: slow frames by category, hitches, worst frames)
+      const ph = this.frameAcct.phase(label, this.nowMs());
+      r.frameAcct = { ...ph, text: undefined };
       this.results.push(r);
+      this.log(`[frames] node mark ${label}: ${ph.text}`);
       this.log(`[frames] node phase ${p.label}: ${secs.toFixed(1)} s, ${frames} frames, ${(g / 1e6).toFixed(0)} M guest instructions, guest ${(cats[ACCT.guest] / 1000).toFixed(2)} s = ${r.guestMsPerMInsn.toFixed(3)} ns per instruction; api ${(cats[ACCT.api] / 1000).toFixed(2)} s, jit ${(cats[ACCT.jit] / 1000).toFixed(2)} s, interp ${(cats[ACCT.interp] / 1000).toFixed(2)} s, wait ${(cats[ACCT.wait] / 1000).toFixed(2)} s, CPU ${cpuS.toFixed(1)} s${threadCpuS !== null ? `, thread CPU ${threadCpuS.toFixed(1)} s` : ''}; frame ms p50 ${r.dt.p50.toFixed(1)} p90 ${r.dt.p90.toFixed(1)} p99 ${r.dt.p99.toFixed(1)} max ${r.dt.max.toFixed(0)}, > 34 ms ${r.dt.over34}, > 40 ms ${r.dt.over40}`);
       this.log(`[apitop] ${p.label} (ms per frame, calls per frame, µs per call): ${r.apiTop.map(([k, ms, c, us]) => `${k} ${(ms / Math.max(1, frames)).toFixed(2)} (${(c / Math.max(1, frames)).toFixed(0)}, ${us.toFixed(1)})`).join(', ')}`);
       // (--jit-profile: the phase's transitions by kind, chained transitions and fallback steps)
@@ -158,7 +173,7 @@ export class NodeScenario {
       if (prof?.size) { this.log(`[d3dx] ${p.label} D3DX image work (ms, count): ${[...prof].sort((a, b) => b[1].ms - a[1].ms).slice(0, 16).map(([k, e]) => `${k}: ${e.ms.toFixed(0)}/${e.n}`).join('; ')}`); prof.clear(); }
       if (ls && this.vm.apiTimes) { const dl = (k) => (ls[k] ?? 0) - (lp[k] ?? 0); this.log(`[d3dx] ${p.label} locks: ${dl('whole')} whole, ${dl('rect')} rect (${(100 * dl('rectPx') / Math.max(1, dl('rectOfPx'))).toFixed(0)}% of their surfaces), ${dl('readOnly')} read-only`); }
     }
-    if (!this.phase) { this.apiTop(); this.jitProf?.(); }
+    if (!this.phase) { this.apiTop(); this.jitProf?.(); this.frameAcct.phase(label, this.nowMs()); }
     this.frameDts = [];
     this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now(), picks: this.vm.sched?.picks ?? 0, locks: { ...(d3d?.lockStats ?? {}) } }; // (epoch ms: phases matched with outside measurements, perf stat -I)
   }
