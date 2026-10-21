@@ -154,7 +154,8 @@ test('download first on a thin link: one block per request (a 4 MiB request woul
   assert.ok(p.done);
   assert.ok(calls.every((c) => c.end - c.start <= BLOCK), `request sizes ${calls.map((c) => (c.end - c.start) >> 10)} KiB`);
   calls.length = 0;
-  const f = new HttpBackend('/game/w2/', tree(), { store: new MemBlockStore(), encoded: true, net: new NetLink({ bw: 20 << 20, fixed: true }) });
+  // (unitRequests off: the 4 MiB download as planned, not cut at its blocks for the server's precompressed units)
+  const f = new HttpBackend('/game/w2/', tree(), { store: new MemBlockStore(), encoded: true, unitRequests: false, net: new NetLink({ bw: 20 << 20, fixed: true }) });
   await f.downloadAll({}, () => false, { alone: true });
   assert.ok(calls.some((c) => c.end - c.start === 4 * BLOCK));
 }));

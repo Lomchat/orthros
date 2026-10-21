@@ -159,7 +159,8 @@ test('learned prefetch: the server orders the blocks sessions needed; the backen
     const progress = {};
     await b.prefetch([['a.big', 3], ['a.big', 0], ['a.big', 1], ['missing.big', 0]], progress);
     assert.equal(progress.done, true);
-    assert.deepEqual(fetched, [[3 * MiB, FILE.length], [0, 2 * MiB]], 'block 3 (partial), then blocks 0-1 in one request');
+    // (blocks 0-1 one download, one request per block: the server's precompressed units, see rangeUnits)
+    assert.deepEqual(fetched, [[3 * MiB, FILE.length], [0, MiB], [MiB, 2 * MiB]], 'block 3 (partial), then blocks 0-1 in one download');
     const n = requests.length;
     assert.deepEqual(b.open('a.big').read(MiB - 5, 10), FILE.subarray(MiB - 5, MiB + 5));
     assert.equal(requests.length, n, 'served from the store');

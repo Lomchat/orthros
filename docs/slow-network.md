@@ -117,6 +117,49 @@ Movies and music are not what the game waits for to start; on a link that is not
   the game is not streaming now (`HttpBackend.streams`); a stream keeps its read-ahead.
 - A read of a media file is never answered with made-up bytes: it waits for the network as any other.
 
+## Precompressed units (2026-10-21)
+
+Every request of `/gamez` used to be compressed on the fly (zstd-3, else gzip-4; 256 MB of encoded ranges kept in
+memory). Behind Cloudflare the origin only ever sees `Accept-Encoding: gzip, br` (no zstd): production sent gzip-4,
+wire/raw 0.69 over 21,740 requests. Brotli at quality 11 saves far more, but costs 1.7-4.8 s of a core per MiB — never
+on the request path. So the server keeps **units** compressed ahead, for every game and runtime
+(`src/host/br-cache.js`):
+
+- **A unit** is a whole 1 MiB block of a file version (its tail for the last block) or a single 64 KiB piece, of the
+  file or of its light copy (`unitOf` in `src/vfs/http-backend.js`: the shapes the shared reader asks for). Independent
+  brotli streams cannot be joined (each has its own header and last meta-block, and a piece compressed alone uses the
+  static dictionary where joined pieces would back-reference): one unit is one response, `Content-Encoding: br`,
+  decoded by the browser.
+- **Served** when a request is exactly a unit, accepts br and has no `pad` (in `sendRangeEncoded`, before the in-memory
+  cache; it beats zstd on the fly too); `netStats.brHits` counts them (`/api/netstats`, with the cache's own `brCache`
+  stats). A unit brotli makes less than 8 % smaller is kept as an empty `.raw` marker: sent as it is, never made again.
+  A request that misses goes the dynamic way — zstd-3 if accepted, else **brotli quality 5** if accepted (~14 % fewer
+  bytes than gzip-4 for ~+8 ms per MiB), else gzip-4 — and asks for its unit.
+- **Made** by a forked child (`src/host/br-cache-worker.js`) niced to 19, one unit at a time (one core at most),
+  pausing while the 1-minute load average is ≥ 24 or the disk is over 85 % full (it evicts meanwhile). Order: the live
+  misses, the most asked first; then each manifest's learned order (`/api/prefetch`, earliest `t` first), the browser
+  ports' manifests first — a block learned whole (or without its pieces' mask) as a block unit, else its learned pieces;
+  a listed texture's light copy first (by pieces: a light copy is read on a link that is not fast). The first half of
+  the budget, shared between the manifests, is their **launch set**: pinned (evicted last). More of each order is made
+  while the cache is under its low mark. Rebuilt at start and every hour from the learned files.
+- **Kept** in `--br-cache <dir>` (default `<learn>/../brcache`, i.e. `/var/lib/orthros2/brcache` on the live server;
+  none without `--learn`, `off` for none), at most `--br-cache-bytes` (1.5 GiB): `<k[0:2]>/<k>/` per file version, `k`
+  the sha1 of the file's resolved real path, size and mtime (and the light copy's shape: `LIGHT_SIDE`, size, offset —
+  manifests sharing a `base/` file share its units), `meta.json` and `b<block>.br` / `p<piece>.br` files written
+  through a temporary file renamed. The index is rebuilt from the disk at start. Over the budget, least recently used
+  out (unpinned first) down to 90 % of it. Never stale: a changed size or mtime is another key, the generator checks
+  the file before and after reading it, and a sweep (at start, hourly) removes the versions of files gone or changed.
+- **Client** (`HttpBackend.fetchBackgroundNow`, `rangeUnits`): a compressed background range that covers several units
+  goes as one request per unit, in parallel (HTTP/2 through Cloudflare: ~300 B of headers each), joined — whole blocks
+  where they fit, else pieces (runs across a block boundary too), at most 16 parts; the download fails if any part
+  does. The game's own reads are unchanged: the synchronous XHR of a Windows game stays one request (on a slow link it
+  is mostly a single piece already: a unit), and so do the parked asynchronous reads (`fetchForeground`).
+- **Measured** (one 1 MiB sample block per file, against gzip-4's bytes): brotli 11 per block 72 % (Morrowind.bsa
+  40-69 %, gta3.img 67-68 %, Morrowind.esm 77 %, halflife.wad 86 %), per independent piece 80 %, brotli 5 on the fly
+  86 %. Not measured yet: the hit rate and the bytes saved on the live server; Cloudflare passing an origin's
+  `Content-Encoding: br` through unchanged was seen for gzip only (to check:
+  `curl -D - -H 'Accept-Encoding: gzip, br' 'https://orthros.chalco.website/gamez/<manifest>/<path>?r=0-65536&p=1'`).
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

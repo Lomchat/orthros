@@ -67,6 +67,35 @@ const PRIO = { readAhead: [1, 0], ahead: [2, 0], miss: [3, 100], fill: [4, 150],
 /** wire length of a response (its encoded body: what crossed the link), else the decoded length */
 const wireOf = (len, header) => { const n = Number(header); return Number.isFinite(n) && n > 0 ? n : len; };
 
+/**
+ * Transport units (docs/slow-network.md "Precompressed units"): the server keeps some ranges of a file compressed ahead
+ * at brotli's best (src/host/br-cache.js) — a whole block (the file's tail for its last one), or a single piece — and
+ * answers a request of exactly that shape from them. unitOf: the unit [start, end) of a file of `size` bytes is (a
+ * block first: a file or a tail of one piece is its block), or null.
+ */
+export function unitOf(start, end, size) {
+  if (start % BLOCK === 0 && end === Math.min(size, start + BLOCK)) return { kind: 'b', index: start / BLOCK };
+  if (start % CHUNK === 0 && end === Math.min(size, start + CHUNK)) return { kind: 'p', index: start / CHUNK };
+  return null;
+}
+/** a background request of more units than this goes as one (see rangeUnits) */
+const MAX_UNIT_PARTS = 16;
+/**
+ * [start, end) of a file of `size` bytes cut at its units — whole blocks where they fit, else pieces —: [[a, b], ...],
+ * or null when it is one unit, not aligned, or more than MAX_UNIT_PARTS of them (the last part may be no unit: a run
+ * of pieces past `end`'s cut, as before).
+ */
+export function rangeUnits(start, end, size) {
+  if (!(start < end) || end > size || start % CHUNK) return null;
+  const out = [];
+  for (let pos = start; pos < end;) {
+    const e = pos % BLOCK === 0 && Math.min(size, pos + BLOCK) <= end ? Math.min(size, pos + BLOCK) : Math.min(end, pos + CHUNK);
+    out.push([pos, e]); pos = e;
+    if (out.length > MAX_UNIT_PARTS) return null;
+  }
+  return out.length > 1 ? out : null;
+}
+
 /** Block the calling worker for `ms` (the reads are synchronous: nothing else can run meanwhile anyway). */
 function pause(ms) {
   try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
@@ -97,6 +126,8 @@ export class HttpBackend {
     this.retryWaits = opts.retryWaits ?? RETRY_WAITS;
     // the server's compressed ranges (/gamez/...?r=start-end: zstd/gzip Content-Encoding, decoded by the browser)
     this.encoded = !!opts.encoded;
+    // (a compressed background range cut at its transport units, see rangeUnits; false: one request as asked)
+    this.unitRequests = opts.unitRequests ?? true;
     /** session id sent with the compressed ranges (the server learns the order blocks are needed in, see prefetch) */
     this.session = opts.session ?? '';
     this.store = opts.store ?? null;
@@ -575,6 +606,24 @@ export class HttpBackend {
     if (!abortable) tok.keep = true;
     let wire = 0, ok = false;
     try {
+      // (compressed ranges: one request per transport unit the range covers, in parallel — each answered from the
+      // server's precompressed units when it has them, see rangeUnits; the parts all here or the download fails)
+      const parts = this.encoded && this.unitRequests ? rangeUnits(start, end, this.lookup(path)?.file?.size ?? 0) : null;
+      if (parts) {
+        let first = true;
+        const ress = await Promise.all(parts.map(([a, b]) => fetch(this.rangeUrl(path, a, b, !learn, learn), { signal: ctl?.signal }).then((r) => { if (first) { first = false; this.net.firstByte(tok); } return r; })));
+        if (ress.some((r) => r.status !== 206 && r.status !== 200)) return undefined;
+        const bodies = await Promise.all(ress.map((r) => r.arrayBuffer()));
+        const data = new Uint8Array(end - start);
+        for (let i = 0; i < parts.length; i++) {
+          const d = new Uint8Array(bodies[i]);
+          wire += wireOf(d.length, ress[i].headers?.get?.('content-length'));
+          if (d.length !== parts[i][1] - parts[i][0]) return undefined;
+          data.set(d, parts[i][0] - start);
+        }
+        ok = true;
+        return data;
+      }
       const res = await fetch(this.rangeUrl(path, start, end, !learn, learn), { ...(this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } }), signal: ctl?.signal });
       this.net.firstByte(tok);
       if (res.status !== 206 && res.status !== 200) return undefined;

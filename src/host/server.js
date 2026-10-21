@@ -1,7 +1,7 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue]
+// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue]
 //   --engines-dir: the installed engine releases of the browser ports (default data_engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
@@ -11,6 +11,8 @@
 //            and the small profile files first sessions wrote (shared first-launch profile; --profile-seed-quorum: the
 //            distinct sessions that must report a set identical before it is offered, default 2), and the shared snapshots
 //            of the games' machines new players start from (docs/snapshot.md, stage 3)
+//   --br-cache: where /gamez keeps its precompressed transport units (br-cache.js; default <learn>/../brcache, none
+//            without --learn; `off`: none), at most --br-cache-bytes of them (default 1.5 GiB)
 //   --snapshot-jobs: when a page asks for a shared snapshot there is none of, a headless browser session of a new
 //            player makes it (tools/snapshot-publish.mjs, one at a time, through the project's browser slots);
 //            --snapshot-queue: the request is only queued, in <learn>/snapshots/queue.json, for tools/snapshot-jobs.mjs
@@ -21,7 +23,8 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
-import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK } from '../vfs/http-backend.js';
+import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK, unitOf } from '../vfs/http-backend.js';
+import { createBrCache } from './br-cache.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
 import path from 'node:path';
@@ -228,6 +231,48 @@ export function createServer(opts = {}) {
   };
   // (each entry: [path, block, mask (0: unknown), t (ms from its earliest session's first read)])
   const prefetchList = (name) => [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k, v]) => { const i = k.lastIndexOf('#'); return [k.slice(0, i), Number(k.slice(i + 1)), v.mask ?? 0, Math.round(v.t)]; });
+
+  /**
+   * Precompressed transport units (br-cache.js, docs/slow-network.md "Precompressed units"): opts.brCacheDir, at most
+   * opts.brCacheBytes. Made first for the requests that missed them, then from each manifest's learned order (its
+   * earliest reads first: the launch sets, pinned) — the browser ports' first, a listed texture's light copy before
+   * the file. A learned block whose pieces are all known (or not known) is a block unit, else its pieces are.
+   */
+  const brSeedUnits = function* (man, list) {
+    const files = new Map(); // rel -> { file, st, light, size } | null
+    const at = (rel) => {
+      if (!files.has(rel)) {
+        let v = null;
+        try {
+          const light = rel.startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, rel) : null;
+          const file = light ? light.file : !rel.startsWith(LIGHT_DIR + '/') && resolveGameFile(man, rel);
+          if (file) { const st = light?.st ?? fs.statSync(file); v = { file, st, light, size: light ? light.copy.size : st.size }; }
+        } catch { /* gone */ }
+        files.set(rel, v);
+      }
+      return files.get(rel);
+    };
+    const lights = new Set();
+    for (const [rel, block, mask] of list) {
+      // (a light copy is read on a link that is not fast, by pieces: its pieces — one block when it is one piece)
+      if (man.lightCopies && !rel.startsWith(LIGHT_DIR + '/') && !lights.has(rel)) {
+        lights.add(rel);
+        const l = at(`${LIGHT_DIR}/${rel}`);
+        if (l) for (let c = 0; c * LEARN_CHUNK < l.size; c++) yield { file: l.file, st: l.st, light: l.light, unit: l.size <= LEARN_CHUNK ? { kind: 'b', index: 0 } : { kind: 'p', index: c } };
+      }
+      const f = at(rel), b0 = block * LEARN_BLOCK;
+      if (!f || b0 >= f.size) continue;
+      const pieces = Math.ceil(Math.min(LEARN_BLOCK, f.size - b0) / LEARN_CHUNK), all = pieces >= 32 ? 0xffffffff : (2 ** pieces - 1);
+      if (!mask || ((mask & all) >>> 0) === all) { yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'b', index: block } }; continue; }
+      for (let c = 0; c < pieces; c++) if (mask & (1 << c)) yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'p', index: block * (LEARN_BLOCK / LEARN_CHUNK) + c } };
+    }
+  };
+  const brCache = opts.brCacheDir ? createBrCache({
+    dir: opts.brCacheDir, maxBytes: opts.brCacheBytes, log: opts.brCacheLog ?? ((m) => console.log(m)), ...opts.brCacheOptions,
+    sources: () => [...manifests].filter(([name]) => learnFile(name) && fs.existsSync(learnFile(name)))
+      .sort(([, a], [, b]) => (runtimeOf(a) === 'win32') - (runtimeOf(b) === 'win32'))
+      .map(([name, man]) => ({ name, units: () => brSeedUnits(man, prefetchList(name)) })),
+  }) : null;
 
   /**
    * Learned GL programs, per manifest: the programs sessions had to build at a draw (key, GLSL sources, attribute
@@ -513,7 +558,7 @@ export function createServer(opts = {}) {
   // request to the last byte handed to the socket, simulated link included)
   // (testing: opts.netTrace, a file — one line per compressed range answered: start s, duration s, kind, file, range, bytes sent)
   const netTrace = opts.netTrace ? (line) => { try { fs.appendFileSync(opts.netTrace, line + '\n'); } catch { /* no trace */ } } : null;
-  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, demand: { requests: 0, sent: 0, ms: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
+  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, brHits: 0, demand: { requests: 0, sent: 0, ms: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
   const encodedCache = new Map(); let encodedBytes = 0;
   const ENCODED_CACHE_MAX = opts.encodedCacheBytes ?? 256 * 1024 * 1024;
@@ -526,11 +571,13 @@ export function createServer(opts = {}) {
     const start = Number(rm[1]), end = Math.min(Number(rm[2]), light ? light.copy.size : st.size);
     if (!(start < end) || end - start > 64 * 1024 * 1024) return send(res, 416, 'bad range');
     const accept = String(req.headers['accept-encoding'] ?? '');
-    const enc = zlib.zstdCompress && /\bzstd\b/.test(accept) ? 'zstd' : /\bgzip\b/.test(accept) ? 'gzip' : null;
+    // (on the fly: zstd, else brotli at a quality that costs about gzip's time — Cloudflare forwards gzip and br only —,
+    // else gzip)
+    const br = /\bbr\b/.test(accept);
+    let enc = zlib.zstdCompress && /\bzstd\b/.test(accept) ? 'zstd' : br ? 'br' : /\bgzip\b/.test(accept) ? 'gzip' : null;
     // (&pad=1: one byte (0) before the range — a page that reads it as text, the only synchronous binary read of a
     // window, x-user-defined, drops it; without it a range starting with a byte-order mark would be decoded as UTF-8/16)
     const pad = /[?&]pad=1(&|$)/.test(req.url) ? 1 : 0;
-    const key = `${light ? LIGHT_DIR + '|' : ''}${file}|${st.mtimeMs}|${start}-${end}|${enc}|${pad}`;
     const reply = (body, encoding) => {
       netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
       const k = netStats[kind]; k.requests++;
@@ -544,28 +591,44 @@ export function createServer(opts = {}) {
       // byte is the round trip, as on a real connection)
       if (link) viaLink(res, body.length, go, () => { res.writeHead(200, h); res.flushHeaders(); }); else go();
     };
-    const hit = encodedCache.get(key);
-    if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
-    const buf = Buffer.alloc(end - start + pad);
-    const read = light ? (done) => readLight(file, light.copy, start, end, buf, pad, done) : (done) => fs.open(file, 'r', (err, fd) => {
-      if (err) return done(err);
-      fs.read(fd, buf, pad, end - start, start, (err2, n) => { fs.close(fd, () => {}); done(err2 ?? (n === end - start ? null : new Error('short read'))); });
-    });
-    read((err) => {
-      if (err) return send(res, 500, String(err));
-      if (!enc) return reply(buf, null);
-      const t0 = performance.now();
-      const done = (err3, out) => {
-        netStats.encodeMs += performance.now() - t0;
-        // (not worth it: sent as is — the encoded form is still cached, as the raw bytes)
-        const entry = !err3 && out.length < buf.length * 0.92 ? { body: out, encoding: enc } : { body: buf, encoding: null };
-        encodedCache.set(key, entry); encodedBytes += entry.body.length;
-        for (const [k, v] of encodedCache) { if (encodedBytes <= ENCODED_CACHE_MAX) break; encodedCache.delete(k); encodedBytes -= v.body.length; }
-        reply(entry.body, entry.encoding);
-      };
-      if (enc === 'zstd') zlib.zstdCompress(buf, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }, done);
-      else zlib.gzip(buf, { level: 4 }, done);
-    });
+    // a unit made ahead (br-cache.js: a whole block or a single piece, brotli 11) when the request is one and takes br;
+    // missed, it is asked for (made in the background) and this request goes the dynamic way
+    const unit = brCache && br && !pad ? unitOf(start, end, light ? light.copy.size : st.size) : null;
+    const pre = unit && brCache.lookup(file, st, light, unit);
+    if (pre?.raw) enc = null; // (brotli saves too little there: as it is)
+    else if (pre) {
+      return fs.readFile(pre.path, (err, body) => {
+        if (!err && body.length === pre.bytes) { netStats.brHits++; return reply(body, 'br'); }
+        brCache.drop(file, st, light, unit); dynamic();
+      });
+    } else if (unit) brCache.want(file, st, light, unit);
+    dynamic();
+    function dynamic() {
+      const key = `${light ? LIGHT_DIR + '|' : ''}${file}|${st.mtimeMs}|${start}-${end}|${enc}|${pad}`;
+      const hit = encodedCache.get(key);
+      if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
+      const buf = Buffer.alloc(end - start + pad);
+      const read = light ? (done) => readLight(file, light.copy, start, end, buf, pad, done) : (done) => fs.open(file, 'r', (err, fd) => {
+        if (err) return done(err);
+        fs.read(fd, buf, pad, end - start, start, (err2, n) => { fs.close(fd, () => {}); done(err2 ?? (n === end - start ? null : new Error('short read'))); });
+      });
+      read((err) => {
+        if (err) return send(res, 500, String(err));
+        if (!enc) return reply(buf, null);
+        const t0 = performance.now();
+        const done = (err3, out) => {
+          netStats.encodeMs += performance.now() - t0;
+          // (not worth it: sent as is — the encoded form is still cached, as the raw bytes)
+          const entry = !err3 && out.length < buf.length * 0.92 ? { body: out, encoding: enc } : { body: buf, encoding: null };
+          encodedCache.set(key, entry); encodedBytes += entry.body.length;
+          for (const [k, v] of encodedCache) { if (encodedBytes <= ENCODED_CACHE_MAX) break; encodedCache.delete(k); encodedBytes -= v.body.length; }
+          reply(entry.body, entry.encoding);
+        };
+        if (enc === 'zstd') zlib.zstdCompress(buf, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }, done);
+        else if (enc === 'br') zlib.brotliCompress(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length } }, done);
+        else zlib.gzip(buf, { level: 4 }, done);
+      });
+    }
   };
 
   const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game), ...(opts.accountMaxUserBytes ? { maxUserBytes: opts.accountMaxUserBytes } : {}), ...(opts.accountGoogle ? { google: opts.accountGoogle } : {}) }) : null;
@@ -671,8 +734,8 @@ export function createServer(opts = {}) {
       }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
       if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return send(res, 200, gameTreeJson(m[1], man), { 'Content-Type': 'application/json' }); }
-      // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd or gzip
-      // when that saves enough (Content-Encoding: the browser decodes before the page sees them), else sent as they are;
+      // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd, brotli
+      // or gzip when that saves enough (a unit made ahead at brotli 11 when there is one: br-cache.js) (Content-Encoding: the browser decodes before the page sees them), else sent as they are;
       // /gamez/<manifest>/.light/<path>: the file's light copy (light-copies.js), when the version has them
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
       if (m) {
@@ -802,7 +865,7 @@ export function createServer(opts = {}) {
         }
         return send(res, 200, JSON.stringify(prefetchList(m[1])), { 'Content-Type': 'application/json' });
       }
-      if (p === '/api/netstats') return send(res, 200, JSON.stringify(netStats), { 'Content-Type': 'application/json' });
+      if (p === '/api/netstats') return send(res, 200, JSON.stringify({ ...netStats, ...(brCache ? { brCache: brCache.stats() } : {}) }), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
       if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
       // browser ports: the version's page (its runtime's own, src/ports/<runtime>/), and the engine releases they name,
@@ -867,8 +930,9 @@ export function createServer(opts = {}) {
   // sockets, which closeAllConnections() leaves open)
   server.mmo = mmo;
   const closeServer = server.close.bind(server);
-  server.close = (cb) => { mmo.close(); return closeServer(cb); };
-  server.on('close', () => mmo.close());
+  server.close = (cb) => { mmo.close(); brCache?.close(); return closeServer(cb); };
+  server.on('close', () => { mmo.close(); brCache?.close(); });
+  server.brCache = brCache; // (tests: its state, drain)
   return server;
 }
 
@@ -878,7 +942,10 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
   const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts'), mmoDir = arg('--mmo');
   for (const d of [telemetryDir, learnDir, accountsDir, mmoDir]) if (d) fs.mkdirSync(d, { recursive: true });
-  const server = createServer({ manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
+  // (--br-cache <dir>: the precompressed units, default <learn>/../brcache — off without --learn, or with `off`;
+  // --br-cache-bytes: their budget, 1.5 GiB by default)
+  const brArg = arg('--br-cache'), brCacheDir = brArg === 'off' ? null : brArg ?? (learnDir ? path.join(learnDir, '..', 'brcache') : null);
+  const server = createServer({ brCacheDir, brCacheBytes: arg('--br-cache-bytes') ? Number(arg('--br-cache-bytes')) : undefined, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
   // (a restart — every deployment — saves the shared worlds' last changes first: they are written a few seconds after)
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.mmo.flush(); } catch (e) { console.error('mmo flush:', e); } finally { process.exit(0); } });
