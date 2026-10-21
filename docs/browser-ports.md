@@ -778,6 +778,13 @@ city the engine's own WebAssembly takes 1.4 ms a frame (CPU profile: the rest is
 decides the frame rate), WebGL calls 4.2 a draw (1,865 for 446 draws a frame) instead of 7.2 (3,397 for 471) before the
 VAOs and single uploads, 18 % more frames a second under SwiftShader. Link-time optimisation and WebAssembly SIMD were
 not kept: at 1.4 ms of engine work a frame, too little to win.
+2026-10-21 (`perf.mjs --drive --warm 10 --seconds 30 --profile`, `revc-web-3141ff3-r1`, load 20-30, one run each — the
+player on foot in a street with police about): with `--gl discard`, 35 browser frames a second, the engine's work a
+frame p50 8.7 ms, p99 38, max 64; no frame gap over 100 ms; its WebAssembly 1.2 ms a frame (4 % of the time); no
+synchronous WebGL call a frame; the four longest busy stretches (139-238 ms) 92-95 % native time (the GPU process,
+SwiftShader's vertex work), none in the engine's code; the game waited 68 ms in all for its files. With `--gl
+swiftshader` (drawn): 3.5 frames a second, stretches of 0.3-5.7 s — SwiftShader's drawing. Nothing in the engine to
+fix for its hitches here; a real GPU decides them.
 First start of a new browser, the learned list made by sessions with the shared first-launch profile (below): 19 MB
 on the wire before the menu (the sound bank `Audio/sfx.raw`, the menu's textures and fonts, the engine), about 20 MB
 more for a new game's first scene (`models/gta3.img`). With Chrome's network emulation, 50 ms round trip: 85 KB/s, the
