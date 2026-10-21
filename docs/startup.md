@@ -152,6 +152,15 @@ a later phase needs is ready when that phase comes, without taking the game's th
 mounted beside it, e.g. an expansion's base game) have lists of their own, learned from the reads of every game
 mounting them.
 
+- **Learned GL programs and translator changes** (`program-id.js`). The programs are Orthros' own GLSL: a change of
+  the translators makes the learned sources useless. A fixed-function program over an FVF layout (`ff:f<fvf>:…|ff:…`
+  keys, BFME1's 127 of 134) is built from its key alone (`ffProgramFromKey`, the draw path too), so a session rebuilds
+  learned ones with its own translator. Every other entry carries the `PROGRAM_GLSL_VERSION` of the session that built
+  or took it; a session asks `/api/programs/<manifest>?v=<its version>` and gets only those of its version (plus,
+  for a few sessions, entries from before versions existed). `tests/program-version.test.js` hashes the GLSL of a
+  fixed corpus: a translator change that alters it fails until the version is raised. Measured (framebench
+  `--programs`, BFME1 menu, the live list of Oct 1): programs built at a draw 51 → 8, learned ones taken 1 → 44.
+
 - **Learned entries that are blocks of an earlier learned region** (`bg-translate.js`, `Jit.bgInstallNow`). The JIT
   enters a region at any of its blocks (block hash), so a learned entry that is a block of a region installed before
   it was always dropped at install — after being translated (and, with the cache, stored). Sessions that reach code
