@@ -32,7 +32,7 @@ try {
   log(`${name} (${lang || 'no language'}) running, key ${key}`);
   const until = t0 + at * 1000, shown = new Set();
   for (;;) {
-    const s = await page.evaluate(() => ({ status: window.orthros.status, kept: window.orthros.snapshotsKept ?? 0, published: window.orthros.snapshotsPublished ?? 0, at: window.orthros.snapshotKeptAt ?? 0, pending: !!window.orthros.snapshotPending }));
+    const s = await page.evaluate(() => ({ status: window.orthros.status, kept: window.orthros.snapshotsKept ?? 0, published: window.orthros.snapshotsPublished ?? 0, at: window.orthros.snapshotKeptAt ?? 0, pending: !!window.orthros.snapshotPending || (window.orthros.snapshotPublishing ?? 0) > 0 }));
     // (the snapshot lines as they come: a session that ends badly — the page crashed — has said how far it got)
     for (const l of await page.evaluate(() => window.orthros.logs.filter((x) => /snapshot/.test(x)).slice(-8))) if (!shown.has(l)) { shown.add(l); log('  ' + l.slice(0, 300)); }
     if (s.status !== 'running') throw new Error(`the game stopped (${s.status})`);
