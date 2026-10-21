@@ -98,8 +98,9 @@ export function createBrCache(opts) {
     return r;
   };
   // (the light copy's shape in the key too: a new LIGHT_SIDE, or a copy made differently, is another version)
-  const metaOf = (file, st, light) => ({ path: realOf(file), size: st.size, mtimeMs: st.mtimeMs, ...(light ? { light: true, lightSide: LIGHT_SIDE, lightSize: light.copy.size, lightFrom: light.copy.from } : {}) });
-  const keyOf = (meta) => crypto.createHash('sha1').update([meta.path, meta.size, meta.mtimeMs, meta.light ? `light\0${meta.lightSide}\0${meta.lightSize}\0${meta.lightFrom}` : ''].join('\0')).digest('hex');
+  // (lightFormat: a copy redrawn in place — a WAD's, light-copies.js lightWad — told apart from one cut from the file)
+  const metaOf = (file, st, light) => ({ path: realOf(file), size: st.size, mtimeMs: st.mtimeMs, ...(light ? { light: true, lightSide: LIGHT_SIDE, lightSize: light.copy.size, lightFrom: light.copy.from, ...(light.copy.mips ? { lightFormat: 'wad1' } : {}) } : {}) });
+  const keyOf = (meta) => crypto.createHash('sha1').update([meta.path, meta.size, meta.mtimeMs, meta.light ? `light\0${meta.lightSide}\0${meta.lightSize}\0${meta.lightFrom}${meta.lightFormat ? '\0' + meta.lightFormat : ''}` : ''].join('\0')).digest('hex');
   const dirOf = (k) => path.join(dir, k.slice(0, 2), k);
   const entryOf = (file, st, light, make = false) => {
     const meta = metaOf(file, st, light), k = keyOf(meta);
@@ -283,7 +284,7 @@ export function createBrCache(opts) {
     job = e;
     try {
       // (the audio form against the brotli unit's wire bytes: the one made now, or the one kept)
-      const r = await ask({ file, size: st.size, mtimeMs: st.mtimeMs, light: light ? { head: light.copy.head, from: light.copy.from, size: light.copy.size } : null, start, end, dir: e.dir, name, meta: e.meta, minGain: MIN_GAIN,
+      const r = await ask({ file, size: st.size, mtimeMs: st.mtimeMs, light: light ? { head: light.copy.head, from: light.copy.from, size: light.copy.size, ...(light.copy.mips ? { mips: light.copy.mips } : {}) } : null, start, end, dir: e.dir, name, meta: e.meta, minGain: MIN_GAIN,
         br, pcm, brWire: old ? (old.raw ? end - start : old.bytes) : null, pcmGain: PCM_MIN_GAIN });
       if (r.error) { counts.failed++; log(`br-cache: ${file} ${name}: ${r.error}`); return; }
       if (r.stale) { counts.stale++; return; }
