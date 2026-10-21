@@ -110,6 +110,20 @@ export function buildVersion(root = ROOT) {
   return value;
 }
 
+/**
+ * A request's path, decoded, when it is safe to route: never a '..' or '.' segment, a backslash or a NUL once decoded
+ * (WHATWG URL folds a literal '/../' but leaves '..%2f' and '%5c' encoded, so a decoded path could climb out of the
+ * directory a route serves), else null — malformed escapes too.
+ */
+export function requestPath(pathname) {
+  let p; try { p = decodeURIComponent(pathname); } catch { return null; }
+  if (p.includes('\\') || p.includes('\0') || p.split('/').some((s) => s === '..' || s === '.')) return null;
+  return p;
+}
+
+/** `file` is inside the directory `dir` (resolved, a trailing separator: '/srv/orthros2' is not under '/srv/orthros'). */
+export const isUnder = (dir, file) => path.resolve(file).startsWith(path.resolve(dir) + path.sep);
+
 export function createServer(opts = {}) {
   const manifestDir = opts.manifests ? path.resolve(opts.manifests) : null;
   const gamesDir = path.resolve(opts.gamesDir ?? DEFAULT_GAMES_DIR);
@@ -224,6 +238,17 @@ export function createServer(opts = {}) {
   const srcBr = new Map(); // file -> { size, mtimeMs, br (Buffer | null: not worth it | undefined: being made) }
   let srcBrBytes = 0;
   const SRC_BR_MAX = 64 << 20;
+  // (at most SRC_BR_JOBS made at once: a first load's ~150 modules would otherwise fill libuv's 4-thread pool, the game
+  // data's reads — /gamez, /api ranges — waiting behind them)
+  const SRC_BR_JOBS = 2, srcBrJobs = [];
+  let srcBrRunning = 0, srcBrPeak = 0;
+  const srcBrPump = () => {
+    while (srcBrRunning < SRC_BR_JOBS && srcBrJobs.length) {
+      srcBrRunning++; srcBrPeak = Math.max(srcBrPeak, srcBrRunning);
+      let once = false;
+      srcBrJobs.shift()(() => { if (once) return; once = true; srcBrRunning--; srcBrPump(); });
+    }
+  };
   const srcBrotli = (file, st) => {
     const c = srcBr.get(file);
     if (c && c.size === st.size && c.mtimeMs === st.mtimeMs) return c.br ?? null;
@@ -231,16 +256,18 @@ export function createServer(opts = {}) {
     if (st.size > 8 << 20 || st.size < 512) return null; // (small: brotli's gain under a header's size)
     const e = { size: st.size, mtimeMs: st.mtimeMs, br: undefined };
     srcBr.set(file, e);
-    fs.readFile(file, (err, buf) => {
-      if (err || buf.length !== st.size) { srcBr.delete(file); return; }
+    srcBrJobs.push((done) => fs.readFile(file, (err, buf) => {
+      if (err || buf.length !== st.size) { if (srcBr.get(file) === e) srcBr.delete(file); return done(); }
       zlib.brotliCompress(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11, [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length } }, (err2, out) => {
+        done();
         let now = null; try { now = fs.statSync(file); } catch { /* gone */ }
         if (err2 || srcBr.get(file) !== e || !now || now.size !== e.size || now.mtimeMs !== e.mtimeMs) { if (srcBr.get(file) === e) srcBr.delete(file); return; }
         e.br = out.length <= buf.length * 0.92 ? out : null;
         srcBrBytes += e.br?.length ?? 0;
         for (const [k, v] of srcBr) { if (srcBrBytes <= SRC_BR_MAX) break; if (v.br) { srcBrBytes -= v.br.length; srcBr.delete(k); } } // (oldest out)
       });
-    });
+    }));
+    srcBrPump();
     return null;
   };
   const sendSource = (req, res, file, mime) => {
@@ -510,6 +537,8 @@ export function createServer(opts = {}) {
   }) : null;
   /** The home's light covers (light-covers.js): opts.coverDir, none without it. */
   const covers = opts.coverDir ? lightCovers({ dir: opts.coverDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
+  // (made from the start, one at a time in the background: the first home after a deploy already has most of them)
+  if (covers) setImmediate(() => { for (const man of manifests.values()) { let f = null; try { f = coverFile(man); } catch { /* none */ } if (f) covers.make(f); } });
   /** OpenMW engine packages without the example world (openmw-lean.js), kept beside the units: none without them. */
   const lean = opts.brCacheDir ? leanPackages({ dir: path.join(opts.brCacheDir, 'engines'), enginesDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
   // (made from the start for the installed games of their own: not first at a card or a page, the window without it short)
@@ -940,8 +969,9 @@ export function createServer(opts = {}) {
   const openmw = openmwProxy({ getManifest, session: accountApi?.session, ownsToken: accountApi?.ownsPortToken });
   const openmwAccounts = accountBridge({ accountsDir: opts.accountsDir, accountApi, getManifest });
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url, 'http://x');
-    const p = decodeURIComponent(url.pathname);
+    let url; try { url = new URL(req.url, 'http://x'); } catch { return send(res, 400, 'bad path'); }
+    const p = requestPath(url.pathname);
+    if (p === null) return send(res, 400, 'bad path');
     try {
       if (openmwAccounts.handle(req, res, url) || openmw.handle(req, res, url) || mmo.handle(req, res, url)) return;
       // (the multiplayer rooms of a browser port, from its server manager)
@@ -1015,7 +1045,9 @@ export function createServer(opts = {}) {
         const light = covers && !url.searchParams.has('full') ? covers.file(f) : null;
         if (light) return sendFile(req, res, light, 'image/webp', { 'Cache-Control': 'public, max-age=86400' });
         const ext = path.extname(f).toLowerCase();
-        res.writeHead(200, { 'Content-Type': MIME[ext]?.startsWith('image/') ? MIME[ext] : 'image/jpeg', 'Cache-Control': 'public, max-age=86400', 'Cross-Origin-Resource-Policy': 'same-origin',
+        // (the light copy still being made: the full image under the same address, not kept for a day by the browser or a proxy)
+        const pending = !!covers && !url.searchParams.has('full') && covers.pending(f);
+        res.writeHead(200, { 'Content-Type': MIME[ext]?.startsWith('image/') ? MIME[ext] : 'image/jpeg', 'Cache-Control': pending ? 'no-cache' : 'public, max-age=86400', 'Cross-Origin-Resource-Policy': 'same-origin',
           ...(ext === '.svg' ? { 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" } : {}) }); // (an SVG opened by itself runs nothing)
         fs.createReadStream(f).pipe(res);
         return;
@@ -1210,8 +1242,10 @@ export function createServer(opts = {}) {
         return sendEngineFile(req, res, file, 'public, max-age=31536000, immutable');
       }
       if (p.startsWith('/src/') || p.startsWith('/tools/') || p.startsWith('/tests/')) {
-        const file = path.join(ROOT, p);
-        if (!file.startsWith(ROOT)) return send(res, 403, 'forbidden');
+        // (under the tree's own top directory, its real path too: no symlink out of it)
+        const top = path.join(ROOT, p.split('/')[1]), file = path.join(ROOT, p);
+        let real = null; try { real = fs.realpathSync(file); } catch { /* none: 404 below */ }
+        if (!isUnder(top, file) || real && !isUnder(fs.realpathSync(top), real)) return send(res, 403, 'forbidden');
         return sendSource(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream');
       }
       return send(res, 404, 'not found');
@@ -1236,6 +1270,7 @@ export function createServer(opts = {}) {
   server.close = (cb) => { mmo.close(); brCache?.close(); return closeServer(cb); };
   server.on('close', () => { mmo.close(); brCache?.close(); });
   server.brCache = brCache; // (tests: its state, drain)
+  server.srcBrJobs = () => ({ running: srcBrRunning, queued: srcBrJobs.length, peak: srcBrPeak }); // (tests: the src brotli queue)
   return server;
 }
 

@@ -32,7 +32,7 @@ import { LearnedHeat } from '../../cpu/jit/heat.js';
 import { captureVm, restoreVm, notQuiet, persistentChanged } from '../../core/vm-snapshot.js';
 import { encodeSnapshot, decodeSnapshot, SnapshotStale } from '../../core/snapshot.js';
 import { SnapshotWatch } from '../snapshot-watch.js';
-import { PlayableWatch, ReadLog } from '../../vfs/playable-watch.js';
+import { PlayableWatch, ReadLog, ReadReports } from '../../vfs/playable-watch.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
@@ -601,6 +601,7 @@ function takeSnapshot(id) {
  */
 const READS_REPORT_MS = 15000;
 let readsReportAt = 0;
+const readReports = new ReadReports(); // (in order: the playable mark after the reads before it; the final one at once)
 function reportReads(now, mark = null, final = false) {
   readsReportAt = now;
   const { session, lang } = playableMeta, sent = [];
@@ -608,8 +609,7 @@ function reportReads(now, mark = null, final = false) {
     const reads = readLog.take(name, (p) => files.lookup(p)?.file?.size ?? null);
     if (!reads.length && !mark) continue;
     sent.push(`${name} ${reads.length}`);
-    fetch(`/api/prefetch/${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: final,
-      body: JSON.stringify({ session, reads, ...(mark ? { mark: { ...mark, ...(lang ? { lang } : {}) } } : {}) }) }).catch(() => {});
+    readReports.send(name, session, reads, mark ? { ...mark, ...(lang ? { lang } : {}) } : null, final);
   }
   return sent;
 }

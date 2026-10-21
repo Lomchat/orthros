@@ -27,7 +27,8 @@ export const coverArgs = (file, out) => ['-v', 'error', '-nostdin', '-y', '-i', 
 
 /**
  * The light covers of a server: { file(cover) -> the light cover's path when made (and smaller), else null — asking for
- * it to be made —, make(cover) -> Promise of that path or null }. opts: { dir, ffmpeg ('ffmpeg'), log }.
+ * it to be made —, pending(cover) -> true while a light copy may still come (the full image served meanwhile is not to
+ * be cached long), make(cover) -> Promise of that path or null }. opts: { dir, ffmpeg ('ffmpeg'), log }.
  */
 export function lightCovers(opts) {
   const dir = path.resolve(opts.dir), ffmpeg = opts.ffmpeg ?? 'ffmpeg', log = opts.log ?? (() => {});
@@ -51,7 +52,12 @@ export function lightCovers(opts) {
       child.stderr.on('data', (d) => { if (err.length < 2000) err += d; });
       child.on('error', (e) => { if (e.code === 'ENOENT') { missing = true; log('light covers: no ffmpeg, the covers go as they are'); } fs.rm(tmp, { force: true }, () => {}); resolve(null); });
       child.on('close', (code) => {
-        if (code !== 0) { if (code !== null) log(`light covers: ${file}: ${err.trim().split('\n')[0]}`); fs.rm(tmp, { force: true }, () => {}); resolve(null); return; }
+        if (code !== 0) {
+          // (ffmpeg could not make it: the empty "not lighter" mark, keyed by the cover's size and mtime — not tried again
+          // at each home load, tried again once the cover changes; killed by a signal: tried again)
+          if (code !== null) { log(`light covers: ${file}: ${err.trim().split('\n')[0]}`); try { fs.writeFileSync(out, ''); } catch { /* tried again next time */ } }
+          fs.rm(tmp, { force: true }, () => {}); resolve(null); return;
+        }
         try {
           const now = fs.statSync(file), size = fs.statSync(tmp).size;
           if (now.size !== st.size || now.mtimeMs !== st.mtimeMs) { fs.rmSync(tmp, { force: true }); resolve(null); return; } // (changed meanwhile)
@@ -75,6 +81,11 @@ export function lightCovers(opts) {
       try { const s = fs.statSync(out); return s.size > 0 ? out : null; } catch { /* not made yet */ }
       make(cover);
       return null;
+    },
+    pending(cover) {
+      if (missing || !RASTER.test(cover)) return false;
+      let st; try { st = fs.statSync(cover); } catch { return false; }
+      return !fs.existsSync(outOf(lightCoverName(cover, st)));
     },
     make,
   };

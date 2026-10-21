@@ -220,3 +220,26 @@ test('profile seed server: a canonical set is offered with no reporter and stays
     s.close();
   });
 });
+
+test('profile seed: a region-cased language (pt-BR) lowercased the same way by the canonical sets and the tool', () => {
+  const ok = [['AppData/G/Options.ini', toBase64(bytes('Detail = Medium'))]];
+  assert.deepEqual(canonSets({ v: 1, sets: [{ lang: 'pt-BR', files: ok }, { lang: 'pt-br', files: ok }] }).map((s) => s.lang), ['pt-br'], 'one per language, whatever its case');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-seedlang-'));
+  try {
+    const learn = path.join(d, 'learn'), prof = path.join(d, 'prof');
+    fs.mkdirSync(path.join(prof, 'AppData', 'G'), { recursive: true });
+    fs.writeFileSync(path.join(prof, 'AppData', 'G', 'Options.ini'), 'Detail = Medium');
+    const tool = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'tools', 'profile-seed-make.mjs'), ...a, '--learn', learn], { encoding: 'utf8' });
+    const put = tool('put', 'g', 'pt-BR', prof);
+    assert.equal(put.status, 0, put.stderr);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(learn, seedCanonFile('g')), 'utf8')).sets.map((s) => s.lang), ['pt-br']);
+    // (the learned sets are stored lowercased by the server: promote finds them by the declared case too)
+    const learned = [['AppData/G/Options.ini', toBase64(bytes('Detail = High'))]];
+    fs.writeFileSync(path.join(learn, 'profileseed-g.json'), JSON.stringify({ sets: [{ lang: 'pt-br', key: 'k', files: learned, sessions: ['a'], at: 1 }] }));
+    const promote = tool('promote', 'g', 'pt-BR');
+    assert.equal(promote.status, 0, promote.stderr);
+    assert.match(tool('show', 'g', 'pt-BR').stdout, /g pt-br: canonical set .*\n.*Options\.ini[\s\S]*Detail = High/);
+    assert.equal(tool('remove', 'g', 'PT-BR').status, 0);
+    assert.equal(fs.existsSync(path.join(learn, seedCanonFile('g'))), false);
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});

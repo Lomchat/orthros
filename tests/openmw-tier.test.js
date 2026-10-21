@@ -22,6 +22,19 @@ test('the GPU\'s kind from the renderer string WebGL gives', () => {
     'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU (0x00002560) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'discrete',
     'ANGLE (AMD, AMD Radeon RX 6700 XT (0x000073DF) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'discrete',
     'ANGLE (Intel, Intel(R) Arc(TM) A770 Graphics (0x000056A0) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'discrete',
+    'ANGLE (Intel, Intel(R) Arc(TM) A380 Graphics (0x000056A5) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'discrete',
+    'ANGLE (Intel, Intel(R) Arc(TM) A370M Graphics (0x00005693) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'discrete',
+    'ANGLE (Intel, Intel(R) Arc(TM) B580 Graphics (0x0000E20B) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'discrete',
+    'ANGLE (Intel, Intel(R) Arc(TM) Pro A60 Graphics (0x000056B2) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'discrete',
+    // (the laptops' integrated Arc: Meteor Lake, Lunar Lake, Arrow Lake)
+    'ANGLE (Intel, Intel(R) Arc(TM) Graphics (0x00007D55) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'integrated',
+    'ANGLE (Intel, Intel(R) Arc(TM) 140V GPU (16GB) (0x000064A0) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'integrated',
+    'ANGLE (Intel, Intel(R) Arc(TM) 130T GPU (0x00007D67) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'integrated',
+    'ANGLE (Intel, Mesa Intel(R) Arc(tm) Graphics (MTL), OpenGL 4.6)': 'integrated',
+    // (AMD's APUs with an "RX Vega N" name, the Vega 56/64 card)
+    'ANGLE (AMD, AMD Radeon RX Vega 11 Graphics (0x000015D8) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'integrated',
+    'ANGLE (AMD, AMD Radeon(TM) RX Vega 10 Graphics (0x000015D8) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'integrated',
+    'ANGLE (AMD, Radeon RX Vega (0x0000687F) Direct3D11 vs_5_0 ps_5_0, D3D11)': 'discrete',
     'Adreno (TM) 740': 'integrated', 'Mali-G78': 'integrated',
     'WebKit WebGL': 'unknown', '': 'unknown', null: 'unknown',
   };
@@ -90,4 +103,18 @@ test('the engine page asks the tier module before its own rule, its log saying t
     const real = withQualityTier(fs.readFileSync(release, 'utf8'));
     for (const k of ['orthrosTierReady = import', 'window.orthrosTier(__devMem)', 'orthrosTierChoice.kind']) assert.equal(real.split(k).length - 1, 1, `${id}: ${k}`);
   }
+});
+
+test('installed in the page: the world as view-grow.js sees it (joined and simulated) — no look while it still loads', () => {
+  const rtx = 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4080 (0x00002704) Direct3D11 vs_5_0 ps_5_0, D3D11)';
+  const storage = new Map(), store = { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v) };
+  let tick = null;
+  const win = { location: { search: '' }, orthrosFrames: { p99: 90 }, __omwMPEnabled: true, omw: { state: { state: 'Joined' } } };
+  install(win, { gpu: rtx, storage: store, setInterval: (f) => { tick = f; return 1; }, clearInterval: () => { tick = null; } });
+  win.orthrosTier(8);
+  for (let i = 0; i < FRAMES.looks * 3; i++) tick();
+  assert.equal(storage.has(KEY), false, 'joined, not simulated yet: the loading\'s frames not looked at');
+  win.omw.state.simReady = '1';
+  for (let i = 0; i < FRAMES.looks * 3 && tick; i++) tick();
+  assert.deepEqual(JSON.parse(storage.get(KEY)), { gpu: rtx, tier: 'mid' });
 });

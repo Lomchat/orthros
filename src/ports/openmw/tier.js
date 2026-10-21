@@ -7,6 +7,7 @@
 // Options (the engine's user settings, read over the page's defaults) still win. Loaded by the engine page before its
 // engine starts (src/host/openmw.js, withQualityTier): the page's tier choice calls window.orthrosTier(deviceMemory).
 import { gpuClass, gpuInfo } from '../../host/web/gpu-class.js';
+import { inWorld as worldShown } from './view-grow.js';
 
 export const TIERS = ['low', 'mid', 'high'];
 const BY_GPU = { software: 'low', integrated: 'mid', discrete: 'high' };
@@ -68,7 +69,8 @@ export function install(win = globalThis, o = {}) {
   };
   const watch = (tier) => {
     const s = { p99s: [], done: false };
-    const inWorld = o.inWorld ?? (() => { const st = win.omw?.state ?? {}; return st['orthros.view'] !== undefined || st.state === 'Joined'; });
+    // (the world shown — joined and simulated —, the one test of view-grow.js: no loading's frames in the looks)
+    const inWorld = o.inWorld ?? (() => worldShown(win));
     const timer = (o.setInterval ?? setInterval)(() => {
       const next = framesLook(s, { frames: win.orthrosFrames, inWorld: inWorld(), tier });
       if (next) { try { storage?.setItem(KEY, JSON.stringify({ gpu: gpu ?? null, tier: next })); } catch { /* full */ } }

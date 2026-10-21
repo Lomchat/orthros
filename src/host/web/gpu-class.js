@@ -19,8 +19,13 @@ export function gpuInfo(gl = null) {
 // "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU …)", "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device …))",
 // "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, …)")
 const SOFTWARE = /swiftshader|llvmpipe|softpipe|lavapipe|software|basic render|microsoft basic|gdi generic/i;
-const INTEGRATED = /\bintel\b|iris|uhd graphics|\bhd graphics|apple (m\d|gpu)|\bmali\b|adreno|powervr|videocore|radeon\(tm\) graphics|radeon graphics|radeon (vega )?\d+ graphics|radeon \d{3}m\b|vega \d+ graphics/i;
-const DISCRETE = /nvidia|geforce|quadro|\brtx\b|\bgtx\b|radeon (rx|pro|r9|r7|hd \d)|radeon \d{4}\b|\barc\b|firepro/i;
+// (Intel's Arc: the discrete cards by their model, A3xx-A7xx, B5xx, Pro A/B — "Intel(R) Arc(TM) A770 Graphics", "Arc(TM)
+// A370M Graphics", "Arc(TM) Pro A60 Graphics"; the laptops' integrated Arc without one or by another — Meteor Lake's
+// "Intel(R) Arc(TM) Graphics", Lunar Lake's "Intel(R) Arc(TM) 140V GPU (16GB)", Arrow Lake's "Arc(TM) 130T GPU".
+// AMD's APUs "Radeon RX Vega 11 Graphics" and "Radeon(TM) RX Vega 8 Graphics" are integrated, the "Radeon RX Vega" card
+// (Vega 56/64) discrete.)
+const INTEGRATED = /\bintel\b|iris|uhd graphics|\bhd graphics|\barc\b|apple (m\d|gpu)|\bmali\b|adreno|powervr|videocore|radeon\(tm\) graphics|radeon graphics|radeon (vega )?\d+ graphics|radeon \d{3}m\b|vega \d+ graphics/i;
+const DISCRETE = /nvidia|geforce|quadro|\brtx\b|\bgtx\b|radeon (rx(?! vega \d+ graphics)|pro|r9|r7|hd \d)|radeon \d{4}\b|\barc(\(tm\))? (pro )?[ab]\d{2,3}m?\b|firepro/i;
 
 /** The kind of GPU a renderer string names: 'software', 'integrated', 'discrete' or 'unknown'. */
 export function gpuClass(renderer) {

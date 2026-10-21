@@ -82,3 +82,47 @@ export class ReadLog {
   }
   get names() { return [...this.parts.keys()]; }
 }
+
+/** Chrome refuses a keepalive request once the keepalive bodies in flight pass 64 KiB (the page's, all requests). */
+export const KEEPALIVE_BYTES = 60000;
+/** reads in one body of a final report (~50 bytes each: a body well under KEEPALIVE_BYTES) */
+export const FINAL_PIECE = 1000;
+
+/**
+ * The reports of a page's reads to the server's learned order (POST /api/prefetch/<version> { session, reads, mark? }),
+ * the same for the Windows worker and the data worker of the engines that run in the page:
+ *   - in order: each waits for the earlier ones to be answered — a playable mark is never handled before the reads that
+ *     came before it (server.js learnMark flags what the session had read by then);
+ *   - a final one (the page leaving) at once, keepalive so that it outlives the page — split into bodies of FINAL_PIECE
+ *     reads, keepalive only while the keepalive bodies in flight stay under KEEPALIVE_BYTES (over it Chrome fails the
+ *     request at once and the reads, taken from the log, are lost), the rest as plain requests (they complete when the
+ *     worker lives on, after a stop).
+ */
+export class ReadReports {
+  constructor(o = {}) {
+    this.fetch = o.fetch ?? ((url, init) => fetch(url, init));
+    this.chain = Promise.resolve();
+    this.keepaliveBytes = 0; // (keepalive bodies in flight)
+    this.enc = new TextEncoder();
+  }
+  /** Send `reads` (and `mark`) of version `name` for `session`; the promise of the chain (tests). */
+  send(name, session, reads, mark = null, final = false) {
+    const url = `/api/prefetch/${encodeURIComponent(name)}`;
+    const init = (body, keepalive) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive, body });
+    if (!final) {
+      const body = JSON.stringify({ session, reads, ...(mark ? { mark } : {}) });
+      this.chain = this.chain.then(() => this.fetch(url, init(body, false))).catch(() => {}).then(() => {});
+      return this.chain;
+    }
+    const sent = [];
+    for (let i = 0; i === 0 || i < reads.length; i += FINAL_PIECE) {
+      const last = i + FINAL_PIECE >= reads.length;
+      const body = JSON.stringify({ session, reads: reads.slice(i, i + FINAL_PIECE), ...(mark && last ? { mark } : {}) });
+      const bytes = this.enc.encode(body).length, keepalive = this.keepaliveBytes + bytes <= KEEPALIVE_BYTES;
+      if (keepalive) this.keepaliveBytes += bytes;
+      let r; try { r = Promise.resolve(this.fetch(url, init(body, keepalive))); } catch (e) { r = Promise.reject(e); }
+      sent.push(r.catch(() => {}).then(() => { if (keepalive) this.keepaliveBytes -= bytes; }));
+    }
+    return Promise.all(sent).then(() => {});
+  }
+}

@@ -61,6 +61,9 @@ const asSet = (files) => { const sel = seedSelect(files); return { key: seedKey(
 const describe = (files) => files.map(([p, d]) => `    ${p} (${fromBase64(d).length} bytes)${/\.(ini|cfg|txt)$/i.test(p) ? '\n' + new TextDecoder().decode(fromBase64(d)).trim().split(/\r?\n/).map((l) => '      | ' + l).join('\n') : ''}`).join('\n');
 const learnedSets = (name) => { try { return JSON.parse(fs.readFileSync(path.join(learn, `profileseed-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`), 'utf8')).sets ?? []; } catch { return []; } };
 
+/** a game language as the canonical and learned sets name it: lowercased, as the server looks it up (server.js seedLang) */
+const langKey = (l) => String(l ?? '').toLowerCase();
+
 /** the win32 versions × languages of a catalog (--only id[:lang],... to restrict) */
 function targets() {
   const dir = opt('games-dir') ?? die('--games-dir <dir> needed');
@@ -68,9 +71,10 @@ function targets() {
   const out = [];
   for (const [id, m] of loadGameCatalog(dir)) {
     if ((m.runtime ?? 'win32') !== 'win32' || m.profileSeed === false) continue;
-    for (const lang of m.languages?.length ? m.languages : ['']) {
-      if (only && !only.some(([i, l]) => i === id && (l === undefined || l === lang))) continue;
-      out.push({ id, lang });
+    for (const declared of m.languages?.length ? m.languages : ['']) {
+      const lang = langKey(declared);
+      if (only && !only.some(([i, l]) => i === id && (l === undefined || langKey(l) === lang))) continue;
+      out.push({ id, lang, declared });
     }
   }
   return out;
@@ -97,13 +101,13 @@ if (cmd === 'plan') {
   const runs = Math.max(1, Number(opt('runs', 2))), accept = opt('accept', 'agree');
   const scratch = path.resolve(opt('scratch', '/tmp/orthros-scratch/profile-seed-make'));
   let failed = 0;
-  for (const { id, lang } of targets()) {
+  for (const { id, lang, declared } of targets()) {
     if (args.includes('--missing') && readCanon(id).some((s) => s.lang === lang)) { console.log(`${id} ${lang}: canonical set present, skipped`); continue; }
     const sets = [];
     for (let r = 0; r < runs; r++) {
       const dir = path.join(scratch, `${id}-${lang || 'x'}-${r}`), prof = path.join(dir, 'profile');
       fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(prof, { recursive: true });
-      const t0 = Date.now(), code = await runHeadless(id, lang, prof, path.join(dir, 'run.log'));
+      const t0 = Date.now(), code = await runHeadless(id, declared, prof, path.join(dir, 'run.log'));
       const set = asSet(dirFiles(prof));
       console.log(`${id} ${lang} run ${r + 1}/${runs}: exit ${code}, ${((Date.now() - t0) / 1000).toFixed(0)} s, ${set.files.length} seed file(s), key ${set.files.length ? set.key : '-'} (log ${path.join(dir, 'run.log')})`);
       if (set.files.length) sets.push(set);
@@ -122,21 +126,21 @@ if (cmd === 'plan') {
   if (!args.includes('--keep')) fs.rmSync(scratch, { recursive: true, force: true });
   process.exit(failed ? 1 : 0);
 } else if (cmd === 'put') {
-  const [, name, lang, dir] = pos;
+  const [, name, lang0, dir] = pos, lang = lang0 === undefined ? undefined : langKey(lang0);
   if (!learn || !name || lang === undefined || !dir) die('usage: put <manifest> <lang> <profile-dir> --learn <dir>');
   const set = asSet(dirFiles(dir));
   if (!set.files.length) die(`no seed file in ${dir}`);
   const kept = writeCanon(name, lang, { files: set.files, note: opt('note', `put from ${dir}`) });
   console.log(`${name} ${lang}: canonical set ${kept.key}\n${describe(kept.files)}`);
 } else if (cmd === 'promote') {
-  const [, name, lang] = pos;
+  const [, name, lang0] = pos, lang = lang0 === undefined ? undefined : langKey(lang0);
   if (!learn || !name || lang === undefined) die('usage: promote <manifest> <lang> --learn <dir> [--key K]');
   const c = learnedSets(name).filter((s) => s.lang === lang && (!opt('key') || s.key === opt('key'))).sort((a, b) => b.sessions.length - a.sessions.length || b.at - a.at)[0];
   if (!c) die(`no learned set for ${name} ${lang}${opt('key') ? ' with key ' + opt('key') : ''}`);
   const kept = writeCanon(name, lang, { files: c.files, note: `promoted from the learned set ${c.key} (${c.sessions.length} reporter(s))` });
   console.log(`${name} ${lang}: canonical set ${kept.key}\n${describe(kept.files)}`);
 } else if (cmd === 'show' || cmd === 'remove') {
-  const [, name, lang] = pos;
+  const [, name, lang0] = pos, lang = lang0 === undefined ? undefined : langKey(lang0);
   if (!learn || !name) die(`usage: ${cmd} <manifest> [<lang>] --learn <dir>`);
   if (cmd === 'remove') { for (const s of readCanon(name)) if (lang === undefined || s.lang === lang) writeCanon(name, s.lang, null); console.log('removed'); }
   for (const s of readCanon(name)) console.log(`${name} ${s.lang}: canonical set ${s.key}${s.note ? ' — ' + s.note : ''}\n${describe(s.files)}`);

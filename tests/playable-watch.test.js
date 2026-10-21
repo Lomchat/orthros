@@ -88,3 +88,37 @@ test('one session marks the version and the version it requires, each with its o
   assert.deepEqual(mod.map((e) => [e[1], e[4]]), [[0, 1], [1, 0]], 'the mod\'s block 1: not before playable (read by the required version only)');
   assert.deepEqual(dep.map((e) => [e[1], e[4]]), [[0, 1], [1, 1]]);
 });
+
+test('ReadReports: in order (a mark after the reports before it); a final one at once, keepalive bodies under 64 KiB', async () => {
+  const { ReadReports, KEEPALIVE_BYTES, FINAL_PIECE } = await import('../src/vfs/playable-watch.js');
+  const calls = [], pending = [];
+  const fetch = (url, init) => new Promise((resolve, reject) => { calls.push({ url, ...init, body: JSON.parse(init.body), bytes: init.body.length }); pending.push({ resolve, reject }); });
+  const r = new ReadReports({ fetch });
+  const reads = (n, from = 0) => Array.from({ length: n }, (_, i) => [`Data/file${from + i}.big`, 0, 65536, 1000 + i]);
+  // (a large periodic report still uploading: the mark waits for it)
+  const a = r.send('v', 's', reads(3000), null);
+  const b = r.send('v', 's', reads(5, 3000), { kind: 'playable', t: 9 });
+  await new Promise((s) => setTimeout(s, 10));
+  assert.equal(calls.length, 1, 'the mark waits');
+  assert.equal(calls[0].keepalive, false); assert.equal(calls[0].body.reads.length, 3000); assert.equal(calls[0].url, '/api/prefetch/v');
+  pending[0].reject(new TypeError('network')); // (a failed report does not stop the chain)
+  await a; await new Promise((s) => setTimeout(s, 0));
+  assert.equal(calls.length, 2); assert.deepEqual(calls[1].body.mark, { kind: 'playable', t: 9 });
+  // (the final report: not behind the chain, split, keepalive while the bodies in flight stay under the limit)
+  r.send('v', 's', reads(1), null);
+  const before = calls.length;
+  const fin = r.send('v', 's', reads(4500, 10000), null, true);
+  const finals = calls.slice(before);
+  assert.equal(finals.length, Math.ceil(4500 / FINAL_PIECE), 'at once, in pieces');
+  assert.deepEqual(finals.flatMap((c) => c.body.reads).map((x) => x[0]), reads(4500, 10000).map((x) => x[0]), 'every read');
+  assert.ok(finals.every((c) => c.bytes < KEEPALIVE_BYTES));
+  const kept = finals.filter((c) => c.keepalive);
+  assert.ok(kept.length >= 1 && kept.reduce((s, c) => s + c.bytes, 0) <= KEEPALIVE_BYTES, 'the keepalive ones within the budget');
+  assert.ok(finals.some((c) => !c.keepalive), 'the rest as plain requests');
+  for (const p of pending) p.resolve(new Response(null, { status: 204 }));
+  await fin; await b;
+  assert.equal(r.keepaliveBytes, 0, 'answered: the budget free again');
+  // (an empty final report with a mark: one body)
+  const n = calls.length; r.send('v', 's', [], { kind: 'playable', t: 1 }, true);
+  assert.equal(calls.length, n + 1); assert.equal(calls[n].keepalive, true); assert.deepEqual(calls[n].body, { session: 's', reads: [], mark: { kind: 'playable', t: 1 } });
+});

@@ -20,6 +20,7 @@ import { MemBlockStore } from './opfs-store.js';
 import { BLOCK, CHUNK } from './http-backend.js';
 import { LIGHT_DIR, treeFiles } from './game-tree.js';
 import { flagged, launchFirst, launchSet, setBytes, WIRE_RATIO } from './launch-set.js';
+import { ReadReports } from './playable-watch.js';
 
 /** The reads the engine used, sent to the server's learned order every so often. */
 const REPORT_MS = 15000;
@@ -44,7 +45,7 @@ export function createDataWorker(post) {
     ctrl: null, data: null, version: null, parts: new Map(), handles: new Map(), ready: null, timers: [],
     session: '', lang: null, t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null,
     prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null,
-    legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(),
+    legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(), reports: new ReadReports(),
   };
   return (m) => {
     if (m.init) {
@@ -205,7 +206,8 @@ function report(final = false, marked = null) {
   if ((!W.reads.length && !marked) || !W.session) return;
   // (a mark goes with every read before it, in one report: the server flags what the session had read by then)
   const reads = W.reads.splice(0, marked ? MARK_READS : 5000), name = W.version.parts[0].name;
-  fetch(`/api/prefetch/${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: final, body: JSON.stringify({ session: W.session, reads, ...(marked ? { mark: marked } : {}) }) }).catch(() => {});
+  // (in order: a mark after the reports before it; the final one at once, keepalive while small enough — playable-watch.js)
+  W.reports.send(name, W.session, reads, marked, final);
 }
 
 /**
