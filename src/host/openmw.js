@@ -41,12 +41,15 @@ export function openmwInstalled(man, enginesDir) {
  * The bytes a page downloads for the engine itself at its first launch (its release's e/ files, brotli when served so:
  * the home's "playable after", which a browser that ran this engine release before does not pay again), or 0.
  */
-export function openmwEngineWire(man, enginesDir) {
+export function openmwEngineWire(man, enginesDir, lean = null) {
   try {
     const release = JSON.parse(fs.readFileSync(engineFile(enginesDir, man.openmw.engine, 'release.json'), 'utf8'));
     let n = 0;
     for (const f of release.files ?? []) {
       if (!/^e\/[^/]+\/[^/]+\.(js|wasm|data)$/.test(f)) continue;
+      // (a game of its own loads the package without the example world once the server made it: openmw-lean.js)
+      const leanBytes = f.endsWith('/openmw.data') && !man.openmw.example ? lean?.size(man.openmw.engine) : null;
+      if (leanBytes) { n += leanBytes; continue; }
       const p = engineFile(enginesDir, man.openmw.engine, f); if (!p) continue;
       const br = p + '.br';
       n += fs.existsSync(br) ? fs.statSync(br).size : fs.statSync(p).size;

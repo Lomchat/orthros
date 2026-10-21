@@ -73,6 +73,13 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   fewer levels, the remaining levels as they are, two at least (an engine meeting a compressed texture without stored
   levels may turn its mipmapping filter off for good, even once the file replaces it in place; a texture of fewer
   than three levels is not lightened, nor one drawn without levels — a menu's).
+  A TGA picture of a screen's size (2026-10-21: uncompressed truecolour or greyscale, its longest side
+  `TGA_LIGHT_FROM` = 1024 or more — a loading screen's, a map's; a smaller one may be a menu's picture drawn at its own
+  size) has one too: a TGA of its own, its sides halved until the longest is `LIGHT_SIDE`, each pixel the mean of those
+  it stands for (`lightTga`, `tgaLight`; made from the file when read, the last 32 MB of them kept). Morrowind's eleven
+  loading screens are 1024 × 1024 × 24-bit, 3 MB each (2.8 MB on the wire): its loading screen shows a new random one
+  every 5 s while the game is not started (OpenMW's `LoadingScreen::changeWallpaper`), so at 85 KB/s each new picture
+  held the page 33 s and fed the next change; light, 197 KB each.
   Derived at each request (a header of its own, then a run of the file: nothing stored, the game files never changed),
   served as `/gamez/<manifest>/.light/<path>` (compressed ranges, read reports learned like the file's). The tree tells
   each such file's light size (`light`). For the browser ports only (`manifest.lightCopies`, the catalog's: `false` in a
@@ -158,8 +165,18 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   `HttpBackend.prefetch` with `learnedOnly`, the pieces as the startup set fetches them) into the same OPFS store; pause
   and resume (the pieces here are skipped; the progress is kept in `localStorage['orthros.launch.<manifest>']`, the
   pieces here counted again each half second — `setBytes`). Starting a game stops it first, as the whole download.
-- Not measured yet: the launch sizes on the live server (no session marked before this change), and whether OpenMW's
-  in-world mark comes as described (no browser run).
+- Not measured yet: the launch sizes on the live server (no session marked before this change). OpenMW's in-world mark
+  was seen in a browser on 2026-10-21 (the 85 KB/s run below: `playable-<manifest>.json` `{ marks: 1 }`, 446 of the
+  French order's 1781 entries flagged).
+- **While the player waits** (2026-10-21): the learned order fetched in the background puts its launch set first
+  (`launchFirst`: the flagged entries, then the others, each in its order; the media still last on a link not fast) —
+  followed from the game's position, a player sitting in the menu gets the rest of the way to playable (a new game's
+  first load) before what sessions read later. The data worker tells the page the way left while the game is not
+  playable (`launchWatch`: `{ launch: { bytes, here, wireLeft, seconds, done } }` every 2 s — the launch set's bytes,
+  those here, the wire bytes left at the link's measured wire/decoded ratio, their time at its measured rate), and the
+  header shows it (`shell.setData` kind `launch`: « Prêt à jouer dans ~N min » / "Ready to play in ~N min", the
+  learned order's own pill hidden meanwhile; gone once all of it is here or the game is playable). Every runtime whose
+  page forwards `GameData.onProgress` (OpenMW's header today).
 
 ## Precompressed units (2026-10-21)
 

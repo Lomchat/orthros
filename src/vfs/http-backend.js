@@ -335,7 +335,8 @@ export class HttpBackend {
     let bytes = 0, prevT = L.pos >= 0 ? L.entries[L.pos].t : null;
     for (let r = L.pos + 1, n = 0; r < L.entries.length && n < 4096; r++, n++) {
       const e = L.entries[r];
-      if (e.t === null || (prevT !== null && e.t - prevT > STEP_GAP_MS)) break;
+      // (an earlier time: the order starts again — its launch set first, then the rest, launch-set.js launchFirst)
+      if (e.t === null || (prevT !== null && (e.t - prevT > STEP_GAP_MS || e.t < prevT))) break;
       prevT = e.t;
       if (this.peekBlockHere(e.path, e.size, e.mtime, e.index)) continue;
       const P = BLOCK / CHUNK, c0 = e.index * P, pieces = Math.ceil((Math.min(e.size, (e.index + 1) * BLOCK) - e.index * BLOCK) / CHUNK);

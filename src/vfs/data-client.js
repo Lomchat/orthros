@@ -94,7 +94,7 @@ export class GameData {
     const ctrl = this.ctrl;
     this.stats = { hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0, syncFetches: 0, get waits() { return this.misses; }, get waitMs() { return this.stallMs; },
       get waitBytes() { return this.bytes; }, get fetchedBytes() { return Atomics.load(ctrl, 2); } };
-    this.listeners = { startup: [], whole: [], ahead: [], real: [] };
+    this.listeners = { startup: [], whole: [], ahead: [], real: [], launch: [] };
     // (o.worker: a test's stand-in, { postMessage, onmessage })
     this.worker = o.worker ?? new Worker(new URL('./data-worker.js', import.meta.url), { type: 'module' });
     this.ready = new Promise((resolve, reject) => {
@@ -106,6 +106,7 @@ export class GameData {
         else if (m.startup) for (const f of this.listeners.startup) f(m.startup);
         else if (m.whole) for (const f of this.listeners.whole) f(m.whole);
         else if (m.ahead) for (const f of this.listeners.ahead) f(m.ahead);
+        else if (m.launch) for (const f of this.listeners.launch) f(m.launch);
         else if (m.real) {
           for (const k of m.real) { this.realHere.add(k); this.lightHere.delete(k); }
           for (const k of m.lightHere ?? []) if (!this.realHere.has(k)) this.lightHere.add(k);
@@ -192,12 +193,15 @@ export class GameData {
   reloads(on = true) { this.reloadsInPlace = !!on; }
 
   /**
-   * The loading in the background, as it goes: `fn({ kind: 'ahead', done, total, finished })` — the learned order —, and
-   * `fn({ kind: 'whole', bytes, total, done })` — the whole game.
+   * The loading in the background, as it goes: `fn({ kind: 'ahead', done, total, finished })` — the learned order —,
+   * `fn({ kind: 'whole', bytes, total, done })` — the whole game —, and `fn({ kind: 'launch', bytes, here, wireLeft,
+   * seconds, done })` — the way to playable (the launch set: what the game still waits for until it plays without
+   * holding; `seconds` at the link's measured rate, null until measured), while the game is not playable yet.
    */
   onProgress(fn) {
     this.listeners.ahead.push((p) => fn({ kind: 'ahead', ...p }));
     this.listeners.whole.push((p) => fn({ kind: 'whole', ...p }));
+    this.listeners.launch.push((p) => fn({ kind: 'launch', ...p }));
   }
 
   /** What earlier sessions read first, loaded before the engine starts; `onProgress({ bytes, total, done })`. */
