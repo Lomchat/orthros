@@ -518,10 +518,10 @@ Measured with headless Chromium on a local server (Playwright, every response's 
   nothing is saved and the first sessions wait for them read by read — 1 MB/s through tools/net-proxy.mjs, a fresh
   browser: menu 50.1 s / 36.4 MB / 11.1 s of demand wait against 42.2 s / 32.9 MB / 5.1 s: not kept.
   The page's game data opened and its startup set loaded beside the engine's download and start, the files mounted
-  once the engine's file system exists (the same day, GoldSrc and re3 pages): Half Strike's menu 50.3 s / 39.4 MB
-  against 42.2 s / 32.9 MB, Half-Life's 17.8 s / 13.2 MB against 16.4 s / 11.1 MB (1 MB/s, same conditions — the
-  startup set began only 0.5 s earlier, the data worker's own modules waiting behind the engine's download, and the
-  link carried more of the learned order before the menu): not kept.
+  once the engine's file system exists (the same day, GoldSrc and re3 pages): at 1 MB/s Half Strike's startup set
+  began at 4.6 s against 4.2 s and ended at 11.6 against 10.8 (the data worker's own modules wait behind the engine's
+  download), so nothing came sooner; the menus (50.3 / 42.2 s) differed by the engine's boot on a loaded machine, the
+  learned order filling the link meanwhile (more MB before the menu as it lasts longer): not kept.
 - **Covers**: `/api/cover/<version>` sends a light copy once made (`src/host/light-covers.js`: 960 px wide at most,
   WebP, made by ffmpeg in the background, one at a time, niced, kept in `--covers <dir>`, default
   `<learn>/../covers`; `?full` the image itself; without ffmpeg the covers go as they are): the home's nine covers
