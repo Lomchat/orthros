@@ -42,7 +42,7 @@ export const CAT_INFO = {
   wait: 'guest threads waiting inside a nested call (pacing)',
   sleep: 'every guest thread waits: the worker sleeps until the next wake-up (pacing)',
   ioWait: 'guest threads waiting for a file read on the network (the worker idle, or a nested wait for a read)',
-  late: 'the worker resumed later than planned (timer clamping, garbage collection, other tasks)',
+  late: 'the worker resumed later than planned (timer clamping, garbage collection, other tasks), or a host wait woke after its deadline (a coarse host timer)',
 };
 export const N_CATS = CATS.length;
 /** Pacing categories: excluded from a frame's work. */
