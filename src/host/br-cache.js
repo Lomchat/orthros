@@ -59,7 +59,8 @@ export function pinShares(wants, cap) {
  * the rest: see nextJob), loadLimit (24: the 1-minute load
  * average generation waits under, half the machine's 48 cores), diskLimit (0.85: the disk's used fraction it waits
  * under), pauseMs (30000), idleMs (60000: the child kept that long without work), sweepMs (hourly: the sweep and the
- * launch sets again), log, onMade (tests: (file, unit) for each unit made) }.
+ * launch sets again), log, onMade (tests: (file, unit) for each unit made), generate (false: nothing made — a frozen
+ * copy served as it is, for measurements: tools/data-matrix.mjs) }.
  */
 export function createBrCache(opts) {
   const dir = path.resolve(opts.dir);
@@ -279,7 +280,7 @@ export function createBrCache(opts) {
   };
 
   const pump = () => {
-    if (pumping || closed) return pumping;
+    if (pumping || closed || opts.generate === false) return pumping; // (frozen: a measurement serves what is there)
     pumping = (async () => {
       try {
         await ready;
