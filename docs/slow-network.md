@@ -170,7 +170,13 @@ for the next sessions. Generic: the data system of every runtime (the ports' str
 Measured (the same run beside the former tree, at the same time): reads on the network in play 37 → 13 (2.8 → 0.7
 MB; the rest: the music stream's next bytes, files first read late), the game's own requests over the session 124 →
 68; the cost, the bytes downloaded over the session 414 → 820 MB (W3D.big, Audio.big and others whole, in the
-background; kept in the store).
+background; kept in the store). Frames, `?dbg=ORTHROS_WHOLE_AFTER_MISSES=0` against the default, two runs at the same
+time, ten minutes of play (`--gl-discard`): with the browser's block store (`--opfs`, as players have it) frames over 40
+ms 29 → 32 per minute, over 100 ms 0.6 → 0.2 per minute, the worst 238 → 204 ms, the game's requests 102 → 56, the
+store's writes on the emulator thread 1.5 → 3.2 s in all (~2 ms per block); with the harness's memory store
+(`--memprefetch`: 1.1 GB more kept in the worker's memory) frames over 40 ms 29 → 37 per minute (`late` 0.2 → 0.5 ms per
+frame: garbage collection and the event loop between slices), over 100 ms 0.7 → 0.3. Fewer stalls of 100 ms and more in
+every pair; frames over 40 ms within the noise with the real store, more with the memory store.
 tests/http-backend-whole.test.js.
 
 ## Playable after (2026-10-21)
