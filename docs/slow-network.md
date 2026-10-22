@@ -153,6 +153,26 @@ Movies and music are not what the game waits for to start; on a link that is not
   the game is not streaming now (`HttpBackend.streams`); a stream keeps its read-ahead.
 - A read of a media file is never answered with made-up bytes: it waits for the network as any other.
 
+## Archives read at random in play: wanted whole (2026-10-22)
+
+The learned order holds what earlier sessions needed, in their order; what a game reads as it plays — a sound bank, the
+models and textures of what comes into view — differs from one session to the next. BFME 1.08, ten minutes of play in
+headless Chromium (`--memprefetch`, a copy of the live learned lists, `headless --net-trace`): 37-47 reads went to the
+network after the loading screen, only 5 of them common to two sessions (Audio.big, W3D.big, _patch108.big, Music.big,
+textures: 64 KiB pieces here and there), each a frame waiting (`ioWait`, then `late` while the read's tasks run).
+
+`HttpBackend.noteMiss` → `noteMissAfter`: once the learned prefetch pass is over (`learnedDone`), a file missed in
+`WHOLE_AFTER_MISSES` (3) distinct blocks — not a media file, not a stream — is wanted whole (`wantWhole`: its other
+blocks in the background fill's `later` queue, after the blocks the game touched and those near them, the link quiet
+for NEAR_QUIET_MS). Only on a fast link and with a block store (OPFS, or the harness's memory store): the blocks stay
+for the next sessions. Generic: the data system of every runtime (the ports' streamed files already asked it).
+
+Measured (the same run beside the former tree, at the same time): reads on the network in play 37 → 13 (2.8 → 0.7
+MB; the rest: the music stream's next bytes, files first read late), the game's own requests over the session 124 →
+68; the cost, the bytes downloaded over the session 414 → 820 MB (W3D.big, Audio.big and others whole, in the
+background; kept in the store).
+tests/http-backend-whole.test.js.
+
 ## Playable after (2026-10-21)
 
 The first pause of the learned order (2 s, `STARTUP_GAP_MS`) is not when a game becomes playable: OpenMW's French
