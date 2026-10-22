@@ -86,6 +86,7 @@ fall back to the in-thread backend). Nothing else: no account, no address beyond
 | `gpu` | GPU time per frame: `mean`, `p50`, `p90`, `p99`, `max` (ms), `over33`, `frames` timed, `disjoint` results dropped, `h`; `{state: 'unavailable'}` without `EXT_disjoint_timer_query_webgl2`, `{state: 'none'}` without a Direct3D device (or with the probes off) |
 | `render` | render worker: the emulator's waits for it (`waitMs`, `fenceMs`, `frameMs`, `readbackMs`) and its replay time (`replayMs`), ms per frame |
 | `busy`, `mips` | share of the time the emulator's worker ran the game, emulated MIPS |
+| `hostWait` | the emulator's host waits (`src/core/host-wait.js`, docs/thread-scheduling.md "Host wake-up overshoot"): `waits` measured, `overMean` how late they woke on average (ms), `lateMsPerFrame` the part of it that lengthened frames (the frame accounting's `late`), `spinMsPerFrame` the spin that made a frame limiter's last waits precise, `est` / `timerEst` the measured overshoot of Atomics.wait / of the pump's timer |
 | `visible`, `fullscreen`, `status`, `renderMode` | share of the window the tab was visible / in full screen, the page's state, the rendering used |
 | `audio` | the sound output over the window (`src/host/web/sound.js` `AudioStats`): `ctx` the AudioContext's last state (`running`, `suspended` — Chrome's autoplay policy before the player's first click —, `interrupted`, `none`: not set up), `rate` its sample rate, `lat` output + base latency (ms), `run` share of the window it was running, `out` frames/s the AudioWorklet played (~`rate` when it plays, 0 stalled), `mix` (`worklet`: the worklet mixes the DirectSound buffers from guest memory; `worker`: the emulator's worker mixes into the ring), `peak` the mix's highest level (0: silence), `play` / `bufs` the most DirectSound buffers playing / existing, `dec` browser audio decoder (WebCodecs, MP3 of movies) failures, `resumes` resumes tried at gestures and `changes` state changes so far, `err` the output's set-up error. The report prints a verdict per session and per bench: `OK`, `SUSPENDED` (never ran: no click), `STALLED`, `SILENT` (buffers played, zero mix), `QUIET` (no buffer played), `ERROR` |
 
@@ -105,10 +106,28 @@ start, seconds from the launch: the time to the menu, the map load...), `anchors
 `interrupted` (seconds hidden, focus losses), `audio` (as in the summaries, over the whole run), `env` (with `audioDecoder` / `audioWorklet`: WebCodecs audio and AudioWorklet available), and per phase: the worker's phase report (frame-acct.js
 `FrameStats.phase`: frames, fps, slow frames > 33 / 40 / 50 / 100 ms and per minute (`slowPaced`: those > 33 ms whose
 work fits in 33.4 ms; the summary panel shows > 40 ms per minute too), frame and work percentiles,
-mean time by category, slow frames' excess shares, hitches, the 3 worst frames) with, from the stats of the phase,
+mean time by category, slow frames' excess shares, hitches, the 3 worst frames, `hostWait` — the phase's host waits:
+`overMean` / `overMax` / `hist` how late they woke (ms; histogram bounds 0.1, 0.25, 0.5, 1, 2, 4, 8, 16), `lateMsPerFrame`,
+`spins` / `spinMsPerFrame`, `est`, `timerEst`, `injected` (an injected timer), `adaptive`) with, from the stats of the phase,
 draws per frame, GL calls per frame, GPU time, render worker waits, busy and visible shares. Phases: `start` (launch to
 the first mark: downloads, start-up, intro), then the scenario's marks; the scenario's last mark `end` closes the last
 phase.
+
+**Host-timing probe** (`hostTiming` of the bench record, `src/host/web/timing-probe.js`): at the start and at each
+mark, a small worker of the page (the timer resolution is the process's: the emulator's worker sees the same) measures
+how late this browser wakes it up — `atomicsWait1` (Atomics.wait(1 ms), as the emulator's own short waits),
+`atomicsWait1Timer` (the same while a 4 ms setTimeout is pending: Chrome may raise the timer resolution for it),
+`setTimeout0` / `setTimeout1` (chained from their own callbacks), `messageHop` (a MessageChannel round) — each `{ n,
+mean, p50, p90, max }` in ms past the time asked (24 samples), plus `battery` (`{ charging, level }` from
+navigator.getBattery, null without it), `label` / `at` (the phase it opens, seconds from the launch) and `injected`
+(`?dbg=ORTHROS_HOST_TIMER_Q`: the probe then applies that timer too — a check of the path). On a Windows machine with
+the default timer, Atomics.wait(1) reads ~+14 ms; with a 1 ms resolution ~+1 ms; Linux ~+0.06 ms. The summary panel
+shows one line per probe and, per phase, the host waits' lateness per frame and the spin (`wake-ups late ms/frame
+(spin)`); `telemetry-report.mjs --bench` prints both.
+
+What to read in the next BFME1 run on the owner's machine: `atomicsWait1` p50 (coarse ~14 ms, or ~1 ms) and the battery
+(the resolution may change with it during the run); per phase `lateMsPerFrame` (before 2026-10-22 that lateness hid in
+`wait`) and `spinMsPerFrame`; menu frame p90 back to ~35 ms (it was 46.8, three 15.625 ms ticks).
 
 Volume: the 0.5 s samples (~0.3 kB each) as before, plus ~2 kB per summary (every 20 s) and ~5 kB per bench record.
 

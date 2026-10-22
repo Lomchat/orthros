@@ -30,6 +30,8 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const target = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--'));
 if (!target) { console.error('usage: node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600]'); process.exit(2); }
 const untilApi = opt('until-api', 'CreateProcessA'), limit = Number(opt('limit', 600));
+// --dbg NAME=value,...: debug globals set before the run (the page's ?dbg= switches, e.g. ORTHROS_HOST_TIMER_Q=15.625)
+for (const kv of (opt('dbg', '') || '').split(',').filter(Boolean)) { const [k, v] = kv.split('='); globalThis[k] = Number.isNaN(Number(v)) ? v : Number(v); }
 // --until-insns <M>: stop after that many million guest instructions (a fixed amount of guest work: under
 // `perf stat -e instructions:u`, the host instructions per guest instruction of a JIT variant, insensitive to the load)
 const untilInsns = Number(opt('until-insns', 0)) * 1e6;
