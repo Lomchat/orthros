@@ -40,6 +40,14 @@ const MISSED_BLOCK_FLIGHTS = 2;
  */
 const NEAR_BLOCKS = 2, NEAR_QUIET_MS = 500, NEAR_MAX = 64;
 /**
+ * Once the learned prefetch is over, a file in which the game keeps missing blocks — WHOLE_AFTER_MISSES distinct blocks
+ * read at random, not as a stream — is an archive it reads here and there as it plays (a sound bank, models, textures
+ * of what comes into view): the rest of it is wanted whole (wantWhole), last of the background downloads, on a fast link
+ * with a block store. The learned order cannot hold those reads: they differ from one session to the next (BFME 1.08,
+ * ten minutes of play: 42-47 reads on the network, 5 of them common to two sessions).
+ */
+const WHOLE_AFTER_MISSES = 3;
+/**
  * the files whose light copy the game read (see upgrade): fetched once the game has read nothing for this long (ms) — the
  * player in an area loaded already, not between two reads of a load (an engine computes for seconds between them)
  */
@@ -196,6 +204,8 @@ export class HttpBackend {
     this.opened = new Map();
     /** files the game reads as a stream (in sequence, past STREAM_SKIP bytes): fetched ahead of their reader only */
     this.streams = new Set();
+    /** the learned prefetch pass is over (prefetch); then the blocks missed per file (path -> Set of blocks; true: wanted whole) */
+    this.learnedDone = false; this.missedAfter = new Map();
   }
 
   /**
@@ -375,7 +385,7 @@ export class HttpBackend {
       progress.bytes += data.length; progress.blocks += n;
     }
     store.flush?.(true); // (a sync point: the prefetch is over)
-    progress.done = true;
+    progress.done = true; this.learnedDone = true;
   }
 
   /**
@@ -614,11 +624,23 @@ export class HttpBackend {
     }
     // (on a link that is not fast the block waits for the background fill: it would hold the game's next reads up)
     if (!this.net.fast()) return;
+    if (this.learnedDone && this.store && !this.isMedia(path) && !this.streams.has(path)) this.noteMissAfter(path, index);
     if (this.missFlights >= MISSED_BLOCK_FLIGHTS || this.blockFlights.has(k) || this.cache.has(k) || this.bgCur?.key === k || this.store?.map.has(`${path}#${size}#${mtime}#${index}`)) return;
     this.missFlights++;
     this.stats.missBlocks = (this.stats.missBlocks ?? 0) + 1;
     // (not learned as the game's own read: its pieces are, with the mask of what it read)
     this.fetchBlocksAhead(path, size, mtime, index, index, false).finally(() => { this.missFlights--; });
+  }
+  /** a block of `path` missed after the learned prefetch: the file wanted whole at its WHOLE_AFTER_MISSES-th distinct block */
+  noteMissAfter(path, index) {
+    let m = this.missedAfter.get(path);
+    if (m === true) return;
+    if (m === undefined) this.missedAfter.set(path, m = new Set());
+    m.add(index);
+    if (m.size < WHOLE_AFTER_MISSES) return;
+    this.missedAfter.set(path, true);
+    this.stats.wholeAfterMisses = (this.stats.wholeAfterMisses ?? 0) + 1;
+    this.wantWhole(path);
   }
   /**
    * Blocks b0..b1 of a file fetched ahead of its sequential reader (see readAhead), resolved when done. `learn`: asked as
