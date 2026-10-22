@@ -13,7 +13,7 @@
 //            seedcanon-<manifest>.json written by tools/profile-seed-make.mjs, is offered first), and the shared snapshots
 //            of the games' machines new players start from (docs/snapshot.md, stage 3)
 //   --br-cache: where /gamez keeps its precompressed transport units (br-cache.js; default <learn>/../brcache, none
-//            without --learn; `off`: none), at most --br-cache-bytes of them (default 1.5 GiB)
+//            without --learn; `off`: none), at most --br-cache-bytes of them (default: 1.5 GiB grown to hold the launch sets)
 //   --snapshot-jobs: when a page asks for a shared snapshot there is none of, a headless browser session of a new
 //            player makes it (tools/snapshot-publish.mjs, one at a time, through the project's browser slots);
 //            --snapshot-queue: the request is only queued, in <learn>/snapshots/queue.json, for tools/snapshot-jobs.mjs
@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK, unitOf, HttpBackend } from '../vfs/http-backend.js';
-import { launchSummary, PRE_PLAYABLE } from '../vfs/launch-set.js';
+import { launchSummary, launchSet, entryPieces, PRE_PLAYABLE } from '../vfs/launch-set.js';
 import { createBrCache } from './br-cache.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
@@ -287,6 +287,13 @@ export function createServer(opts = {}) {
     srcBrPump();
     return null;
   };
+  // (opts.prewarmSrc: every text file of src/ made at start, in the background two at a time — after a deployment, a
+  // restart, the first visitors got the page's modules as they are: the Win32 page's 5.0 MB instead of ~0.85 MB in
+  // brotli, measured; the ports' 0.8 MB)
+  if (opts.prewarmSrc) setImmediate(() => {
+    const walk = (dir) => { let names = []; try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; } for (const d of names) { const f = path.join(dir, d.name); if (d.isDirectory()) walk(f); else if (SRC_TEXT.test(d.name)) { try { srcBrotli(f, fs.statSync(f)); } catch { /* gone */ } } } };
+    walk(path.join(ROOT, 'src'));
+  });
   const sendSource = (req, res, file, mime) => {
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
     if (!st.isFile() || req.headers.range || !SRC_TEXT.test(file)) return sendFile(req, res, file, mime);
@@ -610,6 +617,36 @@ export function createServer(opts = {}) {
     // (not the blocks learned by pieces whole as well, the shape a fast link asks for them — measured, Half-Life on a
     // fast link: 59 % of the bytes it asked: 1473 of Morrowind's 1830 learned blocks are known by pieces, which would
     // make its order about three times the brotli work; a fast link's misses ask for them, made after the launch sets)
+  };
+  /**
+   * How much of each version's launch set the precompressed units cover, in the shapes the links ask for it
+   * (`/api/netstats?launch=1`, the generation backlog an operator reads): per manifest { marked, entries, fast: { units,
+   * made, bytes, madeBytes } — its entries' blocks whole, as a fast link asks them —, light: { … } — the launch set as a
+   * link that is not fast reads it (light copies, no media), by pieces —, lightBlocks: { … } — the same, the blocks whose
+   * pieces are all wanted asked whole }. A version no session marked: its first pause (launch-set.js startupHead).
+   */
+  const launchCoverage = () => {
+    const out = {};
+    for (const [name, man] of manifests) {
+      if (!learnFile(name) || !fs.existsSync(learnFile(name)) || !brCache) continue;
+      try {
+        const tree = gameTree(name, man), files = new HttpBackend(`/game/${name}/`, tree), at = unitFile(man), list = prefetchList(name);
+        const count = (set, shape) => {
+          const c = { units: 0, made: 0, bytes: 0, madeBytes: 0 };
+          const add = (rel, unit, raw) => { const f = at(rel); if (!f) return; c.units++; c.bytes += raw; const w = brCache.size(f.file, f.st, f.light, unit); if (w !== null) { c.made++; c.madeBytes += raw; } };
+          for (const e of set) {
+            const p = entryPieces(files, e); if (!p) continue;
+            const blockRaw = Math.min(LEARN_BLOCK, p.size - p.block * LEARN_BLOCK);
+            if (shape === 'fast' || (shape === 'blocks' && p.whole) || p.size <= LEARN_CHUNK) add(p.path, { kind: 'b', index: p.block }, blockRaw);
+            else for (const i of p.pieces) add(p.path, { kind: 'p', index: i }, Math.min(LEARN_CHUNK, p.size - i * LEARN_CHUNK));
+          }
+          return c;
+        };
+        const fastSet = launchSet(files, list, true), lightSet = launchSet(files, list, false);
+        out[name] = { marked: playableOf(name).marks, entries: fastSet.length, fast: count(fastSet, 'fast'), light: count(lightSet, 'pieces'), lightBlocks: count(lightSet, 'blocks') };
+      } catch (e) { out[name] = { error: String(e?.message ?? e) }; }
+    }
+    return out;
   };
   const brCache = opts.brCacheDir ? createBrCache({
     dir: opts.brCacheDir, maxBytes: opts.brCacheBytes, log: opts.brCacheLog ?? ((m) => console.log(m)), ...opts.brCacheOptions,
@@ -1192,7 +1229,7 @@ export function createServer(opts = {}) {
         const launchUrl = runtimeOf(man) !== 'win32' ? portLaunchUrl(m[1], man) : undefined;
         // (an re3 port: the engine module its page imports, a path of its release — the manifest's, else the release's own)
         const re3 = runtimeOf(man) === 're3' ? { re3: { ...man.re3, module: re3Module(man, enginesDir) } } : {};
-        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, overlays: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
@@ -1350,7 +1387,7 @@ export function createServer(opts = {}) {
         const state = { rss: mem.rss, heapUsed: mem.heapUsed, external: mem.external, arrayBuffers: mem.arrayBuffers,
           encodedCache: { entries: encodedCache.size, bytes: encodedBytes }, encodeQueue: { running: encodeRunning, demand: encodeQueue.demand.length, bg: encodeQueue.bg.length },
           srcBr: { entries: srcBr.size, bytes: srcBrBytes }, sessions: sessions.size, listings: listings.size };
-        return send(res, 200, JSON.stringify({ ...netStats, server: state, ...(brCache ? { brCache: brCache.stats() } : {}) }), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify({ ...netStats, server: state, ...(brCache ? { brCache: brCache.stats() } : {}), ...(url.searchParams.has('launch') ? { launch: launchCoverage() } : {}) }), { 'Content-Type': 'application/json' });
       }
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
       if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2], listings); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
@@ -1449,13 +1486,15 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts'), mmoDir = arg('--mmo');
   for (const d of [telemetryDir, learnDir, accountsDir, mmoDir]) if (d) fs.mkdirSync(d, { recursive: true });
   // (--br-cache <dir>: the precompressed units, default <learn>/../brcache — off without --learn, or with `off`;
-  // --br-cache-bytes: their budget, 1.5 GiB by default)
+  // --br-cache-bytes: their budget — unset, 1.5 GiB grown to hold the launch sets, br-cache.js fitBudget)
   const brArg = arg('--br-cache'), brCacheDir = brArg === 'off' ? null : brArg ?? (learnDir ? path.join(learnDir, '..', 'brcache') : null);
   const brBytesArg = arg('--br-cache-bytes'), brCacheBytes = brBytesArg === undefined ? undefined : Number(brBytesArg);
   if (brBytesArg !== undefined && !(Number.isFinite(brCacheBytes) && brCacheBytes > 0)) { console.error(`--br-cache-bytes ${brBytesArg}: expected a positive number of bytes`); process.exit(2); }
   // (--covers <dir>: the home's light covers, default <learn>/../covers — off without --learn, or with `off`)
   const coverArg = arg('--covers'), coverDir = coverArg === 'off' ? null : coverArg ?? (learnDir ? path.join(learnDir, '..', 'covers') : null);
-  const server = createServer({ coverDir, brCacheDir, brCacheBytes, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
+  // (--br-cache-frozen: the units served as they are, none made — a measurement's copy of another server's)
+  const brCacheOptions = args.includes('--br-cache-frozen') ? { generate: false } : undefined;
+  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
   // (a restart — every deployment — saves the shared worlds' last changes first: they are written a few seconds after)
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.mmo.flush(); } catch (e) { console.error('mmo flush:', e); } finally { process.exit(0); } });

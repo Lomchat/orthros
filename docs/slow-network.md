@@ -389,7 +389,11 @@ on the request path. So the server keeps **units** compressed ahead, for every g
   after a restart, the misses' queue was full — 4044 of its 4096 — and the launch sets had not grown past their first
   6.3 MB; a miss is one session's read, served already, where every new player asks for the launch set.)
 - **Kept** in `--br-cache <dir>` (default `<learn>/../brcache`, i.e. `/var/lib/orthros2/brcache` on the live server;
-  none without `--learn`, `off` for none), at most `--br-cache-bytes` (1.5 GiB): `<k[0:2]>/<k>/` per file version, `k`
+  none without `--learn`, `off` for none), at most `--br-cache-bytes` — unset: 1.5 GiB at least, grown to hold the
+  launch sets (their home sizes summed, a version without one at their mean, ×1.25, as the pinned half), 8 GiB at
+  most; `/api/netstats` `brCache.pinWant` / `pinCap`. (The fixed 1.5 GiB pinned 0.75 GiB where the catalog's 17
+  versions want ~1.3 GB: on 2026-10-22 the live server's cache was full, its launch units evicting each other — 2-5 %
+  of the GoldSrc and re3 launch sets made, `/api/netstats?launch=1`.) `<k[0:2]>/<k>/` per file version, `k`
   the sha1 of the file's resolved real path, size and mtime (and the light copy's shape: `LIGHT_SIDE`, size, offset —
   manifests sharing a `base/` file share its units), `meta.json` and `b<block>.br` / `p<piece>.br` files written
   through a temporary file renamed. The index is rebuilt from the disk at start. Over the budget, least recently used
@@ -509,6 +513,15 @@ Measured with headless Chromium on a local server (Playwright, every response's 
   39.9 / 41.5 → 34.5 / 37.2 s. (Behind the reverse proxy the engine went gzip on the fly: the gain there is the
   brotli-11 / gzip difference, 0.4-0.6 MB per engine.) Starting the arsenal's extras (12.9 MB of pk3) beside the
   startup files instead of after them: 43.5 / 43.4 s against 39.9 / 41.5 (no gain on a saturated link): not kept.
+  Served as game data read by pieces instead (2026-10-22, the server listing them under `_engine/` of the tree): the
+  engine reads its three archives whole before its menu (extras 1.48, bots 4.94, pokemon 6.48 MB, 88 requests), so
+  nothing is saved and the first sessions wait for them read by read — 1 MB/s through tools/net-proxy.mjs, a fresh
+  browser: menu 50.1 s / 36.4 MB / 11.1 s of demand wait against 42.2 s / 32.9 MB / 5.1 s: not kept.
+  The page's game data opened and its startup set loaded beside the engine's download and start, the files mounted
+  once the engine's file system exists (the same day, GoldSrc and re3 pages): at 1 MB/s Half Strike's startup set
+  began at 4.6 s against 4.2 s and ended at 11.6 against 10.8 (the data worker's own modules wait behind the engine's
+  download), so nothing came sooner; the menus (50.3 / 42.2 s) differed by the engine's boot on a loaded machine, the
+  learned order filling the link meanwhile (more MB before the menu as it lasts longer): not kept.
 - **Covers**: `/api/cover/<version>` sends a light copy once made (`src/host/light-covers.js`: 960 px wide at most,
   WebP, made by ffmpeg in the background, one at a time, niced, kept in `--covers <dir>`, default
   `<learn>/../covers`; `?full` the image itself; without ffmpeg the covers go as they are): the home's nine covers
@@ -555,6 +568,16 @@ node tools/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k
 over TLS — no six-requests-per-host queue of a local HTTP/1.1 server —, one shared link, a round trip, `Accept-Encoding:
 gzip, br`, a log line per request): `node tools/net-proxy.mjs --upstream http://127.0.0.1:18431 --listen 18443 --rate 7m
 --rtt 75 --log proxy.log`, then `headless.mjs ... --port 18431 --page-origin https://127.0.0.1:18443`.
+Its log is one JSON line per request (wire bytes, `X-Orthros-Unit`, first byte, total) and one per data report carrying
+a `playable` mark; a text answer the origin sends as it is goes gzip on the way, as Cloudflare does.
+
+The data matrix — a new player in a fresh browser, per version × link, through that proxy: `node tools/data-matrix.mjs
+--pristine <dir with learn/ brcache/ covers/: copies of the live server's> [--links 85k:150,1m:60,7m:75] [--only a,b]
+[--win32-seconds 300]` (each run its own server on a copy of `learn/`, the units frozen — `--br-cache-frozen` —, the
+browser through `tools/with-browser-slot.sh`; per run: first frame, menu / playable mark, in play, and up to the mark
+the wire bytes by kind, requests, unit hits, demand-wait seconds). Prepare alone (the home's launch-set download) in
+Node, no browser: `node tools/prepare-bench.mjs --pristine <dir> [--code <another tree>]`. The launch sets' unit
+coverage of a server: `/api/netstats?launch=1`.
 
 The harness itself: `--net <rtt ms>:<Mbit/s>` (85 KB/s: `50:0.68`, 1 MB/s: `50:8`, 5 MB/s: `50:40`; the simulated link
 is shared fairly by the answers in flight, `src/host/sim-link.js`), `--net-trace <file>` (one line per range answered:

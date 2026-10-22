@@ -115,3 +115,20 @@ test('src: the brotli copies made two at a time, the rest queued (libuv\'s pool 
   assert.equal(s1.peak, 2, 'never more than two at once');
   for (const f of files) assert.equal((await get(port, `/src/win32/${f}`, br)).headers['content-encoding'], 'br', f);
 });
+
+test('src: prewarmSrc makes every text module brotli at start — the first visit after a restart gets them so', async (t) => {
+  const games = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-src-'));
+  t.after(() => fs.rmSync(games, { recursive: true, force: true }));
+  const server = createServer({ gamesDir: games, lanLog: () => {}, prewarmSrc: true });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }));
+  const port = server.address().port;
+  for (let i = 0; i < 1200; i++) { const q = server.srcBrJobs(); if (i > 2 && q.queued === 0 && q.running === 0) break; await new Promise((r) => setTimeout(r, 50)); }
+  assert.ok(server.srcBrJobs().peak <= 2, 'two at a time');
+  // (never asked before: brotli at its first request)
+  for (const p of ['/src/host/web/main.js', '/src/cpu/decoder.js', '/src/vfs/http-backend.js']) {
+    const r = await get(port, p, { 'Accept-Encoding': 'gzip, br' });
+    assert.equal(r.headers['content-encoding'], 'br', p);
+    assert.deepEqual(zlib.brotliDecompressSync(r.body), fs.readFileSync(new URL('..' + p, import.meta.url)));
+  }
+});

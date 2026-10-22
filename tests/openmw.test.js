@@ -285,6 +285,7 @@ test('localized OpenMW profiles share a launcher language choice with distinct s
   const man = await (await fetch(base + '/api/manifest/sample-1')).json();
   assert.deepEqual(man.languages, ['en', 'fr']); assert.deepEqual(man.contentLanguages, ['en']);
   assert.equal(man.languageLaunchUrls.fr, '/ports/openmw/sample-fr/');
+  assert.equal(man.dataMounts, undefined, 'no server path in the page manifest'); assert.equal(JSON.stringify(man).includes(f.engines), false);
   const fr = await (await fetch(base + '/api/manifest/sample-fr')).json();
   assert.notEqual(man.saveKey, fr.saveKey); assert.deepEqual(fr.contentLanguages, ['fr']);
   const catalog = await (await fetch(base + '/api/manifests')).json();
