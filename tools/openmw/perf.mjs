@@ -8,19 +8,21 @@
 // engine's CPU and the browser's (upper bounds: vertex work still runs). Not a gameplay check.
 // Always through tools/with-browser-slot.sh:
 //   tools/with-browser-slot.sh node tools/openmw/perf.mjs <manifest> --url <origin> [--seconds 60] [--warm 10]
-//     [--start -2,-9] [--query tier=high] [--discard] [--run] [--profile] [--out <dir>]   (--run: Shift held, running;
+//     [--start -2,-9] [--query tier=high] [--discard] [--run] [--profile] [--out <dir>] [--mem-every s]   (--run: Shift held, running;
 //     --profile: a CPU profile of the measured seconds, its longest busy stretches and what they ran, tools/port-perf.mjs;
 //     --glide <dx>,<dy>[,<speed>[,<z>]]: instead of walking, the player carried in a straight line from the start
 //     cell's centre, <speed> units a second (300: a run) at height <z> (3000) — several cells crossed the same way
 //     at every run, whatever stands in the way)
+// --mem-every s: the page's memory every s seconds of the walk (port-perf.mjs memSampler) and its growth per 10 minutes;
+// --seconds up to 3600 then (300 otherwise)
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { startProfile, stopProfile } from '../port-perf.mjs';
+import { startProfile, stopProfile, memSampler } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), id = args[0], arg = (k, d = null) => args.includes(k) ? args[args.indexOf(k) + 1] : d;
 if (!id) throw new Error('Expected a manifest id');
-const base = arg('--url', 'http://localhost:8080'), seconds = Math.max(5, Math.min(300, Number(arg('--seconds', 60))));
+const base = arg('--url', 'http://localhost:8080'), seconds = Math.max(5, Math.min(arg('--mem-every') ? 3600 : 300, Number(arg('--seconds', 60))));
 const warm = Math.max(0, Number(arg('--warm', 10))), start = arg('--start', '-2,-9'), extra = arg('--query', '');
 const discard = args.includes('--discard'), profile = args.includes('--profile'), glide = arg('--glide');
 const dir = arg('--out', `/tmp/orthros-scratch/openmw-perf-${id}`);
@@ -84,6 +86,7 @@ try {
   await page.evaluate(() => { const P = window.orthrosPerf; P.cells = new Set(); P.cellLook = setInterval(() => { const c = window.omw?.state?.['orthros.cell']; if (c) P.cells.add(c); }, 500); });
   const cdp = profile ? await startProfile(page) : null;
   await page.evaluate(() => { window.orthrosPerf.on = true; });
+  const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => Module.HEAPU8.length') : null;
   const end = Date.now() + seconds * 1000;
   if (glide) {
     // (a straight line at a set speed from the start cell's centre, whatever is in the way: the engine's debug
@@ -102,6 +105,7 @@ try {
     await page.keyboard.up('w');
     if (args.includes('--run')) await page.keyboard.up('Shift');
   }
+  const mem = memStop ? await memStop() : null;
   const r = await page.evaluate(({ before }) => {
     const P = window.orthrosPerf; P.on = false; clearInterval(P.cellLook);
     const q = (a, p) => { const s = [...a].sort((x, y) => x - y); return s.length ? +s[Math.min(s.length - 1, Math.floor(s.length * p))].toFixed(1) : null; };
@@ -122,7 +126,7 @@ try {
     };
   }, { before });
   const prof = cdp ? await stopProfile(cdp, r.frames, path.join(dir, 'perf.cpuprofile')) : undefined;
-  const out = { manifest: id, discard, seconds, warm, start, glide, query: extra, bootMs, ...r, faults, profile: prof };
+  const out = { manifest: id, discard, seconds, warm, start, glide, query: extra, bootMs, ...r, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1), memSamples: mem.samples } : {}), faults, profile: prof };
   fs.writeFileSync(path.join(dir, 'perf.json'), JSON.stringify(out, null, 2));
   await page.screenshot({ path: path.join(dir, 'perf.png') });
   console.log(JSON.stringify(out));

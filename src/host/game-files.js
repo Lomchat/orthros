@@ -62,10 +62,52 @@ export function listGameTree(manifest, seen = null) {
  * game has ~50 times more files than folders: Morrowind and its mods, 42 000 files in 565 folders).
  */
 export function dirsStamp(dirs) {
-  let stamp = '';
-  for (const dir of dirs) { try { const st = fs.statSync(dir); stamp += `${st.ino}:${st.mtimeMs}:${st.ctimeMs};`; } catch { stamp += '-;'; } }
+  let stamp = '', now = Date.now();
+  for (const dir of dirs) {
+    try {
+      const st = fs.statSync(dir);
+      // (changed within DirListings.RECENT_MS: a stamp of its own each time — two changes in one tick of the file
+      // system's clock leave the same mtime, the second one unseen)
+      stamp += now - Math.max(st.mtimeMs, st.ctimeMs) < DirListings.RECENT_MS ? `r${Math.random()};` : `${st.ino}:${st.mtimeMs}:${st.ctimeMs};`;
+    } catch { stamp += '-;'; }
+  }
   return stamp;
 }
+
+/**
+ * The folders' listings kept across requests (a `memo` of resolveGameFile), each checked at each use by one stat of its
+ * folder — a file added, removed or renamed there changes the folder's mtime: listed again. Without it each /gamez
+ * request listed every folder of its path in every layer (readdir of a texture folder of thousands of files: under 20
+ * players, 5.5 s of the server's thread in 30 s, measured). At most `maxNames` names kept (least recently used out).
+ */
+export class DirListings {
+  constructor(maxNames = 400000) { this.maxNames = maxNames; this.names = 0; this.map = new Map(); this.pending = new Map(); }
+  // (null: the folder changed within the last RECENT_MS — a file system's times are coarse, a few ms on Linux: two
+  // changes in one tick leave the same mtime —, listed again at each use until it is older)
+  static stamp(dir) {
+    try {
+      const st = fs.statSync(dir);
+      return Date.now() - Math.max(st.mtimeMs, st.ctimeMs) < DirListings.RECENT_MS ? null : `${st.ino}:${st.mtimeMs}:${st.ctimeMs}`;
+    } catch { return '-'; }
+  }
+  get(dir) {
+    const stamp = DirListings.stamp(dir), e = this.map.get(dir);
+    if (e && stamp !== null && e.stamp === stamp) { this.map.delete(dir); this.map.set(dir, e); return e.l; }
+    if (e) { this.map.delete(dir); this.names -= e.n; }
+    this.pending.set(dir, stamp); // (the folder's state before it is listed: changed while listed, listed again next time)
+    return undefined;
+  }
+  set(dir, l) {
+    const stamp = this.pending.has(dir) ? this.pending.get(dir) : DirListings.stamp(dir); this.pending.delete(dir);
+    const old = this.map.get(dir); if (old) { this.map.delete(dir); this.names -= old.n; }
+    const n = (l?.kinds.size ?? 0) + 1;
+    this.map.set(dir, { stamp, l, n }); this.names += n;
+    for (const [k, v] of this.map) { if (this.names <= this.maxNames || k === dir) break; this.map.delete(k); this.names -= v.n; }
+    return this;
+  }
+  get size() { return this.map.size; }
+}
+DirListings.RECENT_MS = 2000;
 
 /** The light copy of a version's path under LIGHT_DIR: { file, st, copy } (light-copies.js), or null. */
 export function resolveLightFile(manifest, rel, memo = null) {

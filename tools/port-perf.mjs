@@ -165,3 +165,36 @@ export async function stopProfile(cdp, frames, save = null) {
   return { wasmMsPerFrame: Math.round(wasm / 1000 / Math.max(1, frames) * 100) / 100, wasmShare: `${(100 * wasm / total).toFixed(1)}%`,
     top: Object.fromEntries([...self].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, us]) => [k, `${(100 * us / total).toFixed(1)}%`])), hitches };
 }
+
+/**
+ * A long session's memory, sampled every `everyS` seconds until stop(): the JS heap used, the engine's WebAssembly heap
+ * (`wasmBytes`: a page function's source returning it, e.g. '() => Module.HEAPU8.length'), and the page's DOM nodes,
+ * event listeners and documents (CDP Performance.getMetrics: a listener or node count that only grows is a leak).
+ * stop() returns { samples: [{ t, heapMB, heapTotalMB, wasmMB, nodes, listeners, docs }] — the last one after a full
+ * collection (afterGc) —, growthPer10min: least squares of each after the first `settleS` seconds }.
+ */
+export async function memSampler(page, everyS, wasmBytes = '() => 0', settleS = 120) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Performance.enable');
+  const samples = [], t0 = Date.now();
+  const one = async () => {
+    const { metrics } = await cdp.send('Performance.getMetrics'), m = Object.fromEntries(metrics.map((x) => [x.name, x.value]));
+    const wasm = await page.evaluate(`(() => { try { return (${wasmBytes})(); } catch { return 0; } })()`).catch(() => 0);
+    const s = { t: Math.round((Date.now() - t0) / 1000), heapMB: +(m.JSHeapUsedSize / 1048576).toFixed(1), heapTotalMB: +(m.JSHeapTotalSize / 1048576).toFixed(1), wasmMB: +(wasm / 1048576).toFixed(1), nodes: m.Nodes, listeners: m.JSEventListeners, docs: m.Documents };
+    samples.push(s); console.log('[mem]', JSON.stringify(s));
+  };
+  await one();
+  const timer = setInterval(() => { one().catch(() => {}); }, everyS * 1000);
+  return async () => {
+    clearInterval(timer); await one().catch(() => {});
+    // (then a full collection and a last sample: what only grew because nothing collected it yet is told apart)
+    await cdp.send('HeapProfiler.collectGarbage').catch(() => {}); await one().catch(() => {}); samples.at(-1).afterGc = true;
+    const later = samples.filter((s) => s.t >= settleS && !s.afterGc), slope = (k) => {
+      const n = later.length; if (n < 2) return null;
+      const mx = later.reduce((a, s) => a + s.t, 0) / n, my = later.reduce((a, s) => a + s[k], 0) / n;
+      const b = later.reduce((a, s) => a + (s.t - mx) * (s[k] - my), 0) / Math.max(1e-9, later.reduce((a, s) => a + (s.t - mx) ** 2, 0));
+      return +(b * 600).toFixed(2);
+    };
+    return { samples, growthPer10min: Object.fromEntries(['heapMB', 'wasmMB', 'nodes', 'listeners', 'docs'].map((k) => [k, slope(k)])) };
+  };
+}
