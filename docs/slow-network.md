@@ -513,6 +513,10 @@ Measured with headless Chromium on a local server (Playwright, every response's 
   39.9 / 41.5 → 34.5 / 37.2 s. (Behind the reverse proxy the engine went gzip on the fly: the gain there is the
   brotli-11 / gzip difference, 0.4-0.6 MB per engine.) Starting the arsenal's extras (12.9 MB of pk3) beside the
   startup files instead of after them: 43.5 / 43.4 s against 39.9 / 41.5 (no gain on a saturated link): not kept.
+  Served as game data read by pieces instead (2026-10-22, the server listing them under `_engine/` of the tree): the
+  engine reads its three archives whole before its menu (extras 1.48, bots 4.94, pokemon 6.48 MB, 88 requests), so
+  nothing is saved and the first sessions wait for them read by read — 1 MB/s through tools/net-proxy.mjs, a fresh
+  browser: menu 50.1 s / 36.4 MB / 11.1 s of demand wait against 42.2 s / 32.9 MB / 5.1 s: not kept.
 - **Covers**: `/api/cover/<version>` sends a light copy once made (`src/host/light-covers.js`: 960 px wide at most,
   WebP, made by ffmpeg in the background, one at a time, niced, kept in `--covers <dir>`, default
   `<learn>/../covers`; `?full` the image itself; without ffmpeg the covers go as they are): the home's nine covers
