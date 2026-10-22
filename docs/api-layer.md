@@ -139,7 +139,10 @@ on average: more draws, not a stall. What the profile did find was outside the q
   NOOVERWRITE (never unlocked either; nothing is drawn from it). Direct3D 8/9 buffer locks nest (each Unlock ends one;
   surface locks do not): `Buffer.Lock` now accepts a buffer already locked — the earlier locks wait under the latest
   (`lockStack`, past 16 the oldest two merge into one wider range: bounded for a program that never unlocks), each Unlock
-  ends the latest and writes its range back. Lock 1.2-1.3 → 0.6 µs per call. tests/d3d-buffer-lock-nest.test.js.
+  ends the latest and writes its range back. Lock 1.2-1.4 → 0.6-0.8 µs per call. The game now does what follows a
+  successful lock — it fills those vertices — so this fidelity fix costs it guest time: ten minutes of play in Node
+  (the whole branch against the tree before, run at the same time) 83.6 → 108.9 G guest instructions, guest 12.4 → 13.8 ms
+  per frame, API 2.33 → 1.94 ms per frame; frames over 40 ms 23 → 24 per minute. tests/d3d-buffer-lock-nest.test.js.
 - **Failure reports.** Every failed COM call built its report key (`Interface::Method=code`, a string) to look it up:
   0.23 ms per frame for those locks alone. `Com.failed` first looks the code up in a per-method set (`failedSeen`,
   transient): 490 → 51 ns per failing call (tools: a dispatch loop of one failing method, 5 alternated runs).
