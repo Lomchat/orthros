@@ -513,8 +513,6 @@ Measured with headless Chromium on a local server (Playwright, every response's 
   39.9 / 41.5 → 34.5 / 37.2 s. (Behind the reverse proxy the engine went gzip on the fly: the gain there is the
   brotli-11 / gzip difference, 0.4-0.6 MB per engine.) Starting the arsenal's extras (12.9 MB of pk3) beside the
   startup files instead of after them: 43.5 / 43.4 s against 39.9 / 41.5 (no gain on a saturated link): not kept.
-  Since 2026-10-22 they are game data read by pieces (browser-ports.md, `goldsrc.extras`), and a port's page opens its
-  game data and loads its startup set before the engine's download and start (`openPortData`, port-files.js).
 - **Covers**: `/api/cover/<version>` sends a light copy once made (`src/host/light-covers.js`: 960 px wide at most,
   WebP, made by ffmpeg in the background, one at a time, niced, kept in `--covers <dir>`, default
   `<learn>/../covers`; `?full` the image itself; without ffmpeg the covers go as they are): the home's nine covers
