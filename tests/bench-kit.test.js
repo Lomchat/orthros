@@ -311,3 +311,8 @@ test('bench definitions: each scenario parses, plays in the page, names its mani
     assert.ok(steps.some((s) => s.kind.startsWith('wait')), b.name);
   }
 });
+
+test('bfme1-108: the skirmish bench plays the steps of tools/scenarios/bfme1-108-phases.txt', () => {
+  const steps = (f) => parseScenario(fs.readFileSync(new URL(f, import.meta.url), 'utf8')).steps.map((s) => s.src);
+  assert.deepEqual(steps('../tools/scenarios/bench/bfme1-108-skirmish.txt'), steps('../tools/scenarios/bfme1-108-phases.txt'));
+});

@@ -78,7 +78,7 @@ test('thin link: the learned prefetch fetches the learned pieces in order from t
   await b.prefetch([['f.big', 4, 0b110, 0], ['g.big', 0, 0b1, 100], ['f.big', 1, 0, 200]], progress);
   // (one 64 KiB piece per request: what 85 KB/s carries in BG_SECONDS, rounded up to a piece)
   assert.deepEqual(calls.map((c) => [c.url.split('?')[0].split('/').pop(), c.start, c.end]), [['f.big', 4 * MiB + CHUNK, 4 * MiB + 2 * CHUNK], ['f.big', 4 * MiB + 2 * CHUNK, 4 * MiB + 3 * CHUNK], ['g.big', 0, CHUNK]]);
-  assert.ok(calls.every((c) => c.url.endsWith('&p=1')), 'asked as background downloads');
+  assert.ok(calls.every((c) => c.url.includes('&p=1')), 'asked as background downloads');
   assert.ok(progress.done);
   assert.ok(store.map.has(`f.big#${SIZE}#3#c${4 * 16 + 1}`) && store.map.has(`g.big#${2 * MiB}#3#c0`));
   // the step estimate: what the learned entries past the position still need

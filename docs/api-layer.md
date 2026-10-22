@@ -114,6 +114,11 @@ per frame 712-757 → 356-395, scheduling decisions per frame 1 645-1 774 → 97
 `Sleep(0)` are probably turns where another thread was runnable (a yield, not a throttle) or the streak was not yet
 built (not verified).
 
+**On a coarse host timer (2026-10-22).** The throttle's 1 ms park is a host wait: on Windows it can last up to a timer
+tick (15.625 ms), and the park crossing a frame limiter's deadline then lengthens the frame by that much (BFME1 on the
+owner's laptop: frame p90 46.8 ms). The waits of a pacing loop's end are now spun to their deadline when the host is
+measured coarse; docs/thread-scheduling.md "Host wake-up overshoot".
+
 **The deferred queue's drain has its own accounting entry.** The calls the JIT queued (Direct3D state setters, D3DX
 parameter setters) run in JavaScript before the next call handled there (`Vm.drainDeferred`); the drain ran inside that
 call's timed window, so whichever call followed a batch (`IDirect3DTexture9::Release`, `GetTransform`...) carried the
@@ -123,6 +128,30 @@ order of the calls is unchanged. tests/drain-acct.test.js. BFME1 in Node: the dr
 per frame for 148 drains per frame in play (5 µs each), 0.86 ms per frame (172 drains) in the menu — time the per-API
 table used to spread over the calls that followed the batches. Dispatch cost unchanged (tools/apicall-bench.mjs, 2×7
 runs alternated: 278 / 269 ns before, 279 / 277 ns after).
+
+**The drain, profiled (2026-10-22).** BFME 1.08 play, Node (`startbench --cpu-prof <file> --cpu-prof-window
+play:60:120`: a V8 sampling profile of one minute of play): the drain is 1.6-1.7 ms per frame by the accounting, 152
+drains of ~15 calls (~2 200 queued calls per frame reach JavaScript: state sets that change something — the issued-state
+filter drops the others on the fast path — and draws), ~0.7 µs per call. Inside it: the queue loop itself (records,
+`Ctx` binding, `Com.callQueued`) 14 %, the recorder's work for the draws (buffer bytes copied into the ring 13 %, `flush`
+6 %, the vertex ranges a draw reads 6.5 %, textures and streams 5.5 %), the state handlers (SetRenderState 6 %,
+SetTexture 6 %, SetTextureStageState 5 %, the state-use report's `noteState` 3 %, the state tables 2.5 %, the
+bindings 5 %). No single waste: the Direct3D work of the game itself. Slow frames (> 40 ms) drain 2.2-2.5 ms against 1.65
+on average: more draws, not a stall. What the profile did find was outside the queue:
+
+- **Refused buffer locks.** ~290 `IDirect3DVertexBuffer9::Lock` per frame failed with D3DERR_INVALIDCALL: the game locks
+  one dynamic vertex buffer once with DISCARD, never unlocks it, then locks it again ~290 times per frame with
+  NOOVERWRITE (never unlocked either; nothing is drawn from it). Direct3D 8/9 buffer locks nest (each Unlock ends one;
+  surface locks do not): `Buffer.Lock` now accepts a buffer already locked — the earlier locks wait under the latest
+  (`lockStack`, past 16 the oldest two merge into one wider range: bounded for a program that never unlocks), each Unlock
+  ends the latest and writes its range back. Lock 1.2-1.4 → 0.6-0.8 µs per call. The game now does what follows a
+  successful lock — it fills those vertices — so this fidelity fix costs it guest time: ten minutes of play in Node
+  (the whole branch against the tree before, run at the same time) 83.6 → 108.9 G guest instructions, guest 12.4 → 13.8 ms
+  per frame, API 2.33 → 1.94 ms per frame; frames over 40 ms 23 → 24 per minute. tests/d3d-buffer-lock-nest.test.js.
+- **Failure reports.** Every failed COM call built its report key (`Interface::Method=code`, a string) to look it up:
+  0.23 ms per frame for those locks alone. `Com.failed` first looks the code up in a per-method set (`failedSeen`,
+  transient): 490 → 51 ns per failing call (tools: a dispatch loop of one failing method, 5 alternated runs).
+  tests/com-object-refs.test.js.
 
 ## PeekMessage polling: pacing that now waits (src/win32/user32.js, peekIdle)
 

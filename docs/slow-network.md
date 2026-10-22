@@ -86,6 +86,20 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   loading screens are 1024 × 1024 × 24-bit, 3 MB each (2.8 MB on the wire): its loading screen shows a new random one
   every 5 s while the game is not started (OpenMW's `LoadingScreen::changeWallpaper`), so at 85 KB/s each new picture
   held the page ~33 s more (8 of them in a New Game's first load: 21 MB of its 28); light, 197 KB each.
+  A WAD3 archive (GoldSrc's textures, 2026-10-21: `lightWad`) has a light copy of **its own size and offsets** — the
+  same archive, so that an engine reading part of it as one and part as the other still reads a valid archive —, each
+  uncompressed texture of 64 × 64 pixels or more with its finest level redrawn from the next one (each pixel of level 1
+  twice as wide and high: half the detail on the nearest surfaces, the farther levels as they are), which brotli finds
+  again and again: per 1 MiB block at brotli 11, halflife.wad 0.62 → 0.35 of its bytes, Counter-Strike's map WADs
+  0.70-0.89 → 0.35-0.43 (chateau.wad 0.82 → 0.38, cs_dust.wad 0.89 → 0.43). Its learned order keeps its pieces
+  (`forLink`: a copy of the file's size stands for the same pieces, not for all of it); the units of such a copy are a
+  version of their own (`lightFormat` in br-cache.js's key). GoldSrc does not load a file again in place, so the copy
+  is read only on a thin link (`readsReal`), and the file replaces it at the next map load once downloaded (the whole
+  file, last of all, as any light copy). Measured on the launch sets (thin link, 2026-10-21; each WAD's brotli-11
+  ratio over its blocks, applied to its learned bytes): Counter-Strike Arsenal 9.6 MB of WAD pieces, 6.85 → 3.52 MB on
+  the wire (−3.3 MB, ~−39 s at 85 KB/s; every texture redrawn there, small ones too — the copy as made leaves those
+  under 64 × 64, a little less); Counter-Strike rebuilt 3.3 of its 4.2 MB measured, 2.26 → 1.20 MB; Half-Life 1.0 MB,
+  mostly WADs without textures to lighten, ~−0.2 MB. Not measured in a browser at 85 KB/s.
   Derived at each request (a header of its own, then a run of the file: nothing stored, the game files never changed),
   served as `/gamez/<manifest>/.light/<path>` (compressed ranges, read reports learned like the file's). The tree tells
   each such file's light size (`light`). For the browser ports only (`manifest.lightCopies`, the catalog's: `false` in a
@@ -138,6 +152,87 @@ Movies and music are not what the game waits for to start; on a link that is not
 - **Guesses** (`HttpBackend.speculate`): no blocks near a missed one, nor the next blocks of a read, for a media file
   the game is not streaming now (`HttpBackend.streams`); a stream keeps its read-ahead.
 - A read of a media file is never answered with made-up bytes: it waits for the network as any other.
+
+## Archives read at random in play: wanted whole (2026-10-22)
+
+The learned order holds what earlier sessions needed, in their order; what a game reads as it plays — a sound bank, the
+models and textures of what comes into view — differs from one session to the next. BFME 1.08, ten minutes of play in
+headless Chromium (`--memprefetch`, a copy of the live learned lists, `headless --net-trace`): 37-47 reads went to the
+network after the loading screen, only 5 of them common to two sessions (Audio.big, W3D.big, _patch108.big, Music.big,
+textures: 64 KiB pieces here and there), each a frame waiting (`ioWait`, then `late` while the read's tasks run).
+
+`HttpBackend.noteMiss` → `noteMissAfter`: once the learned prefetch pass is over (`learnedDone`), a file missed in
+`WHOLE_AFTER_MISSES` (3) distinct blocks — not a media file, not a stream — is wanted whole (off by default since 2026-10-22: `?dbg=ORTHROS_WHOLE_AFTER_MISSES=1`) (`wantWhole`: its other
+blocks in the background fill's `later` queue, after the blocks the game touched and those near them, the link quiet
+for NEAR_QUIET_MS). Only on a fast link and with a block store (OPFS, or the harness's memory store): the blocks stay
+for the next sessions. Generic: the data system of every runtime (the ports' streamed files already asked it).
+
+Measured (the same run beside the former tree, at the same time): reads on the network in play 37 → 13 (2.8 → 0.7
+MB; the rest: the music stream's next bytes, files first read late), the game's own requests over the session 124 →
+68; the cost, the bytes downloaded over the session 414 → 820 MB (W3D.big, Audio.big and others whole, in the
+background; kept in the store). Frames, `?dbg=ORTHROS_WHOLE_AFTER_MISSES=0` against the default, two runs at the same
+time, ten minutes of play (`--gl-discard`): with the browser's block store (`--opfs`, as players have it) frames over 40
+ms 29 → 32 per minute, over 100 ms 0.6 → 0.2 per minute, the worst 238 → 204 ms, the game's requests 102 → 56, the
+store's writes on the emulator thread 1.5 → 3.2 s in all (~2 ms per block); with the harness's memory store
+(`--memprefetch`: 1.1 GB more kept in the worker's memory) frames over 40 ms 29 → 37 per minute (`late` 0.2 → 0.5 ms per
+frame: garbage collection and the event loop between slices), over 100 ms 0.7 → 0.3. Fewer stalls of 100 ms and more in
+every pair; frames over 40 ms within the noise with the real store, more with the memory store.
+tests/http-backend-whole.test.js.
+
+## A fast link far away (2026-10-22)
+
+The owner's BFME 1.08 bench links on his laptop (7-15 MB/s measured, 75 ms round trip, behind Cloudflare): 16.7 s of
+game reads waiting for the network before the menu (112 requests, ~150 ms each), 191 MB downloaded before it, the
+learned prefetch still running through the skirmish (155 MB of background there), 12 frames held 400-600 ms by `ioWait`
+in ten minutes of play. Reproduced here with `tools/net-proxy.mjs` (an HTTP/2 TLS proxy as Cloudflare speaks to Chrome:
+one connection, one link of 7 MB/s shared equally by the answers in transfer, a 75 ms round trip, the origin asked with
+`Accept-Encoding: gzip, br`; `headless --page-origin https://127.0.0.1:<port>`), a fresh browser profile with a block
+store (`--opfs`), the menu bench then the skirmish bench (`--ui --bench`, `--game-lang fr`, `--gl-discard`), a copy of
+the live learned files of that day for each run, `--net-log` (every game read that went to the network: file, range,
+time, learned rank).
+
+What it showed:
+
+- **The learned prefetch was latency-bound.** On a fast link it fetched one 1-2 MiB request at a time, paused 300 ms
+  after each game read and aborted its request at each one: the 7 MB/s link carried 2.3-5 MB/s of it (one round trip
+  idle per request), the launch set (297 learned blocks, 145 MB on the wire) was in at ~41 s, the whole learned order
+  at ~100 s. A machine whose game reads faster than that (the owner's) waits for the reads itself.
+  **Now** (`FAST_PREFETCH_PARTS`): on a measured fast link, 3 requests in flight, 1 while the game reads from the
+  network, no pause; and a game read aborts only the background requests whose rest would hold it up long
+  (`NetLink.abortLong`, as on the slower links) — an abort threw away bytes mostly arrived for a read that shares the
+  link with them a few milliseconds. The link is used at 5-7 MB/s, the launch set in at ~32 s, the order at ~55 s.
+- **A file read whole in one call went block by block.** The executable (16 MB, loaded in one read) took 15 synchronous
+  1 MiB requests, 2.6 s. **Now** one read covering several whole blocks none of which is here (no piece, nothing on
+  its way) fetches them in one request (`missingBlocks`, at most 16): 4 requests, 1.6 s.
+- **Before the menu**: the game read 130 MB (decoded) before it looked playable, in 294 blocks — 294 of the launch
+  set's 297 (the launch set is right at the block level); a fast link fetches those blocks whole (their learned masks are
+  all 16 pieces: the masks are the union of every session's requests, and a fast link's own reads — whole blocks, 4 MiB
+  sequential reads, read-ahead — ask whole blocks), ~145 MB on the wire, and then goes on with the rest of the order.
+  In these runs the menu waited for the game's computation, not for the link (start phase: 7 s of guest code in its
+  worst frame; demand waits 1.9 s, all the executable at t = 2-4 s): the bytes past the launch set (162 → 237 MB before
+  the menu with the faster prefetch) did not delay it — the menu at 47.8 / 46.4 / 46.8 s.
+- **Play**: every game read that went to the network after the loading screen was one no earlier session had read
+  (learned rank none: W3D.big, Audio.big, Textures.big, _patch108.big, lang/FrenchAudio.big, Music.big at random —
+  26 and 40 of them in two sessions, almost none in common). Each took one round trip and its bytes, 90-150 ms (the
+  background downloads did not slow them: 104-105 ms on average, a 75 ms round trip); a frame held 300-700 ms is a
+  chain of 3-5 such reads by the same thread (a model and its textures). Nothing in the learned order could have had
+  them; the blocks near a miss (`NEAR_BLOCKS`) caught 1-4 of them (simulated on the logs: ±4 blocks 3-12, ±16 blocks
+  10-29), for ~3.6 blocks downloaded per miss (80-120 MB in the skirmish). The archives wanted whole after misses
+  (`?dbg=ORTHROS_WHOLE_AFTER_MISSES=1`, off by default) do have them: 19 reads on the network in play, 4 frames over
+  100 ms held by `ioWait`, for 427 MB of background in the skirmish instead of 80-122.
+
+| 7 MB/s, 75 ms (one run each) | before | after | after + whole after misses |
+|---|---|---|---|
+| menu bench: game reads on the network before the menu (requests / s waited) | 17 / 2.8 | 6 / 1.9 | 6 / 1.9 |
+| menu at (s), wire bytes by then | 47.8, 162 MB | 46.4, 239 MB | 46.8, 237 MB |
+| skirmish load: network reads / s | 4 / 0.4 | 8 / 1.0 | 4 / 0.4 |
+| skirmish play (600 s): network reads / s, frames > 100 ms (`ioWait` hitches) | 26 / 2.7, 12 (9) | 40 / 4.2, 14 (12) | 19 / 1.9, 10 (4) |
+| skirmish background bytes | 80 MB | 122 MB | 427 MB |
+
+The play rows are each session's own random reads (the "after" session read more new places): what the changes do is
+in the first rows. What only a real machine shows: whether its faster game then waits less before the menu (the owner's
+112 requests), and the round trips of a real path (the owner's game reads took ~150-170 ms on average against 75 ms
+here and ~105 ms in this proxy).
 
 ## Playable after (2026-10-21)
 
@@ -341,6 +436,58 @@ on the request path. So the server keeps **units** compressed ahead, for every g
   ~1.4 GB of file bytes an hour; the live server ~76 units a minute while not paused. Brotli 10 instead of 11 (sample
   blocks of Morrowind, GTA, Half-Life data): 2 % more bytes for 0.6× the time — kept at 11.
 
+## Audio units (2026-10-21)
+
+Uncompressed sound (PCM) is what brotli does worst: a waveform has almost no repeated strings (Vice City's
+`Audio/sfx.RAW`, 15 MB of its 17.5 MB launch set: brotli 11 per block 0.81 of the bytes). A unit that holds sound has
+a second form made beside its brotli one, coded by linear prediction and Rice codes of the residuals — lossless,
+written from scratch (`src/vfs/pcm-codec.js`) —, for every game and runtime alike:
+
+- **Which bytes are sound** (`src/host/pcm-units.js`, by format, no file name looked at): every RIFF WAVE sound in a
+  file — a `.wav`, or one stored as it is inside an archive (EA's `.big`: BFME's sounds are 16-bit WAVE members) — whose
+  format chunk says integer PCM (tag 1, or WAVE_FORMAT_EXTENSIBLE's PCM subtype), 8 or 16 bits, mono or stereo: its data
+  chunk (found by one scan of the file per version, kept in the unit directory's `waves.json`). ADPCM, MP3 and the rest
+  are left alone. A file with no such sound (a raw bank such as `sfx.RAW`, its rates in another file) is tried as
+  16-bit mono, 16-bit stereo and 8-bit mono — the most promising by a quick order-2 estimate, coded only if the estimate
+  is under 0.9 of the brotli unit —: the coding is lossless whatever the bytes are, so the only proof asked of "this is
+  sound" is that it codes smaller.
+- **The codec** (container `OPC1`: segments of bytes as they are and of coded samples, the decoded length and its
+  CRC-32): frames of 2048 sample frames, per channel the cheapest of constant, verbatim, fixed polynomial predictors of
+  order 0-4 and linear predictors of order 2/4/8/12 (Levinson-Durbin over a windowed autocorrelation, coefficients of 12
+  or 14 bits), the residuals Rice-coded in 2^p partitions with an escape to fixed width; stereo as left/right,
+  left/side, side/right or mid/side. Higher orders (to 32) gained 0.7 %, 4096-sample frames lost 0.5 %.
+- **Made** by the units' generator (`br-cache-worker.js`), after the brotli unit (or alone for a unit made before):
+  checked by decoding it, brotli on top (quality 4 — coded samples do not compress —, 11 when a twentieth of the unit or
+  more is other bytes: headers, other members), kept as `<unit>.pcm.br` when it is at most 0.95 of the brotli unit's
+  wire bytes, else an empty `<unit>.pcm.raw` (never tried again). Not tried when sound is under 15 % of the unit; never
+  for a light copy. Cost: ~0.5 s of a core per MiB on top of brotli 11's ~2.9 s.
+- **Asked and served**: the shared reader (`HttpBackend`, every runtime's) adds `&pc=1` to its compressed ranges; the
+  server answers such a unit-shaped request with the audio form when it has one (`Content-Encoding: br`,
+  `X-Orthros-Codec: pcm1`, `X-Orthros-Unit: hit`), else as before — an older page never gets one. The reader decodes it
+  (`unitBody`) before the bytes reach its blocks, the store or the game; an answer that does not decode (or whose CRC
+  does not match) turns the audio units off for that backend and the range is asked again without. A body of the
+  wrong length that starts as a container is decoded too (a proxy that dropped the header). The home's "playable
+  after" counts the audio form's bytes (`brCache.size`).
+- **Measured** (`tools/audio-units.mjs`, a copy of the live learned orders of 2026-10-21, every container decoded and
+  compared; the units the generator keeps, brotli 11 against the audio form): the launch set as a thin link reads it,
+  and the whole learned order as a fast one does —
+
+  | version | launch set: audio units' brotli 11 → audio form | learned order |
+  |---|---|---|
+  | Vice City reVC / Orthros Edition (re3) | 9.01 → 6.61 MB (−2.39 MB, −27 %; sfx.RAW, by trial) | 13.11 → 10.32 MB (−2.79) |
+  | Vice City (Windows) | — (no flagged launch set) | 15.65 → 12.67 MB (−2.98) |
+  | BFME 1.03 / 1.08 / vanilla (stale, mask-less) | 0.24 → 0.21 / 0.35 → 0.30 / 0.91 → 0.78 MB | 11.71 → 9.38 / 3.69 → 3.17 / 63.16 → 52.58 MB |
+  | BFME2, RotWK 2.01 / 2.02 | 0.27 → 0.25, 0.31 → 0.27 / 0.35 → 0.30 MB | 0.76 → 0.59, 0.31 → 0.27 / 0.40 → 0.33 MB |
+  | Counter-Strike Arsenal / rebuilt, Half-Life (8-bit WAVs) | 0.11 → 0.10 MB each (the sounds come after) | 2.81 → 2.31 / 1.67 → 1.39 / 1.83 → 1.49 MB |
+  | Morrowind GOTY EN / Vanilla+ EN / FR | 0.04 → 0.02 MB | 1.93 → 1.51 / 1.85 → 1.45 / 3.00 → 2.47 MB |
+
+  Vice City reVC's whole launch set through the server (`/gamez` answers of every one of its 41 units, with and
+  without `&pc=1`, their bodies decoded and hashed against the file): 12.82 → 10.44 MB on the wire (−18.6 %; 151 →
+  123 s at 85 KB/s); the shared reader prefetching it decoded its 14 sfx.RAW blocks in 314 ms (47 MB/s). In Chrome
+  (`tools/re3/check.mjs vice-city-revc --new-game` against a server of this tree, its units made first): menu and new
+  game as before. Decoding: ~50 MB/s of decoded bytes on one core of this machine under load 25-30 (a MiB unit in
+  ~20 ms — 2 % of the second it takes to cross a 1 MB/s link).
+
 ## The page, the engines and the covers (2026-10-21)
 
 Measured with headless Chromium on a local server (Playwright, every response's body bytes):
@@ -403,6 +550,11 @@ and speed, the phase times, the bytes (demand and background) and the measured r
 node tools/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k,1m,5m \
   --learn-from <copy of the live server's learn dir> --games-dir /srv/orthros/data_games
 ```
+
+`tools/net-proxy.mjs` puts a player's connection in front of a harness server as the production front does (HTTP/2
+over TLS — no six-requests-per-host queue of a local HTTP/1.1 server —, one shared link, a round trip, `Accept-Encoding:
+gzip, br`, a log line per request): `node tools/net-proxy.mjs --upstream http://127.0.0.1:18431 --listen 18443 --rate 7m
+--rtt 75 --log proxy.log`, then `headless.mjs ... --port 18431 --page-origin https://127.0.0.1:18443`.
 
 The harness itself: `--net <rtt ms>:<Mbit/s>` (85 KB/s: `50:0.68`, 1 MB/s: `50:8`, 5 MB/s: `50:40`; the simulated link
 is shared fairly by the answers in flight, `src/host/sim-link.js`), `--net-trace <file>` (one line per range answered:

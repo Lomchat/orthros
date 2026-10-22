@@ -1,0 +1,130 @@
+diff --git a/openmw/apps/openmw/mwrender/globalmap.cpp b/openmw/apps/openmw/mwrender/globalmap.cpp
+index 1401bd4..a2fbd13 100644
+--- a/openmw/apps/openmw/mwrender/globalmap.cpp
++++ b/openmw/apps/openmw/mwrender/globalmap.cpp
+@@ -92,7 +92,12 @@ namespace
+                 // (its quad, its CPU copy) by the next update: drawing it again until copyResult's extra frames are
+                 // over painted the same quad and, for a CPU copy, read the pixels back again — three readbacks, each
+                 // a GPU pipeline drain, at every cell explored.
+-                node->setNodeMask(0);
++                // (orthros-r4.patch: only a camera with no CPU copy pending — OSG's UpdateVisitor skips a node whose
++                // mask is 0, so this callback would never run again for it: its image never copied into
++                // mOverlayImage, the camera never removed. The web build asks for no CPU copy at all since r4,
++                // read() included: this is the guard.)
++                if (!mParent->hasPendingCopy(node))
++                    node->setNodeMask(0);
+ #endif
+                 if (mParent->copyResult(node, nv->getTraversalNumber()))
+                 {
+@@ -473,8 +478,18 @@ namespace MWRender
+         // (the web build has one GL context, current on this thread at any time: the overlay texture read straight
+         // through a framebuffer of its own, the previous bindings restored)
+         osg::Texture::TextureObject* texture = mOverlayTexture->getTextureObject(0);
+-        if (texture == nullptr || mOverlayImage->s() != mWidth || mOverlayImage->t() != mHeight)
++        if (texture == nullptr)
++            return;
++        // (orthros-r4.patch: readPixels writes mWidth * mHeight * 4 bytes, RGBA8, rows unpadded — into an image of
++        // exactly that layout only; read() keeps mOverlayImage so, a refused copy leaves the CPU copy stale)
++        if (!isCpuCopyLayout(*mOverlayImage))
++        {
++            Log(Debug::Warning) << "Global map: CPU copy not refreshed, overlay image " << mOverlayImage->s() << "x"
++                                << mOverlayImage->t() << " format " << mOverlayImage->getPixelFormat() << " type "
++                                << mOverlayImage->getDataType() << ", expected " << mWidth << "x" << mHeight
++                                << " RGBA8";
+             return;
++        }
+         mCpuCopyStale = false;
+         // clang-format off
+         // (no comma outside parentheses in the JavaScript: the macro would split its argument there)
+@@ -499,6 +514,21 @@ namespace MWRender
+ #endif
+     }
+ 
++    bool GlobalMap::isCpuCopyLayout(const osg::Image& image) const
++    {
++        // (Orthros, orthros-r4.patch: the layout syncCpuCopy's readPixels writes, and the overlay texture's)
++        return image.s() == mWidth && image.t() == mHeight && image.r() == 1 && image.getPixelFormat() == GL_RGBA
++            && image.getDataType() == GL_UNSIGNED_BYTE && image.isDataContiguous()
++            && image.getRowSizeInBytes() == static_cast<unsigned int>(mWidth) * 4
++            && image.getTotalSizeInBytes() >= static_cast<unsigned int>(mWidth) * static_cast<unsigned int>(mHeight) * 4
++            && image.data() != nullptr;
++    }
++
++    bool GlobalMap::hasPendingCopy(osg::Camera* camera) const
++    {
++        return mPendingImageDest.find(camera) != mPendingImageDest.end();
++    }
++
+     void GlobalMap::clear()
+     {
+         ensureLoaded();
+@@ -633,7 +663,9 @@ namespace MWRender
+         texture->setFilter(osg::Texture::MAG_FILTER, osg::Texture::LINEAR);
+         texture->setResizeNonPowerOfTwoHint(false);
+ 
+-        if (srcBox == destBox && imageWidth == mWidth && imageHeight == mHeight)
++        // (Orthros, orthros-r4.patch: the save's decoded PNG becomes mOverlayImage only in the CPU copy's layout,
++        // RGBA8 — an RGB, grey or 16-bit PNG of the same size is drawn like a differing one, below)
++        if (srcBox == destBox && imageWidth == mWidth && imageHeight == mHeight && isCpuCopyLayout(*image))
+         {
+             mOverlayImage = image;
+             mCpuCopyStale = false;
+@@ -645,10 +677,21 @@ namespace MWRender
+             // Dimensions don't match. This could mean a changed map region, or a changed map resolution.
+             // In the latter case, we'll want filtering.
+             // Create a RTT Camera and draw the image onto mOverlayImage in the next frame.
++#ifdef __EMSCRIPTEN__
++            // Orthros (orthros-r4.patch): drawn onto the overlay texture only, no CPU copy — as exploreCell since r3;
++            // the CPU copy is read from the texture when a save needs it (syncCpuCopy). (A camera with a CPU copy
++            // was never updated again once drawn — CameraUpdateGlobalCallback — so its copy never landed.)
++            requestOverlayTextureUpdate(destBox.mLeft, destBox.mTop, destBox.mRight - destBox.mLeft,
++                destBox.mBottom - destBox.mTop, std::move(texture), true, false, srcBox.mLeft / float(imageWidth),
++                srcBox.mTop / float(imageHeight), srcBox.mRight / float(imageWidth),
++                srcBox.mBottom / float(imageHeight));
++            mCpuCopyStale = true;
++#else
+             requestOverlayTextureUpdate(destBox.mLeft, destBox.mTop, destBox.mRight - destBox.mLeft,
+                 destBox.mBottom - destBox.mTop, std::move(texture), true, true, srcBox.mLeft / float(imageWidth),
+                 srcBox.mTop / float(imageHeight), srcBox.mRight / float(imageWidth),
+                 srcBox.mBottom / float(imageHeight));
++#endif
+         }
+     }
+ 
+diff --git a/openmw/apps/openmw/mwrender/globalmap.hpp b/openmw/apps/openmw/mwrender/globalmap.hpp
+index 3564210..35c6b7c 100644
+--- a/openmw/apps/openmw/mwrender/globalmap.hpp
++++ b/openmw/apps/openmw/mwrender/globalmap.hpp
+@@ -59,6 +59,9 @@ namespace MWRender
+ 
+         bool copyResult(osg::Camera* cam, unsigned int frame);
+ 
++        /// Orthros (orthros-r4.patch): true while the camera's render is still to be copied into mOverlayImage.
++        bool hasPendingCopy(osg::Camera* camera) const;
++
+         /**
+          * Mark a camera for cleanup in the next update. For internal use only.
+          */
+@@ -78,6 +81,8 @@ namespace MWRender
+         /// Orthros (orthros-r3.patch, web build): mOverlayImage read from the overlay texture when cells were explored
+         /// since (exploreCell paints the texture only), before a save uses it.
+         void syncCpuCopy();
++        /// Orthros (orthros-r4.patch): `image` has the CPU copy's layout — mWidth x mHeight, RGBA8, rows unpadded.
++        bool isCpuCopyLayout(const osg::Image& image) const;
+         bool mCpuCopyStale = false;
+ 
+         struct WritePng;
+diff --git a/play/index.html b/play/index.html
+index 2f28f49..15be309 100644
+--- a/play/index.html
++++ b/play/index.html
+@@ -2041,6 +2041,9 @@ window.omw = (function(){
+            // halve the range again — outdoor texel density doubles, at the cost of shadows fading out
+            // nearer the camera. ?shadowdist=N (QA) to compare.
+            'maximum shadow map distance = ' + ((/[?&]shadowdist=(\d+)/.exec(location.search)||[])[1] || TIER.shadowDist) + '\n' +
++           // Orthros (orthros-r4.patch): ?mapcellsize=N (QA) — the world map's pixels per cell ([Map] global map cell
++           // size, default 18): a save made at another size loads through the global map's resize path.
++           (/[?&]mapcellsize=(\d+)\b/.test(location.search) ? '[Map]\nglobal map cell size = ' + /[?&]mapcellsize=(\d+)/.exec(location.search)[1] + '\n' : '') +
+            '[Cells]\n' +
+            'preload cell cache max = 18\n' +   // engine asked for 18 for exterior preloading
+            // PRELOADING IS SYNCHRONOUS ON THIS BUILD. The WorkQueue runs inline under emscripten

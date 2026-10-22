@@ -15,6 +15,8 @@
 #topbar .brand .game { color: #b8bcc8; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #topbar .spacer { flex: 1; }
 #topbar .pill { display: flex; align-items: center; gap: 6px; font: 12px system-ui; color: #aab0bd; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08); padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+/* (a pill hidden — the game data's, shell.setData, once done — must go: the rule above beats the browser's own [hidden]) */
+#topbar .pill[hidden] { display: none; }
 #topbar .pill b { color: #e7e9ee; font-weight: 600; }
 #topbar .pill i { display: block; width: 46px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.12); overflow: hidden; }
 #topbar .pill i u { display: block; height: 100%; width: 0; background: var(--gold); }

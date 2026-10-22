@@ -19,12 +19,13 @@ const MAX_KNOWN = 65536;
 const known = new Map();
 
 /**
- * The light copy of `file` (`st`: its fs.Stats): { size, head, from } — its bytes: `head`, then the file's from `from`
- * on, up to `size` in all — or null (not a format Orthros lightens, or nothing to gain).
+ * The light copy of `file` (`st`: its fs.Stats): { size, head, from, mips? } — its bytes: `head`, then the file's from
+ * `from` on, up to `size` in all; with `mips` (a WAD3's, see lightWad), the file's own bytes with those finest levels
+ * redrawn from the next ones — or null (not a format Orthros lightens, or nothing to gain).
  */
 export function lightCopy(file, st) {
-  const dds = /\.dds$/i.test(file);
-  if (!dds && !/\.tga$/i.test(file)) return null;
+  const dds = /\.dds$/i.test(file), wad = !dds && /\.wad$/i.test(file);
+  if (!dds && !wad && !/\.tga$/i.test(file)) return null;
   const key = `${file}\0${st.size}\0${st.mtimeMs}`;
   let c = known.get(key);
   if (c !== undefined) { known.delete(key); known.set(key, c); return c; }
@@ -33,7 +34,8 @@ export function lightCopy(file, st) {
     const fd = fs.openSync(file, 'r');
     try {
       const head = Buffer.alloc(148); const n = fs.readSync(fd, head, 0, 148, 0);
-      if (dds) c = lightDds(head.subarray(0, n), st.size);
+      if (wad) c = wadCopy(fd, head.subarray(0, n), st.size);
+      else if (dds) c = lightDds(head.subarray(0, n), st.size);
       else { const t = lightTga(head.subarray(0, n), st.size); if (t) c = tgaCopy(file, st, t); }
     } finally { fs.closeSync(fd); }
   } catch { return null; } // (a failure to read it — a file being replaced, no descriptor left —: not remembered)
@@ -44,6 +46,7 @@ export function lightCopy(file, st) {
 
 /** Bytes [start, end) of a light copy (`c` of `file`), into `buf` at `at`; `done(err)`. */
 export function readLight(file, c, start, end, buf, at, done) {
+  if (c.mips) return readWadLight(file, c, start, end, buf, at, done);
   const h = c.head.length;
   if (start < h) c.head.copy(buf, at, start, Math.min(end, h));
   if (end <= h) return done(null);
@@ -185,4 +188,75 @@ function tgaCopy(file, st, t) {
       return b;
     },
   };
+}
+
+// ---------------------------------------------------------------- WAD3: GoldSrc's texture archives
+
+/** WAD3 lump type of a texture with its mip levels (miptex) */
+const WAD_MIPTEX = 0x43;
+/** A WAD texture is lightened from this many pixels on (64 × 64: smaller ones save nothing worth their detail). */
+export const WAD_LIGHT_FROM = 64 * 64;
+const EMPTY = Buffer.alloc(0);
+
+/**
+ * The light shape of a WAD3 archive (GoldSrc's textures, 8-bit palette indices with four mip levels each) whose file
+ * starts with `head` and has `size` bytes, its directory read from `fd`: the copy keeps the file's size and every
+ * offset — the same archive, so that an engine that reads part of it as one and part as the other still reads a valid
+ * archive —, each texture's finest level redrawn from the next one (each pixel of level 1 twice as wide and high:
+ * half the detail, and bytes brotli finds again and again: halflife.wad 0.62 → 0.35 of its bytes, Counter-Strike's map
+ * WADs 0.70-0.89 → 0.35-0.43). `mips`: [level 0 offset, width, height, level 1 offset, …] (file offsets), sorted. Null:
+ * not a WAD3, or no texture to lighten (uncompressed miptex of WAD_LIGHT_FROM pixels or more, its levels in order
+ * inside its lump).
+ */
+export function lightWad(fd, head, size) {
+  if (head.length < 12 || head.toString('latin1', 0, 4) !== 'WAD3') return null;
+  const n = head.readInt32LE(4), dir = head.readInt32LE(8);
+  if (!(n > 0 && n < 1 << 20 && dir >= 12 && dir + n * 32 <= size)) return null;
+  const d = Buffer.alloc(n * 32);
+  if (fs.readSync(fd, d, 0, d.length, dir) !== d.length) return null;
+  const lumps = [];
+  for (let i = 0; i < n; i++) {
+    const pos = d.readInt32LE(i * 32), disk = d.readInt32LE(i * 32 + 4);
+    if (d[i * 32 + 12] === WAD_MIPTEX && d[i * 32 + 13] === 0 && pos >= 12 && disk >= 40 && pos + disk <= size) lumps.push([pos, disk]);
+  }
+  const mips = [], mt = Buffer.alloc(40);
+  for (const [pos, disk] of lumps.sort((a, b) => a[0] - b[0])) {
+    if (fs.readSync(fd, mt, 0, 40, pos) !== 40) return null;
+    const w = mt.readUInt32LE(16), h = mt.readUInt32LE(20), o0 = mt.readUInt32LE(24), o1 = mt.readUInt32LE(28);
+    if (!w || !h || w % 2 || h % 2 || w > 4096 || h > 4096 || w * h < WAD_LIGHT_FROM) continue;
+    if (o0 < 40 || o1 < o0 + w * h || o1 + (w / 2) * (h / 2) > disk) continue; // (its levels not as the format lays them)
+    mips.push(pos + o0, w, h, pos + o1);
+  }
+  return mips.length ? mips : null;
+}
+function wadCopy(fd, head, size) {
+  const mips = lightWad(fd, head, size);
+  return mips ? { size, head: EMPTY, from: 0, mips } : null;
+}
+
+/** Bytes [start, end) of a WAD's light copy: the file's, with the finest levels inside the range redrawn. */
+function readWadLight(file, c, start, end, buf, at, done) {
+  const m = c.mips;
+  // (the textures whose finest level the range overlaps; their next level lies after it in the file: one read of the
+  // range and of what those levels need past it)
+  let lo = 0, hi = m.length / 4;
+  while (lo < hi) { const k = (lo + hi) >> 1; if (m[k * 4] + m[k * 4 + 1] * m[k * 4 + 2] <= start) lo = k + 1; else hi = k; }
+  let readEnd = end;
+  for (let k = lo; k < m.length / 4 && m[k * 4] < end; k++) readEnd = Math.max(readEnd, m[k * 4 + 3] + (m[k * 4 + 1] / 2) * (m[k * 4 + 2] / 2));
+  readEnd = Math.min(readEnd, c.size);
+  const tmp = readEnd > end ? Buffer.alloc(readEnd - start) : null, into = tmp ?? buf, base = tmp ? 0 : at;
+  fs.open(file, 'r', (err, fd) => {
+    if (err) return done(err);
+    fs.read(fd, into, base, readEnd - start, start, (err2, n) => {
+      fs.close(fd, () => {});
+      if (err2 || n !== readEnd - start) return done(err2 ?? new Error('short read'));
+      for (let k = lo; k < m.length / 4 && m[k * 4] < end; k++) {
+        const d0 = m[k * 4], w = m[k * 4 + 1], h = m[k * 4 + 2], s1 = m[k * 4 + 3] - start + base, hw = w / 2;
+        const a = Math.max(start, d0), b = Math.min(end, d0 + w * h);
+        for (let p = a; p < b; p++) { const i = p - d0, y = (i / w) | 0, x = i - y * w; into[base + p - start] = into[s1 + (y >> 1) * hw + (x >> 1)]; }
+      }
+      if (tmp) tmp.copy(buf, at, 0, end - start);
+      done(null);
+    });
+  });
 }
