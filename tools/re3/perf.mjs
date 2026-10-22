@@ -8,7 +8,8 @@
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/re3/perf.mjs <manifest> [--url http://127.0.0.1:8080] [--gl swiftshader|discard|gpu]
 //     [--seconds 30] [--drive] [--warm 0] [--net KB/s] [--profile] [--stacks getError,…] [--no-calls] [--report]
-//     [--size 1280x720] [--query "a=b"]
+//     [--size 1280x720] [--query "a=b"] [--trace <file.json>]   (--trace: a Chrome trace of the measured seconds — the
+//     renderer's main thread, the GPU process, their waits on each other —, for a closer look at the frames' gaps)
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -57,11 +58,13 @@ if (args.includes('--drive')) { await hold('Enter', 700); await page.waitForTime
 // (--warm s: played that long before the measure — the intro's last loading screen out of it)
 await page.waitForTimeout(Number(arg('--warm', 0)) * 1000);
 const cdp = args.includes('--profile') ? await startProfile(page) : null;
+if (arg('--trace')) await browser.startTracing(page, { path: arg('--trace'), categories: ['toplevel', 'gpu', 'cc', 'viz', 'blink', 'v8', 'disabled-by-default-devtools.timeline', 'disabled-by-default-gpu.service'] });
 await page.evaluate(() => { const B = portSession.engine.orthrosBlocked; perfProbe.blocked0 = B ? { ...B, files: { ...B.files } } : {}; perfProbe.files0 = { ...portSession.files.stats }; });
 await startMeasure(page, { calls: !args.includes('--no-calls') });
 await page.waitForTimeout(seconds * 1000);
 const measured = await readMeasure(page);
 const profile = cdp ? await stopProfile(cdp, measured.frames) : null;
+if (arg('--trace')) await browser.stopTracing();
 const result = { ...measured, ...await page.evaluate(() => {
   const P = perfProbe, F = portSession.files.stats, F0 = P.files0 ?? {}, d = (k) => Math.round((F[k] ?? 0) - (F0[k] ?? 0));
   // (the engine's waits for its files in the measured seconds: count, total and the files)

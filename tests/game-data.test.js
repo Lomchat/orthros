@@ -11,7 +11,7 @@ import { listGameTree, resolveGameFile } from '../src/host/game-files.js';
 import { treeFile, treeFiles, treeBytes, languageFiles } from '../src/vfs/game-tree.js';
 import { createDataWorker } from '../src/vfs/data-worker.js';
 import { GameData, PIECE, readsReal } from '../src/vfs/data-client.js';
-import { fileNode, mountFiles } from '../src/vfs/emscripten-files.js';
+import { fileNode, mountFiles, phaseOnRead } from '../src/vfs/emscripten-files.js';
 import { BLOCK } from '../src/vfs/http-backend.js';
 
 const bytes = (n, seed = 1) => Uint8Array.from({ length: n }, (_, i) => (i * 31 + seed + (i >> 10)) & 255);
@@ -135,6 +135,23 @@ test('the data worker reports the pieces the engine used, loads the startup set,
   assert.equal(server.posts[0].session, 'sess1');
 });
 
+test('the page\'s phases go with the reports: each one\'s start in the session\'s time, the same one twice in a row once', async (t) => {
+  const server = fakeServer({ 'maps/a.bsp': bytes(70000, 4) });
+  const w = await startWorker(t, server);
+  w.handle({ phase: { name: 'early', ago: 0 } }); // (before the engine's start: no session time yet)
+  w.handle({ start: true });
+  // (the map's file read, its phase told a little later: dated from that read)
+  await new Promise((r) => setTimeout(r, 15));
+  w.handle({ used: [['v', 'maps/a.bsp', 0]], phase: { name: 'a', ago: 10 } }); w.handle({ phase: { name: 'a', ago: 0 } });
+  await new Promise((r) => setTimeout(r, 30));
+  w.handle({ phase: { name: 'b', ago: 20 } }); w.handle({ close: true });
+  await w.until(() => server.posts.length, 'reported');
+  const { phases, reads } = server.posts[0];
+  assert.deepEqual(phases.map(([n]) => n), ['a', 'b']);
+  assert.ok(phases[0][1] <= reads[0][3], 'the read of its map at or after its start');
+  assert.ok(phases[1][1] >= phases[0][1] && phases[1][1] <= phases[0][1] + 30, `b dated 20 ms before it was told: ${phases}`);
+});
+
 test('the startup set covers the versions a version requires, each from its own learned order', async (t) => {
   const server = fakeServer({ 'Game.esm': bytes(3 << 20) }, [['Game.esm', 0, 0, 0]], {}, { files: { 'Base.dat': bytes(2 << 20, 5) }, learned: [['Base.dat', 1, 0, 0]] });
   const w = await startWorker(t, server);
@@ -179,6 +196,24 @@ test('a file not in the page yet is not readable at once: fetched in the backgro
   const gone = data.fileAs('v', 'gone.wav', 1000);
   assert.equal(data.readable(gone), false); await gone.ensuring.catch?.(() => {}); await new Promise((r) => setTimeout(r, 20));
   assert.equal(data.readable(gone), true);
+});
+
+test('a range of a file (an archive\'s member) not in the page yet: fetched in the background, once, only its pieces; then readable', async (t) => {
+  const bsa = bytes(1 << 20, 5), server = fakeServer({ 'Morrowind.bsa': bsa });
+  const data = await inThread(t, server), h = data.file('v', 'morrowind.BSA');
+  const at = 300000, len = 70000;
+  assert.equal(data.readable(h, at, len), false); assert.equal(data.readable(h, at, len), false, 'asked again meanwhile');
+  assert.equal(h.ensuringRanges.size, 1, 'one fetch for those bytes'); assert.equal(h.ensuring ?? null, null, 'not the whole file');
+  await [...h.ensuringRanges.values()][0];
+  assert.equal(data.readable(h, at, len), true);
+  const out = new Uint8Array(len), asked = server.asked.length;
+  assert.equal(data.read(h, out, 0, len, at), len); assert.deepEqual(out, bsa.subarray(at, at + len));
+  assert.equal(server.asked.length, asked, 'read from the page: no wait');
+  assert.equal(data.missing(h, 0, h.size), true, 'the rest of the archive not fetched for it');
+  // (to the end, a negative size; past the end, or nothing: readable)
+  assert.equal(data.readable(h, h.size - 1000, -1), false); await Promise.all(h.ensuringRanges.values());
+  assert.equal(data.readable(h, h.size - 1000, -1), true);
+  assert.equal(data.readable(h, h.size + 5, 10), true); assert.equal(data.readable(h, 10, 0), true);
 });
 
 /** The page's client and its worker in this thread (asynchronous reads only), on `server`. */
@@ -303,6 +338,20 @@ test('an Emscripten file node reads its bytes through the game data, maps the fi
   assert.equal(nodes.size, 2); assert.deepEqual(made.slice(-2).map((n) => [n.dir, n.name]), [['/root/x', 'y.txt'], ['/root/w', 'z.txt']]);
 });
 
+test('a map\'s load starts its phase: an open that reads half its .bsp or more, once, dated from that open\'s first read; a listing does not', () => {
+  const told = [], data = { phase: (name, ago) => told.push([name, ago]) };
+  const node = (p, size) => ({ p, usedBytes: size, stream_ops: { read: (s, buf, off, len) => len } });
+  const bsp = node('/rodir/valve/maps/C1A0.bsp', 1000), wad = node('/rodir/valve/gfx.wad', 1000);
+  const FS = { getPath: (n) => n.p };
+  assert.equal(phaseOnRead(FS, [bsp, wad], data, (p) => /\/maps\/([^/]+)\.bsp$/i.exec(p)?.[1].toLowerCase() ?? null), 1);
+  const listing = {}; bsp.stream_ops.read(listing, null, 0, 100, 0); bsp.stream_ops.read(listing, null, 0, 300, 500);
+  assert.deepEqual(told, [], 'a header and a lump: not a load');
+  const load = {}; bsp.stream_ops.read(load, null, 0, 400, 0); bsp.stream_ops.read(load, null, 0, 600, 400); bsp.stream_ops.read(load, null, 0, 10, 0);
+  assert.equal(told.length, 1); assert.equal(told[0][0], 'c1a0'); assert.ok(told[0][1] >= 0 && told[0][1] < 1000);
+  wad.stream_ops.read({}, null, 0, 1000, 0); assert.equal(told.length, 1, 'other files: no phase');
+  bsp.stream_ops.read({}, null, 0, 1000, 0); assert.equal(told.length, 2, 'loaded again: told again');
+});
+
 test('a page\'s read reports teach the server\'s learned list, in the page\'s own times', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-stream-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -326,4 +375,40 @@ test('a page\'s read reports teach the server\'s learned list, in the page\'s ow
   const game = base.replace('/api/prefetch/', '/gamez/') + '/valve/bom.txt?r=0-6';
   assert.deepEqual([...new Uint8Array(await (await fetch(game + '&pad=1')).arrayBuffer())], [0, 0xff, 0xfe, 0x41, 0, 0x42, 0]);
   assert.deepEqual([...new Uint8Array(await (await fetch(game)).arrayBuffer())], [0xff, 0xfe, 0x41, 0, 0x42, 0]);
+});
+
+test('reads learned by phase (a map): each phase\'s blocks together at its usual start, in the order its load reads them; kept on disk', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-phase-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), gs = path.join(games, 'gs'), learn = path.join(root, 'learn');
+  fs.mkdirSync(path.join(gs, 'base', 'valve', 'maps'), { recursive: true }); fs.mkdirSync(path.join(gs, 'versions', 'orig'), { recursive: true }); fs.mkdirSync(learn);
+  for (const f of ['a.bsp', 'b.bsp', 'c.bsp']) fs.writeFileSync(path.join(gs, 'base', 'valve', 'maps', f), bytes(3 * BLOCK, 3));
+  fs.writeFileSync(path.join(gs, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'gs', name: 'GS', defaultVersion: 'gs-orig', defaults: { runtime: 'goldsrc' },
+    versions: [{ id: 'gs-orig', dir: 'orig', version: 'O', goldsrc: { engine: 'e-1', gameDir: 'valve', modules: { client: 'c.wasm', server: 's.wasm' }, solo: { map: 'a' } } }] }));
+  const start = async () => {
+    const server = createServer({ gamesDir: games, learnDir: learn, learnWriteMs: 10, lanLog: () => {} });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return { server, base: `http://127.0.0.1:${server.address().port}/api/prefetch/gs-orig` };
+  };
+  const stop = (server) => new Promise((resolve) => { if (!server.listening) return resolve(); server.closeAllConnections?.(); server.close(resolve); });
+  const { server, base } = await start(); t.after(() => stop(server));
+  const post = (body) => fetch(base, { method: 'POST', body: JSON.stringify(body) });
+  // (a slow player: map a, then b after 600 s; its load reads b's blocks 0, 1, 2 at 600.1, 600.2, 600.3 s)
+  assert.equal((await post({ session: 'slow', phases: [['a', 10], ['b', 600000]], reads: [['valve/maps/a.bsp', 0, 10, 20],
+    ['valve/maps/b.bsp', 0, 10, 600100], ['valve/maps/b.bsp', BLOCK, BLOCK + 10, 600200], ['valve/maps/b.bsp', 2 * BLOCK, 2 * BLOCK + 10, 600300]] })).status, 204);
+  // (a player who goes to b at once, reading its blocks in another order slower, then c; and one at b after 500 s)
+  assert.equal((await post({ session: 'quick', phases: [['b', 5000], ['c', 9000], ['bad', -1], 'x'], reads: [['valve/maps/b.bsp', 2 * BLOCK, 2 * BLOCK + 10, 5050],
+    ['valve/maps/b.bsp', BLOCK, BLOCK + 10, 8000], ['valve/maps/c.bsp', 0, 10, 9100], ['valve/maps/c.bsp', BLOCK, BLOCK + 10, 9200]] })).status, 204);
+  assert.equal((await post({ session: 'mid', phases: [['b', 500000]], reads: [] })).status, 204);
+  // (a phase that usually starts when c does: its blocks after c's, not between them)
+  assert.equal((await post({ session: 'tie', phases: [['d', 9000]], reads: [['valve/maps/a.bsp', BLOCK, BLOCK + 10, 9050], ['valve/maps/a.bsp', 2 * BLOCK, 2 * BLOCK + 10, 9300]] })).status, 204);
+  const list = await (await fetch(base)).json();
+  // (b's usual start: the median of 600, 5 and 500 s — 500 s; its blocks by their time from b's start: 2 (50 ms), 0 (100 ms), 1 (200 ms));
+  // c after it once its start is known (9 s, alone: before b), a at its start
+  assert.deepEqual(list.map(([p, b, , at]) => [p.slice(11), b, at]), [['a.bsp', 0, 20], ['c.bsp', 0, 9100], ['c.bsp', 1, 9200], ['a.bsp', 1, 9050], ['a.bsp', 2, 9300],
+    ['b.bsp', 2, 500050], ['b.bsp', 0, 500100], ['b.bsp', 1, 500200]]);
+  // (no phases told: the global time, as before)
+  await new Promise((r) => setTimeout(r, 100)); await stop(server);
+  const again = await start(); t.after(() => stop(again.server));
+  assert.deepEqual(await (await fetch(again.base)).json(), list, 'the phases and their reads kept on disk');
 });

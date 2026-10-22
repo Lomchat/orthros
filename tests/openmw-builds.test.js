@@ -57,3 +57,26 @@ test('the r3 page (when installed): exterior grid preloaded by default, ?wq=inli
   assert.ok(html.includes("(/[?&]wq=inline\\b/.test(location.search) ? 'preload exterior grid = false\\n' : 'preload exterior grid = true\\n')"));
   for (const k of ['OPENMW_WORKQUEUE_INLINE', 'OPENMW_WORKQUEUE_THREADED', 'OPENMW_WORKQUEUE_BUDGET_MS']) assert.ok(html.includes(`ENV.${k}`), k);
 });
+
+test('r5: r4 plus its patch, the same exports; preloads put off what waits for the network — between frames only, for a while', () => {
+  const r4 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r4'), r5 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r5');
+  assert.ok(r5, 'r5 is a build');
+  assert.deepEqual(r5.patches, [...r4.patches, 'orthros-r5.patch']);
+  assert.deepEqual(r5.exports, r4.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r5.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const k of [
+    // (the page asked: a BSA member's own bytes, a loose file whole)
+    'var f = globalThis.orthrosRangeReady;', 'Files::pathToUnicodeString(mFile->getFile()->getPath()), mInfo->mOffset, mInfo->mFileSize);',
+    'return orthrosRangeReady(Files::pathToUnicodeString(mPath), 0, ~std::uint64_t{ 0 });',
+    // (a template: its NIF and the textures it names)
+    'bool SceneManager::orthrosTemplateReady(VFS::Path::NormalizedView path)', 'record->mRecordType != Nif::RC_NiSourceTexture',
+    // (who asks: object paging's chunks, the terrain preload's entries, the cell preload's meshes)
+    'bool ObjectPaging::chunkReady(', 'bool QuadTreeWorld::chunksReady(', 'bool meshReady(std::string_view path)',
+    // (between frames only — a deadline —, and for dataWaitLimit at most; the queue runs the others meanwhile)
+    'const bool mayWait = deadline != std::chrono::steady_clock::time_point::max()', 'now() - since < limit',
+    'if (mWorld->preloadWaitingForData())', 'waiting.push_back(item.get());', 'OPENMW_PRELOAD_WAIT_MS', 'ENV.OPENMW_PRELOAD_WAIT_MS='])
+    assert.ok(added.includes(k), k);
+  const page = path.join(DEFAULT_ENGINES_DIR, 'openmw-web-v1.5.3-orthros-r5', 'index.html');
+  if (fs.existsSync(page)) assert.ok(fs.readFileSync(page, 'utf8').includes('ENV.OPENMW_PRELOAD_WAIT_MS='), 'the installed page takes ?preloadwait=');
+});

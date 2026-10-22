@@ -323,7 +323,7 @@ export function createServer(opts = {}) {
     if (!m) {
       m = new Map(); learned.set(name, m);
       const f = learnFile(name);
-      if (f) try { for (const [k, t, n, mask, pre, by] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined, pre: pre || 0, ...(by && typeof by === 'object' ? { by } : {}) }); } catch { /* none yet */ }
+      if (f) try { for (const [k, t, n, mask, pre, by, ph] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined, pre: pre || 0, ...(by && typeof by === 'object' ? { by } : {}), ...(ph && typeof ph === 'object' ? { ph } : {}) }); } catch { /* none yet */ }
     }
     return m;
   };
@@ -338,6 +338,26 @@ export function createServer(opts = {}) {
     }
     return p;
   };
+  /**
+   * The phases of a version's sessions (a page's GameData.phase: a map, a level): each phase's start in the sessions that
+   * entered it (ms from their start; the last PHASE_STARTS kept), in phases-<manifest>.json. A block read first in a phase
+   * keeps, by phase, the earliest time it was needed from that phase's start (the entry's `ph`): prefetchList places it
+   * at its phase's usual start plus that time — each phase's reads together, in the order its load reads them.
+   */
+  const PHASE_STARTS = 31;
+  const phaseStarts = new Map(); // manifest -> Map(phase -> [start ms, ...])
+  const phasesFile = (name) => opts.learnDir && path.join(opts.learnDir, `phases-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  const phasesOf = (name) => {
+    let q = phaseStarts.get(name);
+    if (!q) {
+      q = new Map(); phaseStarts.set(name, q);
+      const f = phasesFile(name);
+      if (f) try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(f, 'utf8')))) if (Array.isArray(v)) q.set(k, v.filter(Number.isFinite).slice(-PHASE_STARTS)); } catch { /* none yet */ }
+    }
+    return q;
+  };
+  /** A phase's usual start: the median of its sessions' starts (a session that jumps to it at once does not move it alone). */
+  const phaseStart = (q, phase) => { const s = q.get(phase); if (!s?.length) return null; const o = [...s].sort((a, b) => a - b); return o[Math.floor((o.length - 1) / 2)]; };
   let learnDirty = new Set(), learnTimer = null;
   const learnSave = (name) => {
     launches.delete(name);
@@ -347,7 +367,9 @@ export function createServer(opts = {}) {
       learnTimer = null;
       for (const n of learnDirty) {
         const f = learnFile(n);
-        try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.pre ? [k, v.t, v.n, v.mask ?? null, v.pre, ...(v.by ? [v.by] : [])] : v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
+        try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.ph ? [k, v.t, v.n, v.mask ?? null, v.pre ?? 0, v.by ?? null, v.ph] : v.pre ? [k, v.t, v.n, v.mask ?? null, v.pre, ...(v.by ? [v.by] : [])] : v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
+        const qf = phasesFile(n), q = phaseStarts.get(n);
+        if (qf && q?.size) try { fs.writeFileSync(qf + '.tmp', JSON.stringify(Object.fromEntries(q))); fs.renameSync(qf + '.tmp', qf); } catch { /* next time */ }
         const pf = playableFile(n), pm = playable.get(n);
         if (pm?.marks) try { fs.writeFileSync(pf + '.tmp', JSON.stringify({ marks: pm.marks, ...(Object.keys(pm.by).length ? { by: pm.by } : {}) })); fs.renameSync(pf + '.tmp', pf); } catch { /* next time */ }
       }
@@ -365,6 +387,8 @@ export function createServer(opts = {}) {
       sessions.set(sid, ss = { start: now, seen: new Set() });
     }
     const m = learnedOf(name), t = at ?? now - ss.start;
+    // (the session's phase at t: the last one started by then — learnPhases)
+    let ph = null; for (const p of ss.phases ?? []) { if (p[1] <= t) ph = p; else break; }
     for (let b = Math.floor(start / LEARN_BLOCK); b * LEARN_BLOCK < end; b++) {
       const k = `${rel}#${b}`;
       const bits = pieceBits(Math.max(start, b * LEARN_BLOCK) - b * LEARN_BLOCK, Math.min(end, (b + 1) * LEARN_BLOCK) - b * LEARN_BLOCK);
@@ -375,6 +399,27 @@ export function createServer(opts = {}) {
       if (ss.seen.has(sk)) continue;
       ss.seen.add(sk);
       e.t = Math.min(e.t, t); e.n++;
+      if (ph && (e.ph?.[ph[0]] ?? Infinity) > t - ph[1]) (e.ph ??= {})[ph[0]] = t - ph[1];
+    }
+    learnSave(name);
+  };
+  /**
+   * Session `sid` of version `name` told its phases so far ([[phase, start]…], a report's `phases`, GameData.phase): kept
+   * for its reads (learnRead), each new one's start counted for the version.
+   */
+  const learnPhases = (name, sid, phases) => {
+    if (!sid || sid.length > 40 || !Array.isArray(phases)) return;
+    const list = phases.filter((p) => Array.isArray(p) && typeof p[0] === 'string' && p[0].length > 0 && p[0].length <= 64 && Number.isFinite(p[1]) && p[1] >= 0 && p[1] <= 6 * 3600e3)
+      .slice(0, 200).map(([p, t]) => [p, Math.round(t)]).sort((a, b) => a[1] - b[1]);
+    if (!list.length) return;
+    let ss = sessions.get(sid);
+    if (!ss) sessions.set(sid, ss = { start: Date.now(), seen: new Set() });
+    ss.phases = list;
+    const q = phasesOf(name), counted = (ss.phasesCounted ??= new Set());
+    for (const [p, t] of list) {
+      const key = `${name}\0${p}\0${t}`; if (counted.has(key)) continue;
+      counted.add(key);
+      const s = q.get(p) ?? []; s.push(t); q.set(p, s.slice(-PHASE_STARTS));
     }
     learnSave(name);
   };
@@ -405,8 +450,18 @@ export function createServer(opts = {}) {
   // game language `lang` when some of them told it, else all of them)
   const prefetchList = (name, lang = null) => {
     const p = playableOf(name), own = lang && p.by[lang] > 0 ? p.by[lang] : 0, marks = own || p.marks;
-    return [...learnedOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 8192).map(([k, v]) => {
-      const i = k.lastIndexOf('#'), e = [k.slice(0, i), Number(k.slice(i + 1)), v.mask ?? 0, Math.round(v.t)];
+    // (a block learned in phases: in the phase of them that usually starts first — learnPhases —, the phases in the
+    // order of their usual starts, each one's blocks together in the order its load read them; its time, that start plus
+    // its time in the phase. Others: their time)
+    const q = phasesOf(name), when = new Map();
+    for (const [k, v] of learnedOf(name)) {
+      let key = [v.t, '', 0];
+      if (v.ph) for (const [ph, d] of Object.entries(v.ph)) { const s = phaseStart(q, ph); if (s !== null && (key[1] === '' || s < key[0] || (s === key[0] && ph < key[1]))) key = [s, ph, d]; }
+      when.set(k, key);
+    }
+    const order = (a, b) => { const x = when.get(a[0]), y = when.get(b[0]); return x[0] - y[0] || (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0) || x[2] - y[2]; };
+    return [...learnedOf(name)].sort(order).slice(0, 8192).map(([k, v]) => {
+      const w = when.get(k), i = k.lastIndexOf('#'), e = [k.slice(0, i), Number(k.slice(i + 1)), v.mask ?? 0, Math.round(w[0] + w[2])];
       const pre = own ? v.by?.[lang] ?? 0 : v.pre;
       if (marks) e.push(pre && pre * 2 >= marks ? PRE_PLAYABLE : 0);
       return e;
@@ -1200,6 +1255,7 @@ export function createServer(opts = {}) {
             let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
             if (typeof rec?.session !== 'string' || !rec.session || rec.session.length > 40 || !Array.isArray(rec.reads)) return send(res, 400, 'bad report');
             const tree = gameTree(m[1], man);
+            if (rec.phases !== undefined) learnPhases(m[1], 'r:' + rec.session, rec.phases);
             for (const r of rec.reads.slice(0, 50000)) {
               if (!Array.isArray(r) || typeof r[0] !== 'string' || r[0].length > 512) continue;
               const [rel, start, end, t] = r, size2 = treeFileSize(tree, rel);

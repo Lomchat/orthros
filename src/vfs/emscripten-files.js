@@ -41,6 +41,32 @@ export function fileNode(FS, at, data, h, o = {}) {
 }
 
 /**
+ * The game's phases told by its files (GameData.phase): a node among `nodes` whose path `phaseOf` names (a GoldSrc
+ * map's .bsp: its map) starts that phase once an open of it has read at least half the file — a load, not a listing
+ * that reads its header —, dated from that open's first read. Returns how many nodes are watched.
+ * @param {object} FS the engine's FS
+ * @param {Iterable<object>} nodes the game's file nodes (mountFiles)
+ * @param {{ phase: (name: string, ago?: number) => void }} data
+ * @param {(path: string) => string | null} phaseOf
+ */
+export function phaseOnRead(FS, nodes, data, phaseOf) {
+  let n = 0;
+  for (const node of nodes) {
+    const name = phaseOf(FS.getPath(node)); if (!name) continue;
+    const ops = node.stream_ops, read = ops.read, size = node.usedBytes;
+    node.stream_ops = { ...ops, read(stream, buffer, offset, length, position) {
+      stream.orthrosFirstRead ??= performance.now();
+      const got = read(stream, buffer, offset, length, position);
+      stream.orthrosRead = (stream.orthrosRead ?? 0) + got;
+      if (!stream.orthrosPhase && stream.orthrosRead * 2 >= size) { stream.orthrosPhase = true; data.phase(name, performance.now() - stream.orthrosFirstRead); }
+      return got;
+    } };
+    n++;
+  }
+  return n;
+}
+
+/**
  * The game's files (`files`: [{ path, at? }] of version `name` — `at`, where a language's file goes, languageFiles)
  * under `root`. `rewritable`: a game file the engine opens to write it anew (O_TRUNC: fopen's "w") replaced by an empty
  * file of the engine's own in its place, as in a game folder the player may write in (not when the open must create

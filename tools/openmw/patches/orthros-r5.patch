@@ -1,0 +1,709 @@
+--- a/openmw/apps/openmw/mwrender/objectpaging.cpp
++++ b/openmw/apps/openmw/mwrender/objectpaging.cpp
+@@ -657,9 +657,75 @@
+         }
+     }
+ 
++    bool ObjectPaging::chunkReady(float size, const osg::Vec2f& center, unsigned char /*lod*/,
++        unsigned int lodFlags, bool activeGrid, const osg::Vec3f& /*viewPoint*/)
++    {
++        if (activeGrid && !mActiveGrid)
++            return true;
++        if (mOrthrosPending.size() > 1024)
++            mOrthrosPending.clear(); // (chunks asked and then never built: a preload aborted, the player gone)
++        const ChunkId id = std::make_tuple(center, size, activeGrid);
++        if (mCache->getRefFromObjectCache(id))
++        {
++            mOrthrosPending.erase(id);
++            return true;
++        }
++        // (getChunk's own level: its lodFlags' high bits)
++        const unsigned char lod = static_cast<unsigned char>(lodFlags >> (4 * 4));
++        auto pending = mOrthrosPending.find(id);
++        if (pending == mOrthrosPending.end())
++        {
++            const osg::Vec2i startCell(static_cast<int>(std::floor(center.x() - size / 2.f)),
++                static_cast<int>(std::floor(center.y() - size / 2.f)));
++            const MWBase::World& world = *MWBase::Environment::get().getWorld();
++            const MWWorld::ESMStore& store = world.getStore();
++            const std::map<ESM::RefNum, PagedCellRef> refs = mWorldspace == ESM::Cell::sDefaultWorldspaceId
++                ? collectESM3References(size, startCell, store)
++                : collectESM4References(size, startCell, mWorldspace);
++            std::set<VFS::Path::Normalized> models;
++            for (const auto& [refNum, ref] : refs)
++            {
++                if (Misc::ResourceHelpers::isHiddenMarker(ref.mRefId))
++                    continue;
++                const int type = store.findStatic(ref.mRefId);
++                VFS::Path::Normalized model = getModel(type, ref.mRefId, store);
++                if (model.empty())
++                    continue;
++                model = Misc::ResourceHelpers::correctMeshPath(model);
++                if (activeGrid && type != ESM::REC_STAT && type != ESM::REC_STAT4)
++                    model = Misc::ResourceHelpers::correctActorModelPath(model, mSceneManager->getVFS());
++                if (!activeGrid)
++                {
++                    std::lock_guard<std::mutex> lock(mLODNameCacheMutex);
++                    LODNameCacheKey key{ model, lod };
++                    LODNameCache::const_iterator found = mLODNameCache.lower_bound(key);
++                    if (found != mLODNameCache.end() && found->first == key)
++                        model = found->second;
++                    else
++                        model = mLODNameCache
++                                    .emplace_hint(found, std::move(key),
++                                        Misc::ResourceHelpers::getLODMeshName(
++                                            world.getESMVersions()[refNum.mContentFile], model,
++                                            *mSceneManager->getVFS(), lod))
++                                    ->second;
++                }
++                models.insert(std::move(model));
++            }
++            pending = mOrthrosPending.emplace(id, std::vector<VFS::Path::Normalized>(models.begin(), models.end())).first;
++        }
++        // (every mesh asked: all the missing files on their way at once; those here dropped from the list)
++        std::erase_if(pending->second, [&](const VFS::Path::Normalized& model) { return mSceneManager->orthrosTemplateReady(model); });
++        if (!pending->second.empty())
++            return false;
++        mOrthrosPending.erase(pending);
++        return true;
++    }
++
+     osg::ref_ptr<osg::Node> ObjectPaging::createChunk(float size, const osg::Vec2f& center, bool activeGrid,
+         const osg::Vec3f& viewPoint, bool compile, unsigned char lod)
+     {
++        mOrthrosPending.erase(std::make_tuple(center, size, activeGrid));
++
+         const osg::Vec2i startCell(static_cast<int>(std::floor(center.x() - size / 2.f)),
+             static_cast<int>(std::floor(center.y() - size / 2.f)));
+         const MWBase::World& world = *MWBase::Environment::get().getWorld();
+--- a/openmw/apps/openmw/mwrender/objectpaging.hpp
++++ b/openmw/apps/openmw/mwrender/objectpaging.hpp
+@@ -31,6 +31,13 @@
+ 
+         unsigned int getNodeMask() override;
+ 
++        /// Orthros (orthros-r5.patch): the chunk is cached, or the meshes of its objects and their textures are in the
++        /// browser page (Resource::SceneManager::orthrosTemplateReady): createChunk() reads nothing from the network.
++        /// The meshes asked are those createChunk() may use (a few it skips included); those not ready are kept and
++        /// only they are asked again. Main thread.
++        bool chunkReady(float size, const osg::Vec2f& center, unsigned char lod, unsigned int lodFlags,
++            bool activeGrid, const osg::Vec3f& viewPoint) override;
++
+         /// @return true if view needs rebuild
+         bool enableObject(int type, ESM::RefNum refnum, const osg::Vec3f& pos, const osg::Vec2i& cell, bool enabled);
+ 
+@@ -81,6 +88,9 @@
+         typedef std::pair<std::string, unsigned char> LODNameCacheKey; // Key: mesh name, lod level
+         using LODNameCache = std::map<LODNameCacheKey, VFS::Path::Normalized>; // Cache: key, mesh name to use
+         LODNameCache mLODNameCache;
++
++        /// Orthros (orthros-r5.patch): chunkReady()'s meshes still on their way, by chunk.
++        std::map<ChunkId, std::vector<VFS::Path::Normalized>> mOrthrosPending;
+     };
+ 
+     class RefnumMarker : public osg::Object
+--- a/openmw/apps/openmw/mwworld/cellpreloader.cpp
++++ b/openmw/apps/openmw/mwworld/cellpreloader.cpp
+@@ -122,18 +122,63 @@
+                     return mMeshes.empty();
+             }
+ 
++            // Orthros (orthros-r5.patch): between frames (a deadline), a mesh whose files are not in the page yet
++            // (their bytes then fetched in the background) is put off, the next ones preloaded meanwhile, and
++            // preloaded once its files are here, or after WorkItem::dataWaitLimit() all the same.
++            const auto limit = dataWaitLimit();
++            const bool mayWait = deadline != std::chrono::steady_clock::time_point::max()
++                && limit > std::chrono::steady_clock::duration::zero();
+             while (mNextMesh < mMeshes.size())
+             {
+                 if (mAbort)
+                     return true;
+-                preloadMesh(mMeshes[mNextMesh++]);
++                const std::size_t index = mNextMesh++;
++                if (mayWait && !meshReady(mMeshes[index]))
++                    mDeferred.emplace_back(index, std::chrono::steady_clock::now());
++                else
++                    preloadMesh(mMeshes[index]);
++                if (std::chrono::steady_clock::now() >= deadline)
++                    return mNextMesh >= mMeshes.size() && mDeferred.empty();
++            }
++            for (std::size_t i = 0; i < mDeferred.size();)
++            {
++                if (mAbort)
++                    return true;
++                const auto [index, since] = mDeferred[i];
++                if (mayWait && std::chrono::steady_clock::now() - since < limit && !meshReady(mMeshes[index]))
++                {
++                    ++i;
++                    continue;
++                }
++                mDeferred.erase(mDeferred.begin() + static_cast<std::ptrdiff_t>(i));
++                preloadMesh(mMeshes[index]);
+                 if (std::chrono::steady_clock::now() >= deadline)
+                     break;
+             }
+-            return mNextMesh >= mMeshes.size();
++            if (mDeferred.empty())
++                return true;
++            setWaitingForData();
++            return false;
+         }
+ 
+     private:
++        /// Orthros (orthros-r5.patch): preloadMesh(path) reads nothing from the network now (its mesh and its
++        /// textures; the animation's .kf beside it read anyway). A path it would skip: ready.
++        bool meshReady(std::string_view path)
++        {
++            try
++            {
++                const VFS::Manager& vfs = *mSceneManager->getVFS();
++                VFS::Path::Normalized mesh = Misc::ResourceHelpers::correctMeshPath(VFS::Path::Normalized(path));
++                mesh = Misc::ResourceHelpers::correctActorModelPath(mesh, &vfs);
++                return !vfs.exists(mesh) || mSceneManager->orthrosTemplateReady(mesh);
++            }
++            catch (const std::exception&)
++            {
++                return true; // (preloadMesh reports it)
++            }
++        }
++
+         void preloadMesh(std::string_view path)
+         {
+             try
+@@ -182,6 +227,8 @@
+         std::atomic<bool> mAbort;
+         bool mTerrainCached = false;
+         std::size_t mNextMesh = 0;
++        /// Orthros (orthros-r5.patch): meshes put off while their files come (index, since when).
++        std::vector<std::pair<std::size_t, std::chrono::steady_clock::time_point>> mDeferred;
+ 
+         osg::ref_ptr<Terrain::View> mTerrainView;
+ 
+@@ -223,7 +270,12 @@
+                 const bool viewDone = mWorld->preloadSlice(mTerrainViews[mView], mPreloadPositions[mView].mPosition,
+                     mPreloadPositions[mView].mCellBounds, mAbort, mLoadingReporter, mNext, deadline);
+                 if (!viewDone)
++                {
++                    // (orthros-r5.patch: its chunks left wait for their files — the queue's other items run meanwhile)
++                    if (mWorld->preloadWaitingForData())
++                        setWaitingForData();
+                     return false;
++                }
+                 ++mView;
+                 mNext = 0;
+                 if (std::chrono::steady_clock::now() >= deadline)
+--- a/openmw/components/resource/imagemanager.cpp
++++ b/openmw/components/resource/imagemanager.cpp
+@@ -91,6 +91,11 @@
+ 
+     ImageManager::~ImageManager() {}
+ 
++    bool ImageManager::orthrosCached(VFS::Path::NormalizedView path) const
++    {
++        return mCache->getRefFromObjectCache(path) != nullptr;
++    }
++
+     osg::ref_ptr<osg::Image> ImageManager::getImage(VFS::Path::NormalizedView path, bool disableFlip)
+     {
+         // HEADLESS: the sim peer renders nothing anyone will ever see, so decoding textures
+--- a/openmw/components/resource/imagemanager.hpp
++++ b/openmw/components/resource/imagemanager.hpp
+@@ -31,6 +31,9 @@
+ 
+         osg::Image* getWarningImage();
+ 
++        /// Orthros (orthros-r5.patch): the image is loaded already (getImage reads nothing).
++        bool orthrosCached(VFS::Path::NormalizedView path) const;
++
+         /// Orthros: read again an image already loaded whose file has been replaced since (a texture's light copy by
+         /// the file itself, say) and update the cached osg::Image in place, so that every texture using it shows the
+         /// new one at its next apply (OSG compares the image's modified count; a new size or mipmap count makes it
+--- a/openmw/components/resource/scenemanager.cpp
++++ b/openmw/components/resource/scenemanager.cpp
+@@ -29,6 +29,9 @@
+ #include <components/nifosg/nifloader.hpp>
+ 
+ #include <components/nif/niffile.hpp>
++#include <components/nif/texture.hpp>
++
++#include <components/misc/resourcehelpers.hpp>
+ 
+ #include <components/misc/algorithm.hpp>
+ #include <components/misc/osguservalues.hpp>
+@@ -954,6 +957,43 @@
+         return static_cast<osg::Node*>(mErrorMarker->clone(osg::CopyOp::DEEP_COPY_ALL));
+     }
+ 
++    bool SceneManager::orthrosTemplateReady(VFS::Path::NormalizedView path)
++    {
++        if (mCache->getRefFromObjectCache(path))
++            return true;
++        if (!mVFS->exists(path))
++            return true; // (the error marker: getTemplate's own answer)
++        if (!mVFS->orthrosDataReady(path))
++            return false;
++        constexpr VFS::Path::ExtensionView nif("nif");
++        if (path.extension() != nif)
++            return true;
++        Nif::NIFFilePtr file;
++        try
++        {
++            file = mNifFileManager->get(path);
++        }
++        catch (const std::exception&)
++        {
++            return true; // (getTemplate reports it)
++        }
++        // (every texture the file names, each asked: the missing ones all on their way at once)
++        bool ready = true;
++        for (const auto& record : file->mRecords)
++        {
++            if (!record || record->mRecordType != Nif::RC_NiSourceTexture)
++                continue;
++            const auto* texture = static_cast<const Nif::NiSourceTexture*>(record.get());
++            if (!texture->mExternal || texture->mFile.empty())
++                continue;
++            const VFS::Path::Normalized image
++                = Misc::ResourceHelpers::correctTexturePath(VFS::Path::toNormalized(texture->mFile), *mVFS);
++            if (!mImageManager->orthrosCached(image) && !mVFS->orthrosDataReady(image))
++                ready = false;
++        }
++        return ready;
++    }
++
+     osg::ref_ptr<const osg::Node> SceneManager::getTemplate(VFS::Path::NormalizedView path, bool compile)
+     {
+         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(path);
+--- a/openmw/components/resource/scenemanager.hpp
++++ b/openmw/components/resource/scenemanager.hpp
+@@ -152,6 +152,12 @@
+         /// @note Thread safe.
+         osg::ref_ptr<const osg::Node> getTemplate(VFS::Path::NormalizedView path, bool compile = true);
+ 
++        /// Orthros (orthros-r5.patch): getTemplate(path) would not wait for the network: the template is cached, or
++        /// its file and, for a NIF, the textures it names are in the browser page (VFS::Manager::orthrosDataReady).
++        /// False: some are not, and they are being fetched in the background; asking again later is cheap (the
++        /// parsed NIF is kept). Main thread (the web build's cooperative WorkQueue).
++        bool orthrosTemplateReady(VFS::Path::NormalizedView path);
++
+         /// Clone osg::Node safely.
+         /// @note Thread safe.
+         static osg::ref_ptr<osg::Node> cloneNode(const osg::Node* base);
+--- a/openmw/components/sceneutil/workqueue.cpp
++++ b/openmw/components/sceneutil/workqueue.cpp
+@@ -158,6 +158,18 @@
+         return nullptr;
+     }
+ 
++    std::chrono::steady_clock::duration WorkItem::dataWaitLimit()
++    {
++        static const std::chrono::steady_clock::duration limit = [] {
++            double ms = 3000;
++            if (const char* v = std::getenv("OPENMW_PRELOAD_WAIT_MS"))
++                ms = std::max(0.0, std::atof(v));
++            return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
++                std::chrono::duration<double, std::milli>(ms));
++        }();
++        return limit;
++    }
++
+     void WorkQueue::runCooperative(double budgetMs)
+     {
+         if (!mCooperative)
+@@ -165,29 +177,43 @@
+         const auto deadline = std::chrono::steady_clock::now()
+             + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                 std::chrono::duration<double, std::milli>(budgetMs));
++        // (orthros-r5.patch: items waiting for their data this frame, back in their place in the queue — where
++        // waitTillDone() still finds them — but not run again before the next frame)
++        std::vector<const WorkItem*> waiting;
+         do
+         {
+             osg::ref_ptr<WorkItem> item;
++            std::size_t at = 0;
+             {
+                 std::unique_lock<std::mutex> lock(mMutex);
+-                if (mQueue.empty())
++                while (at < mQueue.size()
++                    && std::find(waiting.begin(), waiting.end(), mQueue[at].get()) != waiting.end())
++                    ++at;
++                if (at >= mQueue.size())
+                     return;
+-                item = std::move(mQueue.front());
+-                mQueue.pop_front();
++                item = std::move(mQueue[at]);
++                mQueue.erase(mQueue.begin() + static_cast<std::ptrdiff_t>(at));
+             }
+             // (the item off the queue while it runs: its work may queue others, or wait for others, finishNow)
+             item->mCooperativeQueue = nullptr;
++            item->mWaitingForData = false;
+             const bool done = item->doWorkSlice(deadline);
+             if (done)
+             {
+                 item->signalDone();
+                 continue;
+             }
+-            // (part done: first again at the next frame, waitTillDone() still finishing it if asked)
++            // (part done: in its place again, first at the next frame, waitTillDone() still finishing it if asked)
+             item->mCooperativeQueue = this;
+-            std::unique_lock<std::mutex> lock(mMutex);
+-            mQueue.push_front(std::move(item));
+-            return;
++            const bool dataWait = item->mWaitingForData;
++            {
++                std::unique_lock<std::mutex> lock(mMutex);
++                if (dataWait)
++                    waiting.push_back(item.get());
++                mQueue.insert(mQueue.begin() + static_cast<std::ptrdiff_t>(std::min(at, mQueue.size())), std::move(item));
++            }
++            if (!dataWait)
++                return;
+         } while (std::chrono::steady_clock::now() < deadline);
+     }
+ 
+--- a/openmw/components/sceneutil/workqueue.hpp
++++ b/openmw/components/sceneutil/workqueue.hpp
+@@ -42,7 +42,19 @@
+         /// Set abort flag in order to return from doWork() as soon as possible. May not be respected by all WorkItems.
+         virtual void abort() {}
+ 
++        /// Orthros (orthros-r5.patch): how long a slice may put off work whose files are still on their way from the
++        /// network (OPENMW_PRELOAD_WAIT_MS, default 3000; 0: never — the reads wait, as before r5).
++        static std::chrono::steady_clock::duration dataWaitLimit();
++
++    protected:
++        /// Orthros (orthros-r5.patch): a slice that stopped early (doWorkSlice returned false) because what it needs
++        /// next is still on its way from the network (VFS::Manager::orthrosDataReady), not because its time is up:
++        /// the cooperative queue runs the items behind it meanwhile, and this one again at the next frame. Reset
++        /// before each slice.
++        void setWaitingForData() { mWaitingForData = true; }
++
+     private:
++        bool mWaitingForData = false;
+         friend class WorkQueue;
+         std::atomic_bool mDone{ false };
+         /// The cooperative queue holding the item while it waits (or is part done): waitTillDone() finishes it there.
+--- a/openmw/components/terrain/quadtreeworld.cpp
++++ b/openmw/components/terrain/quadtreeworld.cpp
+@@ -13,6 +13,7 @@
+ #include <components/misc/mathutil.hpp>
+ #include <components/resource/resourcesystem.hpp>
+ #include <components/sceneutil/positionattitudetransform.hpp>
++#include <components/sceneutil/workqueue.hpp>
+ 
+ #include "chunkmanager.hpp"
+ #include "compositemaprenderer.hpp"
+@@ -572,8 +573,22 @@
+     {
+         // Orthros (orthros-r3.patch): preload() a few chunks at a time. `next`: 0 before the traversal, then 1 + the
+         // next entry to load.
++        // Orthros (orthros-r5.patch): between frames (a deadline), a chunk whose files are not in the page yet
++        // (chunksReady: their bytes then fetched in the background) is put off — the next ones built meanwhile —
++        // and built once its files are here, or after SceneUtil::WorkItem::dataWaitLimit() all the same (its reads
++        // then wait, as before). Finishing now (no deadline: waitTillDone, the threaded and inline modes) puts
++        // nothing off.
+         const float cellWorldSize = mStorage->getCellWorldSize(mWorldspace);
+         ViewData* vd = static_cast<ViewData*>(view);
++        mPreloadWaiting = false;
++        const auto limit = SceneUtil::WorkItem::dataWaitLimit();
++        const bool mayWait = deadline != std::chrono::steady_clock::time_point::max()
++            && limit > std::chrono::steady_clock::duration::zero();
++        if (next == 0 || mDeferredView != view)
++        {
++            mDeferred.clear();
++            mDeferredView = view;
++        }
+         if (next == 0)
+         {
+             ensureQuadTreeBuilt();
+@@ -586,18 +601,63 @@
+             if (std::chrono::steady_clock::now() >= deadline)
+                 return vd->getNumEntries() == 0;
+         }
++        const auto load = [&](unsigned int index) {
++            loadRenderingNode(vd->getEntry(index), vd, cellWorldSize, grid, true);
++            reporter.addProgress(1);
++        };
+         for (unsigned int n = vd->getNumEntries(); next - 1 < n;)
+         {
+             if (abort)
+                 return true;
+-            ViewDataEntry& entry = vd->getEntry(static_cast<unsigned int>(next - 1));
++            const auto index = static_cast<unsigned int>(next - 1);
+             ++next;
+-            loadRenderingNode(entry, vd, cellWorldSize, grid, true);
+-            reporter.addProgress(1);
++            if (mayWait && !chunksReady(vd->getEntry(index), vd, grid))
++                mDeferred.emplace_back(index, std::chrono::steady_clock::now());
++            else
++                load(index);
++            if (std::chrono::steady_clock::now() >= deadline)
++                return next - 1 >= vd->getNumEntries() && mDeferred.empty();
++        }
++        // (the entries put off: those whose files came, or that waited long enough)
++        for (std::size_t i = 0; i < mDeferred.size();)
++        {
++            if (abort)
++                return true;
++            const auto [index, since] = mDeferred[i];
++            if (mayWait && std::chrono::steady_clock::now() - since < limit
++                && !chunksReady(vd->getEntry(index), vd, grid))
++            {
++                ++i;
++                continue;
++            }
++            mDeferred.erase(mDeferred.begin() + static_cast<std::ptrdiff_t>(i));
++            load(index);
+             if (std::chrono::steady_clock::now() >= deadline)
+                 break;
+         }
+-        return next - 1 >= vd->getNumEntries() || abort;
++        if (abort || mDeferred.empty())
++            return true;
++        mPreloadWaiting = true;
++        return false;
++    }
++
++    bool QuadTreeWorld::chunksReady(const ViewDataEntry& entry, const ViewData* vd, const osg::Vec4i& grid)
++    {
++        // (as loadRenderingNode: a node built already and unchanged reads nothing; the chunk managers asked with
++        // the entry's own level of detail — loadRenderingNode may recompute it for a changed view: the files of a
++        // neighbouring level, then, a hint all the same)
++        if (!vd->hasChanged() && entry.mRenderingNode)
++            return true;
++        const osg::Vec2f& center = entry.mNode->getCenter();
++        const bool activeGrid
++            = (center.x() > grid.x() && center.y() > grid.y() && center.x() < grid.z() && center.y() < grid.w());
++        bool ready = true;
++        for (ChunkManager* m : mChunkManagers)
++            if (!m->chunkReady(entry.mNode->getSize(), center,
++                    static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)),
++                    entry.mLodFlags, activeGrid, vd->getViewPoint()))
++                ready = false; // (every manager asked: all the missing files on their way at once)
++        return ready;
+     }
+ 
+     void QuadTreeWorld::reportStats(unsigned int frameNumber, osg::Stats* stats)
+--- a/openmw/components/terrain/quadtreeworld.hpp
++++ b/openmw/components/terrain/quadtreeworld.hpp
+@@ -4,8 +4,11 @@
+ #include "terraingrid.hpp"
+ 
+ #include <atomic>
++#include <chrono>
+ #include <memory>
+ #include <mutex>
++#include <utility>
++#include <vector>
+ 
+ #include <components/esm/refid.hpp>
+ 
+@@ -54,6 +57,7 @@
+             Loading::Reporter& reporter) override;
+         bool preloadSlice(View* view, const osg::Vec3f& eyePoint, const osg::Vec4i& cellgrid, std::atomic<bool>& abort,
+             Loading::Reporter& reporter, std::size_t& next, std::chrono::steady_clock::time_point deadline) override;
++        bool preloadWaitingForData() const override { return mPreloadWaiting; }
+         void rebuildViews() override;
+ 
+         void reportStats(unsigned int frameNumber, osg::Stats* stats) override;
+@@ -73,6 +77,15 @@
+                 = 0;
+             virtual unsigned int getNodeMask() { return 0; }
+ 
++            /// Orthros (orthros-r5.patch): getChunk() with these arguments would not wait for the network (its files
++            /// are in the browser page: VFS::Manager::orthrosDataReady); false: some are not, and they are being
++            /// fetched in the background. Asked by preloadSlice() before a chunk it may put off.
++            virtual bool chunkReady(float /*size*/, const osg::Vec2f& /*center*/, unsigned char /*lod*/,
++                unsigned int /*lodFlags*/, bool /*activeGrid*/, const osg::Vec3f& /*viewPoint*/)
++            {
++                return true;
++            }
++
+             void setViewDistance(float viewDistance) { mViewDistance = viewDistance; }
+             float getViewDistance() const { return mViewDistance; }
+ 
+@@ -100,6 +113,13 @@
+ 
+         std::vector<ChunkManager*> mChunkManagers;
+ 
++        /// Orthros (orthros-r5.patch): preloadSlice()'s entries put off while their data comes (entry, since when),
++        /// for the view mDeferredView; whether its last call stopped for them.
++        bool chunksReady(const ViewDataEntry& entry, const ViewData* vd, const osg::Vec4i& grid);
++        std::vector<std::pair<unsigned int, std::chrono::steady_clock::time_point>> mDeferred;
++        const View* mDeferredView = nullptr;
++        bool mPreloadWaiting = false;
++
+         std::mutex mQuadTreeMutex;
+         bool mQuadTreeBuilt;
+         float mLodFactor;
+--- a/openmw/components/terrain/world.hpp
++++ b/openmw/components/terrain/world.hpp
+@@ -109,6 +109,10 @@
+             return true;
+         }
+ 
++        /// Orthros (orthros-r5.patch): the last preloadSlice() returned false because the chunks it has left wait for
++        /// their data (from the network), not for time: its work item lets others run meanwhile.
++        virtual bool preloadWaitingForData() const { return false; }
++
+         virtual void rebuildViews() {}
+ 
+         virtual void reportStats(unsigned int frameNumber, osg::Stats* stats) {}
+--- a/openmw/components/vfs/bsaarchive.hpp
++++ b/openmw/components/vfs/bsaarchive.hpp
+@@ -12,9 +12,12 @@
+ 
+ #include <components/toutf8/toutf8.hpp>
+ 
++#include <components/files/conversion.hpp>
++
+ #include <algorithm>
+ #include <memory>
+ #include <stdexcept>
++#include <type_traits>
+ 
+ namespace VFS
+ {
+@@ -56,6 +59,17 @@
+             return out;
+         }
+ 
++        /// Orthros (orthros-r5.patch): a plain BSA's file is its bytes in the archive (offset and size as stored);
++        /// the compressed and BA2 kinds read differently: not asked (ready).
++        bool orthrosDataReady() const override
++        {
++            if constexpr (std::is_same_v<FileType, Bsa::BSAFile>)
++                return orthrosRangeReady(
++                    Files::pathToUnicodeString(mFile->getFile()->getPath()), mInfo->mOffset, mInfo->mFileSize);
++            else
++                return true;
++        }
++
+         const Bsa::BSAFile::FileStruct* mInfo;
+         const BsaArchive<FileType>* mFile;
+     };
+--- a/openmw/components/vfs/file.hpp
++++ b/openmw/components/vfs/file.hpp
+@@ -1,6 +1,7 @@
+ #ifndef OPENMW_COMPONENTS_VFS_FILE_H
+ #define OPENMW_COMPONENTS_VFS_FILE_H
+ 
++#include <cstdint>
+ #include <filesystem>
+ #include <string>
+ 
+@@ -18,7 +19,17 @@
+         virtual std::filesystem::file_time_type getLastModified() const = 0;
+ 
+         virtual std::string getStem() const = 0;
++
++        /// Orthros (orthros-r5.patch): whether the file's bytes can be read now without the page's thread waiting
++        /// for the network (the web build streams the game's files: the page's globalThis.orthrosRangeReady,
++        /// src/ports/openmw/streamfs.js, which then fetches them in the background). True when the bytes are there,
++        /// when the file is not streamed, or anywhere but the web build.
++        virtual bool orthrosDataReady() const { return true; }
+     };
++
++    /// Orthros (orthros-r5.patch): bytes [offset, offset + size) of the engine file `path` can be read without a
++    /// wait (size ~0: to the file's end); false: they are being fetched in the background. True off the web build.
++    bool orthrosRangeReady(const std::string& path, std::uint64_t offset, std::uint64_t size);
+ }
+ 
+ #endif
+--- a/openmw/components/vfs/filesystemarchive.cpp
++++ b/openmw/components/vfs/filesystemarchive.cpp
+@@ -77,6 +77,11 @@
+     {
+     }
+ 
++    bool FileSystemArchiveFile::orthrosDataReady() const
++    {
++        return orthrosRangeReady(Files::pathToUnicodeString(mPath), 0, ~std::uint64_t{ 0 });
++    }
++
+     Files::IStreamPtr FileSystemArchiveFile::open()
+     {
+         return Files::openConstrainedFileStream(mPath);
+--- a/openmw/components/vfs/filesystemarchive.hpp
++++ b/openmw/components/vfs/filesystemarchive.hpp
+@@ -21,6 +21,9 @@
+ 
+         std::string getStem() const override;
+ 
++        /// Orthros (orthros-r5.patch): the whole file.
++        bool orthrosDataReady() const override;
++
+     private:
+         std::filesystem::path mPath;
+     };
+--- a/openmw/components/vfs/manager.cpp
++++ b/openmw/components/vfs/manager.cpp
+@@ -3,6 +3,10 @@
+ #include <cassert>
+ #include <stdexcept>
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#endif
++
+ #include <components/files/conversion.hpp>
+ #include <components/misc/strings/lower.hpp>
+ #include <components/vfs/recursivedirectoryiterator.hpp>
+@@ -121,6 +125,31 @@
+         return { it, mIndex.lower_bound(copy) };
+     }
+ 
++    bool Manager::orthrosDataReady(VFS::Path::NormalizedView name) const
++    {
++        const auto found = mIndex.find(name);
++        return found == mIndex.end() || found->second->orthrosDataReady();
++    }
++
++    bool orthrosRangeReady(const std::string& path, std::uint64_t offset, std::uint64_t size)
++    {
++#ifdef __EMSCRIPTEN__
++        // (the page's answer: 1 ready, 0 not yet; a page without the hook, or one that fails: ready, the read then
++        // waiting as before)
++        // clang-format off
++        return EM_ASM_INT({
++            var f = globalThis.orthrosRangeReady;
++            try { return f ? (f(UTF8ToString($0), $1, $2) ? 1 : 0) : 1; } catch (e) { return 1; }
++        }, path.c_str(), static_cast<double>(offset), size == ~std::uint64_t{ 0 } ? -1.0 : static_cast<double>(size)) != 0;
++        // clang-format on
++#else
++        (void)path;
++        (void)offset;
++        (void)size;
++        return true;
++#endif
++    }
++
+     RecursiveDirectoryRange Manager::getRecursiveDirectoryIterator() const
+     {
+         return { mIndex.begin(), mIndex.end() };
+--- a/openmw/components/vfs/manager.hpp
++++ b/openmw/components/vfs/manager.hpp
+@@ -71,6 +71,10 @@
+         // Equivalent to std::filesystem::path::stem. The result isn't normalized.
+         std::string getStem(VFS::Path::NormalizedView name) const;
+ 
++        /// Orthros (orthros-r5.patch): the file `name` can be read now without a wait for the network (File::
++        /// orthrosDataReady); false: its bytes on their way, fetched in the background. A file not found: true.
++        bool orthrosDataReady(VFS::Path::NormalizedView name) const;
++
+     private:
+         std::vector<std::unique_ptr<Archive>> mArchives;
+ 
+--- a/play/index.html
++++ b/play/index.html
+@@ -1584,6 +1584,10 @@
+        if (/[?&]wq=inline\b/.test(location.search)) ENV.OPENMW_WORKQUEUE_INLINE='1';
+        if (/[?&]wq=threaded\b/.test(location.search)) ENV.OPENMW_WORKQUEUE_THREADED='1';
+        if (/[?&]wqbudget=(\d+(\.\d+)?)\b/.test(location.search)) ENV.OPENMW_WORKQUEUE_BUDGET_MS=/[?&]wqbudget=(\d+(\.\d+)?)/.exec(location.search)[1];
++       // Orthros (orthros-r5.patch): a preload between frames puts off a mesh or a distant-object chunk whose files are
++       // not in the page yet (globalThis.orthrosRangeReady, streamfs.js: then fetched in the background) for up to
++       // 3000 ms; ?preloadwait=N: N ms (0: never — its reads wait for the network, as before r5).
++       if (/[?&]preloadwait=(\d+)\b/.test(location.search)) ENV.OPENMW_PRELOAD_WAIT_MS=/[?&]preloadwait=(\d+)/.exec(location.search)[1];
+        // ?perfkeys=1 (QA): dump the frame's raw osg::Stats attribute keys to window.__omwPhaseKeys
+        // and whether the "engine" collection group is on. Diagnostic for empty __omwPhase buckets.
+        if (/[?&]perfkeys=1/.test(location.search)) ENV.OPENMW_PERF_KEYS='1';

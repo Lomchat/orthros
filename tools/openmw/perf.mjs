@@ -50,10 +50,12 @@ try {
     // (the engine's frame timed: the page pumps it, Module._omw_pump_frame, from a message after each animation frame)
     const raf = window.requestAnimationFrame.bind(window);
     // (and the Orthros build's skipped first plays of sounds: streamfs.js orthrosFileReady answering false)
-    P.notReady = 0;
+    // (and, r5, the preloads' reads put off: orthrosRangeReady answering false)
+    P.notReady = 0; P.rangeNotReady = 0;
     const wrapReady = setInterval(() => {
-      const r = window.orthrosFileReady; if (!r) return;
-      window.orthrosFileReady = (name) => { const ok = r(name); if (!ok && P.on) P.notReady++; return ok; }; clearInterval(wrapReady);
+      const r = window.orthrosFileReady, rr = window.orthrosRangeReady; if (!r || !rr) return;
+      window.orthrosFileReady = (name) => { const ok = r(name); if (!ok && P.on) P.notReady++; return ok; };
+      window.orthrosRangeReady = (...a) => { const ok = rr(...a); if (!ok && P.on) P.rangeNotReady++; return ok; }; clearInterval(wrapReady);
     }, 50);
     const wrap = setInterval(() => {
       const M = window.Module, f = M?._omw_pump_frame; if (!f || f.orthrosTimed) return;
@@ -79,7 +81,7 @@ try {
   const bootMs = Date.now() - t0;
   await page.mouse.click(640, 400);
   await page.waitForTimeout(warm * 1000);
-  const before = await page.evaluate(() => ({ stall: window.__streamfsStats?.stallMs ?? null, misses: window.__omwShaderMisses ?? 0, cell: window.omw?.state?.['orthros.cell'] ?? null }));
+  const before = await page.evaluate(() => ({ stall: window.__streamfsStats?.stallMs ?? null, sync: window.__streamfsStats?.syncFetches ?? 0, misses: window.__omwShaderMisses ?? 0, cell: window.omw?.state?.['orthros.cell'] ?? null }));
   // (the exterior cells walked through: view.lua's report, looked at every half second)
   await page.evaluate(() => { const P = window.orthrosPerf; P.cells = new Set(); P.cellLook = setInterval(() => { const c = window.omw?.state?.['orthros.cell']; if (c) P.cells.add(c); }, 500); });
   const cdp = profile ? await startProfile(page) : null;
@@ -117,7 +119,8 @@ try {
       work: { p50: q(P.work, 0.5), p90: q(P.work, 0.9), p99: q(P.work, 0.99), max: q(P.work, 1), over50: P.work.filter((w) => w > 50).length, over100: P.work.filter((w) => w > 100).length },
       syncPerFrame: perFrame, syncTotal: P.sync,
       dataStallMs: window.__streamfsStats ? +(window.__streamfsStats.stallMs - (before.stall ?? 0)).toFixed(0) : null,
-      shaderVariantsBuilt: (window.__omwShaderMisses ?? 0) - before.misses, soundsNotReady: P.notReady, cells: [...P.cells],
+      shaderVariantsBuilt: (window.__omwShaderMisses ?? 0) - before.misses, soundsNotReady: P.notReady, readsPutOff: P.rangeNotReady,
+      syncFetches: window.__streamfsStats ? (window.__streamfsStats.syncFetches ?? 0) - before.sync : null, cells: [...P.cells],
       phase: window.__omwPhase ?? null,
     };
   }, { before });

@@ -13,7 +13,7 @@
   const modules = Promise.all([import('/src/vfs/data-client.js'), import('/src/vfs/emscripten-files.js'), import('/src/ports/openmw/view-grow.js')]);
   let M = null; modules.then(([client, files, view]) => { M = { ...client, ...files, inWorld: view.inWorld }; });
   const app = location.pathname.slice(0, location.pathname.indexOf('/app/') + 5), name = decodeURIComponent(app.split('/')[3]);
-  const S = { data: null, byPath: new Map(), byKey: new Map(), legacy: [] };
+  const S = { data: null, byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [] };
 
   /** The tree path of an engine mount's URL (one of this installation's served files), or null. */
   function treePath(url) {
@@ -62,7 +62,7 @@
 
   function node(path, h) {
     const n = M.fileNode(FS, path, need(), h, { mmap: false, log: (t) => console.warn('[streamfs]', t) });
-    S.byPath.set(path, h);
+    S.byPath.set(path, h); S.byNode.set(n, h); S.byEnginePath.clear();
     return n;
   }
 
@@ -86,6 +86,21 @@
   window.orthrosFileReady = (name) => {
     const h = S.data && byName(name);
     return !h || S.data.readable(h);
+  };
+  // (asked by the Orthros build of the engine before a preload between frames reads a file — a mesh or a texture, in
+  // an archive or not —, orthros-r5.patch: the engine's own path of the file it opens (an archive's: the archive) and
+  // the bytes it reads (size < 0: to the end); false — not all in the page yet, fetched now in the background — and the
+  // engine puts that work off a frame or more instead of the page's thread waiting for the network; a file not
+  // streamed here: true)
+  window.orthrosRangeReady = (path, offset, size) => {
+    if (!S.data) return true;
+    let h = S.byEnginePath.get(path);
+    if (h === undefined) {
+      h = null;
+      try { h = S.byNode.get(FS.lookupPath(path, { follow: true }).node) ?? null; } catch { /* not a file here */ }
+      S.byEnginePath.set(path, h);
+    }
+    return !h || S.data.readable(h, offset, size);
   };
 
   window.StreamFS = {
