@@ -20,7 +20,7 @@
 28:mark:load
 30:waitframe:60,110
 0:mark:loadscreen
-1:waitframe:150,100000
+1:waitframe:120,100000
 0:mark:play
 10:click:398,266
 13:down:470,320

@@ -366,12 +366,18 @@ export function registerD3DX9(api, vm) {
   }];
   /** the Volume (IDirect3DVolume8 / 9 level) at a guest pointer, or null */
   const volumeOf = (ptr) => { const v = com.implAt(ptr); return v && v.depth !== undefined && v.owner && v.slice !== undefined ? v : null; };
-  /** the box arguments of the D3DXLoadVolume family: only whole volumes are loaded here (a box is reported once) */
-  const wholeBoxes = (...boxes) => { if (boxes.some(Boolean) && !vm.loggedVolumeBox) { vm.loggedVolumeBox = true; vm.log('gfx', 'd3dx: D3DXLoadVolume* with a box: the whole volume is loaded'); } };
+  /**
+   * The box arguments of the D3DXLoadVolume family ([pointer, width, height, depth] of the volume it is in): only whole
+   * volumes are loaded here — a box smaller than its volume is reported once, and the whole volume loaded
+   */
+  const wholeBoxes = (...boxes) => {
+    const part = boxes.find(([p, w, h, d]) => p && [0, 0, w, h, 0, d].some((v, i) => mem.read32(p + 4 * i) !== v));
+    if (part && !vm.loggedVolumeBox) { vm.loggedVolumeBox = true; vm.log('gfx', `d3dx: D3DXLoadVolume* with a box smaller than its volume (${[0, 1, 2, 3, 4, 5].map((i) => mem.read32(part[0] + 4 * i)).join(',')} in ${part.slice(1).join('x')}): the whole volume is loaded`); }
+  };
   X.D3DXLoadVolumeFromFileInMemory = [9, (c) => { // (dstVolume, pal, dstBox, src, size, srcBox, filter, key, info)
     const v = volumeOf(c.arg(0)); if (!v) return D3DERR_INVALIDCALL;
     const im = imageAt(c, c.arg(3), c.arg(4)); if (!im) return D3DXERR_INVALIDDATA;
-    writeInfo(c.arg(8), im); wholeBoxes(c.arg(2), c.arg(5));
+    writeInfo(c.arg(8), im); wholeBoxes([c.arg(2), v.width, v.height, v.depth], [c.arg(5), im.width, im.height, im.depth]);
     const data = levelData(im, 0, 0, v.fmt, v.width, v.height, v.depth, c.arg(6), c.arg(7));
     if (!data) { vm.log('gfx', `d3dx: D3DXLoadVolumeFromFileInMemory: no conversion of format ${im.fmt} to ${v.fmt}`); return D3DERR_INVALIDCALL; }
     mem.writeBytes(v.ensureMem(c.proc), data.subarray(0, Math.min(data.length, v.bytes))); v.updated();
@@ -379,7 +385,7 @@ export function registerD3DX9(api, vm) {
   }];
   X.D3DXLoadVolumeFromMemory = [11, (c) => { // (dstVolume, dstPal, dstBox, src, srcFmt, srcRowPitch, srcSlicePitch, srcPal, srcBox, filter, key)
     const v = volumeOf(c.arg(0)), sb = c.arg(8); if (!v || !c.arg(3) || !sb) return D3DERR_INVALIDCALL;
-    wholeBoxes(c.arg(2));
+    wholeBoxes([c.arg(2), v.width, v.height, v.depth]);
     const l = mem.read32(sb), t = mem.read32(sb + 4), r = mem.read32(sb + 8), b = mem.read32(sb + 12), f = mem.read32(sb + 16), k = mem.read32(sb + 20);
     const sw = r - l, sh = b - t, sd = k - f, fmt = c.arg(4), rowPitch = c.arg(5), slicePitch = c.arg(6); if (sw <= 0 || sh <= 0 || sd <= 0) return D3DERR_INVALIDCALL;
     const rows = isDxt(fmt) ? (sh + 3) >> 2 : sh, rowBytes = surfacePitch(fmt, sw), n = sw * sh * 4, rgba = new Uint8Array(n * sd);
