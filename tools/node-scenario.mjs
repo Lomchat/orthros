@@ -219,7 +219,7 @@ export class NodeScenario {
       this.log(`[apitop] ${p.label} (ms per frame, calls per frame, µs per call): ${r.apiTop.map(([k, ms, c, us]) => `${k} ${(ms / Math.max(1, frames)).toFixed(2)} (${(c / Math.max(1, frames)).toFixed(0)}, ${us.toFixed(1)})`).join(', ')}`);
       // (--jit-profile: the phase's transitions by kind, chained transitions and fallback steps)
       if (this.jitProf) this.log(`[jitprof] ${p.label}: ${this.jitProf()}`);
-      this.phaseReport?.(p.label, frames); // (a tool's own per-phase lines: startbench --sleeps)
+      for (const f of this.phaseReports ?? []) f(p.label, frames); // (a tool's own per-phase lines: startbench --sleeps, --slow-threads)
       // (startbench --d3dx-prof: D3DX image work by kind, and the surface lock patterns, as the browser worker reports them)
       const prof = this.vm.d3dxProf, ls = d3d?.lockStats, lp = p.locks ?? {};
       if (prof?.size) { this.log(`[d3dx] ${p.label} D3DX image work (ms, count): ${[...prof].sort((a, b) => b[1].ms - a[1].ms).slice(0, 16).map(([k, e]) => `${k}: ${e.ms.toFixed(0)}/${e.n}`).join('; ')}`); prof.clear(); }

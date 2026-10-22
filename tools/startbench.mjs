@@ -255,7 +255,7 @@ if (scenario && args.includes('--jit-profile') && vm.jit) {
 // Sleep — the calls, Sleep(0)s that ran a ready thread, throttled ones, why their streaks ended — and the scheduler's picks)
 if (scenario && args.includes('--sleeps')) {
   let last = new Map(), picks0 = 0;
-  scenario.phaseReport = (label, frames) => {
+  (scenario.phaseReports ??= []).push((label, frames) => {
     const f = Math.max(1, frames), out = [];
     for (const t of vm.proc?.threads ?? []) {
       const s = t.sleepStats; if (!s) continue;
@@ -266,7 +266,27 @@ if (scenario && args.includes('--sleeps')) {
     }
     const picks = vm.sched?.picks ?? 0;
     console.log(`[sleeps] ${label} per frame: ${out.join('; ')}; scheduler picks ${((picks - picks0) / f).toFixed(0)}`); picks0 = picks;
+  });
+}
+// --slow-threads <ms> (with --threads and a scenario): the guest instructions of each thread in the frames longer than
+// that, against all frames, per phase ([slowthreads] lines, M per frame): which threads make the slow frames' guest time
+if (threadInsns && scenario && opt('slow-threads')) {
+  const over = Number(opt('slow-threads')), fh = vm.host.frameHook;
+  let last = performance.now(), prev = new Map(), slow = new Map(), all = new Map(), nSlow = 0, nAll = 0;
+  vm.host.frameHook = () => {
+    fh?.();
+    const now = performance.now(), dt = now - last; last = now;
+    for (const [id, n] of threadInsns) {
+      const d = n - (prev.get(id) ?? 0); prev.set(id, n); if (!d) continue;
+      all.set(id, (all.get(id) ?? 0) + d); if (dt > over) slow.set(id, (slow.get(id) ?? 0) + d);
+    }
+    nAll++; if (dt > over) nSlow++;
   };
+  (scenario.phaseReports ??= []).push((label) => {
+    const ids = [...all.keys()].sort((a, b) => (all.get(b) ?? 0) - (all.get(a) ?? 0));
+    console.log(`[slowthreads] ${label}: ${nSlow} frames > ${over} ms of ${nAll}; M guest instructions per frame, slow / all: ${ids.map((id) => `t${id} ${((slow.get(id) ?? 0) / Math.max(1, nSlow) / 1e6).toFixed(2)} / ${(all.get(id) / nAll / 1e6).toFixed(2)}`).join(', ')}`);
+    slow = new Map(); all = new Map(); nSlow = 0; nAll = 0;
+  });
 }
 // --cpu-prof <file.cpuprofile> --cpu-prof-window <phase>:<from s>:<to s>: a V8 CPU profile of this thread between those
 // seconds of a scenario phase (e.g. play:120:180: one minute of play), for Chrome DevTools or a summary script
