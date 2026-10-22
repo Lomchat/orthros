@@ -193,6 +193,16 @@ order fetched ahead from the game's position.
   waits — GoldSrc), or suspends the engine (JSPI — re3); the worker answers with what was asked and as much of the file
   as it has here already.
 - **Learning.** The worker reports the pieces the engine used (path, range, time since its start) to `/api/prefetch`.
+- **Phases: a map's reads together.** A page whose engine has phases of its own tells them (`GameData.phase(name)`;
+  GoldSrc: each map's load — an open of `maps/<map>.bsp` that reads half the file or more, `phaseOnRead` in
+  `src/vfs/emscripten-files.js`; a menu listing maps reads less). The reports carry the session's phases with their
+  start; the server keeps, for each block read first in a phase, its time from that phase's start, and each phase's
+  usual start (the median of its sessions' starts, `phases-<manifest>.json`). The learned order then lists each phase's
+  blocks together, in the order its load reads them, the phases in the order they usually come (server.js
+  `prefetchList`): a session that enters a map finds that map's reads next in the list (fetched ahead from there, as
+  any position in it), and the background loading goes on with the map that usually comes next — whatever the pace
+  of the sessions that taught it (a player who loads a late save at once no longer puts that map's reads among the
+  first map's). Blocks learned without a phase keep their time since the session's start.
 - **Light copies.** On a link that is not fast, a large texture's load reads its light copy first (the texture
   without its finest levels), the file itself following in the background for its next load (docs/slow-network.md
   "Light copies"; `lightCopies: false` in a version turns them off).

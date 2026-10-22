@@ -340,14 +340,16 @@ test('an Emscripten file node reads its bytes through the game data, maps the fi
 
 test('a map\'s load starts its phase: an open that reads half its .bsp or more, once, dated from that open\'s first read; a listing does not', () => {
   const told = [], data = { phase: (name, ago) => told.push([name, ago]) };
-  const node = (p, size) => ({ p, usedBytes: size, stream_ops: { read: (s, buf, off, len) => len } });
+  const toldAtRead = [];
+  const node = (p, size) => ({ p, usedBytes: size, stream_ops: { read: (s, buf, off, len) => { toldAtRead.push(told.length); return len; } } });
   const bsp = node('/rodir/valve/maps/C1A0.bsp', 1000), wad = node('/rodir/valve/gfx.wad', 1000);
   const FS = { getPath: (n) => n.p };
   assert.equal(phaseOnRead(FS, [bsp, wad], data, (p) => /\/maps\/([^/]+)\.bsp$/i.exec(p)?.[1].toLowerCase() ?? null), 1);
   const listing = {}; bsp.stream_ops.read(listing, null, 0, 100, 0); bsp.stream_ops.read(listing, null, 0, 300, 500);
   assert.deepEqual(told, [], 'a header and a lump: not a load');
   const load = {}; bsp.stream_ops.read(load, null, 0, 400, 0); bsp.stream_ops.read(load, null, 0, 600, 400); bsp.stream_ops.read(load, null, 0, 10, 0);
-  assert.equal(told.length, 1); assert.equal(told[0][0], 'c1a0'); assert.ok(told[0][1] >= 0 && told[0][1] < 1000);
+  assert.equal(told.length, 1); assert.equal(told[0][0], 'c1a0');
+  assert.deepEqual(toldAtRead.slice(-3), [0, 1, 1], 'told before the read that reaches half the file (its fetches are the phase\'s)'); assert.ok(told[0][1] >= 0 && told[0][1] < 1000);
   wad.stream_ops.read({}, null, 0, 1000, 0); assert.equal(told.length, 1, 'other files: no phase');
   bsp.stream_ops.read({}, null, 0, 1000, 0); assert.equal(told.length, 2, 'loaded again: told again');
 });

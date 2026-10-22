@@ -54,12 +54,12 @@ export function phaseOnRead(FS, nodes, data, phaseOf) {
   for (const node of nodes) {
     const name = phaseOf(FS.getPath(node)); if (!name) continue;
     const ops = node.stream_ops, read = ops.read, size = node.usedBytes;
+    // (told before the read that reaches half the file: its own fetches, and those after it, are the phase's)
     node.stream_ops = { ...ops, read(stream, buffer, offset, length, position) {
       stream.orthrosFirstRead ??= performance.now();
-      const got = read(stream, buffer, offset, length, position);
-      stream.orthrosRead = (stream.orthrosRead ?? 0) + got;
+      stream.orthrosRead = (stream.orthrosRead ?? 0) + Math.max(0, Math.min(length, size - position));
       if (!stream.orthrosPhase && stream.orthrosRead * 2 >= size) { stream.orthrosPhase = true; data.phase(name, performance.now() - stream.orthrosFirstRead); }
-      return got;
+      return read(stream, buffer, offset, length, position);
     } };
     n++;
   }
