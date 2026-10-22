@@ -607,6 +607,51 @@ format in a save (no engine writes one; the guard is read, not run), a real GPU.
 Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r4"` in the `openmw` object of
 each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
 
+### Preloads that wait for the network, and the frames' synchronous WebGL calls: engines orthros-r5, r6, r7 (2026-10-22)
+
+- **r5** (`orthros-r5.patch`): a preload between frames asks the page before it reads (`globalThis.orthrosRangeReady`,
+  `src/ports/openmw/streamfs.js`: a loose file whole, a BSA member's own bytes) whether the bytes are there; when they
+  are not, the page fetches them in the background and the preload puts that work off — a cell preload's mesh, a
+  terrain preload's entry (its distant-object chunk: every mesh it may use and the textures their NIFs name) — and
+  goes on with the next, for up to 3 s (`?preloadwait=N`, 0: as before); the cooperative queue runs the other items
+  meanwhile (`WorkItem::setWaitingForData`). Finishing now (`waitTillDone`, the loading screen) puts nothing off.
+- **r6** (`orthros-r6.patch`): the composite maps' FBO status (`CompositeMapRenderer::compile`) asked until found
+  complete, then no more — every composite map is a texture of the same size and format, and WebGL's
+  `checkFramebufferStatus` is a synchronous round trip to the GPU process (100-400 ms frames when that process is
+  busy). A ray (an intersection visitor: the focus object's, every frame, a script's) builds no distant-object chunk
+  (`getChunkForRay`): it uses those built already, a node with one missing not kept — the focus ray built them in the
+  frame's update for its own view, network reads included.
+- **r7** (`orthros-r7.patch`, the first that reaches OSG's sources: the build applies it at the tree's root,
+  `deps/src/osg` beside `openmw/`): a ray builds no terrain chunk outside the active grid either (its composite map
+  read and drawn), and OSG's camera setup (`RenderStage::runCameraSetUp`) asks an FBO's status once per kind of
+  attachments (their targets, formats and samples) found complete — a cell crossing creates new render-to-texture
+  cameras (the local map's), each one asked before.
+
+The scratch servers that measure a release: a version needs its `multiplayer` object (the gateway's
+`mwdata-manifest.json`, the engine page's list of the installation's files, comes through it — without it the page
+stays on "no manifest (HTTP 404)"), and two versions cannot share a gateway port: one scratch server per release,
+each with its own copied manifest (a first r5 measurement that never reached the world was this, not the engine).
+
+Measured (`perf.mjs --discard --glide 0,1,300,3000 --seconds 150 --query tier=high`, 6 cells, `--profile` on the runs
+marked p; load 25-40 — one r6 run at load 80, discarded; the longest frames' contents from the CPU profile, the engine
+frames of 100 ms or more):
+
+| release, run | fps | engine work p99 / max | frames ≥ 100 ms | gap max, > 250 ms | data stalls (sync fetches) | put off |
+|---|---|---|---|---|---|---|
+| r4 a (p) | 18.6 | 49 / 305 ms | 10 | 683 ms, 16 | 966 ms (205) | — |
+| r4 b | 24.3 | 53 / 240 | 10 | 383, 7 | 809 (207) | — |
+| r5 a (p) | 18.1 | 55 / 233 | 8 | 450, 13 | 316 (94) | 359 |
+| r5 b | 24.5 | 44 / 169 | 7 | 400, 5 | 170 (49) | 377 |
+| r5 c (p) | 22.7 | 85 / 184 | 25 | 300, 2 | 178 (46) | 558 |
+| r6 a (p) | 22.2 | 41 / 197 | 6 | 417, 6 | 187 (47) | 420 |
+
+What the long frames ran: r4 — five of six a distant-object chunk built inside a terrain preload slice, its meshes
+read synchronously; r5 — none of those: the focus ray building a chunk (162 ms), cell crossings' object insertion
+(160 ms), and above all `checkFramebufferStatus` (r5 c: most of its 21 frames over 100 ms, 50-140 ms of each, from
+the composite maps' compile and from new cameras' setup); r6 — no composite-map check left, the focus ray's distant
+chunks gone; left: a new camera's setup check inside cell crossings (3 frames), the focus ray building a distant
+*terrain* chunk with its textures' reads (one, 137 ms) — r7's two changes.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.
