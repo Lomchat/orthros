@@ -178,7 +178,9 @@ test('a frame limiter on an injected 15.625 ms host timer: ~47 ms frames, back t
   const msg = `off p50 ${off.p50.toFixed(1)} p90 ${off.p90.toFixed(1)}, on p50 ${on.p50.toFixed(1)} p90 ${on.p90.toFixed(1)} (spin ${on.hw.wait?.spinMs} ms)`;
   t.diagnostic(msg);
   assert.ok(off.p50 > 40, msg); // (each frame: the last throttled Sleep(0) wakes at the next 15.625 ms tick)
-  assert.ok(on.p50 < 35.5 && on.p90 < 37, msg);
+  // (p90 under 42, not 37: a real-clock run descheduled by a loaded machine — make test's parallel files, load ~30 —
+  // measured p90 38.0 with p50 33.7; the coarse timer without the fix puts every frame at ~47)
+  assert.ok(on.p50 < 35.5 && on.p90 < 42, msg);
   assert.ok(on.hw.wait.spins > 0 && off.hw.wait.spins === 0, msg);
   // (bounded CPU: the spin covers the loop's last ~estimate ms, not the whole wait — under half of the 33 ms frame)
   assert.ok(on.hw.wait.spinMs / on.iv.length < 20, msg);
