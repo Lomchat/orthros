@@ -9,7 +9,7 @@
 // session that teaches the server its learned order). JSON on the last line; evidence under
 // /tmp/orthros-scratch/goldsrc-maps-<manifest>/. Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/goldsrc/maps.mjs <manifest> --url http://127.0.0.1:8080
-//     --steps "wait 5,map c1a0,wait 30,changelevel c1a0d" [--net 1024] [--latency 40] [--steady 20] [--report] [--tag t]
+//     --steps "wait 5,map c1a0,wait 30,changelevel c1a0d" [--net 1024] [--latency 40] [--steady 20] [--report [--no-phases]] [--tag t]
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -29,6 +29,14 @@ try {
   const page = await browser.newPage({ viewport: { width: 1024, height: 812 } });
   await addProbe(page, { discard: true });
   if (!args.includes('--report')) await quietReports(page);
+  // (--report --no-phases: the reports without the session's phases — a server taught by time only, to compare)
+  else if (args.includes('--no-phases')) {
+    await page.route(/\/api\/prefetch\//, (route) => {
+      const r = route.request(); if (r.method() !== 'POST') return route.continue();
+      let body = r.postData() ?? ''; try { const o = JSON.parse(body); delete o.phases; body = JSON.stringify(o); } catch { /* as it is */ }
+      return route.continue({ postData: body });
+    });
+  }
   page.on('pageerror', (e) => console.log('PAGE ERROR', e.message));
   page.on('crash', () => console.log('CRASH'));
   if (arg('--net')) {

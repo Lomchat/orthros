@@ -8,7 +8,7 @@
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/re3/perf.mjs <manifest> [--url http://127.0.0.1:8080] [--gl swiftshader|discard|gpu]
 //     [--seconds 30] [--drive] [--warm 0] [--net KB/s] [--profile] [--stacks getError,…] [--no-calls] [--report]
-//     [--size 1280x720] [--query "a=b"] [--trace <file.json>]   (--trace: a Chrome trace of the measured seconds — the
+//     [--size 1280x720] [--query "a=b"] [--trace <file.json>] [--car GETTHEREFAST]   (--trace: a Chrome trace of the measured seconds — the
 //     renderer's main thread, the GPU process, their waits on each other —, for a closer look at the frames' gaps)
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,7 +25,9 @@ fs.mkdirSync(root, { recursive: true }); process.env.TMPDIR = root;
 const listed = (await (await fetch(`${base}/api/manifests`)).json()).find((m) => m.name === name);
 if (!listed?.available || listed.runtime !== 're3') throw new Error(`${name}: not an available re3 version`);
 
-const browser = await chromium.launch({ headless: true, args: chromeArgs(gl) });
+// (--js-flags "<V8 flags>": e.g. --perf-basic-prof, the engine's WebAssembly named for Linux perf — the CPU profile cannot
+// see the frames run on JSPI's own stacks: they come out as "(program)")
+const browser = await chromium.launch({ headless: true, args: [...chromeArgs(gl), ...(arg('--js-flags') ? [`--js-flags=${arg('--js-flags')}`] : [])] });
 const page = await browser.newPage({ viewport: { width, height: height + 44 } });
 await addProbe(page, { discard: gl === 'discard', stacks: arg('--stacks', '').split(',').filter(Boolean) });
 if (!args.includes('--report')) await quietReports(page);
@@ -54,13 +56,21 @@ while (Date.now() - t0 < 300000) {
   if (scenes >= 4) break;
 }
 await page.screenshot({ path: path.join(root, 'start.png') });
-if (args.includes('--drive')) { await hold('Enter', 700); await page.waitForTimeout(4000); await page.keyboard.down('w'); }
+// (--car <cheat>: a car of the game's own vehicle cheat, typed — GETTHEREFAST, the Sabre Turbo —, the player put in it
+// and driving: W held, turning a little now and then, the city streamed in at a car's pace)
+const car = arg('--car');
+if (car) { await page.keyboard.type(car, { delay: 120 }); await page.waitForTimeout(1500); }
+if (args.includes('--drive') || car) { await hold('Enter', 700); await page.waitForTimeout(4000); await page.keyboard.down('w'); }
+let steer = null;
+if (car) { let k = 0; steer = setInterval(() => { const key = (k++ % 4 < 2) ? 'a' : 'd'; hold(key, 250).catch(() => {}); }, 3000); }
 // (--warm s: played that long before the measure — the intro's last loading screen out of it)
 await page.waitForTimeout(Number(arg('--warm', 0)) * 1000);
 const cdp = args.includes('--profile') ? await startProfile(page) : null;
-if (arg('--trace')) await browser.startTracing(page, { path: arg('--trace'), categories: ['toplevel', 'gpu', 'cc', 'viz', 'blink', 'v8', 'disabled-by-default-devtools.timeline', 'disabled-by-default-gpu.service'] });
+// (--trace-categories a,b: fewer categories — the default set slows the page down to a few frames a second)
+if (arg('--trace')) await browser.startTracing(page, { path: arg('--trace'), categories: arg('--trace-categories')?.split(',') ?? ['toplevel', 'gpu', 'cc', 'viz', 'blink', 'v8', 'disabled-by-default-devtools.timeline', 'disabled-by-default-gpu.service'] });
 await page.evaluate(() => { const B = portSession.engine.orthrosBlocked; perfProbe.blocked0 = B ? { ...B, files: { ...B.files } } : {}; perfProbe.files0 = { ...portSession.files.stats }; });
 await startMeasure(page, { calls: !args.includes('--no-calls') });
+if (args.includes('--mark')) console.log('MEASURE START', Date.now());
 await page.waitForTimeout(seconds * 1000);
 const measured = await readMeasure(page);
 const profile = cdp ? await stopProfile(cdp, measured.frames) : null;
@@ -74,8 +84,9 @@ const result = { ...measured, ...await page.evaluate(() => {
   return { ...blocked, waits: d('waits'), waitMs: d('waitMs'), waitMB: Math.round(d('waitBytes') / 1e5) / 10, syncFetches: d('syncFetches'), backgroundMB: Math.round(d('fetchedBytes') / 1e5) / 10,
     wasmMB: Math.round((portSession.engine?.HEAPU8?.length ?? 0) / 1048576) };
 }) };
-if (args.includes('--drive')) await page.keyboard.up('w');
+clearInterval(steer);
+if (args.includes('--drive') || car) await page.keyboard.up('w');
 await page.screenshot({ path: path.join(root, 'end.png') });
 await browser.close();
 if (profile) console.log('PROFILE', JSON.stringify(profile, null, 1));
-console.log(JSON.stringify({ name, gl, seconds, size: `${width}x${height}`, drive: args.includes('--drive'), ...result }));
+console.log(JSON.stringify({ name, gl, seconds, size: `${width}x${height}`, drive: args.includes('--drive'), car: car ?? null, ...result }));
