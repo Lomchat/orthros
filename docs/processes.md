@@ -104,3 +104,8 @@ data's own `game.dat` is started by it).
 - BFME II 1.06 through `lotrbfme2.exe` (Node, `src/host/cli.js`): the launcher creates the game's process, the game
   finds the launcher's mutex, sets the launcher's event, receives `0xBEEF` with the mapping handle and maps it, and goes
   on with its start (window, fonts, Miles, Direct3D); the launcher waits on the process.
+- In the page (headless Chromium, SwiftShader, render worker): `tools/headless.mjs bfme2-106 --games-dir <scratch with
+  the manifest change> --bench bfme2-skirmish` — the launcher starts `game.dat`, the page follows it (`the page follows
+  process 1284 (game.dat)`), its splash, the menu at 139 s, the profile dialog, the skirmish's loading screen and one
+  minute of play (8.4 fps on that loaded machine, render-bound); the launcher waits on the game throughout and exits
+  after it.

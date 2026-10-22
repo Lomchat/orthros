@@ -26,7 +26,7 @@ the results go to the server, and the summary panel also has a **Copy the result
 | game | link | what it plays | usual duration |
 |---|---|---|---|
 | BFME II | <https://orthros.chalco.website/?bench=bfme2-skirmish> | the intro skipped, the main menu, a skirmish started (the profile name dialog filled), its first minute | ~4 min |
-| BFME II 1.06 | <https://orthros.chalco.website/?bench=bfme2-skirmish&manifest=bfme2-106> | the same on version 1.06 (not today: 1.06's game.dat closes at start without its launcher, below) | ~4 min |
+| BFME II 1.06 | <https://orthros.chalco.website/?bench=bfme2-skirmish&manifest=bfme2-106> | the same on version 1.06, started by its launcher `lotrbfme2.exe` (docs/processes.md; the manifest's exe once switched) | ~4 min |
 | Vice City | <https://orthros.chalco.website/?bench=vicecity-drive> | the intro skipped, the main menu, a new game started, a drive of ~25 s | ~2 min |
 | Rise of the Witch-king 2.02 | <https://orthros.chalco.website/?bench=rotwk-skirmish> (2.01: `&manifest=rotwk-201`) | the main menu, a skirmish started, its first minute with a few orders | ~4 min |
 | BFME | <https://orthros.chalco.website/?bench=bfme1-skirmish> (1.03: `&manifest=bfme1-103`) | the main menu, a skirmish started, its first minute | ~6 min |
@@ -246,6 +246,11 @@ Found while checking: `rotwk-skirmish` / `rotwk-quick` anchored RotWK 2.01's pla
 canonical profile's 2D menu draws ~100 per frame, between the former ranges 20-60 and 150+: now 20 and more).
 `bfme2-skirmish` / `bfme2-quick` on `bfme2-106` cannot run: its game.dat exits after ~1 s when the named mutex its
 launcher creates is absent (CreateMutexA then GetLastError != ERROR_ALREADY_EXISTS), as under Windows.
+Since 2026-10-22 (docs/processes.md) 1.06 runs through its launcher, which starts game.dat as a child process:
+`bfme2-skirmish` with a manifest whose 1.06 `exe` is `lotrbfme2.exe` (headless, SwiftShader, load ~30) reached the menu
+at 139 s, the skirmish's play at 213 s and ran its minute (8.4 fps, render-bound). A first run with a fresh profile left
+the menu by an exit instead (the game quit with code 0 after the scenario's last click; its 2D first-launch menu took
+164 s to come, the clicks fell elsewhere).
 
 ## Tests
 
