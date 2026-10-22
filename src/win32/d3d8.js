@@ -343,6 +343,8 @@ export function d3dCore(vm) {
     GetAutoGenFilterType() { return 2; }
     GenerateMipSubLevels() { return; }
   }
+  /** open locks of a buffer kept apart (see Buffer.Lock): the oldest merge past it */
+  const LOCK_NEST = 16;
   class Buffer extends Resource {
     constructor(dev, type, length, usage, fvfOrFmt, pool) {
       super(dev, type, pool, usage, type === RTYPE.INDEXBUFFER ? fvfOrFmt : FMT.VERTEXDATA);
@@ -358,25 +360,37 @@ export function d3dCore(vm) {
      * (with a render worker, gfx.lockBuffer waits until pending commands no longer read the contents — once: such a
      * buffer's written ranges then travel in the command ring at Unlock, as dynamic buffers' always do)
      * Buffer locks nest, unlike surface locks: a buffer already locked can be locked again (Direct3D 8 / 9 count them,
-     * each Unlock ends one; the contents are visible to draws throughout). Refusing it made a game that leaves one lock of
-     * a dynamic buffer open — a batch of particles locked with DISCARD, then found empty — lose every later lock of that
-     * buffer: hundreds of refused locks per frame, those particles never drawn again. Each Unlock ends the latest
-     * lock still open (its range written back); the earlier ones wait under it (`lockStack`).
+     * each Unlock ends one). Refusing it failed every later Lock of a buffer a game leaves locked (BFME 1.08: a
+     * dynamic vertex buffer locked once with DISCARD and never unlocked, then locked ~290 times per frame with
+     * NOOVERWRITE, never unlocked either). Each Unlock ends the latest lock still open (its range written back); the
+     * earlier ones wait under it (`lockStack`).
      */
     Lock(c) {
       const off = c.arg(1), size = c.arg(2), pp = c.arg(3), flags = c.arg(4);
       if (!pp || off > this.length) return D3DERR_INVALIDCALL;
       this.dev.gfx?.lockBuffer?.(this, flags, off, size);
       mem.write32(pp, this.mem + off);
-      if (this.locked) (this.lockStack ??= []).push(this.lockOff, this.lockSize, this.lockFlags);
+      if (this.locked) {
+        // (the latest lock goes under the new one: [offset, size, flags, locks] — past LOCK_NEST entries the two oldest
+        // merge into one wider range standing for both, so a program that never unlocks keeps a bounded list)
+        const st = this.lockStack ??= [];
+        st.push(this.lockOff, this.lockSize, this.lockFlags, 1);
+        if (st.length > 4 * LOCK_NEST) {
+          const lo = Math.min(st[0], st[4]), hi = Math.max(st[0] + st[1], st[4] + st[5]);
+          st.splice(0, 8, lo, hi - lo, (st[2] & st[6] & 0x10) | ((st[2] | st[6]) & ~0x10), st[3] + st[7]); // (read-only only if both were)
+        }
+      }
       this.locked = true; this.lockOff = off; this.lockSize = size ? Math.min(size, this.length - off) : this.length - off; this.lockFlags = flags;
       return D3D_OK;
     }
     Unlock() {
       if (!this.locked) return D3DERR_INVALIDCALL;
       if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.bufferUpdated?.(this, this.lockOff, this.lockSize); }
-      const st = this.lockStack;
-      if (st?.length) { this.lockFlags = st.pop(); this.lockSize = st.pop(); this.lockOff = st.pop(); } else this.locked = false;
+      const st = this.lockStack, n = st?.length ?? 0;
+      if (n) {
+        this.lockOff = st[n - 4]; this.lockSize = st[n - 3]; this.lockFlags = st[n - 2];
+        if (st[n - 1] > 1) st[n - 1]--; else st.length = n - 4; // (a merged entry: one of its locks ends at each Unlock)
+      } else this.locked = false;
       return D3D_OK;
     }
     GetDesc(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; mem.write32(p, this.fmt); mem.write32(p + 4, this.type); mem.write32(p + 8, this.usage); mem.write32(p + 12, this.pool); mem.write32(p + 16, this.length); if (this.type === RTYPE.VERTEXBUFFER) mem.write32(p + 20, this.fvf); return D3D_OK; }

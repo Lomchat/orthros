@@ -62,3 +62,19 @@ for (const api9 of [false, true]) {
     });
   }
 }
+
+test('D3D9: a buffer locked again and again without Unlock keeps a bounded list; each Unlock ends one lock, wider ranges written back', () => {
+  const { mem, com, ctx, out, call, seen } = device(true);
+  assert.equal(call('CreateVertexBuffer', 96000, 0x208, 0x142, 0, out, 0), 0);
+  const bp = mem.read32(out), b = com.implAt(bp), p = out + 16;
+  const N = 5000;
+  for (let i = 0; i < N; i++) assert.equal(b.Lock(ctx([bp, (i % 400) * 240, 240, p, i ? NOOVERWRITE : DISCARD])), 0);
+  assert.ok(b.lockStack.length <= 4 * 16, `bounded: ${b.lockStack.length / 4} entries for ${N} open locks`);
+  seen.length = 0;
+  for (let i = 0; i < N; i++) assert.equal(b.Unlock(ctx([bp])), 0, `unlock ${i}`);
+  assert.equal(b.locked, false); assert.equal(b.Unlock(ctx([bp])), INVALIDCALL, 'exactly N unlocks');
+  const ups = seen.filter((e) => e[0] === 'updated');
+  assert.equal(ups.length, N);
+  // every locked range is inside a range written back (merged ones are wider, never lost)
+  for (let i = 0; i < N; i++) { const lo = (i % 400) * 240; assert.ok(ups.some(([, o, n]) => o <= lo && o + n >= lo + 240), `range of lock ${i} written back`); }
+});
