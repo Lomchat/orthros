@@ -624,7 +624,7 @@ export class HttpBackend {
     }
     // (on a link that is not fast the block waits for the background fill: it would hold the game's next reads up)
     if (!this.net.fast()) return;
-    if (this.learnedDone && this.store && !this.isMedia(path) && !this.streams.has(path) && globalThis.ORTHROS_WHOLE_AFTER_MISSES !== 0) this.noteMissAfter(path, index); // (?dbg=ORTHROS_WHOLE_AFTER_MISSES=0: not, measurement)
+    if (this.learnedDone && this.store && !this.isMedia(path) && !this.streams.has(path) && globalThis.ORTHROS_WHOLE_AFTER_MISSES === 1) this.noteMissAfter(path, index); // (off by default — measured: ~400 MB more per session for 0.6 → 0.3 frames over 100 ms a minute; ?dbg=ORTHROS_WHOLE_AFTER_MISSES=1: on)
     if (this.missFlights >= MISSED_BLOCK_FLIGHTS || this.blockFlights.has(k) || this.cache.has(k) || this.bgCur?.key === k || this.store?.map.has(`${path}#${size}#${mtime}#${index}`)) return;
     this.missFlights++;
     this.stats.missBlocks = (this.stats.missBlocks ?? 0) + 1;

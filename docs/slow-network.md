@@ -162,7 +162,7 @@ network after the loading screen, only 5 of them common to two sessions (Audio.b
 textures: 64 KiB pieces here and there), each a frame waiting (`ioWait`, then `late` while the read's tasks run).
 
 `HttpBackend.noteMiss` → `noteMissAfter`: once the learned prefetch pass is over (`learnedDone`), a file missed in
-`WHOLE_AFTER_MISSES` (3) distinct blocks — not a media file, not a stream — is wanted whole (`wantWhole`: its other
+`WHOLE_AFTER_MISSES` (3) distinct blocks — not a media file, not a stream — is wanted whole (off by default since 2026-10-22: `?dbg=ORTHROS_WHOLE_AFTER_MISSES=1`) (`wantWhole`: its other
 blocks in the background fill's `later` queue, after the blocks the game touched and those near them, the link quiet
 for NEAR_QUIET_MS). Only on a fast link and with a block store (OPFS, or the harness's memory store): the blocks stay
 for the next sessions. Generic: the data system of every runtime (the ports' streamed files already asked it).

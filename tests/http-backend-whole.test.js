@@ -24,8 +24,9 @@ function backend({ done = true, store = true, media = false } = {}) {
 }
 const wanted = (b) => [...b.later.values()].map((w) => w.index).sort((x, y) => x - y);
 
-test('a file missed in 3 distinct blocks after the learned prefetch: wanted whole, once', async () => {
+test('a file missed in 3 distinct blocks after the learned prefetch: wanted whole, once (when turned on)', async () => {
   globalThis.fetch = () => new Promise(() => {});
+  globalThis.ORTHROS_WHOLE_AFTER_MISSES = 1;
   try {
     const b = backend(), f = b.open('f.big');
     f.read(2 * MiB + 100, 10); f.read(5 * MiB + 100, 10); f.read(5 * MiB + 9000, 10);
@@ -42,5 +43,14 @@ test('a file missed in 3 distinct blocks after the learned prefetch: wanted whol
       for (const blk of [1, 3, 4, 6]) g.read(blk * MiB + 100, 10);
       assert.deepEqual(wanted(c), [], why);
     }
+  } finally { globalThis.fetch = realFetch; delete globalThis.ORTHROS_WHOLE_AFTER_MISSES; }
+});
+
+test('by default a file missed after the learned prefetch is not wanted whole (the download doubled for little)', async () => {
+  globalThis.fetch = () => new Promise(() => {});
+  try {
+    const b = backend(), f = b.open('f.big');
+    for (const at of [2, 5, 7, 9]) f.read(at * MiB + 100, 10);
+    assert.deepEqual(wanted(b), []);
   } finally { globalThis.fetch = realFetch; }
 });
