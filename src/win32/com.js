@@ -233,8 +233,11 @@ export class Com {
   failed(ctx, iface, m, r) {
     // (a method that keeps failing — thousands of times per second — is checked without building its key: the result
     // codes seen per method, transient, `failedSeen`)
-    let seen = this.failedSeen.get(m);
-    if (seen === undefined) this.failedSeen.set(m, seen = new Set());
+    // (by interface, then method: an inherited method's descriptor is shared by every interface derived from its parent)
+    let byM = this.failedSeen.get(iface);
+    if (byM === undefined) this.failedSeen.set(iface, byM = new Map());
+    let seen = byM.get(m);
+    if (seen === undefined) byM.set(m, seen = new Set());
     else if (seen.has(r >>> 0)) return;
     seen.add(r >>> 0);
     const k = `${iface.name}::${m.name}=${(r >>> 0).toString(16)}`;

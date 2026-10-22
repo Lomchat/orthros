@@ -90,6 +90,11 @@ export class Scheduler {
    * priority at least the yielder's for Sleep(0) (a lower one waits, as on Windows), of any priority for SwitchToThread
    * (`yieldAny`); the yielder goes on only when there is none.
    */
+  /** A ready thread's priority for a pick: its own, 16 when starved (see STARVE_INSNS), 0 in round-robin mode. */
+  effPrio(t, now = this.vm.guestInsns ?? 0, picks = this.picks) {
+    return this.roundRobin ? 0 : now - t.readyTime > this.starveInsns || picks - t.readyPick > this.starvePicks ? 16 : (t.priority ?? 0);
+  }
+
   pickRunnable(except, top = false) {
     const ts = this.threads;
     const n = ts.length, now = this.vm.guestInsns ?? 0, picks = ++this.picks; // (instructions executed: see STARVE_INSNS)
@@ -99,7 +104,7 @@ export class Scheduler {
     for (let k = 0; k < n; k++) {
       const t = ts[(this.rr + k) % n];
       if (t === except || !t.isRunnable()) continue;
-      const prio = this.roundRobin ? 0 : now - t.readyTime > this.starveInsns || picks - t.readyPick > this.starvePicks ? 16 : (t.priority ?? 0);
+      const prio = this.effPrio(t, now, picks);
       if (t === y) { yK = k; yPrio = prio; continue; } // (the yielder: only if no other thread may run, below)
       if (prio > bestPrio) { best = t; bestPrio = prio; bestK = k; }
     }
@@ -293,6 +298,8 @@ export class Scheduler {
     }
     const other = this.pickRunnable(thread);
     if (!other) return false;
+    // (Sleep(0) as at top level: a thread of lower priority waits — SwitchToThread, `any`, runs it)
+    if (!any && !globalThis.ORTHROS_YIELD_PICK_OLD && this.effPrio(other) < (thread.priority ?? 0)) return false;
     this.vm.runThread(other, { slice: true });
     return true;
   }

@@ -121,3 +121,17 @@ test('a yield (Sleep(0)) gives the next top-level pick to another ready thread o
   w.state = TS.READY; s.yieldFrom(main); s.pickRunnable(null, true);
   s.rr = 0; assert.equal(s.pickRunnable(null, true), main, 'then round robin as before');
 });
+
+test('a yield inside a nested run (not at top level) keeps the same rule: Sleep(0) leaves a lower priority waiting, SwitchToThread runs it', () => {
+  const vm = fakeSched(), s = vm.sched, ran = [];
+  vm.canUnwind = () => false;
+  vm.runThread = (t) => ran.push(t.id);
+  const main = thread(1, 0), lo = thread(3, -1);
+  vm.proc.threads.push(main, lo);
+  assert.equal(s.yieldFrom(main), false, 'Sleep(0): the lower priority waits');
+  assert.deepEqual(ran, []);
+  assert.equal(s.yieldFrom(main, true), true, 'SwitchToThread: any ready thread');
+  assert.deepEqual(ran, [3]);
+  const eq = thread(2, 0); vm.proc.threads.push(eq);
+  ran.length = 0; assert.equal(s.yieldFrom(main), true); assert.deepEqual(ran, [2], 'an equal priority runs');
+});
