@@ -1,6 +1,6 @@
 // "Prepare" (the home's launch-set download, src/host/web/download-worker.js) replayed in Node for every version of the
 // catalog × link — no browser: the download worker's own code (openVersion, launchSet, the engine's files, then
-// HttpBackend.prefetch with learnedOnly) over the throttling proxy (tools/throttle-proxy.mjs, plain HTTP here) in front
+// HttpBackend.prefetch with learnedOnly) over the player's-link proxy (tools/net-proxy.mjs, plain HTTP here) in front
 // of one Orthros server of a code tree (--code: this tree, or a copy of another commit) on a learned directory's copy
 // and a frozen copy of the precompressed units. A port's page waits for the same set at a first launch (data-worker.js
 // startup()), so its time is the floor of the time to the menu on that link. One JSON line per run: seconds, wire
@@ -13,7 +13,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { startProxy } from './throttle-proxy.mjs';
+import { startProxy } from './net-proxy.mjs';
 import { parseLink, summarize } from './data-matrix.mjs';
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
@@ -36,7 +36,8 @@ const { download } = await import(pathToFileURL(path.join(code, 'src/host/web/do
 const { MemBlockStore } = await import(pathToFileURL(path.join(code, 'src/vfs/opfs-store.js')).href);
 const realFetch = globalThis.fetch;
 let base = null;
-globalThis.fetch = (u, o = {}) => { const { cache, mode, ...rest } = o; return realFetch(typeof u === 'string' && u.startsWith('/') ? base + u : u, rest); };
+// (a new player's browser: nothing in its HTTP cache — an "only-if-cached" request fails, as Chrome's 504)
+globalThis.fetch = (u, o = {}) => { const { cache, mode, ...rest } = o; if (cache === 'only-if-cached') return Promise.resolve(new Response(null, { status: 504 })); return realFetch(typeof u === 'string' && u.startsWith('/') ? base + u : u, rest); };
 // (the last progress message: the worker's last post is 'stopped')
 let last = null; globalThis.self = { postMessage: (m) => { if (m.type !== 'stopped') last = m; } };
 
@@ -47,7 +48,7 @@ try {
     const lang = langs.includes('en') ? 'en' : langs[0] ?? (m.languages.includes('en') ? 'en' : m.languages[0] ?? null);
     const card = (lang && m.launch?.langs?.[lang]) ?? m.launch;
     const logf = path.join(work, `${m.name}-${link.name}.jsonl`);
-    const proxy = await startProxy({ upstream: `127.0.0.1:${sport}`, port: 0, rate: link.rate, rtt: link.rtt, log: logf, http1: true });
+    const proxy = await startProxy({ upstream: `127.0.0.1:${sport}`, listen: 0, rate: link.rate, rtt: link.rtt, log: logf, http1: true });
     base = `http://127.0.0.1:${proxy.port}`; last = null;
     const t0 = performance.now();
     const engine = card?.engineFiles?.length ? { files: card.engineFiles, bytes: card.engine } : null;

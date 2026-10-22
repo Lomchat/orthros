@@ -1,7 +1,7 @@
 // Data-system matrix (docs/slow-network.md "Measuring"): every version of the catalog (/api/manifests) × link, as a new
 // player in a fresh browser. Each run gets its own Orthros server (this tree's code) over a fresh copy of a learned
 // directory (the live server's, copied once by hand) and a frozen copy of its precompressed units (--br-cache-frozen:
-// what a player meets now, the same for every run), behind the throttling proxy (tools/throttle-proxy.mjs: HTTP/2, one
+// what a player meets now, the same for every run), behind the player's-link proxy (tools/net-proxy.mjs: HTTP/2, one
 // shared link, a round trip per request, Cloudflare's Accept-Encoding); the browser run is tools/data-matrix-run.mjs
 // through the browser slot guard. One JSON line per run in --out: the runner's times (first frame, shown, playable,
 // in play), and from the proxy's log up to the playable mark (else the end): bytes on the wire by kind (page /src,
@@ -16,7 +16,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { startProxy } from './throttle-proxy.mjs';
+import { startProxy } from './net-proxy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
@@ -83,7 +83,7 @@ async function one(m, link) {
     for (let i = 0; i < left.length; i += 16) await Promise.all(left.slice(i, i + 16).map(async (f) => { const r = await fetch(`http://127.0.0.1:${sport}/${f}`, { headers: { 'accept-encoding': 'br' } }).catch(() => null); await r?.arrayBuffer().catch(() => {}); if (r && r.headers.get('content-encoding') !== 'br' && r.status === 200) next.push(f); }));
     left = next; if (left.length) await new Promise((r) => setTimeout(r, 1500));
   }
-  const proxy = await startProxy({ upstream: `127.0.0.1:${sport}`, port: 0, rate: link.rate, rtt: link.rtt, log: path.join(dir, 'proxy.jsonl'), certDir: path.join(scratch, 'cert') });
+  const proxy = await startProxy({ upstream: `127.0.0.1:${sport}`, listen: 0, rate: link.rate, rtt: link.rtt, log: path.join(dir, 'proxy.jsonl'), certs: path.join(scratch, 'cert') });
   const lang = opt('lang') && m.languages.includes(opt('lang')) ? opt('lang') : m.languages.includes('en') ? 'en' : m.languages[0];
   // (--win32-seconds: a Win32 game's window — its menu's time on a loaded machine is the CPU's (SwiftShader), its data the
   // same window for every run)

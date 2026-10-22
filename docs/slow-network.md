@@ -559,6 +559,16 @@ node tools/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k
 over TLS — no six-requests-per-host queue of a local HTTP/1.1 server —, one shared link, a round trip, `Accept-Encoding:
 gzip, br`, a log line per request): `node tools/net-proxy.mjs --upstream http://127.0.0.1:18431 --listen 18443 --rate 7m
 --rtt 75 --log proxy.log`, then `headless.mjs ... --port 18431 --page-origin https://127.0.0.1:18443`.
+Its log is one JSON line per request (wire bytes, `X-Orthros-Unit`, first byte, total) and one per data report carrying
+a `playable` mark; a text answer the origin sends as it is goes gzip on the way, as Cloudflare does.
+
+The data matrix — a new player in a fresh browser, per version × link, through that proxy: `node tools/data-matrix.mjs
+--pristine <dir with learn/ brcache/ covers/: copies of the live server's> [--links 85k:150,1m:60,7m:75] [--only a,b]
+[--win32-seconds 300]` (each run its own server on a copy of `learn/`, the units frozen — `--br-cache-frozen` —, the
+browser through `tools/with-browser-slot.sh`; per run: first frame, menu / playable mark, in play, and up to the mark
+the wire bytes by kind, requests, unit hits, demand-wait seconds). Prepare alone (the home's launch-set download) in
+Node, no browser: `node tools/prepare-bench.mjs --pristine <dir> [--code <another tree>]`. The launch sets' unit
+coverage of a server: `/api/netstats?launch=1`.
 
 The harness itself: `--net <rtt ms>:<Mbit/s>` (85 KB/s: `50:0.68`, 1 MB/s: `50:8`, 5 MB/s: `50:40`; the simulated link
 is shared fairly by the answers in flight, `src/host/sim-link.js`), `--net-trace <file>` (one line per range answered:
