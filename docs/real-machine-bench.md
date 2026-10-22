@@ -206,6 +206,26 @@ minute, GPU p99), and the marks (time to each phase).
 - Page cost: `FrameStats.add` with the histogram 0.69-0.86 µs per frame vs 0.42-0.82 before (Node, alternated, noisy
   machine: within the noise; < 0.003 % of a 33 ms frame); the page's summary work 2 µs per 0.5 s stats message.
 
+## Checks made (2026-10-22, Node `startbench --bench`, this server under load 15-60)
+
+Each bench played in Node as the page plays it (`--bench`, pointer coordinates scaled), from a profile seeded with the
+server's canonical first-launch set (no downloads), `--cold --regions --heat --gfx recorder` (copies of the live learned
+data). Times from the launch; the menu anchor includes the scenario's fixed 20 s after the first frame.
+
+| bench (manifest) | first frame | menu | play from | total | play: fps, work p50 / p99, frames > 40 ms per minute |
+|---|---|---|---|---|---|
+| `bfme1-108-quick` (bfme1-108) | ~13 s | 34 s | 120 s | 240 s | 30.2, 14.5 / 25.1 ms, 32 |
+| `bfme2-quick` (bfme2) | 20 s | 42 s | 107 s | 227 s | 30.2, 17.3 / 29 ms, 21 |
+| `rotwk-quick` (rotwk-201) | 13 s | 35 s | 75 s | 195 s | 30.1, 18.1 / 33.1 ms, 27 |
+| `rotwk-skirmish` (rotwk-202) | — | 36 s | 77 s | 137 s | 28.2, 20.1 / 64.2 ms, 83 (load 50-60) |
+| `bfme1-skirmish` (bfme-vanilla) | — | 91 s | 268 s | 328 s | 38.3, 14.3 / 21 ms, 1 (menu at load 50-64) |
+| `bfme1-skirmish` (bfme1-103) | 14 s | 36 s | 226 s | 286 s | 30.2, 14.1 / 25.9 ms, 11 |
+| `vicecity-drive` | — | 20 s | 29 s | 89 s | 29.9, 13.9 / 34.1 ms, 21 |
+
+Found while checking: `rotwk-skirmish` / `rotwk-quick` anchored RotWK 2.01's play only after minutes (its play draws
+~140 per frame against the former threshold of 150: now 120), and `bfme1-skirmish` never left the menu on 1.03 (its
+canonical profile's 2D menu draws ~100 per frame, between the former ranges 20-60 and 150+: now 20 and more).
+
 ## Tests
 
 `tests/bench-kit.test.js` (histogram, interval counts, scenario parsing and the player's timing anchors, pointer
