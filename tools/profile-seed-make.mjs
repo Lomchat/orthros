@@ -17,12 +17,18 @@
 //   node tools/profile-seed-make.mjs promote <manifest> <lang> --learn <dir> [--key <set key>]
 //       a set the sessions reported (the most reported one, or that key) as the canonical set
 //   node tools/profile-seed-make.mjs show|remove <manifest> [<lang>] --learn <dir>
+//   node tools/profile-seed-make.mjs moves --games-dir <dir> --learn <dir> [--only id[:lang],...] [--dry]
+//       the canonical sets of the versions whose manifest declares profileMoves (src/vfs/profile-moves.js) rewritten
+//       with those moves applied (the same files at the game's new place: what a first launch writes since the
+//       change, without running it again); the learned candidates that still hold files at an old place listed
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { seedSelect, seedKey, toBase64, fromBase64, seedCanonFile, canonSets } from '../src/host/profile-seed.js';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
+import { MemBackend } from '../src/vfs/vfs.js';
+import { applyProfileMoves } from '../src/vfs/profile-moves.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -144,6 +150,28 @@ if (cmd === 'plan') {
   if (!learn || !name) die(`usage: ${cmd} <manifest> [<lang>] --learn <dir>`);
   if (cmd === 'remove') { for (const s of readCanon(name)) if (lang === undefined || s.lang === lang) writeCanon(name, s.lang, null); console.log('removed'); }
   for (const s of readCanon(name)) console.log(`${name} ${s.lang}: canonical set ${s.key}${s.note ? ' — ' + s.note : ''}\n${describe(s.files)}`);
+} else if (cmd === 'moves') {
+  if (!learn) die('--learn <dir> needed');
+  const catalog = loadGameCatalog(opt('games-dir'));
+  /** a set's files ([path, base64]) with the manifest's moves applied, and whether any moved */
+  const moved = (files, moves) => {
+    const b = new MemBackend();
+    for (const [p, d] of files) { const parts = p.split('/'); for (let i = 1; i < parts.length; i++) b.mkdir(parts.slice(0, i).join('/')); b.open(p, { create: true }).write(0, fromBase64(d)); }
+    const r = applyProfileMoves(b, moves);
+    return { files: [...b.files.keys()].map((k) => { const parts = k.split('/'); return { path: parts.map((_, i) => b.names.get(parts.slice(0, i + 1).join('/')) ?? parts[i]).join('/'), data: b.files.get(k).data.subarray(0, b.files.get(k).len) }; }), count: r.moved.length };
+  };
+  for (const { id, lang } of targets()) {
+    const moves = catalog.get(id)?.profileMoves;
+    if (!moves?.length) continue;
+    const canon = readCanon(id).find((s) => s.lang === lang);
+    if (canon) {
+      const m = moved(canon.files, moves);
+      if (!m.count) console.log(`${id} ${lang}: canonical set ${canon.key} already at the new place`);
+      else if (args.includes('--dry')) console.log(`${id} ${lang}: canonical set ${canon.key} would be rewritten (${m.count} entr${m.count === 1 ? 'y' : 'ies'} moved)\n${describe(asSet(m.files).files)}`);
+      else { const kept = writeCanon(id, lang, { files: asSet(m.files).files, note: `${canon.note ? canon.note + '; ' : ''}profileMoves applied ${new Date().toISOString()}` }); console.log(`${id} ${lang}: canonical set ${canon.key} -> ${kept.key} (profileMoves applied)\n${describe(kept.files)}`); }
+    } else console.log(`${id} ${lang}: no canonical set`);
+    for (const c of learnedSets(id).filter((s) => s.lang === lang)) if (moved(c.files, moves).count) console.log(`${id} ${lang}: learned candidate ${c.key} (${c.sessions?.length ?? 0} reporter(s)) holds files at an old place: purge <learn>/profileseed-${id}.json (moved at the client meanwhile)`);
+  }
 } else {
-  die('usage: node tools/profile-seed-make.mjs plan|make|put|promote|show|remove ... (see the header)');
+  die('usage: node tools/profile-seed-make.mjs plan|make|put|promote|show|remove|moves ... (see the header)');
 }

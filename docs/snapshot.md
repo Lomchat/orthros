@@ -111,8 +111,8 @@ from it when:
    `tests/snapshot-lint.test.js` fails if a module left out registers snapshot state) — the game version's manifest and
    file tree (sizes, dates), the language and the options that change the machine (`?timescale`, `?interp`, `?dbg`...);
 2. **its machine's start is this session's** (the worker, before anything changes: `snapshotStale`): the registry the
-   process starts with (seeded from the manifest, the player's settings), and every path of the player's profile the
-   game had seen — its existence and size (`stat`), its listing (`readdir`), its bytes (`open`) — is as it saw it. The
+   process starts with (seeded from the manifest, the player's settings), and every path of the player's profile (as
+   the manifest's `profileMoves` left it, docs/startup.md: moved before anything is recorded) the game had seen — its existence and size (`stat`), its listing (`readdir`), its bytes (`open`) — is as it saw it. The
    profile is never the snapshot's: it stays the player's, kept by the browser; saves made after the snapshot in a
    folder the game had not listed leave it valid, a changed setting or a new save where the game had listed its saves
    gives a usual start (and a new snapshot, the old one deleted).

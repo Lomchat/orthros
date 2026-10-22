@@ -29,6 +29,7 @@ import { acct, C as ACCT, catsObject } from '../../core/frame-acct.js';
 import { refreshApiOpt } from '../../core/api-opt.js';
 import { hostWaiter } from '../../core/host-wait.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../profile-seed.js';
+import { applyProfileMoves } from '../../vfs/profile-moves.js';
 import { LearnedHeat } from '../../cpu/jit/heat.js';
 import { captureVm, restoreVm, notQuiet, persistentChanged } from '../../core/vm-snapshot.js';
 import { encodeSnapshot, decodeSnapshot, SnapshotStale } from '../../core/snapshot.js';
@@ -300,9 +301,17 @@ async function start(m) {
   // wrote, as the server learned them, are put in place: the game skips its first-launch work; else this session's are
   // learned. Manifest compat flag "profileSeed": false, ?profileseed=0: off)
   if (m.opts.profileSeed && manifest.profileSeed !== false && profile.files.size === 0) await seedProfile(m.opts.gameLanguage ?? '', m.opts.session ?? '');
+  // (files the manifest says the game keeps elsewhere now — "profileMoves", profile-moves.js: the browser's copy, the
+  // account's restored into it, a shared first-launch profile learned before — put at their new place before the game
+  // sees them; the changes recorded, so the browser's copy follows at the first flush and the account's after it)
+  profile.changes = new Set();
+  if (manifest.profileMoves) {
+    const { moved, kept } = applyProfileMoves(profile, manifest.profileMoves);
+    if (moved.length || kept.length) log('file', `profile: ${moved.length} entr${moved.length === 1 ? 'y' : 'ies'} moved to the game's new place (manifest profileMoves)${kept.length ? `, ${kept.length} kept at the old one (the new place has its own): ${kept.slice(0, 4).join(', ')}` : ''}`);
+  }
   // (the profile is the player's, kept across sessions: what the game sees of it from here is recorded — a snapshot
   // applies only to a profile as its machine saw it, docs/snapshot.md)
-  profile.seen = new Map(); profile.changes = new Set();
+  profile.seen = new Map();
   vfs.mount('C:\\Users\\Player', profile);
   audioMixDirect = m.opts.audioMix !== 'worker';
   const bgWanted = !m.opts.interp && m.opts.bgTranslate !== false && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated;
