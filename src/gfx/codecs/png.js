@@ -1,6 +1,7 @@
 // PNG decoder: color types 0/2/3/4/6, bit depths 1-16, Adam7 interlace, tRNS transparency.
 // Output: { width, height, data: Uint8Array RGBA }.
 import { inflate } from './inflate.js';
+import { crc32 } from '../../core/crc32.js';
 
 export function isPng(b) { return b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47; }
 
@@ -179,13 +180,6 @@ function unpack8(row, pw, out, o, step, ctype, palette, trns) {
 }
 
 // ---- encoder
-let crcTable = null;
-function crc32(b, start, end) {
-  if (!crcTable) { crcTable = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crcTable[n] = c >>> 0; } }
-  let c = 0xffffffff;
-  for (let i = start; i < end; i++) c = crcTable[(c ^ b[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
 /**
  * An RGBA image as PNG (8-bit RGBA, no filter, deflate stored blocks: no compression) — small images such as cursors,
  * encoded on the CPU and at once (a canvas' encoder can wait on the GPU process).
