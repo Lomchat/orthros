@@ -1,6 +1,7 @@
 // kernel32.dll part 2: files, directories, environment, code pages and locale, console output.
 import { utcZone } from './timezone.js';
 import { E } from './errors.js';
+import { snapKnown } from '../core/snapshot.js';
 import { decodeBytes, encodeString, CP_UTF8, caseMap } from './strings.js';
 import { msToFiletime, filetimeToMs, allocString, allocWString } from './kernel32.js';
 import { normalizeWin } from '../vfs/vfs.js';
@@ -46,7 +47,8 @@ export class FileHandle {
   close() { this.file.close(); }
 }
 
-export function registerKernel32File(api, vm) {
+/** @param {{ createNamed: Function, openNamed: Function }} k kernel32's named-object helpers (file mappings) */
+export function registerKernel32File(api, vm, k) {
   const mem = vm.mem;
   const K = {};
 
@@ -430,25 +432,52 @@ export function registerKernel32File(api, vm) {
   K.FindNextFileW = [2, (c) => { const f = c.proc.handles.getAs(c.arg(0), 'find'); if (!f) return c.fail(E.INVALID_HANDLE); if (f.i >= f.entries.length) return c.fail(E.NO_MORE_FILES); writeFindData(c.arg(1), f.entries[f.i++], true); return 1; }];
   K.FindClose = [1, (c) => (c.proc.handles.close(c.arg(0)) ? 1 : c.fail(E.INVALID_HANDLE))];
 
-  // File mappings (read the whole file into a private region; writes are not flushed back)
-  K.CreateFileMappingA = [6, (c) => {
+  // File mappings. A file's: each view a private copy of the file's bytes (writes are not flushed back). The paging
+  // file's (no file: shared memory): its bytes kept in the mapping (`data`), each view filled from them and written back
+  // when unmapped — a later view, of this process or another, sees what an earlier one wrote; views open at once in
+  // several processes are kept alike at each switch between them (core/procs.js ProcessGroup.syncIn / syncOut).
+  // Named ones are in the kernel-object namespace (OpenFileMapping).
+  const mapViews = snapKnown(vm, 'kernel32.mapViews', new Map()); // view base -> its mapping (the paging file's)
+  vm.mapViews = mapViews;
+  const createMapping = (c, name) => {
     const h = c.arg(0) >>> 0;
     const f = h === INVALID_HANDLE ? null : fileOf(c, h);
     if (h !== INVALID_HANDLE && !f?.file) return c.fail(E.INVALID_HANDLE);
     const size = c.arg(4) + c.arg(3) * 4294967296 || f?.file.size() || 0;
-    return c.proc.handles.create({ type: 'mapping', file: f, size, views: [] });
-  }];
-  K.CreateFileMappingW = K.CreateFileMappingA;
-  K.OpenFileMappingA = [3, (c) => c.fail(E.FILE_NOT_FOUND)];
-  K.MapViewOfFile = [5, (c) => {
+    if (!size) return c.fail(E.INVALID_PARAMETER);
+    return k.createNamed(c, name, () => ({ type: 'mapping', file: f, size, views: [], data: null }), c.arg(1));
+  };
+  K.CreateFileMappingA = [6, (c) => createMapping(c, c.str(5))];
+  K.CreateFileMappingW = [6, (c) => createMapping(c, c.wstr(5))];
+  K.OpenFileMappingA = [3, (c) => k.openNamed(c, c.str(2), 'mapping')];
+  K.OpenFileMappingW = [3, (c) => k.openNamed(c, c.wstr(2), 'mapping')];
+  /** the bytes of every open view of `m` (its processes' memories) into the mapping */
+  const flushViews = (m) => { for (const v of m.views) m.data.set(v.vm.mem.u8.subarray(v.base, v.base + v.n), v.off); };
+  const mapView = (c, at) => {
     const m = c.proc.handles.getAs(c.arg(0), 'mapping'); if (!m) return c.fail(E.INVALID_HANDLE);
     const off = c.arg(3) + c.arg(2) * 4294967296; const n = c.arg(4) || (m.size - off);
-    const base = c.proc.vmem.alloc(n, 4, 'mapview'); if (!base) return c.fail(E.NOT_ENOUGH_MEMORY);
-    if (m.file) { const d = m.file.file.read(off, n); mem.writeBytes(base, d); if (d.length < n) mem.fill(base + d.length, n - d.length, 0); } else mem.fill(base, n, 0);
-    m.views.push(base); return base;
+    if (off >= m.size && !m.file) return c.fail(E.INVALID_PARAMETER);
+    const base = c.proc.vmem.alloc(n, 4, 'mapview', at); if (!base) return c.fail(E.NOT_ENOUGH_MEMORY);
+    if (at && base !== at) { c.proc.vmem.release(base); return c.fail(E.INVALID_ADDRESS); } // (MapViewOfFileEx: there or not at all)
+    if (m.file) { const d = m.file.file.read(off, n); mem.writeBytes(base, d); if (d.length < n) mem.fill(base + d.length, n - d.length, 0); return base; }
+    if (m.data) flushViews(m); else m.data = new Uint8Array(m.size);
+    const len = Math.min(n, m.size - off);
+    mem.fill(base, n, 0); mem.u8.set(m.data.subarray(off, off + len), base);
+    m.views.push({ vm, base, off, n: len }); mapViews.set(base, m);
+    vm.group?.noteViews(m);
+    return base;
+  };
+  K.MapViewOfFile = [5, (c) => mapView(c, 0)];
+  K.MapViewOfFileEx = [6, (c) => mapView(c, c.arg(5))];
+  K.UnmapViewOfFile = [1, (c) => {
+    const a = c.arg(0) >>> 0, m = mapViews.get(a);
+    if (m) {
+      const i = m.views.findIndex((v) => v.vm === vm && v.base === a);
+      if (i >= 0) { const v = m.views[i]; m.data.set(mem.u8.subarray(v.base, v.base + v.n), v.off); m.views.splice(i, 1); }
+      mapViews.delete(a); vm.group?.noteViews(m);
+    }
+    const q = c.proc.vmem.query(a); c.proc.vmem.release(a); vm.invalidateCode(a, q.size || 0x1000); return 1;
   }];
-  K.MapViewOfFileEx = [6, (c) => K.MapViewOfFile[1](c)];
-  K.UnmapViewOfFile = [1, (c) => { const q = c.proc.vmem.query(c.arg(0)); c.proc.vmem.release(c.arg(0)); vm.invalidateCode(c.arg(0), q.size || 0x1000); return 1; }];
   K.FlushViewOfFile = [2, () => 1];
 
   // INI files

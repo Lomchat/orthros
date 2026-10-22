@@ -8,6 +8,28 @@ export class HandleTable {
     this.map = new Map();
     this.next = 0x10;
     this.mem = mem;
+    /** @type {Set<number> | null} the handles a child process inherits (bInheritHandle, HANDLE_FLAG_INHERIT) */
+    this.inherit = null;
+  }
+
+  /** Mark handle `h` inheritable or not (SECURITY_ATTRIBUTES.bInheritHandle, SetHandleInformation). */
+  setInherit(h, on) { h >>>= 0; if (on) (this.inherit ??= new Set()).add(h); else this.inherit?.delete(h); }
+
+  /**
+   * The inheritable handles into `child`'s table under the same values (CreateProcess with bInheritHandles): the
+   * objects shared, each with one reference more. `child` hands out its own handles above them (Process handleBase).
+   * @returns {any[]} the objects inherited
+   */
+  inheritInto(child) {
+    const out = [];
+    for (const h of this.inherit ?? []) {
+      const o = this.map.get(h);
+      if (!o) { this.inherit.delete(h); continue; }
+      if (o.refs !== undefined) o.refs++;
+      child.map.set(h, o); child.setInherit(h, true);
+      out.push(o);
+    }
+    return out;
   }
 
   /** the JIT's mutex table entry of handle `h`: the state address of the mutex it names (kernel32.js Mutex), or 0 */
@@ -35,6 +57,7 @@ export class HandleTable {
     const o = this.map.get(h >>> 0);
     if (!o) return false;
     this.map.delete(h >>> 0);
+    this.inherit?.delete(h >>> 0);
     if (o.stateAddr && this.mem && (h >>> 0) < MUTEX_HANDLE_END) this.mem.u32[(MUTEX_HANDLES + (h >>> 0)) >>> 2] = 0;
     if (o.refs !== undefined && --o.refs > 0) return true;
     if (typeof o.close === 'function') o.close();

@@ -9,7 +9,7 @@ import { MEM_COMMIT, MEM_RESERVE, MEM_DECOMMIT, MEM_RELEASE, PAGE_READWRITE, PAG
 import { findResource } from '../loader/pe.js';
 import { registerKernel32File } from './kernel32-file.js';
 import { ApiRegistry } from './api.js';
-import { MUTEX_STATES, MUTEX_STATE_SIZE, MUTEX_STATE_COUNT } from '../cpu/memory.js';
+import { MUTEX_STATES, MUTEX_STATE_SIZE, MUTEX_STATE_COUNT, MUTEX_HANDLES, MUTEX_HANDLE_END } from '../cpu/memory.js';
 import { TICK_BASE } from '../cpu/jit/runtime.js';
 import { utcZone, timeZoneInfo, tziOffsetAt, localToUtc, hostZone, hostZoneNames } from './timezone.js';
 
@@ -100,33 +100,62 @@ export function registerKernel32(api, vm) {
   for (const [k, v] of Object.entries(SIGNATURES)) api.signatures.set(k, v);
   const mem = vm.mem;
   const K = {};
-  const named = snapKnown(vm, 'kernel32.named', new Map()); // named kernel objects
+  // named kernel objects (a child process's machine: its group's, every process's namespace — core/procs.js)
+  const named = snapKnown(vm, 'kernel32.named', vm.group ? vm.group.named : new Map());
+  vm.kernelNamed = named;
   const mutexStates = snapKnown(vm, 'kernel32.mutexStates', { mem, next: 0, free: [], // (Mutex state slots)
     alloc() { return this.free.length ? this.free.pop() : this.next < MUTEX_STATE_COUNT ? MUTEX_STATES + MUTEX_STATE_SIZE * this.next++ : 0; },
     release(a) { this.free.push(a); } });
 
-  const createNamed = (ctx, nameArg, make) => {
+  // (sa: the SECURITY_ATTRIBUTES argument — its bInheritHandle makes the handle inheritable by child processes)
+  const createNamed = (ctx, nameArg, make, sa = 0) => {
     const name = nameArg;
     if (name) vm.log('sync', `named object "${name}" ${named.has(name) ? 'opened (exists)' : 'created'} [t${ctx.thread.id}]`);
-    if (name && named.has(name)) { ctx.setLastError(E.ALREADY_EXISTS); const o = named.get(name); o.refs++; return ctx.proc.handles.create(o); }
+    if (name && named.has(name)) { ctx.setLastError(E.ALREADY_EXISTS); const o = named.get(name); o.refs++; return inheritable(ctx, ctx.proc.handles.create(shared(o)), sa); }
     const o = make();
     o.refs = 1;
     if (name) { o.name = name; named.set(name, o); }
     ctx.setLastError(0);
-    return ctx.proc.handles.create(o);
+    return inheritable(ctx, ctx.proc.handles.create(o), sa);
   };
+  const inheritable = (ctx, h, sa) => { if (sa && mem.read32(sa + 8)) ctx.proc.handles.setInherit(h, true); return h; };
+  /** a named object opened by its name (Open*(access, bInheritHandle, name)): one handle more on it */
+  const openNamed = (c, name, type) => {
+    const o = name ? named.get(name) : null; if (!o || o.type !== type) return c.fail(E.FILE_NOT_FOUND);
+    o.refs++; const h = c.proc.handles.create(shared(o)); if (c.arg(1)) c.proc.handles.setInherit(h, true); return h;
+  };
+  /**
+   * An object reached from another process (by name, inherited: core/procs.js): a mutex's state leaves the creator's
+   * guest memory — where the JIT's fast paths of that process read it — for a JavaScript array every process sees,
+   * its fast-path entries cleared (its waits and releases go through JavaScript from then on).
+   */
+  const shared = (o) => {
+    if (!vm.group || o.type !== 'mutex' || !o.stateAddr) return o;
+    for (const v of vm.group.vms) for (const [h, x] of v.proc?.handles.map ?? []) if (x === o && h < MUTEX_HANDLE_END) v.mem.u32[(MUTEX_HANDLES + h) >>> 2] = 0;
+    o.close();
+    return o;
+  };
+  const signalAll = () => { if (vm.group) vm.group.signal(); else vm.sched.signal(); }; // (waiters of other processes too)
 
   // ---------------------------------------------------------------- process / errors
   K.GetLastError = [0, (c) => c.thread.lastError];
   K.SetLastError = [1, (c) => { c.thread.lastError = c.arg(0); }];
   K.ExitProcess = [1, (c) => vm.exitProcess(c.arg(0)), { noreturn: true }];
-  K.TerminateProcess = [2, (c) => { const h = c.arg(0) >>> 0; if (h === 0xffffffff || c.proc.handles.get(h) === c.proc) vm.exitProcess(c.arg(1)); return 1; }];
+  /** the process a handle names (the pseudo handle: this one) */
+  const procOf = (c, h) => ((h >>> 0) === 0xffffffff ? c.proc : c.proc.handles.getAs(h, 'process'));
+  K.TerminateProcess = [2, (c) => {
+    const p = procOf(c, c.arg(0)); if (!p) return c.fail(E.INVALID_HANDLE);
+    if (p === c.proc) vm.exitProcess(c.arg(1));
+    if (!p.exited) vm.group?.exited(p.vm, c.arg(1)); // (a child process: ended where it stands)
+    return 1;
+  }];
   K.GetCurrentProcess = [0, () => 0xffffffff];
   K.GetCurrentProcessId = [0, (c) => c.proc.pid];
   K.GetCurrentThread = [0, () => 0xfffffffe];
   K.GetCurrentThreadId = [0, (c) => c.thread.id];
-  K.GetExitCodeProcess = [2, (c) => { c.out32(1, c.proc.exited ? c.proc.exitCode : STILL_ACTIVE); return 1; }];
-  K.OpenProcess = [3, (c) => (c.arg(2) === c.proc.pid ? c.proc.handles.create(c.proc) : c.fail(E.INVALID_PARAMETER))];
+  K.GetExitCodeProcess = [2, (c) => { const p = procOf(c, c.arg(0)); if (!p) return c.fail(E.INVALID_HANDLE); c.out32(1, p.exited ? p.exitCode : STILL_ACTIVE); return 1; }];
+  K.GetProcessId = [1, (c) => { const p = procOf(c, c.arg(0)); return p ? p.pid : c.fail(E.INVALID_HANDLE); }];
+  K.OpenProcess = [3, (c) => { const p = c.arg(2) === c.proc.pid ? c.proc : vm.group?.byPid(c.arg(2))?.proc; return p ? c.proc.handles.create(p) : c.fail(E.INVALID_PARAMETER); }];
   K.GetProcessVersion = [1, () => 0x00050001];
   K.GetPriorityClass = [1, (c) => c.proc.priorityClass];
   K.SetPriorityClass = [2, (c) => { c.proc.priorityClass = c.arg(1); return 1; }];
@@ -229,11 +258,13 @@ export function registerKernel32(api, vm) {
     if (h === 0xffffffff) nh = c.proc.handles.create(c.proc);
     else if (h === 0xfffffffe) nh = c.proc.handles.create(c.thread);
     else { nh = c.proc.handles.dup(h); if (!nh) return c.fail(E.INVALID_HANDLE); }
+    if (c.arg(5)) c.proc.handles.setInherit(nh, true);
     c.out32(3, nh);
     return 1;
   }];
-  K.GetHandleInformation = [2, (c) => { c.out32(1, 0); return 1; }];
-  K.SetHandleInformation = [3, () => 1];
+  // (HANDLE_FLAG_INHERIT: inherited by the child processes created with bInheritHandles)
+  K.GetHandleInformation = [2, (c) => { if (!c.proc.handles.get(c.arg(0))) return c.fail(E.INVALID_HANDLE); c.out32(1, c.proc.handles.inherit?.has(c.arg(0) >>> 0) ? 1 : 0); return 1; }];
+  K.SetHandleInformation = [3, (c) => { if (!c.proc.handles.get(c.arg(0))) return c.fail(E.INVALID_HANDLE); if (c.arg(1) & 1) c.proc.handles.setInherit(c.arg(0), (c.arg(2) & 1) !== 0); return 1; }];
 
   // ---------------------------------------------------------------- threads
   K.CreateThread = [6, (c) => {
@@ -270,7 +301,7 @@ export function registerKernel32(api, vm) {
     const t = c.arg(0) >>> 0 === 0xfffffffe ? c.thread : c.proc.handles.getAs(c.arg(0), 'thread');
     if (!t) return c.fail(E.INVALID_HANDLE);
     const prev = t.suspendCount;
-    if (t.suspendCount > 0 && --t.suspendCount === 0 && t.state === TS.SUSPENDED) vm.sched.markReady(t);
+    if (t.suspendCount > 0 && --t.suspendCount === 0 && t.state === TS.SUSPENDED) t.vm.sched.markReady(t); // (a child process's main thread: its machine's)
     return prev;
   }];
   K.GetThreadPriority = [1, (c) => { const t = c.arg(0) >>> 0 === 0xfffffffe ? c.thread : c.proc.handles.getAs(c.arg(0), 'thread'); return t ? t.priority : 0x7fffffff; }];
@@ -386,27 +417,31 @@ export function registerKernel32(api, vm) {
   K.InterlockedCompareExchangePointer = K.InterlockedCompareExchange;
 
   // ---------------------------------------------------------------- synchronization objects
-  K.CreateEventA = [4, (c) => createNamed(c, c.str(3), () => ({ type: 'event', manual: c.arg(1) !== 0, signaled: c.arg(2) !== 0 }))];
-  K.CreateEventW = [4, (c) => createNamed(c, c.wstr(3), () => ({ type: 'event', manual: c.arg(1) !== 0, signaled: c.arg(2) !== 0 }))];
-  K.OpenEventA = [3, (c) => { const o = named.get(c.str(2)); if (!o || o.type !== 'event') return c.fail(E.FILE_NOT_FOUND); o.refs++; return c.proc.handles.create(o); }];
-  K.SetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; vm.sched.signal(); return 1; }];
+  K.CreateEventA = [4, (c) => createNamed(c, c.str(3), () => ({ type: 'event', manual: c.arg(1) !== 0, signaled: c.arg(2) !== 0 }), c.arg(0))];
+  K.CreateEventW = [4, (c) => createNamed(c, c.wstr(3), () => ({ type: 'event', manual: c.arg(1) !== 0, signaled: c.arg(2) !== 0 }), c.arg(0))];
+  K.OpenEventA = [3, (c) => openNamed(c, c.str(2), 'event')];
+  K.OpenEventW = [3, (c) => openNamed(c, c.wstr(2), 'event')];
+  K.SetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; signalAll(); return 1; }];
   K.ResetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = false; return 1; }];
   K.PulseEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; vm.sched.wakeBlocked(); if (!o.manual) { /* one waiter consumed it on wake */ } o.signaled = false; return 1; }];
-  K.CreateMutexA = [3, (c) => createNamed(c, c.str(2), () => new Mutex(mutexStates, c.arg(1) ? c.thread.id : 0))];
-  K.CreateMutexW = [3, (c) => createNamed(c, c.wstr(2), () => new Mutex(mutexStates, c.arg(1) ? c.thread.id : 0))];
-  K.OpenMutexA = [3, (c) => { const o = named.get(c.str(2)); if (!o || o.type !== 'mutex') return c.fail(E.FILE_NOT_FOUND); o.refs++; return c.proc.handles.create(o); }];
+  K.CreateMutexA = [3, (c) => createNamed(c, c.str(2), () => new Mutex(mutexStates, c.arg(1) ? c.thread.id : 0), c.arg(0))];
+  K.CreateMutexW = [3, (c) => createNamed(c, c.wstr(2), () => new Mutex(mutexStates, c.arg(1) ? c.thread.id : 0), c.arg(0))];
+  K.OpenMutexA = [3, (c) => openNamed(c, c.str(2), 'mutex')];
+  K.OpenMutexW = [3, (c) => openNamed(c, c.wstr(2), 'mutex')];
   K.ReleaseMutex = [1, (c) => {
     const o = c.proc.handles.getAs(c.arg(0), 'mutex'); if (!o) return c.fail(E.INVALID_HANDLE);
     if (o.handle === globalThis.ORTHROS_TRACE_HANDLE && (c.thread !== c.proc.threads[0] || o.owner !== c.thread.id)) vm.log('sync', `release 0x${c.arg(0).toString(16)} by t${c.thread.id} from ${c.proc.symbolize(c.retAddr)} owner=t${o.owner} count=${o.count}`);
     if (o.owner !== c.thread.id) { c.proc.syncTrace(`mutex 0x${o.handle.toString(16)} release by t${c.thread.id} REFUSED (owner t${o.owner})`); return c.fail(288); }
-    if (--o.count === 0) { o.owner = 0; vm.sched.signal(); if (o.waiters) o.waiters = mutexWaited(); }
+    if (--o.count === 0) { o.owner = 0; signalAll(); if (o.waiters) o.waiters = mutexWaited(); }
     return 1;
   }];
   /** a thread parked in a wait that may be for a mutex (MX_WAITERS is recomputed from it: conservative) */
   const mutexWaited = () => vm.sched.threads.some((t) => t.state === TS.BLOCKED && typeof t.blockReason === 'string' && (t.blockReason.startsWith('wait:mutex') || t.blockReason === 'waitmany'));
-  K.CreateSemaphoreA = [4, (c) => createNamed(c, c.str(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }))];
-  K.CreateSemaphoreW = [4, (c) => createNamed(c, c.wstr(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }))];
-  K.ReleaseSemaphore = [3, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'semaphore'); if (!o) return c.fail(E.INVALID_HANDLE); c.out32(2, o.count); if (o.count + c.sarg(1) > o.max) return c.fail(298); o.count += c.sarg(1); vm.sched.signal(); return 1; }];
+  K.CreateSemaphoreA = [4, (c) => createNamed(c, c.str(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }), c.arg(0))];
+  K.CreateSemaphoreW = [4, (c) => createNamed(c, c.wstr(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }), c.arg(0))];
+  K.OpenSemaphoreA = [3, (c) => openNamed(c, c.str(2), 'semaphore')];
+  K.OpenSemaphoreW = [3, (c) => openNamed(c, c.wstr(2), 'semaphore')];
+  K.ReleaseSemaphore = [3, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'semaphore'); if (!o) return c.fail(E.INVALID_HANDLE); c.out32(2, o.count); if (o.count + c.sarg(1) > o.max) return c.fail(298); o.count += c.sarg(1); signalAll(); return 1; }];
   K.CreateWaitableTimerA = [3, (c) => createNamed(c, c.str(2), () => ({ type: 'timer', manual: c.arg(1) !== 0, signaled: false, due: Infinity, period: 0 }))];
   K.SetWaitableTimer = [6, (c) => {
     const o = c.proc.handles.getAs(c.arg(0), 'timer'); if (!o) return c.fail(E.INVALID_HANDLE);
@@ -757,22 +792,74 @@ export function registerKernel32(api, vm) {
   for (const n of ['SetCommState', 'GetCommState', 'SetupComm', 'PurgeComm', 'SetCommTimeouts', 'GetCommTimeouts', 'SetCommMask', 'GetCommMask', 'WaitCommEvent', 'GetCommConfig', 'SetCommConfig', 'ClearCommError', 'EscapeCommFunction', 'TransmitCommChar', 'GetCommModemStatus', 'SetNamedPipeHandleState', 'ReadConsoleInputA', 'PeekConsoleInputA', 'SetConsoleCursorInfo', 'GetConsoleCursorInfo', 'SetConsoleScreenBufferSize', 'SetConsoleWindowInfo', 'WriteConsoleOutputA', 'ReadConsoleOutputA', 'FillConsoleOutputCharacterA', 'FillConsoleOutputAttribute', 'SetConsoleCursorPosition', 'WriteConsoleOutputCharacterA', 'ScrollConsoleScreenBufferA']) K[n] = [api.signatures.get(n), (c) => c.fail(E.INVALID_HANDLE)];
   K.GetNumberOfConsoleInputEvents = [2, (c) => { c.out32(1, 0); return 1; }];
   K.GetLargestConsoleWindowSize = [1, () => (25 << 16) | 80];
-  const refuseProcess = (c, app, cmd, cwd) => {
-    // like Windows, a missing image is ERROR_FILE_NOT_FOUND; an existing one is refused (no child processes)
-    const image = app ?? (cmd ?? '').trim().replace(/^"([^"]*)".*$/, '$1').split(' ')[0];
-    const exists = image && !!vm.vfs.stat(c.proc.path(image));
-    vm.warn(`CreateProcess(app=${app ?? '-'}, cmd=${cmd ?? '-'}, cwd=${cwd ?? c.proc.cwd}, flags=0x${c.arg(5).toString(16)}) ${exists ? 'refused (child processes are not supported)' : 'failed: image not found'} from ${c.proc.symbolize(c.retAddr)}`);
-    vm.log('procctx', `CreateProcess ${cmd ?? app} — previous API calls of t${c.thread.id}:\n  ${vm.recentApiCalls(80, c.thread.id).join('\n  ')}`); // (what led to it)
-    return c.fail(exists ? E.ACCESS_DENIED : E.FILE_NOT_FOUND);
-  };
-  K.CreateProcessA = [10, (c) => refuseProcess(c, c.str(0), c.str(1), c.str(7))];
-  K.CreateProcessW = [10, (c) => refuseProcess(c, c.wstr(0), c.wstr(1), c.wstr(7))];
+  K.CreateProcessA = [10, (c) => createProcess(c, c.str(0), c.str(1), c.str(7), false)];
+  K.CreateProcessW = [10, (c) => createProcess(c, c.wstr(0), c.wstr(1), c.wstr(7), true)];
+  /**
+   * CreateProcess (docs/processes.md): the image found as Windows finds it — the application name, else the command
+   * line's first token (quoted, or the shortest run of its words naming a file, `.exe` added to a name without an
+   * extension) in the creator's folder, the current directory, then the system folders — runs in a machine of its own
+   * (core/procs.js), with the creator's environment (or the block given), current directory, DLL overrides and, with
+   * bInheritHandles, its inheritable handles. CREATE_SUSPENDED (4) leaves the main thread suspended.
+   */
+  function createProcess(c, app, cmd, cwd, wide) {
+    const proc = c.proc, flags = c.arg(5) >>> 0;
+    const image = findImage(proc, app, cmd);
+    const what = `CreateProcess(app=${app ?? '-'}, cmd=${cmd ?? '-'}, cwd=${cwd ?? proc.cwd}, inherit=${c.arg(4) ? 1 : 0}, flags=0x${flags.toString(16)}) from ${proc.symbolize(c.retAddr)}`;
+    vm.log('procctx', `${what} — previous API calls of t${c.thread.id}:\n  ${vm.recentApiCalls(80, c.thread.id).join('\n  ')}`); // (what led to it)
+    if (!image) { vm.warn(`${what} failed: image not found`); return c.fail(E.FILE_NOT_FOUND); }
+    const bytes = vm.vfs.readFile(image);
+    if (!bytes || bytes.length < 0x40 || bytes[0] !== 0x4d || bytes[1] !== 0x5a) { vm.warn(`${what} failed: ${image} is not a Windows program`); return c.fail(193); } // ERROR_BAD_EXE_FORMAT
+    const env = c.arg(6) ? readEnvBlock(c.arg(6), wide || (flags & 0x400) !== 0) : Object.fromEntries(proc.env);
+    const inherit = c.arg(4) !== 0;
+    let child;
+    try {
+      child = vm.spawnProcess({ exePath: image, exeBytes: bytes, cmdline: cmd ?? `"${image}"`, cwd: cwd ? proc.path(cwd) : proc.cwd, env,
+        dllOverrides: Object.fromEntries(proc.dllOverrides), handleBase: inherit ? proc.handles.next : 0 });
+    } catch (e) { vm.warn(`${what} failed: ${e.message}`); return c.fail(193); }
+    const cp = child.proc, main = cp.threads[0];
+    if (inherit) for (const o of proc.handles.inheritInto(cp.handles)) shared(o);
+    if (flags & 4) { main.state = TS.SUSPENDED; main.suspendCount = 1; }
+    const pi = c.arg(9);
+    if (pi) { mem.write32(pi, proc.handles.create(cp)); mem.write32(pi + 4, proc.handles.create(main)); mem.write32(pi + 8, cp.pid); mem.write32(pi + 12, main.id); }
+    vm.warn(`${what}: process ${cp.pid} (${image}, main thread ${main.id})${inherit ? `, ${cp.handles.inherit?.size ?? 0} handle(s) inherited` : ''}`);
+    return 1;
+  }
+  /** the image CreateProcess runs (null: none) */
+  function findImage(proc, app, cmd) {
+    const exists = (p) => { const st = vm.vfs.stat(p); return st && !st.isDir ? p : null; };
+    const dirs = [proc.exeDir, proc.cwd, 'C:\\Windows\\System32', 'C:\\Windows'];
+    const absolute = (n) => /^[a-z]:|^\\/i.test(n);
+    const look = (name, explicit) => {
+      for (const n of /\.[^\\.]*$/.test(name) ? [name] : [name + '.exe', name]) {
+        if (absolute(n) || explicit) { const p = exists(proc.path(n)); if (p) return p; if (absolute(n)) continue; } // (an application name: relative to the current directory)
+        for (const d of dirs) { const p = exists(proc.path(d + '\\' + n)); if (p) return p; }
+      }
+      return null;
+    };
+    if (app) return look(app, true);
+    const s = (cmd ?? '').trim();
+    if (s.startsWith('"')) { const e = s.indexOf('"', 1); return look(e < 0 ? s.slice(1) : s.slice(1, e), false); }
+    const words = s.split(/[ \t]+/);
+    for (let i = 1; i <= words.length; i++) { const p = look(words.slice(0, i).join(' '), false); if (p) return p; }
+    return null;
+  }
+  /** an environment block (k=v\0 ... \0) as an object */
+  function readEnvBlock(p, wide) {
+    const out = {};
+    for (let n = 0; n < 4096; n++) {
+      const s = wide ? mem.readWString(p) : mem.readCString(p);
+      if (!s) break;
+      p += (s.length + 1) * (wide ? 2 : 1);
+      const i = s.indexOf('=', 1); if (i > 0) out[s.slice(0, i)] = s.slice(i + 1);
+    }
+    return out;
+  }
   K.WinExec = [2, (c) => { vm.warn(`WinExec(${c.str(0)}) refused`); return 2; }];
   K.GetLogicalProcessorInformation = [2, (c) => c.fail(E.INSUFFICIENT_BUFFER)];
   K.GetSystemDefaultLangID2 = K.GetVersion;
 
   api.define('kernel32.dll', K);
-  registerKernel32File(api, vm);
+  registerKernel32File(api, vm, { createNamed, openNamed });
 }
 
 function alignPage(v) { return (v + 0xfff) & ~0xfff; }

@@ -60,3 +60,13 @@ CreateMutexA@12
 ReleaseMutex@4
 CreateSemaphoreA@16
 ReleaseSemaphore@12
+CreateProcessA@40
+CreateFileMappingA@24
+OpenFileMappingA@12
+MapViewOfFile@20
+UnmapViewOfFile@4
+OpenEventA@12
+OpenMutexA@12
+GetExitCodeProcess@8
+TerminateProcess@8
+WaitForMultipleObjects@16

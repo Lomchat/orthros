@@ -153,6 +153,7 @@ export class WindowManager {
   /** Present the front-most visible top-level window (rate limited unless forced). */
   present(force = false) {
     if (!this.dirty && !force) return;
+    if (this.vm.group && this.vm.group.foreground !== this.vm) return; // (a background process: not on the display, core/procs.js)
     const now = this.vm.clock.now();
     if (!force && this.presentedOnce && now - this.lastPresent < this.presentInterval) return;
     const d = this.host?.display;
@@ -228,6 +229,7 @@ export class WindowManager {
    * frame count to watch); the events after a held release wait with it (order kept).
    */
   pump() {
+    if (this.vm.group && this.vm.group.foreground !== this.vm) return; // (input goes to the foreground process: core/procs.js)
     const evs = this.host?.pollInput?.();
     if (evs) (this.pendingInput ??= []).push(...evs);
     const q = this.pendingInput;
@@ -362,7 +364,7 @@ export class WindowManager {
     this.cursorToHost();
   }
   cursorToHost() {
-    const d = this.host?.display, h = this.cursorHandle, vis = this.cursorVisible();
+    const d = this.vm.group && this.vm.group.foreground !== this.vm ? null : this.host?.display, h = this.cursorHandle, vis = this.cursorVisible();
     const o = h ? this.proc.handles.getAs(h, 'gdi') : null;
     if (o?.kind === 'cursor') d?.setCursor?.(o.image ? h : 'sys' + (o.id || IDC_ARROW), o.image ?? null, o.id || IDC_ARROW);
     d?.showCursor?.(vis);
@@ -625,6 +627,17 @@ export class WindowManager {
     return win.hwnd;
   }
 
+  /**
+   * A top-level window shown by a background process (core/procs.js) takes the display when the foreground process
+   * shows none (a launcher's hidden window, then its game's): the window manager the page shows is that one.
+   */
+  claimDisplay() {
+    const g = this.vm.group;
+    if (!g || g.foreground === this.vm) return;
+    const f = g.foreground.wm;
+    if (!f || f.proc !== g.foreground.proc || !f.zorder.some((x) => x.visible && !x.minimized)) g.setForeground(this.vm);
+  }
+
   showWindow(w, cmd) {
     const was = w.visible;
     let show;
@@ -638,6 +651,7 @@ export class WindowManager {
     if (show !== was) {
       w.visible = show;
       if (show) w.style |= WS_VISIBLE; else w.style &= ~WS_VISIBLE;
+      if (show && !(w.style & WS_CHILD)) this.claimDisplay();
       this.send(w, WM.SHOWWINDOW, show ? 1 : 0, 0);
     }
     if (show && !(w.style & WS_CHILD) && cmd !== 4 && cmd !== 7 && cmd !== 8 && !w.minimized) this.activate(w, true);
@@ -1177,9 +1191,15 @@ export function registerUser32(api, vm) {
   U.SendMessageTimeoutW = U.SendMessageTimeoutA;
   U.SendNotifyMessageA = [4, sendMessage]; U.SendMessageCallbackA = [6, (c) => { sendMessage(c); return 1; }];
   U.SendDlgItemMessageA = [5, (c) => { const p = win(c.arg(0)); if (!p) return 0; const ch = p.children.find((x) => x.id === c.arg(1)); return ch ? wm().send(ch, c.arg(2), c.arg(3), c.arg(4)) : 0; }];
-  const postMessage = (c) => { if (c.arg(0) === 0xffff) { for (const x of wm().zorder) wm().post(x, c.arg(1), c.arg(2), c.arg(3)); return 1; } const w = c.arg(0) ? win(c.arg(0)) : null; if (c.arg(0) && !w) return c.fail(E.INVALID_WINDOW_HANDLE); wm().post(w, c.arg(1), c.arg(2), c.arg(3), w ? null : c.thread); return 1; };
+  const postMessage = (c) => { if (c.arg(0) === 0xffff) { for (const x of wm().zorder) wm().post(x, c.arg(1), c.arg(2), c.arg(3)); return 1; } const w = c.arg(0) ? win(c.arg(0)) : null;
+    if (c.arg(0) && !w) { const o = otherWindow(c.arg(0)); if (o) { o.wm.post(o.w, c.arg(1), c.arg(2), c.arg(3)); return 1; } return c.fail(E.INVALID_WINDOW_HANDLE); } wm().post(w, c.arg(1), c.arg(2), c.arg(3), w ? null : c.thread); return 1; };
   U.PostMessageA = [4, postMessage]; U.PostMessageW = [4, postMessage];
-  U.PostThreadMessageA = [4, (c) => { const t = c.proc.thread(c.arg(0)); if (!t) return c.fail(E.INVALID_PARAMETER); wm().post(null, c.arg(1), c.arg(2), c.arg(3), t); return 1; }];
+  U.PostThreadMessageA = [4, (c) => {
+    const t = c.proc.thread(c.arg(0)) ?? vm.group?.thread(c.arg(0)); if (!t || t.state === TS.DONE) return c.fail(E.INVALID_PARAMETER);
+    (t.vm === vm ? wm() : wmOf(t.vm)).post(null, c.arg(1), c.arg(2), c.arg(3), t); return 1; // (a thread of another process: its own queue, core/procs.js)
+  }];
+  /** a window of another process (core/procs.js: hwnds are handles of distinct ranges) */
+  const otherWindow = (h) => { for (const v of vm.group?.vms ?? []) { if (v === vm || !v.proc || v.proc.exited || !v.wm) continue; const w = v.wm.windows.get(h >>> 0); if (w && !w.destroyed) return { wm: v.wm, w }; } return null; };
   U.PostThreadMessageW = U.PostThreadMessageA;
   U.PostQuitMessage = [1, (c) => { wm().queueOf(c.thread).quit = c.arg(0); }];
   U.CallWindowProcA = [5, (c) => { const proc = c.arg(0); const w = win(c.arg(1)); if (!proc) return 0; const name = api.nameOf(proc); if (name) { if (!w) return 0; return wm().defWindowProc(w, c.arg(2), c.arg(3), c.arg(4)); } return vm.tailCallGuest(c, proc, [c.arg(1), c.arg(2), c.arg(3), c.arg(4)], { argBytes: 20 }); }];
