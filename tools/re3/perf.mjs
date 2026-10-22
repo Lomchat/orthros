@@ -25,8 +25,9 @@ fs.mkdirSync(root, { recursive: true }); process.env.TMPDIR = root;
 const listed = (await (await fetch(`${base}/api/manifests`)).json()).find((m) => m.name === name);
 if (!listed?.available || listed.runtime !== 're3') throw new Error(`${name}: not an available re3 version`);
 
-// (--js-flags "<V8 flags>": e.g. --perf-basic-prof, the engine's WebAssembly named for Linux perf — the CPU profile cannot
-// see the frames run on JSPI's own stacks: they come out as "(program)")
+// (--js-flags "<V8 flags>": e.g. --perf-basic-prof, the engine's WebAssembly named for Linux perf — `perf record -p` on
+// the page's renderer process sees every thread of it, its compositor's included, where the CPU profile's "(program)"
+// is all the browser's native code; --mark prints the measure's start for such a recorder)
 const browser = await chromium.launch({ headless: true, args: [...chromeArgs(gl), ...(arg('--js-flags') ? [`--js-flags=${arg('--js-flags')}`] : [])] });
 const page = await browser.newPage({ viewport: { width, height: height + 44 } });
 await addProbe(page, { discard: gl === 'discard', stacks: arg('--stacks', '').split(',').filter(Boolean) });
