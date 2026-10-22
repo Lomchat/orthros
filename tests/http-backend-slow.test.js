@@ -171,11 +171,56 @@ test('a link between thin and fast: a learned block wanted whole goes as the blo
   assert.deepEqual(got[0], [2 * MiB, 3 * MiB], `the whole block in one request: ${JSON.stringify(got)}`);
   assert.deepEqual(got.slice(1), [[4 * MiB + CHUNK, 4 * MiB + 2 * CHUNK], [4 * MiB + 2 * CHUNK, 4 * MiB + 3 * CHUNK]], 'the learned pieces of the other one');
   assert.ok(b.peekBlockHere('f.big', SIZE, 3, 2), 'the block kept whole');
-  // 300 KB/s: a block would take ~3.5 s — by pieces, backgroundBytes() at a time
+  // 300 KB/s: a block would take ~3.5 s — while the game runs, by pieces, backgroundBytes() at a time
   calls.length = 0;
   const s = new HttpBackend('/game/u2/', tree(), { store: new MemBlockStore(), encoded: true, net: new NetLink({ bw: 400e3, fixed: true }) });
   s.gameBusy = () => false;
   assert.equal(s.wholeBlockFits(), false);
-  await s.prefetch([['f.big', 2, 0xffff, 0]], {}, () => false, { learnedOnly: true });
+  await s.prefetch([['f.big', 2, 0xffff, 0]], {}, () => false);
   assert.ok(calls.length > 1 && calls.every((c) => c.end - c.start <= s.net.backgroundBytes()), `by pieces: ${calls.map((c) => (c.end - c.start) >> 10)} KiB`);
+  // before the game starts (learnedOnly: a startup set, Prepare), nothing of the game's on the link: the block whole on
+  // a thin link too (its unit: ~16 % fewer bytes than pieces brotli makes on the fly, 1 request instead of 16); a light
+  // copy's pieces as they are made (by pieces)
+  for (const bw of [400e3, 85e3]) {
+    calls.length = 0;
+    const t = new HttpBackend('/game/u3/', tree(), { store: new MemBlockStore(), encoded: true, net: new NetLink({ bw, fixed: true }) });
+    t.gameBusy = () => false;
+    await t.prefetch([['f.big', 2, 0xffff, 0], ['f.big', 4, 0b110, 10]], {}, () => false, { learnedOnly: true });
+    const got2 = calls.map((c) => [c.start, c.end]);
+    assert.deepEqual(got2[0], [2 * MiB, 3 * MiB], `${bw}: the whole block in one request: ${JSON.stringify(got2)}`);
+    assert.ok(got2.slice(1).every(([a, e]) => a >= 4 * MiB && e <= 4 * MiB + 3 * CHUNK), `${bw}: the other one's learned pieces: ${JSON.stringify(got2)}`);
+    assert.ok(t.peekBlockHere('f.big', SIZE, 3, 2), 'the block kept whole');
+  }
 }));
+
+test('a fast link before the game starts (learnedOnly): several requests at once, no block again whose learned pieces came; while the game runs, one at a time', async () => {
+  const real = globalThis.fetch;
+  let now = 0, most = 0, asked = [];
+  globalThis.fetch = async (url) => {
+    const [, a, e] = /[?&]r=(\d+)-(\d+)/.exec(url); asked.push([+a, +e]);
+    now++; most = Math.max(most, now);
+    await new Promise((r) => setTimeout(r, 5)); now--;
+    return { status: 206, headers: { get: () => null }, arrayBuffer: async () => bytes(+a, +e).buffer };
+  };
+  try {
+    const files = {}; for (let i = 0; i < 12; i++) files[`s${i}.txt`] = { size: 5000 + i, mtime: 3 };
+    files['f.big'] = { size: SIZE, mtime: 3 };
+    const list = Object.keys(files).filter((p) => p !== 'f.big').map((p, i) => [p, 0, 1, i]);
+    const run = async (opts) => {
+      const store = new MemBlockStore(), b = new HttpBackend('/game/q/', { dirs: {}, files }, { store, encoded: true, net: new NetLink({ bw: 20e6, fixed: true }) });
+      b.gameBusy = () => false; most = 0; asked = [];
+      // (block 1 of f.big: its learned pieces 0 and 3 here already — fetched by pieces before the link was measured)
+      store.put(b.pieceKey('f.big', SIZE, 3, 16), bytes(MiB, MiB + CHUNK)); store.put(b.pieceKey('f.big', SIZE, 3, 19), bytes(MiB + 3 * CHUNK, MiB + 4 * CHUNK));
+      const p = {}; await b.prefetch([...list, ['f.big', 1, 0b1001, 20]], p, () => false, opts);
+      assert.ok(p.done);
+      for (const [path, f] of Object.entries(files)) if (path !== 'f.big') assert.ok(store.map.has(`${path}#${f.size}#3#0`), `${path} stored`);
+      return { most, asked: [...asked] };
+    };
+    const before = await run({ learnedOnly: true });
+    assert.ok(before.most > 1 && before.most <= 6, `requests at once: ${before.most}`);
+    assert.ok(!before.asked.some(([a]) => a === MiB), `the block of pieces here not fetched again: ${JSON.stringify(before.asked)}`);
+    const playing = await run({});
+    assert.equal(playing.most, 1, 'one at a time while the game runs');
+    assert.ok(playing.asked.some(([a]) => a === MiB), 'the whole block, the game running (the rest of it comes too)');
+  } finally { globalThis.fetch = real; }
+});

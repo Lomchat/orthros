@@ -13,6 +13,7 @@ import http from 'node:http';
 import http2 from 'node:http2';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { SimLink } from '../src/host/sim-link.js';
 
@@ -69,9 +70,15 @@ export function startProxy(opts) {
         const parts = [];
         ur.on('data', (c) => parts.push(c));
         ur.on('end', () => {
-          const data = Buffer.concat(parts);
+          let data = Buffer.concat(parts);
           const out = {};
           for (const [k, v] of Object.entries(ur.headers)) if (!HOP.has(k.toLowerCase())) out[k] = v;
+          // (as Cloudflare: a text answer the origin sent as it is goes gzip-compressed on the fly — measured on the live
+          // site: /api/regions/<manifest> 1065 KB → 136 KB gzip, `cf-cache-status: DYNAMIC`)
+          if (!opts.noEdgeGzip && !ur.headers['content-encoding'] && data.length >= 1024 && /gzip/.test(String(req.headers['accept-encoding'] ?? ''))
+            && /^(text\/|application\/(json|javascript|xml|wasm)|image\/svg)/.test(String(ur.headers['content-type'] ?? '')) && ur.statusCode === 200) {
+            data = zlib.gzipSync(data, { level: 6 }); out['content-encoding'] = 'gzip'; delete out['content-length']; out['content-length'] = String(data.length);
+          }
           let firstByte = null;
           const head = () => { firstByte = performance.now() - t0; try { res.writeHead(ur.statusCode, out); } catch { /* gone */ } };
           const done = () => {

@@ -263,6 +263,34 @@ test('cache: the launch sets first, side by side, before the live misses; then m
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('cache: a restart with the cache full keeps the launch sets made before — pinned before anything is made', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
+  const file = (n) => { const f = path.join(dir, n); fs.writeFileSync(f, text(CHUNK, n)); return { file: f, st: fs.statSync(f), light: null, unit: { kind: 'p', index: 0 } }; };
+  const [a0, a1, b1, m1, m2] = ['a0', 'a1', 'b1', 'm1', 'm2'].map(file);
+  const cdir = path.join(dir, 'cache');
+  try {
+    // an earlier process: the launch units a1, b1 made long ago, two live misses lately
+    const first = createBrCache({ dir: cdir, ...QUIET });
+    for (const u of [a1, b1, m1, m2]) { first.want(u.file, u.st, null, u.unit); await first.drain(); }
+    const one = first.stats().bytes / 4, now = Date.now() / 1000;
+    for (const [u, age] of [[a1, 3000], [b1, 2900], [m1, 100], [m2, 50]]) { const p = first.lookup(u.file, u.st, null, u.unit).path; fs.utimesSync(p, now - age, now - age); }
+    first.close();
+    // restarted, full: A's launch set now starts with a unit not made yet — making it evicts one unit
+    const cache = createBrCache({ dir: cdir, maxBytes: Math.floor(one * 4.5), lowBytes: Math.floor(one * 4.2), pinShare: 0.9, ...QUIET,
+      sources: () => [{ name: 'A', units: () => [a0, a1] }, { name: 'B', units: () => [b1] }] });
+    await cache.ready; await new Promise((r) => setTimeout(r, 20)); await cache.drain();
+    assert.ok(cache.lookup(a0.file, a0.st, null, a0.unit), 'the missing launch unit made');
+    assert.ok(cache.stats().evicted >= 1);
+    // (before, the walk's first unit made evicted a1 — the oldest, not pinned again yet — and the walk made it again:
+    // a launch unit missing meanwhile, and brotli 11 run twice for it)
+    assert.equal(cache.stats().generated, 1, 'nothing made twice');
+    assert.ok(cache.lookup(b1.file, b1.st, null, b1.unit), 'B\'s launch unit kept');
+    assert.ok(cache.lookup(a1.file, a1.st, null, a1.unit), 'A\'s kept');
+    assert.equal(cache.lookup(m1.file, m1.st, null, m1.unit), null, 'a live miss out instead');
+    cache.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('pinShares: a known launch set weighs its size, an unknown one an equal part, the rest shared', () => {
   const near = (a, b) => a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) < 1e-6);
   assert.deepEqual(pinShares([], 100), []);

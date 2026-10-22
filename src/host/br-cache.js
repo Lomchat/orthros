@@ -173,6 +173,8 @@ export function createBrCache(opts) {
   /** the launch sets being walked: { sources: [{ name, it, used, share, done }], pass } */
   let seeding = null;
   let job = null, pumping = null, child = null, childIdle = null, nextId = 1;
+  /** the launch sets' pinning under way (pinNow): nothing made before it is over */
+  let seedPins = null;
   const replies = new Map();
 
   const startChild = () => {
@@ -286,6 +288,7 @@ export function createBrCache(opts) {
         await ready;
         for (;;) {
           if (!(await free())) break;
+          await seedPins; // (the launch sets pinned before anything is made: see pinNow)
           const j = await nextJob();
           if (!j) { if (seeding || wanted.size) continue; break; } // (the launch sets read again meanwhile: the new walk)
           await generate(j);
@@ -295,13 +298,34 @@ export function createBrCache(opts) {
     return pumping;
   };
 
+  /**
+   * The launch sets' units already made pinned at once, each source up to its share (the walk's first pass in order,
+   * without making anything): until 2026-10-22 the pins were dropped at each reseed (start, hourly) and given back only
+   * as the walk reached them — a walk that made one missing unit with the cache full evicted the oldest unpinned units
+   * first, i.e. the launch sets made earliest of the sources not walked yet (live, 2026-10-22: Half-Life's and
+   * Counter-Strike's launch sets gone while 1.5 GB of the cache held one session's misses).
+   */
+  const pinNow = async (list, shares, sd) => {
+    let steps = 0;
+    for (let i = 0; i < list.length; i++) {
+      let used = 0;
+      for (const { file, st, light, unit } of list[i].units()) {
+        if (++steps % 256 === 0) await new Promise((r) => setImmediate(r)); // (in slices: requests go on meanwhile)
+        if (closed || seeding !== sd || used >= shares[i]) break;
+        const u = entryOf(file, st, light).units?.get(unitName(unit));
+        if (u) { pin(u); used += u.bytes; }
+      }
+    }
+  };
   const reseed = () => {
     if (!opts.sources || closed) return;
     let list = []; try { list = opts.sources() ?? []; } catch (e) { log(`br-cache: sources: ${e}`); }
     const shares = pinShares(list.map((s) => s.want), pinCap);
-    seeding = list.length ? { sources: list.map((s, i) => ({ name: s.name, it: s.units()[Symbol.iterator](), used: 0, share: shares[i], done: false })), pass: 0 } : null;
+    const sd = seeding = list.length ? { sources: list.map((s, i) => ({ name: s.name, it: s.units()[Symbol.iterator](), used: 0, share: shares[i], done: false })), pass: 0 } : null;
     for (const e of entries.values()) for (const u of e.units.values()) u.pinned = false;
     pinnedBytes = 0;
+    // (the pins first, then the walk that makes what is missing: no eviction meanwhile finds them unpinned)
+    if (sd) seedPins = pinNow(list, shares, sd).catch((e) => log(`br-cache: pins: ${e}`));
     pump();
   };
 

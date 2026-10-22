@@ -72,6 +72,14 @@ async function one(m, link) {
     '--br-cache', path.join(pristine, 'brcache'), '--br-cache-frozen', '--covers', path.join(pristine, 'covers'), '--games-dir', gamesDir, '--engines-dir', enginesDir], { stdio: ['ignore', 'pipe', 'pipe'] });
   const srvLog = fs.createWriteStream(path.join(dir, 'server.log')); srv.stdout.pipe(srvLog); srv.stderr.pipe(srvLog);
   await new Promise((resolve) => { const on = (d) => { if (String(d).includes('orthros: http')) { srv.stdout.off('data', on); resolve(); } }; srv.stdout.on('data', on); setTimeout(resolve, 30000); });
+  // (the page's modules made brotli as on a server up for a while: every src text file asked once, then until all come so)
+  const srcFiles = []; const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else if (/\.(m?js|html|css|json|svg|txt)$/.test(e.name) && fs.statSync(f).size >= 512) srcFiles.push(path.relative(root, f)); } };
+  walk(path.join(root, 'src'));
+  for (let pass = 0, left = srcFiles; pass < 8 && left.length; pass++) {
+    const next = [];
+    for (let i = 0; i < left.length; i += 16) await Promise.all(left.slice(i, i + 16).map(async (f) => { const r = await fetch(`http://127.0.0.1:${sport}/${f}`, { headers: { 'accept-encoding': 'br' } }).catch(() => null); await r?.arrayBuffer().catch(() => {}); if (r && r.headers.get('content-encoding') !== 'br' && r.status === 200) next.push(f); }));
+    left = next; if (left.length) await new Promise((r) => setTimeout(r, 1500));
+  }
   const proxy = await startProxy({ upstream: `127.0.0.1:${sport}`, port: 0, rate: link.rate, rtt: link.rtt, log: path.join(dir, 'proxy.jsonl'), certDir: path.join(scratch, 'cert') });
   const lang = opt('lang') && m.languages.includes(opt('lang')) ? opt('lang') : m.languages.includes('en') ? 'en' : m.languages[0];
   const seconds = secs[link.name] ?? 900;

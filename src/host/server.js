@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK, unitOf, HttpBackend } from '../vfs/http-backend.js';
-import { launchSummary, PRE_PLAYABLE } from '../vfs/launch-set.js';
+import { launchSummary, launchSet, entryPieces, PRE_PLAYABLE } from '../vfs/launch-set.js';
 import { createBrCache } from './br-cache.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
@@ -278,6 +278,13 @@ export function createServer(opts = {}) {
     srcBrPump();
     return null;
   };
+  // (opts.prewarmSrc: every text file of src/ made at start, in the background two at a time — after a deployment, a
+  // restart, the first visitors got the page's modules as they are: the Win32 page's 5.0 MB instead of ~0.85 MB in
+  // brotli, measured; the ports' 0.8 MB)
+  if (opts.prewarmSrc) setImmediate(() => {
+    const walk = (dir) => { let names = []; try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; } for (const d of names) { const f = path.join(dir, d.name); if (d.isDirectory()) walk(f); else if (SRC_TEXT.test(d.name)) { try { srcBrotli(f, fs.statSync(f)); } catch { /* gone */ } } } };
+    walk(path.join(ROOT, 'src'));
+  });
   const sendSource = (req, res, file, mime) => {
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
     if (!st.isFile() || req.headers.range || !SRC_TEXT.test(file)) return sendFile(req, res, file, mime);
@@ -535,6 +542,36 @@ export function createServer(opts = {}) {
     // (not the blocks learned by pieces whole as well, the shape a fast link asks for them — measured, Half-Life on a
     // fast link: 59 % of the bytes it asked: 1473 of Morrowind's 1830 learned blocks are known by pieces, which would
     // make its order about three times the brotli work; a fast link's misses ask for them, made after the launch sets)
+  };
+  /**
+   * How much of each version's launch set the precompressed units cover, in the shapes the links ask for it
+   * (`/api/netstats?launch=1`, the generation backlog an operator reads): per manifest { marked, entries, fast: { units,
+   * made, bytes, madeBytes } — its entries' blocks whole, as a fast link asks them —, light: { … } — the launch set as a
+   * link that is not fast reads it (light copies, no media), by pieces —, lightBlocks: { … } — the same, the blocks whose
+   * pieces are all wanted asked whole }. A version no session marked: its first pause (launch-set.js startupHead).
+   */
+  const launchCoverage = () => {
+    const out = {};
+    for (const [name, man] of manifests) {
+      if (!learnFile(name) || !fs.existsSync(learnFile(name)) || !brCache) continue;
+      try {
+        const tree = gameTree(name, man), files = new HttpBackend(`/game/${name}/`, tree), at = unitFile(man), list = prefetchList(name);
+        const count = (set, shape) => {
+          const c = { units: 0, made: 0, bytes: 0, madeBytes: 0 };
+          const add = (rel, unit, raw) => { const f = at(rel); if (!f) return; c.units++; c.bytes += raw; const w = brCache.size(f.file, f.st, f.light, unit); if (w !== null) { c.made++; c.madeBytes += raw; } };
+          for (const e of set) {
+            const p = entryPieces(files, e); if (!p) continue;
+            const blockRaw = Math.min(LEARN_BLOCK, p.size - p.block * LEARN_BLOCK);
+            if (shape === 'fast' || (shape === 'blocks' && p.whole) || p.size <= LEARN_CHUNK) add(p.path, { kind: 'b', index: p.block }, blockRaw);
+            else for (const i of p.pieces) add(p.path, { kind: 'p', index: i }, Math.min(LEARN_CHUNK, p.size - i * LEARN_CHUNK));
+          }
+          return c;
+        };
+        const fastSet = launchSet(files, list, true), lightSet = launchSet(files, list, false);
+        out[name] = { marked: playableOf(name).marks, entries: fastSet.length, fast: count(fastSet, 'fast'), light: count(lightSet, 'pieces'), lightBlocks: count(lightSet, 'blocks') };
+      } catch (e) { out[name] = { error: String(e?.message ?? e) }; }
+    }
+    return out;
   };
   const brCache = opts.brCacheDir ? createBrCache({
     dir: opts.brCacheDir, maxBytes: opts.brCacheBytes, log: opts.brCacheLog ?? ((m) => console.log(m)), ...opts.brCacheOptions,
@@ -1197,7 +1234,7 @@ export function createServer(opts = {}) {
         }
         return send(res, 200, JSON.stringify(prefetchList(m[1], markLang(man, url.searchParams.get('lang')))), { 'Content-Type': 'application/json' });
       }
-      if (p === '/api/netstats') return send(res, 200, JSON.stringify({ ...netStats, ...(brCache ? { brCache: brCache.stats() } : {}) }), { 'Content-Type': 'application/json' });
+      if (p === '/api/netstats') return send(res, 200, JSON.stringify({ ...netStats, ...(brCache ? { brCache: brCache.stats() } : {}), ...(url.searchParams.has('launch') ? { launch: launchCoverage() } : {}) }), { 'Content-Type': 'application/json' });
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
       if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
       // browser ports: the version's page (its runtime's own, src/ports/<runtime>/), and the engine releases they name,
@@ -1300,7 +1337,7 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const coverArg = arg('--covers'), coverDir = coverArg === 'off' ? null : coverArg ?? (learnDir ? path.join(learnDir, '..', 'covers') : null);
   // (--br-cache-frozen: the units served as they are, none made — a measurement's copy of another server's)
   const brCacheOptions = args.includes('--br-cache-frozen') ? { generate: false } : undefined;
-  const server = createServer({ coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
+  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
   // (a restart — every deployment — saves the shared worlds' last changes first: they are written a few seconds after)
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.mmo.flush(); } catch (e) { console.error('mmo flush:', e); } finally { process.exit(0); } });
