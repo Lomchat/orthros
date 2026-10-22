@@ -136,10 +136,13 @@ export async function startProfile(page) {
 /**
  * The profile's summary: self time by function (the WebAssembly's share apart), and the longest stretches without an
  * idle sample — the hitches: their length and the functions they spent it in (a function counted once a sample
- * wherever it is on the stack). `frames`: the measured frames (the WebAssembly's milliseconds a frame).
+ * wherever it is on the stack). `frames`: the measured frames (the WebAssembly's milliseconds a frame); `save`: a file
+ * the raw profile is written to (a .cpuprofile, for a closer look).
  */
-export async function stopProfile(cdp, frames) {
-  const { profile: pr } = await cdp.send('Profiler.stop'), byId = new Map(pr.nodes.map((n) => [n.id, n])), self = new Map();
+export async function stopProfile(cdp, frames, save = null) {
+  const { profile: pr } = await cdp.send('Profiler.stop');
+  if (save) (await import('node:fs')).writeFileSync(save, JSON.stringify(pr));
+  const byId = new Map(pr.nodes.map((n) => [n.id, n])), self = new Map();
   let total = 0;
   pr.samples.forEach((id, i) => { const n = byId.get(id), us = pr.timeDeltas[i] ?? 0, k = `${n.callFrame.functionName || '(anon)'} ${n.callFrame.url.split('/').pop()}`.trim(); self.set(k, (self.get(k) ?? 0) + us); total += us; });
   const wasm = [...self].filter(([k]) => k.endsWith('.wasm')).reduce((n, [, us]) => n + us, 0);
