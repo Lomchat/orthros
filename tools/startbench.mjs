@@ -21,6 +21,7 @@ import { PROF_OPS_BASE, NOCHAIN_PROF, SITE_PROF } from '../src/cpu/jit/translate
 import { FAST_PROF, FAST_NAMES } from '../src/cpu/jit/runtime.js';
 import { jitMix, jitShape } from './jit-mix.mjs';
 import { NodeScenario } from './node-scenario.mjs';
+import { installNodeGfx, programsLine } from './node-gfx.mjs';
 import { LearnedHeat, RangeHeat } from '../src/cpu/jit/heat.js';
 import { acct, C as ACCT, catsObject } from '../src/core/frame-acct.js';
 
@@ -55,6 +56,11 @@ if (args.includes('--virtual') && opt('jitter')) {
   clock.tick = (ms) => { tick(ms); if ((rnd() & 63) === 0) tick(1 + (rnd() % 40)); };
 }
 const host = new HeadlessHost({ clock, width: manifest.display.width, height: manifest.display.height });
+// --gfx recorder|backend: the Direct3D work goes to the render worker's recorder (commands dropped: the emulator thread's
+// share of the default browser path) or to the in-thread WebGL backend over a no-op context (tools/node-gfx.mjs, as
+// framebench); --programs <programs2-<manifest>.json>: learned GL programs compiled ahead (backend). Default: neither
+// (the device's own bookkeeping only).
+const gfx = opt('gfx') ? installNodeGfx(host, opt('gfx'), { programs: opt('programs'), log: (l) => console.log(l) }) : null;
 // --bg: the background translator in a worker thread (shared guest memory), its regions installed between slices;
 // --cold: with the JIT's cold tier (Jit.runCold) — what the browser worker does
 const bgWanted = args.includes('--bg') || args.includes('--cold');
@@ -155,6 +161,7 @@ const writeHeat = () => {
 const t0 = performance.now(), c0 = process.cpuUsage();
 const report = (why) => {
   writeHeat();
+  if (gfx?.kind === 'backend') { const l = programsLine(gfx); if (l) console.log(l); }
   const wall = (performance.now() - t0) / 1000, cpu = process.cpuUsage(c0).user / 1e6, minsns = vm.guestInsns / 1e6;
   if (process.env.ORTHROS_JIT_STATS) {
     const j = vm.jit?.stats ?? {}; console.log(Object.entries(j).filter(([, v]) => typeof v === 'number').map(([k, v]) => `${k}=${Math.round(v)}`).join(' '));
@@ -225,6 +232,10 @@ let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
 // --input <file>: a harness scenario played on the headless host (tools/node-scenario.mjs); the run ends after its last
 // event (--phases <file>: the phase results as JSON)
 const scenario = opt('input') ? new NodeScenario(fs.readFileSync(opt('input'), 'utf8'), vm, (l) => console.log(l), args.includes('--virtual') ? () => clock.now() : undefined) : null;
+// --slow-apis <ms>: with a scenario, the APIs' time in the frames longer than that, per phase ([slowapis] lines)
+if (scenario && opt('slow-apis')) scenario.enableSlowApis(Number(opt('slow-apis')));
+// --gc <ms>: with a scenario, this thread's garbage collections per phase and in the frames longer than that ([gc] lines)
+if (scenario && opt('gc')) scenario.enableGc(Number(opt('gc')), await import('node:v8'));
 // --jit-profile with a scenario: each phase's profile counters (the difference since the previous mark)
 if (scenario && args.includes('--jit-profile') && vm.jit) {
   let last = null;

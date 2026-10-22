@@ -30,6 +30,28 @@ the results go to the server, and the summary panel also has a **Copy the result
 | Vice City | <https://orthros.chalco.website/?bench=vicecity-drive> | the intro skipped, the main menu, a new game started, a drive of ~25 s | ~2 min |
 | Rise of the Witch-king 2.02 | <https://orthros.chalco.website/?bench=rotwk-skirmish> (2.01: `&manifest=rotwk-201`) | the main menu, a skirmish started, its first minute with a few orders | ~4 min |
 | BFME | <https://orthros.chalco.website/?bench=bfme1-skirmish> (1.03: `&manifest=bfme1-103`) | the main menu, a skirmish started, its first minute | ~6 min |
+| BFME 1.08, menu | <https://orthros.chalco.website/?bench=bfme1-108-menu&gameLang=fr> | the intro skipped, one minute in the main menu, 30 s in the Solo play menu | ~3 min |
+| BFME 1.08, skirmish | <https://orthros.chalco.website/?bench=bfme1-108-skirmish&gameLang=fr> | the main menu, a skirmish started, **ten minutes of play** (orders, camera scrolls): the validation target's criterion | ~15 min |
+
+**The BFME 1.08 pair** measures the project's target (CLAUDE.md: a stable 30 fps, p99 frame ≤ 33 ms over 10 min of
+play) on the machine that opens them, e.g. the owner's Iris Xe laptop: open the menu link first (short: checks the
+setup, the first launch's downloads land here), then the skirmish link in the same browser. `&gameLang=fr` plays the
+French game (drop it for English; the clicks are the same). The `play` phase of the skirmish record is the criterion:
+its `fps`, `dt.p99`, `per33` / `per40`, its slow frames' categories, and the GPU time per frame (`gpu`). BFME 1.08
+paces its frames at 30 per second (a frame every 33.3 ms), so a frame "> 33.4 ms" is often a present that slipped by a
+fraction of a millisecond: read `per40` (a missed frame slot) next to `per33`, and `dt.p99` against 34-35 ms. The same
+scenario runs here headless (`tools/scenarios/bfme1-108-phases.txt`, kept equal by `tests/bench-kit.test.js`):
+
+```
+tools/with-browser-slot.sh node tools/headless.mjs bfme1-108 --games-dir <catalog with bfme1> --profile-dir <copy of a warm profile> \
+  --learn <copy of the live learned data> --gl-discard --memprefetch --seconds 1100 --stop-on "mark end:" \
+  --phases out.json --input-file tools/scenarios/bfme1-108-phases.txt
+node tools/startbench.mjs bfme1-108 --games-dir <catalog> --save <copy of a warm profile> --input tools/scenarios/bfme1-108-phases.txt \
+  --cold --regions <learn>/regions-bfme1-108.json --heat <learn>/heat-bfme1-108.json --gfx recorder --until-api NONE --limit 1300
+```
+
+(Node: `--gfx recorder` puts the render worker's recording on the emulator thread as in the page, and the phase
+reports are the page's `[frames]` reports: slow frames by category.)
 
 A measurement is most useful repeated: the first one in a fresh browser (first launch: downloads, the game's setup,
 nothing learned), then the same link again (files in the browser, code and shaders cached). Each run is one record.
@@ -81,7 +103,8 @@ the GL null mode wraps the methods themselves).
 `aborted`, `exited`, `crashed`) and `detail`, `seconds`, `firstLaunch`, `display`, `options`, `marks` (each phase's
 start, seconds from the launch: the time to the menu, the map load...), `anchors` (when each wait was satisfied),
 `interrupted` (seconds hidden, focus losses), `audio` (as in the summaries, over the whole run), `env` (with `audioDecoder` / `audioWorklet`: WebCodecs audio and AudioWorklet available), and per phase: the worker's phase report (frame-acct.js
-`FrameStats.phase`: frames, fps, slow frames > 33 / 40 / 50 / 100 ms and per minute, frame and work percentiles,
+`FrameStats.phase`: frames, fps, slow frames > 33 / 40 / 50 / 100 ms and per minute (`slowPaced`: those > 33 ms whose
+work fits in 33.4 ms; the summary panel shows > 40 ms per minute too), frame and work percentiles,
 mean time by category, slow frames' excess shares, hitches, the 3 worst frames) with, from the stats of the phase,
 draws per frame, GL calls per frame, GPU time, render worker waits, busy and visible shares. Phases: `start` (launch to
 the first mark: downloads, start-up, intro), then the scenario's marks; the scenario's last mark `end` closes the last

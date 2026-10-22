@@ -27,11 +27,8 @@ import { Registry } from '../src/win32/registry.js';
 import { loadManifest, makeVfs } from '../src/host/cli.js';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { acct, CATS, C } from '../src/core/frame-acct.js';
-import { WebGLDevice } from '../src/gfx/d3d8-webgl.js';
-import { RenderLink, Recorder } from '../src/gfx/d3d-recorder.js';
-import { noopGl } from './noop-gl.mjs';
 import { DEFER_QUEUE } from '../src/cpu/jit/runtime.js';
-import { PROGRAM_GLSL_VERSION, ffKeyRegenerable } from '../src/gfx/program-id.js';
+import { installNodeGfx, programsLine } from './node-gfx.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
@@ -53,25 +50,13 @@ const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-framebench-'));
 if (opt('profile')) fs.cpSync(opt('profile'), saveDir, { recursive: true });
 const vfs = makeVfs(manifest, dir, saveDir);
 const clock = new RealClock();
-/** the recorder's link (--gfx recorder): its counters are reported per frame */
-let link = null, stats0 = null;
 const host = new HeadlessHost({ clock, width: manifest.display?.width ?? 1024, height: manifest.display?.height ?? 768 });
 // --programs <programs2-<manifest>.json>: the server's learned programs (as its list for this translator version)
 // compiled ahead, as a session does; reported: programs built at a draw, learned ones taken (--gfx backend)
-let pcache = null, gfxDev = null;
-if (opt('programs')) {
-  const j = JSON.parse(fs.readFileSync(opt('programs'), 'utf8')), sessions = Number(j.sessions) || 0;
-  const list = j.programs.filter((r) => r[8] === PROGRAM_GLSL_VERSION || ffKeyRegenerable(r[1]) || ((r[8] ?? null) === null && r[7] >= sessions + 1 - 4)).sort((a, b) => a[5] - b[5]);
-  pcache = { queue: list.map(([id, key, vs, fs2, attrs, , , , v]) => ({ id, key: args.includes('--programs-raw') ? '' : key, vs, fs: fs2, attrs, v })), ready: new Map(), learned: [], used: [], t0: performance.now(), parallel: true, started: 0, pending: 0, hits: 0, devices: new Set() };
-  console.log(`programs: ${list.length} of ${j.programs.length} learned listed${args.includes('--programs-raw') ? ' (keys dropped: their sources as learned)' : ''}`);
-}
-if (gfxKind === 'backend') { const gl = noopGl(); host.gfx = { createDevice: (dev) => (gfxDev = new WebGLDevice(gl, dev, { programCache: pcache })) }; }
-else if (gfxKind === 'recorder') {
-  const words = new Int32Array(new SharedArrayBuffer(16 << 20));
-  link = new RenderLink({ words, replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
-  link.drain = function () { this.w.consumed = this.replayer.reader.consumed = this.w.produced; };
-  host.gfx = { createDevice: (dev) => new Recorder(link, dev) };
-}
+const gfx = installNodeGfx(host, gfxKind, { programs: opt('programs'), raw: args.includes('--programs-raw'), log: (l) => console.log(l) });
+/** the recorder's link (--gfx recorder): its counters are reported per frame */
+const link = gfx.link;
+let stats0 = null;
 const vm = new Vm({ vfs, clock, host, logKinds: process.env.FB_LOG ? process.env.FB_LOG.split(',') : ['crash'] });
 vm.registry = new Registry();
 vm.registry.seed(manifest.registry);
@@ -110,7 +95,7 @@ const apiTable = () => {
 };
 const finish = (why) => {
   if (apiTop) apiTable();
-  if (pcache && gfxDev) console.log(`programs: built at a draw ${gfxDev.stats.programs} (${(gfxDev.stats.programMs ?? 0).toFixed(0)} ms), learned compiled ahead ${pcache.started}, taken ${pcache.hits}, regenerated from their key ${pcache.regenerated ?? 0}, other versions skipped ${pcache.stale ?? 0}`);
+  if (gfxKind === 'backend') { const l = programsLine(gfx); if (l) console.log(l); }
   if (session) session.post('Profiler.stop', (err, r) => { if (!err) fs.writeFileSync(profFile, JSON.stringify(r.profile)); });
   const cpu = process.cpuUsage(cpu0), wall = performance.now() - wall0, gi = vm.guestInsns - insn0;
   const mean = CATS.map((c, i) => [c, sums[i] / counted]).filter(([, v]) => v >= 0.005).sort((a, b) => b[1] - a[1]);
