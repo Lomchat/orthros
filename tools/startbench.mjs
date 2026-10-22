@@ -4,6 +4,7 @@
 // process (less sensitive than wall time to other load on a shared machine) and the guest instructions executed.
 // Compares JIT variants: `ORTHROS_JIT_OPTS='{"nestLoops":true}' node tools/startbench.mjs <manifest.json>`.
 //   node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600] [--bg | --cold] [--save <dir>] [--until-insns <M>]
+//     [--input <scenario> [--coords W,H] | --bench <bench name>]
 import './node-wasm-flags.mjs'; // (branch hints honoured, as in Chrome)
 import fs from 'node:fs';
 import os from 'node:os';
@@ -234,7 +235,14 @@ let apiSeq = opt('api-seq') ? (([n, at]) => ({ n: Number(n), at: Number(at ?? 0)
 let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
 // --input <file>: a harness scenario played on the headless host (tools/node-scenario.mjs); the run ends after its last
 // event (--phases <file>: the phase results as JSON)
-const scenario = opt('input') ? new NodeScenario(fs.readFileSync(opt('input'), 'utf8'), vm, (l) => console.log(l), args.includes('--virtual') ? () => clock.now() : undefined) : null;
+// --bench <name>: a bench scenario of the page's bench mode (tools/scenarios/bench/index.json: its file, its pointer
+// coordinates scaled from its `coords` to the game's display as the page scales them); --coords W,H: the same scaling for
+// an --input file
+const benchDef = opt('bench') ? JSON.parse(fs.readFileSync(new URL('./scenarios/bench/index.json', import.meta.url), 'utf8')).benches.find((b) => b.name === opt('bench')) : null;
+if (opt('bench') && !benchDef) throw new Error(`no bench ${opt('bench')} in tools/scenarios/bench/index.json`);
+const scenarioFile = benchDef ? new URL('./scenarios/bench/' + benchDef.file, import.meta.url) : opt('input');
+const scenarioFrom = benchDef?.coords ?? (opt('coords') ? opt('coords').split(',').map(Number) : null);
+const scenario = scenarioFile ? new NodeScenario(fs.readFileSync(scenarioFile, 'utf8'), vm, (l) => console.log(l), args.includes('--virtual') ? () => clock.now() : undefined, { from: scenarioFrom }) : null;
 // --slow-apis <ms>: with a scenario, the APIs' time in the frames longer than that, per phase ([slowapis] lines)
 if (scenario && opt('slow-apis')) scenario.enableSlowApis(Number(opt('slow-apis')));
 // --gc <ms>: with a scenario, this thread's garbage collections per phase and in the frames longer than that ([gc] lines)

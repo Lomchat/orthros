@@ -1,0 +1,50 @@
+# The Battle for Middle-earth 1.08, short: the intro videos skipped, the main menu, a skirmish started, two minutes of
+# play — under 4 minutes once the game files are in the browser (bfme1-108-skirmish plays ten minutes). The menu steps
+# are bfme1-108-skirmish's (tools/scenarios/bfme1-108-phases.txt explains them), closer together (12 s between the
+# Skirmish click and the profile name dialog's field instead of 20: the dialog shows ~5 s after the click on a machine
+# like the owner's), and the Start click waits for the skirmish setup screen by its draws per frame (~220 once the
+# dialog is closed, 300 at times; the dialog over the setup screen ~125, the 2D menus 30-130): a slow machine waits
+# there, a fast one does not. Coordinates for 800x600 (scaled to the game's display: a first launch's 1024x768
+# included); camera scrolls with the arrow keys. Phases: start, menu, setup (the setup screen's first seconds), load
+# (from the Start click), play (120 s), end.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++20:waitframe:30,100000
+0:mark:menu
+5:click:463,367
+8:move:90,573
+10:click:90,573
+18:move:322,573
+20:click:322,573
+30:move:403,304
+32:click:403,304
+34:text:Orthros
+38:move:340,360
+40:click:340,360
+41:waitframe:170,100000
+0:mark:setup
+3:move:338,573
+4:click:338,573
+5:mark:load
+6:waitframe:360,100000
+0:mark:play
+5:click:400,300
+8:rclick:500,350
+20:keydown:39
+23:keyup:39
+30:click:400,300
+33:rclick:300,250
+45:keydown:38
+48:keyup:38
+55:click:420,320
+58:rclick:550,400
+70:keydown:37
+73:keyup:37
+80:rclick:400,450
+95:keydown:40
+98:keyup:40
+105:click:400,300
+108:rclick:500,350
+120:mark:end

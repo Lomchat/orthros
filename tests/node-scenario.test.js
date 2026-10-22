@@ -67,3 +67,19 @@ test('--slow-apis / --gc: the APIs and the garbage collections of the slow frame
   assert.ok(line && line.includes('1 frames > 40 ms') && line.includes('api7 6.00 (1)'), line);
   assert.ok(logs.some((l) => l.startsWith('[gc] a:') && l.includes('frames > 40 ms: 1')), logs.join('\n'));
 });
+
+test('from: pointer coordinates scaled to the device\'s back buffer as the page\'s bench player scales them; keys not', () => {
+  let now = 0;
+  const vm = { ...fakeVm(), acctApiName: String }; vm.d3dDevice.pp = { width: 1024, height: 768 };
+  const s = new NodeScenario('0:click:400,300;0:key:27;0:move:799,599;5:key:13', vm, () => {}, () => now, { from: [800, 600] });
+  now = 1000; s.tick();
+  const q = vm.host.inputQueue;
+  assert.deepEqual(q.filter((e) => e.type === 'mousedown').map((e) => [e.x, e.y]), [[512, 384]]);
+  assert.equal(q.find((e) => e.type === 'keydown').vk, 27);
+  assert.deepEqual([q[q.length - 1].x, q[q.length - 1].y], [1023, 767]);
+  // (no `from`: as written)
+  const vm2 = { ...fakeVm(), acctApiName: String }; vm2.d3dDevice.pp = { width: 1024, height: 768 };
+  const s2 = new NodeScenario('0:click:400,300;5:key:13', vm2, () => {}, () => now);
+  s2.tick();
+  assert.deepEqual(vm2.host.inputQueue.filter((e) => e.type === 'mousedown').map((e) => [e.x, e.y]), [[400, 300]]);
+});

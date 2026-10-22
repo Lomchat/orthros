@@ -316,3 +316,26 @@ test('bfme1-108: the skirmish bench plays the steps of tools/scenarios/bfme1-108
   const steps = (f) => parseScenario(fs.readFileSync(new URL(f, import.meta.url), 'utf8')).steps.map((s) => s.src);
   assert.deepEqual(steps('../tools/scenarios/bench/bfme1-108-skirmish.txt'), steps('../tools/scenarios/bfme1-108-phases.txt'));
 });
+
+test('quick benches: two minutes of play, at most 4 minutes announced, the menu steps of their longer bench', () => {
+  const dir = new URL('../tools/scenarios/bench/', import.meta.url);
+  const { benches } = JSON.parse(fs.readFileSync(new URL('index.json', dir), 'utf8'));
+  const src = (f) => parseScenario(fs.readFileSync(new URL(f, dir), 'utf8')).steps;
+  const quick = benches.filter((b) => b.name.endsWith('-quick'));
+  assert.deepEqual(quick.map((b) => b.name).sort(), ['bfme1-108-quick', 'bfme2-quick', 'rotwk-quick']);
+  for (const b of quick) {
+    const steps = src(b.file), play = steps.findIndex((s) => s.kind === 'mark' && s.args[0] === 'play');
+    assert.ok(play > 0 && b.minutes <= 4, b.name);
+    // (after the play mark every step is timed from its anchor: the last one, the end mark, is the play's length)
+    const after = steps.slice(play + 1);
+    assert.ok(after.every((s) => s.anchored && !s.kind.startsWith('wait')), b.name);
+    assert.equal(after[after.length - 1].src, '120:mark:end', b.name);
+    assert.ok(after.some((s) => s.kind === 'rclick') && after.some((s) => s.kind === 'keydown'), `${b.name}: orders and camera scrolls`);
+  }
+  const head = (f, upTo) => { const s = src(f).map((x) => x.src); return s.slice(0, s.indexOf(upTo)); };
+  assert.deepEqual(head('bfme2-quick.txt', '0:mark:play'), head('bfme2-skirmish.txt', '0:mark:play'));
+  assert.deepEqual(head('rotwk-quick.txt', '60:keydown:39'), head('rotwk-skirmish.txt', '60:mark:end'));
+  // (BFME 1.08: the long bench's menu clicks, the Start click once the setup screen's draws are seen)
+  const q = src('bfme1-108-quick.txt').map((x) => x.src);
+  assert.ok(q.indexOf('41:waitframe:170,100000') >= 0 && q.indexOf('41:waitframe:170,100000') < q.indexOf('4:click:338,573') && q.includes('5:click:463,367'));
+});

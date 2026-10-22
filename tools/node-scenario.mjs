@@ -13,16 +13,23 @@ import { acct, C as ACCT, FrameStats, N_CATS } from '../src/core/frame-acct.js';
 import { scanCodeOfVk } from '../src/win32/dinput8.js';
 import { BLOCK_COUNTS_BASE } from '../src/cpu/memory.js';
 import { refreshApiOpt } from '../src/core/api-opt.js';
-import { parseScenario, inRanges } from '../src/host/scenario.js';
+import { parseScenario, inRanges, ScenarioPlayer } from '../src/host/scenario.js';
+
+const POINTER_KINDS = new Set(['move', 'click', 'rclick', 'down', 'up']);
 
 export class NodeScenario {
   /**
    * @param {string} text scenario
    * @param {any} vm
    * @param {(line: string) => void} log
+   * @param {() => number} [nowMs]
+   * @param {{ from?: [number, number] | null }} [opts] from: the display the pointer coordinates were written for (a
+   *   bench scenario's `coords`): scaled to the game's display as the page's bench player scales them
    */
-  constructor(text, vm, log, nowMs = () => performance.now()) {
+  constructor(text, vm, log, nowMs = () => performance.now(), opts = {}) {
     this.vm = vm; this.log = log; this.nowMs = nowMs; // (the time base: wall time, or a virtual clock's for a deterministic run)
+    // (the page's own scaling: the device's back buffer once there is one, the host's display before)
+    this.scaler = new ScenarioPlayer([], { from: opts.from ?? null, display: () => { const pp = vm.d3dDevice?.pp, d = vm.host.display; return pp?.width ? [pp.width, pp.height] : d ? [d.width, d.height] : null; } });
     const { steps, errors } = parseScenario(text);
     if (errors.length) throw new Error(`scenario: ${errors.join('; ')}`);
     this.events = steps.map((st) => ({ t: st.t, rel: st.rel, anchored: st.anchored, kind: st.kind, args: st.args, done: false }));
@@ -138,7 +145,7 @@ export class NodeScenario {
     }
   }
   fire(ev, t) {
-    const [x, y] = ev.args, at = this.nowMs();
+    const [x, y] = POINTER_KINDS.has(ev.kind) ? this.scaler.scale(ev.args[0], ev.args[1]) : ev.args, at = this.nowMs();
     switch (ev.kind) {
       case 'move': this.push({ type: 'mousemove', x, y, dx: 0, dy: 0 }); break;
       case 'click': case 'rclick': {

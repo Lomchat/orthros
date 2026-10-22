@@ -32,6 +32,16 @@ the results go to the server, and the summary panel also has a **Copy the result
 | BFME | <https://orthros.chalco.website/?bench=bfme1-skirmish> (1.03: `&manifest=bfme1-103`) | the main menu, a skirmish started, its first minute | ~6 min |
 | BFME 1.08, menu | <https://orthros.chalco.website/?bench=bfme1-108-menu&gameLang=fr> | the intro skipped, one minute in the main menu, 30 s in the Solo play menu | ~3 min |
 | BFME 1.08, skirmish | <https://orthros.chalco.website/?bench=bfme1-108-skirmish&gameLang=fr> | the main menu, a skirmish started, **ten minutes of play** (orders, camera scrolls): the validation target's criterion | ~15 min |
+| **BFME 1.08, quick** | <https://orthros.chalco.website/?bench=bfme1-108-quick&gameLang=fr> | the main menu, a skirmish started, **two minutes of play** (orders, camera scrolls) | ~4 min |
+| BFME II, quick | <https://orthros.chalco.website/?bench=bfme2-quick> | `bfme2-skirmish`'s menu steps, two minutes of play (orders, camera scrolls) | ~4 min |
+| Rise of the Witch-king 2.02, quick | <https://orthros.chalco.website/?bench=rotwk-quick> (2.01: `&manifest=rotwk-201`) | `rotwk-skirmish`'s steps, two minutes of play (orders, camera scrolls) | ~4 min |
+
+**The quick benches** (`*-quick`) are the ones to run often (after an Orthros update, on another browser or machine):
+the same menu and skirmish start as the longer ones, then two minutes of play — enough for the play phase's fps, frame
+p99, frames over 40 ms per minute and GPU time to compare runs, in about 4 minutes once the game files are in the
+browser. `bfme1-108-quick` also shortens BFME 1.08's menu (the Start click waits for the skirmish setup screen's draws
+per frame instead of fixed delays sized for a slow first launch) and reports the setup screen as its own phase
+(`setup`). Their play phases are 120 s long; read them like the long ones' (below).
 
 **The BFME 1.08 pair** measures the project's target (CLAUDE.md: a stable 30 fps, p99 frame ≤ 33 ms over 10 min of
 play) on the machine that opens them, e.g. the owner's Iris Xe laptop: open the menu link first (short: checks the
@@ -52,6 +62,17 @@ node tools/startbench.mjs bfme1-108 --games-dir <catalog> --save <copy of a warm
 
 (Node: `--gfx recorder` puts the render worker's recording on the emulator thread as in the page, and the phase
 reports are the page's `[frames]` reports: slow frames by category.)
+
+Any bench runs in Node as the page plays it: `startbench --bench <name>` takes its file from `index.json` and scales
+its pointer coordinates from its `coords` to the game's display (the Direct3D device's back buffer) with the page's
+own `ScenarioPlayer.scale`; `--coords W,H` does the same for an `--input` file. With a profile directory seeded from
+the server's canonical first-launch set (`<learn>/seedcanon-<manifest>.json`, the files of the player's language
+written under `--save`) it is the page's first launch without downloads:
+
+```
+node tools/startbench.mjs bfme1-108 --games-dir <catalog> --save <seeded profile dir> --bench bfme1-108-quick --cold \
+  --regions <learn>/regions-bfme1-108.json --heat <learn>/heat-bfme1-108.json --gfx recorder --until-api NONE --limit 600
+```
 
 A measurement is most useful repeated: the first one in a fresh browser (first launch: downloads, the game's setup,
 nothing learned), then the same link again (files in the browser, code and shaders cached). Each run is one record.
