@@ -289,7 +289,7 @@ export function registerKernel32(api, vm) {
   K.GetThreadContext = [2, (c) => { vm.warn('GetThreadContext: unsupported'); return 0; }];
   K.SetThreadContext = [2, () => 0];
   K.OpenThread = [3, (c) => { const t = c.proc.thread(c.arg(2)); return t ? c.proc.handles.create(t) : c.fail(E.INVALID_PARAMETER); }];
-  K.SwitchToThread = [0, (c) => (vm.sched.yieldFrom(c.thread) ? 1 : 0)];
+  K.SwitchToThread = [0, (c) => (vm.sched.yieldFrom(c.thread, true) ? 1 : 0)];
   // Sleep(0) storms: a thread spinning on Sleep(0) (frame limiter, flag polling) with nothing else to run would
   // burn the whole worker; after 32 back-to-back yields within 50 µs of each other it sleeps for 1 ms instead —
   // the granularity a Windows timer gives Sleep anyway. One other API call between two Sleep(0)s is part of the
@@ -309,15 +309,16 @@ export function registerKernel32(api, vm) {
       }
       st.zero++;
       const now = vm.clock.now(); // (the guest's clock: the host's time on a real clock, kept in a snapshot)
-      st.streak = now - st.last < 0.05 && vm.apiCalls - st.lastApi <= 2 ? st.streak + 1 : 0;
+      const gapOk = now - st.last < 0.05, apiOk = vm.apiCalls - st.lastApi <= 2;
+      if (gapOk && apiOk) st.streak++; else { st.streak = 0; if (!gapOk) st.brokeGap = (st.brokeGap ?? 0) + 1; else st.brokeApi = (st.brokeApi ?? 0) + 1; } // (diagnostics: why streaks end)
       st.last = now; st.lastApi = vm.apiCalls;
-      if (st.streak >= 32 && !vm.sched.pickRunnable(t)) {
+      if (st.streak >= 32 && !vm.sched.hasRunnable(t)) {
         st.throttled++;
         if (vm.sched.park(t, NEVER, 1, 'sleep') === PARK) { st.parked = true; return PARK; }
         if (keepStreak) { st.last = vm.clock.now(); st.lastApi = vm.apiCalls; } // (a nested wait: the 1 ms has passed here)
         return;
       }
-      vm.sched.yieldFrom(t);
+      if (vm.sched.yieldFrom(t)) st.yields = (st.yields ?? 0) + 1; // (diagnostics: a ready thread ran)
       return;
     }
     if (ms <= 2) st.short++; else st.long++;

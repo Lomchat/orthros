@@ -70,6 +70,8 @@ export class Scheduler {
     this.sliceExpired = null;
     /** { t, left }: a thread preempted by a higher priority with `left` ms of quantum: first among its equals afterwards */
     this.preempted = null;
+    /** the thread whose yield (Sleep(0), SwitchToThread) ended its slice, for the next top-level pick; `yieldAny`: SwitchToThread */
+    this.yielder = null; this.yieldAny = false;
   }
 
   /** `t` ready to run (again): the time and decision count it starts waiting from (starvation, see pickRunnable) */
@@ -84,17 +86,24 @@ export class Scheduler {
    * for whole slices (a window of thousands of their instructions where Windows has the high-priority work done at once).
    * A thread ready for STARVE_INSNS (or STARVE_PICKS scheduling decisions) runs whatever its priority (Windows boosts
    * starved threads likewise).
+   * The top-level pick after a yield (`yielder`, set by yieldFrom) gives the processor to another ready thread: of a
+   * priority at least the yielder's for Sleep(0) (a lower one waits, as on Windows), of any priority for SwitchToThread
+   * (`yieldAny`); the yielder goes on only when there is none.
    */
   pickRunnable(except, top = false) {
     const ts = this.threads;
     const n = ts.length, now = this.vm.guestInsns ?? 0, picks = ++this.picks; // (instructions executed: see STARVE_INSNS)
-    let best = null, bestK = 0, bestPrio = -Infinity;
+    const y = top ? this.yielder : null;
+    if (top) this.yielder = null;
+    let best = null, bestK = 0, bestPrio = -Infinity, yK = -1, yPrio = -Infinity;
     for (let k = 0; k < n; k++) {
       const t = ts[(this.rr + k) % n];
       if (t === except || !t.isRunnable()) continue;
       const prio = this.roundRobin ? 0 : now - t.readyTime > this.starveInsns || picks - t.readyPick > this.starvePicks ? 16 : (t.priority ?? 0);
+      if (t === y) { yK = k; yPrio = prio; continue; } // (the yielder: only if no other thread may run, below)
       if (prio > bestPrio) { best = t; bestPrio = prio; bestK = k; }
     }
+    if (yK >= 0 && (best === null || (!this.yieldAny && bestPrio < yPrio))) { best = y; bestPrio = yPrio; bestK = yK; }
     // (the top-level pick: the thread whose slice ended — or the one a higher priority preempted — goes on with its
     // quantum unless a thread of higher priority is ready; a starved thread counts as higher)
     if (top && this.quantumInsns > 0 && !this.roundRobin) {
@@ -257,11 +266,31 @@ export class Scheduler {
     }
   }
 
-  /** Give other runnable threads a turn. At top level this just ends the current slice. */
-  yieldFrom(thread) {
+  /** Is a thread other than `except` ready to run? (no scheduling decision: nothing changes) */
+  hasRunnable(except) {
+    for (const t of this.threads) if (t !== except && t.isRunnable()) return true;
+    return false;
+  }
+
+  /**
+   * Give other runnable threads a turn. At top level this ends the current slice, and the next pick prefers another
+   * ready thread (pickRunnable's `yielder`): of a priority at least this thread's for Sleep(0), of any priority with
+   * `any` (SwitchToThread). True when another thread is ready.
+   * (Until 2026-10-22 the check for another ready thread was itself a pick, which moved the round robin past the thread
+   * it found; the top-level pick then started after it and took the yielder again: a thread woken from its Sleep(1)
+   * waited up to STARVE_PICKS of the spinning thread's Sleep(0) calls — BFME 1.08's main thread, ~250 of them in a row,
+   * 256 a frame in play.)
+   */
+  yieldFrom(thread, any = false) {
     // (a yield with no other thread runnable still ends the slice: returning at once — as Windows does — was measured to
     // make a frame limiter polling Sleep(0) poll more often, not to make anything cheaper: see docs/api-layer.md)
-    if (this.vm.canUnwind(thread)) { thread.yieldRequested = true; return this.pickRunnable(thread) !== null; }
+    if (this.vm.canUnwind(thread)) {
+      thread.yieldRequested = true;
+      if (!this.hasRunnable(thread)) return false;
+      if (globalThis.ORTHROS_YIELD_PICK_OLD) { this.pickRunnable(thread); return true; } // (measurement: the behaviour before 2026-10-22)
+      this.yielder = thread; this.yieldAny = any;
+      return true;
+    }
     const other = this.pickRunnable(thread);
     if (!other) return false;
     this.vm.runThread(other, { slice: true });

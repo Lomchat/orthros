@@ -91,3 +91,33 @@ test('priority.exe: a TIME_CRITICAL thread\'s work is not interrupted by normal 
   const rr = runExe(true);
   assert.match(rr.out, /seen_mid_work=[1-9]/);
 });
+
+test('a yield (Sleep(0)) gives the next top-level pick to another ready thread of at least its priority; SwitchToThread to any; the check changes nothing', () => {
+  const vm = fakeSched(), s = vm.sched;
+  vm.canUnwind = () => true;
+  const main = thread(1, 0), w = thread(2, 0), lo = thread(3, -1), x = thread(4, 0);
+  x.state = TS.BLOCKED;
+  vm.proc.threads.push(main, w, lo, x);
+  // (every round robin position: before the fix the check for a ready thread was itself a pick that moved the round
+  // robin past `w`, and the top-level pick then started after it and took the yielder again)
+  for (const old of [false, true]) {
+    if (old) globalThis.ORTHROS_YIELD_PICK_OLD = 1;
+    const got = [];
+    for (let rr = 0; rr < 4; rr++) { s.rr = rr; assert.equal(s.yieldFrom(main), true); main.yieldRequested = false; got.push(s.pickRunnable(null, true)); }
+    delete globalThis.ORTHROS_YIELD_PICK_OLD;
+    if (old) assert.ok(got.includes(main), 'the former behaviour took the yielder again (the check of this test fails without the fix)');
+    else assert.deepEqual(got, [w, w, w, w], 'the equal-priority ready thread, whatever the round robin position');
+  }
+  // only a lower priority ready: Sleep(0) goes on, SwitchToThread runs it; nothing else ready: false
+  w.state = TS.BLOCKED;
+  assert.equal(s.yieldFrom(main), true); assert.equal(s.pickRunnable(null, true), main, 'Sleep(0): a lower priority waits');
+  assert.equal(s.yieldFrom(main, true), true); assert.equal(s.pickRunnable(null, true), lo, 'SwitchToThread: any ready thread');
+  lo.state = TS.BLOCKED;
+  const picks = s.picks, rr = s.rr;
+  assert.equal(s.hasRunnable(main), false); assert.equal(s.yieldFrom(main), false);
+  assert.equal(s.picks, picks, 'no scheduling decision counted'); assert.equal(s.rr, rr);
+  assert.equal(s.pickRunnable(null, true), main);
+  // the yield is for the next top-level pick only
+  w.state = TS.READY; s.yieldFrom(main); s.pickRunnable(null, true);
+  s.rr = 0; assert.equal(s.pickRunnable(null, true), main, 'then round robin as before');
+});

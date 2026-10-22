@@ -153,6 +153,32 @@ Movies and music are not what the game waits for to start; on a link that is not
   the game is not streaming now (`HttpBackend.streams`); a stream keeps its read-ahead.
 - A read of a media file is never answered with made-up bytes: it waits for the network as any other.
 
+## Archives read at random in play: wanted whole (2026-10-22)
+
+The learned order holds what earlier sessions needed, in their order; what a game reads as it plays — a sound bank, the
+models and textures of what comes into view — differs from one session to the next. BFME 1.08, ten minutes of play in
+headless Chromium (`--memprefetch`, a copy of the live learned lists, `headless --net-trace`): 37-47 reads went to the
+network after the loading screen, only 5 of them common to two sessions (Audio.big, W3D.big, _patch108.big, Music.big,
+textures: 64 KiB pieces here and there), each a frame waiting (`ioWait`, then `late` while the read's tasks run).
+
+`HttpBackend.noteMiss` → `noteMissAfter`: once the learned prefetch pass is over (`learnedDone`), a file missed in
+`WHOLE_AFTER_MISSES` (3) distinct blocks — not a media file, not a stream — is wanted whole (`wantWhole`: its other
+blocks in the background fill's `later` queue, after the blocks the game touched and those near them, the link quiet
+for NEAR_QUIET_MS). Only on a fast link and with a block store (OPFS, or the harness's memory store): the blocks stay
+for the next sessions. Generic: the data system of every runtime (the ports' streamed files already asked it).
+
+Measured (the same run beside the former tree, at the same time): reads on the network in play 37 → 13 (2.8 → 0.7
+MB; the rest: the music stream's next bytes, files first read late), the game's own requests over the session 124 →
+68; the cost, the bytes downloaded over the session 414 → 820 MB (W3D.big, Audio.big and others whole, in the
+background; kept in the store). Frames, `?dbg=ORTHROS_WHOLE_AFTER_MISSES=0` against the default, two runs at the same
+time, ten minutes of play (`--gl-discard`): with the browser's block store (`--opfs`, as players have it) frames over 40
+ms 29 → 32 per minute, over 100 ms 0.6 → 0.2 per minute, the worst 238 → 204 ms, the game's requests 102 → 56, the
+store's writes on the emulator thread 1.5 → 3.2 s in all (~2 ms per block); with the harness's memory store
+(`--memprefetch`: 1.1 GB more kept in the worker's memory) frames over 40 ms 29 → 37 per minute (`late` 0.2 → 0.5 ms per
+frame: garbage collection and the event loop between slices), over 100 ms 0.7 → 0.3. Fewer stalls of 100 ms and more in
+every pair; frames over 40 ms within the noise with the real store, more with the memory store.
+tests/http-backend-whole.test.js.
+
 ## Playable after (2026-10-21)
 
 The first pause of the learned order (2 s, `STARTUP_GAP_MS`) is not when a game becomes playable: OpenMW's French

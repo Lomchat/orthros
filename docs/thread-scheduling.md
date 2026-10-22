@@ -134,6 +134,37 @@ sleeps each): 1/2/3 ms sleeps re-armed from the timer callback oversleep 3.07/2.
 play is not affected (its pump never returns 'sleep': the 1 ms waits happen inside runFor). `ORTHROS_TIMER_HOP=0`: the
 timer armed directly.
 
+## Yields: Sleep(0) and SwitchToThread hand over (2026-10-22)
+
+`Scheduler.yieldFrom`. Sleep(0) gives the rest of the time slice to another ready thread of at least the caller's
+priority (a lower one waits, as on Windows); SwitchToThread to any ready thread. Until 2026-10-22 the check "is another
+thread ready?" was itself a pick (`pickRunnable(thread)`): it moved the round robin past the thread it found, so the
+top-level pick that followed the yield started after that thread, found the yielder first among its equals and took it
+again. The ready thread waited until it was starved (STARVE_PICKS = 1 000 picks, ~1 000 of the spinner's Sleep(0)).
+BFME 1.08 shows it: its main thread paces frames with Sleep(0) + timeGetTime, and a thread of equal priority that wakes
+from its Sleep(1) every millisecond was kept waiting through runs of ~250 Sleep(0) (`startbench --api-seq`: `t2048 Sleep
+[+1 fast timer] x249`); the Sleep(0) throttle (docs/api-layer.md) never engaged, since a thread was ready all along.
+
+Now the yield sets `Scheduler.yielder` and the next top-level pick prefers any other ready thread of a priority at least
+the yielder's (`yieldAny`, SwitchToThread: of any priority); the yielder goes on only when there is none. The probes that
+only ask whether a thread is ready (the Sleep(0) throttle, PeekMessage's idle wait, the yield itself) use `hasRunnable`,
+which changes nothing (no round-robin move, no scheduling decision counted). `?dbg=ORTHROS_YIELD_PICK_OLD=1`: the former
+pick (read at each yield: in-session A/B).
+
+Measured, BFME 1.08 play in Node (`startbench --input` of the 1.08 scenario with `dbg:ORTHROS_YIELD_PICK_OLD=1` / `=`
+alternated every 19 s, ten windows each, two runs at the same time; the vertex buffer lock change below in both arms):
+scheduling decisions per frame 1 019-1 088 → 261-263, main thread Sleep(0) per frame 324 → 146 (`--sleeps`), work per
+frame p50 14.5-14.8 → 13.7-13.9 ms and p90 19.1-19.7 → 18.0-18.5 ms, emulator thread CPU per frame 14.97-15.28 →
+14.50-14.70 ms; frames over 40 ms unchanged (100 / 97 and 90 / 90 in 190 s): those are frames where the main thread itself
+runs 3x its usual guest instructions (12.9 M against 4.1 M, `--threads --slow-threads 40`), the game's own heavy frames.
+Headless Chromium, the ten minutes of play (`--gl-discard`, run beside the former tree at the same time): scheduling
+decisions per frame 1 233 → 272, work p50 14.9 → 14.1 ms, p90 21.5 → 19.7, p99 31.4 → 29.5, frames over 40 ms 22 → 21
+per minute.
+
+Tests: `tests/sched-priority.test.js` (every round-robin position: the equal-priority ready thread runs; with
+`ORTHROS_YIELD_PICK_OLD` the yielder is taken again; a lower priority waits for Sleep(0), runs for SwitchToThread;
+`hasRunnable` changes nothing).
+
 ## Debug switches (`?dbg=NAME=1,...` in the browser, globals in Node)
 
 | switch | what |
@@ -157,6 +188,7 @@ timer armed directly.
 | `ORTHROS_GDI_BITMAP_FONTS` | GDI text with the built-in bitmap font only |
 | `ORTHROS_SLEEP0_KEEP_STREAK=0` | the Sleep(0) throttle's streak reset by the throttled sleep itself (the behaviour before 2026-10-21) |
 | `ORTHROS_TIMER_HOP=0` | the worker's short-sleep timer armed from the timer callback (the nesting clamp applies; before 2026-10-21) |
+| `ORTHROS_YIELD_PICK_OLD=1` | a yield's check for a ready thread is a pick again, and the yielder may be taken back at once (before 2026-10-22) |
 
 Crash reports also show the instructions before each return address and 128 bytes around each register, with the
 region and heap block (and its provenance) it points into.
