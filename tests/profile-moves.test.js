@@ -10,7 +10,10 @@ import { MemBackend } from '../src/vfs/vfs.js';
 import { NodeBackend } from '../src/vfs/node-backend.js';
 import { applyProfileMoves, profileMovesProblem } from '../src/vfs/profile-moves.js';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LEAF = 'AppData/Roaming/My Game Files';
 const MOVES = [{ from: 'AppData/Roaming', to: LEAF }];
 const bytes = (s) => new TextEncoder().encode(s);
@@ -128,4 +131,35 @@ test('the catalog refuses a version with invalid profileMoves and passes valid o
   spec.defaults.profileMoves = [{ from: 'AppData/Roaming', to: '../outside' }];
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(spec));
   assert.throws(() => loadGameCatalog(root), /profileMoves/);
+});
+
+test('profile-seed-make moves: canonical sets rewritten at the new place, once; learned candidates at an old place listed', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-games-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), learn = path.join(root, 'learn');
+  for (const [id, defaults] of [['alpha', { profileMoves: MOVES }], ['beta', {}]]) {
+    const dir = path.join(games, id);
+    fs.mkdirSync(path.join(dir, 'base'), { recursive: true }); fs.mkdirSync(path.join(dir, 'versions', '1.0'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'base', 'Game.exe'), 'x');
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id, name: id, defaultVersion: `${id}-1`, defaults, versions: [{ id: `${id}-1`, dir: '1.0', version: '1.0', exe: 'Game.exe', languages: ['en'] }] }));
+  }
+  fs.mkdirSync(learn);
+  const b64 = (s) => Buffer.from(s).toString('base64');
+  const old = [['AppData/Roaming/Options.ini', b64('Resolution = 800 600\r\n')]];
+  for (const id of ['alpha-1', 'beta-1']) fs.writeFileSync(path.join(learn, `seedcanon-${id}.json`), JSON.stringify({ v: 1, sets: [{ lang: 'en', files: old, at: 1, note: 'made' }] }));
+  fs.writeFileSync(path.join(learn, 'profileseed-alpha-1.json'), JSON.stringify({ v: 1, sets: [{ lang: 'en', key: 'k1', files: old, sessions: ['a'], at: 1 }] }));
+  const tool = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'tools', 'profile-seed-make.mjs'), 'moves', '--games-dir', games, '--learn', learn, ...a], { encoding: 'utf8' });
+  const dry = tool('--dry');
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /alpha-1 en: canonical set \S+ would be rewritten/);
+  assert.match(dry.stdout, /learned candidate k1 .*purge/);
+  assert.doesNotMatch(dry.stdout, /beta-1/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(learn, 'seedcanon-alpha-1.json'), 'utf8')).sets[0].files, old); // (--dry: nothing written)
+  const run = tool();
+  assert.equal(run.status, 0, run.stderr);
+  const sets = JSON.parse(fs.readFileSync(path.join(learn, 'seedcanon-alpha-1.json'), 'utf8')).sets;
+  assert.deepEqual(sets.map((s) => [s.lang, s.files]), [['en', [[LEAF + '/Options.ini', old[0][1]]]]]);
+  assert.match(sets[0].note, /^made; profileMoves applied/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(learn, 'seedcanon-beta-1.json'), 'utf8')).sets[0].files, old); // (no moves declared)
+  assert.match(tool().stdout, /alpha-1 en: canonical set \S+ already at the new place/);
 });

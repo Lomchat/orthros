@@ -46,6 +46,35 @@ profile (`C:\Users\Player`), so every new player paid it.
 The files are the game's own output under Orthros (e.g. its options file with the detail level its first-launch
 benchmark chose on the emulated machine); a player can change them in the game's options as usual.
 
+## Profile moves (`src/vfs/profile-moves.js`, manifest `profileMoves`)
+
+A manifest change can move where a game keeps its files in the player's profile — typically a registry value its
+installer writes, added to the manifest later (BFME1's `UserDataLeafName`: without it the game wrote `Options.ini`,
+saves and replays straight into `AppData\Roaming`; with it, into `AppData\Roaming\My Battle for Middle-earth Files`,
+as on Windows). Players who played before would lose their settings and saves. The manifest then declares
+`"profileMoves": [{ "from": "AppData/Roaming", "to": "AppData/Roaming/My Battle for Middle-earth Files" }]`
+(optionally `names`: only those entries of `from`):
+
+- **When.** At every start, once the profile is assembled and before the game sees it: the page's worker after the
+  browser's copy (OPFS) — into which the account's copy was restored before (`cloud-sync.js` `pull`) — the harness's
+  `--profile-dir` files and a shared first-launch profile (a set learned before the change is moved like the rest);
+  the Node runner (`src/host/cli.js`) on its save folder. Every entry of `from` but the folder holding `to` goes to
+  `to/<name>`, folders merged.
+- **Never destructive.** A file whose new place already holds one stays at the old place (the new place's is the
+  game's own, newer). **Idempotent** without a marker: once moved there is nothing left to move; a later start does
+  nothing (the profile the game sees is its files alone).
+- **Kept everywhere.** The moves are recorded as changes of the profile (`MemBackend.changes`; `rmdir` added for the
+  emptied folders, keeping their original-case name): the browser's copy follows at the first flush (files removed
+  from the old place, folders removed after their files), the worker then says `profile-changed` and the page sends
+  the moved profile to the account (a push from the parent it restored: no conflict). Another device restoring an
+  older copy moves it the same way.
+- **Snapshots.** A snapshot key includes the manifest (the registry seeded from it): the change that needs a move
+  makes every snapshot of the version stale (player's and shared: made again). The moves run before the profile's
+  `seen` record starts, so a snapshot taken afterwards checks the new layout.
+- **What the server keeps.** Shared first-launch sets (`profileseed-*.json`, `seedcanon-*.json`) made before the
+  change still carry the old paths: harmless (moved at the client), but the canonical ones should be made again with
+  `tools/profile-seed-make.mjs` so new players' profiles, and the snapshot key's seed part, match the new layout.
+
 ## Translated code kept across sessions (`src/cpu/jit/code-cache.js`)
 
 The regions earlier sessions translated (the server's learned list, D056) are translated again at every launch by
