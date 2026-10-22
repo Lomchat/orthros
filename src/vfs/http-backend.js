@@ -55,8 +55,6 @@ const AHEAD_REQUESTS = 3, AHEAD_WINDOW = 32;
 const AHEAD_REQUESTS_MID = 8;
 /** prefetch requests queued at once on a link that is not fast (see prefetch) */
 const PREFETCH_PARTS = 6;
-/** a fast link's learnedOnly prefetch (nothing of the game's own on the link): requests at once */
-const FAST_PARTS = 6;
 /** a pause this long (ms) between two learned entries ends a step of the game (see stepEstimate) */
 const STEP_GAP_MS = 5000;
 /** the download of the whole game before playing, on a link that is not fast: a request carries about this much of the link (s) */
@@ -265,8 +263,9 @@ export class HttpBackend {
    * from the start — sessions of different speeds (and menu times) interleave phases in the learned order, so the head
    * of the list is often a phase this session has not reached, or has passed without needing it. Meanwhile the learned
    * pieces of the entries just past the game's position are fetched ahead (see pumpAhead). `progress` gets
-   * { bytes, blocks, done, k }. `opts.learnedOnly`: on a link that is not fast, the learned pieces only (not the rest of
-   * their blocks) — what a page waits for before the game starts. `opts.first`: the list's first entries are its launch
+   * { bytes, blocks, done, k }. `opts.learnedOnly`: the learned pieces only (not the rest of their blocks), on any link,
+   * several requests at once, a block every piece of which is learned as one request (its transport unit) — what a page
+   * waits for before the game starts, nothing of the game's own on the link. `opts.first`: the list's first entries are its launch
    * set (launch-set.js launchFirst): while one of them is missing, a position past them (a read the way to playable does
    * not need, e.g. a loading picture) does not send the pass on through the rest first.
    */
@@ -289,10 +288,7 @@ export class HttpBackend {
     }
     const L = this.learned = { entries, rankOf, first, pos: -1, inFlight: 0, stop };
     const skey = (e, i = e.index) => `${e.path}#${e.size}#${e.mtime}#${i}`;
-    // (learnedOnly: an entry whose learned pieces are all here is done — they came by pieces before the link was
-    // measured fast, and the whole block went again: Half-Life's startup at 7 MB/s, halflife.wad's first block)
-    const piecesHere = (e) => { if (!opts.learnedOnly || !e.mask) return false; const c0 = e.index * (BLOCK / CHUNK), n = Math.ceil((Math.min(e.size, (e.index + 1) * BLOCK) - e.index * BLOCK) / CHUNK); for (let i = 0; i < n; i++) if (((e.mask >>> i) & 1) && !this.pieceHere(e.path, e.size, e.mtime, c0 + i)) return false; return (e.skip = true); };
-    const stored = (e) => e.skip || store.map.has(skey(e)) || this.cache.has(`${e.path}#${e.index}`) || piecesHere(e);
+    const stored = (e) => e.skip || store.map.has(skey(e)) || this.cache.has(`${e.path}#${e.index}`);
     // (the block the fill is downloading is left to it: it stores it too)
     const todo = (e) => !stored(e) && this.bgCur?.key !== `${e.path}#${e.index}` && !this.blockFlights.has(`${e.path}#${e.index}`) && !this.flights.has(`${e.path}#${e.index * (BLOCK / CHUNK)}`);
     // the entry to download next: the first one past the game's position not stored yet, else the first one — the
@@ -327,14 +323,17 @@ export class HttpBackend {
       }
       return null;
     };
-    const parts = new Set(); let failed = false, netDown = false;
+    const parts = new Set(); let failed = false;
     for (;;) {
       if (stop() || store.failed) return;
       // (the game's own reads first; the block fill, when it has blocks to fetch, runs beside this pass rather than
       // before it: a session whose game keeps touching new blocks keeps the fill busy for good, and waiting for it
       // starved this pass for whole sessions)
       while (this.gameBusy(300)) { if (stop()) return; await new Promise((res) => setTimeout(res, 100)); }
-      if (!this.net.fast()) {
+      // (learnedOnly on a fast link too: the learned pieces — the startup set a port's engine waits for, Prepare —, not
+      // their whole blocks one request at a time: Half-Life's startup set at 7 MB/s and 75 ms took 3.6 s, 61 serial
+      // requests for 5.9 MB where its pieces are 2.7 MB; the rest of the blocks comes with the learned order later)
+      if (!this.net.fast() || opts.learnedOnly) {
         // (up to PREFETCH_PARTS requests queued at once: each waits for its turn on the link, which lets several small
         // ones run together — a run of small files is latency-bound — within the link's background bytes)
         if (parts.size >= PREFETCH_PARTS) { await Promise.race(parts); continue; }
@@ -350,30 +349,20 @@ export class HttpBackend {
         if (failed) { failed = false; if (stop()) return; await new Promise((res) => setTimeout(res, 1000)); }
         continue;
       }
-      // (learnedOnly — the game not started, what a page waits for —: FAST_PARTS requests at once — one at a time, a
-      // run of small files was a round trip each, the link mostly idle: Half-Life's startup set at 7 MB/s, 75 ms, took
-      // 3.6 s for 2.7 MB —; while the game runs one at a time, as its own reads abort them on a fast link)
-      if (parts.size >= (opts.learnedOnly ? FAST_PARTS : 1)) { await Promise.race(parts); continue; }
-      if (netDown) return;
       const k = next(); progress.k = k;
-      if (k < 0) { if (parts.size) { await Promise.race(parts); continue; } break; }
+      if (k < 0) break;
       const e = entries[k], f = entries[k + 1];
       const n = f && f.path === e.path && f.index === e.index + 1 && todo(f) ? 2 : 1;
       const start = e.index * BLOCK, end = Math.min(e.size, (e.index + n) * BLOCK);
-      // (taken: the next pick passes it — given back when aborted, fetched again later)
+      const data = await this.fetchBackground(e.path, start, end, null, true, false, { prio: PRIO.prefetch, stop });
+      if (data === ABORTED) continue;
+      if (data === null) return;
+      if (!data) { e.skip = true; continue; } // (an answer to skip: not asked again this session)
+      for (let i = 0; i < n; i++) store.put(skey(e, e.index + i), data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)));
+      // (done with, stored or not: a full store drops blocks silently, and the pass would fetch them again forever)
       e.skip = true; if (n === 2) f.skip = true;
-      const pr = this.fetchBackground(e.path, start, end, null, true, false, { prio: PRIO.prefetch, stop }).then((data) => {
-        if (data === ABORTED) { e.skip = false; if (n === 2) f.skip = false; return; }
-        if (data === null) { netDown = true; return; }
-        if (!data) return; // (an answer to skip: not asked again this session)
-        for (let i = 0; i < n; i++) store.put(skey(e, e.index + i), data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)));
-        // (done with, stored or not: a full store drops blocks silently, and the pass would fetch them again forever)
-        progress.bytes += data.length; progress.blocks += n;
-      }).finally(() => parts.delete(pr));
-      parts.add(pr);
+      progress.bytes += data.length; progress.blocks += n;
     }
-    if (parts.size) await Promise.all(parts);
-    if (netDown) return;
     store.flush?.(true); // (a sync point: the prefetch is over)
     progress.done = true;
   }

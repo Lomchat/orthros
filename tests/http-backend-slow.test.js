@@ -193,7 +193,7 @@ test('a link between thin and fast: a learned block wanted whole goes as the blo
   }
 }));
 
-test('a fast link before the game starts (learnedOnly): several requests at once, no block again whose learned pieces came; while the game runs, one at a time', async () => {
+test('a fast link before the game starts (learnedOnly): the learned pieces only, several requests at once, none again of those here; while the game runs, whole blocks one at a time', async () => {
   const real = globalThis.fetch;
   let now = 0, most = 0, asked = [];
   globalThis.fetch = async (url) => {
@@ -211,16 +211,17 @@ test('a fast link before the game starts (learnedOnly): several requests at once
       b.gameBusy = () => false; most = 0; asked = [];
       // (block 1 of f.big: its learned pieces 0 and 3 here already — fetched by pieces before the link was measured)
       store.put(b.pieceKey('f.big', SIZE, 3, 16), bytes(MiB, MiB + CHUNK)); store.put(b.pieceKey('f.big', SIZE, 3, 19), bytes(MiB + 3 * CHUNK, MiB + 4 * CHUNK));
-      const p = {}; await b.prefetch([...list, ['f.big', 1, 0b1001, 20]], p, () => false, opts);
+      const p = {}; await b.prefetch([...list, ['f.big', 1, 0b1001, 20], ['f.big', 2, 0b0110, 30]], p, () => false, opts);
       assert.ok(p.done);
-      for (const [path, f] of Object.entries(files)) if (path !== 'f.big') assert.ok(store.map.has(`${path}#${f.size}#3#0`), `${path} stored`);
+      for (const [path, f] of Object.entries(files)) if (path !== 'f.big') assert.ok(b.peekBlockHere(path, f.size, 3, 0) || b.pieceHere(path, f.size, 3, 0), `${path} stored`);
       return { most, asked: [...asked] };
     };
     const before = await run({ learnedOnly: true });
-    assert.ok(before.most > 1 && before.most <= 6, `requests at once: ${before.most}`);
-    assert.ok(!before.asked.some(([a]) => a === MiB), `the block of pieces here not fetched again: ${JSON.stringify(before.asked)}`);
+    assert.ok(before.most >= 4 && before.most <= 8, `requests at once: ${before.most}`);
+    assert.ok(!before.asked.some(([a, e]) => a < 2 * MiB && e > MiB), `nothing of the block whose learned pieces are here: ${JSON.stringify(before.asked)}`);
+    assert.deepEqual(before.asked.filter(([a]) => a >= 2 * MiB), [[2 * MiB + CHUNK, 2 * MiB + 2 * CHUNK], [2 * MiB + 2 * CHUNK, 2 * MiB + 3 * CHUNK]], 'the other block\'s learned pieces, not the block (its units)');
     const playing = await run({});
-    assert.equal(playing.most, 1, 'one at a time while the game runs');
+    assert.ok(playing.most <= 2, `one request at a time while the game runs (two blocks of one cut at their units): ${playing.most}`);
     assert.ok(playing.asked.some(([a]) => a === MiB), 'the whole block, the game running (the rest of it comes too)');
   } finally { globalThis.fetch = real; }
 });
