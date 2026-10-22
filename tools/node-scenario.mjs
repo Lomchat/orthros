@@ -109,7 +109,7 @@ export class NodeScenario {
     this.nextCheck = nowMs + 5;
     while (this.pending.length && this.pending[0][0] <= nowMs) this.push(this.pending.shift()[1]);
     const t = this.now(), d3d = this.vm.d3dDevice;
-    if (this.firstFrameAt === null && d3d?.frames > 0) this.firstFrameAt = t;
+    if (this.firstFrameAt === null && d3d?.frames > 0) { this.firstFrameAt = t; this.log(`[input] first Direct3D frame at ${t.toFixed(1)}s (${(this.vm.guestInsns / 1e6).toFixed(0)} M guest instructions)`); }
     for (const ev of this.events) {
       if (ev.done) continue;
       const base = ev.rel ? this.firstFrameAt : ev.anchored ? this.anchorAt : 0;

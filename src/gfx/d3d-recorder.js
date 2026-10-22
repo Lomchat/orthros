@@ -367,8 +367,10 @@ export class Recorder {
     else this.w.put(OP.SURF_DIRTY, sf.id, gen, NO_RECT);
   }
   surfaceMem(sf) { const rr = recOf(sf); if (rr && !rr.destroyed && !this.link.failed && sf !== this.readbackOf) this.w.c2(OP.SURF_MEM, sf.id, sf.mem); }
-  volumeMem(t, i) { if (t.rec && !t.rec.destroyed && !this.link.failed) this.w.c3(OP.VOL_MEM, t.id, i, t.levels[i].mem); }
-  volumeUpdated(t, i) { this.volumeMem(t, i); }
+  volumeMem(t, i) { if (t.rec && !t.rec.destroyed && !this.link.failed) this.w.put(OP.VOL_MEM, t.id, i, t.levels[i].mem, t.rec.gen | 0); }
+  // (new contents of a volume level: a new generation, as surfaceDirty's — until the render worker uploads it, a write
+  // to the texture waits for the commands that still read it, beforeWrite)
+  volumeUpdated(t, i) { const rr = recOf(t); if (rr && !rr.destroyed && !this.link.failed) rr.gen = ++this.link.gen; this.volumeMem(t, i); }
   // (IDirect3DBaseTexture::SetLOD: the mirror's texture follows it — the backend's sampler reads it; not yet recorded:
   // ensureRes sends it with the texture)
   textureLod(t) { if (t.rec && !t.rec.destroyed && !this.link.failed) this.w.c2(OP.TEX_LOD, t.id, t.lod >>> 0); }
