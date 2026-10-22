@@ -52,7 +52,7 @@ function runOnce() {
     cpu: (cpu1.user + cpu1.system) / 1000 / n, // ms of process CPU per frame
     wall: (marks[1] - marks[0]) / n,
     zero: (st1.zero - st0.zero) / n, throttled: (st1.throttled - st0.throttled) / n, picks: (picks1 - picks0) / n,
-    mean: iv.reduce((a, b) => a + b, 0) / iv.length, p99: iv[Math.floor(iv.length * 0.99)], max: iv[iv.length - 1],
+    mean: iv.reduce((a, b) => a + b, 0) / iv.length, p50: iv[iv.length >> 1], p90: iv[Math.floor(iv.length * 0.9)], p99: iv[Math.floor(iv.length * 0.99)], max: iv[iv.length - 1],
   };
 }
 
@@ -61,4 +61,4 @@ for (let r = 0; r < RUNS; r++) res.push(runOnce());
 const stat = (k, d = 2) => { const v = res.map((x) => x[k]).sort((a, b) => a - b); return `${v[v.length >> 1].toFixed(d)} (min ${v[0].toFixed(d)}, max ${v[v.length - 1].toFixed(d)})`; };
 console.log(`per frame (median of ${RUNS} runs): CPU ${stat('cpu')} ms, wall ${stat('wall')} ms`);
 console.log(`  Sleep(0) ${stat('zero', 1)}, throttled ${stat('throttled', 1)}, scheduling decisions ${stat('picks', 1)}`);
-console.log(`  frame interval: mean ${stat('mean')} ms, p99 ${stat('p99')} ms, max ${stat('max')} ms`);
+console.log(`  frame interval: mean ${stat('mean')} ms, p50 ${stat('p50')} ms, p90 ${stat('p90')} ms, p99 ${stat('p99')} ms, max ${stat('max')} ms`);

@@ -80,13 +80,16 @@ const server = opt('server-port') ? null : createServer({ telemetryDir: opt('tel
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 if (server) await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server ? server.address().port : Number(opt('server-port'));
+// --page-origin <origin>: the page loaded from there — a proxy in front of this server (tools/net-proxy.mjs: a player's
+// connection, HTTP/2 over TLS; the browser then ignores certificate errors) — the harness's own requests still go here
+const pageOrigin = opt('page-origin') ?? `http://127.0.0.1:${port}`;
 // ORTHROS_CHROME_ARGS: extra browser switches, space-separated (e.g. --js-flags=--trace-gc with DEBUG=pw:browser to see them)
-const chromeArgs = [...(process.env.ORTHROS_CHROME_ARGS ?? '').split(' ').filter(Boolean), '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required'];
+const chromeArgs = [...(process.env.ORTHROS_CHROME_ARGS ?? '').split(' ').filter(Boolean), ...(opt('page-origin')?.startsWith('https:') ? ['--ignore-certificate-errors'] : []), '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required'];
 // --opfs <user-data-dir>: persistent browser profile so the worker's OPFS mirror of the game profile (saves,
 // Options.ini) survives across runs, exactly as in a real page (the default fresh context has no persistence).
 const opfsDir = opt('opfs');
-const browser = opfsDir ? await chromium.launchPersistentContext(opfsDir, { args: chromeArgs, viewport: { width: 1280, height: 900 } }) : await chromium.launch({ args: chromeArgs });
-const page = opfsDir ? (browser.pages()[0] ?? await browser.newPage()) : await browser.newPage({ viewport: { width: 1280, height: 900 } });
+const browser = opfsDir ? await chromium.launchPersistentContext(opfsDir, { args: chromeArgs, viewport: { width: 1280, height: 900 }, ignoreHTTPSErrors: pageOrigin.startsWith('https:') }) : await chromium.launch({ args: chromeArgs });
+const page = opfsDir ? (browser.pages()[0] ?? await browser.newPage()) : await browser.newPage({ viewport: { width: 1280, height: 900 }, ignoreHTTPSErrors: pageOrigin.startsWith('https:') });
 const logFile = fs.createWriteStream(path.join(out, `${name}.log`));
 // --stop-on <text>: the run ends (as at its time limit: report, profile saved) once a log line contains that text — a
 // benchmark of the time to some point (e.g. the end of a game's first-launch computation) without running past it
@@ -178,7 +181,7 @@ if (args.includes('--ui') && !args.includes('--quiet-page')) await page.addInitS
 // (--server-port of one started with --accounts)
 if (opt('account')) {
   const [username, password] = opt('account').split(':');
-  await page.goto(`http://127.0.0.1:${port}/?menu`);
+  await page.goto(`${pageOrigin}/?menu`);
   const signed = await page.evaluate(async (c) => {
     const post = (route) => fetch(route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
     let r = await post('/api/account/login'); if (r.status === 401) r = await post('/api/account/register');
@@ -187,7 +190,7 @@ if (opt('account')) {
   console.log(`[account] ${username}: ${signed === 200 ? 'signed in' : 'HTTP ' + signed}`);
   if (!args.includes('--ui')) q.set('cloud', '1'); // (without the header too: the saves restored and sent as a player's)
 }
-await page.goto(`http://127.0.0.1:${port}/?${q}`);
+await page.goto(`${pageOrigin}/?${q}`);
 if (bench && args.includes('--ui')) { await page.locator('#benchStart').click({ timeout: 30000 }).then(() => console.log('[bench] started'), (e) => console.log(`[bench] no start button: ${e.message.split('\n')[0]}`)); }
 const t0 = Date.now();
 /** The server's transport totals: compressed ranges, the game's own reads (demand) and the background downloads apart. */
