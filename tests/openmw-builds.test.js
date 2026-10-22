@@ -80,3 +80,23 @@ test('r5: r4 plus its patch, the same exports; preloads put off what waits for t
   const page = path.join(DEFAULT_ENGINES_DIR, 'openmw-web-v1.5.3-orthros-r5', 'index.html');
   if (fs.existsSync(page)) assert.ok(fs.readFileSync(page, 'utf8').includes('ENV.OPENMW_PRELOAD_WAIT_MS='), 'the installed page takes ?preloadwait=');
 });
+
+test('r6: r5 plus its patch, the same exports; no FBO status asked again per composite map, no distant chunk built for a ray', () => {
+  const r5 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r5'), r6 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r6');
+  assert.ok(r6, 'r6 is a build');
+  assert.deepEqual(r6.patches, [...r5.patches, 'orthros-r6.patch']);
+  assert.deepEqual(r6.exports, r5.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r6.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const k of [
+    // (the composite maps' FBO: its status asked until found complete)
+    '= mOrthrosFboComplete ? GL_FRAMEBUFFER_COMPLETE_EXT : ext->glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);',
+    'mOrthrosFboComplete = status == GL_FRAMEBUFFER_COMPLETE_EXT;',
+    // (a ray: the chunks built already, a missing one not built nor its node kept; the active grid's built as before)
+    'virtual osg::ref_ptr<osg::Node> getChunkForRay(', 'osg::ref_ptr<osg::Node> ObjectPaging::getChunkForRay(',
+    'return getChunk(size, center, lod, lodFlags, activeGrid, viewPoint, false);', 'missing = true;',
+    'isCullVisitor ? nullptr : &partial', '*partial = pat;'])
+    assert.ok(added.includes(k), k);
+  // (the drawing's traversal unchanged: getChunk with its compile flag when no ray asks)
+  assert.ok(added.includes(': m->getChunk(entry.mNode->getSize(), entry.mNode->getCenter(), lod, entry.mLodFlags, activeGrid,'));
+});
