@@ -424,7 +424,7 @@ export function registerDirect3D9(api, vm) {
       dev.initShadow(c.proc);
       mem.write32(out, dev.ptr);
       vm.d3dDevice = dev;
-      vm.log('gfx', `d3d9: CreateDevice ${dev.pp.width}x${dev.pp.height} fmt ${dev.pp.format} ${dev.pp.windowed ? 'windowed' : 'fullscreen'} depth ${dev.pp.autoDepth ? dev.pp.depthFormat : 'none'} behavior 0x${behavior.toString(16)} backend ${dev.gfx ? 'yes' : 'none'}`);
+      vm.log('gfx', `d3d9: CreateDevice ${dev.pp.width}x${dev.pp.height} fmt ${dev.pp.format} ${dev.pp.windowed ? 'windowed' : 'fullscreen'} depth ${dev.pp.autoDepth ? dev.pp.depthFormat : 'none'} behavior 0x${behavior.toString(16)} swap ${dev.pp.swap} interval 0x${(dev.pp.interval >>> 0).toString(16)} backend ${dev.gfx ? 'yes' : 'none'}`);
       return D3D_OK;
     }
   }

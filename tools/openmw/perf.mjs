@@ -8,16 +8,23 @@
 // engine's CPU and the browser's (upper bounds: vertex work still runs). Not a gameplay check.
 // Always through tools/with-browser-slot.sh:
 //   tools/with-browser-slot.sh node tools/openmw/perf.mjs <manifest> --url <origin> [--seconds 60] [--warm 10]
-//     [--start -2,-9] [--query tier=high] [--discard] [--run] [--out <dir>]   (--run: Shift held, running)
+//     [--start -2,-9] [--query tier=high] [--discard] [--run] [--profile] [--out <dir>] [--mem-every s]   (--run: Shift held, running;
+//     --profile: a CPU profile of the measured seconds, its longest busy stretches and what they ran, tools/port-perf.mjs;
+//     --glide <dx>,<dy>[,<speed>[,<z>]]: instead of walking, the player carried in a straight line from the start
+//     cell's centre, <speed> units a second (300: a run) at height <z> (3000) — several cells crossed the same way
+//     at every run, whatever stands in the way)
+// --mem-every s: the page's memory every s seconds of the walk (port-perf.mjs memSampler) and its growth per 10 minutes;
+// --seconds up to 3600 then (300 otherwise)
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { startProfile, stopProfile, memSampler } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), id = args[0], arg = (k, d = null) => args.includes(k) ? args[args.indexOf(k) + 1] : d;
 if (!id) throw new Error('Expected a manifest id');
-const base = arg('--url', 'http://localhost:8080'), seconds = Math.max(5, Math.min(300, Number(arg('--seconds', 60))));
+const base = arg('--url', 'http://localhost:8080'), seconds = Math.max(5, Math.min(arg('--mem-every') ? 3600 : 300, Number(arg('--seconds', 60))));
 const warm = Math.max(0, Number(arg('--warm', 10))), start = arg('--start', '-2,-9'), extra = arg('--query', '');
-const discard = args.includes('--discard');
+const discard = args.includes('--discard'), profile = args.includes('--profile'), glide = arg('--glide');
 const dir = arg('--out', `/tmp/orthros-scratch/openmw-perf-${id}`);
 fs.mkdirSync(dir, { recursive: true }); process.env.TMPDIR = dir;
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
@@ -25,6 +32,7 @@ const faults = [];
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   page.on('pageerror', (e) => faults.push(e.message));
+  page.on('crash', () => console.error('perf: the page crashed'));
   // (a measurement: nothing reported to the server — its learned order, telemetry and the gateway's client log stay clean)
   await page.route((u) => /\/clientlog$|\/api\/(telemetry|prefetch|profile-seed|programs|regions)(\/|$)/.test(u.pathname), (r) => r.request().method() === 'GET' ? r.continue() : r.fulfill({ status: 204, body: '' }));
   await page.addInitScript((discard) => {
@@ -76,13 +84,28 @@ try {
   const before = await page.evaluate(() => ({ stall: window.__streamfsStats?.stallMs ?? null, misses: window.__omwShaderMisses ?? 0, cell: window.omw?.state?.['orthros.cell'] ?? null }));
   // (the exterior cells walked through: view.lua's report, looked at every half second)
   await page.evaluate(() => { const P = window.orthrosPerf; P.cells = new Set(); P.cellLook = setInterval(() => { const c = window.omw?.state?.['orthros.cell']; if (c) P.cells.add(c); }, 500); });
+  const cdp = profile ? await startProfile(page) : null;
   await page.evaluate(() => { window.orthrosPerf.on = true; });
-  if (args.includes('--run')) await page.keyboard.down('Shift');
-  await page.keyboard.down('w');
+  const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => Module.HEAPU8.length') : null;
   const end = Date.now() + seconds * 1000;
-  while (Date.now() < end) { await page.mouse.move(640 + 60, 400, { steps: 4 }); await page.mouse.move(640, 400, { steps: 4 }); await page.waitForTimeout(400); }
-  await page.keyboard.up('w');
-  if (args.includes('--run')) await page.keyboard.up('Shift');
+  if (glide) {
+    // (a straight line at a set speed from the start cell's centre, whatever is in the way: the engine's debug
+    // teleport, omw_debug_teleport, every 33 ms — the cells crossed and their loads the same at every run)
+    const [dx, dy, speed, z] = glide.split(',').map(Number), [cx, cy] = start.split(',').map(Number), n = Math.hypot(dx, dy) || 1;
+    await page.evaluate(({ x0, y0, vx, vy, z }) => {
+      const t0 = performance.now();
+      window.orthrosPerf.glide = setInterval(() => { const t = (performance.now() - t0) / 1000; window.Module._omw_debug_teleport(x0 + vx * t, y0 + vy * t, z); }, 33);
+    }, { x0: (cx + 0.5) * 8192, y0: (cy + 0.5) * 8192, vx: dx / n * (speed || 300), vy: dy / n * (speed || 300), z: Number.isFinite(z) ? z : 3000 });
+    await page.waitForTimeout(seconds * 1000);
+    await page.evaluate(() => clearInterval(window.orthrosPerf.glide));
+  } else {
+    if (args.includes('--run')) await page.keyboard.down('Shift');
+    await page.keyboard.down('w');
+    while (Date.now() < end) { await page.mouse.move(640 + 60, 400, { steps: 4 }); await page.mouse.move(640, 400, { steps: 4 }); await page.waitForTimeout(400); }
+    await page.keyboard.up('w');
+    if (args.includes('--run')) await page.keyboard.up('Shift');
+  }
+  const mem = memStop ? await memStop() : null;
   const r = await page.evaluate(({ before }) => {
     const P = window.orthrosPerf; P.on = false; clearInterval(P.cellLook);
     const q = (a, p) => { const s = [...a].sort((x, y) => x - y); return s.length ? +s[Math.min(s.length - 1, Math.floor(s.length * p))].toFixed(1) : null; };
@@ -102,7 +125,8 @@ try {
       phase: window.__omwPhase ?? null,
     };
   }, { before });
-  const out = { manifest: id, discard, seconds, warm, start, query: extra, bootMs, ...r, faults };
+  const prof = cdp ? await stopProfile(cdp, r.frames, path.join(dir, 'perf.cpuprofile')) : undefined;
+  const out = { manifest: id, discard, seconds, warm, start, glide, query: extra, bootMs, ...r, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1), memSamples: mem.samples } : {}), faults, profile: prof };
   fs.writeFileSync(path.join(dir, 'perf.json'), JSON.stringify(out, null, 2));
   await page.screenshot({ path: path.join(dir, 'perf.png') });
   console.log(JSON.stringify(out));

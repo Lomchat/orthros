@@ -15,6 +15,10 @@
 //     [--apis <n>: the n APIs with the most time per frame (the accounting's sampled estimate), each with the time the
 //     deferred-queue drain run before it took (vm.drainDeferred, timed on every call) — the drain is part of the
 //     sampled time of whichever JavaScript API follows queued calls]
+//     [--ab NAME=value[:frames]: A/B within the run — the measured frames alternate, in blocks of `frames` (25), between
+//     the debug global as it is and NAME=value (the scene the same for both, the machine's load too); each side's
+//     categories, draws and recorder counters reported apart]
+//     [--dbg NAME=value,...: debug globals set at start, as the harness's --dbg (e.g. ORTHROS_VB_CHECK=1, ORTHROS_VB_LAZY=0)]
 // With --gfx recorder the link's counters per frame follow (bytes of buffer data copied into the ring, fence waits...).
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,17 +31,15 @@ import { Registry } from '../src/win32/registry.js';
 import { loadManifest, makeVfs } from '../src/host/cli.js';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { acct, CATS, C } from '../src/core/frame-acct.js';
-import { WebGLDevice } from '../src/gfx/d3d8-webgl.js';
-import { RenderLink, Recorder } from '../src/gfx/d3d-recorder.js';
-import { noopGl } from './noop-gl.mjs';
 import { DEFER_QUEUE } from '../src/cpu/jit/runtime.js';
-import { PROGRAM_GLSL_VERSION, ffKeyRegenerable } from '../src/gfx/program-id.js';
+import { installNodeGfx, programsLine } from './node-gfx.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const target = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--'));
 if (!target) { console.error('usage: node tools/framebench.mjs <manifest id | manifest.json> [--gfx backend|recorder|none] ...'); process.exit(2); }
 const gfxKind = opt('gfx', 'backend'), minDraws = Number(opt('min-draws', 100)), warm = Number(opt('warm', 300)), frames = Number(opt('frames', 600)), limit = Number(opt('limit', 900));
+for (const kv of (opt('dbg', '') || '').split(',').filter(Boolean)) { const [k, v = ''] = kv.split('='); if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) globalThis[k] = v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); }
 const VK_SCAN = { 13: 0x1c, 27: 1, 32: 0x39 };
 const inputs = (opt('input', '') || '').split(';').filter(Boolean).map((e) => { const [t, kind, a = ''] = e.split(':'); return { t: Number(t.replace('@', '')), abs: t.startsWith('@'), kind, a: a.split(',').map(Number) }; });
 /** scripted input, as the harness gives it (a key held ~120 ms, a click held ~100 ms), `at` ms on the guest clock */
@@ -53,25 +55,13 @@ const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-framebench-'));
 if (opt('profile')) fs.cpSync(opt('profile'), saveDir, { recursive: true });
 const vfs = makeVfs(manifest, dir, saveDir);
 const clock = new RealClock();
-/** the recorder's link (--gfx recorder): its counters are reported per frame */
-let link = null, stats0 = null;
 const host = new HeadlessHost({ clock, width: manifest.display?.width ?? 1024, height: manifest.display?.height ?? 768 });
 // --programs <programs2-<manifest>.json>: the server's learned programs (as its list for this translator version)
 // compiled ahead, as a session does; reported: programs built at a draw, learned ones taken (--gfx backend)
-let pcache = null, gfxDev = null;
-if (opt('programs')) {
-  const j = JSON.parse(fs.readFileSync(opt('programs'), 'utf8')), sessions = Number(j.sessions) || 0;
-  const list = j.programs.filter((r) => r[8] === PROGRAM_GLSL_VERSION || ffKeyRegenerable(r[1]) || ((r[8] ?? null) === null && r[7] >= sessions + 1 - 4)).sort((a, b) => a[5] - b[5]);
-  pcache = { queue: list.map(([id, key, vs, fs2, attrs, , , , v]) => ({ id, key: args.includes('--programs-raw') ? '' : key, vs, fs: fs2, attrs, v })), ready: new Map(), learned: [], used: [], t0: performance.now(), parallel: true, started: 0, pending: 0, hits: 0, devices: new Set() };
-  console.log(`programs: ${list.length} of ${j.programs.length} learned listed${args.includes('--programs-raw') ? ' (keys dropped: their sources as learned)' : ''}`);
-}
-if (gfxKind === 'backend') { const gl = noopGl(); host.gfx = { createDevice: (dev) => (gfxDev = new WebGLDevice(gl, dev, { programCache: pcache })) }; }
-else if (gfxKind === 'recorder') {
-  const words = new Int32Array(new SharedArrayBuffer(16 << 20));
-  link = new RenderLink({ words, replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
-  link.drain = function () { this.w.consumed = this.replayer.reader.consumed = this.w.produced; };
-  host.gfx = { createDevice: (dev) => new Recorder(link, dev) };
-}
+const gfx = installNodeGfx(host, gfxKind, { programs: opt('programs'), raw: args.includes('--programs-raw'), log: (l) => console.log(l) });
+/** the recorder's link (--gfx recorder): its counters are reported per frame */
+const link = gfx.link;
+let stats0 = null;
 const vm = new Vm({ vfs, clock, host, logKinds: process.env.FB_LOG ? process.env.FB_LOG.split(',') : ['crash'] });
 vm.registry = new Registry();
 vm.registry.seed(manifest.registry);
@@ -80,6 +70,17 @@ vm.host.waitEvent = (ms) => { const p = acct.enter(C.sleep); try { clock.sleep(M
 const t0 = performance.now();
 let firstFrameAt = null, streak = 0, phase = 'wait', counted = 0, lastDraws = 0, cpu0 = null, insn0 = 0, wall0 = 0;
 const sums = new Float64Array(CATS.length);
+// --ab: the two sides' sums (categories, draws, frames, recorder counters)
+const abOpt = opt('ab', null), ab = abOpt && (() => {
+  const [kv, block = '25'] = abOpt.split(':'), [k, v = ''] = kv.split('=');
+  return { k, a: globalThis[k], b: v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v), block: Number(block), side: 0, sums: [new Float64Array(CATS.length), new Float64Array(CATS.length)], draws: [0, 0], n: [0, 0], stats: [{}, {}], last: null };
+})();
+const abSet = (side) => { ab.side = side; globalThis[ab.k] = side ? ab.b : ab.a; ab.last = link && { ...link.stats }; };
+const abFrame = (cats, d) => {
+  const S = ab.side; ab.n[S]++; ab.draws[S] += d; for (let i = 0; i < CATS.length; i++) ab.sums[S][i] += cats[i];
+  if (link) { for (const k in link.stats) ab.stats[S][k] = (ab.stats[S][k] ?? 0) + link.stats[k] - (ab.last[k] ?? 0); ab.last = { ...link.stats }; }
+  if (counted % ab.block === 0) abSet(1 - S);
+};
 let drawsSum = 0;
 // --prof: the sampling profiler over the measured frames (node:inspector, this thread)
 const profFile = opt('prof', null);
@@ -110,11 +111,15 @@ const apiTable = () => {
 };
 const finish = (why) => {
   if (apiTop) apiTable();
-  if (pcache && gfxDev) console.log(`programs: built at a draw ${gfxDev.stats.programs} (${(gfxDev.stats.programMs ?? 0).toFixed(0)} ms), learned compiled ahead ${pcache.started}, taken ${pcache.hits}, regenerated from their key ${pcache.regenerated ?? 0}, other versions skipped ${pcache.stale ?? 0}`);
+  if (gfxKind === 'backend') { const l = programsLine(gfx); if (l) console.log(l); }
   if (session) session.post('Profiler.stop', (err, r) => { if (!err) fs.writeFileSync(profFile, JSON.stringify(r.profile)); });
   const cpu = process.cpuUsage(cpu0), wall = performance.now() - wall0, gi = vm.guestInsns - insn0;
   const mean = CATS.map((c, i) => [c, sums[i] / counted]).filter(([, v]) => v >= 0.005).sort((a, b) => b[1] - a[1]);
   console.log(`${why}: ${manifest.id ?? target} gfx=${gfxKind}: ${counted} frames, ${(drawsSum / counted).toFixed(0)} draws/frame, ${(wall / counted).toFixed(2)} ms/frame wall, ${((cpu.user + cpu.system) / 1000 / counted).toFixed(2)} ms/frame process CPU; mean ms/frame: ${mean.map(([c, v]) => `${c} ${v.toFixed(2)}`).join(', ')}; guest ${(gi / counted / 1e6).toFixed(2)} M instructions/frame`);
+  if (ab) for (const S of [0, 1]) {
+    const n = ab.n[S], m = CATS.map((c, i) => [c, ab.sums[S][i] / n]).filter(([, v]) => v >= 0.005).sort((a, b) => b[1] - a[1]);
+    console.log(`A/B ${ab.k}=${S ? ab.b : ab.a}: ${n} frames, ${(ab.draws[S] / n).toFixed(0)} draws/frame; mean ms/frame: ${m.map(([c, v]) => `${c} ${v.toFixed(3)}`).join(', ')}${link ? `; recorder per frame: ${Object.entries(ab.stats[S]).filter(([, v]) => v).map(([k, v]) => `${k} ${+(v / n).toFixed(2)}`).join(', ')}` : ''}`);
+  }
   if (link) console.log(`recorder per frame: ${Object.keys(link.stats).map((k) => [k, (link.stats[k] - stats0[k]) / counted]).filter(([, v]) => v).map(([k, v]) => `${k} ${+v.toFixed(2)}`).join(', ')}`);
   fs.rmSync(saveDir, { recursive: true, force: true });
   process.exit(0);
@@ -128,8 +133,8 @@ host.frameHook = (dev) => {
   const d = dev.draws - lastDraws; lastDraws = dev.draws;
   if (args.includes('--verbose') && dev.frames % 100 === 0) console.log(`[framebench] ${((now - t0) / 1000).toFixed(0)} s: frame ${dev.frames}, ${d} draws in the last, phase ${phase}`);
   if (phase === 'wait') { streak = d >= minDraws ? streak + 1 : 0; if (streak >= 30) { phase = 'warm'; counted = 0; } }
-  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); stats0 = link && { ...link.stats }; insn0 = vm.guestInsns; wall0 = now; acct0 = { calls: [...acct.idxCalls], n: [...acct.idxN], ms: [...acct.idxMs] }; session?.post('Profiler.start'); } }
-  else { counted++; drawsSum += d; for (let i = 0; i < CATS.length; i++) sums[i] += cats[i]; if (counted >= frames) finish('measured'); }
+  else if (phase === 'warm') { if (++counted >= warm) { phase = 'measure'; counted = 0; sums.fill(0); drawsSum = 0; cpu0 = process.cpuUsage(); stats0 = link && { ...link.stats }; insn0 = vm.guestInsns; wall0 = now; acct0 = { calls: [...acct.idxCalls], n: [...acct.idxN], ms: [...acct.idxMs] }; session?.post('Profiler.start'); if (ab) abSet(0); } }
+  else { counted++; drawsSum += d; for (let i = 0; i < CATS.length; i++) sums[i] += cats[i]; if (ab) abFrame(cats, d); if (counted >= frames) finish('measured'); }
   if (now - t0 > limit * 1000) { console.log(`time limit in phase ${phase} (${counted} frames, last frame ${d} draws)`); if (phase === 'measure' && counted) finish('time limit'); process.exit(1); }
 };
 for (const e of inputs) if (e.abs) schedule(e, clock.now() + e.t * 1000); // ('@' times: from the start)

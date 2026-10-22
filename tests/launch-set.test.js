@@ -421,3 +421,13 @@ test('the startup progress on a fast link counts the blocks it fetches whole, ne
   assert.equal(all.at(-1).total, 2 * BLOCK, 'its two blocks, whole');
   assert.ok(all.every((p) => p.bytes <= p.total), JSON.stringify(all));
 });
+
+test('a light copy of the file\'s own size (a WAD\'s, redrawn in place) stands for the same pieces, not for all of it', async () => {
+  const { HttpBackend, BLOCK } = await import('../src/vfs/http-backend.js');
+  const { forLink } = await import('../src/vfs/launch-set.js');
+  const tree = { dirs: { maps: { dirs: {}, files: { 'a.wad': { size: 8 * BLOCK, mtime: 1, light: 8 * BLOCK } } } }, files: {} };
+  const files = new HttpBackend('/game/g/', tree);
+  const list = [['maps/a.wad', 3, 0b1010, 10, 1], ['.light/maps/a.wad', 5, 0b1, 20, 0]];
+  assert.deepEqual(forLink(files, list, false), [['.light/maps/a.wad', 3, 0b1010, 10, 1], ['.light/maps/a.wad', 5, 0b1, 20, 0]]);
+  assert.deepEqual(forLink(files, list, true), [['maps/a.wad', 3, 0b1010, 10, 1], ['maps/a.wad', 5, 0b1, 20, 0]], 'a fast link: the file, the same pieces');
+});

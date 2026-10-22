@@ -44,14 +44,15 @@ export class ByteWriter {
  * objects rather than raw depths.
  */
 export class Code extends ByteWriter {
-  constructor(cap) { super(cap); this.labels = []; this.hints = []; this.trackLo = 0; this.trackN = 0; this.used = 0; }
+  constructor(cap) { super(cap); this.labels = []; this.hints = []; this.trackLo = 0; this.trackN = 0; this.used = this.written = 0; }
   /** empty the builder for another function body (the buffer is kept) */
-  reset() { this.len = 0; this.labels = []; this.hints = []; this.callsTo = null; this.trackLo = this.trackN = this.used = 0; return this; }
+  reset() { this.len = 0; this.labels = []; this.hints = []; this.callsTo = null; this.trackLo = this.trackN = this.used = this.written = 0; return this; }
   /**
    * Local accesses recorded: bit k of `used` set by every get / set / tee of local trackLo + k (k < trackN, at most 32;
-   * trackN = 0: nothing recorded) — which of a range of locals a function body touches.
+   * trackN = 0: nothing recorded) — which of a range of locals a function body touches; bit k of `written` by its sets
+   * and tees only.
    */
-  track(lo, n) { this.trackLo = lo; this.trackN = n; this.used = 0; return this; }
+  track(lo, n) { this.trackLo = lo; this.trackN = n; this.used = this.written = 0; return this; }
 
   /**
    * Branch hint for the next instruction (an `if` or `br_if`): likely taken or not. Emitted in the
@@ -85,8 +86,8 @@ export class Code extends ByteWriter {
 
   // ---- variables
   get(i) { if ((i - this.trackLo) >>> 0 < this.trackN) this.used |= 1 << (i - this.trackLo); this.byte(0x20).u(i); return this; }
-  set(i) { if ((i - this.trackLo) >>> 0 < this.trackN) this.used |= 1 << (i - this.trackLo); this.byte(0x21).u(i); return this; }
-  tee(i) { if ((i - this.trackLo) >>> 0 < this.trackN) this.used |= 1 << (i - this.trackLo); this.byte(0x22).u(i); return this; }
+  set(i) { if ((i - this.trackLo) >>> 0 < this.trackN) { this.used |= 1 << (i - this.trackLo); this.written |= 1 << (i - this.trackLo); } this.byte(0x21).u(i); return this; }
+  tee(i) { if ((i - this.trackLo) >>> 0 < this.trackN) { this.used |= 1 << (i - this.trackLo); this.written |= 1 << (i - this.trackLo); } this.byte(0x22).u(i); return this; }
   gget(i) { this.byte(0x23).u(i); return this; }
   gset(i) { this.byte(0x24).u(i); return this; }
 

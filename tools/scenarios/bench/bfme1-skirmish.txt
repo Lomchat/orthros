@@ -1,12 +1,13 @@
 # The Battle for Middle-earth: the intro videos skipped, the main menu, a skirmish started (the steps of
 # tools/scenarios/bfme-first.txt), one minute of play. Coordinates for 800x600 (a first launch's settings; another
-# display is scaled). The menu is the 2D one of a first launch or the 3D one of richer settings. The waits count draws
-# per frame (loading screen at most 130, play more), not frames per second.
+# display is scaled). The menu is the 2D one of a first launch (20-60 draws per frame), of 1.03's canonical
+# first-launch profile (800x600 Medium: ~100 — the former ranges 20-60 and 150+ never matched it) or the 3D one of
+# richer settings (~160). The waits count draws per frame (loading screen at most 130, play more), not frames per second.
 +3:key:27
 +6:key:27
 +9:key:27
 +12:key:27
-+20:waitframe:20,60,150,100000
++20:waitframe:20,100000
 0:mark:menu
 40:click:400,300
 65:move:90,573

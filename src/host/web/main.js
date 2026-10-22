@@ -1,9 +1,8 @@
 // Page side: manifest picker, canvases handed to the worker, input capture into the shared ring,
 // audio worklet fed from the shared float ring, perf HUD, and a small window.orthros API for the
 // headless harness (status, stats, screenshots, logs).
-import { CTL, IN_RING, EV, AUDIO_RING_FRAMES, AUDIO_RATE } from '../browser-host.js';
+import { CTL, IN_RING, EV, AUDIO_RING_FRAMES, AUDIO_RATE } from '../host-proto.js';
 import { mountHome } from './home.js';
-import { loadBench, BenchRun } from './bench.js';
 import { SummaryClock } from '../perf-summary.js';
 import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
 import { resumeOnGesture, soundHintNeeded, AudioStats } from './sound.js';
@@ -156,8 +155,9 @@ async function main() {
 
 /** Bench mode: the banner (a click starts it: audio may then play), then the game with the scenario's player. */
 async function startBench(name, manifest) {
-  let def;
-  try { def = await loadBench(name, manifest); } catch (e) { showStatus(TEXT.noBench, e.message ?? String(e), null, true); return; }
+  // (bench.js and its scenario player only in bench mode: not part of a player's first load)
+  let def, BenchRun;
+  try { let loadBench; ({ loadBench, BenchRun } = await import('./bench.js')); def = await loadBench(name, manifest); } catch (e) { showStatus(TEXT.noBench, e.message ?? String(e), null, true); return; }
   const run = state.bench = new BenchRun(def, {
     state, push, EV, typeText, headless, log, capture: () => capturePointer(),
     postWorker: (m) => state.worker?.postMessage(m),

@@ -27,6 +27,7 @@ import { MATH_KERNELS, FAST_NAMES, FAST_PROF, FAST_STATS } from '../../cpu/jit/r
 import { listRegion } from '../../cpu/jit/listing.js';
 import { acct, C as ACCT, catsObject } from '../../core/frame-acct.js';
 import { refreshApiOpt } from '../../core/api-opt.js';
+import { hostWaiter } from '../../core/host-wait.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../profile-seed.js';
 import { applyProfileMoves } from '../../vfs/profile-moves.js';
 import { LearnedHeat } from '../../cpu/jit/heat.js';
@@ -448,14 +449,29 @@ let pumpPosted = false, pumpTimer = null;
 const TIMER_CLAMP_MS = 5;
 let inPumpTimer = false, timerDue = 0;
 const armChannel = new MessageChannel();
-armChannel.port1.onmessage = () => { if (!timerDue) return; const ms = timerDue - performance.now(); timerDue = 0; pumpTimer = setTimeout(pumpFromTimer, Math.max(0, ms)); };
-function pumpFromTimer() { pumpTimer = null; inPumpTimer = true; try { pump(); } finally { inPumpTimer = false; } }
+armChannel.port1.onmessage = () => { if (!timerDue) return; const ms = timerDue - performance.now(); timerDue = 0; armTimer(Math.max(0, ms)); };
+/**
+ * The timer itself (core/host-wait.js): armed earlier by the timers' measured overshoot when that would make the pump
+ * late (the rest is waited inside the pump), the injected coarse timer applied (?dbg=ORTHROS_HOST_TIMER_Q); its
+ * overshoot measured when it fires (`timerArmed`: the time it was armed for, `timerWanted`: the wake-up wanted).
+ */
+let timerArmed = 0, timerWanted = 0;
+function armTimer(ms) {
+  const now = performance.now(), a = hostWaiter.timerArm(ms, now);
+  timerArmed = now + a.ask; timerWanted = now + ms;
+  pumpTimer = setTimeout(pumpFromTimer, a.delay);
+}
+function pumpFromTimer() {
+  pumpTimer = null; inPumpTimer = true;
+  if (timerArmed) { const now = performance.now(); hostWaiter.noteTimer(now - timerArmed, now - timerWanted); timerArmed = 0; }
+  try { pump(); } finally { inPumpTimer = false; }
+}
 function schedulePump(ms) {
-  if (pumpTimer !== null) { clearTimeout(pumpTimer); pumpTimer = null; }
+  if (pumpTimer !== null) { clearTimeout(pumpTimer); pumpTimer = null; timerArmed = 0; }
   timerDue = 0; // (a timer being armed through armChannel: replaced as well)
   if (ms > 0) {
     if (inPumpTimer && ms < TIMER_CLAMP_MS && globalThis.ORTHROS_TIMER_HOP !== 0) { timerDue = performance.now() + ms; armChannel.port2.postMessage(0); return; }
-    pumpTimer = setTimeout(pumpFromTimer, ms); return;
+    armTimer(ms); return;
   }
   if (!pumpPosted) { pumpPosted = true; channel.port2.postMessage(0); }
 }
@@ -720,7 +736,7 @@ function pump() {
     const load = { pfDone: prefetch.blocks, pfTotal: prefetch.total, pfFinished: prefetch.done || (prefetch.total > 0 && prefetch.blocks >= prefetch.total), pfMB: Math.round(prefetch.bytes / 1048576),
       rgDone: regionQueue ? regionPos : 0, rgTotal: regionQueue ? regionQueue.length : 0, pgDone: pc ? pc.started : 0, pgTotal: pc ? pc.started + pc.queue.length : 0 };
     const fa = host.frameAcct.takeInterval(); if (fa) fa.heavy = acct.heavyApis; // (frame accounting of the interval: frame-acct.js)
-    post({ type: 'stats', acct: fa, load, net: netInfo(), dt, render: host.remoteGl ? 'worker' : host.gfx ? (host.gfx.mode ?? 'thread') : 'none', busy: Math.round(pumpStats.runMs / dt / 10), jitMs: Math.round((vm.jit?.stats.translateMs ?? 0) - (vm.jit?.stats.prewarmMs ?? 0)), netMs: Math.round(netMs), netReq, frameMax: iv.max, slow33: iv.slow33, slow50: iv.slow50, ioMB: Math.round((gameFilesStats?.bytes ?? 0) / 1048576), offlineMB: Math.round((offline.bytes + offlineDependencies.reduce((n, d) => n + d.bytes, 0)) / 1048576), prefetchMB: Math.round((prefetch.bytes ?? 0) / 1048576), offlineTotalMB: Math.round((offline.total + offlineDependencies.reduce((n, d) => n + d.total, 0)) / 1048576), apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, videoFrames: host.display.videoFrames, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height, programs: vm.d3dDevice.gfx?.stats.programs ?? 0, vaos: vm.d3dDevice.gfx?.stats.vaos ?? 0, programMs: Math.round(vm.d3dDevice.gfx?.stats.programMs ?? 0), programTakeMs: Math.round(vm.d3dDevice.gfx?.stats.prewarmTakeMs ?? 0), gpu: vm.d3dDevice.gfx?.stats.gpu ?? null, glCalls: vm.d3dDevice.gfx?.stats.glCalls ?? null } : null, unknownImports: vm.proc.unknownImports.size, gl: host.gfx?.stats?.() ?? null, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s threads ${threadTimes(dt)}`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${OP_NAMES[k] ?? k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPlaying: audioPlaying(vm.audio), audioMix: !vm.audio ? null : vm.audio.worklet ? 'worklet' : 'worker', audioDecodeFailures: audioDecodeStats.failures, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: hist ? [...hist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
+    post({ type: 'stats', acct: fa, load, net: netInfo(), dt, hostWait: hostWaiter.totals(), render: host.remoteGl ? 'worker' : host.gfx ? (host.gfx.mode ?? 'thread') : 'none', busy: Math.round(pumpStats.runMs / dt / 10), jitMs: Math.round((vm.jit?.stats.translateMs ?? 0) - (vm.jit?.stats.prewarmMs ?? 0)), netMs: Math.round(netMs), netReq, frameMax: iv.max, slow33: iv.slow33, slow50: iv.slow50, ioMB: Math.round((gameFilesStats?.bytes ?? 0) / 1048576), offlineMB: Math.round((offline.bytes + offlineDependencies.reduce((n, d) => n + d.bytes, 0)) / 1048576), prefetchMB: Math.round((prefetch.bytes ?? 0) / 1048576), offlineTotalMB: Math.round((offline.total + offlineDependencies.reduce((n, d) => n + d.total, 0)) / 1048576), apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, frames: host.framesPresented, videoFrames: host.display.videoFrames, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height, programs: vm.d3dDevice.gfx?.stats.programs ?? 0, vaos: vm.d3dDevice.gfx?.stats.vaos ?? 0, programMs: Math.round(vm.d3dDevice.gfx?.stats.programMs ?? 0), programTakeMs: Math.round(vm.d3dDevice.gfx?.stats.prewarmTakeMs ?? 0), gpu: vm.d3dDevice.gfx?.stats.gpu ?? null, glCalls: vm.d3dDevice.gfx?.stats.glCalls ?? null } : null, unknownImports: vm.proc.unknownImports.size, gl: host.gfx?.stats?.() ?? null, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s threads ${threadTimes(dt)}`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${OP_NAMES[k] ?? k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPlaying: audioPlaying(vm.audio), audioMix: !vm.audio ? null : vm.audio.worklet ? 'worklet' : 'worker', audioDecodeFailures: audioDecodeStats.failures, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: hist ? [...hist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
     if (hist) lastHist = hist;
     // (debugging, dbg:ORTHROS_STEP_HIST=1: the instructions translated code leaves to the interpreter, by address, logged
     // with a few samples of the x87 state every 10 s)
@@ -949,7 +965,10 @@ self.onmessage = (e) => {
       const ph = host.frameAcct.phase(String(m.label), performance.now());
       const guestMs = (ph.mean?.guest ?? 0) * (ph.frames ?? 0), perM = guestInsns > 0 ? guestMs / (guestInsns / 1e6) : 0;
       log('frames', `mark ${m.label}: ${ph.text}${vm ? `\n  API time (estimated ms, calls): ${apiPhaseTop()}` : ''}${guestInsns > 0 ? `\n  guest instructions: ${(guestInsns / 1e6).toFixed(0)} M, ${(guestInsns / 1e6 / Math.max(1, ph.frames ?? 0)).toFixed(2)} M per frame; guest time ${perM.toFixed(2)} ms per M instructions; ${(picks / Math.max(1, ph.frames ?? 0)).toFixed(0)} scheduling decisions and ${(slices / Math.max(1, ph.frames ?? 0)).toFixed(1)} slices per frame` : ''}`);
-      post({ type: 'phase', report: { ...ph, text: undefined, guestInsns, guestMsPerMInsn: perM, picks, slices } });
+      // (the host's wake-ups over the phase: how late its waits ended, the spins that made the frame limiter's last ones precise)
+      const hw = hostWaiter.take(), w = hw.wait;
+      if (w) log('frames', `mark ${m.label}: host waits ${w.waits}, ended late by ${w.overMean} ms on average (max ${w.overMax}; estimate ${hw.est} ms, timers ${hw.timerEst} ms), late for the frame ${(w.lateMs / Math.max(1, ph.frames ?? 0)).toFixed(2)} ms per frame, ${w.spins} spun (${(w.spinMs / Math.max(1, ph.frames ?? 0)).toFixed(2)} ms per frame)${hw.q ? `, injected ${hw.q} ms timer` : ''}${hw.adaptive === true ? '' : hw.adaptive ? ', adaptive waits switched' : ', adaptive waits off'}`);
+      post({ type: 'phase', report: { ...ph, text: undefined, guestInsns, guestMsPerMInsn: perM, picks, slices, hostWait: hw } });
     }
     // (the translated code cache so far: the background worker also translates the cold tier's new code)
     const bc = vm?.jit?.bg?.cache;

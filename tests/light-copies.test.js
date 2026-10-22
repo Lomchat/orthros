@@ -120,3 +120,49 @@ test('a TGA picture of a screen\'s size has a light copy: a smaller TGA of its o
   await new Promise((resolve, reject) => readLight(file, c, 5000, 6000, buf, 0, (err) => (err ? reject(err) : resolve())));
   assert.deepEqual(buf, light.subarray(5000, 6000));
 });
+
+/** A WAD3 archive: miptex lumps [name, w, h] (each level's pixels a pattern of its own), then a lump of another type */
+function wad(textures) {
+  const lumps = [];
+  for (const [name, w, h] of textures) {
+    const sizes = [w * h, (w * h) / 4, (w * h) / 16, (w * h) / 64], head = Buffer.alloc(40);
+    head.write(name, 0, 'latin1'); head.writeUInt32LE(w, 16); head.writeUInt32LE(h, 20);
+    let o = 40; for (let i = 0; i < 4; i++) { head.writeUInt32LE(o, 24 + i * 4); o += sizes[i]; }
+    const levels = sizes.map((n, i) => Buffer.from(Array.from({ length: n }, (_, k) => (k * (i + 3) + (k >> 5)) & 0xff)));
+    lumps.push([0x43, Buffer.concat([head, ...levels, Buffer.from([0, 1]), Buffer.alloc(768, 7), Buffer.alloc(2)])]);
+  }
+  lumps.push([0x42, Buffer.from('a qpic, left as it is')]);
+  const parts = [Buffer.alloc(12)], dir = [];
+  let at = 12;
+  for (const [type, b] of lumps) { const e = Buffer.alloc(32); e.writeInt32LE(at, 0); e.writeInt32LE(b.length, 4); e.writeInt32LE(b.length, 8); e[12] = type; dir.push(e); parts.push(b); at += b.length; }
+  parts[0].write('WAD3', 0, 'latin1'); parts[0].writeInt32LE(lumps.length, 4); parts[0].writeInt32LE(at, 8);
+  return Buffer.concat([...parts, ...dir]);
+}
+
+test('a WAD3 archive\'s light copy keeps its size and offsets, each texture\'s finest level redrawn from the next; any range of it reads the same', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-wad-'));
+  try {
+    const bytes = wad([['big', 128, 64], ['small', 32, 32], ['wide', 256, 128]]), f = path.join(dir, 'maps.WAD');
+    fs.writeFileSync(f, bytes);
+    const c = lightCopy(f, fs.statSync(f));
+    assert.equal(c.size, bytes.length, 'the same size');
+    assert.equal(c.mips.length, 8, 'two textures lightened: 32 × 32 is under WAD_LIGHT_FROM');
+    const read = (a, b) => new Promise((res, rej) => { const buf = Buffer.alloc(b - a + 3); readLight(f, c, a, b, buf, 3, (e) => (e ? rej(e) : res(buf.subarray(3)))); });
+    const all = await read(0, bytes.length);
+    // (the expected copy: level 0 of each lightened texture from its level 1, pixel (x, y) from (x/2, y/2); the rest as it is)
+    const want = Buffer.from(bytes);
+    for (let k = 0; k < c.mips.length; k += 4) {
+      const [d0, w, h, s1] = c.mips.slice(k, k + 4);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) want[d0 + y * w + x] = bytes[s1 + (y >> 1) * (w / 2) + (x >> 1)];
+    }
+    assert.deepEqual(all, want);
+    assert.notDeepEqual(all, bytes);
+    let s = 9;
+    for (let i = 0; i < 40; i++) { s = (s * 1103515245 + 12345) >>> 0; const a = s % bytes.length; s = (s * 1103515245 + 12345) >>> 0; const b = a + 1 + (s % (bytes.length - a)); assert.deepEqual(await read(a, b), want.subarray(a, b), `${a}-${b}`); }
+    // not a WAD3, or no texture to lighten: none
+    const other = path.join(dir, 'other.wad'); fs.writeFileSync(other, Buffer.concat([Buffer.from('WAD2'), bytes.subarray(4)]));
+    assert.equal(lightCopy(other, fs.statSync(other)), null);
+    const tiny = path.join(dir, 'tiny.wad'); fs.writeFileSync(tiny, wad([['s', 16, 16]]));
+    assert.equal(lightCopy(tiny, fs.statSync(tiny)), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

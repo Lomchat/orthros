@@ -222,3 +222,13 @@ test('a timed call running guest code (a callback, a nested wait) does not count
   const f = a.frame();
   assert.ok(Math.abs(f[C.api] - 5.3) < 1e-9 && Math.abs(f[C.draw] - 3) < 1e-9 && Math.abs(f[C.guest] - 2) < 1e-9);
 });
+
+test('phase: slow frames whose work fits in 33.4 ms are counted as paced (a frame limiter waking late)', () => {
+  const s = new FrameStats(1000), cats = (guest, wait) => { const c = new Float64Array(N_CATS); c[C.guest] = guest; c[C.wait] = wait; return c; };
+  for (let i = 0; i < 10; i++) s.add(33, cats(13, 20));
+  for (let i = 0; i < 4; i++) s.add(34.5, cats(14, 20.5)); // (paced: 14 ms of work, the rest waited)
+  for (let i = 0; i < 2; i++) s.add(45, cats(40, 5)); // (work beyond the frame)
+  const r = s.phase('next');
+  assert.equal(r.slow33, 6); assert.equal(r.slowPaced, 4);
+  assert.match(r.text, /4 of them paced/);
+});

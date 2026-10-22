@@ -42,7 +42,7 @@ export const CAT_INFO = {
   wait: 'guest threads waiting inside a nested call (pacing)',
   sleep: 'every guest thread waits: the worker sleeps until the next wake-up (pacing)',
   ioWait: 'guest threads waiting for a file read on the network (the worker idle, or a nested wait for a read)',
-  late: 'the worker resumed later than planned (timer clamping, garbage collection, other tasks)',
+  late: 'the worker resumed later than planned (timer clamping, garbage collection, other tasks), or a host wait woke after its deadline (a coarse host timer)',
 };
 export const N_CATS = CATS.length;
 /** Pacing categories: excluded from a frame's work. */
@@ -272,11 +272,13 @@ export class FrameStats {
     const prev = this.label, reads = this.phaseReads ?? 0; this.label = label; this.n = 0; this.phaseStart = at; this.phaseReads = 0;
     if (!n) return { label: prev, frames: 0, text: `phase ${prev}: no frames` };
     const dts = new Float64Array(n), works = new Float64Array(n);
-    let total = 0, s33 = 0, s40 = 0, s50 = 0, s100 = 0;
+    let total = 0, s33 = 0, s40 = 0, s50 = 0, s100 = 0, paced = 0;
     for (let f = 0; f < n; f++) {
       const o = f * K; dts[f] = rec[o]; total += rec[o];
       let w = 0; for (let i = 0; i < N_CATS; i++) w += rec[o + 1 + i]; for (const i of PACING) w -= rec[o + 1 + i]; works[f] = w;
-      if (rec[o] > SLOW_MS) { s33++; if (rec[o] > 40) s40++; if (rec[o] > VERY_SLOW_MS) s50++; if (rec[o] > 100) s100++; }
+      // (paced: a slow frame whose work fits in SLOW_MS — its length is waiting: the game's own frame limiter waking a
+      // little late, e.g. a 30 fps game's 33.3 ms frames by 1-2 ms of Sleep granularity, as on Windows)
+      if (rec[o] > SLOW_MS) { s33++; if (rec[o] > 40) s40++; if (rec[o] > VERY_SLOW_MS) s50++; if (rec[o] > 100) s100++; if (w <= SLOW_MS) paced++; }
     }
     const seconds = Math.max(total, start !== null && at > start ? at - start : 0) / 1000, minutes = seconds / 60;
     const q = (arr, x) => { const s = Float64Array.from(arr).sort(); return s[Math.min(s.length - 1, Math.floor(x * s.length))]; };
@@ -307,12 +309,13 @@ export class FrameStats {
       label: prev, frames: n, seconds: Math.round(seconds * 10) / 10, fps: Math.round(n / Math.max(1e-3, seconds) * 10) / 10,
       slow33: s33, slow40: s40, slow50: s50, per33: Math.round(s33 / Math.max(1e-6, minutes)), per40: Math.round(s40 / Math.max(1e-6, minutes)), per50: Math.round(s50 / Math.max(1e-6, minutes)),
       slow100: s100, per100: Math.round(s100 / Math.max(1e-6, minutes) * 10) / 10,
+      slowPaced: paced,
       clockReads: Math.round(reads / all),
       dt: { p50: Math.round(q(dts, 0.5) * 10) / 10, p90: Math.round(q(dts, 0.9) * 10) / 10, p99: Math.round(q(dts, 0.99) * 10) / 10, max: Math.round(q(dts, 1)) },
       work: { p50: Math.round(q(works, 0.5) * 10) / 10, p90: Math.round(q(works, 0.9) * 10) / 10, p99: Math.round(q(works, 0.99) * 10) / 10 },
       mean: catsObject(mean, 0.1), slowMean: catsObject(slowMean, 0.1), excessShares: shares, dominant: dom, worst: worstFrames, hitches,
     };
-    r.text = `phase ${prev}: ${n} frames in ${r.seconds} s (${r.fps} fps); >33 ms ${s33} (${r.per33}/min), >40 ms ${s40} (${r.per40}/min), >50 ms ${s50} (${r.per50}/min), >100 ms ${s100} (${r.per100}/min); frame ms p50 ${r.dt.p50} p90 ${r.dt.p90} p99 ${r.dt.p99} max ${r.dt.max}; work ms p50 ${r.work.p50} p90 ${r.work.p90} p99 ${r.work.p99}; accounting ${r.clockReads} clock reads per frame\n` +
+    r.text = `phase ${prev}: ${n} frames in ${r.seconds} s (${r.fps} fps); >33 ms ${s33} (${r.per33}/min${s33 ? `, ${paced} of them paced: work under ${SLOW_MS} ms` : ''}), >40 ms ${s40} (${r.per40}/min), >50 ms ${s50} (${r.per50}/min), >100 ms ${s100} (${r.per100}/min); frame ms p50 ${r.dt.p50} p90 ${r.dt.p90} p99 ${r.dt.p99} max ${r.dt.max}; work ms p50 ${r.work.p50} p90 ${r.work.p90} p99 ${r.work.p99}; accounting ${r.clockReads} clock reads per frame\n` +
       `  mean frame (ms): ${fmtCats(r.mean)}\n` +
       (s33 ? `  slow frames, mean (ms): ${fmtCats(r.slowMean)}\n  slow frames, excess over the median frame (% of the excess): ${fmtCats(shares)}; largest excess per slow frame: ${fmtCats(dom)}\n` +
         `  worst: ${worstFrames.map((w) => `${w.dt} ms (work ${w.work}: ${fmtCats(w.cats)})`).join('; ')}` +

@@ -1,0 +1,41 @@
+# BFME II, short: the steps of bfme2-skirmish.txt (which explains them: the intro skipped, the main menu, a skirmish
+# started) and two minutes of play instead of one, with orders and camera scrolls (bfme1-108-quick's: a unit selected
+# at the centre, move orders, the arrow keys — keys are not scaled with the display). Under 4 minutes once the game
+# files are in the browser. Coordinates for 800x600 (scaled to the game's display).
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++15:key:27
++18:key:27
++20:waitframe:10,30,150,100000
+0:mark:menu
+8:move:216,555
+10:click:216,555
+16:move:216,384
+18:click:216,384
+30:click:406,244
+32:text:Orthros
+35:move:327,362
+36:click:327,362
+48:move:718,572
+50:click:718,572
+51:mark:load
+52:waitframe:1,100
+0:mark:loadscreen
+1:waitframe:120,100000
+0:mark:play
+10:click:400,300
+14:rclick:500,350
+30:keydown:39
+33:keyup:39
+45:click:400,300
+48:rclick:300,250
+60:keydown:38
+63:keyup:38
+75:click:420,320
+78:rclick:550,400
+90:keydown:37
+93:keyup:37
+105:rclick:400,450
+120:mark:end

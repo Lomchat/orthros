@@ -1,0 +1,14 @@
+# The Battle for Middle-earth 1.08: the intro videos skipped, one minute in the main menu, then 30 s in the Solo play
+# menu. Coordinates for 800x600 (scaled to the game's display). An Escape that reaches the menu opens its exit box:
+# the click at 463,367 is its NO (empty background otherwise). The 2D menu draws 30-130 per frame.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++20:waitframe:30,100000
+0:mark:menu
+5:click:463,367
+60:move:90,573
+62:click:90,573
+62:mark:solo
+92:mark:end

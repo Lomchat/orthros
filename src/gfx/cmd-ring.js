@@ -60,7 +60,7 @@ export const OPS = [
   // bytes of a buffer whose contents travel in the ring (the mirror keeps its own copy: never read from guest memory):
   // buffer id, start, kind (0 written by the guest: dirty as BUF_DIRTY; 1 its contents as they are, nothing dirty), bytes
   ['BUF_DATA', 'uuub'],
-  ['VOL_MEM', 'uuu'], // texture id, level, mem
+  ['VOL_MEM', 'uuuu'], // texture id, level, mem, generation (new contents: the level uploaded again at its next use)
   ['SHADER9', 'uuuw'], // id, kind (0 vertex, 1 pixel), handle, code
   ['SHADER8', 'uuunww'], // id, kind, handle, usage, declaration tokens, code (none: fixed-function vertex processing)
   ['SHADER_DELETE', 'u'],
