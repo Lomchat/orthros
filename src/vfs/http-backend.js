@@ -270,6 +270,12 @@ export class HttpBackend {
    * not need, e.g. a loading picture) does not send the pass on through the rest first.
    */
   async prefetch(list, progress, stop = () => false, opts = {}) {
+    // (learnedOnly: its pieces kept in the store on a fast link too — that link otherwise keeps whole blocks only, and the
+    // pass would fetch the pieces again and again, the memory's pieces trimmed)
+    if (opts.learnedOnly) this.keepLearned = (this.keepLearned ?? 0) + 1;
+    try { return await this.prefetchList(list, progress, stop, opts); } finally { if (opts.learnedOnly) this.keepLearned--; }
+  }
+  async prefetchList(list, progress, stop, opts) {
     const store = this.store; if (!store || typeof fetch !== 'function') return;
     progress.bytes = 0; progress.blocks = 0; progress.done = false;
     /** @type {{path: string, size: number, mtime: number, index: number, mask: number, seen?: boolean, ahead?: boolean, skip?: boolean}[]} */
@@ -340,6 +346,8 @@ export class HttpBackend {
         const job = nextPart();
         if (!job) { if (parts.size || this.flights.size) { await (parts.size ? Promise.race(parts) : new Promise((res) => setTimeout(res, 200))); if (parts.size || next() >= 0 || nextPart()) continue; } break; }
         progress.k = job.r;
+        // (an entry asked more often than its pieces: what came was not kept — a full store —; not asked again)
+        if ((job.e.tries = (job.e.tries ?? 0) + 1) > BLOCK / CHUNK + 2) { job.e.skip = true; continue; }
         const pr = this.fetchPartBg(job.e.path, job.e.size, job.e.mtime, job.run[0], job.run[1], PRIO.prefetch, stop).then((r) => {
           if (r === null) failed = true;
           else if (r === undefined) job.e.skip = true;
@@ -811,7 +819,7 @@ export class HttpBackend {
   }
   trimPieces() { while (this.chunkBytes > MAX_CHUNK_BYTES) { const [k, v] = this.chunks.entries().next().value; this.chunks.delete(k); this.chunkBytes -= v.length; } }
   /** pieces fetched are kept in the persistent store too: on a link that is not fast (whole blocks may never come) */
-  keepPieces() { return !!this.store && !this.net.fast(); }
+  keepPieces() { return !!this.store && (!this.net.fast() || this.keepLearned > 0); }
   /** Every piece of block `index` is here: the block is assembled from them and installed (memory, store). */
   assemble(path, size, mtime, index) {
     const k = `${path}#${index}`;

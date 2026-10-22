@@ -214,6 +214,9 @@ test('a fast link before the game starts (learnedOnly): the learned pieces only,
       const p = {}; await b.prefetch([...list, ['f.big', 1, 0b1001, 20], ['f.big', 2, 0b0110, 30]], p, () => false, opts);
       assert.ok(p.done);
       for (const [path, f] of Object.entries(files)) if (path !== 'f.big') assert.ok(b.peekBlockHere(path, f.size, 3, 0) || b.pieceHere(path, f.size, 3, 0), `${path} stored`);
+      // (kept in the store, not only in memory: a fast link keeps whole blocks only otherwise — the pass fetched the same
+      // pieces again and again once the memory's pieces were trimmed: Morrowind Vanilla+'s launch set, 56 000 requests)
+      if (opts.learnedOnly) for (const c of [33, 34]) assert.ok(store.map.has(b.pieceKey('f.big', SIZE, 3, c)), `piece ${c} in the store`);
       return { most, asked: [...asked] };
     };
     const before = await run({ learnedOnly: true });

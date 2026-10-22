@@ -94,7 +94,9 @@ async function one(m, link) {
     p.on('close', (code) => resolve({ code, text }));
   });
   await proxy.close(); srv.kill('SIGTERM');
-  let run = null; try { run = JSON.parse(fs.readFileSync(runJson, 'utf8')); } catch { run = { error: `runner exited ${res.code}: ${res.text.slice(-400)}` }; }
+  let run = null; try { run = JSON.parse(fs.readFileSync(runJson, 'utf8')); } catch { /* its output's line */ }
+  if (!run) { const m = /^RESULT (.*)$/m.exec(res.text); try { run = m ? JSON.parse(m[1]) : null; } catch { /* none */ } }
+  run ??= { error: `runner exited ${res.code}: ${res.text.slice(-400)}` };
   const recs = fs.readFileSync(path.join(dir, 'proxy.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const nav = recs.find((r) => !r.mark && r.url.startsWith('/?manifest='))?.t ?? 0;
   const mark = recs.find((r) => r.mark?.kind === 'playable' && r.url.endsWith('/' + encodeURIComponent(m.name)));
