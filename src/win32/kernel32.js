@@ -309,7 +309,8 @@ export function registerKernel32(api, vm) {
       }
       st.zero++;
       const now = vm.clock.now(); // (the guest's clock: the host's time on a real clock, kept in a snapshot)
-      st.streak = now - st.last < 0.05 && vm.apiCalls - st.lastApi <= 2 ? st.streak + 1 : 0;
+      const gapOk = now - st.last < 0.05, apiOk = vm.apiCalls - st.lastApi <= 2;
+      if (gapOk && apiOk) st.streak++; else { st.streak = 0; if (!gapOk) st.brokeGap = (st.brokeGap ?? 0) + 1; else st.brokeApi = (st.brokeApi ?? 0) + 1; } // (diagnostics: why streaks end)
       st.last = now; st.lastApi = vm.apiCalls;
       if (st.streak >= 32 && !vm.sched.pickRunnable(t)) {
         st.throttled++;
@@ -317,7 +318,7 @@ export function registerKernel32(api, vm) {
         if (keepStreak) { st.last = vm.clock.now(); st.lastApi = vm.apiCalls; } // (a nested wait: the 1 ms has passed here)
         return;
       }
-      vm.sched.yieldFrom(t);
+      if (vm.sched.yieldFrom(t)) st.yields = (st.yields ?? 0) + 1; // (diagnostics: a ready thread ran)
       return;
     }
     if (ms <= 2) st.short++; else st.long++;
