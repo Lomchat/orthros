@@ -134,6 +134,99 @@ sleeps each): 1/2/3 ms sleeps re-armed from the timer callback oversleep 3.07/2.
 play is not affected (its pump never returns 'sleep': the 1 ms waits happen inside runFor). `ORTHROS_TIMER_HOP=0`: the
 timer armed directly.
 
+## Host wake-up overshoot: frame pacing on Windows (2026-10-22)
+
+`src/core/host-wait.js` (`HostWaiter`, `hostWaiter`), used by `BrowserHost.waitEvent`, `RealClock.sleep` and the
+worker's pump timer (`armTimer`); pacing loops noted by kernel32's `Sleep` (`paceStep` / `paceWoke`).
+
+**What the owner measured.** BFME1 1.08 on a Windows laptop (Chrome 154, Iris Xe, 20 threads): menu 26.8 fps, frame
+p50 35.4 / p90 46.8 / p99 52.8 ms, 431 frames > 40 ms per minute, while the work per frame was p50 9.6 / p90 13.5 ms
+of a 33 ms budget and the GPU p99 19 ms. Mean ms per frame: wait 27.2, guest 6.4, api 2.2, late 0.5, draw 0.5.
+
+**Where the time goes.** The game's main loop (`lotrbfme.exe` 0x46bf50-0x46bf69, read with Orthros' decoder) is a
+frame limiter without catch-up: `do { Sleep(0); t = timeGetTime(); } while (t - last < period); last = t;` — the next
+period counts from when the loop ended, so any lateness of its last wake-up lengthens that frame and is never given back.
+After 32 back-to-back `Sleep(0)` the throttle (docs/api-layer.md) parks the thread 1 ms; with every other thread
+waiting too, `Vm.runFor` (delay ≤ 2 ms: it does not return to the event loop) calls `Scheduler.idle` →
+`BrowserHost.waitEvent(≈1 ms)` → `Atomics.wait(1 ms)`. On Linux Chrome that wakes 0.05-0.1 ms late. On Windows it is
+a condition-variable wait on the system timer: Chromium rounds the timeout up to whole milliseconds, and the wait ends
+at a timer interrupt — every 15.625 ms by default, ~1 ms while some code of the process holds a 1 ms resolution
+(Chrome raises it for short pending timers on mains power and drops it on battery). So one `Sleep(0)` park can last
+up to ~16 ms, and the park that crosses the limiter's deadline makes the frame up to ~16 ms late: frames at 3 ticks =
+46.9 ms whenever the timer is coarse — the owner's p90 46.8 — and ~33-36 ms while it is fine (p50 35.4: the resolution
+changed during the run). Mean frame 37.3 ms = 33.3 + ~4 ms of oversleep per frame.
+
+**Why `late` did not show it.** `late` was only measured between two pumps (`gapBegin` / `gapEnd` in worker.js: the
+pump's setTimeout came back later than planned). BFME1's pump never returns 'sleep' — its waits are all ≤ 2 ms, done
+inside `runFor` by `waitEvent` — and `waitEvent` charged the whole Atomics.wait, oversleep included, to `wait` (pacing).
+Now a host wait that ends after its deadline moves the lateness to `late` — except a pacing loop's earlier waits
+(`earlyPacingWait`: waking them late only shortens the polling, the frame is not longer; counting them made a precise
+Linux host show 2.5-3.3 ms of `late` per frame from ~37 waits × 0.07 ms).
+
+**Reproduced here.** `?dbg=ORTHROS_HOST_TIMER_Q=<ms>` (Node: `--dbg`, or `dbg:` scenario steps) injects such a timer:
+every host wait (Atomics.wait in `HostWaiter.hostWait`, the pump's setTimeout) asked for t ms is rounded up to whole
+milliseconds and ends at the first multiple of the quantum (performance.now() time base) at or after that. With 15.625
+the BFME1 menu went from p50 33 / p90 35 to p50 42.5-45.8 / p90 46.6-48.7 ms (below), the owner's distribution.
+
+**The fix.** `HostWaiter.waitUntil(deadline)`:
+- measures the overshoot of its own host waits (`est`: the second largest of the last 16 — a garbage collection does
+  not raise it, a coarse timer does at once) and, for a deadline further than that, asks the host for the time left
+  minus the estimate, then waits the rest again (free: no spin);
+- spins on `performance.now()` only for a pacing loop's last waits — `lastPacingWait`: the wait ends after the loop's
+  predicted end minus the estimate — and only within 2 ms of the deadline (`SPIN_MAX_MS`); any other wait the host
+  would wake late (a background thread's `Sleep(1)`, the Miles thread's 5 ms waits) is a plain host wait, its lateness
+  accepted; an overshoot under 0.25 ms (`TOLERATE_MS`) is always accepted: on a precise host nothing changes;
+- pacing loops (kernel32 `paceStep`): a thread's short sleeps — `Sleep(0)`, `Sleep(1)`, `Sleep(2)` — with at most two
+  of its own other API calls between the end of one and the next (timeGetTime is often on the JIT's fast path, not
+  counted at all) form a loop; it ends where the thread does more (a frame renders: hundreds of calls). The loop's end
+  is the wake-up of its last sleep; the next end is the last one plus the period, the second shortest of the last 8
+  end-to-end intervals (`pacePredict`; a late frame lengthens one interval, a spurious short loop shortens one; a
+  pause over 1 s starts again; no prediction once 4 ms past it). The predicted end goes to `hostWaiter.pace` (host time).
+- the pump's timer (`armTimer`) is armed earlier by the timers' measured overshoot when that would make it late
+  (`timerArm`); the rest is waited inside the pump.
+
+The guest still wakes at or after its deadline: its clock is `performance.now()`, `Sleep`, `timeGetTime` and
+`QueryPerformanceCounter` are untouched; only the host's lateness is taken out of the loop's last wait. On Windows the
+game's own loop spins anyway (`Sleep(0)` returns at once there): spinning its last few milliseconds is what native does.
+
+**Measured** (BFME1 1.08 menu, warm profile, 20 s per arm in one session, `dbg:` switches alternated):
+
+Node (`startbench bfme1-108 --bg --input <menu A/B>`; CPU: the emulator thread's CPU time per 20 s):
+
+| arm | fps | frame p50 / p90 / p99 ms | > 40 ms per min | spin ms/frame | thread CPU s |
+|---|---|---|---|---|---|
+| no injection, adaptive off | 30.2 | 33.0 / 35.8 / 41.1 | 27 | 0 | 7.7 |
+| no injection, adaptive on | 30.2 | 33.0 / 35.6 / 40.6 | 21 | 0 | 8.0 |
+| 15.625 ms timer, off | 23.7 / 24.1 | 45.6-45.8 / 47.8-48.7 / 52.0-52.2 | 948-987 | 0 | 6.3 / 6.8 |
+| 15.625 ms timer, on | 30.3 | 32.9-33.0 / 34.9-35.0 / 37.2 | 0-3 | 7.8-8.0 | 10.7 / 10.8 |
+| 1 ms timer, off | 29.9 | 33.5 / 36.9 / 40.8 | 27 | 0 | 7.8 |
+| 1 ms timer, on | 30.2 | 32.9 / 35.2 / 38.6 | 15 | 2.1 | 10.1 |
+
+Headless Chromium (`tools/headless.mjs bfme1-108 --gl-discard --profile-dir <warm> --input-file <menu A/B>`):
+
+| arm | fps | frame p50 / p90 / p99 ms | > 40 ms per min | mean `late` ms/frame | spin ms/frame |
+|---|---|---|---|---|---|
+| no injection, off / on | 30.2 / 30.2 | 33.1 / 35.0 / 37.7 — 33.1 / 34.7 / 36.5 | 18 / 9 | 0.3 / 0.3 | 0 / 0 |
+| 15.625 ms timer, off | 25.5 | 42.5 / 46.6 / 48.6 | 774 | 8.7 | 0 |
+| 15.625 ms timer, on | 30.2 | 33.0 / 34.3 / 36.1 | 3 | 0.2 | 7.4 |
+| 1 ms timer, off | 30.0 | 33.3 / 35.0 / 36.5 | 3 | 1.6 | 0 |
+| 1 ms timer, on | 30.3 | 32.9 / 34.5 / 36.2 | 0 | 0.1 | 1.7 |
+
+CPU cost: on a precise host none (no spin). On a 15.625 ms timer the emulator thread's CPU per frame goes from ~13 to
+~17.7 ms (0.39 → 0.54 of a core: the limiter's last ~8 ms spun instead of overslept); on a 1 ms timer ~2 ms of spin per
+frame. Without the fix that time is not idle anyway on the owner's machine: it is the frame's lateness.
+
+**What only a Windows machine can confirm**: which timer the owner's Chrome gives a worker (the bench's timing probe,
+docs/real-machine-bench.md, measures it at the start and at each mark, with the battery state), and that the frame
+p90 falls back to ~35 ms there. Loads under the injected 15.625 ms timer also showed 20-60 ms of `late` per frame (the
+loader's and the reads' waits, not a pacing loop: not spun); whether the owner's slow LOAD / START phases have part
+of their waits there is for the next bench run's `late` to tell.
+
+Tests: `tests/host-wait.test.js` (the quantum, the estimate, the waits on a fake coarse and precise host, the pacing
+prediction, the timer arming, the summaries' and phases' fields, the probe; `tools/pe/pacing.c` — a limiter without
+catch-up — on an injected 15.625 ms timer: frame p50 46.9 ms adaptive off, 33.3 on). `ORTHROS_PACE_LOG=1` logs each
+loop's end against its prediction (`[timer]` lines).
+
 ## Debug switches (`?dbg=NAME=1,...` in the browser, globals in Node)
 
 | switch | what |
@@ -157,6 +250,9 @@ timer armed directly.
 | `ORTHROS_GDI_BITMAP_FONTS` | GDI text with the built-in bitmap font only |
 | `ORTHROS_SLEEP0_KEEP_STREAK=0` | the Sleep(0) throttle's streak reset by the throttled sleep itself (the behaviour before 2026-10-21) |
 | `ORTHROS_TIMER_HOP=0` | the worker's short-sleep timer armed from the timer callback (the nesting clamp applies; before 2026-10-21) |
+| `ORTHROS_HOST_TIMER_Q=ms` | inject a coarse host timer: every host wait (Atomics.wait, the pump's setTimeout) rounded up to whole ms, then to the next multiple of `ms` (15.625: Windows' default tick; 1: a 1 ms resolution) — "Host wake-up overshoot" |
+| `ORTHROS_ADAPTIVE_SLEEP=0` | plain host waits: no early wake-up, no spin for a frame limiter's last waits (before 2026-10-22) |
+| `ORTHROS_PACE_LOG=1` | each pacing loop's end logged (`timer` log) against its prediction |
 
 Crash reports also show the instructions before each return address and 128 bytes around each register, with the
 region and heap block (and its provenance) it points into.

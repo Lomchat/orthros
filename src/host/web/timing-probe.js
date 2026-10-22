@@ -76,7 +76,7 @@ export function runTimingProbe(q = 0, timeoutMs = 10000) {
     try { w = new Worker(import.meta.url, { type: 'module', name: 'orthros-timing-probe' }); } catch { resolve(null); return; }
     const done = (r) => { clearTimeout(timer); try { w.terminate(); } catch { /* gone */ } resolve(r); };
     const timer = setTimeout(() => done(null), timeoutMs);
-    w.onmessage = async (e) => done({ ...e.data, battery: await batteryState(), at: Math.round(performance.now()) });
+    w.onmessage = async (e) => done({ ...e.data, battery: await batteryState() });
     w.onerror = () => done(null);
     w.postMessage({ q });
   });

@@ -114,6 +114,11 @@ per frame 712-757 → 356-395, scheduling decisions per frame 1 645-1 774 → 97
 `Sleep(0)` are probably turns where another thread was runnable (a yield, not a throttle) or the streak was not yet
 built (not verified).
 
+**On a coarse host timer (2026-10-22).** The throttle's 1 ms park is a host wait: on Windows it can last up to a timer
+tick (15.625 ms), and the park crossing a frame limiter's deadline then lengthens the frame by that much (BFME1 on the
+owner's laptop: frame p90 46.8 ms). The waits of a pacing loop's end are now spun to their deadline when the host is
+measured coarse; docs/thread-scheduling.md "Host wake-up overshoot".
+
 **The deferred queue's drain has its own accounting entry.** The calls the JIT queued (Direct3D state setters, D3DX
 parameter setters) run in JavaScript before the next call handled there (`Vm.drainDeferred`); the drain ran inside that
 call's timed window, so whichever call followed a batch (`IDirect3DTexture9::Release`, `GetTransform`...) carried the

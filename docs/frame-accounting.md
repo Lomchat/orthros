@@ -30,7 +30,7 @@ time between two presents, measured at `BrowserHost.framePresented`).
 | `wait` | a guest thread waiting inside a nested call (pacing) |
 | `sleep` | every guest thread waits: the worker sleeps until the next wake-up (pacing) |
 | `ioWait` | waiting for a file read on the network: the worker idle or in a nested wait while the thread presenting frames (the last to call Present) waits for a read, or while a parked read is in flight and no guest timer is due within 50 ms; a nested wait for a read (`file read` / `file busy`, or any wait but a sleep while reads are in flight) |
-| `late` | the worker resumed later than planned: timer clamping, garbage collection, other tasks of its event loop |
+| `late` | the worker resumed later than planned: timer clamping, garbage collection, other tasks of its event loop; since 2026-10-22 also a host wait (Atomics.wait inside a slice: a guest Sleep, the Sleep(0) throttle) that woke after its deadline — not a frame limiter's earlier waits, whose lateness does not lengthen the frame (docs/thread-scheduling.md "Host wake-up overshoot"). Before, that lateness stayed in `wait`: a coarse host timer was invisible |
 
 **Work** of a frame = its duration minus the pacing categories (`wait`, `sleep`). A game that paces itself by polling
 the clock (no sleep) shows that polling as `guest`/`api` work: compare slow frames, not fast ones.
