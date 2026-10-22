@@ -12,19 +12,35 @@ import { eachStorage, removeStorage } from './goldsrc/storage.js';
 const BATCH = 16 << 20;
 
 /**
- * The installation's game data: { data (GameData), nodes } once its files are mounted under `root`.
- * @param {{ name: string, tree: object, files: { path: string, at?: string }[], FS: object, root: string,
- *   session: string, lang?: string, log: (text: string) => void, db?: IDBDatabase, asyncReads?: boolean, rewritable?: boolean,
- *   onCopy?: (bytes: number) => void, onProgress?: (p: object) => void }} o
- *   files: the tree's files as the engine sees them (a language's view: languageFiles); db: the installation's IndexedDB,
- *   whose 'content' store an earlier page kept the game files in (handed over, then emptied)
+ * The installation's game data, opened before the engine — it needs no file system —, its startup set loading at once
+ * beside the engine's download and start (one after the other, Half-Life's page at 1 MB/s left the link idle for the
+ * engine's second of compilation, then waited 2.4 s for the startup set): { data: Promise<GameData>, startup:
+ * Promise<{ bytes, total, done }> } — mount the files with mountPortFiles once the engine's file system exists.
+ * @param {{ name: string, tree: object, session: string, lang?: string, log: (text: string) => void, db?: IDBDatabase,
+ *   onCopy?: (bytes: number) => void, onProgress?: (p: object) => void, onStartup?: (p: { bytes: number, total: number }) => void }} o
+ *   db: the installation's IndexedDB, whose 'content' store an earlier page kept the game files in (handed over, then
+ *   emptied); onStartup: the startup set's progress
  */
-export async function openPortFiles(o) {
-  const data = await GameData.open({ name: o.name, tree: o.tree, session: o.session, lang: o.lang, prefetch: 'startup', log: o.log });
-  if (o.onProgress) data.onProgress(o.onProgress); // (the loading in the background: the shell's pill, shell.setData)
-  if (o.db) await handOver(data, o.name, o.db, o.log, o.onCopy);
-  const nodes = mountFiles(o.FS, o.root, data, o.name, o.files, { asyncReads: o.asyncReads, rewritable: o.rewritable, log: o.log });
-  return { data, nodes };
+export function openPortData(o) {
+  const data = (async () => {
+    const d = await GameData.open({ name: o.name, tree: o.tree, session: o.session, lang: o.lang, prefetch: 'startup', log: o.log });
+    if (o.onProgress) d.onProgress(o.onProgress); // (the loading in the background: the shell's pill, shell.setData)
+    if (o.db) await handOver(d, o.name, o.db, o.log, o.onCopy);
+    return d;
+  })();
+  const startup = data.then((d) => d.startup(o.onStartup));
+  // (awaited by the page after the engine's start: no unhandled rejection meanwhile)
+  data.catch(() => {}); startup.catch(() => {});
+  return { data, startup };
+}
+
+/**
+ * The game's files mounted under `root` of the engine's file system: their nodes.
+ * @param {{ files: { path: string, at?: string }[], FS: object, root: string, asyncReads?: boolean, rewritable?: boolean, log: (text: string) => void }} o
+ *   files: the tree's files as the engine sees them (a language's view: languageFiles)
+ */
+export function mountPortFiles(data, o) {
+  return mountFiles(o.FS, o.root, data, o.name ?? data.name, o.files, { asyncReads: o.asyncReads, rewritable: o.rewritable, log: o.log });
 }
 
 /**
