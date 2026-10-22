@@ -298,7 +298,7 @@ export class Vm {
           t.runMs = (t.runMs ?? 0) + t1 - t0; // (diagnostics: time per thread, nested slices included)
           this.sched.wakeBlocked(this.clock.at ? this.clock.at(t1) : undefined);
           if (untilMs !== Infinity && t1 >= untilMs) return RUN_RUNNING;
-          if (this.group !== null && !inGroup) return RUN_RUNNING; // (a child process started: the group runs both from the next call)
+          if (!inGroup && this.group) return RUN_RUNNING; // (a child process started: the group runs both from the next call)
           // (a file read went to the network during this call: the host's event loop completes it, back to it soon)
           if (untilMs !== Infinity && this.readsInFlight > 0 && t1 - tStart >= this.readSliceMs) return RUN_RUNNING;
           t0 = t1;
