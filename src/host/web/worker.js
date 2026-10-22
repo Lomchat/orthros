@@ -772,8 +772,10 @@ function pump() {
     if (r.until - pumpEndAt >= 3) { acct.enter(ACCT.ahead); prewarmRegions(Math.min(8, r.until - pumpEndAt - 1)); acct.enter(ACCT.host); } // (the wait, used to translate ahead)
     heatSlack(r.until - performance.now());
     const ms = Math.max(0, r.until - performance.now()); pumpStats.sleeps++; pumpStats.sleepMs += ms; schedulePump(Math.max(1, ms));
-    // every thread waiting a second or more: what for (a wait Windows would end sooner shows up here)
-    if (ms >= (longWaitMin ?? 1000) && (longWaitLogs = (longWaitLogs ?? 0) + 1) <= 20) log('hang', `every thread waits, next wake in ${(ms / 1000).toFixed(1)} s:\n${vm.threadsReport().split('\nsync objects')[0]}`);
+    // every thread waiting a second or more: what for (a wait Windows would end sooner shows up here). Not while a game
+    // file read is in flight: its wait ends when the data arrives, its 60 s bound is only a safety net — on a first
+    // launch those reads used up the 20 reports in the first seconds (RotWK: 20 of them by t = 3 s) and hid later ones.
+    if (ms >= (longWaitMin ?? 1000) && !(vm.readsInFlight > 0) && (longWaitLogs = (longWaitLogs ?? 0) + 1) <= 20) log('hang', `every thread waits, next wake in ${(ms / 1000).toFixed(1)} s:\n${vm.threadsReport().split('\nsync objects')[0]}`);
   }
   else if (r.state === 'idle') { pumpStats.idles++; acct.enter(ACCT.ahead); prewarmRegions(8); acct.enter(ACCT.host); heatSlack(20); schedulePump(30); }
   else schedulePump(0);
