@@ -674,6 +674,37 @@ cells north): terrain, objects, sky, water, shadows and the local map as before.
 Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r7"` in the `openmw` object of
 each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
 
+### Review fixes of r6 and r7: engine orthros-r8 (2026-10-23)
+
+- **r8** (`orthros-r8.patch`, on r7): only the focus object's ray takes the cached-only path of r6/r7
+  (`getChunkForRay`): `RenderingManager::castCameraToViewportRay(..., focusRay)` marks its visitor
+  (`orthrosFocusRay` user value, reset in `getIntersectionVisitor`), `World::getFocusObject` passes it, and
+  `QuadTreeWorld::accept` gives the partial node only to that visitor. Every other ray (a script's
+  `nearby.castRenderingRay`, from anywhere — its view data split around another point than the camera's, whose chunks
+  nothing draws) builds its terrain and object-paging chunks as before r6, instead of missing distant statics.
+  RenderStage's FBO completeness cache (r7) keys each attachment on its size, mip level, cube face, array and 3D layer
+  too, and on the GL context; an attachment of zero size, or an FBO without attachments, is never cached — an FBO
+  whose allocation failed (zero-sized, beyond the context's limits) is asked and takes OSG's fallback as before r7.
+
+Measured against r7 (two scratch servers, the same copied learned order, runs alternated; `perf.mjs morrowind-goty-en
+--discard --glide 0,1,300,3000 --seconds 150 --query tier=high`, load 18-22, 6 cells):
+
+| release, run | fps | engine work p99 / max | frames ≥ 100 ms | gap max, > 100 ms | data stalls |
+|---|---|---|---|---|---|
+| r7 a | 26.8 | 28.6 / 152 ms | 4 | 283, 30 | 166 ms |
+| r7 b | 26.6 | 26.6 / 158 | 2 | 283, 23 | 176 |
+| r8 a | 26.0 | 29.8 / 139 | 2 | 233, 17 | 98 |
+| r8 b | 29.0 | 26.0 / 156 | 1 | 183, 20 | 95 |
+
+The focus ray keeps r7's frames (its cost was the only per-frame ray's); r8 within the runs' spread or better.
+Checked on r8 (scratch server): `check.mjs morrowind-goty-en` and `--lang fr`, `morrowind-goty-vanilla-plus-en` and
+`--lang fr` pass; in the world (a new character at -2,-9): Arrille's Tradehouse door activated with Space (the focus
+ray), Space on Arrille opens his dialogue, F5, carried to -3,-7, F9 back inside; the page loaded again in the same
+browser profile, F9: inside again. Only fault: the headless "Pointer is already locked.".
+
+Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r8"` in the `openmw` object of
+each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

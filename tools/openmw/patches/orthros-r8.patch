@@ -1,0 +1,188 @@
+diff --git a/deps/src/osg/src/osgUtil/RenderStage.cpp b/deps/src/osg/src/osgUtil/RenderStage.cpp
+index c4dba19..0288047 100644
+--- a/deps/src/osg/src/osgUtil/RenderStage.cpp
++++ b/deps/src/osg/src/osgUtil/RenderStage.cpp
+@@ -539,9 +539,13 @@ void RenderStage::runCameraSetUp(osg::RenderInfo& renderInfo)
+             // process (WebGL), 20-60 ms while that process is busy, for every new camera (the local map's, a cell's
+             // crossing). Only single-sampled FBOs whose every attachment's format is known; the first of each kind,
+             // and any one that fails, asked as before.
++            // (orthros-r8.patch: the kind holds each attachment's size, mip level, cube face and layer, and the GL
++            // context — another size or layer is asked once: a texture whose allocation failed, beyond the context's
++            // limits, is found incomplete, OSG's fallback taken; a zero-sized one is never cached)
+             std::string orthrosKind;
+             if (!fbo_multisample.valid())
+             {
++                orthrosKind = std::to_string(state.getContextID()) + '|';
+                 const osg::FrameBufferObject::AttachmentMap& attachments = fbo->getAttachmentMap();
+                 for (osg::FrameBufferObject::AttachmentMap::const_iterator it = attachments.begin(); it != attachments.end(); ++it)
+                 {
+@@ -549,25 +553,34 @@ void RenderStage::runCameraSetUp(osg::RenderInfo& renderInfo)
+                     const osg::FrameBufferAttachment& a = it->second;
+                     GLenum format = 0;
+                     unsigned int target = 0, samples = 0;
++                    int width = 0, height = 0;
+                     if (const osg::Texture* t = a.getTexture())
+                     {
+                         format = t->getInternalFormat();
+                         target = t->getTextureTarget();
++                        width = t->getTextureWidth();
++                        height = t->getTextureHeight();
+                     }
+                     else if (const osg::RenderBuffer* r = a.getRenderBuffer())
+                     {
+                         format = r->getInternalFormat();
+                         target = GL_RENDERBUFFER_EXT;
+                         samples = static_cast<unsigned int>(r->getSamples());
++                        width = r->getWidth();
++                        height = r->getHeight();
+                     }
+-                    if (!format)
++                    if (!format || width <= 0 || height <= 0)
+                     {
+                         orthrosKind.clear();
+                         break;
+                     }
+                     orthrosKind += std::to_string(component) + ':' + std::to_string(target) + ':' + std::to_string(format)
+-                        + ':' + std::to_string(samples) + ';';
++                        + ':' + std::to_string(samples) + ':' + std::to_string(width) + 'x' + std::to_string(height)
++                        + ':' + std::to_string(a.getTextureLevel()) + ':' + std::to_string(a.getCubeMapFace())
++                        + ':' + std::to_string(a.getTextureArrayLayer()) + ':' + std::to_string(a.getTexture3DZOffset()) + ';';
+                 }
++                if (attachments.empty())
++                    orthrosKind.clear();
+             }
+             static std::set<std::string> orthrosComplete;
+             const bool orthrosKnown = !orthrosKind.empty() && orthrosComplete.count(orthrosKind) != 0;
+diff --git a/openmw/apps/openmw/mwrender/renderingmanager.cpp b/openmw/apps/openmw/mwrender/renderingmanager.cpp
+index 49230a2..297fd9b 100644
+--- a/openmw/apps/openmw/mwrender/renderingmanager.cpp
++++ b/openmw/apps/openmw/mwrender/renderingmanager.cpp
+@@ -16,6 +16,7 @@
+ #include <osg/Material>
+ #include <osg/Matrix>
+ #include <osg/UserDataContainer>
++#include <osg/ValueObject>
+ 
+ #include <osgUtil/LineSegmentIntersector>
+ 
+@@ -1030,6 +1031,7 @@ namespace MWRender
+ 
+         mIntersectionVisitor->setIgnoreList(ignoreList);
+         mIntersectionVisitor->setContainsPagedRefs(false);
++        mIntersectionVisitor->setUserValue("orthrosFocusRay", false); // (orthros-r8.patch: castCameraToViewportRay)
+ 
+         MWWorld::Scene* worldScene = MWBase::Environment::get().getWorldScene();
+         for (const auto& ptr : ignoreList)
+@@ -1072,8 +1074,8 @@ namespace MWRender
+         return getIntersectionResult(intersector, mIntersectionVisitor, ignoreList);
+     }
+ 
+-    RenderingManager::RayResult RenderingManager::castCameraToViewportRay(
+-        const float nX, const float nY, float maxDistance, bool ignorePlayer, bool ignoreActors, bool ignoreTerrain)
++    RenderingManager::RayResult RenderingManager::castCameraToViewportRay(const float nX, const float nY,
++        float maxDistance, bool ignorePlayer, bool ignoreActors, bool ignoreTerrain, bool focusRay)
+     {
+         osg::ref_ptr<osgUtil::LineSegmentIntersector> intersector(new osgUtil::LineSegmentIntersector(
+             osgUtil::LineSegmentIntersector::PROJECTION, nX * 2.f - 1.f, nY * (-2.f) + 1.f));
+@@ -1087,7 +1089,11 @@ namespace MWRender
+         intersector->setEnd(end);
+         intersector->setIntersectionLimit(osgUtil::LineSegmentIntersector::LIMIT_NEAREST);
+ 
+-        mViewer->getCamera()->accept(*getIntersectionVisitor(intersector, ignorePlayer, ignoreActors, ignoreTerrain));
++        osg::ref_ptr<osgUtil::IntersectionVisitor> visitor
++            = getIntersectionVisitor(intersector, ignorePlayer, ignoreActors, ignoreTerrain);
++        if (focusRay)
++            visitor->setUserValue("orthrosFocusRay", true);
++        mViewer->getCamera()->accept(*visitor);
+ 
+         return getIntersectionResult(intersector, mIntersectionVisitor);
+     }
+diff --git a/openmw/apps/openmw/mwrender/renderingmanager.hpp b/openmw/apps/openmw/mwrender/renderingmanager.hpp
+index c3e624d..42aed94 100644
+--- a/openmw/apps/openmw/mwrender/renderingmanager.hpp
++++ b/openmw/apps/openmw/mwrender/renderingmanager.hpp
+@@ -183,8 +183,10 @@ namespace MWRender
+ 
+         /// Return the object under the mouse cursor / crosshair position, given by nX and nY normalized screen
+         /// coordinates, where (0,0) is the top left corner.
++        /// Orthros (orthros-r8.patch): `focusRay`, the focus object's ray (every frame): a distant terrain or
++        /// object-paging chunk not built yet is left out rather than built (orthros-r6/r7.patch)
+         RayResult castCameraToViewportRay(const float nX, const float nY, float maxDistance, bool ignorePlayer,
+-            bool ignoreActors = false, bool ignoreTerrain = false);
++            bool ignoreActors = false, bool ignoreTerrain = false, bool focusRay = false);
+ 
+         /// Get normalized screen coordinates of the bounding box's summit, where (0,0) is the top left corner
+         osg::Vec2f getScreenCoords(const osg::BoundingBox& bb);
+diff --git a/openmw/apps/openmw/mwworld/worldimp.cpp b/openmw/apps/openmw/mwworld/worldimp.cpp
+index 5e78d75..c158b38 100644
+--- a/openmw/apps/openmw/mwworld/worldimp.cpp
++++ b/openmw/apps/openmw/mwworld/worldimp.cpp
+@@ -1791,11 +1791,12 @@ namespace MWWorld
+         {
+             float x, y;
+             MWBase::Environment::get().getWindowManager()->getMousePosition(x, y);
+-            rayToObject = mRendering->castCameraToViewportRay(x, y, maxDistance, ignorePlayer, false, ignoreTerrain);
++            rayToObject
++                = mRendering->castCameraToViewportRay(x, y, maxDistance, ignorePlayer, false, ignoreTerrain, true);
+         }
+         else
+-            rayToObject
+-                = mRendering->castCameraToViewportRay(0.5f, 0.5f, maxDistance, ignorePlayer, false, ignoreTerrain);
++            rayToObject = mRendering->castCameraToViewportRay(
++                0.5f, 0.5f, maxDistance, ignorePlayer, false, ignoreTerrain, true);
+ 
+         focusObject = rayToObject.mHitObject;
+         if (focusObject.isEmpty() && rayToObject.mHitRefnum.isSet())
+diff --git a/openmw/components/terrain/quadtreeworld.cpp b/openmw/components/terrain/quadtreeworld.cpp
+index 1c43771..984fefe 100644
+--- a/openmw/components/terrain/quadtreeworld.cpp
++++ b/openmw/components/terrain/quadtreeworld.cpp
+@@ -3,6 +3,7 @@
+ #include <osg/Material>
+ #include <osg/PolygonMode>
+ #include <osg/ShapeDrawable>
++#include <osg/ValueObject>
+ #include <osgUtil/CullVisitor>
+ 
+ #include <limits>
+@@ -503,14 +504,21 @@ namespace Terrain
+ 
+         const float cellWorldSize = static_cast<float>(ESM::getCellSize(mWorldspace));
+ 
++        // Orthros (orthros-r8.patch): only the focus object's ray (its visitor marked "orthrosFocusRay",
++        // RenderingManager::castCameraToViewportRay) takes the chunks built already; any other ray (a script's, from
++        // anywhere) builds them as before r6 — it would miss the distant ones otherwise
++        bool orthrosFocusRay = false;
++        if (!isCullVisitor)
++            nv.getUserValue("orthrosFocusRay", orthrosFocusRay);
++
+         for (unsigned int i = 0; i < vd->getNumEntries(); ++i)
+         {
+             ViewDataEntry& entry = vd->getEntry(i);
+-            // Orthros (orthros-r6.patch): a ray (an intersection visitor) builds no distant-object chunk — the
+-            // focus object's ray, every frame, built them for its own view in the frame's update, network reads
+-            // included (100-200 ms frames while crossing cells): the chunks built already, the others left out
++            // Orthros (orthros-r6.patch): the focus ray builds no distant chunk — that ray, every frame, built them
++            // for its own view in the frame's update, network reads included (100-200 ms frames while crossing
++            // cells): the chunks built already, the others left out
+             osg::ref_ptr<osg::Node> partial;
+-            if (!loadRenderingNode(entry, vd, cellWorldSize, mActiveGrid, false, isCullVisitor ? nullptr : &partial))
++            if (!loadRenderingNode(entry, vd, cellWorldSize, mActiveGrid, false, orthrosFocusRay ? &partial : nullptr))
+             {
+                 partial->accept(nv);
+                 continue;
+diff --git a/openmw/components/terrain/quadtreeworld.hpp b/openmw/components/terrain/quadtreeworld.hpp
+index 64cb8b6..d990193 100644
+--- a/openmw/components/terrain/quadtreeworld.hpp
++++ b/openmw/components/terrain/quadtreeworld.hpp
+@@ -86,8 +86,8 @@ namespace Terrain
+                 return true;
+             }
+ 
+-            /// Orthros (orthros-r6.patch): the chunk for a ray (an intersection visitor: the focus object's, a script's
+-            /// ray), not for drawing: by default getChunk(). A manager whose chunk costs a long build (object paging:
++            /// Orthros (orthros-r6.patch): the chunk for the focus object's ray (orthros-r8.patch: that one only — its
++            /// visitor marked "orthrosFocusRay"; other rays use getChunk()), not for drawing: by default getChunk(). A manager whose chunk costs a long build (object paging:
+             /// a distant chunk's meshes merged) answers only with one built already — `missing` set, and null, when
+             /// it is not: a ray never builds it (the drawing or the preload will).
+             virtual osg::ref_ptr<osg::Node> getChunkForRay(float size, const osg::Vec2f& center, unsigned char lod,
