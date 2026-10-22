@@ -528,7 +528,9 @@ Measured (`perf.mjs --discard --glide 0,1,300,3000`: the player carried north fr
 150 s, 6 cells, 5 crossings; `?tier=high`; load 25-35; medians, r2: 4 runs, r3: 3): longest frame of engine work
 1249 → 223 ms, longest gap between drawn frames 2033 → 433 ms, gaps over 250 ms 14 → 10, over 100 ms 97 → 67, frames
 over 100 ms of work 23 → 13, work p50 11.6 → 10.8 ms, p99 70 → 56 ms, drawn fps 22.4 → 24.2, readPixels 0.0045 → 0 a
-frame. Left in r3's longest frames (profile, 110-220 ms): one object-paging chunk built in a terrain-preload slice (a
+frame. Walking as before (`--run`, 150 s, one crossing; r2: 2 runs, r3: 1 at load 22-26, a second at load 52
+discarded): longest work 971 → 142 ms, longest gap 1417 → 350 ms, work p50 14.8 → 13.5 ms, p99 23 → 22 ms.
+Left in r3's longest frames (profile, 110-220 ms): one object-paging chunk built in a terrain-preload slice (a
 chunk cannot be split), most of it the data streaming's synchronous fetch of a mesh not yet in the page (`fetchSync`:
 170 of the longest 221 ms; 0.6-0.8 s of such waits a run, r2 and r3 alike) — the next step is a preload that asks
 `orthrosFileReady` first and comes back to a mesh whose bytes are still on their way, as sounds do since r2.
