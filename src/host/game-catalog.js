@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
 import { resolveGameFile } from './game-files.js';
-import { goldsrcProblem, DEFAULT_ENGINES_DIR } from './goldsrc.js';
+import { goldsrcProblem, goldsrcExtras, DEFAULT_ENGINES_DIR } from './goldsrc.js';
 import { openmwProblem } from './openmw.js';
 import { re3Problem, re3GameFiles } from './re3.js';
 import { mmoProblem } from './mmo.js';
@@ -74,6 +74,11 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
       const problem = goldsrcProblem(manifest.goldsrc);
       if (problem) fail(file, `${id}: ${problem}`);
       manifest.saveKey = installation; // (the installation, game/version folder: the page's saved profile)
+      // (the release's archives the engine mounts — its extras, a language's too — served with the game's files, under
+      // _engine/: read by pieces as the engine reads them, learned, in the launch set and the units — not the 13 MB of
+      // Half Strike's downloaded whole before its menu)
+      const g = manifest.goldsrc;
+      manifest.dataMounts = [{ at: '_engine', dir: path.join(enginesDir, g.engine), only: [...new Set([...goldsrcExtras(g), ...Object.values(g.languages ?? {}).flatMap((l) => l.extras ?? [])])] }];
     }
     if (runtime === 'openmw') {
       const problem = openmwProblem(manifest.openmw);

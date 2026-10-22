@@ -400,6 +400,8 @@ function gameLanguage(man) {
   return options.includes(wanted) ? wanted : options.includes(lang) ? lang : options.includes('en') ? 'en' : options[0] ?? null;
 }
 
+/** the folder of the game's tree the release's archives are served under (game-catalog.js dataMounts) */
+const ENGINE_DIR = '_engine';
 const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)} MB`;
 /** The game started at once: the account's saves first, then the engine, the files, the game's own start. */
 async function start() {
@@ -436,17 +438,10 @@ async function start() {
     module: { print: log, printErr: log, onAbort: reason => fail(new Error(String(reason))), postMainLoop: onFrame }
   });
   if (g.multiplayer) attachNet(Net);
-  // (the game's files and the release's archives asked now, beside the engine's download and start: the startup set —
-  // what earlier sessions read first — loads meanwhile, the files mounted once the engine's file system exists)
+  // (the game's files asked now, beside the engine's download and start: the startup set — what earlier sessions read
+  // first — loads meanwhile, the files mounted once the engine's file system exists)
   const t0 = performance.now();
   step('files', 'active', fmtMB(0), 0);
-  // (the release's archives the engine mounts from the game folder — its own extras by default, goldsrc.extras —: after
-  // the startup set, one at a time, they were 13 MB alone on the link for Half Strike)
-  const extras = [...(g.extras ?? ['engine/valve/extras.pk3']), ...(own.extras ?? [])].map((extra) => ({ extra, bytes: fetch(base + extra).then((r) => {
-    if (!r.ok) throw new Error(S.engineFiles);
-    return r.arrayBuffer();
-  }) }));
-  for (const x of extras) x.bytes.catch(() => {}); // (awaited below: no unhandled rejection meanwhile)
   const port = openPortData({ name, tree, session: sessionId, lang: language, log, db,
     onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress),
     onStartup: (p) => {
@@ -465,11 +460,13 @@ async function start() {
   const shown = languageFiles(files, own.overlays, Object.values(g.languages ?? {}).flatMap((l) => Object.keys(l.overlays ?? {})));
   gameData = await port.data;
   session.files = gameData;
-  mountPortFiles(gameData, { name, files: shown, FS, root: '/rodir', log });
+  // (the release's archives the engine mounts from the game folder — its own extras by default, goldsrc.extras, a
+  // language's —: game files under _engine/, read by pieces as it reads them — game-catalog.js)
+  const extras = [...(g.extras ?? ['engine/valve/extras.pk3']), ...(own.extras ?? [])].map((extra) => ({ path: `${ENGINE_DIR}/${extra}`, at: `${g.gameDir}/${extra.split('/').pop()}` }));
+  mountPortFiles(gameData, { name, files: [...shown, ...extras], FS, root: '/rodir', log });
   const loaded = await port.startup;
   session.startup = { ...gameData.snapshot(), startupBytes: loaded.total, ms: Math.round(performance.now() - t0) };
   log(`Startup files: ${JSON.stringify(session.startup)}`);
-  for (const { extra, bytes } of extras) FS.writeFile(`/rodir/${g.gameDir}/${extra.split('/').pop()}`, new Uint8Array(await bytes));
   step('files', 'done', fmtMB(loaded.total));
   FS.chdir('/rwdir');
   step('game', 'active', '', 0.2); status(S.starting);
@@ -530,7 +527,8 @@ try {
   if (!manifestResponse.ok || !treeResponse.ok) throw new Error(`HTTP ${manifestResponse.ok ? treeResponse.status : manifestResponse.status}`);
   config = session.config = await manifestResponse.json();
   if (config.runtime !== 'goldsrc') throw new Error('not a GoldSrc installation');
-  tree = await treeResponse.json(); files = treeFiles(tree);
+  // (the release's archives under _engine/ are mounted where the engine looks for them, not as a folder of the game)
+  tree = await treeResponse.json(); files = treeFiles(tree).filter((f) => !f.path.startsWith(ENGINE_DIR + '/'));
   shell = createShell({
     title: config.name, version: config.version, gameLanguage: gameLanguage(config), cover: `/api/cover/${encodeURIComponent(name)}`, subtitle: S.subtitle,
     steps: Object.entries(S.steps).map(([k, label]) => ({ k, label })), tips: S.tips, extras: [lobbyButton],
