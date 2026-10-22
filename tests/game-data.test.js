@@ -414,3 +414,56 @@ test('reads learned by phase (a map): each phase\'s blocks together at its usual
   const again = await start(); t.after(() => stop(again.server));
   assert.deepEqual(await (await fetch(again.base)).json(), list, 'the phases and their reads kept on disk');
 });
+
+// (a learned-phases version for the tests below: maps a.bsp, b.bsp; opts the server's)
+const phaseServer = async (t, opts = {}) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-phase-b-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), gs = path.join(games, 'gs'), learn = path.join(root, 'learn');
+  fs.mkdirSync(path.join(gs, 'base', 'valve', 'maps'), { recursive: true }); fs.mkdirSync(path.join(gs, 'versions', 'orig'), { recursive: true }); fs.mkdirSync(learn);
+  for (const f of ['a.bsp', 'b.bsp']) fs.writeFileSync(path.join(gs, 'base', 'valve', 'maps', f), bytes(2 * BLOCK, 3));
+  fs.writeFileSync(path.join(gs, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'gs', name: 'GS', defaultVersion: 'gs-orig', defaults: { runtime: 'goldsrc' },
+    versions: [{ id: 'gs-orig', dir: 'orig', version: 'O', goldsrc: { engine: 'e-1', gameDir: 'valve', modules: { client: 'c.wasm', server: 's.wasm' }, solo: { map: 'a' } } }] }));
+  const start = async () => {
+    const server = createServer({ gamesDir: games, learnDir: learn, learnWriteMs: 10, lanLog: () => {}, ...opts });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const close = () => new Promise((resolve) => { if (!server.listening) return resolve(); server.closeAllConnections?.(); server.close(resolve); });
+    t.after(close);
+    const origin = `http://127.0.0.1:${server.address().port}`, base = `${origin}/api/prefetch/gs-orig`;
+    return { origin, base, close, post: (body) => fetch(base, { method: 'POST', body: JSON.stringify(body) }) };
+  };
+  return { learn, start };
+};
+
+test('clients\' phases are bounded: 64 a report, phasesMax a version, sessions made by phases evicted too, 16 phases an entry', async (t) => {
+  const { learn, start } = await phaseServer(t, { phasesMax: 40, sessionsMax: 4 });
+  const s = await start();
+  // (one report of 100 phases: its first 64 told, 40 of them counted for the version)
+  assert.equal((await s.post({ session: 'many', phases: Array.from({ length: 100 }, (_, i) => [`p${i}`, i]), reads: [] })).status, 204);
+  // (phase-only reports from fresh sessions: bounded as reading ones are)
+  for (let i = 0; i < 10; i++) assert.equal((await s.post({ session: `only${i}`, phases: [[`p${i}`, 10]], reads: [] })).status, 204);
+  assert.ok(JSON.parse(await (await fetch(`${s.origin}/api/netstats`)).text()).server.sessions <= 4, 'sessions bounded');
+  // (20 sessions each read block 0 first in another phase: the entry keeps 16 of them; a phase not counted for the
+  // version — past phasesMax — is none)
+  for (let i = 0; i < 20; i++) await s.post({ session: `r${i}`, phases: [[`p${i}`, 100]], reads: [['valve/maps/a.bsp', 0, 10, 150]] });
+  await s.post({ session: 'late', phases: [['p70', 100]], reads: [['valve/maps/b.bsp', 0, 10, 150]] });
+  await new Promise((r) => setTimeout(r, 100)); await s.close();
+  const phases = JSON.parse(fs.readFileSync(path.join(learn, 'phases-gs-orig.json'), 'utf8'));
+  assert.equal(Object.keys(phases).length, 40); assert.equal(phases.p70, undefined);
+  const entries = new Map(JSON.parse(fs.readFileSync(path.join(learn, 'prefetch-gs-orig.json'), 'utf8')).map((e) => [e[0], e]));
+  assert.equal(Object.keys(entries.get('valve/maps/a.bsp#0')[6]).length, 16);
+  assert.equal(entries.get('valve/maps/b.bsp#0')[6], undefined, 'read in a phase not counted: none');
+});
+
+test('a block some session read before a phase began keeps its time, not the phase\'s (kept on disk)', async (t) => {
+  const { start } = await phaseServer(t);
+  let s = await start();
+  // (A reads a.bsp#0 at 1 s in the menu, no phase yet; B goes to map m at 20 s and reads a.bsp#0 then b.bsp#0 there)
+  await s.post({ session: 'A', reads: [['valve/maps/a.bsp', 0, 10, 1000]] });
+  await s.post({ session: 'B', phases: [['m', 20000]], reads: [['valve/maps/a.bsp', 0, 10, 20500], ['valve/maps/b.bsp', 0, 10, 20100]] });
+  const list = await (await fetch(s.base)).json();
+  assert.deepEqual(list.map(([p, b, , at]) => [p.slice(11), b, at]), [['a.bsp', 0, 1000], ['b.bsp', 0, 20100]]);
+  await new Promise((r) => setTimeout(r, 100)); await s.close();
+  s = await start();
+  assert.deepEqual(await (await fetch(s.base)).json(), list);
+});

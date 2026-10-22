@@ -229,6 +229,22 @@ test('a fast link before the game starts (learnedOnly): the learned pieces only,
   } finally { globalThis.fetch = real; }
 });
 
+test('a block completed by the pieces of one request is stored once, as the block (its pieces not put and dropped: the store appends)', () => withFetch(async () => {
+  for (const net of [new NetLink({ bw: 20e6, fixed: true }), thin()]) {
+    const store = new MemBlockStore(), puts = [], put = store.put.bind(store);
+    store.put = (k, v) => { puts.push(k); return put(k, v); };
+    const b = new HttpBackend('/game/once/', tree(), { store, encoded: true, net });
+    b.gameBusy = () => false;
+    // (block 2: every piece learned — whole; block 4: two pieces — kept as pieces)
+    await b.prefetch([['f.big', 2, 0xffff, 0], ['f.big', 4, 0b110, 10]], {}, () => false, { learnedOnly: true });
+    assert.ok(b.peekBlockHere('f.big', SIZE, 3, 2), 'block 2 kept whole');
+    const own = (lo, hi) => puts.filter((k) => { const c = /#c(\d+)$/.exec(k); return c && +c[1] >= lo && +c[1] < hi; });
+    assert.deepEqual(own(32, 48), [], `no piece of block 2 put: ${puts}`);
+    assert.equal(puts.filter((k) => k.endsWith('#2')).length, 1, 'the block once');
+    assert.deepEqual(own(64, 80).sort(), [b.pieceKey('f.big', SIZE, 3, 65), b.pieceKey('f.big', SIZE, 3, 66)].sort(), 'block 4\'s pieces kept');
+  }
+}));
+
 test('learnedOnly with a full store: an entry the store did not keep is asked once (not again each time the memory evicts it)', async () => {
   const real = globalThis.fetch;
   const asked = [];

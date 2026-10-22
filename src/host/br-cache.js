@@ -354,8 +354,11 @@ export function createBrCache(opts) {
       for (const { file, st, light, unit } of list[i].units()) {
         if (++steps % 256 === 0) await new Promise((r) => setImmediate(r)); // (in slices: requests go on meanwhile)
         if (closed || seeding !== sd || used >= shares[i]) break;
-        const u = entryOf(file, st, light).units?.get(unitName(unit));
+        // (its audio form too, counted as the walk counts it: nextSeed)
+        const us = entryOf(file, st, light).units, name = unitName(unit);
+        const u = us?.get(name), up = pcmFor(light) ? us?.get(name + PCM) : null;
         if (u) { pin(u); used += u.bytes; }
+        if (up) { pin(up); used += up.bytes; }
       }
     }
   };

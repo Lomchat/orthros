@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/host/server.js';
+import { DirListings } from '../src/host/game-files.js';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';
 import { NetLink } from '../src/vfs/net-link.js';
@@ -165,6 +166,31 @@ test('the server learns the launch set from the sessions\' marks: flags in the l
   await s.close();
   s = await start(); t.after(() => s.close());
   assert.deepEqual(await (await fetch(`${s.base}/api/prefetch/gs-orig`)).json(), list, 'kept: the marks and each entry\'s count');
+});
+
+test('a session\'s read leaves the launch summary served until it is stale (LAUNCH_STALE_MS); a mark makes it again at once', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-launch-stale-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), gs = path.join(games, 'gs');
+  fs.mkdirSync(path.join(gs, 'base', 'valve'), { recursive: true }); fs.mkdirSync(path.join(gs, 'versions', 'orig'), { recursive: true });
+  fs.writeFileSync(path.join(gs, 'base', 'valve', 'a.pak'), Buffer.alloc(2 * BLOCK, 1));
+  fs.writeFileSync(path.join(gs, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'gs', name: 'GS', defaultVersion: 'gs-orig', defaults: { runtime: 'goldsrc' },
+    versions: [{ id: 'gs-orig', dir: 'orig', version: 'O', goldsrc: { engine: 'e-1', gameDir: 'valve', modules: { client: 'c.wasm', server: 's.wasm' }, solo: { map: 'start' } } }] }));
+  const recent = DirListings.RECENT_MS; t.after(() => { DirListings.RECENT_MS = recent; });
+  DirListings.RECENT_MS = 0; // (the folders as if old: the game's tree listed once — game-files.js dirsStamp)
+  const server = createServer({ gamesDir: games, launchStaleMs: 300, lanLog: () => {} });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r)); t.after(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (body) => fetch(`${base}/api/prefetch/gs-orig`, { method: 'POST', body: JSON.stringify(body) });
+  const launchOf = async () => (await (await fetch(`${base}/api/manifests`)).json()).find((m) => m.name === 'gs-orig').launch;
+  await post({ session: 's1', reads: [['valve/a.pak', 0, 10, 5]], mark: { kind: 'playable' } });
+  assert.equal((await launchOf()).bytes, CHUNK);
+  // (a read widens the launch block's mask: the summary made before it is served on — not made again at every read)
+  await post({ session: 's2', reads: [['valve/a.pak', CHUNK, CHUNK + 10, 7]] });
+  assert.equal((await launchOf()).bytes, CHUNK, 'the summary kept while not stale');
+  await new Promise((r) => setTimeout(r, 350));
+  assert.equal((await launchOf()).bytes, 2 * CHUNK, 'made again once stale');
+  await post({ session: 's2', reads: [['valve/a.pak', 3 * CHUNK, 3 * CHUNK + 10, 9]], mark: { kind: 'playable' } });
+  assert.equal((await launchOf()).bytes, 3 * CHUNK, 'a mark: at once');
 });
 
 test('a version\'s launch counts the launch sets of the versions it requires (extraMounts), each its own', async (t) => {

@@ -155,3 +155,37 @@ test('backend: a synchronous read whose audio unit does not decode is asked agai
     assert.deepEqual(urls.map((u) => /&pc=1/.test(u)), [true, false], 'the retry without &pc=1');
   } finally { globalThis.XMLHttpRequest = Real; }
 });
+
+test('cache: a restart pins a launch set\'s audio units with its brotli ones before anything is made (pinNow)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-pcmpin-'));
+  const unit = { kind: 'p', index: 0 };
+  const file = (n, b) => { const f = path.join(dir, n); fs.writeFileSync(f, b); return { file: f, st: fs.statSync(f), light: null, unit }; };
+  const s = file('s.wav', wave(sound(CHUNK, 7)));
+  const [a0, m1, m2] = ['a0', 'm1', 'm2'].map((n) => file(n, Buffer.from(`${n} compressible text `.repeat(3000)).subarray(0, CHUNK)));
+  const cdir = path.join(dir, 'cache');
+  try {
+    // an earlier process: the launch unit s (brotli and audio forms) made long ago, two live misses lately
+    const first = createBrCache({ dir: cdir, ...QUIET });
+    for (const u of [s, m1, m2]) { first.want(u.file, u.st, null, u.unit); await first.drain(); }
+    const now = Date.now() / 1000, pcm = first.lookupPcm(s.file, s.st, null, unit);
+    assert.ok(pcm, 'the audio form made');
+    for (const [p, age] of [[first.lookup(s.file, s.st, null, unit).path, 3000], [pcm.path, 3000], [first.lookup(m1.file, m1.st, null, unit).path, 100], [first.lookup(m2.file, m2.st, null, unit).path, 50]]) fs.utimesSync(p, now - age, now - age);
+    const before = first.stats().bytes; first.close();
+    // (a0's unit: what making it adds)
+    const probe = createBrCache({ dir: path.join(dir, 'probe'), ...QUIET });
+    probe.want(a0.file, a0.st, null, unit); await probe.drain(); const add = probe.stats().bytes; probe.close();
+    // restarted with one unit's room too few: making A's missing unit evicts one unit — a live miss, not B's audio form
+    const max = before + add - 1;
+    const cache = createBrCache({ dir: cdir, maxBytes: max, lowBytes: max, pinShare: 0.9, ...QUIET,
+      sources: () => [{ name: 'A', units: () => [a0] }, { name: 'B', units: () => [s] }] });
+    await cache.ready; await new Promise((r) => setTimeout(r, 20)); await cache.drain();
+    assert.ok(cache.lookup(a0.file, a0.st, null, unit), 'the missing launch unit made');
+    assert.ok(cache.stats().evicted >= 1);
+    // (before, B's audio unit — the oldest, not pinned until the walk reached it — went out and the walk made it again)
+    assert.equal(cache.stats().generated, 1, 'nothing made twice'); assert.equal(cache.stats().pcmMade, 0);
+    assert.ok(cache.lookupPcm(s.file, s.st, null, unit), 'B\'s audio unit kept');
+    assert.ok(cache.lookup(s.file, s.st, null, unit), 'B\'s brotli unit kept');
+    assert.equal(cache.lookup(m1.file, m1.st, null, unit), null, 'a live miss out instead');
+    cache.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

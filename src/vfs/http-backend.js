@@ -918,13 +918,13 @@ export class HttpBackend {
 
   /** Pieces m0..m1 of a file from `data` (fetched from piece m0), those not here yet; the piece cache stays bounded. */
   addPieces(path, m0, m1, data, file = null) {
-    const keep = file && this.keepPieces();
+    const keep = file && this.keepPieces(), added = [];
     for (let c = m0; c <= m1; c++) {
       const ck = `${path}#${c}`, piece = data.subarray((c - m0) * CHUNK, Math.min(data.length, (c - m0 + 1) * CHUNK));
       if (this.chunks.has(ck)) continue;
       if (this.cache.has(`${path}#${Math.floor(c * CHUNK / BLOCK)}`)) continue; // (its block is here whole)
       this.chunks.set(ck, piece); this.chunkBytes += piece.length;
-      if (keep) this.store.put(this.pieceKey(path, file.size, file.mtime, c), piece);
+      if (keep) added.push([c, piece]);
     }
     // (a block whose pieces are all here becomes a whole block: kept as such, its background download not needed)
     if (file) {
@@ -935,6 +935,9 @@ export class HttpBackend {
         if (all) this.assemble(path, file.size, file.mtime ?? 0, bi);
       }
     }
+    // (kept once their blocks are known: a piece whose block it just completed is in the store as that block — the
+    // store appends, a piece put and then dropped would keep its bytes for good)
+    for (const [c, piece] of added) if (!this.cache.has(`${path}#${Math.floor(c * CHUNK / BLOCK)}`)) this.store.put(this.pieceKey(path, file.size, file.mtime, c), piece);
     this.trimPieces();
   }
 

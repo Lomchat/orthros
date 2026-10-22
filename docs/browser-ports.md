@@ -202,7 +202,10 @@ order fetched ahead from the game's position.
   `prefetchList`): a session that enters a map finds that map's reads next in the list (fetched ahead from there, as
   any position in it), and the background loading goes on with the map that usually comes next — whatever the pace
   of the sessions that taught it (a player who loads a late save at once no longer puts that map's reads among the
-  first map's). Blocks learned without a phase keep their time since the session's start.
+  first map's). Blocks learned without a phase keep their time since the session's start, and so does a block some
+  session read before any phase (a menu's read is not moved to a map's load). Clients' phases are bounded: 64 per
+  report, 256 per version (a new one past that is not counted), 16 per learned block; a session made by a report of
+  phases only is evicted like a reading one.
 - **Light copies.** On a link that is not fast, a large texture's load reads its light copy first (the texture
   without its finest levels), the file itself following in the background for its next load (docs/slow-network.md
   "Light copies"; `lightCopies: false` in a version turns them off).
