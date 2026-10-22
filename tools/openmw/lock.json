@@ -282,7 +282,11 @@
           "call": "Module.ccall('orthros_set_view_distance', 'number', ['number'], [distance])"
         }
       ],
-      "files": {}
+      "files": {
+        "openmw.js": "2c20b8449d8d150e2f46fd8ca25c716961e3aff11ec8f343ca496a9dcba90de6",
+        "openmw.wasm": "eddd57469a7193855164e84f161e122eb3689bd586bb4644771d320b7b7948ea",
+        "openmw.data": "e659ce681ef67cd124b0180c281152aedbbdab8008bee5e776fb9fa39c39ec53"
+      }
     }
   ]
 }
