@@ -7,7 +7,7 @@
 // bytes (engine apart), requests, unit answers, the card's sizes (/api/manifests launch).
 //
 //   node tools/prepare-bench.mjs --pristine <dir with learn/ brcache/ covers/> [--code <tree>] [--links 85k:150,1m:60,7m:75]
-//     [--only a,b] [--out file] [--max-seconds 1800] [--logs <dir>: the proxy's logs kept] [--known-bw]
+//     [--only a,b] [--out file] [--max-seconds 1800] [--logs <dir>: the proxy's logs kept]
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
@@ -53,8 +53,7 @@ try {
     const t0 = performance.now();
     const engine = card?.engineFiles?.length ? { files: card.engineFiles, bytes: card.engine } : null;
     const timer = setTimeout(() => { globalThis.self.onmessage?.({ data: { type: 'stop' } }); }, maxSeconds * 1000);
-    // (--known-bw: the page knew the link's rate — a player who came before —, else a new player's unmeasured link)
-    await download(m.name, args.includes('--known-bw') ? link.rate : undefined, 'launch', lang, engine, { openStore: async () => new MemBlockStore(2 ** 32) });
+    await download(m.name, undefined, 'launch', lang, engine, { openStore: async () => new MemBlockStore(2 ** 32) });
     clearTimeout(timer);
     const seconds = Math.round((performance.now() - t0) / 100) / 10;
     await proxy.close();

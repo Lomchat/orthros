@@ -388,24 +388,3 @@ test('page: the renderer settings a player gets — no glGetError checks unless 
   // (before the manifest's own commands: a version can still turn either off)
   assert.ok(start.indexOf('gl_vbo') < start.indexOf('solo?.commands'));
 });
-
-test('the release\'s archives are game data under _engine/ (those only): in the tree, served by ranges, not engine files to download whole', async (t) => {
-  const { games, engines } = fixture(t, { goldsrc: goldsrc({ extras: ['engine/valve/extras.pk3', 'mod/bots.pk3'], languages: { fr: { extras: ['mod/fr.pk3'] } } }), languages: ['en', 'fr'] });
-  fs.writeFileSync(path.join(engines, ENGINE, 'mod', 'fr.pk3'), 'fr archive');
-  const base = await serve(t, { gamesDir: games, enginesDir: engines });
-  const tree = await (await fetch(`${base}/api/tree/gs-orig`)).json();
-  const e = tree.dirs._engine;
-  assert.deepEqual(Object.keys(e.dirs).sort(), ['engine', 'mod']);
-  assert.deepEqual(Object.keys(e.dirs.mod.files).sort(), ['bots.pk3', 'fr.pk3'], 'the archives only — not the modules nor the release\'s other files');
-  assert.deepEqual(Object.keys(e.dirs.engine.dirs.valve.files), ['extras.pk3']);
-  assert.deepEqual(Object.keys(e.dirs.engine.files), []);
-  assert.equal(await (await fetch(`${base}/game/gs-orig/_engine/mod/bots.pk3`)).text(), 'mod/bots.pk3');
-  const r = await fetch(`${base}/game/gs-orig/_engine/mod/fr.pk3`, { headers: { range: 'bytes=3-9' } });
-  assert.equal(r.status, 206); assert.equal(await r.text(), 'archive');
-  for (const other of ['mod/client.wasm', 'engine/xash.wasm', 'release.json', 'escape']) assert.equal((await fetch(`${base}/game/gs-orig/_engine/${other}`)).status, 404, other);
-  const man = loadGameCatalog(games, null, { enginesDir: engines }).get('gs-orig');
-  const { goldsrcEngineFiles } = await import('../src/host/goldsrc.js');
-  assert.ok(!goldsrcEngineFiles(man, engines).some((f) => f.endsWith('.pk3')), 'no archive among the engine\'s files');
-  assert.ok(goldsrcEngineFiles(man, engines).includes('engine/xash.wasm'));
-  assert.equal(JSON.stringify(await (await fetch(`${base}/api/manifest/gs-orig`)).json()).includes(engines), false, 'no server path in the page\'s manifest');
-});

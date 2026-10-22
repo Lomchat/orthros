@@ -178,8 +178,7 @@ export function goldsrcInstalled(manifest, enginesDir) {
 export function goldsrcEngineFiles(manifest, enginesDir) {
   const g = manifest.goldsrc;
   const js = ['index.js', 'constants.js', 'xash3d.js', 'net/index.js', 'net/net.js', 'net/emNet.js', 'generated/xash.js', 'utils/index.js', 'utils/queue.js', 'utils/rb.js'].map((f) => 'engine/' + f);
-  // (not the archives, goldsrcExtras: game data under _engine/, game-catalog.js — read by pieces as the engine reads them)
-  const files = [...js, 'engine/xash.wasm', 'engine/filesystem_stdio.wasm', g.modules.menu ?? 'engine/libmenu.wasm', g.modules.client, g.modules.server, 'engine/libref_webgl2.wasm'];
+  const files = [...js, 'engine/xash.wasm', 'engine/filesystem_stdio.wasm', g.modules.menu ?? 'engine/libmenu.wasm', g.modules.client, g.modules.server, 'engine/libref_webgl2.wasm', ...goldsrcExtras(g)];
   return [...new Set(files)].filter((f) => typeof f === 'string' && engineFile(enginesDir, g.engine, f));
 }
 

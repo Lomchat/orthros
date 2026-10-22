@@ -1099,7 +1099,7 @@ export function createServer(opts = {}) {
         const launchUrl = runtimeOf(man) !== 'win32' ? portLaunchUrl(m[1], man) : undefined;
         // (an re3 port: the engine module its page imports, a path of its release — the manifest's, else the release's own)
         const re3 = runtimeOf(man) === 're3' ? { re3: { ...man.re3, module: re3Module(man, enginesDir) } } : {};
-        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, overlays: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path

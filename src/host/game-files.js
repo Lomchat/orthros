@@ -44,8 +44,7 @@ function mergeDir(layers, mark = null, seen = null) {
 
 /**
  * The game's files as the browsers read them: its layers, and the folders of its engine's release it serves beside them
- * (`dataMounts`: [{ at, dir, only? }] — an engine's own data, as OpenMW's asset pack, under a folder of its own, `at` —
- * `only`: those of its files only, as a GoldSrc release's archives —; not part
+ * (`dataMounts`: [{ at, dir }] — an engine's own data, as OpenMW's asset pack, under a folder of its own, `at`; not part
  * of the game's layers, which a native server laying out the game reads too). With manifest.lightCopies, a file that has
  * a light copy (light-copies.js) tells its size: `light`. A media file by its format (isMediaFile, game-tree.js) is
  * marked `media: true`. `seen`: the folders it was listed from pushed to it (dirsStamp: whether it changed since).
@@ -53,28 +52,8 @@ function mergeDir(layers, mark = null, seen = null) {
 export function listGameTree(manifest, seen = null) {
   const mark = manifest.lightCopies ? (file, st, e) => { const c = lightCopy(file, st); if (c) e.light = c.size; } : null;
   const tree = mergeDir(gameLayers(manifest), mark, seen);
-  for (const { at, dir, only } of manifest.dataMounts ?? []) {
-    if (!fs.existsSync(dir)) seen?.push(dir);
-    else tree.dirs[at] = only ? onlyDir(dir, only, mark, seen) : mergeDir([dir], mark, seen);
-  }
+  for (const { at, dir } of manifest.dataMounts ?? []) { if (fs.existsSync(dir)) tree.dirs[at] = mergeDir([dir], mark, seen); else seen?.push(dir); }
   return tree;
-}
-
-/** A data mount's listed files only (`only`: their paths in `dir`), as mergeDir lists them — those there. */
-function onlyDir(dir, only, mark, seen) {
-  const root = { dirs: {}, files: {} };
-  for (const rel of only) {
-    const parts = rel.split('/').filter(Boolean), file = path.join(dir, ...parts);
-    seen?.push(path.dirname(file));
-    let st; try { st = fs.statSync(file); } catch { continue; }
-    if (!st.isFile()) continue;
-    let node = root;
-    for (const d of parts.slice(0, -1)) node = node.dirs[d] ??= { dirs: {}, files: {} };
-    const e = node.files[parts.at(-1)] = { size: st.size, mtime: st.mtimeMs };
-    if (isMediaFile(parts.at(-1), st.size)) e.media = true;
-    mark?.(file, st, e);
-  }
-  return root;
 }
 
 /**
@@ -105,12 +84,7 @@ export function resolveLightFile(manifest, rel, memo = null) {
 export function resolveGameFile(manifest, rel, memo = null) {
   const top = rel.replace(/\\/g, '/').split('/').filter(Boolean)[0];
   const mount = (manifest.dataMounts ?? []).find((m) => m.at === top);
-  if (mount) {
-    const inner = rel.replace(/\\/g, '/').split('/').filter(Boolean).slice(1).join('/');
-    // (a mount of listed files: those only)
-    if (mount.only && !mount.only.some((f) => f.toLowerCase() === inner.toLowerCase())) return null;
-    return resolveIn([mount.dir], inner, memo);
-  }
+  if (mount) return resolveIn([mount.dir], rel.replace(/\\/g, '/').split('/').filter(Boolean).slice(1).join('/'), memo);
   return resolveIn(gameLayers(manifest), rel, memo);
 }
 
