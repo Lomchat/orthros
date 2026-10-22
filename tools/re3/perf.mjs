@@ -8,11 +8,13 @@
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/re3/perf.mjs <manifest> [--url http://127.0.0.1:8080] [--gl swiftshader|discard|gpu]
 //     [--seconds 30] [--drive] [--warm 0] [--net KB/s] [--profile] [--stacks getError,…] [--no-calls] [--report]
-//     [--size 1280x720] [--query "a=b"]
+//     [--size 1280x720] [--query "a=b"] [--mem-every s]
+// --mem-every s: the page's memory sampled every s seconds of the measure (port-perf.mjs memSampler: JS heap, the
+// engine's heap, DOM nodes and listeners) and its growth per 10 minutes — a long session's leaks
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { chromeArgs, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile } from '../port-perf.mjs';
+import { chromeArgs, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile, memSampler } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
 const [name] = args;
@@ -59,7 +61,9 @@ await page.waitForTimeout(Number(arg('--warm', 0)) * 1000);
 const cdp = args.includes('--profile') ? await startProfile(page) : null;
 await page.evaluate(() => { const B = portSession.engine.orthrosBlocked; perfProbe.blocked0 = B ? { ...B, files: { ...B.files } } : {}; perfProbe.files0 = { ...portSession.files.stats }; });
 await startMeasure(page, { calls: !args.includes('--no-calls') });
+const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => portSession.engine.HEAPU8.length') : null;
 await page.waitForTimeout(seconds * 1000);
+const mem = memStop ? await memStop() : null;
 const measured = await readMeasure(page);
 const profile = cdp ? await stopProfile(cdp, measured.frames) : null;
 const result = { ...measured, ...await page.evaluate(() => {
@@ -75,4 +79,4 @@ if (args.includes('--drive')) await page.keyboard.up('w');
 await page.screenshot({ path: path.join(root, 'end.png') });
 await browser.close();
 if (profile) console.log('PROFILE', JSON.stringify(profile, null, 1));
-console.log(JSON.stringify({ name, gl, seconds, size: `${width}x${height}`, drive: args.includes('--drive'), ...result }));
+console.log(JSON.stringify({ name, gl, seconds, size: `${width}x${height}`, drive: args.includes('--drive'), ...result, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1) } : {}) }));

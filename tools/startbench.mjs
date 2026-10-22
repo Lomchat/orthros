@@ -277,6 +277,26 @@ vm.host.waitEvent = (ms) => { scenario?.tick(); const p = acct.enter(ACCT.wait);
 // a game's first-launch computation
 const stopOn = opt('stop-on', null);
 if (stopOn) { const log = vm.log.bind(vm); vm.log = (kind, msg) => { if (typeof msg === 'string' && msg.includes(stopOn)) { report(`"${stopOn}" logged`); fs.rmSync(saveDir, { recursive: true, force: true }); process.exit(0); } log(kind, msg); }; }
+// --mem <s>: every <s> seconds of wall time, the process's memory (heap used, external and array buffers, resident) and
+// the emulator's own counts that grow with a session (live translations, the function table, guest frames and draws) —
+// a long session's growth seen (--heap-at <s1,s2,...>: a V8 heap snapshot at those seconds, in --save's directory or
+// the current one, for tools/heapsnap.mjs)
+if (opt('mem')) {
+  const every = Number(opt('mem')) * 1000, heapAt = (opt('heap-at') ?? '').split(',').filter(Boolean).map(Number);
+  const v8 = await import('node:v8');
+  let next = every, h = 0;
+  const memLine = () => {
+    const m = process.memoryUsage(), j = vm.jit, d = vm.d3dDevice, MB = (x) => (x / 1048576).toFixed(1);
+    console.log(`[mem] t=${((performance.now() - t0) / 1000).toFixed(0)}s heap ${MB(m.heapUsed)}/${MB(m.heapTotal)} MB, external ${MB(m.external)} MB (array buffers ${MB(m.arrayBuffers)}), rss ${MB(m.rss)} MB; jit live ${j?.regions.length ?? '-'} regions (${j?.stats.regions ?? '-'} made, ${j?.stats.dropped ?? '-'} dropped), table ${j?.table?.length ?? '-'}, blockMap ${j?.blockMap?.size ?? '-'}; frames ${d?.frames ?? '-'}, insns ${(vm.guestInsns / 1e6).toFixed(0)}M`);
+  };
+  const tick = vm.dispatchThunk;
+  vm.dispatchThunk = (t, i) => {
+    const el = performance.now() - t0;
+    if (el >= next) { next += every; memLine(); }
+    if (h < heapAt.length && el >= heapAt[h] * 1000) { const f = path.join(keepDir ?? '.', `heap-${heapAt[h]}s.heapsnapshot`); v8.writeHeapSnapshot(f); console.log(`[mem] heap snapshot ${f}`); h++; }
+    return tick(t, i);
+  };
+}
 vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides });
 if (learnedHeat) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
 acct.enter(ACCT.guest); // (as the browser worker's slices: the VM's own sections enter their categories)

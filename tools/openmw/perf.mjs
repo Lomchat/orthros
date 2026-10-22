@@ -8,14 +8,17 @@
 // engine's CPU and the browser's (upper bounds: vertex work still runs). Not a gameplay check.
 // Always through tools/with-browser-slot.sh:
 //   tools/with-browser-slot.sh node tools/openmw/perf.mjs <manifest> --url <origin> [--seconds 60] [--warm 10]
-//     [--start -2,-9] [--query tier=high] [--discard] [--run] [--out <dir>]   (--run: Shift held, running)
+//     [--start -2,-9] [--query tier=high] [--discard] [--run] [--out <dir>] [--mem-every s]   (--run: Shift held, running)
+// --mem-every s: the page's memory every s seconds of the walk (port-perf.mjs memSampler) and its growth per 10 minutes;
+// --seconds up to 3600 then (300 otherwise)
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { memSampler } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), id = args[0], arg = (k, d = null) => args.includes(k) ? args[args.indexOf(k) + 1] : d;
 if (!id) throw new Error('Expected a manifest id');
-const base = arg('--url', 'http://localhost:8080'), seconds = Math.max(5, Math.min(300, Number(arg('--seconds', 60))));
+const base = arg('--url', 'http://localhost:8080'), seconds = Math.max(5, Math.min(arg('--mem-every') ? 3600 : 300, Number(arg('--seconds', 60))));
 const warm = Math.max(0, Number(arg('--warm', 10))), start = arg('--start', '-2,-9'), extra = arg('--query', '');
 const discard = args.includes('--discard');
 const dir = arg('--out', `/tmp/orthros-scratch/openmw-perf-${id}`);
@@ -79,8 +82,10 @@ try {
   await page.evaluate(() => { window.orthrosPerf.on = true; });
   if (args.includes('--run')) await page.keyboard.down('Shift');
   await page.keyboard.down('w');
+  const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => Module.HEAPU8.length') : null;
   const end = Date.now() + seconds * 1000;
   while (Date.now() < end) { await page.mouse.move(640 + 60, 400, { steps: 4 }); await page.mouse.move(640, 400, { steps: 4 }); await page.waitForTimeout(400); }
+  const mem = memStop ? await memStop() : null;
   await page.keyboard.up('w');
   if (args.includes('--run')) await page.keyboard.up('Shift');
   const r = await page.evaluate(({ before }) => {
@@ -102,7 +107,7 @@ try {
       phase: window.__omwPhase ?? null,
     };
   }, { before });
-  const out = { manifest: id, discard, seconds, warm, start, query: extra, bootMs, ...r, faults };
+  const out = { manifest: id, discard, seconds, warm, start, query: extra, bootMs, ...r, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1), memSamples: mem.samples } : {}), faults };
   fs.writeFileSync(path.join(dir, 'perf.json'), JSON.stringify(out, null, 2));
   await page.screenshot({ path: path.join(dir, 'perf.png') });
   console.log(JSON.stringify(out));
