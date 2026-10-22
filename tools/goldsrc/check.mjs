@@ -10,8 +10,9 @@
 // Evidence under /tmp/orthros-scratch/.
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/goldsrc/check.mjs <manifest> <solo|multiplayer> [--url http://127.0.0.1:8080]
-//     [--reload] [--join-keys "{n},1"] [--no-save] [--min-players n] [--query "vbo=0"]   (keys each player presses after joining, {n}: its
-//     number — a team menu)
+//     [--reload] [--join-keys "{n},1"] [--no-save] [--min-players n] [--query "vbo=0"] [--boot-timeout 180]   (keys each
+//     player presses after joining, {n}: its number — a team menu; --boot-timeout: seconds each page may take to start
+//     its game — the engine, the account's saves, the files on a cold cache or a slow link)
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -22,6 +23,8 @@ const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.i
 const [name, mode] = args;
 if (!name || !['solo', 'multiplayer'].includes(mode)) { console.error('usage: check.mjs <manifest> <solo|multiplayer> [--url u] [--reload] [--join-keys k]'); process.exit(2); }
 const base = arg('--url') ?? 'http://127.0.0.1:8080';
+const bootTimeout = Number(arg('--boot-timeout') ?? 180) * 1000;
+if (!(bootTimeout > 0)) { console.error('--boot-timeout expects a number of seconds'); process.exit(2); }
 const root = `/tmp/orthros-scratch/goldsrc-check-${name}-${mode}`;
 fs.mkdirSync(root, { recursive: true }); process.env.TMPDIR = root;
 const manifest = await (await fetch(`${base}/api/manifest/${encodeURIComponent(name)}`)).json();
@@ -84,7 +87,7 @@ try {
       await page.goto(pageUrl);
     } else await page.goto(pageUrl);
     // (the game starts by itself: the account's saves, the engine, the files)
-    await page.waitForFunction(() => ['running', 'error'].includes(window.portSession?.state), null, { timeout: 180000 });
+    await page.waitForFunction(() => ['running', 'error'].includes(window.portSession?.state), null, { timeout: bootTimeout });
     if (await page.evaluate(() => portSession.state) === 'running') { await page.waitForTimeout(3000); await enter(page); }
     const state = await page.evaluate(() => ({ state: portSession.state, status: document.querySelector('#status').textContent, draws: renderProbe.draws, multiplayer: portSession.multiplayer }));
     console.log('BOOT', i, JSON.stringify({ ...state, renderer: await rendererOf(page) }));
@@ -156,7 +159,7 @@ try {
         again = await context.newPage(); clients.splice(0, clients.length, { context, page: again });
       }
       await again.goto(pageUrl);
-      await again.waitForFunction(() => ['running', 'error'].includes(portSession?.state), null, { timeout: 180000 });
+      await again.waitForFunction(() => ['running', 'error'].includes(portSession?.state), null, { timeout: bootTimeout });
       const state = await again.evaluate(() => ({ state: portSession.state, status: document.querySelector('#status').textContent }));
       if (state.state !== 'running') throw new Error(state.status);
       await again.waitForTimeout(3000); await enter(again);

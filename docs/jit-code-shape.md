@@ -51,6 +51,14 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   backward transfers) can change the interleavings: the guest instructions of each phase are printed to tell (RotWK:
   a few %, BFME2: up to 7 %, Vice City: 10 % fewer instructions in the same virtual time). BFME1's skirmish load never
   reaches its loading screen under `--virtual`.
+  `--perf` (2026-10-22): each run under `perf record -e instructions:u,cycles:u` with TurboFan only (`--no-liftoff`), and
+  per variant the whole run's user instructions and cycles in perf's `[JIT]` object (the WASM regions, the runtime
+  module, V8's JavaScript code) and in the process; `--jit-opts NAME='{...}'` adds Jit options to one variant
+  (`nestLoops`...). The same guest work gives the same counts: on the bfme-vanilla 3D menu scenario below, two runs of
+  one build 316.57 / 316.61 G JIT instructions (0.01 %), 1 086.1 / 1 087.2 G process instructions; JIT cycles within
+  ~1 % in one batch (load average 4-35), the time measures within ±3-5 %. Instructions resolve a 0.2 % change of the
+  code; cycles only what the load leaves (compare a batch's runs only). The process figures include V8's compilation,
+  on the emulator thread with `--no-liftoff` (the browser compiles off it).
 - **Exit sites** — `startbench --jit-sites [--jit-sites-top n]`: every region exit site (indirect calls through a
   register or a computed address, through an absolute slot, indirect jumps, returns leaving their region, static exits
   — `exitLim`: to a successor discovery left out for the region's size; `...Call`: of a call) counts its executions,
@@ -696,7 +704,137 @@ attempted for bfme1-108 ran its menu at ~5 fps and was useless); medians, concur
   interpreter (~57 ns an iteration); the BFME1 map load spent 0.01 s in the interpreter, so it does not happen there.
   A Dekker product's error sign would settle it inline.
 
+## Where BFME1's 3D menu spends its translated code, and eight shorter shapes (2026-10-22)
+
+Measured on this shared server (load average 15-70); Node, `startbench --virtual` on the bfme-vanilla 3D menu (a phase of
+6 213 M guest instructions, the same work in every run: `+20:waitframe:300,100000;40:mark:menu;70:mark:end`), real-clock
+runs of `bfme-phases.txt` for the map load and play, microbenchmarks. Base: main a36cd74.
+
+- **Profile** (`perf record -F 3999 -k 1` on `node --perf-prof`, `perf inject -j`, samples of the emulator thread in the
+  menu phase's window — `--time` from the phase's start / end and the realtime-monotonic offset): translated regions 88 %
+  of the thread, flat (the hottest 2.6 %; 2 281 region functions). Over the 200 hottest (69 % of the region samples),
+  by instruction: ALU 28 %, guest memory accesses 16 %, stack slots (spills, reloads, stack parameters) 12.3 %, branches
+  9.3 %, vector / float 9.3 %, register-to-register moves 8.8 %, the chained-exit tail (exit-kind test to the tail call)
+  8.7 %, the f32 exponent tests of 24-bit x87 arithmetic 3.8 %, prologues (to the dispatch loop's stack check) 3.4 %,
+  SMC map loads 0.4 %. Menu mix (block counters for that phase only): MOV 21.7 %, JCC 10.5 %, ADD 9.0 %, FLD 7.2 %,
+  CMP 6.6 %, FMUL 5.9 %, FSTP 3.9 %, IMUL 2.4 %; 8.2 % of the instructions are checked stores (2.2 per group of the same
+  address registers); 10.7 chained transitions per 1 000 instructions, 56 % of them leaving x87 regions. The hottest
+  region (10 % of the instructions) is a sound mixer loop (`imul; sar; imul m; add [edi], eax; add [edi+4], ebx`).
+- **f32 exponent test** (translate-x87.js arithF32): the result's exponent field in [1, 254] tested as `(bits << 1) -
+  2^24 <u 0xfe000000` — `vmovd; lea; cmp; jae` instead of `vmovd; shr; movzx; sub; cmp; jae` on every 24-bit
+  round-to-nearest arithmetic instruction with float operands. The double-operand range test (pushFloatRangeTest) and
+  the truncating mode's exponent tests (roundTowardZero24's pushOutOfRange, the directed path's) on the pattern shifted
+  right by 31 (the significand's top bits under the exponent field move no bound): one mask less each.
+  x87loop-bench 0x7f `--pos`, 9 alternated runs at a quiet moment: xform 13.87 → 10.35 ns, sums of squares 17.22 →
+  12.33, arith across blocks 8.26 → 8.04; at 0xc7f `--full` (process host instructions, perf stat, the shifted tests
+  alone): sums of squares 8.32 → 8.17 G, xform 7.56 → 7.49 G.
+- **Chained exits** (emitChain): address 0 and every target from the thunks up (thunks, the private area, past 2 GiB)
+  in one unsigned compare (`tv - 1 >= THUNK_BASE - 1`; profiling translations keep the two tests to count them apart);
+  JIT_HASH_BASE in the probes' load offsets, no mask on the home slot. chain-bench (5 alternated runs, medians): int
+  call/return 24.9 → 24.0 ns, x87 34.6 → 32.6 ns. tests/jit-chain-targets.test.js.
+- **x87 tag word** (loadX87Tags / flushX87Tags): the rotation by TOP as one variable shift of the doubled byte (`(tw |
+  tw << 8) >> TOP`) instead of two (x64 takes the count in CL) at every x87 region entry and exit. With the previous item:
+  chain-bench 1e7 host instructions 27.55 → 25.91 G.
+- **Write-back of read-only x87 registers** (`x87LiveStores`): Code tracks sets apart from gets; the exit and fallback
+  stores of the stack registers the body reads but never sets become nops like those of untouched ones (such a local
+  holds what the cache loaded, the state block is the same). x87-size, 27 regions × 3 control words, with the items
+  above: machine code 126 692 → 124 644 B. tests/jit-x87-live.test.js (programs reading the caller's registers; a
+  mutation dropping a written register's store fails it).
+- **IMUL with dead flags** (`imulDead`): `imul r32, r/m32 (, imm)` whose next instruction in the block writes every
+  arithmetic flag (CMP, TEST, ADD, a shift by a constant, another IMUL...) — no exit can lie between them — is a 32-bit
+  multiply (no sign extensions and 64-bit product for CF / OF). The mixer loop runs four per iteration.
+  tests/jit-imul-dead.test.js.
+- **MOVSX m8 / m16** with `i32.load8_s` / `load16_s` (it was a zero-extending load and a `movsx` of the register).
+- **Lazy states without a first operand** (`lzaFree`, LZA_FREE in translate.js): ADD, INC, DEC, NEG and a SUB writing
+  its destination (a new lazy kind, SUBR; CMP keeps SUB, its first operand being the register the next Jcc reads) leave
+  0 in L_LZA; the inline conditions and both flags helpers derive what they need from the result and the second
+  operand (ADD: a = res - b, CF = res <u b; SUBR: a = res + b; NEG: a = -res; INC / DEC never read it). The
+  destination's old value — `add esi, 4`, `sub ecx, 1`, the word an `add [edi], eax` loaded — no longer lives up to the
+  next flag write or to every exit in between (TurboFan kept it in a register or a spill slot for the SMC checks' cold
+  paths). The readers ignore the operand for those kinds whatever the option, so regions translated either way exchange
+  lazy states. memop-bench `8x add [edi+8], eax` (3 alternated runs): 5.83 / 6.84 / 7.16 → 5.45 / 6.09 / 5.64 ns per
+  iteration. tests/jit-lza-free.test.js (randomized programs of every size and destination against the interpreter,
+  sliced; the helpers with garbage first operands; mutations of one inline reader and of the JS helper fail it).
+  SUBR alone can be turned off (`lzaSub: false`: a SUB keeps the SUB kind and its operand).
+- **BFME1 3D menu**, concurrent `--virtual` pairs, guest ns per instruction (load average 15-70 during these):
+  - every item but lzaFree, main / branch (4 pairs): 0.940 / 0.923, 1.110 / 1.091, 1.008 / 0.985, 1.080 / 1.066
+    (−1.3 to −2.3 %; emulator thread CPU −0.7 to −2.4 %);
+  - lzaFree off / on in the same tree (4 sequential pairs, launch order alternated): 1.026 / 0.981, 1.125 / 0.965,
+    1.025 / 1.041, 1.077 / 0.997 (−4.4, −14, +1.6, −7.4 %);
+  - everything, main / branch (4 more pairs, load 30-70): 1.182 / 1.210, 1.241 / 1.201, 1.110 / 1.038, 1.135 / 1.185
+    (+2.4, −3.2, −6.5, +4.4 %) — within this machine's spread.
+- **Host instructions of the emulator thread in the menu window** (`perf record -e instructions:u -c 100000`, samples
+  counted between the phase's marks; `node --no-liftoff` so that no tier-up timing decides how long code runs in
+  Liftoff): main 15.54 G; branch 14.11, 15.50, 15.93 G (three runs of the same build); lzaFree off 14.61, 15.98,
+  15.20 G; lzaSub off 16.03 G — the same build's runs differ by up to 12 %: even this count follows the machine's load
+  (with Liftoff on it doubled under load: 13.4-14.5 G at load ~15, 23-27 G at load ~60), so it does not resolve a few %
+  either. The frames (121) and API calls (295 600-296 400) of the phase are the same in every run. Kept on the
+  microbenchmarks, the map-load and play pairs below and the time pairs above; not validated beyond that.
+- **BFME1 map load and play** (real clock, `bfme-phases.txt`, concurrent main / branch pairs, the same warm profile
+  copied for each, launch order alternated; the same guest work in each phase within 2 %):
+
+  | pair | loadscreen (s) | loadscreen ns / insn | play ns / insn | play thread CPU (s) |
+  |---|---|---|---|---|
+  | 1, main launched first | 47.8 / 45.2 (−5.4 %) | 1.109 / 1.072 | 2.786 / 2.704 (−2.9 %) | 79.3 / 78.6 |
+  | 2, branch launched first | 40.2 / 39.7 (−1.2 %) | 0.987 / 0.970 | 2.872 / 2.728 (−5.0 %) | 80.5 / 78.3 |
+
+  The menu phase of these real-clock runs (its first 135 s, frame-paced) did not move (1.334 / 1.329, 1.667 / 1.674 ns).
+
+## Registers, region exits and loops in BFME1's 3D menu (2026-10-22): five variants, none kept
+
+Base: main ddfd8e8. Scenario: bfme-vanilla, a warm profile (the canonical seed's Options.ini), `startbench --virtual`,
+`+20:waitframe:300,100000; 40:mark:menu; 70:mark:end` — a menu phase of 6 228 M guest instructions, 121 frames, the same
+in every run; the whole run 43.9 G guest instructions. Measured with `ab-virtual --perf` style counts (above) and
+concurrent timed pairs.
+
+- **Where the guest registers live.** Already in WASM locals for a whole region: the 8 registers, EFLAGS, the four lazy
+  flag values and the budget are the region function's parameters (block and state block address first), passed from
+  region to region by the chained tail call; the state block sees them only at a non-chained exit (to the dispatcher:
+  API thunks, the stop address, an exhausted budget, a miss), around an interpreter fallback (written before, reloaded
+  after) and at the dispatcher's entry. The x87 stack (by use, x87Live) and the XMM registers the region names are
+  loaded at its entry and written back at its exits. Writing back "only the dirty registers" cannot apply to the general
+  registers: a region entered by a chain has a state block older than its parameters, so it does not know which values
+  the state block lacks. Those exits are rare anyway: over the whole run 397.7 M chained transitions against 13.1 M
+  exits to API thunks and 0.1 M budget exits; in the menu no fallback step. Moving values out of the parameters into
+  the state block was measured before (below: +17 % per chained call/return), as were the parameters' order and
+  packing.
+- **Profile** (`perf record -e cycles:u` of the whole run with `--perf-prof`, the emulator thread in the last 40 % of
+  the run, samples in region code by host instruction, branch hints on): memory operands 29.0 %, ALU 27.6 %, stack
+  slots 14.2 % (most of them 64-bit spill stores), branches 12.2 %, register moves 10.5 %, vector 6.4 %; Liftoff code 8 %
+  of the region samples. The two first instructions of the region functions (`push rbp; mov rbp, rsp`) hold 3.3 % of
+  the samples: instruction fetch at the entry of a region entered cold. In the hottest region (an msvcr71 helper, 1.3 %
+  of the thread) 19 % of the samples are its x87 / XMM prologue and ~27 % its exit (the merge's moves into the shared
+  tail, the x87 and XMM write-back, the hash probe's load, the table's bounds and signature checks waiting on it).
+- **Dispatches through a region's br_table** (`--jit-profile`, menu phase): 23.5 M against 60.7 M chained transitions —
+  backward transfers outside a structured loop 16.1 M, returns to a call site placed earlier 4.5 M, forward into a
+  loop elsewhere than at its header 1.7 M, back into a loop 1.3 M. The hottest sites (a counter per site, whole run):
+  an msvcr71 function's RET returning to the call in the region's first block, 41 M — its callee is called from two
+  places, and the depth-first layout put it after the second call, in the first call's return path; overlapping
+  loops whose headers are one block apart (8.8 M, 8.6 M).
+  - RET → local return site counted as a back edge by planUnits (`retLoops`): returns through the top 4.49 → 3.32 M,
+    but forward entries into loops 1.66 → 3.86 M and all dispatches 23.5 → 24.7 M; JIT instructions +0.7 % (318.8 vs
+    316.6 G).
+  - Loops nested (`nestLoops`, re-measured): dispatches 23.5 → 15.6 M (back to the top 16.1 → 4.4 M); JIT instructions
+    317.99 / 318.34 vs 316.87 / 316.66 G (+0.4 %), JIT cycles 147.10 / 146.80 vs 147.28 / 146.24 G (0.0 %), process
+    instructions +1.3 % (compilation). A dispatch costs about what the structured loop's header costs.
+- **XMM write-back of read-only registers** (`xmmLiveStores`, as x87LiveStores: Code tracking the XMM locals' sets, the
+  stores of the unset ones made `nop`s): JIT instructions 317.02 / 316.58 vs 316.57 / 316.61 G — this menu's x87 code
+  hardly uses XMM registers, and 32-bit code rarely reads one it does not write.
+- **Hints in the chained exit** (`chainHint`: the first probe's hit likely, the later probes and the miss out of line,
+  the target range test unlikely), with the previous item: JIT instructions 316.67 / 316.09 vs 316.43 / 316.29 G, JIT
+  cycles 140.25 / 139.23 vs 139.16 / 139.31 G.
+- **Regions of 144 blocks / 1 200 instructions**: JIT instructions +1.0 % in two batches, JIT cycles −3.6 % in one
+  (149.55 / 148.08 vs 154.30 / 154.66 G) and +1.2 % in the other (127.20 vs 125.73 G), V8's compilation +18 % of the
+  process's instructions; not changed.
+- Timed pairs (the same tree, the three first variants off / on, 4 concurrent pairs, launch order alternated): menu
+  guest ns per instruction 1.161 / 1.111, 1.158 / 1.168, 1.014 / 0.991, 1.042 / 1.071 — within the spread.
+
 ## Measured, not kept
+
+- Region parameters reordered so that the budget rides in a register and the state block's address (the same for
+  every region of a thread) on the stack (2026-10-22: block, budget, the 8 registers, state, EFLAGS, the lazy values):
+  chain-bench host instructions 25.56 G vs 25.57 G, times equal — the budget's stack store saved, the state block's
+  address reloaded where the exits use it (the stop-address test of every chained exit).
 
 - Branch-free x87 condition codes (2026-10-21: compareCC / compareEflags as `(a<b) << 8 | (a==b) << 14 | unordered *
   0x4500` instead of nested ifs): x87loop-bench compares with random signs, one run under load 23-36: fcomp + test ah

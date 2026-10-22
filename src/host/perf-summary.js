@@ -20,6 +20,7 @@ function counters(m) {
     gpuState: gpu?.state ?? null, gpuFrames: gpu?.frames, gpuMs: gpu?.ms, gpuOver33: gpu?.over33, gpuDisjoint: gpu?.disjoint, gpuLost: gpu?.lost, gpuHist: gpu?.hist ? Array.from(gpu.hist) : null, gpuMax: gpu?.max,
     glState: gc?.state ?? null, glFrames: gc?.frames, glCalls: gc?.calls, glDraws: gc?.draws,
     rwWaitMs: g?.gpuWaitMs, rwFenceMs: g?.fenceMs, rwFrameMs: g?.frameMs, rwReplayMs: g?.replayMs, rwReadbackMs: g?.readbackMs,
+    hw: m?.hostWait ?? null, // (core/host-wait.js totals: the worker's host waits, how late they ended, the spins)
   };
 }
 
@@ -91,6 +92,8 @@ export class PerfWindow {
     else out.glCalls = { state: l.glState ?? 'none' };
     // render worker: the emulator's waits for it and its replay time, ms per frame
     if (l.rwWaitMs !== undefined && n > 0) out.render = { waitMs: r2(grow(b.rwWaitMs, l.rwWaitMs) / n), fenceMs: r2(grow(b.rwFenceMs, l.rwFenceMs) / n), frameMs: r2(grow(b.rwFrameMs, l.rwFrameMs) / n), replayMs: r2(grow(b.rwReplayMs, l.rwReplayMs) / n), readbackMs: r2(grow(b.rwReadbackMs, l.rwReadbackMs) / n) };
+    // the emulator's host waits (core/host-wait.js): how late they woke (ms per wait), spin time per frame, the estimate
+    if (l.hw && n > 0) { const w = grow(b.hw?.waits, l.hw.waits), sp = grow(b.hw?.spinMs, l.hw.spinMs); out.hostWait = { waits: w, overMean: w > 0 ? r2(grow(b.hw?.overMs, l.hw.overMs) / w) : 0, lateMsPerFrame: r2(grow(b.hw?.lateMs, l.hw.lateMs) / n), spinMsPerFrame: r2(sp / n), est: l.hw.est, timerEst: l.hw.timerEst }; }
     this.reset();
     return out;
   }
@@ -119,8 +122,17 @@ export function compactPhase(ph) {
   if (!ph) return null;
   return {
     label: ph.label, frames: ph.frames ?? 0, seconds: ph.seconds ?? 0, fps: ph.fps ?? 0,
-    slow33: ph.slow33 ?? 0, slow40: ph.slow40 ?? 0, slow50: ph.slow50 ?? 0, slow100: ph.slow100 ?? 0, per33: ph.per33 ?? 0, per50: ph.per50 ?? 0, per100: ph.per100 ?? 0,
+    slow33: ph.slow33 ?? 0, slow40: ph.slow40 ?? 0, slow50: ph.slow50 ?? 0, slow100: ph.slow100 ?? 0, per33: ph.per33 ?? 0, per40: ph.per40 ?? 0, per50: ph.per50 ?? 0, per100: ph.per100 ?? 0,
+    slowPaced: ph.slowPaced ?? null,
     dt: ph.dt ?? null, work: ph.work ?? null, mean: ph.mean ?? null, slowMean: ph.slowMean ?? null, excessShares: ph.excessShares ?? null, hitches: ph.hitches ?? null,
     worst: (ph.worst ?? []).slice(0, 3),
+    hostWait: compactHostWait(ph.hostWait, ph.frames ?? 0),
   };
+}
+
+/** A phase's host waits (core/host-wait.js HostWaiter.take), compact: late per wait, spin per frame, the estimates. */
+export function compactHostWait(hw, frames) {
+  if (!hw) return null;
+  const w = hw.wait;
+  return { waits: w?.waits ?? 0, overMean: w?.overMean ?? 0, overMax: w?.overMax ?? 0, lateMsPerFrame: w && frames ? r2(w.lateMs / frames) : 0, hist: w?.hist ?? null, spins: w?.spins ?? 0, spinMsPerFrame: w && frames ? r2(w.spinMs / frames) : 0, est: hw.est, timerEst: hw.timerEst, timerOverMean: hw.timer?.overMean ?? null, injected: hw.q || 0, adaptive: hw.adaptive ?? true };
 }

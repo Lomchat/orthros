@@ -5,7 +5,7 @@
 // (`vm.host.gfx`) that receives state changes and draw calls. Without a backend (headless Node)
 // everything is tracked and counted so traces and tests can observe the game's rendering.
 import { snapKnown, snapClass } from '../core/snapshot.js';
-import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_INVALIDARG, E_OUTOFMEMORY, E_NOTIMPL } from './com.js';
+import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_INVALIDARG, E_OUTOFMEMORY } from './com.js';
 import { Surface as GdiSurface } from '../gfx/gdi/surface.js';
 import { makeDC } from './gdi32.js';
 import { PROGRAM_RS, PROGRAM_TSS } from '../gfx/d3d8-shaders.js';
@@ -321,28 +321,78 @@ export function d3dCore(vm) {
     GetAutoGenFilterType() { return 2; }
     GenerateMipSubLevels() { return; }
   }
+  /**
+   * One level of a volume texture (IDirect3DVolume8 / 9): guest memory backing, its own COM object once asked
+   * (GetVolumeLevel), alive while its texture lives — as a texture's surface levels (Surface.keepAlive). `dirty`: the
+   * contents changed since the backend last uploaded them (an unlock, a D3DX load).
+   */
+  class Volume {
+    constructor(owner, level, w, h, d) {
+      const fmt = owner.fmt;
+      this.dev = owner.dev; this.owner = owner; this.level = level; this.fmt = fmt; this.usage = owner.usage; this.pool = owner.pool; this.type = RTYPE.VOLUME;
+      this.width = w; this.height = h; this.depth = d; this.pitch = surfacePitch(fmt, w); this.slice = surfaceBytes(fmt, w, h); this.bytes = this.slice * d;
+      this.mem = 0; this.locked = false; this.dirty = false; this.privateData = new Map();
+    }
+    ptrOf(c) {
+      if (!this.ptr || !com.objectAt(this.ptr)) this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DVolume9' : 'IDirect3DVolume8', this);
+      else com.addRef(com.objectAt(this.ptr));
+      return this.ptr;
+    }
+    get keepAlive() { return !this.owner.gone; }
+    destroy() { this.ptr = 0; }
+    /** the contents in guest memory, allocated (zeroed) on first use; with a render worker, after the commands reading them */
+    ensureMem(proc) { this.dev.gfx?.beforeWrite?.(this.owner); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:volume'); mem.fill(this.mem, this.bytes, 0); this.dev.gfx?.volumeMem?.(this.owner, this.level); } return this.mem; }
+    /** the contents changed: uploaded again at the texture's next use */
+    updated() { this.dirty = true; this.dev.gfx?.volumeUpdated?.(this.owner, this.level); }
+    GetDevice(c) { return Resource.prototype.GetDevice.call(this, c); }
+    SetPrivateData(c) { return Resource.prototype.SetPrivateData.call(this, c); }
+    GetPrivateData(c) { return Resource.prototype.GetPrivateData.call(this, c); }
+    FreePrivateData(c) { return Resource.prototype.FreePrivateData.call(this, c); }
+    GetContainer(c) { const iid = readGuid(mem, c.arg(1)); const pp = c.arg(2); if (!pp) return E_POINTER; const o = com.objectAt(this.owner.ptr); if (!o || !com.supports(o, iid)) { mem.write32(pp, 0); return E_NOINTERFACE; } com.addRef(o); mem.write32(pp, this.owner.ptr); return D3D_OK; }
+    // D3DVOLUME_DESC: Format, Type, Usage, Pool, (DX8: Size), Width, Height, Depth
+    GetDesc(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; mem.write32(p, this.fmt); mem.write32(p + 4, RTYPE.VOLUME); mem.write32(p + 8, this.usage); mem.write32(p + 12, this.pool); const q = this.dev.api9 ? p + 16 : (mem.write32(p + 16, this.bytes), p + 20); mem.write32(q, this.width); mem.write32(q + 4, this.height); mem.write32(q + 8, this.depth); return D3D_OK; }
+    LockBox(c) { return this.lock(c, c.arg(1), c.arg(2)); }
+    UnlockBox() { return this.unlock(); }
+    /** D3DLOCKED_BOX { RowPitch, SlicePitch, pBits }; a D3DBOX { Left, Top, Right, Bottom, Front, Back } offsets pBits to its corner */
+    lock(c, pLocked, pBox) {
+      if (!pLocked || this.locked) return D3DERR_INVALIDCALL;
+      const base = this.ensureMem(c.proc);
+      let off = 0;
+      if (pBox) {
+        const l = mem.read32(pBox), t = mem.read32(pBox + 4), front = mem.read32(pBox + 16);
+        const blocky = this.fmt === FMT.DXT1 || this.fmt === FMT.DXT2 || this.fmt === FMT.DXT3 || this.fmt === FMT.DXT4 || this.fmt === FMT.DXT5;
+        off = front * this.slice + (blocky ? (t >> 2) * this.pitch + (l >> 2) * (this.fmt === FMT.DXT1 ? 8 : 16) : t * this.pitch + l * (this.pitch / Math.max(1, this.width)));
+      }
+      mem.write32(pLocked, this.pitch); mem.write32(pLocked + 4, this.slice); mem.write32(pLocked + 8, base + (off | 0));
+      this.locked = true;
+      return D3D_OK;
+    }
+    unlock() { if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; this.updated(); return D3D_OK; }
+  }
   class VolumeTexture extends Resource {
     constructor(dev, w, h, d, levels, usage, fmt, pool) {
       super(dev, RTYPE.VOLUMETEXTURE, pool, usage, fmt);
       this.width = w; this.height = h; this.depth = d; this.lod = 0;
       if (!levels) { levels = 1; let s = Math.max(w, h, d); while (s > 1) { s >>= 1; levels++; } }
       this.levels = [];
-      for (let i = 0, lw = w, lh = h, ld = d; i < levels; i++, lw = Math.max(1, lw >> 1), lh = Math.max(1, lh >> 1), ld = Math.max(1, ld >> 1)) this.levels.push({ width: lw, height: lh, depth: ld, pitch: surfacePitch(fmt, lw), slice: surfaceBytes(fmt, lw, lh), bytes: surfaceBytes(fmt, lw, lh) * ld, mem: 0, locked: false });
+      for (let i = 0, lw = w, lh = h, ld = d; i < levels; i++, lw = Math.max(1, lw >> 1), lh = Math.max(1, lh >> 1), ld = Math.max(1, ld >> 1)) this.levels.push(new Volume(this, i, lw, lh, ld));
       this.iids = [IID_IDirect3DResource8, IID_IDirect3DBaseTexture8];
     }
     free() { for (const l of this.levels) if (l.mem) { const a = l.mem; l.mem = 0; if (!this.dev.gfx?.deferFree?.(this, a)) this.dev.proc.vmem.release(a); } }
     SetLOD(c) { return setLod(this, c.arg(1)); }
     GetLOD() { return this.lod; }
     GetLevelCount() { return this.levels.length; }
-    GetLevelDesc(c) { const l = this.levels[c.arg(1)], p = c.arg(2); if (!l || !p) return D3DERR_INVALIDCALL; mem.write32(p, this.fmt); mem.write32(p + 4, RTYPE.VOLUME); mem.write32(p + 8, this.usage); mem.write32(p + 12, this.pool); if (this.dev.api9) { mem.write32(p + 16, l.width); mem.write32(p + 20, l.height); mem.write32(p + 24, l.depth); } else { mem.write32(p + 16, l.bytes); mem.write32(p + 20, l.width); mem.write32(p + 24, l.height); mem.write32(p + 28, l.depth); } return D3D_OK; }
-    GetVolumeLevel(c) { c.out32(2, 0); return E_NOTIMPL; }
-    LockBox(c) { const l = this.levels[c.arg(1)], p = c.arg(2); if (!l || !p || l.locked) return D3DERR_INVALIDCALL; this.dev.gfx?.beforeWrite?.(this); if (!l.mem) { l.mem = c.proc.vmem.alloc(Math.max(l.bytes, 16), 4, 'd3d8:volume'); mem.fill(l.mem, l.bytes, 0); this.dev.gfx?.volumeMem?.(this, c.arg(1)); } mem.write32(p, l.pitch); mem.write32(p + 4, l.slice); mem.write32(p + 8, l.mem); l.locked = true; return D3D_OK; }
-    UnlockBox(c) { const l = this.levels[c.arg(1)]; if (!l || !l.locked) return D3DERR_INVALIDCALL; l.locked = false; this.dev.gfx?.volumeUpdated?.(this, c.arg(1)); return D3D_OK; }
-    AddDirtyBox() { return D3D_OK; }
+    GetLevelDesc(c) { const l = this.levels[c.arg(1)]; if (!l) return D3DERR_INVALIDCALL; return l.GetDesc({ arg: (i) => (i === 1 ? c.arg(2) : 0) }); }
+    GetVolumeLevel(c) { const l = this.levels[c.arg(1)], pp = c.arg(2); if (!pp) return D3DERR_INVALIDCALL; if (!l) { mem.write32(pp, 0); return D3DERR_INVALIDCALL; } mem.write32(pp, l.ptrOf(c)); return D3D_OK; }
+    LockBox(c) { const l = this.levels[c.arg(1)]; if (!l) return D3DERR_INVALIDCALL; return l.lock(c, c.arg(2), c.arg(3)); }
+    UnlockBox(c) { const l = this.levels[c.arg(1)]; if (!l) return D3DERR_INVALIDCALL; return l.unlock(); }
+    AddDirtyBox() { this.levels[0]?.updated(); return D3D_OK; }
     SetAutoGenFilterType() { return D3D_OK; }
     GetAutoGenFilterType() { return 2; }
     GenerateMipSubLevels() { return; }
   }
+  /** open locks of a buffer kept apart (see Buffer.Lock): the oldest merge past it */
+  const LOCK_NEST = 16;
   class Buffer extends Resource {
     constructor(dev, type, length, usage, fvfOrFmt, pool) {
       super(dev, type, pool, usage, type === RTYPE.INDEXBUFFER ? fvfOrFmt : FMT.VERTEXDATA);
@@ -351,13 +401,46 @@ export function d3dCore(vm) {
       // (zeroed, as fresh pages are: contents never written read the same whatever memory was released before — the
       // allocator reuses blocks without clearing them, and a render worker releases memory later than the device does)
       if (this.mem) mem.fill(this.mem, Math.max(length, 16), 0);
-      this.locked = false; this.dirty = false;
+      this.locked = false; this.dirty = false; this.lockStack = null; // (the locks open under the latest, see Lock)
     }
     free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this, a)) this.dev.proc.vmem.release(a); } }
-    /** (with a render worker, gfx.lockBuffer waits until pending commands no longer read the contents — once: such a
-     * buffer's written ranges then travel in the command ring at Unlock, as dynamic buffers' always do) */
-    Lock(c) { const off = c.arg(1), size = c.arg(2), pp = c.arg(3), flags = c.arg(4); if (!pp || this.locked || off > this.length) return D3DERR_INVALIDCALL; this.dev.gfx?.lockBuffer?.(this, flags, off, size); mem.write32(pp, this.mem + off); this.locked = true; this.lockOff = off; this.lockSize = size ? Math.min(size, this.length - off) : this.length - off; this.lockFlags = flags; return D3D_OK; }
-    Unlock() { if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.bufferUpdated?.(this, this.lockOff, this.lockSize); } return D3D_OK; }
+    /**
+     * (with a render worker, gfx.lockBuffer waits until pending commands no longer read the contents — once: such a
+     * buffer's written ranges then travel in the command ring at Unlock, as dynamic buffers' always do)
+     * Buffer locks nest, unlike surface locks: a buffer already locked can be locked again (Direct3D 8 / 9 count them,
+     * each Unlock ends one). Refusing it failed every later Lock of a buffer a game leaves locked (BFME 1.08: a
+     * dynamic vertex buffer locked once with DISCARD and never unlocked, then locked ~290 times per frame with
+     * NOOVERWRITE, never unlocked either). Each Unlock ends the latest lock still open (its range written back); the
+     * earlier ones wait under it (`lockStack`).
+     */
+    Lock(c) {
+      const off = c.arg(1), size = c.arg(2), pp = c.arg(3), flags = c.arg(4);
+      if (!pp || off > this.length) return D3DERR_INVALIDCALL;
+      this.dev.gfx?.lockBuffer?.(this, flags, off, size);
+      mem.write32(pp, this.mem + off);
+      if (this.locked) {
+        // (the latest lock goes under the new one: [offset, size, flags, locks] — past LOCK_NEST entries the two oldest
+        // merge into one wider range standing for both, so a program that never unlocks keeps a bounded list)
+        const st = this.lockStack ??= [];
+        st.push(this.lockOff, this.lockSize, this.lockFlags, 1);
+        if (st.length > 4 * LOCK_NEST) {
+          const lo = Math.min(st[0], st[4]), hi = Math.max(st[0] + st[1], st[4] + st[5]);
+          st.splice(0, 8, lo, hi - lo, (st[2] & st[6] & 0x10) | ((st[2] | st[6]) & ~0x10), st[3] + st[7]); // (read-only only if both were)
+        }
+      }
+      this.locked = true; this.lockOff = off; this.lockSize = size ? Math.min(size, this.length - off) : this.length - off; this.lockFlags = flags;
+      return D3D_OK;
+    }
+    Unlock() {
+      if (!this.locked) return D3DERR_INVALIDCALL;
+      if (!(this.lockFlags & 0x10)) { this.dirty = true; this.dev.gfx?.bufferUpdated?.(this, this.lockOff, this.lockSize); }
+      const st = this.lockStack, n = st?.length ?? 0;
+      if (n) {
+        this.lockOff = st[n - 4]; this.lockSize = st[n - 3]; this.lockFlags = st[n - 2];
+        if (st[n - 1] > 1) st[n - 1]--; else st.length = n - 4; // (a merged entry: one of its locks ends at each Unlock)
+      } else this.locked = false;
+      return D3D_OK;
+    }
     GetDesc(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; mem.write32(p, this.fmt); mem.write32(p + 4, this.type); mem.write32(p + 8, this.usage); mem.write32(p + 12, this.pool); mem.write32(p + 16, this.length); if (this.type === RTYPE.VERTEXBUFFER) mem.write32(p + 20, this.fvf); return D3D_OK; }
   }
 
@@ -533,7 +616,7 @@ export function d3dCore(vm) {
       this.attachShadow();
       this.createBackBuffers(c);
       this.gfx?.reset?.(this);
-      vm.log('gfx', `d3d8: Reset ${this.pp.width}x${this.pp.height} fmt ${this.pp.format} ${this.pp.windowed ? 'windowed' : 'fullscreen'}`);
+      vm.log('gfx', `d3d8: Reset ${this.pp.width}x${this.pp.height} fmt ${this.pp.format} ${this.pp.windowed ? 'windowed' : 'fullscreen'} swap ${this.pp.swap} interval 0x${(this.pp.interval >>> 0).toString(16)}`);
       return D3D_OK;
     }
     Present(c) {
@@ -587,7 +670,7 @@ export function d3dCore(vm) {
       return D3D_OK;
     }
     // (the same format, as Direct3D requires: the levels are copied byte for byte)
-    UpdateTexture(c) { const s = com.implAt(c.arg(1)), d = com.implAt(c.arg(2)); if (!s || !d || s.type !== d.type || s.fmt !== d.fmt) return D3DERR_INVALIDCALL; for (const l of d.levels ?? []) l.rgbaCache = null; for (const f of d.faces ?? []) for (const l of f) l.rgbaCache = null; if (s instanceof Texture && d instanceof Texture) { for (let i = 0; i < Math.min(s.levels.length, d.levels.length); i++) { const a = s.levels[i], b = d.levels[i]; if (a.mem && a.width === b.width && a.height === b.height) { mem.copy(b.ensureMem(c.proc), a.mem, a.bytes); b.dirty = true; this.gfx?.surfaceUpdated?.(b); } } d.updatedFrom = s; } return D3D_OK; }
+    UpdateTexture(c) { const s = com.implAt(c.arg(1)), d = com.implAt(c.arg(2)); if (!s || !d || s.type !== d.type || s.fmt !== d.fmt) return D3DERR_INVALIDCALL; for (const l of d.levels ?? []) l.rgbaCache = null; for (const f of d.faces ?? []) for (const l of f) l.rgbaCache = null; if (s instanceof Texture && d instanceof Texture) { for (let i = 0; i < Math.min(s.levels.length, d.levels.length); i++) { const a = s.levels[i], b = d.levels[i]; if (a.mem && a.width === b.width && a.height === b.height) { mem.copy(b.ensureMem(c.proc), a.mem, a.bytes); b.dirty = true; this.gfx?.surfaceUpdated?.(b); } } d.updatedFrom = s; } else if (s instanceof VolumeTexture && d instanceof VolumeTexture) { for (let i = 0; i < Math.min(s.levels.length, d.levels.length); i++) { const a = s.levels[i], b = d.levels[i]; if (a.mem && a.bytes === b.bytes) { mem.copy(b.ensureMem(c.proc), a.mem, a.bytes); b.updated(); } } } return D3D_OK; }
     GetFrontBuffer(c) { const s = com.implAt(c.arg(1)); if (!(s instanceof Surface)) return D3DERR_INVALIDCALL; if (this.gfx?.readbackFrontBuffer) this.gfx.readbackFrontBuffer(s); else { const b = this.backBuffers[0]; if (b.mem && b.fmt === s.fmt) mem.copy(s.ensureMem(c.proc), b.mem, Math.min(b.bytes, s.bytes)); } return D3D_OK; }
     SetRenderTarget(c) { const rt = c.arg(1) ? com.implAt(c.arg(1)) : null, ds = c.arg(2) ? com.implAt(c.arg(2)) : null; if (c.arg(1) && !(rt instanceof Surface)) return D3DERR_INVALIDCALL; if (rt) { this.renderTarget = rt; this.viewport = { x: 0, y: 0, w: rt.width, h: rt.height, minZ: 0, maxZ: 1 }; } this.depthTarget = c.arg(2) ? ds : null; this.gfx?.setRenderTarget?.(this.renderTarget, this.depthTarget); return D3D_OK; }
     GetRenderTarget(c) { const pp = c.arg(1); if (!pp) return D3DERR_INVALIDCALL; mem.write32(pp, this.renderTarget.ptrOf(c)); return D3D_OK; }
@@ -722,7 +805,7 @@ export function d3dCore(vm) {
   // its own: a restored resource is one no backend has seen, which they create and upload whole at its first use)
   // snapshot: constant
   const resourceSnap = { skip: ['rec', 'glOwner', 'glRec', 'glGen'] };
-  vm.d3dCore = { deviceSnap, resourceSnap, Resource, Surface, Texture, CubeTexture, VolumeTexture, Buffer, Device, writeCaps, displayMode, writeMode, modes, RS_DEFAULTS, TSS_DEFAULTS, MAX_STAGES, MAX_STREAMS, allocResId: () => resIds.next++ };
+  vm.d3dCore = { deviceSnap, resourceSnap, Resource, Surface, Texture, CubeTexture, Volume, VolumeTexture, Buffer, Device, writeCaps, displayMode, writeMode, modes, RS_DEFAULTS, TSS_DEFAULTS, MAX_STAGES, MAX_STREAMS, allocResId: () => resIds.next++ };
   return vm.d3dCore;
 }
 
@@ -788,11 +871,11 @@ export function registerDirect3D8(api, vm) {
       dev.initShadow(c.proc);
       mem.write32(out, dev.ptr);
       vm.d3dDevice = dev;
-      vm.log('gfx', `d3d8: CreateDevice ${dev.pp.width}x${dev.pp.height} fmt ${dev.pp.format} ${dev.pp.windowed ? 'windowed' : 'fullscreen'} depth ${dev.pp.autoDepth ? dev.pp.depthFormat : 'none'} behavior 0x${behavior.toString(16)} backend ${dev.gfx ? 'yes' : 'none'}`);
+      vm.log('gfx', `d3d8: CreateDevice ${dev.pp.width}x${dev.pp.height} fmt ${dev.pp.format} ${dev.pp.windowed ? 'windowed' : 'fullscreen'} depth ${dev.pp.autoDepth ? dev.pp.depthFormat : 'none'} behavior 0x${behavior.toString(16)} swap ${dev.pp.swap} interval 0x${(dev.pp.interval >>> 0).toString(16)} backend ${dev.gfx ? 'yes' : 'none'}`);
       return D3D_OK;
     }
   }
-  for (const C of [Resource, Surface, Texture, CubeTexture, VolumeTexture, Buffer, Device, Direct3D]) snapClass(vm, C, { name: `d3d8.${C.name}`, ...(C === Device ? d3dCore(vm).deviceSnap : C === Direct3D ? {} : d3dCore(vm).resourceSnap) });
+  for (const C of [Resource, Surface, Texture, CubeTexture, d3dCore(vm).Volume, VolumeTexture, Buffer, Device, Direct3D]) snapClass(vm, C, { name: `d3d8.${C.name}`, ...(C === Device ? d3dCore(vm).deviceSnap : C === Direct3D ? {} : d3dCore(vm).resourceSnap) });
 
   api.define('d3d8.dll', {
     Direct3DCreate8: [1, (c) => {

@@ -1125,7 +1125,7 @@ export function registerUser32(api, vm) {
       if (room < ms) { st.near++; return 0; } // (close to the expected end: spin)
       wait = Math.min(room, PEEK_IDLE_MAX);
     }
-    if (vm.sched.pickRunnable(t)) return 0;
+    if (vm.sched.hasRunnable(t)) return 0;
     st.parks++; if (wait > ms) st.longParks++;
     st.streak = PEEK_IDLE_STREAK; st.last = st.waitEnd = now + wait; st.waitAt = now; st.sinceWait = 0;
     return wait;

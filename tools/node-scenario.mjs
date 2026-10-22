@@ -9,20 +9,28 @@
 // the browser worker sets them. Other
 // kinds (shot, profile, capture...) are ignored. Times are real seconds from the start, from the anchor after a wait
 // (or `+t` from the first Direct3D frame), as in the harness.
-import { acct, C as ACCT } from '../src/core/frame-acct.js';
+import { acct, C as ACCT, FrameStats, N_CATS } from '../src/core/frame-acct.js';
 import { scanCodeOfVk } from '../src/win32/dinput8.js';
 import { BLOCK_COUNTS_BASE } from '../src/cpu/memory.js';
 import { refreshApiOpt } from '../src/core/api-opt.js';
-import { parseScenario, inRanges } from '../src/host/scenario.js';
+import { parseScenario, inRanges, ScenarioPlayer } from '../src/host/scenario.js';
+import { hostWaiter, injectedQuantum, adaptiveOn } from '../src/core/host-wait.js';
+
+const POINTER_KINDS = new Set(['move', 'click', 'rclick', 'down', 'up']);
 
 export class NodeScenario {
   /**
    * @param {string} text scenario
    * @param {any} vm
    * @param {(line: string) => void} log
+   * @param {() => number} [nowMs]
+   * @param {{ from?: [number, number] | null }} [opts] from: the display the pointer coordinates were written for (a
+   *   bench scenario's `coords`): scaled to the game's display as the page's bench player scales them
    */
-  constructor(text, vm, log, nowMs = () => performance.now()) {
+  constructor(text, vm, log, nowMs = () => performance.now(), opts = {}) {
     this.rootVm = vm; this.log = log; this.nowMs = nowMs; // (the time base: wall time, or a virtual clock's for a deterministic run)
+    // (the page's own scaling: the device's back buffer once there is one, the host's display before)
+    this.scaler = new ScenarioPlayer([], { from: opts.from ?? null, display: () => { const pp = this.vm.d3dDevice?.pp, d = vm.host.display; return pp?.width ? [pp.width, pp.height] : d ? [d.width, d.height] : null; } });
     const { steps, errors } = parseScenario(text);
     if (errors.length) throw new Error(`scenario: ${errors.join('; ')}`);
     this.events = steps.map((st) => ({ t: st.t, rel: st.rel, anchored: st.anchored, kind: st.kind, args: st.args, done: false }));
@@ -32,7 +40,66 @@ export class NodeScenario {
     this.results = [];
     // (frame intervals per phase, from the Direct3D presents: percentiles in the phase report)
     this.frameDts = []; this.lastPresentAt = 0;
-    if (!vm.host.frameHook) vm.host.frameHook = () => { const n = this.nowMs(); if (this.lastPresentAt) this.frameDts.push(n - this.lastPresentAt); this.lastPresentAt = n; };
+    // (every frame's categories, as the browser host keeps them: the phase reports' slow frames by category, the same
+    // FrameStats report as the page's [frames] lines; the categories summed per phase for its totals)
+    this.frameAcct = new FrameStats(); this.phaseCats = new Float64Array(N_CATS);
+    this.slowApis = null; this.gc = null; // (enableSlowApis, enableGc)
+    if (!vm.host.frameHook) vm.host.frameHook = () => this.framePresented();
+  }
+  framePresented() {
+    const n = this.nowMs(), cats = acct.frame();
+    for (let i = 0; i < N_CATS; i++) this.phaseCats[i] += cats[i];
+    const gcMs = this.gc ? this.gcFrame() : 0;
+    if (this.lastPresentAt) {
+      const dt = n - this.lastPresentAt; this.frameDts.push(dt); this.frameAcct.add(dt, cats, n, acct.lastReads);
+      if (this.slowApis) this.slowApiFrame(dt, cats);
+      if (this.gc) { const g = this.gc; g.ms += gcMs; g.frames++; if (dt > g.over) { g.slow++; g.slowMs += gcMs; if (gcMs >= 5) g.slowWithGc++; } if (gcMs > g.maxMs) g.maxMs = gcMs; }
+    }
+    this.lastPresentAt = n;
+  }
+  /**
+   * startbench --slow-apis <ms>: the APIs' time in the frames longer than that (each API's sampled time in the frame,
+   * scaled to its calls; the deferred-queue drain and the heavy calls are timed on every call), summed per phase — which
+   * calls make the slow frames' `api` and `draw` time.
+   */
+  slowApiFrame(dt, cats) {
+    const s = this.slowApis, ms = acct.idxMs, k = acct.idxN, calls = acct.idxCalls;
+    const len = Math.max(ms.length, calls.length);
+    if (s.ms.length < len) { const g = (a) => { const b = new Float64Array(len); b.set(a); return b; }; s.ms = g(s.ms); s.n = g(s.n); s.calls = g(s.calls); s.sum = g(s.sum); s.frames = g(s.frames); }
+    if (dt > s.over) {
+      s.slow++; s.apiMs += cats[ACCT.api] + cats[ACCT.draw];
+      for (let i = 0; i < ms.length; i++) {
+        const dm = ms[i] - s.ms[i]; if (dm <= 0) continue;
+        const dn = k[i] - s.n[i], dc = (calls[i] ?? 0) - s.calls[i], e = dm * Math.max(1, dn > 0 ? dc / dn : 1);
+        s.sum[i] += e; s.frames[i]++;
+      }
+    }
+    s.ms.set(ms); s.n.set(k); s.calls.set(calls);
+  }
+  /**
+   * startbench --gc <ms>: the garbage collections of this thread (V8's GCProfiler, restarted at each present: ~5 µs)
+   * per frame, by kind; per phase: their time, in the frames longer than `over` ms, the largest one in a frame.
+   */
+  enableGc(over, v8) { this.gc = { v8, prof: null, over, ms: 0, frames: 0, slow: 0, slowMs: 0, slowWithGc: 0, maxMs: 0, kinds: {} }; this.gcFrame(); }
+  gcFrame() {
+    const g = this.gc; let ms = 0;
+    if (g.prof) for (const s of g.prof.stop().statistics) { ms += s.cost / 1000; g.kinds[s.gcType] = (g.kinds[s.gcType] ?? 0) + s.cost / 1000; }
+    g.prof = new g.v8.GCProfiler(); g.prof.start();
+    return ms;
+  }
+  gcReport(label) {
+    const g = this.gc; if (!g) return;
+    this.log(`[gc] ${label}: ${g.ms.toFixed(0)} ms of garbage collection on the emulator thread in ${g.frames} frames (${(g.ms / Math.max(1, g.frames)).toFixed(2)} ms per frame; ${Object.entries(g.kinds).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(', ')}), most in one frame ${g.maxMs.toFixed(1)} ms; frames > ${g.over} ms: ${g.slow}, their GC ${(g.slowMs / Math.max(1, g.slow)).toFixed(2)} ms each, ${g.slowWithGc} of them with 5 ms or more`);
+    Object.assign(g, { ms: 0, frames: 0, slow: 0, slowMs: 0, slowWithGc: 0, maxMs: 0, kinds: {} });
+  }
+  enableSlowApis(over) { const z = () => new Float64Array(0); this.slowApis = { over, slow: 0, apiMs: 0, ms: z(), n: z(), calls: z(), sum: z(), frames: z() }; }
+  slowApiReport(label) {
+    const s = this.slowApis; if (!s) return;
+    const rows = [];
+    for (let i = 0; i < s.sum.length; i++) if (s.sum[i] > 0) rows.push([this.vm.acctApiName(i), s.sum[i], s.frames[i]]);
+    rows.sort((a, b) => b[1] - a[1]);
+    this.log(`[slowapis] ${label}: ${s.slow} frames > ${s.over} ms, api+draw ${(s.apiMs / Math.max(1, s.slow)).toFixed(2)} ms per such frame; by API (ms per such frame, frames it took time in): ${rows.slice(0, 20).map(([nm, v, f]) => `${nm} ${(v / Math.max(1, s.slow)).toFixed(2)} (${f})`).join(', ')}`);
+    s.slow = 0; s.apiMs = 0; s.sum.fill(0); s.frames.fill(0);
   }
   /** the machine the scenario plays: the host's, or the child process that took the display (docs/processes.md) */
   get vm() { return this.rootVm.group?.foreground ?? this.rootVm; }
@@ -45,7 +112,7 @@ export class NodeScenario {
     this.nextCheck = nowMs + 5;
     while (this.pending.length && this.pending[0][0] <= nowMs) this.push(this.pending.shift()[1]);
     const t = this.now(), d3d = this.vm.d3dDevice;
-    if (this.firstFrameAt === null && d3d?.frames > 0) this.firstFrameAt = t;
+    if (this.firstFrameAt === null && d3d?.frames > 0) { this.firstFrameAt = t; this.log(`[input] first Direct3D frame at ${t.toFixed(1)}s (${(this.vm.guestInsns / 1e6).toFixed(0)} M guest instructions)`); }
     for (const ev of this.events) {
       if (ev.done) continue;
       const base = ev.rel ? this.firstFrameAt : ev.anchored ? this.anchorAt : 0;
@@ -81,7 +148,7 @@ export class NodeScenario {
     }
   }
   fire(ev, t) {
-    const [x, y] = ev.args, at = this.nowMs();
+    const [x, y] = POINTER_KINDS.has(ev.kind) ? this.scaler.scale(ev.args[0], ev.args[1]) : ev.args, at = this.nowMs();
     switch (ev.kind) {
       case 'move': this.push({ type: 'mousemove', x, y, dx: 0, dy: 0 }); break;
       case 'click': case 'rclick': {
@@ -136,7 +203,9 @@ export class NodeScenario {
   }
   /** Close the running phase (its guest instructions, guest-category time per instruction) and open `label`. */
   mark(label, t) {
-    const cats = acct.frame(), d3d = this.vm.d3dDevice;
+    // (the phase's frames' categories and the time since the last present; a run without presents: all of it)
+    const rest = acct.frame(), cats = Float64Array.from(this.phaseCats, (v, i) => v + rest[i]), d3d = this.vm.d3dDevice;
+    this.phaseCats.fill(0);
     const cpu = process.cpuUsage();
     // (the emulator thread's own CPU time: unlike the categories' wall-clock time, not inflated while the thread waits
     // for a core on a loaded machine)
@@ -150,19 +219,33 @@ export class NodeScenario {
       r.dt = { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: dts[dts.length - 1] ?? 0, over34: dts.filter((d) => d > 34).length, over40: dts.filter((d) => d > 40).length };
       r.apiTop = this.apiTop();
       r.picks = (this.vm.sched?.picks ?? 0) - p.picks; // (scheduling decisions: Sleep(0) spins, yields)
+      // (the page's phase report over the same frames: slow frames by category, hitches, worst frames)
+      const ph = this.frameAcct.phase(label, this.nowMs());
+      r.frameAcct = { ...ph, text: undefined };
+      r.dt.over40PerMin = Math.round(r.dt.over40 / Math.max(1e-6, secs / 60));
+      r.hostWait = { ...hostWaiter.take(), ...p.hw }; // (the host's wake-ups: overshoot, spins — core/host-wait.js)
       this.results.push(r);
+      this.log(`[frames] node mark ${label}: ${ph.text}`);
+      this.slowApiReport(p.label); this.gcReport(p.label);
       this.log(`[frames] node phase ${p.label}: ${secs.toFixed(1)} s, ${frames} frames, ${(g / 1e6).toFixed(0)} M guest instructions, guest ${(cats[ACCT.guest] / 1000).toFixed(2)} s = ${r.guestMsPerMInsn.toFixed(3)} ns per instruction; api ${(cats[ACCT.api] / 1000).toFixed(2)} s, jit ${(cats[ACCT.jit] / 1000).toFixed(2)} s, interp ${(cats[ACCT.interp] / 1000).toFixed(2)} s, wait ${(cats[ACCT.wait] / 1000).toFixed(2)} s, CPU ${cpuS.toFixed(1)} s${threadCpuS !== null ? `, thread CPU ${threadCpuS.toFixed(1)} s` : ''}; frame ms p50 ${r.dt.p50.toFixed(1)} p90 ${r.dt.p90.toFixed(1)} p99 ${r.dt.p99.toFixed(1)} max ${r.dt.max.toFixed(0)}, > 34 ms ${r.dt.over34}, > 40 ms ${r.dt.over40}`);
+      const hw = r.hostWait.wait;
+      if (hw) this.log(`[hostwait] ${p.label}: ${hw.waits} waits, overshoot mean ${hw.overMean} ms max ${hw.overMax} ms, late for the frame ${(hw.lateMs / Math.max(1, frames)).toFixed(2)} ms per frame (estimate ${r.hostWait.est} ms), early ${hw.early}, plain ${hw.plain}, spins ${hw.spins} (${hw.spinMs} ms, ${(hw.spinMs / Math.max(1, frames)).toFixed(2)} ms per frame); injected quantum ${p.hw.q || 'none'}, adaptive ${p.hw.adaptive ? 'on' : 'off'}; > 40 ms per minute ${r.dt.over40PerMin}`);
       this.log(`[apitop] ${p.label} (ms per frame, calls per frame, µs per call): ${r.apiTop.map(([k, ms, c, us]) => `${k} ${(ms / Math.max(1, frames)).toFixed(2)} (${(c / Math.max(1, frames)).toFixed(0)}, ${us.toFixed(1)})`).join(', ')}`);
       // (--jit-profile: the phase's transitions by kind, chained transitions and fallback steps)
       if (this.jitProf) this.log(`[jitprof] ${p.label}: ${this.jitProf()}`);
+      for (const f of this.phaseReports ?? []) f(p.label, frames); // (a tool's own per-phase lines: startbench --sleeps, --slow-threads)
       // (startbench --d3dx-prof: D3DX image work by kind, and the surface lock patterns, as the browser worker reports them)
       const prof = this.vm.d3dxProf, ls = d3d?.lockStats, lp = p.locks ?? {};
       if (prof?.size) { this.log(`[d3dx] ${p.label} D3DX image work (ms, count): ${[...prof].sort((a, b) => b[1].ms - a[1].ms).slice(0, 16).map(([k, e]) => `${k}: ${e.ms.toFixed(0)}/${e.n}`).join('; ')}`); prof.clear(); }
       if (ls && this.vm.apiTimes) { const dl = (k) => (ls[k] ?? 0) - (lp[k] ?? 0); this.log(`[d3dx] ${p.label} locks: ${dl('whole')} whole, ${dl('rect')} rect (${(100 * dl('rectPx') / Math.max(1, dl('rectOfPx'))).toFixed(0)}% of their surfaces), ${dl('readOnly')} read-only`); }
     }
-    if (!this.phase) { this.apiTop(); this.jitProf?.(); }
+    if (!this.phase) {
+      this.apiTop(); this.jitProf?.(); this.frameAcct.phase(label, this.nowMs());
+      if (this.gc) Object.assign(this.gc, { ms: 0, frames: 0, slow: 0, slowMs: 0, slowWithGc: 0, maxMs: 0, kinds: {} });
+      if (this.slowApis) { this.slowApis.slow = 0; this.slowApis.apiMs = 0; this.slowApis.sum.fill(0); this.slowApis.frames.fill(0); }
+    }
     this.frameDts = [];
-    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now(), picks: this.vm.sched?.picks ?? 0, locks: { ...(d3d?.lockStats ?? {}) } }; // (epoch ms: phases matched with outside measurements, perf stat -I)
+    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now(), picks: this.vm.sched?.picks ?? 0, hw: { q: injectedQuantum(), adaptive: adaptiveOn() }, locks: { ...(d3d?.lockStats ?? {}) } }; // (epoch ms: phases matched with outside measurements, perf stat -I)
   }
   /**
    * The APIs that took the most time since the previous call (as the browser worker's phase report): each API's timed

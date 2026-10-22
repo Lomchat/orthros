@@ -115,7 +115,7 @@ test('server: compressed ranges carry the exact bytes (zstd, gzip, identity), an
   const b = new HttpBackend('/game/x/', tree(1), { encoded: true });
   const seen = [];
   const Real = globalThis.XMLHttpRequest;
-  globalThis.XMLHttpRequest = class { open(m, url) { this.url = url; } setRequestHeader(k) { seen.push(k); } send() { const [, a, e] = /\?r=(\d+)-(\d+)$/.exec(this.url); this.status = 200; this.response = FILE.slice(+a, +e).buffer; } };
+  globalThis.XMLHttpRequest = class { open(m, url) { this.url = url; } setRequestHeader(k) { seen.push(k); } send() { const [, a, e] = /\?r=(\d+)-(\d+)(?:&|$)/.exec(this.url); this.status = 200; this.response = FILE.slice(+a, +e).buffer; } };
   try {
     assert.deepEqual(b.open('Data/a.big').read(MiB - 3, 10), FILE.subarray(MiB - 3, MiB + 7));
     assert.deepEqual(seen, []);
@@ -152,7 +152,7 @@ test('learned prefetch: the server orders the blocks sessions needed; the backen
   } finally { server.close(); }
   // the backend: the listed blocks into the store, in order, then reads without requests
   const realFetch = globalThis.fetch, fetched = [];
-  globalThis.fetch = async (url) => { const [, a, e] = /\?r=(\d+)-(\d+)/.exec(url); assert.match(url, /&p=1$/); fetched.push([+a, +e]); return { status: 200, arrayBuffer: async () => FILE.slice(+a, +e).buffer }; };
+  globalThis.fetch = async (url) => { const [, a, e] = /\?r=(\d+)-(\d+)/.exec(url); assert.match(url, /&p=1(&|$)/); fetched.push([+a, +e]); return { status: 200, arrayBuffer: async () => FILE.slice(+a, +e).buffer }; };
   try {
     const store = new MemBlockStore();
     const b = new HttpBackend('/game/g/', { dirs: {}, files: { 'a.big': { size: FILE.length, mtime: 7 } } }, { store, encoded: true });

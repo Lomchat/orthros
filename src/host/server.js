@@ -32,7 +32,7 @@ import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
-import { listGameTree, dirsStamp, resolveGameFile, resolveLightFile } from './game-files.js';
+import { listGameTree, dirsStamp, resolveGameFile, resolveLightFile, DirListings } from './game-files.js';
 import { LIGHT_DIR, readLight } from './light-copies.js';
 import { lightCovers } from './light-covers.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
@@ -151,6 +151,13 @@ export function createServer(opts = {}) {
     treeObjs.set(id, { tree, dirs, stamp: dirsStamp(dirs) }); trees.delete(id);
     return tree;
   };
+  /** A tree's bytes (its files', every folder's), summed once per tree object (a tree listed again is a new one). */
+  const treeSizes = new WeakMap();
+  const treeBytes = (t) => {
+    let n = treeSizes.get(t);
+    if (n === undefined) { n = 0; for (const f of Object.values(t.files)) n += f.size; for (const d of Object.values(t.dirs)) n += treeBytes(d); treeSizes.set(t, n); }
+    return n;
+  };
   /** The tree as /api/tree sends it. */
   const gameTreeJson = (id, man) => { const tree = gameTree(id, man); if (!trees.has(id)) trees.set(id, JSON.stringify(tree)); return trees.get(id); };
   /**
@@ -170,6 +177,8 @@ export function createServer(opts = {}) {
     if (/\bgzip\b/.test(accept)) { c.gz ??= zlib.gzipSync(json); return send(res, 200, c.gz, { ...type, 'Content-Encoding': 'gzip', 'Content-Length': c.gz.length }); }
     return send(res, 200, json, type);
   };
+  // (the folders' listings the requests resolve paths with, each checked by a stat of its folder: DirListings)
+  const listings = new DirListings(opts.listingNames);
   const getManifest = (id) => { if (!manifests.has(id) && !manifestDir) refreshCatalog(); return manifests.get(id); };
   const coverFile = (man) => man.coverPath ?? (man.cover && resolveGameFile(man, man.cover));
   const runtimeOf = (man) => man.runtime ?? 'win32';
@@ -316,7 +325,8 @@ export function createServer(opts = {}) {
   const learned = new Map(); // manifest -> Map("path#block" -> { t, n, mask, pre })
   /** mask of the 64 KiB pieces of a block covered by [a, b) (offsets within the block) */
   const pieceBits = (a, b) => { let m = 0; for (let c = Math.floor(a / LEARN_CHUNK); c * LEARN_CHUNK < b; c++) m |= 1 << c; return m >>> 0; };
-  const sessions = new Map(); // session id -> { start, seen: Set }
+  const sessions = new Map(); // session id -> { start, last, seen: Set, marked? }, least recently active first
+  const SESSIONS_MAX = opts.sessionsMax ?? 256;
   const learnFile = (name) => opts.learnDir && path.join(opts.learnDir, `prefetch-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
   const learnedOf = (name) => {
     let m = learned.get(name);
@@ -339,8 +349,12 @@ export function createServer(opts = {}) {
     return p;
   };
   let learnDirty = new Set(), learnTimer = null;
-  const learnSave = (name) => {
-    launches.delete(name);
+  // (`read`: a session's read changed the order — the launch summaries made from it go on serving for LAUNCH_STALE_MS:
+  // with players in a game each of their reads made /api/manifests summarize its launch set again, ~100 ms of the
+  // server's thread at every home under 20 players, measured; a mark, which makes the launch set, forgets them)
+  const learnSave = (name, read = false) => {
+    if (!read) launches.delete(name);
+    else for (const c of launches.get(name)?.values() ?? []) c.stale = true;
     if (!learnFile(name)) return;
     learnDirty.add(name);
     learnTimer ??= setTimeout(() => {
@@ -361,9 +375,14 @@ export function createServer(opts = {}) {
     const now = Date.now();
     let ss = sessions.get(sid);
     if (!ss) {
-      if (sessions.size > 1000) for (const [k, v] of sessions) if (now - v.start > 6 * 3600e3) sessions.delete(k);
-      sessions.set(sid, ss = { start: now, seen: new Set() });
-    }
+      // (each session's `seen` holds a key per block it read — thousands: bounded, the least recently active out —
+      // those idle an hour first —, the 6-hour sweep at a thousand sessions let a day of visitors keep hundreds of MB)
+      if (sessions.size >= SESSIONS_MAX) {
+        for (const [k, v] of sessions) if (now - v.last > 3600e3) sessions.delete(k);
+        for (const k of sessions.keys()) { if (sessions.size < SESSIONS_MAX) break; sessions.delete(k); }
+      }
+      sessions.set(sid, ss = { start: now, last: now, seen: new Set() });
+    } else { ss.last = now; sessions.delete(sid); sessions.set(sid, ss); } // (most recently active last)
     const m = learnedOf(name), t = at ?? now - ss.start;
     for (let b = Math.floor(start / LEARN_BLOCK); b * LEARN_BLOCK < end; b++) {
       const k = `${rel}#${b}`;
@@ -376,7 +395,7 @@ export function createServer(opts = {}) {
       ss.seen.add(sk);
       e.t = Math.min(e.t, t); e.n++;
     }
-    learnSave(name);
+    learnSave(name, true);
   };
   /**
    * Session `sid` marked version `name` (`kind`): 'playable' counts the blocks it read until now, once a session — and
@@ -422,13 +441,14 @@ export function createServer(opts = {}) {
    * release, downloaded at a first launch, is told apart: `engine` (its wire bytes) and `engineFiles` (its URLs, which
    * "Prepare" fetches too: download-worker.js).
    */
-  const launches = new Map(); // manifest -> Map(game language | '' -> { at, v })
+  const launches = new Map(); // manifest -> Map(game language | '' -> { at, tree, v, stale })
+  const LAUNCH_STALE_MS = opts.launchStaleMs ?? 30000;
   const ownLaunchOf = (name, man, lang = null) => {
     let byLang = launches.get(name); if (!byLang) launches.set(name, byLang = new Map());
     // (kept while the game's tree is the same one — what sessions learn forgets it, learnSave —, made again every ten
     // minutes all the same: the compressed sizes the server comes to know meanwhile)
     const c = byLang.get(lang ?? ''), tree = gameTree(name, man);
-    if (c && c.tree === tree && Date.now() - c.at < 600e3) return c.v;
+    if (c && c.tree === tree && Date.now() - c.at < (c.stale ? LAUNCH_STALE_MS : 600e3)) return c.v;
     let v = null;
     try {
       if (playableOf(name).marks) {
@@ -501,7 +521,7 @@ export function createServer(opts = {}) {
    */
   /** The files of a version's paths (a light copy's too), resolved once: rel -> { file, st, light, size } | null. */
   const unitFile = (man) => {
-    const files = new Map(), memo = new Map(); // (the folders' listings: a launch set's paths resolved in a row)
+    const files = new Map(), memo = listings; // (the folders' listings: a launch set's paths resolved in a row)
     return (rel) => {
       if (!files.has(rel)) {
         let v = null;
@@ -875,12 +895,41 @@ export function createServer(opts = {}) {
   /** compressed range transport totals (requests, bytes read, bytes sent, encoding time) */
   // (split by kind: `demand` the game's own reads (&s=), `bg` the background downloads (&p=1); `ms` the time from the
   // request to the last byte handed to the socket, simulated link included)
-  // (testing: opts.netTrace, a file — one line per compressed range answered: start s, duration s, kind, file, range, bytes sent)
+  // (testing: opts.netTrace, a file — one line per compressed range answered: start s, duration s, kind, file, range, bytes sent,
+  // and how the units saw it: hit / raw / miss / none, pcm1 for an audio unit)
   const netTrace = opts.netTrace ? (line) => { try { fs.appendFileSync(opts.netTrace, line + '\n'); } catch { /* no trace */ } } : null;
-  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, brHits: 0, demand: { requests: 0, sent: 0, ms: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
+  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, brHits: 0, joined: 0, demand: { requests: 0, sent: 0, ms: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
   const encodedCache = new Map(); let encodedBytes = 0;
   const ENCODED_CACHE_MAX = opts.encodedCacheBytes ?? 256 * 1024 * 1024;
+  /** ranges being encoded: key -> { joined: the requests of the same range waiting for it, job: its queued job, kind } */
+  const encoding = new Map();
+  /**
+   * The ranges encoded on the fly, at most ENCODE_JOBS at once, the game's own reads (demand) before the background
+   * ones: each takes a thread of libuv's pool (4) for its read and its compression, which the other requests' file
+   * reads share — under 20 players ~120 compressions waited there at once, each with its range and its encoder's
+   * state (the server's resident memory 180 MB -> 1.6 GB, measured), the game's reads behind the downloads. A request
+   * whose client left before its turn is not encoded (`wanted` false: `drop` instead).
+   */
+  // (the pool's size less two, its other requests' reads; every third job a background one when both wait: the
+  // downloads that make a game's next reads local go on under a busy server)
+  const ENCODE_JOBS = opts.encodeJobs ?? Math.max(2, (Number(process.env.UV_THREADPOOL_SIZE) || 4) - 2);
+  const encodeQueue = { demand: [], bg: [] };
+  let encodeRunning = 0, encodePicks = 0;
+  const encodePump = () => {
+    while (encodeRunning < ENCODE_JOBS) {
+      const bgTurn = ++encodePicks % 3 === 0 && encodeQueue.bg.length > 0;
+      const j = (bgTurn ? encodeQueue.bg.shift() : encodeQueue.demand.shift() ?? encodeQueue.bg.shift()); if (!j) return;
+      if (!j.wanted()) { j.drop(); continue; }
+      encodeRunning++;
+      let once = false;
+      j.run(() => { if (once) return; once = true; encodeRunning--; encodePump(); });
+    }
+  };
+  /** a job queued in `kind`'s queue (returned: a demand request joining it may move it to the demand queue) */
+  const encodeSlot = (kind, wanted, run, drop) => { const j = { wanted, run, drop }; (kind === 'bg' ? encodeQueue.bg : encodeQueue.demand).push(j); encodePump(); return j; };
+  /** brotli's window for `n` bytes: the smallest that holds them (10..24 bits; the ring is 2^lgwin - 16) */
+  const brWindow = (n) => { let w = 10; while (w < 24 && (1 << w) - 16 < n) w++; return w; };
   // (`light`: a light copy of `file` — resolveLightFile — its bytes instead of the file's)
   const sendRangeEncoded = (req, res, file, r, kind = 'demand', light = null) => {
     const tReq = performance.now();
@@ -901,11 +950,12 @@ export function createServer(opts = {}) {
       netStats.requests++; netStats.raw += end - start; netStats.sent += body.length;
       const k = netStats[kind]; k.requests++;
       let finished = false;
-      res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind === 'bg' && /[?&]a=1/.test(req.url) ? 'ahead' : kind} ${path.basename(file)} ${start}-${end} ${body.length}`); });
+      res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind === 'bg' && /[?&]a=1/.test(req.url) ? 'ahead' : kind} ${path.basename(file)} ${start}-${end} ${body.length}${unitSeen ? ' ' + unitSeen : ''}${codec ? ' ' + codec : ''}`); });
       res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': end - start });
       // (X-Orthros-Unit: how the precompressed units saw the request — hit, raw (kept as is), miss, or none: not a unit)
       if (unitSeen) h['X-Orthros-Unit'] = unitSeen;
+      if (codec) h['X-Orthros-Codec'] = codec;
       if (encoding) h['Content-Encoding'] = encoding;
       const go = () => { if (!res.headersSent) res.writeHead(200, h); res.end(body); };
       // (simulated link: the headers after the round trip, the body once it crossed — the client's time to the first
@@ -915,41 +965,76 @@ export function createServer(opts = {}) {
     // a unit made ahead (br-cache.js: a whole block or a single piece, brotli 11) when the request is one and takes br;
     // missed, it is asked for (made in the background) and this request goes the dynamic way
     const unit = brCache && br && !pad ? unitOf(start, end, light ? light.copy.size : st.size) : null;
-    const pre = unit && brCache.lookup(file, st, light, unit);
-    let unitSeen = brCache && br && !pad ? (unit ? (pre ? (pre.raw ? 'raw' : 'hit') : 'miss') : 'none') : null;
-    if (pre?.raw) enc = null; // (brotli saves too little there: as it is)
-    else if (pre) {
-      return fs.readFile(pre.path, (err, body) => {
-        if (!err && body.length === pre.bytes) { netStats.brHits++; return reply(body, 'br'); }
-        brCache.drop(file, st, light, unit); unitSeen = 'miss'; dynamic();
+    // (&pc=1: the page decodes the audio units — a PCM transport container, X-Orthros-Codec: pcm1, src/vfs/pcm-codec.js —;
+    // one made is sent before the brotli unit, its bytes fewer)
+    let codec = null, unitSeen = null;
+    const pcm = unit && /[?&]pc=1(&|$)/.test(req.url) ? brCache.lookupPcm(file, st, light, unit) : null;
+    if (pcm) {
+      return fs.readFile(pcm.path, (err, body) => {
+        if (!err && body.length === pcm.bytes) { netStats.pcmHits = (netStats.pcmHits ?? 0) + 1; codec = 'pcm1'; unitSeen = 'hit'; return reply(body, 'br'); }
+        brCache.dropPcm(file, st, light, unit); brUnit();
       });
-    } else if (unit) brCache.want(file, st, light, unit);
-    dynamic();
+    }
+    return brUnit();
+    function brUnit() {
+      const pre = unit && brCache.lookup(file, st, light, unit);
+      unitSeen = brCache && br && !pad ? (unit ? (pre ? (pre.raw ? 'raw' : 'hit') : 'miss') : 'none') : null;
+      if (unit) brCache.want(file, st, light, unit); // (made when missing — the unit, or its audio form)
+      if (pre?.raw) enc = null; // (brotli saves too little there: as it is)
+      else if (pre) {
+        return fs.readFile(pre.path, (err, body) => {
+          if (!err && body.length === pre.bytes) { netStats.brHits++; return reply(body, 'br'); }
+          brCache.drop(file, st, light, unit); unitSeen = 'miss'; brCache.want(file, st, light, unit); dynamic();
+        });
+      }
+      dynamic();
+    }
     function dynamic() {
       const key = `${light ? LIGHT_DIR + '|' : ''}${file}|${st.mtimeMs}|${start}-${end}|${enc}|${pad}`;
       const hit = encodedCache.get(key);
       if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
-      const buf = Buffer.alloc(end - start + pad);
-      const read = light ? (done) => readLight(file, light.copy, start, end, buf, pad, done) : (done) => fs.open(file, 'r', (err, fd) => {
+      // (the same range being encoded for another player — a launch set's blocks, asked by every new one —: its answer)
+      const waiting = encoding.get(key);
+      if (waiting) {
+        netStats.joined++;
+        // (a game's read joining a background request still queued: the job moves to the demand queue — else the read
+        // would wait behind the downloads)
+        if (kind === 'demand' && waiting.kind === 'bg') {
+          const i = encodeQueue.bg.indexOf(waiting.job);
+          if (i >= 0) { encodeQueue.bg.splice(i, 1); encodeQueue.demand.push(waiting.job); }
+          waiting.kind = 'demand';
+        }
+        // (its res kept: the job is still wanted while any of its clients is)
+        const cb = (err, entry) => (err ? send(res, 500, String(err)) : reply(entry.body, entry.encoding)); cb.res = res;
+        waiting.joined.push(cb); return;
+      }
+      const read = (buf, done) => (light ? readLight(file, light.copy, start, end, buf, pad, done) : fs.open(file, 'r', (err, fd) => {
         if (err) return done(err);
         fs.read(fd, buf, pad, end - start, start, (err2, n) => { fs.close(fd, () => {}); done(err2 ?? (n === end - start ? null : new Error('short read'))); });
-      });
-      read((err) => {
-        if (err) return send(res, 500, String(err));
-        if (!enc) return reply(buf, null);
-        const t0 = performance.now();
-        const done = (err3, out) => {
-          netStats.encodeMs += performance.now() - t0;
-          // (not worth it: sent as is — the encoded form is still cached, as the raw bytes)
-          const entry = !err3 && out.length < buf.length * 0.92 ? { body: out, encoding: enc } : { body: buf, encoding: null };
-          encodedCache.set(key, entry); encodedBytes += entry.body.length;
-          for (const [k, v] of encodedCache) { if (encodedBytes <= ENCODED_CACHE_MAX) break; encodedCache.delete(k); encodedBytes -= v.body.length; }
-          reply(entry.body, entry.encoding);
-        };
-        if (enc === 'zstd') zlib.zstdCompress(buf, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }, done);
-        else if (enc === 'br') zlib.brotliCompress(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length } }, done);
-        else zlib.gzip(buf, { level: 4 }, done);
-      });
+      }));
+      if (!enc) { const buf = Buffer.alloc(end - start + pad); return read(buf, (err) => (err ? send(res, 500, String(err)) : reply(buf, null))); }
+      const pending = { joined: [], job: null, kind }; encoding.set(key, pending);
+      const finish = (err, entry) => { encoding.delete(key); if (err) send(res, 500, String(err)); else reply(entry.body, entry.encoding); for (const f of pending.joined) f(err, entry); };
+      pending.job = encodeSlot(kind, () => !res.destroyed || pending.joined.some((f) => !f.res.destroyed), (release) => {
+        const buf = Buffer.alloc(end - start + pad);
+        read(buf, (err) => {
+          if (err) { release(); return finish(err); }
+          const t0 = performance.now();
+          const done = (err3, out) => {
+            release();
+            netStats.encodeMs += performance.now() - t0;
+            // (not worth it: sent as is — the encoded form is still cached, as the raw bytes)
+            const entry = !err3 && out.length < buf.length * 0.92 ? { body: out, encoding: enc } : { body: buf, encoding: null };
+            encodedCache.set(key, entry); encodedBytes += entry.body.length;
+            for (const [k, v] of encodedCache) { if (encodedBytes <= ENCODED_CACHE_MAX) break; encodedCache.delete(k); encodedBytes -= v.body.length; }
+            finish(null, entry);
+          };
+          if (enc === 'zstd') zlib.zstdCompress(buf, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }, done);
+          // (a window no larger than the range: brotli's encoder state is sized by it — 4 MiB rings for 64 KiB pieces)
+          else if (enc === 'br') zlib.brotliCompress(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length, [zlib.constants.BROTLI_PARAM_LGWIN]: brWindow(buf.length) } }, done);
+          else zlib.gzip(buf, { level: 4 }, done);
+        });
+      }, () => finish(new Error('gone')));
     }
   };
 
@@ -960,12 +1045,19 @@ export function createServer(opts = {}) {
   const mmoDir = accountApi ? path.resolve(opts.mmoDir ?? path.join(opts.accountsDir, 'mmo')) : null;
   const mmo = mmoApi({ getManifest, identify, dir: mmoDir, log: opts.mmoLog ?? ((m) => console.log(m)), ...(opts.mmoNow ? { now: opts.mmoNow } : {}) });
   // Localized OpenMW masters need separate simulations, caches and save histories.
-  function portLanguages(man, id, memo = null) {
+  // (`ok`: openmwInstalled's answers by version, kept for one answer — /api/manifests asks it of each version for each
+  // of its languages)
+  const openmwOk = (target, man, memo, ok) => {
+    if (!ok) return openmwInstalled(man, enginesDir, memo);
+    if (!ok.has(target)) ok.set(target, openmwInstalled(man, enginesDir, memo));
+    return ok.get(target);
+  };
+  function portLanguages(man, id, memo = null, ok = null) {
     if (man.runtime !== 'openmw' || !man.openmw.languageVersions) return {};
     const languageLaunchUrls = {}, languageVersions = {};
     for (const [code, target] of Object.entries(man.openmw.languageVersions)) {
       const other = getManifest(target);
-      if (other?.runtime === 'openmw' && other.gameId === man.gameId && other.languages?.includes(code) && openmwInstalled(other, enginesDir, memo)) {
+      if (other?.runtime === 'openmw' && other.gameId === man.gameId && other.languages?.includes(code) && openmwOk(target, other, memo, ok)) {
         languageLaunchUrls[code] = portLaunchUrl(target, other);
         if (target !== id) languageVersions[code] = target; // (the version a language runs: the home's card prepares and downloads it)
       }
@@ -1025,18 +1117,17 @@ export function createServer(opts = {}) {
       if (p === '/privacy' || p === '/terms') return sendFile(req, res, path.join(ROOT, `src/host/web/${p.slice(1)}.html`), MIME['.html']);
       if (p === '/api/manifests') {
         refreshCatalog();
-        const sizeOf = (t) => Object.values(t.files).reduce((a, f) => a + f.size, 0) + Object.values(t.dirs).reduce((a, d) => a + sizeOf(d), 0);
-        const memo = new Map(); // (the folders' listings, for this answer: the OpenMW versions' checks share their game's)
+        const memo = listings, ok = new Map(); // (the folders' listings, the OpenMW versions' checks: shared by the versions)
         const out = [...manifests].map(([name, m]) => {
           let bytes = null;
-          try { if (fs.existsSync(m.folder) && (!m.baseFolder || fs.existsSync(m.baseFolder))) bytes = sizeOf(gameTree(name, m)); } catch { /* folder missing */ }
+          try { if (fs.existsSync(m.folder) && (!m.baseFolder || fs.existsSync(m.baseFolder))) bytes = treeBytes(gameTree(name, m)); } catch { /* folder missing */ }
           const runtime = runtimeOf(m), port = runtime !== 'win32';
           return { name, title: m.name ?? name, gameId: m.gameId ?? name, version: m.version ?? null,
-            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name, memo), runtime, exe: port ? null : m.exe,
+            versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name, memo, ok), runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : runtime === 're3' ? re3Modes(m.re3) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
             hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
-            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwInstalled(m, enginesDir, memo)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
+            available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwOk(name, m, memo, ok)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
       }
@@ -1071,8 +1162,8 @@ export function createServer(opts = {}) {
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
       if (m) {
         const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
-        const light = m[2].startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, m[2]) : null;
-        const file = light ? light.file : resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found');
+        const light = m[2].startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, m[2], listings) : null;
+        const file = light ? light.file : resolveGameFile(man, m[2], listings); if (!file) return send(res, 404, 'not found');
         const r = url.searchParams.get('r') ?? '', rm = /^(\d+)-(\d+)$/.exec(r);
         if (rm && !url.searchParams.get('p')) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
         return sendRangeEncoded(req, res, file, r, url.searchParams.get('p') || url.searchParams.get('a') ? 'bg' : 'demand', light);
@@ -1197,9 +1288,16 @@ export function createServer(opts = {}) {
         }
         return send(res, 200, JSON.stringify(prefetchList(m[1], markLang(man, url.searchParams.get('lang')))), { 'Content-Type': 'application/json' });
       }
-      if (p === '/api/netstats') return send(res, 200, JSON.stringify({ ...netStats, ...(brCache ? { brCache: brCache.stats() } : {}) }), { 'Content-Type': 'application/json' });
+      if (p === '/api/netstats') {
+        // (the server's own state too: its memory and what its caches hold — a long-running server's growth seen)
+        const mem = process.memoryUsage();
+        const state = { rss: mem.rss, heapUsed: mem.heapUsed, external: mem.external, arrayBuffers: mem.arrayBuffers,
+          encodedCache: { entries: encodedCache.size, bytes: encodedBytes }, encodeQueue: { running: encodeRunning, demand: encodeQueue.demand.length, bg: encodeQueue.bg.length },
+          srcBr: { entries: srcBr.size, bytes: srcBrBytes }, sessions: sessions.size, listings: listings.size };
+        return send(res, 200, JSON.stringify({ ...netStats, server: state, ...(brCache ? { brCache: brCache.stats() } : {}) }), { 'Content-Type': 'application/json' });
+      }
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
-      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2]); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
+      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2], listings); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
       // browser ports: the version's page (its runtime's own, src/ports/<runtime>/), and the engine releases they name,
       // immutable under their release id
       m = /^\/ports\/openmw\/([^/]+)\/app\/(.*)$/.exec(p);
@@ -1286,6 +1384,9 @@ export function createServer(opts = {}) {
 }
 
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  // (libuv's pool, 4 threads by default, does every file read and on-the-fly compression of the game data: 8, set
+  // before its first use, unless the environment says otherwise)
+  process.env.UV_THREADPOOL_SIZE ??= '8';
   const args = process.argv.slice(2);
   const port = Number(args[args.indexOf('--port') + 1] || 8080) || 8080;
   const arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);

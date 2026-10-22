@@ -40,7 +40,8 @@ function init(m) {
     onPresent: (mirror, frame) => {
       let bitmap = null;
       try { bitmap = canvas.transferToImageBitmap(); } catch { /* context lost: no frame until restored */ }
-      if (bitmap) { if (o.noPresent) bitmap.close(); else port.postMessage({ type: 'frame', layer: 'gl', bitmap }, [bitmap]); }
+      // (ORTHROS_RW_NO_PRESENT=1, a debug global: frames rendered but not handed to the page — what the page's hand-off costs it)
+      if (bitmap) { if (o.noPresent || globalThis.ORTHROS_RW_NO_PRESENT) bitmap.close(); else port.postMessage({ type: 'frame', layer: 'gl', bitmap }, [bitmap]); }
       replay.frames++;
       Atomics.store(ctl, CTL.SHOWN, frame); Atomics.notify(ctl, CTL.SHOWN);
     },

@@ -115,3 +115,54 @@ test('x87Live: random programs over few registers, every register value as the i
     }
   }
 });
+
+/**
+ * A program starting on a stack its caller left (depth d0 >= 1, those registers valid): instructions that only read some
+ * of them (FST, FCOM, FTST, FLD ST(i), FADD ST0, ST(i) reading ST(i)) next to ones that write or pop — so that a region
+ * reads registers it never sets, whose write-back the translation drops (opts.x87LiveStores).
+ */
+function readerProgram(seed) {
+  const r = prng(seed), out = [];
+  const d0 = 1 + (r() % 3);
+  let d = d0;
+  for (let i = 0; i < 16; i++) {
+    const k = r() % 12, j = d > 1 ? r() % d : 0;
+    if (k < 2) out.push(0xdd, 0x56, md(r)); // fst qword [esi+x]: reads ST0
+    else if (k < 4 && d > 1) out.push(0xd8, 0xd0 + j); // fcom st(j)
+    else if (k === 4) out.push(0xd9, 0xe4); // ftst
+    else if (k === 5 && d < 6) { out.push(0xd9, 0xc0 + j); d++; } // fld st(j): reads ST(j), writes the new ST0
+    else if (k === 6 && d > 1) out.push(0xd8, 0xc0 + j); // fadd st0, st(j): writes ST0 only
+    else if (k === 7 && d > 1) { out.push(0xdd, 0x5e, md(r)); d--; } // fstp qword [esi+x]
+    else if (k === 8) out.push(0xeb, 0x00); // a block boundary
+    else if (k === 9) out.push(0xdd, 0x46, md(r), 0xdd, 0x5e, md(r)); // fld m64 ; fstp m64 (a scratch register written)
+    else if (k === 10 && d > 1) { out.push(0xd8, 0xd8 + j); d--; } // fcomp st(j)
+    else out.push(0x42); // inc edx
+  }
+  out.push(0xdf, 0xe0, 0x89, 0x46, 0x7c); // fnstsw ax ; mov [esi+0x7c], eax (the compares' condition codes kept)
+  out.push(0xf4);
+  return { code: Uint8Array.from(out), d0 };
+}
+
+test('x87LiveStores: registers read but never set keep their values, as the interpreter leaves them', () => {
+  const EI = makeExec(null), EJ = makeExec({ x87Live: true }), EO = makeExec({ x87Live: true, x87LiveStores: false });
+  let dropped = 0;
+  for (let seed = 1; seed <= 300; seed++) {
+    const { code, d0 } = readerProgram(seed), end = CODE + code.length - 1;
+    const tr = (() => { const mem = new GuestMemory(); mem.writeBytes(CODE, code); return translateRegion(mem, CODE, { fpcAssume: null }); })();
+    if (tr.stats.x87Live) dropped++;
+    for (const slice of [1e6, 1 + (seed % 5)]) {
+      for (const E of [EI, EJ, EO]) {
+        setup(E, code, seed);
+        let tw = 0; for (let i = 0; i < d0; i++) tw |= 1 << ((E.cpu.fpuTop + i) & 7);
+        E.cpu.fpuTw = tw;
+      }
+      const ri = run(EI, end, 1e7), rj = run(EJ, end, slice), ro = run(EO, end, slice);
+      assert.equal(ri, EXIT.HALT, `seed ${seed}: interpreter exit ${ri}`);
+      assert.equal(rj, EXIT.HALT, `seed ${seed}: jit exit ${rj}`);
+      assert.equal(ro, EXIT.HALT);
+      assert.deepEqual(snapshot(EJ), snapshot(EI), `seed ${seed} slice ${slice}: x87LiveStores state differs from the interpreter`);
+      assert.deepEqual(snapshot(EO), snapshot(EI), `seed ${seed} slice ${slice}: x87LiveStores off differs`);
+    }
+  }
+  assert.ok(dropped > 100, `regions translated with a mask: ${dropped}`);
+});

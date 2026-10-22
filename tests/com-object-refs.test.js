@@ -78,3 +78,26 @@ test('COM objects: a released object keeps no marker and no pointer the JIT fast
   assert.deepEqual([mem.read32(ptr + 4), mem.read32(ptr + 12), mem.read32(ptr + 20)], [0, 0, 0]);
   assert.deepEqual(freed, [ptr]);
 });
+
+test('COM: a method that keeps failing is reported once per result code, each code once', () => {
+  const mem = new GuestMemory({ sizeBytes: 16 << 20 });
+  let top = 0x100000;
+  const proc = { mem, processHeap: { alloc: (n) => { const a = top; top += (n + 15) & ~15; return a; }, free_() {} }, symbolize: () => '?' };
+  const defs = new Map(); let nextThunk = 0x7000;
+  const api = { lookup: (dll, n) => defs.get(n), define: (dll, d) => { for (const k of Object.keys(d)) defs.set(k, d[k]); }, thunkFor: () => (nextThunk += 4) };
+  const logged = [];
+  const vm = { mem, api, warn() {}, log: (kind, m) => logged.push(m), logFn() {} };
+  const com = new Com(vm);
+  const iface = com.interface('IFail', '11111111-2222-3333-4444-666666666666', 'IUnknown', [['Bar', 1]]);
+  let code = 0x8876086c;
+  const ptr = com.create(proc, 'IFail', { Bar: () => code });
+  const sp = 0x200000, ctx = { proc, thread: { id: 1 }, mem, sp, get retAddr() { return 0; }, arg(i) { return mem.read32(sp + 4 + 4 * i); } };
+  mem.write32(sp + 4, ptr);
+  let lookups = 0; const has = com.failedOnce.has.bind(com.failedOnce); com.failedOnce.has = (k) => { lookups++; return has(k); };
+  for (let i = 0; i < 1000; i++) assert.equal(com.dispatch(ctx, iface, 3), 0x8876086c);
+  assert.equal(lookups, 1, 'the repeated failure is not keyed by a string again');
+  code = 0x80004005;
+  for (let i = 0; i < 10; i++) com.dispatch(ctx, iface, 3);
+  assert.deepEqual(logged.map((m) => m.replace(/ \(first.*/, '')), ['com: IFail::Bar -> 0x8876086c', 'com: IFail::Bar -> 0x80004005']);
+  assert.equal(com.failedOnce.size, 2);
+});

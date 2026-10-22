@@ -8,6 +8,7 @@ import { scanCodeOfVk } from '../../win32/vk-scan.js';
 import { benchNetwork, fmtRate, fmtBytes, received } from './net-status.js';
 import { AudioStats } from './sound.js';
 import { pickLang } from './lang.js';
+import { runTimingProbe, probeLine } from './timing-probe.js';
 
 // (the page's words: English or French, as the rest of the page — lang.js)
 const FR = pickLang() === 'fr';
@@ -19,7 +20,8 @@ const W = FR ? {
   done: (ok, why) => (ok ? 'Mesure terminée' : `Mesure arrêtée (${why})`), gpuUnknown: 'GPU inconnu', cores: 'cœurs', render: 'rendu', inThread: 'dans le fil', display: 'affichage',
   connection: 'connexion', roundTrip: 'aller-retour', receivedLine: (all, game, bg) => `${all} reçus (lectures du jeu ${game}, arrière-plan ${bg})`,
   hidden: (s, b) => `attention : l’onglet a été masqué ${s} s / a perdu le focus ${b} fois : ces phases ne sont pas représentatives`,
-  head: ['phase', 'durée', 'img/s', 'image ms p50 / p90 / p99', '&gt;33 ms /min', '&gt;50', '&gt;100', 'GPU ms p50 / p99', 'dessins /image', 'image moyenne (ms)'],
+  head: ['phase', 'durée', 'img/s', 'image ms p50 / p90 / p99', '&gt;33 ms /min', '&gt;40', '&gt;50', '&gt;100', 'GPU ms p50 / p99', 'dessins /image', 'réveils en retard ms/image (attente active)', 'image moyenne (ms)'],
+  timer: 'minuteries de ce navigateur (retard ms)',
   sent: 'Les résultats ont été envoyés au serveur. Merci !', notSent: 'Les résultats n’ont pas pu être envoyés (télémétrie désactivée sur ce serveur) : utilise « Copier les résultats ».',
   yours: 'Le jeu est à toi maintenant : clique dedans pour capturer la souris, Échap la libère.', copy: 'Copier les résultats', close: 'Fermer et jouer', copied: 'Copié', copyFailed: 'Échec de la copie',
 } : {
@@ -30,7 +32,8 @@ const W = FR ? {
   done: (ok, why) => (ok ? 'Measurement complete' : `Measurement stopped (${why})`), gpuUnknown: 'GPU unknown', cores: 'cores', render: 'render', inThread: 'in-thread', display: 'display',
   connection: 'connection', roundTrip: 'round trip', receivedLine: (all, game, bg) => `${all} received (game reads ${game}, background ${bg})`,
   hidden: (s, b) => `warning: the tab was hidden ${s} s / lost the focus ${b} time(s): those phases are not representative`,
-  head: ['phase', 'time', 'fps', 'frame ms p50 / p90 / p99', '&gt;33 ms /min', '&gt;50', '&gt;100', 'GPU ms p50 / p99', 'draws /frame', 'mean frame (ms)'],
+  head: ['phase', 'time', 'fps', 'frame ms p50 / p90 / p99', '&gt;33 ms /min', '&gt;40', '&gt;50', '&gt;100', 'GPU ms p50 / p99', 'draws /frame', 'wake-ups late ms/frame (spin)', 'mean frame (ms)'],
+  timer: 'this browser\'s timers (lateness ms)',
   sent: 'The results were sent to the server. Thank you!', notSent: 'The results could not be sent (telemetry is off on this server): use "Copy the results".',
   yours: 'The game is yours now: click it to capture the mouse, Escape releases it.', copy: 'Copy the results', close: 'Close and play', copied: 'Copied', copyFailed: 'Copy failed',
 };
@@ -83,6 +86,8 @@ export class BenchRun {
     this.win = new PerfWindow(); this.phases = []; this.extras = []; this.marks = []; this.anchors = [];
     this.audio = new AudioStats(); // (the page feeds it: the sound of the run, sent with the record)
     this.label = 'start'; this.hiddenSeconds = 0; this.blurs = 0; this.finished = false; this.t0 = null;
+    // (host-timing probes — timing-probe.js: how late this browser wakes a worker up — at the start and at each mark)
+    this.probes = []; this.probing = null;
     if (!document.getElementById('benchCss')) { const st = document.createElement('style'); st.id = 'benchCss'; st.textContent = CSS; document.head.appendChild(st); }
     this.el = document.createElement('div'); this.el.id = 'bench'; document.body.appendChild(this.el);
     if (deps.headless) this.el.style.display = 'none'; // (the harness's bare frame: its screenshots without the banner)
@@ -103,6 +108,14 @@ export class BenchRun {
     this.onBlur = () => { this.blurs++; };
     document.addEventListener('visibilitychange', this.onVis); addEventListener('blur', this.onBlur);
     this.timer = setInterval(() => this.tick(), 100);
+    this.probe('start');
+  }
+  /** A host-timing probe now (one at a time; `label`: the phase it opens), kept with the record. */
+  probe(label) {
+    if (this.probing || this.d.timingProbe === null) return;
+    const q = Number((/(?:^|,)ORTHROS_HOST_TIMER_Q=([\d.]+)/.exec(new URLSearchParams(globalThis.location?.search ?? '').get('dbg') ?? '') ?? [])[1]) || 0;
+    const at = this.t0 === null ? 0 : Math.round((performance.now() - this.t0) / 100) / 10;
+    this.probing = (this.d.timingProbe ?? runTimingProbe)(q).then((r) => { if (r) this.probes.push({ label, at, ...r }); }).catch(() => {}).finally(() => { this.probing = null; });
   }
   onStats(m) { if (this.t0 !== null && !this.finished) this.win.add(m, { t: Date.now(), visible: document.visibilityState === 'visible', fullscreen: !!document.fullscreenElement, status: this.state.status }); }
   onPhase(rep) { this.phases.push(rep); }
@@ -153,6 +166,7 @@ export class BenchRun {
     const net = this.state.stats?.net;
     this.marks.push({ label, at: Math.round(at * 10) / 10, ...(net ? { netBytes: received(net), netDemandMs: Math.round(net.demandMs ?? 0) } : {}) });
     this.label = label;
+    if (label !== 'end') this.probe(label);
   }
   async finish(outcome, detail) {
     if (this.finished) return;
@@ -163,6 +177,7 @@ export class BenchRun {
     // (the last phase closed unless the scenario's last mark was "end")
     if (this.label !== 'end') this.mark('end', seconds);
     for (let i = 0; i < 40 && this.phases.length < this.marks.length; i++) await new Promise((r) => setTimeout(r, 100));
+    if (this.probing) await Promise.race([this.probing, new Promise((r) => setTimeout(r, 5000))]);
     const phases = [];
     for (let i = 0; i < this.extras.length; i++) {
       const rep = this.phases[i], x = this.extras[i], w = x.window;
@@ -177,6 +192,7 @@ export class BenchRun {
       interrupted: { hiddenSeconds: Math.round(this.hiddenSeconds), blurs: this.blurs },
       audio: this.audio.take(), // (sound.js: context state, worklet output, mix level, buffers over the run)
       network: benchNetwork(st.stats?.net), // (the measured link: bytes/s, round trip, the game's reads and the background downloads)
+      hostTiming: this.probes, // (timing-probe.js: Atomics.wait / setTimeout / hop lateness and the battery, at the start and each mark)
       env: await this.d.machine().catch(() => null),
     };
     st.benchResult = record;
@@ -190,11 +206,12 @@ export class BenchRun {
   showResult(r) {
     const el = document.createElement('div'); el.id = 'benchResult';
     const cls = (fps) => (fps >= 29.5 ? 'good' : fps >= 20 ? 'warn' : 'bad');
-    const rows = r.phases.map((p) => `<tr><td>${esc(p.label)}</td><td>${p.seconds ?? '–'} s</td><td class="${cls(p.fps ?? 0)}">${p.fps ?? '–'}</td><td>${p.dt ? `${p.dt.p50} / ${p.dt.p90} / ${p.dt.p99}` : '–'}</td><td>${p.per33 ?? '–'}</td><td>${p.per50 ?? '–'}</td><td>${p.per100 ?? '–'}</td><td>${p.gpu?.state === 'on' && p.gpu.frames ? `${p.gpu.p50} / ${p.gpu.p99}` : p.gpu?.state === 'unavailable' ? 'n/a' : '–'}</td><td>${p.drawsPerFrame ?? '–'}</td><td class="l">${p.mean ? Object.entries(p.mean).slice(0, 3).map(([k, v]) => `${k} ${v}`).join(', ') : ''}</td></tr>`).join('');
+    const rows = r.phases.map((p) => `<tr><td>${esc(p.label)}</td><td>${p.seconds ?? '–'} s</td><td class="${cls(p.fps ?? 0)}">${p.fps ?? '–'}</td><td>${p.dt ? `${p.dt.p50} / ${p.dt.p90} / ${p.dt.p99}` : '–'}</td><td>${p.per33 ?? '–'}</td><td>${p.per40 ?? '–'}</td><td>${p.per50 ?? '–'}</td><td>${p.per100 ?? '–'}</td><td>${p.gpu?.state === 'on' && p.gpu.frames ? `${p.gpu.p50} / ${p.gpu.p99}` : p.gpu?.state === 'unavailable' ? 'n/a' : '–'}</td><td>${p.drawsPerFrame ?? '–'}</td><td>${p.hostWait ? `${p.hostWait.lateMsPerFrame} (${p.hostWait.spinMsPerFrame})` : '–'}</td><td class="l">${p.mean ? Object.entries(p.mean).slice(0, 3).map(([k, v]) => `${k} ${v}`).join(', ') : ''}</td></tr>`).join('');
     const e = r.env ?? {};
     el.innerHTML = `<h2>${W.done(r.outcome === 'done', esc(r.outcome))} — ${esc(r.title ?? r.bench)}</h2>
 <div class="m">${esc(r.detail ?? '')}${r.detail ? '\n' : ''}${esc(e.gpu ?? W.gpuUnknown)} · ${e.cores ?? '?'} ${W.cores}${e.memGB ? ` · ${e.memGB} GB` : ''} · ${esc(e.screen ?? '')} · ${W.render} ${r.options?.renderWorker ? 'worker' : W.inThread} · ${W.display} ${esc(r.display ?? '?')}${r.network?.bw ? `\n${W.connection} ${fmtRate(r.network.bw)}${r.network.rtt ? `, ${W.roundTrip} ${r.network.rtt} ms` : ''}: ${W.receivedLine(fmtBytes(r.network.demandBytes + r.network.bgBytes), fmtBytes(r.network.demandBytes), fmtBytes(r.network.bgBytes))}` : ''}${r.interrupted.hiddenSeconds || r.interrupted.blurs ? `\n${W.hidden(r.interrupted.hiddenSeconds, r.interrupted.blurs)}` : ''}</div>
 <table><tr>${W.head.map((x) => `<th>${x}</th>`).join('')}</tr>${rows}</table>
+${r.hostTiming?.length ? `<div class="m">${W.timer}:\n${r.hostTiming.map((p) => `${esc(p.label)} (${p.at} s): ${esc(probeLine(p))}`).join('\n')}</div>` : ''}
 <div class="m">${r.sent ? W.sent : W.notSent}</div>
 <div class="m">${W.yours}</div>
 <button id="benchCopy">${W.copy}</button><button class="quiet" id="benchClose">${W.close}</button>`;

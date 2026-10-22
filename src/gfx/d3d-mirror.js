@@ -250,7 +250,7 @@ export class Replayer {
         break;
       }
       case OP.TEX_LOD: { const t = this.res.get(a[0]); if (t) t.lod = a[1]; break; }
-      case OP.VOL_MEM: { const t = this.res.get(a[0]); const l = t?.levels?.[a[1]]; if (l) l.mem = a[2]; break; }
+      case OP.VOL_MEM: { const t = this.res.get(a[0]); const l = t?.levels?.[a[1]]; if (l) { l.mem = a[2]; l.dirty = true; t.gen = a[3] | 0; } break; } // (its memory, or new contents: uploaded at the next use, its generation acknowledged then)
       case OP.SHADER9: { const code = Uint32Array.from(a[3]); this.shaders.set(a[0], { kind: a[1] ? 'ps' : 'vs', code, handle: a[2], version: code[0] >>> 0 }); break; }
       case OP.SHADER8: this.shaders.set(a[0], a[1] ? { handle: a[2], code: Uint32Array.from(a[5]) } : { handle: a[2], decl: Uint32Array.from(a[4]), code: a[5] ? Uint32Array.from(a[5]) : null, usage: a[3] }); break;
       case OP.SHADER_DELETE: { const s = this.shaders.get(a[0]); if (!s) break; this.shaders.delete(a[0]); if (s.decl || s.kind === 'vs') g?.deleteVertexShader(s); else g?.deletePixelShader(s); break; }

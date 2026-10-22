@@ -65,6 +65,8 @@ export class Com {
   /** @param {import('../core/vm.js').Vm} vm */
   constructor(vm) {
     this.failedOnce = new Set(); // interface::method=hresult already reported
+    /** (the same by method descriptor and code, for a quick check: transient, not in snapshots) */
+    this.failedSeen = new Map();
     this.comSites = new Map(); // 'comx' trace: calls logged per method@site
     this.vm = vm;
     this.mem = vm.mem;
@@ -229,6 +231,15 @@ export class Com {
   }
   /** a failed HRESULT: traced once per method/value (fidelity diagnostics) */
   failed(ctx, iface, m, r) {
+    // (a method that keeps failing — thousands of times per second — is checked without building its key: the result
+    // codes seen per method, transient, `failedSeen`)
+    // (by interface, then method: an inherited method's descriptor is shared by every interface derived from its parent)
+    let byM = this.failedSeen.get(iface);
+    if (byM === undefined) this.failedSeen.set(iface, byM = new Map());
+    let seen = byM.get(m);
+    if (seen === undefined) byM.set(m, seen = new Set());
+    else if (seen.has(r >>> 0)) return;
+    seen.add(r >>> 0);
     const k = `${iface.name}::${m.name}=${(r >>> 0).toString(16)}`;
     if (!this.failedOnce.has(k)) { this.failedOnce.add(k); this.vm.log('gfx', `com: ${iface.name}::${m.name} -> 0x${(r >>> 0).toString(16)} (first from ${ctx.proc.symbolize(ctx.retAddr)})`); }
   }

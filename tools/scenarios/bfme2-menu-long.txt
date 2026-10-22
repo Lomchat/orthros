@@ -1,0 +1,2 @@
+# BFME2 / RotWK: the main menu, held — a long session at its cheapest (startbench --mem: memory over time)
++3:key:27;+6:key:27;+9:key:27;+12:key:27;+15:key:27;+18:key:27;+20:waitframe:10,30;0:mark:menu;1500:mark:held

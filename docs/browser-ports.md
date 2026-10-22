@@ -508,6 +508,9 @@ tools/with-browser-slot.sh node tools/goldsrc/check.mjs half-life-original-en so
 tools/with-browser-slot.sh node tools/goldsrc/check.mjs counter-strike-hl-arsenal-en multiplayer --url https://orthros.chalco.website --join-keys "{n},1"
 ```
 
+Each page has 180 s to start its game (engine, account saves, files); `--boot-timeout <s>` gives it more (a cold
+cache, a slow link).
+
 ## Same origin
 
 The ports share the Win32 runtime's origin (the owner's choice): their engine code can read this origin's browser

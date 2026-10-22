@@ -24,7 +24,8 @@ export const flagged = (list) => list.some((e) => typeof e[4] === 'number');
 
 /**
  * A learned order as this link reads it: on a link that is not fast, a texture's light copy (whole, once) in place of
- * the file — unless the file is here —, and the media files' entries (the tree's `media`: movies, music — game-tree.js)
+ * the file — unless the file is here; a copy of the file's own size (redrawn in place: a WAD's, light-copies.js) by the
+ * same pieces —, and the media files' entries (the tree's `media`: movies, music — game-tree.js)
  * after all the others, in their order (a movie earlier sessions watched while this one may skip it, a track the engine
  * streams itself: not ahead of what the game waits for); on a fast one, the files themselves in place of light copies
  * earlier sessions read. An entry's flags go with what replaces it.
@@ -37,6 +38,10 @@ export function forLink(files, list, fast) {
     const r = files.lookup(light ? path.slice(LIGHT_DIR.length + 1) : path);
     if (!fast && !light && r?.file?.media) { const k = path + '#' + e[1]; if (!seen.has(k)) { seen.add(k); tail.push(e); } continue; }
     if (!r?.file?.light) { if (!light) add(...e); continue; }
+    if (r.file.light === r.file.size) { // (a copy redrawn in place — a WAD's —, its offsets the file's: the same pieces of the one read)
+      add(fast || files.isWhole(r.path) ? r.path : `${LIGHT_DIR}/${r.path}`, e[1], e[2], t, flags);
+      continue;
+    }
     if (fast || files.isWhole(r.path)) {
       if (!light) add(...e); else for (let b = 0; b * BLOCK < r.file.size; b++) add(r.path, b, 0, t, flags);
     } else {

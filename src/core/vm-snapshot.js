@@ -54,7 +54,7 @@ snapshotClass(VMem);
 snapshotClass(Heap, { skip: ['watchLog'] }); // (debugging hook)
 // (the file's bytes are only read while the image is mapped: not kept)
 snapshotClass(PeImage, { skip: ['bytes', 'dv'], init: (img) => { img.bytes = null; img.dv = null; } });
-snapshotClass(Com, { skip: ['vm'], init: (c, vm) => { c.vm = vm; } });
+snapshotClass(Com, { skip: ['vm', 'failedSeen'], init: (c, vm) => { c.vm = vm; c.failedSeen = new Map(); } });
 snapshotClass(Seh, { skip: ['vm'], init: (s, vm) => { s.vm = vm; } });
 snapshotClass(Mutex);
 snapshotClass(Registry);

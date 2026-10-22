@@ -384,7 +384,9 @@ tools/with-browser-slot.sh node tools/openmw/check.mjs morrowind-goty-en \
 ```
 
 This check is a solo smoke check (the engine draws, the Orthros frame shows its frame rate and the mouse), **not** a
-Morrowind multiplayer or gameplay success claim. (Until 2026-10-18 it ran on the free example.)
+Morrowind multiplayer or gameplay success claim. `--lang <code>` picks the game language on the card (its flag) before
+Play: the version that language runs is the one checked (`morrowind-goty-en --lang fr` checks `morrowind-goty-fr`'s
+page, its saves and start cell). (Until 2026-10-18 it ran on the free example.)
 
 ### The page (2026-10-18)
 
@@ -499,6 +501,111 @@ did not move (440-980 ms, both): the inline cell load at the boundary. SwiftShad
 runs each): `?tier=high` 1.47-1.55 fps, gap p99 3.5-6.5 s; the tier chosen now ('low') 2.12-2.22 fps, 2.4-3.3 s.
 `tools/openmw/check.mjs` passes on r2. Not validated: a real GPU (the owner's laptop), the local map screen after r2
 (the change removes callbacks only), a throttled link for the skipped sounds.
+
+### r2 checked on the public site (2026-10-21, wave 2)
+
+Headless Chromium (SwiftShader), the live server, scratch harnesses (not kept):
+- **Multiplayer, two real clients** (two Orthros accounts registered, the port page's « with friends », QA
+  `?start=-2,-9` character creation, friend request/accept, `joinfriend`): `morrowind-goty-en` — both `Joined`,
+  `simReady=1`, the guest in the host's world after 116 s, each in the other's roster, the host's W key moved its
+  puppet on the guest 59 units; `morrowind-goty-vanilla-plus-fr` — the same (12 content files, no
+  `orthros.omwscripts`), together after 117 s, puppet moved 21 units. No `BAD_CONTENT`, no page error. Playable marks
+  recorded (`playable-<manifest>.json`: 0 → 3 for each, the guest's page counting twice: its reload into the host's
+  world is a new session). Test accounts deleted (login 401 afterwards), native players erased through the gateway's
+  operator API (`accounts/delete`: account and character).
+- **Maps**: the local map (Seyda Neen, the menu's map window and the HUD's) and the world map draw on r2, in both the
+  original and Vanilla+ (`M`). The local map's explored part looks pale/whitish in SwiftShader; r1 on the same spot
+  (a local server on the r1 release) draws it the same (mean pixel difference 2.5/255): not an r2 change.
+- **Quality tier**: SwiftShader → 'low' (`software`); a renderer string faked as Intel Iris Xe → 'mid'
+  (`integrated`); a minute in the world at a frame p99 of ~180 ms stored `{ gpu, tier: 'low' }` and the reload started
+  at 'low' (`orthrosTierChoice.saved`, the engine's `__omwTier` 'low').
+- **Throttled 1 MB/s** (a proxy in front of the live server, a fresh browser, `vanilla-plus-fr`, in the world ~105 s
+  after the page): at 'low' (SwiftShader) the view does not grow — by design, the tier's distance is the boot one
+  (8192); at 'mid' (Iris Xe faked) 8192 → 12288 within 34 s of the world. Light copies reloaded in place
+  (`orthros_file_updated`): 334 in 10 min ('low'), 381 in 12 min ('mid'), the first ~2 min after the world. First
+  plays of sounds skipped (footsteps, creatures, wind): 35 files ('low') / 37 ('mid'), of which 24 / 32 were played
+  again later and found loaded.
+- Found and fixed: the header's data pills never hid (`#topbar .pill { display: flex }` beat `[hidden]`): « Preloading
+  100 % » and « Ready to play » stayed in the world, every runtime (`tests/player-css-hidden.test.js`).
+
+### Cell crossings off the frame: engine orthros-r3 (2026-10-22)
+
+Engine release `openmw-web-v1.5.3-orthros-r3` (patches r1 + r2 + `orthros-r3.patch`, files pinned in `lock.json`).
+Installed in `data_engines/`, no manifest switched. What a crossing cost on r2, from CPU profiles
+(`perf.mjs --profile`, discard mode): the inline cell load (`Scene::changeCellGrid` → `insertCell`: NIF parsing,
+templates, creatures' animations) 100-430 ms, the terrain/object-paging preload of the predicted position run inline
+(`TerrainPreloadItem`, every 128 units walked) up to 120-200 ms, and above all the global map's CPU copy of the
+explored cell (`osg::Image` on a pre-render camera → `glReadPixels`, drawn three times) 0.2-1 s: a readback waits for
+the whole GPU queue, which at a crossing holds the new cell's uploads. What r3 changes:
+- **Cooperative WorkQueue** (`components/sceneutil/workqueue.cpp`, the web default): still no worker thread — so none
+  of the main-thread futex waits that made upstream revert its threaded mode —, but the items are queued and run on
+  the main thread after each frame, 4 ms a frame (`OPENMW_WORKQUEUE_BUDGET_MS`, `?wqbudget=`), at least one step.
+  Long items run in slices (`WorkItem::doWorkSlice`): a cell preload one mesh at a time, a terrain preload a chunk at a
+  time (`Terrain::World::preloadSlice`, `QuadTreeWorld`). The threaded contract holds (asynchronous;
+  `waitTillDone()` finishes an item still queued, on the caller; `syncTerrainLoad` does so before waiting on its
+  reporter). `?wq=inline` restores the old mode, `?wq=threaded` the 2 workers.
+- **The exterior grid is preloaded again** (`preload exterior grid = true` in the page; doors stay off): the next cells'
+  meshes, shapes and terrain are loaded in slices ahead of the player, so the crossing frame finds them cached.
+- **No global-map readback while playing** (`mwrender/globalmap.cpp`): an explored cell paints the overlay texture
+  only; the CPU copy (`mOverlayImage`, what saves keep) is read from that texture once, when a save needs it
+  (`syncCpuCopy`: a framebuffer of its own, bindings restored). The map's cameras are drawn once instead of three times.
+  Checked: a quicksave after r3 holds the same map overlay as r2's (954×864, the explored cell's 18×18 = 324 pixels
+  painted, both).
+
+Measured (`perf.mjs --discard --glide 0,1,300,3000`: the player carried north from Seyda Neen at 300 units/s for
+150 s, 6 cells, 5 crossings; `?tier=high`; load 25-35; medians, r2: 4 runs, r3: 3): longest frame of engine work
+1249 → 223 ms, longest gap between drawn frames 2033 → 433 ms, gaps over 250 ms 14 → 10, over 100 ms 97 → 67, frames
+over 100 ms of work 23 → 13, work p50 11.6 → 10.8 ms, p99 70 → 56 ms, drawn fps 22.4 → 24.2, readPixels 0.0045 → 0 a
+frame. Walking as before (`--run`, 150 s, one crossing; r2: 2 runs, r3: 1 at load 22-26, a second at load 52
+discarded): longest work 971 → 142 ms, longest gap 1417 → 350 ms, work p50 14.8 → 13.5 ms, p99 23 → 22 ms.
+Left in r3's longest frames (profile, 110-220 ms): one object-paging chunk built in a terrain-preload slice (a
+chunk cannot be split), most of it the data streaming's synchronous fetch of a mesh not yet in the page (`fetchSync`:
+170 of the longest 221 ms; 0.6-0.8 s of such waits a run, r2 and r3 alike) — the next step is a preload that asks
+`orthrosFileReady` first and comes back to a mesh whose bytes are still on their way, as sounds do since r2.
+`tools/openmw/check.mjs` passes on r3.
+
+### The global map fixed: engine orthros-r4 (2026-10-22)
+
+Engine release `openmw-web-v1.5.3-orthros-r4` (patches r1 + r2 + r3 + `orthros-r4.patch`, files pinned in `lock.json`;
+17 min to compile here; `openmw.js` and `openmw.data` identical to r3's, only `openmw.wasm` and the page differ).
+Installed in `data_engines/`, no manifest switched. Two defects of r3's global map (`mwrender/globalmap.cpp`):
+- **A save whose world map has another size lost its explored map.** r3 zeroes a map camera's node mask after its first
+  draw, before `copyResult()`; OSG's update traversal skips a node whose mask is 0, so a camera with a CPU copy pending
+  — `GlobalMap::read()`'s resize path (the save's map of another size: another `global map cell size`, other content
+  bounds) — was never updated again: the image never copied into `mOverlayImage`, the camera never removed. The map
+  showed it (the texture was drawn) but the next save wrote an empty map (unless a cell was explored since, which reads
+  the whole texture back). r4: the web build's resize path draws onto the overlay texture without a CPU copy and marks
+  the copy stale (`syncCpuCopy` reads it back when a save needs it), and the mask is zeroed early only for a camera
+  with no copy pending (`hasPendingCopy`).
+- **`syncCpuCopy` checked only the image's width and height** before `readPixels` writes `width × height × 4` bytes of
+  RGBA8 into it; after `read()`'s equal-size shortcut `mOverlayImage` is the save's decoded PNG, whose format was not
+  checked (an RGB or 16-bit PNG). r4: the copy refuses an image not in the copy's layout (`isCpuCopyLayout`: size,
+  RGBA, unsigned bytes, rows unpadded; a warning, the copy left stale) and `read()` takes the shortcut only for such an
+  image — any other goes through the resize path.
+- The page takes `?mapcellsize=N` (QA): the world map's pixels per cell (`[Map] global map cell size`, default 18).
+
+Checked (headless SwiftShader, a scratch server whose manifests point at r4): a new character at -2,-9, three cells
+explored (`omw_debug_coe`), into an interior (console `coc`), F5; the page loaded again with a world map cell size of
+12 (written to the player's `settings.cfg`, which any release reads; `?mapcellsize=12` on r4 for Vanilla+), F9 (the
+save's 954×864 map loaded into a 636×576 one: the resize path), the overlay texture read back from WebGL, F5, F9, F5
+— the saves' GMAP records decoded:
+
+| release | overlay after the load | save after the load | save after loading it again |
+|---|---|---|---|
+| r2 | 432 px painted | 636×576, 432 px | 636×576, 432 px |
+| r3 | 432 px | 636×576, **0 px** (the map lost) | 0 px |
+| r4 (Morrowind; Vanilla+ the same) | 432 px | 636×576, 432 px | 636×576, 432 px (identical) |
+
+(432 = 3 cells × 12²; the first save, 972 = 3 × 18².) F5 / F9 in an exterior at the same size on r4: 972 px kept
+through two loads. Crossing cells (`perf.mjs --discard --glide 0,1,300,3000 --seconds 150 --query tier=high`, 6
+cells, load 15-27, 2 runs each, r2 and r4 interleaved): longest frame of engine work 1203 / 1062 → 282 / 291 ms,
+longest gap between drawn frames 1967 / 1683 → 433 / 450 ms, gaps over 250 ms 16 / 15 → 4 / 5, readPixels 18 → 0
+(r3's gain kept). `tools/openmw/check.mjs` passes on r4 for both games, in English and in French (`--lang fr`; one
+of three Vanilla+ French runs failed, its output lost, the next two passed). Not checked: a PNG of another pixel
+format in a save (no engine writes one; the guard is read, not run), a real GPU.
+
+Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r4"` in the `openmw` object of
+each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
 
 ### GOTY completion check, 2026-10-18
 

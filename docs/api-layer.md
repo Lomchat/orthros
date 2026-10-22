@@ -114,6 +114,11 @@ per frame 712-757 → 356-395, scheduling decisions per frame 1 645-1 774 → 97
 `Sleep(0)` are probably turns where another thread was runnable (a yield, not a throttle) or the streak was not yet
 built (not verified).
 
+**On a coarse host timer (2026-10-22).** The throttle's 1 ms park is a host wait: on Windows it can last up to a timer
+tick (15.625 ms), and the park crossing a frame limiter's deadline then lengthens the frame by that much (BFME1 on the
+owner's laptop: frame p90 46.8 ms). The waits of a pacing loop's end are now spun to their deadline when the host is
+measured coarse; docs/thread-scheduling.md "Host wake-up overshoot".
+
 **The deferred queue's drain has its own accounting entry.** The calls the JIT queued (Direct3D state setters, D3DX
 parameter setters) run in JavaScript before the next call handled there (`Vm.drainDeferred`); the drain ran inside that
 call's timed window, so whichever call followed a batch (`IDirect3DTexture9::Release`, `GetTransform`...) carried the
@@ -123,6 +128,30 @@ order of the calls is unchanged. tests/drain-acct.test.js. BFME1 in Node: the dr
 per frame for 148 drains per frame in play (5 µs each), 0.86 ms per frame (172 drains) in the menu — time the per-API
 table used to spread over the calls that followed the batches. Dispatch cost unchanged (tools/apicall-bench.mjs, 2×7
 runs alternated: 278 / 269 ns before, 279 / 277 ns after).
+
+**The drain, profiled (2026-10-22).** BFME 1.08 play, Node (`startbench --cpu-prof <file> --cpu-prof-window
+play:60:120`: a V8 sampling profile of one minute of play): the drain is 1.6-1.7 ms per frame by the accounting, 152
+drains of ~15 calls (~2 200 queued calls per frame reach JavaScript: state sets that change something — the issued-state
+filter drops the others on the fast path — and draws), ~0.7 µs per call. Inside it: the queue loop itself (records,
+`Ctx` binding, `Com.callQueued`) 14 %, the recorder's work for the draws (buffer bytes copied into the ring 13 %, `flush`
+6 %, the vertex ranges a draw reads 6.5 %, textures and streams 5.5 %), the state handlers (SetRenderState 6 %,
+SetTexture 6 %, SetTextureStageState 5 %, the state-use report's `noteState` 3 %, the state tables 2.5 %, the
+bindings 5 %). No single waste: the Direct3D work of the game itself. Slow frames (> 40 ms) drain 2.2-2.5 ms against 1.65
+on average: more draws, not a stall. What the profile did find was outside the queue:
+
+- **Refused buffer locks.** ~290 `IDirect3DVertexBuffer9::Lock` per frame failed with D3DERR_INVALIDCALL: the game locks
+  one dynamic vertex buffer once with DISCARD, never unlocks it, then locks it again ~290 times per frame with
+  NOOVERWRITE (never unlocked either; nothing is drawn from it). Direct3D 8/9 buffer locks nest (each Unlock ends one;
+  surface locks do not): `Buffer.Lock` now accepts a buffer already locked — the earlier locks wait under the latest
+  (`lockStack`, past 16 the oldest two merge into one wider range: bounded for a program that never unlocks), each Unlock
+  ends the latest and writes its range back. Lock 1.2-1.4 → 0.6-0.8 µs per call. The game now does what follows a
+  successful lock — it fills those vertices — so this fidelity fix costs it guest time: ten minutes of play in Node
+  (the whole branch against the tree before, run at the same time) 83.6 → 108.9 G guest instructions, guest 12.4 → 13.8 ms
+  per frame, API 2.33 → 1.94 ms per frame; frames over 40 ms 23 → 24 per minute. tests/d3d-buffer-lock-nest.test.js.
+- **Failure reports.** Every failed COM call built its report key (`Interface::Method=code`, a string) to look it up:
+  0.23 ms per frame for those locks alone. `Com.failed` first looks the code up in a per-method set (`failedSeen`,
+  transient): 490 → 51 ns per failing call (tools: a dispatch loop of one failing method, 5 alternated runs).
+  tests/com-object-refs.test.js.
 
 ## PeekMessage polling: pacing that now waits (src/win32/user32.js, peekIdle)
 
@@ -643,3 +672,32 @@ it. Growth happens once per new chunk (1 MB or more), so the saved walk is not m
 
 The crash / hang report of `vm.js` lists every heap with overwritten boundary tags, broken free lists or looping free
 lists (`stats.badTags`, `brokenLists`, `loopedLists`).
+
+## Volume textures (2026-10-22)
+
+Found by the survey of the Windows games (Node `startbench --bench`, COM failure reports): RotWK 2.01 creates a volume
+texture (`D3DXCreateVolumeTexture`), takes its level 0 (`IDirect3DVolumeTexture9::GetVolumeLevel`), reads its
+description, loads a DDS file into it (`D3DXLoadVolumeFromFileInMemory`) and builds its mips (`D3DXFilterTexture`).
+`GetVolumeLevel` answered `E_NOTIMPL` (the game skipped the load: the texture stayed zero), the D3DX volume loads did
+nothing, `D3DXFilterTexture` left a volume's mips empty, and a level written after the texture's first use was never
+uploaded again (in-thread nor in the render worker). Now (d3d8.js `Volume`, shared by Direct3D 8 and 9):
+
+- A volume texture's levels are `Volume` objects (IDirect3DVolume8 / 9: GetDevice, private data, GetContainer,
+  GetDesc, LockBox, UnlockBox), one COM object per level, the same at each `GetVolumeLevel`, alive while the texture
+  lives (as a texture's surface levels). `LockBox` with a box returns the pointer at its corner (front slice, top row,
+  left column; 4 x 4 blocks for DXT), with the level's row and slice pitches.
+- An unlock, a D3DX load or `UpdateTexture` (now between volume textures too) marks the level dirty: the backend
+  uploads it again at the texture's next use. With the render worker, `VOL_MEM` carries a new generation (as
+  `SURF_DIRTY`), so a later write to the texture waits for the commands that still read its old contents until the
+  render worker acknowledges the upload (without it, a write made before the upload was replayed reached the GPU: the
+  randomized replay tests, which lock volume levels, caught it).
+- `D3DXLoadVolumeFromFileInMemory` (the file's first level, as is when the formats and sizes agree) and
+  `D3DXLoadVolumeFromMemory` load a source box into a destination box of the level: converted through RGBA8, resized
+  to the box (2 x 2 x 2 means or point), encoded slice by slice and written at the box's place (DXT: boxes on 4 x 4
+  blocks). RotWK 2.01 loads 2D images into single slices of a 32 x 32 x 32 volume (box 0,0,32,32,z,z+1). `D3DXFilterTexture`
+  of a volume texture computes each level from the one above, as RGBA8, each texel the mean of the 2 x 2 x 2 source box
+  (fewer along an axis already at 1).
+
+Tests: `tests/d3d-volume.test.js` (Direct3D 8 and 9 levels, descriptions, boxes, the D3DX loads — a slice box among kept slices — and
+the mips against a direct computation, UpdateTexture; a destination box ignored fails one; a mutation restoring `E_NOTIMPL` fails 5 of 6, the box offset or the volume mips one
+each), the render-worker replay tests (a mirror that does not mark the level dirty fails 4).

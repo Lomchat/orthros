@@ -4,6 +4,7 @@
 // process (less sensitive than wall time to other load on a shared machine) and the guest instructions executed.
 // Compares JIT variants: `ORTHROS_JIT_OPTS='{"nestLoops":true}' node tools/startbench.mjs <manifest.json>`.
 //   node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600] [--bg | --cold] [--save <dir>] [--until-insns <M>]
+//     [--input <scenario> [--coords W,H] | --bench <bench name>]
 import './node-wasm-flags.mjs'; // (branch hints honoured, as in Chrome)
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,6 +22,7 @@ import { PROF_OPS_BASE, NOCHAIN_PROF, SITE_PROF } from '../src/cpu/jit/translate
 import { FAST_PROF, FAST_NAMES } from '../src/cpu/jit/runtime.js';
 import { jitMix, jitShape } from './jit-mix.mjs';
 import { NodeScenario } from './node-scenario.mjs';
+import { installNodeGfx, programsLine } from './node-gfx.mjs';
 import { LearnedHeat, RangeHeat } from '../src/cpu/jit/heat.js';
 import { acct, C as ACCT, catsObject } from '../src/core/frame-acct.js';
 
@@ -29,6 +31,8 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const target = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--'));
 if (!target) { console.error('usage: node tools/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600]'); process.exit(2); }
 const untilApi = opt('until-api', 'CreateProcessA'), limit = Number(opt('limit', 600));
+// --dbg NAME=value,...: debug globals set before the run (the page's ?dbg= switches, e.g. ORTHROS_HOST_TIMER_Q=15.625)
+for (const kv of (opt('dbg', '') || '').split(',').filter(Boolean)) { const [k, v] = kv.split('='); globalThis[k] = Number.isNaN(Number(v)) ? v : Number(v); }
 // --until-insns <M>: stop after that many million guest instructions (a fixed amount of guest work: under
 // `perf stat -e instructions:u`, the host instructions per guest instruction of a JIT variant, insensitive to the load)
 const untilInsns = Number(opt('until-insns', 0)) * 1e6;
@@ -55,6 +59,11 @@ if (args.includes('--virtual') && opt('jitter')) {
   clock.tick = (ms) => { tick(ms); if ((rnd() & 63) === 0) tick(1 + (rnd() % 40)); };
 }
 const host = new HeadlessHost({ clock, width: manifest.display.width, height: manifest.display.height });
+// --gfx recorder|backend: the Direct3D work goes to the render worker's recorder (commands dropped: the emulator thread's
+// share of the default browser path) or to the in-thread WebGL backend over a no-op context (tools/node-gfx.mjs, as
+// framebench); --programs <programs2-<manifest>.json>: learned GL programs compiled ahead (backend). Default: neither
+// (the device's own bookkeeping only).
+const gfx = opt('gfx') ? installNodeGfx(host, opt('gfx'), { programs: opt('programs'), log: (l) => console.log(l) }) : null;
 // --bg: the background translator in a worker thread (shared guest memory), its regions installed between slices;
 // --cold: with the JIT's cold tier (Jit.runCold) — what the browser worker does
 const bgWanted = args.includes('--bg') || args.includes('--cold');
@@ -155,6 +164,7 @@ const writeHeat = () => {
 const t0 = performance.now(), c0 = process.cpuUsage();
 const report = (why) => {
   writeHeat();
+  if (gfx?.kind === 'backend') { const l = programsLine(gfx); if (l) console.log(l); }
   const wall = (performance.now() - t0) / 1000, cpu = process.cpuUsage(c0).user / 1e6, minsns = vm.guestInsns / 1e6;
   if (process.env.ORTHROS_JIT_STATS) {
     const j = vm.jit?.stats ?? {}; console.log(Object.entries(j).filter(([, v]) => typeof v === 'number').map(([k, v]) => `${k}=${Math.round(v)}`).join(' '));
@@ -192,6 +202,9 @@ const report = (why) => {
   if (globalThis.ORTHROS_SITE_PROF) siteReport();
   if (apiHist) console.log(`[api] ${[...apiHist].sort((a, b) => b[1] - a[1]).slice(0, Number(process.env.API_HIST_N || 25)).map(([k, v]) => `${k} ${(v / 1e6).toFixed(2)}M`).join(', ')}`);
   if (threadInsns) console.log(`[threads] ${[...threadInsns].sort((a, b) => b[1] - a[1]).map(([id, n]) => `t${id} ${(n / 1e6).toFixed(0)}M`).join(', ')}`);
+  // (each thread's Sleep pattern: Sleep(0) calls, those that ran a ready thread, throttled ones, streaks ended by a gap
+  // of 50 µs or more / by other API calls between, and the short and long sleeps)
+  for (const t of vm.proc?.threads ?? []) if (t.sleepStats) { const s = t.sleepStats; console.log(`[sleeps] t${t.id} prio ${t.priority ?? 0}: Sleep(0) ${s.zero} (ran another thread ${s.yields ?? 0}, throttled ${s.throttled}, streaks ended by a gap ${s.brokeGap ?? 0} / by other calls ${s.brokeApi ?? 0}), Sleep(1..2) ${s.short}, longer ${s.long}`); }
   for (const t of vm.proc?.threads ?? []) if (t.peekIdle) { const s = t.peekIdle; console.log(`[peekidle] t${t.id}: ${s.parks} waits (${s.longParks} long), polling ended ${s.ends} times (${s.cut} right after a wait), wait overshoot ${s.over.toFixed(2)} ms, interval min ${s.ivs.length ? Math.min(...s.ivs).toFixed(2) : '-'} of [${s.ivs.map((x) => x.toFixed(1)).join(' ')}] ms, spins near the expected end ${s.near}, ends after it ${s.late} (by ${(s.lateMs / Math.max(1, s.late)).toFixed(2)} ms), streaks broken by guest work ${s.loose}${s.hist ? `, guest instructions between calls (log2 histogram) ${s.hist.map((n, i) => n ? `2^${i}:${n}` : '').filter(Boolean).join(' ')}` : ''}`); }
   for (const l of vm.peekReport()) console.log(l);
   console.log(`${why}: wall ${wall.toFixed(1)} s, CPU ${cpu.toFixed(1)} s, ~${minsns.toFixed(0)} M guest instructions (${(minsns / cpu).toFixed(0)} MIPS per CPU second), ${vm.jit?.stats.regions ?? 0} regions, translation ${(vm.jit?.stats.translateMs ?? 0).toFixed(0)} ms`);
@@ -224,7 +237,18 @@ let apiSeq = opt('api-seq') ? (([n, at]) => ({ n: Number(n), at: Number(at ?? 0)
 let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
 // --input <file>: a harness scenario played on the headless host (tools/node-scenario.mjs); the run ends after its last
 // event (--phases <file>: the phase results as JSON)
-const scenario = opt('input') ? new NodeScenario(fs.readFileSync(opt('input'), 'utf8'), vm, (l) => console.log(l), args.includes('--virtual') ? () => clock.now() : undefined) : null;
+// --bench <name>: a bench scenario of the page's bench mode (tools/scenarios/bench/index.json: its file, its pointer
+// coordinates scaled from its `coords` to the game's display as the page scales them); --coords W,H: the same scaling for
+// an --input file
+const benchDef = opt('bench') ? JSON.parse(fs.readFileSync(new URL('./scenarios/bench/index.json', import.meta.url), 'utf8')).benches.find((b) => b.name === opt('bench')) : null;
+if (opt('bench') && !benchDef) throw new Error(`no bench ${opt('bench')} in tools/scenarios/bench/index.json`);
+const scenarioFile = benchDef ? new URL('./scenarios/bench/' + benchDef.file, import.meta.url) : opt('input');
+const scenarioFrom = benchDef?.coords ?? (opt('coords') ? opt('coords').split(',').map(Number) : null);
+const scenario = scenarioFile ? new NodeScenario(fs.readFileSync(scenarioFile, 'utf8'), vm, (l) => console.log(l), args.includes('--virtual') ? () => clock.now() : undefined, { from: scenarioFrom }) : null;
+// --slow-apis <ms>: with a scenario, the APIs' time in the frames longer than that, per phase ([slowapis] lines)
+if (scenario && opt('slow-apis')) scenario.enableSlowApis(Number(opt('slow-apis')));
+// --gc <ms>: with a scenario, this thread's garbage collections per phase and in the frames longer than that ([gc] lines)
+if (scenario && opt('gc')) scenario.enableGc(Number(opt('gc')), await import('node:v8'));
 // --jit-profile with a scenario: each phase's profile counters (the difference since the previous mark)
 if (scenario && args.includes('--jit-profile') && vm.jit) {
   let last = null;
@@ -237,7 +261,60 @@ if (scenario && args.includes('--jit-profile') && vm.jit) {
     return d.map(([k, v]) => `${k} ${(v / 1e6).toFixed(2)}M`).join(', ');
   };
 }
+// --sleeps with a scenario: each phase's Sleep pattern per thread, per frame ([sleeps] lines: the counters of kernel32's
+// Sleep — the calls, Sleep(0)s that ran a ready thread, throttled ones, why their streaks ended — and the scheduler's picks)
+if (scenario && args.includes('--sleeps')) {
+  let last = new Map(), picks0 = 0;
+  (scenario.phaseReports ??= []).push((label, frames) => {
+    const f = Math.max(1, frames), out = [];
+    for (const t of vm.proc?.threads ?? []) {
+      const s = t.sleepStats; if (!s) continue;
+      const cur = { zero: s.zero, yields: s.yields ?? 0, throttled: s.throttled, gap: s.brokeGap ?? 0, api: s.brokeApi ?? 0, short: s.short, long: s.long, insns: t.insnsRun ?? 0 }, p = last.get(t.id) ?? {};
+      last.set(t.id, cur);
+      const d = (k) => ((cur[k] - (p[k] ?? 0)) / f).toFixed(1);
+      if (cur.zero + cur.short + cur.long - (p.zero ?? 0) - (p.short ?? 0) - (p.long ?? 0) > 0) out.push(`t${t.id}(prio ${t.priority ?? 0}) Sleep(0) ${d('zero')} [ran another ${d('yields')}, throttled ${d('throttled')}, streak ends: gap ${d('gap')} calls ${d('api')}] Sleep(1-2) ${d('short')} longer ${d('long')}`);
+    }
+    const picks = vm.sched?.picks ?? 0;
+    console.log(`[sleeps] ${label} per frame: ${out.join('; ')}; scheduler picks ${((picks - picks0) / f).toFixed(0)}`); picks0 = picks;
+  });
+}
+// --slow-threads <ms> (with --threads and a scenario): the guest instructions of each thread in the frames longer than
+// that, against all frames, per phase ([slowthreads] lines, M per frame): which threads make the slow frames' guest time
+if (threadInsns && scenario && opt('slow-threads')) {
+  const over = Number(opt('slow-threads')), fh = vm.host.frameHook;
+  let last = performance.now(), prev = new Map(), slow = new Map(), all = new Map(), nSlow = 0, nAll = 0;
+  vm.host.frameHook = () => {
+    fh?.();
+    const now = performance.now(), dt = now - last; last = now;
+    for (const [id, n] of threadInsns) {
+      const d = n - (prev.get(id) ?? 0); prev.set(id, n); if (!d) continue;
+      all.set(id, (all.get(id) ?? 0) + d); if (dt > over) slow.set(id, (slow.get(id) ?? 0) + d);
+    }
+    nAll++; if (dt > over) nSlow++;
+  };
+  (scenario.phaseReports ??= []).push((label) => {
+    const ids = [...all.keys()].sort((a, b) => (all.get(b) ?? 0) - (all.get(a) ?? 0));
+    console.log(`[slowthreads] ${label}: ${nSlow} frames > ${over} ms of ${nAll}; M guest instructions per frame, slow / all: ${ids.map((id) => `t${id} ${((slow.get(id) ?? 0) / Math.max(1, nSlow) / 1e6).toFixed(2)} / ${(all.get(id) / nAll / 1e6).toFixed(2)}`).join(', ')}`);
+    slow = new Map(); all = new Map(); nSlow = 0; nAll = 0;
+  });
+}
+// --cpu-prof <file.cpuprofile> --cpu-prof-window <phase>:<from s>:<to s>: a V8 CPU profile of this thread between those
+// seconds of a scenario phase (e.g. play:120:180: one minute of play), for Chrome DevTools or a summary script
+let cpuProf = null;
+if (scenario && opt('cpu-prof')) {
+  const [label, from, to] = (opt('cpu-prof-window') ?? 'play:60:120').split(':');
+  const { Session } = await import('node:inspector');
+  cpuProf = { label, from: Number(from), to: Number(to), file: opt('cpu-prof'), session: new Session(), on: false, done: false };
+  cpuProf.session.connect();
+}
+const cpuProfTick = () => {
+  const p = cpuProf, ph = scenario.phase; if (p.done || !ph || ph.label !== p.label) return;
+  const s = scenario.now() - ph.t;
+  if (!p.on && s >= p.from) { p.on = true; p.session.post('Profiler.enable'); p.session.post('Profiler.setSamplingInterval', { interval: 200 }); p.session.post('Profiler.start'); console.log(`[cpuprof] started at ${p.label}+${s.toFixed(1)} s`); }
+  else if (p.on && s >= p.to) { p.done = true; p.session.post('Profiler.stop', (err, r) => { if (!err) fs.writeFileSync(p.file, JSON.stringify(r.profile)); console.log(`[cpuprof] ${err ? 'failed: ' + err.message : 'written ' + p.file}`); }); }
+};
 vm.dispatchThunk = (t, i) => {
+  if (cpuProf) cpuProfTick();
   if (learnedHeat && vm.proc.moduleList.length !== heatModules) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
   const th = vm.api.thunk(i);
   if (args.includes('--d3d-log') && performance.now() - d3dLog > 5000) { d3dLog = performance.now(); const d = vm.d3dDevice; console.log(`[d3d] t=${((d3dLog - t0) / 1000).toFixed(0)}s frames=${d?.frames ?? '-'} draws=${d?.draws ?? '-'} insns=${(vm.guestInsns / 1e6).toFixed(0)}M`); }
@@ -277,6 +354,26 @@ vm.host.waitEvent = (ms) => { scenario?.tick(); const p = acct.enter(ACCT.wait);
 // a game's first-launch computation
 const stopOn = opt('stop-on', null);
 if (stopOn) { const log = vm.log.bind(vm); vm.log = (kind, msg) => { if (typeof msg === 'string' && msg.includes(stopOn)) { report(`"${stopOn}" logged`); fs.rmSync(saveDir, { recursive: true, force: true }); process.exit(0); } log(kind, msg); }; }
+// --mem <s>: every <s> seconds of wall time, the process's memory (heap used, external and array buffers, resident) and
+// the emulator's own counts that grow with a session (live translations, the function table, guest frames and draws) —
+// a long session's growth seen (--heap-at <s1,s2,...>: a V8 heap snapshot at those seconds, in --save's directory or
+// the current one, for tools/heapsnap.mjs)
+if (opt('mem')) {
+  const every = Number(opt('mem')) * 1000, heapAt = (opt('heap-at') ?? '').split(',').filter(Boolean).map(Number);
+  const v8 = await import('node:v8');
+  let next = every, h = 0;
+  const memLine = () => {
+    const m = process.memoryUsage(), j = vm.jit, d = vm.d3dDevice, MB = (x) => (x / 1048576).toFixed(1);
+    console.log(`[mem] t=${((performance.now() - t0) / 1000).toFixed(0)}s heap ${MB(m.heapUsed)}/${MB(m.heapTotal)} MB, external ${MB(m.external)} MB (array buffers ${MB(m.arrayBuffers)}), rss ${MB(m.rss)} MB; jit live ${j?.regions.length ?? '-'} regions (${j?.stats.regions ?? '-'} made, ${j?.stats.dropped ?? '-'} dropped), table ${j?.table?.length ?? '-'}, blockMap ${j?.blockMap?.size ?? '-'}; frames ${d?.frames ?? '-'}, insns ${(vm.guestInsns / 1e6).toFixed(0)}M`);
+  };
+  const tick = vm.dispatchThunk;
+  vm.dispatchThunk = (t, i) => {
+    const el = performance.now() - t0;
+    if (el >= next) { next += every; memLine(); }
+    if (h < heapAt.length && el >= heapAt[h] * 1000) { const f = path.join(keepDir ?? '.', `heap-${heapAt[h]}s.heapsnapshot`); v8.writeHeapSnapshot(f); console.log(`[mem] heap snapshot ${f}`); h++; }
+    return tick(t, i);
+  };
+}
 vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides });
 if (learnedHeat) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
 acct.enter(ACCT.guest); // (as the browser worker's slices: the VM's own sections enter their categories)

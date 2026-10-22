@@ -3,6 +3,7 @@
 // used by tests: sleeping just advances time. `zone` is the guest's time zone (see win32/timezone.js): the host's for
 // RealClock, UTC for VirtualClock (deterministic tests).
 import { hostZone, utcZone } from '../win32/timezone.js';
+import { hostWaiter } from './host-wait.js';
 
 export class RealClock {
   /**
@@ -26,8 +27,10 @@ export class RealClock {
   sleep(ms) {
     if (ms <= 0) return;
     ms /= this.scale;
-    try { Atomics.wait(this.sab, 0, 0, ms); }
-    catch { const end = performance.now() + ms; while (performance.now() < end) { /* spin */ } }
+    // (the host's wake-up overshoot measured and taken out, a coarse host timer injected on demand: core/host-wait.js)
+    const end = performance.now() + ms;
+    try { hostWaiter.waitUntil(this.sab, 0, 0, end); }
+    catch { while (performance.now() < end) { /* spin: no Atomics.wait on this thread */ } }
   }
   sleepUntil(t) { this.sleep(t - this.now()); }
 }

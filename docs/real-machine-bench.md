@@ -26,10 +26,53 @@ the results go to the server, and the summary panel also has a **Copy the result
 | game | link | what it plays | usual duration |
 |---|---|---|---|
 | BFME II | <https://orthros.chalco.website/?bench=bfme2-skirmish> | the intro skipped, the main menu, a skirmish started (the profile name dialog filled), its first minute | ~4 min |
-| BFME II 1.06 | <https://orthros.chalco.website/?bench=bfme2-skirmish&manifest=bfme2-106> | the same on version 1.06 | ~4 min |
+| BFME II 1.06 | <https://orthros.chalco.website/?bench=bfme2-skirmish&manifest=bfme2-106> | the same on version 1.06 (not today: 1.06's game.dat closes at start without its launcher, below) | ~4 min |
 | Vice City | <https://orthros.chalco.website/?bench=vicecity-drive> | the intro skipped, the main menu, a new game started, a drive of ~25 s | ~2 min |
 | Rise of the Witch-king 2.02 | <https://orthros.chalco.website/?bench=rotwk-skirmish> (2.01: `&manifest=rotwk-201`) | the main menu, a skirmish started, its first minute with a few orders | ~4 min |
 | BFME | <https://orthros.chalco.website/?bench=bfme1-skirmish> (1.03: `&manifest=bfme1-103`) | the main menu, a skirmish started, its first minute | ~6 min |
+| BFME 1.08, menu | <https://orthros.chalco.website/?bench=bfme1-108-menu&gameLang=fr> | the intro skipped, one minute in the main menu, 30 s in the Solo play menu | ~3 min |
+| BFME 1.08, skirmish | <https://orthros.chalco.website/?bench=bfme1-108-skirmish&gameLang=fr> | the main menu, a skirmish started, **ten minutes of play** (orders, camera scrolls): the validation target's criterion | ~15 min |
+| **BFME 1.08, quick** | <https://orthros.chalco.website/?bench=bfme1-108-quick&gameLang=fr> | the main menu, a skirmish started, **two minutes of play** (orders, camera scrolls) | ~4 min |
+| BFME II, quick | <https://orthros.chalco.website/?bench=bfme2-quick> | `bfme2-skirmish`'s menu steps, two minutes of play (orders, camera scrolls) | ~4 min |
+| Rise of the Witch-king 2.02, quick | <https://orthros.chalco.website/?bench=rotwk-quick> (2.01: `&manifest=rotwk-201`) | `rotwk-skirmish`'s steps, two minutes of play (orders, camera scrolls) | ~4 min |
+
+**The quick benches** (`*-quick`) are the ones to run often (after an Orthros update, on another browser or machine):
+the same menu and skirmish start as the longer ones, then two minutes of play — enough for the play phase's fps, frame
+p99, frames over 40 ms per minute and GPU time to compare runs, in about 4 minutes once the game files are in the
+browser. `bfme1-108-quick` also shortens BFME 1.08's menu (the Start click waits for the skirmish setup screen's draws
+per frame instead of fixed delays sized for a slow first launch) and reports the setup screen as its own phase
+(`setup`). Their play phases are 120 s long; read them like the long ones' (below).
+
+**The BFME 1.08 pair** measures the project's target (CLAUDE.md: a stable 30 fps, p99 frame ≤ 33 ms over 10 min of
+play) on the machine that opens them, e.g. the owner's Iris Xe laptop: open the menu link first (short: checks the
+setup, the first launch's downloads land here), then the skirmish link in the same browser. `&gameLang=fr` plays the
+French game (drop it for English; the clicks are the same). The `play` phase of the skirmish record is the criterion:
+its `fps`, `dt.p99`, `per33` / `per40`, its slow frames' categories, and the GPU time per frame (`gpu`). BFME 1.08
+paces its frames at 30 per second (a frame every 33.3 ms), so a frame "> 33.4 ms" is often a present that slipped by a
+fraction of a millisecond: read `per40` (a missed frame slot) next to `per33`, and `dt.p99` against 34-35 ms. The same
+scenario runs here headless (`tools/scenarios/bfme1-108-phases.txt`, kept equal by `tests/bench-kit.test.js`):
+
+```
+tools/with-browser-slot.sh node tools/headless.mjs bfme1-108 --games-dir <catalog with bfme1> --profile-dir <copy of a warm profile> \
+  --learn <copy of the live learned data> --gl-discard --memprefetch --seconds 1100 --stop-on "mark end:" \
+  --phases out.json --input-file tools/scenarios/bfme1-108-phases.txt
+node tools/startbench.mjs bfme1-108 --games-dir <catalog> --save <copy of a warm profile> --input tools/scenarios/bfme1-108-phases.txt \
+  --cold --regions <learn>/regions-bfme1-108.json --heat <learn>/heat-bfme1-108.json --gfx recorder --until-api NONE --limit 1300
+```
+
+(Node: `--gfx recorder` puts the render worker's recording on the emulator thread as in the page, and the phase
+reports are the page's `[frames]` reports: slow frames by category.)
+
+Any bench runs in Node as the page plays it: `startbench --bench <name>` takes its file from `index.json` and scales
+its pointer coordinates from its `coords` to the game's display (the Direct3D device's back buffer) with the page's
+own `ScenarioPlayer.scale`; `--coords W,H` does the same for an `--input` file. With a profile directory seeded from
+the server's canonical first-launch set (`<learn>/seedcanon-<manifest>.json`, the files of the player's language
+written under `--save`) it is the page's first launch without downloads:
+
+```
+node tools/startbench.mjs bfme1-108 --games-dir <catalog> --save <seeded profile dir> --bench bfme1-108-quick --cold \
+  --regions <learn>/regions-bfme1-108.json --heat <learn>/heat-bfme1-108.json --gfx recorder --until-api NONE --limit 600
+```
 
 A measurement is most useful repeated: the first one in a fresh browser (first launch: downloads, the game's setup,
 nothing learned), then the same link again (files in the browser, code and shaders cached). Each run is one record.
@@ -64,6 +107,7 @@ fall back to the in-thread backend). Nothing else: no account, no address beyond
 | `gpu` | GPU time per frame: `mean`, `p50`, `p90`, `p99`, `max` (ms), `over33`, `frames` timed, `disjoint` results dropped, `h`; `{state: 'unavailable'}` without `EXT_disjoint_timer_query_webgl2`, `{state: 'none'}` without a Direct3D device (or with the probes off) |
 | `render` | render worker: the emulator's waits for it (`waitMs`, `fenceMs`, `frameMs`, `readbackMs`) and its replay time (`replayMs`), ms per frame |
 | `busy`, `mips` | share of the time the emulator's worker ran the game, emulated MIPS |
+| `hostWait` | the emulator's host waits (`src/core/host-wait.js`, docs/thread-scheduling.md "Host wake-up overshoot"): `waits` measured, `overMean` how late they woke on average (ms), `lateMsPerFrame` the part of it that lengthened frames (the frame accounting's `late`), `spinMsPerFrame` the spin that made a frame limiter's last waits precise, `est` / `timerEst` the measured overshoot of Atomics.wait / of the pump's timer |
 | `visible`, `fullscreen`, `status`, `renderMode` | share of the window the tab was visible / in full screen, the page's state, the rendering used |
 | `audio` | the sound output over the window (`src/host/web/sound.js` `AudioStats`): `ctx` the AudioContext's last state (`running`, `suspended` — Chrome's autoplay policy before the player's first click —, `interrupted`, `none`: not set up), `rate` its sample rate, `lat` output + base latency (ms), `run` share of the window it was running, `out` frames/s the AudioWorklet played (~`rate` when it plays, 0 stalled), `mix` (`worklet`: the worklet mixes the DirectSound buffers from guest memory; `worker`: the emulator's worker mixes into the ring), `peak` the mix's highest level (0: silence), `play` / `bufs` the most DirectSound buffers playing / existing, `dec` browser audio decoder (WebCodecs, MP3 of movies) failures, `resumes` resumes tried at gestures and `changes` state changes so far, `err` the output's set-up error. The report prints a verdict per session and per bench: `OK`, `SUSPENDED` (never ran: no click), `STALLED`, `SILENT` (buffers played, zero mix), `QUIET` (no buffer played), `ERROR` |
 
@@ -81,11 +125,30 @@ the GL null mode wraps the methods themselves).
 `aborted`, `exited`, `crashed`) and `detail`, `seconds`, `firstLaunch`, `display`, `options`, `marks` (each phase's
 start, seconds from the launch: the time to the menu, the map load...), `anchors` (when each wait was satisfied),
 `interrupted` (seconds hidden, focus losses), `audio` (as in the summaries, over the whole run), `env` (with `audioDecoder` / `audioWorklet`: WebCodecs audio and AudioWorklet available), and per phase: the worker's phase report (frame-acct.js
-`FrameStats.phase`: frames, fps, slow frames > 33 / 40 / 50 / 100 ms and per minute, frame and work percentiles,
-mean time by category, slow frames' excess shares, hitches, the 3 worst frames) with, from the stats of the phase,
+`FrameStats.phase`: frames, fps, slow frames > 33 / 40 / 50 / 100 ms and per minute (`slowPaced`: those > 33 ms whose
+work fits in 33.4 ms; the summary panel shows > 40 ms per minute too), frame and work percentiles,
+mean time by category, slow frames' excess shares, hitches, the 3 worst frames, `hostWait` — the phase's host waits:
+`overMean` / `overMax` / `hist` how late they woke (ms; histogram bounds 0.1, 0.25, 0.5, 1, 2, 4, 8, 16), `lateMsPerFrame`,
+`spins` / `spinMsPerFrame`, `est`, `timerEst`, `injected` (an injected timer), `adaptive`) with, from the stats of the phase,
 draws per frame, GL calls per frame, GPU time, render worker waits, busy and visible shares. Phases: `start` (launch to
 the first mark: downloads, start-up, intro), then the scenario's marks; the scenario's last mark `end` closes the last
 phase.
+
+**Host-timing probe** (`hostTiming` of the bench record, `src/host/web/timing-probe.js`): at the start and at each
+mark, a small worker of the page (the timer resolution is the process's: the emulator's worker sees the same) measures
+how late this browser wakes it up — `atomicsWait1` (Atomics.wait(1 ms), as the emulator's own short waits),
+`atomicsWait1Timer` (the same while a 4 ms setTimeout is pending: Chrome may raise the timer resolution for it),
+`setTimeout0` / `setTimeout1` (chained from their own callbacks), `messageHop` (a MessageChannel round) — each `{ n,
+mean, p50, p90, max }` in ms past the time asked (24 samples), plus `battery` (`{ charging, level }` from
+navigator.getBattery, null without it), `label` / `at` (the phase it opens, seconds from the launch) and `injected`
+(`?dbg=ORTHROS_HOST_TIMER_Q`: the probe then applies that timer too — a check of the path). On a Windows machine with
+the default timer, Atomics.wait(1) reads ~+14 ms; with a 1 ms resolution ~+1 ms; Linux ~+0.06 ms. The summary panel
+shows one line per probe and, per phase, the host waits' lateness per frame and the spin (`wake-ups late ms/frame
+(spin)`); `telemetry-report.mjs --bench` prints both.
+
+What to read in the next BFME1 run on the owner's machine: `atomicsWait1` p50 (coarse ~14 ms, or ~1 ms) and the battery
+(the resolution may change with it during the run); per phase `lateMsPerFrame` (before 2026-10-22 that lateness hid in
+`wait`) and `spinMsPerFrame`; menu frame p90 back to ~35 ms (it was 46.8, three 15.625 ms ticks).
 
 Volume: the 0.5 s samples (~0.3 kB each) as before, plus ~2 kB per summary (every 20 s) and ~5 kB per bench record.
 
@@ -161,6 +224,28 @@ minute, GPU p99), and the marks (time to each phase).
   check a scenario's flow) here.
 - Page cost: `FrameStats.add` with the histogram 0.69-0.86 µs per frame vs 0.42-0.82 before (Node, alternated, noisy
   machine: within the noise; < 0.003 % of a 33 ms frame); the page's summary work 2 µs per 0.5 s stats message.
+
+## Checks made (2026-10-22, Node `startbench --bench`, this server under load 15-60)
+
+Each bench played in Node as the page plays it (`--bench`, pointer coordinates scaled), from a profile seeded with the
+server's canonical first-launch set (no downloads), `--cold --regions --heat --gfx recorder` (copies of the live learned
+data). Times from the launch; the menu anchor includes the scenario's fixed 20 s after the first frame.
+
+| bench (manifest) | first frame | menu | play from | total | play: fps, work p50 / p99, frames > 40 ms per minute |
+|---|---|---|---|---|---|
+| `bfme1-108-quick` (bfme1-108) | ~13 s | 34 s | 120 s | 240 s | 30.2, 14.5 / 25.1 ms, 32 |
+| `bfme2-quick` (bfme2) | 20 s | 42 s | 107 s | 227 s | 30.2, 17.3 / 29 ms, 21 |
+| `rotwk-quick` (rotwk-201) | 13 s | 35 s | 75 s | 195 s | 30.1, 18.1 / 33.1 ms, 27 |
+| `rotwk-skirmish` (rotwk-202) | — | 36 s | 77 s | 137 s | 28.2, 20.1 / 64.2 ms, 83 (load 50-60) |
+| `bfme1-skirmish` (bfme-vanilla) | — | 91 s | 268 s | 328 s | 38.3, 14.3 / 21 ms, 1 (menu at load 50-64) |
+| `bfme1-skirmish` (bfme1-103) | 14 s | 36 s | 226 s | 286 s | 30.2, 14.1 / 25.9 ms, 11 |
+| `vicecity-drive` (no canonical set) | 10 s | 20 s | 29 s | 89 s | 29.9, 12.1-13.9 / 33-34 ms, 17-21 |
+
+Found while checking: `rotwk-skirmish` / `rotwk-quick` anchored RotWK 2.01's play only after minutes (its play draws
+~140 per frame against the former threshold of 150: now 120), and `bfme1-skirmish` never left the menu on 1.03 (its
+canonical profile's 2D menu draws ~100 per frame, between the former ranges 20-60 and 150+: now 20 and more).
+`bfme2-skirmish` / `bfme2-quick` on `bfme2-106` cannot run: its game.dat exits after ~1 s when the named mutex its
+launcher creates is absent (CreateMutexA then GetLastError != ERROR_ALREADY_EXISTS), as under Windows.
 
 ## Tests
 

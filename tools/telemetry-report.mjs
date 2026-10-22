@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HIST_N, histAddSparse, histQuantile } from '../src/core/frame-acct.js';
 import { audioVerdict, audioText } from '../src/host/web/sound.js';
+import { probeLine } from '../src/host/web/timing-probe.js';
 
 const FILE_DATE = /telemetry-(\d{4}-\d{2}-\d{2})\.jsonl$/;
 
@@ -196,9 +197,12 @@ export function formatReport(reports, comparison) {
       L.push(`  bench ${b.bench} (${b.manifest}): ${b.outcome}${b.detail ? ` — ${b.detail}` : ''}, ${b.seconds} s, display ${b.display ?? '?'}${b.firstLaunch ? ', first launch' : ''}${b.interrupted && (b.interrupted.hiddenSeconds || b.interrupted.blurs) ? `, INTERRUPTED (hidden ${b.interrupted.hiddenSeconds} s, ${b.interrupted.blurs} focus losses)` : ''}; marks ${(b.marks ?? []).map((m) => `${m.label}@${m.at}s`).join(' ')}`);
       if (b.audio) L.push(`    ${audioText(audioVerdict([b.audio]))}`);
       for (const p of b.phases ?? []) {
-        L.push(`    ${String(p.label).padEnd(12)} ${String(p.seconds ?? '?').padStart(6)} s ${String(p.fps ?? '?').padStart(5)} fps; frame ms p50 ${p.dt?.p50 ?? '-'} p90 ${p.dt?.p90 ?? '-'} p99 ${p.dt?.p99 ?? '-'} max ${p.dt?.max ?? '-'}; >33 ${p.per33}/min >50 ${p.per50} >100 ${p.per100}; draws/frame ${p.drawsPerFrame ?? '-'}, GL calls/frame ${p.glCalls?.perFrame ?? p.glCalls?.state ?? '-'}; GPU ${p.gpu?.frames ? `p50 ${p.gpu.p50} p99 ${p.gpu.p99} ms` : p.gpu?.state ?? '-'}${p.render ? `; render waits ${p.render.waitMs} ms/frame` : ''}`);
+        L.push(`    ${String(p.label).padEnd(12)} ${String(p.seconds ?? '?').padStart(6)} s ${String(p.fps ?? '?').padStart(5)} fps; frame ms p50 ${p.dt?.p50 ?? '-'} p90 ${p.dt?.p90 ?? '-'} p99 ${p.dt?.p99 ?? '-'} max ${p.dt?.max ?? '-'}; >33 ${p.per33}/min >40 ${p.per40 ?? "-"} >50 ${p.per50} >100 ${p.per100}; draws/frame ${p.drawsPerFrame ?? '-'}, GL calls/frame ${p.glCalls?.perFrame ?? p.glCalls?.state ?? '-'}; GPU ${p.gpu?.frames ? `p50 ${p.gpu.p50} p99 ${p.gpu.p99} ms` : p.gpu?.state ?? '-'}${p.render ? `; render waits ${p.render.waitMs} ms/frame` : ''}`);
         if (p.mean) L.push(`      mean frame (ms): ${Object.entries(p.mean).slice(0, 6).map(([k, v]) => `${k} ${v}`).join(', ')}${p.excessShares && Object.keys(p.excessShares).length ? `; slow frames' excess (%): ${Object.entries(p.excessShares).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}${p.hitches && Object.keys(p.hitches).length ? `; hitches: ${Object.entries(p.hitches).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`);
       }
+      // (the host's wake-ups: core/host-wait.js per phase, the timing probes of timing-probe.js)
+      for (const p of b.phases ?? []) if (p.hostWait?.waits) L.push(`    ${String(p.label).padEnd(12)} host waits: late ${p.hostWait.overMean} ms on average (max ${p.hostWait.overMax}), late for the frame ${p.hostWait.lateMsPerFrame ?? '-'} ms/frame, estimate ${p.hostWait.est} ms, timers ${p.hostWait.timerEst} ms, spin ${p.hostWait.spinMsPerFrame} ms/frame${p.hostWait.injected ? `, injected ${p.hostWait.injected} ms timer` : ''}${p.hostWait.adaptive === true ? '' : p.hostWait.adaptive ? ', adaptive switched' : ', adaptive off'}`);
+      for (const pr of b.hostTiming ?? []) L.push(`    timer probe ${pr.label}@${pr.at}s: ${probeLine(pr)}`);
     }
   }
   for (const g of comparison) {

@@ -125,7 +125,36 @@ export function registerD3DX9(api, vm) {
   };
   /** write level data into a Direct3D surface / volume level of a created resource and tell the backend */
   const fillSurface = (c, s, data) => { s.rgbaCache = null; const a = s.ensureMem(c.proc, data.length >= s.bytes); mem.writeBytes(a, data.subarray(0, Math.min(data.length, s.bytes))); s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
-  const fillVolume = (c, t, i, data) => { const l = t.levels[i]; t.dev.gfx?.beforeWrite?.(t); if (!l.mem) l.mem = c.proc.vmem.alloc(Math.max(l.bytes, 16), 4, 'd3d8:volume'); mem.writeBytes(l.mem, data.subarray(0, Math.min(data.length, l.bytes))); t.dev.gfx?.volumeUpdated?.(t, i); };
+  const fillVolume = (c, t, i, data) => { const l = t.levels[i]; const a = l.ensureMem(c.proc); mem.writeBytes(a, data.subarray(0, Math.min(data.length, l.bytes))); l.updated(); };
+  /** a volume level's contents as RGBA8, slice after slice */
+  const volumeRgba = (l) => { const n = l.width * l.height * 4, out = new Uint8Array(n * l.depth); for (let z = 0; z < l.depth; z++) out.set(toRgba(l.fmt, mem.bytes(l.mem + z * l.slice, l.slice), l.width, l.height), z * n); return out; };
+  /**
+   * RGBA8 volume w x h x d resized to nw x nh x nd: each texel the mean of the source box it covers (a 2 x 2 x 2 box
+   * for a mip level, fewer along an axis already at 1), or its first texel with `point`
+   */
+  const resizeVolumeRgba = (src, w, h, d, nw, nh, nd, point) => {
+    const out = new Uint8Array(nw * nh * nd * 4);
+    for (let z = 0; z < nd; z++) {
+      const z0 = Math.floor(z * d / nd), z1 = point ? z0 + 1 : Math.max(z0 + 1, Math.floor((z + 1) * d / nd));
+      for (let y = 0; y < nh; y++) {
+        const y0 = Math.floor(y * h / nh), y1 = point ? y0 + 1 : Math.max(y0 + 1, Math.floor((y + 1) * h / nh));
+        for (let x = 0; x < nw; x++) {
+          const x0 = Math.floor(x * w / nw), x1 = point ? x0 + 1 : Math.max(x0 + 1, Math.floor((x + 1) * w / nw));
+          let r = 0, g = 0, b = 0, a = 0, n = 0;
+          for (let zz = z0; zz < z1; zz++) for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) { const i = ((zz * h + yy) * w + xx) * 4; r += src[i]; g += src[i + 1]; b += src[i + 2]; a += src[i + 3]; n++; }
+          const o = ((z * nh + y) * nw + x) * 4;
+          out[o] = (r + (n >> 1)) / n; out[o + 1] = (g + (n >> 1)) / n; out[o + 2] = (b + (n >> 1)) / n; out[o + 3] = (a + (n >> 1)) / n;
+        }
+      }
+    }
+    return out;
+  };
+  /** RGBA8 volume data encoded slice by slice into `fmt` (null when the format has no encoder) */
+  const encodeVolume = (fmt, rgba, w, h, d) => {
+    const n = w * h * 4, sb = surfaceBytes(fmt, w, h), out = new Uint8Array(sb * d);
+    for (let z = 0; z < d; z++) { const e = fromRgba(fmt, rgba.subarray(z * n, (z + 1) * n), w, h); if (!e) return null; out.set(e.subarray(0, sb), z * sb); }
+    return out;
+  };
 
   /**
    * Create a texture of kind 'tex' | 'cube' | 'volume' from an image in memory (the ...FromFileInMemoryEx family).
@@ -335,16 +364,78 @@ export function registerD3DX9(api, vm) {
     for (let y = 0; y < sh; y++) sub.set(full.subarray(((sr.t + y) * src.width + sr.l) * 4, ((sr.t + y) * src.width + sr.r) * 4), y * sw * 4);
     return blitRgba(c, dst, rectOf(c.arg(2), dst.width, dst.height), sub, sw, sh, c.arg(6), c.arg(7));
   }];
-  X.D3DXLoadVolumeFromFileInMemory = [9, (c) => { // (dstVolume, pal, dstBox, src, size, srcBox, filter, key, info): volumes are levels here
+  /** the Volume (IDirect3DVolume8 / 9 level) at a guest pointer, or null */
+  const volumeOf = (ptr) => { const v = com.implAt(ptr); return v && v.depth !== undefined && v.owner && v.slice !== undefined ? v : null; };
+  /** a D3DBOX { Left, Top, Right, Bottom, Front, Back } at `p`, clamped to w x h x d (null pointer: the whole volume) */
+  const boxAt = (p, w, h, d) => { if (!p) return { l: 0, t: 0, r: w, b: h, f: 0, k: d }; const v = [0, 1, 2, 3, 4, 5].map((i) => mem.read32(p + 4 * i)); return { l: Math.min(v[0], w), t: Math.min(v[1], h), r: Math.min(v[2], w), b: Math.min(v[3], h), f: Math.min(v[4], d), k: Math.min(v[5], d) }; };
+  /** RGBA8 of a box of volume data in `fmt` (rows `rowPitch`, slices `slicePitch` apart) read by `bytesAt(offset, n)` */
+  const boxRgba = (fmt, bytesAt, rowPitch, slicePitch, bx, colorKey) => {
+    const sw = bx.r - bx.l, sh = bx.b - bx.t, sd = bx.k - bx.f, dxt = isDxt(fmt), rows = dxt ? (sh + 3) >> 2 : sh, rowBytes = surfacePitch(fmt, sw), n = sw * sh * 4, out = new Uint8Array(n * sd);
+    for (let z = 0; z < sd; z++) {
+      const slice = new Uint8Array(rowBytes * rows), base = (bx.f + z) * slicePitch + (dxt ? (bx.t >> 2) * rowPitch + (bx.l >> 2) * (fmt === FMT.DXT1 ? 8 : 16) : bx.t * rowPitch + bx.l * (surfacePitch(fmt, 1)));
+      for (let y = 0; y < rows; y++) slice.set(bytesAt(base + y * rowPitch, rowBytes), y * rowBytes);
+      let px = toRgba(fmt, slice, sw, sh); if (colorKey) px = applyColorKey(px.slice(), colorKey);
+      out.set(px, z * n);
+    }
+    return out;
+  };
+  /**
+   * RGBA8 volume data (sw x sh x sd) into a box of a volume level: resized to the box (box or point filter), encoded in the
+   * level's format slice by slice and written at the box's place; the level marked updated. DXT: a box on 4 x 4 blocks.
+   */
+  const writeVolumeBox = (c, v, bx, rgba, sw, sh, sd, filter) => {
+    const bw = bx.r - bx.l, bh = bx.b - bx.t, bd = bx.k - bx.f;
+    if (bw <= 0 || bh <= 0 || bd <= 0) return D3DERR_INVALIDCALL;
+    const dxt = isDxt(v.fmt);
+    if (dxt && ((bx.l | bx.t) & 3 || (bw & 3 && bx.r !== v.width) || (bh & 3 && bx.b !== v.height))) return D3DERR_INVALIDCALL;
+    const sized = sw === bw && sh === bh && sd === bd ? rgba : resizeVolumeRgba(rgba, sw, sh, sd, bw, bh, bd, (filter & 0xff) === FILTER_POINT);
+    const enc = encodeVolume(v.fmt, sized, bw, bh, bd); if (!enc) return D3DERR_INVALIDCALL;
+    const base = v.ensureMem(c.proc), rows = dxt ? (bh + 3) >> 2 : bh, rowBytes = surfacePitch(v.fmt, bw), sliceBytes = surfaceBytes(v.fmt, bw, bh);
+    const col = dxt ? (bx.l >> 2) * (v.fmt === FMT.DXT1 ? 8 : 16) : bx.l * surfacePitch(v.fmt, 1), row0 = dxt ? bx.t >> 2 : bx.t;
+    for (let z = 0; z < bd; z++) for (let y = 0; y < rows; y++) mem.writeBytes(base + (bx.f + z) * v.slice + (row0 + y) * v.pitch + col, enc.subarray(z * sliceBytes + y * rowBytes, z * sliceBytes + (y + 1) * rowBytes));
+    v.updated();
+    return D3D_OK;
+  };
+  X.D3DXLoadVolumeFromFileInMemory = [9, (c) => { // (dstVolume, pal, dstBox, src, size, srcBox, filter, key, info)
+    const v = volumeOf(c.arg(0)); if (!v) return D3DERR_INVALIDCALL;
     const im = imageAt(c, c.arg(3), c.arg(4)); if (!im) return D3DXERR_INVALIDDATA;
     writeInfo(c.arg(8), im);
-    vm.log('gfx', 'd3dx: D3DXLoadVolumeFromFileInMemory into a volume object is not supported (volumes are texture levels here)');
-    return D3D_OK;
+    const db = boxAt(c.arg(2), v.width, v.height, v.depth), sbx = boxAt(c.arg(5), im.width, im.height, im.depth);
+    // (an empty or inverted source box: refused, as D3DXLoadVolumeFromMemory does)
+    const sw = sbx.r - sbx.l, sh = sbx.b - sbx.t, sd = sbx.k - sbx.f; if (sw <= 0 || sh <= 0 || sd <= 0) return D3DERR_INVALIDCALL;
+    // (the whole file into the whole level: its first level as is when the formats and sizes agree, else converted)
+    if (!c.arg(2) && !c.arg(5)) {
+      const data = levelData(im, 0, 0, v.fmt, v.width, v.height, v.depth, c.arg(6), c.arg(7));
+      if (data) { mem.writeBytes(v.ensureMem(c.proc), data.subarray(0, Math.min(data.length, v.bytes))); v.updated(); return D3D_OK; }
+    }
+    // (a box of the file into a box of the level, e.g. one 2D image per slice of a volume)
+    const src = im.images[0][0], rowPitch = surfacePitch(im.fmt, im.width), slicePitch = surfaceBytes(im.fmt, im.width, im.height);
+    const rgba = boxRgba(im.fmt, (o, n) => src.subarray(o, o + n), rowPitch, slicePitch, sbx, c.arg(7));
+    const r = writeVolumeBox(c, v, db, rgba, sw, sh, sd, c.arg(6));
+    if (r) vm.log('gfx', `d3dx: D3DXLoadVolumeFromFileInMemory: format ${im.fmt} into format ${v.fmt} box ${JSON.stringify(db)} -> 0x${(r >>> 0).toString(16)}`);
+    return r;
+  }];
+  X.D3DXLoadVolumeFromMemory = [11, (c) => { // (dstVolume, dstPal, dstBox, src, srcFmt, srcRowPitch, srcSlicePitch, srcPal, srcBox, filter, key)
+    const v = volumeOf(c.arg(0)), sb = c.arg(8), src = c.arg(3); if (!v || !src || !sb) return D3DERR_INVALIDCALL;
+    const sbx = boxAt(sb, 0x7fffffff, 0x7fffffff, 0x7fffffff), sw = sbx.r - sbx.l, sh = sbx.b - sbx.t, sd = sbx.k - sbx.f; if (sw <= 0 || sh <= 0 || sd <= 0) return D3DERR_INVALIDCALL;
+    const rgba = boxRgba(c.arg(4), (o, n) => mem.bytes(src + o, n), c.arg(5), c.arg(6), sbx, c.arg(10));
+    return writeVolumeBox(c, v, boxAt(c.arg(2), v.width, v.height, v.depth), rgba, sw, sh, sd, c.arg(9));
   }];
   X.D3DXFilterTexture = [4, (c) => { // (texture, palette, srcLevel, filter): levels below srcLevel regenerated
     const t = com.implAt(c.arg(0)); if (!t) return D3DERR_INVALIDCALL;
     const src = c.arg(2) === D3DX_DEFAULT ? 0 : c.arg(2), point = (c.arg(3) & 0xff) === FILTER_POINT;
-    const chains = t.faces ?? (t.levels && !t.depth ? [t.levels] : null);
+    if (t.depth && t.levels) { // a volume texture: each level from the one above it, through RGBA8, 2 x 2 x 2 boxes
+      let rgba = null;
+      for (let i = src + 1; i < t.levels.length; i++) {
+        const p = t.levels[i - 1], s = t.levels[i];
+        if (!rgba && !p.mem) continue;
+        rgba = resizeVolumeRgba(rgba ?? volumeRgba(p), p.width, p.height, p.depth, s.width, s.height, s.depth, point);
+        const enc = encodeVolume(s.fmt, rgba, s.width, s.height, s.depth);
+        if (enc) fillVolume(c, t, i, enc); else rgba = null;
+      }
+      return D3D_OK;
+    }
+    const chains = t.faces ?? (t.levels ? [t.levels] : null);
     if (!chains) return D3D_OK;
     for (const lv of chains) {
       // the whole chain below the first level holding data at once (d3dx9-image.js mipChain: the same levels as the

@@ -307,7 +307,7 @@ export class Vm {
         if (proc.threads.every((x) => x.state === TS.DONE)) break;
         if (inGroup || (untilMs !== Infinity && this.host?.cooperative)) {
           // cooperative host (browser worker): hand the wait back to the event loop when it is long
-          if (this.host.pump) this.host.pump();
+          if (this.host?.pump) this.host.pump();
           if (this.sched.wakeBlocked()) { t0 = performance.now(); continue; }
           const wake = this.sched.nextWake();
           if (wake === Infinity) return RUN_IDLE;

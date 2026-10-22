@@ -216,7 +216,23 @@ export function mountHome({ onPlay }) {
 
   // ---- the library
   const backdrops = $('hmBackdrops');
-  function setBackdrop(name) { for (const b of backdrops.children) b.classList.toggle('on', b.dataset.name === name); }
+  // (a backdrop's image set once it is shown: the covers of the games not under the pointer are not downloaded for it)
+  function setBackdrop(name) {
+    for (const b of backdrops.children) {
+      const on_ = b.dataset.name === name;
+      b.classList.toggle('on', on_);
+      if (on_ && b.dataset.src && b.style.backgroundImage !== `url("${b.dataset.src}")`) b.style.backgroundImage = `url("${b.dataset.src}")`;
+    }
+  }
+  // The covers of the cards in view (or close to it) only: a first visit on a thin link downloads those, not the
+  // library's ~0.6 MB, the rest as the page scrolls (a filter shows them) — the game the player starts gets the link.
+  // whenSeen(el, fn): fn once el has come near the viewport (at once if it has).
+  const seen = new WeakSet(), waiting = new WeakMap();
+  const near = typeof IntersectionObserver === 'function' ? new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) { seen.add(e.target); near.unobserve(e.target); const fn = waiting.get(e.target); waiting.delete(e.target); fn?.(); }
+  }, { rootMargin: '200px' }) : null;
+  cleanup.push(() => near?.disconnect());
+  const whenSeen = (el, fn) => { if (!near || seen.has(el)) return fn(); waiting.set(el, fn); near.observe(el); };
   function heat(on_) { menu.toggleAttribute('data-hot', on_); } // (the hound's eyes flare while a game is under the pointer)
 
   const pref = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
@@ -273,7 +289,8 @@ export function mountHome({ onPlay }) {
     const v = chosen(g), d = [...backdrops.children].find((b) => b.dataset.name === g.id);
     if (!v?.cover || !v.available) { d?.remove(); return; }
     const bd = d ?? backdrops.appendChild(h('div', { class: 'hm-bd', 'data-name': g.id }));
-    bd.style.backgroundImage = `url(/api/cover/${encodeURIComponent(v.name)})`;
+    bd.dataset.src = `/api/cover/${encodeURIComponent(v.name)}`;
+    if (bd.classList.contains('on')) bd.style.backgroundImage = `url("${bd.dataset.src}")`;
   }
   /** The hero button: resume the last game, or start the first one. */
   function renderCta() {
@@ -335,9 +352,12 @@ export function mountHome({ onPlay }) {
       const src = v?.cover ? `/api/cover/${encodeURIComponent(v.name)}` : LOGO;
       if (src !== shown) { // (the new image fades in over the old one)
         shown = src;
-        const img = h('img', { src, alt: '', decoding: 'async', draggable: 'false', class: v?.cover ? '' : 'glyph' });
-        const put = () => { const old = [...cover.querySelectorAll('img')]; cover.insertBefore(img, cover.querySelector('.hm-badge')); requestAnimationFrame(() => { img.classList.add('loaded'); setTimeout(() => old.forEach((o) => o.remove()), 700); }); };
-        if (v?.cover) img.onload = put; else put();
+        whenSeen(el, () => {
+          if (shown !== src) return; // (another version chosen meanwhile)
+          const img = h('img', { src, alt: '', decoding: 'async', draggable: 'false', class: v?.cover ? '' : 'glyph' });
+          const put = () => { const old = [...cover.querySelectorAll('img')]; cover.insertBefore(img, cover.querySelector('.hm-badge')); requestAnimationFrame(() => { img.classList.add('loaded'); setTimeout(() => old.forEach((o) => o.remove()), 700); }); };
+          if (v?.cover) img.onload = put; else put();
+        });
       }
       cover.querySelector('.hm-badge')?.remove();
       if (v?.name === last && ok) cover.append(h('span', { class: 'hm-badge' }, S().lastPlayed));

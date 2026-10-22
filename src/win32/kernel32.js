@@ -9,6 +9,7 @@ import { MEM_COMMIT, MEM_RESERVE, MEM_DECOMMIT, MEM_RELEASE, PAGE_READWRITE, PAG
 import { findResource } from '../loader/pe.js';
 import { registerKernel32File } from './kernel32-file.js';
 import { ApiRegistry } from './api.js';
+import { hostWaiter, paceEnded, pacePredict } from '../core/host-wait.js';
 import { MUTEX_STATES, MUTEX_STATE_SIZE, MUTEX_STATE_COUNT, MUTEX_HANDLES, MUTEX_HANDLE_END } from '../cpu/memory.js';
 import { TICK_BASE } from '../cpu/jit/runtime.js';
 import { utcZone, timeZoneInfo, tziOffsetAt, localToUtc, hostZone, hostZoneNames } from './timezone.js';
@@ -320,7 +321,7 @@ export function registerKernel32(api, vm) {
   K.GetThreadContext = [2, (c) => { vm.warn('GetThreadContext: unsupported'); return 0; }];
   K.SetThreadContext = [2, () => 0];
   K.OpenThread = [3, (c) => { const t = c.proc.thread(c.arg(2)); return t ? c.proc.handles.create(t) : c.fail(E.INVALID_PARAMETER); }];
-  K.SwitchToThread = [0, (c) => (vm.sched.yieldFrom(c.thread) ? 1 : 0)];
+  K.SwitchToThread = [0, (c) => (vm.sched.yieldFrom(c.thread, true) ? 1 : 0)];
   // Sleep(0) storms: a thread spinning on Sleep(0) (frame limiter, flag polling) with nothing else to run would
   // burn the whole worker; after 32 back-to-back yields within 50 µs of each other it sleeps for 1 ms instead —
   // the granularity a Windows timer gives Sleep anyway. One other API call between two Sleep(0)s is part of the
@@ -332,28 +333,61 @@ export function registerKernel32(api, vm) {
   // scheduling decisions per 16 ms frame). ?dbg=ORTHROS_SLEEP0_KEEP_STREAK=0: the former behaviour (measurement).
   const sleep = (c, ms) => {
     const keepStreak = globalThis.ORTHROS_SLEEP0_KEEP_STREAK === undefined || !!Number(globalThis.ORTHROS_SLEEP0_KEEP_STREAK); // (read each time: in-session A/B)
-    const t = c.thread, st = t.sleepStats ??= { zero: 0, short: 0, long: 0, streak: 0, last: 0, throttled: 0, parked: false };
+    const t = c.thread, st = t.sleepStats ??= { zero: 0, short: 0, long: 0, streak: 0, last: 0, throttled: 0, parked: false, paceN: 0, paceLast: 0, paceApi: 0, paceEnds: null };
     if (ms === 0) {
       if (st.parked) { // (the throttled sleep's re-executed call, after its wake-up: done)
         st.parked = false;
-        if (t.resuming && keepStreak) { vm.sched.park(t, NEVER, 1, 'sleep'); st.last = vm.clock.now(); st.lastApi = vm.apiCalls; return; }
+        if (t.resuming && keepStreak) { vm.sched.park(t, NEVER, 1, 'sleep'); st.last = vm.clock.now(); st.lastApi = vm.apiCalls; paceWoke(t, st); return; }
       }
       st.zero++;
       const now = vm.clock.now(); // (the guest's clock: the host's time on a real clock, kept in a snapshot)
-      st.streak = now - st.last < 0.05 && vm.apiCalls - st.lastApi <= 2 ? st.streak + 1 : 0;
+      paceStep(t, st, now);
+      const gapOk = now - st.last < 0.05, apiOk = vm.apiCalls - st.lastApi <= 2;
+      if (gapOk && apiOk) st.streak++; else { st.streak = 0; if (!gapOk) st.brokeGap = (st.brokeGap ?? 0) + 1; else st.brokeApi = (st.brokeApi ?? 0) + 1; } // (diagnostics: why streaks end)
       st.last = now; st.lastApi = vm.apiCalls;
-      if (st.streak >= 32 && !vm.sched.pickRunnable(t)) {
+      if (st.streak >= 32 && !vm.sched.hasRunnable(t)) {
         st.throttled++;
         if (vm.sched.park(t, NEVER, 1, 'sleep') === PARK) { st.parked = true; return PARK; }
         if (keepStreak) { st.last = vm.clock.now(); st.lastApi = vm.apiCalls; } // (a nested wait: the 1 ms has passed here)
+        paceWoke(t, st);
         return;
       }
-      vm.sched.yieldFrom(t);
+      if (vm.sched.yieldFrom(t)) st.yields = (st.yields ?? 0) + 1; // (diagnostics: a ready thread ran)
+      paceWoke(t, st);
       return;
     }
-    if (ms <= 2) st.short++; else st.long++;
-    return vm.sched.park(t, NEVER, ms === INFINITE ? INFINITE : ms, 'sleep', undefined, true) === PARK ? PARK : undefined;
+    if (ms <= 2) {
+      if (t.resuming) { const r = vm.sched.park(t, NEVER, ms, 'sleep', undefined, true); paceWoke(t, st); return r === PARK ? PARK : undefined; } // (its re-executed call: done)
+      st.short++;
+      paceStep(t, st, vm.clock.now());
+    } else st.long++;
+    const r = vm.sched.park(t, NEVER, ms === INFINITE ? INFINITE : ms, 'sleep', undefined, true);
+    if (r === PARK) return PARK;
+    if (ms <= 2) paceWoke(t, st); // (a nested wait: over here)
+    return undefined;
   };
+  // Pacing loops (core/host-wait.js, docs/thread-scheduling.md "Host wake-up overshoot"): a thread polling the clock
+  // with short sleeps — Sleep(0), Sleep(1), Sleep(2) with at most PACE_CALLS of its own other API calls between the
+  // end of one and the next (timeGetTime, QueryPerformanceCounter: often on the JIT's fast paths, not counted at all) —
+  // is a frame limiter; the loop ends where the thread does more (its frame's work). Its ends give its period; the
+  // predicted end of the current loop goes to the host's waits, which then wake precisely for its last waits.
+  const PACE_CALLS = 2;
+  /** a new short sleep of `t` at guest time `now` (not a re-executed call) */
+  const paceStep = (t, st, now) => {
+    if (t.apiCalls - st.paceApi > PACE_CALLS + 1) { // (+1: this Sleep, counted at its dispatch)
+      if (st.paceN >= 2) {
+        if (globalThis.ORTHROS_PACE_LOG) { const e = pacePredict(st, st.paceLast); vm.logFn('timer', `pace: t${t.id} loop of ${st.paceN + 1} sleeps ended at ${st.paceLast.toFixed(2)} ms, predicted ${e < 0 ? 'none' : `${e.toFixed(2)} (${(st.paceLast - e).toFixed(2)} ms later)`}`); }
+        paceEnded(st, st.paceLast);
+      }
+      st.paceN = 0;
+    } else st.paceN++;
+    if (st.paceN >= 2) {
+      const end = pacePredict(st, now);
+      if (end >= 0 && vm.clock.real) hostWaiter.pace(performance.now() + vm.clock.real(end - now));
+    }
+  };
+  /** a short sleep of `t` returned (its wake-up: the loop's end if the thread goes on with other work) */
+  const paceWoke = (t, st) => { st.paceLast = vm.clock.now(); st.paceApi = t.apiCalls; };
   function NEVER() { return false; } // (a sleep's wake condition: the timeout alone)
   K.Sleep = [1, (c) => sleep(c, c.arg(0))]; // (undefined, or PARK: the thread parks)
   K.SleepEx = [2, (c) => (sleep(c, c.arg(0)) === PARK ? PARK : 0)];

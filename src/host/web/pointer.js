@@ -12,7 +12,7 @@
 // screen's edges: edge scrolling without capture); the device counts are the position's change only while the pointer
 // stays over the game — none when it enters, leaves or moves in the margins (no huge jump after re-entering elsewhere,
 // no motion stuck at an edge).
-import { EV, BUTTON_AT_CURSOR } from '../browser-host.js';
+import { EV, BUTTON_AT_CURSOR } from '../host-proto.js';
 
 /**
  * The cursor the page shows over the game: the guest's system cursor and nothing else (a game drawing its own cursor
