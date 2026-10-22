@@ -9,6 +9,7 @@ import { goldsrcProblem, DEFAULT_ENGINES_DIR } from './goldsrc.js';
 import { openmwProblem } from './openmw.js';
 import { re3Problem, re3GameFiles } from './re3.js';
 import { mmoProblem } from './mmo.js';
+import { profileMovesProblem } from '../vfs/profile-moves.js';
 
 export const DEFAULT_GAMES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data_games');
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
@@ -65,6 +66,8 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     if (manifest.modified !== undefined && typeof manifest.modified !== 'boolean') fail(file, `${id}: modified doit être un booléen`);
     // (a shared world, any runtime: src/host/mmo.js)
     { const problem = mmoProblem(manifest.mmo); if (problem) fail(file, `${id}: ${problem}`); }
+    // (files of the player's profile the game keeps elsewhere now: moved at each start, src/vfs/profile-moves.js)
+    { const problem = profileMovesProblem(manifest.profileMoves); if (problem) fail(file, `${id}: ${problem}`); }
     // (light copies of the textures for a slow link, src/host/light-copies.js: the browser ports — a Windows game reads
     // its files as they are —, unless the version says false)
     if (manifest.lightCopies !== undefined && typeof manifest.lightCopies !== 'boolean') fail(file, `${id}: lightCopies doit être un booléen`);

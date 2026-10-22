@@ -87,6 +87,14 @@ export class NodeBackend {
     try { fs.unlinkSync(hp); this.dirCache.delete(path.dirname(hp)); return true; } catch { return false; }
   }
 
+  /** Removes an empty folder (false otherwise). */
+  rmdir(rel) {
+    if (this.readOnly || !rel) return false;
+    const hp = this.hostPath(rel);
+    if (!hp || hp === this.root) return false;
+    try { fs.rmdirSync(hp); this.dirCache.delete(path.dirname(hp)); this.dirCache.delete(hp); return true; } catch { return false; }
+  }
+
   rename(from, to) {
     if (this.readOnly) return false;
     const a = this.hostPath(from), b = this.hostPath(to, { forCreate: true });

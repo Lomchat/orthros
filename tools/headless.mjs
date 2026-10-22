@@ -153,11 +153,12 @@ if (opt('frames-from')) q.set('slowfrom', opt('frames-from')); // slow-frame dia
 if (args.includes('--audio')) q.set('audio', '1'); // set up the AudioWorklet even headless (checks the output path, not audible)
 // --profile-dir <dir>: the game's user profile (C:\\Users\\Player: Options.ini, saves...) is loaded from this host
 // directory and written back at the end, so a second run skips the first-run setup (benchmarks) and keeps its settings.
-const profileDir = opt('profile-dir');
+const profileDir = opt('profile-dir'), profileLoaded = [];
 if (profileDir) {
   const files = [];
   const walk = (dir, rel) => { if (!fs.existsSync(dir)) return; for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = rel ? rel + '/' + e.name : e.name; if (e.isDirectory()) walk(path.join(dir, e.name), p); else files.push({ path: p, data: fs.readFileSync(path.join(dir, e.name)).toString('base64') }); } };
   walk(profileDir, '');
+  for (const f of files) profileLoaded.push(f.path);
   console.log(`[profile] ${files.length} file(s) loaded from ${profileDir}`);
   await page.addInitScript((f) => { window.__orthrosProfile = f; }, files);
 }
@@ -169,7 +170,11 @@ async function saveProfile() {
     for (let i = 0; i < 50 && !files; i++) { files = await page.evaluate(() => window.orthros.profile); if (!files) await page.waitForTimeout(100); }
     if (!files) { console.log('[profile] no profile received'); return; }
     for (const f of files) { const p = path.join(profileDir, f.path); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from(f.data, 'base64')); }
-    console.log(`[profile] ${files.length} file(s) saved to ${profileDir}`);
+    // (a file loaded that the profile no longer has — the game deleted it, a manifest's profileMoves moved it — goes too)
+    const now = new Set(files.map((f) => f.path.toLowerCase()));
+    const gone = profileLoaded.filter((p) => !now.has(p.toLowerCase()));
+    for (const p of gone) fs.rmSync(path.join(profileDir, p), { force: true });
+    console.log(`[profile] ${files.length} file(s) saved to ${profileDir}${gone.length ? `, ${gone.length} removed (${gone.slice(0, 4).join(', ')})` : ''}`);
   } catch (e) { console.log(`[profile] save failed: ${e.message.split('\n')[0]}`); }
 }
 if (args.includes('--ui') && !args.includes('--quiet-page')) await page.addInitScript(() => { window.__orthrosConsoleLog = true; }); // (the page's log in the run's log file; --quiet-page: not)

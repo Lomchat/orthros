@@ -8,7 +8,7 @@
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
     "defaultVersion": { "$ref": "#/$defs/id" },
-    "defaults": { "type": "object", "description": "Champs communs aux versions : runtime, goldsrc, re3, mmo, mount, display, cover, coverFile, registry, cdrom, profileSeed, languageFileAliases, languageFiles, glWorker (false ou 0 : rendu Direct3D dans le fil de l'émulateur au lieu du worker de rendu, docs/render-worker.md), etc." },
+    "defaults": { "type": "object", "description": "Champs communs aux versions : runtime, goldsrc, re3, mmo, mount, display, cover, coverFile, registry, cdrom, profileSeed, profileMoves, languageFileAliases, languageFiles, glWorker (false ou 0 : rendu Direct3D dans le fil de l'émulateur au lieu du worker de rendu, docs/render-worker.md), etc." },
     "versions": {
       "type": "array",
       "minItems": 1,
@@ -205,6 +205,18 @@
                 "type": "array", "minItems": 1, "maxItems": 64,
                 "description": "Les clés d'enregistrements (verrous et données du monde, LOCK/STORE) que le moteur utilise : des intervalles [première, dernière] de 0 à 65535 ; toute autre clé est refusée. Sans records : toutes.",
                 "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "integer", "minimum": 0, "maximum": 65535 } }
+              }
+            }
+          },
+          "profileMoves": {
+            "type": "array", "maxItems": 8,
+            "description": "Fichiers du profil du joueur (C:\\Users\\Player) que le jeu garde ailleurs depuis un changement du manifeste (une valeur de registre de l'installeur ajoutée — UserDataLeafName de BFME1 — déplace son dossier de données) : à chaque démarrage, avant que le jeu voie son profil (page : copie OPFS, copie du compte restaurée dedans, profil de premier lancement partagé ; lanceur Node : son dossier de sauvegarde), chaque entrée de from (seulement celles de names, sans tenir compte de la casse, si donné ; jamais le dossier qui contient to) va à to/<nom>, dossiers fusionnés ; un fichier dont la nouvelle place en a déjà un reste à l'ancienne (rien d'écrasé). Idempotent, sans marqueur (src/vfs/profile-moves.js). Aussi dans defaults.",
+            "items": {
+              "type": "object", "required": ["from", "to"], "additionalProperties": false,
+              "properties": {
+                "from": { "type": "string", "maxLength": 240, "description": "Dossier du profil, relatif, séparé par / (ex. AppData/Roaming)." },
+                "to": { "type": "string", "maxLength": 240, "description": "Nouvelle place, relative ; ni from ni un de ses parents (peut être sous from)." },
+                "names": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "type": "string", "minLength": 1 }, "description": "Seulement ces entrées de from (sans : toutes)." }
               }
             }
           },

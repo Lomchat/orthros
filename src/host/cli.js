@@ -12,6 +12,7 @@ import path from 'node:path';
 import { Vm, GuestCrash } from '../core/vm.js';
 import { Vfs, MemBackend, normalizeWin, mountGameCdrom } from '../vfs/vfs.js';
 import { NodeBackend } from '../vfs/node-backend.js';
+import { applyProfileMoves } from '../vfs/profile-moves.js';
 import { OverlayBackend } from '../vfs/overlay-backend.js';
 import { RealClock } from '../core/clock.js';
 import { HeadlessHost } from './display.js';
@@ -78,7 +79,11 @@ export function makeVfs(manifest, dir, saveDir) {
   if (saveDir) {
     // the user profile lives on disk (saves, settings): standard profile subdirectories must exist there
     for (const d of ['', 'Temp', 'AppData/Roaming', 'AppData/Local', 'AppData/LocalLow', 'Documents', 'Desktop', 'Saved Games']) fs.mkdirSync(path.join(saveDir, d), { recursive: true });
-    vfs.mount('C:\\Users\\Player', new NodeBackend(saveDir));
+    const profile = new NodeBackend(saveDir);
+    // (files the manifest says the game keeps elsewhere now: put there before it starts, as the page does — profile-moves.js)
+    const { moved } = applyProfileMoves(profile, manifest.profileMoves);
+    if (moved.length) console.log(`[orthros] profile: ${moved.length} entr${moved.length === 1 ? 'y' : 'ies'} moved to the game's new place (manifest profileMoves)`);
+    vfs.mount('C:\\Users\\Player', profile);
   }
   return vfs;
 }

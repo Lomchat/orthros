@@ -166,6 +166,15 @@ export class MemBackend {
     return true;
   }
   unlink(rel) { const k = this.saw(this.key(rel), SEEN.DATA), r = this.files.delete(k); if (r) this.changes?.add(k); return r; }
+  /** Removes an empty folder (false: not a folder, the root, or not empty). */
+  rmdir(rel) {
+    const k = this.saw(this.key(rel), SEEN.STAT), prefix = k + '/';
+    if (!k || !this.dirs.has(k)) return false;
+    for (const d of this.dirs) if (d.startsWith(prefix)) return false;
+    for (const p of this.files.keys()) if (p.startsWith(prefix)) return false;
+    this.dirs.delete(k); this.changes?.add(k); // (its name kept: the mirror removes it by its original case)
+    return true;
+  }
   rename(from, to) {
     this.saw(this.key(from), SEEN.DATA); this.saw(this.key(to), SEEN.DATA);
     const f = this.files.get(this.key(from));
