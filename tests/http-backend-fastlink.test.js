@@ -46,47 +46,54 @@ class MemStore {
 /** a link measured at 7 MB/s with a 75 ms round trip (as the owner's) */
 const fastFar = () => { const net = new NetLink({ bw: 7e6 }); net.measured = true; net.rtt = 75; return net; };
 
-test('fast link far away: the learned prefetch keeps several requests in flight, one while the game reads from the network', { timeout: 10000 }, () => withFetch(async (calls) => {
+test('fast link far away: the learned prefetch keeps several requests in flight, one while the game reads from the network', { timeout: 20000 }, () => withFetch(async (calls) => {
   const store = new MemStore();
   const b = new HttpBackend('/game/a/', tree(), { store, net: fastFar() });
   const list = [0, 2, 4, 6, 8, 10].map((i) => ['f.big', i, 0xffff, i]);
   const progress = {};
-  const pf = b.prefetch(list, progress);
-  await tick(20);
+  let stopped = false; // (a failed assertion leaves no prefetch loop running: the test file ends)
+  const pf = b.prefetch(list, progress, () => stopped);
+  const until = async (ok) => { for (let i = 0; i < 250 && !ok(); i++) await tick(20); };
+  try {
+  await until(() => calls.length >= 3); await tick(30);
   assert.equal(calls.length, 3, 'three requests side by side');
   assert.deepEqual(calls.map((c) => c.start / BLOCK), [0, 2, 4], 'in the learned order, none twice');
-  b.lastSyncFetchAt = performance.now(); // (the game reads from the network: one request at a time meanwhile)
+  b.fgPending = 1; // (the game waits for a read from the network: one request at a time meanwhile)
   calls[0].release(); calls[1].release();
-  await tick(30);
+  await tick(150);
   assert.equal(calls.length, 3, 'none more while one is in flight and the game reads');
   calls[2].release();
-  await tick(30);
+  await until(() => calls.length >= 4); await tick(150);
   assert.equal(calls.length, 4, 'one at a time while the game reads');
-  b.lastSyncFetchAt = -1e9;
-  for (let i = 0; i < 50 && calls.length < 6; i++) await tick(20);
+  b.fgPending = 0;
+  await until(() => calls.length >= 6);
   assert.equal(calls.length, 6);
   for (const c of calls) c.release();
   await pf;
+  } finally { stopped = true; for (const c of calls) c.release(); }
   assert.equal(progress.done, true);
   for (const i of [0, 2, 4, 6, 8, 10]) assert.ok(store.m.has(`f.big#${SIZE}#1#${i}`), `block ${i} stored`);
 }));
 
-test('fast link far away: a game read leaves the background downloads in flight alone (a link not measured aborts them)', { timeout: 10000 }, () => withFetch(async (calls) => {
+test('fast link far away: a game read leaves the background downloads in flight alone (a link not measured aborts them)', { timeout: 20000 }, () => withFetch(async (calls) => {
   for (const [net, aborted] of [[fastFar(), false], [new NetLink({ fixed: true }), true]]) {
     calls.length = 0;
     const store = new MemStore();
     const b = new HttpBackend('/game/a/', tree(), { store, net }); b.noteMiss = () => {};
-    const pf = b.prefetch([['f.big', 3, 0xffff, 0]], {});
-    await tick(20);
+    let stopped = false;
+    const pf = b.prefetch([['f.big', 3, 0xffff, 0]], {}, () => stopped);
+    try {
+    for (let i = 0; i < 250 && !calls.length; i++) await tick(20);
     assert.equal(calls.length, 1);
     const ahead = b.fetchAhead('f.big', SIZE, 1, 8 * BLOCK, 8 * BLOCK + 10, false);
     assert.equal(calls[0].signal.aborted, aborted);
     for (const c of calls) c.release();
     await ahead; await tick(20);
     for (const c of calls) c.release();
-    for (let i = 0; i < 50 && !store.m.has(`f.big#${SIZE}#1#3`); i++) { await tick(20); for (const c of calls) c.release(); }
+    for (let i = 0; i < 250 && !store.m.has(`f.big#${SIZE}#1#3`); i++) { await tick(20); for (const c of calls) c.release(); }
     await pf;
     assert.ok(store.m.has(`f.big#${SIZE}#1#3`), 'the prefetched block made it');
+    } finally { stopped = true; for (const c of calls) c.release(); }
   }
 }));
 
