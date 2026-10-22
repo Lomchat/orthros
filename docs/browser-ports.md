@@ -828,6 +828,20 @@ synchronous WebGL call a frame; the four longest busy stretches (139-238 ms) 92-
 SwiftShader's vertex work), none in the engine's code; the game waited 68 ms in all for its files. With `--gl
 swiftshader` (drawn): 3.5 frames a second, stretches of 0.3-5.7 s — SwiftShader's drawing. Nothing in the engine to
 fix for its hitches here; a real GPU decides them.
+Driving (2026-10-22, `perf.mjs --gl discard --car GETTHEREFAST --warm 5 --seconds 40 --profile`: the game's own vehicle
+cheat typed, the player put in the Sabre Turbo, W held, turning now and then — 552-566 draws a frame against ~210 on
+foot; `revc-web-e312f97-r1`, scratch server, load 25-40, four runs of 25-40 s): 21.8-23.7 browser frames a second, the engine's
+work a frame p50 10.5-14.5 ms, p99 60-127, max 97-243; gaps p99 100-167 ms, max 183-383, 0-4 over 250 ms; the game
+stood still for its files (the first run) 9 times in 40 s, 48 ms in all (`models/gta3.img` 42 ms, `Audio/bclosed.mp3` 6 ms; longest
+100 ms — the reads the game insists on, `CdStreamSync`'s callers), 57 reads that did not
+hold it (1 s, 15.6 MB). Where the time goes, three ways: the CPU profile's longest stretches are 90-95 % "(program)";
+a Chrome trace (`--trace-categories toplevel,v8,blink,gpu`) shows the longest main-thread tasks (100-173 ms) with
+almost no JavaScript in them (3-7 ms) and the GPU process busy 5-98 ms meanwhile; Linux `perf` on the page's
+renderer process (`--js-flags --perf-basic-prof`, `perf record -p`) puts 76 % of its samples in its **compositor
+thread** (Chrome's code and the kernel's socket calls to the GPU process: the WebGL canvas composited by SwiftShader
+every frame), 18 % in its main thread, and the engine's WebAssembly at 3.4 %. The hitches are the browser's software
+compositing and rendering here, not the engine's work nor its streaming: nothing to fix in the engine for them; a
+real GPU decides them (the measure to make on a player's machine: `--gl gpu`).
 First start of a new browser, the learned list made by sessions with the shared first-launch profile (below): 19 MB
 on the wire before the menu (the sound bank `Audio/sfx.raw`, the menu's textures and fonts, the engine), about 20 MB
 more for a new game's first scene (`models/gta3.img`). With Chrome's network emulation, 50 ms round trip: 85 KB/s, the
