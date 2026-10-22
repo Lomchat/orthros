@@ -902,7 +902,7 @@ export function createServer(opts = {}) {
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
   const encodedCache = new Map(); let encodedBytes = 0;
   const ENCODED_CACHE_MAX = opts.encodedCacheBytes ?? 256 * 1024 * 1024;
-  /** ranges being encoded: key -> the requests of the same range waiting for it */
+  /** ranges being encoded: key -> { joined: the requests of the same range waiting for it, job: its queued job, kind } */
   const encoding = new Map();
   /**
    * The ranges encoded on the fly, at most ENCODE_JOBS at once, the game's own reads (demand) before the background
@@ -926,7 +926,8 @@ export function createServer(opts = {}) {
       j.run(() => { if (once) return; once = true; encodeRunning--; encodePump(); });
     }
   };
-  const encodeSlot = (kind, wanted, run, drop) => { (kind === 'bg' ? encodeQueue.bg : encodeQueue.demand).push({ wanted, run, drop }); encodePump(); };
+  /** a job queued in `kind`'s queue (returned: a demand request joining it may move it to the demand queue) */
+  const encodeSlot = (kind, wanted, run, drop) => { const j = { wanted, run, drop }; (kind === 'bg' ? encodeQueue.bg : encodeQueue.demand).push(j); encodePump(); return j; };
   /** brotli's window for `n` bytes: the smallest that holds them (10..24 bits; the ring is 2^lgwin - 16) */
   const brWindow = (n) => { let w = 10; while (w < 24 && (1 << w) - 16 < n) w++; return w; };
   // (`light`: a light copy of `file` — resolveLightFile — its bytes instead of the file's)
@@ -994,15 +995,27 @@ export function createServer(opts = {}) {
       if (hit) { encodedCache.delete(key); encodedCache.set(key, hit); netStats.cacheHits++; return reply(hit.body, hit.encoding); }
       // (the same range being encoded for another player — a launch set's blocks, asked by every new one —: its answer)
       const waiting = encoding.get(key);
-      if (waiting) { netStats.joined++; waiting.push((err, entry) => (err ? send(res, 500, String(err)) : reply(entry.body, entry.encoding))); return; }
+      if (waiting) {
+        netStats.joined++;
+        // (a game's read joining a background request still queued: the job moves to the demand queue — else the read
+        // would wait behind the downloads)
+        if (kind === 'demand' && waiting.kind === 'bg') {
+          const i = encodeQueue.bg.indexOf(waiting.job);
+          if (i >= 0) { encodeQueue.bg.splice(i, 1); encodeQueue.demand.push(waiting.job); }
+          waiting.kind = 'demand';
+        }
+        // (its res kept: the job is still wanted while any of its clients is)
+        const cb = (err, entry) => (err ? send(res, 500, String(err)) : reply(entry.body, entry.encoding)); cb.res = res;
+        waiting.joined.push(cb); return;
+      }
       const read = (buf, done) => (light ? readLight(file, light.copy, start, end, buf, pad, done) : fs.open(file, 'r', (err, fd) => {
         if (err) return done(err);
         fs.read(fd, buf, pad, end - start, start, (err2, n) => { fs.close(fd, () => {}); done(err2 ?? (n === end - start ? null : new Error('short read'))); });
       }));
       if (!enc) { const buf = Buffer.alloc(end - start + pad); return read(buf, (err) => (err ? send(res, 500, String(err)) : reply(buf, null))); }
-      const joined = []; encoding.set(key, joined);
-      const finish = (err, entry) => { encoding.delete(key); if (err) send(res, 500, String(err)); else reply(entry.body, entry.encoding); for (const f of joined) f(err, entry); };
-      encodeSlot(kind, () => !res.destroyed || joined.length > 0, (release) => {
+      const pending = { joined: [], job: null, kind }; encoding.set(key, pending);
+      const finish = (err, entry) => { encoding.delete(key); if (err) send(res, 500, String(err)); else reply(entry.body, entry.encoding); for (const f of pending.joined) f(err, entry); };
+      pending.job = encodeSlot(kind, () => !res.destroyed || pending.joined.some((f) => !f.res.destroyed), (release) => {
         const buf = Buffer.alloc(end - start + pad);
         read(buf, (err) => {
           if (err) { release(); return finish(err); }
