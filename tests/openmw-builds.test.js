@@ -100,3 +100,22 @@ test('r6: r5 plus its patch, the same exports; no FBO status asked again per com
   // (the drawing's traversal unchanged: getChunk with its compile flag when no ray asks)
   assert.ok(added.includes(': m->getChunk(entry.mNode->getSize(), entry.mNode->getCenter(), lod, entry.mLodFlags, activeGrid,'));
 });
+
+test('r7: r6 plus its patch, the same exports; no terrain chunk outside the active grid built for a ray, an FBO of a kind found complete not asked again', () => {
+  const r6 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r6'), r7 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r7');
+  assert.ok(r7, 'r7 is a build');
+  assert.deepEqual(r7.patches, [...r6.patches, 'orthros-r7.patch']);
+  assert.deepEqual(r7.exports, r6.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r7.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  // (the patch reaches OSG's sources too: the build applies it at the tree's root, deps/src/osg beside openmw/)
+  assert.ok(patch.includes('+++ b/deps/src/osg/src/osgUtil/RenderStage.cpp'));
+  for (const k of [
+    'osg::ref_ptr<osg::Node> ChunkManager::getChunkForRay(', 'if (activeGrid)\n+            return getChunk(size, center, lod, lodFlags, activeGrid, viewPoint, false);',
+    'missing = true;',
+    // (single-sampled FBOs whose every attachment's format is known; asked when unknown or not complete before)
+    'if (!fbo_multisample.valid())', 'orthrosKind.clear();',
+    'GLenum status = orthrosKnown ? GLenum(GL_FRAMEBUFFER_COMPLETE_EXT) : ext->glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);',
+    'if (status == GL_FRAMEBUFFER_COMPLETE_EXT && !orthrosKind.empty())'])
+    assert.ok(added.includes(k), k);
+});
