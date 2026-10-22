@@ -51,6 +51,14 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   backward transfers) can change the interleavings: the guest instructions of each phase are printed to tell (RotWK:
   a few %, BFME2: up to 7 %, Vice City: 10 % fewer instructions in the same virtual time). BFME1's skirmish load never
   reaches its loading screen under `--virtual`.
+  `--perf` (2026-10-22): each run under `perf record -e instructions:u,cycles:u` with TurboFan only (`--no-liftoff`), and
+  per variant the whole run's user instructions and cycles in perf's `[JIT]` object (the WASM regions, the runtime
+  module, V8's JavaScript code) and in the process; `--jit-opts NAME='{...}'` adds Jit options to one variant
+  (`nestLoops`...). The same guest work gives the same counts: on the bfme-vanilla 3D menu scenario below, two runs of
+  one build 316.57 / 316.61 G JIT instructions (0.01 %), 1 086.1 / 1 087.2 G process instructions; JIT cycles within
+  ~1 % in one batch (load average 4-35), the time measures within ±3-5 %. Instructions resolve a 0.2 % change of the
+  code; cycles only what the load leaves (compare a batch's runs only). The process figures include V8's compilation,
+  on the emulator thread with `--no-liftoff` (the browser compiles off it).
 - **Exit sites** — `startbench --jit-sites [--jit-sites-top n]`: every region exit site (indirect calls through a
   register or a computed address, through an absolute slot, indirect jumps, returns leaving their region, static exits
   — `exitLim`: to a successor discovery left out for the region's size; `...Call`: of a call) counts its executions,
@@ -771,6 +779,55 @@ runs of `bfme-phases.txt` for the map load and play, microbenchmarks. Base: main
   | 2, branch launched first | 40.2 / 39.7 (−1.2 %) | 0.987 / 0.970 | 2.872 / 2.728 (−5.0 %) | 80.5 / 78.3 |
 
   The menu phase of these real-clock runs (its first 135 s, frame-paced) did not move (1.334 / 1.329, 1.667 / 1.674 ns).
+
+## Registers, region exits and loops in BFME1's 3D menu (2026-10-22): five variants, none kept
+
+Base: main ddfd8e8. Scenario: bfme-vanilla, a warm profile (the canonical seed's Options.ini), `startbench --virtual`,
+`+20:waitframe:300,100000; 40:mark:menu; 70:mark:end` — a menu phase of 6 228 M guest instructions, 121 frames, the same
+in every run; the whole run 43.9 G guest instructions. Measured with `ab-virtual --perf` style counts (above) and
+concurrent timed pairs.
+
+- **Where the guest registers live.** Already in WASM locals for a whole region: the 8 registers, EFLAGS, the four lazy
+  flag values and the budget are the region function's parameters (block and state block address first), passed from
+  region to region by the chained tail call; the state block sees them only at a non-chained exit (to the dispatcher:
+  API thunks, the stop address, an exhausted budget, a miss), around an interpreter fallback (written before, reloaded
+  after) and at the dispatcher's entry. The x87 stack (by use, x87Live) and the XMM registers the region names are
+  loaded at its entry and written back at its exits. Writing back "only the dirty registers" cannot apply to the general
+  registers: a region entered by a chain has a state block older than its parameters, so it does not know which values
+  the state block lacks. Those exits are rare anyway: over the whole run 397.7 M chained transitions against 13.1 M
+  exits to API thunks and 0.1 M budget exits; in the menu no fallback step. Moving values out of the parameters into
+  the state block was measured before (below: +17 % per chained call/return), as were the parameters' order and
+  packing.
+- **Profile** (`perf record -e cycles:u` of the whole run with `--perf-prof`, the emulator thread in the last 40 % of
+  the run, samples in region code by host instruction, branch hints on): memory operands 29.0 %, ALU 27.6 %, stack
+  slots 14.2 % (most of them 64-bit spill stores), branches 12.2 %, register moves 10.5 %, vector 6.4 %; Liftoff code 8 %
+  of the region samples. The two first instructions of the region functions (`push rbp; mov rbp, rsp`) hold 3.3 % of
+  the samples: instruction fetch at the entry of a region entered cold. In the hottest region (an msvcr71 helper, 1.3 %
+  of the thread) 19 % of the samples are its x87 / XMM prologue and ~27 % its exit (the merge's moves into the shared
+  tail, the x87 and XMM write-back, the hash probe's load, the table's bounds and signature checks waiting on it).
+- **Dispatches through a region's br_table** (`--jit-profile`, menu phase): 23.5 M against 60.7 M chained transitions —
+  backward transfers outside a structured loop 16.1 M, returns to a call site placed earlier 4.5 M, forward into a
+  loop elsewhere than at its header 1.7 M, back into a loop 1.3 M. The hottest sites (a counter per site, whole run):
+  an msvcr71 function's RET returning to the call in the region's first block, 41 M — its callee is called from two
+  places, and the depth-first layout put it after the second call, in the first call's return path; overlapping
+  loops whose headers are one block apart (8.8 M, 8.6 M).
+  - RET → local return site counted as a back edge by planUnits (`retLoops`): returns through the top 4.49 → 3.32 M,
+    but forward entries into loops 1.66 → 3.86 M and all dispatches 23.5 → 24.7 M; JIT instructions +0.7 % (318.8 vs
+    316.6 G).
+  - Loops nested (`nestLoops`, re-measured): dispatches 23.5 → 15.6 M (back to the top 16.1 → 4.4 M); JIT instructions
+    317.99 / 318.34 vs 316.87 / 316.66 G (+0.4 %), JIT cycles 147.10 / 146.80 vs 147.28 / 146.24 G (0.0 %), process
+    instructions +1.3 % (compilation). A dispatch costs about what the structured loop's header costs.
+- **XMM write-back of read-only registers** (`xmmLiveStores`, as x87LiveStores: Code tracking the XMM locals' sets, the
+  stores of the unset ones made `nop`s): JIT instructions 317.02 / 316.58 vs 316.57 / 316.61 G — this menu's x87 code
+  hardly uses XMM registers, and 32-bit code rarely reads one it does not write.
+- **Hints in the chained exit** (`chainHint`: the first probe's hit likely, the later probes and the miss out of line,
+  the target range test unlikely), with the previous item: JIT instructions 316.67 / 316.09 vs 316.43 / 316.29 G, JIT
+  cycles 140.25 / 139.23 vs 139.16 / 139.31 G.
+- **Regions of 144 blocks / 1 200 instructions**: JIT instructions +1.0 % in two batches, JIT cycles −3.6 % in one
+  (149.55 / 148.08 vs 154.30 / 154.66 G) and +1.2 % in the other (127.20 vs 125.73 G), V8's compilation +18 % of the
+  process's instructions; not changed.
+- Timed pairs (the same tree, the three first variants off / on, 4 concurrent pairs, launch order alternated): menu
+  guest ns per instruction 1.161 / 1.111, 1.158 / 1.168, 1.014 / 0.991, 1.042 / 1.071 — within the spread.
 
 ## Measured, not kept
 
