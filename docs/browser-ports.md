@@ -193,6 +193,16 @@ order fetched ahead from the game's position.
   waits — GoldSrc), or suspends the engine (JSPI — re3); the worker answers with what was asked and as much of the file
   as it has here already.
 - **Learning.** The worker reports the pieces the engine used (path, range, time since its start) to `/api/prefetch`.
+- **Phases: a map's reads together.** A page whose engine has phases of its own tells them (`GameData.phase(name)`;
+  GoldSrc: each map's load — an open of `maps/<map>.bsp` that reads half the file or more, `phaseOnRead` in
+  `src/vfs/emscripten-files.js`; a menu listing maps reads less). The reports carry the session's phases with their
+  start; the server keeps, for each block read first in a phase, its time from that phase's start, and each phase's
+  usual start (the median of its sessions' starts, `phases-<manifest>.json`). The learned order then lists each phase's
+  blocks together, in the order its load reads them, the phases in the order they usually come (server.js
+  `prefetchList`): a session that enters a map finds that map's reads next in the list (fetched ahead from there, as
+  any position in it), and the background loading goes on with the map that usually comes next — whatever the pace
+  of the sessions that taught it (a player who loads a late save at once no longer puts that map's reads among the
+  first map's). Blocks learned without a phase keep their time since the session's start.
 - **Light copies.** On a link that is not fast, a large texture's load reads its light copy first (the texture
   without its finest levels), the file itself following in the background for its next load (docs/slow-network.md
   "Light copies"; `lightCopies: false` in a version turns them off).
@@ -204,6 +214,33 @@ order fetched ahead from the game's position.
   1.5 s (re3: the page goes on painting) —; in the header, a pill while the learned order or the whole game loads in
   the background. The home screen's "download first" and the settings' offline copy (`offlineCopy`, kept in this
   browser for every game) fill the same store.
+
+### Map loads (2026-10-22)
+
+`tools/goldsrc/maps.mjs <manifest> --steps "wait 5,map c1a0,wait 20,changelevel c1a0d,wait 10" [--net KB/s]`: a new
+browser, its page as a visitor, each step in turn (a console command, or time spent in the map); a map's load is
+timed from its command to the first frame of a steady run (20 frames each within 250 ms of the one before), with the
+game data's waits meanwhile (count, ms, MB) and the MB loaded in the background. `--report` teaches the server (its
+learned order); `--report --no-phases` teaches it without the session's phases, by time only.
+
+Half-Life (`half-life-original-en`), Chrome's network emulation with a 40 ms round trip, a scratch server, load 25-80:
+
+| | `map c1a0` | `changelevel c1a0d` |
+|---|---|---|
+| no network limit (the teacher) | 1.1-1.2 s, 434 waits (0.7 s), 25 MB | 0.8 s, 50 waits (0.3 s), 6 MB |
+| 8 MB/s, the learned order of the live server (2026-10-22: no phases yet) | 3.3, 3.4 s, 435 waits (2.9-3.0 s) | 2.9, 3.0 s, 50 waits (2.0 s) |
+| 8 MB/s, after one teaching session (its pace) | 0.9, 2.1 s, 432 waits (0.4-1.5 s) | 0.6, 0.55 s, 51 waits (0.1 s) |
+| 8 MB/s, a slower teacher (60 s in c1a0), with phases | 0.9, 1.8 s | 0.6, 0.5 s |
+| 8 MB/s, the same slower teacher, by time only | 1.8, 1.1 s | 0.6, 1.1 s |
+| 1 MB/s, the live server's order | 13.9 s, 453 waits (13.4 s), 20 MB | 10.8 s, 60 waits (6.2 s), 7 MB |
+
+At 8 MB/s a map whose reads are not ahead of the engine costs the link's round trip per wait (c1a0d: 50 waits, 2 s of
+the 3); taught, its reads come before the engine asks (the background loading goes on through the map's reads during
+the time in the previous map). With one teacher the phases and the time order put the same blocks first (the
+difference above is the run-to-run spread); phases matter when the sessions that teach differ in pace — the live
+server's order, made of sessions that wait in the menu or load a save at once, did not have c1a0's reads ahead of a
+player who starts it after 5 s. At 1 MB/s c1a0 is the link's own time (20 MB to read, the background loading
+beside): nothing to win there but bytes.
 
 ## Game modules built from source
 
@@ -791,6 +828,20 @@ synchronous WebGL call a frame; the four longest busy stretches (139-238 ms) 92-
 SwiftShader's vertex work), none in the engine's code; the game waited 68 ms in all for its files. With `--gl
 swiftshader` (drawn): 3.5 frames a second, stretches of 0.3-5.7 s — SwiftShader's drawing. Nothing in the engine to
 fix for its hitches here; a real GPU decides them.
+Driving (2026-10-22, `perf.mjs --gl discard --car GETTHEREFAST --warm 5 --seconds 40 --profile`: the game's own vehicle
+cheat typed, the player put in the Sabre Turbo, W held, turning now and then — 552-566 draws a frame against ~210 on
+foot; `revc-web-e312f97-r1`, scratch server, load 25-40, four runs of 25-40 s): 21.8-23.7 browser frames a second, the engine's
+work a frame p50 10.5-14.5 ms, p99 60-127, max 97-243; gaps p99 100-167 ms, max 183-383, 0-4 over 250 ms; the game
+stood still for its files (the first run) 9 times in 40 s, 48 ms in all (`models/gta3.img` 42 ms, `Audio/bclosed.mp3` 6 ms; longest
+100 ms — the reads the game insists on, `CdStreamSync`'s callers), 57 reads that did not
+hold it (1 s, 15.6 MB). Where the time goes, three ways: the CPU profile's longest stretches are 90-95 % "(program)";
+a Chrome trace (`--trace-categories toplevel,v8,blink,gpu`) shows the longest main-thread tasks (100-173 ms) with
+almost no JavaScript in them (3-7 ms) and the GPU process busy 5-98 ms meanwhile; Linux `perf` on the page's
+renderer process (`--js-flags --perf-basic-prof`, `perf record -p`) puts 76 % of its samples in its **compositor
+thread** (Chrome's code and the kernel's socket calls to the GPU process: the WebGL canvas composited by SwiftShader
+every frame), 18 % in its main thread, and the engine's WebAssembly at 3.4 %. The hitches are the browser's software
+compositing and rendering here, not the engine's work nor its streaming: nothing to fix in the engine for them; a
+real GPU decides them (the measure to make on a player's machine: `--gl gpu`).
 First start of a new browser, the learned list made by sessions with the shared first-launch profile (below): 19 MB
 on the wire before the menu (the sound bank `Audio/sfx.raw`, the menu's textures and fonts, the engine), about 20 MB
 more for a new game's first scene (`models/gta3.img`). With Chrome's network emulation, 50 ms round trip: 85 KB/s, the

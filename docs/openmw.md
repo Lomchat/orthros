@@ -607,6 +607,73 @@ format in a save (no engine writes one; the guard is read, not run), a real GPU.
 Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r4"` in the `openmw` object of
 each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
 
+### Preloads that wait for the network, and the frames' synchronous WebGL calls: engines orthros-r5, r6, r7 (2026-10-22)
+
+- **r5** (`orthros-r5.patch`): a preload between frames asks the page before it reads (`globalThis.orthrosRangeReady`,
+  `src/ports/openmw/streamfs.js`: a loose file whole, a BSA member's own bytes) whether the bytes are there; when they
+  are not, the page fetches them in the background and the preload puts that work off — a cell preload's mesh, a
+  terrain preload's entry (its distant-object chunk: every mesh it may use and the textures their NIFs name) — and
+  goes on with the next, for up to 3 s (`?preloadwait=N`, 0: as before); the cooperative queue runs the other items
+  meanwhile (`WorkItem::setWaitingForData`). Finishing now (`waitTillDone`, the loading screen) puts nothing off.
+- **r6** (`orthros-r6.patch`): the composite maps' FBO status (`CompositeMapRenderer::compile`) asked until found
+  complete, then no more — every composite map is a texture of the same size and format, and WebGL's
+  `checkFramebufferStatus` is a synchronous round trip to the GPU process (100-400 ms frames when that process is
+  busy). A ray (an intersection visitor: the focus object's, every frame, a script's) builds no distant-object chunk
+  (`getChunkForRay`): it uses those built already, a node with one missing not kept — the focus ray built them in the
+  frame's update for its own view, network reads included.
+- **r7** (`orthros-r7.patch`, the first that reaches OSG's sources: the build applies it at the tree's root,
+  `deps/src/osg` beside `openmw/`): a ray builds no terrain chunk outside the active grid either (its composite map
+  read and drawn), and OSG's camera setup (`RenderStage::runCameraSetUp`) asks an FBO's status once per kind of
+  attachments (their targets, formats and samples) found complete — a cell crossing creates new render-to-texture
+  cameras (the local map's), each one asked before.
+
+The scratch servers that measure a release: a version needs its `multiplayer` object (the gateway's
+`mwdata-manifest.json`, the engine page's list of the installation's files, comes through it — without it the page
+stays on "no manifest (HTTP 404)"), and two versions cannot share a gateway port: one scratch server per release,
+each with its own copied manifest (a first r5 measurement that never reached the world was this, not the engine).
+
+Measured (`perf.mjs --discard --glide 0,1,300,3000 --seconds 150 --query tier=high`, 6 cells, `--profile` on the runs
+marked p; load 25-40 — one r6 run at load 80, discarded; the longest frames' contents from the CPU profile, the engine
+frames of 100 ms or more):
+
+| release, run | fps | engine work p99 / max | frames ≥ 100 ms | gap max, > 250 ms | data stalls (sync fetches) | put off |
+|---|---|---|---|---|---|---|
+| r4 a (p) | 18.6 | 49 / 305 ms | 10 | 683 ms, 16 | 966 ms (205) | — |
+| r4 b | 24.3 | 53 / 240 | 10 | 383, 7 | 809 (207) | — |
+| r5 a (p) | 18.1 | 55 / 233 | 8 | 450, 13 | 316 (94) | 359 |
+| r5 b | 24.5 | 44 / 169 | 7 | 400, 5 | 170 (49) | 377 |
+| r5 c (p) | 22.7 | 85 / 184 | 25 | 300, 2 | 178 (46) | 558 |
+| r6 a (p) | 22.2 | 41 / 197 | 6 | 417, 6 | 187 (47) | 420 |
+| r6 c (p) | 21.5 | 40 / 183 | 7 | 433, 4 | 226 (84) | 344 |
+| r7 a (p) | 20.4 | 39 / 162 | 5 | 350, 9 | 198 (49) | 354 |
+| r7 b (p) | 21.0 | 34 / 164 | 3 | 467, 11 | 168 (48) | 425 |
+
+What the long frames ran: r4 — five of six a distant-object chunk built inside a terrain preload slice, its meshes
+read synchronously; r5 — none of those: the focus ray building a chunk (162 ms), cell crossings' object insertion
+(160 ms), and above all `checkFramebufferStatus` (r5 c: most of its 21 frames over 100 ms, 50-140 ms of each, from
+the composite maps' compile and from new cameras' setup); r6 — no composite-map check left, the focus ray's distant
+chunks gone; left: a new camera's setup check inside cell crossings (3 frames), the focus ray building a distant
+*terrain* chunk with its textures' reads (one, 137 ms) — r7's two changes; r7 — five frames over 100 ms in its two
+profiles, all cell crossings (`Scene::changeCellGrid`: the new cells' objects inserted, a mesh read synchronously
+now and then, an active-grid chunk built for the focus ray — 101-133 ms); no `checkFramebufferStatus`, no terrain
+chunk built for a ray. Longest engine frame 305 / 240 ms (r4) → 162 / 164 ms (r7), engine frames over 100 ms 10 / 10 →
+5 / 3, data stalls 966 / 809 → 198 / 168 ms. The gaps between drawn frames do not follow (r7: 350 / 467 ms, 9 / 11
+over 250 ms, within the runs' spread): SwiftShader's compositing and drawing decide them here (the same as in the re3
+measures, docs/browser-ports.md).
+
+Checked on r5, r6 and r7 (scratch servers, one per release): `tools/openmw/check.mjs morrowind-goty-en` in English
+and with `--lang fr` (morrowind-goty-fr) pass; quicksave and reload (a new character at -2,-9 carried to -3,-7, F5,
+carried back, F9: -3,-7 again; the page loaded again in the same browser profile, F9 from the menu: -3,-7) pass. The
+one fault every run reports, "Pointer is already locked.", is the headless browser's pointer lock (r4 the same).
+Vanilla+ (`morrowind-goty-vanilla-plus-en`) on r7: 2 of 5 check runs pass; the others fail on the header's state read
+3 s after the engine page's loading screen hides (its frame rate not shown yet, or the Orthros loader not hidden yet
+— the version's files still loading in a server with nothing learned). r4 the same, interleaved on the same machine
+(1 of 2 each way): the check's timing, not the release. In the world (r7, drawn by SwiftShader, Seyda Neen and two
+cells north): terrain, objects, sky, water, shadows and the local map as before.
+
+Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r7"` in the `openmw` object of
+each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

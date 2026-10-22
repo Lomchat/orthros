@@ -221,6 +221,15 @@ export class GameData {
    */
   mark(kind) { this.worker.postMessage({ mark: { kind }, used: this.used.splice(0) }); }
 
+  /**
+   * The game entered a phase of its own (`name`: a map, a level — the engine's glue knows it) `ago` ms before now: the
+   * reads from then on are learned as that phase's (the server's learned order keeps each phase's reads together, in
+   * the order the phase reads them — what a load of that map needs, then what comes next; server.js prefetchList).
+   */
+  phase(name, ago = 0) {
+    this.worker.postMessage({ phase: { name: String(name).slice(0, 64), ago: Math.max(0, Number(ago) || 0) }, used: this.used.splice(0) });
+  }
+
   /** The whole version kept in the browser, in the background (`on`: start, else stop); `onProgress({ bytes, total, done })`. */
   download(on = true, onProgress = null) {
     if (onProgress) this.listeners.whole.push(onProgress);
@@ -260,7 +269,7 @@ export class GameData {
   close() { this.saveRate(); clearInterval(this.timer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
 
   /** The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes }. */
-  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes }; }
+  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes }; }
 
   // ---------------------------------------------------------------- light copies
 
@@ -363,13 +372,20 @@ export class GameData {
   }
 
   /**
-   * Whether `h` can be read whole without the page's thread waiting: true, or false and its bytes fetched in the
-   * background (ensure, once at a time) — an engine that would rather skip a load than wait (OpenMW's sounds played
-   * once, orthros-r2.patch). A file whose fetch failed: true (its read waits, and says what failed).
+   * Whether the bytes [position, position + length) of `h` (by default the whole file; a negative length: to its end)
+   * can be read without the page's thread waiting: true, or false and those bytes fetched in the background (ensure,
+   * once at a time for the same bytes) — an engine that would rather skip or put off a load than wait (OpenMW's sounds
+   * played once, orthros-r2.patch; its preloads, a file inside an archive among them, orthros-r5.patch). A file whose
+   * fetch failed: true (its read waits, and says what failed).
    */
-  readable(h) {
-    if (h.failed || !this.missing(h, 0, h.size)) return true;
-    h.ensuring ??= this.ensure(h, 0, h.size, true).catch((e) => { h.failed = true; this.log(`${h.path}: ${e?.message ?? e}`); }).finally(() => { h.ensuring = null; });
+  readable(h, position = 0, length = h.size) {
+    const at = Math.max(0, Math.min(h.size, position)), len = length < 0 ? h.size - at : Math.min(length, h.size - at);
+    if (h.failed || !(len > 0) || !this.missing(h, at, len)) return true;
+    const whole = at === 0 && len === h.size, key = `${at}+${len}`;
+    if (whole ? h.ensuring : h.ensuringRanges?.has(key)) return false;
+    const done = whole ? () => { h.ensuring = null; } : () => { h.ensuringRanges.delete(key); };
+    const p = this.ensure(h, at, len, true).catch((e) => { h.failed = true; this.log(`${h.path}: ${e?.message ?? e}`); }).finally(done);
+    if (whole) h.ensuring = p; else (h.ensuringRanges ??= new Map()).set(key, p);
     return false;
   }
 

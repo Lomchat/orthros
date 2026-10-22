@@ -105,19 +105,23 @@ export class ReadReports {
     this.keepaliveBytes = 0; // (keepalive bodies in flight)
     this.enc = new TextEncoder();
   }
-  /** Send `reads` (and `mark`) of version `name` for `session`; the promise of the chain (tests). */
-  send(name, session, reads, mark = null, final = false) {
+  /**
+   * Send `reads` (and `mark`) of version `name` for `session` — and the session's `phases` so far ([name, t], every
+   * report: GameData.phase); the promise of the chain (tests).
+   */
+  send(name, session, reads, mark = null, final = false, phases = null) {
+    const ph = phases?.length ? { phases } : {};
     const url = `/api/prefetch/${encodeURIComponent(name)}`;
     const init = (body, keepalive) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive, body });
     if (!final) {
-      const body = JSON.stringify({ session, reads, ...(mark ? { mark } : {}) });
+      const body = JSON.stringify({ session, reads, ...(mark ? { mark } : {}), ...ph });
       this.chain = this.chain.then(() => this.fetch(url, init(body, false))).catch(() => {}).then(() => {});
       return this.chain;
     }
     const sent = [];
     for (let i = 0; i === 0 || i < reads.length; i += FINAL_PIECE) {
       const last = i + FINAL_PIECE >= reads.length;
-      const body = JSON.stringify({ session, reads: reads.slice(i, i + FINAL_PIECE), ...(mark && last ? { mark } : {}) });
+      const body = JSON.stringify({ session, reads: reads.slice(i, i + FINAL_PIECE), ...(mark && last ? { mark } : {}), ...(last ? ph : {}) });
       const bytes = this.enc.encode(body).length, keepalive = this.keepaliveBytes + bytes <= KEEPALIVE_BYTES;
       if (keepalive) this.keepaliveBytes += bytes;
       let r; try { r = Promise.resolve(this.fetch(url, init(body, keepalive))); } catch (e) { r = Promise.reject(e); }

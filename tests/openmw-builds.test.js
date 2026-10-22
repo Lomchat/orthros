@@ -57,3 +57,65 @@ test('the r3 page (when installed): exterior grid preloaded by default, ?wq=inli
   assert.ok(html.includes("(/[?&]wq=inline\\b/.test(location.search) ? 'preload exterior grid = false\\n' : 'preload exterior grid = true\\n')"));
   for (const k of ['OPENMW_WORKQUEUE_INLINE', 'OPENMW_WORKQUEUE_THREADED', 'OPENMW_WORKQUEUE_BUDGET_MS']) assert.ok(html.includes(`ENV.${k}`), k);
 });
+
+test('r5: r4 plus its patch, the same exports; preloads put off what waits for the network — between frames only, for a while', () => {
+  const r4 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r4'), r5 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r5');
+  assert.ok(r5, 'r5 is a build');
+  assert.deepEqual(r5.patches, [...r4.patches, 'orthros-r5.patch']);
+  assert.deepEqual(r5.exports, r4.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r5.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const k of [
+    // (the page asked: a BSA member's own bytes, a loose file whole)
+    'var f = globalThis.orthrosRangeReady;', 'Files::pathToUnicodeString(mFile->getFile()->getPath()), mInfo->mOffset, mInfo->mFileSize);',
+    'return orthrosRangeReady(Files::pathToUnicodeString(mPath), 0, ~std::uint64_t{ 0 });',
+    // (a template: its NIF and the textures it names)
+    'bool SceneManager::orthrosTemplateReady(VFS::Path::NormalizedView path)', 'record->mRecordType != Nif::RC_NiSourceTexture',
+    // (who asks: object paging's chunks, the terrain preload's entries, the cell preload's meshes)
+    'bool ObjectPaging::chunkReady(', 'bool QuadTreeWorld::chunksReady(', 'bool meshReady(std::string_view path)',
+    // (between frames only — a deadline —, and for dataWaitLimit at most; the queue runs the others meanwhile)
+    'const bool mayWait = deadline != std::chrono::steady_clock::time_point::max()', 'now() - since < limit',
+    'if (mWorld->preloadWaitingForData())', 'waiting.push_back(item.get());', 'OPENMW_PRELOAD_WAIT_MS', 'ENV.OPENMW_PRELOAD_WAIT_MS='])
+    assert.ok(added.includes(k), k);
+  const page = path.join(DEFAULT_ENGINES_DIR, 'openmw-web-v1.5.3-orthros-r5', 'index.html');
+  if (fs.existsSync(page)) assert.ok(fs.readFileSync(page, 'utf8').includes('ENV.OPENMW_PRELOAD_WAIT_MS='), 'the installed page takes ?preloadwait=');
+});
+
+test('r6: r5 plus its patch, the same exports; no FBO status asked again per composite map, no distant chunk built for a ray', () => {
+  const r5 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r5'), r6 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r6');
+  assert.ok(r6, 'r6 is a build');
+  assert.deepEqual(r6.patches, [...r5.patches, 'orthros-r6.patch']);
+  assert.deepEqual(r6.exports, r5.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r6.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const k of [
+    // (the composite maps' FBO: its status asked until found complete)
+    '= mOrthrosFboComplete ? GL_FRAMEBUFFER_COMPLETE_EXT : ext->glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);',
+    'mOrthrosFboComplete = status == GL_FRAMEBUFFER_COMPLETE_EXT;',
+    // (a ray: the chunks built already, a missing one not built nor its node kept; the active grid's built as before)
+    'virtual osg::ref_ptr<osg::Node> getChunkForRay(', 'osg::ref_ptr<osg::Node> ObjectPaging::getChunkForRay(',
+    'return getChunk(size, center, lod, lodFlags, activeGrid, viewPoint, false);', 'missing = true;',
+    'isCullVisitor ? nullptr : &partial', '*partial = pat;'])
+    assert.ok(added.includes(k), k);
+  // (the drawing's traversal unchanged: getChunk with its compile flag when no ray asks)
+  assert.ok(added.includes(': m->getChunk(entry.mNode->getSize(), entry.mNode->getCenter(), lod, entry.mLodFlags, activeGrid,'));
+});
+
+test('r7: r6 plus its patch, the same exports; no terrain chunk outside the active grid built for a ray, an FBO of a kind found complete not asked again', () => {
+  const r6 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r6'), r7 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r7');
+  assert.ok(r7, 'r7 is a build');
+  assert.deepEqual(r7.patches, [...r6.patches, 'orthros-r7.patch']);
+  assert.deepEqual(r7.exports, r6.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r7.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  // (the patch reaches OSG's sources too: the build applies it at the tree's root, deps/src/osg beside openmw/)
+  assert.ok(patch.includes('+++ b/deps/src/osg/src/osgUtil/RenderStage.cpp'));
+  for (const k of [
+    'osg::ref_ptr<osg::Node> ChunkManager::getChunkForRay(', 'if (activeGrid)\n+            return getChunk(size, center, lod, lodFlags, activeGrid, viewPoint, false);',
+    'missing = true;',
+    // (single-sampled FBOs whose every attachment's format is known; asked when unknown or not complete before)
+    'if (!fbo_multisample.valid())', 'orthrosKind.clear();',
+    'GLenum status = orthrosKnown ? GLenum(GL_FRAMEBUFFER_COMPLETE_EXT) : ext->glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);',
+    'if (status == GL_FRAMEBUFFER_COMPLETE_EXT && !orthrosKind.empty())'])
+    assert.ok(added.includes(k), k);
+});

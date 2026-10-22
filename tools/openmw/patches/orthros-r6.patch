@@ -1,0 +1,163 @@
+--- a/openmw/apps/openmw/mwrender/objectpaging.cpp
++++ b/openmw/apps/openmw/mwrender/objectpaging.cpp
+@@ -657,6 +657,17 @@
+         }
+     }
+ 
++    osg::ref_ptr<osg::Node> ObjectPaging::getChunkForRay(float size, const osg::Vec2f& center, unsigned char lod,
++        unsigned int lodFlags, bool activeGrid, const osg::Vec3f& viewPoint, bool& missing)
++    {
++        if (activeGrid)
++            return getChunk(size, center, lod, lodFlags, activeGrid, viewPoint, false);
++        if (const osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(std::make_tuple(center, size, activeGrid)))
++            return static_cast<osg::Node*>(obj.get());
++        missing = true;
++        return nullptr;
++    }
++
+     bool ObjectPaging::chunkReady(float size, const osg::Vec2f& center, unsigned char /*lod*/,
+         unsigned int lodFlags, bool activeGrid, const osg::Vec3f& /*viewPoint*/)
+     {
+--- a/openmw/apps/openmw/mwrender/objectpaging.hpp
++++ b/openmw/apps/openmw/mwrender/objectpaging.hpp
+@@ -35,6 +35,11 @@
+         /// browser page (Resource::SceneManager::orthrosTemplateReady): createChunk() reads nothing from the network.
+         /// The meshes asked are those createChunk() may use (a few it skips included); those not ready are kept and
+         /// only they are asked again. Main thread.
++        /// Orthros (orthros-r6.patch): a ray gets a distant chunk only once built (the active grid's: built as for
++        /// drawing — the objects about the player stop a ray).
++        osg::ref_ptr<osg::Node> getChunkForRay(float size, const osg::Vec2f& center, unsigned char lod,
++            unsigned int lodFlags, bool activeGrid, const osg::Vec3f& viewPoint, bool& missing) override;
++
+         bool chunkReady(float size, const osg::Vec2f& center, unsigned char lod, unsigned int lodFlags,
+             bool activeGrid, const osg::Vec3f& viewPoint) override;
+ 
+--- a/openmw/components/terrain/compositemaprenderer.cpp
++++ b/openmw/components/terrain/compositemaprenderer.cpp
+@@ -88,7 +88,10 @@
+         mFBO->setAttachment(osg::Camera::COLOR_BUFFER, attach);
+         mFBO->apply(state, osg::FrameBufferObject::DRAW_FRAMEBUFFER);
+ 
+-        GLenum status = ext->glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);
++        // Orthros (orthros-r6.patch): asked until the FBO is found complete, then no more (mOrthrosFboComplete)
++        const GLenum status
++            = mOrthrosFboComplete ? GL_FRAMEBUFFER_COMPLETE_EXT : ext->glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);
++        mOrthrosFboComplete = status == GL_FRAMEBUFFER_COMPLETE_EXT;
+ 
+         if (status != GL_FRAMEBUFFER_COMPLETE_EXT)
+         {
+--- a/openmw/components/terrain/compositemaprenderer.hpp
++++ b/openmw/components/terrain/compositemaprenderer.hpp
+@@ -67,6 +67,12 @@
+         mutable std::mutex mMutex;
+ 
+         osg::ref_ptr<osg::FrameBufferObject> mFBO;
++
++        /// Orthros (orthros-r6.patch): the FBO was found complete once. Every composite map is a texture of the same
++        /// size and format (ChunkManager::createCompositeMapRTT): its status is not asked again — a synchronous
++        /// round trip to the GPU process in a browser (WebGL's checkFramebufferStatus), 100-400 ms when that process is
++        /// busy, for each map compiled.
++        mutable bool mOrthrosFboComplete = false;
+     };
+ 
+ }
+--- a/openmw/components/terrain/quadtreeworld.cpp
++++ b/openmw/components/terrain/quadtreeworld.cpp
+@@ -365,11 +365,11 @@
+         return lodFlags;
+     }
+ 
+-    void QuadTreeWorld::loadRenderingNode(
+-        ViewDataEntry& entry, ViewData* vd, float cellWorldSize, const osg::Vec4i& gridbounds, bool compile)
++    bool QuadTreeWorld::loadRenderingNode(ViewDataEntry& entry, ViewData* vd, float cellWorldSize,
++        const osg::Vec4i& gridbounds, bool compile, osg::ref_ptr<osg::Node>* partial)
+     {
+         if (!vd->hasChanged() && entry.mRenderingNode)
+-            return;
++            return true;
+ 
+         if (vd->hasChanged())
+         {
+@@ -395,16 +395,28 @@
+             bool activeGrid = (center.x() > gridbounds.x() && center.y() > gridbounds.y() && center.x() < gridbounds.z()
+                 && center.y() < gridbounds.w());
+ 
++            bool missing = false;
+             for (QuadTreeWorld::ChunkManager* m : mChunkManagers)
+             {
+-                osg::ref_ptr<osg::Node> n = m->getChunk(entry.mNode->getSize(), entry.mNode->getCenter(),
+-                    static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)),
+-                    entry.mLodFlags, activeGrid, vd->getViewPoint(), compile);
++                const auto lod
++                    = static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize));
++                osg::ref_ptr<osg::Node> n = partial
++                    ? m->getChunkForRay(entry.mNode->getSize(), entry.mNode->getCenter(), lod, entry.mLodFlags,
++                        activeGrid, vd->getViewPoint(), missing)
++                    : m->getChunk(entry.mNode->getSize(), entry.mNode->getCenter(), lod, entry.mLodFlags, activeGrid,
++                        vd->getViewPoint(), compile);
+                 if (n)
+                     pat->addChild(n);
+             }
++            // (orthros-r6.patch: a ray's node with a chunk missing is not kept)
++            if (missing)
++            {
++                *partial = pat;
++                return false;
++            }
+             entry.mRenderingNode = pat;
+         }
++        return true;
+     }
+ 
+     namespace
+@@ -494,7 +506,15 @@
+         for (unsigned int i = 0; i < vd->getNumEntries(); ++i)
+         {
+             ViewDataEntry& entry = vd->getEntry(i);
+-            loadRenderingNode(entry, vd, cellWorldSize, mActiveGrid, false);
++            // Orthros (orthros-r6.patch): a ray (an intersection visitor) builds no distant-object chunk — the
++            // focus object's ray, every frame, built them for its own view in the frame's update, network reads
++            // included (100-200 ms frames while crossing cells): the chunks built already, the others left out
++            osg::ref_ptr<osg::Node> partial;
++            if (!loadRenderingNode(entry, vd, cellWorldSize, mActiveGrid, false, isCullVisitor ? nullptr : &partial))
++            {
++                partial->accept(nv);
++                continue;
++            }
+             entry.mRenderingNode->accept(nv);
+         }
+ 
+--- a/openmw/components/terrain/quadtreeworld.hpp
++++ b/openmw/components/terrain/quadtreeworld.hpp
+@@ -86,6 +86,17 @@
+                 return true;
+             }
+ 
++            /// Orthros (orthros-r6.patch): the chunk for a ray (an intersection visitor: the focus object's, a script's
++            /// ray), not for drawing: by default getChunk(). A manager whose chunk costs a long build (object paging:
++            /// a distant chunk's meshes merged) answers only with one built already — `missing` set, and null, when
++            /// it is not: a ray never builds it (the drawing or the preload will).
++            virtual osg::ref_ptr<osg::Node> getChunkForRay(float size, const osg::Vec2f& center, unsigned char lod,
++                unsigned int lodFlags, bool activeGrid, const osg::Vec3f& viewPoint, bool& missing)
++            {
++                (void)missing;
++                return getChunk(size, center, lod, lodFlags, activeGrid, viewPoint, false);
++            }
++
+             void setViewDistance(float viewDistance) { mViewDistance = viewDistance; }
+             float getViewDistance() const { return mViewDistance; }
+ 
+@@ -104,8 +115,11 @@
+ 
+     private:
+         void ensureQuadTreeBuilt();
+-        void loadRenderingNode(
+-            ViewDataEntry& entry, ViewData* vd, float cellWorldSize, const osg::Vec4i& gridbounds, bool compile);
++        /// Orthros (orthros-r6.patch): `partial` given (a ray's traversal), the chunks asked with getChunkForRay(); when
++        /// one is missing the node is not kept in the entry (built again, whole, at a later ray) but returned in
++        /// `partial`, and the call returns false.
++        bool loadRenderingNode(ViewDataEntry& entry, ViewData* vd, float cellWorldSize, const osg::Vec4i& gridbounds,
++            bool compile, osg::ref_ptr<osg::Node>* partial = nullptr);
+ 
+         osg::ref_ptr<RootNode> mRootNode;
+ 

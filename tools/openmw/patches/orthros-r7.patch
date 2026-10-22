@@ -1,0 +1,94 @@
+--- a/openmw/components/terrain/chunkmanager.cpp
++++ b/openmw/components/terrain/chunkmanager.cpp
+@@ -81,6 +81,18 @@
+         return node;
+     }
+ 
++    osg::ref_ptr<osg::Node> ChunkManager::getChunkForRay(float size, const osg::Vec2f& center, unsigned char lod,
++        unsigned int lodFlags, bool activeGrid, const osg::Vec3f& viewPoint, bool& missing)
++    {
++        if (activeGrid)
++            return getChunk(size, center, lod, lodFlags, activeGrid, viewPoint, false);
++        const ChunkKey key{ .mCenter = center, .mLod = static_cast<unsigned char>(lodFlags >> (4 * 4)), .mLodFlags = lodFlags };
++        if (osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(key))
++            return static_cast<osg::Node*>(obj.get());
++        missing = true;
++        return nullptr;
++    }
++
+     void ChunkManager::updateTextureFiltering()
+     {
+         UpdateTextureFilteringFunctor f(mSceneManager);
+--- a/openmw/components/terrain/chunkmanager.hpp
++++ b/openmw/components/terrain/chunkmanager.hpp
+@@ -81,6 +81,11 @@
+         osg::ref_ptr<osg::Node> getChunk(float size, const osg::Vec2f& center, unsigned char lod, unsigned int lodFlags,
+             bool activeGrid, const osg::Vec3f& viewPoint, bool compile) override;
+ 
++        /// Orthros (orthros-r7.patch): a ray gets a terrain chunk outside the active grid only once built (its
++        /// composite map's textures read and drawn); within the grid — where the player's rays reach —, as getChunk().
++        osg::ref_ptr<osg::Node> getChunkForRay(float size, const osg::Vec2f& center, unsigned char lod,
++            unsigned int lodFlags, bool activeGrid, const osg::Vec3f& viewPoint, bool& missing) override;
++
+         void setCompositeMapSize(unsigned int size) { mCompositeMapSize = size; }
+         void setCompositeMapLevel(float level) { mCompositeMapLevel = level; }
+         void setMaxCompositeGeometrySize(float maxCompGeometrySize) { mMaxCompGeometrySize = maxCompGeometrySize; }
+--- a/deps/src/osg/src/osgUtil/RenderStage.cpp
++++ b/deps/src/osg/src/osgUtil/RenderStage.cpp
+@@ -11,6 +11,8 @@
+  * OpenSceneGraph Public License for more details.
+ */
+ #include <stdio.h>
++#include <set>
++#include <string>
+ 
+ #include <osg/Notify>
+ #include <osg/Texture1D>
+@@ -532,7 +534,46 @@
+             #endif
+             }
+ 
+-            GLenum status = ext->glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);
++            // Orthros (orthros-r7.patch): an FBO whose attachments have the kinds and formats of one found complete
++            // before is not asked again — glCheckFramebufferStatus is a synchronous round trip to a browser's GPU
++            // process (WebGL), 20-60 ms while that process is busy, for every new camera (the local map's, a cell's
++            // crossing). Only single-sampled FBOs whose every attachment's format is known; the first of each kind,
++            // and any one that fails, asked as before.
++            std::string orthrosKind;
++            if (!fbo_multisample.valid())
++            {
++                const osg::FrameBufferObject::AttachmentMap& attachments = fbo->getAttachmentMap();
++                for (osg::FrameBufferObject::AttachmentMap::const_iterator it = attachments.begin(); it != attachments.end(); ++it)
++                {
++                    const int component = static_cast<int>(it->first);
++                    const osg::FrameBufferAttachment& a = it->second;
++                    GLenum format = 0;
++                    unsigned int target = 0, samples = 0;
++                    if (const osg::Texture* t = a.getTexture())
++                    {
++                        format = t->getInternalFormat();
++                        target = t->getTextureTarget();
++                    }
++                    else if (const osg::RenderBuffer* r = a.getRenderBuffer())
++                    {
++                        format = r->getInternalFormat();
++                        target = GL_RENDERBUFFER_EXT;
++                        samples = static_cast<unsigned int>(r->getSamples());
++                    }
++                    if (!format)
++                    {
++                        orthrosKind.clear();
++                        break;
++                    }
++                    orthrosKind += std::to_string(component) + ':' + std::to_string(target) + ':' + std::to_string(format)
++                        + ':' + std::to_string(samples) + ';';
++                }
++            }
++            static std::set<std::string> orthrosComplete;
++            const bool orthrosKnown = !orthrosKind.empty() && orthrosComplete.count(orthrosKind) != 0;
++            GLenum status = orthrosKnown ? GLenum(GL_FRAMEBUFFER_COMPLETE_EXT) : ext->glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);
++            if (status == GL_FRAMEBUFFER_COMPLETE_EXT && !orthrosKind.empty())
++                orthrosComplete.insert(orthrosKind);
+ 
+             if (status != GL_FRAMEBUFFER_COMPLETE_EXT)
+             {

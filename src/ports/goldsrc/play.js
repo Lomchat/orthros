@@ -14,6 +14,7 @@ import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { treeFiles, languageFiles } from '../../vfs/game-tree.js';
 import { openPortFiles } from '../port-files.js';
+import { phaseOnRead } from '../../vfs/emscripten-files.js';
 import { createLobby, roomAddress } from './lobby.js';
 
 const STRINGS = {
@@ -448,9 +449,13 @@ async function start() {
   const shown = languageFiles(files, own.overlays, Object.values(g.languages ?? {}).flatMap((l) => Object.keys(l.overlays ?? {})));
   const t0 = performance.now();
   step('files', 'active', fmtMB(0), 0);
-  ({ data: gameData } = await openPortFiles({ name, tree, files: shown, FS, root: '/rodir', session: sessionId, lang: language, log, db,
+  let nodes;
+  ({ data: gameData, nodes } = await openPortFiles({ name, tree, files: shown, FS, root: '/rodir', session: sessionId, lang: language, log, db,
     onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
   session.files = gameData;
+  // (each map the engine loads — its .bsp read — a phase of the game data: the server learns what each map's load reads,
+  // in its order, and the next sessions load it ahead — GameData.phase)
+  phaseOnRead(FS, nodes, gameData, (p) => /\/maps\/([^/]+)\.bsp$/i.exec(p)?.[1].toLowerCase() ?? null);
   const loaded = await gameData.startup((p) => {
     const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;
     step('files', 'active', `${fmtMB(p.bytes)}${secs > 1 ? ` · ${(p.bytes / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));

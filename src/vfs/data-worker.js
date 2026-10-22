@@ -45,7 +45,7 @@ export function createDataWorker(post) {
     ctrl: null, data: null, version: null, parts: new Map(), handles: new Map(), ready: null, timers: [],
     session: '', lang: null, t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null,
     prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null,
-    legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(), reports: new ReadReports(),
+    legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(), reports: new ReadReports(), phases: [],
   };
   return (m) => {
     if (m.init) {
@@ -73,6 +73,7 @@ function dispatch(m) {
   if (m.start) { W.t0 = performance.now(); if (W.prefetchAt === 'start' || W.prefetchAt === 'startup') prefetchAll(); return; }
   if (m.startup) { startup(); return; }
   if (m.mark) { mark(m.mark); return; }
+  if (m.phase) { phase(m.phase); return; }
   if (m.wantWhole) { W.parts.get(m.wantWhole.name)?.files.wantWhole(m.wantWhole.path); return; }
   if (m.light) { upgrade(m.light.name, m.light.path, !!m.light.soon); return; }
   if ('whole' in m) { m.whole ? wholeDownload() : (W.whole && (W.whole.stop = true)); return; }
@@ -207,7 +208,21 @@ function report(final = false, marked = null) {
   // (a mark goes with every read before it, in one report: the server flags what the session had read by then)
   const reads = W.reads.splice(0, marked ? MARK_READS : 5000), name = W.version.parts[0].name;
   // (in order: a mark after the reports before it; the final one at once, keepalive while small enough — playable-watch.js)
-  W.reports.send(name, W.session, reads, marked, final);
+  W.reports.send(name, W.session, reads, marked, final, W.phases);
+}
+
+/** The most phases a session tells (GameData.phase). */
+const MAX_PHASES = 200;
+
+/**
+ * The page's game entered phase `name` (GameData.phase: a map, a level) `ago` ms ago: [name, t] (t: ms from the
+ * session's start, the reads' times) goes with every report from now on — the server learns each read as its phase's.
+ */
+function phase({ name, ago }) {
+  if (W.t0 === null || typeof name !== 'string' || !name || W.phases.length >= MAX_PHASES) return;
+  const t = Math.max(0, Math.round(performance.now() - W.t0 - ago));
+  if (W.phases.at(-1)?.[0] === name) return;
+  W.phases.push([name, t]);
 }
 
 /**
