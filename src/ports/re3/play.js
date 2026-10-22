@@ -18,7 +18,7 @@ import { onAccountChange, accountState } from '../../host/web/account.js';
 import { createMmoLink, LINK } from '../../host/web/mmo-link.js';
 import { openStorage, readStorage, writeStorage } from '../goldsrc/storage.js';
 import { treeFiles } from '../../vfs/game-tree.js';
-import { openPortData, mountPortFiles } from '../port-files.js';
+import { openPortFiles } from '../port-files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
 import { setIniDefaults } from './ini.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../../host/profile-seed.js';
@@ -491,16 +491,6 @@ async function start(mode = null) {
   status(S.init);
   // (the module's own files — its WebAssembly — beside it in the release)
   const moduleUrl = base + r.module.split('/').map(encodeURIComponent).join('/'), dir = moduleUrl.slice(0, moduleUrl.lastIndexOf('/') + 1);
-  // (the game's files asked now, beside the engine's download and start: the startup set — what earlier sessions read
-  // first — loads meanwhile; the files mounted once the engine's file system exists)
-  const t0 = performance.now();
-  step('files', 'active', fmtMB(0), 0);
-  const port = openPortData({ name, tree, session: sessionId, lang: language, log, db,
-    onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress),
-    onStartup: (p) => {
-      const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;
-      step('files', 'active', `${fmtMB(p.bytes)}${secs > 1 ? ` · ${(p.bytes / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
-    } });
   const t = performance.now();
   const { default: createEngine } = await import(moduleUrl);
   engine = session.engine = await createEngine({
@@ -512,14 +502,21 @@ async function start(mode = null) {
   step('engine', 'done', `${((performance.now() - t) / 1000).toFixed(1)} s`);
   FS = engine.FS;
   FS.mkdirTree(ROOT);
-  // (the game's files: its whole tree — the release's own over the version's, as the server lists it —, what earlier
-  // sessions read first loaded before the start, the rest later; a stream's next bytes read ahead)
+  // (the game's files: its whole tree now — the release's own over the version's, as the server lists it —, what
+  // earlier sessions read first loaded before the start, the rest later; a stream's next bytes read ahead; a game file
+  // the engine writes anew, a file of the profile in its place)
   // (asyncReads: a read waiting for bytes suspends the engine — JSPI — instead of holding the page; rewritable: a game file
   // the engine writes anew, a file of the profile in its place)
-  gameData = await port.data;
-  session.files = gameData;
-  gameNodes = mountPortFiles(gameData, { name, files, FS, root: ROOT, asyncReads: true, rewritable: true, log });
-  const loaded = await port.startup;
+  const t0 = performance.now();
+  step('files', 'active', fmtMB(0), 0);
+  let nodes;
+  ({ data: gameData, nodes } = await openPortFiles({ name, tree, files, FS, root: ROOT, session: sessionId, lang: language, log, db, asyncReads: true, rewritable: true,
+    onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
+  session.files = gameData; gameNodes = nodes;
+  const loaded = await gameData.startup((p) => {
+    const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;
+    step('files', 'active', `${fmtMB(p.bytes)}${secs > 1 ? ` · ${(p.bytes / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
+  });
   session.startup = { ...gameData.snapshot(), startupBytes: loaded.total, ms: Math.round(performance.now() - t0) };
   log(`Startup files: ${JSON.stringify(session.startup)}`);
   step('files', 'done', fmtMB(loaded.total));

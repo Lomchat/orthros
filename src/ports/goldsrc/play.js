@@ -13,7 +13,7 @@ import { escapeToGame } from '../../host/web/escape.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { treeFiles, languageFiles } from '../../vfs/game-tree.js';
-import { openPortData, mountPortFiles } from '../port-files.js';
+import { openPortFiles } from '../port-files.js';
 import { createLobby, roomAddress } from './lobby.js';
 
 const STRINGS = {
@@ -436,16 +436,6 @@ async function start() {
     module: { print: log, printErr: log, onAbort: reason => fail(new Error(String(reason))), postMainLoop: onFrame }
   });
   if (g.multiplayer) attachNet(Net);
-  // (the game's files asked now, beside the engine's download and start: the startup set — what earlier sessions read
-  // first — loads meanwhile, the files mounted once the engine's file system exists)
-  const t0 = performance.now();
-  step('files', 'active', fmtMB(0), 0);
-  const port = openPortData({ name, tree, session: sessionId, lang: language, log, db,
-    onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress),
-    onStartup: (p) => {
-      const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;
-      step('files', 'active', `${fmtMB(p.bytes)}${secs > 1 ? ` · ${(p.bytes / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
-    } });
   const t = performance.now();
   await engine.init();
   step('engine', 'done', `${((performance.now() - t) / 1000).toFixed(1)} s`);
@@ -453,13 +443,18 @@ async function start() {
   // (the game's writable folder, with its maps folder: files the game writes there, as its bots' navigation meshes)
   FS.mkdirTree('/rodir'); FS.mkdirTree('/rwdir/' + g.gameDir + '/maps');
   restoreSnapshot(FS, await readStorage(db, 'profile', 'files'));
-  // (the game's files: its whole tree — a language's folders over the ones they translate —, what earlier sessions
+  // (the game's files: its whole tree now — a language's folders over the ones they translate —, what earlier sessions
   // read first loaded before the start, the rest later)
   const shown = languageFiles(files, own.overlays, Object.values(g.languages ?? {}).flatMap((l) => Object.keys(l.overlays ?? {})));
-  gameData = await port.data;
+  const t0 = performance.now();
+  step('files', 'active', fmtMB(0), 0);
+  ({ data: gameData } = await openPortFiles({ name, tree, files: shown, FS, root: '/rodir', session: sessionId, lang: language, log, db,
+    onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
   session.files = gameData;
-  mountPortFiles(gameData, { name, files: shown, FS, root: '/rodir', log });
-  const loaded = await port.startup;
+  const loaded = await gameData.startup((p) => {
+    const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;
+    step('files', 'active', `${fmtMB(p.bytes)}${secs > 1 ? ` · ${(p.bytes / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
+  });
   session.startup = { ...gameData.snapshot(), startupBytes: loaded.total, ms: Math.round(performance.now() - t0) };
   log(`Startup files: ${JSON.stringify(session.startup)}`);
   // (the release's archives the engine mounts from the game folder: its own extras by default, goldsrc.extras)
