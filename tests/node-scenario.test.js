@@ -8,12 +8,12 @@ import { NodeScenario } from '../tools/node-scenario.mjs';
 const fakeVm = () => ({ host: { inputQueue: [], frameHook: () => {} }, d3dDevice: { draws: 0, frames: 0 }, guestInsns: 0 });
 
 test('bench scenarios: comment lines and new lines are skipped, the steps match the page parser', () => {
-  const text = fs.readFileSync(new URL('../tools/scenarios/bench/bfme1-skirmish.txt', import.meta.url), 'utf8');
+  const text = fs.readFileSync(new URL('../tools/scenarios/bench/bfme2-skirmish.txt', import.meta.url), 'utf8');
   const s = new NodeScenario(text, fakeVm(), () => {});
   assert.equal(s.events[0].kind, 'key');
   assert.ok(s.events.every((e) => Number.isFinite(e.t) && typeof e.kind === 'string' && !e.kind.includes('#')));
   const w = s.events.find((e) => e.kind === 'waitframe');
-  assert.deepEqual(w.args, [20, 60, 150, 100000]);
+  assert.deepEqual(w.args, [10, 30, 150, 100000]);
 });
 
 test('waitframe min,max,min2,max2: the second range anchors as well', () => {
