@@ -384,7 +384,9 @@ tools/with-browser-slot.sh node tools/openmw/check.mjs morrowind-goty-en \
 ```
 
 This check is a solo smoke check (the engine draws, the Orthros frame shows its frame rate and the mouse), **not** a
-Morrowind multiplayer or gameplay success claim. (Until 2026-10-18 it ran on the free example.)
+Morrowind multiplayer or gameplay success claim. `--lang <code>` picks the game language on the card (its flag) before
+Play: the version that language runs is the one checked (`morrowind-goty-en --lang fr` checks `morrowind-goty-fr`'s
+page, its saves and start cell). (Until 2026-10-18 it ran on the free example.)
 
 ### The page (2026-10-18)
 
