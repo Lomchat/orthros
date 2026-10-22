@@ -104,6 +104,29 @@ same scenario): 30.0 fps, p99 39.0-42.3 ms, > 40 ms 12-33 per minute, slow frame
 4 %. A run during a load spike of the shared machine (load 40-86) showed render-worker waits of 300-500 ms (the GPU
 process starved) and 28.4 fps over the ten minutes: measure at a quiet moment.
 
+Wave 3 (2026-10-22, the frames over 40 ms; each change against the tree before it, two runs started together so that
+both see the same load — the shared machine's load moved frames over 40 ms between 21 and 41 per minute for the same
+tree): what makes a frame over 40 ms in BFME 1.08's play is the game's own heavy frames — its main thread runs 12.9 M
+guest instructions in them against 4.1 M on average, the other threads nothing more (`startbench --threads
+--slow-threads 40`) — so they follow the speed of the translated code. Fixed meanwhile: a yield that took the yielding
+thread back (scheduling decisions per frame ~1 100-1 250 → ~270, `Sleep` calls per frame ~400 → ~190, work p90 −1 to
+−2 ms: docs/thread-scheduling.md), refused nested buffer locks and the cost of failure reports (docs/api-layer.md), the
+archives read at random after the learned prefetch (docs/slow-network.md: fewer stalls of 100 ms and more). The drain
+of the deferred queue was profiled (docs/api-layer.md): the game's Direct3D work, ~0.7 µs per queued call, 14 % of it
+the queue itself. Late wake-ups (`late`, 0.2-0.3 ms per frame, 7 % of the slow frames' excess): the slices end every 12
+ms and the event loop runs between them; the guest's own 1 ms waits (the Sleep(0) throttle) happen inside `runFor`
+(Atomics.wait, precise), and the frames paced by Sleep(0) + timeGetTime end at 33.0-33.1 ms (p50); the large `late`
+shares come with network reads (`ioWait`): the read's tasks. Headless Chromium, ten minutes of play, the tree before /
+this one, together: frames over 40 ms 22 / 21 per minute (yield and locks), work p50 14.9 / 14.1 ms, p90 21.5 / 19.7, p99
+31.4 / 29.5. Node (`startbench`, together): 23 / 24 per minute, `Sleep` 0.30 / 0.15 ms per frame, vertex buffer locks
+0.48 / 0.27 ms per frame, the drain 1.59 / 1.57 ms per frame; the guest does more (the game's vertex fills after its
+locks now succeed: 83.6 → 108.9 G instructions in ten minutes).
+
+`startbench` options for this kind of work: `--sleeps` (each phase's Sleep pattern per thread: Sleep(0) calls, those
+that ran a ready thread, throttled ones, why their streaks ended), `--threads --slow-threads <ms>` (each thread's guest
+instructions in the frames over that), `--slow-apis <ms>`, `--cpu-prof <file> --cpu-prof-window <phase>:<from>:<to>` (a
+V8 profile of a window of a phase), `--api-seq <n>@<s>` (the next n API calls after s seconds).
+
 `rotwk-phases.txt` (rotwk-202, 1024x768) needs a rotwk profile; `bfme-phases.txt` (bfme-vanilla, 800x600) a profile
 saved by an earlier run (`/tmp/orthros-profiles/bfme-vanilla`). `--gl-discard` measures the CPU side (headless
 SwiftShader otherwise makes `draw` — the GPU process behind — dominate every rendered frame of play).
