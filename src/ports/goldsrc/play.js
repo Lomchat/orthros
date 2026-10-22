@@ -448,6 +448,14 @@ async function start() {
   const shown = languageFiles(files, own.overlays, Object.values(g.languages ?? {}).flatMap((l) => Object.keys(l.overlays ?? {})));
   const t0 = performance.now();
   step('files', 'active', fmtMB(0), 0);
+  // (the release's archives the engine mounts from the game folder — its own extras by default, goldsrc.extras —: asked
+  // now, beside the startup set — after it, one at a time, they were 13 MB alone on the link for Half Strike, the
+  // startup set's round trips leaving it idle meanwhile)
+  const extras = [...(g.extras ?? ['engine/valve/extras.pk3']), ...(own.extras ?? [])].map((extra) => ({ extra, bytes: fetch(base + extra).then((r) => {
+    if (!r.ok) throw new Error(S.engineFiles);
+    return r.arrayBuffer();
+  }) }));
+  for (const x of extras) x.bytes.catch(() => {}); // (awaited below: no unhandled rejection meanwhile)
   ({ data: gameData } = await openPortFiles({ name, tree, files: shown, FS, root: '/rodir', session: sessionId, lang: language, log, db,
     onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
   session.files = gameData;
@@ -457,12 +465,7 @@ async function start() {
   });
   session.startup = { ...gameData.snapshot(), startupBytes: loaded.total, ms: Math.round(performance.now() - t0) };
   log(`Startup files: ${JSON.stringify(session.startup)}`);
-  // (the release's archives the engine mounts from the game folder: its own extras by default, goldsrc.extras)
-  for (const extra of [...(g.extras ?? ['engine/valve/extras.pk3']), ...(own.extras ?? [])]) {
-    const extrasResponse = await fetch(base + extra);
-    if (!extrasResponse.ok) throw new Error(S.engineFiles);
-    FS.writeFile(`/rodir/${g.gameDir}/${extra.split('/').pop()}`, new Uint8Array(await extrasResponse.arrayBuffer()));
-  }
+  for (const { extra, bytes } of extras) FS.writeFile(`/rodir/${g.gameDir}/${extra.split('/').pop()}`, new Uint8Array(await bytes));
   step('files', 'done', fmtMB(loaded.total));
   FS.chdir('/rwdir');
   step('game', 'active', '', 0.2); status(S.starting);
