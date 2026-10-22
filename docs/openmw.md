@@ -564,6 +564,49 @@ chunk cannot be split), most of it the data streaming's synchronous fetch of a m
 `orthrosFileReady` first and comes back to a mesh whose bytes are still on their way, as sounds do since r2.
 `tools/openmw/check.mjs` passes on r3.
 
+### The global map fixed: engine orthros-r4 (2026-10-22)
+
+Engine release `openmw-web-v1.5.3-orthros-r4` (patches r1 + r2 + r3 + `orthros-r4.patch`, files pinned in `lock.json`;
+17 min to compile here; `openmw.js` and `openmw.data` identical to r3's, only `openmw.wasm` and the page differ).
+Installed in `data_engines/`, no manifest switched. Two defects of r3's global map (`mwrender/globalmap.cpp`):
+- **A save whose world map has another size lost its explored map.** r3 zeroes a map camera's node mask after its first
+  draw, before `copyResult()`; OSG's update traversal skips a node whose mask is 0, so a camera with a CPU copy pending
+  — `GlobalMap::read()`'s resize path (the save's map of another size: another `global map cell size`, other content
+  bounds) — was never updated again: the image never copied into `mOverlayImage`, the camera never removed. The map
+  showed it (the texture was drawn) but the next save wrote an empty map (unless a cell was explored since, which reads
+  the whole texture back). r4: the web build's resize path draws onto the overlay texture without a CPU copy and marks
+  the copy stale (`syncCpuCopy` reads it back when a save needs it), and the mask is zeroed early only for a camera
+  with no copy pending (`hasPendingCopy`).
+- **`syncCpuCopy` checked only the image's width and height** before `readPixels` writes `width × height × 4` bytes of
+  RGBA8 into it; after `read()`'s equal-size shortcut `mOverlayImage` is the save's decoded PNG, whose format was not
+  checked (an RGB or 16-bit PNG). r4: the copy refuses an image not in the copy's layout (`isCpuCopyLayout`: size,
+  RGBA, unsigned bytes, rows unpadded; a warning, the copy left stale) and `read()` takes the shortcut only for such an
+  image — any other goes through the resize path.
+- The page takes `?mapcellsize=N` (QA): the world map's pixels per cell (`[Map] global map cell size`, default 18).
+
+Checked (headless SwiftShader, a scratch server whose manifests point at r4): a new character at -2,-9, three cells
+explored (`omw_debug_coe`), into an interior (console `coc`), F5; the page loaded again with a world map cell size of
+12 (written to the player's `settings.cfg`, which any release reads; `?mapcellsize=12` on r4 for Vanilla+), F9 (the
+save's 954×864 map loaded into a 636×576 one: the resize path), the overlay texture read back from WebGL, F5, F9, F5
+— the saves' GMAP records decoded:
+
+| release | overlay after the load | save after the load | save after loading it again |
+|---|---|---|---|
+| r2 | 432 px painted | 636×576, 432 px | 636×576, 432 px |
+| r3 | 432 px | 636×576, **0 px** (the map lost) | 0 px |
+| r4 (Morrowind; Vanilla+ the same) | 432 px | 636×576, 432 px | 636×576, 432 px (identical) |
+
+(432 = 3 cells × 12²; the first save, 972 = 3 × 18².) F5 / F9 in an exterior at the same size on r4: 972 px kept
+through two loads. Crossing cells (`perf.mjs --discard --glide 0,1,300,3000 --seconds 150 --query tier=high`, 6
+cells, load 15-27, 2 runs each, r2 and r4 interleaved): longest frame of engine work 1203 / 1062 → 282 / 291 ms,
+longest gap between drawn frames 1967 / 1683 → 433 / 450 ms, gaps over 250 ms 16 / 15 → 4 / 5, readPixels 18 → 0
+(r3's gain kept). `tools/openmw/check.mjs` passes on r4 for both games, in English and in French (`--lang fr`; one
+of three Vanilla+ French runs failed, its output lost, the next two passed). Not checked: a PNG of another pixel
+format in a save (no engine writes one; the guard is read, not run), a real GPU.
+
+Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r4"` in the `openmw` object of
+each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

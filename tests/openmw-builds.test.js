@@ -1,6 +1,7 @@
 // Orthros' own OpenMW engine releases (tools/openmw/lock.json "builds", tools/openmw/build.sh): each build's patches
 // exist and extend the previous build's, in order; r3's page (when installed here) keeps the cooperative WorkQueue's
-// switches and preloads the exterior grid unless the old inline mode is asked for.
+// switches and preloads the exterior grid unless the old inline mode is asked for; r4 fixes r3's global map (a resized
+// save's map copied back, the CPU copy's layout checked).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -21,6 +22,10 @@ test('every engine build: its patches present, each build the previous one plus 
   const r3 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r3');
   assert.ok(r3, 'r3 is a build');
   assert.deepEqual(r3.patches, ['orthros-r1.patch', 'orthros-r2.patch', 'orthros-r3.patch']);
+  const r4 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r4');
+  assert.ok(r4, 'r4 is a build');
+  assert.deepEqual(r4.patches, [...r3.patches, 'orthros-r4.patch']);
+  assert.deepEqual(r4.exports, r3.exports, 'r4 keeps r3\'s exports');
 });
 
 test('r3 patch: the cooperative WorkQueue, its per-frame pump, the sliced preloads, the global map copied back only for saves', () => {
@@ -30,6 +35,19 @@ test('r3 patch: the cooperative WorkQueue, its per-frame pump, the sliced preloa
     'bool QuadTreeWorld::preloadSlice(', 'mTerrainPreloadItem->waitTillDone();', 'void GlobalMap::syncCpuCopy()', 'mCpuCopyStale = true;',
     "ENV.OPENMW_WORKQUEUE_INLINE='1'", 'preload exterior grid = true'])
     assert.ok(patch.includes(k), k);
+});
+
+test('r4 patch: no CPU copy pending on a camera whose mask is zeroed, the save\'s map resized without one, the copy\'s layout checked', () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r4.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const k of ['if (!mParent->hasPendingCopy(node))', 'bool GlobalMap::hasPendingCopy(osg::Camera* camera) const',
+    'bool GlobalMap::isCpuCopyLayout(const osg::Image& image) const', 'image.getPixelFormat() == GL_RGBA', 'image.getDataType() == GL_UNSIGNED_BYTE',
+    'if (!isCpuCopyLayout(*mOverlayImage))', '&& isCpuCopyLayout(*image))', "'[Map]\\nglobal map cell size = '"])
+    assert.ok(added.includes(k), k);
+  // (read()'s resize path, web build: drawn without a CPU copy, the copy marked stale for syncCpuCopy)
+  const web = added.slice(added.indexOf('+#ifdef __EMSCRIPTEN__\n+            // Orthros (orthros-r4.patch): drawn onto the overlay texture only'));
+  assert.ok(web.length > 0);
+  assert.match(web.slice(0, web.indexOf('+#else')), /std::move\(texture\), true, false,[\s\S]*mCpuCopyStale = true;/);
 });
 
 test('the r3 page (when installed): exterior grid preloaded by default, ?wq=inline back to the old mode', () => {

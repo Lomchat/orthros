@@ -97,7 +97,7 @@ test('the engine page asks the tier module before its own rule, its log saying t
   assert.ok(out.startsWith(`<html><head><script>window.orthrosTierReady = import('/src/ports/openmw/tier.js')`));
   assert.ok(out.includes("|| (window.orthrosTier ? window.orthrosTier(__devMem) : (__devMem >= 8 ? 'high'"));
   assert.ok(out.includes("(window.orthrosTierChoice ? ' (gpu: '+window.orthrosTierChoice.kind+')' : '')"));
-  for (const id of ['openmw-web-v1.5.3', 'openmw-web-v1.5.3-orthros-r1', 'openmw-web-v1.5.3-orthros-r2', 'openmw-web-v1.5.3-orthros-r3']) {
+  for (const id of ['openmw-web-v1.5.3', 'openmw-web-v1.5.3-orthros-r1', 'openmw-web-v1.5.3-orthros-r2', 'openmw-web-v1.5.3-orthros-r3', 'openmw-web-v1.5.3-orthros-r4']) {
     const release = path.join(DEFAULT_ENGINES_DIR, id, 'index.html');
     if (!fs.existsSync(release)) continue;
     const real = withQualityTier(fs.readFileSync(release, 'utf8'));

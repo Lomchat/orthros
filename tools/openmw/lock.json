@@ -188,6 +188,38 @@
         "openmw.wasm": "98358bd51693fd67218ab91e7bcb353eadcc9d65b1353b4610c87ab906e2175f",
         "openmw.data": "e659ce681ef67cd124b0180c281152aedbbdab8008bee5e776fb9fa39c39ec53"
       }
+    },
+    {
+      "id": "openmw-web-v1.5.3-orthros-r4",
+      "patches": [
+        "orthros-r1.patch",
+        "orthros-r2.patch",
+        "orthros-r3.patch",
+        "orthros-r4.patch"
+      ],
+      "exports": [
+        {
+          "name": "orthros_file_updated",
+          "returns": "number",
+          "args": [
+            "string"
+          ],
+          "call": "Module.ccall('orthros_file_updated', 'number', ['string'], [path])"
+        },
+        {
+          "name": "orthros_set_view_distance",
+          "returns": "number",
+          "args": [
+            "number"
+          ],
+          "call": "Module.ccall('orthros_set_view_distance', 'number', ['number'], [distance])"
+        }
+      ],
+      "files": {
+        "openmw.js": "60a5011946616dfcfa2feeb718d1fc1e5af738873cf5633379112414366567b4",
+        "openmw.wasm": "4fdfffc3711d8fb9e86bc21a1cd1ba7105e4709a7e2fba8c6ef326000f90425a",
+        "openmw.data": "e659ce681ef67cd124b0180c281152aedbbdab8008bee5e776fb9fa39c39ec53"
+      }
     }
   ]
 }
