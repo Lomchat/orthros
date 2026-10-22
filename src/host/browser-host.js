@@ -6,6 +6,7 @@
 // of a worker task showed half-drawn or missing frames under load.
 import { acct, C as ACCT, FrameStats } from '../core/frame-acct.js';
 import { encodePng } from '../gfx/codecs/png.js';
+import { hostWaiter } from '../core/host-wait.js';
 
 export const CTL = { IN_HEAD: 0, IN_TAIL: 1, WAKE: 2, STOP: 3, AUDIO_WRITE: 4, AUDIO_READ: 5, AUDIO_UNDERRUNS: 6, POINTER_LOCK: 7, FOCUS: 8, SIZE: 64 };
 export const IN_RING = 4096; // int32 slots (4 per event)
@@ -232,13 +233,19 @@ export class BrowserHost {
    */
   waitEvent(ms, io = false) {
     let t = Math.min(ms, 50);
+    // (a wait for a deadline — a guest timeout, a timer, a throttled Sleep(0) — wakes at it on a coarse host timer; the
+    // deadlock watch's long waits are plain: core/host-wait.js)
+    const precise = ms <= 50, deadline = performance.now() + t;
     this.audioHook?.(); // (the audio ring filled before blocking: a nested wait must not starve the output)
     // (deferrable work of the worker done in the wait first — the game waits anyway: see idleWork in worker.js)
-    if (this.idleWork && t >= 1) { const t0 = performance.now(), p = acct.enter(ACCT.host); this.idleWork(t); acct.leave(p); t = Math.max(0, t - (performance.now() - t0)); }
-    const ap = acct.enter(io ? ACCT.ioWait : ACCT.wait);
-    const t0 = acct.stamp();
-    Atomics.wait(this.ctl, CTL.WAKE, 0, t);
+    if (this.idleWork && t >= 1) { const t0 = performance.now(), p = acct.enter(ACCT.host); this.idleWork(t); acct.leave(p); }
+    const cat = io ? ACCT.ioWait : ACCT.wait, ap = acct.enter(cat);
+    const t0 = acct.stamp(), acc0 = acct.acc[cat];
+    const r = hostWaiter.waitUntil(this.ctl, CTL.WAKE, 0, deadline, precise);
     acct.leave(ap);
+    // (frame accounting: the host's wake-up past the deadline is lateness, not the game's pacing — Windows' coarse timer
+    // shows here; before 2026-10-22 it stayed in `wait`)
+    if (r === 'timed-out' && precise) { const over = acct.stamp() - deadline; if (over > 0) acct.move(cat, ACCT.late, Math.min(over, acct.acc[cat] - acc0)); }
     this.waitMs = (this.waitMs ?? 0) + acct.stamp() - t0;
     this.pump();
   }

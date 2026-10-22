@@ -14,6 +14,7 @@ import { scanCodeOfVk } from '../src/win32/dinput8.js';
 import { BLOCK_COUNTS_BASE } from '../src/cpu/memory.js';
 import { refreshApiOpt } from '../src/core/api-opt.js';
 import { parseScenario, inRanges } from '../src/host/scenario.js';
+import { hostWaiter, injectedQuantum, adaptiveOn } from '../src/core/host-wait.js';
 
 export class NodeScenario {
   /**
@@ -148,8 +149,12 @@ export class NodeScenario {
       r.dt = { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: dts[dts.length - 1] ?? 0, over34: dts.filter((d) => d > 34).length, over40: dts.filter((d) => d > 40).length };
       r.apiTop = this.apiTop();
       r.picks = (this.vm.sched?.picks ?? 0) - p.picks; // (scheduling decisions: Sleep(0) spins, yields)
+      r.dt.over40PerMin = Math.round(r.dt.over40 / Math.max(1e-6, secs / 60));
+      r.hostWait = { ...hostWaiter.take(), ...p.hw }; // (the host's wake-ups: overshoot, spins — core/host-wait.js)
       this.results.push(r);
       this.log(`[frames] node phase ${p.label}: ${secs.toFixed(1)} s, ${frames} frames, ${(g / 1e6).toFixed(0)} M guest instructions, guest ${(cats[ACCT.guest] / 1000).toFixed(2)} s = ${r.guestMsPerMInsn.toFixed(3)} ns per instruction; api ${(cats[ACCT.api] / 1000).toFixed(2)} s, jit ${(cats[ACCT.jit] / 1000).toFixed(2)} s, interp ${(cats[ACCT.interp] / 1000).toFixed(2)} s, wait ${(cats[ACCT.wait] / 1000).toFixed(2)} s, CPU ${cpuS.toFixed(1)} s${threadCpuS !== null ? `, thread CPU ${threadCpuS.toFixed(1)} s` : ''}; frame ms p50 ${r.dt.p50.toFixed(1)} p90 ${r.dt.p90.toFixed(1)} p99 ${r.dt.p99.toFixed(1)} max ${r.dt.max.toFixed(0)}, > 34 ms ${r.dt.over34}, > 40 ms ${r.dt.over40}`);
+      const hw = r.hostWait.wait;
+      if (hw) this.log(`[hostwait] ${p.label}: ${hw.waits} waits, overshoot mean ${hw.overMean} ms max ${hw.overMax} ms (estimate ${r.hostWait.est} ms), early ${hw.early}, plain ${hw.plain}, spins ${hw.spins} (${hw.spinMs} ms, ${(hw.spinMs / Math.max(1, frames)).toFixed(2)} ms per frame); injected quantum ${p.hw.q || 'none'}, adaptive ${p.hw.adaptive ? 'on' : 'off'}; > 40 ms per minute ${r.dt.over40PerMin}`);
       this.log(`[apitop] ${p.label} (ms per frame, calls per frame, µs per call): ${r.apiTop.map(([k, ms, c, us]) => `${k} ${(ms / Math.max(1, frames)).toFixed(2)} (${(c / Math.max(1, frames)).toFixed(0)}, ${us.toFixed(1)})`).join(', ')}`);
       // (--jit-profile: the phase's transitions by kind, chained transitions and fallback steps)
       if (this.jitProf) this.log(`[jitprof] ${p.label}: ${this.jitProf()}`);
@@ -160,7 +165,7 @@ export class NodeScenario {
     }
     if (!this.phase) { this.apiTop(); this.jitProf?.(); }
     this.frameDts = [];
-    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now(), picks: this.vm.sched?.picks ?? 0, locks: { ...(d3d?.lockStats ?? {}) } }; // (epoch ms: phases matched with outside measurements, perf stat -I)
+    this.phase = { label, t, g0: this.vm.guestInsns, f0: d3d?.frames ?? 0, cpu, tcpu, epoch: Date.now(), picks: this.vm.sched?.picks ?? 0, hw: { q: injectedQuantum(), adaptive: adaptiveOn() }, locks: { ...(d3d?.lockStats ?? {}) } }; // (epoch ms: phases matched with outside measurements, perf stat -I)
   }
   /**
    * The APIs that took the most time since the previous call (as the browser worker's phase report): each API's timed
