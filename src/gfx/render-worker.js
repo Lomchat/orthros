@@ -17,6 +17,7 @@ const log = (msg) => port?.postMessage({ type: 'log', kind: 'gfx', msg });
 self.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'init') { try { init(m); } catch (err) { self.postMessage({ type: 'failed', reason: String(err?.stack ?? err) }); if (ctl) Atomics.store(ctl, CTL.READY, -1); } }
+  else if (m.type === 'memory') { replayer.mems[m.index] = new GuestMemory({ memory: m.memory }); Atomics.store(ctl, CTL.MEMORIES, m.index); Atomics.notify(ctl, CTL.MEMORIES); } // (a child process's: docs/processes.md)
   else if (m.type === 'dbg') { const [k, v] = String(m.kv ?? '').split('='); if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); refreshApiOpt(); }
   else if (m.type === 'capture') { const d = backend?.device; if (d) { if (m.at !== undefined) d.captureAt = d.frame + 1; if (m.draws !== undefined) d.captureDraws = !!m.draws; if (m.count !== undefined) d.countFrames = m.count; } }
   else if (m.type === 'loseContext') { const ext = backend?.gl.getExtension('WEBGL_lose_context'); if (ext) { ext.loseContext(); setTimeout(() => ext.restoreContext(), m.ms ?? 500); } else log('d3d-webgl: WEBGL_lose_context unavailable'); }

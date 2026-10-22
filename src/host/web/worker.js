@@ -35,6 +35,11 @@ import { SnapshotWatch } from '../snapshot-watch.js';
 import { PlayableWatch, ReadLog, ReadReports } from '../../vfs/playable-watch.js';
 
 let profileFilesRestored = 0, profileListing = []; // (the listing goes to the page: failure diagnostics) // files of the game's user profile found in the browser (0: its first launch here)
+/**
+ * `vm`: the machine the page follows — display, input, audio, statistics, translation ahead: the root's, then the
+ * foreground child process's (docs/processes.md); `rootVm`: the host's machine, which runs every process (its runFor).
+ */
+let rootVm = null;
 let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
 /** the block stores of the game files (the game's and the games it requires): their index synced by flushProfile */
 const fileStores = [];
@@ -305,7 +310,7 @@ async function start(m) {
   vfs.mount('C:\\Users\\Player', profile);
   audioMixDirect = m.opts.audioMix !== 'worker';
   const bgWanted = !m.opts.interp && m.opts.bgTranslate !== false && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated;
-  vm = new Vm({ vfs, clock, host, jit: !m.opts.interp, sharedMemory: bgWanted || renderWorker, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
+  vm = rootVm = new Vm({ vfs, clock, host, jit: !m.opts.interp, sharedMemory: bgWanted || renderWorker, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
   // (a ReadFile whose data is still on the network parks its thread while the fetch runs: the other threads and the
   // page go on; ?asyncreads=0 restores the synchronous reads)
   vm.asyncReads = m.opts.asyncReads !== false;
@@ -321,18 +326,8 @@ async function start(m) {
   if (heatSink && vm.jit && vm.jit.opts.visit === undefined && !vm.jit.opts.blockCounts) vm.jit.opts.visit = globalThis.ORTHROS_JIT_VISIT === undefined ? true : !!Number(globalThis.ORTHROS_JIT_VISIT);
   // learned regions translated in a worker of their own (another core) while the game runs; ?bgjit=0: off (then only
   // while the game waits, on this thread)
-  if (vm.jit && bgWanted) {
-    try {
-      bgTranslator = new Worker(new URL('../../cpu/jit/bg-translate.js', import.meta.url), { type: 'module' });
-      bgTranslator.onmessage = (e) => { if (e.data?.type === 'batch') { vm.jit.bgInstall(e.data); feedBackground(); } else if (e.data?.type === 'cache-error') log('warn', `translated code cache unavailable: ${e.data.message}`); else if (e.data?.type === 'cache-stats' && vm.jit.bg) vm.jit.bg.cache = e.data.cache; };
-      bgTranslator.onerror = (e) => { log('warn', `background translation unavailable: ${e.message ?? e}`); bgTranslator = null; };
-      // (translations kept across sessions in OPFS, keyed by the translator's own sources: ?codecache=0, off)
-      const jitUrl = (f) => new URL(`../../cpu/jit/${f}`, import.meta.url).href;
-      vm.jit.attachBackground(bgTranslator, codeCacheOn(m.opts) ? { name: manifestName, sources: [jitUrl('bg-translate.js'), jitUrl('jit.js'), jitUrl('runtime.js')] } : null);
-      // cold tier (Jit.runCold): new code interpreted while the background worker translates it (?dbg=ORTHROS_COLD_TIER=0|1)
-      vm.jit.coldTier = !!(globalThis.ORTHROS_COLD_TIER ?? COLD_TIER_DEFAULT);
-    } catch (e) { bgTranslator = null; log('warn', `background translation unavailable: ${e.message}`); }
-  }
+  bgOpts = bgWanted ? m.opts : null;
+  if (vm.jit && bgWanted) startBackground(vm);
   // D3DX's DXT encoding of large images split with helper workers (other cores; the same bytes as on one thread);
   // ?dxthelpers=N sets their number (0: none)
   const dxtHelpers = m.opts.dxtHelpers ?? Math.max(0, Math.min(4, (navigator.hardwareConcurrency || 2) - 2));
@@ -404,6 +399,50 @@ async function start(m) {
   channel.port1.onmessage = () => { pumpPosted = false; pump(); };
   host.wake = () => { if (running && !stopped) schedulePump(0); }; // (an asynchronous completion a guest thread waits on)
   pump();
+}
+
+/**
+ * Learned regions translated in a worker of their own (another core) for `v`'s JIT while the game runs; ?bgjit=0: off
+ * (then only while the game waits, on this thread). Its guest memory is `v`'s: a child process that takes the page has
+ * one of its own (adoptForeground).
+ */
+let bgOpts = null;
+function startBackground(v) {
+  const m = { opts: bgOpts };
+  try {
+    const translator = bgTranslator = new Worker(new URL('../../cpu/jit/bg-translate.js', import.meta.url), { type: 'module' });
+    const jit = v.jit;
+    translator.onmessage = (e) => { if (e.data?.type === 'batch') { jit.bgInstall(e.data); if (bgTranslator === translator) feedBackground(); } else if (e.data?.type === 'cache-error') log('warn', `translated code cache unavailable: ${e.data.message}`); else if (e.data?.type === 'cache-stats' && jit.bg) jit.bg.cache = e.data.cache; };
+    translator.onerror = (e) => { log('warn', `background translation unavailable: ${e.message ?? e}`); if (bgTranslator === translator) bgTranslator = null; };
+    // (translations kept across sessions in OPFS, keyed by the translator's own sources: ?codecache=0, off)
+    const jitUrl = (f) => new URL(`../../cpu/jit/${f}`, import.meta.url).href;
+    jit.attachBackground(translator, codeCacheOn(m.opts) ? { name: manifestName, sources: [jitUrl('bg-translate.js'), jitUrl('jit.js'), jitUrl('runtime.js')] } : null);
+    // cold tier (Jit.runCold): new code interpreted while the background worker translates it (?dbg=ORTHROS_COLD_TIER=0|1)
+    jit.coldTier = !!(globalThis.ORTHROS_COLD_TIER ?? COLD_TIER_DEFAULT);
+  } catch (e) { bgTranslator = null; log('warn', `background translation unavailable: ${e.message}`); }
+}
+
+/**
+ * A child process took the display (core/procs.js setForeground: it created a Direct3D device or showed the first
+ * window): the page follows it from now on — statistics, audio, the regions and heat learned for this game, translation
+ * ahead (a background translator on its memory; the parent's ends: its code is translated, it mostly waits).
+ */
+function adoptForeground(v) {
+  const prev = vm;
+  vm = v;
+  log('loader', `the page follows process ${v.proc.pid} (${v.proc.exe?.name ?? '?'}) from now on (was ${prev.proc.pid})`);
+  v.waitLogMin = prev.waitLogMin; if (prev.mainWaits) v.mainWaits = new Map();
+  if (prev.apiTimes) { v.apiTimes = new Map(); v.apiTimesPhase = new Map(); }
+  v.readSliceMs = prev.readSliceMs;
+  if (regionSink && v.jit) { v.jit.learned ??= []; v.jit.coveredLearned ??= []; }
+  if (heatSink && v.jit && v.jit.opts.visit === undefined && !v.jit.opts.blockCounts) v.jit.opts.visit = prev.jit?.opts.visit;
+  heatModules = 0; bgMods.n = -1; bgDoneLogged = false;
+  if (bgTranslator && v.jit) {
+    const old = bgTranslator; bgTranslator = null;
+    try { old.terminate(); } catch { /* gone */ }
+    if (regionQueue) { for (const e of regionLater) regionQueue.push(e); regionLater = []; regionPos = 0; } // (the entries of its modules: this process's now)
+    startBackground(v);
+  }
 }
 
 /**
@@ -665,7 +704,8 @@ function pump() {
     // (a file read on the network: short slices, so the read's completion — several event-loop tasks for one fetch —
     // is not held behind a 12 ms slice at each step; --dbg ORTHROS_READ_SLICE_MS=12 is the earlier behaviour)
     vm.readSliceMs = globalThis.ORTHROS_READ_SLICE_MS ?? 2;
-    r = vm.runFor(tRun + (vm.readsInFlight > 0 ? vm.readSliceMs : 12));
+    r = rootVm.runFor(tRun + (vm.readsInFlight > 0 ? vm.readSliceMs : 12));
+    if (rootVm.group && rootVm.group.foreground !== vm && !rootVm.group.foreground.proc.exited) adoptForeground(rootVm.group.foreground); // (several processes: docs/processes.md)
     acct.enter(ACCT.host);
     if (vm.jit?.coldQueue.length) vm.jit.flushCold(); // (the cold tier's entries to the background translator)
   } catch (e) {
@@ -751,7 +791,7 @@ function pump() {
   host.gfx?.afterSlice?.();
   acct.enter(ACCT.host);
   pumpEndAt = performance.now(); lastPumpReturn = r.state === 'sleep' ? `sleep ${Math.round(r.until - pumpEndAt)}ms` : r.state;
-  if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code, report: vm.exitReport ?? null }); flushProfile(true); if (readLog) reportReads(performance.now(), null, true); return; }
+  if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code, report: rootVm.exitReport ?? vm.exitReport ?? null }); flushProfile(true); if (readLog) reportReads(performance.now(), null, true); return; }
   if (r.state === 'sleep') {
     if (r.until - pumpEndAt >= 3) { acct.enter(ACCT.ahead); prewarmRegions(Math.min(8, r.until - pumpEndAt - 1)); acct.enter(ACCT.host); } // (the wait, used to translate ahead)
     heatSlack(r.until - performance.now());

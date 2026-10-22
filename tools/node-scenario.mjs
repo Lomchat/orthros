@@ -22,7 +22,7 @@ export class NodeScenario {
    * @param {(line: string) => void} log
    */
   constructor(text, vm, log, nowMs = () => performance.now()) {
-    this.vm = vm; this.log = log; this.nowMs = nowMs; // (the time base: wall time, or a virtual clock's for a deterministic run)
+    this.rootVm = vm; this.log = log; this.nowMs = nowMs; // (the time base: wall time, or a virtual clock's for a deterministic run)
     const { steps, errors } = parseScenario(text);
     if (errors.length) throw new Error(`scenario: ${errors.join('; ')}`);
     this.events = steps.map((st) => ({ t: st.t, rel: st.rel, anchored: st.anchored, kind: st.kind, args: st.args, done: false }));
@@ -34,6 +34,8 @@ export class NodeScenario {
     this.frameDts = []; this.lastPresentAt = 0;
     if (!vm.host.frameHook) vm.host.frameHook = () => { const n = this.nowMs(); if (this.lastPresentAt) this.frameDts.push(n - this.lastPresentAt); this.lastPresentAt = n; };
   }
+  /** the machine the scenario plays: the host's, or the child process that took the display (docs/processes.md) */
+  get vm() { return this.rootVm.group?.foreground ?? this.rootVm; }
   now() { return (this.nowMs() - this.t0) / 1000; }
   push(ev) { this.vm.host.inputQueue.push(ev); }
   /** Called often (API dispatch, waits): fires the due events. */

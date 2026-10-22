@@ -96,3 +96,18 @@ test('the display and the input belong to the foreground process', { skip: skip(
   g.exited(child, 0);
   assert.equal(g.foreground, vm);
 });
+
+test('render worker: devices created after a MEMORY command read that guest memory (a child process\'s)', async () => {
+  const { OP, RingWriter } = await import('../src/gfx/cmd-ring.js');
+  const { Replayer } = await import('../src/gfx/d3d-mirror.js');
+  const words = new Int32Array(1 << 12), w = new RingWriter(words, () => { throw new Error('full'); });
+  const a = { name: 'root memory' }, b = { name: 'child memory' };
+  const replayer = new Replayer(words, { mem: a, createBackend: () => null });
+  replayer.mems[1] = b;
+  w.put(OP.DEVICE, 1, 1, 800, 600, 1);
+  w.put(OP.MEMORY, 1);
+  w.put(OP.DEVICE, 2, 1, 800, 600, 1);
+  replayer.run(w.produced);
+  assert.equal(replayer.devices.get(1).proc.mem, a);
+  assert.equal(replayer.devices.get(2).proc.mem, b);
+});
