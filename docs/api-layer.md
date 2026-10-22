@@ -119,6 +119,28 @@ tick (15.625 ms), and the park crossing a frame limiter's deadline then lengthen
 owner's laptop: frame p90 46.8 ms). The waits of a pacing loop's end are now spun to their deadline when the host is
 measured coarse; docs/thread-scheduling.md "Host wake-up overshoot".
 
+**Only a lower priority ready: the spin is throttled too (2026-10-22).** RotWK 2.02's main thread paces its menu with
+`Sleep(0)` + `timeGetTime` (lotrbfme2ep1.exe 0x63a1dc: `push 0; call Sleep; call timeGetTime; sub last; cmp period; jb`)
+beside a `THREAD_PRIORITY_BELOW_NORMAL` thread that is ready most of the time. The throttle required no *runnable*
+thread at all (`hasRunnable`), so that ready lower thread kept it off — yet `Sleep(0)` does not hand the processor to a
+lower priority (the pick takes the spinning thread again; the lower one ran only when starved, every STARVE_PICKS = 1 000
+picks). The main thread spun ~2 700 `Sleep(0)` per frame in the menu, each ending a slice for nothing (2.58 M in a
+195 s `rotwk-quick` run, 99.7 % at that one call site). The throttle now asks whether the yield would run another thread
+(`Scheduler.hasYieldTarget`: ready with a priority at least the caller's, a starved one counting as higher — what the
+top-level pick after the yield does); with only lower priorities ready the spin is throttled and the lower thread runs
+during the 1 ms wait, as it would on another core of a Windows machine. `yieldFrom` answers false in that case too, as
+it did in nested runs. `?dbg=ORTHROS_SLEEP0_ANY_READY=1` restores the former condition (read at each call).
+`startbench --sleeps` reports per thread the `Sleep(0)` with only lower priorities ready, the call sites and each
+thread's priority and state. Measured (`startbench rotwk-202 --bench rotwk-quick --cold`, seeded first launch, the two arms
+at the same time, two pairs, load 30-70): main thread `Sleep(0)` 2.58 M / 2.09 M → 298 k / 293 k; menu (28 s): `Sleep(0)`
+per frame 2 578 → 118, scheduling decisions per frame 3 182 → ~200, API time 4.45 / 5.89 → 1.54 / 2.48 s, emulator thread
+CPU 15.4 / 21.2 → 10.7 / 16.7 s (19.3 / 29.0 → 13.5 / 23.3 ms per frame), frame p50 33.1-33.3 ms in every run; play
+(120 s, where the spin was already mostly throttled: 148 → 56 `Sleep(0)` per frame): emulator thread CPU per frame 20.9 /
+21.6 → 21.4 / 21.7 ms, frame p50 33.1-33.2 ms, p99 48.5 / 55.0 → 55.4 / 58.1 ms, frames over 40 ms 122 / 157 → 145 / 157
+(within the spread of this loaded machine: the play frames' p99 is the game's own heavy frames). tests/sleep-throttle.test.js
+(tools/pe/sleepspin_lower.c: 100 paced frames beside a busy BELOW_NORMAL thread, `Sleep(0)` 1 998 801 → 4 200, scheduling
+decisions 2 002 004 → 7 403, same run length), tests/sched-priority.test.js.
+
 **The deferred queue's drain has its own accounting entry.** The calls the JIT queued (Direct3D state setters, D3DX
 parameter setters) run in JavaScript before the next call handled there (`Vm.drainDeferred`); the drain ran inside that
 call's timed window, so whichever call followed a batch (`IDirect3DTexture9::Release`, `GetTransform`...) carried the

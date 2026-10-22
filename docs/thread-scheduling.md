@@ -147,8 +147,9 @@ from its Sleep(1) every millisecond was kept waiting through runs of ~250 Sleep(
 
 Now the yield sets `Scheduler.yielder` and the next top-level pick prefers any other ready thread of a priority at least
 the yielder's (`yieldAny`, SwitchToThread: of any priority); the yielder goes on only when there is none. The probes that
-only ask whether a thread is ready (the Sleep(0) throttle, PeekMessage's idle wait, the yield itself) use `hasRunnable`,
-which changes nothing (no round-robin move, no scheduling decision counted). `?dbg=ORTHROS_YIELD_PICK_OLD=1`: the former
+only ask whether a thread is ready (PeekMessage's idle wait) use `hasRunnable`; the yield and the Sleep(0) throttle use
+`hasYieldTarget` (a thread the yield would run: of at least the caller's priority, or starved — since 2026-10-22, see
+docs/api-layer.md "Only a lower priority ready"); both change nothing (no round-robin move, no scheduling decision counted). `?dbg=ORTHROS_YIELD_PICK_OLD=1`: the former
 pick (read at each yield: in-session A/B).
 
 Measured, BFME 1.08 play in Node (`startbench --input` of the 1.08 scenario with `dbg:ORTHROS_YIELD_PICK_OLD=1` / `=`
@@ -280,6 +281,7 @@ loop's end against its prediction (`[timer]` lines).
 | `ORTHROS_READ_SLICE_MS=n` | slice length while a file read is on the network (default 2: the pump and `runFor` end slices early so the read completes; 12: the behaviour before 2026-10-06; docs/startup.md) |
 | `ORTHROS_GDI_BITMAP_FONTS` | GDI text with the built-in bitmap font only |
 | `ORTHROS_SLEEP0_KEEP_STREAK=0` | the Sleep(0) throttle's streak reset by the throttled sleep itself (the behaviour before 2026-10-21) |
+| `ORTHROS_SLEEP0_ANY_READY=1` | any ready thread (a lower priority too) keeps the Sleep(0) throttle off, and a Sleep(0) yield reports one (the behaviour before 2026-10-22) |
 | `ORTHROS_TIMER_HOP=0` | the worker's short-sleep timer armed from the timer callback (the nesting clamp applies; before 2026-10-21) |
 | `ORTHROS_YIELD_PICK_OLD=1` | a yield's check for a ready thread is a pick again, and the yielder may be taken back at once (before 2026-10-22) |
 | `ORTHROS_HOST_TIMER_Q=ms` | inject a coarse host timer: every host wait (Atomics.wait, the pump's setTimeout) rounded up to whole ms, then to the next multiple of `ms` (15.625: Windows' default tick; 1: a 1 ms resolution) — "Host wake-up overshoot" |

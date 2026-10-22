@@ -278,6 +278,21 @@ export class Scheduler {
   }
 
   /**
+   * Would a yield of `thread` hand the processor to another thread? A ready thread of a priority at least its own (a
+   * starved one counts as higher: effPrio) for Sleep(0), any ready thread with `any` (SwitchToThread) — what the
+   * top-level pick after the yield does (pickRunnable's `yielder`). No scheduling decision: nothing changes.
+   * (A ready thread of lower priority does not count: the pick takes the yielder again, so a Sleep(0) spin with only
+   * such a thread ready used to look like yields to the throttle — RotWK 2.02's frame limiter, ~2 700 Sleep(0) per
+   * frame in the menu beside a ready THREAD_PRIORITY_BELOW_NORMAL thread, never throttled; docs/api-layer.md.)
+   */
+  hasYieldTarget(thread, any = false) {
+    if (any || this.roundRobin) return this.hasRunnable(thread);
+    const p = thread.priority ?? 0, now = this.vm.guestInsns ?? 0, picks = this.picks;
+    for (const t of this.threads) if (t !== thread && t.isRunnable() && this.effPrio(t, now, picks) >= p) return true;
+    return false;
+  }
+
+  /**
    * Give other runnable threads a turn. At top level this ends the current slice, and the next pick prefers another
    * ready thread (pickRunnable's `yielder`): of a priority at least this thread's for Sleep(0), of any priority with
    * `any` (SwitchToThread). True when another thread is ready.
@@ -291,7 +306,7 @@ export class Scheduler {
     // make a frame limiter polling Sleep(0) poll more often, not to make anything cheaper: see docs/api-layer.md)
     if (this.vm.canUnwind(thread)) {
       thread.yieldRequested = true;
-      if (!this.hasRunnable(thread)) return false;
+      if (!(globalThis.ORTHROS_YIELD_PICK_OLD || globalThis.ORTHROS_SLEEP0_ANY_READY ? this.hasRunnable(thread) : this.hasYieldTarget(thread, any))) return false;
       if (globalThis.ORTHROS_YIELD_PICK_OLD) { this.pickRunnable(thread); return true; } // (measurement: the behaviour before 2026-10-22)
       this.yielder = thread; this.yieldAny = any;
       return true;

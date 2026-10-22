@@ -110,7 +110,13 @@ test('a yield (Sleep(0)) gives the next top-level pick to another ready thread o
   }
   // only a lower priority ready: Sleep(0) goes on, SwitchToThread runs it; nothing else ready: false
   w.state = TS.BLOCKED;
-  assert.equal(s.yieldFrom(main), true); assert.equal(s.pickRunnable(null, true), main, 'Sleep(0): a lower priority waits');
+  // (Sleep(0) answers false then — no thread to hand over to, as at a nested level — so kernel32's throttle sees the spin;
+  // until 2026-10-22 any ready thread counted: RotWK 2.02's frame limiter beside a ready BELOW_NORMAL thread)
+  assert.equal(s.hasYieldTarget(main), false); assert.equal(s.hasYieldTarget(main, true), true);
+  assert.equal(s.yieldFrom(main), false); assert.equal(s.pickRunnable(null, true), main, 'Sleep(0): a lower priority waits');
+  // a starved lower thread is a target (effPrio: the top priority for a pick)
+  const picks0 = s.picks; s.picks += s.starvePicks + 1; lo.readyPick = 0;
+  assert.equal(s.hasYieldTarget(main), true, 'a starved lower priority runs'); s.picks = picks0; lo.readyPick = s.picks;
   assert.equal(s.yieldFrom(main, true), true); assert.equal(s.pickRunnable(null, true), lo, 'SwitchToThread: any ready thread');
   lo.state = TS.BLOCKED;
   const picks = s.picks, rr = s.rr;

@@ -204,7 +204,9 @@ const report = (why) => {
   if (threadInsns) console.log(`[threads] ${[...threadInsns].sort((a, b) => b[1] - a[1]).map(([id, n]) => `t${id} ${(n / 1e6).toFixed(0)}M`).join(', ')}`);
   // (each thread's Sleep pattern: Sleep(0) calls, those that ran a ready thread, throttled ones, streaks ended by a gap
   // of 50 µs or more / by other API calls between, and the short and long sleeps)
-  for (const t of vm.proc?.threads ?? []) if (t.sleepStats) { const s = t.sleepStats; console.log(`[sleeps] t${t.id} prio ${t.priority ?? 0}: Sleep(0) ${s.zero} (ran another thread ${s.yields ?? 0}, throttled ${s.throttled}, streaks ended by a gap ${s.brokeGap ?? 0} / by other calls ${s.brokeApi ?? 0}), Sleep(1..2) ${s.short}, longer ${s.long}`); }
+  for (const t of vm.proc?.threads ?? []) if (t.sleepStats) { const s = t.sleepStats; console.log(`[sleeps] t${t.id} prio ${t.priority ?? 0}: Sleep(0) ${s.zero} (ran another thread ${s.yields ?? 0}, only lower priorities ready ${s.lowerReady ?? 0}, throttled ${s.throttled}, streaks ended by a gap ${s.brokeGap ?? 0} / by other calls ${s.brokeApi ?? 0}), Sleep(1..2) ${s.short}, longer ${s.long}`); }
+  if (vm.sleepSites) console.log(`[sleeps] Sleep(0) call sites: ${[...vm.sleepSites].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} ${n}`).join(', ')}`);
+  if (args.includes('--sleeps')) console.log(`[sleeps] threads: ${(vm.proc?.threads ?? []).map((t) => `t${t.id} prio ${t.priority ?? 0} ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.blockReason ? ` [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}]` : ''}`).join(', ')}`);
   for (const t of vm.proc?.threads ?? []) if (t.peekIdle) { const s = t.peekIdle; console.log(`[peekidle] t${t.id}: ${s.parks} waits (${s.longParks} long), polling ended ${s.ends} times (${s.cut} right after a wait), wait overshoot ${s.over.toFixed(2)} ms, interval min ${s.ivs.length ? Math.min(...s.ivs).toFixed(2) : '-'} of [${s.ivs.map((x) => x.toFixed(1)).join(' ')}] ms, spins near the expected end ${s.near}, ends after it ${s.late} (by ${(s.lateMs / Math.max(1, s.late)).toFixed(2)} ms), streaks broken by guest work ${s.loose}${s.hist ? `, guest instructions between calls (log2 histogram) ${s.hist.map((n, i) => n ? `2^${i}:${n}` : '').filter(Boolean).join(' ')}` : ''}`); }
   for (const l of vm.peekReport()) console.log(l);
   console.log(`${why}: wall ${wall.toFixed(1)} s, CPU ${cpu.toFixed(1)} s, ~${minsns.toFixed(0)} M guest instructions (${(minsns / cpu).toFixed(0)} MIPS per CPU second), ${vm.jit?.stats.regions ?? 0} regions, translation ${(vm.jit?.stats.translateMs ?? 0).toFixed(0)} ms`);
@@ -264,15 +266,16 @@ if (scenario && args.includes('--jit-profile') && vm.jit) {
 // --sleeps with a scenario: each phase's Sleep pattern per thread, per frame ([sleeps] lines: the counters of kernel32's
 // Sleep — the calls, Sleep(0)s that ran a ready thread, throttled ones, why their streaks ended — and the scheduler's picks)
 if (scenario && args.includes('--sleeps')) {
+  vm.sleepSites = new Map(); // (kernel32's Sleep(0) counts its call sites there)
   let last = new Map(), picks0 = 0;
   (scenario.phaseReports ??= []).push((label, frames) => {
     const f = Math.max(1, frames), out = [];
     for (const t of vm.proc?.threads ?? []) {
       const s = t.sleepStats; if (!s) continue;
-      const cur = { zero: s.zero, yields: s.yields ?? 0, throttled: s.throttled, gap: s.brokeGap ?? 0, api: s.brokeApi ?? 0, short: s.short, long: s.long, insns: t.insnsRun ?? 0 }, p = last.get(t.id) ?? {};
+      const cur = { zero: s.zero, yields: s.yields ?? 0, lower: s.lowerReady ?? 0, throttled: s.throttled, gap: s.brokeGap ?? 0, api: s.brokeApi ?? 0, short: s.short, long: s.long, insns: t.insnsRun ?? 0 }, p = last.get(t.id) ?? {};
       last.set(t.id, cur);
       const d = (k) => ((cur[k] - (p[k] ?? 0)) / f).toFixed(1);
-      if (cur.zero + cur.short + cur.long - (p.zero ?? 0) - (p.short ?? 0) - (p.long ?? 0) > 0) out.push(`t${t.id}(prio ${t.priority ?? 0}) Sleep(0) ${d('zero')} [ran another ${d('yields')}, throttled ${d('throttled')}, streak ends: gap ${d('gap')} calls ${d('api')}] Sleep(1-2) ${d('short')} longer ${d('long')}`);
+      if (cur.zero + cur.short + cur.long - (p.zero ?? 0) - (p.short ?? 0) - (p.long ?? 0) > 0) out.push(`t${t.id}(prio ${t.priority ?? 0}) Sleep(0) ${d('zero')} [ran another ${d('yields')}, only lower ready ${d('lower')}, throttled ${d('throttled')}, streak ends: gap ${d('gap')} calls ${d('api')}] Sleep(1-2) ${d('short')} longer ${d('long')}`);
     }
     const picks = vm.sched?.picks ?? 0;
     console.log(`[sleeps] ${label} per frame: ${out.join('; ')}; scheduler picks ${((picks - picks0) / f).toFixed(0)}`); picks0 = picks;

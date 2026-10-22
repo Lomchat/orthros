@@ -309,12 +309,16 @@ export function registerKernel32(api, vm) {
         if (t.resuming && keepStreak) { vm.sched.park(t, NEVER, 1, 'sleep'); st.last = vm.clock.now(); st.lastApi = vm.apiCalls; paceWoke(t, st); return; }
       }
       st.zero++;
+      if (vm.sleepSites) { const k = `t${t.id} ${c.proc.symbolize(c.retAddr)}`; vm.sleepSites.set(k, (vm.sleepSites.get(k) ?? 0) + 1); } // (diagnostics, startbench --sleeps: the call sites)
       const now = vm.clock.now(); // (the guest's clock: the host's time on a real clock, kept in a snapshot)
       paceStep(t, st, now);
       const gapOk = now - st.last < 0.05, apiOk = vm.apiCalls - st.lastApi <= 2;
       if (gapOk && apiOk) st.streak++; else { st.streak = 0; if (!gapOk) st.brokeGap = (st.brokeGap ?? 0) + 1; else st.brokeApi = (st.brokeApi ?? 0) + 1; } // (diagnostics: why streaks end)
       st.last = now; st.lastApi = vm.apiCalls;
-      if (st.streak >= 32 && !vm.sched.hasRunnable(t)) {
+      // (no thread this yield would run: none ready of a priority at least this thread's — a lower one waits for the
+      // processor, as on Windows, and runs during the throttle's 1 ms instead. ?dbg=ORTHROS_SLEEP0_ANY_READY=1: any
+      // ready thread prevents the throttle, the behaviour before 2026-10-22, for measurement)
+      if (st.streak >= 32 && !(globalThis.ORTHROS_SLEEP0_ANY_READY ? vm.sched.hasRunnable(t) : vm.sched.hasYieldTarget(t))) {
         st.throttled++;
         if (vm.sched.park(t, NEVER, 1, 'sleep') === PARK) { st.parked = true; return PARK; }
         if (keepStreak) { st.last = vm.clock.now(); st.lastApi = vm.apiCalls; } // (a nested wait: the 1 ms has passed here)
@@ -322,6 +326,7 @@ export function registerKernel32(api, vm) {
         return;
       }
       if (vm.sched.yieldFrom(t)) st.yields = (st.yields ?? 0) + 1; // (diagnostics: a ready thread ran)
+      else if (vm.sched.hasRunnable(t)) st.lowerReady = (st.lowerReady ?? 0) + 1; // (diagnostics: only lower priorities ready)
       paceWoke(t, st);
       return;
     }
