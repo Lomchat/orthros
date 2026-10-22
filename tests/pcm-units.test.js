@@ -131,3 +131,27 @@ test('backend: an audio unit is decoded before the reader keeps it; a bad one tu
     assert.ok(!new HttpBackend('/game/g/', tree, {}).rangeUrl('a.raw', 0, BLOCK).includes('pc=1'), 'not the compressed ranges: never');
   } finally { globalThis.fetch = realFetch; }
 });
+
+test('backend: a synchronous read whose audio unit does not decode is asked again without the codec', () => {
+  const FILE = Buffer.from(sound(CHUNK, 4));
+  const tree = { dirs: {}, files: { 'a.raw': { size: FILE.length, mtime: 1 } } };
+  const Real = globalThis.XMLHttpRequest, urls = [];
+  globalThis.XMLHttpRequest = class {
+    open(m, url) { this.url = url; }
+    setRequestHeader() {}
+    getResponseHeader(h) { return /x-orthros-codec/i.test(h) ? this.codec : null; }
+    send() {
+      urls.push(this.url);
+      const [, a, e] = /\?r=(\d+)-(\d+)/.exec(this.url), body = new Uint8Array(FILE.subarray(+a, +e));
+      this.status = 200;
+      if (/&pc=1(&|$)/.test(this.url)) { const enc = encodePcm(body, [{ at: 0, len: body.length, bits: 16, ch: 1 }]); enc[enc.length >> 1] ^= 0x55; this.codec = 'pcm1'; this.response = enc.buffer; }
+      else { this.codec = null; this.response = body.slice().buffer; }
+    }
+  };
+  try {
+    const b = new HttpBackend('/game/g/', tree, { encoded: true, retryWaits: [0, 0, 0] });
+    assert.equal(sha(b.fetchRange('a.raw', 0, CHUNK)), sha(FILE.subarray(0, CHUNK)));
+    assert.equal(b.pcm, false);
+    assert.deepEqual(urls.map((u) => /&pc=1/.test(u)), [true, false], 'the retry without &pc=1');
+  } finally { globalThis.XMLHttpRequest = Real; }
+});

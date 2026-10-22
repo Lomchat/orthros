@@ -730,8 +730,9 @@ export class HttpBackend {
     // (a background download shares the connection: it goes away while the game waits, and is fetched again later — on
     // a fast link; on a slower one only those that would hold the game up long, see NetLink.abortLong)
     this.abortBackground();
-    const url = this.rangeUrl(path, start, end);
     for (let attempt = 0; ; attempt++) {
+      // (made at each attempt: an audio unit that failed to decode turned the codec off — asked again without it)
+      const url = this.rangeUrl(path, start, end);
       const xhr = new XMLHttpRequest();
       xhr.open('GET', url, false);
       xhr.responseType = 'arraybuffer';
