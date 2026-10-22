@@ -215,6 +215,33 @@ order fetched ahead from the game's position.
   the background. The home screen's "download first" and the settings' offline copy (`offlineCopy`, kept in this
   browser for every game) fill the same store.
 
+### Map loads (2026-10-22)
+
+`tools/goldsrc/maps.mjs <manifest> --steps "wait 5,map c1a0,wait 20,changelevel c1a0d,wait 10" [--net KB/s]`: a new
+browser, its page as a visitor, each step in turn (a console command, or time spent in the map); a map's load is
+timed from its command to the first frame of a steady run (20 frames each within 250 ms of the one before), with the
+game data's waits meanwhile (count, ms, MB) and the MB loaded in the background. `--report` teaches the server (its
+learned order); `--report --no-phases` teaches it without the session's phases, by time only.
+
+Half-Life (`half-life-original-en`), Chrome's network emulation with a 40 ms round trip, a scratch server, load 25-80:
+
+| | `map c1a0` | `changelevel c1a0d` |
+|---|---|---|
+| no network limit (the teacher) | 1.1-1.2 s, 434 waits (0.7 s), 25 MB | 0.8 s, 50 waits (0.3 s), 6 MB |
+| 8 MB/s, the learned order of the live server (2026-10-22: no phases yet) | 3.3, 3.4 s, 435 waits (2.9-3.0 s) | 2.9, 3.0 s, 50 waits (2.0 s) |
+| 8 MB/s, after one teaching session (its pace) | 0.9, 2.1 s, 432 waits (0.4-1.5 s) | 0.6, 0.55 s, 51 waits (0.1 s) |
+| 8 MB/s, a slower teacher (60 s in c1a0), with phases | 0.9, 1.8 s | 0.6, 0.5 s |
+| 8 MB/s, the same slower teacher, by time only | 1.8, 1.1 s | 0.6, 1.1 s |
+| 1 MB/s, the live server's order | 13.9 s, 453 waits (13.4 s), 20 MB | 10.8 s, 60 waits (6.2 s), 7 MB |
+
+At 8 MB/s a map whose reads are not ahead of the engine costs the link's round trip per wait (c1a0d: 50 waits, 2 s of
+the 3); taught, its reads come before the engine asks (the background loading goes on through the map's reads during
+the time in the previous map). With one teacher the phases and the time order put the same blocks first (the
+difference above is the run-to-run spread); phases matter when the sessions that teach differ in pace — the live
+server's order, made of sessions that wait in the menu or load a save at once, did not have c1a0's reads ahead of a
+player who starts it after 5 s. At 1 MB/s c1a0 is the link's own time (20 MB to read, the background loading
+beside): nothing to win there but bytes.
+
 ## Game modules built from source
 
 The browser release's game modules were recovered from a deployed build whose sources no longer exist.
