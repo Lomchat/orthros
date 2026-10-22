@@ -253,14 +253,30 @@ export function registerKernel32(api, vm) {
     c.proc.handles.close(h);
     return 1;
   }];
+  /**
+   * DuplicateHandle(hSourceProcess, hSource, hTargetProcess, lpTarget, access, bInheritHandle, options): the object
+   * behind the source process's handle under a new handle of the target process (another process's: core/procs.js —
+   * a launcher handing an event to its game); DUPLICATE_CLOSE_SOURCE (1) closes the source handle.
+   */
   K.DuplicateHandle = [7, (c) => {
+    const sp = procOf(c, c.arg(0)), tp = procOf(c, c.arg(2));
+    if (!sp?.handles || (!tp?.handles && c.arg(3))) return c.fail(E.INVALID_HANDLE); // (an exited process: no table)
     const h = c.arg(1) >>> 0;
-    let nh;
-    if (h === 0xffffffff) nh = c.proc.handles.create(c.proc);
-    else if (h === 0xfffffffe) nh = c.proc.handles.create(c.thread);
-    else { nh = c.proc.handles.dup(h); if (!nh) return c.fail(E.INVALID_HANDLE); }
-    if (c.arg(5)) c.proc.handles.setInherit(nh, true);
-    c.out32(3, nh);
+    let o;
+    if (h === 0xffffffff) o = sp;
+    else if (h === 0xfffffffe && sp === c.proc) o = c.thread;
+    else { o = sp.handles.get(h); if (!o) return c.fail(E.INVALID_HANDLE); }
+    let nh = 0;
+    if (c.arg(3)) {
+      if (sp !== tp) shared(o); // (a mutex reached from another process: its state where every process sees it)
+      if (o.refs !== undefined) o.refs++;
+      nh = tp.handles.create(o);
+      if (c.arg(5)) tp.handles.setInherit(nh, true);
+      c.out32(3, nh);
+    }
+    if ((c.arg(6) & 1) && h !== 0xffffffff && h !== 0xfffffffe) { // DUPLICATE_CLOSE_SOURCE (as CloseHandle does)
+      if (o.type === 'thread' || o.type === 'process' || o.type === 'heap') { sp.handles.map.delete(h); sp.handles.inherit?.delete(h); } else sp.handles.close(h);
+    }
     return 1;
   }];
   // (HANDLE_FLAG_INHERIT: inherited by the child processes created with bInheritHandles)
@@ -462,7 +478,8 @@ export function registerKernel32(api, vm) {
   K.OpenEventW = [3, (c) => openNamed(c, c.wstr(2), 'event')];
   K.SetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; signalAll(); return 1; }];
   K.ResetEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = false; return 1; }];
-  K.PulseEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; vm.sched.wakeBlocked(); if (!o.manual) { /* one waiter consumed it on wake */ } o.signaled = false; return 1; }];
+  // (the waiters woken while it is signaled — of every process: an auto-reset one is taken by the first, on wake)
+  K.PulseEvent = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'event'); if (!o) return c.fail(E.INVALID_HANDLE); o.signaled = true; if (vm.group) { for (const v of vm.group.vms) if (v.proc && !v.proc.exited) v.sched.wakeBlocked(); } else vm.sched.wakeBlocked(); o.signaled = false; return 1; }];
   K.CreateMutexA = [3, (c) => createNamed(c, c.str(2), () => new Mutex(mutexStates, c.arg(1) ? c.thread.id : 0), c.arg(0))];
   K.CreateMutexW = [3, (c) => createNamed(c, c.wstr(2), () => new Mutex(mutexStates, c.arg(1) ? c.thread.id : 0), c.arg(0))];
   K.OpenMutexA = [3, (c) => openNamed(c, c.str(2), 'mutex')];
@@ -541,7 +558,7 @@ export function registerKernel32(api, vm) {
   K.WaitForMultipleObjectsEx = [5, (c) => waitMany(c, c.arg(0), c.arg(1), c.arg(2) !== 0, c.arg(3), c.arg(4) !== 0)];
   K.SignalObjectAndWait = [4, (c) => {
     const s = waitObject(c, c.arg(0));
-    if (!c.thread.resuming) { if (s?.type === 'event') s.signaled = true; else if (s?.type === 'mutex') { if (--s.count === 0) s.owner = 0; } else if (s?.type === 'semaphore') s.count++; vm.sched.signal(); }
+    if (!c.thread.resuming) { if (s?.type === 'event') s.signaled = true; else if (s?.type === 'mutex') { if (--s.count === 0) s.owner = 0; } else if (s?.type === 'semaphore') s.count++; signalAll(); }
     return waitOne(c, c.arg(1), c.arg(2), c.arg(3) !== 0);
   }];
 
@@ -853,8 +870,8 @@ export function registerKernel32(api, vm) {
     let child;
     try {
       child = vm.spawnProcess({ exePath: image, exeBytes: bytes, cmdline: cmd ?? `"${image}"`, cwd: cwd ? proc.path(cwd) : proc.cwd, env,
-        dllOverrides: Object.fromEntries(proc.dllOverrides), handleBase: proc.handles.next }); // (its handles — windows too — above its creator's)
-    } catch (e) { vm.warn(`${what} failed: ${e.message}`); return c.fail(193); }
+        dllOverrides: Object.fromEntries(proc.dllOverrides) }); // (its handles — windows too — from blocks of its own: core/procs.js)
+    } catch (e) { vm.warn(`${what} failed: ${e.message}`); return c.fail(e.processLimit || e instanceof RangeError ? E.NOT_ENOUGH_MEMORY : 193); } // (too many processes, no address space for its memory; else its image did not load)
     const cp = child.proc, main = cp.threads[0];
     if (inherit) for (const o of proc.handles.inheritInto(cp.handles)) shared(o);
     if (flags & 4) { main.state = TS.SUSPENDED; main.suspendCount = 1; }

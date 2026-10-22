@@ -2,6 +2,7 @@
 import { utcZone } from './timezone.js';
 import { E } from './errors.js';
 import { snapKnown } from '../core/snapshot.js';
+import { releaseMapping, acquireMapping, growMapping } from './mappings.js';
 import { decodeBytes, encodeString, CP_UTF8, caseMap } from './strings.js';
 import { msToFiletime, filetimeToMs, allocString, allocWString } from './kernel32.js';
 import { normalizeWin } from '../vfs/vfs.js';
@@ -433,10 +434,10 @@ export function registerKernel32File(api, vm, k) {
   K.FindClose = [1, (c) => (c.proc.handles.close(c.arg(0)) ? 1 : c.fail(E.INVALID_HANDLE))];
 
   // File mappings. A file's: each view a private copy of the file's bytes (writes are not flushed back). The paging
-  // file's (no file: shared memory): its bytes kept in the mapping (`data`), each view filled from them and written back
-  // when unmapped — a later view, of this process or another, sees what an earlier one wrote; views open at once in
-  // several processes are kept alike at each switch between them (core/procs.js ProcessGroup.syncIn / syncOut).
-  // Named ones are in the kernel-object namespace (OpenFileMapping).
+  // file's (no file: shared memory): its bytes kept in the mapping, each view filled from them, what a process wrote
+  // in its views written back before another process or a later view reads them (mappings.js) — views open at once in
+  // several processes are kept alike at each switch between them (core/procs.js). Named ones are in the kernel-object
+  // namespace (OpenFileMapping).
   const mapViews = snapKnown(vm, 'kernel32.mapViews', new Map()); // view base -> its mapping (the paging file's)
   vm.mapViews = mapViews;
   const createMapping = (c, name) => {
@@ -445,25 +446,25 @@ export function registerKernel32File(api, vm, k) {
     if (h !== INVALID_HANDLE && !f?.file) return c.fail(E.INVALID_HANDLE);
     const size = c.arg(4) + c.arg(3) * 4294967296 || f?.file.size() || 0;
     if (!size) return c.fail(E.INVALID_PARAMETER);
-    return k.createNamed(c, name, () => ({ type: 'mapping', file: f, size, views: [], data: null }), c.arg(1));
+    return k.createNamed(c, name, () => ({ type: 'mapping', file: f, size, views: [], data: null, holder: null, ver: 0 }), c.arg(1));
   };
   K.CreateFileMappingA = [6, (c) => createMapping(c, c.str(5))];
   K.CreateFileMappingW = [6, (c) => createMapping(c, c.wstr(5))];
   K.OpenFileMappingA = [3, (c) => k.openNamed(c, c.str(2), 'mapping')];
   K.OpenFileMappingW = [3, (c) => k.openNamed(c, c.wstr(2), 'mapping')];
-  /** the bytes of every open view of `m` (its processes' memories) into the mapping */
-  const flushViews = (m) => { for (const v of m.views) m.data.set(v.vm.mem.u8.subarray(v.base, v.base + v.n), v.off); };
   const mapView = (c, at) => {
     const m = c.proc.handles.getAs(c.arg(0), 'mapping'); if (!m) return c.fail(E.INVALID_HANDLE);
     const off = c.arg(3) + c.arg(2) * 4294967296; const n = c.arg(4) || (m.size - off);
     if (off >= m.size && !m.file) return c.fail(E.INVALID_PARAMETER);
+    const len = m.file ? n : Math.min(n, m.size - off);
+    if (!m.file && !growMapping(m, off + len)) return c.fail(E.NOT_ENOUGH_MEMORY); // (the bytes its views cover, no more)
     const base = c.proc.vmem.alloc(n, 4, 'mapview', at); if (!base) return c.fail(E.NOT_ENOUGH_MEMORY);
     if (at && base !== at) { c.proc.vmem.release(base); return c.fail(E.INVALID_ADDRESS); } // (MapViewOfFileEx: there or not at all)
     if (m.file) { const d = m.file.file.read(off, n); mem.writeBytes(base, d); if (d.length < n) mem.fill(base + d.length, n - d.length, 0); return base; }
-    if (m.data) flushViews(m); else m.data = new Uint8Array(m.size);
-    const len = Math.min(n, m.size - off);
+    // (what every view wrote so far — this process's, another's — in the bytes, then this one filled from them)
+    releaseMapping(m); acquireMapping(vm, m);
     mem.fill(base, n, 0); mem.u8.set(m.data.subarray(off, off + len), base);
-    m.views.push({ vm, base, off, n: len }); mapViews.set(base, m);
+    m.views.push({ vm, base, off, n: len, ver: m.ver }); mapViews.set(base, m);
     vm.group?.noteViews(m);
     return base;
   };
@@ -473,8 +474,9 @@ export function registerKernel32File(api, vm, k) {
     const a = c.arg(0) >>> 0, m = mapViews.get(a);
     if (m) {
       const i = m.views.findIndex((v) => v.vm === vm && v.base === a);
-      if (i >= 0) { const v = m.views[i]; m.data.set(mem.u8.subarray(v.base, v.base + v.n), v.off); m.views.splice(i, 1); }
+      if (i >= 0) { releaseMapping(m); m.views.splice(i, 1); acquireMapping(vm, m); } // (its bytes kept; this process's other views brought up to date)
       mapViews.delete(a); vm.group?.noteViews(m);
+      c.proc.handles.forgetName(m); // (its last view of a mapping without a handle: the name goes with it)
     }
     const q = c.proc.vmem.query(a); c.proc.vmem.release(a); vm.invalidateCode(a, q.size || 0x1000); return 1;
   }];

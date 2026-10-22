@@ -64,8 +64,10 @@ as on Windows). Players who played before would lose their settings and saves. T
   game's own, newer). **Idempotent** without a marker: once moved there is nothing left to move; a later start does
   nothing (the profile the game sees is its files alone).
 - **Kept everywhere.** The moves are recorded as changes of the profile (`MemBackend.changes`; `rmdir` added for the
-  emptied folders, keeping their original-case name): the browser's copy follows at the first flush (files removed
-  from the old place, folders removed after their files), the worker then says `profile-changed` and the page sends
+  emptied folders, keeping their original-case name): the browser's copy follows at the first flush
+  (`src/vfs/profile-opfs.js`: the files written at their new place first, then removed from the old one — only once
+  every write succeeded, what failed kept for the next flush, so a closed tab or a failed write never leaves a save in
+  neither place —, folders removed after their files), the worker then says `profile-changed` and the page sends
   the moved profile to the account (a push from the parent it restored: no conflict). Another device restoring an
   older copy moves it the same way.
 - **Snapshots.** A snapshot key includes the manifest (the registry seeded from it): the change that needs a move

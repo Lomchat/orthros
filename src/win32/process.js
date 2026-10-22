@@ -118,7 +118,11 @@ export class Process {
     this.pid = vm.nextPid; vm.nextPid += 4; // (per machine: in its snapshots)
     this.vmem = new VMem();
     this.handles = new HandleTable(vm.mem);
-    if (opts.handleBase) this.handles.next = opts.handleBase; // (a child process: its own handles above the values it inherits)
+    /** the kernel-object namespace a named object's name leaves at its last handle (kernel32.js; a group's: core/procs.js) */
+    this.handles.named = vm.kernelNamed;
+    // (a child process: handle values — window handles too — from blocks of its own, above every value handed out in
+    // its group so far, inherited ones included: core/procs.js)
+    if (vm.group) vm.group.ownHandles(this.handles);
     /** @type {Map<string, any>} lowercase name -> module (PeModule or builtin marker) */
     this.modules = new Map();
     /** @type {any[]} native modules in load order */

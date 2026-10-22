@@ -186,6 +186,29 @@ export class BrowserHost {
     this.audioHook = null; this.interval = null; this.waitMs = 0;
     this.audioPeak = 0; this.audioMs = 0; this.audioFrames = 0; this.audioDiag = 0; this.chunk = null;
     this.audioLead = undefined; this.audioUnderSeen = 0; this.audioCalmSince = 0;
+    this.audioVm = null; // (the machine whose voice table the page's AudioWorklet mixes: pointAudio)
+  }
+  /**
+   * The page's AudioWorklet mixes `vm`'s DirectSound buffers from its guest memory (the worker's direct mix): the voice
+   * table made once DirectSound exists, and handed to the page again whenever the machine the page follows changes — a
+   * child process taking the foreground, its parent taking it back when it ends (core/procs.js) — so the worklet never
+   * goes on mixing a machine that left. The table it leaves is marked as no longer mixed (its ring path, if it plays on).
+   * @param {() => SharedArrayBuffer} makeTable a new voice table
+   */
+  pointAudio(vm, makeTable) {
+    const a = vm.audio;
+    if (!a || (this.audioVm === vm && a.voices)) return false;
+    if (!a.voices) a.attachVoices(makeTable());
+    const prev = this.audioVm?.audio;
+    if (prev && prev !== a && prev.voices) prev.voices[2] = 0;
+    this.audioVm = vm;
+    this.post({ type: 'audio-voices', memory: vm.mem.memory.buffer, voices: a.voices.buffer });
+    return true;
+  }
+  /** A process of the machine ended and was released (core/procs.js reap): nothing here keeps its machine. */
+  forgetProcess(v) {
+    if (this.audioVm === v) this.audioVm = null;
+    if (v.mem?.memory) this.gfx?.forgetMemory?.(v.mem.memory);
   }
   /** Drain the shared input ring into the local queue. */
   pump() {

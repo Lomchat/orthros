@@ -1015,9 +1015,24 @@ export function registerUser32(api, vm) {
   }];
   U.GetNextDlgTabItem = [3, (c) => c.arg(1)];
   U.GetWindowThreadProcessId = [2, (c) => { const w = win(c.arg(0)); if (!w) return 0; c.out32(1, c.proc.pid); return w.thread?.id ?? c.proc.threads[0].id; }];
-  U.FindWindowA = [2, (c) => { const cls = c.str(0), title = c.str(1); for (const w of wm().zorder) if ((!cls || (w.cls?.name ?? '').toLowerCase() === cls.toLowerCase()) && (title === null || w.title === title)) return w.hwnd; return 0; }];
-  U.FindWindowW = [2, (c) => { const cls = c.wstr(0), title = c.wstr(1); for (const w of wm().zorder) if ((!cls || (w.cls?.name ?? '').toLowerCase() === cls.toLowerCase()) && (title === null || w.title === title)) return w.hwnd; return 0; }];
-  U.FindWindowExA = [4, (c) => { const cls = c.str(2), title = c.str(3); const parent = c.arg(0) ? win(c.arg(0)) : wm().desktop; const list = parent?.desktop ? wm().zorder : parent?.children ?? []; for (const w of list) if ((!cls || (w.cls?.name ?? '').toLowerCase() === cls.toLowerCase()) && (title === null || w.title === title)) return w.hwnd; return 0; }];
+  /**
+   * The window managers of the top-level windows the desktop shows: this process's, then the other live processes' of
+   * its group (core/procs.js) — FindWindow, a broadcast reach every process's windows.
+   */
+  const desktopWms = () => {
+    const own = wm();
+    if (!vm.group) return [own];
+    const out = [own];
+    for (const v of vm.group.vms) if (v !== vm && v.proc && !v.proc.exited && v.wm && v.wm.proc === v.proc) out.push(v.wm);
+    return out;
+  };
+  const findTop = (cls, title) => {
+    for (const m of desktopWms()) for (const w of m.zorder) if (!w.destroyed && (!cls || (w.cls?.name ?? '').toLowerCase() === cls.toLowerCase()) && (title === null || w.title === title)) return w.hwnd;
+    return 0;
+  };
+  U.FindWindowA = [2, (c) => findTop(c.str(0), c.str(1))];
+  U.FindWindowW = [2, (c) => findTop(c.wstr(0), c.wstr(1))];
+  U.FindWindowExA = [4, (c) => { const cls = c.str(2), title = c.str(3); const parent = c.arg(0) ? win(c.arg(0)) : wm().desktop; if (parent?.desktop) return findTop(cls, title); for (const w of parent?.children ?? []) if ((!cls || (w.cls?.name ?? '').toLowerCase() === cls.toLowerCase()) && (title === null || w.title === title)) return w.hwnd; return 0; }];
   U.EnumWindows = [2, (c) => { for (const w of [...wm().zorder]) if (!vm.callGuest(c.thread, c.arg(0), [w.hwnd, c.arg(1)])) break; return 1; }];
   U.EnumThreadWindows = [3, (c) => { for (const w of [...wm().zorder]) if (w.thread?.id === c.arg(0) && !vm.callGuest(c.thread, c.arg(1), [w.hwnd, c.arg(2)])) break; return 1; }];
   U.EnumChildWindows = [3, (c) => { const p = win(c.arg(0)); if (!p) return 0; const all = []; const walk = (w) => { for (const ch of w.children) { all.push(ch); walk(ch); } }; walk(p); for (const w of all) if (!vm.callGuest(c.thread, c.arg(1), [w.hwnd, c.arg(2)])) break; return 1; }];
@@ -1181,7 +1196,13 @@ export function registerUser32(api, vm) {
   U.DispatchMessageW = U.DispatchMessageA;
   const sendMessage = (c) => {
     const w = win(c.arg(0));
-    if (!w) { if (c.arg(0) === 0xffff) { for (const x of [...wm().zorder]) wm().send(x, c.arg(1), c.arg(2), c.arg(3)); return 0; } return 0; }
+    if (!w) {
+      if (c.arg(0) === 0xffff) {
+        for (const x of [...wm().zorder]) wm().send(x, c.arg(1), c.arg(2), c.arg(3));
+        for (const m of desktopWms().slice(1)) for (const x of [...m.zorder]) m.post(x, c.arg(1), c.arg(2), c.arg(3)); // (another process's windows: queued, as SendNotifyMessage — never a call into its machine from here)
+      }
+      return 0;
+    }
     const proc = guestProcOf(w, c.arg(1));
     if (proc) return vm.tailCallGuest(c, proc, [w.hwnd, c.arg(1), c.arg(2), c.arg(3)], { argBytes: 16 });
     return wm().send(w, c.arg(1), c.arg(2), c.arg(3));
@@ -1191,7 +1212,7 @@ export function registerUser32(api, vm) {
   U.SendMessageTimeoutW = U.SendMessageTimeoutA;
   U.SendNotifyMessageA = [4, sendMessage]; U.SendMessageCallbackA = [6, (c) => { sendMessage(c); return 1; }];
   U.SendDlgItemMessageA = [5, (c) => { const p = win(c.arg(0)); if (!p) return 0; const ch = p.children.find((x) => x.id === c.arg(1)); return ch ? wm().send(ch, c.arg(2), c.arg(3), c.arg(4)) : 0; }];
-  const postMessage = (c) => { if (c.arg(0) === 0xffff) { for (const x of wm().zorder) wm().post(x, c.arg(1), c.arg(2), c.arg(3)); return 1; } const w = c.arg(0) ? win(c.arg(0)) : null;
+  const postMessage = (c) => { if (c.arg(0) === 0xffff) { for (const m of desktopWms()) for (const x of [...m.zorder]) m.post(x, c.arg(1), c.arg(2), c.arg(3)); return 1; } const w = c.arg(0) ? win(c.arg(0)) : null;
     if (c.arg(0) && !w) { const o = otherWindow(c.arg(0)); if (o) { o.wm.post(o.w, c.arg(1), c.arg(2), c.arg(3)); return 1; } return c.fail(E.INVALID_WINDOW_HANDLE); } wm().post(w, c.arg(1), c.arg(2), c.arg(3), w ? null : c.thread); return 1; };
   U.PostMessageA = [4, postMessage]; U.PostMessageW = [4, postMessage];
   U.PostThreadMessageA = [4, (c) => {

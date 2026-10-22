@@ -113,8 +113,25 @@ export function createRemoteGfx({ log, onFail, workerUrl }) {
       const memOk = !dev.proc?.mem?.memory || !current.memory || useMemory(dev.proc.mem.memory);
       const rec = new Recorder(gfx.link, dev);
       if (!memOk) fail('a device of another guest memory the render worker could not take'); // (its devices to this thread's backend)
-      deviceProxy = { get stats() { return gfx.link.statsFor(rec.id); }, get frame() { return gfx.link.frames; }, set captureAt(v) { worker?.postMessage({ type: 'capture', at: v }); }, set captureDraws(v) { worker?.postMessage({ type: 'capture', draws: v }); }, set countFrames(v) { worker?.postMessage({ type: 'capture', count: v }); } };
+      deviceProxy = { memory: dev.proc?.mem?.memory ?? null, get stats() { return gfx.link.statsFor(rec.id); }, get frame() { return gfx.link.frames; }, set captureAt(v) { worker?.postMessage({ type: 'capture', at: v }); }, set captureDraws(v) { worker?.postMessage({ type: 'capture', draws: v }); }, set countFrames(v) { worker?.postMessage({ type: 'capture', count: v }); } };
       return rec;
+    },
+    /**
+     * A process ended and its machine is released (core/procs.js reap): the render worker forgets its guest memory and
+     * the devices it made from it (FORGET, in the ring's order: after everything they recorded), the devices created
+     * from here read the first memory again, and nothing here keeps that memory (its recorders, the link's process).
+     */
+    forgetMemory(memory) {
+      const i = memories.indexOf(memory);
+      if (i <= 0) return false;
+      memories[i] = null;
+      const link = gfx.link;
+      for (const r of [...link.recorders]) if (r.mem?.memory === memory) link.recorders.delete(r);
+      if (link.proc?.mem?.memory === memory) { link.proc = [...link.recorders][0]?.dev.proc ?? null; link.deferred.length = 0; } // (its pending frees: of a released memory)
+      if (!failed) link.w.put(OP.FORGET, i);
+      if (current.memory === memory) current.memory = memories[0]; // (the worker went back to it at FORGET)
+      if (deviceProxy?.memory === memory) deviceProxy = null;
+      return true;
     },
     canvasResized(w, h) { gfx.link.canvas(w, h); },
     /** messages for the render worker (debug globals, captures, context loss tests) */

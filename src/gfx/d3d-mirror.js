@@ -168,6 +168,13 @@ export class Replayer {
       case OP.DEVICE: { const d = new DeviceMirror(a[0], a[1], { width: a[2], height: a[3], swap: a[4], count: 1 }, this.mem, this); this.devices.set(a[0], d); this.cur = d; this.attach(d); break; }
       case OP.SELECT: this.cur = this.devices.get(a[0]) ?? null; break;
       case OP.MEMORY: if (this.mems[a[0]]) this.mem = this.mems[a[0]]; else this.opts.log?.(`render: guest memory ${a[0]} unknown`); break;
+      case OP.FORGET: {
+        const gm = this.mems[a[0]];
+        for (const [id, d] of this.devices) if (d.proc?.mem === gm) { d.gfx?.destroy?.(); this.devices.delete(id); if (this.cur === d) this.cur = null; }
+        this.mems[a[0]] = null;
+        if (this.mem === gm) this.mem = this.mems[0];
+        break;
+      }
       case OP.DEVICE_DESTROY: { const d = this.devices.get(a[0]); d?.gfx?.destroy?.(); this.devices.delete(a[0]); if (this.cur === d) this.cur = null; break; }
       case OP.PP: m.pp = { width: a[0], height: a[1], swap: a[2], count: a[3] }; break;
       case OP.RESET: g?.reset(m); break;

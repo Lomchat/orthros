@@ -11,6 +11,7 @@ import { defaultGameManifest } from '../src/host/game-catalog.js';
 import { decodePng } from '../src/gfx/codecs/png.js';
 import { scanCodeOfVk } from '../src/win32/vk-scan.js';
 import { inRanges } from '../src/host/scenario.js';
+import { profileGone } from '../src/vfs/profile-opfs.js';
 
 const args = process.argv.slice(2);
 let name = args.find((a) => !a.startsWith('--'));
@@ -171,11 +172,10 @@ async function saveProfile() {
     await page.evaluate(() => { window.orthros.profile = null; window.orthros.worker?.postMessage({ type: 'profile-dump' }); });
     let files = null;
     for (let i = 0; i < 50 && !files; i++) { files = await page.evaluate(() => window.orthros.profile); if (!files) await page.waitForTimeout(100); }
-    if (!files) { console.log('[profile] no profile received'); return; }
+    if (!files) { console.log('[profile] no profile received (not complete yet: nothing saved or removed)'); return; }
     for (const f of files) { const p = path.join(profileDir, f.path); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from(f.data, 'base64')); }
     // (a file loaded that the profile no longer has — the game deleted it, a manifest's profileMoves moved it — goes too)
-    const now = new Set(files.map((f) => f.path.toLowerCase()));
-    const gone = profileLoaded.filter((p) => !now.has(p.toLowerCase()));
+    const gone = profileGone(profileLoaded, files); // (none without a complete profile: the worker answers null until then)
     for (const p of gone) fs.rmSync(path.join(profileDir, p), { force: true });
     console.log(`[profile] ${files.length} file(s) saved to ${profileDir}${gone.length ? `, ${gone.length} removed (${gone.slice(0, 4).join(', ')})` : ''}`);
   } catch (e) { console.log(`[profile] save failed: ${e.message.split('\n')[0]}`); }

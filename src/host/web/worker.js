@@ -30,6 +30,7 @@ import { refreshApiOpt } from '../../core/api-opt.js';
 import { hostWaiter } from '../../core/host-wait.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../profile-seed.js';
 import { applyProfileMoves } from '../../vfs/profile-moves.js';
+import { flushProfileOpfs, profileDumpOf } from '../../vfs/profile-opfs.js';
 import { LearnedHeat } from '../../cpu/jit/heat.js';
 import { captureVm, restoreVm, notQuiet, persistentChanged } from '../../core/vm-snapshot.js';
 import { encodeSnapshot, decodeSnapshot, SnapshotStale } from '../../core/snapshot.js';
@@ -63,6 +64,7 @@ let learnedHeat = null, heatModules = 0, heatSink = null;
 let audioMixDirect = true; // (?audiomix=worker: the game's worker mixes into the ring, as before)
 let bgTranslator = null, regionLater = [], bgDoneLogged = false; const bgMods = { n: -1, map: null }; // (background translation)
 let lastFlush = 0, running = false, stopped = false;
+let profileReady = false; // (the profile complete — the browser's copy, the harness's files, the shared first-launch ones, the moves: profileDump)
 let snapshotWanted = null; // (the page asked for a snapshot of the machine: { id, at }, taken at the next quiet point — docs/snapshot.md)
 let snapshotWatch = null, autoSeen = null; // (this session's automatic snapshot, once the game settled: snapshot-watch.js; what it saw of the profile)
 let snapshotPublish = false; // (the server's publishing session: its snapshots carry the profile, for new players — docs/snapshot.md stage 3)
@@ -138,37 +140,14 @@ async function flushProfile(force = false) {
   if (!force && now - lastFlush < 2000) return;
   for (const s of fileStores) s.flush(force); // (the game file block stores' index: a sync point every 2 s, at once when forced)
   if (!opfsDir || !profile) { lastFlush = now; return; }
-  const changes = profile.changes ? [...profile.changes] : []; profile.changes?.clear();
-  const dirty = new Map([...profile.files].filter(([, f]) => f.mtime > lastFlush));
-  for (const k of changes) if (profile.files.has(k)) dirty.set(k, profile.files.get(k)); // (renamed: same date)
-  lastFlush = now;
-  const dirOf = async (parts, create) => { let dir = opfsDir; for (let i = 0; i < parts.length; i++) dir = await dir.getDirectoryHandle(profile.names.get(parts.slice(0, i + 1).join('/')) ?? parts[i], { create }); return dir; };
-  // (folders made, files removed or renamed away: the browser's copy follows — a folder the game made and a snapshot
-  // saw must be there at the next start, a deleted save must not come back)
-  for (const k of changes) {
-    if (profile.files.has(k)) continue;
-    const parts = k.split('/');
-    try { if (profile.dirs.has(k)) await dirOf(parts, true); else await (await dirOf(parts.slice(0, -1), false)).removeEntry(profile.names.get(k) ?? parts[parts.length - 1]); }
-    catch { /* already so */ }
-  }
-  if (dirty.size || changes.length) post({ type: 'profile-changed' }); // (the page sends the profile to the player's account a while after)
-  for (const [key, f] of dirty) {
-    try {
-      const parts = key.split('/');
-      const dir = await dirOf(parts.slice(0, -1), true);
-      const fh = await dir.getFileHandle(profile.names.get(key) ?? parts[parts.length - 1], { create: true });
-      const w = await fh.createWritable();
-      await w.write(f.data.subarray(0, f.len));
-      await w.close();
-    } catch (e) { log('warn', `OPFS write failed for ${key}: ${e.message}`); }
-  }
+  const since = lastFlush; lastFlush = now;
+  // (the files written first, the removals once they all are: a moved save is never gone from both places, profile-opfs.js)
+  const r = await flushProfileOpfs(opfsDir, profile, since, { log: (msg) => log('warn', msg) });
+  if (r.changed) post({ type: 'profile-changed' }); // (the page sends the profile to the player's account a while after)
 }
 
-/** Every profile file as { path (original case, '/'-separated), data (base64) } — the headless harness saves them. */
-function profileDump() {
-  if (!profile) return [];
-  return profileFilesList().map((f) => ({ path: f.path, data: toBase64(f.data) }));
-}
+/** Every profile file as { path (original case, '/'-separated), data (base64) } — the headless harness saves them; null until the profile is complete. */
+function profileDump() { return profileDumpOf(profile, profileReady, profileFilesList, toBase64); }
 
 async function start(m) {
   manifestName = m.name;
@@ -318,6 +297,7 @@ async function start(m) {
   // applies only to a profile as its machine saw it, docs/snapshot.md)
   profile.seen = new Map();
   vfs.mount('C:\\Users\\Player', profile);
+  profileReady = true;
   audioMixDirect = m.opts.audioMix !== 'worker';
   const bgWanted = !m.opts.interp && m.opts.bgTranslate !== false && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated;
   vm = rootVm = new Vm({ vfs, clock, host, jit: !m.opts.interp, sharedMemory: bgWanted || renderWorker, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
@@ -745,7 +725,8 @@ function pump() {
   }
   // the DirectSound buffers mixed by the page's AudioWorklet (guest memory shared): the voice table handed over once
   // DirectSound exists; until the worklet uses it (no audio output yet, ?audiomix=worker) the ring path below goes on
-  if (vm.audio && !vm.audio.voices && audioMixDirect && vm.jit?.shared) { const sab = new SharedArrayBuffer(VOICE_TABLE_BYTES); vm.audio.attachVoices(sab); post({ type: 'audio-voices', memory: vm.mem.memory.buffer, voices: sab }); }
+  // (several processes: handed again when the page follows another one, BrowserHost.pointAudio)
+  if (vm.audio && audioMixDirect && vm.jit?.shared) host.pointAudio(vm, () => new SharedArrayBuffer(VOICE_TABLE_BYTES));
   acct.enter(ACCT.audio); host.renderAudio(vm); acct.enter(ACCT.host);
   if (snapshotWanted) snapshotStep();
   else if (snapshotWatch) snapshotAutoStep();

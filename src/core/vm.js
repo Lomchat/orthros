@@ -171,7 +171,7 @@ export class Vm {
       exitReport: null, execFaults: 0, nullFaults: 0, apiTail: null,
       guestInsns: 0, // guest instructions executed (charged by the executors' budgets): see runThread
       nextPid: 0x400, // (process ids: win32/process.js)
-      tidBase: 0x800, parentVm: null, kernelNamed: null, mapViews: null, // (child processes: core/procs.js; kernel32-file.js)
+      tidBase: 0x800, parentVm: null, kernelNamed: null, mapViews: null, groupExited: false, // (child processes: core/procs.js; kernel32-file.js)
     };
     for (const k of Object.keys(late)) this[k] ??= late[k];
     sealVmSnapRegistry(this); // (what the construction built is the same in every Vm: snapshots restore it in place)
@@ -252,9 +252,18 @@ export class Vm {
    * createProcess does; this machine joins a process group on its first child.
    */
   spawnProcess(opts) {
+    const fresh = !this.group;
     const group = this.group ?? (this.group = new ProcessGroup(this));
-    const child = group.spawn(this);
-    try { child.createProcess(opts); } catch (e) { group.vms.splice(group.vms.indexOf(child), 1); throw e; }
+    let child;
+    try {
+      child = group.spawn(this);
+      child.createProcess(opts);
+    } catch (e) {
+      if (child) group.vms.splice(group.vms.indexOf(child), 1);
+      // (no child ever ran: the machine goes back to its single-process path — the group's namespace is its own map)
+      if (fresh && group.vms.length === 1) { this.group = null; this.proc.handles.limit = 0; this.proc.handles.pool = null; }
+      throw e;
+    }
     return child;
   }
 
@@ -281,6 +290,7 @@ export class Vm {
     try {
       if (!this.started) {
         this.started = true;
+        if (inGroup) this.group.enter(this); // (several processes: the shared mappings' bytes, before guest code runs)
         // DllMain(PROCESS_ATTACH) + TLS callbacks for native DLLs, dependencies first (load order)
         for (const mod of proc.moduleList) if (mod !== proc.exe && !mod.attached) this.attachModule(main, mod);
         for (const cb of proc.exe.tls?.callbacks ?? []) this.callGuest(main, cb, [proc.exe.base, 1, 0]);
@@ -293,6 +303,7 @@ export class Vm {
       for (;;) {
         const t = this.sched.pickRunnable(null, true);
         if (t) {
+          if (inGroup && this.group.mappings.size) this.group.enter(this);
           this.runThread(t, TOP_SLICE);
           const t1 = performance.now();
           t.runMs = (t.runMs ?? 0) + t1 - t0; // (diagnostics: time per thread, nested slices included)

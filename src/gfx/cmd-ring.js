@@ -81,6 +81,7 @@ export const OPS = [
   ['CANVAS', 'uu'], // the display's size (the canvas the frames are presented on)
   ['TEX_LOD', 'uu'], // texture id, its IDirect3DBaseTexture::SetLOD level (the most detailed level sampled)
   ['MEMORY', 'u'], // the guest memory the devices created from here read (an index of the memories the render worker was given: a child process's, docs/processes.md)
+  ['FORGET', 'u'], // a guest memory released (its process ended: docs/processes.md): the devices made from it destroyed, the first memory current again
 ];
 export const OP = Object.fromEntries(OPS.map(([name], i) => [name, i]));
 export const OP_NAMES = OPS.map(([name]) => name);

@@ -70,3 +70,7 @@ OpenMutexA@12
 GetExitCodeProcess@8
 TerminateProcess@8
 WaitForMultipleObjects@16
+PulseEvent@4
+SignalObjectAndWait@16
+DuplicateHandle@28
+GetCurrentProcess@0

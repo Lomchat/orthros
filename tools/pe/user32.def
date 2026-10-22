@@ -28,3 +28,4 @@ SetWindowTextA@8
 DrawTextA@20
 EnumWindows@8
 PostThreadMessageA@16
+FindWindowA@8
