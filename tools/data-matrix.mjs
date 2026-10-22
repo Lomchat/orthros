@@ -61,6 +61,8 @@ export function summarize(recs, until = Infinity) {
   };
 }
 
+/** the base64 SHA-256 of the proxy certificate's key: the browser trusts it (--ignore-certificate-errors-spki-list) */
+const spkiOf = (dir) => execFileSync('bash', ['-c', `openssl x509 -in ${JSON.stringify(path.join(dir, 'cert.pem'))} -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64`], { encoding: 'utf8' }).trim();
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 
 async function one(m, link) {
@@ -87,7 +89,7 @@ async function one(m, link) {
   const t0 = Date.now();
   const res = await new Promise((resolve) => {
     const p = spawn('bash', [path.join(root, 'tools/with-browser-slot.sh'), process.execPath, path.join(root, 'tools/data-matrix-run.mjs'), '--base', `https://127.0.0.1:${proxy.port}`, '--manifest', m.name,
-      ...(lang ? ['--lang', lang] : []), '--seconds', String(seconds), '--json', runJson, '--shot', path.join(dir, 'end.png')], { cwd: root, env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      ...(lang ? ['--lang', lang] : []), '--spki', spkiOf(path.join(scratch, 'cert')), '--seconds', String(seconds), '--json', runJson, '--shot', path.join(dir, 'end.png')], { cwd: root, env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
     let text = ''; p.stdout.on('data', (d) => { text += d; }); p.stderr.on('data', (d) => { text += d; });
     p.on('close', (code) => resolve({ code, text }));
   });

@@ -13,12 +13,14 @@ const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--
 const base = opt('base'), name = opt('manifest'), lang = opt('lang', null), seconds = Number(opt('seconds', 1200));
 // (the proxy's certificate is its own: NODE_TLS_REJECT_UNAUTHORIZED=0 for these two fetches, set by data-matrix.mjs)
 const man = await (await fetch(`${base}/api/manifest/${encodeURIComponent(name)}`)).json();
-const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--ignore-certificate-errors', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] });
+const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', ...(opt('spki') ? [`--ignore-certificate-errors-spki-list=${opt('spki')}`] : ['--ignore-certificate-errors']), '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] });
 const out = { manifest: name, lang, firstFrame: null, shown: null, playable: null, inPlay: null, error: null, notes: [] };
 const t0 = Date.now(); const at = () => Math.round((Date.now() - t0) / 100) / 10;
 const marks = async () => { try { return await (await fetch(`${base}/__proxy/marks`)).json(); } catch { return []; } };
 try {
-  const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 900 } });
+  // (the proxy's certificate trusted by its key — a certificate error would turn the HTTP cache off: every worker
+  // fetched the page's modules again, none of the engines' immutable files kept)
+  const context = await browser.newContext({ ignoreHTTPSErrors: !opt('spki'), viewport: { width: 1280, height: 900 } });
   await context.addInitScript(() => {
     window.renderProbe = { draws: 0, frames: 0 };
     const raf = window.requestAnimationFrame.bind(window);
@@ -54,9 +56,9 @@ try {
       if (s?.net) out.pageNet = s.net;
       if (await markSeen()) { out.playable = at(); out.shown = out.playable; break; }
       // (steady: drawing at 10 fps or more for 8 s, nothing waited for the network — the menu on this loaded machine;
-      // without the worker's mark (20 fps: SwiftShader may not reach it) the run ends 120 s later)
+      // without the worker's mark (20 fps: SwiftShader may not reach it) the run ends 30 s later)
       if (out.firstFrame !== null && s && s.fps >= 10 && !s.net?.waiting) { steadyN++; if (steadyN >= 8 && out.steady === undefined) out.steady = Math.round((at() - 8) * 10) / 10; } else steadyN = 0;
-      if (out.steady !== undefined && at() - out.steady > 120) { out.error = 'no mark 120 s after steady'; break; }
+      if (out.steady !== undefined && at() - out.steady > 30) { out.error = 'no mark 30 s after steady'; break; }
       await page.waitForTimeout(1000);
     }
   } else {

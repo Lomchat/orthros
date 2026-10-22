@@ -13,7 +13,9 @@
 import { openVersion, openStore, learnedOrder } from '../../vfs/game-data.js';
 import { launchSet, setBytes } from '../../vfs/launch-set.js';
 
-let stopping = false, running = false, abort = null;
+let stopping = false, running = false;
+/** the engine files' requests in flight (stop aborts them) */
+const aborts = new Set();
 const post = (m) => self.postMessage(m);
 
 /**
@@ -34,34 +36,51 @@ export const wireOf = (raw, wire, decoded) => (wire && decoded ? Math.min(wire, 
  * once all came, false when stopped.
  */
 async function fetchEngine(urls, progress) {
-  for (const url of urls) {
+  // (ENGINE_PARTS files at once: one at a time, a release of 17 small files was a round trip each — Half-Life's at
+  // 150 ms; the page loads them side by side too)
+  let next = 0, failed = null;
+  const one = async () => {
+    while (next < urls.length && !failed) {
+      const url = urls[next++];
+      try { if (!(await engineFile(url, progress))) return; } catch (e) { failed ??= e; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(ENGINE_PARTS, urls.length) }, one));
+  if (stopping) return false;
+  if (failed) throw failed;
+  return true;
+}
+const ENGINE_PARTS = 4;
+/** One engine file into the HTTP cache (see fetchEngine): true, false when stopped. */
+async function engineFile(url, progress) {
+  if (stopping) return false;
+  // (a file the cache has: no request — "only-if-cached" answers from it or fails)
+  const cached = await fetch(url, { cache: 'only-if-cached', mode: 'same-origin' }).then((r) => { r.body?.cancel().catch(() => {}); return r.ok; }).catch(() => false);
+  if (cached) return true;
+  const ctl = new AbortController(); aborts.add(ctl);
+  let counted = 0; // (this file's bytes in progress.bytes: files come side by side)
+  try {
+    const r = await fetch(url, { signal: ctl.signal });
+    if (!r.ok || !r.body) throw new Error(`the engine file ${url} could not be downloaded (${r.status})`);
+    const reader = r.body.getReader(), { wire, decoded } = engineSizes(r.headers);
+    // (what came, in wire bytes — the unit of the total, /api/manifests launch.engine —: the body comes decoded)
+    let raw = 0;
+    const count = (n) => { progress.bytes += n - counted; counted = n; };
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      raw += value.length;
+      count(wireOf(raw, wire, decoded));
+    }
+    count(wire || raw);
+  } catch (e) {
     if (stopping) return false;
-    // (a file the cache has: no request — "only-if-cached" answers from it or fails)
-    const cached = await fetch(url, { cache: 'only-if-cached', mode: 'same-origin' }).then((r) => { r.body?.cancel().catch(() => {}); return r.ok; }).catch(() => false);
-    if (cached) continue;
-    abort = new AbortController();
-    const before = progress.bytes;
-    try {
-      const r = await fetch(url, { signal: abort.signal });
-      if (!r.ok || !r.body) throw new Error(`the engine file ${url} could not be downloaded (${r.status})`);
-      const reader = r.body.getReader(), { wire, decoded } = engineSizes(r.headers);
-      // (what came, in wire bytes — the unit of the total, /api/manifests launch.engine —: the body comes decoded)
-      let raw = 0;
-      for (;;) {
-        const { done, value } = await reader.read(); if (done) break;
-        raw += value.length;
-        progress.bytes = before + wireOf(raw, wire, decoded);
-      }
-      progress.bytes = before + (wire || raw);
-    } catch (e) {
-      if (stopping) return false;
-      throw e;
-    } finally { abort = null; }
-  }
+    throw e;
+  } finally { aborts.delete(ctl); }
   return true;
 }
 
-async function download(name, bw, kind = 'whole', lang = null, engine = null) {
+/** (exported for a harness: tools/prepare-bench.mjs — `hooks.openStore`: the stores, the browser's OPFS ones without it) */
+export async function download(name, bw, kind = 'whole', lang = null, engine = null, hooks = {}) {
   running = true; stopping = false;
   const stores = [];
   let parts = [], net = null, timer = null, launch = null, eng = null;
@@ -80,7 +99,7 @@ async function download(name, bw, kind = 'whole', lang = null, engine = null) {
   try {
     // (the game data every Orthros game reads, src/vfs/game-data.js: the version and those it requires, their stores)
     const store = async (n) => {
-      const st = await openStore(n);
+      const st = await (hooks.openStore ?? openStore)(n);
       if (!st) throw new Error('this browser cannot keep the game files (storage unavailable, or the game is open in another tab)');
       stores.push(st);
       return st;
@@ -133,7 +152,7 @@ async function download(name, bw, kind = 'whole', lang = null, engine = null) {
 // (a worker's; imported elsewhere — a test — its helpers only)
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) self.onmessage = (e) => {
   const m = e.data ?? {};
-  if (m.type === 'stop') { stopping = true; abort?.abort(); if (!running) post({ type: 'stopped', name: m.name ?? null }); return; }
+  if (m.type === 'stop') { stopping = true; for (const c of aborts) c.abort(); if (!running) post({ type: 'stopped', name: m.name ?? null }); return; }
   if ((m.type === 'download' || m.type === 'launch') && !running) {
     download(String(m.name), Number(m.bw) || undefined, m.type === 'launch' ? 'launch' : 'whole', typeof m.lang === 'string' && m.lang ? m.lang : null, m.engine ?? null);
   }
