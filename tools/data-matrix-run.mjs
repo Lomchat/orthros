@@ -72,7 +72,8 @@ try {
       if (out.firstFrame === null && draws > 0) out.firstFrame = at();
       if (st.state === 'error') { out.error = 'port error'; break; }
       if (rt === 'openmw' ? st.hidden && draws > 50 : st.hidden) { out.shown = at(); break; }
-      if (rt === 'openmw' && st.state === undefined && page.url().includes('/ports/openmw/')) await page.click('#solo', { timeout: 1000 }).catch(() => {});
+      // (the OpenMW page waits at its choices — state 'ready' — for Play solo: the click a player makes)
+      if (rt === 'openmw' && st.state === 'ready' && page.url().includes('/ports/openmw/')) { if (out.soloAt === undefined) out.soloAt = at(); await page.click('#solo', { timeout: 1000 }).catch(() => {}); }
       await page.waitForTimeout(500);
     }
     if (!out.error) {

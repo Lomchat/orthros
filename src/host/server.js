@@ -13,7 +13,7 @@
 //            seedcanon-<manifest>.json written by tools/profile-seed-make.mjs, is offered first), and the shared snapshots
 //            of the games' machines new players start from (docs/snapshot.md, stage 3)
 //   --br-cache: where /gamez keeps its precompressed transport units (br-cache.js; default <learn>/../brcache, none
-//            without --learn; `off`: none), at most --br-cache-bytes of them (default 1.5 GiB)
+//            without --learn; `off`: none), at most --br-cache-bytes of them (default: 1.5 GiB grown to hold the launch sets)
 //   --snapshot-jobs: when a page asks for a shared snapshot there is none of, a headless browser session of a new
 //            player makes it (tools/snapshot-publish.mjs, one at a time, through the project's browser slots);
 //            --snapshot-queue: the request is only queued, in <learn>/snapshots/queue.json, for tools/snapshot-jobs.mjs
@@ -1345,7 +1345,7 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const telemetryDir = arg('--telemetry'), learnDir = arg('--learn'), accountsDir = arg('--accounts'), mmoDir = arg('--mmo');
   for (const d of [telemetryDir, learnDir, accountsDir, mmoDir]) if (d) fs.mkdirSync(d, { recursive: true });
   // (--br-cache <dir>: the precompressed units, default <learn>/../brcache — off without --learn, or with `off`;
-  // --br-cache-bytes: their budget, 1.5 GiB by default)
+  // --br-cache-bytes: their budget — unset, 1.5 GiB grown to hold the launch sets, br-cache.js fitBudget)
   const brArg = arg('--br-cache'), brCacheDir = brArg === 'off' ? null : brArg ?? (learnDir ? path.join(learnDir, '..', 'brcache') : null);
   const brBytesArg = arg('--br-cache-bytes'), brCacheBytes = brBytesArg === undefined ? undefined : Number(brBytesArg);
   if (brBytesArg !== undefined && !(Number.isFinite(brCacheBytes) && brCacheBytes > 0)) { console.error(`--br-cache-bytes ${brBytesArg}: expected a positive number of bytes`); process.exit(2); }

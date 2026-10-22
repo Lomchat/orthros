@@ -32,6 +32,8 @@ const WORKER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'br-cache
 const MIN_GAIN = 0.92;
 /** live misses waiting for their unit, at most (the oldest out first) */
 const MAX_WANTED = 4096;
+/** the pinned part of an automatic budget: the launch sets' bytes times this (their sizes are estimates, a version's set grows) */
+const PIN_SLACK = 1.25;
 
 /** the unit's file name in its version's directory */
 export const unitName = (u) => `${u.kind}${u.index}`;
@@ -59,7 +61,7 @@ export function pinShares(wants, cap) {
 }
 
 /**
- * The cache. opts: { dir, maxBytes (1.5 GiB), lowBytes (0.9 × maxBytes), pinShare (0.5), sources: () => [{ name,
+ * The cache. opts: { dir, maxBytes (1.5 GiB — unset: at least that, grown to the launch sets, fitBudget, up to maxAutoBytes, 8 GiB, from minBytes, 1.5 GiB), lowBytes (0.9 × maxBytes), pinShare (0.5), sources: () => [{ name,
  * units: () => iterator of { file, st, light, unit }, want (bytes of its launch set, or null) }] (the launch sets, in
  * their order: the first `pinShare` of the budget shared between them by their size (pinShares) is pinned, then more
  * of each while under `lowBytes`; walked side by side, made before the live misses for the pinned part, after them for
@@ -72,9 +74,28 @@ export function pinShares(wants, cap) {
 export function createBrCache(opts) {
   const dir = path.resolve(opts.dir);
   // (a budget that is not a positive number — NaN from a bad flag — would never evict, nor stop seeding: the default)
-  const maxBytes = Number.isFinite(opts.maxBytes) && opts.maxBytes > 0 ? opts.maxBytes : 1536 * 1024 * 1024;
-  const lowBytes = Number.isFinite(opts.lowBytes) && opts.lowBytes >= 0 ? opts.lowBytes : Math.floor(maxBytes * 0.9);
-  const pinCap = maxBytes * (opts.pinShare ?? 0.5);
+  const setBytes = Number.isFinite(opts.maxBytes) && opts.maxBytes > 0 ? opts.maxBytes : null;
+  const baseBytes = setBytes ?? opts.minBytes ?? 1536 * 1024 * 1024, pinShare = opts.pinShare ?? 0.5;
+  // (not set by the operator: the budget grows with the catalog's launch sets — see fitBudget —, up to maxAutoBytes)
+  const maxAutoBytes = opts.maxAutoBytes ?? 8 * 1024 ** 3;
+  let maxBytes = baseBytes, lowBytes = 0, pinCap = 0, pinWant = 0;
+  const budget = (max) => {
+    maxBytes = max;
+    lowBytes = Number.isFinite(opts.lowBytes) && opts.lowBytes >= 0 ? opts.lowBytes : Math.floor(maxBytes * 0.9);
+    pinCap = maxBytes * pinShare;
+  };
+  budget(baseBytes);
+  /**
+   * The budget for the launch sets `wants` (sources' bytes, null when unknown: the mean of the known ones): their sum
+   * pinned with PIN_SLACK, the pinned share of a budget grown to hold it — the default 1.5 GiB held 0.8 GB pinned
+   * where the catalog's 17 versions want ~1.3 GB: the units the launch sets need evicted each other, 2-30 % of them
+   * made on the live server at a given time —; a budget set by the operator stays as set.
+   */
+  const fitBudget = (wants) => {
+    const known = wants.filter((w) => Number.isFinite(w) && w > 0), mean = known.length ? known.reduce((a, w) => a + w, 0) / known.length : 0;
+    pinWant = wants.reduce((a, w) => a + (Number.isFinite(w) && w > 0 ? w : mean), 0);
+    if (setBytes === null) budget(Math.min(maxAutoBytes, Math.max(baseBytes, Math.ceil((pinWant * PIN_SLACK) / pinShare))));
+  };
   const loadLimit = opts.loadLimit ?? 24, diskLimit = opts.diskLimit ?? 0.85, pauseMs = opts.pauseMs ?? 30000, idleMs = opts.idleMs ?? 60000;
   const log = opts.log ?? (() => {});
   // (audio units: on unless opts.pcm is false — never for a light copy)
@@ -338,9 +359,11 @@ export function createBrCache(opts) {
       }
     }
   };
+  const readSources = () => { let list = []; if (opts.sources) try { list = opts.sources() ?? []; } catch (e) { log(`br-cache: sources: ${e}`); } return list; };
   const reseed = () => {
     if (!opts.sources || closed) return;
-    let list = []; try { list = opts.sources() ?? []; } catch (e) { log(`br-cache: sources: ${e}`); }
+    const list = readSources();
+    fitBudget(list.map((s) => s.want));
     const shares = pinShares(list.map((s) => s.want), pinCap);
     const sd = seeding = list.length ? { sources: list.map((s, i) => ({ name: s.name, it: s.units()[Symbol.iterator](), used: 0, share: shares[i], done: false })), pass: 0 } : null;
     for (const e of entries.values()) for (const u of e.units.values()) u.pinned = false;
@@ -350,7 +373,8 @@ export function createBrCache(opts) {
     pump();
   };
 
-  const ready = (async () => { await load(); await sweep(); evict(maxBytes); })().catch((e) => log(`br-cache: load: ${e}`));
+  // (the budget fitted before anything is evicted: a restart kept what a grown budget held)
+  const ready = (async () => { await load(); await sweep(); if (opts.sources) fitBudget(readSources().map((s) => s.want)); evict(maxBytes); })().catch((e) => log(`br-cache: load: ${e}`));
   ready.then(reseed);
   const timer = setInterval(() => { sweep().then(reseed); }, opts.sweepMs ?? 3600e3); timer.unref?.();
 
@@ -412,7 +436,7 @@ export function createBrCache(opts) {
     async drain() { await ready; while (pumping) await pumping; },
     // (units: the brotli ones; pcmUnits: the audio forms made — their tried-and-not-kept markers not counted)
     stats: () => ({ units: [...entries.values()].reduce((n, e) => n + [...e.units.keys()].filter((k) => !k.endsWith(PCM)).length, 0),
-      pcmUnits: [...entries.values()].reduce((n, e) => n + [...e.units].filter(([k, u]) => k.endsWith(PCM) && !u.raw).length, 0), bytes: total, pinnedBytes, maxBytes, wanted: wanted.size, seeding: !!seeding, paused, ...counts }),
+      pcmUnits: [...entries.values()].reduce((n, e) => n + [...e.units].filter(([k, u]) => k.endsWith(PCM) && !u.raw).length, 0), bytes: total, pinnedBytes, pinCap: Math.round(pinCap), pinWant: Math.round(pinWant), maxBytes, wanted: wanted.size, seeding: !!seeding, paused, ...counts }),
     close() { closed = true; clearInterval(timer); clearTimeout(childIdle); stopChild(); },
   };
 }

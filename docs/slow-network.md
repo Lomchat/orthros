@@ -389,7 +389,11 @@ on the request path. So the server keeps **units** compressed ahead, for every g
   after a restart, the misses' queue was full — 4044 of its 4096 — and the launch sets had not grown past their first
   6.3 MB; a miss is one session's read, served already, where every new player asks for the launch set.)
 - **Kept** in `--br-cache <dir>` (default `<learn>/../brcache`, i.e. `/var/lib/orthros2/brcache` on the live server;
-  none without `--learn`, `off` for none), at most `--br-cache-bytes` (1.5 GiB): `<k[0:2]>/<k>/` per file version, `k`
+  none without `--learn`, `off` for none), at most `--br-cache-bytes` — unset: 1.5 GiB at least, grown to hold the
+  launch sets (their home sizes summed, a version without one at their mean, ×1.25, as the pinned half), 8 GiB at
+  most; `/api/netstats` `brCache.pinWant` / `pinCap`. (The fixed 1.5 GiB pinned 0.75 GiB where the catalog's 17
+  versions want ~1.3 GB: on 2026-10-22 the live server's cache was full, its launch units evicting each other — 2-5 %
+  of the GoldSrc and re3 launch sets made, `/api/netstats?launch=1`.) `<k[0:2]>/<k>/` per file version, `k`
   the sha1 of the file's resolved real path, size and mtime (and the light copy's shape: `LIGHT_SIDE`, size, offset —
   manifests sharing a `base/` file share its units), `meta.json` and `b<block>.br` / `p<piece>.br` files written
   through a temporary file renamed. The index is rebuilt from the disk at start. Over the budget, least recently used

@@ -302,3 +302,37 @@ test('pinShares: a known launch set weighs its size, an unknown one an equal par
   assert.ok(Math.abs(s.reduce((a, b) => a + b, 0) - 100) < 1e-6);
   assert.ok(s[0] > 40 && s[1] < s[2] && s[2] < s[3] && s[3] < s[4]);
 });
+
+test('cache: an unset budget grows to hold the launch sets (their sum pinned, x1.25), bounded; a budget set stays as set', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
+  const GiB = 1024 ** 3, none = () => [];
+  try {
+    // (the catalog of 17 versions: ~1.3 GB of launch sets — above the default's pinned 0.75 GiB)
+    const wants = [100e6, 216e6, 207e6, 223e6, 275e6, null, null, 17e6, 9e6, 2.4e6, 27e6, 27e6];
+    const sources = () => wants.map((want, i) => ({ name: 'v' + i, want, units: none }));
+    const known = wants.filter(Boolean), sum = known.reduce((a, w) => a + w, 0) * (1 + 2 / known.length);
+    const auto = createBrCache({ dir: path.join(dir, 'a'), ...QUIET, sources });
+    await auto.ready;
+    const s = auto.stats();
+    assert.ok(Math.abs(s.pinWant - sum) < 2, `the launch sets' bytes, the unknown ones at their mean: ${s.pinWant} vs ${sum}`);
+    assert.ok(s.pinCap >= s.pinWant * 1.25 - 2 && s.maxBytes > 1.5 * GiB, `grown: ${s.maxBytes}, pinned ${s.pinCap}`);
+    auto.close();
+    const small = createBrCache({ dir: path.join(dir, 's'), ...QUIET, sources: () => [{ name: 'x', want: 10e6, units: none }] });
+    await small.ready; assert.equal(small.stats().maxBytes, 1536 * 1024 * 1024, 'never under the default'); small.close();
+    const bounded = createBrCache({ dir: path.join(dir, 'b'), ...QUIET, maxAutoBytes: 2 * GiB, sources });
+    await bounded.ready; assert.equal(bounded.stats().maxBytes, 2 * GiB, 'up to maxAutoBytes'); bounded.close();
+    // a restart: the units on the disk past the default budget but within the grown one are kept (fitted before the
+    // load's eviction)
+    const file = (n) => { const f = path.join(dir, n); fs.writeFileSync(f, text(CHUNK, n)); return { file: f, st: fs.statSync(f), light: null, unit: { kind: 'p', index: 0 } }; };
+    const us = ['u0', 'u1', 'u2', 'u3'].map(file), cdir = path.join(dir, 'r');
+    const first = createBrCache({ dir: cdir, ...QUIET });
+    for (const u of us) { first.want(u.file, u.st, null, u.unit); await first.drain(); }
+    const four = first.stats().bytes; first.close();
+    const again = createBrCache({ dir: cdir, ...QUIET, minBytes: Math.floor(four / 2), sources: () => [{ name: 'r', want: four, units: () => us }] });
+    await again.ready;
+    assert.equal(again.stats().evicted, 0, 'nothing evicted at the load'); assert.equal(again.stats().bytes, four);
+    again.close();
+    const set = createBrCache({ dir: path.join(dir, 'o'), maxBytes: GiB, ...QUIET, sources });
+    await set.ready; assert.equal(set.stats().maxBytes, GiB, 'the operator\'s budget'); assert.equal(set.stats().pinCap, GiB / 2); set.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
