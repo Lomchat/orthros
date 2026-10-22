@@ -102,6 +102,62 @@ test('/gamez: encodings at most encodeJobs at once, the game\'s reads before the
   assert.deepEqual(done, ['bg1', 'demand4', 'bg2', 'demand5', 'bg3']);
 });
 
+/** zlib.gzip held: each call waits until `release()` (the server's encodings in a slot as long as the test wants) */
+function holdGzip(t) {
+  const real = zlib.gzip, held = [];
+  zlib.gzip = (...a) => { held.push(a); };
+  t.after(() => { zlib.gzip = real; for (const a of held.splice(0)) real(...a); });
+  return { count: () => held.length, release: () => { for (const a of held.splice(0)) real(...a); }, real: () => { zlib.gzip = real; } };
+}
+
+test('/gamez: a game\'s read joining a range a background download queued is not left in the background queue', async (t) => {
+  const { base, game } = await start(t, { encodeJobs: 1 });
+  for (let i = 1; i <= 4; i++) fs.writeFileSync(path.join(game, 'Data', `f${i}.dat`), Buffer.from(`file ${i} of a game `.repeat(20000)));
+  const gz = holdGzip(t);
+  const done = [];
+  const ask = (i, kind) => get(base, `/gamez/g/Data/f${i}.dat?r=0-100000&${kind === 'bg' ? 'p=1' : 's=x'}`).then((r) => { assert.equal(r.status, 200); done.push(`${kind}${i}`); });
+  const stats = async () => JSON.parse((await get(base, '/api/netstats', '')).body);
+  const until = async (f) => { for (let k = 0; k < 1000 && !f(await stats()); k++) await new Promise((r) => setTimeout(r, 2)); };
+  // a background download runs (its compression held), three more wait; the game reads the last one's range
+  const all = [ask(1, 'bg')];
+  await until(() => gz.count() === 1);
+  all.push(ask(2, 'bg'), ask(3, 'bg'), ask(4, 'bg'));
+  await until((s) => s.server.encodeQueue.bg === 3);
+  const joined0 = (await stats()).joined;
+  all.push(ask(4, 'demand'));
+  await until((s) => s.joined === joined0 + 1);
+  const q = (await stats()).server.encodeQueue;
+  assert.deepEqual([q.demand, q.bg], [1, 2], 'the joined job moved to the game\'s queue');
+  gz.real(); gz.release();
+  await Promise.all(all);
+  assert.deepEqual(done.slice(0, 3).sort(), ['bg1', 'bg4', 'demand4'].sort(), `the game's read next (${done})`);
+});
+
+test('/gamez: a queued encoding whose every client left (the first one and those that joined it) is not made', async (t) => {
+  const { base, game } = await start(t, { encodeJobs: 1 });
+  for (let i = 1; i <= 2; i++) fs.writeFileSync(path.join(game, 'Data', `f${i}.dat`), Buffer.from(`file ${i} of a game `.repeat(20000)));
+  const gz = holdGzip(t);
+  const stats = async () => JSON.parse((await get(base, '/api/netstats', '')).body);
+  const until = async (f) => { for (let k = 0; k < 1000 && !f(await stats()); k++) await new Promise((r) => setTimeout(r, 2)); };
+  const first = get(base, '/gamez/g/Data/f1.dat?r=0-100000&p=1');
+  await until(() => gz.count() === 1);
+  // f2's range queued by one client, joined by two others; all three leave before its turn
+  const open = (u) => { const req = http.get(base + u, { headers: { 'accept-encoding': 'gzip' } }); req.on('error', () => {}); return req; };
+  const reqs = [open('/gamez/g/Data/f2.dat?r=0-100000&p=1')];
+  await until((s) => s.server.encodeQueue.bg === 1);
+  const joined0 = (await stats()).joined;
+  reqs.push(open('/gamez/g/Data/f2.dat?r=0-100000&s=b'), open('/gamez/g/Data/f2.dat?r=0-100000&s=c'));
+  await until((s) => s.joined === joined0 + 2);
+  for (const r of reqs) r.destroy();
+  await new Promise((r) => setTimeout(r, 100)); // (the server sees the sockets close)
+  gz.real(); gz.release();
+  assert.equal((await first).status, 200);
+  await until((s) => s.server.encodeQueue.bg === 0 && s.server.encodeQueue.demand === 0 && s.server.encodeQueue.running === 0);
+  await new Promise((r) => setTimeout(r, 50));
+  const s = await stats();
+  assert.equal(s.server.encodedCache.entries, 1, 'only the first range encoded');
+});
+
 test('learned sessions bounded: the least recently active out', async (t) => {
   const { base, game } = await start(t, { sessionsMax: 3 });
   fs.writeFileSync(path.join(game, 'Data', 'a.dat'), Buffer.alloc(100000, 1));

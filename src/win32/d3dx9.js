@@ -401,6 +401,8 @@ export function registerD3DX9(api, vm) {
     const im = imageAt(c, c.arg(3), c.arg(4)); if (!im) return D3DXERR_INVALIDDATA;
     writeInfo(c.arg(8), im);
     const db = boxAt(c.arg(2), v.width, v.height, v.depth), sbx = boxAt(c.arg(5), im.width, im.height, im.depth);
+    // (an empty or inverted source box: refused, as D3DXLoadVolumeFromMemory does)
+    const sw = sbx.r - sbx.l, sh = sbx.b - sbx.t, sd = sbx.k - sbx.f; if (sw <= 0 || sh <= 0 || sd <= 0) return D3DERR_INVALIDCALL;
     // (the whole file into the whole level: its first level as is when the formats and sizes agree, else converted)
     if (!c.arg(2) && !c.arg(5)) {
       const data = levelData(im, 0, 0, v.fmt, v.width, v.height, v.depth, c.arg(6), c.arg(7));
@@ -409,7 +411,7 @@ export function registerD3DX9(api, vm) {
     // (a box of the file into a box of the level, e.g. one 2D image per slice of a volume)
     const src = im.images[0][0], rowPitch = surfacePitch(im.fmt, im.width), slicePitch = surfaceBytes(im.fmt, im.width, im.height);
     const rgba = boxRgba(im.fmt, (o, n) => src.subarray(o, o + n), rowPitch, slicePitch, sbx, c.arg(7));
-    const r = writeVolumeBox(c, v, db, rgba, sbx.r - sbx.l, sbx.b - sbx.t, sbx.k - sbx.f, c.arg(6));
+    const r = writeVolumeBox(c, v, db, rgba, sw, sh, sd, c.arg(6));
     if (r) vm.log('gfx', `d3dx: D3DXLoadVolumeFromFileInMemory: format ${im.fmt} into format ${v.fmt} box ${JSON.stringify(db)} -> 0x${(r >>> 0).toString(16)}`);
     return r;
   }];

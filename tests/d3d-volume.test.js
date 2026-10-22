@@ -156,3 +156,20 @@ test('a destination box: a 2D image into one slice of a volume, the other slices
   const mean = (sh, x0, y0) => { let t = 0; for (let y = y0; y < y0 + 2; y++) for (let x = x0; x < x0 + 2; x++) t += (src(x, y) >>> sh) & 0xff; return Math.floor((t + 2) / 4); };
   for (const sh of [0, 8, 16]) assert.equal((at(2, 1, 0) >>> sh) & 0xff, mean(sh, 2, 0), `channel ${sh}`);
 });
+
+test('D3DXLoadVolumeFromFileInMemory: an empty or inverted source box is D3DERR_INVALIDCALL, the level untouched', () => {
+  const { E, mem, com, call, volumeTexture, level } = env(true);
+  const tex = volumeTexture(4, 4, 1, 1, FMT.A8R8G8B8), vp = level(tex, 0).p, v = com.implAt(vp);
+  mem.fill(v.ensureMem(E.proc), v.bytes, 0x5a);
+  const file = new Uint8Array(128 + 64), dv = new DataView(file.buffer);
+  file.set([0x44, 0x44, 0x53, 0x20]); dv.setUint32(4, 124, true); dv.setUint32(8, 0x1007, true); dv.setUint32(12, 4, true); dv.setUint32(16, 4, true);
+  dv.setUint32(76, 32, true); dv.setUint32(80, 0x41, true); dv.setUint32(88, 32, true); dv.setUint32(92, 0xff0000, true); dv.setUint32(96, 0xff00, true); dv.setUint32(100, 0xff, true); dv.setUint32(104, 0xff000000, true); dv.setUint32(108, 0x1000, true);
+  for (let i = 0; i < 16; i++) dv.setUint32(128 + 4 * i, (0xff000000 | i * 0x030507) >>> 0, true);
+  const p = E.alloc(file.length); mem.writeBytes(p, file);
+  const sbox = E.alloc(24);
+  for (const b of [[2, 0, 2, 4, 0, 1], [3, 0, 1, 4, 0, 1], [0, 0, 4, 4, 1, 0], [9, 0, 9, 4, 0, 1]]) {
+    b.forEach((x, i) => mem.write32(sbox + 4 * i, x));
+    assert.equal(call('D3DXLoadVolumeFromFileInMemory', vp, 0, 0, p, file.length, sbox, 1, 0, 0), 0x8876086c, `box ${b}`);
+    assert.ok(Array.from(mem.bytes(v.mem, v.bytes)).every((x) => x === 0x5a), `box ${b}: level kept`);
+  }
+});
