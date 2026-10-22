@@ -8,8 +8,8 @@ import { WebGLDevice } from '../src/gfx/d3d8-webgl.js';
 import { CTL } from '../src/gfx/cmd-ring.js';
 import { fakeGl } from './fake-gl.js';
 
-const { memory, ring, ctl: ctlSab, ack, stop: stopSab, slow } = workerData;
-const ctl = new Int32Array(ctlSab), stop = new Int32Array(stopSab), G = fakeGl();
+const { memory, ring, ctl: ctlSab, ack, stop: stopSab, slow, reads } = workerData;
+const ctl = new Int32Array(ctlSab), stop = new Int32Array(stopSab), G = fakeGl(800, 600, { reads: !!reads });
 const replayer = new Replayer(new Int32Array(ring), {
   mem: new GuestMemory({ memory }), ack: new Int32Array(ack),
   createBackend: (m) => new WebGLDevice(G.gl, m, {}),

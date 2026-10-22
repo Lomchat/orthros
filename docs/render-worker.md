@@ -446,10 +446,30 @@ frame comparison.
   4 MiB written meanwhile is copied on write instead of waited for (new guest memory with its contents; the old block
   released once the commands reading it are replayed; `ORTHROS_RW_COW=0`: wait).
 - **Buffers rewritten while in use: their contents travel in the ring.** A dynamic buffer (`D3DUSAGE_DYNAMIC`) from
-  its first use, and any other buffer once a lock had to wait for it, copies each written range into the ring at
-  `Unlock` (`BUF_DATA`, 1 MiB chunks; its whole contents once when it switches). The mirror buffer keeps its own copy
-  and the backend uploads from it (same dirty unions, same GL calls as in-thread), so those buffers' locks never wait
-  and their memory is released at once. (The first implementation renamed them on `DISCARD` and copied the whole
+  its first use, and any other buffer once a lock had to wait for it, copies its written bytes into the ring when a
+  draw reads them (`BUF_DATA`, 1 MiB chunks; its whole contents once when it switches). The mirror buffer keeps its
+  own copy and the backend uploads from it, so those buffers' locks never wait and their memory is released at once.
+  - `Unlock` only notes the written range (`lazyAdd`: the buffer's pending ranges, where the mirror's copy may differ
+    from guest memory). Before each draw (`Recorder.readBuffers`), the pending bytes it reads go into the ring: its
+    indices, and for each stream of the current vertex layout the vertices from the lowest to the highest one it
+    reads, plus the layout's element extent — for an indexed draw the lowest and highest index **of the index data**
+    (cached per first index until the index buffer is written), never the call's `MinIndex` / `NumVertices`, which
+    games understate. Anything that cannot be bounded copies the whole buffer. Bytes written again before any draw
+    reads them, or never read, never travel. A copy has a cost of its own, so a pending range of at most 16 KiB that a
+    draw meets goes whole, and a buffer with at most 32 KiB pending goes whole without bounding the draw (BFME2's
+    menu: 358 copies and 245 index scans per frame otherwise, against 36 copies at `Unlock`, for the same 72 KB).
+  - Measured (Node framebench `--ab ORTHROS_VB_LAZY=0:25`: blocks of 25 frames alternated within one run, same
+    scene): BFME1 menu at 820 draws per frame 2.42 → 1.58 MB per frame copied, api + draw 3.88 → 3.80 ms; at 1 540
+    draws 3.30 → 2.01 MB, api + draw 4.77 → 4.31 ms (first version of the policy). BFME2 menu: 72 KB either way,
+    api + draw 2.02 → 2.17 ms (noise level). The copy left the emulator thread's `Unlock` for its draws: the gain is
+    the bytes that no longer travel, not the calls.
+  - Upload calls differ from in-thread (other ranges, other bytes in the never-read parts); what every draw reads
+    does not. The tests compare the WebGL draws by the bytes they read (`fakeGl({ reads: true })`), and
+    `ORTHROS_VB_LAZY=0` (a worker debug global) copies at `Unlock` again, with the exact-call comparisons.
+  - `ORTHROS_VB_CHECK=1` (harness `--dbg`, framebench `--dbg`): after each draw's copies, every index and every byte
+    of every vertex the draw reads (each index's vertex) is compared with guest memory through the recorder's own
+    copy of what the mirror holds; a difference is a stale read, counted (`stats.vbStale`) and logged
+    (`render record: VB check: ...`, a summary every 600 frames). Slow: diagnostics only. (The first implementation renamed them on `DISCARD` and copied the whole
   buffer at every lock still in use: 51 renames, ~32 MiB copied per BFME2 skirmish frame — the emulator thread was
   slower than in-thread.) What the application does not rewrite after `DISCARD` reads as before, as in-thread.
 - **`D3DLOCK_NOOVERWRITE`** on another buffer waits only when the locked range meets ranges written but not uploaded
