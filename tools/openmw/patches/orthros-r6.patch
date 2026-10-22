@@ -57,7 +57,7 @@
 +        /// size and format (ChunkManager::createCompositeMapRTT): its status is not asked again — a synchronous
 +        /// round trip to the GPU process in a browser (WebGL's checkFramebufferStatus), 100-400 ms when that process is
 +        /// busy, for each map compiled.
-+        bool mOrthrosFboComplete = false;
++        mutable bool mOrthrosFboComplete = false;
      };
  
  }
