@@ -665,6 +665,11 @@ Checked on r5, r6 and r7 (scratch servers, one per release): `tools/openmw/check
 and with `--lang fr` (morrowind-goty-fr) pass; quicksave and reload (a new character at -2,-9 carried to -3,-7, F5,
 carried back, F9: -3,-7 again; the page loaded again in the same browser profile, F9 from the menu: -3,-7) pass. The
 one fault every run reports, "Pointer is already locked.", is the headless browser's pointer lock (r4 the same).
+Vanilla+ (`morrowind-goty-vanilla-plus-en`) on r7: 2 of 5 check runs pass; the others fail on the header's state read
+3 s after the engine page's loading screen hides (its frame rate not shown yet, or the Orthros loader not hidden yet
+— the version's files still loading in a server with nothing learned). r4 the same, interleaved on the same machine
+(1 of 2 each way): the check's timing, not the release. In the world (r7, drawn by SwiftShader, Seyda Neen and two
+cells north): terrain, objects, sky, water, shadows and the local map as before.
 
 Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r7"` in the `openmw` object of
 each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
