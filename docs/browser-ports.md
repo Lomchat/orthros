@@ -82,7 +82,12 @@ same as for Windows games: version files replace same-named base files, whatever
   order — a game over another's files, as the two Counter-Strike games below over `counter-strike`'s, without a copy.
   In the page's tree, the files served and the dedicated server's linked tree alike (`gameLayers`, game-files.js).
 - `goldsrc.extras`: the release's archives mounted in the game folder (`engine/valve/extras.pk3` by default, the page
-  only); declared, the dedicated server gets them too (linked into its game folder).
+  only); declared, the dedicated server gets them too (linked into its game folder). The page reads them as game data:
+  the server lists them (and a language's `extras`) under `_engine/` of the version's tree (`dataMounts` with `only`,
+  game-catalog.js), the page mounts them where the engine looks for them (`<gameDir>/<name>.pk3`), read by pieces as
+  the engine reads them — learned, in the launch set, precompressed units, the browser's store —, not downloaded whole
+  as engine files before the menu (Half Strike: 13.3 of its 15.1 MB of engine; its Prepare at 85 KB/s 245 → 114 s
+  before the sessions teach the pieces the engine reads).
 - `goldsrc.solo.commands` / `goldsrc.multiplayer.commands`: console commands before the map, one per entry (the page;
   `+command` arguments of the dedicated server) — `maxplayers 10` and `deathmatch 1` make a solo game a listen server
   with Counter-Strike's round rules and bots (with one player the game installs its training rules: no team, no bot).
