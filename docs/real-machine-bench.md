@@ -26,7 +26,7 @@ the results go to the server, and the summary panel also has a **Copy the result
 | game | link | what it plays | usual duration |
 |---|---|---|---|
 | BFME II | <https://orthros.chalco.website/?bench=bfme2-skirmish> | the intro skipped, the main menu, a skirmish started (the profile name dialog filled), its first minute | ~4 min |
-| BFME II 1.06 | <https://orthros.chalco.website/?bench=bfme2-skirmish&manifest=bfme2-106> | the same on version 1.06 | ~4 min |
+| BFME II 1.06 | <https://orthros.chalco.website/?bench=bfme2-skirmish&manifest=bfme2-106> | the same on version 1.06 (not today: 1.06's game.dat closes at start without its launcher, below) | ~4 min |
 | Vice City | <https://orthros.chalco.website/?bench=vicecity-drive> | the intro skipped, the main menu, a new game started, a drive of ~25 s | ~2 min |
 | Rise of the Witch-king 2.02 | <https://orthros.chalco.website/?bench=rotwk-skirmish> (2.01: `&manifest=rotwk-201`) | the main menu, a skirmish started, its first minute with a few orders | ~4 min |
 | BFME | <https://orthros.chalco.website/?bench=bfme1-skirmish> (1.03: `&manifest=bfme1-103`) | the main menu, a skirmish started, its first minute | ~6 min |
@@ -239,11 +239,13 @@ data). Times from the launch; the menu anchor includes the scenario's fixed 20 s
 | `rotwk-skirmish` (rotwk-202) | — | 36 s | 77 s | 137 s | 28.2, 20.1 / 64.2 ms, 83 (load 50-60) |
 | `bfme1-skirmish` (bfme-vanilla) | — | 91 s | 268 s | 328 s | 38.3, 14.3 / 21 ms, 1 (menu at load 50-64) |
 | `bfme1-skirmish` (bfme1-103) | 14 s | 36 s | 226 s | 286 s | 30.2, 14.1 / 25.9 ms, 11 |
-| `vicecity-drive` | — | 20 s | 29 s | 89 s | 29.9, 13.9 / 34.1 ms, 21 |
+| `vicecity-drive` (no canonical set) | 10 s | 20 s | 29 s | 89 s | 29.9, 12.1-13.9 / 33-34 ms, 17-21 |
 
 Found while checking: `rotwk-skirmish` / `rotwk-quick` anchored RotWK 2.01's play only after minutes (its play draws
 ~140 per frame against the former threshold of 150: now 120), and `bfme1-skirmish` never left the menu on 1.03 (its
 canonical profile's 2D menu draws ~100 per frame, between the former ranges 20-60 and 150+: now 20 and more).
+`bfme2-skirmish` / `bfme2-quick` on `bfme2-106` cannot run: its game.dat exits after ~1 s when the named mutex its
+launcher creates is absent (CreateMutexA then GetLastError != ERROR_ALREADY_EXISTS), as under Windows.
 
 ## Tests
 
