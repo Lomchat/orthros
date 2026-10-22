@@ -12,7 +12,7 @@
 // nothing — no marker needed, so the profile the game sees (and a snapshot's check of it) is the files alone.
 
 const SEGMENT = /^[^\x00-\x1f<>:"\\|?*/]+$/;
-const MAX_MOVES = 8, MAX_NAMES = 64, MAX_PATH = 240;
+const MAX_MOVES = 8, MAX_NAMES = 64, MAX_PATH = 240, MAX_DEPTH = 32;
 
 const segOk = (s) => SEGMENT.test(s) && s !== '.' && s !== '..' && !/[ .]$/.test(s);
 /** A profile path as a manifest gives it: '/'-separated, relative, without '.', '..' or Windows-forbidden characters. */
@@ -47,16 +47,16 @@ function ensureDir(backend, dir) {
   return true;
 }
 
-function moveEntry(backend, src, dst, isDir, out) {
+function moveEntry(backend, src, dst, isDir, out, depth = 0) {
   const there = backend.stat(dst);
   if (!isDir) {
     if (there || !ensureDir(backend, parentOf(dst)) || !backend.rename(src, dst)) { out.kept.push(src); return; }
     out.moved.push([src, dst]);
     return;
   }
-  if (there && !there.isDir) { out.kept.push(src); return; }
+  if ((there && !there.isDir) || depth >= MAX_DEPTH) { out.kept.push(src); return; } // (deeper than a profile goes: left)
   if (!there && !ensureDir(backend, dst)) { out.kept.push(src); return; }
-  for (const e of backend.readdir(src) ?? []) moveEntry(backend, join(src, e.name), join(dst, e.name), e.isDir, out);
+  for (const e of backend.readdir(src) ?? []) moveEntry(backend, join(src, e.name), join(dst, e.name), e.isDir, out, depth + 1);
   if (!(backend.readdir(src) ?? []).length && backend.rmdir?.(src)) out.moved.push([src, dst]);
 }
 

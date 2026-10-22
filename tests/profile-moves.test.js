@@ -96,7 +96,9 @@ test('the browser mirror is told every change: new folders, moved files, old fol
 test('MemBackend.rmdir removes only an empty folder', () => {
   const b = new MemBackend(); b.mkdir('A'); b.mkdir('A/B'); put(b, 'A/f', 'x');
   assert.equal(b.rmdir('A'), false); assert.equal(b.rmdir(''), false); assert.equal(b.rmdir('none'), false);
-  assert.equal(b.rmdir('A/B'), true); b.unlink('A/f'); assert.equal(b.rmdir('a'), true);
+  assert.equal(b.rmdir('A/B'), true);
+  assert.equal(b.rmdir('A'), false); // (a file in it)
+  b.unlink('A/f'); assert.equal(b.rmdir('a'), true);
   assert.deepEqual([...b.dirs], ['']);
 });
 
