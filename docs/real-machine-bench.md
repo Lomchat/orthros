@@ -247,6 +247,32 @@ canonical profile's 2D menu draws ~100 per frame, between the former ranges 20-6
 `bfme2-skirmish` / `bfme2-quick` on `bfme2-106` cannot run: its game.dat exits after ~1 s when the named mutex its
 launcher creates is absent (CreateMutexA then GetLastError != ERROR_ALREADY_EXISTS), as under Windows.
 
+## Checks made (2026-10-22 evening: the quick benches in headless Chromium with the banner, bfme-vanilla re-measured)
+
+The three quick links played as the owner plays them: `tools/with-browser-slot.sh node tools/headless.mjs <manifest>
+--games-dir data_games --learn <copy of the live learned data> --ui --bench <name> --gl-discard` — a fresh browser (no
+profile: the first launch, the files downloaded from the harness's server, the canonical first-launch set offered), the
+banner's start button clicked, the scenario played by the page, the summary panel at the end (screenshot). SwiftShader,
+load 25-37, sometimes two of these browsers at once:
+
+| bench (manifest) | outcome | menu / play from / end | play: fps, frame p50 / p90 / p99 ms, > 40 ms per minute |
+|---|---|---|---|
+| `rotwk-quick` (rotwk-202) | `done` after 235 s | 63 / 115 / 235 s | 26.6, 33.3 / 38.6 / 113.3, 135 |
+| `bfme2-quick` (bfme2) | `done` after 251 s | 62 / 131 / 251 s | 30.1, 33.0 / 35.8 / 40.4, 22 (a first run beside another browser: 10.9 fps, guest 46 ms per frame — the machine) |
+| `bfme1-108-quick` (bfme1-108) | `done` after 278 s | 55 / 158 / 278 s | 30.1, 33.1 / 35.7 / 40.5, 21 |
+
+Every link runs to its end and shows its summary; the timings are this loaded server's software rendering, not a
+player's machine. Found on the way: on a first launch the page's "every thread waits" reports (at most 20 per session)
+were all used in the first seconds by the main thread's parked game file reads (RotWK: 20 by t = 3 s), whose 60 s bound
+is only a safety net; the report now skips the moments when a file read is in flight (worker.js).
+
+**bfme-vanilla's first launch** (the 91 s to the menu of the table above, measured at load 50-64): Node, seeded profile,
+`--bench bfme1-skirmish`, load ~30: first Direct3D frame at 14.4 s, menu anchor at 40 s (the scenario's 20 s after the first frame
+included) — like 1.03 (36 s) and 1.08 (34 s). The 91 s was the machine's load. Its menu itself is heavy: 21 fps in Node,
+28 M guest instructions per frame in the main thread (the 2.22 mod's menu at the canonical High LOD settings), the
+emulator's speed per instruction as elsewhere (1.5 ns); nothing of the emulator's own stands out there (no Sleep(0)
+spin: 45 per frame, 491 scheduling decisions per frame).
+
 ## Tests
 
 `tests/bench-kit.test.js` (histogram, interval counts, scenario parsing and the player's timing anchors, pointer
