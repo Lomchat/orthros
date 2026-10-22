@@ -201,7 +201,7 @@ export function formatReport(reports, comparison) {
         if (p.mean) L.push(`      mean frame (ms): ${Object.entries(p.mean).slice(0, 6).map(([k, v]) => `${k} ${v}`).join(', ')}${p.excessShares && Object.keys(p.excessShares).length ? `; slow frames' excess (%): ${Object.entries(p.excessShares).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}${p.hitches && Object.keys(p.hitches).length ? `; hitches: ${Object.entries(p.hitches).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`);
       }
       // (the host's wake-ups: core/host-wait.js per phase, the timing probes of timing-probe.js)
-      for (const p of b.phases ?? []) if (p.hostWait?.waits) L.push(`    ${String(p.label).padEnd(12)} host waits: late ${p.hostWait.overMean} ms on average (max ${p.hostWait.overMax}), estimate ${p.hostWait.est} ms, timers ${p.hostWait.timerEst} ms, spin ${p.hostWait.spinMsPerFrame} ms/frame${p.hostWait.injected ? `, injected ${p.hostWait.injected} ms timer` : ''}${p.hostWait.adaptive ? '' : ', adaptive off'}`);
+      for (const p of b.phases ?? []) if (p.hostWait?.waits) L.push(`    ${String(p.label).padEnd(12)} host waits: late ${p.hostWait.overMean} ms on average (max ${p.hostWait.overMax}), late for the frame ${p.hostWait.lateMsPerFrame ?? '-'} ms/frame, estimate ${p.hostWait.est} ms, timers ${p.hostWait.timerEst} ms, spin ${p.hostWait.spinMsPerFrame} ms/frame${p.hostWait.injected ? `, injected ${p.hostWait.injected} ms timer` : ''}${p.hostWait.adaptive === true ? '' : p.hostWait.adaptive ? ', adaptive switched' : ', adaptive off'}`);
       for (const pr of b.hostTiming ?? []) L.push(`    timer probe ${pr.label}@${pr.at}s: ${probeLine(pr)}`);
     }
   }

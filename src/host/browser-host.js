@@ -244,8 +244,9 @@ export class BrowserHost {
     const r = hostWaiter.waitUntil(this.ctl, CTL.WAKE, 0, deadline, precise);
     acct.leave(ap);
     // (frame accounting: the host's wake-up past the deadline is lateness, not the game's pacing — Windows' coarse timer
-    // shows here; before 2026-10-22 it stayed in `wait`)
-    if (r === 'timed-out' && precise) { const over = acct.stamp() - deadline; if (over > 0) acct.move(cat, ACCT.late, Math.min(over, acct.acc[cat] - acc0)); }
+    // shows here; before 2026-10-22 it stayed in `wait`. Not a frame limiter's earlier waits: waking them late does not
+    // lengthen the frame — host-wait.js earlyPacingWait)
+    if (r === 'timed-out' && precise && hostWaiter.lastLate > 0) acct.move(cat, ACCT.late, Math.min(hostWaiter.lastLate, acct.acc[cat] - acc0));
     this.waitMs = (this.waitMs ?? 0) + acct.stamp() - t0;
     this.pump();
   }

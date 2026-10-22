@@ -93,7 +93,7 @@ export class PerfWindow {
     // render worker: the emulator's waits for it and its replay time, ms per frame
     if (l.rwWaitMs !== undefined && n > 0) out.render = { waitMs: r2(grow(b.rwWaitMs, l.rwWaitMs) / n), fenceMs: r2(grow(b.rwFenceMs, l.rwFenceMs) / n), frameMs: r2(grow(b.rwFrameMs, l.rwFrameMs) / n), replayMs: r2(grow(b.rwReplayMs, l.rwReplayMs) / n), readbackMs: r2(grow(b.rwReadbackMs, l.rwReadbackMs) / n) };
     // the emulator's host waits (core/host-wait.js): how late they woke (ms per wait), spin time per frame, the estimate
-    if (l.hw && n > 0) { const w = grow(b.hw?.waits, l.hw.waits), sp = grow(b.hw?.spinMs, l.hw.spinMs); out.hostWait = { waits: w, overMean: w > 0 ? r2(grow(b.hw?.overMs, l.hw.overMs) / w) : 0, lateMsPerFrame: r2(grow(b.hw?.overMs, l.hw.overMs) / n), spinMsPerFrame: r2(sp / n), est: l.hw.est, timerEst: l.hw.timerEst }; }
+    if (l.hw && n > 0) { const w = grow(b.hw?.waits, l.hw.waits), sp = grow(b.hw?.spinMs, l.hw.spinMs); out.hostWait = { waits: w, overMean: w > 0 ? r2(grow(b.hw?.overMs, l.hw.overMs) / w) : 0, lateMsPerFrame: r2(grow(b.hw?.lateMs, l.hw.lateMs) / n), spinMsPerFrame: r2(sp / n), est: l.hw.est, timerEst: l.hw.timerEst }; }
     this.reset();
     return out;
   }
@@ -133,5 +133,5 @@ export function compactPhase(ph) {
 export function compactHostWait(hw, frames) {
   if (!hw) return null;
   const w = hw.wait;
-  return { waits: w?.waits ?? 0, overMean: w?.overMean ?? 0, overMax: w?.overMax ?? 0, hist: w?.hist ?? null, spins: w?.spins ?? 0, spinMsPerFrame: w && frames ? r2(w.spinMs / frames) : 0, est: hw.est, timerEst: hw.timerEst, timerOverMean: hw.timer?.overMean ?? null, injected: hw.q || 0, adaptive: hw.adaptive !== false };
+  return { waits: w?.waits ?? 0, overMean: w?.overMean ?? 0, overMax: w?.overMax ?? 0, lateMsPerFrame: w && frames ? r2(w.lateMs / frames) : 0, hist: w?.hist ?? null, spins: w?.spins ?? 0, spinMsPerFrame: w && frames ? r2(w.spinMs / frames) : 0, est: hw.est, timerEst: hw.timerEst, timerOverMean: hw.timer?.overMean ?? null, injected: hw.q || 0, adaptive: hw.adaptive ?? true };
 }

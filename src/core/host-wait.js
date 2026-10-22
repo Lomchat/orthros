@@ -70,7 +70,7 @@ export class OvershootEstimate {
 }
 
 /** Per-source wait statistics (telemetry: the bench phases, the summaries). */
-function newStats() { return { waits: 0, overMs: 0, overMax: 0, hist: new Array(OVER_BOUNDS.length + 1).fill(0), spins: 0, spinMs: 0, early: 0, plain: 0 }; }
+function newStats() { return { waits: 0, overMs: 0, overMax: 0, hist: new Array(OVER_BOUNDS.length + 1).fill(0), spins: 0, spinMs: 0, early: 0, plain: 0, lateMs: 0, q: 0, modes: 0 }; }
 
 export class HostWaiter {
   /**
@@ -82,8 +82,9 @@ export class HostWaiter {
     this.est = new OvershootEstimate(); // (Atomics.wait)
     this.timerEst = new OvershootEstimate(); // (the worker's setTimeout, measured at the pump)
     this.stats = newStats(); this.timer = newStats();
-    this.tot = { waits: 0, overMs: 0, spins: 0, spinMs: 0, timers: 0, timerOverMs: 0 }; // (cumulative: the stats messages, summaries take differences)
+    this.tot = { waits: 0, overMs: 0, lateMs: 0, spins: 0, spinMs: 0, timers: 0, timerOverMs: 0 }; // (cumulative: the stats messages, summaries take differences)
     this.paceEnd = 0; // (host time: the predicted end of the guest's current pacing loop, 0 none — kernel32 sets it)
+    this.lastLate = 0; // (the last wait's lateness that can lengthen a frame, ms: the frame accounting's `late`)
     this.ownSab = null;
   }
   /** One host wait of `ms` (the injected quantum applied): Atomics.wait's result. */
@@ -96,6 +97,11 @@ export class HostWaiter {
   /** A wait ending at `deadline` is one of a pacing loop's last ones (its overshoot would lengthen the frame). */
   lastPacingWait(deadline) { const e = this.paceEnd; return e > 0 && deadline > e - this.est.value - 0.5 && deadline <= e + PACE_SLACK_MS; }
   /**
+   * A wait ending at `deadline` is one of a pacing loop's earlier waits: waking late only shortens the polling, the
+   * frame is not longer (its lateness is not `late` for the frame accounting).
+   */
+  earlyPacingWait(deadline) { const e = this.paceEnd; return e > 0 && deadline <= e - this.est.value - 0.5; }
+  /**
    * Block until the host time `deadline` (ms), or until arr[idx] is notified / no longer `value` (Atomics.wait's
    * result: 'ok' or 'not-equal' woken early, 'timed-out'). `precise` false: a wait without a deadline that matters
    * (a plain host wait, not counted as late).
@@ -103,13 +109,13 @@ export class HostWaiter {
   waitUntil(arr, idx, value, deadline, precise = true) {
     let r = 'timed-out', t = this.now();
     if (deadline <= t) return r;
-    const st = this.stats;
-    st.waits++;
-    if (!precise || !adaptiveOn()) {
+    const st = this.stats, adaptive = adaptiveOn();
+    st.waits++; st.q = injectedQuantum(); st.modes |= adaptive ? 1 : 2; this.lastLate = 0;
+    if (!precise || !adaptive) {
       st.plain++;
       r = this.hostWait(arr, idx, value, deadline - t);
       t = this.now();
-      if (r === 'timed-out') { this.est.add(t - deadline); if (precise) this.noteEnd(st, t - deadline); }
+      if (r === 'timed-out') { this.est.add(t - deadline); if (precise) this.noteEnd(st, t - deadline, deadline); }
       return r;
     }
     for (;;) {
@@ -136,18 +142,22 @@ export class HostWaiter {
       t = this.now(); if (r === 'timed-out') this.est.add(t - deadline);
       break;
     }
-    if (r === 'timed-out') this.noteEnd(st, t - deadline);
+    if (r === 'timed-out') this.noteEnd(st, t - deadline, deadline);
     return r;
   }
-  noteEnd(st, over) {
+  /** A wait (or a timer: st === this.timer) ended `over` ms past its deadline (`deadline`: a wait's, for lastLate). */
+  noteEnd(st, over, deadline) {
     if (over < 0) over = 0;
     st.overMs += over; if (over > st.overMax) st.overMax = over;
     let b = 0; while (b < OVER_BOUNDS.length && over > OVER_BOUNDS[b]) b++;
     st.hist[b]++;
-    if (st === this.timer) { this.tot.timers++; this.tot.timerOverMs += over; } else { this.tot.waits++; this.tot.overMs += over; }
+    if (st === this.timer) { this.tot.timers++; this.tot.timerOverMs += over; return; }
+    this.tot.waits++; this.tot.overMs += over;
+    this.lastLate = deadline !== undefined && this.earlyPacingWait(deadline) ? 0 : over;
+    st.lateMs += this.lastLate; this.tot.lateMs += this.lastLate;
   }
   /** The cumulative counters (the worker's stats messages: perf-summary.js takes their differences), rounded. */
-  totals() { const t = this.tot, r = (x) => Math.round(x * 100) / 100; return { waits: t.waits, overMs: r(t.overMs), spins: t.spins, spinMs: r(t.spinMs), timers: t.timers, timerOverMs: r(t.timerOverMs), est: r(this.est.value), timerEst: r(this.timerEst.value) }; }
+  totals() { const t = this.tot, r = (x) => Math.round(x * 100) / 100; return { waits: t.waits, overMs: r(t.overMs), lateMs: r(t.lateMs), spins: t.spins, spinMs: r(t.spinMs), timers: t.timers, timerOverMs: r(t.timerOverMs), est: r(this.est.value), timerEst: r(this.timerEst.value) }; }
   /** Sleep `ms` on a private word (tests, tools). */
   sleep(ms) {
     if (!(ms > 0)) return;
@@ -172,8 +182,9 @@ export class HostWaiter {
 
   /** The statistics since the last call (then reset), compact: per source waits, mean / max overshoot, histogram, spins. */
   take() {
-    const f = (s) => (s.waits ? { waits: s.waits, overMean: Math.round(s.overMs / s.waits * 1000) / 1000, overMax: Math.round(s.overMax * 100) / 100, hist: s.hist.slice(), spins: s.spins, spinMs: Math.round(s.spinMs * 10) / 10, early: s.early, plain: s.plain } : null);
-    const r = { wait: f(this.stats), timer: f(this.timer), est: Math.round(this.est.value * 1000) / 1000, timerEst: Math.round(this.timerEst.value * 1000) / 1000, q: injectedQuantum(), adaptive: adaptiveOn() };
+    const f = (s) => (s.waits ? { waits: s.waits, overMean: Math.round(s.overMs / s.waits * 1000) / 1000, overMax: Math.round(s.overMax * 100) / 100, lateMs: Math.round(s.lateMs * 10) / 10, hist: s.hist.slice(), spins: s.spins, spinMs: Math.round(s.spinMs * 10) / 10, early: s.early, plain: s.plain } : null);
+    // (the switches as the window's waits saw them: `adaptive` 'mixed' when they changed within it)
+    const m = this.stats.modes, r = { wait: f(this.stats), timer: f(this.timer), est: Math.round(this.est.value * 1000) / 1000, timerEst: Math.round(this.timerEst.value * 1000) / 1000, q: this.stats.waits ? this.stats.q : injectedQuantum(), adaptive: m === 2 ? false : m === 3 ? 'mixed' : m === 1 ? true : adaptiveOn() };
     this.stats = newStats(); this.timer = newStats();
     return r;
   }
