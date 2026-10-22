@@ -14,6 +14,8 @@ export const BLOCK = 1 << 20; // 1 MiB
  */
 export const CHUNK = 1 << 16;
 const MAX_CHUNK_BYTES = 64 << 20;
+/** a read covering several whole blocks none of which is here fetches at most this many of them in one request */
+const COALESCE_BLOCKS = 16;
 /** sequential bytes after which a file is being read whole (whole blocks ahead) rather than streamed */
 const STREAM_BYTES = 1 << 20;
 /** sequential bytes and reads after which a file is a stream for the learned prefetch (see doneWith) */
@@ -64,6 +66,12 @@ const AHEAD_REQUESTS = 3, AHEAD_WINDOW = 32;
 const AHEAD_REQUESTS_MID = 8;
 /** prefetch requests queued at once on a link that is not fast (see prefetch) */
 const PREFETCH_PARTS = 6;
+/**
+ * prefetch requests in flight at once on a measured fast link while the game reads nothing from the network (one while it
+ * does): one at a time left the link idle a round trip per request — BFME 1.08 through a 7 MB/s, 75 ms link (HTTP/2,
+ * tools/net-proxy.mjs) carried 2.3-3 MB/s of learned blocks, and a game that read faster than that waited for them
+ */
+const FAST_PREFETCH_PARTS = 3;
 /** a pause this long (ms) between two learned entries ends a step of the game (see stepEstimate) */
 const STEP_GAP_MS = 5000;
 /** the download of the whole game before playing, on a link that is not fast: a request carries about this much of the link (s) */
@@ -317,7 +325,7 @@ export class HttpBackend {
     const skey = (e, i = e.index) => `${e.path}#${e.size}#${e.mtime}#${i}`;
     const stored = (e) => e.skip || store.map.has(skey(e)) || this.cache.has(`${e.path}#${e.index}`);
     // (the block the fill is downloading is left to it: it stores it too)
-    const todo = (e) => !stored(e) && this.bgCur?.key !== `${e.path}#${e.index}` && !this.blockFlights.has(`${e.path}#${e.index}`) && !this.flights.has(`${e.path}#${e.index * (BLOCK / CHUNK)}`);
+    const todo = (e) => !e.pending && !stored(e) && this.bgCur?.key !== `${e.path}#${e.index}` && !this.blockFlights.has(`${e.path}#${e.index}`) && !this.flights.has(`${e.path}#${e.index * (BLOCK / CHUNK)}`);
     // the entry to download next: the first one past the game's position not stored yet, else the first one — the
     // launch set's first when the position is past it (opts.first)
     const next = () => {
@@ -347,13 +355,15 @@ export class HttpBackend {
       }
       return null;
     };
-    const parts = new Set(); let failed = false;
+    const parts = new Set(); let failed = false, down = false;
     for (;;) {
-      if (stop() || store.failed) return;
+      if (stop() || store.failed || down) return;
+      // (a measured fast link: requests side by side, the game's reads beside them — see FAST_PREFETCH_PARTS)
+      const overlap = this.net.fast() && this.net.measured;
       // (the game's own reads first; the block fill, when it has blocks to fetch, runs beside this pass rather than
       // before it: a session whose game keeps touching new blocks keeps the fill busy for good, and waiting for it
       // starved this pass for whole sessions)
-      while (this.gameBusy(300)) { if (stop()) return; await new Promise((res) => setTimeout(res, 100)); }
+      if (!overlap) while (this.gameBusy(300)) { if (stop()) return; await new Promise((res) => setTimeout(res, 100)); }
       if (!this.net.fast()) {
         // (up to PREFETCH_PARTS requests queued at once: each waits for its turn on the link, which lets several small
         // ones run together — a run of small files is latency-bound — within the link's background bytes)
@@ -370,19 +380,25 @@ export class HttpBackend {
         if (failed) { failed = false; if (stop()) return; await new Promise((res) => setTimeout(res, 1000)); }
         continue;
       }
+      if (overlap && parts.size >= (this.gameBusy(300) ? 1 : FAST_PREFETCH_PARTS)) { await Promise.race([...parts, new Promise((res) => setTimeout(res, 100))]); continue; }
       const k = next(); progress.k = k;
-      if (k < 0) break;
+      if (k < 0) { if (parts.size) { await Promise.race(parts); continue; } break; }
       const e = entries[k], f = entries[k + 1];
       const n = f && f.path === e.path && f.index === e.index + 1 && todo(f) ? 2 : 1;
       const start = e.index * BLOCK, end = Math.min(e.size, (e.index + n) * BLOCK);
-      const data = await this.fetchBackground(e.path, start, end, null, true, false, { prio: PRIO.prefetch, stop });
-      if (data === ABORTED) continue;
-      if (data === null) return;
-      if (!data) { e.skip = true; continue; } // (an answer to skip: not asked again this session)
-      for (let i = 0; i < n; i++) store.put(skey(e, e.index + i), data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)));
-      // (done with, stored or not: a full store drops blocks silently, and the pass would fetch them again forever)
-      e.skip = true; if (n === 2) f.skip = true;
-      progress.bytes += data.length; progress.blocks += n;
+      e.pending = true; if (n === 2) f.pending = true;
+      const job = this.fetchBackground(e.path, start, end, null, true, false, { prio: PRIO.prefetch, stop }).then((data) => {
+        e.pending = false; if (n === 2) f.pending = false;
+        if (data === ABORTED) return;
+        if (data === null) { down = true; return; }
+        if (!data) { e.skip = true; return; } // (an answer to skip: not asked again this session)
+        for (let i = 0; i < n; i++) store.put(skey(e, e.index + i), data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)));
+        // (done with, stored or not: a full store drops blocks silently, and the pass would fetch them again forever)
+        e.skip = true; if (n === 2) f.skip = true;
+        progress.bytes += data.length; progress.blocks += n;
+      });
+      if (!overlap) { await job; continue; }
+      parts.add(job); job.finally(() => parts.delete(job));
     }
     store.flush?.(true); // (a sync point: the prefetch is over)
     progress.done = true; this.learnedDone = true;
@@ -601,6 +617,21 @@ export class HttpBackend {
    * a measured link, not thin, that carries it in WHOLE_BLOCK_SECONDS at most.
    */
   wholeBlockFits() { return this.net.bw > 0 && !this.net.thin() && this.net.secondsFor(BLOCK) <= WHOLE_BLOCK_SECONDS; }
+  /**
+   * How many blocks from `index` on lie whole within [index * BLOCK, end) and have nothing here (no block, no piece in
+   * memory or stored, none on its way), up to COALESCE_BLOCKS: a read of them fetches them in one request (see readNow).
+   */
+  missingBlocks(path, size, mtime, index, end) {
+    const P = BLOCK / CHUNK;
+    let n = 0;
+    for (let b = index; n < COALESCE_BLOCKS && b * BLOCK < size && Math.min(size, (b + 1) * BLOCK) <= end; b++, n++) {
+      if (this.peekBlockHere(path, size, mtime, b) || this.blockFlights.has(`${path}#${b}`) || this.bgCur?.key === `${path}#${b}`) break;
+      let any = false;
+      for (let c = b * P; c < (b + 1) * P && c * CHUNK < size && !any; c++) any = this.pieceHere(path, size, mtime, c) || this.flights.has(`${path}#${c}`);
+      if (any) break;
+    }
+    return n;
+  }
   /** block `index` is in memory or stored (no read) */
   peekBlockHere(path, size, mtime, index) { return this.cache.has(`${path}#${index}`) || !!this.store?.map.has(`${path}#${size}#${mtime}#${index}`); }
 
@@ -667,10 +698,13 @@ export class HttpBackend {
   }
   /**
    * The game needs the network: every background download in flight goes away (fetched again later), except the
-   * block fill's when a parked read waits for it (`spareWaited`).
+   * block fill's when a parked read waits for it (`spareWaited`) — on a link not measured (the local policies). On a
+   * measured link only those whose rest would hold the game's read up long (NetLink.abortLong): on a fast one with a
+   * real round trip an abort threw away bytes mostly arrived, to fetch them again a round trip later, for a read that
+   * shares the link with them for a few milliseconds (7 MB/s: a 2 MiB block, ~1 MB on the wire, in ~150 ms).
    */
   abortBackground(spareWaited = false) {
-    if (!this.net.fast()) { this.net.abortLong(); return; }
+    if (!this.net.fast() || this.net.measured) { this.net.abortLong(); return; }
     if (this.link) { for (const b of this.link) b.abortOwn(spareWaited); } else this.abortOwn(spareWaited);
   }
   abortOwn(spareWaited) {
@@ -1236,6 +1270,13 @@ class HttpFile {
     let pos = off;
     while (pos < end) {
       const bi = Math.floor(pos / BLOCK), bo = pos - bi * BLOCK;
+      // (one read that covers several whole blocks none of which is here — a file read whole in one call, as a program
+      // image is loaded —: those blocks in one request, as the game waits for all of them anyway; one round trip instead
+      // of one per block — BFME 1.08's 16 MB executable through a 75 ms link: 16 requests, 2.6 s before)
+      if (bo === 0) {
+        const n = this.b.missingBlocks(this.path, this.len, this.mtime, bi, end);
+        if (n >= 2) { this.b.block(this.path, this.len, bi, n, this.mtime); this.b.stats.coalesced = (this.b.stats.coalesced ?? 0) + 1; }
+      }
       // a random read of a block not here yet: only its pieces now (the block follows in the background); on a link
       // that is not fast a file read whole too, with what the link carries in a moment past it (see prepare)
       if ((!bulk || !fast) && !this.b.peekBlock(this.path, this.len, bi, this.mtime)) {

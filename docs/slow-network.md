@@ -179,6 +179,61 @@ frame: garbage collection and the event loop between slices), over 100 ms 0.7 �
 every pair; frames over 40 ms within the noise with the real store, more with the memory store.
 tests/http-backend-whole.test.js.
 
+## A fast link far away (2026-10-22)
+
+The owner's BFME 1.08 bench links on his laptop (7-15 MB/s measured, 75 ms round trip, behind Cloudflare): 16.7 s of
+game reads waiting for the network before the menu (112 requests, ~150 ms each), 191 MB downloaded before it, the
+learned prefetch still running through the skirmish (155 MB of background there), 12 frames held 400-600 ms by `ioWait`
+in ten minutes of play. Reproduced here with `tools/net-proxy.mjs` (an HTTP/2 TLS proxy as Cloudflare speaks to Chrome:
+one connection, one link of 7 MB/s shared equally by the answers in transfer, a 75 ms round trip, the origin asked with
+`Accept-Encoding: gzip, br`; `headless --page-origin https://127.0.0.1:<port>`), a fresh browser profile with a block
+store (`--opfs`), the menu bench then the skirmish bench (`--ui --bench`, `--game-lang fr`, `--gl-discard`), a copy of
+the live learned files of that day for each run, `--net-log` (every game read that went to the network: file, range,
+time, learned rank).
+
+What it showed:
+
+- **The learned prefetch was latency-bound.** On a fast link it fetched one 1-2 MiB request at a time, paused 300 ms
+  after each game read and aborted its request at each one: the 7 MB/s link carried 2.3-5 MB/s of it (one round trip
+  idle per request), the launch set (297 learned blocks, 145 MB on the wire) was in at ~41 s, the whole learned order
+  at ~100 s. A machine whose game reads faster than that (the owner's) waits for the reads itself.
+  **Now** (`FAST_PREFETCH_PARTS`): on a measured fast link, 3 requests in flight, 1 while the game reads from the
+  network, no pause; and a game read aborts only the background requests whose rest would hold it up long
+  (`NetLink.abortLong`, as on the slower links) — an abort threw away bytes mostly arrived for a read that shares the
+  link with them a few milliseconds. The link is used at 5-7 MB/s, the launch set in at ~32 s, the order at ~55 s.
+- **A file read whole in one call went block by block.** The executable (16 MB, loaded in one read) took 15 synchronous
+  1 MiB requests, 2.6 s. **Now** one read covering several whole blocks none of which is here (no piece, nothing on
+  its way) fetches them in one request (`missingBlocks`, at most 16): 4 requests, 1.6 s.
+- **Before the menu**: the game read 130 MB (decoded) before it looked playable, in 294 blocks — 294 of the launch
+  set's 297 (the launch set is right at the block level); a fast link fetches those blocks whole (their learned masks are
+  all 16 pieces: the masks are the union of every session's requests, and a fast link's own reads — whole blocks, 4 MiB
+  sequential reads, read-ahead — ask whole blocks), ~145 MB on the wire, and then goes on with the rest of the order.
+  In these runs the menu waited for the game's computation, not for the link (start phase: 7 s of guest code in its
+  worst frame; demand waits 1.9 s, all the executable at t = 2-4 s): the bytes past the launch set (162 → 237 MB before
+  the menu with the faster prefetch) did not delay it — the menu at 47.8 / 46.4 / 46.8 s.
+- **Play**: every game read that went to the network after the loading screen was one no earlier session had read
+  (learned rank none: W3D.big, Audio.big, Textures.big, _patch108.big, lang/FrenchAudio.big, Music.big at random —
+  26 and 40 of them in two sessions, almost none in common). Each took one round trip and its bytes, 90-150 ms (the
+  background downloads did not slow them: 104-105 ms on average, a 75 ms round trip); a frame held 300-700 ms is a
+  chain of 3-5 such reads by the same thread (a model and its textures). Nothing in the learned order could have had
+  them; the blocks near a miss (`NEAR_BLOCKS`) caught 1-4 of them (simulated on the logs: ±4 blocks 3-12, ±16 blocks
+  10-29), for ~3.6 blocks downloaded per miss (80-120 MB in the skirmish). The archives wanted whole after misses
+  (`?dbg=ORTHROS_WHOLE_AFTER_MISSES=1`, off by default) do have them: 19 reads on the network in play, 4 frames over
+  100 ms held by `ioWait`, for 427 MB of background in the skirmish instead of 80-122.
+
+| 7 MB/s, 75 ms (one run each) | before | after | after + whole after misses |
+|---|---|---|---|
+| menu bench: game reads on the network before the menu (requests / s waited) | 17 / 2.8 | 6 / 1.9 | 6 / 1.9 |
+| menu at (s), wire bytes by then | 47.8, 162 MB | 46.4, 239 MB | 46.8, 237 MB |
+| skirmish load: network reads / s | 4 / 0.4 | 8 / 1.0 | 4 / 0.4 |
+| skirmish play (600 s): network reads / s, frames > 100 ms (`ioWait` hitches) | 26 / 2.7, 12 (9) | 40 / 4.2, 14 (12) | 19 / 1.9, 10 (4) |
+| skirmish background bytes | 80 MB | 122 MB | 427 MB |
+
+The play rows are each session's own random reads (the "after" session read more new places): what the changes do is
+in the first rows. What only a real machine shows: whether its faster game then waits less before the menu (the owner's
+112 requests), and the round trips of a real path (the owner's game reads took ~150-170 ms on average against 75 ms
+here and ~105 ms in this proxy).
+
 ## Playable after (2026-10-21)
 
 The first pause of the learned order (2 s, `STARTUP_GAP_MS`) is not when a game becomes playable: OpenMW's French
@@ -495,6 +550,11 @@ and speed, the phase times, the bytes (demand and background) and the measured r
 node tools/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k,1m,5m \
   --learn-from <copy of the live server's learn dir> --games-dir /srv/orthros/data_games
 ```
+
+`tools/net-proxy.mjs` puts a player's connection in front of a harness server as the production front does (HTTP/2
+over TLS — no six-requests-per-host queue of a local HTTP/1.1 server —, one shared link, a round trip, `Accept-Encoding:
+gzip, br`, a log line per request): `node tools/net-proxy.mjs --upstream http://127.0.0.1:18431 --listen 18443 --rate 7m
+--rtt 75 --log proxy.log`, then `headless.mjs ... --port 18431 --page-origin https://127.0.0.1:18443`.
 
 The harness itself: `--net <rtt ms>:<Mbit/s>` (85 KB/s: `50:0.68`, 1 MB/s: `50:8`, 5 MB/s: `50:40`; the simulated link
 is shared fairly by the answers in flight, `src/host/sim-link.js`), `--net-trace <file>` (one line per range answered:
