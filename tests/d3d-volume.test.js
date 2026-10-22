@@ -130,3 +130,29 @@ test('UpdateTexture between volume textures copies their levels', () => {
   assert.equal(mem.read32(b.t.levels[0].mem + 8) >>> 0, 0xabcdef01);
   assert.equal(b.t.levels[0].dirty, true);
 });
+
+test('a destination box: a 2D image into one slice of a volume, the other slices kept (D3DXLoadVolumeFromFileInMemory / FromMemory)', () => {
+  const { E, mem, com, call, volumeTexture, level } = env(true);
+  const tex = volumeTexture(4, 4, 4, 1, FMT.A8R8G8B8), vp = level(tex, 0).p, v = com.implAt(vp);
+  mem.fill(v.ensureMem(E.proc), v.bytes, 0x5a);
+  // a 2D DDS, 32-bit BGRA 4 x 4
+  const file = new Uint8Array(128 + 64), dv = new DataView(file.buffer);
+  file.set([0x44, 0x44, 0x53, 0x20]); dv.setUint32(4, 124, true); dv.setUint32(8, 0x1007, true); dv.setUint32(12, 4, true); dv.setUint32(16, 4, true);
+  dv.setUint32(76, 32, true); dv.setUint32(80, 0x41, true); dv.setUint32(88, 32, true); dv.setUint32(92, 0xff0000, true); dv.setUint32(96, 0xff00, true); dv.setUint32(100, 0xff, true); dv.setUint32(104, 0xff000000, true); dv.setUint32(108, 0x1000, true);
+  for (let i = 0; i < 16; i++) dv.setUint32(128 + 4 * i, (0xff000000 | i * 0x030507) >>> 0, true);
+  const p = E.alloc(file.length); mem.writeBytes(p, file);
+  const box = E.alloc(24); [0, 0, 4, 4, 2, 3].forEach((x, i) => mem.write32(box + 4 * i, x)); // (slice 2)
+  assert.equal(call('D3DXLoadVolumeFromFileInMemory', vp, 0, box, p, file.length, 0, 1, 0, 0), 0);
+  const slice = (z) => Array.from(mem.bytes(v.mem + z * v.slice, v.slice));
+  assert.deepEqual(slice(2), Array.from(file.subarray(128)));
+  for (const z of [0, 1, 3]) assert.ok(slice(z).every((x) => x === 0x5a), `slice ${z} kept`);
+  // the same from memory into slice 0, a 2 x 2 x 1 box at (1, 1): resized from the 4 x 4 source by 2 x 2 means
+  const sbox = E.alloc(24); [0, 0, 4, 4, 0, 1].forEach((x, i) => mem.write32(sbox + 4 * i, x));
+  [1, 1, 3, 3, 0, 1].forEach((x, i) => mem.write32(box + 4 * i, x));
+  assert.equal(call('D3DXLoadVolumeFromMemory', vp, 0, box, p + 128, FMT.A8R8G8B8, 16, 64, 0, sbox, 1, 0), 0);
+  const at = (x, y, z) => mem.read32(v.mem + z * v.slice + y * v.pitch + 4 * x) >>> 0;
+  assert.equal(at(0, 0, 0), 0x5a5a5a5a); assert.equal(at(3, 3, 0), 0x5a5a5a5a);
+  const src = (x, y) => dv.getUint32(128 + 4 * (y * 4 + x), true);
+  const mean = (sh, x0, y0) => { let t = 0; for (let y = y0; y < y0 + 2; y++) for (let x = x0; x < x0 + 2; x++) t += (src(x, y) >>> sh) & 0xff; return Math.floor((t + 2) / 4); };
+  for (const sh of [0, 8, 16]) assert.equal((at(2, 1, 0) >>> sh) & 0xff, mean(sh, 2, 0), `channel ${sh}`);
+});

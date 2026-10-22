@@ -686,12 +686,13 @@ uploaded again (in-thread nor in the render worker). Now (d3d8.js `Volume`, shar
   `SURF_DIRTY`), so a later write to the texture waits for the commands that still read its old contents until the
   render worker acknowledges the upload (without it, a write made before the upload was replayed reached the GPU: the
   randomized replay tests, which lock volume levels, caught it).
-- `D3DXLoadVolumeFromFileInMemory` (the file's first level converted to the level's format and size) and
-  `D3DXLoadVolumeFromMemory` (a source box of any texture format, resized with a box or point filter) load whole levels
-  (a destination or source box of the file variant is reported once and the whole volume loaded). `D3DXFilterTexture`
+- `D3DXLoadVolumeFromFileInMemory` (the file's first level, as is when the formats and sizes agree) and
+  `D3DXLoadVolumeFromMemory` load a source box into a destination box of the level: converted through RGBA8, resized
+  to the box (2 x 2 x 2 means or point), encoded slice by slice and written at the box's place (DXT: boxes on 4 x 4
+  blocks). RotWK 2.01 loads 2D images into single slices of a 32 x 32 x 32 volume (box 0,0,32,32,z,z+1). `D3DXFilterTexture`
   of a volume texture computes each level from the one above, as RGBA8, each texel the mean of the 2 x 2 x 2 source box
   (fewer along an axis already at 1).
 
-Tests: `tests/d3d-volume.test.js` (Direct3D 8 and 9 levels, descriptions, boxes, the D3DX loads and the mips against a
-direct computation, UpdateTexture; a mutation restoring `E_NOTIMPL` fails 5 of 6, the box offset or the volume mips one
+Tests: `tests/d3d-volume.test.js` (Direct3D 8 and 9 levels, descriptions, boxes, the D3DX loads — a slice box among kept slices — and
+the mips against a direct computation, UpdateTexture; a destination box ignored fails one; a mutation restoring `E_NOTIMPL` fails 5 of 6, the box offset or the volume mips one
 each), the render-worker replay tests (a mirror that does not mark the level dirty fails 4).
