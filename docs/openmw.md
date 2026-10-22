@@ -500,6 +500,32 @@ runs each): `?tier=high` 1.47-1.55 fps, gap p99 3.5-6.5 s; the tier chosen now (
 `tools/openmw/check.mjs` passes on r2. Not validated: a real GPU (the owner's laptop), the local map screen after r2
 (the change removes callbacks only), a throttled link for the skipped sounds.
 
+### r2 checked on the public site (2026-10-21, wave 2)
+
+Headless Chromium (SwiftShader), the live server, scratch harnesses (not kept):
+- **Multiplayer, two real clients** (two Orthros accounts registered, the port page's « with friends », QA
+  `?start=-2,-9` character creation, friend request/accept, `joinfriend`): `morrowind-goty-en` — both `Joined`,
+  `simReady=1`, the guest in the host's world after 116 s, each in the other's roster, the host's W key moved its
+  puppet on the guest 59 units; `morrowind-goty-vanilla-plus-fr` — the same (12 content files, no
+  `orthros.omwscripts`), together after 117 s, puppet moved 21 units. No `BAD_CONTENT`, no page error. Playable marks
+  recorded (`playable-<manifest>.json`: 0 → 3 for each, the guest's page counting twice: its reload into the host's
+  world is a new session). Test accounts deleted (login 401 afterwards), native players erased through the gateway's
+  operator API (`accounts/delete`: account and character).
+- **Maps**: the local map (Seyda Neen, the menu's map window and the HUD's) and the world map draw on r2, in both the
+  original and Vanilla+ (`M`). The local map's explored part looks pale/whitish in SwiftShader; r1 on the same spot
+  (a local server on the r1 release) draws it the same (mean pixel difference 2.5/255): not an r2 change.
+- **Quality tier**: SwiftShader → 'low' (`software`); a renderer string faked as Intel Iris Xe → 'mid'
+  (`integrated`); a minute in the world at a frame p99 of ~180 ms stored `{ gpu, tier: 'low' }` and the reload started
+  at 'low' (`orthrosTierChoice.saved`, the engine's `__omwTier` 'low').
+- **Throttled 1 MB/s** (a proxy in front of the live server, a fresh browser, `vanilla-plus-fr`, in the world ~105 s
+  after the page): at 'low' (SwiftShader) the view does not grow — by design, the tier's distance is the boot one
+  (8192); at 'mid' (Iris Xe faked) 8192 → 12288 within 34 s of the world. Light copies reloaded in place
+  (`orthros_file_updated`): 334 in 10 min ('low'), 381 in 12 min ('mid'), the first ~2 min after the world. First
+  plays of sounds skipped (footsteps, creatures, wind): 35 files ('low') / 37 ('mid'), of which 24 / 32 were played
+  again later and found loaded.
+- Found and fixed: the header's data pills never hid (`#topbar .pill { display: flex }` beat `[hidden]`): « Preloading
+  100 % » and « Ready to play » stayed in the world, every runtime (`tests/player-css-hidden.test.js`).
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.
