@@ -61,6 +61,20 @@ DLLIMPORT HANDLE WINAPI LoadLibraryA(const char*);
 DLLIMPORT DWORD WINAPI GetVersion(void);
 DLLIMPORT void WINAPI OutputDebugStringA(const char*);
 DLLIMPORT int WINAPI lstrlenA(const char*);
+typedef struct { DWORD nLength; void* lpSecurityDescriptor; BOOL bInheritHandle; } SECURITY_ATTRIBUTES;
+typedef struct { DWORD cb; char* lpReserved; char* lpDesktop; char* lpTitle; DWORD dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags; WORD wShowWindow, cbReserved2; BYTE* lpReserved2; HANDLE hStdInput, hStdOutput, hStdError; } STARTUPINFOA;
+typedef struct { HANDLE hProcess; HANDLE hThread; DWORD dwProcessId; DWORD dwThreadId; } PROCESS_INFORMATION;
+DLLIMPORT BOOL WINAPI CreateProcessA(const char*, char*, SECURITY_ATTRIBUTES*, SECURITY_ATTRIBUTES*, BOOL, DWORD, void*, const char*, STARTUPINFOA*, PROCESS_INFORMATION*);
+DLLIMPORT HANDLE WINAPI CreateFileMappingA(HANDLE, SECURITY_ATTRIBUTES*, DWORD, DWORD, DWORD, const char*);
+DLLIMPORT HANDLE WINAPI OpenFileMappingA(DWORD, BOOL, const char*);
+DLLIMPORT void* WINAPI MapViewOfFile(HANDLE, DWORD, DWORD, DWORD, DWORD);
+DLLIMPORT BOOL WINAPI UnmapViewOfFile(void*);
+DLLIMPORT HANDLE WINAPI OpenEventA(DWORD, BOOL, const char*);
+DLLIMPORT HANDLE WINAPI OpenMutexA(DWORD, BOOL, const char*);
+DLLIMPORT BOOL WINAPI GetExitCodeProcess(HANDLE, DWORD*);
+DLLIMPORT BOOL WINAPI TerminateProcess(HANDLE, UINT);
+DLLIMPORT DWORD WINAPI WaitForMultipleObjects(DWORD, const HANDLE*, BOOL, DWORD);
+DLLIMPORT BOOL WINAPI PostThreadMessageA(DWORD, UINT, WPARAM, LPARAM);
 
 // user32
 DLLIMPORT WORD WINAPI RegisterClassA(const WNDCLASSA*);

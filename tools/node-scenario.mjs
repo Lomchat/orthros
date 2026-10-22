@@ -28,9 +28,9 @@ export class NodeScenario {
    *   bench scenario's `coords`): scaled to the game's display as the page's bench player scales them
    */
   constructor(text, vm, log, nowMs = () => performance.now(), opts = {}) {
-    this.vm = vm; this.log = log; this.nowMs = nowMs; // (the time base: wall time, or a virtual clock's for a deterministic run)
+    this.rootVm = vm; this.log = log; this.nowMs = nowMs; // (the time base: wall time, or a virtual clock's for a deterministic run)
     // (the page's own scaling: the device's back buffer once there is one, the host's display before)
-    this.scaler = new ScenarioPlayer([], { from: opts.from ?? null, display: () => { const pp = vm.d3dDevice?.pp, d = vm.host.display; return pp?.width ? [pp.width, pp.height] : d ? [d.width, d.height] : null; } });
+    this.scaler = new ScenarioPlayer([], { from: opts.from ?? null, display: () => { const pp = this.vm.d3dDevice?.pp, d = vm.host.display; return pp?.width ? [pp.width, pp.height] : d ? [d.width, d.height] : null; } });
     const { steps, errors } = parseScenario(text);
     if (errors.length) throw new Error(`scenario: ${errors.join('; ')}`);
     this.events = steps.map((st) => ({ t: st.t, rel: st.rel, anchored: st.anchored, kind: st.kind, args: st.args, done: false }));
@@ -101,6 +101,8 @@ export class NodeScenario {
     this.log(`[slowapis] ${label}: ${s.slow} frames > ${s.over} ms, api+draw ${(s.apiMs / Math.max(1, s.slow)).toFixed(2)} ms per such frame; by API (ms per such frame, frames it took time in): ${rows.slice(0, 20).map(([nm, v, f]) => `${nm} ${(v / Math.max(1, s.slow)).toFixed(2)} (${f})`).join(', ')}`);
     s.slow = 0; s.apiMs = 0; s.sum.fill(0); s.frames.fill(0);
   }
+  /** the machine the scenario plays: the host's, or the child process that took the display (docs/processes.md) */
+  get vm() { return this.rootVm.group?.foreground ?? this.rootVm; }
   now() { return (this.nowMs() - this.t0) / 1000; }
   push(ev) { this.vm.host.inputQueue.push(ev); }
   /** Called often (API dispatch, waits): fires the due events. */

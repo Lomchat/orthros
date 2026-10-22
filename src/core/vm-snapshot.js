@@ -31,7 +31,8 @@ const VM_TRANSIENT = ['vfs', 'clock', 'host', 'mem', 'api', 'interp', 'jit', 'ex
   'traceApiRet', 'traceApiSite', 'traceApiSiteMax', 'apiTrace', 'apiTracePos', 'apiTraceNames', 'apiTraceRets', 'apiTraceTids', 'apiHistCounts',
   'profile', 'progressAt', 'progressEvery', 'onProgress', 'heapProv', 'heapProvMap', 'stdout', 'onStdout', 'deadline', 'sliceInsns',
   'runOptsByDepth', 'restoring', 'traceCom', 'traceComQuiet', 'GuestCrash', 'returnThunk', 'callbackReturnThunk', 'exitThreadThunk', 'exitProcessThunk',
-  'jitArgs', 'waitLogMin', 'mainWaits', 'recentFiles', 'recentReads', 'readSliceMs', 'apiTail', 'exitReport', 'traceRing', 'traceByArg'];
+  'jitArgs', 'waitLogMin', 'mainWaits', 'recentFiles', 'recentReads', 'readSliceMs', 'apiTail', 'exitReport', 'traceRing', 'traceByArg',
+  'ctorOpts', 'group', 'parentVm', 'kernelNamed']; // (group...: child processes, core/procs.js — a machine with several is not snapshotted)
 
 snapshotConstant('sched.PARK', PARK);
 snapshotConstant('process.TS', TS);
@@ -138,6 +139,7 @@ export function sealVmSnapRegistry(vm) {
 /** Why `vm` cannot be snapshotted now (null: it can — between time slices, nothing in progress). */
 export function notQuiet(vm) {
   if (!vm.proc) return 'no process';
+  if (vm.group) return 'several processes (a child process was started)';
   if (vm.depth) return 'inside a time slice';
   if (vm.sched.nestedWaits) return 'a nested wait in progress';
   if (vm.readsInFlight) return 'file reads in flight';

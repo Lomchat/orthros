@@ -22,6 +22,7 @@ import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, DEFER_WORDS, PROC_CONSTS } from '..
 import { Seh, EXC } from '../win32/seh.js';
 import { Com } from '../win32/com.js';
 import { apiOpt } from './api-opt.js';
+import { ProcessGroup } from './procs.js';
 
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 
@@ -66,6 +67,10 @@ export class Vm {
    */
   constructor(opts) {
     this.vfs = opts.vfs;
+    /** the options this machine was built with (a child process's machine is built alike: core/procs.js) */
+    this.ctorOpts = opts;
+    /** the machine's processes when it started a child (core/procs.js ProcessGroup; null: one process, the usual path) */
+    this.group = opts.group ?? null;
     this.clock = opts.clock ?? new RealClock();
     /** the guest's clock interrupt (timer-res.js): when timed waits end, the tick counters' steps, timeBeginPeriod */
     this.timerRes = opts.timerRes ?? timerResFromDebug();
@@ -166,6 +171,7 @@ export class Vm {
       exitReport: null, execFaults: 0, nullFaults: 0, apiTail: null,
       guestInsns: 0, // guest instructions executed (charged by the executors' budgets): see runThread
       nextPid: 0x400, // (process ids: win32/process.js)
+      tidBase: 0x800, parentVm: null, kernelNamed: null, mapViews: null, // (child processes: core/procs.js; kernel32-file.js)
     };
     for (const k of Object.keys(late)) this[k] ??= late[k];
     sealVmSnapRegistry(this); // (what the construction built is the same in every Vm: snapshots restore it in place)
@@ -241,6 +247,17 @@ export class Vm {
     return proc;
   }
 
+  /**
+   * A machine for a child process (kernel32 CreateProcess: core/procs.js), its process created from `opts` as
+   * createProcess does; this machine joins a process group on its first child.
+   */
+  spawnProcess(opts) {
+    const group = this.group ?? (this.group = new ProcessGroup(this));
+    const child = group.spawn(this);
+    try { child.createProcess(opts); } catch (e) { group.vms.splice(group.vms.indexOf(child), 1); throw e; }
+    return child;
+  }
+
   /** Run the process to completion (blocking). Returns the exit code. */
   run() {
     for (;;) { const r = this.runFor(Infinity); if (r.state === 'exited') return r.code; }
@@ -252,7 +269,13 @@ export class Vm {
    * state is in memory), so a browser worker can return to its event loop to present frames.
    * @returns {{ state: 'running' } | { state: 'sleep', until: number } | { state: 'idle' } | { state: 'exited', code: number }}
    */
-  runFor(untilMs) {
+  runFor(untilMs) { return this.group ? this.group.runFor(untilMs) : this.runOwn(untilMs, false); }
+
+  /**
+   * runFor of this machine's own process. `inGroup` (core/procs.js: one process among several): a wait of every thread
+   * is handed back to the group instead of being slept here, whatever the host.
+   */
+  runOwn(untilMs, inGroup) {
     const proc = this.proc;
     const main = proc.threads[0];
     try {
@@ -275,20 +298,22 @@ export class Vm {
           t.runMs = (t.runMs ?? 0) + t1 - t0; // (diagnostics: time per thread, nested slices included)
           this.sched.wakeBlocked(this.clock.at ? this.clock.at(t1) : undefined);
           if (untilMs !== Infinity && t1 >= untilMs) return RUN_RUNNING;
+          if (!inGroup && this.group) return RUN_RUNNING; // (a child process started: the group runs both from the next call)
           // (a file read went to the network during this call: the host's event loop completes it, back to it soon)
           if (untilMs !== Infinity && this.readsInFlight > 0 && t1 - tStart >= this.readSliceMs) return RUN_RUNNING;
           t0 = t1;
           continue;
         }
         if (proc.threads.every((x) => x.state === TS.DONE)) break;
-        if (untilMs !== Infinity && this.host?.cooperative) {
+        if (inGroup || (untilMs !== Infinity && this.host?.cooperative)) {
           // cooperative host (browser worker): hand the wait back to the event loop when it is long
-          if (this.host.pump) this.host.pump();
+          if (this.host?.pump) this.host.pump();
           if (this.sched.wakeBlocked()) { t0 = performance.now(); continue; }
           const wake = this.sched.nextWake();
           if (wake === Infinity) return RUN_IDLE;
           const delay = wake - this.clock.now();
-          if (delay > 2) return { state: 'sleep', until: performance.now() + (this.clock.real ? this.clock.real(delay) : delay) };
+          // (one process among several: never slept here — the group sleeps once every process waits)
+          if (delay > 2 || inGroup) return { state: 'sleep', until: performance.now() + Math.max(0, this.clock.real ? this.clock.real(delay) : delay), at: wake }; // (at: on the guest's clock)
         }
         this.sched.idle();
         t0 = performance.now();
@@ -304,7 +329,7 @@ export class Vm {
   finish(code) {
     this.proc.exited = true;
     this.proc.exitCode = code >>> 0;
-    this.host?.onExit?.(code >>> 0);
+    if (!this.group) this.host?.onExit?.(code >>> 0); // (several processes: the group tells the host once all ended)
     return code >>> 0;
   }
 

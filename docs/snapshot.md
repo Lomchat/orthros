@@ -64,6 +64,8 @@ subtly wrong. So:
   no backend has seen: created and uploaded whole at its first use. What the host showed comes back through `resume`
   hooks (`snapshotClass(cls, { resume })`, run once the machine is whole): the window manager sets the display mode,
   title and cursor again.
+- **Several processes** (a game started by its launcher, docs/processes.md): a machine that started a child process is
+  never captured (`notQuiet`: "several processes") — its state spans several machines, each with its own memory.
 - **CPU states** are views on the guest memory (rebuilt by address); a PE image's file bytes, only read while it was
   mapped, are not kept.
 - **Time** goes on from where it was: a virtual clock's state, a real clock's origin moved. Everything the guest can

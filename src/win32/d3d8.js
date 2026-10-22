@@ -865,6 +865,7 @@ export function registerDirect3D8(api, vm) {
     CreateDevice(c) {
       const adapter = c.arg(1), devType = c.arg(2), hFocus = c.arg(3), behavior = c.arg(4), pp = c.arg(5), out = c.arg(6);
       if (adapter !== 0 || !pp || !out) return D3DERR_INVALIDCALL;
+      vm.group?.setForeground(vm); // (a child process rendering: the display and the input are its own, core/procs.js)
       const dev = new Device(c, this, adapter, devType, hFocus, behavior, pp);
       dev.ptr = com.create(c.proc, 'IDirect3DDevice8', dev);
       dev.initShadow(c.proc);

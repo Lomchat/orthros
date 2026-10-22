@@ -111,7 +111,7 @@ export function registerDirectDraw(api, vm) {
     GetVerticalBlankStatus(c) { if (c.arg(1)) mem.write32(c.arg(1), 0); return DD_OK; }
     Initialize() { return DDERR_ALREADYINITIALIZED; }
     RestoreDisplayMode() { return DD_OK; }
-    SetCooperativeLevel(c) { this.dd.coop = c.arg(2); return DD_OK; }
+    SetCooperativeLevel(c) { this.dd.coop = c.arg(2); if (c.arg(2) & 0x10) vm.group?.setForeground(vm); return DD_OK; } // (DDSCL_EXCLUSIVE: a child process takes the display, core/procs.js)
     SetDisplayMode() { return DD_OK; } // (the page's canvas follows the Direct3D device's back buffer, not this)
     WaitForVerticalBlank() { return DD_OK; }
     RestoreAllSurfaces() { return DD_OK; }

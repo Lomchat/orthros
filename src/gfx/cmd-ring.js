@@ -80,6 +80,7 @@ export const OPS = [
   ['GAMMA', 'b'],
   ['CANVAS', 'uu'], // the display's size (the canvas the frames are presented on)
   ['TEX_LOD', 'uu'], // texture id, its IDirect3DBaseTexture::SetLOD level (the most detailed level sampled)
+  ['MEMORY', 'u'], // the guest memory the devices created from here read (an index of the memories the render worker was given: a child process's, docs/processes.md)
 ];
 export const OP = Object.fromEntries(OPS.map(([name], i) => [name, i]));
 export const OP_NAMES = OPS.map(([name]) => name);
@@ -101,6 +102,7 @@ export const CTL = {
   READY: 128, // render worker: 1 when its context is up, -1 when it failed
   EPOCH: 144, // render worker: incremented at each context restoration
   REPLAY_US: 160, // render worker: microseconds spent replaying (running total)
+  MEMORIES: 176, // render worker: the guest memories it was given after the first (a child process's, docs/processes.md)
 };
 export const CTL_WORDS = 192;
 export const TWO32 = 4294967296;

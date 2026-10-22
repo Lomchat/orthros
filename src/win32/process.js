@@ -118,6 +118,7 @@ export class Process {
     this.pid = vm.nextPid; vm.nextPid += 4; // (per machine: in its snapshots)
     this.vmem = new VMem();
     this.handles = new HandleTable(vm.mem);
+    if (opts.handleBase) this.handles.next = opts.handleBase; // (a child process: its own handles above the values it inherits)
     /** @type {Map<string, any>} lowercase name -> module (PeModule or builtin marker) */
     this.modules = new Map();
     /** @type {any[]} native modules in load order */
@@ -127,7 +128,7 @@ export class Process {
     this.exeDir = this.exePath.slice(0, this.exePath.lastIndexOf('\\'));
     this.cwd = normalizeWin(opts.cwd ?? this.exeDir);
     this.args = opts.args ?? '';
-    this.cmdline = `"${this.exePath}"` + (this.args ? ' ' + this.args : '');
+    this.cmdline = opts.cmdline ?? `"${this.exePath}"` + (this.args ? ' ' + this.args : ''); // (a child process: its creator's command line as given)
     this.env = new Map(Object.entries({
       SystemRoot: 'C:\\Windows', windir: 'C:\\Windows', SystemDrive: 'C:',
       TEMP: 'C:\\Users\\Player\\Temp', TMP: 'C:\\Users\\Player\\Temp', USERPROFILE: 'C:\\Users\\Player',
@@ -144,7 +145,7 @@ export class Process {
     this.exited = false;
     /** @type {Thread[]} */
     this.threads = [];
-    this.nextTid = 0x800;
+    this.nextTid = vm.tidBase ?? 0x800; // (a child process's machine: a range of its own, core/procs.js)
     this.usedSlots = new Uint8Array(MAX_THREADS);
     this.tlsSlots = new Uint8Array(1088); // 64 + 1024 expansion
     this.tlsValuesExpansion = new Map(); // tid -> guest address of expansion array

@@ -6,7 +6,7 @@
 import { createWebGLBackend } from './d3d8-webgl.js';
 import { Replayer, compareDevice } from './d3d-mirror.js';
 import { RenderLink, Recorder } from './d3d-recorder.js';
-import { CTL, CTL_WORDS, ACK_SLOTS } from './cmd-ring.js';
+import { CTL, CTL_WORDS, ACK_SLOTS, OP } from './cmd-ring.js';
 
 /**
  * The rendering mode (`?glworker=` values: '1' render worker, '0' in-thread backend, 'inline', 'check', 'compare',
@@ -82,6 +82,26 @@ export function createRemoteGfx({ log, onFail, workerUrl }) {
   const remoteStats = new Map();
   const programCache = { queue: { length: 0 }, ready: new Map(), learned: [], used: [], started: 0, hits: 0, pending: 0, devices: new Set(), remote: true };
   let worker = null, readyTimer = null, failed = false, deviceProxy = null, settle = null;
+  /** the guest memories the render worker was given (its replayer's indexes), and the one devices are created with now */
+  const memories = [], current = { memory: null };
+  /**
+   * A device of another guest memory than the current one (a child process's, docs/processes.md): the render worker
+   * given that memory — waited for, at most 5 s, as the commands that follow read it — and told in the ring to create
+   * the devices from here with it. False when it could not take it (the caller renders in this thread then).
+   */
+  const useMemory = (memory) => {
+    if (memory === current.memory) return true;
+    let i = memories.indexOf(memory);
+    if (i < 0) {
+      memories.push(memory); i = memories.length - 1;
+      worker?.postMessage({ type: 'memory', index: i, memory });
+      const end = performance.now() + 5000;
+      while (Atomics.load(ctl, CTL.MEMORIES) < i && !failed && performance.now() < end) Atomics.wait(ctl, CTL.MEMORIES, Atomics.load(ctl, CTL.MEMORIES), 50);
+      if (Atomics.load(ctl, CTL.MEMORIES) < i) { log(`render worker: guest memory ${i} not taken`); return false; }
+    }
+    gfx.link.w.put(OP.MEMORY, i); current.memory = memory;
+    return true;
+  };
   const gfx = {
     mode: 'worker', gl: null, programCache, ready: false, replay: { ms: 0, frames: 0 },
     link: null,
@@ -90,7 +110,9 @@ export function createRemoteGfx({ log, onFail, workerUrl }) {
     afterSlice() { if (!failed) gfx.link.publish(true); },
     beforeSlice() {},
     createDevice(dev) {
+      const memOk = !dev.proc?.mem?.memory || !current.memory || useMemory(dev.proc.mem.memory);
       const rec = new Recorder(gfx.link, dev);
+      if (!memOk) fail('a device of another guest memory the render worker could not take'); // (its devices to this thread's backend)
       deviceProxy = { get stats() { return gfx.link.statsFor(rec.id); }, get frame() { return gfx.link.frames; }, set captureAt(v) { worker?.postMessage({ type: 'capture', at: v }); }, set captureDraws(v) { worker?.postMessage({ type: 'capture', draws: v }); }, set countFrames(v) { worker?.postMessage({ type: 'capture', count: v }); } };
       return rec;
     },
@@ -99,6 +121,7 @@ export function createRemoteGfx({ log, onFail, workerUrl }) {
     post(m) { worker?.postMessage(m); },
     stats() { return { ...gfx.link.stats, replayMs: gfx.replay.ms }; },
     start(memory, opts, pagePort) {
+      memories.push(memory); current.memory = memory;
       worker = new Worker(workerUrl, { type: 'module' });
       worker.onmessage = (e) => {
         const m = e.data;

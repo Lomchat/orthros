@@ -254,7 +254,9 @@ export class Scheduler {
       }
       if (this.vm.host?.pump) this.vm.host.pump();
       if (cond()) continue;
-      const wake = Math.min(this.nextWake(), deadline);
+      // (several processes, core/procs.js: the others run meanwhile — what this one waits for may be theirs)
+      if (this.vm.group && this.vm.group.runOthers(this.vm)) continue;
+      const wake = Math.min(this.nextWake(), deadline, this.vm.group ? clock.now() + 5 : Infinity);
       if (wake === Infinity) {
         if (idleSince < 0) idleSince = clock.now();
         if (this.vm.host?.waitEvent) { const w0 = clock.now(); this.vm.host.waitEvent(this.deadlockLimit, io()); note(clock.now() - w0); }

@@ -143,7 +143,11 @@ export async function main(argv) {
     console.log(`\n[orthros] process exited with code ${code} after ${((performance.now() - t0) / 1000).toFixed(1)}s, ${vm.apiCalls} API calls`);
   } catch (e) {
     if (e instanceof GuestCrash) console.log(`\n[orthros] ${e.report}`);
-    else if (e.message === 'time limit') { const t = vm.lastThread; console.log(`\n[orthros] time limit reached after ${o.seconds}s, ${vm.apiCalls} API calls`); if (t) console.log(vm.crashReport(t, 'time limit (state of the last running thread)')); }
+    else if (e.message === 'time limit') {
+      console.log(`\n[orthros] time limit reached after ${o.seconds}s, ${vm.apiCalls} API calls`);
+      // (several processes, core/procs.js: each one's state)
+      for (const v of vm.group?.vms ?? [vm]) { const t = v.lastThread; if (t && !v.proc.exited) console.log(`${vm.group ? `[process ${v.proc.pid} ${v.proc.exe?.name}, ${v.apiCalls} API calls] ` : ''}${v.crashReport(t, 'time limit (state of the last running thread)')}`); }
+    }
     else { console.log(`\n[orthros] host error: ${e.stack}`); }
   }
   saveRegistry();
@@ -151,6 +155,7 @@ export async function main(argv) {
   if (vm.apiHistCounts) console.log('[orthros] top API calls: ' + [...vm.apiHist()].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, v]) => `${k}=${v}`).join(' '));
   if (vm.profile) { const total = vm.slices || 1; console.log(`[orthros] profile: ${vm.slices} slices of 100k instructions (~${(vm.slices / 10).toFixed(0)}M instructions)`); for (const [k, v] of [...vm.profile].sort((a, b) => b[1] - a[1]).slice(0, 20)) console.log(`  ${(100 * v / total).toFixed(1).padStart(5)}%  ${vm.proc.symbolize(k << 6)}`); }
   console.log(`[orthros] modules: ${vm.proc?.moduleList.map((m) => m.name).join(', ')}`);
+  for (const v of vm.group?.vms.slice(1) ?? []) console.log(`[orthros] child process ${v.proc.pid} ${v.proc.exe?.name}: ${v.proc.exited ? `exited with code ${v.proc.exitCode}` : 'running'}, ${v.apiCalls} API calls; modules: ${v.proc.moduleList.map((m) => m.name).join(', ')}${v.firstD3DCall ? `; first Direct3D call: ${v.firstD3DCall.name} after ${v.firstD3DCall.apiCalls} API calls` : ''}`);
   const unknown = [...(vm.proc?.unknownImports ?? [])];
   if (vm.firstD3DCall) console.log(`[orthros] first Direct3D call: ${vm.firstD3DCall.name} from ${vm.firstD3DCall.from} after ${vm.firstD3DCall.apiCalls} API calls`);
   console.log(`[orthros] unknown imports: ${unknown.length}` + (unknown.length ? '\n  ' + unknown.sort((a, b) => b[1].calls - a[1].calls).map(([k, v]) => `${k} (${v.calls}, from ${v.from})`).join('\n  ') : ''));
