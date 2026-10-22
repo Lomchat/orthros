@@ -312,7 +312,8 @@ export class Vm {
           const wake = this.sched.nextWake();
           if (wake === Infinity) return RUN_IDLE;
           const delay = wake - this.clock.now();
-          if (delay > 2) return { state: 'sleep', until: performance.now() + (this.clock.real ? this.clock.real(delay) : delay) };
+          // (one process among several: never slept here — the group sleeps once every process waits)
+          if (delay > 2 || inGroup) return { state: 'sleep', until: performance.now() + Math.max(0, this.clock.real ? this.clock.real(delay) : delay), at: wake }; // (at: on the guest's clock)
         }
         this.sched.idle();
         t0 = performance.now();

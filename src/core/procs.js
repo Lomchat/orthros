@@ -99,7 +99,7 @@ export class ProcessGroup {
   runFor(untilMs) {
     const root = this.root;
     for (;;) {
-      let running = false, wake = Infinity, ran = 0;
+      let running = false, wake = Infinity, wakeAt = Infinity, ran = 0;
       for (const v of this.vms) {
         if (!v.proc || v.proc.exited) continue;
         const now = performance.now();
@@ -107,7 +107,7 @@ export class ProcessGroup {
         ran++;
         if (r.state === 'exited') { this.exited(v, r.code); continue; }
         if (r.state === 'running') running = true;
-        else if (r.state === 'sleep') wake = Math.min(wake, r.until);
+        else if (r.state === 'sleep') { wake = Math.min(wake, r.until); wakeAt = Math.min(wakeAt, r.at ?? Infinity); }
       }
       if (!ran || this.vms.every((v) => !v.proc || v.proc.exited)) return { state: 'exited', code: this.finish() };
       const now = performance.now();
@@ -115,7 +115,8 @@ export class ProcessGroup {
       // every process waits
       if (untilMs !== Infinity && root.host?.cooperative) return wake === Infinity ? IDLE : { state: 'sleep', until: wake };
       if (untilMs !== Infinity && now >= untilMs) return RUNNING;
-      const ms = wake === Infinity ? 50 : Math.max(0, wake - now);
+      // (slept on the guest's clock — a virtual one advances by it — at most 50 ms at a time)
+      const clock = root.clock, ms = Math.min(50, wakeAt === Infinity ? 50 : Math.max(0.5, wakeAt - clock.now())); // (never 0: a wait due now is checked again after a moment)
       if (wake === Infinity) {
         if (this.idleSince < 0) this.idleSince = root.clock.now();
         else if (root.clock.now() - this.idleSince > root.sched.deadlockLimit) {
@@ -123,7 +124,7 @@ export class ProcessGroup {
           v.deadlock(t, `every process waits (${t?.blockReason ?? 'idle'})`);
         }
       } else this.idleSince = -1;
-      if (ms > 0) { if (root.host?.waitEvent) root.host.waitEvent(Math.min(ms, 50)); else root.clock.sleep(Math.min(ms, 50)); }
+      if (root.host?.waitEvent) root.host.waitEvent(ms); else clock.sleep(ms);
     }
   }
 

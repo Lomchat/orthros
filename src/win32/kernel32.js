@@ -814,7 +814,7 @@ export function registerKernel32(api, vm) {
     let child;
     try {
       child = vm.spawnProcess({ exePath: image, exeBytes: bytes, cmdline: cmd ?? `"${image}"`, cwd: cwd ? proc.path(cwd) : proc.cwd, env,
-        dllOverrides: Object.fromEntries(proc.dllOverrides), handleBase: inherit ? proc.handles.next : 0 });
+        dllOverrides: Object.fromEntries(proc.dllOverrides), handleBase: proc.handles.next }); // (its handles — windows too — above its creator's)
     } catch (e) { vm.warn(`${what} failed: ${e.message}`); return c.fail(193); }
     const cp = child.proc, main = cp.threads[0];
     if (inherit) for (const o of proc.handles.inheritInto(cp.handles)) shared(o);
