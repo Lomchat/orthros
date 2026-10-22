@@ -9,7 +9,7 @@
 // demand-wait seconds (the time at least one of the game's own reads — neither `p=1` nor `a=1` — was in flight).
 //
 //   node tools/data-matrix.mjs --pristine <dir with learn/ brcache/ covers/> [--links 85k:150,1m:60,7m:75]
-//     [--only a,b] [--skip a,b] [--parallel 2] [--seconds 85k=1800,1m=900,7m=600] [--out results.jsonl] [--scratch <dir>]
+//     [--only a,b] [--skip a,b] [--parallel 2] [--seconds 85k=1800,1m=900,7m=600] [--win32-seconds N] [--out results.jsonl] [--scratch <dir>]
 //     [--games-dir /srv/orthros/data_games] [--engines-dir /srv/orthros/data_engines] [--lang <code>]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -85,7 +85,9 @@ async function one(m, link) {
   }
   const proxy = await startProxy({ upstream: `127.0.0.1:${sport}`, port: 0, rate: link.rate, rtt: link.rtt, log: path.join(dir, 'proxy.jsonl'), certDir: path.join(scratch, 'cert') });
   const lang = opt('lang') && m.languages.includes(opt('lang')) ? opt('lang') : m.languages.includes('en') ? 'en' : m.languages[0];
-  const seconds = secs[link.name] ?? 900;
+  // (--win32-seconds: a Win32 game's window — its menu's time on a loaded machine is the CPU's (SwiftShader), its data the
+  // same window for every run)
+  const seconds = (m.runtime ?? 'win32') === 'win32' && opt('win32-seconds') ? Number(opt('win32-seconds')) : secs[link.name] ?? 900;
   const runJson = path.join(dir, 'run.json');
   const t0 = Date.now();
   const res = await new Promise((resolve) => {
