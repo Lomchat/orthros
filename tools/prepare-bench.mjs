@@ -7,7 +7,7 @@
 // bytes (engine apart), requests, unit answers, the card's sizes (/api/manifests launch).
 //
 //   node tools/prepare-bench.mjs --pristine <dir with learn/ brcache/ covers/> [--code <tree>] [--links 85k:150,1m:60,7m:75]
-//     [--only a,b] [--out file] [--max-seconds 1800]
+//     [--only a,b] [--out file] [--max-seconds 1800] [--logs <dir>: the proxy's logs kept]
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
@@ -20,7 +20,7 @@ const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--
 const code = path.resolve(opt('code', path.join(path.dirname(fileURLToPath(import.meta.url)), '..')));
 const pristine = opt('pristine'); if (!pristine) { console.error('--pristine <dir>'); process.exit(2); }
 const links = opt('links', '85k:150,1m:60,7m:75').split(',').map(parseLink);
-const out = opt('out', '/dev/stdout'), maxSeconds = Number(opt('max-seconds', 1800));
+const out = opt('out', '/dev/stdout'), maxSeconds = Number(opt('max-seconds', 1800)), keepLogs = opt('logs', null);
 const only = opt('only')?.split(',');
 const work = fs.mkdtempSync(path.join(path.dirname(path.resolve(pristine)), 'prep-'));
 const freePort = () => new Promise((resolve) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
@@ -37,7 +37,8 @@ const { MemBlockStore } = await import(pathToFileURL(path.join(code, 'src/vfs/op
 const realFetch = globalThis.fetch;
 let base = null;
 globalThis.fetch = (u, o = {}) => { const { cache, mode, ...rest } = o; return realFetch(typeof u === 'string' && u.startsWith('/') ? base + u : u, rest); };
-let last = null; globalThis.self = { postMessage: (m) => { last = m; } };
+// (the last progress message: the worker's last post is 'stopped')
+let last = null; globalThis.self = { postMessage: (m) => { if (m.type !== 'stopped') last = m; } };
 
 try {
   for (const link of links) for (const m of catalog) {
@@ -51,7 +52,7 @@ try {
     const t0 = performance.now();
     const engine = card?.engineFiles?.length ? { files: card.engineFiles, bytes: card.engine } : null;
     const timer = setTimeout(() => { globalThis.self.onmessage?.({ data: { type: 'stop' } }); }, maxSeconds * 1000);
-    await download(m.name, undefined, 'launch', lang, engine, { openStore: async () => new MemBlockStore(4 << 30) });
+    await download(m.name, undefined, 'launch', lang, engine, { openStore: async () => new MemBlockStore(2 ** 32) });
     clearTimeout(timer);
     const seconds = Math.round((performance.now() - t0) / 100) / 10;
     await proxy.close();
@@ -62,6 +63,7 @@ try {
       wireMB: s.wireMB, engineMB: s.byKind.engine?.MB ?? 0, dataMB: s.byKind.background?.MB ?? 0, requests: s.requests, dataRequests: s.dataRequests, units: s.units };
     fs.appendFileSync(out, JSON.stringify(row) + '\n');
     console.error(`[prepare] ${m.name} ${link.name}: ${seconds} s, ${s.wireMB} MB (engine ${row.engineMB}), ${s.requests} req, units ${JSON.stringify(s.units)}${row.error ? ' ' + row.error : ''}`);
+    if (keepLogs) { fs.mkdirSync(keepLogs, { recursive: true }); fs.copyFileSync(logf, path.join(keepLogs, path.basename(logf))); }
     fs.rmSync(logf, { force: true });
   }
 } finally { srv.kill(); fs.rmSync(work, { recursive: true, force: true }); process.exit(0); }

@@ -20,10 +20,11 @@ import { startProxy } from './throttle-proxy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
-const pristine = opt('pristine'); if (!pristine) { console.error('--pristine <dir> (learn/, brcache/, covers/)'); process.exit(2); }
-const scratch = opt('scratch', path.join(path.dirname(path.resolve(pristine)), 'runs'));
+const pristine = opt('pristine') && path.resolve(opt('pristine')); if (!pristine) { console.error('--pristine <dir> (learn/, brcache/, covers/)'); process.exit(2); }
+// (absolute: the runner's cwd is this tree — a relative --json / --shot wrote its files into it)
+const scratch = path.resolve(opt('scratch', path.join(path.dirname(pristine), 'runs')));
 const gamesDir = opt('games-dir', '/srv/orthros/data_games'), enginesDir = opt('engines-dir', '/srv/orthros/data_engines');
-const outFile = opt('out', path.join(scratch, 'results.jsonl'));
+const outFile = path.resolve(opt('out', path.join(scratch, 'results.jsonl')));
 const parallel = Number(opt('parallel', 2));
 
 /** a link name (85k, 1m, 7m: KB/s of 1000 bytes, MB/s of 10^6) and its round trip: { name, rate, rtt } */

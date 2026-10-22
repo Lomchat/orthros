@@ -346,12 +346,15 @@ export class HttpBackend {
         const job = nextPart();
         if (!job) { if (parts.size || this.flights.size) { await (parts.size ? Promise.race(parts) : new Promise((res) => setTimeout(res, 200))); if (parts.size || next() >= 0 || nextPart()) continue; } break; }
         progress.k = job.r;
-        // (an entry asked more often than its pieces: what came was not kept — a full store —; not asked again)
-        if ((job.e.tries = (job.e.tries ?? 0) + 1) > BLOCK / CHUNK + 2) { job.e.skip = true; continue; }
         const pr = this.fetchPartBg(job.e.path, job.e.size, job.e.mtime, job.run[0], job.run[1], PRIO.prefetch, stop).then((r) => {
           if (r === null) failed = true;
           else if (r === undefined) job.e.skip = true;
-          else if (r === true) progress.bytes += Math.min(job.e.size, (job.run[1] + 1) * CHUNK) - job.run[0] * CHUNK;
+          else if (r === true) {
+            progress.bytes += Math.min(job.e.size, (job.run[1] + 1) * CHUNK) - job.run[0] * CHUNK;
+            // (what came the store did not keep — full —: done with this entry, it would be asked again each time the
+            // memory's copy is evicted)
+            if (!this.keptInStore(job.e, job.run[0])) job.e.skip = true;
+          }
         }).finally(() => parts.delete(pr));
         parts.add(pr);
         if (failed) { failed = false; if (stop()) return; await new Promise((res) => setTimeout(res, 1000)); }
@@ -504,6 +507,8 @@ export class HttpBackend {
     if (n <= 0 && !this.net.fast()) this.net.abortOverlap(this.base + path, 0, Infinity);
   }
   /** piece c is here or stored (not read back) */
+  /** a learned entry's piece `c` (or its whole block) is in the persistent store */
+  keptInStore(e, c) { return !!this.store && (this.store.map.has(`${e.path}#${e.size}#${e.mtime}#${e.index}`) || this.store.map.has(this.pieceKey(e.path, e.size, e.mtime, c))); }
   pieceHere(path, size, mtime, c) { return this.chunks.has(`${path}#${c}`) || !!this.store?.map.has(this.pieceKey(path, size, mtime, c)); }
   /**
    * The next run of pieces of block `index` to fetch in the background: missing, not on their way, among `mask` (bit i:

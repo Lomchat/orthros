@@ -228,3 +228,25 @@ test('a fast link before the game starts (learnedOnly): the learned pieces only,
     assert.ok(playing.asked.some(([a]) => a === MiB), 'the whole block, the game running (the rest of it comes too)');
   } finally { globalThis.fetch = real; }
 });
+
+test('learnedOnly with a full store: an entry the store did not keep is asked once (not again each time the memory evicts it)', async () => {
+  const real = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = async (url) => {
+    const [, a, e] = /[?&]r=(\d+)-(\d+)/.exec(url); asked.push([+a, +e]);
+    return { status: 206, headers: { get: () => null }, arrayBuffer: async () => bytes(+a, +e).buffer };
+  };
+  try {
+    const files = { 'f.big': { size: SIZE, mtime: 3 } };
+    // (a store that keeps nothing, a memory cache of one block: every block evicted by the next)
+    const b = new HttpBackend('/game/full/', { dirs: {}, files }, { store: new MemBlockStore(0), encoded: true, net: new NetLink({ bw: 20e6, fixed: true }) });
+    b.gameBusy = () => false;
+    b.maxBlocks = 1;
+    const list = [0, 1, 2, 3].map((i) => ['f.big', i, 0xffff, i]);
+    // (stopped after 40 requests: the pass would otherwise go on for good)
+    const p = {}; await b.prefetch(list, p, () => asked.length > 40, { learnedOnly: true });
+    assert.ok(p.done, `the pass ended by itself after ${asked.length} requests`);
+    const per = new Map(); for (const [a] of asked) { const k = Math.floor(a / MiB); per.set(k, (per.get(k) ?? 0) + 1); }
+    assert.deepEqual([...per.values()], [1, 1, 1, 1], `each block asked once: ${JSON.stringify(asked)}`);
+  } finally { globalThis.fetch = real; }
+});
