@@ -19,7 +19,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--engines-dir', type=pathlib.Path, default=ROOT / 'data_engines')
     p.add_argument('--archives', type=pathlib.Path, help='use already downloaded release archives')
-    p.add_argument('--server', action='store_true', help='also pull the pinned native multiplayer image')
+    p.add_argument('--server', action='store_true', help='also pull the pinned native multiplayer image and build the gateway image derived from it')
     a = p.parse_args()
     subprocess.run([ROOT / 'tools/disk-check.sh'], check=True)
     scratch = pathlib.Path('/tmp/orthros-scratch/openmw-install')
@@ -62,6 +62,9 @@ def main():
         (dest / 'release.json').write_text(json.dumps({**LOCK, 'runtime': 'openmw', 'files': files}, indent=2) + '\n')
     if a.server:
         subprocess.run(['docker', 'pull', LOCK['serverImage']], check=True)
+        # (the gateway runs the image derived from it, its Node.js replaced: lock.json "serverBuild")
+        if LOCK.get('serverBuild'):
+            subprocess.run(['sh', ROOT / 'tools/openmw/build-server-image.sh'], check=True)
     print(f"Installed {LOCK['id']} in {dest}")
 
 

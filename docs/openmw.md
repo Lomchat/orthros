@@ -260,6 +260,32 @@ Only `127.0.0.1:28100` is published. Limits: two CPU cores, 4 GiB, 256 tasks; wo
 worlds and saves persist under `build/openmw/<manifest>/`, separate from the original game files.
 Back up that state directory. Do not delete it when updating the engine.
 
+### The gateway's image: its Node.js replaced (2026-10-23)
+
+The pinned upstream image (`lock.json` `serverImage`) runs its gateway and world servers on the Node.js its Dockerfile
+installed from NodeSource, `/usr/bin/node` v22.23.3, vulnerable to CVE-2026-111497. The gateway runs instead an image
+derived from it (`lock.json` `serverBuild`, `tools/openmw/server-node.Dockerfile`): the official nodejs.org release
+v22.23.4 linux-x64 (its SHA-256 from nodejs.org's `SHASUMS256.txt`, pinned, checked again in the build) in place of
+`/usr/bin/node`, npm and corepack (`/usr/lib/node_modules`, their `/usr/bin` links unchanged) and the headers; the
+rest is the upstream image's (OpenMW binary, `/app` bundle and `node_modules`, entrypoint, user, env, healthcheck).
+Same major version, same module ABI (127): the only native addon, `@node-rs/argon2` (N-API), loads unchanged — the
+build hashes with it. `sh tools/openmw/build-server-image.sh` (also run by `install-engine.py --server`) builds it
+without network, timestamps fixed: the same inputs give the same ID, compared with the lock's `image` (the manifest's
+digest in Docker's containerd store; `config`, its config's digest, in a classic store). `server.mjs` runs that ID for
+every release on that upstream image (`openmwGatewayImage`, `src/host/openmw.js`) and refuses to start if it is not
+built — never the vulnerable base then. `server.mjs --port <n>` starts a scratch gateway beside the live one (its own
+container name), with `--state-dir` in scratch.
+
+Checked before the switch: a scratch gateway (port 28191, scratch state) answered `/healthz`, its operator API created
+an operator and a player (argon2), and a Chromium client of a worktree server whose copied manifest pointed at it
+signed in through the account bridge, started a private world (`dist/server.mjs` and the native simulation peer) and
+reached `Joined`, `simReady=1`; every node process in the container ran v22.23.4.
+
+Deploy: after the merge, build the image (`sh tools/openmw/build-server-image.sh`), then restart the units one by one
+(`systemctl restart orthros-openmw@<manifest>`); each container: `docker exec orthros-openmw-<manifest> node --version`
+→ v22.23.4, `docker inspect --format '{{.Image}}' orthros-openmw-<manifest>` → the lock's `image`, `curl
+127.0.0.1:<port>/healthz`. Rollback: revert the merge and restart the units (the base image stays in Docker).
+
 For the currently installed original profile, the active unit is
 `orthros-openmw@morrowind-goty-en` (port 28101) and the public entry point is
 `https://orthros.chalco.website/ports/openmw/morrowind-goty-en/`. The complete Vanilla+ profile

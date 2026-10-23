@@ -49,6 +49,24 @@ export function openmwEngineFiles(man, enginesDir) {
   } catch { return []; }
 }
 
+const UPSTREAM_IMAGE = /^ghcr\.io\/virtastic\/openmw-web-server@sha256:[a-f0-9]{64}$/;
+/**
+ * The native multiplayer gateway's Docker image for an engine release (tools/openmw/server.mjs): its upstream release's
+ * pinned image (`serverImage`; a release built here from the pinned source, build.sh, changes the browser engine only),
+ * or, when tools/openmw/lock.json derives an image from that one (`serverBuild`: its Node.js replaced,
+ * build-server-image.sh), the derived image's pinned ID — never the base then. `releaseOf(id)`: a release's release.json.
+ * @returns {{ image: string, base: string, tag: string|null }}
+ */
+export function openmwGatewayImage(release, releaseOf, lock) {
+  const upstreamId = release.upstream?.id ?? release.id;
+  const base = release.serverImage ?? (release.upstream?.id ? releaseOf(release.upstream.id).serverImage : null);
+  if (!UPSTREAM_IMAGE.test(base ?? '')) throw new Error('No pinned server image in this engine release');
+  const b = lock?.serverBuild;
+  if (!b || lock.id !== upstreamId || b.base !== base) return { image: base, base, tag: null };
+  if (!/^sha256:[a-f0-9]{64}$/.test(b.image ?? '')) throw new Error('lock.json serverBuild.image is not pinned');
+  return { image: b.image, base, tag: b.tag ?? null };
+}
+
 export const openmwBase = (id) => `/ports/openmw/${encodeURIComponent(id)}/app`;
 export const openmwModes = (o) => ['solo', ...(o.multiplayer ? ['multiplayer'] : [])];
 
