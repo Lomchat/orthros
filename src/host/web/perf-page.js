@@ -65,7 +65,8 @@ export class PerfSession {
     this.onVis = () => { this.tick(); if (this.meter) { this.meter.prevT = null; this.meter.lastShownT = null; } };
     this.onHide = () => this.end();
     doc?.addEventListener?.('visibilitychange', this.onVis);
-    this.win.addEventListener?.('pagehide', this.onHide);
+    // (capture: before the page's own pagehide listeners — a large telemetry flush there could use up the keepalive quota)
+    this.win.addEventListener?.('pagehide', this.onHide, { capture: true });
     this.timer = setInterval(() => this.tick(), CLOCK_MS);
     this.tick();
   }
@@ -96,7 +97,7 @@ export class PerfSession {
     this.rec.counters({ gpu: this.gpu() ?? null, data: this.data() ?? null });
     const r = this.rec.take(now, true); this.ended = true;
     clearInterval(this.timer);
-    this.win.document?.removeEventListener?.('visibilitychange', this.onVis); this.win.removeEventListener?.('pagehide', this.onHide);
+    this.win.document?.removeEventListener?.('visibilitychange', this.onVis); this.win.removeEventListener?.('pagehide', this.onHide, { capture: true });
     if (r) this.send(r);
   }
 

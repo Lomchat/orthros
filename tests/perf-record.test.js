@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { PerfRecorder, sanitizePerfRecord, fitRecord, compactProbe, MAX_RECORDS, MAX_ENTRIES, PERF_MAX_BYTES } from '../src/host/perf-record.js';
 import { PerfSession, timerContext } from '../src/host/web/perf-page.js';
 import { createServer } from '../src/host/server.js';
-import { perfSessions, perfReport, formatPerf, gpuLabel } from '../tools/telemetry-report.mjs';
+import { perfSessions, perfReport, formatPerf, gpuLabel, buildSessions } from '../tools/telemetry-report.mjs';
 import { HIST_N, histBucket } from '../src/core/frame-acct.js';
 
 const IRIS = 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)';
@@ -126,6 +126,13 @@ test('GPU timer and data waits: differences per entry, totals over the session',
   // a browser without the timer: its state
   const u = new PerfRecorder({ header }); u.counters({ gpu: { state: 'unavailable' } }); u.clock(0, true, 'x'); play(u, 0, 10, { phase: 'x' });
   assert.deepEqual(u.take(10000, true).mins[0].gpu, { state: 'unavailable' });
+  // queries lost (no result), and a frame past the histogram's last bound
+  const l = new PerfRecorder({ header }); l.counters({ gpu: { state: 'on', frames: 0, ms: 0, lost: 0, hist: new Array(HIST_N).fill(0) } }); l.clock(0, true, 'x'); play(l, 0, 10, { phase: 'x' });
+  const big = new Array(HIST_N).fill(0); big[histBucket(9000)] = 1;
+  l.counters({ gpu: { state: 'on', frames: 0, ms: 0, lost: 7, hist: big.map(() => 0) } });
+  assert.deepEqual(l.take(10000, true).mins[0].gpu, { n: 0, lost: 7 });
+  const o = new PerfRecorder({ header }); o.clock(0, true, 'x'); o.counters({ gpu: { state: 'on', frames: 1, ms: 9000, hist: big } }); play(o, 0, 10, { phase: 'x' });
+  assert.equal(o.take(10000, true).mins[0].gpu.p99, 5000);
 });
 
 test('slow frames waiting for the game data are said so', () => {
@@ -323,6 +330,9 @@ test('--perf: sessions per game × GPU, medians, the worst minutes, slow frames\
   assert.match(text, /worst minute: s1aaaa/);
   assert.match(text, /slow frames' time by cause/);
   assert.equal(gpuLabel('ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)'), 'Apple M2');
+  // (the classic per-session report keeps the page's own machine: a perf record of the same session does not replace it)
+  const classic = buildSessions([{ session: 's1aaaa', game: 'g1', samples: [], env: { gpu: IRIS, coi: true, version: 'b0' } }, lines[0]]);
+  assert.equal(classic.get('s1aaaa').env.coi, true);
   // the command line
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-perf-report-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

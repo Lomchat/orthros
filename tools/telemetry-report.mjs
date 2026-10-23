@@ -44,7 +44,7 @@ export function buildSessions(lines, { from = null, to = null, session = null, g
   /** @type {Map<string, any>} */
   const sessions = new Map();
   for (const r of lines) {
-    if (!r?.session || (session && r.session !== session)) continue;
+    if (!r?.session || (session && r.session !== session) || r.event === 'perf') continue; // (the passive records: --perf)
     const day = typeof r.at === 'string' ? r.at.slice(0, 10) : null;
     if (day && ((from && day < from) || (to && day > to))) continue;
     let s = sessions.get(r.session);

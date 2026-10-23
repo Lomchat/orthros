@@ -22,7 +22,8 @@ export const RUNTIMES = ['win32', 'goldsrc', 'openmw', 're3'];
 
 const r1 = (v) => Math.round(v * 10) / 10;
 const r2 = (v) => Math.round(v * 100) / 100;
-const hq = (h, q, max) => { const v = histQuantile(h, q, max); return v === null ? null : r1(v); };
+/** a quantile of a histogram, rounded to 0.1 ms (the open bucket's: its lower bound, 5000) */
+const hq = (h, q, max) => { const v = histQuantile(h, q, max); return v === null ? null : v === Infinity ? 5000 : r1(v); };
 const addTo = (into, o, k = 1) => { for (const [n, v] of Object.entries(o ?? {})) if (Number.isFinite(v)) into[n] = (into[n] ?? 0) + v * k; };
 /** the largest `top` entries of `o` (scaled, rounded to 0.01, those under `min` dropped) */
 const topOf = (o, top, scale = 1, min = 0.05) => {
@@ -112,11 +113,10 @@ export class PerfRecorder {
   }
   /** The cumulative counters now (GPU timer, game data waits). */
   counters({ gpu, data } = {}) {
-    if (gpu !== undefined) this.gpuNow = gpu ? { state: gpu.state ?? null, frames: gpu.frames ?? 0, ms: gpu.ms ?? 0, hist: gpu.hist ? Array.from(gpu.hist) : null } : null;
+    if (gpu !== undefined) this.gpuNow = gpu ? { state: gpu.state ?? null, frames: gpu.frames ?? 0, ms: gpu.ms ?? 0, lost: gpu.lost ?? 0, hist: gpu.hist ? Array.from(gpu.hist) : null } : null;
     if (data !== undefined) this.dataNow = data ? { waits: data.waits ?? 0, ms: data.ms ?? 0 } : null;
     if (this.tot.gpu === null && this.gpuNow) this.tot.gpu = { state: this.gpuNow.state, frames: 0, ms: 0, hist: this.gpuNow.hist ? new Array(this.gpuNow.hist.length).fill(0) : null };
     if (this.tot.data === null && this.dataNow) this.tot.data = { waits: 0, ms: 0 };
-    if (this.cur) { this.cur.gpu ??= this.gpuNow; this.cur.data ??= this.dataNow; }
   }
   /** The host timing probe's results (timing-probe.js runTimingProbe), sent once. */
   setProbe(p) { this.probe = compactProbe(p); }
@@ -136,6 +136,7 @@ export class PerfRecorder {
       const f = total ? c.gpu?.frames ?? 0 : grow(g0?.frames, g1.frames), ms = total ? c.gpu?.ms ?? 0 : grow(g0?.ms, g1.ms);
       const h = total ? c.gpu?.hist : g1.hist ? g1.hist.map((v, i) => grow(g0?.hist?.[i], v)) : null;
       out.gpu = f > 0 ? { n: f, mean: r2(ms / f), p50: h ? hq(h, 0.5, Infinity) : null, p90: h ? hq(h, 0.9, Infinity) : null, p99: h ? hq(h, 0.99, Infinity) : null } : { n: 0 };
+      if (!total) { const lost = grow(g0?.lost, g1.lost); if (lost) out.gpu.lost = lost; } // (queries whose result never came)
     } else if (g1) out.gpu = { state: g1.state ?? 'none' };
     // the game data's waits (reads the engine waited for)
     const d0 = c.data, d1 = this.dataNow;
@@ -173,7 +174,7 @@ export class PerfRecorder {
 }
 
 /** A record within PERF_MAX_BYTES: the totals' histogram dropped first, then the oldest entries. */
-export function fitRecord(rec, max = PERF_MAX_BYTES - 512) {
+export function fitRecord(rec, max = PERF_MAX_BYTES - 2048) { // (room for the machine, added after)
   const size = () => JSON.stringify(rec).length;
   if (size() <= max) return rec;
   if (rec.tot) delete rec.tot.h;
@@ -212,7 +213,7 @@ const nullable = (f) => (v) => (v === null ? null : f(v));
 const gpuPart = (g) => {
   if (!g || typeof g !== 'object') return undefined;
   if (typeof g.state === 'string') return { state: g.state.slice(0, 16) };
-  return pick(g, { n: (v) => int(v), mean: (v) => num(v, 1e5), p50: nullable((v) => num(v, 1e5)), p90: nullable((v) => num(v, 1e5)), p99: nullable((v) => num(v, 1e5)) });
+  return pick(g, { n: (v) => int(v), lost: (v) => int(v), mean: (v) => num(v, 1e5), p50: nullable((v) => num(v, 1e5)), p90: nullable((v) => num(v, 1e5)), p99: nullable((v) => num(v, 1e5)) });
 };
 const hist = (h) => (Array.isArray(h) && h.length <= 2 * HIST_N && h.every((x) => Number.isInteger(x) && x >= 0 && x < 1e9) ? h : undefined);
 const ENTRY = {

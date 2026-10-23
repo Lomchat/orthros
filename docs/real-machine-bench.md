@@ -178,7 +178,7 @@ histogram then the oldest entries; the server refuses larger ones with 413). Eac
 | `seq`, `final`, `len`, `vis`, `hid`, `dropped` | record number, the end's record, session seconds so far, of them visible / hidden, entries dropped over the cap |
 | `env` | `gpu` / `gpuVendor` (WebGL unmasked renderer), `gpuClass` (gpu-class.js: integrated, discrete, software), `cores`, `memGB`, `ua`, `screen` |
 | `probe` | the host timing probe (timing-probe.js), once after a minute of visible play: `atomicsWait1`, `atomicsWait1Timer`, `setTimeout0`, `setTimeout1`, `messageHop` as `[p50, p90, max]` ms late, `battery`; in the first record after it and in the end's |
-| `mins[]` | entries: `t` (start, s from the session's start), `ph` (phase: Win32 the page's status, the ports' session state, OpenMW `loading` / `menu` / `world`), `s` / `hid` (visible / hidden seconds), `n` frames, `fps` (over the visible time), `p50` `p90` `p99` `max` (frame ms, frame-acct.js histogram: 1 ms buckets below 100 ms), `f40` `f100` (frames over 40 / 100 ms), `work` / `wait` (ms per frame), `cats` (Win32: mean ms per frame by frame-accounting category), `slow` (the slow frames' time by cause, ms summed), `gpu` (`{ n, mean, p50, p90, p99 }` timed frames, or `{ state }`), `data` (`{ n, ms }` game data waits) |
+| `mins[]` | entries: `t` (start, s from the session's start), `ph` (phase: Win32 the page's status, the ports' session state, OpenMW `loading` / `menu` / `world`), `s` / `hid` (visible / hidden seconds), `n` frames, `fps` (over the visible time), `p50` `p90` `p99` `max` (frame ms, frame-acct.js histogram: 1 ms buckets below 100 ms), `f40` `f100` (frames over 40 / 100 ms), `work` / `wait` (ms per frame), `cats` (Win32: mean ms per frame by frame-accounting category), `slow` (the slow frames' time by cause, ms summed), `gpu` (`{ n, mean, p50, p90, p99 }` timed frames — `lost`: queries whose result never came —, or `{ state }`), `data` (`{ n, ms }` game data waits) |
 | `tot` | the same over the whole session so far (visible play only), with its frame-time histogram `h` (sparse: sessions merge) |
 
 **Hidden tabs**: the time is counted (`hid`), the frames are not (a hidden tab's frames and the first gap after it).
@@ -194,7 +194,7 @@ histogram then the oldest entries; the server refuses larger ones with 413). Eac
   made in it (`requestAnimationFrame` wrapped: its iteration's end, an asynchronous main loop's too); `wait` = the
   frame's time minus that. `slow` for frames over 40 ms: `data` (the game data's waits in that frame — the shared
   counters of `src/vfs/data-client.js` `GameData.stats`), `work` (the engine's other work), `other` (the browser, the
-  GPU, the compositor), `unknown` without a work measure. GPU: the same `GpuProbe` on the engine's context
+  GPU, the compositor, or the page's thread held outside the engine's frame iteration — a synchronous load), `unknown` without a work measure. GPU: the same `GpuProbe` on the engine's context
   (`EXT_disjoint_timer_query_webgl2`, or `EXT_disjoint_timer_query` on WebGL1 through an adapter), windows of 120
   frames every 10 s; `{ state: 'unavailable' }` without the extension.
 
