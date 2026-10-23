@@ -5,6 +5,6 @@
   { "name": "rotwk-skirmish", "title": "Rise of the Witch-king: menu, skirmish start, one minute of play", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-skirmish.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1200 },
   { "name": "bfme1-skirmish", "title": "BFME: menu, skirmish start, one minute of play", "manifests": ["bfme-vanilla", "bfme1-103"], "file": "bfme1-skirmish.txt", "coords": [800, 600], "minutes": 6, "maxSeconds": 1200 },
   { "name": "vicecity-drive", "title": "Vice City: menu, new game, a drive", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vicecity-drive.txt", "coords": [640, 480], "minutes": 2, "maxSeconds": 2400 },
-  { "name": "vc-quick", "title": "Vice City: menu, new game, into the car, a drive of ~45 s", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vc-quick.txt", "coords": [640, 480], "minutes": 3, "maxSeconds": 1200 }
+  { "name": "vc-quick", "title": "Vice City: menu, new game, ~45 s of play", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vc-quick.txt", "coords": [640, 480], "minutes": 3, "maxSeconds": 1200 }
  ]
 }
