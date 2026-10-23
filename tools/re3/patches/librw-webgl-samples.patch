@@ -1,0 +1,17 @@
+--- a/src/gl/gl3device.cpp
++++ b/src/gl/gl3device.cpp
+@@ -1570,7 +1570,14 @@
+ 
+ 	mode = &glGlobals.modes[glGlobals.currentMode];
+ 
++#ifdef __EMSCRIPTEN__
++	// (one sample is no multisampling, as a desktop GL context makes it; Emscripten's EGL turns any sample count into a
++	// WebGL context with antialias — 4x MSAA in Chrome —, so only a count above one asks for it)
++	SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, glGlobals.numSamples > 1 ? 1 : 0);
++	SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, glGlobals.numSamples > 1 ? glGlobals.numSamples : 0);
++#else
+ 	SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, glGlobals.numSamples);
++#endif
+ 
+ 	int i;
+ 	for(i = 0; profiles[i].gl; i++){

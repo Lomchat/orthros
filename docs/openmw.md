@@ -491,6 +491,14 @@ The cloud bridge (`cloud.js`): each file's size, date and base64 kept; a sync th
 hashes nothing (`tools/openmw/cloud-bench.mjs`, Node: 1 MB of saves 74-88 → 0.03-0.05 ms per idle sync; 20 × 2 MB
 2.9-3.7 s → 0.11-0.15 ms).
 
+2026-10-23: `perf.mjs` reads its probe as `window.__omwPerfProbe` (the engine page's `window.orthrosPerf`, the passive
+session record, replaced the tool's and every run ended in a TypeError since then), prints the canvas (drawing buffer,
+pixel ratio, antialias, samples) and runs Chromium itself by default as the bench suite does (`--channel shell`: the
+headless shell, 47-50 frames a second on the glide where Chromium and the suite measure 31 — docs/browser-ports.md
+"Measuring a port"). Where the frames' time goes outside the engine there: the GPU process executing the draws
+(SwiftShader's vertex work, rasterizer discarded or not) — at Seyda Neen, 690 draws a frame: 17.7 frames a second, the
+engine's work 22.5 ms; the draws made no-ops, 60 and 11.8 ms. A real GPU's matter of a few milliseconds.
+
 In-world measurement: `tools/openmw/perf.mjs` (Seyda Neen `?start=-2,-9`, running for 60 s across one cell boundary,
 `--discard` forces rasterizer discard so SwiftShader rasterizes nothing: CPU-side upper bounds; engine work = time in
 `Module._omw_pump_frame`). On the shared test machine (load 22-37, `?tier=high`, morrowind-goty-en, medians; r1: 5

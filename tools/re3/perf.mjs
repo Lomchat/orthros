@@ -10,13 +10,15 @@
 //     [--seconds 30] [--drive] [--warm 0] [--net KB/s] [--profile] [--stacks getError,…] [--no-calls] [--report]
 //     [--size 1280x720] [--query "a=b"] [--trace <file.json>] [--car GETTHEREFAST]   (--trace: a Chrome trace of the measured seconds — the
 //     renderer's main thread, the GPU process, their waits on each other —, for a closer look at the frames' gaps)
-//     [--size 1280x720] [--query "a=b"] [--mem-every s]
+//     [--size 1280x720] [--query "a=b"] [--mem-every s] [--channel chromium|shell]
+// --channel: Chromium itself by default, as the bench suite; shell: Playwright's headless shell, which floods a page that
+// holds the pointer lock (the game in the city) with synthetic mouse moves — tools/port-perf.mjs
 // --mem-every s: the page's memory sampled every s seconds of the measure (port-perf.mjs memSampler: JS heap, the
 // engine's heap, DOM nodes and listeners) and its growth per 10 minutes — a long session's leaks
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { chromeArgs, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile, memSampler } from '../port-perf.mjs';
+import { launchOptions, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile, memSampler } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
 const [name] = args;
@@ -31,7 +33,7 @@ if (!listed?.available || listed.runtime !== 're3') throw new Error(`${name}: no
 // (--js-flags "<V8 flags>": e.g. --perf-basic-prof, the engine's WebAssembly named for Linux perf — `perf record -p` on
 // the page's renderer process sees every thread of it, its compositor's included, where the CPU profile's "(program)"
 // is all the browser's native code; --mark prints the measure's start for such a recorder)
-const browser = await chromium.launch({ headless: true, args: [...chromeArgs(gl), ...(arg('--js-flags') ? [`--js-flags=${arg('--js-flags')}`] : [])] });
+const browser = await chromium.launch(launchOptions({ gl, channel: arg('--channel', 'chromium'), args: arg('--js-flags') ? [`--js-flags=${arg('--js-flags')}`] : [] }));
 const page = await browser.newPage({ viewport: { width, height: height + 44 } });
 await addProbe(page, { discard: gl === 'discard', stacks: arg('--stacks', '').split(',').filter(Boolean) });
 if (!args.includes('--report')) await quietReports(page);

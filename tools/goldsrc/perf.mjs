@@ -8,11 +8,12 @@
 // /tmp/orthros-scratch/goldsrc-perf-<manifest>/. Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/goldsrc/perf.mjs <manifest> [--url http://127.0.0.1:8080] [--gl discard]
 //     [--map de_dust2] [--join-keys "2,1"] [--commands "gl_vbo 1;…"] [--seconds 30] [--warm 10] [--walk] [--profile]
-//     [--stacks getError] [--size 1280x720] [--query "a=b"] [--report] [--tag t]
+//     [--stacks getError] [--size 1280x720] [--query "a=b"] [--report] [--tag t] [--channel chromium|shell]
+// (--channel: Chromium itself by default, as the bench suite; shell: Playwright's headless shell — tools/port-perf.mjs)
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { chromeArgs, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile } from '../port-perf.mjs';
+import { launchOptions, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
 const [name] = args;
@@ -25,7 +26,7 @@ const manifest = await (await fetch(`${base}/api/manifest/${encodeURIComponent(n
 if (manifest.runtime !== 'goldsrc') throw new Error(`${name}: not a GoldSrc version`);
 const map = arg('--map', manifest.goldsrc.solo?.map);
 
-const browser = await chromium.launch({ headless: true, args: chromeArgs(gl) });
+const browser = await chromium.launch(launchOptions({ gl, channel: arg('--channel', 'chromium') }));
 try {
   const page = await browser.newPage({ viewport: { width, height: height + 44 } });
   await addProbe(page, { discard: gl === 'discard', stacks: arg('--stacks', '').split(',').filter(Boolean) });

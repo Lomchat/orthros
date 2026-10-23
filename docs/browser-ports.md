@@ -28,7 +28,7 @@ only its mod stack: `requires` puts the original game's version's files beneath 
 | `src/host/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
 | `src/host/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `ini.js`, `style.css`) | yes |
-| `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
+| `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `patches/` (a build's own patches), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/port-perf.mjs` | the ports' shared frame measurement (below, "Measuring a port") | yes |
 | `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
@@ -54,6 +54,31 @@ off the server unless `--report`. Headless Chromium here always renders with Swi
 vertex work done, no pixel drawn — the closest to the engine's own CPU cost a frame here, an upper bound
 (SwiftShader's vertex threads still compete with the page: report the machine's load, several runs). `--gl swiftshader`
 draws (the GPU's share on the CPU); `--gl gpu` adds no flag (a machine's own GPU).
+The browser (`--channel`, `tools/openmw/perf.mjs` too) is Chromium itself in its new headless mode by default — as the
+bench suite and the re3 check run it —; `--channel shell` takes Playwright's lighter headless shell, which measures
+otherwise (2026-10-23): it composites the page differently (OpenMW's glide 47 frames a second there, 31 in Chromium and
+in the suite), and once a page holds the pointer lock (reVC in the city, GoldSrc in a map) it sends that page about
+40,000 synthetic mouse moves a second (zero movement; a trace: 308,583 `PostSynthesizeMouseMove` tasks in 6.5 s), its
+browser thread and the page's compositor thread each a whole core — Chromium sends none, nor does any browser.
+
+Where a port's frame goes outside its engine (2026-10-23, headless Chromium, SwiftShader, `--gl discard`): the WebGL
+calls' execution in the GPU process. A frame waits for the previous one there; with a GPU process far behind, the time
+shows as the browser's frames coming late (Chromium) or as GL calls blocking within the engine's work (the shell).
+None of the ports makes a synchronous WebGL call a frame (reVC 0, OpenMW a getError every few seconds; the GPU timer's
+`getQueryParameter` / `GPU_DISJOINT_EXT` are answered in the page, 2-3 µs, where a getError after a frame's draws
+waits 42 ms here). Ablations: OpenMW standing at Seyda Neen (690 draws a frame, 6,300 calls) 17.7 frames a second,
+the engine's work 22.5 ms; its draws made no-ops, 60 frames a second and 11.8 ms — SwiftShader's vertex work (on a
+real GPU, 690 draws are a few ms of the GPU process). reVC: its `copyTexSubImage2D` (the colour filter's copy of the
+screen, ~2 a frame) made a no-op, 30 frames a second instead of 16 (Chromium), 55 instead of 24 (shell) — a copy from
+the `alpha: false` drawing buffer into an RGB texture, which ANGLE converts with a draw (a microbenchmark: two such
+copies a frame cost 16.7 ms here, from an `alpha: true` buffer into RGBA nothing): a full-screen pass, a fraction of a
+millisecond on a GPU. And reVC's 4x multisampled drawing buffer, which no setting asked for (below, "The engine, built
+from source"): a real cost on every GPU, fixed. Canvas sizes: reVC draws at the canvas's CSS size whatever the
+device pixel ratio; GoldSrc and OpenMW at device pixels (2560 × 1512 at a ratio of 2 — four times the pixels; OpenMW
+caps the buffer at 4 MP and has its scene render scale per tier). The data indicator (`data-meter.js`, a 480 × 90
+canvas drawn by a worker 10 times a second while shown) costs nothing measurable; it shows "Loading…" over smooth play
+while the engine's non-blocking streaming reads wait (reVC driving at 24 frames a second): a reading the engine does
+not wait for counts as waiting (`data-worker.js` ctrl[6]).
 
 On a player's machine (the owner's: a real GPU, Windows), the ports are measured by the **bench suite**
 (`/?benchsuite=all`, docs/real-machine-bench.md "The bench suite"), every game in a row from one link, no Playwright:
@@ -781,6 +806,20 @@ the build time; checked 2026-10-19 and 2026-10-20): the script refuses one that 
 the strings of reVC's new menu options, controller button textures, `neo/` tables, `data/freeroam_miami.scm`,
 `gamecontrollerdb.txt`), `notices/` and `release.json`.
 
+A build may add patches of its own (`lock.json` "patches": `[repository, file]`, `tools/re3/patches/`, applied to a
+copy before the build; their digests in `release.json`). `revc-web-e312f97-r2` and `-plus-r2` add
+`librw-webgl-samples.patch` (2026-10-23): librw asked SDL for `1 << level` samples, so the menu's anti-aliasing off
+(level 0, one sample — no multisampling on a desktop GL context) became Emscripten's `EGL_SAMPLES = 1`, a WebGL context
+with `antialias: true`: every frame drawn 4x multisampled (Chrome's count), resolved at each of the colour filter's
+copies of the screen and at each present, whatever the player chose. With the patch only a count above one asks for
+it (the menu's levels 1-3 still do: checked with `MultiSampling=2`, the context then 4x). Measured (scratch servers,
+the same machine, runs alternated, headless Chromium, `perf.mjs --car GETTHEREFAST --seconds 20`): drawn (`--gl
+swiftshader`), 4.6 and 5.5 frames shown a second with r1, 24.1 and 19.8 with r2 (frame gaps p50 167 → 33-50 ms);
+`--gl discard`, 15.4 and 12.9 → 16.5 and 17.5; the bench suite's `revc-drive` (`--gl-discard`, two runs each) intro
+16.8 / 19.0 → 19.4 / 21.4, on foot 18.6 / 18.4 → 22.8 / 22.2, driving 19.0 / 19.2 → 16.0 (638 ms of data waits) /
+21.9 frames a second, its GPU timer p50 53 → 46-48 ms driving. On a GPU the multisampled buffer is four times the
+color and depth memory and bandwidth of every draw, plus the resolves — the integrated GPUs' limit.
+
 The fork's commits make the desktop build a browser one, nothing about a game (all under `__EMSCRIPTEN__`):
 
 - **One thread, the browser's turn**: the game's main loop is kept as it is; with JSPI its
@@ -863,6 +902,10 @@ thread** (Chrome's code and the kernel's socket calls to the GPU process: the We
 every frame), 18 % in its main thread, and the engine's WebAssembly at 3.4 %. The hitches are the browser's software
 compositing and rendering here, not the engine's work nor its streaming: nothing to fix in the engine for them; a
 real GPU decides them (the measure to make on a player's machine: `--gl gpu`).
+Corrected 2026-10-23: that compositor thread was busy with the headless shell's synthetic mouse moves under the
+game's pointer lock (~40,000 a second, "Measuring a port"), not with compositing; the frames' time outside the engine
+is the GPU process (the colour filter's screen copies, the 4x multisampled buffer — fixed in r2 — and SwiftShader's
+vertex work), measured there with Chromium itself.
 First start of a new browser, the learned list made by sessions with the shared first-launch profile (below): 19 MB
 on the wire before the menu (the sound bank `Audio/sfx.raw`, the menu's textures and fonts, the engine), about 20 MB
 more for a new game's first scene (`models/gta3.img`). With Chrome's network emulation, 50 ms round trip: 85 KB/s, the
