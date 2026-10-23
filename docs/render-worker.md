@@ -175,7 +175,7 @@ From the backend and the Direct3D layer (every GL call whose result is used, eve
 | 6 | Caps: `getParameter` (renderer, max texture size, texture units), `getExtension` (s3tc, anisotropy, provoking vertex, parallel compile, lose_context) | device creation, context restore | once per device |
 | 7 | Canvas size, `drawingBufferWidth/Height` | `reset` (resize), `present`, gamma pass | every present (local values, no round trip) |
 | 8 | Present hand-off | `present` (`blitFramebuffer`, `flush`), host `transferToImageBitmap` + `postMessage` | every frame: `transferToImageBitmap` 20-33 µs, `flush` 8-10 µs |
-| 9 | Present pacing / vsync | `Present` calls `vm.host.vsyncWait` only if the host defines it: the browser host does not; the games pace themselves on their timers | none |
+| 9 | Present pacing / vsync | `Present` (d3d8.js) parks the game's thread on the guest clock when its presentation interval waits for the retrace (no GL, no host call): at most one frame per refresh (60 Hz, a fullscreen mode's rate), a floor since the previous slot — a slower frame is not held | none |
 | 10 | Frame statistics | host `framePresented` (clock), `GetRasterStatus` (clock) | no GL |
 | 11 | D3D9 queries | `CreateQuery` EVENT / OCCLUSION answered at once (event done; occlusion = draws since `Issue`), no GL query objects | no GL |
 | 12 | Context loss / restore | `webglcontextlost` / `restored` events on the worker's event loop (between slices) → `contextRestored()` | none in these runs (`--lose-context-at` tests it) |
@@ -318,7 +318,10 @@ as a risk.
 - At most 2 frames in flight: after `PRESENT(n)` the emulator waits while `framesShown < n − 2`. That is the driver's
   frame queue (Direct3D's default maximum latency is 3): a slower GPU slows the game instead of piling up old
   frames; input-to-display latency is bounded by 2 frames (67 ms at 30 fps; ~1 frame today).
-- No vsync is added (the games pace themselves, the browser composites the bitmaps).
+- No browser vsync is waited for (the browser composites the bitmaps). The guest's own presentation interval is honoured
+  on the guest clock: a Present whose interval waits for the retrace (D3D8 fullscreen DEFAULT/ONE..FOUR or windowed
+  COPY_VSYNC, D3D9 DEFAULT/ONE..FOUR) shows at most one frame per refresh, as on Windows (Vice City's menu: 250-360
+  frames/s before, 60 after; `?dbg=ORTHROS_VSYNC=0` switches it off).
 - Stats: `gpuWaitMs` on the emulator (ring full, frames in flight, readbacks, fences), `replayMs` per frame in the
   render worker; both in the HUD, the slow-frame lines and the telemetry, so a slow frame says which side was late.
 
