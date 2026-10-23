@@ -214,6 +214,47 @@ mounting them.
   server, which forgets them (`covered` in the POST; older servers ignore it, the file format is unchanged): their
   room in the 40 000 entries served goes to regions of later phases.
 
+- **Borrowed entries** (`server.js` borrowedFor, 2026-10-23). A version's order holds only what its own sessions
+  read: a phase none of them reached yet (a first map load after a new release, or after its order was pruned) is read
+  on demand, one parked read after another. /api/prefetch now appends to the version's own order what the other
+  versions' sessions read of the files it shares with them — the same file on disk (device, inode, size, time) under the
+  same path: a game's versions over one base, the version another game mounts (RotWK's BFME II 1.06) —, in their own
+  order, each file block once (the version's own entry first), flag 0: never in the launch set, after every entry of
+  its own (at most 4096, the order's 8192 in all), so it comes with the network idle in the menus. Only a version
+  some session marked playable borrows (the flags keep the borrowed entries out of its launch set). Made again a
+  minute later at most; `--no-learn-borrow` turns it off. What it adds to a first launch with the live orders of
+  2026-10-23: RotWK 2.02 +21 MiB of pieces for its own files (from 2.01) and +159 MiB for BFME II 1.06's (from 1.09),
+  BFME II 1.09 +79 MiB (from 1.06), BFME 1.08 +225 MiB (from 1.03 and the original release).
+
+### Why RotWK 2.02 and BFME II waited for data in the bench suite of 2026-10-23 (measured the same day)
+
+The live baseline's first launches (`--suite all`, fresh browser) waited 1.5 / 4.3 / 1.7 s for game data in RotWK's
+load, loading screen and play, BFME II 0.8 / 2.9 s in its load and loading screen. Every read that waited was missing
+from the learned order (`?netlog=1`: learned rank `-` for all of them): no session of either version had loaded a map
+with its order as it was. BFME II's map load had been learned in its mask-less entries, which the prune of 2026-10-21
+(`tools/learn-prune.mjs --write`) dropped (its backup holds 225 of the 230 blocks the menu-only run below waited for);
+RotWK 2.02's order (and BFME II 1.06's, which RotWK mounts) had only been taken to the menu (the snapshot jobs' and
+launch sessions). The baseline session itself taught them: a fresh browser on a copy of the live learn directory of
+the same morning (the baseline and one more session learned) waited 0 / 17 / 31 ms (RotWK) and 14 / 73 / 230 ms
+(BFME II) in those phases; the learned orders then hold 97 % of the blocks the menu-only runs waited for. Map-load
+reads repeat from one session to the next (the same map); what does not is reads of play (sounds, textures of what
+comes into view: rank `-` in every run). Measured with the orders cut to their launch set (the state of the baseline)
+— `tools/bench-suite-check.mjs --suite <bench> --gl-discard --query netlog=1 --log <file>`, a server of this tree on a
+copy of the live learn directory and br-cache, two runs side by side on the shared server (load 17-31):
+
+| bench (orders cut to the launch set) | map load (load + loading screen) | data waits there | frames > 100 ms there |
+|---|---|---|---|
+| rotwk-short, the full orders (reference) | 15.0 s | 17 ms | 16 |
+| rotwk-short, cut: own only (`--no-learn-borrow`) | 21.2, 21.7 s | 7 436, 7 034 ms | 37, 37 |
+| rotwk-short, cut: borrowed from BFME II 1.09 | 20.3, 19.9 s | 4 632, 4 771 ms | 39, 34 |
+| bfme2-short, the full orders (reference) | 17.7 s | 87 ms | 38 |
+| bfme2-short, cut: own only (`--no-learn-borrow`) | 24.5, 24.9 s | 3 796, 4 236 ms | 49, 51 |
+| bfme2-short, cut: borrowed from BFME II 1.06 | 21.5, 21.0 s | 1 860, 1 965 ms | 45, 43 |
+
+(RotWK: its own order and BFME II 1.06's cut, BFME II 1.09's whole; BFME II: its order cut, 1.06's whole.) Other
+predictions of these reads measured on the same logs and left aside: the blocks next to each missed one (±2 blocks)
+would have held 18-25 % of the waited time for 520-630 extra MiB; the whole archives (wantWhole) are GBs.
+
 ## Measurements (2026-10-02, headless Chromium, `--gl-discard`, shared 48-core server under load)
 
 Scenarios `tools/scenarios/{bfme2,rotwk,bfme}-first.txt` (the settings a first launch writes), one private server for
