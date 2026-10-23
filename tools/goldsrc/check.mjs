@@ -18,7 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { chromium } from 'playwright';
 import { rendererOf } from '../port-perf.mjs';
-import { lastStatus, scoreOf } from './status-lines.mjs';
+import { distance, lastStatus, scoreOf, signedOn } from './status-lines.mjs';
 
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
 const [name, mode] = args;
@@ -79,6 +79,8 @@ const focusGame = async (page) => {
   if (at.over) throw new Error(`The game is covered: ${at.over}`);
   await page.mouse.click(at.x, at.y);
 };
+/** The least distance a player's walk covers (game units: a second's walk is 200 and more). */
+const MOVED = 16;
 const lastPos = (page) => page.evaluate(() => portSession.logs.filter((l) => /\borg \(/.test(l)).at(-1)?.match(/org \(([^)]+)\)/)?.[1]);
 const heartbeat = setInterval(async () => {
   for (const { page } of clients) try { console.log('PROGRESS', await page.evaluate(() => ({ state: portSession?.state, status: document.querySelector('#status')?.textContent, draws: renderProbe?.draws }))); } catch { /* closing */ }
@@ -117,6 +119,13 @@ try {
     console.log('BOOT', i, JSON.stringify({ ...state, renderer: await rendererOf(page) }));
     if (state.state !== 'running') throw new Error(state.status);
     await page.waitForFunction(() => renderProbe.draws > 50, null, { timeout: 30000 });
+    // (in the game first: a page connects in seconds but may take half a minute more to enter on a loaded machine —
+    // its files, a few frames a second —, and a key pressed before the server's team menu opens is lost, the player
+    // never in a team: Counter-Strike then ignores its `kill`, its score stays 0)
+    if (mode === 'multiplayer' || args.includes('--no-save')) {
+      const entered = await page.waitForFunction(`(${signedOn})(portSession.logs)`, null, { timeout: bootTimeout, polling: 500 }).then(() => true, () => false);
+      if (!entered) throw new Error(`Player ${i + 1} did not enter the game within ${bootTimeout / 1000} s (no "client connected at" line)`);
+    }
     await page.waitForTimeout(7000);
     await page.screenshot({ path: path.join(root, `client-${i}.png`) });
     // (each player joins as soon as it is in, before the next one starts: one browser's renderer is shared by them)
@@ -141,10 +150,11 @@ try {
         await page.keyboard.down(key); await page.waitForTimeout(1000); await page.keyboard.up(key);
         await page.evaluate(() => portSession.command('viewpos')); await page.waitForTimeout(100);
         after = await lastPos(page);
-        if (after !== before) break;
+        if (distance(before, after) >= MOVED) break;
       }
-      if (!before || !after || before === after) throw new Error('Movement did not update the player position');
-      console.log('MOVEMENT', JSON.stringify({ before, after }));
+      // (a walk, not a spectator's drift: a player outside the game — a team never joined, --join-keys — floats a unit)
+      if (!(distance(before, after) >= MOVED)) throw new Error(`Movement did not update the player position: ${JSON.stringify({ before, after })} (a team menu still open? --join-keys)`);
+      console.log('MOVEMENT', JSON.stringify({ before, after, distance: Math.round(distance(before, after)) }));
     }
     if (arg('--min-players')) {
       // (the players status lists: a line per client after its header, bots included — status-lines.mjs)
@@ -208,6 +218,7 @@ try {
         score = scoreOf(await page.evaluate(() => portSession.logs.slice(-200)), nicknames[0]);
         if (score === -1) break;
       }
+      // (0: the server did not count the suicide — Counter-Strike ignores `kill` from a player without a team)
       if (score !== -1) throw new Error(`Player one's score after its death: ${score} (expected -1)`);
     }
     console.log('SYNCHRONIZATION', 'both players received the same score update after player one died');

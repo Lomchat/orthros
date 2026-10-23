@@ -13,7 +13,7 @@ import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { linkGameLayers, parseServerInfo, roomName, roomOptionCommands, roomPort, roomRequest, roomSlots } from '../src/host/goldsrc.js';
 import { createServer } from '../src/host/server.js';
 import { groupMaps } from '../src/ports/goldsrc/lobby.js';
-import { lastStatus, playerLine, scoreOf } from '../tools/goldsrc/status-lines.mjs';
+import { distance, lastStatus, playerLine, scoreOf, signedOn } from '../tools/goldsrc/status-lines.mjs';
 
 const ENGINE = 'engine-test-1';
 const goldsrc = (over = {}) => ({ engine: ENGINE, gameDir: 'valve', modules: { client: 'mod/client.wasm', server: 'mod/server.wasm' }, solo: { map: 'start' }, ...over });
@@ -409,4 +409,24 @@ test("check: the players of the engine's status — a name the server already ha
   // (the latest status counts: an earlier one's score is replaced)
   assert.equal(scoreOf([...logs, '# score ping dev  playtime name', '[07:36:00]  2     3   70   mj 90.1 qa-check-1-fgjvq (1)'], 'qa-check-1-fgjvq'), 3);
   assert.deepEqual(lastStatus(['no status yet']), []);
+});
+
+test('check: a player is in the game once signed on, and walks — a spectator outside any team only drifts', () => {
+  // (a live run's logs: connected to the relay, still loading; then the engine's signon line)
+  const loading = ['[10:12:18] Adding directory: cstrike/custom/', '[10:12:44] Setting up renderer...'];
+  assert.equal(signedOn(loading), false);
+  assert.equal(signedOn([...loading, '[10:12:46] client connected at 29.29 sec']), true);
+  // (the page's string form, as the check evaluates it there)
+  assert.equal(new Function('portSession', `return (${signedOn})(portSession.logs)`)({ logs: [...loading, '[10:12:46] client connected at 29.29 sec'] }), true);
+  // (a live run: the player in a team walked 250 units; the one left at its team menu drifted one)
+  assert.ok(distance(' 1152.03 328.031 -106.938 ', ' 1347.35 175.405 -107.745 ') > 200);
+  assert.ok(distance(' 1742.03 -519.969 -79.9688 ', ' 1742.49 -518.989 -80.2454 ') < 2);
+  assert.ok(Number.isNaN(distance(undefined, ' 1 2 3 '))); assert.ok(Number.isNaN(distance(' 1 2 ', ' 1 2 3 ')));
+  // (the check requires a walk: its threshold between the two)
+  const check = fs.readFileSync(new URL('../tools/goldsrc/check.mjs', import.meta.url), 'utf8');
+  const moved = Number(check.match(/const MOVED = (\d+);/)?.[1]);
+  assert.ok(moved > 2 && moved < 200, 'MOVED between a drift and a walk');
+  assert.match(check, /distance\(before, after\) >= MOVED\)\) throw/);
+  // (the join keys pressed only after the signon wait)
+  assert.ok(check.indexOf('(${signedOn})(portSession.logs)') > 0 && check.indexOf('(${signedOn})(portSession.logs)') < check.indexOf("keys.split(',')"));
 });

@@ -27,3 +27,16 @@ export function scoreOf(logs, name) {
   for (let i = logs.length - 1; i >= 0; i--) { const p = playerLine(logs[i]); if (p && p.name === name) return p.score; }
   return null;
 }
+
+/** Whether the engine finished entering a server in these logs: its "client connected at" line (developer messages,
+ * the page's ?debug), written once every signon message arrived — the server's first menus (a team's) come after. */
+export function signedOn(logs) {
+  return logs.some((l) => l.includes('client connected at '));
+}
+
+/** The distance between two `viewpos` origins ("x y z", the "org ( ... )" line's), or NaN if either is missing. */
+export function distance(before, after) {
+  const a = before?.trim().split(/\s+/).map(Number), b = after?.trim().split(/\s+/).map(Number);
+  if (a?.length !== 3 || b?.length !== 3 || [...a, ...b].some((v) => !Number.isFinite(v))) return NaN;
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
