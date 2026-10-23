@@ -569,6 +569,15 @@ frees it, escape.js sends that page's game an Escape and its menu opens; `escape
 pages at the end (each leaves the server). On a failure: `client-<i>-end.json` / `.png`, each page's last lines.
 Checked twice in a row on `counter-strike-hl-arsenal-en` and `counter-strike-rebuilt-en`.
 
+Counter-Strike counts a `kill` only from a player in a team (ReGameDLL's `CBasePlayer::Kill`: no observer, joining
+state `JOINED`), so its versions need `--join-keys "{n},1"` and keys that land. Each page presses them once it is in
+the game — its engine's `client connected at` line (developer messages, `?debug`): a page connects at once but may
+enter half a minute later on a loaded machine, and keys pressed before the server's team menu opens are lost (the
+live check of 2026-10-23 failed so, "score after its death: 0", both players still at the team menu). The movement
+step then requires a walk (16 units; a player outside any team drifts about one), so a team never joined fails there,
+with its reason. Checked 3 times in a row against the live site on each of `counter-strike-hl-arsenal-en` and
+`counter-strike-rebuilt-en` (2026-10-23); without `--join-keys`, the check stops at the movement step.
+
 ## Same origin
 
 The ports share the Win32 runtime's origin (the owner's choice): their engine code can read this origin's browser
