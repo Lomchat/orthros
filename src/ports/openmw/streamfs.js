@@ -32,6 +32,12 @@
       S.data = new M.GameData({ name, session: Math.random().toString(36).slice(2, 14), prefetch: 'first-read', cacheBytes: ((window.__omwLruDefault | 0) || 128) << 20,
         log: (t) => console.warn('[streamfs]', t) });
       S.data.start();
+      // (the engine's start held until the worker answered: its first reads wait synchronously, the page's thread
+      // spinning, and Chrome hands a module worker the messages sent before its scripts ran through the page's thread —
+      // a read before then is never answered: the engine's boot after a short manifest fetch, "the game data worker
+      // stopped answering" 30 s later, the archive unreadable. The engine page's preRun holds its own dependencies until
+      // its mounts, this one with them.)
+      holdRun(S.data.ready);
       // (the loading in the background, for the Orthros page around the engine: its header's pill)
       if (window.parent !== window) S.data.onProgress((p) => window.parent.postMessage({ type: 'orthros-data', ...p }, location.origin));
       // (the player in the world — alone, Orthros' PLAYER script, view.lua, tells its view from its first poll; in
@@ -58,6 +64,15 @@
       try { Object.defineProperty(window, '__streamfsStats', { configurable: true, get: () => S.data.snapshot() }); } catch { /* defined */ }
     }
     return S.data;
+  }
+
+  /** The Emscripten engine's run (its main) held until `ready` settles (a page without the engine's globals: nothing). */
+  function holdRun(ready) {
+    const add = typeof addRunDependency === 'function' ? addRunDependency : globalThis.Module?.addRunDependency;
+    const remove = typeof removeRunDependency === 'function' ? removeRunDependency : globalThis.Module?.removeRunDependency;
+    if (typeof add !== 'function' || typeof remove !== 'function') return;
+    add('orthros-game-data');
+    ready.then(() => remove('orthros-game-data'), (e) => { console.warn('[streamfs]', e?.message ?? e); remove('orthros-game-data'); });
   }
 
   function node(path, h) {

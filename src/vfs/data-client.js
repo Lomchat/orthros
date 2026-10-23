@@ -436,7 +436,11 @@ export class GameData {
   /** How many bytes to take back from the worker (as far as it has them already): more for a file read in order. */
   want(h, need) { return Math.min(SPAN, Math.max(need, h.run > 0 ? Math.max(1 << 20, h.run) : 256 << 10)); }
 
-  /** Piece `p` of `h` on, through `need`, from the worker: the page's thread waits for its answer. */
+  /**
+   * Piece `p` of `h` on, through `need`, from the worker: the page's thread waits for its answer. Not before `ready`: Chrome
+   * hands a module worker the messages sent before its scripts ran through the page's thread, which spins here — such a
+   * read is never answered (its heartbeat, ctrl[3], still 0).
+   */
   fetchSync(h, p, need) {
     const start = p * PIECE;
     // (asked: from this piece to the end of the read, short of the first piece the page has — the worker adds what it
@@ -449,7 +453,7 @@ export class GameData {
     let beat = Atomics.load(ctrl, 3), beatAt = t0;
     while (Atomics.load(ctrl, 0) !== gen) {
       const b = Atomics.load(ctrl, 3), now = performance.now();
-      if (b !== beat) { beat = b; beatAt = now; } else if (now - beatAt > DEAD_MS) throw new Error('the game data worker stopped answering');
+      if (b !== beat) { beat = b; beatAt = now; } else if (now - beatAt > DEAD_MS) throw new Error(b === 0 ? 'the game data worker never started (a read the page waited for before GameData.ready)' : 'the game data worker stopped answering');
     }
     this.stats.misses++; this.stats.syncFetches++; this.stats.stallMs += performance.now() - t0;
     const n = ctrl[1];

@@ -52,7 +52,7 @@ export function createDataWorker(post) {
   return (m) => {
     if (m.init) {
       // (alive from now on — the page's waits watch it — though the version takes a moment to open: the rest waits for it)
-      W.ctrl = new Int32Array(m.init.ctrl); W.timers.push(setInterval(() => Atomics.add(W.ctrl, 3, 1), 100));
+      W.ctrl = new Int32Array(m.init.ctrl); Atomics.add(W.ctrl, 3, 1); W.timers.push(setInterval(() => Atomics.add(W.ctrl, 3, 1), 100));
       W.ready = init(m.init).catch((err) => { postMessage({ failed: String(err?.message ?? err) }); throw err; });
       return;
     }
