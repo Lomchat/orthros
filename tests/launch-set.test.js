@@ -457,3 +457,37 @@ test('a light copy of the file\'s own size (a WAD\'s, redrawn in place) stands f
   assert.deepEqual(forLink(files, list, false), [['.light/maps/a.wad', 3, 0b1010, 10, 1], ['.light/maps/a.wad', 5, 0b1, 20, 0]]);
   assert.deepEqual(forLink(files, list, true), [['maps/a.wad', 3, 0b1010, 10, 1], ['maps/a.wad', 5, 0b1, 20, 0]], 'a fast link: the file, the same pieces');
 });
+
+test('a version\'s order borrows what other versions\' sessions read of the files it shares with them, after its own and never in its launch set', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-borrow-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), learn = path.join(root, 'learn'); fs.mkdirSync(learn);
+  const g = path.join(games, 'g');
+  for (const d of ['base', 'versions/a', 'versions/b']) fs.mkdirSync(path.join(g, d), { recursive: true });
+  // (shared.dat: one file under both versions; own.dat: each version's own file under the same path)
+  fs.writeFileSync(path.join(g, 'base', 'shared.dat'), Buffer.alloc(3 * BLOCK, 1)); fs.writeFileSync(path.join(g, 'base', 'game.exe'), 'MZ');
+  fs.writeFileSync(path.join(g, 'versions', 'a', 'own.dat'), Buffer.alloc(BLOCK, 2)); fs.writeFileSync(path.join(g, 'versions', 'b', 'own.dat'), Buffer.alloc(BLOCK, 3));
+  fs.writeFileSync(path.join(g, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'g', name: 'g', defaultVersion: 'g-a',
+    versions: [{ id: 'g-a', dir: 'a', version: 'A', exe: 'game.exe' }, { id: 'g-b', dir: 'b', version: 'B', exe: 'game.exe' }] }));
+  const start = async (o = {}) => {
+    const server = createServer({ gamesDir: games, learnDir: learn, learnWriteMs: 10, lanLog: () => {}, borrowStaleMs: 0, ...o });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r)); t.after(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }));
+    return `http://127.0.0.1:${server.address().port}`;
+  };
+  const base = await start();
+  const post = (v, body) => fetch(`${base}/api/prefetch/${v}`, { method: 'POST', body: JSON.stringify(body) });
+  const order = async (v, b = base) => (await fetch(`${b}/api/prefetch/${v}`)).json();
+  // (g-a's sessions went to a map load: shared.dat's blocks 1 and 2, its own.dat; g-b's only to its menu)
+  await post('g-a', { session: 'a1', reads: [['shared.dat', 0, 10, 5]], mark: { kind: 'playable' } });
+  await post('g-a', { session: 'a1', reads: [['own.dat', 0, 10, 900], ['shared.dat', 2 * BLOCK, 2 * BLOCK + 10, 1000], ['shared.dat', BLOCK + CHUNK, BLOCK + CHUNK + 10, 1100]] });
+  await post('g-b', { session: 'b0', reads: [['shared.dat', 0, 10, 7]] });
+  assert.deepEqual(await order('g-b'), [['shared.dat', 0, 1, 7]], 'no mark yet: nothing borrowed (no flags to keep borrowed entries out of the launch set)');
+  await post('g-b', { session: 'b1', reads: [['shared.dat', 0, 10, 6], ['own.dat', 0, 10, 8]], mark: { kind: 'playable' } });
+  const own = [['shared.dat', 0, 1, 6, PRE_PLAYABLE], ['own.dat', 0, 1, 8, PRE_PLAYABLE]];
+  const list = await order('g-b');
+  assert.deepEqual(list, [...own, ['shared.dat', 2, 1, 1000, 0], ['shared.dat', 1, 2, 1100, 0]],
+    'its own entries, then the shared file\'s blocks g-a read (in g-a\'s order, flag 0): not g-a\'s own.dat, not a block it has');
+  assert.deepEqual(startupHead({ lookup: () => null }, list, true), own, 'the launch set: its own only');
+  assert.equal(launchFirst({ lookup: (p) => ({ path: p, file: { size: 3 * BLOCK } }), isWhole: () => true }, list, true).first, 2);
+  assert.deepEqual((await order('g-a')).filter((e) => e[4] === 0 && e[0] === 'shared.dat' && e[1] === 0), [], 'a block it has: its own entry only');
+  assert.deepEqual(await order('g-b', await start({ learnBorrow: false })), own, 'learnBorrow false: its own order only');
+});

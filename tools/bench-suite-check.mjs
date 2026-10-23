@@ -9,6 +9,8 @@
 //     [--gl-discard] [--minutes 60] [--size 1280x800] [--out /tmp/orthros-scratch/bench-suite-check]
 //   --gl-discard: the games' rasterizer discarded (this server's software GPU without its drawing: ?gldiscard=1)
 //   --suite: a suite of tools/scenarios/bench/index.json, or bench names separated by commas
+//   --log <file>: every frame's page log there (the games' [kind] lines: window.__orthrosConsoleLog), e.g. with
+//     --query netlog=1 each game file read that went to the network, with its rank in the learned order ([net])
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -27,7 +29,10 @@ const browser = await chromium.launch({ headless: true, channel: 'chromium', arg
 let status = 1;
 try {
   const context = await browser.newContext({ viewport: { width, height } });
+  const logFile = arg('--log', null);
+  if (logFile) await context.addInitScript(() => { window.__orthrosConsoleLog = true; });
   const page = await context.newPage();
+  if (logFile) { const t0 = Date.now(), w = fs.createWriteStream(logFile); page.on('console', (m) => w.write(`${((Date.now() - t0) / 1000).toFixed(1)} ${m.text()}\n`)); }
   page.on('pageerror', (e) => console.log('PAGE ERROR', e.message));
   page.on('crash', () => console.log('CRASH'));
   page.on('dialog', (d) => d.accept().catch(() => {}));

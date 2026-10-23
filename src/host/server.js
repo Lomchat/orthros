@@ -1,7 +1,7 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--covers <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue]
+// Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--covers <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue] [--no-learn-borrow]
 //   --engines-dir: the installed engine releases of the browser ports (default data_engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
@@ -11,7 +11,8 @@
 //            and the small profile files first sessions wrote (shared first-launch profile; --profile-seed-quorum: the
 //            distinct sessions that must report a set identical before it is offered, default 2; an operator-made set,
 //            seedcanon-<manifest>.json written by tools/profile-seed-make.mjs, is offered first), and the shared snapshots
-//            of the games' machines new players start from (docs/snapshot.md, stage 3)
+//            of the games' machines new players start from (docs/snapshot.md, stage 3); --no-learn-borrow: a version's
+//            prefetch order without the entries borrowed from other versions' orders for the files they share (borrowedFor)
 //   --br-cache: where /gamez keeps its precompressed transport units (br-cache.js; default <learn>/../brcache, none
 //            without --learn; `off`: none), at most --br-cache-bytes of them (default: 1.5 GiB grown to hold the launch sets)
 //   --snapshot-jobs: when a page asks for a shared snapshot there is none of, a headless browser session of a new
@@ -511,6 +512,64 @@ export function createServer(opts = {}) {
       if (marks) e.push(pre && pre * 2 >= marks ? PRE_PLAYABLE : 0);
       return e;
     });
+  };
+  /**
+   * Entries borrowed from the learned orders of the other versions, for the files a version shares with them (the same
+   * file on disk under the same path: a game's versions over one base, the version another game mounts), appended to
+   * the version's own order by /api/prefetch: a phase none of its own sessions reached yet (a first map load after its
+   * order was made, a release new on the server) is prefetched from what the other versions' sessions read of the same
+   * files there, while the network is idle in the menus. Measured (2026-10-23, docs/startup.md "Borrowed entries"): of
+   * the reads a RotWK 2.02 map load waited for in BFME II 1.06's files with no session of its own past the menu, the
+   * blocks BFME II 1.09's sessions had read held 35 %; of BFME II 1.09's own, the blocks of BFME II 1.06's order 34 %.
+   * Each borrowed entry: [path, block, mask, t (its own version's time), 0] — never in the launch set (a version none of
+   * whose sessions marked it playable borrows nothing: its order has no flags to keep the borrowed ones out), after the
+   * version's own entries (the most learned first, BORROW_MAX at most, the order's 8192 in all), each one's file and
+   * block once (its own entries' first). Made again after BORROW_STALE_MS (the lists learn meanwhile).
+   */
+  const BORROW_MAX = 4096, BORROW_STALE_MS = opts.borrowStaleMs ?? 60000;
+  const borrowedLists = new Map(); // `${manifest}\0${lang}` -> { at, list }
+  // (each version's paths resolved to their file's identity on disk — device, inode, size, time —, kept as long as the
+  // lists made with them)
+  let fileIds = { at: 0, memo: new Map(), ids: new Map() };
+  const fileId = (v, m, rel) => {
+    const k = `${v}\0${rel}`; if (fileIds.ids.has(k)) return fileIds.ids.get(k);
+    let id = null;
+    try { const f = resolveGameFile(m, rel, fileIds.memo); if (f) { const st = fs.statSync(f); id = `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}`; } } catch { id = null; }
+    fileIds.ids.set(k, id); return id;
+  };
+  const borrowedFor = (name, man, own, lang) => {
+    if (opts.learnBorrow === false || !own.some((e) => typeof e[4] === 'number')) return [];
+    const key = `${name}\0${lang ?? ''}`, c = borrowedLists.get(key), now = Date.now();
+    if (c && now - c.at < BORROW_STALE_MS) return c.list;
+    if (now - fileIds.at >= BORROW_STALE_MS) fileIds = { at: now, memo: new Map(), ids: new Map() };
+    const seen = new Set();
+    for (const [p, b] of own) { const id = !p.startsWith(LIGHT_DIR + '/') && fileId(name, man, p); if (id) seen.add(`${id}#${b}`); }
+    const room = Math.min(BORROW_MAX, Math.max(0, 8192 - own.length)), found = [];
+    for (const [other, om] of manifests) {
+      // (a version no session taught, here or before: nothing to lend — its order not loaded for nothing)
+      if (other === name || !om || !learned.has(other) && !(learnFile(other) && fs.existsSync(learnFile(other)))) continue;
+      // (its order made only when it read a file this version shares: the files of its entries compared first)
+      const shared = new Map();
+      for (const k of learnedOf(other).keys()) {
+        const p = k.slice(0, k.lastIndexOf('#'));
+        if (shared.has(p)) continue;
+        const id = p.startsWith(LIGHT_DIR + '/') ? null : fileId(other, om, p);
+        shared.set(p, id && fileId(name, man, p) === id ? id : null);
+      }
+      if (![...shared.values()].some(Boolean)) continue;
+      const list = prefetchList(other, markLang(om, lang));
+      for (let i = 0; i < list.length; i++) {
+        const [p, b, mask, t] = list[i], id = shared.get(p);
+        if (!id) continue;
+        const k = `${id}#${b}`; if (seen.has(k)) continue;
+        seen.add(k); found.push({ e: [p, b, mask, t, 0], rank: i / list.length });
+      }
+    }
+    // (several versions lending: the entries in the order of their own lists, interleaved by rank — none behind all of
+    // another's)
+    const list = found.sort((x, y) => x.rank - y.rank).slice(0, room).map((x) => x.e);
+    borrowedLists.set(key, { at: now, list });
+    return list;
   };
   /**
    * What a version's launch costs (launch-set.js launchSummary: its launch set's bytes, with and without light copies,
@@ -1404,7 +1463,9 @@ export function createServer(opts = {}) {
           });
           return;
         }
-        return send(res, 200, JSON.stringify(prefetchList(m[1], markLang(man, url.searchParams.get('lang')))), { 'Content-Type': 'application/json' });
+        // (its own order, then what other versions' sessions read of the files it shares with them: borrowedFor)
+        const lang = markLang(man, url.searchParams.get('lang')), own = prefetchList(m[1], lang);
+        return send(res, 200, JSON.stringify(own.concat(borrowedFor(m[1], man, own, url.searchParams.get('lang')))), { 'Content-Type': 'application/json' });
       }
       if (p === '/api/netstats') {
         // (the server's own state too: its memory and what its caches hold — a long-running server's growth seen)
@@ -1519,7 +1580,7 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const coverArg = arg('--covers'), coverDir = coverArg === 'off' ? null : coverArg ?? (learnDir ? path.join(learnDir, '..', 'covers') : null);
   // (--br-cache-frozen: the units served as they are, none made — a measurement's copy of another server's)
   const brCacheOptions = args.includes('--br-cache-frozen') ? { generate: false } : undefined;
-  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue') });
+  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), learnBorrow: !args.includes('--no-learn-borrow') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
   // (a restart — every deployment — saves the shared worlds' last changes first: they are written a few seconds after)
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.mmo.flush(); } catch (e) { console.error('mmo flush:', e); } finally { process.exit(0); } });
