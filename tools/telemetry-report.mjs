@@ -275,20 +275,21 @@ export function perfReport(sessions, { minSeconds = 60 } = {}) {
     if ((s.tot?.s ?? s.vis ?? 0) < minSeconds) continue;
     const key = `${s.game ?? '?'}\n${s.gpu}`;
     let g = groups.get(key);
-    if (!g) groups.set(key, (g = { game: s.game, gpu: s.gpu, runtime: s.runtime, sessions: [], hist: new Array(HIST_N).fill(0), max: 0, minutes: [], slow: {}, seconds: 0 }));
+    if (!g) groups.set(key, (g = { game: s.game, gpu: s.gpu, runtime: s.runtime, sessions: [], hist: new Array(HIST_N).fill(0), max: 0, minutes: [], slow: {}, seconds: 0, noFrames: 0 }));
+    if (!(s.tot?.n > 0)) { g.noFrames++; continue; } // (no frame shown: a start that never drew — counted, not in the medians)
     g.sessions.push(s); g.seconds += s.tot?.s ?? 0;
     if (s.tot?.h) histAddSparse(g.hist, s.tot.h);
     if ((s.tot?.max ?? 0) > g.max) g.max = s.tot.max;
     for (const e of s.mins) { g.minutes.push({ session: s.id, ...e }); add(g.slow, e.slow); }
   }
-  return [...groups.values()].map((g) => {
+  return [...groups.values()].filter((g) => g.sessions.length || g.noFrames).map((g) => {
     const f = g.sessions.map(sessionFigures), slowTotal = Object.values(g.slow).reduce((a, b) => a + b, 0);
     const m = (k) => median(f.map((x) => x[k]));
     // (the worst minutes: those with the most frames over 40 ms a minute, then the highest p99; at least 20 s of play)
     const worst = g.minutes.filter((e) => (e.s ?? 0) >= 20 && e.n > 0).map((e) => ({ ...e, per40: per(e.f40 ?? 0, e.s) })).sort((a, b) => (b.per40 - a.per40) || ((b.p99 ?? 0) - (a.p99 ?? 0))).slice(0, 3);
     const probes = f.map((x) => x.probe).filter(Boolean);
     return {
-      game: g.game, gpu: g.gpu, runtime: g.runtime, sessions: f.length, minutes: +(g.seconds / 60).toFixed(1),
+      game: g.game, gpu: g.gpu, runtime: g.runtime, sessions: f.length, noFrames: g.noFrames, minutes: +(g.seconds / 60).toFixed(1),
       median: { fps: m('fps'), p50: m('p50'), p90: m('p90'), p99: m('p99'), per40: m('per40'), per100: m('per100'), work: m('work'), wait: m('wait'), gpuMean: median(f.map((x) => x.gpu?.mean)), gpuP90: median(f.map((x) => x.gpu?.p90)), dataMsPerMin: m('dataMsPerMin'), visible: m('visible') },
       merged: { p50: histQuantile(g.hist, 0.5, g.max || Infinity), p90: histQuantile(g.hist, 0.9, g.max || Infinity), p99: histQuantile(g.hist, 0.99, g.max || Infinity), max: g.max || null },
       gpuStates: [...new Set(f.map((x) => x.gpuState).filter(Boolean))],
@@ -306,7 +307,7 @@ export function formatPerf(groups) {
   if (!groups.length) L.push('no passive session records (event "perf") in the selection');
   for (const g of groups) {
     const md = g.median;
-    L.push(`${g.game ?? '?'} (${g.runtime}) × ${g.gpu}: ${g.sessions} session(s), ${g.minutes} min of visible play`);
+    L.push(`${g.game ?? '?'} (${g.runtime}) × ${g.gpu}: ${g.sessions} session(s), ${g.minutes} min of visible play${g.noFrames ? `; ${g.noFrames} session(s) without a frame shown` : ''}`);
     L.push(`  medians over the sessions: ${v(md.fps)} fps; frame ms p50 ${v(md.p50)} p90 ${v(md.p90)} p99 ${v(md.p99)}; >40 ms ${v(md.per40)}/min >100 ms ${v(md.per100)}/min; work ${v(md.work)} wait ${v(md.wait)} ms/frame; GPU ${md.gpuMean !== null ? `${md.gpuMean} ms/frame p90 ${v(md.gpuP90)}` : g.gpuStates.join('/') || '-'}; data waits ${v(md.dataMsPerMin)} ms/min; visible ${md.visible !== null ? Math.round(md.visible * 100) + '%' : '-'}`);
     L.push(`  all frames merged: p50 ${v(g.merged.p50)} p90 ${v(g.merged.p90)} p99 ${v(g.merged.p99)} max ${v(g.merged.max)} ms`);
     if (g.slowShares) L.push(`  slow frames' time by cause (%): ${Object.entries(g.slowShares).map(([k, x]) => `${k} ${x}`).join(', ')}`);

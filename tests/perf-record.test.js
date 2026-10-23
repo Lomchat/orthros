@@ -312,7 +312,9 @@ test('--perf: sessions per game × GPU, medians, the worst minutes, slow frames\
     const b = r.take(185000, true);
     return [a, b].map((x) => ({ at: '2026-10-23T10:00:00.000Z', ...x, env: { gpu, cores: 8, memGB: 8, ua: 'Mozilla/5.0 (Windows NT 10.0) Chrome/154.0.0.0' } }));
   };
-  const lines = [...mk('s1aaaa', IRIS, 10), ...mk('s2aaaa', IRIS, 50), ...mk('s3aaaa', 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x2560) Direct3D11 vs_5_0 ps_5_0, D3D11)', 0), ...mk('s4aaaa', IRIS, 0, 'g2'), { session: 'old', samples: [] }];
+  const blank = new PerfRecorder({ header: { ...header, session: 's5aaaa' } }); blank.clock(0, true, 'loading'); for (let i = 1; i <= 90; i++) blank.clock(i * 1000, true, 'loading');
+  const noFrame = { at: '2026-10-23T10:00:00.000Z', ...blank.take(90000, true), env: { gpu: IRIS } };
+  const lines = [noFrame, ...mk('s1aaaa', IRIS, 10), ...mk('s2aaaa', IRIS, 50), ...mk('s3aaaa', 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x2560) Direct3D11 vs_5_0 ps_5_0, D3D11)', 0), ...mk('s4aaaa', IRIS, 0, 'g2'), { session: 'old', samples: [] }];
   lines.push(lines[0]); // (a record received twice)
   assert.equal(perfSessions(lines).get('s1aaaa').mins.length, 4, 'a record received twice counts once');
   const groups = perfReport(perfSessions(lines));
@@ -326,7 +328,7 @@ test('--perf: sessions per game × GPU, medians, the worst minutes, slow frames\
   const fil = perfReport(perfSessions(lines, { gpu: 'iris', game: 'g1' }));
   assert.deepEqual(fil.map((g) => g.gpu), ['Intel Iris Xe Graphics']);
   const text = formatPerf(groups);
-  assert.match(text, /g1 \(goldsrc\) × Intel Iris Xe Graphics: 2 session\(s\)/);
+  assert.match(text, /g1 \(goldsrc\) × Intel Iris Xe Graphics: 2 session\(s\), [\d.]+ min of visible play; 1 session\(s\) without a frame shown/);
   assert.match(text, /worst minute: s1aaaa/);
   assert.match(text, /slow frames' time by cause/);
   assert.equal(gpuLabel('ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)'), 'Apple M2');
