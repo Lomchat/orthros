@@ -1,0 +1,163 @@
+# Vice City (Win32 runtime): the intro movies skipped as a player does (Escape, Enter, a click), the main menu, a new
+# game started, ~2 min of play: the opening cutscene skipped, into the car parked beside Tommy (F, as soon as he can
+# move: a walk first took him away from it and onto a passing scooter), a drive of ~70 s (three times the drive of
+# vicecity-drive.txt), out of the car and a walk of ~20 s. Coordinates for 640x480 (the display a first launch uses).
+# Phases: start (launch to the menu: downloads, movies skipped), menu, load (new game to the first 3D frames),
+# cutscene (with the walk to the car), drive, walk, end.
+# Without input the two movies (39.5 + 82 s) play to their end and the menu follows (first Direct3D frame ~124 s): the
+# movies draw no Direct3D frame, so their skips are at absolute times (each one harmless if the movie already ended).
+# Keys: W 87 (accelerate / walk), S 83 (brake, reverse / walk back), A 65 / D 68 (steer, turn), F 70 (enter / leave a
+# vehicle), Enter 13 (skip a cutscene), Escape 27. Vehicle and driving keys are held (F 0.2 s): the game polls their
+# state once a frame, a press and its release in the same instant are not seen (as on Windows). The cutscene's skip is
+# Enter held 1.5 s then 1 s again (a short press fell in a loading hitch of the cutscene's first seconds and the whole
+# ~2 min cutscene played; on an overloaded machine it still may).
+6:key:27
+9:key:13
+12:click:10,10
+15:click:10,10
++2:click:10,10
++5:click:10,10
++8:waitframe:5,40
+0:mark:menu
+1:shot
+1:move:320,192
+2:click:320,192
+3:move:320,177
+4:click:320,177
+4:mark:load
+7:click:320,177
+8:waitframe:150,100000
+0:mark:cutscene
+1:shot
+3:keydown:13
+4.5:keyup:13
+7:keydown:13
+8:keyup:13
+8:shot
+16:shot
+# (control from ~20 s: Tommy on foot, the mission's car beside him)
+21:shot
+22:keydown:70
+22.2:keyup:70
+25:shot
+27:mark:drive
+27:keydown:87
+28.2:keyup:87
+29.2:keydown:83
+29.2:keydown:65
+30.1:keyup:83
+30.1:keyup:65
+30.4:keydown:87
+30.4:keydown:68
+31:keyup:68
+32:keyup:87
+32.5:keydown:87
+32.5:keydown:65
+33:shot
+33.2:keyup:65
+34.7:keyup:87
+35:keydown:87
+35:keydown:65
+35.35:keyup:65
+38.35:keyup:87
+38.5:keydown:83
+39:shot
+39.1:keyup:83
+39.1:keydown:87
+39.1:keydown:68
+39.8:keyup:68
+42.8:keyup:87
+43:keydown:65
+43:keydown:87
+43.6:keyup:65
+45:shot
+47:keydown:68
+47.5:keyup:68
+49:keyup:87
+49:keydown:83
+50.5:keyup:83
+51:keydown:87
+52.2:keyup:87
+53.2:keydown:83
+53.2:keydown:65
+54.1:keyup:83
+54.1:keyup:65
+54.4:keydown:87
+54.4:keydown:68
+55:keyup:68
+56:keyup:87
+56.5:keydown:87
+56.5:keydown:65
+57:shot
+57.2:keyup:65
+58.7:keyup:87
+59:keydown:87
+59:keydown:65
+59.35:keyup:65
+62.35:keyup:87
+62.5:keydown:83
+63:shot
+63.1:keyup:83
+63.1:keydown:87
+63.1:keydown:68
+63.8:keyup:68
+66.8:keyup:87
+67:keydown:65
+67:keydown:87
+67.6:keyup:65
+69:shot
+71:keydown:68
+71.5:keyup:68
+73:keyup:87
+73:keydown:83
+74.5:keyup:83
+75:keydown:87
+76.2:keyup:87
+77.2:keydown:83
+77.2:keydown:65
+78.1:keyup:83
+78.1:keyup:65
+78.4:keydown:87
+78.4:keydown:68
+79:keyup:68
+80:keyup:87
+80.5:keydown:87
+80.5:keydown:65
+81:shot
+81.2:keyup:65
+82.7:keyup:87
+83:keydown:87
+83:keydown:65
+83.35:keyup:65
+86.35:keyup:87
+86.5:keydown:83
+87:shot
+87.1:keyup:83
+87.1:keydown:87
+87.1:keydown:68
+87.8:keyup:68
+90.8:keyup:87
+91:keydown:65
+91:keydown:87
+91.6:keyup:65
+93:shot
+95:keydown:68
+95.5:keyup:68
+97:keyup:87
+97:keydown:83
+98.5:keyup:83
+# out of the car, a walk
+99:mark:walk
+99:keydown:70
+99.2:keyup:70
+102:shot
+103:keydown:87
+107:keydown:65
+107.6:keyup:65
+110:shot
+112:keydown:68
+112.5:keyup:68
+116:shot
+119:keyup:87
+120:shot
+121:mark:end
