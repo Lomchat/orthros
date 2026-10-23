@@ -190,6 +190,39 @@ export async function stopProfile(cdp, frames, save = null) {
 }
 
 /**
+ * The game data's indicator (src/host/web/data-meter-worker.js, its worker in `page`) sampled every `everyMs` until
+ * stop(): stop() returns { samples, shownS, waitingS, shownAt } — the seconds it was shown, those the engine's reads
+ * waited for the network (the shared counter it reads, ctrl[6]), and when it was shown ([from, to] s from the start). Read
+ * in its worker: sampled while the page's thread is held too. `shots`: a directory — a screenshot at the start of each
+ * time it is shown (meter-<s>.png, the first 5), and one where it is not (no-meter-<s>.png, every 20 s).
+ */
+export async function meterSampler(page, { everyMs = 250, shots = null } = {}) {
+  const seen = [], t0 = Date.now();
+  let on = true, taken = 0, plainAt = -Infinity;
+  const shot = (name) => page.screenshot({ path: `${shots}/${name}-${Math.round((Date.now() - t0) / 1000)}.png` }).catch(() => {});
+  const loop = (async () => {
+    while (on) {
+      const w = page.workers().find((x) => x.url().includes('data-meter-worker'));
+      // (the worker's own top-level state: `shown` drawn, `arrived` the game data's counters)
+      const s = w ? await w.evaluate(() => ({ shown, waiting: arrived ? Atomics.load(arrived, 6) : 0 })).catch(() => null) : null;
+      if (s) {
+        const was = seen.at(-1)?.shown, t = (Date.now() - t0) / 1000;
+        seen.push({ t, ...s });
+        if (shots && s.shown && !was && taken < 5) { taken++; await shot('meter'); }
+        if (shots && !s.shown && t - plainAt >= 20) { plainAt = t; await shot('no-meter'); }
+      }
+      await new Promise((r) => setTimeout(r, everyMs));
+    }
+  })();
+  return async () => {
+    on = false; await loop;
+    const secs = (k) => +(seen.filter(k).length * everyMs / 1000).toFixed(1), shownAt = [];
+    for (const s of seen) { const last = shownAt.at(-1); if (!s.shown) continue; if (last && s.t - last[1] < 2 * everyMs / 1000) last[1] = +s.t.toFixed(1); else shownAt.push([+s.t.toFixed(1), +s.t.toFixed(1)]); }
+    return { samples: seen.length, shownS: secs((s) => s.shown), waitingS: secs((s) => s.waiting > 0), shownAt };
+  };
+}
+
+/**
  * A long session's memory, sampled every `everyS` seconds until stop(): the JS heap used, the engine's WebAssembly heap
  * (`wasmBytes`: a page function's source returning it, e.g. '() => Module.HEAPU8.length'), and the page's DOM nodes,
  * event listeners and documents (CDP Performance.getMetrics: a listener or node count that only grows is a leak).

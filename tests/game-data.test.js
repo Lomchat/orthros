@@ -466,6 +466,7 @@ test('a block some session read before a phase began keeps its time, not the pha
   await new Promise((r) => setTimeout(r, 100)); await s.close();
   s = await start();
   assert.deepEqual(await (await fetch(s.base)).json(), list);
+});
 
 /** `server` whose game file ranges wait until release(): a read waiting for the network as long as the test wants. */
 function gatedServer(server) {
@@ -500,30 +501,31 @@ test('the engine\'s waits count only the reads it waits for: a synchronous one, 
 test('the page tells which of the engine\'s asynchronous reads hold it: not the ones it asked ahead and went on past', async () => {
   const told = [], fake = { onmessage: null, postMessage: (m) => told.push(m), terminate() {} };
   const data = new GameData({ name: 'v', worker: fake });
+  const task = () => new Promise((r) => setTimeout(r, 0)); // (the page's next task: the engine gave it its turn)
   try {
-    clearInterval(data.holdTimer); // (holdWatch driven by the test's clock)
+    clearInterval(data.holdTimer); // (holdWatch called by the test)
     data.trees = { v: { dirs: {}, files: { 'a.img': { size: 1 << 20 }, 'b.wav': { size: 1000 } } } };
     const h = data.file('v', 'a.img'), s = data.file('v', 'b.wav');
     const reads = () => told.filter((m) => m.read).map((m) => m.read), held = () => told.filter((m) => m.held).flatMap((m) => m.held);
-    // (asked ahead: the engine goes on — polls, reads, frames)
+    // (asked ahead: the engine goes on before it gives the page its turn — polls, reads, its frame shown)
     data.ensure(h, 0, 65536);
     const ahead = reads().at(-1); assert.equal(ahead.held, false);
     data.missing(h, 0, 65536); data.progress();
-    data.holdWatch(performance.now() + 1000);
+    await task(); data.holdWatch();
     assert.deepEqual(held(), [], 'gone on past it: never a wait');
-    // (asked, then nothing: the engine waits — told once, after HOLD_MS)
+    // (asked, then the page's turn with nothing more: the engine waits for it — told once)
     data.ensure(h, 65536 * 4, 65536);
     const waited = reads().at(-1);
-    data.holdWatch(performance.now()); assert.deepEqual(held(), [], 'not before HOLD_MS');
-    data.holdWatch(performance.now() + 300); data.holdWatch(performance.now() + 400);
+    assert.deepEqual(held(), [], 'not before the page\'s turn');
+    await task(); await task(); data.holdWatch();
     assert.deepEqual(held(), [[waited.id, 1]]);
     // (the engine went on while it was under way: not a wait any more)
-    data.progress(); data.holdWatch(performance.now() + 500);
+    data.progress(); data.holdWatch();
     assert.deepEqual(held(), [[waited.id, 1], [waited.id, 0]]);
     // (in the background — readable(): never)
     told.length = 0;
     assert.equal(data.readable(s), false);
-    data.holdWatch(performance.now() + 1000);
+    await task(); data.holdWatch();
     assert.equal(reads().length, 1); assert.equal(reads()[0].held, false); assert.deepEqual(held(), []);
     assert.equal(data.pending.size, 2, 'the background read not among those that may hold the engine');
   } finally { data.close(); }
@@ -533,9 +535,13 @@ test('an engine that streams ahead (re3: ask, go on, poll) never shows a wait; o
   const server = gatedServer(fakeServer({ 'models.img': bytes(1 << 20), 'audio.sfx': bytes(1 << 20, 4) }));
   const data = await inThread(t, server), img = data.file('v', 'models.img'), sfx = data.file('v', 'audio.sfx');
   const seen = [];
-  // (the engine's frames for a second: it asked for a model and a sound ahead, polls the model every frame)
-  data.ensure(img, 0, 65536).catch(() => {}); data.ensure(sfx, 0, 65536).catch(() => {});
-  for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 25)); data.missing(img, 0, 65536); data.progress(); seen.push(Atomics.load(data.ctrl, 6)); }
+  // (the engine's frames for a second: it asks for a model and a sound ahead in its first, polls the model in each, shows
+  // it, then gives the page its turn until the next)
+  for (let i = 0; i < 40; i++) {
+    if (i === 0) { data.ensure(img, 0, 65536).catch(() => {}); data.ensure(sfx, 0, 65536).catch(() => {}); }
+    data.missing(img, 0, 65536); data.progress();
+    await new Promise((r) => setTimeout(r, 25)); seen.push(Atomics.load(data.ctrl, 6));
+  }
   assert.deepEqual(seen.filter((n) => n > 0), [], 'no wait over smooth play');
   assert.equal(data.quiet(500), true, 'the game data quiet meanwhile');
   // (it needs a model now: it suspends until it is here — calls nothing)
@@ -543,5 +549,21 @@ test('an engine that streams ahead (re3: ask, go on, poll) never shows a wait; o
   await until(() => Atomics.load(data.ctrl, 6) > 0, 'its wait counted', 3000);
   server.release(); await wait;
   await until(() => Atomics.load(data.ctrl, 6) === 0, 'over');
-  assert.ok(data.snapshot().stallMs >= 250, 'its time among the engine\'s waits');
+  assert.ok(data.snapshot().stallMs >= 100, 'its time among the engine\'s waits');
+});
+
+test('a load made of many short waits (each read the engine suspends on, 60 ms) is a wait all along', async (t) => {
+  const base = fakeServer({ 'level.dat': bytes(4 << 20) });
+  const server = { ...base, fetch: async (url, init) => { if (String(url).includes('/gamez/')) await new Promise((r) => setTimeout(r, 60)); return base.fetch(url, init); } };
+  const data = await inThread(t, server), h = data.file('v', 'level.dat');
+  let loading = true;
+  const seen = [];
+  const watch = (async () => { while (loading) { await new Promise((r) => setTimeout(r, 100)); if (loading) seen.push(Atomics.load(data.ctrl, 6)); } })();
+  // (the engine reads the file in order, far apart — every read misses —, suspending on each: the worker's own read-ahead
+  // kept small by the reads' spread)
+  const out = new Uint8Array(4096);
+  for (let i = 0; i < 25; i++) { const at = i * 160 * 1024; if (data.missing(h, at, 4096)) await data.ensure(h, at, 4096); data.read(h, out, 0, 4096, at); }
+  loading = false; await watch;
+  assert.ok(seen.length >= 10, `sampled during the load (${seen.length})`);
+  assert.ok(seen.filter((n) => n > 0).length >= seen.length * 0.6, `counted as a wait most of the load: ${seen.join('')}`);
 });

@@ -16,12 +16,14 @@
 //     --glide <dx>,<dy>[,<speed>[,<z>]]: instead of walking, the player carried in a straight line from the start
 //     cell's centre, <speed> units a second (300: a run) at height <z> (3000) — several cells crossed the same way
 //     at every run, whatever stands in the way)
+// The game data's indicator over the measured seconds too (meter: the seconds it was shown, those the engine's reads
+// waited; meter-<s>.png at each time it shows, no-meter-<s>.png now and then).
 // --mem-every s: the page's memory every s seconds of the walk (port-perf.mjs memSampler) and its growth per 10 minutes;
 // --seconds up to 3600 then (300 otherwise)
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { launchOptions, startProfile, stopProfile, memSampler } from '../port-perf.mjs';
+import { launchOptions, startProfile, stopProfile, memSampler, meterSampler } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), id = args[0], arg = (k, d = null) => args.includes(k) ? args[args.indexOf(k) + 1] : d;
 if (!id) throw new Error('Expected a manifest id');
@@ -94,6 +96,8 @@ try {
   await page.evaluate(() => { window.__omwPerfProbe.on = true; });
   if (args.includes('--mark')) console.log('MEASURE START', Date.now()); // (for a recorder outside: perf record, a thread sampler)
   const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => Module.HEAPU8.length') : null;
+  // (the game data's indicator over the measured seconds: shown only while the game truly waits — data-meter-worker.js)
+  const meterStop = await meterSampler(page, { shots: dir });
   const end = Date.now() + seconds * 1000;
   if (glide) {
     // (a straight line at a set speed from the start cell's centre, whatever is in the way: the engine's debug
@@ -112,6 +116,7 @@ try {
     await page.keyboard.up('w');
     if (args.includes('--run')) await page.keyboard.up('Shift');
   }
+  const meter = await meterStop();
   const mem = memStop ? await memStop() : null;
   const r = await page.evaluate(({ before }) => {
     const P = window.__omwPerfProbe; P.on = false; clearInterval(P.cellLook);
@@ -138,7 +143,7 @@ try {
     };
   }, { before });
   const prof = cdp ? await stopProfile(cdp, r.frames, path.join(dir, 'perf.cpuprofile')) : undefined;
-  const out = { manifest: id, discard, seconds, warm, start, glide, query: extra, bootMs, ...r, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1), memSamples: mem.samples } : {}), faults, profile: prof };
+  const out = { manifest: id, discard, seconds, warm, start, glide, query: extra, bootMs, ...r, meter, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1), memSamples: mem.samples } : {}), faults, profile: prof };
   fs.writeFileSync(path.join(dir, 'perf.json'), JSON.stringify(out, null, 2));
   await page.screenshot({ path: path.join(dir, 'perf.png') });
   console.log(JSON.stringify(out));

@@ -2,7 +2,7 @@
 // ones — CLAUDE.md "Standardization"): a node per file, its size known at once, its bytes from the game data
 // (data-client.js) as the engine reads them. Read-only; an engine that suspends while it waits (JSPI) asks for its
 // bytes ahead (`node.orthrosStreamed`: whether it then waits for them or goes on, the game data tells by what the engine
-// does meanwhile — data-client.js HOLD_MS); one that maps a file (mmap) gets it whole.
+// does meanwhile — data-client.js holdCheck); one that maps a file (mmap) gets it whole.
 
 /** open()'s flags (Emscripten's, musl's values). */
 const O_ACCMODE = 3, O_EXCL = 0o200, O_TRUNC = 0o1000;

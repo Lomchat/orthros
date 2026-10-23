@@ -3,7 +3,8 @@
 // the engine's work a frame — from the browser's frame callback that resumes it to its next wait for one —, the frames
 // shown, the WebGL calls a frame by kind and the synchronous ones, the renderer; --gl swiftshader draws on the CPU, the
 // GPU's share included; --gl discard sends every call but draws nothing — the CPU a frame costs, an upper bound). Also
-// the engine's waits for its files and its memory. The page's reports (telemetry, learned order, first-launch profile)
+// the engine's waits for its files and its memory, and the game data's indicator (meter: the seconds it was shown, those
+// the engine's reads waited; meter-<s>.png at each time it shows, no-meter-<s>.png now and then). The page's reports (telemetry, learned order, first-launch profile)
 // stay off the server unless --report. JSON on the last line; evidence under /tmp/orthros-scratch/re3-perf-<manifest>/.
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/re3/perf.mjs <manifest> [--url http://127.0.0.1:8080] [--gl swiftshader|discard|gpu]
@@ -18,7 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { launchOptions, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile, memSampler } from '../port-perf.mjs';
+import { launchOptions, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile, memSampler, meterSampler } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
 const [name] = args;
@@ -78,7 +79,10 @@ await page.evaluate(() => { const B = portSession.engine.orthrosBlocked; perfPro
 await startMeasure(page, { calls: !args.includes('--no-calls') });
 const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => portSession.engine.HEAPU8.length') : null;
 if (args.includes('--mark')) console.log('MEASURE START', Date.now());
+// (the game data's indicator over the measured seconds: shown only while the game truly waits — data-meter-worker.js)
+const meterStop = await meterSampler(page, { shots: root });
 await page.waitForTimeout(seconds * 1000);
+const meter = await meterStop();
 const mem = memStop ? await memStop() : null;
 const measured = await readMeasure(page);
 const profile = cdp ? await stopProfile(cdp, measured.frames) : null;
@@ -97,4 +101,4 @@ if (args.includes('--drive') || car) await page.keyboard.up('w');
 await page.screenshot({ path: path.join(root, 'end.png') });
 await browser.close();
 if (profile) console.log('PROFILE', JSON.stringify(profile, null, 1));
-console.log(JSON.stringify({ name, gl, seconds, size: `${width}x${height}`, drive: args.includes('--drive'), car: car ?? null, ...result, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1) } : {}) }));
+console.log(JSON.stringify({ name, gl, seconds, size: `${width}x${height}`, drive: args.includes('--drive'), car: car ?? null, ...result, meter, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1) } : {}) }));

@@ -6,7 +6,7 @@
 // Counters shared with the page's indicator: ctrl[2] bytes received (decoded), ctrl[3] this worker's heartbeat,
 // ctrl[4] / ctrl[5] KB of the current step here / in all (the learned order: HttpBackend.stepEstimate), ctrl[6] the
 // page's reads waiting for the network that the engine waits for — a synchronous read, or an asynchronous one the page
-// says holds the engine (`held`: data-client.js HOLD_MS; not one the engine asked ahead and went on past, nor one
+// says holds the engine (`held`: data-client.js holdCheck; not one the engine asked ahead and went on past, nor one
 // fetched in the background). The link, for the page: ctrl[7] 1 when it is fast (the files themselves read,
 // not their light copies), ctrl[8] its measured rate (KB/s, 0 until measured), ctrl[9] 1 when it is thin (measured
 // below THIN_BPS, net-link.js). The page's quiet (GameData.quiet: a page that loads more of its game when nothing waits):
@@ -157,7 +157,7 @@ function waited() {
   if (W.waiting > 0 || was > 0) W.lastWait = performance.now();
 }
 
-/** The page says which of its asynchronous reads the engine waits for now ([id, 1 | 0]: data-client.js holdWatch). */
+/** The page says which of its asynchronous reads the engine waits for now ([id, 1 | 0]: data-client.js holdCheck, holdWatch). */
 function hold(list) {
   for (const [id, on] of list) { const a = W.held.get(id); if (a) a.held = !!on; }
   waited();
