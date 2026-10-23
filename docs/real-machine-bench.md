@@ -85,8 +85,9 @@ of the render worker on that machine; `&gameLang=fr` the game's language.
 ## The bench suite: every game from one link
 
 **<https://orthros.chalco.website/?benchsuite=all>** — open it in Chrome, click **Start the measurement**, then leave
-the tab in front and visible, without touching the mouse or the keyboard, until the summary appears (about 15 minutes
-once the games are in the browser; longer on a first launch: each game's files download first). The summary lists every
+the tab in front and visible, without touching the mouse or the keyboard, until the summary appears (about 15 minutes —
+14.6 here, a first launch on a fast link, below —; longer on a first launch over a slower link: each game's files
+download first). The summary lists every
 game's phases and says whether the results reached the server (**Send again** if not, **Copy the results** besides).
 
 | # | game (version) | bench | what it plays | phases |
@@ -348,6 +349,35 @@ included) — like 1.03 (36 s) and 1.08 (34 s). The 91 s was the machine's load.
 28 M guest instructions per frame in the main thread (the 2.22 mod's menu at the canonical High LOD settings), the
 emulator's speed per instruction as elsewhere (1.5 ns); nothing of the emulator's own stands out there (no Sleep(0)
 spin: 45 per frame, 491 scheduling decisions per frame).
+
+## Checks made (2026-10-23: the bench suite in headless Chromium, every game's first launch)
+
+`tools/bench-suite-check.mjs --suite all --gl-discard` on a server of this branch (`--games-dir` a scratch catalog
+linking the live games, `--learn` a copy of the live learned data, `--telemetry`): a fresh browser, the intro's button
+clicked, nothing else. SwiftShader with the rasterizer discarded, load 17-60 (other projects). Second run, all fixes in:
+**7/7 `done` in 875 s** (14.6 min), 8 records written (7 games, the suite's), `telemetry-report.mjs --suite` reads them:
+
+| game | outcome, time | measured phase: fps, frame p50 / p90 / p99 ms, > 40 ms /min, work p50 / p99 ms, data waits |
+|---|---|---|
+| BFME 1.08 fr | done, 189 s (menu at 45 s, play from 149 s) | play 40 s: 30.0, 33.1 / 36.4 / 41.1, 30, 15 / 27, 0 ms |
+| BFME II | done, 158 s | play 40 s: 29.4, 33.0 / 36.9 / 53.0, 58, 15.9 / 46, 277 ms |
+| RotWK 2.02 | done, 145 s | play 50 s: 29.8, 33.1 / 36.4 / 48.5, 48, 18 / 48.5, 12 ms |
+| Vice City reVC | done, 122 s | drive 30 s: 19.1, 50 / 100 / 100, 930, 3.3 / 6.1, 41 ms (GPU-bound here: GPU p50 53 ms) |
+| Morrowind Vanilla+ fr | done, 85 s (world at 27 s) | glide 45 s: 32.1, 33.3 / 33.3 / 66.7, 121, 11.9 / 25.6, 288 ms |
+| Half-Life | done, 69 s | walk 45 s: 59.6, 16.7 / 16.7 / 16.7, 0, 1.2 / 3.4, 6 ms |
+| Counter-Strike rebuilt | done, 85 s | play 50 s: 59.5, 16.7 / 16.7 / 16.7, 4, 1.8 / 5.2, 11 ms |
+
+(Numbers of this loaded server's software GPU, not a player's machine; the ports' frame times are the browser's
+animation-frame timestamps, on the display's 16.7 ms grid.) The first full run (before the game's frame was given the
+focus) had BFME 1.08 `timeout` after 900 s — waiting for the skirmish setup screen, its profile dialog left open — and
+went on with the next game as designed (6/7 done, the summary and the 8 records sent); BFME 1.08 alone in the suite
+then played to its end (190 s), as at the top level (`headless.mjs --ui --bench bfme1-108-short --game-lang fr`: 237 s).
+Without `--gl-discard` (SwiftShader drawing), the port pages showed their scenarios: reVC's menu, new game, intro
+scenes, Tommy free near the Ocean View, "Cheat activated" for the typed GETTHEREFAST (at 2-4 fps here a key held
+100 ms can fall between two frames: the presses are held longer, the text one key at a time); Morrowind at Seyda Neen
+then carried over the Bitter Coast (at 3000 high the player once died against the hills and the main menu came up:
+5000 now); Counter-Strike's counter-terrorist spawn with the bots; Half-Life's tram. The Win32 pages there stall the
+page's thread for minutes under SwiftShader (as noted on 2026-10-05): use `--gl-discard` for them.
 
 ## Tests
 

@@ -14,9 +14,9 @@
   {"name": "bfme2-short", "title": "BFME II: menu, skirmish start, 40 s of play", "manifests": ["bfme2"], "file": "bfme2-short.txt", "coords": [800, 600], "minutes": 3, "maxSeconds": 900},
   {"name": "rotwk-short", "title": "Rise of the Witch-king: menu, skirmish start, 50 s of play", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-short.txt", "coords": [800, 600], "minutes": 3, "maxSeconds": 900},
   {"name": "revc-drive", "title": "Vice City (reVC): menu, new game, on foot, a drive", "manifests": ["vice-city-revc", "vice-city-orthros"], "runtime": "re3", "file": "revc-drive.txt", "coords": [1000, 1000], "minutes": 2, "maxSeconds": 600},
-  {"name": "morrowind-glide", "title": "Morrowind (OpenMW): in the world, then carried over the land", "manifests": ["morrowind-goty-vanilla-plus-fr", "morrowind-goty-vanilla-plus-en", "morrowind-goty-fr", "morrowind-goty-en"], "runtime": "openmw", "page": "app/index.html?src=hosted&start=-2,-9&novid", "file": "morrowind-glide.txt", "coords": [1000, 1000], "minutes": 2, "maxSeconds": 600},
-  {"name": "halflife-c1a0", "title": "Half-Life: the map c1a0, a walk in the tram", "manifests": ["half-life-original-en"], "runtime": "goldsrc", "file": "halflife-c1a0.txt", "coords": [1000, 1000], "minutes": 2, "maxSeconds": 480},
-  {"name": "cs-bots", "title": "Counter-Strike (rebuilt): de_dust2 against bots", "manifests": ["counter-strike-rebuilt-en"], "runtime": "goldsrc", "file": "cs-bots.txt", "coords": [1000, 1000], "minutes": 2, "maxSeconds": 480}
+  {"name": "morrowind-glide", "title": "Morrowind (OpenMW): in the world, then carried over the land", "manifests": ["morrowind-goty-vanilla-plus-fr", "morrowind-goty-vanilla-plus-en", "morrowind-goty-fr", "morrowind-goty-en"], "runtime": "openmw", "page": "app/index.html?src=hosted&start=-2,-9&novid", "file": "morrowind-glide.txt", "coords": [1000, 1000], "minutes": 1.5, "maxSeconds": 600},
+  {"name": "halflife-c1a0", "title": "Half-Life: the map c1a0, a walk in the tram", "manifests": ["half-life-original-en"], "runtime": "goldsrc", "file": "halflife-c1a0.txt", "coords": [1000, 1000], "minutes": 1.2, "maxSeconds": 480},
+  {"name": "cs-bots", "title": "Counter-Strike (rebuilt): de_dust2 against bots", "manifests": ["counter-strike-rebuilt-en"], "runtime": "goldsrc", "file": "cs-bots.txt", "coords": [1000, 1000], "minutes": 1.5, "maxSeconds": 480}
  ],
  "suites": [
   { "name": "all", "title": "Every game", "benches": [

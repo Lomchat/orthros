@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { HIST_N, histBucket, histUpper, histQuantile, histSparse, histAddSparse, FrameStats, N_CATS, C } from '../src/core/frame-acct.js';
-import { parseScenario, unsupportedSteps, ScenarioPlayer, inRanges } from '../src/host/scenario.js';
+import { parseScenario, unsupportedSteps, ScenarioPlayer, inRanges, PORT_KINDS } from '../src/host/scenario.js';
 import { PerfWindow, SummaryClock, compactPhase } from '../src/host/perf-summary.js';
 import { GpuProbe, WINDOW_FRAMES, PERIOD_MS, GL_FRAMES, GL_PERIOD_MS } from '../src/gfx/gpu-probe.js';
 import { scanCodeOfVk } from '../src/win32/vk-scan.js';
@@ -305,7 +305,8 @@ test('bench definitions: each scenario parses, plays in the page, names its mani
     assert.ok(Array.isArray(b.coords) && b.coords.length === 2 && b.coords.every((v) => v > 0), b.name);
     assert.ok(b.maxSeconds > 60 && b.title, b.name);
     const { steps, errors } = parseScenario(fs.readFileSync(new URL(b.file, dir), 'utf8'));
-    assert.deepEqual(errors, [], b.name); assert.deepEqual(unsupportedSteps(steps), [], b.name);
+    // (a browser port's bench plays the ports' steps too: the bench suite, tests/bench-suite.test.js)
+    assert.deepEqual(errors, [], b.name); assert.deepEqual(unsupportedSteps(steps, b.runtime && b.runtime !== 'win32' ? PORT_KINDS : undefined), [], b.name);
     const marks = steps.filter((s) => s.kind === 'mark').map((s) => s.args[0]);
     assert.ok(marks.length >= 2 && marks[marks.length - 1] === 'end', `${b.name}: marks ${marks}`);
     assert.ok(steps.some((s) => s.kind.startsWith('wait')), b.name);
