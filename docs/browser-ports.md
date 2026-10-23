@@ -89,8 +89,8 @@ reVC driving (`--car GETTHEREFAST`, start at 3000 KB/s, 90 s driven at 300 KB/s)
 second before (19.5 s of reads "waiting" while the engine stood 6.8 s), 0 s at 27.7 after; Morrowind's glide
 (`--glide 1,0,600`, 60 s at 300 KB/s) — 22.8 s before, 6.8 s after (the page's synchronous reads held it 5.4 s);
 Orthros Edition at 3000 KB/s: its start (the engine waits ~95 % of the time in reads of ~65 ms) and its free mode's
-load shown, the menu and the walk not; the Win32 page (its own net status, `worker.js` netInfo: the frame thread's
-reads) says it waits only at 0-15 frames a second (Vice City's loads), never over its menu at 60 or its game at 30.
+load shown, the menu and the walk not; the Win32 page (its own net status, `worker.js` netInfo, shown over the game only once its
+frames stop 3 s) says it waits only at 0-15 frames a second (Vice City's loads), never over its menu at 60 or its game at 30.
 
 On a player's machine (the owner's: a real GPU, Windows), the ports are measured by the **bench suite**
 (`/?benchsuite=all`, docs/real-machine-bench.md "The bench suite"), every game in a row from one link, no Playwright:
