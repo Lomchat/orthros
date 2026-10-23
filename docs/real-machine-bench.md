@@ -431,6 +431,8 @@ clicked, nothing else. SwiftShader with the rasterizer discarded, load 17-60 (ot
 | Half-Life | done, 69 s | walk 45 s: 59.6, 16.7 / 16.7 / 16.7, 0, 1.2 / 3.4, 6 ms |
 | Counter-Strike rebuilt | done, 85 s | play 50 s: 59.5, 16.7 / 16.7 / 16.7, 4, 1.8 / 5.2, 11 ms |
 
+After the merge with the passive session records (the port meter on `watchEngineFrames`), a third run: 7/7 `done` in
+888 s, 8 records, every passive record of the run marked `bench` (`--perf --players` leaves them out).
 (Numbers of this loaded server's software GPU, not a player's machine; the ports' frame times are the browser's
 animation-frame timestamps, on the display's 16.7 ms grid.) The first full run (before the game's frame was given the
 focus) had BFME 1.08 `timeout` after 900 s — waiting for the skirmish setup screen, its profile dialog left open — and
