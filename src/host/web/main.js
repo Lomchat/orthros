@@ -15,6 +15,7 @@ import { accountState } from './account.js';
 import { pickLang } from './lang.js';
 import { linkRate } from '../../vfs/data-client.js';
 import { gpuInfo } from './gpu-class.js';
+import { PerfSession } from './perf-page.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -227,6 +228,8 @@ async function start(name, language = null) {
   }
   const tree = await treeReq;
   state.status = 'starting'; state.manifest = name;
+  // (the passive session record, perf-page.js: every 2 min of play and at the end — docs/real-machine-bench.md)
+  if (state.telemetry) state.perf = new PerfSession({ runtime: 'win32', game: name, session: state.session, version: manifest.version ?? null, build: state.version, bench: params.get('bench'), env: () => state.env ?? environment(), phase: () => state.status });
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
   state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer'); state.ctxVideo = $('vid').getContext('bitmaprenderer'); $('vid').style.visibility = 'hidden'; // (no movie from a previous run)
   resizeTo(manifest.display.width, manifest.display.height);
@@ -397,8 +400,8 @@ function onWorkerMessage(m) {
     case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
     case 'audio-voices': state.audioVoices = { type: 'voices', memory: m.memory, voices: m.voices }; state.audioNode?.port.postMessage(state.audioVoices); break; // (the AudioWorklet mixes the game's sound buffers itself)
-    case 'exit': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(TEXT.exited(state.title), TEXT.exitCode(m.code, m.reason), null, m.code !== 0, true); cloud?.push(); break;
-    case 'crash': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; log('crash', m.report); if (!headless) showStatus(TEXT.crashed(state.title), TEXT.crashDetail, m.report, true, true); break;
+    case 'exit': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; state.perf?.end(); log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(TEXT.exited(state.title), TEXT.exitCode(m.code, m.reason), null, m.code !== 0, true); cloud?.push(); break;
+    case 'crash': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; state.perf?.end(); log('crash', m.report); if (!headless) showStatus(TEXT.crashed(state.title), TEXT.crashDetail, m.report, true, true); break;
     case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
     case 'corpus': state.corpus = m.text; break;
@@ -646,6 +649,7 @@ function recordSample(m) {
   // categories summed and the worst one [ms, work ms, categories] — what made frames slow
   const fa = m.acct; if (fa) { smp.w = fa.w; smp.c = fa.c; if (fa.sc) { smp.sc = fa.sc; smp.wf = fa.wf; } }
   state.samples.push(smp); if (state.samples.length > 600) state.samples.shift();
+  state.perf?.interval(m);
   if (!state.telemetry) return;
   (state.queue ??= []).push(smp);
   // every ~20 s a summary of the frames (perf-summary.js: percentiles, slow frames, time by category, draws, GPU time,

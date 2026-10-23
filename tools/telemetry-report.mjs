@@ -9,8 +9,10 @@
 // - the bench runs (?bench=<name>, docs/real-machine-bench.md): per phase results;
 // and a comparison of the bench runs, per bench: one line per run, its phases side by side.
 // Usage: node tools/telemetry-report.mjs <telemetry dir | .jsonl file>... [--from YYYY-MM-DD] [--to YYYY-MM-DD]
-//          [--session <id>] [--game <manifest>] [--bench [<name>]] [--min-seconds 60] [--json]
+//          [--session <id>] [--game <manifest>] [--bench [<name>]] [--perf [--gpu <name>]] [--min-seconds 60] [--json]
 //   --bench: only the sessions with bench runs (of that bench) and the comparison
+//   --perf [--gpu <part of its name>]: the passive session records (every runtime, src/host/perf-record.js) per game ×
+//          GPU: medians over the sessions, all frames merged, the worst minutes, the slow frames' causes, host timing
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -216,9 +218,108 @@ export function formatReport(reports, comparison) {
   return L.join('\n');
 }
 
+// ---------------------------------------------------------------- --perf: the passive session records (perf-record.js)
+/** A short name of the GPU from the WebGL renderer string ("ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x…) Direct3D11 …)" -> "Intel Iris Xe Graphics"). */
+export function gpuLabel(renderer) {
+  let r = String(renderer ?? '').trim();
+  if (!r) return 'GPU ?';
+  if (/swiftshader/i.test(r)) return 'SwiftShader';
+  const angle = /^ANGLE \((.*)\)$/.exec(r);
+  if (angle) { const parts = angle[1].split(', '); r = parts.length > 1 ? parts[1] : parts[0]; }
+  r = r.replace(/^ANGLE Metal Renderer: /, '').replace(/\((R|TM|tm|r)\)/g, '').replace(/\s*\(0x[0-9a-f]+\)/ig, '')
+    .replace(/\s+(Direct3D\d*|D3D\d+|OpenGL|Vulkan|Metal)\b.*$/i, '').replace(/\s+/g, ' ').trim();
+  return r || 'GPU ?';
+}
+const median = (v) => { const a = v.filter((x) => typeof x === 'number' && Number.isFinite(x)).sort((x, y) => x - y); return a.length ? a[a.length >> 1] : null; };
+const per = (count, seconds) => (seconds > 0 ? +(count / (seconds / 60)).toFixed(1) : null);
+
+/** The perf records by session (their entries in order, the latest totals). `gpu`: a part of the GPU's name or renderer. */
+export function perfSessions(lines, { from = null, to = null, session = null, game = null, gpu = null } = {}) {
+  const by = new Map();
+  for (const r of lines) {
+    if (r?.event !== 'perf' || !r.session || (session && r.session !== session) || (game && r.game !== game)) continue;
+    const day = typeof r.at === 'string' ? r.at.slice(0, 10) : null;
+    if (day && ((from && day < from) || (to && day > to))) continue;
+    let s = by.get(r.session);
+    if (!s) by.set(r.session, (s = { id: r.session, game: r.game ?? null, runtime: r.runtime, first: r.at ?? null, env: null, probe: null, seqs: new Set(), mins: [], tot: null, totSeq: -1, len: 0, vis: 0, hid: 0, final: false, version: null, build: null, tier: null, bench: null }));
+    if (s.seqs.has(r.seq)) continue; // (a record sent twice)
+    s.seqs.add(r.seq);
+    if (r.at && (!s.first || r.at < s.first)) s.first = r.at;
+    if (r.env) s.env = r.env; if (r.probe) s.probe = r.probe;
+    for (const k of ['version', 'build', 'tier', 'bench']) if (r[k]) s[k] = r[k];
+    s.mins.push(...(r.mins ?? []));
+    if (r.seq > s.totSeq) { s.totSeq = r.seq; s.tot = r.tot; s.len = r.len ?? s.len; s.vis = r.vis ?? s.vis; s.hid = r.hid ?? s.hid; }
+    if (r.final) s.final = true;
+  }
+  for (const s of by.values()) {
+    s.mins.sort((a, b) => a.t - b.t);
+    s.gpu = gpuLabel(s.env?.gpu);
+    if (gpu && !s.gpu.toLowerCase().includes(gpu.toLowerCase()) && !String(s.env?.gpu ?? '').toLowerCase().includes(gpu.toLowerCase())) by.delete(s.id);
+  }
+  return by;
+}
+
+/** One session's figures from its totals. */
+function sessionFigures(s) {
+  const t = s.tot ?? {}, sec = t.s ?? s.vis ?? 0;
+  return { session: s.id, at: s.first, runtime: s.runtime, tier: s.tier, build: s.build, seconds: Math.round(sec), len: s.len, visible: s.len ? +(s.vis / s.len).toFixed(2) : null, final: s.final,
+    fps: t.fps ?? null, p50: t.p50 ?? null, p90: t.p90 ?? null, p99: t.p99 ?? null, max: t.max ?? null, per40: per(t.f40 ?? 0, sec), per100: per(t.f100 ?? 0, sec),
+    work: t.work ?? null, wait: t.wait ?? null, gpu: t.gpu?.n ? t.gpu : null, gpuState: t.gpu?.state ?? null, dataMsPerMin: t.data ? per(t.data.ms, sec) : null, dataWaits: t.data?.n ?? null,
+    machine: machineLine(s.env), probe: s.probe };
+}
+
+/** The sessions grouped per game × GPU: medians over the sessions, the merged frame times, the worst minutes, the slow frames' causes. */
+export function perfReport(sessions, { minSeconds = 60 } = {}) {
+  const groups = new Map();
+  for (const s of sessions.values()) {
+    if ((s.tot?.s ?? s.vis ?? 0) < minSeconds) continue;
+    const key = `${s.game ?? '?'}\n${s.gpu}`;
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = { game: s.game, gpu: s.gpu, runtime: s.runtime, sessions: [], hist: new Array(HIST_N).fill(0), max: 0, minutes: [], slow: {}, seconds: 0 }));
+    g.sessions.push(s); g.seconds += s.tot?.s ?? 0;
+    if (s.tot?.h) histAddSparse(g.hist, s.tot.h);
+    if ((s.tot?.max ?? 0) > g.max) g.max = s.tot.max;
+    for (const e of s.mins) { g.minutes.push({ session: s.id, ...e }); add(g.slow, e.slow); }
+  }
+  return [...groups.values()].map((g) => {
+    const f = g.sessions.map(sessionFigures), slowTotal = Object.values(g.slow).reduce((a, b) => a + b, 0);
+    const m = (k) => median(f.map((x) => x[k]));
+    // (the worst minutes: those with the most frames over 40 ms a minute, then the highest p99; at least 20 s of play)
+    const worst = g.minutes.filter((e) => (e.s ?? 0) >= 20 && e.n > 0).map((e) => ({ ...e, per40: per(e.f40 ?? 0, e.s) })).sort((a, b) => (b.per40 - a.per40) || ((b.p99 ?? 0) - (a.p99 ?? 0))).slice(0, 3);
+    const probes = f.map((x) => x.probe).filter(Boolean);
+    return {
+      game: g.game, gpu: g.gpu, runtime: g.runtime, sessions: f.length, minutes: +(g.seconds / 60).toFixed(1),
+      median: { fps: m('fps'), p50: m('p50'), p90: m('p90'), p99: m('p99'), per40: m('per40'), per100: m('per100'), work: m('work'), wait: m('wait'), gpuMean: median(f.map((x) => x.gpu?.mean)), gpuP90: median(f.map((x) => x.gpu?.p90)), dataMsPerMin: m('dataMsPerMin'), visible: m('visible') },
+      merged: { p50: histQuantile(g.hist, 0.5, g.max || Infinity), p90: histQuantile(g.hist, 0.9, g.max || Infinity), p99: histQuantile(g.hist, 0.99, g.max || Infinity), max: g.max || null },
+      gpuStates: [...new Set(f.map((x) => x.gpuState).filter(Boolean))],
+      slowShares: slowTotal ? Object.fromEntries(Object.entries(g.slow).map(([k, v]) => [k, Math.round(v / slowTotal * 100)]).filter(([, v]) => v >= 1).sort((a, b) => b[1] - a[1])) : null,
+      worst, probe: probes.length ? { atomicsWait1P50: median(probes.map((p) => p.atomicsWait1?.[0])), setTimeout1P50: median(probes.map((p) => p.setTimeout1?.[0])), onBattery: probes.filter((p) => p.battery && !p.battery.charging).length, n: probes.length } : null,
+      perSession: f,
+    };
+  }).sort((a, b) => String(a.game).localeCompare(String(b.game)) || a.gpu.localeCompare(b.gpu));
+}
+
+/** The --perf text. */
+export function formatPerf(groups) {
+  const L = [];
+  const v = (x, unit = '') => (x === null || x === undefined ? '-' : `${x}${unit}`);
+  if (!groups.length) L.push('no passive session records (event "perf") in the selection');
+  for (const g of groups) {
+    const md = g.median;
+    L.push(`${g.game ?? '?'} (${g.runtime}) × ${g.gpu}: ${g.sessions} session(s), ${g.minutes} min of visible play`);
+    L.push(`  medians over the sessions: ${v(md.fps)} fps; frame ms p50 ${v(md.p50)} p90 ${v(md.p90)} p99 ${v(md.p99)}; >40 ms ${v(md.per40)}/min >100 ms ${v(md.per100)}/min; work ${v(md.work)} wait ${v(md.wait)} ms/frame; GPU ${md.gpuMean !== null ? `${md.gpuMean} ms/frame p90 ${v(md.gpuP90)}` : g.gpuStates.join('/') || '-'}; data waits ${v(md.dataMsPerMin)} ms/min; visible ${md.visible !== null ? Math.round(md.visible * 100) + '%' : '-'}`);
+    L.push(`  all frames merged: p50 ${v(g.merged.p50)} p90 ${v(g.merged.p90)} p99 ${v(g.merged.p99)} max ${v(g.merged.max)} ms`);
+    if (g.slowShares) L.push(`  slow frames' time by cause (%): ${Object.entries(g.slowShares).map(([k, x]) => `${k} ${x}`).join(', ')}`);
+    for (const w of g.worst) L.push(`  worst minute: ${w.session} t=${w.t}s ${w.ph ?? '-'} ${w.fps} fps p99 ${v(w.p99)} >40 ms ${w.per40}/min${w.work !== undefined ? ` work ${w.work} wait ${w.wait}` : ''}${w.gpu?.n ? ` gpu ${w.gpu.mean}` : ''}${w.data?.ms ? ` data ${w.data.ms} ms` : ''}${w.slow ? ` slow: ${Object.entries(w.slow).map(([k, x]) => `${k} ${x}`).join(', ')}` : ''}`);
+    if (g.probe) L.push(`  host timing: Atomics.wait(1) late p50 ${v(g.probe.atomicsWait1P50)} ms, setTimeout(1) ${v(g.probe.setTimeout1P50)} ms (median of ${g.probe.n}); ${g.probe.onBattery} on battery`);
+    for (const s of g.perSession) L.push(`    ${(s.at ?? '').slice(0, 16).replace('T', ' ')} ${s.session} ${s.seconds} s${s.visible !== null && s.visible < 0.99 ? ` (visible ${Math.round(s.visible * 100)}%)` : ''}${s.final ? '' : ' (no end record)'}: ${v(s.fps)} fps p99 ${v(s.p99)} >40 ${v(s.per40)}/min work ${v(s.work)} gpu ${s.gpu ? s.gpu.mean : v(s.gpuState)}${s.tier ? ` tier ${s.tier}` : ''} | ${s.machine}${s.build ? ` | build ${s.build}` : ''}`);
+  }
+  return L.join('\n');
+}
+
 function main(args) {
   const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 && i + 1 < args.length && !args[i + 1].startsWith('--') ? args[i + 1] : d; };
-  const valued = new Set(['--from', '--to', '--session', '--game', '--min-seconds']);
+  const valued = new Set(['--from', '--to', '--session', '--game', '--gpu', '--min-seconds']);
   const inputs = []; let benchName;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -227,8 +328,13 @@ function main(args) {
     if (a === '--bench') { const n = args[i + 1]; if (n && !n.startsWith('--') && !fs.existsSync(n)) { benchName = n; i++; } else benchName = true; continue; }
     if (!a.startsWith('--')) inputs.push(a);
   }
-  if (!inputs.length) { console.error('usage: node tools/telemetry-report.mjs <telemetry dir | file.jsonl>... [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--session id] [--game manifest] [--bench [name]] [--min-seconds 60] [--json]'); return 2; }
+  if (!inputs.length) { console.error('usage: node tools/telemetry-report.mjs <telemetry dir | file.jsonl>... [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--session id] [--game manifest] [--bench [name]] [--perf [--gpu name]] [--min-seconds 60] [--json]'); return 2; }
   const range = { from: opt('from', null), to: opt('to', null) };
+  if (args.includes('--perf')) {
+    const groups = perfReport(perfSessions(readLines(telemetryFiles([...new Set(inputs)], range)), { ...range, session: opt('session', null), game: opt('game', null), gpu: opt('gpu', null) }), { minSeconds: Number(opt('min-seconds', 60)) });
+    console.log(args.includes('--json') ? JSON.stringify(groups, null, 1) : formatPerf(groups));
+    return 0;
+  }
   const sessions = buildSessions(readLines(telemetryFiles([...new Set(inputs)], range)), { ...range, session: opt('session', null), game: opt('game', null) });
   const reports = report(sessions, { minSeconds: Number(opt('min-seconds', 60)), bench: benchName });
   const comparison = benchComparison(reports);

@@ -27,6 +27,7 @@ import zlib from 'node:zlib';
 import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK, unitOf, HttpBackend } from '../vfs/http-backend.js';
 import { launchSummary, launchSet, entryPieces, PRE_PLAYABLE } from '../vfs/launch-set.js';
 import { createBrCache } from './br-cache.js';
+import { PERF_MAX_BYTES, sanitizePerfRecord } from './perf-record.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
 import path from 'node:path';
@@ -1214,8 +1215,14 @@ export function createServer(opts = {}) {
         let body = '', size = 0;
         req.on('data', (d) => { size += d.length; if (size <= 256 * 1024) body += d; });
         req.on('end', () => {
-          let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
           if (size > 256 * 1024) return send(res, 413, 'too large');
+          let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+          // (a passive session record, perf-record.js: its own size limit, checked and rebuilt from its known fields)
+          if (rec?.event === 'perf') {
+            if (size > PERF_MAX_BYTES) return send(res, 413, 'too large');
+            const v = sanitizePerfRecord(rec); if (!v.ok) return send(res, 400, v.error);
+            rec = v.rec;
+          }
           const day = new Date().toISOString().slice(0, 10);
           fs.appendFile(path.join(opts.telemetryDir, `telemetry-${day}.jsonl`), JSON.stringify({ at: new Date().toISOString(), ...rec }) + '\n', () => {});
           send(res, 204, '');

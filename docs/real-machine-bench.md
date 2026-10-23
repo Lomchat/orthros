@@ -8,7 +8,9 @@ from the server's telemetry.
 Three parts, all generic (no game-specific code; the only per-game artifacts are the scenario files):
 
 1. **Telemetry** of every normal session (when the server runs with `--telemetry <dir>`, as the live server does):
-   the machine, the options, and every ~20 s a frame summary (`src/host/perf-summary.js`).
+   the machine, the options, and every ~20 s a frame summary (`src/host/perf-summary.js`); and in every runtime
+   (Win32, GoldSrc, re3, OpenMW) the passive session record, every 2 min and at the end (below, "Passive session
+   records"; `telemetry-report.mjs --perf`).
 2. **Bench mode** of the page: `?bench=<name>` plays a scripted scenario (`tools/scenarios/bench/`) in the player's
    browser, shows a banner while it runs and a summary at the end, and sends one `bench` record with the per-phase
    results and the machine (`src/host/web/bench.js`, `src/host/scenario.js`).
@@ -152,6 +154,66 @@ What to read in the next BFME1 run on the owner's machine: `atomicsWait1` p50 (c
 
 Volume: the 0.5 s samples (~0.3 kB each) as before, plus ~2 kB per summary (every 20 s) and ~5 kB per bench record.
 
+## Passive session records
+
+The owner (and most players) will not run benchmarks: what a game does on a player's machine is learned from their
+normal play sessions, passively. Every runtime's page — the Windows games' (`src/host/web/main.js`), the GoldSrc and re3
+ports' (`src/ports/*/play.js`) and the OpenMW engine's page (`src/ports/openmw/frame-meter.js`, put in by the server) —
+sends the same compact record, `event: "perf"`, built by one shared module: `src/host/perf-record.js` (the recording
+and the server's validation, no DOM) and `src/host/web/perf-page.js` (the page side: clock, frame meter, GPU timer,
+timing probe, sending). Only when the server keeps telemetry (`/api/config` `telemetry`; the Win32 page also not with
+`?headless=1`). There is no opt-out in Orthros today (none existed for the other telemetry either); the record holds
+nothing beyond what the telemetry already held (the browser's user agent, cores, memory, screen, WebGL renderer).
+
+**When**: one record every 2 minutes of the session that has new entries (a hidden tab sends none), and one at its end
+(`final: true`: the game exited or crashed, the port's end, the page's `pagehide`) — sendBeacon, else a keepalive
+fetch. At most 150 records a session (5 hours), 12 entries a record, 24 KiB a record (the page trims the totals'
+histogram then the oldest entries; the server refuses larger ones with 413). Each record is ~2-5 kB.
+
+**What** (one entry per minute of the session; a phase change starts a new entry once the current one holds 5 s):
+
+| field | what |
+|---|---|
+| `session`, `game`, `runtime`, `version`, `build`, `tier`, `bench` | the page's telemetry session id, the manifest, `win32` / `goldsrc` / `openmw` / `re3`, the manifest's version label, the served build (`/api/config`), the engine's quality tier (OpenMW: `orthrosTierChoice`), the bench name when the page runs one |
+| `seq`, `final`, `len`, `vis`, `hid`, `dropped` | record number, the end's record, session seconds so far, of them visible / hidden, entries dropped over the cap |
+| `env` | `gpu` / `gpuVendor` (WebGL unmasked renderer), `gpuClass` (gpu-class.js: integrated, discrete, software), `cores`, `memGB`, `ua`, `screen` |
+| `probe` | the host timing probe (timing-probe.js), once after a minute of visible play: `atomicsWait1`, `atomicsWait1Timer`, `setTimeout0`, `setTimeout1`, `messageHop` as `[p50, p90, max]` ms late, `battery`; in the first record after it and in the end's |
+| `mins[]` | entries: `t` (start, s from the session's start), `ph` (phase: Win32 the page's status, the ports' session state, OpenMW `loading` / `menu` / `world`), `s` / `hid` (visible / hidden seconds), `n` frames, `fps` (over the visible time), `p50` `p90` `p99` `max` (frame ms, frame-acct.js histogram: 1 ms buckets below 100 ms), `f40` `f100` (frames over 40 / 100 ms), `work` / `wait` (ms per frame), `cats` (Win32: mean ms per frame by frame-accounting category), `slow` (the slow frames' time by cause, ms summed), `gpu` (`{ n, mean, p50, p90, p99 }` timed frames, or `{ state }`), `data` (`{ n, ms }` game data waits) |
+| `tot` | the same over the whole session so far (visible play only), with its frame-time histogram `h` (sparse: sessions merge) |
+
+**Hidden tabs**: the time is counted (`hid`), the frames are not (a hidden tab's frames and the first gap after it).
+
+**Frames, work and wait, per runtime**:
+- Win32: the worker's stats intervals (~0.5 s, frame-acct.js `takeInterval`): frames, histogram, slow counts, mean work
+  (frame accounting minus `wait` / `sleep`) and categories; `slow` = the categories of the frames over 33.4 ms (the
+  frame accounting's own slow frames). GPU: the Direct3D device's timer probe (gpu-probe.js, render worker). Data waits:
+  the game's synchronous file reads over the network (the worker's `netMs` / `netReq`).
+- Ports: a frame is a browser frame in which the engine drew (GoldSrc, OpenMW: the GL draw counter they already had)
+  or one it displayed (re3: `Module.orthrosFrame`); its time from one shown frame's start to the next (animation frame
+  timestamps). The engine's work: from the browser frame's start to the engine's request of its next animation frame
+  made in it (`requestAnimationFrame` wrapped: its iteration's end, an asynchronous main loop's too); `wait` = the
+  frame's time minus that. `slow` for frames over 40 ms: `data` (the game data's waits in that frame — the shared
+  counters of `src/vfs/data-client.js` `GameData.stats`), `work` (the engine's other work), `other` (the browser, the
+  GPU, the compositor), `unknown` without a work measure. GPU: the same `GpuProbe` on the engine's context
+  (`EXT_disjoint_timer_query_webgl2`, or `EXT_disjoint_timer_query` on WebGL1 through an adapter), windows of 120
+  frames every 10 s; `{ state: 'unavailable' }` without the extension.
+
+**The report**:
+
+```
+node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf                     # every game × GPU
+node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf --game bfme1-108 --gpu Iris
+node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf --json
+```
+
+Per game × GPU (the renderer's short name, e.g. `Intel Iris Xe Graphics`; `--gpu` matches a part of it or of the
+renderer string): sessions and minutes of visible play; the medians over the sessions (fps, frame p50 / p90 / p99,
+frames > 40 / > 100 ms per minute, work / wait per frame, GPU ms per frame, data waits per minute, visible share); the
+percentiles of all their frames merged; the slow frames' time by cause (%); the three worst minutes (most frames over
+40 ms per minute, then p99; at least 20 s of play); the host timing (median Atomics.wait(1) lateness, sessions on
+battery); one line per session (machine, build, tier, whether its end record arrived). `--from`, `--to`, `--session`,
+`--min-seconds` (60 s of visible play) apply.
+
 ## Bench scenarios
 
 `tools/scenarios/bench/index.json` lists them: `name` (the link's `bench=`), `title`, `manifests` (versions it plays;
@@ -280,6 +342,7 @@ spin: 45 per frame, 491 scheduling decisions per frame).
 
 ## Tests
 
-`tests/bench-kit.test.js` (histogram, interval counts, scenario parsing and the player's timing anchors, pointer
+`tests/perf-record.test.js` (passive session records: minutes, phases, hidden time, counters, bounds, the server's
+check and route, the page side with a fake window, the WebGL1 timer adapter, `--perf`), `tests/bench-kit.test.js` (histogram, interval counts, scenario parsing and the player's timing anchors, pointer
 scaling, summaries, GPU / GL call probe with a timer-query double, the bench definitions), `tests/telemetry-report.test.js`
 (sessions, date filters, merged summaries, bench comparison, the command line).
