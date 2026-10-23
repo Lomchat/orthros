@@ -8,7 +8,10 @@
 // engine's CPU and the browser's (upper bounds: vertex work still runs). Not a gameplay check.
 // Always through tools/with-browser-slot.sh:
 //   tools/with-browser-slot.sh node tools/openmw/perf.mjs <manifest> --url <origin> [--seconds 60] [--warm 10]
-//     [--start -2,-9] [--query tier=high] [--discard] [--run] [--profile] [--out <dir>] [--mem-every s]   (--run: Shift held, running;
+//     [--start -2,-9] [--query tier=high] [--discard] [--run] [--profile] [--out <dir>] [--mem-every s] [--mark]
+//     [--channel chromium|shell]   (--channel: Chromium itself in its new headless mode by default, as the bench suite
+//     runs it; shell: Playwright's headless shell, which composites otherwise — 47 fps on the glide where Chromium and
+//     the suite measure 31, tools/port-perf.mjs)   (--run: Shift held, running;
 //     --profile: a CPU profile of the measured seconds, its longest busy stretches and what they ran, tools/port-perf.mjs;
 //     --glide <dx>,<dy>[,<speed>[,<z>]]: instead of walking, the player carried in a straight line from the start
 //     cell's centre, <speed> units a second (300: a run) at height <z> (3000) — several cells crossed the same way
@@ -18,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { startProfile, stopProfile, memSampler } from '../port-perf.mjs';
+import { launchOptions, startProfile, stopProfile, memSampler } from '../port-perf.mjs';
 
 const args = process.argv.slice(2), id = args[0], arg = (k, d = null) => args.includes(k) ? args[args.indexOf(k) + 1] : d;
 if (!id) throw new Error('Expected a manifest id');
@@ -27,7 +30,7 @@ const warm = Math.max(0, Number(arg('--warm', 10))), start = arg('--start', '-2,
 const discard = args.includes('--discard'), profile = args.includes('--profile'), glide = arg('--glide');
 const dir = arg('--out', `/tmp/orthros-scratch/openmw-perf-${id}`);
 fs.mkdirSync(dir, { recursive: true }); process.env.TMPDIR = dir;
-const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+const browser = await chromium.launch(launchOptions({ gl: 'swiftshader', channel: arg('--channel', 'chromium') }));
 const faults = [];
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
@@ -36,7 +39,8 @@ try {
   // (a measurement: nothing reported to the server — its learned order, telemetry and the gateway's client log stay clean)
   await page.route((u) => /\/clientlog$|\/api\/(telemetry|prefetch|profile-seed|programs|regions)(\/|$)/.test(u.pathname), (r) => r.request().method() === 'GET' ? r.continue() : r.fulfill({ status: 204, body: '' }));
   await page.addInitScript((discard) => {
-    const P = window.orthrosPerf = { draws: 0, frames: [], work: [], sync: {}, syncFrames: [], cur: {} };
+    // (its own name: the engine page's window.orthrosPerf is the passive session record, frame-meter.js)
+    const P = window.__omwPerfProbe = { draws: 0, frames: [], work: [], sync: {}, syncFrames: [], cur: {} };
     const proto = WebGL2RenderingContext.prototype;
     for (const name of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
       const f = proto[name]; proto[name] = function (...a) { P.draws++; return f.apply(this, a); };
@@ -79,15 +83,16 @@ try {
   const t0 = Date.now();
   await page.goto(url);
   // (in the world: Orthros' script's first report, view.lua — or the engine running and drawing for a while)
-  await page.waitForFunction(() => window.omw?.state?.['orthros.view'] !== undefined || (window.Module?.__omwRunning && window.orthrosPerf.draws > 2000), null, { timeout: 600000, polling: 500 });
+  await page.waitForFunction(() => window.omw?.state?.['orthros.view'] !== undefined || (window.Module?.__omwRunning && window.__omwPerfProbe.draws > 2000), null, { timeout: 600000, polling: 500 });
   const bootMs = Date.now() - t0;
   await page.mouse.click(640, 400);
   await page.waitForTimeout(warm * 1000);
   const before = await page.evaluate(() => ({ stall: window.__streamfsStats?.stallMs ?? null, sync: window.__streamfsStats?.syncFetches ?? 0, misses: window.__omwShaderMisses ?? 0, cell: window.omw?.state?.['orthros.cell'] ?? null }));
   // (the exterior cells walked through: view.lua's report, looked at every half second)
-  await page.evaluate(() => { const P = window.orthrosPerf; P.cells = new Set(); P.cellLook = setInterval(() => { const c = window.omw?.state?.['orthros.cell']; if (c) P.cells.add(c); }, 500); });
+  await page.evaluate(() => { const P = window.__omwPerfProbe; P.cells = new Set(); P.cellLook = setInterval(() => { const c = window.omw?.state?.['orthros.cell']; if (c) P.cells.add(c); }, 500); });
   const cdp = profile ? await startProfile(page) : null;
-  await page.evaluate(() => { window.orthrosPerf.on = true; });
+  await page.evaluate(() => { window.__omwPerfProbe.on = true; });
+  if (args.includes('--mark')) console.log('MEASURE START', Date.now()); // (for a recorder outside: perf record, a thread sampler)
   const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => Module.HEAPU8.length') : null;
   const end = Date.now() + seconds * 1000;
   if (glide) {
@@ -96,10 +101,10 @@ try {
     const [dx, dy, speed, z] = glide.split(',').map(Number), [cx, cy] = start.split(',').map(Number), n = Math.hypot(dx, dy) || 1;
     await page.evaluate(({ x0, y0, vx, vy, z }) => {
       const t0 = performance.now();
-      window.orthrosPerf.glide = setInterval(() => { const t = (performance.now() - t0) / 1000; window.Module._omw_debug_teleport(x0 + vx * t, y0 + vy * t, z); }, 33);
+      window.__omwPerfProbe.glide = setInterval(() => { const t = (performance.now() - t0) / 1000; window.Module._omw_debug_teleport(x0 + vx * t, y0 + vy * t, z); }, 33);
     }, { x0: (cx + 0.5) * 8192, y0: (cy + 0.5) * 8192, vx: dx / n * (speed || 300), vy: dy / n * (speed || 300), z: Number.isFinite(z) ? z : 3000 });
     await page.waitForTimeout(seconds * 1000);
-    await page.evaluate(() => clearInterval(window.orthrosPerf.glide));
+    await page.evaluate(() => clearInterval(window.__omwPerfProbe.glide));
   } else {
     if (args.includes('--run')) await page.keyboard.down('Shift');
     await page.keyboard.down('w');
@@ -109,15 +114,19 @@ try {
   }
   const mem = memStop ? await memStop() : null;
   const r = await page.evaluate(({ before }) => {
-    const P = window.orthrosPerf; P.on = false; clearInterval(P.cellLook);
+    const P = window.__omwPerfProbe; P.on = false; clearInterval(P.cellLook);
     const q = (a, p) => { const s = [...a].sort((x, y) => x - y); return s.length ? +s[Math.min(s.length - 1, Math.floor(s.length * p))].toFixed(1) : null; };
     const gaps = P.frames.slice(1).map((t, i) => t - P.frames[i]), secs = (P.frames.at(-1) - P.frames[0]) / 1000;
     let renderer = null; try { const gl = document.createElement('canvas').getContext('webgl2'); const e = gl.getExtension('WEBGL_debug_renderer_info'); renderer = gl.getParameter(e ? e.UNMASKED_RENDERER_WEBGL : gl.RENDERER); } catch { /* none */ }
     const perFrame = {}; for (const f of P.syncFrames) for (const [k, v] of Object.entries(f)) perFrame[k] = (perFrame[k] ?? 0) + v;
     for (const k of Object.keys(perFrame)) perFrame[k] = +(perFrame[k] / Math.max(1, P.syncFrames.length)).toFixed(3);
     const log = document.querySelector('#log')?.textContent ?? '';
+    // (the engine's canvas: its drawing buffer's size, the page's pixel ratio and the context's attributes — a
+    // multisampled or preserved drawing buffer costs on every GPU)
+    const cv = document.querySelector('canvas'), cx = cv?.getContext('webgl2'), ca = cx?.getContextAttributes();
+    const canvas = cv ? { buffer: `${cx?.drawingBufferWidth ?? cv.width}x${cx?.drawingBufferHeight ?? cv.height}`, css: `${cv.clientWidth}x${cv.clientHeight}`, dpr: devicePixelRatio, antialias: ca?.antialias ?? null, samples: cx?.getParameter(cx.SAMPLES) ?? null, preserveDrawingBuffer: ca?.preserveDrawingBuffer ?? null } : null;
     return {
-      renderer, tier: window.__omwTier ?? null, tierChoice: window.orthrosTierChoice ?? null, tierLog: /\[tier\][^\n]*/.exec(log)?.[0] ?? null,
+      renderer, canvas, tier: window.__omwTier ?? null, tierChoice: window.orthrosTierChoice ?? null, tierLog: /\[tier\][^\n]*/.exec(log)?.[0] ?? null,
       frames: P.frames.length, fps: +(P.frames.length / Math.max(0.001, secs)).toFixed(2),
       gap: { p50: q(gaps, 0.5), p90: q(gaps, 0.9), p99: q(gaps, 0.99), max: q(gaps, 1), over100: gaps.filter((g) => g > 100).length, over250: gaps.filter((g) => g > 250).length },
       work: { p50: q(P.work, 0.5), p90: q(P.work, 0.9), p99: q(P.work, 0.99), max: q(P.work, 1), over50: P.work.filter((w) => w > 50).length, over100: P.work.filter((w) => w > 100).length },

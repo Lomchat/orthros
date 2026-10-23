@@ -3,7 +3,7 @@
 // server. The probe runs here on a fake window (its init script is a plain function).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chromeArgs, addProbe, quietReports, startMeasure, readMeasure, SYNC_CALLS } from '../tools/port-perf.mjs';
+import { chromeArgs, launchOptions, addProbe, quietReports, startMeasure, readMeasure, SYNC_CALLS } from '../tools/port-perf.mjs';
 
 test('launch flags: SwiftShader for swiftshader and discard, none for gpu; null refused', () => {
   assert.ok(chromeArgs('swiftshader').includes('--use-angle=swiftshader'));
@@ -11,6 +11,23 @@ test('launch flags: SwiftShader for swiftshader and discard, none for gpu; null 
   assert.ok(!chromeArgs('gpu').some((a) => a.startsWith('--use-angle')));
   assert.throws(() => chromeArgs('null'), /ignored/);
   assert.throws(() => chromeArgs('vulkan'), /one of/);
+});
+
+test('launch options: Chromium itself by default (as the bench suite), the headless shell on request, a short TMPDIR', () => {
+  const saved = process.env.TMPDIR;
+  try {
+    process.env.TMPDIR = '/tmp/orthros-scratch/openmw-perf-morrowind-goty-vanilla-plus-fr';
+    const o = launchOptions({ gl: 'discard', args: ['--x'] });
+    assert.equal(o.channel, 'chromium'); assert.equal(o.headless, true);
+    assert.deepEqual(o.args, [...chromeArgs('discard'), '--x']);
+    // (Chromium's profile socket under TMPDIR: a long one aborts its start, "Socket path too long")
+    assert.ok(process.env.TMPDIR.length <= 48, process.env.TMPDIR);
+    process.env.TMPDIR = '/tmp/orthros-scratch/a-very-long-scratch-directory-name-for-a-shell';
+    const s = launchOptions({ gl: 'gpu', channel: 'shell' });
+    assert.equal(s.channel, undefined);
+    assert.equal(process.env.TMPDIR, '/tmp/orthros-scratch/a-very-long-scratch-directory-name-for-a-shell'); // (the shell's own path is fine)
+    assert.throws(() => launchOptions({ channel: 'firefox' }), /one of/);
+  } finally { if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved; }
 });
 
 test('reports: posts to telemetry and learning answered locally, reads go through', async () => {

@@ -15,6 +15,8 @@
 // The synchronous calls (`sync`): those that wait for the GPU process' answer (getError, checkFramebufferStatus,
 // readPixels, shader/program queries, …) — on a real GPU each one stops the CPU and the GPU working in parallel.
 
+import { mkdirSync } from 'node:fs';
+
 export const GL_MODES = ['swiftshader', 'discard', 'gpu'];
 
 /** Chromium's launch flags for a rendering mode (GL_MODES). */
@@ -22,6 +24,27 @@ export function chromeArgs(gl = 'swiftshader') {
   if (gl === 'null') throw new Error("--gl null: ANGLE's null backend is ignored by this Chromium (it still renders with SwiftShader); use --gl discard for the CPU cost without drawing");
   if (!GL_MODES.includes(gl)) throw new Error(`--gl ${gl}: one of ${GL_MODES.join(', ')}`);
   return ['--no-sandbox', ...(gl === 'gpu' ? [] : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']), '--autoplay-policy=no-user-gesture-required'];
+}
+
+// Browsers (--channel): `chromium` (the default) is Chromium itself in its new headless mode, as the bench suite
+// (tools/bench-suite-check.mjs) and the re3 check run it: its page composited through the GPU process as a browser
+// does. `shell` is Playwright's lighter headless shell: it composites otherwise (OpenMW's glide 47 fps there, 31 in
+// Chromium, 2026-10-23), and once a page holds the pointer lock it sends that page ~40,000 synthetic mouse moves a
+// second (zero movement; its browser and renderer compositor threads each a whole core; Chromium sends none) — a
+// headless shell artifact, no browser does that.
+export const CHANNELS = ['chromium', 'shell'];
+/**
+ * Playwright's launch options for a port measurement: the rendering mode's flags (chromeArgs), the channel (CHANNELS),
+ * `args` besides. Chromium's profile socket must stay under 108 bytes: its temporary directory (TMPDIR) is moved to a
+ * short one under the scratch when the caller's is long.
+ */
+export function launchOptions({ gl = 'swiftshader', channel = 'chromium', args = [] } = {}) {
+  if (!CHANNELS.includes(channel)) throw new Error(`--channel ${channel}: one of ${CHANNELS.join(', ')}`);
+  if (channel === 'chromium' && (process.env.TMPDIR ?? '/tmp').length > 48) {
+    process.env.TMPDIR = '/tmp/orthros-scratch/pw';
+    mkdirSync(process.env.TMPDIR, { recursive: true });
+  }
+  return { headless: true, ...(channel === 'shell' ? {} : { channel }), args: [...chromeArgs(gl), ...args] };
 }
 
 /** The WebGL methods that wait for the GPU process' answer. */
