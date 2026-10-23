@@ -76,9 +76,21 @@ millisecond on a GPU. And reVC's 4x multisampled drawing buffer, which no settin
 from source"): a real cost on every GPU, fixed. Canvas sizes: reVC draws at the canvas's CSS size whatever the
 device pixel ratio; GoldSrc and OpenMW at device pixels (2560 × 1512 at a ratio of 2 — four times the pixels; OpenMW
 caps the buffer at 4 MP and has its scene render scale per tier). The data indicator (`data-meter.js`, a 480 × 90
-canvas drawn by a worker 10 times a second while shown) costs nothing measurable; it shows "Loading…" over smooth play
-while the engine's non-blocking streaming reads wait (reVC driving at 24 frames a second): a reading the engine does
-not wait for counts as waiting (`data-worker.js` ctrl[6]).
+canvas drawn by a worker 10 times a second while shown) costs nothing measurable. It used to show "Loading…" over
+smooth play (reVC driving at 24 frames a second): every read waiting for the network counted (`data-worker.js`
+ctrl[6]), the engine's streaming asked ahead (`OrthrosFileReady`) and OpenMW's reads in the background (`readable`)
+too. Now only the reads an engine waits for count (2026-10-23, `data-client.js` holdCheck): a synchronous one, and an
+asynchronous one (JSPI `ensure`) when the engine has not gone on by the page's next task — an engine that suspends on
+its read gives the page its turn having called nothing more, one that asked ahead reads, asks or shows its frame first
+(`GameData.progress()`, the re3 page at each frame) —; a load of many short waits counts all along. Measured
+(`tools/re3/perf.mjs` and `tools/openmw/perf.mjs` now report `meter`: the seconds it was shown, those the reads waited,
+screenshots; `--net-after KB/s`: Chrome's link slowed from the measure on), rasterizer discarded, headless Chromium:
+reVC driving (`--car GETTHEREFAST`, start at 3000 KB/s, 90 s driven at 300 KB/s) — shown 23.3 s at 28.5 frames a
+second before (19.5 s of reads "waiting" while the engine stood 6.8 s), 0 s at 27.7 after; Morrowind's glide
+(`--glide 1,0,600`, 60 s at 300 KB/s) — 22.8 s before, 6.8 s after (the page's synchronous reads held it 5.4 s);
+Orthros Edition at 3000 KB/s: its start (the engine waits ~95 % of the time in reads of ~65 ms) and its free mode's
+load shown, the menu and the walk not; the Win32 page (its own net status, `worker.js` netInfo: the frame thread's
+reads) says it waits only at 0-15 frames a second (Vice City's loads), never over its menu at 60 or its game at 30.
 
 On a player's machine (the owner's: a real GPU, Windows), the ports are measured by the **bench suite**
 (`/?benchsuite=all`, docs/real-machine-bench.md "The bench suite"), every game in a row from one link, no Playwright:

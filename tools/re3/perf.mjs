@@ -8,7 +8,7 @@
 // stay off the server unless --report. JSON on the last line; evidence under /tmp/orthros-scratch/re3-perf-<manifest>/.
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/re3/perf.mjs <manifest> [--url http://127.0.0.1:8080] [--gl swiftshader|discard|gpu]
-//     [--seconds 30] [--drive] [--warm 0] [--net KB/s] [--profile] [--stacks getError,…] [--no-calls] [--report]
+//     [--seconds 30] [--drive] [--warm 0] [--net KB/s] [--net-after KB/s] [--profile] [--stacks getError,…] [--no-calls] [--report]
 //     [--size 1280x720] [--query "a=b"] [--trace <file.json>] [--car GETTHEREFAST]   (--trace: a Chrome trace of the measured seconds — the
 //     renderer's main thread, the GPU process, their waits on each other —, for a closer look at the frames' gaps)
 //     [--size 1280x720] [--query "a=b"] [--mem-every s] [--channel chromium|shell]
@@ -42,7 +42,11 @@ page.on('pageerror', (e) => console.log('PAGE ERROR', e.message));
 page.on('crash', () => console.log('CRASH'));
 const query = arg('--query', '');
 // (--net KB/s: Chrome's network emulation, 50 ms round trip, from the start)
-if (arg('--net')) { const c = await page.context().newCDPSession(page); await c.send('Network.enable'); await c.send('Network.emulateNetworkConditions', { offline: false, latency: 50, downloadThroughput: Number(arg('--net')) * 1024, uploadThroughput: 64 * 1024 }); }
+// (--net-after KB/s: that link from the measure on — the start at --net's speed or the server's, the city then streamed
+// over a slower one)
+let netCdp = null;
+const netAt = async (kbs) => { const c = netCdp ??= await page.context().newCDPSession(page); await c.send('Network.enable'); await c.send('Network.emulateNetworkConditions', { offline: false, latency: 50, downloadThroughput: kbs * 1024, uploadThroughput: 64 * 1024 }); };
+if (arg('--net')) await netAt(Number(arg('--net')));
 await page.goto(`${base}${listed.launchUrl}${query ? `?${query}` : ''}`);
 await page.waitForFunction(() => window.portSession?.state === 'running', null, { timeout: 300000 });
 console.log('RENDERER', await page.evaluate(() => perfProbe.renderer), gl === 'discard' ? '(rasterizer discarded)' : '');
@@ -79,6 +83,7 @@ await page.evaluate(() => { const B = portSession.engine.orthrosBlocked; perfPro
 await startMeasure(page, { calls: !args.includes('--no-calls') });
 const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => portSession.engine.HEAPU8.length') : null;
 if (args.includes('--mark')) console.log('MEASURE START', Date.now());
+if (arg('--net-after')) await netAt(Number(arg('--net-after')));
 // (the game data's indicator over the measured seconds: shown only while the game truly waits — data-meter-worker.js)
 const meterStop = await meterSampler(page, { shots: root });
 await page.waitForTimeout(seconds * 1000);

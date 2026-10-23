@@ -9,7 +9,7 @@
 // Always through tools/with-browser-slot.sh:
 //   tools/with-browser-slot.sh node tools/openmw/perf.mjs <manifest> --url <origin> [--seconds 60] [--warm 10]
 //     [--start -2,-9] [--query tier=high] [--discard] [--run] [--profile] [--out <dir>] [--mem-every s] [--mark]
-//     [--channel chromium|shell]   (--channel: Chromium itself in its new headless mode by default, as the bench suite
+//     [--net-after KB/s] [--channel chromium|shell]   (--channel: Chromium itself in its new headless mode by default, as the bench suite
 //     runs it; shell: Playwright's headless shell, which composites otherwise — 47 fps on the glide where Chromium and
 //     the suite measure 31, tools/port-perf.mjs)   (--run: Shift held, running;
 //     --profile: a CPU profile of the measured seconds, its longest busy stretches and what they ran, tools/port-perf.mjs;
@@ -96,6 +96,8 @@ try {
   await page.evaluate(() => { window.__omwPerfProbe.on = true; });
   if (args.includes('--mark')) console.log('MEASURE START', Date.now()); // (for a recorder outside: perf record, a thread sampler)
   const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => Module.HEAPU8.length') : null;
+  // (--net-after KB/s: Chrome's link at that speed from the measure on, 50 ms round trip — the world streamed over a slow link)
+  if (arg('--net-after')) { const c = await page.context().newCDPSession(page); await c.send('Network.enable'); await c.send('Network.emulateNetworkConditions', { offline: false, latency: 50, downloadThroughput: Number(arg('--net-after')) * 1024, uploadThroughput: 64 * 1024 }); }
   // (the game data's indicator over the measured seconds: shown only while the game truly waits — data-meter-worker.js)
   const meterStop = await meterSampler(page, { shots: dir });
   const end = Date.now() + seconds * 1000;
