@@ -164,7 +164,10 @@ starts at once.
 - `/api/udp/<manifest>` (WebSocket): the multiplayer relay. Each player gets one UDP socket to the version's dedicated
   server on `127.0.0.1:<multiplayer.port>`, never another destination; same-origin pages only, 64 players at once,
   idle connections closed after two minutes. With `?rooms` (the page's): one socket per room, each message carrying
-  its room in its first byte (255: every room — the game's LAN search).
+  its room in its first byte (255: every room — the game's LAN search). A page that goes (tab closed, reload, back to
+  the games) first runs the engine's `disconnect` while the relay is open, so the server drops the player at once
+  (2026-10-23): before, it kept it until its timeout (a minute), and the same account back meanwhile played as
+  `name (1)` beside its still body — what made the multiplayer check's last step miss player one's score.
 - `/api/rooms/<manifest>`: the lobby. GET: the version's games (its permanent server and the rooms players created:
   name, map, players with the bots, humans, size, bots), the maps and the limits, from its server manager, with the
   manifest's options (without their commands) and map groups (`multiplayer.mapGroups`). POST

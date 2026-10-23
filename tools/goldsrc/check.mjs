@@ -17,6 +17,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { chromium } from 'playwright';
 import { rendererOf } from '../port-perf.mjs';
+import { lastStatus, scoreOf } from './status-lines.mjs';
 
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
 const [name, mode] = args;
@@ -120,14 +121,10 @@ try {
       console.log('MOVEMENT', JSON.stringify({ before, after }));
     }
     if (arg('--min-players')) {
-      // (the players status lists: a line per client after its "# score ping ..." header, bots included)
+      // (the players status lists: a line per client after its header, bots included — status-lines.mjs)
       const page = clients[0].page;
       await page.evaluate(() => portSession.command('status')); await page.waitForTimeout(1500);
-      const players = await page.evaluate(() => {
-        const logs = portSession.logs, head = logs.findLastIndex((l) => l.includes('# score'));
-        let n = 0; for (let i = head + 1; head >= 0 && i < logs.length && /^\[[^\]]*\]\s+\d+\s+-?\d+\s/.test(logs[i]); i++) n++;
-        return n;
-      });
+      const players = lastStatus(await page.evaluate(() => portSession.logs)).length;
       if (players < Number(arg('--min-players'))) throw new Error(`${players} players, fewer than ${arg('--min-players')}`);
       console.log('PLAYERS', players);
     }
@@ -179,12 +176,24 @@ try {
     await clients[0].page.evaluate(() => portSession.command('kill')); await clients[0].page.waitForTimeout(3000);
     for (const { page } of clients) {
       await page.evaluate(() => portSession.command('status'));
-      await page.waitForFunction((n) => portSession.logs.some((l) => /\]\s+\d+\s+-1\s+/.test(l) && l.endsWith(n)), nicknames[0], { timeout: 10000 });
+      // (player one's latest status line: -1, its suicide — "name (1)" too, the name an earlier connection still held)
+      let score = null;
+      for (const until = Date.now() + 10000; Date.now() < until; await page.waitForTimeout(500)) {
+        score = scoreOf(await page.evaluate(() => portSession.logs.slice(-200)), nicknames[0]);
+        if (score === -1) break;
+      }
+      if (score !== -1) throw new Error(`Player one's score after its death: ${score} (expected -1)`);
     }
     console.log('SYNCHRONIZATION', 'both players received the same score update after player one died');
   }
   console.log('PASSED', name, mode);
 } finally {
   clearInterval(heartbeat);
+  // (each page's last console lines, whatever the outcome: what a failed step saw)
+  for (let i = 0; i < clients.length; i++) {
+    try { fs.writeFileSync(path.join(root, `client-${i}-end.json`), JSON.stringify(await clients[i].page.evaluate(() => portSession.logs.slice(-150)), null, 1)); } catch { /* closed */ }
+  }
+  // (each page closed as a player's tab is — its pagehide leaves the game's server — before the browser goes)
+  for (const { page } of clients) await page?.close().catch(() => {});
   await browser.close();
 }
