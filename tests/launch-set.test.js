@@ -489,5 +489,8 @@ test('a version\'s order borrows what other versions\' sessions read of the file
   assert.deepEqual(startupHead({ lookup: () => null }, list, true), own, 'the launch set: its own only');
   assert.equal(launchFirst({ lookup: (p) => ({ path: p, file: { size: 3 * BLOCK } }), isWhole: () => true }, list, true).first, 2);
   assert.deepEqual((await order('g-a')).filter((e) => e[4] === 0 && e[0] === 'shared.dat' && e[1] === 0), [], 'a block it has: its own entry only');
+  // (the second server reads the learned files the first one writes after learnWriteMs: wait for g-b's to hold own.dat)
+  const file = path.join(learn, 'prefetch-g-b.json');
+  for (let i = 0; i < 200 && !(fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes('own.dat')); i++) await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(await order('g-b', await start({ learnBorrow: false })), own, 'learnBorrow false: its own order only');
 });
