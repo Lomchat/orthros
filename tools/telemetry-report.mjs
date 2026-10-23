@@ -8,9 +8,13 @@
 //   categories;
 // - the bench runs (?bench=<name>, docs/real-machine-bench.md): per phase results;
 // and a comparison of the bench runs, per bench: one line per run, its phases side by side.
+// - the bench suite's runs (?benchsuite=, bench-suite.js: every game in a row): per run, each game's outcome and phases
+//   (frame time percentiles, frames > 40 ms, work, GPU time, data waits), the renderer, the host's timers.
 // Usage: node tools/telemetry-report.mjs <telemetry dir | .jsonl file>... [--from YYYY-MM-DD] [--to YYYY-MM-DD]
-//          [--session <id>] [--game <manifest>] [--bench [<name>]] [--min-seconds 60] [--json]
+//          [--session <id>] [--game <manifest>] [--bench [<name>]] [--suite [<run>]] [--players] [--min-seconds 60] [--json]
 //   --bench: only the sessions with bench runs (of that bench) and the comparison
+//   --suite: only the bench suite's runs (that run: its id), per game
+//   --players: the sessions of benches (marked by the page: their batches' `bench`) left out
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,15 +50,17 @@ export function buildSessions(lines, { from = null, to = null, session = null, g
     const day = typeof r.at === 'string' ? r.at.slice(0, 10) : null;
     if (day && ((from && day < from) || (to && day > to))) continue;
     let s = sessions.get(r.session);
-    if (!s) sessions.set(r.session, (s = { id: r.session, game: r.game ?? null, first: r.at ?? null, last: r.at ?? null, env: null, options: null, version: null, samples: [], summaries: [], benches: [], slow: 0, events: {} }));
+    if (!s) sessions.set(r.session, (s = { id: r.session, game: r.game ?? null, first: r.at ?? null, last: r.at ?? null, env: null, options: null, version: null, samples: [], summaries: [], benches: [], suites: [], bench: null, slow: 0, events: {} }));
     if (r.game) s.game = r.game;
+    if (r.bench) s.bench = r.bench; // (a bench's session: the page marks its batches — its suite run, or the bench's name)
     if (r.at) { if (!s.first || r.at < s.first) s.first = r.at; if (!s.last || r.at > s.last) s.last = r.at; }
     if (r.env) { s.env = r.env; s.version ??= r.env.version ?? null; }
     for (const x of r.samples ?? []) {
       if (x.event === 'options') { s.options = x.options; s.version = x.version ?? s.version; }
       else if (x.event === 'slow') s.slow++;
       else if (x.event === 'summary') s.summaries.push(x);
-      else if (x.event === 'bench') s.benches.push(x);
+      else if (x.event === 'bench') s.benches.push({ ...x, at: x.at ?? r.at ?? null, env: x.env ?? r.env ?? null, session: r.session });
+      else if (x.event === 'bench-suite') s.suites.push({ ...x, at: r.at ?? null, env: x.env ?? r.env ?? null });
       else if (x.event) s.events[x.event] = (s.events[x.event] ?? 0) + 1;
       else if (x.dt) s.samples.push(x);
     }
@@ -142,14 +148,15 @@ export function machineLine(env) {
 const renderModeOf = (s) => s.summaries.findLast?.((x) => x.renderMode)?.renderMode ?? (s.options ? (s.options.renderWorker ? 'worker' : `glworker=${s.options.glWorker ?? '?'}`) : null);
 
 /** The report's data: one entry per session kept. */
-export function report(sessions, { minSeconds = 60, bench = undefined } = {}) {
+export function report(sessions, { minSeconds = 60, bench = undefined, players = false } = {}) {
   const out = [];
   for (const s of sessions.values()) {
+    if (players && (s.bench || s.benches.length || s.suites.length)) continue;
     const seconds = s.samples.reduce((a, x) => a + x.dt, 0) || s.summaries.reduce((a, x) => a + (x.seconds ?? 0), 0);
     const benches = bench === undefined ? s.benches : s.benches.filter((b) => bench === true || b.bench === bench);
     if (bench !== undefined && !benches.length) continue;
     if (seconds < minSeconds && !benches.length) continue;
-    const r = { session: s.id, game: s.game, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), audio: audioVerdict(s.summaries.map((x) => x.audio)), benches };
+    const r = { session: s.id, game: s.game, bench: s.bench, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), audio: audioVerdict(s.summaries.map((x) => x.audio)), benches };
     for (const st of stretches(s.samples)) {
       const min = st.seconds / 60, n = st.acctFrames || 1, slowTotal = Object.values(st.slowCats).reduce((a, b) => a + b, 0);
       r.stretches.push({ kind: st.kind, at: new Date(st.t0).toISOString().slice(11, 19), seconds: Math.round(st.seconds), fps: +(st.frames / st.seconds).toFixed(1), busy: Math.round(st.busy / st.seconds), per33: Math.round(st.s33 / min), per50: Math.round(st.s50 / min),
@@ -174,13 +181,59 @@ export function benchComparison(reports) {
   return [...by.values()];
 }
 
+/**
+ * The bench suite's runs (bench-suite.js), oldest first: per run its suite, machine, build and, per game in the suite's
+ * order, the game's bench record (or, when only the suite's own record has it, its compact result). `run`: one run's id.
+ */
+export function suiteRuns(sessions, run = null) {
+  const runs = new Map();
+  const get = (id) => { let r = runs.get(id); if (!r) runs.set(id, (r = { run: id, suite: null, title: null, at: null, env: null, version: null, record: null, games: new Map() })); return r; };
+  for (const s of sessions.values()) {
+    for (const b of s.benches) {
+      const id = b.suite?.run; if (!id || (run && id !== run)) continue;
+      const r = get(id); r.suite ??= b.suite.name ?? null; if (!r.at || (b.at && b.at < r.at)) r.at = b.at; r.env ??= b.env ?? s.env; r.version ??= b.version ?? s.version;
+      r.games.set(b.suite.index ?? r.games.size + 1, { ...b, of: b.suite.of ?? null, session: s.id });
+    }
+    for (const x of s.suites) {
+      if (!x.run || (run && x.run !== run)) continue;
+      const r = get(x.run); r.record = x; r.suite = x.suite ?? r.suite; r.title = x.title ?? null; r.env = x.env ?? r.env; r.version = x.version ?? r.version; if (!r.at || (x.at && x.at < r.at)) r.at = x.at;
+    }
+  }
+  return [...runs.values()].map((r) => {
+    // (a game whose own record never came: the suite's record still has its result)
+    (r.record?.results ?? []).forEach((g, i) => { if (!r.games.has(i + 1)) r.games.set(i + 1, { ...g, fromSuite: true }); });
+    return { ...r, games: [...r.games.entries()].sort((a, b) => a[0] - b[0]).map(([index, g]) => ({ index, ...g })) };
+  }).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+}
+
+const ms = (v) => (v === null || v === undefined ? '-' : Math.round(v * 10) / 10);
+/** The text of the suite's runs: per game, its outcome and phases side by side with the figures read first. */
+export function formatSuites(runs) {
+  const L = [];
+  for (const r of runs) {
+    const done = r.games.filter((g) => g.outcome === 'done').length;
+    L.push(`suite ${r.suite ?? '?'} run ${r.run} ${(r.at ?? '').slice(0, 16).replace('T', ' ')}: ${done}/${r.record?.games ?? r.games.length} games done${r.record ? `, ${r.record.seconds} s` : ', no suite record (the run did not finish)'}${r.version ? `, build ${r.version}` : ''}`);
+    L.push(`  machine: ${machineLine(r.env)}`);
+    for (const g of r.games) {
+      const probe = g.hostTiming?.[0];
+      L.push(`  ${g.index}. ${g.bench} (${g.manifest ?? '?'}, ${g.runtime ?? 'win32'}): ${g.outcome}${g.detail ? ` — ${g.detail}` : ''}${g.seconds !== null && g.seconds !== undefined ? `, ${g.seconds} s` : ''}${g.firstLaunch ? ', first launch' : ''}${g.interrupted && (g.interrupted.hiddenSeconds || g.interrupted.blurs) ? ', INTERRUPTED' : ''}${g.fromSuite ? ' (from the suite record)' : ''}`);
+      if (g.renderer) L.push(`      renderer ${g.renderer}${g.display ? `, display ${g.display}` : ''}`);
+      for (const p of g.phases ?? []) {
+        L.push(`      ${String(p.label).padEnd(10)} ${String(p.seconds ?? '?').padStart(6)} s ${String(p.fps ?? '?').padStart(5)} fps; frame ms p50 ${p.dt?.p50 ?? '-'} p90 ${p.dt?.p90 ?? '-'} p99 ${p.dt?.p99 ?? '-'}; >40 ms ${p.per40 ?? '-'}/min (${p.slow40 ?? '-'}); work p50 ${ms(p.work?.p50)} p99 ${ms(p.work?.p99)} ms; GPU ${p.gpu?.frames ? `p50 ${p.gpu.p50} p99 ${p.gpu.p99} ms` : p.gpu?.state ?? '-'}; data waits ${p.dataWaitMs ?? '-'} ms${p.drawsPerFrame !== null && p.drawsPerFrame !== undefined ? `; draws/frame ${p.drawsPerFrame}` : ''}`);
+      }
+      if (probe) L.push(`      timers: ${probe.atomicsWait1 && typeof probe.atomicsWait1 === 'object' ? probeLine(probe) : `Atomics.wait(1) +${probe.atomicsWait1 ?? '?'} ms, setTimeout(1) +${probe.setTimeout1 ?? '?'} ms (p50)`}`);
+    }
+  }
+  return L.join('\n');
+}
+
 const cell = (p) => (p ? `${p.fps} fps p99 ${p.dt?.p99 ?? '?'} >33 ${p.per33}/min${p.gpu?.frames ? ` gpu p99 ${p.gpu.p99}` : ''}` : '-');
 
 /** The text report. */
 export function formatReport(reports, comparison) {
   const L = [];
   for (const r of reports) {
-    L.push(`session ${r.session} ${r.game ?? '?'} ${r.first ? r.first.slice(0, 16).replace('T', ' ') : ''} ${r.seconds} s${r.version ? `, build ${r.version}` : ''}${r.render ? `, render ${r.render}` : ''}; ${r.slowEvents} slow-frame events${Object.keys(r.events).length ? `; events ${Object.entries(r.events).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`);
+    L.push(`session ${r.session}${r.bench ? ` [bench ${r.bench}]` : ''} ${r.game ?? '?'} ${r.first ? r.first.slice(0, 16).replace('T', ' ') : ''} ${r.seconds} s${r.version ? `, build ${r.version}` : ''}${r.render ? `, render ${r.render}` : ''}; ${r.slowEvents} slow-frame events${Object.keys(r.events).length ? `; events ${Object.entries(r.events).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`);
     L.push(`  machine: ${r.machine}`);
     if (r.options) L.push(`  options: ${Object.entries(r.options).filter(([, v]) => v !== '' && v !== false && v !== null).map(([k, v]) => `${k}=${v}`).join(' ')}`);
     for (const st of r.stretches) {
@@ -219,18 +272,25 @@ export function formatReport(reports, comparison) {
 function main(args) {
   const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 && i + 1 < args.length && !args[i + 1].startsWith('--') ? args[i + 1] : d; };
   const valued = new Set(['--from', '--to', '--session', '--game', '--min-seconds']);
-  const inputs = []; let benchName;
+  const inputs = []; let benchName, suiteRun;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (valued.has(a)) { i++; continue; }
     // (--bench [name]: a name unless the next argument is a flag or an existing path; without one, every bench)
     if (a === '--bench') { const n = args[i + 1]; if (n && !n.startsWith('--') && !fs.existsSync(n)) { benchName = n; i++; } else benchName = true; continue; }
+    if (a === '--suite') { const n = args[i + 1]; if (n && !n.startsWith('--') && !fs.existsSync(n)) { suiteRun = n; i++; } else suiteRun = true; continue; }
     if (!a.startsWith('--')) inputs.push(a);
   }
-  if (!inputs.length) { console.error('usage: node tools/telemetry-report.mjs <telemetry dir | file.jsonl>... [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--session id] [--game manifest] [--bench [name]] [--min-seconds 60] [--json]'); return 2; }
+  if (!inputs.length) { console.error('usage: node tools/telemetry-report.mjs <telemetry dir | file.jsonl>... [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--session id] [--game manifest] [--bench [name]] [--suite [run]] [--players] [--min-seconds 60] [--json]'); return 2; }
   const range = { from: opt('from', null), to: opt('to', null) };
   const sessions = buildSessions(readLines(telemetryFiles([...new Set(inputs)], range)), { ...range, session: opt('session', null), game: opt('game', null) });
-  const reports = report(sessions, { minSeconds: Number(opt('min-seconds', 60)), bench: benchName });
+  if (suiteRun !== undefined) {
+    const runs = suiteRuns(sessions, suiteRun === true ? null : suiteRun);
+    if (args.includes('--json')) console.log(JSON.stringify({ suites: runs }, null, 1));
+    else console.log(runs.length ? formatSuites(runs) : 'no bench suite run');
+    return 0;
+  }
+  const reports = report(sessions, { minSeconds: Number(opt('min-seconds', 60)), bench: benchName, players: args.includes('--players') });
   const comparison = benchComparison(reports);
   if (args.includes('--json')) console.log(JSON.stringify({ sessions: reports, benches: comparison }, null, 1));
   else console.log(formatReport(reports, comparison));

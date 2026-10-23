@@ -82,6 +82,77 @@ focus (those phases are not representative).
 Other options of the page still apply: `&glworker=0` (in-thread rendering instead of the render worker) makes an A/B
 of the render worker on that machine; `&gameLang=fr` the game's language.
 
+## The bench suite: every game from one link
+
+**<https://orthros.chalco.website/?benchsuite=all>** — open it in Chrome, click **Start the measurement**, then leave
+the tab in front and visible, without touching the mouse or the keyboard, until the summary appears (about 15 minutes
+once the games are in the browser; longer on a first launch: each game's files download first). The summary lists every
+game's phases and says whether the results reached the server (**Send again** if not, **Copy the results** besides).
+
+| # | game (version) | bench | what it plays | phases |
+|---|---|---|---|---|
+| 1 | BFME 1.08, French (`bfme1-108`) | `bfme1-108-short` | `bfme1-108-quick`'s menu steps, a skirmish, 40 s of play | start, menu, setup, load, play, end |
+| 2 | BFME II (`bfme2`) | `bfme2-short` | `bfme2-quick`'s menu steps, a skirmish, 40 s of play | start, menu, load, loadscreen, play, end |
+| 3 | Rise of the Witch-king 2.02 (`rotwk-202`) | `rotwk-short` | `rotwk-quick`'s steps up to 44 s of play, 50 s | start, menu, load, loadscreen, play, end |
+| 4 | Vice City on reVC (`vice-city-revc`) | `revc-drive` | the game's menu, a new game, its intro (cutscenes skipped with Space), 10 s on foot, the vehicle cheat's car driven 30 s | start, menu, load, intro, foot, drive, end |
+| 5 | Morrowind Vanilla+, French (`morrowind-goty-vanilla-plus-fr`) | `morrowind-glide` | the engine page straight into Seyda Neen as a new character (`?start=-2,-9`), 10 s standing, 45 s carried north at 300 units/s, 5000 high (the engine's debug teleport, as `tools/openmw/perf.mjs --glide`) | start, world, glide, end |
+| 6 | Half-Life (`half-life-original-en`) | `halflife-c1a0` | the menu, `map c1a0` from the console, 45 s walking in the tram (console movement commands) | start, menu, load, walk, end |
+| 7 | Counter-Strike rebuilt (`counter-strike-rebuilt-en`) | `cs-bots` | the menu, the version's solo map (`de_dust2`, its bots), the counter-terrorists joined, 50 s walking while the bots play | start, menu, load, play, end |
+
+`?benchsuite=<bench>[,<bench>...]` runs some of them (`?benchsuite=revc-drive`; `&manifest=` picks the version of a
+single one); `?bench=<a port's bench>` opens it the same way. `&gldiscard=1` reaches every game (this server's software
+GPU without its drawing: the Win32 page's `?gldiscard=1`, the ports' rasterizer discarded by the meter); `&benchauto=1`
+starts without the click. The suites are in `tools/scenarios/bench/index.json` (`suites`: the benches in order, each
+with its version and game language), the ports' benches there too (`runtime`: `re3`, `goldsrc`, `openmw`; `page`: the
+port page's address under the version's launch address, e.g. OpenMW's engine page with `?start=`).
+
+How it runs (`src/host/web/bench-suite.js`): the suite page (the Orthros page, `main.js` `?benchsuite=`) opens each game
+in a full-window frame of its own, the game's page as a player opens it, with the game's normal profile in this browser,
+and shows its banner above it ("3/7 Vice City (reVC) · 0:40 · phase drive · 54 fps", a progress bar, **Skip this
+game**, **Stop everything**). Before the next game, the page is left as a player leaves it (the shell's save — the
+runtime's `onQuit`, `shell.save()` — then the frame emptied).
+- **A Win32 game**: its page in bench mode (`/?bench=<name>&benchauto=1&benchrun=<run>…`): its own BenchRun plays the
+  scenario and measures its worker's frames, without its banner or summary (the suite's), and sends its record.
+- **A browser port**: its page in the frame; the suite runs the BenchRun (the same class), the port's frames measured
+  from outside its page (`src/host/web/page-meter.js`: installed into the frame's window once it is there — the
+  engine's WebGL draw calls counted on the context prototypes, a frame = a browser frame in which it drew, its work from
+  the frame's first callback to its request for the next one or the port's own count, those frames fed to the frame
+  accounting every runtime uses, `FrameStats`, and to the scenario player as the Win32 worker's stats messages; GPU time
+  with the Win32 runtime's probe, `gpu-probe.js`, on the engine's context; its renderer string) and its input given as
+  DOM events of its own window (`src/host/web/dom-input.js`: keys with their `code` / `keyCode` and a `keypress` for
+  characters, typed text one key at a time, the mouse at the canvas' place) or through the page's hooks — the GoldSrc
+  console (`cmd:` steps, `portSession.command`), OpenMW's debug teleport (`glide:` steps, `window.orthrosBenchHooks`
+  set by `src/ports/openmw/frame-meter.js` when the page has `?benchrun=`). Data waits: the game data's reads that
+  waited (`data-client.js` stats: `portSession.files`, OpenMW's streamfs).
+- **A game that fails** (its page's error, its exit, a scenario that never reaches its screen — the bench's
+  `maxSeconds`, 480-900 s, then 90 s of grace without a record) is recorded with its outcome (`crashed`, `exited`,
+  `timeout`, `skipped`, `aborted`, `failed`, `lost`) and the next one starts.
+- **The scenario language** gained `nudge:vk,every` (the key pressed every `every` seconds while the next wait holds:
+  intros skipped however many there are) and, for the ports, `cmd:<command>`, `look:dx,dy[,n,ms]`,
+  `glide:x0,y0,vx,vy,z` / `glide` (stop); a `;` separates steps, so a `cmd` holds one command.
+
+**Records**: each game's `bench` record has the same fields whatever the runtime (`runtime`, `manifest`, `outcome`,
+`marks`, `anchors`, `phases` — per phase `fps`, `dt` p50 / p90 / p99 / max, `work` p50 / p90 / p99, `slow40` / `per40`
+(frames > 40 ms), `gpu` (EXT_disjoint_timer_query_webgl2 when the browser has it), `drawsPerFrame`, `dataWaitMs` —,
+`hostTiming` (the timing probe), `renderer` (the WebGL renderer the game drew with), `env`, `interrupted`) and
+`suite: { run, name, index, of }`; the suite's own `bench-suite` record holds every game's compact result
+(`compactResult`), the machine and the counts. The batches of every bench page carry `bench` (the suite run, or the
+bench's name) — their sessions are told apart from the players' (`telemetry-report.mjs --players` leaves them out); the
+ports' own session reports carry it too.
+
+**Read it**: `node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --suite` (every run; `--suite <run>`
+one, `--json`): per run the machine and build, per game its outcome, renderer and phases (fps, frame p50 / p90 / p99,
+frames > 40 ms per minute, work p50 / p99, GPU p50 / p99, data waits, draws per frame) and the host's timers. A game
+whose own record never came is shown from the suite's record.
+
+**Check it here** (headless Chromium, fresh profile: every game's first launch, through the browser slots):
+
+```
+tools/with-browser-slot.sh node tools/bench-suite-check.mjs --url http://127.0.0.1:<port> --suite all --gl-discard \
+  --minutes 45 --shots 20 --out /tmp/orthros-scratch/<task>/suite
+node tools/telemetry-report.mjs <the server's --telemetry dir> --suite
+```
+
 ## What is measured and sent
 
 **Machine** (`env` of the first telemetry batch, and of each bench record): `navigator.userAgent`,
@@ -282,4 +353,7 @@ spin: 45 per frame, 491 scheduling decisions per frame).
 
 `tests/bench-kit.test.js` (histogram, interval counts, scenario parsing and the player's timing anchors, pointer
 scaling, summaries, GPU / GL call probe with a timer-query double, the bench definitions), `tests/telemetry-report.test.js`
-(sessions, date filters, merged summaries, bench comparison, the command line).
+(sessions, date filters, merged summaries, bench comparison, the command line), `tests/bench-suite.test.js` (the nudge
+and the ports' steps, the suites' definitions, the page meter on a stand-in window — frames, work, data waits, discard
+—, the hooks, the DOM input, virtual keys as DOM keys, the games' addresses, the suite's records, `--suite` and
+`--players`).

@@ -8,7 +8,8 @@
 // its input given to it (dom-input.js), and sends it. A game that fails, stops or overstays is recorded so and the
 // next one starts. At the end: the summary, one `bench-suite` record (every game's results), what was sent, a button
 // to send again and one to copy. The suites and their benches: tools/scenarios/bench/index.json (`suites`).
-// `?benchsuite=<bench>[,<bench>...]` runs those benches as a suite of their own; `&gldiscard=1` (this server's
+// `?benchsuite=<bench>[,<bench>...]` runs those benches as a suite of their own (`&manifest=`, `&gameLang=`: the
+// version and the game language of those); `&gldiscard=1` (this server's
 // software GPU: the rasterizer discarded) reaches every game; `&benchauto=1` starts without the click.
 import { loadBench, BenchRun, BENCH_DIR } from './bench.js';
 import { PageMeter } from './page-meter.js';
@@ -42,7 +43,7 @@ export const PASSED = ['gldiscard', 'glworker', 'dbg', 'encoded', 'prefetch'];
  * The suite `spec` (a suite of index.json, or bench names separated by commas), each bench loaded (bench.js loadBench).
  * `manifest`: the version for a suite of one bench. Throws a message for the player.
  */
-export async function loadSuite(spec, { manifest = null, fetcher = fetch } = {}) {
+export async function loadSuite(spec, { manifest = null, gameLang = null, fetcher = fetch } = {}) {
   const res = await fetcher(BENCH_DIR + 'index.json');
   if (!res.ok) throw new Error(W.noList(res.status));
   const index = await res.json(), suites = index.suites ?? [];
@@ -50,7 +51,7 @@ export async function loadSuite(spec, { manifest = null, fetcher = fetch } = {})
   if (!suite) {
     const names = String(spec ?? '').split(',').map((s) => s.trim()).filter(Boolean);
     if (!names.length || !names.every((n) => (index.benches ?? []).some((b) => b.name === n))) throw new Error(W.noSuite(spec, suites.map((s) => s.name).join(', ')));
-    suite = { name: names.join(','), title: null, benches: names.map((bench) => ({ bench, ...(names.length === 1 && manifest ? { manifest } : {}) })) };
+    suite = { name: names.join(','), title: null, benches: names.map((bench) => ({ bench, ...(names.length === 1 && manifest ? { manifest } : {}), ...(gameLang ? { gameLang } : {}) })) };
   }
   const items = [];
   for (const it of suite.benches) items.push({ ...it, def: await loadBench(it.bench, it.manifest ?? null, fetcher) });
@@ -125,7 +126,8 @@ const CSS = `
 #suiteResult { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 71; max-width: 98vw; max-height: 94vh; overflow: auto; background: rgba(14,15,20,.98); border: 1px solid rgba(224,189,110,.55); border-radius: 12px; padding: 16px 20px; color: #d9dce3; font: 13px/1.45 system-ui, sans-serif; box-shadow: 0 20px 60px rgba(0,0,0,.7); }
 #suiteResult h2 { margin: 0 0 6px; font: 700 18px system-ui; color: #f2ead6; } #suiteResult .m { font: 12px/1.5 ui-monospace, monospace; color: #9fa4b0; white-space: pre-wrap; }
 #suiteResult table { border-collapse: collapse; margin: 10px 0; font: 12px ui-monospace, monospace; }
-#suiteResult th, #suiteResult td { padding: 3px 8px; border-bottom: 1px solid rgba(255,255,255,.08); text-align: right; white-space: nowrap; } #suiteResult td.l, #suiteResult th.l { text-align: left; }
+#suiteResult td.g { white-space: normal; max-width: 210px; }
+#suiteResult th, #suiteResult td { padding: 3px 7px; border-bottom: 1px solid rgba(255,255,255,.08); text-align: right; white-space: nowrap; } #suiteResult td.l, #suiteResult th.l { text-align: left; }
 #suiteResult tr.first td { border-top: 1px solid rgba(224,189,110,.35); }
 #suiteResult .good { color: #8fd18f; } #suiteResult .warn { color: #e0bd6e; } #suiteResult .bad { color: #ff8b8b; }
 `;
@@ -144,7 +146,7 @@ export async function startSuite(spec, deps) {
   if (!document.getElementById('suiteCss')) { const st = document.createElement('style'); st.id = 'suiteCss'; st.textContent = CSS; document.head.appendChild(st); }
   const banner = document.createElement('div'); banner.id = 'suite'; document.body.appendChild(banner);
   let suite;
-  try { suite = await loadSuite(spec, { manifest: params.get('manifest') }); } catch (e) { banner.innerHTML = `<b>${W.title}</b><div class="st">${esc(e.message ?? e)}</div>`; return null; }
+  try { suite = await loadSuite(spec, { manifest: params.get('manifest'), gameLang: params.get('gameLang') }); } catch (e) { banner.innerHTML = `<b>${W.title}</b><div class="st">${esc(e.message ?? e)}</div>`; return null; }
   const runner = new SuiteRun(suite, { ...deps, banner, params });
   window.orthrosSuite = runner; // (the harness's view: tools/bench-suite-check.mjs)
   if (params.get('benchauto') === '1') runner.run();
@@ -197,6 +199,8 @@ export class SuiteRun {
     const def = item.def, url = itemUrl(item, run, { origin: location.origin, launch, pass: this.params });
     const frame = document.createElement('iframe');
     frame.id = 'suiteFrame'; frame.allow = 'autoplay; fullscreen; cross-origin-isolated; gamepad'; frame.src = url;
+    // (the game's page has the focus, as a page a player opened: its window active — not "paused while inactive")
+    frame.addEventListener('load', () => { try { frame.contentWindow?.focus(); } catch { /* gone */ } });
     document.body.insertBefore(frame, this.banner);
     const t0 = performance.now(), title = def.title ?? def.name, deadline = ((def.maxSeconds ?? 900) + GRACE_S) * 1000;
     const port = !!def.runtime && def.runtime !== 'win32';
@@ -310,8 +314,8 @@ export class SuiteRun {
     const cls = (fps) => (fps >= 29.5 ? 'good' : fps >= 20 ? 'warn' : 'bad');
     const rows = this.results.map((r) => {
       const ph = (r.phases ?? []).filter((p) => p.label !== 'start'), name = esc(r.title ?? r.bench), out = `<span class="${r.outcome === 'done' ? 'good' : 'bad'}">${esc(W.outcomes[r.outcome] ?? r.outcome)}</span>`;
-      if (!ph.length) return `<tr class="first"><td class="l">${name}</td><td class="l">${out}</td><td class="l" colspan="8">${esc(r.detail ?? '')}</td></tr>`;
-      return ph.map((p, i) => `<tr${i ? '' : ' class="first"'}><td class="l">${i ? '' : name}</td><td class="l">${i ? '' : out}</td><td class="l">${esc(p.label)}</td><td>${p.seconds ?? '–'} s</td><td class="${cls(p.fps ?? 0)}">${p.fps ?? '–'}</td><td>${p.dt ? `${p.dt.p50} / ${p.dt.p90} / ${p.dt.p99}` : '–'}</td><td>${p.per40 ?? '–'}</td><td>${p.work ? `${r1(p.work.p50)} / ${r1(p.work.p99)}` : '–'}</td><td>${p.gpu?.frames ? `${p.gpu.p50} / ${p.gpu.p99}` : p.gpu?.state === 'unavailable' ? 'n/a' : '–'}</td><td>${p.dataWaitMs ?? '–'}</td></tr>`).join('');
+      if (!ph.length) return `<tr class="first"><td class="l g">${name}</td><td class="l">${out}</td><td class="l" colspan="8">${esc(r.detail ?? '')}</td></tr>`;
+      return ph.map((p, i) => `<tr${i ? '' : ' class="first"'}><td class="l g">${i ? '' : name}</td><td class="l">${i ? '' : out}</td><td class="l">${esc(p.label)}</td><td>${p.seconds ?? '–'} s</td><td class="${cls(p.fps ?? 0)}">${p.fps ?? '–'}</td><td>${p.dt ? `${p.dt.p50} / ${p.dt.p90} / ${p.dt.p99}` : '–'}</td><td>${p.per40 ?? '–'}</td><td>${p.work ? `${r1(p.work.p50)} / ${r1(p.work.p99)}` : '–'}</td><td>${p.gpu?.frames ? `${p.gpu.p50} / ${p.gpu.p99}` : p.gpu?.state === 'unavailable' ? 'n/a' : '–'}</td><td>${p.dataWaitMs ?? '–'}</td></tr>`).join('');
     }).join('');
     const e = this.env ?? {}, probe = this.results.find((r) => r.hostTiming?.length)?.hostTiming?.[0];
     const renderers = [...new Set(this.results.map((r) => r.renderer).filter(Boolean))];

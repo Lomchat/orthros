@@ -70,7 +70,8 @@ export class PageMeter {
     if (this.gl) { this.otherContexts = (this.otherContexts ?? 0) + 1; if (this.gl.isContextLost?.() === false) return; }
     this.gl = gl;
     try { const info = gl.getExtension('WEBGL_debug_renderer_info'); this.renderer = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER)); } catch { this.renderer = null; }
-    this.webgl2 = typeof gl.createQuery === 'function' && typeof gl.beginQuery === 'function';
+    const W2 = this.win.WebGL2RenderingContext;
+    this.webgl2 = !!W2 && gl instanceof W2;
     // (WebGL 1: no TIME_ELAPSED queries of the kind the probe makes — reported unavailable)
     this.gpu = this.webgl2 ? new GpuProbe(gl, { wrapGl: false, now: this.now }) : null;
     if (this.discard && this.webgl2) gl.enable(RASTERIZER_DISCARD);

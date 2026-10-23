@@ -55,6 +55,14 @@ vertex work done, no pixel drawn — the closest to the engine's own CPU cost a 
 (SwiftShader's vertex threads still compete with the page: report the machine's load, several runs). `--gl swiftshader`
 draws (the GPU's share on the CPU); `--gl gpu` adds no flag (a machine's own GPU).
 
+On a player's machine (the owner's: a real GPU, Windows), the ports are measured by the **bench suite**
+(`/?benchsuite=all`, docs/real-machine-bench.md "The bench suite"), every game in a row from one link, no Playwright:
+the port's page opens in a frame of the Orthros page, `src/host/web/page-meter.js` measures its frames from outside it
+(the same frame accounting, GPU timer and records as the Windows games'), `src/host/web/dom-input.js` gives it its
+scenario's keys and clicks as DOM events, and its console (GoldSrc: `portSession.command`) or debug teleport (OpenMW:
+`window.orthrosBenchHooks`, set by `src/ports/openmw/frame-meter.js` under `?benchrun=`) through hooks. The ports'
+benches are in `tools/scenarios/bench/` (`revc-drive`, `morrowind-glide`, `halflife-c1a0`, `cs-bots`).
+
 ## Manifest
 
 ```json

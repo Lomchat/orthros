@@ -196,7 +196,8 @@ async function showMenu() {
 async function start(name, language = null) {
   if (state.status !== 'menu') return;
   state.status = 'loading';
-  try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ }
+  // (the home's last game: not changed by a bench suite's games — bench-suite.js)
+  if (!params.has('benchrun')) { try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ } }
   const sourcesReq = snapshotsOn() ? fetch('/api/snapshot-sources').then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
   if (manifest.launchUrl) { const portUrl = new URL(manifest.languageLaunchUrls?.[language] ?? manifest.launchUrl, location.href); if (language) portUrl.searchParams.set('gameLang', language); location.href = portUrl.href; return; } // (a browser port: its own page, docs/browser-ports.md)
