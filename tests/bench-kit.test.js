@@ -318,11 +318,12 @@ test('bfme1-108: the skirmish bench plays the steps of tools/scenarios/bfme1-108
   assert.deepEqual(steps('../tools/scenarios/bench/bfme1-108-skirmish.txt'), steps('../tools/scenarios/bfme1-108-phases.txt'));
 });
 
-test('quick benches: two minutes of play, at most 4 minutes announced, the menu steps of their longer bench', () => {
+test('skirmish quick benches: two minutes of play, at most 4 minutes announced, the menu steps of their longer bench', () => {
   const dir = new URL('../tools/scenarios/bench/', import.meta.url);
   const { benches } = JSON.parse(fs.readFileSync(new URL('index.json', dir), 'utf8'));
   const src = (f) => parseScenario(fs.readFileSync(new URL(f, dir), 'utf8')).steps;
-  const quick = benches.filter((b) => b.name.endsWith('-quick'));
+  // (the skirmish games' quick benches; Vice City's, vc-quick, plays no skirmish: checked with the other benches above)
+  const quick = benches.filter((b) => b.name.endsWith('-quick') && b.name !== 'vc-quick');
   assert.deepEqual(quick.map((b) => b.name).sort(), ['bfme1-108-quick', 'bfme2-quick', 'rotwk-quick']);
   for (const b of quick) {
     const steps = src(b.file), play = steps.findIndex((s) => s.kind === 'mark' && s.args[0] === 'play');
