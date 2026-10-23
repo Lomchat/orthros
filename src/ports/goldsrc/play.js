@@ -123,7 +123,7 @@ const telemetry = { session: crypto.randomUUID().replaceAll('-', '').slice(0, 16
 let perfRecord = null;
 function report(event, data = {}) {
   if (telemetry.sent >= 20) return; telemetry.sent++;
-  const body = JSON.stringify({ session: telemetry.session, game: decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? ''), port: 'goldsrc', event,
+  const body = JSON.stringify({ session: telemetry.session, game: decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? ''), port: 'goldsrc', event, ...(params.get('benchrun') ? { bench: params.get('benchrun') } : {}), // (a bench suite's session: bench-suite.js)
     seconds: Math.round((performance.now() - telemetry.started) / 1000), state: session.state, ...data,
     env: { ua: navigator.userAgent, cores: navigator.hardwareConcurrency, memGB: navigator.deviceMemory ?? null, dpr: devicePixelRatio, screen: `${screen.width}x${screen.height}` } });
   beacon(body);
@@ -407,7 +407,7 @@ const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)}
 /** The game started at once: the account's saves first, then the engine, the files, the game's own start. */
 async function start() {
   session.state = 'starting';
-  perfRecord ??= portPerf({ runtime: 'goldsrc', game: name, session: telemetry.session, version: config.version ?? null, phase: () => session.state, data: () => (gameData ? { waits: gameData.stats.misses, ms: gameData.stats.stallMs } : null), gl: () => canvasGl($('canvas')), draws: () => draws });
+  perfRecord ??= portPerf({ runtime: 'goldsrc', game: name, session: telemetry.session, version: config.version ?? null, bench: params.get('benchrun'), phase: () => session.state, data: () => (gameData ? { waits: gameData.stats.misses, ms: gameData.stats.stallMs } : null), gl: () => canvasGl($('canvas')), draws: () => draws });
   if (!crossOriginIsolated) throw new Error(S.isolated);
   const g = config.goldsrc, base = `/engines/${encodeURIComponent(g.engine)}/`, language = gameLanguage(config);
   step('engine', 'active'); step('files', ''); step('game', '');

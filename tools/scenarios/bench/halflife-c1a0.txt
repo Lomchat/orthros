@@ -1,0 +1,28 @@
+# Half-Life on its GoldSrc engine (a browser port: the bench suite plays it, bench-suite.js): the game's menu, then the
+# map c1a0 (Black Mesa Inbound, the tram) from the engine's console, a walk inside the tram's car while it rides:
+# forward, turns, back. Phases: start (the page, the engine, the files), menu, load (the map), walk (45 s), end.
++3:waitframe:1,100000
+0:mark:menu
+5:cmd:map c1a0
+5:mark:load
+6:waitframe:1,200
+0:mark:walk
+2:cmd:+forward
+6:cmd:+right
+7:cmd:-right
+10:cmd:-forward
+12:cmd:+back
+15:cmd:-back
+17:cmd:+left
+19:cmd:-left
+20:cmd:+forward
+24:cmd:-forward
+26:cmd:+right
+28:cmd:-right
+30:cmd:+forward
+35:cmd:-forward
+37:cmd:+left
+38:cmd:-left
+40:cmd:+back
+44:cmd:-back
+45:mark:end

@@ -1,0 +1,29 @@
+# Counter-Strike on its GoldSrc engine, rebuilt from source (a browser port: the bench suite plays it,
+# bench-suite.js): the game's menu, then the version's solo map from the engine's console (the page has run the
+# version's solo commands: bots fill the teams), the counter-terrorists joined, a walk through the map while the bots
+# play: forward, turns. Phases: start (the page, the engine, the files), menu, load (the map), play (50 s), end.
++3:waitframe:1,100000
+0:mark:menu
+5:cmd:map de_dust2
+5:mark:load
+6:waitframe:1,200
+2:cmd:jointeam 2
+4:cmd:joinclass 1
+6:mark:play
+10:cmd:+forward
+14:cmd:+right
+15:cmd:-right
+20:cmd:+left
+21:cmd:-left
+26:cmd:-forward
+27:cmd:+attack
+28:cmd:-attack
+30:cmd:+forward
+34:cmd:+right
+36:cmd:-right
+42:cmd:-forward
+44:cmd:+left
+46:cmd:-left
+48:cmd:+forward
+55:cmd:-forward
+56:mark:end

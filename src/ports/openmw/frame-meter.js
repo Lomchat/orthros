@@ -22,12 +22,28 @@
     const m = { type: 'orthros-frames', fps: recent.length * 2, max: gaps.at(-1) ?? 0, p99: gaps[Math.floor(gaps.length * 0.99)] ?? 0, total: draws > 0 };
     window.orthrosFrames = m; tell(m);
   }, 500);
+  // the bench suite around this page (src/host/web/bench-suite.js, ?benchrun=): what its frame measurement and scripted
+  // input use (page-meter.js hooks) — the engine's work a frame (its pump, Module._omw_pump_frame, timed), its debug
+  // teleport, its data reads waited for (streamfs.js)
+  if (/[?&]benchrun=/.test(location.search)) {
+    let workMs = 0;
+    const wrap = setInterval(() => {
+      const M = window.Module, f = M?._omw_pump_frame; if (!f || f.orthrosTimed) return;
+      const timed = function (...a) { const t0 = performance.now(); try { return f.apply(this, a); } finally { workMs += performance.now() - t0; } };
+      timed.orthrosTimed = true; M._omw_pump_frame = timed; clearInterval(wrap);
+    }, 100);
+    window.orthrosBenchHooks = {
+      workMs: () => (window.Module?._omw_pump_frame?.orthrosTimed ? workMs : undefined),
+      teleport: (x, y, z) => window.Module?._omw_debug_teleport?.(x, y, z),
+      data: () => { const s = window.__streamfsStats; return s ? { waits: s.misses ?? 0, waitMs: s.stallMs ?? 0, bytes: s.fetchedBytes ?? 0 } : null; },
+    };
+  }
   // the passive session record (src/host/web/perf-page.js, docs/real-machine-bench.md "Passive session records"): the
   // engine's frames (browser frames with draws), its GPU time on its context, the game data's waits (streamfs.js),
   // the phase (loading, the menus, the world: view-grow.js) and the quality tier (tier.js)
   Promise.all([import('/src/host/web/perf-page.js'), import('/src/ports/openmw/view-grow.js')]).then(([perf, view]) => {
     const id = decodeURIComponent(location.pathname.split('/')[3] ?? '');
-    window.orthrosPerf = perf.portPerf({ runtime: 'openmw', game: id, session: Math.random().toString(36).slice(2, 14), version: null,
+    window.orthrosPerf = perf.portPerf({ runtime: 'openmw', game: id, session: Math.random().toString(36).slice(2, 14), version: null, bench: new URLSearchParams(location.search).get('benchrun'),
       tier: () => window.orthrosTierChoice?.tier ?? null, phase: () => (!draws ? 'loading' : view.inWorld(window) ? 'world' : 'menu'),
       data: () => { const d = window.StreamFS?.data?.(); return d ? { waits: d.stats.misses, ms: d.stats.stallMs } : null; },
       gl: () => glc, draws: () => draws });

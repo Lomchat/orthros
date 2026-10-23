@@ -19,3 +19,36 @@ export const VK_TO_SCAN = (() => {
  * @param {number} vk
  */
 export function scanCodeOfVk(vk) { const d = VK_TO_SCAN[vk & 0xff]; return d >= 0x80 ? 0x100 | (d & 0x7f) : d; }
+
+/** DOM KeyboardEvent.code -> virtual key, for the codes that are not a letter, a digit, a numpad digit or F1-F24 */
+export const CODE_TO_VK = { Escape: 0x1b, Backspace: 8, Tab: 9, Enter: 13, NumpadEnter: 13, ShiftLeft: 0xa0, ShiftRight: 0xa1, ControlLeft: 0xa2, ControlRight: 0xa3, AltLeft: 0xa4, AltRight: 0xa5, Pause: 0x13, CapsLock: 0x14, Space: 0x20, PageUp: 0x21, PageDown: 0x22, End: 0x23, Home: 0x24, ArrowLeft: 0x25, ArrowUp: 0x26, ArrowRight: 0x27, ArrowDown: 0x28, PrintScreen: 0x2c, Insert: 0x2d, Delete: 0x2e, MetaLeft: 0x5b, MetaRight: 0x5c, ContextMenu: 0x5d, NumpadMultiply: 0x6a, NumpadAdd: 0x6b, NumpadSubtract: 0x6d, NumpadDecimal: 0x6e, NumpadDivide: 0x6f, NumLock: 0x90, ScrollLock: 0x91, Semicolon: 0xba, Equal: 0xbb, Comma: 0xbc, Minus: 0xbd, Period: 0xbe, Slash: 0xbf, Backquote: 0xc0, BracketLeft: 0xdb, Backslash: 0xdc, BracketRight: 0xdd, Quote: 0xde };
+
+/** The virtual key of a DOM KeyboardEvent.code (the page's keys to the guest), 0 for an unknown one. */
+export function vkOfCode(c) {
+  if (CODE_TO_VK[c] !== undefined) return CODE_TO_VK[c];
+  if (/^Key[A-Z]$/.test(c)) return c.charCodeAt(3);
+  if (/^Digit[0-9]$/.test(c)) return c.charCodeAt(5);
+  if (/^Numpad[0-9]$/.test(c)) return 0x60 + Number(c[6]);
+  if (/^F([0-9]+)$/.test(c)) return 0x70 + Number(c.slice(1)) - 1;
+  return 0;
+}
+
+const KEY_NAMES = { Escape: 'Escape', Backspace: 'Backspace', Tab: 'Tab', Enter: 'Enter', Space: ' ', ArrowLeft: 'ArrowLeft', ArrowUp: 'ArrowUp', ArrowRight: 'ArrowRight', ArrowDown: 'ArrowDown', ShiftLeft: 'Shift', ShiftRight: 'Shift', ControlLeft: 'Control', ControlRight: 'Control', AltLeft: 'Alt', AltRight: 'Alt', PageUp: 'PageUp', PageDown: 'PageDown', Home: 'Home', End: 'End', Insert: 'Insert', Delete: 'Delete', Pause: 'Pause', CapsLock: 'CapsLock' };
+/**
+ * A virtual key as a DOM keyboard event's fields (the scripted input of the browser ports' bench, dom-input.js):
+ * { code, key, keyCode } — keyCode the generic virtual key (VK_SHIFT for either Shift, as browsers report it); null for
+ * a virtual key without a DOM code here.
+ */
+export function domKeyOfVk(vk) {
+  const generic = { 0x10: 'ShiftLeft', 0x11: 'ControlLeft', 0x12: 'AltLeft' }[vk];
+  let code = generic ?? null;
+  if (!code) for (const [c, v] of Object.entries(CODE_TO_VK)) if (v === vk) { code = c; break; }
+  if (!code && vk >= 0x41 && vk <= 0x5a) code = 'Key' + String.fromCharCode(vk);
+  if (!code && vk >= 0x30 && vk <= 0x39) code = 'Digit' + String.fromCharCode(vk);
+  if (!code && vk >= 0x60 && vk <= 0x69) code = 'Numpad' + (vk - 0x60);
+  if (!code && vk >= 0x70 && vk <= 0x87) code = 'F' + (vk - 0x6f);
+  if (!code) return null;
+  const key = KEY_NAMES[code] ?? (/^Key/.test(code) ? code[3].toLowerCase() : /^Digit|^Numpad[0-9]/.test(code) ? code.slice(-1) : code);
+  const keyCode = vk >= 0xa0 && vk <= 0xa5 ? 0x10 + ((vk - 0xa0) >> 1) : vk;
+  return { code, key, keyCode };
+}

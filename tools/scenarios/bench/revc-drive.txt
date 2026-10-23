@@ -1,0 +1,67 @@
+# Vice City on reVC (a browser port: the bench suite plays it, bench-suite.js): the game's menu, a new game, its
+# intro (its cutscenes skipped with Space — the game's skip key that does nothing harmful once the player has the
+# controls: a sprint — then its scripted scenes until Tommy is free near the hotel), on foot, then a car of the game's
+# own vehicle cheat (GETTHEREFAST, typed) entered and driven. The game reads its keys once a frame: the presses are
+# held long enough for a slow machine's frames. Coordinates in thousandths of the game's canvas (coords 1000x1000): the
+# menu's Start game and New game, as tools/re3/perf.mjs clicks them. Phases: start (the page, the engine, the files),
+# menu, load (the new game until the city draws), intro (45 s), foot, drive (30 s), end.
++4:waitframe:1,60
+0:mark:menu
+4:move:500,401
+5:click:500,401
+8:move:500,365
+9:click:500,365
+9:mark:load
+12:nudge:32,3
+12:waitframe:80,100000
+0:mark:intro
+3:keydown:32
+3.3:keyup:32
+6:keydown:32
+6.3:keyup:32
+9:keydown:32
+9.3:keyup:32
+12:keydown:32
+12.3:keyup:32
+15:keydown:32
+15.3:keyup:32
+18:keydown:32
+18.3:keyup:32
+21:keydown:32
+21.3:keyup:32
+24:keydown:32
+24.3:keyup:32
+27:keydown:32
+27.3:keyup:32
+30:keydown:32
+30.3:keyup:32
+33:keydown:32
+33.3:keyup:32
+36:keydown:32
+36.3:keyup:32
+39:keydown:32
+39.3:keyup:32
+42:keydown:32
+42.3:keyup:32
+45:mark:foot
+46:keydown:87
+54:keyup:87
+56:text:GETTHEREFAST
+62:keydown:13
+62.7:keyup:13
+64:mark:drive
+65:keydown:87
+69:keydown:65
+69.5:keyup:65
+73:keydown:68
+73.5:keyup:68
+77:keydown:65
+77.5:keyup:65
+81:keydown:68
+81.5:keyup:68
+85:keydown:65
+85.5:keyup:65
+89:keydown:68
+89.5:keyup:68
+94:keyup:87
+94:mark:end

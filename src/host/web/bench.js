@@ -2,7 +2,9 @@
 // tools/scenarios/bench/ in the player's own browser — the harness's scenario language (src/host/scenario.js), the
 // harness's phase marks (each mark closes a phase measured by the worker's frame accounting) — shows a banner while it
 // runs and a summary at the end, and sends one `bench` telemetry record: the per-phase results with the machine.
-import { parseScenario, unsupportedSteps, ScenarioPlayer } from '../scenario.js';
+// The bench suite (bench-suite.js: every game in a row, ?benchsuite=) runs the same BenchRun for the browser ports, its
+// frames measured by page-meter.js and its input given to the port's page (dom-input.js), its banner its own.
+import { parseScenario, unsupportedSteps, ScenarioPlayer, PLAYER_KINDS, PORT_KINDS } from '../scenario.js';
 import { PerfWindow, compactPhase } from '../perf-summary.js';
 import { scanCodeOfVk } from '../../win32/vk-scan.js';
 import { benchNetwork, fmtRate, fmtBytes, received } from './net-status.js';
@@ -55,7 +57,9 @@ export async function loadBench(name, manifest = null, fetcher = fetch) {
   if (manifest && !def.manifests.includes(manifest)) throw new Error(W.notFor(name, def.manifests.join(', '), manifest));
   const text = await (await fetcher(BENCH_DIR + def.file)).text();
   const { steps, errors } = parseScenario(text);
-  const bad = unsupportedSteps(steps);
+  // (a browser port's bench — `runtime` re3, goldsrc, openmw; `page`: its page under the version's launch address —
+  // plays the ports' steps too)
+  const bad = unsupportedSteps(steps, def.runtime && def.runtime !== 'win32' ? PORT_KINDS : PLAYER_KINDS);
   if (errors.length || bad.length) throw new Error(W.cannot(def.file, [...errors, ...bad.map((s) => W.harnessOnly(s.src))].join('; ')));
   return { ...def, manifest: manifest ?? def.manifests[0], steps };
 }
@@ -75,13 +79,30 @@ const fmtTime = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padSt
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
 /**
- * One bench run in this page. `deps`: the page's pieces — state (window.orthros), push / EV / typeText (input ring),
- * postWorker, sendRecord(record) → Promise<boolean> (telemetry; false: not sent), machine() → Promise<object>,
- * headless (no banner interaction: starts at once), capture() (the mouse captured: the summary closed to play).
+ * The game's input from the Win32 page's input ring (push / EV / typeText): what BenchRun gives its steps to. A port's
+ * page gets the same calls from dom-input.js.
+ */
+export function ringInput(push, EV, typeText) {
+  return {
+    move: (x, y) => push(EV.MOUSEMOVE, x, y, 0),
+    button: (b, down, x, y) => { push(EV.MOUSEMOVE, x, y, 0); push(down ? EV.MOUSEDOWN : EV.MOUSEUP, b, x, y); },
+    key: (vk, scan, down) => push(down ? EV.KEYDOWN : EV.KEYUP, vk, scan || scanCodeOfVk(vk), 0),
+    text: (s) => typeText(s),
+  };
+}
+
+/**
+ * One bench run in this page. `deps`: the page's pieces — state (window.orthros: mode, stats, status, manifest...),
+ * input (move, button, key, text and, for a port, command / look / glide — or push / EV / typeText: the input ring),
+ * postWorker ({ type: 'mark' }: the phase's report comes back through onPhase), sendRecord(record) → Promise<boolean>
+ * (telemetry; false: not sent), machine() → Promise<object>, headless (no banner interaction: starts at once), quiet
+ * (no banner nor summary: the bench suite shows its own), suite (the suite run this bench is part of, kept in the
+ * record), capture() (the mouse captured: the summary closed to play).
  */
 export class BenchRun {
   constructor(def, deps) {
     this.def = def; this.d = deps; this.state = deps.state;
+    this.input = deps.input ?? ringInput(deps.push, deps.EV, deps.typeText);
     this.player = new ScenarioPlayer(def.steps, { from: def.coords ?? null, display: () => (this.state.mode ? [this.state.mode.width, this.state.mode.height] : null) });
     this.win = new PerfWindow(); this.phases = []; this.extras = []; this.marks = []; this.anchors = [];
     this.audio = new AudioStats(); // (the page feeds it: the sound of the run, sent with the record)
@@ -90,7 +111,7 @@ export class BenchRun {
     this.probes = []; this.probing = null;
     if (!document.getElementById('benchCss')) { const st = document.createElement('style'); st.id = 'benchCss'; st.textContent = CSS; document.head.appendChild(st); }
     this.el = document.createElement('div'); this.el.id = 'bench'; document.body.appendChild(this.el);
-    if (deps.headless) this.el.style.display = 'none'; // (the harness's bare frame: its screenshots without the banner)
+    if (deps.headless || deps.quiet) this.el.style.display = 'none'; // (the harness's bare frame: its screenshots without the banner; the suite's own banner)
   }
   /** The banner before the start: what will happen; `onStart` once the player agrees (a click: audio may start). */
   intro(onStart, onCancel) {
@@ -105,7 +126,8 @@ export class BenchRun {
     this.el.innerHTML = `<div><b>${W.running}</b></div><div class="st"></div><button class="quiet" id="benchAbort">${W.stop}</button>`;
     this.el.querySelector('#benchAbort').onclick = () => this.finish('aborted', W.stoppedByPlayer);
     this.onVis = () => { if (document.visibilityState === 'hidden') this.hiddenAt = performance.now(); else if (this.hiddenAt) { this.hiddenSeconds += (performance.now() - this.hiddenAt) / 1000; this.hiddenAt = null; } };
-    this.onBlur = () => { this.blurs++; };
+    // (a focus loss: the page's focus gone elsewhere — not into a frame of its own: the bench suite's game page)
+    this.onBlur = () => setTimeout(() => { if (!document.hasFocus()) this.blurs++; }, 0);
     document.addEventListener('visibilitychange', this.onVis); addEventListener('blur', this.onBlur);
     this.timer = setInterval(() => this.tick(), 100);
     this.probe('start');
@@ -143,16 +165,20 @@ export class BenchRun {
     if (line) line.textContent = `${fmtTime(now)} · phase ${this.label} · step ${k}/${n}${w ? ` · waiting for ${w.kind === 'waitfps' ? 'the game to run' : 'the next screen'}` : ''}${dl}${st.stats ? ` · ${Math.round(st.stats.fps ?? 0)} fps` : ''}`;
   }
   perform(a) {
-    const { push, EV, typeText } = this.d, [x, y] = a.args;
+    const inp = this.input, [x, y] = a.args;
     switch (a.kind) {
-      case 'move': push(EV.MOUSEMOVE, x, y, 0); break;
+      case 'move': inp.move(x, y); break;
       // (a click holds the button ~100 ms and a key press likewise, as the harness and a person do)
-      case 'click': case 'rclick': { const b = a.kind === 'click' ? 0 : 1; push(EV.MOUSEMOVE, x, y, 0); push(EV.MOUSEDOWN, b, x, y); setTimeout(() => push(EV.MOUSEUP, b, x, y), 100); break; }
-      case 'down': push(EV.MOUSEMOVE, x, y, 0); push(EV.MOUSEDOWN, 0, x, y); break;
-      case 'up': push(EV.MOUSEMOVE, x, y, 0); push(EV.MOUSEUP, 0, x, y); break;
-      case 'key': { const vk = a.args[0], scan = a.args[1] || scanCodeOfVk(vk); push(EV.KEYDOWN, vk, scan, 0); setTimeout(() => push(EV.KEYUP, vk, scan, 0), 100); break; }
-      case 'keydown': case 'keyup': { const vk = a.args[0], scan = a.args[1] || scanCodeOfVk(vk); push(a.kind === 'keydown' ? EV.KEYDOWN : EV.KEYUP, vk, scan, 0); break; }
-      case 'text': typeText(String(a.args[0])); break;
+      case 'click': case 'rclick': { const b = a.kind === 'click' ? 0 : 1; inp.button(b, true, x, y); setTimeout(() => inp.button(b, false, x, y), 100); break; }
+      case 'down': inp.button(0, true, x, y); break;
+      case 'up': inp.button(0, false, x, y); break;
+      case 'key': { const vk = a.args[0], scan = a.args[1] || 0; inp.key(vk, scan, true); setTimeout(() => inp.key(vk, scan, false), 100); break; }
+      case 'keydown': case 'keyup': inp.key(a.args[0], a.args[1] || 0, a.kind === 'keydown'); break;
+      case 'text': inp.text(String(a.args[0])); break;
+      // (a port's own: its console, a captured mouse's look, its debug teleport — page-meter.js's hooks)
+      case 'cmd': inp.command?.(String(a.args[0])); break;
+      case 'look': inp.look?.(...a.args); break;
+      case 'glide': inp.glide?.(a.args); break;
       case 'mark': this.mark(String(a.args[0]), a.at); break;
       case 'waitfps': case 'waitframe': this.anchors.push({ step: a.step.src, at: Math.round(a.at * 10) / 10 }); break;
       default: break; // (shot, blur, focus: harness steps without effect here)
@@ -164,7 +190,9 @@ export class BenchRun {
     this.extras.push({ label: this.label, at: this.marks.length ? this.marks[this.marks.length - 1].at : 0, window: this.win.take() });
     // (what the network had carried by then: the time of a phase on a slow link reads with it)
     const net = this.state.stats?.net;
-    this.marks.push({ label, at: Math.round(at * 10) / 10, ...(net ? { netBytes: received(net), netDemandMs: Math.round(net.demandMs ?? 0) } : {}) });
+    // (a port's: the reads its engine waited for, page-meter.js — the same keys)
+    const data = this.state.stats?.data;
+    this.marks.push({ label, at: Math.round(at * 10) / 10, ...(net ? { netBytes: received(net), netDemandMs: Math.round(net.demandMs ?? 0) } : data ? { netBytes: data.bytes ?? 0, netDemandMs: Math.round(data.waitMs ?? 0), dataWaits: data.waits ?? 0 } : {}) });
     this.label = label;
     if (label !== 'end') this.probe(label);
   }
@@ -182,11 +210,15 @@ export class BenchRun {
     for (let i = 0; i < this.extras.length; i++) {
       const rep = this.phases[i], x = this.extras[i], w = x.window;
       if (x.label === 'end') continue;
-      phases.push({ ...(compactPhase(rep) ?? { label: x.label }), label: x.label, at: x.at, drawsPerFrame: w?.drawsPerFrame ?? null, gpu: w?.gpu ?? null, glCalls: w?.glCalls ?? null, render: w?.render ?? null, busy: w?.busy ?? null, visible: w?.visible ?? null });
+      // (the time the game waited for its data in the phase: the network's demand reads, a port's engine's reads)
+      const m0 = this.marks[i - 1], m1 = this.marks[i];
+      const dataWaitMs = m1?.netDemandMs !== undefined ? m1.netDemandMs - (m0?.netDemandMs ?? 0) : null;
+      phases.push({ ...(compactPhase(rep) ?? { label: x.label }), label: x.label, at: x.at, drawsPerFrame: w?.drawsPerFrame ?? null, gpu: w?.gpu ?? null, glCalls: w?.glCalls ?? null, render: w?.render ?? null, busy: w?.busy ?? null, visible: w?.visible ?? null, dataWaitMs });
     }
     const st = this.state;
     const record = {
-      event: 'bench', bench: this.def.name, title: this.def.title ?? null, manifest: st.manifest, version: st.version ?? null, outcome, detail,
+      event: 'bench', bench: this.def.name, title: this.def.title ?? null, runtime: this.def.runtime ?? st.runtime ?? 'win32', manifest: st.manifest, version: st.version ?? null, outcome, detail,
+      ...(this.d.suite ? { suite: this.d.suite } : {}), // (bench-suite.js: { run, name, index, of } — the suite run this bench is part of)
       seconds: Math.round(seconds), firstLaunch: !!st.firstLaunch, display: st.mode ? `${st.mode.width}x${st.mode.height}` : null,
       options: st.perfOptions ?? null, marks: this.marks, anchors: this.anchors, phases,
       interrupted: { hiddenSeconds: Math.round(this.hiddenSeconds), blurs: this.blurs },
@@ -195,13 +227,16 @@ export class BenchRun {
       hostTiming: this.probes, // (timing-probe.js: Atomics.wait / setTimeout / hop lateness and the battery, at the start and each mark)
       env: await this.d.machine().catch(() => null),
     };
+    // (the WebGL renderer the game drew with: a port's context's, page-meter.js; the Win32 page's machine line's)
+    record.renderer = st.renderer ?? record.env?.gpu ?? null;
     st.benchResult = record;
     let sent = false;
     try { sent = await this.d.sendRecord(record); } catch { sent = false; }
     record.sent = sent; st.benchSent = sent;
     this.d.log?.('bench', `${outcome}${detail ? ` (${detail})` : ''}: ${phases.map((p) => `${p.label} ${p.seconds ?? '?'} s ${p.fps ?? '?'} fps p99 ${p.dt?.p99 ?? '?'} ms`).join('; ')}; record ${sent ? 'sent' : 'not sent (telemetry off)'}`);
     this.el.remove();
-    if (!this.d.headless) this.showResult(record);
+    this.d.onDone?.(record);
+    if (!this.d.headless && !this.d.quiet) this.showResult(record);
   }
   showResult(r) {
     const el = document.createElement('div'); el.id = 'benchResult';

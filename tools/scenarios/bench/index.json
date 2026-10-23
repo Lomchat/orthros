@@ -1,15 +1,33 @@
 {
- "about": "Bench scenarios of the page's bench mode (?bench=<name>, docs/real-machine-bench.md). file: the scenario (tools/headless.mjs language, src/host/scenario.js); manifests: the versions it plays (the first one by default, ?manifest= picks another); coords: the display its pointer coordinates were written for (scaled to the game's display); minutes: the usual duration once the game files are in the browser; maxSeconds: the bench stops there (a first launch downloads the files first).",
+ "about": "Bench scenarios of the page's bench mode (?bench=<name>, docs/real-machine-bench.md). file: the scenario (tools/headless.mjs language, src/host/scenario.js); manifests: the versions it plays (the first one by default, ?manifest= picks another); coords: the display its pointer coordinates were written for (scaled to the game's display); minutes: the usual duration once the game files are in the browser; maxSeconds: the bench stops there (a first launch downloads the files first). runtime: a browser port's bench (re3, goldsrc, openmw: the bench suite plays it around the port's page, bench-suite.js), page: that page's address under the version's launch address (none: the launch address itself). suites: the bench suite's lists (?benchsuite=<name>), their benches in order, each with the version (manifest) and the game language (gameLang) it plays.",
  "benches": [
-  { "name": "bfme2-skirmish", "title": "BFME II: menu, skirmish start, one minute of play", "manifests": ["bfme2", "bfme2-106"], "file": "bfme2-skirmish.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 2400 },
-  { "name": "bfme2-quick", "title": "BFME II: menu, skirmish start, two minutes of play", "manifests": ["bfme2"], "file": "bfme2-quick.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 2400 },
-  { "name": "rotwk-skirmish", "title": "Rise of the Witch-king: menu, skirmish start, one minute of play", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-skirmish.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1200 },
-  { "name": "rotwk-quick", "title": "Rise of the Witch-king: menu, skirmish start, two minutes of play", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-quick.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1200 },
-  { "name": "bfme1-skirmish", "title": "BFME: menu, skirmish start, one minute of play", "manifests": ["bfme-vanilla", "bfme1-103"], "file": "bfme1-skirmish.txt", "coords": [800, 600], "minutes": 6, "maxSeconds": 1200 },
-  { "name": "bfme1-108-menu", "title": "BFME 1.08: the main menu", "manifests": ["bfme1-108"], "file": "bfme1-108-menu.txt", "coords": [800, 600], "minutes": 3, "maxSeconds": 1500 },
-  { "name": "bfme1-108-quick", "title": "BFME 1.08: menu, skirmish start, two minutes of play", "manifests": ["bfme1-108"], "file": "bfme1-108-quick.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1500 },
-  { "name": "bfme1-108-skirmish", "title": "BFME 1.08: menu, skirmish start, ten minutes of play", "manifests": ["bfme1-108"], "file": "bfme1-108-skirmish.txt", "coords": [800, 600], "minutes": 15, "maxSeconds": 2700 },
-  { "name": "vicecity-drive", "title": "Vice City: menu, new game, a drive", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vicecity-drive.txt", "coords": [640, 480], "minutes": 2, "maxSeconds": 2400 },
-  { "name": "vc-quick", "title": "Vice City: menu, new game, ~45 s of play", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vc-quick.txt", "coords": [640, 480], "minutes": 3, "maxSeconds": 1200 }
+  {"name": "bfme2-skirmish", "title": "BFME II: menu, skirmish start, one minute of play", "manifests": ["bfme2", "bfme2-106"], "file": "bfme2-skirmish.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 2400},
+  {"name": "bfme2-quick", "title": "BFME II: menu, skirmish start, two minutes of play", "manifests": ["bfme2"], "file": "bfme2-quick.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 2400},
+  {"name": "rotwk-skirmish", "title": "Rise of the Witch-king: menu, skirmish start, one minute of play", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-skirmish.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1200},
+  {"name": "rotwk-quick", "title": "Rise of the Witch-king: menu, skirmish start, two minutes of play", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-quick.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1200},
+  {"name": "bfme1-skirmish", "title": "BFME: menu, skirmish start, one minute of play", "manifests": ["bfme-vanilla", "bfme1-103"], "file": "bfme1-skirmish.txt", "coords": [800, 600], "minutes": 6, "maxSeconds": 1200},
+  {"name": "bfme1-108-menu", "title": "BFME 1.08: the main menu", "manifests": ["bfme1-108"], "file": "bfme1-108-menu.txt", "coords": [800, 600], "minutes": 3, "maxSeconds": 1500},
+  {"name": "bfme1-108-quick", "title": "BFME 1.08: menu, skirmish start, two minutes of play", "manifests": ["bfme1-108"], "file": "bfme1-108-quick.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1500},
+  {"name": "bfme1-108-skirmish", "title": "BFME 1.08: menu, skirmish start, ten minutes of play", "manifests": ["bfme1-108"], "file": "bfme1-108-skirmish.txt", "coords": [800, 600], "minutes": 15, "maxSeconds": 2700},
+  {"name": "vicecity-drive", "title": "Vice City: menu, new game, a drive", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vicecity-drive.txt", "coords": [640, 480], "minutes": 2, "maxSeconds": 2400},
+  {"name": "vc-quick", "title": "Vice City: menu, new game, ~45 s of play", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vc-quick.txt", "coords": [640, 480], "minutes": 3, "maxSeconds": 1200},
+  {"name": "bfme1-108-short", "title": "BFME 1.08: menu, skirmish start, 40 s of play", "manifests": ["bfme1-108"], "file": "bfme1-108-short.txt", "coords": [800, 600], "minutes": 3, "maxSeconds": 900},
+  {"name": "bfme2-short", "title": "BFME II: menu, skirmish start, 40 s of play", "manifests": ["bfme2"], "file": "bfme2-short.txt", "coords": [800, 600], "minutes": 3, "maxSeconds": 900},
+  {"name": "rotwk-short", "title": "Rise of the Witch-king: menu, skirmish start, 50 s of play", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-short.txt", "coords": [800, 600], "minutes": 3, "maxSeconds": 900},
+  {"name": "revc-drive", "title": "Vice City (reVC): menu, new game, on foot, a drive", "manifests": ["vice-city-revc", "vice-city-orthros"], "runtime": "re3", "file": "revc-drive.txt", "coords": [1000, 1000], "minutes": 2, "maxSeconds": 600},
+  {"name": "morrowind-glide", "title": "Morrowind (OpenMW): in the world, then carried over the land", "manifests": ["morrowind-goty-vanilla-plus-fr", "morrowind-goty-vanilla-plus-en", "morrowind-goty-fr", "morrowind-goty-en"], "runtime": "openmw", "page": "app/index.html?src=hosted&start=-2,-9&novid", "file": "morrowind-glide.txt", "coords": [1000, 1000], "minutes": 1.5, "maxSeconds": 600},
+  {"name": "halflife-c1a0", "title": "Half-Life: the map c1a0, a walk in the tram", "manifests": ["half-life-original-en"], "runtime": "goldsrc", "file": "halflife-c1a0.txt", "coords": [1000, 1000], "minutes": 1.2, "maxSeconds": 480},
+  {"name": "cs-bots", "title": "Counter-Strike (rebuilt): de_dust2 against bots", "manifests": ["counter-strike-rebuilt-en"], "runtime": "goldsrc", "file": "cs-bots.txt", "coords": [1000, 1000], "minutes": 1.5, "maxSeconds": 480}
+ ],
+ "suites": [
+  { "name": "all", "title": "Every game", "benches": [
+   {"bench": "bfme1-108-short", "manifest": "bfme1-108", "gameLang": "fr"},
+   {"bench": "bfme2-short", "manifest": "bfme2"},
+   {"bench": "rotwk-short", "manifest": "rotwk-202"},
+   {"bench": "revc-drive", "manifest": "vice-city-revc"},
+   {"bench": "morrowind-glide", "manifest": "morrowind-goty-vanilla-plus-fr"},
+   {"bench": "halflife-c1a0", "manifest": "half-life-original-en"},
+   {"bench": "cs-bots", "manifest": "counter-strike-rebuilt-en"}
+  ] }
  ]
 }

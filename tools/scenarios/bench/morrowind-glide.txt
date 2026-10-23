@@ -1,0 +1,11 @@
+# Morrowind on OpenMW (a browser port: the bench suite plays it, bench-suite.js): its engine page straight into the
+# world as a new character at Seyda Neen's cell (the page's ?start=-2,-9), ten seconds standing there, then the player
+# carried north over the land at a run's pace (300 units a second, 5000 high — above the hills: the player not dropped onto them: the engine's debug teleport, as
+# tools/openmw/perf.mjs --glide 0,1,300,5000), cells crossed and loaded the same at every run. Phases: start (the page,
+# the engine, the game data), world (standing), glide (45 s), end.
++3:waitframe:20,100000
+0:mark:world
+10:glide:-12288,-69632,0,300,5000
+10:mark:glide
+55:glide
+55:mark:end

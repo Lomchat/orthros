@@ -121,36 +121,58 @@ export class PerfSession {
    * to the engine's request for the next one made in it (its iteration's end, with an asynchronous main loop as well).
    */
   watchFrames({ gl = null, draws = null } = {}) {
-    const win = this.win, raf0 = win.requestAnimationFrame.bind(win);
-    const m = this.meter = { prevT: null, lastShownT: null, flag: false, drawsSeen: draws ? draws() : 0, work: 0, known: false, frameT: null, ask: [null, 0], askPrev: [null, 0], dataAt: null, gl: null };
-    // (the asks: the last two frames' last requests, by the frame they were made in)
-    win.requestAnimationFrame = function (cb) {
-      const at = performance.now();
-      if (m.ask[0] !== m.frameT) m.askPrev = m.ask;
-      m.ask = [m.frameT, at];
-      return raf0((t) => { m.frameT = t; cb(t); });
-    };
-    const tick = (t) => {
-      if (this.ended) return;
-      if (m.frameT !== t) m.frameT = t; // (this frame's asks are this frame's)
-      if (m.prevT !== null) {
-        const a = m.ask[0] === m.prevT ? m.ask : m.askPrev[0] === m.prevT ? m.askPrev : null;
-        if (a) { m.work += Math.max(0, a[1] - m.prevT); m.known = true; }
-        const d = draws ? draws() : null, shown = m.flag || (d !== null && d !== m.drawsSeen);
-        m.flag = false; if (d !== null) m.drawsSeen = d;
-        if (shown) {
-          if (!this.gpuProbe && gl) { const ctx = gl(); if (ctx) { m.gl = ctx; try { this.gpuProbe = new GpuProbe(timerContext(ctx), { wrapGl: false }); } catch { this.gpuProbe = null; } } }
-          try { this.gpuProbe?.frame(); } catch { /* lost context */ }
-          const dw = this.data(), dms = dw ? dw.ms : 0, dd = m.dataAt === null ? 0 : Math.max(0, dms - m.dataAt); m.dataAt = dms;
-          if (m.lastShownT !== null && this.visible()) this.rec.frame(m.prevT - m.lastShownT, m.known ? m.work : null, dd);
-          m.lastShownT = m.prevT; m.work = 0; m.known = false;
-        }
-      }
-      m.prevT = t; raf0(tick);
-    };
-    raf0(tick);
-    return { shown: () => { m.flag = true; } };
+    const w = watchEngineFrames(this.win, {
+      draws, gl, data: () => this.data(), active: () => this.visible(), stopped: () => this.ended, now: () => performance.now(),
+      onGl: (ctx) => { try { this.gpuProbe = new GpuProbe(timerContext(ctx), { wrapGl: false }); } catch { this.gpuProbe = null; } },
+      onShown: () => { try { this.gpuProbe?.frame(); } catch { /* lost context */ } },
+      onFrame: (dt, work, dataMs) => this.rec.frame(dt, work, dataMs),
+    });
+    this.meter = w.meter;
+    return { shown: w.shown };
   }
+}
+
+/**
+ * The frames an engine shows in the page `win` — one measurement for the passive records (PerfSession.watchFrames, in
+ * the port's own page) and the bench suite (page-meter.js, from the page around it): a frame shown is a browser frame
+ * with draws (`draws()`, a counter of the engine's draw calls) or one the page marks (the returned `shown()`); its time
+ * the gap between the animation frames that saw two of them; the engine's work in it from the browser frame's start to
+ * the engine's request for the next one made in it (its iteration's end, with an asynchronous main loop as well; null
+ * when it made none); the game data's waits in it from `data()` ({ ms } cumulative). `gl()`: the engine's context, asked
+ * at shown frames until it has one (onGl). onShown() at each frame shown, onFrame(dtMs, workMs | null, dataMs, t) for
+ * each one after the first while `active()`; `stopped()` ends it. `now`: the clock of the page's requests (its
+ * performance.now).
+ */
+export function watchEngineFrames(win, o) {
+  const raf0 = win.requestAnimationFrame.bind(win), now = o.now ?? (() => (win.performance ?? performance).now());
+  const m = { prevT: null, lastShownT: null, flag: false, drawsSeen: o.draws ? o.draws() : 0, work: 0, known: false, frameT: null, ask: [null, 0], askPrev: [null, 0], dataAt: null, gl: null };
+  // (the asks: the last two frames' last requests, by the frame they were made in)
+  win.requestAnimationFrame = function (cb) {
+    const at = now();
+    if (m.ask[0] !== m.frameT) m.askPrev = m.ask;
+    m.ask = [m.frameT, at];
+    return raf0((t) => { m.frameT = t; cb(t); });
+  };
+  const tick = (t) => {
+    if (o.stopped?.()) return;
+    if (m.frameT !== t) m.frameT = t; // (this frame's asks are this frame's)
+    if (m.prevT !== null) {
+      const a = m.ask[0] === m.prevT ? m.ask : m.askPrev[0] === m.prevT ? m.askPrev : null;
+      if (a) { m.work += Math.max(0, a[1] - m.prevT); m.known = true; }
+      const d = o.draws ? o.draws() : null, shown = m.flag || (d !== null && d !== m.drawsSeen);
+      m.flag = false; if (d !== null) m.drawsSeen = d;
+      if (shown) {
+        if (!m.gl && o.gl) { const ctx = o.gl(); if (ctx) { m.gl = ctx; o.onGl?.(ctx); } }
+        o.onShown?.(m.prevT);
+        const dw = o.data?.(), dms = dw ? dw.ms : 0, dd = m.dataAt === null ? 0 : Math.max(0, dms - m.dataAt); m.dataAt = dms;
+        if (m.lastShownT !== null && (o.active?.() ?? true)) o.onFrame(m.prevT - m.lastShownT, m.known ? m.work : null, dd, m.prevT);
+        m.lastShownT = m.prevT; m.work = 0; m.known = false;
+      }
+    }
+    m.prevT = t; raf0(tick);
+  };
+  raf0(tick);
+  return { meter: m, shown: () => { m.flag = true; } };
 }
 
 /** The WebGL context an engine made on `canvas` (asked once it drew: never creates one), or null. */
