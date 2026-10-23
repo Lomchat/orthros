@@ -6,12 +6,12 @@
 (() => {
   const framed = window.parent !== window;
   const tell = (m) => { if (framed) window.parent.postMessage(m, location.origin); };
-  let draws = 0, seen = 0, frames = [];
+  let draws = 0, seen = 0, frames = [], glc = null;
   for (const type of [window.WebGL2RenderingContext, window.WebGLRenderingContext]) {
     if (!type) continue;
     for (const method of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
       const original = type.prototype[method]; if (!original) continue;
-      type.prototype[method] = function (...args) { draws++; return original.apply(this, args); };
+      type.prototype[method] = function (...args) { draws++; glc = this; return original.apply(this, args); };
     }
   }
   const tick = (t) => { if (draws !== seen) { seen = draws; frames.push(t); } requestAnimationFrame(tick); };
@@ -38,6 +38,16 @@
       data: () => { const s = window.__streamfsStats; return s ? { waits: s.misses ?? 0, waitMs: s.stallMs ?? 0, bytes: s.fetchedBytes ?? 0 } : null; },
     };
   }
+  // the passive session record (src/host/web/perf-page.js, docs/real-machine-bench.md "Passive session records"): the
+  // engine's frames (browser frames with draws), its GPU time on its context, the game data's waits (streamfs.js),
+  // the phase (loading, the menus, the world: view-grow.js) and the quality tier (tier.js)
+  Promise.all([import('/src/host/web/perf-page.js'), import('/src/ports/openmw/view-grow.js')]).then(([perf, view]) => {
+    const id = decodeURIComponent(location.pathname.split('/')[3] ?? '');
+    window.orthrosPerf = perf.portPerf({ runtime: 'openmw', game: id, session: Math.random().toString(36).slice(2, 14), version: null, bench: new URLSearchParams(location.search).get('benchrun'),
+      tier: () => window.orthrosTierChoice?.tier ?? null, phase: () => (!draws ? 'loading' : view.inWorld(window) ? 'world' : 'menu'),
+      data: () => { const d = window.StreamFS?.data?.(); return d ? { waits: d.stats.misses, ms: d.stats.stallMs } : null; },
+      gl: () => glc, draws: () => draws });
+  }).catch((e) => console.warn('[orthros perf]', e));
   // the engine's loading status (Module.setStatus, src/host/openmw.js): its package download, "Downloading data...
   // (x/y)" many times a second (a few told), then "Running..."
   if (!framed) return;

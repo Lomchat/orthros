@@ -10,6 +10,7 @@
 import { pickLang } from '../../host/web/lang.js';
 import { createShell, lockKeys } from '../../host/web/shell.js';
 import { escapeToGame } from '../../host/web/escape.js';
+import { beacon, canvasGl, portPerf } from '../../host/web/perf-page.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { treeFiles, languageFiles } from '../../vfs/game-tree.js';
@@ -118,13 +119,14 @@ window.addEventListener('unhandledrejection', event => { log(`Unhandled: ${event
 // ---------------------------------------------------------------- what the server learns of a session (/api/telemetry)
 // (its start, its errors with the end of the engine's log, its end with its length and frame rate; a few a session)
 const telemetry = { session: crypto.randomUUID().replaceAll('-', '').slice(0, 16), started: performance.now(), sent: 0 };
+/** the passive session record (perf-page.js: every 2 min of play and at the end, docs/real-machine-bench.md) */
+let perfRecord = null;
 function report(event, data = {}) {
   if (telemetry.sent >= 20) return; telemetry.sent++;
   const body = JSON.stringify({ session: telemetry.session, game: decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? ''), port: 'goldsrc', event, ...(params.get('benchrun') ? { bench: params.get('benchrun') } : {}), // (a bench suite's session: bench-suite.js)
     seconds: Math.round((performance.now() - telemetry.started) / 1000), state: session.state, ...data,
     env: { ua: navigator.userAgent, cores: navigator.hardwareConcurrency, memGB: navigator.deviceMemory ?? null, dpr: devicePixelRatio, screen: `${screen.width}x${screen.height}` } });
-  try { if (!navigator.sendBeacon('/api/telemetry', new Blob([body], { type: 'application/json' }))) throw new Error('beacon refused'); }
-  catch { fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {}); }
+  beacon(body);
 }
 
 // ---------------------------------------------------------------- the loading screen and passing messages
@@ -222,7 +224,7 @@ setInterval(() => {
   shell?.setFps(perf.samples, session.state !== 'running' || perf.started < 10 ? 'loading' : document.hidden ? 'paused' : 'running');
 }, 500);
 /** The session's end, once: its length and frame rate. */
-function endReport() { if (telemetry.ended) return; telemetry.ended = true; report('end', { frames: frameStats(), audio: audioState() }); }
+function endReport() { perfRecord?.end(); if (telemetry.ended) return; telemetry.ended = true; report('end', { frames: frameStats(), audio: audioState() }); }
 /** The last minute's frame rate and slowest frames, for the session's report. */
 function frameStats() {
   const a = perf.samples.filter((x) => x.fps > 0); if (!a.length) return null;
@@ -405,6 +407,7 @@ const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)}
 /** The game started at once: the account's saves first, then the engine, the files, the game's own start. */
 async function start() {
   session.state = 'starting';
+  perfRecord ??= portPerf({ runtime: 'goldsrc', game: name, session: telemetry.session, version: config.version ?? null, bench: params.get('benchrun'), phase: () => session.state, data: () => (gameData ? { waits: gameData.stats.misses, ms: gameData.stats.stallMs } : null), gl: () => canvasGl($('canvas')), draws: () => draws });
   if (!crossOriginIsolated) throw new Error(S.isolated);
   const g = config.goldsrc, base = `/engines/${encodeURIComponent(g.engine)}/`, language = gameLanguage(config);
   step('engine', 'active'); step('files', ''); step('game', '');

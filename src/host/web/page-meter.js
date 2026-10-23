@@ -2,15 +2,15 @@
 // OpenMW) — measured from outside it, as the Win32 worker measures its own (docs/real-machine-bench.md, "The bench
 // suite"): installed by the bench suite (bench-suite.js) into the port's window of its frame, same origin, at any time
 // after the page started (the engine's calls look the WebGL methods and requestAnimationFrame up at each call):
-// - a frame is a browser frame in which the engine drew (its draw calls counted on the context prototypes), its time
-//   the gap between the animation frames that saw two such frames; the engine's work in it, from the frame's first
-//   callback to the last request for the next one made in it (the engine asks at the end of its iteration, an
-//   asynchronous main loop too), or the port's own count of its engine's work (hooks.workMs);
+// - a frame is a browser frame in which the engine drew (its draw calls counted on the context prototypes), its time,
+//   its work and its data waits measured as the passive session records measure them (perf-page.js
+//   watchEngineFrames: one measurement of a port's frames), or the port's own count of its engine's work
+//   (hooks.workMs);
 // - each frame goes to the frame accounting every runtime uses (core/frame-acct.js FrameStats: `guest` its work,
 //   `ioWait` the port's reads waited for in it, `wait` the rest), so its phase reports and intervals are the Win32
 //   worker's, read by the same summaries (perf-summary.js PerfWindow, compactPhase);
-// - GPU time per frame with the Win32 runtime's probe (gfx/gpu-probe.js: EXT_disjoint_timer_query_webgl2 windows) on
-//   the engine's context, and that context's renderer string;
+// - GPU time per frame with the Win32 runtime's probe (gfx/gpu-probe.js: EXT_disjoint_timer_query_webgl2 windows, WebGL
+//   1's extension through perf-page.js timerContext) on the engine's context, and that context's renderer string;
 // - every 0.5 s a stats message shaped as the Win32 worker's (fps, dt, acct, d3d: { frames, draws, gpu }) for the
 //   scenario player's waits and the bench's windows, with the port's data (hooks.data: its reads waited for).
 // The port's page may give hooks (window.orthrosBenchHooks): command(text) (its console), teleport(x, y, z),
@@ -20,6 +20,7 @@
 // software GPU measured without its drawing; the harness's --gl-discard).
 import { FrameStats, C, N_CATS } from '../../core/frame-acct.js';
 import { GpuProbe } from '../../gfx/gpu-probe.js';
+import { watchEngineFrames, timerContext } from './perf-page.js';
 
 const DRAWS = ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements'];
 const RASTERIZER_DISCARD = 0x8C89;
@@ -32,10 +33,9 @@ export class PageMeter {
    */
   constructor(win, o = {}) {
     this.win = win; this.discard = !!o.discard; this.now = o.now ?? (() => win.performance.now()); this.onStats = o.onStats ?? null;
-    this.draws = 0; this.drawsAt = 0; this.frames = 0; this.framesDraws = 0; this.browserFrames = 0;
+    this.draws = 0; this.frames = 0; this.framesDraws = 0;
     this.fs = new FrameStats(); this.gl = null; this.gpu = null; this.renderer = null; this.seq = 0;
-    this.tickT = null; this.tickAt = null; this.lastAsk = 0; this.lastShown = null; this.work = 0;
-    this.lastWorkMs = null; this.lastIo = null; this.statsAt = null; this.statsFrames = 0;
+    this.lastWorkMs = null; this.statsAt = null; this.statsFrames = 0;
   }
   get hooks() { return benchHooks(this.win); }
   /** The wrappers in the port's window (once a window: a page reloaded in the frame is another window). */
@@ -55,48 +55,38 @@ export class PageMeter {
         proto.disable = function (cap) { if (cap === RASTERIZER_DISCARD) return undefined; return disable.call(this, cap); };
       }
     }
-    const raf = W.requestAnimationFrame.bind(W);
-    W.requestAnimationFrame = (cb) => { if (P.tickAt !== null) P.lastAsk = P.now(); return raf((t) => { P.tick(t); return cb(t); }); };
-    // (a frame without the engine's own callback is seen all the same: an engine pumped by messages)
-    const loop = (t) => { if (this.stopped) return; P.tick(t); raf(loop); };
-    raf(loop);
+    // (the frames shown, their work and data waits: the passive records' measurement, perf-page.js)
+    watchEngineFrames(W, {
+      draws: () => this.draws, now: this.now, stopped: () => this.stopped,
+      data: () => { const d = safe(() => this.hooks?.data?.()); return d ? { ms: d.waitMs ?? 0 } : null; },
+      onShown: () => { this.frames++; this.framesDraws = this.draws; try { this.gpu?.frame(); } catch { this.gpu = null; } }, // (a lost context: no more timing)
+      onFrame: (dt, work, dataMs, t) => this.frame(dt, work, dataMs, t),
+    });
     this.statsAt = this.now();
     this.timer = W.setInterval(() => this.emit(), STATS_MS);
     return true;
   }
-  stop() { this.stopped = true; try { this.win.clearInterval(this.timer); } catch { /* gone */ } this.gpu?.stopGlCount?.(false); }
+  stop() { this.stopped = true; try { this.win.clearInterval(this.timer); } catch { /* gone */ } }
   /** The engine's context, seen at its first draw: its renderer, its GPU timer, the rasterizer discarded. */
   context(gl) {
     if (this.gl) { this.otherContexts = (this.otherContexts ?? 0) + 1; if (this.gl.isContextLost?.() === false) return; }
     this.gl = gl;
     try { const info = gl.getExtension('WEBGL_debug_renderer_info'); this.renderer = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER)); } catch { this.renderer = null; }
     const W2 = this.win.WebGL2RenderingContext;
-    this.webgl2 = !!W2 && gl instanceof W2;
-    // (WebGL 1: no TIME_ELAPSED queries of the kind the probe makes — reported unavailable)
-    this.gpu = this.webgl2 ? new GpuProbe(gl, { wrapGl: false, now: this.now }) : null;
-    if (this.discard && this.webgl2) gl.enable(RASTERIZER_DISCARD);
+    // (its timer queries, WebGL 1's extension adapted — perf-page.js timerContext; none: reported unavailable)
+    try { this.gpu = new GpuProbe(timerContext(gl), { wrapGl: false, now: this.now }); } catch { this.gpu = null; }
+    if (this.discard && W2 && gl instanceof W2) gl.enable(RASTERIZER_DISCARD);
   }
-  /** An animation frame (the first callback in it: once per browser frame). */
-  tick(t) {
-    if (t === this.tickT) return;
-    const now = this.now(), h = this.hooks;
-    // (the browser frame that ended: the engine's work in it)
-    if (this.tickAt !== null) this.work += this.lastAsk > this.tickAt ? this.lastAsk - this.tickAt : 0;
-    this.tickT = t; this.tickAt = now; this.lastAsk = 0; this.browserFrames++;
-    if (this.draws === this.drawsAt) return;
-    // the engine drew since the last frame: a frame shown now
-    this.drawsAt = this.draws; this.frames++; this.framesDraws = this.draws;
-    let work = this.work; this.work = 0;
-    const wm = safe(() => h?.workMs?.()); if (typeof wm === 'number') { if (this.lastWorkMs !== null) work = wm - this.lastWorkMs; this.lastWorkMs = wm; }
-    const io = safe(() => h?.data?.()?.waitMs); let ioMs = 0; if (typeof io === 'number') { if (this.lastIo !== null) ioMs = Math.max(0, io - this.lastIo); this.lastIo = io; }
-    if (this.lastShown !== null) {
-      const dt = t - this.lastShown, cats = new Float64Array(N_CATS);
-      const w = Math.max(0, Math.min(work, dt)), wio = Math.min(ioMs, w);
-      cats[C.guest] = w - wio; cats[C.ioWait] = wio; cats[C.wait] = Math.max(0, dt - w);
-      this.fs.add(dt, cats, t);
-    }
-    this.lastShown = t;
-    try { this.gpu?.frame(); } catch { this.gpu = null; } // (a lost context: no more timing)
+  /**
+   * A frame shown (after the first): to the frame accounting — `guest` the engine's work (the port's own count when it
+   * has one, hooks.workMs), `ioWait` the data waits within it, `wait` the rest.
+   */
+  frame(dt, work, dataMs, t) {
+    let w = work ?? 0;
+    const wm = safe(() => this.hooks?.workMs?.()); if (typeof wm === 'number') { if (this.lastWorkMs !== null) w = wm - this.lastWorkMs; this.lastWorkMs = wm; }
+    const cats = new Float64Array(N_CATS), ww = Math.max(0, Math.min(w, dt)), wio = Math.min(dataMs, ww);
+    cats[C.guest] = ww - wio; cats[C.ioWait] = wio; cats[C.wait] = Math.max(0, dt - ww);
+    this.fs.add(dt, cats, t); // (t: the browser frame that ends it)
   }
   /** The stats message now (the Win32 worker's shape: what the scenario player and PerfWindow read). */
   emit() {
@@ -106,7 +96,7 @@ export class PageMeter {
     const m = {
       seq: ++this.seq, dt, fps: frames / dt, acct: this.fs.takeInterval(),
       d3d: { frames: this.frames, draws: this.framesDraws, gpu: g ? { ...g, hist: Array.from(g.hist) } : { state: this.gl ? 'unavailable' : 'none' } },
-      ...(data ? { data } : {}), browserFrames: this.browserFrames,
+      ...(data ? { data } : {}),
     };
     this.last = m;
     this.onStats?.(m);

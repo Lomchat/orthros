@@ -156,6 +156,20 @@ test('page meter: a frame is a browser frame the engine drew in; its work, its d
   assert.ok(sum.frames > 0 && sum.drawsPerFrame === 5, JSON.stringify(sum));
 });
 
+test('page meter: a port\'s own count of its engine\'s work (hooks.workMs) wins over the animation frames\' measure', () => {
+  const W = fakeWindow();
+  let work = 0;
+  W.orthrosBenchHooks = { workMs: () => work };
+  const m = new PageMeter(W); m.install();
+  const gl = new W.WebGL2RenderingContext();
+  const engine = () => { W.requestAnimationFrame(engine); };
+  W.requestAnimationFrame(engine);
+  let t = 0;
+  for (let i = 0; i < 40; i++) { t += 1000 / 60; W.frame(t, () => { gl.drawArrays(); work += 7; W.now = t + 12; W.requestAnimationFrame(() => {}); }); }
+  const ph = compactPhase(m.phase('x'));
+  assert.ok(Math.abs(ph.work.p50 - 7) < 0.2, JSON.stringify(ph.work));
+});
+
 test('page meter: rasterizer discarded on the engine\'s context, its disable ignored; installed once a window', () => {
   const W = fakeWindow();
   const m = new PageMeter(W, { discard: true }); assert.equal(m.install(), true);
