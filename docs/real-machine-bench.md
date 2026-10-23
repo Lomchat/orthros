@@ -30,6 +30,7 @@ the results go to the server, and the summary panel also has a **Copy the result
 | BFME II | <https://orthros.chalco.website/?bench=bfme2-skirmish> | the intro skipped, the main menu, a skirmish started (the profile name dialog filled), its first minute | ~4 min |
 | BFME II 1.06 | <https://orthros.chalco.website/?bench=bfme2-skirmish&manifest=bfme2-106> | the same on version 1.06, started by its launcher `lotrbfme2.exe` (docs/processes.md; the manifest's exe once switched) | ~4 min |
 | Vice City | <https://orthros.chalco.website/?bench=vicecity-drive> | the intro skipped, the main menu, a new game started, a drive of ~25 s | ~2 min |
+| Vice City (short) | <https://orthros.chalco.website/?bench=vc-quick> | the intro movies skipped (Escape, Enter, a click), the main menu, a new game, the cutscene skipped, ~45 s of play (on foot: the car is not entered yet) | ~3 min |
 | Rise of the Witch-king 2.02 | <https://orthros.chalco.website/?bench=rotwk-skirmish> (2.01: `&manifest=rotwk-201`) | the main menu, a skirmish started, its first minute with a few orders | ~4 min |
 | BFME | <https://orthros.chalco.website/?bench=bfme1-skirmish> (1.03: `&manifest=bfme1-103`) | the main menu, a skirmish started, its first minute | ~6 min |
 | BFME 1.08, menu | <https://orthros.chalco.website/?bench=bfme1-108-menu&gameLang=fr> | the intro skipped, one minute in the main menu, 30 s in the Solo play menu | ~3 min |

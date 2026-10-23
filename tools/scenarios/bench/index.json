@@ -9,6 +9,7 @@
   { "name": "bfme1-108-menu", "title": "BFME 1.08: the main menu", "manifests": ["bfme1-108"], "file": "bfme1-108-menu.txt", "coords": [800, 600], "minutes": 3, "maxSeconds": 1500 },
   { "name": "bfme1-108-quick", "title": "BFME 1.08: menu, skirmish start, two minutes of play", "manifests": ["bfme1-108"], "file": "bfme1-108-quick.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1500 },
   { "name": "bfme1-108-skirmish", "title": "BFME 1.08: menu, skirmish start, ten minutes of play", "manifests": ["bfme1-108"], "file": "bfme1-108-skirmish.txt", "coords": [800, 600], "minutes": 15, "maxSeconds": 2700 },
-  { "name": "vicecity-drive", "title": "Vice City: menu, new game, a drive", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vicecity-drive.txt", "coords": [640, 480], "minutes": 2, "maxSeconds": 2400 }
+  { "name": "vicecity-drive", "title": "Vice City: menu, new game, a drive", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vicecity-drive.txt", "coords": [640, 480], "minutes": 2, "maxSeconds": 2400 },
+  { "name": "vc-quick", "title": "Vice City: menu, new game, ~45 s of play", "manifests": ["vice-city-1.1-elamigos-2014"], "file": "vc-quick.txt", "coords": [640, 480], "minutes": 3, "maxSeconds": 1200 }
  ]
 }

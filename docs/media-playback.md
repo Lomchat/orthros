@@ -157,3 +157,6 @@ graph, the layer disappears) and the game goes on to its main menu.
   /srv/orthros/data_games --log video,stdout --audio`; its output lines match the Node test's (real time: the MPEG movie
   ends after 1177-1201 ms, notifications, frames, from / to).
 - Vice City: `tools/scenarios/vicecity-movies.txt` (shots during the movies, Enter then a click to skip them).
+  Without any input both movies play to their end (39.5 + 82.1 s) and the main menu follows: first Direct3D frame
+  at 124 s in headless Chromium, menu at 128 s in Node (2026-10-23; a run shorter than that only seems stuck in the
+  intro). `tools/scenarios/vicecity-play.txt` skips them as a player does (Escape, Enter, a click) and plays ~2 min.

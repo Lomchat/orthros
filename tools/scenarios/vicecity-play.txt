@@ -1,0 +1,165 @@
+# Vice City (Win32 runtime): the intro movies skipped as a player does (Escape, Enter, a click), the main menu, a new
+# game started, ~2 min of play: the opening cutscene skipped, F to enter the car parked beside Tommy (not taken yet:
+# see below), the keys of a drive of ~70 s (three times the drive of vicecity-drive.txt), F again and a walk of ~20 s. Coordinates for 640x480 (the display a first launch uses).
+# Phases: start (launch to the menu: downloads, movies skipped), menu, load (new game to the first 3D frames),
+# cutscene (with the walk to the car), drive, walk, end.
+# Without input the two movies (39.5 + 82 s) play to their end and the menu follows (first Direct3D frame ~124 s): the
+# movies draw no Direct3D frame, so their skips are at absolute times (each one harmless if the movie already ended).
+# Keys: W 87 (accelerate / walk), S 83 (brake, reverse / walk back), A 65 / D 68 (steer, turn), F 70 (enter / leave a
+# vehicle), Enter 13 (skip a cutscene), Escape 27. Vehicle and driving keys are held (F 0.2 s): the game polls their
+# state once a frame, a press and its release in the same instant are not seen (as on Windows). The cutscene's skip is
+# Enter held 1.5 s then 1 s again (a short press fell in a loading hitch of the cutscene's first seconds and the whole
+# ~2 min cutscene played; on an overloaded machine it still may).
+6:key:27
+9:key:13
+12:click:10,10
+15:click:10,10
++2:click:10,10
++5:click:10,10
++8:waitframe:5,40
+0:mark:menu
+1:shot
+1:move:320,192
+2:click:320,192
+3:move:320,177
+4:click:320,177
+4:mark:load
+7:click:320,177
+8:waitframe:150,100000
+0:mark:cutscene
+1:shot
+3:keydown:13
+4.5:keyup:13
+7:keydown:13
+8:keyup:13
+8:shot
+16:shot
+# (control from ~23 s: Tommy on foot, a parked car beside him. NOT YET ACHIEVED (2026-10-23, 4 browser runs): F at
+# 22 / 24 s, instant or held 0.2 s, never put him in that car (once, at 30 s after a walk, he took a passing scooter);
+# the drive keys then run Tommy on foot along the street into a wall — the play phases measure on-foot play. Open
+# question: is F seen by the game then (trace GetDeviceState around it), or is that car not enterable?)
+21:shot
+24:keydown:70
+24.3:keyup:70
+25:shot
+31:mark:drive
+31:keydown:87
+32.2:keyup:87
+33.2:keydown:83
+33.2:keydown:65
+34.1:keyup:83
+34.1:keyup:65
+34.4:keydown:87
+34.4:keydown:68
+35:keyup:68
+36:keyup:87
+36.5:keydown:87
+36.5:keydown:65
+37:shot
+37.2:keyup:65
+38.7:keyup:87
+39:keydown:87
+39:keydown:65
+39.35:keyup:65
+42.35:keyup:87
+42.5:keydown:83
+43:shot
+43.1:keyup:83
+43.1:keydown:87
+43.1:keydown:68
+43.8:keyup:68
+46.8:keyup:87
+47:keydown:65
+47:keydown:87
+47.6:keyup:65
+49:shot
+51:keydown:68
+51.5:keyup:68
+53:keyup:87
+53:keydown:83
+54.5:keyup:83
+55:keydown:87
+56.2:keyup:87
+57.2:keydown:83
+57.2:keydown:65
+58.1:keyup:83
+58.1:keyup:65
+58.4:keydown:87
+58.4:keydown:68
+59:keyup:68
+60:keyup:87
+60.5:keydown:87
+60.5:keydown:65
+61:shot
+61.2:keyup:65
+62.7:keyup:87
+63:keydown:87
+63:keydown:65
+63.35:keyup:65
+66.35:keyup:87
+66.5:keydown:83
+67:shot
+67.1:keyup:83
+67.1:keydown:87
+67.1:keydown:68
+67.8:keyup:68
+70.8:keyup:87
+71:keydown:65
+71:keydown:87
+71.6:keyup:65
+73:shot
+75:keydown:68
+75.5:keyup:68
+77:keyup:87
+77:keydown:83
+78.5:keyup:83
+79:keydown:87
+80.2:keyup:87
+81.2:keydown:83
+81.2:keydown:65
+82.1:keyup:83
+82.1:keyup:65
+82.4:keydown:87
+82.4:keydown:68
+83:keyup:68
+84:keyup:87
+84.5:keydown:87
+84.5:keydown:65
+85:shot
+85.2:keyup:65
+86.7:keyup:87
+87:keydown:87
+87:keydown:65
+87.35:keyup:65
+90.35:keyup:87
+90.5:keydown:83
+91:shot
+91.1:keyup:83
+91.1:keydown:87
+91.1:keydown:68
+91.8:keyup:68
+94.8:keyup:87
+95:keydown:65
+95:keydown:87
+95.6:keyup:65
+97:shot
+99:keydown:68
+99.5:keyup:68
+101:keyup:87
+101:keydown:83
+102.5:keyup:83
+# out of the car, a walk
+103:mark:walk
+103:keydown:70
+103.2:keyup:70
+106:shot
+107:keydown:87
+111:keydown:65
+111.6:keyup:65
+114:shot
+116:keydown:68
+116.5:keyup:68
+120:shot
+123:keyup:87
+124:shot
+125:mark:end

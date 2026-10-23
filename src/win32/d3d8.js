@@ -11,7 +11,10 @@ import { makeDC } from './gdi32.js';
 import { PROGRAM_RS, PROGRAM_TSS } from '../gfx/d3d8-shaders.js';
 import { StateTable } from './state-table.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
+import { PARK } from '../core/sched.js';
 import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, SHADOW_FVF, SHADOW_LIGHTON, SHADOW_LIGHT, SHADOW_MATERIAL, SHADOW_LIGHTS, LIGHT_WORDS, MATERIAL_WORDS, SURF_DESC_BYTES, SHADOW_OWNER } from '../cpu/jit/runtime.js';
+
+const NEVER = () => false; // (Present's pacing wait: its timeout alone wakes it)
 
 export const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DERR_NOTAVAILABLE = 0x8876086a, D3DERR_OUTOFVIDEOMEMORY = 0x8876017c, D3DERR_DEVICELOST = 0x88760868, D3DERR_DEVICENOTRESET = 0x88760869, D3DERR_NOTFOUND = 0x88760866, D3DERR_MOREDATA = 0x88760867, D3DERR_INVALIDDEVICE = 0x8876086b, D3DERR_UNSUPPORTEDTEXTUREFILTER = 0x88760876, D3DERR_WRONGTEXTUREFORMAT = 0x88760872;
 const IID_IDirect3D8 = '1dd9e8da-1c77-4d40-b0cf-98fefdff9512', IID_IDirect3DDevice8 = '7385e5df-8fe8-41d5-86b6-d7b48547b6cf', IID_IDirect3DResource8 = '1b36bb7b-09b7-410a-b445-7d1430d7b33f', IID_IDirect3DBaseTexture8 = 'b4211cfa-51b9-4a9f-ab78-db99b2bb678e', IID_IDirect3DTexture8 = 'e4cdd575-2866-4f01-b12e-7eece1ec9358', IID_IDirect3DCubeTexture8 = '3ee5b968-2aca-4c34-8bb5-7e0c3d19b750', IID_IDirect3DVolumeTexture8 = '4b8aaafa-140f-42ba-9131-597eafaa2ead', IID_IDirect3DVertexBuffer8 = '8aeeeac7-05f9-44d4-b591-000b0df1cb95', IID_IDirect3DIndexBuffer8 = '0e689c9a-053d-44a0-9d92-db0e3d750f86', IID_IDirect3DSurface8 = 'b96eebca-b326-4ea5-882f-2ff5bae021dd', IID_IDirect3DVolume8 = 'bd7349f5-14f1-42e4-9c79-972380db40c0', IID_IDirect3DSwapChain8 = '928c088b-76b9-4c6b-a536-a590853876cd';
@@ -464,6 +467,7 @@ export function d3dCore(vm) {
       this.iids = [IID_IDirect3DDevice8];
       this.createBackBuffers(c);
       this.lost = 0; // fullscreen device: 1 lost (application deactivated), 2 not reset yet (reactivated), see onActivate
+      this.vsyncAt = -1e9; this.vsyncTid = 0; // (Present's pacing: the last refresh slot used, the thread parked in it)
       (vm.d3dDevices ??= new Set()).add(this);
       this.gfx = vm.host?.gfx?.createDevice?.(this) ?? null;
       if (vm.gammaRamp) this.gfx?.setGamma?.(vm.gammaRamp); // SetDeviceGammaRamp before the device existed
@@ -619,7 +623,20 @@ export function d3dCore(vm) {
       vm.log('gfx', `d3d8: Reset ${this.pp.width}x${this.pp.height} fmt ${this.pp.format} ${this.pp.windowed ? 'windowed' : 'fullscreen'} swap ${this.pp.swap} interval 0x${(this.pp.interval >>> 0).toString(16)}`);
       return D3D_OK;
     }
+    /**
+     * Display refreshes a Present waits for (D3DPRESENT_INTERVAL_*): IMMEDIATE none; DEFAULT and ONE one, TWO / THREE /
+     * FOUR more. Direct3D 8 applies the interval to a fullscreen device only (a windowed one must give DEFAULT and
+     * waits only with D3DSWAPEFFECT_COPY_VSYNC); Direct3D 9 to both.
+     */
+    vsyncRefreshes() {
+      const iv = this.pp.interval >>> 0;
+      if (iv === 0x80000000) return 0;
+      if (!this.api9 && this.pp.windowed) return this.pp.swap === 4 ? 1 : 0;
+      return iv === 2 ? 2 : iv === 4 ? 3 : iv === 8 ? 4 : 1;
+    }
     Present(c) {
+      // (the call re-executed after its pacing wait below: the frame was presented before the wait)
+      if (this.vsyncTid === c.thread.id && c.thread.resuming) { this.vsyncTid = 0; return D3D_OK; }
       if (this.lost) return D3DERR_DEVICELOST;
       this.frames++;
       this.lastPresent = vm.clock.now(); vm.presentThread = c.thread; // (frame accounting: the thread whose waits delay the frames)
@@ -628,8 +645,19 @@ export function d3dCore(vm) {
         if (this.gfx) this.gfx.present(this, c.arg(1), c.arg(2), c.arg(3));
         else vm.host?.onPresent?.(this);
         if (vm.host?.frameHook) vm.host.frameHook(this);
-        if (this.pp.interval !== 0x80000000 && this.pp.interval !== 0 && vm.host?.vsyncWait) vm.host.vsyncWait();
       } finally { acct.leave(ap); }
+      // Presentation interval: a Present that waits for the vertical retrace shows at most one frame per refresh (60 Hz,
+      // or a fullscreen mode's rate) — a game drawing a cheap screen (a menu) without a frame limiter of its own runs at
+      // the display's rate on Windows, not at hundreds of frames per second burning the player's CPU and GPU. The wait
+      // is a floor on the time since the previous present's slot, not a fixed grid: a frame that took longer than a
+      // refresh is not held to the next one (a 30 fps limiter keeps its 33 ms frames). ?dbg=ORTHROS_VSYNC=0: no wait.
+      const n = globalThis.ORTHROS_VSYNC === '0' || globalThis.ORTHROS_VSYNC === 0 ? 0 : this.vsyncRefreshes();
+      if (n) {
+        const now = vm.clock.now(), period = 1000 / (!this.pp.windowed && this.pp.refresh >= 30 ? this.pp.refresh : 60);
+        const due = this.vsyncAt + n * period;
+        this.vsyncAt = now >= due ? now : due;
+        if (now < due && vm.sched && vm.sched.park(c.thread, NEVER, due - now, 'vsync') === PARK) { this.vsyncTid = c.thread.id; return PARK; }
+      }
       // back buffer surfaces keep their identity across Present (GetBackBuffer(0) stays the render target);
       // a flipping chain rotates the contents, which the backend does on its side
       return D3D_OK;
