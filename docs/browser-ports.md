@@ -164,7 +164,10 @@ starts at once.
 - `/api/udp/<manifest>` (WebSocket): the multiplayer relay. Each player gets one UDP socket to the version's dedicated
   server on `127.0.0.1:<multiplayer.port>`, never another destination; same-origin pages only, 64 players at once,
   idle connections closed after two minutes. With `?rooms` (the page's): one socket per room, each message carrying
-  its room in its first byte (255: every room — the game's LAN search).
+  its room in its first byte (255: every room — the game's LAN search). A page that goes (tab closed, reload, back to
+  the games) first runs the engine's `disconnect` while the relay is open, so the server drops the player at once
+  (2026-10-23): before, it kept it until its timeout (a minute), and the same account back meanwhile played as
+  `name (1)` beside its still body — what made the multiplayer check's last step miss player one's score.
 - `/api/rooms/<manifest>`: the lobby. GET: the version's games (its permanent server and the rooms players created:
   name, map, players with the bots, humans, size, bots), the maps and the limits, from its server manager, with the
   manifest's options (without their commands) and map groups (`multiplayer.mapGroups`). POST
@@ -550,6 +553,13 @@ tools/with-browser-slot.sh node tools/goldsrc/check.mjs counter-strike-hl-arsena
 
 Each page has 180 s to start its game (engine, account saves, files); `--boot-timeout <s>` gives it more (a cold
 cache, a slow link).
+The multiplayer check (2026-10-23) reads the players from the engine's `status` lines (`tools/goldsrc/status-lines.mjs`:
+a `name (1)` is still that player), clicks the game as a mouse does at its middle once nothing covers it (Playwright's
+element click never "lands" once the game captures the mouse at its pointerdown: the next events get the capture's
+coordinates — the header), frees the other player's mouse from its page before switching pages (else the browser
+frees it, escape.js sends that page's game an Escape and its menu opens; `escapes` in the evidence: 0), and closes its
+pages at the end (each leaves the server). On a failure: `client-<i>-end.json` / `.png`, each page's last lines.
+Checked twice in a row on `counter-strike-hl-arsenal-en` and `counter-strike-rebuilt-en`.
 
 ## Same origin
 

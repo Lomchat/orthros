@@ -551,4 +551,8 @@ try {
 document.addEventListener('visibilitychange', () => { if (document.hidden && session.state === 'running') save().then(() => cloud?.push()).catch(log); });
 window.addEventListener('pagehide', () => {
   if (session.state === 'running') endReport();
+  // (the game's server told the player left, through the relay before it closes — its socket sends what it queued
+  // first: otherwise the server keeps the player until its timeout, a minute, and the same account coming back meanwhile
+  // plays as "name (1)" beside its own still body)
+  if (session.state === 'running' && relay?.socket?.readyState === WebSocket.OPEN) { try { engine.Cmd_ExecuteString('disconnect'); } catch (error) { log(error); } }
   stopped = true; if (timer) clearInterval(timer); relay?.close(); gameData?.close(); });

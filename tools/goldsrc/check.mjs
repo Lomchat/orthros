@@ -18,6 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { chromium } from 'playwright';
 import { rendererOf } from '../port-perf.mjs';
+import { lastStatus, scoreOf } from './status-lines.mjs';
 
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
 const [name, mode] = args;
@@ -54,7 +55,30 @@ const nicknames = [];
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const clients = [], keys = arg('--join-keys');
 const enter = (page) => page.evaluate((command) => portSession.command(command), mode === 'solo' ? `map ${manifest.goldsrc.solo.map}` : 'connect 127.0.0.1:8080');
-const focusGame = async (page) => { await page.bringToFront(); await page.evaluate(() => document.exitPointerLock()); await page.locator('#canvas').click(); };
+/** A page's answer, or null after `ms` (a page whose main thread is held answers nothing). */
+const within = (promise, ms) => Promise.race([promise.catch(() => null), new Promise((resolve) => setTimeout(resolve, ms, null))]);
+const focusGame = async (page) => {
+  // (the other players' mice freed by their pages first: a capture the browser ends — this page brought to the front —
+  // is an Escape kept from the game, which escape.js sends it, and its menu opens; a headless page still has the focus)
+  for (const other of clients) if (other.page && other.page !== page) await within(other.page.evaluate(() => document.exitPointerLock()), 5000);
+  await page.bringToFront();
+  // (the mouse released first, its release waited for: the click then starts from a free mouse, as a player's first one)
+  const lock = await within(page.evaluate(() => new Promise((resolve) => {
+    const before = document.pointerLockElement?.id ?? null, done = (how) => resolve({ before, how, after: document.pointerLockElement?.id ?? null });
+    if (!before) { done('free'); return; }
+    document.addEventListener('pointerlockchange', () => done('released'), { once: true }); setTimeout(() => done('timeout'), 3000); document.exitPointerLock();
+  })), 5000);
+  if (lock?.before) console.log('MOUSE', clients.findIndex((c) => c.page === page), JSON.stringify(lock));
+  // (the click as the player's mouse makes it, at the game's middle once nothing else is there: not Playwright's
+  // element click, which checks each of the click's events where it happens — and the game captures the mouse at its
+  // pointerdown, after which the browser gives the next ones the capture's coordinates, so the click never "lands")
+  const at = await page.evaluate(() => {
+    const c = document.querySelector('#canvas').getBoundingClientRect(), x = c.x + c.width / 2, y = c.y + c.height / 2, e = document.elementFromPoint(x, y);
+    return { x, y, over: e?.id === 'canvas' ? null : e && `${e.tagName}#${e.id}.${e.className}` };
+  });
+  if (at.over) throw new Error(`The game is covered: ${at.over}`);
+  await page.mouse.click(at.x, at.y);
+};
 const lastPos = (page) => page.evaluate(() => portSession.logs.filter((l) => /\borg \(/.test(l)).at(-1)?.match(/org \(([^)]+)\)/)?.[1]);
 const heartbeat = setInterval(async () => {
   for (const { page } of clients) try { console.log('PROGRESS', await page.evaluate(() => ({ state: portSession?.state, status: document.querySelector('#status')?.textContent, draws: renderProbe?.draws }))); } catch { /* closing */ }
@@ -123,14 +147,10 @@ try {
       console.log('MOVEMENT', JSON.stringify({ before, after }));
     }
     if (arg('--min-players')) {
-      // (the players status lists: a line per client after its "# score ping ..." header, bots included)
+      // (the players status lists: a line per client after its header, bots included — status-lines.mjs)
       const page = clients[0].page;
       await page.evaluate(() => portSession.command('status')); await page.waitForTimeout(1500);
-      const players = await page.evaluate(() => {
-        const logs = portSession.logs, head = logs.findLastIndex((l) => l.includes('# score'));
-        let n = 0; for (let i = head + 1; head >= 0 && i < logs.length && /^\[[^\]]*\]\s+\d+\s+-?\d+\s/.test(logs[i]); i++) n++;
-        return n;
-      });
+      const players = lastStatus(await page.evaluate(() => portSession.logs)).length;
       if (players < Number(arg('--min-players'))) throw new Error(`${players} players, fewer than ${arg('--min-players')}`);
       console.log('PLAYERS', players);
     }
@@ -172,22 +192,34 @@ try {
   }
   for (let i = 0; i < clients.length; i++) {
     const page = clients[i].page;
-    const evidence = await page.evaluate(() => ({ state: portSession.state, logs: portSession.logs.slice(-100), draws: renderProbe.draws, audio: renderProbe.audioContexts.map((c) => c.state), saveAt: portSession.lastSaveAt ?? null }));
+    const evidence = await page.evaluate(() => ({ state: portSession.state, logs: portSession.logs.slice(-100), draws: renderProbe.draws, audio: renderProbe.audioContexts.map((c) => c.state), saveAt: portSession.lastSaveAt ?? null, escapes: window.__orthrosEscape?.sent ?? null }));
     fs.writeFileSync(path.join(root, `client-${i}.json`), JSON.stringify(evidence, null, 2));
     await page.screenshot({ path: path.join(root, `client-${i}-final.png`) });
     if (!evidence.audio.includes('running')) throw new Error('Audio did not resume with user interaction');
-    console.log('EVIDENCE', i, JSON.stringify({ state: evidence.state, draws: evidence.draws, audio: evidence.audio }));
+    console.log('EVIDENCE', i, JSON.stringify({ state: evidence.state, draws: evidence.draws, audio: evidence.audio, escapes: evidence.escapes }));
   }
   if (mode === 'multiplayer') {
     await clients[0].page.evaluate(() => portSession.command('kill')); await clients[0].page.waitForTimeout(3000);
     for (const { page } of clients) {
       await page.evaluate(() => portSession.command('status'));
-      await page.waitForFunction((n) => portSession.logs.some((l) => /\]\s+\d+\s+-1\s+/.test(l) && l.endsWith(n)), nicknames[0], { timeout: 10000 });
+      // (player one's latest status line: -1, its suicide — "name (1)" too, the name an earlier connection still held)
+      let score = null;
+      for (const until = Date.now() + 10000; Date.now() < until; await page.waitForTimeout(500)) {
+        score = scoreOf(await page.evaluate(() => portSession.logs.slice(-200)), nicknames[0]);
+        if (score === -1) break;
+      }
+      if (score !== -1) throw new Error(`Player one's score after its death: ${score} (expected -1)`);
     }
     console.log('SYNCHRONIZATION', 'both players received the same score update after player one died');
   }
   console.log('PASSED', name, mode);
 } finally {
   clearInterval(heartbeat);
+  // (each page's last console lines, whatever the outcome: what a failed step saw)
+  for (let i = 0; i < clients.length; i++) {
+    try { fs.writeFileSync(path.join(root, `client-${i}-end.json`), JSON.stringify(await within(clients[i].page.evaluate(() => portSession.logs.slice(-150)), 10000), null, 1)); await clients[i].page.screenshot({ path: path.join(root, `client-${i}-end.png`), timeout: 10000 }); } catch { /* closed */ }
+  }
+  // (each page closed as a player's tab is — its pagehide leaves the game's server — before the browser goes)
+  for (const { page } of clients) if (page) await within(page.close(), 10000);
   await browser.close();
 }

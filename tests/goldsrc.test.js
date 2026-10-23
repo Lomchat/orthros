@@ -13,6 +13,7 @@ import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { linkGameLayers, parseServerInfo, roomName, roomOptionCommands, roomPort, roomRequest, roomSlots } from '../src/host/goldsrc.js';
 import { createServer } from '../src/host/server.js';
 import { groupMaps } from '../src/ports/goldsrc/lobby.js';
+import { lastStatus, playerLine, scoreOf } from '../tools/goldsrc/status-lines.mjs';
 
 const ENGINE = 'engine-test-1';
 const goldsrc = (over = {}) => ({ engine: ENGINE, gameDir: 'valve', modules: { client: 'mod/client.wasm', server: 'mod/server.wasm' }, solo: { map: 'start' }, ...over });
@@ -387,4 +388,25 @@ test('page: the renderer settings a player gets — no glGetError checks unless 
   assert.match(start, /Cmd_ExecuteString\('gl_vbo ' \+ \(params\.get\('vbo'\) === '0' \? '0' : '1'\)\)/);
   // (before the manifest's own commands: a version can still turn either off)
   assert.ok(start.indexOf('gl_vbo') < start.indexOf('solo?.commands'));
+});
+
+test('page: leaving the page leaves the game server first — through the relay, before it closes', () => {
+  const src = fs.readFileSync(new URL('../src/ports/goldsrc/play.js', import.meta.url), 'utf8');
+  const hide = src.slice(src.indexOf("window.addEventListener('pagehide'"));
+  const leave = hide.indexOf("Cmd_ExecuteString('disconnect')"), close = hide.indexOf('relay?.close()');
+  assert.ok(leave > 0 && close > leave, 'disconnect sent before the relay closes');
+  assert.match(hide.slice(0, leave), /relay\?\.socket\?\.readyState === WebSocket\.OPEN/);
+});
+
+test("check: the players of the engine's status — a name the server already had is still that player's", () => {
+  const logs = ['[07:35:04] hostname: Orthros\nversion: 49/0.21 4212', '[07:35:04] map:\tde_dust at 1 x, 2 y, 3 z\nplayers: 3 active (16 max)\n# score ping dev  playtime name',
+    '[07:35:04]  2    -1   70   mj 72.2119 qa-check-1-fgjvq (1)', '[07:35:04]  3     0   72   mj 45.6406 qa-check-2-0pzsa', '[07:35:04]  4    12    0  bot 9.5 [POD]Bot Two', '[07:35:05] org ( 1 2 3 )'];
+  assert.deepEqual(playerLine(logs[2]), { slot: 2, score: -1, name: 'qa-check-1-fgjvq', copy: 1 });
+  assert.equal(playerLine(logs[5]), null); assert.equal(playerLine('[07:35:04] qa-check-1-fgjvq (1) died'), null);
+  assert.deepEqual(lastStatus(logs).map((p) => p.name), ['qa-check-1-fgjvq', 'qa-check-2-0pzsa', '[POD]Bot Two']);
+  assert.equal(scoreOf(logs, 'qa-check-1-fgjvq'), -1); assert.equal(scoreOf(logs, 'qa-check-2-0pzsa'), 0);
+  assert.equal(scoreOf(logs, 'qa-check-1'), null); // (another name's prefix is not that player)
+  // (the latest status counts: an earlier one's score is replaced)
+  assert.equal(scoreOf([...logs, '# score ping dev  playtime name', '[07:36:00]  2     3   70   mj 90.1 qa-check-1-fgjvq (1)'], 'qa-check-1-fgjvq'), 3);
+  assert.deepEqual(lastStatus(['no status yet']), []);
 });
