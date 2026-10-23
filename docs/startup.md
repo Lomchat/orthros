@@ -232,7 +232,8 @@ The live baseline's first launches (`--suite all`, fresh browser) waited 1.5 / 4
 load, loading screen and play, BFME II 0.8 / 2.9 s in its load and loading screen. Every read that waited was missing
 from the learned order (`?netlog=1`: learned rank `-` for all of them): no session of either version had loaded a map
 with its order as it was. BFME II's map load had been learned in its mask-less entries, which the prune of 2026-10-21
-(`tools/learn-prune.mjs --write`) dropped (its backup holds 225 of the 230 blocks the menu-only run below waited for);
+(`tools/learn-prune.mjs --write`) dropped (its backup holds 225 of the 230 blocks the menu-only run below waited for;
+the tool now drops a mask-less entry only when proven stale, docs/slow-network.md "Mask-less learned orders");
 RotWK 2.02's order (and BFME II 1.06's, which RotWK mounts) had only been taken to the menu (the snapshot jobs' and
 launch sessions). The baseline session itself taught them: a fresh browser on a copy of the live learn directory of
 the same morning (the baseline and one more session learned) waited 0 / 17 / 31 ms (RotWK) and 14 / 73 / 230 ms

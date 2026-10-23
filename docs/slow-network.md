@@ -527,10 +527,27 @@ Measured with headless Chromium on a local server (Playwright, every response's 
   `<learn>/../covers`; `?full` the image itself; without ffmpeg the covers go as they are): the home's nine covers
   1737 → 388 KB.
 - **Mask-less learned orders**: `tools/learn-prune.mjs <learn dir>` lists each order's mask-less entries (learned
-  before masks: whole blocks — a thin link's learned pass skips them, a between link fetches them whole) and, with
-  `--write`, drops them from the orders that have enough masked entries (a backup kept; the server stopped meanwhile:
-  it writes its orders back). Live orders: bfme-vanilla 663 of 698 entries (663 MB of whole blocks, 18 MB masked),
-  bfme2 636 of 860 (76 MB masked), none elsewhere.
+  before masks: whole blocks — a thin link's learned pass skips them, a between link fetches them whole) and what each
+  of its two rules would drop; a dry run unless `--write` (a backup kept; the server stopped meanwhile: it writes its
+  orders back; `--list`: each entry's verdict). A mask-less entry is not "a block no recent session read": it is also
+  the only record of a phase no recent session reached — the first version of the tool dropped every mask-less entry
+  of an order with ≥ 50 masked ones, and the prune of 2026-10-21 took BFME II's map load out of its order
+  (docs/startup.md "Why RotWK 2.02 and BFME II waited"; that flag, `--min-masked`, is now refused). An entry goes only
+  when proven stale:
+  - `masked-duplicate`: the same block (path case-insensitive, `\` = `/`) has a masked entry in the order — learned
+    again since masks exist (the dropped entry's earlier time goes with it; the masked one keeps its own).
+  - `passed-unread`: at least `--sessions N` (3) of the `--recent K` (10) latest sessions went through the entry's time
+    and phase without reading it — the session reached the entry's time, and entered one of its phases (`ph`) or, an
+    entry without phases, read half of the order's masked entries learned within `--window` ms (5000) of it, at least
+    `--min-neighbors` (3) of them: a phase no recent session reached has no masked neighbours, so it stays. It needs
+    per-session reads, `sessions-<manifest>.json` beside the order (`[{ id, reached, phases: [[phase, start]…], read:
+    ["path#block"…] }…]`, oldest first). The server keeps none on disk (its sessions' read sets are in memory only;
+    `phases-<manifest>.json` counts phase starts, not reads): without that file the rule refuses and drops nothing.
+
+  On a copy of the live orders (2026-10-23): only bfme-vanilla still has mask-less entries (663 of 698): none dropped
+  (no duplicates, rule 2 refused). The 2026-10-21 backup of bfme2's order (636 mask-less of 860): 114 entries
+  `masked-duplicate` (the same block learned again under another case, e.g. `lang/english.big#0` /
+  `lang/English.big#0`), 522 kept — where the first prune dropped all 636.
 
 ## What the page says
 
