@@ -511,6 +511,14 @@ tools/with-browser-slot.sh node tools/goldsrc/check.mjs half-life-original-en so
 tools/with-browser-slot.sh node tools/goldsrc/check.mjs counter-strike-hl-arsenal-en multiplayer --url https://orthros.chalco.website --join-keys "{n},1"
 ```
 
+The multiplayer check (2026-10-23) reads the players from the engine's `status` lines (`tools/goldsrc/status-lines.mjs`:
+a `name (1)` is still that player), clicks the game as a mouse does at its middle once nothing covers it (Playwright's
+element click never "lands" once the game captures the mouse at its pointerdown: the next events get the capture's
+coordinates — the header), frees the other player's mouse from its page before switching pages (else the browser
+frees it, escape.js sends that page's game an Escape and its menu opens; `escapes` in the evidence: 0), and closes its
+pages at the end (each leaves the server). On a failure: `client-<i>-end.json` / `.png`, each page's last lines.
+Checked twice in a row on `counter-strike-hl-arsenal-en` and `counter-strike-rebuilt-en`.
+
 ## Same origin
 
 The ports share the Win32 runtime's origin (the owner's choice): their engine code can read this origin's browser
