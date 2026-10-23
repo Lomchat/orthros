@@ -545,11 +545,12 @@ test('an engine that streams ahead (re3: ask, go on, poll) never shows a wait; o
   assert.deepEqual(seen.filter((n) => n > 0), [], 'no wait over smooth play');
   assert.equal(data.quiet(500), true, 'the game data quiet meanwhile');
   // (it needs a model now: it suspends until it is here — calls nothing)
-  const wait = data.ensure(img, 65536 * 8, 65536);
+  const before = data.snapshot().misses, wait = data.ensure(img, 65536 * 8, 65536);
   await until(() => Atomics.load(data.ctrl, 6) > 0, 'its wait counted', 3000);
   server.release(); await wait;
   await until(() => Atomics.load(data.ctrl, 6) === 0, 'over');
-  assert.ok(data.snapshot().stallMs >= 100, 'its time among the engine\'s waits');
+  assert.equal(data.snapshot().misses - before, 1, 'among the engine\'s waits: that one only');
+  assert.ok(data.snapshot().stallMs > 0);
 });
 
 test('a load made of many short waits (each read the engine suspends on, 60 ms) is a wait all along', async (t) => {
