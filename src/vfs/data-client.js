@@ -9,6 +9,11 @@
 // may say what its loads are for (prefer): 'light' — the far ring of a view that grows — or 'real'. A page whose engine
 // loads a file again in place once it is here (reloads: a texture made sharp while it is shown) reads the light copies
 // first on every link that is not fast, their files coming soon after them.
+// The reads the engine waits for, as the worker counts them for the page's indicator (data-worker.js ctrl[6]): a
+// synchronous read always (the page's thread is held); an asynchronous one (JSPI: `ensure`) once the engine has not
+// gone on since it asked for it for HOLD_MS — an engine that suspends until its bytes are here calls nothing meanwhile,
+// one that asked ahead and goes on (re3's streaming: a model, a sound not here yet shows a moment later) asks for more,
+// reads, or shows a frame (progress); one fetched in the background (readable) never.
 import { treeFile, LIGHT_DIR } from './game-tree.js';
 import { FAST_BPS } from './net-link.js';
 
@@ -43,6 +48,12 @@ const PER_FILE = 2 ** 21; // (a piece's key: file id × PER_FILE + piece)
 const LOAD_GAP_MS = 2000;
 /** The page's game data is quiet (GameData.quiet) after this long without a read waiting for the network. */
 export const QUIET_MS = 3000;
+/**
+ * An asynchronous read counts among the engine's waits once the engine has not gone on (progress) for this long since
+ * it asked for it: a game that streams ahead draws a frame every few tens of ms meanwhile; the indicator shows a wait of
+ * 1.5 s (data-meter-worker.js) — a wait shorter than this is not one the player sees.
+ */
+export const HOLD_MS = 250;
 
 /**
  * A load of a file that has a light copy reads the file itself (true) or its light copy (false): the file when it is
@@ -82,6 +93,10 @@ export class GameData {
     this.data = new Uint8Array(new SharedArrayBuffer(SPAN));
     this.cache = new Map(); this.held = 0; this.budget = o.cacheBytes ?? 256 << 20;
     this.files = new Map(); this.byId = []; this.gen = 0; this.used = []; this.asks = new Map(); this.nextAsk = 1;
+    /** the asynchronous reads under way the engine may wait for: id → { at (when the engine asked: asked()), held (told so) } */
+    this.pending = new Map();
+    /** how many times the engine went on (progress: it called the game data, or showed a frame) */
+    this.goes = 0;
     /** the files that have a light copy and are here whole (told by the worker): read themselves */
     this.realHere = new Set();
     /** those whose light copy is here whole (the file not): read light, the link fast or not */
@@ -118,6 +133,7 @@ export class GameData {
     });
     this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', lang: o.lang ?? null, bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
     this.timer = setInterval(() => { if (this.used.length) this.worker.postMessage({ used: this.used.splice(0) }); }, 2000);
+    this.holdTimer = setInterval(() => this.holdWatch(), 100);
     // (the page's loading indicator, src/host/web/data-meter.js, when it has one: these counters, read live)
     globalThis.orthrosDataMeter?.attach?.(this.ctrl.buffer);
     // (the link's rate as measured, kept for the next page: ctrl[8], KB/s)
@@ -248,8 +264,29 @@ export class GameData {
   /** Bytes a page kept elsewhere before ([{ name, path, at, bytes }]): into the browser's copy. */
   migrate(list) { this.worker.postMessage({ migrate: list }, [...new Set(list.map((e) => e.bytes.buffer))]); }
 
-  /** The engine's reads wait for the network now. */
+  /** The engine's reads wait for the network now (those it waits for: HOLD_MS). */
   get waiting() { return Atomics.load(this.ctrl, 6) > 0; }
+  /**
+   * The engine went on (a page tells each frame its engine shows; every call of the engine's into the game data says
+   * so too): the reads it asked for until now without waiting for them are not among its waits.
+   */
+  progress() { this.goes++; }
+  /**
+   * Every 100 ms: an asynchronous read the engine asked for HOLD_MS ago or more without going on since is one it waits
+   * for, told to the worker (`held`: [id, 1 | 0]); one it went on past is not (any more).
+   */
+  holdWatch(now = performance.now()) {
+    let told = null;
+    for (const [id, a] of this.pending) {
+      const held = this.holding(a.at, now);
+      if (held !== a.held) { a.held = held; (told ??= []).push([id, held ? 1 : 0]); }
+    }
+    if (told) this.worker.postMessage({ held: told });
+  }
+  /** The engine asks for bytes now: when ({ seq, t } — its progress, the time), for holding(). */
+  asked() { this.progress(); return { seq: this.goes, t: performance.now() }; }
+  /** The engine waits for what it asked for at `at` (asked()): it has not gone on since, for HOLD_MS. */
+  holding(at, now = performance.now()) { return this.goes === at.seq && now - at.t >= HOLD_MS; }
   /** The link is thin (measured below THIN_BPS, net-link.js). */
   get thin() { return Atomics.load(this.ctrl, 9) === 1; }
   /**
@@ -266,7 +303,7 @@ export class GameData {
   get received() { return Atomics.load(this.ctrl, 2); }
 
   /** The worker stopped (its pending reports sent first). */
-  close() { this.saveRate(); clearInterval(this.timer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
+  close() { this.saveRate(); clearInterval(this.timer); clearInterval(this.holdTimer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
 
   /** The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes }. */
   snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes }; }
@@ -305,6 +342,7 @@ export class GameData {
 
   /** Some of the bytes [position, position + length) of `h` are not in the page yet. */
   missing(h, position, length) {
+    this.progress();
     const v = this.pick(h, position);
     if (v !== h) return position < v.size && this.missing(v, position, Math.min(length, v.size - position));
     const end = Math.min(h.size, position + length);
@@ -314,6 +352,7 @@ export class GameData {
 
   /** The bytes [position, position + length) of `h` into the engine's `buffer` at `offset` (waiting when missing). */
   read(h, buffer, offset, length, position) {
+    this.progress();
     const end = Math.min(h.size, position + length);
     if (!(end > position)) return 0;
     const v = this.pick(h, position);
@@ -352,20 +391,29 @@ export class GameData {
 
   /**
    * The bytes [position, position + length) of `h` into the page, without holding it (an engine that waits: JSPI).
-   * `background`: nothing waits for them (readable()) — not counted among the engine's waits.
+   * `background`: nothing waits for them (readable()) — never counted among the engine's waits; else they are once the
+   * engine has not gone on since for HOLD_MS (holdWatch: an engine that asked ahead goes on).
    */
-  async ensure(h, position, length, background = false) {
+  ensure(h, position, length, background = false) { return this.fetchAsync(h, position, length, background, this.asked()); }
+
+  /** ensure(), the engine having asked `at` (asked()). */
+  async fetchAsync(h, position, length, background, at) {
     const v = this.pick(h, position);
-    if (v !== h) { if (position < v.size) await this.ensure(v, position, Math.min(length, v.size - position), background); return; }
+    if (v !== h) { if (position < v.size) await this.fetchAsync(v, position, Math.min(length, v.size - position), background, at); return; }
     const end = Math.min(h.size, position + length);
     for (let p = Math.floor(position / PIECE); p * PIECE < end;) {
       if (this.cache.has(h.id * PER_FILE + p)) { p++; continue; }
-      const id = this.nextAsk++, t0 = performance.now();
-      const bytes = await new Promise((resolve, reject) => {
-        this.asks.set(id, { resolve, reject });
-        this.worker.postMessage({ read: { id, ...this.whose(h), off: p * PIECE, len: end - p * PIECE, want: this.want(h, end - p * PIECE) } });
-      });
-      if (!background) { this.stats.misses++; this.stats.stallMs += performance.now() - t0; }
+      const id = this.nextAsk++, t0 = performance.now(), held = !background && this.holding(at, t0);
+      if (!background) this.pending.set(id, { at, held });
+      let bytes;
+      try {
+        bytes = await new Promise((resolve, reject) => {
+          this.asks.set(id, { resolve, reject });
+          this.worker.postMessage({ read: { id, ...this.whose(h), off: p * PIECE, len: end - p * PIECE, want: this.want(h, end - p * PIECE), held } });
+        });
+      } finally { this.pending.delete(id); }
+      // (the engine's waits: the reads it did not go on past — the time since it asked)
+      if (!background && this.goes === at.seq) { this.stats.misses++; this.stats.stallMs += performance.now() - t0; }
       this.keep(h, p, bytes);
       p = Math.floor((p * PIECE + Math.max(PIECE, bytes.length)) / PIECE);
     }

@@ -258,6 +258,7 @@ function giveMouse() {
 const perf = { frames: [], samples: [], started: 0 };
 function onFrame() {
   perfRecord?.shown();
+  gameData?.progress(); // (the engine went on: the reads it asked for ahead are not waits — data-client.js HOLD_MS)
   perf.frames.push(performance.now());
   if (perf.frames.length > 400) perf.frames.splice(0, perf.frames.length - 400);
   if (session.state === 'running' && ++perf.started === 10) hideLoader(); // (its first images: the game is shown)

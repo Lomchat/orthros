@@ -466,4 +466,82 @@ test('a block some session read before a phase began keeps its time, not the pha
   await new Promise((r) => setTimeout(r, 100)); await s.close();
   s = await start();
   assert.deepEqual(await (await fetch(s.base)).json(), list);
+
+/** `server` whose game file ranges wait until release(): a read waiting for the network as long as the test wants. */
+function gatedServer(server) {
+  let open = null; const gate = new Promise((r) => { open = r; });
+  return { ...server, release: open, fetch: async (url, init) => { if (String(url).includes('/gamez/')) await gate; return server.fetch(url, init); } };
+}
+
+test('the engine\'s waits count only the reads it waits for: a synchronous one, an asynchronous one the page says holds it', async (t) => {
+  const server = gatedServer(fakeServer({ 'a.img': bytes(1 << 20), 'b.img': bytes(1 << 20, 3), 'c.img': bytes(1 << 20, 5) }));
+  const w = await startWorker(t, server);
+  await w.until(() => Atomics.load(w.ctrl, 11) > 0, 'its counters');
+  // (asked ahead, the engine going on: waiting for the network, not counted)
+  w.handle({ read: { id: 1, name: 'v', path: 'a.img', off: 0, len: 65536, held: false } });
+  w.handle({ read: { id: 2, name: 'v', path: 'b.img', off: 0, len: 65536 } });
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(Atomics.load(w.ctrl, 6), 0, 'reads asked ahead are not waits');
+  assert.ok(Atomics.load(w.ctrl, 11) >= 200, 'nor do they make the game data busy');
+  // (the page says the engine waits for one now: counted; then that it went on: not any more)
+  w.handle({ held: [[1, 1]] });
+  await w.until(() => Atomics.load(w.ctrl, 6) === 1, 'the held read counted');
+  assert.equal(Atomics.load(w.ctrl, 11), 0);
+  w.handle({ held: [[1, 0], [77, 1]] });
+  await w.until(() => Atomics.load(w.ctrl, 6) === 0, 'not once the engine went on');
+  // (a synchronous read: the page's thread waits — counted at once)
+  w.handle({ gen: 5, name: 'v', path: 'c.img', off: 0, len: 65536 });
+  await w.until(() => Atomics.load(w.ctrl, 6) === 1, 'a synchronous read counted');
+  server.release();
+  await w.until(() => Atomics.load(w.ctrl, 0) === 5 && w.out.filter((m) => m.id).length === 2, 'all answered');
+  await w.until(() => Atomics.load(w.ctrl, 6) === 0, 'nothing waits');
+});
+
+test('the page tells which of the engine\'s asynchronous reads hold it: not the ones it asked ahead and went on past', async () => {
+  const told = [], fake = { onmessage: null, postMessage: (m) => told.push(m), terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    clearInterval(data.holdTimer); // (holdWatch driven by the test's clock)
+    data.trees = { v: { dirs: {}, files: { 'a.img': { size: 1 << 20 }, 'b.wav': { size: 1000 } } } };
+    const h = data.file('v', 'a.img'), s = data.file('v', 'b.wav');
+    const reads = () => told.filter((m) => m.read).map((m) => m.read), held = () => told.filter((m) => m.held).flatMap((m) => m.held);
+    // (asked ahead: the engine goes on — polls, reads, frames)
+    data.ensure(h, 0, 65536);
+    const ahead = reads().at(-1); assert.equal(ahead.held, false);
+    data.missing(h, 0, 65536); data.progress();
+    data.holdWatch(performance.now() + 1000);
+    assert.deepEqual(held(), [], 'gone on past it: never a wait');
+    // (asked, then nothing: the engine waits — told once, after HOLD_MS)
+    data.ensure(h, 65536 * 4, 65536);
+    const waited = reads().at(-1);
+    data.holdWatch(performance.now()); assert.deepEqual(held(), [], 'not before HOLD_MS');
+    data.holdWatch(performance.now() + 300); data.holdWatch(performance.now() + 400);
+    assert.deepEqual(held(), [[waited.id, 1]]);
+    // (the engine went on while it was under way: not a wait any more)
+    data.progress(); data.holdWatch(performance.now() + 500);
+    assert.deepEqual(held(), [[waited.id, 1], [waited.id, 0]]);
+    // (in the background — readable(): never)
+    told.length = 0;
+    assert.equal(data.readable(s), false);
+    data.holdWatch(performance.now() + 1000);
+    assert.equal(reads().length, 1); assert.equal(reads()[0].held, false); assert.deepEqual(held(), []);
+    assert.equal(data.pending.size, 2, 'the background read not among those that may hold the engine');
+  } finally { data.close(); }
+});
+
+test('an engine that streams ahead (re3: ask, go on, poll) never shows a wait; one that suspends on its read does', async (t) => {
+  const server = gatedServer(fakeServer({ 'models.img': bytes(1 << 20), 'audio.sfx': bytes(1 << 20, 4) }));
+  const data = await inThread(t, server), img = data.file('v', 'models.img'), sfx = data.file('v', 'audio.sfx');
+  const seen = [];
+  // (the engine's frames for a second: it asked for a model and a sound ahead, polls the model every frame)
+  data.ensure(img, 0, 65536).catch(() => {}); data.ensure(sfx, 0, 65536).catch(() => {});
+  for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 25)); data.missing(img, 0, 65536); data.progress(); seen.push(Atomics.load(data.ctrl, 6)); }
+  assert.deepEqual(seen.filter((n) => n > 0), [], 'no wait over smooth play');
+  assert.equal(data.quiet(500), true, 'the game data quiet meanwhile');
+  // (it needs a model now: it suspends until it is here — calls nothing)
+  const wait = data.ensure(img, 65536 * 8, 65536);
+  await until(() => Atomics.load(data.ctrl, 6) > 0, 'its wait counted', 3000);
+  server.release(); await wait;
+  await until(() => Atomics.load(data.ctrl, 6) === 0, 'over');
+  assert.ok(data.snapshot().stallMs >= 250, 'its time among the engine\'s waits');
 });

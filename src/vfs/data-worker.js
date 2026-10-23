@@ -5,7 +5,9 @@
 // memory (ctrl[0] the request answered, ctrl[1] the bytes delivered or -1), one it can wait for (JSPI) by message.
 // Counters shared with the page's indicator: ctrl[2] bytes received (decoded), ctrl[3] this worker's heartbeat,
 // ctrl[4] / ctrl[5] KB of the current step here / in all (the learned order: HttpBackend.stepEstimate), ctrl[6] the
-// page's reads waiting for the network. The link, for the page: ctrl[7] 1 when it is fast (the files themselves read,
+// page's reads waiting for the network that the engine waits for — a synchronous read, or an asynchronous one the page
+// says holds the engine (`held`: data-client.js HOLD_MS; not one the engine asked ahead and went on past, nor one
+// fetched in the background). The link, for the page: ctrl[7] 1 when it is fast (the files themselves read,
 // not their light copies), ctrl[8] its measured rate (KB/s, 0 until measured), ctrl[9] 1 when it is thin (measured
 // below THIN_BPS, net-link.js). The page's quiet (GameData.quiet: a page that loads more of its game when nothing waits):
 // ctrl[10] 1 when the learned order's loading has nothing left for the game's current step (or does not run), ctrl[11]
@@ -43,7 +45,7 @@ export function createDataWorker(post) {
   postMessage = post;
   W = {
     ctrl: null, data: null, version: null, parts: new Map(), handles: new Map(), ready: null, timers: [],
-    session: '', lang: null, t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null,
+    session: '', lang: null, t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null, waits: new Set(), held: new Map(),
     prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null,
     legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(), reports: new ReadReports(), phases: [],
   };
@@ -67,6 +69,7 @@ function dispatch(m) {
   if (m.source) { W.sources.set(m.source.id, { ...m.source }); return; }
   if (m.legacy) { for (const r of m.legacy) W.legacy.set(r.name + '\n' + r.path.toLowerCase(), r); return; }
   if (m.setSource) { const src = W.sources.get(m.setSource.id); if (src) src.url = m.setSource.url; return; }
+  if (m.held) { hold(m.held); return; }
   if (typeof m.gen === 'number') { answerSync(m); return; }
   if (m.read) { answerAsync(m.read); return; }
   // ('startup': the startup set before the engine, then the whole learned order once it runs — as 'start')
@@ -126,9 +129,10 @@ function hereUntil(files, f, from, limit) {
 
 /**
  * Bytes of `path` from `off`: at least `len` (fetched when missing — the reader's own planning: pieces, blocks, read
- * ahead, the link's measure), and on as far as they are here already, up to `want` in all.
+ * ahead, the link's measure), and on as far as they are here already, up to `want` in all. `ask`: the read, { held } —
+ * whether the engine waits for it (counted among the waits while it waits for the network: waited()).
  */
-async function bytesOf({ name, path, off, len, want, src }) {
+async function bytesOf({ name, path, off, len, want, src }, ask = { held: true }) {
   if (src !== undefined) return sourceBytes(src, off, len);
   const part = W.parts.get(name), f = handle(name, path);
   if (!part || !f) throw new Error(`${name}: ${path} not in the game's files`);
@@ -138,17 +142,31 @@ async function bytesOf({ name, path, off, len, want, src }) {
   await adoptLegacy(name, path, part, f);
   const wait = f.prepare(off, end - off);
   if (wait) {
-    W.waiting++; W.lastWait = performance.now();
-    try { await wait; } finally { W.waiting--; W.lastWait = performance.now(); }
+    W.waits.add(ask); waited();
+    try { await wait; } finally { W.waits.delete(ask); waited(); }
   }
   const stop = Math.max(end, hereUntil(part.files, f, Math.ceil(end / CHUNK) * CHUNK, Math.min(f.len, off + Math.max(len, want ?? 0))));
   return f.read(off, stop - off);
 }
 
+/** The reads waiting for the network that the engine waits for, counted again (W.waiting; lastWait while there are). */
+function waited() {
+  const was = W.waiting;
+  W.waiting = 0;
+  for (const a of W.waits) if (a.held) W.waiting++;
+  if (W.waiting > 0 || was > 0) W.lastWait = performance.now();
+}
+
+/** The page says which of its asynchronous reads the engine waits for now ([id, 1 | 0]: data-client.js holdWatch). */
+function hold(list) {
+  for (const [id, on] of list) { const a = W.held.get(id); if (a) a.held = !!on; }
+  waited();
+}
+
 async function answerSync(m) {
   const { ctrl, data } = W;
   try {
-    const bytes = await bytesOf(m);
+    const bytes = await bytesOf(m); // (the page's thread waits for it)
     const n = Math.min(bytes.length, data.length);
     data.set(bytes.subarray(0, n), 0);
     ctrl[1] = n;
@@ -161,8 +179,12 @@ async function answerSync(m) {
 }
 
 async function answerAsync(m) {
-  try { const bytes = await bytesOf(m); postMessage({ id: m.id, bytes }, [bytes.buffer]); }
+  // (the engine waits for it once the page says so — held —, at once when it says so with the read)
+  const ask = { held: !!m.held };
+  W.held.set(m.id, ask);
+  try { const bytes = await bytesOf(m, ask); postMessage({ id: m.id, bytes }, [bytes.buffer]); }
   catch (err) { postMessage({ id: m.id, error: String(err?.message ?? err) }); }
+  finally { W.held.delete(m.id); }
 }
 
 // ---------------------------------------------------------------- files of elsewhere
