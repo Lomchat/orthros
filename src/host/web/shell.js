@@ -352,6 +352,9 @@ export function createShell(o) {
     location.href = '/?menu';
   };
   games.onclick = home.onclick = (e) => { e.preventDefault(); shell.quit(); };
+  /** The runtime's save before the page goes, without the question nor the navigation: how the bench suite (bench-suite.js) leaves a game. */
+  shell.save = async () => { try { return await o.onQuit?.(); } catch (e) { console.error(e); return false; } };
+  globalThis.orthrosShell ??= shell; // (the page's shell, for the bench suite around it)
   // (out of full screen the browser keeps its shortcuts: a page left with Ctrl or ⌘ held while the game runs — Ctrl+W,
   // Ctrl+R in the middle of a fight — asks first; watchKeys(doc): a frame's document the game's keys go to)
   let held = false;

@@ -1,0 +1,36 @@
+# BFME II, the bench suite's (bench-suite.js): bfme2-quick's menu steps (bfme2-skirmish.txt explains them: the intro
+# skipped, the main menu, a skirmish started), then 40 s of play with move orders and camera scrolls. Coordinates for
+# 800x600 (scaled to the game's display). Phases: start, menu, load, loadscreen, play (40 s), end.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++15:key:27
++18:key:27
++20:waitframe:10,30,150,100000
+0:mark:menu
+8:move:216,555
+10:click:216,555
+16:move:216,384
+18:click:216,384
+30:click:406,244
+32:text:Orthros
+35:move:327,362
+36:click:327,362
+48:move:718,572
+50:click:718,572
+51:mark:load
+52:waitframe:1,100
+0:mark:loadscreen
+1:waitframe:120,100000
+0:mark:play
+10:click:400,300
+13:rclick:500,350
+15:keydown:39
+18:keyup:39
+22:click:420,320
+25:rclick:300,250
+30:keydown:38
+33:keyup:38
+36:rclick:550,400
+40:mark:end

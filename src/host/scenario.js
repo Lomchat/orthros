@@ -12,12 +12,20 @@
 //   waitframe min,max[,min2,max2...]: until 3 successive checks (1 s apart) see new Direct3D frames whose draws per
 //     frame are within one of the ranges
 //   waitpixel x,y,r,g,b[,tol]: until a displayed pixel has that colour (the harness only)
+//   nudge vk,every: while the next wait holds, the key vk pressed every `every` seconds (an intro or cutscenes skipped
+//     until the screen waited for comes, however many there are)
+// The browser ports' bench (bench-suite.js, page-meter.js) plays these too, and steps of their own (PORT_KINDS):
+//   cmd <command> (the engine's console) | look dx,dy[,n[,ms]] (the mouse moved by dx,dy in n steps over ms: a captured
+//   mouse's look) | glide x0,y0,vx,vy,z (the player carried in a straight line from x0,y0 at vx,vy units a second at
+//   height z, by the engine's debug teleport, until the next glide; `glide` alone stops)
 
 /** steps whose argument is one string (the rest: comma-separated numbers) */
-const STRING_ARGS = new Set(['text', 'find', 'mark', 'jitlist', 'dbg']);
+const STRING_ARGS = new Set(['text', 'find', 'mark', 'jitlist', 'dbg', 'cmd']);
 export const WAIT_KINDS = new Set(['waitfps', 'waitframe', 'waitpixel']);
 /** the steps the page's player performs; `shot`, `blur` and `focus` are accepted and skipped there */
-export const PLAYER_KINDS = new Set(['move', 'click', 'rclick', 'down', 'up', 'key', 'keydown', 'keyup', 'text', 'mark', 'waitfps', 'waitframe', 'shot', 'blur', 'focus']);
+export const PLAYER_KINDS = new Set(['move', 'click', 'rclick', 'down', 'up', 'key', 'keydown', 'keyup', 'text', 'mark', 'waitfps', 'waitframe', 'nudge', 'shot', 'blur', 'focus']);
+/** the steps the browser ports' bench performs besides (their engine's console, a captured mouse, a debug teleport) */
+export const PORT_KINDS = new Set([...PLAYER_KINDS, 'cmd', 'look', 'glide']);
 const POINTER_KINDS = new Set(['move', 'click', 'rclick', 'down', 'up']);
 
 /**
@@ -39,14 +47,17 @@ export function parseScenario(text) {
     if (POINTER_KINDS.has(kind) && args.length < 2) errors.push(`"${src}": x,y expected`);
     if (kind === 'waitframe' && (args.length < 2 || args.length % 2)) errors.push(`"${src}": min,max pairs expected`);
     if (kind === 'waitfps' && args.length < 1) errors.push(`"${src}": a frame rate expected`);
+    if (kind === 'nudge' && (args.length !== 2 || !(args[1] > 0))) errors.push(`"${src}": vk,every expected`);
+    if (kind === 'look' && args.length < 2) errors.push(`"${src}": dx,dy expected`);
+    if (kind === 'glide' && args.length !== 0 && args.length !== 5) errors.push(`"${src}": x0,y0,vx,vy,z (or nothing: stop) expected`);
     steps.push({ t, rel: ts.trim().startsWith('+'), anchored: afterWait, kind, args, src, index: steps.length });
     if (WAIT_KINDS.has(kind)) afterWait = true;
   }
   return { steps, errors };
 }
 
-/** Steps the page's player cannot perform (debugging steps of the harness, pixel waits). */
-export function unsupportedSteps(steps) { return steps.filter((s) => !PLAYER_KINDS.has(s.kind)); }
+/** Steps the page's player cannot perform (debugging steps of the harness, pixel waits); `kinds`: PORT_KINDS for a port. */
+export function unsupportedSteps(steps, kinds = PLAYER_KINDS) { return steps.filter((s) => !kinds.has(s.kind)); }
 
 /** Is `dpf` (draws per frame) within one of the `[min, max, min2, max2, ...]` ranges? */
 export function inRanges(dpf, ranges) { for (let i = 0; i + 1 < ranges.length; i += 2) if (dpf >= ranges[i] && dpf <= ranges[i + 1]) return true; return false; }
@@ -68,6 +79,7 @@ export class ScenarioPlayer {
     this.from = opts.from ?? null; this.display = opts.display ?? (() => null);
     this.anchorAt = null; this.firstFrameAt = null;
     this.lastSeq = undefined; this.fpsStreak = 0; this.marks = [];
+    this.nudge = null; // ({ vk, every, next }: a nudge step's key, pressed while the next wait holds)
   }
   get done() { return this.steps.every((s) => s.done); }
   /** steps done / all */
@@ -92,30 +104,34 @@ export class ScenarioPlayer {
     const out = [];
     const fresh = stats && stats.seq !== this.lastSeq; if (fresh) this.lastSeq = stats.seq;
     if (this.firstFrameAt === null && stats?.d3d?.frames > 0) this.firstFrameAt = now;
+    // (a wait that holds this tick: the key of the nudge before it, when due; a wait satisfied ends the nudge)
+    const hold = () => { const n = this.nudge; if (n && now >= n.next) { n.next = now + n.every; out.push({ kind: 'key', args: [n.vk], at: now, step: n.step }); } };
+    const satisfied = (s, extra = {}) => { s.done = true; this.anchorAt = now; this.nudge = null; out.push({ kind: s.kind, args: s.args, at: now, step: s, ...extra }); };
     for (const s of this.steps) {
       if (s.done) continue;
       const due = this.due(s);
       if (s.kind === 'waitfps') {
-        if (now < due) break;
+        if (now < due) { hold(); break; }
         if (fresh) { this.fpsStreak = (stats.fps ?? 0) > s.args[0] ? this.fpsStreak + (stats.dt ?? 0.5) : 0; }
-        if (this.fpsStreak >= 3 - 1e-6) { s.done = true; this.anchorAt = now; this.fpsStreak = 0; out.push({ kind: s.kind, args: s.args, at: now, step: s }); continue; } // (the steps due at the anchor run at once)
-        break;
+        if (this.fpsStreak >= 3 - 1e-6) { this.fpsStreak = 0; satisfied(s); continue; } // (the steps due at the anchor run at once)
+        hold(); break;
       }
       if (s.kind === 'waitframe') {
-        if (now < due) break;
-        if (s.checkAt !== undefined && now - s.checkAt < 1) break; // (once a second, as the harness polls)
+        if (now < due) { hold(); break; }
+        if (s.checkAt !== undefined && now - s.checkAt < 1) { hold(); break; } // (once a second, as the harness polls)
         s.checkAt = now;
         const d3d = stats?.d3d, prev = s.prev;
-        if (!d3d || (prev && d3d.frames === prev.frames)) break; // (no new frame since the last check: a slow loading screen)
+        if (!d3d || (prev && d3d.frames === prev.frames)) { hold(); break; } // (no new frame since the last check: a slow loading screen)
         s.prev = { draws: d3d.draws, frames: d3d.frames };
         const dpf = prev ? (d3d.draws - prev.draws) / (d3d.frames - prev.frames) : -1;
         s.streak = prev && inRanges(dpf, s.args) ? (s.streak ?? 0) + 1 : 0;
-        if (s.streak >= 3) { s.done = true; this.anchorAt = now; out.push({ kind: s.kind, args: s.args, at: now, step: s, dpf }); continue; }
-        break;
+        if (s.streak >= 3) { satisfied(s, { dpf }); continue; }
+        hold(); break;
       }
       if (s.kind === 'waitpixel') break; // (not playable in the page: unsupportedSteps rejects such a scenario first)
       if (now < due) continue;
       s.done = true;
+      if (s.kind === 'nudge') { this.nudge = { vk: s.args[0], every: s.args[1], next: now, step: s }; continue; }
       let args = s.args;
       if (POINTER_KINDS.has(s.kind)) args = this.scale(args[0], args[1]);
       if (s.kind === 'mark') this.marks.push({ label: String(args[0]), at: now });

@@ -136,7 +136,7 @@ window.addEventListener('unhandledrejection', (event) => {
 const telemetry = { session: crypto.randomUUID().replaceAll('-', '').slice(0, 16), started: performance.now(), sent: 0 };
 function report(event, data = {}) {
   if (telemetry.sent >= 20) return; telemetry.sent++;
-  const body = JSON.stringify({ session: telemetry.session, game: decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? ''), port: 're3', event,
+  const body = JSON.stringify({ session: telemetry.session, game: decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? ''), port: 're3', event, ...(params.get('benchrun') ? { bench: params.get('benchrun') } : {}), // (a bench suite's session: bench-suite.js)
     seconds: Math.round((performance.now() - telemetry.started) / 1000), state: session.state, ...data,
     env: { ua: navigator.userAgent, cores: navigator.hardwareConcurrency, memGB: navigator.deviceMemory ?? null, dpr: devicePixelRatio, screen: `${screen.width}x${screen.height}` } });
   try { if (!navigator.sendBeacon('/api/telemetry', new Blob([body], { type: 'application/json' }))) throw new Error('beacon refused'); }

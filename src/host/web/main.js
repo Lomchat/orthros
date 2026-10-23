@@ -15,10 +15,13 @@ import { accountState } from './account.js';
 import { pickLang } from './lang.js';
 import { linkRate } from '../../vfs/data-client.js';
 import { gpuInfo } from './gpu-class.js';
+import { vkOfCode } from '../../win32/vk-scan.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const headless = params.get('headless') === '1';
+/** a bench's session: its suite run, or the bench's name (telemetry batches carry it) */
+const BENCH_MARK = params.get('benchrun') ?? params.get('bench') ?? null;
 const state = { status: 'menu', loadT0: performance.now(), loadPct: 0, stats: null, logs: [], exitCode: null, crash: null, worker: null, ctl: null, inputRing: null, head: 0, mode: { width: 1024, height: 768 }, pointerLocked: false };
 window.orthros = state;
 /** The frame around the game (shell.js): created when a game starts, none headless. */
@@ -144,9 +147,11 @@ async function main() {
   state.profileSeed = !!config.profileSeed && params.get('profileseed') !== '0'; // (shared first-launch profile: profile-seed.js; ?profileseed=0: off)
   state.prefetch = !!config.prefetch && state.encodedRanges && params.get('prefetch') !== '0'; // (learned background prefetch; ?prefetch=0: off) // (compressed game file ranges; ?encoded=0: plain Range requests)
   $('logToggle').onchange = () => { $('log').style.display = $('logToggle').checked ? 'block' : 'none'; };
-  if (state.telemetry || params.has('bench')) state.envPromise = machine().then((e) => (state.env = e)); // (the machine, once: sent with the first telemetry batch)
+  if (state.telemetry || params.has('bench') || params.has('benchsuite')) state.envPromise = machine().then((e) => (state.env = e)); // (the machine, once: sent with the first telemetry batch)
   // ?bench=<name>: a scripted measurement of tools/scenarios/bench (bench.js, docs/real-machine-bench.md); ?manifest= picks one of its versions
   if (params.has('bench')) { await startBench(params.get('bench'), params.get('manifest')); return; }
+  // ?benchsuite=<suite | bench,bench...>: every game measured in a row, each in a frame of this page (bench-suite.js)
+  if (params.has('benchsuite')) { const { startSuite } = await import('./bench-suite.js'); await startSuite(params.get('benchsuite'), { machine: () => state.envPromise ?? machine(), version: state.version, telemetry: state.telemetry, log }); return; }
   // the server's default game starts directly (a deployment for players); ?menu shows the picker (?tags too: a link to
   // the library's filters, home.js)
   const auto = params.get('manifest') ?? (params.has('menu') || params.has('tags') ? null : config.defaultManifest);
@@ -158,8 +163,12 @@ async function startBench(name, manifest) {
   // (bench.js and its scenario player only in bench mode: not part of a player's first load)
   let def, BenchRun;
   try { let loadBench; ({ loadBench, BenchRun } = await import('./bench.js')); def = await loadBench(name, manifest); } catch (e) { showStatus(TEXT.noBench, e.message ?? String(e), null, true); return; }
+  // (a browser port's bench: played by the bench suite, around the port's page)
+  if (def.runtime && def.runtime !== 'win32') { location.replace(`/?benchsuite=${encodeURIComponent(name)}${manifest ? `&manifest=${encodeURIComponent(manifest)}` : ''}`); return; }
+  // (one game of a bench suite, in its frame: bench-suite.js shows the banner and the summary, and keeps the record)
+  const suite = params.has('benchrun') ? { run: params.get('benchrun'), name: params.get('benchsuitename') ?? null, index: Number(params.get('benchindex') ?? 0), of: Number(params.get('benchof') ?? 0) } : null;
   const run = state.bench = new BenchRun(def, {
-    state, push, EV, typeText, headless, log, capture: () => capturePointer(),
+    state, push, EV, typeText, headless, log, capture: () => capturePointer(), quiet: !!suite, suite,
     postWorker: (m) => state.worker?.postMessage(m),
     machine: () => state.envPromise ?? machine(),
     sendRecord: async (rec) => { if (!state.telemetry) return false; (state.queue ??= []).push({ t: Date.now(), ...rec }); return flushTelemetry(); },
@@ -660,7 +669,8 @@ function flushTelemetry() {
   state.flushTimer = null;
   const samples = state.queue ?? []; state.queue = [];
   if (!samples.length && state.envSent) return Promise.resolve(true);
-  const body = { session: state.session, game: state.manifest ?? null, samples };
+  // (a bench's session marked so: its records are read apart from the players' — telemetry-report.mjs --bench / --suite)
+  const body = { session: state.session, game: state.manifest ?? null, ...(BENCH_MARK ? { bench: BENCH_MARK } : {}), samples };
   if (!state.envSent) { state.envSent = true; body.env = state.env ?? environment(); }
   return fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true }).then((r) => r.ok, () => false);
 }
@@ -703,7 +713,7 @@ function typeText(text) {
   for (const ch of text) {
     const code = /[a-z]/i.test(ch) ? 'Key' + ch.toUpperCase() : /[0-9]/.test(ch) ? 'Digit' + ch : ch === ' ' ? 'Space' : null;
     if (!code) continue;
-    const vk = vkOf({ code }), scan = SCAN[code] ?? 0;
+    const vk = vkOfCode(code), scan = SCAN[code] ?? 0;
     push(EV.KEYDOWN, vk, scan, 0); push(EV.CHAR, ch.charCodeAt(0), 0, 0); push(EV.KEYUP, vk, scan, 0);
   }
 }
@@ -751,17 +761,6 @@ function drawSoftCursor() {
 /** A plain arrow (SVG) for the software cursor when the guest shows a system cursor. */
 const ARROW = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="19"><path d="M0.5 0.5v16l4-4 3 6 2.5-1-3-6h5.5z" fill="white" stroke="black"/></svg>');
 const SCAN = { Escape: 0x01, Digit1: 0x02, Digit2: 0x03, Digit3: 0x04, Digit4: 0x05, Digit5: 0x06, Digit6: 0x07, Digit7: 0x08, Digit8: 0x09, Digit9: 0x0a, Digit0: 0x0b, Minus: 0x0c, Equal: 0x0d, Backspace: 0x0e, Tab: 0x0f, KeyQ: 0x10, KeyW: 0x11, KeyE: 0x12, KeyR: 0x13, KeyT: 0x14, KeyY: 0x15, KeyU: 0x16, KeyI: 0x17, KeyO: 0x18, KeyP: 0x19, BracketLeft: 0x1a, BracketRight: 0x1b, Enter: 0x1c, ControlLeft: 0x1d, KeyA: 0x1e, KeyS: 0x1f, KeyD: 0x20, KeyF: 0x21, KeyG: 0x22, KeyH: 0x23, KeyJ: 0x24, KeyK: 0x25, KeyL: 0x26, Semicolon: 0x27, Quote: 0x28, Backquote: 0x29, ShiftLeft: 0x2a, Backslash: 0x2b, KeyZ: 0x2c, KeyX: 0x2d, KeyC: 0x2e, KeyV: 0x2f, KeyB: 0x30, KeyN: 0x31, KeyM: 0x32, Comma: 0x33, Period: 0x34, Slash: 0x35, ShiftRight: 0x36, NumpadMultiply: 0x37, AltLeft: 0x38, Space: 0x39, CapsLock: 0x3a, F1: 0x3b, F2: 0x3c, F3: 0x3d, F4: 0x3e, F5: 0x3f, F6: 0x40, F7: 0x41, F8: 0x42, F9: 0x43, F10: 0x44, NumLock: 0x45, ScrollLock: 0x46, Numpad7: 0x47, Numpad8: 0x48, Numpad9: 0x49, NumpadSubtract: 0x4a, Numpad4: 0x4b, Numpad5: 0x4c, Numpad6: 0x4d, NumpadAdd: 0x4e, Numpad1: 0x4f, Numpad2: 0x50, Numpad3: 0x51, Numpad0: 0x52, NumpadDecimal: 0x53, F11: 0x57, F12: 0x58, NumpadEnter: 0x11c, ControlRight: 0x11d, NumpadDivide: 0x135, PrintScreen: 0x137, AltRight: 0x138, Pause: 0x45, Home: 0x147, ArrowUp: 0x148, PageUp: 0x149, ArrowLeft: 0x14b, ArrowRight: 0x14d, End: 0x14f, ArrowDown: 0x150, PageDown: 0x151, Insert: 0x152, Delete: 0x153, MetaLeft: 0x15b, MetaRight: 0x15c, ContextMenu: 0x15d };
-const VK = { Escape: 0x1b, Backspace: 8, Tab: 9, Enter: 13, NumpadEnter: 13, ShiftLeft: 0xa0, ShiftRight: 0xa1, ControlLeft: 0xa2, ControlRight: 0xa3, AltLeft: 0xa4, AltRight: 0xa5, Pause: 0x13, CapsLock: 0x14, Space: 0x20, PageUp: 0x21, PageDown: 0x22, End: 0x23, Home: 0x24, ArrowLeft: 0x25, ArrowUp: 0x26, ArrowRight: 0x27, ArrowDown: 0x28, PrintScreen: 0x2c, Insert: 0x2d, Delete: 0x2e, MetaLeft: 0x5b, MetaRight: 0x5c, ContextMenu: 0x5d, NumpadMultiply: 0x6a, NumpadAdd: 0x6b, NumpadSubtract: 0x6d, NumpadDecimal: 0x6e, NumpadDivide: 0x6f, NumLock: 0x90, ScrollLock: 0x91, Semicolon: 0xba, Equal: 0xbb, Comma: 0xbc, Minus: 0xbd, Period: 0xbe, Slash: 0xbf, Backquote: 0xc0, BracketLeft: 0xdb, Backslash: 0xdc, BracketRight: 0xdd, Quote: 0xde };
-function vkOf(e) {
-  const c = e.code;
-  if (VK[c] !== undefined) return VK[c];
-  if (/^Key[A-Z]$/.test(c)) return c.charCodeAt(3);
-  if (/^Digit[0-9]$/.test(c)) return c.charCodeAt(5);
-  if (/^Numpad[0-9]$/.test(c)) return 0x60 + Number(c[6]);
-  if (/^F([0-9]+)$/.test(c)) return 0x70 + Number(c.slice(1)) - 1;
-  return 0;
-}
-
 function setupInput() {
   const c = $('c2d');
   if (!headless) escapeToGame(window); // (the first Escape to the game, the next frees the mouse)
@@ -785,8 +784,8 @@ function setupInput() {
   c.addEventListener('mouseup', (e) => { if (!live()) return; pointer.button(false, winButton(e.button), state.pointerLocked, ...screenPos(e)); e.preventDefault(); });
   c.addEventListener('contextmenu', (e) => e.preventDefault());
   c.addEventListener('wheel', (e) => { if (!live()) return; const [x, y] = state.pointerLocked ? [pointer.vx, pointer.vy] : screenPos(e).map(Math.round); push(EV.WHEEL, e.deltaY < 0 ? 120 : -120, pointer.clampX(x), pointer.clampY(y)); e.preventDefault(); }, { passive: false });
-  addEventListener('keydown', (e) => { if ((e.code === 'F12' && !e.shiftKey) || state.benchActive) return; const s = SCAN[e.code] ?? 0; push(EV.KEYDOWN, vkOf(e), s, e.repeat ? 1 : 0); if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) push(EV.CHAR, e.key.charCodeAt(0), 0, 0); if (!(e.ctrlKey && (e.code === 'KeyR' || e.code === 'KeyL'))) e.preventDefault(); });
-  addEventListener('keyup', (e) => { if (state.benchActive) return; push(EV.KEYUP, vkOf(e), SCAN[e.code] ?? 0, 0); e.preventDefault(); });
+  addEventListener('keydown', (e) => { if ((e.code === 'F12' && !e.shiftKey) || state.benchActive) return; const s = SCAN[e.code] ?? 0; push(EV.KEYDOWN, vkOfCode(e.code), s, e.repeat ? 1 : 0); if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) push(EV.CHAR, e.key.charCodeAt(0), 0, 0); if (!(e.ctrlKey && (e.code === 'KeyR' || e.code === 'KeyL'))) e.preventDefault(); });
+  addEventListener('keyup', (e) => { if (state.benchActive) return; push(EV.KEYUP, vkOfCode(e.code), SCAN[e.code] ?? 0, 0); e.preventDefault(); });
   addEventListener('blur', () => { pointer.left(); if (!state.benchActive) push(EV.FOCUS, 0, 0, 0); });
   addEventListener('focus', () => { if (!state.benchActive) push(EV.FOCUS, 1, 0, 0); });
   document.addEventListener('pointerlockchange', () => {
