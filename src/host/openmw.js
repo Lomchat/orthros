@@ -109,19 +109,34 @@ export const withProgressiveView = (html) => html
   .replace("'viewing distance = ' + ((/[?&]vd=(\\d+)/.exec(location.search)||[])[1] || TIER.vd)",
     "'viewing distance = ' + ((/[?&]vd=(\\d+)/.exec(location.search)||[])[1] || (window.orthrosViewBoot ? window.orthrosViewBoot(TIER.vd) : TIER.vd))")
   .replace(/FS\.writeFile\('\/openmw\.cfg',\s*cfg\.join\('\\n'\)\)/g, "FS.writeFile('/openmw.cfg', (window.orthrosContent ? window.orthrosContent(FS, cfg) : cfg).join('\\n'))")
-  .replace('document.body.appendChild(s);', 'Promise.all([window.orthrosViewReady, window.orthrosTierReady]).then(function () { document.body.appendChild(s); });');
+  .replace('document.body.appendChild(s);', 'Promise.all([window.orthrosViewReady, window.orthrosTierReady, window.orthrosInputReady]).then(function () { document.body.appendChild(s); });');
 
 /**
  * The engine page's quality tier from the GPU and the frames measured (src/ports/openmw/tier.js) instead of
  * navigator.deviceMemory alone: the module loaded before the engine (withProgressiveView's hold waits for it too), the
- * page's tier choice asking it (?tier= first, as before), its log line saying the GPU's kind. The page's own rule when
- * the module did not load.
+ * page's tier choice asking it (?tier= first, as before), its log line saying the GPU's kind, the water's refraction as
+ * the tier says (tierSettings: 'high' only; ?norefr=1 / ?refr=1 force it). The page's own rule when the module did not
+ * load.
  */
 export const withQualityTier = (html) => html
   .replace('<head>', `<head><script>window.orthrosTierReady = import('/src/ports/openmw/tier.js').then(function (m) { return m.install(window); }).catch(function (e) { console.warn('[orthros tier]', e); });</script>`)
   .replace("|| (__devMem >= 8 ? 'high' : (__devMem > 0 && __devMem <= 4 ? 'low' : 'mid'));",
     "|| (window.orthrosTier ? window.orthrosTier(__devMem) : (__devMem >= 8 ? 'high' : (__devMem > 0 && __devMem <= 4 ? 'low' : 'mid')));")
-  .replace("append('[tier] '+__tier+' (navigator.deviceMemory='", "append('[tier] '+__tier+(window.orthrosTierChoice ? ' (gpu: '+window.orthrosTierChoice.kind+')' : '')+' (navigator.deviceMemory='");
+  .replace("append('[tier] '+__tier+' (navigator.deviceMemory='", "append('[tier] '+__tier+(window.orthrosTierChoice ? ' (gpu: '+window.orthrosTierChoice.kind+')' : '')+' (navigator.deviceMemory='")
+  .replace("'refraction = ' + (/[?&]norefr=1\\b/.test(location.search) ? 'false' : 'true')",
+    "'refraction = ' + (/[?&]norefr=1\\b/.test(location.search) || (!/[?&]refr=1\\b/.test(location.search) && window.orthrosTierSettings && !window.orthrosTierSettings(__tier).refraction) ? 'false' : 'true')");
+
+/**
+ * The keyboard layout every player gets (src/ports/openmw/input-keys.js: Activate on E, Jump on Space): the module loaded
+ * before the engine (withProgressiveView's hold waits for it too), and a player's saved bindings that still hold the
+ * old pair swapped once their user files are in place — the account's copy and IDBFS restored, before the engine
+ * reads them. Nothing when the module did not load.
+ */
+export const withInputKeys = (html) => html
+  .replace('<head>', `<head><script>window.orthrosInputReady = import('/src/ports/openmw/input-keys.js').then(function (m) { return m.install(window); }).catch(function (e) { console.warn('[orthros keys]', e); });</script>`)
+  .replace("FS.mkdirTree('/userdata/config/openmw');   // XDG user config (persistent)",
+    "FS.mkdirTree('/userdata/config/openmw');   // XDG user config (persistent)\n" +
+    "               if (window.orthrosInputKeys && window.orthrosInputKeys(FS) === 'swapped') append('[orthros] saved bindings: Activate on E, Jump on Space');");
 
 export const withSharedEngine =(html, release) => html.replace('("e/" + __ENGINE_VER + "/")', `(${JSON.stringify(`/engines/${release}/e/`)} + __ENGINE_VER + "/")`);
 

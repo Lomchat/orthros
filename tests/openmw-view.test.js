@@ -117,12 +117,12 @@ test('the engine page loads the view module before its engine, its boot distance
   assert.ok(out.startsWith(`<html><head><script>window.orthrosViewReady = import('/src/ports/openmw/view-grow.js')`));
   assert.ok(out.includes('|| (window.orthrosViewBoot ? window.orthrosViewBoot(TIER.vd) : TIER.vd))'));
   assert.equal(out.split("FS.writeFile('/openmw.cfg', (window.orthrosContent ? window.orthrosContent(FS, cfg) : cfg).join('\\n'))").length, 3);
-  assert.ok(out.includes('Promise.all([window.orthrosViewReady, window.orthrosTierReady]).then(function () { document.body.appendChild(s); });'));
+  assert.ok(out.includes('Promise.all([window.orthrosViewReady, window.orthrosTierReady, window.orthrosInputReady]).then(function () { document.body.appendChild(s); });'));
   // (the installed release's page, when here: every hook found)
   const release = path.join(DEFAULT_ENGINES_DIR, 'openmw-web-v1.5.3/index.html');
   if (fs.existsSync(release)) {
     const real = withProgressiveView(fs.readFileSync(release, 'utf8'));
-    for (const [k, n] of [['orthrosViewReady = import', 1], ['orthrosViewBoot(TIER.vd)', 1], ['orthrosContent(FS, cfg)', 3], ['Promise.all([window.orthrosViewReady, window.orthrosTierReady])', 1]]) assert.equal(real.split(k).length - 1, n, k);
+    for (const [k, n] of [['orthrosViewReady = import', 1], ['orthrosViewBoot(TIER.vd)', 1], ['orthrosContent(FS, cfg)', 3], ['Promise.all([window.orthrosViewReady, window.orthrosTierReady, window.orthrosInputReady])', 1]]) assert.equal(real.split(k).length - 1, n, k);
   }
 });
 

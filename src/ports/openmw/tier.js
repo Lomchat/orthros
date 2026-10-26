@@ -3,8 +3,9 @@
 // not from navigator.deviceMemory alone — which Chrome caps at 8, so every laptop of 8 GB or more got 'high' (an 8192
 // shadow map, a 16384 view distance): a software renderer (SwiftShader, llvmpipe…) gets 'low', an integrated GPU 'mid',
 // a discrete one 'high'; deviceMemory of 4 or less still means 'low'. A session whose frames stayed long in the world
-// (FRAMES) on a tier above 'low' has the next session start a tier lower, on that same GPU. ?tier= and the player's own
-// Options (the engine's user settings, read over the page's defaults) still win. Loaded by the engine page before its
+// (FRAMES) on a tier above 'low' has the next session start a tier lower, on that same GPU. What a tier sets beyond the
+// page's table: tierSettings (the water's refraction). ?tier= and the player's own Options (the engine's user settings,
+// read over the page's defaults) still win. Loaded by the engine page before its
 // engine starts (src/host/openmw.js, withQualityTier): the page's tier choice calls window.orthrosTier(deviceMemory).
 import { gpuClass, gpuInfo } from '../../host/web/gpu-class.js';
 import { inWorld as worldShown } from './view-grow.js';
@@ -20,6 +21,14 @@ export const FRAMES = {
   /** …a tier lower next time when the median of its p99 frame gaps passed this (under 20 frames a second) */
   slowP99Ms: 50,
 };
+
+/**
+ * What a tier sets beyond the engine page's TIER table. The water's refraction draws the scene a second time each frame
+ * water is in view (its render-to-texture camera: the whole cull and draw again); OpenMW's own default is off, the
+ * engine page turned it on for every tier. Measured on the integrated GPUs' tier (docs/openmw.md, r9): the engine's
+ * work p50 18.2-19.2 -> 16.7-16.8 ms a frame at Seyda Neen. On 'high' only; the player's Options still win.
+ */
+export const tierSettings = (tier) => ({ refraction: tier === 'high' });
 
 const lower = (t) => TIERS[Math.max(0, TIERS.indexOf(t) - 1)];
 const min = (a, b) => TIERS[Math.min(TIERS.indexOf(a), TIERS.indexOf(b))];
@@ -60,6 +69,7 @@ export function install(win = globalThis, o = {}) {
   const gpu = o.gpu !== undefined ? o.gpu : gpuInfo().renderer;
   let saved = null;
   try { saved = JSON.parse(storage?.getItem(KEY) ?? 'null'); } catch { /* none */ }
+  win.orthrosTierSettings = tierSettings;
   win.orthrosTier = (deviceMemory) => {
     const { tier, kind } = chooseTier({ gpu, deviceMemory: Number(deviceMemory) || 0, saved });
     win.orthrosTierChoice = { tier, gpu, kind, deviceMemory: Number(deviceMemory) || null, saved };

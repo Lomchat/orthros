@@ -40,7 +40,7 @@ import { lightCovers } from './light-covers.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, goldsrcEngineFiles, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
-import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withProgressiveView, withQualityTier, withSharedEngine, withStreaming } from './openmw.js';
+import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withInputKeys, withProgressiveView, withQualityTier, withSharedEngine, withStreaming } from './openmw.js';
 import { leanPackages, withLeanPackage } from './openmw-lean.js';
 import { re3EngineFiles, re3Installed, re3Modes, re3Module } from './re3.js';
 import { mmoApi } from './mmo.js';
@@ -1495,7 +1495,7 @@ export function createServer(opts = {}) {
           const saveKey = scope ? `${man.saveKey}:user:${scope}` : man.saveKey;
           let page = openmwWebText(fs.readFileSync(f, 'utf8'), base, saveKey);
           if (asset.endsWith('.html')) page = withFrameMeter(page);
-          if (asset === 'index.html') page = withQualityTier(withProgressiveView(withStreaming(withLeanPackage(withSharedEngine(page, man.openmw.engine), man.openmw.example ? null : lean?.url(man.openmw.engine)), url.searchParams.get('sfs') === 'upstream')));
+          if (asset === 'index.html') page = withInputKeys(withQualityTier(withProgressiveView(withStreaming(withLeanPackage(withSharedEngine(page, man.openmw.engine), man.openmw.example ? null : lean?.url(man.openmw.engine)), url.searchParams.get('sfs') === 'upstream'))));
           if (asset === 'index.html' && scope) {
             page = page.replace('<head>', '<head><script src="/src/ports/openmw/cloud.js"></script>');
             page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(m[1])}, ${JSON.stringify(scope)});`);

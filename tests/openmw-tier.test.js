@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { gpuClass } from '../src/host/web/gpu-class.js';
-import { chooseTier, framesLook, install, FRAMES, KEY } from '../src/ports/openmw/tier.js';
+import { chooseTier, framesLook, install, tierSettings, FRAMES, KEY } from '../src/ports/openmw/tier.js';
 import { withQualityTier } from '../src/host/openmw.js';
 import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
 
@@ -117,4 +117,25 @@ test('installed in the page: the world as view-grow.js sees it (joined and simul
   win.omw.state.simReady = '1';
   for (let i = 0; i < FRAMES.looks * 3 && tick; i++) tick();
   assert.deepEqual(JSON.parse(storage.get(KEY)), { gpu: rtx, tier: 'mid' });
+});
+
+test('the water\'s refraction (a second rendering of the scene) on the discrete GPUs\' tier only, as the page writes it', () => {
+  assert.deepEqual(['low', 'mid', 'high'].map((t) => tierSettings(t).refraction), [false, false, true]);
+  const win = { location: { search: '' } };
+  install(win, { gpu: null, storage: null, setInterval: () => 1, clearInterval: () => {} });
+  assert.equal(win.orthrosTierSettings, tierSettings);
+  const line = "'refraction = ' + (/[?&]norefr=1\\b/.test(location.search) ? 'false' : 'true') + '\\n'";
+  const out = withQualityTier(`<html><head></head><body><script>var __tier = 'mid'; var cfg = ${line};</script></body></html>`);
+  const cfg = (tier, search, settings = tierSettings) => new Function('window', 'location', '__tier', `return ${/'refraction = '.*?'\\n'/.exec(out)[0]};`)({ orthrosTierSettings: settings }, { search }, tier);
+  assert.equal(cfg('mid', ''), 'refraction = false\n');
+  assert.equal(cfg('low', ''), 'refraction = false\n');
+  assert.equal(cfg('high', ''), 'refraction = true\n');
+  assert.equal(cfg('high', '?norefr=1'), 'refraction = false\n', '?norefr=1 as before');
+  assert.equal(cfg('mid', '?refr=1'), 'refraction = true\n', '?refr=1 forces it');
+  assert.equal(cfg('mid', '', null), 'refraction = true\n', 'the module not loaded: the page\'s own');
+  for (const id of ['openmw-web-v1.5.3-orthros-r8', 'openmw-web-v1.5.3-orthros-r9']) {
+    const release = path.join(DEFAULT_ENGINES_DIR, id, 'index.html');
+    if (!fs.existsSync(release)) continue;
+    assert.equal(withQualityTier(fs.readFileSync(release, 'utf8')).split('orthrosTierSettings(__tier).refraction').length - 1, 1, id);
+  }
 });

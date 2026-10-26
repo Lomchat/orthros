@@ -1,0 +1,190 @@
+diff --git a/openmw/apps/openmw/mwinput/bindingsmanager.cpp b/openmw/apps/openmw/mwinput/bindingsmanager.cpp
+index 0289542..eb00654 100644
+--- a/openmw/apps/openmw/mwinput/bindingsmanager.cpp
++++ b/openmw/apps/openmw/mwinput/bindingsmanager.cpp
+@@ -252,7 +252,10 @@ namespace MWInput
+         std::map<int, SDL_Scancode> defaultKeyBindings;
+ 
+         // Gets the Keyvalue from the Scancode; gives the button in the same place reguardless of keyboard format
+-        defaultKeyBindings[A_Activate] = SDL_SCANCODE_SPACE;
++        // Orthros (orthros-r9.patch): Activate on E and Jump on Space, the layout players expect today (Morrowind's
++        // own defaults were the reverse). The page swaps a saved file that still holds the old pair once
++        // (src/ports/openmw/input-keys.js); controllers keep their buttons.
++        defaultKeyBindings[A_Activate] = SDL_SCANCODE_E;
+         defaultKeyBindings[A_MoveBackward] = SDL_SCANCODE_S;
+         defaultKeyBindings[A_MoveForward] = SDL_SCANCODE_W;
+         defaultKeyBindings[A_MoveLeft] = SDL_SCANCODE_A;
+@@ -269,7 +272,7 @@ namespace MWInput
+         defaultKeyBindings[A_Run] = SDL_SCANCODE_LSHIFT;
+         defaultKeyBindings[A_Sneak] = SDL_SCANCODE_LCTRL;
+         defaultKeyBindings[A_AutoMove] = SDL_SCANCODE_Q;
+-        defaultKeyBindings[A_Jump] = SDL_SCANCODE_E;
++        defaultKeyBindings[A_Jump] = SDL_SCANCODE_SPACE;
+         defaultKeyBindings[A_Journal] = SDL_SCANCODE_J;
+         defaultKeyBindings[A_Rest] = SDL_SCANCODE_T;
+         defaultKeyBindings[A_GameMenu] = SDL_SCANCODE_ESCAPE;
+diff --git a/wasm-build/build-deps.sh b/wasm-build/build-deps.sh
+index e304e69..3609bd9 100755
+--- a/wasm-build/build-deps.sh
++++ b/wasm-build/build-deps.sh
+@@ -234,7 +234,10 @@ build_lua() {
+   cd "$SRC/lua-5.4.7/src"
+   rm -f ./*.o
+   # Compile every core/lib .c except the standalone driver (lua.c) and compiler (luac.c).
+-  for c in *.c; do case "$c" in lua.c|luac.c) ;; *) emcc $CFLAGS_COMMON -c "$c" -o "${c%.c}.o";; esac; done
++  # Orthros (orthros-r9.patch): LUA_COMPAT_MATHLIB keeps math.atan2, pow, cosh, sinh, tanh, frexp, ldexp and log10,
++  # which desktop OpenMW's LuaJIT has and mods call (UI Modes' NPC turning: math.atan2 every frame of a dialogue —
++  # a Lua error each frame without it). Only lmathlib.c reads the macro.
++  for c in *.c; do case "$c" in lua.c|luac.c) ;; *) emcc $CFLAGS_COMMON -DLUA_COMPAT_MATHLIB -c "$c" -o "${c%.c}.o";; esac; done
+   emar rcs "$DW/lib/liblua.a" $(ls *.o | grep -vE '^(lua|luac)\.o$')
+   cp -f lua.h luaconf.h lualib.h lauxlib.h ../src/lua.hpp "$DW/include/" 2>/dev/null || \
+     cp -f lua.h luaconf.h lualib.h lauxlib.h "$DW/include/"
+diff --git a/wasm-build/link-openmw.sh b/wasm-build/link-openmw.sh
+index 4f00ac9..f160237 100755
+--- a/wasm-build/link-openmw.sh
++++ b/wasm-build/link-openmw.sh
+@@ -220,6 +220,8 @@ ninja apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
+   -I"$ROOT/deps/src/bullet3/src" -I"$INC" -I"$ROOT/deps/src/boost_1_85_0" \
+   -O3 -DNDEBUG \
+   -lopenal \
++  `# Orthros (orthros-r9.patch): the OpenAL library's per-frame costs on the page's thread (wasm-build/orthros-openal.js)` \
++  --js-library "$ROOT/wasm-build/orthros-openal.js" \
+   --use-port=sdl2 --use-port=freetype --use-port=harfbuzz --use-port=libpng \
+   --use-port=libjpeg --use-port=zlib --use-port=ogg --use-port=vorbis \
+   -sALLOW_MEMORY_GROWTH=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
+diff --git a/wasm-build/orthros-openal.js b/wasm-build/orthros-openal.js
+new file mode 100644
+index 0000000..0c28134
+--- /dev/null
++++ b/wasm-build/orthros-openal.js
+@@ -0,0 +1,130 @@
++// Orthros (orthros-r9.patch): two costs of Emscripten's OpenAL (src/lib/libopenal.js, Emscripten 6.0.1) on the page's
++// thread, found in OpenMW frames (Orthros' tools/openmw/perf.mjs --profile, Seyda Neen: AL.updateSourceSpace ~5 % of
++// the engine's busy time, alBufferData ~2 %). Linked after the system library (--js-library, link-openmw.sh): its
++// entries replace the library's own of the same name.
++//
++// - The listener. Every alListener* call (OpenMW sets the position and the orientation each frame) ran
++//   AL.updateSourceSpace on every source that has a panner, which reads six AudioParams and may write them. A source in
++//   world coordinates (not AL_SOURCE_RELATIVE) does not move with the listener: WebAudio places it, and its panner
++//   was set when its own position or direction changed (setSourceParam, initSourcePanner). Only its Doppler shift
++//   depends on the listener: those sources now get that alone, computed as updateSourceSpace computes it. Relative
++//   sources go through updateSourceSpace as before.
++// - alBufferData. Its conversion loops read the heap through growMemViews() at every sample (the growable shared
++//   memory's check, wasmMemory.buffer's getter each time). The heap view is taken once a call. The 16- and 32-bit
++//   views are indexed by division, not `>>`, which wraps a pointer past 2 GiB under MEMORY64.
++addToLibrary({
++  $AL__postset: `
++    AL.orthrosSourceDoppler = (src) => {
++      var listener = src.context.listener;
++      var posX = src.position[0], posY = src.position[1], posZ = src.position[2];
++      var lPosX = listener.position[0], lPosY = listener.position[1], lPosZ = listener.position[2];
++      var oldShift = src.dopplerShift;
++      var velX = src.velocity[0], velY = src.velocity[1], velZ = src.velocity[2];
++      var lVelX = listener.velocity[0], lVelY = listener.velocity[1], lVelZ = listener.velocity[2];
++      if (posX === lPosX && posY === lPosY && posZ === lPosZ
++        || velX === lVelX && velY === lVelY && velZ === lVelZ) {
++        src.dopplerShift = 1.0;
++      } else {
++        var speedOfSound = src.context.speedOfSound;
++        var dopplerFactor = src.context.dopplerFactor;
++        var slX = lPosX - posX, slY = lPosY - posY, slZ = lPosZ - posZ;
++        var magSl = Math.sqrt(slX * slX + slY * slY + slZ * slZ);
++        var vls = (slX * lVelX + slY * lVelY + slZ * lVelZ) / magSl;
++        var vss = (slX * velX + slY * velY + slZ * velZ) / magSl;
++        vls = Math.min(vls, speedOfSound / dopplerFactor);
++        vss = Math.min(vss, speedOfSound / dopplerFactor);
++        src.dopplerShift = (speedOfSound - dopplerFactor * vls) / (speedOfSound - dopplerFactor * vss);
++      }
++      if (src.dopplerShift !== oldShift) {
++        AL.updateSourceRate(src);
++      }
++    };
++    AL.updateListenerSpace = (ctx) => {
++      var listener = ctx.audioCtx.listener;
++      if (listener.positionX) {
++        listener.positionX.value = ctx.listener.position[0];
++        listener.positionY.value = ctx.listener.position[1];
++        listener.positionZ.value = ctx.listener.position[2];
++      } else {
++        listener.setPosition(ctx.listener.position[0], ctx.listener.position[1], ctx.listener.position[2]);
++      }
++      if (listener.forwardX) {
++        listener.forwardX.value = ctx.listener.direction[0];
++        listener.forwardY.value = ctx.listener.direction[1];
++        listener.forwardZ.value = ctx.listener.direction[2];
++        listener.upX.value = ctx.listener.up[0];
++        listener.upY.value = ctx.listener.up[1];
++        listener.upZ.value = ctx.listener.up[2];
++      } else {
++        listener.setOrientation(
++          ctx.listener.direction[0], ctx.listener.direction[1], ctx.listener.direction[2],
++          ctx.listener.up[0], ctx.listener.up[1], ctx.listener.up[2]);
++      }
++      for (var i in ctx.sources) {
++        var src = ctx.sources[i];
++        if (!src.panner) continue;
++        if (src.relative) AL.updateSourceSpace(src);
++        else AL.orthrosSourceDoppler(src);
++      }
++    };
++  `,
++
++  alBufferData: (bufferId, format, pData, size, freq) => {
++    if (!AL.currentCtx) {
++      return;
++    }
++    var buf = AL.buffers[bufferId];
++    if (!buf || freq <= 0) {
++      AL.currentCtx.err = {{{ cDefs.AL_INVALID_VALUE }}};
++      return;
++    }
++    // [channels, bytes a sample] of the formats the library takes
++    var layout = {
++      0x1100 /* AL_FORMAT_MONO8 */: [1, 1], 0x1101 /* AL_FORMAT_MONO16 */: [1, 2],
++      0x1102 /* AL_FORMAT_STEREO8 */: [2, 1], 0x1103 /* AL_FORMAT_STEREO16 */: [2, 2],
++      0x10010 /* AL_FORMAT_MONO_FLOAT32 */: [1, 4], 0x10011 /* AL_FORMAT_STEREO_FLOAT32 */: [2, 4],
++    }[format];
++    if (!layout) {
++      AL.currentCtx.err = {{{ cDefs.AL_INVALID_VALUE }}};
++      return;
++    }
++    var channels = layout[0], bytes = layout[1];
++    var frames = Math.floor(size / (channels * bytes)), count = frames * channels;
++    var audioBuf = null;
++    try {
++      if (size > 0) {
++        audioBuf = AL.currentCtx.audioCtx.createBuffer(channels, frames, freq);
++        var out0 = audioBuf.getChannelData(0), out1 = channels === 2 ? audioBuf.getChannelData(1) : null, i, k;
++        if (bytes === 1) {
++          var u8 = HEAPU8.subarray(pData, pData + count);
++          if (!out1) for (i = 0; i < frames; ++i) out0[i] = u8[i] * 0.0078125 /* 1/128 */ - 1.0;
++          else for (i = 0, k = 0; i < frames; ++i, k += 2) {
++            out0[i] = u8[k] * 0.0078125 - 1.0;
++            out1[i] = u8[k + 1] * 0.0078125 - 1.0;
++          }
++        } else if (bytes === 2) {
++          var s16 = HEAP16.subarray(pData / 2, pData / 2 + count);
++          if (!out1) for (i = 0; i < frames; ++i) out0[i] = s16[i] * 0.000030517578125 /* 1/32768 */;
++          else for (i = 0, k = 0; i < frames; ++i, k += 2) {
++            out0[i] = s16[k] * 0.000030517578125;
++            out1[i] = s16[k + 1] * 0.000030517578125;
++          }
++        } else {
++          var f32 = HEAPF32.subarray(pData / 4, pData / 4 + count);
++          if (!out1) out0.set(f32);
++          else for (i = 0, k = 0; i < frames; ++i, k += 2) {
++            out0[i] = f32[k];
++            out1[i] = f32[k + 1];
++          }
++        }
++      }
++      buf.bytesPerSample = bytes;
++      buf.channels = channels;
++      buf.length = frames;
++      buf.frequency = freq;
++      buf.audioBuf = audioBuf;
++    } catch (e) {
++      AL.currentCtx.err = {{{ cDefs.AL_INVALID_VALUE }}};
++    }
++  },
++});

@@ -740,6 +740,87 @@ browser profile, F9: inside again. Only fault: the headless "Pointer is already 
 Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r8"` in the `openmw` object of
 each version of `data/games/morrowind/manifest.json` and `data/games/morrowind-vanilla-plus/manifest.json`.
 
+### Space jumps, E activates; Lua's math, OpenAL's frame cost: engine orthros-r9 (2026-10-26)
+
+The owner (2026-10-26): "still lags on Morrowind", and Space should jump and E activate, for everyone — the reverse of
+Morrowind's own defaults, which OpenMW keeps. What the owner's session said (passive record, Vanilla+ FR solo, Iris Xe,
+Chrome 155, a 1826×1271 window, tier `mid`, r8): in the world 39-50 frames a second, frames of 16.7 ms and 33 ms (one
+in six missed a vsync), 30-46 over 40 ms and 4-13 over 100 ms a minute, the engine's work 19.9-22.4 ms a frame
+(averages), its GPU time 10.7-15 ms. Before that, loading the game took 57 s without a frame, 55 s of it the engine
+waiting for game data (906 reads not yet in the browser's copy). And the gateway's client log had the same Lua error
+at every frame of a dialogue, `scripts/uimodes/npc.lua:13: attempt to call a nil value (field 'atan2')` (UI Modes'
+NPC turning to the player): 135 lines that day, 4,154 in one session on 2026-10-20.
+
+A profile of the engine at the owner's tier (`perf.mjs morrowind-goty-vanilla-plus-fr --query tier=mid --discard
+--profile`, Seyda Neen, 60 s walking; names from `openmw.js.symbols`): of the engine's busy time, OSG's draw ~39 %
+(applying uniforms and state sets: `PerContextProgram::apply(Uniform)` alone 8 %), the cull ~19 % (the shadowed
+scene, the light lists), Lua 7 % (the addons' handlers), **the OpenAL listener 5 %** and the music stream's buffers
+3.5 % (`alBufferData` 2 %); the wasm64 JS glue's checks (`growMemViews`, `bigintToI53Checked`, the memory's `buffer`
+getter) ~5 % across every GL call.
+
+What r9 changes (`orthros-r9.patch`, on r8):
+- **Key defaults** (`mwinput/bindingsmanager.cpp`): Activate on E, Jump on Space (keyboard only: controllers keep their
+  buttons). A new player gets them, and Options → Controls → reset too. A player's saved bindings (`input_v3.xml` in
+  the engine's user config, written when the Options window closes, kept in IDBFS and on the account) are swapped by
+  the page, once, when they hold the old pair exactly — Activate on Space and Jump on E —: `src/ports/openmw/input-keys.js`,
+  loaded before the engine and called once the user files are in place (the account's copy and IDBFS restored), by
+  `withInputKeys` (`src/host/openmw.js`). A marker beside them (`orthros-input.json`) records that the file was looked
+  at: the old pair chosen again later stays, any other layout is never touched, and with no file yet nothing is
+  recorded (a file the engine writes later is looked at then). The swap edits only the two `key` attributes.
+- **Lua's math** (`wasm-build/build-deps.sh`): the browser engine runs PUC Lua 5.4, desktop OpenMW LuaJIT, and mods
+  call LuaJIT's `math.atan2`, `pow`, `cosh`, `sinh`, `tanh`, `frexp`, `ldexp`, `log10`. Lua is compiled with
+  `LUA_COMPAT_MATHLIB`, its own C versions of them (5.4's `atan2` is `math.atan(y, x)`); only `lmathlib.c` reads the
+  macro. A generic fidelity fix: UI Modes' NPCs turn to the player in dialogue again, without an error a frame.
+- **OpenAL** (`wasm-build/orthros-openal.js`, a `--js-library` linked after Emscripten's): every `alListener*` call
+  (OpenMW sets the position and the orientation each frame) re-placed every source's panner, reading six AudioParams
+  of each; a source in world coordinates does not move with the listener — only its Doppler shift depends on it, and
+  that is all it now gets (computed as before); listener-relative sources as before. `alBufferData` read the heap
+  through `growMemViews()` at every sample: the view is taken once a call (and indexed by division, not `>>`, which
+  wraps a pointer past 2 GiB under MEMORY64).
+
+- **The water's refraction on the discrete GPUs' tier only** (no engine change: `tierSettings`,
+  `src/ports/openmw/tier.js`, written into the page's settings by `withQualityTier`): refraction draws the scene a
+  second time each frame water is in view (a render-to-texture camera: the whole cull and draw again, and its GPU
+  pass). OpenMW's own default is off (`settings-default.cfg`); the engine page had it on for every tier. Now `low` and
+  `mid` (software and integrated GPUs) leave it off, `high` keeps it; `?norefr=1` / `?refr=1` force it, and a value
+  saved from the player's Options wins as every setting does.
+
+Measured (two scratch servers on this branch's code, one serving r8 and the old tier, one r9 and the new — an engines
+dir whose `openmw-web-v1.5.3-orthros-r8` links to the release under test —, the same copied learned order, runs
+alternated; `perf.mjs morrowind-goty-vanilla-plus-fr --query tier=mid --discard --seconds 60`, Seyda Neen walking,
+load 10-15; one run at load 64 discarded):
+
+| run | fps | engine work p50 / p90 / p99 | frames over 50 ms of work | gaps over 100 ms |
+|---|---|---|---|---|
+| before (r8, refraction) a | 17.0 | 20.1 / 24.8 / 42.6 ms | 8 | 9 |
+| before b | 16.4 | 21.1 / 26.8 / 47.0 | 9 | 12 |
+| before c | 15.6 | 20.5 / 26.2 / 43.4 | 7 | 14 |
+| after (r9, mid without refraction) b | 20.9 | 16.2 / 20.0 / 34.1 | 7 | 9 |
+| after c | 20.8 | 17.2 / 21.5 / 34.7 | 7 | 5 |
+
+Apart (same tier, refraction on both sides, profiled runs): the OpenAL listener 5.8 % of the engine's busy time on r8,
+1.2-1.3 % on r9 (with `AL.orthrosSourceDoppler` 0.6 %), `alBufferData` 1.8 % -> 0.2-0.3 %, the stream refills 3.4 % ->
+1.8-2.2 % — about 1.3 ms a frame; refraction alone on r9: work p50 18.2-19.2 -> 16.7-16.8 ms, 17.2-17.4 -> 20.4-20.6
+fps. These are the CPU's (SwiftShader rasterizes nothing); on a real GPU the refraction's pass is saved as well. Left:
+OSG's draw (applying uniforms and state sets) and cull, now ~60 % of the engine's busy time; the addons' Lua ~5 %.
+Not changed here: the 57 s load of the owner's session was the game data's synchronous reads (the shared game data's
+work, docs/slow-network.md).
+
+The keys in the engine: `tools/openmw/keys-check.mjs <manifest> --url <origin> [--seed-old]` (a new character at
+-2,-9; the player's Lua console samples `input.isActionPressed` for Jump and Activate and the player's height while
+Space, then E, is held — reported through the engine's log; `--seed-old` first saves the old pair in the page's
+persistent user files and loads the page again). On r8 it reports Space → Activate, E → Jump (a 78-unit rise). On r9 it reports Space → Jump (a 73-unit rise), E → Activate, a
+new player and a seeded one alike (`morrowind-goty-en`, `morrowind-goty-vanilla-plus-fr`); with `--seed-old` on r8 too
+— the page's swap alone is enough for a saved file. Lua in the player's console: on r9 `math.atan2(1, 1)` 0.7854,
+`math.pow(2, 10)` 1024, `math.log10(1000)` 3, `math.ldexp(1, 4)` 16; on r8 `atan2` is nil. A dialogue in Vanilla+ FR
+(`Module._omw_debug_activate()`, the nearest NPC): 156 `atan2` Lua errors in 8 s on r8, none on r9. `check.mjs`
+passes on r9 for `morrowind-goty-en`, `--lang fr`, `morrowind-goty-vanilla-plus-en` and `--lang fr`; the settings the
+page wrote: `refraction = false` at `low` and `mid`, `true` at `high` and with `?refr=1`.
+
+Switch (after a merge and a server restart — the page's swap comes with the server's code): set `"engine":
+"openmw-web-v1.5.3-orthros-r9"` in the `openmw` object of each version of `data/games/morrowind/manifest.json` and
+`data/games/morrowind-vanilla-plus/manifest.json`.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.
