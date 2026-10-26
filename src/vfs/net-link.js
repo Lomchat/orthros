@@ -15,6 +15,10 @@
 //   the request had already received);
 // - a demand read asks for what the game reads plus at most demandExtra() bytes past it (DEMAND_SECONDS of the
 //   link): a thin link fetches what the game needs, a fast one rounds up generously (fewer round trips).
+// - a load (docs/slow-network.md "Silence during a load"): while the game is blocked in a dense run of reads it really
+//   waits for (wait/waitEnd: a parked read, a synchronous one — not a read fetched ahead that nothing waits for), a link
+//   that is not fast carries only what that load needs: the turns promoted by a parked read (urgent) and those flagged
+//   forLoad; the others stay queued until the load is over (loading()), and an allowed one is small (requestBytes()).
 
 /** a background request carries about this much of the link's time (s) */
 export const BG_SECONDS = 0.35;
@@ -31,6 +35,20 @@ const UNKNOWN_BG = 256 << 10;
 const RTT_BYTES = 16 << 10;
 /** the rate is measured over the answers that ended within this much time (ms, see sample) */
 const HORIZON_MS = 20000;
+/**
+ * A load (see loading): at least LOAD_WAITS reads the game waited for began within LOAD_WINDOW_MS, the last of them
+ * ended less than loadGap() ago (LOAD_GAP_MS at least, LOAD_GAP_RTTS round trips) — one wait in play alone silences
+ * nothing past its own end
+ */
+export const LOAD_WAITS = 3, LOAD_WINDOW_MS = 4000, LOAD_GAP_MS = 500, LOAD_GAP_RTTS = 4;
+/**
+ * a run of waits that has lasted LOAD_LONG_MS (a load, not a few reads in play) ends only after a pause of LOAD_HOLD_MS:
+ * its engine's own work between two reads (a save parsed, a scene built) can last longer than loadGap()'s few round
+ * trips, and each such pause released every queued download, whole blocks too, into the load's next reads
+ */
+export const LOAD_LONG_MS = 4000, LOAD_HOLD_MS = 2000;
+/** while loading, a background request carries at most this many round trips of the link (see requestBytes) */
+const LOAD_REQUEST_RTTS = 2;
 
 export class NetLink {
   /**
@@ -51,7 +69,7 @@ export class NetLink {
     this.inflight = { demand: 0, bg: 0 };
     this.lastDemandEnd = -1e9;
     /** totals: wire bytes received, requests, ms the game's reads were on their way */
-    this.totals = { demandBytes: 0, demandRequests: 0, demandMs: 0, bgBytes: 0, bgRequests: 0, abortedRequests: 0, rawBytes: 0 };
+    this.totals = { demandBytes: 0, demandRequests: 0, demandMs: 0, bgBytes: 0, bgRequests: 0, abortedRequests: 0, rawBytes: 0, waits: 0, waitMs: 0 };
     // bandwidth window: bytes received and link busy time since the last sample
     // (bandwidth window: the transfer intervals of the answers that ended in it — from their first byte, else from their
     // start plus a round trip, to their end — and their wire bytes; see sample)
@@ -66,6 +84,65 @@ export class NetLink {
     this.reserved = [];
     /** the game's reads in flight (their tokens) */
     this.demandFlights = new Set();
+    /** the reads the game waits for now (wait's tokens), the times the latest ones began, when the last one ended */
+    this.waitsNow = new Set(); this.waitStarts = []; this.lastWaitEnd = -1e9;
+    /** when the current run of waits began (its first wait after a pause of loadGap(): see loadGap) */
+    this.runT0 = -1e9;
+    /**
+     * the background bytes by producer (begin's `reason`: pf1/pf2 learned pieces / rest of their blocks, pf whole learned
+     * blocks, ahead, readAhead, mediaAhead, miss, want, near, later, upgrade, offline): { requests, wire, raw, inLoad —
+     * wire bytes of the requests begun during a load }
+     */
+    this.bgBy = {};
+  }
+
+  /**
+   * The game is blocked on a read (a parked read, a synchronous one, a page's read its engine waits for): its token for
+   * waitEnd. Not a request: what feeds loading() — a read fetched ahead that nothing waits for is no wait.
+   */
+  wait() {
+    const t = { t0: this.now() };
+    // (the first wait after a pause: a new run)
+    if (!this.waitsNow.size && t.t0 - this.lastWaitEnd >= this.loadGap()) this.runT0 = t.t0;
+    this.waitsNow.add(t); this.waitStarts.push(t.t0); this.totals.waits++;
+    if (this.waitStarts.length > 64) this.waitStarts.shift();
+    return t;
+  }
+  /** The read of wait token `t` is here (or failed): the game goes on. */
+  waitEnd(t) {
+    if (!t || !this.waitsNow.delete(t)) return;
+    this.lastWaitEnd = this.now(); this.totals.waitMs += this.lastWaitEnd - t.t0;
+    this.kick();
+  }
+  /**
+   * after a dense run of waits, a pause this long (ms) ends the load: a few round trips, LOAD_GAP_MS at least —
+   * LOAD_HOLD_MS once the run has lasted LOAD_LONG_MS
+   */
+  loadGap() {
+    const g = Math.max(LOAD_GAP_MS, LOAD_GAP_RTTS * (this.rtt ?? 0));
+    return this.lastWaitEnd - this.runT0 >= LOAD_LONG_MS ? Math.max(g, LOAD_HOLD_MS) : g;
+  }
+  /**
+   * The game is loading: a read it waits for is in flight, or a dense run of them (LOAD_WAITS within LOAD_WINDOW_MS)
+   * ended less than loadGap() ago — the engine's work between two reads of a load is no pause.
+   */
+  loading() {
+    if (this.waitsNow.size) return true;
+    const now = this.now();
+    if (now - this.lastWaitEnd >= this.loadGap()) return false;
+    let n = 0; for (let i = this.waitStarts.length - 1; i >= 0 && now - this.waitStarts[i] < LOAD_WINDOW_MS; i--) n++;
+    return n >= LOAD_WAITS;
+  }
+  /** The background keeps to the load's own needs now: a load on a link that is not fast (a fast one keeps its policies). */
+  silenced() { return !this.fast() && this.loading(); }
+  /**
+   * File bytes one background request may carry now: backgroundBytes(), and while silenced() at most LOAD_REQUEST_RTTS
+   * round trips of the link — a parked read that waits for a request on its way waits about that long, not a block's time.
+   */
+  requestBytes() {
+    const b = this.backgroundBytes();
+    if (!this.bw || !this.silenced()) return b;
+    return Math.max(MIN_BG, Math.min(b, Math.floor(this.bw * LOAD_REQUEST_RTTS * (this.rtt ?? 0) / 1000 / this.ratio() / MIN_BG) * MIN_BG));
   }
   /** background requests in flight or about to be (turns given within the last 500 ms) */
   bgCount() { const now = this.now(); while (this.reserved.length && now - this.reserved[0].t > 500) this.reserved.shift(); return this.inflight.bg + this.reserved.length; }
@@ -94,10 +171,14 @@ export class NetLink {
   /** bytes a demand read may fetch past what the game asked for (`cap`: the caller's own limit) */
   demandExtra(cap) { return this.bw === null ? (this.fixed ? cap : Math.min(cap, UNKNOWN_BG)) : Math.min(cap, Math.floor(this.bw * DEMAND_SECONDS / this.ratio())); }
 
-  /** A request starts: `kind` 'demand' (the game waits for it) or 'bg'. Returns its token for end(). */
-  begin(kind, bytes = 0, abort = null, range = null) {
-    const t = { kind, t0: this.now(), bytes, abort, range, tx: null };
+  /**
+   * A request starts: `kind` 'demand' (the game waits for it) or 'bg' — `reason` the background producer's (counted in
+   * bgBy: which of them carried what). Returns its token for end().
+   */
+  begin(kind, bytes = 0, abort = null, range = null, reason = 'other') {
+    const t = { kind, t0: this.now(), bytes, abort, range, tx: null, reason };
     this.inflight[kind]++;
+    if (kind === 'bg' && this.loading()) t.inLoad = true; // (started during a load: see bgBy's inLoad)
     if (kind === 'bg') { this.reserved.shift(); this.bgFlights.add(t); } else this.demandFlights.add(t);
     return t;
   }
@@ -118,7 +199,11 @@ export class NetLink {
     if (t.kind === 'bg') this.bgFlights.delete(t); else this.demandFlights.delete(t);
     if (t.kind === 'demand') { this.lastDemandEnd = now; this.totals.demandMs += ms; }
     if (ok) {
-      if (t.kind === 'demand') { this.totals.demandBytes += wire; this.totals.demandRequests++; } else { this.totals.bgBytes += wire; this.totals.bgRequests++; }
+      if (t.kind === 'demand') { this.totals.demandBytes += wire; this.totals.demandRequests++; } else {
+        this.totals.bgBytes += wire; this.totals.bgRequests++;
+        const r = (this.bgBy[t.reason] ??= { requests: 0, wire: 0, raw: 0, inLoad: 0 });
+        r.requests++; r.wire += wire; r.raw += raw; if (t.inLoad) r.inLoad += wire;
+      }
       this.totals.rawBytes += raw;
       // (the round trip from small answers only: a large one's time is mostly its transfer)
       if (wire <= RTT_BYTES) this.rtt = this.rtt === null ? ms : Math.min(this.rtt, ms);
@@ -199,9 +284,14 @@ export class NetLink {
     }
   }
 
-  /** True when a background download of priority `quietMs` may start now. */
-  mayStart(quietMs, urgent = false, bytes = 0) {
+  /**
+   * True when a background download of priority `quietMs` may start now: `urgent` (a parked read waits for it) at once;
+   * while silenced() (a load) only one `forLoad` (what the load needs), by the same rules as outside a load.
+   */
+  mayStart(quietMs, urgent = false, bytes = 0, forLoad = false) {
     if (urgent) return true;
+    const quiet = this.silenced();
+    if (quiet && !forLoad) return false;
     const n = this.bgCount();
     if (n >= this.maxBackground()) return false;
     // (together the background requests carry about BG_SECONDS of the link: one at least)
@@ -211,6 +301,9 @@ export class NetLink {
     // flight — the game's and the background's — within about BG_SECONDS of the link: a game read waits at most that
     // long more, and the round trips of a run of small reads no longer leave the link idle)
     if (this.thin()) return this.inflight.demand === 0 && this.now() - this.lastDemandEnd >= quietMs;
+    // (a load's own download larger than the bytes rule — queued before the load, at the size of a link then free —
+    // goes when nothing else is on the link, or it would wait for the load to end, the load's next pieces behind it;
+    // those queued during a load are small: requestBytes)
     return n + this.inflight.demand === 0 || this.bgBytes() + this.demandBytes() + bytes <= this.backgroundBytes();
   }
   /**
@@ -218,6 +311,7 @@ export class NetLink {
    * game's last read it waits for (0 on a fast link: no wait). `w.urgent` set meanwhile (a parked read waits for this
    * download) lets it start at once. Resolves to true, or false once `stop()` holds.
    */
+  // (`w.forLoad`: the download is what a load under way needs — it may start during the load, see mayStart)
   turn(prio, quietMs, stop = () => false, w = {}, bytes = 0) {
     w.bytes = bytes;
     if (this.tryTurn(quietMs, w)) return Promise.resolve(true);
@@ -230,7 +324,7 @@ export class NetLink {
   }
   /** The turn of a background download that may start now (none waits before it): taken, true; else false. */
   tryTurn(quietMs, w = {}, bytes = w.bytes ?? 0) {
-    if (this.waiters.length || !this.mayStart(quietMs, w.urgent, bytes)) return false;
+    if (this.waiters.length || !this.mayStart(quietMs, w.urgent, bytes, w.forLoad)) return false;
     this.reserved.push({ t: this.now(), bytes });
     return true;
   }
@@ -239,10 +333,13 @@ export class NetLink {
     if (this.timer !== null) { this.clearTimer(this.timer); this.timer = null; }
     // (the stopped ones go first, wherever they wait)
     for (let i = 0; i < this.waiters.length; i++) { const w = this.waiters[i]; if (w.stop?.()) { this.waiters.splice(i--, 1); w.resolve(false); } }
+    const quiet = this.silenced();
     for (let i = 0; i < this.waiters.length; i++) {
       const w = this.waiters[i];
+      // (a load: the ones it does not need stay queued, out of the priority order meanwhile — the timer looks again)
+      if (quiet && !w.urgent && !w.forLoad) continue;
       // (the request starts after this resolves: counted as in flight now so the next ones see it)
-      if (this.mayStart(w.quietMs, w.urgent, w.bytes ?? 0)) { this.waiters.splice(i--, 1); this.reserved.push({ t: this.now(), bytes: w.bytes ?? 0 }); w.resolve(true); continue; }
+      if (this.mayStart(w.quietMs, w.urgent, w.bytes ?? 0, w.forLoad)) { this.waiters.splice(i--, 1); this.reserved.push({ t: this.now(), bytes: w.bytes ?? 0 }); w.resolve(true); continue; }
       if (!w.urgent) break; // (strict priority: a later one does not pass one that waits)
     }
     if (this.waiters.length) {
@@ -259,6 +356,6 @@ export class NetLink {
   }
   /** A snapshot for the page and the reports. */
   snapshot() {
-    return { bw: this.bw === null ? null : Math.round(this.bw), measured: this.measured, rtt: this.rtt === null ? null : Math.round(this.rtt), demandInFlight: this.inflight.demand, bgInFlight: this.inflight.bg, waiting: this.waiters.length, ...this.totals };
+    return { bw: this.bw === null ? null : Math.round(this.bw), measured: this.measured, rtt: this.rtt === null ? null : Math.round(this.rtt), demandInFlight: this.inflight.demand, bgInFlight: this.inflight.bg, waiting: this.waiters.length, loading: this.loading(), ...this.totals, bgBy: Object.fromEntries(Object.entries(this.bgBy).map(([k, v]) => [k, { ...v }])) };
   }
 }

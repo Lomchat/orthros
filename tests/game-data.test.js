@@ -13,6 +13,7 @@ import { createDataWorker } from '../src/vfs/data-worker.js';
 import { GameData, PIECE, readsReal } from '../src/vfs/data-client.js';
 import { fileNode, mountFiles, phaseOnRead } from '../src/vfs/emscripten-files.js';
 import { BLOCK } from '../src/vfs/http-backend.js';
+import { FAST_BPS } from '../src/vfs/net-link.js';
 
 const bytes = (n, seed = 1) => Uint8Array.from({ length: n }, (_, i) => (i * 31 + seed + (i >> 10)) & 255);
 
@@ -567,4 +568,21 @@ test('a load made of many short waits (each read the engine suspends on, 60 ms) 
   loading = false; await watch;
   assert.ok(seen.length >= 3, `sampled during the load (${seen.length})`); // (how long the load lasts depends on the machine: a few samples are enough)
   assert.ok(seen.filter((n) => n > 0).length >= seen.length * 0.6, `counted as a wait most of the load: ${seen.join('')}`);
+  // (the link silent meanwhile: the blocks the load touched — the block fill — wait for its end; the worker's counters
+  // tell the page each producer's bytes, those begun during a load apart)
+  // (the load's end: a pause of loadGap() — LOAD_HOLD_MS once the run has lasted LOAD_LONG_MS, as on a busy machine)
+  await until(() => data.snapshot().net?.bgBy?.want && data.snapshot().net.loading === false, 'the block fill after the load', 8000);
+  const net = data.snapshot().net;
+  if (net.bw < FAST_BPS) for (const [why, r] of Object.entries(net.bgBy)) assert.equal(r.inLoad, 0, `${why} begun during the load: ${JSON.stringify(net.bgBy)}`);
+  assert.ok(net.waits >= 25 && net.loading === false, JSON.stringify(net));
+});
+
+test('on a link that is not fast a picture read light (a loading screen: a TGA\'s light copy) is never upgraded; a texture is', async (t) => {
+  const pic = bytes(400000, 2), plight = bytes(30000, 8), tex = bytes(300000, 3), tlight = bytes(40000, 9);
+  const server = fakeServer({ 'Splash/load.tga': pic, 'tex.dds': tex }, [], { 'Splash/load.tga': plight, 'tex.dds': tlight });
+  const data = await inThread(t, server, { reloads: true }), out = new Uint8Array(400000);
+  for (const p of ['Splash/load.tga', 'tex.dds']) { const h = data.file('v', p); await data.ensure(h, 0, h.size); data.read(h, out, 0, h.size, 0); }
+  await until(() => data.realHere.has('v\ntex.dds'), 'the texture\'s file here', 6000);
+  assert.ok(!server.asked.some(([p]) => p === 'Splash/load.tga'), `the picture's file never asked: ${JSON.stringify(server.asked)}`);
+  assert.ok(!data.realHere.has('v\nsplash/load.tga'));
 });

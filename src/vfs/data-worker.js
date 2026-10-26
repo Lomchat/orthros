@@ -142,18 +142,27 @@ async function bytesOf({ name, path, off, len, want, src }, ask = { held: true }
   await adoptLegacy(name, path, part, f);
   const wait = f.prepare(off, end - off);
   if (wait) {
+    // (a media stream's read: a wait of the engine's, not of a load — see HttpFile.prepare)
+    ask.media = !!part.files.isMedia?.(f.path);
     W.waits.add(ask); waited();
-    try { await wait; } finally { W.waits.delete(ask); waited(); }
+    try { await wait; } finally { W.waits.delete(ask); if (ask.tok) { W.version.net.waitEnd(ask.tok); ask.tok = null; } waited(); }
   }
   const stop = Math.max(end, hereUntil(part.files, f, Math.ceil(end / CHUNK) * CHUNK, Math.min(f.len, off + Math.max(len, want ?? 0))));
   return f.read(off, stop - off);
 }
 
-/** The reads waiting for the network that the engine waits for, counted again (W.waiting; lastWait while there are). */
+/**
+ * The reads waiting for the network that the engine waits for, counted again (W.waiting; lastWait while there are);
+ * each one a wait of the link's while it is held (NetLink.wait: the background keeps to a load's needs during a run of
+ * them) — not a read fetched in the background, nor one the engine went on past, nor a media stream's.
+ */
 function waited() {
-  const was = W.waiting;
+  const was = W.waiting, net = W.version.net;
   W.waiting = 0;
-  for (const a of W.waits) if (a.held) W.waiting++;
+  for (const a of W.waits) {
+    if (a.held) W.waiting++;
+    if (a.held && !a.media && !a.tok) a.tok = net.wait(); else if (!a.held && a.tok) { net.waitEnd(a.tok); a.tok = null; }
+  }
   if (W.waiting > 0 || was > 0) W.lastWait = performance.now();
 }
 
@@ -292,7 +301,8 @@ async function prefetchAll() {
     const progress = { bytes: 0, blocks: 0, done: false };
     // (its launch set first: a player waiting in the menu gets what the way to playable still needs first — launchFirst)
     const list = launchFirst(p.files, lists[i], W.version.net.fast());
-    runs.push({ p, progress, job: p.files.prefetch(list, progress, () => W.stop, { first: list.first }).catch(() => {}) });
+    // (made again when the link's class changes: the rate this page started with was another page's — relist)
+    runs.push({ p, progress, job: p.files.prefetch(list, progress, () => W.stop, { first: list.first, relist: (fast) => launchFirst(p.files, lists[i], fast) }).catch(() => {}) });
   });
   W.runs = runs;
   if (!runs.length) return;
@@ -372,6 +382,8 @@ function monitor() {
     const done = raw - W.step.base;
     Atomics.store(ctrl, 4, Math.round(done / 1024)); Atomics.store(ctrl, 5, rest === null ? 0 : Math.round((done + rest) / 1024));
   } else if (W.step && now - W.lastWait > STEP_PAUSE_MS) { W.step = null; Atomics.store(ctrl, 4, 0); Atomics.store(ctrl, 5, 0); }
+  // (the link's counters for the page's reports — GameData.snapshot's `net`: the background's bytes by producer —, every second)
+  if (now - (W.netAt ?? -1e9) >= 1000) { W.netAt = now; postMessage({ net: net.snapshot() }); }
 }
 
 /**

@@ -15,13 +15,17 @@
 // first (ms to the first byte), ms (total), reset when the browser cancelled it —, and a line { t, mark, url } for each
 // data report carrying a mark (`/api/prefetch/<manifest>` POSTs with `mark`: a page's or worker's "playable"), which
 // GET /__proxy/marks lists (not forwarded). --http1: plain HTTP/1.1 (a Node client: tools/prepare-bench.mjs).
-// tools/data-matrix.mjs and tools/prepare-bench.mjs use startProxy.
+// tools/data-matrix.mjs, tools/prepare-bench.mjs and tools/openmw/place-load.mjs use startProxy; the log's readers
+// (readLog, summarize: the run's bytes by kind; loadWindow: a stretch of it — the game's own reads, their spacing, and
+// the background's bytes by kind and file category) and the origin behind it (startOrigin: an Orthros server of a code
+// tree on a measurement's copies, spkiOf, freePort) are theirs too.
 import http from 'node:http';
+import net from 'node:net';
 import http2 from 'node:http2';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import zlib from 'node:zlib';
 
 const args = process.argv.slice(2);
@@ -149,6 +153,166 @@ export function startProxy({ upstream, listen = 0, rate, rtt = 0, log = null, ce
     server, port: server.address().port, marks,
     close: () => new Promise((r) => { out?.end(); server.close(() => r()); setTimeout(r, 2000).unref?.(); }),
   })));
+}
+
+/** the base64 SHA-256 of the proxy certificate's key: the browser trusts it (--ignore-certificate-errors-spki-list) */
+export const spkiOf = (dir) => execFileSync('bash', ['-c', `openssl x509 -in ${JSON.stringify(path.join(dir, 'cert.pem'))} -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64`], { encoding: 'utf8' }).trim();
+/** a free local port */
+export const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
+
+/**
+ * The origin behind the proxy for a measurement: the Orthros server of the code tree `tree` (its src/host/server.js)
+ * on a port of its own, with the measurement's directories — `learn` (a fresh copy: the run's reports land there),
+ * `telemetry`, `brcache` (always given: the default <learn>/../brcache would start making units; served `frozen`, none
+ * made), `covers` (a directory or 'off'), `gamesDir`, `enginesDir` —, its output in `log`; ready once it listens, the
+ * page's modules then made brotli as on a server up for a while (every src text file asked until all come so).
+ * A promise of { port, close() }.
+ */
+export async function startOrigin({ tree, learn, telemetry, brcache, frozen = true, covers = 'off', gamesDir, enginesDir, log, warmSrc = true }) {
+  const port = await freePort();
+  const srv = spawn(process.execPath, [path.join(tree, 'src/host/server.js'), '--port', String(port), '--learn', learn, '--telemetry', telemetry,
+    '--br-cache', brcache, ...(frozen ? ['--br-cache-frozen'] : []), '--covers', covers, '--games-dir', gamesDir, '--engines-dir', enginesDir], { cwd: tree, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (log) { const w = fs.createWriteStream(log); srv.stdout.pipe(w); srv.stderr.pipe(w); }
+  const exited = new Promise((r) => srv.on('exit', r));
+  await new Promise((resolve) => { const on = (d) => { if (String(d).includes('orthros: http')) { srv.stdout.off('data', on); resolve(); } }; srv.stdout.on('data', on); srv.on('exit', resolve); setTimeout(resolve, 30000); });
+  if (srv.exitCode !== null) throw new Error(`origin: the server exited (${srv.exitCode})${log ? `, see ${log}` : ''}`);
+  if (warmSrc) {
+    const srcFiles = []; const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else if (/\.(m?js|html|css|json|svg|txt)$/.test(e.name) && fs.statSync(f).size >= 512) srcFiles.push(path.relative(tree, f)); } };
+    walk(path.join(tree, 'src'));
+    for (let pass = 0, left = srcFiles; pass < 8 && left.length; pass++) {
+      const next = [];
+      for (let i = 0; i < left.length; i += 16) await Promise.all(left.slice(i, i + 16).map(async (f) => { const r = await fetch(`http://127.0.0.1:${port}/${f}`, { headers: { 'accept-encoding': 'br' } }).catch(() => null); await r?.arrayBuffer().catch(() => {}); if (r && r.headers.get('content-encoding') !== 'br' && r.status === 200) next.push(f); }));
+      left = next; if (left.length) await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  return { port, close: () => { srv.kill('SIGTERM'); return Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]); } };
+}
+
+/** A proxy log's lines (a file, gzip too): requests and marks, by request start (`t`; lines are written as they close). */
+export function readLog(file) {
+  const raw = fs.readFileSync(file); const text = (file.endsWith('.gz') ? zlib.gunzipSync(raw) : raw).toString('utf8');
+  const recs = []; for (const l of text.split('\n')) { if (!l) continue; try { recs.push(JSON.parse(l)); } catch { /* a line cut by a kill */ } }
+  return recs.sort((a, b) => a.t - b.t);
+}
+
+/**
+ * A request's kind from its URL (the backend's rangeUrl): game data (/gamez/, /game/) read for the game itself —
+ * 'demand' —, fetched ahead of it as its own read ('ahead': `a=1`, which carries the session `s=` too: the proxy's own
+ * `kind` counts it as demand) or in the background ('bg': `p=1`); anything else 'other'.
+ */
+export function urlKind(url) {
+  if (!url.startsWith('/gamez/') && !url.startsWith('/game/')) return 'other';
+  return /[?&]p=1/.test(url) ? 'bg' : /[?&]a=1/.test(url) ? 'ahead' : 'demand';
+}
+
+/** A game data request's { manifest, path (decoded, without the light copies' folder), light, decoded (bytes, from `r=a-b`; null: the file) }, else null. */
+export function dataRead(url) {
+  const m = /^\/gamez?\/([^/?]+)\/([^?]*)(?:\?(.*))?$/.exec(url); if (!m) return null;
+  let p; try { p = m[2].split('/').map(decodeURIComponent).join('/'); } catch { p = m[2]; }
+  const light = p.startsWith('.light/'); if (light) p = p.slice(7);
+  const r = /(?:^|&)r=(\d+)-(\d+)/.exec(m[3] ?? '');
+  return { manifest: decodeURIComponent(m[1]), path: p, light, decoded: r ? Number(r[2]) - Number(r[1]) : null };
+}
+
+/** The file categories of loadWindow, the first that matches wins (`folders`: a path segment's name, any case). */
+export const FILE_FOLDERS = ['Video', 'Splash', 'Music', 'Sound'];
+/**
+ * A game data read's category: 'upgrade' (the full file of a light copy read earlier: `lightSeen` has its path),
+ * 'light', a folder of `folders`, then by format — 'texture' (dds, tga, bmp, ktx), 'mesh' (nif, kf, x), 'archive'
+ * (bsa, ba2, pak, big, wad), 'content' (esm, esp, omwaddon, omwgame), '_engine' (the engine release's own data) —,
+ * else 'other'.
+ */
+export function fileCategory(read, { lightSeen = null, folders = FILE_FOLDERS } = {}) {
+  if (read.light) return 'light';
+  if (lightSeen?.has(read.path)) return 'upgrade';
+  if (read.path.startsWith('_engine/')) return '_engine';
+  const segs = read.path.toLowerCase().split('/').slice(0, -1);
+  for (const f of folders) if (segs.includes(f.toLowerCase())) return f;
+  const ext = /\.([^./]+)$/.exec(read.path)?.[1]?.toLowerCase() ?? '';
+  if (/^(dds|tga|bmp|ktx2?)$/.test(ext)) return 'texture';
+  if (/^(nif|kf|x)$/.test(ext)) return 'mesh';
+  if (/^(bsa|ba2|pak|big|wad)$/.test(ext)) return 'archive';
+  if (/^(esm|esp|omwaddon|omwgame)$/.test(ext)) return 'content';
+  return 'other';
+}
+
+const quant = (a, p) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return Math.round(s[Math.min(s.length - 1, Math.floor(s.length * p))]); };
+const q3 = (a) => ({ p10: quant(a, 0.1), p50: quant(a, 0.5), p90: quant(a, 0.9) });
+
+/**
+ * A stretch [from, to] of a proxy log (ms, its clock; `recs` the whole log, readLog): the game's own reads that started
+ * in it — count, decoded and wire bytes (light copies apart), start-to-start spacing, time to the first byte, transfer
+ * (after the first byte), idle (from a read's end to the next one's start), the time at least one was in flight
+ * (waitMs) — and the wire bytes every request carried during it (an answer spanning an edge counted for its share of
+ * time inside) by kind (demand, ahead, bg, other) and, for game data other than the game's own reads, by kind × file
+ * category (fileCategory; 'upgrade': a light copy read earlier in the log, at any time before that request).
+ */
+export function loadWindow(recs, from, to, { folders = FILE_FOLDERS } = {}) {
+  const lightSeen = new Set(), demand = [], byKind = {}, byCategory = {}, bgByCategory = {};
+  let bgWire = 0;
+  const MB = (n) => Math.round(n / 1e4) / 100;
+  for (const r of recs) {
+    if (r.mark || r.url === undefined) continue;
+    const kind = urlKind(r.url), read = kind === 'other' ? null : dataRead(r.url);
+    const end = r.t + (r.ms ?? 0), inside = Math.max(0, Math.min(to, end) - Math.max(from, r.t));
+    const share = end > r.t ? inside / (end - r.t) : (r.t >= from && r.t <= to ? 1 : 0);
+    if (share > 0) {
+      const w = r.wire * share;
+      byKind[kind] = (byKind[kind] ?? 0) + w;
+      if (read && kind !== 'demand') {
+        const c = fileCategory(read, { lightSeen, folders });
+        bgWire += w; byCategory[c] = (byCategory[c] ?? 0) + w;
+        (bgByCategory[kind] ??= {})[c] = (bgByCategory[kind][c] ?? 0) + w;
+      }
+    }
+    if (read && kind === 'demand' && r.t >= from && r.t <= to) demand.push({ t: r.t, end, first: r.first, ms: r.ms, wire: r.wire, decoded: read.decoded ?? 0, light: read.light });
+    if (read?.light) lightSeen.add(read.path);
+  }
+  const spacing = demand.slice(1).map((d, i) => d.t - demand[i].t);
+  const idle = []; let lastEnd = -Infinity;
+  for (const d of demand) { if (lastEnd > -Infinity) idle.push(Math.max(0, d.t - lastEnd)); lastEnd = Math.max(lastEnd, d.end); }
+  let waitMs = 0, cur = null;
+  for (const d of demand) { const b = Math.min(to, d.end); if (!cur || d.t > cur[1]) { if (cur) waitMs += cur[1] - cur[0]; cur = [d.t, b]; } else cur[1] = Math.max(cur[1], b); }
+  if (cur) waitMs += cur[1] - cur[0];
+  const sum = (a, k) => a.reduce((n, d) => n + d[k], 0), lights = demand.filter((d) => d.light);
+  const mbOf = (o) => Object.fromEntries(Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, MB(v)]));
+  return {
+    ms: Math.round(to - from),
+    demand: {
+      count: demand.length, decodedMB: MB(sum(demand, 'decoded')), wireMB: MB(sum(demand, 'wire')),
+      light: { count: lights.length, decodedMB: MB(sum(lights, 'decoded')), wireMB: MB(sum(lights, 'wire')) },
+      spacing: q3(spacing), ttfb: q3(demand.filter((d) => d.first !== null && d.first !== undefined).map((d) => d.first)),
+      transfer: q3(demand.filter((d) => d.first !== null && d.first !== undefined).map((d) => d.ms - d.first)), idle: q3(idle), waitMs: Math.round(waitMs),
+    },
+    wireMB: mbOf(byKind), backgroundMB: MB(bgWire), backgroundByCategory: mbOf(byCategory),
+    backgroundByKind: Object.fromEntries(Object.entries(bgByCategory).map(([k, v]) => [k, mbOf(v)])),
+  };
+}
+
+/**
+ * The proxy log's summary up to `until` ms (its own clock): bytes and requests by kind, unit answers, demand-wait.
+ * `recs`: the log's request lines.
+ */
+export function summarize(recs, until = Infinity) {
+  const kinds = {}; let wire = 0, requests = 0, gz = 0, units = { hit: 0, raw: 0, miss: 0, none: 0 }, unitWire = { hit: 0, raw: 0, miss: 0, none: 0 };
+  const demand = [];
+  for (const r of recs) {
+    if (r.mark || r.t > until) continue;
+    // (the game's own reads: no `p=1` nor `a=1` — `&s=` when the backend has a session, nothing for a port's data worker)
+    const k = r.url.startsWith('/gamez/') || r.url.startsWith('/game/') ? (/[?&][pa]=1/.test(r.url) ? 'background' : 'demand') : r.url.startsWith('/src/') ? 'src' : r.url.startsWith('/engines/') ? 'engine' : r.url.startsWith('/api/') ? 'api' : 'page';
+    const s = (kinds[k] ??= { requests: 0, wire: 0 }); s.requests++; s.wire += r.wire; wire += r.wire; requests++;
+    if (k === 'demand' || k === 'background') { gz++; const u = r.unit ?? 'none'; units[u] = (units[u] ?? 0) + 1; unitWire[u] = (unitWire[u] ?? 0) + r.wire; }
+    if (k === 'demand') demand.push([r.t, Math.min(until, r.t + r.ms)]);
+  }
+  demand.sort((a, b) => a[0] - b[0]);
+  let waitMs = 0, cur = null;
+  for (const [a, b] of demand) { if (!cur || a > cur[1]) { if (cur) waitMs += cur[1] - cur[0]; cur = [a, b]; } else cur[1] = Math.max(cur[1], b); }
+  if (cur) waitMs += cur[1] - cur[0];
+  const MB = (n) => Math.round(n / 1e4) / 100;
+  return {
+    wireMB: MB(wire), requests, byKind: Object.fromEntries(Object.entries(kinds).map(([k, v]) => [k, { requests: v.requests, MB: MB(v.wire) }])),
+    dataRequests: gz, units, unitMB: Object.fromEntries(Object.entries(unitWire).map(([k, v]) => [k, MB(v)])), demandWaitS: Math.round(waitMs / 100) / 10,
+  };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

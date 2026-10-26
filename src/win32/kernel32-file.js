@@ -162,7 +162,7 @@ export function registerKernel32File(api, vm, k) {
     // data still on the network: this thread waits parked while the others run (the call is executed again once
     // it is here) — not in a nested call, whose wait cannot let the browser deliver it
     if (!waited && f.file.prepare && c.thread.wakeResult === undefined && vm.asyncReads && vm.canUnwind(c.thread)) {
-      const p = f.file.prepare(pos, n);
+      const p = f.file.prepare(pos, n, true); // (true: the guest thread is blocked on it — a wait, see NetLink.loading)
       if (p) f.ioOwner = c.thread;
       // (a nested wait elsewhere blocks the event loop, so the fetch cannot complete during it: the parked read then
       // wakes and reads synchronously, instead of holding up the nested waiter — which may be waiting for it)

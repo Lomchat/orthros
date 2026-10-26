@@ -123,6 +123,7 @@ export class GameData {
           for (const k of m.lightHere ?? []) if (!this.realHere.has(k)) this.lightHere.add(k);
           if (m.real.length) for (const f of this.listeners.real) f(m.real);
         }
+        else if (m.net) this.net = m.net;
         else if (m.log) this.log(m.log);
       };
     });
@@ -298,8 +299,12 @@ export class GameData {
   /** The worker stopped (its pending reports sent first). */
   close() { this.saveRate(); clearInterval(this.timer); clearInterval(this.holdTimer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
 
-  /** The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes }. */
-  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes }; }
+  /**
+   * The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes, fetchedBytes, net } —
+   * net: the link as the worker last told it (NetLink.snapshot, every second: rate, waits, loading, the background's
+   * bytes by producer — bgBy), null before.
+   */
+  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, net: this.net ?? null }; }
 
   // ---------------------------------------------------------------- light copies
 

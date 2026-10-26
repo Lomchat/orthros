@@ -549,6 +549,75 @@ Measured with headless Chromium on a local server (Playwright, every response's 
   `masked-duplicate` (the same block learned again under another case, e.g. `lang/english.big#0` /
   `lang/English.big#0`), 522 kept — where the first prune dropped all 636.
 
+## Silence during a load (2026-10-26)
+
+The owner's session (Morrowind Vanilla+ FR, ~1.5-2 MB/s through Cloudflare, ~90 ms round trip, warm OPFS store, a save
+loaded outside the learned area): one frozen frame of 58 s, 253 serial demand reads (median spacing 205 ms against a
+93 ms round trip), 14 MB the game needed — while the background sent 116 MB beside them (full-resolution texture
+upgrades, learned blocks of other places, movies never played, full-size loading screens, music). Between thin and fast,
+a background turn opened in every gap between two reads of the load (nothing in flight: any request may start, a whole
+block included), and each next read shared the link with it. Stage 1: while the game is blocked in a dense run of real
+waits, the background carries only what that load needs. Generic: the rules depend on the link and the reads only.
+
+- **Waits, not requests** (`NetLink.wait` / `waitEnd`): fed by the reads the game is blocked on — a Win32 parked read
+  (`kernel32-file.js` ReadFile → `HttpFile.prepare(…, true)`), any synchronous read (`HttpBackend.fetchRangeNow`), a
+  page's read its engine waits for (`data-worker.js` `waited`: a synchronous one, an asynchronous one while `held`).
+  Never a media file's (`isMedia`): a movie's or a track's misses are no load — counted as one, they silenced the
+  stream's own read-ahead, which then went a round trip at a time for the whole movie. A demand request is not a wait: `readable()` / `ensure(background)` fetch ahead with nobody waiting (OpenMW's preloads,
+  re3's streaming), they must not silence anything.
+- **A load** (`NetLink.loading`): a wait in flight, or `LOAD_WAITS` (3) waits begun within `LOAD_WINDOW_MS` (4 s), the
+  last one ended less than `loadGap()` ago — `max(LOAD_GAP_MS 500 ms, 4 round trips)`, and `LOAD_HOLD_MS` (2 s) once
+  the run has lasted `LOAD_LONG_MS` (4 s): a long load's engine work between two reads (a save parsed, a scene built)
+  is no end of it — each such pause released every queued download into the load's next reads. One wait in play
+  silences nothing past its own end. `NetLink.silenced()`: a load on a link that is not fast (a fast link keeps its policies).
+- **The gate** (`NetLink.mayStart` / `kick`): while silenced, only turns promoted by a parked read (`urgent`: one that
+  waits for a request still queued — no deadlock) and turns flagged `forLoad` start; the others stay queued, skipped
+  without holding up a `forLoad` one behind them, and the timer (every 250 ms at most) releases them in priority order
+  once the load is over. A `forLoad` turn follows the between-link rules (nothing in flight: it starts whatever its
+  size — one queued before the load, at a free link's size, would otherwise wait for the load's end with the load's
+  smaller ones behind it); those made during a load are small: `NetLink.requestBytes()` — 2 round trips of the link, not
+  `BG_SECONDS` —, and `HttpBackend.wholeBlockFits()` is false (a parked read never waits for a whole block on its way).
+- **What a load needs** (`forLoad`): the learned pieces ahead of the game (`pumpAhead`) while its position in the learned
+  order is followed — `L.tracked` (`HttpBackend.noteBlock`): `TRACK_STEPS` (2) first touches in a row going forward by
+  at most `TRACK_WINDOW` (64) ranks, and at least `TRACK_SHARE` (half) of the last `TRACK_SPAN` (8) blocks touched first
+  in the order; a first touch at most `TRACK_BACK` (8) ranks behind the position (the engine's threads out of order) is
+  neither a step nor a jump; a jump elsewhere in the order, `TRACK_MISSES` (4) blocks in a row outside it (a place
+  earlier sessions did not load, a save file), or too few in it, and it is lost; not followed and loading, `pumpAhead`
+  sends nothing. An ahead turn's `forLoad` is read when its turn is looked at (a getter), not when it was queued: those
+  queued before the position was followed go during the load once it is, those queued while followed wait once it is
+  lost.
+  Never a media entry at the order's tail (`e.tail`: never ahead at all). The read-ahead of a file read in sequence that
+  is not a media file — one request ahead of a reader of fewer than `STREAM_READS` reads in sequence (an archive's
+  entry read in a few pieces: the bytes past it are other entries the load may not read), two of a longer one. The
+  startup set a page waits for (`prefetch` `learnedOnly`).
+- **Not during a load**: the learned order's background pass (tier 1 and 2, the media tail), the block fill (`want`,
+  `near`, `later`), the upgrades of light copies, the offline copy, the read-ahead of a media stream. `fillBackground`
+  checks `silenced()` before whichever queue is next (so `want` cannot open the way for an upgrade).
+- **A media stream's read-ahead** (`readAheadParts`): `MEDIA_AHEAD_SECONDS` (8) of its reader's own rate,
+  `MEDIA_AHEAD_MIN` (256 KiB) at least — a 20 KB/s track took 4 MiB (2 s of the link) at once.
+- **Pictures** (`isLightPicture` in `src/vfs/game-tree.js`, by format): a TGA's light copy is a picture of a screen's
+  size (`light-copies.js` lightens a TGA only from `TGA_LIGHT_FROM`: a loading screen, a map). On a link that is not
+  fast, `HttpBackend.upgrade` never fetches its file after it (shown a moment, often never again; OpenMW draws a new
+  random splash every 5 s, each upgrade ~3 MB, LIFO so first): it comes with the offline copy, or read itself on a
+  fast link. `stats.pictureKept` counts them.
+- **The learned list made again** (`HttpBackend.prefetch` `opts.relist`, `data-worker.js` `prefetchAll`): the list
+  (`launch-set.js` `launchFirst` / `forLink`: light copies or the files, media at the tail or not) is made for the
+  link's class when the pass starts; the rate it starts with is the browser's (`orthros.netBw`, any game's, any page's).
+  When `NetLink.fast()` changes from the class it was made for, the pass stops and starts again on a list made for the
+  new class (`stats.relists`): at once for a list made before the link was measured, else once the new class has held
+  `RELIST_HOLD_MS` (5 s; a rate near `FAST_BPS` goes back and forth), `RELISTS` (2) times at most; the new list keeps
+  the game's position, the entries it touched, its tracking and the progress counted.
+- **Which producer carried what** (`NetLink.bgBy`, in `NetLink.snapshot()`: the Win32 worker's `net` stats, the data
+  worker's `{ net }` message every second → `GameData.snapshot().net` → OpenMW's `window.__streamfsStats.net`): per
+  reason — `pf1` / `pf2` (learned pieces / rest of their blocks), `pf` (whole learned blocks, fast link), `ahead`,
+  `readAhead`, `mediaAhead`, `miss`, `want`, `near`, `later`, `upgrade`, `offline` — requests, wire and decoded bytes,
+  and `inLoad`: the wire bytes of those begun during a load. With `waits` / `waitMs` (the game's real waits) and
+  `loading`. No reason in the URL (counters only).
+
+Measured: see below.
+
+MEASURE-TBD
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

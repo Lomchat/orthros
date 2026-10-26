@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
+import { NetLink } from '../src/vfs/net-link.js';
 
 const MiB = 1 << 20;
 const SIZE = 8 * MiB;
@@ -21,7 +22,7 @@ function fakeFetch() {
   const calls = [];
   const fn = (url, init = {}) => new Promise((resolve, reject) => {
     const [, a, b] = /bytes=(\d+)-(\d+)/.exec(init.headers.Range);
-    const call = { start: +a, end: +b + 1, signal: init.signal, settled: false,
+    const call = { url, start: +a, end: +b + 1, signal: init.signal, settled: false,
       release: () => { if (call.settled) return; call.settled = true; resolve({ status: 206, arrayBuffer: async () => bytes(+a, +b + 1).buffer }); } };
     init.signal?.addEventListener('abort', () => { if (!call.settled) { call.settled = true; reject(new DOMException('aborted', 'AbortError')); } });
     calls.push(call);
@@ -155,4 +156,92 @@ test('learned prefetch: runs beside a block fill that always has blocks to fetch
   assert.equal(b.filling, false);
   assert.deepEqual(calls.map((c) => c.start / MiB), [2, 4, 6], 'the fill does not fetch block 6 again (stored by the prefetch), nor the prefetch block 2');
   for (const i of [2, 4, 6]) assert.ok(store.has(`f.big#${SIZE}#1#${i}`), `block ${i} stored`);
+}));
+
+test('during a load the learned pieces ahead go only while the game follows the order; a jump elsewhere or reads outside it silence them', () => withFetch(async (calls) => {
+  const files = {}; for (let i = 0; i < 40; i++) files[`e${i}.dat`] = { size: 2 * CHUNK, mtime: 1 };
+  files['save.dat'] = { size: 4 * CHUNK, mtime: 1 };
+  const b = new HttpBackend('/game/a/', { dirs: {}, files }, { store: memStore(), net: new NetLink({ bw: 1.5e6, fixed: true }) });
+  b.fillBackground = () => {};
+  let stopped = true;
+  await b.prefetch(Array.from({ length: 40 }, (_, i) => [`e${i}.dat`, 0, 0b1, i * 10]), {}, () => stopped); // (the entries only)
+  stopped = false;
+  const rank = (c) => Number(/e(\d+)\.dat/.exec(c.url)[1]);
+  const w = b.net.wait(); // (the game blocked on a read: a load)
+  assert.ok(b.net.silenced());
+  b.noteBlock('e20.dat', 0); await tick();
+  assert.equal(calls.length, 0, 'a first touch at another place: not followed yet, nothing ahead during the load');
+  b.noteBlock('e21.dat', 0); b.noteBlock('e22.dat', 0); await tick();
+  assert.ok(b.learned.tracked, 'followed: three first touches going forward');
+  assert.ok(calls.length > 0 && calls.every((c) => rank(c) > 22), `the load's next reads, during it: ${calls.map(rank)}`);
+  for (const c of calls) c.release(); await tick(); await tick();
+  // (a jump back in the order: another place — not followed any more, nothing more ahead)
+  b.noteBlock('e3.dat', 0);
+  assert.equal(b.learned.tracked, false);
+  for (const c of calls) c.release(); await tick(); await tick();
+  const n = calls.length;
+  b.noteBlock('e4.dat', 0); await tick();
+  assert.equal(calls.length, n, 'one step is not yet following');
+  b.noteBlock('e5.dat', 0); await tick();
+  assert.ok(calls.length > n, 'followed again');
+  // (reads outside the order — a save file — lose the position)
+  for (let k = 0; k < 4; k++) b.noteBlock('save.dat', k);
+  assert.equal(b.learned.tracked, false);
+  b.net.waitEnd(w);
+  for (const c of calls) c.release(); await tick();
+}));
+
+// (`n` learned entries of one piece each, the backend between thin and fast, the list in place — its pass stopped)
+async function learnedEntries(n = 40) {
+  const files = {}; for (let i = 0; i < n; i++) files[`e${i}.dat`] = { size: 2 * CHUNK, mtime: 1 };
+  const net = new NetLink({ bw: 1.5e6, fixed: true });
+  const b = new HttpBackend('/game/a/', { dirs: {}, files }, { store: memStore(), net });
+  b.fillBackground = () => {};
+  let stopped = true;
+  await b.prefetch(Array.from({ length: n }, (_, i) => [`e${i}.dat`, 0, 0b1, i * 10]), {}, () => stopped);
+  stopped = false;
+  return { b, net, rank: (c) => Number(/e(\d+)\.dat/.exec(c.url)[1]) };
+}
+
+test('ahead pieces queued before the position was followed go during the load once it is (their forLoad read at their turn)', () => withFetch(async (calls) => {
+  const { b, net, rank } = await learnedEntries();
+  const dem = net.begin('demand', 512 << 10); // (a read of the game's on the link: the ahead requests wait for their turn)
+  b.noteBlock('e20.dat', 0); await tick();
+  assert.equal(calls.length, 0); assert.ok(net.waiters.length > 0, 'queued, not followed yet');
+  const ws = [net.wait(), net.wait(), net.wait()]; // (a load begins)
+  assert.ok(net.silenced());
+  b.noteBlock('e21.dat', 0); b.noteBlock('e22.dat', 0);
+  assert.ok(b.learned.tracked);
+  net.end(dem, 512 << 10); await tick();
+  assert.ok(net.silenced(), 'still loading');
+  assert.ok(calls.length > 0 && calls.every((c) => rank(c) > 20), `the ones queued before go now: ${calls.map(rank)}`);
+  for (const w of ws) net.waitEnd(w);
+  for (const c of calls) c.release(); await tick();
+}));
+
+test('a few first touches out of order (the engine\'s threads) keep the position followed; reads mostly outside the order lose it, and the turns queued meanwhile wait', () => withFetch(async (calls) => {
+  const { b, net } = await learnedEntries(120);
+  const ws = [net.wait(), net.wait(), net.wait()];
+  for (const [r, tracked] of [[20, false], [21, false], [23, true], [22, true], [24, true], [25, true]]) {
+    b.noteBlock(`e${r}.dat`, 0); assert.equal(b.learned.tracked, tracked, `after e${r}`);
+  }
+  assert.equal(b.learned.pos, 25);
+  await tick(); assert.ok(calls.length > 0, 'its pieces ahead go during the load');
+  for (let i = 0; i < 10; i++) { for (const c of calls) c.release(); await tick(); }
+  // (a demand read fills the link: the next ahead turns queue — forLoad while followed)
+  const dem = net.begin('demand', 512 << 10);
+  b.noteBlock('e26.dat', 0); await tick();
+  const n = calls.length, queued = net.waiters.length;
+  assert.ok(queued > 0, 'queued behind the demand read');
+  // (three blocks outside the order for each one in it: not the place the order describes)
+  for (let k = 0; k < 3; k++) b.noteBlock('save.dat', k);
+  b.noteBlock('e27.dat', 0);
+  for (let k = 3; k < 6; k++) b.noteBlock('save.dat', k);
+  assert.equal(b.learned.tracked, false, 'mostly outside the order');
+  net.end(dem, 512 << 10); await tick();
+  assert.equal(calls.length, n, 'the turns queued while followed wait for the load now');
+  for (const w of ws) net.waitEnd(w);
+  for (let i = 0; i < 30 && calls.length === n; i++) await tick(30);
+  assert.ok(calls.length > n, 'after the load');
+  for (let i = 0; i < 10; i++) { for (const c of calls) c.release(); await tick(); }
 }));

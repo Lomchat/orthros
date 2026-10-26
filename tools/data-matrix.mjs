@@ -13,10 +13,9 @@
 //     [--games-dir /srv/orthros/data/games] [--engines-dir /srv/orthros/data/engines] [--lang <code>]
 import fs from 'node:fs';
 import path from 'node:path';
-import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { startProxy } from './net-proxy.mjs';
+import { startProxy, summarize, spkiOf, freePort, startOrigin } from './net-proxy.mjs';
 import { DEFAULT_GAMES_DIR } from '../src/host/game-catalog.js';
 import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
 
@@ -38,53 +37,16 @@ export function parseLink(s) {
 const links = opt('links', '85k:150,1m:60,7m:75').split(',').map(parseLink);
 const secs = Object.fromEntries(opt('seconds', '85k=1800,1m=900,7m=600').split(',').map((kv) => kv.split('=')).map(([k, v]) => [k, Number(v)]));
 
-/**
- * The proxy log's summary up to `until` ms (its own clock): bytes and requests by kind, unit answers, demand-wait.
- * `recs`: the log's request lines.
- */
-export function summarize(recs, until = Infinity) {
-  const kinds = {}; let wire = 0, requests = 0, gz = 0, units = { hit: 0, raw: 0, miss: 0, none: 0 }, unitWire = { hit: 0, raw: 0, miss: 0, none: 0 };
-  const demand = [];
-  for (const r of recs) {
-    if (r.mark || r.t > until) continue;
-    // (the game's own reads: no `p=1` nor `a=1` — `&s=` when the backend has a session, nothing for a port's data worker)
-    const k = r.url.startsWith('/gamez/') || r.url.startsWith('/game/') ? (/[?&][pa]=1/.test(r.url) ? 'background' : 'demand') : r.url.startsWith('/src/') ? 'src' : r.url.startsWith('/engines/') ? 'engine' : r.url.startsWith('/api/') ? 'api' : 'page';
-    const s = (kinds[k] ??= { requests: 0, wire: 0 }); s.requests++; s.wire += r.wire; wire += r.wire; requests++;
-    if (k === 'demand' || k === 'background') { gz++; const u = r.unit ?? 'none'; units[u] = (units[u] ?? 0) + 1; unitWire[u] = (unitWire[u] ?? 0) + r.wire; }
-    if (k === 'demand') demand.push([r.t, Math.min(until, r.t + r.ms)]);
-  }
-  demand.sort((a, b) => a[0] - b[0]);
-  let waitMs = 0, cur = null;
-  for (const [a, b] of demand) { if (!cur || a > cur[1]) { if (cur) waitMs += cur[1] - cur[0]; cur = [a, b]; } else cur[1] = Math.max(cur[1], b); }
-  if (cur) waitMs += cur[1] - cur[0];
-  const MB = (n) => Math.round(n / 1e4) / 100;
-  return {
-    wireMB: MB(wire), requests, byKind: Object.fromEntries(Object.entries(kinds).map(([k, v]) => [k, { requests: v.requests, MB: MB(v.wire) }])),
-    dataRequests: gz, units, unitMB: Object.fromEntries(Object.entries(unitWire).map(([k, v]) => [k, MB(v)])), demandWaitS: Math.round(waitMs / 100) / 10,
-  };
-}
-
-/** the base64 SHA-256 of the proxy certificate's key: the browser trusts it (--ignore-certificate-errors-spki-list) */
-const spkiOf = (dir) => execFileSync('bash', ['-c', `openssl x509 -in ${JSON.stringify(path.join(dir, 'cert.pem'))} -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64`], { encoding: 'utf8' }).trim();
-const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
+// (the proxy log's summary, tools/net-proxy.mjs: here since the matrix; tools/prepare-bench.mjs takes it from here)
+export { summarize };
 
 async function one(m, link) {
   const tag = `${m.name}-${link.name}`, dir = path.join(scratch, tag);
   fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(dir, { recursive: true });
   execFileSync('cp', ['-a', path.join(pristine, 'learn'), path.join(dir, 'learn')]);
-  const sport = await freePort();
-  const srv = spawn(process.execPath, [path.join(root, 'src/host/server.js'), '--port', String(sport), '--learn', path.join(dir, 'learn'), '--telemetry', path.join(dir, 'telemetry'),
-    '--br-cache', path.join(pristine, 'brcache'), '--br-cache-frozen', '--covers', path.join(pristine, 'covers'), '--games-dir', gamesDir, '--engines-dir', enginesDir], { stdio: ['ignore', 'pipe', 'pipe'] });
-  const srvLog = fs.createWriteStream(path.join(dir, 'server.log')); srv.stdout.pipe(srvLog); srv.stderr.pipe(srvLog);
-  await new Promise((resolve) => { const on = (d) => { if (String(d).includes('orthros: http')) { srv.stdout.off('data', on); resolve(); } }; srv.stdout.on('data', on); setTimeout(resolve, 30000); });
-  // (the page's modules made brotli as on a server up for a while: every src text file asked once, then until all come so)
-  const srcFiles = []; const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else if (/\.(m?js|html|css|json|svg|txt)$/.test(e.name) && fs.statSync(f).size >= 512) srcFiles.push(path.relative(root, f)); } };
-  walk(path.join(root, 'src'));
-  for (let pass = 0, left = srcFiles; pass < 8 && left.length; pass++) {
-    const next = [];
-    for (let i = 0; i < left.length; i += 16) await Promise.all(left.slice(i, i + 16).map(async (f) => { const r = await fetch(`http://127.0.0.1:${sport}/${f}`, { headers: { 'accept-encoding': 'br' } }).catch(() => null); await r?.arrayBuffer().catch(() => {}); if (r && r.headers.get('content-encoding') !== 'br' && r.status === 200) next.push(f); }));
-    left = next; if (left.length) await new Promise((r) => setTimeout(r, 1500));
-  }
+  const origin = await startOrigin({ tree: root, learn: path.join(dir, 'learn'), telemetry: path.join(dir, 'telemetry'), brcache: path.join(pristine, 'brcache'),
+    covers: path.join(pristine, 'covers'), gamesDir, enginesDir, log: path.join(dir, 'server.log') });
+  const sport = origin.port;
   const proxy = await startProxy({ upstream: `127.0.0.1:${sport}`, listen: 0, rate: link.rate, rtt: link.rtt, log: path.join(dir, 'proxy.jsonl'), certs: path.join(scratch, 'cert') });
   const lang = opt('lang') && m.languages.includes(opt('lang')) ? opt('lang') : m.languages.includes('en') ? 'en' : m.languages[0];
   // (--win32-seconds: a Win32 game's window — its menu's time on a loaded machine is the CPU's (SwiftShader), its data the
@@ -98,7 +60,7 @@ async function one(m, link) {
     let text = ''; p.stdout.on('data', (d) => { text += d; }); p.stderr.on('data', (d) => { text += d; });
     p.on('close', (code) => resolve({ code, text }));
   });
-  await proxy.close(); srv.kill('SIGTERM');
+  await proxy.close(); await origin.close();
   let run = null; try { run = JSON.parse(fs.readFileSync(runJson, 'utf8')); } catch { /* its output's line */ }
   if (!run) { const m = /^RESULT (.*)$/m.exec(res.text); try { run = m ? JSON.parse(m[1]) : null; } catch { /* none */ } }
   run ??= { error: `runner exited ${res.code}: ${res.text.slice(-400)}` };

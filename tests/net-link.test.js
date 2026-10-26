@@ -2,7 +2,7 @@
 // background turns by priority, request sizes from the measure; and the page's wording of a wait (net-status.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { NetLink, FAST_BPS, BG_SECONDS } from '../src/vfs/net-link.js';
+import { NetLink, FAST_BPS, BG_SECONDS, LOAD_GAP_MS, LOAD_WINDOW_MS, LOAD_LONG_MS, LOAD_HOLD_MS } from '../src/vfs/net-link.js';
 import { netWaitText, fmtRate, fmtDuration, benchNetwork } from '../src/host/web/net-status.js';
 import { downloadStatus } from '../src/host/web/download.js';
 
@@ -134,6 +134,108 @@ test('net link: only the background requests that would hold the game up long ar
   c.advance(100);
   n.abortLong();
   assert.deepEqual(aborted, ['big']);
+});
+
+test('net link: a load is a read the game waits for in flight, or a dense run of them until a short pause; one wait alone ends with it', () => {
+  const c = clock(), n = new NetLink({ ...c, bw: 1.5e6 });
+  assert.equal(n.loading(), false);
+  // (one wait in play: a load while it lasts, not after)
+  const w = n.wait(); assert.ok(n.loading() && n.silenced());
+  c.advance(90); n.waitEnd(w); assert.equal(n.loading(), false, 'an isolated wait silences nothing past its end');
+  c.advance(5000);
+  // (a load: serial reads, a round trip each, the engine's work between them)
+  for (let i = 0; i < 3; i++) { const t = n.wait(); c.advance(93); n.waitEnd(t); c.advance(110); assert.equal(n.loading(), i >= 2, `wait ${i}`); }
+  assert.equal(n.loadGap(), LOAD_GAP_MS, 'no round trip measured: the floor');
+  c.advance(LOAD_GAP_MS - 150); assert.ok(n.loading(), 'the work between two reads of a load is no pause');
+  c.advance(100); assert.equal(n.loading(), false, 'over after the gap');
+  // (a demand request is no wait: an engine streaming ahead in play — readable() — never silences the background)
+  for (let i = 0; i < 6; i++) { const t = n.begin('demand', 65536); c.advance(50); n.end(t, 65536); }
+  assert.equal(n.loading(), false);
+  // (waits spread over more than LOAD_WINDOW_MS: no run)
+  for (let i = 0; i < 3; i++) { const t = n.wait(); c.advance(20); n.waitEnd(t); c.advance(LOAD_WINDOW_MS / 2); }
+  const t = n.wait(); c.advance(20); n.waitEnd(t); assert.equal(n.loading(), false, 'two in the window only');
+  // (a fast link keeps its policies: loading, not silenced)
+  const f = new NetLink({ ...c, bw: 200e6 }); f.wait(); assert.ok(f.loading() && !f.silenced());
+  assert.equal(n.snapshot().waits, 8);
+});
+
+test('net link: during a load only the turns it needs start (promoted by a parked read, forLoad); the others after it, by priority', async () => {
+  const c = clock(), n = new NetLink({ ...c, bw: 1.5e6 }), got = [];
+  n.rtt = 90;
+  for (let i = 0; i < 3; i++) { const t = n.wait(); c.advance(90); n.waitEnd(t); c.advance(100); }
+  assert.ok(n.silenced());
+  // (nothing in flight between two reads of the load: still no free link for the background)
+  assert.equal(n.tryTurn(0, {}, 65536), false, 'a background request waits for the load');
+  assert.ok(n.tryTurn(0, { forLoad: true }, 65536), 'one the load needs goes');
+  n.begin('bg', 65536);
+  assert.ok(n.requestBytes() < n.backgroundBytes() && n.requestBytes() >= 64 << 10, `small requests while loading: ${n.requestBytes()}`);
+  const up = {}, ahead = {}, fill = {};
+  n.turn(7, 500, () => false, up, 65536).then((ok) => got.push(['upgrade', ok]));
+  n.turn(4, 150, () => false, fill, 65536).then((ok) => got.push(['fill', ok]));
+  n.turn(2, 0, () => false, ahead, 65536).then((ok) => got.push(['ahead', ok]));
+  await flush(); assert.deepEqual(got, [], 'queued');
+  // (a forLoad turn behind queued ones that wait for the load: not held up by them)
+  const fl = { forLoad: true }; n.turn(5, 300, () => false, fl, 65536).then((ok) => got.push(['load', ok]));
+  await flush(); assert.deepEqual(got, [['load', true]]);
+  // (a parked read waits for one of them: it goes at once)
+  n.promote(fill); await flush();
+  assert.deepEqual(got.map((g) => g[0]), ['load', 'fill']);
+  // (the load goes on: a wait in flight, then its end; the rest once the gap is over — the timer looks again)
+  const w = n.wait(); c.advance(300); await flush(); assert.equal(got.length, 2);
+  n.waitEnd(w); c.advance(100); await flush(); assert.equal(got.length, 2, 'within the gap');
+  c.advance(n.loadGap()); await flush();
+  assert.deepEqual(got.map((g) => g[0]), ['load', 'fill', 'ahead', 'upgrade'], 'released after the load, in priority order');
+  assert.equal(n.silenced(), false); assert.equal(n.requestBytes(), n.backgroundBytes());
+});
+
+test('net link: a load\'s download too large for the bytes rule, queued before the load, goes once nothing is on the link — not holding the load\'s smaller ones behind it until the load ends', async () => {
+  const c = clock(), n = new NetLink({ ...c, bw: 1.5e6, fixed: true }), got = [];
+  n.rtt = 90;
+  const other = n.begin('bg', 65536); // (another download on its way: the large one waits for its turn)
+  const big = { forLoad: true };
+  n.turn(1, 0, () => false, big, 1 << 20).then((ok) => got.push(['big', ok]));
+  await flush(); assert.deepEqual(got, []);
+  for (let i = 0; i < 3; i++) { const t = n.wait(); c.advance(90); n.waitEnd(t); c.advance(50); }
+  const w = n.wait(); assert.ok(n.silenced());
+  n.end(other, 65536);
+  const small = { forLoad: true };
+  n.turn(2, 0, () => false, small, 65536).then((ok) => got.push(['small', ok]));
+  await flush(); c.advance(100); await flush();
+  assert.deepEqual(got.map((g) => g[0]), ['big'], 'the large one on an empty link, during the load');
+  const bt = n.begin('bg', 1 << 20); c.advance(600); n.end(bt, 1 << 20); await flush();
+  assert.ok(n.silenced()); assert.deepEqual(got.map((g) => g[0]), ['big', 'small'], 'then the one behind it, still during the load');
+  n.waitEnd(w);
+});
+
+test('net link: a long load\'s pause (its engine\'s own work) is no end of it; a short run ends after loadGap', async () => {
+  const c = clock(), n = new NetLink({ ...c, bw: 1.5e6, fixed: true }), got = [];
+  n.rtt = 90;
+  // (a load of LOAD_LONG_MS and more: serial reads, a round trip each and the engine's work between them)
+  for (let ms = 0; ms <= LOAD_LONG_MS; ms += 200) { const t = n.wait(); c.advance(90); n.waitEnd(t); c.advance(110); }
+  assert.equal(n.loadGap(), LOAD_HOLD_MS);
+  n.turn(7, 0, () => false, {}, 65536).then((ok) => got.push(['upgrade', ok]));
+  c.advance(1500); await flush();
+  assert.ok(n.silenced(), 'a 1.5 s pause inside a long load'); assert.deepEqual(got, [], 'nothing it does not need');
+  const t = n.wait(); c.advance(90); n.waitEnd(t); // (the load goes on)
+  c.advance(LOAD_HOLD_MS - 100); await flush(); assert.deepEqual(got, []);
+  c.advance(200); await flush();
+  assert.equal(n.silenced(), false); assert.deepEqual(got, [['upgrade', true]], 'after the hold');
+  // (a new run, short: the round trips' gap again)
+  c.advance(5000);
+  for (let i = 0; i < 3; i++) { const t = n.wait(); c.advance(90); n.waitEnd(t); c.advance(110); }
+  assert.equal(n.loadGap(), LOAD_GAP_MS);
+  c.advance(LOAD_GAP_MS); assert.equal(n.loading(), false);
+});
+
+test('net link: the background bytes counted by producer, those begun during a load apart', () => {
+  const c = clock(), n = new NetLink({ ...c, bw: 1.5e6 });
+  const a = n.begin('bg', 65536, null, null, 'upgrade'); c.advance(50); n.end(a, 40000, 65536);
+  const w = n.wait();
+  const b = n.begin('bg', 65536, null, null, 'ahead'); c.advance(50); n.end(b, 30000, 65536);
+  n.waitEnd(w);
+  const s = n.snapshot();
+  assert.deepEqual(s.bgBy.upgrade, { requests: 1, wire: 40000, raw: 65536, inLoad: 0 });
+  assert.deepEqual(s.bgBy.ahead, { requests: 1, wire: 30000, raw: 65536, inLoad: 30000 });
 });
 
 test('net status: the waiting message names the rate, what came and the step\'s time', () => {

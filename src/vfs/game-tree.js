@@ -23,6 +23,14 @@ export const MEDIA_WAV_BYTES = 512 << 10;
 /** The file `name` of `size` bytes is a media file (see MEDIA). */
 export function isMediaFile(name, size) { return MEDIA.test(name) || (/\.wav$/i.test(name) && size >= MEDIA_WAV_BYTES); }
 
+/**
+ * A file whose light copy is a picture rather than a texture, by format: src/host/light-copies.js lightens a TGA only
+ * when it is a picture of a screen's size (TGA_LIGHT_FROM: a loading screen, a map) — shown a moment, often never again;
+ * on a link that is not fast its file is not fetched after its light copy (HttpBackend.upgrade), it comes with the
+ * offline copy, or read itself on a fast link.
+ */
+export const isLightPicture = (name) => /\.tga$/i.test(name);
+
 /** Native binaries of an installation: useless to a WebAssembly engine, never part of its files. */
 const NATIVE = /\.(exe|dll|so|dylib)$/i;
 

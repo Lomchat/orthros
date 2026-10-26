@@ -266,3 +266,90 @@ test('learnedOnly with a full store: an entry the store did not keep is asked on
     assert.deepEqual([...per.values()], [1, 1, 1, 1], `each block asked once: ${JSON.stringify(asked)}`);
   } finally { globalThis.fetch = real; }
 });
+
+/** fetch stand-in answering after `ms`, each call with its time (performance.now) */
+function withSlowFetch(ms, body) {
+  const real = globalThis.fetch, calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const m = /[?&]r=(\d+)-(\d+)/.exec(url), a = +m[1], e = +m[2];
+    calls.push({ url, start: a, end: e, at: performance.now(), bg: url.includes('p=1') });
+    await new Promise((r) => setTimeout(r, ms));
+    return { status: 206, headers: { get: () => null }, arrayBuffer: async () => bytes(a, e).buffer };
+  };
+  return Promise.resolve(body(calls)).finally(() => { globalThis.fetch = real; });
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('between thin and fast: during a run of parked reads (a load) the block fill and the upgrades wait for its end, then go', () => withSlowFetch(30, async (calls) => {
+  const tr = { dirs: { Splash: { dirs: {}, files: { 'pic.tga': { size: 3 * MiB, mtime: 3, light: 197000 } } } }, files: { 'level.dat': { size: 48 * MiB, mtime: 3 }, 'tex.dds': { size: 300000, mtime: 3, light: 40000 } } };
+  const b = new HttpBackend('/game/l/', tr, { encoded: true, net: new NetLink({ bw: 1.5e6, fixed: true }) });
+  const f = b.open('level.dat');
+  // (a picture's light copy read on a link that is not fast: its file is never fetched after it)
+  b.upgrade('Splash/pic.tga', { soon: true });
+  assert.equal(b.upgrades.size, 0, 'a picture is not upgraded'); assert.equal(b.stats.pictureKept, 1);
+  // (the load: reads far apart, each parked — the game waits —, the engine's work between them; a texture read light
+  // early in it, its file wanted soon)
+  let runEnd = 0, dense = 0;
+  for (let i = 0; i < 10; i++) {
+    if (i === 2) dense = performance.now(); // (from its third wait on, a load: the first two may be play's)
+    // (4 blocks apart: past the blocks near a missed one, which the fill may bring before the load is dense)
+    const at = i * 4 * MiB + 12345, p = f.prepare(at, 4096, true);
+    assert.ok(p, `read ${i} needs the network`);
+    await p; assert.deepEqual(f.read(at, 4096), bytes(at, at + 4096));
+    if (i === 1) b.upgrade('tex.dds', { soon: true });
+    runEnd = performance.now();
+    if (i < 9) await sleep(200); // (> the fill's 150 ms: it used to go in each of these gaps)
+  }
+  assert.ok(b.want.size > 0, 'the blocks the load touched are wanted');
+  const during = calls.filter((c) => c.bg && c.at >= dense && c.at < runEnd);
+  assert.deepEqual(during.map((c) => c.url), [], 'nothing of the background during the load');
+  b.near.clear(); // (the blocks near the missed ones: not what this test looks at — the fill goes on with the rest sooner)
+  for (let k = 0; k < 400 && !b.net.bgBy.upgrade; k++) await sleep(25);
+  const after = calls.filter((c) => c.bg);
+  assert.ok(after.some((c) => c.at >= runEnd + 400) && after.every((c) => c.at < dense || c.at >= runEnd + 400), 'after the gap that ends the load');
+  assert.ok(after.some((c) => c.url.includes('tex.dds')), 'the upgrade too, once the game is quiet');
+  assert.ok(!calls.some((c) => c.url.includes('pic.tga')));
+  const by = b.net.snapshot().bgBy;
+  assert.ok(by.want?.requests > 0 && by.upgrade?.requests > 0, JSON.stringify(by));
+  // (on a fast link a picture is upgraded as any light copy)
+  const fast = new HttpBackend('/game/l/', tr, { encoded: true, net: new NetLink({ bw: 200e6, fixed: true }) });
+  fast.fillBackground = () => {}; fast.upgrade('Splash/pic.tga'); assert.equal(fast.upgrades.size, 3);
+  for (const q of [b.want, b.near, b.later, b.upgrades]) q.clear(); // (the fill stops: the next test's fetch is its own)
+  while (b.filling) await sleep(20);
+}));
+
+test('between thin and fast: a media stream gets a few seconds of its own rate ahead, not seconds of the link', () => withFetch(async (calls) => {
+  const tr = { dirs: { Music: { dirs: {}, files: { 'track.mp3': { size: 6 * MiB, mtime: 3, media: true } } } }, files: { 'f.big': { size: SIZE, mtime: 3 } } };
+  const b = new HttpBackend('/game/m/', tr, { net: new NetLink({ bw: 1.5e6, fixed: true }) });
+  b.readAheadParts('Music/track.mp3', 6 * MiB, 3, 64 << 10, 20000); // (a 160 kbit/s track)
+  await settle();
+  const music = calls.reduce((n, c) => n + c.end - c.start, 0);
+  assert.ok(music > 0 && music <= 256 << 10, `${music >> 10} KiB ahead of the track`);
+  calls.length = 0;
+  b.readAheadParts('f.big', SIZE, 3, 64 << 10, 20000);
+  await settle();
+  assert.ok(calls.reduce((n, c) => n + c.end - c.start, 0) > 256 << 10, 'a file loaded in sequence: the link\'s seconds');
+}));
+
+test('between thin and fast: a media stream\'s parked reads are no load (its own read-ahead is not silenced by them); a file\'s are', () => withFetch(async (calls) => {
+  const tr = { dirs: { Video: { dirs: {}, files: { 'intro.bik': { size: 6 * MiB, mtime: 3, media: true } } } }, files: { 'f.big': { size: SIZE, mtime: 3 } } };
+  const b = new HttpBackend('/game/m/', tr, { net: new NetLink({ bw: 1.5e6, fixed: true }) });
+  const v = b.open('Video/intro.bik');
+  for (let i = 0; i < 4; i++) { const p = v.prepare(i * 300000, 4096, true); assert.ok(p); await p; }
+  assert.equal(b.net.totals.waits, 0); assert.equal(b.net.loading(), false);
+  // (the movie's reader gets its seconds ahead now — not held for a load)
+  calls.length = 0; b.readAheadParts('Video/intro.bik', 6 * MiB, 3, 1200000 + 4096, 600000); await settle();
+  assert.ok(calls.length > 0, 'its read-ahead goes');
+  const f = b.open('f.big'); const p = f.prepare(5 * MiB, 4096, true); assert.ok(p); await p;
+  assert.equal(b.net.totals.waits, 1, 'a file\'s parked read is a wait');
+}));
+
+test('between thin and fast: during a load an archive\'s entry read in a few pieces gets one request ahead of it, a long sequential reader two', () => withFetch(async (calls) => {
+  const b = new HttpBackend('/game/m/', tree(), { net: new NetLink({ bw: 1.5e6, fixed: true }) });
+  const w = b.net.wait(); assert.ok(b.net.silenced());
+  b.readAheadParts('f.big', SIZE, 3, 128 << 10, 0, 2); await settle();
+  assert.equal(calls.length, 1, 'one request past the entry (the bytes past it: other entries the load may not read)');
+  b.readAheadParts('g.big', 2 * MiB, 3, 128 << 10, 0, 16); await settle();
+  assert.equal(calls.length, 3, 'a reader of many reads in sequence: two');
+  b.net.waitEnd(w);
+}));

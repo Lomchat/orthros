@@ -92,6 +92,56 @@ test('a read past the launch set (a loading picture) does not send the backgroun
   }
 });
 
+test('the learned order is made again for the link once its class changes: a rate kept from another page said fast, the measure says not', async (t) => {
+  const order = [['data.bsa', 0, 1, 0, 1], ['tex.dds', 0, 0xffff, 50, 1], ['Video/intro.bik', 0, 1, 60, 0], ['late.esp', 0, 1, 9000, 0]];
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  const store = new MemBlockStore(64 * MiB), b = new HttpBackend('/game/m/', tree(), { store, net: new NetLink({ bw: 50 * MiB, fixed: true }), encoded: true });
+  const asked = [];
+  globalThis.fetch = async (url) => {
+    const u = new URL(url, 'http://x'), [a, z] = u.searchParams.get('r').split('-').map(Number);
+    asked.push(decodeURIComponent(u.pathname.replace(/^\/gamez\/m\//, '')));
+    b.net.bw = 1.5e6; // (the first answers measure the link: between thin and fast)
+    return new Response(new Uint8Array(z - a), { status: 200, headers: { 'content-length': String(z - a) } });
+  };
+  const made = [];
+  const relist = (fast) => { made.push(fast); return launchFirst(b, order, fast); };
+  const list = launchFirst(b, order, true);
+  assert.ok(list.some((e) => e[0] === 'tex.dds'), 'made fast: the texture itself');
+  b.gameBusy = () => false;
+  await b.prefetch(list, {}, () => false, { first: list.first, relist });
+  assert.deepEqual(made, [false], 'made again once, for a link that is not fast');
+  assert.equal(b.stats.relists, 1);
+  const paths = b.learned.entries.map((e) => e.path);
+  assert.ok(paths.includes('.light/tex.dds') && !paths.includes('tex.dds'), `light copies now: ${paths}`);
+  assert.equal(paths.at(-1), 'Video/intro.bik', 'the movie at the tail'); assert.ok(b.learned.entries.at(-1).tail);
+  assert.ok(!asked.slice(1).includes('tex.dds'), `the texture itself not fetched after the change: ${asked}`);
+});
+
+test('a measured link\'s list made again only once its new class has held a while (a rate near the threshold goes back and forth), the game\'s position kept', async (t) => {
+  const order = [['data.bsa', 0, 1, 0, 1], ['tex.dds', 0, 0xffff, 50, 1], ['Video/intro.bik', 0, 1, 60, 0], ['late.esp', 0, 1, 9000, 0]];
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  for (const brief of [true, false]) {
+    let now = 0;
+    const net = new NetLink({ bw: 50 * MiB, fixed: true, now: () => now }); net.measured = true;
+    const store = new MemBlockStore(64 * MiB), b = new HttpBackend('/game/m/', tree(), { store, net, encoded: true });
+    globalThis.fetch = async (url) => {
+      const u = new URL(url, 'http://x'), [a, z] = u.searchParams.get('r').split('-').map(Number);
+      // (the measure below the threshold from the first answer on: briefly — 100 ms an answer —, or 3 s an answer)
+      net.bw = 1.5e6; now += brief ? 100 : 3000;
+      return new Response(new Uint8Array(z - a), { status: 200, headers: { 'content-length': String(z - a) } });
+    };
+    const made = [], list = launchFirst(b, order, true);
+    b.gameBusy = () => false;
+    const job = b.prefetch(list, {}, () => false, { first: list.first, relist: (fast) => { made.push(fast); return launchFirst(b, order, fast); } });
+    b.noteBlock('data.bsa', 0); // (the game's first read)
+    await job;
+    if (brief) { assert.deepEqual(made, [], 'not for a class held less than RELIST_HOLD_MS'); continue; }
+    assert.deepEqual(made, [false], 'made again once the class held');
+    const e = b.learned.entries[b.learned.pos];
+    assert.equal(`${e.path}#${e.index}`, 'data.bsa#0', 'the game\'s position kept'); assert.ok(e.seen);
+  }
+});
+
 test('a set\'s bytes, those here, and a launch\'s cost with and without light copies, its wire bytes from the units known', () => {
   const store = new MemBlockStore(64 * MiB), files = new HttpBackend('/game/m/', tree(), { store });
   const list = [['data.bsa', 0, 0b101, 0, PRE_PLAYABLE], ['tex.dds', 1, 0, 10, PRE_PLAYABLE], ['late.esp', 0, 0, 30000, 0]];
