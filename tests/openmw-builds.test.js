@@ -140,7 +140,11 @@ test('r11 patch: each frame-cost change read from its switch, the page setting o
 });
 
 test('r10 patch: read-ahead of a cell change — the page told the files about to be read, a bounded wait, then the textures the NIFs name', () => {
-  // (no lock entry yet: the release is r9 plus this patch, pinned when built; the patch stays clear of r9's files)
+  // (the release is r9 plus this patch, r9's exports; the patch stays clear of r9's files)
+  const r9 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r9'), r10 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r10');
+  assert.ok(r9 && r10, 'r9 and r10 are builds');
+  assert.deepEqual(r10.patches, [...r9.patches, 'orthros-r10.patch']);
+  assert.deepEqual(r10.exports, r9.exports, 'r10 keeps r9\'s exports');
   const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r10.patch'), 'utf8');
   const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
   const files = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]);
