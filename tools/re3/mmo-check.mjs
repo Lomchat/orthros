@@ -52,6 +52,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { v8LogArgs } from '../v8-logs.mjs';
 
 export const SCENARIOS = Object.freeze(['basic', 'chat', 'combat', 'combatx', 'combatp', 'combatv', 'away', 'aim', 'stars', 'population', 'world', 'garage']);
 /** Scenarios run only when named (not in `all`): crowd (3 players or more), perks (a new character), freemode (alone). */
@@ -330,8 +331,8 @@ async function main() {
   }
 
   const { chromium } = await import('playwright');
-  const browser = await chromium.launch({ headless: true, channel: 'chromium', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
-    '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', ...(process.env.MMO_CDP_PORT ? [`--remote-debugging-port=${process.env.MMO_CDP_PORT}`] : []), ...(process.env.MMO_JS_FLAGS ? [`--js-flags=${process.env.MMO_JS_FLAGS}`] : [])] });
+  const browser = await chromium.launch({ headless: true, channel: 'chromium', args: v8LogArgs(['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+    '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', ...(process.env.MMO_CDP_PORT ? [`--remote-debugging-port=${process.env.MMO_CDP_PORT}`] : []), ...(process.env.MMO_JS_FLAGS ? [`--js-flags=${process.env.MMO_JS_FLAGS}`] : [])]) });
   const heartbeat = setInterval(async () => {
     const line = [];
     for (const c of clients) line.push(await c.read().then((s) => ({ c: c.tag, mode: s?.mode, link: s?._page?.link, inWorld: s?.inWorld, fps: s?.fps, updates: s?._page?.updates })).catch(() => ({ c: c.tag, closed: true })));

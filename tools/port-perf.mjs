@@ -16,6 +16,7 @@
 // readPixels, shader/program queries, …) — on a real GPU each one stops the CPU and the GPU working in parallel.
 
 import { mkdirSync } from 'node:fs';
+import { v8LogArgs } from './v8-logs.mjs';
 
 export const GL_MODES = ['swiftshader', 'discard', 'gpu'];
 
@@ -35,8 +36,8 @@ export function chromeArgs(gl = 'swiftshader') {
 export const CHANNELS = ['chromium', 'shell'];
 /**
  * Playwright's launch options for a port measurement: the rendering mode's flags (chromeArgs), the channel (CHANNELS),
- * `args` besides. Chromium's profile socket must stay under 108 bytes: its temporary directory (TMPDIR) is moved to a
- * short one under the scratch when the caller's is long.
+ * `args` besides (a --js-flags' V8 logs under the scratch, tools/v8-logs.mjs). Chromium's profile socket must stay
+ * under 108 bytes: its temporary directory (TMPDIR) is moved to a short one under the scratch when the caller's is long.
  */
 export function launchOptions({ gl = 'swiftshader', channel = 'chromium', args = [] } = {}) {
   if (!CHANNELS.includes(channel)) throw new Error(`--channel ${channel}: one of ${CHANNELS.join(', ')}`);
@@ -44,7 +45,7 @@ export function launchOptions({ gl = 'swiftshader', channel = 'chromium', args =
     process.env.TMPDIR = '/tmp/orthros-scratch/pw';
     mkdirSync(process.env.TMPDIR, { recursive: true });
   }
-  return { headless: true, ...(channel === 'shell' ? {} : { channel }), args: [...chromeArgs(gl), ...args] };
+  return { headless: true, ...(channel === 'shell' ? {} : { channel }), args: v8LogArgs([...chromeArgs(gl), ...args]) };
 }
 
 /** The WebGL methods that wait for the GPU process' answer. */

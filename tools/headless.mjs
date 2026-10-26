@@ -12,6 +12,7 @@ import { decodePng } from '../src/gfx/codecs/png.js';
 import { scanCodeOfVk } from '../src/win32/vk-scan.js';
 import { inRanges } from '../src/host/scenario.js';
 import { profileGone } from '../src/vfs/profile-opfs.js';
+import { v8LogArgs } from './v8-logs.mjs';
 
 const args = process.argv.slice(2);
 let name = args.find((a) => !a.startsWith('--'));
@@ -84,8 +85,9 @@ const port = server ? server.address().port : Number(opt('server-port'));
 // --page-origin <origin>: the page loaded from there — a proxy in front of this server (tools/net-proxy.mjs: a player's
 // connection, HTTP/2 over TLS; the browser then ignores certificate errors) — the harness's own requests still go here
 const pageOrigin = opt('page-origin') ?? `http://127.0.0.1:${port}`;
-// ORTHROS_CHROME_ARGS: extra browser switches, space-separated (e.g. --js-flags=--trace-gc with DEBUG=pw:browser to see them)
-const chromeArgs = [...(process.env.ORTHROS_CHROME_ARGS ?? '').split(' ').filter(Boolean), ...(opt('page-origin')?.startsWith('https:') ? ['--ignore-certificate-errors'] : []), '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required'];
+// ORTHROS_CHROME_ARGS: extra browser switches, space-separated (e.g. --js-flags=--trace-gc with DEBUG=pw:browser to see them;
+// a V8 log's files go to the scratch, tools/v8-logs.mjs)
+const chromeArgs = v8LogArgs([...(process.env.ORTHROS_CHROME_ARGS ?? '').split(' ').filter(Boolean), ...(opt('page-origin')?.startsWith('https:') ? ['--ignore-certificate-errors'] : []), '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required']);
 // --opfs <user-data-dir>: persistent browser profile so the worker's OPFS mirror of the game profile (saves,
 // Options.ini) survives across runs, exactly as in a real page (the default fresh context has no persistence).
 const opfsDir = opt('opfs');
