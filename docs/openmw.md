@@ -803,6 +803,13 @@ Apart (same tier, refraction on both sides, profiled runs): the OpenAL listener 
 1.8-2.2 % — about 1.3 ms a frame; refraction alone on r9: work p50 18.2-19.2 -> 16.7-16.8 ms, 17.2-17.4 -> 20.4-20.6
 fps. These are the CPU's (SwiftShader rasterizes nothing); on a real GPU the refraction's pass is saved as well. Left:
 OSG's draw (applying uniforms and state sets) and cull, now ~60 % of the engine's busy time; the addons' Lua ~5 %.
+In r9's profiles: OSG applying uniforms 14-16 % (`State::applyUniformList` → `PerContextProgram::apply(Uniform)`, of
+which the `glUniform*` calls themselves ~5 %: the rest its lookups), the shadowed scene's cull 15 %, the light lists 13-14 %
+(`LightManagerCullCallback`, every object every frame), Lua 5.5 %, mechanics 4.4 %. A frame at Seyda Neen (mid, no
+refraction, counted on every WebGL call): ~5,800 calls for ~650 draws — 1,680 uniform uploads (`uniform4fv` 565,
+`uniformMatrix4fv` 448, `uniformMatrix3fv` 351), 1,050 vertex attribute set-ups (`vertexAttribPointer` 537,
+`enableVertexAttribArray` 513) though VAOs are bound 390 times, 624 `bindTexture`, 390 `getParameter`. RUN!'s sprint
+on Left Alt checked there too (the binding Orthros' input defaults give, SDL scancode 226; its action on while held).
 Not changed here: the 57 s load of the owner's session was the game data's synchronous reads (the shared game data's
 work, docs/slow-network.md).
 
