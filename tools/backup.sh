@@ -59,6 +59,13 @@ snapshot() { # <tag> [note]
   nice -n 10 ionice -c 3 restic backup "${args[@]}" || { local rc=$?; [ $rc = 3 ] || return $rc; echo "backup: snapshot saved, some files unreadable (above)" >&2; }
 }
 
+# (restic 0.16's diff takes ids only: latest made the newest snapshot's)
+snap_id() {
+  if [ "$1" = latest ]; then
+    restic snapshots --host "$HOST" --json | python3 -c 'import json, sys; s = json.load(sys.stdin); print(max(s, key=lambda x: x["time"])["id"] if s else "")'
+  else echo "$1"; fi
+}
+
 forget() { restic forget --host "$HOST" --group-by host "${KEEP[@]}" --prune; }
 
 restore() { # <snapshot> <path> [--to <dir>] [--yes]
@@ -145,9 +152,9 @@ case $cmd in
     snapshot manual "$note" ;;
   daily) need_root; need_repo; snapshot daily; forget ;;
   list) need_repo; restic snapshots --host "$HOST" ;;
-  diff) need_repo; [ $# -eq 2 ] || die "usage: diff <a> <b>"; restic diff "$1" "$2" ;;
+  diff) need_repo; [ $# -eq 2 ] || die "usage: diff <a> <b>"; restic diff "$(snap_id "$1")" "$(snap_id "$2")" ;;
   find) need_repo; [ $# -ge 1 ] || die "usage: find <pattern>"; restic find --host "$HOST" "$@" ;;
-  ls) need_repo; [ $# -eq 2 ] || die "usage: ls <snapshot> <path>"; restic ls "$1" "$(realpath -m "$2")" ;;
+  ls) need_repo; [ $# -eq 2 ] || die "usage: ls <snapshot> <path>"; restic ls --recursive "$1" "$(realpath -m "$2")" ;;
   restore) need_root; need_repo; restore "$@" ;;
   mount) need_repo; dir=${1:-$ROOT/backups/mnt}; mkdir -p "$dir"; echo "snapshots under $dir/snapshots/ (Ctrl-C to unmount)"; restic mount "$dir" ;;
   check) need_repo; if [ "${1:-}" = --full ]; then restic check --read-data; else restic check --read-data-subset=1%; fi ;;
