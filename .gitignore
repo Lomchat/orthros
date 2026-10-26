@@ -5,8 +5,8 @@ build/
 /artifacts/
 /tests/generated/
 __pycache__/
-/data/
-/backups/
+/data
+/backups
 /.claude/
 /.charon-uploads/
 /CLAUDE.md
