@@ -9,13 +9,15 @@
 // Always through tools/with-browser-slot.sh:
 //   tools/with-browser-slot.sh node tools/openmw/perf.mjs <manifest> --url <origin> [--seconds 60] [--warm 10]
 //     [--start -2,-9] [--query tier=high] [--discard] [--run] [--profile] [--out <dir>] [--mem-every s] [--mark]
-//     [--net-after KB/s] [--channel chromium|shell]   (--channel: Chromium itself in its new headless mode by default, as the bench suite
+//     [--net-after KB/s] [--glcalls] [--channel chromium|shell]   (--channel: Chromium itself in its new headless mode by default, as the bench suite
 //     runs it; shell: Playwright's headless shell, which composites otherwise — 47 fps on the glide where Chromium and
 //     the suite measure 31, tools/port-perf.mjs)   (--run: Shift held, running;
 //     --profile: a CPU profile of the measured seconds, its longest busy stretches and what they ran, tools/port-perf.mjs;
 //     --glide <dx>,<dy>[,<speed>[,<z>]]: instead of walking, the player carried in a straight line from the start
 //     cell's centre, <speed> units a second (300: a run) at height <z> (3000) — several cells crossed the same way
 //     at every run, whatever stands in the way)
+// --glcalls: every WebGL call of the measured seconds counted by name (glCalls: per drawn frame, the 30 commonest) — its
+// own wrapping costs time: not with the timings of a comparison.
 // The game data's indicator over the measured seconds too (meter: the seconds it was shown, those the engine's reads
 // waited; meter-<s>.png at each time it shows, no-meter-<s>.png now and then).
 // --mem-every s: the page's memory every s seconds of the walk (port-perf.mjs memSampler) and its growth per 10 minutes;
@@ -29,7 +31,7 @@ const args = process.argv.slice(2), id = args[0], arg = (k, d = null) => args.in
 if (!id) throw new Error('Expected a manifest id');
 const base = arg('--url', 'http://localhost:8080'), seconds = Math.max(5, Math.min(arg('--mem-every') ? 3600 : 300, Number(arg('--seconds', 60))));
 const warm = Math.max(0, Number(arg('--warm', 10))), start = arg('--start', '-2,-9'), extra = arg('--query', '');
-const discard = args.includes('--discard'), profile = args.includes('--profile'), glide = arg('--glide');
+const discard = args.includes('--discard'), profile = args.includes('--profile'), glide = arg('--glide'), glcalls = args.includes('--glcalls');
 const dir = arg('--out', `/tmp/orthros-scratch/openmw-perf-${id}`);
 fs.mkdirSync(dir, { recursive: true }); process.env.TMPDIR = dir;
 const browser = await chromium.launch(launchOptions({ gl: 'swiftshader', channel: arg('--channel', 'chromium') }));
@@ -40,7 +42,7 @@ try {
   page.on('crash', () => console.error('perf: the page crashed'));
   // (a measurement: nothing reported to the server — its learned order, telemetry and the gateway's client log stay clean)
   await page.route((u) => /\/clientlog$|\/api\/(telemetry|prefetch|profile-seed|programs|regions)(\/|$)/.test(u.pathname), (r) => r.request().method() === 'GET' ? r.continue() : r.fulfill({ status: 204, body: '' }));
-  await page.addInitScript((discard) => {
+  await page.addInitScript(({ discard, glcalls }) => {
     // (its own name: the engine page's window.orthrosPerf is the passive session record, frame-meter.js)
     const P = window.__omwPerfProbe = { draws: 0, frames: [], work: [], sync: {}, syncFrames: [], cur: {} };
     const proto = WebGL2RenderingContext.prototype;
@@ -80,7 +82,16 @@ try {
       raf(tick);
     };
     raf(tick);
-  }, discard);
+    // (--glcalls: each WebGL2 method counted while measuring)
+    if (glcalls) {
+      P.gl = {};
+      for (const name of Object.getOwnPropertyNames(proto)) {
+        const d = Object.getOwnPropertyDescriptor(proto, name);
+        if (name === 'constructor' || typeof d.value !== 'function') continue;
+        const f = proto[name]; proto[name] = function (...a) { if (P.on) P.gl[name] = (P.gl[name] ?? 0) + 1; return f.apply(this, a); };
+      }
+    }
+  }, { discard, glcalls });
   const url = `${base}/ports/openmw/${encodeURIComponent(id)}/app/index.html?src=hosted&start=${encodeURIComponent(start)}&perfstats=1${extra ? '&' + extra : ''}`;
   const t0 = Date.now();
   await page.goto(url);
@@ -138,6 +149,8 @@ try {
       gap: { p50: q(gaps, 0.5), p90: q(gaps, 0.9), p99: q(gaps, 0.99), max: q(gaps, 1), over100: gaps.filter((g) => g > 100).length, over250: gaps.filter((g) => g > 250).length },
       work: { p50: q(P.work, 0.5), p90: q(P.work, 0.9), p99: q(P.work, 0.99), max: q(P.work, 1), over50: P.work.filter((w) => w > 50).length, over100: P.work.filter((w) => w > 100).length },
       syncPerFrame: perFrame, syncTotal: P.sync,
+      glCalls: P.gl ? (() => { const n = Math.max(1, P.frames.length), all = Object.entries(P.gl).sort((x, y) => y[1] - x[1]);
+        return { perFrame: +(all.reduce((t, [, v]) => t + v, 0) / n).toFixed(0), top: Object.fromEntries(all.slice(0, 30).map(([k, v]) => [k, +(v / n).toFixed(1)])) }; })() : undefined,
       dataStallMs: window.__streamfsStats ? +(window.__streamfsStats.stallMs - (before.stall ?? 0)).toFixed(0) : null,
       shaderVariantsBuilt: (window.__omwShaderMisses ?? 0) - before.misses, soundsNotReady: P.notReady, readsPutOff: P.rangeNotReady,
       syncFetches: window.__streamfsStats ? (window.__streamfsStats.syncFetches ?? 0) - before.sync : null, cells: [...P.cells],

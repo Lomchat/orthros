@@ -1,0 +1,1283 @@
+diff --git a/deps/src/osg/include/osg/BufferObject b/deps/src/osg/include/osg/BufferObject
+index 3ec3655..2a8e20a 100644
+--- a/deps/src/osg/include/osg/BufferObject
++++ b/deps/src/osg/include/osg/BufferObject
+@@ -25,6 +25,7 @@
+ #include <iosfwd>
+ #include <list>
+ #include <map>
++#include <set>
+ 
+ #ifndef GL_ARB_vertex_buffer_object
+     #define GL_ARRAY_BUFFER_ARB               0x8892
+@@ -310,6 +311,9 @@ class OSG_EXPORT GLBufferObjectSet : public Referenced
+         unsigned int getNumOrphans() const { return static_cast<unsigned int>(_orphanedGLBufferObjects.size()); }
+         unsigned int getNumPendingOrphans() const { return static_cast<unsigned int>(_pendingOrphanedGLBufferObjects.size()); }
+ 
++        // Orthros (orthros-r11.patch): whether buffer objects wait here to be deleted, pending or not (under _mutex).
++        bool orthrosHasOrphans();
++
+ 
+     protected:
+ 
+@@ -380,6 +384,16 @@ class OSG_EXPORT GLBufferObjectManager : public GraphicsObjectManager
+         unsigned int& getNumberApplied() { return _numApplied; }
+         double& getApplyTime() { return _applyTime; }
+ 
++        // Orthros (orthros-r11.patch): flushDeletedGLObjects() walked every GLBufferObjectSet each frame to find the few
++        // holding orphans: one set per buffer profile ever used (target, usage, exact size), never removed, more with
++        // every mesh loaded and every dynamic buffer that grows. The walk was 1-2 % of the engine's busy time in the
++        // world, growing as it is played (1.0 -> 2.1 % over a minute of walking). With OPENMW_ORTHROS_VAO on (absent
++        // or anything but "0", read once when the manager is made) GLBufferObjectSet::orphan() lists its set here and
++        // the flush visits the listed sets only, in the same profile order: any other set has neither pending nor
++        // orphaned buffer objects, for which its flush does nothing. OPENMW_ORTHROS_VAO=0: every set, as before.
++        bool orthrosListsOrphanSets() const { return _orthrosListOrphanSets; }
++        void orthrosListOrphanSet(GLBufferObjectSet* set);
++
+     protected:
+ 
+         virtual ~GLBufferObjectManager();
+@@ -404,6 +418,18 @@ class OSG_EXPORT GLBufferObjectManager : public GraphicsObjectManager
+         unsigned int            _numApplied;
+         double                  _applyTime;
+ 
++        // Orthros (orthros-r11.patch): the sets given an orphan since their last flush (see orthrosListOrphanSet()),
++        // in _glBufferObjectSetMap's order. Lock order: a set's _mutex, then this one, never the reverse.
++        struct OrthrosProfileLess
++        {
++            bool operator()(const GLBufferObjectSet* lhs, const GLBufferObjectSet* rhs) const { return lhs->getProfile() < rhs->getProfile(); }
++        };
++        typedef std::set<GLBufferObjectSet*, OrthrosProfileLess> OrthrosOrphanSets;
++
++        bool                    _orthrosListOrphanSets;
++        OpenThreads::Mutex      _orthrosOrphanSetsMutex;
++        OrthrosOrphanSets       _orthrosOrphanSets;
++
+ };
+ 
+ 
+diff --git a/deps/src/osg/include/osg/Program b/deps/src/osg/include/osg/Program
+index e9e2682..ea88d50 100644
+--- a/deps/src/osg/include/osg/Program
++++ b/deps/src/osg/include/osg/Program
+@@ -35,6 +35,11 @@ namespace osg {
+ 
+ class State;
+ 
++/** Orthros (orthros-r11.patch): OPENMW_ORTHROS_UNIFORMS, read once — absent or anything but "0": uniforms are
++  * applied through flat tables indexed by the uniform's name ID (PerContextProgram::apply, State::applyUniformList);
++  * "0": OSG's maps, as before. The same glUniform* calls either way. */
++extern OSG_EXPORT bool orthrosUniformsEnabled();
++
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ /** osg::Program is an application-level abstraction of an OpenGL glProgram.
+@@ -296,11 +301,26 @@ class OSG_EXPORT Program : public osg::StateAttribute
+                 void resetAppliedUniforms() const
+                 {
+                     _lastAppliedUniformList.clear();
++                    // Orthros (orthros-r11.patch): the flat tables' last applied uniforms too (rebuilt empty on next use).
++                    _orthrosSlotsDirty = true;
+                 }
+ 
+ 
+                 inline void apply(const Uniform& uniform) const
+                 {
++                    // Orthros (orthros-r11.patch): the name ID indexes this program's slots (one a location: the uniform
++                    // and modified count last applied there) instead of up to four map descents a call, tens of
++                    // thousands of calls a frame (State::applyUniformList offers every uniform on the stack to every
++                    // draw's program). Same test, same glUniform* calls.
++                    if (_orthrosUniforms)
++                    {
++                        if (_orthrosSlotsDirty) orthrosBuildSlots();
++                        const unsigned int nameID = uniform.getNameID();
++                        if (nameID < _orthrosSlotOfName.size() && _orthrosSlotOfName[nameID] >= 0)
++                            orthrosApply(static_cast<unsigned int>(_orthrosSlotOfName[nameID]), uniform);
++                        return;
++                    }
++
+                     GLint location = getUniformLocation(uniform.getNameID());
+                     if (location>=0)
+                     {
+@@ -322,6 +342,34 @@ class OSG_EXPORT Program : public osg::StateAttribute
+                     }
+                 }
+ 
++                /** Orthros (orthros-r11.patch): one of this program's active uniforms — its name ID and its slot. */
++                struct OrthrosUniformName
++                {
++                    unsigned int nameID;
++                    unsigned int slot;
++                };
++                typedef std::vector<OrthrosUniformName> OrthrosUniformNames;
++
++                /** Orthros (orthros-r11.patch): this program's active uniforms (flat tables on, orthrosUniformsEnabled). */
++                inline const OrthrosUniformNames& orthrosUniformNames() const
++                {
++                    if (_orthrosSlotsDirty) orthrosBuildSlots();
++                    return _orthrosNames;
++                }
++
++                /** Orthros (orthros-r11.patch): apply(uniform) once the uniform's slot is known — glUniform* unless the
++                  * slot's last applied uniform is this one at its current modified count. */
++                inline void orthrosApply(unsigned int slot, const Uniform& uniform) const
++                {
++                    OrthrosUniformSlot& s = _orthrosSlots[slot];
++                    if (s.uniform.get() != &uniform || s.modifiedCount != uniform.getModifiedCount())
++                    {
++                        uniform.apply(_extensions.get(), s.location);
++                        s.uniform = &uniform;
++                        s.modifiedCount = uniform.getModifiedCount();
++                    }
++                }
++
+                 const ActiveUniformMap& getActiveUniforms() const {return _uniformInfoMap;}
+                 const ActiveVarInfoMap& getActiveAttribs() const {return _attribInfoMap;}
+                 const UniformBlockMap& getUniformBlocks() const {return _uniformBlockMap; }
+@@ -384,6 +432,24 @@ class OSG_EXPORT Program : public osg::StateAttribute
+                 typedef std::map<unsigned int, UniformModifiedCountPair> LastAppliedUniformList;
+                 mutable LastAppliedUniformList _lastAppliedUniformList;
+ 
++                /** Orthros (orthros-r11.patch): the flat tables — _lastAppliedUniformList's entries by slot (one per
++                  * distinct location of _uniformInfoMap), the slot of each name ID (-1: not active here), built from
++                  * _uniformInfoMap on first use after a link or resetAppliedUniforms. */
++                void orthrosBuildSlots() const;
++
++                struct OrthrosUniformSlot
++                {
++                    OrthrosUniformSlot() : location(-1), modifiedCount(0) {}
++                    GLint location;
++                    osg::ref_ptr<const osg::Uniform> uniform;
++                    unsigned int modifiedCount;
++                };
++                bool _orthrosUniforms;
++                mutable bool _orthrosSlotsDirty;
++                mutable std::vector<int> _orthrosSlotOfName;
++                mutable std::vector<OrthrosUniformSlot> _orthrosSlots;
++                mutable OrthrosUniformNames _orthrosNames;
++
+                 typedef std::vector< ref_ptr<Shader> > ShaderList;
+                 ShaderList _shadersToDetach;
+                 ShaderList _shadersToAttach;
+diff --git a/deps/src/osg/include/osg/State b/deps/src/osg/include/osg/State
+index afff834..a373ba0 100644
+--- a/deps/src/osg/include/osg/State
++++ b/deps/src/osg/include/osg/State
+@@ -1294,6 +1294,24 @@ class OSG_EXPORT State : public Referenced
+ 
+         const Program::PerContextProgram*                               _lastAppliedProgramObject;
+ 
++        // Orthros (orthros-r11.patch): OPENMW_ORTHROS_UNIFORMS (osg::orthrosUniformsEnabled) — _uniformMap's stacks by
++        // the name ID of their key (every entry is reached through orthrosUniformStack, never erased, so the pointers
++        // hold), and the uniforms of the StateSet being applied by name ID, valid when their stamp is the current
++        // one. _orthrosUniformMismatch: a StateSet listed a uniform under a key that is not its name (no OSG API does
++        // that) or under "" — applying falls back to the map walk for good (orthrosUniformKeyMismatch).
++        struct OrthrosStateSetUniform
++        {
++            OrthrosStateSetUniform() : uniform(0), value(0), stamp(0) {}
++            const Uniform*                  uniform;
++            StateAttribute::OverrideValue   value;
++            unsigned int                    stamp;
++        };
++        bool                                                            _orthrosUniforms;
++        bool                                                            _orthrosUniformMismatch;
++        unsigned int                                                    _orthrosUniformStamp;
++        std::vector<UniformStack*>                                      _orthrosUniformStackOfName;
++        std::vector<OrthrosStateSetUniform>                             _orthrosStateSetUniforms;
++
+         StateSetStack                                                   _stateStateStack;
+ 
+         unsigned int                                                    _maxTexturePoolSize;
+@@ -1339,6 +1357,11 @@ class OSG_EXPORT State : public Referenced
+         inline void applyAttributeMap(AttributeMap& attributeMap);
+         inline void applyUniformMap(UniformMap& uniformMap);
+ 
++        // Orthros (orthros-r11.patch): see applyUniformList.
++        inline UniformStack& orthrosUniformStack(UniformMap& uniformMap, const StateSet::UniformList::value_type& entry);
++        inline bool orthrosApplyUniforms(const StateSet::UniformList* uniformList);
++        inline void orthrosUniformKeyMismatch(const std::string& key);
++
+         inline void applyModeListOnTexUnit(unsigned int unit,ModeMap& modeMap,const StateSet::ModeList& modeList);
+         inline void applyAttributeListOnTexUnit(unsigned int unit,AttributeMap& attributeMap,const StateSet::AttributeList& attributeList);
+ 
+@@ -1476,7 +1499,8 @@ inline void State::pushUniformList(UniformMap& uniformMap,const StateSet::Unifor
+         ++aitr)
+     {
+         // get the attribute stack for incoming type {aitr->first}.
+-        UniformStack& us = uniformMap[aitr->first];
++        // Orthros (orthros-r11.patch): by the uniform's name ID when the switch is on (the same entry).
++        UniformStack& us = _orthrosUniforms ? orthrosUniformStack(uniformMap, *aitr) : uniformMap[aitr->first];
+         if (us.uniformVec.empty())
+         {
+             // first pair so simply push incoming pair to back.
+@@ -1574,7 +1598,8 @@ inline void State::popUniformList(UniformMap& uniformMap,const StateSet::Uniform
+         ++aitr)
+     {
+         // get the attribute stack for incoming type {aitr->first}.
+-        UniformStack& us = uniformMap[aitr->first];
++        // Orthros (orthros-r11.patch): by the uniform's name ID when the switch is on (the same entry).
++        UniformStack& us = _orthrosUniforms ? orthrosUniformStack(uniformMap, *aitr) : uniformMap[aitr->first];
+         if (!us.uniformVec.empty())
+         {
+             us.uniformVec.pop_back();
+@@ -2084,10 +2109,101 @@ inline void State::applyAttributeListOnTexUnit(unsigned int unit,AttributeMap& a
+ 
+ }
+ 
++inline State::UniformStack& State::orthrosUniformStack(UniformMap& uniformMap, const StateSet::UniformList::value_type& entry)
++{
++    // Orthros (orthros-r11.patch): the stack of a StateSet's uniform found by its name ID — a flat table instead of a
++    // descent of _uniformMap comparing strings. Every StateSet API keys a uniform by its name: checked here (one string
++    // equality), anything else takes the map as before. Not "" either: a uniform named "" (osg::Uniform() is, with no
++    // name ID, ~0u — e.g. read from a .osgt without a Name) can still get a name (Uniform::setName) while listed under
++    // "", and the walk would then apply it there; a name, and its name ID, are for good once set.
++    const Uniform* uniform = entry.second.first.get();
++    const unsigned int nameID = uniform ? uniform->getNameID() : ~0u;
++    if (nameID != ~0u && &uniformMap == &_uniformMap && !entry.first.empty() && uniform->getName() == entry.first)
++    {
++        if (nameID < _orthrosUniformStackOfName.size() && _orthrosUniformStackOfName[nameID]) return *_orthrosUniformStackOfName[nameID];
++        UniformStack& us = uniformMap[entry.first];
++        if (nameID >= _orthrosUniformStackOfName.size()) _orthrosUniformStackOfName.resize(nameID + 1, 0);
++        _orthrosUniformStackOfName[nameID] = &us;
++        return us;
++    }
++    orthrosUniformKeyMismatch(entry.first);
++    return uniformMap[entry.first];
++}
++
++inline void State::orthrosUniformKeyMismatch(const std::string& key)
++{
++    // Orthros (orthros-r11.patch): a StateSet lists a uniform under a key that is not its name, under "" or a null one
++    // (see orthrosUniformStack); applying takes the map walk from now on, said once.
++    if (!_orthrosUniformMismatch)
++        OSG_NOTICE << "osg::State: a StateSet lists a uniform under another name, or none (\"" << key << "\"): uniforms applied by the map walk from now on (OPENMW_ORTHROS_UNIFORMS)" << std::endl;
++    _orthrosUniformMismatch = true;
++}
++
++inline bool State::orthrosApplyUniforms(const StateSet::UniformList* uniformList)
++{
++    // Orthros (orthros-r11.patch): applyUniformList / applyUniformMap without walking _uniformMap. The walk offers
++    // every name on the stack (and the StateSet's) to the program, which ignores the names it has no location for;
++    // here the program's own active names are visited and each one's uniform is chosen as the walk chooses it: the
++    // StateSet's, unless the stack's top is OVERRIDE and the StateSet's not PROTECTED; else the stack's top. The same
++    // uniforms reach PerContextProgram's slots (applied in another order: distinct names have distinct locations), so
++    // the same glUniform* calls. False (nothing applied): a StateSet uniform not keyed by its name, or keyed "" (as in
++    // orthrosUniformStack) — the walk instead, from now on.
++    const Program::PerContextProgram* pcp = _lastAppliedProgramObject;
++
++    unsigned int stamp = ++_orthrosUniformStamp;
++    if (stamp == 0)
++    {
++        for (std::vector<OrthrosStateSetUniform>::iterator itr = _orthrosStateSetUniforms.begin(); itr != _orthrosStateSetUniforms.end(); ++itr) itr->stamp = 0;
++        stamp = _orthrosUniformStamp = 1;
++    }
++
++    if (uniformList)
++    {
++        for (StateSet::UniformList::const_iterator itr = uniformList->begin(); itr != uniformList->end(); ++itr)
++        {
++            const Uniform* uniform = itr->second.first.get();
++            const unsigned int nameID = uniform ? uniform->getNameID() : ~0u;
++            if (nameID == ~0u || itr->first.empty() || uniform->getName() != itr->first)
++            {
++                orthrosUniformKeyMismatch(itr->first);
++                return false;
++            }
++            if (nameID >= _orthrosStateSetUniforms.size()) _orthrosStateSetUniforms.resize(nameID + 1);
++            OrthrosStateSetUniform& ssu = _orthrosStateSetUniforms[nameID];
++            ssu.uniform = uniform;
++            ssu.value = itr->second.second;
++            ssu.stamp = stamp;
++        }
++    }
++
++    const Program::PerContextProgram::OrthrosUniformNames& names = pcp->orthrosUniformNames();
++    for (Program::PerContextProgram::OrthrosUniformNames::const_iterator itr = names.begin(); itr != names.end(); ++itr)
++    {
++        const unsigned int nameID = itr->nameID;
++        const UniformStack* us = nameID < _orthrosUniformStackOfName.size() ? _orthrosUniformStackOfName[nameID] : 0;
++        const UniformStack::UniformPair* top = (us && !us->uniformVec.empty()) ? &us->uniformVec.back() : 0;
++        const Uniform* uniform = 0;
++        if (nameID < _orthrosStateSetUniforms.size() && _orthrosStateSetUniforms[nameID].stamp == stamp)
++        {
++            const OrthrosStateSetUniform& ssu = _orthrosStateSetUniforms[nameID];
++            uniform = (top && (top->second & StateAttribute::OVERRIDE) && !(ssu.value & StateAttribute::PROTECTED)) ? top->first : ssu.uniform;
++        }
++        else if (top)
++        {
++            uniform = top->first;
++        }
++        if (uniform) pcp->orthrosApply(itr->slot, *uniform);
++    }
++    return true;
++}
++
+ inline void State::applyUniformList(UniformMap& uniformMap,const StateSet::UniformList& uniformList)
+ {
+     if (!_lastAppliedProgramObject) return;
+ 
++    // Orthros (orthros-r11.patch): OPENMW_ORTHROS_UNIFORMS — see orthrosApplyUniforms.
++    if (_orthrosUniforms && !_orthrosUniformMismatch && &uniformMap == &_uniformMap && orthrosApplyUniforms(&uniformList)) return;
++
+     StateSet::UniformList::const_iterator ds_aitr=uniformList.begin();
+ 
+     UniformMap::iterator this_aitr=uniformMap.begin();
+@@ -2330,6 +2446,9 @@ inline void State::applyUniformMap(UniformMap& uniformMap)
+ {
+     if (!_lastAppliedProgramObject) return;
+ 
++    // Orthros (orthros-r11.patch): OPENMW_ORTHROS_UNIFORMS — see orthrosApplyUniforms.
++    if (_orthrosUniforms && !_orthrosUniformMismatch && &uniformMap == &_uniformMap && orthrosApplyUniforms(0)) return;
++
+     for(UniformMap::iterator aitr=uniformMap.begin();
+         aitr!=uniformMap.end();
+         ++aitr)
+diff --git a/deps/src/osg/src/osg/BufferObject.cpp b/deps/src/osg/src/osg/BufferObject.cpp
+index e14231c..fe01e70 100644
+--- a/deps/src/osg/src/osg/BufferObject.cpp
++++ b/deps/src/osg/src/osg/BufferObject.cpp
+@@ -12,6 +12,7 @@
+  * OpenSceneGraph Public License for more details.
+ */
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <math.h>
+ #include <float.h>
+ 
+@@ -795,6 +796,15 @@ void GLBufferObjectSet::orphan(GLBufferObject* to)
+     // list.  This double buffered approach to handling orphaned TO's is used
+     // to avoid having to mutex the process of appling active TO's.
+     _pendingOrphanedGLBufferObjects.push_back(to);
++
++    // Orthros (orthros-r11.patch): listed for the manager's next flushDeletedGLObjects().
++    if (_parent->orthrosListsOrphanSets()) _parent->orthrosListOrphanSet(this);
++}
++
++bool GLBufferObjectSet::orthrosHasOrphans()
++{
++    OpenThreads::ScopedLock<OpenThreads::Mutex> lock(_mutex);
++    return !_pendingOrphanedGLBufferObjects.empty() || !_orphanedGLBufferObjects.empty();
+ }
+ 
+ void GLBufferObjectSet::remove(GLBufferObject* to)
+@@ -866,14 +876,24 @@ GLBufferObjectManager::GLBufferObjectManager(unsigned int contextID):
+     _numGenerated(0),
+     _generateTime(0.0),
+     _numApplied(0),
+-    _applyTime(0.0)
++    _applyTime(0.0),
++    _orthrosListOrphanSets(true)
+ {
++    // Orthros (orthros-r11.patch): OPENMW_ORTHROS_VAO=0 keeps the walk over every set (see orthrosListOrphanSet()).
++    const char* orthrosVao = getenv("OPENMW_ORTHROS_VAO");
++    if (orthrosVao && orthrosVao[0]=='0' && orthrosVao[1]==0) _orthrosListOrphanSets = false;
+ }
+ 
+ GLBufferObjectManager::~GLBufferObjectManager()
+ {
+ }
+ 
++void GLBufferObjectManager::orthrosListOrphanSet(GLBufferObjectSet* set)
++{
++    OpenThreads::ScopedLock<OpenThreads::Mutex> lock(_orthrosOrphanSetsMutex);
++    _orthrosOrphanSets.insert(set);
++}
++
+ void GLBufferObjectManager::setMaxGLBufferObjectPoolSize(unsigned int size)
+ {
+     if (_maxGLBufferObjectPoolSize == size) return;
+@@ -979,6 +999,24 @@ void GLBufferObjectManager::flushDeletedGLObjects(double currentTime, double& av
+ {
+     ElapsedTime elapsedTime(&(getDeleteTime()));
+ 
++    if (_orthrosListOrphanSets)
++    {
++        // Orthros (orthros-r11.patch): the listed sets only, taken off the list (a set orphaning again meanwhile, from
++        // another thread, lists itself anew), visited while there is time as the walk below does; a set left with
++        // orphans (out of time, or kept by the pool's size) is listed again for the next flush.
++        OrthrosOrphanSets sets;
++        {
++            OpenThreads::ScopedLock<OpenThreads::Mutex> lock(_orthrosOrphanSetsMutex);
++            sets.swap(_orthrosOrphanSets);
++        }
++        for(OrthrosOrphanSets::iterator itr = sets.begin(); itr != sets.end(); ++itr)
++        {
++            if (availableTime > 0.0) (*itr)->flushDeletedGLBufferObjects(currentTime, availableTime);
++            if ((*itr)->orthrosHasOrphans()) orthrosListOrphanSet(*itr);
++        }
++        return;
++    }
++
+     for(GLBufferObjectSetMap::iterator itr = _glBufferObjectSetMap.begin();
+         (itr != _glBufferObjectSetMap.end()) && (availableTime > 0.0);
+         ++itr)
+diff --git a/deps/src/osg/src/osg/Program.cpp b/deps/src/osg/src/osg/Program.cpp
+index 493d9fc..46397b1 100644
+--- a/deps/src/osg/src/osg/Program.cpp
++++ b/deps/src/osg/src/osg/Program.cpp
+@@ -37,6 +37,7 @@
+ #include <OpenThreads/Mutex>
+ 
+ #include <string.h>
++#include <stdlib.h>
+ 
+ using namespace osg;
+ 
+@@ -644,12 +645,59 @@ const Program::UniformBlockMap& Program::getUniformBlocks(unsigned contextID) co
+ // PCP is an OSG abstraction of the per-context glProgram
+ ///////////////////////////////////////////////////////////////////////////
+ 
++static bool orthrosReadUniformsSwitch()
++{
++    const char* value = getenv("OPENMW_ORTHROS_UNIFORMS");
++    const bool enabled = !(value && strcmp(value, "0") == 0);
++    if (!enabled) OSG_NOTICE << "OPENMW_ORTHROS_UNIFORMS=0: uniforms applied through OSG's maps" << std::endl;
++    return enabled;
++}
++
++bool osg::orthrosUniformsEnabled()
++{
++    // Orthros (orthros-r11.patch): read once (the page sets ENV before the engine starts).
++    static const bool enabled = orthrosReadUniformsSwitch();
++    return enabled;
++}
++
++void Program::PerContextProgram::orthrosBuildSlots() const
++{
++    // Orthros (orthros-r11.patch): from _uniformInfoMap as apply() reads it — a name with a location >= 0 is applied
++    // there, a location's last applied uniform is shared by every name that has it (_lastAppliedUniformList's key).
++    _orthrosSlotsDirty = false;
++    _orthrosSlotOfName.clear();
++    _orthrosSlots.clear();
++    _orthrosNames.clear();
++    std::map<GLint, unsigned int> slotOfLocation;
++    for (ActiveUniformMap::const_iterator itr = _uniformInfoMap.begin(); itr != _uniformInfoMap.end(); ++itr)
++    {
++        const GLint location = itr->second._location;
++        if (location < 0) continue;
++        std::pair<std::map<GLint, unsigned int>::iterator, bool> inserted =
++            slotOfLocation.insert(std::map<GLint, unsigned int>::value_type(location, static_cast<unsigned int>(_orthrosSlots.size())));
++        if (inserted.second)
++        {
++            _orthrosSlots.push_back(OrthrosUniformSlot());
++            _orthrosSlots.back().location = location;
++        }
++        const unsigned int nameID = itr->first;
++        if (nameID >= _orthrosSlotOfName.size()) _orthrosSlotOfName.resize(nameID + 1, -1);
++        _orthrosSlotOfName[nameID] = static_cast<int>(inserted.first->second);
++        OrthrosUniformName name;
++        name.nameID = nameID;
++        name.slot = inserted.first->second;
++        _orthrosNames.push_back(name);
++    }
++}
++
+ Program::PerContextProgram::PerContextProgram(const Program* program, unsigned int contextID, GLuint programHandle ) :
+         osg::Referenced(),
+         _glProgramHandle(programHandle),
+         _loadedBinary(false),
+         _contextID( contextID ),
+-        _ownsProgramHandle(false)
++        _ownsProgramHandle(false),
++        _orthrosUniforms(osg::orthrosUniformsEnabled()),
++        _orthrosSlotsDirty(true)
+ {
+     _program = program;
+     if (_glProgramHandle == 0)
+@@ -759,6 +807,7 @@ void Program::PerContextProgram::linkProgram(osg::State& state)
+     _uniformInfoMap.clear();
+     _attribInfoMap.clear();
+     _lastAppliedUniformList.clear();
++    _orthrosSlotsDirty = true;
+ 
+     if (!_loadedBinary)
+     {
+diff --git a/deps/src/osg/src/osg/State.cpp b/deps/src/osg/src/osg/State.cpp
+index 50ca7b0..6f2a249 100644
+--- a/deps/src/osg/src/osg/State.cpp
++++ b/deps/src/osg/src/osg/State.cpp
+@@ -127,6 +127,11 @@ State::State():
+ 
+     _lastAppliedProgramObject = 0;
+ 
++    // Orthros (orthros-r11.patch): applying uniforms through flat tables (include/osg/State, applyUniformList).
++    _orthrosUniforms = osg::orthrosUniformsEnabled();
++    _orthrosUniformMismatch = false;
++    _orthrosUniformStamp = 0;
++
+     _extensionProcsInitialized = false;
+     _glClientActiveTexture = 0;
+     _glActiveTexture = 0;
+diff --git a/openmw/components/myguiplatform/myguirendermanager.cpp b/openmw/components/myguiplatform/myguirendermanager.cpp
+index 4819f72..c197d98 100644
+--- a/openmw/components/myguiplatform/myguirendermanager.cpp
++++ b/openmw/components/myguiplatform/myguirendermanager.cpp
+@@ -2,6 +2,8 @@
+ // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
+ #include "myguirendermanager.hpp"
+ 
++#include <cstdlib>
++
+ #include <MyGUI_Timer.h>
+ 
+ #include <osg/Drawable>
+@@ -104,6 +106,12 @@ namespace MyGUIPlatform
+             const unsigned int emColLoc = state->getColorAlias()._location;
+             const unsigned int emUvLoc
+                 = state->getTexCoordAliasList().empty() ? 3u : state->getTexCoordAliasList()[0]._location;
++            // Orthros (orthros-r11.patch): the three arrays are enabled with the first batch only, not again with
++            // every batch: being enabled is state of the vertex array object bound for this drawable (its own), which
++            // nothing between two batches changes (state sets, textures, buffer uploads); each batch still points
++            // them at its own buffer, and they are disabled after the last as before. A HUD of ~170 batches: ~500
++            // enableVertexAttribArray calls a frame fewer. OPENMW_ORTHROS_VAO=0: enabled again for every batch.
++            bool emEnableArrays = true;
+ #else
+             state->setClientActiveTextureUnit(0);
+             glEnableClientState(GL_VERTEX_ARRAY);
+@@ -145,15 +153,19 @@ namespace MyGUIPlatform
+                     // vertex attributes at the locations OSG's vertex-attribute aliasing assigned
+                     // (resolved at runtime above via state->get*Alias()._location), which gui.vert
+                     // uses after GLES transpilation.
+-                    glEnableVertexAttribArray(emPosLoc);
++                    if (emEnableArrays)
++                        glEnableVertexAttribArray(emPosLoc);
+                     glVertexAttribPointer(
+                         emPosLoc, 3, GL_FLOAT, GL_FALSE, sizeof(MyGUI::Vertex), reinterpret_cast<char*>(0));
+-                    glEnableVertexAttribArray(emColLoc);
++                    if (emEnableArrays)
++                        glEnableVertexAttribArray(emColLoc);
+                     glVertexAttribPointer(
+                         emColLoc, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(MyGUI::Vertex), reinterpret_cast<char*>(12));
+-                    glEnableVertexAttribArray(emUvLoc);
++                    if (emEnableArrays)
++                        glEnableVertexAttribArray(emUvLoc);
+                     glVertexAttribPointer(
+                         emUvLoc, 2, GL_FLOAT, GL_FALSE, sizeof(MyGUI::Vertex), reinterpret_cast<char*>(16));
++                    emEnableArrays = !mOrthrosEnableOnce;
+ #else
+                     glVertexPointer(3, GL_FLOAT, sizeof(MyGUI::Vertex), reinterpret_cast<char*>(0));
+                     glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(MyGUI::Vertex), reinterpret_cast<char*>(12));
+@@ -236,6 +248,13 @@ namespace MyGUIPlatform
+             mDummyTexture->setWrap(osg::Texture::WRAP_T, osg::Texture::CLAMP_TO_EDGE);
+             mDummyTexture->setInternalFormat(GL_RGB);
+             mDummyTexture->setTextureSize(1, 1);
++
++#ifdef __EMSCRIPTEN__
++            // Orthros (orthros-r11.patch): OPENMW_ORTHROS_VAO, read once (the GUI's drawable is made at startup);
++            // absent or anything but "0": on.
++            const char* orthrosVao = std::getenv("OPENMW_ORTHROS_VAO");
++            mOrthrosEnableOnce = !(orthrosVao && orthrosVao[0] == '0' && orthrosVao[1] == '\0');
++#endif
+         }
+         Drawable(const Drawable& copy, const osg::CopyOp& copyop = osg::CopyOp::SHALLOW_COPY)
+             : osg::Drawable(copy, copyop)
+@@ -245,6 +264,9 @@ namespace MyGUIPlatform
+             , mReadFrom(0)
+             , mDummyTexture(copy.mDummyTexture)
+         {
++#ifdef __EMSCRIPTEN__
++            mOrthrosEnableOnce = copy.mOrthrosEnableOnce;
++#endif
+         }
+ 
+         // Defines the necessary information for a draw call
+@@ -286,6 +308,11 @@ namespace MyGUIPlatform
+         mutable int mReadFrom;
+ 
+         osg::ref_ptr<osg::Texture2D> mDummyTexture;
++
++#ifdef __EMSCRIPTEN__
++        // Orthros (orthros-r11.patch): the batches' vertex arrays enabled with the first batch of a draw only.
++        bool mOrthrosEnableOnce;
++#endif
+     };
+ 
+     class OSGVertexBuffer : public MyGUI::IVertexBuffer
+diff --git a/openmw/components/sceneutil/lightmanager.cpp b/openmw/components/sceneutil/lightmanager.cpp
+index 896e376..7dfbf13 100644
+--- a/openmw/components/sceneutil/lightmanager.cpp
++++ b/openmw/components/sceneutil/lightmanager.cpp
+@@ -3,6 +3,7 @@
+ #include "lightmanager.hpp"
+ 
+ #include <algorithm>
++#include <cstdlib>
+ #include <cstring>
+ 
+ #include <osgUtil/CullVisitor>
+@@ -54,12 +55,79 @@ namespace
+         mat(2, 3) = q;
+         mat(3, 3) = r;
+     }
++
++    // Orthros (orthros-r11.patch): OPENMW_ORTHROS_LIGHTUBO (absent or anything but "0": on; "0": the previous code),
++    // read once -- named after the uniform buffer it was meant to bring; it sizes the existing uniform instead (no
++    // UBO: OSG binds uniform blocks from GL 3.1 only, and WebGL2 reports ES 3.0). On, a LightBuffer uniform holds
++    // only the elements its PointLightCount covers: a light list's (per frame, or kept between frames by
++    // OPENMW_ORTHROS_LIGHTCACHE), the list's lights; the LightManager's own (unlit objects', PointLightCount 0), one.
++    // The shaders read LightBuffer[i] for i < PointLightCount only (lib/core/lighting_*_impl.glsl) and
++    // glUniformMatrix4fv with fewer elements than the array sets its first ones: the values read are the same, while
++    // each change of light list in a program uploads n mat4s instead of maxLights (16 from the web page: 1 KiB,
++    // copied float by float by the GL glue) and the cull allocates n. The elements past n keep the program's
++    // previous values, never read.
++    bool orthrosSizedLightBuffers()
++    {
++        static const bool enabled = [] {
++            const char* value = std::getenv("OPENMW_ORTHROS_LIGHTUBO");
++            const bool on = value == nullptr || std::strcmp(value, "0") != 0;
++            Log(Debug::Info) << "Orthros: light buffers sized to their light lists: "
++                             << (on ? "on" : "off (OPENMW_ORTHROS_LIGHTUBO=0)");
++            return on;
++        }();
++        return enabled;
++    }
++
++    // A sized LightBuffer's elements for numLights lights (at least one: the LightManager's own has no light).
++    unsigned int orthrosLightBufferSize(size_t numLights)
++    {
++        return static_cast<unsigned int>(std::max<size_t>(numLights, 1));
++    }
++
++    osg::ref_ptr<osg::Uniform> orthrosLightBuffer(size_t numLights)
++    {
++        return new osg::Uniform(
++            osg::Uniform::FLOAT_MAT4, "LightBuffer", static_cast<int>(orthrosLightBufferSize(numLights)));
++    }
+ }
+ 
+ namespace SceneUtil
+ {
+     static int sLightId = 0;
+ 
++    // Orthros (orthros-r11.patch): OPENMW_ORTHROS_LIGHTCACHE, read once: absent or anything but "0" keeps the light
++    // list StateSets from one frame to the next (LightManager::LightListStateSets), "0" the per-frame cache (the
++    // previous code), "check" keeps them and compares each with the per-frame path's (QA; the log counts them).
++    enum class LightListCache
++    {
++        Off,
++        On,
++        Check,
++    };
++
++    static LightListCache lightListCacheMode()
++    {
++        static const LightListCache mode = [] {
++            const char* value = std::getenv("OPENMW_ORTHROS_LIGHTCACHE");
++            LightListCache result = LightListCache::On;
++            if (value != nullptr && std::strcmp(value, "0") == 0)
++                result = LightListCache::Off;
++            else if (value != nullptr && std::strcmp(value, "check") == 0)
++                result = LightListCache::Check;
++            Log(Debug::Info) << "Orthros: light list StateSets kept between frames: "
++                             << (result == LightListCache::Off
++                                        ? "off (OPENMW_ORTHROS_LIGHTCACHE=0)"
++                                        : (result == LightListCache::Check ? "on, checked against the per-frame ones"
++                                                                           : "on"));
++            return result;
++        }();
++        return mode;
++    }
++
++    // Orthros (orthros-r11.patch): a kept light list unused for this many update() calls is dropped (looked for
++    // as often): the ids of light sources gone with their cells do not pile up.
++    static constexpr size_t sLightListUnusedUpdates = 64;
++
+ #ifdef __EMSCRIPTEN__
+     // WebGL2/ANGLE reads struct-member uniforms (sun.ambient …) as 0, which zeroed the per-cell
+     // ambient floor (black interiors) and the directional sun. The GLES shaders (@useGLES) swap
+@@ -365,6 +433,8 @@ namespace SceneUtil
+ 
+     LightManager::LightManager(const LightSettings& settings, Resource::ResourceSystem* resourceSystem)
+         : mResourceSystem(resourceSystem)
++        , mLightListCacheEnabled(lightListCacheMode() != LightListCache::Off)
++        , mLightListCacheCheck(lightListCacheMode() == LightListCache::Check)
+         , mLightingMask(~0u)
+         , mSun(nullptr)
+         , mPointLightRadiusMultiplier(1.f)
+@@ -407,6 +477,8 @@ namespace SceneUtil
+     LightManager::LightManager(const LightManager& copy, const osg::CopyOp& copyop)
+         : osg::Group(copy, copyop)
+         , mResourceSystem(copy.mResourceSystem)
++        , mLightListCacheEnabled(copy.mLightListCacheEnabled)
++        , mLightListCacheCheck(copy.mLightListCacheCheck)
+         , mLightingMask(copy.mLightingMask)
+         , mSun(copy.mSun)
+         , mClusteredLighting(copy.mClusteredLighting)
+@@ -457,7 +529,7 @@ namespace SceneUtil
+         setMaxLights(maxLights);
+ 
+         getStateSet()->removeUniform("LightBuffer");
+-        getStateSet()->addUniform(generateLightBufferUniform());
++        getStateSet()->addUniform(orthrosSizedLightBuffers() ? orthrosLightBuffer(0) : generateLightBufferUniform());
+     }
+ 
+     void LightManager::updateSettings(float lightRadiusMultiplier, float maximumLightDistance, float lightFadeStart)
+@@ -486,7 +558,8 @@ namespace SceneUtil
+         mClusteredLighting = false;
+         setMaxLights(targetLights);
+ 
+-        getOrCreateStateSet()->addUniform(generateLightBufferUniform());
++        getOrCreateStateSet()->addUniform(
++            orthrosSizedLightBuffers() ? orthrosLightBuffer(0) : generateLightBufferUniform());
+ 
+         mCullCallback->reset();
+     }
+@@ -517,6 +590,46 @@ namespace SceneUtil
+         // The cached StateSets hold this frame's light positions/colours in view space, so they
+         // are only valid for the frame that built them.
+         mLightListStateSetCache.clear();
++        if (!mLightListCacheEnabled)
++            return;
++
++        // Orthros (orthros-r11.patch): the same validity for the kept ones -- each is filled again on its first
++        // use after this call (LightListStateSets) --, and those unused for a while are dropped.
++        mLastViewSpaceObserverSet = nullptr;
++        mLastViewSpaceLights = nullptr;
++        ++mLightListUpdate;
++        if (mLightListUpdate % sLightListUnusedUpdates == 0)
++        {
++            for (auto it = mLightListCache.begin(); it != mLightListCache.end();)
++            {
++                if (mLightListUpdate - it->second->mLastUsedUpdate > sLightListUnusedUpdates)
++                {
++                    // A LightListCallback may still hold the entry (until its list changes): its StateSets go now
++                    // -- not pushed for that many updates, no state graph or draw refers to them --, the callback
++                    // looks its list up again (mCached).
++                    LightListStateSets& dropped = *it->second;
++                    dropped.mCached = false;
++                    dropped.mStateSet = {};
++                    dropped.mLightBuffer = {};
++                    std::vector<int>().swap(dropped.mKey);
++                    it = mLightListCache.erase(it);
++                }
++                else
++                    ++it;
++            }
++        }
++
++        if (mLightListCacheCheck && mLightListUpdate % 600 == 0)
++            Log(Debug::Info) << "Orthros: light list cache check: " << mLightListChecked << " compared, "
++                             << mLightListCheckFailed << " different; " << mLightListCache.size() << " lists kept, "
++                             << mLightListRebuilt << " StateSets rebuilt";
++    }
++
++    void LightManager::countLightListCheck(bool same, const char* what)
++    {
++        ++mLightListChecked;
++        if (!same && mLightListCheckFailed++ < 20)
++            Log(Debug::Warning) << "Orthros: light list cache check: " << what << " differs";
+     }
+ 
+     void LightManager::addLight(LightSource* lightSource, const osg::Matrixf& worldMat, size_t frameNum)
+@@ -557,7 +670,8 @@ namespace SceneUtil
+             return cached->second;
+ 
+         osg::ref_ptr<osg::StateSet> stateset = new osg::StateSet;
+-        osg::ref_ptr<osg::Uniform> data = generateLightBufferUniform();
++        osg::ref_ptr<osg::Uniform> data
++            = orthrosSizedLightBuffers() ? orthrosLightBuffer(lightList.size()) : generateLightBufferUniform();
+ 
+         for (size_t i = 0; i < lightList.size(); ++i)
+         {
+@@ -581,11 +695,123 @@ namespace SceneUtil
+         return stateset;
+     }
+ 
++    osg::ref_ptr<osg::StateSet> LightManager::getLightListStateSet(const LightList& lightList, size_t frameNum,
++        const osg::RefMatrix* viewMatrix, osg::ref_ptr<LightListStateSets>& last)
++    {
++        if (!mLightListCacheEnabled)
++            return getLightListStateSet(lightList, frameNum, viewMatrix);
++
++        // Orthros (orthros-r11.patch): the entry for these light source ids (LightListStateSets) -- the caller's
++        // last one when its ids are the same, else the map's (created if missing).
++        LightListStateSets* entry = last.get();
++        bool same = entry && entry->mCached && entry->mKey.size() == lightList.size();
++        for (size_t i = 0; same && i < lightList.size(); ++i)
++            same = entry->mKey[i] == lightList[i]->mLightSource->getId();
++        if (!same)
++        {
++            mLightListKey.clear();
++            for (const auto* bound : lightList)
++                mLightListKey.push_back(bound->mLightSource->getId());
++
++            auto found = mLightListCache.find(mLightListKey);
++            if (found == mLightListCache.end())
++            {
++                osg::ref_ptr<LightListStateSets> created = new LightListStateSets;
++                created->mKey = mLightListKey;
++                found = mLightListCache.emplace(mLightListKey, std::move(created)).first;
++            }
++            entry = found->second.get();
++            last = entry;
++        }
++
++        entry->mLastUsedUpdate = mLightListUpdate;
++        const size_t parity = mLightListUpdate % 2;
++        osg::ref_ptr<osg::StateSet>& stateset = entry->mStateSet[parity];
++
++        // Filled once after each update(); later uses return it as is, as the per-frame cache returns its StateSet.
++        if (!stateset || entry->mBuiltUpdate[parity] != mLightListUpdate)
++        {
++            // A new StateSet as the per-frame cache builds it, the first time or when the light buffer's size
++            // (maxLights, or the list's with OPENMW_ORTHROS_LIGHTUBO: orthrosLightBuffer) changed; else that parity's
++            // StateSet, last drawn two updates ago: its "PointLightCount" is the same (the ids, so their number, are
++            // the key) and the LightBuffer elements past the list, if any, stay zero.
++            osg::Uniform* data = entry->mLightBuffer[parity];
++            const bool sized = orthrosSizedLightBuffers();
++            const unsigned int bufferSize
++                = sized ? orthrosLightBufferSize(lightList.size()) : static_cast<unsigned int>(getMaxLights());
++            if (!stateset || data->getNumElements() != bufferSize)
++            {
++                osg::ref_ptr<osg::Uniform> buffer
++                    = sized ? orthrosLightBuffer(lightList.size()) : generateLightBufferUniform();
++                stateset = new osg::StateSet;
++                stateset->addUniform(buffer);
++                stateset->addUniform(new osg::Uniform("PointLightCount", static_cast<int>(lightList.size())));
++                data = buffer.get();
++                entry->mLightBuffer[parity] = data;
++                // (a parity filled before: its buffer's size changed -- expected after a change of max lights only;
++                // counted for the check's log, where a count growing with every update means a lost cache)
++                if (entry->mBuiltUpdate[parity] != 0)
++                    ++mLightListRebuilt;
++            }
++
++            // The values of the per-frame cache's StateSet, computed the same way.
++            for (size_t i = 0; i < lightList.size(); ++i)
++            {
++                auto* light = lightList[i]->mLightSource->getLight(frameNum);
++                osg::Matrixf lightMat;
++                configurePosition(lightMat, light->getPosition() * (*viewMatrix));
++                configureAmbient(lightMat, light->getAmbient());
++                configureDiffuse(lightMat, light->getDiffuse());
++                configureSpecular(lightMat, light->getSpecular());
++                configureAttenuation(lightMat, light->getConstantAttenuation(), light->getLinearAttenuation(),
++                    light->getQuadraticAttenuation(),
++                    lightList[i]->mLightSource->getRadius() * mPointLightRadiusMultiplier);
++
++                data->setElement(static_cast<unsigned int>(i), lightMat);
++            }
++
++            entry->mBuiltUpdate[parity] = mLightListUpdate;
++        }
++
++        if (mLightListCacheCheck)
++        {
++            // QA: the per-frame path's StateSet for the same call, uniform by uniform, bit for bit.
++            const osg::ref_ptr<osg::StateSet> reference = getLightListStateSet(lightList, frameNum, viewMatrix);
++            const osg::Uniform* expectedBuffer = reference->getUniform("LightBuffer");
++            const osg::Uniform* expectedCount = reference->getUniform("PointLightCount");
++            const osg::Uniform* actualCount = stateset->getUniform("PointLightCount");
++            const osg::FloatArray* expected = expectedBuffer ? expectedBuffer->getFloatArray() : nullptr;
++            const osg::FloatArray* actual = entry->mLightBuffer[parity]->getFloatArray();
++            int expectedLights = -1;
++            int actualLights = -2;
++            if (expectedCount && actualCount)
++            {
++                expectedCount->get(expectedLights);
++                actualCount->get(actualLights);
++            }
++            countLightListCheck(expectedLights == actualLights && expected && actual
++                    && expected->size() == actual->size()
++                    && std::memcmp(expected->getDataPointer(), actual->getDataPointer(), expected->getTotalDataSize())
++                        == 0
++                    && reference->getUniformList().size() == stateset->getUniformList().size(),
++                "a light list's StateSet");
++        }
++        return stateset;
++    }
++
+     const std::vector<LightManager::LightSourceViewBound>& LightManager::getLightsInViewSpace(
+         osgUtil::CullVisitor* cv, const osg::RefMatrix* viewMatrix, size_t frameNum)
+     {
+         osg::Camera* camera = cv->getCurrentCamera();
+ 
++        // Orthros (orthros-r11.patch): the same camera as the last call since update() -- the entry found or
++        // built then, as the lookup below would find it: the map's key is the camera's ObserverSet, which the
++        // key keeps alive, so the same ObserverSet means the same entry.
++        const bool sameCamera = mLightListCacheEnabled && mLastViewSpaceLights && camera
++            && camera->getObserverSet() == mLastViewSpaceObserverSet;
++        if (sameCamera && !mLightListCacheCheck)
++            return *mLastViewSpaceLights;
++
+         osg::observer_ptr<osg::Camera> camPtr(camera);
+         auto it = mLightsInViewSpace.find(camPtr);
+ 
+@@ -653,6 +879,13 @@ namespace SceneUtil
+             }
+         }
+ 
++        if (mLightListCacheEnabled && camera)
++        {
++            if (sameCamera)
++                countLightListCheck(&it->second == mLastViewSpaceLights, "a camera's lights in view space");
++            mLastViewSpaceObserverSet = camera->getObserverSet();
++            mLastViewSpaceLights = &it->second;
++        }
+         return it->second;
+     }
+ 
+@@ -775,7 +1008,8 @@ namespace SceneUtil
+ 
+         if (!mLightList.empty())
+         {
+-            cv->pushStateSet(mLightManager->getLightListStateSet(mLightList, mLastFrameNumber, viewMatrix));
++            cv->pushStateSet(
++                mLightManager->getLightListStateSet(mLightList, mLastFrameNumber, viewMatrix, mLightListStateSets));
+             return true;
+         }
+         return false;
+diff --git a/openmw/components/sceneutil/lightmanager.hpp b/openmw/components/sceneutil/lightmanager.hpp
+index 2e0c8b9..4236aa0 100644
+--- a/openmw/components/sceneutil/lightmanager.hpp
++++ b/openmw/components/sceneutil/lightmanager.hpp
+@@ -217,6 +217,32 @@ namespace SceneUtil
+         osg::ref_ptr<osg::StateSet> getLightListStateSet(
+             const LightList& lightList, size_t frameNum, const osg::RefMatrix* viewMatrix);
+ 
++        /// Orthros (orthros-r11.patch): a light list's StateSet kept from one frame to the next
++        /// (OPENMW_ORTHROS_LIGHTCACHE: on unless "0"; "check" also builds the per-frame StateSet each time and
++        /// compares, for QA, counting differences in the log). The per-frame cache below builds a new StateSet and
++        /// two new uniforms for every light list each frame and frees them all at the next update(); an entry here
++        /// holds two StateSets, one per update parity, and the list's first use after an update() rewrites the
++        /// "LightBuffer" of that parity's StateSet in place with exactly the values a new one would get (later
++        /// uses before the next update() return it as is, as the per-frame cache does). The other parity's
++        /// StateSet, which a draw still in flight may read, is not written. Entries unused for a while are dropped.
++        /// A parity's StateSet is built anew only when its LightBuffer's size differs from the size a new one would
++        /// get: whatever sizes the per-frame path's LightBuffer must size the one built here and that test alike
++        /// (else every list is rebuilt at every update: still right, the gain lost -- "check" logs the rebuilds).
++        struct LightListStateSets : public osg::Referenced
++        {
++            std::vector<int> mKey; // the light source ids, as in mLightListStateSetCache
++            DoubleBuffer<osg::ref_ptr<osg::StateSet>> mStateSet;
++            DoubleBuffer<osg::Uniform*> mLightBuffer{}; // "LightBuffer" of mStateSet[i], owned by it
++            DoubleBuffer<size_t> mBuiltUpdate{}; // the update() count mStateSet[i] was last filled for
++            size_t mLastUsedUpdate = 0;
++            bool mCached = true; // false once dropped from mLightListCache (its StateSets released then)
++        };
++
++        /// Orthros (orthros-r11.patch): as above; `last` is the caller's entry from its previous call (a light
++        /// list usually keeps its light sources from one frame to the next: then no key and no map lookup).
++        osg::ref_ptr<osg::StateSet> getLightListStateSet(const LightList& lightList, size_t frameNum,
++            const osg::RefMatrix* viewMatrix, osg::ref_ptr<LightListStateSets>& last);
++
+         void setSunlight(osg::ref_ptr<osg::Light> sun);
+         osg::ref_ptr<osg::Light> getSunlight();
+ 
+@@ -256,6 +282,9 @@ namespace SceneUtil
+ 
+         void setMaxLights(int value);
+ 
++        // Orthros (orthros-r11.patch): OPENMW_ORTHROS_LIGHTCACHE=check's count (mLightListChecked).
++        void countLightListCheck(bool same, const char* what);
++
+         Resource::ResourceSystem* mResourceSystem;
+ 
+         std::vector<LightSourceTransform> mLights;
+@@ -272,6 +301,21 @@ namespace SceneUtil
+         // are what actually determine the contents. Cleared every frame in update().
+         std::map<std::vector<int>, osg::ref_ptr<osg::StateSet>> mLightListStateSetCache;
+ 
++        // Orthros (orthros-r11.patch): the light list StateSets kept between frames (LightListStateSets), in
++        // place of mLightListStateSetCache when the switch is on (read once, at construction).
++        bool mLightListCacheEnabled;
++        bool mLightListCacheCheck; // "check": compared with the per-frame path, counted below
++        size_t mLightListChecked = 0;
++        size_t mLightListCheckFailed = 0;
++        size_t mLightListRebuilt = 0; // StateSets built anew for a parity filled before (logged by "check")
++        size_t mLightListUpdate = 1; // update() calls, plus one
++        std::map<std::vector<int>, osg::ref_ptr<LightListStateSets>> mLightListCache;
++        std::vector<int> mLightListKey; // scratch key, kept to avoid an allocation per lookup
++        // The last camera getLightsInViewSpace() was asked for since update() (its ObserverSet, the map's key)
++        // and its entry of mLightsInViewSpace: saves an observer_ptr and a map lookup for every lit object.
++        const osg::ObserverSet* mLastViewSpaceObserverSet = nullptr;
++        const LightSourceViewBoundCollection* mLastViewSpaceLights = nullptr;
++
+         size_t mLightingMask;
+ 
+         osg::ref_ptr<osg::Light> mSun;
+@@ -368,6 +412,8 @@ namespace SceneUtil
+         size_t mLastFrameNumber;
+         LightManager::LightList mLightList;
+         std::set<SceneUtil::LightSource*> mIgnoredLightSources;
++        // Orthros (orthros-r11.patch): this list's entry in the light manager's kept StateSets (not copied).
++        osg::ref_ptr<LightManager::LightListStateSets> mLightListStateSets;
+     };
+ 
+     void configureStateSetSunOverride(const osg::Light* light, osg::StateSet* stateset,
+diff --git a/play/index.html b/play/index.html
+index 5d3c64e..28f65a4 100644
+--- a/play/index.html
++++ b/play/index.html
+@@ -1600,6 +1600,15 @@ window.omw = (function(){
+        ENV.XDG_CONFIG_HOME='/userdata/config';
+        ENV.XDG_DATA_HOME='/userdata/data-home';
+        ENV.XDG_CACHE_HOME='/home/web_user/.cache';
++       // Orthros (orthros-r11.patch): ?omwenv=NAME=VALUE[,NAME=VALUE…] (QA) sets the engine's OPENMW_ORTHROS_* switches —
++       // each frame-cost change of r11 reads one (=0: off, for an A/B in the same build). Only that prefix is taken.
++       try {
++         var omwEnv = /[?&]omwenv=([^&]*)/.exec(location.search);
++         if (omwEnv) decodeURIComponent(omwEnv[1]).split(',').forEach(function(kv){
++           var m = /^(OPENMW_ORTHROS_[A-Z0-9_]+)=([A-Za-z0-9._-]*)$/.exec(kv);
++           if (m) ENV[m[1]] = m[2];
++         });
++       } catch(e){}
+        FS.mkdirTree('/home/web_user/.cache/openmw');
+        // --- Multiplayer (M0, server/PROTOCOL.md): ?mp=<ws(s)://…> arms the omw-mp/1 client.
+        // The engine sees it via ENV; the Lua session driver (mp.omwscripts, appended to the
+diff --git a/wasm-build/link-openmw.sh b/wasm-build/link-openmw.sh
+index f160237..48b4ba9 100755
+--- a/wasm-build/link-openmw.sh
++++ b/wasm-build/link-openmw.sh
+@@ -222,6 +222,8 @@ ninja apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
+   -lopenal \
+   `# Orthros (orthros-r9.patch): the OpenAL library's per-frame costs on the page's thread (wasm-build/orthros-openal.js)` \
+   --js-library "$ROOT/wasm-build/orthros-openal.js" \
++  `# Orthros (orthros-r11.patch): the WebGL glue's per-call costs (wasm-build/orthros-gl.js; ENV OPENMW_ORTHROS_GLGLUE=0: off)` \
++  --js-library "$ROOT/wasm-build/orthros-gl.js" \
+   --use-port=sdl2 --use-port=freetype --use-port=harfbuzz --use-port=libpng \
+   --use-port=libjpeg --use-port=zlib --use-port=ogg --use-port=vorbis \
+   -sALLOW_MEMORY_GROWTH=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
+diff --git a/wasm-build/orthros-gl.js b/wasm-build/orthros-gl.js
+new file mode 100644
+index 0000000..8a718c3
+--- /dev/null
++++ b/wasm-build/orthros-gl.js
+@@ -0,0 +1,237 @@
++// Orthros (orthros-r11.patch): per-call costs of Emscripten's WebGL glue (src/lib/libwebgl.js, libwebgl2.js and
++// libint53.js, Emscripten 6.0.1) in this MEMORY64 + pthreads + ALLOW_MEMORY_GROWTH + FULL_ES3 build, found in OpenMW
++// frames (Seyda Neen, tier mid: ~5,800 WebGL calls a frame; growMemViews 1.6 %, bigintToI53Checked 1.4 %, the
++// getParameter of glBindVertexArray 0.75 %, the client-side array checks of every draw 0.4 % of the engine's busy
++// time). Linked after the system libraries (--js-library, link-openmw.sh): its entries replace theirs of the same name,
++// whose __sig and __deps stay (deps are only added to).
++//
++// Switch: ENV.OPENMW_ORTHROS_GLGLUE, read once, when the first WebGL context is registered (the page fills ENV in
++// preRun, before main() creates the context). "0": every replaced entry runs the library's own body, kept below as
++// orthrosGLOrig_<name>; absent or anything else: the paths below. Same WebGL calls with the same arguments either way.
++//
++// - Heap reads. With growable shared memory every HEAPxx access is (growMemViews(), HEAPxx), and growMemViews reads
++//   wasmMemory.buffer, a getter: glUniformMatrix3fv did it 9 times a matrix, glUniform1fv/1iv once an element. A view
++//   of a SharedArrayBuffer stays valid when the memory grows (a shared buffer is never detached: growth gives a longer
++//   one), so the glue keeps its own views and takes the current one only when a call reaches past their end. Small
++//   uploads still go through the pool's views (miniTempWebGL*Buffers), larger ones through a view of the heap: the
++//   WebGL overloads of before (the garbage-free ones with a heap offset stay off, as the link chose: crbug.com/324992397).
++// - glBindVertexArray asked WebGL for the VAO's element array buffer (getParameter(ELEMENT_ARRAY_BUFFER_BINDING), one a
++//   VAO bind: all ~390 getParameter a frame, from osg::Drawable::draw) to keep FULL_ES3's mirror of it,
++//   GLctx.currentElementArrayBufferBinding. The glue records that binding per VAO where WebGL changes it:
++//   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER), glDeleteVertexArrays of the bound VAO (WebGL reverts to the default one) and
++//   glDrawElements' client-side index path (it leaves null bound). The mirror is the recorded buffer's .name | 0, as
++//   it was the returned one's: a deleted buffer has name 0 whether WebGL still returns it or null. A buffer's first
++//   bind to that target is checked once with getParameter (WebGL refuses a buffer already used as other data).
++// - FULL_ES3's client-side vertex arrays: glDrawArrays/glDrawElements looped over every attribute (16) to find enabled
++//   client-side ones. The glue counts them where they change (glVertexAttrib[I]Pointer, gl{En,Dis}ableVertexAttribArray);
++//   with none, a draw with an element array buffer bound (or glDrawArrays) is the WebGL call alone.
++// - bigintToI53Checked (every pointer argument): two BigInt-Number comparisons, then the conversion. The conversion now
++//   comes first; the comparisons only run for a result at or past +-2^53 (same result; ~2.5x faster in V8).
++
++(() => {
++  // The library's own bodies, kept under $orthrosGLOrig_<name> (no __sig: they take the arguments already converted).
++  // The replaced entries' deps gain their kept body, the switch and the helper they call.
++  const lib = LibraryManager.library;
++  const kept = {};
++  for (const [name, helper] of [
++    ['glUniform1fv', '$orthrosGLFloats'], ['glUniform2fv', '$orthrosGLFloats'],
++    ['glUniform3fv', '$orthrosGLFloats'], ['glUniform4fv', '$orthrosGLFloats'],
++    ['glUniform1iv', '$orthrosGLInts'], ['glUniform2iv', '$orthrosGLInts'],
++    ['glUniform3iv', '$orthrosGLInts'], ['glUniform4iv', '$orthrosGLInts'],
++    ['glUniformMatrix2fv', '$orthrosGLFloats'], ['glUniformMatrix3fv', '$orthrosGLFloats'],
++    ['glUniformMatrix4fv', '$orthrosGLFloats'],
++    ['glBufferSubData'], ['glBindBuffer'], ['glBindVertexArray'], ['glDeleteVertexArrays'],
++    ['glVertexAttribPointer'], ['glVertexAttribIPointer'], ['glEnableVertexAttribArray'], ['glDisableVertexAttribArray'],
++    ['glDrawArrays'], ['glDrawElements'],
++  ]) {
++    const sym = 'emscripten_' + name;
++    if (typeof lib[sym] != 'function') throw new Error(`orthros-gl.js: no library function ${sym}`);
++    kept['$orthrosGLOrig_' + name] = lib[sym];
++    kept['$orthrosGLOrig_' + name + '__deps'] = lib[sym + '__deps'] || [];
++    kept[sym + '__deps'] = (lib[sym + '__deps'] || []).concat(
++      ['$orthrosGLOrig_' + name, '$orthrosGLGlue'], helper ? [helper] : []);
++  }
++  addToLibrary(kept);
++})();
++
++addToLibrary({
++  // undefined until the first context is registered, then true (on) or false ("0").
++  $orthrosGLGlue: undefined,
++  $orthrosGLGlue__deps: ['$GL', '$ENV'],
++  $orthrosGLGlue__postset: `
++    var orthrosGLHeapU8 = new Uint8Array(0), orthrosGLHeap32 = new Int32Array(0), orthrosGLHeapF32 = new Float32Array(0);
++    var orthrosGLRegisterContext = GL.registerContext;
++    GL.registerContext = (ctx, webGLContextAttributes) => {
++      if (orthrosGLGlue === undefined) orthrosGLGlue = ENV['OPENMW_ORTHROS_GLGLUE'] !== '0';
++      var handle = orthrosGLRegisterContext(ctx, webGLContextAttributes);
++      // enabled client-side attributes (clientBuffers[i].enabled && .clientside), kept by the entries below
++      if (handle) GL.contexts[handle].orthrosClientAttribs = 0;
++      return handle;
++    };
++  `,
++
++  // n (> 0) floats at byte address value: the pool's view of that length filled from the heap, or a view of the heap
++  // above the pool's size (as the library's glUniform*fv do).
++  $orthrosGLFloats__deps: ['$orthrosGLGlue', '$miniTempWebGLFloatBuffers'],
++  $orthrosGLFloats: (value, n) => {
++    var src = value / 4, heap = orthrosGLHeapF32;
++    if (src + n > heap.length) heap = orthrosGLHeapF32 = HEAPF32;
++    if (n <= 288) {
++      var view = miniTempWebGLFloatBuffers[n];
++      for (var i = 0; i < n; ++i) view[i] = heap[src + i];
++      return view;
++    }
++    return heap.subarray(src, src + n);
++  },
++  $orthrosGLInts__deps: ['$orthrosGLGlue', '$miniTempWebGLIntBuffers'],
++  $orthrosGLInts: (value, n) => {
++    var src = value / 4, heap = orthrosGLHeap32;
++    if (src + n > heap.length) heap = orthrosGLHeap32 = HEAP32;
++    if (n <= 288) {
++      var view = miniTempWebGLIntBuffers[n];
++      for (var i = 0; i < n; ++i) view[i] = heap[src + i];
++      return view;
++    }
++    return heap.subarray(src, src + n);
++  },
++
++  // count <= 0 keeps the library's body (its errors and exceptions as they were).
++  emscripten_glUniform1fv: (location, count, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniform1fv(location, count, value);
++    GLctx.uniform1fv(webglGetUniformLocation(location), orthrosGLFloats(value, count));
++  },
++  emscripten_glUniform2fv: (location, count, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniform2fv(location, count, value);
++    GLctx.uniform2fv(webglGetUniformLocation(location), orthrosGLFloats(value, count * 2));
++  },
++  emscripten_glUniform3fv: (location, count, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniform3fv(location, count, value);
++    GLctx.uniform3fv(webglGetUniformLocation(location), orthrosGLFloats(value, count * 3));
++  },
++  emscripten_glUniform4fv: (location, count, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniform4fv(location, count, value);
++    GLctx.uniform4fv(webglGetUniformLocation(location), orthrosGLFloats(value, count * 4));
++  },
++  emscripten_glUniform1iv: (location, count, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniform1iv(location, count, value);
++    GLctx.uniform1iv(webglGetUniformLocation(location), orthrosGLInts(value, count));
++  },
++  emscripten_glUniform2iv: (location, count, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniform2iv(location, count, value);
++    GLctx.uniform2iv(webglGetUniformLocation(location), orthrosGLInts(value, count * 2));
++  },
++  emscripten_glUniform3iv: (location, count, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniform3iv(location, count, value);
++    GLctx.uniform3iv(webglGetUniformLocation(location), orthrosGLInts(value, count * 3));
++  },
++  emscripten_glUniform4iv: (location, count, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniform4iv(location, count, value);
++    GLctx.uniform4iv(webglGetUniformLocation(location), orthrosGLInts(value, count * 4));
++  },
++  emscripten_glUniformMatrix2fv: (location, count, transpose, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniformMatrix2fv(location, count, transpose, value);
++    GLctx.uniformMatrix2fv(webglGetUniformLocation(location), !!transpose, orthrosGLFloats(value, count * 4));
++  },
++  emscripten_glUniformMatrix3fv: (location, count, transpose, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniformMatrix3fv(location, count, transpose, value);
++    GLctx.uniformMatrix3fv(webglGetUniformLocation(location), !!transpose, orthrosGLFloats(value, count * 9));
++  },
++  emscripten_glUniformMatrix4fv: (location, count, transpose, value) => {
++    if (!orthrosGLGlue || count <= 0) return orthrosGLOrig_glUniformMatrix4fv(location, count, transpose, value);
++    GLctx.uniformMatrix4fv(webglGetUniformLocation(location), !!transpose, orthrosGLFloats(value, count * 16));
++  },
++  // the WebGL 1 overload, as webglBufferSubData's (a view of the bytes)
++  emscripten_glBufferSubData: (target, offset, size, data) => {
++    if (!orthrosGLGlue) return orthrosGLOrig_glBufferSubData(target, offset, size, data);
++    var heap = orthrosGLHeapU8;
++    if (data + size > heap.length) heap = orthrosGLHeapU8 = HEAPU8;
++    GLctx.bufferSubData(target, offset, heap.subarray(data, data + size));
++  },
++
++  // The element array buffer binding of each VAO: vao.orthrosIbo, the default VAO's GLctx.orthrosIbo; the bound VAO:
++  // GLctx.orthrosVao (null: the default one).
++  emscripten_glBindBuffer: (target, buffer) => {
++    orthrosGLOrig_glBindBuffer(target, buffer);
++    if (orthrosGLGlue && target == 0x8893 /*GL_ELEMENT_ARRAY_BUFFER*/) {
++      // what the library bound (it creates the buffer of an unknown nonzero name)
++      var b = GL.buffers[buffer] || null;
++      if (b && !b.orthrosElementArray) {
++        var bound = GLctx.getParameter(0x8895 /*GL_ELEMENT_ARRAY_BUFFER_BINDING*/);
++        if (bound === b) b.orthrosElementArray = true; // WebGL's type for it now: binding it there again succeeds
++        else b = bound;
++      }
++      (GLctx.orthrosVao || GLctx).orthrosIbo = b;
++    }
++  },
++  emscripten_glBindVertexArray: (vao) => {
++    if (!orthrosGLGlue) return orthrosGLOrig_glBindVertexArray(vao);
++    var v = GL.vaos[vao];
++    GLctx.bindVertexArray(v);
++    GLctx.orthrosVao = v || null;
++    var ibo = (v || GLctx).orthrosIbo;
++    GLctx.currentElementArrayBufferBinding = ibo ? (ibo.name | 0) : 0;
++  },
++  emscripten_glDeleteVertexArrays: (n, vaos) => {
++    if (orthrosGLGlue && GLctx.orthrosVao) {
++      for (var i = 0; i < n; i++) {
++        if (GL.vaos[HEAP32[(vaos + i * 4) / 4]] === GLctx.orthrosVao) GLctx.orthrosVao = null;
++      }
++    }
++    orthrosGLOrig_glDeleteVertexArrays(n, vaos);
++  },
++
++  emscripten_glVertexAttribPointer: (index, size, type, normalized, stride, ptr) => {
++    if (!orthrosGLGlue) return orthrosGLOrig_glVertexAttribPointer(index, size, type, normalized, stride, ptr);
++    var context = GL.currentContext, cb = context.clientBuffers[index], was = !!(cb && cb.clientside && cb.enabled);
++    orthrosGLOrig_glVertexAttribPointer(index, size, type, normalized, stride, ptr);
++    if (!!(cb.clientside && cb.enabled) !== was) context.orthrosClientAttribs += was ? -1 : 1;
++  },
++  emscripten_glVertexAttribIPointer: (index, size, type, stride, ptr) => {
++    if (!orthrosGLGlue) return orthrosGLOrig_glVertexAttribIPointer(index, size, type, stride, ptr);
++    var context = GL.currentContext, cb = context.clientBuffers[index], was = !!(cb && cb.clientside && cb.enabled);
++    orthrosGLOrig_glVertexAttribIPointer(index, size, type, stride, ptr);
++    if (!!(cb.clientside && cb.enabled) !== was) context.orthrosClientAttribs += was ? -1 : 1;
++  },
++  emscripten_glEnableVertexAttribArray: (index) => {
++    if (!orthrosGLGlue) return orthrosGLOrig_glEnableVertexAttribArray(index);
++    var context = GL.currentContext, cb = context.clientBuffers[index];
++    if (cb && cb.clientside && !cb.enabled) context.orthrosClientAttribs++;
++    orthrosGLOrig_glEnableVertexAttribArray(index);
++  },
++  emscripten_glDisableVertexAttribArray: (index) => {
++    if (!orthrosGLGlue) return orthrosGLOrig_glDisableVertexAttribArray(index);
++    var context = GL.currentContext, cb = context.clientBuffers[index];
++    if (cb && cb.clientside && cb.enabled) context.orthrosClientAttribs--;
++    orthrosGLOrig_glDisableVertexAttribArray(index);
++  },
++  emscripten_glDrawArrays: (mode, first, count) => {
++    if (orthrosGLGlue && !GL.currentContext.orthrosClientAttribs) {
++      GLctx.drawArrays(mode, first, count);
++      return;
++    }
++    orthrosGLOrig_glDrawArrays(mode, first, count);
++  },
++  emscripten_glDrawElements: (mode, count, type, indices) => {
++    if (!orthrosGLGlue) return orthrosGLOrig_glDrawElements(mode, count, type, indices);
++    if (GLctx.currentElementArrayBufferBinding) {
++      if (!GL.currentContext.orthrosClientAttribs) {
++        GLctx.drawElements(mode, count, type, indices);
++        return;
++      }
++      orthrosGLOrig_glDrawElements(mode, count, type, indices);
++      return;
++    }
++    // the client-side index path: a temporary index buffer is bound, null after the draw
++    orthrosGLOrig_glDrawElements(mode, count, type, indices);
++    (GLctx.orthrosVao || GLctx).orthrosIbo = null;
++  },
++
++  $bigintToI53Checked__deps: ['$INT53_MAX', '$INT53_MIN', '$orthrosGLGlue'],
++  $bigintToI53Checked: (num) => {
++    if (orthrosGLGlue) {
++      var n = Number(num);
++      if (n > -9007199254740992 && n < 9007199254740992) return n;
++    }
++    return (num < INT53_MIN || num > INT53_MAX) ? NaN : Number(num);
++  },
++});

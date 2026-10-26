@@ -828,6 +828,88 @@ Switch (after a merge and a server restart — the page's swap comes with the se
 "openmw-web-v1.5.3-orthros-r9"` in the `openmw` object of each version of `data/games/morrowind/manifest.json` and
 `data/games/morrowind-vanilla-plus/manifest.json`.
 
+### Development builds: kept tree, switches, pictures compared (2026-10-26)
+
+A change to the engine costs a whole `build.sh` (18-25 min) per try; development builds do it in minutes:
+- `sh tools/openmw/build.sh <dev id> --keep --dest <scratch>` once (a `lock.json` build entry of the patches so far, not
+  committed): the tree stays in `/tmp/orthros-scratch/openmw-build/<dev id>/root`, configured and compiled (2.6 GB).
+- `sh tools/openmw/dev-build.sh <kept root> <base release> <release dir> [--check] --patch <file>...`: the previous run's
+  patches reverted, these applied in order; `--check` compiles only the `.cpp` files they touch and reverts them
+  (seconds); otherwise OSG (its ninja), OpenMW (ninja) and the link (~7 min when no header changed, more after an OSG
+  header), installed as a release beside the base one (its other files hard-linked, never written through). One run at
+  a time on a tree (a lock): parallel agents queue.
+- `sh tools/openmw/dev-serve.sh <release dir> <port>`: a scratch server of this code tree whose OpenMW pages run that
+  release under the engine names the live manifests give (links in a scratch engines directory), the live games
+  read-only, a frozen copy of the learned orders.
+- Switches: `orthros-r11.patch` lets the page set the engine's `OPENMW_ORTHROS_*` environment from the address
+  (`?omwenv=NAME=0[,NAME2=0]`); each r11 frame-cost change reads its own once at start (absent: on; `0`: the previous
+  code path), so one build gives every A/B.
+- `tools/openmw/frame-compare.mjs <manifest> --url … --variant <query>…`: the same views (day and night at Seyda Neen,
+  Arrille's Tradehouse inside) for each variant, each started in its cell (`?start=`), AI and clock held (`tai`,
+  `set timescale to 0`), overlays hidden, 4 captures averaged (interior lights flicker with real time); the reference
+  captured twice — its difference is the noise. Measured on r11dev with a variant that changes nothing (goty-en):
+  day 0.007 / 0.003 mean absolute difference, night 0.38 / 0.40, interior 0.21 / 3.19 (one capture each, before the
+  averaging: the flicker).
+- `perf.mjs --glcalls`: every WebGL call of the measured seconds counted by name, per drawn frame.
+
+### The frame's draw and cull bookkeeping: engine orthros-r11 (2026-10-26)
+
+The owner: "can the engine's drawing be improved, how, for what gain and how much work" — then all of it. Five changes
+in `orthros-r11.patch` (on r10), each behind its switch (`?omwenv=<switch>=0`: the previous code, for an A/B in one
+build), each written, reviewed adversarially and revised by its own agent, compiled, integrated, then checked by
+pictures and an adversarial judge:
+- **A, uniforms** (`OPENMW_ORTHROS_UNIFORMS`; OSG `include/osg/{State,Program}`, `State.cpp`, `Program.cpp`). r9 spent
+  14-16 % of the engine's busy time applying uniforms, 10.7-12.3 % of it bookkeeping: `State::applyUniformList` walked
+  the whole string-keyed `_uniformMap` and merged the leaf's list by string at every state change, and
+  `PerContextProgram::apply(Uniform)` made up to four map descents per uniform. Now flat tables indexed by the uniform's
+  name ID: the program's own active names only, each picked as the walk picked it (the leaf's, unless the stack's is
+  OVERRIDE and the leaf's not PROTECTED), applied through a slot per location (pointer and modified count compared as
+  before). The same `glUniform*` calls, in another order (distinct locations). A StateSet listing a uniform under
+  another name than its own (no OSG API does) falls back to the map walk, logged once. Checked off the engine: 400
+  random sequences of 4,000 operations (pushes, pops, OVERRIDE/PROTECTED, relinks, resets…), the same GL calls.
+- **B, the GL glue** (`OPENMW_ORTHROS_GLGLUE`; `wasm-build/orthros-gl.js`, a `--js-library` over the hottest entry
+  points, the originals kept for the switch): one heap view a call instead of `growMemViews()` at every element; and
+  Emscripten's `glBindVertexArray` asked `getParameter(ELEMENT_ARRAY_BUFFER_BINDING)` at every VAO bind (~390 a
+  frame, a WebGL getter each) — the glue now keeps each VAO's element buffer itself.
+- **C, light lists** (`OPENMW_ORTHROS_LIGHTCACHE`; `components/sceneutil/lightmanager.*`): the light-list StateSets
+  and their two uniforms were built anew every frame for every distinct list; they are kept between frames (two per
+  list, one per update's parity), their elements rewritten in place. The same lights, the same values. (My first
+  estimate counted the whole scene's cull under `LightManagerCullCallback` — 13-14 % inclusive; the lists themselves
+  were ~1.5 %.)
+- **D, buffers and the GUI's arrays** (`OPENMW_ORTHROS_VAO`; OSG `BufferObject`, `myguirendermanager.cpp`):
+  `GLBufferObjectManager::flushDeletedGLObjects` walked every buffer set ever made, each frame — one per profile
+  (target, usage, exact size), never removed, so the walk grew with the session (1.0 % of busy time at the start of a
+  minute, 2.1 % at its end): now only the sets given an orphan since their last flush. MyGUI enabled its three vertex
+  arrays again for every batch (~260 `enableVertexAttribArray` a frame): once per draw.
+- **E, light buffers sized** (`OPENMW_ORTHROS_LIGHTUBO`; `lightmanager.cpp`): each list's `LightBuffer` uniform holds
+  its lights instead of `max lights` (16) matrices. Small. The uniform buffer the name promised is not possible here:
+  OSG binds uniform blocks from GL 3.1 only (WebGL2 reports ES 3.0), clustered lighting needs GLSL 4.30, and a buffer
+  per object would need as many calls.
+
+Pictures (`frame-compare.mjs morrowind-goty-en`, each switch off against all on, and all off against all on; day,
+night, interior, 4 captures averaged; the reference's own repeat as the noise): every view within the noise, no pixel
+off by more than 24 in a channel, judged equivalent by an adversarial judge looking at the pictures (the interior's
+differences are its lights' flicker, the day's an NPC or the first capture still settling — present in the repeats
+too). Smoke: `check.mjs` goty-en and Vanilla+ FR, `keys-check.mjs`, all switches off in the world. WebGL calls a frame
+(Seyda Neen, mid): 5,027 → 4,507 — no `getParameter` (403), no `enableVertexAttribArray` (263).
+
+Measured (dev build of r1-r9 + r11, scratch server, `perf.mjs morrowind-goty-vanilla-plus-fr --query tier=mid
+--discard --seconds 60`, all on and all off alternated, load 9-33):
+
+| run | fps | engine work p50 / p90 / p99 | draw phase | gaps over 100 ms |
+|---|---|---|---|---|
+| all off 1 / 2 / 3 | 22.4 / 21.2 / 22.4 | 14.1 / 17.3 / 15.0 — 20.0 / 21.0 / 19.6 — 30.5 / 34.8 / 27.5 ms | 9.5 / 8.9 / 6.4 ms | 6 / 5 / 4 |
+| all on 1 / 2 / 3 | 21.4 / 22.0 / 21.9 | 12.9 / 11.5 / 11.5 — 16.8 / 16.8 / 16.1 — 28.1 / 26.4 / 30.5 | 3.5 / 2.5 / 2.8 | 5 / 4 / 6 |
+
+Profiled pair (the same series): the engine's busy time 20.1 → 15.6 ms a frame (−22 %): uniforms 3.0 → 1.0 ms
+(A), the buffer flush 0.38 → 0.06 ms (D), `growMemViews` 0.4 ms → negligible and `bigintToI53Checked` halved (B),
+`pushLightState` 0.30 → 0.14 ms (C). One switch off at a time (single runs): A off 13.8 ms p50, C 11.6, D 11.9, E 13.2
+(load 13: noise); B's run fell in a load of 78 and does not count. The fps does not move here: in this headless
+SwiftShader set-up the frames are paced by the GPU process's own work (SwiftShader's vertex processing, rasterization
+discarded or not — "Frame time" above), not by the engine; on a real GPU the engine's work is what decides 60 Hz against 30 (the owner's laptop: ~20 ms of work on
+r8, so ~16.7 is the line). Left: the cull (~22 % of the busy time), Lua's addons (~7 %), the draw's GL calls
+themselves.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

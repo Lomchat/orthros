@@ -119,3 +119,22 @@ test('r7: r6 plus its patch, the same exports; no terrain chunk outside the acti
     'if (status == GL_FRAMEBUFFER_COMPLETE_EXT && !orthrosKind.empty())'])
     assert.ok(added.includes(k), k);
 });
+
+test('r11 patch: each frame-cost change read from its switch, the page setting only OPENMW_ORTHROS_* from ?omwenv=, the GL glue linked', () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r11.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  // (OSG's sources too: the build applies the patch at the tree's root)
+  for (const f of ['deps/src/osg/include/osg/State', 'deps/src/osg/src/osg/Program.cpp', 'deps/src/osg/src/osg/BufferObject.cpp',
+    'openmw/components/sceneutil/lightmanager.cpp', 'openmw/components/myguiplatform/myguirendermanager.cpp', 'wasm-build/orthros-gl.js', 'play/index.html'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  for (const k of ['getenv("OPENMW_ORTHROS_UNIFORMS")', 'getenv("OPENMW_ORTHROS_LIGHTCACHE")', 'getenv("OPENMW_ORTHROS_VAO")',
+    'getenv("OPENMW_ORTHROS_LIGHTUBO")', "OPENMW_ORTHROS_GLGLUE", 'orthrosApplyUniforms',
+    '--js-library "$ROOT/wasm-build/orthros-gl.js"', '/^(OPENMW_ORTHROS_[A-Z0-9_]+)=([A-Za-z0-9._-]*)$/'])
+    assert.ok(added.includes(k), k);
+  // (the page's hook: an address's ?omwenv= reaches the engine's environment for that prefix only)
+  const hook = /var omwEnv = [\s\S]*?\}\);/.exec(added)?.[0].replace(/^\+/gm, '');
+  assert.ok(hook, 'the ?omwenv= hook');
+  const run = (search) => { const ENV = {}; new Function('location', 'ENV', hook)({ search }, ENV); return ENV; };
+  assert.deepEqual(run('?tier=mid&omwenv=OPENMW_ORTHROS_UNIFORMS=0,OPENMW_ORTHROS_VAO=0'), { OPENMW_ORTHROS_UNIFORMS: '0', OPENMW_ORTHROS_VAO: '0' });
+  assert.deepEqual(run('?omwenv=HOME=/x,LD_PRELOAD=a,OPENMW_ORTHROS_X=a%20b'), {}, 'other names, or values with spaces, never');
+});
