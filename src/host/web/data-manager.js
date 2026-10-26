@@ -2,7 +2,7 @@
 // downloaded — and the optional account that copies the saves online. A window over the page (opened from the home
 // screen and from the in-game header); it follows the page language.
 import { offlineCopy } from '../../vfs/data-client.js';
-import { archiveProfile, download, parseArchive, removeCache, removeProfile, restoreProfile, scanStorage, profileFiles, replaceProfile, scanPorts, portFiles, clearPortCache, clearPortSaves } from './data-store.js';
+import { archiveProfile, download, parseArchive, removeCache, removeOther, removeProfile, restoreProfile, scanStorage, profileFiles, replaceProfile, scanPorts, portFiles, clearPortCache, clearPortSaves, MAX_RAW } from './data-store.js';
 import { pickLang } from './lang.js';
 import { h } from './dom.js';
 import { errorText, accountChanged, onAccountChange, googleSignIn, googleText, GOOGLE_G } from './account.js';
@@ -34,6 +34,8 @@ const TEXT = {
     portOpen: 'Ferme ce jeu dans tes autres onglets avant de nettoyer ses données.',
     noData: (n) => `Jeux sans données sur cet appareil (${n})`, noGames: 'Aucun jeu', noGamesText: 'Les jeux apparaîtront ici dès que le serveur les proposera.',
     asides: 'Copies de secours', asidesText: 'Gardées automatiquement avant une restauration. Supprime-les quand tu n’en as plus besoin.',
+    others: 'Autres fichiers de jeu', othersText: 'Gardés par une version précédente d’Orthros : repris au prochain lancement du jeu, téléchargés de nouveau si tu les supprimes.',
+    otherNames: { 'orthros-streamfs-1': 'Jeux OpenMW' },
     delete: 'Supprimer', more: 'Plus d’options',
     // online
     cloudTitle: 'Sauvegarde en ligne', portSaves: 'Restauration automatique au lancement. Les copies précédentes peuvent être téléchargées dans l’historique.', playPort: 'Ouvrir le jeu',
@@ -106,6 +108,8 @@ const TEXT = {
     portOpen: 'Close this game in your other tabs before cleaning its data.',
     noData: (n) => `Games with no data on this device (${n})`, noGames: 'No games', noGamesText: 'Games will show up here as soon as the server offers them.',
     asides: 'Safety copies', asidesText: 'Kept automatically before a restore. Delete them when you no longer need them.',
+    others: 'Other game files', othersText: 'Kept by an earlier version of Orthros: taken back at the game’s next launch, downloaded again if you delete them.',
+    otherNames: { 'orthros-streamfs-1': 'OpenMW games' },
     delete: 'Delete', more: 'More options',
     cloudTitle: 'Online backup', portSaves: 'Restored automatically when launching. Previous copies can be downloaded from history.', playPort: 'Open game',
     cloudLead: 'Your saves are sent to your account while you play and come back at launch, on any device. Game files are never uploaded.',
@@ -382,6 +386,18 @@ function renderDevice() {
         btn(t('delete'), () => removeAside(item), { variant: 'danger', ico: 'trash', key: 'aside:' + item.name, small: true }));
     })));
   }
+  const others = (st.others ?? []).filter((item) => item.bytes > 0);
+  if (others.length) {
+    content.append(h('h3', { class: 'dm-section' }, t('others')), h('p', { class: 'dm-sub' }, t('othersText')));
+    content.append(h('div', { class: 'dm-list tight' }, others.map((item) => {
+      const name = t('otherNames')[item.name] ?? item.name;
+      return h('div', { class: 'dm-line' }, h('span', {}, h('strong', {}, name), h('small', {}, fmtBytes(item.bytes))),
+        btn(t('cacheOk'), () => run(t('wCache'), async () => {
+          if (!await ask({ title: t('cacheAsk', name), text: t('cacheAskText'), ok: t('cacheOk'), danger: true })) return t('cancelled');
+          await removeOther(item.name); return t('rCache');
+        }), { variant: 'danger', ico: 'trash', key: 'other:' + item.name, small: true }));
+    })));
+  }
 }
 
 // ---------------------------------------------------------------- tab: online
@@ -563,7 +579,9 @@ function outcome(st, sent) {
 }
 /** Every Windows game's profile kept in this browser sent when it changed; the conflicts left for the player. */
 async function syncAll() {
-  const rows = (app.storage?.games ?? []).filter((g) => g.profile > 0 && !activeGame(g.game) && (app.games.get(g.game)?.runtime ?? 'win32') === 'win32');
+  // (only the games the server lists — the account keeps no other —, and a profile the account could take: each is
+  // read whole into memory, several times its size)
+  const rows = (app.storage?.games ?? []).filter((g) => g.profile > 0 && g.profile <= MAX_RAW && !activeGame(g.game) && app.games.has(g.game) && (app.games.get(g.game).runtime ?? 'win32') === 'win32');
   let uploaded = 0, conflicts = 0;
   for (const item of rows) {
     const c = cloudFor(item.game), st = await c.push();

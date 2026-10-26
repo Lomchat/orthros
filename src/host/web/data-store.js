@@ -3,9 +3,18 @@ const PROFILE_PREFIX = 'orthros-';
 const CACHE_PREFIX = 'orthros-files-';
 // (a game's snapshot of its machine, docs/snapshot.md: regenerable like the cache, counted and cleared with it)
 export const SNAPSHOT_PREFIX = 'orthros-snapshot-';
+// (the page's other folders under the profiles' prefix — never a game's profile, which the account's sync reads whole
+// and sends: the translated code kept across sessions, one file per game, <game>.bin (src/cpu/jit/bg-translate.js),
+// counted and cleared with that game's cache; the OpenMW page's file copies of 2026-10-20 (src/ports/openmw/
+// legacy-copies.js: taken into the game data at a file's first read), of no single game)
+const JIT_CACHE = 'orthros-jitcache';
+const OTHER_CACHES = ['orthros-streamfs-1'];
+// (a restore's folder left by a page closed meanwhile: a copy, like the ones kept aside)
+const LEFT_ASIDE = /-aside-\d{4}-\d\d-\d\dT|-restore-\d+$/;
 const ARCHIVE_FORMAT = 'orthros-profile';
 const MAX_FILES = 10000;
-const MAX_RAW = 128 * 1024 * 1024;
+// (a profile at most this large: an archive of it can be restored, the account's sync reads it)
+export const MAX_RAW = 128 * 1024 * 1024;
 
 export function formatBytes(n) {
   if (!Number.isFinite(n) || n < 0) return '—';
@@ -31,27 +40,35 @@ async function dirBytes(dir) {
 
 export async function scanStorage() {
   const root = await navigator.storage.getDirectory();
-  const games = new Map(), asides = [];
+  const games = new Map(), asides = [], others = [];
+  const rowOf = (game) => games.get(game) ?? games.set(game, { game, profile: 0, cache: 0, files: 0, locked: 0 }).get(game);
   for await (const [name, handle] of root.entries()) {
     if (handle.kind !== 'directory') continue;
-    if (name.startsWith(CACHE_PREFIX) || name.startsWith(SNAPSHOT_PREFIX)) {
-      const game = name.slice((name.startsWith(CACHE_PREFIX) ? CACHE_PREFIX : SNAPSHOT_PREFIX).length);
-      const row = games.get(game) ?? { game, profile: 0, cache: 0, files: 0, locked: 0 };
+    if (name === JIT_CACHE) {
+      for await (const [file, h] of handle.entries()) {
+        if (h.kind !== 'file' || !file.endsWith('.bin')) continue;
+        const row = rowOf(file.slice(0, -4));
+        try { row.cache += (await h.getFile()).size; } catch { row.locked++; } // (a running game's: open)
+      }
+    } else if (OTHER_CACHES.includes(name)) {
+      others.push({ name, ...await dirBytes(handle) });
+    } else if (name.startsWith(CACHE_PREFIX) || name.startsWith(SNAPSHOT_PREFIX)) {
+      const row = rowOf(name.slice((name.startsWith(CACHE_PREFIX) ? CACHE_PREFIX : SNAPSHOT_PREFIX).length));
       const size = await dirBytes(handle);
-      row.cache += size.bytes; row.locked += size.locked; games.set(game, row);
+      row.cache += size.bytes; row.locked += size.locked;
     } else if (name.startsWith(PROFILE_PREFIX)) {
       const game = name.slice(PROFILE_PREFIX.length);
       const size = await dirBytes(handle);
-      if (/-aside-\d{4}-\d\d-\d\dT/.test(game)) {
+      if (LEFT_ASIDE.test(game)) {
         asides.push({ name, ...size });
       } else {
-        const row = games.get(game) ?? { game, profile: 0, cache: 0, files: 0, locked: 0 };
-        row.profile = size.bytes; row.files = size.files; row.locked += size.locked; games.set(game, row);
+        const row = rowOf(game);
+        row.profile = size.bytes; row.files = size.files; row.locked += size.locked;
       }
     }
   }
   const quota = await navigator.storage.estimate();
-  return { games: [...games.values()].sort((a, b) => a.game.localeCompare(b.game)), asides,
+  return { games: [...games.values()].sort((a, b) => a.game.localeCompare(b.game)), asides, others,
     usage: quota.usage ?? 0, quota: quota.quota ?? 0, persistent: await navigator.storage.persisted?.() ?? false };
 }
 
@@ -184,7 +201,13 @@ export async function removeCache(game, state) {
     throw new Error('Quitte ce jeu avant de vider son cache.');
   const root = await navigator.storage.getDirectory();
   await root.removeEntry(SNAPSHOT_PREFIX + game, { recursive: true }).catch(() => {}); // (often none)
-  await root.removeEntry(CACHE_PREFIX + game, { recursive: true });
+  await root.getDirectoryHandle(JIT_CACHE).then((d) => d.removeEntry(game + '.bin')).catch(() => {}); // (often none)
+  await root.removeEntry(CACHE_PREFIX + game, { recursive: true }).catch((e) => { if (e?.name !== 'NotFoundError') throw e; }); // (none: only translated code)
+}
+/** One of the page's other folders (scanStorage's `others`), removed. */
+export async function removeOther(name) {
+  if (!OTHER_CACHES.includes(name)) throw new Error('Dossier inconnu.');
+  await (await navigator.storage.getDirectory()).removeEntry(name, { recursive: true });
 }
 export async function removeProfile(game, state) {
   if (state?.manifest === game && ['running', 'loading', 'starting'].includes(state.status))
