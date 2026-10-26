@@ -920,6 +920,72 @@ the game data (`GameData.want`: fetched in parallel, light copies on a link that
 models and land textures, wait, then the textures the models name) is a patch of its own. Contract and rules:
 docs/slow-network.md "Announced reads (2026-10-26)".
 
+### Anticipated places (2026-10-26)
+
+Announced reads leave the load's own download (Ald'ruhn from a save: ~4.5 s of 8.3 s at 1.8 MB/s; everything for a
+player on a new device). The page fetches that place before the click, while the engine boots and the player sits in
+the menu:
+- **Learning** (`streamfs.js` `learnPlace`): each announced batch with a place (`meshes|textures|terrain:<place>`) is
+  posted to `POST /api/places/<manifest>` as `{ session, place, kind, records: [[treePath, start, end), …] }` — the
+  files themselves (never `.light/`: each player's link picks), archives by their member's range. The server keeps a
+  place's set (the engine's own computation, exact, unlike demand reads) and `GET /api/places/<manifest>?place=<key>`
+  lists it (`[[path, start, end]]`, or `{ path, start, end }`; bare or under `list`); the page asks 256 MiB of the
+  files' own bytes at most (8192 entries). Multiplayer loads are learned too.
+- **Prediction** (`src/ports/openmw/save-place.js`, no engine): the saves of `/userdata/saves/<character>/` and
+  `/userdata/data-home/openmw/saves/<character>/` parsed — TES3 `FORM`, `SAVE` (player, `TIME` played, the cell's
+  display name: no key), then `PLAY`'s cell just before `LKEP`: format > 26 a `NAME` RefId (tag 6 exterior `x,y`,
+  tag 2 the interior id), up to 26 `SPAC`/`CIDX`. The key is the engine's label's place: `x,y` (the grid centre
+  `changeCellGrid` announces for — the player's cell), the interior id ASCII-lowercased (`Misc::StringUtils::lowerCase`);
+  Ald'ruhn's real save gives `-2,6`, parsed in under 1 ms. A save is read in place (`FS.open`/`FS.read`): its records'
+  16-byte headers, the `TES3`, `SAVE` (without its `SCRN` screenshot) and `PLAY` bodies — not the whole file (the cells'
+  records come before `PLAY` from format 33). The save chosen (`chooseSave`): the remembered place
+  (`localStorage['orthros.place.<manifest>']` = `{ place, at }`: the session's first announced load that is not terrain
+  — the game started from the menu, not the cells walked through after it nor a terrain read-ahead (the view point's
+  cell) —, and each save the engine writes at its date — the saves folders looked at every 5 s) when a save is there
+  and no save is newer than the hint (a save written since, in another tab or on another device, says more); else the
+  newest by date, else the most time played when the account's restore came without dates. The account's copy keeps
+  each file's date (`cloud.js`: `mtime` per file, `FS.utime` on restore; `window.orthrosProfileRestored` only when a
+  file came back without one — a copy uploaded by an earlier page). Not in multiplayer (`window.__omwMPEnabled`: the
+  server decides where the player spawns; neither the prefetch nor the hint).
+- **Prefetch** (`streamfs.js` `anticipate`): once `window.__idbfsReady` resolves (IDBFS populated, and the account's
+  restore: `cloud.js` answers the populate after it), the engine's first frame drawn and the game data ready, the saves
+  parsed, `GET /api/places`, then
+  `GameData.want(entries, { prio: 'place' })` → the data worker's `wantPlace` → `HttpBackend.wantList(…, { prio:
+  'place' })`: the same units and deduplication as announced reads (a second call is cheap), but background turns of
+  `PRIO.place` — after the game's reads, a load's, the learned launch set (and a startup set), before the rest of the
+  learned order (`PRIO.learned`: other places' reads) —, never urgent nor `forLoad` (a load's silence holds them),
+  `PLACE_REQUESTS` (8, 2 thin) at once and only while no announced unit waits for its request, `p=1` (not learned), no
+  wait of the link's, outside the engine's wait window (no batch number). A load of that place takes them over: a unit
+  still queued becomes an announced one (the announced queue in the list's order, under its window — not all of a
+  place's queued units at once past it), one waiting for its turn on the link a load's own (`NetLink.forLoad`: past the
+  silence by the link's rules, not urgent); a parked read promotes as any. A save loaded elsewhere loses nothing — its
+  load announces its own.
+  `StreamFS.place()`: `{ place, why: 'hint'|'newest'|'time', save, listed, asked, atMs }`; counters `placeWants`
+  (`GameData.snapshot()`), `stats.place*` and `NetLink.bgBy.place`.
+- **After the boot**: the saves are read, the set asked of the server and handed to the data system only once the
+  engine draws its first frame (`Module.__omwRunning` defined; 180 s at most). Asked while the engine booted, its requests delayed
+  the engine's first read by 1.7 s (warm store) and 4.5 s (new device) on an otherwise free link — the page's and its
+  worker's time — and the menu came that much later; after the first frame, the boot is unchanged.
+
+**Measured** (`tools/openmw/place-load.mjs --mode save`, Ald'ruhn `-2,6` from the menu with F9 after 10 s, 1.8 MB/s,
+90 ms, dev engine r10dev3 with its brotli siblings, `--teach 1`: one earlier session loaded the place — which also
+teaches the learned order those files; stage 2 = commit b582377, same tool and engine):
+
+| profile | code | boot → menu | place bytes before the key | key → in world | frozen | announced waits | serial reads |
+|---|---|---|---|---|---|---|---|
+| warm store | stage 2 (2 runs) | 20.6 / 19.7 s | — (learned order: 6.3-6.5 MB in the menu) | 5.8 / 5.9 s | 4.8 / 5.0 s | 3, 930 ms (65 units, 1.5 MB) | 1 / 0 |
+| warm store | stage 3 (2 runs) | 21.4 / 20.4 s | 8.9 MB, done 3-4 s into the menu | 5.1 / 4.8 s | 4.2 / 3.8 s | 3, 5-6 ms (0 units) | 0 / 1 |
+| new device | stage 2 | 55.7 s | — | 13.3 s | 12.3 s | 3, 5308 ms (407 units, 9.1 MB) | 5 |
+| new device | stage 3 | 55.4 s | 19.6 MB (12.3 in the menu), 8 in flight at the key | 8.7 s | 7.6 s | 3, 2331 ms (0 new units) | 3 |
+| warm store | stage 3 final (hardened, 1 run) | 20.1 s | 8.9 MB, done 6.1 s before the key | 4.9 s | 4.0 s | 3, 7 ms (0 units) | 0 |
+| new device | stage 3 final (hardened, 1 run) | 54.8 s | 20.0 MB (12.6 in the menu), 8 in flight at the key | 8.6 s | 7.6 s | 3, 2140 ms (139 units taken over from the place's queue, 3.3 MB) | 2 |
+
+Untaught (the teach runs: nobody loaded the place before), both stages load in 9.5-9.6 s warm and 12.2-13.9 s on a new
+device. With a warm store the place is in about 4 s after the menu appears (5.5 s after the first frame); on a new device
+5.8 MB of it were still to come at the key (the menu's link ran at 1.3 MB/s): a menu of about 15 s. The engine's list
+varies between loads (NPCs' equipment: ~30 weapon textures, 0.5 MB, not in the taught set once), which the union of the
+next sessions' lists absorbs.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

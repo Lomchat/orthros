@@ -21,6 +21,7 @@ function browser(remote = null, state = null, { dates = true } = {}) {
     isDir: (m) => m === 2, isFile: (m) => m === 1,
     readFile: (p) => { reads.push(p); return files.get(p); }, writeFile: (p, b) => { files.set(p, new Uint8Array(b)); times.set(p, clock++); },
     mkdirTree() {}, unlink: (p) => files.delete(p), rmdir() {},
+    ...(dates ? { utime: (p, _a, m) => { times.set(p, m); } } : {}),
   };
   const window = { parent: { postMessage: (m) => messages.push(m) }, addEventListener: (n, cb) => events[n] = cb };
   runInNewContext(source, { window, document: { createElement: () => ({ setAttribute() {} }), body: { prepend() {} } },
@@ -41,7 +42,7 @@ function browser(remote = null, state = null, { dates = true } = {}) {
   });
   window.orthrosCloudInstall(FS, 'game', 'user');
   // (`put`: a write by the engine, its date the next millisecond)
-  return { FS, files, storage, messages, writes, events, window, reads, fail: (status = 409) => { fail = true; failStatus = status; }, recover: () => { fail = false; }, put: (p, b) => FS.writeFile(p, b),
+  return { FS, files, storage, times, messages, writes, events, window, reads, fail: (status = 409) => { fail = true; failStatus = status; }, recover: () => { fail = false; }, put: (p, b) => FS.writeFile(p, b),
     cloud: () => JSON.parse(gunzipSync(cloud)), sync: () => new Promise((r) => FS.syncfs(false, r)),
     ready: () => new Promise((r) => FS.syncfs(true, r)) };
 }
@@ -133,4 +134,19 @@ test('OpenMW sends again after a failed upload, even when nothing changed since'
   assert.equal(b.writes.length, 2); assert.equal(JSON.parse([...b.storage.values()][0]).dirty, true, 'not on the account yet');
   b.recover(); await b.sync(); await uploaded(b, 3);
   assert.equal(b.cloud().files[0].data, 'Ag==', 'the change the failed upload had');
+});
+
+test('OpenMW keeps each file\'s date through the account: restored with it, the profile not marked undated', async () => {
+  const b = browser(null); await b.ready();
+  b.put('/userdata/saves/p/a.omwsave', new Uint8Array([1])); b.put('/userdata/saves/p/b.omwsave', new Uint8Array([2]));
+  await b.sync(); await uploaded(b, 1);
+  const sent = Object.fromEntries(b.cloud().files.map((f) => [f.path, f.mtime]));
+  assert.deepEqual(sent, { 'saves/p/a.omwsave': b.times.get('/userdata/saves/p/a.omwsave'), 'saves/p/b.omwsave': b.times.get('/userdata/saves/p/b.omwsave') });
+  // (another device: the account's copy restored, each file at its date)
+  const c = browser([{ path: 'saves/p/a.omwsave', data: 'AQ==', mtime: 5000 }, { path: 'saves/p/b.omwsave', data: 'Ag==', mtime: 7000 }]); await c.ready();
+  assert.equal(c.times.get('/userdata/saves/p/a.omwsave'), 5000); assert.equal(c.times.get('/userdata/saves/p/b.omwsave'), 7000);
+  assert.equal(c.window.orthrosProfileRestored, undefined, 'dates kept: not a restore\'s');
+  // (an account's copy of an earlier page, without dates: the restore's dates, said)
+  const d = browser([{ path: 'saves/p/a.omwsave', data: 'AQ==' }]); await d.ready();
+  assert.equal(d.window.orthrosProfileRestored, true);
 });

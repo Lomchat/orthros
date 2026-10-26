@@ -40,14 +40,18 @@
       }
       return out;
     }
-    /** The profile's files with their base64: a file read again only when its size or date changed. */
+    /**
+     * The profile's files with their base64 and date (mtime, ms: kept by the account's copy — a device that restores
+     * it tells the newest save, streamfs.js's guess of the save the player loads): a file read again only when its
+     * size or date changed.
+     */
     function collect(files = list()) {
       return files.map((f) => {
-        const k = known.get(f.path);
-        if (k && f.mtime !== undefined && k.size === f.size && k.mtime === f.mtime) return { path: f.path, data: k.data };
+        const k = known.get(f.path), at = f.mtime !== undefined ? { mtime: f.mtime } : {};
+        if (k && f.mtime !== undefined && k.size === f.size && k.mtime === f.mtime) return { path: f.path, data: k.data, ...at };
         const data = base64(FS.readFile(f.full));
         known.set(f.path, { size: f.size, mtime: f.mtime, data });
-        return { path: f.path, data };
+        return { path: f.path, data, ...at };
       });
     }
     /** The same files, with the same bytes, as the account last took (a file written again unchanged: the same). */
@@ -76,11 +80,17 @@
         if (doc.format !== 'orthros-profile' || doc.game !== game || !Array.isArray(doc.files)) throw new Error('Sauvegarde en ligne invalide.');
         for (const f of doc.files) if (typeof f.path !== 'string' || f.path.startsWith('/') || f.path.includes('\\') || f.path.split('/').some((p) => !p || p === '.' || p === '..')) throw new Error('Chemin de sauvegarde invalide.');
         clear();
+        let undated = false;
         for (const f of doc.files) {
           const p = `/userdata/${f.path}`; FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
           FS.writeFile(p, Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0)));
+          // (its date as the account's copy kept it; a copy of an earlier page has none: the restore's)
+          if (Number.isFinite(f.mtime) && typeof FS.utime === 'function') FS.utime(p, f.mtime, f.mtime); else undated = true;
         }
         await new Promise((resolve, reject) => original(false, (e) => e ? reject(e) : resolve()));
+        // (a file rewritten without its date — its date the restore's —: streamfs.js's guess of the save the player loads
+        // (save-place.js chooseSave) does not trust the dates then)
+        if (undated) window.orthrosProfileRestored = true;
       }
       remember(!!local.dirty);
       notify(local.dirty ? 'idle' : 'saved');

@@ -659,3 +659,19 @@ test('announced reads on a fast link: the texture itself', async (t) => {
   await until(() => Atomics.load(data.ctrl, 12) >= data.wantSeq, 'settled');
   assert.deepEqual(server.asked.filter(([, , , k]) => k === 'want').map(([p, a, b]) => [p, a, b]), [['tex.dds', 0, 300000]]);
 });
+
+test('a predicted place (want prio \'place\'): fetched by the worker in the background (not learned), outside the wait\'s window, its light-or-file choice not pinned', async (t) => {
+  const tex = bytes(300000, 2), light = bytes(40000, 8), mesh = bytes(9000, 4);
+  const server = fakeServer({ 'tex.dds': tex, 'Meshes/a.nif': mesh }, [], { 'tex.dds': light });
+  const data = await inThread(t, server, { reloads: true });
+  const h = data.file('v', 'tex.dds'), m = data.file('v', 'meshes/a.nif');
+  assert.equal(data.want([{ h }, { h: m }], { prio: 'place', label: 'place:-2,6' }), 2);
+  assert.equal(data.wantSeq, 0, 'no batch: the engine\'s waits never wait for it');
+  assert.equal(data.wantWait(0), true);
+  assert.equal(h.pin, undefined, 'not pinned: the load, when it comes, chooses by its link then');
+  await until(() => server.asked.filter(([p]) => p === 'Meshes/a.nif' || p === '.light/tex.dds').length === 2, 'both fetched');
+  const asked = server.asked.filter(([p]) => p === 'Meshes/a.nif' || p === '.light/tex.dds');
+  assert.ok(asked.every(([, , , k]) => k === 'bg'), `background requests (p=1, not learned): ${JSON.stringify(asked)}`);
+  assert.equal(data.snapshot().placeWants, 2);
+  assert.equal(data.snapshot().wants, 0);
+});

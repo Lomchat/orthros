@@ -5,15 +5,28 @@
 // version's tree: mwdata/<file> → <file>, mwdata/mods/<part>/<file> → mods/<part>/<file>, moddata/<file> →
 // _engine/<file> (the engine release's asset pack, a data mount of the manifest). Files of elsewhere (a signed address, a file the player picked, a Blob) go through the same worker. A copy
 // an earlier page kept of a file (legacy-copies.js) is taken before its first read. The player first in the world marks
-// the session playable (GameData.mark).
+// the session playable (GameData.mark). The places the engine announces it loads are learned by the server
+// (POST /api/places), and the place the player's saved game will load is predicted from the saves and fetched while
+// the engine boots and the player sits in the menu (docs/openmw.md "Anticipated places", save-place.js).
 (() => {
   'use strict';
   // (a classic script — the page calls StreamFS synchronously — loading the shared modules at once: they are here long
   // before the engine's first mount, which comes after its own requests)
-  const modules = Promise.all([import('/src/vfs/data-client.js'), import('/src/vfs/emscripten-files.js'), import('/src/ports/openmw/view-grow.js')]);
-  let M = null; modules.then(([client, files, view]) => { M = { ...client, ...files, inWorld: view.inWorld }; });
+  const modules = Promise.all([import('/src/vfs/data-client.js'), import('/src/vfs/emscripten-files.js'), import('/src/ports/openmw/view-grow.js'), import('/src/ports/openmw/save-place.js')]);
+  let M = null; modules.then(([client, files, view, place]) => { M = { ...client, ...files, inWorld: view.inWorld, savePlace: place }; });
   const app = location.pathname.slice(0, location.pathname.indexOf('/app/') + 5), name = decodeURIComponent(app.split('/')[3]);
-  const S = { data: null, byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [] };
+  // (predicted: the place the page expects the player's save to load, and what it asked for it — anticipate)
+  const S = { data: null, session: Math.random().toString(36).slice(2, 14), byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [], predicted: null, hinted: false };
+  /** The learned places of this installation (the server's: POST a load's announced batch, GET a place's set). */
+  const placesUrl = `/api/places/${encodeURIComponent(name)}`;
+  /** the most entries of a predicted place's set asked for (the server bounds its sets; a bad answer does not flood the link) */
+  const PLACE_ENTRIES = 8192;
+  /** the most bytes of a predicted place's set asked for (the files' own: Ald'ruhn's with a mod's textures, 134 MB) */
+  const PLACE_BYTES = 256 << 20;
+  /** how often the saves folders are looked at for a save the engine wrote (its place: the hint) */
+  const SAVES_WATCH_MS = 5000;
+  /** the longest the predicted place waits for the engine's first frame (see anticipate) */
+  const BOOT_WAIT_MS = 180000;
 
   /** The tree path of an engine mount's URL (one of this installation's served files), or null. */
   function treePath(url) {
@@ -29,7 +42,7 @@
     if (!M) throw new Error('streamfs: the game data modules are not loaded yet');
     if (!S.data) {
       // (the page's memory tier — the upstream's slots were "about 1 MB each" — as the bytes kept in the page)
-      S.data = new M.GameData({ name, session: Math.random().toString(36).slice(2, 14), prefetch: 'first-read', cacheBytes: ((window.__omwLruDefault | 0) || 128) << 20,
+      S.data = new M.GameData({ name, session: S.session, prefetch: 'first-read', cacheBytes: ((window.__omwLruDefault | 0) || 128) << 20,
         log: (t) => console.warn('[streamfs]', t) });
       S.data.start();
       // (the engine's start held until the worker answered: its first reads wait synchronously, the page's thread
@@ -62,8 +75,106 @@
       if (canReload()) S.data.reloads(true);
       else { let n = 0; const look = setInterval(() => { if (canReload()) S.data.reloads(true); if (canReload() || ++n >= 240) clearInterval(look); }, 250); }
       try { Object.defineProperty(window, '__streamfsStats', { configurable: true, get: () => S.data.snapshot() }); } catch { /* defined */ }
+      anticipate().catch((e) => console.warn('[streamfs] place', e?.message ?? e));
     }
     return S.data;
+  }
+
+  // ---------------------------------------------------------------- anticipated places
+
+  /** `fn()` polled every `ms`, `n` times at most: true once it holds, false once given up. */
+  const until = (fn, ms, n) => new Promise((resolve) => {
+    if (fn()) { resolve(true); return; }
+    let k = 0;
+    const t = setInterval(() => { const ok = !!fn(); if (ok || ++k >= n) { clearInterval(t); resolve(ok); } }, ms);
+  });
+  /** A multiplayer session (the engine page's __omwMPEnabled): the server decides where the player spawns, its solo saves say nothing. */
+  const multiplayer = () => !!window.__omwMPEnabled;
+  /**
+   * The place the player's saved game will load, fetched before the click (docs/openmw.md "Anticipated places"): once
+   * the saves are readable — the engine page's __idbfsReady: IDBFS populated, the account's profile restored (cloud.js
+   * answers the populate after it) — and the engine draws its first frame (its boot over, the player at the menu), the
+   * saves parsed (save-place.js: their records' headers, read in place), one chosen (the remembered place, the newest,
+   * the most played: chooseSave), its learned set asked of the server and fetched in the background at the place's
+   * priority (GameData.want `prio: 'place'`: the link's idle time, below the game's reads, a load's and the launch set).
+   * A save loaded elsewhere loses nothing: its load announces its own (orthrosWillRead). Then the saves the engine
+   * writes are watched: their place is the hint for the next session. Not in multiplayer.
+   */
+  async function anticipate() {
+    if (!await until(() => !!window.__idbfsReady && typeof FS !== 'undefined', 250, 480)) return;
+    await window.__idbfsReady;
+    if (multiplayer()) return;
+    // (the saves read, the set asked and fetched once the engine draws its first frame, not while it boots: requests
+    // beside the boot's delayed the engine's first read by 1.7 s with a warm store, 4.5 s on a new device (1.8 MB/s,
+    // 90 ms; place-load.mjs), though the link was free — the page's and its worker's time, not the link's —, and so
+    // would reading every save on the page's thread; an engine that never says it draws: after BOOT_WAIT_MS)
+    await until(() => window.Module?.__omwRunning !== undefined, 250, BOOT_WAIT_MS / 250);
+    if (multiplayer()) return;
+    const P = M.savePlace, saves = P.listSaves(FS);
+    watchSaves(saves.reduce((t, x) => Math.max(t, x.mtime), -Infinity));
+    const pick = P.chooseSave(saves, { hint: P.placeHint.get(name, window.localStorage ?? null), restored: !!window.orthrosProfileRestored });
+    if (!pick) return;
+    S.predicted = { place: pick.place, why: pick.why, save: pick.save.path, listed: 0, asked: 0 };
+    await S.data.ready;
+    const r = await fetch(`${placesUrl}?place=${encodeURIComponent(pick.place)}`, { cache: 'no-store' });
+    if (!r.ok) return;
+    const entries = placeEntries(await r.json());
+    S.predicted.listed = entries.length;
+    if (!entries.length) return;
+    S.predicted.atMs = Math.round(performance.now());
+    S.predicted.asked = S.data.want(entries, { prio: 'place', label: 'place:' + pick.place });
+  }
+  /**
+   * A place's set as the server lists it ([[path, start, end]] — end exclusive, absent or -1: the file's end —, or
+   * { path, start, end }; bare or under `list`) to the game data's entries: the tree's files (others left out).
+   */
+  function placeEntries(doc) {
+    const list = Array.isArray(doc) ? doc : Array.isArray(doc?.list) ? doc.list : [];
+    const out = [];
+    let bytes = 0;
+    for (const x of list.slice(0, PLACE_ENTRIES)) {
+      const [p, a, b] = Array.isArray(x) ? x : [x?.path, x?.start, x?.end];
+      const h = typeof p === 'string' ? S.data.file(name, p) : null;
+      if (!h) continue;
+      const off = Math.max(0, Number(a) || 0), end = b === undefined || b === null ? -1 : Number(b);
+      const len = Number.isFinite(end) && end >= 0 ? Math.max(0, end - off) : -1;
+      // (cut at PLACE_BYTES, the list's order kept: a bad answer does not fill the store either)
+      bytes += len < 0 ? Math.max(0, (h.size ?? 0) - off) : len;
+      if (bytes > PLACE_BYTES) break;
+      out.push({ h, off, len });
+    }
+    return out;
+  }
+  /** The saves the engine writes from now (after `since`, ms): the newest one's place remembered (placeHint, at its date). */
+  function watchSaves(since) {
+    const t = setInterval(() => {
+      if (typeof FS === 'undefined') { clearInterval(t); return; }
+      for (const x of M.savePlace.listSaves(FS, undefined, since).sort((a, b) => a.mtime - b.mtime)) {
+        since = Math.max(since, x.mtime);
+        if (x.info.place) M.savePlace.placeHint.set(name, x.info.place, window.localStorage ?? null, x.mtime);
+      }
+    }, SAVES_WATCH_MS);
+  }
+  /**
+   * An announced batch of a load (`label` '<kind>:<place>', `entries` the game data's) to the server's learned places
+   * (POST /api/places): its records [tree path, start, end) — the files themselves, never their light copies (each
+   * player's link picks) —, with the place and kind. The session's first load (the game the player started from the
+   * menu: a save, or a new game) remembered as the hint (placeHint) — not the cells the player walks through after it
+   * (a hub revisited would steal the next prediction from the save written elsewhere: the saves written set it), not a
+   * terrain read-ahead's (the view point's cell), not in multiplayer (the server's world, not a solo save's).
+   */
+  function learnPlace(label, entries) {
+    const at = M?.savePlace?.labelPlace(label);
+    if (!at) return;
+    if (!S.hinted && at.kind !== 'terrain' && !multiplayer()) { S.hinted = true; M.savePlace.placeHint.set(name, at.place, window.localStorage ?? null); }
+    const records = [];
+    for (const { h, off, len } of entries) {
+      if (h.src !== undefined || h.name !== name) continue;
+      const a = Math.max(0, Math.min(h.size, off)), b = len < 0 ? h.size : Math.min(h.size, a + len);
+      if (b > a) records.push([h.path, a, b]);
+    }
+    if (!records.length || typeof fetch !== 'function') return;
+    fetch(placesUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session: S.session, place: at.place, kind: at.kind, records }) }).catch(() => {});
   }
 
   /** The Emscripten engine's run (its main) held until `ready` settles (a page without the engine's globals: nothing). */
@@ -134,7 +245,8 @@
       const [path, off, size] = rec.split('\x1F'), h = byEngine(path);
       if (h) entries.push({ h, off: Number(off) || 0, len: size === undefined || size === '' ? -1 : Number(size) });
     }
-    S.place = String(label ?? ''); // (what the load is for: kept for the learned places — stage 3)
+    S.place = String(label ?? ''); // (what the load is for: the learned places)
+    learnPlace(S.place, entries);
     return entries.length ? S.data.want(entries, S.place) : 0;
   };
   // (the engine waits for what it announced, at most `timeoutMs`: 1 when it is all here (or failed — its reads say why),
@@ -147,6 +259,8 @@
 
   window.StreamFS = {
     stats() { return S.data ? S.data.snapshot() : {}; },
+    /** The place predicted for the player's save (anticipate): { place, why, save, listed, asked, atMs (when asked, the page's clock) }, or null. */
+    place() { return S.predicted; },
     /** The game data (data-client.js GameData), once the engine mounted a file: null before. */
     data() { return S.data; },
     init() {

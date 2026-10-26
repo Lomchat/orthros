@@ -711,6 +711,67 @@ building ~850 files: ~0.4 s in C, ~3 s in S, under SwiftShader). Left: the seque
 member (`a=1`, 0.3 MB of a wait), the learned pieces fetched during the NIF parse between the two waits (`p=1`, 0.3 MB
 in S), the textures' upgrades to full size right after (S).
 
+## Places learned from announcements (2026-10-26)
+
+Stage 2 made a save's load wait once for what its engine announced (4.5 s of the 8.3 s frozen at Ald'ruhn, 1.8 MB/s,
+a warm store; everything, on a new device). Stage 3 fetches it before the click, while the engine boots and the player
+sits in the menu: the page predicts where the save will load (the OpenMW page reads its saves) and asks the server
+what that place's load reads. The server learns it from the announcements themselves — the engine's own computation
+for that place, exact and complete, unlike the demand reads a session happened to wait for (the learned order keeps a
+block once per session; a place loaded second learns nothing of what it shares with the first).
+
+**The route** (`src/host/server.js`, beside `/api/prefetch`, same manifest check — unknown: 404; a POST only for a
+runtime whose engine announces, `PLACE_RUNTIMES` — `openmw` —, else 404: no place can be invented for the others):
+- `POST /api/places/<manifest>` `{ session, place, kind, lang?, records: [[path, start, end]] }` — one announced batch
+  (`kind` `meshes` | `terrain` | `textures`, `place` the label's: `x,y` or the lowercased interior id; `records` tree
+  paths after the page's engine-path mapping, end exclusive, -1 to the file's end). Answer `{ kept }` (200); 400 a
+  malformed report (no session or one over 40 characters, a place empty, over 64 characters or with a control
+  character, another kind, records not a list), 413 a body over 2 MiB, 429 a reporter that made `PLACE_NEW_HOUR` (240)
+  places this hour. Each record checked against the version's tree
+  (`treeFileSize`): an unknown path, a range out of the file or not integers is dropped (counted). A light copy's path
+  (`.light/…`) stands for its file, whole: the page picks light or real by its link when it fetches. A report of
+  nothing kept makes no place. `lang`: a language the manifest declares (`markLang`), else none.
+- `GET /api/places/<manifest>?place=<key>[&lang=]` → `{ place, lang, sessions, at, bytes, list: [[path, start, end,
+  kind]] }`: the meshes, then the terrain, then the textures, each kind the last session's records in their order,
+  then what earlier sessions announced and it did not; checked against the tree again (a release's files may change);
+  cut at 4 times the version's median place (64 MiB at least, `PLACE_BYTES` at most): a place one client swelled is not
+  all fetched by every player predicted there. `sessions`: its reporters.
+  The language's own place, else another language's (the most recent: an exterior's files are mostly the same), else
+  an empty list. Without `place`: the places known, `[place, lang, sessions, at, records]`, the most recent first.
+- Not learned from `/gamez` `w=1` requests (an announced range is not a read, and a page that announces names its
+  place): only from these reports.
+
+**Who reports**: the reporter, as for the profile seeds (`seedReporter`: one client network, an IPv6 /64 as one; a
+session on localhost by its id) — not the `session` string the page picks, which anyone can vary. A place's
+`sessions` counts its reporters; a generation is one reporter's session (its batches of a load, and of a later visit).
+
+**Storage** (`<learn>/places-<manifest>.json`, written by the learned files' timer, `armLearnTimer`, every 20 s at
+most, atomically, serialized a slice of 64 places at a time and written asynchronously): per version a list of places
+`[lang, place, at, reporters, gen, records, runs, by]`, each record `[kind, path, start, end, gen, rank]` — `gen` the
+place's generation count when it was last announced, `rank` its order in that generation's announcements; `runs` the
+last 32 runs of one reporter's generations (`[first, last, reporter]`), `by` its last 16 reporters.
+
+**Bounds**: a report's first 8192 records, paths of 512 characters at most; `PLACES_MAX` (2048) places a version,
+`PLACES_RECORDS` (200 000) records a version and `PLACES_RECORDS_ALL` (400 000) in all — memory (a record is a few
+hundred bytes) and the file each tick writes (~60 B a record) —, a place out when over: the fewest reporters first,
+then the least recently announced (a flood of one-report places evicts its own kind before a place several players
+taught); a reporter makes `PLACE_NEW_HOUR` (240) places an hour. A place keeps the union of its generations' records
+bounded with recency — a record none of its last `PLACE_KEEP` (4) generations announced out (an NPC met once, a
+release's old file) once those came from two reporters at least (one network's sessions, however many, do not wipe
+what others taught; alone, a player's own union stays, bounded below) —, then past `PLACE_RECORDS` (4096) records or
+`PLACE_BYTES` (512 MiB of the files' own bytes) the oldest generations' first (Ald'ruhn loaded from a
+save: 790 records, 134 MB of files with Vanilla Plus' textures — 8 MB on the wire at 1.8 MB/s, light copies picked).
+`/api/netstats` `places`: `posts`, `records` kept, `dropped`, `gets`, `found`.
+
+**Precompressed**: the units of the `PLACES_SEED` (32) places of a version the most sessions announced are made after
+its launch set and before the rest of its learned order (`placeSeedUnits` in the br-cache's `sources`), in the shapes
+an announcement asks them (`HttpBackend.wantRange` with nothing here: a block the range covers whole as the block, else
+its pieces; a file's light copy first, whole). A version is a source once it has a learned order (as before).
+
+Tests: `tests/places.test.js` (round trip and order, path checks, malformed reports, unknown manifest, union and
+recency, bounds, languages, persistence across a restart, the seeded units served as hits, the runtimes that may
+report, one network as one reporter, the version's record bound by value, the hourly new places, the served cut).
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

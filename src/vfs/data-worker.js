@@ -82,6 +82,7 @@ function dispatch(m) {
   if (m.mark) { mark(m.mark); return; }
   if (m.phase) { phase(m.phase); return; }
   if (m.want) { want(m.want); return; }
+  if (m.wantPlace) { wantPlace(m.wantPlace); return; }
   if (m.wantWhole) { W.parts.get(m.wantWhole.name)?.files.wantWhole(m.wantWhole.path); return; }
   if (m.light) { upgrade(m.light.name, m.light.path, !!m.light.soon); return; }
   if ('whole' in m) { m.whole ? wholeDownload() : (W.whole && (W.whole.stop = true)); return; }
@@ -236,6 +237,22 @@ function want({ seq, from, list, label }) {
   };
   for (const p of all) p.then(settle, () => settle(false));
   wantTell();
+}
+
+/**
+ * A predicted place's set (GameData.want `prio: 'place'`: `list` [[name, path, off, len]], `label` 'place:<key>'): each
+ * version's entries to its reader at the place's priority (HttpBackend.wantList `prio: 'place'` — the link's idle time,
+ * below the game's reads, a load's and the launch set); no batch, no counter the page waits on.
+ */
+function wantPlace({ list, label }) {
+  const byPart = new Map();
+  for (const [name, path, off, len] of Array.isArray(list) ? list : []) {
+    const part = W.parts.get(name); if (!part) continue;
+    const a = Math.max(0, Number(off) || 0), n = Number(len);
+    let e = byPart.get(part); if (!e) byPart.set(part, e = []);
+    e.push([path, a, n < 0 || !Number.isFinite(n) ? -1 : a + n]);
+  }
+  for (const [part, ranges] of byPart) try { part.files.wantList(ranges, { label: typeof label === 'string' ? label.slice(0, 80) : '', prio: 'place' }); } catch { /* a reader closed: nothing kept */ }
 }
 
 /**

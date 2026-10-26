@@ -348,6 +348,16 @@ export class NetLink {
       this.timer = this.setTimer(() => { this.timer = null; this.kick(); }, Math.min(due, 250));
     }
   }
+  /**
+   * The download `w` (see turn) is now what a load under way needs (an announced list names a predicted place's): it may
+   * pass the load's silence and ranks at `prio` among the waiting ones — by the count and bytes rules still (mayStart),
+   * not urgent as promote's.
+   */
+  forLoad(w, prio) {
+    if (!w || w.forLoad) return;
+    w.forLoad = true;
+    if (this.waiters.includes(w)) { if (Number.isFinite(prio)) w.prio = Math.min(w.prio, prio); this.waiters.sort((a, b) => (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0) || a.prio - b.prio); this.kick(); }
+  }
   /** The waiting download `w` (see turn) is now waited for by the game: it goes first. */
   promote(w) {
     if (!w || w.urgent) return;

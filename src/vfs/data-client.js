@@ -314,7 +314,7 @@ export class GameData {
    * net: the link as the worker last told it (NetLink.snapshot, every second: rate, waits, loading, the background's
    * bytes by producer — bgBy), null before.
    */
-  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, net: this.net ?? null }; }
+  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, net: this.net ?? null }; }
 
   // ---------------------------------------------------------------- light copies
 
@@ -377,19 +377,30 @@ export class GameData {
    * there), and that load reads it (pinned: nextPick). The bytes the page holds already are not; the rest go to the
    * worker at once (fetched in parallel, kept: HttpBackend.wantList), one batch (`from`: the first batch of the current
    * wait's window — the worker's ctrl[12] counts from it). Returns how many entries are not in the page (0: nothing to wait for — no batch).
+   * `opts` (or the label alone): { label, prio } — prio 'place': a list the page predicts (the place a saved game will
+   * load, docs/openmw.md "Anticipated places"), not one the engine waits for: fetched in the background below the
+   * game's reads, a load's and the launch set (HttpBackend.wantList `prio: 'place'`), outside the wait's window (no
+   * batch number: wantWait never waits for it), its light-or-file choice made by the link now and not pinned.
    */
-  want(entries, label = '') {
-    this.progress();
+  want(entries, opts = '') {
+    const { label = '', prio = null } = typeof opts === 'string' ? { label: opts } : opts ?? {};
+    const place = prio === 'place';
+    if (!place) this.progress();
     const list = [];
     for (const { h, off = 0, len = -1 } of entries) {
       if (!h || h.src !== undefined || h.failed) continue;
-      const v = this.nextPick(h, true);
+      const v = this.nextPick(h, !place);
       // (the light copy whole; else the range, clamped to the file)
       const a = v !== h ? 0 : Math.max(0, Math.min(h.size, off)), n = v !== h ? v.size : len < 0 ? h.size - a : Math.min(len, h.size - a);
       if (!(n > 0) || this.inPage(v, a, n)) continue;
       list.push([v.name, v.path, a, n]);
     }
     if (!list.length) return 0;
+    if (place) {
+      this.stats.placeWants = (this.stats.placeWants ?? 0) + list.length;
+      this.worker.postMessage({ wantPlace: { list, label: String(label ?? '').slice(0, 80) } });
+      return list.length;
+    }
     this.stats.wants += list.length;
     this.worker.postMessage({ want: { seq: ++this.wantSeq, from: this.wantFrom, list, label: String(label ?? '').slice(0, 80) }, used: this.used.splice(0) });
     return list.length;

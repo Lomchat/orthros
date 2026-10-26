@@ -73,6 +73,7 @@ function validBackup(bytes, game) {
           file.path.startsWith('/') || file.path.includes('\\') ||
           file.path.split('/').some((part) => !part || part === '.' || part === '..') ||
           typeof file.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(file.data) ||
+          (file.mtime !== undefined && !Number.isFinite(file.mtime)) ||
           seen.has(file.path)) return false;
       seen.add(file.path);
     }

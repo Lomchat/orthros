@@ -29,6 +29,23 @@
 //   (<scratch>/games-<release>: one real folder a game, of links to the live game's entries — the server's catalog
 //   takes real folders only —, a modified copy of the measured game's manifest.json; the versions it requires keep
 //   theirs), its engine from --engines-dir (default the live one). The live games folder checked for new links after.
+// - Stage 3 (docs/slow-network.md "Announced reads": the places learned from what engines announced, the page's prediction
+//   from the saves): --teach N runs the same scenario N times first, unmeasured, on one learn copy of the invocation
+//   (<scratch>/teach/<tag>-<time>/learn, from the pristine one; the server's places-<manifest>.json written there — each
+//   teach run left at least 25 s after its load: the server's learnSave timer is 20 s, its exit flushes none), and every
+//   measured run then starts from a copy of THAT learn directory — another player already loaded the place —, the
+//   teach copy removed at the end. --profile new: each run (taught or measured) on a fresh empty profile — a new device:
+//   no store, no HTTP cache (the engine itself through the link), no link measure, no place hint —, the save of
+//   scenario S still injected; no warm-up then. --engine-br: the brotli siblings of --engine's openmw.{js,wasm,data}
+//   (as tools/openmw/build.sh makes them: quality 11, window 24) made once when missing or older than their file — only
+//   for a release under /tmp/orthros-scratch (a dev build; a release in data/engines has its own) —, else that engine
+//   goes uncompressed through the link (213 MB, ~2 min at 1.8 MB/s) on a new profile. --dry: the options resolved and
+//   the plan printed, nothing started.
+//   Scenario S's row adds `stage3`: the place hint (localStorage 'orthros.place.<manifest>') at the menu and at the end,
+//   the learned places (the learn copy's places file: size, places, the target's units), the menu-time prefetch (the
+//   announced ranges, kind 'want', started before the key: before the menu and in it, their end against the key, those
+//   still in flight at it; the /api/places requests) and the load (key -> in world, its serial reads, its announced
+//   ranges, the engine's waits — wantWaits, wantWaitMs, wantTimeouts of the data stats' delta).
 // One JSON line per run in --out: the engine's start, the frozen load (the longest gap between frames drawn after the
 // COE or the key), the proxy log's stretch of that frozen frame (loadWindow: the game's reads — count, decoded, wire,
 // spacing, ttfb, idle — and the background's bytes by kind and file category, 'upgrade' the full file of a light copy
@@ -40,11 +57,13 @@
 //     [--profile-warm <dir>] [--warm-tree /srv/orthros] [--warm-seconds 120] [--rate 1.8m] [--rtt 90] [--listen 18447]
 //     [--start -2,-9] [--to -2,6] [--quiet 10] [--after 30] [--out <scratch>/results.jsonl] [--games-dir ..]
 //     [--engines-dir ..] [--engine <release>] [--covers off|<dir>] [--warm-only]
+//     [--profile warm|new] [--teach 0] [--engine-br] [--dry]
 //     save: [--entry play|engine] [--menu 10] [--save <scratch>/saves/<to>.omwsave] [--make-save]
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { parseRate, urlKind, dataRead } from '../net-proxy.mjs';
 
 const MAIN = !!process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 /** Where the engine's saves may be (IDBFS): the engine's user data folder — /userdata/saves in the r8 page, seen —, its XDG data home's. */
@@ -98,6 +117,149 @@ export function clearScratchGames(out) {
     fs.rmdirSync(dir);
   }
   fs.rmdirSync(out);
+}
+
+/** The flags without a value (every other option takes the next argument). */
+const FLAGS = ['make-save', 'warm-only', 'engine-br', 'dry'];
+
+/**
+ * The command line's options (`argv` after the script: the manifest first), resolved with their defaults — absolute
+ * paths, numbers, the scenario's checks; throws on a missing or wrong one (the message says which). Nothing is touched.
+ */
+export function parseArgs(argv) {
+  const id = argv[0];
+  if (!id || id.startsWith('--')) throw new Error('the manifest id comes first');
+  const known = new Set([...FLAGS, 'tree', 'mode', 'runs', 'tag', 'pristine', 'scratch', 'profile-warm', 'warm-tree', 'warm-seconds', 'rate', 'rtt', 'listen', 'start', 'to', 'quiet', 'after', 'out',
+    'games-dir', 'engines-dir', 'engine', 'covers', 'entry', 'menu', 'save', 'profile', 'teach']);
+  const val = new Map(), flags = new Set();
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i], k = a.startsWith('--') ? a.slice(2) : null;
+    if (!k || !known.has(k)) throw new Error(`${a}: unknown option`);
+    if (FLAGS.includes(k)) { flags.add(k); continue; }
+    if (i + 1 >= argv.length || argv[i + 1].startsWith('--')) throw new Error(`--${k}: a value expected`);
+    val.set(k, argv[++i]);
+  }
+  const opt = (k, d = null) => (val.has(k) ? val.get(k) : d);
+  const num = (k, d, { int = false, min = 0 } = {}) => {
+    const n = Number(opt(k, d));
+    if (!Number.isFinite(n) || n < min || (int && !Number.isInteger(n))) throw new Error(`--${k} ${opt(k, d)}: ${int ? 'an integer' : 'a number'} >= ${min} expected`);
+    return n;
+  };
+  const one = (k, d, ok) => { const v = opt(k, d); if (!ok.includes(v)) throw new Error(`--${k} ${v}: ${ok.join(' or ')}`); return v; };
+  if (!opt('tree')) throw new Error('--tree <code tree> is required');
+  const to = opt('to', '-2,6'), start = opt('start', '-2,-9');
+  for (const [k, c] of [['to', to], ['start', start]]) if (!/^-?\d+,-?\d+$/.test(c)) throw new Error(`--${k} ${c}: an exterior cell x,y`);
+  const [toX, toY] = to.split(',').map(Number);
+  const scratch = path.resolve(opt('scratch', '/tmp/orthros-scratch/mw-load'));
+  const o = {
+    id, tree: path.resolve(opt('tree')), mode: one('mode', 'coe', ['coe', 'save']), entry: one('entry', 'play', ['play', 'engine']), profile: one('profile', 'warm', ['warm', 'new']),
+    scratch, pristine: path.resolve(opt('pristine', path.join(scratch, 'pristine'))), warmTree: path.resolve(opt('warm-tree', '/srv/orthros')),
+    warmDir: path.resolve(opt('profile-warm', path.join(scratch, 'profile-warm'))), outFile: path.resolve(opt('out', path.join(scratch, 'results.jsonl'))),
+    rate: parseRate(opt('rate', '1.8m')), rtt: num('rtt', 90), listen: num('listen', 18447, { int: true, min: 1 }),
+    start, to, toX, toY, target: `${toX} ${toY}`, place: `${toX},${toY}`,
+    quietS: num('quiet', 10), afterS: num('after', 30), warmS: num('warm-seconds', 120), menuS: num('menu', 10),
+    liveGames: path.resolve(opt('games-dir', '/srv/orthros/data/games')), enginesDir: path.resolve(opt('engines-dir', '/srv/orthros/data/engines')),
+    engine: opt('engine'), engineBr: flags.has('engine-br'),
+    saveFile: path.resolve(opt('save', path.join(scratch, 'saves', `${to.replace(/[^0-9a-z-]+/gi, '_')}.omwsave`))),
+    covers: opt('covers', 'off'), runs: num('runs', 2, { int: true }), teach: num('teach', 0, { int: true }), tag: opt('tag', 'run'),
+    makeSave: flags.has('make-save'), warmOnly: flags.has('warm-only'), dry: flags.has('dry'),
+  };
+  if (!(o.rate > 0)) throw new Error(`--rate ${opt('rate')}: bytes per second, e.g. 1.8m`);
+  if (o.engineBr && !o.engine) throw new Error('--engine-br: with --engine <release> only');
+  for (const d of [o.pristine, o.warmDir, o.scratch]) if (d.startsWith('/var/lib')) throw new Error(`${d}: never the live state — a copy under the scratch`);
+  if (o.scratch.startsWith('/srv/orthros/data')) throw new Error(`${o.scratch}: never under the live data`);
+  return o;
+}
+
+/** The scratch root a dev engine release must be under to get brotli siblings made here (never a release of data/engines). */
+export const ENGINE_BR_ROOT = '/tmp/orthros-scratch/';
+
+/**
+ * The brotli siblings of an engine release's openmw.{js,wasm,data} (e/<hash>/), the server's whole-file answer to a
+ * browser asking for br (src/host/server.js: a .br at least as new as its file), made as tools/openmw/build.sh makes
+ * them (quality 11, window 24, size hint), at nice 19 in a child, one file at a time — those missing or older than
+ * their file. `release`: the release's folder (a link resolved first); refused unless it is under `root`. `make`
+ * false: the list only. Returns [{ file, bytes, made, brBytes, ms }].
+ */
+export function engineBrotli(release, { root = ENGINE_BR_ROOT, make = true } = {}) {
+  const real = fs.realpathSync(release);
+  if (!real.startsWith(path.resolve(root) + path.sep)) throw new Error(`${release} (${real}): brotli siblings are made here only for a release under ${root}`);
+  if (!fs.existsSync(path.join(real, 'release.json'))) throw new Error(`${real}: no release.json — not an engine release`);
+  const out = [];
+  const eDir = path.join(real, 'e');
+  for (const h of fs.existsSync(eDir) ? fs.readdirSync(eDir).sort() : []) {
+    for (const n of ['openmw.js', 'openmw.wasm', 'openmw.data']) {
+      const file = path.join(eDir, h, n);
+      if (!fs.existsSync(file) || fs.lstatSync(file).isSymbolicLink()) continue;
+      const st = fs.statSync(file);
+      let fresh = false; try { fresh = fs.statSync(file + '.br').mtimeMs >= st.mtimeMs; } catch { /* none */ }
+      const row = { file, bytes: st.size, made: false, brBytes: fresh ? fs.statSync(file + '.br').size : null, ms: 0 };
+      if (!fresh && make) {
+        const t0 = Date.now();
+        // (written beside, then renamed: a cut run leaves no truncated sibling the server would send)
+        execFileSync('nice', ['-n', '19', process.execPath, '-e',
+          "const z=require('zlib'),fs=require('fs'),f=process.argv[1];fs.writeFileSync(f+'.br.tmp',z.brotliCompressSync(fs.readFileSync(f),{params:{[z.constants.BROTLI_PARAM_QUALITY]:11,[z.constants.BROTLI_PARAM_LGWIN]:24,[z.constants.BROTLI_PARAM_SIZE_HINT]:fs.statSync(f).size}}));fs.renameSync(f+'.br.tmp',f+'.br')",
+          file], { stdio: 'inherit' });
+        Object.assign(row, { made: true, brBytes: fs.statSync(file + '.br').size, ms: Date.now() - t0 });
+      }
+      out.push(row);
+    }
+  }
+  return out;
+}
+
+/**
+ * A learn directory's places as the server stores them (places-<id>.json, src/host/server.js placesWrite: [[lang, place,
+ * at, sessions, gen, [[kind index, path, start, end, gen, rank]]]]): { file, bytes, mtime, places, target, targetMB,
+ * sessions } — `target` the records of `place` (its most recently announced entry, any language), null when absent —,
+ * and `paths` (not for the row: the target's files, to find its requests in a proxy log). null when there is no file.
+ */
+export function placesSummary(learnDir, id, place) {
+  const file = path.join(learnDir, `places-${id}.json`);
+  if (!fs.existsSync(file)) return null;
+  const st = fs.statSync(file), row = { file: path.basename(file), bytes: st.size, mtime: new Date(st.mtimeMs).toISOString(), places: null, target: null, targetMB: null, sessions: null };
+  let doc; try { doc = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return { ...row, error: String(e.message ?? e) }; }
+  if (!Array.isArray(doc)) return { ...row, error: 'not the server\'s places list' };
+  row.places = doc.length;
+  const P = doc.filter((e) => Array.isArray(e) && e[1] === place && Array.isArray(e[5])).sort((x, y) => (Number(y[2]) || 0) - (Number(x[2]) || 0))[0];
+  if (!P) return row;
+  const recs = P[5].filter((r) => Array.isArray(r) && typeof r[1] === 'string');
+  Object.assign(row, { target: recs.length, targetMB: Math.round(recs.reduce((n, r) => n + Math.max(0, (Number(r[3]) || 0) - (Number(r[2]) || 0)), 0) / 1e4) / 100, sessions: P[3] ?? null });
+  Object.defineProperty(row, 'paths', { value: new Set(recs.map((r) => r[1])), enumerable: false });
+  return row;
+}
+
+/**
+ * Stage 3's menu-time prefetch from a proxy log (its clock, ms; null: unknown) before the key `keyT`: the predicted
+ * place's set — background ranges (`p=1`: HttpBackend.wantList `prio: 'place'` asks as background) of the place's files
+ * (`placePaths`, its learned records' paths; a light copy counts as its file) —, all of them, those before the menu
+ * `menuT` and those in it, the last one's end against the key (s; negative: done before it), those still in flight at
+ * it; the announced ranges (`w=1`) started before the key (none expected: the engine announces at the load); the
+ * /api/places requests.
+ */
+export function prefetchReport(recs, { docT = 0, menuT = null, keyT, placePaths = null }) {
+  const MB = (n) => Math.round(n / 1e4) / 100, S = (ms) => (ms === null ? null : Math.round(ms / 100) / 10);
+  const sum = (a) => ({ count: a.length, wireMB: MB(a.reduce((n, r) => n + (r.wire ?? 0), 0)), decodedMB: MB(a.reduce((n, r) => n + (r.decoded ?? 0), 0)) });
+  const want = [], place = [], places = [];
+  for (const r of recs) {
+    if (r.mark || r.url === undefined || r.t < docT) continue;
+    if (r.url.startsWith('/api/places')) places.push({ atS: S(r.t - docT), keyS: keyT === null ? null : S(r.t - keyT), method: r.method ?? 'GET', status: r.status ?? null, ms: r.ms ?? null, url: r.url.slice(0, 160) });
+    if (keyT === null || r.t >= keyT) continue;
+    const kind = urlKind(r.url), d = kind === 'want' || kind === 'bg' ? dataRead(r.url) : null;
+    if (!d) continue;
+    const x = { t: r.t, end: r.t + (r.ms ?? 0), wire: r.wire, decoded: d.decoded ?? 0 };
+    if (kind === 'want') want.push(x);
+    else if (placePaths?.has(d.path)) place.push(x);
+  }
+  const span = (a) => {
+    const lastEnd = a.reduce((m, r) => Math.max(m, r.end), -Infinity);
+    return { ...sum(a), firstS: a.length ? S(a[0].t - docT) : null, lastEndS: a.length ? S(lastEnd - docT) : null, lastEndToKeyS: a.length ? S(lastEnd - keyT) : null, inFlightAtKey: a.filter((r) => r.end > keyT).length };
+  };
+  return {
+    place: span(place), want: span(want),
+    beforeMenu: menuT === null ? null : sum(place.filter((r) => r.t < menuT)), inMenu: menuT === null ? null : sum(place.filter((r) => r.t >= menuT)),
+    places,
+  };
 }
 
 /**
@@ -181,7 +343,7 @@ const look = (on, fn, arg, ms = 3000) => {
   return Promise.race([p, sleep(ms).then(() => null)]);
 };
 const stats = (f) => look(f, () => (window.__streamfsStats ? JSON.parse(JSON.stringify(window.__streamfsStats)) : null));
-const storage = (f) => look(f, async () => ({ estimateMB: await navigator.storage.estimate().then((e) => Math.round(e.usage / 1e5) / 10).catch(() => null), netBw: localStorage.getItem('orthros.netBw'), offlineCopy: localStorage.getItem('orthros.offlineCopy') }), undefined, 10000);
+const storage = (f, id) => look(f, async (id) => ({ estimateMB: await navigator.storage.estimate().then((e) => Math.round(e.usage / 1e5) / 10).catch(() => null), netBw: localStorage.getItem('orthros.netBw'), offlineCopy: localStorage.getItem('orthros.offlineCopy'), placeHint: localStorage.getItem(`orthros.place.${id}`) }), id, 10000);
 const delta = (a, b) => (a && b ? Object.fromEntries(Object.keys(b).filter((k) => typeof b[k] === 'number' && typeof a[k] === 'number').map((k) => [k, Math.round(b[k] - a[k])])) : null);
 
 /** The engine's frame of the page (the page itself on the engine page; the play page's frame), once there. */
@@ -221,27 +383,21 @@ const newestSave = (frame) => look(frame, (dirs) => {
 }, SAVES_DIRS);
 
 if (MAIN) {
+  let o;
+  try { o = parseArgs(process.argv.slice(2)); } catch (e) { console.error(`place-load: ${e.message}\nusage: node tools/openmw/place-load.mjs <manifest> --tree <code tree> [--mode coe|save] [--runs 2] [--tag t] [--engine <release> [--engine-br]] [--engines-dir dir] [--to x,y] [--profile warm|new] [--teach N] [--dry] ... (see the header)`); process.exit(2); }
+  const { id, mode, scratch, pristine, tree, warmTree, warmDir, outFile, rate, rtt, listen, start, to, toX, toY, target, quietS, afterS, warmS, menuS, entry, liveGames, enginesDir, engine, saveFile, covers, runs, tag } = o;
+  if (o.dry) {
+    // (the plan: what this invocation would do, nothing started nor written)
+    const brPlan = o.engineBr ? (() => { try { return engineBrotli(path.join(enginesDir, engine), { make: false }).map((r) => ({ file: r.file, MB: Math.round(r.bytes / 1e5) / 10, fresh: r.brBytes !== null })); } catch (e) { return String(e.message); } })() : null;
+    console.log(JSON.stringify({ options: o, plan: {
+      engineBr: brPlan, warmUp: o.profile === 'warm' && !fs.existsSync(warmDir), makeSave: mode === 'save' && (o.makeSave || !fs.existsSync(saveFile + '.json')),
+      teach: o.teach, measured: o.warmOnly ? 0 : runs, profile: o.profile === 'new' ? 'fresh, empty' : warmDir, place: o.place,
+    } }, null, 1));
+    process.exit(0);
+  }
   const { chromium } = await import('playwright');
   const { launchOptions } = await import('../port-perf.mjs');
-  const { startProxy, startOrigin, spkiOf, parseRate, readLog, loadWindow, summarize, urlKind } = await import('../net-proxy.mjs');
-
-  const args = process.argv.slice(2), id = args[0], opt = (k, d = null) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
-  if (!id || id.startsWith('--') || !opt('tree')) { console.error('usage: node tools/openmw/place-load.mjs <manifest> --tree <code tree> [--mode coe|save] [--runs 2] [--tag t] [--engine <release>] [--engines-dir dir] [--to x,y] ... (see the header)'); process.exit(2); }
-  const mode = opt('mode', 'coe'); if (!['coe', 'save'].includes(mode)) throw new Error(`--mode ${mode}: coe or save`);
-  const scratch = path.resolve(opt('scratch', '/tmp/orthros-scratch/mw-load'));
-  const pristine = path.resolve(opt('pristine', path.join(scratch, 'pristine')));
-  const tree = path.resolve(opt('tree')), warmTree = path.resolve(opt('warm-tree', '/srv/orthros'));
-  const warmDir = path.resolve(opt('profile-warm', path.join(scratch, 'profile-warm')));
-  const outFile = path.resolve(opt('out', path.join(scratch, 'results.jsonl')));
-  const rate = parseRate(opt('rate', '1.8m')), rtt = Number(opt('rtt', 90)), listen = Number(opt('listen', 18447));
-  const start = opt('start', '-2,-9'), to = opt('to', '-2,6'), [toX, toY] = to.split(',').map(Number), target = `${toX} ${toY}`;
-  const quietS = Number(opt('quiet', 10)), afterS = Number(opt('after', 30)), warmS = Number(opt('warm-seconds', 120)), menuS = Number(opt('menu', 10));
-  const entry = opt('entry', 'play'); if (!['play', 'engine'].includes(entry)) throw new Error(`--entry ${entry}: play or engine`);
-  const liveGames = path.resolve(opt('games-dir', '/srv/orthros/data/games')), enginesDir = path.resolve(opt('engines-dir', '/srv/orthros/data/engines'));
-  const engine = opt('engine'), saveFile = path.resolve(opt('save', path.join(scratch, 'saves', `${to.replace(/[^0-9a-z-]+/gi, '_')}.omwsave`)));
-  const covers = opt('covers', 'off'), runs = Number(opt('runs', 2)), tag = opt('tag', 'run');
-  for (const d of [pristine, warmDir, scratch]) if (d.startsWith('/var/lib')) throw new Error(`${d}: never the live state — a copy under the scratch`);
-  if (path.resolve(scratch).startsWith('/srv/orthros/data')) throw new Error(`${scratch}: never under the live data`);
+  const { startProxy, startOrigin, spkiOf, readLog, loadWindow, summarize } = await import('../net-proxy.mjs');
   const certs = path.join(scratch, 'cert');
   const log = (...a) => console.log('[place-load]', ...a);
 
@@ -262,16 +418,24 @@ if (MAIN) {
     const m = cat.get(id); if (!m || m.openmw?.engine !== engine) throw new Error(`${id}: the scratch catalog does not run ${engine}`);
     gamesDir = made.out; engineNote = { engine, previous: made.previous, game: made.game, gamesDir };
     log(`games: ${made.out} (${made.game}: ${id} on ${engine}, was ${made.previous}; ${cat.size} versions; live folder unchanged)`);
+    if (o.engineBr) {
+      // (a dev release's brotli siblings, once: the engine's files then go compressed through the link as a built release's)
+      const t0 = Date.now(), br = engineBrotli(path.join(enginesDir, engine));
+      engineNote.br = br.map((x) => ({ file: path.relative(fs.realpathSync(path.join(enginesDir, engine)), x.file), MB: Math.round(x.bytes / 1e5) / 10, brMB: x.brBytes === null ? null : Math.round(x.brBytes / 1e5) / 10, made: x.made }));
+      log(`engine brotli: ${br.filter((x) => x.made).length} made in ${Math.round((Date.now() - t0) / 1000)} s, ${br.length - br.filter((x) => x.made).length} already there (${engineNote.br.map((x) => `${path.basename(x.file)} ${x.MB} -> ${x.brMB} MB`).join(', ')})`);
+    }
   }
 
   /**
    * One browser session through a proxy at the pinned port over the tree's server: `ready` (in the engine's frame)
-   * awaited, then `body(frame, { page, proxyNow, faults, dir })`. `init`: [script, arg] added after the probe.
+   * awaited, then `body(frame, { page, proxyNow, faults, dir })`. `init`: [script, arg] added after the probe. The
+   * server's learned directory: `learn` (default <dir>/learn), a copy of `learnFrom` made first unless that is null (a
+   * teach run: the invocation's teach copy, used in place).
    */
-  async function session({ codeTree, profile, dir, url, ready, init = null, body }) {
+  async function session({ codeTree, profile, dir, url, ready, init = null, body, learn = path.join(dir, 'learn'), learnFrom = path.join(pristine, 'learn') }) {
     fs.mkdirSync(dir, { recursive: true });
-    execFileSync('cp', ['-a', path.join(pristine, 'learn'), path.join(dir, 'learn')]);
-    const origin = await startOrigin({ tree: codeTree, learn: path.join(dir, 'learn'), telemetry: path.join(dir, 'telemetry'), brcache: path.join(pristine, 'brcache'), covers, gamesDir, enginesDir, log: path.join(dir, 'server.log') });
+    if (learnFrom) execFileSync('cp', ['-a', learnFrom, learn]);
+    const origin = await startOrigin({ tree: codeTree, learn, telemetry: path.join(dir, 'telemetry'), brcache: path.join(pristine, 'brcache'), covers, gamesDir, enginesDir, log: path.join(dir, 'server.log') });
     const proxyT0 = performance.now();
     const proxy = await startProxy({ upstream: `127.0.0.1:${origin.port}`, listen, rate, rtt, log: path.join(dir, 'proxy.jsonl'), certs });
     const proxyNow = () => performance.now() - proxyT0;
@@ -310,7 +474,7 @@ if (MAIN) {
     const res = await session({ codeTree: warmTree, profile: building, dir, url: enginePage(`&start=${encodeURIComponent(start)}&novid`), ready: inWorld, body: async (frame, { faults }) => {
       const inWorldS = s1((await look(frame, () => window.__placeProbe.inWorldAt)));
       await sleep(warmS * 1000);
-      return { inWorldS, storage: await storage(frame), stats: await stats(frame), cell: await look(frame, () => window.omw?.state?.['orthros.cell'] ?? null), faults };
+      return { inWorldS, storage: await storage(frame, id), stats: await stats(frame), cell: await look(frame, () => window.omw?.state?.['orthros.cell'] ?? null), faults };
     } });
     const recs = readLog(path.join(dir, 'proxy.jsonl'));
     const row = { warm: true, tree: warmTree, commit: treeId(warmTree), seconds: warmS, wallS: Math.round((Date.now() - t0) / 1000), ...res, all: summarize(recs) };
@@ -368,18 +532,24 @@ if (MAIN) {
     }
   }
 
-  async function measured(n) {
-    const dir = path.join(scratch, 'runs', `${tag}-${n}-${new Date().toISOString().replace(/[:.]/g, '-')}`), profile = path.join(dir, 'profile');
+  /**
+   * One run of the scenario: measured (its row in --out), or a teach run (`teach`: the invocation's teach learn
+   * directory, used in place; its row only in its run folder, left --after but at least 25 s after its load so the
+   * server's learnSave timer writes the places). A measured run's server starts on a copy of `learnFrom`.
+   */
+  async function measured(n, { teach = null, learnFrom = path.join(pristine, 'learn') } = {}) {
+    const dir = path.join(scratch, 'runs', `${tag}-${teach ? 'teach-' : ''}${n}-${new Date().toISOString().replace(/[:.]/g, '-')}`), profile = path.join(dir, 'profile');
     fs.mkdirSync(dir, { recursive: true });
-    execFileSync('cp', ['-a', warmDir, profile]);
-    const t0 = Date.now(), notes = [];
+    // (a new device: an empty profile, the browser makes it)
+    if (o.profile === 'warm') execFileSync('cp', ['-a', warmDir, profile]);
+    const t0 = Date.now(), notes = [], learnDir = teach ?? path.join(dir, 'learn');
     const save = mode === 'save' ? JSON.parse(fs.readFileSync(saveFile + '.json', 'utf8')) : null;
     const url = mode === 'coe' ? enginePage(`&start=${encodeURIComponent(start)}&novid`) : entry === 'play' ? `/ports/openmw/${encodeURIComponent(id)}/?mode=solo` : enginePage('&novid');
     const init = save ? [injectSave, { dir: save.dir, character: save.character, file: save.file, b64: fs.readFileSync(saveFile).toString('base64') }] : null;
     const ready = mode === 'coe' ? inWorld : () => window.__placeProbe?.menuAt != null;
-    const res = await session({ codeTree: tree, profile, dir, url, ready, init, body: async (frame, { page, proxyNow, faults }) => {
+    const res = await session({ codeTree: tree, profile, dir, url, ready, init, learn: learnDir, learnFrom: teach ? null : learnFrom, body: async (frame, { page, proxyNow, faults }) => {
       const boot = await look(frame, () => ({ firstDraw: window.__placeProbe.firstDraw, menuAt: window.__placeProbe.menuAt, inWorldAt: window.__placeProbe.inWorldAt, cell: window.omw?.state?.['orthros.cell'] ?? null, save: window.__placeSave ?? null }));
-      const store0 = await storage(frame);
+      const store0 = await storage(frame, id);
       let quietWaitS = null;
       if (mode === 'coe') {
         // (the data quiet: none of the game's own reads on the wire, started or ended, for --quiet seconds — the page's
@@ -400,6 +570,8 @@ if (MAIN) {
         await sleep(menuS * 1000);
       }
       const before = await stats(frame);
+      // (the page's prediction at the key: StreamFS.place() — the place, why, the save, the set's entries listed and asked)
+      const predicted = await look(frame, () => window.StreamFS?.place?.() ?? null);
       // (the marker: through the proxy, its log's clock against the engine frame's)
       const mark = `place-${n}-${Date.now()}`;
       const markAt = await frame.evaluate(async (mark) => { const t = performance.now(); await fetch(`/__qa/mark?${mark}`, { cache: 'no-store' }).catch(() => {}); return t; }, mark);
@@ -438,9 +610,9 @@ if (MAIN) {
       }
       if (!end) notes.push(`cell ${target} not reached with frames flowing`);
       const afterLoad = await stats(frame);
-      await sleep(afterS * 1000);
+      await sleep((teach ? Math.max(afterS, 25) : afterS) * 1000);
       const P = await look(frame, () => { const P = window.__placeProbe; return { from: P.from ?? null, keyAt: P.keyAt, armAt: P.armAt ?? null, coeCall: P.coeCall, coeRet: P.coeRet, coeErr: P.coeErr ?? null, gaps: P.gaps, cellAt: P.cellAt, inWorldAt: P.inWorldAt, menuAt: P.menuAt, firstDraw: P.firstDraw, frames: P.frames.length, cell: window.omw?.state?.['orthros.cell'] ?? null }; }, undefined, 10000);
-      return { boot, store0, quietWaitS, before, afterLoad, after: await stats(frame), store1: await storage(frame), mark, markAt, end, P, faults };
+      return { boot, store0, quietWaitS, before, predicted, afterLoad, after: await stats(frame), store1: await storage(frame, id), mark, markAt, end, P, faults };
     } });
     const recs = readLog(path.join(dir, 'proxy.jsonl'));
     const markRec = recs.find((r) => r.url?.startsWith(`/__qa/mark?${res.mark}`)), docRec = recs.find((r) => r.url?.includes('/app/index.html'));
@@ -451,8 +623,10 @@ if (MAIN) {
     const cellAt = P?.cellAt?.[target] ?? null;
     const lt = from !== null ? loadTimes({ gaps: P.gaps, from, cellAt }) : loadTimes({ from: Infinity });
     const inWorldAt = mode === 'save' && P?.inWorldAt !== null && P?.inWorldAt >= (from ?? Infinity) ? P.inWorldAt : null;
+    const toInWorld = mode === 'save' && inWorldAt !== null ? win(proxyOf(from), proxyOf(inWorldAt)) : null, loadDelta = delta(res.before, res.afterLoad);
+    const known = mode === 'save' ? placesSummary(learnFrom && !teach ? learnFrom : learnDir, id, o.place) : null;
     const row = {
-      tag, run: n, tree, commit: treeId(tree), scenario: mode === 'coe' ? 'C' : 'S', manifest: id, link: { rate, rtt }, ...(mode === 'coe' ? { start } : { entry, menuS, save: path.basename(saveFile) }), to: target,
+      tag, run: n, ...(teach ? { teachRun: true } : {}), profile: o.profile, teach: o.teach, tree, commit: treeId(tree), scenario: mode === 'coe' ? 'C' : 'S', manifest: id, link: { rate, rtt }, ...(mode === 'coe' ? { start } : { entry, menuS, save: path.basename(saveFile) }), to: target,
       ...(engineNote ? { engine: engineNote } : {}), wallS: Math.round((Date.now() - t0) / 1000),
       engineStart: mode === 'coe'
         ? { firstFrameS: s1(res.boot?.firstDraw), inWorldS: s1(res.boot?.inWorldAt), toInWorld: docRec && res.boot ? summarize(recs, docRec.t + res.boot.inWorldAt) : null }
@@ -464,22 +638,57 @@ if (MAIN) {
         cellReachedS: cellAt !== null && from !== null ? s1(cellAt - from) : null, steadyS: lt.steadyAt && from !== null ? s1(lt.steadyAt - from) : null, cellAtEnd: P?.cell ?? null,
       },
       frozen: lt.longest ? win(proxyOf(from), proxyOf(lt.longest[1])) : null,
-      ...(mode === 'save' ? { toInWorld: inWorldAt !== null ? win(proxyOf(from), proxyOf(inWorldAt)) : null, menu: win(proxyOf(res.markAt - menuS * 1000), proxyOf(res.markAt)) } : {}),
+      ...(mode === 'save' ? { toInWorld, menu: win(proxyOf(res.markAt - menuS * 1000), proxyOf(res.markAt)) } : {}),
       toSteady: lt.steadyAt ? win(proxyOf(from), proxyOf(lt.steadyAt)) : null,
-      streamfs: { load: delta(res.before, res.afterLoad), toEnd: delta(res.before, res.after) },
+      streamfs: { load: loadDelta, toEnd: delta(res.before, res.after) },
+      // (stage 3: the hint, the places the server knew, what the page fetched before the key, the load after it)
+      ...(mode === 'save' ? { stage3: {
+        hint: { menu: res.store0?.placeHint ?? null, end: res.store1?.placeHint ?? null },
+        places: known,
+        predicted: res.predicted ?? null, placeBg: res.before?.net?.bgBy?.place ?? null,
+        prefetch: from !== null ? prefetchReport(recs, { docT: docRec?.t ?? 0, menuT: proxyOf(res.boot?.menuAt), keyT: proxyOf(from), placePaths: known?.paths ?? null }) : null,
+        load: {
+          keyToWorldS: inWorldAt !== null ? s1(inWorldAt - from) : null, serialReads: toInWorld?.demand.count ?? null, serialWaitMs: toInWorld?.demand.waitMs ?? null, want: toInWorld?.want ?? null,
+          waits: loadDelta?.wantWaits ?? null, waitMs: loadDelta?.wantWaitMs ?? null, timeouts: loadDelta?.wantTimeouts ?? null, announced: loadDelta?.wants ?? null,
+        },
+      } } : {}),
       store: { before: res.store0, after: res.store1 }, all: summarize(recs), faults: res.faults, notes,
     };
-    fs.appendFileSync(outFile, JSON.stringify(row) + '\n');
-    // (kept: the logs, small; the profile copy and the server's copies removed)
+    if (teach) fs.writeFileSync(path.join(dir, 'row.json'), JSON.stringify(row) + '\n');
+    else fs.appendFileSync(outFile, JSON.stringify(row) + '\n');
+    // (kept: the logs, small; the profile and the server's copies removed — a teach run's learn directory is not here)
     for (const d of ['profile', 'learn', 'telemetry']) fs.rmSync(path.join(dir, d), { recursive: true, force: true });
     execFileSync('gzip', ['-f', path.join(dir, 'proxy.jsonl')]);
-    const w = row.frozen, l = row.toInWorld ?? row.toSteady;
-    log(`${tag} #${n} (${row.scenario}): engine ${mode === 'coe' ? `in world ${row.engineStart.inWorldS}` : `menu ${row.engineStart.menuS}`} s; ${mode === 'save' ? `in world ${row.load.inWorldS} s after the key, ` : ''}frozen ${row.load.frozenMs} ms, steady ${row.load.steadyS} s, cell ${row.load.cellAtEnd}; frozen: demand ${w?.demand.count} reads, ${w?.demand.decodedMB} MB decoded, spacing p50 ${w?.demand.spacing.p50} ms; background ${w?.backgroundMB} MB ${JSON.stringify(w?.backgroundByCategory ?? {})}; ${mode === 'save' ? 'to the world' : 'to steady'}: demand ${l?.demand.count}, background ${l?.backgroundMB} MB${notes.length ? ' — ' + notes.join('; ') : ''}`);
+    const w = row.frozen, l = row.toInWorld ?? row.toSteady, st3 = row.stage3;
+    if (st3) log(`  stage 3: hint ${st3.hint.menu} -> ${st3.hint.end}; places ${st3.places ? `${st3.places.places} (target ${st3.places.target} records, ${st3.places.targetMB} MB)` : 'none'}; predicted ${JSON.stringify(st3.predicted)}; before the key: place set ${st3.prefetch?.place.count} requests (${st3.prefetch?.place.wireMB} MB wire, ${st3.prefetch?.inMenu?.wireMB ?? '?'} in the menu, first ${st3.prefetch?.place.firstS} s, last end ${st3.prefetch?.place.lastEndS} s = ${st3.prefetch?.place.lastEndToKeyS} s from the key, ${st3.prefetch?.place.inFlightAtKey} in flight), announced ${st3.prefetch?.want.count}; load: ${st3.load.keyToWorldS} s, ${st3.load.serialReads} serial reads, want ${st3.load.want?.count} (${st3.load.want?.wireMB} MB), ${st3.load.waits} waits ${st3.load.waitMs} ms, ${st3.load.timeouts} timeouts`);
+    log(`${tag} ${teach ? 'teach ' : ''}#${n} (${row.scenario}): engine ${mode === 'coe' ? `in world ${row.engineStart.inWorldS}` : `menu ${row.engineStart.menuS}`} s; ${mode === 'save' ? `in world ${row.load.inWorldS} s after the key, ` : ''}frozen ${row.load.frozenMs} ms, steady ${row.load.steadyS} s, cell ${row.load.cellAtEnd}; frozen: demand ${w?.demand.count} reads, ${w?.demand.decodedMB} MB decoded, spacing p50 ${w?.demand.spacing.p50} ms; background ${w?.backgroundMB} MB ${JSON.stringify(w?.backgroundByCategory ?? {})}; ${mode === 'save' ? 'to the world' : 'to steady'}: demand ${l?.demand.count}, background ${l?.backgroundMB} MB${notes.length ? ' — ' + notes.join('; ') : ''}`);
     return row;
   }
 
   fs.mkdirSync(scratch, { recursive: true });
-  if (!fs.existsSync(warmDir)) await warmUp();
-  if (mode === 'save' && (args.includes('--make-save') || !fs.existsSync(saveFile + '.json'))) await makeSave();
-  if (!args.includes('--warm-only')) for (let n = 1; n <= runs; n++) await measured(n);
+  if (o.profile === 'warm' && !fs.existsSync(warmDir)) await warmUp();
+  if (mode === 'save' && (o.makeSave || !fs.existsSync(saveFile + '.json'))) await makeSave();
+  if (!o.warmOnly) {
+    // (taught first: one learn copy for the invocation, the measured runs start from copies of it; removed at the end)
+    let learnFrom = path.join(pristine, 'learn'), teachDir = null;
+    try {
+      if (o.teach > 0) {
+        teachDir = path.join(scratch, 'teach', `${tag}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+        fs.mkdirSync(teachDir, { recursive: true });
+        learnFrom = path.join(teachDir, 'learn');
+        execFileSync('cp', ['-a', path.join(pristine, 'learn'), learnFrom]);
+        for (let n = 1; n <= o.teach; n++) await measured(n, { teach: learnFrom });
+        const places = placesSummary(learnFrom, id, o.place);
+        log(`taught ${o.teach}: ${places ? `${places.file} ${places.bytes} bytes, ${places.places} places, ${o.place}: ${places.target} units` : `no places-${id}.json in the learn copy (the tree's server learns none?)`}`);
+      }
+      for (let n = 1; n <= runs; n++) await measured(n, { learnFrom });
+    } finally {
+      // (the teach copy's places file kept beside its runs, small; the learn copy itself removed)
+      if (teachDir) {
+        const pf = path.join(learnFrom, `places-${id}.json`);
+        if (fs.existsSync(pf)) fs.copyFileSync(pf, path.join(teachDir, path.basename(pf)));
+        fs.rmSync(learnFrom, { recursive: true, force: true });
+      }
+    }
+  }
 }

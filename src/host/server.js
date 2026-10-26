@@ -404,6 +404,12 @@ export function createServer(opts = {}) {
     else for (const c of launches.get(name)?.values() ?? []) c.stale = true;
     if (!learnFile(name)) return;
     learnDirty.add(name);
+    armLearnTimer();
+  };
+  // (one timer writes every learned file of the versions changed since the last write: the orders, phases and marks of
+  // learnDirty, the places of placesDirty — placeAnnounce)
+  let placesDirty = new Set();
+  const armLearnTimer = () => {
     learnTimer ??= setTimeout(() => {
       learnTimer = null;
       for (const n of learnDirty) {
@@ -415,6 +421,8 @@ export function createServer(opts = {}) {
         if (pm?.marks) try { fs.writeFileSync(pf + '.tmp', JSON.stringify({ marks: pm.marks, ...(Object.keys(pm.by).length ? { by: pm.by } : {}) })); fs.renameSync(pf + '.tmp', pf); } catch { /* next time */ }
       }
       learnDirty = new Set();
+      const dirty = placesDirty; placesDirty = new Set();
+      for (const n of dirty) placesWrite(n);
     }, opts.learnWriteMs ?? 20000);
     learnTimer.unref?.(); // (does not keep a finished process alive)
   };
@@ -676,9 +684,10 @@ export function createServer(opts = {}) {
     };
   };
   /** A learned order, its launch set first (the entries flagged PRE_PLAYABLE), each part in its order: what is pinned. */
-  const launchFirstOrder = (list) => { const first = [], rest = []; for (const e of list) ((e[4] & PRE_PLAYABLE) !== 0 ? first : rest).push(e); return first.concat(rest); };
-  const brSeedUnits = function* (man, list) {
-    const at = unitFile(man), lights = new Set();
+  const launchFirst = (list) => { const first = [], rest = []; for (const e of list) ((e[4] & PRE_PLAYABLE) !== 0 ? first : rest).push(e); return [first, rest]; };
+  // (`lights`: the light copies yielded already — one walk's, in parts)
+  const brSeedUnits = function* (man, list, lights = new Set()) {
+    const at = unitFile(man);
     for (const [rel, block, mask] of list) {
       // (a light copy is read on a link that is not fast, by pieces: its pieces — one block when it is one piece)
       if (man.lightCopies && !rel.startsWith(LIGHT_DIR + '/') && !lights.has(rel)) {
@@ -695,6 +704,243 @@ export function createServer(opts = {}) {
     // (not the blocks learned by pieces whole as well, the shape a fast link asks for them — measured, Half-Life on a
     // fast link: 59 % of the bytes it asked: 1473 of Morrowind's 1830 learned blocks are known by pieces, which would
     // make its order about three times the brotli work; a fast link's misses ask for them, made after the launch sets)
+  };
+  /**
+   * Places learned from announcements (docs/slow-network.md "Places learned from announcements"): what an engine said a
+   * place's load reads (its announced reads, GameData.want — the engine's own computation, exact and complete, unlike
+   * the demand reads a session happened to wait for), per version, game language and place, so that a page fetches the
+   * place a save will load while the player is still in the menu. POST /api/places/<manifest> { session, place, kind,
+   * lang?, records: [[path, start, end]] } (a batch's ranges: tree paths, end -1 to the file's end) — only for a runtime
+   * whose engine announces (PLACE_RUNTIMES) —; GET /api/places/<manifest>?place=<key>[&lang=] → { place, lang, sessions,
+   * at, bytes, list: [[path, start, end, kind]] }: its meshes, then terrain, then textures, each kind in the order the
+   * last session announced it, then what earlier sessions announced and it did not, cut at placeServeBytes. Without
+   * `place`: the places known, most recently announced first.
+   * Who announced is the reporter, as for the profile seeds (seedReporter: one client network — one localhost session),
+   * not the session string a page picks: a place's `n` counts its reporters, a generation is a reporter's session.
+   * A place's records are the union of its generations' (an engine's list varies a little between loads: the NPCs met,
+   * the page's own bytes it leaves out), bounded with recency: a record no generation of the last PLACE_KEEP announced is
+   * dropped — once those came from two reporters at least (one network's sessions do not wipe what others taught) —,
+   * then the oldest past PLACE_RECORDS records or PLACE_BYTES bytes. Bounds: PLACES_MAX places a version, PLACES_RECORDS
+   * records a version and PLACES_RECORDS_ALL in all (memory, and the file written at each learn tick: a place out —
+   * the fewest reporters first, then the least recently announced: a flood of one-report places evicts its own kind
+   * before a place several players taught), PLACE_NEW_HOUR places a reporter makes in an hour, PLACE_REPORT records a
+   * report (and PLACE_BODY bytes of body), a place key of up to 64 printable characters, a kind of PLACE_KINDS, paths of
+   * the version's tree only (a light copy's path is its file's whole: the page picks light or real by its link). Kept
+   * in opts.learnDir/places-<manifest>.json (armLearnTimer, written in slices: placesWrite).
+   */
+  const PLACE_KINDS = ['meshes', 'terrain', 'textures'], PLACES_MAX = opts.placesMax ?? 2048, PLACE_RECORDS = opts.placeRecords ?? 4096;
+  // (sized for real use — about 200 places of ~1000 records a version: Ald'ruhn's load names 790 —; a record's memory is
+  // a few hundred bytes, the version's file ~60 B a record)
+  const PLACES_RECORDS = opts.placesRecords ?? 200000, PLACES_RECORDS_ALL = opts.placesRecordsAll ?? 400000;
+  const PLACE_RUNTIMES = new Set(opts.placeRuntimes ?? ['openmw']), PLACE_NEW_HOUR = opts.placeNewPerHour ?? 240;
+  // (PLACE_BYTES: the files' own bytes — Ald'ruhn's load names 790 records of 134 MB with a mod's textures, 8 MB on a slow
+  // link that takes their light copies —: a bound against nonsense, not a budget; a list served is cut at PLACE_SERVE
+  // times the version's median place, PLACE_SERVE_MIN at least: what one reporter added past what places weigh, out)
+  const PLACE_BYTES = 512 * 1024 * 1024, PLACE_KEEP = 4, PLACE_REPORT = 8192, PLACE_BODY = 2 * 1024 * 1024, PLACES_SEED = 32;
+  const PLACE_SERVE = 4, PLACE_SERVE_MIN = opts.placeServeMin ?? 64 * 1024 * 1024, PLACE_HIST = 32, PLACE_BY = 16;
+  const placeName = (p) => (typeof p === 'string' && p.length > 0 && p.length <= 64 && !/[\x00-\x1f\x7f]/.test(p) ? p : null);
+  const places = new Map(); // manifest -> Map(`${lang}\0${place}` -> P), the least recently announced first
+  const placeCounts = new Map(); // manifest -> records held (placesOf's map), for the bounds
+  const placeMakers = new Map(); // reporter -> { t (the hour's start), n (places made in it) }, the least recent first
+  const placesWriting = new Set(); // manifests whose file is being written (placesWrite)
+  const placesFile = (name) => opts.learnDir && path.join(opts.learnDir, `places-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  const placeBytes = (P) => { let b = 0; for (const r of P.recs.values()) b += r[3] - r[2]; return b; };
+  /**
+   * A version's places, read from its file the first time. P: { lang ('' when not told), place, at (last announced,
+   * ms since the epoch), n (reporters that announced it), by (the last PLACE_BY of them), gen (its generations' count,
+   * each record's last), hist ([first gen, last gen, reporter]: the last PLACE_HIST runs of one reporter's generations), sid (the last generation's reporter
+   * and session, not kept: its batches of one load are one generation), bytes (its records' bytes), recs:
+   * Map(`${kind}\0${path}\0${start}\0${end}` -> R) }, R: [kind index, path, start, end, gen, ord (its rank in that
+   * generation's announcements)].
+   */
+  const placesOf = (name) => {
+    let m = places.get(name);
+    if (!m) {
+      m = new Map(); places.set(name, m);
+      const f = placesFile(name);
+      let count = 0;
+      if (f) try {
+        for (const [lang, place, at, n, gen, recs, hist, by] of JSON.parse(fs.readFileSync(f, 'utf8'))) {
+          if (typeof lang !== 'string' || !placeName(place) || !Array.isArray(recs) || m.size >= PLACES_MAX || count >= PLACES_RECORDS) continue;
+          const P = { lang, place, at: Number(at) || 0, n: Number(n) || 1, gen: Number(gen) || 1, sid: null, recs: new Map(),
+            hist: Array.isArray(hist) ? hist.filter((h) => Array.isArray(h) && Number.isInteger(h[0]) && Number.isInteger(h[1]) && typeof h[2] === 'string').slice(-PLACE_HIST) : [],
+            by: Array.isArray(by) ? by.filter((x) => typeof x === 'string').slice(-PLACE_BY) : [] };
+          for (const r of recs.slice(0, Math.min(PLACE_RECORDS, PLACES_RECORDS - count))) if (Array.isArray(r) && PLACE_KINDS[r[0]] && typeof r[1] === 'string') P.recs.set(`${r[0]}\0${r[1]}\0${r[2]}\0${r[3]}`, r);
+          P.bytes = placeBytes(P); count += P.recs.size;
+          m.set(`${lang}\0${place}`, P);
+        }
+      } catch { /* none yet */ }
+      placeCounts.set(name, count);
+    }
+    return m;
+  };
+  /**
+   * Version `name`'s places written to its file: serialized a slice of places at a time between the server's other
+   * work (a version near its bounds is a few MB of JSON), written asynchronously; one write at a time a version (one
+   * asked meanwhile: the next learn tick's).
+   */
+  const placesWrite = async (name) => {
+    const f = placesFile(name), m = places.get(name); if (!f || !m) return;
+    if (placesWriting.has(name)) { placesDirty.add(name); armLearnTimer(); return; }
+    placesWriting.add(name);
+    try {
+      const parts = [], all = [...m.values()];
+      for (let i = 0; i < all.length; i++) {
+        const P = all[i];
+        parts.push(JSON.stringify([P.lang, P.place, P.at, P.n, P.gen, [...P.recs.values()], P.hist, P.by]));
+        if (i % 64 === 63) await new Promise((r) => setImmediate(r));
+      }
+      await fs.promises.writeFile(f + '.tmp', '[' + parts.join(',') + ']');
+      await fs.promises.rename(f + '.tmp', f);
+    } catch { /* next time */ } finally { placesWriting.delete(name); }
+  };
+  /** A place's records in its list's order: by kind, the latest generation's first in their order, then the older ones'. */
+  const placeOrder = (P) => [...P.recs.values()].sort((a, b) => a[0] - b[0] || b[4] - a[4] || a[5] - b[5]);
+  /** The place to let go first among `m`'s (a version's map) — the fewest reporters, then the least recently announced — not `keep`. */
+  const placeVictim = (m, keep) => {
+    let v = null;
+    for (const P of m.values()) if (P !== keep && (!v || P.n < v.n || (P.n === v.n && P.at < v.at))) v = P;
+    return v;
+  };
+  /** Places let go until version `name` and all of them are within their bounds (`keep`: the place just announced, last). */
+  const placesBound = (name, keep) => {
+    const m = places.get(name), total = () => { let t = 0; for (const c of placeCounts.values()) t += c; return t; };
+    const drop = (n, M, P) => { M.delete(`${P.lang}\0${P.place}`); placeCounts.set(n, placeCounts.get(n) - P.recs.size); if (placesFile(n)) placesDirty.add(n); };
+    while (m.size > PLACES_MAX || (placeCounts.get(name) > PLACES_RECORDS && m.size > 1)) drop(name, m, placeVictim(m, keep) ?? keep);
+    // (over the bound of all versions: the worst place of any version — the version just announced's last of all)
+    while (total() > PLACES_RECORDS_ALL) {
+      let at = null;
+      const rank = (n, v) => [n === name ? 1 : 0, v.n, v.at];
+      const before = (a, b) => { for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i]; return false; };
+      for (const [n, M] of places) {
+        const v = placeVictim(M, keep);
+        if (v && (!at || before(rank(n, v), rank(at.n, at.v)))) at = { n, M, v };
+      }
+      if (!at) break;
+      drop(at.n, at.M, at.v);
+    }
+  };
+  /** Reporter `who` may make a place (PLACE_NEW_HOUR an hour): counted, true; else false. */
+  const placeMake = (who) => {
+    const now = Date.now();
+    let c = placeMakers.get(who);
+    if (!c || now - c.t > 3600e3) c = { t: now, n: 0 };
+    placeMakers.delete(who); placeMakers.set(who, c);
+    while (placeMakers.size > 4096) placeMakers.delete(placeMakers.keys().next().value);
+    return ++c.n <= PLACE_NEW_HOUR;
+  };
+  /**
+   * Version `name` (`man`): session `sid` of reporter `who` (seedReporter) announced `records` of `kind` for `place`
+   * (game language `lang`, markLang's). Returns the records kept of the report (the others: not in the tree, malformed),
+   * null for a malformed report, -1 when the reporter made too many places this hour.
+   */
+  const placeAnnounce = (name, man, sid, who, place, kind, lang, records) => {
+    const k = PLACE_KINDS.indexOf(kind);
+    if (typeof sid !== 'string' || !sid || sid.length > 40 || !placeName(place) || k < 0 || !Array.isArray(records)) return null;
+    who = typeof who === 'string' && who ? who : 's:' + sid;
+    const tree = gameTree(name, man), ok = [];
+    for (const r of records.slice(0, PLACE_REPORT)) {
+      if (!Array.isArray(r) || typeof r[0] !== 'string' || r[0].length > 512) continue;
+      let [rel, start, end] = r;
+      // (a light copy's path: its file, whole — the light copy's ranges are not the file's)
+      if (rel.startsWith(LIGHT_DIR + '/')) { rel = rel.slice(LIGHT_DIR.length + 1); start = 0; end = -1; }
+      const size = rel.split('/')[0] === LIGHT_DIR ? null : treeFileSize(tree, rel);
+      if (size === null || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= size) continue;
+      if (end === -1) end = size;
+      if (end <= start || end > size) continue;
+      ok.push([rel, start, end]);
+    }
+    netStats.places.records += ok.length; netStats.places.dropped += Math.min(records.length, PLACE_REPORT) - ok.length;
+    if (!ok.length) return 0; // (nothing of the tree: no place made of it, no session counted)
+    const m = placesOf(name), key = `${lang ?? ''}\0${place}`, now = Date.now();
+    let P = m.get(key);
+    if (!P) {
+      if (!placeMake(who)) return -1;
+      P = { lang: lang ?? '', place, at: now, n: 0, by: [], gen: 0, hist: [], sid: null, bytes: 0, recs: new Map() };
+    }
+    m.delete(key); m.set(key, P); // (the most recently announced last)
+    const before = P.recs.size;
+    // (a new session's load: a generation — its batches of the same load, and of any later visit, are one; its
+    // reporter counted once whatever the sessions it claims)
+    const gid = `${who}\0${sid}`;
+    if (P.sid !== gid) {
+      P.sid = gid; P.gen++; P.ord = 0;
+      const run = P.hist[P.hist.length - 1];
+      if (run?.[2] === who) run[1] = P.gen;
+      else { P.hist.push([P.gen, P.gen, who]); if (P.hist.length > PLACE_HIST) P.hist.splice(0, P.hist.length - PLACE_HIST); }
+      if (!P.by.includes(who)) { P.n++; P.by.push(who); if (P.by.length > PLACE_BY) P.by.shift(); }
+    }
+    P.at = now;
+    for (const [rel, start, end] of ok) {
+      const rk = `${k}\0${rel}\0${start}\0${end}`, r = P.recs.get(rk);
+      if (r && r[4] === P.gen) continue; // (announced again in the same generation: its first rank)
+      P.recs.delete(rk); P.recs.set(rk, [k, rel, start, end, P.gen, P.ord = (P.ord ?? 0) + 1]);
+    }
+    // (bounded with recency: what its last PLACE_KEEP generations did not announce out — when those came from two
+    // reporters at least: the runs ending past the record's generation; runs out of hist are past 32 runs of
+    // alternating reporters, the ones kept tell already)
+    const since = (g) => { const s = new Set(); for (const [, last, hw] of P.hist) if (last > g) s.add(hw); return s.size; };
+    for (const [rk, r] of P.recs) if (r[4] <= P.gen - PLACE_KEEP && since(r[4]) >= 2) P.recs.delete(rk);
+    if (P.recs.size > PLACE_RECORDS || placeBytes(P) > PLACE_BYTES) {
+      const keep = new Set(); let bytes = 0;
+      // (the most recent generations' first, in their order — kinds not before recency: a bound drops the oldest)
+      for (const r of [...P.recs.values()].sort((a, b) => b[4] - a[4] || a[0] - b[0] || a[5] - b[5])) {
+        if (keep.size >= PLACE_RECORDS || bytes + r[3] - r[2] > PLACE_BYTES) break;
+        keep.add(r); bytes += r[3] - r[2];
+      }
+      for (const [rk, r] of P.recs) if (!keep.has(r)) P.recs.delete(rk);
+    }
+    P.bytes = placeBytes(P);
+    placeCounts.set(name, (placeCounts.get(name) ?? 0) + P.recs.size - before);
+    placesBound(name, P);
+    if (placesFile(name)) { placesDirty.add(name); armLearnTimer(); }
+    return ok.length;
+  };
+  /**
+   * Version `name`'s place `place` for game language `lang` (markLang's; another language's when this one has none —
+   * an exterior's files are mostly the same —, the most recent), its records checked against the version's tree again
+   * (a release's files may have changed since), cut at PLACE_SERVE times the version's median place (PLACE_SERVE_MIN at
+   * least, PLACE_BYTES at most: a place one reporter swelled is not all fetched by every player predicted there), or null.
+   */
+  const placeList = (name, man, place, lang) => {
+    const m = placesOf(name);
+    let P = m.get(`${lang ?? ''}\0${place}`) ?? null;
+    if (!P) for (const Q of m.values()) if (Q.place === place) P = Q; // (the most recent last)
+    if (!P) return null;
+    const sizes = [...m.values()].map((Q) => Q.bytes ?? 0).sort((a, b) => a - b), median = sizes[sizes.length >> 1] ?? 0;
+    const cap = Math.min(PLACE_BYTES, Math.max(PLACE_SERVE_MIN, PLACE_SERVE * median));
+    const tree = gameTree(name, man), list = []; let bytes = 0;
+    for (const [k, rel, start, end] of placeOrder(P)) {
+      const size = treeFileSize(tree, rel);
+      if (size === null || start >= size) continue;
+      const e = Math.min(end, size);
+      if (bytes + e - start > cap) break;
+      list.push([rel, start, e, PLACE_KINDS[k]]); bytes += e - start;
+    }
+    return { place: P.place, lang: P.lang || null, sessions: P.n, at: P.at, bytes, list };
+  };
+  /**
+   * The units the announced reads of a version's most announced places ask (PLACES_SEED of them, the most sessions
+   * first): each range as HttpBackend.wantRange asks it with none of it here — a block the range covers whole as the
+   * block, else its pieces —, a file's light copy first (whole: a texture is read whole) when it has one.
+   */
+  const placeSeedUnits = function* (name, man) {
+    const at = unitFile(man), m = places.has(name) || (placesFile(name) && fs.existsSync(placesFile(name))) ? placesOf(name) : null;
+    if (!m?.size) return;
+    const ranges = function* (f, start, end) {
+      for (let b = Math.floor(start / LEARN_BLOCK); b * LEARN_BLOCK < end && b * LEARN_BLOCK < f.size; b++) {
+        const b0 = b * LEARN_BLOCK, b1 = Math.min(f.size, b0 + LEARN_BLOCK), a = Math.max(start, b0), z = Math.min(end, b1);
+        if (a === b0 && z === b1) { yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'b', index: b } }; continue; }
+        for (let c = Math.floor(a / LEARN_CHUNK); c * LEARN_CHUNK < z; c++) yield { file: f.file, st: f.st, light: f.light, unit: unitOf(c * LEARN_CHUNK, Math.min(f.size, (c + 1) * LEARN_CHUNK), f.size) };
+      }
+    };
+    const top = [...m.values()].sort((a, b) => b.n - a.n || b.at - a.at).slice(0, PLACES_SEED);
+    for (const P of top) for (const [, rel, start, end] of placeOrder(P)) {
+      const l = man.lightCopies ? at(`${LIGHT_DIR}/${rel}`) : null;
+      if (l) yield* ranges(l, 0, l.size);
+      const f = at(rel);
+      if (f) yield* ranges(f, start, Math.min(end, f.size));
+    }
   };
   /**
    * How much of each version's launch set the precompressed units cover, in the shapes the links ask for it
@@ -733,7 +979,11 @@ export function createServer(opts = {}) {
     sources: () => [...manifests].filter(([name]) => learnFile(name) && fs.existsSync(learnFile(name)))
       .map(([name, man]) => { let l = null; try { l = ownLaunchOf(name, man); } catch { /* none */ } return [name, man, l ? l.wire + (man.lightCopies ? l.lightWire : 0) : null]; })
       .sort(([, a, wa], [, b, wb]) => (wa === null) - (wb === null) || (runtimeOf(a) === 'win32') - (runtimeOf(b) === 'win32'))
-      .map(([name, man, want]) => ({ name, want, units: () => brSeedUnits(man, launchFirstOrder(prefetchList(name))) })),
+      // (its launch set, then the units of its most announced places, then the rest of its order)
+      .map(([name, man, want]) => ({ name, want, units: function* () {
+        const [first, rest] = launchFirst(prefetchList(name)), lights = new Set();
+        yield* brSeedUnits(man, first, lights); yield* placeSeedUnits(name, man); yield* brSeedUnits(man, rest, lights);
+      } })),
   }) : null;
   /** The home's light covers (light-covers.js): opts.coverDir, none without it. */
   const covers = opts.coverDir ? lightCovers({ dir: opts.coverDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
@@ -1068,7 +1318,7 @@ export function createServer(opts = {}) {
   // (testing: opts.netTrace, a file — one line per compressed range answered: start s, duration s, kind, file, range, bytes sent,
   // and how the units saw it: hit / raw / miss / none, pcm1 for an audio unit)
   const netTrace = opts.netTrace ? (line) => { try { fs.appendFileSync(opts.netTrace, line + '\n'); } catch { /* no trace */ } } : null;
-  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, brHits: 0, joined: 0, demand: { requests: 0, sent: 0, ms: 0 }, want: { requests: 0, sent: 0, ms: 0, aborted: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
+  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, brHits: 0, joined: 0, demand: { requests: 0, sent: 0, ms: 0 }, want: { requests: 0, sent: 0, ms: 0, aborted: 0 }, places: { posts: 0, records: 0, dropped: 0, gets: 0, found: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
   const encodedCache = new Map(); let encodedBytes = 0;
   const ENCODED_CACHE_MAX = opts.encodedCacheBytes ?? 256 * 1024 * 1024;
@@ -1472,6 +1722,38 @@ export function createServer(opts = {}) {
         // (its own order, then what other versions' sessions read of the files it shares with them: borrowedFor)
         const lang = markLang(man, url.searchParams.get('lang')), own = prefetchList(m[1], lang);
         return send(res, 200, JSON.stringify(own.concat(borrowedFor(m[1], man, own, url.searchParams.get('lang')))), { 'Content-Type': 'application/json' });
+      }
+      m = /^\/api\/places\/([^/]+)$/.exec(p);
+      if (m) {
+        const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
+        // a page tells what its engine announced for a place's load: { session, place, kind, lang?, records: [[path,
+        // start, end]] } (placeAnnounce)
+        if (req.method === 'POST') {
+          // (only a runtime whose engine announces its loads: the others' places would be anyone's invention)
+          if (!PLACE_RUNTIMES.has(runtimeOf(man))) { req.resume(); return send(res, 404, 'no places for this runtime'); }
+          let body = '', size = 0;
+          req.on('data', (d) => { size += d.length; if (size <= PLACE_BODY) body += d; });
+          req.on('end', () => {
+            if (size > PLACE_BODY) return send(res, 413, 'too large');
+            let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+            const kept = placeAnnounce(m[1], man, rec?.session, seedReporter(req, rec?.session), rec?.place, rec?.kind, markLang(man, rec?.lang), rec?.records);
+            if (kept === null) return send(res, 400, 'bad report');
+            if (kept === -1) return send(res, 429, 'too many places');
+            netStats.places.posts++;
+            send(res, 200, JSON.stringify({ kept }), { 'Content-Type': 'application/json' });
+          });
+          return;
+        }
+        const lang = markLang(man, url.searchParams.get('lang')), place = url.searchParams.get('place');
+        if (place === null) {
+          // (the places known: [place, lang, sessions, at, records], the most recently announced first)
+          const all = [...placesOf(m[1]).values()].reverse().map((P) => [P.place, P.lang || null, P.n, P.at, P.recs.size]);
+          return send(res, 200, JSON.stringify(all), { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        }
+        netStats.places.gets++;
+        const out = placeName(place) ? placeList(m[1], man, place, lang) : null;
+        if (out) netStats.places.found++;
+        return send(res, 200, JSON.stringify(out ?? { place, lang, sessions: 0, at: 0, bytes: 0, list: [] }), { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       }
       if (p === '/api/netstats') {
         // (the server's own state too: its memory and what its caches hold — a long-running server's growth seen)

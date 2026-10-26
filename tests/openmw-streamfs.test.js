@@ -78,3 +78,98 @@ test('announced reads (orthrosWillRead / orthrosReadWait): engine paths to the g
     assert.equal(data.snapshot().wantTimeouts, 1);
   } finally { ctx.StreamFS?.data()?.close?.(); globalThis.Worker = RealWorker; }
 });
+
+// Anticipated places (docs/openmw.md "Anticipated places"): each announced batch posted to the server's learned places
+// with its place (the files themselves: tree paths and ranges), the place remembered; once the saves are readable the
+// save the player most likely loads is parsed (save-place.js), its place's learned set asked of the server and handed
+// to the game data at the place's priority (GameData.want prio 'place': the worker's wantPlace, no wait window).
+test('anticipated places: announced batches learned (POST /api/places), the predicted save\'s place fetched at the place\'s priority, saves written remembered', async () => {
+  const workers = [], RealWorker = globalThis.Worker;
+  globalThis.Worker = class { constructor() { this.sent = []; workers.push(this); } postMessage(m) { this.sent.push(m); } };
+  const { parseSave } = await import('../src/ports/openmw/save-place.js');
+  // (a save as the engine writes one: TES3 FORM 38, SAVE, PLAY with the player's cell RefId before LKEP)
+  const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; }, i32 = (n) => { const b = Buffer.alloc(4); b.writeInt32LE(n); return b; };
+  const sub = (n, d) => Buffer.concat([Buffer.from(n), u32(d.length), d]);
+  const rec = (n, ...s) => { const body = Buffer.concat(s); return Buffer.concat([Buffer.from(n), u32(body.length), u32(0), u32(0), body]); };
+  const f64 = (n) => { const b = Buffer.alloc(8); b.writeDoubleLE(n); return b; };
+  const save = (cell, time) => new Uint8Array(Buffer.concat([rec('TES3', sub('FORM', u32(38)), sub('HEDR', Buffer.alloc(300))),
+    rec('SAVE', sub('PLNA', Buffer.from('player')), sub('TIME', f64(time))), rec('PLAY', sub('NAME', cell), sub('LKEP', Buffer.alloc(8)))]));
+  const ext = (x, y) => Buffer.concat([Buffer.from([6]), i32(x), i32(y)]), int = (s) => Buffer.concat([Buffer.from([2]), Buffer.from(s)]);
+  assert.equal(parseSave(save(ext(-2, 6), 1)).place, '-2,6');
+  // (the engine's file system: the mounted files' nodes, and the saves folders)
+  const nodes = new Map(), saves = new Map([['/userdata/saves/player/Quicksave.omwsave', { bytes: save(ext(-2, 6), 30), mtime: 2000 }], ['/userdata/saves/player/old.omwsave', { bytes: save(int('Vivec, Arena'), 90), mtime: 1000 }]]);
+  const FS = {
+    ErrnoError: class extends Error { constructor(n) { super(`errno ${n}`); this.errno = n; } },
+    mkdirTree() {},
+    createFile(dir, name) { const n = { stream_ops: {}, node_ops: {} }; nodes.set(`${dir}/${name}`, n); return n; },
+    lookupPath(p) { const n = nodes.get(p); if (!n) throw new FS.ErrnoError(44); return { node: n }; },
+    readdir(d) {
+      const out = new Set();
+      for (const p of saves.keys()) if (p.startsWith(d + '/')) out.add(p.slice(d.length + 1).split('/')[0]);
+      if (!out.size) throw new FS.ErrnoError(44);
+      return ['.', '..', ...out];
+    },
+    stat(p) { return { mtime: new Date(saves.get(p)?.mtime ?? 0) }; },
+    readFile(p) { return saves.get(p).bytes; },
+  };
+  const store = new Map(), localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
+  const calls = [], intervals = [];
+  let places = [['Meshes/x/a.nif', 0, 9000], ['Morrowind.bsa', 1048576, 1118576], { path: 'Textures/t.dds' }, ['nope.nif', 0, -1]];
+  const fetch = async (url, init = {}) => { calls.push({ url, init }); return { ok: true, json: async () => places }; };
+  const ctx = vm.createContext({
+    console, URL, Promise, Map, WeakMap, Math, Object, Error, Number, String, JSON, Array, queueMicrotask, decodeURIComponent, encodeURIComponent, FS, fetch, localStorage,
+    self: { crossOriginIsolated: true }, location: { pathname: '/ports/openmw/morrowind-goty-en/app/index.html', href: 'https://o.test/ports/openmw/morrowind-goty-en/app/index.html', origin: 'https://o.test' },
+    setInterval: (f) => { intervals.push(f); return intervals.length; }, clearInterval() {},
+    __idbfsReady: Promise.resolve(), performance, Module: {},
+  });
+  ctx.window = ctx; ctx.globalThis = ctx; ctx.window.parent = ctx;
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  try {
+    vm.runInContext(SRC, ctx, { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER });
+    for (let i = 0; i < 50; i++) { try { ctx.StreamFS.init(); break; } catch (e) { if (!/not loaded yet/.test(e.message)) throw e; await tick(); } }
+    const w = workers[0];
+    const tree = { dirs: { Meshes: { dirs: { x: { files: { 'a.nif': { size: 9000 }, 'b.nif': { size: 9000 } } } } }, Textures: { files: { 't.dds': { size: 40000, light: 9000 } } } }, files: { 'Morrowind.bsa': { size: 5000000, mtime: 1 } } };
+    w.onmessage({ data: { ready: { trees: { 'morrowind-goty-en': tree }, kept: {}, manifest: {}, real: [] } } });
+    for (let i = 0; i < 50 && !calls.length; i++) await tick();
+    await tick();
+    // (the engine still booting — no first frame —: the set asked of the server, not fetched yet)
+    assert.ok(!w.sent.some((m) => m.wantPlace), 'not while the engine boots');
+    ctx.Module.__omwRunning = false; // (the engine's first frame)
+    for (let i = 0; i < 50 && !w.sent.some((m) => m.wantPlace); i++) { for (const f of intervals) f(); await tick(); }
+    // (no hint: the newest save — Quicksave at -2,6 — its place's learned set asked, handed to the worker at the place's priority)
+    assert.deepEqual(calls.map((c) => c.url), ['/api/places/morrowind-goty-en?place=-2%2C6']);
+    const sent = w.sent.find((m) => m.wantPlace).wantPlace;
+    assert.equal(sent.label, 'place:-2,6');
+    assert.deepEqual(sent.list.slice(0, 2), [['morrowind-goty-en', 'Meshes/x/a.nif', 0, 9000], ['morrowind-goty-en', 'Morrowind.bsa', 1048576, 70000]]);
+    assert.equal(sent.list.length, 3, 'the tree\'s files (an unknown path left out)');
+    assert.ok(/^(Textures\/t\.dds|\.light\/Textures\/t\.dds)$/.test(sent.list[2][1]), 'a texture as this link reads it (its light copy or the file)');
+    assert.ok(!w.sent.some((m) => m.want), 'no announced batch (nothing the engine waits for)');
+    const { atMs, ...predicted } = ctx.StreamFS.place();
+    assert.deepEqual(predicted, { place: '-2,6', why: 'newest', save: '/userdata/saves/player/Quicksave.omwsave', listed: 3, asked: 3 });
+    assert.equal(typeof atMs, 'number');
+    assert.equal(ctx.StreamFS.data().wantSeq, 0, 'outside the wait window');
+
+    // (a load the engine announces: its batch to the learned places — the files themselves, their ranges —, the place remembered)
+    const app = 'https://o.test/ports/openmw/morrowind-goty-en/app/';
+    ctx.StreamFS.mount('/data/Morrowind.bsa', app + 'mwdata/Morrowind.bsa', 5000000);
+    ctx.StreamFS.mount('/data/Meshes/x/b.nif', app + 'mwdata/Meshes/x/b.nif', 9000);
+    ctx.orthrosWillRead(['/data/Morrowind.bsa\x1F2000\x1F100', '/data/Meshes/x/b.nif\x1F0\x1F-1', '/data/elsewhere.nif\x1F0\x1F-1'].join('\x1E'), "meshes:ald'ruhn, temple");
+    const post = calls.find((c) => c.init.method === 'POST');
+    assert.equal(post.url, '/api/places/morrowind-goty-en');
+    const body = JSON.parse(post.init.body);
+    assert.deepEqual({ ...body, session: typeof body.session }, { session: 'string', place: "ald'ruhn, temple", kind: 'meshes', records: [['Morrowind.bsa', 2000, 2100], ['Meshes/x/b.nif', 0, 9000]] });
+    const hint = () => JSON.parse(store.get('orthros.place.morrowind-goty-en'));
+    assert.equal(hint().place, "ald'ruhn, temple");
+    ctx.orthrosWillRead('/data/Meshes/x/b.nif\x1F0\x1F-1', 'nolabel');
+    assert.equal(calls.filter((c) => c.init.method === 'POST').length, 1, 'a batch without a place: not learned');
+    // (the cells walked through after the session's first load: learned, not the hint)
+    ctx.orthrosWillRead('/data/Meshes/x/b.nif\x1F0\x1F-1', 'meshes:-3,-2');
+    assert.equal(calls.filter((c) => c.init.method === 'POST').length, 2);
+    assert.equal(hint().place, "ald'ruhn, temple", 'a later cell: not the hint');
+
+    // (a save the engine writes: its place is the hint)
+    saves.set('/userdata/saves/player/new.omwsave', { bytes: save(int('Balmora, Lucky Lockup'), 5), mtime: 9000 });
+    for (const f of intervals) f();
+    assert.deepEqual(hint(), { place: 'balmora, lucky lockup', at: 9000 }, 'at the save\'s date');
+  } finally { ctx.StreamFS?.data()?.close?.(); globalThis.Worker = RealWorker; }
+});

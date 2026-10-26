@@ -220,3 +220,123 @@ test('while an announced list is missing nothing is fetched ahead from the learn
     stopped = true; F.release(); await pass;
   } finally { stopped = true; F.release(); F.restore(); }
 });
+
+// A predicted place (wantList `prio: 'place'`, docs/openmw.md "Anticipated places"): the set of the place a saved game
+// will load, fetched while the link is idle before the player clicks — background turns below the game's reads, a
+// load's and the launch set, not learned, no wait of the link's, joined (and promoted) by what the game then needs.
+test('a predicted place: background requests (p=1, not learned), a small window, held by a load\'s silence, no wait of the link\'s', async () => {
+  const F = heldFetch();
+  try {
+    const net = mid(), b = new HttpBackend('/game/v/', tree(), { store: new MemBlockStore(), encoded: true, session: 'sess', net });
+    const toks = [net.wait(), net.wait(), net.wait()];
+    const list = Array.from({ length: 10 }, (_, i) => [`m${i}.nif`, 0, -1]);
+    const done = b.wantList(list, { prio: 'place', label: 'place:-2,6' });
+    await settle(3);
+    assert.equal(F.calls.length, 0, 'not forLoad nor urgent: a load holds it');
+    assert.equal(net.waitsNow.size, 3, 'no wait of its own (the engine waits for nothing)');
+    assert.equal(b.wantLists, 0, 'the learned read-ahead is not paused for it');
+    assert.equal(b.stats.placeLabel, 'place:-2,6');
+    assert.equal(b.stats.wantLabel, undefined, 'not an announced load\'s label');
+    for (const t of toks) net.waitEnd(t);
+    for (let i = 0; i < 200 && !F.calls.length; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(F.calls.length > 0 && F.calls.length <= 8, `its window (${F.calls.length} requests)`);
+    assert.ok(F.calls.every((c) => /[?&]p=1/.test(c.url) && !/[?&]w=1/.test(c.url) && !/[?&]s=/.test(c.url)), 'background, not learned');
+    for (let i = 0; i < 40 && F.calls.length < 10; i++) { F.release(); await settle(3); await new Promise((r) => setTimeout(r, 5)); }
+    F.release();
+    assert.deepEqual(await Promise.all(done), list.map(() => true));
+    assert.equal(F.calls.length, 10);
+    assert.equal(b.stats.placeUnits, 10);
+    assert.equal(b.stats.wantUnits, undefined);
+    assert.equal(net.snapshot().bgBy.place.requests, 10, 'counted as the place\'s');
+    assert.deepEqual(await Promise.all(b.wantList(list, { prio: 'place' })), list.map(() => true), 'asked again: here already');
+    assert.equal(F.calls.length, 10);
+  } finally { F.restore(); }
+});
+
+test('a predicted place\'s queued unit that an announced list (or a parked read) needs goes at once, asked once; announced units first', async () => {
+  const F = heldFetch();
+  try {
+    const net = mid(), b = new HttpBackend('/game/v/', tree(), { store: new MemBlockStore(), encoded: true, net });
+    const toks = [net.wait(), net.wait(), net.wait()];
+    const place = b.wantList(Array.from({ length: 10 }, (_, i) => [`m${i}.nif`, 0, -1]), { prio: 'place' });
+    await settle(3);
+    assert.equal(F.calls.length, 0);
+    // (the player loaded that place: the engine announces some of the same files — joined, promoted past the silence)
+    const done = b.wantList([['m7.nif', 0, -1], ['m1.nif', 0, -1], ['m20.nif', 0, -1]]);
+    await settle(3);
+    assert.deepEqual(F.calls.map((c) => c.file).sort(), ['m1.nif', 'm20.nif', 'm7.nif']);
+    // (a parked read of another of the place's units: it goes too)
+    const parked = b.open('m9.nif').prepare(0, 100, true);
+    await settle(3);
+    assert.ok(F.calls.some((c) => c.file === 'm9.nif'));
+    F.release(); await settle(3);
+    assert.deepEqual(await Promise.all(done), [true, true, true]);
+    await parked;
+    for (const t of toks) net.waitEnd(t);
+    for (let i = 0; i < 60 && F.calls.length < 11; i++) { F.release(); await new Promise((r) => setTimeout(r, 10)); }
+    F.release();
+    assert.deepEqual(await Promise.all(place), Array(10).fill(true));
+    for (const f of ['m1.nif', 'm7.nif', 'm9.nif']) assert.equal(F.calls.filter((c) => c.file === f).length, 1, `${f} asked once`);
+    // (announced units waiting for their requests (the window full): a place's wait for them)
+    const a2 = b.wantList(Array.from({ length: 40 }, (_, i) => [`m${10 + i}.nif`, 0, -1]).filter(([p]) => p !== 'm20.nif'));
+    const p2 = b.wantList(Array.from({ length: 5 }, (_, i) => [`m${50 + i}.nif`, 0, -1]), { prio: 'place' });
+    await settle(3);
+    const n0 = F.calls.length;
+    assert.equal(b.placeQ.length, 5, 'queued behind the announced ones');
+    assert.ok(!F.calls.some((c) => /m5[0-4]\./.test(c.file)));
+    let over = false; const all2 = Promise.all([...a2, ...p2]).then((r) => { over = true; return r; });
+    for (let i = 0; i < 300 && !over; i++) { F.release(); await new Promise((r) => setTimeout(r, 5)); }
+    assert.ok((await all2).every(Boolean));
+    const order = F.calls.slice(n0 - 32).map((c) => c.file);
+    assert.ok(order.findIndex((f) => /m5[0-4]\./.test(f)) > order.indexOf('m49.nif'), 'the place\'s after every announced unit');
+  } finally { F.restore(); }
+});
+
+test('a predicted place\'s queued units an announced list names go under the announced window, in its order — not all at once', async () => {
+  const F = heldFetch();
+  try {
+    const net = mid(), b = new HttpBackend('/game/v/', tree(), { store: new MemBlockStore(), encoded: true, net });
+    const tok = net.wait(); // (a load's silence: the place's units stay queued)
+    const files = Array.from({ length: 60 }, (_, i) => [`m${i}.nif`, 0, -1]);
+    const place = b.wantList(files, { prio: 'place' });
+    await settle(3);
+    assert.equal(F.calls.length, 0);
+    // (the player loads that place: the engine announces the same files, the other way round)
+    const announced = [...files].reverse(), done = b.wantList(announced);
+    await settle(3);
+    // (the place's first PLACE_REQUESTS_THIN… — 8 — had their requests already, waiting for their turn: a load's own now,
+    // by the link's rules; the 52 still queued joined the announced queue, the window's 32 of them at once)
+    const ann = F.calls.filter((c) => /[?&]w=1/.test(c.url)), early = F.calls.filter((c) => !/[?&]w=1/.test(c.url));
+    assert.equal(ann.length, 32, 'the window, not the 52 promoted at once');
+    assert.ok(early.length <= 8, `the place's own requests only (${early.length})`);
+    assert.deepEqual(ann.map((c) => c.file), announced.filter(([p]) => !early.some((c) => c.file === p)).slice(0, 32).map(([p]) => p), 'in the announcement\'s order');
+    for (let i = 0; i < 60 && F.calls.length < 60; i++) { F.release(); await settle(2); }
+    F.release();
+    assert.deepEqual(await Promise.all(done), Array(60).fill(true));
+    assert.deepEqual(await Promise.all(place), Array(60).fill(true));
+    assert.equal(F.calls.length, 60, 'each asked once');
+    assert.ok(F.maxInFlight <= 40, `at most the window and the place's own in flight (${F.maxInFlight})`);
+    assert.equal(b.stats.placeAdopted, 60 - early.length);
+    net.waitEnd(tok);
+  } finally { F.restore(); }
+});
+
+test('the learned order\'s launch set goes before a predicted place, the rest of the order after it', async () => {
+  const files = { 'a.bin': { size: 2 * MiB, mtime: 1 }, 'b.bin': { size: 2 * MiB, mtime: 1 } };
+  const b = new HttpBackend('/game/w/', { dirs: {}, files }, { store: new MemBlockStore(), net: mid() });
+  b.fillBackground = () => {}; b.noteMiss = () => {};
+  const prios = [];
+  // (each learned piece as if fetched: here at once)
+  b.fetchPartBg = (path, size, mtime, c0, c1, prio) => { prios.push([path, prio[0]]); b.chunks.set(`${path}#${c0}`, new Uint8Array(CHUNK)); return Promise.resolve(true); };
+  const real = globalThis.fetch; globalThis.fetch = () => Promise.reject(new Error('none'));
+  try {
+    const list = [['a.bin', 0, 0b1], ['b.bin', 0, 0b1]]; list.first = 1;
+    await b.prefetch(list, {}, () => false, { first: 1 });
+    let placePrio = null;
+    b.fetchBackground = (path, s, e, onStart, abortable, learn, turn) => { placePrio = turn.prio[0]; return Promise.resolve(undefined); };
+    await Promise.all(b.wantList([['a.bin', MiB, MiB + 100]], { prio: 'place' }));
+    assert.deepEqual([...new Set(prios.map(([p]) => p))], ['a.bin', 'b.bin']);
+    prios.splice(1, prios.findIndex(([p]) => p === 'b.bin') - 1);
+    assert.ok(prios[0][1] < placePrio && placePrio < prios[1][1], `launch set ${prios[0][1]} < place ${placePrio} < the rest ${prios[1][1]}`);
+  } finally { globalThis.fetch = real; }
+});
