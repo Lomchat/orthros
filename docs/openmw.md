@@ -910,6 +910,15 @@ discarded or not — "Frame time" above), not by the engine; on a real GPU the e
 r8, so ~16.7 is the line). Left: the cull (~22 % of the busy time), Lua's addons (~7 %), the draw's GL calls
 themselves.
 
+The release `openmw-web-v1.5.3-orthros-r11` (r1-r10 + r11, `build.sh`, files pinned in `lock.json`; engine
+`fb15db671fdf`) checked on a scratch server (`dev-serve.sh`) before the switch: `check.mjs` goty-en and Vanilla+ FR,
+`keys-check.mjs`, pictures all off against all on (day 3.62 against a noise of 3.62 — the first reference capture
+settling —, night 0.03 / 0.82, interior 0.57 / 0.96), Vanilla+ FR mid with r10's announced reads: engine work p50 / p90
+/ p99 16.8 / 21.5 / 27.6 ms all off, 12.3 / 17.0 / 24.0 all on. Switched on 2026-10-26 (restic snapshot before): set
+`"engine": "openmw-web-v1.5.3-orthros-r11"` in the `openmw` object of each version of `data/games/morrowind/manifest.json`
+and `data/games/morrowind-vanilla-plus/manifest.json`. Back to r10 the same way; one change off for everyone without a
+rebuild: not provided (the switches are for measuring, from the address).
+
 ### Announced reads (2026-10-26)
 
 A cell load was 340 serial synchronous reads, one round trip each (37 s at 1.8 MB/s, 90 ms). The page's side of the

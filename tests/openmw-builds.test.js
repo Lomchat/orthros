@@ -120,7 +120,11 @@ test('r7: r6 plus its patch, the same exports; no terrain chunk outside the acti
     assert.ok(added.includes(k), k);
 });
 
-test('r11 patch: each frame-cost change read from its switch, the page setting only OPENMW_ORTHROS_* from ?omwenv=, the GL glue linked', () => {
+test('r11: r10 plus its patch, the same exports; each frame-cost change read from its switch, the page setting only OPENMW_ORTHROS_* from ?omwenv=, the GL glue linked', () => {
+  const r10 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r10'), r11 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r11');
+  assert.ok(r11, 'r11 is a build');
+  assert.deepEqual(r11.patches, [...r10.patches, 'orthros-r11.patch']);
+  assert.deepEqual(r11.exports, r10.exports);
   const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r11.patch'), 'utf8');
   const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
   // (OSG's sources too: the build applies the patch at the tree's root)
