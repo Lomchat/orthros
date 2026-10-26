@@ -107,7 +107,15 @@ const RELIST = Symbol('relist');
  * pieces just ahead of the game first (its next reads), then the blocks the game touched, the learned blocks, the
  * blocks next to missed ones, the offline copy.
  */
-const PRIO = { readAhead: [1, 0], ahead: [2, 0], miss: [3, 100], fill: [4, 150], prefetch: [5, 300], near: [6, 500], offline: [7, 500] };
+const PRIO = { announced: [0, 0], readAhead: [1, 0], ahead: [2, 0], miss: [3, 100], fill: [4, 150], prefetch: [5, 300], near: [6, 500], offline: [7, 500] };
+/**
+ * Announced reads (wantList: the ranges an engine says its next reads take, then waits for): unit requests in flight at
+ * once at most — a load's few hundred small files fetched in parallel, not one round trip each (OpenMW, Ald'ruhn on a
+ * 1.8 MB/s, 90 ms link: 340 serial reads, 37 s) —, fewer on a thin link (its bytes, not its round trips, are the wait).
+ */
+const WANT_REQUESTS = 32, WANT_REQUESTS_THIN = 8;
+/** an announced unit whose request failed on the network is asked again this many times (after retryWaits' pauses) */
+const WANT_RETRIES = 2;
 /** wire length of a response (its encoded body: what crossed the link), else the decoded length */
 const wireOf = (len, header) => { const n = Number(header); return Number.isFinite(n) && n > 0 ? n : len; };
 
@@ -236,6 +244,10 @@ export class HttpBackend {
     this.streams = new Set();
     /** the learned prefetch pass is over (prefetch); then the blocks missed per file (path -> Set of blocks; true: wanted whole) */
     this.learnedDone = false; this.missedAfter = new Map();
+    /** announced units waiting for a request (see wantList), in the order announced; the requests of them in flight */
+    this.wantQ = []; this.wantInFlight = 0;
+    /** announced lists not all here yet (see wantList): meanwhile nothing is fetched ahead from the learned order (pumpAhead) */
+    this.wantLists = 0;
   }
 
   /**
@@ -293,10 +305,12 @@ export class HttpBackend {
    * cut over the Internet) is retried after a pause, once per entry of retryWaits, before failing the read.
    */
   /** URL of [start, end) of a file: a compressed range, or the file itself (with a Range header) */
-  rangeUrl(path, start, end, background = false, ahead = false) {
+  rangeUrl(path, start, end, background = false, ahead = false, announced = false) {
     const rel = path.split('/').map(encodeURIComponent).join('/');
-    // (`ahead`: fetched ahead of the game but learned as its own read — the server counts it with the background)
-    return this.encoded ? `${this.base.replace(/\/game\//, '/gamez/')}${rel}?r=${start}-${end}${background ? '&p=1' : this.session ? '&s=' + this.session : ''}${!background && ahead ? '&a=1' : ''}${this.pcm ? '&pc=1' : ''}` : this.base + rel;
+    // (`ahead`: fetched ahead of the game but learned as its own read — the server counts it with the background;
+    // `announced`: a background range the engine announced it reads next (wantList) — not learned either, queued by the
+    // server between the game's reads and the background's)
+    return this.encoded ? `${this.base.replace(/\/game\//, '/gamez/')}${rel}?r=${start}-${end}${background ? (announced ? '&w=1' : '&p=1') : this.session ? '&s=' + this.session : ''}${!background && ahead ? '&a=1' : ''}${this.pcm ? '&pc=1' : ''}` : this.base + rel;
   }
   /**
    * The bytes of an answer: `codec` its X-Orthros-Codec — pcm1: an audio unit, decoded (src/vfs/pcm-codec.js, its CRC
@@ -543,6 +557,9 @@ export class HttpBackend {
     // (a load at a place the order does not follow: nothing of it ahead — another place's next reads would take the
     // link from the load's own; the next touch of a learned entry pumps again)
     if (!L.tracked && this.net.silenced()) return;
+    // (nor while the engine waits for what it announced (wantList): it said what its load reads — the learned order's
+    // guesses would only take the link from it (measured: 0.8-1.1 MB of a 5 s announced wait); they go once it is here)
+    if (this.wantLists > 0) return;
     const P = BLOCK / CHUNK;
     for (let r = L.pos + 1, lim = Math.min(L.entries.length, L.pos + 1 + AHEAD_WINDOW); r < lim && L.inFlight < (this.net.fast() || this.net.thin() ? AHEAD_REQUESTS : AHEAD_REQUESTS_MID); r++) {
       const e = L.entries[r];
@@ -606,6 +623,133 @@ export class HttpBackend {
     done.w = w;
     for (let c = c0; c <= c1; c++) this.flights.set(`${path}#${c}`, done);
     return done;
+  }
+  // ---------------------------------------------------------------- announced reads
+
+  /**
+   * Announced reads (docs/slow-network.md "Announced reads"): an engine says which ranges its next reads take, then
+   * waits for them — a load's files fetched in parallel (WANT_REQUESTS unit requests in flight, in the list's order)
+   * instead of one round trip each as the engine reads them. `list`: [[path, start, end]] (end exclusive, -1: the end of
+   * the file — clamped to it). Each range's missing bytes go as transport units (unitOf: the whole block when the range
+   * covers all of a block none of which is here, else its 64 KiB pieces), registered as on their way (a parked read of
+   * them joins the request — and makes it go first — rather than ask again), kept like any background bytes (memory,
+   * the store); what is here or on its way already (the learned pieces ahead, a block read ahead, the fill's block) is
+   * not asked again. The requests are `forLoad` (they pass a load's silence, NetLink.mayStart) and urgent — the engine
+   * waits for them next, as for a parked read: the window bounds them, not the background's count —; the server is told
+   * they are announced (`w=1`: not learned as reads, queued between the game's reads and the background's). While any
+   * of them is missing the game counts as waiting (NetLink.wait, `opts.wait` false: not — a page that announces far
+   * ahead). Returns one promise per entry: true once all its bytes are here, false when one of its units failed (the
+   * engine's read then asks itself, and says what failed). `opts.label`: what the load is for (kept in stats.wantLabel).
+   */
+  wantList(list, opts = {}) {
+    if (opts.label) this.stats.wantLabel = String(opts.label).slice(0, 80);
+    const ranges = list.map(([p, start, end]) => {
+      const r = this.lookup(p);
+      if (!r?.file) return false;
+      const size = r.file.size, stop = end < 0 ? size : Math.min(size, end);
+      this.stats.wantEntries = (this.stats.wantEntries ?? 0) + 1;
+      return this.wantRange(r.path, size, r.file.mtime ?? 0, Math.max(0, start), stop, false);
+    });
+    const missing = ranges.filter((x) => typeof x !== 'boolean');
+    this.stats.wantHere = (this.stats.wantHere ?? 0) + ranges.length - missing.length;
+    if (missing.length) {
+      // (one wait of the link's for the whole list, while any of it is missing: the rest of the background keeps quiet;
+      // the learned pieces ahead too — pumpAhead —, even for a list announced far ahead (opts.wait false))
+      const tok = opts.wait !== false ? this.net.wait() : null;
+      this.wantLists++;
+      Promise.allSettled(missing).then(() => { if (tok !== null) this.net.waitEnd(tok); this.wantLists--; this.pumpAhead(); });
+    }
+    return ranges.map((x) => (typeof x === 'boolean' ? Promise.resolve(x) : x));
+  }
+  /**
+   * [start, end) of a file (`path` as listed) here: true when it is (no promise: nothing to wait for); else a promise of
+   * true once its missing units came (false: one failed). A unit on its way already is joined, and goes first
+   * (NetLink.promote, as for a parked read; `joined`: this range joined one already — its missing bytes are asked now,
+   * not joined again).
+   */
+  wantRange(path, size, mtime, start, end, joined) {
+    if (!(end > start)) return true;
+    const waits = [], P = BLOCK / CHUNK;
+    for (let bi = Math.floor(start / BLOCK); bi * BLOCK < end; bi++) {
+      if (this.peekBlockHere(path, size, mtime, bi)) continue;
+      const b0 = bi * BLOCK, b1 = Math.min(size, b0 + BLOCK), a = Math.max(start, b0), b = Math.min(end, b1);
+      // (the whole block on its way: read ahead of a sequential reader, or the fill's)
+      const bf = this.blockFlights.get(`${path}#${bi}`) ?? (this.bgCur?.key === `${path}#${bi}` ? this.bgCur.done : null);
+      // (joined, and promoted as a parked read's (NetLink.promote): one still waiting for its turn would else stay queued
+      // behind the very silence this list's wait makes — a background flight that is not forLoad — until the engine's
+      // timeout)
+      if (bf && !joined) { this.net.promote(bf.w); waits.push(Promise.resolve(bf).then(() => this.wantRange(path, size, mtime, a, b, true), () => this.wantRange(path, size, mtime, a, b, true))); continue; }
+      const c0 = Math.floor(a / CHUNK), c1 = Math.floor((b - 1) / CHUNK), first = bi * P, n = Math.ceil((b1 - b0) / CHUNK);
+      const missing = [];
+      for (let c = c0; c <= c1; c++) {
+        if (this.pieceHere(path, size, mtime, c)) continue;
+        const f = this.flights.get(`${path}#${c}`);
+        if (f && !joined) { this.net.promote(f.w); const again = () => this.wantRange(path, size, mtime, Math.max(a, c * CHUNK), Math.min(b, (c + 1) * CHUNK), true); waits.push(f.then(again, again)); continue; }
+        missing.push(c);
+      }
+      // (the range covers the whole block, none of it here nor on its way: the block, one unit)
+      if (missing.length === n && n > 1) { waits.push(this.wantUnit(path, size, mtime, first, first + n - 1, true)); continue; }
+      for (const c of missing) waits.push(this.wantUnit(path, size, mtime, c, c, n === 1));
+    }
+    if (!waits.length) return true;
+    return Promise.all(waits).then((oks) => oks.every(Boolean));
+  }
+  /**
+   * Pieces c0..c1 of a file (a unit: one piece, or `whole`, its whole block) queued for an announced request: registered
+   * as on their way at once (flights: a parked read of them waits for it — and promotes it, NetLink.promote: it goes
+   * before the queue); resolves to true once they are here, false when their request failed.
+   */
+  wantUnit(path, size, mtime, c0, c1, whole) {
+    const self = this;
+    // (the turn's mark: urgent once a parked read waits for it — the queue starts it first, past the window)
+    const w = { forLoad: true, u: false, get urgent() { return this.u; }, set urgent(v) { this.u = !!v; if (v && job.queued) self.pumpWant(); } };
+    const job = { path, size, mtime, c0, c1, whole, w, queued: true, resolve: null };
+    const done = new Promise((res) => { job.resolve = res; });
+    done.w = w;
+    for (let c = c0; c <= c1; c++) this.flights.set(`${path}#${c}`, done);
+    this.wantQ.push(job);
+    this.stats.wantUnits = (this.stats.wantUnits ?? 0) + 1;
+    this.pumpWant();
+    return done;
+  }
+  /** The announced units' requests started up to the window (WANT_REQUESTS), those a parked read waits for first and past it. */
+  pumpWant() {
+    for (let i = 0; i < this.wantQ.length; i++) if (this.wantQ[i].w.u) { const [job] = this.wantQ.splice(i--, 1); this.runWant(job); }
+    const max = this.net.thin() ? WANT_REQUESTS_THIN : WANT_REQUESTS;
+    while (this.wantInFlight < max && this.wantQ.length) this.runWant(this.wantQ.shift());
+  }
+  /** An announced unit's request (retried on a network failure): its pieces here, true; or false. */
+  async runWant(job) {
+    const { path, size, mtime, c0, c1, whole, w } = job;
+    job.queued = false; this.wantInFlight++;
+    w.u = true; // (the engine waits for it next: urgent, as a parked read's turn)
+    const P = BLOCK / CHUNK;
+    const here = () => { for (let c = c0; c <= c1; c++) if (!this.peekBlockHere(path, size, mtime, Math.floor(c / P)) && !this.pieceHere(path, size, mtime, c)) return false; return true; };
+    let ok = false;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        if (here()) { ok = true; break; }
+        const d = typeof fetch === 'function' ? await this.fetchBackground(path, c0 * CHUNK, Math.min(size, (c1 + 1) * CHUNK), null, false, false, { prio: PRIO.announced, w, reason: 'announced', forLoad: true }) : undefined;
+        if (d instanceof Uint8Array) {
+          const bi = Math.floor(c0 / P);
+          if (whole && c0 % P === 0) { if (!this.cache.has(`${path}#${bi}`)) { this.installBlock(path, bi, d, `${path}#${size}#${mtime}#${bi}`); this.evict(); } }
+          else this.addPieces(path, c0, c1, d, { size, mtime });
+          this.stats.wantBytes = (this.stats.wantBytes ?? 0) + d.length;
+          ok = true; break;
+        }
+        // (aborted by a read of the same bytes: that read brought them; an answer refused, or the network still down: failed)
+        if (here()) { ok = true; break; }
+        if (d === undefined || attempt >= WANT_RETRIES) break;
+        await new Promise((res) => setTimeout(res, this.retryWaits[attempt] ?? 1000));
+      }
+    } catch { ok = false; } finally {
+      for (let c = c0; c <= c1; c++) if (this.flights.get(`${path}#${c}`)?.w === w) this.flights.delete(`${path}#${c}`);
+      this.wantInFlight--;
+      if (!ok) this.stats.wantFailed = (this.stats.wantFailed ?? 0) + 1;
+      job.resolve(ok);
+      this.pumpWant();
+    }
+    return ok;
   }
   /**
    * The game opened `path` in this session and holds no handle on it now: what earlier sessions read further in it is
@@ -846,6 +990,7 @@ export class HttpBackend {
     // abortable ones by a demand read elsewhere)
     const tok = this.net.begin('bg', end - start, ctl ? () => ctl.abort() : null, { key: this.base + path, start, end }, reason);
     if (!abortable) tok.keep = true;
+    const announced = reason === 'announced'; // (wantList's: the server's `w=1`)
     let wire = 0, ok = false;
     try {
       // (compressed ranges: one request per transport unit the range covers, in parallel — each answered from the
@@ -855,7 +1000,7 @@ export class HttpBackend {
       if (parts && this.unitHitRate < UNIT_HIT_MIN) { if (++this.unitSkips < UNIT_PROBE_EVERY) parts = null; else this.unitSkips = 0; }
       if (parts) {
         let first = true;
-        const ress = await Promise.all(parts.map(([a, b]) => fetch(this.rangeUrl(path, a, b, !learn, learn), { signal: ctl?.signal }).then((r) => { if (first) { first = false; this.net.firstByte(tok); } return r; })));
+        const ress = await Promise.all(parts.map(([a, b]) => fetch(this.rangeUrl(path, a, b, !learn, learn, announced), { signal: ctl?.signal }).then((r) => { if (first) { first = false; this.net.firstByte(tok); } return r; })));
         if (ress.some((r) => r.status !== 206 && r.status !== 200)) return undefined;
         const bodies = await Promise.all(ress.map((r) => r.arrayBuffer()));
         const data = new Uint8Array(end - start);
@@ -871,7 +1016,7 @@ export class HttpBackend {
         ok = true;
         return data;
       }
-      const res = await fetch(this.rangeUrl(path, start, end, !learn, learn), { ...(this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } }), signal: ctl?.signal });
+      const res = await fetch(this.rangeUrl(path, start, end, !learn, learn, announced), { ...(this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } }), signal: ctl?.signal });
       this.net.firstByte(tok);
       if (res.status !== 206 && res.status !== 200) return undefined;
       let data = new Uint8Array(await res.arrayBuffer());

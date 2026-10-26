@@ -108,14 +108,41 @@
   // engine puts that work off a frame or more instead of the page's thread waiting for the network; a file not
   // streamed here: true)
   window.orthrosRangeReady = (path, offset, size) => {
-    if (!S.data) return true;
+    const h = S.data && byEngine(path);
+    return !h || S.data.readable(h, offset, size);
+  };
+  /** The game file the engine opens as `path` (its file system's: an archive's for a file in it), or null (not streamed here). */
+  function byEngine(path) {
     let h = S.byEnginePath.get(path);
     if (h === undefined) {
       h = null;
       try { h = S.byNode.get(FS.lookupPath(path, { follow: true }).node) ?? null; } catch { /* not a file here */ }
       S.byEnginePath.set(path, h);
     }
-    return !h || S.data.readable(h, offset, size);
+    return h;
+  }
+  // (announced reads, the Orthros build's scene changes (its announced-reads patch, docs/slow-network.md "Announced reads"): before
+  // it loads cells, the engine says what it reads — `list`: records 'enginePath\x1Foffset\x1Fsize' (size -1: to the end;
+  // an archive's path and range for a file in it) separated by '\x1E', `label` '<meshes|textures|terrain>:<place>' — then
+  // waits once (orthrosReadWait) instead of a round trip per file: fetched in parallel by the game data (GameData.want).
+  // Returns how many are not in the page yet (0: nothing to wait for); paths not streamed here are left out.)
+  window.orthrosWillRead = (list, label) => {
+    if (!S.data) return 0;
+    const entries = [];
+    for (const rec of String(list ?? '').split('\x1E')) {
+      if (!rec) continue;
+      const [path, off, size] = rec.split('\x1F'), h = byEngine(path);
+      if (h) entries.push({ h, off: Number(off) || 0, len: size === undefined || size === '' ? -1 : Number(size) });
+    }
+    S.place = String(label ?? ''); // (what the load is for: kept for the learned places — stage 3)
+    return entries.length ? S.data.want(entries, S.place) : 0;
+  };
+  // (the engine waits for what it announced, at most `timeoutMs`: 1 when it is all here (or failed — its reads say why),
+  // 0 on time out (its reads fetch the rest); 1 at once without game data)
+  window.orthrosReadWait = (timeoutMs) => {
+    if (!S.data) return 1;
+    const ms = Number(timeoutMs);
+    return S.data.wantWait(Number.isFinite(ms) && ms >= 0 ? ms : 15000) ? 1 : 0;
   };
 
   window.StreamFS = {

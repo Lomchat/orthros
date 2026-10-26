@@ -75,7 +75,7 @@ function fakeServer(files, learned = [], lights = {}, required = null) {
     if (av && api[1] === 'prefetch') { if (init.method === 'POST') { posts.push(JSON.parse(init.body)); return new Response(null, { status: 204 }); } return Response.json(av.learned); }
     const m = /^\/gamez\/(\w+)\/(.+)$/.exec(u.pathname), gv = m && vs[m[1]];
     if (gv && gv.files[decodeURIComponent(m[2])]) {
-      const [a, b] = u.searchParams.get('r').split('-').map(Number); asked.push([(m[1] === 'v' ? '' : m[1] + ':') + decodeURIComponent(m[2]), a, b, u.searchParams.get('p') ? 'bg' : 'demand']);
+      const [a, b] = u.searchParams.get('r').split('-').map(Number); asked.push([(m[1] === 'v' ? '' : m[1] + ':') + decodeURIComponent(m[2]), a, b, u.searchParams.get('w') ? 'want' : u.searchParams.get('p') ? 'bg' : 'demand']);
       const body = gv.files[decodeURIComponent(m[2])].slice(a, b);
       return new Response(body, { status: 200, headers: { 'content-length': String(body.length) } });
     }
@@ -585,4 +585,77 @@ test('on a link that is not fast a picture read light (a loading screen: a TGA\'
   await until(() => data.realHere.has('v\ntex.dds'), 'the texture\'s file here', 6000);
   assert.ok(!server.asked.some(([p]) => p === 'Splash/load.tga'), `the picture's file never asked: ${JSON.stringify(server.asked)}`);
   assert.ok(!data.realHere.has('v\nsplash/load.tga'));
+});
+
+test('announced reads: the page\'s entries (a texture as its light copy, whole; an archive\'s range) fetched by the worker at once, the page\'s wait on ctrl[12]', async (t) => {
+  const tex = bytes(300000, 2), light = bytes(40000, 8), bsa = bytes(3 << 20, 5), mesh = bytes(9000, 4);
+  const server = fakeServer({ 'tex.dds': tex, 'Morrowind.bsa': bsa, 'Meshes/a.nif': mesh }, [], { 'tex.dds': light });
+  const data = await inThread(t, server, { reloads: true });
+  const h = data.file('v', 'TEX.dds'), arc = data.file('v', 'morrowind.bsa'), m = data.file('v', 'meshes/A.NIF'), gone = data.fileAs('v', 'gone.nif', 500);
+  assert.equal(data.wantWait(0), true, 'nothing announced: nothing to wait for');
+  // (the link not measured: the texture's next load reads its light copy — announced as it, whole, the choice not made)
+  const n = data.want([{ h, off: 0, len: -1 }, { h: arc, off: (1 << 20) + 5000, len: 70000 }, { h: m }, { h: gone }], 'meshes:-2,6');
+  assert.equal(n, 4, 'none in the page');
+  assert.equal(h.as, undefined, 'pick not made: the load\'s own first read makes it');
+  assert.equal(data.wantWait(20), false, 'not here within 20 ms (the worker runs in this thread: it cannot answer while the page spins)');
+  await until(() => Atomics.load(data.ctrl, 12) >= data.wantSeq, 'the batch settled');
+  assert.equal(data.wantWait(1000), true);
+  assert.equal(data.wantLeft, 0); assert.equal(data.wantFailed, 1, 'the file not in the listing failed');
+  const wanted = server.asked.filter(([, , , k]) => k === 'want').map(([p, a, b]) => [p, a, b]).sort();
+  assert.deepEqual(wanted, [['.light/tex.dds', 0, 40000], ['Meshes/a.nif', 0, 9000], ['Morrowind.bsa', 1 << 20, (1 << 20) + 65536], ['Morrowind.bsa', (1 << 20) + 65536, (1 << 20) + 131072]]);
+  assert.ok(!server.asked.some(([p]) => p === 'tex.dds'), 'never the texture itself before its light copy');
+  // (the engine's reads: from the worker's copy, no request)
+  const asked = server.asked.length, out = new Uint8Array(300000);
+  await data.ensure(h, 0, h.size); data.read(h, out, 0, h.size, 0);
+  assert.deepEqual(out.subarray(0, light.length), light);
+  await data.ensure(arc, (1 << 20) + 5000, 70000); data.read(arc, out, 0, 70000, (1 << 20) + 5000);
+  assert.deepEqual(out.subarray(0, 70000), bsa.subarray((1 << 20) + 5000, (1 << 20) + 75000));
+  await data.ensure(m, 0, m.size);
+  assert.equal(server.asked.slice(asked).filter(([p, , , k]) => k !== 'bg' && p !== 'tex.dds').length, 0, `read here: ${JSON.stringify(server.asked.slice(asked))}`);
+  // (in the page now: not announced again)
+  assert.equal(data.want([{ h: m }, { h: arc, off: (1 << 20) + 5000, len: 70000 }], 'meshes:-2,6'), 0);
+  assert.equal(data.snapshot().wants, 4);
+});
+
+test('announced reads: a wait covers the batches announced since the last one — an older batch still hung holds nothing', async (t) => {
+  const server = fakeServer({ 'Meshes/stuck.nif': bytes(9000, 3), 'Meshes/a.nif': bytes(9000, 4) });
+  let hang = true; const held = [];
+  const fetch = server.fetch;
+  server.fetch = (url, init) => (hang && /stuck\.nif/.test(String(url)) ? new Promise((r) => held.push(() => r(fetch(url, init)))) : fetch(url, init));
+  const data = await inThread(t, server), stuck = data.file('v', 'meshes/stuck.nif'), a = data.file('v', 'meshes/a.nif');
+  assert.equal(data.want([{ h: stuck }], 'meshes:0,0'), 1);
+  await until(() => held.length > 0, 'its request on its way, hung');
+  assert.equal(data.wantWait(10), false, 'timed out');
+  assert.equal(data.wantWait(10), true, 'nothing announced since: nothing to wait for');
+  assert.equal(data.want([{ h: a }], 'meshes:1,0'), 1);
+  await until(() => Atomics.load(data.ctrl, 12) >= data.wantSeq, 'the new batch settled, the old one still hung');
+  assert.equal(data.wantWait(1000), true);
+  assert.equal(data.wantLeft, 1, 'the hung entry still counted as not settled');
+  hang = false; for (const go of held.splice(0)) go();
+  await until(() => data.wantLeft === 0, 'the old one settled too');
+});
+
+test('announced reads: the load announced reads what was announced (light copy or file), even when the link\'s measure changes meanwhile', async (t) => {
+  const tex = bytes(300000, 2), light = bytes(40000, 8), server = fakeServer({ 'tex.dds': tex }, [], { 'tex.dds': light });
+  const data = await inThread(t, server, { reloads: true }), h = data.file('v', 'tex.dds'), out = new Uint8Array(h.size);
+  assert.equal(data.want([{ h }], 'textures:0,0'), 1, 'its light copy announced (the link not fast)');
+  await until(() => Atomics.load(data.ctrl, 12) >= data.wantSeq, 'settled');
+  assert.equal(data.wantWait(1000), true);
+  // (the link measured fast during the wait: the load reads the light copy fetched all the same, not the file)
+  Atomics.store(data.ctrl, 8, 1); Atomics.store(data.ctrl, 7, 1);
+  const asked = server.asked.length;
+  await data.ensure(h, 0, h.size); data.read(h, out, 0, h.size, 0);
+  assert.deepEqual(out.subarray(0, light.length), light);
+  assert.ok(!server.asked.slice(asked).some(([p, , , k]) => p === 'tex.dds' && k === 'demand'), 'the file itself not waited for');
+  // (pinned for that load only: the next one chooses again)
+  h.at = -Infinity; assert.equal(data.nextPick(h), h, 'the next load: the file (fast)');
+});
+
+test('announced reads on a fast link: the texture itself', async (t) => {
+  const tex = bytes(300000, 2), light = bytes(40000, 8), server = fakeServer({ 'tex.dds': tex }, [], { 'tex.dds': light });
+  const data = await inThread(t, server, { bw: 50 << 20, reloads: true }), h = data.file('v', 'tex.dds');
+  await until(() => Atomics.load(data.ctrl, 7) === 1, 'the link fast');
+  assert.equal(data.want([{ h }], 'textures:-2,6'), 1);
+  await until(() => Atomics.load(data.ctrl, 12) >= data.wantSeq, 'settled');
+  assert.deepEqual(server.asked.filter(([, , , k]) => k === 'want').map(([p, a, b]) => [p, a, b]), [['tex.dds', 0, 300000]]);
 });

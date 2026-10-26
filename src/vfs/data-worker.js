@@ -12,6 +12,9 @@
 // below THIN_BPS, net-link.js). The page's quiet (GameData.quiet: a page that loads more of its game when nothing waits):
 // ctrl[10] 1 when the learned order's loading has nothing left for the game's current step (or does not run), ctrl[11]
 // the time since a read last waited for the network (ms, 0 while one waits).
+// Announced reads (GameData.want: the ranges the engine says it reads next, fetched in parallel — HttpBackend.wantList):
+// ctrl[12] the last batch settled with every one of the page's current wait window before it (the batches from the
+// window's first, `from`: each entry here, or failed — GameData.wantWait spins on it), ctrl[13] the announced entries not settled yet, ctrl[14] those that failed (since the start).
 // A page's mark (GameData.mark('playable'): its game first draws in play) goes to the server with the reads before it:
 // the launch set later sessions wait for and the home announces (launch-set.js).
 // Light copies (src/host/light-copies.js): on a link that is not fast, the page reads a texture's light copy unless the
@@ -47,6 +50,7 @@ export function createDataWorker(post) {
     ctrl: null, data: null, version: null, parts: new Map(), handles: new Map(), ready: null, timers: [],
     session: '', lang: null, t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null, waits: new Set(), held: new Map(),
     prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null,
+    wants: new Map(), wantFrom: 1, wantMax: 0, wantLeft: 0, wantFailed: 0, wantLabel: null,
     legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(), reports: new ReadReports(), phases: [],
   };
   return (m) => {
@@ -77,6 +81,7 @@ function dispatch(m) {
   if (m.startup) { startup(); return; }
   if (m.mark) { mark(m.mark); return; }
   if (m.phase) { phase(m.phase); return; }
+  if (m.want) { want(m.want); return; }
   if (m.wantWhole) { W.parts.get(m.wantWhole.name)?.files.wantWhole(m.wantWhole.path); return; }
   if (m.light) { upgrade(m.light.name, m.light.path, !!m.light.soon); return; }
   if ('whole' in m) { m.whole ? wholeDownload() : (W.whole && (W.whole.stop = true)); return; }
@@ -194,6 +199,54 @@ async function answerAsync(m) {
   try { const bytes = await bytesOf(m, ask); postMessage({ id: m.id, bytes }, [bytes.buffer]); }
   catch (err) { postMessage({ id: m.id, error: String(err?.message ?? err) }); }
   finally { W.held.delete(m.id); }
+}
+
+// ---------------------------------------------------------------- announced reads
+
+/**
+ * A batch of announced reads (GameData.want: `seq` its number, `from` the first batch of the page's current wait window,
+ * `list` [[name, path, off, len]] — len -1: to the end of the file —, `label` what the load is for, e.g. 'meshes:-2,6'):
+ * each version's entries to its reader (HttpBackend.wantList: fetched in parallel, kept), and as they land or fail, the
+ * counters the page's wait reads (ctrl[12] — every batch of the window up to it settled —, ctrl[13], ctrl[14]). The
+ * batch is registered whatever happens (an exception: its entries failed), so the window's count never stops at it.
+ */
+function want({ seq, from, list, label }) {
+  W.wantLabel = typeof label === 'string' ? label.slice(0, 80) : null;
+  const byPart = new Map();
+  for (const [name, path, off, len] of list) {
+    const part = W.parts.get(name);
+    const a = Math.max(0, Number(off) || 0), n = Number(len);
+    if (!part) { W.wantFailed++; continue; }
+    let e = byPart.get(part); if (!e) byPart.set(part, e = []);
+    e.push([path, a, n < 0 || !Number.isFinite(n) ? -1 : a + n]);
+  }
+  const all = [];
+  try { for (const [part, ranges] of byPart) all.push(...part.files.wantList(ranges, { label: W.wantLabel })); }
+  catch { W.wantFailed += list.length - all.length; }
+  W.wantMax = Math.max(W.wantMax, seq);
+  if (Number.isInteger(from) && from > W.wantFrom) W.wantFrom = from;
+  // (a settled batch leaves the map: a number up to wantMax not in it is settled)
+  if (all.length) W.wants.set(seq, all.length);
+  W.wantLeft += all.length;
+  const settle = (ok) => {
+    W.wantLeft--; if (!ok) W.wantFailed++;
+    const n = W.wants.get(seq) - 1;
+    if (n > 0) W.wants.set(seq, n); else W.wants.delete(seq);
+    wantTell();
+  };
+  for (const p of all) p.then(settle, () => settle(false));
+  wantTell();
+}
+
+/**
+ * The announced batches' counters to the page: the last batch settled with every one of the window before it (ctrl[12]:
+ * from W.wantFrom — an older one still unsettled, its wait over, holds nothing), entries left, failed.
+ */
+function wantTell() {
+  let done = W.wantFrom - 1;
+  while (done < W.wantMax && !W.wants.has(done + 1)) done++;
+  Atomics.store(W.ctrl, 13, W.wantLeft); Atomics.store(W.ctrl, 14, W.wantFailed);
+  Atomics.store(W.ctrl, 12, done); Atomics.notify(W.ctrl, 12);
 }
 
 // ---------------------------------------------------------------- files of elsewhere

@@ -198,11 +198,12 @@ export function readLog(file) {
 /**
  * A request's kind from its URL (the backend's rangeUrl): game data (/gamez/, /game/) read for the game itself —
  * 'demand' —, fetched ahead of it as its own read ('ahead': `a=1`, which carries the session `s=` too: the proxy's own
- * `kind` counts it as demand) or in the background ('bg': `p=1`); anything else 'other'.
+ * `kind` counts it as demand), announced by its engine as its next reads ('want': `w=1`, HttpBackend.wantList — the load's own
+ * bytes, fetched in parallel) or in the background ('bg': `p=1`); anything else 'other'.
  */
 export function urlKind(url) {
   if (!url.startsWith('/gamez/') && !url.startsWith('/game/')) return 'other';
-  return /[?&]p=1/.test(url) ? 'bg' : /[?&]a=1/.test(url) ? 'ahead' : 'demand';
+  return /[?&]w=1/.test(url) ? 'want' : /[?&]p=1/.test(url) ? 'bg' : /[?&]a=1/.test(url) ? 'ahead' : 'demand';
 }
 
 /** A game data request's { manifest, path (decoded, without the light copies' folder), light, decoded (bytes, from `r=a-b`; null: the file) }, else null. */
@@ -243,12 +244,13 @@ const q3 = (a) => ({ p10: quant(a, 0.1), p50: quant(a, 0.5), p90: quant(a, 0.9) 
  * A stretch [from, to] of a proxy log (ms, its clock; `recs` the whole log, readLog): the game's own reads that started
  * in it — count, decoded and wire bytes (light copies apart), start-to-start spacing, time to the first byte, transfer
  * (after the first byte), idle (from a read's end to the next one's start), the time at least one was in flight
- * (waitMs) — and the wire bytes every request carried during it (an answer spanning an edge counted for its share of
- * time inside) by kind (demand, ahead, bg, other) and, for game data other than the game's own reads, by kind × file
+ * (waitMs) —, the announced ranges that started in it (want: count, decoded and wire bytes — the load's own, not
+ * background) and the wire bytes every request carried during it (an answer spanning an edge counted for its share of
+ * time inside) by kind (demand, ahead, want, bg, other) and, for game data other than the game's own reads and announced ones, by kind × file
  * category (fileCategory; 'upgrade': a light copy read earlier in the log, at any time before that request).
  */
 export function loadWindow(recs, from, to, { folders = FILE_FOLDERS } = {}) {
-  const lightSeen = new Set(), demand = [], byKind = {}, byCategory = {}, bgByCategory = {};
+  const lightSeen = new Set(), demand = [], wanted = [], byKind = {}, byCategory = {}, bgByCategory = {};
   let bgWire = 0;
   const MB = (n) => Math.round(n / 1e4) / 100;
   for (const r of recs) {
@@ -259,12 +261,13 @@ export function loadWindow(recs, from, to, { folders = FILE_FOLDERS } = {}) {
     if (share > 0) {
       const w = r.wire * share;
       byKind[kind] = (byKind[kind] ?? 0) + w;
-      if (read && kind !== 'demand') {
+      if (read && kind !== 'demand' && kind !== 'want') {
         const c = fileCategory(read, { lightSeen, folders });
         bgWire += w; byCategory[c] = (byCategory[c] ?? 0) + w;
         (bgByCategory[kind] ??= {})[c] = (bgByCategory[kind][c] ?? 0) + w;
       }
     }
+    if (read && kind === 'want' && r.t >= from && r.t <= to) wanted.push({ wire: r.wire, decoded: read.decoded ?? 0 });
     if (read && kind === 'demand' && r.t >= from && r.t <= to) demand.push({ t: r.t, end, first: r.first, ms: r.ms, wire: r.wire, decoded: read.decoded ?? 0, light: read.light });
     if (read?.light) lightSeen.add(read.path);
   }
@@ -284,6 +287,7 @@ export function loadWindow(recs, from, to, { folders = FILE_FOLDERS } = {}) {
       spacing: q3(spacing), ttfb: q3(demand.filter((d) => d.first !== null && d.first !== undefined).map((d) => d.first)),
       transfer: q3(demand.filter((d) => d.first !== null && d.first !== undefined).map((d) => d.ms - d.first)), idle: q3(idle), waitMs: Math.round(waitMs),
     },
+    want: { count: wanted.length, decodedMB: MB(sum(wanted, 'decoded')), wireMB: MB(sum(wanted, 'wire')) },
     wireMB: mbOf(byKind), backgroundMB: MB(bgWire), backgroundByCategory: mbOf(byCategory),
     backgroundByKind: Object.fromEntries(Object.entries(bgByCategory).map(([k, v]) => [k, mbOf(v)])),
   };
@@ -298,10 +302,11 @@ export function summarize(recs, until = Infinity) {
   const demand = [];
   for (const r of recs) {
     if (r.mark || r.t > until) continue;
-    // (the game's own reads: no `p=1` nor `a=1` — `&s=` when the backend has a session, nothing for a port's data worker)
-    const k = r.url.startsWith('/gamez/') || r.url.startsWith('/game/') ? (/[?&][pa]=1/.test(r.url) ? 'background' : 'demand') : r.url.startsWith('/src/') ? 'src' : r.url.startsWith('/engines/') ? 'engine' : r.url.startsWith('/api/') ? 'api' : 'page';
+    // (the game's own reads: no `p=1`, `a=1` nor `w=1` — `&s=` when the backend has a session, nothing for a port's data
+    // worker; `want`: the ranges an engine announced it reads next, fetched in parallel — HttpBackend.wantList)
+    const k = r.url.startsWith('/gamez/') || r.url.startsWith('/game/') ? (/[?&]w=1/.test(r.url) ? 'want' : /[?&][pa]=1/.test(r.url) ? 'background' : 'demand') : r.url.startsWith('/src/') ? 'src' : r.url.startsWith('/engines/') ? 'engine' : r.url.startsWith('/api/') ? 'api' : 'page';
     const s = (kinds[k] ??= { requests: 0, wire: 0 }); s.requests++; s.wire += r.wire; wire += r.wire; requests++;
-    if (k === 'demand' || k === 'background') { gz++; const u = r.unit ?? 'none'; units[u] = (units[u] ?? 0) + 1; unitWire[u] = (unitWire[u] ?? 0) + r.wire; }
+    if (k === 'demand' || k === 'background' || k === 'want') { gz++; const u = r.unit ?? 'none'; units[u] = (units[u] ?? 0) + 1; unitWire[u] = (unitWire[u] ?? 0) + r.wire; }
     if (k === 'demand') demand.push([r.t, Math.min(until, r.t + r.ms)]);
   }
   demand.sort((a, b) => a[0] - b[0]);

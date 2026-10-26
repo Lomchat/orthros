@@ -133,6 +133,34 @@ test('/gamez: a game\'s read joining a range a background download queued is not
   assert.deepEqual(done.slice(0, 3).sort(), ['bg1', 'bg4', 'demand4'].sort(), `the game's read next (${done})`);
 });
 
+test('/gamez: announced ranges (w=1) are not learned, counted apart, encoded after the game\'s reads and before the background', async (t) => {
+  const { base, game } = await start(t, { encodeJobs: 1 });
+  for (let i = 1; i <= 4; i++) fs.writeFileSync(path.join(game, 'Data', `f${i}.dat`), Buffer.from(`file ${i} of a game `.repeat(20000)));
+  const gz = holdGzip(t);
+  const done = [];
+  const flag = { bg: 'p=1', want: 'w=1', demand: 's=x' };
+  const ask = (i, kind) => get(base, `/gamez/g/Data/f${i}.dat?r=0-100000&${flag[kind]}`).then((r) => { assert.equal(r.status, 200); assert.deepEqual(plain(r), fs.readFileSync(path.join(game, 'Data', `f${i}.dat`)).subarray(0, 100000)); done.push(`${kind}${i}`); });
+  const stats = async () => JSON.parse((await get(base, '/api/netstats', '')).body);
+  const until = async (f) => { for (let k = 0; k < 1000 && !f(await stats()); k++) await new Promise((r) => setTimeout(r, 2)); };
+  // a background download runs (its compression held); two more wait, then an announced range arrives
+  const all = [ask(1, 'bg')];
+  await until(() => gz.count() === 1);
+  all.push(ask(2, 'bg'), ask(3, 'bg'));
+  await until((s) => s.server.encodeQueue.bg === 2);
+  all.push(ask(4, 'want'));
+  await until((s) => s.server.encodeQueue.want === 1);
+  gz.real(); gz.release();
+  await Promise.all(all);
+  assert.deepEqual(done, ['bg1', 'want4', 'bg2', 'bg3'], 'the announced range before the downloads queued before it');
+  const s = await stats();
+  assert.equal(s.want.requests, 1); assert.equal(s.bg.requests, 3); assert.equal(s.demand.requests, 0);
+  // (with a session: still not learned — announced is not read)
+  await get(base, '/gamez/g/Data/f1.dat?r=0-65536&w=1&s=zz');
+  assert.equal((await stats()).server.sessions, 0, 'no session learned');
+  await get(base, '/gamez/g/Data/f1.dat?r=0-65536&s=zz');
+  assert.equal((await stats()).server.sessions, 1, 'a read is');
+});
+
 test('/gamez: a queued encoding whose every client left (the first one and those that joined it) is not made', async (t) => {
   const { base, game } = await start(t, { encodeJobs: 1 });
   for (let i = 1; i <= 2; i++) fs.writeFileSync(path.join(game, 'Data', `f${i}.dat`), Buffer.from(`file ${i} of a game `.repeat(20000)));

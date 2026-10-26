@@ -614,9 +614,102 @@ waits, the background carries only what that load needs. Generic: the rules depe
   and `inLoad`: the wire bytes of those begun during a load. With `waits` / `waitMs` (the game's real waits) and
   `loading`. No reason in the URL (counters only).
 
-Measured: see below.
+Measured (tools/openmw/place-load.mjs, a returning player's warm store, 1.8 MB/s and 90 ms round trip, two runs
+each, the load of Ald'ruhn -2,6 outside the learned order): the frozen load does not change — 37.3-37.5 s for a COE,
+40.5-41.5 s for a save loaded from the menu, 340 serial reads 107 ms apart, latency-bound —; the background during it
+2.25 → 0.43 MB (save from the menu) and while frames resume 2.0-2.7 → 0.4-0.6 MB. The owner's session (2026-10-26:
+116 MB of upgrades, Video/, full Splash pictures and Music during a 58 s save load, reads 205 ms apart against a 93 ms
+floor) is not reproduced by these warm profiles: the rules are kept as the guard for it, unmeasured there.
 
-MEASURE-TBD
+## Announced reads (2026-10-26)
+
+Stage 1 silenced the background, and the load stayed as long (`tools/openmw/place-load.mjs`, a returning player at
+1.8 MB/s and 90 ms, COE from Seyda Neen to Ald'ruhn -2,6): one frozen frame of 37.4 s made of 340 serial synchronous
+reads (174 .nif, 153 .dds — light copies on that link —, 7 .kf, 6 archive headers), each a round trip (93 ms to the
+first byte) plus ~4 ms of the engine's work; 9.4 MB decoded, 5.9 MB on the wire. Fetched in parallel, those bytes take
+3-4 s on that link. The engine knows what a load reads before it reads it (the cells' references, their models, the
+textures those name): it says so first, the game data fetches all of it in parallel, and the engine waits once.
+Stage 2: the transport (any runtime) and the OpenMW page; the engine side is its own patch.
+
+**The contract** (the engine calls, on the page's thread; absent hooks: nothing announced, no wait):
+- `globalThis.orthrosWillRead(list, label) → int`: `list` UTF-8 records separated by `\x1E`, each
+  `enginePath\x1Foffset\x1Fsize` — the path the engine opens (an archive's for a file in it, with the member's range;
+  a loose file's own), size -1: to the end. `label`: `<kind>:<place>`, kind `meshes` | `textures` | `terrain`, place
+  `x,y` for an exterior cell or the lowercased interior id (`meshes:-2,6`). Returns how many records are not in the
+  page yet (0: nothing to wait for); they are fetched at once.
+- `globalThis.orthrosReadWait(timeoutMs) → int`: spins until every record announced since the last wait is in the data
+  worker (stored, or failed: the engine's own read then says what failed) — 1 —, or `timeoutMs` passed — 0 (the
+  engine reads all the same; what is missing comes by its reads).
+- The engine announces in its scene changes before it loads cells (models of the cells' references, their land
+  textures), waits (bounded), then announces the textures the now-local models name, and waits again.
+
+**The page** (`src/vfs/data-client.js`): `GameData.want(entries, label)` (`entries` `[{ h, off, len }]`) and
+`GameData.wantWait(timeoutMs)`; OpenMW's hooks (`src/ports/openmw/streamfs.js`) map the engine's paths to handles as
+`orthrosRangeReady` does (unknown paths left out). A file with a light copy is announced as what its next load reads
+(`nextPick`: `pick`'s rules — `readsReal`, `GameData.reloads`, the link's class, `prefer`), and that choice is pinned
+for that load (`h.pin`, honoured by `pick` at the load's first read within `PIN_MS`, 60 s, unless the file itself is
+here: the announced transfers may push the link's measure across `FAST_BPS` during the wait, and the other copy was not
+fetched): on a link that is not fast its light copy, whole (a texture is read whole; never the file itself there). Bytes already in the page are not announced. One batch per call, numbered.
+
+**The worker** (`src/vfs/data-worker.js` `want`) hands each version's entries to its reader,
+`HttpBackend.wantList(list, { label })` (`[[path, start, end]]`, end -1: the file's end) — one promise per entry, true
+once its bytes are here:
+- each range's missing bytes as transport units (`unitOf`): a whole block when the range covers all of a block none of
+  which is here (a file under 1 MiB read whole: one request, its unit), else its 64 KiB pieces — every request one
+  precompressed unit on the server;
+- in the list's order, `WANT_REQUESTS` (32; `WANT_REQUESTS_THIN` 8 on a thin link) requests in flight — the window, not
+  the background's count: the engine waits for them next, so their turns are `urgent` (as a parked read's) and
+  `forLoad` (they pass a load's silence);
+- deduplicated: what is here (memory, the store) is not asked; a learned piece or a block on its way (`flights`,
+  `blockFlights`, the fill's block) is joined — and promoted (`NetLink.promote`): a queued background flight that is
+  not `forLoad` (prefetch, fill, a learned piece no longer followed) would else wait behind the silence the list's own
+  wait makes, until the engine's timeout —, and asked only if that flight failed; every queued unit is registered in
+  `flights` at once, so a parked read of the same bytes joins it — and makes it go first, past the window
+  (`NetLink.promote` → the unit's `urgent`) — instead of a second request;
+- kept like any background bytes (whole blocks and pieces in the store); retried `WANT_RETRIES` (2) times on a network
+  failure (`retryWaits`' pauses), an answer refused fails at once;
+- while any entry of a list is missing, one `NetLink.wait` (the engine waits for them: the rest of the background stays
+  silent, stage 1); counted as `announced` in `NetLink.bgBy`, `stats.want*` in the backend.
+
+**The wait** (shared memory: the page's thread spins, no message reaches it): `ctrl[12]` — the last batch settled, with
+every batch of the current window before it (the window: the batches announced since the page's last wait, `from` sent
+with each; the page waits for its last number) — so an older batch that timed out or hung holds no later wait —, `ctrl[13]` the entries not settled yet, `ctrl[14]` those
+that failed since the start. The page's heartbeat check (`ctrl[3]`, `DEAD_MS`) ends a wait whose worker died (0).
+`GameData.snapshot()`: `wants`, `wantWaits`, `wantWaitMs`, `wantTimeouts`.
+
+**The server** (`src/host/server.js` `/gamez`): `&w=1` marks an announced range — not learned (announced is not read:
+the learned orders and launch sets stay the reads'), answered from the precompressed units like any unit request,
+encoded on the fly in its own queue (`want`, between the game's reads and the background's; a game's read joining one
+moves it to the demand queue, an announced one joining a download moves that to `want`), counted in
+`/api/netstats` as `want`. `tools/net-proxy.mjs`: kind `want` (`urlKind`, `summarize`, `loadWindow`'s `want` — the
+load's own bytes, not background).
+
+The label goes to the worker with each batch (`W.wantLabel`, `stats.wantLabel`): the learned places (stage 3) will key
+on it. While a list is missing, nothing is fetched ahead from the learned order either (`pumpAhead`, even for a list
+announced with `wait: false`): the engine said what its load reads; the order's guesses go once it is here.
+
+**Measured** (2026-10-26, `place-load.mjs`, the same warm profile, pristine learned order and link — 1.8 MB/s, 90 ms —,
+two runs each; the engine `orthros-r10.patch` as a scratch release; C: COE Seyda Neen → Ald'ruhn -2,6, S: a save made
+at Ald'ruhn loaded from the menu with F9):
+
+| scenario | frozen frame | serial reads in it (p50 spacing) | announced: waits, wire | background in it |
+|---|---|---|---|---|
+| C baseline / stage 1 | 37.4 s | 340 (107 ms) | — | 0.03-0.23 MB |
+| C stage 2 | 4.8-5.4 s | 0 | 3 waits, 4.4 s; 392 units, 11.6 MB decoded, 7.5 MB wire | 0.9-1.1 MB (read-ahead past archive members) |
+| S baseline | 40.7-41.5 s (key → world 42 s) | 340 (108 ms) | — | 2.25 MB |
+| S stage 1 | 40.5-40.8 s (41.5 s) | 340 (108 ms) | — | 0.4 MB |
+| S stage 2 | 8.3-8.5 s (key → world 9.3-9.6 s) | 0 | 3 waits, 4.5 s; 404 units, 11.7 MB decoded, 7.5 MB wire | 3.2-3.3 MB |
+
+The announced bytes go at ~1.65 MB/s of the link's 1.8 (the gap: the NIF parse between the meshes' wait and the
+textures'). More bytes than the serial reads took (11.6 vs 9.4 MB decoded): the distant chunks' and the grid's whole
+lists, some never read in this load (not the NPCs' record inventories: listing autoEquip's likely choice per slot type
+instead of every item — a merchant's stock — took C from 392 units / 11.64 MB to 390 / 11.59 MB, frozen 5.4 s, S
+unchanged at 404 / 11.72 MB, frozen 8.3 s). A first probe without the NPCs' record inventory (an NPC met for the first time
+has no inventory yet — its clothing and armor were then read one by one) left 66 serial reads (7.3 s) of body parts and
+their textures in a 10.8 s frame. What remains in the frame after the waits is the engine's own work (parsing and
+building ~850 files: ~0.4 s in C, ~3 s in S, under SwiftShader). Left: the sequential read-ahead past an archive
+member (`a=1`, 0.3 MB of a wait), the learned pieces fetched during the NIF parse between the two waits (`p=1`, 0.3 MB
+in S), the textures' upgrades to full size right after (S).
 
 ## What the page says
 

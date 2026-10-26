@@ -16,6 +16,7 @@ test('net-proxy log: kinds, reads and categories', () => {
   assert.equal(urlKind(`${M}/Data/a.nif?r=0-10&s=abc`), 'demand');
   assert.equal(urlKind(`${M}/Data/a.nif?r=0-10&s=abc&a=1`), 'ahead');
   assert.equal(urlKind(`${M}/Data/a.nif?r=0-10&p=1`), 'bg');
+  assert.equal(urlKind(`${M}/Data/a.nif?r=0-10&w=1`), 'want');
   assert.equal(urlKind('/src/vfs/net-link.js'), 'other');
   assert.deepEqual(dataRead(`${M}/.light/Textures/tx%20a.dds?r=100-1100&s=x`), { manifest: 'mw', path: 'Textures/tx a.dds', light: true, decoded: 1000 });
   assert.equal(dataRead(`${M}/Morrowind.bsa?r=0-5&p=1`).decoded, 5);
@@ -73,4 +74,20 @@ test('net-proxy log: readLog sorts by start, reads gzip, skips a cut line', () =
     fs.writeFileSync(path.join(dir, 'p.jsonl.gz'), zlib.gzipSync(text));
     assert.deepEqual(readLog(path.join(dir, 'p.jsonl.gz')).map((r) => r.url), ['/a', '/b']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('net-proxy log: announced ranges (w=1) are the load\'s own — counted apart, not background', () => {
+  const recs = [
+    rec(1000, `${M}/Meshes/a.nif?r=0-65536&w=1`, 30_000, 120),
+    rec(1001, `${M}/.light/Textures/a.dds?r=0-40000&w=1`, 20_000, 110),
+    rec(1010, `${M}/Textures/b.dds?r=0-100000&p=1`, 50_000, 100),
+    rec(1500, `${M}/Meshes/a.nif?r=0-100&s=x`, 100, 90),
+  ];
+  const w = loadWindow(recs, 1000, 2000);
+  assert.deepEqual(w.want, { count: 2, decodedMB: 0.11, wireMB: 0.05 });
+  assert.equal(w.backgroundMB, 0.05, 'the p=1 download only');
+  assert.equal(w.wireMB.want, 0.05);
+  const s = summarize(recs);
+  assert.deepEqual(s.byKind.want, { requests: 2, MB: 0.05 });
+  assert.equal(s.dataRequests, 4);
 });

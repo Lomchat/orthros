@@ -1,0 +1,1072 @@
+diff --git a/openmw/apps/openmw/mwrender/objectpaging.cpp b/openmw/apps/openmw/mwrender/objectpaging.cpp
+index fb95242..b0d8f67 100644
+--- a/openmw/apps/openmw/mwrender/objectpaging.cpp
++++ b/openmw/apps/openmw/mwrender/objectpaging.cpp
+@@ -681,49 +681,9 @@ namespace MWRender
+             mOrthrosPending.erase(id);
+             return true;
+         }
+-        // (getChunk's own level: its lodFlags' high bits)
+-        const unsigned char lod = static_cast<unsigned char>(lodFlags >> (4 * 4));
+         auto pending = mOrthrosPending.find(id);
+         if (pending == mOrthrosPending.end())
+-        {
+-            const osg::Vec2i startCell(static_cast<int>(std::floor(center.x() - size / 2.f)),
+-                static_cast<int>(std::floor(center.y() - size / 2.f)));
+-            const MWBase::World& world = *MWBase::Environment::get().getWorld();
+-            const MWWorld::ESMStore& store = world.getStore();
+-            const std::map<ESM::RefNum, PagedCellRef> refs = mWorldspace == ESM::Cell::sDefaultWorldspaceId
+-                ? collectESM3References(size, startCell, store)
+-                : collectESM4References(size, startCell, mWorldspace);
+-            std::set<VFS::Path::Normalized> models;
+-            for (const auto& [refNum, ref] : refs)
+-            {
+-                if (Misc::ResourceHelpers::isHiddenMarker(ref.mRefId))
+-                    continue;
+-                const int type = store.findStatic(ref.mRefId);
+-                VFS::Path::Normalized model = getModel(type, ref.mRefId, store);
+-                if (model.empty())
+-                    continue;
+-                model = Misc::ResourceHelpers::correctMeshPath(model);
+-                if (activeGrid && type != ESM::REC_STAT && type != ESM::REC_STAT4)
+-                    model = Misc::ResourceHelpers::correctActorModelPath(model, mSceneManager->getVFS());
+-                if (!activeGrid)
+-                {
+-                    std::lock_guard<std::mutex> lock(mLODNameCacheMutex);
+-                    LODNameCacheKey key{ model, lod };
+-                    LODNameCache::const_iterator found = mLODNameCache.lower_bound(key);
+-                    if (found != mLODNameCache.end() && found->first == key)
+-                        model = found->second;
+-                    else
+-                        model = mLODNameCache
+-                                    .emplace_hint(found, std::move(key),
+-                                        Misc::ResourceHelpers::getLODMeshName(
+-                                            world.getESMVersions()[refNum.mContentFile], model,
+-                                            *mSceneManager->getVFS(), lod))
+-                                    ->second;
+-                }
+-                models.insert(std::move(model));
+-            }
+-            pending = mOrthrosPending.emplace(id, std::vector<VFS::Path::Normalized>(models.begin(), models.end())).first;
+-        }
++            pending = mOrthrosPending.emplace(id, orthrosChunkModels(size, center, lodFlags, activeGrid)).first;
+         // (every mesh asked: all the missing files on their way at once; those here dropped from the list)
+         std::erase_if(pending->second, [&](const VFS::Path::Normalized& model) { return mSceneManager->orthrosTemplateReady(model); });
+         if (!pending->second.empty())
+@@ -732,6 +692,66 @@ namespace MWRender
+         return true;
+     }
+ 
++    std::vector<VFS::Path::Normalized> ObjectPaging::orthrosChunkModels(
++        float size, const osg::Vec2f& center, unsigned int lodFlags, bool activeGrid)
++    {
++        // (getChunk's own level: its lodFlags' high bits)
++        const unsigned char lod = static_cast<unsigned char>(lodFlags >> (4 * 4));
++        const osg::Vec2i startCell(static_cast<int>(std::floor(center.x() - size / 2.f)),
++            static_cast<int>(std::floor(center.y() - size / 2.f)));
++        const MWBase::World& world = *MWBase::Environment::get().getWorld();
++        const MWWorld::ESMStore& store = world.getStore();
++        const std::map<ESM::RefNum, PagedCellRef> refs = mWorldspace == ESM::Cell::sDefaultWorldspaceId
++            ? collectESM3References(size, startCell, store)
++            : collectESM4References(size, startCell, mWorldspace);
++        std::set<VFS::Path::Normalized> models;
++        for (const auto& [refNum, ref] : refs)
++        {
++            if (Misc::ResourceHelpers::isHiddenMarker(ref.mRefId))
++                continue;
++            const int type = store.findStatic(ref.mRefId);
++            VFS::Path::Normalized model = getModel(type, ref.mRefId, store);
++            if (model.empty())
++                continue;
++            model = Misc::ResourceHelpers::correctMeshPath(model);
++            if (activeGrid && type != ESM::REC_STAT && type != ESM::REC_STAT4)
++                model = Misc::ResourceHelpers::correctActorModelPath(model, mSceneManager->getVFS());
++            if (!activeGrid)
++            {
++                std::lock_guard<std::mutex> lock(mLODNameCacheMutex);
++                LODNameCacheKey key{ model, lod };
++                LODNameCache::const_iterator found = mLODNameCache.lower_bound(key);
++                if (found != mLODNameCache.end() && found->first == key)
++                    model = found->second;
++                else
++                    model = mLODNameCache
++                                .emplace_hint(found, std::move(key),
++                                    Misc::ResourceHelpers::getLODMeshName(
++                                        world.getESMVersions()[refNum.mContentFile], model, *mSceneManager->getVFS(),
++                                        lod))
++                                ->second;
++            }
++            models.insert(std::move(model));
++        }
++        return std::vector<VFS::Path::Normalized>(models.begin(), models.end());
++    }
++
++    void ObjectPaging::orthrosChunkFiles(float size, const osg::Vec2f& center, unsigned char /*lod*/,
++        unsigned int lodFlags, bool activeGrid, std::vector<VFS::Path::Normalized>& meshes,
++        std::vector<VFS::Path::Normalized>& /*landTextures*/)
++    {
++        if (activeGrid && !mActiveGrid)
++            return;
++        if (mCache->getRefFromObjectCache(std::make_tuple(center, size, activeGrid)))
++            return;
++        // (kept for chunkReady too: the same chunk asked again lists nothing twice)
++        const ChunkId id = std::make_tuple(center, size, activeGrid);
++        auto pending = mOrthrosPending.find(id);
++        if (pending == mOrthrosPending.end())
++            pending = mOrthrosPending.emplace(id, orthrosChunkModels(size, center, lodFlags, activeGrid)).first;
++        meshes.insert(meshes.end(), pending->second.begin(), pending->second.end());
++    }
++
+     osg::ref_ptr<osg::Node> ObjectPaging::createChunk(float size, const osg::Vec2f& center, bool activeGrid,
+         const osg::Vec3f& viewPoint, bool compile, unsigned char lod)
+     {
+diff --git a/openmw/apps/openmw/mwrender/objectpaging.hpp b/openmw/apps/openmw/mwrender/objectpaging.hpp
+index 6c1af39..c033cb5 100644
+--- a/openmw/apps/openmw/mwrender/objectpaging.hpp
++++ b/openmw/apps/openmw/mwrender/objectpaging.hpp
+@@ -43,6 +43,11 @@ namespace MWRender
+         bool chunkReady(float size, const osg::Vec2f& center, unsigned char lod, unsigned int lodFlags,
+             bool activeGrid, const osg::Vec3f& viewPoint) override;
+ 
++        /// Orthros (orthros-r10.patch): a chunk not built yet: the meshes chunkReady() asks for (orthrosChunkModels).
++        void orthrosChunkFiles(float size, const osg::Vec2f& center, unsigned char lod, unsigned int lodFlags,
++            bool activeGrid, std::vector<VFS::Path::Normalized>& meshes,
++            std::vector<VFS::Path::Normalized>& landTextures) override;
++
+         /// @return true if view needs rebuild
+         bool enableObject(int type, ESM::RefNum refnum, const osg::Vec3f& pos, const osg::Vec2i& cell, bool enabled);
+ 
+@@ -96,6 +101,11 @@ namespace MWRender
+ 
+         /// Orthros (orthros-r5.patch): chunkReady()'s meshes still on their way, by chunk.
+         std::map<ChunkId, std::vector<VFS::Path::Normalized>> mOrthrosPending;
++
++        /// Orthros (orthros-r10.patch): the meshes createChunk() may use for the chunk (a few it skips included),
++        /// corrected as it does (LOD names outside the active grid). Main thread.
++        std::vector<VFS::Path::Normalized> orthrosChunkModels(
++            float size, const osg::Vec2f& center, unsigned int lodFlags, bool activeGrid);
+     };
+ 
+     class RefnumMarker : public osg::Object
+diff --git a/openmw/apps/openmw/mwworld/scene.cpp b/openmw/apps/openmw/mwworld/scene.cpp
+index 194a5c4..b846efa 100644
+--- a/openmw/apps/openmw/mwworld/scene.cpp
++++ b/openmw/apps/openmw/mwworld/scene.cpp
+@@ -3,9 +3,11 @@
+ #include "scene.hpp"
+ 
+ #include <algorithm>
++#include <string>
+ #include <atomic>
+ #include <chrono>
+ #include <limits>
++#include <map>
+ 
+ #include <BulletCollision/CollisionDispatch/btCollisionObject.h>
+ 
+@@ -20,12 +22,17 @@
+ #include <components/esm3/loadcell.hpp>
+ #include <components/loadinglistener/loadinglistener.hpp>
+ #include <components/misc/convert.hpp>
++#include <components/misc/pathhelpers.hpp>
+ #include <components/misc/resourcehelpers.hpp>
++#include <components/misc/strings/lower.hpp>
+ #include <components/resource/resourcesystem.hpp>
+ #include <components/resource/scenemanager.hpp>
+ #include <components/sceneutil/positionattitudetransform.hpp>
+ #include <components/settings/values.hpp>
++#include <components/terrain/storage.hpp>
+ #include <components/terrain/terraingrid.hpp>
++#include <components/vfs/file.hpp>
++#include <components/vfs/manager.hpp>
+ #include <components/vfs/pathutil.hpp>
+ 
+ #include "../mwbase/environment.hpp"
+@@ -59,6 +66,67 @@ namespace
+ {
+     using MWWorld::RotationOrder;
+ 
++#ifdef __EMSCRIPTEN__
++    // Orthros (orthros-r10.patch): what an NPC met for the first time wears, before its inventory exists (made from its
++    // record — levelled lists drawn, the best item of each slot equipped: InventoryStore::autoEquip — only once the cell
++    // inserts it): the body parts (as Npc::getModelsToPreload picks them by sex) of autoEquip's likely choice, roughly —
++    // per armor type the best rating, per clothing type the most valuable (two rings), per weapon type (ammo too) the
++    // best damage. Not every item of the record: a merchant's stock (its restocking items, count < 0) would bring dozens
++    // of meshes and their textures into the load it never shows — but kept among the candidates, as autoEquip ranks
++    // them with the rest. Levelled lists left out (drawn later).
++    void orthrosNpcRecordModels(
++        const ESM::NPC& npc, const MWWorld::ESMStore& store, std::vector<std::string_view>& models)
++    {
++        const bool female = (npc.mFlags & ESM::NPC::Female) != 0;
++        const auto addParts = [&](const std::vector<ESM::PartReference>& parts) {
++            for (const ESM::PartReference& partRef : parts)
++            {
++                const ESM::RefId& partname = (female && !partRef.mFemale.empty()) || (!female && partRef.mMale.empty())
++                    ? partRef.mFemale
++                    : partRef.mMale;
++                const ESM::BodyPart* part = store.get<ESM::BodyPart>().search(partname);
++                if (part != nullptr && !part->mModel.getOriginal().empty())
++                    models.push_back(part->mModel.getOriginal());
++            }
++        };
++        std::map<int32_t, const ESM::Armor*> armor;
++        std::map<int32_t, std::vector<const ESM::Clothing*>> clothing;
++        std::map<int32_t, std::pair<int, const ESM::Weapon*>> weapons;
++        for (const ESM::ContItem& item : npc.mInventory.mList)
++        {
++            if (const ESM::Clothing* c = store.get<ESM::Clothing>().search(item.mItem))
++            {
++                std::vector<const ESM::Clothing*>& best = clothing[c->mData.mType];
++                best.push_back(c);
++                std::stable_sort(best.begin(), best.end(),
++                    [](const ESM::Clothing* a, const ESM::Clothing* b) { return a->mData.mValue > b->mData.mValue; });
++                best.resize(std::min<size_t>(best.size(), c->mData.mType == ESM::Clothing::Ring ? 2 : 1));
++            }
++            else if (const ESM::Armor* a = store.get<ESM::Armor>().search(item.mItem))
++            {
++                const ESM::Armor*& best = armor[a->mData.mType];
++                if (best == nullptr || a->mData.mArmor > best->mData.mArmor)
++                    best = a;
++            }
++            else if (const ESM::Weapon* w = store.get<ESM::Weapon>().search(item.mItem);
++                     w != nullptr && !w->mModel.getOriginal().empty())
++            {
++                const int damage = std::max({ w->mData.mChop[1], w->mData.mSlash[1], w->mData.mThrust[1] });
++                const auto it = weapons.find(w->mData.mType);
++                if (it == weapons.end() || damage > it->second.first)
++                    weapons[w->mData.mType] = { damage, w };
++            }
++        }
++        for (const auto& entry : armor)
++            addParts(entry.second->mParts.mParts);
++        for (const auto& entry : clothing)
++            for (const ESM::Clothing* c : entry.second)
++                addParts(c->mParts.mParts);
++        for (const auto& entry : weapons)
++            models.push_back(entry.second.second->mModel.getOriginal());
++    }
++#endif
++
+     osg::Quat makeActorOsgQuat(const ESM::Position& position)
+     {
+         return osg::Quat(position.rot[2], osg::Vec3(0, 0, -1));
+@@ -811,6 +879,22 @@ namespace MWWorld
+         mRendering.enableTerrain(true, playerCellIndex.mWorldspace);
+         mRendering.setActiveGrid(newGrid);
+ 
++#ifdef __EMSCRIPTEN__
++        // Orthros (orthros-r10.patch): the grid's cells about to load (as wantCell below picks the player's: those
++        // not active yet, their refs loaded here), their files fetched together before the synchronous terrain
++        // preload and loadCell read them one by one; the terrain preload's own (distant chunks) then likewise
++        // (Terrain::QuadTreeWorld::orthrosReadAhead).
++        {
++            std::vector<CellStore*> cells;
++            iterateOverCellsAround(playerCellX, playerCellY, halfGridSize, [&](int x, int y) {
++                const ESM::ExteriorCellLocation location(x, y, playerCellIndex.mWorldspace);
++                if (!isCellInCollection(location, mActiveCells))
++                    cells.push_back(&mWorld.getWorldModel().getExterior(location));
++            });
++            orthrosReadAhead(cells, std::to_string(playerCellX) + "," + std::to_string(playerCellY));
++        }
++#endif
++
+         mPreloader->setTerrain(mRendering.getTerrain());
+         if (mRendering.pagingUnlockCache())
+             mPreloader->abortTerrainPreloadExcept(nullptr);
+@@ -1122,6 +1206,14 @@ namespace MWWorld
+ 
+         Log(Debug::Info) << "Changing to interior";
+ 
++#ifdef __EMSCRIPTEN__
++        // Orthros (orthros-r10.patch): the interior's files fetched together before loadCell reads them one by one.
++        {
++            CellStore* cells[] = { &cell };
++            orthrosReadAhead(cells, Misc::StringUtils::lowerCase(cellName));
++        }
++#endif
++
+         auto navigatorUpdateGuard = mNavigator.makeUpdateGuard();
+ 
+         // unload
+@@ -1473,6 +1565,65 @@ namespace MWWorld
+         mPreloader->syncTerrainLoad(*loadingListener);
+     }
+ 
++    void Scene::orthrosReadAhead(std::span<CellStore* const> cells, std::string_view place)
++    {
++#ifdef __EMSCRIPTEN__
++        if (cells.empty() || !VFS::orthrosReadAheadHooked())
++            return;
++        Resource::SceneManager& sceneManager = *mRendering.getResourceSystem()->getSceneManager();
++        const VFS::Manager& vfs = *sceneManager.getVFS();
++        // (the models as CellPreloader's ListModelsVisitor lists them — an NPC's equipped parts only once its
++        // inventory exists: before, what its record carries, orthrosNpcRecordModels)
++        const MWWorld::ESMStore& store = *MWBase::Environment::get().getESMStore();
++        std::vector<std::string_view> models;
++        std::vector<VFS::Path::Normalized> landTextures;
++        Terrain::World* terrain = mRendering.getTerrain();
++        for (CellStore* cell : cells)
++        {
++            cell->forEachConst([&](const ConstPtr& ptr) {
++                ptr.getClass().getModelsToPreload(ptr, models);
++                if (ptr.getType() == ESM::NPC::sRecordId && ptr.getRefData().getCustomData() == nullptr)
++                    orthrosNpcRecordModels(*ptr.get<ESM::NPC>()->mBase, store, models);
++                return true;
++            });
++            if (terrain != nullptr && cell->getCell()->isExterior())
++                terrain->getStorage()->orthrosLandTextures(cell->getCell()->getExteriorCellLocation(), landTextures);
++        }
++        std::sort(models.begin(), models.end());
++        models.erase(std::unique(models.begin(), models.end()), models.end());
++        // (each corrected as PreloadItem::preloadMesh does: the actor's x*.nif, and its .kf beside it)
++        std::vector<VFS::Path::Normalized> files;
++        constexpr VFS::Path::ExtensionView nif("nif");
++        constexpr VFS::Path::ExtensionView kf("kf");
++        for (const std::string_view model : models)
++        {
++            try
++            {
++                VFS::Path::Normalized mesh = Misc::ResourceHelpers::correctMeshPath(VFS::Path::Normalized(model));
++                mesh = Misc::ResourceHelpers::correctActorModelPath(mesh, &vfs);
++                if (!vfs.exists(mesh))
++                    continue;
++                if (Misc::getFileName(mesh).starts_with('x') && mesh.extension() == nif)
++                {
++                    VFS::Path::Normalized kfname = mesh;
++                    kfname.changeExtension(kf);
++                    if (vfs.exists(kfname))
++                        files.push_back(std::move(kfname));
++                }
++                files.push_back(std::move(mesh));
++            }
++            catch (const std::exception&)
++            {
++                // (the load reports it)
++            }
++        }
++        sceneManager.orthrosPrefetch(files, landTextures, place);
++#else
++        (void)cells;
++        (void)place;
++#endif
++    }
++
+     void Scene::reloadTerrain()
+     {
+         mPreloader->setTerrainPreloadPositions({});
+diff --git a/openmw/apps/openmw/mwworld/scene.hpp b/openmw/apps/openmw/mwworld/scene.hpp
+index d09adee..6336ce9 100644
+--- a/openmw/apps/openmw/mwworld/scene.hpp
++++ b/openmw/apps/openmw/mwworld/scene.hpp
+@@ -11,6 +11,8 @@
+ #include <memory>
+ #include <optional>
+ #include <set>
++#include <span>
++#include <string_view>
+ #include <vector>
+ 
+ #include <components/esm/exteriorcelllocation.hpp>
+@@ -164,6 +166,13 @@ namespace MWWorld
+         void preloadCell(MWWorld::CellStore& cell);
+         void preloadTerrain(const osg::Vec3f& pos, ESM::RefId worldspace, bool sync = false);
+ 
++        /// Orthros (orthros-r10.patch): the cells about to load synchronously (their refs loaded): their objects'
++        /// meshes (with the actors' .kf), the textures those name and their terrain's layer textures fetched by the
++        /// page together first (Resource::SceneManager::orthrosPrefetch) — a cell change otherwise reads them one
++        /// round trip at a time in one frozen frame. `place`: 'x,y' (the player's exterior cell) or the interior's
++        /// lowercased id. Nothing off the web build.
++        void orthrosReadAhead(std::span<CellStore* const> cells, std::string_view place);
++
+         osg::Vec4i gridCenterToBounds(const osg::Vec2i& centerCell) const;
+         osg::Vec2i getNewGridCenter(const osg::Vec3f& pos, const osg::Vec2i* currentGridCenter = nullptr) const;
+ 
+diff --git a/openmw/components/esmterrain/storage.cpp b/openmw/components/esmterrain/storage.cpp
+index 25dab43..5df8936 100644
+--- a/openmw/components/esmterrain/storage.cpp
++++ b/openmw/components/esmterrain/storage.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include <algorithm>
+ #include <optional>
++#include <set>
+ #include <stdexcept>
+ 
+ #include <osg/Image>
+@@ -371,6 +372,24 @@ namespace ESMTerrain
+             std::fill(positions.begin(), positions.end(), osg::Vec3f());
+     }
+ 
++    void Storage::orthrosLandTextures(ESM::ExteriorCellLocation cellLocation, std::vector<VFS::Path::Normalized>& out)
++    {
++        if (ESM::isEsm4Ext(cellLocation.mWorldspace))
++            return;
++        const osg::ref_ptr<const LandObject> land = getLand(cellLocation);
++        std::set<UniqueTextureId> ids;
++        for (std::size_t y = 0; y < ESM::Land::LAND_TEXTURE_SIZE; ++y)
++            for (std::size_t x = 0; x < ESM::Land::LAND_TEXTURE_SIZE; ++x)
++                ids.insert(getTextureIdAt(land.get(), x, y));
++        for (const UniqueTextureId& id : ids)
++        {
++            Terrain::LayerInfo info = getLayerInfo(getTextureName(id));
++            out.push_back(std::move(info.mDiffuseMap));
++            if (!info.mNormalMap.empty())
++                out.push_back(std::move(info.mNormalMap));
++        }
++    }
++
+     VFS::Path::Normalized Storage::getTextureName(UniqueTextureId id)
+     {
+         constexpr VFS::Path::NormalizedView defaultTexture("_land_default.dds");
+diff --git a/openmw/components/esmterrain/storage.hpp b/openmw/components/esmterrain/storage.hpp
+index 25fa1a4..670a812 100644
+--- a/openmw/components/esmterrain/storage.hpp
++++ b/openmw/components/esmterrain/storage.hpp
+@@ -139,6 +139,12 @@ namespace ESMTerrain
+ 
+         int getTextureTileCount(float chunkSize, ESM::RefId worldspace) override;
+ 
++        /// Orthros (orthros-r10.patch): an ESM3 cell's VTEX textures (its 16x16 LTEX indices, 0 the default
++        /// texture), each through getTextureName() and getLayerInfo() — the files getBlendmaps() will have read.
++        /// An ESM4 worldspace: none.
++        void orthrosLandTextures(
++            ESM::ExteriorCellLocation cellLocation, std::vector<VFS::Path::Normalized>& out) override;
++
+         float getVertexHeight(const ESM::LandData* data, int x, int y)
+         {
+             const int landSize = data->getLandSize();
+diff --git a/openmw/components/resource/scenemanager.cpp b/openmw/components/resource/scenemanager.cpp
+index 0cf84aa..c003505 100644
+--- a/openmw/components/resource/scenemanager.cpp
++++ b/openmw/components/resource/scenemanager.cpp
+@@ -1,7 +1,9 @@
+ #include "scenemanager.hpp"
+ 
++#include <chrono>
+ #include <cstdlib>
+ #include <filesystem>
++#include <set>
+ 
+ #include <osg/AlphaFunc>
+ #include <osg/Capability>
+@@ -39,6 +41,7 @@
+ #include <components/misc/strings/algorithm.hpp>
+ #include <components/misc/strings/conversion.hpp>
+ 
++#include <components/vfs/file.hpp>
+ #include <components/vfs/manager.hpp>
+ #include <components/vfs/pathutil.hpp>
+ 
+@@ -965,9 +968,21 @@ namespace Resource
+             return true; // (the error marker: getTemplate's own answer)
+         if (!mVFS->orthrosDataReady(path))
+             return false;
++        // (every texture the file names, each asked: the missing ones all on their way at once)
++        std::vector<VFS::Path::Normalized> images;
++        orthrosTexturesOf(path, images);
++        bool ready = true;
++        for (const auto& image : images)
++            if (!mImageManager->orthrosCached(image) && !mVFS->orthrosDataReady(image))
++                ready = false;
++        return ready;
++    }
++
++    void SceneManager::orthrosTexturesOf(VFS::Path::NormalizedView path, std::vector<VFS::Path::Normalized>& out)
++    {
+         constexpr VFS::Path::ExtensionView nif("nif");
+-        if (path.extension() != nif)
+-            return true;
++        if (path.extension() != nif || !mVFS->exists(path))
++            return;
+         Nif::NIFFilePtr file;
+         try
+         {
+@@ -975,10 +990,15 @@ namespace Resource
+         }
+         catch (const std::exception&)
+         {
+-            return true; // (getTemplate reports it)
++            return; // (getTemplate reports it)
+         }
+-        // (every texture the file names, each asked: the missing ones all on their way at once)
+-        bool ready = true;
++        // (the shaders' automatic maps, Shader::ShaderVisitor: <name><pattern>.<ext> beside the diffuse map, the
++        // normal-height map preferred to the normal map)
++        const auto withPattern = [](std::string_view image, const std::string& pattern) {
++            std::string value(image);
++            Misc::StringUtils::replaceLast(value, ".", pattern + ".");
++            return VFS::Path::Normalized(std::move(value));
++        };
+         for (const auto& record : file->mRecords)
+         {
+             if (!record || record->mRecordType != Nif::RC_NiSourceTexture)
+@@ -986,12 +1006,82 @@ namespace Resource
+             const auto* texture = static_cast<const Nif::NiSourceTexture*>(record.get());
+             if (!texture->mExternal || texture->mFile.empty())
+                 continue;
+-            const VFS::Path::Normalized image
++            VFS::Path::Normalized image
+                 = Misc::ResourceHelpers::correctTexturePath(VFS::Path::toNormalized(texture->mFile), *mVFS);
+-            if (!mImageManager->orthrosCached(image) && !mVFS->orthrosDataReady(image))
+-                ready = false;
++            if (mAutoUseNormalMaps)
++            {
++                VFS::Path::Normalized normal = withPattern(image.value(), mNormalHeightMapPattern);
++                if (!mVFS->exists(normal))
++                    normal = withPattern(image.value(), mNormalMapPattern);
++                if (mVFS->exists(normal))
++                    out.push_back(std::move(normal));
++            }
++            if (mAutoUseSpecularMaps)
++            {
++                VFS::Path::Normalized specular = withPattern(image.value(), mSpecularMapPattern);
++                if (mVFS->exists(specular))
++                    out.push_back(std::move(specular));
++            }
++            out.push_back(std::move(image));
+         }
+-        return ready;
++    }
++
++    void SceneManager::orthrosPrefetch(std::span<const VFS::Path::Normalized> files,
++        std::span<const VFS::Path::Normalized> landTextures, std::string_view place)
++    {
++#ifdef __EMSCRIPTEN__
++        // (each wait bounded: past it the reads left wait one by one, as before; measured, 340 serial reads at a
++        // 90 ms round trip and 1.8 MB/s — 37 s — come in a few seconds fetched together)
++        constexpr double waitMs = 15000;
++        if (!VFS::orthrosReadAheadHooked())
++            return;
++        const auto start = std::chrono::steady_clock::now();
++        constexpr VFS::Path::ExtensionView nif("nif");
++        std::set<VFS::Path::Normalized, std::less<>> seen;
++        std::vector<VFS::Path::Normalized> wanted;
++        std::vector<VFS::Path::Normalized> nifs;
++        for (const auto& file : files)
++        {
++            if (!seen.insert(file).second || !mVFS->exists(file))
++                continue;
++            if (file.extension() == nif)
++            {
++                if (mCache->getRefFromObjectCache(file))
++                    continue; // (built already: its files read before)
++                nifs.push_back(file);
++            }
++            wanted.push_back(file);
++        }
++        const std::string meshesLabel = "meshes:" + std::string(place);
++        const std::size_t meshesMissing = mVFS->orthrosWillRead(wanted, meshesLabel);
++        const bool meshesHere = meshesMissing == 0 || VFS::orthrosReadWait(waitMs);
++        const auto meshesDone = std::chrono::steady_clock::now();
++
++        // (now local: each NIF parsed — kept by the NIF cache for getTemplate and the collision shapes — and the
++        // textures it names asked, those loaded already left out)
++        std::vector<VFS::Path::Normalized> textures;
++        for (const auto& file : nifs)
++            orthrosTexturesOf(file, textures);
++        std::erase_if(textures,
++            [&](const VFS::Path::Normalized& image) { return !seen.insert(image).second || mImageManager->orthrosCached(image); });
++        std::vector<VFS::Path::Normalized> land;
++        for (const auto& image : landTextures)
++            if (seen.insert(image).second && mVFS->exists(image) && !mImageManager->orthrosCached(image))
++                land.push_back(image);
++        const std::size_t texturesMissing = mVFS->orthrosWillRead(textures, "textures:" + std::string(place))
++            + mVFS->orthrosWillRead(land, "terrain:" + std::string(place));
++        const bool texturesHere = texturesMissing == 0 || VFS::orthrosReadWait(waitMs);
++        const auto ms = [](auto d) { return std::chrono::duration_cast<std::chrono::milliseconds>(d).count(); };
++        Log(Debug::Info) << "Orthros read-ahead " << place << ": " << wanted.size() << " meshes (" << meshesMissing
++                         << " fetched" << (meshesHere ? "" : ", timed out") << ") " << ms(meshesDone - start)
++                         << " ms, " << textures.size() << " textures + " << land.size() << " land (" << texturesMissing
++                         << " fetched" << (texturesHere ? "" : ", timed out") << ") "
++                         << ms(std::chrono::steady_clock::now() - meshesDone) << " ms";
++#else
++        (void)files;
++        (void)landTextures;
++        (void)place;
++#endif
+     }
+ 
+     osg::ref_ptr<const osg::Node> SceneManager::getTemplate(VFS::Path::NormalizedView path, bool compile)
+diff --git a/openmw/components/resource/scenemanager.hpp b/openmw/components/resource/scenemanager.hpp
+index 813f298..fa8c1e9 100644
+--- a/openmw/components/resource/scenemanager.hpp
++++ b/openmw/components/resource/scenemanager.hpp
+@@ -4,7 +4,10 @@
+ #include <array>
+ #include <memory>
+ #include <mutex>
++#include <span>
+ #include <string>
++#include <string_view>
++#include <vector>
+ 
+ #include <osg/Texture>
+ #include <osg/ref_ptr>
+@@ -158,6 +161,22 @@ namespace Resource
+         /// parsed NIF is kept). Main thread (the web build's cooperative WorkQueue).
+         bool orthrosTemplateReady(VFS::Path::NormalizedView path);
+ 
++        /// Orthros (orthros-r10.patch): the textures the NIF `path` names (its external NiSourceTexture files, as the
++        /// loader corrects them, with the shaders' automatic normal / specular maps when enabled), appended to `out`.
++        /// Parses the file (its bytes read, kept in the NIF cache for getTemplate); nothing for another kind or a file
++        /// that fails. Main thread.
++        void orthrosTexturesOf(VFS::Path::NormalizedView path, std::vector<VFS::Path::Normalized>& out);
++
++        /// Orthros (orthros-r10.patch): before a synchronous load (a cell change, the sync terrain preload), the files
++        /// it will read fetched in parallel by the page instead of one round trip per read: `files` (meshes, .kf,
++        /// already corrected; those not found and the cached templates left out) announced as 'meshes:<place>', a
++        /// bounded wait, the NIFs then parsed (now local) and the textures they name announced as
++        /// 'textures:<place>' with `landTextures` as 'terrain:<place>', a bounded wait again. A wait spins the
++        /// page's thread (VFS::orthrosReadWait) only while the page reports files missing. Nothing off the web
++        /// build, or when the page has no read-ahead hooks.
++        void orthrosPrefetch(std::span<const VFS::Path::Normalized> files,
++            std::span<const VFS::Path::Normalized> landTextures, std::string_view place);
++
+         /// Clone osg::Node safely.
+         /// @note Thread safe.
+         static osg::ref_ptr<osg::Node> cloneNode(const osg::Node* base);
+diff --git a/openmw/components/terrain/chunkmanager.cpp b/openmw/components/terrain/chunkmanager.cpp
+index 02887f0..bf46270 100644
+--- a/openmw/components/terrain/chunkmanager.cpp
++++ b/openmw/components/terrain/chunkmanager.cpp
+@@ -2,6 +2,9 @@
+ // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
+ #include "chunkmanager.hpp"
+ 
++#include <algorithm>
++#include <cmath>
++
+ #include <osg/Material>
+ #include <osg/Texture2D>
+ 
+@@ -93,6 +96,23 @@ namespace Terrain
+         return nullptr;
+     }
+ 
++    void ChunkManager::orthrosChunkFiles(float size, const osg::Vec2f& center, unsigned char /*lod*/,
++        unsigned int lodFlags, bool /*activeGrid*/, std::vector<VFS::Path::Normalized>& /*meshes*/,
++        std::vector<VFS::Path::Normalized>& landTextures)
++    {
++        const ChunkKey key{ .mCenter = center, .mLod = static_cast<unsigned char>(lodFlags >> (4 * 4)), .mLodFlags = lodFlags };
++        if (mCache->getRefFromObjectCache(key))
++            return;
++        // (the cells the chunk covers, as getBlendmaps samples them: a chunk smaller than a cell lies in one)
++        const int startX = static_cast<int>(std::floor(center.x() - size / 2.f));
++        const int startY = static_cast<int>(std::floor(center.y() - size / 2.f));
++        const int endX = std::max(startX + 1, static_cast<int>(std::ceil(center.x() + size / 2.f)));
++        const int endY = std::max(startY + 1, static_cast<int>(std::ceil(center.y() + size / 2.f)));
++        for (int y = startY; y < endY; ++y)
++            for (int x = startX; x < endX; ++x)
++                mStorage->orthrosLandTextures(ESM::ExteriorCellLocation(x, y, mWorldspace), landTextures);
++    }
++
+     void ChunkManager::updateTextureFiltering()
+     {
+         UpdateTextureFilteringFunctor f(mSceneManager);
+diff --git a/openmw/components/terrain/chunkmanager.hpp b/openmw/components/terrain/chunkmanager.hpp
+index 2fbb4f2..bd2c85d 100644
+--- a/openmw/components/terrain/chunkmanager.hpp
++++ b/openmw/components/terrain/chunkmanager.hpp
+@@ -86,6 +86,12 @@ namespace Terrain
+         osg::ref_ptr<osg::Node> getChunkForRay(float size, const osg::Vec2f& center, unsigned char lod,
+             unsigned int lodFlags, bool activeGrid, const osg::Vec3f& viewPoint, bool& missing) override;
+ 
++        /// Orthros (orthros-r10.patch): a chunk not built yet: the layer textures of the cells it covers
++        /// (Storage::orthrosLandTextures).
++        void orthrosChunkFiles(float size, const osg::Vec2f& center, unsigned char lod, unsigned int lodFlags,
++            bool activeGrid, std::vector<VFS::Path::Normalized>& meshes,
++            std::vector<VFS::Path::Normalized>& landTextures) override;
++
+         void setCompositeMapSize(unsigned int size) { mCompositeMapSize = size; }
+         void setCompositeMapLevel(float level) { mCompositeMapLevel = level; }
+         void setMaxCompositeGeometrySize(float maxCompGeometrySize) { mMaxCompGeometrySize = maxCompGeometrySize; }
+diff --git a/openmw/components/terrain/quadtreeworld.cpp b/openmw/components/terrain/quadtreeworld.cpp
+index 984fefe..c5a90e2 100644
+--- a/openmw/components/terrain/quadtreeworld.cpp
++++ b/openmw/components/terrain/quadtreeworld.cpp
+@@ -6,7 +6,9 @@
+ #include <osg/ValueObject>
+ #include <osgUtil/CullVisitor>
+ 
++#include <cmath>
+ #include <limits>
++#include <string>
+ 
+ #include <components/esm/util.hpp>
+ #include <components/loadinglistener/reporter.hpp>
+@@ -15,6 +17,8 @@
+ #include <components/resource/resourcesystem.hpp>
+ #include <components/sceneutil/positionattitudetransform.hpp>
+ #include <components/sceneutil/workqueue.hpp>
++#include <components/resource/scenemanager.hpp>
++#include <components/vfs/file.hpp>
+ 
+ #include "chunkmanager.hpp"
+ #include "compositemaprenderer.hpp"
+@@ -586,6 +590,8 @@ namespace Terrain
+         mRootNode->traverseNodes(vd, viewPoint, &lodCallback);
+ 
+         reporter.addTotal(vd->getNumEntries());
++        if (!abort)
++            orthrosReadAhead(vd, grid, 0);
+ 
+         for (unsigned int i = 0, n = vd->getNumEntries(); i < n && !abort; ++i)
+         {
+@@ -629,6 +635,10 @@ namespace Terrain
+             if (std::chrono::steady_clock::now() >= deadline)
+                 return vd->getNumEntries() == 0;
+         }
++        // Orthros (orthros-r10.patch): finishing now (the synchronous terrain preload of a cell change), the files of
++        // the entries left — those put off between frames too — fetched together before they are built one by one.
++        if (deadline == std::chrono::steady_clock::time_point::max() && !abort)
++            orthrosReadAhead(vd, grid, static_cast<unsigned int>(next - 1));
+         const auto load = [&](unsigned int index) {
+             loadRenderingNode(vd->getEntry(index), vd, cellWorldSize, grid, true);
+             reporter.addProgress(1);
+@@ -688,6 +698,43 @@ namespace Terrain
+         return ready;
+     }
+ 
++    void QuadTreeWorld::orthrosReadAhead(ViewData* vd, const osg::Vec4i& grid, unsigned int first)
++    {
++        if (!VFS::orthrosReadAheadHooked())
++            return;
++        // (the entries from `first` and those put off — mDeferred, preloadSlice's, for this view —, as chunksReady
++        // and loadRenderingNode see them: one built already and unchanged reads nothing)
++        std::vector<unsigned int> entries;
++        if (mDeferredView == vd)
++            for (const auto& deferred : mDeferred)
++                entries.push_back(deferred.first);
++        for (unsigned int i = first, n = vd->getNumEntries(); i < n; ++i)
++            entries.push_back(i);
++        std::vector<VFS::Path::Normalized> meshes;
++        std::vector<VFS::Path::Normalized> landTextures;
++        for (const unsigned int i : entries)
++        {
++            const ViewDataEntry& entry = vd->getEntry(i);
++            if (!vd->hasChanged() && entry.mRenderingNode)
++                continue;
++            const osg::Vec2f& center = entry.mNode->getCenter();
++            const bool activeGrid
++                = (center.x() > grid.x() && center.y() > grid.y() && center.x() < grid.z() && center.y() < grid.w());
++            for (ChunkManager* m : mChunkManagers)
++                m->orthrosChunkFiles(entry.mNode->getSize(), center,
++                    static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)),
++                    entry.mLodFlags, activeGrid, meshes, landTextures);
++        }
++        if (meshes.empty() && landTextures.empty())
++            return;
++        // (the place: the view point's cell)
++        const float cellWorldSize = mStorage->getCellWorldSize(mWorldspace);
++        const osg::Vec3f& viewPoint = vd->getViewPoint();
++        const std::string place = std::to_string(static_cast<int>(std::floor(viewPoint.x() / cellWorldSize))) + ","
++            + std::to_string(static_cast<int>(std::floor(viewPoint.y() / cellWorldSize)));
++        mResourceSystem->getSceneManager()->orthrosPrefetch(meshes, landTextures, place);
++    }
++
+     void QuadTreeWorld::reportStats(unsigned int frameNumber, osg::Stats* stats)
+     {
+         if (mCompositeMapRenderer)
+diff --git a/openmw/components/terrain/quadtreeworld.hpp b/openmw/components/terrain/quadtreeworld.hpp
+index d990193..47350ce 100644
+--- a/openmw/components/terrain/quadtreeworld.hpp
++++ b/openmw/components/terrain/quadtreeworld.hpp
+@@ -11,6 +11,7 @@
+ #include <vector>
+ 
+ #include <components/esm/refid.hpp>
++#include <components/vfs/pathutil.hpp>
+ 
+ namespace osg
+ {
+@@ -97,6 +98,23 @@ namespace Terrain
+                 return getChunk(size, center, lod, lodFlags, activeGrid, viewPoint, false);
+             }
+ 
++            /// Orthros (orthros-r10.patch): the files getChunk() with these arguments would read — the meshes of its
++            /// objects (already corrected) and its terrain's layer textures — appended, for the page to fetch them
++            /// ahead of the synchronous terrain preload (QuadTreeWorld::orthrosReadAhead). By default none; a chunk
++            /// cached already: none either.
++            virtual void orthrosChunkFiles(float size, const osg::Vec2f& center, unsigned char lod,
++                unsigned int lodFlags, bool activeGrid, std::vector<VFS::Path::Normalized>& meshes,
++                std::vector<VFS::Path::Normalized>& landTextures)
++            {
++                (void)size;
++                (void)center;
++                (void)lod;
++                (void)lodFlags;
++                (void)activeGrid;
++                (void)meshes;
++                (void)landTextures;
++            }
++
+             void setViewDistance(float viewDistance) { mViewDistance = viewDistance; }
+             float getViewDistance() const { return mViewDistance; }
+ 
+@@ -130,6 +148,11 @@ namespace Terrain
+         /// Orthros (orthros-r5.patch): preloadSlice()'s entries put off while their data comes (entry, since when),
+         /// for the view mDeferredView; whether its last call stopped for them.
+         bool chunksReady(const ViewDataEntry& entry, const ViewData* vd, const osg::Vec4i& grid);
++        /// Orthros (orthros-r10.patch): a synchronous preload (no deadline) about to build the view's chunks one
++        /// after the other: every chunk manager's files for them (ChunkManager::orthrosChunkFiles) fetched together
++        /// first (Resource::SceneManager::orthrosPrefetch), not one round trip per read. Web build, main thread.
++        /// `first`: the first entry left to build (with the put-off ones, mDeferred).
++        void orthrosReadAhead(ViewData* vd, const osg::Vec4i& grid, unsigned int first);
+         std::vector<std::pair<unsigned int, std::chrono::steady_clock::time_point>> mDeferred;
+         const View* mDeferredView = nullptr;
+         bool mPreloadWaiting = false;
+diff --git a/openmw/components/terrain/storage.hpp b/openmw/components/terrain/storage.hpp
+index 436efd8..07dae0e 100644
+--- a/openmw/components/terrain/storage.hpp
++++ b/openmw/components/terrain/storage.hpp
+@@ -90,6 +90,15 @@ namespace Terrain
+ 
+         /// Get the number of texture tiles on one side per chunk (chunkSize 1.0 = 1 cell).
+         virtual int getTextureTileCount(float chunkSize, ESM::RefId worldspace) = 0;
++
++        /// Orthros (orthros-r10.patch): the layer textures the cell's terrain is drawn with (diffuse, normal and
++        /// specular maps, as getBlendmaps() names them), appended to `out`, for the page to fetch them ahead of a
++        /// synchronous load. By default none.
++        virtual void orthrosLandTextures(ESM::ExteriorCellLocation cellLocation, std::vector<VFS::Path::Normalized>& out)
++        {
++            (void)cellLocation;
++            (void)out;
++        }
+     };
+ 
+ }
+diff --git a/openmw/components/vfs/bsaarchive.hpp b/openmw/components/vfs/bsaarchive.hpp
+index c09ea53..aaed6f2 100644
+--- a/openmw/components/vfs/bsaarchive.hpp
++++ b/openmw/components/vfs/bsaarchive.hpp
+@@ -61,13 +61,23 @@ namespace VFS
+ 
+         /// Orthros (orthros-r5.patch): a plain BSA's file is its bytes in the archive (offset and size as stored);
+         /// the compressed and BA2 kinds read differently: not asked (ready).
+-        bool orthrosDataReady() const override
++        /// Orthros (orthros-r10.patch): as a range (File::orthrosRange), the readiness and the read-ahead share it.
++        bool orthrosRange(std::string& path, std::uint64_t& offset, std::uint64_t& size) const override
+         {
+             if constexpr (std::is_same_v<FileType, Bsa::BSAFile>)
+-                return orthrosRangeReady(
+-                    Files::pathToUnicodeString(mFile->getFile()->getPath()), mInfo->mOffset, mInfo->mFileSize);
+-            else
++            {
++                path = Files::pathToUnicodeString(mFile->getFile()->getPath());
++                offset = mInfo->mOffset;
++                size = mInfo->mFileSize;
+                 return true;
++            }
++            else
++            {
++                (void)path;
++                (void)offset;
++                (void)size;
++                return false;
++            }
+         }
+ 
+         const Bsa::BSAFile::FileStruct* mInfo;
+diff --git a/openmw/components/vfs/file.hpp b/openmw/components/vfs/file.hpp
+index 04f75b9..1720b9b 100644
+--- a/openmw/components/vfs/file.hpp
++++ b/openmw/components/vfs/file.hpp
+@@ -24,12 +24,33 @@ namespace VFS
+         /// for the network (the web build streams the game's files: the page's globalThis.orthrosRangeReady,
+         /// src/ports/openmw/streamfs.js, which then fetches them in the background). True when the bytes are there,
+         /// when the file is not streamed, or anywhere but the web build.
+-        virtual bool orthrosDataReady() const { return true; }
++        /// Orthros (orthros-r10.patch): by default, orthrosRangeReady() over orthrosRange(); true without a range.
++        virtual bool orthrosDataReady() const;
++
++        /// Orthros (orthros-r10.patch): the bytes the file is read from in the page: the engine file `path` (the
++        /// archive's for a BSA member, the file's own for a loose one), from `offset`, `size` bytes (~0: to the
++        /// file's end). False: no such plain range (compressed BSA, BA2: read through another layer, never asked).
++        virtual bool orthrosRange(std::string& path, std::uint64_t& offset, std::uint64_t& size) const
++        {
++            (void)path;
++            (void)offset;
++            (void)size;
++            return false;
++        }
+     };
+ 
+     /// Orthros (orthros-r5.patch): bytes [offset, offset + size) of the engine file `path` can be read without a
+     /// wait (size ~0: to the file's end); false: they are being fetched in the background. True off the web build.
+     bool orthrosRangeReady(const std::string& path, std::uint64_t offset, std::uint64_t size);
++
++    /// Orthros (orthros-r10.patch): the page has the read-ahead hooks (globalThis.orthrosWillRead and
++    /// orthrosReadWait, src/ports/openmw/streamfs.js). False off the web build.
++    bool orthrosReadAheadHooked();
++
++    /// Orthros (orthros-r10.patch): waits — the page's thread spinning synchronously in globalThis.orthrosReadWait —
++    /// until every range announced since the last wait (Manager::orthrosWillRead) is in the page's data worker, or
++    /// failed, or `timeoutMs` passed. True: all there (or no hook: nothing to wait for); false: the timeout.
++    bool orthrosReadWait(double timeoutMs);
+ }
+ 
+ #endif
+diff --git a/openmw/components/vfs/filesystemarchive.cpp b/openmw/components/vfs/filesystemarchive.cpp
+index e8b3dca..f56fa5a 100644
+--- a/openmw/components/vfs/filesystemarchive.cpp
++++ b/openmw/components/vfs/filesystemarchive.cpp
+@@ -77,9 +77,12 @@ namespace VFS
+     {
+     }
+ 
+-    bool FileSystemArchiveFile::orthrosDataReady() const
++    bool FileSystemArchiveFile::orthrosRange(std::string& path, std::uint64_t& offset, std::uint64_t& size) const
+     {
+-        return orthrosRangeReady(Files::pathToUnicodeString(mPath), 0, ~std::uint64_t{ 0 });
++        path = Files::pathToUnicodeString(mPath);
++        offset = 0;
++        size = ~std::uint64_t{ 0 };
++        return true;
+     }
+ 
+     Files::IStreamPtr FileSystemArchiveFile::open()
+diff --git a/openmw/components/vfs/filesystemarchive.hpp b/openmw/components/vfs/filesystemarchive.hpp
+index 8a448fd..142997b 100644
+--- a/openmw/components/vfs/filesystemarchive.hpp
++++ b/openmw/components/vfs/filesystemarchive.hpp
+@@ -21,8 +21,8 @@ namespace VFS
+ 
+         std::string getStem() const override;
+ 
+-        /// Orthros (orthros-r5.patch): the whole file.
+-        bool orthrosDataReady() const override;
++        /// Orthros (orthros-r5.patch): the whole file (orthros-r10.patch: as a range, File::orthrosRange).
++        bool orthrosRange(std::string& path, std::uint64_t& offset, std::uint64_t& size) const override;
+ 
+     private:
+         std::filesystem::path mPath;
+diff --git a/openmw/components/vfs/manager.cpp b/openmw/components/vfs/manager.cpp
+index be7bce2..f8d22c6 100644
+--- a/openmw/components/vfs/manager.cpp
++++ b/openmw/components/vfs/manager.cpp
+@@ -5,6 +5,7 @@
+ 
+ #ifdef __EMSCRIPTEN__
+ #include <emscripten.h>
++#include <emscripten/threading.h>
+ #endif
+ 
+ #include <components/files/conversion.hpp>
+@@ -131,6 +132,90 @@ namespace VFS
+         return found == mIndex.end() || found->second->orthrosDataReady();
+     }
+ 
++    bool File::orthrosDataReady() const
++    {
++        std::string path;
++        std::uint64_t offset = 0;
++        std::uint64_t size = 0;
++        return !orthrosRange(path, offset, size) || orthrosRangeReady(path, offset, size);
++    }
++
++    std::size_t Manager::orthrosWillRead(std::span<const Path::Normalized> names, std::string_view label) const
++    {
++#ifdef __EMSCRIPTEN__
++        // (the page's hooks are on the main thread's globalThis; a cell load runs there. Elsewhere: not announced, the
++        // reads then waiting one by one as before)
++        if (names.empty() || !emscripten_is_main_runtime_thread())
++            return 0;
++        // (lengths as int: a size_t is a BigInt in the wasm64 build's JS)
++        // records 'path\x1Foffset\x1Fsize' separated by '\x1E' (size -1: to the file's end); one call for the batch
++        std::string list;
++        std::string path;
++        for (const auto& name : names)
++        {
++            const auto found = mIndex.find(name);
++            std::uint64_t offset = 0;
++            std::uint64_t size = 0;
++            if (found == mIndex.end() || !found->second->orthrosRange(path, offset, size))
++                continue;
++            if (!list.empty())
++                list += '\x1E';
++            list += path;
++            list += '\x1F';
++            list += std::to_string(offset);
++            list += '\x1F';
++            list += size == ~std::uint64_t{ 0 } ? std::string("-1") : std::to_string(size);
++        }
++        if (list.empty())
++            return 0;
++        // clang-format off
++        const int missing = MAIN_THREAD_EM_ASM_INT({
++            var f = globalThis.orthrosWillRead;
++            try { return f ? (f(UTF8ToString($0, $1), UTF8ToString($2, $3)) | 0) : 0; } catch (e) { return 0; }
++        }, list.data(), static_cast<int>(list.size()), label.data(), static_cast<int>(label.size()));
++        // clang-format on
++        return missing > 0 ? static_cast<std::size_t>(missing) : 0;
++#else
++        (void)names;
++        (void)label;
++        return 0;
++#endif
++    }
++
++    bool orthrosReadAheadHooked()
++    {
++#ifdef __EMSCRIPTEN__
++        if (!emscripten_is_main_runtime_thread())
++            return false;
++        // clang-format off
++        return MAIN_THREAD_EM_ASM_INT({
++            return typeof globalThis.orthrosWillRead === 'function' && typeof globalThis.orthrosReadWait === 'function' ? 1 : 0;
++        }) != 0;
++        // clang-format on
++#else
++        return false;
++#endif
++    }
++
++    bool orthrosReadWait(double timeoutMs)
++    {
++#ifdef __EMSCRIPTEN__
++        if (!emscripten_is_main_runtime_thread())
++            return true;
++        // (1: everything announced is there, 0: the timeout; a page without the hook, or one that fails: nothing to
++        // wait for, the reads then waiting one by one as before)
++        // clang-format off
++        return MAIN_THREAD_EM_ASM_INT({
++            var f = globalThis.orthrosReadWait;
++            try { return f ? (f($0) ? 1 : 0) : 1; } catch (e) { return 1; }
++        }, timeoutMs) != 0;
++        // clang-format on
++#else
++        (void)timeoutMs;
++        return true;
++#endif
++    }
++
+     bool orthrosRangeReady(const std::string& path, std::uint64_t offset, std::uint64_t size)
+     {
+ #ifdef __EMSCRIPTEN__
+diff --git a/openmw/components/vfs/manager.hpp b/openmw/components/vfs/manager.hpp
+index d2519d0..147fae2 100644
+--- a/openmw/components/vfs/manager.hpp
++++ b/openmw/components/vfs/manager.hpp
+@@ -5,6 +5,7 @@
+ 
+ #include <filesystem>
+ #include <memory>
++#include <span>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+@@ -75,6 +76,14 @@ namespace VFS
+         /// orthrosDataReady); false: its bytes on their way, fetched in the background. A file not found: true.
+         bool orthrosDataReady(VFS::Path::NormalizedView name) const;
+ 
++        /// Orthros (orthros-r10.patch): announces to the page (globalThis.orthrosWillRead, one call) the files about
++        /// to be read synchronously — every name's range (File::orthrosRange; names not found or without a plain
++        /// range left out) — so it fetches them at once, in parallel, instead of one round trip per read. `label`:
++        /// '<kind>:<place>' (kind meshes | textures | terrain; place 'x,y' for an exterior cell, the lowercased id
++        /// for an interior). Returns how many ranges the page does not have yet (0: nothing to wait for; off the web
++        /// build, without the hook, or on a thread other than the main one: 0). See orthrosReadWait().
++        std::size_t orthrosWillRead(std::span<const Path::Normalized> names, std::string_view label) const;
++
+     private:
+         std::vector<std::unique_ptr<Archive>> mArchives;
+ 

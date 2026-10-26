@@ -71,6 +71,27 @@ test('the backend cuts its ranges while the server answers from units, else one 
 const get = (url, enc) => new Promise((res, rej) => http.get(url, { headers: { 'accept-encoding': enc } }, async (r) => { const parts = []; for await (const d of r) parts.push(d); res({ r, body: Buffer.concat(parts) }); }).on('error', rej));
 const plain = ({ r, body }) => (r.headers['content-encoding'] === 'br' ? zlib.brotliDecompressSync(body) : r.headers['content-encoding'] === 'gzip' ? zlib.gunzipSync(body) : body);
 
+test('server: an announced unit (w=1) is served precompressed like any unit, counted as announced', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brwant-'));
+  const big = text(BLOCK + 3000, 'want');
+  fs.writeFileSync(path.join(dir, 'a.big'), big);
+  fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
+  const server = createServer({ manifests: path.join(dir, 'man'), brCacheDir: path.join(dir, 'brcache'), brCacheOptions: QUIET, brCacheLog: () => {} });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const u = `${base}/gamez/g/a.big?r=${CHUNK}-${2 * CHUNK}&w=1`;
+    const a = await get(u, 'gzip, br');
+    assert.equal(a.r.headers['x-orthros-unit'], 'miss'); assert.deepEqual(plain(a), big.subarray(CHUNK, 2 * CHUNK));
+    await server.brCache.drain();
+    const b = await get(u, 'gzip, br');
+    assert.equal(b.r.headers['x-orthros-unit'], 'hit', 'made, then served from the unit');
+    assert.equal(b.r.headers['content-encoding'], 'br'); assert.deepEqual(plain(b), big.subarray(CHUNK, 2 * CHUNK));
+    const s = JSON.parse((await get(`${base}/api/netstats`, '')).body);
+    assert.equal(s.want.requests, 2); assert.equal(s.demand.requests, 0); assert.equal(s.brHits, 1);
+  } finally { await new Promise((r) => { server.closeAllConnections?.(); server.close(r); }); await server.brCache?.close?.(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('server: a unit missed goes the dynamic way and is made; then served precompressed; changed files never hit', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
   const big = text(2 * BLOCK + 3000), small = text(5000, 'small'), noise = crypto.randomBytes(CHUNK);

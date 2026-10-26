@@ -138,3 +138,36 @@ test('r11 patch: each frame-cost change read from its switch, the page setting o
   assert.deepEqual(run('?tier=mid&omwenv=OPENMW_ORTHROS_UNIFORMS=0,OPENMW_ORTHROS_VAO=0'), { OPENMW_ORTHROS_UNIFORMS: '0', OPENMW_ORTHROS_VAO: '0' });
   assert.deepEqual(run('?omwenv=HOME=/x,LD_PRELOAD=a,OPENMW_ORTHROS_X=a%20b'), {}, 'other names, or values with spaces, never');
 });
+
+test('r10 patch: read-ahead of a cell change — the page told the files about to be read, a bounded wait, then the textures the NIFs name', () => {
+  // (no lock entry yet: the release is r9 plus this patch, pinned when built; the patch stays clear of r9's files)
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r10.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  const files = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]);
+  for (const f of ['openmw/apps/openmw/mwinput/bindingsmanager.cpp', 'wasm-build/build-deps.sh', 'wasm-build/link-openmw.sh', 'wasm-build/orthros-openal.js'])
+    assert.ok(!files.includes(f), f);
+  for (const k of [
+    // (the contract with src/ports/openmw/streamfs.js: one call per batch, records 'path\x1Foffset\x1Fsize' joined by '\x1E')
+    'var f = globalThis.orthrosWillRead;', 'f(UTF8ToString($0, $1), UTF8ToString($2, $3))', "list += '\\x1E';", "list += '\\x1F';",
+    'var f = globalThis.orthrosReadWait;', 'MAIN_THREAD_EM_ASM_INT', 'emscripten_is_main_runtime_thread()',
+    // (the files' ranges shared by r5's readiness and the read-ahead)
+    'bool orthrosRange(std::string& path, std::uint64_t& offset, std::uint64_t& size) const override',
+    // (two phases, each wait bounded; labels '<kind>:<place>')
+    'void SceneManager::orthrosPrefetch(', 'constexpr double waitMs = 15000;', '"meshes:" + std::string(place)',
+    '"textures:" + std::string(place)', '"terrain:" + std::string(place)', 'orthrosTexturesOf(file, textures);',
+    'void Storage::orthrosLandTextures(ESM::ExteriorCellLocation cellLocation',
+    // (the call sites: the grid's cells before the sync terrain preload, the interior after getInterior, the
+    // distant chunks inside the sync terrain preload)
+    'orthrosReadAhead(cells, std::to_string(playerCellX) + "," + std::to_string(playerCellY));',
+    'orthrosReadAhead(cells, Misc::StringUtils::lowerCase(cellName));',
+    'if (deadline == std::chrono::steady_clock::time_point::max() && !abort)', 'void QuadTreeWorld::orthrosReadAhead(',
+    // (an NPC met for the first time: autoEquip's likely choice per slot type, not every item of its record — a
+    // merchant's stock)
+    'std::map<int32_t, const ESM::Armor*> armor;', 'c->mData.mType == ESM::Clothing::Ring ? 2 : 1', 'weapons[w->mData.mType] = { damage, w };'])
+    assert.ok(added.includes(k), k);
+  // (the grid's read-ahead just before the terrain's setup and synchronous preload, and only in the web build)
+  const scene = patch.slice(patch.indexOf('+++ b/openmw/apps/openmw/mwworld/scene.cpp'));
+  const grid = scene.indexOf('+        // Orthros (orthros-r10.patch): the grid\'s cells about to load');
+  assert.ok(grid > 0 && grid < scene.indexOf('\n         mPreloader->setTerrain(mRendering.getTerrain());', grid));
+  assert.ok(scene.lastIndexOf('+#ifdef __EMSCRIPTEN__', grid) > 0);
+});

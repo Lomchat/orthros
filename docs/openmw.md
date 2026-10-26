@@ -910,6 +910,16 @@ discarded or not — "Frame time" above), not by the engine; on a real GPU the e
 r8, so ~16.7 is the line). Left: the cull (~22 % of the busy time), Lua's addons (~7 %), the draw's GL calls
 themselves.
 
+### Announced reads (2026-10-26)
+
+A cell load was 340 serial synchronous reads, one round trip each (37 s at 1.8 MB/s, 90 ms). The page's side of the
+fix is in `src/ports/openmw/streamfs.js`: `window.orthrosWillRead(list, label)` (records `enginePath\x1Foffset\x1Fsize`
+separated by `\x1E`, label `meshes|textures|terrain:<x,y | interior id>`) hands what the engine is about to read to
+the game data (`GameData.want`: fetched in parallel, light copies on a link that is not fast), and
+`window.orthrosReadWait(timeoutMs)` waits once for all of it. The engine side (its scene changes announce the cells'
+models and land textures, wait, then the textures the models name) is a patch of its own. Contract and rules:
+docs/slow-network.md "Announced reads (2026-10-26)".
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

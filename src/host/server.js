@@ -1068,7 +1068,7 @@ export function createServer(opts = {}) {
   // (testing: opts.netTrace, a file — one line per compressed range answered: start s, duration s, kind, file, range, bytes sent,
   // and how the units saw it: hit / raw / miss / none, pcm1 for an audio unit)
   const netTrace = opts.netTrace ? (line) => { try { fs.appendFileSync(opts.netTrace, line + '\n'); } catch { /* no trace */ } } : null;
-  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, brHits: 0, joined: 0, demand: { requests: 0, sent: 0, ms: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
+  const netStats = { requests: 0, raw: 0, sent: 0, encodeMs: 0, cacheHits: 0, brHits: 0, joined: 0, demand: { requests: 0, sent: 0, ms: 0 }, want: { requests: 0, sent: 0, ms: 0, aborted: 0 }, bg: { requests: 0, sent: 0, ms: 0, aborted: 0 } };
   /** encoded ranges kept for the next players (key: file, mtime, range, encoding), least recently used first out */
   const encodedCache = new Map(); let encodedBytes = 0;
   const ENCODED_CACHE_MAX = opts.encodedCacheBytes ?? 256 * 1024 * 1024;
@@ -1082,14 +1082,16 @@ export function createServer(opts = {}) {
    * whose client left before its turn is not encoded (`wanted` false: `drop` instead).
    */
   // (the pool's size less two, its other requests' reads; every third job a background one when both wait: the
-  // downloads that make a game's next reads local go on under a busy server)
+  // downloads that make a game's next reads local go on under a busy server. Between the two, `want`: the ranges an
+  // engine announced it reads next (&w=1, docs/slow-network.md "Announced reads") — its load waits for them, after the
+  // game's reads of the moment)
   const ENCODE_JOBS = opts.encodeJobs ?? Math.max(2, (Number(process.env.UV_THREADPOOL_SIZE) || 4) - 2);
-  const encodeQueue = { demand: [], bg: [] };
+  const encodeQueue = { demand: [], want: [], bg: [] };
   let encodeRunning = 0, encodePicks = 0;
   const encodePump = () => {
     while (encodeRunning < ENCODE_JOBS) {
       const bgTurn = ++encodePicks % 3 === 0 && encodeQueue.bg.length > 0;
-      const j = (bgTurn ? encodeQueue.bg.shift() : encodeQueue.demand.shift() ?? encodeQueue.bg.shift()); if (!j) return;
+      const j = (bgTurn ? encodeQueue.bg.shift() : encodeQueue.demand.shift() ?? encodeQueue.want.shift() ?? encodeQueue.bg.shift()); if (!j) return;
       if (!j.wanted()) { j.drop(); continue; }
       encodeRunning++;
       let once = false;
@@ -1097,7 +1099,7 @@ export function createServer(opts = {}) {
     }
   };
   /** a job queued in `kind`'s queue (returned: a demand request joining it may move it to the demand queue) */
-  const encodeSlot = (kind, wanted, run, drop) => { const j = { wanted, run, drop }; (kind === 'bg' ? encodeQueue.bg : encodeQueue.demand).push(j); encodePump(); return j; };
+  const encodeSlot = (kind, wanted, run, drop) => { const j = { wanted, run, drop }; (encodeQueue[kind] ?? encodeQueue.demand).push(j); encodePump(); return j; };
   /** brotli's window for `n` bytes: the smallest that holds them (10..24 bits; the ring is 2^lgwin - 16) */
   const brWindow = (n) => { let w = 10; while (w < 24 && (1 << w) - 16 < n) w++; return w; };
   // (`light`: a light copy of `file` — resolveLightFile — its bytes instead of the file's)
@@ -1168,11 +1170,12 @@ export function createServer(opts = {}) {
       if (waiting) {
         netStats.joined++;
         // (a game's read joining a background request still queued: the job moves to the demand queue — else the read
-        // would wait behind the downloads)
-        if (kind === 'demand' && waiting.kind === 'bg') {
-          const i = encodeQueue.bg.indexOf(waiting.job);
-          if (i >= 0) { encodeQueue.bg.splice(i, 1); encodeQueue.demand.push(waiting.job); }
-          waiting.kind = 'demand';
+        // would wait behind the downloads; an announced one joining a download, to the want queue)
+        const rank = { bg: 0, want: 1, demand: 2 };
+        if (rank[kind] > rank[waiting.kind]) {
+          const q = encodeQueue[waiting.kind], i = q.indexOf(waiting.job);
+          if (i >= 0) { q.splice(i, 1); encodeQueue[kind].push(waiting.job); }
+          waiting.kind = kind;
         }
         // (its res kept: the job is still wanted while any of its clients is)
         const cb = (err, entry) => (err ? send(res, 500, String(err)) : reply(entry.body, entry.encoding)); cb.res = res;
@@ -1341,8 +1344,11 @@ export function createServer(opts = {}) {
         const light = m[2].startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, m[2], listings) : null;
         const file = light ? light.file : resolveGameFile(man, m[2], listings); if (!file) return send(res, 404, 'not found');
         const r = url.searchParams.get('r') ?? '', rm = /^(\d+)-(\d+)$/.exec(r);
-        if (rm && !url.searchParams.get('p')) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
-        return sendRangeEncoded(req, res, file, r, url.searchParams.get('p') || url.searchParams.get('a') ? 'bg' : 'demand', light);
+        // (&w=1: a range the engine announced it reads next — not a read, not learned; queued between the game's reads
+        // and the background's, counted apart: netStats.want)
+        const announced = !!url.searchParams.get('w');
+        if (rm && !url.searchParams.get('p') && !announced) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
+        return sendRangeEncoded(req, res, file, r, announced ? 'want' : url.searchParams.get('p') || url.searchParams.get('a') ? 'bg' : 'demand', light);
       }
       m = /^\/api\/regions\/([^/]+)$/.exec(p);
       if (m) {
@@ -1471,7 +1477,7 @@ export function createServer(opts = {}) {
         // (the server's own state too: its memory and what its caches hold — a long-running server's growth seen)
         const mem = process.memoryUsage();
         const state = { rss: mem.rss, heapUsed: mem.heapUsed, external: mem.external, arrayBuffers: mem.arrayBuffers,
-          encodedCache: { entries: encodedCache.size, bytes: encodedBytes }, encodeQueue: { running: encodeRunning, demand: encodeQueue.demand.length, bg: encodeQueue.bg.length },
+          encodedCache: { entries: encodedCache.size, bytes: encodedBytes }, encodeQueue: { running: encodeRunning, demand: encodeQueue.demand.length, want: encodeQueue.want.length, bg: encodeQueue.bg.length },
           srcBr: { entries: srcBr.size, bytes: srcBrBytes }, sessions: sessions.size, listings: listings.size };
         return send(res, 200, JSON.stringify({ ...netStats, server: state, ...(brCache ? { brCache: brCache.stats() } : {}), ...(url.searchParams.has('launch') ? { launch: launchCoverage() } : {}) }), { 'Content-Type': 'application/json' });
       }
