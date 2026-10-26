@@ -17,7 +17,7 @@ LOCK = json.loads(pathlib.Path(__file__).with_name('lock.json').read_text())
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--engines-dir', type=pathlib.Path, default=ROOT / 'data_engines')
+    p.add_argument('--engines-dir', type=pathlib.Path, default=ROOT / 'data/engines')
     p.add_argument('--archives', type=pathlib.Path, help='use already downloaded release archives')
     p.add_argument('--server', action='store_true', help='also pull the pinned native multiplayer image and build the gateway image derived from it')
     a = p.parse_args()

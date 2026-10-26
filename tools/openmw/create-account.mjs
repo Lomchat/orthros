@@ -5,15 +5,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/host/game-catalog.js';
+import { OPENMW_STATE_DIR } from '../../src/host/openmw.js';
 
 const args = process.argv.slice(2), [id, name] = args, arg = (k) => args.includes(k) ? args[args.indexOf(k) + 1] : null;
 if (!name || !args.includes('--password-stdin')) throw new Error('Expected manifest, username and --password-stdin');
 const man = loadGameCatalog(path.resolve(arg('--games-dir') ?? DEFAULT_GAMES_DIR)).get(id);
 if (man?.runtime !== 'openmw' || !man.openmw.multiplayer) throw new Error('Expected an OpenMW multiplayer version');
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const state = path.resolve(arg('--state-dir') ?? path.join(root, 'build/openmw', id));
+const state = path.resolve(arg('--state-dir') ?? path.join(OPENMW_STATE_DIR, id));
 if (!fs.existsSync(state)) throw new Error('Start the multiplayer server before creating players');
 const password = fs.readFileSync(0, 'utf8').replace(/[\r\n]+$/, '');
 if (!password.length || password.length > 1024) throw new Error('Expected a password on stdin (1–1024 characters)');

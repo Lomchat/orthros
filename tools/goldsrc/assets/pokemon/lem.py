@@ -1,7 +1,7 @@
 """Le M (the owner's brother, Half Strike r9): models/others/lem.mdl.
 
 Source (when installed): his AI reconstruction rigged with 22 clips, `rigged/lem_rigged.glb` under $LEM_DIR
-(default /srv/orthros/data_installers/le-m; never copied into the repository), imported by `official.Importer`
+(default /srv/orthros/data/installers/le-m; never copied into the repository), imported by `official.Importer`
 (height 72, facing +x, origin on the ground, the file's 24 joints), then converted for the studio format:
 
 * geometry: the 31k-triangle scan is welded and decimated (quadric edge collapse with per-vertex importance: the
@@ -74,7 +74,7 @@ CLIP_T0 = 1.0 / 30.0         # the rigged file's clips hold their first key one 
 
 
 def lem_dir():
-    return os.environ.get("LEM_DIR", "/srv/orthros/data_installers/le-m")
+    return os.environ.get("LEM_DIR", "/srv/orthros/data/installers/le-m")
 
 
 def source_path():

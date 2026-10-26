@@ -1,12 +1,12 @@
 #!/bin/sh
 # Build Orthros' own releases of the OpenMW browser engine (docs/openmw.md) from the pinned upstream source
-# (lock.json "source": openmw-web, installed in data_engines/src/<id>/ by install-engine.py) with a build's patches
-# (tools/openmw/patches/, lock.json "builds"), into a release data_engines/<build id>/ laid out as the upstream one
+# (lock.json "source": openmw-web, installed in data/engines/src/<id>/ by install-engine.py) with a build's patches
+# (tools/openmw/patches/, lock.json "builds"), into a release data/engines/<build id>/ laid out as the upstream one
 # (index.html stamped with the engine's hash, e/<hash>/openmw.{js,wasm,data}, its .br siblings, streamfs.js), the
 # upstream release's other files (lock.json "id": its asset pack, portal pages, notices) copied beside it.
 # On the pattern of tools/re3/build.sh: the dependency sources (lock.json "build": OSG, Bullet, MyGUI, FFmpeg, Boost,
 # Lua, LZ4 and the three archives OpenMW's CMake fetches) and Emscripten's ports are fetched once, with network,
-# into data_engines/src/ and checked against the lock; every compilation then runs in the pinned Emscripten image
+# into data/engines/src/ and checked against the lock; every compilation then runs in the pinned Emscripten image
 # (plus ninja and pkg-config, tools/openmw/emsdk.Dockerfile) without network, on a copy in scratch, with 8 CPUs.
 # The engine's package also carries the upstream demo world (fsroot/gamedata, not in the source archive): it is taken
 # from the upstream release's own package, checked against the lock. A build whose engine files differ from the
@@ -17,7 +17,7 @@
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
 here=$root/tools/openmw
-engines=$root/data_engines dest= ids= keep=0
+engines=$root/data/engines dest= ids= keep=0
 while [ $# -gt 0 ]; do
   case $1 in
     --engines-dir) engines=$2; shift 2 ;;

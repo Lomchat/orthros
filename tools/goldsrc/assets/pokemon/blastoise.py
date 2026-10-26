@@ -1,7 +1,7 @@
 """Blastoise (Tortank): models/pokemon/blastoise.mdl.
 
 Official model (when installed): Game Freak's Blastoise, `plain/9.glb` under $POKEMON_OFFICIAL_DIR (default
-/srv/orthros/data_installers/pokemon-official; owner's decision, never copied into the repository), imported by
+/srv/orthros/data/installers/pokemon-official; owner's decision, never copied into the repository), imported by
 `official.Importer` with its own 42-bone rig, smooth skinning and textures, scaled to 60 units.  The file has no
 animation: the eight sequences are authored below on its real bones (OfficialAnimator).  Without the file, the model
 generated from scratch further down is built instead (make_generated_model).
@@ -886,7 +886,7 @@ HITBOX_BONES = ("Waist", "Head", "Jaw", "LArm", "LForeArm", "LHand", "RArm", "RF
 
 def official_source():
     """Path of the official source file, or None when it is not installed ($POKEMON_OFFICIAL_DIR)."""
-    d = os.environ.get("POKEMON_OFFICIAL_DIR", "/srv/orthros/data_installers/pokemon-official")
+    d = os.environ.get("POKEMON_OFFICIAL_DIR", "/srv/orthros/data/installers/pokemon-official")
     p = os.path.join(d, OFFICIAL_FILE)
     return p if os.path.isfile(p) else None
 

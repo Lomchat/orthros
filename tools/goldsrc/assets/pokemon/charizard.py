@@ -1,7 +1,7 @@
 """Charizard (Dracaufeu): models/pokemon/charizard.mdl.
 
 Official model (when the sources are installed, $POKEMON_OFFICIAL_DIR, default
-/srv/orthros/data_installers/pokemon-official; see OfficialCharizard at the end): Game Freak's Scarlet / Violet
+/srv/orthros/data/installers/pokemon-official; see OfficialCharizard at the end): Game Freak's Scarlet / Violet
 Charizard (plain/6-shiny-animated.glb: mesh, 107 of its 128 joints, smooth skinning, official animations), its shiny
 textures recoloured to the normal colouring measured on the X/Y model's textures (plain/6.glb), the tail flame
 additive and fullbright; scaled to 78 units at the horn tips in its relaxed stance (defaultwait01_loop), facing +x,
@@ -1071,7 +1071,7 @@ def make_sequences(rig):
 # textures are recoloured to the normal colouring measured on the normal model's own textures (6.glb): retargeting
 # the S/V animations onto the older X/Y rig would lose the S/V model's detail and the set's fidelity, a shading-
 # preserving recolour keeps both.  Nothing of the sources is stored here: they are read at build time from
-# $POKEMON_OFFICIAL_DIR (default /srv/orthros/data_installers/pokemon-official); without them, the generated model.
+# $POKEMON_OFFICIAL_DIR (default /srv/orthros/data/installers/pokemon-official); without them, the generated model.
 
 OFFICIAL_FILE = os.path.join("plain", "6-shiny-animated.glb")      # mesh, rig, animations (shiny colouring)
 OFFICIAL_NORMAL_FILE = os.path.join("plain", "6.glb")              # the normal colouring's reference textures
@@ -1115,7 +1115,7 @@ OFFICIAL_HITBOX_BONES = ("spine_01", "spine_02", "neck_01", "neck_02", "neck_03"
 
 def official_source():
     """Paths (shiny S/V file, normal X/Y file or None) of the official sources, or None when not installed."""
-    d = os.environ.get("POKEMON_OFFICIAL_DIR", "/srv/orthros/data_installers/pokemon-official")
+    d = os.environ.get("POKEMON_OFFICIAL_DIR", "/srv/orthros/data/installers/pokemon-official")
     p = os.path.join(d, OFFICIAL_FILE)
     if not os.path.isfile(p):
         return None

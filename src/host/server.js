@@ -2,7 +2,7 @@
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
 // Usage: node src/host/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--covers <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue] [--no-learn-borrow]
-//   --engines-dir: the installed engine releases of the browser ports (default data_engines/, docs/browser-ports.md)
+//   --engines-dir: the installed engine releases of the browser ports (default data/engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
 //                <dir>/telemetry-<date>.jsonl, one line per batch, to study the slowdowns seen by a player

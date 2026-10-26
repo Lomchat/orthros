@@ -269,7 +269,7 @@
       },
       {
         "id": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r12",
-        "purpose": "The Half-Life arsenal: the fourteen Half-Life weapons bought in Counter-Strike, at its scale, anywhere and anytime, with its own team, appearance and buy menus (hl-arsenal patches); Poké Balls with Pikachu, Charizard and Blastoise, the Pokémon's official game models (the owner's files, data_installers/pokemon-official, converted by tools/goldsrc/assets), the balls, sprites and sounds generated there; Le M (the owner's brother, at his request), his AI reconstruction kept in data_installers/le-m, summoned with a laptop; bricks from impacts, Fortnite-style building (F) and its destruction; its own texts in English and French (ars_lang).",
+        "purpose": "The Half-Life arsenal: the fourteen Half-Life weapons bought in Counter-Strike, at its scale, anywhere and anytime, with its own team, appearance and buy menus (hl-arsenal patches); Poké Balls with Pikachu, Charizard and Blastoise, the Pokémon's official game models (the owner's files, data/installers/pokemon-official, converted by tools/goldsrc/assets), the balls, sprites and sounds generated there; Le M (the owner's brother, at his request), his AI reconstruction kept in data/installers/le-m, summoned with a laptop; bricks from impacts, Fortnite-style building (F) and its destruction; its own texts in English and French (ars_lang).",
         "patches": [
           [
             ".",

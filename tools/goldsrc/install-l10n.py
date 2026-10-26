@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Install a GoldSrc game language package into the library (docs/browser-ports.md, "Languages").
 
-A package folder holds one folder per game id (data_games/<id>), each with the language folders the game's version
+A package folder holds one folder per game id (data/games/<id>), each with the language folders the game's version
 mounts over its own (goldsrc.languages.<code>.overlays), e.g. <package>/half-life/valve_french/. They are copied into
-data_games/<id>/base/ — an existing different file is never replaced. Every `valve_<language>/resource/` folder also
+data/games/<id>/base/ — an existing different file is never replaced. Every `valve_<language>/resource/` folder also
 gets the engine menu's own strings in that language (mainui_<language>.txt, from tools/goldsrc/l10n/mainui-<code>.py)
 and its banner titles (gfx/shell/head_*.tga, tools/goldsrc/l10n/banners.py).
-Usage: python3 -I tools/goldsrc/install-l10n.py <package> [--games-dir data_games] [--apply]"""
+Usage: python3 -I tools/goldsrc/install-l10n.py <package> [--games-dir data/games] [--apply]"""
 import filecmp, os, runpy, shutil, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +21,7 @@ def main():
     args = sys.argv[1:]
     if not args: sys.exit(__doc__)
     package, apply = os.path.abspath(args[0]), '--apply' in args
-    games = os.path.abspath(args[args.index('--games-dir') + 1]) if '--games-dir' in args else os.path.join(HERE, '../../data_games')
+    games = os.path.abspath(args[args.index('--games-dir') + 1]) if '--games-dir' in args else os.path.join(HERE, '../../data/games')
     for game in sorted(os.listdir(package)):
         src = os.path.join(package, game)
         if not os.path.isdir(src) or not os.path.isfile(os.path.join(games, game, 'manifest.json')): continue

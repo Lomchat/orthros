@@ -1,4 +1,4 @@
-// The production catalog is entirely described by data_games/<game>/manifest.json.
+// The production catalog is entirely described by data/games/<game>/manifest.json.
 // A game's base files are overlaid by the selected version's files.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,7 +11,8 @@ import { re3Problem, re3GameFiles } from './re3.js';
 import { mmoProblem } from './mmo.js';
 import { profileMovesProblem } from '../vfs/profile-moves.js';
 
-export const DEFAULT_GAMES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data_games');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+export const DEFAULT_GAMES_DIR = path.join(ROOT, 'data/games');
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
 const WIN_MOUNT = /^[A-Za-z]:\\[^/:*?"<>|]*$/;
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
@@ -61,7 +62,7 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     const installation = `orthros-port:${formerGame ?? spec.id}:${dir}`;
     const manifest = withDefaults({ ...defaults, ...version, runtime, name: spec.name, gameId: spec.id,
       folder: path.join(gameDir, 'versions', dir), baseFolder: path.join(gameDir, 'base'),
-      saveDir: path.resolve(gameDir, '../../build/saves', id) });
+      saveDir: path.join(ROOT, 'build/saves', id) });
     if (!WIN_MOUNT.test(manifest.mount)) fail(file, `${id}: mount invalide`);
     if (manifest.modified !== undefined && typeof manifest.modified !== 'boolean') fail(file, `${id}: modified doit être un booléen`);
     // (a shared world, any runtime: src/host/mmo.js)

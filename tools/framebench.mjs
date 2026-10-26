@@ -6,7 +6,7 @@
 // frame accounting (src/core/frame-acct.js) of the next frames is reported — mean ms per frame by category, draws per
 // frame, process CPU per frame — and the guest instructions executed. A measure of the Direct3D path's cost on real
 // workloads that neither the shared machine's load on a browser's GPU process nor SwiftShader disturb.
-//   node tools/framebench.mjs <manifest id | manifest.json> [--games-dir /srv/orthros/data_games] [--profile <dir to copy>]
+//   node tools/framebench.mjs <manifest id | manifest.json> [--games-dir /srv/orthros/data/games] [--profile <dir to copy>]
 //     [--gfx backend|recorder|none] [--min-draws 100] [--warm 300] [--frames 600] [--limit 900]
 //     [--input "3:key:27;10:click:320,192;@12:click:10,10" (seconds after the first frame, or with @ after the start: a
 //     key's virtual-key code, a left click)]
@@ -29,7 +29,7 @@ import { RealClock } from '../src/core/clock.js';
 import { HeadlessHost } from '../src/host/display.js';
 import { Registry } from '../src/win32/registry.js';
 import { loadManifest, makeVfs } from '../src/host/cli.js';
-import { loadGameCatalog } from '../src/host/game-catalog.js';
+import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../src/host/game-catalog.js';
 import { acct, CATS, C } from '../src/core/frame-acct.js';
 import { DEFER_QUEUE } from '../src/cpu/jit/runtime.js';
 import { installNodeGfx, programsLine } from './node-gfx.mjs';
@@ -49,7 +49,7 @@ const schedule = ({ kind, a }, at) => {
 };
 let manifest, dir;
 if (target.endsWith('.json') || fs.existsSync(target)) ({ manifest, dir } = loadManifest(target));
-else { manifest = loadGameCatalog(opt('games-dir', '/srv/orthros/data_games')).get(target); if (!manifest) throw new Error(`no manifest ${target}`); dir = manifest.folder; }
+else { manifest = loadGameCatalog(opt('games-dir', DEFAULT_GAMES_DIR)).get(target); if (!manifest) throw new Error(`no manifest ${target}`); dir = manifest.folder; }
 // (a copy of the given user profile: the game's settings without its first-launch computation)
 const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-framebench-'));
 if (opt('profile')) fs.cpSync(opt('profile'), saveDir, { recursive: true });

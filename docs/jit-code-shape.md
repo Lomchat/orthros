@@ -597,7 +597,7 @@ copies of the same profile and learned data):
   10.7 → 10.9, 13.9 → 13.8 and 10.8 → 11.0 ms per frame; 3D menu guest +3.0 %, −10.3 %, +3.5 %; map load (load +
   loading screen) 69.5 → 68.1 s, 111.5 → 113.9 s (a loaded machine) and 68.4 → 67.6 s. No frame-rate or map-load
   change beyond the spread: play is not measurably faster for the 16 % less machine code of its x87 regions.
-- Exactness and tests: the full suite (`make test`) passes but tests/accounts.test.js (needs data_games in the tree,
+- Exactness and tests: the full suite (`make test`) passes but tests/accounts.test.js (needs data/games in the tree,
   fails on the base commit as well); with ORTHROS_NO_F32 the x87 suites fail the same two tests as on the base commit
   (the 24-bit random sequences and the NaN test written for the float representation), nothing more.
 

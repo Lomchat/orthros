@@ -98,10 +98,10 @@
           },
           "goldsrc": {
             "type": "object",
-            "description": "Runtime goldsrc (docs/browser-ports.md) ; les modules sont des chemins de la release data_engines/<engine>/. Un mode au moins : solo ou multiplayer.",
+            "description": "Runtime goldsrc (docs/browser-ports.md) ; les modules sont des chemins de la release data/engines/<engine>/. Un mode au moins : solo ou multiplayer.",
             "required": ["engine", "gameDir", "modules"],
             "properties": {
-              "engine": { "$ref": "#/$defs/id", "description": "Release du moteur navigateur dans data_engines/ (tools/goldsrc/install-engine.py)." },
+              "engine": { "$ref": "#/$defs/id", "description": "Release du moteur navigateur dans data/engines/ (tools/goldsrc/install-engine.py)." },
               "gameDir": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$", "description": "Dossier du jeu dans ses fichiers (-game du moteur)." },
               "modules": { "type": "object", "required": ["client", "server"], "properties": { "client": { "type": "string" }, "server": { "type": "string" }, "menu": { "type": "string", "description": "Par défaut engine/libmenu.wasm." } } },
               "extras": { "type": "array", "items": { "type": "string", "pattern": "\\.pk3$" }, "description": "Archives de la release montées dans le dossier du jeu (moteur et serveur dédié), noms distincts. Par défaut engine/valve/extras.pk3 (page seulement)." },
@@ -110,7 +110,7 @@
                 "type": "object",
                 "required": ["server", "port", "map"],
                 "properties": {
-                  "server": { "$ref": "#/$defs/id", "description": "Release du serveur dédié natif dans data_engines/ (tools/goldsrc/build-server.sh)." },
+                  "server": { "$ref": "#/$defs/id", "description": "Release du serveur dédié natif dans data/engines/ (tools/goldsrc/build-server.sh)." },
                   "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "description": "Port UDP du serveur dédié, sur 127.0.0.1 seulement ; les joueurs passent par /api/udp/<manifeste>." },
                   "map": { "type": "string" },
                   "maxPlayers": { "type": "integer", "minimum": 2, "maximum": 32 },
@@ -136,10 +136,10 @@
           },
           "re3": {
             "type": "object",
-            "description": "Runtime re3 (docs/browser-ports.md, « re3 ports ») : la release du moteur dans data_engines/<engine>/ (release.json, engine/<nom>.mjs et engine/<nom>.wasm ; ses propres fichiers de jeu dans gamefiles/, posés sur ceux de la version quelle que soit leur casse). Solo seulement pour l'instant.",
+            "description": "Runtime re3 (docs/browser-ports.md, « re3 ports ») : la release du moteur dans data/engines/<engine>/ (release.json, engine/<nom>.mjs et engine/<nom>.wasm ; ses propres fichiers de jeu dans gamefiles/, posés sur ceux de la version quelle que soit leur casse). Solo seulement pour l'instant.",
             "required": ["engine"],
             "properties": {
-              "engine": { "$ref": "#/$defs/id", "description": "Release du moteur navigateur dans data_engines/ (tools/re3/build.sh)." },
+              "engine": { "$ref": "#/$defs/id", "description": "Release du moteur navigateur dans data/engines/ (tools/re3/build.sh)." },
               "module": { "type": "string", "maxLength": 128, "pattern": "^(?:[\\x20-\\x2d\\x30-\\x5b\\x5d-\\x7e][\\x20-\\x2e\\x30-\\x5b\\x5d-\\x7e]*/)*[\\x20-\\x2d\\x30-\\x5b\\x5d-\\x7e][\\x20-\\x2e\\x30-\\x5b\\x5d-\\x7e]*\\.mjs$", "description": "Le module ES du moteur, chemin relatif de la release (séparé par '/', ASCII imprimable, sans partie vide ni commençant par '.', ni '\\'). Par défaut le seul module de engine/ qui a son WebAssembly à côté (<nom>.wasm)." },
               "args": { "type": "array", "maxItems": 32, "items": { "type": "string", "pattern": "^[-+]?[A-Za-z0-9_.=]{1,64}$" }, "description": "Arguments de ligne de commande du jeu (callMain)." },
               "languages": {

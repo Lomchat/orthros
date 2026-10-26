@@ -3313,7 +3313,7 @@ CORPUS_FLAGS = {
     'AAM': SF | ZF | PF | DF, 'AAD': SF | ZF | PF | DF,
 }
 FPU_TRANS = {'F2XM1', 'FYL2X', 'FYL2XP1', 'FPTAN', 'FPATAN', 'FSIN', 'FCOS', 'FSINCOS', 'FSCALE', 'FPREM', 'FPREM1', 'FXTRACT'}
-CORPUS_FILE = os.environ.get('ORTHROS_CORPUS', 'build/corpus/bfme-vanilla.json')
+CORPUS_FILE = os.environ.get('ORTHROS_CORPUS', 'data/corpus/bfme-vanilla.json')
 
 
 def rnd_lanes(rng):

@@ -154,7 +154,7 @@ graph, the layer disappears) and the game goes on to its main menu.
   headless Chromium against ffmpeg.
 - The test programs in the browser: a folder holding `build/pe/mci.exe` (or `quartz.exe`) with `movie.mpg` (and
   `clip.avi`, written by tests/media-avi-writer.js) runs with `node tools/headless.mjs <folder> --games-dir
-  /srv/orthros/data_games --log video,stdout --audio`; its output lines match the Node test's (real time: the MPEG movie
+  /srv/orthros/data/games --log video,stdout --audio`; its output lines match the Node test's (real time: the MPEG movie
   ends after 1177-1201 ms, notifications, frames, from / to).
 - Vice City: `tools/scenarios/vicecity-movies.txt` (shots during the movies, Enter then a click to skip them).
   Without any input both movies play to their end (39.5 + 82.1 s) and the main menu follows: first Direct3D frame

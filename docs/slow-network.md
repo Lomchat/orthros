@@ -578,7 +578,7 @@ and speed, the phase times, the bytes (demand and background) and the measured r
 
 ```
 node tools/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k,1m,5m \
-  --learn-from <copy of the live server's learn dir> --games-dir /srv/orthros/data_games
+  --learn-from <copy of the live server's learn dir> --games-dir /srv/orthros/data/games
 ```
 
 `tools/net-proxy.mjs` puts a player's connection in front of a harness server as the production front does (HTTP/2

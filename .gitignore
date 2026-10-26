@@ -5,10 +5,8 @@ build/
 /artifacts/
 /tests/generated/
 __pycache__/
-/data_games
-/data_installers
-/data_wine
-/data_engines
+/data/
+/backups/
 /.claude/
 /.charon-uploads/
 /CLAUDE.md

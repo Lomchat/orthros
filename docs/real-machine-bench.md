@@ -313,7 +313,7 @@ whose start button the harness clicks; `--telemetry <dir>` gives the harness's s
 page sends its records there; the run ends with the bench and prints its phases):
 
 ```
-tools/with-browser-slot.sh node tools/headless.mjs vice-city-1.1-elamigos-2014 --games-dir /srv/orthros/data_games \
+tools/with-browser-slot.sh node tools/headless.mjs vice-city-1.1-elamigos-2014 --games-dir /srv/orthros/data/games \
   --ui --bench vicecity-drive --telemetry /tmp/tel --seconds 600 --learn <copy of /tmp/orthros-profiles/learn-live>
 node tools/telemetry-report.mjs /tmp/tel --bench
 ```
@@ -392,7 +392,7 @@ the menu by an exit instead (the game quit with code 0 after the scenario's last
 ## Checks made (2026-10-22 evening: the quick benches in headless Chromium with the banner, bfme-vanilla re-measured)
 
 The three quick links played as the owner plays them: `tools/with-browser-slot.sh node tools/headless.mjs <manifest>
---games-dir data_games --learn <copy of the live learned data> --ui --bench <name> --gl-discard` — a fresh browser (no
+--games-dir data/games --learn <copy of the live learned data> --ui --bench <name> --gl-discard` — a fresh browser (no
 profile: the first launch, the files downloaded from the harness's server, the canonical first-launch set offered), the
 banner's start button clicked, the scenario played by the page, the summary panel at the end (screenshot). SwiftShader,
 load 25-37, sometimes two of these browsers at once:

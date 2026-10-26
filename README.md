@@ -5,7 +5,7 @@ Runtime navigateur qui exécute des jeux Windows **tels quels** (binaire inchang
 Second type de jeu, sur le même accueil et le même serveur : les **portages navigateur** (`"runtime": "goldsrc"` dans le
 manifeste). Les fichiers d'origine du jeu y tournent sur un moteur GoldSrc tiers épinglé, compilé en WebAssembly, dans
 sa propre page (`src/ports/goldsrc/`), sans passer par l'émulateur ; le multijoueur passe par un serveur dédié natif
-(Half-Life, Counter-Strike 1.6). Moteurs installés hors Git dans `data_engines/` : voir
+(Half-Life, Counter-Strike 1.6). Moteurs installés hors Git dans `data/engines/` : voir
 [docs/browser-ports.md](docs/browser-ports.md). Même principe pour les portages re3 (`"runtime": "re3"`, un objet `re3`
 à la place de `exe`) : un moteur décompilé de la famille re3 (reVC pour GTA Vice City) compilé en WebAssembly, en solo,
 dans sa page `src/ports/re3/` — moteur construit depuis notre fork public [Lomchat/reVC](https://github.com/Lomchat/reVC)
@@ -44,7 +44,7 @@ envoyé à chaque mouvement, `DefWindowProc` pose le curseur de la classe), aucu
 Caché (un jeu qui dessine son propre curseur), la page n'en montre aucun, capturée ou non ; montré, sa forme (curseur
 CSS, ou curseur dessiné par la page sous capture) — jamais la flèche du navigateur par-dessus le curseur du jeu.
 
-Les jeux installés sont hors Git dans `/srv/orthros/data_games/<jeu>/`. **Chaque dossier immédiat représente un jeu**
+Les jeux installés sont hors Git dans `/srv/orthros/data/games/<jeu>/`. **Chaque dossier immédiat représente un jeu**
 et doit contenir `manifest.json`, `base/` et `versions/<version>/`. Le serveur découvre ces dossiers automatiquement :
 pour ajouter un jeu, il suffit d'ajouter son dossier et de recharger la page. Le contrat du manifeste est décrit dans
 [docs/game-manifest.schema.json](docs/game-manifest.schema.json). Exemple minimal :
@@ -77,11 +77,44 @@ monte également les fichiers de BFME2 1.06 dans son second lecteur virtuel.
 
 Le menu permet de choisir la version et la langue avant le lancement. BFME1 2.22 ne propose que l'anglais car ses
 menus ne passent pas en français. BFME2 1.06 est installé mais quitte encore pendant l'initialisation sous Orthros ;
-sa 1.09 fonctionne. La langue du site se règle indépendamment dans l'en-tête. Le préfixe Wine de diagnostic est
-dans `/srv/orthros/data_wine/wine-prefix/` ; les installateurs et ressources de réimportation sont dans
-`/srv/orthros/data_installers/`. Ces trois dossiers sont exclus de Git. Le préfixe Wine ne conserve que les outils et
-manifests de l'installeur, sans copies installées des jeux ni cache de téléchargement. `/srv/orthros/data_engines/`
-(moteurs des portages navigateur et leurs sources épinglées) est lui aussi hors Git et à préserver comme `data_games/`.
+sa 1.09 fonctionne. La langue du site se règle indépendamment dans l'en-tête.
+
+## Dossiers hors Git
+
+Trois dossiers de `/srv/orthros` restent hors Git, chacun avec sa règle :
+
+| Dossier | Contenu | Règle |
+|---|---|---|
+| `data/` | tout ce qui est précieux et n'existe qu'ici | jamais effacé ; sauvegardé chaque nuit par restic |
+| `data/games/` | les jeux installés : `<jeu>/manifest.json`, `base/`, `versions/<version>/` | fichiers des jeux jamais modifiés |
+| `data/engines/` | les moteurs des portages navigateur (`<release>/`) et leurs sources épinglées (`src/`) | |
+| `data/installers/` | installateurs, archives de mods, reçus d'import, fichiers sources du propriétaire | |
+| `data/wine/` | préfixe Wine de diagnostic (outils et manifests de l'installeur, sans copie des jeux) | |
+| `data/corpus/` | corpus d'instructions enregistré depuis un jeu (entrée de `make test`) | |
+| `data/proof/` | captures et preuves citées par la doc | |
+| `backups/` | `restic/` : le dépôt de sauvegarde ; `manual/` : copies ponctuelles faites à la main | voir [docs/backups.md](docs/backups.md) |
+| `build/` | sorties régénérables : oracle, programmes PE de test, profils des exécutions Node (`build/saves/`) | jetable : `make clean` l'efface |
+
+L'état des services en production est dans `/var/lib` (`orthros2` : comptes, apprentissage, télémétrie, caches ;
+`orthros-goldsrc` ; `orthros-openmw` : mondes et comptes OpenMW). Les tests écrivent sous
+`/tmp/orthros-scratch/<tâche>/`.
+
+## Sauvegardes (restic)
+
+Un instantané de tout ce qui n'est pas jetable est pris chaque nuit (`orthros-backup.timer`) : `data/`,
+`backups/manual/`, le dépôt Git (`.git`, avec les commits et branches pas encore sur GitHub), les notes locales
+(`CLAUDE.md`, `DECISIONS.md`, `STATUS.md`) et l'état des services dans `/var/lib`. Les données identiques ne sont
+stockées qu'une fois : un instantané ne coûte que ce qui a changé. Tout passe par `tools/backup.sh` :
+
+```sh
+tools/backup.sh snapshot -m "avant la mise à jour de bfme2"   # instantané à la demande (gardé)
+tools/backup.sh list                                         # l'historique
+tools/backup.sh diff <ancien> <récent>                       # ce qui a changé entre deux instantanés
+tools/backup.sh restore latest /srv/orthros/data/games/bfme2 # remettre un dossier tel qu'il était
+tools/backup.sh restore <id> <chemin> --to /tmp/orthros-scratch/r   # ou en copie, à côté
+```
+
+Détails (contenu, rétention, mot de passe, restauration complète) : [docs/backups.md](docs/backups.md).
 
 ## Paramètres et compte facultatif
 
@@ -125,7 +158,7 @@ seulement) : le bouton « Continuer avec Google » apparaît sans redémarrage, 
 - Réseau lent (docs/slow-network.md) : `--net <ms>:<Mbit/s>` simule le lien d'un joueur (85 Ko/s : `50:0.68`, 1 Mo/s :
   `50:8`, 5 Mo/s : `50:40`), `--net-trace <fichier>` journalise chaque plage servie ; validation standard d'un lien fin :
   `node tools/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k,1m,5m --learn-from <copie du dossier
-  learn du serveur> --games-dir /srv/orthros/data_games` (profil neuf, temps des phases, octets demandés / d'arrière-plan).
+  learn du serveur> --games-dir /srv/orthros/data/games` (profil neuf, temps des phases, octets demandés / d'arrière-plan).
 - Mesures sur une vraie machine (docs/real-machine-bench.md) : ouvrir un lien de mesure dans Chrome, cliquer « Start
   the measurement », ne plus toucher la souris ni le clavier jusqu'au résumé ; les résultats partent dans la télémétrie
   du serveur. BFME II : <https://orthros.chalco.website/?bench=bfme2-skirmish> (1.06 : ajouter `&manifest=bfme2-106`),

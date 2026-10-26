@@ -5,7 +5,7 @@ their activities; facing +x, origin on the ground; attachments 0 and 1 in front 
 Thunderbolt starts; hitboxes on the main bones, group 0):
 
 * official_model(): when `$POKEMON_OFFICIAL_DIR/plain/25.glb` exists (default directory
-  /srv/orthros/data_installers/pokemon-official, git-ignored: the files and anything converted from them never go
+  /srv/orthros/data/installers/pokemon-official, git-ignored: the files and anything converted from them never go
   into the repository), Game Freak's model as official.Importer converts it (mesh, textures, smooth skinning,
   31-bone rig), 30 units tall in its battle stance.  attack is its official Thunderbolt ("Impactrueno"), retimed
   to the server's 1.1 s with the hit at 40 % and the leap at half height; the others are keyframed here on its
@@ -1446,7 +1446,7 @@ def generated_model(path=None, verbose=False, return_checks=False, strict=True):
 # real bones.  Without the file, generated_model() above builds our own Pikachu (same contract).
 
 OFFICIAL_ENV = "POKEMON_OFFICIAL_DIR"
-OFFICIAL_DEFAULT = "/srv/orthros/data_installers/pokemon-official"
+OFFICIAL_DEFAULT = "/srv/orthros/data/installers/pokemon-official"
 OFFICIAL_FILE = ("plain", "25.glb")
 OFFICIAL_ANIM = "Impactrueno"
 OFFICIAL_HEIGHT = 30.0          # the battle stance (the clip's first frame) to the ear tips

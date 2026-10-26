@@ -1,6 +1,6 @@
 // GoldSrc browser ports (docs/browser-ports.md): a game version whose manifest says "runtime": "goldsrc" does not run in
 // the Win32 runtime. Its page (src/ports/goldsrc/) runs a pinned third-party GoldSrc engine compiled to WebAssembly,
-// installed outside Git in data_engines/<release>/, over the game's own files (/game/<manifest>/). This module checks
+// installed outside Git in data/engines/<release>/, over the game's own files (/game/<manifest>/). This module checks
 // such a manifest entry, tells whether its engine release is installed, links the game's layers for the native
 // dedicated server, and relays multiplayer: one WebSocket per player to the version's dedicated server on a localhost
 // UDP port. Nothing here names a game: engine release, game directory, modules, maps and ports come from the manifest.
@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gameLayers, resolveGameFile } from './game-files.js';
 
-export const DEFAULT_ENGINES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data_engines');
+export const DEFAULT_ENGINES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data/engines');
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
 const MAP = /^[A-Za-z0-9_.-]+$/;
 const COMMAND = /^[\x20-\x7e]{1,200}$/;
@@ -25,7 +25,7 @@ const isObject = (value) => !!value && typeof value === 'object' && !Array.isArr
 /** What is wrong with a version's `goldsrc` entry, or null. */
 export function goldsrcProblem(g) {
   if (!isObject(g)) return 'goldsrc obligatoire pour le runtime goldsrc';
-  if (!ID.test(g.engine ?? '')) return 'goldsrc.engine doit nommer une release de data_engines/';
+  if (!ID.test(g.engine ?? '')) return 'goldsrc.engine doit nommer une release de data/engines/';
   if (!safePath(g.gameDir) || g.gameDir.includes('/')) return 'goldsrc.gameDir doit nommer un dossier du jeu';
   if (!isObject(g.modules) || !['client', 'server'].every((k) => safePath(g.modules[k])) || (g.modules.menu !== undefined && !safePath(g.modules.menu))) return 'goldsrc.modules.client et .server (et .menu) doivent être des chemins de la release';
   if (g.solo === undefined && g.multiplayer === undefined) return 'goldsrc.solo ou goldsrc.multiplayer obligatoire';

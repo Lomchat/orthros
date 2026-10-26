@@ -3,7 +3,7 @@
 // JIT) to a point, its snapshot is taken and restored in a fresh Vm (its profile folder copied at that moment); then both
 // machines go on alike on the interpreter (the same slices) and must stay the same — guest memory and every object of
 // the state. A refused capture lists every field it cannot keep (the work left, by kind).
-//   node tools/snapshot-check.mjs <manifest> --games-dir /srv/orthros/data_games [--at <virtual s>] [--then <slices>]
+//   node tools/snapshot-check.mjs <manifest> --games-dir /srv/orthros/data/games [--at <virtual s>] [--then <slices>]
 //     [--input <scenario> [--at-mark <label>]] [--input-after <scenario: times from the capture, played on both>] [--every <slices>] [--keep <dir>] [--log kinds]
 //   --lockstep: after every slice a cheap signature of both (thread, guest instructions, API calls, registers): the first
 //   slice they part, with each one's last API calls
@@ -18,7 +18,7 @@ import { VirtualClock } from '../src/core/clock.js';
 import { HeadlessHost } from '../src/host/display.js';
 import { Registry } from '../src/win32/registry.js';
 import { makeVfs } from '../src/host/cli.js';
-import { loadGameCatalog } from '../src/host/game-catalog.js';
+import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../src/host/game-catalog.js';
 import { captureVm, restoreVm, HOST_TIME_FIELDS } from '../src/core/vm-snapshot.js';
 import { encodeSnapshot, decodeSnapshot, snapshotsDiffer } from '../src/core/snapshot.js';
 import { NodeScenario } from './node-scenario.mjs';
@@ -26,7 +26,7 @@ import { NodeScenario } from './node-scenario.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const name = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--'));
-const gamesDir = opt('games-dir', '/srv/orthros/data_games');
+const gamesDir = opt('games-dir', DEFAULT_GAMES_DIR);
 const manifest = loadGameCatalog(gamesDir).get(name);
 if (!manifest) { console.error(`usage: snapshot-check.mjs <manifest> --games-dir <dir> [--at s] [--then slices]`); process.exit(2); }
 const atMark = opt('at-mark'); // (a mark of --input: the capture once the scenario reached it)

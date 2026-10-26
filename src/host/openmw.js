@@ -1,10 +1,13 @@
-// OpenMW browser ports. Third-party code stays in data_engines; HTTP and WebSocket traffic
+// OpenMW browser ports. Third-party code stays in data/engines; HTTP and WebSocket traffic
 // stays on the Orthros origin, beneath the selected installation's URL.
 import http from 'node:http';
 import fs from 'node:fs';
 import { engineFile, clientAddress } from './goldsrc.js';
 import { resolveGameFile } from './game-files.js';
 
+/** The multiplayer gateways' state (worlds, accounts, operator credential), one folder per manifest: beside the other
+ * services' state, never under build/ (make clean). A scratch gateway passes its own --state-dir. */
+export const OPENMW_STATE_DIR = '/var/lib/orthros-openmw';
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
 const MOD_ID = /^[a-z0-9][a-z0-9-]{0,54}$/;
 const safePath = (s) => typeof s === 'string' && s.length > 0 && !s.includes('\\') && s.split('/').every((p) => p && p !== '.' && p !== '..');

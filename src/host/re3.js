@@ -1,7 +1,7 @@
 // re3 browser ports (docs/browser-ports.md, "re3 ports"): a game version whose manifest says "runtime": "re3" does not
 // run in the Win32 runtime. Its page (src/ports/re3/) runs a decompiled engine of the re3 family compiled to
 // WebAssembly (Emscripten: SDL2 on WebGL 2, OpenAL on WebAudio, JSPI), a pinned release installed outside Git in
-// data_engines/<release>/: its ES module and WebAssembly under engine/, and the engine's own extra game files under
+// data/engines/<release>/: its ES module and WebAssembly under engine/, and the engine's own extra game files under
 // gamefiles/, laid over the version's files (game-files.js gameLayers: the catalog puts that folder in the manifest's
 // `overlays`). This module checks such a manifest entry, tells whether its release is installed and which module the
 // page imports. Single player only for now: one game, or several ways to play it (`modes`: their own command-line
@@ -36,7 +36,7 @@ function iniOk(ini) {
 /** What is wrong with a version's `re3` entry, or null. */
 export function re3Problem(r) {
   if (!isObject(r)) return 're3 obligatoire pour le runtime re3';
-  if (!ID.test(r.engine ?? '')) return 're3.engine doit nommer une release de data_engines/';
+  if (!ID.test(r.engine ?? '')) return 're3.engine doit nommer une release de data/engines/';
   if (r.module !== undefined && (!safePath(r.module) || !/\.mjs$/.test(r.module))) return 're3.module doit être un module .mjs de la release';
   if (r.args !== undefined && (!Array.isArray(r.args) || r.args.length > 32 || !r.args.every((a) => typeof a === 'string' && ARG.test(a)))) return 're3.args : arguments de ligne de commande ([-+]?[A-Za-z0-9_.=], 64 caractères au plus)';
   // (a game language's own: environment variables and settings of the profile's ini files — the player's choice of the

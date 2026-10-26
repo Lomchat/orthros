@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the pinned GoldSrc browser engine release (lock.json "browser") into data_engines/<id>/.
+"""Install the pinned GoldSrc browser engine release (lock.json "browser") into data/engines/<id>/.
 
 The release is the published Xash3D FWGS WebAssembly package plus the game modules (client/server/menu compiled to
 WebAssembly) the lock names, every file checked against its SHA-256. An installed release is never overwritten.
@@ -48,7 +48,7 @@ def safe_name(name):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--engines-dir', default=str(ROOT / 'data_engines'))
+    parser.add_argument('--engines-dir', default=str(ROOT / 'data/engines'))
     release = Path(parser.parse_args().engines_dir) / LOCK['id']
     subprocess.run([str(ROOT / 'tools/disk-check.sh')], check=True)
     if (release / 'release.json').exists():

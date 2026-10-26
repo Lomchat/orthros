@@ -77,7 +77,7 @@ subtly wrong. So:
 
 ## Results (stage 1, Node, virtual clock)
 
-`node tools/snapshot-check.mjs <manifest> --games-dir /srv/orthros/data_games [--at <s> | --input <scenario> --at-mark
+`node tools/snapshot-check.mjs <manifest> --games-dir /srv/orthros/data/games [--at <s> | --input <scenario> --at-mark
 <label>] [--jit] [--input-after <scenario>] [--then <slices>] [--every <slices>]`
 
 | game, capture | objects | guest memory | snapshot (raw) | restore | then |
@@ -123,7 +123,7 @@ A restore that fails midway (not refused beforehand) leaves a machine in pieces:
 starts again. `?snapshot=0`: none; headless runs: none unless `?snapshot=auto`. `window.orthros.snapshot()` takes one
 now, `saveSnapshot()` keeps it as the automatic one.
 
-`tools/with-browser-slot.sh node tools/snapshot-browser-check.mjs <manifest> --games-dir /srv/orthros/data_games`: a
+`tools/with-browser-slot.sh node tools/snapshot-browser-check.mjs <manifest> --games-dir /srv/orthros/data/games`: a
 session with automatic snapshots until it kept one, then the page opened again (`--manual --at <s>`: asked for at that
 time).
 

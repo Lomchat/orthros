@@ -2,18 +2,18 @@
 # Build the re3-family engine of an "re3" browser port (docs/browser-ports.md, "re3 ports") from pinned sources
 # (lock.json "engine": Orthros' fork, its browser branch — the browser build defined there; a build may add its own
 # CMake options, "cmake": Orthros' modified game's -DREVC_ORTHROS_EXTRAS=ON) into a release
-# data_engines/<id>/ per build of "builds": the engine compiled to WebAssembly (engine/revc.mjs, an Emscripten ES module,
+# data/engines/<id>/ per build of "builds": the engine compiled to WebAssembly (engine/revc.mjs, an Emscripten ES module,
 # and engine/revc.wasm), with a build's patches if it names any (tools/re3/patches/), the engine's own game files
 # (gamefiles/: laid over the game's by the server) and the sources' licence notices (notices/).
-# The sources are cloned with their submodules in data_engines/src/<repository name> and stay as pinned; a build works
+# The sources are cloned with their submodules in data/engines/src/<repository name> and stay as pinned; a build works
 # on a copy in scratch. The compiler is the pinned Emscripten image, without network; its SDL2 and mpg123 ports come
-# from a cache in data_engines/ (made once, with network, the archives checked against the lock). The pinned commit's
+# from a cache in data/engines/ (made once, with network, the archives checked against the lock). The pinned commit's
 # time is the build time the sources record: a build whose files differ from the lock's "files" is refused (an empty
 # "files" prints them, to be pinned). An installed release is never overwritten. Needs git, Docker, Python 3.
 # Usage: sh tools/re3/build.sh [<build id>...] [--engines-dir <dir>]   (all builds by default)
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
-engines=$root/data_engines ids=
+engines=$root/data/engines ids=
 while [ $# -gt 0 ]; do
   case $1 in
     --engines-dir) engines=$2; shift 2 ;;

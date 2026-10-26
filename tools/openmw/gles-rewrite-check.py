@@ -11,7 +11,7 @@ import argparse, json, pathlib, re, shutil, subprocess, sys
 here = pathlib.Path(__file__).resolve().parent
 root = here.parent.parent
 ap = argparse.ArgumentParser()
-ap.add_argument('--engines-dir', default=str(root / 'data_engines'))
+ap.add_argument('--engines-dir', default=str(root / 'data/engines'))
 ap.add_argument('--scratch', default='/tmp/orthros-scratch/openmw-gles-rewrite-check')
 a = ap.parse_args()
 lock = json.loads((here / 'lock.json').read_text())

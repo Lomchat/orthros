@@ -44,7 +44,7 @@ seeding); its hourly reseed holds the thread ~20 ms.
 
 ## Long sessions
 
-- Win32 (Node, no rendering): `node tools/startbench.mjs bfme2 --games-dir data_games --cold --input
+- Win32 (Node, no rendering): `node tools/startbench.mjs bfme2 --games-dir data/games --cold --input
   tools/scenarios/bfme2-menu-long.txt --limit 2400 --mem 60 --heap-at 300,1500`. BFME2's menu held 40 min: JS heap
   222-241 MB (sawtooth, no trend), translations 14 261 live from minute 11 on (none dropped, none added), heap
   snapshots at 5 and 25 min: +7 400 nodes, +0.2 MB — no leak on the emulator's side.

@@ -1,19 +1,19 @@
 #!/bin/sh
 # Build the game modules of a GoldSrc browser port from pinned sources (lock.json "modules", docs/browser-ports.md) into
-# a browser engine release data_engines/<id>/ per build of "modules.builds": the engine files of the release it extends
+# a browser engine release data/engines/<id>/ per build of "modules.builds": the engine files of the release it extends
 # (checked against lock.json "browser"); the client, menu and server modules compiled to WebAssembly in the pinned
 # Emscripten image (no network); the server library compiled natively (32-bit Linux) for the dedicated server
 # (goldsrc.multiplayer.gameLibrary); the bots' archive (goldsrc.extras): their profiles and the navigation meshes the
 # native server learns for the game's maps (bot-nav.mjs, the game's files and the dedicated-server release needed); a
 # build's "assets": archives its generator writes (Python 3 with numpy and Pillow, tools/goldsrc/assets/).
-# Sources are cloned with their submodules in data_engines/src/<repository name> and stay as pinned; each build works on
+# Sources are cloned with their submodules in data/engines/src/<repository name> and stay as pinned; each build works on
 # a copy in scratch where its patches (tools/goldsrc/patches/) are applied. Every module lock.json lists must come out
 # identical. Needs git, Docker, Python 3, Node, cmake, g++ with 32-bit libraries. An installed release is
 # never overwritten.
 # Usage: sh tools/goldsrc/build-modules.sh [<build id>...] [--engines-dir <dir>] [--games-dir <dir>] [--installers-dir <dir>]   (all builds by default)
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
-engines=$root/data_engines games=$root/data_games installers=$root/data_installers ids=
+engines=$root/data/engines games=$root/data/games installers=$root/data/installers ids=
 while [ $# -gt 0 ]; do
   case $1 in
     --engines-dir) engines=$2; shift 2 ;;
@@ -112,7 +112,7 @@ for asset in build_spec.get('assets', []):
     rel = f"{mods['gameDir']}/{asset['archive']}"
     (stage / rel).parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
-    # (input files the generator reads from outside Git — e.g. the owner's official models in data_installers/ —
+    # (input files the generator reads from outside Git — e.g. the owner's official models in data/installers/ —
     # checked against their pinned SHA-256 and handed over in an environment variable)
     for src in asset.get('sources', []):
         base = pathlib.Path(sys.argv[6]) / src['dir']

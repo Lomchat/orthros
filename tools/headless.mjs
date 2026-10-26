@@ -73,7 +73,7 @@ if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 // them to an empty profile (default 2; see src/host/profile-seed.js); --profile-seed 0: none offered, none learned
 // --server-port <p>: use an Orthros server already running on 127.0.0.1:<p> (several harness runs on one server: its
 // virtual LAN links them) instead of starting one
-// --games-dir <dir>: the game catalog (folders with their manifest.json) served instead of data_games (a manifest under test)
+// --games-dir <dir>: the game catalog (folders with their manifest.json) served instead of data/games (a manifest under test)
 // --telemetry <dir>: the server keeps the page's telemetry there (as the live server does; the page sends it with --ui)
 // --bench <name>: the page's bench mode (?bench=<name>, tools/scenarios/bench, docs/real-machine-bench.md): the page
 // plays the scenario itself (with --ui its banner's start button is clicked); the run ends with the bench's record

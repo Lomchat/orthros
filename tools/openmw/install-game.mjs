@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2), arg = (k) => args.includes(k) ? args[args.indexOf(k) + 1] : null;
-const games = path.resolve(arg('--games-dir') ?? path.join(here, '../../data_games'));
+const games = path.resolve(arg('--games-dir') ?? path.join(here, '../../data/games'));
 const lock = JSON.parse(fs.readFileSync(path.join(here, 'lock.json')));
 function writeGame(spec) {
   const dir = path.join(games, spec.id); fs.mkdirSync(path.join(dir, 'base'), { recursive: true });

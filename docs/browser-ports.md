@@ -1,6 +1,6 @@
 # Browser ports: games whose engine runs as browser code
 
-Orthros runs games in the Win32 emulator and browser ports. All are declared by `data_games/<game>/manifest.json`, listed on the same home,
+Orthros runs games in the Win32 emulator and browser ports. All are declared by `data/games/<game>/manifest.json`, listed on the same home,
 served by the same server (`src/host/server.js`, `orthros.service`) on the same origin. The version's `runtime` says
 which kind it is:
 
@@ -31,14 +31,14 @@ only its mod stack: `requires` puts the original game's version's files beneath 
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `patches/` (a build's own patches), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/port-perf.mjs` | the ports' shared frame measurement (below, "Measuring a port") | yes |
-| `data_games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
-| `data_engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-e312f97-r1` (reVC built from source) and `revc-web-e312f97-plus-r1` (with Orthros' additions) | no |
-| `data_engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` (Orthros' fork) with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
+| `data/games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
+| `data/engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-e312f97-r1` (reVC built from source) and `revc-web-e312f97-plus-r1` (with Orthros' additions) | no |
+| `data/engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` (Orthros' fork) with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
 
 The engines stay out of Git like the games: the repository is public, the engine, wrapper and SDK-derived modules
 carry their own licenses (notices below), and the browser game modules were recovered from a deployed build whose
 sources no longer exist. `lock.json` and the install scripts reproduce them while their sources remain available;
-treat `data_engines/` like `data_games/` (the only copy of the recovered modules).
+treat `data/engines/` like `data/games/` (the only copy of the recovered modules).
 
 ### Measuring a port
 
@@ -306,7 +306,7 @@ on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sour
 `orthros-bots.pk3` (`goldsrc.extras`); a build's `assets` add archives of their own (Half Strike:
 `orthros-pokemon.pk3`, below).
 
-- **Sources.** `data_engines/src/cs16-client` stays at the pinned commits (checked, clean); a build works on a copy in
+- **Sources.** `data/engines/src/cs16-client` stays at the pinned commits (checked, clean); a build works on a copy in
   scratch, where its patches (`tools/goldsrc/patches/`) are applied. The common ones: a few one-line portability fixes
   (Emscripten is neither Linux nor Apple for these sources), the client's engine version check accepting the build
   number `-1` the WebAssembly engine reports, options to skip the YaPB bots and the downloaded bot graphs,
@@ -444,7 +444,7 @@ same classic one for the three); sprites `zap`, `fire`, `water`, `flash` (additi
 is exactly 0, the engine's texture gamma lifting the rest), `hud`, `d_pokemon`; 19 sounds.
 
 **Official models (r8, the owner's choice: personal use).** When `$POKEMON_OFFICIAL_DIR` holds them
-(`data_installers/pokemon-official/`, outside Git; the release build checks them against `lock.json` "sources"), the
+(`data/installers/pokemon-official/`, outside Git; the release build checks them against `lock.json` "sources"), the
 three Pokémon are the games' own models, converted by our code (`gltf.py`: a glTF 2.0 reader; `official.py`: axes,
 scale, the rig pruned to what vertices and animations use, four bone weights a vertex, textures quantised to 256
 colours each, animations resampled): Xash3D draws smooth skinning (`STUDIO_HAS_BONEWEIGHTS` with
@@ -452,7 +452,7 @@ colours each, animations resampled): Xash3D draws smooth skinning (`STUDIO_HAS_B
 bones, with expression decals), Charizard (Scarlet/Violet's file with the full official animation set, its shiny
 textures recoloured to the normal colouring measured on the X/Y model's), Blastoise (its rig, every sequence animated
 on its bones). Without the sources the generated models are built instead. Converted files exist only in the
-release's archive in `data_engines/`, never in Git.
+release's archive in `data/engines/`, never in Git.
 
 ### Le M (r9)
 
@@ -468,7 +468,7 @@ dissolves into pixels when he dies or goes back; kills `lem` (icon `d_lem`). `pk
 
 His model comes from his photos: identity-preserving full-body references (fal `nano-banana-pro/edit`), a multi-view
 reconstruction (`meshy/v7/multi-image-to-3d`, chosen over Tripo and Rodin for the face and glasses) rigged with
-animations (`meshy/rigging/multi-animation`), kept in `data_installers/le-m/` (outside Git, pinned in `lock.json`
+animations (`meshy/rigging/multi-animation`), kept in `data/installers/le-m/` (outside Git, pinned in `lock.json`
 "sources", `$LEM_DIR`), converted by `pokemon/lem.py` (decimated to 7200 triangles with UV seams and weights kept,
 4 bone weights, the clips mapped and trimmed, the attack, flinch and spawn authored on his rig); without them a
 stand-in. The fal key lives in `/root/.config/orthros/fal.key`, never in Git.
@@ -587,9 +587,9 @@ with `multiplayer.rooms`, those players create.
   The catalog refuses a port two versions take.
 
 ```sh
-python3 tools/goldsrc/install-engine.py          # browser engine release -> data_engines/
-sh tools/goldsrc/build-server.sh                 # dedicated server -> data_engines/ (gcc, 32-bit libraries)
-sh tools/goldsrc/build-modules.sh                # Counter-Strike modules from source -> data_engines/ (Docker, g++ -m32, the game's files)
+python3 tools/goldsrc/install-engine.py          # browser engine release -> data/engines/
+sh tools/goldsrc/build-server.sh                 # dedicated server -> data/engines/ (gcc, 32-bit libraries)
+sh tools/goldsrc/build-modules.sh                # Counter-Strike modules from source -> data/engines/ (Docker, g++ -m32, the game's files)
 install -m 644 tools/goldsrc/orthros-goldsrc@.service /etc/systemd/system/ && systemctl daemon-reload
 systemctl enable --now orthros-goldsrc@half-life-original-en orthros-goldsrc@counter-strike-rebuilt-en orthros-goldsrc@counter-strike-hl-arsenal-en
 tools/with-browser-slot.sh node tools/goldsrc/check.mjs half-life-original-en solo --url https://orthros.chalco.website --reload
@@ -630,7 +630,7 @@ folder where the file it translates is (`languageFiles`, src/vfs/game-tree.js), 
 otherwise; the player's choice comes from the home card (`?gameLang=`).
 
 The French files are Valve's own, from the Steam depots of 2004-2009 kept on archive.org (Half-Life 72, Counter-Strike
-12, Blue Shift 131 for the newer shared menu strings; provenance and hashes in `data_installers/goldsrc-fr/provenance/`):
+12, Blue Shift 131 for the newer shared menu strings; provenance and hashes in `data/installers/goldsrc-fr/provenance/`):
 Half-Life's subtitles and HUD texts (`titles.txt`), menus, chapter titles, loading pictures and its French voices
 (1,136 clips; 18 sentence clips exist in no French release), Counter-Strike's HUD, menus and messages, its text
 menus, map briefings (all 25) and radio voices. `cstrike_french.txt` and six briefings are Valve's 2015 SteamPipe files
@@ -640,15 +640,15 @@ what the engine's own menu needs: its strings (`tools/goldsrc/l10n/mainui-fr.py`
 titles in the style of the English ones (`tools/goldsrc/l10n/banners.py` → `gfx/shell/head_*.tga`) and, in the
 French folders, the engine's conversion of the game's `liblist.gam` (`fs_make_gameinfo`) with
 `render_picbutton_text 1` — the main menu's buttons drawn as the official French words instead of the English
-pictures. `python3 -I tools/goldsrc/install-l10n.py data_installers/goldsrc-fr --apply` puts it all into
-`data_games/<game>/base/` (never replacing a different file). Counter-Strike's old text menus have no accents in
+pictures. `python3 -I tools/goldsrc/install-l10n.py data/installers/goldsrc-fr --apply` puts it all into
+`data/games/<game>/base/` (never replacing a different file). Counter-Strike's old text menus have no accents in
 Valve's French either (« Choisir une equipe »).
 
 ## The recovered Counter-Strike removed (2026-10-18)
 
 The owner removed the game `counter-strike` (its recovered browser modules, kept to compare). Its original files
 (`cstrike/`, `valve/` from the HLDS release) are now the base of `counter-strike-rebuilt`, which Half Strike requires;
-its manifest went to `data_installers/removed-2026-10-18/` with the free OpenMW example's.
+its manifest went to `backups/manual/removed-2026-10-18/` with the free OpenMW example's.
 
 ## State (2026-10-14)
 
@@ -673,7 +673,7 @@ on the home (`vice-city-revc`, "Grand Theft Auto: Vice City — reVC"), over the
 (`vice-city`), without a copy of them. A second card, `vice-city-orthros` ("Grand Theft Auto: Vice City — Orthros
 Edition"), runs the same engine built with Orthros' additions (the HELP cheat, a free mode: below, "Orthros' modified
 Vice City"), the first left as reVC is. Single player only for now; nothing in it prevents a multiplayer later. The engine release is built by
-`tools/re3/build.sh` into `data_engines/<release>/`, outside Git like the GoldSrc engines. Nothing in the server or the
+`tools/re3/build.sh` into `data/engines/<release>/`, outside Git like the GoldSrc engines. Nothing in the server or the
 page names a game: release, arguments, environment and settings come from the manifest, the module's name from the
 release.
 
@@ -698,7 +698,7 @@ release.
 }
 ```
 
-(Vice City's `data_games/vice-city-revc/`: an empty `base/` and `versions/1.1-revc/`, its cover; the game's files are
+(Vice City's `data/games/vice-city-revc/`: an empty `base/` and `versions/1.1-revc/`, its cover; the game's files are
 the Windows card's, by `requires`. reVC takes its language from its ini file, else from the locale; `0` is American
 English, `1` French.)
 
@@ -733,7 +733,7 @@ followed (they are drives of its emulated machine). The saved profile's key is t
 
 ### Engine release
 
-`data_engines/<release>/`: `release.json` (present once installed), the Emscripten ES module and its WebAssembly
+`data/engines/<release>/`: `release.json` (present once installed), the Emscripten ES module and its WebAssembly
 (`engine/revc.mjs`, `engine/revc.wasm`: `MODULARIZE` + `EXPORT_ES6`, `export default function (overrides)` returning a
 promise of the Module, which exposes `FS`, `ENV` and `callMain`), and `gamefiles/`, the engine's own extra game files
 (its text files, its textures). The page passes `canvas`, `print`, `printErr`, `locateFile` (the module's folder in
@@ -820,7 +820,7 @@ The engine is Orthros' public fork of reVC, `github.com/Lomchat/reVC`, branch `o
 branch `orthros`: the browser build is defined there (`src/CMakeLists.txt`, `cmake/EmscriptenDeps.cmake`,
 `src/skel/orthros_*`; the fork's README, "Browser build"). `tools/re3/build.sh` builds it from the commit pinned in
 `tools/re3/lock.json` (`d0f8957`, its submodules too) in the pinned image `emscripten/emsdk:4.0.23`, without network.
-Emscripten's SDL2 and mpg123 ports come from a cache made once (`data_engines/src/emscripten-4.0.23-cache`, the
+Emscripten's SDL2 and mpg123 ports come from a cache made once (`data/engines/src/emscripten-4.0.23-cache`, the
 archives checked against the lock). Two builds give the same `revc.mjs` and `revc.wasm` (the pinned commit's time is
 the build time; checked 2026-10-19 and 2026-10-20): the script refuses one that differs from the lock. A release holds
 `engine/revc.mjs` and `engine/revc.wasm` (3.8 MiB), `gamefiles/` (the sources' own game files: updated `TEXT/*.gxt` with
@@ -1071,7 +1071,7 @@ never stopped there, and `tools/re3/check.mjs` uses it — a fault of the headle
 ## Third-party components
 
 - Xash3D FWGS WebAssembly package `xash3d-fwgs` 1.2.2 (npm) and its wrapper `sealdev224/webxash3d-fwgs-cstrike`
-  (MIT, copyright 2025 yohimik): `data_engines/xash3d-web-1.2.2/engine/`.
+  (MIT, copyright 2025 yohimik): `data/engines/xash3d-web-1.2.2/engine/`.
 - Game modules compiled to WebAssembly (client, server, menu), recovered from the deployed `x8bitrain/webXash` build;
   their exact sources were unavailable on 2026-10-13: `halflife/`, `counterstrike/` of the same release.
 - Xash3D FWGS native engine `FWGS/xash3d-fwgs` at `e0ece3d` with libbacktrace, mbedTLS and miniz (their notices are in

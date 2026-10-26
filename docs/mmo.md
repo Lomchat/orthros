@@ -59,7 +59,7 @@ manifest version has an `mmo` object.
 ## 3. Manifest
 
 Version level (any runtime may use it; validated by the server's `mmoProblem(version)`), e.g. in
-`data_games/vice-city-orthros/manifest.json` → `versions[0].mmo`:
+`data/games/vice-city-orthros/manifest.json` → `versions[0].mmo`:
 
 ```json
 "mmo": { "maxCharacters": 8, "maxPlayers": 16 }

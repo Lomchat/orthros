@@ -9,19 +9,19 @@ The engine release, source archive and native simulation image are pinned by
 
 - Browser engine, corresponding source and native simulation image remain pinned to v1.5.3.
   The freely licensed example card (`openmw-example-1.5.3`) was removed by the owner on 2026-10-18 (its manifest in
-  `data_installers/removed-2026-10-18/`).
+  `backups/manual/removed-2026-10-18/`).
 - On 2026-10-18 the user's two encrypted RAR volumes were successfully extracted. Their
   multilingual ISO installer was run in a disposable, network-isolated filesystem to recover
   the English GOTY data. Only its `Data Files` directory was copied into an empty
-  `data_games/morrowind/base/`: 7,372 files, 1,126,510,640 bytes. Installers remain outside
-  `data_games`, in `data_installers/openmw/`; an import receipt records the master/archive hashes.
+  `data/games/morrowind/base/`: 7,372 files, 1,126,510,640 bytes. Installers remain outside
+  `data/games`, in `data/installers/openmw/`; an import receipt records the master/archive hashes.
 - The original profile `morrowind-goty-en` shares that base, declares no mods, and uses the
   gateway on localhost port 28101 (`orthros-openmw@morrowind-goty-en`, enabled). The full
   `morrowind-goty-vanilla-plus-en` profile keeps its original id and now contains all seven mods.
   Its enabled gateway uses localhost port 28100. Saves/worlds stay separate from the original profiles.
 - Two games on the home since 2026-10-21 (D103), as Vice City's recompiled and modified cards:
-  `data_games/morrowind` ("The Elder Scrolls III: Morrowind", the original profiles `morrowind-goty-en` / `-fr`, tagged
-  "Recompiled") holds the game's files; `data_games/morrowind-vanilla-plus` ("… — Vanilla+", `modified`, tagged
+  `data/games/morrowind` ("The Elder Scrolls III: Morrowind", the original profiles `morrowind-goty-en` / `-fr`, tagged
+  "Recompiled") holds the game's files; `data/games/morrowind-vanilla-plus` ("… — Vanilla+", `modified`, tagged
   "Modified") holds only the Vanilla+ profiles' version folders (their mods; the French one its hardlinked
   localized files too) and an empty `base/`. Each Vanilla+ profile `requires` the original profile of its language,
   whose files lie beneath its own (`gameLayers`: the page's tree and the gateway's linked tree alike). Their version ids,
@@ -40,7 +40,7 @@ The engine release, source archive and native simulation image are pinned by
   des Traducteurs packages, translated by Redondepremière. The Glow mirror is linked by the
   original author; Graphic Herbalism permits redistribution with attribution. Only the core
   meshes, textures and documentation were copied; no MWSE scripts or optional plugins.
-  Archives, SHA-256 hashes, source selections and receipts are in `data_installers/openmw/`.
+  Archives, SHA-256 hashes, source selections and receipts are in `data/installers/openmw/`.
   The source pages are [Brille dans le Noyr](https://www.confrerie-des-traducteurs.fr/morrowind/mods/1890/graphisme/environnement/brille_dans_le_noyr)
   and [Récolte réaliste](https://www.confrerie-des-traducteurs.fr/morrowind/mods/1973/jouabilite/recolte_realiste).
   Glow 3.x supports basic OpenMW window glow, but its author recommends 2.11.2: sunrays in
@@ -68,7 +68,7 @@ The engine release, source archive and native simulation image are pinned by
   Load order follows Atlas's authors: PfP, MOP, GitD, GH, MET, Atlas, then Familiar Faces.
 - These mirror downloads do not require a Nexus session. No CAPTCHA solvers or third-party
   account services were installed, and no Nexus password is stored. SHA-256 receipts and
-  reference metadata remain in `data_installers/openmw/`.
+  reference metadata remain in `data/installers/openmw/`.
 - The hidden `morrowind-goty-vanilla-plus-fr` profile is the French language target of the
   Vanilla+ launcher. It uses the French masters/voices and six visual mods: MOP core/textures/GH
   meshes, GitD, GH, MET, Atlas and Familiar Faces. No English PfP master or MOP ESP is enabled.
@@ -92,13 +92,13 @@ The engine release, source archive and native simulation image are pinned by
   A returning French character was selected with a normal pointer click after fixing the
   covering loader, and reached `Joined` with `simReady=1`. The complete test suite passes:
   1,094 passed, zero failed, three pre-existing TODOs. QA worlds and accounts were removed;
-  small proofs and pinned source receipts remain under `build/proof/openmw-full-mods-20261018/`.
+  small proofs and pinned source receipts remain under `data/proof/openmw-full-mods-20261018/`.
 - A complete campaign and GPU performance on the player's machine remain unvalidated.
   Do not activate Atlas/MOP compatibility patches in the original profiles on their own.
 
 The GOTY edition is available from [GOG](https://www.gog.com/en/game/the_elder_scrolls_iii_morrowind_goty_edition)
 and [Steam](https://store.steampowered.com/app/22320/). OpenMW is free; the retail game is not
-included. Keep installers and downloaded mod archives in `data_installers/openmw/`.
+included. Keep installers and downloaded mod archives in `data/installers/openmw/`.
 
 ## Interface addons
 
@@ -136,8 +136,8 @@ visibly displayed “Rapport à Caius Cosadès”. One English client also joine
 registered all three addon settings pages. This validates startup and the French journal;
 it does not validate an entire campaign or every map feature. The full unit suite passed
 1,096 tests, zero failures, with three existing TODOs. Sanitized receipts and screenshots are
-kept in `build/proof/openmw-ui-20261018/`; original archives and the pre-install manifest are
-kept in `data_installers/openmw/`.
+kept in `data/proof/openmw-ui-20261018/`; original archives and the pre-install manifest are
+kept in `data/installers/openmw/`.
 
 ### Additional quality-of-life addons
 
@@ -153,7 +153,7 @@ The Vanilla+ language profiles also include four author-source packages, pinned 
 Only the authors' release data roots are installed, excluding presentation content, videos,
 websites and developer tools. QuickSelect's generated `build_info.lua` follows its packaging
 script and identifies version 1.0.28. Source archives and SHA-256 receipts are kept in
-`data_installers/openmw/`. The four addons themselves total 404,344 uncompressed bytes.
+`data/installers/openmw/`. The four addons themselves total 404,344 uncompressed bytes.
 The original game data and original unmodded profiles remain unchanged.
 
 QuickSelect's `QuickKeys` window registration raises a Lua error on the headless simulation
@@ -182,7 +182,7 @@ Known limitation in the pinned multiplayer engine: its container watcher expires
 server's contents stale. An experimental UI lease overlay passed a stubbed regression but did
 not establish a successful browser fix; it remains undeployed. Avoid leaving a shared loot
 window open for a long time. Diagnostic sources and receipts, marked NOT DEPLOYED, are kept
-in `build/proof/openmw-qol-20261018/`. Original packaged engine Lua hashes match the native
+in `data/proof/openmw-qol-20261018/`. Original packaged engine Lua hashes match the native
 image; the source archive's `fsroot` copies differ and must not be used as a patch base.
 
 ### Headless simulation compatibility
@@ -198,7 +198,7 @@ Explicitly attached `CUSTOM` scripts retain their original registered filenames,
 calls to `addScript`, `hasScript` and `removeScript` continue to resolve them.
 
 ```sh
-node tools/openmw/guard-client-ui.mjs data_games/morrowind-vanilla-plus morrowind-goty-vanilla-plus-fr \
+node tools/openmw/guard-client-ui.mjs data/games/morrowind-vanilla-plus morrowind-goty-vanilla-plus-fr \
   ui-modes questman advanced-world-map
 ```
 
@@ -218,8 +218,8 @@ node tools/openmw/install-game.mjs --data-files '/path/to/Morrowind/Data Files'
 ```
 
 The last command requires the six GOTY master/archive files. It copies into an **empty**
-`data_games/morrowind/base/` and refuses to overwrite an existing installation. It also prepares the modded game
-(`tools/openmw/manifest-vanilla-plus.json`: `data_games/morrowind-vanilla-plus`, an empty base, its mods over the
+`data/games/morrowind/base/` and refuses to overwrite an existing installation. It also prepares the modded game
+(`tools/openmw/manifest-vanilla-plus.json`: `data/games/morrowind-vanilla-plus`, an empty base, its mods over the
 original's files by `requires`). A GOG offline
 installer may first be extracted with the tooling `innoextract` into the task's scratch directory.
 The manifest currently selects the English release, matching the recommended English plugins;
@@ -230,7 +230,7 @@ author's archive into task scratch, inspect its installation instructions, and s
 applicable parts and plugins explicitly:
 
 ```sh
-node tools/openmw/install-mod.mjs data_games/morrowind-vanilla-plus morrowind-goty-vanilla-plus-en \
+node tools/openmw/install-mod.mjs data/games/morrowind-vanilla-plus morrowind-goty-vanilla-plus-en \
   project-atlas /path/to/extracted/Project-Atlas \
   --part '00 Core' --part '01 Textures - MET' \
   --part '06 Glow in the Dahrk Patch' --part '07 Graphic Herbalism Patch' \
@@ -254,11 +254,12 @@ systemctl enable --now orthros-openmw@morrowind-goty-vanilla-plus-en orthros-ope
 ```
 
 The runner refuses an incomplete manifest. It generates a linked read-only game tree and mod
-list under `build/openmw/<manifest>/gamedata`, then starts the pinned native gateway in Docker.
+list under `/var/lib/orthros-openmw/<manifest>/gamedata` (`OPENMW_STATE_DIR`, src/host/openmw.js), then starts the pinned native gateway in Docker.
 Only `127.0.0.1:28100` is published. Limits: two CPU cores, 4 GiB, 256 tasks; worlds have a
 3 GiB memory budget plus 256 MiB gateway reserve. Worlds start on demand and idle out. Accounts,
-worlds and saves persist under `build/openmw/<manifest>/`, separate from the original game files.
-Back up that state directory. Do not delete it when updating the engine.
+worlds and saves persist under `/var/lib/orthros-openmw/<manifest>/`, separate from the original game files
+(beside the other services' state; under `build/` until 2026-10-26, where `make clean` would have erased it). The
+nightly restic snapshot keeps it (docs/backups.md). Do not delete it when updating the engine.
 
 ### The gateway's image: its Node.js replaced (2026-10-23)
 
@@ -291,7 +292,7 @@ For the currently installed original profile, the active unit is
 `https://orthros.chalco.website/ports/openmw/morrowind-goty-en/`. The complete Vanilla+ profile
 is now enabled too, with its French language target on port 28103. Accounts and saves belong
 to each profile separately. The owner's two requested player accounts are provisioned on the original
-profile; their generated credentials are in `build/openmw/morrowind-goty-en/player-access.json`
+profile; their generated credentials are in `/var/lib/orthros-openmw/morrowind-goty-en/player-access.json`
 (mode 0600, outside Git). Their public usernames are already set, with local placeholder email
 addresses; no Nexus credential is reused or stored.
 
@@ -303,7 +304,7 @@ node tools/openmw/create-account.mjs morrowind-goty-vanilla-plus-en Alice --pass
 ```
 
 Finish stdin with EOF after entering the password, or redirect a private file. The first run
-creates a random local operator credential in `build/openmw/<manifest>/operator.json` (0600).
+creates a random local operator credential in `/var/lib/orthros-openmw/<manifest>/operator.json` (0600).
 Players have no administration role. The public proxy never forwards operator API requests.
 This tool remains available for local diagnostics. Normal players use their Orthros account
 on the port page; switch the world to Party and add friends. Party visits advance the host's campaign. Multiplayer is experimental.
@@ -490,7 +491,7 @@ manifest switched. What r2 changes:
   map's CPU copy of each explored cell, `GlobalMap::requestOverlayTextureUpdate(cpuCopy)`, what saves keep): left.
 - the GLES rewriting of shaders (`adjustSourceForGLES`, about 40 `std::regex` constructions and passes over each merged
   source, and the `$link` regex) is plain scans (`components/shader/glesrewrite.hpp`). Byte for byte the regexes'
-  output: `python3 tools/openmw/gles-rewrite-check.py --engines-dir <data_engines>` compiles both natively and compares
+  output: `python3 tools/openmw/gles-rewrite-check.py --engines-dir <data/engines>` compiles both natively and compares
   them over the engine's 76 shaders (whole, as vertex and fragment, merged as `$link` makes them), 200,000 generated
   sources and 200,000 `$link` statements (0 differences; a one-character mutation of the scans is caught); natively
   11.4 ms → 0.095 ms per merged source (5.8 KB mean). No persisted cache of rewritten sources: nothing left to save.
@@ -565,7 +566,7 @@ Headless Chromium (SwiftShader), the live server, scratch harnesses (not kept):
 ### Cell crossings off the frame: engine orthros-r3 (2026-10-22)
 
 Engine release `openmw-web-v1.5.3-orthros-r3` (patches r1 + r2 + `orthros-r3.patch`, files pinned in `lock.json`).
-Installed in `data_engines/`, no manifest switched. What a crossing cost on r2, from CPU profiles
+Installed in `data/engines/`, no manifest switched. What a crossing cost on r2, from CPU profiles
 (`perf.mjs --profile`, discard mode): the inline cell load (`Scene::changeCellGrid` → `insertCell`: NIF parsing,
 templates, creatures' animations) 100-430 ms, the terrain/object-paging preload of the predicted position run inline
 (`TerrainPreloadItem`, every 128 units walked) up to 120-200 ms, and above all the global map's CPU copy of the
@@ -602,7 +603,7 @@ chunk cannot be split), most of it the data streaming's synchronous fetch of a m
 
 Engine release `openmw-web-v1.5.3-orthros-r4` (patches r1 + r2 + r3 + `orthros-r4.patch`, files pinned in `lock.json`;
 17 min to compile here; `openmw.js` and `openmw.data` identical to r3's, only `openmw.wasm` and the page differ).
-Installed in `data_engines/`, no manifest switched. Two defects of r3's global map (`mwrender/globalmap.cpp`):
+Installed in `data/engines/`, no manifest switched. Two defects of r3's global map (`mwrender/globalmap.cpp`):
 - **A save whose world map has another size lost its explored map.** r3 zeroes a map camera's node mask after its first
   draw, before `copyResult()`; OSG's update traversal skips a node whose mask is 0, so a camera with a CPU copy pending
   — `GlobalMap::read()`'s resize path (the save's map of another size: another `global map cell size`, other content
@@ -639,7 +640,7 @@ of three Vanilla+ French runs failed, its output lost, the next two passed). Not
 format in a save (no engine writes one; the guard is read, not run), a real GPU.
 
 Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r4"` in the `openmw` object of
-each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
+each version of `data/games/morrowind/manifest.json` and `data/games/morrowind-vanilla-plus/manifest.json`.
 
 ### Preloads that wait for the network, and the frames' synchronous WebGL calls: engines orthros-r5, r6, r7 (2026-10-22)
 
@@ -706,7 +707,7 @@ Vanilla+ (`morrowind-goty-vanilla-plus-en`) on r7: 2 of 5 check runs pass; the o
 cells north): terrain, objects, sky, water, shadows and the local map as before.
 
 Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r7"` in the `openmw` object of
-each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
+each version of `data/games/morrowind/manifest.json` and `data/games/morrowind-vanilla-plus/manifest.json`.
 
 ### Review fixes of r6 and r7: engine orthros-r8 (2026-10-23)
 
@@ -737,7 +738,7 @@ ray), Space on Arrille opens his dialogue, F5, carried to -3,-7, F9 back inside;
 browser profile, F9: inside again. Only fault: the headless "Pointer is already locked.".
 
 Switch (after a merge and a server restart): set `"engine": "openmw-web-v1.5.3-orthros-r8"` in the `openmw` object of
-each version of `data_games/morrowind/manifest.json` and `data_games/morrowind-vanilla-plus/manifest.json`.
+each version of `data/games/morrowind/manifest.json` and `data/games/morrowind-vanilla-plus/manifest.json`.
 
 ### GOTY completion check, 2026-10-18
 
@@ -774,7 +775,7 @@ path and three GOTY masters/archives were exercised, without editing game files.
 Those original-only checks did not exercise the full visual stack; the later modded party
 checks are recorded above. Full combat, long sessions, campaign completion and solo save/load
 remain to be checked. Small screenshots, state receipts and the original test log remain under
-`build/proof/openmw-goty-20261018/`; disposable installer copies, browser profiles and test
+`data/proof/openmw-goty-20261018/`; disposable installer copies, browser profiles and test
 accounts are removed.
 
 ## Orthros accounts, cloud saves and language selection (2026-10-18)
@@ -794,7 +795,7 @@ The host reads `<accountsDir>/openmw.json` (0600, owned by the host service) wit
 random `secret` and `operators: { "<manifest>": { "name": "...", "password": "..." } }`.
 Operator credentials stay server-side; the Orthros password is never forwarded to OpenMW.
 The installed configuration covers the original English and French profiles. Preserve this
-file together with `accounts.sqlite` and native `build/openmw/<manifest>/` state in backups:
+file together with `accounts.sqlite` and native `/var/lib/orthros-openmw/<manifest>/` state in backups (restic keeps all three, docs/backups.md):
 replacing its secret makes the derived native passwords unusable. Original manually prepared
 native accounts are independent; they are not automatically adopted by nickname.
 
@@ -820,7 +821,7 @@ The French payload was recovered from the same user-supplied ISO (`elamigos-fren
 running its installer with `/LANG=french` in a disposable network-isolated filesystem. Only
 files differing from the English base were imported into `versions/goty-fr`: 6,465 files,
 844,559,725 bytes. Original base files remain untouched; hashes and provenance are recorded in
-`data_installers/openmw/import-fr-receipt.json`. The French original profile is
+`data/installers/openmw/import-fr-receipt.json`. The French original profile is
 `morrowind-goty-fr`, port 28102, service `orthros-openmw@morrowind-goty-fr`. It is hidden as a
 separate home version and reachable through the original profile's language selector.
 `openmw.languageVersions` maps language codes to installation ids from the same game. The
@@ -858,4 +859,4 @@ wait incorrectly treated the puppet map as an array; corrected object-map assert
 run against the captured client states and matched the live gateway roster. This is a party
 handshake/travel and persistence check, with QA character creation, not a full campaign proof.
 All temporary Orthros/native accounts and worlds were removed; both gateways returned to zero
-active worlds. Evidence is retained in `build/proof/openmw-accounts-fr-20261018/`.
+active worlds. Evidence is retained in `data/proof/openmw-accounts-fr-20261018/`.

@@ -26,7 +26,7 @@ $(BUILD)/oracle: tools/oracle/oracle.S tools/oracle/oracle.c
 
 # ---- conformance case generation: one .results.bin per suite, regenerated when the generator or
 # the oracle changes.
-CORPUS := $(wildcard build/corpus/*.json)
+CORPUS := $(wildcard data/corpus/*.json)
 gen: $(foreach s,$(SUITES),$(GEN)/$(s).results.bin) $(if $(CORPUS),$(GEN)/corpus.results.bin)
 
 $(GEN)/%.results.bin: tools/gen/gen_cases.py $(BUILD)/oracle
@@ -34,7 +34,7 @@ $(GEN)/%.results.bin: tools/gen/gen_cases.py $(BUILD)/oracle
 	python3 tools/gen/gen_cases.py --suite $* --count $(CASES) --out $(GEN)
 
 # instruction-corpus suite: every instruction form recorded from a real program (headless harness
-# --corpus build/corpus/<manifest>.json), 12 random cases per form against the native oracle
+# --corpus data/corpus/<manifest>.json), 12 random cases per form against the native oracle
 $(GEN)/corpus.results.bin: tools/gen/gen_cases.py $(BUILD)/oracle $(CORPUS)
 	@mkdir -p $(GEN)
 	ORTHROS_CORPUS=$(firstword $(CORPUS)) python3 tools/gen/gen_cases.py --suite corpus --count 12 --out $(GEN)

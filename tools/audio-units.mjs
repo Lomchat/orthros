@@ -6,7 +6,7 @@
 // brotli's, as the generator does); every container decoded and compared. Brotli 11 costs ~3 s of a core per MiB: run
 // it niced; results are kept per unit in --cache (default /tmp/orthros-scratch/audio-units/units.json) between runs.
 //
-// Usage: nice -n 19 node tools/audio-units.mjs --learn <copy of the learn dir> [--games-dir data_games] [--only <regex>]
+// Usage: nice -n 19 node tools/audio-units.mjs --learn <copy of the learn dir> [--games-dir data/games/] [--only <regex>]
 //   [--cache <file>]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,7 +14,7 @@ import zlib from 'node:zlib';
 import { createServer } from '../src/host/server.js';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 import { launchSet, forLink, entryPieces } from '../src/vfs/launch-set.js';
-import { loadGameCatalog } from '../src/host/game-catalog.js';
+import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../src/host/game-catalog.js';
 import { resolveGameFile } from '../src/host/game-files.js';
 import { LIGHT_DIR } from '../src/vfs/game-tree.js';
 import { scanWaves, regionsIn, trialRegion, PCM_SHARE_MIN } from '../src/host/pcm-units.js';
@@ -23,7 +23,7 @@ import { PCM_MIN_GAIN } from '../src/host/br-cache.js';
 
 const args = process.argv.slice(2);
 const arg = (n, d) => { const i = args.indexOf(n); return i < 0 ? d : args[i + 1]; };
-const learnDir = arg('--learn'), gamesDir = path.resolve(arg('--games-dir', 'data_games')), only = arg('--only') ? new RegExp(arg('--only')) : null;
+const learnDir = arg('--learn'), gamesDir = path.resolve(arg('--games-dir', DEFAULT_GAMES_DIR)), only = arg('--only') ? new RegExp(arg('--only')) : null;
 const cachePath = arg('--cache', '/tmp/orthros-scratch/audio-units/units.json');
 if (!learnDir) { console.error('usage: node tools/audio-units.mjs --learn <learn dir copy> [--games-dir dir] [--only regex] [--cache file]'); process.exit(2); }
 

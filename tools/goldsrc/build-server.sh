@@ -1,11 +1,11 @@
 #!/bin/sh
 # Build the native GoldSrc dedicated server (Xash3D FWGS at the commit pinned in lock.json "dedicatedServer") into
-# data_engines/<id>/. Sources are cloned in data_engines/src/xash3d-fwgs; the build itself goes to scratch.
+# data/engines/<id>/. Sources are cloned in data/engines/src/xash3d-fwgs; the build itself goes to scratch.
 # Needs Python 3, gcc/g++ with 32-bit development libraries, git. An installed release is never overwritten.
 # Usage: sh tools/goldsrc/build-server.sh [<engines-dir>]
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
-engines=${1:-$root/data_engines}
+engines=${1:-$root/data/engines}
 lock=$root/tools/goldsrc/lock.json
 field() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['dedicatedServer'][sys.argv[2]])" "$lock" "$1"; }
 id=$(field id); commit=$(field commit); repository=$(field repository)

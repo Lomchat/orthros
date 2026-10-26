@@ -10,20 +10,22 @@
 //
 //   node tools/data-matrix.mjs --pristine <dir with learn/ brcache/ covers/> [--links 85k:150,1m:60,7m:75]
 //     [--only a,b] [--skip a,b] [--parallel 2] [--seconds 85k=1800,1m=900,7m=600] [--win32-seconds N] [--out results.jsonl] [--scratch <dir>]
-//     [--games-dir /srv/orthros/data_games] [--engines-dir /srv/orthros/data_engines] [--lang <code>]
+//     [--games-dir /srv/orthros/data/games] [--engines-dir /srv/orthros/data/engines] [--lang <code>]
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startProxy } from './net-proxy.mjs';
+import { DEFAULT_GAMES_DIR } from '../src/host/game-catalog.js';
+import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const pristine = opt('pristine') && path.resolve(opt('pristine')); if (!pristine) { console.error('--pristine <dir> (learn/, brcache/, covers/)'); process.exit(2); }
 // (absolute: the runner's cwd is this tree — a relative --json / --shot wrote its files into it)
 const scratch = path.resolve(opt('scratch', path.join(path.dirname(pristine), 'runs')));
-const gamesDir = opt('games-dir', '/srv/orthros/data_games'), enginesDir = opt('engines-dir', '/srv/orthros/data_engines');
+const gamesDir = opt('games-dir', DEFAULT_GAMES_DIR), enginesDir = opt('engines-dir', DEFAULT_ENGINES_DIR);
 const outFile = path.resolve(opt('out', path.join(scratch, 'results.jsonl')));
 const parallel = Number(opt('parallel', 2));
 

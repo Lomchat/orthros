@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/host/game-catalog.js';
 import { linkGameLayers, engineFile, DEFAULT_ENGINES_DIR } from '../../src/host/goldsrc.js';
-import { openmwInstalled, openmwGatewayImage } from '../../src/host/openmw.js';
+import { openmwInstalled, openmwGatewayImage, OPENMW_STATE_DIR } from '../../src/host/openmw.js';
 import { resolveGameFile } from '../../src/host/game-files.js';
 
 const args = process.argv.slice(2), id = args[0], arg = (k) => args.includes(k) ? args[args.indexOf(k) + 1] : null;
@@ -27,7 +27,7 @@ const lock = JSON.parse(fs.readFileSync(path.join(root, 'tools/openmw/lock.json'
 const { image: serverImage, tag } = openmwGatewayImage(release, releaseOf, lock);
 if (tag && spawnSync('docker', ['image', 'inspect', serverImage], { stdio: 'ignore' }).status !== 0)
   throw new Error(`Gateway image ${tag} (${serverImage}) not built here: sh tools/openmw/build-server-image.sh`);
-const state = path.resolve(arg('--state-dir') ?? path.join(root, 'build/openmw', id));
+const state = path.resolve(arg('--state-dir') ?? path.join(OPENMW_STATE_DIR, id));
 const base = `/ports/openmw/${encodeURIComponent(id)}/app`;
 const port = Number(arg('--port') ?? man.openmw.multiplayer.port);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('--port: expected a port number');

@@ -1,6 +1,6 @@
 // The native dedicated servers of a GoldSrc version (docs/browser-ports.md), run by systemd
 // (tools/goldsrc/orthros-goldsrc@.service, instance = the manifest id): Xash3D FWGS built from pinned sources
-// (build-server.sh) in data_engines/<goldsrc.multiplayer.server>/, serving the version's files read-only on 127.0.0.1
+// (build-server.sh) in data/engines/<goldsrc.multiplayer.server>/, serving the version's files read-only on 127.0.0.1
 // only — players reach them through the Orthros server's relay (/api/udp/<manifest>).
 // Room 0 is the version's permanent server (goldsrc.multiplayer.port, its map, its rotation). With
 // goldsrc.multiplayer.rooms, players create more — a name, a map it stays on, a size, bots — one per port of the
