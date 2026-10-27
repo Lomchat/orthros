@@ -218,7 +218,7 @@ test('the server learns the launch set from the sessions\' marks: flags in the l
   assert.deepEqual(await (await fetch(`${s.base}/api/prefetch/gs-orig`)).json(), list, 'kept: the marks and each entry\'s count');
 });
 
-test('a session\'s read leaves the launch summary served until it is stale (LAUNCH_STALE_MS); a mark makes it again at once', async (t) => {
+test('a session\'s read leaves the launch summary served until it is stale (LAUNCH_STALE_MS); a mark makes it due at once; both made again in the background', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-launch-stale-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const games = path.join(root, 'games'), gs = path.join(games, 'gs');
   fs.mkdirSync(path.join(gs, 'base', 'valve'), { recursive: true }); fs.mkdirSync(path.join(gs, 'versions', 'orig'), { recursive: true });
@@ -238,9 +238,67 @@ test('a session\'s read leaves the launch summary served until it is stale (LAUN
   await post({ session: 's2', reads: [['valve/a.pak', CHUNK, CHUNK + 10, 7]] });
   assert.equal((await launchOf()).bytes, CHUNK, 'the summary kept while not stale');
   await new Promise((r) => setTimeout(r, 350));
-  assert.equal((await launchOf()).bytes, 2 * CHUNK, 'made again once stale');
+  // (stale-while-revalidate: the request that finds it stale is answered with it, the summary is made after the answer)
+  assert.equal((await launchOf()).bytes, CHUNK, 'stale: served all the same');
+  assert.equal((await launchOf()).bytes, 2 * CHUNK, 'made again in the background');
   await post({ session: 's2', reads: [['valve/a.pak', 3 * CHUNK, 3 * CHUNK + 10, 9]], mark: { kind: 'playable' } });
-  assert.equal((await launchOf()).bytes, 3 * CHUNK, 'a mark: at once');
+  assert.equal((await launchOf()).bytes, 2 * CHUNK, 'a mark: due at once, the kept one served');
+  assert.equal((await launchOf()).bytes, 3 * CHUNK, 'a mark: made at the next turn');
+});
+
+test('the launch summaries are made again in the background past LAUNCH_REFRESH_MS; synchronously only when there is none or a first mark', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-launch-swr-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games');
+  for (const g of ['ga', 'gb']) {
+    fs.mkdirSync(path.join(games, g, 'base', 'valve'), { recursive: true }); fs.mkdirSync(path.join(games, g, 'versions', 'orig'), { recursive: true });
+    fs.writeFileSync(path.join(games, g, 'base', 'valve', 'a.pak'), Buffer.alloc(4 * BLOCK, 1));
+    fs.writeFileSync(path.join(games, g, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: g, name: g, defaultVersion: `${g}-orig`, defaults: { runtime: 'goldsrc' },
+      versions: [{ id: `${g}-orig`, dir: 'orig', version: 'O', languages: ['en', 'fr'], goldsrc: { engine: 'e-1', gameDir: 'valve', modules: { client: 'c.wasm', server: 's.wasm' }, solo: { map: 'start' } } }] }));
+  }
+  const recent = DirListings.RECENT_MS; t.after(() => { DirListings.RECENT_MS = recent; });
+  DirListings.RECENT_MS = 0;
+  const server = createServer({ gamesDir: games, launchStaleMs: 60e3, launchRefreshMs: 200, lanLog: () => {} });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r)); t.after(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (v, body) => fetch(`${base}/api/prefetch/${v}`, { method: 'POST', body: JSON.stringify(body) });
+  const launches = async () => Object.fromEntries((await (await fetch(`${base}/api/manifests`)).json()).filter((m) => m.name.endsWith('-orig')).map((m) => [m.name, m.launch]));
+  assert.deepEqual(await launches(), { 'ga-orig': null, 'gb-orig': null }, 'none marked');
+  // (a first mark: the summary kept was null, made on the request — the home shows the figure at once)
+  await post('ga-orig', { session: 'a1', reads: [['valve/a.pak', 0, 10, 5]], mark: { kind: 'playable', lang: 'fr' } });
+  let l = await launches();
+  assert.equal(l['ga-orig'].bytes, CHUNK, 'first mark: at once'); assert.equal(l['ga-orig'].langs.fr.bytes, CHUNK, 'a new language: at once');
+  await post('gb-orig', { session: 'b1', reads: [['valve/a.pak', 0, 10, 5]], mark: { kind: 'playable' } });
+  assert.equal((await launches())['gb-orig'].bytes, CHUNK);
+  // (reads widen both launch sets; past LAUNCH_REFRESH_MS both are served as kept, then made again in the background)
+  await post('ga-orig', { session: 'a2', reads: [['valve/a.pak', CHUNK, CHUNK + 10, 6]] });
+  await post('gb-orig', { session: 'b2', reads: [['valve/a.pak', CHUNK, CHUNK + 10, 6]] });
+  await new Promise((r) => setTimeout(r, 250));
+  l = await launches();
+  assert.equal(l['ga-orig'].bytes, CHUNK, 'expired: served as kept'); assert.equal(l['gb-orig'].bytes, CHUNK); assert.equal(l['ga-orig'].langs.fr.bytes, CHUNK);
+  await new Promise((r) => setTimeout(r, 20));
+  l = await launches();
+  assert.equal(l['ga-orig'].bytes, 2 * CHUNK, 'made again'); assert.equal(l['gb-orig'].bytes, 2 * CHUNK); assert.equal(l['ga-orig'].langs.fr.bytes, 2 * CHUNK, 'each language too');
+});
+
+test('after a restart the br-cache seeder\'s pass makes every summary the home asks for in the background — each marked language\'s too', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-launch-warm-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), gs = path.join(games, 'gs'), learn = path.join(root, 'learn'); fs.mkdirSync(learn);
+  fs.mkdirSync(path.join(gs, 'base', 'valve'), { recursive: true }); fs.mkdirSync(path.join(gs, 'versions', 'orig'), { recursive: true });
+  fs.writeFileSync(path.join(gs, 'base', 'valve', 'a.pak'), Buffer.alloc(2 * BLOCK, 1));
+  fs.writeFileSync(path.join(gs, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'gs', name: 'GS', defaultVersion: 'gs-orig', defaults: { runtime: 'goldsrc' },
+    versions: [{ id: 'gs-orig', dir: 'orig', version: 'O', languages: ['en', 'fr'], goldsrc: { engine: 'e-1', gameDir: 'valve', modules: { client: 'c.wasm', server: 's.wasm' }, solo: { map: 'start' } } }] }));
+  const start = (more = {}) => new Promise((r) => { const server = createServer({ gamesDir: games, learnDir: learn, learnWriteMs: 10, lanLog: () => {}, ...more }); server.listen(0, '127.0.0.1', () => r(server)); });
+  const stop = (server) => new Promise((r) => { server.closeAllConnections?.(); server.close(r); });
+  let server = await start();
+  const post = (body) => fetch(`http://127.0.0.1:${server.address().port}/api/prefetch/gs-orig`, { method: 'POST', body: JSON.stringify(body) });
+  await post({ session: 's1', reads: [['valve/a.pak', 0, 10, 5]], mark: { kind: 'playable', lang: 'fr' } });
+  await post({ session: 's2', reads: [['valve/a.pak', 0, 10, 5]], mark: { kind: 'playable', lang: 'en' } });
+  await new Promise((r) => setTimeout(r, 100)); // (written)
+  await stop(server);
+  server = await start({ brCacheDir: path.join(root, 'brcache'), brCacheOptions: { loadLimit: Infinity, diskLimit: 1, idleMs: 50 }, brCacheLog: () => {} });
+  t.after(() => stop(server));
+  await server.brCache.drain(); await new Promise((r) => setTimeout(r, 50)); // (the seeder's first pass, then the background turns)
+  assert.deepEqual(server.launchesKept().filter((k) => k.startsWith('gs-orig:')), ['gs-orig:', 'gs-orig:en', 'gs-orig:fr'], 'every summary kept before the first home');
 });
 
 test('a version\'s launch counts the launch sets of the versions it requires (extraMounts), each its own', async (t) => {

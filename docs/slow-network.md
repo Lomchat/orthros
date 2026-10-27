@@ -294,7 +294,8 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   cut fetches what the menu does not need (Half-Life: 18 MB before its menu instead of 2.5 MB, 11 s later). The
   background order is what removes the freezes later.
 - **The home card** (`/api/manifests` `launch: { bytes, lightBytes, wire, lightWire, entries }` per version,
-  `launchSummary`; null until a session marked it; made again when the order changes, at most every minute): `bytes`
+  `launchSummary`; null until a session marked it; made again in the background — "Off the home's request" below):
+  `bytes`
   the launch set's learned pieces on a fast link, `lightBytes` with light copies (a link not fast), the `wire` bytes
   those of the precompressed units already made (`brCache.size`; a unit brotli could not shrink: its range's bytes),
   else 0.75 of the bytes; `langs: { <code>: … }` each game language's own (`launchFor`: the card's language's); `engine`
@@ -339,6 +340,60 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   Morrowind's menu at 85 KB/s fetched 32.8 MB of intro movies — not played, `&novid` — and 14.6 MB of music, none of the
   launch set's last 6 MB; the pill stayed at "~1 min", the New Game hold 84 s after the wait as without it). Fixed after
   that run; covered by a unit test, not measured in a browser yet.
+
+### Off the home's request (2026-10-27)
+
+The launch summaries cost the server's single thread: each one walks a version × language's launch set and asks the
+br-cache the wire size of every unit (`brCache.size`: real path, sha1 key). Until 2026-10-27 `/api/manifests` made them
+again on its request once ten minutes old (30 s after a player's read): the first home after an idle stretch waited for
+all of them, and so did every request meanwhile — a `/gamez` read, the page's logo, `/api/account`. The Caddy log of
+orthros.chalco.website, 2026-10-21 to 10-27 (322 calls): median 0.087 s when the previous call was under 60 s before
+(74 of 236 still over 0.3 s: the 30 s stale mark while players were in a game), 0.67 s after 600-3600 s (n 19, up to
+3.2 s), 0.41 s after more than an hour (n 26); after any gap over 600 s, 0.45 s (n 45). The rules now
+(`src/host/server.js` `ownLaunchOf`):
+
+- **Stale-while-revalidate.** A summary kept is always answered at once; one past its age — ten minutes
+  (`launchRefreshMs`), 30 s after a session's read (`launchStaleMs`), at once after a playable mark (`learnSave`), or of
+  another tree of the game — is queued and made again after the answer.
+- **One version × language per turn of the event loop** (`launchStep`, `setImmediate`): a request arriving meanwhile
+  waits for one summary at most, not for all of them.
+- **No scheduler of its own.** What reads the summaries queues them: a home's `/api/manifests` and the br-cache seeder's
+  pass (its `sources`, at the start and hourly), which used to make them on its own turn too.
+- **Made on the request only when there is none**, or when the kept one is null and the version was marked since (a
+  version just marked playable, or a new language's first mark, shows its figure at the next home, not one refresh
+  later). The seeder's pass also queues, in the same background turns, every summary the home will ask for that none is
+  kept of — each marked language's and the required versions' (`queueLaunches`) —: the first home after a restart finds
+  them made (the "cold (start)" 1.23 s below was measured before this; `tests/launch-set.test.js` checks it, not
+  measured again on the live state: a home within the seeder's first pass still makes those not reached yet).
+
+The figure can lag one refresh behind the learned order, as before. Measured (scratch server, copies of the learned
+files and of the live br-cache — 19 490 units, 2.2 GB, frozen —, Date.now moved 601 s ahead before each "expired" call,
+a `/gamez` 64 KiB read loop beside it, 5 rounds; a scratch script, 2026-10-27, load average ~20):
+
+| | cold (start) | warm | expired | next call | worst `/gamez` read during the expired call |
+|---|---|---|---|---|---|
+| before | 1.24-1.34 s | 38-148 ms | 0.31-1.13 s | 34-96 ms | = the call (0.31-1.13 s) |
+| after | 1.23 s (none kept: made) | 34-50 ms | **32-57 ms** | 55-64 ms | 93-178 ms (one summary: the largest slice) |
+
+The work is the same, spread: a `/gamez` read waits for one summary (BFME's launch sets, up to ~175 ms) instead of all
+of them.
+
+Measured again on the final code (with `queueLaunches`; same scratch script, fresh copies of the learned files and of
+the live br-cache — 19 490 units —, 5 rounds, before = main at 948fb9f and after = this change run alternately,
+2026-10-27 19:04-19:35, load average 3-22 except one "after" run at 49). "Cold" is a home in the first second after
+the start, before the br-cache has loaded; "after the seeder's start" waits for the seeder's first pass plus 5 s:
+
+| | cold (start) | first home after the seeder's start | warm | expired | worst `/gamez` read during it | next call |
+|---|---|---|---|---|---|---|
+| before (2 runs + 1) | 1.22-1.24 s | 193 ms | 34-63 ms | 312-711 ms | = the call (313-708 ms) | 37-81 ms |
+| after (2 runs + 1) | 1.38-1.73 s (none kept: made) | 142 ms | 38-45 ms | **35-44 ms** | 119-162 ms | 31-34 ms |
+
+A home in the server's first seconds still makes every summary on its request (1.2-1.7 s, as before: none kept yet,
+the br-cache still loading); one after the seeder's first pass finds them made. Production, before the deploy (Caddy,
+2026-10-21 to 10-27 19:00, 327 calls): p50 0.107 s, p90 0.707 s, max 3.21 s; after any gap over 600 s median 0.437 s
+(n 46, 30 over 0.3 s), under 60 s median 0.087 s (74 of 240 over 0.3 s). After the deploy: not measured yet — the same
+query from the deploy's day (median after gaps over 600 s, the count over 0.3 s under 60 s) once a few days of homes
+are logged.
 
 ### Measured at 85 KB/s (2026-10-21)
 

@@ -111,7 +111,18 @@ from it when:
    the GPU backends, which a restore rebuilds anyway (`/api/snapshot-sources`, `src/host/snapshot-sources.js`: a
    deployed change to the JIT or the WebGL backend keeps snapshots, one to an API module or the machine does not;
    `tests/snapshot-lint.test.js` fails if a module left out registers snapshot state) — the game version's manifest and
-   file tree (sizes, dates), the language and the options that change the machine (`?timescale`, `?interp`, `?dbg`...);
+   file tree (sizes, dates), the language and the options that change the machine (`?timescale`, `?interp`, `?dbg`...;
+   `src/host/web/snapshot-key.js`). The debug flags that only measure the host's GL side are not among them
+   (`HOST_ONLY_DBG` in `src/gfx/gpu-probe.js`: `ORTHROS_GL_COUNT`, `ORTHROS_GL_PROBES`, `ORTHROS_GL_TIME`; a flag joins
+   the list only if it changes neither what the guest sees nor when): a `?bench` page adds `ORTHROS_GL_COUNT`, and until
+   2026-10-27 that alone gave it a key of its own — the shared-snapshot jobs its 404s queued could never be published
+   (the publishing session is a plain page: "this session's key is X, the server was asked for Y"), which is why no
+   BFME1 1.08 or BFME II shared snapshot existed. The bench/plain key equality is covered by
+   `tests/snapshot-key.test.js` only (a bench page and a plain page get the same key; no browser run checked a `?bench`
+   page against a plain publisher). Separately, `tools/snapshot-shared-check.mjs bfme1-108 --lang fr --queue` on a
+   private server (2026-10-27; plain pages only, which shared their key before as well) proves the BFME1 1.08
+   publish/restore chain: published at 252 s of its session (310.6 MiB, 93 MB brotli), a second new player restored it
+   in 623 ms — PASSED;
 2. **its machine's start is this session's** (the worker, before anything changes: `snapshotStale`): the registry the
    process starts with (seeded from the manifest, the player's settings), and every path of the player's profile (as
    the manifest's `profileMoves` left it, docs/startup.md: moved before anything is recorded) the game had seen — its existence and size (`stat`), its listing (`readdir`), its bytes (`open`) — is as it saw it. The
@@ -120,7 +131,10 @@ from it when:
    gives a usual start (and a new snapshot, the old one deleted).
 
 A restore that fails midway (not refused beforehand) leaves a machine in pieces: the page deletes the snapshot and
-starts again. `?snapshot=0`: none; headless runs: none unless `?snapshot=auto`. `window.orthros.snapshot()` takes one
+starts again. `?snapshot=0`: none (a bench that measures a cold start passes it; `?benchsuite=...&snapshot=0` passes it on to
+every game); headless runs: none unless `?snapshot=auto`. A headed `?bench` page restores like a returning player — its
+own snapshot, else the server's shared one, under the players' key since 2026-10-27 — and its record says which
+(`snapshot`: `own`, `shared`, `failed` or null). `window.orthros.snapshot()` takes one
 now, `saveSnapshot()` keeps it as the automatic one.
 
 `tools/with-browser-slot.sh node tools/snapshot-browser-check.mjs <manifest> --games-dir /srv/orthros/data/games`: a

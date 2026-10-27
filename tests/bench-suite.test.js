@@ -261,6 +261,8 @@ test('suite: loaded by name or as a list of benches; the games\' addresses', asy
   const w = new URL(itemUrl(all.items[0], run, { origin: 'https://o.example', pass }));
   assert.equal(w.pathname, '/');
   assert.deepEqual(Object.fromEntries(w.searchParams), { bench: 'bfme1-108-short', manifest: 'bfme1-108', benchauto: '1', gldiscard: '1', dbg: 'X=1', benchrun: 'r1', benchsuitename: 'all', benchindex: '1', benchof: '7', gameLang: 'fr' });
+  // (a cold-start suite, ?benchsuite=...&snapshot=0: each game's page starts without a snapshot, main.js snapshotsOn)
+  assert.equal(new URL(itemUrl(all.items[0], run, { origin: 'https://o.example', pass: new URLSearchParams('snapshot=0') })).searchParams.get('snapshot'), '0');
   const mw = all.items[4], launch = { launchUrl: '/ports/openmw/morrowind-goty-vanilla-plus-fr/', languageLaunchUrls: { en: '/ports/openmw/morrowind-goty-vanilla-plus-en/' } };
   const p = new URL(itemUrl(mw, { ...run, index: 5 }, { origin: 'https://o.example', launch, pass }));
   assert.equal(p.pathname, '/ports/openmw/morrowind-goty-vanilla-plus-fr/app/index.html');

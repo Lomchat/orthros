@@ -219,7 +219,10 @@ export class BenchRun {
     const record = {
       event: 'bench', bench: this.def.name, title: this.def.title ?? null, runtime: this.def.runtime ?? st.runtime ?? 'win32', manifest: st.manifest, version: st.version ?? null, outcome, detail,
       ...(this.d.suite ? { suite: this.d.suite } : {}), // (bench-suite.js: { run, name, index, of } — the suite run this bench is part of)
-      seconds: Math.round(seconds), firstLaunch: !!st.firstLaunch, display: st.mode ? `${st.mode.width}x${st.mode.height}` : null,
+      seconds: Math.round(seconds), firstLaunch: !!st.firstLaunch,
+      // (the machine's start: 'own' / 'shared' snapshot restored, 'failed' one that could not be, null a usual start —
+      // docs/snapshot.md; a ?bench page shares the players' snapshots since 2026-10-27, its own before)
+      snapshot: st.snapshotFailed ? 'failed' : st.snapshotFrom ?? null, display: st.mode ? `${st.mode.width}x${st.mode.height}` : null,
       options: st.perfOptions ?? null, marks: this.marks, anchors: this.anchors, phases,
       interrupted: { hiddenSeconds: Math.round(this.hiddenSeconds), blurs: this.blurs },
       audio: this.audio.take(), // (sound.js: context state, worklet output, mix level, buffers over the run)

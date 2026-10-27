@@ -18,6 +18,7 @@ import { gpuInfo } from './gpu-class.js';
 import { vkOfCode } from '../../win32/vk-scan.js';
 import { PerfSession } from './perf-page.js';
 import { pageStorage, withStorage } from './storage-persist.js';
+import { snapshotKey } from './snapshot-key.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -260,7 +261,8 @@ async function start(name, language = null) {
   if (sources?.hash) {
     state.snapshotKey = await snapshotKey(sources.hash, name, manifest, tree, opts);
     snapshot = await loadSnapshot(name, state.snapshotKey);
-    if (!snapshot) { snapshot = await sharedSnapshot(name, state.snapshotKey, language); if (snapshot) state.sharedSnapshotCopy = snapshot.slice(0); } // (kept as this player's once it applied)
+    if (snapshot) state.snapshotFrom = 'own';
+    else { snapshot = await sharedSnapshot(name, state.snapshotKey, language); if (snapshot) { state.sharedSnapshotCopy = snapshot.slice(0); state.snapshotFrom = 'shared'; } } // (kept as this player's once it applied)
     opts.snapshotAuto = true; // (the worker takes them as the game's loading goes on)
     opts.snapshotPublish = params.get('snapshot') === 'publish';
   }
@@ -299,7 +301,9 @@ document.addEventListener('fullscreenchange', fit);
  * files, the language and the options that change the machine; the worker then checks the profile files and the registry
  * the snapshot's machine saw. A player with no profile of the game yet starts from the server's shared one of the same
  * key when there is one (docs/snapshot.md, stage 3: made by a new player's session the server ran, ?snapshot=publish).
- * ?snapshot=0: none; headless runs: none unless ?snapshot=auto.
+ * ?snapshot=0: none (a bench that measures a cold start passes it: bench-suite.js passes it on to its games); headless
+ * runs: none unless ?snapshot=auto. The key (snapshot-key.js) leaves out the debug flags that only measure the host: a
+ * ?bench page and a player's page share their snapshots, as a returning player's start (the bench record's `snapshot`).
  * window.orthros.snapshot() asks the worker for one now ({ bytes, objects, pages, ms } or the fields it refused);
  * saveSnapshot() keeps it as the automatic one.
  */
@@ -312,12 +316,6 @@ state.saveSnapshot = async () => {
   await storeSnapshot(state.manifest, state.snapshotKey, r.bytes);
   return { saved: true, bytes: r.bytes.byteLength, objects: r.objects, pages: r.pages, ms: r.ms, timing: r.timing };
 };
-/** The key a snapshot of game `name` is kept under (see above): a hex string. */
-async function snapshotKey(sources, name, manifest, tree, opts) {
-  const machine = { lang: opts.gameLanguage, timeScale: opts.timeScale, interp: opts.interp, interpRange: opts.interpRange, dbg: opts.dbg, jitOpts: opts.jitOpts, noF32: opts.noF32, f32Off: opts.f32Off };
-  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ sources, name, manifest, tree, machine })));
-  return Array.from(new Uint8Array(d).subarray(0, 16), (b) => b.toString(16).padStart(2, '0')).join('');
-}
 const snapshotDir = async (name, create = false) => (await navigator.storage.getDirectory()).getDirectoryHandle(SNAPSHOT_PREFIX + name, { create });
 /** This browser's snapshot of game `name` when it was kept under `key`: its bytes, else null. */
 async function loadSnapshot(name, key) {

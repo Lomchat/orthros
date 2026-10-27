@@ -407,12 +407,12 @@ export function createServer(opts = {}) {
   /** A phase's usual start: the median of its sessions' starts (a session that jumps to it at once does not move it alone). */
   const phaseStart = (q, phase) => { const s = q.get(phase); if (!s?.length) return null; const o = [...s].sort((a, b) => a - b); return o[Math.floor((o.length - 1) / 2)]; };
   let learnDirty = new Set(), learnTimer = null;
-  // (`read`: a session's read changed the order — the launch summaries made from it go on serving for LAUNCH_STALE_MS:
+  // (`read`: a session's read changed the order — the launch summaries made from it are made again LAUNCH_STALE_MS later:
   // with players in a game each of their reads made /api/manifests summarize its launch set again, ~100 ms of the
-  // server's thread at every home under 20 players, measured; a mark, which makes the launch set, forgets them)
+  // server's thread at every home under 20 players, measured; a mark, which makes the launch set, makes them due at once.
+  // Either way they go on serving until made again in the background: ownLaunchOf)
   const learnSave = (name, read = false) => {
-    if (!read) launches.delete(name);
-    else for (const c of launches.get(name)?.values() ?? []) c.stale = true;
+    for (const c of launches.get(name)?.values() ?? []) { c.stale = true; if (!read) c.at = 0; }
     if (!learnFile(name)) return;
     learnDirty.add(name);
     armLearnTimer();
@@ -593,35 +593,85 @@ export function createServer(opts = {}) {
   /**
    * What a version's launch costs (launch-set.js launchSummary: its launch set's bytes, with and without light copies,
    * and their wire bytes — the precompressed units' when made, br-cache.js), for the home: null until a session marked
-   * it playable. Made again once its learned order changed, or a minute later (the units made meanwhile). The versions it
+   * it playable. Made again in the background once its learned order changed, or ten minutes later (the units made
+   * meanwhile; ownLaunchOf), the home served the one kept meanwhile. The versions it
    * requires (manifest.extraMounts: the game reads them too) add their own launch sets, each learned from its own
    * sessions (a version none of whose sessions was marked playable adds nothing). Each game language whose sessions
    * marked it has its own (`langs`: the launch set of that language's sessions, prefetchList). A browser port's engine
    * release, downloaded at a first launch, is told apart: `engine` (its wire bytes) and `engineFiles` (its URLs, which
    * "Prepare" fetches too: download-worker.js).
    */
-  const launches = new Map(); // manifest -> Map(game language | '' -> { at, tree, v, stale })
-  const LAUNCH_STALE_MS = opts.launchStaleMs ?? 30000;
-  const ownLaunchOf = (name, man, lang = null) => {
+  const launches = new Map(); // manifest -> Map(game language | '' -> { at, tree, v, stale, marks })
+  const LAUNCH_STALE_MS = opts.launchStaleMs ?? 30000, LAUNCH_REFRESH_MS = opts.launchRefreshMs ?? 600e3;
+  /** Make version `name`'s launch summary for game language `lang` (null: all its sessions'), keep it, return it. */
+  const makeLaunch = (name, man, lang, tree = gameTree(name, man)) => {
     let byLang = launches.get(name); if (!byLang) launches.set(name, byLang = new Map());
-    // (kept while the game's tree is the same one — what sessions learn forgets it, learnSave —, made again every ten
-    // minutes all the same: the compressed sizes the server comes to know meanwhile)
-    const c = byLang.get(lang ?? ''), tree = gameTree(name, man);
-    if (c && c.tree === tree && Date.now() - c.at < (c.stale ? LAUNCH_STALE_MS : 600e3)) return c.v;
-    let v = null;
+    let v = null; const marks = playableOf(name).marks;
     try {
-      if (playableOf(name).marks) {
+      if (marks) {
         const at = unitFile(man);
         v = launchSummary(new HttpBackend(`/game/${name}/`, tree), prefetchList(name, lang), brCache && ((rel, unit) => {
           const f = at(rel); return f ? brCache.size(f.file, f.st, f.light, unit) : null;
         }));
       }
     } catch { v = null; }
-    byLang.set(lang ?? '', { at: Date.now(), tree, v });
+    byLang.set(lang ?? '', { at: Date.now(), tree, v, marks });
     return v;
   };
+  // (the summaries due, made one version × language per turn of the event loop: a home's request, the br-cache seeder's
+  // pass or a /gamez read waits for one at most, not for all — live until 2026-10-27, /api/manifests made them all on
+  // its request after ten idle minutes: 0.44-0.67 s median, up to 3.2 s, the requests meanwhile stalled as long)
+  const launchesDue = new Map(); // `${name}\0${lang}` -> [name, man, lang, missing: only if none is kept by then]
+  let launchTurn = null;
+  const launchStep = () => {
+    launchTurn = null;
+    const first = launchesDue.entries().next().value; if (!first) return;
+    launchesDue.delete(first[0]);
+    const [name, man, lang, missing] = first[1];
+    if (!(missing && launches.get(name)?.has(lang ?? ''))) {
+      try { makeLaunch(name, man, lang); } catch { /* left as it was: due again at its next read */ }
+    }
+    if (launchesDue.size) launchTurn = setImmediate(launchStep);
+  };
+  /**
+   * Version `name`'s launch summary for game language `lang`, as kept: stale-while-revalidate — one older than ten
+   * minutes (LAUNCH_REFRESH_MS: the compressed sizes the server comes to know meanwhile), than LAUNCH_STALE_MS after a
+   * session's read, at once after a mark (learnSave) or of another tree of the game is served all the same and made
+   * again in the background (launchStep). Made on the caller's turn only when there is none yet, or when it is null and
+   * the version was marked since (a version just marked playable shows its figure at the next home).
+   */
+  const ownLaunchOf = (name, man, lang = null) => {
+    const c = launches.get(name)?.get(lang ?? ''), tree = gameTree(name, man);
+    if (!c || (c.v === null && c.marks !== playableOf(name).marks)) return makeLaunch(name, man, lang, tree);
+    if (c.tree !== tree || Date.now() - c.at >= (c.stale ? Math.min(LAUNCH_STALE_MS, LAUNCH_REFRESH_MS) : LAUNCH_REFRESH_MS)) {
+      launchesDue.set(`${name}\0${lang ?? ''}`, [name, man, lang]);
+      launchTurn ??= setImmediate(launchStep);
+    }
+    return c.v;
+  };
+  /** The versions version `name` requires (manifest.extraMounts) that this server has: [[name, manifest]]. */
+  const requiredOf = (name, man) => (Array.isArray(man.extraMounts) ? man.extraMounts : []).map((d) => (d?.manifest && d.manifest !== name ? [d.manifest, manifests.get(d.manifest)] : null)).filter((r) => r?.[1]);
+  // (the languages some marking sessions told, of this version or of one it requires — those the version declares:
+  // markLang; marks kept from before it are left out)
+  const marksLangs = (name, man, required) => new Set([name, ...required.map(([rn]) => rn)].flatMap((n) => Object.keys(playableOf(n).by)).filter((l) => markLang(man, l) === l));
+  /**
+   * Make in the background (launchStep) the summaries launchOf asks for that none is kept of yet — version `name`'s and
+   * its required versions', for all sessions and for each marked language: the br-cache seeder's pass (at the start and
+   * hourly) calls it, so the first home after a restart finds them all kept instead of making each on its request
+   * (1.23 s cold on the live state, 2026-10-27).
+   */
+  const queueLaunches = (name, man) => {
+    if (!playableOf(name).marks) return; // (launchOf asks for nothing more: null)
+    const required = requiredOf(name, man);
+    for (const lang of [null, ...marksLangs(name, man, required)]) {
+      for (const [n, m] of [[name, man], ...required]) {
+        if (!launches.get(n)?.has(lang ?? '')) launchesDue.set(`${n}\0${lang ?? ''}`, [n, m, lang, true]);
+      }
+    }
+    if (launchesDue.size) launchTurn ??= setImmediate(launchStep);
+  };
   const launchOf = (name, man) => {
-    const required = (Array.isArray(man.extraMounts) ? man.extraMounts : []).map((d) => (d?.manifest && d.manifest !== name ? [d.manifest, manifests.get(d.manifest)] : null)).filter((r) => r?.[1]);
+    const required = requiredOf(name, man);
     const summed = (lang) => {
       const v = ownLaunchOf(name, man, lang);
       if (!v) return v;
@@ -634,9 +684,7 @@ export function createServer(opts = {}) {
     };
     const sum = summed(null);
     if (!sum) return sum;
-    // (the languages some marking sessions told, of this version or of one it requires — those the version declares:
-    // markLang; marks kept from before it are left out)
-    const langs = new Set([name, ...required.map(([rn]) => rn)].flatMap((n) => Object.keys(playableOf(n).by)).filter((l) => markLang(man, l) === l));
+    const langs = marksLangs(name, man, required);
     if (langs.size) sum.langs = Object.fromEntries([...langs].sort().map((l) => [l, summed(l)]));
     // (the engine's own download at a first launch: told apart, a browser that ran it before has it)
     const engine = engineOf(man);
@@ -986,9 +1034,11 @@ export function createServer(opts = {}) {
   const brCache = opts.brCacheDir ? createBrCache({
     dir: opts.brCacheDir, maxBytes: opts.brCacheBytes, log: opts.brCacheLog ?? ((m) => console.log(m)), ...opts.brCacheOptions,
     // (each launch set's pinned part from its size, the home's: its own and its light copies' units, both made; the
-    // versions without one — no session marked them — an equal part, after those with one)
+    // versions without one — no session marked them — an equal part, after those with one. The summaries as kept: this
+    // pass, at the start and hourly, makes again in the background those due, as a home does — ownLaunchOf —, and those
+    // the home will ask for that none is kept of yet, each language's: queueLaunches)
     sources: () => [...manifests].filter(([name]) => learnFile(name) && fs.existsSync(learnFile(name)))
-      .map(([name, man]) => { let l = null; try { l = ownLaunchOf(name, man); } catch { /* none */ } return [name, man, l ? l.wire + (man.lightCopies ? l.lightWire : 0) : null]; })
+      .map(([name, man]) => { let l = null; try { l = ownLaunchOf(name, man); queueLaunches(name, man); } catch { /* none */ } return [name, man, l ? l.wire + (man.lightCopies ? l.lightWire : 0) : null]; })
       .sort(([, a, wa], [, b, wb]) => (wa === null) - (wb === null) || (runtimeOf(a) === 'win32') - (runtimeOf(b) === 'win32'))
       // (its launch set, then the units of its most announced places, then the rest of its order)
       .map(([name, man, want]) => ({ name, want, units: function* () {
@@ -1856,8 +1906,9 @@ export function createServer(opts = {}) {
   server.mmo = mmo;
   const closeServer = server.close.bind(server);
   server.close = (cb) => { mmo.close(); brCache?.close(); return closeServer(cb); };
-  server.on('close', () => { mmo.close(); brCache?.close(); });
+  server.on('close', () => { mmo.close(); brCache?.close(); if (launchTurn) clearImmediate(launchTurn); launchTurn = null; launchesDue.clear(); });
   server.brCache = brCache; // (tests: its state, drain)
+  server.launchesKept = () => [...launches].flatMap(([n, byLang]) => [...byLang.keys()].map((l) => `${n}:${l}`)).sort(); // (tests: the summaries kept)
   server.srcBrJobs = () => ({ running: srcBrRunning, queued: srcBrJobs.length, peak: srcBrPeak }); // (tests: the src brotli queue)
   return server;
 }

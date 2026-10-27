@@ -13,6 +13,15 @@
 // readers take differences.
 import { HIST_N, histBucket } from '../core/frame-acct.js';
 
+/**
+ * The page's debug flags (?dbg=, the worker's globals) that only measure the host's GL side — no guest-visible effect, no
+ * state of the machine: left out of a snapshot's key (snapshot-key.js), a ?bench page (which adds ORTHROS_GL_COUNT) and a
+ * player's page share their snapshots. ORTHROS_GL_COUNT: the GL call counter here; ORTHROS_GL_PROBES=0: this probe off
+ * (d3d8-webgl.js); ORTHROS_GL_TIME: every GL call timed for some frames (d3d8-webgl.js glProbeStep). A flag that changes
+ * what the guest sees or when (timers, scheduling, the JIT, the APIs' paths) is not one of them.
+ */
+export const HOST_ONLY_DBG = Object.freeze(['ORTHROS_GL_COUNT', 'ORTHROS_GL_PROBES', 'ORTHROS_GL_TIME']);
+
 const TIME_ELAPSED_EXT = 0x88bf, GPU_DISJOINT_EXT = 0x8fbb;
 export const WINDOW_FRAMES = 120, PERIOD_MS = 10000, GL_FRAMES = 30, GL_PERIOD_MS = 20000;
 /** queries in flight at most (a GPU that far behind: frames left untimed rather than more queries) */

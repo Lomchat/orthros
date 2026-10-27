@@ -78,7 +78,14 @@ node tools/startbench.mjs bfme1-108 --games-dir <catalog> --save <seeded profile
 ```
 
 A measurement is most useful repeated: the first one in a fresh browser (first launch: downloads, the game's setup,
-nothing learned), then the same link again (files in the browser, code and shaders cached). Each run is one record.
+nothing learned), then the same link again (files in the browser, code and shaders cached, and the game's machine
+restored from its snapshot, docs/snapshot.md). Each run is one record; its `snapshot` field says how the machine
+started (`own`: this browser's snapshot, `shared`: the server's, `failed`, null: a usual boot — a first launch, or
+`&snapshot=0`, which a bench measuring a cold start adds; `?benchsuite=...&snapshot=0` passes it on to every game).
+Until 2026-10-27 a bench page's snapshot key was its own (the bench's `ORTHROS_GL_COUNT` flag was in it): since then
+it shares the players' snapshots, so a bench's first run in a fresh browser may already start from the server's shared
+one — compare load and boot times across that date only between records with the same `snapshot` (records before it
+have no such field).
 Laptop on mains power, other heavy tabs closed; the summary flags a run during which the tab was hidden or lost the
 focus (those phases are not representative).
 

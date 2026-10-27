@@ -37,7 +37,7 @@ const W = FR ? {
 /** seconds a game's frame is given beyond its bench's maxSeconds before the suite moves on without its record */
 export const GRACE_S = 90;
 /** the URL parameters of the suite's page passed on to each game's page */
-export const PASSED = ['gldiscard', 'glworker', 'dbg', 'encoded', 'prefetch', 'netlog'];
+export const PASSED = ['gldiscard', 'glworker', 'dbg', 'encoded', 'prefetch', 'netlog', 'snapshot']; // (snapshot=0: cold starts)
 
 /**
  * The suite `spec` (a suite of index.json, or bench names separated by commas), each bench loaded (bench.js loadBench).
