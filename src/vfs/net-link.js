@@ -49,11 +49,14 @@ export const LOAD_WAITS = 3, LOAD_WINDOW_MS = 4000, LOAD_GAP_MS = 500, LOAD_GAP_
 export const LOAD_LONG_MS = 4000, LOAD_HOLD_MS = 2000;
 /** while loading, a background request carries at most this many round trips of the link (see requestBytes) */
 const LOAD_REQUEST_RTTS = 2;
+/** requests a browser runs at once to an HTTP/1.x origin (Chrome: six connections per host; see h1) */
+export const H1_CONNECTIONS = 6;
 
 export class NetLink {
   /**
-   * @param {{ now?: () => number, bw?: number, fixed?: boolean, setTimer?: (fn: () => void, ms: number) => any, clearTimer?: (t: any) => void }} [opts]
-   *   bw: the rate measured on this link last time (bytes/s), the estimate until this session measures its own
+   * @param {{ now?: () => number, bw?: number, fixed?: boolean, setTimer?: (fn: () => void, ms: number) => any, clearTimer?: (t: any) => void, protocol?: string }} [opts]
+   *   bw: the rate measured on this link last time (bytes/s), the estimate until this session measures its own;
+   *   protocol: the origin's HTTP version, as nextHopProtocol says it (else found by h1)
    */
   constructor(opts = {}) {
     this.now = opts.now ?? (() => performance.now());
@@ -94,6 +97,24 @@ export class NetLink {
      * wire bytes of the requests begun during a load }
      */
     this.bgBy = {};
+    /**
+     * the origin's HTTP version as the browser negotiated it (PerformanceResourceTiming.nextHopProtocol: 'http/1.1', 'h2',
+     * 'h3'), null until one of its answers tells it (see h1); `protocol` given: fixed (tests)
+     */
+    this.protocol = typeof opts.protocol === 'string' ? opts.protocol : null;
+  }
+
+  /**
+   * The origin speaks HTTP/1.x (a local server, `make serve`; the production front speaks HTTP/2): the browser runs
+   * H1_CONNECTIONS requests to it at once, the others queued in the order they came — not the link's priorities: a
+   * request beyond them waits behind every one started before it, the game's reads too. Known from the first answer the
+   * browser's resource timing lists (this context's own requests); false until then.
+   */
+  h1() {
+    if (this.protocol === null && typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
+      for (const e of performance.getEntriesByType('resource')) if (e.nextHopProtocol) { this.protocol = e.nextHopProtocol; break; }
+    }
+    return /^http\/1/i.test(this.protocol ?? '');
   }
 
   /**

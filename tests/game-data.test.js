@@ -700,6 +700,28 @@ test('announced reads: the page\'s entries (a texture as its light copy, whole; 
   assert.equal(data.snapshot().wants, 4);
 });
 
+test('announced reads the engine waits for through its own reads (wait false: a GoldSrc map\'s load): posted at once, no batch; an archive read light announced as its light copy\'s range', async (t) => {
+  const wad = bytes(600000, 2), wlight = bytes(600000, 6), mdl = bytes(9000, 4);
+  const server = fakeServer({ 'valve/halflife.wad': wad, 'valve/models/a.mdl': mdl }, [], { 'valve/halflife.wad': wlight });
+  const data = await inThread(t, server), w = data.file('v', 'valve/halflife.wad'), m = data.file('v', 'valve/models/a.mdl'), out = new Uint8Array(70000);
+  // (the archive opened at the engine's start, the link not measured: read light — its header)
+  await data.ensure(w, 0, 12); data.read(w, out, 0, 12, 0);
+  assert.deepEqual(out.subarray(0, 12), wlight.subarray(0, 12));
+  const n = data.want([{ h: w, off: 300000, len: 70000 }, { h: m }], { label: 'textures:m1', wait: false });
+  assert.equal(n, 2); assert.equal(data.wantSeq, 0, 'no batch number');
+  await until(() => data.wantLeft === 0 && server.asked.filter(([, , , k]) => k === 'want').length >= 3, 'its entries settled');
+  const wanted = server.asked.filter(([, , , k]) => k === 'want').map(([p, a, b]) => [p, a, b]).sort();
+  assert.deepEqual(wanted, [['.light/valve/halflife.wad', 262144, 327680], ['.light/valve/halflife.wad', 327680, 393216], ['valve/models/a.mdl', 0, 9000]]);
+  assert.equal(Atomics.load(data.ctrl, 12), 0, 'no batch settled: none was counted');
+  assert.equal(data.wantWait(0), true, 'nothing for the page to wait for');
+  // (the engine's read past the archive's start: the light copy's bytes, from the worker's copy)
+  const asked = server.asked.length;
+  await data.ensure(w, 300000, 70000); data.read(w, out, 0, 70000, 300000);
+  assert.deepEqual(out, wlight.subarray(300000, 370000));
+  assert.equal(server.asked.slice(asked).filter(([p, , , k]) => k === 'demand' && p.includes('halflife')).length, 0, `read here: ${JSON.stringify(server.asked.slice(asked))}`);
+  assert.equal(data.snapshot().wants, 2);
+});
+
 test('announced reads: a wait covers the batches announced since the last one — an older batch still hung holds nothing', async (t) => {
   const server = fakeServer({ 'Meshes/stuck.nif': bytes(9000, 3), 'Meshes/a.nif': bytes(9000, 4) });
   let hang = true; const held = [];

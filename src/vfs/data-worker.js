@@ -221,8 +221,11 @@ async function answerAsync(m) {
  * each version's entries to its reader (HttpBackend.wantList: fetched in parallel, kept), and as they land or fail, the
  * counters the page's wait reads (ctrl[12] — every batch of the window up to it settled —, ctrl[13], ctrl[14]). The
  * batch is registered whatever happens (an exception: its entries failed), so the window's count never stops at it.
+ * `wait` false (GameData.want's: the engine waits for it through its own reads, never wantWait): no batch — its entries
+ * counted in ctrl[13] and ctrl[14] only —, and no hold of the link's nor of the learned read-ahead (wantList `wait` false).
  */
-function want({ seq, from, list, label }) {
+function want({ seq, from, list, label, wait }) {
+  const batch = wait !== false;
   W.wantLabel = typeof label === 'string' ? label.slice(0, 80) : null;
   const byPart = new Map();
   for (const [name, path, off, len] of list) {
@@ -233,17 +236,18 @@ function want({ seq, from, list, label }) {
     e.push([path, a, n < 0 || !Number.isFinite(n) ? -1 : a + n]);
   }
   const all = [];
-  try { for (const [part, ranges] of byPart) all.push(...part.files.wantList(ranges, { label: W.wantLabel })); }
+  try { for (const [part, ranges] of byPart) all.push(...part.files.wantList(ranges, { label: W.wantLabel, wait: batch })); }
   catch { W.wantFailed += list.length - all.length; }
-  W.wantMax = Math.max(W.wantMax, seq);
-  if (Number.isInteger(from) && from > W.wantFrom) W.wantFrom = from;
-  // (a settled batch leaves the map: a number up to wantMax not in it is settled)
-  if (all.length) W.wants.set(seq, all.length);
+  if (batch) {
+    W.wantMax = Math.max(W.wantMax, seq);
+    if (Number.isInteger(from) && from > W.wantFrom) W.wantFrom = from;
+    // (a settled batch leaves the map: a number up to wantMax not in it is settled)
+    if (all.length) W.wants.set(seq, all.length);
+  }
   W.wantLeft += all.length;
   const settle = (ok) => {
     W.wantLeft--; if (!ok) W.wantFailed++;
-    const n = W.wants.get(seq) - 1;
-    if (n > 0) W.wants.set(seq, n); else W.wants.delete(seq);
+    if (batch) { const n = W.wants.get(seq) - 1; if (n > 0) W.wants.set(seq, n); else W.wants.delete(seq); }
     wantTell();
   };
   for (const p of all) p.then(settle, () => settle(false));

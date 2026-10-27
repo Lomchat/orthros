@@ -424,10 +424,14 @@ export class GameData {
   /**
    * What the next load of `h` will read — `h`, or its light copy's handle — as pick will choose it; with `pin`, that
    * choice held for that load (h.pin: what is announced is what it reads — pick), not made yet (its first read makes it).
-   * `big`: whether a big load is under way (default: bigLoadNow).
+   * `big`: whether a big load is under way (default: bigLoadNow). `position`: where the read starts — past the file's
+   * start, pick chooses nothing (a texture inside an archive the engine keeps open): what the file's current load reads
+   * (h.as; the file itself before any), pinned all the same when asked (an engine that opens the archive again meanwhile
+   * — a new load of it — reads what was announced).
    */
-  nextPick(h, pin = false, big = undefined) {
+  nextPick(h, pin = false, big = undefined, position = 0) {
     if (!this.lightOf(h)) return h;
+    if (position > 0) { const v = h.as ?? h; if (pin) h.pin = { real: v === h, at: performance.now() }; return v; }
     const v = !this.newLoad(h) ? h.as ?? h : this.loadsReal(h, big) ? h : this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light);
     if (pin) h.pin = { real: v === h, at: performance.now() };
     return v;
@@ -450,22 +454,29 @@ export class GameData {
    * game's reads, a load's and the launch set (HttpBackend.wantList `prio: 'place'`), outside the wait's window (no
    * batch number: wantWait never waits for it), its light-or-file choice made by the link now and not pinned (nor
    * made light by a big load: the player idles meanwhile, a fast link brings the files themselves).
+   * `wait` false: a list the engine waits for through its own reads, not wantWait (an engine whose reads are synchronous
+   * and that cannot be told to wait: GoldSrc's, src/ports/goldsrc/bsp-reads.js — a map's load says what it reads once
+   * the map's file is read): posted at once (the page's thread does not yield before those reads), no batch number
+   * (wantWait never waits for it), the link's light-or-file choice pinned (nextPick at each entry's offset: a range past a
+   * file's start reads what the file's current load reads), not weighed as a big load; the worker's list holds the link
+   * for it as for any announced load (HttpBackend.wantList), and the engine's reads join its requests.
    * A big load (bigBatch: an engine that reloads in place, its window's files that have a light copy more than
    * LOAD_BUDGET_S of the link): those files announced and read as their light copies, the loads of the moment too
    * (bigLoadNow).
    */
   want(entries, opts = '') {
-    const { label = '', prio = null } = typeof opts === 'string' ? { label: opts } : opts ?? {};
-    if (prio === 'place') {
-      const list = [];
+    const { label = '', prio = null, wait = true } = typeof opts === 'string' ? { label: opts } : opts ?? {};
+    if (prio === 'place' || wait === false) {
+      const place = prio === 'place', list = [];
       for (const { h, off = 0, len = -1 } of entries) {
         if (!h || h.src !== undefined || h.failed) continue;
-        const r = this.announced(h, off, len, this.nextPick(h, false, false));
+        const r = this.announced(h, off, len, this.nextPick(h, !place, false, place ? 0 : off));
         if (r) list.push(r);
       }
       if (!list.length) return 0;
-      this.stats.placeWants = (this.stats.placeWants ?? 0) + list.length;
-      this.worker.postMessage({ wantPlace: { list, label: String(label ?? '').slice(0, 80) } });
+      const text = String(label ?? '').slice(0, 80);
+      if (place) { this.stats.placeWants = (this.stats.placeWants ?? 0) + list.length; this.worker.postMessage({ wantPlace: { list, label: text } }); }
+      else { this.stats.wants += list.length; this.worker.postMessage({ want: { seq: 0, list, label: text, wait: false }, used: this.used.splice(0) }); }
       return list.length;
     }
     this.progress();
@@ -487,9 +498,13 @@ export class GameData {
     return n;
   }
 
-  /** What an announce of `h`'s [off, off + len) asks when its load reads `v` (h or its light copy, whole): [name, path, off, len], or null when the page has it. */
+  /**
+   * What an announce of `h`'s [off, off + len) asks when its load reads `v` (h, or its light copy: whole — unless it keeps
+   * the file's layout, sameLayout: that range of it): [name, path, off, len], or null when the page has it.
+   */
   announced(h, off, len, v) {
-    const a = v !== h ? 0 : Math.max(0, Math.min(h.size, off)), n = v !== h ? v.size : len < 0 ? h.size - a : Math.min(len, h.size - a);
+    const whole = v !== h && !this.sameLayout(h, v);
+    const a = whole ? 0 : Math.max(0, Math.min(h.size, off)), n = whole ? v.size : len < 0 ? h.size - a : Math.min(len, h.size - a);
     return !(n > 0) || this.inPage(v, a, n) ? null : [v.name, v.path, a, n];
   }
 
@@ -509,7 +524,7 @@ export class GameData {
       const list = [];
       for (const { h, off = 0, len = -1 } of entries) {
         if (h.failed) continue;
-        const r = this.announced(h, off, len, this.nextPick(h, true, big));
+        const r = this.announced(h, off, len, this.nextPick(h, true, big, off));
         if (r) list.push(r);
       }
       // (an empty batch too: the worker settles its number at once)
@@ -588,6 +603,32 @@ export class GameData {
   /** Announced entries the worker has not settled yet (ctrl[13]), and those that failed since the start (ctrl[14]). */
   get wantLeft() { return Atomics.load(this.ctrl, 13); }
   get wantFailed() { return Atomics.load(this.ctrl, 14); }
+
+  /**
+   * `v`, the light copy of `h`, keeps the file's layout: its size is the file's (a WAD3's — light-copies.js lightWad: the
+   * same archive, every offset kept, only pixels redrawn), so a range of one is the same range of the other.
+   */
+  sameLayout(h, v) { return v !== h && v.size === h.size; }
+
+  /**
+   * The bytes [position, position + length) of `h` from the page's pieces, nothing fetched: a copy, or null when some are
+   * not in the page — those of the file, or else of its light copy when it keeps the file's layout (sameLayout: an
+   * archive's directory, read as either) —, to read what the engine read already (a map's lumps, an archive's directory).
+   */
+  peek(h, position, length) {
+    const at = Math.max(0, position), end = Math.min(h.size, at + length);
+    if (!(end > at)) return new Uint8Array(0);
+    const light = this.lightOf(h) === h.size ? this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.size) : null;
+    const v = this.inPage(h, at, end - at) ? h : light && this.inPage(light, at, end - at) ? light : null;
+    if (!v) return null;
+    const out = new Uint8Array(end - at);
+    for (let pos = at; pos < end;) {
+      const p = Math.floor(pos / PIECE), piece = this.cache.get(v.id * PER_FILE + p), within = pos - p * PIECE, n = Math.min(end - pos, piece.length - within);
+      out.set(piece.subarray(within, within + n), pos - at);
+      pos += n;
+    }
+    return out;
+  }
 
   /** Every byte of [position, position + length) of `h` (as is: no light copy chosen) is in the page's pieces. */
   inPage(h, position, length) {

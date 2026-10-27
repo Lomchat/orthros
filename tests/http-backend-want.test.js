@@ -196,7 +196,7 @@ test('a whole block already read ahead (blockFlights) is joined', async () => {
   } finally { F.restore(); }
 });
 
-test('while an announced list is missing nothing is fetched ahead from the learned order (even announced far ahead); once here, it is', async () => {
+test('while an announced list is missing nothing is fetched ahead from the learned order; once here, it is', async () => {
   const F = heldFetch();
   let stopped = false;
   try {
@@ -205,8 +205,7 @@ test('while an announced list is missing nothing is fetched ahead from the learn
     b.fillBackground = () => {}; b.noteMiss = () => {}; b.lastSyncFetchAt = performance.now() + 1e9; // (the learned pieces alone)
     const pass = b.prefetch([['f.big', 0, 0b1], ['f.big', 1, 0b100], ['f.big', 2, 0b1]], {}, () => stopped);
     await settle(2);
-    // (wait false: the link not held — only the announced list keeps the learned pieces back)
-    const done = b.wantList([['m0.nif', 0, -1]], { label: 'meshes:0,0', wait: false });
+    const done = b.wantList([['m0.nif', 0, -1]], { label: 'meshes:0,0' });
     await settle(2);
     assert.deepEqual(F.calls.map((c) => c.file), ['m0.nif']);
     b.chunks.set('f.big#0', bytes(0, CHUNK)); b.chunkBytes += CHUNK;
@@ -219,6 +218,59 @@ test('while an announced list is missing nothing is fetched ahead from the learn
     assert.deepEqual(F.calls.slice(1).map((c) => [c.file, c.start]), [['f.big', MiB + 2 * CHUNK], ['f.big', 2 * MiB]], 'the learned pieces ahead once it is here');
     stopped = true; F.release(); await pass;
   } finally { stopped = true; F.release(); F.restore(); }
+});
+
+test('a list the engine waits for through its own reads (wait false) holds neither the link nor the learned read-ahead', async () => {
+  const F = heldFetch();
+  let stopped = false;
+  try {
+    const files = { 'f.big': { size: 8 * MiB, mtime: 1 }, 'm0.nif': { size: 20000, mtime: 1 } };
+    const net = mid(), b = new HttpBackend('/game/w/', { dirs: {}, files }, { store: new MemBlockStore(), net });
+    b.fillBackground = () => {}; b.noteMiss = () => {}; b.lastSyncFetchAt = performance.now() + 1e9; // (the learned pieces alone)
+    const pass = b.prefetch([['f.big', 0, 0b1], ['f.big', 1, 0b100], ['f.big', 2, 0b1]], {}, () => stopped);
+    await settle(2);
+    const done = b.wantList([['m0.nif', 0, -1]], { label: 'textures:m1', wait: false });
+    await settle(2);
+    assert.equal(net.waitsNow.size, 0, 'no wait of the link\'s');
+    assert.equal(b.wantLists, 0); assert.equal(b.wantLoose, 1);
+    assert.ok(b.loadUnderWay(), 'a load under way all the same');
+    b.chunks.set('f.big#0', bytes(0, CHUNK)); b.chunkBytes += CHUNK;
+    assert.deepEqual(b.open('f.big').read(100, 50), bytes(100, 150)); // the game reaches the learned list's entry 0
+    await settle(2);
+    assert.deepEqual(F.calls.slice(1).map((c) => [c.file, c.start]), [['f.big', MiB + 2 * CHUNK], ['f.big', 2 * MiB]], 'the learned pieces ahead meanwhile');
+    F.release();
+    assert.deepEqual(await Promise.all(done), [true]);
+    await settle(2);
+    assert.equal(b.wantLoose, 0);
+    stopped = true; F.release(); await pass;
+  } finally { stopped = true; F.release(); F.restore(); }
+});
+
+test('on an HTTP/1.x origin a list the engine waits for through its reads keeps connections free (WANT_REQUESTS_H1_LOOSE); a waited list does not', async () => {
+  const F = heldFetch();
+  try {
+    const net = new NetLink({ bw: 1.5e6, fixed: true, protocol: 'http/1.1' });
+    assert.equal(net.h1(), true); assert.equal(new NetLink({ protocol: 'h2' }).h1(), false);
+    const b = new HttpBackend('/game/v/', tree(), { store: new MemBlockStore(), encoded: true, net });
+    const loose = Array.from({ length: 10 }, (_, i) => [`m${i}.nif`, 0, -1]);
+    const done = b.wantList(loose, { label: 'textures:m', wait: false });
+    await settle(5);
+    assert.deepEqual(F.calls.map((c) => c.file), ['m0.nif', 'm1.nif', 'm2.nif', 'm3.nif'], 'four at once, in the list\'s order: two of the six connections left');
+    // (a list the engine waits for: its own window, past the held units)
+    const waited = b.wantList([['m20.nif', 0, -1], ['m21.nif', 0, -1]], { label: 'meshes:0,0' });
+    await settle(5);
+    assert.deepEqual(F.calls.slice(4).map((c) => c.file), ['m20.nif', 'm21.nif']);
+    // (a parked read of a held unit: it goes at once)
+    const parked = b.open('m8.nif').prepare(0, 100, true);
+    assert.ok(parked, 'the read is not here: parked');
+    await settle(5);
+    assert.equal(F.calls.at(-1).file, 'm8.nif', 'a parked read\'s unit goes past the window');
+    for (let k = 0; k < 6; k++) { F.release(); await settle(5); }
+    assert.deepEqual(await Promise.all(done), loose.map(() => true));
+    assert.deepEqual(await Promise.all(waited), [true, true]);
+    assert.ok(F.maxInFlight <= 7, `at most four loose units beside the others and the parked read's (${F.maxInFlight})`);
+    await parked;
+  } finally { F.release(); F.restore(); }
 });
 
 // A predicted place (wantList `prio: 'place'`, docs/openmw.md "Anticipated places"): the set of the place a saved game

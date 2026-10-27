@@ -3,7 +3,7 @@
 // JSON listing so stat/readdir never hit the network; file data is fetched in blocks kept in a
 // bounded LRU cache with read-ahead for sequential access.
 import { acct, C as ACCT } from '../core/frame-acct.js';
-import { NetLink } from './net-link.js';
+import { NetLink, H1_CONNECTIONS } from './net-link.js';
 import { LIGHT_DIR, isVideoFile, isLightPicture } from './game-tree.js';
 import { decodePcm, PCM_MAGIC } from './pcm-codec.js';
 
@@ -115,6 +115,14 @@ const PRIO = { announced: [0, 0], readAhead: [1, 0], ahead: [2, 0], miss: [3, 10
  * 1.8 MB/s, 90 ms link: 340 serial reads, 37 s) —, fewer on a thin link (its bytes, not its round trips, are the wait).
  */
 const WANT_REQUESTS = 32, WANT_REQUESTS_THIN = 8;
+/**
+ * The units of lists the engine waits for through its own reads (wantList `wait` false) in flight at once at most on an
+ * HTTP/1.x origin (NetLink.h1): the browser's other connections left to the engine's reads and the learned read-ahead —
+ * the window's units would hold all of them, and those reads wait behind them in the browser's queue (Half-Life's c1a0,
+ * a taught map, at 8 MB/s, 85 ms: every request's first byte 400-690 ms instead of 90 during the announce, the load
+ * 5.25 s instead of 4.05).
+ */
+const WANT_REQUESTS_H1_LOOSE = H1_CONNECTIONS - 2;
 /**
  * A predicted place's set (wantList `prio: 'place'`: what a page expects the game to load next, fetched while the link
  * is idle — the OpenMW page asks it once its engine's boot is over, in the menu): its unit requests registered at once
@@ -254,11 +262,13 @@ export class HttpBackend {
     /** the learned prefetch pass is over (prefetch); then the blocks missed per file (path -> Set of blocks; true: wanted whole) */
     this.learnedDone = false; this.missedAfter = new Map();
     /** announced units waiting for a request (see wantList), in the order announced; the requests of them in flight */
-    this.wantQ = []; this.wantInFlight = 0;
+    this.wantQ = []; this.wantInFlight = 0; this.wantLooseInFlight = 0;
     /** a predicted place's units waiting for a request (wantList `prio: 'place'`), in order; their requests in flight */
     this.placeQ = []; this.placeInFlight = 0;
     /** announced lists not all here yet (see wantList): meanwhile nothing is fetched ahead from the learned order (pumpAhead) */
     this.wantLists = 0; this.wantHeld = 0;
+    /** announced lists not all here yet that the engine waits for through its own reads (wantList `wait` false) */
+    this.wantLoose = 0;
   }
 
   /**
@@ -572,7 +582,9 @@ export class HttpBackend {
     // link from the load's own; the next touch of a learned entry pumps again)
     if (!L.tracked && this.net.silenced()) return;
     // (nor while the engine waits for what it announced (wantList): it said what its load reads — the learned order's
-    // guesses would only take the link from it (measured: 0.8-1.1 MB of a 5 s announced wait); they go once it is here)
+    // guesses would only take the link from it (measured: 0.8-1.1 MB of a 5 s announced wait); they go once it is here.
+    // Not for a list announced with `wait` false: it holds files the load reads late too, and the order's next entries
+    // — the reads it cannot predict — would each wait a round trip until its last unit came)
     if (this.wantLists > 0) return;
     const P = BLOCK / CHUNK;
     for (let r = L.pos + 1, lim = Math.min(L.entries.length, L.pos + 1 + AHEAD_WINDOW); r < lim && L.inFlight < (this.net.fast() || this.net.thin() ? AHEAD_REQUESTS : AHEAD_REQUESTS_MID); r++) {
@@ -651,8 +663,10 @@ export class HttpBackend {
    * not asked again. The requests are `forLoad` (they pass a load's silence, NetLink.mayStart) and urgent — the engine
    * waits for them next, as for a parked read: the window bounds them, not the background's count —; the server is told
    * they are announced (`w=1`: not learned as reads, queued between the game's reads and the background's). While any
-   * of them is missing the game counts as waiting (NetLink.wait, `opts.wait` false: not — a page that announces far
-   * ahead). Returns one promise per entry: true once all its bytes are here, false when one of its units failed (the
+   * of them is missing the game counts as waiting (NetLink.wait) and nothing is read ahead from the learned order
+   * (pumpAhead); `opts.wait` false: neither — an engine that waits through its own reads, its list holding files read
+   * late in the load too (GoldSrc's map loads): the learned order's next entries go meanwhile when it follows the load
+   * (still a load under way, loadUnderWay). Returns one promise per entry: true once all its bytes are here, false when one of its units failed (the
    * engine's read then asks itself, and says what failed). `opts.label`: what the load is for (kept in stats.wantLabel).
    * `opts.prio` 'place': a list the page predicts (the place a saved game will load, fetched while the player sits in
    * the menu — docs/openmw.md "Anticipated places"), not one the engine waits for: the same units, deduplicated the same
@@ -663,7 +677,7 @@ export class HttpBackend {
    * any. Counted as `place` (NetLink.bgBy, stats.place*).
    */
   wantList(list, opts = {}) {
-    const place = opts.prio === 'place';
+    const place = opts.prio === 'place', loose = !place && opts.wait === false;
     if (opts.label) this.stats[place ? 'placeLabel' : 'wantLabel'] = String(opts.label).slice(0, 80);
     // (the queues pumped once the whole list is queued: a unit started as each is queued would empty the announced queue
     // between two — a predicted place's units then starting in its idle turn, the list's own among them)
@@ -675,7 +689,7 @@ export class HttpBackend {
         if (!r?.file) return false;
         const size = r.file.size, stop = end < 0 ? size : Math.min(size, end);
         this.stats[place ? 'placeEntries' : 'wantEntries'] = (this.stats[place ? 'placeEntries' : 'wantEntries'] ?? 0) + 1;
-        return this.wantRange(r.path, size, r.file.mtime ?? 0, Math.max(0, start), stop, false, place);
+        return this.wantRange(r.path, size, r.file.mtime ?? 0, Math.max(0, start), stop, false, place, loose);
       });
     } finally { this.wantHeld--; }
     this.pumpWant();
@@ -683,10 +697,10 @@ export class HttpBackend {
     this.stats[place ? 'placeHere' : 'wantHere'] = (this.stats[place ? 'placeHere' : 'wantHere'] ?? 0) + ranges.length - missing.length;
     if (missing.length && !place) {
       // (one wait of the link's for the whole list, while any of it is missing: the rest of the background keeps quiet;
-      // the learned pieces ahead too — pumpAhead —, even for a list announced far ahead (opts.wait false))
-      const tok = opts.wait !== false ? this.net.wait() : null;
-      this.wantLists++;
-      Promise.allSettled(missing).then(() => { if (tok !== null) this.net.waitEnd(tok); this.wantLists--; this.pumpAhead(); });
+      // the learned pieces ahead too — pumpAhead —; neither for a list the engine waits for through its reads (wait false))
+      const hold = opts.wait !== false, tok = hold ? this.net.wait() : null;
+      if (hold) this.wantLists++; else this.wantLoose++;
+      Promise.allSettled(missing).then(() => { if (tok !== null) this.net.waitEnd(tok); if (hold) this.wantLists--; else this.wantLoose--; this.pumpAhead(); });
     }
     return ranges.map((x) => (typeof x === 'boolean' ? Promise.resolve(x) : x));
   }
@@ -696,7 +710,7 @@ export class HttpBackend {
    * (NetLink.promote, as for a parked read; `joined`: this range joined one already — its missing bytes are asked now,
    * not joined again; `place`: a predicted place's — see wantList —, a flight joined as it is, not promoted).
    */
-  wantRange(path, size, mtime, start, end, joined, place = false) {
+  wantRange(path, size, mtime, start, end, joined, place = false, loose = false) {
     if (!(end > start)) return true;
     const waits = [], P = BLOCK / CHUNK;
     for (let bi = Math.floor(start / BLOCK); bi * BLOCK < end; bi++) {
@@ -707,7 +721,7 @@ export class HttpBackend {
       // (joined, and promoted as a parked read's (NetLink.promote): one still waiting for its turn would else stay queued
       // behind the very silence this list's wait makes — a background flight that is not forLoad — until the engine's
       // timeout)
-      if (bf && !joined) { if (!place) this.net.promote(bf.w); waits.push(Promise.resolve(bf).then(() => this.wantRange(path, size, mtime, a, b, true, place), () => this.wantRange(path, size, mtime, a, b, true, place))); continue; }
+      if (bf && !joined) { if (!place) this.net.promote(bf.w); waits.push(Promise.resolve(bf).then(() => this.wantRange(path, size, mtime, a, b, true, place, loose), () => this.wantRange(path, size, mtime, a, b, true, place, loose))); continue; }
       const c0 = Math.floor(a / CHUNK), c1 = Math.floor((b - 1) / CHUNK), first = bi * P, n = Math.ceil((b1 - b0) / CHUNK);
       const missing = [];
       for (let c = c0; c <= c1; c++) {
@@ -720,12 +734,12 @@ export class HttpBackend {
         if (f && !joined && !place && f.job?.queued && f.job.place) this.adoptPlaceUnit(f.job);
         else if (f && !joined && !place && f.job?.place) this.net.forLoad(f.w, PRIO.announced);
         else if (f && !joined && !place) this.net.promote(f.w);
-        if (f && !joined) { const again = () => this.wantRange(path, size, mtime, Math.max(a, c * CHUNK), Math.min(b, (c + 1) * CHUNK), true, place); waits.push(f.then(again, again)); continue; }
+        if (f && !joined) { const again = () => this.wantRange(path, size, mtime, Math.max(a, c * CHUNK), Math.min(b, (c + 1) * CHUNK), true, place, loose); waits.push(f.then(again, again)); continue; }
         missing.push(c);
       }
       // (the range covers the whole block, none of it here nor on its way: the block, one unit)
-      if (missing.length === n && n > 1) { waits.push(this.wantUnit(path, size, mtime, first, first + n - 1, true, place)); continue; }
-      for (const c of missing) waits.push(this.wantUnit(path, size, mtime, c, c, n === 1, place));
+      if (missing.length === n && n > 1) { waits.push(this.wantUnit(path, size, mtime, first, first + n - 1, true, place, loose)); continue; }
+      for (const c of missing) waits.push(this.wantUnit(path, size, mtime, c, c, n === 1, place, loose));
     }
     if (!waits.length) return true;
     return Promise.all(waits).then((oks) => oks.every(Boolean));
@@ -736,11 +750,11 @@ export class HttpBackend {
    * before the queue); resolves to true once they are here, false when their request failed. `place`: a predicted
    * place's unit (wantList), queued apart (placeQ), not urgent nor forLoad until promoted.
    */
-  wantUnit(path, size, mtime, c0, c1, whole, place = false) {
+  wantUnit(path, size, mtime, c0, c1, whole, place = false, loose = false) {
     const self = this;
     // (the turn's mark: urgent once a parked read waits for it — the queue starts it first, past the window)
     const w = { forLoad: !place, u: false, get urgent() { return this.u; }, set urgent(v) { this.u = !!v; if (v && job.queued) self.pumpWant(); } };
-    const job = { path, size, mtime, c0, c1, whole, w, place, queued: true, resolve: null };
+    const job = { path, size, mtime, c0, c1, whole, w, place, loose, queued: true, resolve: null };
     const done = new Promise((res) => { job.resolve = res; });
     done.w = w; done.job = job;
     for (let c = c0; c <= c1; c++) this.flights.set(`${path}#${c}`, done);
@@ -770,17 +784,23 @@ export class HttpBackend {
   pumpWant() {
     if (this.wantHeld) return; // (a list being queued: wantList pumps once it is)
     for (const q of [this.wantQ, this.placeQ]) for (let i = 0; i < q.length; i++) if (q[i].w.u) { const [job] = q.splice(i--, 1); this.runWant(job); }
-    const max = this.net.thin() ? WANT_REQUESTS_THIN : WANT_REQUESTS;
-    while (this.wantInFlight < max && this.wantQ.length) this.runWant(this.wantQ.shift());
+    const max = this.net.thin() ? WANT_REQUESTS_THIN : WANT_REQUESTS, looseMax = this.net.h1() ? Math.min(max, WANT_REQUESTS_H1_LOOSE) : max;
+    // (a unit of a list the engine waits for through its reads stays queued while its own window is full — the next
+    // lists' units go past it)
+    for (let i = 0; this.wantInFlight < max && i < this.wantQ.length; i++) {
+      if (this.wantQ[i].loose && this.wantLooseInFlight >= looseMax) continue;
+      const [job] = this.wantQ.splice(i--, 1); this.runWant(job);
+    }
     if (this.wantQ.length) return;
     const pmax = this.net.thin() ? PLACE_REQUESTS_THIN : PLACE_REQUESTS;
     while (this.placeInFlight < pmax && this.placeQ.length) this.runWant(this.placeQ.shift());
   }
   /** An announced (or a predicted place's) unit's request (retried on a network failure): its pieces here, true; or false. */
   async runWant(job) {
-    const { path, size, mtime, c0, c1, whole, w, place } = job;
+    const { path, size, mtime, c0, c1, whole, w, place, loose } = job;
     job.queued = false;
     if (place) this.placeInFlight++; else this.wantInFlight++;
+    if (loose) this.wantLooseInFlight++;
     if (!place) w.u = true; // (the engine waits for it next: urgent, as a parked read's turn)
     const P = BLOCK / CHUNK;
     const here = () => { for (let c = c0; c <= c1; c++) if (!this.peekBlockHere(path, size, mtime, Math.floor(c / P)) && !this.pieceHere(path, size, mtime, c)) return false; return true; };
@@ -804,6 +824,7 @@ export class HttpBackend {
     } catch { ok = false; } finally {
       for (let c = c0; c <= c1; c++) if (this.flights.get(`${path}#${c}`)?.w === w) this.flights.delete(`${path}#${c}`);
       if (place) this.placeInFlight--; else this.wantInFlight--;
+      if (loose) this.wantLooseInFlight--;
       if (!ok) this.stats[place ? 'placeFailed' : 'wantFailed'] = (this.stats[place ? 'placeFailed' : 'wantFailed'] ?? 0) + 1;
       job.resolve(ok);
       this.pumpWant();
@@ -871,7 +892,7 @@ export class HttpBackend {
    */
   loadUnderWay() {
     if (this.net.loading()) return true;
-    for (const b of this.link ?? [this]) if (b.wantLists > 0) return true;
+    for (const b of this.link ?? [this]) if (b.wantLists > 0 || b.wantLoose > 0) return true;
     return false;
   }
   /** The game has read nothing for `ms` (from the network or not), through this backend nor those sharing its link. */

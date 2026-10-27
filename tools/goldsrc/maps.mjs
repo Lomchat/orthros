@@ -6,10 +6,11 @@
 // data's (src/vfs/data-client.js stats: the reads that held the engine — count, ms, bytes) between the command and that
 // moment; the bytes loaded in the background beside. --net KB/s (and --latency ms, default 40): Chrome's network
 // emulation from the start. The page's reports (learned order, telemetry) stay off the server unless --report (a
-// session that teaches the server its learned order). JSON on the last line; evidence under
-// /tmp/orthros-scratch/goldsrc-maps-<manifest>/. Start it through the browser slot guard:
+// session that teaches the server its learned order). --query: added to the page's address (e.g. mapreads=0: the map loads
+// not announced — src/ports/goldsrc/bsp-reads.js —, to compare). JSON on the last line; evidence under
+// /tmp/orthros-scratch/goldsrc-maps-<manifest>/ (--out: another folder). Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/goldsrc/maps.mjs <manifest> --url http://127.0.0.1:8080
-//     --steps "wait 5,map c1a0,wait 30,changelevel c1a0d" [--net 1024] [--latency 40] [--steady 20] [--report [--no-phases]] [--tag t]
+//     --steps "wait 5,map c1a0,wait 30,changelevel c1a0d" [--net 1024] [--latency 40] [--steady 20] [--report [--no-phases]] [--query q] [--out dir] [--tag t]
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -20,7 +21,7 @@ const [name] = args;
 if (!name || name.startsWith('--')) { console.error('usage: maps.mjs <manifest> --steps "map c1a0,wait 30,changelevel c1a0d" [--url u] [--net KB/s]'); process.exit(2); }
 const base = arg('--url', 'http://127.0.0.1:8080'), steady = Number(arg('--steady', 20));
 const steps = arg('--steps', '').split(',').map((s) => s.trim()).filter(Boolean);
-const root = `/tmp/orthros-scratch/goldsrc-maps-${name}`;
+const root = arg('--out', `/tmp/orthros-scratch/goldsrc-maps-${name}`);
 fs.mkdirSync(root, { recursive: true }); process.env.TMPDIR = root;
 
 const browser = await chromium.launch({ headless: true, args: chromeArgs('discard') });
@@ -50,12 +51,12 @@ try {
     requestAnimationFrame(look);
   });
   const t0 = Date.now();
-  await page.goto(`${base}/ports/goldsrc/${encodeURIComponent(name)}/`);
+  await page.goto(`${base}/ports/goldsrc/${encodeURIComponent(name)}/${arg('--query') ? '?' + arg('--query').replace(/^\?/, '') : ''}`);
   await page.waitForFunction(() => ['running', 'error'].includes(window.portSession?.state), null, { timeout: 900000 });
   if (await page.evaluate(() => portSession.state) !== 'running') throw new Error(await page.evaluate(() => document.querySelector('#status')?.textContent));
   out.runningMs = Date.now() - t0;
   out.startup = await page.evaluate(() => portSession.startup ?? null);
-  const stats = () => page.evaluate(() => { const s = portSession.files.stats; return { waits: s.waits, waitMs: s.waitMs, waitBytes: s.waitBytes, syncFetches: s.syncFetches, fetchedBytes: s.fetchedBytes, at: performance.now() }; });
+  const stats = () => page.evaluate(() => { const s = portSession.files.stats; return { waits: s.waits, waitMs: s.waitMs, waitBytes: s.waitBytes, syncFetches: s.syncFetches, fetchedBytes: s.fetchedBytes, wants: s.wants, at: performance.now() }; });
   for (const step of steps) {
     const [verb, value] = step.split(/\s+/);
     if (verb === 'wait') { await page.waitForTimeout(Number(value) * 1000); continue; }
@@ -75,9 +76,10 @@ try {
     const s1 = await stats();
     const loadMs = Math.round(end - s0.at);
     out.maps.push({ step, loadMs, waits: s1.waits - s0.waits, waitMs: Math.round(s1.waitMs - s0.waitMs), waitMB: +((s1.waitBytes - s0.waitBytes) / 1048576).toFixed(1),
-      syncFetches: s1.syncFetches - s0.syncFetches, backgroundMB: +((s1.fetchedBytes - s0.fetchedBytes) / 1048576).toFixed(1) });
+      syncFetches: s1.syncFetches - s0.syncFetches, wants: s1.wants - s0.wants, backgroundMB: +((s1.fetchedBytes - s0.fetchedBytes) / 1048576).toFixed(1) });
     console.log(JSON.stringify(out.maps.at(-1)));
   }
+  out.mapLogs = await page.evaluate(() => portSession.logs.filter((l) => /^Map /.test(String(l))).slice(-40));
   const tag = arg('--tag', '');
   await page.screenshot({ path: path.join(root, `end${tag ? `-${tag}` : ''}.png`) });
   out.load = fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0];

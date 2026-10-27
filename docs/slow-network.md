@@ -865,7 +865,16 @@ Stage 2: the transport (any runtime) and the OpenMW page; the engine side is its
 (`nextPick`: `pick`'s rules — `readsReal`, `GameData.reloads`, the link's class, `prefer`), and that choice is pinned
 for that load (`h.pin`, honoured by `pick` at the load's first read within `PIN_MS`, 60 s, unless the file itself is
 here: the announced transfers may push the link's measure across `FAST_BPS` during the wait, and the other copy was not
-fetched): on a link that is not fast its light copy, whole (a texture is read whole; never the file itself there). Bytes already in the page are not announced. One batch per call, numbered.
+fetched): on a link that is not fast its light copy, whole (a texture is read whole; never the file itself there) —
+unless that copy keeps the file's layout (`sameLayout`: its size is the file's, a WAD3's), then the same range of it. A
+range past a file's start is announced as what the file's current load reads (`nextPick` with a position: `pick`
+chooses only at a read at the start; a texture inside an archive the engine keeps open). Bytes already in the page are
+not announced. One batch per call, numbered. `GameData.want(entries, { wait: false })`: a list the engine waits for
+through its own reads, never `wantWait` (an engine that cannot be told to wait — GoldSrc's map loads,
+docs/browser-ports.md "Map loads announced"): posted at once, no batch number (the worker counts it in `ctrl[13]` and
+`ctrl[14]` only), the link's choice pinned, never a big load; the worker's list holds neither the link (`NetLink.wait`)
+nor the learned read-ahead (`wantList` `wait: false`). `GameData.peek(h, off, len)`: bytes the page holds, nothing
+fetched (a file's, or its same-layout light copy's) — what the engine read already, for a page that parses it.
 
 **The worker** (`src/vfs/data-worker.js` `want`) hands each version's entries to its reader,
 `HttpBackend.wantList(list, { label })` (`[[path, start, end]]`, end -1: the file's end) — one promise per entry, true
@@ -885,7 +894,7 @@ once its bytes are here:
 - kept like any background bytes (whole blocks and pieces in the store); retried `WANT_RETRIES` (2) times on a network
   failure (`retryWaits`' pauses), an answer refused fails at once;
 - while any entry of a list is missing, one `NetLink.wait` (the engine waits for them: the rest of the background stays
-  silent, stage 1); counted as `announced` in `NetLink.bgBy`, `stats.want*` in the backend.
+  silent, stage 1; none for a `wait: false` list); counted as `announced` in `NetLink.bgBy`, `stats.want*` in the backend.
 
 **The wait** (shared memory: the page's thread spins, no message reaches it): `ctrl[12]` — the last batch settled, with
 every batch of the current window before it (the window: the batches announced since the page's last wait, `from` sent
@@ -901,8 +910,15 @@ moves it to the demand queue, an announced one joining a download moves that to 
 load's own bytes, not background).
 
 The label goes to the worker with each batch (`W.wantLabel`, `stats.wantLabel`): the learned places (stage 3) will key
-on it. While a list is missing, nothing is fetched ahead from the learned order either (`pumpAhead`, even for a list
-announced with `wait: false`): the engine said what its load reads; the order's guesses go once it is here.
+on it. While a list is missing, nothing is fetched ahead from the learned order either (`pumpAhead`): the engine said
+what its load reads; the order's guesses go once it is here. Not for a list announced with `wait: false` (counted in
+`wantLoose`, still a load under way for `loadUnderWay`): it holds files read late in the load too, and the order's next
+entries — what the engine's announce cannot predict — would each wait a round trip until its last unit came. On an
+HTTP/1.x origin (`NetLink.h1`: the browser's `nextHopProtocol` for this context's requests — a local server, `make
+serve`; the production front speaks HTTP/2) such a list's units are `WANT_REQUESTS_H1_LOOSE` (4) in flight at most, not
+the window's 32: the browser runs six requests to the host at once and queues the rest in their order, so 32 announced
+units put the engine's own reads and the learned read-ahead behind them (Half-Life's c1a0, taught, at 8 MB/s and 85 ms:
+every request's first byte 400-690 ms instead of 90 during the announce); a parked read's unit still goes at once.
 
 **Measured** (2026-10-26, `place-load.mjs`, the same warm profile, pristine learned order and link — 1.8 MB/s, 90 ms —,
 two runs each; the engine `orthros-r10.patch` as a scratch release; C: COE Seyda Neen → Ald'ruhn -2,6, S: a save made

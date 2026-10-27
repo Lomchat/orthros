@@ -26,7 +26,7 @@ only its mod stack: `requires` puts the original game's version's files beneath 
 | Path | Content | In Git |
 | --- | --- | --- |
 | `src/host/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
-| `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`) | yes |
+| `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`), `bsp-reads.js` (a map's load announced, below "Map loads announced") | yes |
 | `src/host/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `ini.js`, `style.css`) | yes |
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `patches/` (a build's own patches), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
@@ -292,6 +292,109 @@ difference above is the run-to-run spread); phases matter when the sessions that
 server's order, made of sessions that wait in the menu or load a save at once, did not have c1a0's reads ahead of a
 player who starts it after 5 s. At 1 MB/s c1a0 is the link's own time (20 MB to read, the background loading
 beside): nothing to win there but bytes.
+
+### Map loads announced (2026-10-27)
+
+The engine reads its files synchronously and one at a time: each piece of a map's load that is not in the page yet is a
+round trip with the page's thread held (`GameData.fetchSync`), and the learned order only fetches ahead during a load
+whose position it follows (a map that no session has taught gets none of it). The map's file says much of what the load
+reads next, so the page reads it (`src/ports/goldsrc/bsp-reads.js`, `announceMapLoads`, hooked on the mounted files
+beside `phaseOnRead`) and announces those reads, which the data worker fetches in parallel (`GameData.want`,
+`HttpBackend.wantList`). The engine's own reads join those requests.
+
+- **When.** An open of `maps/<map>.bsp` that has read at least half the file is a load; a map listing, which reads only
+  the header and the entities, is not. After the read that brings the header (BSP v30) and the entity and texture lumps
+  into the page (`GameData.peek`: nothing fetched), the lumps are parsed once per open. Lumps 0 and 1 are swapped in
+  some maps; the one that reads as text starting with `{` is the entities.
+- **What, only what the load certainly reads:**
+  - every texture the texture lump names, as the lump of the WAD the engine finds it in. The search covers the
+    worldspawn's `wad` list (base names that the game has) from its end, as the engine does. Each WAD's directory is
+    parsed as the engine reads it (the hook on the `.wad` nodes: at the mount, at its start, while those pieces are
+    certainly in the page — a long session evicts them later); a WAD whose directory was never parsed is skipped. A
+    texture whose pixels the map holds is read from the map unless the engine's `r_wadtextures` is set
+    (`Mod_LoadTextureData`, mod_bmodel.c: the WAD list first then; the cvar defaults to 0 and is a game's config choice —
+    Half-Life's `config.cfg` sets it, Counter-Strike's do not): announced from a WAD only then. This engine build
+    answers no console query (its console output never reaches the page: `Xash3D.getCVar` times out), so the page takes
+    the value the configuration the engine reads sets: the last `r_wadtextures` statement of the `.cfg` / `.rc` files as
+    the engine reads them (`FS.read` watched in play.js; `configSetting`), of the language's arguments and of the
+    commands the page runs; none: 0, the external textures only. (Half-Life's campaign maps embed all their textures, and with its setting their
+    loads' learned reads are lumps of halflife.wad — c0a0: 98 of 104 predicted pieces among the learned ones; de_aztec
+    embeds all 48 of its own, read from the map: about 1 MB that announcing them from the WADs would waste.)
+  - the sky: `skyname` → `gfx/env/<name><rt|bk|lf|ft|up|dn>`, `.tga` or else `.bmp`. With no `skyname` key nothing is
+    announced: the engine keeps its last sky.
+  - the entities' files: a `model` key's `.mdl` / `.spr` (not a brush model `*n`), and an `ambient_generic`'s
+    `message` sound under `sound/` (not a `!sentence`).
+  - files beside the map: `overviews/<map>.txt` with its `.bmp` / `.tga`, when the game has them; `maps/graphs/<map>.nod`
+    only when the page certainly runs the map's server (only the server's game module reads node graphs): no remote
+    server joined through the relay this session (`Relay.joined`, set at the engine's connectionless `connect` through
+    it — a signed-out player cannot join one).
+  - the entries of `maps/<map>.res`, when there is one, of those kinds (`.wad` and `.bsp` lines aside), as a second list
+    (label `res:<map>`). The engine never reads this file: at the load's announce (never at a listing) it is announced
+    and fetched in the background (`GameData.ensure` — the announced request joined, so not learned as a read; read with
+    `peek`, so never reported as used), and its entries announced once it is here; the page's thread never waits for it.
+  - Files are looked up as the engine's search order finds them: the game's folder first, then the others it mounts,
+    with a language's folder where it goes (`languageFiles`). Nothing the page already holds is announced.
+- **How.** `GameData.want(entries, { label: 'textures:<map>', wait: false })`:
+  - The list is posted at once (the page's thread does not yield before the engine's next reads) and carries no batch
+    number, so `wantWait` never waits for it. The worker counts it in ctrl[13] and ctrl[14] only.
+  - The worker passes `wait: false` on to `HttpBackend.wantList`: no `NetLink.wait` of its own (the engine's reads
+    during the load make the link's silence) and the learned read-ahead not paused (`wantLoose`, not `wantLists`): the
+    list holds files the load reads late too (the client's models and sounds), and on a taught map the order's next
+    entries — the reads the map's file cannot predict, the game module's precaches — go meanwhile instead of a round trip
+    each. It still counts as a load under way (`loadUnderWay`: the light copies' upgrades wait). On an HTTP/1.x origin
+    (a local server; `NetLink.h1`) its units are 4 in flight at most (`WANT_REQUESTS_H1_LOOSE`), not 32: the browser
+    runs six requests to the host at once, the others queued in their order, and 32 announced units held the engine's
+    own reads and the learned read-ahead behind them — a taught map was slower with the announce (below).
+  - A WAD lump is a range past the archive's start, so it is announced as what the archive's current load reads (`h.as`,
+    `nextPick` with a position): the light copy on a thin link. A WAD's light copy keeps the file's size and offsets
+    (`sameLayout`), so it is announced by range, not whole. The choice is pinned in case the engine opens the archive
+    again.
+- **Rules.**
+  - Announce only what the load certainly reads: its requests are urgent and `forLoad`, so a wrong guess takes the
+    link from the load's own reads.
+  - No game's names, only the engine's formats and folders.
+  - One WAD3 reader, shared with the server's light copies (`src/vfs/wad3.js`).
+  - `?mapreads=0` turns it off to compare (`maps.mjs --query mapreads=0`).
+
+Read-only check against the live learned order (2026-10-27, `textures:` sets of the real maps): HL c0a0 82 entries
+1.9 MB, c1a0 178 / 1.9 MB, c1a0d 208 / 2.0 MB; Arsenal de_dust 38 / 3.2 MB, cs_office 124 / 3.4 MB, cs_italy 118 /
+5.2 MB (all of its pieces among that map's learned reads), de_chateau 144 / 9.7 MB, cs_assault 191 / 4.7 MB, de_aztec 62
+/ 5.2 MB.
+
+Measured (2026-10-27, `maps.mjs` through Chrome's network emulation at 85 ms — not `net-proxy.mjs`, not 85 KB/s —,
+two sessions each on a scratch server with a copy of the learned directory and a copy of the unit cache, `--query
+mapreads=0` as the reference, the machine's load 12-60; c1a0 is a taught map, c1a0d, de_aztec and cs_assault are not),
+load seconds on / off, medians in brackets:
+- Half-Life, 1.8 MB/s: c1a0 8.6, 6.8, 7.8, 6.4 / 15.0, 14.8, 14.3, 16.7 [7.3 / 14.9]; changelevel c1a0d 5.8, 5.9, 5.6,
+  5.8 / 6.1, 6.1, 6.1, 4.4 [5.8 / 6.1] (waits 3.5-3.8 s / 3.9-4.1 s).
+- Half-Life, 8 MB/s: c1a0 5.2, 4.2, 4.1, 5.3, 5.4, 5.0, 6.4, 5.6 / 5.0, 4.3, 2.5, 4.3, 2.8, 5.5, 3.8, 3.7 [5.25 / 4.0]
+  — **the taught map is slower with the announce** (the same 433 waits, each longer: 4.4-5.8 s of waits against
+  2.4-4.9 s; its 148-174 announced pieces, urgent, share the link with the learned order's next ones); c1a0d 4.0, 3.9,
+  4.1, 4.0, 4.0, 3.8, 4.0, 4.0 / 4.8, 4.9, 5.1, 4.9, 4.9, 4.8, 4.8, 4.9 [4.0 / 4.9].
+- Arsenal, 1.8 MB/s: de_aztec (the first map, 737 waits mostly the game's start) 34.0, 33.7, 30.3, 30.9 / 34.4, 34.4,
+  44.5, 33.5 [32.3 / 34.4] — its 48 textures are its own, read from the map with Counter-Strike's r_wadtextures 0: 17
+  reads announced, none from a WAD; cs_assault 6.5, 6.1, 5.4, 6.4 / 17.5, 17.1, 21.0, 17.3 [6.3 / 17.4].
+- Arsenal, 8 MB/s: de_aztec 18.4, 15.4 / 19.9, 25.0; cs_assault 1.3, 1.9 / 2.8, 7.3.
+Verdict then: a gain on maps no session taught and on the taught c1a0 at 1.8 MB/s, a loss on the taught c1a0 at 8 MB/s.
+Its cause, traced (request starts, first bytes and ends in the data worker beside each engine wait, on vs off): the
+scratch server is HTTP/1.1, where Chrome runs six requests to the host at once and queues the rest in their order; the
+32 announced units, urgent, filled that queue, and every request's first byte — the engine's own reads, the learned
+read-ahead — came 400-690 ms after it started instead of 90 (one WAD read waited 1 s for its block instead of 0.25-0.45 s,
+and the read-ahead fell behind the model and sound precaches that follow: about 35 more round-trip waits). Fixed with
+the units of a `wait: false` list 4 at most in flight on an HTTP/1.x origin (`NetLink.h1`, `WANT_REQUESTS_H1_LOOSE`).
+Measured again (same method, same day, a new copy of the learned directory and of the unit cache, machine load 8-24,
+the sides alternated), load seconds on / off, medians in brackets:
+- Half-Life, 8 MB/s, 8 runs a side: c1a0 3.9, 6.5, 3.0, 4.5, 5.2, 5.0, 4.7, 3.0 / 5.4, 2.0, 2.4, 5.5, 5.7, 10.9, 5.2,
+  5.3 [4.6 / 5.4] (engine waits [3.5 / 4.6] s; the off side is bimodal, 2.0-2.4 or 5.2-5.7 s — not traced, likely where the
+  background pass stands when the load starts; the 10.9 s run waited 2.3 s only — a stalled renderer, not the network); c1a0d 4.2,
+  4.4, 4.1, 4.1, 4.0, 6.3, 4.0, 4.0 / 5.0, 4.9, 4.9, 4.8, 4.5, 4.9, 4.8, 4.6 [4.1 / 4.85].
+- Half-Life, 1.8 MB/s: c1a0 6.8, 7.2 / 16.9, 15.3; c1a0d 6.1, 6.0 / 4.4, 6.1.
+- Arsenal, 1.8 MB/s, `wait 5,map cs_assault` (the first map: its load includes the game's start, 825-828 waits — not
+  comparable with the de_aztec → cs_assault runs above): 37.7, 35.9 / 45.4, 47.3.
+Verdict: the taught map is no slower (faster within the noise at 8 MB/s), the gains on untaught maps and at 1.8 MB/s
+kept. Over HTTP/2 (the production front, `tools/net-proxy.mjs`) not measured.
+`check.mjs` half-life-original-en solo and counter-strike-hl-arsenal-en multiplayer (`--join-keys "{n},1"`) pass (before
+the HTTP/1.x window; not run again).
 
 ## Game modules built from source
 

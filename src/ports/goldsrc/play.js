@@ -17,6 +17,7 @@ import { openStorage, readStorage, writeStorage, writableSnapshot, restoreSnapsh
 import { treeFiles, languageFiles } from '../../vfs/game-tree.js';
 import { openPortFiles } from '../port-files.js';
 import { phaseOnRead } from '../../vfs/emscripten-files.js';
+import { announceMapLoads, configSetting } from './bsp-reads.js';
 import { createLobby, roomAddress } from './lobby.js';
 
 const STRINGS = {
@@ -337,7 +338,7 @@ session.save = save;
  * next packet once closed (the server closes idle ones).
  */
 class Relay {
-  constructor(url, enabled) { this.url = url; this.enabled = enabled; this.socket = null; this.queue = []; this.closed = false; this.used = 0; this.from = new Map(); }
+  constructor(url, enabled) { this.url = url; this.enabled = enabled; this.socket = null; this.queue = []; this.closed = false; this.used = 0; this.from = new Map(); this.joined = false; }
   open() {
     if (this.closed || !this.enabled || (this.socket && this.socket.readyState <= WebSocket.OPEN)) return;
     const socket = this.socket = new WebSocket(this.url); socket.binaryType = 'arraybuffer';
@@ -367,12 +368,23 @@ class Relay {
     const index = this.room(packet.ip, packet.port);
     if (index === null) return;
     if (index !== 255) this.from.set(index, [[...packet.ip], packet.port]);
+    // (the engine joined a server of the relay's — GoldSrc's connectionless `connect`, \xff\xff\xff\xff then the word —:
+    // from then on a map it loads may be another's, its server not the page's — bsp-reads.js `server`)
+    if (!this.joined && index !== 255 && isConnect(packet.data)) this.joined = true;
     const data = new Uint8Array(packet.data.length + 1); data[0] = index; data.set(packet.data, 1);
     this.open();
     if (this.socket.readyState === WebSocket.OPEN) { if (this.socket.bufferedAmount < 1024 * 1024) this.socket.send(data); }
     else if (this.queue.length < 64) this.queue.push(data);
   }
   close() { this.closed = true; this.socket?.close(); }
+}
+
+/** A GoldSrc connectionless packet asking a server to connect (\xff\xff\xff\xff "connect ..."). */
+function isConnect(d) {
+  const word = 'connect';
+  if (!d || d.length < 4 + word.length || d[0] !== 255 || d[1] !== 255 || d[2] !== 255 || d[3] !== 255) return false;
+  for (let i = 0; i < word.length; i++) if (d[4 + i] !== word.charCodeAt(i)) return false;
+  return true;
 }
 
 function attachNet(Net) {
@@ -463,6 +475,29 @@ async function start() {
   // (each map the engine loads — its .bsp read — a phase of the game data: the server learns what each map's load reads,
   // in its order, and the next sessions load it ahead — GameData.phase)
   phaseOnRead(FS, nodes, gameData, (p) => /\/maps\/([^/]+)\.bsp$/i.exec(p)?.[1].toLowerCase() ?? null);
+  // (and what a map's load reads, told by its .bsp once read — its textures' WAD lumps, sky, models, sounds —, fetched in
+  // parallel instead of a round trip each: bsp-reads.js; ?mapreads=0 turns it off, to compare)
+  // (a map's own textures read from the WADs only when the engine's r_wadtextures is set — a game's config sets it; this
+  // build answers no console query (its output never reaches the page), so the value is the last one the configuration
+  // the engine reads sets — its .cfg / .rc files as it reads them, the arguments and commands the page gives it —:
+  // configSetting; the node graph only while the page certainly runs the map's server — no remote server joined
+  // through the relay)
+  const mapCvars = { wadTextures: false };
+  const setting = (text) => { const v = configSetting(text, 'r_wadtextures'); if (v !== null) mapCvars.wadTextures = Number(v) !== 0; };
+  setting([...(own.args ?? [])].join(' ').replace(/(^|\s)\+/g, '\n'));
+  const fsRead = FS.read;
+  FS.read = function (stream, buffer, offset, length, position, canOwn) {
+    const n = fsRead.call(this, stream, buffer, offset, length, position, canOwn);
+    // (the text the stream read so far, read again whole: a statement across two reads is read once complete)
+    if (n > 0 && /\.(cfg|rc)$/i.test(stream.path ?? '') && (stream.orthrosCfg ?? '').length < 1 << 20) {
+      setting(stream.orthrosCfg = (stream.orthrosCfg ?? '') + new TextDecoder('latin1').decode(buffer.subarray(offset, offset + n)));
+    }
+    return n;
+  };
+  if (params.get('mapreads') !== '0') {
+    announceMapLoads(FS, nodes, gameData, { name, files: shown, root: '/rodir', gameDir: g.gameDir, log,
+      wadTextures: () => mapCvars.wadTextures, server: () => !relay?.joined });
+  }
   const loaded = await gameData.startup((p) => {
     const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;
     step('files', 'active', `${fmtMB(p.bytes)}${secs > 1 ? ` · ${(p.bytes / 1048576 / secs).toFixed(1)} MB/s` : ''}`, f); status(S.files(Math.round(f * 100)));
@@ -498,7 +533,7 @@ async function start() {
   engine.Cmd_ExecuteString(`name "${playerName()}"`); engine.Cmd_ExecuteString('setinfo "_vgui_menus" "0"');
   // (the game's main menu: its single player and its multiplayer — a game it creates gets the manifest's settings,
   // bots included; Orthros' server answers its LAN search; the language's own commands)
-  for (const command of [...(g.solo?.commands ?? []), ...(own.commands ?? [])]) engine.Cmd_ExecuteString(command);
+  for (const command of [...(g.solo?.commands ?? []), ...(own.commands ?? [])]) { engine.Cmd_ExecuteString(command); setting(command); }
   // (a room chosen in the lobby during the loading: joined at once)
   if (pendingConnect) { log(`Joining ${pendingConnect}`); engine.Cmd_ExecuteString(`connect ${pendingConnect}`); pendingConnect = null; }
   session.command = command => engine.Cmd_ExecuteString(command);

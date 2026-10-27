@@ -6,6 +6,7 @@
 // they are). Served under LIGHT_DIR (/gamez/<manifest>/.light/<path>); the tree tells each file's light size (`light`).
 import fs from 'node:fs';
 import { LIGHT_DIR } from '../vfs/game-tree.js';
+import { WAD_ENTRY, WAD_MIPTEX, wadEntries, wadHeader } from '../vfs/wad3.js';
 
 export { LIGHT_DIR };
 /**
@@ -192,8 +193,6 @@ function tgaCopy(file, st, t) {
 
 // ---------------------------------------------------------------- WAD3: GoldSrc's texture archives
 
-/** WAD3 lump type of a texture with its mip levels (miptex) */
-const WAD_MIPTEX = 0x43;
 /** A WAD texture is lightened from this many pixels on (64 × 64: smaller ones save nothing worth their detail). */
 export const WAD_LIGHT_FROM = 64 * 64;
 const EMPTY = Buffer.alloc(0);
@@ -209,16 +208,10 @@ const EMPTY = Buffer.alloc(0);
  * inside its lump).
  */
 export function lightWad(fd, head, size) {
-  if (head.length < 12 || head.toString('latin1', 0, 4) !== 'WAD3') return null;
-  const n = head.readInt32LE(4), dir = head.readInt32LE(8);
-  if (!(n > 0 && n < 1 << 20 && dir >= 12 && dir + n * 32 <= size)) return null;
-  const d = Buffer.alloc(n * 32);
-  if (fs.readSync(fd, d, 0, d.length, dir) !== d.length) return null;
-  const lumps = [];
-  for (let i = 0; i < n; i++) {
-    const pos = d.readInt32LE(i * 32), disk = d.readInt32LE(i * 32 + 4);
-    if (d[i * 32 + 12] === WAD_MIPTEX && d[i * 32 + 13] === 0 && pos >= 12 && disk >= 40 && pos + disk <= size) lumps.push([pos, disk]);
-  }
+  const hd = wadHeader(head, size); if (!hd) return null;
+  const d = Buffer.alloc(hd.n * WAD_ENTRY);
+  if (fs.readSync(fd, d, 0, d.length, hd.dir) !== d.length) return null;
+  const lumps = wadEntries(d, hd.n, size).filter((e) => e.type === WAD_MIPTEX && e.comp === 0 && e.disk >= 40).map((e) => [e.pos, e.disk]);
   const mips = [], mt = Buffer.alloc(40);
   for (const [pos, disk] of lumps.sort((a, b) => a[0] - b[0])) {
     if (fs.readSync(fd, mt, 0, 40, pos) !== 40) return null;
