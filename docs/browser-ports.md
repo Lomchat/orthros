@@ -841,6 +841,12 @@ swiftshader`), 4.6 and 5.5 frames shown a second with r1, 24.1 and 19.8 with r2 
 21.9 frames a second, its GPU timer p50 53 → 46-48 ms driving. On a GPU the multisampled buffer is four times the
 color and depth memory and bandwidth of every draw, plus the resolves — the integrated GPUs' limit.
 
+`revc-web-e312f97-r3` and `-plus-r3` add `revc-lazy-sfx.patch` (2026-10-27) on top of r2's: the effects bank (15 MB of
+`Audio/sfx.RAW`) is no longer read whole at the audio's start but each sample on its first play, when its bytes are in
+the page — else that play is skipped and the bytes fetched (docs/slow-network.md "A sound bank read sample by sample":
+the rules, and the launch set's reset that goes with the release). Built and pinned at their install (lock.json lists
+them with empty `files` until then: build.sh prints the digests to pin).
+
 The fork's commits make the desktop build a browser one, nothing about a game (all under `__EMSCRIPTEN__`):
 
 - **One thread, the browser's turn**: the game's main loop is kept as it is; with JSPI its

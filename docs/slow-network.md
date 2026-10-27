@@ -961,6 +961,98 @@ in-place reloads — about half the big batch's textures, paced. Hitches from th
 draws most frames over 250 ms; `stallsOver250Ms` is dominated by it and no different before/after); to check on a GPU.
 Not measured: `?lightfirst=0` (should match before), the owner's real Cloudflare link, scenario S (a save from the menu).
 
+## A sound bank read sample by sample (2026-10-27)
+
+reVC read its whole effects bank at the audio's start (`cSampleManager::Initialise` → `LoadSampleBank(SFX_BANK_0)`: one
+`fread` of 15 MB of `Audio/sfx.RAW`), before its menu: 15.07 of the 19.1 MB of Vice City reVC's learned launch set, 6.61
+of its 10.44 MB on the wire (the audio units above), ~78 s of the ~123 s a new device waited at 85 KB/s. The engine
+releases `revc-web-e312f97-r3` and `-plus-r3` (`tools/re3/patches/revc-lazy-sfx.patch`, under `__EMSCRIPTEN__` without
+Opus banks: docs/browser-ports.md "The engine, built from source") read it as the game plays it — the rule for every
+engine that runs in the page and holds a bank of sounds it plays at random (an engine's glue, nothing about a game):
+
+- **The bank's memory, not its bytes, at the start**: the allocation stays (the engine's addresses are unchanged);
+  `LoadSampleBank` reads nothing, clears a bitmap of the samples read (`gSampleHere`, one bit per bank-0 sample) and
+  says the bank loaded.
+- **A sample on its first play** (`EnsureSample`, from `InitialiseChannel` — where a bank-0 sample's bytes are used —
+  and from the player's gear change): read if its bytes are in the page (`OrthrosFileReady`, the non-blocking ask the
+  ped comments and the CD image's streaming already use; `pread` of exactly its range — stdio's buffer would read past
+  it, a wait for bytes nobody asked for), else asked for and **that play skipped**, never waited for on the game's
+  thread. What a skip must not do (the callers did not expect a bank-0 sample to fail before):
+  - keep the audio manager's slot as playing — a loop (`m_nLoopCount` 0: engines, road noise, rain, sirens) is never
+    checked against its channel, so it would stay silent while the game asks for it: `ServiceSoundEffects` frees the
+    slot instead, the next frame's request tries again and the loop starts once its bytes are here;
+  - leave the channel with its last sample — the police radio starts its channel whatever `InitialiseChannel` said:
+    the skipped channel is emptied (`Reset`), its word is not said rather than the previous one re-pitched;
+  - move the player's gear — the gear change moved the gear before its sample's play, then again each frame until the
+    cruise: it waits for its sample first.
+
+  A one-shot sound asked for once (a first shot, a pickup) is lost, not delayed, on a link where the round trip is
+  longer than the sound; one the game asks for again (a loop, a sound held for its frames) starts late.
+- **The front end's sounds asked for with the bank** (the menu's highlight, select, back, error and noise bursts, 148 KB,
+  and the info chime): fetched while the engine boots, so the menu's first clicks are heard.
+- **The rest in the background, as before**: the file is still one the engine reads at random (`OrthrosFileComplete`):
+  on a link that is not thin the page loads it whole after what the game reads first; on a thin link (no `wantWhole`
+  fill) the samples come as they are played, and from the learned order once the launch set is in (its blocks keep
+  their early time and pieces: the first entries after the launch set).
+
+**Launch set after an engine change.** The learned launch set is what the marking sessions read before playable
+(`pre`, "Playable after" above): the sessions of the older release flagged the 15 blocks of the bank (19 of 19 marks for
+vice-city-revc, 4 of 4 for vice-city-orthros), and the new release's sessions would take ~20 marks to outvote them —
+meanwhile every new device still waits for the whole bank before the game starts (the startup set the page waits for).
+So an engine release that stops reading a file before playable comes with its entries unflagged:
+`tools/learn-unflag.mjs <learn dir> --only <manifest>... --path <game file>... [--write]` takes the `pre` counts (and their
+per-language counts) off that file's entries — out of the launch set at once — and moves them to the end of the order
+(their time past every other entry's, their phases gone), keeping their counts, masks and the version's marks. Kept at
+their early times (the first version of the tool), the bank was still the first thing the learned order fetched after
+the launch set: at 1.8 MB/s its 11-12 MB went down during the menu, ahead of the new game's `gta3.img` blocks, and in 2
+of 3 runs the new game made ~20 more serial demand reads of them (4.6 s waited against 1.2-2.5 s; the new game's own
+phase median 30.2 -> 37.8 s, time to in play unchanged at a 56.1 s median: the menu's 7 s gain spent again). The new
+release's sessions flag again what they really read before playable (the front end's
+samples' block once half the marks say so). A dry run by default; `--write` keeps `<file>.bak-<time>`. The server holds
+the orders in memory and writes them back every 20 s: on the live state only with the service stopped, after a
+snapshot. For this change (at the deploy of the r3 releases, once the manifests name them):
+
+```
+tools/backup.sh snapshot -m "before unflagging sfx.RAW for the reVC r3 engines"
+systemctl stop orthros.service
+node tools/learn-unflag.mjs /var/lib/orthros2/learn --only vice-city-revc --only vice-city-orthros --path Audio/sfx.RAW --write
+systemctl start orthros.service
+```
+
+(dry run first without `--write`: 15 entries flagged of 19 / of 4 marks, 14.38 MB each.)
+
+Measured with the tool as it is (entries at the end of the order; data-matrix, vice-city-revc, new device, 1.8 MB/s and
+90 ms, a frozen copy of the units, 3 runs each interleaved, load 20-29): playable 14.1 -> 6.7 s (medians), New Game
+clicked 25.9 -> 18.5 s, in play 50.2 -> 45.8 s (means 57.7 -> 45.3 s), the new game's own phase 24.3 -> 27.3 s
+(means 31.9 -> 26.8 s: within the noise); the menu window carries 3.55 MB of the bank (blocks read ahead of the first
+samples) and 12.1-12.5 MB of the rest, as before. At 85 KB/s (one run): playable ~30 s (195 s before). Left: in 2 of 3
+runs ~5 MB of the bank still arrive during the end of the new game's load (31-39 s), not yet explained.
+
+Measured (2026-10-27, scratch servers of this tree, copies of the live learned state of the day — the reset applied to
+one — and of its precompressed units, frozen; the same units copy for both sides): the home's launch set for
+vice-city-revc (`/api/manifests` `launch`) 33 entries, 18.30 MB, 13.45 MB on the wire as the frozen copy knows its units
+(the live server, same day: 10.44 MB) → 18 entries, 3.23 MB, 1.82 MB on the wire after the reset (vice-city-orthros the
+same set); the page's startup set (`startupBytes`) 3.23 MB. `tools/re3/check.mjs --new-game` with the final r3 builds
+(SwiftShader, fast link): menu and new game, both editions passed; OpenAL buffers started / heard (not silent)
+vice-city-revc 320 / 318, vice-city-orthros 324 / 322, bank-0 samples read / skipped 6 / 1 each, 14 heard buffers the
+length of a sample read (`Module.orthrosSamples`; a first patch, before the skipped plays' fixes above — slot, channel,
+gear —, counted 105 / 103 and 309 / 307 without telling the bank's samples from the streams'). Time to playable on a new
+device (`tools/data-matrix.mjs --only vice-city-revc --links 85k:90,1.8m:90 --lang en`, two runs per side, interleaved,
+SwiftShader on a machine loaded 9-37 by other projects; before: the live engine r2 and the learned state as it was;
+after: the final r3 and the reset copy):
+
+| link | playable, before → after | wire to playable | in play (new game running) |
+|---|---|---|---|
+| 85 KB/s, 90 ms | 194.6, 195.3 → 27.2, 27.2 s | 16.07 → 2.56 MB | 675, 643 → 491, 560 s |
+| 1.8 MB/s, 90 ms | 15.1, 14.7 → 5.2, 5.1 s | 16.75, 16.23 → 6.05 MB (the background order's too) | 48, 56 → 54, 75 s |
+
+At 85 KB/s the playable mark comes 168 s earlier on this units copy; against the live server's units the launch set was
+~10.4 MB (~123 s at 85 KB/s), so the live gain is smaller (estimated ~80 s from the live wire sizes, not measured). At 1.8 MB/s ~10 s earlier.
+The time in play (the new game running, after the menu's clicks) is not better at 1.8 MB/s (noise of the loaded
+machine, or the bank's samples now read during the new game: not settled). Not measured: the owner's real link, sounds
+lost on a thin link in play (one-shot sounds before their bytes; a skipped loop heard once its bytes arrive), the French
+launch set, vice-city-orthros' times.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

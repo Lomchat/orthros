@@ -1,0 +1,199 @@
+diff --git a/src/audio/AudioLogic.cpp b/src/audio/AudioLogic.cpp
+index dd27560..fa656d3 100644
+--- a/src/audio/AudioLogic.cpp
++++ b/src/audio/AudioLogic.cpp
+@@ -2484,6 +2484,12 @@ PlayCruising:
+ 					vol >>= 2;
+ 				AddPlayerCarSample(vol, freq, engineSoundType - CAR_SFX_BANKS_OFFSET + SFX_CAR_REV_1, SFX_BANK_0, 2, TRUE);
+ 			} else {
++#ifdef ORTHROS_LAZY_SFX
++				// (the gear's sample not here yet — sampman.h —: nothing changed this frame, its bytes asked for; the
++				// gear moved first, each frame would move it again until the cruise, the gear changes not heard)
++				if (!channelUsed && !SampleManager.EnsureSample(soundOffset + SFX_CAR_ACCEL_1))
++					return;
++#endif
+ 				TranslateEntity(&m_sQueueSample.m_vecPos, &pos);
+ #ifndef EXTERNAL_3D_SOUND
+ 				m_sQueueSample.m_nPan = ComputePan(m_sQueueSample.m_fDistance, &pos);
+diff --git a/src/audio/AudioManager.cpp b/src/audio/AudioManager.cpp
+index bcc0966..d385e65 100644
+--- a/src/audio/AudioManager.cpp
++++ b/src/audio/AudioManager.cpp
+@@ -1329,6 +1329,16 @@ cAudioManager::ProcessActiveQueues()
+ #endif
+ 							SampleManager.StartChannel(k);
+ 						}
++#ifdef ORTHROS_LAZY_SFX
++						else if (m_asActiveSamples[k].m_nBankIndex == SFX_BANK_0) {
++							// (a sample whose bytes are not here yet — sampman.h —: the slot freed and the request not
++							// played, so the game's next request starts it once they are here; kept as being played, a
++							// loop — m_nLoopCount 0, never checked against its channel — would stay silent while asked for)
++							m_asActiveSamples[k].m_nSampleIndex = NO_SAMPLE;
++							m_asActiveSamples[k].m_nEntityIndex = AEHANDLE_NONE;
++							break;
++						}
++#endif
+ 						m_asActiveSamples[k].m_bIsBeingPlayed = TRUE;
+ 						channelOffset++;
+ 						sample.m_bIsBeingPlayed = TRUE;
+diff --git a/src/audio/sampman.h b/src/audio/sampman.h
+index 291c429..3edce5a 100644
+--- a/src/audio/sampman.h
++++ b/src/audio/sampman.h
+@@ -3,6 +3,15 @@
+ #include "AudioSamples.h"
+ #include "audio_enums.h"
+ 
++#if defined(__EMSCRIPTEN__) && defined(AUDIO_OAL) && !defined(OPUS_SFX)
++// Orthros (the browser): bank 0 (the game's effects, ~15 MB of sfx.RAW) is not read whole at the audio's start — on a
++// thin link that read was most of the bytes before the menu —, each sample is read on its first play instead
++// (cSampleManager::EnsureSample, sampman_oal.cpp); a play whose bytes are not here yet is skipped while the page fetches
++// them, and asked for again by the game's next request (cAudioManager::ServiceSoundEffects frees its slot: a loop starts
++// once its bytes are here).
++#define ORTHROS_LAZY_SFX
++#endif
++
+ #define MAX_VOLUME 127
+ #define MAX_FREQ DIGITALRATE
+ 
+@@ -234,6 +243,10 @@ public:
+ 	
+ 	void  SetChannelReverbFlag    (uint32 nChannel, bool8 nReverbFlag);
+ 	bool8 InitialiseChannel       (uint32 nChannel, uint32 nSfx, uint8 nBank);
++#ifdef ORTHROS_LAZY_SFX
++	// Bank 0's sample nSfx in the bank's memory: TRUE (read now if its bytes are here); else FALSE, its bytes asked for.
++	bool8 EnsureSample            (uint32 nSfx);
++#endif
+ #ifdef EXTERNAL_3D_SOUND
+ 	void  SetChannelEmittingVolume(uint32 nChannel, uint32 nVolume);
+ 	void  SetChannel3DPosition    (uint32 nChannel, float fX, float fY, float fZ);
+diff --git a/src/audio/sampman_oal.cpp b/src/audio/sampman_oal.cpp
+index 300e56b..55da837 100644
+--- a/src/audio/sampman_oal.cpp
++++ b/src/audio/sampman_oal.cpp
+@@ -45,6 +45,12 @@
+ #ifdef __EMSCRIPTEN__
+ #include "orthros_web.h"
+ #endif
++#ifdef ORTHROS_LAZY_SFX
++#include <unistd.h>
++// (bank 0 read per sample — sampman.h —: on its first play, when its bytes are here — OrthrosFileReady: else the page
++// fetches them and that play is skipped, as a ped comment's —; the front end's sounds asked for with the bank,
++// LoadSampleBank; the page still loads the whole file in the background, OrthrosFileComplete)
++#endif
+ 
+ #include "AudioManager.h"
+ #include "MusicManager.h"
+@@ -104,6 +110,9 @@ int32 _nSampleDataEndOffset;
+ int32 nPedSlotSfx    [MAX_PEDSFX];
+ int32 nPedSlotSfxAddr[MAX_PEDSFX];
+ uint8 nCurrentPedSlot;
++#ifdef ORTHROS_LAZY_SFX
++uint8 gSampleHere[(SAMPLEBANK_MAX + 7) / 8]; // (bit i: bank 0's sample i read into the bank's memory)
++#endif
+ 
+ #ifdef FIX_BUGS
+ uint32 gPlayerTalkSfx = UINT32_MAX;
+@@ -1258,6 +1267,20 @@ cSampleManager::LoadSampleBank(uint8 nBank)
+ 		samplesSize -= size;
+ 	}
+ #else
++#ifdef ORTHROS_LAZY_SFX
++	if ( nBank == SFX_BANK_0 )
++	{
++		// (its memory allocated, nothing read: each sample on its first play — EnsureSample —, the front end's
++		// clicks and selections asked for now, so the menu's first ones are heard)
++		memset(gSampleHere, 0, sizeof(gSampleHere));
++		uint32 first = m_aSamples[SFX_FE_HIGHLIGHT_LEFT].nOffset;
++		uint32 end = m_aSamples[SFX_FE_NOISE_BURST_3].nOffset + m_aSamples[SFX_FE_NOISE_BURST_3].nSize;
++		OrthrosFileReady(fileno(fpSampleDataHandle), first, end - first);
++		OrthrosFileReady(fileno(fpSampleDataHandle), m_aSamples[SFX_INFO_LEFT].nOffset, m_aSamples[SFX_INFO_LEFT].nSize);
++		gBankLoaded[nBank] = LOADING_STATUS_LOADED;
++		return TRUE;
++	}
++#endif
+ 	if ( fseek(fpSampleDataHandle, nSampleBankDiscStartOffset[nBank], SEEK_SET) != 0 )
+ 		return FALSE;
+ 	
+@@ -1551,6 +1574,17 @@ cSampleManager::InitialiseChannel(uint32 nChannel, uint32 nSfx, uint8 nBank)
+ 			return FALSE;
+ 		
+ 		addr = nSampleBankMemoryStartAddress[nBank] + m_aSamples[nSfx].nOffset - m_aSamples[BankStartOffset[nBank]].nOffset;
++#ifdef ORTHROS_LAZY_SFX
++		// (its first play: its bytes read now if here, else asked for and this play skipped — the channel emptied: a
++		// caller that starts it all the same, the police radio's next word, plays nothing rather than its last sample)
++		if ( nBank == SFX_BANK_0 && !EnsureSample(nSfx) )
++		{
++			if ( GetChannelUsedFlag(nChannel) )
++				StopChannel(nChannel);
++			aChannel[nChannel].Reset();
++			return FALSE;
++		}
++#endif
+ 	}
+ #ifdef FIX_BUGS
+ 	else if ( nSfx >= PLAYER_COMMENTS_START && nSfx <= PLAYER_COMMENTS_END )
+@@ -1600,6 +1634,31 @@ cSampleManager::InitialiseChannel(uint32 nChannel, uint32 nSfx, uint8 nBank)
+ 	return FALSE;
+ }
+ 
++#ifdef ORTHROS_LAZY_SFX
++bool8
++cSampleManager::EnsureSample(uint32 nSfx)
++{
++	if ( gSampleHere[nSfx >> 3] & (1 << (nSfx & 7)) )
++		return TRUE;
++	if ( gBankLoaded[SFX_BANK_0] != LOADING_STATUS_LOADED || nSfx >= BankStartOffset[SFX_BANK_PED_COMMENTS] )
++		return FALSE;
++	// (pread, exactly its range: stdio's buffer would read past it, a wait for bytes not asked for)
++	int fd = fileno(fpSampleDataHandle);
++	uint32 size = m_aSamples[nSfx].nSize;
++	if ( !OrthrosFileReady(fd, m_aSamples[nSfx].nOffset, size) )
++	{
++		OrthrosSampleCount(0, 0);
++		return FALSE;
++	}
++	uintptr addr = nSampleBankMemoryStartAddress[SFX_BANK_0] + m_aSamples[nSfx].nOffset - m_aSamples[BankStartOffset[SFX_BANK_0]].nOffset;
++	if ( pread(fd, (void *)addr, size, m_aSamples[nSfx].nOffset) != (ssize_t)size )
++		return FALSE;
++	gSampleHere[nSfx >> 3] |= 1 << (nSfx & 7);
++	OrthrosSampleCount(1, size / 2);
++	return TRUE;
++}
++#endif
++
+ void
+ cSampleManager::SetChannelEmittingVolume(uint32 nChannel, uint32 nVolume)
+ {
+diff --git a/src/skel/orthros_web.cpp b/src/skel/orthros_web.cpp
+index 487da66..7f0c7fe 100644
+--- a/src/skel/orthros_web.cpp
++++ b/src/skel/orthros_web.cpp
+@@ -47,6 +47,13 @@ EM_JS(void, OrthrosFileComplete, (int fd), {
+ 	if (s && s.complete) s.complete();
+ });
+ 
++EM_JS(void, OrthrosSampleCount, (int read, int frames), {
++	var c = Module.orthrosSamples || (Module.orthrosSamples = { read: 0, skipped: 0, frames: [] });
++	if (!read) { c.skipped++; return; }
++	c.read++;
++	if (c.frames.length < 512) c.frames.push(frames);
++});
++
+ static double lastLoadingYield;
+ 
+ void
+diff --git a/src/skel/orthros_web.h b/src/skel/orthros_web.h
+index a5f1040..c000637 100644
+--- a/src/skel/orthros_web.h
++++ b/src/skel/orthros_web.h
+@@ -23,6 +23,9 @@ void OrthrosFileWait(int fd, double position, int length);
+ // The file open as `fd` is one the game reads at random while it plays (a streaming archive, a sound bank): the page
+ // loads the whole of it in the background, after what the game reads first.
+ void OrthrosFileComplete(int fd);
++// A sound sample read on its first play (read 1: `frames` 16-bit frames, its size) or skipped, its bytes not here yet
++// (read 0): counted in Module.orthrosSamples (read, skipped, the first frames counts), for the page's checks.
++void OrthrosSampleCount(int read, int frames);
+ #ifdef __cplusplus
+ }
+ #endif

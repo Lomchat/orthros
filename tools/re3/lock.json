@@ -77,6 +77,37 @@
         "engine/revc.mjs": "671286aa44dc92ba33ccdbd388be58054195ff2c3f9d7a91fa57f2effeb820b2",
         "engine/revc.wasm": "f23593b59eb70ea1dcefa5bc090e35f9979bb3a19773f00b4312ac267206bb5c"
       }
+    },
+    {
+      "id": "revc-web-e312f97-r3",
+      "patches": [
+        [
+          "vendor/librw",
+          "librw-webgl-samples.patch"
+        ],
+        [
+          ".",
+          "revc-lazy-sfx.patch"
+        ]
+      ],
+      "files": {}
+    },
+    {
+      "id": "revc-web-e312f97-plus-r3",
+      "patches": [
+        [
+          "vendor/librw",
+          "librw-webgl-samples.patch"
+        ],
+        [
+          ".",
+          "revc-lazy-sfx.patch"
+        ]
+      ],
+      "cmake": [
+        "-DREVC_ORTHROS_EXTRAS=ON"
+      ],
+      "files": {}
     }
   ]
 }

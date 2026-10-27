@@ -73,21 +73,31 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const s1 = (ms) => (ms === null || ms === undefined || !Number.isFinite(ms) ? null : Math.round(ms / 100) / 10);
 
 /**
- * A games folder for a test server whose `version` runs `engine`: `out` (made anew: a real folder) holds one real folder
+ * A games folder for a test server whose `version` runs `engine` (or each version of `engines`, { [version]: release }:
+ * an engine release a version of each edition — reVC's two, say): `out` (made anew: a real folder) holds one real folder
  * per game of `live` — the server's catalog takes real folders only (a link's Dirent is no directory) — of links to the
- * live game's entries (base, versions, cover…), the game of `version` with a copy of its manifest.json, that version's
- * openmw.engine replaced (the versions it requires keep their own). Never a link into an existing link: every folder
- * linked into is made here, checked a real folder first. `live` is only read. Returns { out, game, previous }.
+ * live game's entries (base, versions, cover…), each game of a changed version with a copy of its manifest.json, that
+ * version's engine replaced — its port's (`openmw.engine`, `re3.engine`; the versions it requires keep their own).
+ * Never a link into an existing link: every folder linked into is made here, checked a real folder first. `live` is only
+ * read. Returns { out, game, previous } (the first changed version's game and former release), `changed`: every one's
+ * { [version]: { game, previous } }.
  */
-export function scratchGames({ live, out, version, engine }) {
+export function scratchGames({ live, out, version, engine, engines = { [version]: engine } }) {
   const games = fs.readdirSync(live, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
-  let game = null, spec = null, previous = null;
+  const specs = new Map(), changed = {};
   for (const g of games) {
     let m; try { m = JSON.parse(fs.readFileSync(path.join(live, g, 'manifest.json'), 'utf8')); } catch { continue; }
-    const v = m.versions?.find((x) => x.id === version);
-    if (v) { game = g; spec = m; previous = v.openmw?.engine ?? null; if (!v.openmw) throw new Error(`${version}: not an OpenMW version`); v.openmw = { ...v.openmw, engine }; }
+    for (const v of m.versions ?? []) {
+      if (!Object.hasOwn(engines, v.id)) continue;
+      const port = ['openmw', 're3'].find((k) => v[k] && typeof v[k] === 'object');
+      if (!port) throw new Error(`${v.id}: not a browser port version with an engine release (openmw, re3)`);
+      changed[v.id] = { game: g, previous: v[port].engine ?? null };
+      v[port] = { ...v[port], engine: engines[v.id] };
+      specs.set(g, m);
+    }
   }
-  if (!game) throw new Error(`${version}: no version of that id in ${live}`);
+  const missing = Object.keys(engines).filter((v) => !changed[v]);
+  if (missing.length) throw new Error(`${missing.join(', ')}: no version of that id in ${live}`);
   clearScratchGames(out);
   fs.mkdirSync(out);
   for (const g of games) {
@@ -95,11 +105,12 @@ export function scratchGames({ live, out, version, engine }) {
     fs.mkdirSync(dir);
     if (fs.lstatSync(dir).isSymbolicLink() || fs.realpathSync(dir) !== path.resolve(dir)) throw new Error(`${dir}: not a real folder of the scratch`);
     for (const e of fs.readdirSync(path.join(live, g))) {
-      if (g === game && e === 'manifest.json') fs.writeFileSync(path.join(dir, e), JSON.stringify(spec, null, 2) + '\n');
+      if (specs.has(g) && e === 'manifest.json') fs.writeFileSync(path.join(dir, e), JSON.stringify(specs.get(g), null, 2) + '\n');
       else fs.symlinkSync(path.join(live, g, e), path.join(dir, e));
     }
   }
-  return { out, game, previous };
+  const first = changed[Object.keys(engines)[0]];
+  return { out, game: first.game, previous: first.previous, changed };
 }
 
 /** Removes a scratch games folder of scratchGames: its links unlinked (never followed), its own files and folders, nothing recursive. */

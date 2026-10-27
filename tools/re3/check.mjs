@@ -1,5 +1,8 @@
 // Browser check of an re3 port (docs/browser-ports.md, "re3 ports"): the home lists the version as available; its page
-// starts the engine on the game's main menu, which draws and plays sound once the page is used; the engine's profile
+// starts the engine on the game's main menu, which draws and plays sound once the page is used (AUDIO: the buffers its
+// OpenAL started, those not silent — `heard`, at least one wanted —, distinct ones; an engine that reads its effects
+// bank sample by sample — Module.orthrosSamples, revc-lazy-sfx.patch — must have read one and played it: a heard buffer
+// of one read sample's length, the streams' — music, voices, also heard — told apart); the engine's profile
 // (its ini file, settings, caches: every file it writes in the game's folder) is kept in the browser; --new-game starts
 // a new game from the game's own menu (clicks at the menu's places, the canvas' fractions: `--menu "0.5,0.401;0.5,0.365"`)
 // and waits for its first scene (many draws a frame); --reload goes back to the games from the header (saving here and
@@ -70,6 +73,18 @@ const probe = () => {
     }
   }
   if (window.AudioContext) { const Original = window.AudioContext; window.AudioContext = class extends Original { constructor(...a) { super(...a); window.renderProbe.audioContexts.push(this); } }; }
+  // (the sounds heard: each buffer the engine's OpenAL starts — a sample, a piece of a stream —, silent or not: a sample
+  // whose bytes the engine never read plays as silence)
+  const sounds = window.renderProbe.sounds = { started: 0, heard: 0, silent: 0, distinct: 0, lengths: [] }, loud = new WeakMap();
+  const start = window.AudioBufferSourceNode?.prototype.start;
+  if (start) window.AudioBufferSourceNode.prototype.start = function (...a) {
+    const b = this.buffer;
+    if (b) {
+      if (!loud.has(b)) { const d = b.getChannelData(0); let l = false; for (let i = 0; i < d.length && !l; i += 3) l = Math.abs(d[i]) > 1e-3; loud.set(b, l); if (l) { sounds.distinct++; if (sounds.lengths.length < 4096) sounds.lengths.push(b.length); } }
+      sounds.started++; if (loud.get(b)) sounds.heard++; else sounds.silent++;
+    }
+    return start.apply(this, a);
+  };
 };
 /** The profile as the page keeps it: paths and sizes. */
 const profileOf = (page) => page.evaluate(async () => { await portSession.save(); const db = await new Promise((ok, ko) => { const r = indexedDB.open(portSession.config.saveKey); r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error); }); const files = await new Promise((ok) => { const r = db.transaction('profile').objectStore('profile').get('files'); r.onsuccess = () => ok(r.result ?? []); }); return files.map((f) => ({ path: f.path, size: f.data.length })).sort((a, b) => a.path.localeCompare(b.path)); });
@@ -151,6 +166,13 @@ try {
   }
   const audio = await page.evaluate(() => renderProbe.audioContexts.map((c) => c.state));
   if (!audio.includes('running')) throw new Error(`no sound: ${JSON.stringify(audio)}`);
+  const { lengths, ...sounds } = await page.evaluate(() => renderProbe.sounds);
+  const samples = await page.evaluate(() => portSession.engine?.orthrosSamples ?? null);
+  // (a lazily read sample heard: a loud buffer as long as one of the samples read — frames, mono or forced to stereo)
+  const readHeard = samples ? lengths.filter((n) => samples.frames.includes(n)).length : null;
+  console.log('AUDIO', JSON.stringify({ ...sounds, ...(samples ? { samplesRead: samples.read, samplesSkipped: samples.skipped, readHeard } : {}) }));
+  if (!(sounds.heard > 0)) throw new Error(`no sound heard: ${JSON.stringify(sounds)}`);
+  if (samples && !(samples.read > 0 && readHeard > 0)) throw new Error(`no sample of the effects bank read and heard: ${JSON.stringify({ read: samples.read, skipped: samples.skipped, readHeard })}`);
   const saved = await profileOf(page);
   if (!saved.length) throw new Error('the profile is empty: the engine wrote nothing the page kept');
   console.log('PROFILE', JSON.stringify(saved));
@@ -176,7 +198,7 @@ try {
   }
   for (const ctx of browser.contexts()) for (const p of ctx.pages()) {
     if (!(await p.evaluate(() => !!window.portSession).catch(() => false))) continue;
-    const evidence = await p.evaluate(() => ({ state: portSession.state, logs: portSession.logs.slice(-150), draws: renderProbe.draws, audio: renderProbe.audioContexts.map((c) => c.state), startup: portSession.startup, background: portSession.background }));
+    const evidence = await p.evaluate(() => ({ state: portSession.state, logs: portSession.logs.slice(-150), draws: renderProbe.draws, audio: renderProbe.audioContexts.map((c) => c.state), sounds: renderProbe.sounds, samples: portSession.engine?.orthrosSamples ?? null, startup: portSession.startup, background: portSession.background }));
     fs.writeFileSync(path.join(root, `evidence-${ctx === context ? 0 : 1}.json`), JSON.stringify(evidence, null, 2));
     await p.screenshot({ path: path.join(root, `final-${ctx === context ? 0 : 1}.png`) });
   }

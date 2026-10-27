@@ -34,7 +34,7 @@ test('place-load: a scratch games folder whose version runs another engine, the 
     liveGames(live);
     const manifestBefore = fs.readFileSync(path.join(live, 'mw-plus', 'manifest.json'), 'utf8');
     const made = scratchGames({ live, out, version: 'mw-plus-en', engine: 'eng-r9' });
-    assert.deepEqual(made, { out, game: 'mw-plus', previous: 'eng-r8' });
+    assert.deepEqual(made, { out, game: 'mw-plus', previous: 'eng-r8', changed: { 'mw-plus-en': { game: 'mw-plus', previous: 'eng-r8' } } });
     // (real folders of links; the measured game's manifest a file of its own; nothing new in the live folder)
     for (const g of ['mw', 'mw-plus']) assert.ok(fs.lstatSync(path.join(out, g)).isDirectory());
     assert.ok(fs.lstatSync(path.join(out, 'mw', 'manifest.json')).isSymbolicLink());
@@ -153,4 +153,26 @@ test('place-load: the menu-time prefetch from a proxy log', () => {
   assert.equal(prefetchReport(recs, { keyT: null }).place.count, 0);
   assert.equal(prefetchReport(recs, { keyT: 12000 }).inMenu, null);
   assert.equal(prefetchReport(recs, { keyT: 12000 }).place.count, 0);
+});
+
+test('place-load: scratchGames gives an re3 version of each of two games its own engine release', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'place-load-'));
+  try {
+    const live = path.join(tmp, 'live'), out = path.join(tmp, 'games-r3');
+    const game = (g, v) => {
+      fs.mkdirSync(path.join(live, g, 'versions', v.dir), { recursive: true }); fs.mkdirSync(path.join(live, g, 'base'), { recursive: true });
+      fs.writeFileSync(path.join(live, g, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: g, name: g, defaultVersion: v.id, defaults: { runtime: 're3' }, versions: [v] }));
+    };
+    game('vc', { id: 'vc-revc', dir: 'revc', version: '1', re3: { engine: 'revc-r2' } });
+    game('vc-plus', { id: 'vc-plus', dir: 'plus', version: '1', re3: { engine: 'revc-plus-r2', modes: ['story'] } });
+    game('other', { id: 'other-en', dir: 'en', version: '1', re3: { engine: 'revc-r2' } });
+    const made = scratchGames({ live, out, engines: { 'vc-revc': 'revc-r3', 'vc-plus': 'revc-plus-r3' } });
+    assert.deepEqual(made.changed, { 'vc-revc': { game: 'vc', previous: 'revc-r2' }, 'vc-plus': { game: 'vc-plus', previous: 'revc-plus-r2' } });
+    const read = (g) => JSON.parse(fs.readFileSync(path.join(out, g, 'manifest.json'), 'utf8')).versions[0].re3;
+    assert.deepEqual(read('vc'), { engine: 'revc-r3' });
+    assert.deepEqual(read('vc-plus'), { engine: 'revc-plus-r3', modes: ['story'] });
+    assert.ok(fs.lstatSync(path.join(out, 'other', 'manifest.json')).isSymbolicLink()); // (an unchanged game: its own)
+    assert.throws(() => scratchGames({ live, out, engines: { 'vc-revc': 'x', nope: 'y' } }), /nope: no version/);
+    clearScratchGames(out);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
