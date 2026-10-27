@@ -90,7 +90,10 @@
           "revc-lazy-sfx.patch"
         ]
       ],
-      "files": {}
+      "files": {
+        "engine/revc.mjs": "0447d90522a540174528ac2736876af1e4d675267da4ae75d5d988b329a79e06",
+        "engine/revc.wasm": "efd6eb37e23420efa03b11316e4d2186c1d75680663499b4f06c47c18d97f9c8"
+      }
     },
     {
       "id": "revc-web-e312f97-plus-r3",
@@ -107,7 +110,10 @@
       "cmake": [
         "-DREVC_ORTHROS_EXTRAS=ON"
       ],
-      "files": {}
+      "files": {
+        "engine/revc.mjs": "ed96a3449a33a005125526adf44e695d8f18b54a143acad72a1655db827b3042",
+        "engine/revc.wasm": "d6ef9c6ed0ba01042828d0f49b694a3be52387909125fc7635311b853740a4e9"
+      }
     }
   ]
 }
