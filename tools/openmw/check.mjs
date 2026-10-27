@@ -47,6 +47,9 @@ try {
   const frame = page.frameLocator('#game');
   await frame.locator('#loading.hide').waitFor({ state: 'attached', timeout: 90000 });
   await page.waitForTimeout(seconds * 1000);
+  // (the page hides its loading screen ~2.4 s after the engine's first frame-rate report: under a loaded software
+  // renderer that can come after the fixed wait — waited for, up to 30 s, instead of read at once)
+  await page.locator('#loader.hidden').waitFor({ state: 'attached', timeout: 30000 }).catch(() => {});
   const state = await frame.locator('body').evaluate(async () => ({
     isolated: crossOriginIsolated, draws: window.orthrosDraws, args: window.Module?.arguments,
     databases: (await indexedDB.databases()).map((d) => d.name), log: document.querySelector('#log')?.textContent.slice(-1600),
