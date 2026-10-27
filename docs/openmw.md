@@ -348,23 +348,53 @@ OffscreenCanvas over the Orthros page — its frames reach the screen while the 
 data received (the streaming's shared byte counter), rate, seconds, and "choose Wait" once Chrome
 may ask.
 
-The engine's package without the example world (2026-10-21, `src/host/openmw-lean.js`). The release's `openmw.data`
-(204 MB, 33.4 MB in brotli) holds the engine's resources (3.3 MB), ICU's data twice (`/icudt68l.dat` and
-`/icu/icudt68l.dat`, 28.6 MB each) and the free example world the page boots with `?nomw` (`/gamedata/`, 144 MB:
-22 MB of the brotli). Every data path of the engine page for a game of its own (hosted, local folder, locker) writes an
-`openmw.cfg` without `data=/gamedata`, yet a new Morrowind player downloaded it before the menu (4-5 min at 85 KB/s).
-The server makes, once per release, the same package with the example world's bytes zeroed — same size and offsets, so
-the metadata inside `openmw.js` stays as it is — at brotli quality 11 (a niced child, `openmw-lean-worker.js`, 207 s
-on the loaded test machine; orthros-r1: 14.9 MB), kept in `<br-cache>/engines/<release>/lean<rule>/<build>/` and
-served immutable as `/engines/<release>/lean<rule>/<build>/openmw.data`; the engine page of a version that is not the
-example (`withLeanPackage`) has `locateFile` give that address for `openmw.data` unless it boots `?nomw`, answered as
-brotli without `Content-Length` like the release's own (`sendBrotli`). The server starts making it at its start for
-every installed game of its own (else the first card or page asking for it does); until it is made pages load the
-release's own package, and the card's engine files (`launch.engineFiles`, what Prepare caches) leave the package out
-(`pending`: a Prepare meanwhile would cache a URL the page stops asking for once the lean one is there). The home's
-engine size counts it once made (`engineOf`); a Prepare whose engine files are no longer the card's (`engineFiles` kept
-with its progress) shows as not ready, its engine to fetch again. Not done: ICU's second copy (the page sets `ICU_DATA=/`, so `/icu/` looks
-unused — another 6-7 MB — not zeroed without a check that nothing reads it).
+The engine's package without what a game of its own never reads (2026-10-21; rule 2 and content keying 2026-10-27,
+`src/host/openmw-lean.js`). The release's `openmw.data` (204 MB, 33.4 MB in brotli) holds the engine's resources
+(3.3 MB), ICU's data twice (`/icu/icudt68l.dat` and `/icudt68l.dat`, 28,566,176 bytes each, byte-identical, 28.5 MB
+apart — beyond brotli's 16 MB window, so each costs ~7.1 MB of brotli) and the free example world the page boots with
+`?nomw` (`/gamedata/`, 144 MB: 22 MB of the brotli). Every data path of the engine page for a game of its own (hosted,
+local folder, locker) writes an `openmw.cfg` without `data=/gamedata`, yet a new Morrowind player downloaded it before
+the menu (4-5 min at 85 KB/s). The server makes the same package with the unread bytes zeroed — same size and offsets,
+so the metadata inside `openmw.js` stays as it is — at brotli quality 11 (a niced child, `openmw-lean-worker.js`, 207 s
+on the loaded test machine). Its rules (`LEAN_RULE`, in its URL and file: a new rule is a new immutable address):
+1. the example world, `/gamedata/` (lean1: 14,929,087 bytes for every release r1..r11);
+2. ICU's root copy, `/icudt68l.dat`, by name and only when the package has `/icu/icudt68l.dat`: the engine opens that
+   one only — `u_setDataDirectory("/icu")` in `apps/openmw/main.cpp` (`data/engines/src/openmw-web-v1.5.3/…:241`),
+   set in-process before any ICU use because, its comment says, `ENV.ICU_DATA` does not work in this build (the page's
+   `ENV.ICU_DATA='/'` is dead). Measured 2026-10-27 on orthros-r11 (scratch servers of main and of this change on
+   the same copied br-cache and learned state): lean2 7,852,937 bytes (lean1 14,929,087), made in 107 s, the decoded
+   package equal to the original byte for byte but `/gamedata/*` and `/icudt68l.dat` zeroed (`/icu/icudt68l.dat`
+   intact); the home's engine (`/api/manifests` `launch.engine`) 20,649,625 → 13,573,475 bytes (the live server said
+   20,649,625 too); a warm-up boot to the menu through 1.8 MB/s and 90 ms fetches 20,630,708 → 13,554,558 bytes of
+   `/engines` (menu at 53.2 → 50.0 s, one run each). `tools/openmw/check.mjs` (2 runs per variant): Morrowind GOTY EN
+   and Vanilla+ `--lang fr` reach the menu on both; on this change both open the Options window (a copy of the tool that
+   clicks it), its ICU-formatted values drawn ("Difficulté (0)", "Difficulty (0)", "Actors Processing Range (3584)").
+
+Keyed by the package's content (since rule 2): `<br-cache>/engines/_c/<sha256 of openmw.data>/lean<rule>/openmw.data.br`,
+served immutable as `/engines/_c/<sha256>/lean<rule>/openmw.data`. The sha256 is the release's own
+(`release.json` `engineFiles['openmw.data']`; the made file is checked against it by the child), else hashed once by the
+server (by file, size and mtime). The OpenMW releases built here change the wasm and keep the package (the same
+`e659ce68…` from orthros-r1 to r11), so a returning player keeps it across releases and fetches only `openmw.wasm`/`.js`
+(measured 2026-10-27: a profile warmed to the menu on r11, then a copy of r11 under a new release id, to the menu
+behind 1.8 MB/s and 90 ms, 2 runs a variant: `/engines` 20,630,708 → 5,701,421 bytes — `openmw.js` and `.wasm` only,
+the package not asked —, everything through the link 34.4/33.8 → 18.7/19.2 MB, the menu at 18.5/17.4 → 10.1/11.3 s), and the server makes it once for all of them. The engine page of a version that is not the example
+(`withLeanPackage`) has `locateFile` give that address for `openmw.data` unless it boots `?nomw`, answered as brotli
+without `Content-Length` like the release's own (`sendBrotli`). The release-keyed addresses of earlier servers
+(`/engines/<release>/lean<n>/<build>/openmw.data`) keep answering for the pages still open with them — their own file
+while it is kept, else the content's (the same package for them: only unread bytes differ). The server starts making it
+at its start for every installed game of its own (else the first card or page asking for it does); until it is made
+(about 100 s at nice 19 on an idle machine), or for the rest of the run when its making failed, pages are given the
+newest lean package already on disk for that package (an earlier rule's under `_c/<sha256>/`, else an earlier server's
+release-keyed `<release>/lean<n>/<build>/`: right after the switch to rule 2, the 14.9 MB lean1), and the card lists
+that one for Prepare. With none on disk pages load the release's own package (33 MB of brotli), and the card's engine
+files (`launch.engineFiles`, what Prepare caches) leave the package out (`pending`: a Prepare meanwhile would cache a URL
+the page stops asking for once the lean one is there). The
+home's engine size counts it once made (`engineOf`); a Prepare whose engine files are no longer the card's (`engineFiles`
+kept with its progress) shows as not ready, its engine to fetch again (once at the switch to the content address, then
+only for a release's new wasm/js). Follow-ups: `tools/openmw/build.sh` (131-132) still stages ICU twice — a future
+release could ship `/icu/icudt68l.dat` only (it changes that release's package hash: to do with the release chain's
+owner); the release-keyed lean1 files of the live br-cache (`<br-cache>/engines/<release>/lean1/`, ~15 MB each) can go
+once no page opened before the switch remains.
 
 The engine page's file streaming is the game data every Orthros game reads (CLAUDE.md "Standardization";
 docs/slow-network.md): `src/ports/openmw/streamfs.js` keeps the engine page's StreamFS interface (swapped for the

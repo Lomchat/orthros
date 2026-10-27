@@ -247,6 +247,17 @@ export function createServer(opts = {}) {
     fs.createReadStream(br).pipe(res);
   };
   /**
+   * An OpenMW lean package (openmw-lean.js: its brotli file `file`, `decoded` bytes), immutable: brotli only — a browser
+   * that takes none (or asks a range) gets it decoded here.
+   */
+  const sendLean = (req, res, file, decoded) => {
+    const cache = 'public, max-age=31536000, immutable';
+    if (/\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !req.headers.range) return sendBrotli(req, res, file, 'application/octet-stream', { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }, decoded);
+    res.writeHead(200, headers({ 'Content-Type': 'application/octet-stream', 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }));
+    if (req.method === 'HEAD') return res.end();
+    return void pipeline(fs.createReadStream(file), zlib.createBrotliDecompress(), res).catch(() => res.destroy());
+  };
+  /**
    * The page's own files (src/, and the pages: no build step, the browser loads the modules as they are): revalidated
    * at each load (Cache-Control no-cache: a new tree is new code at once), 304 when unchanged (sendFile), and a text
    * file sent brotli 11 once made — 0.90 MB for the Win32 page's 3.26 MB of modules where the reverse proxy's gzip
@@ -1802,18 +1813,19 @@ export function createServer(opts = {}) {
       }
       m = /^\/ports\/([a-z0-9]+)\/([^/]+)\/$/.exec(p);
       if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendSource(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
+      // (an OpenMW engine package's lean copy, made by this server and keyed by the package's content — openmw-lean.js:
+      // every engine release with that package shares its address)
+      m = /^\/engines\/_c\/([^/]+)\/(.+)$/.exec(p);
+      if (m) {
+        const c = lean?.contentFile(m[1], m[2]);
+        return c ? sendLean(req, res, c.file, c.decoded) : send(res, 404, 'not found');
+      }
       m = /^\/engines\/([^/]+)\/(.+)$/.exec(p);
       if (m) {
         if (![...manifests.values()].some((man) => man.goldsrc?.engine === m[1] || man.openmw?.engine === m[1] || (man.runtime === 're3' && man.re3?.engine === m[1]))) return send(res, 404, 'no such engine');
-        // (an OpenMW release's lean package, made by this server: brotli only — a browser that takes none decodes nothing)
+        // (a lean package's release-keyed address, an earlier server's: for the pages still open with it)
         const leanFile = lean?.file(m[1], m[2]);
-        if (leanFile) {
-          const cache = 'public, max-age=31536000, immutable';
-          if (/\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !req.headers.range) return sendBrotli(req, res, leanFile, 'application/octet-stream', { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }, lean.decoded(m[1]));
-          res.writeHead(200, headers({ 'Content-Type': 'application/octet-stream', 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }));
-          if (req.method === 'HEAD') return res.end();
-          return void pipeline(fs.createReadStream(leanFile), zlib.createBrotliDecompress(), res).catch(() => res.destroy());
-        }
+        if (leanFile) return sendLean(req, res, leanFile, lean.decoded(m[1]));
         const file = engineFile(enginesDir, m[1], m[2]); if (!file) return send(res, 404, 'not found');
         return sendEngineFile(req, res, file, 'public, max-age=31536000, immutable');
       }
