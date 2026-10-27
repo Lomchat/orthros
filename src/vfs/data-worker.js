@@ -21,7 +21,9 @@
 // Light copies (src/host/light-copies.js): on a link that is not fast, the page reads a texture's light copy unless the
 // file itself is here (told: { real: [keys] }); the learned order brings the light copies; the files whose light copy
 // the engine read come last, in the background (HttpBackend.upgrade).
-import { openVersion, openStore, learnedOrder } from './game-data.js';
+// The page knows the files by the version it opened (its parts' names); a file that version takes from one it requires
+// is read, kept and learned-ahead through that version's part (game-data.js partOf, learnedOrders): its store, its URLs.
+import { openVersion, openStore, learnedOrders, partOf } from './game-data.js';
 import { MemBlockStore } from './opfs-store.js';
 import { BLOCK, CHUNK } from './http-backend.js';
 import { LIGHT_DIR, treeFiles } from './game-tree.js';
@@ -84,7 +86,7 @@ function dispatch(m) {
   if (m.phase) { phase(m.phase); return; }
   if (m.want) { want(m.want); return; }
   if (m.wantPlace) { wantPlace(m.wantPlace); return; }
-  if (m.wantWhole) { W.parts.get(m.wantWhole.name)?.files.wantWhole(m.wantWhole.path); return; }
+  if (m.wantWhole) { route(m.wantWhole.name, m.wantWhole.path)?.files.wantWhole(m.wantWhole.path); return; }
   if (m.light) { upgrade(m.light.name, m.light.path, !!m.light.soon); return; }
   if ('whole' in m) { m.whole ? wholeDownload() : (W.whole && (W.whole.stop = true)); return; }
   if (m.migrate) { migrate(m.migrate); return; }
@@ -93,32 +95,40 @@ function dispatch(m) {
 
 /**
  * { name, session, lang, bw, ctrl, data, prefetch: 'startup' | 'start' | 'first-read' | 'none', memBytes, cacheBlocks }: the
- * version and the ones it requires opened (lang: the game's language — its sessions' own launch set, launch-set.js) (their stores: OPFS, else in memory — another tab holds them, or no OPFS).
+ * version and the ones it requires opened (lang: the game's language — its sessions' own launch set, launch-set.js) (their stores: OPFS, else in memory — another tab holds them, or no OPFS; the files of a version another owns: in
+ * that one's store over this one's — game-data.js UnderStore: what this one kept of them before read there —, in this
+ * one's when another tab's game holds the owner's).
  */
 async function init(o) {
   W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.lang = typeof o.lang === 'string' && o.lang ? o.lang : null; W.prefetchAt = o.prefetch ?? 'none';
   const kept = {};
-  W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, cacheBlocks: o.cacheBlocks, store: async (n) => {
+  W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, cacheBlocks: o.cacheBlocks, kept: (n) => kept[n], store: async (n) => {
     const s = await openStore(n); kept[n] = !!s;
     return s ?? new MemBlockStore(o.memBytes ?? 512 << 20);
   } });
   for (const p of W.version.parts) W.parts.set(p.name, p);
   W.timers.push(setInterval(monitor, 100), setInterval(report, REPORT_MS), setInterval(lightWatch, 1000));
-  // (the files that have a light copy: those here whole the page reads themselves; the others watched — lightWatch)
+  // (the files that have a light copy: those here whole the page reads themselves; the others watched — lightWatch —,
+  // each by the name the page knows it under, through the part that reads it)
   const real = [];
-  for (const p of W.version.parts) for (const f of treeFiles(p.tree)) {
+  for (const p of W.version.parts) if (!p.shared) for (const f of treeFiles(p.tree)) {
     if (!f.light) continue;
-    if (p.files.isWhole(f.path)) real.push(lightKey(p.name, f.path)); else W.light.set(lightKey(p.name, f.path), { part: p, path: f.path, told: false });
+    const r = route(p.name, f.path), k = lightKey(p.name, f.path);
+    if (r.files.isWhole(f.path)) real.push(k); else W.light.set(k, { part: r, path: f.path, told: false });
   }
-  postMessage({ ready: { trees: Object.fromEntries(W.version.parts.map((p) => [p.name, p.tree])), kept, manifest: W.version.manifest, real } });
+  // (the trees of the versions the page opened: a shared part's files are in them already)
+  postMessage({ ready: { trees: Object.fromEntries(W.version.parts.filter((p) => !p.shared).map((p) => [p.name, p.tree])), kept, manifest: W.version.manifest, real } });
   lightWatch();
 }
 
-/** The file `path` of version `name`, opened once. */
+/** The part that reads the file `path` of version `name` as the page knows it (game-data.js partOf), or null. */
+const route = (name, path) => (W.parts.has(name) ? partOf(W.version, name, path) : null);
+
+/** The file `path` of version `name`, opened once (through the part that reads it). */
 function handle(name, path) {
   const key = name + '\n' + path;
   let f = W.handles.get(key);
-  if (!f) { f = W.parts.get(name)?.files.open(path) ?? null; if (f) W.handles.set(key, f); }
+  if (!f) { f = route(name, path)?.files.open(path) ?? null; if (f) W.handles.set(key, f); }
   return f;
 }
 
@@ -141,7 +151,7 @@ function hereUntil(files, f, from, limit) {
  */
 async function bytesOf({ name, path, off, len, want, src }, ask = { held: true }) {
   if (src !== undefined) return sourceBytes(src, off, len);
-  const part = W.parts.get(name), f = handle(name, path);
+  const part = route(name, path), f = handle(name, path);
   if (!part || !f) throw new Error(`${name}: ${path} not in the game's files`);
   const end = Math.min(f.len, off + len);
   if (end <= off) return new Uint8Array(0);
@@ -216,7 +226,7 @@ function want({ seq, from, list, label }) {
   W.wantLabel = typeof label === 'string' ? label.slice(0, 80) : null;
   const byPart = new Map();
   for (const [name, path, off, len] of list) {
-    const part = W.parts.get(name);
+    const part = route(name, String(path));
     const a = Math.max(0, Number(off) || 0), n = Number(len);
     if (!part) { W.wantFailed++; continue; }
     let e = byPart.get(part); if (!e) byPart.set(part, e = []);
@@ -248,7 +258,7 @@ function want({ seq, from, list, label }) {
 function wantPlace({ list, label }) {
   const byPart = new Map();
   for (const [name, path, off, len] of Array.isArray(list) ? list : []) {
-    const part = W.parts.get(name); if (!part) continue;
+    const part = route(name, String(path)); if (!part) continue;
     const a = Math.max(0, Number(off) || 0), n = Number(len);
     let e = byPart.get(part); if (!e) byPart.set(part, e = []);
     e.push([path, a, n < 0 || !Number.isFinite(n) ? -1 : a + n]);
@@ -339,8 +349,11 @@ function mark(m) {
 
 // ---------------------------------------------------------------- loading ahead
 
-/** The learned order of the version: what earlier sessions read first, the startup set its head. */
-const order = () => (W.learned ??= Promise.all(W.version.parts.map((p) => learnedOrder(p.name, W.lang))));
+/**
+ * The learned order of the version, one list a part: what earlier sessions read first, the startup set its head — the
+ * entries of files another version owns in that version's part's list (learnedOrders).
+ */
+const order = () => (W.learned ??= learnedOrders(W.version, W.lang));
 
 /**
  * The startup set loaded (before the engine starts): every part's launch set — the version's, then those of the versions
@@ -478,7 +491,7 @@ const lightKey = (name, path) => name + '\n' + path.toLowerCase();
  * `soon` for an engine that loads it again in place (GameData.reloads: the player sees it sharpen).
  */
 function upgrade(name, path, soon = false) {
-  const part = W.parts.get(name), r = part?.files.lookup(path); if (!r?.file) return;
+  const part = route(name, path), r = part?.files.lookup(path); if (!r?.file) return;
   part.files.upgrade(r.path, { soon });
 }
 
@@ -521,7 +534,7 @@ async function adoptLegacy(name, path, part, f) {
  */
 function migrate(list) {
   for (const { name, path, at, bytes } of list) {
-    const part = W.parts.get(name), f = handle(name, path);
+    const part = route(name, path), f = handle(name, path);
     if (!part?.store || !f || at % CHUNK || at + bytes.length > f.len) continue;
     part.files.keep(f.path, f.len, f.mtime, at, bytes);
   }

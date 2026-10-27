@@ -475,6 +475,104 @@ best-effort origin's stores may be evicted when the disk runs short: nothing ask
   recounting on a thin link (the 85 KB/s home kept the visit's result) and a store of light copies probed on a fast
   link in a browser (unit tests only: `tests/download-worker.test.js`, `tests/launch-set.test.js`).
 
+## Files of a required version (2026-10-27)
+
+A port that requires another version (`requires`: Vice City on reVC and Vice City — Orthros Edition over the Windows
+Vice City, a Vanilla+ Morrowind over GOTY of its language, Half-Life Arsenal over Counter-Strike) sees the required
+version's files as underlays in its own tree. Each version kept its own store (`orthros-files-<manifest>`) and fetched
+through `/gamez/<manifest>/`: a player of both editions downloaded and stored the shared files twice — the owner's
+`/gamez` requests from 2026-10-20 to 10-27 held 122 MB of cross-manifest repeats, all `vice-city-revc` →
+`vice-city-orthros` (sfx.RAW 54.8 MB, gta3.img 27.3, City.mp3 16.2, Water.mp3 16.0, …). The server already shared the
+units (`br-cache.js` keys them by the file), not the browser. The Windows games' `extraMounts` already stored a
+required version under its own name. Now every runtime does it the same way:
+
+- **The server marks the owner** (`listGameTree(manifest, seen, ownerOf)` in `src/host/game-files.js`, from
+  `manifest.underlayOwners` — `game-catalog.js`, the version each underlay folder is the folder of, the deepest one for a
+  chain): a file of the tree is `owner: <id>` when `/gamez/<id>/<path>` serves that very file — the required version's
+  own path resolved (`resolveGameFile`: through its overlays, data mounts and version folder) is the same device and
+  inode, so the same size and time, the browsers' block keys agreeing. That covers a file the tree takes from the
+  required version's folders and a hard link of one in the version's own folder (`goty-vanilla-plus-fr` keeps
+  `goty-fr`'s archives, `Sound/`, `Video/`… as hard links: 6,465 files, 845 MB). It is not marked when that version
+  serves another file there: its overlays hide it (an re3 engine's files), its data mount, or its own version folder
+  overriding a base the two versions share (two versions of one game folder: `requires` allows it); nor when it has a
+  light copy and that version does not serve light copies (`lightCopies`, e.g. the Windows Vice City's few large TGAs:
+  they stay the port's own). A required version's manifest that changes lists the tree again (`refreshCatalog`), and so
+  does a folder its paths were resolved in (`seen`). `/api/manifests` tells a version's `owners` (ids),
+  `/api/manifest` too (its folders stripped: `underlayOwners`). Win32 trees carry no marks (their required
+  versions are `extraMounts`, mounted elsewhere in the machine).
+  Measured on the live catalog: `vice-city-orthros` and `vice-city-revc` 1,568 MB marked
+  `vice-city-1.1-elamigos-2014` (14 MB their own: the engine's files), `counter-strike-hl-arsenal-en` 743 MB
+  `counter-strike-rebuilt-en`, `morrowind-goty-vanilla-plus-fr` 1,250 MB `morrowind-goty-fr` (2,696 MB its own; 286 MB
+  before the hard links counted), `-en` 1,246 MB `morrowind-goty-en`. Listing cost: 0.4 s for Vanilla+ FR's 42,000 files.
+- **The client reads them under the owner** (`openVersion` in `src/vfs/game-data.js`, one place for the data worker,
+  Prepare / the download and the probe): each part's tree is split (`splitOwners`, `game-tree.js`); its reader
+  (`files`) holds its own files only (`files.tree`, `total`); the files of an owner go to that owner's part — one opened
+  already (a Windows dependency), else a **shared part** (`shared: true`, its tree those files only, its store
+  `orthros-files-<owner>` and `/gamez/<owner>/` URLs, no session: the owner's learned order is its own players', and
+  a session's `s=` would teach it another game's reads). `part.tree` stays the tree as the game sees it (the page's
+  `trees` only for the versions it opened; a shared part is not one).
+- **Reads route by path** (`partOf(version, name, path)`, remembered per path): the data worker's reads, announced and
+  place lists, whole-file wants, upgrades of light copies (`.light/<path>`: its file's owner), copies handed over —
+  the page still names the version it opened. The engine's uses are reported under that version (`used`): it learns
+  them as its own reads, the server's learned order unchanged.
+- **Learned orders follow the owner** (`learnedOrders(version, lang)`): each opened version's order fetched, its
+  entries of an owner's files moved to the owner's part's list in their order (the startup set, the whole order's
+  background loading, Prepare's launch set and the probe count them there); a shared part fetches no order of its
+  own. The server's launch summary is unchanged (same files, same sizes, the same precompressed units).
+- **Light copies** of a marked file: its owner serves them (the mark requires it), `.light/<path>` under the owner's
+  part and store.
+- **Locks and contexts**: a page opens its stores one after the other, each under its own Web Lock for the open only
+  (`openStore`), never two at once; `storeLocks` takes several (the probe) in one order, by name, whoever asks — so a
+  page of one edition, a probe and a page of the other cannot each hold one the other waits for. The owner's store
+  is also the owner game's own (the Windows Vice City, Counter-Strike, GOTY): while another tab's game holds it (that
+  game, or the other edition), OPFS lets one context only — the shared part then keeps its files in the version's own
+  store, as before the owners (`UnderStore` with no top: read and written there, not fetched again at each launch);
+  Prepare does the same instead of failing; the probe counts the version's own share and does not leave the card
+  unknown.
+- **Migration: moved as read** (`UnderStore`, a shared part's store: the owner's over the stores of the parts that read
+  its files). The blocks an edition's store kept of the owner's files before (every edition's store before this
+  change) count as here — the probe, Prepare and the whole download skip them, nothing is fetched again — and each one
+  the game reads there is put into the owner's store and dropped from the edition's. Chosen over a re-download (the
+  player who has both editions is the one who would pay twice: 122 MB at 85 KB/s is 24 minutes) and over a copy of
+  every block at the open (a first version did that: an offline copy is 1.5 GB read, checksummed and written before the
+  page was ready, and a device short of space failed the owner's store midway — for the session, and again at each
+  launch). Owner store failed (full device): reads go on from the edition's store, new blocks go there. A moved
+  block's bytes stay in the edition's data file (the store appends only) until its cache is cleared: a block read
+  once is on disk twice until then. The probe reads nothing (counts both); a version whose own store does not exist
+  is probed when one of its owners' (`/api/manifest` `owners`) does — "missing" only when none does.
+- **"My data"** (`data-manager.js`): a store is listed under the version it belongs to (the owner's under the owner,
+  e.g. the Windows Vice City); clearing a version's cache deletes its own store only — another version's blocks are
+  never deleted with it —, the owner's row says which versions read its files too (`sharedWith`), and a reader's row
+  that its copies of them move under the owner as read, clearing it freeing them (`keptUnder`). A port's row
+  counts its OPFS store and its earlier database together, and clearing it clears both (it cleared the database only).
+- Measured (2026-10-27, one fresh persistent Chromium profile per pair behind `tools/net-proxy.mjs` 1.8 MB/s + 90 ms,
+  scratch server on copies of the learned directory and the br-cache (frozen), main = the branch's base `dbac797`;
+  `tools/re3/check.mjs <v> --new-game --guest --profile --insecure`, `vice-city-revc` then `vice-city-orthros`, two
+  pairs per variant, all checks passed). The second edition's `/gamez`:
+
+  | second edition | main r1 | main r2 | change r1 | change r2 |
+  |---|---|---|---|---|
+  | wire bytes | 117.0 MB (129 s) | 107.7 MB (84 s) | 79.9 MB (63 s) | 87.6 MB (107 s) |
+  | of it under `vice-city-1.1-elamigos-2014` | 0 | 0 | 78.8 MB | 86.5 MB |
+  | ranges the first edition had fetched already | **32.9 MB** | **32.5 MB** | **3.2 MB** | **1.1 MB** |
+
+  Main's repeats: gta3.img 14.3-14.8, sfx.RAW 11.2, ped.ifp 1.3, FLASH.adf 1.1 MB, Water.mp3 0-1.4; the change's:
+  small files (generic.txd, particle.txd, the .gxt) and once a VROCK.adf block 2.1 MB. The total wire bytes are not
+  the measure: most of them are the learned order's background, bound by the link × the run's length (both variants
+  fill the 1.8 MB/s while the game runs); the gain is the ~30 MB a new game of the second edition no longer fetches
+  again (~17 s at 1.8 MB/s, ~6 min at 85 KB/s), stored once. Its demand reads were 0 in every run (the new game's
+  launch set is covered by the boot prefetch either way): transfer and storage, not waiting.
+  Migration: main's pair-2 profile (both editions' own stores filled), `vice-city-orthros` on this change: passed in
+  47 s, 51.0 MB of `/gamez`; of what its own store held 1.0 MB fetched again, but 23.9 MB (Water.mp3 8.5, FLASH.adf 7.5…)
+  that only `vice-city-revc`'s own store held were fetched again — `UnderStore` falls back to the opening edition's own
+  store only, so a sibling edition's pre-change blocks are fetched once more (no worse than main, which fetched 32.5 MB).
+  Morrowind: not run in a browser (`tools/openmw/check.mjs` has no persistent profile, `morrowind-goty-fr` has no
+  learned order yet); offline, `morrowind-goty-vanilla-plus-fr`'s learned order (2,164 entries) is 276 MB raw in
+  `morrowind-goty-fr`'s files (Morrowind.esm 81, Morrowind.bsa 71, mw_intro.bik 26…) against 552 MB of its own; `-en`
+  209 MB vs 413 MB: the upper bound of what a GOTY player starting Vanilla+ no longer fetches. Arsenal over
+  Counter-Strike (all its files now under `counter-strike-rebuilt-en`): `tools/goldsrc/check.mjs
+  counter-strike-hl-arsenal-en solo --guest --no-save` passed (8 players, moved 234 units).
+
 ## Precompressed units (2026-10-21)
 
 Every request of `/gamez` used to be compressed on the fly (zstd-3, else gzip-4; 256 MB of encoded ranges kept in

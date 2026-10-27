@@ -236,8 +236,17 @@ test('an re3 game of its own over another game\'s files (requires): beneath its 
   assert.equal(await (await fetch(`${base}/game/gm-r/text/american.gxt`)).text(), 'engine text');
   const tree = await (await fetch(`${base}/api/tree/gm-r`)).json();
   assert.ok(tree.dirs.data.files['x.dat'] && tree.dirs.data.files['own.dat'] && tree.files['game.exe']);
+  // (the Win32 game's files are its own: marked so, served under it — the browsers keep one copy for both games —;
+  // the re3 game's own files and the engine's over the Win32 game's are not)
+  assert.deepEqual(m.underlayOwners, [{ manifest: 'win-1', dirs: [path.join(games, 'win', 'versions', '1'), path.join(games, 'win', 'base')] }]);
+  assert.equal(tree.dirs.data.files['x.dat'].owner, 'win-1');
+  assert.equal(tree.dirs.data.files['own.dat'].owner, undefined);
+  assert.equal(tree.dirs.Text?.files['american.gxt']?.owner ?? tree.dirs.TEXT.files['american.gxt'].owner, undefined, 'the engine\'s file over it');
+  assert.equal(await (await fetch(`${base}/gamez/win-1/data/x.dat?r=0-5`)).text(), 'win x');
+  assert.equal((await (await fetch(`${base}/api/manifest/gm-r`)).json()).underlayOwners, undefined, 'its folders not told');
   // (two cards: each game its own, the Win32 one unchanged)
   const listed = await (await fetch(`${base}/api/manifests`)).json();
+  assert.deepEqual(listed.find((v) => v.name === 'gm-r').owners, ['win-1'], 'the versions whose files it reads');
   assert.deepEqual(listed.filter((v) => ['gm-r', 'win-1'].includes(v.name)).map((v) => [v.name, v.gameId, v.runtime]).sort(), [['gm-r', 'gm-re3', 're3'], ['win-1', 'win', 'win32']]);
   // (a mount is the Win32 games' way, refused here; a GoldSrc port still requires GoldSrc ports only)
   editManifest(own, (spec) => { spec.versions[0].requires[0].mount = 'D:\\'; });

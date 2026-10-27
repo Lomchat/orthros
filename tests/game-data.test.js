@@ -8,8 +8,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/host/server.js';
 import { listGameTree, resolveGameFile } from '../src/host/game-files.js';
-import { treeFile, treeFiles, treeBytes, languageFiles } from '../src/vfs/game-tree.js';
+import { treeFile, treeFiles, treeBytes, languageFiles, treeOwner, splitOwners } from '../src/vfs/game-tree.js';
 import { createDataWorker } from '../src/vfs/data-worker.js';
+import { openVersion, learnedOrders, partOf, UnderStore } from '../src/vfs/game-data.js';
+import { MemBlockStore } from '../src/vfs/opfs-store.js';
 import { GameData, PIECE, readsReal } from '../src/vfs/data-client.js';
 import { fileNode, mountFiles, phaseOnRead } from '../src/vfs/emscripten-files.js';
 import { BLOCK } from '../src/vfs/http-backend.js';
@@ -32,6 +34,19 @@ test('a data mount puts an engine release\'s folder in the served tree under its
   assert.deepEqual(languageFiles(treeFiles({ dirs: { valve: { files: { 'a.txt': { size: 1 } } }, valve_french: { files: { 'a.txt': { size: 2 } } } }, files: {} }), { valve_french: 'valve' }).map((f) => [f.path, f.at]), [['valve_french/a.txt', 'valve/a.txt']]);
 });
 
+test('a tree split by owner: its own files, each owner\'s at the same paths; a light copy\'s owner its file\'s', () => {
+  const tree = { dirs: { Audio: { dirs: {}, files: { 'sfx.RAW': { size: 9, owner: 'vc' }, 'own.wav': { size: 2 } } }, Empty: { dirs: {}, files: {} } }, files: { 'gta3.img': { size: 5, owner: 'vc', light: 3 }, 'mine.dat': { size: 1, owner: 'me' } } };
+  assert.equal(treeOwner(tree, 'AUDIO\\sfx.raw'), 'vc'); assert.equal(treeOwner(tree, '.light/gta3.img'), 'vc');
+  assert.equal(treeOwner(tree, 'Audio/own.wav'), null); assert.equal(treeOwner(tree, 'mine.dat', 'me'), null, 'a mark of its own name');
+  const { own, owners } = splitOwners(tree, 'me');
+  assert.deepEqual([...owners.keys()], ['vc']);
+  assert.deepEqual(treeFiles(owners.get('vc')).map((f) => f.path).sort(), ['Audio/sfx.RAW', 'gta3.img']);
+  assert.deepEqual(treeFiles(own).map((f) => f.path).sort(), ['Audio/own.wav', 'mine.dat']);
+  assert.equal(treeBytes(own) + treeBytes(owners.get('vc')), treeBytes(tree));
+  const plain = { dirs: {}, files: { a: { size: 1 } } };
+  assert.equal(splitOwners(plain).own, plain, 'nothing marked: the tree itself');
+});
+
 test('an OpenMW installation serves its engine\'s asset pack with its game files (/api/tree, /gamez)', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-omwdata-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const games = path.join(root, 'games'), engines = path.join(root, 'engines'), game = path.join(games, 'mw');
@@ -52,9 +67,10 @@ test('an OpenMW installation serves its engine\'s asset pack with its game files
 /**
  * A server of one version for the data worker: /api/manifest, /api/tree, /api/prefetch, /gamez ranges (`lights`: files'
  * light copies, under .light/); requests logged. `required`: { files, learned } of a version 'r' it requires
- * (extraMounts), its requests logged as 'r:<path>'.
+ * (extraMounts), its requests logged as 'r:<path>'; with `o.owned`, a version whose files 'v' takes instead (a port's
+ * underlay): in v's tree marked `owner: 'r'`, served under /gamez/r/ only.
  */
-function fakeServer(files, learned = [], lights = {}, required = null) {
+function fakeServer(files, learned = [], lights = {}, required = null, o = {}) {
   const posts = [], asked = [];
   const version = (files, lights = {}) => {
     const tree = { dirs: {}, files: {} };
@@ -65,8 +81,15 @@ function fakeServer(files, learned = [], lights = {}, required = null) {
     }
     return { tree, files: { ...files, ...Object.fromEntries(Object.entries(lights).map(([p, b]) => ['.light/' + p, b])) } };
   };
-  const vs = { v: { ...version(files, lights), learned, man: { name: 'v', ...(required ? { extraMounts: [{ manifest: 'r', at: 'C:\\R' }] } : {}) } } };
-  if (required) vs.r = { ...version(required.files), learned: required.learned ?? [], man: { name: 'r' } };
+  const vs = { v: { ...version(files, lights), learned, man: { name: 'v', ...(required && !o.owned ? { extraMounts: [{ manifest: 'r', at: 'C:\\R' }] } : {}) } } };
+  if (required) vs.r = { ...version(required.files, required.lights), learned: required.learned ?? [], man: { name: 'r' } };
+  if (required && o.owned) {
+    // (r's files in v's tree, marked: v's own win at the same path)
+    (function graft(from, to) {
+      for (const [n, e] of Object.entries(from.files)) to.files[n] ??= { ...e, owner: 'r' };
+      for (const [n, d] of Object.entries(from.dirs)) graft(d, to.dirs[n] ??= { dirs: {}, files: {} });
+    })(vs.r.tree, vs.v.tree);
+  }
   const fetch = async (url, init = {}) => {
     const u = new URL(url, 'http://x');
     const api = /^\/api\/(manifest|tree|prefetch)\/(\w+)$/.exec(u.pathname), av = api && vs[api[2]];
@@ -162,6 +185,65 @@ test('the startup set covers the versions a version requires, each from its own 
   assert.equal(w.out.findLast((m) => m.startup).startup.total, 2 << 20, 'a block of each');
   assert.ok(server.asked.some(([p, a]) => p === 'Game.esm' && a === 0), 'the version\'s');
   assert.ok(server.asked.some(([p, a]) => p === 'r:Base.dat' && a === 1 << 20), 'the required version\'s, its own order');
+});
+
+test('a file a version takes from one it requires is read, kept and loaded ahead under its owner; the version learns it as its own read', async (t) => {
+  const shared = bytes(2 << 20, 5);
+  const server = fakeServer({ 'Game.esm': bytes(3 << 20), 'Data/Over.dat': bytes(5000, 2) }, [['Game.esm', 0, 0, 0], ['Data/Shared.dat', 1, 0, 0]], {},
+    { files: { 'Data/Shared.dat': shared, 'Data/Over.dat': bytes(9000, 3) }, learned: [['Data/Shared.dat', 0, 0, 0]] }, { owned: true });
+  const w = await startWorker(t, server);
+  const ready = w.out.find((m) => m.ready).ready;
+  assert.deepEqual(Object.keys(ready.trees), ['v'], 'the page knows the version it opened only');
+  assert.deepEqual(Object.keys(ready.kept), ['v', 'r'], 'the owner\'s store opened beside the version\'s');
+  assert.equal(ready.trees.v.dirs.Data.files['Shared.dat'].owner, 'r');
+  // (the startup set: the version's learned entries, the owner's file among them fetched under the owner — not the
+  // owner's own order, its players' reads)
+  w.handle({ startup: true });
+  await w.until(() => w.out.some((m) => m.startup?.done), 'startup');
+  assert.equal(w.out.findLast((m) => m.startup).startup.total, 2 << 20);
+  assert.ok(server.asked.some(([p, a]) => p === 'r:Data/Shared.dat' && a === 1 << 20), 'under its owner');
+  assert.ok(!server.asked.some(([p, a]) => p === 'r:Data/Shared.dat' && a === 0), 'not from the owner\'s order');
+  // (the page's reads by the version's name: through the owner's part; a file of the version over the owner's: its own)
+  assert.deepEqual(await w.read('data/shared.dat', 100, 50), shared.subarray(100, 150));
+  assert.deepEqual(await w.read('Data/Over.dat', 0, 10), bytes(5000, 2).subarray(0, 10));
+  assert.ok(server.asked.some(([p]) => p === 'Data/Over.dat') && !server.asked.some(([p]) => p === 'Data/Shared.dat' || p === 'r:Data/Over.dat'), JSON.stringify(server.asked));
+  // (announced reads too)
+  w.handle({ want: { seq: 1, from: 1, list: [['v', 'Data/Shared.dat', 1 << 20, 4096]] } });
+  await w.until(() => Atomics.load(w.ctrl, 12) >= 1, 'announced');
+  assert.equal(Atomics.load(w.ctrl, 14), 0, 'none failed');
+  // (the engine's uses: the version's own learned reads)
+  w.handle({ start: true }); w.handle({ used: [['v', 'Data/Shared.dat', 1]] }); w.handle({ close: true });
+  await w.until(() => server.posts.length, 'reported');
+  assert.deepEqual(server.posts[0].reads.map((r) => r[0]), ['Data/Shared.dat']);
+});
+
+test('the blocks an edition kept of its owner\'s files before are read there and moved to the owner\'s store as read; routes and learned orders by owner', async (t) => {
+  const server = fakeServer({ 'Game.esm': bytes(3 << 20) }, [['Data/Shared.dat', 1, 0, 0], ['Game.esm', 0, 0, 5]], {},
+    { files: { 'Data/Shared.dat': bytes(2 << 20, 5) }, learned: [['Data/Shared.dat', 0, 0, 0]] }, { owned: true });
+  const realFetch = globalThis.fetch; globalThis.fetch = server.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  const stores = { v: new MemBlockStore(), r: new MemBlockStore() };
+  const mtime = 5, k0 = `Data/Shared.dat#${2 << 20}#${mtime}#0`, own = `Game.esm#${3 << 20}#${mtime}#0`;
+  stores.v.put(k0, bytes(1 << 20, 1)); stores.v.put(own, bytes(1 << 20, 2)); stores.v.put(`Data/Shared.dat#${2 << 20}#${mtime}#c17`, bytes(65536, 3));
+  const version = await openVersion('v', { store: (n) => stores[n] });
+  assert.deepEqual(version.parts.map((p) => [p.name, !!p.shared, p.total]), [['v', false, 3 << 20], ['r', true, 2 << 20]]);
+  assert.equal(partOf(version, 'v', 'data/SHARED.dat').name, 'r'); assert.equal(partOf(version, 'v', 'Game.esm').name, 'v');
+  assert.deepEqual((await learnedOrders(version)).map((l) => l.map((e) => e[0])), [['Game.esm'], ['Data/Shared.dat']], 'the version\'s own order, split; not the owner\'s');
+  const st = version.parts[1].store;
+  assert.ok(st instanceof UnderStore && st.top === stores.r && st.below[0] === stores.v, 'the owner\'s store over the edition\'s');
+  assert.ok(st.map.has(k0) && !stores.r.map.has(k0), 'here: nothing moved at the open');
+  // (read from the edition's store: no request; moved under the owner as read)
+  assert.deepEqual(new Uint8Array(await new Promise((res) => { const f = partOf(version, 'v', 'Data/Shared.dat').files.open('Data/Shared.dat'); res(f.read(10, 20)); })), bytes(1 << 20, 1).subarray(10, 30));
+  assert.equal(server.asked.length, 0);
+  assert.deepEqual(stores.r.get(k0), bytes(1 << 20, 1)); assert.ok(!stores.v.map.has(k0) && stores.v.map.has(own));
+  // (the owner's store failed — the device full —, or held by another tab: the edition's keeps them, read and written)
+  stores.r.failed = true;
+  const k1 = `Data/Shared.dat#${2 << 20}#${mtime}#1`;
+  st.put(k1, bytes(1 << 20, 4)); assert.ok(stores.v.map.has(k1) && !st.failed);
+  assert.deepEqual(st.get(`Data/Shared.dat#${2 << 20}#${mtime}#c17`), bytes(65536, 3), 'read below, not moved into a failed store');
+  const none = new UnderStore(null, [stores.v]); assert.ok(none.map.has(k1)); none.close();
+  // (the edition's store in memory: no store below — the owner's alone)
+  const mem = await openVersion('v', { store: (n) => stores[n], kept: (n) => n !== 'v' });
+  assert.equal(mem.parts[1].store, stores.r);
 });
 
 test('the page\'s client reads through the worker: pieces kept in the page, asked once, the engine\'s waits by message', async (t) => {

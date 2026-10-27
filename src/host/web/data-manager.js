@@ -29,6 +29,8 @@ const TEXT = {
     games: 'Tes jeux', saves: 'Sauvegardes', cache: 'Cache', cacheHelp: 'Fichiers du jeu déjà téléchargés : ils peuvent l’être de nouveau.',
     export: 'Exporter', import: 'Importer', clean: 'Nettoyer',
     cleanCache: 'Vider le cache', cleanCacheText: 'Les fichiers du jeu seront téléchargés de nouveau au prochain lancement.',
+    sharedWith: (g) => `Ces fichiers servent aussi à ${g} : ils y seront téléchargés de nouveau si besoin.`,
+    keptUnder: (g) => `Les fichiers que ce jeu partage avec ${g} sont désormais gardés sous ${g} : les copies que ce cache en garde encore y passent à mesure qu'elles sont lues, et le vider libère l'espace qu'elles occupaient.`,
     cleanSaves: 'Effacer les sauvegardes', cleanSavesText: 'Supprime définitivement les parties et réglages de cet appareil.',
     playing: 'Jeu en cours : l’import et le nettoyage seront possibles après l’avoir quitté.',
     portOpen: 'Ferme ce jeu dans tes autres onglets avant de nettoyer ses données.',
@@ -103,6 +105,8 @@ const TEXT = {
     games: 'Your games', saves: 'Saves', cache: 'Cache', cacheHelp: 'Game files already downloaded: they can be downloaded again.',
     export: 'Export', import: 'Import', clean: 'Clean up',
     cleanCache: 'Clear the cache', cleanCacheText: 'The game files will be downloaded again at the next launch.',
+    sharedWith: (g) => `These files also serve ${g}: they will be downloaded again there when needed.`,
+    keptUnder: (g) => `The files this game shares with ${g} are now kept under ${g}: the copies this cache still holds move there as they are read, and clearing it frees the space they took.`,
     cleanSaves: 'Erase the saves', cleanSavesText: 'Permanently deletes the games and settings on this device.',
     playing: 'Game running: import and clean-up are possible once you have left it.',
     portOpen: 'Close this game in your other tabs before cleaning its data.',
@@ -176,6 +180,11 @@ const showAll = new URLSearchParams(location.search).has('all');
 const state = () => window.orthros;
 const activeGame = (game) => state()?.manifest === game && ['running', 'loading', 'starting'].includes(state()?.status);
 const nameOf = (game) => app.games.get(game)?.title ?? game;
+/**
+ * The other versions that read version `game`'s files (/api/manifests `owners`: the versions whose files a version
+ * takes — they are stored under their owner, game-data.js): its cache is theirs too, counted and cleared here only.
+ */
+const readers = (game) => [...app.games].filter(([n, g]) => n !== game && g.owners.includes(game)).map(([n]) => n);
 const versionOf = (game) => app.games.get(game)?.version ?? null;
 /** The account's copy of a Windows game's profile kept in this browser (cloud-sync.js), with its latest hash as listed. */
 const cloudFor = (game) => {
@@ -206,9 +215,14 @@ async function refresh({ account = false } = {}) {
     try { app.account = app.accountsOn ? (await jsonApi('/api/account')).user : null; } catch { app.account = null; }
   }
   const [storage, manifests] = await Promise.all([scanStorage(), fetch('/api/manifests').then((r) => r.json()).catch(() => [])]);
-  app.games = new Map(manifests.map((m) => [m.name, { title: m.title ?? m.name, version: m.runtime === 'openmw' ? [m.version, (m.contentLanguages ?? m.languages ?? []).join('/').toUpperCase()].filter(Boolean).join(' · ') : m.version ?? null, hidden: !!m.hidden, runtime: m.runtime, launchUrl: m.launchUrl, saveKey: m.saveKey ?? null }]));
-  // (the browser ports' data: their own databases, beside the Windows games' OPFS folders)
-  try { storage.games.push(...await scanPorts(manifests.filter((m) => m.saveKey).map((m) => ({ name: m.name, saveKey: m.saveKey })))); } catch { /* IndexedDB unavailable */ }
+  app.games = new Map(manifests.map((m) => [m.name, { title: m.title ?? m.name, version: m.runtime === 'openmw' ? [m.version, (m.contentLanguages ?? m.languages ?? []).join('/').toUpperCase()].filter(Boolean).join(' · ') : m.version ?? null, hidden: !!m.hidden, runtime: m.runtime, launchUrl: m.launchUrl, saveKey: m.saveKey ?? null, owners: Array.isArray(m.owners) ? m.owners : [] }]));
+  // (the browser ports' data: their own databases, beside the Windows games' OPFS folders — one row a game, both counted)
+  try {
+    for (const r of await scanPorts(manifests.filter((m) => m.saveKey).map((m) => ({ name: m.name, saveKey: m.saveKey })))) {
+      const row = storage.games.find((g) => g.game === r.game);
+      if (row) { row.profile += r.profile; row.cache += r.cache; row.port = true; } else storage.games.push(r);
+    }
+  } catch { /* IndexedDB unavailable */ }
   app.storage = storage;
   if (app.account) {
     try { app.cloud = new Map((await jsonApi('/api/cloud')).games.map((g) => [g.game, g])); } catch { app.cloud = new Map(); }
@@ -348,7 +362,7 @@ function gameRow(game, data) {
   card.append(row(data?.profile ? btn(t('export'), () => exportLocal(game), { variant: 'primary', ico: 'download', key: 'export:' + game, small: true }) : null,
     port ? null : btn(t('import'), () => pickImport(game), { variant: 'ghost', ico: 'upload', key: 'import:' + game, small: true })));
   if (has) card.append(fold('clean:' + game, t('clean'),
-    data.cache ? h('div', { class: 'dm-clean' }, h('div', {}, h('strong', {}, t('cleanCache') + ' · ' + fmtBytes(data.cache)), h('p', {}, t('cleanCacheText'))), btn(t('cleanCache'), () => clearCache(game), { variant: 'danger', ico: 'trash', key: 'cache:' + game, small: true })) : null,
+    data.cache ? h('div', { class: 'dm-clean' }, h('div', {}, h('strong', {}, t('cleanCache') + ' · ' + fmtBytes(data.cache)), h('p', {}, t('cleanCacheText')), readers(game).length ? h('p', {}, t('sharedWith', readers(game).map(nameOf).join(', '))) : null, app.games.get(game)?.owners.length ? h('p', {}, t('keptUnder', app.games.get(game).owners.map(nameOf).join(', '))) : null), btn(t('cleanCache'), () => clearCache(game), { variant: 'danger', ico: 'trash', key: 'cache:' + game, small: true })) : null,
     data.profile ? h('div', { class: 'dm-clean' }, h('div', {}, h('strong', {}, t('cleanSaves') + ' · ' + fmtBytes(data.profile)), h('p', {}, t('cleanSavesText'))), btn(t('cleanSaves'), () => clearProfile(game), { variant: 'danger', ico: 'trash', key: 'saves:' + game, small: true })) : null));
   if (port && has) card.append(h('p', { class: 'dm-playing' }, icon('alert'), t('portOpen')));
   if (activeGame(game)) card.append(h('p', { class: 'dm-playing' }, icon('alert'), t('playing')));
@@ -543,7 +557,9 @@ picker.onchange = () => {
 function clearCache(game) {
   return run(t('wCache'), async () => {
     if (!await ask({ title: t('cacheAsk', nameOf(game)), text: t('cacheAskText'), ok: t('cacheOk'), danger: true })) return t('cancelled');
-    if (portKey(game)) await clearPortCache(portKey(game)); else await removeCache(game, state());
+    // (a port: the files its earlier pages kept in its database too)
+    if (portKey(game)) await clearPortCache(portKey(game));
+    await removeCache(game, state());
     return t('rCache');
   });
 }

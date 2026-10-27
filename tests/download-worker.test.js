@@ -33,20 +33,40 @@ test('prepare: the engine files side by side (at most 4), each once, the bytes c
   } finally { globalThis.fetch = real; globalThis.self = realSelf; }
 });
 
+test('prepare: the owner\'s store held by another tab\'s game — the shared files kept in the version\'s own store, not a failed Prepare', async () => {
+  const real = globalThis.fetch, realSelf = globalThis.self;
+  const posts = []; globalThis.self = { postMessage: (m) => posts.push(m) };
+  globalThis.fetch = async (url) => {
+    const json = (v) => ({ ok: true, status: 200, json: async () => v, headers: new Headers() });
+    if (url.startsWith('/api/manifest/')) return json({});
+    if (url.startsWith('/api/tree/')) return json({ dirs: {}, files: { 'a.dat': { size: 10, mtime: 1, owner: 'base' }, 'b.dat': { size: 10, mtime: 1 } } });
+    if (url.startsWith('/api/prefetch/')) return json([]);
+    throw new Error('unexpected ' + url);
+  };
+  const own = new MemBlockStore(), opened = [];
+  try {
+    const { download } = await import('../src/host/web/download-worker.js');
+    await download('ed', undefined, 'launch', null, null, { openStore: async (n) => { opened.push(n); return n === 'ed' ? own : null; } });
+    const last = posts.filter((m) => m.type === 'progress').at(-1);
+    assert.deepEqual(opened, ['ed', 'base']);
+    assert.equal(last.error, undefined, JSON.stringify(last)); assert.equal(last.done, true);
+  } finally { globalThis.fetch = real; globalThis.self = realSelf; }
+});
+
 // The home's probe (download-worker.js `probe`, docs/slow-network.md "The card from the store"): what a store holds of
 // the launch set and of the whole game, a store filled on another link counted (light copies or files), a store that
 // does not exist neither opened nor created.
 const MiB = 1 << 20, CHUNK = 1 << 16;
 const probeTree = () => ({ dirs: {}, files: { 'data.bsa': { size: 2 * MiB, mtime: 1 }, 'tex.dds': { size: 2 * MiB, mtime: 1, light: 100000 } } });
 const probeOrder = [['data.bsa', 0, 0, 0, 1], ['tex.dds', 0, 0, 10, 1], ['tex.dds', 1, 0, 20, 1], ['data.bsa', 1, 0, 9000, 0]];
-async function runProbe(items, bw, { stores = {}, exists = (n) => n in stores, engineCached = false } = {}) {
+async function runProbe(items, bw, { stores = {}, exists = (n) => n in stores, engineCached = false, tree = probeTree, manifest = {} } = {}) {
   const real = globalThis.fetch, realSelf = globalThis.self;
   const posts = [], opened = []; globalThis.self = { postMessage: (m) => posts.push(m) };
   globalThis.fetch = async (url, o = {}) => {
     const json = (v) => ({ ok: true, status: 200, json: async () => v, headers: new Headers() });
     if (o.cache === 'only-if-cached') { if (engineCached) return { ok: true, body: null }; throw new TypeError('not cached'); }
-    if (url.startsWith('/api/manifest/')) return json({});
-    if (url.startsWith('/api/tree/')) return json(probeTree());
+    if (url.startsWith('/api/manifest/')) return json(manifest);
+    if (url.startsWith('/api/tree/')) return json(tree(decodeURIComponent(url.slice(10))));
     if (url.startsWith('/api/prefetch/')) return json(probeOrder);
     throw new Error('unexpected ' + url);
   };
@@ -113,6 +133,37 @@ test('probe: under the stores\' Web Locks — a store whose lock another context
   } finally { globalThis.fetch = real; globalThis.self = realSelf; }
   await game;
   assert.deepEqual(order, ['probe closed', 'game opened']);
+});
+
+test('probe: a file a version takes from one it requires counts from that version\'s store (one copy for both); the stores\' locks in one order', async () => {
+  // (the edition's tree: data.bsa is the owner's file — the server's mark —, tex.dds its own)
+  const tree = () => { const t = probeTree(); t.files['data.bsa'].owner = 'base'; return t; };
+  const own = new MemBlockStore(); putBlock(own, 'tex.dds', 2 * MiB, 0); putBlock(own, 'tex.dds', 2 * MiB, 1);
+  const owner = new MemBlockStore(); putBlock(owner, 'data.bsa', 2 * MiB, 0); putBlock(owner, 'data.bsa', 2 * MiB, 1);
+  const both = await runProbe([{ name: 'ed' }], FAST, { stores: { ed: own, base: owner }, tree });
+  assert.deepEqual(both.opened, ['ed', 'base']);
+  assert.deepEqual(both.probed[0].whole, { bytes: 4 * MiB, total: 4 * MiB, done: true }, 'the owner\'s blocks counted');
+  assert.equal(both.probed[0].launch.done, true);
+  // (the owner's store not here, or held by another tab's game: what the edition's own kept of the owner's files
+  // before the owners counts — the game reads it there, UnderStore)
+  const alone = new MemBlockStore(); for (const s of [own]) for (const [k, v] of s.map) alone.put(k, v); putBlock(alone, 'data.bsa', 2 * MiB, 0);
+  const one = await runProbe([{ name: 'ed' }], FAST, { stores: { ed: alone }, tree });
+  assert.deepEqual(one.opened, ['ed']);
+  assert.deepEqual(one.probed[0].whole, { bytes: 3 * MiB, total: 4 * MiB, done: false });
+  const busy = await runProbe([{ name: 'ed' }], FAST, { stores: { ed: alone }, exists: (n) => n === 'ed' || n === 'base', tree });
+  assert.deepEqual(busy.opened, ['ed', 'base']);
+  assert.deepEqual(busy.probed[0].whole, { bytes: 3 * MiB, total: 4 * MiB, done: false }, 'the owner\'s busy: the edition\'s share counted, not unknown');
+  // (the edition never played, its owner's store here: not missing — the shared files counted)
+  const fresh = await runProbe([{ name: 'ed' }], FAST, { stores: { base: owner }, tree, manifest: { owners: ['base'] } });
+  assert.deepEqual(fresh.opened, ['base']);
+  assert.deepEqual(fresh.probed[0].whole, { bytes: 2 * MiB, total: 4 * MiB, done: false });
+  assert.equal((await runProbe([{ name: 'ed' }], FAST, { stores: {}, tree, manifest: { owners: ['base'] } })).probed[0].missing, true, 'no store of either: missing');
+  // (the locks: by name whatever the order asked — a page taking the edition's and the owner's, a probe the other way)
+  const real = globalThis.navigator, taken = [];
+  const locks = { request: async (name, o, fn) => { taken.push(name); return fn({ name }); } };
+  Object.defineProperty(globalThis, 'navigator', { value: { locks }, configurable: true });
+  try { await storeLocks(['vice-city-revc', 'vice-city-1.1', 'vice-city-revc'], () => {}); } finally { Object.defineProperty(globalThis, 'navigator', { value: real, configurable: true }); }
+  assert.deepEqual(taken, ['orthros-store-vice-city-1.1', 'orthros-store-vice-city-revc']);
 });
 
 test('Play: no probe starts once a game is chosen (forGame) — a probe timer firing after the click starts no worker', async () => {

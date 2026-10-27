@@ -137,8 +137,10 @@ export function createServer(opts = {}) {
   // same kept: listing a game's tree is a stat of each of its files, all of them ~0.5 s that held every request)
   const refreshCatalog = () => {
     const before = manifests; manifests = readCatalog();
+    // (a tree marks the files of the versions it requires by their owner — listGameTree: one of those changed, it too)
+    const same = (id) => manifests.has(id) && JSON.stringify(manifests.get(id)) === JSON.stringify(before.get(id));
     for (const id of [...treeObjs.keys()]) {
-      if (manifests.has(id) && JSON.stringify(manifests.get(id)) === JSON.stringify(before.get(id))) continue;
+      if (same(id) && (manifests.get(id).underlayOwners ?? []).every((o) => same(o.manifest))) continue;
       treeObjs.delete(id); trees.delete(id);
     }
   };
@@ -149,7 +151,8 @@ export function createServer(opts = {}) {
   const gameTree = (id, man) => {
     const cached = treeObjs.get(id);
     if (cached && dirsStamp(cached.dirs) === cached.stamp) return cached.tree;
-    const dirs = [], tree = listGameTree(man, dirs);
+    // (the files of the versions it requires marked with their owner: the browsers store and fetch them under it)
+    const dirs = [], tree = listGameTree(man, dirs, (owner) => manifests.get(owner));
     treeObjs.set(id, { tree, dirs, stamp: dirsStamp(dirs) }); trees.delete(id);
     return tree;
   };
@@ -1616,7 +1619,7 @@ export function createServer(opts = {}) {
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name, memo, ok), runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : runtime === 're3' ? re3Modes(m.re3) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
-            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
+            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, owners: (m.underlayOwners ?? []).map((o) => o.manifest), launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
             available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwOk(name, m, memo, ok)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
@@ -1627,7 +1630,7 @@ export function createServer(opts = {}) {
         const launchUrl = runtimeOf(man) !== 'win32' ? portLaunchUrl(m[1], man) : undefined;
         // (an re3 port: the engine module its page imports, a path of its release — the manifest's, else the release's own)
         const re3 = runtimeOf(man) === 're3' ? { re3: { ...man.re3, module: re3Module(man, enginesDir) } } : {};
-        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, underlayOwners: undefined, owners: (man.underlayOwners ?? []).map((o) => o.manifest), overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path

@@ -12,10 +12,13 @@
 // first one by default); `free` starts in the city, without the menu: checked there instead of the menu and the new game.
 // --keys k1,k2,…: keys pressed in the game's menu once it draws (Playwright's names, a third of a second each), then the
 // city expected — a menu entry that starts a game (Orthros' Vice City: ArrowDown,Enter,Enter, its free mode).
+// --profile <dir>: one persistent browser profile kept there (its stores: a second version checked after a first one
+// finds what that one stored — docs/slow-network.md "Files of a required version"); --insecure: certificate errors
+// ignored (the page behind tools/net-proxy.mjs, --url https://127.0.0.1:<port>).
 // Evidence under /tmp/orthros-scratch/re3-check-<manifest>/.
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/re3/check.mjs <manifest> [--url http://127.0.0.1:8080] [--new-game] [--reload]
-//     [--guest] [--lang fr] [--menu "x,y;x,y"] [--mode story|free] [--keys ArrowDown,Enter,Enter]
+//     [--guest] [--lang fr] [--menu "x,y;x,y"] [--mode story|free] [--keys ArrowDown,Enter,Enter] [--profile <dir>] [--insecure]
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -111,7 +114,13 @@ async function boot(context) {
 }
 // (Chromium itself, headless: Playwright's lighter headless shell stops on an internal check of its browser process a
 // minute or so into the free mode's city — docs/browser-ports.md, "re3 ports", State)
-const browser = await chromium.launch({ headless: true, channel: 'chromium', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+// (a signed-in --reload boots "another device" in a context of its own: one persistent profile is one context — that
+// device would be this one, its profile read back from its own storage, not the account's copy)
+if (arg('--profile') && args.includes('--reload') && !guest) { console.error('check.mjs: --profile with a signed-in --reload: add --guest, or drop --profile'); process.exit(2); }
+const launchArgs = ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', ...(args.includes('--insecure') ? ['--ignore-certificate-errors'] : [])];
+// (--profile: one persistent context — the first context asked is it, a second one another of the same profile's pages)
+const kept = arg('--profile') ? await chromium.launchPersistentContext(path.resolve(arg('--profile')), { headless: true, channel: 'chromium', args: launchArgs, viewport: { width: 1280, height: 800 } }) : null;
+const browser = kept ? { contexts: () => [kept], newContext: async () => kept, close: () => kept.close() } : await chromium.launch({ headless: true, channel: 'chromium', args: launchArgs });
 const heartbeat = setInterval(async () => {
   for (const ctx of browser.contexts()) for (const page of ctx.pages()) try { console.log('PROGRESS', await page.evaluate(() => ({ state: portSession?.state, draws: renderProbe?.draws }))); } catch { /* closing */ }
 }, 15000);

@@ -91,7 +91,41 @@ export function treeFile(tree, rel) {
     const name = node.files?.[p] !== undefined ? p : Object.keys(node.files ?? {}).find((n) => n.toLowerCase() === low);
     if (name === undefined) return null;
     const f = node.files[name];
-    return { path: [...real, name].join('/'), size: f.size, mtime: f.mtime ?? 0, ...(f.light ? { light: f.light } : {}) };
+    return { path: [...real, name].join('/'), size: f.size, mtime: f.mtime ?? 0, ...(f.light ? { light: f.light } : {}), ...(f.owner ? { owner: f.owner } : {}) };
   }
   return null;
+}
+
+/**
+ * The version that owns the file `rel` of a tree when it is another version's (the server's `owner` mark: a file a
+ * version takes from one it requires — its underlays, src/host/game-files.js listGameTree —, stored and fetched under
+ * that version: docs/slow-network.md "Files of a required version"), else null. A light copy's (LIGHT_DIR/<path>): its
+ * file's. `self`: the tree's own version (a mark of its own name is its own file).
+ */
+export function treeOwner(tree, rel, self = null) {
+  const p = rel.replace(/\\/g, '/');
+  const o = treeFile(tree, p.startsWith(LIGHT_DIR + '/') ? p.slice(LIGHT_DIR.length + 1) : p)?.owner ?? null;
+  return o && o !== self ? o : null;
+}
+
+/**
+ * A version's tree split by owner (treeOwner): { own: the tree of its own files (the tree itself when no file is
+ * another's), owners: Map(owner -> the tree of that version's files it takes, at the same paths) }.
+ */
+export function splitOwners(tree, self = null) {
+  const owners = new Map();
+  const marked = (node) => Object.values(node.files ?? {}).some((f) => f.owner && f.owner !== self) || Object.values(node.dirs ?? {}).some(marked);
+  if (!marked(tree)) return { own: tree, owners };
+  const split = (node, at) => {
+    const own = { dirs: {}, files: {} };
+    for (const [name, f] of Object.entries(node.files ?? {})) {
+      if (!f.owner || f.owner === self) { own.files[name] = f; continue; }
+      let o = owners.get(f.owner); if (!o) owners.set(f.owner, o = { dirs: {}, files: {} });
+      for (const d of at) o = o.dirs[d] ??= { dirs: {}, files: {} };
+      o.files[name] = f;
+    }
+    for (const [name, d] of Object.entries(node.dirs ?? {})) own.dirs[name] = split(d, [...at, name]);
+    return own;
+  };
+  return { own: split(tree, []), owners };
 }

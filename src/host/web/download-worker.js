@@ -13,7 +13,11 @@
 // bw }, { type: 'stop' }. Out: { type: 'progress', kind ('whole' | 'launch'), bytes, total, stored, engine (of them: the
 // engine's wire bytes), bw, ratio, running, done, error }, { type: 'probed', name, lang, missing?, launch?, whole? }
 // (probe), then { type: 'stopped' } once the stores are closed (the game's worker may open them).
-import { openVersion, openData, openStore, openStoreNow, storeExists, storeLocks, learnedOrder } from '../../vfs/game-data.js';
+// The files a version takes from one it requires go to that version's store (game-data.js openVersion's shared parts,
+// learnedOrders): a version prepared or probed counts them there — what another version that reads them stored too —
+// and in its own store (what it kept of them before the owners: UnderStore); the owner's store held by another tab's
+// game, they are prepared into its own store, as before.
+import { openVersion, openData, openStore, openStoreNow, storeExists, storeLocks, learnedOrders, UnderStore } from '../../vfs/game-data.js';
 import { launchSet, setBytes } from '../../vfs/launch-set.js';
 
 let stopping = false, running = false;
@@ -101,8 +105,11 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
   };
   try {
     // (the game data every Orthros game reads, src/vfs/game-data.js: the version and those it requires, their stores)
-    const store = async (n) => {
+    // (a shared part's — the owner's store — may be held by another tab's game: its files then kept in this version's
+    // store, as before the owners — openVersion —, not a failed Prepare)
+    const store = async (n, primary, shared) => {
       const st = await (hooks.openStore ?? openStore)(n);
+      if (!st && shared) return null;
       if (!st) throw new Error('this browser cannot keep the game files (storage unavailable, or the game is open in another tab)');
       stores.push(st);
       return st;
@@ -112,10 +119,11 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
     if (kind === 'launch') {
       // (every part's launch set: the version's and those of the versions it requires — the game reads them too —, each
       // from its own learned order; the version's first)
-      launch = await Promise.all(version.parts.map(async (p) => {
-        const set = launchSet(p.files, await learnedOrder(p.name, lang), net.fast());
+      const lists = await learnedOrders(version, lang);
+      launch = version.parts.map((p, i) => {
+        const set = launchSet(p.files, lists[i], net.fast());
         return { p, files: p.files, set, stored: setBytes(p.files, set).here, progress: { bytes: 0, blocks: 0, done: false } };
-      }));
+      });
       // (the engine release first: the page loads it before reading any game file)
       const urls = Array.isArray(engine?.files) ? engine.files.filter((u) => typeof u === 'string' && u.startsWith('/engines/')) : [];
       if (urls.length) eng = { bytes: 0, total: Number(engine.bytes) || 0 };
@@ -132,7 +140,8 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
       report({ done: !stopping && launch.every((l) => l.progress.done) });
       return;
     }
-    parts = await Promise.all(version.parts.map(async (p) => ({ ...p, order: await learnedOrder(p.name), progress: { bytes: 0, total: 0, done: false } })));
+    const orders = await learnedOrders(version);
+    parts = version.parts.map((p, i) => ({ ...p, order: orders[i], progress: { bytes: 0, total: 0, done: false } }));
     timer = setInterval(() => report(), 500);
     for (const p of parts) {
       p.progress.started = true;
@@ -153,19 +162,26 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
 }
 
 /**
- * The probe's count of a version (its stores' locks held): each part's store opened into `stores` (a required version's
- * only when it exists), its launch set as this link reads it and its whole blocks here: { bytes, here, wb, wt }.
- * Throws when a store cannot be told (unknown, another context holds it).
+ * The probe's count of a version (its stores' locks held): each part's store opened into `stores` (one only when it
+ * exists — `has`: the version's own), its launch set as this link reads it and its whole blocks here: { bytes, here, wb,
+ * wt }. A shared part (the files of a version another owns) counts its owner's store and what the stores of the parts
+ * reading them kept of them before the owners (UnderStore, as the game reads them) — the owner's store held by another
+ * tab's game: those only. Throws when a store cannot be told (unknown, another context holds it).
  */
-async function countStores(version, orders, stores, exists, open) {
-  const parts = [];
+async function countStores(version, orders, stores, exists, open, has = true) {
+  const parts = [], opened = new Map();
   for (const [i, p] of version.parts.entries()) {
-    const kept = i === 0 ? true : await exists(p.name);
-    if (kept === null) throw new Error('unknown');
-    const st = kept ? await open(p.name) : null;
-    if (kept && !st) throw new Error('busy'); // (another tab's game holds it: unknown)
+    const kept = i === 0 ? has : await exists(p.name);
+    if (kept === null && !p.shared) throw new Error('unknown');
+    let st = kept ? await open(p.name) : null;
+    if (kept && !st && !p.shared) throw new Error('busy'); // (another tab's game holds it: unknown)
     if (st) stores.push(st);
-    parts.push(await openData(p.name, { tree: p.tree, store: st, net: version.net }));
+    if (p.shared) {
+      const below = version.parts.filter((q) => q.owned?.has(p.name) && opened.get(q.name)).map((q) => opened.get(q.name));
+      if (below.length) st = new UnderStore(st, below);
+    }
+    opened.set(p.name, st);
+    parts.push(await openData(p.name, { tree: p.files.tree, store: st, net: version.net })); // (its own files: files.tree)
   }
   const fast = version.net.fast();
   let bytes = 0, here = 0, wb = 0, wt = 0;
@@ -181,7 +197,8 @@ async function countStores(version, orders, stores, exists, open) {
  * The home's probe (docs/slow-network.md "The card from the store"): for each item { name, lang, engine } in turn (the
  * resume game first: the page's order), what this browser holds of the version — posted as { type: 'probed', name,
  * lang, launch: { bytes, total, engine, engineFiles, done } | null (no launch set known), whole: { bytes, total, done } },
- * or { missing: true } when its store does not exist (never played, or evicted: nothing here). A store's directory is
+ * or { missing: true } when its store does not exist, nor that of a version owning files it reads (manifest `owners`:
+ * those files are kept there — one played before holds them) (never played, or evicted: nothing here). A store's directory is
  * looked up first (openStore creates it). The network first (manifest, trees, learned orders, the engine's files only if
  * cached), the stores then, opened only to count and closed at once: a stop (Play, Prepare) finds them closed but for
  * that moment — `running` is true only then, so a stop at any other time answers 'stopped' at once —, under the stores'
@@ -201,12 +218,19 @@ export async function probe(items, bw, hooks = {}) {
       if (!name) continue;
       const has = await exists(name);
       if (has === null || stopping) continue;
-      if (!has) { post({ type: 'probed', name, lang, missing: true }); continue; }
+      let manifest = null;
+      if (!has) {
+        // (its own store not here: the stores of the versions owning files it reads may hold them)
+        try { manifest = await fetch(`/api/manifest/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : null)); } catch { /* unknown */ }
+        if (stopping) break;
+        const owners = Array.isArray(manifest?.owners) ? manifest.owners.filter((o) => typeof o === 'string') : [];
+        if (!(await Promise.all(owners.map(exists))).some(Boolean)) { post({ type: 'probed', name, lang, missing: true }); continue; }
+      }
       const stores = [];
       try {
         // (the network, no store held: the version and those it requires, their learned orders, the engine's files)
-        const version = await openVersion(name, { bw, store: null });
-        const orders = await Promise.all(version.parts.map((p) => learnedOrder(p.name, lang)));
+        const version = await openVersion(name, { bw, store: null, ...(manifest ? { manifest } : {}) });
+        const orders = await learnedOrders(version, lang);
         const urls = Array.isArray(it.engine?.files) ? it.engine.files.filter((u) => typeof u === 'string' && u.startsWith('/engines/')) : [];
         const cached = (await Promise.all(urls.map(engineCached))).filter(Boolean).length;
         const engTotal = urls.length ? Number(it.engine.bytes) || 0 : 0, engHere = urls.length ? Math.round(engTotal * cached / urls.length) : 0;
@@ -217,7 +241,7 @@ export async function probe(items, bw, hooks = {}) {
         const { bytes, here, wb, wt } = await storeLocks(version.parts.map((p) => p.name), async (locked) => {
           if (!locked) throw new Error('busy'); // (a game opening one now: unknown)
           // (closed before the locks go, whatever happens: a game waiting on them opens them next)
-          try { return await countStores(version, orders, stores, exists, open); } finally { for (const s of stores.splice(0)) { try { s.close(); } catch { /* closed */ } } }
+          try { return await countStores(version, orders, stores, exists, open, has); } finally { for (const s of stores.splice(0)) { try { s.close(); } catch { /* closed */ } } }
         }, { ifAvailable: true });
         const launch = bytes > 0 ? { bytes: here + engHere, total: bytes + engTotal, engine: engTotal, engineFiles: urls, done: here >= bytes && cached === urls.length } : null;
         post({ type: 'probed', name, lang, launch, whole: { bytes: wb, total: wt, done: wt > 0 && wb >= wt } });

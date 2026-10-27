@@ -78,3 +78,43 @@ test('the home\'s list of games keeps each game\'s tree: listed again only when 
   assert.equal(await bytes(), 207, 'a file added in a folder: the tree listed again');
   assert.ok((await (await fetch(base + '/api/tree/alpha-1')).json()).dirs.d2.files['new.dat']);
 });
+
+test('a file taken from a required version is marked with its owner only when /gamez/<owner>/ serves the same file', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-owner-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const put = (rel, body = 'x') => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, body); };
+  for (const f of ['o/base/a.dat', 'o/base/hidden.dat', 'o/base/_engine/e.dat', 'o/base/tex.tga', 'o/ver/b.dat', 'r/ver/own.dat', 'r/ver/a2.dat', 'o/engine/hidden.dat']) put(f);
+  // (a TGA of a screen's size: it has a light copy)
+  const tga = Buffer.alloc(18 + 1024 * 512 * 3); tga[2] = 2; tga.writeUInt16LE(1024, 12); tga.writeUInt16LE(512, 14); tga[16] = 24; put('o/base/tex.tga', tga);
+  const owner = { folder: path.join(root, 'o/ver'), baseFolder: path.join(root, 'o/base'), overlays: [path.join(root, 'o/engine')], dataMounts: [{ at: '_engine', dir: path.join(root, 'o/mount') }] };
+  const man = { folder: path.join(root, 'r/ver'), lightCopies: true, underlays: [owner.folder, owner.baseFolder], underlayOwners: [{ manifest: 'o', dirs: [owner.folder, owner.baseFolder] }] };
+  const marks = (m, ownerOf) => { const tree = listGameTree(m, null, ownerOf); return Object.fromEntries(Object.entries(tree.files).map(([n, e]) => [n, e.owner ?? null])); };
+  assert.deepEqual(marks(man, (id) => (id === 'o' ? owner : null)), { 'own.dat': null, 'a2.dat': null, 'b.dat': 'o', 'a.dat': 'o', 'hidden.dat': null, 'tex.tga': null },
+    'its own files, one the owner\'s overlay hides, a light copy the owner does not serve: not marked');
+  assert.equal(listGameTree(man, null, () => owner).dirs._engine.files['e.dat'].owner, undefined, 'under the owner\'s data mount: another file there');
+  assert.equal(marks(man, () => ({ ...owner, lightCopies: true }))['tex.tga'], 'o', 'the owner serves light copies too');
+  assert.ok(listGameTree(man, null, () => ({ ...owner, lightCopies: true })).files['tex.tga'].light > 0);
+  assert.deepEqual(Object.values(marks(man, null)).filter(Boolean), [], 'no owners known: no marks');
+});
+
+test('a required version\'s file is marked only when it is that version\'s own at the same path: a shared base, a hard link', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-owner-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const put = (rel, body = 'x') => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, body); };
+  // (one game folder G: version a overrides base's X; version b — a port — requires a and shares the base)
+  for (const f of ['G/base/X.dat', 'G/base/Y.dat', 'G/versions/b/own.dat', 'H/a/arch.bsa', 'H/a/copy.bsa']) put(f, f);
+  put('G/versions/a/X.dat', 'a\'s own X, longer');
+  const a = { folder: path.join(root, 'G/versions/a'), baseFolder: path.join(root, 'G/base') };
+  const b = { folder: path.join(root, 'G/versions/b'), baseFolder: a.baseFolder, underlays: [a.folder, a.baseFolder], underlayOwners: [{ manifest: 'a', dirs: [a.folder, a.baseFolder] }] };
+  const seen = [], tree = listGameTree(b, seen, (id) => (id === 'a' ? a : null));
+  assert.equal(tree.files['X.dat'].owner, undefined, 'b sees base\'s X; /gamez/a/X.dat serves a\'s other X: b\'s own');
+  assert.equal(tree.files['Y.dat'].owner, 'a', 'the base\'s Y: the same file through a');
+  assert.equal(tree.files['own.dat'].owner, undefined);
+  assert.ok(seen.includes(a.folder), 'a\'s folder watched (a file added there changes the marks)');
+  // (a port's version folder keeping hard links of the files of the version it requires — not a copy)
+  const c = { folder: path.join(root, 'H/c'), underlays: [path.join(root, 'H/a')], underlayOwners: [{ manifest: 'a2', dirs: [path.join(root, 'H/a')] }] };
+  fs.mkdirSync(c.folder, { recursive: true });
+  fs.linkSync(path.join(root, 'H/a/arch.bsa'), path.join(c.folder, 'arch.bsa'));
+  fs.copyFileSync(path.join(root, 'H/a/copy.bsa'), path.join(c.folder, 'copy.bsa'));
+  const tc = listGameTree(c, null, (id) => (id === 'a2' ? { folder: path.join(root, 'H/a') } : null));
+  assert.equal(tc.files['arch.bsa'].owner, 'a2', 'a hard link of the owner\'s file: the owner\'s');
+  assert.equal(tc.files['copy.bsa'].owner, undefined, 'a copy (another file): the version\'s own');
+});

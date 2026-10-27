@@ -15,7 +15,7 @@ export function gameLayers(manifest) {
  * List one layer, replacing same-named entries without changing the guest-visible path. `mark(file, entry)`: each
  * file's entry completed (its light copy's size); `seen`: every folder looked at (there or not) pushed to it.
  */
-function mergeDir(layers, mark = null, seen = null) {
+function mergeDir(layers, mark = null, seen = null, rel = '') {
   const node = { dirs: {}, files: {} }, entries = new Map();
   for (const dir of layers) {
     seen?.push(dir);
@@ -32,11 +32,12 @@ function mergeDir(layers, mark = null, seen = null) {
     }
   }
   for (const entry of entries.values()) {
-    if (entry.dirs) node.dirs[entry.name] = mergeDir(entry.dirs, mark, seen);
+    const at = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.dirs) node.dirs[entry.name] = mergeDir(entry.dirs, mark, seen, at);
     else {
       const st = fs.statSync(entry.file), e = node.files[entry.name] = { size: st.size, mtime: st.mtimeMs };
       if (isMediaFile(entry.name, st.size)) e.media = true; // (game-tree.js: after the rest on a link that is not fast)
-      mark?.(entry.file, st, e);
+      mark?.(entry.file, st, e, at);
     }
   }
   return node;
@@ -48,12 +49,44 @@ function mergeDir(layers, mark = null, seen = null) {
  * of the game's layers, which a native server laying out the game reads too). With manifest.lightCopies, a file that has
  * a light copy (light-copies.js) tells its size: `light`. A media file by its format (isMediaFile, game-tree.js) is
  * marked `media: true`. `seen`: the folders it was listed from pushed to it (dirsStamp: whether it changed since).
+ * `ownerOf(id)`: the manifest of a version the tree's underlays belong to (manifest.underlayOwners, game-catalog.js) —
+ * a file taken from one is marked `owner: <id>` (fileOwner): the browsers store and fetch it under that version.
  */
-export function listGameTree(manifest, seen = null) {
-  const mark = manifest.lightCopies ? (file, st, e) => { const c = lightCopy(file, st); if (c) e.light = c.size; } : null;
+export function listGameTree(manifest, seen = null, ownerOf = null) {
+  const light = manifest.lightCopies ? (file, st, e) => { const c = lightCopy(file, st); if (c) e.light = c.size; } : null;
+  const owner = ownerOf && manifest.underlayOwners?.length ? fileOwner(manifest, ownerOf, seen) : null;
+  const mark = light && owner ? (file, st, e, rel) => { light(file, st, e); owner(file, st, e, rel); } : light ?? owner;
   const tree = mergeDir(gameLayers(manifest), mark, seen);
-  for (const { at, dir } of manifest.dataMounts ?? []) { if (fs.existsSync(dir)) tree.dirs[at] = mergeDir([dir], mark, seen); else seen?.push(dir); }
+  for (const { at, dir } of manifest.dataMounts ?? []) { if (fs.existsSync(dir)) tree.dirs[at] = mergeDir([dir], mark, seen, at); else seen?.push(dir); }
   return tree;
+}
+
+/**
+ * listGameTree's marker of the files a version takes from another (its underlays): (file, st, entry, rel) marks the
+ * entry `owner: <id>` when the first of the versions it requires (manifest.underlayOwners, in order) whose own path
+ * `rel` — what /gamez/<id>/<rel> serves, resolveGameFile: through its overlays, data mounts and version folder — is this
+ * very file (the same device and inode: the file of the folder they share, or a hard link of it in the version's own
+ * folder — Morrowind Vanilla+ FR keeps GOTY FR's archives so —, the same size and time then: the browsers' block keys
+ * agree), and, when it has a light copy, when that version serves light copies too. Any other file stays the version's
+ * own (fetched as before): one the owner's folder overrides (two versions of one game folder share its base), one the
+ * owner hides. The folders the owners' paths were resolved in pushed to `seen` (a file added there changes the answer).
+ */
+function fileOwner(manifest, ownerOf, seen) {
+  const owners = [];
+  for (const { manifest: id } of manifest.underlayOwners) { const m = ownerOf(id); if (m && !owners.some((o) => o.id === id)) owners.push({ id, m }); }
+  // (resolveGameFile's listings, each folder listed once — and pushed to `seen` then)
+  const memo = new Map(), set = memo.set.bind(memo);
+  memo.set = (dir, l) => { seen?.push(dir); return set(dir, l); };
+  for (const { m } of owners) for (const d of [...gameLayers(m), ...(m.dataMounts ?? []).map((x) => x.dir)]) if (d && !memo.has(d)) listing(d, memo);
+  return (file, st, e, rel) => {
+    for (const o of owners) {
+      const at = resolveGameFile(o.m, rel, memo); if (!at) continue;
+      let ost; try { ost = at === file ? st : fs.statSync(at); } catch { continue; }
+      if (ost.ino !== st.ino || ost.dev !== st.dev || ost.size !== st.size || ost.mtimeMs !== st.mtimeMs) continue;
+      if (e.light && !o.m.lightCopies) return;
+      e.owner = o.id; return;
+    }
+  };
 }
 
 /**

@@ -39,7 +39,7 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
   if (!Array.isArray(spec.versions) || !spec.versions.length) fail(file, 'versions doit contenir au moins une version');
   if (spec.defaults !== undefined && (!spec.defaults || Array.isArray(spec.defaults) || typeof spec.defaults !== 'object')) fail(file, 'defaults doit être un objet');
   const defaults = spec.defaults ?? {};
-  for (const key of ['folder', 'baseFolder', 'gameId', 'id', 'dir', 'requires', 'formerGame', 'extraMounts', 'saveDir', 'coverPath', 'saveKey', 'overlays', 'dataMounts']) if (own(defaults, key)) fail(file, `defaults.${key} est réservé`);
+  for (const key of ['folder', 'baseFolder', 'gameId', 'id', 'dir', 'requires', 'formerGame', 'extraMounts', 'saveDir', 'coverPath', 'saveKey', 'overlays', 'dataMounts', 'underlays', 'underlayOwners']) if (own(defaults, key)) fail(file, `defaults.${key} est réservé`);
   const versions = new Map();
   for (const entry of spec.versions) {
     if (!entry || Array.isArray(entry) || typeof entry !== 'object') fail(file, 'entrée de version invalide');
@@ -55,7 +55,7 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     // version's, no mount)
     const layered = runtime === 'goldsrc' || runtime === 're3' || runtime === 'openmw';
     if (entry.requires !== undefined && (!Array.isArray(entry.requires) || !entry.requires.every((d) => d && ID.test(d.game ?? '') && ID.test(d.version ?? '') && (layered ? d.mount === undefined : WIN_MOUNT.test(d.mount ?? ''))))) fail(file, `${entry.id}: requires invalide`);
-    for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey', 'overlays', 'dataMounts']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
+    for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey', 'overlays', 'dataMounts', 'underlays', 'underlayOwners']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
     // (a version moved from another game folder: the browser's saves keep that installation's key — the port's saveKey)
     if (entry.formerGame !== undefined && (!ID.test(entry.formerGame) || entry.formerGame === spec.id)) fail(file, `${entry.id}: formerGame doit nommer un autre dossier de jeu`);
     const { id, dir, requires, formerGame, ...version } = entry;
@@ -165,18 +165,24 @@ export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null, { engine
   // re3 version's, of any runtime, the same way — a recompiled engine over the original game's files, as a game of its
   // own on the home without a copy of them; an OpenMW version's too — its mod stack over the original game's files;
   // a required version's own requires followed for a port only)
+  // (each underlay folder with the version it is the folder of — `underlayOwners`: [{ manifest, dirs }]: the files the
+  // tree takes from them are that version's, stored and fetched under its name by the browsers — game-files.js
+  // listGameTree, docs/slow-network.md "Files of a required version")
   const underlays = (id, seen) => {
     if (seen.includes(id)) throw new Error(`dépendance circulaire: ${[...seen, id].join(' -> ')}`);
     const own = catalog.get(id).runtime;
     return sources.get(id).requires.flatMap((dep) => {
       const m = catalog.get(dep.version);
       if (own === 'goldsrc' && m.runtime !== 'goldsrc') throw new Error(`${id}: ${dep.version} n'est pas un portage goldsrc`);
-      return [m.folder, m.baseFolder, ...(m.runtime === 'win32' ? [] : underlays(dep.version, [...seen, id]))];
+      return [{ manifest: dep.version, dirs: [m.folder, m.baseFolder] }, ...(m.runtime === 'win32' ? [] : underlays(dep.version, [...seen, id]))];
     });
   };
   for (const [id, source] of sources) {
     const runtime = catalog.get(id).runtime;
-    if (source.requires.length && runtime !== 'win32') catalog.get(id).underlays = underlays(id, []);
+    if (!source.requires.length || runtime === 'win32') continue;
+    const owners = underlays(id, []);
+    catalog.get(id).underlays = owners.flatMap((o) => o.dirs);
+    catalog.get(id).underlayOwners = owners.map((o) => ({ manifest: o.manifest, dirs: o.dirs.filter(Boolean) }));
   }
   for (const [id, manifest] of extra ?? []) catalog.set(id, manifest);
   return catalog;
