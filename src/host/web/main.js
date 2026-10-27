@@ -17,6 +17,7 @@ import { linkRate } from '../../vfs/data-client.js';
 import { gpuInfo } from './gpu-class.js';
 import { vkOfCode } from '../../win32/vk-scan.js';
 import { PerfSession } from './perf-page.js';
+import { pageStorage, withStorage } from './storage-persist.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -149,6 +150,7 @@ async function main() {
   state.prefetch = !!config.prefetch && state.encodedRanges && params.get('prefetch') !== '0'; // (learned background prefetch; ?prefetch=0: off) // (compressed game file ranges; ?encoded=0: plain Range requests)
   $('logToggle').onchange = () => { $('log').style.display = $('logToggle').checked ? 'block' : 'none'; };
   if (state.telemetry || params.has('bench') || params.has('benchsuite')) state.envPromise = machine().then((e) => (state.env = e)); // (the machine, once: sent with the first telemetry batch)
+  if (state.telemetry) (state.storage ??= pageStorage()).read(); // (the browser's storage, read: the telemetry's env — asked at a game's start)
   // ?bench=<name>: a scripted measurement of tools/scenarios/bench (bench.js, docs/real-machine-bench.md); ?manifest= picks one of its versions
   if (params.has('bench')) { await startBench(params.get('bench'), params.get('manifest')); return; }
   // ?benchsuite=<suite | bench,bench...>: every game measured in a row, each in a frame of this page (bench-suite.js)
@@ -199,6 +201,8 @@ async function start(name, language = null) {
   state.status = 'loading';
   // (the home's last game: not changed by a bench suite's games — bench-suite.js)
   if (!params.has('benchrun')) { try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ } }
+  // (before the game's worker writes its store: persistent storage asked — its state in the telemetry, storage-persist.js)
+  (state.storage ??= pageStorage()).ask();
   const sourcesReq = snapshotsOn() ? fetch('/api/snapshot-sources').then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
   if (manifest.launchUrl) { const portUrl = new URL(manifest.languageLaunchUrls?.[language] ?? manifest.launchUrl, location.href); if (language) portUrl.searchParams.set('gameLang', language); location.href = portUrl.href; return; } // (a browser port: its own page, docs/browser-ports.md)
@@ -239,7 +243,7 @@ async function start(name, language = null) {
   const tree = await treeReq;
   state.status = 'starting'; state.manifest = name;
   // (the passive session record, perf-page.js: every 2 min of play and at the end — docs/real-machine-bench.md)
-  if (state.telemetry) state.perf = new PerfSession({ runtime: 'win32', game: name, session: state.session, version: manifest.version ?? null, build: state.version, bench: BENCH_MARK, env: () => state.env ?? environment(), phase: () => state.status });
+  if (state.telemetry) state.perf = new PerfSession({ runtime: 'win32', game: name, session: state.session, version: manifest.version ?? null, build: state.version, bench: BENCH_MARK, env: () => state.env ?? environment(), storage: state.storage ?? undefined, phase: () => state.status });
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
   state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer'); state.ctxVideo = $('vid').getContext('bitmaprenderer'); $('vid').style.visibility = 'hidden'; // (no movie from a previous run)
   resizeTo(manifest.display.width, manifest.display.height);
@@ -676,7 +680,7 @@ function flushTelemetry() {
   if (!samples.length && state.envSent) return Promise.resolve(true);
   // (a bench's session marked so: its records are read apart from the players' — telemetry-report.mjs --bench / --suite)
   const body = { session: state.session, game: state.manifest ?? null, ...(BENCH_MARK ? { bench: BENCH_MARK } : {}), samples };
-  if (!state.envSent) { state.envSent = true; body.env = state.env ?? environment(); }
+  if (!state.envSent) { state.envSent = true; body.env = withStorage(state.env ?? environment(), state.storage?.state); }
   return fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true }).then((r) => r.ok, () => false);
 }
 addEventListener('pagehide', () => { if (state.telemetry) flushTelemetry(); });

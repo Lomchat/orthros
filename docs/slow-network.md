@@ -358,6 +358,68 @@ Unexplained, not network: in the world, with no read waiting (0.3 MB of the game
 held 1-10 s every ~10 s in all three runs (sum 204 s / 240 s before, 133 s after) — SwiftShader on a machine loaded at
 24-30, to look at on a real GPU.
 
+## The card from the store, persistent storage (2026-10-27)
+
+Until now the card's "Playable after" and "Whole game" lines knew only what a Prepare or a download of the home had
+written (`localStorage['orthros.launch.<manifest>[.<lang>]']`, `['orthros.download.<manifest>']`). A player who played
+the game — the game fills the same store — saw "Playable after 137 MB · ~10 min" (Morrowind FR at 85 KB/s) over a store
+holding all of it, and nobody uses Prepare (`download-worker.js` fetched 0 times in a month of access logs). And a
+best-effort origin's stores may be evicted when the disk runs short: nothing asked for persistence, nothing told it.
+
+- **The probe** (`probe` in `src/host/web/download-worker.js`, `Downloads.probe` / `probed` in `download.js`, started by
+  `home.js` `probeStores` 1.5 s after the library is drawn, once a visit): each card's version — the one its game
+  language runs — in turn, the resume game first, in the download worker. Rules:
+  - a store's directory is looked up first (`storeExists` in `src/vfs/game-data.js`, no `create`): a version never
+    played is never opened nor created; a store that does not exist (never played, evicted, cleared) clears the lines'
+    progress (`missing`: the full size again);
+  - the network first, no store held (manifest, trees, learned orders of the game language, the engine's files checked
+    `only-if-cached` — no download), then the stores opened, counted and closed at once: `running` (the worker's) only
+    then, so a Play or a Prepare started stops it at once outside that moment and finds the stores closed in it — the
+    game never opens a store the probe holds (OPFS: one context at a time). A Play cancels the probe's timer before
+    anything is awaited and closes the probes of the page for good (`play()` → `Downloads.forGame`: a timer firing
+    while `main.js start()` fetches its manifest, or a port's page navigating, starts no probe after the click);
+  - across tabs and workers, the stores' **Web Locks** (`storeLocks` in `game-data.js`, `orthros-store-<manifest>`):
+    every `openStore` (the Windows game's worker, the data worker, Prepare / download) takes its store's lock for the
+    open only, waiting; the probe takes its version's locks without waiting (`ifAvailable`: a game opening one now →
+    unknown) for its open-count-close. A game in another tab started during a probe's count waits that moment out
+    instead of running its session without its store;
+  - the launch set as this link reads it (`launchSet`: on a thin link a file here whole is listed itself, else its
+    light copy; on a fast link the file's pieces — a light copy stored then does not count: the game's startup fetches
+    the file's own pieces, `data-worker.js` `startup`); the engine's bytes in proportion of its files cached; "done"
+    (the card's **Ready**) when all of the set and all of the engine are here — a store filled on a thin link probed on
+    a fast one says "Playable after …" its files' pieces;
+  - the whole game by its blocks here whole (`HttpBackend.storedBytes`: what the whole download skips), "N % downloaded";
+  - written as the progress Prepare and the download write (`probed: true`), never over a download running in this
+    visit; a store another tab's game holds, OPFS unavailable or an error: unknown, nothing written.
+- **Persistent storage** (`src/host/web/storage-persist.js`, page side only — `persist()` does not exist in workers):
+  `pageStorage().ask()` once a page before its first write of game data — the home's Prepare / download
+  (`Downloads.start`), the Windows game's start (`main.js`), the GoldSrc and re3 pages' `start()`, the OpenMW page's
+  `enter()` (its `window.orthrosStorage`, which the engine page's perf records take: `frame-meter.js`, the same
+  origin — so they report `asked` like the other runtimes). Chrome grants
+  or refuses silently (the site's engagement, a bookmark, an installed app), no prompt. The data manager's button stays.
+- **Telemetry**: `{ storage: { persisted, usageMB, quotaMB, asked } }` in the env of every runtime — one builder,
+  `withStorage`: the Windows page's batches (`flushTelemetry`), the ports' event records (`eventEnv` in perf-page.js,
+  GoldSrc and re3), and the perf records of all four runtimes (`PerfSession`, read again after each record; the
+  server's check keeps it, `src/host/perf-record.js` `ENV.storage`). MiB, not bytes (a quota to the byte tells the
+  disk). Evictions show as a session whose store was found missing for a game played before — not reported yet.
+- Measured (2026-10-27, `half-life-original-en`, scratch servers on localhost of main and of this change — each a copy
+  of the learned files, `--br-cache off --covers off` —, headless Chromium, one persistent profile per run: the home,
+  Play, the game running, the home again, then the home again told 85 KB/s; two runs each, after the review's fixes):
+
+  | the card | main (2 runs) | this change (2 runs) |
+  |---|---|---|
+  | a fresh profile | "Playable after 3 MB (+ 3 MB of engine)", "Whole game: 430 MB" | the same |
+  | after the play | "Playable after 3 MB (+ 3 MB of engine) · ~5 s", "Whole game: 430 MB · ~10-15 s" (20 s watched) | **"Ready: starts without waiting"** 1.51 s after the home was drawn (the probe's delay), "14% downloaded" (63.7 MB of whole blocks the session's prefetch stored) |
+  | told 85 KB/s | "· ~30 s", "Whole game: 430 MB · ~1 h 6 min" | "Ready" (kept from the visit's probe), "14% downloaded · ~57 min more" |
+
+  The telemetry's env (this change; main's has no `storage`): `storage: { persisted: false, usageMB: 0, quotaMB: 10240,
+  asked: true }` on the game's start, perf and end records, `usageMB: 62, asked: false` on the later home records
+  (headless Chromium refuses persist(): no engagement). A Play clicked 0, 1.3, 1.5, 1.55, 1.6, 1.7 and 2.5 s after the
+  home was drawn, on a profile holding the store: the game running each time, no console error. Not measured: a real
+  player's Chrome (whether persist() is granted), Morrowind's 3.9 GB store (the probe's open and count time), a probe
+  recounting on a thin link (the 85 KB/s home kept the visit's result) and a store of light copies probed on a fast
+  link in a browser (unit tests only: `tests/download-worker.test.js`, `tests/launch-set.test.js`).
+
 ## Precompressed units (2026-10-21)
 
 Every request of `/gamez` used to be compressed on the fly (zstd-3, else gzip-4; 256 MB of encoded ranges kept in

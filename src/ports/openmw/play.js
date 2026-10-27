@@ -9,6 +9,7 @@ import { createShell } from '../../host/web/shell.js';
 import { escapeToGame } from '../../host/web/escape.js';
 import { endonym } from '../../host/web/lang.js';
 import { linkRate } from '../../vfs/data-client.js';
+import { pageStorage } from '../../host/web/storage-persist.js';
 
 const STRINGS = {
   en: {
@@ -81,11 +82,16 @@ async function api(route, method = 'GET', body) {
   const data = await r.json().catch(() => ({})); if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`); return data;
 }
 
+// the browser's storage (storage-persist.js): asked here as the game starts, its state in the engine page's perf records
+// (frame-meter.js takes this page's own: window.orthrosStorage — the same origin)
+const storage = window.orthrosStorage = pageStorage();
+
 /** The engine's page in the frame: alone (the hosted game, its saves on the account) or with friends (a world's ticket). */
 async function enter(chosen) {
   if (session.state !== 'ready') return;
   if (chosen === 'multi' && !shell.account) { shell.openSignIn?.('login'); shell.phase(S.multiNeed); pendingMulti = true; return; }
   session.state = 'starting'; mode = session.mode = chosen;
+  storage.ask(); // (before the engine's page writes the game data: persistent storage asked — its state in the perf records, storage-persist.js)
   shell.choices.querySelectorAll('button').forEach((b) => { b.disabled = true; });
   shell.showProgress(true); shell.step('engine', 'active'); shell.step('world', ''); shell.progress(8, S.preparing);
   try {

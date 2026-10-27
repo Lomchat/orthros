@@ -13,7 +13,8 @@
 import { pickLang } from '../../host/web/lang.js';
 import { createShell, lockKeys } from '../../host/web/shell.js';
 import { escapeToGame } from '../../host/web/escape.js';
-import { beacon, canvasGl, portPerf } from '../../host/web/perf-page.js';
+import { beacon, canvasGl, eventEnv, portPerf } from '../../host/web/perf-page.js';
+import { pageStorage } from '../../host/web/storage-persist.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { onAccountChange, accountState } from '../../host/web/account.js';
 import { createMmoLink, LINK } from '../../host/web/mmo-link.js';
@@ -137,11 +138,13 @@ window.addEventListener('unhandledrejection', (event) => {
 const telemetry = { session: crypto.randomUUID().replaceAll('-', '').slice(0, 16), started: performance.now(), sent: 0 };
 /** the passive session record (perf-page.js: every 2 min of play and at the end, docs/real-machine-bench.md) */
 let perfRecord = null;
+/** the browser's storage of the game data: persistent asked at the start, its state in the telemetry (storage-persist.js) */
+const storage = pageStorage();
 function report(event, data = {}) {
   if (telemetry.sent >= 20) return; telemetry.sent++;
   const body = JSON.stringify({ session: telemetry.session, game: decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? ''), port: 're3', event, ...(params.get('benchrun') ? { bench: params.get('benchrun') } : {}), // (a bench suite's session: bench-suite.js)
     seconds: Math.round((performance.now() - telemetry.started) / 1000), state: session.state, ...data,
-    env: { ua: navigator.userAgent, cores: navigator.hardwareConcurrency, memGB: navigator.deviceMemory ?? null, dpr: devicePixelRatio, screen: `${screen.width}x${screen.height}` } });
+    env: eventEnv(storage.state) });
   beacon(body);
 }
 
@@ -478,7 +481,8 @@ const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)}
  */
 async function start(mode = null) {
   session.state = 'starting'; session.mode = mode;
-  perfRecord ??= portPerf({ runtime: 're3', game: name, session: telemetry.session, version: config.version ?? null, bench: params.get('benchrun'), phase: () => session.state, data: () => (gameData ? { waits: gameData.stats.misses, ms: gameData.stats.stallMs } : null), gl: () => canvasGl($('canvas')) });
+  storage.ask(); // (before the game data's first write: the store, the saves — storage-persist.js)
+  perfRecord ??= portPerf({ runtime: 're3', storage, game: name, session: telemetry.session, version: config.version ?? null, bench: params.get('benchrun'), phase: () => session.state, data: () => (gameData ? { waits: gameData.stats.misses, ms: gameData.stats.stallMs } : null), gl: () => canvasGl($('canvas')) });
   if (!crossOriginIsolated) throw new Error(S.isolated);
   if (typeof WebAssembly.Suspending !== 'function') throw new Error(S.noJspi);
   const r = config.re3, base = `/engines/${encodeURIComponent(r.engine)}/`, language = gameLanguage(config), own = r.languages?.[language] ?? {};

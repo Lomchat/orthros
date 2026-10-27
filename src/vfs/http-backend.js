@@ -1388,6 +1388,23 @@ export class HttpBackend {
   }
 
   /**
+   * The tree's bytes and those of its blocks here whole (memory or store): { bytes, total } — downloadAll's count of
+   * what it skips (a block here by pieces only is fetched whole again).
+   */
+  storedBytes() {
+    let bytes = 0, total = 0;
+    const walk = (node, rel) => {
+      for (const [n, f] of Object.entries(node.files ?? {})) {
+        const path = rel ? `${rel}/${n}` : n, size = f.size ?? 0, mtime = f.mtime ?? 0; total += size;
+        for (let i = 0; i * BLOCK < size; i++) if (this.cache.has(`${path}#${i}`) || this.store?.map.has(`${path}#${size}#${mtime}#${i}`)) bytes += Math.min(size, (i + 1) * BLOCK) - i * BLOCK;
+      }
+      for (const [n, d] of Object.entries(node.dirs ?? {})) walk(d, rel ? `${rel}/${n}` : n);
+    };
+    walk(this.tree, '');
+    return { bytes, total };
+  }
+
+  /**
    * The game read `path`'s light copy (a link that is not fast: src/vfs/data-client.js): the file itself downloaded in
    * the background for its next load, last of all — after every other background download, the link quiet for
    * UPGRADE_QUIET_MS (UPGRADE_SOON_QUIET_MS when `soon`: an engine that loads it again in place), a thin link too (by

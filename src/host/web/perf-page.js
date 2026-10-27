@@ -9,10 +9,13 @@ import { PerfRecorder, SLOW_A } from '../perf-record.js';
 import { GpuProbe } from '../../gfx/gpu-probe.js';
 import { runTimingProbe } from './timing-probe.js';
 import { gpuClass, gpuInfo } from './gpu-class.js';
+import { pageStorage, withStorage } from './storage-persist.js';
 
 export { SLOW_A };
 /** the clock's period (ms); the timing probe once after this much visible time */
 export const CLOCK_MS = 1000, PROBE_AFTER_MS = 60000;
+/** the storage's state (storage-persist.js) read again this often (ms) for the records' env */
+export const STORAGE_READ_MS = 30000;
 
 /** Send a telemetry body (an object or its JSON) to the server: sendBeacon, else a keepalive fetch. */
 export function beacon(body, url = '/api/telemetry') {
@@ -49,18 +52,30 @@ export function portEnv(gl = null) {
     screen: globalThis.screen ? `${screen.width}x${screen.height}@${globalThis.devicePixelRatio ?? 1}` : null };
 }
 
+/**
+ * The env of a browser port's event records (start, error, end — /api/telemetry, the GoldSrc and re3 pages): the
+ * browser and machine, and the storage's state (`storage`: the page's pageStorage().state, storage-persist.js).
+ */
+export function eventEnv(storage = null) {
+  const nav = globalThis.navigator ?? {};
+  return withStorage({ ua: nav.userAgent ?? null, cores: nav.hardwareConcurrency ?? null, memGB: nav.deviceMemory ?? null, dpr: globalThis.devicePixelRatio ?? 1,
+    screen: globalThis.screen ? `${screen.width}x${screen.height}` : null }, storage);
+}
+
 export class PerfSession {
   /**
    * @param {{ runtime: string, game: string|null, session: string, version?: string|null, build?: string|null,
    *   tier?: () => string|null, bench?: string|null, env?: () => object, phase?: () => string|null,
    *   data?: () => ({ waits: number, ms: number }|null), gpu?: () => object|null, send?: (rec: object) => void,
-   *   win?: any, now?: () => number, probe?: boolean, recordMs?: number }} o
+   *   win?: any, now?: () => number, probe?: boolean, recordMs?: number, storage?: ReturnType<typeof pageStorage> }} o
+   *   storage: the page's (storage-persist.js: its env's `storage`, read again after each record), else one of its own
    */
   constructor(o) {
     this.o = o; this.win = o.win ?? globalThis; this.now = o.now ?? (() => performance.now());
     this.rec = new PerfRecorder({ recordMs: o.recordMs, header: { session: o.session, game: o.game ?? null, runtime: o.runtime, version: o.version ?? null, build: o.build ?? null, tier: null, ...(o.bench ? { bench: o.bench } : {}) } });
     this.sendFn = o.send ?? beacon; this.envCache = null; this.ended = false; this.probeAsked = o.probe === false;
     this.gpuProbe = null; this.dataCum = null; this.gpuStats = null;
+    this.storage = o.storage ?? pageStorage(this.win.navigator); // (read by tick: at once, then every STORAGE_READ_MS)
     const doc = this.win.document;
     this.onVis = () => { this.tick(); if (this.meter) { this.meter.prevT = null; this.meter.lastShownT = null; } };
     this.onHide = () => this.end();
@@ -83,12 +98,14 @@ export class PerfSession {
       runTimingProbe().then((p) => { if (p) this.rec.setProbe(p); }, () => {});
     }
     const r = this.rec.take(now); if (r) this.send(r);
+    else if (!(now - (this.storageRead ?? -Infinity) < STORAGE_READ_MS)) { this.storageRead = now; this.storage.read(); } // (the usage grows as the game data comes: the end's record too)
   }
   send(r) {
     if (!this.envCache) { try { this.envCache = this.o.env ? this.o.env() : portEnv(this.meter?.gl ?? null); } catch { this.envCache = null; } if (this.envCache && !this.envCache.gpuClass) this.envCache = { ...this.envCache, gpuClass: gpuClass(this.envCache.gpu) }; }
     r.tier = this.o.tier?.() ?? null;
-    if (this.envCache) { const e = this.envCache; r.env = { gpu: e.gpu ?? null, gpuVendor: e.gpuVendor ?? null, gpuClass: e.gpuClass ?? null, cores: e.cores ?? null, memGB: e.memGB ?? null, ua: e.ua ?? null, screen: e.screen ?? null }; }
+    if (this.envCache) { const e = this.envCache; r.env = withStorage({ gpu: e.gpu ?? null, gpuVendor: e.gpuVendor ?? null, gpuClass: e.gpuClass ?? null, cores: e.cores ?? null, memGB: e.memGB ?? null, ua: e.ua ?? null, screen: e.screen ?? null }, this.storage.state); }
     try { this.sendFn(r); } catch { /* lost */ }
+    this.storage.read(); // (the next record's: the usage grows as the game data comes)
   }
   /** The session's end (the game exited, the page goes): the last record, then nothing more. */
   end() {

@@ -10,6 +10,8 @@ import { accountState, onAccountChange } from './account.js';
 const downloads = new Downloads();
 
 const $ = (id) => document.getElementById(id);
+/** the stores' probe after the library is drawn (download.js `probe`): its covers' requests first */
+const PROBE_DELAY_MS = 1500;
 const LOGO = '/src/host/web/orthros_logo.png';
 
 const STRINGS = {
@@ -280,8 +282,28 @@ export function mountHome({ onPlay }) {
   };
   /** The version game language `gl` runs from version `v`: its language's own (languageVersions), else `v`. */
   const runs = (v, gl) => { const o = gl && v?.languageVersions?.[gl] ? byName.get(v.languageVersions[gl]) : null; return o?.available ? o : v; };
-  // (a download running stops first: the game's worker opens the same stores)
-  const play = async (g) => { const v = chosen(g); if (!v?.available) return; await downloads.stop(); onPlay(v.name, gameLang(g, v)); };
+  /**
+   * What the stores of this browser hold (download.js `probe`): every game's version shown on its card — the one its
+   * game language runs, the line's — with its launch's engine files, the resume game's first; once a visit, after the
+   * library is drawn (the covers first on a thin link). Only the stores that exist are opened (the worker checks).
+   */
+  let probed = false, probeTimer = 0;
+  /** No probe this visit any more (a game chosen: its worker opens the stores — the timer, else a probe after Play). */
+  const cancelProbe = () => { probed = true; clearTimeout(probeTimer); };
+  function probeStores() {
+    if (probed || !games.length) return; probed = true;
+    const items = [], order = resume ? [resume, ...games.filter((g) => g !== resume)] : games;
+    for (const g of order) {
+      const shown = chosen(g); if (!shown?.available) continue;
+      const gl = gameLang(g, shown), v = runs(shown, gl), launch = launchFor(v.launch, gl);
+      items.push({ name: v.name, lang: gl, engine: launch?.engineFiles?.length ? { files: launch.engineFiles, bytes: launch.engine ?? 0 } : null });
+    }
+    probeTimer = setTimeout(() => downloads.probe(items), PROBE_DELAY_MS);
+    cleanup.push(cancelProbe);
+  }
+  // (a download or a probe running stops first, and none starts after — download.js `forGame`: the game's worker opens
+  // the same stores; the probe's timer cancelled at once, before anything awaited)
+  const play = async (g) => { const v = chosen(g); if (!v?.available) return; cancelProbe(); await downloads.forGame(); onPlay(v.name, gameLang(g, v)); };
   function playPill(g) { const el = h('button', { type: 'button', class: 'hm-play', onclick: () => play(g) }); el.innerHTML = `${ICON.play}<span>${S().play}</span>`; return el; }
 
   // the cover of the game's chosen version behind the page (added, updated or removed as the choice changes)
@@ -337,7 +359,8 @@ export function mountHome({ onPlay }) {
       dlBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().dlStart;
       dlBtn.onclick = (e) => { e.stopPropagation(); if (st.state === 'running') downloads.stop(); else downloads.start(v.name); };
     }
-    cardCleanup.push(downloads.onChange((name) => { if (name === chosen(g)?.name) syncDownload(); }));
+    // (the version shown, or the one its game language runs — the lines are that one's)
+    cardCleanup.push(downloads.onChange((name) => { const v = chosen(g); if (name === v?.name || (v?.available && name === runs(v, gameLang(g, v))?.name)) syncDownload(); }));
     let shown = null, langRow = null;
     // one row for the versions (chips, the oldest in a select past three), one for the game's languages (flags)
     const versions = g.variants.length && g.variants.some((v) => v.version) ? choiceRow({ label: S().gameVersion, aria: S().gameVersion, max: MAX_VERSIONS, more: S().others,
@@ -531,6 +554,7 @@ export function mountHome({ onPlay }) {
       for (const group of games) group.variants.sort((a, b) => (b.versionOrder ?? 0) - (a.versionOrder ?? 0));
       last = lastPlayed; view = { kind: 'games' };
       applyLang();
+      probeStores();
       (cards.find((c) => !c.hidden && c.dataset.name === resume?.id) ?? cards.find((c) => !c.hidden && !c.classList.contains('unavailable')))?.focus({ preventScroll: true });
     },
     setError(text, retry) { view = { kind: 'error', text, retry }; renderView(); },

@@ -7,10 +7,13 @@
 // pieces as the game's own startup set fetches them; resumed the same way (the pieces here are skipped) — the game
 // language's own launch set (`lang`) —, and a browser port's engine release first (`engine`: its URLs, /api/manifests
 // launch.engineFiles, immutable: into the browser's HTTP cache, where the page's first launch finds them).
-// Messages in: { type: 'download' | 'launch', name, bw, lang?, engine? }, { type: 'stop' }. Out: { type: 'progress', kind ('whole' |
-// 'launch'), bytes, total, stored, engine (of them: the engine's wire bytes), bw, ratio, running, done, error }, then { type: 'stopped' } once the stores are
-// closed (the game's worker may open them).
-import { openVersion, openStore, learnedOrder } from '../../vfs/game-data.js';
+// "Probe" (the home, on its arrival: `probe`): what the stores of the versions played before hold — their launch sets
+// and their whole files —, so that the card says "Ready" from the store's contents, not only after a Prepare.
+// Messages in: { type: 'download' | 'launch', name, bw, lang?, engine? }, { type: 'probe', items: [{ name, lang?, engine? }],
+// bw }, { type: 'stop' }. Out: { type: 'progress', kind ('whole' | 'launch'), bytes, total, stored, engine (of them: the
+// engine's wire bytes), bw, ratio, running, done, error }, { type: 'probed', name, lang, missing?, launch?, whole? }
+// (probe), then { type: 'stopped' } once the stores are closed (the game's worker may open them).
+import { openVersion, openData, openStore, openStoreNow, storeExists, storeLocks, learnedOrder } from '../../vfs/game-data.js';
 import { launchSet, setBytes } from '../../vfs/launch-set.js';
 
 let stopping = false, running = false;
@@ -51,12 +54,12 @@ async function fetchEngine(urls, progress) {
   return true;
 }
 const ENGINE_PARTS = 4;
+/** The HTTP cache has the engine file at `url`: no request — "only-if-cached" answers from it or fails. */
+const engineCached = (url) => fetch(url, { cache: 'only-if-cached', mode: 'same-origin' }).then((r) => { r.body?.cancel().catch(() => {}); return r.ok; }).catch(() => false);
 /** One engine file into the HTTP cache (see fetchEngine): true, false when stopped. */
 async function engineFile(url, progress) {
   if (stopping) return false;
-  // (a file the cache has: no request — "only-if-cached" answers from it or fails)
-  const cached = await fetch(url, { cache: 'only-if-cached', mode: 'same-origin' }).then((r) => { r.body?.cancel().catch(() => {}); return r.ok; }).catch(() => false);
-  if (cached) return true;
+  if (await engineCached(url)) return true;
   const ctl = new AbortController(); aborts.add(ctl);
   let counted = 0; // (this file's bytes in progress.bytes: files come side by side)
   try {
@@ -149,10 +152,91 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
   }
 }
 
+/**
+ * The probe's count of a version (its stores' locks held): each part's store opened into `stores` (a required version's
+ * only when it exists), its launch set as this link reads it and its whole blocks here: { bytes, here, wb, wt }.
+ * Throws when a store cannot be told (unknown, another context holds it).
+ */
+async function countStores(version, orders, stores, exists, open) {
+  const parts = [];
+  for (const [i, p] of version.parts.entries()) {
+    const kept = i === 0 ? true : await exists(p.name);
+    if (kept === null) throw new Error('unknown');
+    const st = kept ? await open(p.name) : null;
+    if (kept && !st) throw new Error('busy'); // (another tab's game holds it: unknown)
+    if (st) stores.push(st);
+    parts.push(await openData(p.name, { tree: p.tree, store: st, net: version.net }));
+  }
+  const fast = version.net.fast();
+  let bytes = 0, here = 0, wb = 0, wt = 0;
+  for (const [i, p] of parts.entries()) {
+    const b = setBytes(p.files, launchSet(p.files, orders[i], fast));
+    bytes += b.bytes; here += b.here;
+    const w = p.files.storedBytes(); wb += w.bytes; wt += w.total;
+  }
+  return { bytes, here, wb, wt };
+}
+
+/**
+ * The home's probe (docs/slow-network.md "The card from the store"): for each item { name, lang, engine } in turn (the
+ * resume game first: the page's order), what this browser holds of the version — posted as { type: 'probed', name,
+ * lang, launch: { bytes, total, engine, engineFiles, done } | null (no launch set known), whole: { bytes, total, done } },
+ * or { missing: true } when its store does not exist (never played, or evicted: nothing here). A store's directory is
+ * looked up first (openStore creates it). The network first (manifest, trees, learned orders, the engine's files only if
+ * cached), the stores then, opened only to count and closed at once: a stop (Play, Prepare) finds them closed but for
+ * that moment — `running` is true only then, so a stop at any other time answers 'stopped' at once —, under the stores'
+ * Web Locks taken without waiting (game-data.js storeLocks: a game opening one in this tab or another waits that moment
+ * out instead of running without its store; one opening it now leaves the item unknown). Unknown (a store another
+ * context holds, an error, OPFS unavailable): nothing posted for the item. The launch set as this link reads it
+ * (launchSet: a store filled on a thin link holds light copies — no wait there, the files' pieces to fetch on a fast
+ * one). (exported for a test — `hooks`: { openStore (no lock taken: the probe holds it), exists }.)
+ */
+export async function probe(items, bw, hooks = {}) {
+  stopping = false;
+  const exists = hooks.exists ?? storeExists, open = hooks.openStore ?? openStoreNow;
+  try {
+    for (const it of Array.isArray(items) ? items : []) {
+      if (stopping) break;
+      const name = String(it?.name ?? ''), lang = typeof it?.lang === 'string' && it.lang ? it.lang : null;
+      if (!name) continue;
+      const has = await exists(name);
+      if (has === null || stopping) continue;
+      if (!has) { post({ type: 'probed', name, lang, missing: true }); continue; }
+      const stores = [];
+      try {
+        // (the network, no store held: the version and those it requires, their learned orders, the engine's files)
+        const version = await openVersion(name, { bw, store: null });
+        const orders = await Promise.all(version.parts.map((p) => learnedOrder(p.name, lang)));
+        const urls = Array.isArray(it.engine?.files) ? it.engine.files.filter((u) => typeof u === 'string' && u.startsWith('/engines/')) : [];
+        const cached = (await Promise.all(urls.map(engineCached))).filter(Boolean).length;
+        const engTotal = urls.length ? Number(it.engine.bytes) || 0 : 0, engHere = urls.length ? Math.round(engTotal * cached / urls.length) : 0;
+        if (stopping) break;
+        // (the stores, under their locks: opened, counted, closed — a required version's only when it exists, else
+        // nothing of it is here)
+        running = true;
+        const { bytes, here, wb, wt } = await storeLocks(version.parts.map((p) => p.name), async (locked) => {
+          if (!locked) throw new Error('busy'); // (a game opening one now: unknown)
+          // (closed before the locks go, whatever happens: a game waiting on them opens them next)
+          try { return await countStores(version, orders, stores, exists, open); } finally { for (const s of stores.splice(0)) { try { s.close(); } catch { /* closed */ } } }
+        }, { ifAvailable: true });
+        const launch = bytes > 0 ? { bytes: here + engHere, total: bytes + engTotal, engine: engTotal, engineFiles: urls, done: here >= bytes && cached === urls.length } : null;
+        post({ type: 'probed', name, lang, launch, whole: { bytes: wb, total: wt, done: wt > 0 && wb >= wt } });
+      } catch { /* unknown: nothing said */ } finally {
+        for (const s of stores) { try { s.close(); } catch { /* closed */ } }
+        running = false;
+      }
+    }
+  } finally {
+    running = false;
+    post({ type: 'stopped', name: null });
+  }
+}
+
 // (a worker's; imported elsewhere — a test — its helpers only)
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) self.onmessage = (e) => {
   const m = e.data ?? {};
   if (m.type === 'stop') { stopping = true; for (const c of aborts) c.abort(); if (!running) post({ type: 'stopped', name: m.name ?? null }); return; }
+  if (m.type === 'probe' && !running) { probe(m.items, Number(m.bw) || undefined); return; }
   if ((m.type === 'download' || m.type === 'launch') && !running) {
     download(String(m.name), Number(m.bw) || undefined, m.type === 'launch' ? 'launch' : 'whole', typeof m.lang === 'string' && m.lang ? m.lang : null, m.engine ?? null);
   }

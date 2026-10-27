@@ -10,7 +10,8 @@
 import { pickLang } from '../../host/web/lang.js';
 import { createShell, lockKeys } from '../../host/web/shell.js';
 import { escapeToGame } from '../../host/web/escape.js';
-import { beacon, canvasGl, portPerf } from '../../host/web/perf-page.js';
+import { beacon, canvasGl, eventEnv, portPerf } from '../../host/web/perf-page.js';
+import { pageStorage } from '../../host/web/storage-persist.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { treeFiles, languageFiles } from '../../vfs/game-tree.js';
@@ -121,11 +122,13 @@ window.addEventListener('unhandledrejection', event => { log(`Unhandled: ${event
 const telemetry = { session: crypto.randomUUID().replaceAll('-', '').slice(0, 16), started: performance.now(), sent: 0 };
 /** the passive session record (perf-page.js: every 2 min of play and at the end, docs/real-machine-bench.md) */
 let perfRecord = null;
+/** the browser's storage of the game data: persistent asked at the start, its state in the telemetry (storage-persist.js) */
+const storage = pageStorage();
 function report(event, data = {}) {
   if (telemetry.sent >= 20) return; telemetry.sent++;
   const body = JSON.stringify({ session: telemetry.session, game: decodeURIComponent(location.pathname.split('/').filter(Boolean)[2] ?? ''), port: 'goldsrc', event, ...(params.get('benchrun') ? { bench: params.get('benchrun') } : {}), // (a bench suite's session: bench-suite.js)
     seconds: Math.round((performance.now() - telemetry.started) / 1000), state: session.state, ...data,
-    env: { ua: navigator.userAgent, cores: navigator.hardwareConcurrency, memGB: navigator.deviceMemory ?? null, dpr: devicePixelRatio, screen: `${screen.width}x${screen.height}` } });
+    env: eventEnv(storage.state) });
   beacon(body);
 }
 
@@ -407,7 +410,8 @@ const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)}
 /** The game started at once: the account's saves first, then the engine, the files, the game's own start. */
 async function start() {
   session.state = 'starting';
-  perfRecord ??= portPerf({ runtime: 'goldsrc', game: name, session: telemetry.session, version: config.version ?? null, bench: params.get('benchrun'), phase: () => session.state, data: () => (gameData ? { waits: gameData.stats.misses, ms: gameData.stats.stallMs } : null), gl: () => canvasGl($('canvas')), draws: () => draws });
+  storage.ask(); // (before the game data's first write: the store, the saves — storage-persist.js)
+  perfRecord ??= portPerf({ runtime: 'goldsrc', storage, game: name, session: telemetry.session, version: config.version ?? null, bench: params.get('benchrun'), phase: () => session.state, data: () => (gameData ? { waits: gameData.stats.misses, ms: gameData.stats.stallMs } : null), gl: () => canvasGl($('canvas')), draws: () => draws });
   if (!crossOriginIsolated) throw new Error(S.isolated);
   const g = config.goldsrc, base = `/engines/${encodeURIComponent(g.engine)}/`, language = gameLanguage(config);
   step('engine', 'active'); step('files', ''); step('game', '');

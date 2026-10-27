@@ -2,8 +2,11 @@
 // (download-worker.js), its progress kept in localStorage so a later visit shows where it stopped and resumes from
 // there (the blocks already stored are skipped). The home screen draws it (home.js); starting a game stops it first.
 // "Prepare" is the same with the launch set only (kind 'launch': what earlier sessions read before their game was
-// playable, src/vfs/launch-set.js), and the card's "playable after X MB" line (launchStatus).
+// playable, src/vfs/launch-set.js), and the card's "playable after X MB" line (launchStatus). The home's probe (`probe`:
+// what the stores of the versions played before hold) writes the same progress, so that the lines tell the store's
+// contents whoever filled it — a game played, a Prepare, a download — or that it is gone (evicted, cleared).
 import { fmtRate, fmtBytes, fmtDuration } from './net-status.js';
+import { pageStorage } from './storage-persist.js';
 import { linkRate } from '../../vfs/data-client.js';
 import { FAST_BPS } from '../../vfs/net-link.js';
 
@@ -11,6 +14,7 @@ import { FAST_BPS } from '../../vfs/net-link.js';
 const KEY = (name, kind = 'whole', lang = null) => (kind === 'launch' ? 'orthros.launch.' : 'orthros.download.') + name + (kind === 'launch' && lang ? '.' + lang : '');
 const load = (name, kind, lang) => { try { return JSON.parse(localStorage.getItem(KEY(name, kind, lang)) ?? 'null'); } catch { return null; } };
 const save = (name, kind, lang, v) => { try { localStorage.setItem(KEY(name, kind, lang), JSON.stringify(v)); } catch { /* storage off */ } };
+const forget = (name, kind, lang) => { try { localStorage.removeItem(KEY(name, kind, lang)); } catch { /* storage off */ } };
 const savedBw = () => linkRate.get() ?? null;
 
 /**
@@ -87,7 +91,7 @@ export function launchStatus(launch, o = {}, lang = 'en') {
 const sameFiles = (a, b) => a.length === b.length && a.every((u, i) => u === b[i]);
 
 export class Downloads {
-  constructor() { this.worker = null; this.name = null; this.kind = null; this.lang = null; this.listeners = new Set(); this.live = new Map(); }
+  constructor() { this.worker = null; this.name = null; this.kind = null; this.lang = null; this.listeners = new Set(); this.live = new Map(); this.storage = pageStorage(); this.closed = false; }
   /**
    * the last known progress of `name` (`kind`: 'whole', else 'launch' — "Prepare", of game language `lang`; this
    * visit's, else the one kept from an earlier visit)
@@ -103,6 +107,7 @@ export class Downloads {
   async start(name, kind = 'whole', o = {}) {
     const lang = kind === 'launch' ? o.lang ?? null : null;
     if (this.running(name, kind, lang)) return;
+    this.storage.ask(); // (before the first write: persistent storage asked, storage-persist.js)
     await this.stop();
     const w = this.worker = new Worker(new URL('./download-worker.js', import.meta.url), { type: 'module' });
     const key = KEY(name, kind, lang);
@@ -126,6 +131,44 @@ export class Downloads {
     w.postMessage({ type: kind === 'launch' ? 'launch' : 'download', name, bw: savedBw(), lang, engine });
     this.live.set(key, { ...(load(name, kind, lang) ?? {}), running: true, error: null, done: false }); this.emit(name);
   }
+  /**
+   * Probe the stores of `items` ([{ name, lang, engine? (/api/manifests launch: { files, bytes }) }], in the order
+   * given — the resume game first —, one at a time, in the download worker: its `probe`) and keep what they hold as
+   * the lines' progress (`probed`). Nothing while a download runs, nor once a game is chosen (forGame); a download
+   * started or a game's Play stops it first (stop(): the stores closed).
+   */
+  probe(items) {
+    if (this.closed || this.worker || !items?.length || typeof Worker !== 'function') return;
+    const w = this.worker = new Worker(new URL('./download-worker.js', import.meta.url), { type: 'module' });
+    this.name = null; this.kind = 'probe'; this.lang = null;
+    const done = () => { w.terminate(); if (this.worker === w) { this.worker = null; this.name = null; this.kind = null; this.lang = null; } this.stopped?.(); this.stopped = null; };
+    w.onmessage = (e) => { const m = e.data; if (m.type === 'probed') this.probed(m); else if (m.type === 'stopped') done(); };
+    w.onerror = done;
+    w.postMessage({ type: 'probe', items: items.map((i) => ({ name: i.name, lang: i.lang ?? null, engine: i.engine ?? null })), bw: savedBw() });
+  }
+  /**
+   * A probe's answer (download-worker.js `probe`) kept as the progress of the launch (of game language `m.lang`) and
+   * of the whole download: what the store holds of the launch set as this link reads it; a store gone (`missing`)
+   * clears them. Never over a download of this visit's (its own count is live).
+   */
+  probed(m) {
+    const at = Date.now();
+    for (const [kind, lang, got] of [['launch', m.lang ?? null, m.launch], ['whole', null, m.whole]]) {
+      const key = KEY(m.name, kind, lang); if (this.live.get(key)?.running) continue;
+      if (m.missing || !got || (kind === 'whole' && !(got.bytes > 0))) {
+        if (m.missing || kind === 'whole') { this.live.delete(key); forget(m.name, kind, lang); }
+        continue;
+      }
+      const v = { bytes: got.bytes, total: got.total, engine: got.engine ?? 0, ...(kind === 'launch' ? { engineFiles: got.engineFiles ?? [] } : {}), bw: null, ratio: null, running: false, done: !!got.done, error: null, at, probed: true };
+      this.live.set(key, v); save(m.name, kind, lang, v);
+    }
+    this.emit(m.name);
+  }
+  /**
+   * A game was chosen (Play): no probe starts from now on (a timer's, a late one), the running download or probe stopped
+   * — resolves once its stores are closed (the game's worker opens them next).
+   */
+  forGame() { this.closed = true; return this.stop(); }
   /** Stop the running download (its stores closed: a game may open them); resolves once stopped. */
   stop() {
     const w = this.worker; if (!w) return Promise.resolve();

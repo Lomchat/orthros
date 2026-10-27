@@ -544,3 +544,18 @@ test('a version\'s order borrows what other versions\' sessions read of the file
   for (let i = 0; i < 200 && !(fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes('own.dat')); i++) await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(await order('g-b', await start({ learnBorrow: false })), own, 'learnBorrow false: its own order only');
 });
+
+test('a set\'s bytes here, as this link reads it: a light copy here does not count for its file on a fast link, the file here whole counts on a thin one', () => {
+  const order = [['tex.dds', 0, 0b11, 0, PRE_PLAYABLE], ['tex.dds', 1, 0b11, 10, PRE_PLAYABLE]];
+  // (a store filled on a thin link: the light copy whole, by pieces)
+  const store = new MemBlockStore(64 * MiB), files = new HttpBackend('/game/m/', tree(), { store });
+  store.put(files.pieceKey('.light/tex.dds', 100000, 1, 0), new Uint8Array(CHUNK)); store.put(files.pieceKey('.light/tex.dds', 100000, 1, 1), new Uint8Array(100000 - CHUNK));
+  const thin = setBytes(files, launchSet(files, order, false)), fast = setBytes(files, launchSet(files, order, true));
+  assert.ok(thin.bytes > 0 && thin.here === thin.bytes, `thin: the light copy read, here: ${JSON.stringify(thin)}`);
+  assert.ok(fast.bytes > 0 && fast.here === 0, `fast: the file's own pieces read, none here: ${JSON.stringify(fast)}`);
+  // (a store filled on a fast link: the file whole — a thin link reads it, not its light copy)
+  const s2 = new MemBlockStore(64 * MiB), f2 = new HttpBackend('/game/m/', tree(), { store: s2 });
+  s2.put('tex.dds#2097152#1#0', new Uint8Array(MiB)); s2.put('tex.dds#2097152#1#1', new Uint8Array(MiB));
+  for (const link of [false, true]) { const b = setBytes(f2, launchSet(f2, order, link)); assert.ok(b.bytes > 0 && b.here === b.bytes, `${link ? 'fast' : 'thin'}: ${JSON.stringify(b)}`); }
+  assert.deepEqual(f2.storedBytes(), { bytes: 2 * MiB, total: 8 * MiB + 200000 }, 'the whole game: its blocks here whole');
+});

@@ -224,7 +224,11 @@ const ENTRY = {
 };
 const TIMES = (v) => (Array.isArray(v) && v.length === 3 && v.every((x) => num(x, 1e6) !== undefined) ? v : undefined);
 const PROBE = Object.fromEntries([...PROBE_KINDS.map((k) => [k, TIMES]), ['battery', (b) => (b && typeof b === 'object' ? { charging: !!b.charging, level: num(b.level, 1) ?? null } : undefined)], ['injected', (v) => num(v, 1000)]]);
-const ENV = { gpu: (v) => str(v, 200), gpuVendor: (v) => str(v, 120), gpuClass: (v) => str(v, 16), cores: (v) => int(v, 4096), memGB: (v) => num(v, 4096), ua: (v) => str(v, 400), screen: (v) => str(v, 40) };
+const bool = (v) => (typeof v === 'boolean' ? v : undefined);
+/** the browser's storage (src/host/web/storage-persist.js: persisted, its usage and quota in MiB, persist() asked) */
+const STORAGE = { persisted: nullable(bool), usageMB: nullable((v) => int(v, 1 << 30)), quotaMB: nullable((v) => int(v, 1 << 30)), asked: bool };
+const ENV = { gpu: (v) => str(v, 200), gpuVendor: (v) => str(v, 120), gpuClass: (v) => str(v, 16), cores: (v) => int(v, 4096), memGB: (v) => num(v, 4096), ua: (v) => str(v, 400), screen: (v) => str(v, 40),
+  storage: (v) => (v && typeof v === 'object' ? pick(v, STORAGE) : undefined) };
 
 /**
  * A perf record as received (the page's JSON), checked and rebuilt from its known fields only (unknown ones dropped,

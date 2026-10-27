@@ -101,7 +101,9 @@ const pieceBytes = (size, c) => Math.min(CHUNK, size - c * CHUNK);
 
 /**
  * The bytes of a set (decoded), and those of them here already (files' memory or store): { bytes, here }. `whole`: its
- * blocks counted whole (what a fast link fetches of them: HttpBackend.prefetch), not their learned pieces.
+ * blocks counted whole (what a fast link fetches of them: HttpBackend.prefetch), not their learned pieces. The set as
+ * this link reads it (forLink): on a link that is not fast a file here whole is listed itself, not its light copy;
+ * on a fast one a light copy here does not count for its file — the game's startup fetches the file's own pieces.
  */
 export function setBytes(files, list, whole = false) {
   let bytes = 0, here = 0;

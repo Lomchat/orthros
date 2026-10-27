@@ -40,13 +40,16 @@
   }
   // the passive session record (src/host/web/perf-page.js, docs/real-machine-bench.md "Passive session records"): the
   // engine's frames (browser frames with draws), its GPU time on its context, the game data's waits (streamfs.js),
-  // the phase (loading, the menus, the world: view-grow.js) and the quality tier (tier.js)
-  Promise.all([import('/src/host/web/perf-page.js'), import('/src/ports/openmw/view-grow.js')]).then(([perf, view]) => {
+  // the phase (loading, the menus, the world: view-grow.js), the quality tier (tier.js) and the browser's storage — the
+  // Orthros page's (play.js asks persistence as the game starts), else this page's own, asked here
+  Promise.all([import('/src/host/web/perf-page.js'), import('/src/ports/openmw/view-grow.js'), import('/src/host/web/storage-persist.js')]).then(([perf, view, sp]) => {
     const id = decodeURIComponent(location.pathname.split('/')[3] ?? '');
+    let storage = null; try { storage = framed ? window.parent.orthrosStorage ?? null : null; } catch { /* another origin */ }
+    if (!storage) { storage = sp.pageStorage(); storage.ask(); }
     window.orthrosPerf = perf.portPerf({ runtime: 'openmw', game: id, session: Math.random().toString(36).slice(2, 14), version: null, bench: new URLSearchParams(location.search).get('benchrun'),
       tier: () => window.orthrosTierChoice?.tier ?? null, phase: () => (!draws ? 'loading' : view.inWorld(window) ? 'world' : 'menu'),
       data: () => { const d = window.StreamFS?.data?.(); return d ? { waits: d.stats.misses, ms: d.stats.stallMs } : null; },
-      gl: () => glc, draws: () => draws });
+      gl: () => glc, draws: () => draws, storage });
   }).catch((e) => console.warn('[orthros perf]', e));
   // the engine's loading status (Module.setStatus, src/host/openmw.js): its package download, "Downloading data...
   // (x/y)" many times a second (a few told), then "Running..."

@@ -16,8 +16,38 @@ async function json(url) {
   return r.json();
 }
 
-/** The browser's copy of a version's files (OPFS: one context at a time), or null when it cannot be opened. */
-export const openStore = (name) => OpfsBlockStore.open('orthros-files-' + name);
+/**
+ * The browser's copy of a version's files (OPFS: one context at a time), or null when it cannot be opened. Opened under
+ * the store's Web Lock (storeLocks): an open waits out the home's probe counting the store in this tab or another (a
+ * moment), instead of failing and running the session without its store.
+ */
+export const openStore = (name) => storeLocks([name], () => openStoreNow(name));
+/** openStore without the lock: the caller holds it (the home's probe, download-worker.js `probe`). */
+export const openStoreNow = (name) => OpfsBlockStore.open('orthros-files-' + name);
+
+/**
+ * Runs `fn(got)` holding the Web Locks of the stores of `names` (navigator.locks, shared by every tab and worker of the
+ * origin; held only while a store is opened — openStore — or opened, counted and closed — the probe). `o.ifAvailable`:
+ * do not wait — `got` false when another context holds one of them (fn runs unlocked, to say so). Without Web Locks
+ * (an old browser, a test): fn(true) at once.
+ * @template T @param {string[]} names @param {(got: boolean) => T|Promise<T>} fn @param {{ ifAvailable?: boolean }} [o]
+ * @returns {Promise<T>}
+ */
+export async function storeLocks(names, fn, o = {}) {
+  const locks = globalThis.navigator?.locks;
+  if (!locks?.request || !names.length) return fn(true);
+  const [n, ...rest] = names;
+  return locks.request('orthros-store-' + n, { ifAvailable: !!o.ifAvailable }, (l) => (l || !o.ifAvailable ? storeLocks(rest, fn, o) : fn(false)));
+}
+
+/**
+ * The browser has a copy of a version's files: true when its OPFS directory exists (looked up without creating it —
+ * openStore creates it), false when it does not, null when OPFS cannot say (no OPFS, an error).
+ */
+export async function storeExists(name) {
+  let root; try { root = await navigator.storage.getDirectory(); } catch { return null; }
+  try { await root.getDirectoryHandle('orthros-files-' + name); return true; } catch (e) { return e?.name === 'NotFoundError' ? false : null; }
+}
 
 /** The order earlier sessions read a version in (/api/prefetch: [path, block, pieces mask, ms]); [] when none. */
 export const learnedOrder = (name, lang = null) => fetch(`/api/prefetch/${enc(name)}${lang ? `?lang=${enc(lang)}` : ''}`).then((r) => (r.ok ? r.json() : [])).then((l) => (Array.isArray(l) ? l : [])).catch(() => []);
