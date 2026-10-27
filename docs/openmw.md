@@ -371,9 +371,10 @@ on the loaded test machine). Its rules (`LEAN_RULE`, in its URL and file: a new 
    clicks it), its ICU-formatted values drawn ("Difficulté (0)", "Difficulty (0)", "Actors Processing Range (3584)").
 
 Keyed by the package's content (since rule 2): `<br-cache>/engines/_c/<sha256 of openmw.data>/lean<rule>/openmw.data.br`,
-served immutable as `/engines/_c/<sha256>/lean<rule>/openmw.data`. The sha256 is the release's own
-(`release.json` `engineFiles['openmw.data']`; the made file is checked against it by the child), else hashed once by the
-server (by file, size and mtime). The OpenMW releases built here change the wasm and keep the package (the same
+served immutable as `/engines/_c/<sha256>/lean<rule>/openmw.data`. The sha256 is the one the server's engine files by
+content hash (`engine-content.js`, the same instance: once by file, size and mtime, `release.json`
+`engineFiles['openmw.data']` only checked against it, a mismatch logged; the made file is checked against it by the
+child). The OpenMW releases built here change the wasm and keep the package (the same
 `e659ce68…` from orthros-r1 to r11), so a returning player keeps it across releases and fetches only `openmw.wasm`/`.js`
 (measured 2026-10-27: a profile warmed to the menu on r11, then a copy of r11 under a new release id, to the menu
 behind 1.8 MB/s and 90 ms, 2 runs a variant: `/engines` 20,630,708 → 5,701,421 bytes — `openmw.js` and `.wasm` only,
@@ -394,7 +395,9 @@ kept with its progress) shows as not ready, its engine to fetch again (once at t
 only for a release's new wasm/js). Follow-ups: `tools/openmw/build.sh` (131-132) still stages ICU twice — a future
 release could ship `/icu/icudt68l.dat` only (it changes that release's package hash: to do with the release chain's
 owner); the release-keyed lean1 files of the live br-cache (`<br-cache>/engines/<release>/lean1/`, ~15 MB each) can go
-once no page opened before the switch remains.
+once no page opened before the switch remains. Since the next step (docs/browser-ports.md "Engine files by content"), `openmw.js`, `openmw.wasm` and
+the release's own `openmw.data` (the example world's, `?nomw`) are given by their content too (`withEngineUrls`):
+a release that changes only the wasm costs a returning player the wasm alone.
 
 The engine page's file streaming is the game data every Orthros game reads (CLAUDE.md "Standardization";
 docs/slow-network.md): `src/ports/openmw/streamfs.js` keeps the engine page's StreamFS interface (swapped for the

@@ -55,8 +55,10 @@ export const launchFor = (launch, gameLang) => (gameLang && launch?.langs?.[game
  * bytes/s; linkRate's by default) — on a link that is not fast the light copies' set, the files' on a fast one; `o.st`:
  * the "Prepare" progress (Downloads.get(name, 'launch', lang): its engine's bytes, `engine`, counted in its own); `o.whole`:
  * the whole download's (done: nothing to wait for). A "Prepare" whose engine files (`engineFiles`) are no longer the
- * launch's (an OpenMW game's lean package made since: the page asks for it, not for the package that was cached) is not
- * done: its engine is to fetch again (the launch set is here).
+ * launch's (an OpenMW game's lean package made since: the page asks for it, not for the package that was cached; an
+ * engine release since, its changed files under new content addresses — src/host/engine-content.js) is not done: its
+ * engine is to fetch again (the launch set is here; the files kept under the same addresses are found in the HTTP
+ * cache, not downloaded: download-worker.js engineCached).
  */
 export function launchStatus(launch, o = {}, lang = 'en') {
   if (!launch || !(launch.bytes > 0)) return null;

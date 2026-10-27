@@ -8,6 +8,18 @@ import { GameData, PIECE } from '../vfs/data-client.js';
 import { mountFiles } from '../vfs/emscripten-files.js';
 import { eachStorage, removeStorage } from './goldsrc/storage.js';
 
+/**
+ * A port page's engine file addresses: `at(rel)` the URL of release path `rel` — by its content when the server gives it
+ * (/api/manifest engineUrls, src/host/engine-content.js: a release's unchanged files keep their address, and the
+ * browser's copy), else under the release (/engines/<release>/<rel>, encoded `encode`d).
+ * @param {{ engineUrls?: Record<string, string> }} config the version's /api/manifest
+ * @param {string} release the engine release's id
+ */
+export const engineUrls = (config, release, encode = false) => {
+  const base = `/engines/${encodeURIComponent(release)}/`;
+  return (rel) => config.engineUrls?.[rel] ?? base + (encode ? rel.split('/').map(encodeURIComponent).join('/') : rel);
+};
+
 /** Bytes per message to the data worker while an earlier copy is handed over. */
 const BATCH = 16 << 20;
 

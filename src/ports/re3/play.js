@@ -20,7 +20,7 @@ import { onAccountChange, accountState } from '../../host/web/account.js';
 import { createMmoLink, LINK } from '../../host/web/mmo-link.js';
 import { openStorage, readStorage, writeStorage } from '../goldsrc/storage.js';
 import { treeFiles } from '../../vfs/game-tree.js';
-import { openPortFiles } from '../port-files.js';
+import { engineUrls, openPortFiles } from '../port-files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
 import { setIniDefaults } from './ini.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../../host/profile-seed.js';
@@ -485,7 +485,7 @@ async function start(mode = null) {
   perfRecord ??= portPerf({ runtime: 're3', storage, game: name, session: telemetry.session, version: config.version ?? null, bench: params.get('benchrun'), phase: () => session.state, data: () => (gameData ? { waits: gameData.stats.misses, ms: gameData.stats.stallMs } : null), gl: () => canvasGl($('canvas')) });
   if (!crossOriginIsolated) throw new Error(S.isolated);
   if (typeof WebAssembly.Suspending !== 'function') throw new Error(S.noJspi);
-  const r = config.re3, base = `/engines/${encodeURIComponent(r.engine)}/`, language = gameLanguage(config), own = r.languages?.[language] ?? {};
+  const r = config.re3, language = gameLanguage(config), own = r.languages?.[language] ?? {};
   if (!r.module) throw new Error(S.noModule);
   step('engine', 'active'); step('files', ''); step('game', '');
   db = await openStorage(config.saveKey);
@@ -498,12 +498,13 @@ async function start(mode = null) {
   }
   world = config.mmo ? createWorld(name, who.user?.username ?? null) : null;
   status(S.init);
-  // (the module's own files — its WebAssembly — beside it in the release)
-  const moduleUrl = base + r.module.split('/').map(encodeURIComponent).join('/'), dir = moduleUrl.slice(0, moduleUrl.lastIndexOf('/') + 1);
+  // (the module's own files — its WebAssembly — beside it in the release; each by its content when the server gives it,
+  // else under its release: engineUrls)
+  const at = engineUrls(config, r.engine, true), moduleDir = r.module.slice(0, r.module.lastIndexOf('/') + 1);
   const t = performance.now();
-  const { default: createEngine } = await import(moduleUrl);
+  const { default: createEngine } = await import(at(r.module));
   engine = session.engine = await createEngine({
-    canvas: $('canvas'), print: log, printErr: log, locateFile: (file) => dir + file, noInitialRun: true,
+    canvas: $('canvas'), print: log, printErr: log, locateFile: (file) => at(moduleDir + file), noInitialRun: true,
     onAbort: (reason) => fail(new Error(String(reason))), onExit: (code) => ended(code), orthrosFrame: onFrame, orthrosMouse: onMouseMode,
     ...(world ? { orthrosNet: world.net } : {}), // (the shared world: the engine's way to it)
     preRun: [envPreRun(own.env, log)], // (the language's environment, before the runtime copies it)

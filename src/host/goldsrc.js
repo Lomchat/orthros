@@ -182,6 +182,19 @@ export function goldsrcEngineFiles(manifest, enginesDir) {
   return [...new Set(files)].filter((f) => typeof f === 'string' && engineFile(enginesDir, g.engine, f));
 }
 
+/** The engine's ES module graph, a directory of the release: addressed as one tree (engine-content.js). */
+export const GOLDSRC_MODULE_TREE = 'engine/';
+
+/**
+ * Every engine release file a GoldSrc page may load (release-relative, installed): those of its start
+ * (goldsrcEngineFiles) and the archives of each of its languages (goldsrc.languages.<code>.extras).
+ */
+export function goldsrcPageFiles(manifest, enginesDir) {
+  const g = manifest.goldsrc;
+  const own = Object.values(g.languages ?? {}).flatMap((l) => (Array.isArray(l?.extras) ? l.extras : []));
+  return [...new Set([...goldsrcEngineFiles(manifest, enginesDir), ...own.filter((f) => typeof f === 'string' && engineFile(enginesDir, g.engine, f))])];
+}
+
 /** The browser launch page of a port. */
 export const portLaunchUrl = (name, manifest) => `/ports/${manifest.runtime}/${encodeURIComponent(name)}/`;
 

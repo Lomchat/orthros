@@ -77,7 +77,7 @@ const s1 = (ms) => (ms === null || ms === undefined || !Number.isFinite(ms) ? nu
  * an engine release a version of each edition — reVC's two, say): `out` (made anew: a real folder) holds one real folder
  * per game of `live` — the server's catalog takes real folders only (a link's Dirent is no directory) — of links to the
  * live game's entries (base, versions, cover…), each game of a changed version with a copy of its manifest.json, that
- * version's engine replaced — its port's (`openmw.engine`, `re3.engine`; the versions it requires keep their own).
+ * version's engine replaced — its port's (`openmw.engine`, `re3.engine`, `goldsrc.engine`; the versions it requires keep their own).
  * Never a link into an existing link: every folder linked into is made here, checked a real folder first. `live` is only
  * read. Returns { out, game, previous } (the first changed version's game and former release), `changed`: every one's
  * { [version]: { game, previous } }.
@@ -89,8 +89,8 @@ export function scratchGames({ live, out, version, engine, engines = { [version]
     let m; try { m = JSON.parse(fs.readFileSync(path.join(live, g, 'manifest.json'), 'utf8')); } catch { continue; }
     for (const v of m.versions ?? []) {
       if (!Object.hasOwn(engines, v.id)) continue;
-      const port = ['openmw', 're3'].find((k) => v[k] && typeof v[k] === 'object');
-      if (!port) throw new Error(`${v.id}: not a browser port version with an engine release (openmw, re3)`);
+      const port = ['openmw', 're3', 'goldsrc'].find((k) => v[k] && typeof v[k] === 'object');
+      if (!port) throw new Error(`${v.id}: not a browser port version with an engine release (openmw, re3, goldsrc)`);
       changed[v.id] = { game: g, previous: v[port].engine ?? null };
       v[port] = { ...v[port], engine: engines[v.id] };
       specs.set(g, m);

@@ -15,7 +15,7 @@ import { pageStorage } from '../../host/web/storage-persist.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { treeFiles, languageFiles } from '../../vfs/game-tree.js';
-import { openPortFiles } from '../port-files.js';
+import { engineUrls, openPortFiles } from '../port-files.js';
 import { phaseOnRead } from '../../vfs/emscripten-files.js';
 import { announceMapLoads, configSetting } from './bsp-reads.js';
 import { createLobby, roomAddress } from './lobby.js';
@@ -425,7 +425,8 @@ async function start() {
   storage.ask(); // (before the game data's first write: the store, the saves — storage-persist.js)
   perfRecord ??= portPerf({ runtime: 'goldsrc', storage, game: name, session: telemetry.session, version: config.version ?? null, bench: params.get('benchrun'), phase: () => session.state, data: () => (gameData ? { waits: gameData.stats.misses, ms: gameData.stats.stallMs } : null), gl: () => canvasGl($('canvas')), draws: () => draws });
   if (!crossOriginIsolated) throw new Error(S.isolated);
-  const g = config.goldsrc, base = `/engines/${encodeURIComponent(g.engine)}/`, language = gameLanguage(config);
+  // (each engine file by its content when the server gives it, else under its release: engineUrls)
+  const g = config.goldsrc, at = engineUrls(config, g.engine), language = gameLanguage(config);
   step('engine', 'active'); step('files', ''); step('game', '');
   db = await openStorage(config.saveKey);
   const who = await shell.ready;
@@ -436,7 +437,7 @@ async function start() {
     if (what === 'conflict') await shell.resolveConflict(cloud);
   }
   status(S.init);
-  const { Xash3D, Net, DEFAULT_SERVER_LIBRARY } = await import(base + 'engine/index.js');
+  const { Xash3D, Net, DEFAULT_SERVER_LIBRARY } = await import(at('engine/index.js'));
   const width = $('canvas').clientWidth || 1024, height = $('canvas').clientHeight || 768;
   // (a language's own arguments and folders, goldsrc.languages.<code> — the engine's, as the version's release has them)
   const own = g.languages?.[language] ?? {};
@@ -449,9 +450,9 @@ async function start() {
     // its virtual width still fits a smaller window)
     arguments: ['-windowed', '-noip6', '-game', g.gameDir, '-dll', DEFAULT_SERVER_LIBRARY, '-rodir', '/rodir', '-basedir', '/rwdir', '-width', String(width), '-height', String(height), ...(own.args ?? []), ...(params.has('debug') ? ['-dev', '2'] : []), '+hud_scale', String(hudScale(Math.max(width, screen.width), Math.max(height, screen.height)))],
     libraries: {
-      xash: base + 'engine/xash.wasm', filesystem: base + 'engine/filesystem_stdio.wasm',
-      menu: base + (g.modules.menu ?? 'engine/libmenu.wasm'), client: base + g.modules.client, server: base + g.modules.server,
-      render: { gl4es: base + 'engine/libref_webgl2.wasm' }
+      xash: at('engine/xash.wasm'), filesystem: at('engine/filesystem_stdio.wasm'),
+      menu: at(g.modules.menu ?? 'engine/libmenu.wasm'), client: at(g.modules.client), server: at(g.modules.server),
+      render: { gl4es: at('engine/libref_webgl2.wasm') }
     },
     module: { print: log, printErr: log, onAbort: reason => fail(new Error(String(reason))), postMainLoop: onFrame }
   });
@@ -506,7 +507,7 @@ async function start() {
   log(`Startup files: ${JSON.stringify(session.startup)}`);
   // (the release's archives the engine mounts from the game folder: its own extras by default, goldsrc.extras)
   for (const extra of [...(g.extras ?? ['engine/valve/extras.pk3']), ...(own.extras ?? [])]) {
-    const extrasResponse = await fetch(base + extra);
+    const extrasResponse = await fetch(at(extra));
     if (!extrasResponse.ok) throw new Error(S.engineFiles);
     FS.writeFile(`/rodir/${g.gameDir}/${extra.split('/').pop()}`, new Uint8Array(await extrasResponse.arrayBuffer()));
   }

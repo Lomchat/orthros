@@ -201,7 +201,11 @@ starts at once.
   when its files, its engine release and the modules it names are installed. The home starts a port by opening its
   `launchUrl` (`src/host/web/main.js`); the Windows pre-download row is for `win32` versions only.
 - `/ports/goldsrc/<manifest>/`, `/ports/re3/<manifest>/`: the port's page.
-- `/engines/<release>/<path>`: engine files, only of releases a manifest names, cached as immutable.
+- `/engines/<release>/<path>`: engine files, only of releases a manifest names, cached as immutable. Pages and the
+  home's Prepare are given the content addresses below instead; these keep answering for pages already open.
+- `/engines/_c/<sha256>/<name>`: an engine file by its content (next section), immutable, brotli sibling as above;
+  `/engines/_c/<tree sha256>/<path>`: a member of a module graph's tree; `/engines/_c/<sha256>/lean<n>/openmw.data`:
+  OpenMW's lean package (docs/openmw.md).
 - `/gamez/<manifest>/...?r=<start>-<end>`: the game's files, compressed when that saves bytes, as for Windows games
   (see "Streamed files" below). Native binaries (`.exe`, `.dll`, `.so`) are not part of the engine's tree.
 - `/api/prefetch/<manifest>`: GET the learned list (files and pieces in the order sessions first read them); POST
@@ -220,6 +224,74 @@ starts at once.
   server answers, with the room's secret `key`. `DELETE /api/rooms/<manifest>/<index>` `{ key }` (the page's origin):
   that room closed — its server stopped, its players back to the menu; room 0 never. The lobby keeps the keys of the
   rooms its browser created (`localStorage`, `orthros-rooms:<manifest>`) and shows those a Close button.
+
+### Engine files by content (2026-10-27)
+
+Engine releases come often and change one or two files (Arsenal r2 → r12, OpenMW r1 → r11, reVC r1 → r3), and a
+release-keyed URL made every file new to the browser's HTTP cache and to Prepare's. One shared mechanism,
+`src/host/engine-content.js`, gives every runtime's engine files an address by their content, so that a player coming
+back after a release fetches only the files whose bytes changed. The rules:
+
+- **The sha256.** A file's address is the sha256 of its bytes as the server reads them: hashed once per file, size and
+  mtime, in the background, one file at a time, its release URL given meanwhile (the installed releases' page files,
+  about 500 MB, are hashed in seconds after a start). What `release.json` says — `files` as `[{ path, sha256, bytes }]`
+  (Xash3D) or `{ path: sha256 }` (re3), OpenMW's `engineFiles` `{ basename: sha256 }` — is only checked against it, a
+  mismatch logged: a release copied from another and then one file replaced while keeping an old mtime (`cp -p`,
+  `rsync -a`, a restore) must not put its bytes, immutable for a year in browsers, under the address of the other
+  release's file (or the reverse). All 727 declared sha256s of the installed releases matched their files (checked
+  2026-10-27). OpenMW's lean package (openmw-lean.js) is keyed by the same hash of `openmw.data`, through the same
+  `engineContent` instance (one hashing, one rule).
+- **Files.** `/engines/_c/<sha256>/<name>` (`name`: the file's name in its release). The same bytes in two releases
+  have one address. The route serves only a file indexed from a release a manifest names, under its own name, while
+  its size and mtime are still those hashed (checked at each request: a file changed since is out of the index), with
+  its release's `.br` sibling as `sendEngineFile` does. An address not indexed yet (a release installed since, or a
+  server just restarted: addresses the previous process gave a page or a Prepare) indexes every manifest's engine again
+  (at most every 5 s, and once after each hashing it waited for: a tree is known once all its members are hashed), and
+  waits for the hashing running (up to 60 s) before it answers or 404s.
+- **Module graphs are trees.** Scripts that import their siblings by relative paths (Xash3D's `engine/`: `index.js` →
+  `./xash3d.js` → `./generated/xash.js`, `../utils/index.js`…) cannot each sit under their own sha256. Every script under
+  the graph's directory (`GOLDSRC_MODULE_TREE`, listed or not — a module the graph imports is in it) forms one tree,
+  `/engines/_c/<tree sha256>/<path in the tree>`, its sha256 made of its members' paths and sha256s: the graph keeps its
+  address while no script changes, and its relative imports resolve inside it. A tree with a member not hashed yet is
+  given under its release.
+- **One map for the page and for Prepare.** The server's `engineUrlsOf(manifest)` (from `portEngine`: the runtime's
+  files a page may load — `goldsrcPageFiles` with every language's archives, `re3EngineFiles`, `openmwEngineFiles`) is
+  what `/api/manifest/<name>` gives the page as `engineUrls` `{ release path: URL }` and what `engineOf` lists for the
+  home (`launch.engineFiles`, Prepare's files). The pages take an engine file's address through one helper,
+  `engineUrls(config, release)` in `src/ports/port-files.js` (its content URL, else its release URL): GoldSrc's module
+  import, `libraries` (the loader's `filesMap`) and extras; re3's module import and `locateFile` (its WebAssembly).
+  OpenMW's page is the release's own HTML: `withEngineUrls` (openmw.js) gives `openmw.js` (its script, and the pthread
+  workers it starts from its own address), `openmw.wasm` and `openmw.data` through `Module.locateFile` (the lean package
+  first, `withLeanPackage`). Emscripten's own sibling URLs all go through those (`locateFile`, `filesMap`); a file
+  without a content URL resolves as before.
+- **Prepare.** The download worker takes any `/engines/` URL; its `only-if-cached` check finds a file kept from an
+  earlier release under the same address, so a stale Prepare (its `engineFiles` no longer the card's: `launchStatus`)
+  fetches again only the changed files.
+- re3's `gamefiles/` (the engine's own game files) are game data, not engine files: they go through the game data
+  system (`/gamez`, the OPFS store), keyed by the version's paths.
+
+Measured (2026-10-27). For each runtime a new persistent Chromium profile booted the game once on the original release,
+then the same profile booted it again on the next release. Both runs used the same code tree's server: main `a9aae1b`
+for the "before" column, this change for the "after" column. Everything went through `tools/net-proxy.mjs` at 1.8 MB/s
+with a 90 ms round trip, on copies of the learned state and the br-cache. Each case ran twice, with identical bytes
+both times. The table gives the `/engines` bytes on the wire for the second boot:
+
+| Release change | Before | After | Requests after |
+|---|---|---|---|
+| Arsenal r11 → r12 (real releases: the server and client wasm changed) | 15.05 MB (19 files) | 0.61 MB | 2 |
+| reVC r3 → a copy with `revc.mjs` changed | 1.07 MB | 0.050 MB | 1 |
+| OpenMW r11 → a copy with `openmw.js` changed | 5.70 MB (js + wasm) | 0.069 MB | 1 |
+
+- **Saved per returning player:** 14.4 MB for Arsenal (about 8 s at 1.8 MB/s, about 170 s at 85 KB/s), 1.02 MB for
+  reVC, and 5.63 MB for OpenMW. OpenMW's lean package was already content-addressed before this change.
+- **First boot:** the same with and without the change (Arsenal 15.04 MB, reVC 1.07 MB, OpenMW 13.55 MB with its lean
+  package).
+- **Requests:** every engine request this change's pages made was a content URL, including OpenMW's pthread workers,
+  which load from the same `openmw.js` address.
+- **Browser checks:** all three passed against a server of this change: `tools/goldsrc/check.mjs half-life-original-en solo`,
+  `tools/re3/check.mjs vice-city-revc --new-game` (on the changed copy) and `tools/openmw/check.mjs morrowind-goty-en`
+  (on the changed copy).
+- **Not measured:** Prepare's Cache Storage path, which was not exercised in a browser; real players' links.
 
 ## Streamed files
 

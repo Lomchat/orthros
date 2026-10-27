@@ -42,13 +42,15 @@ export function openmwInstalled(man, enginesDir, memo = null) {
 }
 
 /**
- * The engine release's files a page downloads for the engine itself at its first launch (its release's e/ files),
+ * The engine release's files a page downloads for the engine itself at its first launch (its build's openmw.js,
+ * openmw.wasm and openmw.data),
  * release-relative: those installed.
  */
 export function openmwEngineFiles(man, enginesDir) {
   try {
     const release = JSON.parse(fs.readFileSync(engineFile(enginesDir, man.openmw.engine, 'release.json'), 'utf8'));
-    return (release.files ?? []).filter((f) => /^e\/[^/]+\/[^/]+\.(js|wasm|data)$/.test(f) && engineFile(enginesDir, man.openmw.engine, f));
+    // (the engine's own: its script, WebAssembly and package — not the release's streamfs.js, which Orthros' replaces)
+    return (release.files ?? []).filter((f) => /^e\/[^/]+\/openmw\.(js|wasm|data)$/.test(f) && engineFile(enginesDir, man.openmw.engine, f));
   } catch { return []; }
 }
 
@@ -139,6 +141,17 @@ export const withInputKeys = (html) => html
     "               if (window.orthrosInputKeys && window.orthrosInputKeys(FS) === 'swapped') append('[orthros] saved bindings: Activate on E, Jump on Space');");
 
 export const withSharedEngine =(html, release) => html.replace('("e/" + __ENGINE_VER + "/")', `(${JSON.stringify(`/engines/${release}/e/`)} + __ENGINE_VER + "/")`);
+
+/**
+ * The engine page loading the engine's files by their content (engine-content.js): `urls` { basename: URL } —
+ * openmw.js (its script, and the pthread workers it starts from its own address), openmw.wasm and openmw.data through
+ * Module.locateFile (after withLeanPackage: the lean package keeps its own address) —, a file without one from the
+ * release's build directory as before.
+ */
+export const withEngineUrls = (html, urls) => !urls || !Object.keys(urls).length ? html : html
+  .replace(/var __ENGINE_DIR = [^\n]*;/, (m) => `${m}\n function __orthrosEngineUrl(p){ var u = ${JSON.stringify(urls)}; return Object.prototype.hasOwnProperty.call(u, p) ? u[p] : __ENGINE_DIR + p; }`)
+  .replace(/(locateFile: function\(path\)\{ return [^}]*?)__ENGINE_DIR \+ path; \}/, '$1__orthrosEngineUrl(path); }')
+  .replace("s.src = __ENGINE_DIR + 'openmw.js';", "s.src = __orthrosEngineUrl('openmw.js');");
 
 export function openmwWebText(text, base, saveKey) {
   // Native EM_ASM in the untouched engine glue uses the upstream storage keys too.

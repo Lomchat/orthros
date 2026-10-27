@@ -6,20 +6,21 @@
 // path of the engine page writes an openmw.cfg without data=/gamedata) never reads /gamedata nor the root copy, yet every
 // new player downloaded them before the menu. The lean package is the same package — same size, the same offsets, the
 // metadata in openmw.js unchanged — with those bytes zeroed, which brotli turns into almost nothing. Keyed by the
-// package's CONTENT (its sha256: release.json engineFiles, else hashed once), not by the release: engine releases that
+// package's CONTENT (its sha256 as the server's engine files by content hash it, engine-content.js: one hashing, one
+// rule — the bytes read, a release.json's word only checked), not by the release: engine releases that
 // change only the wasm (r8 -> r9 -> r10 -> r11 in one day) share one package, which a returning player's browser keeps.
 // Made once per content and rule by a niced child (openmw-lean-worker.js) into the server's cache directory, served
 // immutable under /engines/_c/<sha256>/lean<rule>/openmw.data; until it is there (being made, or failed) the page loads
 // the newest lean package already on disk for it (an earlier rule's, or an earlier server's release-keyed one), else the
 // release's own package. The page asks for it unless it boots the example world. The release-keyed addresses of earlier servers
 // (/engines/<release>/lean<n>/<build>/openmw.data) keep answering for the pages still open with them.
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { engineFile } from './goldsrc.js';
+import { engineContent } from './engine-content.js';
 
 /**
  * The rule that made a lean package (its URL and file carry it: a new rule is a new immutable URL). 1: the example
@@ -49,34 +50,36 @@ export const leanRanges = (js) => {
 };
 
 /**
- * The package of an engine release, from its release.json: { build (the e/<hash> directory), data, js (their files),
- * sha (its openmw.data's sha256 as the release says, engineFiles, or null) } or null when it has none.
+ * The package of an engine release, from its release.json: { build (the e/<hash> directory), rel (its openmw.data's
+ * path in the release), data, js (their files) } or null when it has none.
  */
 function packageOf(enginesDir, release) {
   try {
     const r = JSON.parse(fs.readFileSync(engineFile(enginesDir, release, 'release.json'), 'utf8'));
     const f = (r.files ?? []).find((x) => /^e\/[0-9a-f]+\/openmw\.data$/.test(x)); if (!f) return null;
-    const build = f.split('/')[1], sha = r.engineFiles?.['openmw.data'];
-    return { build, data: engineFile(enginesDir, release, f), js: engineFile(enginesDir, release, `e/${build}/openmw.js`), sha: SHA256.test(sha ?? '') ? sha : null };
+    const build = f.split('/')[1];
+    return { build, rel: f, data: engineFile(enginesDir, release, f), js: engineFile(enginesDir, release, `e/${build}/openmw.js`) };
   } catch { return null; }
 }
 
 /**
  * The lean packages of the installed engine releases, kept in `dir` by content (<dir>/_c/<sha256>/lean<rule>/
- * openmw.data.br; earlier servers' <dir>/<release>/lean<n>/<build>/ still served). `url(release)`: the page's address
- * of the release's lean package once made (its making started otherwise — after hashing its package when the release
- * does not say its sha256 —: meanwhile an older lean package of it on disk, else null); `pending(release)`: its making
+ * openmw.data.br; earlier servers' <dir>/<release>/lean<n>/<build>/ still served), their packages' sha256s those of
+ * `content` (the server's engineContent: its hashing shared). `url(release)`: the page's address
+ * of the release's lean package once made (its making started otherwise — once its package is hashed —: meanwhile an
+ * older lean package of it on disk, else null); `pending(release)`: its making
  * (or hashing) runs with no older one to give (the page will ask for the lean package once it is there, not for the
  * release's own: nothing to prepare meanwhile); `size(release)`: the brotli bytes of the one url() gives; `decoded(release)`: its decoded bytes (the release's own package's: the same size); `file(release,
  * rest)`: the file for a request of /engines/<release>/<rest> (an earlier server's address), or null;
  * `contentFile(sha, rest)`: { file, decoded } for a request of /engines/_c/<sha>/<rest>, or null.
  */
-export function leanPackages({ dir, enginesDir, log = () => {} }) {
+export function leanPackages({ dir, enginesDir, log = () => {}, content = engineContent({ enginesDir, log }) }) {
   const making = new Map(); // sha -> true while its child runs, false once it failed (not tried again this run)
-  const hashes = new Map(); // "<file>\0<size>\0<mtime>" -> sha256, null while hashed, false once failed
+  const awaited = new WeakSet(); // content.hashed() promises a making already follows
   const sizes = new Map(); // sha -> the package's decoded bytes (a release's that has it)
   const outOf = (sha, rule = LEAN_RULE) => path.join(dir, '_c', sha, `lean${rule}`, 'openmw.data.br');
   const exists = (f) => { try { return fs.statSync(f).isFile(); } catch { return false; } };
+  const statOf = (f) => { try { return fs.statSync(f); } catch { return null; } };
   const make = (sha, pkg) => {
     if (making.has(sha)) return;
     if (!pkg.data || !pkg.js) { making.set(sha, false); return; }
@@ -94,33 +97,22 @@ export function leanPackages({ dir, enginesDir, log = () => {} }) {
     });
   };
   /**
-   * The release's package with its sha256 ({ ...packageOf, sha }), or null: none, or its hashing runs (started here
-   * when the release does not say it, once per file, size and mtime; its making follows).
+   * The release's package with its sha256 ({ ...packageOf, sha }), or null: none, or its hashing runs (its making
+   * follows it).
    */
   const keyed = (release) => {
     const pkg = packageOf(enginesDir, release); if (!pkg?.data) return null;
-    let st; try { st = fs.statSync(pkg.data); } catch { return null; }
-    let sha = pkg.sha;
+    const sha = content.sha(release, pkg.rel);
     if (!sha) {
-      const key = `${pkg.data}\0${st.size}\0${st.mtimeMs}`;
-      sha = hashes.get(key);
-      if (sha === undefined) {
-        hashes.set(key, null);
-        const h = crypto.createHash('sha256');
-        fs.createReadStream(pkg.data, { highWaterMark: 1 << 20 }).on('data', (b) => h.update(b))
-          .on('error', (e) => { hashes.set(key, false); log(`openmw lean package ${release}: ${e.message}`); })
-          .on('end', () => { const s = h.digest('hex'); hashes.set(key, s); sizes.set(s, st.size); if (!exists(outOf(s))) make(s, { ...pkg, sha: s }); });
-      }
-      if (!sha) return null;
+      const p = content.pending(release, pkg.rel) && content.hashed(release, pkg.rel);
+      if (p && !awaited.has(p)) { awaited.add(p); p.then((s) => { if (s && !exists(outOf(s))) { const st = statOf(pkg.data); if (st) sizes.set(s, st.size); make(s, { ...pkg, sha: s }); } }); }
+      return null;
     }
-    sizes.set(sha, st.size);
+    const st = statOf(pkg.data); if (st) sizes.set(sha, st.size);
     return { ...pkg, sha };
   };
   /** Is the release's package being hashed? */
-  const hashing = (release) => {
-    const pkg = packageOf(enginesDir, release); if (!pkg?.data || pkg.sha) return false;
-    try { const st = fs.statSync(pkg.data); return hashes.get(`${pkg.data}\0${st.size}\0${st.mtimeMs}`) === null; } catch { return false; }
-  };
+  const hashing = (release) => { const pkg = packageOf(enginesDir, release); return !!pkg?.data && content.pending(release, pkg.rel); };
   /**
    * The lean package a page of the release is given: { url, file } — this content's under the current rule (its making
    * started otherwise), else, while that one is made or after it failed, the newest already on disk for the same
@@ -184,7 +176,8 @@ export function leanPackages({ dir, enginesDir, log = () => {} }) {
 
 /**
  * The engine page loading the lean package (its address `leanUrl`, a directory) in place of the release's own, unless
- * it boots the example world (?nomw, or the page's own __FORCE_NOMW).
+ * it boots the example world (?nomw, or the page's own __FORCE_NOMW). Its other files `__ENGINE_DIR + path`: what
+ * openmw.js withEngineUrls gives by content.
  */
 export const withLeanPackage = (html, leanUrl) => !leanUrl ? html : html.replace('locateFile: function(path){ return __ENGINE_DIR + path; }',
-  `locateFile: function(path){ return (path === 'openmw.data' && !(window.__FORCE_NOMW || /[?&]nomw\\b/.test(location.search)) ? ${JSON.stringify(leanUrl)} : __ENGINE_DIR) + path; }`);
+  `locateFile: function(path){ return path === 'openmw.data' && !(window.__FORCE_NOMW || /[?&]nomw\\b/.test(location.search)) ? ${JSON.stringify(leanUrl)} + path : __ENGINE_DIR + path; }`);

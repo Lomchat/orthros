@@ -39,8 +39,9 @@ import { LIGHT_DIR, readLight } from './light-copies.js';
 import { lightCovers } from './light-covers.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
-import { DEFAULT_ENGINES_DIR, engineFile, goldsrcEngineFiles, goldsrcInstalled, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
-import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withFrameMeter, withInputKeys, withProgressiveView, withQualityTier, withSharedEngine, withStreaming } from './openmw.js';
+import { DEFAULT_ENGINES_DIR, engineFile, GOLDSRC_MODULE_TREE, goldsrcEngineFiles, goldsrcInstalled, goldsrcPageFiles, goldsrcModes, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
+import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withEngineUrls, withFrameMeter, withInputKeys, withProgressiveView, withQualityTier, withSharedEngine, withStreaming } from './openmw.js';
+import { CONTENT_PREFIX, engineContent } from './engine-content.js';
 import { leanPackages, withLeanPackage } from './openmw-lean.js';
 import { re3EngineFiles, re3Installed, re3Modes, re3Module } from './re3.js';
 import { mmoApi } from './mmo.js';
@@ -696,13 +697,31 @@ export function createServer(opts = {}) {
     return sum;
   };
   /**
+   * A browser port's engine release: { release, files (what its page loads at a first launch: the home's engine bytes,
+   * "Prepare"), page (every file its page may load), tree (its ES module graph's directory, or null) } — none for a
+   * Win32 game.
+   */
+  const portEngine = (man) => {
+    if (man.runtime === 'goldsrc' && man.goldsrc) return { release: man.goldsrc.engine, files: goldsrcEngineFiles(man, enginesDir), page: goldsrcPageFiles(man, enginesDir), tree: GOLDSRC_MODULE_TREE };
+    if (man.runtime === 're3' && man.re3) { const files = re3EngineFiles(man, enginesDir); return { release: man.re3.engine, files, page: files, tree: null }; }
+    if (man.runtime === 'openmw' && man.openmw) { const files = openmwEngineFiles(man, enginesDir); return { release: man.openmw.engine, files, page: files, tree: null }; }
+    return { release: null, files: [], page: [], tree: null };
+  };
+  /**
+   * The content URLs of a port's engine files (engine-content.js): { release path: /engines/_c/<sha256>/<name> } for
+   * those whose sha256 is known (the others' hashing started: their release URL meanwhile) — what its page
+   * (/api/manifest engineUrls, OpenMW's withEngineUrls) and the home's "Prepare" (engineOf) are given alike.
+   */
+  const engineUrlsOf = (man) => {
+    const { release, page, tree } = portEngine(man);
+    return release && page.length ? contentFiles.pageUrls(release, page, tree) : {};
+  };
+  /**
    * A browser port's engine release as its page downloads it at a first launch: { wire (bytes, brotli when served so —
    * sendEngineFile), urls } — none for a Win32 game.
    */
   const engineOf = (man) => {
-    const [release, files] = man.runtime === 'openmw' ? [man.openmw?.engine, openmwEngineFiles(man, enginesDir)]
-      : man.runtime === 'goldsrc' ? [man.goldsrc?.engine, goldsrcEngineFiles(man, enginesDir)]
-        : man.runtime === 're3' ? [man.re3?.engine, re3EngineFiles(man, enginesDir)] : [null, []];
+    const { release, files } = portEngine(man), byContent = engineUrlsOf(man);
     let wire = 0; const urls = [];
     for (const rel of files) {
       const f = engineFile(enginesDir, release, rel); if (!f) continue;
@@ -717,7 +736,7 @@ export function createServer(opts = {}) {
       try {
         const st = fs.statSync(f); let n = st.size;
         try { const br = fs.statSync(f + '.br'); if (br.mtimeMs >= st.mtimeMs) n = br.size; } catch { /* none */ }
-        wire += n; urls.push(`/engines/${encodeURIComponent(release)}/${rel}`);
+        wire += n; urls.push(byContent[rel] ?? `/engines/${encodeURIComponent(release)}/${rel}`);
       } catch { /* gone */ }
     }
     return { wire, urls };
@@ -1053,8 +1072,19 @@ export function createServer(opts = {}) {
   const covers = opts.coverDir ? lightCovers({ dir: opts.coverDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
   // (made from the start, one at a time in the background: the first home after a deploy already has most of them)
   if (covers) setImmediate(() => { for (const man of manifests.values()) { let f = null; try { f = coverFile(man); } catch { /* none */ } if (f) covers.make(f); } });
+  /** The engine files by content (engine-content.js): their sha256s indexed from the start, those to hash hashed then. */
+  const contentFiles = engineContent({ enginesDir, log: opts.brCacheLog ?? ((m) => console.log(m)) });
+  // (again at a request of a content address not indexed, at most every few seconds — and once after each hashing such
+  // requests waited for, `force` —: a flood of unknown ones costs nothing)
+  let indexedAt = 0;
+  const indexEngines = (force = false) => {
+    if (!force && Date.now() - indexedAt < 5000) return;
+    indexedAt = Date.now();
+    for (const m of manifests.values()) { try { engineUrlsOf(m); } catch { /* not installed */ } }
+  };
+  setImmediate(indexEngines);
   /** OpenMW engine packages without the example world (openmw-lean.js), kept beside the units: none without them. */
-  const lean = opts.brCacheDir ? leanPackages({ dir: path.join(opts.brCacheDir, 'engines'), enginesDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
+  const lean = opts.brCacheDir ? leanPackages({ dir: path.join(opts.brCacheDir, 'engines'), enginesDir, content: contentFiles, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
   // (made from the start for the installed games of their own: not first at a card or a page, the window without it short)
   if (lean) for (const m of manifests.values()) if (m.runtime === 'openmw' && !m.openmw?.example && openmwInstalled(m, enginesDir)) lean.url(m.openmw.engine);
 
@@ -1630,7 +1660,9 @@ export function createServer(opts = {}) {
         const launchUrl = runtimeOf(man) !== 'win32' ? portLaunchUrl(m[1], man) : undefined;
         // (an re3 port: the engine module its page imports, a path of its release — the manifest's, else the release's own)
         const re3 = runtimeOf(man) === 're3' ? { re3: { ...man.re3, module: re3Module(man, enginesDir) } } : {};
-        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, underlayOwners: undefined, owners: (man.underlayOwners ?? []).map((o) => o.manifest), overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
+        // (a port's engine files by content: the page loads those, its release's own address for the others)
+        const engineUrls = runtimeOf(man) !== 'win32' ? { engineUrls: engineUrlsOf(man) } : {};
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, underlayOwners: undefined, owners: (man.underlayOwners ?? []).map((o) => o.manifest), overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...engineUrls, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
@@ -1847,7 +1879,11 @@ export function createServer(opts = {}) {
           const saveKey = scope ? `${man.saveKey}:user:${scope}` : man.saveKey;
           let page = openmwWebText(fs.readFileSync(f, 'utf8'), base, saveKey);
           if (asset.endsWith('.html')) page = withFrameMeter(page);
-          if (asset === 'index.html') page = withInputKeys(withQualityTier(withProgressiveView(withStreaming(withLeanPackage(withSharedEngine(page, man.openmw.engine), man.openmw.example ? null : lean?.url(man.openmw.engine)), url.searchParams.get('sfs') === 'upstream'))));
+          if (asset === 'index.html') {
+            // (its engine files by content, by their names in the build directory: engine-content.js)
+            const byName = Object.fromEntries(Object.entries(engineUrlsOf(man)).map(([rel, u]) => [path.posix.basename(rel), u]));
+            page = withInputKeys(withQualityTier(withProgressiveView(withStreaming(withEngineUrls(withLeanPackage(withSharedEngine(page, man.openmw.engine), man.openmw.example ? null : lean?.url(man.openmw.engine)), byName), url.searchParams.get('sfs') === 'upstream'))));
+          }
           if (asset === 'index.html' && scope) {
             page = page.replace('<head>', '<head><script src="/src/ports/openmw/cloud.js"></script>');
             page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(m[1])}, ${JSON.stringify(scope)});`);
@@ -1866,12 +1902,20 @@ export function createServer(opts = {}) {
       }
       m = /^\/ports\/([a-z0-9]+)\/([^/]+)\/$/.exec(p);
       if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendSource(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
-      // (an OpenMW engine package's lean copy, made by this server and keyed by the package's content — openmw-lean.js:
-      // every engine release with that package shares its address)
-      m = /^\/engines\/_c\/([^/]+)\/(.+)$/.exec(p);
+      // (an engine file by its content — engine-content.js: every release with those bytes shares its address —, or an
+      // OpenMW engine package's lean copy, made by this server and keyed by the package's content — openmw-lean.js)
+      m = p.startsWith(CONTENT_PREFIX) && /^\/engines\/_c\/([^/]+)\/(.+)$/.exec(p);
       if (m) {
         const c = lean?.contentFile(m[1], m[2]);
-        return c ? sendLean(req, res, c.file, c.decoded) : send(res, 404, 'not found');
+        if (c) return sendLean(req, res, c.file, c.decoded);
+        // (not indexed yet — a request while the start's hashing runs, an address the previous process gave, or of a
+        // release installed since —: indexed now, the hashing waited for)
+        const file = contentFiles.lookup(m[1], m[2]);
+        if (file) return sendEngineFile(req, res, file, 'public, max-age=31536000, immutable');
+        contentFiles.served(m[1], m[2], { reindex: indexEngines })
+          .then((f) => (f ? sendEngineFile(req, res, f, 'public, max-age=31536000, immutable') : send(res, 404, 'not found')))
+          .catch((e) => { if (!res.headersSent) send(res, 500, String(e.stack || e)); else res.destroy(); });
+        return;
       }
       m = /^\/engines\/([^/]+)\/(.+)$/.exec(p);
       if (m) {

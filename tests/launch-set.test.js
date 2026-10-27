@@ -3,10 +3,12 @@
 // "Prepare" take those, and the home card says "playable after X MB, about Y min at your link".
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/host/server.js';
+import { treeSha } from '../src/host/engine-content.js';
 import { DirListings } from '../src/host/game-files.js';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';
@@ -419,10 +421,17 @@ test('a game language\'s own launch set (its sessions\' marks: its translated fi
   assert.deepEqual(await order('?lang=fr'), ['valve/a.pak:1', 'valve_french/titles.txt:1'], 'the French sessions\' own');
   assert.deepEqual(await order('?lang=en'), ['valve/a.pak:1', 'valve_french/titles.txt:0']);
   assert.deepEqual(await order('?lang=de'), await order(), 'a language no session told: all the sessions');
-  const launch = (await (await fetch(`${s.base}/api/manifests`)).json()).find((m) => m.name === 'gs-orig').launch;
+  // (its engine files by their content once hashed — its release.json says none: engine-content.js —, under the release
+  // meanwhile)
+  let launch;
+  for (let i = 0; i < 200 && !launch?.engineFiles?.every((u) => u.startsWith('/engines/_c/')); i++) {
+    if (i) await new Promise((r) => setTimeout(r, 20));
+    launch = (await (await fetch(`${s.base}/api/manifests`)).json()).find((m) => m.name === 'gs-orig').launch;
+  }
   assert.equal(launch.bytes, CHUNK); assert.equal(launch.langs.fr.bytes, CHUNK + 1000); assert.equal(launch.langs.en.bytes, CHUNK);
   assert.equal(launch.engine, 10 + 1200 + 300 + 200 + 40, 'the engine release at a first launch: brotli when served so');
-  assert.deepEqual(launch.engineFiles, ['/engines/e-1/engine/index.js', '/engines/e-1/engine/xash.wasm', '/engines/e-1/cl/c.wasm', '/engines/e-1/dl/s.wasm', '/engines/e-1/engine/valve/extras.pk3']);
+  const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(e1, f))).digest('hex');
+  assert.deepEqual(launch.engineFiles, [`/engines/_c/${treeSha([['index.js', sha('engine/index.js')]])}/index.js`, ...['engine/xash.wasm', 'cl/c.wasm', 'dl/s.wasm', 'engine/valve/extras.pk3'].map((f) => `/engines/_c/${sha(f)}/${path.basename(f)}`)]);
   assert.equal(launch.langs.fr.engine, launch.engine);
   assert.equal(launchFor(launch, 'fr'), launch.langs.fr); assert.equal(launchFor(launch, 'de'), launch); assert.equal(launchFor(null, 'fr'), null);
   // (a language the version does not declare: counted in all the sessions' marks, not as a language of its own)

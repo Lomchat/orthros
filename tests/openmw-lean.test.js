@@ -10,6 +10,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { leanPackages, leanRanges, packageFiles, withLeanPackage, LEAN_RULE } from '../src/host/openmw-lean.js';
 import { createServer } from '../src/host/server.js';
+import { engineContent } from '../src/host/engine-content.js';
 
 const LOCATE = 'locateFile: function(path){ return __ENGINE_DIR + path; }';
 
@@ -36,7 +37,7 @@ function release(root, o = {}) {
 }
 /** The lean package of release(): the resources and the opened ICU copy, the rest zeroed. */
 const LEAN = 'RES' + '\0'.repeat(9) + 'IC' + '\0\0';
-const until = async (fn, ms = 20000) => { const t0 = Date.now(); for (;;) { const v = fn(); if (v) return v; if (Date.now() - t0 > ms) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 50)); } };
+const until = async (fn, ms = 20000) => { const t0 = Date.now(); for (;;) { const v = await fn(); if (v) return v; if (Date.now() - t0 > ms) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 50)); } };
 
 test('the lean package\'s ranges: the example world, and ICU\'s root copy only beside the copy the engine opens', () => {
   const js = (names) => `loadPackage({files:[${names.map((n, i) => `{filename:"${n}",start:${i * 10},end:${i * 10 + 10}}`).join(',')}]})`;
@@ -85,20 +86,27 @@ test('the lean package: keyed by the package\'s content, made once, loaded unles
   assert.equal(withLeanPackage('x', null), 'x');
 });
 
-test('the lean package of a release that does not say its package\'s sha256: hashed once, then made; a wrong one makes nothing', async (t) => {
+test('the lean package: keyed by the package\'s bytes as hashed, said or not by the release; a making that fails makes nothing', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-lean-hash-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const { sha } = release(root, { sha: false });
   const lean = leanPackages({ dir: path.join(root, 'cache'), enginesDir: path.join(root, 'engines') });
   assert.equal(lean.url('eng'), null); assert.equal(lean.pending('eng'), true, 'hashed, then made');
   assert.equal(await until(() => lean.url('eng')), `/engines/_c/${sha}/lean${LEAN_RULE}/`);
-  // (a release.json whose sha256 is not its package's: the child checks what it reads, writes nothing)
+  // (a release.json whose sha256 is not its package's — a package replaced since —: keyed by what the package holds,
+  // the mismatch logged by the shared hashing, engine-content.js)
   const { dir } = release(root, { id: 'bad', build: 'bad000' });
   const rj = JSON.parse(fs.readFileSync(path.join(dir, 'release.json'), 'utf8')); rj.engineFiles['openmw.data'] = 'e'.repeat(64);
   fs.writeFileSync(path.join(dir, 'release.json'), JSON.stringify(rj));
   const logs = [], bad = leanPackages({ dir: path.join(root, 'cache2'), enginesDir: path.join(root, 'engines'), log: (m) => logs.push(m) });
-  assert.equal(bad.url('bad'), null);
-  await until(() => !bad.pending('bad'));
-  assert.equal(bad.url('bad'), null); assert.match(logs.join('\n'), /failed/);
+  assert.equal(bad.url('bad'), null); assert.equal(bad.pending('bad'), true);
+  assert.equal(await until(() => bad.url('bad')), `/engines/_c/${sha}/lean${LEAN_RULE}/`, 'never under the sha256 it says');
+  assert.match(logs.join('\n'), new RegExp(`openmw.data: sha256 ${sha}, not the ${'e'.repeat(64)}`));
+  assert.ok(!fs.existsSync(path.join(root, 'cache2', '_c', 'e'.repeat(64))));
+  // (a making that fails — its file cannot be written —: nothing given, nothing pending, not tried again this run)
+  const cache3 = path.join(root, 'cache3'); fs.mkdirSync(path.join(cache3, '_c', sha, `lean${LEAN_RULE}`, 'openmw.data.br'), { recursive: true });
+  const logs3 = [], failing = leanPackages({ dir: cache3, enginesDir: path.join(root, 'engines'), log: (m) => logs3.push(m) });
+  failing.url('eng'); await until(() => /failed/.test(logs3.join('\n')));
+  assert.equal(failing.url('eng'), null); assert.equal(failing.pending('eng'), false);
 });
 
 test('while the current rule\'s lean package is made, or after its making failed: the newest one already on disk', async (t) => {
@@ -117,16 +125,17 @@ test('while the current rule\'s lean package is made, or after its making failed
   if (LEAN_RULE > 1) {
     const dir2 = path.join(root, 'cache2'); put(path.join(dir2, 'eng', 'lean1', 'abc123', 'openmw.data.br'), 'old');
     const prev = put(path.join(dir2, '_c', sha, `lean${LEAN_RULE - 1}`, 'openmw.data.br'), 'prev-rule');
-    const l2 = leanPackages({ dir: dir2, enginesDir: path.join(root, 'engines') });
+    // (its package hashed already — the server's engine files by content, shared —: this content's files at once)
+    const content = engineContent({ enginesDir: path.join(root, 'engines') }); assert.equal(await content.hashed('eng', 'e/abc123/openmw.data'), sha);
+    const l2 = leanPackages({ dir: dir2, enginesDir: path.join(root, 'engines'), content });
     assert.equal(l2.url('eng'), `/engines/_c/${sha}/lean${LEAN_RULE - 1}/`); assert.equal(l2.size('eng'), fs.statSync(prev).size);
     assert.equal(l2.contentFile(sha, `lean${LEAN_RULE - 1}/openmw.data`).file, prev);
     await until(() => l2.url('eng') === `/engines/_c/${sha}/lean${LEAN_RULE}/`);
   }
-  // (a making that fails — release.json's sha256 is not its package's —: the old file for the rest of the run)
-  const { dir: bad } = release(root, { id: 'bad', build: 'bad000' });
-  const rj = JSON.parse(fs.readFileSync(path.join(bad, 'release.json'), 'utf8')); rj.engineFiles['openmw.data'] = 'e'.repeat(64);
-  fs.writeFileSync(path.join(bad, 'release.json'), JSON.stringify(rj));
-  const dir3 = path.join(root, 'cache3'), logs = [], l3 = leanPackages({ dir: dir3, enginesDir: path.join(root, 'engines'), log: (m) => logs.push(m) });
+  // (a making that fails — its file cannot be written —: the old file for the rest of the run)
+  release(root, { id: 'bad', build: 'bad000' });
+  const dir3 = path.join(root, 'cache3'); fs.mkdirSync(path.join(dir3, '_c', sha, `lean${LEAN_RULE}`, 'openmw.data.br'), { recursive: true });
+  const logs = [], l3 = leanPackages({ dir: dir3, enginesDir: path.join(root, 'engines'), log: (m) => logs.push(m) });
   assert.equal(l3.url('bad'), null); assert.equal(l3.pending('bad'), true);
   await until(() => /failed/.test(logs.join('\n')));
   assert.equal(l3.url('bad'), null, 'failed, nothing older: the release\'s own package'); assert.equal(l3.pending('bad'), false);
@@ -157,7 +166,12 @@ test('the server makes and serves the lean package of a game of its own, not of 
   // what the page stops asking for —, the lean one once made)
   await fetch(`${base}/api/prefetch/game-1`, { method: 'POST', body: JSON.stringify({ session: 's', reads: [['Game.esm', 0, 3, 5]], mark: { kind: 'playable' } }) });
   const engineFiles = async () => (await (await fetch(`${base}/api/manifests`)).json()).find((m) => m.name === 'game-1').launch.engineFiles;
-  assert.deepEqual(await engineFiles(), ['/engines/eng/e/abc123/openmw.js', '/engines/eng/e/abc123/openmw.wasm'], 'its making just started');
+  // (the release's files by their content once hashed — not by the sha256s its release.json says: engine-content.js —;
+  // never the release's own package)
+  const hash = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(build, f))).digest('hex');
+  const js = `/engines/_c/${hash('openmw.js')}/openmw.js`, wasm = `/engines/_c/${hash('openmw.wasm')}/openmw.wasm`;
+  const first = await until(async () => { const f = await engineFiles(); return f.includes(js) && f.includes(wasm) && f; });
+  assert.ok(!first.some((u) => /openmw\.data$/.test(u) && !u.includes('/lean')), `its making just started: ${first}`);
   const leanFile = path.join(root, 'brcache', 'engines', '_c', sha, `lean${LEAN_RULE}`, 'openmw.data.br'), leanUrl = `/engines/_c/${sha}/lean${LEAN_RULE}/openmw.data`;
   await until(() => fs.existsSync(leanFile));
   // (a server started with the game installed: made from its start, before any card or page asked for it)
@@ -167,7 +181,7 @@ test('the server makes and serves the lean package of a game of its own, not of 
   let html = '';
   for (let i = 0; i < 400 && !html.includes('lean'); i++) { html = await page('game'); if (!html.includes('lean')) await new Promise((r) => setTimeout(r, 50)); }
   assert.match(html, new RegExp(`/engines/_c/${sha}/lean${LEAN_RULE}/`));
-  assert.deepEqual(await engineFiles(), [leanUrl, '/engines/eng/e/abc123/openmw.js', '/engines/eng/e/abc123/openmw.wasm']);
+  assert.deepEqual(await engineFiles(), [leanUrl, js, wasm]);
   assert.ok(!(await page('demo')).includes('lean'), 'the example world loads the whole package');
   const r = await fetch(base + leanUrl, { headers: { 'Accept-Encoding': 'br' } });
   assert.equal(r.status, 200); assert.equal(r.headers.get('content-encoding'), 'br');
