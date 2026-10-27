@@ -348,7 +348,7 @@ OffscreenCanvas over the Orthros page — its frames reach the screen while the 
 data received (the streaming's shared byte counter), rate, seconds, and "choose Wait" once Chrome
 may ask.
 
-The engine's package without what a game of its own never reads (2026-10-21; rule 2 and content keying 2026-10-27,
+The engine's package without what a game of its own never reads (2026-10-21; rules 2 and 3 and content keying 2026-10-27,
 `src/host/openmw-lean.js`). The release's `openmw.data` (204 MB, 33.4 MB in brotli) holds the engine's resources
 (3.3 MB), ICU's data twice (`/icu/icudt68l.dat` and `/icudt68l.dat`, 28,566,176 bytes each, byte-identical, 28.5 MB
 apart — beyond brotli's 16 MB window, so each costs ~7.1 MB of brotli) and the free example world the page boots with
@@ -369,6 +369,37 @@ on the loaded test machine). Its rules (`LEAN_RULE`, in its URL and file: a new 
    `/engines` (menu at 53.2 → 50.0 s, one run each). `tools/openmw/check.mjs` (2 runs per variant): Morrowind GOTY EN
    and Vanilla+ `--lang fr` reach the menu on both; on this change both open the Options window (a copy of the tool that
    clicks it), its ICU-formatted values drawn ("Difficulté (0)", "Difficulty (0)", "Actors Processing Range (3584)").
+3. inside the opened copy, `/icu/icudt68l.dat`, the ICU feature trees the engine never opens (`ICU_DROPPED`: `brkitr`,
+   `coll`, `rbnf`, `translit`, `unit`, `zone`), `leanIcuData`: the common data's table of contents rewritten with the
+   kept entries only (still sorted: ICU finds an item by binary search), the freed slots, the dropped names and the
+   dropped items' bytes zeroed — the same length, every kept item at its offset (a kept item's length as ICU computes
+   it, to the next entry, may grow over zeros: a resource bundle is bounded by its own indexes). Removing entries, not
+   zeroing items in place (an entry would point at no valid header). Whole trees only, their `res_index.res` with them
+   (OpenMW's own build filters the same way, `extern/icufilters.json`; the upstream web build's note in
+   `wasm-build/link-openmw.sh` found that dropping LOCALES breaks the boot — the root's locale index still lists them —
+   and dropping feature groups does not). Chosen from what the engine calls (its sources, `data/engines/src/openmw-web-
+   v1.5.3/…`): `icu::MessageFormat` (l10n: number skeletons `::.00` and `:: group-off`, `plural`; no date, time,
+   spellout, ordinal or duration argument in the engine's or the installed mods' l10n) and `Locale::getDisplayName`
+   (the Options' Language list), nothing else (`grep` of `apps/` and `components/` for Collator, BreakIterator,
+   Transliterator, DateFormat, Calendar, TimeZone, MeasureFormat, RuleBasedNumberFormat, toTitle: none). Kept: every
+   locale and every root item (converters, normalization, supplemental data, `plurals.res`, `numberingSystems.res`);
+   `lang/` and `region/` (getDisplayName: a Vanilla+ mod ships `zh-cn`, "Chinese (China)"); `curr/` —
+   `DecimalFormatSymbols::initialize` opens it with the caller's status (ICU 68 `i18n/dcfmtsym.cpp:469`: without it
+   every number format fails). Measured 2026-10-27 on orthros-r11 (package `e659ce68…`): one ICU copy 7,094,292 →
+   3,371,725 bytes of brotli 11 (2,566 of 3,823 items kept); lean3 4,132,827 bytes (lean2 7,852,937: −3.72 MB, ~44 s
+   at 85 KB/s), made in 71 s at nice 19, its decoded package equal to lean2's but the ICU copy, which is
+   `leanIcuData(original)`; the home's engine (`launch.engine`) 13,573,475 → 9,853,365. A scratch server of this change
+   (rule 3) and one of main (rule 2) on the same copied br-cache and learned state, Vanilla+ `--lang fr` through a copy
+   of `tools/openmw/check.mjs` that opens Options: Préfs ("Difficulté (0)", "Actors Processing Range (3584)": `::
+   group-off`), Vidéo ("Field of View (60.00)", "Correction Gamma (1.20)": `::.00`), Language with its list open
+   (German … "Chinese", "Chinese (China)") — the three screenshots identical between rule 2 and rule 3 over the
+   window (0 pixels differing), no ICU or l10n error in the engine's log; Morrowind GOTY EN reaches the menu
+   (`check.mjs`) and draws its Options' values ("Field of View (60.00)"). Then (2026-10-27): Vanilla+ on rule 3 makes a
+   save (F5 at -2,6) and loads it from the menu (`tools/openmw/place-load.mjs --mode save --profile new`, 7 MB/s: in the
+   world 57 s after the key, cell -2 6, frames flowing), and in a new game its Lua HUD (the quick bar) draws over the
+   chargen name dialog (`tools/data-matrix.mjs`, 500 KB/s). A new player at 85 KB/s (the same matrix, main against this
+   tree, which also has the whole-block reads of docs/slow-network.md): the engine's lean package 13.55 → 9.83 MB on the
+   wire, downloaded 67 s earlier (173 → 106 s from navigation).
 
 Keyed by the package's content (since rule 2): `<br-cache>/engines/_c/<sha256 of openmw.data>/lean<rule>/openmw.data.br`,
 served immutable as `/engines/_c/<sha256>/lean<rule>/openmw.data`. The sha256 is the one the server's engine files by

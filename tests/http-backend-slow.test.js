@@ -9,6 +9,7 @@ import { NetLink } from '../src/vfs/net-link.js';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';
 
 const MiB = 1 << 20;
+const P = BLOCK / CHUNK;
 const SIZE = 6 * MiB + 4321;
 const byteAt = (i) => (i * 11 + (i >> 10)) & 0xff;
 const bytes = (a, b) => Uint8Array.from({ length: b - a }, (_, k) => byteAt(a + k));
@@ -57,7 +58,7 @@ test('thin link: a random read fetches its pieces only, keeps them in the store;
   assert.deepEqual(g.read(BLOCK - 100, 200), bytes(BLOCK - 100, BLOCK + 100));
 }));
 
-test('thin link: a file read in sequence is fetched a little past each read, never 4 MiB at once; the rest comes ahead in small requests', () => withFetch(async (calls) => {
+test('thin link: a file read in sequence is fetched a little past each read, never 4 MiB at once; the rest comes ahead in small requests, whole blocks once it is read whole', () => withFetch(async (calls) => {
   const b = new HttpBackend('/game/q/', tree(), { net: thin() });
   const f = b.open('f.big'), n0 = syncReqs.length;
   for (let pos = 0; pos < 2 * MiB; pos += 32 << 10) { assert.deepEqual(f.read(pos, 32 << 10), bytes(pos, pos + (32 << 10))); await settle(2); }
@@ -65,8 +66,86 @@ test('thin link: a file read in sequence is fetched a little past each read, nev
   assert.ok(sync.length > 0);
   assert.ok(sync.every(([a, z]) => z - a <= 2 * CHUNK), `sync requests small (${sync.map(([a, z]) => (z - a) / 1024)} KiB)`);
   assert.ok(calls.length > 0, 'pieces fetched ahead of the reader');
-  assert.ok(calls.every((c) => c.end - c.start <= b.net.backgroundBytes()), 'background requests of the link\'s size');
-  assert.ok(calls.every((c) => c.start < 2 * MiB + 256 * 1024), 'not far past the reader');
+  // (its first MiB: requests of the link's size; past STREAM_BYTES — the file read whole —: whole blocks, the server's
+  // units, two at most past the reader)
+  const isBlock = (c) => c.start % BLOCK === 0 && c.end === Math.min(SIZE, c.start + BLOCK);
+  assert.ok(calls.every((c) => c.end - c.start <= b.net.backgroundBytes() || isBlock(c)), `background requests of the link's size or whole blocks: ${calls.map((c) => `${c.start >> 10}+${(c.end - c.start) >> 10}`)} KiB`);
+  assert.ok(calls.filter((c) => c.start < MiB).every((c) => c.end - c.start <= b.net.backgroundBytes()), 'not read whole yet: pieces');
+  assert.ok(calls.some(isBlock), 'read whole: whole blocks');
+  assert.ok(b.stats.wholeAheads > 0);
+  assert.ok(calls.every((c) => c.start < 5 * MiB), 'not far past the reader: its block and two past it at most');
+}));
+
+test('thin link: a file read whole keeps two whole blocks on their way past its reader (one during a load), its own block by pieces; a block with a piece here by its pieces; a media file never', () => withFetch(async (calls) => {
+  const tr = { dirs: { Music: { dirs: {}, files: { 'track.mp3': { size: 6 * MiB, mtime: 3, media: true } } } }, files: tree().files };
+  const b = new HttpBackend('/game/wa/', tr, { net: thin() });
+  b.net.mayStart = () => true; // (the turns at once: the cut of the requests is what is checked)
+  const mid = MiB + 5 * CHUNK + 100;
+  // (the reader stays at `mid` while its read-ahead's answers come: the rest of its block first, three requests at most
+  // on their way, then the two blocks past it)
+  for (let i = 0; i < 12; i++) { b.readAheadParts('f.big', SIZE, 3, mid, 0, 40, mid); await settle(); }
+  const got = calls.map((c) => [c.start, c.end]);
+  assert.ok(got.filter(([a]) => a < 2 * MiB).every(([a, e]) => e - a <= b.net.backgroundBytes() && e <= 2 * MiB), `the reader's block by pieces: ${JSON.stringify(got)}`);
+  assert.equal(got.filter(([a]) => a < 2 * MiB).length, P - 5, 'all of its rest');
+  assert.deepEqual(got.filter(([a]) => a >= 2 * MiB), [[2 * MiB, 3 * MiB], [3 * MiB, 4 * MiB]], 'then two whole blocks, nothing past them');
+  // (at a block's start: that block and the next whole; a block with a piece here: its missing pieces)
+  calls.length = 0;
+  const c = new HttpBackend('/game/wb/', tr, { net: thin() }); c.net.mayStart = () => true;
+  c.addPieces('f.big', 3 * P + 4, 3 * P + 4, bytes(3 * MiB + 4 * CHUNK, 3 * MiB + 5 * CHUNK), { size: SIZE, mtime: 3 });
+  c.readAheadParts('f.big', SIZE, 3, 2 * MiB, 0, 40, 2 * MiB); await settle();
+  const got2 = calls.map((x) => [x.start, x.end]);
+  assert.deepEqual(got2[0], [2 * MiB, 3 * MiB], JSON.stringify(got2));
+  assert.ok(got2.slice(1).every(([a, e]) => a >= 3 * MiB && e - a <= c.net.backgroundBytes() && !(a <= 3 * MiB + 4 * CHUNK && e > 3 * MiB + 4 * CHUNK)), `block 3 by its missing pieces: ${JSON.stringify(got2)}`);
+  // (during a load: one whole block past the reader)
+  calls.length = 0;
+  const d = new HttpBackend('/game/wc/', tr, { net: thin() });
+  const w = d.net.wait(); assert.ok(d.net.silenced()); d.net.mayStart = () => true;
+  d.readAheadParts('f.big', SIZE, 3, 2 * MiB, 0, 40, 2 * MiB); await settle();
+  assert.deepEqual(calls.map((x) => [x.start, x.end]), [[2 * MiB, 3 * MiB], [3 * MiB, 4 * MiB]], 'during a load: the reader\'s next block (it ends on a block boundary) and one past it');
+  d.net.waitEnd(w);
+  // (a reader of few reads, or a short run: as before, no whole block; a media stream: its own seconds, no block)
+  for (const [p, size, reads, run] of [['f.big', SIZE, 4, 2 * MiB], ['f.big', SIZE, 40, 512 << 10], ['Music/track.mp3', 6 * MiB, 400, 3 * MiB]]) {
+    calls.length = 0;
+    const e = new HttpBackend('/game/wd/', tr, { net: thin() }); e.net.mayStart = () => true;
+    e.readAheadParts(p, size, 3, 2 * MiB, 20000, reads, run); await settle();
+    assert.ok(calls.every((x) => x.end - x.start <= e.net.backgroundBytes()), `${p} ${reads} ${run}: ${JSON.stringify(calls.map((x) => [x.start, x.end]))}`);
+    assert.equal(e.stats.wholeAheads ?? 0, 0);
+  }
+}));
+
+test('thin link: whole blocks only for a file read from its start or a long run; never again a block on its way whole; one waiting for its turn at a time, dropped once its reader moved away', () => withFetch(async (calls) => {
+  const mk = (name) => { const b = new HttpBackend(`/game/${name}/`, tree(), { net: thin() }); b.net.mayStart = () => true; return b; };
+  // (a 2 MiB run that did not start at the file's start — an archive's adjacent entries —: pieces; 4 MiB and more: blocks)
+  const a = mk('wr');
+  a.readAheadParts('f.big', SIZE, 3, 3 * MiB, 0, 40, 2 * MiB); await settle();
+  assert.ok(calls.length > 0 && calls.every((x) => x.end - x.start <= a.net.backgroundBytes()), JSON.stringify(calls.map((x) => [x.start, x.end])));
+  assert.equal(a.stats.wholeAheads ?? 0, 0);
+  calls.length = 0;
+  const a2 = mk('wr2');
+  for (let i = 0; i < 12; i++) { a2.readAheadParts('f.big', SIZE, 3, 4 * MiB + 100, 0, 40, 4 * MiB); await settle(); }
+  assert.ok(a2.stats.wholeAheads > 0 && calls.some((x) => x.start === 5 * MiB && x.end === 6 * MiB), JSON.stringify(calls.map((x) => [x.start, x.end])));
+  // (blocks 2 and 3 on their way whole — the read-ahead of a link that was fast a moment ago —: not asked again)
+  calls.length = 0;
+  const c = mk('wf'), never = new Promise(() => {});
+  c.blockFlights.set('f.big#2', never); c.blockFlights.set('f.big#3', never);
+  c.readAheadParts('f.big', SIZE, 3, 2 * MiB, 0, 40, 2 * MiB); await settle();
+  assert.deepEqual(calls.map((x) => [x.start, x.end]), [[4 * MiB, 5 * MiB]], 'the block past them only');
+  // (the link busy: the first whole block waits for its turn, no second one behind it; the reader reads elsewhere: dropped)
+  calls.length = 0;
+  for (const moved of [true, false]) {
+    const d = new HttpBackend(`/game/wq${moved}/`, tree(), { net: thin() });
+    d.net.mayStart = () => false;
+    d.open('f.big').read(MiB, MiB); // (the reader: its run ends at 2 MiB)
+    await settle(); calls.length = 0;
+    d.readAheadParts('f.big', SIZE, 3, 2 * MiB, 0, 40, 2 * MiB);
+    assert.equal(d.net.waiters.length, 1, 'one whole block waiting');
+    if (moved) d.open('g.big').read(0, 100);
+    await settle(); calls.length = 0;
+    d.net.mayStart = () => true; d.net.kick(); await settle();
+    const got = calls.map((x) => [x.start, x.end]);
+    if (moved) assert.ok(!got.some(([s0, e0]) => s0 === 2 * MiB && e0 === 3 * MiB), `dropped: ${JSON.stringify(got)}`);
+    else assert.deepEqual(got[0], [2 * MiB, 3 * MiB], 'fetched once its turn came');
+  }
 }));
 
 test('thin link: the learned prefetch fetches the learned pieces in order from the game\'s position, nothing else', () => withFetch(async (calls) => {

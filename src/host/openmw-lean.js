@@ -5,7 +5,8 @@
 // root copy, 28.5 MB apart — beyond brotli's window, so 7 MB of brotli each). A game of its own (Morrowind: every data
 // path of the engine page writes an openmw.cfg without data=/gamedata) never reads /gamedata nor the root copy, yet every
 // new player downloaded them before the menu. The lean package is the same package — same size, the same offsets, the
-// metadata in openmw.js unchanged — with those bytes zeroed, which brotli turns into almost nothing. Keyed by the
+// metadata in openmw.js unchanged — with those bytes zeroed, which brotli turns into almost nothing, and the opened ICU
+// copy without the feature trees the engine never opens (rule 3: its table of contents rewritten in place). Keyed by the
 // package's CONTENT (its sha256 as the server's engine files by content hash it, engine-content.js: one hashing, one
 // rule — the bytes read, a release.json's word only checked), not by the release: engine releases that
 // change only the wasm (r8 -> r9 -> r10 -> r11 in one day) share one package, which a returning player's browser keeps.
@@ -24,9 +25,10 @@ import { engineContent } from './engine-content.js';
 
 /**
  * The rule that made a lean package (its URL and file carry it: a new rule is a new immutable URL). 1: the example
- * world zeroed; 2: ICU's unused root copy too.
+ * world zeroed; 2: ICU's unused root copy too; 3: inside the opened ICU copy, the feature trees no engine call opens
+ * (ICU_DROPPED) left out of its table of contents and zeroed.
  */
-export const LEAN_RULE = 2;
+export const LEAN_RULE = 3;
 /** The example world's folder in the package: the files left out. */
 const EXAMPLE_DIR = '/gamedata/';
 /**
@@ -35,6 +37,18 @@ const EXAMPLE_DIR = '/gamedata/';
  * the opened one is there.
  */
 const ICU_OPENED = '/icu/icudt68l.dat', ICU_UNUSED = '/icudt68l.dat';
+/**
+ * The trees of ICU's common data the engine never opens (rule 3), by what opens them in ICU 68 and what the engine
+ * calls (docs/openmw.md "The engine's package"): its only ICU uses are MessageFormat (number skeletons ::.00 and
+ * :: group-off, plural, select — DecimalFormatSymbols, number patterns, plurals.res, numberingSystems.res, all kept) and
+ * Locale::getDisplayName in the Options' language list (lang/ and region/, kept: a mod's zh-cn needs region/).
+ * Kept too: curr/ (DecimalFormatSymbols::initialize opens it with the caller's status: without it every number fails),
+ * every locale and every root item (converters, normalization, supplemental data). Left out: collation (Collator),
+ * break iteration (BreakIterator, toTitle), time-zone names (date formats), transliteration, unit names (MeasureFormat,
+ * unit skeletons), rule-based number spelling (spellout/ordinal/duration) — the trees OpenMW's own ICU build filters out
+ * too (extern/icufilters.json), plus unit/ and rbnf/.
+ */
+export const ICU_DROPPED = ['brkitr', 'coll', 'rbnf', 'translit', 'unit', 'zone'];
 const SHA256 = /^[0-9a-f]{64}$/;
 const WORKER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'openmw-lean-worker.js');
 
@@ -48,6 +62,53 @@ export const leanRanges = (js) => {
   const files = packageFiles(js), opened = files.some((f) => f.name === ICU_OPENED && f.end > f.start);
   return files.filter((f) => (f.name.startsWith(EXAMPLE_DIR) || opened && f.name === ICU_UNUSED) && f.end > f.start).map((f) => [f.start, f.end]).sort((a, b) => a[0] - b[0]);
 };
+
+/**
+ * The files a lean package rewrites in place (rule 3: [{ start, end, rewrite(bytes) }], in order): the ICU copy the engine
+ * opens, its dropped trees left out (leanIcuData). Same length: the offsets of the package stay.
+ */
+export const leanRewrites = (js) => packageFiles(js).filter((f) => f.name === ICU_OPENED && f.end > f.start)
+  .map((f) => ({ start: f.start, end: f.end, rewrite: (b) => leanIcuData(b) ?? b }));
+
+/**
+ * ICU's common data (a .dat: a data header, then a table of contents — the item count and, per item sorted by name,
+ * its name's and its data's offsets from the table — then the names and the items) without the items of the `drop`
+ * trees (their names <prefix>/<tree>/...): the table rewritten with the kept entries only (still sorted: ICU looks items
+ * up by binary search), its freed slots, the dropped names and the dropped items' bytes zeroed. The same length and
+ * every kept item at its offset; a kept item's length as ICU computes it (the next entry's offset minus its own) may
+ * grow over zeroed bytes, which resource bundles bound by their own indexes. Returns a new buffer, or null when `buf`
+ * is not little-endian ASCII common data ("CmnD") or its table does not parse (then left whole).
+ */
+export function leanIcuData(buf, drop = ICU_DROPPED) {
+  const b = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
+  if (b.length < 32 || b[2] !== 0xda || b[3] !== 0x27) return null;
+  const hs = b.readUInt16LE(0);
+  // (UDataInfo after the 4-byte header: size, reserved, isBigEndian, charsetFamily, sizeofUChar, reserved, dataFormat)
+  if (hs < 24 || hs + 4 > b.length || b[8] !== 0 || b[9] !== 0 || b.toString('latin1', 12, 16) !== 'CmnD') return null;
+  const n = b.readUInt32LE(hs), table = hs + 4 + 8 * n;
+  if (!n || table > b.length) return null;
+  const items = [];
+  for (let i = 0; i < n; i++) {
+    const name = hs + b.readUInt32LE(hs + 4 + 8 * i), data = hs + b.readUInt32LE(hs + 8 + 8 * i);
+    if (name < table || name >= b.length || data < table || data > b.length) return null;
+    const end = b.indexOf(0, name); if (end < 0) return null;
+    items.push({ entry: b.subarray(hs + 4 + 8 * i, hs + 12 + 8 * i), name, nameEnd: end, data, tree: b.toString('latin1', name, end).split('/') });
+  }
+  // (an item's bytes run to the next item's start, by offset: the table's order is the names')
+  const starts = [...new Set(items.map((x) => x.data))].sort((x, y) => x - y);
+  const next = (d) => { let lo = 0, hi = starts.length; while (lo < hi) { const m = (lo + hi) >> 1; if (starts[m] <= d) lo = m + 1; else hi = m; } return lo < starts.length ? starts[lo] : b.length; };
+  const dropped = (x) => x.tree.length > 2 && drop.includes(x.tree[1]);
+  const kept = items.filter((x) => !dropped(x));
+  if (kept.length === n) return null;
+  const out = Buffer.from(b);
+  out.writeUInt32LE(kept.length, hs);
+  kept.forEach((x, i) => x.entry.copy(out, hs + 4 + 8 * i));
+  out.fill(0, hs + 4 + 8 * kept.length, table);
+  // (an item another kept entry shares — none in ICU's data, but then its bytes stay)
+  const keptData = new Set(kept.map((x) => x.data));
+  for (const x of items) if (dropped(x)) { out.fill(0, x.name, x.nameEnd); if (!keptData.has(x.data)) out.fill(0, x.data, next(x.data)); }
+  return out;
+}
 
 /**
  * The package of an engine release, from its release.json: { build (the e/<hash> directory), rel (its openmw.data's

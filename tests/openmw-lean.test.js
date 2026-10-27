@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { leanPackages, leanRanges, packageFiles, withLeanPackage, LEAN_RULE } from '../src/host/openmw-lean.js';
+import { leanPackages, leanRanges, leanRewrites, leanIcuData, packageFiles, withLeanPackage, LEAN_RULE, ICU_DROPPED } from '../src/host/openmw-lean.js';
 import { createServer } from '../src/host/server.js';
 import { engineContent } from '../src/host/engine-content.js';
 
@@ -47,6 +47,81 @@ test('the lean package\'s ranges: the example world, and ICU\'s root copy only b
   assert.deepEqual(leanRanges(js(['/resources/a', '/gamedata/b', '/icu/icudt68l.dat'])), [[10, 20]], 'a release without the root copy');
   assert.deepEqual(leanRanges(js(['/resources/a', '/gamedata/b', '/icudt68l.dat'])), [[10, 20]], 'the root copy alone: kept, the engine may read it');
   assert.deepEqual(leanRanges(js(['/resources/icudt68l.dat', '/gamedata/b'])), [[10, 20]]);
+});
+
+/**
+ * ICU common data ("CmnD", little-endian ASCII) of `items` ([name, body] — sorted by name here, as ICU's tool writes
+ * them): a 32-byte data header, the table (count, then name/data offsets from the table), the names, the items 16-aligned.
+ */
+function icuData(items) {
+  items = [...items].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  const hs = 32, header = Buffer.alloc(hs);
+  header.writeUInt16LE(hs, 0); header[2] = 0xda; header[3] = 0x27; header.writeUInt16LE(20, 4); header[10] = 2; header.write('CmnD', 12, 'latin1');
+  const names = Buffer.concat(items.map(([n]) => Buffer.from(`${n}\0`, 'latin1'))), tableLen = 4 + 8 * items.length;
+  let data = (tableLen + names.length + 15) & ~15;
+  const table = Buffer.alloc(tableLen), parts = []; let name = tableLen;
+  table.writeUInt32LE(items.length, 0);
+  items.forEach(([n, body], i) => {
+    table.writeUInt32LE(name, 4 + 8 * i); table.writeUInt32LE(data, 8 + 8 * i); name += n.length + 1;
+    const b = Buffer.alloc((body.length + 15) & ~15); Buffer.from(body, 'latin1').copy(b); parts.push(b); data += b.length;
+  });
+  const pad = Buffer.alloc(((tableLen + names.length + 15) & ~15) - tableLen - names.length);
+  return Buffer.concat([header, table, names, pad, ...parts]);
+}
+/** The items of ICU common data: { name: body (to its next item's start, trailing zeros cut) } — as ICU looks them up. */
+function icuItems(b) {
+  const hs = b.readUInt16LE(0), n = b.readUInt32LE(hs), out = {}, at = [];
+  for (let i = 0; i < n; i++) at.push([hs + b.readUInt32LE(hs + 4 + 8 * i), hs + b.readUInt32LE(hs + 8 + 8 * i)]);
+  at.forEach(([name, data], i) => { out[b.toString('latin1', name, b.indexOf(0, name))] = b.toString('latin1', data, i + 1 < n ? at[i + 1][1] : b.length).replace(/\0+$/, ''); });
+  return out;
+}
+const ICU_ITEMS = [['icudt68l/root.res', 'MAIN-ROOT'], ['icudt68l/fr.res', 'FRFR'], ['icudt68l/plurals.res', 'PLURALS'], ['icudt68l/coll/root.res', 'COLLROOT'],
+  ['icudt68l/coll/fr.res', 'COLLFR'], ['icudt68l/curr/fr.res', 'CURRFR'], ['icudt68l/lang/fr.res', 'LANGFR'], ['icudt68l/zone/fr.res', 'ZONEFR'],
+  ['icudt68l/brkitr/word.brk', 'WORDBRK'], ['icudt68l/region/fr.res', 'REGIONFR'], ['icudt68l/unit/fr.res', 'UNITFR'], ['icudt68l/rbnf/fr.res', 'RBNFFR'],
+  ['icudt68l/translit/root.res', 'TRANSLIT']];
+
+test('rule 3: ICU\'s common data without the feature trees the engine never opens — its table rewritten, same length, kept items at their offsets', () => {
+  assert.deepEqual(ICU_DROPPED, ['brkitr', 'coll', 'rbnf', 'translit', 'unit', 'zone']);
+  const icu = icuData(ICU_ITEMS), lean = leanIcuData(icu);
+  assert.equal(lean.length, icu.length);
+  assert.deepEqual(icuItems(lean), { 'icudt68l/curr/fr.res': 'CURRFR', 'icudt68l/fr.res': 'FRFR', 'icudt68l/lang/fr.res': 'LANGFR', 'icudt68l/plurals.res': 'PLURALS',
+    'icudt68l/region/fr.res': 'REGIONFR', 'icudt68l/root.res': 'MAIN-ROOT' }, 'the kept items, found by name as ICU finds them');
+  const names = Object.keys(icuItems(lean)); assert.deepEqual(names, [...names].sort(), 'still sorted (binary search)');
+  for (const [n, body] of ICU_ITEMS) {
+    const at = icu.indexOf(Buffer.from(body, 'latin1'));
+    if (ICU_DROPPED.includes(n.split('/')[1])) { assert.equal(lean.indexOf(Buffer.from(body, 'latin1')), -1, `${n}: zeroed`); assert.equal(lean.indexOf(Buffer.from(n, 'latin1')), -1, `${n}: its name too`); }
+    else assert.equal(lean.toString('latin1', at, at + body.length), body, `${n}: at its offset`);
+  }
+  assert.ok(lean.subarray(0, 32).equals(icu.subarray(0, 32)), 'the data header as it was');
+  // (not ICU's common data, or nothing to drop: left whole)
+  assert.equal(leanIcuData(Buffer.from('IC')), null);
+  assert.equal(leanIcuData(icuData(ICU_ITEMS.filter(([n]) => !ICU_DROPPED.includes(n.split('/')[1])))), null);
+  const big = Buffer.from(icu); big[8] = 1; assert.equal(leanIcuData(big), null, 'big-endian: not this format');
+  const bad = Buffer.from(icu); bad.writeUInt32LE(1e6, 32); assert.equal(leanIcuData(bad), null, 'a table past the end');
+  // (the package's rewrite: the opened copy only, by name)
+  const js = `loadPackage({files:[{filename:"/icu/icudt68l.dat",start:0,end:${icu.length}},{filename:"/icudt68l.dat",start:${icu.length},end:${2 * icu.length}}]})`;
+  const rw = leanRewrites(js);
+  assert.deepEqual(rw.map((r) => [r.start, r.end]), [[0, icu.length]]);
+  assert.ok(rw[0].rewrite(icu).equals(lean)); assert.equal(rw[0].rewrite(Buffer.from('IC')).toString(), 'IC', 'not ICU data: as it is');
+});
+
+test('rule 3 made by the child: the opened ICU copy rewritten in place across read chunks, the rest as rules 1-2', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-lean-icu-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // (ICU data larger than the child's 1 MiB reads, not aligned to them: its rewrite spans several chunks)
+  const filler = Array.from({ length: 300 }, (_, i) => [`icudt68l/coll/x${String(i).padStart(3, '0')}.res`, `C${i}`.repeat(1200)]);
+  const icu = icuData([...ICU_ITEMS, ...filler, ...Array.from({ length: 300 }, (_, i) => [`icudt68l/l${String(i).padStart(3, '0')}.res`, `L${i}`.repeat(1200)])]);
+  assert.ok(icu.length > 2 << 20);
+  const files = [['/resources/a', Buffer.alloc(700001, 7)], ['/gamedata/b', Buffer.from('BBBBB')], ['/icu/icudt68l.dat', icu], ['/icudt68l.dat', icu], ['/resources/z', Buffer.from('ZZ')]];
+  let at = 0; const meta = [];
+  for (const [name, body] of files) { meta.push(`{filename:"${name}",start:${at},end:${at + body.length}}`); at += body.length; }
+  const data = Buffer.concat(files.map((f) => f[1])), dir = path.join(root, 'e');
+  fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, 'openmw.data'), data); fs.writeFileSync(path.join(dir, 'openmw.js'), `loadPackage({files:[${meta.join(',')}]})`);
+  const out = path.join(root, 'lean.br'), sha = crypto.createHash('sha256').update(data).digest('hex');
+  const { fork } = await import('node:child_process');
+  const code = await new Promise((res) => fork(new URL('../src/host/openmw-lean-worker.js', import.meta.url).pathname, [path.join(dir, 'openmw.data'), path.join(dir, 'openmw.js'), out, sha]).on('exit', res));
+  assert.equal(code, 0);
+  const got = zlib.brotliDecompressSync(fs.readFileSync(out)), want = Buffer.concat([files[0][1], Buffer.alloc(5), leanIcuData(icu), Buffer.alloc(icu.length), files[4][1]]);
+  assert.equal(got.length, data.length); assert.ok(got.equals(want), 'the package: the opened ICU copy rewritten at its offset, the root copy and the example zeroed');
 });
 
 test('the lean package: keyed by the package\'s content, made once, loaded unless the page boots the example', async (t) => {

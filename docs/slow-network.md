@@ -45,7 +45,56 @@ this server (localhost), where none of this shows.
   at 1 MB/s, 4 MiB on a fast link); a demand read rounds up by at most `DEMAND_SECONDS` (0.25 s) of the link past what
   the game asked (a stream's window grows with the stream, within that bound). A file read whole no longer fetches
   1-4 MiB blocks synchronously on a link that is not fast: it goes by pieces, its next bytes come ahead in background
-  requests of the link's size (`readAheadParts`, 2 s of the link ahead).
+  requests of the link's size (`readAheadParts`, 2 s of the link ahead) — until it is read whole: see the next item.
+- **A file read whole takes whole blocks on any link** (2026-10-27, `readAheadParts` `whole`): not a media file, its
+  reader at `STREAM_READS` (16) reads in sequence or more, and its run past `STREAM_BYTES` (1 MiB) from the file's start
+  or past `WHOLE_RUN` (4 MiB) from anywhere (an engine reading its master file from start to end: OpenMW's ESMs; a run
+  of an archive's adjacent entries — a .big, .img, .bsa, .pak — rarely starts at offset 0 or lasts 4 MiB). The
+  read-ahead then asks each block past its reader's as the whole block — one request, the server's block unit (brotli
+  11 over 1 MiB: ~10 % fewer bytes than its sixteen piece units, ~25 % fewer than pieces compressed on the fly;
+  Morrowind.esm 28.2 MB as 77 block units against ~30.7 MB as piece units) — even where `wholeBlockFits()` is false (a
+  thin link, a block slower than 1.25 s, a load). The blocks are counted from the first past the reader's position's
+  block — a read that ends on a block boundary (the data worker's reads end where the bytes here end) makes the next
+  block the reader's own —: that one and `WHOLE_AHEAD_BLOCKS` (2) more, one during a load. Bounds on the speculation:
+  - one whole block waits for its turn at a time (a 1 MiB request starts on a link that is not fast only when the link
+    is free, `NetLink.mayStart`; a second one queued would hold every later background request behind it, `kick()`'s
+    strict priority): in practice one on the link, one queued;
+  - a queued one is dropped once its reader moved away (`HttpBackend.reader`: a read of another file, or elsewhere in
+    this one, or past that block), so a run that ends leaves at most the block already on the link (kept: only a
+    synchronous read of the same bytes aborts it — an abort throws its bytes away);
+  - a block already on its way whole (`fetchBlocksAhead` of a moment when the link was fast, a missed block's, the block
+    fill's `bgCur`) is counted, never asked again.
+  The rest of the block the reader is inside goes by pieces as before, and so does a block with a piece here or on its
+  way (its missing pieces). The background prefetch (`missingRun`) is unchanged. Against the load's two-round-trip
+  requests (`requestBytes()`, "The gate" below), the reader of a file read whole wins: it reads that block next, and
+  another read of the load queues behind one block at most (~4 s at 85 KB/s, ~0.8 s at 500 KB/s) — the price of the
+  smaller bytes. Residual: the server learns these blocks as the game's reads (`a=1`), the unread rest of a block whose
+  reader stopped inside it included. `stats.wholeAheads` counts the blocks asked so where the earlier rule would have
+  asked pieces. Measured (2026-10-27, `tools/data-matrix.mjs --links 85k:150,500k:90 --only
+  morrowind-goty-vanilla-plus-fr`, page language en, main a9aae1b against this tree, the same frozen copy of the live
+  learned state and units — every Morrowind.esm block unit there, 202 of its piece units; the engine's lean package is
+  rule 2 on main and rule 3 here, docs/openmw.md, so the engine's bytes are counted apart; up to the menu shown; one run
+  at 85 KB/s, two at 500 KB/s):
+
+  | | 85 KB/s before → after | 500 KB/s run 1 | 500 KB/s run 2 |
+  |---|---|---|---|
+  | menu shown (s) | 998.8 → 684.6 | 172.2 → 146.9 | 203.5 → 187.6 |
+  | Morrowind.esm on the link (s from navigation) | 191–793 → 147–503 | 44–143 → 36–104 | |
+  | Morrowind.esm wire (MB), requests | 33.95, 1219 → 28.31, 152 | 32.49, 529 → 28.71, 174 | 33.23, 1054 → 28.58, 182 |
+  | its 1 MiB whole-block requests | 0 → 73 | 13 → 66 | 10 → 67 |
+  | Bloodmoon.esm / Tribunal.esm wire (MB) | 3.10 / 1.16 → 2.91 / 1.04 | 3.01 / 1.12 → 2.95 / 1.11 | 3.10 / 1.16 → 2.93 / 1.18 |
+  | game data wire (MB), requests | 47.51, 1835 → 41.49, 621 | 49.95, 1053 → 46.11, 852 | 51.42, 1876 → 46.31, 677 |
+  | `X-Orthros-Unit: hit` share of those requests | 23 % → 56 % | 29 % → 59 % | 27 % → 56 % |
+  | engine wire (MB, rule 2 → 3) | 13.55 → 9.83 | 13.55 → 9.83 | 13.55 → 9.83 |
+  | demand wait (s) | 32.2 → 32.2 | 5.0 → 7.6 | 6.5 → 5.3 |
+
+  At 85 KB/s the master file reaches the browser in 356 s instead of 602 s: −5.6 MB (whole-block units, ~17 % smaller
+  than the pieces mostly compressed on the fly) and ~1 070 fewer round trips, the link busier (76 KB/s average to the
+  menu instead of 62). Of the −314 s to the menu, the lean rule 3 engine accounts for ~44–67 s (its bytes; its download
+  ended 67 s earlier), the rest is this rule. The demand wait (the game's own reads) is unchanged at 85 KB/s and within
+  the runs' spread at 500 KB/s (the gate's two-round-trip requests queue behind one block at most). bfme2 (archives) was
+  not measured; neither `stats.wholeAheads` nor `net.silenced()` during the ESM read (the data worker's, not the
+  runner's page stats): the proxy log's 1 MiB block-aligned `a=1` requests stand for the former.
 - **No abort waste**: background requests are small enough to finish (a demand read that comes waits at most their
   rest); only those that would hold the game up longer than 1.5 × `BG_SECONDS` are aborted (sized before the link was
   measured, or the link slowed down); a synchronous read aborts the background requests for the same bytes (the worker
@@ -792,7 +841,9 @@ waits, the background carries only what that load needs. Generic: the rules depe
   once the load is over. A `forLoad` turn follows the between-link rules (nothing in flight: it starts whatever its
   size — one queued before the load, at a free link's size, would otherwise wait for the load's end with the load's
   smaller ones behind it); those made during a load are small: `NetLink.requestBytes()` — 2 round trips of the link, not
-  `BG_SECONDS` —, and `HttpBackend.wholeBlockFits()` is false (a parked read never waits for a whole block on its way).
+  `BG_SECONDS` —, and `HttpBackend.wholeBlockFits()` is false (a parked read never waits for a whole block on its way —
+  but for the reader of a file read whole, whose next block is one whole request, it and one more during a load: see "A
+  file read whole takes whole blocks on any link").
 - **What a load needs** (`forLoad`): the learned pieces ahead of the game (`pumpAhead`) while its position in the learned
   order is followed — `L.tracked` (`HttpBackend.noteBlock`): `TRACK_STEPS` (2) first touches in a row going forward by
   at most `TRACK_WINDOW` (64) ranks, and at least `TRACK_SHARE` (half) of the last `TRACK_SPAN` (8) blocks touched first
@@ -804,7 +855,8 @@ waits, the background carries only what that load needs. Generic: the rules depe
   lost.
   Never a media entry at the order's tail (`e.tail`: never ahead at all). The read-ahead of a file read in sequence that
   is not a media file — one request ahead of a reader of fewer than `STREAM_READS` reads in sequence (an archive's
-  entry read in a few pieces: the bytes past it are other entries the load may not read), two of a longer one. The
+  entry read in a few pieces: the bytes past it are other entries the load may not read), two of a longer one (for a
+  file read whole, its next block and one whole block past it, one of them waiting for its turn at most). The
   startup set a page waits for (`prefetch` `learnedOnly`).
 - **Not during a load**: the learned order's background pass (tier 1 and 2, the media tail), the block fill (`want`,
   `near`, `later`), the upgrades of light copies, the offline copy, the read-ahead of a media stream. `fillBackground`

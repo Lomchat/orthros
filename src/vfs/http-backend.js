@@ -30,6 +30,10 @@ const STREAM_WINDOW = 256 << 10; // pieces kept in memory (the blocks fetched be
 const READ_AHEAD_LOW = 2 << 20, READ_AHEAD_HIGH = 4 << 20;
 /** on a link that is not fast, a sequential reader gets this many seconds of the link ahead of it (see readAheadParts) */
 const READ_AHEAD_SECONDS = 2;
+/** a file read whole on a link that is not fast: this many whole blocks asked past its reader's (see readAheadParts) */
+const WHOLE_AHEAD_BLOCKS = 2;
+/** a run this long in sequence (from anywhere in the file) or STREAM_BYTES from the file's start: a file read whole (readAheadParts) */
+const WHOLE_RUN = 4 << 20;
 /**
  * A read that misses a block (needs pieces not here yet) also starts the download of the whole block, at most this many
  * such downloads in flight (else the block waits for the background fill, as before): see noteMiss.
@@ -251,6 +255,9 @@ export class HttpBackend {
     this.flights = new Map();
     /** whole blocks being fetched ahead of a sequential reader: "path#block" -> promise (see readAhead) */
     this.blockFlights = new Map(); this.readAheadPending = 0;
+    /** the latest read of any file (HttpFile.readNow): its path, end, and `runs` — counted up at each read that does not
+     * continue the latest one (another file, or elsewhere in it); see readAheadParts */
+    this.reader = { path: '', end: 0, runs: 0 };
     /** whole blocks downloading because a read missed them (see noteMiss) */
     this.missFlights = 0;
     /** the learned prefetch list and the game's position in it (see prefetch, noteBlock) */
@@ -909,9 +916,11 @@ export class HttpBackend {
    * parked read of a block on its way waits for it (fetchAhead). A synchronous read of such a block fetches it again
    * (the worker cannot receive the asynchronous answer while it blocks): the bytes are the same either way.
    */
-  readAhead(path, size, mtime, end, rate = 0, reads = STREAM_READS) {
+  // (`run`: the bytes its reader read in sequence so far, its first read included — `end` itself: from the file's start;
+  // see readAheadParts)
+  readAhead(path, size, mtime, end, rate = 0, reads = STREAM_READS, run = 0) {
     if (typeof fetch !== 'function' || end >= size) return;
-    if (!this.net.fast()) { this.readAheadParts(path, size, mtime, end, rate, reads); return; }
+    if (!this.net.fast()) { this.readAheadParts(path, size, mtime, end, rate, reads, run); return; }
     const have = (bi) => this.cache.has(`${path}#${bi}`) || this.blockFlights.has(`${path}#${bi}`) || !!this.store?.map.has(`${path}#${size}#${mtime}#${bi}`);
     let covered = end;
     while (covered < size && covered - end < READ_AHEAD_LOW && have(Math.floor(covered / BLOCK))) covered = (Math.floor(covered / BLOCK) + 1) * BLOCK;
@@ -933,24 +942,70 @@ export class HttpBackend {
    * `rate` (bytes/s) only, and waits for a load to end. During a load, a reader of fewer than STREAM_READS reads in
    * sequence (`reads`: an archive's entry read in a few pieces, the bytes past it other entries the load may not read)
    * gets one request ahead of it, not two.
+   *
+   * A file read whole (not media, `reads` of STREAM_READS at least in sequence, its run past STREAM_BYTES from the file's
+   * start or past WHOLE_RUN from anywhere: an engine reading its master file from start to end — a run of an archive's
+   * adjacent entries rarely starts at offset 0 or lasts 4 MiB) takes whole blocks past its reader on any link — each
+   * block one request, the server's block unit (precompressed at brotli 11 over 1 MiB: ~10 % fewer bytes than its
+   * sixteen piece units, ~25 % fewer than pieces compressed on the fly). The blocks are counted from the first one past
+   * the reader's (`end` on a block boundary: that block is the reader's own — the data worker's reads end where the
+   * bytes here end): the reader's and WHOLE_AHEAD_BLOCKS more, one during a load. Only one of them waits for its turn at
+   * a time (a 1 MiB request starts on a link that is not fast only when the link is free: NetLink.mayStart — a second
+   * one queued would hold every later background request behind it, kick()'s strict priority), and a queued one is
+   * dropped once its reader moved away (`reader`: a read elsewhere, in this file or another), so an archive's run that
+   * ends leaves at most the block already on the link — kept (abortOverlap only): an abort throws its bytes away. The
+   * rest of the block its reader is inside goes by pieces as before, and so does a block with a piece here or on its way
+   * (its missing pieces); a block on its way whole (fetchBlocksAhead, the block fill) is counted, not asked again.
+   * During a load this wins over requestBytes()'s two round trips: those keep a parked read of another file from waiting
+   * behind a block it does not need, but this reader needs that block next, and the load's other reads queue behind
+   * one block at most. Residual cost: the server learns these blocks as the game's reads (`a=1`) — the unread rest of a
+   * block whose reader stopped inside it is learned too.
    */
-  readAheadParts(path, size, mtime, end, rate = 0, reads = STREAM_READS) {
+  readAheadParts(path, size, mtime, end, rate = 0, reads = STREAM_READS, run = 0) {
     let want = Math.min(READ_AHEAD_HIGH, Math.max(128 << 10, Math.floor(this.net.secondsFor(1) > 0 ? READ_AHEAD_SECONDS / this.net.secondsFor(1) : READ_AHEAD_HIGH)));
     // (a media file: what its reader consumes in MEDIA_AHEAD_SECONDS — and not as part of a load: forLoad below)
-    const media = this.isMedia(path);
+    const media = this.isMedia(path), P = BLOCK / CHUNK;
     if (media) want = Math.min(want, Math.max(MEDIA_AHEAD_MIN, Math.floor(rate * MEDIA_AHEAD_SECONDS)));
-    const last = Math.floor((Math.min(size, end + want) - 1) / CHUNK), most = Math.max(1, this.net.requestBytes() / CHUNK);
-    let inFlight = 0;
-    const ahead = !media && reads < STREAM_READS && this.net.silenced() ? 1 : 2;
+    const whole = !media && reads >= STREAM_READS && (run >= STREAM_BYTES && run >= end || run >= WHOLE_RUN);
+    const blocks = this.net.silenced() ? 1 : WHOLE_AHEAD_BLOCKS;
+    let stop = Math.min(size, end + want);
+    if (whole) stop = Math.min(size, Math.max(stop, (Math.floor(end / BLOCK) + 1 + blocks) * BLOCK));
+    const last = Math.floor((stop - 1) / CHUNK), most = Math.max(1, this.net.requestBytes() / CHUNK);
+    let inFlight = 0, queued = false;
+    // (a file read whole: its requests counted once each — a block on its way is one request, not sixteen —, the
+    // reader's block and the blocks past it)
+    const ahead = whole ? 1 + blocks : !media && reads < STREAM_READS && this.net.silenced() ? 1 : 2, seen = new Set();
+    /** block `bi` on its way whole outside the piece flights: the read-ahead's or a missed block's, the block fill's */
+    const blockOnWay = (bi) => this.blockFlights.get(`${path}#${bi}`) ?? (this.bgCur?.key === `${path}#${bi}` ? this.bgCur.done ?? this.bgCur : null);
+    /** every piece of block `bi` missing: none here, none on its way */
+    const none = (bi) => { for (let k = bi * P, e = Math.min(Math.ceil(size / CHUNK), (bi + 1) * P); k < e; k++) if (this.flights.has(`${path}#${k}`) || this.pieceHere(path, size, mtime, k)) return false; return true; };
     for (let c = Math.floor(end / CHUNK); c <= last; c++) {
-      if (this.flights.has(`${path}#${c}`)) { inFlight++; continue; }
-      if (this.peekBlockHere(path, size, mtime, Math.floor(c * CHUNK / BLOCK)) || this.pieceHere(path, size, mtime, c)) continue;
+      const bi = Math.floor(c * CHUNK / BLOCK), piece = this.flights.get(`${path}#${c}`), f = piece ?? blockOnWay(bi);
+      if (f) {
+        // (a whole block — this read-ahead's, or on its way outside the piece flights — still waiting for its turn)
+        if (!whole || !seen.has(f)) { inFlight++; seen.add(f); if ((f.whole || !piece) && f.w && this.net.waiters.includes(f.w)) queued = true; }
+        if (!piece) c = (bi + 1) * P - 1; // (a block on its way whole: none of its pieces asked)
+        continue;
+      }
+      if (this.peekBlockHere(path, size, mtime, bi) || this.pieceHere(path, size, mtime, c)) continue;
       if (inFlight >= ahead) return; // (two requests on their way past the reader at most, one during a load: the link stays the game's)
-      // (from a block's start, the whole block in one request — its unit — when the link carries it soon enough)
-      const n = c % (BLOCK / CHUNK) === 0 && this.wholeBlockFits() ? BLOCK / CHUNK : most;
-      let j = c; while (j + 1 <= last && j + 1 - c < n && Math.floor((j + 1) * CHUNK / BLOCK) === Math.floor(c * CHUNK / BLOCK) && !this.flights.has(`${path}#${j + 1}`) && !this.pieceHere(path, size, mtime, j + 1)) j++;
+      // (from a block's start, the whole block in one request — its unit — when the link carries it soon enough, or for a
+      // file read whole a block starting at its reader or past it, nothing of that block here or on its way)
+      const big = c % P === 0 && !this.wholeBlockFits() && whole && c * CHUNK >= end && none(bi);
+      if (big && queued) return; // (one whole block waiting for its turn at a time: see above)
+      const n = c % P === 0 && (this.wholeBlockFits() || big) ? P : most;
+      let j = c; while (j + 1 <= last && j + 1 - c < n && Math.floor((j + 1) * CHUNK / BLOCK) === bi && !this.flights.has(`${path}#${j + 1}`) && !this.pieceHere(path, size, mtime, j + 1)) j++;
       this.stats.readAheads = (this.stats.readAheads ?? 0) + 1;
-      this.fetchPartBg(path, size, mtime, c, j, PRIO.readAhead, () => false, true, { reason: media ? 'mediaAhead' : 'readAhead', forLoad: !media });
+      // (a whole block of a file read whole: dropped while it waits for its turn once its reader moved away — a read
+      // elsewhere, or past this block — see `reader`)
+      let halt = () => false;
+      if (big) {
+        this.stats.wholeAheads = (this.stats.wholeAheads ?? 0) + 1;
+        const r = this.reader, runs = r.runs;
+        halt = () => r.path !== path || r.runs !== runs || r.end >= (bi + 1) * BLOCK;
+      }
+      const pr = this.fetchPartBg(path, size, mtime, c, j, PRIO.readAhead, halt, true, { reason: media ? 'mediaAhead' : 'readAhead', forLoad: !media });
+      if (big) { pr.whole = true; if (pr.w && this.net.waiters.includes(pr.w)) queued = true; }
       inFlight++; c = j;
     }
   }
@@ -1650,10 +1705,12 @@ class HttpFile {
     // bytes read in sequence so far: a bulk read (loading a file whole) fetches whole blocks ahead synchronously; a
     // stream read a little at a time (audio, video while playing) goes by pieces, its next blocks in the background
     this.run = sequential ? this.run + (end - off) : 0;
-    if (!sequential) this.runT0 = performance.now(); // (the run's start: its reading rate, see readAhead)
+    if (!sequential) { this.runT0 = performance.now(); this.runFrom = off; } // (the run's start: its reading rate and offset, see readAhead)
     // (a stream: many reads in sequence — a movie, music; an archive entry loaded in one go is not, and a read elsewhere
     // in the file ends it)
     this.runReads = sequential ? (this.runReads ?? 0) + 1 : 0;
+    // (the backend's latest reader: a queued whole block of a file read whole drops once it moved away, see readAheadParts)
+    const rd = this.b.reader; if (rd.path !== this.path || !sequential) rd.runs++; rd.path = this.path; rd.end = end;
     if (this.run >= STREAM_SKIP && this.runReads >= STREAM_READS) this.b.streams.add(this.path);
     else if (!sequential && this.b.streams.size) this.b.streams.delete(this.path);
     const fast = this.b.net.fast(), bulk = sequential && this.run >= STREAM_BYTES;
@@ -1681,7 +1738,7 @@ class HttpFile {
       pos += n;
     }
     // (a file read whole: its next blocks on their way before the reader gets there)
-    if (pos === end && (bulk || (!fast && sequential && this.run >= CHUNK))) this.b.readAhead(this.path, this.len, this.mtime, end, this.run / Math.max(0.25, (performance.now() - this.runT0) / 1000), this.runReads);
+    if (pos === end && (bulk || (!fast && sequential && this.run >= CHUNK))) this.b.readAhead(this.path, this.len, this.mtime, end, this.run / Math.max(0.25, (performance.now() - this.runT0) / 1000), this.runReads, end - this.runFrom);
     return pos === end ? out : out.subarray(0, pos - off);
   }
   write() { return 0; }
