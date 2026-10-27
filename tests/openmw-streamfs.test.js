@@ -64,14 +64,18 @@ test('announced reads (orthrosWillRead / orthrosReadWait): engine paths to the g
     ctx.StreamFS.mount('/data/Meshes/x/a.nif', app + 'mwdata/Meshes/x/a.nif', 9000);
     const list = ['/data/Morrowind.bsa\x1F1048576\x1F70000', '/data/Meshes/x/a.nif\x1F0\x1F-1', '/data/nothing.nif\x1F0\x1F-1', ''].join('\x1E');
     assert.equal(ctx.orthrosWillRead(list, 'meshes:-2,6'), 2, 'two not in the page (the unknown path left out)');
+    const data = ctx.StreamFS.data();
+    // (posted with its wait window's other lists: at the wait, or once the page's thread yields — GameData.wantFlush)
+    assert.equal(w.sent.filter((m) => m.want).length, 0);
+    data.wantFlush();
     const sent = w.sent.find((m) => m.want);
     assert.deepEqual(sent.want, { seq: 1, from: 1, list: [['morrowind-goty-en', 'Morrowind.bsa', 1048576, 70000], ['morrowind-goty-en', 'Meshes/x/a.nif', 0, 9000]], label: 'meshes:-2,6' });
-    const data = ctx.StreamFS.data();
     assert.equal(ctx.orthrosReadWait(5), 0, 'not settled: time out');
     assert.equal(ctx.orthrosReadWait(15000), 1, 'nothing announced since the last wait: nothing to wait for');
     // (the next batch's window starts after the one that timed out)
     ctx.StreamFS.mount('/data/Meshes/x/b.nif', app + 'mwdata/Meshes/x/b.nif', 9000);
     assert.equal(ctx.orthrosWillRead('/data/Meshes/x/b.nif\x1F0\x1F-1', 'meshes:-2,7'), 1);
+    data.wantFlush();
     assert.equal(w.sent.filter((m) => m.want).at(-1).want.from, 2);
     Atomics.store(data.ctrl, 12, 2);
     assert.equal(ctx.orthrosReadWait(15000), 1, 'settled (ctrl[12] at the batch)');

@@ -9,7 +9,8 @@
 // says holds the engine (`held`: data-client.js holdCheck; not one the engine asked ahead and went on past, nor one
 // fetched in the background). The link, for the page: ctrl[7] 1 when it is fast (the files themselves read,
 // not their light copies), ctrl[8] its measured rate (KB/s, 0 until measured), ctrl[9] 1 when it is thin (measured
-// below THIN_BPS, net-link.js). The page's quiet (GameData.quiet: a page that loads more of its game when nothing waits):
+// below THIN_BPS, net-link.js), ctrl[15] its wire bytes per file byte (NetLink.ratio, thousandths: the compressed
+// ranges — GameData.bigBatch weighs a load's files on the wire). The page's quiet (GameData.quiet: a page that loads more of its game when nothing waits):
 // ctrl[10] 1 when the learned order's loading has nothing left for the game's current step (or does not run), ctrl[11]
 // the time since a read last waited for the network (ms, 0 while one waits).
 // Announced reads (GameData.want: the ranges the engine says it reads next, fetched in parallel — HttpBackend.wantList):
@@ -441,6 +442,7 @@ function monitor() {
   Atomics.store(ctrl, 6, W.waiting);
   Atomics.store(ctrl, 7, net.fast() ? 1 : 0); Atomics.store(ctrl, 8, net.measured && net.bw > 0 ? Math.round(net.bw / 1024) : 0);
   Atomics.store(ctrl, 9, net.thin() ? 1 : 0);
+  Atomics.store(ctrl, 15, Math.round(net.ratio() * 1000));
   const now = performance.now();
   Atomics.store(ctrl, 10, aheadIdle() ? 1 : 0);
   Atomics.store(ctrl, 11, W.waiting > 0 ? 0 : Math.min(0x7fffffff, Math.round(now - W.lastWait)));

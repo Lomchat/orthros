@@ -111,6 +111,7 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   one measured between thin and fast (ctrl[8] measured, ctrl[9] not thin) —, the file unless its light copy is here
   (no wait); else its light copy — zeros past its bytes, up to the file's size (the engine reads what its header
   says). The choice holds for the whole load. The light copy read, the worker is told once.
+  A big announced load of an engine that reloads in place reads light on a fast link too ("Big loads light first").
 - **Engines that reload in place** (`GameData.reloads(true)`, or the `reloads` option: OpenMW's Orthros build, whose
   `orthros_file_updated` export `src/ports/openmw/streamfs.js` sees): light copies first on every link that is not
   fast, since the file replaces the light copy while it is shown (`onReal`: the page asks the engine to load it again,
@@ -771,6 +772,77 @@ its pieces; a file's light copy first, whole). A version is a source once it has
 Tests: `tests/places.test.js` (round trip and order, path checks, malformed reports, unknown manifest, union and
 recency, bounds, languages, persistence across a restart, the seeded units served as hits, the runtimes that may
 report, one network as one reporter, the version's record bound by value, the hourly new places, the served cut).
+
+## Big loads light first (2026-10-27)
+
+The owner's link is fast (4-15 MB/s through Cloudflare, ~80 ms): `NetLink.fast()` (≥ 3 MiB/s), so OpenMW read the
+full-resolution textures, and since the announced reads a first visit of a place waits for all of them at once — at
+Seyda Neen a new device announced ~96 MB of real files (Vanilla+ textures, 1-4 MB each): ~8-10 s frozen at 12 MB/s,
+~19 s at 5 MB/s, against ~14-15 MB with the light copies. An engine that reloads in place loses nothing by reading them
+light first: the files replace them a few seconds later. The rules (`src/vfs/data-client.js`, generic: the link, the
+batch's sizes and the engine's ability only):
+
+- **A big load** (`GameData.bigBatch`, over a whole wait window): the page's engine reloads in place
+  (`GameData.reloads`), the page lets it (`GameData.lightFirst`, on by default; OpenMW's `?lightfirst=0`, on the
+  engine page or the play page around it, turns it off) and did not say what its loads are for (`prefer`), and the
+  files of the window that have a light copy and whose next load would read the file itself (not here whole, not in the
+  page, no load of it under way) would hold the link more than `LOAD_BUDGET_S` (2 s): their bytes times the link's
+  wire/file ratio (`NetLink.ratio`, ctrl[15]: the compressed ranges) against its measured rate (`FAST_BPS` before it
+  is measured) — 24 MB of wire at 12 MB/s, 10 MB at 5 MB/s. Only those files count — what else the window fetches
+  (meshes, archive ranges) is read as is either way and may be in the worker's store already (the page cannot tell).
+  Small loads are unchanged (the files themselves on a fast link).
+- **One verdict a window**: an engine announces one load in several lists before its one wait (OpenMW: a place's
+  textures, then its land's — two `orthrosWillRead` in one expression, their order unspecified), each maybe under the
+  budget, together over it. So `want` numbers its batch at once (the wait's window counts it) and returns how many
+  entries are in the page as neither copy, but posts it with the window's others (`GameData.wantFlush`): at the wait
+  (`wantWait`), or once the page's thread yields (an engine that announces and goes on); the verdict is the whole
+  window's, and every batch of it is pinned by it.
+- **Light first**: the big batch's files are announced as their light copies, whole, and pinned for their loads
+  (`h.pin`, as any announced choice); the big-load state (`GameData.bigLoad`, `bigLoadNow`) makes the loads of that
+  moment that were not announced read light too — the engine's preloads (`readable()`) — until `BIG_HOLD_MS` (5 s)
+  after the end of the big window's own wait (`wantWait`), `PIN_MS` (60 s) after the announce if it never waits. A
+  later announced window has its own verdict (a small one reads the files themselves on a fast link) and its wait does
+  not extend the hold: loads less than 5 s apart do not chain it.
+  A predicted place (`prio: 'place'`, fetched while the player idles) keeps the link's choice: the files themselves on a
+  fast link.
+- **The files after the load**: each light copy read tells the worker (`light`, `soon`: `HttpBackend.upgrade`), the
+  latest first (LIFO). The upgrades wait for the load's end on every link (`HttpBackend.loadUnderWay`: the game blocked
+  on reads — `NetLink.loading` — or an announced list still missing, of any backend sharing the link): on a fast link
+  the stage-1 gate does not silence, and an engine spinning on its announced wait reads nothing — the game looked quiet
+  1.5 s into the wait and an earlier place's upgrades competed with the batch. Then the game quiet `UPGRADE_SOON_QUIET_MS`
+  (1.5 s), one block at a time.
+- **Reloads paced**: the files here whole that the page read light (`lightReads`, kept by `pick`) reach the page's
+  listeners (`onReal` → OpenMW's `orthros_file_updated`) `REAL_PER_TICK` (2) per 100 ms, the latest first — an engine
+  reloads them over frames, not dozens in one. The other files the worker reports whole (the learned order, the whole
+  download, a place's files, plain reads: hundreds a minute on a fast link) reload nothing and are not queued — the
+  queue never grows past the textures shown light. The page's choice for the next loads (`realHere`) is updated at
+  once for all. `GameData.reloaded()` counts the reloads done.
+- **Counted** (`GameData.snapshot()`, OpenMW's `window.__streamfsStats`): `bigLoads`, `bigFiles`, `bigBytes` (the real
+  bytes left for later), `reloaded`; the upgrades' bytes in `net.bgBy.upgrade`.
+
+Tests: `tests/game-data.test.js` (a big batch light first and pinned, a preload of the moment light, small loads, places,
+`prefer`, `lightFirst(false)`, an engine that cannot reload, the hold's end; a window of two lists each under the budget;
+the wire ratio; a small load in the hold; the reloads paced, the latest first, only the files read light),
+`tests/http-backend-want.test.js` (on a fast link no upgrade during an announced list's wait, then it goes).
+
+Measured (2026-10-27, `tools/openmw/place-load.mjs morrowind-goty-vanilla-plus-fr --profile new --mode coe --rtt 80
+--after 60`, COE from Seyda Neen to -2,6 on a new device, pristine learned state and brcache copies, the runs interleaved
+before/after; before: `main` bc6163f; SwiftShader headless):
+
+| link | variant | frozen ms | announced wire MB (decoded) | wantWait ms | big loads / files | upgrades in frozen MB | upgrades 60 s after MB | `reloaded` |
+|---|---|---|---|---|---|---|---|---|
+| 12 MB/s | before | 8383, 8816 | 69.8 (100.7), 71.7 (104.5) | 7129, 7484 | — | 0 | 0 | — |
+| 12 MB/s | after | 2383, 2633 | 7.7 (12.1), 7.4 (11.7) | 1490, 1631 | 2 / 220, 216 | 0.11, 0.14 | 23.1, 23.6 | 106, 101 |
+| 5 MB/s | before | 19983 | 80.0 (119.8) | 18730 | — | 0 | 0 | — |
+| 5 MB/s | after | 3500 | 8.7 (14.1) | 2936 | 2 / 261 | 0.16 (+1.4 MB started in its last 0.3 s) | 40.9 | 97 |
+
+The frozen frame 3.3-3.4x shorter at 12 MB/s, 5.7x at 5 MB/s; the announced bytes ~9x fewer; time to frames flowing
+12.9-13.1 s -> 5.7-6.4 s (12 MB/s), 24 -> 7.8 s (5 MB/s). Upgrades: none during the announced waits; one or three
+requests started in the frozen frame's last few hundred ms (after the waits, the engine still building the scene: the
+gate is the load's lists, not the frame). In the 60 s after, ~23 MB (12 MB/s) / ~41 MB (5 MB/s) of full files and ~100
+in-place reloads — about half the big batch's textures, paced. Hitches from the reloads: not measurable here (SwiftShader
+draws most frames over 250 ms; `stallsOver250Ms` is dominated by it and no different before/after); to check on a GPU.
+Not measured: `?lightfirst=0` (should match before), the owner's real Cloudflare link, scenario S (a save from the menu).
 
 ## What the page says
 

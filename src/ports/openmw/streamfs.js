@@ -28,6 +28,12 @@
   /** the longest the predicted place waits for the engine's first frame (see anticipate) */
   const BOOT_WAIT_MS = 180000;
 
+  /** The page's `lightfirst` parameter (this engine page's, else the play page's around it: same origin), or null. */
+  function lightFirstParam() {
+    const of = (w) => { try { return new URLSearchParams(w.location.search).get('lightfirst'); } catch { return null; } };
+    return of(window) ?? (window.parent && window.parent !== window ? of(window.parent) : null);
+  }
+
   /** The tree path of an engine mount's URL (one of this installation's served files), or null. */
   function treePath(url) {
     const u = new URL(url, location.href);
@@ -67,11 +73,14 @@
           const at = S.byKey.get(k), h = at && S.byPath.get(at);
           if (!h || !S.data.lightRead(h)) continue;
           S.data.repick(h);
-          try { update?.(at); } catch (e) { console.warn('[streamfs] reload', at, e?.message ?? e); }
+          try { if (update) { update(at); S.data.reloaded(); } } catch (e) { console.warn('[streamfs] reload', at, e?.message ?? e); }
         }
       });
       // (an engine that reloads in place: its loads read the light copies first on every link that is not fast, their
       // files soon after them — GameData.reloads; its export seen once the engine's module is instantiated)
+      // (a big load read light first on a fast link too, GameData.lightFirst — ?lightfirst=0 on this page or the play
+      // page around it: the link alone decides)
+      S.data.lightFirst(lightFirstParam() !== '0');
       if (canReload()) S.data.reloads(true);
       else { let n = 0; const look = setInterval(() => { if (canReload()) S.data.reloads(true); if (canReload() || ++n >= 240) clearInterval(look); }, 250); }
       try { Object.defineProperty(window, '__streamfsStats', { configurable: true, get: () => S.data.snapshot() }); } catch { /* defined */ }

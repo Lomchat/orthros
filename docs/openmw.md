@@ -958,6 +958,9 @@ the game data (`GameData.want`: fetched in parallel, light copies on a link that
 `window.orthrosReadWait(timeoutMs)` waits once for all of it. The engine side (its scene changes announce the cells'
 models and land textures, wait, then the textures the models name) is a patch of its own. Contract and rules:
 docs/slow-network.md "Announced reads (2026-10-26)".
+A big announced load (its textures more than 2 s of the link) reads their light copies first on a fast link too, the
+files after the load, made sharp in place (`orthros_file_updated`, paced); `?lightfirst=0` on the play or engine page
+turns it off: docs/slow-network.md "Big loads light first (2026-10-27)".
 
 ### Anticipated places (2026-10-26)
 

@@ -340,3 +340,27 @@ test('the learned order\'s launch set goes before a predicted place, the rest of
     assert.ok(prios[0][1] < placePrio && placePrio < prios[1][1], `launch set ${prios[0][1]} < place ${placePrio} < the rest ${prios[1][1]}`);
   } finally { globalThis.fetch = real; }
 });
+
+test('on a fast link the upgrades of light copies wait for an announced list (the engine reads nothing meanwhile), then go', async () => {
+  const F = heldFetch();
+  try {
+    const net = new NetLink({ bw: 12e6, fixed: true });
+    assert.equal(net.fast(), true); assert.equal(net.silenced(), false, 'a fast link: the gate does not silence');
+    const b = new HttpBackend('/game/v/', tree(), { store: new MemBlockStore(), encoded: true, session: 'sess', net });
+    const done = b.wantList([['m0.nif', 0, -1], ['m1.nif', 0, -1]], { label: 'textures:-2,6' });
+    await settle(3);
+    assert.equal(b.loadUnderWay(), true, 'a list waited for: a load under way');
+    // (an earlier place's light copy read: its file queued, `soon`; the game read nothing for long — it spins on the wait)
+    b.upgrade('arc.bsa', { soon: true });
+    assert.ok(b.upgrades.size > 0);
+    await new Promise((r) => setTimeout(r, 1800));
+    assert.ok(!F.calls.some((c) => c.file === 'arc.bsa'), `no upgrade during the load: ${JSON.stringify(F.calls.map((c) => c.file))}`);
+    F.release();
+    assert.deepEqual(await Promise.all(done), [true, true]);
+    assert.equal(b.loadUnderWay(), false);
+    for (let i = 0; i < 100 && !F.calls.some((c) => c.file === 'arc.bsa'); i++) { F.release(); await new Promise((r) => setTimeout(r, 25)); }
+    assert.ok(F.calls.some((c) => c.file === 'arc.bsa'), 'the upgrade once the load is over');
+    for (let i = 0; i < 100 && b.upgrades.size; i++) { F.release(); await new Promise((r) => setTimeout(r, 10)); }
+    b.upgrades.clear(); F.release();
+  } finally { F.restore(); }
+});

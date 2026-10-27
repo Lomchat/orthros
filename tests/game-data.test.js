@@ -660,6 +660,117 @@ test('announced reads on a fast link: the texture itself', async (t) => {
   assert.deepEqual(server.asked.filter(([, , , k]) => k === 'want').map(([p, a, b]) => [p, a, b]), [['tex.dds', 0, 300000]]);
 });
 
+test('a big announced load of an engine that reloads in place reads light first on a fast link; small loads, places, the page\'s choice unchanged', () => {
+  const told = [], fake = { onmessage: null, postMessage: (m) => told.push(m), terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    data.reloads(true);
+    const c = data.ctrl; c[7] = 1; c[8] = 12 << 10; c[9] = 0; // (a fast link: 12 MiB/s — 24 MiB in LOAD_BUDGET_S)
+    const tex = (i, size = 3 << 20) => { const h = data.fileAs('v', `textures/t${i}.dds`, size); h.light = 60000; return h; };
+    const mesh = data.fileAs('v', 'meshes/a.nif', 40 << 20); mesh.light = 0;
+    const lightOf = (h) => `.light/${h.path}`;
+    const posted = () => { data.wantFlush(); return told.filter((m) => m.want).at(-1).want.list.map(([, path]) => path); };
+    // (small: 4 textures, 12 MiB — the files themselves, as before; a mesh weighs nothing in the choice)
+    const small = [0, 1, 2, 3].map((i) => tex(i));
+    assert.equal(data.want([...small, mesh].map((h) => ({ h })), 'textures:0,0'), 5);
+    assert.deepEqual(posted(), [...small.map((h) => h.path), mesh.path]);
+    assert.equal(data.bigLoad, null); assert.equal(data.stats.bigLoads, 0);
+    // (big: 10 more, 30 MiB > 24 — their light copies announced and pinned; the files of the small load are under way)
+    for (const h of small) h.at = performance.now();
+    const big = Array.from({ length: 10 }, (_, i) => tex(10 + i));
+    data.wantWait(0); // (the small load's window over)
+    data.want([...big, ...small].map((h) => ({ h })), 'textures:-2,6');
+    assert.deepEqual(posted().slice(0, 10), big.map(lightOf)); assert.ok(big.every((h) => h.pin && !h.pin.real));
+    assert.deepEqual(data.snapshot().bigLoads, 1); assert.equal(data.stats.bigFiles, 10); assert.equal(data.stats.bigBytes, 30 << 20);
+    // (its loads read light, their upgrades told soon; a preload of the moment (readable) reads light too)
+    assert.notEqual(data.pick(big[0], 0), big[0]);
+    assert.deepEqual(told.find((m) => m.light && m.light.path === big[0].path).light, { name: 'v', path: big[0].path, soon: true });
+    const pre = tex(30); assert.notEqual(data.pick(pre, 0), pre, 'a preload during the big load: light');
+    // (a predicted place keeps the link's choice: the files themselves on a fast link)
+    const placed = tex(31); data.want([{ h: placed }], { prio: 'place', label: 'place:-2,6' });
+    assert.ok(told.at(-1).wantPlace, 'posted at once');
+    assert.deepEqual(told.at(-1).wantPlace.list.map(([, path]) => path), [placed.path]);
+    // (the engine's wait ends the announce's hold: BIG_HOLD_MS after it, the link decides again)
+    data.wantWait(1);
+    assert.ok(data.bigLoad.end !== null && data.bigLoadNow());
+    data.bigLoad.end -= 6000; assert.equal(data.bigLoadNow(), false); assert.equal(data.bigLoad, null);
+    const later = tex(32); assert.equal(data.pick(later, 0), later, 'after it: the file (fast)');
+    // (the page's own choice, or ?lightfirst=0, or an engine that cannot reload: no big load)
+    const again = () => Array.from({ length: 10 }, (_, i) => tex(40 + i + 20 * again.n++)).map((h) => ({ h })); again.n = 0;
+    data.prefer('real'); data.want(again()); data.wantWait(0); assert.equal(data.stats.bigLoads, 1, 'the page prefers real');
+    data.prefer(null); data.lightFirst(false); data.want(again()); data.wantWait(0); assert.equal(data.stats.bigLoads, 1, 'light first off');
+    data.lightFirst(true); data.reloads(false); data.want(again()); data.wantWait(0); assert.equal(data.stats.bigLoads, 1, 'no reload in place');
+    data.reloads(true); c[8] = 0; data.want(again()); data.wantWait(0); assert.equal(data.stats.bigLoads, 2, 'not measured yet: FAST_BPS, 6 MiB in the budget');
+  } finally { data.close(); }
+});
+
+test('the files made sharp in place reach the page\'s listeners a few at a time, the latest first, only those read light (a burst of reloads is a hitch)', () => {
+  const fake = { onmessage: null, postMessage() {}, terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    const got = []; data.onReal((keys) => got.push(keys));
+    // (5 textures read light — the link not fast —, then thousands of other files whole: the learned order, a download)
+    const read = ['a', 'b', 'c', 'd', 'e'].map((n) => { const h = data.fileAs('v', `${n}.dds`, 300000); h.light = 40000; data.pick(h, 0); assert.ok(data.lightRead(h)); return h; });
+    const others = Array.from({ length: 3000 }, (_, i) => `v\nother${i}.dds`);
+    fake.onmessage({ data: { real: others } });
+    fake.onmessage({ data: { real: read.map((h) => 'v\n' + h.path) } });
+    assert.ok(data.realHere.has('v\ne.dds') && data.realHere.has('v\nother9.dds'), 'known at once (the next loads read the files)');
+    assert.equal(got.length, 0);
+    assert.equal(data.realQ.length, 5, 'only the files read light queued');
+    data.holdWatch(); data.holdWatch(); data.holdWatch(); data.holdWatch();
+    assert.deepEqual(got, [['v\ne.dds', 'v\nd.dds'], ['v\nc.dds', 'v\nb.dds'], ['v\na.dds']]);
+    fake.onmessage({ data: { real: ['v\na.dds'] } }); data.holdWatch();
+    assert.equal(got.length, 3, 'told once');
+    data.reloaded(3); assert.equal(data.snapshot().reloaded, 3);
+  } finally { data.close(); }
+});
+
+test('a big load announced in two lists (a place\'s textures, its land\'s), each under the budget, the window over it: light first for both', () => {
+  const told = [], fake = { onmessage: null, postMessage: (m) => told.push(m), terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    data.reloads(true);
+    const c = data.ctrl; c[7] = 1; c[8] = 12 << 10; c[9] = 0; // (24 MiB in LOAD_BUDGET_S)
+    const tex = (i) => { const h = data.fileAs('v', `textures/w${i}.dds`, 3 << 20); h.light = 60000; return h; };
+    const models = Array.from({ length: 6 }, (_, i) => tex(i)), land = Array.from({ length: 6 }, (_, i) => tex(10 + i));
+    // (18 MiB each, 36 together)
+    assert.equal(data.want(models.map((h) => ({ h })), 'textures:-2,6'), 6);
+    assert.equal(data.want(land.map((h) => ({ h })), 'terrain:-2,6'), 6);
+    assert.equal(told.filter((m) => m.want).length, 0, 'posted with the window: at the wait');
+    assert.equal(data.wantWait(0), false);
+    const batches = told.filter((m) => m.want).map((m) => m.want);
+    assert.deepEqual(batches.map((b) => [b.seq, b.label]), [[1, 'textures:-2,6'], [2, 'terrain:-2,6']]);
+    assert.ok(batches.every((b) => b.list.every(([, path]) => path.startsWith('.light/'))), 'both halves light');
+    assert.equal(data.stats.bigLoads, 1); assert.equal(data.stats.bigBytes, 36 << 20);
+    // (compressed ranges: the same 36 MiB at 0.6 of it on the wire, 21.6 MiB — under the budget: the files)
+    c[15] = 600;
+    const more = Array.from({ length: 12 }, (_, i) => tex(30 + i));
+    data.bigLoad = null; data.want(more.map((h) => ({ h })), 'textures:0,0'); data.wantWait(0);
+    assert.ok(told.filter((m) => m.want).at(-1).want.list.every(([, path]) => !path.startsWith('.light/')), 'under the budget on the wire: the files');
+    assert.equal(data.stats.bigLoads, 1);
+  } finally { data.close(); }
+});
+
+test('a big load\'s hold: only its own window\'s wait ends it; a small load during the hold reads the files and does not extend it', () => {
+  const told = [], fake = { onmessage: null, postMessage: (m) => told.push(m), terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    data.reloads(true);
+    const c = data.ctrl; c[7] = 1; c[8] = 12 << 10; c[9] = 0;
+    const tex = (i, size = 3 << 20) => { const h = data.fileAs('v', `textures/x${i}.dds`, size); h.light = 60000; return h; };
+    data.want(Array.from({ length: 10 }, (_, i) => ({ h: tex(i) })), 'textures:0,0');
+    data.wantWait(0);
+    assert.ok(data.bigLoadNow()); const end = data.bigLoad.end; assert.notEqual(end, null);
+    // (a small load in the hold: the files themselves, its wait leaves the hold's end as it was)
+    const small = tex(20);
+    data.want([{ h: small }], 'textures:1,0'); data.wantWait(0);
+    assert.deepEqual(told.filter((m) => m.want).at(-1).want.list.map(([, path]) => path), [small.path]);
+    assert.equal(data.bigLoad.end, end);
+    // (a preload of the moment, not announced: light)
+    const pre = tex(21); assert.notEqual(data.pick(pre, 0), pre);
+  } finally { data.close(); }
+});
+
 test('a predicted place (want prio \'place\'): fetched by the worker in the background (not learned), outside the wait\'s window, its light-or-file choice not pinned', async (t) => {
   const tex = bytes(300000, 2), light = bytes(40000, 8), mesh = bytes(9000, 4);
   const server = fakeServer({ 'tex.dds': tex, 'Meshes/a.nif': mesh }, [], { 'tex.dds': light });

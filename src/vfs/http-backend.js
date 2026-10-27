@@ -864,6 +864,16 @@ export class HttpBackend {
     return false;
   }
   ownBusy(ms) { return this.fgPending > 0 || this.readAheadPending > 0 || performance.now() - (this.lastSyncFetchAt ?? -1e9) < ms; }
+  /**
+   * A load is under way, whatever the link: the game blocked on reads (NetLink.loading) or waiting for an announced list
+   * (wantList) of this backend or one sharing its link — the upgrades of light copies wait for its end, on a fast link
+   * too (a big load read light first, its files after it: GameData.bigBatch).
+   */
+  loadUnderWay() {
+    if (this.net.loading()) return true;
+    for (const b of this.link ?? [this]) if (b.wantLists > 0) return true;
+    return false;
+  }
   /** The game has read nothing for `ms` (from the network or not), through this backend nor those sharing its link. */
   gameQuiet(ms) {
     const now = performance.now();
@@ -1382,7 +1392,7 @@ export class HttpBackend {
    * the background for its next load, last of all — after every other background download, the link quiet for
    * UPGRADE_QUIET_MS (UPGRADE_SOON_QUIET_MS when `soon`: an engine that loads it again in place), a thin link too (by
    * pieces) —, the latest files first (the player is near them: loaded again soonest). Not a picture's on a link that
-   * is not fast (isLightPicture), and none while the game loads (fillBackground).
+   * is not fast (isLightPicture), and none while the game loads, on any link (fillBackground, loadUnderWay).
    */
   upgrade(path, { soon = false } = {}) {
     const r = this.lookup(path); if (!r?.file) return;
@@ -1430,8 +1440,9 @@ export class HttpBackend {
         // (the next upgrade, the latest file's: soon or not)
         const upgradeQuiet = () => (this.upgradeSoon ? UPGRADE_SOON_QUIET_MS : UPGRADE_QUIET_MS);
         // (and none while the game loads — NetLink.loading: a dense run of reads it waits for, its engine's work between
-        // them no pause —, whichever queue is next)
-        while (queued() && (this.net.silenced() || (quiet() ? this.gameBusy(quiet()) : !this.gameQuiet(upgradeQuiet())))) await new Promise((res) => setTimeout(res, 50));
+        // them no pause —, whichever queue is next; the upgrades not during a load on a fast link either — loadUnderWay:
+        // an engine waiting for its announced batch reads nothing meanwhile, the game would look quiet)
+        while (queued() && (this.net.silenced() || (quiet() ? this.gameBusy(quiet()) : this.loadUnderWay() || !this.gameQuiet(upgradeQuiet())))) await new Promise((res) => setTimeout(res, 50));
         const q = this.want.size ? this.want : this.near.size ? this.near : this.later.size ? this.later : this.upgrades;
         if (!q.size) continue; // (fetched whole meanwhile by a sequential read)
         const [k, w] = q === this.upgrades ? [...q].at(-1) : q.entries().next().value;

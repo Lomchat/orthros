@@ -17,7 +17,9 @@
 // the background (readable) never. A load made of many short waits counts as a wait all along.
 // Announced reads (want, wantWait — docs/slow-network.md "Announced reads"): an engine that knows what its next load
 // reads says so first; the worker fetches all of it in parallel, and the engine waits once (on shared memory: ctrl[12],
-// the last batch settled) instead of a round trip per file.
+// the last batch settled) instead of a round trip per file. A big announced load of an engine that reloads in place
+// (its batch's files would hold the link more than LOAD_BUDGET_S, a fast link included) reads the light copies first,
+// the files after it (docs/slow-network.md "Big loads light first").
 import { treeFile, LIGHT_DIR } from './game-tree.js';
 import { FAST_BPS } from './net-link.js';
 
@@ -52,6 +54,23 @@ const PER_FILE = 2 ** 21; // (a piece's key: file id × PER_FILE + piece)
 const LOAD_GAP_MS = 2000;
 /** an announced choice (GameData.want: light copy or file) holds for the load that starts within this time (its waits, ~30 s at most) */
 const PIN_MS = 60000;
+/**
+ * An announced load (GameData.want) whose batch's files that have a light copy would take the link longer than this (s,
+ * at its measured rate) is a big load: an engine that reloads in place reads their light copies first, even on a fast
+ * link — the player waits for ~15 MB instead of ~100 (a new device at a place of large textures: ~8 s frozen at 12 MB/s,
+ * ~19 s at 5 MB/s) —, the files coming after the load, sharpened in place.
+ */
+export const LOAD_BUDGET_S = 2;
+/**
+ * The big load's state (GameData.bigLoadNow: the other loads of that moment — the engine's preloads, readable() — read
+ * light too) holds this long after the engine's last wait for its batches ended (PIN_MS at most while it never waits).
+ */
+const BIG_HOLD_MS = 5000;
+/**
+ * Files made sharp in place delivered to the page's listeners (onReal) at most this many each 100 ms (a burst of reloads
+ * is a hitch) — only those the page read light (the others reload nothing: not queued, the queue never outgrows them).
+ */
+const REAL_PER_TICK = 2;
 /** The page's game data is quiet (GameData.quiet) after this long without a read waiting for the network. */
 export const QUIET_MS = 3000;
 
@@ -109,11 +128,24 @@ export class GameData {
     this.preferred = null;
     /** the page's engine loads a file again in place once it is here (reloads) */
     this.reloadsInPlace = !!o.reloads;
+    /** a big announced load reads light first (lightFirst; the page's ?lightfirst=0 turns it off) */
+    this.lightFirstOn = o.lightFirst ?? true;
+    /** the big load under way (wantFlush): { at, end, seq } — announced at, the end of its window's wait (null before),
+     * its window's last batch —, or null */
+    this.bigLoad = null;
+    /** the files the page read light, here whole now, not delivered to the listeners yet (onReal: REAL_PER_TICK at a
+     * time, the latest first); lightReads: the keys of the files whose last load read the light copy (pick) */
+    this.realQ = []; this.lightReads = new Set();
+    /** the announced batches not posted yet (want: posted together at the wait, or once the page's thread yields —
+     * wantFlush), and the current wait window's verdict: its countable bytes (bigBatch), big or not */
+    this.wantPending = []; this.wantTimer = null; this.win = { bytes: 0, big: false };
     // (waits: the reads that waited for the worker — waitMs, waitBytes their time and bytes, syncFetches those that held
     // the page; fetchedBytes: what the worker received)
     const ctrl = this.ctrl;
-    // (wants: announced entries posted; wantWaits / wantWaitMs / wantTimeouts: the engine's waits for them — want, wantWait)
-    this.stats = { hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0, syncFetches: 0, wants: 0, wantWaits: 0, wantWaitMs: 0, wantTimeouts: 0, get waits() { return this.misses; }, get waitMs() { return this.stallMs; },
+    // (wants: announced entries posted; wantWaits / wantWaitMs / wantTimeouts: the engine's waits for them — want, wantWait;
+    // bigLoads / bigFiles / bigBytes: the big loads read light first, the files and their bytes left for later; reloaded:
+    // the files the page loaded again in place — reloaded())
+    this.stats = { hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0, syncFetches: 0, wants: 0, wantWaits: 0, wantWaitMs: 0, wantTimeouts: 0, bigLoads: 0, bigFiles: 0, bigBytes: 0, reloaded: 0, get waits() { return this.misses; }, get waitMs() { return this.stallMs; },
       get waitBytes() { return this.bytes; }, get fetchedBytes() { return Atomics.load(ctrl, 2); } };
     this.listeners = { startup: [], whole: [], ahead: [], real: [], launch: [] };
     // (o.worker: a test's stand-in, { postMessage, onmessage })
@@ -131,7 +163,8 @@ export class GameData {
         else if (m.real) {
           for (const k of m.real) { this.realHere.add(k); this.lightHere.delete(k); }
           for (const k of m.lightHere ?? []) if (!this.realHere.has(k)) this.lightHere.add(k);
-          if (m.real.length) for (const f of this.listeners.real) f(m.real);
+          // (to the listeners paced — holdWatch —, the files the page read light only: the others reload nothing)
+          for (const k of m.real) if (this.lightReads.delete(k) && this.listeners.real.length) this.realQ.push(k);
         }
         else if (m.net) this.net = m.net;
         else if (m.log) this.log(m.log);
@@ -198,6 +231,9 @@ export class GameData {
    */
   onReal(fn) { this.listeners.real.push(fn); }
 
+  /** The page loaded a file again in place (its count in snapshot: `reloaded`). */
+  reloaded(n = 1) { this.stats.reloaded += n; }
+
   /** `h` was read from its light copy at its last load. */
   lightRead(h) { return !!h.as; }
 
@@ -214,6 +250,24 @@ export class GameData {
    * them sharpen at once.
    */
   reloads(on = true) { this.reloadsInPlace = !!on; }
+
+  /**
+   * A big announced load reads the light copies first (`on`, the default), even on a fast link — for an engine that
+   * reloads in place only (want, LOAD_BUDGET_S); off: the link alone decides (the page's ?lightfirst=0).
+   */
+  lightFirst(on = true) { this.lightFirstOn = !!on; if (!on) this.bigLoad = null; }
+
+  /**
+   * A big load is under way (want): the loads of this moment read light (loadsReal) — until BIG_HOLD_MS after the
+   * engine's last wait for it, PIN_MS after its announce while it never waited.
+   */
+  bigLoadNow(now = performance.now()) {
+    const b = this.bigLoad;
+    if (!b) return false;
+    if (b.end === null ? now - b.at <= PIN_MS : now - b.end <= BIG_HOLD_MS) return true;
+    this.bigLoad = null;
+    return false;
+  }
 
   /**
    * The loading in the background, as it goes: `fn({ kind: 'ahead', done, total, finished })` — the learned order —,
@@ -285,8 +339,14 @@ export class GameData {
     const a = this.pending.get(id);
     if (a && !a.held && this.goes === a.at) { a.held = true; this.worker.postMessage({ held: [[id, 1]] }); }
   }
-  /** Every 100 ms: a read the engine waited for and has gone on past since (an engine that yields while it goes on) is not one any more. */
+  /**
+   * Every 100 ms: a read the engine waited for and has gone on past since (an engine that yields while it goes on) is not
+   * one any more; the files here whole since to the page's listeners (onReal), REAL_PER_TICK of them — an engine that
+   * loads them again in place does it over frames, not dozens in one.
+   */
   holdWatch() {
+    // (the latest first: the files the player saw last)
+    if (this.realQ.length) { const keys = this.realQ.splice(-REAL_PER_TICK).reverse(); for (const f of this.listeners.real) f(keys); }
     let told = null;
     for (const [id, a] of this.pending) if (a.held && this.goes !== a.at) { a.held = false; (told ??= []).push([id, 0]); }
     if (told) this.worker.postMessage({ held: told });
@@ -307,14 +367,14 @@ export class GameData {
   get received() { return Atomics.load(this.ctrl, 2); }
 
   /** The worker stopped (its pending reports sent first). */
-  close() { this.saveRate(); clearInterval(this.timer); clearInterval(this.holdTimer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
+  close() { this.saveRate(); clearInterval(this.timer); clearInterval(this.holdTimer); clearTimeout(this.wantTimer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
 
   /**
    * The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes, fetchedBytes, net } —
    * net: the link as the worker last told it (NetLink.snapshot, every second: rate, waits, loading, the background's
    * bytes by producer — bgBy), null before.
    */
-  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, net: this.net ?? null }; }
+  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, bigLoads: s.bigLoads, bigFiles: s.bigFiles, bigBytes: s.bigBytes, reloaded: s.reloaded, net: this.net ?? null }; }
 
   // ---------------------------------------------------------------- light copies
 
@@ -342,6 +402,8 @@ export class GameData {
       h.pin = null;
       const real = pin ? pin.real || this.realHere.has(h.name + '\n' + h.path.toLowerCase()) : this.loadsReal(h);
       h.as = real ? null : this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light);
+      const key = h.name + '\n' + h.path.toLowerCase();
+      if (h.as && !this.realHere.has(key)) this.lightReads.add(key); else this.lightReads.delete(key);
       if (h.as && !h.told) { h.told = true; this.worker.postMessage({ light: { name: h.name, path: h.path, soon: this.reloadsInPlace } }); }
     }
     h.at = now;
@@ -350,19 +412,23 @@ export class GameData {
 
   /** A read of `h` at its start now is a new load of it (pick chooses again). */
   newLoad(h, now = performance.now()) { return !!h.repick || now - (h.at ?? -Infinity) > LOAD_GAP_MS; }
-  /** A load of `h` that has a light copy, starting now, reads the file itself (readsReal, with what the page knows now). */
-  loadsReal(h) {
+  /**
+   * A load of `h` that has a light copy, starting now, reads the file itself (readsReal, with what the page knows now);
+   * `big`: a big load under way (bigLoadNow) — light, as the page's 'light', unless the page said what its loads are for.
+   */
+  loadsReal(h, big = this.bigLoadNow()) {
     const key = h.name + '\n' + h.path.toLowerCase(), c = this.ctrl;
     return readsReal({ here: this.realHere.has(key), lightHere: this.lightHere.has(key), fast: Atomics.load(c, 7) === 1,
-      thin: Atomics.load(c, 9) === 1, measured: Atomics.load(c, 8) > 0, prefer: this.preferred, reloads: this.reloadsInPlace });
+      thin: Atomics.load(c, 9) === 1, measured: Atomics.load(c, 8) > 0, prefer: this.preferred ?? (big ? 'light' : null), reloads: this.reloadsInPlace });
   }
   /**
    * What the next load of `h` will read — `h`, or its light copy's handle — as pick will choose it; with `pin`, that
    * choice held for that load (h.pin: what is announced is what it reads — pick), not made yet (its first read makes it).
+   * `big`: whether a big load is under way (default: bigLoadNow).
    */
-  nextPick(h, pin = false) {
+  nextPick(h, pin = false, big = undefined) {
     if (!this.lightOf(h)) return h;
-    const v = !this.newLoad(h) ? h.as ?? h : this.loadsReal(h) ? h : this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light);
+    const v = !this.newLoad(h) ? h.as ?? h : this.loadsReal(h, big) ? h : this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light);
     if (pin) h.pin = { real: v === h, at: performance.now() };
     return v;
   }
@@ -375,45 +441,134 @@ export class GameData {
    * learned places). A file read light (nextPick: the light copy the next load of it reads, on a link that is not fast)
    * is announced as its light copy, whole (a texture is read whole; its light copy is smaller — never the file itself
    * there), and that load reads it (pinned: nextPick). The bytes the page holds already are not; the rest go to the
-   * worker at once (fetched in parallel, kept: HttpBackend.wantList), one batch (`from`: the first batch of the current
-   * wait's window — the worker's ctrl[12] counts from it). Returns how many entries are not in the page (0: nothing to wait for — no batch).
+   * worker (fetched in parallel, kept: HttpBackend.wantList), one batch (`from`: the first batch of the current wait's
+   * window — the worker's ctrl[12] counts from it), posted with the window's other batches (wantFlush: at the wait, or
+   * once the page's thread yields — the window's light-or-file verdict is the whole window's). Returns how many entries
+   * are not in the page as either copy that verdict may choose (0: nothing to wait for — no batch).
    * `opts` (or the label alone): { label, prio } — prio 'place': a list the page predicts (the place a saved game will
    * load, docs/openmw.md "Anticipated places"), not one the engine waits for: fetched in the background below the
    * game's reads, a load's and the launch set (HttpBackend.wantList `prio: 'place'`), outside the wait's window (no
-   * batch number: wantWait never waits for it), its light-or-file choice made by the link now and not pinned.
+   * batch number: wantWait never waits for it), its light-or-file choice made by the link now and not pinned (nor
+   * made light by a big load: the player idles meanwhile, a fast link brings the files themselves).
+   * A big load (bigBatch: an engine that reloads in place, its window's files that have a light copy more than
+   * LOAD_BUDGET_S of the link): those files announced and read as their light copies, the loads of the moment too
+   * (bigLoadNow).
    */
   want(entries, opts = '') {
     const { label = '', prio = null } = typeof opts === 'string' ? { label: opts } : opts ?? {};
-    const place = prio === 'place';
-    if (!place) this.progress();
-    const list = [];
-    for (const { h, off = 0, len = -1 } of entries) {
-      if (!h || h.src !== undefined || h.failed) continue;
-      const v = this.nextPick(h, !place);
-      // (the light copy whole; else the range, clamped to the file)
-      const a = v !== h ? 0 : Math.max(0, Math.min(h.size, off)), n = v !== h ? v.size : len < 0 ? h.size - a : Math.min(len, h.size - a);
-      if (!(n > 0) || this.inPage(v, a, n)) continue;
-      list.push([v.name, v.path, a, n]);
-    }
-    if (!list.length) return 0;
-    if (place) {
+    if (prio === 'place') {
+      const list = [];
+      for (const { h, off = 0, len = -1 } of entries) {
+        if (!h || h.src !== undefined || h.failed) continue;
+        const r = this.announced(h, off, len, this.nextPick(h, false, false));
+        if (r) list.push(r);
+      }
+      if (!list.length) return 0;
       this.stats.placeWants = (this.stats.placeWants ?? 0) + list.length;
       this.worker.postMessage({ wantPlace: { list, label: String(label ?? '').slice(0, 80) } });
       return list.length;
     }
-    this.stats.wants += list.length;
-    this.worker.postMessage({ want: { seq: ++this.wantSeq, from: this.wantFrom, list, label: String(label ?? '').slice(0, 80) }, used: this.used.splice(0) });
-    return list.length;
+    this.progress();
+    const kept = [];
+    let n = 0;
+    for (const e of entries) {
+      const h = e?.h;
+      if (!h || h.src !== undefined || h.failed) continue;
+      kept.push(e);
+      // (not in the page as either copy the window's verdict may choose: one to wait for)
+      const { off = 0, len = -1 } = e;
+      const as = !this.newLoad(h) ? [h.as ?? h] : this.lightOf(h) && !this.realHere.has(h.name + '\n' + h.path.toLowerCase()) ? [h, this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light)] : [h];
+      if (as.some((v) => this.announced(h, off, len, v))) n++;
+    }
+    if (!n) return 0;
+    // (its batch number now — the wait's window counts it —, posted with the window's other batches: wantFlush)
+    this.wantPending.push({ seq: ++this.wantSeq, from: this.wantFrom, entries: kept, label: String(label ?? '').slice(0, 80) });
+    this.wantTimer ??= setTimeout(() => this.wantFlush(), 0);
+    return n;
+  }
+
+  /** What an announce of `h`'s [off, off + len) asks when its load reads `v` (h or its light copy, whole): [name, path, off, len], or null when the page has it. */
+  announced(h, off, len, v) {
+    const a = v !== h ? 0 : Math.max(0, Math.min(h.size, off)), n = v !== h ? v.size : len < 0 ? h.size - a : Math.min(len, h.size - a);
+    return !(n > 0) || this.inPage(v, a, n) ? null : [v.name, v.path, a, n];
+  }
+
+  /**
+   * The announced batches not posted yet, to the worker: the window's verdict first (bigBatch over all of them — an
+   * engine announces one load in several lists, e.g. a place's textures and its land's, then waits once), then each
+   * batch's entries pinned as that verdict says (big: their light copies; else the link's choice — a small load during
+   * a big one's hold too). At the wait, or once the page's thread yields (an engine that announces and goes on).
+   */
+  wantFlush() {
+    clearTimeout(this.wantTimer); this.wantTimer = null;
+    const batches = this.wantPending.splice(0);
+    if (!batches.length) return;
+    if (!this.win.big && this.bigBatch(batches.flatMap((b) => b.entries))) this.win.big = true;
+    const big = this.win.big;
+    for (const { seq, from, entries, label } of batches) {
+      const list = [];
+      for (const { h, off = 0, len = -1 } of entries) {
+        if (h.failed) continue;
+        const r = this.announced(h, off, len, this.nextPick(h, true, big));
+        if (r) list.push(r);
+      }
+      // (an empty batch too: the worker settles its number at once)
+      this.stats.wants += list.length;
+      this.worker.postMessage({ want: { seq, from, list, label }, used: this.used.splice(0) });
+    }
+    if (big && this.bigLoad) this.bigLoad.seq = batches.at(-1).seq;
+  }
+
+  /**
+   * The announced batches of the current wait window (`entries`: theirs not posted yet; this.win: the window's bytes
+   * counted so far) make a big load: the page's engine reloads in place, the page lets it (lightFirst) and did not say
+   * what its loads are for (prefer), and the files of the window that have a light copy and whose next load would read
+   * the file itself — not here, nor in the page, nor in a load under way — would hold the link more than LOAD_BUDGET_S
+   * (their bytes on the wire — the link's wire/file ratio, ctrl[15] — at its measured rate; FAST_BPS before it is
+   * measured). Then the big-load state starts (bigLoad: those files, and the loads of the moment, read light —
+   * loadsReal), counted in stats.big*; the files come after the load (their light copy read: HttpBackend.upgrade,
+   * `soon`, held while a load is under way). Small loads unchanged. Only the files that have a light copy count: what
+   * else the window fetches (meshes, archives) is read as is either way, and may be in the worker's store already (the
+   * page cannot tell).
+   */
+  bigBatch(entries) {
+    if (!this.reloadsInPlace || !this.lightFirstOn || this.preferred !== null) return false;
+    const seen = new Set();
+    let bytes = 0, files = 0;
+    for (const { h } of entries) {
+      if (!h || h.src !== undefined || h.failed || seen.has(h) || !this.lightOf(h)) continue;
+      seen.add(h);
+      if (!this.newLoad(h) || this.realHere.has(h.name + '\n' + h.path.toLowerCase()) || !this.loadsReal(h, false) || this.inPage(h, 0, h.size)) continue;
+      bytes += h.size; files++;
+    }
+    this.win.bytes += bytes;
+    const rate = (Atomics.load(this.ctrl, 8) * 1024) || FAST_BPS, ratio = Atomics.load(this.ctrl, 15) / 1000 || 1;
+    if (!(this.win.bytes * ratio > rate * LOAD_BUDGET_S)) return false;
+    this.bigLoad = { at: performance.now(), end: null, seq: this.wantSeq };
+    this.stats.bigLoads++; this.stats.bigFiles += files; this.stats.bigBytes += this.win.bytes;
+    this.log(`a big load (${Math.round(this.win.bytes / 1e6)} MB of files > ${LOAD_BUDGET_S} s of the link): light copies first`);
+    return true;
   }
 
   /**
    * The page waits (its thread spins, as fetchSync: no message gets through meanwhile — the worker's answer is ctrl[12])
    * until every batch announced since the last wait (want: wantFrom..wantSeq) is in the worker, each entry stored or
-   * failed — true —, or `timeoutMs` passed — false (the engine reads all the same: what is missing comes by its own
-   * reads). False at once when the worker stopped answering (its heartbeat, ctrl[3]). The next wait's window starts
-   * after these, whatever the outcome.
+   * failed, or `timeoutMs` passed (or the worker stopped beating — DEAD_MS): true when all of it is there (or failed: its
+   * reads say why), false on time out (the reads fetch the rest themselves). The page's next waits count only batches
+   * after these, whatever the outcome. The window's batches posted first (wantFlush); a big load's hold counts from
+   * the end of its own window's wait (a later small load's wait does not extend it).
    */
   wantWait(timeoutMs = 15000) {
+    this.wantFlush();
+    const from = this.wantFrom, target = this.wantSeq;
+    const ok = this.wantWaitFor(timeoutMs);
+    const b = this.bigLoad;
+    if (b && b.seq >= from && b.seq <= target && this.bigLoadNow()) b.end = performance.now();
+    this.win = { bytes: 0, big: false };
+    return ok;
+  }
+  /** wantWait's wait itself. */
+  wantWaitFor(timeoutMs) {
     this.progress();
     const target = this.wantSeq, c = this.ctrl;
     if (target < this.wantFrom) return true;
@@ -485,6 +640,7 @@ export class GameData {
   whole(h) {
     if (h.whole) return h.whole;
     h.as = null; h.at = performance.now(); // (the file itself, not its light copy: mapped whole)
+    this.lightReads.delete(h.name + '\n' + h.path.toLowerCase());
     const all = new Uint8Array(h.size);
     for (let at = 0; at < h.size; at += SPAN) this.read(h, all, at, Math.min(SPAN, h.size - at), at);
     return (h.whole = all);

@@ -56,7 +56,8 @@ test('the lean package: keyed by the package\'s content, made once, loaded unles
   assert.equal(lean.url('eng'), null, 'not made yet: the release\'s own package meanwhile');
   assert.equal(lean.pending('eng'), true, 'being made');
   assert.equal(lean.url('eng2'), null); assert.equal(lean.pending('eng2'), true, 'the same content: the same making');
-  const url = await until(() => lean.url('eng'));
+  // (the file is renamed in place before the maker's log line arrives: wait for both)
+  const url = await until(() => logs.some((l) => /bytes in/.test(l)) && lean.url('eng'));
   assert.equal(lean.pending('eng'), false);
   assert.equal(lean.decoded('eng'), 16, 'the decoded bytes: the release\'s package\'s');
   assert.equal(url, `/engines/_c/${sha}/lean${LEAN_RULE}/`);
