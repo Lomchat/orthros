@@ -131,7 +131,10 @@
           "revc-fuzzy-stream-seek.patch"
         ]
       ],
-      "files": {}
+      "files": {
+        "engine/revc.mjs": "0447d90522a540174528ac2736876af1e4d675267da4ae75d5d988b329a79e06",
+        "engine/revc.wasm": "4c745a479fc190eb1f5e0c4094cfd5920b73da458bf07b70af14481158f73540"
+      }
     },
     {
       "id": "revc-web-e312f97-plus-r4",
@@ -152,7 +155,10 @@
       "cmake": [
         "-DREVC_ORTHROS_EXTRAS=ON"
       ],
-      "files": {}
+      "files": {
+        "engine/revc.mjs": "ed96a3449a33a005125526adf44e695d8f18b54a143acad72a1655db827b3042",
+        "engine/revc.wasm": "4b44058028e51b92a4be8ddc35f67ee0c627d54b1c5f023f0fb2bef77bce85ce"
+      }
     }
   ]
 }
