@@ -81,6 +81,29 @@ home); `bench.js` loaded in bench mode only. Graph 31 → 26 requests, 143 → 1
 
 Tried and dropped: `<link rel="modulepreload">` for every module of a page's graph, injected by the server — home
 −0.1 s, the three port pages +0.03 to +0.29 s (the preloads compete with the page's own scripts on a thin link).
+Taken back for the home only (2026-10-28, `server.js` sendHome, `src/host/module-graph.js`): that trial measured a
+first visit, where bytes are the bottleneck; a returning player's home revalidates each module (no-cache, a 304 each)
+and walks its graph — 7 levels by then — a round trip per level. The home now carries a `modulepreload` for each module
+of levels 2 and deeper, its ETag its content's. `tools/home-check.mjs --warm` (same profile, second load), median of 5,
+against the same tree run with `--no-home-preload`:
+
+| link | /api/config asked | library drawn |
+| --- | --- | --- |
+| warm, 450 ms RTT | 4.56 → 3.65 s | 5.84 → 4.86 s |
+| warm, 200 ms RTT | 2.10 → 1.66 s | 2.66 → 2.58 s |
+| first visit, 85 KB/s, 80 ms | 3.58 → 3.43 s | 4.50 → 3.99 s |
+
+(CDP's emulated round trip, a scratch server on localhost.) At 200 ms the library waits for something after
+/api/config (−0.44 s there, −0.08 s drawn): not looked into. The port pages keep their HTML as it is. Not checked: the
+0.1-0.2 s stagger between modules of one level in the owner's Caddy log (Chrome's revalidations, or Cloudflare), and
+the Caddy waterfall of a real returning home after the deploy — the measure step's.
+Measured again by the measure step (2026-10-28, same tool, two scratch servers on this tree, preload on vs
+`--no-home-preload`, 2 runs of median-of-5 per arm, the arms' order swapped in the second): warm 450 ms /api/config
+4.57/4.57 → 3.64/3.64 s, drawn 5.87/5.85 → 4.84/4.84 s; warm 200 ms /api/config 2.09/2.09 → 1.66/1.68 s, drawn
+2.64/2.68 → 2.60/2.59 s; first visit 85 KB/s 80 ms /api/config 3.58/3.58 → 3.42/3.42 s, drawn 4.48/4.48 → 4.00/3.98 s,
+340 KB both. The −0.5 s bar is met at 450 ms only (−0.93 s); at 200 ms /api/config gains 0.42 s and the drawn library
+0.04-0.09 s. Not measured yet: a real returning home behind Cloudflare (Caddy waterfall), a thin-link run on the live
+server.
 
 Port pages at 85 KB/s (unchanged): first paint re3 2.2 s, GoldSrc 2.8 s, OpenMW 2.0 s; 64-90 KiB of modules, of which
 `data-manager.js` (15 KiB, the settings window) on every page — splitting its window out (loaded at first open) is the

@@ -63,3 +63,49 @@ test('modules that register snapshot state are among the sources a snapshot depe
   assert.ok(sources.has('src/win32/kernel32.js') && sources.has('src/core/vm-snapshot.js') && !sources.has('src/cpu/jit/translate.js'), 'the closure is followed');
   assert.deepEqual(out, [], 'modules outside the snapshot sources (src/host/snapshot-sources.js) registering state');
 });
+
+test('the game data\'s transport is out of the snapshot sources, the guest-visible tree in', async () => {
+  // (a data-only deploy keeps a returning player's snapshot: src/host/snapshot-sources.js DATA_TRANSPORT)
+  const { snapshotSourceFiles, DATA_TRANSPORT, KEPT } = await import('../src/host/snapshot-sources.js');
+  const sources = new Set(snapshotSourceFiles(ROOT));
+  for (const f of DATA_TRANSPORT) assert.ok(!sources.has(f), `${f} out`);
+  assert.ok(!sources.has('src/vfs/pcm-codec.js'), 'what only the transport imports out with it');
+  for (const f of KEPT) assert.ok(sources.has(f), `${f} kept (which files the guest sees, their sizes)`);
+  assert.ok(sources.has('src/vfs/vfs.js') && sources.has('src/host/web/worker.js'), 'the guest\'s file system and the worker kept');
+});
+
+test('what the guest sees of the game folder through the data transport is pinned (out of the snapshot key)', async () => {
+  // (http-backend.js is out of the key, DATA_TRANSPORT: its answers to the guest's stat/readdir/open — case folding, the
+  // listing's order, a directory's date — are restored over silently if they change. Changing one here fails this test:
+  // such a change must change the key too — moved into a kept module, src/host/snapshot-sources.js KEPT —, never a
+  // data-only deploy)
+  const { HttpBackend } = await import('../src/vfs/http-backend.js');
+  const { LIGHT_DIR } = await import('../src/vfs/game-tree.js');
+  const tree = { dirs: {
+    Data: { dirs: { Maps: { dirs: {}, files: { 'm1.map': { size: 7, mtime: 3 } } } }, files: { 'B.big': { size: 10, mtime: 5 }, 'a.ini': { size: 2 } } },
+  }, files: { 'Game.exe': { size: 100, mtime: 9, light: 40 }, 'data.txt': { size: 1, mtime: 1 }, DATA: { size: 3 } } };
+  const b = new HttpBackend('/game/g/', tree, {});
+  const shape = (r) => r && (r.dir ? { dir: r.path, name: r.name } : { file: r.path, name: r.name, size: r.file.size });
+  assert.deepEqual(shape(b.lookup('data/maps/M1.MAP')), { file: 'Data/Maps/m1.map', name: 'm1.map', size: 7 }, 'case folded to the tree\'s names');
+  assert.deepEqual(shape(b.lookup('data')), { dir: 'Data', name: 'Data' }, 'a directory before a file of the same name (case aside)');
+  assert.deepEqual(shape(b.lookup('DATA')), { dir: 'Data', name: 'Data' }, 'even an exact file name');
+  assert.deepEqual(shape(b.lookup('data.txt')), { file: 'data.txt', name: 'data.txt', size: 1 });
+  assert.deepEqual(shape(b.lookup('\\Data\\\\b.BIG')), { file: 'Data/B.big', name: 'B.big', size: 10 }, 'either separator, empty parts skipped');
+  assert.deepEqual(shape(b.lookup('')), { dir: '', name: '' }, 'the root');
+  assert.equal(b.lookup('Data/nope'), null);
+  assert.equal(b.lookup('Game.exe/x'), null, 'no path through a file');
+  assert.deepEqual(shape(b.lookup(`${LIGHT_DIR}/game.EXE`)), { file: `${LIGHT_DIR}/Game.exe`, name: 'Game.exe', size: 40 }, 'a light copy: its own size');
+  assert.equal(b.lookup(`${LIGHT_DIR}/data.txt`), null, 'no light copy: none');
+  assert.deepEqual(b.stat('data/b.big'), { size: 10, isDir: false, mtime: 5 });
+  assert.deepEqual(b.stat('data/A.INI'), { size: 2, isDir: false, mtime: 0 }, 'no date: 0');
+  assert.deepEqual(b.stat('data/MAPS'), { size: 0, isDir: true, mtime: 0 }, 'a directory: size and date 0');
+  assert.equal(b.stat('x'), null);
+  assert.deepEqual(b.readdir(''), [
+    { name: 'Data', size: 0, isDir: true, mtime: 0 },
+    { name: 'Game.exe', size: 100, isDir: false, mtime: 9 },
+    { name: 'data.txt', size: 1, isDir: false, mtime: 1 },
+    { name: 'DATA', size: 3, isDir: false, mtime: 0 },
+  ], 'directories first, then files, each in the tree\'s order');
+  assert.deepEqual(b.readdir('data').map((e) => e.name), ['Maps', 'B.big', 'a.ini']);
+  assert.equal(b.readdir('data.txt'), null, 'a file is not listed');
+});

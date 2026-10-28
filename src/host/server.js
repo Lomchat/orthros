@@ -25,9 +25,11 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
+import crypto from 'node:crypto';
 import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK, unitOf, HttpBackend } from '../vfs/http-backend.js';
 import { launchSummary, launchSet, entryPieces, PRE_PLAYABLE, RELOAD_EXPORT } from '../vfs/launch-set.js';
 import { createBrCache } from './br-cache.js';
+import { moduleGraph, withPreloads } from './module-graph.js';
 import { PERF_MAX_BYTES, sanitizePerfRecord } from './perf-record.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
@@ -252,11 +254,14 @@ export function createServer(opts = {}) {
   };
   /**
    * An OpenMW lean package (openmw-lean.js: its brotli file `file`, `decoded` bytes), immutable: brotli only — a browser
-   * that takes none (or asks a range) gets it decoded here.
+   * that takes none gets it decoded here. A range asked is not honored (a 200 is a valid answer to one): the brotli
+   * body whole when the client takes br — until 2026-10-28 a range went down the decoding way, 204 MB from the origin
+   * for a `Range: bytes=0-0` where the br body is 7.9 MB —, else the decoded package whole (a 206 would still decode up
+   * to the range's end; nothing in the tree asks one: the loaders and the download worker fetch it whole).
    */
   const sendLean = (req, res, file, decoded) => {
     const cache = 'public, max-age=31536000, immutable';
-    if (/\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !req.headers.range) return sendBrotli(req, res, file, 'application/octet-stream', { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }, decoded);
+    if (/\bbr\b/.test(String(req.headers['accept-encoding'] ?? ''))) return sendBrotli(req, res, file, 'application/octet-stream', { 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }, decoded);
     res.writeHead(200, headers({ 'Content-Type': 'application/octet-stream', 'Cache-Control': cache, 'Vary': 'Accept-Encoding' }));
     if (req.method === 'HEAD') return res.end();
     return void pipeline(fs.createReadStream(file), zlib.createBrotliDecompress(), res).catch(() => res.destroy());
@@ -319,6 +324,38 @@ export function createServer(opts = {}) {
     if (!br) return sendFile(req, res, file, mime, vary);
     res.writeHead(200, headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Content-Length': br.length, 'Last-Modified': st.mtime.toUTCString(), 'ETag': etag, ...vary }));
     res.end(req.method === 'HEAD' ? undefined : br);
+  };
+  /**
+   * The home (src/host/web/index.html) with a <link rel="modulepreload"> for every module of its static graph's levels 2
+   * and deeper (module-graph.js withPreloads): a returning player's browser revalidates each module (no-cache), and
+   * found the next level's only once the one before had arrived — 7 levels, a round trip each, before /api/config
+   * (the owner's homes of 10-26: 2.1-3.8 s). Measured (tools/home-check.mjs --warm, CDP round trip, median of 5, the
+   * same tree with --no-home-preload): /api/config asked 4.56 → 3.65 s and the library drawn 5.84 → 4.86 s at 450 ms,
+   * 2.10 → 1.66 s and 2.66 → 2.58 s at 200 ms; a first visit at 85 KB/s not slower (3.58 → 3.43 s, drawn 4.50 → 3.99
+   * s). The home only: the ports' pages were slower with them (docs/platform-health.md).
+   * Its validator is its content's (a module's new import changes the list, not the page's file); recomputed when one
+   * of the graph's files changed. opts.homePreload false: the page as it is (a trial's other arm).
+   */
+  let home = null; // { stamp, files, body, br, etag, mtimeMs }
+  const homeStamp = (files) => files.map((f) => { try { const s = fs.statSync(f); return `${s.size}:${s.mtimeMs}`; } catch { return '-'; } }).join(',');
+  const homePage = () => {
+    if (home && homeStamp(home.files) === home.stamp) return home;
+    const file = path.join(ROOT, 'src/host/web/index.html'), g = moduleGraph(ROOT, file), files = [file, ...g.level.keys()];
+    const stamp = homeStamp(files), body = Buffer.from(withPreloads(ROOT, g.text, g.level));
+    const br = zlib.brotliCompressSync(body, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11, [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT } });
+    const mtimeMs = Math.max(...files.map((f) => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } }));
+    home = { stamp, files, body, br, etag: `W/"h${crypto.createHash('sha1').update(body).digest('hex').slice(0, 20)}"`, mtimeMs };
+    return home;
+  };
+  const sendHome = (req, res) => {
+    const file = path.join(ROOT, 'src/host/web/index.html');
+    if (opts.homePreload === false || req.headers.range) return sendSource(req, res, file, MIME['.html']);
+    let h; try { h = homePage(); } catch { return sendSource(req, res, file, MIME['.html']); }
+    const br = /\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')), body = br ? h.br : h.body;
+    const hd = headers({ 'Content-Type': MIME['.html'], 'Last-Modified': new Date(h.mtimeMs).toUTCString(), 'ETag': h.etag, 'Vary': 'Accept-Encoding', ...(br ? { 'Content-Encoding': 'br' } : {}) });
+    if (notModified(req, { mtimeMs: h.mtimeMs }, h.etag)) return sendNotModified(res, hd);
+    res.writeHead(200, { ...hd, 'Content-Length': body.length });
+    res.end(req.method === 'HEAD' ? undefined : body);
   };
   /**
    * An engine release's file, or its precompressed sibling (<file>.br, as releases ship them: OpenMW's 204 MB package is
@@ -790,7 +827,24 @@ export function createServer(opts = {}) {
     }
     // (not the blocks learned by pieces whole as well, the shape a fast link asks for them — measured, Half-Life on a
     // fast link: 59 % of the bytes it asked: 1473 of Morrowind's 1830 learned blocks are known by pieces, which would
-    // make its order about three times the brotli work; a fast link's misses ask for them, made after the launch sets)
+    // make its order about three times the brotli work; a fast link's misses ask for them, made after the launch sets —
+    // and those of the launch sets only by brWholeUnits, after the pinned pass)
+  };
+  /**
+   * The blocks of a launch set (`list`) learned by pieces, whole: the shape a fast link asks for them (?launch=1's
+   * fast.madeBytes against fast.bytes), the first of br-cache's second pass — after the pinned launch sets and the live
+   * misses, unpinned: a first fast device per file version gets them precompressed instead of on the fly (brotli 11
+   * against the dynamic path's), without pushing a thin link's launch set out of the pinned part.
+   */
+  const brWholeUnits = function* (man, list) {
+    const at = unitFile(man);
+    for (const [rel, block, mask] of list) {
+      if (!mask || rel.startsWith(LIGHT_DIR + '/')) continue; // (a whole block: brSeedUnits made it)
+      const f = at(rel), b0 = block * LEARN_BLOCK;
+      if (!f || b0 >= f.size) continue;
+      const pieces = Math.ceil(Math.min(LEARN_BLOCK, f.size - b0) / LEARN_CHUNK), all = pieces >= 32 ? 0xffffffff : (2 ** pieces - 1);
+      if (((mask & all) >>> 0) !== all) yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'b', index: block } };
+    }
   };
   /**
    * Places learned from announcements (docs/slow-network.md "Places learned from announcements"): what an engine said a
@@ -1072,7 +1126,7 @@ export function createServer(opts = {}) {
       .map(([name, man, want]) => ({ name, want, units: function* () {
         const [first, rest] = launchFirst(prefetchList(name)), lights = new Set();
         yield* brSeedUnits(man, first, lights); yield* placeSeedUnits(name, man); yield* brSeedUnits(man, rest, lights);
-      } })),
+      }, whole: function* () { yield* brWholeUnits(man, launchFirst(prefetchList(name))[0]); } })),
   }) : null;
   /** The home's light covers (light-covers.js): opts.coverDir, none without it. */
   const covers = opts.coverDir ? lightCovers({ dir: opts.coverDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
@@ -1641,7 +1695,7 @@ export function createServer(opts = {}) {
         });
         return;
       }
-      if (p === '/' || p === '/index.html') return sendSource(req, res, path.join(ROOT, 'src/host/web/index.html'), MIME['.html']);
+      if (p === '/' || p === '/index.html') return sendHome(req, res);
       // (the privacy policy and the terms of use, at public addresses: the home screen, the account window and Google's sign-in link to them)
       if (p === '/privacy' || p === '/terms') return sendFile(req, res, path.join(ROOT, `src/host/web/${p.slice(1)}.html`), MIME['.html']);
       if (p === '/api/manifests') {
@@ -1984,10 +2038,12 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   if (brBytesArg !== undefined && !(Number.isFinite(brCacheBytes) && brCacheBytes > 0)) { console.error(`--br-cache-bytes ${brBytesArg}: expected a positive number of bytes`); process.exit(2); }
   // (--covers <dir>: the home's light covers, default <learn>/../covers — off without --learn, or with `off`)
   const coverArg = arg('--covers'), coverDir = coverArg === 'off' ? null : coverArg ?? (learnDir ? path.join(learnDir, '..', 'covers') : null);
+  // (--no-home-preload: the home without its modulepreload links — a trial's other arm, sendHome)
   // (--br-cache-frozen: the units served as they are, none made — a measurement's copy of another server's)
   const brCacheOptions = args.includes('--br-cache-frozen') ? { generate: false } : undefined;
-  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), learnBorrow: !args.includes('--no-learn-borrow') });
+  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), learnBorrow: !args.includes('--no-learn-borrow'), homePreload: !args.includes('--no-home-preload') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
-  // (a restart — every deployment — saves the shared worlds' last changes first: they are written a few seconds after)
-  for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.mmo.flush(); } catch (e) { console.error('mmo flush:', e); } finally { process.exit(0); } });
+  // (a restart — every deployment — saves the shared worlds' last changes and the units' miss queue first: they are
+  // written a few seconds after)
+  for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.brCache?.flush(); server.mmo.flush(); } catch (e) { console.error('flush:', e); } finally { process.exit(0); } });
 }

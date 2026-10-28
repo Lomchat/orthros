@@ -708,6 +708,45 @@ on the request path. So the server keeps **units** compressed ahead, for every g
 - **Measured, generation**: 3020 units (600 MB of file bytes, 300 MB made) in 26.5 minutes of one niced core,
   ~1.4 GB of file bytes an hour; the live server ~76 units a minute while not paused. Brotli 10 instead of 11 (sample
   blocks of Morrowind, GTA, Half-Life data): 2 % more bytes for 0.6× the time — kept at 11.
+- **The misses during the first pass, and across restarts** (2026-10-28). Rules:
+  1. While the first (pinned) pass of the launch sets runs, **one live miss is made every `WANT_EVERY` (8) launch-set
+     units** (`nextJob`, the most asked first); once the pass is over, the misses all go before the second pass, as
+     before. The first pass was meant to take hours; live it took days — paused under load (213 pauses since 10-20,
+     the 1-minute load ≥ 24 in 9-14 % of the samples), its launch sets growing with each deploy (content-keyed engine
+     files, the lean package), started again at each restart and each hourly reseed — and the misses waited behind all
+     of it: of the owner's 10-22 BFME1 1.08 misses, 291 of 451 blocks and 110 of 153 pieces still had no unit on 10-27.
+     The cost: a new thin-link player's launch-set units come ~1/9 later while misses are queued.
+  2. **The miss queue survives a restart**: `<dir>/wanted.json` (written 5 s after a change through a file renamed
+     over it, at `close()` and at the server's SIGTERM — `flush()`), read back at start: a miss whose file changed
+     (size, mtime; a light copy of another shape) or whose unit exists is dropped, the counts kept. The service
+     restarted 51 times since 10-20 (once per deploy), each restart threw the queue away. A frozen copy
+     (`--br-cache-frozen`, a measurement's) writes nothing. Nothing is written before the kept queue is read back
+     (`wantedLoaded`): the index loads in ~4-5 s on the live cache, and a player's miss in those seconds (or a SIGTERM)
+     would have written a file of that miss alone over it. The misses asked meanwhile — every unit looks missing before
+     the index is loaded — are checked again once it is, and the counts merge (a miss asked during the read back adds
+     to the kept one's count). `nextJob` drops a queued miss whose unit exists by then (made by the walk) instead of
+     spending the live-miss slot on it.
+  3. **A launch set's blocks learned by pieces are made whole too, first in the second pass** (`whole` of a source:
+     server.js `brWholeUnits`) — after the pinned pass and the live misses, unpinned: the shape a fast link asks for
+     them (`/api/netstats?launch=1`: `fast.madeBytes` against `fast.bytes`), never at the expense of a thin link's
+     pinned launch set. The rest of an order's blocks learned by pieces stay pieces (three times the brotli work).
+  Measured: unit level (`tests/br-cache.test.js`): a miss queued while a 24-unit first pass runs is made within the
+  first 9 units, even behind a queued miss the walk made meanwhile (without the check: the 17th); three misses queued
+  by a paused process are made by the next one, the changed file's dropped; a miss and a flush before the next
+  process's index is loaded leave the kept file as it was, the queue then kept + new, counts added. Scratch server
+  (2026-10-28, an empty cache, 300 piece misses of Morrowind.bsa, SIGTERM, start again, `/api/netstats` 10 s later):
+  before, 292 queued at the SIGTERM, 0 after the restart (no file); after, 291 queued, `wanted.json` 42 KB, after the
+  restart 218 queued + 71 made in those 10 s (289 of 291: the other two made before the exit). Not measured yet (live,
+  after the deploy): `brCache.wanted` across a real restart, `?launch=1` fast.madeBytes approaching fast.bytes
+  (pinnedBytes ≤ pinCap, evicted 0), and the owner-miss-URL against the unit files cross-check after 2-3 days
+  (target ≥ 90 % made).
+- **The lean OpenMW package and a range** (2026-10-28, server.js `sendLean`): a request carrying `Range` that takes br
+  gets the brotli body whole (a 200 is a valid answer to a range), as one without; before, it went down the decoding
+  way — 204,615,322 bytes from the origin for a `Range: bytes=0-0` (two curl probes, Caddy log 10-27) where the body is
+  7,852,937. Without br: the decoded package, a 200, as before. Nothing in the tree asks it a range. Measured
+  (2026-10-28, scratch servers on a copy of the lean packages, `curl -r 0-0 -H 'Accept-Encoding: br'`): lean2 204,615,322
+  bytes in 1.1 s before, 7,852,937 (Content-Encoding br) in 0.02 s after; lean3 204,615,322 → 4,132,827; without br
+  204,615,322 both (unchanged by design).
 
 ## Audio units (2026-10-21)
 

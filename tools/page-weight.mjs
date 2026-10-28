@@ -6,10 +6,15 @@
 //   node tools/page-weight.mjs [src/host/web/index.html ...] [--kbps 85] [--rtt 80] [--json]
 // --kbps/--rtt: the time on such a link, as the browser fetches it (each level of the graph a round trip, its bytes
 // the link's).
+//   node tools/page-weight.mjs src/host/web/index.html --preload-html <out.html>
+// writes the page with a <link rel="modulepreload"> for each module of levels 2 and deeper of its static graph (level 1
+// is in the HTML already) before its first module script: a modulepreload trial's page (tools/home-check.mjs --warm
+// against a server run from a copy of the tree carrying it).
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { moduleGraph, withPreloads } from '../src/host/module-graph.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -26,41 +31,10 @@ const wire = (file) => {
   }
   return brSize.get(file);
 };
-const urlFile = (url, from) => {
-  if (/^(https?:|data:|blob:)/.test(url)) return null;
-  const p = url.split(/[?#]/)[0];
-  return p.startsWith('/') ? path.join(ROOT, p) : path.resolve(path.dirname(from), p);
-};
-// (the static imports: `import ... from '...'`, `import '...'`, `export ... from '...'` — comments and strings aside, roughly)
-const staticImports = (src) => {
-  const out = new Set(), code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  for (const m of code.matchAll(/(?:^|[;\n}])\s*(?:import|export)\s+(?:[\w*{}\s,$]+\s+from\s+)?['"]([^'"]+)['"]/g)) out.add(m[1]);
-  return [...out];
-};
-const dynamicImports = (src) => [...new Set([...src.matchAll(/\bimport\(\s*['"`]([^'"`]+)['"`]\s*\)/g)].map((m) => m[1]))];
-
 function weigh(html) {
-  const file = path.resolve(ROOT, html), text = fs.readFileSync(file, 'utf8');
-  const level = new Map(); // file -> depth (1: named by the page)
-  const css = [], dyn = new Set();
-  for (const m of text.matchAll(/<link[^>]+rel="stylesheet"[^>]*href="([^"]+)"/g)) { const f = urlFile(m[1], file); if (f) css.push(f); }
-  for (const m of text.matchAll(/<link[^>]+href="([^"]+)"[^>]*rel="stylesheet"/g)) { const f = urlFile(m[1], file); if (f && !css.includes(f)) css.push(f); }
-  const roots = [];
-  for (const m of text.matchAll(/<script[^>]+src="([^"]+)"/g)) { const f = urlFile(m[1], file); if (f) roots.push(f); }
-  // inline module scripts' imports
-  for (const m of text.matchAll(/<script[^>]*type="module"[^>]*>([\s\S]*?)<\/script>/g)) for (const s of staticImports(m[1])) { const f = urlFile(s, file); if (f) roots.push(f); }
-  const queue = roots.map((f) => [f, 1]);
-  while (queue.length) {
-    const [f, d] = queue.shift();
-    if (level.has(f) && level.get(f) <= d) continue;
-    level.set(f, d);
-    if (!fs.existsSync(f)) continue;
-    const src = fs.readFileSync(f, 'utf8');
-    for (const s of staticImports(src)) { const g = urlFile(s, f); if (g) queue.push([g, d + 1]); }
-    for (const s of dynamicImports(src)) { const g = urlFile(s, f); if (g) dyn.add(g); }
-  }
+  const file = path.resolve(ROOT, html), { level, css, dynamic: dyn } = moduleGraph(ROOT, file);
   const mods = [...level].filter(([f]) => fs.existsSync(f)).map(([f, d]) => ({ file: path.relative(ROOT, f), depth: d, ...wire(f) }));
-  const styles = css.filter((f) => fs.existsSync(f)).map((f) => ({ file: path.relative(ROOT, f), ...wire(f) }));
+  const styles = css.map((f) => ({ file: path.relative(ROOT, f), ...wire(f) }));
   const page = { file: path.relative(ROOT, file), ...wire(file) };
   const sum = (a, k) => a.reduce((n, x) => n + x[k], 0);
   const depth = Math.max(0, ...mods.map((m) => m.depth));
@@ -72,6 +46,15 @@ function weigh(html) {
 }
 
 const out = Object.fromEntries((pages.length ? pages : ['src/host/web/index.html']).map((p) => [p, weigh(p)]));
+const preloadOut = arg('--preload-html', null);
+if (preloadOut) {
+  // (what the server sends as the home: server.js homePage — this writes it for another page, or a trial's copy)
+  const p = Object.keys(out)[0], file = path.resolve(ROOT, p), g = moduleGraph(ROOT, file), page = withPreloads(ROOT, g.text, g.level);
+  if (page === g.text) { console.error(`${p}: no module script, or nothing deeper than its first level`); process.exit(1); }
+  fs.writeFileSync(preloadOut, page);
+  console.error(`${preloadOut}: ${[...g.level.values()].filter((d) => d >= 2).length} modulepreload links`);
+  process.exit(0);
+}
 if (args.includes('--json')) console.log(JSON.stringify(out, null, 1));
 else for (const [p, w] of Object.entries(out)) {
   console.log(`${p}: ${w.total.requests} requests, ${(w.total.raw / 1024).toFixed(0)} KiB raw, ${(w.total.wire / 1024).toFixed(1)} KiB on the wire, graph depth ${w.total.depth}; at ${kbps} KB/s, ${rtt} ms: ${w.total.seconds} s`);

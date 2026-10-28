@@ -10,7 +10,7 @@ import http from 'node:http';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { unitOf, rangeUnits, HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
-import { createBrCache, pinShares } from '../src/host/br-cache.js';
+import { createBrCache, pinShares, WANT_EVERY } from '../src/host/br-cache.js';
 import { createServer } from '../src/host/server.js';
 
 // (the machine's own load and disk never pause the tests' generation)
@@ -308,6 +308,122 @@ test('cache: a restart with the cache full keeps the launch sets made before —
     assert.ok(cache.lookup(b1.file, b1.st, null, b1.unit), 'B\'s launch unit kept');
     assert.ok(cache.lookup(a1.file, a1.st, null, a1.unit), 'A\'s kept');
     assert.equal(cache.lookup(m1.file, m1.st, null, m1.unit), null, 'a live miss out instead');
+    cache.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cache: a live miss made within WANT_EVERY + 1 units while the launch sets\' first pass goes on', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
+  const file = (n) => { const f = path.join(dir, n); fs.writeFileSync(f, text(CHUNK, n)); return { file: f, st: fs.statSync(f), light: null, unit: { kind: 'p', index: 0 } }; };
+  // (a launch set longer than the test looks at, the whole budget pinned: its first pass never over meanwhile)
+  const launch = Array.from({ length: 3 * WANT_EVERY }, (_, i) => file(`l${i}`)), miss = file('miss');
+  try {
+    const made = [];
+    const cache = createBrCache({ dir: path.join(dir, 'cache'), maxBytes: 1e9, pinShare: 1, ...QUIET,
+      onMade: (f) => made.push(path.basename(f)), sources: () => [{ name: 'L', units: () => launch }] });
+    await cache.ready;
+    cache.want(miss.file, miss.st, null, miss.unit);
+    await cache.drain();
+    const at = made.indexOf('miss');
+    assert.ok(at >= 0 && at <= WANT_EVERY, `the miss among the first ${WANT_EVERY + 1} units made: ${made}`);
+    assert.ok(made.slice(at + 1).some((n) => n.startsWith('l')), 'the first pass went on after it');
+    assert.equal(made.length, launch.length + 1);
+    cache.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cache: the live misses survive a restart (wanted.json), those of files changed meanwhile out', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
+  const file = (n) => { const f = path.join(dir, n); fs.writeFileSync(f, text(CHUNK, n)); return { file: f, st: fs.statSync(f), light: null, unit: { kind: 'p', index: 0 } }; };
+  const [m1, m2, m3] = ['m1', 'm2', 'm3'].map(file), cdir = path.join(dir, 'cache');
+  try {
+    // a process whose generation never runs (always paused: the live server under load) gets three misses, then stops
+    const first = createBrCache({ dir: cdir, ...QUIET, loadLimit: -1, pauseMs: 5, log: () => {} });
+    await first.ready;
+    for (const u of [m1, m2, m2, m3]) first.want(u.file, u.st, null, u.unit);
+    assert.equal(first.stats().wanted, 3);
+    first.close();
+    const kept = JSON.parse(fs.readFileSync(path.join(cdir, 'wanted.json'), 'utf8'));
+    assert.deepEqual(kept.map((w) => [path.basename(w.file), w.unit, w.count]), [['m1', 'p0', 1], ['m2', 'p0', 2], ['m3', 'p0', 1]]);
+    // m3 changed while the server was down: its unit would be another version's
+    fs.writeFileSync(m3.file, text(CHUNK + 1, 'm3'));
+    const made = [];
+    const again = createBrCache({ dir: cdir, ...QUIET, onMade: (f) => made.push(path.basename(f)) });
+    await again.ready; await new Promise((r) => setTimeout(r, 20)); await again.drain();
+    assert.deepEqual(made, ['m2', 'm1'], 'the kept misses made, the most asked first; the changed file\'s dropped');
+    assert.ok(again.lookup(m1.file, m1.st, null, m1.unit));
+    again.close();
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(cdir, 'wanted.json'), 'utf8')), [], 'none left to keep');
+    // a frozen copy (a measurement's) writes nothing
+    const frozenDir = path.join(dir, 'frozen'), frozen = createBrCache({ dir: frozenDir, ...QUIET, generate: false });
+    await frozen.ready; frozen.want(m1.file, m1.st, null, { kind: 'p', index: 1 }); frozen.close();
+    assert.equal(fs.existsSync(path.join(frozenDir, 'wanted.json')), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cache: a miss asked while the index loads writes nothing over the kept queue; counts add up', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
+  const file = (n) => { const f = path.join(dir, n); fs.writeFileSync(f, text(CHUNK, n)); return { file: f, st: fs.statSync(f), light: null, unit: { kind: 'p', index: 0 } }; };
+  const [m1, m2, m3] = ['m1', 'm2', 'm3'].map(file), cdir = path.join(dir, 'cache');
+  const kept = () => JSON.parse(fs.readFileSync(path.join(cdir, 'wanted.json'), 'utf8')).map((w) => [path.basename(w.file), w.count]);
+  try {
+    const NEVER = { ...QUIET, loadLimit: -1, pauseMs: 5, log: () => {} }; // (generation always paused)
+    const first = createBrCache({ dir: cdir, ...NEVER });
+    await first.ready;
+    for (const u of [m1, m2, m2]) first.want(u.file, u.st, null, u.unit);
+    first.close();
+    // the next process: misses before its index is loaded (a restart with a player on), then SIGTERM's flush at once
+    const again = createBrCache({ dir: cdir, ...NEVER });
+    again.want(m3.file, m3.st, null, m3.unit); again.want(m2.file, m2.st, null, m2.unit);
+    again.flush();
+    assert.deepEqual(kept(), [['m1', 1], ['m2', 2]], 'the kept queue not overwritten before it is read');
+    await again.ready;
+    assert.equal(again.stats().wanted, 3);
+    again.close();
+    assert.deepEqual(kept(), [['m1', 1], ['m2', 3], ['m3', 1]], 'kept first, then the new; m2 counted 2 + 1');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cache: a queued miss made meanwhile (by the walk) spends no live-miss slot', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
+  const file = (n) => { const f = path.join(dir, n); fs.writeFileSync(f, text(CHUNK, n)); return { file: f, st: fs.statSync(f), light: null, unit: { kind: 'p', index: 0 } }; };
+  const launch = Array.from({ length: 3 * WANT_EVERY }, (_, i) => file(`l${i}`)), miss = file('miss');
+  try {
+    const made = [];
+    const cache = createBrCache({ dir: path.join(dir, 'cache'), maxBytes: 1e9, pinShare: 1, ...QUIET,
+      onMade: (f) => made.push(path.basename(f)), sources: () => [{ name: 'L', units: () => launch }] });
+    await cache.ready;
+    // l0, the walk's first unit, asked most (made by the walk before its turn comes), then a real miss
+    const [x] = launch;
+    cache.want(x.file, x.st, null, x.unit); cache.want(x.file, x.st, null, x.unit);
+    cache.want(miss.file, miss.st, null, miss.unit);
+    await cache.drain();
+    const at = made.indexOf('miss');
+    assert.ok(at >= 0 && at <= WANT_EVERY, `the real miss among the first ${WANT_EVERY + 1} units made: ${made}`);
+    assert.equal(made.filter((n) => n === 'l0').length, 1);
+    cache.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cache: a launch set\'s blocks learned by pieces, whole, first in the second pass (after the misses), unpinned', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
+  const file = (n) => { const f = path.join(dir, n); fs.writeFileSync(f, text(CHUNK, n)); return { file: f, st: fs.statSync(f), light: null, unit: { kind: 'p', index: 0 } }; };
+  const [a1, a2, a3, w1, miss] = ['a1', 'a2', 'a3', 'w1', 'miss'].map(file);
+  try {
+    const probe = createBrCache({ dir: path.join(dir, 'probe'), ...QUIET });
+    probe.want(a1.file, a1.st, null, a1.unit); await probe.drain();
+    const one = probe.stats().bytes; probe.close();
+    const made = [];
+    // (a pinned budget of 3.5 units, room for the whole block had it been pinned; A's share half of it — B, empty,
+    // takes the other half —: A's first pass a1, a2, both pinned)
+    const cache = createBrCache({ dir: path.join(dir, 'cache'), maxBytes: one * 40, pinShare: (one * 3.5) / (one * 40), ...QUIET,
+      onMade: (f) => made.push(path.basename(f)),
+      sources: () => [{ name: 'A', units: () => [a1, a2, a3], whole: () => [w1] }, { name: 'B', units: () => [] }] });
+    cache.want(miss.file, miss.st, null, miss.unit);
+    await cache.ready; await cache.drain();
+    assert.deepEqual(made, ['a1', 'a2', 'miss', 'w1', 'a3'], `pinned part, miss, whole blocks, rest: ${made}`);
+    const bytes = (u) => cache.size(u.file, u.st, null, u.unit);
+    assert.equal(cache.stats().pinnedBytes, bytes(a1) + bytes(a2), 'the first pass pinned, the whole blocks not');
     cache.close();
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

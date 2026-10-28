@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -266,6 +267,12 @@ test('the server makes and serves the lean package of a game of its own, not of 
   assert.equal(r.headers.get('x-orthros-wire-length'), String(fs.statSync(leanFile).size)); assert.equal(r.headers.get('x-orthros-decoded-length'), '16');
   assert.equal(Buffer.from(await r.arrayBuffer()).toString('latin1'), LEAN, 'decoded by the client');
   assert.equal((await fetch(base + leanUrl, { headers: { 'Accept-Encoding': 'identity' } }).then((x) => x.arrayBuffer())).byteLength, 16, 'without brotli: decoded by the server');
+  // (a range asked: the brotli body whole, as without one — not the package decoded here, ~26 times its bytes live)
+  const ranged = await new Promise((resolve, reject) => http.get(base + leanUrl, { headers: { 'Accept-Encoding': 'br', Range: 'bytes=0-0' } }, (res) => {
+    const parts = []; res.on('data', (d) => parts.push(d)); res.on('end', () => resolve({ res, body: Buffer.concat(parts) }));
+  }).on('error', reject));
+  assert.equal(ranged.res.statusCode, 200); assert.equal(ranged.res.headers['content-encoding'], 'br');
+  assert.deepEqual(ranged.body, fs.readFileSync(leanFile), 'the brotli file as it is');
   assert.equal((await fetch(`${base}/engines/_c/${'f'.repeat(64)}/lean${LEAN_RULE}/openmw.data`)).status, 404, 'another content');
   assert.equal((await fetch(`${base}/engines/_c/${sha}/lean${LEAN_RULE}/openmw.wasm`)).status, 404);
   // (the release-keyed address a page opened before gave: still answered, another build's not)

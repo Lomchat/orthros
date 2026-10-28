@@ -108,9 +108,27 @@ from it when:
 
 1. **its key is the same** (the page): Orthros' **state-owning sources** — the modules the emulator worker loads,
    followed from `src/core/vm.js` and `src/host/web/worker.js` through their imports, but for the JIT's translator and
-   the GPU backends, which a restore rebuilds anyway (`/api/snapshot-sources`, `src/host/snapshot-sources.js`: a
-   deployed change to the JIT or the WebGL backend keeps snapshots, one to an API module or the machine does not;
-   `tests/snapshot-lint.test.js` fails if a module left out registers snapshot state) — the game version's manifest and
+   the GPU backends, which a restore rebuilds anyway, and the game data's transport (`/api/snapshot-sources`,
+   `src/host/snapshot-sources.js`: a deployed change to the JIT or the WebGL backend keeps snapshots, one to an API
+   module or the machine does not; `tests/snapshot-lint.test.js` fails if a module left out registers snapshot state).
+   **Rules for the data modules** (since 2026-10-28, `DATA_TRANSPORT`): how the game's bytes come and when —
+   `src/vfs/game-data.js`, `http-backend.js`, `net-link.js`, `opfs-store.js`, `launch-set.js`, `playable-watch.js`
+   (and what only they import, `pcm-codec.js`) — and when a snapshot is taken (`src/host/snapshot-watch.js`) are out:
+   the mounts are host objects (`state: false`, `src/core/vm-snapshot.js`), a file is reopened by its path. Which files
+   the guest sees and their sizes stay in through the version's tree itself; `src/vfs/game-tree.js` (`KEPT`) holds only
+   the tree's helpers. How the guest's stat/readdir/open are answered from the tree (`HttpBackend.lookup/stat/readdir`:
+   case folding, directories listed before files, a directory's date 0) is out with `http-backend.js` and pinned by a
+   test instead (`tests/snapshot-lint.test.js`): a change that alters what the guest reads (a size, a listing, a byte)
+   fails it and belongs in a kept module or must change the tree; one that does not is restored over — a failed restore
+   falls back to a cold start. Which part serves a file (`game-data.js`'s `partOf`) is out too: the owner holds the same
+   bytes. Before: 48 of the 246 key changes of October were data-only commits (all 4 of 10-27's), each a cold
+   start of 35-50 s to the menu for a returning BFME1 player instead of a ~0.6 s restore. A comment-only edit of
+   `http-backend.js` or `game-data.js` now keeps the hash (`c707f1…` → `823bb2…` before, unchanged after); one of
+   `game-tree.js` still changes it. Over October's commits, 272 → 226 change the key. Measured again 2026-10-28
+   (`snapshotSourcesHash` on copies of the main tree and this one, a comment appended): main 106 modules, `cfc369…` →
+   `25a966…` after `http-backend.js` + `game-data.js`; now 98 modules, `27706d…` → `27706d…` (kept), → `2918d5…` after
+   `game-tree.js`. Not measured: a browser restore across a data-module edit (`tools/snapshot-browser-check.mjs`), and
+   the live gain — no Win32 session in the telemetry since 10-23. — The game version's manifest and
    file tree (sizes, dates), the language and the options that change the machine (`?timescale`, `?interp`, `?dbg`...;
    `src/host/web/snapshot-key.js`). The debug flags that only measure the host's GL side are not among them
    (`HOST_ONLY_DBG` in `src/gfx/gpu-probe.js`: `ORTHROS_GL_COUNT`, `ORTHROS_GL_PROBES`, `ORTHROS_GL_TIME`; a flag joins

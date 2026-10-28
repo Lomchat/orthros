@@ -5,8 +5,10 @@
 // 1 MiB block — the file's tail for its last one — or a single 64 KiB piece (unitOf in src/vfs/http-backend.js: the
 // shapes the shared reader asks for). Brotli 11 costs seconds of a core per MiB: units are made in the background by a
 // forked child niced to 19 (src/host/br-cache-worker.js), one at a time, paused while the machine is loaded or the
-// disk full — the launch sets first (every manifest's head side by side), then the units requests missed, then more of
-// the learned orders; a request that misses goes the dynamic way and asks for its unit. Nothing is ever served stale: a unit's
+// disk full — the launch sets first (every manifest's head side by side; one live miss every WANT_EVERY of their
+// units meanwhile), then the units requests missed, then each launch set's blocks learned by pieces whole, then more of
+// the learned orders; a request that misses goes the dynamic way and asks for its unit (the misses waiting kept across
+// a restart: <dir>/wanted.json). Nothing is ever served stale: a unit's
 // key is the file's resolved real path, size and mtime (and the light copy's shape), the generator checks the file
 // before and after reading it, and a sweep removes the units of files gone or changed.
 //
@@ -25,13 +27,22 @@ import crypto from 'node:crypto';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BLOCK, CHUNK } from '../vfs/http-backend.js';
-import { LIGHT_SIDE } from './light-copies.js';
+import { LIGHT_SIDE, lightCopy } from './light-copies.js';
 
 const WORKER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'br-cache-worker.js');
 /** a unit kept compressed only when brotli makes it this much of its bytes at most (as the dynamic path's test) */
 const MIN_GAIN = 0.92;
 /** live misses waiting for their unit, at most (the oldest out first) */
 const MAX_WANTED = 4096;
+/**
+ * one live miss made every this many launch-set units while the walk's first pass runs (see nextJob): that pass took
+ * days on the live server — paused under load, its launch sets growing with each deploy, started again at each restart
+ * —, and the misses waited behind all of it (2026-10-27: 291 of the owner's 451 BFME blocks missed five days earlier
+ * still without a unit)
+ */
+export const WANT_EVERY = 8;
+/** the live misses kept on the disk (a restart — each deploy — dropped them): <dir>/WANTED_FILE, written this long after a change */
+const WANTED_FILE = 'wanted.json', WANTED_WRITE_MS = 5000;
 /** the pinned part of an automatic budget: the launch sets' bytes times this (their sizes are estimates, a version's set grows) */
 const PIN_SLACK = 1.25;
 
@@ -62,10 +73,12 @@ export function pinShares(wants, cap) {
 
 /**
  * The cache. opts: { dir, maxBytes (1.5 GiB — unset: at least that, grown to the launch sets, fitBudget, up to maxAutoBytes, 8 GiB, from minBytes, 1.5 GiB), lowBytes (0.9 × maxBytes), pinShare (0.5), sources: () => [{ name,
- * units: () => iterator of { file, st, light, unit }, want (bytes of its launch set, or null) }] (the launch sets, in
+ * units: () => iterator of { file, st, light, unit }, want (bytes of its launch set, or null), whole (optional: () =>
+ * iterator of the same — its launch set's blocks learned by pieces, whole: the shape a fast link asks for them, made
+ * first in the second pass, unpinned) }] (the launch sets, in
  * their order: the first `pinShare` of the budget shared between them by their size (pinShares) is pinned, then more
  * of each while under `lowBytes`; walked side by side, made before the live misses for the pinned part, after them for
- * the rest: see nextJob), loadLimit (24: the 1-minute load
+ * the rest — one live miss every WANT_EVERY of the pinned part's units: see nextJob), loadLimit (24: the 1-minute load
  * average generation waits under, half the machine's 48 cores), diskLimit (0.85: the disk's used fraction it waits
  * under), pauseMs (30000), idleMs (60000: the child kept that long without work), sweepMs (hourly: the sweep and the
  * launch sets again), log, onMade (tests: (file, unit) for each unit made), generate (false: nothing made — a frozen
@@ -200,8 +213,10 @@ export function createBrCache(opts) {
   const diskUse = () => { try { const s = fs.statfsSync(dir); return s.blocks ? 1 - s.bavail / s.blocks : 0; } catch { return 0; } };
 
   // ------------------------------------------------------------------------------------------- generation
-  /** live misses: id -> { file, st, light, unit, count } */
+  /** live misses: id -> { file, st, light, unit, count } (kept in WANTED_FILE: saveWanted, loadWanted) */
   const wanted = new Map();
+  /** launch-set units made since the last live miss (the first pass: one miss every WANT_EVERY) */
+  let seedRun = 0;
   /** the launch sets being walked: { sources: [{ name, it, used, share, done }], pass } */
   let seeding = null;
   let job = null, pumping = null, child = null, childIdle = null, nextId = 1;
@@ -258,17 +273,30 @@ export function createBrCache(opts) {
   };
   /**
    * The next unit to make: the launch sets' (the first pass of the learned orders, pinned) first — every new player
-   * asks for them, where a live miss is one session's read, that session served already —, then the most asked live
-   * miss, then more of the learned orders (null: nothing). The orders are walked side by side, the one with the fewest
+   * asks for them, where a live miss is one session's read, that session served already —, but for the most asked live
+   * miss every WANT_EVERY of them; then the live misses, then more of the learned orders (null: nothing). The orders are walked side by side, the one with the fewest
    * bytes made first: the head of every manifest's order before the tail of any (walked one after the other, the last
    * manifest's launch set waited for every other's share — hours of brotli 11).
    */
   const nextJob = async () => {
     const sd = seeding; // (read again meanwhile, hourly: that walk goes on instead)
-    if (sd && sd.pass === 0) { const j = await nextSeed(sd); if (j || seeding !== sd) return j; }
-    let best = null;
-    for (const [id, w] of wanted) if (!best || w.count > best[1].count) best = [id, w];
-    if (best) { wanted.delete(best[0]); return { ...best[1], pin: false }; }
+    // (the first pass yields to the most asked live miss every WANT_EVERY units: that pass is hours of brotli 11 at
+    // best, days when paused under load and started again at each restart — the misses never reached otherwise)
+    if (sd && sd.pass === 0 && !(wanted.size && seedRun >= WANT_EVERY)) {
+      const j = await nextSeed(sd);
+      if (j) { seedRun++; return j; }
+      if (seeding !== sd) return j;
+    }
+    // (a miss made meanwhile — by the walk, or asked before the index was loaded: every unit missing then — dropped
+    // here, not spent: its slot would have made nothing, the real misses behind it waiting WANT_EVERY units more each)
+    for (;;) {
+      let best = null;
+      for (const [id, w] of wanted) if (!best || w.count > best[1].count) best = [id, w];
+      if (!best) break;
+      wanted.delete(best[0]); wantedChanged();
+      const w = best[1];
+      if (missing(w.file, w.st, w.light, w.unit)) { seedRun = 0; return { ...w, pin: false }; }
+    }
     return sd && seeding === sd ? nextSeed(sd) : null;
   };
   /** the next unit of the launch sets' walk `sd` not made yet, in its current pass (see nextJob), or null */
@@ -280,11 +308,13 @@ export function createBrCache(opts) {
         if (closed || seeding !== sd) return null;
         // first pass: each source's share of the pinned budget; second: more while under lowBytes
         if (sd.pass === 0 ? pinnedBytes >= pinCap : total >= lowBytes) break;
-        let s = null;
-        for (const c of sd.sources) if (!c.done && (sd.pass > 0 || c.used < c.share) && (!s || c.used < s.used)) s = c;
+        // (the second pass: each source's launch-set blocks whole first — `whole` —, side by side, then its order's rest)
+        let s = null, w = false;
+        if (sd.pass > 0) for (const c of sd.sources) if (c.whole && (!s || c.used < s.used)) { s = c; w = true; }
+        if (!s) for (const c of sd.sources) if (!c.done && (sd.pass > 0 || c.used < c.share) && (!s || c.used < s.used)) s = c;
         if (!s) break;
-        const n = s.it.next();
-        if (n.done) { s.done = true; continue; }
+        const n = w ? s.whole.next() : s.it.next();
+        if (n.done) { if (w) s.whole = null; else s.done = true; continue; }
         const { file, st, light, unit } = n.value;
         const e = entryOf(file, st, light), u = e.units?.get(unitName(unit)), up = e.units?.get(unitName(unit) + PCM);
         if (u && (up || !pcmFor(light))) { if (sd.pass === 0) { pin(u); if (up) pin(up); } s.used += u.bytes + (up?.bytes ?? 0); continue; }
@@ -368,7 +398,7 @@ export function createBrCache(opts) {
     const list = readSources();
     fitBudget(list.map((s) => s.want));
     const shares = pinShares(list.map((s) => s.want), pinCap);
-    const sd = seeding = list.length ? { sources: list.map((s, i) => ({ name: s.name, it: s.units()[Symbol.iterator](), used: 0, share: shares[i], done: false })), pass: 0 } : null;
+    const sd = seeding = list.length ? { sources: list.map((s, i) => ({ name: s.name, it: s.units()[Symbol.iterator](), whole: s.whole?.()[Symbol.iterator]() ?? null, used: 0, share: shares[i], done: false })), pass: 0 } : null;
     for (const e of entries.values()) for (const u of e.units.values()) u.pinned = false;
     pinnedBytes = 0;
     // (the pins first, then the walk that makes what is missing: no eviction meanwhile finds them unpinned)
@@ -376,9 +406,76 @@ export function createBrCache(opts) {
     pump();
   };
 
+  // ------------------------------------------------------------------------------------------- the misses kept
+  // (a frozen copy — a measurement's — keeps its directory as it is: nothing written)
+  const keepWanted = opts.generate !== false;
+  const wantedPath = path.join(dir, WANTED_FILE);
+  let wantedTimer = null;
+  /**
+   * the kept misses read back (loadWanted): nothing written before — a miss asked while the index loads (seconds on the
+   * live cache, a restart with a player on) would otherwise write a file of that miss alone over the kept queue, before
+   * it is read; `wantedDirty`: one asked meanwhile, written once loaded
+   */
+  let wantedLoaded = false, wantedDirty = false;
+  /** the live misses as kept: [{ file, size, mtimeMs, light: { size, from } | null, unit: 'b3', count }] */
+  const wantedList = () => [...wanted.values()].map((w) => ({ file: w.file, size: w.st.size, mtimeMs: w.st.mtimeMs,
+    light: w.light ? { size: w.light.copy.size, from: w.light.copy.from } : null, unit: unitName(w.unit), count: w.count }));
+  /** the misses written now (a new file renamed over the old one: never half of it) */
+  const saveWanted = () => {
+    clearTimeout(wantedTimer); wantedTimer = null;
+    if (!keepWanted || !wantedLoaded) return;
+    try { fs.writeFileSync(wantedPath + '.new', JSON.stringify(wantedList())); fs.renameSync(wantedPath + '.new', wantedPath); } catch (e) { log(`br-cache: ${WANTED_FILE}: ${e}`); }
+  };
+  /** the misses changed: written a few seconds later (a burst of misses, one write) */
+  const wantedChanged = () => {
+    if (!keepWanted || wantedTimer || closed) return;
+    if (!wantedLoaded) { wantedDirty = true; return; }
+    wantedTimer = setTimeout(saveWanted, WANTED_WRITE_MS); wantedTimer.unref?.();
+  };
+  /**
+   * The misses an earlier process kept, those of files unchanged (size and mtime; a light copy of the same shape,
+   * found again: lightCopy) and still missing, back in the queue — before the ones asked since, which they do not
+   * replace (a count adds up; the ones asked since checked again too: asked before the index was loaded, every unit
+   * was missing). Gathered apart, joined at once at the end: a miss asked during its stats is not overwritten.
+   */
+  const loadWanted = async () => {
+    try { await readWanted(); } finally {
+      wantedLoaded = true;
+      if (wantedDirty || wanted.size) { wantedDirty = false; wantedChanged(); }
+    }
+  };
+  const readWanted = async () => {
+    let list; try { list = JSON.parse(await fs.promises.readFile(wantedPath, 'utf8')); } catch { list = []; }
+    if (!Array.isArray(list)) list = [];
+    const kept = new Map();
+    for (const w of list.slice(-MAX_WANTED)) {
+      const m = /^([bp])(\d+)$/.exec(w?.unit ?? ''); if (!m || typeof w.file !== 'string') continue;
+      let st; try { st = await fs.promises.stat(w.file); } catch { continue; }
+      if (!st.isFile() || st.size !== w.size || st.mtimeMs !== w.mtimeMs) continue;
+      let light = null;
+      if (w.light) {
+        const copy = lightCopy(w.file, st);
+        if (!copy || copy.size !== w.light.size || copy.from !== w.light.from) continue;
+        light = { file: w.file, st, copy };
+      }
+      const unit = { kind: m[1], index: Number(m[2]) };
+      if (!missing(w.file, st, light, unit)) continue;
+      kept.set(`${entryOf(w.file, st, light).k}#${w.unit}`, { file: w.file, st: { size: st.size, mtimeMs: st.mtimeMs }, light, unit, count: Math.max(1, Number(w.count) || 1) });
+    }
+    for (const [id, w] of wanted) {
+      if (!missing(w.file, w.st, w.light, w.unit)) continue;
+      const o = kept.get(id); if (o) o.count += w.count; else kept.set(id, w);
+    }
+    wanted.clear();
+    for (const [id, w] of kept) wanted.set(id, w);
+    while (wanted.size > MAX_WANTED) wanted.delete(wanted.keys().next().value);
+  };
+
   // (the budget fitted before anything is evicted: a restart kept what a grown budget held)
-  const ready = (async () => { await load(); await sweep(); if (opts.sources) fitBudget(readSources().map((s) => s.want)); evict(maxBytes); })().catch((e) => log(`br-cache: load: ${e}`));
-  ready.then(reseed);
+  // (a load that fails still reads the kept misses back before any is written: see wantedLoaded)
+  const ready = (async () => { await load(); await sweep(); await loadWanted(); if (opts.sources) fitBudget(readSources().map((s) => s.want)); evict(maxBytes); })()
+    .catch(async (e) => { log(`br-cache: load: ${e}`); if (!wantedLoaded) await loadWanted().catch((e2) => log(`br-cache: ${WANTED_FILE}: ${e2}`)); });
+  ready.then(() => { reseed(); if (wanted.size) pump(); }); // (the misses kept: made even without launch sets)
   const timer = setInterval(() => { sweep().then(reseed); }, opts.sweepMs ?? 3600e3); timer.unref?.();
 
   return {
@@ -430,7 +527,7 @@ export function createBrCache(opts) {
         wanted.set(id, { file, st: { size: st.size, mtimeMs: st.mtimeMs }, light, unit, count: 1 });
         if (wanted.size > MAX_WANTED) wanted.delete(wanted.keys().next().value);
       }
-      pump();
+      wantedChanged(); pump();
     },
     /** the launch sets read again (the learned orders changed) */
     reseed,
@@ -440,6 +537,8 @@ export function createBrCache(opts) {
     // (units: the brotli ones; pcmUnits: the audio forms made — their tried-and-not-kept markers not counted)
     stats: () => ({ units: [...entries.values()].reduce((n, e) => n + [...e.units.keys()].filter((k) => !k.endsWith(PCM)).length, 0),
       pcmUnits: [...entries.values()].reduce((n, e) => n + [...e.units].filter(([k, u]) => k.endsWith(PCM) && !u.raw).length, 0), bytes: total, pinnedBytes, pinCap: Math.round(pinCap), pinWant: Math.round(pinWant), maxBytes, wanted: wanted.size, seeding: !!seeding, paused, ...counts }),
-    close() { closed = true; clearInterval(timer); clearTimeout(childIdle); stopChild(); },
+    /** the live misses written now (a process about to exit: server.js's SIGTERM) */
+    flush() { if (wantedTimer) saveWanted(); },
+    close() { if (!closed && wantedTimer) saveWanted(); closed = true; clearInterval(timer); clearTimeout(childIdle); stopChild(); },
   };
 }
