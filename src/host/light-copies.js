@@ -6,7 +6,7 @@
 // they are). Served under LIGHT_DIR (/gamez/<manifest>/.light/<path>); the tree tells each file's light size (`light`).
 import fs from 'node:fs';
 import { LIGHT_DIR } from '../vfs/game-tree.js';
-import { WAD_ENTRY, WAD_MIPTEX, wadEntries, wadHeader } from '../vfs/wad3.js';
+import { WAD_ENTRY, WAD_MIPTEX, MIPTEX_HEADER, MIP_LIGHT_FROM, wadEntries, wadHeader, miptexLevels, redrawFinest } from '../vfs/wad3.js';
 
 export { LIGHT_DIR };
 /**
@@ -23,6 +23,10 @@ const known = new Map();
  * The light copy of `file` (`st`: its fs.Stats): { size, head, from, mips? } — its bytes: `head`, then the file's from
  * `from` on, up to `size` in all; with `mips` (a WAD3's, see lightWad), the file's own bytes with those finest levels
  * redrawn from the next ones — or null (not a format Orthros lightens, or nothing to gain).
+ * Never a GoldSrc map's (.bsp), although its texture lump is WAD3's miptex: the engine checksums a map's lumps from the
+ * planes on, the textures' among them, when it plays with more than one player (Xash3D CRC32_MapFile) and a client
+ * whose map differs from its server's is disconnected; the page's server and client open the map each on its own, and
+ * which copy each read would follow the link, the store's state — a light map is no light copy.
  */
 export function lightCopy(file, st) {
   const dds = /\.dds$/i.test(file), wad = !dds && /\.wad$/i.test(file);
@@ -35,7 +39,7 @@ export function lightCopy(file, st) {
     const fd = fs.openSync(file, 'r');
     try {
       const head = Buffer.alloc(148); const n = fs.readSync(fd, head, 0, 148, 0);
-      if (wad) c = wadCopy(fd, head.subarray(0, n), st.size);
+      if (wad) c = mipCopy(lightWad(fd, head.subarray(0, n), st.size), st.size);
       else if (dds) c = lightDds(head.subarray(0, n), st.size);
       else { const t = lightTga(head.subarray(0, n), st.size); if (t) c = tgaCopy(file, st, t); }
     } finally { fs.closeSync(fd); }
@@ -47,7 +51,7 @@ export function lightCopy(file, st) {
 
 /** Bytes [start, end) of a light copy (`c` of `file`), into `buf` at `at`; `done(err)`. */
 export function readLight(file, c, start, end, buf, at, done) {
-  if (c.mips) return readWadLight(file, c, start, end, buf, at, done);
+  if (c.mips) return readMipLight(file, c, start, end, buf, at, done);
   const h = c.head.length;
   if (start < h) c.head.copy(buf, at, start, Math.min(end, h));
   if (end <= h) return done(null);
@@ -194,7 +198,7 @@ function tgaCopy(file, st, t) {
 // ---------------------------------------------------------------- WAD3: GoldSrc's texture archives
 
 /** A WAD texture is lightened from this many pixels on (64 × 64: smaller ones save nothing worth their detail). */
-export const WAD_LIGHT_FROM = 64 * 64;
+export const WAD_LIGHT_FROM = MIP_LIGHT_FROM;
 const EMPTY = Buffer.alloc(0);
 
 /**
@@ -211,24 +215,31 @@ export function lightWad(fd, head, size) {
   const hd = wadHeader(head, size); if (!hd) return null;
   const d = Buffer.alloc(hd.n * WAD_ENTRY);
   if (fs.readSync(fd, d, 0, d.length, hd.dir) !== d.length) return null;
-  const lumps = wadEntries(d, hd.n, size).filter((e) => e.type === WAD_MIPTEX && e.comp === 0 && e.disk >= 40).map((e) => [e.pos, e.disk]);
-  const mips = [], mt = Buffer.alloc(40);
-  for (const [pos, disk] of lumps.sort((a, b) => a[0] - b[0])) {
-    if (fs.readSync(fd, mt, 0, 40, pos) !== 40) return null;
-    const w = mt.readUInt32LE(16), h = mt.readUInt32LE(20), o0 = mt.readUInt32LE(24), o1 = mt.readUInt32LE(28);
-    if (!w || !h || w % 2 || h % 2 || w > 4096 || h > 4096 || w * h < WAD_LIGHT_FROM) continue;
-    if (o0 < 40 || o1 < o0 + w * h || o1 + (w / 2) * (h / 2) > disk) continue; // (its levels not as the format lays them)
-    mips.push(pos + o0, w, h, pos + o1);
-  }
-  return mips.length ? mips : null;
-}
-function wadCopy(fd, head, size) {
-  const mips = lightWad(fd, head, size);
-  return mips ? { size, head: EMPTY, from: 0, mips } : null;
+  const lumps = wadEntries(d, hd.n, size).filter((e) => e.type === WAD_MIPTEX && e.comp === 0 && e.disk >= MIPTEX_HEADER).map((e) => [e.pos, e.disk]);
+  return mipsOf(fd, lumps);
 }
 
+/**
+ * The textures to lighten among the miptex at `lumps` ([file offset, bytes of the file its own from there]): their
+ * miptexLevels, sorted by level 0's offset, none whose level 0 overlaps another's (an archive's directory pointing
+ * twice into the same bytes: left as it is) — or null when none.
+ */
+function mipsOf(fd, lumps) {
+  const found = [], mt = Buffer.alloc(MIPTEX_HEADER);
+  for (const [pos, span] of lumps.sort((a, b) => a[0] - b[0])) {
+    if (fs.readSync(fd, mt, 0, MIPTEX_HEADER, pos) !== MIPTEX_HEADER) return null;
+    const m = miptexLevels(mt, pos, span); if (m) found.push(m);
+  }
+  found.sort((a, b) => a[0] - b[0]);
+  const mips = [];
+  let after = 0;
+  for (const m of found) { if (m[0] < after) continue; mips.push(...m); after = m[0] + m[1] * m[2]; }
+  return mips.length ? mips : null;
+}
+function mipCopy(mips, size) { return mips ? { size, head: EMPTY, from: 0, mips } : null; }
+
 /** Bytes [start, end) of a WAD's light copy: the file's, with the finest levels inside the range redrawn. */
-function readWadLight(file, c, start, end, buf, at, done) {
+function readMipLight(file, c, start, end, buf, at, done) {
   const m = c.mips;
   // (the textures whose finest level the range overlaps; their next level lies after it in the file: one read of the
   // range and of what those levels need past it)
@@ -243,11 +254,7 @@ function readWadLight(file, c, start, end, buf, at, done) {
     fs.read(fd, into, base, readEnd - start, start, (err2, n) => {
       fs.close(fd, () => {});
       if (err2 || n !== readEnd - start) return done(err2 ?? new Error('short read'));
-      for (let k = lo; k < m.length / 4 && m[k * 4] < end; k++) {
-        const d0 = m[k * 4], w = m[k * 4 + 1], h = m[k * 4 + 2], s1 = m[k * 4 + 3] - start + base, hw = w / 2;
-        const a = Math.max(start, d0), b = Math.min(end, d0 + w * h);
-        for (let p = a; p < b; p++) { const i = p - d0, y = (i / w) | 0, x = i - y * w; into[base + p - start] = into[s1 + (y >> 1) * hw + (x >> 1)]; }
-      }
+      for (let k = lo; k < m.length / 4 && m[k * 4] < end; k++) redrawFinest(into, base, start, end, m[k * 4], m[k * 4 + 1], m[k * 4 + 2], m[k * 4 + 3] - start + base);
       if (tmp) tmp.copy(buf, at, 0, end - start);
       done(null);
     });

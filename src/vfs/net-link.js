@@ -51,6 +51,17 @@ export const LOAD_LONG_MS = 4000, LOAD_HOLD_MS = 2000;
 const LOAD_REQUEST_RTTS = 2;
 /** requests a browser runs at once to an HTTP/1.x origin (Chrome: six connections per host; see h1) */
 export const H1_CONNECTIONS = 6;
+/**
+ * The learned read-ahead's requests in flight (HttpBackend.pumpAhead, see aheadBudget): AHEAD_REQUESTS on a thin link or
+ * an HTTP/1.x origin (its six connections are the game's reads' too), AHEAD_REQUESTS_MID otherwise — small files are
+ * latency-bound —, and on a measured fast link over HTTP/2 or 3 as many as keep AHEAD_BDP times the link's
+ * bandwidth-delay product in flight, AHEAD_REQUESTS_MAX at most: a GoldSrc map's first load reads ~750 learned entries,
+ * most of them 64 KiB or less, and 3 requests of ~86 KB each round trip carried 0.2-0.9 MB/s of an 8 MB/s, 85 ms link
+ * (Half Strike de_dust2, 814 waits for 15 s of a 17 s load, tools/goldsrc/maps.mjs --proxy 8m:85)
+ */
+export const AHEAD_REQUESTS = 3, AHEAD_REQUESTS_MID = 8, AHEAD_REQUESTS_MAX = 24, AHEAD_BDP = 2;
+/** the fast link's ahead bytes at least: AHEAD_REQUESTS_MID pieces of 64 KiB (a short round trip: no fewer than a mid link's) */
+export const AHEAD_BYTES_MIN = AHEAD_REQUESTS_MID * 65536;
 
 export class NetLink {
   /**
@@ -186,6 +197,22 @@ export class NetLink {
   backgroundBytes() {
     if (this.bw === null) return this.fixed ? MAX_BG : UNKNOWN_BG;
     return Math.max(MIN_BG, Math.min(MAX_BG, Math.floor(this.bw * BG_SECONDS / this.ratio() / MIN_BG) * MIN_BG));
+  }
+  /**
+   * The learned read-ahead's budget (HttpBackend.pumpAhead): { requests, bytes } — requests in flight at most, and the
+   * file bytes in flight past which only AHEAD_REQUESTS requests go (whatever their size: a learned whole block is one).
+   * A thin link: AHEAD_REQUESTS; between thin and fast (or not measured yet, nor fixed): AHEAD_REQUESTS_MID; a fast link
+   * measured over HTTP/2 or 3, its round trip known: up to AHEAD_REQUESTS_MAX requests while their bytes stay under
+   * AHEAD_BDP bandwidth-delay products, AHEAD_BYTES_MIN at least (8 MB/s × 85 ms: ~1.4 MB on the wire, ~24 requests of
+   * a map's learned pieces, three whole blocks — as before; a demand read that misses the order waits behind about
+   * AHEAD_BDP round trips, a block more at most) — it had AHEAD_REQUESTS, fewer than a slower link; a fast link
+   * otherwise (HTTP/1.x: six connections shared with the game's reads; a fixed one, not measured): AHEAD_REQUESTS.
+   */
+  aheadBudget() {
+    if (this.thin()) return { requests: AHEAD_REQUESTS, bytes: Infinity };
+    if (!this.fast()) return { requests: AHEAD_REQUESTS_MID, bytes: Infinity };
+    if (this.h1() || !this.measured || !this.bw || !this.rtt) return { requests: AHEAD_REQUESTS, bytes: Infinity };
+    return { requests: AHEAD_REQUESTS_MAX, bytes: Math.max(AHEAD_BYTES_MIN, Math.round(AHEAD_BDP * this.bw * this.rtt / 1000 / this.ratio())) };
   }
   /** background requests at once at most (within the bytes of backgroundBytes(), see mayStart) */
   maxBackground() { return this.bw === null && !this.fixed ? 2 : this.fast() ? 64 : 8; }

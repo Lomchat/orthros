@@ -149,6 +149,18 @@ envoie tout en compressé instantanément, puis en background on charge les gros
   the wire (−3.3 MB, ~−39 s at 85 KB/s; every texture redrawn there, small ones too — the copy as made leaves those
   under 64 × 64, a little less); Counter-Strike rebuilt 3.3 of its 4.2 MB measured, 2.26 → 1.20 MB; Half-Life 1.0 MB,
   mostly WADs without textures to lighten, ~−0.2 MB. Not measured in a browser at 85 KB/s.
+  A texture whose level 0 overlaps one already taken (sorted by level 0's offset: a directory listing the same lump
+  twice, or pointing into another's bytes) is left as it is (2026-10-28): each texture redrawn once, and the copy's
+  reader, which finds the textures a range touches by a binary search over their level 0, sees them sorted and
+  disjoint — any range of the copy then reads the same bytes. None of the 45 WADs installed (GoldSrc games and engines)
+  has such an entry; a guard for the archives the runtime has not seen (`tests/light-copies.test.js`).
+  A BSP v30 map (GoldSrc's) has none, although its texture lump holds the same miptex (tried 2026-10-28, per 1 MiB block
+  at brotli 9: c1a0 1.37 → 1.10 MB, de_dust2 1.00 → 0.75, de_airstrip 3.86 → 2.82; 85 KB/s, c1a0: its waits 16.9 →
+  12.7 s, one run a side) and dropped: with more than one player the engine checksums the map's lumps from the planes
+  on, the textures' among them (Xash3D `CRC32_MapFile`), and a client whose map differs from its server's is
+  disconnected ("Your map differs from the server's") — a native dedicated server reads the real map; a page's own
+  server and client open it each on its own, the copy each read following the link and the store (the real map arriving
+  between the two opens).
   Derived at each request (a header of its own, then a run of the file: nothing stored, the game files never changed),
   served as `/gamez/<manifest>/.light/<path>` (compressed ranges, read reports learned like the file's). The tree tells
   each such file's light size (`light`). For the browser ports only (`manifest.lightCopies`, the catalog's: `false` in a
@@ -1518,6 +1530,69 @@ one run, 90 % at 371 s in the other), the bank after. Up to ~4 min both sides fe
 most of gta3.img, `p=1`): time to in play is unchanged (63.5 s was a loaded run), and the demand reads after in play —
 a standing player, while the archive is still ≤ 270 MB on both sides — are as many. Not measured: a moving player
 (where the archive's missing tail is a wait), the owner's link.
+
+## Read-ahead by the link's bandwidth-delay product (2026-10-28)
+
+The learned pieces fetched ahead of the game (`HttpBackend.pumpAhead`, "What a load needs") kept `AHEAD_REQUESTS` (3)
+requests in flight on a fast link and on a thin one, `AHEAD_REQUESTS_MID` (8) between: an 8 MB/s link kept fewer than a
+2.9 MB/s one. A GoldSrc map's first load reads ~750 learned entries (Half Strike's de_dust2: 756, 65 MB raw, 578 of them
+64 KB or less — the game module's player and weapon models and sounds, which the map does not name, so they are not
+announced), each a round trip: behind the player's-link proxy (HTTP/2, `tools/goldsrc/maps.mjs --proxy 8m:85`) that
+load took 16.9-17.2 s, the engine waiting 15.2-15.5 s in 814 waits (19 ms each, a quarter of the round trip), ~60
+requests a second of ~90 ms each, 0.2-0.9 MB/s on the wire of the 8 MB/s link.
+
+- **The budget** (`NetLink.aheadBudget`, by the link only): a thin link `AHEAD_REQUESTS`; between thin and fast, or not
+  measured yet, `AHEAD_REQUESTS_MID`; a fast link measured over HTTP/2 or 3 with its round trip known, up to
+  `AHEAD_REQUESTS_MAX` (24) requests. The memory bound: the first `AHEAD_REQUESTS` (3) requests go whatever their size
+  (a learned block whose pieces are all read goes as one request: up to three whole 1 MiB blocks, 3 MiB in flight, as
+  before); beyond them a request starts only while the file bytes in flight (`L.inBytes`) stay under `AHEAD_BDP` (2)
+  bandwidth-delay products, `AHEAD_BYTES_MIN` (8 pieces of 64 KiB) at least (8 MB/s × 85 ms: ~1.4 MB on the wire, ~24
+  requests of 64 KiB); a demand read that misses the order waits behind about two round trips, a block more at most.
+  The fast whole-block pass's own requests (`prefetchList`, `FAST_PREFETCH_PARTS`) are outside this budget, as before
+  the change. A fast link over HTTP/1.x (six connections, the game's reads' too) or a fixed one not measured keeps
+  `AHEAD_REQUESTS`. The entries looked at past the game's position: `AHEAD_WINDOW` (32), twice the budget's requests
+  when more.
+- **One request for the same bytes** (`prefetchList`, `pumpAhead`): the learned order's whole-block pass on a fast link
+  registers its blocks as on their way (`blockFlights`, as a sequential reader's read-ahead): a parked read or an
+  announced list joins that request (and promotes it) rather than asking its bytes again — the blocks then go to memory
+  too, not only to the store (full or failed, it drops them: the read would ask again) —; the pieces ahead skip a
+  started one, and take the blocks of one still waiting for its turn (`job.drop`: given up, the pass picks the block
+  again once those pieces came — queued behind the game's reads, it would hold the load's next blocks back, a parked
+  read waiting for its 1-2 MiB rather than a piece). Before, both walked the same order at the same place: Half Strike's first map at 8 MB/s asked 441
+  ranges twice at once (8.7 MB), Half-Life's c1a0 153 (1.9 MB), a game read sometimes beside the pass's request for
+  the same block.
+- Every runtime reads through it (Win32, GoldSrc, re3, OpenMW): BFME's learned entries are whole 1 MiB blocks, bounded
+  by the bytes past `AHEAD_REQUESTS` (three at 8 MB/s and 85 ms, as before).
+- Measured (2026-10-28, `tools/goldsrc/maps.mjs --proxy`, new browser, scratch servers on copies of the learned
+  directory and of the unit cache, frozen; before = main 5aa05be, after = this code; sides alternated, machine load
+  17-34), load seconds (engine waits):
+  - Half Strike, `wait 5,map de_dust2`, 8 MB/s and 85 ms: before 15.4, 17.2 (13.8, 15.5 s; 435-443 ranges asked twice,
+    8.2-8.6 MB); after 4.4, 3.9 (2.9, 2.1 s; 4-5 ranges twice, < 0.04 MB) — the same 813 waits, 3-4 ms each instead of
+    17-19. A first series on an earlier state of the code gave the same picture: before 16.9, 17.2, 14.6; the registered
+    blocks alone 10.8, 10.2; both 4.3, 4.1, 4.7.
+  - Half-Life c1a0, 8 MB/s: before 4.7, 3.3 (4.2, 2.7 s; 57-115 ranges twice, 2.0-3.0 MB); after 2.6, 2.4 (2.2, 2.0 s;
+    24 twice, 0.6 MB). Its changelevel c1a0d (not taught, its reads not in the order): 4.0, 3.9 before, 4.0, 3.8 after
+    — unchanged.
+  - 3.5 MB/s (fast), Half Strike's de_dust2: before 30.4 (28.6 s), after 8.8 (3.9 s) — one run a side, the after run
+    at a machine load of 70.
+  - 1.8 MB/s (a link between thin and fast: the budget does not change there): Half-Life c1a0 5.1, 5.7 before, 4.9, 6.9
+    after, c1a0d 5.6, 5.5 / 5.6, 5.7; Half Strike's cs_assault (untaught) 35.4, 33.1 / 33.0, 33.0 — within the noise.
+  - BFME1 (`bfme1-103`, `tools/data-matrix.mjs --links 8m:85 --win32-seconds 240`, the same pristine copies, 3 runs a
+    side interleaved a b b a a b): first frame 33.2, 34.2, 29.2 s after, 34.2, 32.2, 29.2 before; ~248 MB on the wire to
+    the run's end on both sides (247-253), the page's waits 16 (2.3-2.5 s) after against 29-35 (2.9-3.7 s) before; no
+    run reached the worker's playable mark (SwiftShader's menu under 20 fps, both sides: "timeout"). No crash in the
+    six. The renderer's resident memory peaked at 2456, 2825, 2455 MB after and 2515, 2399, 2430 MB before. The GPU
+    process's resident memory grew roughly linearly over each run, to 4.2-6.6 GB by its end (500-584 s), on both sides
+    alike (after 6.6, 6.1, 5.2 GB; before 6.1, 6.1, 4.2 GB): not caused by this change (its cause not looked into). A crash seen once earlier in this work ("Page crashed", an after run) was the host's out-of-memory killer:
+    the kernel's global OOM at the run's very second killed the page's renderer (oom_score_adj 300, its usual 2.3 GB)
+    while two Python processes outside the run held 17.8 and 29.3 GB, swap empty — not this code.
+  - OpenMW (`morrowind-goty-en`, data-matrix at 8 MB/s and 85 ms, one run a side): the playable mark as the proxy saw
+    it (the matrix's `markS`) 36.7 s before, 30.8 after (the runner's own `playable` 39.6 / 33.9 s; first frame 24.9 /
+    18.2 s; 206 / 184 MB to the mark) — no worse; one run a side is within OpenMW's noise. Neither run got into play:
+    both ended "timeout before play".
+  Not measured: the owner's own link and machine (a real HTTP/2 front over the Internet), an re3 port, a fast link with
+  the store full or failing (the joined blocks kept in memory: covered by a unit test), more than two runs a side on
+  the GoldSrc rows.
 
 ## Opened early (2026-10-28)
 

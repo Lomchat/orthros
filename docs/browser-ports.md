@@ -347,8 +347,13 @@ order fetched ahead from the game's position.
 `tools/goldsrc/maps.mjs <manifest> --steps "wait 5,map c1a0,wait 20,changelevel c1a0d,wait 10" [--net KB/s]`: a new
 browser, its page as a visitor, each step in turn (a console command, or time spent in the map); a map's load is
 timed from its command to the first frame of a steady run (20 frames each within 250 ms of the one before), with the
-game data's waits meanwhile (count, ms, MB) and the MB loaded in the background. `--report` teaches the server (its
-learned order); `--report --no-phases` teaches it without the session's phases, by time only.
+game data's waits meanwhile (count, ms, MB), the map file's own (`bspWaits`) and the MB loaded in the background (by
+producer: `bgByMB`). `--report` teaches the server (its learned order); `--report --no-phases` teaches it without the
+session's phases, by time only. `--proxy <rate>:<rtt>` (e.g. `8m:85`, 2026-10-28): the page behind the player's-link
+proxy (`tools/net-proxy.mjs`: HTTP/2 on one connection, as the production front) in front of `--url` instead of
+Chrome's emulation (which keeps HTTP/1.1's six connections a host), its self-signed key trusted; each load's window of
+the proxy's log in its line (`proxy`: the game's own requests, the ahead / announced / background bytes) and the run's
+summary (`proxySummary`). `--spki <key>` / `--insecure`: an https `--url` behind a proxy started elsewhere.
 
 Half-Life (`half-life-original-en`), Chrome's network emulation with a 40 ms round trip, a scratch server, load 25-80:
 
@@ -469,8 +474,20 @@ the sides alternated), load seconds on / off, medians in brackets:
   comparable with the de_aztec → cs_assault runs above): 37.7, 35.9 / 45.4, 47.3.
 Verdict: the taught map is no slower (faster within the noise at 8 MB/s), the gains on untaught maps and at 1.8 MB/s
 kept. Over HTTP/2 (the production front, `tools/net-proxy.mjs`) not measured.
-`check.mjs` half-life-original-en solo and counter-strike-hl-arsenal-en multiplayer (`--join-keys "{n},1"`) pass (before
-the HTTP/1.x window; not run again).
+Over HTTP/2 (2026-10-28, `maps.mjs --proxy 8m:85`, main 5aa05be, a scratch server on copies of the learned directory
+and the unit cache, frozen, sides alternated): Half-Life c1a0 4.7, 3.3 s (431 waits, 4.2, 2.7 s), c1a0d 4.0, 3.9 s
+(50 waits); Half Strike's first map (`wait 5,map de_dust2`) 15.4, 17.2 s (814 waits, 13.8-15.5 s — round trips:
+docs/slow-network.md "Read-ahead by the link's bandwidth-delay product"). After it (the learned order's blocks
+registered as on their way, the read-ahead by the bandwidth-delay product): c1a0 2.6, 2.4 s (2.2, 2.0 s of waits),
+c1a0d 4.0, 3.8 (unchanged), Half Strike's first map 4.4, 3.9 s (2.9, 2.1 s of waits); at 3.5 MB/s 30.4 → 8.8 s (one run
+a side); at 1.8 MB/s within the noise (c1a0 5.1, 5.7 / 4.9, 6.9; cs_assault 35.4, 33.1 / 33.0, 33.0).
+No light copy of a map (.bsp) although its texture lump is WAD3's miptex: the engine checksums the map's lumps in
+multiplayer (Xash3D `CRC32_MapFile`) and disconnects a client whose map differs from its server's (docs/slow-network.md,
+light copies).
+`check.mjs` half-life-original-en solo, counter-strike-hl-arsenal-en solo (`--guest --no-save`) and multiplayer
+(`--join-keys "{n},1"`) pass on this code (2026-10-28, a scratch server; the multiplayer check's first run failed at its
+last step, player one's suicide scored 0 — the dedicated server's case the check describes, a player without a team —,
+its second passed).
 
 ## Game modules built from source
 

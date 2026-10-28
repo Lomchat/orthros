@@ -1,5 +1,7 @@
 // WAD3: GoldSrc's texture archives — a 12-byte header ('WAD3', its lumps' count, its directory's offset), the lumps, then
 // the directory (32 bytes a lump: offset, size in the file, size, type, compression, two pad bytes, a 16-byte name).
+// Its textures (miptex): a 16-byte name, width, height, the offsets of four levels, each half the last's size, of 8-bit
+// palette indices.
 // One reader for every place that reads one: the server's light copies (src/host/light-copies.js: a texture's finest
 // level redrawn) and a GoldSrc page that announces the textures a map's load reads (src/ports/goldsrc/bsp-reads.js).
 // Pure: bytes in (a Uint8Array or a Buffer), values out — Node and the browser alike.
@@ -39,4 +41,45 @@ export function wadEntries(bytes, n, size) {
     out.push({ name: name.toLowerCase(), pos, disk, size: v.getInt32(at + 8, true), type: bytes[at + 12], comp: bytes[at + 13] });
   }
   return out;
+}
+
+/** Bytes of a miptex's header (name, width, height, four level offsets). */
+export const MIPTEX_HEADER = 40;
+/** A texture's finest level is redrawn (a light copy) from this many pixels on: 64 × 64 (smaller ones save nothing worth their detail). */
+export const MIP_LIGHT_FROM = 64 * 64;
+
+/**
+ * The two finest levels of a miptex whose header (`mt`, its MIPTEX_HEADER bytes) lies at file offset `pos`, `span` bytes
+ * of the file from there being its own (a WAD's lump): [level 0's file offset, width,
+ * height, level 1's file offset] — or null: no pixels here (offsets 0), under
+ * MIP_LIGHT_FROM pixels, odd sides, or levels not as the format lays them (level 1 past level 0, both inside the span).
+ * @param {Uint8Array} mt
+ * @param {number} pos
+ * @param {number} span
+ */
+export function miptexLevels(mt, pos, span) {
+  if (mt.length < MIPTEX_HEADER) return null;
+  const v = new DataView(mt.buffer, mt.byteOffset, mt.byteLength);
+  const w = v.getUint32(16, true), h = v.getUint32(20, true), o0 = v.getUint32(24, true), o1 = v.getUint32(28, true);
+  if (!w || !h || w % 2 || h % 2 || w > 4096 || h > 4096 || w * h < MIP_LIGHT_FROM) return null;
+  if (o0 < MIPTEX_HEADER || o1 < o0 + w * h || o1 + (w / 2) * (h / 2) > span) return null;
+  return [pos + o0, w, h, pos + o1];
+}
+
+/**
+ * A miptex's finest level redrawn from the next one (each pixel of level 1 twice as wide and high: half the detail) over
+ * the bytes of `buf` that hold the file's [start, end) from index `base`: level 0 at file offset `d0` (`w` × `h`), its
+ * pixels inside the range only, level 1 read at index `l1` of `buf` (it lies after level 0: the caller read that far).
+ * @param {Uint8Array} buf
+ * @param {number} base
+ * @param {number} start
+ * @param {number} end
+ * @param {number} d0
+ * @param {number} w
+ * @param {number} h
+ * @param {number} l1
+ */
+export function redrawFinest(buf, base, start, end, d0, w, h, l1) {
+  const hw = w / 2, a = Math.max(start, d0), b = Math.min(end, d0 + w * h);
+  for (let p = a; p < b; p++) { const i = p - d0, y = (i / w) | 0, x = i - y * w; buf[base + p - start] = buf[l1 + (y >> 1) * hw + (x >> 1)]; }
 }

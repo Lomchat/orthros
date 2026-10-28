@@ -121,8 +121,11 @@ test('a TGA picture of a screen\'s size has a light copy: a smaller TGA of its o
   assert.deepEqual(buf, light.subarray(5000, 6000));
 });
 
-/** A WAD3 archive: miptex lumps [name, w, h] (each level's pixels a pattern of its own), then a lump of another type */
-function wad(textures) {
+/**
+ * A WAD3 archive: miptex lumps [name, w, h] (each level's pixels a pattern of its own), then a lump of another type;
+ * `again`: indices of lumps the directory lists a second time (another entry, the same bytes)
+ */
+function wad(textures, again = []) {
   const lumps = [];
   for (const [name, w, h] of textures) {
     const sizes = [w * h, (w * h) / 4, (w * h) / 16, (w * h) / 64], head = Buffer.alloc(40);
@@ -135,7 +138,8 @@ function wad(textures) {
   const parts = [Buffer.alloc(12)], dir = [];
   let at = 12;
   for (const [type, b] of lumps) { const e = Buffer.alloc(32); e.writeInt32LE(at, 0); e.writeInt32LE(b.length, 4); e.writeInt32LE(b.length, 8); e[12] = type; dir.push(e); parts.push(b); at += b.length; }
-  parts[0].write('WAD3', 0, 'latin1'); parts[0].writeInt32LE(lumps.length, 4); parts[0].writeInt32LE(at, 8);
+  for (const i of again) { const e = Buffer.from(dir[i]); e.write('again', 16, 'latin1'); dir.push(e); }
+  parts[0].write('WAD3', 0, 'latin1'); parts[0].writeInt32LE(dir.length, 4); parts[0].writeInt32LE(at, 8);
   return Buffer.concat([...parts, ...dir]);
 }
 
@@ -164,5 +168,68 @@ test('a WAD3 archive\'s light copy keeps its size and offsets, each texture\'s f
     assert.equal(lightCopy(other, fs.statSync(other)), null);
     const tiny = path.join(dir, 'tiny.wad'); fs.writeFileSync(tiny, wad([['s', 16, 16]]));
     assert.equal(lightCopy(tiny, fs.statSync(tiny)), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a WAD3 archive whose directory lists a texture twice: each texture lightened once, the copy the same from any range', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-wad-again-'));
+  try {
+    const textures = [['big', 128, 64], ['wide', 256, 128]];
+    const once = wad(textures), bytes = wad(textures, [1, 0]), f = path.join(dir, 'again.wad'), g = path.join(dir, 'once.wad');
+    fs.writeFileSync(f, bytes); fs.writeFileSync(g, once);
+    const c = lightCopy(f, fs.statSync(f)), c1 = lightCopy(g, fs.statSync(g));
+    assert.equal(c.size, bytes.length);
+    // (the same lumps at the same offsets: the archive differs only in its directory, after them)
+    assert.deepEqual(c.mips, c1.mips, 'two textures, each once — level 0 overlapping another\'s is left out');
+    assert.equal(c.mips.length, 8);
+    for (let k = 4; k < c.mips.length; k += 4) assert.ok(c.mips[k] >= c.mips[k - 4] + c.mips[k - 3] * c.mips[k - 2], 'sorted, none overlapping');
+    const read = (a, b) => new Promise((res, rej) => { const buf = Buffer.alloc(b - a); readLight(f, c, a, b, buf, 0, (e) => (e ? rej(e) : res(buf))); });
+    const want = Buffer.from(bytes);
+    for (let k = 0; k < c.mips.length; k += 4) {
+      const [d0, w, h, s1] = c.mips.slice(k, k + 4);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) want[d0 + y * w + x] = bytes[s1 + (y >> 1) * (w / 2) + (x >> 1)];
+    }
+    assert.deepEqual(await read(0, bytes.length), want);
+    assert.notDeepEqual(want, bytes);
+    let s = 5;
+    for (let i = 0; i < 40; i++) { s = (s * 1103515245 + 12345) >>> 0; const a = s % bytes.length; s = (s * 1103515245 + 12345) >>> 0; const b = a + 1 + (s % (bytes.length - a)); assert.deepEqual(await read(a, b), want.subarray(a, b), `${a}-${b}`); }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+/**
+ * A BSP v30 map: lumps 0 (entities), 1 (planes) as filler bytes, lump 2 the textures — miptex [name, w, h] with their
+ * pixels (each level a pattern of its own), [name, w, h, true] one its WAD holds (offsets 0), a -1 entry (left out) —,
+ * then lumps 3-14 filler bytes.
+ */
+function bsp(textures) {
+  const mips = [];
+  for (const [name, w, h, external] of textures) {
+    const head = Buffer.alloc(40); head.write(name, 0, 'latin1'); head.writeUInt32LE(w, 16); head.writeUInt32LE(h, 20);
+    if (external) { mips.push(head); continue; }
+    const sizes = [w * h, (w * h) / 4, (w * h) / 16, (w * h) / 64];
+    let o = 40; for (let i = 0; i < 4; i++) { head.writeUInt32LE(o, 24 + i * 4); o += sizes[i]; }
+    mips.push(Buffer.concat([head, ...sizes.map((n, i) => Buffer.from(Array.from({ length: n }, (_, k) => (k * (i + 5) + (k >> 6)) & 0xff))), Buffer.from([0, 1]), Buffer.alloc(768, 9), Buffer.alloc(2)]));
+  }
+  const n = mips.length + 1, dir = Buffer.alloc(4 + n * 4); dir.writeInt32LE(n, 0);
+  let o = dir.length; mips.forEach((m, i) => { dir.writeInt32LE(o, 4 + i * 4); o += m.length; }); dir.writeInt32LE(-1, 4 + mips.length * 4);
+  const lumps = Array.from({ length: 15 }, (_, i) => (i === 2 ? Buffer.concat([dir, ...mips]) : Buffer.from(Array.from({ length: 300 + i * 17 }, (_, k) => (k * 7 + i) & 0xff))));
+  const head = Buffer.alloc(4 + 15 * 8); head.writeInt32LE(30, 0);
+  let at = head.length; lumps.forEach((l, i) => { head.writeInt32LE(at, 4 + i * 8); head.writeInt32LE(l.length, 8 + i * 8); at += l.length; });
+  return { bytes: Buffer.concat([head, ...lumps]), head };
+}
+
+test('a BSP v30 map has no light copy, its textures embedded or not: the engine checksums its texture lump in multiplayer (a client whose map differs from its server\'s is disconnected)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-bsp-'));
+  try {
+    const { bytes, head } = bsp([['wall', 128, 64], ['tiny', 32, 32], ['sky', 256, 256, true], ['floor', 64, 64]]);
+    for (const name of ['c1a0.bsp', 'DE_DUST2.BSP']) {
+      const f = path.join(dir, name); fs.writeFileSync(f, bytes);
+      assert.equal(lightCopy(f, fs.statSync(f)), null, name);
+    }
+    // (what a GoldSrc page parses of a map — src/ports/goldsrc/bsp-reads.js — reads its lumps through the shared reader)
+    const { bspLumps } = await import('../src/ports/goldsrc/bsp-reads.js');
+    const lumps = bspLumps(bytes, bytes.length);
+    assert.equal(lumps.length, 15);
+    assert.deepEqual(lumps[2], { off: head.readInt32LE(4 + 2 * 8), len: head.readInt32LE(8 + 2 * 8) });
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

@@ -3,7 +3,7 @@
 // JSON listing so stat/readdir never hit the network; file data is fetched in blocks kept in a
 // bounded LRU cache with read-ahead for sequential access.
 import { acct, C as ACCT } from '../core/frame-acct.js';
-import { NetLink, H1_CONNECTIONS } from './net-link.js';
+import { NetLink, H1_CONNECTIONS, AHEAD_REQUESTS } from './net-link.js';
 import { LIGHT_DIR, isVideoFile, isLightPicture } from './game-tree.js';
 import { decodePcm, PCM_MAGIC } from './pcm-codec.js';
 
@@ -66,10 +66,11 @@ const UPGRADE_QUIET_MS = 8000;
  */
 const UPGRADE_SOON_QUIET_MS = 1500;
 const DEFAULT_CACHE_BLOCKS = 256; // 256 MiB
-/** learned pieces fetched ahead of the game (see pumpAhead): requests in flight at most, entries past its position */
-const AHEAD_REQUESTS = 3, AHEAD_WINDOW = 32;
-/** learned pieces ahead on a link neither fast nor thin: more requests at once (small files are latency-bound) */
-const AHEAD_REQUESTS_MID = 8;
+/**
+ * learned pieces fetched ahead of the game (see pumpAhead): entries past its position, AHEAD_WINDOW at least and twice
+ * the requests the link's budget allows (NetLink.aheadBudget)
+ */
+const AHEAD_WINDOW = 32;
 /**
  * The game's position in the learned order is followed (L.tracked: what it reads next is what the order says — its
  * pieces ahead may go during a load, see pumpAhead) once TRACK_STEPS first touches of learned entries in a row went
@@ -414,19 +415,21 @@ export class HttpBackend {
     // was made for, see prefetch's relist)
     // (hist: the last TRACK_SPAN first touches, in the order or not; changed: since when the link's class differs from
     // fast, measured: the link's then)
-    const L = this.learned = { entries, rankOf, first, pos: -1, inFlight: 0, stop, tracked: false, steps: 0, misses: 0, hist: [], fast: this.net.fast(), measured: this.net.measured, changed: null };
+    const L = this.learned = { entries, rankOf, first, pos: -1, inFlight: 0, inBytes: 0, stop, tracked: false, steps: 0, misses: 0, hist: [], fast: this.net.fast(), measured: this.net.measured, changed: null };
     // (a list made again for the link's new class: what the game did with the one it replaces)
     const C = opts.carry;
     if (C) {
       for (const e of C.entries) if (e.seen) { const r = rankOf.get(`${e.path}#${e.index}`); if (r !== undefined) entries[r].seen = true; }
       const p = C.entries[C.pos]; if (p) L.pos = rankOf.get(`${p.path}#${p.index}`) ?? -1;
       if (L.pos >= 0) Object.assign(L, { tracked: C.tracked, steps: C.steps, misses: C.misses, hist: C.hist });
-      L.inFlight = C.inFlight; C.moved = L; // (its requests still on their way count in the new one's, see fetchPiecesAhead)
+      L.inFlight = C.inFlight; L.inBytes = C.inBytes; C.moved = L; // (its requests still on their way count in the new one's, see fetchPiecesAhead)
     }
     const skey = (e, i = e.index) => `${e.path}#${e.size}#${e.mtime}#${i}`;
     const stored = (e) => e.skip || store.map.has(skey(e)) || this.cache.has(`${e.path}#${e.index}`);
     // (the block the fill is downloading is left to it: it stores it too)
-    const todo = (e) => !e.pending && !stored(e) && this.bgCur?.key !== `${e.path}#${e.index}` && !this.blockFlights.has(`${e.path}#${e.index}`) && !this.flights.has(`${e.path}#${e.index * (BLOCK / CHUNK)}`);
+    // (nor one whose queued download the pieces ahead took (e.dropped, see pumpAhead) while those pieces are on their way)
+    const flying = (e) => { for (let c = e.index * (BLOCK / CHUNK), z = c + BLOCK / CHUNK; c < z; c++) if (this.flights.has(`${e.path}#${c}`)) return true; return false; };
+    const todo = (e) => !e.pending && !stored(e) && this.bgCur?.key !== `${e.path}#${e.index}` && !this.blockFlights.has(`${e.path}#${e.index}`) && !this.flights.has(`${e.path}#${e.index * (BLOCK / CHUNK)}`) && !(e.dropped && flying(e));
     // the entry to download next: the first one past the game's position not stored yet, else the first one — the
     // launch set's first when the position is past it (opts.first)
     const next = () => {
@@ -510,16 +513,38 @@ export class HttpBackend {
       const n = f && f.path === e.path && f.index === e.index + 1 && todo(f) ? 2 : 1;
       const start = e.index * BLOCK, end = Math.min(e.size, (e.index + n) * BLOCK);
       e.pending = true; if (n === 2) f.pending = true;
-      const job = this.fetchBackground(e.path, start, end, null, true, false, { prio: prioOf(k), stop, reason: 'pf' }).then((data) => {
+      // (its blocks registered as on their way, as a sequential reader's read-ahead: a parked read or an announced list
+      // joins the request and makes it go first rather than ask again (job.joined); the learned pieces ahead skip it once
+      // it started, and take its blocks while it still waits for its turn — job.drop, see pumpAhead)
+      const w = {}, keys = n === 2 ? [`${e.path}#${e.index}`, `${f.path}#${f.index}`] : [`${e.path}#${e.index}`];
+      let dropped = false;
+      const unregister = () => { for (const key of keys) if (this.blockFlights.get(key) === job) this.blockFlights.delete(key); };
+      const job = this.fetchBackground(e.path, start, end, null, true, false, { prio: prioOf(k), stop: () => dropped || stop(), w, reason: 'pf' }).then((data) => {
         e.pending = false; if (n === 2) f.pending = false;
-        if (data === ABORTED) return;
+        unregister();
+        if (data === ABORTED || dropped) return;
         if (data === null) { down = true; return; }
         if (!data) { e.skip = true; return; } // (an answer to skip: not asked again this session)
-        for (let i = 0; i < n; i++) store.put(skey(e, e.index + i), data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK)));
+        // (a read joined it: the blocks in memory too — the store may drop them, full or failed, and the read would then
+        // ask them again after waiting for this whole request)
+        for (let i = 0; i < n; i++) {
+          const b = data.subarray(i * BLOCK, Math.min(data.length, (i + 1) * BLOCK));
+          if (job.joined && !this.cache.has(`${e.path}#${e.index + i}`)) this.installBlock(e.path, e.index + i, b, skey(e, e.index + i)); else store.put(skey(e, e.index + i), b);
+        }
+        if (job.joined) this.evict();
         // (done with, stored or not: a full store drops blocks silently, and the pass would fetch them again forever)
         e.skip = true; if (n === 2) f.skip = true;
         progress.bytes += data.length; progress.blocks += n;
-      });
+      }, (err) => { unregister(); throw err; });
+      job.w = w;
+      // (still waiting for its turn: given up — its blocks to the pieces ahead —, true; else false)
+      job.drop = () => {
+        if (dropped || job.joined || !this.net.waiters.includes(w)) return false; // (a read waits for it: kept)
+        dropped = true; unregister(); e.pending = false; e.dropped = true; if (n === 2) { f.pending = false; f.dropped = true; }
+        this.net.kick(); // (out of the queue now: its stop holds)
+        return true;
+      };
+      for (const key of keys) this.blockFlights.set(key, job);
       if (!overlap) { await job; continue; }
       parts.add(job); job.finally(() => parts.delete(job));
     }
@@ -582,12 +607,17 @@ export class HttpBackend {
 
   /**
    * Fetch ahead the pieces earlier sessions read (the entry's mask of 64 KiB pieces) of the learned entries just past
-   * the game's position (AHEAD_WINDOW entries), AHEAD_REQUESTS requests in flight at most. While the game walks a run
+   * the game's position (AHEAD_WINDOW entries, twice the budget's requests on a fast link), within the link's budget
+   * (NetLink.aheadBudget: requests in flight, and their bytes on a fast HTTP/2 link — L.inBytes). While the game walks a run
    * of learned blocks reading a piece or two of each (a latency-bound chain of small reads, the link mostly idle
    * between them), its next reads are already here or on their way. While the game loads (NetLink.silenced) only when
    * its position is followed (L.tracked, see noteBlock): then they are the load's own next reads (forLoad). These requests are not aborted by the game's own
    * reads (they are predictions of those reads, and small); a parked read of a piece in flight waits for it
-   * (fetchAhead). Entries whose mask is unknown (learned before masks) are left to the whole-block pass.
+   * (fetchAhead). Entries whose mask is unknown (learned before masks) are left to the whole-block pass, as are the
+   * blocks a download already started brings (blockFlights: their pieces were asked twice at once — Half Strike's first
+   * map, 441 requests and 8.7 MB twice at 8 MB/s); one of that pass's still waiting for its turn is given up instead
+   * (job.drop): queued behind the game's reads on a fast link, it would hold the load's next blocks back, a parked read
+   * then waiting for its 1-2 MiB rather than a piece.
    */
   pumpAhead() {
     const L = this.learned; if (!L || L.stop() || this.store?.failed || typeof fetch !== 'function') return;
@@ -599,11 +629,20 @@ export class HttpBackend {
     // Not for a list announced with `wait` false: it holds files the load reads late too, and the order's next entries
     // — the reads it cannot predict — would each wait a round trip until its last unit came)
     if (this.wantLists > 0) return;
-    const P = BLOCK / CHUNK;
-    for (let r = L.pos + 1, lim = Math.min(L.entries.length, L.pos + 1 + AHEAD_WINDOW); r < lim && L.inFlight < (this.net.fast() || this.net.thin() ? AHEAD_REQUESTS : AHEAD_REQUESTS_MID); r++) {
+    const P = BLOCK / CHUNK, budget = this.net.aheadBudget();
+    // (within the budget: its requests, and past AHEAD_REQUESTS of them its bytes — L.inBytes, see fetchPiecesAhead: whole
+    // blocks stay at about main's three on a fast link, pieces go by the bandwidth-delay product)
+    const room = () => L.inFlight < budget.requests && (L.inFlight < AHEAD_REQUESTS || (L.inBytes ?? 0) < budget.bytes);
+    const span = Math.max(AHEAD_WINDOW, 2 * budget.requests);
+    for (let r = L.pos + 1, lim = Math.min(L.entries.length, L.pos + 1 + span); r < lim && room(); r++) {
       const e = L.entries[r];
       // (nor a media file's entry at the order's tail: the game streams it, read ahead of its reader — readAhead)
       if (e.ahead || e.seen || !e.mask || e.tail || this.doneWith(e.path)) continue;
+      // (nor a block a download started brings: a parked read joins that request — fetchAhead; the whole-block pass's
+      // still queued is given up, its block's pieces go ahead — job.drop)
+      const bf = this.blockFlights.get(`${e.path}#${e.index}`);
+      if (bf && !(bf.w && this.net.waiters.includes(bf.w) && (!bf.drop || bf.drop()))) continue;
+      if (e.pending && !bf) continue;
       e.ahead = true;
       if (this.cache.has(`${e.path}#${e.index}`) || this.store?.map.has(`${e.path}#${e.size}#${e.mtime}#${e.index}`)) continue;
       const c0 = e.index * P, pieces = Math.ceil((Math.min(e.size, (e.index + 1) * BLOCK) - e.index * BLOCK) / CHUNK);
@@ -625,7 +664,7 @@ export class HttpBackend {
   fetchPiecesAhead(e, m0, m1, whole) {
     const L0 = this.learned, at = () => { let L = L0; while (L.moved) L = L.moved; return L; }; // (see prefetchList's carry)
     const start = m0 * CHUNK, stop = Math.min(e.size, (m1 + 1) * CHUNK);
-    L0.inFlight++;
+    L0.inFlight++; L0.inBytes = (L0.inBytes ?? 0) + stop - start;
     this.stats.aheadRequests = (this.stats.aheadRequests ?? 0) + 1;
     // (the learned position followed (L.tracked): these are the load's next reads — they may go during it; read when the
     // turn is looked at, not when it was queued: tracking found or lost meanwhile)
@@ -636,7 +675,7 @@ export class HttpBackend {
       if (whole) { this.installBlock(e.path, e.index, d, `${e.path}#${e.size}#${e.mtime}#${e.index}`); this.evict(); } else this.addPieces(e.path, m0, m1, d, e);
     }).finally(() => {
       for (let c = m0; c <= m1; c++) if (this.flights.get(`${e.path}#${c}`) === done) this.flights.delete(`${e.path}#${c}`);
-      at().inFlight--;
+      const L = at(); L.inFlight--; L.inBytes = Math.max(0, (L.inBytes ?? 0) - (stop - start));
       this.pumpAhead();
     });
     done.w = w;
@@ -734,7 +773,7 @@ export class HttpBackend {
       // (joined, and promoted as a parked read's (NetLink.promote): one still waiting for its turn would else stay queued
       // behind the very silence this list's wait makes — a background flight that is not forLoad — until the engine's
       // timeout)
-      if (bf && !joined) { if (!place) this.net.promote(bf.w); waits.push(Promise.resolve(bf).then(() => this.wantRange(path, size, mtime, a, b, true, place, loose), () => this.wantRange(path, size, mtime, a, b, true, place, loose))); continue; }
+      if (bf && !joined) { if (!place) this.net.promote(bf.w); bf.joined = true; waits.push(Promise.resolve(bf).then(() => this.wantRange(path, size, mtime, a, b, true, place, loose), () => this.wantRange(path, size, mtime, a, b, true, place, loose))); continue; }
       const c0 = Math.floor(a / CHUNK), c1 = Math.floor((b - 1) / CHUNK), first = bi * P, n = Math.ceil((b1 - b0) / CHUNK);
       const missing = [];
       for (let c = c0; c <= c1; c++) {
@@ -1386,7 +1425,7 @@ export class HttpBackend {
       const flying = new Set();
       if (this.flights.size) for (let c = Math.floor(pos / CHUNK); c * CHUNK < end; c++) { const f = this.flights.get(`${path}#${c}`); if (f) flying.add(f); }
       if (this.blockFlights.size) for (let bi = Math.floor(pos / BLOCK); bi * BLOCK < end; bi++) { const f = this.blockFlights.get(`${path}#${bi}`); if (f) flying.add(f); }
-      for (const f of flying) this.net.promote(f.w);
+      for (const f of flying) { this.net.promote(f.w); f.joined = true; }
       if (flying.size) await Promise.all(flying);
     }
     const jobs = [];
