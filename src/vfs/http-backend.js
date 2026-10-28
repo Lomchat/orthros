@@ -45,6 +45,8 @@ const MISSED_BLOCK_FLIGHTS = 2;
  * game's next misses are often next to its last ones: the parts of an archive one scene needs). At most NEAR_MAX wanted.
  */
 const NEAR_BLOCKS = 2, NEAR_QUIET_MS = 500, NEAR_MAX = 64;
+/** The files whose latest wait laterNext remembers (the oldest forgotten), and the rank above any file wanted whole. */
+const WAITED_FILES = 256, WAITED_RANK = 2 ** 40;
 /**
  * Once the learned prefetch is over, a file in which the game keeps missing blocks — WHOLE_AFTER_MISSES distinct blocks
  * read at random, not as a stream — is an archive it reads here and there as it plays (a sound bank, models, textures
@@ -238,8 +240,12 @@ export class HttpBackend {
     this.want = new Map(); this.filling = false;
     /** blocks next to missed ones, wanted at the lowest priority (see NEAR_BLOCKS): same entries as `want` */
     this.near = new Map();
-    /** blocks of files the game wants whole (see wantWhole), after `want` and `near`: same entries */
+    /** blocks of files the game wants whole (see wantWhole), after `want` and `near`: same entries (laterNext's order) */
     this.later = new Map();
+    /** the files of `later` by rank (laterNext): path -> the turn of the latest wantWhole of it; path -> the turn of the
+     * game's latest wait on it (a read it is blocked on that went to the network: fetchRange, HttpFile.prepare held, a page's
+     * data worker's held ask — not a read the game went on past, a skipped sample: noteWait — at most WAITED_FILES) */
+    this.wholeAt = new Map(); this.waitedAt = new Map(); this.fileTurn = 0;
     /** blocks of files whose light copy the game read (see upgrade), last of all: same entries, the latest last */
     this.upgrades = new Map();
     /** the latest upgrade was soon (an engine that reloads in place): the upgrades start after UPGRADE_SOON_QUIET_MS */
@@ -1180,6 +1186,7 @@ export class HttpBackend {
   }
 
   fetchRange(path, start, end) {
+    this.noteWait(path);
     const ap = acct.enter(ACCT.net); // (frame accounting: the game thread waits for the network)
     try { return this.fetchRangeNow(path, start, end); } finally { acct.leave(ap); }
   }
@@ -1448,11 +1455,42 @@ export class HttpBackend {
   wantWhole(path) {
     const r = this.lookup(path); if (!r?.file) return;
     const size = r.file.size, mtime = r.file.mtime ?? 0;
+    this.wholeAt.set(r.path, ++this.fileTurn);
     for (let i = 0; i * BLOCK < size; i++) {
       const k = `${r.path}#${i}`;
       if (!this.cache.has(k) && !this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) this.later.set(k, { path: r.path, size, mtime, index: i });
     }
     this.fillBackground();
+  }
+
+  /**
+   * The game is blocked on the network for a read of `path` (a synchronous read, a held one — HttpFile.prepare, a page's
+   * data worker once the engine waits for its ask): its whole fill goes first (laterNext). Never for a read the game went
+   * on past (an ask ahead, readable(), a sample skipped while missing): one would put a bank its engine skips before the
+   * archive whose reads wait.
+   */
+  noteWait(path) {
+    this.waitedAt.delete(path); this.waitedAt.set(path, ++this.fileTurn);
+    if (this.waitedAt.size > WAITED_FILES) this.waitedAt.delete(this.waitedAt.keys().next().value); // (the oldest go)
+  }
+
+  /**
+   * The `later` block the fill takes next ([key, entry] or undefined), file by file, each file's blocks in their order:
+   * the file the game waited on latest this session first (its next reads wait on the network again while the file is
+   * not whole — reVC's gta3.img, read at random as the player moves), else the file wanted whole latest (a bank wanted
+   * whole at the engine's start before an archive wanted at a new game's: the archive's streaming reads wait, a bank's
+   * missing sample is skipped — measured, docs/slow-network.md "Whole files in order").
+   */
+  laterNext() {
+    let best, bestRank = -1;
+    const ranks = new Map();
+    for (const e of this.later) {
+      const path = e[1].path;
+      let r = ranks.get(path);
+      if (r === undefined) { const w = this.waitedAt.get(path); r = w !== undefined ? WAITED_RANK + w : this.wholeAt.get(path) ?? 0; ranks.set(path, r); }
+      if (r > bestRank) { best = e; bestRank = r; }
+    }
+    return best;
   }
 
   /** Every block of `path` is here (memory, store): its reads need no network. */
@@ -1538,7 +1576,7 @@ export class HttpBackend {
         while (queued() && (this.net.silenced() || (quiet() ? this.gameBusy(quiet()) : this.loadUnderWay() || !this.gameQuiet(upgradeQuiet())))) await new Promise((res) => setTimeout(res, 50));
         const q = this.want.size ? this.want : this.near.size ? this.near : this.later.size ? this.later : this.upgrades;
         if (!q.size) continue; // (fetched whole meanwhile by a sequential read)
-        const [k, w] = q === this.upgrades ? [...q].at(-1) : q.entries().next().value;
+        const [k, w] = q === this.upgrades ? [...q].at(-1) : q === this.later ? this.laterNext() : q.entries().next().value;
         // (here already: fetched whole by a read, or stored by the learned prefetch)
         // (or on its way, fetched ahead of a sequential reader)
         if (this.cache.has(k) || this.blockFlights.has(k) || this.store?.map.has(`${w.path}#${w.size}#${w.mtime}#${w.index}`)) { q.delete(k); continue; }
@@ -1669,6 +1707,7 @@ class HttpFile {
     const p = this.prepareNow(off, len);
     // (nor a media stream's: its reader's misses are no load — counted as one, they silenced its own read-ahead, the
     // movie read a round trip at a time)
+    if (p && held) this.b.noteWait(this.path); // (a wait for the file's whole fill too: laterNext)
     if (!p || !held || this.b.isMedia(this.path)) return p;
     const tok = this.b.net.wait();
     return p.finally(() => this.b.net.waitEnd(tok));

@@ -356,7 +356,8 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   card says "Playable
   after 80 MB, about 10 min at your link (100 KB/s)" (`launchStatus` in `src/host/web/download.js`, the rate
   `linkRate`; the size only while none was measured), above the whole download's line, hidden once the whole game is
-  here or downloading.
+  here or downloading. An engine that reloads in place (`reloads`) is said by its light set on every link, and
+  prepared in two stages: "The light launch set of an engine that reloads in place" below.
 - **Prepare** (the line's button): the download worker fetches the launch set only (`{ type: 'launch' }`:
   `HttpBackend.prefetch` with `learnedOnly`, the pieces as the startup set fetches them) into the same OPFS store —
   the card's game language's set, and first the engine release's files into the HTTP cache (immutable URLs: the page's
@@ -1390,6 +1391,94 @@ matrix enters the map 2 s after the menu; "map wait" = the demand-wait seconds f
   counter-strike-hl-arsenal-en solo `--guest --no-save`, counter-strike-rebuilt-en solo `--no-save` and
   counter-strike-hl-arsenal-en multiplayer `--join-keys "{n},1"` (a scratch dedicated server, `tools/goldsrc/server.mjs
   --engines-dir`, its meshes linked from the release's `gamefiles/`) pass.
+
+## The light launch set of an engine that reloads in place (2026-10-28)
+
+Since "Big loads light first", an engine that reloads in place (its release.json `exports` lists
+`orthros_file_updated`: OpenMW's builds) reads the light copies of a new game's big load even on a fast link, its files
+coming after as upgrades. Yet the card, the in-page way to playable and "Prepare" still counted the fast link's launch
+set — the files themselves: Morrowind Vanilla+ FR said "playable after 378 MB" (184.5 MB of wire) on a fast link for a
+game that plays after 137 MB (54.2 MB of wire). One rule now (`src/vfs/launch-set.js` `lightLaunch(fast, reloads)`):
+
+- **The server says it** (`src/host/server.js` `engineReloads`, `launchOf`): /api/manifests `launch.reloads` (and each
+  language's) when the version's engine release exports `RELOAD_EXPORT` (`engine-content.js` `exports(release)`, read
+  again when its release.json changes). Generic: an engine release's word, no runtime or game named.
+- **The card** (`download.js` `launchStatus`): `lightBytes` / `lightWire` for "Playable after" and its time on every
+  link when `reloads`; the files' figures otherwise on a fast link, as before.
+- **"Prepare" in two stages** (`download-worker.js` `download`, `reloads` from the card's launch): the light set first
+  (`launchSet(..., false)`), "Ready" once it is here; then, on a fast link only (where the old Prepare fetched them), the
+  files themselves of the fast link's set as a second stage (`upgrade: { bytes, total }` in the progress, said in the
+  card's tooltip), stopped like the first (Play, another download), its end or a failure leaving the card ready. A player
+  who plays between the stages gets the light copies and their in-place upgrades — what a big load does anyway.
+- **The probe** (`probe`, `countStores`, the item's `reloads`): the light set on every link — a light copy or its file
+  whole (forLink) —, so a store filled light on a thin link is ready on a fast one.
+- **The page's cold-store test** (`data-worker.js` `prefetchNow`; `GameData.reloads` tells the worker): judged on the
+  light set once the page knows its engine reloads, so a store "Prepare" left at its first stage (Play pressed on
+  "Ready", which ends the second) is warm and the boot is not shared with a paced prefetch. The order the page fetches
+  ahead (`launchFirst`, `prefetchAll`) and its pill (`launchWatch`, counted on that same set) are unchanged: a long
+  menu dwell on a fast link still ends with the full files here (no pop-in, no reloads), and the pill never counts
+  light copies nothing fetches.
+
+Tests: `tests/launch-set.test.js` (the card at 7 MB/s with `reloads`; the server's `reloads` from a release.json's
+exports), `tests/download-worker.test.js` (the two stages; the probe of a light store on a fast link).
+
+Measured (2026-10-28, a scratch server on copies of the live learned state and units — frozen —, before: `main` a5aff0d).
+/api/manifests: the OpenMW versions now say `reloads: true`, no other version changed; Vanilla+ FR on a
+fast link "Playable after" 377.6 MB → 136.9 MB (Vanilla+ EN 218.5 → 118.1 MB, GOTY 161.0 → 150.8 MB). "Prepare"
+(`tools/prepare-bench.mjs --only morrowind-goty-vanilla-plus-fr --known-bw`, behind the player's-link proxy, 80 ms; the
+engine's 20.6 MB included — the release's own package, no lean one in the frozen copy; three runs a side, all identical
+to 0.3 s but one 4 MB/s "after" run, 49.0 s / 96.7 s, made while a browser run shared the machine):
+
+| link | before: "Ready" (wire) | after: "Ready" (wire) | after: second stage over (wire in all) |
+|---|---|---|---|
+| 7 MB/s | 36.1 s (199.4 MB) | 22.6 s (76.4 MB) | 42.7 s (208.1 MB) |
+| 4 MB/s | 54.7 s (199.4 MB) | 28.5 s (76.4 MB) | 62.1 s (208.1 MB) |
+
+"Ready" 1.6-1.9x sooner, 2.6x fewer bytes before it; the whole of the two stages ~8.7 MB more (the light copies) and
+6-7 s longer. The light set's requests are small (1422 in all against 1120): at 7 MB/s its 76 MB came at ~3.4 MB/s, the
+round trips its bound. Not measured: the page's way to playable in a browser, the owner's real link.
+
+## Whole files in order (2026-10-28)
+
+`HttpBackend.wantWhole` queues every missing block of a file in the background fill's `later` queue; the fill used to
+take them in insertion order, so reVC's effects bank (`sfx.RAW`, wanted whole at the audio's start, 292 MB of wire) went
+entirely before the streaming archive (`models/gta3.img`, wanted whole at `CGame::Initialise` after New Game, 149 MB)
+whose random reads the game waits on in free roam (the owner's sessions: 5-15 gta3.img demand reads per session behind
+the bank's fill). The rule (`HttpBackend.laterNext`, generic: what the game waited on, never a file name):
+
+- `later` is filled **file by file, each file's blocks in their order**: first the file the game **waited on latest**
+  this session (`noteWait`: a read the game is **blocked** on that went to the network — a synchronous one,
+  `fetchRange`; a held one, `HttpFile.prepare(..., held)`; a page's data-worker ask once the engine waits for it,
+  `waited` —, never a read it went on past: an ask ahead, `readable()`, reVC's bank sample skipped while missing; the
+  latest `WAITED_FILES` (256) files remembered), else the file **wanted whole latest** (`wholeAt`). A bank's missing
+  sample is skipped (a silence), an archive's missing model is a wait or pop-in: the archive goes first.
+- No hold added during loads: on a link that is not fast the `later` queue is already held while the game loads
+  (`net.silenced()`), and NetLink's strict priority puts the learned order before it.
+
+Test: `tests/http-backend-whole.test.js` (two files wanted whole, a parked read on the first, a synchronous one on the
+second, a third waited on before it was wanted whole).
+
+Measured (2026-10-28, `tools/data-matrix.mjs --only vice-city-revc --links 1.8m:90 --parallel 1`, before: `main`
+a5aff0d, each side's tree copied into scratch; frozen copies of the live learned state and units; the runner kept 330 s
+in play after "in play" — a scratch-only `MATRIX_LINGER`, the player standing — for the fill's end; runs interleaved,
+loaded machine, load average 21-33. A second "before" run's page stopped receiving at ~280 s, replaced by a third;
+figures from the proxy's log, seconds from the navigation, gta3.img 327.5 MB decoded):
+
+| | before (2 runs) | after (2 runs) |
+|---|---|---|
+| in play | 63.5 / 41.1 s | 42.0 / 40.6 s |
+| gta3.img fetched at 180 s | 199.3 / 201.7 MB | 212.5 / 205.4 MB |
+| gta3.img fetched at 300 s | 254.0 / 267.1 MB | 266.8 / 264.7 MB |
+| gta3.img at 90 % / whole | never / never (stops at 275.1 / 274.0 MB, end 395 / 373 s) | 362 / 371 s; whole 377 s / 299 MB at the end (373 s) |
+| sfx.RAW fetched at the end | 98.6 / 102.8 MB | 50.3 / 47.2 MB |
+| gta3.img demand reads after in play (their time in flight) | 84 (13.4 s) / 72 (11.9 s) | 88 (14.0 s) / 89 (14.1 s) |
+
+The order shows at the queue's tail: before, from ~5 min the fill went to the effects bank (38 MB of sfx.RAW in the 7th
+minute, 2 of gta3.img) with 52 MB of the archive still missing; after, the archive is finished first (whole at 377 s in
+one run, 90 % at 371 s in the other), the bank after. Up to ~4 min both sides fetch the same (the learned order brings
+most of gta3.img, `p=1`): time to in play is unchanged (63.5 s was a loaded run), and the demand reads after in play —
+a standing player, while the archive is still ≤ 270 MB on both sides — are as many. Not measured: a moving player
+(where the archive's missing tail is a wait), the owner's link.
 
 ## What the page says
 

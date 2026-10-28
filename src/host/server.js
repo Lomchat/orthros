@@ -26,7 +26,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK, unitOf, HttpBackend } from '../vfs/http-backend.js';
-import { launchSummary, launchSet, entryPieces, PRE_PLAYABLE } from '../vfs/launch-set.js';
+import { launchSummary, launchSet, entryPieces, PRE_PLAYABLE, RELOAD_EXPORT } from '../vfs/launch-set.js';
 import { createBrCache } from './br-cache.js';
 import { PERF_MAX_BYTES, sanitizePerfRecord } from './perf-record.js';
 import { createAccountApi } from './accounts.js';
@@ -691,9 +691,10 @@ export function createServer(opts = {}) {
     const langs = marksLangs(name, man, required);
     if (langs.size) sum.langs = Object.fromEntries([...langs].sort().map((l) => [l, summed(l)]));
     // (the engine's own download at a first launch: told apart, a browser that ran it before has it)
-    const engine = engineOf(man);
+    const engine = engineOf(man), reloads = engineReloads(man);
     sum.engine = engine.wire; sum.engineFiles = engine.urls;
-    if (sum.langs) for (const l of Object.values(sum.langs)) { l.engine = engine.wire; l.engineFiles = engine.urls; }
+    if (reloads) sum.reloads = true;
+    if (sum.langs) for (const l of Object.values(sum.langs)) { l.engine = engine.wire; l.engineFiles = engine.urls; if (reloads) l.reloads = true; }
     return sum;
   };
   /**
@@ -716,6 +717,11 @@ export function createServer(opts = {}) {
     const { release, page, tree } = portEngine(man);
     return release && page.length ? contentFiles.pageUrls(release, page, tree) : {};
   };
+  /**
+   * A browser port's engine loads a file again in place once it is here (its release.json exports RELOAD_EXPORT): its
+   * launch is the light one on every link (launch-set.js lightLaunch; /api/manifests launch.reloads).
+   */
+  const engineReloads = (man) => { const { release } = portEngine(man); return !!release && contentFiles.exports(release).has(RELOAD_EXPORT); };
   /**
    * A browser port's engine release as its page downloads it at a first launch: { wire (bytes, brotli when served so —
    * sendEngineFile), urls } — none for a Win32 game.

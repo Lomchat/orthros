@@ -27,7 +27,7 @@ import { openVersion, openStore, learnedOrders, partOf } from './game-data.js';
 import { MemBlockStore } from './opfs-store.js';
 import { BLOCK, CHUNK } from './http-backend.js';
 import { LIGHT_DIR, treeFiles } from './game-tree.js';
-import { flagged, launchFirst, launchSet, setBytes, WIRE_RATIO } from './launch-set.js';
+import { flagged, launchFirst, launchSet, lightLaunch, setBytes, WIRE_RATIO } from './launch-set.js';
 import { ReadReports } from './playable-watch.js';
 
 /** The reads the engine used, sent to the server's learned order every so often. */
@@ -64,6 +64,7 @@ export function createDataWorker(post) {
     prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null, boot: false, readSeen: false,
     wants: new Map(), wantFrom: 1, wantMax: 0, wantLeft: 0, wantFailed: 0, wantLabel: null,
     legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(), reports: new ReadReports(), phases: [],
+    reloads: false,
   };
   return (m) => {
     if (m.init) {
@@ -94,6 +95,7 @@ function dispatch(m) {
   if (m.prefetch) { prefetchNow(); return; }
   if (m.mark) { mark(m.mark); return; }
   if (m.phase) { phase(m.phase); return; }
+  if (m.reloads !== undefined) { W.reloads = !!m.reloads; return; }
   if (m.want) { want(m.want); return; }
   if (m.wantPlace) { wantPlace(m.wantPlace); return; }
   if (m.wantWhole) { route(m.wantWhole.name, m.wantWhole.path)?.files.wantWhole(m.wantWhole.path); return; }
@@ -110,7 +112,7 @@ function dispatch(m) {
  * one's when another tab's game holds the owner's).
  */
 async function init(o) {
-  W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.lang = typeof o.lang === 'string' && o.lang ? o.lang : null; W.prefetchAt = o.prefetch ?? 'none';
+  W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.lang = typeof o.lang === 'string' && o.lang ? o.lang : null; W.prefetchAt = o.prefetch ?? 'none'; W.reloads = !!o.reloads;
   const kept = {};
   W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, cacheBlocks: o.cacheBlocks, kept: (n) => kept[n], store: async (n) => {
     const s = await openStore(n); kept[n] = !!s;
@@ -172,6 +174,8 @@ async function bytesOf({ name, path, off, len, want, src }, ask = { held: true }
   if (wait) {
     // (a media stream's read: a wait of the engine's, not of a load — see HttpFile.prepare)
     ask.media = !!part.files.isMedia?.(f.path);
+    // (its file's whole fill first once the engine waits for it: waited, HttpBackend.noteWait)
+    ask.files = part.files; ask.path = f.path;
     W.waits.add(ask); waited();
     try { await wait; } finally { W.waits.delete(ask); if (ask.tok) { W.version.net.waitEnd(ask.tok); ask.tok = null; } waited(); }
   }
@@ -189,6 +193,8 @@ function waited() {
   W.waiting = 0;
   for (const a of W.waits) {
     if (a.held) W.waiting++;
+    // (once per ask: an ask the engine went on past never counts — a sample skipped while missing)
+    if (a.held && !a.noted && a.files) { a.noted = true; a.files.noteWait?.(a.path); }
     if (a.held && !a.media && !a.tok) a.tok = net.wait(); else if (!a.held && a.tok) { net.waitEnd(a.tok); a.tok = null; }
   }
   if (W.waiting > 0 || was > 0) W.lastWait = performance.now();
@@ -398,8 +404,12 @@ async function startup() {
  */
 async function prefetchNow() {
   if (W.prefetching || W.stop) return;
-  const lists = await order(), fast = W.version.net.fast();
+  const lists = await order();
   if (W.prefetching || W.stop) return;
+  // (judged on the set the home's card and "Prepare" call ready: the light one for an engine that reloads in place —
+  // W.reloads, told by the page before its engine runs, read after the order's await; a store "Prepare" left at its
+  // light stage is warm — and the files' own set on a fast link otherwise: lightLaunch)
+  const fast = !lightLaunch(W.version.net.fast(), W.reloads);
   let bytes = 0, here = 0;
   W.version.parts.forEach((p, i) => { const s = setBytes(p.files, launchSet(p.files, lists[i], fast)); bytes += s.bytes; here += s.here; });
   if (!bytes || here >= bytes * LAUNCH_COLD) return;
@@ -444,8 +454,10 @@ async function prefetchAll() {
  * wireLeft, seconds, done } }): the launch set of every part as this link reads it (launch-set.js: what earlier
  * sessions read before their game was playable — a new game's first load included), its bytes here already, the wire
  * bytes left (the link's measured ratio of wire to decoded bytes, else WIRE_RATIO) and the seconds they take at the
- * link's measured rate (null until measured). Only for an order with flags (a session marked the version playable);
- * over once all of it is here or the game is playable (the page's mark).
+ * link's measured rate (null until measured). The set prefetchAll fetches first (launchFirst on this link's class), not
+ * the light one the home announces for an engine that reloads in place (lightLaunch): counted on a set nothing fetches,
+ * the pill would stay at its light copies' bytes while the link brings the files. Only for an order with flags (a
+ * session marked the version playable); over once all of it is here or the game is playable (the page's mark).
  */
 function launchWatch(lists) {
   if (!lists.some(flagged)) return;

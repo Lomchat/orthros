@@ -296,7 +296,7 @@ export function mountHome({ onPlay }) {
     for (const g of order) {
       const shown = chosen(g); if (!shown?.available) continue;
       const gl = gameLang(g, shown), v = runs(shown, gl), launch = launchFor(v.launch, gl);
-      items.push({ name: v.name, lang: gl, engine: launch?.engineFiles?.length ? { files: launch.engineFiles, bytes: launch.engine ?? 0 } : null });
+      items.push({ name: v.name, lang: gl, engine: launch?.engineFiles?.length ? { files: launch.engineFiles, bytes: launch.engine ?? 0 } : null, reloads: launch?.reloads === true });
     }
     probeTimer = setTimeout(() => downloads.probe(items), PROBE_DELAY_MS);
     cleanup.push(cancelProbe);

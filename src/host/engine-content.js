@@ -52,6 +52,12 @@ export function declaredShas(release) {
   return out;
 }
 
+/**
+ * The functions a release.json says its engine exports to its page (`exports`: [{ name, ... }] — OpenMW's
+ * orthros_file_updated, its files loaded again in place): Set(name).
+ */
+export const exportNames = (release) => new Set((Array.isArray(release?.exports) ? release.exports : []).map((e) => e?.name).filter((n) => typeof n === 'string'));
+
 /** A tree's sha256: its members' paths in the tree and sha256s, in order (a member renamed or changed: a new tree). */
 export const treeSha = (members) => crypto.createHash('sha256').update('orthros-engine-tree-1\n' + [...members].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([p, s]) => `${p}\0${s}\n`).join('')).digest('hex');
 
@@ -64,7 +70,8 @@ export const treeSha = (members) => crypto.createHash('sha256').update('orthros-
  * /engines/_c/<sha>/<rest> is served, or null), `served(sha, rest, { reindex, ms })` (the same, a promise waiting — at
  * most `ms` — for the hashing running: `reindex(force)` asks the server's releases again — `force`: once a hashing drained
  * since, else throttled by the server —),
- * `hashing()` (files being hashed or waiting to be).
+ * `hashing()` (files being hashed or waiting to be), `exports(release)` (the names its release.json says the engine
+ * exports: exportNames, read again when it changes).
  */
 export function engineContent({ enginesDir, log = () => {} }) {
   const releases = new Map(); // release -> { size, mtimeMs, declared: Map } (its release.json, read again when it changes)
@@ -80,8 +87,9 @@ export function engineContent({ enginesDir, log = () => {} }) {
     let st; try { st = fs.statSync(f); } catch { return null; }
     const c = releases.get(release);
     if (c && c.size === st.size && c.mtimeMs === st.mtimeMs) return c;
-    let declared = new Map(); try { declared = declaredShas(JSON.parse(fs.readFileSync(f, 'utf8'))); } catch { /* unreadable: hashed */ }
-    const v = { size: st.size, mtimeMs: st.mtimeMs, declared };
+    let declared = new Map(), exports = new Set();
+    try { const r = JSON.parse(fs.readFileSync(f, 'utf8')); declared = declaredShas(r); exports = exportNames(r); } catch { /* unreadable: hashed */ }
+    const v = { size: st.size, mtimeMs: st.mtimeMs, declared, exports };
     releases.set(release, v);
     return v;
   };
@@ -147,6 +155,7 @@ export function engineContent({ enginesDir, log = () => {} }) {
   const url = (release, rel) => { const s = sha(release, rel); return s ? `${CONTENT_PREFIX}${s}/${encodeURIComponent(path.posix.basename(rel))}` : null; };
   return {
     sha,
+    exports(release) { return declaredOf(release)?.exports ?? new Set(); },
     pending(release, rel) { const f = fileOf(release, rel); return !!f && hashes.get(f.key) === null; },
     hashed(release, rel) {
       const s = sha(release, rel), f = fileOf(release, rel);

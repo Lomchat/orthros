@@ -170,7 +170,7 @@ export class GameData {
         else if (m.log) this.log(m.log);
       };
     });
-    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', lang: o.lang ?? null, bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
+    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', lang: o.lang ?? null, bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', reloads: !!o.reloads, memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
     this.timer = setInterval(() => { if (this.used.length) this.worker.postMessage({ used: this.used.splice(0) }); }, 2000);
     this.holdTimer = setInterval(() => this.holdWatch(), 100);
     // (the page's loading indicator, src/host/web/data-meter.js, when it has one: these counters, read live)
@@ -255,9 +255,10 @@ export class GameData {
   /**
    * The page's engine loads a file again in place once it is here (`on`): the light copies read first on every link
    * that is not fast (readsReal), their files fetched soon after them (HttpBackend.upgrade's `soon`) — the player sees
-   * them sharpen at once.
+   * them sharpen at once; the worker judges a cold store on the light launch set on every link (data-worker.js
+   * prefetchNow, launch-set.js lightLaunch).
    */
-  reloads(on = true) { this.reloadsInPlace = !!on; }
+  reloads(on = true) { if (this.reloadsInPlace !== !!on) this.worker.postMessage({ reloads: !!on }); this.reloadsInPlace = !!on; }
 
   /**
    * A big announced load reads the light copies first (`on`, the default), even on a fast link — for an engine that

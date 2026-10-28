@@ -16,6 +16,7 @@ import { NetLink } from '../src/vfs/net-link.js';
 import { forLink, startupHead, launchSet, launchFirst, setBytes, launchSummary, PRE_PLAYABLE, WIRE_RATIO } from '../src/vfs/launch-set.js';
 import { createDataWorker } from '../src/vfs/data-worker.js';
 import { launchFor, launchStatus } from '../src/host/web/download.js';
+import { fmtBytes } from '../src/host/web/net-status.js';
 import { engineSizes, wireOf } from '../src/host/web/download-worker.js';
 
 const MiB = 1 << 20;
@@ -183,6 +184,19 @@ test('the home card\'s line: playable after X at the link\'s rate, preparing, pr
   assert.equal(launchStatus(launch, { st: { done: true } }, 'en').state, 'done');
   assert.equal(launchStatus(launch, { whole: { state: 'done', done: true } }, 'en').state, 'done');
   assert.equal(launchStatus(null, {}, 'en'), null);
+});
+
+test('an engine that reloads in place (launch.reloads): the card says its light set on every link — its game plays on it, the files upgrade after', () => {
+  const launch = { bytes: 377.6e6, lightBytes: 136.9e6, wire: 184.5e6, lightWire: 54.2e6, engine: 13.55e6, reloads: true };
+  const fast = launchStatus(launch, { bw: 7e6 }, 'en');
+  assert.equal(fast.text, `Playable after ${fmtBytes(136.9e6, 'en')} (+ ${fmtBytes(13.55e6, 'en')} of engine) · ~10 s`, fast.text);
+  assert.ok(Math.abs(fast.eta - 54.2e6 / 7e6) < 0.01, `the light set's wire bytes at the link's rate: ${fast.eta}`);
+  assert.equal(launchStatus(launch, { bw: 100 * 1024 }, 'en').total, 136.9e6, 'a slow link: the same');
+  const plain = launchStatus({ ...launch, reloads: undefined }, { bw: 7e6 }, 'en');
+  assert.equal(plain.total, 377.6e6, 'an engine that does not reload: the files themselves on a fast link');
+  // (prepared: 'Ready' while the files themselves come — the second stage, said in the detail)
+  const up = launchStatus(launch, { bw: 7e6, st: { done: true, running: true, bytes: 136.9e6, total: 136.9e6, upgrade: { bytes: 50e6, total: 240.7e6 } } }, 'en');
+  assert.equal(up.state, 'done'); assert.match(up.detail, /sharp textures: .+ \/ .+$/);
 });
 
 test('the server learns the launch set from the sessions\' marks: flags in the learned order, a launch per version, kept', async (t) => {
@@ -434,6 +448,11 @@ test('a game language\'s own launch set (its sessions\' marks: its translated fi
   assert.deepEqual(launch.engineFiles, [`/engines/_c/${treeSha([['index.js', sha('engine/index.js')]])}/index.js`, ...['engine/xash.wasm', 'cl/c.wasm', 'dl/s.wasm', 'engine/valve/extras.pk3'].map((f) => `/engines/_c/${sha(f)}/${path.basename(f)}`)]);
   assert.equal(launch.langs.fr.engine, launch.engine);
   assert.equal(launchFor(launch, 'fr'), launch.langs.fr); assert.equal(launchFor(launch, 'de'), launch); assert.equal(launchFor(null, 'fr'), null);
+  assert.equal(launch.reloads, undefined, 'an engine whose release.json exports nothing: no reload in place');
+  // (a release.json that says its engine exports orthros_file_updated: it reloads in place — read again once changed)
+  fs.writeFileSync(path.join(e1, 'release.json'), JSON.stringify({ exports: [{ name: 'orthros_file_updated', returns: 'number', args: ['string'] }] }));
+  const reloads = (await (await fetch(`${s.base}/api/manifests`)).json()).find((m) => m.name === 'gs-orig').launch;
+  assert.equal(reloads.reloads, true); assert.equal(reloads.langs.fr.reloads, true);
   // (a language the version does not declare: counted in all the sessions' marks, not as a language of its own)
   await post({ session: 'x1', reads: [['valve/a.pak', 0, 10, 5]], mark: { kind: 'playable', lang: 'qqqqqqqqqqqqqqqq' } });
   assert.deepEqual(Object.keys((await (await fetch(`${s.base}/api/manifests`)).json()).find((m) => m.name === 'gs-orig').launch.langs), ['en', 'fr']);
@@ -625,4 +644,32 @@ test('a set\'s bytes here, as this link reads it: a light copy here does not cou
   s2.put('tex.dds#2097152#1#0', new Uint8Array(MiB)); s2.put('tex.dds#2097152#1#1', new Uint8Array(MiB));
   for (const link of [false, true]) { const b = setBytes(f2, launchSet(f2, order, link)); assert.ok(b.bytes > 0 && b.here === b.bytes, `${link ? 'fast' : 'thin'}: ${JSON.stringify(b)}`); }
   assert.deepEqual(f2.storedBytes(), { bytes: 2 * MiB, total: 8 * MiB + 200000 }, 'the whole game: its blocks here whole');
+});
+
+test('an engine that reloads in place on a fast link: its pill counts the set its prefetch fetches, and gets there', async (t) => {
+  // (the home announces the light set for it, lightLaunch; the page's prefetch fetches the files on a fast link: a pill
+  // counted on light copies nothing fetches would stay short of its total)
+  const asked = [];
+  const tr = { dirs: {}, files: { 'a.esm': { size: BLOCK, mtime: 5 }, 't.dds': { size: 2 * BLOCK, mtime: 5, light: CHUNK } } };
+  const learned = [['a.esm', 0, 1, 0, 1], ['.light/t.dds', 0, 1, 100, 1]];
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(url, 'http://x');
+    if (u.pathname === '/api/manifest/v') return Response.json({ name: 'v' });
+    if (u.pathname === '/api/tree/v') return Response.json(tr);
+    if (u.pathname === '/api/prefetch/v') return init.method === 'POST' ? new Response(null, { status: 204 }) : Response.json(learned);
+    const m = /^\/gamez\/v\/(.+)$/.exec(u.pathname);
+    if (m) { const [a, b] = u.searchParams.get('r').split('-').map(Number); asked.push(m[1]); const body = new Uint8Array(b - a); return new Response(body, { status: 200, headers: { 'content-length': String(body.length) } }); }
+    return new Response('no', { status: 404 });
+  };
+  const out = [], handle = createDataWorker((m) => out.push(m));
+  const ctrl = new Int32Array(new SharedArrayBuffer(64)), data = new Uint8Array(new SharedArrayBuffer(1 << 20));
+  handle({ init: { name: 'v', session: 's', prefetch: 'start', bw: 50 << 20, reloads: true, ctrl: ctrl.buffer, data: data.buffer } });
+  const until = async (ok, what) => { for (let i = 0; i < 3000 && !ok(); i++) await new Promise((r) => setTimeout(r, 2)); assert.ok(ok(), what); };
+  await until(() => out.some((m) => m.ready), 'ready');
+  t.after(() => handle({ close: true }));
+  handle({ reloads: true });
+  handle({ start: true });
+  await until(() => out.some((m) => m.launch?.done), `the pill done once its set is here: ${JSON.stringify(out.filter((m) => m.launch).at(-1))}`);
+  assert.ok(!asked.some((p) => p.startsWith('.light/')), `a fast link fetches the files: ${JSON.stringify(asked)}`);
 });

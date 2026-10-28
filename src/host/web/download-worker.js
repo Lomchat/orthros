@@ -6,19 +6,24 @@
 // (src/vfs/launch-set.js: what earlier sessions read before their game was playable, as this link reads it), their
 // pieces as the game's own startup set fetches them; resumed the same way (the pieces here are skipped) — the game
 // language's own launch set (`lang`) —, and a browser port's engine release first (`engine`: its URLs, /api/manifests
-// launch.engineFiles, immutable: into the browser's HTTP cache, where the page's first launch finds them).
+// launch.engineFiles, immutable: into the browser's HTTP cache, where the page's first launch finds them). A version
+// whose engine reloads in place (`reloads`: /api/manifests launch.reloads, launch-set.js lightLaunch) is prepared in two
+// stages on a fast link: its light launch set — what its game reads before it plays without waiting: 'Ready' once
+// here —, then the files themselves of the fast link's set (`upgrade` in the progress: what the game would load again
+// sharp), the second stage stopped like the first (Play, another download).
 // "Probe" (the home, on its arrival: `probe`): what the stores of the versions played before hold — their launch sets
 // and their whole files —, so that the card says "Ready" from the store's contents, not only after a Prepare.
-// Messages in: { type: 'download' | 'launch', name, bw, lang?, engine? }, { type: 'probe', items: [{ name, lang?, engine? }],
-// bw }, { type: 'stop' }. Out: { type: 'progress', kind ('whole' | 'launch'), bytes, total, stored, engine (of them: the
-// engine's wire bytes), bw, ratio, running, done, error }, { type: 'probed', name, lang, missing?, launch?, whole? }
+// Messages in: { type: 'download' | 'launch', name, bw, lang?, engine?, reloads? }, { type: 'probe', items: [{ name, lang?,
+// engine?, reloads? }], bw }, { type: 'stop' }. Out: { type: 'progress', kind ('whole' | 'launch'), bytes, total, stored,
+// engine (of them: the engine's wire bytes), bw, ratio, running, done, error, upgrade? ({ bytes, total }: the second
+// stage's) }, { type: 'probed', name, lang, missing?, launch?, whole? }
 // (probe), then { type: 'stopped' } once the stores are closed (the game's worker may open them).
 // The files a version takes from one it requires go to that version's store (game-data.js openVersion's shared parts,
 // learnedOrders): a version prepared or probed counts them there — what another version that reads them stored too —
 // and in its own store (what it kept of them before the owners: UnderStore); the owner's store held by another tab's
 // game, they are prepared into its own store, as before.
 import { openVersion, openData, openStore, openStoreNow, storeExists, storeLocks, learnedOrders, UnderStore } from '../../vfs/game-data.js';
-import { launchSet, setBytes } from '../../vfs/launch-set.js';
+import { launchSet, setBytes, lightLaunch } from '../../vfs/launch-set.js';
 
 let stopping = false, running = false;
 /** the engine files' requests in flight (stop aborts them) */
@@ -87,10 +92,10 @@ async function engineFile(url, progress) {
 }
 
 /** (exported for a harness: tools/prepare-bench.mjs — `hooks.openStore`: the stores, the browser's OPFS ones without it) */
-export async function download(name, bw, kind = 'whole', lang = null, engine = null, hooks = {}) {
+export async function download(name, bw, kind = 'whole', lang = null, engine = null, hooks = {}, reloads = false) {
   running = true; stopping = false;
   const stores = [];
-  let parts = [], net = null, timer = null, launch = null, eng = null;
+  let parts = [], net = null, timer = null, launch = null, eng = null, upgrade = null;
   const report = (extra = {}) => {
     let bytes = parts.reduce((a, p) => a + (p.progress.started ? p.progress.bytes : 0), 0), total = parts.reduce((a, p) => a + p.total, 0);
     let stored = parts.reduce((a, p) => a + (p.progress.stored ?? 0), 0);
@@ -99,6 +104,12 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
       bytes = 0; total = 0; stored = 0;
       for (const l of launch) { const b = setBytes(l.files, l.set); bytes += b.here; total += b.bytes; stored += l.stored; }
       if (eng) { bytes += eng.bytes; total += eng.total; }
+    }
+    // (the second stage's: the full files' set, its pieces here — counted apart, 'Ready' said by every report of it)
+    if (upgrade) {
+      let ub = 0, ut = 0;
+      for (const u of upgrade) { const b = setBytes(u.files, u.set); ub += b.here; ut += b.bytes; }
+      extra = { done: true, upgrade: { bytes: ub, total: ut }, ...extra };
     }
     const s = net?.snapshot();
     post({ type: 'progress', kind, name, bytes, total, stored, engine: eng?.total ?? 0, bw: s?.bw ?? null, ratio: net ? net.ratio() : 1, received: s ? s.bgBytes + s.demandBytes : 0, running, ...extra });
@@ -120,8 +131,10 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
       // (every part's launch set: the version's and those of the versions it requires — the game reads them too —, each
       // from its own learned order; the version's first)
       const lists = await learnedOrders(version, lang);
+      // (the light set first for an engine that reloads in place, on any link: lightLaunch)
+      const light = lightLaunch(net.fast(), reloads), full = net.fast() && reloads;
       launch = version.parts.map((p, i) => {
-        const set = launchSet(p.files, lists[i], net.fast());
+        const set = launchSet(p.files, lists[i], !light);
         return { p, files: p.files, set, stored: setBytes(p.files, set).here, progress: { bytes: 0, blocks: 0, done: false } };
       });
       // (the engine release first: the page loads it before reading any game file)
@@ -135,6 +148,19 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
         else l.progress.done = true;
         if (stopping) break;
         if (!l.progress.done) { running = false; throw new Error(l.p.store.failed ? 'the browser storage is full or unavailable' : 'the server stopped answering: try again later'); }
+      }
+      if (full && !stopping) {
+        // (ready: said at once, then the full files of the fast link's set — what the light copies stand for —, each part's
+        // in its order; their end, a stop or a failure leave it ready)
+        upgrade = version.parts.map((p, i) => ({ p, files: p.files, set: launchSet(p.files, lists[i], true), progress: { bytes: 0, blocks: 0, done: false } }));
+        report();
+        for (const u of upgrade) {
+          if (u.set.length) await u.files.prefetch(u.set, u.progress, () => stopping, { learnedOnly: true });
+          if (stopping || !u.progress.done) break;
+        }
+        running = false;
+        report({ done: true });
+        return;
       }
       running = false;
       report({ done: !stopping && launch.every((l) => l.progress.done) });
@@ -168,7 +194,7 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
  * reading them kept of them before the owners (UnderStore, as the game reads them) — the owner's store held by another
  * tab's game: those only. Throws when a store cannot be told (unknown, another context holds it).
  */
-async function countStores(version, orders, stores, exists, open, has = true) {
+async function countStores(version, orders, stores, exists, open, has = true, reloads = false) {
   const parts = [], opened = new Map();
   for (const [i, p] of version.parts.entries()) {
     const kept = i === 0 ? has : await exists(p.name);
@@ -183,7 +209,8 @@ async function countStores(version, orders, stores, exists, open, has = true) {
     opened.set(p.name, st);
     parts.push(await openData(p.name, { tree: p.files.tree, store: st, net: version.net })); // (its own files: files.tree)
   }
-  const fast = version.net.fast();
+  // (a version whose engine reloads in place: its light set on every link — a light copy or its file whole, lightLaunch)
+  const fast = !lightLaunch(version.net.fast(), reloads);
   let bytes = 0, here = 0, wb = 0, wt = 0;
   for (const [i, p] of parts.entries()) {
     const b = setBytes(p.files, launchSet(p.files, orders[i], fast));
@@ -206,7 +233,8 @@ async function countStores(version, orders, stores, exists, open, has = true) {
  * out instead of running without its store; one opening it now leaves the item unknown). Unknown (a store another
  * context holds, an error, OPFS unavailable): nothing posted for the item. The launch set as this link reads it
  * (launchSet: a store filled on a thin link holds light copies — no wait there, the files' pieces to fetch on a fast
- * one). (exported for a test — `hooks`: { openStore (no lock taken: the probe holds it), exists }.)
+ * one; an item's `reloads`, an engine that reloads in place: its light set on every link — a store filled light on a
+ * thin link is ready on a fast one too —, lightLaunch). (exported for a test — `hooks`: { openStore (no lock taken: the probe holds it), exists }.)
  */
 export async function probe(items, bw, hooks = {}) {
   stopping = false;
@@ -241,7 +269,7 @@ export async function probe(items, bw, hooks = {}) {
         const { bytes, here, wb, wt } = await storeLocks(version.parts.map((p) => p.name), async (locked) => {
           if (!locked) throw new Error('busy'); // (a game opening one now: unknown)
           // (closed before the locks go, whatever happens: a game waiting on them opens them next)
-          try { return await countStores(version, orders, stores, exists, open, has); } finally { for (const s of stores.splice(0)) { try { s.close(); } catch { /* closed */ } } }
+          try { return await countStores(version, orders, stores, exists, open, has, it.reloads === true); } finally { for (const s of stores.splice(0)) { try { s.close(); } catch { /* closed */ } } }
         }, { ifAvailable: true });
         const launch = bytes > 0 ? { bytes: here + engHere, total: bytes + engTotal, engine: engTotal, engineFiles: urls, done: here >= bytes && cached === urls.length } : null;
         post({ type: 'probed', name, lang, launch, whole: { bytes: wb, total: wt, done: wt > 0 && wb >= wt } });
@@ -262,6 +290,6 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
   if (m.type === 'stop') { stopping = true; for (const c of aborts) c.abort(); if (!running) post({ type: 'stopped', name: m.name ?? null }); return; }
   if (m.type === 'probe' && !running) { probe(m.items, Number(m.bw) || undefined); return; }
   if ((m.type === 'download' || m.type === 'launch') && !running) {
-    download(String(m.name), Number(m.bw) || undefined, m.type === 'launch' ? 'launch' : 'whole', typeof m.lang === 'string' && m.lang ? m.lang : null, m.engine ?? null);
+    download(String(m.name), Number(m.bw) || undefined, m.type === 'launch' ? 'launch' : 'whole', typeof m.lang === 'string' && m.lang ? m.lang : null, m.engine ?? null, {}, m.reloads === true);
   }
 };

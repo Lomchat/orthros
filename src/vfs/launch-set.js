@@ -19,6 +19,22 @@ export const WIRE_RATIO = 0.75;
 
 const PIECES = BLOCK / CHUNK;
 
+/**
+ * The export of an engine that loads a file again in place once it is here (its release.json `exports`: OpenMW's,
+ * streamfs.js; GameData.reloads): its big loads read light copies first on every link (data-client.js), so its launch
+ * set is the light one on every link too (lightLaunch).
+ */
+export const RELOAD_EXPORT = 'orthros_file_updated';
+/**
+ * The launch set read as on a link that is not fast (light copies, no media: launchSet(..., false)) — on such a link, and
+ * on any link for a version whose engine reloads in place (/api/manifests launch.reloads): what its game reads before it
+ * plays without waiting (a new game's big load reads the light copies even on a fast link), the files themselves
+ * coming after as upgrades. One rule for the home's card (launchStatus), "Prepare" and the probe (download-worker.js)
+ * and the page's cold-store test (data-worker.js prefetchNow; not its pill, launchWatch: counted on the set its prefetch
+ * fetches).
+ */
+export const lightLaunch = (fast, reloads = false) => !fast || !!reloads;
+
 /** The order carries the server's flags (a session marked the version playable). */
 export const flagged = (list) => list.some((e) => typeof e[4] === 'number');
 
@@ -122,7 +138,8 @@ export function setBytes(files, list, whole = false) {
 /**
  * What a version's launch costs, from its learned order (as the server lists it): { bytes, lightBytes, wire, lightWire,
  * entries } — decoded and wire bytes of the launch set on a fast link (the files themselves) and on one that is not
- * (light copies, no media) —, or null when no session marked it playable (no flags). `wireOf(path, unit, raw)`: the wire
+ * (light copies, no media: the one a version whose engine reloads in place announces on every link, lightLaunch — the
+ * server adds `reloads`) —, or null when no session marked it playable (no flags). `wireOf(path, unit, raw)`: the wire
  * bytes of a transport unit ({ kind: 'b' | 'p', index }, br-cache.js's: a block whose pieces are all learned, or one
  * piece; a light copy by pieces, one block when it is one piece), else raw × WIRE_RATIO.
  */

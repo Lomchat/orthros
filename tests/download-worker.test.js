@@ -178,3 +178,51 @@ test('Play: no probe starts once a game is chosen (forGame) — a probe timer fi
     assert.equal(made, 1, 'the probe of a home visit');
   } finally { globalThis.Worker = realW; }
 });
+
+test('probe: an engine that reloads in place — its light set on every link: a store filled light on a thin link is ready on a fast one', async () => {
+  const thinFilled = new MemBlockStore(); putBlock(thinFilled, 'data.bsa', 2 * MiB, 0); putPieces(thinFilled, '.light/tex.dds', 100000, 2);
+  const [m] = (await runProbe([{ name: 'g', lang: 'en', reloads: true }], FAST, { stores: { g: thinFilled } })).probed;
+  assert.equal(m.launch.done, true, JSON.stringify(m.launch)); assert.equal(m.launch.bytes, m.launch.total);
+  const fastFilled = new MemBlockStore(); putBlock(fastFilled, 'data.bsa', 2 * MiB, 0); putBlock(fastFilled, 'tex.dds', 2 * MiB, 0); putBlock(fastFilled, 'tex.dds', 2 * MiB, 1);
+  assert.equal((await runProbe([{ name: 'g', reloads: true }], FAST, { stores: { g: fastFilled } })).probed[0].launch.done, true, 'the files here whole: ready too');
+});
+
+test('prepare: an engine that reloads in place, on a fast link — the light set first ("Ready"), then the files themselves as a second stage', async () => {
+  const run = async (reloads) => {
+    const real = globalThis.fetch, realSelf = globalThis.self;
+    const posts = [], asked = []; globalThis.self = { postMessage: (m) => posts.push({ ...m, asked: asked.length }) };
+    globalThis.fetch = async (url) => {
+      const json = (v) => ({ ok: true, status: 200, json: async () => v, headers: new Headers() });
+      if (url.startsWith('/api/manifest/')) return json({});
+      if (url.startsWith('/api/tree/')) return json(probeTree());
+      if (url.startsWith('/api/prefetch/')) return json(probeOrder);
+      const u = new URL(url, 'http://x'), r = u.searchParams.get('r');
+      const [a, b] = r ? r.split('-').map(Number) : [0, 0];
+      const file = decodeURIComponent(u.pathname.split('/').slice(3).join('/'));
+      asked.push(file);
+      // (the file itself slow: the half-second reports of the second stage come meanwhile)
+      if (file === 'tex.dds') await new Promise((r) => setTimeout(r, 700));
+      return new Response(new Uint8Array(b - a), { status: 200, headers: { 'content-length': String(b - a) } });
+    };
+    try {
+      const { download } = await import('../src/host/web/download-worker.js');
+      await download('g', FAST, 'launch', null, null, { openStore: async () => new MemBlockStore() }, reloads);
+    } finally { globalThis.fetch = real; globalThis.self = realSelf; }
+    return { progress: posts.filter((m) => m.type === 'progress'), asked };
+  };
+  const two = await run(true);
+  const ready = two.progress.find((m) => m.done);
+  assert.ok(ready && ready.bytes === ready.total, `'Ready' once the light set is here: ${JSON.stringify(ready)}`);
+  const before = two.asked.slice(0, ready.asked), after = two.asked.slice(ready.asked);
+  assert.ok(before.includes('.light/tex.dds') && !before.includes('tex.dds'), `first stage: the light copy, not the file: ${before}`);
+  assert.ok(after.includes('tex.dds'), `second stage: the file itself: ${after}`);
+  const last = two.progress.at(-1);
+  assert.equal(last.done, true); assert.equal(last.running, false);
+  assert.ok(last.upgrade && last.upgrade.bytes === last.upgrade.total && last.upgrade.total > 0, JSON.stringify(last.upgrade));
+  assert.ok(two.progress.filter((m) => m.upgrade && m.running).length >= 2, 'the half-second reports while the second stage runs');
+  assert.ok(two.progress.filter((m) => m.upgrade).every((m) => m.done), 'ready all along the second stage');
+  // (an engine that does not reload in place: the files themselves on a fast link, one stage)
+  const one = await run(false);
+  assert.ok(!one.asked.some((p) => p.startsWith('.light/')) && one.asked.includes('tex.dds'), one.asked.join(' '));
+  assert.ok(!one.progress.some((m) => m.upgrade));
+});

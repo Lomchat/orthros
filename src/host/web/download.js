@@ -9,6 +9,7 @@ import { fmtRate, fmtBytes, fmtDuration } from './net-status.js';
 import { pageStorage } from './storage-persist.js';
 import { linkRate } from '../../vfs/data-client.js';
 import { FAST_BPS } from '../../vfs/net-link.js';
+import { lightLaunch } from '../../vfs/launch-set.js';
 
 // (a launch set is a game language's own: "Prepare" in one language is not the other's)
 const KEY = (name, kind = 'whole', lang = null) => (kind === 'launch' ? 'orthros.launch.' : 'orthros.download.') + name + (kind === 'launch' && lang ? '.' + lang : '');
@@ -52,7 +53,8 @@ export const launchFor = (launch, gameLang) => (gameLang && launch?.langs?.[game
  * The card's "playable after X MB" line for a version's launch (/api/manifests `launch`: launch-set.js launchSummary),
  * or null when the server does not know it yet: { state: 'none' | 'running' | 'paused' | 'done' | 'error', bytes (of
  * the launch set here), total, eta (s, null while the link is not measured), pct, text (short), detail (whole) }. `o.bw`: the link's rate (wire
- * bytes/s; linkRate's by default) — on a link that is not fast the light copies' set, the files' on a fast one; `o.st`:
+ * bytes/s; linkRate's by default) — on a link that is not fast the light copies' set, the files' on a fast one (the light
+ * one there too for an engine that reloads in place, `launch.reloads`: launch-set.js lightLaunch); `o.st`:
  * the "Prepare" progress (Downloads.get(name, 'launch', lang): its engine's bytes, `engine`, counted in its own); `o.whole`:
  * the whole download's (done: nothing to wait for). A "Prepare" whose engine files (`engineFiles`) are no longer the
  * launch's (an OpenMW game's lean package made since: the page asks for it, not for the package that was cached; an
@@ -65,7 +67,10 @@ export function launchStatus(launch, o = {}, lang = 'en') {
   const bw = o.bw === undefined ? savedBw() : o.bw, fast = bw >= FAST_BPS;
   let st = o.st ?? null;
   if (st?.done && Array.isArray(st.engineFiles) && !sameFiles(st.engineFiles, launch.engineFiles ?? [])) st = { ...st, done: false, bytes: Math.max(0, (st.bytes ?? 0) - (st.engine ?? 0)) };
-  const size = fast ? launch.bytes : launch.lightBytes ?? launch.bytes, wire = (fast ? launch.wire : launch.lightWire ?? launch.wire) ?? size * 0.75;
+  // (the light copies' set on a link that is not fast, and on every link for an engine that reloads in place — its big
+  // loads read them first, its files upgrades after: lightLaunch)
+  const light = lightLaunch(fast, launch.reloads);
+  const size = light ? launch.lightBytes ?? launch.bytes : launch.bytes, wire = (light ? launch.lightWire ?? launch.wire : launch.wire) ?? size * 0.75;
   // (what "Prepare" already brought: its own count of the set it fetched — and of the engine's files, when it fetched
   // them —, the rest in proportion)
   const withEngine = st?.engine > 0 ? st.engine : 0;
@@ -82,7 +87,10 @@ export function launchStatus(launch, o = {}, lang = 'en') {
     : state === 'paused' ? (fr ? `Jouable après encore ${B(t - bytes)}${after}` : `Playable after ${B(t - bytes)} more${after}`)
     : (fr ? `Jouable après ${B(size)}${engineShort}${after}` : `Playable after ${B(size)}${engineShort}${after}`);
   const engine = first ? (fr ? ` (+ ${B(launch.engine)} de moteur au premier lancement${bw > 0 ? `, ${D(launch.engine / bw)}` : ''})` : ` (+ ${B(launch.engine)} of engine at the first launch${bw > 0 ? `, ${D(launch.engine / bw)}` : ''})`) : '';
-  const detail = state === 'done' ? (fr ? `Prêt : démarre sans attendre le réseau (${B(size)} dans ce navigateur)` : `Ready: starts without waiting for the network (${B(size)} in this browser)`)
+  // (a second stage under way — the files themselves after the light set, download-worker.js —: said in the detail)
+  const up = state === 'done' && st?.running && st.upgrade?.total > 0 ? st.upgrade : null;
+  const upText = up ? (fr ? ` · images nettes : ${B(up.bytes)} / ${B(up.total)}` : ` · sharp textures: ${B(up.bytes)} / ${B(up.total)}`) : '';
+  const detail = state === 'done' ? (fr ? `Prêt : démarre sans attendre le réseau (${B(size)} dans ce navigateur)${upText}` : `Ready: starts without waiting for the network (${B(size)} in this browser)${upText}`)
     : state === 'running' ? (fr ? `Préparation : ${B(bytes)} / ${B(t)} (${pct} %)${eta !== null ? ` · ${D(eta)} restantes` : ''}` : `Preparing: ${B(bytes)} of ${B(t)} (${pct}%)${eta !== null ? ` · ${D(eta)} left` : ''}`)
     : state === 'error' ? (fr ? `Préparation arrêtée : ${st.error}` : `Preparing stopped: ${st.error}`)
     : state === 'paused' ? (fr ? `Jouable après encore ${B(t - bytes)} (${pct} % prêt)${eta !== null ? `, ${D(eta)} à ta connexion (${R(bw)})` : ''}` : `Playable after ${B(t - bytes)} more (${pct}% ready)${eta !== null ? `, ${D(eta)} at your link (${R(bw)})` : ''}`)
@@ -104,7 +112,8 @@ export class Downloads {
   running(name, kind = 'whole', lang = null) { return this.name === name && this.kind === kind && (kind !== 'launch' || this.lang === lang) && !!this.worker; }
   /**
    * Start (or resume) the download of `name` (`kind` 'launch': its launch set only — `o.lang`'s, and `o.launch`'s engine
-   * files first: /api/manifests launch.engineFiles); another one running stops first.
+   * files first: /api/manifests launch.engineFiles; `o.launch.reloads`: the light set, then the files — download-worker.js);
+   * another one running stops first.
    */
   async start(name, kind = 'whole', o = {}) {
     const lang = kind === 'launch' ? o.lang ?? null : null;
@@ -118,7 +127,7 @@ export class Downloads {
     w.onmessage = (e) => {
       const m = e.data;
       if (m.type === 'progress') {
-        const v = { bytes: m.bytes, total: m.total, engine: m.engine ?? 0, ...(kind === 'launch' ? { engineFiles: engine?.files ?? [] } : {}), bw: m.bw, ratio: m.ratio, running: !!m.running, done: !!m.done, error: m.error ?? null, at: Date.now() };
+        const v = { bytes: m.bytes, total: m.total, engine: m.engine ?? 0, ...(kind === 'launch' ? { engineFiles: engine?.files ?? [] } : {}), ...(m.upgrade ? { upgrade: m.upgrade } : {}), bw: m.bw, ratio: m.ratio, running: !!m.running, done: !!m.done, error: m.error ?? null, at: Date.now() };
         this.live.set(key, v); save(name, kind, lang, { ...v, running: false });
         linkRate.set(m.bw);
         this.emit(name);
@@ -130,11 +139,12 @@ export class Downloads {
       }
     };
     w.onerror = (e) => { const v = { ...(this.get(name, kind, lang) ?? {}), running: false, error: e.message || 'the download stopped' }; this.live.set(key, v); w.terminate(); if (this.worker === w) { this.worker = null; this.name = null; this.kind = null; this.lang = null; } this.emit(name); };
-    w.postMessage({ type: kind === 'launch' ? 'launch' : 'download', name, bw: savedBw(), lang, engine });
+    w.postMessage({ type: kind === 'launch' ? 'launch' : 'download', name, bw: savedBw(), lang, engine, reloads: kind === 'launch' && o.launch?.reloads === true });
     this.live.set(key, { ...(load(name, kind, lang) ?? {}), running: true, error: null, done: false }); this.emit(name);
   }
   /**
-   * Probe the stores of `items` ([{ name, lang, engine? (/api/manifests launch: { files, bytes }) }], in the order
+   * Probe the stores of `items` ([{ name, lang, engine? (/api/manifests launch: { files, bytes }), reloads? (its
+   * launch.reloads) }], in the order
    * given — the resume game first —, one at a time, in the download worker: its `probe`) and keep what they hold as
    * the lines' progress (`probed`). Nothing while a download runs, nor once a game is chosen (forGame); a download
    * started or a game's Play stops it first (stop(): the stores closed).
@@ -146,7 +156,7 @@ export class Downloads {
     const done = () => { w.terminate(); if (this.worker === w) { this.worker = null; this.name = null; this.kind = null; this.lang = null; } this.stopped?.(); this.stopped = null; };
     w.onmessage = (e) => { const m = e.data; if (m.type === 'probed') this.probed(m); else if (m.type === 'stopped') done(); };
     w.onerror = done;
-    w.postMessage({ type: 'probe', items: items.map((i) => ({ name: i.name, lang: i.lang ?? null, engine: i.engine ?? null })), bw: savedBw() });
+    w.postMessage({ type: 'probe', items: items.map((i) => ({ name: i.name, lang: i.lang ?? null, engine: i.engine ?? null, reloads: i.reloads === true })), bw: savedBw() });
   }
   /**
    * A probe's answer (download-worker.js `probe`) kept as the progress of the launch (of game language `m.lang`) and
