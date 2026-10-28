@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
-import { resolveGameFile } from './game-files.js';
+import { resolveGameFile, releaseGameFiles } from './game-files.js';
 import { goldsrcProblem, DEFAULT_ENGINES_DIR } from './goldsrc.js';
 import { openmwProblem } from './openmw.js';
-import { re3Problem, re3GameFiles } from './re3.js';
+import { re3Problem } from './re3.js';
 import { mmoProblem } from './mmo.js';
 import { profileMovesProblem } from '../vfs/profile-moves.js';
 
@@ -23,8 +23,8 @@ const COVER_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.(png|jpe?g|svg|webp)$/i;
 const safePath = (value) => typeof value === 'string' && value.length > 0 && !path.isAbsolute(value) && !value.includes('\\') && value.split('/').every((part) => part && part !== '.' && part !== '..');
 
 /**
- * A game folder's manifest and its versions. `enginesDir`: the browser ports' engine releases (an re3 port's engine
- * files lie over its version's: `overlays`).
+ * A game folder's manifest and its versions. `enginesDir`: the browser ports' engine releases (an re3 or GoldSrc port's
+ * release's game files lie over its version's: `overlays`).
  */
 export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {}) {
   const file = path.join(gameDir, 'manifest.json');
@@ -78,6 +78,9 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
       const problem = goldsrcProblem(manifest.goldsrc);
       if (problem) fail(file, `${id}: ${problem}`);
       manifest.saveKey = installation; // (the installation, game/version folder: the page's saved profile)
+      // (the release's own game files over the version's — the files Orthros builds, as the bots' meshes: game data, not
+      // archives the page fetches whole —; none while the release has no gamefiles/)
+      manifest.overlays = [releaseGameFiles(enginesDir, manifest.goldsrc.engine)];
     }
     if (runtime === 'openmw') {
       const problem = openmwProblem(manifest.openmw);
@@ -91,7 +94,7 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
       if (problem) fail(file, `${id}: ${problem}`);
       manifest.saveKey = installation;
       // (the engine release's own game files over the version's, whatever their case — none while it is not installed)
-      manifest.overlays = [re3GameFiles(enginesDir, manifest.re3.engine)];
+      manifest.overlays = [releaseGameFiles(enginesDir, manifest.re3.engine)];
     }
     // (an image beside manifest.json, for a game whose own files hold none a browser displays)
     if (manifest.coverFile !== undefined) {

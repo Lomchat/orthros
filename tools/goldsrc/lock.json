@@ -268,6 +268,35 @@
         ]
       },
       {
+        "id": "xash3d-web-1.2.2-cs16-15278ca-r3",
+        "purpose": "xash3d-web-1.2.2-cs16-15278ca-r2 with its archives' members as loose game files under gamefiles/ (tools/goldsrc/release-gamefiles.py): the same modules and archives; made from the installed xash3d-web-1.2.2-cs16-15278ca-r2 with --derive (its bots' meshes kept), or built anew (r2 rebuilt stays without: gameFiles).",
+        "gameFiles": true,
+        "patches": [
+          [
+            ".",
+            "cs16-client.patch"
+          ],
+          [
+            "3rdparty/ReGameDLL_CS",
+            "ReGameDLL_CS.patch"
+          ]
+        ],
+        "files": [
+          {
+            "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
+            "sha256": "713202bad2484424ca9a8ce23d0421acb09e20248478b3bb08cfdd03cbbc4cf0"
+          },
+          {
+            "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
+            "sha256": "d59d082fe0b58a35340432867629fd7342d9e8c91e81aa36550a7857e1474db8"
+          },
+          {
+            "path": "counterstrike/cstrike/dlls/cs_emscripten_wasm32.wasm",
+            "sha256": "dc4f39db8cb0a35fe9c26d69a7e99201bc70d0ab94ce98aab0acb60752d9b2c2"
+          }
+        ]
+      },
+      {
         "id": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r12",
         "purpose": "The Half-Life arsenal: the fourteen Half-Life weapons bought in Counter-Strike, at its scale, anywhere and anytime, with its own team, appearance and buy menus (hl-arsenal patches); Poké Balls with Pikachu, Charizard and Blastoise, the Pokémon's official game models (the owner's files, data/installers/pokemon-official, converted by tools/goldsrc/assets), the balls, sprites and sounds generated there; Le M (the owner's brother, at his request), his AI reconstruction kept in data/installers/le-m, summoned with a laptop; bricks from impacts, Fortnite-style building (F) and its destruction; its own texts in English and French (ars_lang).",
         "patches": [
@@ -309,6 +338,73 @@
         "assets": [
           {
             "archive": "orthros-pokemon.pk3",
+            "generator": "assets/build.py",
+            "sources": [
+              {
+                "env": "POKEMON_OFFICIAL_DIR",
+                "dir": "pokemon-official",
+                "files": {
+                  "plain/25.glb": "bf4b7d04ea250d3e8a5188e8977908dc07e6742a65962551bea92e8c7eec03c6",
+                  "plain/6.glb": "bd1a7cfcde068b560bf3fefbdb25a46f172cbcc1c75c0c5c754c6254dc359af9",
+                  "plain/6-shiny-animated.glb": "d4c6a1ccbd5a9a272ada3cc7b5efb81dbefcfc617405a4347c3005a14b977731",
+                  "plain/9.glb": "c65ae71afc26328d9ef13e81565a5a48f2a8f084c40be9dbb4cb8443a01893c3"
+                }
+              },
+              {
+                "env": "LEM_DIR",
+                "dir": "le-m",
+                "files": {
+                  "rigged/lem_rigged.glb": "6213d4e75c54ed9fed4ddf7f85883da0bfb91dd4a981dca00a8ca1292c53fb19"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r13",
+        "purpose": "xash3d-web-1.2.2-cs16-15278ca-arsenal-r12 with its archives' members as loose game files under gamefiles/ (tools/goldsrc/release-gamefiles.py): the same modules and archives, the Pokémon's precached at every map's load (mapPrecache); made from the installed xash3d-web-1.2.2-cs16-15278ca-arsenal-r12 with --derive --map-precache=counterstrike/cstrike/orthros-pokemon.pk3 (its bots' meshes kept), or built anew (r12 rebuilt stays without: gameFiles).",
+        "gameFiles": true,
+        "patches": [
+          [
+            ".",
+            "cs16-client.patch"
+          ],
+          [
+            "3rdparty/ReGameDLL_CS",
+            "ReGameDLL_CS.patch"
+          ],
+          [
+            ".",
+            "hl-arsenal/cs16-client.patch"
+          ],
+          [
+            "3rdparty/ReGameDLL_CS",
+            "hl-arsenal/ReGameDLL_CS.patch"
+          ]
+        ],
+        "files": [
+          {
+            "path": "counterstrike/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
+            "sha256": "976eaaa761b1471a1e8758bbacdb3e459c91514e17492bb0c02931581b23df79"
+          },
+          {
+            "path": "counterstrike/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
+            "sha256": "d59d082fe0b58a35340432867629fd7342d9e8c91e81aa36550a7857e1474db8"
+          },
+          {
+            "path": "counterstrike/cstrike/dlls/cs_emscripten_wasm32.wasm",
+            "sha256": "5d1cb3da362425a0762e5189ed39cd51d698826115f73ae8dbd03f5883301cd5"
+          },
+          {
+            "path": "counterstrike/cstrike/orthros-pokemon.pk3",
+            "sha256": "5767f7552590b6ddd31a137b7bd6ad1373df7d84f5f49520e249e682d4a06a3d"
+          }
+        ],
+        "assets": [
+          {
+            "archive": "orthros-pokemon.pk3",
+            "mapPrecache": true,
             "generator": "assets/build.py",
             "sources": [
               {

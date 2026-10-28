@@ -98,13 +98,13 @@
           },
           "goldsrc": {
             "type": "object",
-            "description": "Runtime goldsrc (docs/browser-ports.md) ; les modules sont des chemins de la release data/engines/<engine>/. Un mode au moins : solo ou multiplayer.",
+            "description": "Runtime goldsrc (docs/browser-ports.md) ; les modules sont des chemins de la release data/engines/<engine>/ (ses propres fichiers de jeu dans gamefiles/<dossier du jeu>/, posés sur ceux de la version quelle que soit leur casse : des données du jeu, pas des fichiers du moteur). Un mode au moins : solo ou multiplayer.",
             "required": ["engine", "gameDir", "modules"],
             "properties": {
               "engine": { "$ref": "#/$defs/id", "description": "Release du moteur navigateur dans data/engines/ (tools/goldsrc/install-engine.py)." },
               "gameDir": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$", "description": "Dossier du jeu dans ses fichiers (-game du moteur)." },
               "modules": { "type": "object", "required": ["client", "server"], "properties": { "client": { "type": "string" }, "server": { "type": "string" }, "menu": { "type": "string", "description": "Par défaut engine/libmenu.wasm." } } },
-              "extras": { "type": "array", "items": { "type": "string", "pattern": "\\.pk3$" }, "description": "Archives de la release montées dans le dossier du jeu (moteur et serveur dédié), noms distincts. Par défaut engine/valve/extras.pk3 (page seulement)." },
+              "extras": { "type": "array", "items": { "type": "string", "pattern": "\\.pk3$" }, "description": "Archives de la release montées dans le dossier du jeu (moteur et serveur dédié), noms distincts, chargées entières avant le démarrage. Par défaut engine/valve/extras.pk3 (page seulement). Les fichiers qu'Orthros construit pour le jeu vont dans gamefiles/ de la release, jamais ici." },
               "solo": { "type": "object", "required": ["map"], "properties": { "map": { "type": "string" }, "commands": { "type": "array", "items": { "type": "string" }, "description": "Commandes de console avant la carte (maxplayers, deathmatch, bots…), une par entrée." } } },
               "multiplayer": {
                 "type": "object",

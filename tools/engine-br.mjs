@@ -27,7 +27,7 @@ export function precompress(dir, { dryRun = false, log = () => {} } = {}) {
   const walk = (d) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const f = path.join(d, e.name);
-      // (a release's gamefiles/ is laid over the game's own files, re3GameFiles: a sibling there would be a game file)
+      // (a release's gamefiles/ is laid over the game's own files, releaseGameFiles: a sibling there would be a game file)
       if (e.isDirectory()) { if (!(d === root && e.name === 'gamefiles')) walk(f); continue; }
       if (!e.isFile() || !COMPRESSIBLE.test(e.name)) continue;
       const st = fs.statSync(f), rel = path.relative(root, f);

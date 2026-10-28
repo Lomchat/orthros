@@ -2,9 +2,9 @@
 // run in the Win32 runtime. Its page (src/ports/re3/) runs a decompiled engine of the re3 family compiled to
 // WebAssembly (Emscripten: SDL2 on WebGL 2, OpenAL on WebAudio, JSPI), a pinned release installed outside Git in
 // data/engines/<release>/: its ES module and WebAssembly under engine/, and the engine's own extra game files under
-// gamefiles/, laid over the version's files (game-files.js gameLayers: the catalog puts that folder in the manifest's
-// `overlays`). This module checks such a manifest entry, tells whether its release is installed and which module the
-// page imports. Single player only for now: one game, or several ways to play it (`modes`: their own command-line
+// gamefiles/, laid over the version's files (game-files.js releaseGameFiles: the catalog puts that folder in the
+// manifest's `overlays`). This module checks such a manifest entry, tells whether its release is installed and which
+// module the page imports. Single player only for now: one game, or several ways to play it (`modes`: their own command-line
 // arguments, the player's choice on the page). Nothing here names a game: release, arguments, environment, settings
 // and modes come from the manifest; the module's name from the release.
 import fs from 'node:fs';
@@ -59,9 +59,6 @@ export function re3Problem(r) {
 
 /** The modes a version offers: its own (re3.modes, in order), else single player. */
 export const re3Modes = (r) => (r?.modes ? Object.keys(r.modes) : ['solo']);
-
-/** The release's folder of the engine's own game files, laid over the version's (present or not). */
-export const re3GameFiles = (enginesDir, release) => path.join(enginesDir, release, 'gamefiles');
 
 /**
  * The engine's ES module, a path of the release (`engine/<name>.mjs`): the manifest's `re3.module`, else the release's

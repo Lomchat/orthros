@@ -29,17 +29,22 @@ const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.i
 const id = args[0], stateArg = arg('--state') ?? process.env.STATE_DIRECTORY;
 if (!id || !stateArg) { console.error('usage: server.mjs <manifest> [--games-dir d] [--engines-dir d] [--state d]'); process.exit(2); }
 const state = path.resolve(stateArg);
-const man = loadGameCatalog(path.resolve(arg('--games-dir') ?? DEFAULT_GAMES_DIR)).get(id);
+// (the catalog over the same engines folder: the release's own game files — gamefiles/, its bots' meshes — laid over the
+// version's as the page sees them, linkGameLayers below)
+const engines = path.resolve(arg('--engines-dir') ?? DEFAULT_ENGINES_DIR);
+const man = loadGameCatalog(path.resolve(arg('--games-dir') ?? DEFAULT_GAMES_DIR), null, { enginesDir: engines }).get(id);
 const g = man?.runtime === 'goldsrc' ? man.goldsrc : null, mp = g?.multiplayer;
 if (!mp) { console.error(`${id}: no GoldSrc version with a multiplayer server`); process.exit(2); }
-const engines = path.resolve(arg('--engines-dir') ?? DEFAULT_ENGINES_DIR), release = path.join(engines, mp.server);
+const release = path.join(engines, mp.server);
 if (!fs.existsSync(path.join(release, 'xash'))) { console.error(`${release}: dedicated-server release not installed (tools/goldsrc/build-server.sh)`); process.exit(1); }
 const gameLibrary = mp.gameLibrary === undefined ? null : engineFile(engines, g.engine, mp.gameLibrary);
 if (mp.gameLibrary !== undefined && !gameLibrary) { console.error(`${g.engine}/${mp.gameLibrary}: game library not installed (tools/goldsrc/build-modules.sh)`); process.exit(1); }
-// (one directory for the engine: the version's files over the base's, linked afresh at each start)
+// (one directory for the engine: the release's game files over the version's, over the base's, linked afresh at each
+// start)
 const game = path.join(state, 'game');
 console.log(`${id}: ${linkGameLayers(man, game)} game files linked`);
-// (the archives goldsrc.extras names in the game folder, as the page mounts them: bot profiles, navigation meshes)
+// (the archives goldsrc.extras names in the game folder, as the page mounts them: the engine's extras; an older
+// release's bot profiles and navigation meshes, which a newer one has as loose game files in its gamefiles/)
 const gameFolder = path.join(game, fs.readdirSync(game).find((n) => n.toLowerCase() === g.gameDir.toLowerCase()) ?? g.gameDir);
 fs.mkdirSync(gameFolder, { recursive: true });
 for (const extra of g.extras ?? []) {

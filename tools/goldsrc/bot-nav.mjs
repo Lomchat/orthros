@@ -22,7 +22,9 @@ if (!fs.existsSync(path.join(release, 'xash'))) { console.error(`${release}: ded
 fs.mkdirSync('/tmp/orthros-scratch', { recursive: true });
 const work = fs.mkdtempSync('/tmp/orthros-scratch/goldsrc-bot-nav-');
 const game = path.join(work, 'game');
-linkGameLayers(man, game);
+// (the game's own files only: not a release's game files laid over them — its meshes of an earlier build, which the
+// server would load instead of learning one)
+linkGameLayers({ ...man, overlays: [] }, game);
 fs.mkdirSync(out, { recursive: true });
 
 /** One map: a server whose single bot learns it, until the mesh is saved (or the time is up). */

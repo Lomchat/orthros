@@ -187,6 +187,52 @@ test('the dedicated server sees the version\'s files over the base\'s as one tre
   assert.ok(fs.lstatSync(path.join(dest, 'VALVE', 'maps', 'start.bsp')).isSymbolicLink());
 });
 
+test('a GoldSrc release\'s own game files (gamefiles/) lie over the version\'s: the tree, /game/, /gamez/, the dedicated server\'s links — not engine files', async (t) => {
+  const { root, games, engines } = fixture(t);
+  const own = path.join(engines, ENGINE, 'gamefiles', 'valve');
+  // (none yet: no layer; the dedicated server's links as before)
+  const before = loadGameCatalog(games, null, { enginesDir: engines }).get('gs-orig');
+  assert.deepEqual(before.overlays, [path.join(engines, ENGINE, 'gamefiles')]);
+  assert.equal(linkGameLayers(before, path.join(root, 'linked0')), 2);
+  const base = await serve(t, { gamesDir: games, enginesDir: engines });
+  const tree = async () => (await (await fetch(`${base}/api/tree/gs-orig`)).json());
+  assert.equal((await tree()).dirs.VALVE.dirs.maps.files['start.nav'], undefined);
+  // (installed while the server runs — a release's bots' mesh and model, a file of the game's own replaced whatever its
+  // case: listed again, served as the game's files)
+  fs.mkdirSync(path.join(own, 'maps'), { recursive: true }); fs.mkdirSync(path.join(own, 'models'), { recursive: true });
+  fs.writeFileSync(path.join(own, 'maps', 'start.nav'), 'mesh'); fs.writeFileSync(path.join(own, 'models', 'pet.mdl'), 'model');
+  fs.writeFileSync(path.join(own, 'CONFIG.CFG'), 'release');
+  // (the top layer names the folder: the release's spelling now)
+  const after = await tree();
+  assert.deepEqual(Object.keys(after.dirs), ['valve']);
+  assert.equal(after.dirs.valve.dirs.maps.files['start.nav'].size, 4);
+  assert.equal(after.dirs.valve.dirs.maps.files['start.bsp'].size, 3);
+  assert.equal(after.dirs.valve.dirs.models.files['pet.mdl'].size, 5);
+  assert.deepEqual(Object.keys(after.dirs.valve.files), ['CONFIG.CFG']);
+  assert.equal(await (await fetch(`${base}/game/gs-orig/valve/maps/start.nav`)).text(), 'mesh');
+  assert.equal(await (await fetch(`${base}/gamez/gs-orig/valve/models/pet.mdl?r=0-5`)).text(), 'model');
+  assert.equal(await (await fetch(`${base}/game/gs-orig/valve/config.cfg`)).text(), 'release');
+  // (the launch's engine files: the release's archives the manifest names only — the loose files are game data)
+  const entry = (await (await fetch(`${base}/api/manifests`)).json()).find((m) => m.name === 'gs-orig');
+  assert.equal(entry.available, true); assert.equal(JSON.stringify(entry).includes('gamefiles'), false);
+  const info = await (await fetch(`${base}/api/manifest/gs-orig`)).json();
+  assert.equal(info.overlays, undefined); assert.equal(JSON.stringify(info).includes(root), false);
+  assert.equal(JSON.stringify(info).includes('gamefiles'), false, 'no engine URL of a loose file');
+  // (what the game's server precaches at every map's load, the release's release.json says: given to the page —
+  // announced with each map —; none, or a malformed list: none)
+  assert.deepEqual(info.mapPrecache, []);
+  const meta = path.join(engines, ENGINE, 'release.json'), precache = async () => (await (await fetch(`${base}/api/manifest/gs-orig`)).json()).mapPrecache;
+  fs.writeFileSync(meta, JSON.stringify({ id: ENGINE, mapPrecache: ['models/pet.mdl', '../escape.mdl'] }));
+  assert.deepEqual(await precache(), []);
+  fs.writeFileSync(meta, JSON.stringify({ id: ENGINE, mapPrecache: ['models/pet.mdl', 'sound/pet/a.wav'] }));
+  assert.deepEqual(await precache(), ['models/pet.mdl', 'sound/pet/a.wav']);
+  // (the dedicated server reads them too: one directory of links, the release's files first)
+  const dest = path.join(root, 'linked');
+  assert.equal(linkGameLayers(loadGameCatalog(games, null, { enginesDir: engines }).get('gs-orig'), dest), 4);
+  assert.equal(fs.readFileSync(path.join(dest, 'valve', 'maps', 'start.nav'), 'utf8'), 'mesh');
+  assert.equal(fs.readFileSync(path.join(dest, 'valve', 'CONFIG.CFG'), 'utf8'), 'release');
+});
+
 test('a port requiring another port has its files beneath its own: in the page\'s tree, the files served and the dedicated server\'s', async (t) => {
   const { root, games, engines } = fixture(t, { goldsrc: goldsrc({ extras: ['engine/valve/extras.pk3', 'mod/bots.pk3'], solo: { map: 'start', commands: ['bot_quota 4'] } }) });
   const mod = path.join(games, 'mod');

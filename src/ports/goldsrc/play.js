@@ -491,7 +491,7 @@ async function start() {
   };
   if (params.get('mapreads') !== '0') {
     announceMapLoads(FS, nodes, gameData, { name, files: shown, root: '/rodir', gameDir: g.gameDir, log,
-      wadTextures: () => mapCvars.wadTextures, server: () => !relay?.joined });
+      wadTextures: () => mapCvars.wadTextures, server: () => !relay?.joined, mapPrecache: config.mapPrecache ?? [] });
   }
   const loaded = await gameData.startup((p) => {
     const f = p.total ? p.bytes / p.total : 1, secs = (performance.now() - t0) / 1000;

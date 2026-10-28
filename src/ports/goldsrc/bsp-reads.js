@@ -10,10 +10,14 @@
 //   config sets it, Half-Life's does): announced from a WAD only then (`wadTextures`);
 // - the worldspawn's sky (`skyname`: gfx/env/<name><side> — six pictures);
 // - the entities' own files: a `model` key's .mdl / .spr, an ambient_generic's sound (`message`, under sound/);
-// - the files beside the map that its load reads: its node graph (maps/graphs/<map>.nod — read by the map's server
-//   only: when the page certainly runs it, `server`), its overview (overviews/<map>.txt and its picture);
+// - the files beside the map that its load reads: its node graph and its bots' navigation mesh (maps/graphs/<map>.nod,
+//   maps/<map>.nav — read by the map's server only: when the page certainly runs it, `server`), its overview
+//   (overviews/<map>.txt and its picture);
 // - the entries of maps/<map>.res when there is one (a map's own list of its files — those of the kinds above), a second
-//   list once its text is here (the engine never reads it: fetched announced, not learned, the page's thread not held).
+//   list once its text is here (the engine never reads it: fetched announced, not learned, the page's thread not held);
+// - what the game's server precaches at every map's load without the map naming it (`mapPrecache`: its engine release
+//   says so — a build's generated assets its game DLL precaches; /api/manifest mapPrecache), last — the map's own files
+//   first —, whoever runs the server: its clients load what it precaches.
 // Only files the game has (the engine's search order: the game's folder first, then the others it mounts); nothing the
 // page holds already. Engine conventions only (GoldSrc's formats and folders): no game's own names.
 
@@ -172,15 +176,17 @@ export function resReads(res, find) {
  * `wad(name)`: the WAD the engine finds by that base name — { h, dir: Map(texture name → { pos, disk }) } its miptex
  * entries —, or null (not in the game, or its directory not known); `res`: maps/<map>.res's text, or null;
  * `wadTextures`: the engine's r_wadtextures is set — a texture the map holds is read from a WAD that has it (else from the
- * map: only the external ones announced); `server`: the page runs the map's server (its node graph read).
+ * map: only the external ones announced); `server`: the page runs the map's server (its node graph and navigation mesh
+ * read); `mapPrecache`: the paths, relative to the game folder, the game's server precaches at every map's load (its
+ * clients load them too: announced whoever runs it).
  * @param {{ map: string, entities: object[], textures: { name: string, external: boolean }[],
  *   find: (rel: string) => object | null, wad: (name: string) => { h: object, dir: Map<string, { pos: number, disk: number }> } | null,
- *   res?: string | null, wadTextures?: boolean, server?: boolean }} o
+ *   res?: string | null, wadTextures?: boolean, server?: boolean, mapPrecache?: string[] }} o
  * @returns {{ entries: { h: object, off?: number, len?: number }[], textures: number, missing: number }}
  *   textures: the textures announced from a WAD; missing: the external ones not found (a WAD whose directory is not
  *   known, or not in the game — an embedded one is read from the map then)
  */
-export function mapReads({ map, entities, textures, find, wad, res = null, wadTextures = false, server = false }) {
+export function mapReads({ map, entities, textures, find, wad, res = null, wadTextures = false, server = false, mapPrecache = [] }) {
   const { entries, add } = readList();
   const file = (rel) => { const r = relPath(rel); if (r) add(find(r)); };
   const world = entities.find((e) => (e.classname ?? '').toLowerCase() === 'worldspawn') ?? entities[0] ?? {};
@@ -207,13 +213,17 @@ export function mapReads({ map, entities, textures, find, wad, res = null, wadTe
     const cls = (e.classname ?? '').toLowerCase(), snd = relPath(e.message);
     if (cls === 'ambient_generic' && /\.wav$/i.test(snd) && !snd.startsWith('!')) file(/^sound\//i.test(snd) ? snd : `sound/${snd}`);
   }
-  // (beside the map: its node graph, its overview and the picture it names, else its own name's)
+  // (beside the map: its node graph and its bots' navigation mesh — the server's —, its overview and the picture it
+  // names, else its own name's)
   const m = relPath(map).toLowerCase();
-  if (server) file(`maps/graphs/${m}.nod`);
+  if (server) { file(`maps/graphs/${m}.nod`); file(`maps/${m}.nav`); }
   const ov = find(`overviews/${m}.txt`);
   if (ov) { add(ov); add(find(`overviews/${m}.bmp`) ?? find(`overviews/${m}.tga`)); }
   // (the map's own list: its files of those kinds)
   if (res) for (const e of resReads(res, find)) add(e.h);
+  // (what the game's server precaches at every map's load, its release says — its clients load it: whoever runs it —,
+  // after the map's own files)
+  for (const rel of mapPrecache) file(rel);
   return { entries, textures: found, missing };
 }
 
@@ -231,10 +241,11 @@ export function mapReads({ map, entities, textures, find, wad, res = null, wadTe
  * @param {Iterable<object>} nodes the game's file nodes (mountFiles)
  * @param {import('../../vfs/data-client.js').GameData} data
  * @param {{ name: string, files: { path: string, at?: string }[], root: string, gameDir: string, log?: (text: string) => void,
- *   wadTextures?: () => boolean, server?: () => boolean, announced?: (map: string) => void }} o
+ *   wadTextures?: () => boolean, server?: () => boolean, mapPrecache?: string[], announced?: (map: string) => void }} o
  *   files: the game's files as the engine sees them (languageFiles: `at` where a language's file goes); root: where they
  *   are mounted; gameDir: the game's folder (searched first); wadTextures: the engine's r_wadtextures is set now (default
- *   false: the external textures only); server: the page certainly runs the map's server now (default false); announced:
+ *   false: the external textures only); server: the page certainly runs the map's server now (default false); mapPrecache:
+ *   what the game's server precaches at every map's load (mapReads); announced:
  *   told after each load's announce (outside the engine's read: a task of its own)
  */
 export function announceMapLoads(FS, nodes, data, o) {
@@ -284,7 +295,7 @@ export function announceMapLoads(FS, nodes, data, o) {
     // (its .res first, small: its entries' list sooner)
     if (resH && !resB) announceRes(map, resH);
     const wadTextures = !!o.wadTextures?.(), server = !!o.server?.();
-    const r = mapReads({ map, entities: parseEntities(text(ents)), textures: bspTextures(tex), find, wad, res: resB ? text(resB) : null, wadTextures, server });
+    const r = mapReads({ map, entities: parseEntities(text(ents)), textures: bspTextures(tex), find, wad, res: resB ? text(resB) : null, wadTextures, server, mapPrecache: o.mapPrecache ?? [] });
     const n = r.entries.length ? data.want(r.entries, { label: `textures:${map.slice(0, LABEL_MAP)}`, wait: false }) : 0;
     log(`Map ${map}: ${n} of ${r.entries.length} reads announced (${r.textures} textures from WADs${r.missing ? `, ${r.missing} not found` : ''}${wadTextures ? ', r_wadtextures' : ''}${server ? ', its server' : ''})`);
     if (o.announced) setTimeout(() => o.announced(map), 0);

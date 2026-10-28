@@ -1,13 +1,21 @@
-// A game's base installation and a version's overrides form one read-only folder (an re3 port's engine files over
-// both, the files of the versions a GoldSrc port requires beneath).
+// A game's base installation and a version's overrides form one read-only folder (a port's engine release's game
+// files over both, the files of the versions a GoldSrc port requires beneath).
 import fs from 'node:fs';
 import path from 'node:path';
 import { LIGHT_DIR, lightCopy } from './light-copies.js';
 import { isMediaFile } from '../vfs/game-tree.js';
 
+/**
+ * A port's engine release's own game files (`gamefiles/`, present or not), laid over its version's whatever the
+ * runtime (re3, GoldSrc: game-catalog.js puts it in the manifest's `overlays`): files Orthros builds itself — reVC's
+ * texts, the Counter-Strike bots' navigation meshes, Half Strike's models and sounds — served as the game's own data
+ * (/gamez, light copies, the learned order, the OPFS store), not as engine files fetched whole before the start.
+ */
+export const releaseGameFiles = (enginesDir, release) => path.join(enginesDir, release, 'gamefiles');
+
 export function gameLayers(manifest) {
   // (underlays: the folders of versions a GoldSrc port requires, beneath its own; overlays: folders over the version's
-  // own, an re3 port's engine files — both from game-catalog.js)
+  // own, a port's engine release's game files, releaseGameFiles — both from game-catalog.js)
   return [...(manifest.overlays ?? []), ...(manifest.baseFolder ? [manifest.folder, manifest.baseFolder] : [manifest.folder]), ...(manifest.underlays ?? [])];
 }
 

@@ -1328,6 +1328,69 @@ bg: {pf1, ahead, want, readAhead, mediaAhead, …}}`, accepted by the server's s
 by a person (no glitch is audible in a headless run; the CBR position is within a frame by construction), VBR files,
 the fast-link order a few days after the deploy.
 
+## A port's own archives as game data (2026-10-27)
+
+Half Strike and Counter-Strike rebuilt fetched Orthros' own archives whole before their menu, as engine files
+(`goldsrc.extras`): `orthros-bots.pk3` (4.94 MB: 25 navigation meshes, 14.2 MB raw, one read per map load and none
+before the menu) in both, and `orthros-pokemon.pk3` (6.48 MB: models, sounds and sprites the game's server precaches
+at a map's start) in Half Strike — 4.94 / 11.41 MB of the 8.47 / 15.04 MB engine figure. Already deflated, brotli did
+nothing for them; served by pieces (2026-10-22, "The page, the engines and the covers") nothing was saved either:
+the engine reads every member's local header at the mount (xash3d-fwgs `filesystem/zip.c` FS_LoadZip), touching nearly
+every piece of the archive before its menu. The rules now (generic: the release says which files are game data, no
+game named in the code — docs/browser-ports.md "The release's own game files"):
+
+- **The files a release builds for its game are loose game files**, in the release's `gamefiles/<game folder>/`
+  (`tools/goldsrc/release-gamefiles.py`, from the build's archives), laid over the version's files by the catalog for
+  GoldSrc as for re3 (`releaseGameFiles`). They go through the game data system as the game's own: the tree,
+  `/gamez` ranges and precompressed units, the OPFS store, the learned order and its launch set, Prepare, the whole
+  download, light copies by format. No archive scan: a file is read when the game reads it.
+- **Only the engine's own archive stays an engine file** (`engine/valve/extras.pk3`: the engine's menus and
+  shaders, read before the menu anyway).
+- **Not in the launch set** (the menu reads none of them): the card's engine figure and its launch set fall by the
+  archives, and a first session fetches none of them before its menu. Once the learned order holds them, its
+  background run (`prefetch: 'startup'`: from the engine's start, `gameData.start()`, after the launch set) may fetch
+  some before the menu on a fast link — background bytes, not the launch path: data-matrix tells them apart (demand /
+  background).
+- **At a map's load** its mesh (`maps/<map>.nav`, 62-520 KB deflated, 151 KB for de_dust2) is announced with the
+  map's other files when the page runs the server; what the game's server precaches without the map naming it is
+  declared by the release (`release.json` `mapPrecache`, Half Strike's 72 Pokémon files) and announced after the map's
+  own files: fetched in parallel at a first session's first map, not a demand read each.
+- **A rebuild** changes only the files whose bytes changed (one mesh between two builds, not a 4.9 MB archive): a
+  loose file's time is drawn from its bytes, not its archive's (the store's keys hold path, size and time). Only the
+  builds that say `"gameFiles": true` in the lock have loose files: an older id rebuilds as pinned.
+
+Measured (2026-10-28, tools/data-matrix.mjs, new device, 2 runs per variant interleaved, the same pristine state for
+both — a copy of the live learned directory, a frozen br-cache copy, covers —; before = main 93391eb with `…-r2` /
+`…-arsenal-r12`, after = this change with `…-r3` / `…-arsenal-r13`; menu = the playable mark, first map = in play, the
+matrix enters the map 2 s after the menu; "map wait" = the demand-wait seconds from the `map` command to in play):
+
+| version, link | menu (s) | first map (s) | wire before the menu (MB; engine) | map wait (s) |
+|---|---|---|---|---|
+| Half Strike, 85k:150 | 296.3 / 300.0 → 156.9 / 162.5 | 755.6 / 746.0 → 670.7 / 662.5 | 21.85 / 22.25 (15.05) → 10.31 / 10.59 (3.63) | 233 / 234 → 304 / 300 |
+| CS rebuilt, 85k:150 | 174.5 / 176.0 → 113.1 / 139.6 | 581.2 / 579.0 → 518.6 / 528.3 | 12.66 / 12.71 (8.47) → 7.60 / 8.68 (3.53) | 93 / 92 → 94 / 91 |
+| Half Strike, 1.8m:90 | 37.6 / 37.3 → 25.0 / 26.5 | 65.3 / 64.6 → 62.8 / 59.5 | 38.39 / 37.75 (15.05) → 17.99 / 20.33 (3.63) | 1.9 / 2.4 → 2.2 / 2.0 |
+| CS rebuilt, 1.8m:90 | 33.8 / 35.9 → 31.4 / 23.3 | 54.7 / 55.4 → 53.0 / 48.6 | 31.93 / 34.46 (8.47) → 27.68 / 15.38 (3.53) | 0.8 / 0.8 → 0.9 / 0.9 |
+
+- **The menu**: -138 s for Half Strike and -49 s for CS rebuilt at 85 KB/s (-46 % / -28 %), -11.7 s and -7.5 s at
+  1.8 MB/s (the rebuilt pair noisy: 31.4 and 23.3 s). The engine bytes fall by the archives, 11.4 and 4.9 MB; at
+  1.8 MB/s the rest of the bytes before the menu is the learned order's background run, which varies run to run.
+- **The first map**: -84 s and -57 s at 85 KB/s, -3.8 s and -4.3 s at 1.8 MB/s. Half Strike's map load itself grows
+  (456 / 443 → 510 / 496 s at 85 KB/s, its demand wait +70 s): it now fetches the Pokémon files — announced (`w=1`
+  1.04 → 7.48 MB), not one demand read each — that the menu used to wait for. CS rebuilt's map load does not change
+  (de_dust2's mesh, 0.12 MB, rides with the map's files).
+- **Conservative for the map**: the frozen br-cache predates the loose files, so they went as live misses (gzip on the
+  fly: 57 Pokémon/build reads, 4.35 MB); a live server makes their brotli units as it meets them.
+- **A second session** (the order taught by one session of each, the three check.mjs solo runs, then the same matrix,
+  1 run): Half Strike 158.6 s to the menu and 662.2 s to the map at 85 KB/s, 25.2 / 58.4 s at 1.8 MB/s; CS rebuilt
+  114.8 / 564.7 s and 23.5 / 45.8 s — the same as a first session. The taught entries sit at the end of the order
+  (positions 1130-1204 of 1210, one session's weight against the order's), and the matrix leaves no menu dwell: 28 of
+  them (1.2 MB) came in the background before the map at 1.8 MB/s, 11 (0.25 MB) at 85 KB/s. A player who stays in the
+  menu gets more of them; not measured.
+- Checks against the scratch server (this change, r3 / r13): `check.mjs` half-life-original-en solo,
+  counter-strike-hl-arsenal-en solo `--guest --no-save`, counter-strike-rebuilt-en solo `--no-save` and
+  counter-strike-hl-arsenal-en multiplayer `--join-keys "{n},1"` (a scratch dedicated server, `tools/goldsrc/server.mjs
+  --engines-dir`, its meshes linked from the release's `gamefiles/`) pass.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

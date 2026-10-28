@@ -61,7 +61,8 @@ test('an re3 version needs no executable and is checked by its own rules', (t) =
   assert.equal(man.saveKey, 'orthros-port:gm:web'); // (the installation, as the other ports': game and version folders)
   assert.deepEqual(gameLayers(man), [path.join(release, 'gamefiles'), man.folder, man.baseFolder]); // (the engine's files over the version's)
   assert.deepEqual(man.re3.languages.fr.env, { GAME_LANG: 'fr' });
-  assert.equal(gameLayers(loadGameCatalog(games, null, { enginesDir: engines }).get('gs-1')).length, 2, 'a GoldSrc port gets no engine layer');
+  const gs = loadGameCatalog(games, null, { enginesDir: engines }).get('gs-1');
+  assert.deepEqual(gameLayers(gs), [path.join(release, 'gamefiles'), gs.folder, gs.baseFolder], 'a GoldSrc port\'s release lays its game files the same way');
   assert.equal(re3Problem({ engine: ENGINE }), null);
   assert.equal(re3Problem({ engine: ENGINE, module: 'engine/main.mjs', args: ['+set', 'a=b', '-x.y'], solo: {}, languages: { en: {}, fr: { env: { A_1: '' }, ini: { 'sub/a.ini': { 'Main Section': { 'Some key': 'v w' } } } } } }), null);
   assert.equal(re3Problem({ engine: ENGINE, defaults: { 'reVC.ini': { Display: { Subtitles: '1' } } } }), null);
@@ -192,8 +193,8 @@ test('the release\'s own game files lie over the version\'s, whatever their case
   const prefetch = `${base}/api/prefetch/gm-web`;
   assert.equal((await fetch(prefetch, { method: 'POST', body: JSON.stringify({ session: 's1', reads: [['models/extra.txd', 0, 5, 12], ['TEXT/american.gxt', 0, 11, 3]] }) })).status, 204);
   assert.deepEqual(await (await fetch(prefetch)).json(), [['TEXT/american.gxt', 0, 1, 3], ['models/extra.txd', 0, 1, 12]]);
-  // (a GoldSrc port on the same release gets none of them)
-  assert.equal((await fetch(`${base}/game/gs-1/TEXT/american.gxt`)).status, 404);
+  // (a GoldSrc port on the same release gets them too: the release's game files, whatever the runtime)
+  assert.equal(await (await fetch(`${base}/game/gs-1/TEXT/american.gxt`)).text(), 'engine text');
   // (the release not installed: no layer, the game's own file — the tree listed again by itself, as /game/ resolves:
   // the page reads both, the home page not loaded since)
   fs.rmSync(path.join(release, 'gamefiles'), { recursive: true });

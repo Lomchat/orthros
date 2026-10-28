@@ -92,29 +92,32 @@ test('the shared WAD3 reader: header and directory entries, names without case, 
   const bad = w.bytes.slice(); bad[3] = 0x32; assert.equal(wadHeader(bad, bad.length), null, 'WAD2');
 });
 
-test('what a map\'s load reads: each texture from the last WAD of the map\'s list that has it, the sky, the entities\' files, the files beside the map', () => {
+test('what a map\'s load reads: each texture from the last WAD of the map\'s list that has it, the sky, the entities\' files, the files beside the map (its server\'s node graph and bots\' mesh), what the game\'s server precaches', () => {
   const files = new Map(), h = (p) => { const k = p.toLowerCase(); if (!files.has(k)) files.set(k, { name: 'v', path: p, size: 100 }); return files.get(k); };
   const have = new Set(['cstrike/gfx/env/nightrt.tga', 'cstrike/gfx/env/nightbk.tga', 'cstrike/gfx/env/nightlf.tga', 'cstrike/gfx/env/nightft.tga', 'cstrike/gfx/env/nightup.tga',
     'valve/gfx/env/nightdn.bmp', 'valve/sprites/glow.spr', 'cstrike/models/thing.mdl', 'valve/sound/ambience/wind.wav', 'cstrike/maps/graphs/m1.nod', 'cstrike/overviews/m1.txt',
-    'cstrike/overviews/m1.bmp', 'cstrike/models/fromres.mdl', 'cstrike/sound/res/a.wav']);
+    'cstrike/overviews/m1.bmp', 'cstrike/models/fromres.mdl', 'cstrike/sound/res/a.wav', 'cstrike/maps/m1.nav', 'cstrike/models/pet/a.mdl', 'valve/sound/pet/a.wav']);
   const find = (rel) => { for (const d of ['cstrike', 'valve']) if (have.has(`${d}/${rel.toLowerCase()}`)) return h(`${d}/${rel.toLowerCase()}`); return null; };
   const hl = h('valve/halflife.wad'), other = h('cstrike/other.wad');
   const wads = { halflife: { h: hl, dir: new Map([['wall1', { pos: 100, disk: 50 }], ['emb1', { pos: 200, disk: 60 }], ['solo', { pos: 300, disk: 70 }]]) },
     other: { h: other, dir: new Map([['wall1', { pos: 1000, disk: 80 }]]) } };
   const textures = [{ name: 'wall1', external: true }, { name: 'emb1', external: false }, { name: 'solo', external: true }, { name: 'gone', external: true }, { name: 'mapown', external: false }];
   const res = '// list\r\nmodels/fromres.mdl\r\nother.wad\r\nmaps/m1.bsp\r\nsound/res/a.wav\r\nsound/res/missing.wav\r\n';
-  const r = mapReads({ map: 'M1', entities: parseEntities(ENTITIES), textures, find, wad: (n) => wads[n] ?? null, res, wadTextures: true, server: true });
+  // (the release's list of what the game's server precaches at every map's load: after the map's own files, a path the
+  // game has not skipped, one already announced not twice)
+  const mapPrecache = ['models/pet/a.mdl', 'sound/pet/a.wav', 'sound/pet/gone.wav', 'models/thing.mdl'];
+  const r = mapReads({ map: 'M1', entities: parseEntities(ENTITIES), textures, find, wad: (n) => wads[n] ?? null, res, wadTextures: true, server: true, mapPrecache });
   const got = r.entries.map((e) => (e.off === undefined ? e.h.path : `${e.h.path}@${e.off}+${e.len}`));
   assert.deepEqual(got, ['cstrike/other.wad@1000+80', 'valve/halflife.wad@200+60', 'valve/halflife.wad@300+70',
     'cstrike/gfx/env/nightrt.tga', 'cstrike/gfx/env/nightbk.tga', 'cstrike/gfx/env/nightlf.tga', 'cstrike/gfx/env/nightft.tga', 'cstrike/gfx/env/nightup.tga', 'valve/gfx/env/nightdn.bmp',
-    'valve/sprites/glow.spr', 'cstrike/models/thing.mdl', 'valve/sound/ambience/wind.wav', 'cstrike/maps/graphs/m1.nod', 'cstrike/overviews/m1.txt', 'cstrike/overviews/m1.bmp',
-    'cstrike/models/fromres.mdl', 'cstrike/sound/res/a.wav']);
+    'valve/sprites/glow.spr', 'cstrike/models/thing.mdl', 'valve/sound/ambience/wind.wav', 'cstrike/maps/graphs/m1.nod', 'cstrike/maps/m1.nav', 'cstrike/overviews/m1.txt', 'cstrike/overviews/m1.bmp',
+    'cstrike/models/fromres.mdl', 'cstrike/sound/res/a.wav', 'cstrike/models/pet/a.mdl', 'valve/sound/pet/a.wav']);
   assert.equal(r.textures, 3); assert.equal(r.missing, 1, 'the external texture no WAD has; the map\'s own embedded one is read from the map');
   // (r_wadtextures 0 — the engine's default —: a texture the map holds is read from the map, not from a WAD that has it;
-  // a client of another's server: no node graph)
-  const own = mapReads({ map: 'M1', entities: parseEntities(ENTITIES), textures, find, wad: (n) => wads[n] ?? null, res });
+  // a client of another's server: no node graph, no navigation mesh — what that server precaches still, its client loads it)
+  const own = mapReads({ map: 'M1', entities: parseEntities(ENTITIES), textures, find, wad: (n) => wads[n] ?? null, res, mapPrecache });
   const ownGot = own.entries.map((e) => (e.off === undefined ? e.h.path : `${e.h.path}@${e.off}+${e.len}`));
-  assert.deepEqual(ownGot, got.filter((x) => x !== 'valve/halflife.wad@200+60' && x !== 'cstrike/maps/graphs/m1.nod'));
+  assert.deepEqual(ownGot, got.filter((x) => x !== 'valve/halflife.wad@200+60' && x !== 'cstrike/maps/graphs/m1.nod' && x !== 'cstrike/maps/m1.nav'));
   assert.equal(own.textures, 2); assert.equal(own.missing, 1);
   assert.deepEqual(resReads(res, find).map((e) => e.h.path), ['cstrike/models/fromres.mdl', 'cstrike/sound/res/a.wav']);
   // (no wad key, no sky, nothing beside it: nothing but the entities' files)

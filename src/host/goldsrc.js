@@ -195,6 +195,20 @@ export function goldsrcPageFiles(manifest, enginesDir) {
   return [...new Set([...goldsrcEngineFiles(manifest, enginesDir), ...own.filter((f) => typeof f === 'string' && engineFile(enginesDir, g.engine, f))])];
 }
 
+/**
+ * What the version's game server precaches at every map's load without the map naming it — its clients load it too —,
+ * as its engine release declares (release.json `mapPrecache`, tools/goldsrc/release-gamefiles.py: a build's generated
+ * assets its game DLL precaches), relative to the game folder: the page announces them with each map it loads
+ * (src/ports/goldsrc/bsp-reads.js mapReads). [] for a release that declares none, or a malformed list.
+ */
+export function goldsrcMapPrecache(manifest, enginesDir) {
+  const f = engineFile(enginesDir, manifest.goldsrc?.engine, 'release.json');
+  try {
+    const list = f ? JSON.parse(fs.readFileSync(f, 'utf8')).mapPrecache : undefined;
+    return Array.isArray(list) && list.every(safePath) ? list : [];
+  } catch { return []; }
+}
+
 /** The browser launch page of a port. */
 export const portLaunchUrl = (name, manifest) => `/ports/${manifest.runtime}/${encodeURIComponent(name)}/`;
 

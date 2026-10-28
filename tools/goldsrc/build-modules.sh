@@ -3,9 +3,13 @@
 # a browser engine release data/engines/<id>/ per build of "modules.builds": the engine files of the release it extends
 # (checked against lock.json "browser"); the client, menu and server modules compiled to WebAssembly in the pinned
 # Emscripten image (no network); the server library compiled natively (32-bit Linux) for the dedicated server
-# (goldsrc.multiplayer.gameLibrary); the bots' archive (goldsrc.extras): their profiles and the navigation meshes the
-# native server learns for the game's maps (bot-nav.mjs, the game's files and the dedicated-server release needed); a
-# build's "assets": archives its generator writes (Python 3 with numpy and Pillow, tools/goldsrc/assets/).
+# (goldsrc.multiplayer.gameLibrary); the bots' archive: their profiles and the navigation meshes the native server
+# learns for the game's maps (bot-nav.mjs, the game's files and the dedicated-server release needed); a build's
+# "assets": archives its generator writes (Python 3 with numpy and Pillow, tools/goldsrc/assets/). A build that says
+# "gameFiles": true (r3 / arsenal-r13 on) also has every archive's members as loose files under the release's
+# gamefiles/ (release-gamefiles.py): the game data the server lays over the version's files — a manifest names none of
+# these archives in goldsrc.extras then; an asset that says "mapPrecache": true is what the game's server precaches at
+# every map's load (release.json mapPrecache: the page announces it with each map). The older builds rebuild as pinned, without.
 # Sources are cloned with their submodules in data/engines/src/<repository name> and stay as pinned; each build works on
 # a copy in scratch where its patches (tools/goldsrc/patches/) are applied. Every module lock.json lists must come out
 # identical. Needs git, Docker, Python 3, Node, cmake, g++ with 32-bit libraries. An installed release is
@@ -125,6 +129,12 @@ dirs = ['patches', 'cmake'] + sorted({a['generator'].split('/')[0] for a in buil
 inputs = {str(f.relative_to(tools)): sha(f) for d in dirs for f in sorted((tools / d).rglob('*')) if f.is_file() and '__pycache__' not in f.parts}
 release = {k: mods[k] for k in ('engine', 'repository', 'commit', 'submodules', 'emsdk')}
 (stage / 'release.json').write_text(json.dumps({'id': build_spec['id'], **release, 'patches': build_spec['patches'], 'inputs': inputs, 'files': files}, indent=2) + '\n')
+# (a build that says so: the archives' members as loose game files too, under gamefiles/<game folder>/ — the server lays
+# them over the version's files, the page reads them as game data; release-gamefiles.py. Not the older builds: rebuilt,
+# a release is the one pinned)
+if build_spec.get('gameFiles'):
+    archives = [f"{mods['gameDir']}/{bots['archive']}"] + [('--map-precache=' if a.get('mapPrecache') else '') + f"{mods['gameDir']}/{a['archive']}" for a in build_spec.get('assets', [])]
+    subprocess.run(['python3', '-I', str(tools / 'release-gamefiles.py'), str(stage), *archives], check=True)
 PY
   # (each compressible file's brotli 11 beside it: what the server sends a browser that takes it)
   node "$root/tools/engine-br.mjs" "$build/stage" > /dev/null

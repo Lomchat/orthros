@@ -29,7 +29,7 @@ only its mod stack: `requires` puts the original game's version's files beneath 
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`), `bsp-reads.js` (a map's load announced, below "Map loads announced") | yes |
 | `src/host/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `ini.js`, `style.css`) | yes |
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `patches/` (a build's own patches), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
-| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
+| `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `release-gamefiles.py` (a release's archives as loose game files), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/port-perf.mjs` | the ports' shared frame measurement (below, "Measuring a port") | yes |
 | `data/games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
 | `data/engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-e312f97-r1` (reVC built from source) and `revc-web-e312f97-plus-r1` (with Orthros' additions) | no |
@@ -127,7 +127,10 @@ same as for Windows games: version files replace same-named base files, whatever
   order — a game over another's files, as the two Counter-Strike games below over `counter-strike`'s, without a copy.
   In the page's tree, the files served and the dedicated server's linked tree alike (`gameLayers`, game-files.js).
 - `goldsrc.extras`: the release's archives mounted in the game folder (`engine/valve/extras.pk3` by default, the page
-  only); declared, the dedicated server gets them too (linked into its game folder).
+  only); declared, the dedicated server gets them too (linked into its game folder). The page fetches each whole
+  before the engine starts (the engine reads every member's header at the mount): only the engine's own archive belongs
+  there. The files Orthros builds for a game are the release's `gamefiles/` instead ("The release's own game files",
+  below), never named here.
 - `goldsrc.solo.commands` / `goldsrc.multiplayer.commands`: console commands before the map, one per entry (the page;
   `+command` arguments of the dedicated server) — `maxplayers 10` and `deathmatch 1` make a solo game a listen server
   with Counter-Strike's round rules and bots (with one player the game installs its training rules: no team, no bot).
@@ -478,8 +481,57 @@ on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sour
 `xash3d-web-1.2.2-cs16-15278ca-arsenal-r12` (the Half-Life Arsenal, below). A release holds the engine files of
 `xash3d-web-1.2.2` (checked against the lock) and under `counterstrike/cstrike/` the three WebAssembly modules,
 `dlls/cs.so` (the same server compiled natively for the 32-bit dedicated server: `multiplayer.gameLibrary`) and
-`orthros-bots.pk3` (`goldsrc.extras`); a build's `assets` add archives of their own (Half Strike:
-`orthros-pokemon.pk3`, below).
+`orthros-bots.pk3`; a build's `assets` add archives of their own (Half Strike: `orthros-pokemon.pk3`, below). A build
+that says `"gameFiles": true` (`…-r3`, `…-arsenal-r13` and later) has every archive's members as loose files too, under
+`gamefiles/cstrike/` (below): what the manifests use since; the archives stay for the releases' older manifests. The
+older builds rebuild as pinned, without `gamefiles/` (a manifest on `…-r2` would otherwise get both).
+
+### The release's own game files (2026-10-27)
+
+The files Orthros builds for a game — the bots' profiles and navigation meshes, Half Strike's models, sprites and
+sounds — are game data like the game's own, not engine files: a GoldSrc release's `gamefiles/` is laid over the
+version's files exactly as an re3 release's ("The engine's files over the version's", below; `releaseGameFiles` in
+`src/host/game-files.js`, the catalog's `overlays` for both runtimes). The rules:
+
+- **Where.** `gamefiles/<game folder>/<path>` in the release: `gamefiles/cstrike/maps/de_dust2.nav` is the game's
+  `cstrike/maps/de_dust2.nav`. `tools/goldsrc/release-gamefiles.py` writes an archive's members there (the archive's
+  folder is the game folder), each listed in `release.json` (`files`, `gameFilesFrom`); `build-modules.sh` runs it
+  on every archive of a build that says `"gameFiles": true`. **A loose file's time is its bytes'** (drawn from its
+  sha256), not its archive's, which every build writes anew: the browsers' blocks are keyed by path, size and time,
+  so a rebuild makes a returning player fetch the files whose bytes changed only (one mesh, not every mesh and model),
+  and a changed file never keeps an old key, even at the same size. `--derive <engines> <from> <new> <archive>...` makes a
+  new release from an installed one without rebuilding it (its files copied with their times, `derivedFrom`): how
+  `…-r3` and `…-arsenal-r13` came from `…-r2` and `…-arsenal-r12`, keeping their meshes (a rebuild learns them again,
+  one differing). Run `tools/engine-br.mjs` on the new release then (its `release.json`). Two archives giving one path,
+  a member outside its folder, a path the release has already: refused.
+- **Spelling.** The top layer names a folder: its folders take the game's spelling (`cstrike`, `maps`, `models`,
+  `sound`, `sprites`), or every path under them changes for the browsers — their learned order and block store keyed
+  by those paths.
+- **What follows.** The version's tree (`/api/tree`), `/game/`, `/gamez/` (precompressed units), the learned order
+  (`/api/prefetch`: a file read before the menu joins the launch set, the rest is fetched in the background or when a
+  map's load reads it), the OPFS store, Prepare's and the whole download's sets, the light copies (a WAD there gets
+  one as any). The home card's engine figure loses the archives (`launch.engine`); a file the menu does not read is not
+  in the launch set either.
+- **Not in `goldsrc.extras`.** A manifest moving to such a release drops those archives from its `extras` (both:
+  the engine would find each file twice). Its page is unchanged; a page open on the older release keeps its archives
+  (`/engines/_c/`).
+- **The dedicated server** links the same tree (`linkGameLayers`: the overlay first; `server.mjs` reads the catalog
+  over its `--engines-dir`): the loose meshes, no archive. `bot-nav.mjs` links the game's own layers only (the overlay
+  would give the server a mesh to load instead of learning one).
+- **A map's load.** A map's navigation mesh, `maps/<map>.nav`, is announced with its node graph when the page runs the
+  map's server ("Map loads announced": one round trip with the map's other files, not a wait of its own). What the
+  game's server precaches at every map's load without the map naming it is declared by the release: an asset of the
+  lock that says `"mapPrecache": true` (`--map-precache=<archive>` to `release-gamefiles.py`) has its members listed in
+  `release.json` `mapPrecache` (relative to the game folder); `/api/manifest` gives the list (`mapPrecache`) and the
+  page announces it after each map's own files, whoever runs the server (its clients load what it precaches): Half
+  Strike's 72 Pokémon files are fetched in parallel at a first session's first map, not one demand read each.
+
+Measured (2026-10-28, tools/data-matrix.mjs, new device, 2 runs each, before = main with `…-r2` / `…-arsenal-r12`;
+the table in docs/slow-network.md "A port's own archives as game data"): to the menu Half Strike 298 → 160 s and CS
+rebuilt 175 → 126 s at 85 KB/s, 37.5 → 25.8 s and 34.9 → 27.4 s at 1.8 MB/s; to the first map 751 → 667 s and
+580 → 524 s, 65.0 → 61.2 s and 55.1 → 50.8 s; engine bytes before the menu 15.05 → 3.63 MB and 8.47 → 3.53 MB. Half
+Strike's first map load grows by the Pokémon files it now fetches (+70 s of demand wait at 85 KB/s), less than the
+menu saves. Solo checks of the three versions and the Half Strike multiplayer check pass on r3 / r13.
 
 - **Sources.** `data/engines/src/cs16-client` stays at the pinned commits (checked, clean); a build works on a copy in
   scratch, where its patches (`tools/goldsrc/patches/`) are applied. The common ones: a few one-line portability fixes
@@ -492,9 +544,9 @@ on these sources: `xash3d-web-1.2.2-cs16-15278ca-r2` (Counter-Strike as its sour
   own build does; `cmake/hidden-visibility.cmake` compiles the server with hidden visibility, as the recovered one was:
   Emscripten's dynamic linker has one symbol table for every module, where the client's same-named weapon and entity
   symbols would otherwise bind in place of the server's. The menu renders fonts with stb_truetype (no FreeType).
-- **Bots.** Counter-Strike 1.6 ships no bot data: `orthros-bots.pk3` holds the profiles of cs16-client's extras
-  (`BotProfile.db`; not `BotChatter.db`, whose loading crashes the dedicated server) and a navigation mesh per official
-  map, `maps/<map>.nav`, learned by the build's native server (`tools/goldsrc/bot-nav.mjs`: one bot on a map without a
+- **Bots.** Counter-Strike 1.6 ships no bot data: `orthros-bots.pk3` (and `gamefiles/cstrike/`) holds the profiles of
+  cs16-client's extras (`BotProfile.db`; not `BotChatter.db`, whose loading crashes the dedicated server) and a
+  navigation mesh per official map, `maps/<map>.nav`, learned by the build's native server (`tools/goldsrc/bot-nav.mjs`: one bot on a map without a
   mesh learns it, 15 to 90 s a map, four at once) on the files of `modules.bots.game`. The bots read it through the
   engine's file system, archives included. (A map without a mesh would be learned by the game itself, into its
   writable `maps/` folder: not checked.)
@@ -922,13 +974,14 @@ ini file at the root, maybe caches.
 
 ### The engine's files over the version's
 
-The release's `gamefiles/` is the top layer of the version's game tree: over `versions/<dir>/` and `base/`, its files
+The release's `gamefiles/` is the top layer of the version's game tree (a GoldSrc release's the same way: "The
+release's own game files", above): over `versions/<dir>/` and `base/`, its files
 replacing same-named ones whatever their case, as a version's replace the base's. The catalog puts it in the manifest's
 `overlays` (`gameLayers`, `src/host/game-files.js`), from the server's engines folder (`--engines-dir`): `/api/tree`,
 `/game/`, `/gamez/` and the learned reads (`/api/prefetch`) see one tree. A release not installed adds no layer. The
 server lists a tree once, and again when the catalog is read (`/api/manifests`) or when a folder laid over it changed
 (its inode, change or modification time: a release installed, removed or rebuilt while the server runs), so
-`/api/tree` follows the release as `/game/` does. The other runtimes' trees are unchanged.
+`/api/tree` follows the release as `/game/` does. The OpenMW and Windows games' trees are unchanged.
 
 ### Server routes
 
