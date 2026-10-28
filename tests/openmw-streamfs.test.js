@@ -266,3 +266,52 @@ test('anticipated places: announced batches learned (POST /api/places), the pred
     assert.deepEqual(hint(), { place: 'balmora, lucky lockup', at: 9000 }, 'at the save\'s date');
   } finally { ctx.StreamFS?.close?.(); globalThis.Worker = RealWorker; }
 });
+
+test('in play (?lead=1): the next row\'s learned set asked ahead at the place\'s priority, meshes and terrain only; none by default', async () => {
+  const workers = [], RealWorker = globalThis.Worker;
+  globalThis.Worker = class { constructor() { this.sent = []; workers.push(this); } postMessage(m) { this.sent.push(m); } };
+  const run = async (search) => {
+    const calls = [], intervals = [], cleared = [];
+    const lists = { '-2,-7': [['Meshes/x/a.nif', 0, -1, 'meshes'], ['Textures/t.dds', 0, -1, 'textures'], ['Morrowind.bsa', 1000, 3000, 'terrain']], 'balmora, guild': [['Meshes/x/b.nif', 0, -1, 'meshes']] };
+    const fetch = async (url, init = {}) => { calls.push(url); const q = new URL(url, 'https://o.test').searchParams.get('place'); return { ok: true, json: async () => ({ list: lists[q] ?? [] }) }; };
+    const ctx = vm.createContext({
+      console, URL, URLSearchParams, Promise, Map, WeakMap, Set, Math, Object, Error, Number, String, JSON, Array, queueMicrotask, decodeURIComponent, encodeURIComponent, fetch,
+      self: { crossOriginIsolated: true }, location: { pathname: '/ports/openmw/morrowind-goty-en/app/index.html', href: 'https://o.test/ports/openmw/morrowind-goty-en/app/index.html', origin: 'https://o.test', search },
+      setInterval: (f) => { intervals.push(f); return intervals.length; }, clearInterval: (id) => { cleared.push(id); }, performance, Module: {},
+      omw: { state: {} },
+    });
+    ctx.window = ctx; ctx.globalThis = ctx; ctx.window.parent = ctx;
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    try {
+      vm.runInContext(SRC, ctx, { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER });
+      for (let i = 0; i < 50; i++) { try { ctx.StreamFS.init(); break; } catch (e) { if (!/not loaded yet/.test(e.message)) throw e; await tick(); } }
+      const w = workers.at(-1);
+      const tree = { dirs: { Meshes: { dirs: { x: { files: { 'a.nif': { size: 9000 }, 'b.nif': { size: 7000 } } } } }, Textures: { files: { 't.dds': { size: 40000, light: 9000 } } } }, files: { 'Morrowind.bsa': { size: 5000000, mtime: 1 } } };
+      w.onmessage({ data: { ready: { trees: { 'morrowind-goty-en': tree }, kept: {}, manifest: {}, real: [] } } });
+      const step = async (state) => { Object.assign(ctx.omw.state, state); for (let k = 0; k < 3; k++) { for (const f of intervals) f(); await tick(); } };
+      // (not in the world yet: nothing; then the first cell, a crossing north, a door — no guess)
+      await step({ 'orthros.cell': '-2 -9' });
+      await step({ 'orthros.view': '8192 8192' });
+      await step({ 'orthros.cell': '-2 -8' });
+      await step({ 'orthros.door': 'Balmora, Guild' });
+      const out = { calls, sent: w.sent.filter((m) => m.wantPlace).map((m) => m.wantPlace), leads: ctx.StreamFS.leads() };
+      // (the page's close stops the lead's polling: its interval — the one that looks at the player's place — cleared)
+      const leadIds = intervals.map((f, i) => (/\.look\(/.test(String(f)) ? i + 1 : 0)).filter(Boolean);
+      ctx.StreamFS.close();
+      out.leadIntervals = leadIds.length; out.leadCleared = leadIds.every((id) => cleared.includes(id));
+      return out;
+    } finally { ctx.StreamFS?.close?.(); }
+  };
+  try {
+    const on = await run('?src=hosted&lead=1');
+    assert.deepEqual(on.calls, ['/api/places/morrowind-goty-en?place=-2%2C-7']);
+    assert.deepEqual(on.sent.map((s) => s.label), ['lead:-2,-7']);
+    // (the row's meshes and terrain — the texture left out —, the files' ranges)
+    assert.deepEqual(on.sent[0].list, [['morrowind-goty-en', 'Meshes/x/a.nif', 0, 9000], ['morrowind-goty-en', 'Morrowind.bsa', 1000, 2000]]);
+    assert.deepEqual(on.leads, { guessed: 1, bytes: 9000 + 2000, last: ['-2,-7'] });
+    assert.deepEqual([on.leadIntervals, on.leadCleared], [1, true], 'StreamFS.close clears the lead\'s interval');
+    const off = await run('?src=hosted');
+    assert.equal(off.leadIntervals, 0);
+    assert.deepEqual([off.calls, off.sent, off.leads], [[], [], null]);
+  } finally { globalThis.Worker = RealWorker; }
+});

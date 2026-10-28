@@ -1062,6 +1062,119 @@ device. With a warm store the place is in about 4 s after the menu appears (5.5 
 varies between loads (NPCs' equipment: ~30 weapon textures, 0.5 MB, not in the taught set once), which the union of the
 next sessions' lists absorbs.
 
+### In play: crossings and doors (2026-10-28)
+
+The network's part in play, measured first (engine r11, no engine change), then led from the page where it pays.
+
+**Measuring** (`tools/openmw/place-load.mjs`, two in-play scenarios beside `coe` and `save`, both on a warm profile of
+their start cell through the player's-link proxy):
+- `--mode glide` (G): perf.mjs's glide (`--glide dx,dy[,speed[,z]]`, default north at 300 u/s, a run; `--seconds`
+  150) from `--start`'s centre; each cell entered (view.lua's report) is a crossing: its frame gaps (longest, over
+  250 ms), the game data's counters over it (`stallMs`, `syncFetches`, `wantWaits`, `wantWaitMs`: the probe samples
+  `__streamfsStats` twice a second), its network reads (demand, read-ahead, announced: count, MB, the files) and how
+  much of them the learned places named (`inPlaceMB`: the sets of the entered cell and of the next one, keys `x,y` —
+  the engine announces a cell's key as it enters it, but its preload fetched that row ~4 s before, in the window
+  before; `inAnyMB`: any place's; a read touching a learned record counts whole — the data system fetches blocks
+  larger than the engine's records).
+- `--mode door` (D): the console's `coc "<--interior>"` from `--start` (default Balmora `-3,-2` and its cornerclub,
+  the one interior the live learned places know) — a door's own path, `ActionTeleport` into `changeToInteriorCell` —,
+  timed from its Enter to frames flowing inside; `--lead s`: the interior's learned set (meshes and terrain, as the
+  page's guesses) asked at the place's priority that long before the Enter — the upper bound of a lead. `--interior`
+  is lowered as the engine lowers its keys (`engineLower`: ASCII only, an accented capital kept).
+- `--query name=value`: added to the engine page of the measured runs, not the taught ones (`--query lead=1`: the A/B
+  below — both arms taught the same way); `--teach-query name=value`: added to the taught ones (what a session with
+  the switch teaches the next ones).
+
+**Measured** (2026-10-28, `morrowind-goty-en`, r11, warm profile — 120 s in the world at the start cell at 1.8 MB/s —,
+the live learned state and br-cache copied, 2 runs each; SwiftShader, so frame gaps over 250 ms also count the
+software rasterizer — `stallMs` and `wantWaitMs` are the data's part):
+
+| scenario | link | frozen / longest gap | data stall | announced waits | network reads | learned covered |
+|---|---|---|---|---|---|---|
+| glide Seyda Neen → -2,-4 (5 crossings, 150 s) | 300 KB/s | 1.2 / 0.7 s | 3.1 / 2.5 s (≤ 1.6 s a crossing) | 0.4 s | 6.1 / 5.6 MB | 0 (no exterior learned for this version) |
+| same | 85 KB/s | 6.5 / 6.3 s | 24.1 / 19.2 s (town edge 6.8-11.6 s, wilderness 0.5-10.9 s) | 2.2 s | 8.0 / 6.7 MB | 0 |
+| door, Balmora cornerclub, no lead | 1.8 MB/s | 1.47 / 1.47 s (steady 6.0 / 5.6 s) | 0.1 s | 0.61 s | 4.3 MB | — |
+| same, set asked 5 s before | 1.8 MB/s | 1.48 / 1.57 s (5.7 / 5.7 s) | 0.1 s | 0.32 s | 3.3 MB (0.35 MB ahead) | — |
+| door, no lead | 300 KB/s | 2.68 / 2.73 s (steady 7.0 / 7.7 s) | 0.1 s | 2.50 / 2.70 s | 2.0 MB | — |
+| same, set asked 10 s before | 300 KB/s | 1.60 / 1.35 s (5.3 / 5.0 s) | 0.1 s | 1.20 s | 1.05 MB (0.35 MB ahead) | — |
+
+Reading: at 1.8 MB/s neither costs the player anything the network could save (a door's frozen frame is the engine's
+CPU; its 0.6 s of waits overlap it). At 300 KB/s a crossing waits ≤ 1.6 s and a new interior ~2.6 s, of which a
+right guess 10 s ahead saves ~1.2 s frozen and ~2 s to steady for 0.35 MB (the town's meshes are mostly stored
+already). At 85 KB/s crossings cost 19-24 s of stalls in 150 s, frames held up to 6.5 s. The files read are
+`Morrowind.bsa` ranges and the engine's own `_engine/openmw-web-assets.bsa` (1.3-1.6 MB a crossing). The learned places
+covered none of it: the live learned state holds one interior and no exterior of this version (six exteriors of
+Vanilla+ fr) — every crossing announced and posted teaches its row, so coverage grows with play.
+
+**The lead — built, measured, off by default** (`src/ports/openmw/place-lead.js`, `streamfs.js` `leadInPlay`; no
+engine change; `?lead=1` on the engine or play page turns it on):
+- **Next row**: a crossing from a cell into its neighbour (view.lua's `orthros.cell`) guesses the cell after it, the
+  same way (`nextRow`): the grid centre the engine will announce next, a whole cell's walk ahead (~27 s at a run)
+  where the engine's own preload starts ~4 s before the crossing. A step that is no neighbour's (a teleport, a door,
+  a load) guesses nothing.
+- **No door guess**: a door read from the player's surroundings (view.lua: the nearest teleport door's destination
+  within ~256 units, `iMaxActivateDist` being 192) gives 0.2-1 s of warning at a walk or a run, where the door runs
+  show a guess needs ~10 s at 300 KB/s to save anything (nothing at 1.8 MB/s) — and every door passed in a street
+  would spend the session's bounds (`LEAD.places`, `LEAD.sessionBytes`) the row guesses need. Tried, then removed; a
+  door lead needs a warning of seconds (the player's heading toward a door from afar), measured first with
+  `--mode door --lead`.
+- **Fetch**: `GET /api/places/<manifest>?place=<key>`, then `GameData.want(…, { prio: 'place' })` — the link's idle
+  time only, below the game's reads, a load's and the launch set; a load of that place takes the queued units over.
+- **Rules (thin links: no waste)**: a guess takes its set's **meshes and terrain only, never textures** (`LEAD.kinds`:
+  a wrong guess on Vanilla+ textures costs tens of MB; the load reads its textures, light first on a link that is not
+  fast); at most `LEAD.bytes` (8 MiB of the files' own) a guess, each place once a session, `LEAD.places` (64) guesses
+  and `LEAD.sessionBytes` (64 MiB) in all; a place never learned costs one small GET. Polled every 500 ms once the
+  player is in the world; not in multiplayer (no Orthros script there: no reports). `StreamFS.leads()` →
+  `{ guessed, bytes, last }`.
+
+**Measured, the row lead** (glide at 85 KB/s as above, `--teach 1`: one earlier session — lead off, the arm's own code —
+crossed the same rows, which teaches the places and the learned order; then the measured runs. Final A/B, 2026-10-28:
+the arms interleaved A, B, A, B, then C, one pristine learned state and one warm profile for all; each A and B run had
+a teaching session of its own, C's two runs followed one teaching session together (one invocation, `--runs 2`: the
+same setup, not two independent ones); A is the code before this change, 5aa05be; B this change, lead off; C this
+change with `--query lead=1`. B and C ran before `place-lead.js` became lazy-loaded (`streamfs.js` changed after the
+last run): B's page loaded the module and left it unused; the shipped page, lead off, does strictly less — it does not
+load it. The server was loaded, so the warm boot to the world took ~80 s in every arm. These are SwiftShader runs too):
+
+| arm | data stall (whole run, 150 s; `streamfs.toEnd.stallMs`) | first crossing -2,-8 out of Seyda Neen | the 4 other crossings | longest gap | network reads in crossings |
+|---|---|---|---|---|---|
+| untaught (the session that teaches: A, B, C) | 28.3-41.4 s (A 28.3 / 41.4 / 34.4, B 40.9 / 35.5, C 37.1; its five crossings 27.3-37.5 s of it) | 5.5-13.3 s | 21-26 s | 7.9-11.3 s | 9.5-11.4 MB |
+| A, before (\*\*) | 13.9 / 6.1 / 13.7 s | 12.9 / 4.8 / 13.6 s | 1.0 / 1.3 / 0.1 s | 11.3 / 1.5 / 3.6 s | 3.2 / 3.3 / 3.3 MB |
+| B, this change, lead off (\*) | 11.5 / 7.1 s | 11.3 / 7.0 s | 0.1 / 0.1 s | 4.2 / 2.9 s | 4.3 / 4.3 MB |
+| C, this change, lead on | 13.1 / 6.6 s | 10.3 / 4.9 s | 2.9 / 1.7 s | 4.2 / 3.0 s | 3.6 / 3.3 MB |
+
+(\*) before `place-lead.js` was lazy-loaded (see above): what ships with the lead off does strictly less.
+(\*\*) the third A run is from an earlier session interrupted in the middle, with the same setup. B's 1 MB more is
+`_engine/openmw-web-assets.bsa` at the first crossing (1.51 MB against 0.46). It came in both B runs, each taught by
+its own session, but not in C's two (taught by one session), whose page is the same up to that crossing (the lead
+guesses only after it). Likely a difference in what the teaching session left rather than code — not established.
+Its stall is not above A's.
+
+A first, smaller pair of runs (same setup, earlier that day) gave a taught stall of 3.0 / 3.3 s with the lead off and
+1.9 / 2.0 s with it on. Once a session had taught the rows with the lead on (and with the page still guessing doors),
+the stall was 11.0 / 9.3 s (longest gap 14.0 / 12.9 s). That last run was made with an earlier version of the tool and
+was not reproduced (`--teach-query lead=1`: arm D, not run). In this final A/B the first crossing dominates and swings
+between 4.8 and 13.6 s in every arm, so a 1 s difference between arms is noise.
+
+**Conclusion:** the measuring tools ship (`place-load.mjs --mode glide|door`, `--query`, `--teach-query`), and so does
+the lead's code, **off by default**:
+- **The default changes nothing for players.** With the lead off (B), the page asks for nothing more: no
+  `/api/places` GET, no `want`, so nothing extra to learn. `place-lead.js` is not even loaded unless `?lead=1` (tests:
+  `openmw-streamfs.test.js`, no calls and `leads()` null without it) — made so after the A/B, which ran B with the
+  module loaded and unused: strictly less than what was measured. View.lua is unchanged: the door report was tried
+  and then removed. B measures as A within noise.
+- **The lead has nothing to win once one session has crossed the rows.** The learned order (`/api/prefetch`, fetched
+  in the background after the launch set) brings the rows before the player gets there: the 4 later crossings stall
+  0.1-1.3 s in all with the lead off. What remains is the first crossing out of Seyda Neen, which no direction predicts.
+  With the lead on (C), those 4 crossings stalled more, not less (1.7-2.9 s: at 85 KB/s the guess for -2,-7 shares the
+  link with the end of the first crossing's reads). Untaught, there is no learned set to fetch.
+- **The door lead:** its upper bound (a right guess 10 s ahead) saves ~1.2 s frozen at 300 KB/s and nothing at
+  1.8 MB/s. A player at a door gives under a second of warning.
+- **When to look again:** when the learned order no longer covers the world (a server with many players' places
+  rather than one path). Before that, reproduce the lead-on teach row (arm D). Then run the A/B again:
+  `place-load.mjs --mode glide --teach 1 --query lead=1`, with and without `--teach-query lead=1`, and
+  `--mode door --lead 0|5|10`.
+
 ### The boot's idle time: the gateway's lists, the link after the engine's package (2026-10-27)
 
 Two waits before the engine's first game read, neither the link's:

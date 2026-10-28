@@ -7,7 +7,9 @@
 // an earlier page kept of a file (legacy-copies.js) is taken before its first read. The player first in the world marks
 // the session playable (GameData.mark). The places the engine announces it loads are learned by the server
 // (POST /api/places), and the place the player's saved game will load is predicted from the saves and fetched while
-// the engine boots and the player sits in the menu (docs/openmw.md "Anticipated places", save-place.js).
+// the engine boots and the player sits in the menu (docs/openmw.md "Anticipated places", save-place.js); in play, the
+// learned set of the next exterior row is fetched ahead the same way (docs/openmw.md "In
+// play: crossings and doors", place-lead.js).
 (() => {
   'use strict';
   // (a classic script — the page calls StreamFS synchronously — loading the shared modules at once: they are here long
@@ -38,10 +40,12 @@
   const SAVES_WATCH_MS = 5000;
   /** the longest the predicted place waits for the engine's first frame (see anticipate) */
   const BOOT_WAIT_MS = 180000;
+  /** how often the engine's reports are looked at for the next place in play (view.lua reports every 500 ms) */
+  const LEAD_POLL_MS = 500;
 
-  /** The page's `lightfirst` parameter (this engine page's, else the play page's around it: same origin), or null. */
-  function lightFirstParam() {
-    const of = (w) => { try { return new URLSearchParams(w.location.search).get('lightfirst'); } catch { return null; } };
+  /** A parameter of the page (this engine page's, else the play page's around it: same origin), or null. */
+  function pageParam(key) {
+    const of = (w) => { try { return new URLSearchParams(w.location.search).get(key); } catch { return null; } };
     return of(window) ?? (window.parent && window.parent !== window ? of(window.parent) : null);
   }
 
@@ -109,11 +113,14 @@
       // files soon after them — GameData.reloads; its export seen once the engine's module is instantiated)
       // (a big load read light first on a fast link too, GameData.lightFirst — ?lightfirst=0 on this page or the play
       // page around it: the link alone decides)
-      S.data.lightFirst(lightFirstParam() !== '0');
+      S.data.lightFirst(pageParam('lightfirst') !== '0');
       if (canReload()) S.data.reloads(true);
       else { let n = 0; const look = setInterval(() => { if (canReload()) S.data.reloads(true); if (canReload() || ++n >= 240) clearInterval(look); }, 250); }
       try { Object.defineProperty(window, '__streamfsStats', { configurable: true, get: () => S.data.snapshot() }); } catch { /* defined */ }
       anticipate().catch((e) => console.warn('[streamfs] place', e?.message ?? e));
+      // (in play: the next row's learned set ahead — only with ?lead=1 on this page or the play page: an A/B, off by
+      // default — docs/openmw.md "In play: crossings and doors": the learned order already covers a taught row)
+      if (pageParam('lead') === '1') import('/src/ports/openmw/place-lead.js').then(leadInPlay).catch((e) => console.warn('[streamfs] lead', e?.message ?? e));
     }
     return S.data;
   }
@@ -161,6 +168,35 @@
     if (!entries.length) return;
     S.predicted.atMs = Math.round(performance.now());
     S.predicted.asked = S.data.want(entries, { prio: 'place', label: 'place:' + pick.place });
+  }
+  /**
+   * The player's next place guessed in play (place-lead.js: the exterior grid after the one just entered, the same
+   * way), its learned set's meshes and terrain asked at the place's priority — never textures, bounded a guess and a session. Looked at every
+   * LEAD_POLL_MS once the player is in the world; one look's GETs at a time. `lead`: place-lead.js, loaded only then
+   * (off by default: the page fetches nothing more). Stopped by StreamFS.close (S.leadTimer; a module that arrives after
+   * the close starts nothing).
+   */
+  function leadInPlay(lead) {
+    if (S.closed) return;
+    const L = S.lead = lead.createLead();
+    let busy = false;
+    S.leadTimer = setInterval(() => {
+      if (busy || !M.inWorld(window)) return;
+      const places = L.look(window.omw?.state);
+      if (!places.length) return;
+      busy = true;
+      (async () => {
+        await S.data.ready;
+        for (const place of places) {
+          const r = await fetch(`${placesUrl}?place=${encodeURIComponent(place)}`, { cache: 'no-store' }).catch(() => null);
+          if (!r?.ok) continue;
+          const { entries, bytes } = lead.leadEntries(await r.json(), { size: (p) => S.data.file(name, p)?.size ?? null });
+          if (!entries.length) continue;
+          L.spent(bytes);
+          S.data.want(entries.map((e) => ({ h: S.data.file(name, e.path), off: e.off, len: e.len })), { prio: 'place', label: 'lead:' + place });
+        }
+      })().catch((e) => console.warn('[streamfs] lead', e?.message ?? e)).finally(() => { busy = false; });
+    }, LEAD_POLL_MS);
   }
   /**
    * A place's set as the server lists it ([[path, start, end]] — end exclusive, absent or -1: the file's end —, or
@@ -299,10 +335,12 @@
     stats() { return S.started ? S.data.snapshot() : {}; },
     /** The place predicted for the player's save (anticipate): { place, why, save, listed, asked, atMs (when asked, the page's clock) }, or null. */
     place() { return S.predicted; },
+    /** The places guessed in play (leadInPlay): { guessed, bytes, last }, or null (none yet, or no ?lead=1). */
+    leads() { return S.lead?.snapshot() ?? null; },
     /** The game data (data-client.js GameData), once the engine used it (its first mount): null before (opened earlier). */
     data() { return S.started ? S.data : null; },
     /** The game data closed, opened or used (a test; the page's leaving closes its worker anyway). */
-    close() { S.data?.close(); },
+    close() { S.closed = true; if (S.leadTimer) { clearInterval(S.leadTimer); S.leadTimer = null; } S.data?.close(); },
     init() {
       if (!self.crossOriginIsolated) throw new Error('streamfs needs crossOriginIsolated (COOP/COEP)');
       need();

@@ -22,6 +22,18 @@
 //     any character (statemanagerimp.cpp, __EMSCRIPTEN__), StateManager::requestLoad as the Load menu's click —; the
 //     load measured from the key (its keydown in the frame) to the player in the world (view.lua's first report), the
 //     cell reached and frames flowing, then --after seconds.
+//   - glide (scenario G, the network's part in exterior crossings — docs/openmw.md "In play: crossings and doors"): the
+//     warm boot at --start, the data quiet, the marker, then perf.mjs's glide (--glide dx,dy[,speed[,z]], default
+//     0,1,300,3000: north at a run's speed from the start cell's centre, the engine's debug teleport every 33 ms) for
+//     --seconds (150); each cell entered (view.lua's report) a crossing: its frame gaps (longest, over 250 ms), the game
+//     data's counters over it (stallMs, syncFetches, wantWaits, wantWaitMs: the probe's samples), its network reads
+//     (demand, read-ahead, announced: count, MB, the five files most read) and how much of them the learned places had
+//     (the cell's own set, any place's).
+//   - door (scenario D, a door's load): the warm boot at --start (default -3,-2, Balmora), the data quiet, then the
+//     console's COC to --interior (default 'balmora, south wall cornerclub': a door's own path into the interior),
+//     timed from its Enter to frames flowing in the interior (view.lua's '' cell); --lead s: the interior's learned set
+//     asked at the place's priority that long before the Enter (the page guessing the door right: the upper bound of a
+//     lead); the set's bytes fetched before the Enter, and the load's network reads against it.
 //   The save, once (--make-save, or --save missing): the engine page ?start=<--to>&novid on a plain local server of
 //   --warm-tree (no proxy: a throwaway profile and origin, the warm store untouched), in the world, the data quiet,
 //   F5 (QuickSave), the newest .omwsave read back from the engine's FS into --save, its character folder in <save>.json.
@@ -52,18 +64,25 @@
 // read this run), the same to the player in the world (S) and to the frames' return (toSteady), the data stats' delta
 // (__streamfsStats), the whole run's summary. Runs are sequential; the whole tool holds one browser slot:
 //
-//   tools/with-browser-slot.sh node tools/openmw/place-load.mjs <manifest> --tree <code tree> [--mode coe|save] [--runs 2]
+//   tools/with-browser-slot.sh node tools/openmw/place-load.mjs <manifest> --tree <code tree> [--mode coe|save|glide|door] [--runs 2]
 //     [--tag baseline] [--pristine /tmp/orthros-scratch/mw-load/pristine] [--scratch /tmp/orthros-scratch/mw-load]
 //     [--profile-warm <dir>] [--warm-tree /srv/orthros] [--warm-seconds 120] [--rate 1.8m] [--rtt 90] [--listen 18447]
 //     [--start -2,-9] [--to -2,6] [--quiet 10] [--after 30] [--out <scratch>/results.jsonl] [--games-dir ..]
 //     [--engines-dir ..] [--engine <release>] [--covers off|<dir>] [--warm-only]
 //     [--profile warm|new] [--teach 0] [--engine-br] [--dry]
 //     save: [--entry play|engine] [--menu 10] [--save <scratch>/saves/<to>.omwsave] [--make-save]
+//     glide: [--glide 0,1,300,3000] [--seconds 150]   door: [--interior '<cell id>'] [--lead 0]
+//     in play (coe, glide, door): [--query lead=1] (added to the measured runs' engine page — not the teach runs': an A/B
+//     of a page switch) [--teach-query lead=1] (added to the teach runs' engine page: what a session with the switch
+//     teaches the next ones)
+//   (--profile-warm defaults to <scratch>/profile-warm for --start -2,-9, <scratch>/profile-warm-<start> otherwise)
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { parseRate, urlKind, dataRead } from '../net-proxy.mjs';
+import { engineLower } from '../../src/ports/openmw/save-place.js';
+import { nextRow } from '../../src/ports/openmw/place-lead.js';
 
 const MAIN = !!process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 /** Where the engine's saves may be (IDBFS): the engine's user data folder — /userdata/saves in the r8 page, seen —, its XDG data home's. */
@@ -141,7 +160,7 @@ export function parseArgs(argv) {
   const id = argv[0];
   if (!id || id.startsWith('--')) throw new Error('the manifest id comes first');
   const known = new Set([...FLAGS, 'tree', 'mode', 'runs', 'tag', 'pristine', 'scratch', 'profile-warm', 'warm-tree', 'warm-seconds', 'rate', 'rtt', 'listen', 'start', 'to', 'quiet', 'after', 'out',
-    'games-dir', 'engines-dir', 'engine', 'covers', 'entry', 'menu', 'save', 'profile', 'teach']);
+    'games-dir', 'engines-dir', 'engine', 'covers', 'entry', 'menu', 'save', 'profile', 'teach', 'glide', 'seconds', 'interior', 'lead', 'query', 'teach-query']);
   const val = new Map(), flags = new Set();
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i], k = a.startsWith('--') ? a.slice(2) : null;
@@ -158,14 +177,17 @@ export function parseArgs(argv) {
   };
   const one = (k, d, ok) => { const v = opt(k, d); if (!ok.includes(v)) throw new Error(`--${k} ${v}: ${ok.join(' or ')}`); return v; };
   if (!opt('tree')) throw new Error('--tree <code tree> is required');
-  const to = opt('to', '-2,6'), start = opt('start', '-2,-9');
+  const mode = one('mode', 'coe', ['coe', 'save', 'glide', 'door']);
+  // (a door's town by default: Balmora, its cornerclub the interior the learned places know)
+  const to = opt('to', '-2,6'), start = opt('start', mode === 'door' ? '-3,-2' : '-2,-9');
   for (const [k, c] of [['to', to], ['start', start]]) if (!/^-?\d+,-?\d+$/.test(c)) throw new Error(`--${k} ${c}: an exterior cell x,y`);
   const [toX, toY] = to.split(',').map(Number);
   const scratch = path.resolve(opt('scratch', '/tmp/orthros-scratch/mw-load'));
   const o = {
-    id, tree: path.resolve(opt('tree')), mode: one('mode', 'coe', ['coe', 'save']), entry: one('entry', 'play', ['play', 'engine']), profile: one('profile', 'warm', ['warm', 'new']),
+    id, tree: path.resolve(opt('tree')), mode, entry: one('entry', 'play', ['play', 'engine']), profile: one('profile', 'warm', ['warm', 'new']),
     scratch, pristine: path.resolve(opt('pristine', path.join(scratch, 'pristine'))), warmTree: path.resolve(opt('warm-tree', '/srv/orthros')),
-    warmDir: path.resolve(opt('profile-warm', path.join(scratch, 'profile-warm'))), outFile: path.resolve(opt('out', path.join(scratch, 'results.jsonl'))),
+    // (a warm profile a start cell: the store of another town is not this one's)
+    warmDir: path.resolve(opt('profile-warm', path.join(scratch, start === '-2,-9' ? 'profile-warm' : `profile-warm-${start}`))), outFile: path.resolve(opt('out', path.join(scratch, 'results.jsonl'))),
     rate: parseRate(opt('rate', '1.8m')), rtt: num('rtt', 90), listen: num('listen', 18447, { int: true, min: 1 }),
     start, to, toX, toY, target: `${toX} ${toY}`, place: `${toX},${toY}`,
     quietS: num('quiet', 10), afterS: num('after', 30), warmS: num('warm-seconds', 120), menuS: num('menu', 10),
@@ -174,7 +196,13 @@ export function parseArgs(argv) {
     saveFile: path.resolve(opt('save', path.join(scratch, 'saves', `${to.replace(/[^0-9a-z-]+/gi, '_')}.omwsave`))),
     covers: opt('covers', 'off'), runs: num('runs', 2, { int: true }), teach: num('teach', 0, { int: true }), tag: opt('tag', 'run'),
     makeSave: flags.has('make-save'), warmOnly: flags.has('warm-only'), dry: flags.has('dry'),
+    glide: glideSpec(opt('glide', '0,1,300,3000')), seconds: num('seconds', 150, { min: 5 }),
+    // (the engine's key: its ASCII-only lower case — an id's accented capitals stay, as the learned places have them)
+    interior: engineLower(opt('interior', 'balmora, south wall cornerclub')), leadS: num('lead', 0),
+    query: opt('query', ''), teachQuery: opt('teach-query', ''),
   };
+  for (const [k, q] of [['query', o.query], ['teach-query', o.teachQuery]]) if (q && !/^[\w.-]+=[\w.,-]*(&[\w.-]+=[\w.,-]*)*$/.test(q)) throw new Error(`--${k} ${q}: name=value[&name=value] for the engine page`);
+  if (!o.interior || o.interior.length > 64 || /["\x00-\x1f]/.test(o.interior)) throw new Error(`--interior ${o.interior}: an interior cell's id (64 characters, no quote)`);
   if (!(o.rate > 0)) throw new Error(`--rate ${opt('rate')}: bytes per second, e.g. 1.8m`);
   if (o.engineBr && !o.engine) throw new Error('--engine-br: with --engine <release> only');
   for (const d of [o.pristine, o.warmDir, o.scratch]) if (d.startsWith('/var/lib')) throw new Error(`${d}: never the live state — a copy under the scratch`);
@@ -290,10 +318,157 @@ export function loadTimes({ gaps = [], from, cellAt = null }) {
   };
 }
 
+/** OpenMW's exterior cell side (engine units). */
+export const CELL_UNITS = 8192;
+
+/** --glide's `dx,dy[,speed[,z]]` (perf.mjs's): a direction, units a second (300: a run) and a height; throws on a wrong one. */
+export function glideSpec(text) {
+  const v = String(text).split(',').map(Number);
+  if (v.length < 2 || v.length > 4 || v.some((n) => !Number.isFinite(n)) || !(Math.hypot(v[0], v[1]) > 0) || (v.length > 2 && !(v[2] > 0))) throw new Error(`--glide ${text}: dx,dy[,speed[,z]] (a direction, speed > 0)`);
+  return { dx: v[0], dy: v[1], speed: v[2] ?? 300, z: v[3] ?? 3000 };
+}
+
+/** The glide's straight line from the start cell's centre (`start` 'x,y'): { x0, y0, vx, vy, z } (units, units a second). */
+export function glideLine(start, { dx, dy, speed, z }) {
+  const [cx, cy] = start.split(',').map(Number), n = Math.hypot(dx, dy);
+  return { x0: (cx + 0.5) * CELL_UNITS, y0: (cy + 0.5) * CELL_UNITS, vx: dx / n * speed, vy: dy / n * speed, z };
+}
+
+/**
+ * A glide's cell crossings from the page's probe (page clock, ms): `cells` [[cell 'x y', t]] as view.lua reported them
+ * (the first one the cell glided from), `gaps` [a, b] between frames drawn, `samples` [[t, stallMs, syncFetches,
+ * wantWaits, wantWaitMs, wants]] of the game data's counters (taken while the page's thread runs), the glide `from`-`to`.
+ * One row a cell entered after `from`, its window to the next one's (the last: `to`): its frame gaps (the longest, those
+ * over 250 ms: count and sum) and the counters' growth over it (the last sample at or before each end).
+ */
+export function crossings({ cells = [], gaps = [], samples = [], from, to }) {
+  const at = (t) => { let s = null; for (const x of samples) { if (x[0] <= t) s = x; else break; } return s; };
+  const entered = cells.filter(([, t]) => t > from && t < to);
+  return entered.map(([cell, a], i) => {
+    const b = i + 1 < entered.length ? entered[i + 1][1] : to;
+    const g = gaps.filter(([x, y]) => y > a && x < b).map(([x, y]) => y - x), over = g.filter((d) => d > 250);
+    const s0 = at(a), s1x = at(b), d = (k) => (s0 && s1x ? Math.round(s1x[k] - s0[k]) : null);
+    return {
+      cell, atS: Math.round((a - from) / 100) / 10, ms: Math.round(b - a), longestGapMs: g.length ? Math.round(Math.max(...g)) : 0,
+      gapsOver250: over.length, gapsOver250Ms: Math.round(over.reduce((n, x) => n + x, 0)),
+      stallMs: d(1), syncFetches: d(2), wantWaits: d(3), wantWaitMs: d(4), wants: d(5),
+    };
+  });
+}
+
+/**
+ * Every learned place's records of a learn directory (places-<id>.json, as placesSummary reads it; each place's most
+ * recently announced entry, any language): Map(place -> Map(path -> [[start, end]])). Empty when there is none.
+ */
+export function learnedSets(learnDir, id) {
+  const out = new Map();
+  let doc; try { doc = JSON.parse(fs.readFileSync(path.join(learnDir, `places-${id}.json`), 'utf8')); } catch { return out; }
+  if (!Array.isArray(doc)) return out;
+  const newest = new Map();
+  for (const e of doc) if (Array.isArray(e) && typeof e[1] === 'string' && Array.isArray(e[5]) && (Number(e[2]) || 0) >= (Number(newest.get(e[1])?.[2]) || 0)) newest.set(e[1], e);
+  for (const [place, e] of newest) {
+    const files = new Map();
+    for (const r of e[5]) if (Array.isArray(r) && typeof r[1] === 'string') { let a = files.get(r[1]); if (!a) files.set(r[1], (a = [])); a.push([Number(r[2]) || 0, Number(r[3]) || 0]); }
+    out.set(place, files);
+  }
+  return out;
+}
+
+/** The bytes of [a, b) inside `ranges` ([[start, end]], may overlap). */
+function covered(ranges, a, b) {
+  const parts = (ranges ?? []).map(([x, y]) => [Math.max(a, x), Math.min(b, y)]).filter(([x, y]) => y > x).sort((p, q) => p[0] - q[0]);
+  let n = 0, end = a;
+  for (const [x, y] of parts) { if (y <= end) continue; n += y - Math.max(x, end); end = y; }
+  return n;
+}
+
+/**
+ * The game's own reads over the network in a stretch of a proxy log (its clock: `from`-`to`; demand, read-ahead and
+ * announced — not the background's): how many, their bytes (decoded: the files' ranges), and how much of them the
+ * learned places (`sets`, learnedSets) named: `inPlace` the sets of `place` (a key — a crossing's cell 'x,y', an interior's
+ * id — or several: a read named by any of them), `inAny` any place's; `files` the five files read most there and the part of each no place named. A read counts whole
+ * when it touches a learned record of its file (the data system fetches units — an archive's block, a read-ahead —
+ * larger than the records the engine names); a light copy counts as its file (a place learns the files, and a light
+ * copy's range is its own).
+ */
+export function readCoverage(recs, from, to, sets, place = null) {
+  const MB = (n) => Math.round(n / 1e4) / 100;
+  const keys = place === null ? [] : Array.isArray(place) ? place : [place];
+  const mine = keys.map((k) => sets.get(k)).filter(Boolean), byFile = new Map();
+  let reads = 0, bytes = 0, inPlace = 0, inAny = 0;
+  for (const r of recs) {
+    if (r.mark || r.url === undefined || r.t < from || r.t > to) continue;
+    const kind = urlKind(r.url);
+    if (kind !== 'demand' && kind !== 'ahead' && kind !== 'want') continue;
+    const d = dataRead(r.url), m = /(?:^|[?&])r=(\d+)-(\d+)/.exec(r.url);
+    if (!d || !m) continue;
+    const a = Number(m[1]), b = Number(m[2]), n = b - a;
+    const named = (files) => !!files?.get(d.path) && (d.light || covered(files.get(d.path), a, b) > 0);
+    const any = [...sets.values()].some(named) ? n : 0;
+    reads++; bytes += n; inAny += any; inPlace += mine.some(named) ? n : 0;
+    const f = byFile.get(d.path) ?? { MB: 0, unknownMB: 0 }; f.MB += n; f.unknownMB += n - any; byFile.set(d.path, f);
+  }
+  const files = [...byFile].sort((x, y) => y[1].MB - x[1].MB).slice(0, 5).map(([p, f]) => ({ path: p, MB: MB(f.MB), unknownMB: MB(f.unknownMB) }));
+  return { reads, MB: MB(bytes), inPlaceMB: MB(inPlace), inAnyMB: MB(inAny), placeKnown: mine.length > 0, files };
+}
+
+/**
+ * A glide run's report: its crossings (crossings) each with its network reads (readCoverage over the crossing's
+ * window in the proxy's clock — `proxyOf` the page's time to it, null: not aligned — against the learned sets of the cell
+ * entered and of the next one, keys 'x,y': the engine announces a cell's key as it enters it, but its preload fetched
+ * that row ~4 s before, in the window before — the next cell the next crossing's, else the one after it the same way),
+ * and the run's totals. `P` the probe's (from, gaps, cells, samples), `glideEnd` the page's time it
+ * stopped.
+ */
+export function glideReport({ P, glideEnd, recs, proxyOf, sets, line = null, spec = null }) {
+  const from = P?.from ?? null, to = glideEnd ?? null;
+  if (from === null || to === null) return { line, spec, crossings: [], total: null };
+  const rows = crossings({ cells: (P.cells ?? []).filter(([c]) => c), gaps: P.gaps ?? [], samples: P.samples ?? [], from, to });
+  const glided = (P.cells ?? []).map(([c]) => c).filter(Boolean);
+  rows.forEach((c, i) => {
+    const a = proxyOf(from + c.atS * 1000), b = proxyOf(from + c.atS * 1000 + c.ms), key = c.cell.replace(' ', ',');
+    const next = rows[i + 1]?.cell.replace(' ', ',') ?? nextRow(i ? rows[i - 1].cell : glided[0] ?? null, c.cell);
+    c.net = a !== null && b !== null ? readCoverage(recs, a, b, sets ?? new Map(), next && next !== key ? [key, next] : key) : null;
+  });
+  const g = (P.gaps ?? []).filter(([x, y]) => y > from && x < to).map(([x, y]) => y - x), over = g.filter((d) => d > 250);
+  const sum = (k) => rows.reduce((n, c) => n + (c[k] ?? 0), 0);
+  return {
+    line, spec, cells: (P.cells ?? []).map(([c, t]) => [c, Math.round((t - from) / 100) / 10]), crossings: rows, leads: P.leads ?? null,
+    total: {
+      seconds: Math.round((to - from) / 100) / 10, crossings: rows.length, longestGapMs: g.length ? Math.round(Math.max(...g)) : 0, gapsOver250: over.length,
+      gapsOver250Ms: Math.round(over.reduce((n, x) => n + x, 0)), stallMs: sum('stallMs'), syncFetches: sum('syncFetches'), wantWaitMs: sum('wantWaitMs'),
+      netMB: Math.round(rows.reduce((n, c) => n + (c.net?.MB ?? 0), 0) * 100) / 100, learnedMB: Math.round(rows.reduce((n, c) => n + (c.net?.inPlaceMB ?? 0), 0) * 100) / 100,
+    },
+  };
+}
+
+/**
+ * In the page: a place's learned set (GET /api/places) asked of the game data at the place's priority, as streamfs.js
+ * anticipate asks a save's place (GameData.want `prio: 'place'`) — door mode's --lead: the page guessing the door right.
+ * Its meshes and terrain only, as the page's own guesses (place-lead.js LEAD.kinds: never textures).
+ */
+async function placeLead({ name, place, kinds = ['meshes', 'terrain'] }) {
+  const d = window.StreamFS?.data?.(), at = performance.now();
+  if (!d) return { err: 'no game data' };
+  const r = await fetch(`/api/places/${encodeURIComponent(name)}?place=${encodeURIComponent(place)}`, { cache: 'no-store' }).catch(() => null);
+  if (!r?.ok) return { status: r?.status ?? null };
+  const doc = await r.json(), list = Array.isArray(doc) ? doc : Array.isArray(doc?.list) ? doc.list : [], entries = [];
+  let bytes = 0;
+  for (const x of list) {
+    const [p, a, b, kind] = Array.isArray(x) ? x : [x?.path, x?.start, x?.end, x?.kind];
+    const h = typeof p === 'string' && kinds.includes(kind) ? d.file(name, p) : null;
+    if (!h) continue;
+    const off = Math.max(0, Number(a) || 0), end = b === undefined || b === null ? -1 : Number(b), len = end >= 0 ? Math.max(0, end - off) : -1;
+    bytes += len < 0 ? Math.max(0, (h.size ?? 0) - off) : len;
+    entries.push({ h, off, len });
+  }
+  return { at, listed: list.length, asked: d.want(entries, { prio: 'place', label: 'lead:' + place }), MB: Math.round(bytes / 1e4) / 100 };
+}
+
 /** The page's probe, before its scripts (the engine page only): frames drawn, the gaps between them once armed, the engine's main loop, the world and the cells reached, the trigger key. */
 function probe() {
   if (!location.pathname.includes('/app/')) return;
-  const P = window.__placeProbe = { draws: 0, firstDraw: null, menuAt: null, inWorldAt: null, last: null, on: false, frames: [], gaps: [], cellAt: {}, keyAt: null };
+  const P = window.__placeProbe = { draws: 0, firstDraw: null, menuAt: null, inWorldAt: null, last: null, on: false, frames: [], gaps: [], cellAt: {}, keyAt: null, cells: [], samples: [] };
   for (const type of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
     if (!type) continue;
     for (const m of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
@@ -317,8 +492,16 @@ function probe() {
     if (P.menuAt === null && window.Module?.__omwRunning !== undefined) P.menuAt = performance.now();
     const st = window.omw?.state ?? {};
     if (P.inWorldAt === null && st['orthros.view'] !== undefined) P.inWorldAt = performance.now();
-    const c = st['orthros.cell']; if (c && !(c in P.cellAt)) P.cellAt[c] = performance.now();
+    // (an interior: view.lua's '' — kept once armed, a door's destination reached; every change kept once armed: a glide's crossings)
+    const c = st['orthros.cell'], now = performance.now();
+    if ((c || (c === '' && P.on)) && !(c in P.cellAt)) P.cellAt[c] = now;
+    if (P.on && c !== undefined && P.cells.at(-1)?.[0] !== c) P.cells.push([c, now]);
   }, 100);
+  // (the game data's counters while armed, twice a second — none while the page's thread is held: the next one has its growth)
+  setInterval(() => {
+    const s = P.on && window.__streamfsStats;
+    if (s) P.samples.push([performance.now(), s.stallMs ?? 0, s.syncFetches ?? 0, s.wantWaits ?? 0, s.wantWaitMs ?? 0, s.wants ?? 0]);
+  }, 500);
 }
 
 /** Scenario S's save into the engine's saves folder: in IDBFS's populate callback (its __idbfsReadyResolve, called there before the engine may start), after the reconcile that would drop a file written earlier. */
@@ -555,14 +738,18 @@ if (MAIN) {
     if (o.profile === 'warm') execFileSync('cp', ['-a', warmDir, profile]);
     const t0 = Date.now(), notes = [], learnDir = teach ?? path.join(dir, 'learn');
     const save = mode === 'save' ? JSON.parse(fs.readFileSync(saveFile + '.json', 'utf8')) : null;
-    const url = mode === 'coe' ? enginePage(`&start=${encodeURIComponent(start)}&novid`) : entry === 'play' ? `/ports/openmw/${encodeURIComponent(id)}/?mode=solo` : enginePage('&novid');
+    // (in play — coe, glide, door —: a new character dropped at --start; save: the menu)
+    const play = mode !== 'save', goal = mode === 'door' ? '' : target;
+    // (--query on the measured runs only: the teach runs of both arms of an A/B the same; --teach-query on the teach runs)
+    const q = teach ? o.teachQuery : o.query;
+    const url = play ? enginePage(`&start=${encodeURIComponent(start)}&novid${q ? '&' + q : ''}`) : entry === 'play' ? `/ports/openmw/${encodeURIComponent(id)}/?mode=solo` : enginePage('&novid');
     const init = save ? [injectSave, { dir: save.dir, character: save.character, file: save.file, b64: fs.readFileSync(saveFile).toString('base64') }] : null;
-    const ready = mode === 'coe' ? inWorld : () => window.__placeProbe?.menuAt != null;
+    const ready = play ? inWorld : () => window.__placeProbe?.menuAt != null;
     const res = await session({ codeTree: tree, profile, dir, url, ready, init, learn: learnDir, learnFrom: teach ? null : learnFrom, body: async (frame, { page, proxyNow, faults }) => {
       const boot = await look(frame, () => ({ firstDraw: window.__placeProbe.firstDraw, menuAt: window.__placeProbe.menuAt, inWorldAt: window.__placeProbe.inWorldAt, cell: window.omw?.state?.['orthros.cell'] ?? null, save: window.__placeSave ?? null }));
       const store0 = await storage(frame, id);
-      let quietWaitS = null;
-      if (mode === 'coe') {
+      let quietWaitS = null, lead = null, glideEnd = null;
+      if (play) {
         // (the data quiet: none of the game's own reads on the wire, started or ended, for --quiet seconds — the page's
         // synchronous reads never stop, its music streaming from the store)
         const quietFrom = Date.now();
@@ -586,7 +773,37 @@ if (MAIN) {
       // (the marker: through the proxy, its log's clock against the engine frame's)
       const mark = `place-${n}-${Date.now()}`;
       const markAt = await frame.evaluate(async (mark) => { const t = performance.now(); await fetch(`/__qa/mark?${mark}`, { cache: 'no-store' }).catch(() => {}); return t; }, mark);
-      if (mode === 'coe') {
+      if (mode === 'glide') {
+        // (perf.mjs's glide: the engine's debug teleport every 33 ms along a straight line, the page's own timer — it goes
+        // on while this process waits; the cells crossed and their loads the same at every run)
+        const has = await frame.evaluate((line) => {
+          const P = window.__placeProbe; if (typeof window.Module?._omw_debug_teleport !== 'function') return false;
+          P.on = true; P.gaps = []; P.frames = []; P.samples = []; P.cells = [[window.omw?.state?.['orthros.cell'] ?? null, performance.now()]];
+          const t0 = P.from = performance.now();
+          P.glide = setInterval(() => { const t = (performance.now() - t0) / 1000; window.Module._omw_debug_teleport(line.x0 + line.vx * t, line.y0 + line.vy * t, line.z); }, 33);
+          return true;
+        }, glideLine(start, o.glide));
+        if (!has) throw new Error('Module._omw_debug_teleport is not exported by this engine');
+        await sleep(o.seconds * 1000);
+        glideEnd = await frame.evaluate(() => { const P = window.__placeProbe; clearInterval(P.glide); return (P.glideEnd = performance.now()); });
+      } else if (mode === 'door') {
+        // (a door's load: the console's COC to the interior — the door's own path, ActionTeleport into changeToInteriorCell
+        // —, the load timed from its Enter. --lead s: the interior's learned set asked at the place's priority that long
+        // before — what a page that guessed the door would fetch: the gain's upper bound; 0: nothing ahead)
+        if (o.leadS > 0) {
+          lead = await frame.evaluate(placeLead, { name: id, place: o.interior });
+          await sleep(o.leadS * 1000);
+        }
+        await frame.evaluate(() => { window.focus(); document.getElementById('canvas')?.focus(); });
+        await page.keyboard.press('Backquote'); await sleep(800);
+        await page.keyboard.type(`coc "${o.interior}"`); await sleep(300);
+        await frame.evaluate(() => { const P = window.__placeProbe; P.on = true; P.gaps = []; P.frames = []; P.samples = []; P.cells = []; P.key = 'Enter'; P.armAt = performance.now(); });
+        await page.keyboard.press('Enter');
+        if (await look(frame, () => window.__placeProbe.keyAt, undefined, 10000) === null) {
+          notes.push('Enter keydown not seen in the frame within 10 s: the load timed from the arming');
+          await look(frame, () => { const P = window.__placeProbe; P.from ??= P.armAt; }, undefined, 900000);
+        }
+      } else if (mode === 'coe') {
         const has = await frame.evaluate(({ x, y }) => {
           const P = window.__placeProbe; if (typeof window.Module?._omw_debug_coe !== 'function') return false;
           P.on = true; P.gaps = []; P.frames = [];
@@ -606,7 +823,7 @@ if (MAIN) {
       }
       // (the end: the cell reached and frames flowing — SwiftShader draws a town at a few frames a second on this
       // machine: 3 frames in the last 3 s, no gap over 1 s among them; another cell reported than --to: 20 s of that, noted)
-      const deadline = Date.now() + 15 * 60000, keyed = Date.now(); let end = null, said = 0;
+      const deadline = Date.now() + (mode === 'glide' ? 0 : 15 * 60000), keyed = Date.now(); let end = null, said = 0;
       while (Date.now() < deadline) {
         await sleep(1000);
         const s = await look(frame, (target) => {
@@ -614,16 +831,17 @@ if (MAIN) {
           const started = P.from !== undefined && (P.coeRet !== undefined || P.coeCall === undefined);
           const flowing = started && P.frames.filter((t) => t > now - 3000).length >= 3 && !P.gaps.some(([a, b]) => b > now - 3000 && b - a > 1000);
           return { now, flowing, at: P.cellAt[target] ?? null, cells, frames: P.frames.length, inWorld: P.inWorldAt !== null, cell: window.omw?.state?.['orthros.cell'] ?? null };
-        }, target);
+        }, goal);
         if (s && Date.now() - said > 30000) { said = Date.now(); log(`  load: ${s.frames} frames since the ${mode === 'coe' ? 'COE' : 'key'}, in world ${s.inWorld}, cell ${s.cell}, flowing ${s.flowing}`); }
-        if (s?.flowing && (s.at !== null || (s.cells.length && s.now - s.cells[0][1] > 20000))) { end = s; if (s.at === null) notes.push(`cell ${target} never reported: ${s.cell}`); break; }
+        if (s?.flowing && (s.at !== null || (s.cells.length && s.now - s.cells[0][1] > 20000))) { end = s; if (s.at === null) notes.push(`cell ${goal || 'interior'} never reported: ${s.cell}`); break; }
         if (mode === 'save' && s && !s.inWorld && s.flowing && Date.now() - keyed > 90000) { notes.push('no load 90 s after F9: still in the menu'); break; }
       }
-      if (!end) notes.push(`cell ${target} not reached with frames flowing`);
+      if (!end && mode !== 'glide') notes.push(`cell ${goal || 'interior'} not reached with frames flowing`);
+      if (mode === 'door') await pressInEngine(page, frame, 'Backquote');
       const afterLoad = await stats(frame);
       await sleep((teach ? Math.max(afterS, 25) : afterS) * 1000);
-      const P = await look(frame, () => { const P = window.__placeProbe; return { from: P.from ?? null, keyAt: P.keyAt, armAt: P.armAt ?? null, coeCall: P.coeCall, coeRet: P.coeRet, coeErr: P.coeErr ?? null, gaps: P.gaps, cellAt: P.cellAt, inWorldAt: P.inWorldAt, menuAt: P.menuAt, firstDraw: P.firstDraw, frames: P.frames.length, cell: window.omw?.state?.['orthros.cell'] ?? null }; }, undefined, 10000);
-      return { boot, store0, quietWaitS, before, predicted, afterLoad, after: await stats(frame), store1: await storage(frame, id), mark, markAt, end, P, faults };
+      const P = await look(frame, () => { const P = window.__placeProbe; return { from: P.from ?? null, keyAt: P.keyAt, armAt: P.armAt ?? null, coeCall: P.coeCall, coeRet: P.coeRet, coeErr: P.coeErr ?? null, gaps: P.gaps, cellAt: P.cellAt, inWorldAt: P.inWorldAt, menuAt: P.menuAt, firstDraw: P.firstDraw, frames: P.frames.length, cell: window.omw?.state?.['orthros.cell'] ?? null, cells: P.cells, samples: P.samples, leads: window.StreamFS?.leads?.() ?? null }; }, undefined, 10000);
+      return { boot, store0, quietWaitS, before, predicted, afterLoad, after: await stats(frame), store1: await storage(frame, id), mark, markAt, end, P, faults, lead, glideEnd };
     } });
     const recs = readLog(path.join(dir, 'proxy.jsonl'));
     const markRec = recs.find((r) => r.url?.startsWith(`/__qa/mark?${res.mark}`)), docRec = recs.find((r) => r.url?.includes('/app/index.html'));
@@ -631,20 +849,22 @@ if (MAIN) {
     const proxyOf = (pageT) => (markRec && pageT !== null && pageT !== undefined ? markRec.t + (pageT - res.markAt) : null);
     const win = (a, b) => (a !== null && b !== null ? loadWindow(recs, a, b) : null);
     const { P } = res, from = P?.from ?? null;
-    const cellAt = P?.cellAt?.[target] ?? null;
+    const cellAt = mode === 'glide' ? null : P?.cellAt?.[goal] ?? null;
     const lt = from !== null ? loadTimes({ gaps: P.gaps, from, cellAt }) : loadTimes({ from: Infinity });
+    // (glide and door: the learned places the server started from — what a page could have fetched ahead)
+    const sets = mode === 'glide' || mode === 'door' ? learnedSets(learnFrom && !teach ? learnFrom : learnDir, id) : null;
     const inWorldAt = mode === 'save' && P?.inWorldAt !== null && P?.inWorldAt >= (from ?? Infinity) ? P.inWorldAt : null;
     const toInWorld = mode === 'save' && inWorldAt !== null ? win(proxyOf(from), proxyOf(inWorldAt)) : null, loadDelta = delta(res.before, res.afterLoad);
     const known = mode === 'save' ? placesSummary(learnFrom && !teach ? learnFrom : learnDir, id, o.place) : null;
     const row = {
-      tag, run: n, ...(teach ? { teachRun: true } : {}), profile: o.profile, teach: o.teach, tree, commit: treeId(tree), scenario: mode === 'coe' ? 'C' : 'S', manifest: id, link: { rate, rtt }, ...(mode === 'coe' ? { start } : { entry, menuS, save: path.basename(saveFile) }), to: target,
+      tag, run: n, ...(teach ? { teachRun: true } : {}), ...(o.query ? { query: o.query } : {}), ...(o.teachQuery ? { teachQuery: o.teachQuery } : {}), profile: o.profile, teach: o.teach, tree, commit: treeId(tree), scenario: { coe: 'C', save: 'S', glide: 'G', door: 'D' }[mode], manifest: id, link: { rate, rtt }, ...(mode !== 'save' ? { start } : { entry, menuS, save: path.basename(saveFile) }), to: mode === 'door' ? o.interior : mode === 'glide' ? null : target,
       ...(engineNote ? { engine: engineNote } : {}), wallS: Math.round((Date.now() - t0) / 1000),
-      engineStart: mode === 'coe'
+      engineStart: mode !== 'save'
         ? { firstFrameS: s1(res.boot?.firstDraw), inWorldS: s1(res.boot?.inWorldAt), toInWorld: docRec && res.boot ? summarize(recs, docRec.t + res.boot.inWorldAt) : null }
         : { firstFrameS: s1(res.boot?.firstDraw), menuS: s1(res.boot?.menuAt), toMenu: docRec && res.boot?.menuAt ? summarize(recs, docRec.t + res.boot.menuAt) : null, save: res.boot?.save ?? null },
       quietWaitS: res.quietWaitS,
       load: {
-        ...(mode === 'coe' ? { coeSyncMs: P?.coeRet !== undefined ? Math.round(P.coeRet - P.coeCall) : null, coeErr: P?.coeErr ?? null } : { keySeen: P?.keyAt !== null && P?.keyAt !== undefined, inWorldS: inWorldAt !== null ? s1(inWorldAt - from) : null }),
+        ...(mode !== 'save' ? { coeSyncMs: P?.coeRet !== undefined ? Math.round(P.coeRet - P.coeCall) : null, coeErr: P?.coeErr ?? null } : { keySeen: P?.keyAt !== null && P?.keyAt !== undefined, inWorldS: inWorldAt !== null ? s1(inWorldAt - from) : null }),
         frozenMs: lt.frozenMs, frozenStartMs: lt.frozenStartMs, stallsOver250Ms: lt.stallsOver250Ms,
         cellReachedS: cellAt !== null && from !== null ? s1(cellAt - from) : null, steadyS: lt.steadyAt && from !== null ? s1(lt.steadyAt - from) : null, cellAtEnd: P?.cell ?? null,
       },
@@ -663,6 +883,17 @@ if (MAIN) {
           waits: loadDelta?.wantWaits ?? null, waitMs: loadDelta?.wantWaitMs ?? null, timeouts: loadDelta?.wantTimeouts ?? null, announced: loadDelta?.wants ?? null,
         },
       } } : {}),
+      ...(mode === 'glide' ? { glide: glideReport({ P, glideEnd: res.glideEnd, recs, proxyOf, sets, line: glideLine(start, o.glide), spec: o.glide }) } : {}),
+      ...(mode === 'door' ? { door: (() => {
+        const known = placesSummary(learnFrom && !teach ? learnFrom : learnDir, id, o.interior), keyT = proxyOf(from);
+        return {
+          interior: o.interior, leadS: o.leadS, lead: res.lead, learned: known, leads: P?.leads ?? null,
+          // (the interior's set fetched before the Enter: requests, bytes, the last one's end against it)
+          ahead: keyT !== null ? prefetchReport(recs, { docT: docRec?.t ?? 0, keyT, placePaths: known?.paths ?? null }).place : null,
+          // (the load's own network reads, Enter to frames back, and how much of them the learned places had)
+          reads: lt.steadyAt && keyT !== null ? readCoverage(recs, keyT, proxyOf(lt.steadyAt), sets, o.interior) : null,
+        };
+      })() } : {}),
       store: { before: res.store0, after: res.store1 }, all: summarize(recs), faults: res.faults, notes,
     };
     if (teach) fs.writeFileSync(path.join(dir, 'row.json'), JSON.stringify(row) + '\n');
@@ -672,7 +903,12 @@ if (MAIN) {
     execFileSync('gzip', ['-f', path.join(dir, 'proxy.jsonl')]);
     const w = row.frozen, l = row.toInWorld ?? row.toSteady, st3 = row.stage3;
     if (st3) log(`  stage 3: hint ${st3.hint.menu} -> ${st3.hint.end}; places ${st3.places ? `${st3.places.places} (target ${st3.places.target} records, ${st3.places.targetMB} MB)` : 'none'}; predicted ${JSON.stringify(st3.predicted)}; before the key: place set ${st3.prefetch?.place.count} requests (${st3.prefetch?.place.wireMB} MB wire, ${st3.prefetch?.inMenu?.wireMB ?? '?'} in the menu, first ${st3.prefetch?.place.firstS} s, last end ${st3.prefetch?.place.lastEndS} s = ${st3.prefetch?.place.lastEndToKeyS} s from the key, ${st3.prefetch?.place.inFlightAtKey} in flight), announced ${st3.prefetch?.want.count}; load: ${st3.load.keyToWorldS} s, ${st3.load.serialReads} serial reads, want ${st3.load.want?.count} (${st3.load.want?.wireMB} MB), ${st3.load.waits} waits ${st3.load.waitMs} ms, ${st3.load.timeouts} timeouts`);
-    log(`${tag} ${teach ? 'teach ' : ''}#${n} (${row.scenario}): engine ${mode === 'coe' ? `in world ${row.engineStart.inWorldS}` : `menu ${row.engineStart.menuS}`} s; ${mode === 'save' ? `in world ${row.load.inWorldS} s after the key, ` : ''}frozen ${row.load.frozenMs} ms, steady ${row.load.steadyS} s, cell ${row.load.cellAtEnd}; frozen: demand ${w?.demand.count} reads, ${w?.demand.decodedMB} MB decoded, spacing p50 ${w?.demand.spacing.p50} ms; background ${w?.backgroundMB} MB ${JSON.stringify(w?.backgroundByCategory ?? {})}; ${mode === 'save' ? 'to the world' : 'to steady'}: demand ${l?.demand.count}, background ${l?.backgroundMB} MB${notes.length ? ' — ' + notes.join('; ') : ''}`);
+    if (row.glide) {
+      for (const c of row.glide.crossings) log(`  crossing ${c.cell} at ${c.atS} s: longest gap ${c.longestGapMs} ms, ${c.gapsOver250} over 250 ms (${c.gapsOver250Ms} ms), stall ${c.stallMs} ms, ${c.syncFetches} sync reads, ${c.wantWaits} waits ${c.wantWaitMs} ms; network ${c.net?.reads} reads ${c.net?.MB} MB (learned for the cell ${c.net?.inPlaceMB}, any place ${c.net?.inAnyMB})`);
+      log(`  glide: ${JSON.stringify(row.glide.total)}`);
+    }
+    if (row.door) log(`  door ${row.door.interior}: lead ${row.door.leadS} s ${JSON.stringify(row.door.lead)}; ahead ${row.door.ahead?.count} requests ${row.door.ahead?.wireMB} MB wire; load reads ${row.door.reads?.reads} (${row.door.reads?.MB} MB, learned ${row.door.reads?.inPlaceMB}); waits ${row.streamfs.load?.wantWaits} ${row.streamfs.load?.wantWaitMs} ms`);
+    log(`${tag} ${teach ? 'teach ' : ''}#${n} (${row.scenario}): engine ${mode !== 'save' ? `in world ${row.engineStart.inWorldS}` : `menu ${row.engineStart.menuS}`} s; ${mode === 'save' ? `in world ${row.load.inWorldS} s after the key, ` : ''}frozen ${row.load.frozenMs} ms, steady ${row.load.steadyS} s, cell ${row.load.cellAtEnd}; frozen: demand ${w?.demand.count} reads, ${w?.demand.decodedMB} MB decoded, spacing p50 ${w?.demand.spacing.p50} ms; background ${w?.backgroundMB} MB ${JSON.stringify(w?.backgroundByCategory ?? {})}; ${mode === 'save' ? 'to the world' : 'to steady'}: demand ${l?.demand.count}, background ${l?.backgroundMB} MB${notes.length ? ' — ' + notes.join('; ') : ''}`);
     return row;
   }
 
