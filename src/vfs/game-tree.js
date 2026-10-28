@@ -31,6 +31,16 @@ export function isMediaFile(name, size) { return MEDIA.test(name) || (/\.wav$/i.
  */
 export const isLightPicture = (name) => /\.tga$/i.test(name);
 
+/**
+ * A content file whose light copy keeps only what an engine reads of it while it loads its content (src/host/light-
+ * copies.js esmZeroRanges, by format: a TES3 file — Morrowind's masters and plugins, its LAND payloads and cell
+ * references' details zeroed, every offset kept): read light only until the engine says its content is loaded
+ * (data-client.js GameData.contentLoading / contentLoaded), on every link — the file itself from then on, by the ranges
+ * its cells read; never fetched whole after its light copy (no upgrade), nor read light by an engine that does not say
+ * so. docs/slow-network.md "Content files light before the menu".
+ */
+export const isLightContent = (name) => /\.(esm|esp|omwaddon|omwgame)$/i.test(name);
+
 /** Native binaries of an installation: useless to a WebAssembly engine, never part of its files. */
 const NATIVE = /\.(exe|dll|so|dylib)$/i;
 

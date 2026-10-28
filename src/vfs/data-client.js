@@ -20,7 +20,12 @@
 // the last batch settled) instead of a round trip per file. A big announced load of an engine that reloads in place
 // (its batch's files would hold the link more than LOAD_BUDGET_S, a fast link included) reads the light copies first,
 // the files after it (docs/slow-network.md "Big loads light first").
-import { treeFile, LIGHT_DIR } from './game-tree.js';
+// Content files (game-tree.js isLightContent: a TES3 master's light copy keeps what the content load reads, every offset
+// the file's): read light on every link while the engine says it loads its content (contentLoading), the file itself
+// once it says its content is loaded (contentLoaded) — every read from then on, every handle, for good; never fetched
+// whole after the copy; an engine that says nothing reads the file (docs/slow-network.md "Content files light before
+// the menu").
+import { treeFile, LIGHT_DIR, isLightContent } from './game-tree.js';
 import { FAST_BPS } from './net-link.js';
 
 export const PIECE = 1 << 16;
@@ -115,7 +120,7 @@ export class GameData {
     /** when the data was opened and when its worker answered (performance.now(): the page's clock, from its navigation;
      * ready null before; mounted: when a port's page mounted its files, port-files.js) — a page's start measured
      * (docs/slow-network.md "Opened early") */
-    this.times = { open: Math.round(performance.now()), ready: null, mounted: null };
+    this.times = { open: Math.round(performance.now()), ready: null, mounted: null, contentLoading: null, contentLoaded: null };
     this.ctrl = new Int32Array(new SharedArrayBuffer(64));
     this.data = new Uint8Array(new SharedArrayBuffer(SPAN));
     this.cache = new Map(); this.held = 0; this.budget = o.cacheBytes ?? 256 << 20;
@@ -136,6 +141,12 @@ export class GameData {
     this.preferred = null;
     /** the page's engine loads a file again in place once it is here (reloads) */
     this.reloadsInPlace = !!o.reloads;
+    /** the content files (isLightContent) as the engine reads them: 'real' (it said nothing), 'light' (its content load
+     * under way: contentLoading), 'done' (its content loaded: contentLoaded — the files themselves for good) */
+    this.content = 'real';
+    /** the engine's reads that want a content file's ids only (contentIds: its references listed, what the content load
+     * read), nested — served light once the content is loaded too */
+    this.contentIdsDepth = 0;
     /** a big announced load reads light first (lightFirst; the page's ?lightfirst=0 turns it off) */
     this.lightFirstOn = o.lightFirst ?? true;
     /** the big load under way (wantFlush): { at, end, seq } — announced at, the end of its window's wait (null before),
@@ -388,13 +399,57 @@ export class GameData {
 
   /**
    * The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes, fetchedBytes, openMs,
-   * readyMs, mountedMs, net } — openMs, readyMs, mountedMs: when the data was opened, its worker answered, a port's page
-   * mounted its files (times, null before); net: the link as the worker last told it (NetLink.snapshot, every second:
-   * rate, waits, loading, the background's bytes by producer — bgBy), null before.
+   * readyMs, mountedMs, content, contentLoadingMs, contentLoadedMs, net } — openMs, readyMs, mountedMs: when the data was
+   * opened, its worker answered, a port's page mounted its files (times, null before); content: how the content files
+   * are read (this.content), contentLoadingMs / contentLoadedMs when the engine said its content load started / ended;
+   * net: the link as the worker last told it (NetLink.snapshot, every second: rate, waits, loading, the background's
+   * bytes by producer — bgBy), null before.
    */
-  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, bigLoads: s.bigLoads, bigFiles: s.bigFiles, bigBytes: s.bigBytes, reloaded: s.reloaded, openMs: this.times.open, readyMs: this.times.ready, mountedMs: this.times.mounted, net: this.net ?? null }; }
+  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, bigLoads: s.bigLoads, bigFiles: s.bigFiles, bigBytes: s.bigBytes, reloaded: s.reloaded, openMs: this.times.open, readyMs: this.times.ready, mountedMs: this.times.mounted, content: this.content, contentLoadingMs: this.times.contentLoading, contentLoadedMs: this.times.contentLoaded, net: this.net ?? null }; }
 
   // ---------------------------------------------------------------- light copies
+
+  /**
+   * The engine loads its content now and reads its content files light (isLightContent: their light copies keep what
+   * that load reads): until contentLoaded, on every link — unless a file is here whole. Said by the engine (OpenMW's
+   * Orthros build: globalThis.orthrosContentLoading, streamfs.js); an engine that does not say it reads them as they are.
+   */
+  contentLoading() { if (this.content === 'real') { this.content = 'light'; this.times.contentLoading = Math.round(performance.now()); } }
+  /**
+   * The engine's content is loaded: its content files read themselves from now on, every read of every handle (an
+   * engine keeps readers open — OpenMW's ReadersCache, up to 100 — each sought again before it reads: its next bytes the
+   * file's), for good — what it reads now (a cell's land, its references) the light copy zeroed.
+   */
+  contentLoaded() {
+    if (this.content !== 'done') this.times.contentLoaded = Math.round(performance.now());
+    this.content = 'done';
+    for (const h of this.byId) if (h.content) h.as = null;
+  }
+  /**
+   * The engine's next reads of its content files want what its content load read only — a cell's references listed by
+   * their ids (OpenMW's CellStore::listRefs: a search through every cell, orthros-r13.patch) — (`on` true), or no
+   * longer (false; nested). Those reads are served from the light copies once the content is loaded too (contentPick):
+   * what the content load brought, in the page or the store, not every cell's records of the file fetched one by one
+   * while the page's thread waits. Nothing before the content load said it read light (content 'real': the files).
+   */
+  contentIds(on) { this.contentIdsDepth = Math.max(0, this.contentIdsDepth + (on ? 1 : -1)); }
+  /**
+   * `h` is a content file whose light copy keeps its layout (isLightContent, the tree's light size its size): read light
+   * while the content loads only (contentPick).
+   */
+  contentFile(h) {
+    if (h.content !== undefined) return h.content;
+    if (h.src !== undefined || !this.trees) return false;
+    return (h.content = isLightContent(h.path) && this.lightOf(h) === h.size);
+  }
+  /**
+   * What a read of the content file `h` reads now: its light copy's handle while the content loads, or once it is loaded
+   * for a read of ids only (contentIds) — unless the file is here whole —, else `h`.
+   */
+  contentPick(h) {
+    const light = this.content === 'light' || (this.content === 'done' && this.contentIdsDepth > 0);
+    return light && !this.realHere.has(h.name + '\n' + h.path.toLowerCase()) ? this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light) : h;
+  }
 
   /** The size of `h`'s light copy (the tree's `light`), 0 when it has none (or not known yet: the file then). */
   lightOf(h) {
@@ -414,6 +469,8 @@ export class GameData {
   pick(h, position) {
     if (!this.lightOf(h)) return h;
     const now = performance.now();
+    // (a content file: chosen at each read — the engine's content load or not —, never told to the worker: no upgrade)
+    if (this.contentFile(h)) { const v = this.contentPick(h); h.as = v === h ? null : v; h.at = now; return v; }
     if (position === 0 && this.newLoad(h, now)) {
       h.repick = false;
       const pin = h.pin && now - h.pin.at <= PIN_MS ? h.pin : null;
@@ -449,6 +506,7 @@ export class GameData {
    */
   nextPick(h, pin = false, big = undefined, position = 0) {
     if (!this.lightOf(h)) return h;
+    if (this.contentFile(h)) return this.contentPick(h);
     if (position > 0) { const v = h.as ?? h; if (pin) h.pin = { real: v === h, at: performance.now() }; return v; }
     const v = !this.newLoad(h) ? h.as ?? h : this.loadsReal(h, big) ? h : this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light);
     if (pin) h.pin = { real: v === h, at: performance.now() };
@@ -506,7 +564,7 @@ export class GameData {
       kept.push(e);
       // (not in the page as either copy the window's verdict may choose: one to wait for)
       const { off = 0, len = -1 } = e;
-      const as = !this.newLoad(h) ? [h.as ?? h] : this.lightOf(h) && !this.realHere.has(h.name + '\n' + h.path.toLowerCase()) ? [h, this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light)] : [h];
+      const as = this.contentFile(h) ? [this.contentPick(h)] : !this.newLoad(h) ? [h.as ?? h] : this.lightOf(h) && !this.realHere.has(h.name + '\n' + h.path.toLowerCase()) ? [h, this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.light)] : [h];
       if (as.some((v) => this.announced(h, off, len, v))) n++;
     }
     if (!n) return 0;
@@ -569,7 +627,8 @@ export class GameData {
     const seen = new Set();
     let bytes = 0, files = 0;
     for (const { h } of entries) {
-      if (!h || h.src !== undefined || h.failed || seen.has(h) || !this.lightOf(h)) continue;
+      // (a content file's ranges — a cell's land and references — are the file's, read as they are: not a texture)
+      if (!h || h.src !== undefined || h.failed || seen.has(h) || !this.lightOf(h) || this.contentFile(h)) continue;
       seen.add(h);
       if (!this.newLoad(h) || this.realHere.has(h.name + '\n' + h.path.toLowerCase()) || !this.loadsReal(h, false) || this.inPage(h, 0, h.size)) continue;
       bytes += h.size; files++;
@@ -636,7 +695,8 @@ export class GameData {
   peek(h, position, length) {
     const at = Math.max(0, position), end = Math.min(h.size, at + length);
     if (!(end > at)) return new Uint8Array(0);
-    const light = this.lightOf(h) === h.size ? this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.size) : null;
+    // (not a content file's: its copy's zeroed payloads are not the file's bytes)
+    const light = this.lightOf(h) === h.size && !this.contentFile(h) ? this.fileAs(h.name, `${LIGHT_DIR}/${h.path}`, h.size) : null;
     const v = this.inPage(h, at, end - at) ? h : light && this.inPage(light, at, end - at) ? light : null;
     if (!v) return null;
     const out = new Uint8Array(end - at);
@@ -687,7 +747,9 @@ export class GameData {
       let piece = this.cache.get(key);
       if (piece) { this.cache.delete(key); this.cache.set(key, piece); this.stats.hits++; }
       else { this.fetchSync(h, p, end); piece = this.cache.get(key); if (!piece) throw new Error(`${h.path}: bytes at ${p * PIECE} missing`); }
-      if (piece.fresh) { piece.fresh = false; if (h.src === undefined) this.used.push([h.name, h.path, p]); }
+      // (a content file read as itself while the content loads — here whole —: learned as its light copy's read, what
+      // that load reads — a content file's own reads learned are those after it: server.js CONTENT_REAL)
+      if (piece.fresh) { piece.fresh = false; if (h.src === undefined) this.used.push([h.name, h.content && this.content === 'light' ? `${LIGHT_DIR}/${h.path}` : h.path, p]); }
       const within = pos - p * PIECE, n = Math.min(end - pos, piece.length - within);
       buffer.set(piece.subarray(within, within + n), out);
       pos += n; out += n;
@@ -710,11 +772,11 @@ export class GameData {
    * `background`: nothing waits for them (readable()) — never counted among the engine's waits; else they are while
    * the engine does not go on (holdCheck: an engine that asked ahead goes on).
    */
-  ensure(h, position, length, background = false) { this.progress(); return this.fetchAsync(h, position, length, background, this.goes); }
+  ensure(h, position, length, background = false, real = false) { this.progress(); return this.fetchAsync(h, position, length, background, this.goes, real); }
 
-  /** ensure(), the engine having asked at its progress `at`. */
-  async fetchAsync(h, position, length, background, at) {
-    const v = this.pick(h, position);
+  /** ensure(), the engine having asked at its progress `at`; `real`: the file's own bytes, whatever its loads read. */
+  async fetchAsync(h, position, length, background, at, real = false) {
+    const v = real ? h : this.pick(h, position);
     if (v !== h) { if (position < v.size) await this.fetchAsync(v, position, Math.min(length, v.size - position), background, at); return; }
     const end = Math.min(h.size, position + length);
     for (let p = Math.floor(position / PIECE); p * PIECE < end;) {
@@ -740,15 +802,18 @@ export class GameData {
    * can be read without the page's thread waiting: true, or false and those bytes fetched in the background (ensure,
    * once at a time for the same bytes) — an engine that would rather skip or put off a load than wait (OpenMW's sounds
    * played once, orthros-r2.patch; its preloads, a file inside an archive among them, orthros-r5.patch). A file whose
-   * fetch failed: true (its read waits, and says what failed).
+   * fetch failed: true (its read waits, and says what failed). A content file (contentFile): the file's own bytes,
+   * whatever its light copy in the page — what the engine asks of it is what it reads once its content is loaded (a
+   * cell's land: OpenMW's terrain chunks put off until it is here, orthros-r12.patch).
    */
   readable(h, position = 0, length = h.size) {
     const at = Math.max(0, Math.min(h.size, position)), len = length < 0 ? h.size - at : Math.min(length, h.size - at);
-    if (h.failed || !(len > 0) || !this.missing(h, at, len)) return true;
+    const real = this.contentFile(h);
+    if (h.failed || !(len > 0) || (real ? (this.progress(), this.inPage(h, at, len)) : !this.missing(h, at, len))) return true;
     const whole = at === 0 && len === h.size, key = `${at}+${len}`;
     if (whole ? h.ensuring : h.ensuringRanges?.has(key)) return false;
     const done = whole ? () => { h.ensuring = null; } : () => { h.ensuringRanges.delete(key); };
-    const p = this.ensure(h, at, len, true).catch((e) => { h.failed = true; this.log(`${h.path}: ${e?.message ?? e}`); }).finally(done);
+    const p = this.ensure(h, at, len, true, real).catch((e) => { h.failed = true; this.log(`${h.path}: ${e?.message ?? e}`); }).finally(done);
     if (whole) h.ensuring = p; else (h.ensuringRanges ??= new Map()).set(key, p);
     return false;
   }

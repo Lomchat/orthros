@@ -2,7 +2,7 @@
 // files over both, the files of the versions a GoldSrc port requires beneath).
 import fs from 'node:fs';
 import path from 'node:path';
-import { LIGHT_DIR, lightCopy } from './light-copies.js';
+import { ESM_FORMAT, LIGHT_DIR, lightCopy } from './light-copies.js';
 import { isMediaFile } from '../vfs/game-tree.js';
 
 /**
@@ -55,13 +55,16 @@ function mergeDir(layers, mark = null, seen = null, rel = '') {
  * The game's files as the browsers read them: its layers, and the folders of its engine's release it serves beside them
  * (`dataMounts`: [{ at, dir }] — an engine's own data, as OpenMW's asset pack, under a folder of its own, `at`; not part
  * of the game's layers, which a native server laying out the game reads too). With manifest.lightCopies, a file that has
- * a light copy (light-copies.js) tells its size: `light`. A media file by its format (isMediaFile, game-tree.js) is
- * marked `media: true`. `seen`: the folders it was listed from pushed to it (dirsStamp: whether it changed since).
+ * a light copy (light-copies.js) tells its size: `light` — a content file's (a TES3 file's) with `contentLight` only
+ * (the version's engine reads it light: launch-set.js CONTENT_EXPORT). A media file by its format (isMediaFile,
+ * game-tree.js) is marked `media: true`. `seen`: the folders it was listed from pushed to it (dirsStamp: whether it changed since).
  * `ownerOf(id)`: the manifest of a version the tree's underlays belong to (manifest.underlayOwners, game-catalog.js) —
  * a file taken from one is marked `owner: <id>` (fileOwner): the browsers store and fetch it under that version.
  */
-export function listGameTree(manifest, seen = null, ownerOf = null) {
-  const light = manifest.lightCopies ? (file, st, e) => { const c = lightCopy(file, st); if (c) e.light = c.size; } : null;
+export function listGameTree(manifest, seen = null, ownerOf = null, { contentLight = false } = {}) {
+  // (a content file's light copy — a TES3 file's, ESM_FORMAT — only for an engine that reads it light and says when it
+  // is done: `contentLight`, its release's CONTENT_EXPORT — launch-set.js)
+  const light = manifest.lightCopies ? (file, st, e) => { const c = lightCopy(file, st); if (c && (contentLight || c.format !== ESM_FORMAT)) e.light = c.size; } : null;
   const owner = ownerOf && manifest.underlayOwners?.length ? fileOwner(manifest, ownerOf, seen) : null;
   const mark = light && owner ? (file, st, e, rel) => { light(file, st, e); owner(file, st, e, rel); } : light ?? owner;
   const tree = mergeDir(gameLayers(manifest), mark, seen);
@@ -150,14 +153,17 @@ export class DirListings {
 }
 DirListings.RECENT_MS = 2000;
 
-/** The light copy of a version's path under LIGHT_DIR: { file, st, copy } (light-copies.js), or null. */
-export function resolveLightFile(manifest, rel, memo = null) {
+/**
+ * The light copy of a version's path under LIGHT_DIR: { file, st, copy } (light-copies.js), or null — a content file's
+ * (a TES3 file's, ESM_FORMAT) with `contentLight` only (the version's engine reads it light, as listGameTree's).
+ */
+export function resolveLightFile(manifest, rel, memo = null, { contentLight = false } = {}) {
   const parts = rel.replace(/\\/g, '/').split('/').filter(Boolean);
   if (!manifest.lightCopies || parts[0] !== LIGHT_DIR) return null;
   const file = resolveGameFile(manifest, parts.slice(1).join('/'), memo); if (!file) return null;
   let st; try { st = fs.statSync(file); } catch { return null; }
   const copy = lightCopy(file, st);
-  return copy ? { file, st, copy } : null;
+  return copy && (contentLight || copy.format !== ESM_FORMAT) ? { file, st, copy } : null;
 }
 
 /**

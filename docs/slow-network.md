@@ -1657,6 +1657,132 @@ init, ~12-13 s) is what the start waits for; the menu came 0.1-0.2 s later on Op
 on average, within their run-to-run spread (0.3 / 1.4 s) — no contention shown, none excluded at that size. Not
 measured: the owner's laptop (real GPU) and the 85 KB/s link.
 
+## Content files light before the menu (2026-10-28)
+
+A new OpenMW player read Morrowind.esm, Bloodmoon.esm and Tribunal.esm whole before the menu: 95 MB of the 137 MB thin
+launch set (Vanilla+ FR), 34.6 MB of wire for Morrowind.esm alone at 85 KB/s. The engine's content load
+(`World::loadData`) reads every record of them, but not all of each: `ESM::Land::load` skips a LAND record's normals,
+heights, colours and texture indices (`skipHSub`: read when a cell loads, `Land::loadData`), and
+`ESMStore::countAllCellRefsAndMarkKeys` reads a cell reference's number, object, key and deleted flag only. Those
+bytes are 38 MB (LAND) and ~9 MB (references' details) of Morrowind.esm's 80 MB.
+
+- **The light copy** (`src/host/light-copies.js` `lightEsm`, `esmZeroRanges`, by format: a file named as a content file
+  — `isLightContent` in `src/vfs/game-tree.js`: .esm, .esp, .omwaddon, .omwgame — with a TES3 header, from
+  `ESM_LIGHT_FROM` = 1 MiB): **the file's size and every offset**, every record and subrecord header kept, zeroed: a
+  LAND record's VNML, VHGT, VCLR, VTEX payloads (INTV, DATA, WNAM kept — the global map reads WNAM); in a CELL record,
+  from its first reference on (its own header kept), each reference's subrecord payloads but FRMR, NAME, KNAM, DELE; a
+  moved reference's group (MVRF, its target, the FRMR group after them) kept whole — `Store<Cell>::handleMovedCellRefs`
+  loads it all at the content load (none in the installed masters; one in Patch for Purists). Its map made from the file
+  at its first read (`esmZeroMap`: the file read asynchronously, its records walked 1 MiB at a time between turns of the
+  event loop — done synchronously it held every game's requests ~130 ms per master —; kept with the copy, a failure
+  not kept and returned to the read, never thrown), not at the tree's listing (16 bytes there). Its units are a format of their own (`lightFormat` `ESM_FORMAT` 'tes3-1' in
+  br-cache.js's key: another rule, other units), a unit's job carrying only its range's zeroed spans (`zeroWithin`).
+  Per 1 MiB block at brotli 9: Morrowind.esm EN 31.79 → 4.94 MB, FR 31.94 → 5.11 MB, Bloodmoon 2.81 → 0.80 MB, Tribunal
+  0.99 → 0.79 MB; the references the content load counts (number, object, key, deleted) identical in all three
+  (316 116, 26 473, 15 103 references).
+- **Only for an engine that says it**: the tree marks a content file's light copy only when the version's engine
+  release exports `CONTENT_EXPORT` (`orthros_content_light`, `src/vfs/launch-set.js`; `src/host/server.js`
+  `engineContentLight` → `listGameTree(..., { contentLight })`, and `resolveLightFile`: served under `.light/` and seeded
+  as units only then). Any other engine (a release before orthros-r13) sees no light copy: nothing listed, served,
+  seeded, learned or fetched light — its versions' real units seeded as before.
+- **The page** (`src/vfs/data-client.js` `contentFile`, `contentPick`): a content file is read light **only while the
+  engine says its content load runs** — `globalThis.orthrosContentLoading()` at `World::loadData`'s start, then
+  `orthrosContentLoaded()` at its end (orthros-r13.patch, `VFS::orthrosContentLoad`; `src/ports/openmw/streamfs.js`) —,
+  on every link (the copy is what that load reads, a fast link included), unless the file is here whole (`?contentlight=0`
+  on the engine's page or the play page: the files all along — pictures compared; the learned order still brings the
+  copies). From the end on,
+  **every read of every handle is the file's**, for good — not chosen per load at the file's start: the engine keeps up
+  to 100 readers open (`ESM::ReadersCache`), each sought again before it reads (libc++'s filebuf and musl's FILE drop
+  their buffers at a seek). An engine that says nothing reads the files. The copy is never fetched whole after (no
+  `light` message: no `HttpBackend.upgrade`, no reload in place); a check of a range (`readable`, r12's terrain chunks
+  waiting for their LAND: `orthrosRangeReady`) answers for **the file's own bytes**, never for the copy in the page;
+  an announce after the load asks the file's ranges (`nextPick`), never makes a big load (`bigBatch` leaves content
+  files out), and `peek` never takes the copy's bytes for the file's.
+- **Reads of ids only** (orthros-r13.patch `CellStore::listRefs`, `VFS::orthrosContentIds`; `GameData.contentIds`): a
+  cell's references listed by their ids — what the content load read, kept in the copy — are read from the copy after
+  the content load too. `WorldModel::getPtrByRefId` / `getExteriorPtrs` (a script naming an object in no loaded cell)
+  list every cell not loaded yet, one after another on the main thread: from the file, each a synchronous fetch of its
+  references (many MB at 85 KB/s, the frame frozen for minutes); from the copy, what the content load brought.
+- **A store an older engine filled** (`data-worker.js` `contentHere`; `launch-set.js` `setBytes`): a read of the copy
+  where the file's own pieces are here (memory or store) is served from them — a superset of the copy's bytes, every
+  offset the same. A returning r12 player (Morrowind.esm here but its LAND, not whole) reads its store at the content
+  load instead of fetching the copy, and the home's probe counts those pieces as the copy's.
+- **The learned order** (`launch-set.js` `forLink`, `contentLight`): the content load is learned under the copy's path
+  (the page reads it; a file here whole read as itself then is learned as the copy's read too, `GameData.read`). A
+  content file's entry under the file's path read before playable (or in an order without flags — orders learned before
+  the copy read the file there, by the same pieces) stands for its light copy **on every link** — unless the sessions
+  whose engine reads the copy read it as the file before playable (`CONTENT_REAL`, flags bit 1: their first cells' land
+  and references, read after the content load; `server.js` counts them apart — a session's real reads of a content file
+  `creal`, `cpre` per entry at its mark, `cmarks` per version, kept in the learned files — so the blocks an older engine's
+  content load read, learned under the file's path too, do not keep the whole file in the launch set): those stay the
+  file's, in the launch set beside the copy. Entries read in play stay the file's, fetched in the background as any. The
+  units seeded (`brSeedUnits`): a same-size copy's pieces of the entry (what a link that is not fast asks) and, when all
+  its pieces were read, its block (what a link that asks blocks reads); a content file's pre-playable entry its copy's
+  only, unless `CONTENT_REAL`.
+- **The engine reads the rest by place** (orthros-r13.patch): the ranges a cell is read from once the content is
+  loaded (`MWRender::orthrosCellRanges`: each content file's CELL context — its references —, an exterior's LAND
+  context, 8 KiB more for the stream's read-ahead) are announced with the place's reads and waited for once:
+  - a cell change (`Scene::changeCellGrid`: the grid's cells not active yet, `meshes:<x,y>`; `changeToInteriorCell`:
+    the interior's, `meshes:<id>`) before the cells' references load (`getExterior` / `getInterior` load them);
+  - the synchronous terrain preload (`QuadTreeWorld::orthrosReadAhead`: every chunk's cells and the ring around them —
+    land and paged objects' references, `terrain:<x,y>`) before the chunks' files are listed;
+  - a saved game's load (`StateManager::loadGame`: one pass over the save's record headers, each CSTA's cell — their
+    references load one after another — `cells:save`, not learned as a place);
+  - between frames, put off until their ranges are in the page (fetched in the background): an exterior grid cell's or a
+    door destination's preload (`Scene::orthrosCellReady`), an object paging chunk's model list (`chunkReady`), r12's
+    terrain chunks (their LAND, as before).
+  Announced places are learned (`/api/places`), so a predicted save's place brings its cells' ranges while the player
+  sits in the menu (docs/openmw.md "Anticipated places").
+
+Tests: `tests/light-copies.test.js` (a synthetic TES3 file: offsets, zeroed payloads, kept headers and references, a
+moved reference's group, any range; the size threshold and the tree's mark), `tests/br-cache.test.js` (its units),
+`tests/launch-set.test.js` (forLink on every link, an order without flags, the file here whole), `tests/game-data.test.js`
+(the page: light during the content load on a fast link, the file after for every read, readiness on the file, no
+upgrade; announces and big loads; the server's mark by the release's exports; reads of ids only; a store's real pieces;
+`CONTENT_REAL` learned and kept), `tests/openmw-streamfs.test.js` (the
+hooks), `tests/openmw-builds.test.js` (the patch).
+
+Measured (2026-10-28, a new device, the same pristine state for both — a copy of the live learned directory, a frozen
+br-cache copy, covers —; before = the branch's base fc5fcd7 with the live orthros-r12, after = this change with the
+dev build orthros-r13dev2 (engine 71c3364eba86, its brotli siblings made as a release's) under r12's name; the light
+units not in the frozen copy, so the copies went brotli 5 on the fly). `tools/data-matrix.mjs`, 2 runs per variant at
+1 MB/s, 1 at 85 KB/s (a run takes 12-25 min); menu = the runner's `shown`, playable = the in-world mark; "masters" =
+the wire of the content files (real or `.light/`) up to the menu:
+
+| version, link | menu (s) | playable (s) | wire to the menu (MB) | masters to the menu (MB) | menu → playable (s) |
+|---|---|---|---|---|---|
+| GOTY EN, 1m:60 | 72.3 / 72.2 → 45.8 / 49.1 | 87.1 / 86.1 → 70.6 / 74.3 | 61.0 / 60.7 → 37.6 / 38.4 | 33.1 / 33.0 → 6.9 / 7.1 | 14.8 / 13.9 → 24.8 / 25.2 |
+| Vanilla+ FR, 1m:60 | 72.4 / 71.9 → 43.4 / 42.8 | 81.6 / 84.1 → 65.0 / 64.7 | 59.4 / 58.0 → 31.9 / 31.0 | 33.9 / 33.8 → 7.9 / 7.9 | 9.2 / 12.2 → 21.6 / 21.9 |
+| GOTY EN, 85k:150 | 698 → 384 | 793 → 531 | 53.7 → 28.6 | 32.7 → 7.0 | 95 → 147 |
+| Vanilla+ FR, 85k:150 | 663 → 368 | 755 → 497 | 51.4 → 27.6 | 32.6 → 7.8 | 92 → 129 |
+
+- **The menu**: -25 / -29 s at 1 MB/s (-35 / -40 %), -314 / -295 s at 85 KB/s (-45 %); -23 to -28 MB on the wire
+  before it, the masters' 33 MB down to 7-8 MB. The engine's first frame moves as much (69 → 43-47 s at 1 MB/s): the
+  masters no longer share the link with the engine's own files.
+- **The first cell is paid after the menu**: the New Game's load (menu → playable) grows by 10-13 s at 1 MB/s and
+  37-52 s at 85 KB/s — the first cells' land and references, 3.3-4.8 MB of the real masters read after the content
+  load (announced or on demand: the demand-wait seconds from the menu to playable 1.7-2.5 → 12.3-12.5 s at 1 MB/s, 27 → 81 s
+  for EN at 85 KB/s), which the launch set no longer holds. Playable still comes 12-19 s and 258-262 s sooner.
+  The learned order will carry those blocks as the file's (`CONTENT_REAL`) once r13 sessions mark playable; the
+  pristine order had only r12 sessions in it.
+- **`place-load.mjs`** (GOTY EN, 1.8 MB/s and 90 ms, 2 runs each; frozen = the longest gap between frames):
+  - save (scenario S, new device): the engine's menu 43 / 44 → 25.7 / 25.8 s (wire to the menu 60.3 / 61.7 → 36.2 /
+    34.5 MB); the save's load frozen 12.6 / 12.3 → 12.8 / 12.9 s (+0.2-0.6 s), its announced ranges 11.5 / 11.9 →
+    12.2 / 12.1 MB (the CSTA cells' references and land, `cells:save`), demand reads 4 → 8 (0.15 MB of wire, 0.72 MB
+    decoded: none of them light).
+  - COE to -2,6 (scenario C), new device: in the world 62 / 61 → 45 / 45 s; the frozen load 6.3 / 6.2 → 7.3 / 7.6 s
+    (+1.0-1.4 s), announced 9.2 / 8.8 → 9.8 / 9.9 MB, plus 0.84 MB of the real Morrowind.esm in the read-ahead
+    (`upgrade` in the tool's categories) — ~1.5-1.8 MB more in the frozen frame, ~1 s at that rate: the growth is the
+    land and references' bytes, not serial reads (demand 4 → 4-5).
+  - COE, warm profile (each variant's own warm-up): frozen 1.67 / 1.65 → 1.93 / 1.82 s, 0 → 1-2 demand reads.
+- **Pictures** (`frame-compare.mjs morrowind-goty-en`, r13dev2, `?contentlight=0` against the default): the open
+  exterior 1,-4 the same as the repeat (mean difference 13.48 against the repeat's 13.49: the sky and its light change
+  between captures; terrain, trees and rocks in place), Arrille's Tradehouse 0.46 against 0.56; the content load told
+  (`content` "done", light from 2.8-2.9 s, loaded at 5.6-5.7 s, 113 requests of the copies). `check.mjs
+  morrowind-goty-en` EN and `--lang fr`: ok.
+- Not measured: r12 against r13 pictures (only the light copy against the file on r13), a script searching every cell
+  (`listRefs` from the copy), a view-grow run, the owner's real link.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

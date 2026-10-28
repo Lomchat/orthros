@@ -145,6 +145,7 @@ test('announced reads (orthrosWillRead / orthrosReadWait): engine paths to the g
     vm.runInContext(SRC, ctx, { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER });
     assert.equal(ctx.orthrosWillRead('x\x1F0\x1F-1', 'meshes:0,0'), 0, 'no game data yet: nothing announced');
     assert.equal(ctx.orthrosReadWait(100), 1, 'nor waited for');
+    ctx.orthrosContentLoading(); // (the engine's content load said before the game data opened: nothing)
     for (let i = 0; i < 50; i++) { try { ctx.StreamFS.init(); break; } catch (e) { if (!/not loaded yet/.test(e.message)) throw e; await new Promise((r) => setTimeout(r, 10)); } }
     const w = workers[0]; assert.ok(w, 'the game data opened');
     w.onmessage({ data: { ready: { trees: {}, kept: {}, manifest: {}, real: [] } } });
@@ -169,6 +170,13 @@ test('announced reads (orthrosWillRead / orthrosReadWait): engine paths to the g
     Atomics.store(data.ctrl, 12, 2);
     assert.equal(ctx.orthrosReadWait(15000), 1, 'settled (ctrl[12] at the batch)');
     assert.equal(data.snapshot().wantTimeouts, 1);
+    // (the engine's content load (orthros-r13.patch): its content files light until it says it is over, for good)
+    assert.equal(data.content, 'real');
+    ctx.orthrosContentLoading(); assert.equal(data.content, 'light');
+    ctx.orthrosContentLoaded(); assert.equal(data.content, 'done');
+    // (a cell's references listed by their ids: the copies again, said back after)
+    ctx.orthrosContentIds(1); assert.equal(data.contentIdsDepth, 1);
+    ctx.orthrosContentIds(0); assert.equal(data.contentIdsDepth, 0);
   } finally { ctx.StreamFS?.close?.(); globalThis.Worker = RealWorker; }
 });
 

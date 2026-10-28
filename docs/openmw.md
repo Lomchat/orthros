@@ -1301,6 +1301,45 @@ within the spread; the profiled runs' busy time 11.7-12.2 ms a frame. The announ
 --mode save`, Ald'ruhn at 1.8 MB/s and 90 ms, against r1-r11): no timeout, and the one read in series in either build a
 region weather sound, as before.
 
+### The masters light before the menu: engine orthros-r13 (2026-10-28)
+
+The boot read Morrowind.esm, Bloodmoon.esm and Tribunal.esm whole before the menu (95 MB of the 137 MB thin launch
+set). `orthros-r13.patch` (on r12) lets the page serve them light while the engine loads its content: their LAND
+payloads and cell references' details zeroed in a copy of the same size and offsets (docs/slow-network.md "Content files
+light before the menu" for the copy, the page's rules and the learned order), the files themselves read from the end of
+the content load on, by the ranges each cell needs:
+- `World::loadData` tells the page when it starts and ends (`VFS::orthrosContentLoad` → `globalThis.
+  orthrosContentLoading` / `orthrosContentLoaded`, `src/ports/openmw/streamfs.js`); the release exports
+  `orthros_content_light` (launch-set.js `CONTENT_EXPORT`: the server marks its versions' masters light only then — an
+  r12 release reads them as before).
+- A cell's ranges (`MWRender::orthrosCellRanges`: each content file's CELL context — its references —, an exterior's
+  LAND context) are announced and waited for once before the loads that read them: a cell change (the grid's cells not
+  active yet, an interior: `meshes:<place>`), the synchronous terrain preload (every chunk's cells and their ring:
+  `terrain:<place>`), a saved game's load (its CSTA records' cells: `cells:save`, not learned); and between frames the
+  loads that would read them are put off until they are in the page (an exterior grid cell's or a door destination's
+  preload, an object paging chunk's list of models; r12's terrain chunks already wait for their LAND), as r5 does for
+  meshes. `VFS::orthrosWillReadRanges` announces raw ranges of any engine file (`Manager::orthrosWillRead` goes through
+  it).
+- r12's terrain readiness (`TerrainStorage::orthrosLandReady`, its LAND range through `orthrosLandRange`) is answered by
+  the page for the file's own bytes, never for the light copy in the page (`GameData.readable`).
+- A cell's references listed by their ids only (`CellStore::listRefs`: `WorldModel::getPtrByRefId` / `getExteriorPtrs`
+  go through every cell not loaded when a script names an object in none of them) are read from the light copies after
+  the content load too (`VFS::orthrosContentIds` → `globalThis.orthrosContentIds(1|0)` around it, main thread only;
+  `GameData.contentIds`): what the content load brought, instead of every cell's references fetched from the file one
+  by one with the frame frozen.
+
+Development build only so far (scratch; r12 now in `main`, the lock entry `orthros-r13` = r12's patches +
+`orthros-r13.patch`, exports r12's + `orthros_content_light`, its files pinned once the release is built). Checked on it (`tools/openmw/dev-serve.sh`, local
+link, `frame-compare.mjs morrowind-goty-en` against `?contentlight=0` — the masters read as they are all along —, which
+now also reports each run's content mode and its requests of content files' light copies): the content load told
+(light from ~3 s, loaded at ~6 s; 88-116 light requests), Seyda Neen's exterior, an open exterior (1,-4: terrain,
+trees, rocks) and Arrille's Tradehouse the same pictures (mean differences 0.06 / weather only / 0.39-0.76 against the
+repeat's 1.08 / weather / 0.28-0.58, no pixel over 24 apart from the open view's sky). Measured (2026-10-28, dev build
+r13dev2 against r12, a new device, docs/slow-network.md "Content files light before the menu"): the menu -25 to -29 s
+at 1 MB/s and -295 to -314 s at 85 KB/s (the masters 33 → 7-8 MB of wire), the New Game's first load +10-13 s / +37-52
+s (its cells' land and references now read after the menu), playable still 12-19 s / ~260 s sooner; at 1.8 MB/s a
+save's load frozen +0.2-0.6 s and a COE +1.0-1.4 s (the cells' bytes, no serial reads), the pictures the same.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

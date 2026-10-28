@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { lightDds, lightTga, tgaLight, lightCopy, readLight, LIGHT_SIDE, TGA_LIGHT_FROM } from '../src/host/light-copies.js';
-import { listGameTree } from '../src/host/game-files.js';
+import { lightDds, lightTga, tgaLight, lightCopy, readLight, esmZeroRanges, zeroWithin, LIGHT_SIDE, TGA_LIGHT_FROM, ESM_FORMAT, ESM_LIGHT_FROM } from '../src/host/light-copies.js';
+import { listGameTree, resolveLightFile } from '../src/host/game-files.js';
 import { createServer } from '../src/host/server.js';
 
 /** A DDS texture: its header (DX10's too when `dxgi`), then its levels' bytes (each level's bytes its own value). */
@@ -231,5 +231,142 @@ test('a BSP v30 map has no light copy, its textures embedded or not: the engine 
     const lumps = bspLumps(bytes, bytes.length);
     assert.equal(lumps.length, 15);
     assert.deepEqual(lumps[2], { off: head.readInt32LE(4 + 2 * 8), len: head.readInt32LE(8 + 2 * 8) });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------- TES3 content files
+
+/** A TES3 subrecord: its name, its payload (a string's bytes, a buffer, or `n` bytes of `fill`). */
+const sub = (name, data) => { const b = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'latin1'); const h = Buffer.alloc(8); h.write(name, 0, 'latin1'); h.writeUInt32LE(b.length, 4); return Buffer.concat([h, b]); };
+const u32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32LE(v); return b; };
+const filled = (n, v) => Buffer.alloc(n, v);
+/** A TES3 record: its name and subrecords. */
+const rec = (name, subs) => { const body = Buffer.concat(subs), h = Buffer.alloc(16); h.write(name, 0, 'latin1'); h.writeUInt32LE(body.length, 4); return Buffer.concat([h, body]); };
+/**
+ * A TES3 file: its header, a LAND record, an exterior CELL with references (one with a key, one deleted, a moved
+ * reference's group), an interior's, a dialogue's padding to `size`.
+ */
+function tes3(size = ESM_LIGHT_FROM + 4096) {
+  const parts = [
+    rec('TES3', [sub('HEDR', filled(300, 1))]),
+    rec('CELL', [sub('NAME', 'Seyda Neen\0'), sub('DATA', filled(12, 2)), sub('RGNN', 'Bitter Coast\0'), sub('NAM0', u32(3)),
+      sub('FRMR', u32(1)), sub('NAME', 'chest_small\0'), sub('XSCL', filled(4, 9)), sub('ANAM', 'fargoth\0'), sub('KNAM', 'key_chest\0'), sub('FLTV', u32(50)), sub('DATA', filled(24, 7)),
+      sub('FRMR', u32(2)), sub('NAME', 'barrel_01\0'), sub('DELE', u32(0)), sub('DATA', filled(24, 8)),
+      sub('MVRF', u32(5)), sub('CNDT', filled(8, 3)), sub('FRMR', u32(5)), sub('NAME', 'mudcrab\0'), sub('DATA', filled(24, 6)),
+      sub('FRMR', u32(6)), sub('NAME', 'rock_01\0'), sub('DATA', filled(24, 5)), sub('XSCL', filled(4, 4))]),
+    rec('LAND', [sub('INTV', filled(8, 1)), sub('DATA', u32(15)), sub('VNML', filled(12675, 0x41)), sub('VHGT', filled(4232, 0x42)),
+      sub('WNAM', filled(81, 0x43)), sub('VCLR', filled(12675, 0x44)), sub('VTEX', filled(512, 0x45))]),
+    rec('CELL', [sub('NAME', 'Arrille\'s Tradehouse\0'), sub('DATA', filled(12, 1)), sub('FRMR', u32(9)), sub('NAME', 'arrille\0'), sub('DATA', filled(24, 2)), sub('ANAM', 'x\0')]),
+  ];
+  const used = parts.reduce((n, b) => n + b.length, 0);
+  parts.push(rec('INFO', [sub('INAM', filled(size - used - 24, 0x55))]));
+  return Buffer.concat(parts);
+}
+/** The TES3 file's subrecords: [record, subrecord, payload offset, payload bytes], in order. */
+function subsOf(b) {
+  const out = [];
+  for (let p = 0; p + 16 <= b.length;) {
+    const r = b.toString('latin1', p, p + 4), e = p + 16 + b.readUInt32LE(p + 4);
+    for (let s = p + 16; s + 8 <= e;) { const n = b.toString('latin1', s, s + 4), z = b.readUInt32LE(s + 4); out.push([r, n, s + 8, b.subarray(s + 8, s + 8 + z)]); s += 8 + z; }
+    p = e;
+  }
+  return out;
+}
+/** A cell's references as the engine's content load counts them (ESMStore::countAllCellRefsAndMarkKeys): number, object, key, deleted. */
+function refTuples(b) {
+  const out = []; let cur = null;
+  for (const [r, n, , d] of subsOf(b)) {
+    if (r !== 'CELL') { cur = null; continue; }
+    if (n === 'FRMR') out.push(cur = { num: d.readUInt32LE(0), id: '', key: '', deleted: false });
+    else if (cur && n === 'NAME') cur.id = d.toString('latin1');
+    else if (cur && n === 'KNAM') cur.key = d.toString('latin1');
+    else if (cur && n === 'DELE') cur.deleted = true;
+  }
+  return out;
+}
+
+test('a TES3 content file\'s light copy: its size and offsets, the land payloads and the references\' details zeroed, what the content load reads kept', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-esm-'));
+  try {
+    const bytes = tes3(), f = path.join(dir, 'Morrowind.esm');
+    fs.writeFileSync(f, bytes);
+    const c = lightCopy(f, fs.statSync(f));
+    assert.equal(c.size, bytes.length, 'the same size');
+    assert.equal(c.format, ESM_FORMAT);
+    const read = (a, b) => new Promise((res, rej) => { const buf = Buffer.alloc(b - a + 3); readLight(f, c, a, b, buf, 3, (e) => (e ? rej(e) : res(buf.subarray(3)))); });
+    const all = await read(0, bytes.length);
+    // (every record and subrecord header in place: the same subrecords at the same offsets)
+    assert.deepEqual(subsOf(all).map(([r, n, at, d]) => [r, n, at, d.length]), subsOf(bytes).map(([r, n, at, d]) => [r, n, at, d.length]));
+    const zeroed = (d) => d.every((x) => x === 0);
+    const light = subsOf(all), real = subsOf(bytes);
+    for (let i = 0; i < real.length; i++) {
+      const [r, n] = real[i], kept = light[i][3].equals(real[i][3]);
+      const what = `${r}.${n} #${i}`;
+      if (r === 'LAND') assert.equal(kept, ['INTV', 'DATA', 'WNAM'].includes(n), what);
+      if (r === 'LAND' && !kept) assert.ok(zeroed(light[i][3]), what);
+    }
+    // (a cell's own header kept; each reference's number, object, key and deleted flag kept, its details zeroed; a moved
+    // reference's group kept whole — the content load reads it all: Store<Cell>::handleMovedCellRefs)
+    const cell = (i) => light[i][3], at = (r, n, k = 0) => real.map((x, i) => [x, i]).filter(([x]) => x[0] === r && x[1] === n)[k][1];
+    for (const n of ['NAME', 'DATA', 'RGNN', 'NAM0']) assert.ok(cell(at('CELL', n)).equals(real[at('CELL', n)][3]), `the header's ${n}`);
+    assert.ok(zeroed(cell(at('CELL', 'XSCL'))) && zeroed(cell(at('CELL', 'ANAM'))) && zeroed(cell(at('CELL', 'FLTV'))), 'details of reference 1');
+    assert.ok(zeroed(cell(at('CELL', 'DATA', 1))) && zeroed(cell(at('CELL', 'DATA', 2))), 'positions of references 1 and 2');
+    assert.ok(cell(at('CELL', 'DATA', 3)).equals(real[at('CELL', 'DATA', 3)][3]), 'the moved reference\'s position kept');
+    assert.ok(cell(at('CELL', 'CNDT')).equals(real[at('CELL', 'CNDT')][3]));
+    assert.ok(zeroed(cell(at('CELL', 'DATA', 4))) && zeroed(cell(at('CELL', 'XSCL', 1))), 'the reference after the moved group: zeroed again');
+    assert.ok(zeroed(cell(at('CELL', 'DATA', 6))) && zeroed(cell(at('CELL', 'ANAM', 1))), 'an interior\'s references too');
+    assert.ok(cell(at('INFO', 'INAM')).equals(real[at('INFO', 'INAM')][3]), 'other records as they are');
+    assert.deepEqual(refTuples(all), refTuples(bytes), 'the references the content load counts: the same');
+    assert.deepEqual(refTuples(bytes).map((r) => [r.num, r.key, r.deleted]), [[1, 'key_chest\0', false], [2, '', true], [5, '', false], [6, '', false], [9, '', false]]);
+    // (any range reads as the whole copy's bytes there; the map made once, sorted, its ranges merged)
+    let seed = 7;
+    for (let k = 0; k < 40; k++) {
+      seed = (seed * 1103515245 + 12345) >>> 0; const a = seed % bytes.length; seed = (seed * 1103515245 + 12345) >>> 0;
+      const b = Math.min(bytes.length, a + 1 + (seed % 40000));
+      assert.deepEqual(await read(a, b), all.subarray(a, b), `${a}-${b}`);
+    }
+    const z = esmZeroRanges(bytes);
+    for (let i = 2; i < z.length; i += 2) assert.ok(z[i] > z[i - 1], 'sorted, apart');
+    // (a job's share: the ranges within a unit, clipped)
+    const mid = (z[0] + z[1]) >> 1, w = zeroWithin(z, mid, z[3]);
+    assert.deepEqual([...w], [mid, z[1], z[2], z[3]]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a TES3 file has a light copy from ESM_LIGHT_FROM on, by its header (not its name alone); its tree marks it only for an engine that reads it light', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-esm-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'base'));
+    fs.writeFileSync(path.join(dir, 'base', 'Big.esm'), tes3());
+    fs.writeFileSync(path.join(dir, 'base', 'Small.esp'), tes3(64 << 10));
+    fs.writeFileSync(path.join(dir, 'base', 'Fake.esm'), Buffer.alloc(ESM_LIGHT_FROM + 10, 1));
+    const stat = (n) => fs.statSync(path.join(dir, 'base', n));
+    assert.equal(lightCopy(path.join(dir, 'base', 'Big.esm'), stat('Big.esm')).size, stat('Big.esm').size);
+    assert.equal(lightCopy(path.join(dir, 'base', 'Small.esp'), stat('Small.esp')), null, 'under ESM_LIGHT_FROM');
+    assert.equal(lightCopy(path.join(dir, 'base', 'Fake.esm'), stat('Fake.esm')), null, 'no TES3 header');
+    const man = { folder: path.join(dir, 'v'), baseFolder: path.join(dir, 'base'), lightCopies: true };
+    assert.equal(listGameTree(man).files['Big.esm'].light, undefined, 'an engine that does not say it reads it light: not marked');
+    assert.equal(listGameTree(man, null, null, { contentLight: true }).files['Big.esm'].light, stat('Big.esm').size);
+    assert.equal(listGameTree({ ...man, lightCopies: false }, null, null, { contentLight: true }).files['Big.esm'].light, undefined, 'a Windows game');
+    // (served the same way: resolveLightFile)
+    assert.equal(resolveLightFile(man, '.light/Big.esm'), null, 'not served to an engine that reads the file');
+    assert.equal(resolveLightFile(man, '.light/Big.esm', null, { contentLight: true }).copy.size, stat('Big.esm').size);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a TES3 copy\'s map made asynchronously, the same as esmZeroRanges\'; a file gone when it is made: the read fails, nothing thrown', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-esm-map-'));
+  try {
+    // (records past ESM_WALK_SLICE: the walk resumed between turns of the event loop)
+    const file = path.join(dir, 'Big.esm'), bytes = tes3(3 << 20); fs.writeFileSync(file, bytes);
+    const c = lightCopy(file, fs.statSync(file));
+    const z = await c.zeroMap();
+    assert.deepEqual([...z], [...esmZeroRanges(bytes)]); assert.equal(c.zeroMap(), c.zeroMap(), 'made once');
+    const gone = path.join(dir, 'Gone.esm'); fs.writeFileSync(gone, bytes);
+    const g = lightCopy(gone, fs.statSync(gone)); fs.rmSync(gone);
+    const err = await new Promise((r) => readLight(gone, g, 0, 100, Buffer.alloc(100), 0, r));
+    assert.ok(err, 'the read fails');
+    fs.writeFileSync(gone, bytes);
+    assert.equal(await new Promise((r) => readLight(gone, g, 0, 100, Buffer.alloc(100), 0, r)), null, 'a failure not kept: made again');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

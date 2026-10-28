@@ -237,6 +237,38 @@ test('server: the learned order seeds the units ahead of any request', async () 
   } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('server: a TES3 file\'s light copy seeded only for an engine that reads it light — its pieces and its full blocks —, the file\'s units else', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-esm-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const games = path.join(dir, 'games'), engines = path.join(dir, 'engines'), game = path.join(games, 'mw');
+  fs.mkdirSync(path.join(game, 'base'), { recursive: true }); fs.mkdirSync(path.join(game, 'versions/1'), { recursive: true });
+  const head = Buffer.alloc(16); head.write('TES3', 0, 'latin1'); head.writeUInt32LE(BLOCK + 200 - 16, 4);
+  fs.writeFileSync(path.join(game, 'base/Game.esm'), Buffer.concat([head, text(BLOCK + 200 - 16)]));
+  fs.writeFileSync(path.join(game, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'mw', name: 'MW', defaultVersion: 'mw-1', defaults: { runtime: 'openmw' },
+    versions: [{ id: 'mw-1', dir: '1', version: '1', openmw: { engine: 'e1', files: ['Game.esm'] } }] }));
+  fs.mkdirSync(path.join(engines, 'e1/moddata'), { recursive: true });
+  // (block 0 read whole before playable by every marking session — the content load —; block 1's first piece in play)
+  const learnDir = path.join(dir, 'learn'); fs.mkdirSync(learnDir);
+  fs.writeFileSync(path.join(learnDir, 'prefetch-mw-1.json'), JSON.stringify([['Game.esm#0', 10, 1, null, 1], ['Game.esm#1', 900, 1, 1]]));
+  fs.writeFileSync(path.join(learnDir, 'playable-mw-1.json'), JSON.stringify({ marks: 1 }));
+  const seeded = async (exports, n) => {
+    fs.writeFileSync(path.join(engines, 'e1/release.json'), JSON.stringify({ schemaVersion: 1, id: 'e1', runtime: 'openmw', exports: exports.map((name) => ({ name })), files: [] }));
+    const made = [], brDir = path.join(dir, `brcache-${n}`);
+    const server = createServer({ gamesDir: games, enginesDir: engines, learnDir, brCacheDir: brDir, brCacheOptions: { ...QUIET, onMade: (f, unit) => made.push(`${unit.kind}${unit.index}`) }, brCacheLog: () => {} });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try { await server.brCache.ready; await new Promise((r) => setTimeout(r, 50)); await server.brCache.drain(); return { made, units: server.brCache.stats().units }; }
+    finally { server.close(); }
+  };
+  // (an engine that reads the file: its units, nothing light)
+  const r12 = await seeded([], 0);
+  assert.deepEqual(r12.made.sort(), ['b0', 'b1']);
+  // (one that reads it light at its content load: block 0 its copy's only — its 16 pieces, a link not fast, and the block,
+  // one that asks blocks —; block 1 (one piece), read in play: the file's too)
+  const r13 = await seeded(['orthros_content_light'], 1);
+  assert.deepEqual(r13.made.filter((u) => u === 'b0').length, 1, 'block 0: the copy\'s only');
+  assert.equal(r13.made.filter((u) => /^p([0-9]|1[0-5])$/.test(u)).length, 16, 'its pieces');
+  assert.equal(r13.made.filter((u) => u === 'b1').length, 2, 'block 1: the copy\'s and the file\'s');
+});
+
 test('cache: a light copy\'s units are its own version, made from its bytes', async () => {
   const { lightCopy, readLight } = await import('../src/host/light-copies.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
@@ -256,6 +288,33 @@ test('cache: a light copy\'s units are its own version, made from its bytes', as
     const want = Buffer.alloc(copy.size); await new Promise((r, j) => readLight(file, copy, 0, copy.size, want, 0, (e) => (e ? j(e) : r())));
     assert.deepEqual(zlib.brotliDecompressSync(fs.readFileSync(hit.path)), want);
     assert.equal(cache.lookup(file, st, null, unit), null, 'the file itself: another version');
+  } finally { cache.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cache: a TES3 file\'s light copy (its payloads zeroed in place) has units of its own format, made from its bytes', async () => {
+  const { lightCopy, readLight, ESM_LIGHT_FROM } = await import('../src/host/light-copies.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
+  // (a header, then LAND records whose heights are noise: zeroed in the copy)
+  const rec = (name, subs) => { const body = Buffer.concat(subs), h = Buffer.alloc(16); h.write(name, 0, 'latin1'); h.writeUInt32LE(body.length, 4); return Buffer.concat([h, body]); };
+  const sub = (name, b) => { const h = Buffer.alloc(8); h.write(name, 0, 'latin1'); h.writeUInt32LE(b.length, 4); return Buffer.concat([h, b]); };
+  const parts = [rec('TES3', [sub('HEDR', Buffer.alloc(300, 1))])];
+  for (let n = 0, x = 1; n < ESM_LIGHT_FROM + BLOCK;) {
+    const noise = Buffer.alloc(4232); for (let i = 0; i < noise.length; i++) { x = (x * 1103515245 + 12345) >>> 0; noise[i] = x >>> 24; }
+    const r = rec('LAND', [sub('INTV', Buffer.alloc(8, 1)), sub('DATA', Buffer.alloc(4, 9)), sub('VHGT', noise), sub('WNAM', Buffer.alloc(81, 3))]);
+    parts.push(r); n += r.length;
+  }
+  const file = path.join(dir, 'Morrowind.esm'); fs.writeFileSync(file, Buffer.concat(parts));
+  const st = fs.statSync(file), copy = lightCopy(file, st), light = { file, st, copy };
+  const cache = createBrCache({ dir: path.join(dir, 'cache'), ...QUIET });
+  try {
+    assert.equal(copy.size, st.size);
+    const unit = { kind: 'b', index: 1 };
+    cache.want(file, st, light, unit); cache.want(file, st, null, unit); await cache.drain();
+    const hit = cache.lookup(file, st, light, unit), real = cache.lookup(file, st, null, unit);
+    const want = Buffer.alloc(BLOCK); await new Promise((r, j) => readLight(file, copy, BLOCK, 2 * BLOCK, want, 0, (e) => (e ? j(e) : r())));
+    assert.deepEqual(zlib.brotliDecompressSync(fs.readFileSync(hit.path)), want);
+    assert.ok(hit.bytes * 4 < real.bytes, `zeroed heights compress: ${hit.bytes} against ${real.bytes}`);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(path.dirname(hit.path), 'meta.json'), 'utf8')).lightFormat, 'tes3-1');
   } finally { cache.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

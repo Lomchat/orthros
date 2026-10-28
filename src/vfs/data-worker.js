@@ -26,7 +26,7 @@
 import { openVersion, openStore, learnedOrders, partOf } from './game-data.js';
 import { MemBlockStore } from './opfs-store.js';
 import { BLOCK, CHUNK } from './http-backend.js';
-import { LIGHT_DIR, treeFiles } from './game-tree.js';
+import { LIGHT_DIR, isLightContent, treeFiles } from './game-tree.js';
 import { flagged, launchFirst, launchSet, lightLaunch, setBytes, WIRE_RATIO } from './launch-set.js';
 import { ReadReports } from './playable-watch.js';
 
@@ -173,6 +173,11 @@ async function bytesOf({ name, path, off, len, want, src }, ask = { held: true }
   W.readSeen = true; W.boot = false;
   if (W.prefetchAt === 'first-read' && !W.prefetching) prefetchAll();
   await adoptLegacy(name, path, part, f);
+  const real = contentHere(name, path, f, off, end);
+  if (real) {
+    const stop = Math.max(end, hereUntil(real.files, real.f, Math.ceil(end / CHUNK) * CHUNK, Math.min(real.f.len, off + Math.max(len, want ?? 0))));
+    return real.f.read(off, stop - off);
+  }
   const wait = f.prepare(off, end - off);
   if (wait) {
     // (a media stream's read: a wait of the engine's, not of a load — see HttpFile.prepare)
@@ -184,6 +189,18 @@ async function bytesOf({ name, path, off, len, want, src }, ask = { held: true }
   }
   const stop = Math.max(end, hereUntil(part.files, f, Math.ceil(end / CHUNK) * CHUNK, Math.min(f.len, off + Math.max(len, want ?? 0))));
   return f.read(off, stop - off);
+}
+
+/**
+ * A content file's light copy (game-tree.js isLightContent: every offset the file's, payloads zeroed) read where the
+ * file's own bytes [off, end) are all here already (memory or store): the file's { files, f } to read them from — a
+ * superset of the copy's, what an engine reading the file itself at its content load stored (a store from before its
+ * engine read the copy) read as it is instead of fetched again light —, else null.
+ */
+function contentHere(name, path, f, off, end) {
+  if (!path.startsWith(LIGHT_DIR + '/') || !isLightContent(path)) return null;
+  const rel = path.slice(LIGHT_DIR.length + 1), part = route(name, rel), r = part ? handle(name, rel) : null;
+  return r && r.len === f.len && hereUntil(part.files, r, off, end) >= end ? { files: part.files, f: r } : null;
 }
 
 /**

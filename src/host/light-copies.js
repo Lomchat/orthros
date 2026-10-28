@@ -5,7 +5,7 @@
 // for every game whose runtime reads them (manifest.lightCopies: the browser ports — a Windows game reads its files as
 // they are). Served under LIGHT_DIR (/gamez/<manifest>/.light/<path>); the tree tells each file's light size (`light`).
 import fs from 'node:fs';
-import { LIGHT_DIR } from '../vfs/game-tree.js';
+import { LIGHT_DIR, isLightContent } from '../vfs/game-tree.js';
 import { WAD_ENTRY, WAD_MIPTEX, MIPTEX_HEADER, MIP_LIGHT_FROM, wadEntries, wadHeader, miptexLevels, redrawFinest } from '../vfs/wad3.js';
 
 export { LIGHT_DIR };
@@ -29,8 +29,8 @@ const known = new Map();
  * which copy each read would follow the link, the store's state — a light map is no light copy.
  */
 export function lightCopy(file, st) {
-  const dds = /\.dds$/i.test(file), wad = !dds && /\.wad$/i.test(file);
-  if (!dds && !wad && !/\.tga$/i.test(file)) return null;
+  const dds = /\.dds$/i.test(file), wad = !dds && /\.wad$/i.test(file), esm = !dds && !wad && isLightContent(file);
+  if (!dds && !wad && !esm && !/\.tga$/i.test(file)) return null;
   const key = `${file}\0${st.size}\0${st.mtimeMs}`;
   let c = known.get(key);
   if (c !== undefined) { known.delete(key); known.set(key, c); return c; }
@@ -40,6 +40,7 @@ export function lightCopy(file, st) {
     try {
       const head = Buffer.alloc(148); const n = fs.readSync(fd, head, 0, 148, 0);
       if (wad) c = mipCopy(lightWad(fd, head.subarray(0, n), st.size), st.size);
+      else if (esm) c = lightEsm(head.subarray(0, n), st.size) ? esmCopy(file, st) : null;
       else if (dds) c = lightDds(head.subarray(0, n), st.size);
       else { const t = lightTga(head.subarray(0, n), st.size); if (t) c = tgaCopy(file, st, t); }
     } finally { fs.closeSync(fd); }
@@ -52,6 +53,7 @@ export function lightCopy(file, st) {
 /** Bytes [start, end) of a light copy (`c` of `file`), into `buf` at `at`; `done(err)`. */
 export function readLight(file, c, start, end, buf, at, done) {
   if (c.mips) return readMipLight(file, c, start, end, buf, at, done);
+  if (c.format === ESM_FORMAT) return readEsmLight(file, c, start, end, buf, at, done);
   const h = c.head.length;
   if (start < h) c.head.copy(buf, at, start, Math.min(end, h));
   if (end <= h) return done(null);
@@ -259,4 +261,141 @@ function readMipLight(file, c, start, end, buf, at, done) {
       done(null);
     });
   });
+}
+
+// ---------------------------------------------------------------- TES3: the content files of Morrowind's engine
+
+/**
+ * A TES3 content file (game-tree.js isLightContent: .esm, .esp, .omwaddon, .omwgame) has a light copy from this size on
+ * (a plugin of a few records saves nothing worth a second copy of its pieces).
+ */
+export const ESM_LIGHT_FROM = 1 << 20;
+/** The most bytes of a TES3 file read to make its light copy's map (one read of the whole file: ~80 MB for Morrowind.esm). */
+const ESM_LIGHT_MAX = 512 << 20;
+/** The light copy's format in br-cache.js's key: a version of its rules (another rule, other units). */
+export const ESM_FORMAT = 'tes3-1';
+const fourcc = (b, at) => b.readUInt32LE(at);
+const cc = (s) => Buffer.from(s, 'latin1').readUInt32LE(0);
+const LAND = cc('LAND'), CELL = cc('CELL'), FRMR = cc('FRMR'), MVRF = cc('MVRF');
+/** a LAND record's payloads the engine reads only when its cell loads (OpenMW's ESM::Land::load skips them: loadData) */
+const LAND_LATER = new Set(['VNML', 'VHGT', 'VCLR', 'VTEX'].map(cc));
+/**
+ * a cell reference's subrecords the content load reads (ESMStore::countAllCellRefsAndMarkKeys: the reference's number,
+ * its object, its key, deleted or not; Store<Cell>::handleMovedCellRefs: a moved reference's target) — the others
+ * (position, scale, owner, lock, …) only when the cell loads (CellStore::loadRefs)
+ */
+const REF_KEPT = new Set(['FRMR', 'NAME', 'KNAM', 'DELE', 'MVRF', 'CNDT'].map(cc));
+
+/** The file whose first bytes are `head` (16 at least) and of `size` bytes is a TES3 content file worth a light copy. */
+export function lightEsm(head, size) {
+  return head.length >= 16 && head.toString('latin1', 0, 4) === 'TES3' && size >= ESM_LIGHT_FROM && size <= ESM_LIGHT_MAX;
+}
+
+/**
+ * The payloads a TES3 file's light copy leaves zeroed (`bytes`: the whole file): [start0, end0, start1, end1, …] (file
+ * offsets, sorted, end exclusive) — every byte else as in the file: its records, their headers and every subrecord's
+ * 8-byte header, so the copy has the file's size and offsets and parses as the same records (an engine that reads part
+ * of it as one and part as the other reads a valid file). Zeroed, the bytes an engine of Morrowind's content reads only
+ * when a cell loads, not at its content load (docs/slow-network.md "Content files light before the menu"):
+ * - a LAND record's VNML, VHGT, VCLR and VTEX (normals, heights, colours, texture indices; its INTV, DATA and WNAM —
+ *   the global map's — kept): 38 of Morrowind.esm's 80 MB;
+ * - in a CELL record, from its first reference on (its own header kept: name, flags, region, water, ambient light),
+ *   each reference's subrecords but FRMR, NAME, KNAM, DELE (what the content load counts: number, object, key,
+ *   deleted), a moved reference's group (MVRF, its target, the FRMR group after them) kept whole — the content load
+ *   reads all of it (handleMovedCellRefs).
+ * A record cut short by the file's end ends the walk (what follows kept as it is).
+ */
+export function esmZeroRanges(bytes) {
+  const out = [];
+  esmZeroWalk(bytes, 0, Infinity, out);
+  return Uint32Array.from(out);
+}
+
+/**
+ * esmZeroRanges' walk of `bytes` from the record at `pos`, the records starting before `until`: their ranges appended to
+ * `out` (merged with its last); the next record's offset, `bytes.length` once the walk is over (a record cut short too).
+ */
+function esmZeroWalk(bytes, pos, until, out) {
+  const n = bytes.length;
+  const zero = (a, b) => { if (b > a) { if (out.length && out[out.length - 1] === a) out[out.length - 1] = b; else out.push(a, b); } };
+  for (; pos + 16 <= n && pos < until;) {
+    const name = fourcc(bytes, pos), end = pos + 16 + bytes.readUInt32LE(pos + 4);
+    if (end > n) return n;
+    if (name === LAND || name === CELL) {
+      // (in a CELL: refs — a reference seen —, moved — an MVRF since the last FRMR —, keep — this group kept whole)
+      let refs = false, moved = false, keep = false;
+      for (let s = pos + 16; s + 8 <= end;) {
+        const sub = fourcc(bytes, s), e = s + 8 + bytes.readUInt32LE(s + 4);
+        if (e > end) break;
+        if (name === LAND) { if (LAND_LATER.has(sub)) zero(s + 8, e); }
+        else if (sub === MVRF) { refs = true; moved = true; keep = true; }
+        else if (sub === FRMR) { refs = true; keep = moved; moved = false; }
+        else if (refs && !keep && !REF_KEPT.has(sub)) zero(s + 8, e);
+        s = e;
+      }
+    }
+    pos = end;
+  }
+  return pos + 16 <= n ? pos : n;
+}
+
+/** The bytes esmZeroMap walks between two turns of the server's event loop (~1 ms of the walk). */
+const ESM_WALK_SLICE = 1 << 20;
+
+/**
+ * esmZeroRanges of the file `file` (`st`: its fs.Stats), made off the server's thread's way: the file read
+ * asynchronously, its records walked ESM_WALK_SLICE bytes at a time between other work (the whole of Morrowind.esm held
+ * the event loop ~130 ms, measured: every game's requests waited). A file no longer of its size: no ranges (its bytes as
+ * they are — a superset of its copy's; a changed file is another copy: lightCopy's key).
+ */
+async function esmZeroMap(file, st) {
+  const bytes = await fs.promises.readFile(file);
+  if (bytes.length !== st.size) return new Uint32Array(0);
+  const out = [];
+  for (let pos = 0; pos < bytes.length;) {
+    pos = esmZeroWalk(bytes, pos, pos + ESM_WALK_SLICE, out);
+    if (pos < bytes.length) await new Promise((resolve) => setImmediate(resolve));
+  }
+  return Uint32Array.from(out);
+}
+
+/** The first range of `zero` (esmZeroRanges') that ends after `at`: its index (even). */
+function zeroFrom(zero, at) {
+  let lo = 0, hi = zero.length / 2;
+  while (lo < hi) { const k = (lo + hi) >> 1; if (zero[k * 2 + 1] <= at) lo = k + 1; else hi = k; }
+  return lo * 2;
+}
+/** The ranges of `zero` within [start, end), clipped (a job's share for br-cache-worker.js: its readLight). */
+export function zeroWithin(zero, start, end) {
+  const out = [];
+  for (let i = zeroFrom(zero, start); i < zero.length && zero[i] < end; i += 2) out.push(Math.max(start, zero[i]), Math.min(end, zero[i + 1]));
+  return Uint32Array.from(out);
+}
+
+/**
+ * A TES3 file's light copy for readLight: its file's bytes, its map's ranges zeroed — `zeroMap()`: a promise of the map
+ * (esmZeroMap), made at its first use and kept with the copy (lightCopy's cache; a failure not kept: made again at the
+ * next use), not at the tree's listing (a stat and 16 bytes there).
+ */
+function esmCopy(file, st) {
+  let zero = null;
+  return {
+    size: st.size, head: EMPTY, from: 0, format: ESM_FORMAT,
+    zeroMap() { return (zero ??= esmZeroMap(file, st).catch((err) => { zero = null; throw err; })); },
+  };
+}
+
+/** Bytes [start, end) of a TES3 file's light copy: the file's, its zeroed payloads within the range zeroed. */
+// (its map first: a failure to make it is the read's — `done(err)`, never thrown from a callback; a br-cache job's copy
+// brings its range's share of it, `zero`: br-cache-worker.js)
+function readEsmLight(file, c, start, end, buf, at, done) {
+  (c.zeroMap ? c.zeroMap() : Promise.resolve(c.zero ?? new Uint32Array(0))).then((z) => fs.open(file, 'r', (err, fd) => {
+    if (err) return done(err);
+    fs.read(fd, buf, at, end - start, start, (err2, n) => {
+      fs.close(fd, () => {});
+      if (err2 || n !== end - start) return done(err2 ?? new Error('short read'));
+      for (let i = zeroFrom(z, start); i < z.length && z[i] < end; i += 2) buf.fill(0, at + Math.max(start, z[i]) - start, at + Math.min(end, z[i + 1]) - start);
+      done(null);
+    });
+  }), done);
 }

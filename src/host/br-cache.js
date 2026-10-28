@@ -27,7 +27,7 @@ import crypto from 'node:crypto';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BLOCK, CHUNK } from '../vfs/http-backend.js';
-import { LIGHT_SIDE, lightCopy } from './light-copies.js';
+import { ESM_FORMAT, LIGHT_SIDE, lightCopy, zeroWithin } from './light-copies.js';
 
 const WORKER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'br-cache-worker.js');
 /** a unit kept compressed only when brotli makes it this much of its bytes at most (as the dynamic path's test) */
@@ -133,8 +133,10 @@ export function createBrCache(opts) {
     return r;
   };
   // (the light copy's shape in the key too: a new LIGHT_SIDE, or a copy made differently, is another version)
-  // (lightFormat: a copy redrawn in place — a WAD's, light-copies.js lightWad — told apart from one cut from the file)
-  const metaOf = (file, st, light) => ({ path: realOf(file), size: st.size, mtimeMs: st.mtimeMs, ...(light ? { light: true, lightSide: LIGHT_SIDE, lightSize: light.copy.size, lightFrom: light.copy.from, ...(light.copy.mips ? { lightFormat: 'wad1' } : {}) } : {}) });
+  // (lightFormat: a copy redrawn in place — a WAD's, light-copies.js lightWad — or with payloads zeroed in place — a TES3
+  // file's, esmZeroRanges: its rules' version — told apart from one cut from the file)
+  const formatOf = (copy) => (copy.mips ? 'wad1' : copy.format ?? null);
+  const metaOf = (file, st, light) => ({ path: realOf(file), size: st.size, mtimeMs: st.mtimeMs, ...(light ? { light: true, lightSide: LIGHT_SIDE, lightSize: light.copy.size, lightFrom: light.copy.from, ...(formatOf(light.copy) ? { lightFormat: formatOf(light.copy) } : {}) } : {}) });
   const keyOf = (meta) => crypto.createHash('sha1').update([meta.path, meta.size, meta.mtimeMs, meta.light ? `light\0${meta.lightSide}\0${meta.lightSize}\0${meta.lightFrom}${meta.lightFormat ? '\0' + meta.lightFormat : ''}` : ''].join('\0')).digest('hex');
   const dirOf = (k) => path.join(dir, k.slice(0, 2), k);
   const entryOf = (file, st, light, make = false) => {
@@ -330,15 +332,23 @@ export function createBrCache(opts) {
     const { file, light, unit } = j;
     let st; try { st = await fs.promises.stat(file); } catch { counts.stale++; return; }
     if (st.size !== j.st.size || st.mtimeMs !== j.st.mtimeMs) { counts.stale++; return; }
-    const e = entryOf(file, st, light, true), name = unitName(unit);
+    const name = unitName(unit), [start, end] = unitRange(unit, light ? light.copy.size : st.size);
+    if (!(start < end)) return;
+    // (a TES3 copy's zeroed payloads: those of the unit's range only — the file's map is ~3 MB —, the map made
+    // asynchronously at its first job: light-copies.js esmZeroMap)
+    const c = light?.copy;
+    let zero = null;
+    if (c?.format === ESM_FORMAT) {
+      try { zero = zeroWithin(await c.zeroMap(), start, end); } catch (err) { counts.failed++; log(`br-cache: ${file} ${name}: ${err?.message ?? err}`); return; }
+      if (closed) return;
+    }
+    const e = entryOf(file, st, light, true);
     const old = e.units.get(name), br = !old, pcm = pcmFor(light) && !e.units.has(name + PCM);
     if (!br && !pcm) return;
-    const [start, end] = unitRange(unit, light ? light.copy.size : st.size);
-    if (!(start < end)) return;
     job = e;
     try {
       // (the audio form against the brotli unit's wire bytes: the one made now, or the one kept)
-      const r = await ask({ file, size: st.size, mtimeMs: st.mtimeMs, light: light ? { head: light.copy.head, from: light.copy.from, size: light.copy.size, ...(light.copy.mips ? { mips: light.copy.mips } : {}) } : null, start, end, dir: e.dir, name, meta: e.meta, minGain: MIN_GAIN,
+      const r = await ask({ file, size: st.size, mtimeMs: st.mtimeMs, light: c ? { head: c.head, from: c.from, size: c.size, ...(c.mips ? { mips: c.mips } : {}), ...(zero ? { format: c.format, zero } : {}) } : null, start, end, dir: e.dir, name, meta: e.meta, minGain: MIN_GAIN,
         br, pcm, brWire: old ? (old.raw ? end - start : old.bytes) : null, pcmGain: PCM_MIN_GAIN });
       if (r.error) { counts.failed++; log(`br-cache: ${file} ${name}: ${r.error}`); return; }
       if (r.stale) { counts.stale++; return; }

@@ -8,12 +8,20 @@
 // X MB": /api/manifests `launch`). `files`: an HttpBackend over the version's tree (lookup, isWhole, pieceHere,
 // peekBlockHere) — the server's has no store.
 import { BLOCK, CHUNK } from './http-backend.js';
-import { LIGHT_DIR } from './game-tree.js';
+import { LIGHT_DIR, isLightContent } from './game-tree.js';
 
 /** An order without flags: its startup set up to its first pause this long. */
 export const STARTUP_GAP_MS = 2000;
 /** Flags bit: earlier sessions read the entry before their game was playable (in at least half the marked sessions). */
 export const PRE_PLAYABLE = 1;
+/**
+ * Flags bit: a content file's block (game-tree.js isLightContent) that sessions whose engine reads it light at its
+ * content load (CONTENT_EXPORT) read as the file itself before their game was playable (in at least half of those that
+ * marked it): their first cells' land and references, after the content load (whose reads are learned under the light
+ * copy's path: data-client.js) — the file's own bytes, not its light copy (contentLight). The server's
+ * (src/host/server.js prefetchList); an order learned before such sessions has none.
+ */
+export const CONTENT_REAL = 2;
 /** The wire bytes of a decoded byte, when the server does not know them (its compressed units: br-cache.js). */
 export const WIRE_RATIO = 0.75;
 
@@ -25,6 +33,22 @@ const PIECES = BLOCK / CHUNK;
  * set is the light one on every link too (lightLaunch).
  */
 export const RELOAD_EXPORT = 'orthros_file_updated';
+/**
+ * The export of an engine that reads its content files light while it loads its content and says when it is done
+ * (game-tree.js isLightContent; OpenMW's Orthros build from orthros-r13: globalThis.orthrosContentLoading /
+ * orthrosContentLoaded, data-client.js): only its versions' trees mark those files' light copies (src/host/game-files.js
+ * listGameTree `contentLight`) — another engine reads them as they are, nothing light listed or fetched for them.
+ */
+export const CONTENT_EXPORT = 'orthros_content_light';
+/**
+ * An entry of a learned order of the content file `path` (isLightContent) stands for its light copy — on every link —
+ * when sessions read it before their game was playable (`flags` PRE_PLAYABLE), or in an order without flags: the
+ * content load reads the copy (orders learned before it did read the file there — the same pieces, light now; since,
+ * learned under the copy's path); the file's own reads after it stay the file's: in play, or before playable by the
+ * sessions whose engine reads the copy (CONTENT_REAL: their first cells' land and references — a block an older
+ * engine's content load read too stays the file's then, not dropped from the launch set as a copy of what it has).
+ */
+export const contentLight = (path, flags) => isLightContent(path) && (flags === undefined || ((flags & PRE_PLAYABLE) !== 0 && (flags & CONTENT_REAL) === 0));
 /**
  * The launch set read as on a link that is not fast (light copies, no media: launchSet(..., false)) — on such a link, and
  * on any link for a version whose engine reloads in place (/api/manifests launch.reloads): what its game reads before it
@@ -41,7 +65,8 @@ export const flagged = (list) => list.some((e) => typeof e[4] === 'number');
 /**
  * A learned order as this link reads it: on a link that is not fast, a texture's light copy (whole, once) in place of
  * the file — unless the file is here; a copy of the file's own size (redrawn in place: a WAD's, light-copies.js) by the
- * same pieces —, and the media files' entries (the tree's `media`: movies, music — game-tree.js)
+ * same pieces; a content file's (a TES3 file's) by the same pieces on every link, for the entries read before playable
+ * (contentLight) —, and the media files' entries (the tree's `media`: movies, music — game-tree.js)
  * after all the others, in their order (a movie earlier sessions watched while this one may skip it, a track the engine
  * streams itself: not ahead of what the game waits for); on a fast one, the files themselves in place of light copies
  * earlier sessions read. An entry's flags go with what replaces it.
@@ -55,7 +80,10 @@ export function forLink(files, list, fast) {
     if (!fast && !light && r?.file?.media) { const k = path + '#' + e[1]; if (!seen.has(k)) { seen.add(k); tail.push(e); } continue; }
     if (!r?.file?.light) { if (!light) add(...e); continue; }
     if (r.file.light === r.file.size) { // (a copy redrawn in place — a WAD's —, its offsets the file's: the same pieces of the one read)
-      add(fast || files.isWhole(r.path) ? r.path : `${LIGHT_DIR}/${r.path}`, e[1], e[2], t, flags);
+      // (a content file's — a TES3 file's, payloads zeroed in place —: its copy on every link for the content load, the
+      // file's own entries in play the file's — contentLight)
+      const real = files.isWhole(r.path) || (isLightContent(r.path) ? !light && !contentLight(r.path, flags) : fast);
+      add(real ? r.path : `${LIGHT_DIR}/${r.path}`, e[1], e[2], t, flags);
       continue;
     }
     if (fast || files.isWhole(r.path)) {
@@ -126,10 +154,14 @@ export function setBytes(files, list, whole = false) {
   for (const e of list) {
     const p = entryPieces(files, e); if (!p) continue;
     const block = p.block, blockHere = files.peekBlockHere?.(p.path, p.size, p.mtime, block);
+    // (a content file's light copy: its file's pieces here count — the bytes its reads take where they are, data-worker.js
+    // contentHere: a store filled when the engine read the file itself)
+    const real = p.path.startsWith(LIGHT_DIR + '/') && isLightContent(p.path) ? p.path.slice(LIGHT_DIR.length + 1) : null;
+    const realBlock = real !== null && files.peekBlockHere?.(real, p.size, p.mtime, block);
     const pieces = whole ? Array.from({ length: Math.ceil(Math.min(BLOCK, p.size - block * BLOCK) / CHUNK) }, (_, i) => block * PIECES + i) : p.pieces;
     for (const c of pieces) {
       const n = pieceBytes(p.size, c); bytes += n;
-      if (blockHere || files.pieceHere?.(p.path, p.size, p.mtime, c)) here += n;
+      if (blockHere || files.pieceHere?.(p.path, p.size, p.mtime, c) || realBlock || (real !== null && files.pieceHere?.(real, p.size, p.mtime, c))) here += n;
     }
   }
   return { bytes, here };

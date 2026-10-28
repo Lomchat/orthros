@@ -196,3 +196,45 @@ test('r12: r11 plus its patch, the same exports; each kept frame-cost change rea
   // (measured without a gain of their own, or not checked by pictures: left out)
   for (const s of ['STATEGRAPHS', 'PRELOADREADY', 'CELLREADS']) assert.ok(!patch.includes(`OPENMW_ORTHROS_${s}`), s);
 });
+
+test('r13 patch: the content load told to the page (its content files light until then), the cells\' ranges read ahead or put off', () => {
+  const file = path.join(tools, 'patches/orthros-r13.patch');
+  const patch = fs.readFileSync(file, 'utf8'), added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  // (an r13 build, once in the lock: r12's patches and its own, its exports r12's and the content's — launch-set.js
+  // CONTENT_EXPORT: the server marks its versions' content files light only then)
+  const r13 = lock.builds.find((b) => b.patches.includes('orthros-r13.patch'));
+  if (r13) {
+    assert.equal(r13.patches.at(-1), 'orthros-r13.patch'); assert.equal(r13.patches.at(-2), 'orthros-r12.patch');
+    assert.ok(r13.exports.some((e) => e.name === 'orthros_content_light'), 'CONTENT_EXPORT among its exports');
+  }
+  for (const k of [
+    // (the export, and the hooks around World::loadData: light from its start, the files from its end)
+    'extern "C" EMSCRIPTEN_KEEPALIVE int orthros_content_light()', 'VFS::orthrosContentLoad(false);', 'VFS::orthrosContentLoad(true);',
+    'globalThis.orthrosContentLoaded : globalThis.orthrosContentLoading',
+    // (a cell's ranges: each content file's CELL context, an exterior's LAND context)
+    'void orthrosCellRanges(const MWWorld::ESMStore& store, const ESM::Cell& cell, bool refs, bool land,',
+    'for (const ESM::ESM_Context& context : cell.mContextList)', 'bool orthrosLandRange(const ESM::Land& land, VFS::OrthrosRange& out)',
+    'std::size_t orthrosWillReadRanges(std::span<const OrthrosRange> ranges, std::string_view label)',
+    // (announced and waited for before the loads that read them; put off between frames until there)
+    'orthrosReadCells(records, "meshes:" + std::to_string(playerCellX) + "," + std::to_string(playerCellY));',
+    'orthrosReadCells(records, "meshes:" + Misc::StringUtils::lowerCase(cellName));',
+    'if (VFS::orthrosWillReadRanges(ranges, "terrain:" + place) > 0)', 'orthrosReadSavedCells(filepath);', '"cells:save"',
+    'if (!VFS::orthrosRangesReady(ranges))', 'orthrosCellReady(mWorld.getWorldModel().getExterior(cellIndex, false))',
+    // (a cell's references listed by their ids — a search through every cell — read from the light copies)
+    'void orthrosContentIds(bool on)', 'var f = globalThis.orthrosContentIds;'])
+    assert.ok(added.includes(k), k);
+  // (the ids-only guard inside CellStore::listRefs(const ESM::Cell&), before its readers are restored)
+  const cells = patch.slice(patch.indexOf('+++ b/openmw/apps/openmw/mwworld/cellstore.cpp'));
+  const guard = cells.indexOf('} orthrosIdsOnly;');
+  assert.ok(guard > cells.indexOf('void CellStore::listRefs(const ESM::Cell& cell)') && guard < cells.indexOf('// Load references from all plugins that do something with this cell.'));
+  assert.ok(cells.indexOf('OrthrosIdsOnly() { VFS::orthrosContentIds(true); }') > 0 && cells.indexOf('~OrthrosIdsOnly() { VFS::orthrosContentIds(false); }') > 0);
+  // (the hooks around the whole content load: the content files, the groundcover's, the references counted)
+  const world = patch.slice(patch.indexOf('+++ b/openmw/apps/openmw/mwworld/worldimp.cpp'));
+  const on = world.indexOf('VFS::orthrosContentLoad(false);'), off = world.indexOf('VFS::orthrosContentLoad(true);');
+  assert.ok(on > 0 && on < world.indexOf(' loadContentFiles(fileCollections, contentFiles, encoder, listener);'));
+  assert.ok(off > world.indexOf(' mStore.validateRecords(mReaders);'));
+  // (the grid's cells read ahead before getExterior loads their references)
+  const scene = patch.slice(patch.indexOf('+++ b/openmw/apps/openmw/mwworld/scene.cpp'));
+  const read = scene.indexOf('orthrosReadCells(records, "meshes:" + std::to_string(');
+  assert.ok(read > 0 && read < scene.indexOf('\n             std::vector<CellStore*> cells;', read));
+});

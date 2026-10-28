@@ -306,6 +306,16 @@
     }
     return h;
   }
+  // (the Orthros build's content load, orthros-r13.patch (docs/slow-network.md "Content files light before the menu"):
+  // said before it reads its content files — their light copies read from then on, on every link: their land and cell
+  // references' details zeroed —, and once they are loaded — the files themselves from then on, for every read of every
+  // reader it keeps open; an engine that says nothing reads the files as they are; ?contentlight=0 on this page or the
+  // play page around it: the files as they are all along — the pictures compared, tools/openmw/frame-compare.mjs)
+  window.orthrosContentLoading = () => { if (pageParam('contentlight') !== '0') S.data?.contentLoading(); };
+  window.orthrosContentLoaded = () => { S.data?.contentLoaded(); };
+  // (the engine's reads of its content files for ids only — a cell's references listed: its search through every cell —,
+  // `on` 1 then 0: served from the light copies, what the content load read, once it is loaded too — GameData.contentIds)
+  window.orthrosContentIds = (on) => { S.data?.contentIds(!!on); };
   // (announced reads, the Orthros build's scene changes (its announced-reads patch, docs/slow-network.md "Announced reads"): before
   // it loads cells, the engine says what it reads — `list`: records 'enginePath\x1Foffset\x1Fsize' (size -1: to the end;
   // an archive's path and range for a file in it) separated by '\x1E', `label` '<meshes|textures|terrain>:<place>' — then

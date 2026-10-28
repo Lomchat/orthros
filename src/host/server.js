@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { BLOCK as LEARN_BLOCK, CHUNK as LEARN_CHUNK, unitOf, HttpBackend } from '../vfs/http-backend.js';
-import { launchSummary, launchSet, entryPieces, PRE_PLAYABLE, RELOAD_EXPORT } from '../vfs/launch-set.js';
+import { launchSummary, launchSet, entryPieces, contentLight, PRE_PLAYABLE, CONTENT_REAL, RELOAD_EXPORT, CONTENT_EXPORT } from '../vfs/launch-set.js';
 import { createBrCache } from './br-cache.js';
 import { moduleGraph, withPreloads } from './module-graph.js';
 import { PERF_MAX_BYTES, sanitizePerfRecord } from './perf-record.js';
@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
 import { listGameTree, dirsStamp, resolveGameFile, resolveLightFile, DirListings } from './game-files.js';
 import { LIGHT_DIR, readLight } from './light-copies.js';
+import { isLightContent } from '../vfs/game-tree.js';
 import { lightCovers } from './light-covers.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
@@ -152,11 +153,12 @@ export function createServer(opts = {}) {
   // gamefiles/, whose files /game/ and /gamez/ resolve at each request —; looked at each time, one stat a folder: all
   // the trees of the library 5.6 ms, against 0.5 s to list them)
   const gameTree = (id, man) => {
-    const cached = treeObjs.get(id);
-    if (cached && dirsStamp(cached.dirs) === cached.stamp) return cached.tree;
-    // (the files of the versions it requires marked with their owner: the browsers store and fetch them under it)
-    const dirs = [], tree = listGameTree(man, dirs, (owner) => manifests.get(owner));
-    treeObjs.set(id, { tree, dirs, stamp: dirsStamp(dirs) }); trees.delete(id);
+    const cached = treeObjs.get(id), contentLight = engineContentLight(man);
+    if (cached && dirsStamp(cached.dirs) === cached.stamp && cached.contentLight === contentLight) return cached.tree;
+    // (the files of the versions it requires marked with their owner: the browsers store and fetch them under it; its
+    // content files' light copies marked when its engine reads them so — engineContentLight)
+    const dirs = [], tree = listGameTree(man, dirs, (owner) => manifests.get(owner), { contentLight });
+    treeObjs.set(id, { tree, dirs, stamp: dirsStamp(dirs), contentLight }); trees.delete(id);
     return tree;
   };
   /** A tree's bytes (its files', every folder's), summed once per tree object (a tree listed again is a new one). */
@@ -410,18 +412,20 @@ export function createServer(opts = {}) {
     if (!m) {
       m = new Map(); learned.set(name, m);
       const f = learnFile(name);
-      if (f) try { for (const [k, t, n, mask, pre, by, ph, np] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined, pre: pre || 0, ...(by && typeof by === 'object' ? { by } : {}), ...(ph && typeof ph === 'object' ? { ph } : {}), ...(Number.isFinite(np) ? { np } : {}) }); } catch { /* none yet */ }
+      if (f) try { for (const [k, t, n, mask, pre, by, ph, np, cpre] of JSON.parse(fs.readFileSync(f, 'utf8'))) m.set(k, { t, n, mask: mask ?? undefined, pre: pre || 0, ...(by && typeof by === 'object' ? { by } : {}), ...(ph && typeof ph === 'object' ? { ph } : {}), ...(Number.isFinite(np) ? { np } : {}), ...(cpre > 0 ? { cpre } : {}) }); } catch { /* none yet */ }
     }
     return m;
   };
-  const playable = new Map(); // manifest -> { marks, by: { [game language]: marks } }
+  // (`cmarks`: the marking sessions whose engine read the content files light — engineContentLight —, the entries' `cpre`
+  // those of them that read the block as the file itself before: launch-set.js CONTENT_REAL)
+  const playable = new Map(); // manifest -> { marks, by: { [game language]: marks }, cmarks }
   const playableFile = (name) => opts.learnDir && path.join(opts.learnDir, `playable-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
   const playableOf = (name) => {
     let p = playable.get(name);
     if (!p) {
-      p = { marks: 0, by: {} }; playable.set(name, p);
+      p = { marks: 0, by: {}, cmarks: 0 }; playable.set(name, p);
       const f = playableFile(name);
-      if (f) try { const j = JSON.parse(fs.readFileSync(f, 'utf8')); p.marks = Number(j.marks) || 0; if (j.by && typeof j.by === 'object') p.by = j.by; } catch { /* none yet */ }
+      if (f) try { const j = JSON.parse(fs.readFileSync(f, 'utf8')); p.marks = Number(j.marks) || 0; p.cmarks = Number(j.cmarks) || 0; if (j.by && typeof j.by === 'object') p.by = j.by; } catch { /* none yet */ }
     }
     return p;
   };
@@ -466,11 +470,11 @@ export function createServer(opts = {}) {
       learnTimer = null;
       for (const n of learnDirty) {
         const f = learnFile(n);
-        try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.ph ? [k, v.t, v.n, v.mask ?? null, v.pre ?? 0, v.by ?? null, v.ph, ...(v.np !== undefined ? [v.np] : [])] : v.pre ? [k, v.t, v.n, v.mask ?? null, v.pre, ...(v.by ? [v.by] : [])] : v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
+        try { fs.writeFileSync(f + '.tmp', JSON.stringify([...learnedOf(n)].map(([k, v]) => (v.cpre ? [k, v.t, v.n, v.mask ?? null, v.pre ?? 0, v.by ?? null, v.ph ?? null, v.np ?? null, v.cpre] : v.ph ? [k, v.t, v.n, v.mask ?? null, v.pre ?? 0, v.by ?? null, v.ph, ...(v.np !== undefined ? [v.np] : [])] : v.pre ? [k, v.t, v.n, v.mask ?? null, v.pre, ...(v.by ? [v.by] : [])] : v.mask === undefined ? [k, v.t, v.n] : [k, v.t, v.n, v.mask])))); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
         const qf = phasesFile(n), q = phaseStarts.get(n);
         if (qf && q?.size) try { fs.writeFileSync(qf + '.tmp', JSON.stringify(Object.fromEntries(q))); fs.renameSync(qf + '.tmp', qf); } catch { /* next time */ }
         const pf = playableFile(n), pm = playable.get(n);
-        if (pm?.marks) try { fs.writeFileSync(pf + '.tmp', JSON.stringify({ marks: pm.marks, ...(Object.keys(pm.by).length ? { by: pm.by } : {}) })); fs.renameSync(pf + '.tmp', pf); } catch { /* next time */ }
+        if (pm?.marks) try { fs.writeFileSync(pf + '.tmp', JSON.stringify({ marks: pm.marks, ...(Object.keys(pm.by).length ? { by: pm.by } : {}), ...(pm.cmarks ? { cmarks: pm.cmarks } : {}) })); fs.renameSync(pf + '.tmp', pf); } catch { /* next time */ }
       }
       learnDirty = new Set();
       const dirty = placesDirty; placesDirty = new Set();
@@ -486,6 +490,10 @@ export function createServer(opts = {}) {
     // (the session's phase at t: the last one started by then — learnPhases —, one the version counts)
     let ph = null; for (const p of ss.phases ?? []) { if (p[1] <= t) ph = p; else break; }
     const known = ph && phasesOf(name).has(ph[0]);
+    // (a content file read as itself by a session whose engine reads it light at its content load — those reads learned
+    // under the light copy's path, data-client.js —: a read after that load, its blocks counted apart at the mark —
+    // learnMark's cpre, launch-set.js CONTENT_REAL)
+    const creal = isLightContent(rel) && !rel.startsWith(LIGHT_DIR + '/') && engineContentLight(getManifest(name) ?? {});
     for (let b = Math.floor(start / LEARN_BLOCK); b * LEARN_BLOCK < end; b++) {
       const k = `${rel}#${b}`;
       const bits = pieceBits(Math.max(start, b * LEARN_BLOCK) - b * LEARN_BLOCK, Math.min(end, (b + 1) * LEARN_BLOCK) - b * LEARN_BLOCK);
@@ -493,6 +501,7 @@ export function createServer(opts = {}) {
       if (!e) m.set(k, e = { t, n: 0, mask: 0 });
       e.mask = (e.mask ?? 0) | bits; // (every session's pieces, first read of the block or not)
       const sk = `${name}\0${k}`; // (a session reads the versions its game requires too: each one's blocks its own)
+      if (creal) (ss.creal ??= new Set()).add(sk);
       if (ss.seen.has(sk)) continue;
       ss.seen.add(sk);
       e.t = Math.min(e.t, t); e.n++;
@@ -534,13 +543,15 @@ export function createServer(opts = {}) {
     const keys = [...ss.seen].filter((sk) => sk.startsWith(own));
     if (!keys.length) return false;
     (ss.marked ??= new Set()).add(name); // (once per version: a Windows game marks the versions it requires too)
-    const m = learnedOf(name), p = playableOf(name);
+    const m = learnedOf(name), p = playableOf(name), clight = engineContentLight(getManifest(name) ?? {});
     for (const sk of keys) {
       const e = m.get(sk.slice(own.length)); if (!e) continue;
       e.pre = (e.pre ?? 0) + 1;
       if (lang) { e.by ??= {}; e.by[lang] = (e.by[lang] ?? 0) + 1; }
+      if (clight && ss.creal?.has(sk)) e.cpre = (e.cpre ?? 0) + 1;
     }
     p.marks++;
+    if (clight) p.cmarks = (p.cmarks ?? 0) + 1;
     if (lang) p.by[lang] = (p.by[lang] ?? 0) + 1;
     learnSave(name);
     return true;
@@ -569,7 +580,7 @@ export function createServer(opts = {}) {
     return [...learnedOf(name)].sort(order).slice(0, 8192).map(([k, v]) => {
       const w = when.get(k), i = k.lastIndexOf('#'), e = [k.slice(0, i), Number(k.slice(i + 1)), v.mask ?? 0, Math.round(w[0] + w[2])];
       const pre = own ? v.by?.[lang] ?? 0 : v.pre;
-      if (marks) e.push(pre && pre * 2 >= marks ? PRE_PLAYABLE : 0);
+      if (marks) e.push((pre && pre * 2 >= marks ? PRE_PLAYABLE : 0) | (v.cpre && p.cmarks && v.cpre * 2 >= p.cmarks ? CONTENT_REAL : 0));
       return e;
     });
   };
@@ -760,6 +771,12 @@ export function createServer(opts = {}) {
    */
   const engineReloads = (man) => { const { release } = portEngine(man); return !!release && contentFiles.exports(release).has(RELOAD_EXPORT); };
   /**
+   * A browser port's engine reads its content files light while it loads its content (its release.json exports
+   * CONTENT_EXPORT, launch-set.js): its tree marks their light copies (gameTree).
+   */
+  // (false before the engine files' index exists — a tree listed while the server starts: listed again once it does)
+  const engineContentLight = (man) => { const release = man[man.runtime]?.engine; try { return man.runtime !== 'win32' && typeof release === 'string' && contentFiles.exports(release).has(CONTENT_EXPORT); } catch { return false; } };
+  /**
    * A browser port's engine release as its page downloads it at a first launch: { wire (bytes, brotli when served so —
    * sendEngineFile), urls } — none for a Win32 game.
    */
@@ -794,11 +811,13 @@ export function createServer(opts = {}) {
   /** The files of a version's paths (a light copy's too), resolved once: rel -> { file, st, light, size } | null. */
   const unitFile = (man) => {
     const files = new Map(), memo = listings; // (the folders' listings: a launch set's paths resolved in a row)
+    // (a content file's light copy only for an engine that reads it so: engineContentLight)
+    const contentLight = engineContentLight(man);
     return (rel) => {
       if (!files.has(rel)) {
         let v = null;
         try {
-          const light = rel.startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, rel, memo) : null;
+          const light = rel.startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, rel, memo, { contentLight }) : null;
           const file = light ? light.file : !rel.startsWith(LIGHT_DIR + '/') && resolveGameFile(man, rel, memo);
           if (file) { const st = light?.st ?? fs.statSync(file); v = { file, st, light, size: light ? light.copy.size : st.size }; }
         } catch { /* gone */ }
@@ -812,18 +831,27 @@ export function createServer(opts = {}) {
   // (`lights`: the light copies yielded already — one walk's, in parts)
   const brSeedUnits = function* (man, list, lights = new Set()) {
     const at = unitFile(man);
-    for (const [rel, block, mask] of list) {
-      // (a light copy is read on a link that is not fast, by pieces: its pieces — one block when it is one piece)
-      if (man.lightCopies && !rel.startsWith(LIGHT_DIR + '/') && !lights.has(rel)) {
-        lights.add(rel);
-        const l = at(`${LIGHT_DIR}/${rel}`);
-        if (l) for (let c = 0; c * LEARN_CHUNK < l.size; c++) yield { file: l.file, st: l.st, light: l.light, unit: l.size <= LEARN_CHUNK ? { kind: 'b', index: 0 } : { kind: 'p', index: c } };
-      }
+    for (const [rel, block, mask, , flags] of list) {
       const f = at(rel), b0 = block * LEARN_BLOCK;
+      // (a light copy is read on a link that is not fast, by pieces: its pieces — one block when it is one piece; a
+      // copy of its file's size and offsets — a WAD's, a TES3 file's (its engine reading it light: unitFile) — stands
+      // for the same pieces, launch-set.js forLink: its pieces of the entry, and the entry's block when all its pieces
+      // were read (the shape a link that asks whole blocks reads: the content load reads its copy on every link); a
+      // content file's entry read before playable (or in an order without flags) is its light copy's only, on every link
+      // — contentLight: not when read so by sessions whose engine read the copy, CONTENT_REAL)
+      const l = man.lightCopies && !rel.startsWith(LIGHT_DIR + '/') ? at(`${LIGHT_DIR}/${rel}`) : null, same = !!(l && f && l.size === f.size);
+      const lightOnly = same && contentLight(rel, flags);
+      if (l && !same && !lights.has(rel)) {
+        lights.add(rel);
+        for (let c = 0; c * LEARN_CHUNK < l.size; c++) yield { file: l.file, st: l.st, light: l.light, unit: l.size <= LEARN_CHUNK ? { kind: 'b', index: 0 } : { kind: 'p', index: c } };
+      }
       if (!f || b0 >= f.size) continue;
       const pieces = Math.ceil(Math.min(LEARN_BLOCK, f.size - b0) / LEARN_CHUNK), all = pieces >= 32 ? 0xffffffff : (2 ** pieces - 1);
-      if (!mask || ((mask & all) >>> 0) === all) { yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'b', index: block } }; continue; }
-      for (let c = 0; c < pieces; c++) if (mask & (1 << c)) yield { file: f.file, st: f.st, light: f.light, unit: { kind: 'p', index: block * (LEARN_BLOCK / LEARN_CHUNK) + c } };
+      const whole = !mask || ((mask & all) >>> 0) === all;
+      const piecesOf = (x) => Array.from({ length: pieces }, (_, c) => c).filter((c) => whole || mask & (1 << c)).map((c) => ({ file: x.file, st: x.st, light: x.light, unit: { kind: 'p', index: block * (LEARN_BLOCK / LEARN_CHUNK) + c } }));
+      const blockOf = (x) => ({ file: x.file, st: x.st, light: x.light, unit: { kind: 'b', index: block } });
+      if (same) { yield* piecesOf(l); if (whole) yield blockOf(l); }
+      if (!lightOnly) { if (whole) yield blockOf(f); else yield* piecesOf(f); }
     }
     // (not the blocks learned by pieces whole as well, the shape a fast link asks for them — measured, Half-Life on a
     // fast link: 59 % of the bytes it asked: 1473 of Morrowind's 1830 learned blocks are known by pieces, which would
@@ -1749,7 +1777,7 @@ export function createServer(opts = {}) {
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
       if (m) {
         const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
-        const light = m[2].startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, m[2], listings) : null;
+        const light = m[2].startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, m[2], listings, { contentLight: engineContentLight(man) }) : null;
         const file = light ? light.file : resolveGameFile(man, m[2], listings); if (!file) return send(res, 404, 'not found');
         const r = url.searchParams.get('r') ?? '', rm = /^(\d+)-(\d+)$/.exec(r);
         // (&w=1: a range the engine announced it reads next — not a read, not learned; queued between the game's reads

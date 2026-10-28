@@ -64,6 +64,76 @@ test('an OpenMW installation serves its engine\'s asset pack with its game files
   assert.deepEqual(part, bytes(200000, 7).subarray(1000, 5000));
 });
 
+test('an OpenMW engine that reads its content light (its release exports CONTENT_EXPORT): its tree marks the TES3 masters, served zeroed under .light/', async (t) => {
+  const { CONTENT_EXPORT } = await import('../src/vfs/launch-set.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-omwesm-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), engines = path.join(root, 'engines'), game = path.join(games, 'mw');
+  fs.mkdirSync(path.join(game, 'base'), { recursive: true }); fs.mkdirSync(path.join(game, 'versions/1'), { recursive: true });
+  // (a TES3 header, a LAND record whose heights the copy zeroes, a dialogue's padding past 1 MiB)
+  const rec = (name, subs) => { const body = Buffer.concat(subs), h = Buffer.alloc(16); h.write(name, 0, 'latin1'); h.writeUInt32LE(body.length, 4); return Buffer.concat([h, body]); };
+  const sub = (name, b) => { const h = Buffer.alloc(8); h.write(name, 0, 'latin1'); h.writeUInt32LE(b.length, 4); return Buffer.concat([h, b]); };
+  const esm = Buffer.concat([rec('TES3', [sub('HEDR', Buffer.alloc(300, 1))]), rec('LAND', [sub('INTV', Buffer.alloc(8, 1)), sub('VHGT', Buffer.alloc(4232, 0x42))]), rec('INFO', [sub('INAM', Buffer.alloc(1 << 20, 3))])]);
+  fs.writeFileSync(path.join(game, 'base/Game.esm'), esm);
+  fs.writeFileSync(path.join(game, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'mw', name: 'MW', defaultVersion: 'mw-1', defaults: { runtime: 'openmw' },
+    versions: [{ id: 'mw-1', dir: '1', version: '1', openmw: { engine: 'e1', files: ['Game.esm'] } }] }));
+  fs.mkdirSync(path.join(engines, 'e1/moddata'), { recursive: true });
+  const release = (exports) => fs.writeFileSync(path.join(engines, 'e1/release.json'), JSON.stringify({ schemaVersion: 1, id: 'e1', runtime: 'openmw', exports: exports.map((name) => ({ name })), files: [] }));
+  release(['orthros_file_updated']);
+  const server = createServer({ gamesDir: games, enginesDir: engines });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r)); t.after(() => new Promise((r) => { server.closeAllConnections(); server.close(r); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const tree = async () => (await (await fetch(base + '/api/tree/mw-1')).json()).files['Game.esm'];
+  assert.equal((await tree()).light, undefined, 'an engine that reads it as it is: no light copy listed');
+  release(['orthros_file_updated', CONTENT_EXPORT]);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await tree()).light, esm.length, 'its light copy: the same size');
+  const at = 16 + 316 + 16 + 16;
+  const part = new Uint8Array(await (await fetch(base + `/gamez/mw-1/.light/Game.esm?r=${at - 8}-${at + 100}`)).arrayBuffer());
+  assert.deepEqual([...part.subarray(0, 4)], [...Buffer.from('VHGT')], 'the subrecord\'s header kept');
+  assert.ok(part.subarray(8).every((b) => b === 0), 'its heights zeroed');
+});
+
+test('an engine reading its content light: a content file read as itself before playable learned apart (CONTENT_REAL), kept; no light copy of it for another engine', async (t) => {
+  const { CONTENT_EXPORT, CONTENT_REAL, PRE_PLAYABLE } = await import('../src/vfs/launch-set.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-omwreal-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), engines = path.join(root, 'engines'), learn = path.join(root, 'learn'), game = path.join(games, 'mw');
+  fs.mkdirSync(path.join(game, 'base'), { recursive: true }); fs.mkdirSync(path.join(game, 'versions/1'), { recursive: true }); fs.mkdirSync(learn);
+  const rec = (name, subs) => { const body = Buffer.concat(subs), h = Buffer.alloc(16); h.write(name, 0, 'latin1'); h.writeUInt32LE(body.length, 4); return Buffer.concat([h, body]); };
+  const sub = (name, b) => { const h = Buffer.alloc(8); h.write(name, 0, 'latin1'); h.writeUInt32LE(b.length, 4); return Buffer.concat([h, b]); };
+  fs.writeFileSync(path.join(game, 'base/Game.esm'), Buffer.concat([rec('TES3', [sub('HEDR', Buffer.alloc(300, 1))]), rec('INFO', [sub('INAM', Buffer.alloc(3 << 20, 3))])]));
+  fs.writeFileSync(path.join(game, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'mw', name: 'MW', defaultVersion: 'mw-1', defaults: { runtime: 'openmw' },
+    versions: [{ id: 'mw-1', dir: '1', version: '1', openmw: { engine: 'e1', files: ['Game.esm'] } }] }));
+  fs.mkdirSync(path.join(engines, 'e1/moddata'), { recursive: true });
+  const release = (exports) => fs.writeFileSync(path.join(engines, 'e1/release.json'), JSON.stringify({ schemaVersion: 1, id: 'e1', runtime: 'openmw', exports: exports.map((name) => ({ name })), files: [] }));
+  release([]);
+  const start = async () => {
+    const server = createServer({ gamesDir: games, enginesDir: engines, learnDir: learn, learnWriteMs: 10, lanLog: () => {} });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    return { base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => { server.closeAllConnections(); server.close(r); }) };
+  };
+  let s = await start();
+  t.after(() => s.close());
+  const post = (body) => fetch(`${s.base}/api/prefetch/mw-1`, { method: 'POST', body: JSON.stringify(body) });
+  const order = async () => (await fetch(`${s.base}/api/prefetch/mw-1`)).json();
+  // (an engine that reads it as it is: no copy served; its sessions' reads of the file, PRE_PLAYABLE only)
+  assert.equal((await fetch(`${s.base}/gamez/mw-1/.light/Game.esm?r=0-100`)).status, 404, 'no light copy for an engine that reads the file');
+  await post({ session: 'old', reads: [['Game.esm', 0, 3 * BLOCK, 5]], mark: { kind: 'playable' } });
+  release([CONTENT_EXPORT]);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await fetch(`${s.base}/gamez/mw-1/.light/Game.esm?r=0-100`)).status, 200);
+  // (two sessions reading the copy at the content load, then the file's block 2 — their first cell — before playable)
+  for (const sid of ['n1', 'n2']) await post({ session: sid, reads: [['.light/Game.esm', 0, 3 * BLOCK, 5], ['Game.esm', 2 * BLOCK, 2 * BLOCK + 10, 900]], mark: { kind: 'playable' } });
+  const flags = (list) => Object.fromEntries(list.map((e) => [`${e[0]}#${e[1]}`, e[4]]));
+  const list = await order(), f = flags(list);
+  assert.equal(f['Game.esm#0'] & CONTENT_REAL, 0, 'an older engine\'s content load: the copy\'s');
+  assert.equal(f['Game.esm#2'], PRE_PLAYABLE | CONTENT_REAL, 'the first cell, read as the file by the sessions reading the copy');
+  assert.equal(f['.light/Game.esm#2'], PRE_PLAYABLE);
+  await new Promise((r) => setTimeout(r, 100)); // (written)
+  await s.close();
+  s = await start();
+  assert.deepEqual(await order(), list, 'kept: the counts of the sessions reading the copy');
+});
+
 /**
  * A server of one version for the data worker: /api/manifest, /api/tree, /api/prefetch, /gamez ranges (`lights`: files'
  * light copies, under .light/); requests logged. `required`: { files, learned } of a version 'r' it requires
@@ -452,6 +522,96 @@ test('on a link that is not fast a texture\'s load reads its light copy, the fil
   data.read(h, out, 0, 100, 5000); assert.deepEqual(out.subarray(0, 100), light.subarray(5000, 5100), 'the same load: its light copy still');
   h.at = -Infinity; await data.ensure(h, 0, h.size); data.read(h, out, 0, h.size, 0);
   assert.deepEqual(out, tex, 'its next load: the file');
+});
+
+test('a content file (TES3) read light while the engine loads its content, on a fast link too; the file itself once loaded, every read; never upgraded', async (t) => {
+  const esm = bytes(4 << 20, 2), light = bytes(4 << 20, 9), server = fakeServer({ 'Game.esm': esm }, [], { 'Game.esm': light }), at = 3600000;
+  const data = await inThread(t, server, { bw: 50 << 20 }), h = data.file('v', 'Game.esm'), out = new Uint8Array(1000);
+  assert.equal(data.contentFile(h), true);
+  // (an engine that says nothing: the file)
+  await data.ensure(h, 0, 1000); data.read(h, out, 0, 1000, 0);
+  assert.deepEqual(out, esm.subarray(0, 1000));
+  // (its content load: the copy, wherever the reads start — no load chosen at the file's start — the link fast)
+  data.contentLoading(); assert.equal(data.snapshot().content, 'light');
+  await data.ensure(h, at, 1000); data.read(h, out, 0, 1000, at);
+  assert.deepEqual(out, light.subarray(at, at + 1000));
+  assert.equal(data.lightRead(h), true);
+  // (a check of a range — a cell's land, the terrain's readiness — answers for the file itself, not the copy in the page)
+  assert.equal(data.readable(h, at, 1000), false, 'the copy\'s bytes do not make the file\'s range ready');
+  await until(() => data.readable(h, at, 1000), 'the file\'s range fetched in the background');
+  // (loaded: the file for every read — the same reader's next bytes, sought or not)
+  data.contentLoaded(); assert.equal(data.snapshot().content, 'done'); assert.ok(data.snapshot().contentLoadedMs >= data.snapshot().contentLoadingMs);
+  data.read(h, out, 0, 1000, at);
+  assert.deepEqual(out, esm.subarray(at, at + 1000));
+  assert.equal(data.lightRead(h), false);
+  data.contentLoading(); assert.equal(data.snapshot().content, 'done', 'for good');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(!data.realHere.has('v\ngame.esm') && !data.lightReads.size, 'not told as read light: no upgrade of the whole file');
+});
+
+test('a content file\'s copy read from the file\'s own pieces where they are here (a store an older engine filled); reads of ids only light once loaded', async (t) => {
+  const esm = bytes(4 << 20, 2), light = bytes(4 << 20, 9), server = fakeServer({ 'Game.esm': esm }, [], { 'Game.esm': light });
+  const data = await inThread(t, server, { bw: 50 << 20 }), h = data.file('v', 'Game.esm'), out = new Uint8Array(1000);
+  // (the file's first bytes here: read as itself, as an engine that read it at its content load stored them)
+  await data.ensure(h, 0, 200000);
+  data.contentLoading();
+  await data.ensure(h, 70000, 1000); data.read(h, out, 0, 1000, 70000);
+  assert.deepEqual(out, esm.subarray(70000, 71000), 'the file\'s bytes: every offset the copy\'s, its payloads filled');
+  assert.ok(!server.asked.some(([p, a, b]) => p === '.light/Game.esm' && a < 71000 && b > 70000), 'not fetched again light');
+  await data.ensure(h, 3000000, 1000); data.read(h, out, 0, 1000, 3000000);
+  assert.deepEqual(out, light.subarray(3000000, 3001000), 'elsewhere: the copy');
+  // (loaded: the file — but a listing of references by their ids, what the content load read: the copy, in the page)
+  data.contentLoaded();
+  data.contentIds(true);
+  data.read(h, out, 0, 1000, 3000000); assert.deepEqual(out, light.subarray(3000000, 3001000), 'ids only: the copy');
+  data.contentIds(false);
+  await data.ensure(h, 3000000, 1000); data.read(h, out, 0, 1000, 3000000);
+  assert.deepEqual(out, esm.subarray(3000000, 3001000), 'after: the file');
+});
+
+test('reads of ids only: the copy once the content is loaded, the file for an engine that never read it light; the content load\'s reads of a file here whole learned under its copy', () => {
+  const told = [], fake = { onmessage: null, postMessage: (m) => told.push(m), terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    data.trees = {};
+    const h = data.fileAs('v', 'Data Files/Morrowind.esm', 80 << 20); h.light = h.size;
+    assert.equal(data.contentFile(h), true);
+    data.contentIds(true); assert.equal(data.nextPick(h), h, 'an engine that said nothing: the file'); data.contentIds(false);
+    data.contentLoading(); data.contentLoaded();
+    data.contentIds(true); data.contentIds(true); data.contentIds(false);
+    assert.equal(data.nextPick(h).path, '.light/Data Files/Morrowind.esm', 'nested: still ids only');
+    data.contentIds(false); data.contentIds(false);
+    assert.equal(data.nextPick(h), h, 'said again: the file (never below zero)');
+    // (a file here whole: read as itself at the content load, learned as its copy's read — server.js CONTENT_REAL)
+    const g = data.fileAs('v', 'Data Files/Tribunal.esm', 4 << 20); g.light = g.size;
+    data.realHere.add('v\ndata files/tribunal.esm'); data.content = 'light';
+    data.keep(g, 0, new Uint8Array(1 << 16)); data.read(g, new Uint8Array(10), 0, 10, 0);
+    data.content = 'done'; data.keep(g, 1, new Uint8Array(1 << 16)); data.read(g, new Uint8Array(10), 0, 10, 1 << 16);
+    assert.deepEqual(data.used, [['v', '.light/Data Files/Tribunal.esm', 0], ['v', 'Data Files/Tribunal.esm', 1]]);
+  } finally { data.close(); }
+});
+
+test('a content file announced: its copy\'s range while the content loads, the file\'s after (the same layout); never a big load', () => {
+  const told = [], fake = { onmessage: null, postMessage: (m) => told.push(m), terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    data.trees = {}; data.reloads(true);
+    const c = data.ctrl; c[7] = 1; c[8] = 1 << 10; c[9] = 0; // (a fast link measured at 1 MiB/s: 2 MiB in LOAD_BUDGET_S)
+    const h = data.fileAs('v', 'Data Files/Morrowind.esm', 80 << 20); h.light = h.size;
+    assert.equal(data.contentFile(h), true);
+    const posted = () => { data.wantFlush(); return told.filter((m) => m.want).at(-1).want.list; };
+    data.contentLoading();
+    assert.equal(data.want([{ h, off: 4000, len: 100 }], 'terrain:0,0'), 1);
+    assert.deepEqual(posted(), [['v', '.light/Data Files/Morrowind.esm', 4000, 100]]);
+    data.contentLoaded();
+    assert.equal(data.want([{ h, off: 30 << 20, len: 20000 }, { h, off: 31 << 20, len: 20000 }], 'terrain:-2,6'), 2);
+    assert.deepEqual(posted(), [['v', 'Data Files/Morrowind.esm', 30 << 20, 20000], ['v', 'Data Files/Morrowind.esm', 31 << 20, 20000]]);
+    assert.equal(data.stats.bigLoads, 0, 'its 80 MB are not a texture load');
+    assert.equal(data.nextPick(h), h);
+    assert.ok(!told.some((m) => m.light), 'never told as read light');
+    // (a peek does not take the copy's zeroed bytes for the file's)
+    assert.equal(data.peek(h, 0, 10), null);
+  } finally { data.close(); }
 });
 
 test('an engine that reloads in place gets the file of a texture read light soon (the game quiet 1.5 s, not 8)', async (t) => {

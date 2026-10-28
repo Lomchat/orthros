@@ -594,6 +594,45 @@ test('a light copy of the file\'s own size (a WAD\'s, redrawn in place) stands f
   assert.deepEqual(forLink(files, list, true), [['maps/a.wad', 3, 0b1010, 10, 1], ['maps/a.wad', 5, 0b1, 20, 0]], 'a fast link: the file, the same pieces');
 });
 
+test('a content file\'s light copy (TES3, same size) stands for the entries read before playable on every link; its reads in play stay the file\'s', async () => {
+  const { HttpBackend, BLOCK } = await import('../src/vfs/http-backend.js');
+  const { forLink, contentLight } = await import('../src/vfs/launch-set.js');
+  const tree = { dirs: {}, files: { 'Morrowind.esm': { size: 8 * BLOCK, mtime: 1, light: 8 * BLOCK } } };
+  const files = new HttpBackend('/game/g/', tree);
+  // (an order learned before the copy existed — the content load read the file: flagged —, the copy's own entries, and
+  // a cell's land read in play: not flagged)
+  const list = [['Morrowind.esm', 0, 0, 10, PRE_PLAYABLE], ['.light/Morrowind.esm', 1, 0, 11, PRE_PLAYABLE], ['Morrowind.esm', 3, 0b100, 900, 0], ['Morrowind.esm', 1, 0b1, 950, PRE_PLAYABLE]];
+  const want = [['.light/Morrowind.esm', 0, 0, 10, PRE_PLAYABLE], ['.light/Morrowind.esm', 1, 0, 11, PRE_PLAYABLE], ['Morrowind.esm', 3, 0b100, 900, 0]];
+  assert.deepEqual(forLink(files, list, false), want);
+  assert.deepEqual(forLink(files, list, true), want, 'a fast link: the same — the content load reads the copy on every link');
+  assert.deepEqual(forLink(files, [['Morrowind.esm', 2, 0, 5]], true), [['.light/Morrowind.esm', 2, 0, 5]], 'an order without flags: the copy');
+  assert.ok(contentLight('Data Files/Bloodmoon.ESM', undefined) && contentLight('a.omwaddon', PRE_PLAYABLE) && !contentLight('a.esp', 0) && !contentLight('a.wad', PRE_PLAYABLE));
+  // (the file here whole: itself)
+  files.isWhole = (p) => p === 'Morrowind.esm';
+  assert.deepEqual(forLink(files, list, false).map((e) => e[0]), ['Morrowind.esm', 'Morrowind.esm', 'Morrowind.esm']);
+});
+
+test('a content file\'s blocks read as the file before playable by sessions whose engine read its copy (CONTENT_REAL) stay the file\'s, in the launch set beside the copy', async () => {
+  const { HttpBackend, BLOCK, CHUNK } = await import('../src/vfs/http-backend.js');
+  const { forLink, launchSet, setBytes, contentLight, CONTENT_REAL } = await import('../src/vfs/launch-set.js');
+  const tree = { dirs: {}, files: { 'Morrowind.esm': { size: 8 * BLOCK, mtime: 1, light: 8 * BLOCK } } };
+  const files = new HttpBackend('/game/g/', tree);
+  // (the content load learned under the copy; an older engine's content load under the file — flagged, not CONTENT_REAL —;
+  // the first cell's land and references read as the file before playable by the sessions reading the copy)
+  const both = PRE_PLAYABLE | CONTENT_REAL;
+  const list = [['.light/Morrowind.esm', 0, 0, 10, PRE_PLAYABLE], ['Morrowind.esm', 0, 0, 12, PRE_PLAYABLE], ['Morrowind.esm', 5, 0b110, 900, both], ['Morrowind.esm', 6, 0b1, 950, CONTENT_REAL]];
+  const want = [['.light/Morrowind.esm', 0, 0, 10, PRE_PLAYABLE], ['Morrowind.esm', 5, 0b110, 900, both], ['Morrowind.esm', 6, 0b1, 950, CONTENT_REAL]];
+  assert.deepEqual(forLink(files, list, false), want);
+  assert.deepEqual(forLink(files, list, true), want);
+  assert.deepEqual(launchSet(files, list, false), want.slice(0, 2), 'the launch set: the copy, and the first cell\'s real pieces');
+  assert.ok(!contentLight('Morrowind.esm', both) && contentLight('Morrowind.esm', PRE_PLAYABLE));
+  // (the copy's pieces count as here where the file's are: a store an older engine filled read as it is — data-worker.js)
+  files.pieceHere = (p, size, mtime, c) => p === 'Morrowind.esm' && c < 4;
+  assert.deepEqual(setBytes(files, [['.light/Morrowind.esm', 0, 0b11111, 10, PRE_PLAYABLE]]), { bytes: 5 * CHUNK, here: 4 * CHUNK });
+  files.pieceHere = () => false; files.peekBlockHere = (p, size, mtime, b) => p === 'Morrowind.esm' && b === 0;
+  assert.deepEqual(setBytes(files, [['.light/Morrowind.esm', 0, 0b11, 10, PRE_PLAYABLE]]), { bytes: 2 * CHUNK, here: 2 * CHUNK });
+});
+
 test('a version\'s order borrows what other versions\' sessions read of the files it shares with them, after its own and never in its launch set', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-borrow-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const games = path.join(root, 'games'), learn = path.join(root, 'learn'); fs.mkdirSync(learn);

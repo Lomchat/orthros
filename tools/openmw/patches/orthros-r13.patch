@@ -1,0 +1,775 @@
+diff --git a/openmw/apps/openmw/engine.cpp b/openmw/apps/openmw/engine.cpp
+index 27ea8df..db6164d 100644
+--- a/openmw/apps/openmw/engine.cpp
++++ b/openmw/apps/openmw/engine.cpp
+@@ -1340,6 +1340,15 @@ extern "C" EMSCRIPTEN_KEEPALIVE int orthros_set_view_distance(float distance)
+     return 1;
+ }
+ 
++// Orthros (orthros-r13.patch): this engine tells its page when its content load starts and ends
++// (MWWorld::World::loadData, VFS::orthrosContentLoad), so its content files may be served light until then — what the
++// server's tree marks for its releases (src/vfs/launch-set.js CONTENT_EXPORT: this export in the release's list).
++// Returns 1.
++extern "C" EMSCRIPTEN_KEEPALIVE int orthros_content_light()
++{
++    return 1;
++}
++
+ // Debug: point the camera (yaw/pitch in degrees) so we can verify object rendering without mouse-look.
+ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_look(float yawDeg, float pitchDeg)
+ {
+diff --git a/openmw/apps/openmw/mwrender/objectpaging.cpp b/openmw/apps/openmw/mwrender/objectpaging.cpp
+index b0d8f67..d0855b8 100644
+--- a/openmw/apps/openmw/mwrender/objectpaging.cpp
++++ b/openmw/apps/openmw/mwrender/objectpaging.cpp
+@@ -38,6 +38,7 @@
+ #include <components/sceneutil/riggeometryosgaextension.hpp>
+ #include <components/sceneutil/util.hpp>
+ #include <components/settings/values.hpp>
++#include <components/vfs/file.hpp>
+ #include <components/vfs/manager.hpp>
+ 
+ #include "apps/openmw/mwbase/environment.hpp"
+@@ -45,6 +46,7 @@
+ #include "apps/openmw/mwclass/esm4base.hpp"
+ #include "apps/openmw/mwworld/esmstore.hpp"
+ 
++#include "terrainstorage.hpp"
+ #include "vismask.hpp"
+ 
+ #ifdef __EMSCRIPTEN__
+@@ -683,7 +685,25 @@ namespace MWRender
+         }
+         auto pending = mOrthrosPending.find(id);
+         if (pending == mOrthrosPending.end())
++        {
++            // Orthros (orthros-r13.patch): listing the chunk's models reads its cells' references from the content
++            // files, read as they are once the content is loaded (their light copies zeroed those details): put off
++            // until those records are in the page — all asked at once, fetched in the background
++            if (mWorldspace == ESM::Cell::sDefaultWorldspaceId)
++            {
++                const MWWorld::ESMStore& store = MWBase::Environment::get().getWorld()->getStore();
++                std::vector<VFS::OrthrosRange> ranges;
++                const int x0 = static_cast<int>(std::floor(center.x() - size / 2.f));
++                const int y0 = static_cast<int>(std::floor(center.y() - size / 2.f));
++                for (int x = x0; x < x0 + size; ++x)
++                    for (int y = y0; y < y0 + size; ++y)
++                        if (const ESM::Cell* cell = store.get<ESM::Cell>().searchStatic(x, y))
++                            orthrosCellRanges(store, *cell, true, false, ranges);
++                if (!VFS::orthrosRangesReady(ranges))
++                    return false;
++            }
+             pending = mOrthrosPending.emplace(id, orthrosChunkModels(size, center, lodFlags, activeGrid)).first;
++        }
+         // (every mesh asked: all the missing files on their way at once; those here dropped from the list)
+         std::erase_if(pending->second, [&](const VFS::Path::Normalized& model) { return mSceneManager->orthrosTemplateReady(model); });
+         if (!pending->second.empty())
+diff --git a/openmw/apps/openmw/mwrender/terrainstorage.cpp b/openmw/apps/openmw/mwrender/terrainstorage.cpp
+index 3b181e4..18569e2 100644
+--- a/openmw/apps/openmw/mwrender/terrainstorage.cpp
++++ b/openmw/apps/openmw/mwrender/terrainstorage.cpp
+@@ -7,6 +7,7 @@
+ #include <string>
+ 
+ #include <components/debug/debuglog.hpp>
++#include <components/esm3/loadcell.hpp>
+ #include <components/esm3/loadland.hpp>
+ #include <components/esm4/loadltex.hpp>
+ #include <components/esm4/loadtxst.hpp>
+@@ -76,13 +77,11 @@ namespace MWRender
+         if (land == nullptr || land->mContext.filename.empty()
+             || (land->mDataTypes & mLandManager->getLoadFlags()) == 0)
+             return true;
+-        // (the stream reads beyond the record's end: libc++'s filebuf 4 KiB at a time, musl's FILE buffer up to 1 KiB
+-        // more behind each; the page answers for its pieces, clipped to the file's size)
+-        constexpr std::uint64_t streamReadAhead = 8 << 10;
+-        const std::string path = Files::pathToUnicodeString(land->mContext.filename);
+-        const std::uint64_t offset = static_cast<std::uint64_t>(land->mContext.filePos);
+-        const std::uint64_t size
+-            = static_cast<std::uint64_t>(std::max<std::streamsize>(land->mContext.leftRec, 0)) + streamReadAhead;
++        VFS::OrthrosRange range;
++        orthrosLandRange(*land, range);
++        const std::string& path = range.mPath;
++        const std::uint64_t offset = range.mOffset;
++        const std::uint64_t size = range.mSize;
+         const bool ready = VFS::orthrosRangeReady(path, offset, size);
+         // (once: the path the page is asked with — one it does not stream answers ready, and nothing is put off)
+         static std::atomic<bool> logged{ false };
+@@ -92,6 +91,59 @@ namespace MWRender
+         return ready;
+     }
+ 
++    namespace
++    {
++        /// The bytes a reader restored to `context` reads (ESM::ESMReader::restoreContext: a std::ifstream sought to
++        /// its filePos, then within its leftRec bytes): the stream reads beyond the record's end — libc++'s filebuf
++        /// 4 KiB at a time, musl's FILE buffer up to 1 KiB more behind each —; the page clips to the file's size.
++        VFS::OrthrosRange orthrosContextRange(const ESM::ESM_Context& context)
++        {
++            constexpr std::uint64_t streamReadAhead = 8 << 10;
++            return VFS::OrthrosRange{ Files::pathToUnicodeString(context.filename),
++                static_cast<std::uint64_t>(context.filePos),
++                static_cast<std::uint64_t>(std::max<std::streamsize>(context.leftRec, 0)) + streamReadAhead };
++        }
++    }
++
++    bool orthrosLandRange(const ESM::Land& land, VFS::OrthrosRange& out)
++    {
++        if (land.mContext.filename.empty())
++            return false;
++        out = orthrosContextRange(land.mContext);
++        return true;
++    }
++
++    void orthrosCellRanges(const MWWorld::ESMStore& store, const ESM::Cell& cell, bool refs, bool land,
++        std::vector<VFS::OrthrosRange>& out)
++    {
++        if (refs)
++            for (const ESM::ESM_Context& context : cell.mContextList)
++                if (!context.filename.empty())
++                    out.push_back(orthrosContextRange(context));
++        if (land && cell.isExterior())
++        {
++            const ESM::Land* record = store.get<ESM::Land>().search(cell.getGridX(), cell.getGridY());
++            VFS::OrthrosRange range;
++            if (record != nullptr && record->mDataTypes != 0 && orthrosLandRange(*record, range))
++                out.push_back(std::move(range));
++        }
++    }
++
++    void TerrainStorage::orthrosCellRanges(ESM::ExteriorCellLocation cellLocation, std::vector<VFS::OrthrosRange>& out)
++    {
++        if (ESM::isEsm4Ext(cellLocation.mWorldspace))
++            return;
++        const MWWorld::ESMStore& esmStore = *MWBase::Environment::get().getESMStore();
++        if (const ESM::Cell* cell = esmStore.get<ESM::Cell>().searchStatic(cellLocation.mX, cellLocation.mY))
++            MWRender::orthrosCellRanges(esmStore, *cell, true, true, out);
++        else if (const ESM::Land* land = esmStore.get<ESM::Land>().search(cellLocation.mX, cellLocation.mY))
++        {
++            VFS::OrthrosRange range;
++            if (land->mDataTypes != 0 && orthrosLandRange(*land, range))
++                out.push_back(std::move(range));
++        }
++    }
++
+     static void BoundUnion(float& minX, float& maxX, float& minY, float& maxY, float x, float y)
+     {
+         if (x < minX)
+diff --git a/openmw/apps/openmw/mwrender/terrainstorage.hpp b/openmw/apps/openmw/mwrender/terrainstorage.hpp
+index 797a73f..103108e 100644
+--- a/openmw/apps/openmw/mwrender/terrainstorage.hpp
++++ b/openmw/apps/openmw/mwrender/terrainstorage.hpp
+@@ -2,16 +2,43 @@
+ #define MWRENDER_TERRAINSTORAGE_H
+ 
+ #include <memory>
++#include <vector>
++
++#include <components/vfs/file.hpp>
+ 
+ #include <components/esmterrain/storage.hpp>
+ 
+ #include <components/resource/resourcesystem.hpp>
+ 
++namespace ESM
++{
++    struct Cell;
++    struct Land;
++}
++
++namespace MWWorld
++{
++    class ESMStore;
++}
++
+ namespace MWRender
+ {
+ 
+     class LandManager;
+ 
++    /// Orthros (orthros-r13.patch): the bytes of its file an ESM3 land's data is read from (ESM::Land::loadData: its
++    /// saved context, a std::ifstream sought there that reads past the record's end), into `out`; false for a land
++    /// made without a file.
++    bool orthrosLandRange(const ESM::Land& land, VFS::OrthrosRange& out);
++
++    /// Orthros (orthros-r13.patch): the ranges of its content files an ESM3 cell is read from once the content is
++    /// loaded (its content files read light before: src/host/light-copies.js esmZeroRanges): with `refs`, each
++    /// content file's references to it (CellStore::loadRefs and listRefs, object paging: the CELL record from the
++    /// context the content load saved), with `land`, an exterior's land with data (orthrosLandRange); appended to
++    /// `out`.
++    void orthrosCellRanges(const MWWorld::ESMStore& store, const ESM::Cell& cell, bool refs, bool land,
++        std::vector<VFS::OrthrosRange>& out);
++
+     /// @brief Connects the ESM Store used in OpenMW with the ESMTerrain storage.
+     class TerrainStorage : public ESMTerrain::Storage
+     {
+@@ -34,6 +61,10 @@ namespace MWRender
+         /// orthrosRangeReady, which fetches them in the background when they are not). An ESM4 worldspace: true.
+         bool orthrosLandReady(ESM::ExteriorCellLocation cellLocation) override;
+ 
++        /// Orthros (orthros-r13.patch): an ESM3 cell's land and references (orthrosCellRanges); an ESM4 worldspace's:
++        /// none.
++        void orthrosCellRanges(ESM::ExteriorCellLocation cellLocation, std::vector<VFS::OrthrosRange>& out) override;
++
+         /// Get bounds of the whole terrain in cell units
+         void getBounds(float& minX, float& maxX, float& minY, float& maxY, ESM::RefId worldspace) override;
+ 
+diff --git a/openmw/apps/openmw/mwstate/statemanagerimp.cpp b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
+index 618f4f1..82e5f6c 100644
+--- a/openmw/apps/openmw/mwstate/statemanagerimp.cpp
++++ b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
+@@ -58,6 +58,51 @@
+ 
+ #include "quicksavemanager.hpp"
+ 
++#include <components/vfs/file.hpp>
++
++#include "../mwrender/terrainstorage.hpp"
++
++namespace
++{
++    /// Orthros (orthros-r13.patch): loading the saved game `filepath` loads the references of every cell it has a state
++    /// of (WorldModel::readRecord: CellStore::load, one cell after the other), read from the content files as they are
++    /// once the content is loaded (their light copies zeroed those details): the ranges of those cells fetched together
++    /// first — one pass over the save's record headers, each CSTA's cell id —, then one wait (bounded). Not learned as
++    /// a place's (the label's kind is none of them). Nothing off the web build, without the hooks, or on any error
++    /// (the load reads them one by one, as before).
++    void orthrosReadSavedCells(const std::filesystem::path& filepath)
++    {
++#ifdef __EMSCRIPTEN__
++        if (!VFS::orthrosReadAheadHooked())
++            return;
++        try
++        {
++            const MWWorld::ESMStore& store = *MWBase::Environment::get().getESMStore();
++            ESM::ESMReader reader;
++            reader.open(filepath);
++            std::vector<VFS::OrthrosRange> ranges;
++            while (reader.hasMoreRecs())
++            {
++                const ESM::NAME n = reader.getRecName();
++                reader.getRecHeader();
++                if (n.toInt() == ESM::REC_CSTA)
++                    if (const ESM::Cell* cell = store.get<ESM::Cell>().search(reader.getCellId()))
++                        MWRender::orthrosCellRanges(store, *cell, true, false, ranges);
++                reader.skipRecord();
++            }
++            if (VFS::orthrosWillReadRanges(ranges, "cells:save") > 0)
++                VFS::orthrosReadWait(15000);
++        }
++        catch (const std::exception& e)
++        {
++            Log(Debug::Warning) << "Orthros: the saved game's cells not read ahead: " << e.what();
++        }
++#else
++        (void)filepath;
++#endif
++    }
++}
++
+ void MWState::StateManager::cleanup(bool force)
+ {
+     if (mState != State_NoGame || force)
+@@ -534,6 +579,8 @@ void MWState::StateManager::loadGame(const Character* character, const std::file
+ 
+         Loading::ScopedLoad load(&listener);
+ 
++        orthrosReadSavedCells(filepath);
++
+         bool firstPersonCam = false;
+ 
+         size_t total = reader.getFileSize();
+diff --git a/openmw/apps/openmw/mwworld/cellstore.cpp b/openmw/apps/openmw/mwworld/cellstore.cpp
+index 8183061..93fa914 100644
+--- a/openmw/apps/openmw/mwworld/cellstore.cpp
++++ b/openmw/apps/openmw/mwworld/cellstore.cpp
+@@ -41,6 +41,7 @@
+ #include <components/esm3/npcstate.hpp>
+ #include <components/esm3/objectstate.hpp>
+ #include <components/esm3/readerscache.hpp>
++#include <components/vfs/file.hpp>
+ 
+ #include <components/esm4/loadachr.hpp>
+ #include <components/esm4/loadacti.hpp>
+@@ -746,6 +747,19 @@ namespace MWWorld
+         if (cell.mContextList.empty())
+             return; // this is a dynamically generated cell -> skipping.
+ 
++        // Orthros (orthros-r13.patch): the references read for their ids only — the content load's reads, which the
++        // content files' light copies keep (every offset the file's, a reference's number, object, deleted flag and a
++        // moved one's group as they are; the rest zeroed, never used here) — from those copies: a search through every
++        // cell (WorldModel::getPtrByRefId, getExteriorPtrs) reads what the content load brought, not each cell's
++        // records of the file fetched one by one with the frame held. Said again after, an exception included.
++        struct OrthrosIdsOnly
++        {
++            OrthrosIdsOnly() { VFS::orthrosContentIds(true); }
++            ~OrthrosIdsOnly() { VFS::orthrosContentIds(false); }
++            OrthrosIdsOnly(const OrthrosIdsOnly&) = delete;
++            OrthrosIdsOnly& operator=(const OrthrosIdsOnly&) = delete;
++        } orthrosIdsOnly;
++
+         // Load references from all plugins that do something with this cell.
+         for (size_t i = 0; i < cell.mContextList.size(); i++)
+         {
+diff --git a/openmw/apps/openmw/mwworld/scene.cpp b/openmw/apps/openmw/mwworld/scene.cpp
+index b846efa..ed00b8c 100644
+--- a/openmw/apps/openmw/mwworld/scene.cpp
++++ b/openmw/apps/openmw/mwworld/scene.cpp
+@@ -45,6 +45,7 @@
+ #include "../mwrender/landmanager.hpp"
+ #include "../mwrender/postprocessor.hpp"
+ #include "../mwrender/renderingmanager.hpp"
++#include "../mwrender/terrainstorage.hpp"
+ 
+ #include "../mwphysics/actor.hpp"
+ #include "../mwphysics/heightfield.hpp"
+@@ -885,6 +886,19 @@ namespace MWWorld
+         // preload and loadCell read them one by one; the terrain preload's own (distant chunks) then likewise
+         // (Terrain::QuadTreeWorld::orthrosReadAhead).
+         {
++            // Orthros (orthros-r13.patch): first the content files' ranges of those cells (their references are read
++            // just below, getExterior; their land by the terrain), together
++            if (!isEsm4Ext(playerCellIndex.mWorldspace))
++            {
++                std::vector<const ESM::Cell*> records;
++                iterateOverCellsAround(playerCellX, playerCellY, halfGridSize, [&](int x, int y) {
++                    const ESM::ExteriorCellLocation location(x, y, playerCellIndex.mWorldspace);
++                    if (!isCellInCollection(location, mActiveCells))
++                        if (const ESM::Cell* record = mWorld.getStore().get<ESM::Cell>().searchStatic(x, y))
++                            records.push_back(record);
++                });
++                orthrosReadCells(records, "meshes:" + std::to_string(playerCellX) + "," + std::to_string(playerCellY));
++            }
+             std::vector<CellStore*> cells;
+             iterateOverCellsAround(playerCellX, playerCellY, halfGridSize, [&](int x, int y) {
+                 const ESM::ExteriorCellLocation location(x, y, playerCellIndex.mWorldspace);
+@@ -1184,6 +1198,14 @@ namespace MWWorld
+     void Scene::changeToInteriorCell(
+         std::string_view cellName, const ESM::Position& position, bool adjustPlayerPos, bool changeEvent)
+     {
++#ifdef __EMSCRIPTEN__
++        // Orthros (orthros-r13.patch): the interior's references, read just below (getInterior), fetched first
++        if (const ESM::Cell* record = mWorld.getStore().get<ESM::Cell>().search(cellName))
++        {
++            const ESM::Cell* records[] = { record };
++            orthrosReadCells(records, "meshes:" + Misc::StringUtils::lowerCase(cellName));
++        }
++#endif
+         CellStore& cell = mWorld.getWorldModel().getInterior(cellName);
+         bool useFading = (mCurrentCell != nullptr);
+         if (useFading)
+@@ -1455,6 +1477,10 @@ namespace MWWorld
+             {
+                 try
+                 {
++                    // Orthros (orthros-r13.patch): not before the destination's references can be read at once
++                    const CellStore* dest = mWorld.getWorldModel().findCell(door.getCellRef().getDestCell(), false);
++                    if (dest != nullptr && !orthrosCellReady(*dest))
++                        continue;
+                     preloadCellWithSurroundings(mWorld.getWorldModel().getCell(door.getCellRef().getDestCell()));
+                 }
+                 catch (const std::exception& e)
+@@ -1497,7 +1523,9 @@ namespace MWWorld
+                         std::abs(thisCellCenter.y() - predictedPos.y())));
+                 float loadDist = cellSize / 2 + cellSize - mCellLoadingThreshold + mPreloadDistance;
+ 
+-                if (dist < loadDist)
++                // Orthros (orthros-r13.patch): not before its references and land can be read at once (put off: asked in
++                // the background, preloaded at a later frame)
++                if (dist < loadDist && orthrosCellReady(mWorld.getWorldModel().getExterior(cellIndex, false)))
+                     preloadCell(mWorld.getWorldModel().getExterior(cellIndex));
+             }
+         }
+@@ -1536,8 +1564,13 @@ namespace MWWorld
+ 
+         const ESM::RefId worldspace = cell.getCell()->getWorldSpace();
+         for (const auto& [x, y] : cells)
+-            mPreloader->preload(mWorld.getWorldModel().getExterior(ESM::ExteriorCellLocation(x, y, worldspace)),
+-                mRendering.getReferenceTime());
++        {
++            // Orthros (orthros-r13.patch): a cell whose references or land are not in the page yet: put off
++            const ESM::ExteriorCellLocation location(x, y, worldspace);
++            if (!orthrosCellReady(mWorld.getWorldModel().getExterior(location, false)))
++                continue;
++            mPreloader->preload(mWorld.getWorldModel().getExterior(location), mRendering.getReferenceTime());
++        }
+     }
+ 
+     void Scene::preloadCell(CellStore& cell)
+@@ -1565,6 +1598,38 @@ namespace MWWorld
+         mPreloader->syncTerrainLoad(*loadingListener);
+     }
+ 
++    void Scene::orthrosReadCells(std::span<const ESM::Cell* const> cells, std::string_view label)
++    {
++#ifdef __EMSCRIPTEN__
++        if (cells.empty() || !VFS::orthrosReadAheadHooked())
++            return;
++        std::vector<VFS::OrthrosRange> ranges;
++        for (const ESM::Cell* cell : cells)
++            MWRender::orthrosCellRanges(mWorld.getStore(), *cell, true, true, ranges);
++        // (bounded as the read-ahead's own waits: past it the reads left wait one by one, as before)
++        if (VFS::orthrosWillReadRanges(ranges, label) > 0)
++            VFS::orthrosReadWait(15000);
++#else
++        (void)cells;
++        (void)label;
++#endif
++    }
++
++    bool Scene::orthrosCellReady(const CellStore& cell) const
++    {
++#ifdef __EMSCRIPTEN__
++        if (cell.getCell()->isEsm4())
++            return true;
++        std::vector<VFS::OrthrosRange> ranges;
++        MWRender::orthrosCellRanges(mWorld.getStore(), cell.getCell()->getEsm3(),
++            cell.getState() != CellStore::State_Loaded, true, ranges);
++        return VFS::orthrosRangesReady(ranges);
++#else
++        (void)cell;
++        return true;
++#endif
++    }
++
+     void Scene::orthrosReadAhead(std::span<CellStore* const> cells, std::string_view place)
+     {
+ #ifdef __EMSCRIPTEN__
+diff --git a/openmw/apps/openmw/mwworld/scene.hpp b/openmw/apps/openmw/mwworld/scene.hpp
+index 6336ce9..418e9fc 100644
+--- a/openmw/apps/openmw/mwworld/scene.hpp
++++ b/openmw/apps/openmw/mwworld/scene.hpp
+@@ -26,6 +26,7 @@ namespace osg
+ 
+ namespace ESM
+ {
++    struct Cell;
+     struct Position;
+ }
+ 
+@@ -173,6 +174,18 @@ namespace MWWorld
+         /// lowercased id. Nothing off the web build.
+         void orthrosReadAhead(std::span<CellStore* const> cells, std::string_view place);
+ 
++        /// Orthros (orthros-r13.patch): the content files' ranges `cells` are read from once the content is loaded
++        /// (each one's references, an exterior's land: MWRender::orthrosCellRanges) fetched together before a cell
++        /// change loads them one by one — a round trip each otherwise, their light copies in the page zeroed those
++        /// bytes —, then one wait (bounded); `label` '<kind>:<place>'. Nothing off the web build, or without the hooks.
++        void orthrosReadCells(std::span<const ESM::Cell* const> cells, std::string_view label);
++
++        /// Orthros (orthros-r13.patch): `cell` can be preloaded without the page's thread waiting for the network —
++        /// its references loaded already or their ranges in the page, an exterior's land's too (VFS::
++        /// orthrosRangesReady: those not there fetched in the background, the preload put off to a later frame). An
++        /// ESM4 cell, or off the web build: true.
++        bool orthrosCellReady(const CellStore& cell) const;
++
+         osg::Vec4i gridCenterToBounds(const osg::Vec2i& centerCell) const;
+         osg::Vec2i getNewGridCenter(const osg::Vec3f& pos, const osg::Vec2i* currentGridCenter = nullptr) const;
+ 
+diff --git a/openmw/apps/openmw/mwworld/worldimp.cpp b/openmw/apps/openmw/mwworld/worldimp.cpp
+index c158b38..fb1ee3b 100644
+--- a/openmw/apps/openmw/mwworld/worldimp.cpp
++++ b/openmw/apps/openmw/mwworld/worldimp.cpp
+@@ -62,6 +62,7 @@
+ #include <components/loadinglistener/loadinglistener.hpp>
+ 
+ #include <components/settings/values.hpp>
++#include <components/vfs/file.hpp>
+ 
+ #include "../mwbase/environment.hpp"
+ #include "../mwbase/luamanager.hpp"
+@@ -224,6 +225,13 @@ namespace MWWorld
+         mContentFiles = contentFiles;
+         mESMVersions.resize(mContentFiles.size(), -1);
+ 
++        // Orthros (orthros-r13.patch): the page told that the content load starts — its content files read light, their
++        // land payloads and cell references' details zeroed (src/host/light-copies.js esmZeroRanges): this load reads
++        // neither (ESM::Land::load skips the first, ESMStore::countAllCellRefsAndMarkKeys reads a reference's number,
++        // object, key and deleted flag only, a moved reference's group kept whole) —, and that it is over below: every
++        // read from then on the files' own (a cell's land and references when it loads).
++        VFS::orthrosContentLoad(false);
++
+         loadContentFiles(fileCollections, contentFiles, encoder, listener);
+         loadGroundcoverFiles(fileCollections, groundcoverFiles, encoder, listener);
+         MWBase::Environment::get().getLuaManager()->contentFilesLoaded();
+@@ -235,6 +243,8 @@ namespace MWWorld
+         mStore.movePlayerRecord();
+ 
+         mSwimHeightScale = mStore.get<ESM::GameSetting>().find("fSwimHeightScale")->mValue.getFloat();
++
++        VFS::orthrosContentLoad(true);
+     }
+ 
+     void World::init(Debug::Level maxRecastLogLevel, osgViewer::Viewer* viewer, osg::ref_ptr<osg::Group> rootNode,
+diff --git a/openmw/components/terrain/quadtreeworld.cpp b/openmw/components/terrain/quadtreeworld.cpp
+index 3c240cc..c70007a 100644
+--- a/openmw/components/terrain/quadtreeworld.cpp
++++ b/openmw/components/terrain/quadtreeworld.cpp
+@@ -8,7 +8,9 @@
+ 
+ #include <cmath>
+ #include <limits>
++#include <set>
+ #include <string>
++#include <tuple>
+ 
+ #include <components/esm/util.hpp>
+ #include <components/loadinglistener/reporter.hpp>
+@@ -748,12 +750,40 @@ namespace Terrain
+             entries.emplace_back(i, 0);
+         std::vector<VFS::Path::Normalized> meshes;
+         std::vector<VFS::Path::Normalized> landTextures;
++        // (the place: the view point's cell)
++        const float cellWorldSize = mStorage->getCellWorldSize(mWorldspace);
++        const osg::Vec3f& viewPoint = vd->getViewPoint();
++        const std::string place = std::to_string(static_cast<int>(std::floor(viewPoint.x() / cellWorldSize))) + ","
++            + std::to_string(static_cast<int>(std::floor(viewPoint.y() / cellWorldSize)));
++        // Orthros (orthros-r13.patch): the entries built below read their cells' land (and the ring around it: normals
++        // and blend maps read the neighbours) and their paged objects' references — files listed below read them too
++        // (orthrosChunkFiles: blend map layers, a chunk's models) — from the content files, read as they are once the
++        // content is loaded (their light copies zeroed those bytes): those ranges fetched together first, one wait
++        std::vector<std::tuple<unsigned int, std::uint32_t, unsigned int>> builds;
++        std::set<std::pair<int, int>> cells;
+         for (const auto& [i, readyManagers] : entries)
+         {
+             const ViewDataEntry& entry = vd->getEntry(i);
+             unsigned int lodFlags = 0;
+             if (!orthrosBuilds(entry, vd, lodFlags))
+                 continue;
++            builds.emplace_back(i, readyManagers, lodFlags);
++            const osg::Vec2f& center = entry.mNode->getCenter();
++            const float half = entry.mNode->getSize() / 2.f;
++            for (int x = static_cast<int>(std::floor(center.x() - half)) - 1; x <= static_cast<int>(std::ceil(center.x() + half)); ++x)
++                for (int y = static_cast<int>(std::floor(center.y() - half)) - 1; y <= static_cast<int>(std::ceil(center.y() + half)); ++y)
++                    cells.emplace(x, y);
++        }
++        {
++            std::vector<VFS::OrthrosRange> ranges;
++            for (const auto& [x, y] : cells)
++                mStorage->orthrosCellRanges(ESM::ExteriorCellLocation(x, y, mWorldspace), ranges);
++            if (VFS::orthrosWillReadRanges(ranges, "terrain:" + place) > 0)
++                VFS::orthrosReadWait(15000);
++        }
++        for (const auto& [i, readyManagers, lodFlags] : builds)
++        {
++            const ViewDataEntry& entry = vd->getEntry(i);
+             const osg::Vec2f& center = entry.mNode->getCenter();
+             const bool activeGrid
+                 = (center.x() > grid.x() && center.y() > grid.y() && center.x() < grid.z() && center.y() < grid.w());
+@@ -765,11 +795,6 @@ namespace Terrain
+         }
+         if (meshes.empty() && landTextures.empty())
+             return;
+-        // (the place: the view point's cell)
+-        const float cellWorldSize = mStorage->getCellWorldSize(mWorldspace);
+-        const osg::Vec3f& viewPoint = vd->getViewPoint();
+-        const std::string place = std::to_string(static_cast<int>(std::floor(viewPoint.x() / cellWorldSize))) + ","
+-            + std::to_string(static_cast<int>(std::floor(viewPoint.y() / cellWorldSize)));
+         mResourceSystem->getSceneManager()->orthrosPrefetch(meshes, landTextures, place);
+     }
+ 
+diff --git a/openmw/components/terrain/storage.hpp b/openmw/components/terrain/storage.hpp
+index b56fa6b..8d1f8bb 100644
+--- a/openmw/components/terrain/storage.hpp
++++ b/openmw/components/terrain/storage.hpp
+@@ -10,6 +10,7 @@
+ 
+ #include <components/esm/exteriorcelllocation.hpp>
+ #include <components/esm/refid.hpp>
++#include <components/vfs/file.hpp>
+ 
+ #include "defs.hpp"
+ 
+@@ -110,6 +111,15 @@ namespace Terrain
+             return true;
+         }
+ 
++        /// Orthros (orthros-r13.patch): the ranges of the content files the cell is read from in play — its land's,
++        /// its references' (a chunk's terrain, its paged objects) —, appended to `out`, for the page to fetch them
++        /// ahead of a synchronous load (QuadTreeWorld::orthrosReadAhead). By default none.
++        virtual void orthrosCellRanges(ESM::ExteriorCellLocation cellLocation, std::vector<VFS::OrthrosRange>& out)
++        {
++            (void)cellLocation;
++            (void)out;
++        }
++
+         /// Orthros (orthros-r12.patch): the layers getBlendmaps() with these arguments would list (its layerList),
+         /// appended to `out`, in any order — the files a chunk's passes read. By default none.
+         virtual void orthrosBlendmapLayers(
+diff --git a/openmw/components/vfs/file.hpp b/openmw/components/vfs/file.hpp
+index 1720b9b..967f1ea 100644
+--- a/openmw/components/vfs/file.hpp
++++ b/openmw/components/vfs/file.hpp
+@@ -3,7 +3,9 @@
+ 
+ #include <cstdint>
+ #include <filesystem>
++#include <span>
+ #include <string>
++#include <string_view>
+ 
+ #include <components/files/istreamptr.hpp>
+ 
+@@ -51,6 +53,39 @@ namespace VFS
+     /// until every range announced since the last wait (Manager::orthrosWillRead) is in the page's data worker, or
+     /// failed, or `timeoutMs` passed. True: all there (or no hook: nothing to wait for); false: the timeout.
+     bool orthrosReadWait(double timeoutMs);
++
++    /// Orthros (orthros-r13.patch): bytes [mOffset, mOffset + mSize) of the engine file mPath (mSize ~0: to the file's
++    /// end) — a range a load reads outside the VFS (a content file's records: a cell's references, its land).
++    struct OrthrosRange
++    {
++        std::string mPath;
++        std::uint64_t mOffset = 0;
++        std::uint64_t mSize = 0;
++    };
++
++    /// Orthros (orthros-r13.patch): announces `ranges` to the page (globalThis.orthrosWillRead, one call, as
++    /// Manager::orthrosWillRead does for the VFS's files): fetched at once, in parallel. `label` '<kind>:<place>' (an
++    /// unknown kind: fetched, not learned as a place's). Returns how many the page does not have yet (0 off the web
++    /// build, without the hook, or on a thread other than the main one). See orthrosReadWait().
++    std::size_t orthrosWillReadRanges(std::span<const OrthrosRange> ranges, std::string_view label);
++
++    /// Orthros (orthros-r13.patch): every range's bytes can be read without a wait (orthrosRangeReady, each asked: the
++    /// missing ones all on their way at once).
++    bool orthrosRangesReady(std::span<const OrthrosRange> ranges);
++
++    /// Orthros (orthros-r13.patch): the engine's content load starts (`loaded` false: its content files read light from
++    /// now on, src/vfs/data-client.js GameData.contentLoading) or is over (true: the files themselves from now on, every
++    /// read — contentLoaded): globalThis.orthrosContentLoading / orthrosContentLoaded, src/ports/openmw/streamfs.js.
++    /// Nothing off the web build or without the hook.
++    void orthrosContentLoad(bool loaded);
++
++    /// Orthros (orthros-r13.patch): the engine lists a cell's references by their ids only (`on` true, false after:
++    /// MWWorld::CellStore::listRefs — WorldModel::getPtrByRefId's search through every cell not loaded, among others),
++    /// what its content load read and the content files' light copies hold: those reads served from the light copies
++    /// (globalThis.orthrosContentIds, src/ports/openmw/streamfs.js; src/vfs/data-client.js GameData.contentIds) instead
++    /// of the files' own bytes fetched cell by cell with the page's thread held. On the main thread only (another
++    /// thread's reads stay the files'); nothing off the web build or without the hook.
++    void orthrosContentIds(bool on);
+ }
+ 
+ #endif
+diff --git a/openmw/components/vfs/manager.cpp b/openmw/components/vfs/manager.cpp
+index f8d22c6..d8b3eae 100644
+--- a/openmw/components/vfs/manager.cpp
++++ b/openmw/components/vfs/manager.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include <cassert>
+ #include <stdexcept>
++#include <vector>
+ 
+ #ifdef __EMSCRIPTEN__
+ #include <emscripten.h>
+@@ -147,27 +148,41 @@ namespace VFS
+         // reads then waiting one by one as before)
+         if (names.empty() || !emscripten_is_main_runtime_thread())
+             return 0;
++        // (each name's range — orthros-r13.patch: announced as any range, orthrosWillReadRanges)
++        std::vector<OrthrosRange> ranges;
++        for (const auto& name : names)
++        {
++            const auto found = mIndex.find(name);
++            OrthrosRange range;
++            if (found != mIndex.end() && found->second->orthrosRange(range.mPath, range.mOffset, range.mSize))
++                ranges.push_back(std::move(range));
++        }
++        return orthrosWillReadRanges(ranges, label);
++#else
++        (void)names;
++        (void)label;
++        return 0;
++#endif
++    }
++
++    std::size_t orthrosWillReadRanges(std::span<const OrthrosRange> ranges, std::string_view label)
++    {
++#ifdef __EMSCRIPTEN__
++        if (ranges.empty() || !emscripten_is_main_runtime_thread())
++            return 0;
+         // (lengths as int: a size_t is a BigInt in the wasm64 build's JS)
+         // records 'path\x1Foffset\x1Fsize' separated by '\x1E' (size -1: to the file's end); one call for the batch
+         std::string list;
+-        std::string path;
+-        for (const auto& name : names)
++        for (const OrthrosRange& range : ranges)
+         {
+-            const auto found = mIndex.find(name);
+-            std::uint64_t offset = 0;
+-            std::uint64_t size = 0;
+-            if (found == mIndex.end() || !found->second->orthrosRange(path, offset, size))
+-                continue;
+             if (!list.empty())
+                 list += '\x1E';
+-            list += path;
++            list += range.mPath;
+             list += '\x1F';
+-            list += std::to_string(offset);
++            list += std::to_string(range.mOffset);
+             list += '\x1F';
+-            list += size == ~std::uint64_t{ 0 } ? std::string("-1") : std::to_string(size);
++            list += range.mSize == ~std::uint64_t{ 0 } ? std::string("-1") : std::to_string(range.mSize);
+         }
+-        if (list.empty())
+-            return 0;
+         // clang-format off
+         const int missing = MAIN_THREAD_EM_ASM_INT({
+             var f = globalThis.orthrosWillRead;
+@@ -176,12 +191,55 @@ namespace VFS
+         // clang-format on
+         return missing > 0 ? static_cast<std::size_t>(missing) : 0;
+ #else
+-        (void)names;
++        (void)ranges;
+         (void)label;
+         return 0;
+ #endif
+     }
+ 
++    bool orthrosRangesReady(std::span<const OrthrosRange> ranges)
++    {
++        bool ready = true;
++        for (const OrthrosRange& range : ranges)
++            if (!orthrosRangeReady(range.mPath, range.mOffset, range.mSize))
++                ready = false;
++        return ready;
++    }
++
++    void orthrosContentLoad(bool loaded)
++    {
++#ifdef __EMSCRIPTEN__
++        // (the page's hooks are on the main thread's globalThis: called there, synchronously — the page decides before
++        // the next read of a content file)
++        // clang-format off
++        MAIN_THREAD_EM_ASM({
++            var f = $0 ? globalThis.orthrosContentLoaded : globalThis.orthrosContentLoading;
++            try { if (f) f(); } catch (e) { }
++        }, loaded ? 1 : 0);
++        // clang-format on
++#else
++        (void)loaded;
++#endif
++    }
++
++    void orthrosContentIds(bool on)
++    {
++#ifdef __EMSCRIPTEN__
++        // (the main thread's reads only: the page's choice holds for every read until it is said again — a read of
++        // another thread meanwhile would be served light too)
++        if (!emscripten_is_main_runtime_thread())
++            return;
++        // clang-format off
++        EM_ASM({
++            var f = globalThis.orthrosContentIds;
++            try { if (f) f($0); } catch (e) { }
++        }, on ? 1 : 0);
++        // clang-format on
++#else
++        (void)on;
++#endif
++    }
++
+     bool orthrosReadAheadHooked()
+     {
+ #ifdef __EMSCRIPTEN__

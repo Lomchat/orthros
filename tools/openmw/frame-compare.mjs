@@ -34,7 +34,7 @@ const VIEW = {
 };
 
 const browser = await chromium.launch(launchOptions({ gl: 'swiftshader', channel: arg('--channel', 'chromium') }));
-const shots = {}, faults = [];
+const shots = {}, data = {}, faults = [];
 try {
   // (the reference twice — its second run the noise —, then each other variant)
   const runs = [{ name: 'ref', q: variants[0] }, { name: 'ref2', q: variants[0] }, ...variants.slice(1).map((q, i) => ({ name: `v${i + 1}`, q }))];
@@ -44,6 +44,9 @@ try {
       const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
       const page = await context.newPage();
       page.on('pageerror', (e) => faults.push(`${v}/${run.name}: ${e.message}`));
+      // (the requests of content files' light copies: read while the engine loaded its content)
+      let contentLight = 0;
+      page.on('request', (r) => { if (/\/\.light\/[^?]*\.(esm|esp|omwaddon|omwgame)(\?|$)/i.test(decodeURIComponent(new URL(r.url()).pathname))) contentLight++; });
       await page.route((u) => /\/clientlog$|\/api\/(telemetry|prefetch|profile-seed|programs|regions)(\/|$)/.test(u.pathname), (r) => r.request().method() === 'GET' ? r.continue() : r.fulfill({ status: 204, body: '' }));
       await page.goto(`${base}/ports/openmw/${encodeURIComponent(id)}/app/index.html?src=hosted&start=${encodeURIComponent(view.start)}&novid${run.q ? '&' + run.q : ''}`);
       await page.waitForFunction(() => window.omw?.state?.['orthros.view'] !== undefined, null, { timeout: 900000, polling: 500 });
@@ -70,6 +73,9 @@ try {
         if (k < frames - 1) await page.waitForTimeout(1500);
       }
       (shots[v] ??= {})[run.name] = files;
+      // (how the page read the game data — its content files light or not, docs/slow-network.md "Content files light
+      // before the menu" —, and what it fetched)
+      (data[v] ??= {})[run.name] = await page.evaluate(() => { const s = window.__streamfsStats; return s ? { content: s.content ?? null, contentLoadingMs: s.contentLoadingMs ?? null, contentLoadedMs: s.contentLoadedMs ?? null, fetchedBytes: s.fetchedBytes, wantWaits: s.wantWaits } : null; }).then((d) => d && { ...d, contentLightRequests: contentLight }).catch(() => null);
       await context.close();
     }
   }
@@ -94,7 +100,7 @@ try {
     variants.slice(1).forEach((q, i) => { report[v][q] = null; });
     for (let i = 1; i < variants.length; i++) report[v][variants[i]] = await diff(s.ref, s[`v${i}`]);
   }
-  const out = { manifest: id, url: base, reference: variants[0], views: report, shots: dir, faults };
+  const out = { manifest: id, url: base, reference: variants[0], views: report, data, shots: dir, faults };
   fs.writeFileSync(path.join(dir, 'compare.json'), JSON.stringify(out, null, 2));
   console.log(JSON.stringify(out));
 } finally { await browser.close(); }
