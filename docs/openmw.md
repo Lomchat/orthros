@@ -1340,6 +1340,45 @@ at 1 MB/s and -295 to -314 s at 85 KB/s (the masters 33 → 7-8 MB of wire), the
 s (its cells' land and references now read after the menu), playable still 12-19 s / ~260 s sooner; at 1.8 MB/s a
 save's load frozen +0.2-0.6 s and a COE +1.0-1.4 s (the cells' bytes, no serial reads), the pictures the same.
 
+### The engine's language and dialogue topic colours (2026-10-28)
+
+OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own
+menus (its Options, its Lua settings pages) and every Lua mod's texts (their `l10n/<context>/<lang>.yaml`) stayed in
+English, even where the engine ships `fr.yaml` (all eight contexts in the release's package) or the mod does. Only the
+strings OpenMW takes from the game's GMSTs were French (`gmst overrides l10n = true`: the `gmst` locale first).
+
+The server now adds the version's settings defaults to the engine page (`withSettingsDefaults`, `src/host/openmw.js`,
+from the `/ports/openmw/<id>/app/index.html` route of `src/host/server.js`, whose manifest it knows):
+- `[General] preferred locales` = the version's `languages`, then `en` (`openmwLocales`): `fr,en` for a version whose
+  `languages` is `["fr"]`, `en` for an English one. The engine reads it once at its start (`engine.cpp`,
+  `L10n::Manager::setPreferredLocales`): `gmst fr en`, each context's French file where there is one, English
+  otherwise. ICU keeps every locale's data in the lean package, so French plurals and number formats work (see
+  "Runtime boundary and validation").
+- `[GUI] color topic enable = true` in every OpenMW version: the dialogue window colours a topic that has an answer of the
+  speaker's own, and greys one already read, with OpenMW's default colours (`color topic specific` / `exhausted`).
+  OpenMW's Options menu has no switch for it; a player's `settings.cfg` can still turn it off.
+
+They are appended to what the page writes to `/settings.cfg` (`settingsCfg`, the page's own block: `[Video]` …
+`[General]`, `[Post Processing]`), as a second `[General]` header and a `[GUI]` one. That file is the first of the
+engine's config dirs, which OpenMW reads as additional defaults (`components/settings/settings.cpp`:
+`loadSettingsFile(…, overrideExisting = true)`). There a section may be opened again and a later key replaces an
+earlier one. A duplicate key is an error only in the player's own file, which the server does not touch. That file
+(`/userdata/config/openmw/settings.cfg`, the last config dir, per installation and per account) still wins: a language
+chosen in Options → Language (the engine asks for a restart) or a saved `color topic enable` stays the player's. The
+page's log says `[orthros] settings defaults: [General] preferred locales = fr,en; [GUI] color topic enable = true`.
+Every OpenMW release from the upstream `v1.5.3` to `orthros-r13` has the same write
+(`FS.writeFile('/settings.cfg', settingsCfg);`).
+
+`tests/openmw-settings.test.js` checks the locale list, the file the page writes, read the way OpenMW's parser reads it
+(its defaults, the additional defaults, the player's file over them), the page the server serves for an English and
+a French version, and, where the releases are installed, each release's real settings block run as the page runs it,
+over the engine's own `settings-default.cfg`. Checked in Chromium (2026-10-28, a scratch server of the change over the
+live games read-only, `morrowind-goty-fr` solo on r13, a new browser profile): the engine's log says `Preferred
+locales: gmst fr en`, no l10n error. The Options window's OpenMW strings are now French: "Distance de traitement pour
+les personnages (3584)" where the French game said "Actors Processing Range (3584)", the tabs "Scripts" and
+"Localisation", "Curseur d'émulation de souris". Its Localisation tab shows "Localisation principale : français",
+"Localisation secondaire : anglais".
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

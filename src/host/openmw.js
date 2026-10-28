@@ -170,6 +170,42 @@ export const withInputKeys = (html) => html
     "FS.mkdirTree('/userdata/config/openmw');   // XDG user config (persistent)\n" +
     "               if (window.orthrosInputKeys && window.orthrosInputKeys(FS) === 'swapped') append('[orthros] saved bindings: Activate on E, Jump on Space');");
 
+/**
+ * OpenMW's language list for a version (its [General] preferred locales): the version's languages (manifest `languages`,
+ * its masters' language) first, then English, the fallback every l10n context ships. OpenMW's own default is `en`
+ * alone, so a French game showed OpenMW's menus and every Lua mod's texts in English. ['fr'] → 'fr,en', ['en'] → 'en'.
+ * Only locale codes (the manifest schema's `xx` / `xx-YY`) are kept.
+ */
+export function openmwLocales(man) {
+  const codes = (Array.isArray(man?.languages) ? man.languages : []).filter((c) => typeof c === 'string' && /^[a-z]{2}(-[A-Z]{2})?$/.test(c));
+  return [...new Set([...codes, 'en'])].join(',');
+}
+
+/** The settings Orthros adds to the engine page's defaults for a version: { section: { key: value } }. */
+export const openmwSettingsDefaults = (man) => ({
+  General: { 'preferred locales': openmwLocales(man) },
+  // dialogue topics coloured by what they hold (an answer of the speaker's own, or already read), in OpenMW's default
+  // colours ([GUI] color topic specific / exhausted); the Options menu has no switch for it
+  GUI: { 'color topic enable': 'true' },
+});
+
+/** The page writing its settings defaults (settingsCfg: [Video] … [General], [Post Processing]) to /settings.cfg. */
+const SETTINGS_WRITE = "FS.writeFile('/settings.cfg', settingsCfg);";
+/**
+ * The engine page's settings defaults with a version's (openmwSettingsDefaults(man)) after its own. They are appended to
+ * what the page writes to /settings.cfg, the first of the engine's config dirs. OpenMW reads that file as additional
+ * defaults, where a section may be opened again and a later key overrides an earlier one
+ * (components/settings/settings.cpp: loadSettingsFile(…, overrideExisting = true)). The player's own settings.cfg
+ * (/userdata/config/openmw, the last config dir, where the Options menu writes, its Language choice among them) still
+ * wins over them. A line in the page's log lists them.
+ */
+export function withSettingsDefaults(html, man) {
+  const sections = Object.entries(openmwSettingsDefaults(man));
+  const cfg = sections.map(([s, kv]) => `[${s}]\n${Object.entries(kv).map(([k, v]) => `${k} = ${v}\n`).join('')}`).join('');
+  const said = sections.map(([s, kv]) => Object.entries(kv).map(([k, v]) => `[${s}] ${k} = ${v}`).join('; ')).join('; ');
+  return html.replace(SETTINGS_WRITE, () => `FS.writeFile('/settings.cfg', settingsCfg + ${JSON.stringify('\n' + cfg)}); append(${JSON.stringify('[orthros] settings defaults: ' + said)});`);
+}
+
 export const withSharedEngine =(html, release) => html.replace('("e/" + __ENGINE_VER + "/")', `(${JSON.stringify(`/engines/${release}/e/`)} + __ENGINE_VER + "/")`);
 
 /**

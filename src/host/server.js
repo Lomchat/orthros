@@ -43,7 +43,7 @@ import { lightCovers } from './light-covers.js';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, GOLDSRC_MODULE_TREE, goldsrcEngineFiles, goldsrcInstalled, goldsrcPageFiles, goldsrcModes, goldsrcMapPrecache, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
-import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withEngineUrls, withFrameMeter, withInputKeys, withProgressiveView, withQualityTier, withSharedEngine, withStreaming } from './openmw.js';
+import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withEngineUrls, withFrameMeter, withInputKeys, withProgressiveView, withQualityTier, withSettingsDefaults, withSharedEngine, withStreaming } from './openmw.js';
 import { CONTENT_PREFIX, engineContent } from './engine-content.js';
 import { leanPackages, withLeanPackage } from './openmw-lean.js';
 import { re3EngineFiles, re3Installed, re3Modes, re3Module } from './re3.js';
@@ -1973,6 +1973,8 @@ export function createServer(opts = {}) {
             // (its engine files by content, by their names in the build directory: engine-content.js)
             const byName = Object.fromEntries(Object.entries(engineUrlsOf(man)).map(([rel, u]) => [path.posix.basename(rel), u]));
             page = withInputKeys(withQualityTier(withProgressiveView(withStreaming(withEngineUrls(withLeanPackage(withSharedEngine(page, man.openmw.engine), man.openmw.example ? null : lean?.url(man.openmw.engine)), byName), url.searchParams.get('sfs') === 'upstream'))));
+            // (its settings defaults: the version's language first in OpenMW's locales, dialogue topics coloured)
+            page = withSettingsDefaults(page, man);
           }
           if (asset === 'index.html' && scope) {
             page = page.replace('<head>', '<head><script src="/src/ports/openmw/cloud.js"></script>');
