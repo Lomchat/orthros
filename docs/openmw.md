@@ -1143,6 +1143,51 @@ frozen precompressed units, `--lang fr`, the OpenMW lean2 package; a machine at 
 - `tools/openmw/check.mjs morrowind-goty-vanilla-plus-en --lang fr` on a scratch server of the change: ok, 1653 draws.
   Not measured: 85 KB/s (a run is 15-30 min on this machine's load).
 
+### A loop over the engine's frame: engine orthros-r12 (2026-10-28)
+
+The owner: "are more engine improvements possible? Find them and make them, in a loop." A workflow looped: profiles of
+four scenarios on the current release (Vanilla+ FR walking at Seyda Neen, gliding across six cells, Balmora's streets,
+goty-en in Balmora's South Wall Cornerclub; `tools/cpuprofile-report.py`: wasm frames named, self/inclusive time,
+callers and callees, ms a frame), five finders with their own lens (cull, draw, non-render CPU, long frames, the page),
+a selection challenged by a skeptic, then for each pick a patch behind its switch, an adversarial review and a revision,
+a compile check, the build, pictures with an adversarial judge, and a profiled measure. A fault of the loop's script
+(the integration's ids compared as text) left its first three rounds unverified; the ten patches of rounds 2 and 3
+(round 3 re-did round 1's picks) were then integrated, verified and measured together, and a skeptic kept seven.
+
+`orthros-r12.patch` (on r11), each change behind its switch (`?omwenv=<switch>=0`: the previous code):
+- **`OPENMW_ORTHROS_REFATOMIC`** (OSG `Referenced`): OSG's reference counts took a pthread mutex per object (OSG's
+  configure found no atomics for the build): atomic counts instead. Mutex functions 0.39 → 0.02 ms a frame.
+- **`OPENMW_ORTHROS_UNIFORMVALUES`** (OSG `Program`): r11's per-location slots remember the value last uploaded; a
+  `glUniform*` whose value did not change is skipped (733 of ~1,630 uniform calls a frame were). 0.82 → 0.66 ms.
+- **`OPENMW_ORTHROS_SHADERLOG`** (OSG `Shader`, `Program`): a shader's or program's info log read only after a
+  failed compile or link (it was read every time: a synchronous WebGL call in the frames that build shaders).
+- **`OPENMW_ORTHROS_GUIBATCHES`, `OPENMW_ORTHROS_GUIUPLOAD`** (`myguirendermanager.cpp`): MyGUI's batches rewritten in
+  place instead of cleared and copied, and an unchanged vertex buffer not uploaded again. 0.58 → 0.49 ms.
+- **`OPENMW_ORTHROS_ALCACHE`** (`wasm-build/orthros-openal.js`): no listener AudioParam written with the value it has,
+  the Doppler work skipped when nothing it reads changed. 0.50 → 0.26 ms.
+- **`OPENMW_ORTHROS_IDLECALLS`** (`scriptscontainer.cpp`, `mwgui/layout.cpp`): the Lua scripts' timer pass not entered
+  when no timer is due, a window title not re-captioned to the same text. 0.33 → 0.11 ms.
+- **`OPENMW_ORTHROS_TERRAINREADY`** (terrain `ChunkManager`/`QuadTreeWorld`, `esmterrain::Storage`, `LandManager`,
+  `TextureManager`): a terrain preload's chunk is put off, as r5 does for meshes, until its zone's LAND records (a ring of
+  cells: normals and blend maps read the neighbours) and its layers' textures are in the page; before, the chunk read them
+  synchronously inside the preload slice. Crossing six cells: longest engine frame 655-729 → 183-231 ms, engine frames
+  over 100 ms 9-11 → 3-5, the data's waits 2.2-2.3 s → 0.15-0.25 s (that pair also had three of the dropped switches
+  off).
+
+Left out: `STATEGRAPHS` (OSG's StateGraph pruned one cull later: never compared by pictures — the verifier got no
+browser), `PRELOADREADY` (a cell preload waiting for the `.kf` and collision files: no gain of its own measured),
+`CELLREADS` (a cell's CELL records read in one batch: no gain of its own, the highest risk of the ten). Still to look
+at, found by the loop and not yet done: StateGraph clean/prune together, the clock glue (`emscripten_get_now`'s BigInt),
+tooltips re-laid out while the crosshair rests, music decoded on the page's thread (FFmpeg MP3, 0.14-0.30 ms),
+`KHR_parallel_shader_compile`.
+
+Measured on the development build of r1-r11 + the ten (scratch server, `perf.mjs morrowind-goty-vanilla-plus-fr --query
+tier=mid --discard --seconds 60`, alternated, runs over load 24 thrown away and run again): all on against all off,
+engine work p50 10.5 / 10.2 / 11.6 against 12.0 / 12.2 / 12.1 ms (−1.3 ms), p90 14.4 against 16.2 ms (means), p99
+within the spread; the profiled runs' busy time 11.7-12.2 ms a frame. The announced reads of r10 (`place-load.mjs
+--mode save`, Ald'ruhn at 1.8 MB/s and 90 ms, against r1-r11): no timeout, and the one read in series in either build a
+region weather sound, as before.
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

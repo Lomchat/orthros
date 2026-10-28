@@ -179,3 +179,20 @@ test('r10 patch: read-ahead of a cell change — the page told the files about t
   assert.ok(grid > 0 && grid < scene.indexOf('\n         mPreloader->setTerrain(mRendering.getTerrain());', grid));
   assert.ok(scene.lastIndexOf('+#ifdef __EMSCRIPTEN__', grid) > 0);
 });
+
+test('r12: r11 plus its patch, the same exports; each kept frame-cost change read from its switch, the dropped ones absent', () => {
+  const r11 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r11'), r12 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r12');
+  assert.ok(r12, 'r12 is a build');
+  assert.deepEqual(r12.patches, [...r11.patches, 'orthros-r12.patch']);
+  assert.deepEqual(r12.exports, r11.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r12.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const f of ['deps/src/osg/src/osg/Referenced.cpp', 'deps/src/osg/src/osg/Program.cpp', 'deps/src/osg/src/osg/Shader.cpp',
+    'openmw/components/myguiplatform/myguirendermanager.cpp', 'wasm-build/orthros-openal.js', 'openmw/components/terrain/chunkmanager.cpp',
+    'openmw/components/lua/scriptscontainer.cpp', 'openmw/apps/openmw/mwgui/layout.cpp'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  for (const s of ['REFATOMIC', 'GUIBATCHES', 'GUIUPLOAD', 'ALCACHE', 'TERRAINREADY', 'UNIFORMVALUES', 'IDLECALLS', 'SHADERLOG'])
+    assert.ok(added.includes(`OPENMW_ORTHROS_${s}`), s);
+  // (measured without a gain of their own, or not checked by pictures: left out)
+  for (const s of ['STATEGRAPHS', 'PRELOADREADY', 'CELLREADS']) assert.ok(!patch.includes(`OPENMW_ORTHROS_${s}`), s);
+});

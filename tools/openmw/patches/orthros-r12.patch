@@ -1,0 +1,1870 @@
+diff --git a/deps/src/osg/include/osg/Program b/deps/src/osg/include/osg/Program
+index ea88d50..5439908 100644
+--- a/deps/src/osg/include/osg/Program
++++ b/deps/src/osg/include/osg/Program
+@@ -364,6 +364,13 @@ class OSG_EXPORT Program : public osg::StateAttribute
+                     OrthrosUniformSlot& s = _orthrosSlots[slot];
+                     if (s.uniform.get() != &uniform || s.modifiedCount != uniform.getModifiedCount())
+                     {
++                        // Orthros (orthros-r12.patch): OPENMW_ORTHROS_UNIFORMVALUES — the bytes compared with those the
++                        // location holds, out of line (orthrosApplyValue); "0": r11's apply below.
++                        if (_orthrosUniformValues)
++                        {
++                            orthrosApplyValue(s, uniform);
++                            return;
++                        }
+                         uniform.apply(_extensions.get(), s.location);
+                         s.uniform = &uniform;
+                         s.modifiedCount = uniform.getModifiedCount();
+@@ -439,12 +446,29 @@ class OSG_EXPORT Program : public osg::StateAttribute
+ 
+                 struct OrthrosUniformSlot
+                 {
+-                    OrthrosUniformSlot() : location(-1), modifiedCount(0) {}
++                    OrthrosUniformSlot() : location(-1), modifiedCount(0), valid(false), type(Uniform::UNDEFINED), num(0), words(0), value() {}
+                     GLint location;
+                     osg::ref_ptr<const osg::Uniform> uniform;
+                     unsigned int modifiedCount;
++                    /** Orthros (orthros-r12.patch): the call last sent at this location, when valid — its GL API type
++                      * (Uniform::getGlApiType: what Uniform::apply switches on), its element count and its first
++                      * words (num x components, 32-bit, as GL read them; a mat4 fits). Not valid: unknown (a fresh
++                      * slot — after a link or resetAppliedUniforms —, or a call not recorded). */
++                    bool valid;
++                    Uniform::Type type;
++                    unsigned int num;
++                    unsigned int words;
++                    GLuint value[16];
+                 };
++
++                /** Orthros (orthros-r12.patch): orthrosApply's miss with OPENMW_ORTHROS_UNIFORMVALUES on — no glUniform*
++                  * when the slot's record holds the same call (type, count, bytes); else the record replaced (or
++                  * invalidated) and the uniform applied. Either way the slot takes the uniform and its modified count. */
++                void orthrosApplyValue(OrthrosUniformSlot& s, const Uniform& uniform) const;
++
+                 bool _orthrosUniforms;
++                /** Orthros (orthros-r12.patch): OPENMW_ORTHROS_UNIFORMVALUES, read once (Program.cpp). */
++                bool _orthrosUniformValues;
+                 mutable bool _orthrosSlotsDirty;
+                 mutable std::vector<int> _orthrosSlotOfName;
+                 mutable std::vector<OrthrosUniformSlot> _orthrosSlots;
+diff --git a/deps/src/osg/include/osg/Referenced b/deps/src/osg/include/osg/Referenced
+index 9081123..105675d 100644
+--- a/deps/src/osg/include/osg/Referenced
++++ b/deps/src/osg/include/osg/Referenced
+@@ -24,6 +24,15 @@
+ # define _OSG_REFERENCED_USE_ATOMIC_OPERATIONS
+ #endif
+ 
++// Orthros (orthros-r12.patch): this build's OpenThreads atomics are a mutex (the CheckAtomicOps test cannot run under
++// emcmake), so the code below without _OSG_REFERENCED_USE_ATOMIC_OPERATIONS is the one compiled: each object made
++// itself an OpenThreads::Mutex (two heap blocks) and locked it at every ref()/unref() — an error-checking pthread
++// mutex here (not __linux__): 0.15-0.39 ms of a frame's engine time in __pthread_mutex_* alone on r11. With
++// OPENMW_ORTHROS_REFATOMIC on (absent, or anything but "0"; read once, Referenced.cpp) an object is made without its
++// mutex and its count moves by atomic read-modify-writes (the same counts, the same deletion points); getRefMutex()
++// then gives the global Referenced mutex, as OSG's atomic build does. OPENMW_ORTHROS_REFATOMIC=0: a mutex per object,
++// as before. Each object keeps the way chosen when it was made; the class layout is unchanged.
++
+ namespace osg {
+ 
+ // forward declare, declared after Referenced below.
+@@ -62,14 +71,17 @@ class OSG_EXPORT Referenced
+ #if defined(_OSG_REFERENCED_USE_ATOMIC_OPERATIONS)
+         bool getThreadSafeRefUnref() const { return true; }
+ #else
+-        bool getThreadSafeRefUnref() const { return _refMutex!=0; }
++        // Orthros (orthros-r12.patch): an object without its mutex counts atomically, also thread safe.
++        bool getThreadSafeRefUnref() const { return true; }
+ #endif
+ 
+         /** Get the mutex used to ensure thread safety of ref()/unref(). */
+ #if defined(_OSG_REFERENCED_USE_ATOMIC_OPERATIONS)
+         OpenThreads::Mutex* getRefMutex() const { return getGlobalReferencedMutex(); }
+ #else
+-        OpenThreads::Mutex* getRefMutex() const { return _refMutex; }
++        // Orthros (orthros-r12.patch): the global mutex for an object without its own (OPENMW_ORTHROS_REFATOMIC on), as
++        // OSG's atomic build: the parent lists of Node, StateSet, StateAttribute and Uniform are kept under it.
++        OpenThreads::Mutex* getRefMutex() const { return _refMutex ? _refMutex : getGlobalReferencedMutex(); }
+ #endif
+ 
+         /** Get the optional global Referenced mutex, this can be shared between all osg::Referenced.*/
+@@ -170,7 +182,8 @@ inline int Referenced::ref() const
+     }
+     else
+     {
+-        return ++_refCount;
++        // Orthros (orthros-r12.patch): no mutex (OPENMW_ORTHROS_REFATOMIC on): an atomic increment.
++        return __atomic_add_fetch(&_refCount, 1, __ATOMIC_SEQ_CST);
+     }
+ #endif
+ }
+@@ -191,7 +204,9 @@ inline int Referenced::unref() const
+     }
+     else
+     {
+-        newRef = --_refCount;
++        // Orthros (orthros-r12.patch): no mutex (OPENMW_ORTHROS_REFATOMIC on): an atomic decrement; the thread that
++        // takes the count to 0 deletes, as with the mutex.
++        newRef = __atomic_sub_fetch(&_refCount, 1, __ATOMIC_SEQ_CST);
+         needDelete = newRef==0;
+     }
+ #endif
+diff --git a/deps/src/osg/src/osg/Program.cpp b/deps/src/osg/src/osg/Program.cpp
+index 46397b1..6cd6f10 100644
+--- a/deps/src/osg/src/osg/Program.cpp
++++ b/deps/src/osg/src/osg/Program.cpp
+@@ -660,6 +660,21 @@ bool osg::orthrosUniformsEnabled()
+     return enabled;
+ }
+ 
++static bool orthrosReadUniformValuesSwitch()
++{
++    const char* value = getenv("OPENMW_ORTHROS_UNIFORMVALUES");
++    const bool enabled = !(value && strcmp(value, "0") == 0);
++    if (!enabled) OSG_NOTICE << "OPENMW_ORTHROS_UNIFORMVALUES=0: a changed uniform is sent even when its location holds its bytes" << std::endl;
++    return enabled;
++}
++
++static bool orthrosUniformValuesEnabled()
++{
++    // Orthros (orthros-r12.patch): read once (the page sets ENV before the engine starts), as orthrosUniformsEnabled.
++    static const bool enabled = orthrosReadUniformValuesSwitch();
++    return enabled;
++}
++
+ void Program::PerContextProgram::orthrosBuildSlots() const
+ {
+     // Orthros (orthros-r11.patch): from _uniformInfoMap as apply() reads it — a name with a location >= 0 is applied
+@@ -690,6 +705,70 @@ void Program::PerContextProgram::orthrosBuildSlots() const
+     }
+ }
+ 
++void Program::PerContextProgram::orthrosApplyValue(OrthrosUniformSlot& s, const Uniform& uniform) const
++{
++    // Orthros (orthros-r12.patch): a changed uniform (another one, or the same one set() again) often carries the bytes
++    // its location already holds — the normal matrix of a draw like the last one, a material's colours, a light count:
++    // 724 of ~1,600 glUniform* a frame at Seyda Neen (mid tier). A program's uniform storage changes only through a
++    // glUniform* while it is current — each of them made here (one slot a location; linkProgram registers base names
++    // only) or followed by resetAppliedUniforms (debugdraw's own) — or through a relink; both make the slots anew,
++    // their records not valid. So the call last made here, made again (same GL API type, element count and bytes),
++    // would set the elements it covers to the values they hold: skipped. The words compared as 32-bit integers, not
++    // floats (-0 and +0 differ, a NaN equals its own bits), as GL holds them. Not recorded (valid false, the call
++    // always made): 64-bit types (GL_DOUBLE, GL_INT64_ARB, GL_UNSIGNED_INT64_ARB), no array, no element, more than 16
++    // words, an array shorter than the call reads.
++    const Uniform::Type uniformType = uniform.getType();
++    const unsigned int num = uniform.getNumElements();
++    const void* data = 0;
++    unsigned int size = 0;
++    switch (Uniform::getInternalArrayType(uniformType))
++    {
++    case GL_FLOAT:
++        if (const FloatArray* array = uniform.getFloatArray()) { size = array->getNumElements(); data = array->getDataPointer(); }
++        break;
++    case GL_INT:
++        if (const IntArray* array = uniform.getIntArray()) { size = array->getNumElements(); data = array->getDataPointer(); }
++        break;
++    case GL_UNSIGNED_INT:
++        if (const UIntArray* array = uniform.getUIntArray()) { size = array->getNumElements(); data = array->getDataPointer(); }
++        break;
++    default:
++        break;
++    }
++    // (num checked before the product: no overflow)
++    const unsigned int words = (num >= 1 && num <= 16) ? num * static_cast<unsigned int>(Uniform::getTypeNumComponents(uniformType)) : 0;
++    if (data && words >= 1 && words <= 16 && size >= words)
++    {
++        const Uniform::Type type = Uniform::getGlApiType(uniformType);
++        const unsigned char* bytes = static_cast<const unsigned char*>(data);
++        bool same = s.valid && s.type == type && s.num == num && s.words == words;
++        for (unsigned int i = 0; same && i < words; ++i)
++        {
++            GLuint word;
++            memcpy(&word, bytes + i * sizeof(GLuint), sizeof(GLuint));
++            same = word == s.value[i];
++        }
++        if (same)
++        {
++            s.uniform = &uniform;
++            s.modifiedCount = uniform.getModifiedCount();
++            return;
++        }
++        memcpy(s.value, bytes, words * sizeof(GLuint));
++        s.type = type;
++        s.num = num;
++        s.words = words;
++        s.valid = true;
++    }
++    else
++    {
++        s.valid = false;
++    }
++    uniform.apply(_extensions.get(), s.location);
++    s.uniform = &uniform;
++    s.modifiedCount = uniform.getModifiedCount();
++}
++
+ Program::PerContextProgram::PerContextProgram(const Program* program, unsigned int contextID, GLuint programHandle ) :
+         osg::Referenced(),
+         _glProgramHandle(programHandle),
+@@ -697,6 +776,7 @@ Program::PerContextProgram::PerContextProgram(const Program* program, unsigned i
+         _contextID( contextID ),
+         _ownsProgramHandle(false),
+         _orthrosUniforms(osg::orthrosUniformsEnabled()),
++        _orthrosUniformValues(orthrosUniformValuesEnabled()),
+         _orthrosSlotsDirty(true)
+ {
+     _program = program;
+@@ -869,11 +949,19 @@ void Program::PerContextProgram::linkProgram(osg::State& state)
+     }
+     else
+     {
+-        std::string infoLog;
+-        if( getInfoLog(infoLog) )
++        // Orthros (orthros-r12.patch): the log of a successful link is only printed at INFO; unless
++        // OPENMW_ORTHROS_SHADERLOG=0, it is not read otherwise. osg::orthrosSkipSuccessLogs() is defined in Shader.cpp;
++        // this block-scope declaration names it in namespace osg, this member's namespace (not in include/osg/Program,
++        // so that the change touches no OSG header; with one changed anyway, declare it there instead).
++        extern bool orthrosSkipSuccessLogs();
++        if (!orthrosSkipSuccessLogs() || osg::isNotifyEnabled(osg::INFO))
+         {
+-            OSG_INFO << "Program \""<< _program->getName() << "\" "<<
+-                                      "link succeeded, infolog:\n" << infoLog << std::endl;
++            std::string infoLog;
++            if( getInfoLog(infoLog) )
++            {
++                OSG_INFO << "Program \""<< _program->getName() << "\" "<<
++                                          "link succeeded, infolog:\n" << infoLog << std::endl;
++            }
+         }
+ 
+         _extensions->debugObjectLabel(GL_PROGRAM, _glProgramHandle, _program->getName());
+diff --git a/deps/src/osg/src/osg/Referenced.cpp b/deps/src/osg/src/osg/Referenced.cpp
+index 95b665c..e5f078d 100644
+--- a/deps/src/osg/src/osg/Referenced.cpp
++++ b/deps/src/osg/src/osg/Referenced.cpp
+@@ -11,6 +11,7 @@
+  * OpenSceneGraph Public License for more details.
+ */
+ #include <stdlib.h>
++#include <stdio.h>
+ 
+ #include <osg/Referenced>
+ #include <osg/Notify>
+@@ -110,6 +111,37 @@ DeleteHandler* Referenced::getDeleteHandler()
+     return s_deleteHandler.get();
+ }
+ 
++#if !defined(_OSG_REFERENCED_USE_ATOMIC_OPERATIONS)
++// Orthros (orthros-r12.patch): OPENMW_ORTHROS_REFATOMIC read once, at the first object made (the page sets the
++// environment in preRun and Emscripten's environ is built at constructor priority 100, before any C++ static): -1 not
++// read yet, 1 a mutex per object ("0", the previous code), 0 atomic counts (absent, or any other value). Threads making
++// their first objects at once may each read it; they read the same value and one stores and reports it. Atomic accesses
++// (relaxed: wasm's are sequentially consistent anyway) because a thread may read it while another stores it; not a
++// function-local static (a guard at every object made). Reported on stderr, not through osg::notify: its handler is
++// itself a Referenced.
++static int s_orthrosRefMutexes = -1;
++
++static bool orthrosRefMutexes()
++{
++    int mutexes = __atomic_load_n(&s_orthrosRefMutexes, __ATOMIC_RELAXED);
++    if (mutexes < 0)
++    {
++        const char* value = getenv("OPENMW_ORTHROS_REFATOMIC");
++        const int wanted = (value && value[0]=='0' && value[1]==0) ? 1 : 0;
++        int expected = -1;
++        if (__atomic_compare_exchange_n(&s_orthrosRefMutexes, &expected, wanted, false,
++                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED))
++        {
++            fputs(wanted ? "Orthros: osg reference counts under a mutex per object (OPENMW_ORTHROS_REFATOMIC=0)\n"
++                         : "Orthros: osg reference counts atomic (OPENMW_ORTHROS_REFATOMIC)\n", stderr);
++            mutexes = wanted;
++        }
++        else mutexes = expected;
++    }
++    return mutexes != 0;
++}
++#endif
++
+ #ifdef DEBUG_OBJECT_ALLOCATION_DESTRUCTION
+ OpenThreads::Mutex& getNumObjectMutex()
+ {
+@@ -130,7 +162,8 @@ Referenced::Referenced():
+ #endif
+ {
+ #if !defined(_OSG_REFERENCED_USE_ATOMIC_OPERATIONS)
+-    _refMutex = new OpenThreads::Mutex;
++    // Orthros (orthros-r12.patch): no mutex with OPENMW_ORTHROS_REFATOMIC on (the include file's comment).
++    _refMutex = orthrosRefMutexes() ? new OpenThreads::Mutex : 0;
+ #endif
+ 
+ #ifdef DEBUG_OBJECT_ALLOCATION_DESTRUCTION
+@@ -154,7 +187,8 @@ Referenced::Referenced(bool /*threadSafeRefUnref*/):
+ #endif
+ {
+ #if !defined(_OSG_REFERENCED_USE_ATOMIC_OPERATIONS)
+-    _refMutex = new OpenThreads::Mutex;
++    // Orthros (orthros-r12.patch): no mutex with OPENMW_ORTHROS_REFATOMIC on (the include file's comment).
++    _refMutex = orthrosRefMutexes() ? new OpenThreads::Mutex : 0;
+ #endif
+ 
+ #ifdef DEBUG_OBJECT_ALLOCATION_DESTRUCTION
+@@ -177,7 +211,8 @@ Referenced::Referenced(const Referenced&):
+ #endif
+ {
+ #if !defined(_OSG_REFERENCED_USE_ATOMIC_OPERATIONS)
+-    _refMutex = new OpenThreads::Mutex;
++    // Orthros (orthros-r12.patch): no mutex with OPENMW_ORTHROS_REFATOMIC on (the include file's comment).
++    _refMutex = orthrosRefMutexes() ? new OpenThreads::Mutex : 0;
+ #endif
+ 
+ #ifdef DEBUG_OBJECT_ALLOCATION_DESTRUCTION
+@@ -250,12 +285,24 @@ ObserverSet* Referenced::getOrCreateObserverSet() const
+     }
+     else
+     {
+-        if (!_observerSet)
++        // Orthros (orthros-r12.patch): no mutex (OPENMW_ORTHROS_REFATOMIC on): the set attached by a compare-and-swap,
++        // as OSG's atomic build does; of two threads attaching one at once, the one that lost drops its own.
++        ObserverSet* observerSet = static_cast<ObserverSet*>(__atomic_load_n(&_observerSet, __ATOMIC_SEQ_CST));
++        while (!observerSet)
+         {
+-            _observerSet = new ObserverSet(this);
+-            static_cast<ObserverSet*>(_observerSet)->ref();
++            ObserverSet* newObserverSet = new ObserverSet(this);
++            newObserverSet->ref();
++
++            void* expected = 0;
++            if (__atomic_compare_exchange_n(&_observerSet, &expected, static_cast<void*>(newObserverSet), false,
++                                            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
++            {
++                return newObserverSet;
++            }
++            newObserverSet->unref();
++            observerSet = static_cast<ObserverSet*>(expected);
+         }
+-        return static_cast<ObserverSet*>(_observerSet);
++        return observerSet;
+     }
+ #endif
+ }
+@@ -305,7 +352,8 @@ int Referenced::unref_nodelete() const
+     }
+     else
+     {
+-        return --_refCount;
++        // Orthros (orthros-r12.patch): no mutex (OPENMW_ORTHROS_REFATOMIC on): an atomic decrement.
++        return __atomic_sub_fetch(&_refCount, 1, __ATOMIC_SEQ_CST);
+     }
+ #endif
+ }
+diff --git a/deps/src/osg/src/osg/Shader.cpp b/deps/src/osg/src/osg/Shader.cpp
+index de90557..0ac23af 100644
+--- a/deps/src/osg/src/osg/Shader.cpp
++++ b/deps/src/osg/src/osg/Shader.cpp
+@@ -23,6 +23,8 @@
+ #include <list>
+ #include <sstream>
+ #include <iomanip>
++#include <cstdlib>
++#include <cstring>
+ 
+ #include <osg/Notify>
+ #include <osg/State>
+@@ -578,6 +580,33 @@ namespace
+     }
+ }
+ 
++namespace osg
++{
++
++// Orthros (orthros-r12.patch): OPENMW_ORTHROS_SHADERLOG, read once (the page sets ENV before the engine starts):
++// absent or anything but "0", a shader's info log after a successful compile and a program's after a successful link
++// are read only when OSG would print them (INFO enabled: OSG_INFO's own test); "0", always read, as before. In WebGL
++// each read is one synchronous round trip to the GPU process (glGetShaderiv/glGetProgramiv(GL_INFO_LOG_LENGTH) call
++// getShaderInfoLog/getProgramInfoLog), about 0.3 ms: a small cleanup, not a hitch fix. A profile shows the first
++// read of a compile burst long (17-630 ms), but that is the GPU process still busy after the first COMPILE_STATUS
++// answered; without the read, the next synchronous call (the next shader's COMPILE_STATUS) waits for it instead.
++// Defined in namespace osg without a header: Program.cpp declares it locally in linkProgram.
++static bool orthrosReadShaderLogSwitch()
++{
++    const char* value = std::getenv("OPENMW_ORTHROS_SHADERLOG");
++    const bool enabled = !(value && std::strcmp(value, "0") == 0);
++    if (!enabled) OSG_NOTICE << "OPENMW_ORTHROS_SHADERLOG=0: info logs read after every successful compile and link" << std::endl;
++    return enabled;
++}
++
++bool orthrosSkipSuccessLogs()
++{
++    static const bool enabled = orthrosReadShaderLogSwitch();
++    return enabled;
++}
++
++}
++
+ void Shader::PerContextShader::compileShader(osg::State& state)
+ {
+     if( ! _needsCompile ) return;
+@@ -747,11 +776,16 @@ void Shader::PerContextShader::compileShader(osg::State& state)
+     }
+     else
+     {
+-        std::string infoLog;
+-        if( getInfoLog(infoLog) )
++        // Orthros (orthros-r12.patch): the log of a successful compile is only printed at INFO; unless
++        // OPENMW_ORTHROS_SHADERLOG=0, it is not read otherwise (orthrosSkipSuccessLogs()).
++        if (!orthrosSkipSuccessLogs() || osg::isNotifyEnabled(osg::INFO))
+         {
+-            OSG_INFO << _shader->getTypename() << " Shader \""
+-                << _shader->getName() << "\" infolog:\n" << infoLog << std::endl;
++            std::string infoLog;
++            if( getInfoLog(infoLog) )
++            {
++                OSG_INFO << _shader->getTypename() << " Shader \""
++                    << _shader->getName() << "\" infolog:\n" << infoLog << std::endl;
++            }
+         }
+ 
+         _extensions->debugObjectLabel(GL_SHADER, _glShaderHandle, _shader->getName());
+diff --git a/openmw/apps/openmw/mwgui/layout.cpp b/openmw/apps/openmw/mwgui/layout.cpp
+index d350dab..1dc2902 100644
+--- a/openmw/apps/openmw/mwgui/layout.cpp
++++ b/openmw/apps/openmw/mwgui/layout.cpp
+@@ -1,6 +1,10 @@
+ #include "layout.hpp"
+ 
++#include <cstdlib>
++#include <cstring>
++
+ #include <MyGUI_Gui.h>
++#include <MyGUI_LanguageManager.h>
+ #include <MyGUI_LayoutManager.h>
+ #include <MyGUI_TextBox.h>
+ #include <MyGUI_UString.h>
+@@ -54,12 +58,45 @@ namespace MWGui
+         static_cast<MyGUI::TextBox*>(pt)->setCaption(MyGUI::UString(caption));
+     }
+ 
++    // Orthros (orthros-r12.patch): OPENMW_ORTHROS_IDLECALLS, read once (absent or anything but "0": on).
++    static bool orthrosIdleCallsEnabled()
++    {
++        static const bool enabled = [] {
++            const char* value = std::getenv("OPENMW_ORTHROS_IDLECALLS");
++            return value == nullptr || std::strcmp(value, "0") != 0;
++        }();
++        return enabled;
++    }
++
+     void Layout::setTitle(std::string_view title)
+     {
+         MyGUI::Window* window = static_cast<MyGUI::Window*>(mMainWidget);
+ 
+         if (window->getCaption() != title)
+-            window->setCaptionWithReplacing(MyGUI::UString(title));
++        {
++            const MyGUI::UString text(title);
++            // Orthros (orthros-r12.patch): the caption holds the title with its tags replaced, so a tagged title
++            // ("#{Interface:None}", "#{sSkillHandtohand}", set every frame by MechanicsManager::update when nothing is
++            // selected) never equals it above and was set again every frame — the caption EditBox's text rebuilt and
++            // WindowCaption::align() run. This is TextBox::setCaptionWithReplacing (the same string it receives, the
++            // same replaceTags call, every time: tag values that change are still resolved), the caption set only
++            // when its text differs. A caption the EditBox transforms (cut to its maximum length, a newline in a
++            // single-line box) never compares equal and is set as before. Titles with "\n" escapes take the original
++            // call. OPENMW_ORTHROS_IDLECALLS=0: setCaptionWithReplacing whenever the raw title differs.
++            if (orthrosIdleCallsEnabled())
++            {
++                const std::string_view value = text;
++                if (value.find("\\n") == std::string_view::npos)
++                {
++                    const MyGUI::UString replaced
++                        = MyGUI::LanguageManager::getInstance().replaceTags(MyGUI::UString(value));
++                    if (window->getCaption() != replaced)
++                        window->setCaption(replaced);
++                    return;
++                }
++            }
++            window->setCaptionWithReplacing(text);
++        }
+     }
+ 
+     MyGUI::Widget* Layout::getWidget(std::string_view name) const
+diff --git a/openmw/apps/openmw/mwrender/landmanager.cpp b/openmw/apps/openmw/mwrender/landmanager.cpp
+index d17933b..8553592 100644
+--- a/openmw/apps/openmw/mwrender/landmanager.cpp
++++ b/openmw/apps/openmw/mwrender/landmanager.cpp
+@@ -49,6 +49,12 @@ namespace MWRender
+         return landObj;
+     }
+ 
++    bool LandManager::orthrosCached(ESM::ExteriorCellLocation cellIndex)
++    {
++        // (getLand's own key for an ESM3 cell — an ESM4 worldspace's may be its parent's: not asked here)
++        return mCache->getRefFromObjectCacheOrNone(cellIndex).has_value();
++    }
++
+     void LandManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const
+     {
+         Resource::reportStats("Land", frameNumber, mCache->getStats(), *stats);
+diff --git a/openmw/apps/openmw/mwrender/landmanager.hpp b/openmw/apps/openmw/mwrender/landmanager.hpp
+index 1b82f32..30a53c4 100644
+--- a/openmw/apps/openmw/mwrender/landmanager.hpp
++++ b/openmw/apps/openmw/mwrender/landmanager.hpp
+@@ -23,6 +23,14 @@ namespace MWRender
+         /// @note Will return nullptr if not found.
+         osg::ref_ptr<ESMTerrain::LandObject> getLand(ESM::ExteriorCellLocation cellIndex);
+ 
++        /// Orthros (orthros-r12.patch): getLand() would read nothing for this ESM3 cell — its answer is cached, a land
++        /// or the null of a cell without one (getRefFromObjectCacheOrNone; counted in the Land cache's stats as a
++        /// get, as r5's probes of the image and scene caches are in theirs).
++        bool orthrosCached(ESM::ExteriorCellLocation cellIndex);
++
++        /// Orthros (orthros-r12.patch): the data a land is loaded with (ESM::Land::DATA_*).
++        int getLoadFlags() const { return mLoadFlags; }
++
+         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
+ 
+     private:
+diff --git a/openmw/apps/openmw/mwrender/terrainstorage.cpp b/openmw/apps/openmw/mwrender/terrainstorage.cpp
+index 91f6d70..3b181e4 100644
+--- a/openmw/apps/openmw/mwrender/terrainstorage.cpp
++++ b/openmw/apps/openmw/mwrender/terrainstorage.cpp
+@@ -1,11 +1,18 @@
+ #include "terrainstorage.hpp"
+ 
++#include <algorithm>
++#include <atomic>
++#include <cstdint>
+ #include <cstdlib>
++#include <string>
+ 
++#include <components/debug/debuglog.hpp>
+ #include <components/esm3/loadland.hpp>
+ #include <components/esm4/loadltex.hpp>
+ #include <components/esm4/loadtxst.hpp>
+ #include <components/esm4/loadwrld.hpp>
++#include <components/files/conversion.hpp>
++#include <components/vfs/file.hpp>
+ 
+ #include "../mwbase/environment.hpp"
+ #include "../mwworld/esmstore.hpp"
+@@ -54,6 +61,37 @@ namespace MWRender
+         }
+     }
+ 
++    bool TerrainStorage::orthrosLandReady(ESM::ExteriorCellLocation cellLocation)
++    {
++        if (ESM::isEsm4Ext(cellLocation.mWorldspace))
++            return true;
++        if (mLandManager->orthrosCached(cellLocation))
++            return true;
++        const MWWorld::ESMStore& esmStore = *MWBase::Environment::get().getESMStore();
++        const ESM::Land* land = esmStore.get<ESM::Land>().search(cellLocation.mX, cellLocation.mY);
++        // (LandManager::getLand's LandObject reads the record again from its file, even when the record's own data is
++        // loaded already: ESM::Land::loadData — ESMReader::restoreContext, a std::ifstream sought to
++        // mContext.filePos, then within the record's mContext.leftRec bytes. It reads nothing for a cell without a
++        // record, a record made without a file, or one with none of the data asked)
++        if (land == nullptr || land->mContext.filename.empty()
++            || (land->mDataTypes & mLandManager->getLoadFlags()) == 0)
++            return true;
++        // (the stream reads beyond the record's end: libc++'s filebuf 4 KiB at a time, musl's FILE buffer up to 1 KiB
++        // more behind each; the page answers for its pieces, clipped to the file's size)
++        constexpr std::uint64_t streamReadAhead = 8 << 10;
++        const std::string path = Files::pathToUnicodeString(land->mContext.filename);
++        const std::uint64_t offset = static_cast<std::uint64_t>(land->mContext.filePos);
++        const std::uint64_t size
++            = static_cast<std::uint64_t>(std::max<std::streamsize>(land->mContext.leftRec, 0)) + streamReadAhead;
++        const bool ready = VFS::orthrosRangeReady(path, offset, size);
++        // (once: the path the page is asked with — one it does not stream answers ready, and nothing is put off)
++        static std::atomic<bool> logged{ false };
++        if (!logged.exchange(true))
++            Log(Debug::Info) << "Orthros: terrain chunks wait for their LAND records; the first asked: " << path
++                             << " bytes " << offset << "+" << size << ", " << (ready ? "ready" : "not in the page yet");
++        return ready;
++    }
++
+     static void BoundUnion(float& minX, float& maxX, float& minY, float& maxY, float x, float y)
+     {
+         if (x < minX)
+diff --git a/openmw/apps/openmw/mwrender/terrainstorage.hpp b/openmw/apps/openmw/mwrender/terrainstorage.hpp
+index 00cf04c..797a73f 100644
+--- a/openmw/apps/openmw/mwrender/terrainstorage.hpp
++++ b/openmw/apps/openmw/mwrender/terrainstorage.hpp
+@@ -29,6 +29,11 @@ namespace MWRender
+ 
+         bool hasData(ESM::ExteriorCellLocation cellLocation) override;
+ 
++        /// Orthros (orthros-r12.patch): an ESM3 cell's land cached by the LandManager (or known absent), no LAND
++        /// record, one without a file or without data to load, or its record's bytes in the page (VFS::
++        /// orthrosRangeReady, which fetches them in the background when they are not). An ESM4 worldspace: true.
++        bool orthrosLandReady(ESM::ExteriorCellLocation cellLocation) override;
++
+         /// Get bounds of the whole terrain in cell units
+         void getBounds(float& minX, float& maxX, float& minY, float& maxY, ESM::RefId worldspace) override;
+ 
+diff --git a/openmw/components/esmterrain/storage.cpp b/openmw/components/esmterrain/storage.cpp
+index 5df8936..54f418a 100644
+--- a/openmw/components/esmterrain/storage.cpp
++++ b/openmw/components/esmterrain/storage.cpp
+@@ -390,6 +390,40 @@ namespace ESMTerrain
+         }
+     }
+ 
++    void Storage::orthrosBlendmapLayers(float chunkSize, const osg::Vec2f& chunkCenter, ESM::RefId worldspace,
++        std::vector<Terrain::LayerInfo>& out)
++    {
++        if (ESM::isEsm4Ext(worldspace))
++            return;
++        // (getBlendmaps' ESM3 sampling, kept in step with it below: the ids it finds — the cells beside the chunk it
++        // samples an edge of included —, each once; consecutive texels mostly share one)
++        const osg::Vec2f origin = chunkCenter - osg::Vec2f(chunkSize, chunkSize) * 0.5f;
++        const int startCellX = static_cast<int>(std::floor(origin.x()));
++        const int startCellY = static_cast<int>(std::floor(origin.y()));
++        LandCache cache(startCellX - 1, startCellY - 1, static_cast<std::size_t>(std::ceil(chunkSize)) + 2);
++        std::pair lastCell{ startCellX, startCellY };
++        const LandObject* land = getLand(ESM::ExteriorCellLocation(startCellX, startCellY, worldspace), cache);
++        std::set<UniqueTextureId> ids;
++        std::optional<UniqueTextureId> lastId;
++        const auto handleSample = [&](const CellSample& sample) {
++            const std::pair cell{ sample.mCellX, sample.mCellY };
++            if (lastCell != cell)
++            {
++                land = getLand(ESM::ExteriorCellLocation(sample.mCellX, sample.mCellY, worldspace), cache);
++                lastCell = cell;
++            }
++            const UniqueTextureId id = getTextureIdAt(land, sample.mSrcRow, sample.mSrcCol);
++            if (lastId != id)
++            {
++                ids.insert(id);
++                lastId = id;
++            }
++        };
++        sampleBlendmaps(chunkSize, origin.x(), origin.y(), ESM::Land::LAND_TEXTURE_SIZE, handleSample);
++        for (const UniqueTextureId& id : ids)
++            out.push_back(getLayerInfo(getTextureName(id)));
++    }
++
+     VFS::Path::Normalized Storage::getTextureName(UniqueTextureId id)
+     {
+         constexpr VFS::Path::NormalizedView defaultTexture("_land_default.dds");
+diff --git a/openmw/components/esmterrain/storage.hpp b/openmw/components/esmterrain/storage.hpp
+index 670a812..ebca247 100644
+--- a/openmw/components/esmterrain/storage.hpp
++++ b/openmw/components/esmterrain/storage.hpp
+@@ -145,6 +145,14 @@ namespace ESMTerrain
+         void orthrosLandTextures(
+             ESM::ExteriorCellLocation cellLocation, std::vector<VFS::Path::Normalized>& out) override;
+ 
++        /// Orthros (orthros-r12.patch): an ESM3 chunk's layers by getBlendmaps()'s own sampling (the same cells and
++        /// texels, so the same texture ids, each through getTextureName() and getLayerInfo()), without its images.
++        /// getBlendmaps keeps one layer per diffuse map, the first id's: two ids whose layers share a diffuse map (a
++        /// texture named as another's specular map) both listed here — a normal map more at most. An ESM4
++        /// worldspace: none.
++        void orthrosBlendmapLayers(float chunkSize, const osg::Vec2f& chunkCenter, ESM::RefId worldspace,
++            std::vector<Terrain::LayerInfo>& out) override;
++
+         float getVertexHeight(const ESM::LandData* data, int x, int y)
+         {
+             const int landSize = data->getLandSize();
+diff --git a/openmw/components/lua/scriptscontainer.cpp b/openmw/components/lua/scriptscontainer.cpp
+index 8b62eb7..f9e7963 100644
+--- a/openmw/components/lua/scriptscontainer.cpp
++++ b/openmw/components/lua/scriptscontainer.cpp
+@@ -2,6 +2,9 @@
+ 
+ #include "scripttracker.hpp"
+ 
++#include <cstdlib>
++#include <cstring>
++
+ #include <components/esm/luascripts.hpp>
+ 
+ namespace
+@@ -752,8 +755,41 @@ namespace LuaUtil
+         }
+     }
+ 
++    // Orthros (orthros-r12.patch): OPENMW_ORTHROS_IDLECALLS, read once (absent or anything but "0": on).
++    static bool orthrosIdleCallsEnabled()
++    {
++        static const bool enabled = [] {
++            const char* value = std::getenv("OPENMW_ORTHROS_IDLECALLS");
++            const bool on = value == nullptr || std::strcmp(value, "0") != 0;
++            if (!on)
++                Log(Debug::Info) << "Orthros: OPENMW_ORTHROS_IDLECALLS=0: Lua timers entered every frame";
++            return on;
++        }();
++        return enabled;
++    }
++
+     void ScriptsContainer::processTimers(double simulationTime, double gameTime)
+     {
++        // Orthros (orthros-r12.patch): every active container came here every frame and paid a protected call
++        // (lua_checkstack, the pcall, a LuaView and its registry reference) to find, most of the time, that no timer
++        // was due. A loaded container whose earliest timers (each queue is a heap with the earliest at its front:
++        // Timer::operator< is reversed) are not due yet returns here; the test is updateTimerQueue's own loop
++        // condition, so the protected call runs exactly when a timer fires. mRequiredLoading is set as ensureLoaded()
++        // would have (ScriptTracker::unloadInactiveScripts reads it). An unloaded container takes the original path
++        // (ensureLoaded loads it). OPENMW_ORTHROS_IDLECALLS=0: the protected call every frame.
++        if (orthrosIdleCallsEnabled())
++        {
++            if (LoadedData* data = std::get_if<LoadedData>(&mData))
++            {
++                mRequiredLoading = true;
++                const bool simulationDue = !data->mSimulationTimersQueue.empty()
++                    && data->mSimulationTimersQueue.front().mTime <= simulationTime;
++                const bool gameDue
++                    = !data->mGameTimersQueue.empty() && data->mGameTimersQueue.front().mTime <= gameTime;
++                if (!simulationDue && !gameDue)
++                    return;
++            }
++        }
+         mLua.protectedCall([&](LuaView& view) {
+             LoadedData& data = ensureLoaded();
+             updateTimerQueue(data.mSimulationTimersQueue, simulationTime);
+diff --git a/openmw/components/myguiplatform/myguirendermanager.cpp b/openmw/components/myguiplatform/myguirendermanager.cpp
+index c197d98..18ce559 100644
+--- a/openmw/components/myguiplatform/myguirendermanager.cpp
++++ b/openmw/components/myguiplatform/myguirendermanager.cpp
+@@ -2,7 +2,15 @@
+ // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
+ #include "myguirendermanager.hpp"
+ 
++#include <cstddef>
++#include <cstdint>
+ #include <cstdlib>
++#include <cstring>
++#include <vector>
++
++#if defined(__wasm_simd128__)
++#include <wasm_simd128.h>
++#endif
+ 
+ #include <MyGUI_Timer.h>
+ 
+@@ -48,6 +56,129 @@
+ namespace MyGUIPlatform
+ {
+ 
++    namespace
++    {
++        // Orthros (orthros-r12.patch): the GUI's two frame-cost switches, each read once (absent or anything but
++        // "0": on; "0": the previous code) and logged once. OPENMW_ORTHROS_GUIBATCHES=0 restores all the GUI's
++        // previous code (both changes off); OPENMW_ORTHROS_GUIUPLOAD=0 the vertex uploads' only.
++        bool orthrosSwitch(const char* name, const char* what)
++        {
++            const char* value = std::getenv(name);
++            const bool on = value == nullptr || std::strcmp(value, "0") != 0;
++            if (on)
++                Log(Debug::Info) << "Orthros: " << what << ": on";
++            else
++                Log(Debug::Info) << "Orthros: " << what << ": off (" << name << "=0)";
++            return on;
++        }
++
++        // Orthros (orthros-r12.patch): OPENMW_ORTHROS_GUIBATCHES: the drawable's batches rewritten in place
++        // (Drawable::orthrosNextBatch). "0" turns OPENMW_ORTHROS_GUIUPLOAD's change off as well (orthrosGuiUpload).
++        bool orthrosGuiBatches()
++        {
++            static const bool on = orthrosSwitch("OPENMW_ORTHROS_GUIBATCHES", "GUI batches rewritten in place");
++            return on;
++        }
++
++        // Orthros (orthros-r12.patch): OPENMW_ORTHROS_GUIUPLOAD: a GUI vertex array rewritten with the bytes it held
++        // is not uploaded again (OSGVertexBuffer::lock/unlock). Off with OPENMW_ORTHROS_GUIBATCHES=0 too, its line
++        // naming that switch (OPENMW_ORTHROS_GUIUPLOAD then not read: orthrosSwitch would log "on" for it absent);
++        // OPENMW_ORTHROS_GUIUPLOAD=0, the finer switch, turns this change off alone, the batches still in place.
++        bool orthrosGuiUpload()
++        {
++            static const bool on = [] {
++                if (!orthrosGuiBatches())
++                {
++                    Log(Debug::Info) << "Orthros: GUI vertex arrays rewritten unchanged not uploaded again: off "
++                                        "(OPENMW_ORTHROS_GUIBATCHES=0)";
++                    return false;
++                }
++                return orthrosSwitch(
++                    "OPENMW_ORTHROS_GUIUPLOAD", "GUI vertex arrays rewritten unchanged not uploaded again");
++            }();
++            return on;
++        }
++
++        // Orthros (orthros-r12.patch): OPENMW_ORTHROS_GUISTATS=1, a measuring aid, off unless asked for (absent or
++        // anything but "1": off, nothing counted, nothing logged -- both switches' "0" paths are then the previous
++        // code exactly): OSGVertexBuffer::unlock's counts, logged every sOrthrosStatsFrames GUI frames by
++        // RenderManager::collectDrawCalls (one a frame), then started again.
++        bool orthrosGuiStats()
++        {
++            static const bool on = [] {
++                const char* value = std::getenv("OPENMW_ORTHROS_GUISTATS");
++                const bool asked = value != nullptr && std::strcmp(value, "1") == 0;
++                if (asked)
++                    Log(Debug::Info) << "Orthros: GUI vertex upload counters: on (OPENMW_ORTHROS_GUISTATS=1)";
++                return asked;
++            }();
++            return on;
++        }
++
++        struct OrthrosGuiStats
++        {
++            size_t mFrames = 0;
++            size_t mUnlocks = 0;
++            size_t mCompared = 0;
++            size_t mUnchanged = 0;
++            size_t mBytesCompared = 0;
++            size_t mBytesNotUploaded = 0;
++            size_t mBytesDirtied = 0;
++        };
++
++        OrthrosGuiStats sOrthrosGuiStats;
++
++        constexpr size_t sOrthrosStatsFrames = 600;
++
++        // Orthros (orthros-r12.patch): the bytes a GUI vertex array held when OSGVertexBuffer::lock() handed it out
++        // again at its size, its item drawn since its previous write, compared by its unlock(). One copy for all the
++        // buffers: MyGUI's lock/unlock pairs never nest (RenderItem::renderToTarget locks its buffer, writes all its
++        // draw items, unlocks it; on the cull traversal's thread), and mOwner guards it all the same -- an unlock()
++        // whose lock() saved no copy, or whose copy a later lock() replaced, dirties as before. A copy per buffer
++        // would double the GUI's vertex memory (text-heavy windows -- the journal, the inventory -- are large). Grown
++        // to the largest array copied, never shrunk.
++        struct OrthrosVertexCopy
++        {
++            std::vector<unsigned char> mBytes;
++            size_t mSize = 0;
++            const void* mOwner = nullptr;
++        };
++
++        OrthrosVertexCopy sOrthrosVertexCopy;
++
++        // Orthros (orthros-r12.patch): whether the n bytes at a and b are equal. musl's memcmp goes byte by byte:
++        // this compares 64 bytes a step (v128 loads, unaligned ones allowed in WebAssembly), then 8 (words loaded
++        // through memcpy: no misaligned access), then the bytes left.
++        bool orthrosSameBytes(const unsigned char* a, const unsigned char* b, size_t n)
++        {
++            size_t i = 0;
++#if defined(__wasm_simd128__)
++            for (; i + 64 <= n; i += 64)
++            {
++                const v128_t d0 = wasm_v128_xor(wasm_v128_load(a + i), wasm_v128_load(b + i));
++                const v128_t d1 = wasm_v128_xor(wasm_v128_load(a + i + 16), wasm_v128_load(b + i + 16));
++                const v128_t d2 = wasm_v128_xor(wasm_v128_load(a + i + 32), wasm_v128_load(b + i + 32));
++                const v128_t d3 = wasm_v128_xor(wasm_v128_load(a + i + 48), wasm_v128_load(b + i + 48));
++                if (wasm_v128_any_true(wasm_v128_or(wasm_v128_or(d0, d1), wasm_v128_or(d2, d3))))
++                    return false;
++            }
++#endif
++            for (; i + 8 <= n; i += 8)
++            {
++                std::uint64_t x;
++                std::uint64_t y;
++                std::memcpy(&x, a + i, sizeof(x));
++                std::memcpy(&y, b + i, sizeof(y));
++                if (x != y)
++                    return false;
++            }
++            for (; i < n; ++i)
++                if (a[i] != b[i])
++                    return false;
++            return true;
++        }
++    }
++
+     class Drawable : public osg::Drawable
+     {
+         MyGUIPlatform::RenderManager* mParent;
+@@ -227,6 +358,7 @@ namespace MyGUIPlatform
+             : mParent(parent)
+             , mWriteTo(0)
+             , mReadFrom(0)
++            , mOrthrosBatchesInPlace(orthrosGuiBatches())
+         {
+             setSupportsDisplayList(false);
+ 
+@@ -263,6 +395,7 @@ namespace MyGUIPlatform
+             , mWriteTo(0)
+             , mReadFrom(0)
+             , mDummyTexture(copy.mDummyTexture)
++            , mOrthrosBatchesInPlace(copy.mOrthrosBatchesInPlace)
+         {
+ #ifdef __EMSCRIPTEN__
+             mOrthrosEnableOnce = copy.mOrthrosEnableOnce;
+@@ -287,10 +420,43 @@ namespace MyGUIPlatform
+ 
+         void addBatch(const Batch& batch) { mBatchVector[mWriteTo].push_back(batch); }
+ 
++        // Orthros (orthros-r12.patch): OPENMW_ORTHROS_GUIBATCHES, read once with the drawable (made at startup). On,
++        // a buffer's batches are kept until its next use (sNumBuffers frames later) and overwritten in place:
++        // clear() resets the buffer's count only, orthrosNextBatch() hands out its next element (a new one only past
++        // those it holds) and finish() erases those left past the count. Before, clear() destroyed the HUD's ~170
++        // batches every frame (up to four ref_ptr unrefs each) and doRender built each anew and copied it in (ref_ptr
++        // has no move operations: four refs more); now an unchanged batch costs a pointer comparison per field
++        // (RenderManager::doRender). drawImplementation reads the same vector: the same batches in the same order,
++        // finish() run by end() before any draw reads the buffer (collectDrawCalls: begin, doRender..., end). "0":
++        // cleared and pushed back as before. Either way a buffer holds its batches until it is written again.
++        bool orthrosBatchesInPlace() const { return mOrthrosBatchesInPlace; }
++
++        Batch& orthrosNextBatch()
++        {
++            std::vector<Batch>& vec = mBatchVector[mWriteTo];
++            size_t& count = mBatchCount[mWriteTo];
++            if (count == vec.size())
++                vec.emplace_back();
++            return vec[count++];
++        }
++
+         void clear()
+         {
+             mWriteTo = (mWriteTo + 1) % sNumBuffers;
+-            mBatchVector[mWriteTo].clear();
++            if (mOrthrosBatchesInPlace)
++                mBatchCount[mWriteTo] = 0;
++            else
++                mBatchVector[mWriteTo].clear();
++        }
++
++        void finish()
++        {
++            if (!mOrthrosBatchesInPlace)
++                return;
++            std::vector<Batch>& vec = mBatchVector[mWriteTo];
++            const size_t count = mBatchCount[mWriteTo];
++            if (count < vec.size())
++                vec.erase(vec.begin() + static_cast<std::ptrdiff_t>(count), vec.end());
+         }
+ 
+         osg::StateSet* getDrawableStateSet() { return mStateSet; }
+@@ -309,6 +475,10 @@ namespace MyGUIPlatform
+ 
+         osg::ref_ptr<osg::Texture2D> mDummyTexture;
+ 
++        // Orthros (orthros-r12.patch): OPENMW_ORTHROS_GUIBATCHES, and each buffer's batches written since its clear().
++        bool mOrthrosBatchesInPlace;
++        size_t mBatchCount[sNumBuffers] = {};
++
+ #ifdef __EMSCRIPTEN__
+         // Orthros (orthros-r11.patch): the batches' vertex arrays enabled with the first batch of a draw only.
+         bool mOrthrosEnableOnce;
+@@ -371,12 +541,18 @@ namespace MyGUIPlatform
+ 
+     MyGUI::Vertex* OSGVertexBuffer::lock()
+     {
++        // Orthros (orthros-r12.patch): whether this buffer's item was drawn since its previous write, for
++        // OPENMW_ORTHROS_GUIUPLOAD below.
++        const bool wasUsed = mUsed;
+         if (mUsed)
+         {
+             mCurrentBuffer = (mCurrentBuffer + 1) % 2;
+             mUsed = false;
+         }
+         osg::UByteArray* array = mVertexArray[mCurrentBuffer];
++        // Orthros (orthros-r12.patch): an array handed out again at its size (OPENMW_ORTHROS_GUIUPLOAD); a new one
++        // (create) or a resized one never is saved -- unlock() dirties those.
++        bool reused = false;
+         if (!array)
+         {
+             array = create();
+@@ -385,12 +561,81 @@ namespace MyGUIPlatform
+         {
+             array->resize(mNeedVertexCount * sizeof(MyGUI::Vertex));
+         }
++        else
++            reused = true;
++
++        // Orthros (orthros-r12.patch): OPENMW_ORTHROS_GUIUPLOAD: the array's bytes saved for unlock() only when its
++        // item was drawn since its previous write (mUsed on entry: RenderManager::doRender batched it, the item had
++        // vertices). Then the array handed out is the other one, which was batched -- drawn, its GL buffer uploaded
++        // -- after its own last write (lock() moves off an array only once it is used), so an unlock() finding the
++        // same bytes saves a real upload at the item's next draw. An item that drew nothing since its previous write
++        // is not copied: a hidden window's text (Layout::setTitle from WindowManager::unsetSelectedSpell/Weapon at
++        // every MechanicsManager::update marks its render item out of date) is rewritten every frame with 0 vertices,
++        // never batched, never uploaded -- its dirty() costs a counter, while copying and comparing its whole
++        // reserved array (all its text, ~290 bytes a character) would cost every frame and save nothing. Its
++        // unlock() dirties as before.
++        if (orthrosGuiUpload())
++        {
++            OrthrosVertexCopy& copy = sOrthrosVertexCopy;
++            copy.mOwner = nullptr;
++            if (wasUsed && reused && !array->empty())
++            {
++                const size_t size = array->size();
++                if (copy.mBytes.size() < size)
++                    copy.mBytes.resize(size);
++                std::memcpy(copy.mBytes.data(), &(*array)[0], size);
++                copy.mSize = size;
++                copy.mOwner = this;
++            }
++        }
+ 
+         return (MyGUI::Vertex*)&(*array)[0];
+     }
+ 
+     void OSGVertexBuffer::unlock()
+     {
++        // Orthros (orthros-r12.patch): OPENMW_ORTHROS_GUIUPLOAD. RenderItem::renderToTarget rewrites a render item's
++        // whole buffer when any of its draw items changed (or at a view update), often with the bytes it held. An
++        // array rewritten with exactly the bytes it held at lock() -- compared over its whole size: MyGUI writes at
++        // most mNeedVertexCount vertices from its start, the tail it leaves compares equal -- is not dirtied, so not
++        // uploaded again. Invariant: this array's buffer object holds this array only (create), and its GL buffer
++        // holds either exactly the array's bytes or a pending dirty (its GLBufferObject dirty, the array's modified
++        // count ahead of the buffer entry's) that uploads the array's bytes as they are at the next draw binding it
++        // (VertexArrayState::bindVertexBufferObject, GLBufferObject::compileBuffer). The bytes change only between a
++        // lock() and its unlock(); dirtying when they differ, when no copy was saved (lock(): not drawn since its
++        // last write, or the array just made or resized -- Array::resize does not dirty, and the GL buffer's size
++        // changes), keeps it, and a pending dirty stays pending: skipping both dirty() calls on equal bytes leaves
++        // the GL buffer's bytes at every draw exactly what they would have been. Off (OPENMW_ORTHROS_GUIUPLOAD=0 or
++        // OPENMW_ORTHROS_GUIBATCHES=0): dirtied at every unlock as before. Counted with OPENMW_ORTHROS_GUISTATS=1 only.
++        OrthrosGuiStats* stats = orthrosGuiStats() ? &sOrthrosGuiStats : nullptr;
++        if (stats)
++            ++stats->mUnlocks;
++        if (orthrosGuiUpload())
++        {
++            OrthrosVertexCopy& copy = sOrthrosVertexCopy;
++            const osg::UByteArray* array = mVertexArray[mCurrentBuffer];
++            const bool saved = copy.mOwner == this && copy.mSize == array->size();
++            copy.mOwner = nullptr;
++            if (saved)
++            {
++                const bool same = orthrosSameBytes(copy.mBytes.data(), &(*array)[0], copy.mSize);
++                if (stats)
++                {
++                    ++stats->mCompared;
++                    stats->mBytesCompared += copy.mSize;
++                    if (same)
++                    {
++                        ++stats->mUnchanged;
++                        stats->mBytesNotUploaded += copy.mSize;
++                    }
++                }
++                if (same)
++                    return;
++            }
++        }
++        if (stats)
++            stats->mBytesDirtied += mVertexArray[mCurrentBuffer]->size();
++
+         mVertexArray[mCurrentBuffer]->dirty();
+         mBuffer[mCurrentBuffer]->dirty();
+     }
+@@ -513,6 +758,38 @@ namespace MyGUIPlatform
+ 
+     void RenderManager::doRender(MyGUI::IVertexBuffer* buffer, MyGUI::ITexture* texture, size_t count)
+     {
++        // Orthros (orthros-r12.patch): OPENMW_ORTHROS_GUIBATCHES (Drawable::orthrosBatchesInPlace): the batch is the
++        // drawable's next kept element, all five fields written (a kept element holds an older batch's), each
++        // from a raw pointer -- osg::ref_ptr::operator=(T*) returns at once for the pointer it holds, where a
++        // temporary ref_ptr would take and drop a reference again --, with the values and precedence of the code
++        // below: the texture or none, the vertex buffer and its array, the injected StateSet before the texture's
++        // own, none without either, the count.
++        if (mDrawable->orthrosBatchesInPlace())
++        {
++            OSGVertexBuffer* vertexBuffer = static_cast<OSGVertexBuffer*>(buffer);
++            Drawable::Batch& batch = mDrawable->orthrosNextBatch();
++            batch.mVertexCount = count;
++            batch.mVertexBuffer = vertexBuffer->getVertexBuffer();
++            batch.mArray = vertexBuffer->getVertexArray();
++            vertexBuffer->markUsed();
++
++            osg::Texture2D* batchTexture = nullptr;
++            osg::StateSet* batchStateSet = nullptr;
++            if (OSGTexture* osgtexture = static_cast<OSGTexture*>(texture))
++            {
++                batchTexture = osgtexture->getTexture();
++                if (batchTexture->getDataVariance() == osg::Object::DYNAMIC)
++                    mDrawable->setDataVariance(osg::Object::DYNAMIC); // only for this frame, reset in begin()
++                if (!mInjectState && osgtexture->getInjectState())
++                    batchStateSet = osgtexture->getInjectState();
++            }
++            if (mInjectState)
++                batchStateSet = mInjectState;
++            batch.mTexture = batchTexture;
++            batch.mStateSet = batchStateSet;
++            return;
++        }
++
+         Drawable::Batch batch;
+         batch.mVertexCount = count;
+         batch.mVertexBuffer = static_cast<OSGVertexBuffer*>(buffer)->getVertexBuffer();
+@@ -538,7 +815,12 @@ namespace MyGUIPlatform
+         mInjectState = stateSet;
+     }
+ 
+-    void RenderManager::end() {}
++    void RenderManager::end()
++    {
++        // Orthros (orthros-r12.patch): the batches past this frame's count erased (OPENMW_ORTHROS_GUIBATCHES; off,
++        // there are none) -- drawImplementation reads the whole vector.
++        mDrawable->finish();
++    }
+ 
+     void RenderManager::update()
+     {
+@@ -555,10 +837,51 @@ namespace MyGUIPlatform
+     void RenderManager::collectDrawCalls()
+     {
+         begin();
+-        onRenderToTarget(this, mUpdate);
+-        end();
++        {
++            // Orthros (orthros-r12.patch): end() run however onRenderToTarget leaves -- an exception unwinding
++            // included: its Drawable::finish() erases the batches past this frame's count (OPENMW_ORTHROS_GUIBATCHES),
++            // which would otherwise stay in the buffer and be drawn. Before, end() did nothing and begin()'s clear()
++            // left a short list.
++            struct EndGuard
++            {
++                RenderManager* mManager;
++                ~EndGuard() { mManager->end(); }
++            } endGuard{ this };
++            onRenderToTarget(this, mUpdate);
++        }
+ 
+         mUpdate = false;
++
++        // Orthros (orthros-r12.patch): OPENMW_ORTHROS_GUISTATS=1 only: OSGVertexBuffer::unlock's counts, a frame,
++        // logged every sOrthrosStatsFrames GUI frames (one collectDrawCalls a frame), then started again. Unlocks:
++        // render items rewritten; compared: those whose array was copied at lock() (drawn since their previous
++        // write, same size), with the bytes copied and compared; unchanged: compared equal, not dirtied, with the
++        // bytes not uploaded again; dirtied: the bytes of the others (each uploaded at its item's next draw).
++        if (orthrosGuiStats())
++        {
++            OrthrosGuiStats& stats = sOrthrosGuiStats;
++            if (++stats.mFrames == sOrthrosStatsFrames)
++            {
++                const double frames = static_cast<double>(stats.mFrames);
++                if (orthrosGuiUpload())
++                    Log(Debug::Info) << "Orthros: GUI vertex uploads, a frame over " << stats.mFrames
++                                     << " frames: " << stats.mUnlocks / frames << " unlocks, "
++                                     << stats.mCompared / frames << " compared (" << stats.mBytesCompared / frames
++                                     << " bytes copied and compared), "
++                                     << stats.mUnchanged / frames << " unchanged not uploaded again ("
++                                     << stats.mBytesNotUploaded / frames << " bytes), "
++                                     << (stats.mUnlocks - stats.mUnchanged) / frames << " dirtied ("
++                                     << stats.mBytesDirtied / frames << " bytes)";
++                else
++                    Log(Debug::Info) << "Orthros: GUI vertex uploads, a frame over " << stats.mFrames
++                                     << " frames: " << stats.mUnlocks / frames << " unlocks, all dirtied ("
++                                     << stats.mBytesDirtied / frames << " bytes; "
++                                     << (orthrosGuiBatches() ? "OPENMW_ORTHROS_GUIUPLOAD=0"
++                                                             : "OPENMW_ORTHROS_GUIBATCHES=0")
++                                     << ": not compared)";
++                stats = OrthrosGuiStats();
++            }
++        }
+     }
+ 
+     void RenderManager::setViewSize(int width, int height)
+diff --git a/openmw/components/terrain/chunkmanager.cpp b/openmw/components/terrain/chunkmanager.cpp
+index bf46270..f618ac7 100644
+--- a/openmw/components/terrain/chunkmanager.cpp
++++ b/openmw/components/terrain/chunkmanager.cpp
+@@ -4,15 +4,22 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <set>
+ 
+ #include <osg/Material>
+ #include <osg/Texture2D>
+ 
+ #include <osgUtil/IncrementalCompileOperation>
+ 
++#include <components/debug/debuglog.hpp>
+ #include <components/esm/util.hpp>
++#include <components/resource/imagemanager.hpp>
+ #include <components/resource/objectcache.hpp>
+ #include <components/resource/scenemanager.hpp>
++#include <components/vfs/manager.hpp>
+ 
+ #include <components/sceneutil/lightmanager.hpp>
+ 
+@@ -25,6 +32,19 @@
+ namespace Terrain
+ {
+ 
++    // Orthros (orthros-r12.patch): the switch (chunkmanager.hpp)
++    bool orthrosTerrainReady()
++    {
++        static const bool enabled = [] {
++            const char* value = std::getenv("OPENMW_ORTHROS_TERRAINREADY");
++            const bool on = value == nullptr || std::strcmp(value, "0") != 0;
++            Log(Debug::Info) << "Orthros: terrain chunks put off until their lands and textures are in the page: "
++                             << (on ? "on" : "off (OPENMW_ORTHROS_TERRAINREADY=0)");
++            return on;
++        }();
++        return enabled;
++    }
++
+     struct UpdateTextureFilteringFunctor
+     {
+         UpdateTextureFilteringFunctor(Resource::SceneManager* sceneMgr)
+@@ -113,6 +133,112 @@ namespace Terrain
+                 mStorage->orthrosLandTextures(ESM::ExteriorCellLocation(x, y, mWorldspace), landTextures);
+     }
+ 
++    bool ChunkManager::chunkReady(float size, const osg::Vec2f& center, unsigned char /*lod*/, unsigned int lodFlags,
++        bool /*activeGrid*/, const osg::Vec3f& /*viewPoint*/)
++    {
++        if (!orthrosTerrainReady() || ESM::isEsm4Ext(mWorldspace))
++            return true;
++        // (getChunk's key: its level of detail from lodFlags' high bits — the flags loadRenderingNode will build the
++        // chunk with, QuadTreeWorld::orthrosBuilds)
++        const unsigned char lod = static_cast<unsigned char>(lodFlags >> (4 * 4));
++        const ChunkKey key{ .mCenter = center, .mLod = lod, .mLodFlags = lodFlags };
++        // (asked by the sliced preload on the main thread only — preloadSlice puts nothing off without a deadline —;
++        // createChunk, which drops an entry, may run elsewhere)
++        const std::lock_guard<std::mutex> lock(mOrthrosWaitsMutex);
++        if (mOrthrosWaits.size() > 1024)
++            mOrthrosWaits.clear(); // (chunks asked and then never built: a preload aborted, the player gone)
++        // (getChunk's branches that read nothing: the chunk cached; a template of its center and level, whose
++        // vertices, passes and composite map createChunk copies)
++        bool readsNothing = mCache->getRefFromObjectCache(key) != nullptr;
++        if (!readsNothing)
++        {
++            const TemplateKey templateKey{ .mCenter = center, .mLod = lod };
++            const auto pair = mCache->lowerBound(templateKey);
++            readsNothing = pair.has_value()
++                && templateKey == TemplateKey{ .mCenter = pair->first.mCenter, .mLod = pair->first.mLod };
++        }
++        if (readsNothing)
++        {
++            mOrthrosWaits.erase(key);
++            return true;
++        }
++        const auto [found, fresh] = mOrthrosWaits.try_emplace(key);
++        OrthrosWait& wait = found->second;
++        // (the lands of the cells the chunk covers, counted as orthrosChunkFiles does, and of the ring around them:
++        // fillVertexBuffers' fixNormal, averageNormal and fixColour read the next cells' edges, corners included, and
++        // getBlendmaps samples an edge of the cells beside — LandCache(start - 1, ceil(size) + 2) in both)
++        if (fresh)
++        {
++            const int startX = static_cast<int>(std::floor(center.x() - size / 2.f));
++            const int startY = static_cast<int>(std::floor(center.y() - size / 2.f));
++            const int endX = std::max(startX + 1, static_cast<int>(std::ceil(center.x() + size / 2.f)));
++            const int endY = std::max(startY + 1, static_cast<int>(std::ceil(center.y() + size / 2.f)));
++            for (int y = startY - 1; y <= endY; ++y)
++                for (int x = startX - 1; x <= endX; ++x)
++                {
++                    const ESM::ExteriorCellLocation cell(x, y, mWorldspace);
++                    if (!mStorage->orthrosLandReady(cell))
++                        wait.mLands.push_back(cell);
++                }
++        }
++        else
++            while (wait.mLandsReady < wait.mLands.size() && mStorage->orthrosLandReady(wait.mLands[wait.mLandsReady]))
++                ++wait.mLandsReady;
++        if (wait.mLandsReady < wait.mLands.size())
++            return false;
++        // (then the textures, listed once from the lands — parsed now and kept by the LandManager, createChunk's own
++        // soon after)
++        const Resource::ImageManager& images = *mSceneManager->getImageManager();
++        const VFS::Manager& vfs = *mSceneManager->getVFS();
++        const auto textureReady = [&](const VFS::Path::Normalized& texture) {
++            return mTextureManager->orthrosCached(texture) || images.orthrosCached(texture)
++                || vfs.orthrosDataReady(texture);
++        };
++        if (!wait.mListed)
++        {
++            wait.mListed = true;
++            std::vector<VFS::Path::Normalized> textures;
++            orthrosPassTextures(size, center, size >= mCompositeMapLevel, textures);
++            for (const VFS::Path::Normalized& texture :
++                std::set<VFS::Path::Normalized>(textures.begin(), textures.end()))
++                if (!textureReady(texture))
++                    wait.mTextures.push_back(texture);
++        }
++        else
++            while (wait.mTexturesReady < wait.mTextures.size() && textureReady(wait.mTextures[wait.mTexturesReady]))
++                ++wait.mTexturesReady;
++        if (wait.mTexturesReady < wait.mTextures.size())
++            return false;
++        mOrthrosWaits.erase(found);
++        return true;
++    }
++
++    void ChunkManager::orthrosPassTextures(float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap,
++        std::vector<VFS::Path::Normalized>& out)
++    {
++        // (createChunk: a composite map's parts as createCompositeMapGeometry splits it, each drawn with
++        // createPasses(..., true): diffuse maps only; below the composite level, createPasses(..., false): the
++        // normal maps too)
++        if (forCompositeMap && chunkSize > mMaxCompGeometrySize)
++        {
++            const float half = chunkSize / 2.f;
++            const float quarter = chunkSize / 4.f;
++            orthrosPassTextures(half, chunkCenter + osg::Vec2f(quarter, quarter), true, out);
++            orthrosPassTextures(half, chunkCenter + osg::Vec2f(-quarter, quarter), true, out);
++            orthrosPassTextures(half, chunkCenter + osg::Vec2f(quarter, -quarter), true, out);
++            orthrosPassTextures(half, chunkCenter + osg::Vec2f(-quarter, -quarter), true, out);
++            return;
++        }
++        std::vector<LayerInfo> layers;
++        mStorage->orthrosBlendmapLayers(chunkSize, chunkCenter, mWorldspace, layers);
++        for (LayerInfo& layer : layers)
++        {
++            out.push_back(std::move(layer.mDiffuseMap));
++            if (!forCompositeMap && !layer.mNormalMap.empty())
++                out.push_back(std::move(layer.mNormalMap));
++        }
++    }
++
+     void ChunkManager::updateTextureFiltering()
+     {
+         UpdateTextureFilteringFunctor f(mSceneManager);
+@@ -245,6 +371,13 @@ namespace Terrain
+     osg::ref_ptr<osg::Node> ChunkManager::createChunk(float chunkSize, const osg::Vec2f& chunkCenter, unsigned char lod,
+         unsigned int lodFlags, bool compile, const TerrainDrawable* templateGeometry)
+     {
++        // Orthros (orthros-r12.patch): built now — chunkReady's entry, if any, has nothing left to wait for
++        if (orthrosTerrainReady())
++        {
++            const std::lock_guard<std::mutex> lock(mOrthrosWaitsMutex);
++            mOrthrosWaits.erase(ChunkKey{ .mCenter = chunkCenter, .mLod = lod, .mLodFlags = lodFlags });
++        }
++
+         osg::ref_ptr<TerrainDrawable> geometry(new TerrainDrawable);
+ 
+         if (!templateGeometry)
+diff --git a/openmw/components/terrain/chunkmanager.hpp b/openmw/components/terrain/chunkmanager.hpp
+index bd2c85d..0bc17f8 100644
+--- a/openmw/components/terrain/chunkmanager.hpp
++++ b/openmw/components/terrain/chunkmanager.hpp
+@@ -1,8 +1,13 @@
+ #ifndef OPENMW_COMPONENTS_TERRAIN_CHUNKMANAGER_H
+ #define OPENMW_COMPONENTS_TERRAIN_CHUNKMANAGER_H
+ 
++#include <cstddef>
++#include <map>
++#include <mutex>
+ #include <tuple>
++#include <vector>
+ 
++#include <components/esm/exteriorcelllocation.hpp>
+ #include <components/resource/resourcemanager.hpp>
+ 
+ #include "buffercache.hpp"
+@@ -28,6 +33,12 @@ namespace Terrain
+     class CompositeMap;
+     class TerrainDrawable;
+ 
++    /// Orthros (orthros-r12.patch): OPENMW_ORTHROS_TERRAINREADY, read once (logged): absent or anything but "0" lets
++    /// the terrain preload put a chunk off between frames while its lands and textures come (ChunkManager::
++    /// chunkReady), QuadTreeWorld asking the chunk managers with the level of detail loadRenderingNode will build and
++    /// each at most until it answers ready; "0": every terrain chunk ready, the managers asked as before.
++    bool orthrosTerrainReady();
++
+     struct TemplateKey
+     {
+         osg::Vec2f mCenter;
+@@ -92,6 +103,14 @@ namespace Terrain
+             bool activeGrid, std::vector<VFS::Path::Normalized>& meshes,
+             std::vector<VFS::Path::Normalized>& landTextures) override;
+ 
++        /// Orthros (orthros-r12.patch): as getChunk() decides, a chunk that reads nothing (cached, or copied from a
++        /// template of its center and level) is ready; another once the lands of the cells it covers and of the ring
++        /// around them are in the page (Storage::orthrosLandReady), then the layer textures its passes load
++        /// (orthrosPassTextures). What is missing is fetched in the background meanwhile.
++        /// OPENMW_ORTHROS_TERRAINREADY=0: always ready, as before.
++        bool chunkReady(float size, const osg::Vec2f& center, unsigned char lod, unsigned int lodFlags,
++            bool activeGrid, const osg::Vec3f& viewPoint) override;
++
+         void setCompositeMapSize(unsigned int size) { mCompositeMapSize = size; }
+         void setCompositeMapLevel(float level) { mCompositeMapLevel = level; }
+         void setMaxCompositeGeometrySize(float maxCompGeometrySize) { mMaxCompGeometrySize = maxCompGeometrySize; }
+@@ -119,6 +138,12 @@ namespace Terrain
+         std::vector<osg::ref_ptr<osg::StateSet>> createPasses(
+             float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap);
+ 
++        /// Orthros (orthros-r12.patch): the textures createPasses(chunkSize, chunkCenter, forCompositeMap) loads —
++        /// with `forCompositeMap` and a chunk larger than mMaxCompGeometrySize, those of the parts
++        /// createCompositeMapGeometry() splits it into — appended to `out` (a file possibly more than once).
++        void orthrosPassTextures(float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap,
++            std::vector<VFS::Path::Normalized>& out);
++
+         Terrain::Storage* mStorage;
+         Resource::SceneManager* mSceneManager;
+         TextureManager* mTextureManager;
+@@ -132,6 +157,23 @@ namespace Terrain
+         unsigned int mCompositeMapSize;
+         float mCompositeMapLevel;
+         float mMaxCompGeometrySize;
++
++        /// Orthros (orthros-r12.patch): what chunkReady() found missing for a chunk not built yet: the cells whose
++        /// land was not in the page, then (once none is left) the textures not there. Every one asked at the first
++        /// call, which starts all their fetches; a later call asks again from the first not yet found ready (the
++        /// counts `m...Ready`) and stops at the first still missing — a few calls into the page while a chunk waits,
++        /// its textures listed (its lands parsed) once. Dropped when the chunk is built (createChunk); cleared above
++        /// 1024 chunks.
++        struct OrthrosWait
++        {
++            std::vector<ESM::ExteriorCellLocation> mLands;
++            std::size_t mLandsReady = 0;
++            bool mListed = false;
++            std::vector<VFS::Path::Normalized> mTextures;
++            std::size_t mTexturesReady = 0;
++        };
++        std::map<ChunkKey, OrthrosWait> mOrthrosWaits;
++        std::mutex mOrthrosWaitsMutex;
+     };
+ 
+ }
+diff --git a/openmw/components/terrain/quadtreeworld.cpp b/openmw/components/terrain/quadtreeworld.cpp
+index c5a90e2..3c240cc 100644
+--- a/openmw/components/terrain/quadtreeworld.cpp
++++ b/openmw/components/terrain/quadtreeworld.cpp
+@@ -649,8 +649,11 @@ namespace Terrain
+                 return true;
+             const auto index = static_cast<unsigned int>(next - 1);
+             ++next;
+-            if (mayWait && !chunksReady(vd->getEntry(index), vd, grid))
+-                mDeferred.emplace_back(index, std::chrono::steady_clock::now());
++            std::uint32_t readyManagers = 0;
++            if (mayWait && !chunksReady(vd->getEntry(index), vd, grid, readyManagers))
++                mDeferred.push_back({ .mIndex = index,
++                    .mSince = std::chrono::steady_clock::now(),
++                    .mReadyManagers = readyManagers });
+             else
+                 load(index);
+             if (std::chrono::steady_clock::now() >= deadline)
+@@ -661,9 +664,10 @@ namespace Terrain
+         {
+             if (abort)
+                 return true;
+-            const auto [index, since] = mDeferred[i];
+-            if (mayWait && std::chrono::steady_clock::now() - since < limit
+-                && !chunksReady(vd->getEntry(index), vd, grid))
++            OrthrosDeferred& deferred = mDeferred[i];
++            const unsigned int index = deferred.mIndex;
++            if (mayWait && std::chrono::steady_clock::now() - deferred.mSince < limit
++                && !chunksReady(vd->getEntry(index), vd, grid, deferred.mReadyManagers))
+             {
+                 ++i;
+                 continue;
+@@ -679,22 +683,50 @@ namespace Terrain
+         return false;
+     }
+ 
+-    bool QuadTreeWorld::chunksReady(const ViewDataEntry& entry, const ViewData* vd, const osg::Vec4i& grid)
++    bool QuadTreeWorld::orthrosBuilds(const ViewDataEntry& entry, ViewData* vd, unsigned int& lodFlags)
+     {
+-        // (as loadRenderingNode: a node built already and unchanged reads nothing; the chunk managers asked with
+-        // the entry's own level of detail — loadRenderingNode may recompute it for a changed view: the files of a
+-        // neighbouring level, then, a hint all the same)
+-        if (!vd->hasChanged() && entry.mRenderingNode)
++        // (loadRenderingNode's own steps: an unchanged view keeps the node built and builds the others with the
++        // entry's flags; a changed one recomputes the flags and keeps the node only if they are the same)
++        lodFlags = entry.mLodFlags;
++        if (!vd->hasChanged())
++            return !entry.mRenderingNode;
++        if (!orthrosTerrainReady())
++            return true;
++        vd->buildNodeIndex();
++        lodFlags = getLodFlags(entry.mNode, getVertexLod(entry.mNode, mVertexLodMod), mVertexLodMod, vd);
++        return !entry.mRenderingNode || lodFlags != entry.mLodFlags;
++    }
++
++    bool QuadTreeWorld::chunksReady(
++        const ViewDataEntry& entry, ViewData* vd, const osg::Vec4i& grid, std::uint32_t& readyManagers)
++    {
++        // (as loadRenderingNode: a node it keeps reads nothing; the chunk managers asked with the flags it builds the
++        // chunks with — orthros-r12.patch: before, the entry's own flags, another node's for a slot that changed
++        // node: the terrain's cached chunk missed, its wait entry never dropped)
++        unsigned int lodFlags = 0;
++        if (!orthrosBuilds(entry, vd, lodFlags))
+             return true;
+         const osg::Vec2f& center = entry.mNode->getCenter();
+         const bool activeGrid
+             = (center.x() > grid.x() && center.y() > grid.y() && center.x() < grid.z() && center.y() < grid.w());
+         bool ready = true;
+-        for (ChunkManager* m : mChunkManagers)
+-            if (!m->chunkReady(entry.mNode->getSize(), center,
+-                    static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)),
+-                    entry.mLodFlags, activeGrid, vd->getViewPoint()))
++        for (std::size_t i = 0; i < mChunkManagers.size(); ++i)
++        {
++            // Orthros (orthros-r12.patch): a manager that answered ready for the entry is not asked again while
++            // another one waits — its whole answer computed anew each slice otherwise (object paging's references
++            // and meshes listed again, the terrain's lands and textures) and its own list dropped. (A manager left
++            // at the default answer is always ready: with orthrosTerrainReady() off, only object paging waits, and
++            // nothing is skipped that would have answered otherwise.)
++            const std::uint32_t bit = i < 32 ? std::uint32_t{ 1 } << i : 0;
++            if ((readyManagers & bit) != 0)
++                continue;
++            if (mChunkManagers[i]->chunkReady(entry.mNode->getSize(), center,
++                    static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)), lodFlags,
++                    activeGrid, vd->getViewPoint()))
++                readyManagers |= bit;
++            else
+                 ready = false; // (every manager asked: all the missing files on their way at once)
++        }
+         return ready;
+     }
+ 
+@@ -704,26 +736,32 @@ namespace Terrain
+             return;
+         // (the entries from `first` and those put off — mDeferred, preloadSlice's, for this view —, as chunksReady
+         // and loadRenderingNode see them: one built already and unchanged reads nothing)
+-        std::vector<unsigned int> entries;
++        // Orthros (orthros-r12.patch): with orthrosTerrainReady(), the entries as orthrosBuilds() says (the flags
++        // loadRenderingNode builds with), and a put-off entry's managers that answered ready skipped (their files are
++        // in the page)
++        const bool skipReady = orthrosTerrainReady();
++        std::vector<std::pair<unsigned int, std::uint32_t>> entries;
+         if (mDeferredView == vd)
+-            for (const auto& deferred : mDeferred)
+-                entries.push_back(deferred.first);
++            for (const OrthrosDeferred& deferred : mDeferred)
++                entries.emplace_back(deferred.mIndex, skipReady ? deferred.mReadyManagers : 0);
+         for (unsigned int i = first, n = vd->getNumEntries(); i < n; ++i)
+-            entries.push_back(i);
++            entries.emplace_back(i, 0);
+         std::vector<VFS::Path::Normalized> meshes;
+         std::vector<VFS::Path::Normalized> landTextures;
+-        for (const unsigned int i : entries)
++        for (const auto& [i, readyManagers] : entries)
+         {
+             const ViewDataEntry& entry = vd->getEntry(i);
+-            if (!vd->hasChanged() && entry.mRenderingNode)
++            unsigned int lodFlags = 0;
++            if (!orthrosBuilds(entry, vd, lodFlags))
+                 continue;
+             const osg::Vec2f& center = entry.mNode->getCenter();
+             const bool activeGrid
+                 = (center.x() > grid.x() && center.y() > grid.y() && center.x() < grid.z() && center.y() < grid.w());
+-            for (ChunkManager* m : mChunkManagers)
+-                m->orthrosChunkFiles(entry.mNode->getSize(), center,
+-                    static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)),
+-                    entry.mLodFlags, activeGrid, meshes, landTextures);
++            for (std::size_t m = 0; m < mChunkManagers.size(); ++m)
++                if (m >= 32 || (readyManagers & (std::uint32_t{ 1 } << m)) == 0)
++                    mChunkManagers[m]->orthrosChunkFiles(entry.mNode->getSize(), center,
++                        static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)),
++                        lodFlags, activeGrid, meshes, landTextures);
+         }
+         if (meshes.empty() && landTextures.empty())
+             return;
+diff --git a/openmw/components/terrain/quadtreeworld.hpp b/openmw/components/terrain/quadtreeworld.hpp
+index 47350ce..db877d4 100644
+--- a/openmw/components/terrain/quadtreeworld.hpp
++++ b/openmw/components/terrain/quadtreeworld.hpp
+@@ -5,6 +5,7 @@
+ 
+ #include <atomic>
+ #include <chrono>
++#include <cstdint>
+ #include <memory>
+ #include <mutex>
+ #include <utility>
+@@ -147,13 +148,27 @@ namespace Terrain
+ 
+         /// Orthros (orthros-r5.patch): preloadSlice()'s entries put off while their data comes (entry, since when),
+         /// for the view mDeferredView; whether its last call stopped for them.
+-        bool chunksReady(const ViewDataEntry& entry, const ViewData* vd, const osg::Vec4i& grid);
++        /// Orthros (orthros-r12.patch): the managers asked as orthrosBuilds() says loadRenderingNode() will build the
++        /// entry (with orthrosTerrainReady()); `readyManagers` (bit i: mChunkManagers[i]) those that answered ready
++        /// for it already — not asked again —, those answering ready now added.
++        bool chunksReady(const ViewDataEntry& entry, ViewData* vd, const osg::Vec4i& grid, std::uint32_t& readyManagers);
++        /// Orthros (orthros-r12.patch): as loadRenderingNode() will decide for the entry: false when it keeps its
++        /// node (reads nothing); else true and `lodFlags` the flags it builds the chunks with — recomputed for a
++        /// changed view, the entry's own flags being then those of the node its slot held before (ViewDataEntry::set
++        /// keeps them). orthrosTerrainReady() off: the entry's own flags, as before (r5, r10).
++        bool orthrosBuilds(const ViewDataEntry& entry, ViewData* vd, unsigned int& lodFlags);
+         /// Orthros (orthros-r10.patch): a synchronous preload (no deadline) about to build the view's chunks one
+         /// after the other: every chunk manager's files for them (ChunkManager::orthrosChunkFiles) fetched together
+         /// first (Resource::SceneManager::orthrosPrefetch), not one round trip per read. Web build, main thread.
+         /// `first`: the first entry left to build (with the put-off ones, mDeferred).
+         void orthrosReadAhead(ViewData* vd, const osg::Vec4i& grid, unsigned int first);
+-        std::vector<std::pair<unsigned int, std::chrono::steady_clock::time_point>> mDeferred;
++        struct OrthrosDeferred
++        {
++            unsigned int mIndex;
++            std::chrono::steady_clock::time_point mSince;
++            std::uint32_t mReadyManagers; // (orthros-r12.patch: chunksReady's)
++        };
++        std::vector<OrthrosDeferred> mDeferred;
+         const View* mDeferredView = nullptr;
+         bool mPreloadWaiting = false;
+ 
+diff --git a/openmw/components/terrain/storage.hpp b/openmw/components/terrain/storage.hpp
+index 07dae0e..b56fa6b 100644
+--- a/openmw/components/terrain/storage.hpp
++++ b/openmw/components/terrain/storage.hpp
+@@ -99,6 +99,27 @@ namespace Terrain
+             (void)cellLocation;
+             (void)out;
+         }
++
++        /// Orthros (orthros-r12.patch): the cell's land can be had now without the page's thread waiting for the
++        /// network: loaded already (or known absent), or its record's bytes in the browser page; false — those bytes
++        /// are then fetched in the background (VFS::orthrosRangeReady). Asked by Terrain::ChunkManager::chunkReady()
++        /// for every cell a chunk reads. By default true.
++        virtual bool orthrosLandReady(ESM::ExteriorCellLocation cellLocation)
++        {
++            (void)cellLocation;
++            return true;
++        }
++
++        /// Orthros (orthros-r12.patch): the layers getBlendmaps() with these arguments would list (its layerList),
++        /// appended to `out`, in any order — the files a chunk's passes read. By default none.
++        virtual void orthrosBlendmapLayers(
++            float chunkSize, const osg::Vec2f& chunkCenter, ESM::RefId worldspace, std::vector<LayerInfo>& out)
++        {
++            (void)chunkSize;
++            (void)chunkCenter;
++            (void)worldspace;
++            (void)out;
++        }
+     };
+ 
+ }
+diff --git a/openmw/components/terrain/texturemanager.cpp b/openmw/components/terrain/texturemanager.cpp
+index 06f3243..52b0ba6 100644
+--- a/openmw/components/terrain/texturemanager.cpp
++++ b/openmw/components/terrain/texturemanager.cpp
+@@ -52,6 +52,11 @@ namespace Terrain
+         return texture;
+     }
+ 
++    bool TextureManager::orthrosCached(VFS::Path::NormalizedView name) const
++    {
++        return mCache->getRefFromObjectCache(name) != nullptr;
++    }
++
+     void TextureManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const
+     {
+         Resource::reportStats("Terrain Texture", frameNumber, mCache->getStats(), *stats);
+diff --git a/openmw/components/terrain/texturemanager.hpp b/openmw/components/terrain/texturemanager.hpp
+index a79ef53..71a61e5 100644
+--- a/openmw/components/terrain/texturemanager.hpp
++++ b/openmw/components/terrain/texturemanager.hpp
+@@ -26,6 +26,9 @@ namespace Terrain
+ 
+         osg::ref_ptr<osg::Texture2D> getTexture(VFS::Path::NormalizedView name);
+ 
++        /// Orthros (orthros-r12.patch): the texture is cached (getTexture reads nothing).
++        bool orthrosCached(VFS::Path::NormalizedView name) const;
++
+         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
+ 
+     private:
+diff --git a/wasm-build/orthros-openal.js b/wasm-build/orthros-openal.js
+index 0c28134..aab4088 100644
+--- a/wasm-build/orthros-openal.js
++++ b/wasm-build/orthros-openal.js
+@@ -12,7 +12,53 @@
+ // - alBufferData. Its conversion loops read the heap through growMemViews() at every sample (the growable shared
+ //   memory's check, wasmMemory.buffer's getter each time). The heap view is taken once a call. The 16- and 32-bit
+ //   views are indexed by division, not `>>`, which wraps a pointer past 2 GiB under MEMORY64.
++//
++// Orthros (orthros-r12.patch): what the glue still did again each frame with the same values (r11, Seyda Neen, tier
++// mid: _alListenerfv 0.25 ms a frame, of which the Doppler pass 0.13; the sources' scheduler 0.1). After every OpenAL
++// call, every AudioParam (the listener's, the panners', the sources' gains) holds the same value as with r9's code,
++// every playing source the same playback rate, and the same buffers are scheduled at the same times; only writes of a
++// value already there and computations nobody reads are left out.
++// Switch: ENV.OPENMW_ORTHROS_ALCACHE, read once, at the first call of AL.updateListenerSpace, AL.scheduleContextAudio
++// or AL.setSourceParam (the page fills ENV in preRun, before main() opens the device), which installs either set:
++// "0", r9's and the library's own functions, the very ones, and nothing else replaced; absent or anything else, these.
++// - The listener's AudioParams. OpenMW sets the listener's position, velocity and orientation each frame (three
++//   alListenerfv calls), and each call wrote all nine of them (a write is also an automation event, setValueAtTime).
++//   Each is written now when its float32 value differs from the one this code wrote there last, kept on the AL
++//   context (a new context, a new AudioContext: its first call writes all nine). setPosition/setOrientation, the
++//   fallback of browsers without those AudioParams, as before.
++// - The Doppler pass. Each call also computed the Doppler shift of every world-space source with a panner, playing or
++//   not. It runs now when one of its inputs differs from those of the last pass: the listener's position and
++//   velocity, the context's speed of sound and Doppler factor (alSpeedOfSound and alDopplerFactor end in this
++//   function too); the orientation's call never needs it. Listener-relative sources (placed from the listener's whole
++//   frame, Doppler included) go through AL.updateSourceSpace as before when any of those or the orientation changed.
++//   Within a pass, a world-space source that is not playing is marked (src.orthrosDopplerStale) instead: r9 computed
++//   its shift and its AL.updateSourceRate did nothing (it acts on a playing source only), and no one reads the shift
++//   of a source that does not play (scheduleSourceAudio and updateSourceTime return; AL_LOOPING's path needs a
++//   scheduled buffer, which only a playing source has; alGetSource* returns the pitch). A marked source's shift is
++//   computed as before when it is about to play (AL.setSourceState: alSourcePlay[v], a seek's restart) and before
++//   AL.initSourcePanner, which drops the panner of a pooled source given a stereo buffer or spatialization off (r9's
++//   passes skip a source without a panner, so its shift stayed the last one computed). Exact: each input of that
++//   shift computes it again in r9's code — the listener's and the context's through a pass, which marks it again; the
++//   source's own position and velocity through AL.updateSourceSpace, which computes it and clears the mark —, so when
++//   it is computed late its inputs are those of r9's last computation.
++// - The scheduler (every 25 ms): AL.scheduleSourceAudio is called for the playing sources only, in the same order (it
++//   returned at once for the others), and the tab's visibility is read once a tick (MainLoop is the library's).
++// - The pass and the scheduler walk the sources by index instead of for-in: the same sources in the same order
++//   (DENSE below).
++// - alSource*(AL_POSITION, AL_DIRECTION or AL_VELOCITY) with the three values the source already has returns at once
++//   (OpenMW sets them for every playing sound each frame): the library would place the panner and compute the Doppler
++//   shift again from the same inputs. AL_GAIN with the float32 value this code last wrote to that source's gain, too.
++//   Anything else (an unknown source, a value out of range) goes to the library, its errors as they were.
++(() => {
++  // AL's deps gain ENV and the switch (the library's own kept).
++  const lib = LibraryManager.library;
++  addToLibrary({ $AL__deps: (lib['$AL__deps'] || []).concat(['$ENV', '$orthrosALCache']) });
++})();
++
+ addToLibrary({
++  // Orthros (orthros-r12.patch): undefined until the first call that reads the switch, then true (on) or false ("0").
++  $orthrosALCache: undefined,
++
+   $AL__postset: `
+     AL.orthrosSourceDoppler = (src) => {
+       var listener = src.context.listener;
+@@ -67,6 +113,164 @@ addToLibrary({
+         else AL.orthrosSourceDoppler(src);
+       }
+     };
++
++    // Orthros (orthros-r12.patch): the switch's two sets (header). The functions replaced, kept for "0" and called by
++    // the wrappers: r9's AL.updateListenerSpace above, the library's others.
++    (() => {
++      var r9 = {
++        updateListenerSpace: AL.updateListenerSpace,
++        scheduleContextAudio: AL.scheduleContextAudio,
++        setSourceParam: AL.setSourceParam,
++      };
++      var setSourceState = AL.setSourceState, initSourcePanner = AL.initSourcePanner;
++      var updateSourceSpace = AL.updateSourceSpace, setSourceParam = AL.setSourceParam;
++      var AL_PLAYING = 0x1012;
++      // ctx.sources is an array indexed by the sources' ids (AL.newId: a counter shared with the buffers, its freed ids
++      // reused). The library walks it with for-in, which collects its keys anew each time (~30 ns a source in V8, 256
++      // sources in OpenMW: 8 us a pass); an index loop visits the same sources in the same order, the holes skipped
++      // (a deleted source leaves a hole; none is added or deleted during these loops). for-in still above DENSE slots,
++      // where the holes could outnumber the sources.
++      var DENSE = 4096;
++
++      // A marked source's Doppler shift, computed as r9's last pass did (header). Not playing here: its
++      // AL.updateSourceRate does nothing, as then.
++      var settle = (src) => {
++        src.orthrosDopplerStale = false;
++        if (src.panner) AL.orthrosSourceDoppler(src);
++      };
++      // An AudioParam written when x's float32 value is not the one this code wrote there last (written[i]).
++      var put = (param, written, i, x) => {
++        if (!Object.is(written[i], Math.fround(x))) {
++          param.value = x;
++          written[i] = x;
++        }
++      };
++
++      // A source's share of a listener pass: doppler, whether its inputs changed (the relative sources' then too).
++      var passSource = (src, doppler) => {
++        if (!src.panner) return;
++        if (src.relative) AL.updateSourceSpace(src);
++        else if (!doppler) return;
++        else if (src.state === AL_PLAYING) AL.orthrosSourceDoppler(src);
++        else src.orthrosDopplerStale = true;
++      };
++
++      AL.orthrosListenerSpace = (ctx) => {
++        var l = ctx.listener, listener = ctx.audioCtx.listener;
++        // written: the listener's nine AudioParams as this code last wrote them (float32); passed: the inputs of the
++        // last pass (position, velocity, speed of sound, Doppler factor, direction, up). NaN: none yet.
++        var c = ctx.orthrosAL || (ctx.orthrosAL = { written: new Float32Array(9).fill(NaN), passed: new Float64Array(14).fill(NaN) });
++        var p = l.position, v = l.velocity, d = l.direction, u = l.up, w = c.written, q = c.passed;
++        if (listener.positionX) {
++          put(listener.positionX, w, 0, p[0]);
++          put(listener.positionY, w, 1, p[1]);
++          put(listener.positionZ, w, 2, p[2]);
++        } else {
++          listener.setPosition(p[0], p[1], p[2]);
++        }
++        if (listener.forwardX) {
++          put(listener.forwardX, w, 3, d[0]);
++          put(listener.forwardY, w, 4, d[1]);
++          put(listener.forwardZ, w, 5, d[2]);
++          put(listener.upX, w, 6, u[0]);
++          put(listener.upY, w, 7, u[1]);
++          put(listener.upZ, w, 8, u[2]);
++        } else {
++          listener.setOrientation(d[0], d[1], d[2], u[0], u[1], u[2]);
++        }
++        var speed = ctx.speedOfSound, factor = ctx.dopplerFactor;
++        var doppler = !(Object.is(q[0], p[0]) && Object.is(q[1], p[1]) && Object.is(q[2], p[2])
++          && Object.is(q[3], v[0]) && Object.is(q[4], v[1]) && Object.is(q[5], v[2])
++          && Object.is(q[6], speed) && Object.is(q[7], factor));
++        if (!doppler && Object.is(q[8], d[0]) && Object.is(q[9], d[1]) && Object.is(q[10], d[2])
++          && Object.is(q[11], u[0]) && Object.is(q[12], u[1]) && Object.is(q[13], u[2])) {
++          return;
++        }
++        var s = ctx.sources, i, n;
++        if (s.length <= DENSE) {
++          for (i = 0, n = s.length; i < n; i++) if (s[i] !== undefined) passSource(s[i], doppler);
++        } else {
++          for (i in s) passSource(s[i], doppler);
++        }
++        // (after the pass: one that threw is run again by the next call, as r9's would be)
++        q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[3] = v[0]; q[4] = v[1]; q[5] = v[2]; q[6] = speed; q[7] = factor;
++        q[8] = d[0]; q[9] = d[1]; q[10] = d[2]; q[11] = u[0]; q[12] = u[1]; q[13] = u[2];
++      };
++
++      AL.orthrosScheduleContext = (ctx) => {
++        // (the library's test, which AL.scheduleSourceAudio repeats for each source)
++        if (MainLoop.timingMode === 1 /* EM_TIMING_RAF */ && document['visibilityState'] != 'visible') {
++          return;
++        }
++        var s = ctx.sources, i, n;
++        if (s.length <= DENSE) {
++          for (i = 0, n = s.length; i < n; i++) if (s[i] !== undefined && s[i].state === AL_PLAYING) AL.scheduleSourceAudio(s[i]);
++        } else {
++          for (i in s) if (s[i].state === AL_PLAYING) AL.scheduleSourceAudio(s[i]);
++        }
++      };
++
++      AL.orthrosSetSourceState = (src, state) => {
++        if (src.orthrosDopplerStale && state === AL_PLAYING) settle(src);
++        setSourceState(src, state);
++      };
++      AL.orthrosInitSourcePanner = (src) => {
++        if (src.orthrosDopplerStale) settle(src);
++        initSourcePanner(src);
++      };
++      AL.orthrosUpdateSourceSpace = (src) => {
++        // (it computes the shift; a marked source has a panner)
++        if (src.orthrosDopplerStale) src.orthrosDopplerStale = false;
++        updateSourceSpace(src);
++      };
++
++      AL.orthrosSetSourceParam = (funcname, sourceId, param, value) => {
++        var ctx = AL.currentCtx, src = ctx && value !== null ? ctx.sources[sourceId] : undefined;
++        if (src) {
++          var a = param === 0x1004 /* AL_POSITION */ ? src.position
++            : param === 0x1006 /* AL_VELOCITY */ ? src.velocity
++            : param === 0x1005 /* AL_DIRECTION */ ? src.direction : null;
++          if (a) {
++            // (equal to values the source holds: finite, as the library requires)
++            if (Object.is(value[0], a[0]) && Object.is(value[1], a[1]) && Object.is(value[2], a[2])) return;
++          } else if (param === 0x100A /* AL_GAIN */) {
++            if (value >= 0 && Object.is(Math.fround(value), src.orthrosGain)) return;
++            setSourceParam(funcname, sourceId, param, value);
++            // (written when the library took it; its AudioParam holds the float32 value)
++            if (value >= 0 && Number.isFinite(value)) src.orthrosGain = Math.fround(value);
++            return;
++          }
++        }
++        setSourceParam(funcname, sourceId, param, value);
++      };
++
++      var on = {
++        updateListenerSpace: AL.orthrosListenerSpace,
++        scheduleContextAudio: AL.orthrosScheduleContext,
++        setSourceParam: AL.orthrosSetSourceParam,
++        setSourceState: AL.orthrosSetSourceState,
++        initSourcePanner: AL.orthrosInitSourcePanner,
++        updateSourceSpace: AL.orthrosUpdateSourceSpace,
++      };
++      var choose = () => {
++        if (orthrosALCache === undefined) {
++          orthrosALCache = ENV['OPENMW_ORTHROS_ALCACHE'] !== '0';
++          Object.assign(AL, orthrosALCache ? on : r9);
++        }
++      };
++      AL.updateListenerSpace = (ctx) => {
++        choose();
++        return AL.updateListenerSpace(ctx);
++      };
++      AL.scheduleContextAudio = (ctx) => {
++        choose();
++        return AL.scheduleContextAudio(ctx);
++      };
++      AL.setSourceParam = (funcname, sourceId, param, value) => {
++        choose();
++        return AL.setSourceParam(funcname, sourceId, param, value);
++      };
++    })();
+   `,
+ 
+   alBufferData: (bufferId, format, pData, size, freq) => {
