@@ -265,6 +265,87 @@ test('a file a version takes from one it requires is read, kept and loaded ahead
   assert.deepEqual(server.posts[0].reads.map((r) => r[0]), ['Data/Shared.dat']);
 });
 
+// Opened early (docs/slow-network.md "Opened early"): a version's manifest, tree and store had at once, then every
+// required version's tree and store at once — one wait each, not one after another —; the page's manifest and tree not
+// asked again; a failure closes the stores that opened.
+test('openVersion: the manifest, the tree and the store at once, the required versions\' at once; the page\'s manifest not asked again', async (t) => {
+  const server = fakeServer({ 'Game.esm': bytes(1000) }, [], {}, { files: { 'R.dat': bytes(2000, 3) } });
+  // (the API's answers held until the test opens them: what was asked meanwhile is what went at once)
+  const asked = [], waits = [];
+  let open = false;
+  const gate = () => new Promise((r) => { if (open) r(); else waits.push(r); });
+  const release = () => { open = true; for (const r of waits.splice(0)) r(); };
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async (url, init) => { asked.push(new URL(url, 'http://x').pathname); if (String(url).includes('/api/')) await gate(); return server.fetch(url, init); };
+  const storesAsked = [], closed = [];
+  const store = (n) => { storesAsked.push(n); const st = new MemBlockStore(); st.close = () => closed.push(n); return st; };
+  const opening = openVersion('v', { store });
+  for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(asked.sort(), ['/api/manifest/v', '/api/tree/v'], 'the manifest and the tree asked together');
+  assert.deepEqual(storesAsked, ['v'], 'the store opened meanwhile');
+  release();
+  const version = await opening;
+  assert.deepEqual(version.parts.map((p) => p.name), ['v', 'r']);
+  assert.deepEqual(storesAsked, ['v', 'r']);
+  // (the page's manifest and tree: nothing asked but the required version's tree)
+  asked.length = 0; open = true;
+  const man = await (await server.fetch('/api/manifest/v')).json(), tree = await (await server.fetch('/api/tree/v')).json();
+  const again = await openVersion('v', { store, manifest: man, tree });
+  assert.deepEqual(asked, ['/api/tree/r']);
+  assert.deepEqual(again.parts.map((p) => [p.name, p.total]), [['v', 1000], ['r', 2000]]);
+  // (a tree that cannot be had: the stores that opened closed, the failure thrown)
+  globalThis.fetch = async (url, init) => (String(url).includes('/api/tree/r') ? new Response('no', { status: 500 }) : server.fetch(url, init));
+  closed.length = 0;
+  await assert.rejects(openVersion('v', { store }), /HTTP 500/);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(closed.sort(), ['r', 'v'], 'every store opened closed');
+  globalThis.fetch = async (url, init) => (String(url).includes('/api/manifest/') ? new Response('no', { status: 404 }) : server.fetch(url, init));
+  closed.length = 0;
+  await assert.rejects(openVersion('v', { store }), /HTTP 404/);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(closed, ['v'], 'the version\'s store closed when its manifest cannot be had');
+});
+
+// A tree or a store that fails while the open still awaits something else (the manifest, the tree): the open rejects,
+// nothing left unhandled — Node's process killed, the worker's "Uncaught (in promise)" before its clean failure.
+test('openVersion: a tree or a store failing while the manifest or the tree is in flight rejects the open, no unhandled rejection', async (t) => {
+  const server = fakeServer({ 'Game.esm': bytes(1000) });
+  const unhandled = [], onUnhandled = (e) => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; process.off('unhandledRejection', onUnhandled); });
+  const later = (ms) => new Promise((r) => setTimeout(r, ms));
+  // (the tree failed at once, the manifest 50 ms later)
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('/api/tree/')) return new Response('no', { status: 500 });
+    if (String(url).includes('/api/manifest/')) await later(50);
+    return server.fetch(url, init);
+  };
+  await assert.rejects(openVersion('v', { store: null }), /HTTP 500/);
+  // (the store failed at once, the tree and the manifest 50 ms later — the download worker's store with the game open
+  // in another tab)
+  globalThis.fetch = async (url, init) => { if (String(url).includes('/api/')) await later(50); return server.fetch(url, init); };
+  await assert.rejects(openVersion('v', { store: async () => { throw new Error('this browser cannot keep the game files'); } }), /cannot keep/);
+  await later(10);
+  assert.equal(unhandled.length, 0, `unhandled: ${unhandled.map(String)}`);
+});
+
+test('the data worker opened with the page\'s manifest and orderAtOpen: no manifest asked, the learned order\'s list asked at the open, no bytes', async (t) => {
+  const server = fakeServer({ 'Game.esm': bytes(1 << 20) }, [['Game.esm', 0, 0, 5]]);
+  const asked = [], inner = server.fetch;
+  server.fetch = (url, init) => { asked.push(new URL(url, 'http://x').pathname); return inner(url, init); };
+  const w = await startWorker(t, server, { prefetch: 'startup', manifest: { name: 'v' }, orderAtOpen: true });
+  await w.until(() => asked.includes('/api/prefetch/v'), 'the learned order asked');
+  assert.ok(!asked.includes('/api/manifest/v'), 'the page\'s manifest used');
+  // (this version's: an earlier test's closed worker may still have reads of its own in flight through the global fetch)
+  assert.ok(!asked.some((p) => p.startsWith('/gamez/v/')), 'no bytes before the page asks ' + JSON.stringify(asked));
+  // (the startup set then: the order not asked again)
+  w.handle({ startup: true });
+  await w.until(() => w.out.some((m) => m.startup?.done), 'startup');
+  assert.equal(asked.filter((p) => p === '/api/prefetch/v').length, 1);
+  assert.ok(server.asked.some(([p]) => p === 'Game.esm'));
+});
+
 test('the blocks an edition kept of its owner\'s files before are read there and moved to the owner\'s store as read; routes and learned orders by owner', async (t) => {
   const server = fakeServer({ 'Game.esm': bytes(3 << 20) }, [['Data/Shared.dat', 1, 0, 0], ['Game.esm', 0, 0, 5]], {},
     { files: { 'Data/Shared.dat': bytes(2 << 20, 5) }, learned: [['Data/Shared.dat', 0, 0, 0]] }, { owned: true });

@@ -15,7 +15,7 @@ import { pageStorage } from '../../host/web/storage-persist.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { treeFiles, languageFiles } from '../../vfs/game-tree.js';
-import { engineUrls, openPortFiles } from '../port-files.js';
+import { engineUrls, openPortData, mountPortFiles } from '../port-files.js';
 import { phaseOnRead } from '../../vfs/emscripten-files.js';
 import { announceMapLoads, configSetting } from './bsp-reads.js';
 import { createLobby, roomAddress } from './lobby.js';
@@ -421,6 +421,9 @@ async function start() {
   if (!crossOriginIsolated) throw new Error(S.isolated);
   // (each engine file by its content when the server gives it, else under its release: engineUrls)
   const g = config.goldsrc, at = engineUrls(config, g.engine), language = gameLanguage(config);
+  // (the game data opened now — its worker, the version's store, the learned order's list —, beside the account's saves
+  // and the engine's download, ready by the time the engine's file system takes its files: openPortData)
+  gameData ??= openPortData({ name, tree, manifest: config, session: sessionId, lang: language, log });
   step('engine', 'active'); step('files', ''); step('game', '');
   db = await openStorage(config.saveKey);
   const who = await shell.ready;
@@ -464,7 +467,7 @@ async function start() {
   const t0 = performance.now();
   step('files', 'active', fmtMB(0), 0);
   let nodes;
-  ({ data: gameData, nodes } = await openPortFiles({ name, tree, files: shown, FS, root: '/rodir', session: sessionId, lang: language, log, db,
+  ({ nodes } = await mountPortFiles(gameData, { name, files: shown, FS, root: '/rodir', log, db,
     onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
   session.files = gameData;
   // (each map the engine loads — its .bsp read — a phase of the game data: the server learns what each map's load reads,

@@ -106,7 +106,8 @@ function dispatch(m) {
 }
 
 /**
- * { name, session, lang, bw, ctrl, data, prefetch: 'startup' | 'start' | 'first-read' | 'none', memBytes, cacheBlocks }: the
+ * { name, session, lang, bw, ctrl, data, prefetch: 'startup' | 'start' | 'first-read' | 'none', tree, manifest (the page's,
+ * when it holds them), orderAtOpen, memBytes, cacheBlocks }: the
  * version and the ones it requires opened (lang: the game's language — its sessions' own launch set, launch-set.js) (their stores: OPFS, else in memory — another tab holds them, or no OPFS; the files of a version another owns: in
  * that one's store over this one's — game-data.js UnderStore: what this one kept of them before read there —, in this
  * one's when another tab's game holds the owner's).
@@ -114,11 +115,13 @@ function dispatch(m) {
 async function init(o) {
   W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.lang = typeof o.lang === 'string' && o.lang ? o.lang : null; W.prefetchAt = o.prefetch ?? 'none'; W.reloads = !!o.reloads;
   const kept = {};
-  W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, cacheBlocks: o.cacheBlocks, kept: (n) => kept[n], store: async (n) => {
+  W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, manifest: o.manifest, cacheBlocks: o.cacheBlocks, kept: (n) => kept[n], store: async (n) => {
     const s = await openStore(n); kept[n] = !!s;
     return s ?? new MemBlockStore(o.memBytes ?? 512 << 20);
   } });
   for (const p of W.version.parts) W.parts.set(p.name, p);
+  // (the learned order's list asked now, its bytes not: here before the startup set or the engine's first read asks)
+  if (o.orderAtOpen) order();
   W.timers.push(setInterval(monitor, 100), setInterval(report, REPORT_MS), setInterval(lightWatch, 1000));
   // (the files that have a light copy: those here whole the page reads themselves; the others watched — lightWatch —,
   // each by the name the page knows it under, through the part that reads it)

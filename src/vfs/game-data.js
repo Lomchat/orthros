@@ -128,17 +128,37 @@ export async function openData(name, o = {}) {
  * `o.kept(name)`: whether that version's store is the browser's (default: any store; the data worker's in memory are
  * not). A shared part's store is an UnderStore over the stores of the parts that read its files: what they kept of them
  * before (pages before the `owner` marks) is read there, and moved under the owner as it is read.
+ * The manifest (`o.manifest`, the page's when it holds it: no request), the version's tree (`o.tree`, likewise) and its
+ * store are had at once, then every required version's tree and store at once: one wait each instead of one after
+ * another (a page that opens its data while its engine downloads — docs/slow-network.md "Opened early"). A failure
+ * closes the stores that opened.
  */
 export async function openVersion(name, o = {}) {
   const net = o.net ?? new NetLink({ bw: o.bw }), link = new Set();
-  const manifest = o.manifest ?? await json(`/api/manifest/${enc(name)}`);
-  const names = [name, ...(Array.isArray(manifest.extraMounts) ? manifest.extraMounts.map((d) => d.manifest).filter(Boolean) : [])];
-  const parts = [], shared = new Map();
   const storeOf = (n, primary, sh = false) => (typeof o.store === 'function' ? o.store(n, primary, sh) : o.store);
   const kept = (n, st) => !!st && typeof st === 'object' && (o.kept ? !!o.kept(n) : true);
-  for (const [i, n] of names.entries()) {
-    const tree = (i === 0 ? o.tree : null) ?? await json(`/api/tree/${enc(n)}`), { own, owners } = splitOwners(tree, n);
-    const part = await openData(n, { ...o, net, link, store: await storeOf(n, i === 0), tree: own });
+  // (a version's tree and store, together; its store closed when its tree cannot be had. Each promise observed as it
+  // is made — awaited later: a store that fails while the tree is in flight, or a tree while the manifest is, is not an
+  // unhandled rejection — Node's process killed, the worker's "Uncaught (in promise)" before its clean failure)
+  const both = async (n, primary, tree) => {
+    const store = Promise.resolve(storeOf(n, primary));
+    store.catch(() => {});
+    try { return { n, tree: await (tree ?? json(`/api/tree/${enc(n)}`)), store: await store }; }
+    catch (e) { store.then((st) => st?.close?.(), () => {}); throw e; }
+  };
+  const first = both(name, true, o.tree);
+  first.catch(() => {});
+  let manifest;
+  try { manifest = await (o.manifest ?? json(`/api/manifest/${enc(name)}`)); }
+  catch (e) { first.then((x) => x.store?.close?.(), () => {}); throw e; }
+  const deps = [...new Set((Array.isArray(manifest.extraMounts) ? manifest.extraMounts.map((d) => d.manifest).filter(Boolean) : []))].filter((n) => n !== name);
+  const got = await Promise.allSettled([first, ...deps.map((n) => both(n, false))]);
+  const bad = got.find((g) => g.status === 'rejected');
+  if (bad) { for (const g of got) if (g.status === 'fulfilled') g.value.store?.close?.(); throw bad.reason; }
+  const names = [name, ...deps], parts = [], shared = new Map();
+  for (const { value: { n, tree, store } } of got) {
+    const { own, owners } = splitOwners(tree, n);
+    const part = await openData(n, { ...o, net, link, store, tree: own });
     parts.push(Object.assign(part, { tree, owned: new Set(owners.keys()) }));
     for (const [owner, t] of owners) shared.set(owner, shared.has(owner) ? mergeTrees(shared.get(owner), t) : t);
   }

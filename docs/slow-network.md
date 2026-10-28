@@ -1480,6 +1480,69 @@ most of gta3.img, `p=1`): time to in play is unchanged (63.5 s was a loaded run)
 a standing player, while the archive is still ≤ 270 MB on both sides — are as many. Not measured: a moving player
 (where the archive's missing tail is a wait), the owner's link.
 
+## Opened early (2026-10-28)
+
+The ports' pages opened their game data after their engine: GoldSrc and re3 created the data worker once
+`engine.init()` / `createEngine()` returned (after the account's saves, the engine's download and its compile), OpenMW's
+streaming at the engine's first mount (its preRun, once `mwdata-mods.json` was read). Then the worker opened the
+version one wait after another: its modules, `/api/manifest`, `/api/tree`, the OPFS store (its index replayed), each
+required version's tree and store, and only then the page's reads and the learned order. In the Caddy log of the
+Morrowind starts (10-26/27, 30 runs) the worker's script to its `/api/tree` is 0.5-0.9 s, the gateway's lists to the
+first engine `/gamez` 1.1-1.6 s, while the link sat idle during the engine's compile; GoldSrc and re3 asked
+`/api/prefetch` 0.35-0.7 s after the worker's script, at `startup()`.
+
+The rules, the same for every port (one mechanism: `src/ports/port-files.js`, `src/vfs/data-client.js`,
+`src/vfs/data-worker.js`, `src/vfs/game-data.js`):
+- **A page opens its game data as soon as it knows its version**, beside the engine's download, not after it: GoldSrc
+  and re3 at the top of `start()`, before the account's saves (`openPortData`: the GameData at once, its `ready` later),
+  their files mounted once the engine's file system exists and the data is ready (`mountPortFiles`: the earlier
+  IndexedDB copy handed over, then `mountFiles`); OpenMW's `streamfs.js` when its shared modules load (`open`), long
+  before the engine's first mount.
+- **What the page holds is not asked again**: GoldSrc and re3 fetched `/api/manifest` and `/api/tree` themselves; both go
+  to the worker (`GameData` `manifest`, `tree` → `openVersion`).
+- **One wait, not a chain**: `openVersion` asks the manifest, the version's tree and its store at once, then every
+  required version's tree and store at once; a failure closes the stores that opened.
+- **The learned order's list at the open, not its bytes** (`orderAtOpen`): the list is in the worker before
+  `startup()` (GoldSrc, re3) or the engine's first read (OpenMW, `prefetch: 'first-read'`) asks for it. When bytes
+  move is unchanged: the startup set at `startup()`, after the mount; OpenMW's learned order at the package's end on a
+  cold store (`prefetchNow`) or at the first read. Opening early fetches no game bytes.
+- **What the engine's use decides stays at its use**: the session's start (`GameData.start`: the reads learned from
+  there, the marks timed from there, the offline copy started), OpenMW's run hold (`holdRun`, at the first `need()`:
+  before the engine's script ran there is no run dependency to add, and a read before the worker answered would never
+  be answered — 8300c5f), its page-side cache budget (the tier the engine page's preRun sets, `__omwLruDefault`, read
+  again then), the progress to the page around it, `StreamFS.data()` / `stats()` (null / empty before).
+- **The store's Web Lock** is still held only while the store opens (`openStore`); the store itself is the page's from
+  its start instead of from its engine's: a home probe after Play-then-back finds it held a little longer, and counts it
+  as held (as before).
+- **Times**: `GameData.times` / `snapshot()` `openMs`, `readyMs`, `mountedMs` (the page's clock from its navigation):
+  the open, the worker's answer, the mount — GoldSrc's and re3's `session.startup`, OpenMW's `__streamfsStats`.
+
+Measured (2026-10-28, before = main a5aff0d, after = this change; 2 runs each, behind `tools/net-proxy.mjs` 1.8 MB/s
+90 ms, headless Chromium + SwiftShader, scratch origins on copies of the learned state and a frozen brcache copy; seconds
+from the page's own request in the proxy log, the menu / first frame on the page's clock; OpenMW:
+`tools/openmw/place-load.mjs morrowind-goty-vanilla-plus-fr --mode save`, the warm profile built once by main's code and
+copied for every run; GoldSrc `half-life-original-en`, re3 `vice-city-revc`: the page opened directly, guest, warm = the
+same persistent profile after one 60 s start, new = an empty profile):
+
+| runtime, store | data-worker.js | first engine `/gamez` | menu / running | first frame |
+|---|---|---|---|---|
+| OpenMW, warm | 3.33, 3.08 → 1.98, 2.54 | 8.56, 8.24 → 8.50, 8.52 | menu 8.9, 8.8 → 9.1, 9.0 | 7.5, 7.2 → 7.4, 7.6 |
+| OpenMW, new | 8.14, 8.06 → 2.21, 2.17 | 9.97, 9.77 → 8.51, 8.42 | menu 49.7, 50.4 → 48.9, 47.9 | 44.3, 44.6 → 43.2, 42.2 |
+| GoldSrc, warm | 3.35, 3.69 → 0.94, 0.93 | none (all in the store) | running 13.3, 11.9 → 13.6, 12.7 | = running |
+| GoldSrc, new | 3.64, 3.62 → 1.03, 0.79 | 4.68, 4.43 → 3.55, 2.48 | running 16.7, 15.7 → 15.0, 14.2 | = running |
+| re3, warm | 1.83, 1.86 → 0.92, 0.86 | 2.86, 2.64 → 2.17, 1.91 | running 2.86, 2.65 → 2.17, 1.90 | 6.23, 5.65 → 5.31, 5.49 |
+| re3, new | 1.99, 1.99 → 1.00, 0.71 | 3.00, 2.77 → 2.20, 1.77 | running 3.87, 3.52 → 3.08, 2.54 | 6.82, 6.57 → 6.67, 6.06 |
+
+After, `session.startup`: GoldSrc `openMs` 0.8-1.0 s, `readyMs` 1.3-2.3 s, `mountedMs` 2.5-3.6 s (the data ready
+before the engine's file system every time); re3 `openMs` 0.7-1.0, `readyMs` 1.2-1.9, `mountedMs` 1.8-2.0 s. The
+worker's `/api/prefetch` (the learned order's list) moved from 4.1-4.4 s to 1.3-1.9 s (GoldSrc), 2.5-2.7 to 1.2-1.9 s
+(re3). What it gives: a new device starts 1.6 s sooner on OpenMW (menu) and GoldSrc, 0.9 s on re3; re3 on a warm store
+0.7 s. **Nothing on a warm store for OpenMW (the owner's Morrowind saves) or GoldSrc**: the data is open 0.8-1.4 s
+sooner, but the engine's own boot (OpenMW: its main reaching the first read at ~8.5 s; GoldSrc: its modules and
+init, ~12-13 s) is what the start waits for; the menu came 0.1-0.2 s later on OpenMW and GoldSrc's running 0.5 s later
+on average, within their run-to-run spread (0.3 / 1.4 s) — no contention shown, none excluded at that size. Not
+measured: the owner's laptop (real GPU) and the 85 KB/s link.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

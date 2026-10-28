@@ -300,7 +300,8 @@ both times. The table gives the `/engines` bytes on the wire for the second boot
 
 The page does not download a game before starting it: its files are the game data every Orthros game reads
 (CLAUDE.md "Standardization", docs/slow-network.md) — `src/ports/port-files.js` opens it (`src/vfs/data-client.js`)
-and mounts the version's tree in the engine's file system (`src/vfs/emscripten-files.js`: names and sizes at once, a
+at the page's start, beside the engine's download (`openPortData`; docs/slow-network.md "Opened early"), and mounts the
+version's tree in the engine's file system (`src/vfs/emscripten-files.js`: names and sizes at once, a
 file's bytes at its first read). The bytes come from the data worker (`src/vfs/data-worker.js`), the Windows games'
 reader in a worker of its own: the server's compressed ranges (`/gamez`), the link's measure and its regimes, the
 browser's OPFS block store (`orthros-files-<manifest>`, the same the home screen's whole download fills), the learned

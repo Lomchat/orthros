@@ -1,8 +1,9 @@
 // The game files of a browser port whose engine runs in the page (GoldSrc, re3 — CLAUDE.md "Standardization"): the
 // game data every Orthros game reads (src/vfs/data-client.js: the data worker, the browser's OPFS copy, the learned
-// order, the whole download) opened, the copy an earlier page kept in IndexedDB handed over to it, the files mounted in
-// the engine's file system (src/vfs/emscripten-files.js), what earlier sessions read first loaded before the start; the
-// loading indicator every game shows while it waits for its data (src/host/web/data-meter.js).
+// order, the whole download) opened at the page's start, beside the engine's download (openPortData), then the copy an
+// earlier page kept in IndexedDB handed over to it and the files mounted in the engine's file system
+// (src/vfs/emscripten-files.js) once the engine is in (mountPortFiles), what earlier sessions read first loaded before
+// the start; the loading indicator every game shows while it waits for its data (src/host/web/data-meter.js).
 import '../host/web/data-meter.js'; // (the loading indicator, before the game data: attached to it — data-client.js)
 import { GameData, PIECE } from '../vfs/data-client.js';
 import { mountFiles } from '../vfs/emscripten-files.js';
@@ -24,18 +25,34 @@ export const engineUrls = (config, release, encode = false) => {
 const BATCH = 16 << 20;
 
 /**
- * The installation's game data: { data (GameData), nodes } once its files are mounted under `root`.
- * @param {{ name: string, tree: object, files: { path: string, at?: string }[], FS: object, root: string,
- *   session: string, lang?: string, log: (text: string) => void, db?: IDBDatabase, asyncReads?: boolean, rewritable?: boolean,
- *   onCopy?: (bytes: number) => void, onProgress?: (p: object) => void }} o
+ * The installation's game data opened now, as soon as the page knows its version — not after its engine: the data
+ * worker, the version's store and the learned order's list ready while the engine downloads and compiles
+ * (docs/slow-network.md "Opened early"). Returns the GameData at once (its `ready` settles once the worker answered);
+ * mountPortFiles mounts it once the engine's file system exists.
+ * @param {{ name: string, tree: object, manifest?: object, session: string, lang?: string, log: (text: string) => void }} o
+ *   tree, manifest: the version's, as the page fetched them (not asked again: game-data.js openVersion)
+ */
+export function openPortData(o) {
+  const data = new GameData({ name: o.name, tree: o.tree, manifest: o.manifest, session: o.session, lang: o.lang, prefetch: 'startup', orderAtOpen: true, log: o.log });
+  data.ready.catch(() => {}); // (its failure told where the page waits for it: mountPortFiles)
+  return data;
+}
+
+/**
+ * The game data an openPortData opened, its files mounted under `root` once it is ready: { data, nodes }.
+ * @param {GameData} data
+ * @param {{ name: string, files: { path: string, at?: string }[], FS: object, root: string, log: (text: string) => void,
+ *   db?: IDBDatabase, asyncReads?: boolean, rewritable?: boolean, onCopy?: (bytes: number) => void,
+ *   onProgress?: (p: object) => void }} o
  *   files: the tree's files as the engine sees them (a language's view: languageFiles); db: the installation's IndexedDB,
  *   whose 'content' store an earlier page kept the game files in (handed over, then emptied)
  */
-export async function openPortFiles(o) {
-  const data = await GameData.open({ name: o.name, tree: o.tree, session: o.session, lang: o.lang, prefetch: 'startup', log: o.log });
+export async function mountPortFiles(data, o) {
+  await data.ready;
   if (o.onProgress) data.onProgress(o.onProgress); // (the loading in the background: the shell's pill, shell.setData)
   if (o.db) await handOver(data, o.name, o.db, o.log, o.onCopy);
   const nodes = mountFiles(o.FS, o.root, data, o.name, o.files, { asyncReads: o.asyncReads, rewritable: o.rewritable, log: o.log });
+  data.times.mounted = Math.round(performance.now());
   return { data, nodes };
 }
 

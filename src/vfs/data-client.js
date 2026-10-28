@@ -94,7 +94,11 @@ export class GameData {
   /**
    * The data of version `name` (and the versions it requires), its worker started and its files listed.
    * @param {{ name: string, session?: string, lang?: string|null, bw?: number, prefetch?: 'startup'|'start'|'first-read'|'none',
-   *   cacheBytes?: number, memBytes?: number, cacheBlocks?: number, reloads?: boolean, log?: (text: string) => void }} o
+   *   cacheBytes?: number, memBytes?: number, cacheBlocks?: number, reloads?: boolean, log?: (text: string) => void,
+   *   tree?: object, manifest?: object, orderAtOpen?: boolean }} o
+   *   tree, manifest: the version's /api/tree and /api/manifest when the page holds them (not asked again: game-data.js
+   *   openVersion); orderAtOpen: the learned order's list asked at the open, its bytes not (a page that opens its data
+   *   while its engine downloads: the list here before the startup set or the first read asks for it)
    *   lang: the game's language (its sessions' own launch set: the startup set, and the mark it adds to — launch-set.js)
    *   prefetch: when the learned order starts loading in the background — with the startup set (startup() then start()),
    *   at the engine's start, or at its first read (an engine that downloads itself first: its download comes first);
@@ -108,6 +112,10 @@ export class GameData {
 
   constructor(o) {
     this.log = o.log ?? (() => {});
+    /** when the data was opened and when its worker answered (performance.now(): the page's clock, from its navigation;
+     * ready null before; mounted: when a port's page mounted its files, port-files.js) — a page's start measured
+     * (docs/slow-network.md "Opened early") */
+    this.times = { open: Math.round(performance.now()), ready: null, mounted: null };
     this.ctrl = new Int32Array(new SharedArrayBuffer(64));
     this.data = new Uint8Array(new SharedArrayBuffer(SPAN));
     this.cache = new Map(); this.held = 0; this.budget = o.cacheBytes ?? 256 << 20;
@@ -153,7 +161,7 @@ export class GameData {
     this.ready = new Promise((resolve, reject) => {
       this.worker.onmessage = (e) => {
         const m = e.data;
-        if (m.ready) { this.trees = m.ready.trees; this.kept = m.ready.kept; this.manifest = m.ready.manifest; this.name = o.name; for (const k of m.ready.real ?? []) this.realHere.add(k); resolve(this); }
+        if (m.ready) { this.times.ready = Math.round(performance.now()); this.trees = m.ready.trees; this.kept = m.ready.kept; this.manifest = m.ready.manifest; this.name = o.name; for (const k of m.ready.real ?? []) this.realHere.add(k); resolve(this); }
         else if (m.failed) reject(new Error(m.failed));
         else if (m.id) { const a = this.asks.get(m.id); this.asks.delete(m.id); if (a) m.error ? a.reject(new Error(m.error)) : a.resolve(m.bytes); }
         else if (m.startup) for (const f of this.listeners.startup) f(m.startup);
@@ -170,7 +178,7 @@ export class GameData {
         else if (m.log) this.log(m.log);
       };
     });
-    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', lang: o.lang ?? null, bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', reloads: !!o.reloads, memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
+    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', lang: o.lang ?? null, bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', reloads: !!o.reloads, manifest: o.manifest, orderAtOpen: !!o.orderAtOpen, memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
     this.timer = setInterval(() => { if (this.used.length) this.worker.postMessage({ used: this.used.splice(0) }); }, 2000);
     this.holdTimer = setInterval(() => this.holdWatch(), 100);
     // (the page's loading indicator, src/host/web/data-meter.js, when it has one: these counters, read live)
@@ -379,11 +387,12 @@ export class GameData {
   close() { this.saveRate(); clearInterval(this.timer); clearInterval(this.holdTimer); clearTimeout(this.wantTimer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
 
   /**
-   * The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes, fetchedBytes, net } —
-   * net: the link as the worker last told it (NetLink.snapshot, every second: rate, waits, loading, the background's
-   * bytes by producer — bgBy), null before.
+   * The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes, fetchedBytes, openMs,
+   * readyMs, mountedMs, net } — openMs, readyMs, mountedMs: when the data was opened, its worker answered, a port's page
+   * mounted its files (times, null before); net: the link as the worker last told it (NetLink.snapshot, every second:
+   * rate, waits, loading, the background's bytes by producer — bgBy), null before.
    */
-  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, bigLoads: s.bigLoads, bigFiles: s.bigFiles, bigBytes: s.bigBytes, reloaded: s.reloaded, net: this.net ?? null }; }
+  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, bigLoads: s.bigLoads, bigFiles: s.bigFiles, bigBytes: s.bigBytes, reloaded: s.reloaded, openMs: this.times.open, readyMs: this.times.ready, mountedMs: this.times.mounted, net: this.net ?? null }; }
 
   // ---------------------------------------------------------------- light copies
 

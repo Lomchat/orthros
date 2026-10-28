@@ -19,11 +19,15 @@
     // read: the link idle meanwhile loads the learned order, on a cold store (little of the launch set here) — GameData.prefetchNow,
     // docs/openmw.md "The link after the engine's package". Installed long before the package ends: these modules are a
     // few KB, the package MBs over the same link.)
-    M.onPackageLoaded(window.Module, () => { S.packaged = true; S.data?.prefetchNow(); });
+    M.onPackageLoaded(window.Module, () => { S.packaged = true; if (S.started) S.data.prefetchNow(); });
+    // (the game data opened now — its worker, the version's tree and store, the learned order's list —, while the
+    // engine's script, WebAssembly and package download: ready by the engine's first mount (docs/slow-network.md
+    // "Opened early"), not opened there, serially, before the engine's run is released)
+    try { open(); } catch (e) { console.warn('[streamfs]', e?.message ?? e); }
   });
   const app = location.pathname.slice(0, location.pathname.indexOf('/app/') + 5), name = decodeURIComponent(app.split('/')[3]);
   // (predicted: the place the page expects the player's save to load, and what it asked for it — anticipate)
-  const S = { data: null, session: Math.random().toString(36).slice(2, 14), byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [], predicted: null, hinted: false, packaged: false };
+  const S = { data: null, session: Math.random().toString(36).slice(2, 14), byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [], predicted: null, hinted: false, packaged: false, started: false };
   /** The learned places of this installation (the server's: POST a load's announced batch, GET a place's set). */
   const placesUrl = `/api/places/${encodeURIComponent(name)}`;
   /** the most entries of a predicted place's set asked for (the server bounds its sets; a bad answer does not flood the link) */
@@ -51,19 +55,36 @@
     return null;
   }
 
+  /**
+   * The bytes of the game files kept in the page: the page's memory tier — the upstream's slots were "about 1 MB each"
+   * —, set by the engine page's preRun (__omwLruDefault), 128 MB before.
+   */
+  const cacheBytes = () => ((window.__omwLruDefault | 0) || 128) << 20;
+  /** The game data opened (once): its worker started, the version's tree, store and learned order's list asked. */
+  function open() {
+    if (S.data) return S.data;
+    S.data = new M.GameData({ name, session: S.session, prefetch: 'first-read', orderAtOpen: true, cacheBytes: cacheBytes(), log: (t) => console.warn('[streamfs]', t) });
+    // (observed at once, as openPortData's: a failed open before the engine's first need() — its download seconds long —
+    // is not an unhandled rejection, the engine page's log opened on it; holdRun reports it at that need())
+    S.data.ready.catch(() => {});
+    return S.data;
+  }
+
   function need() {
     if (!M) throw new Error('streamfs: the game data modules are not loaded yet');
-    if (!S.data) {
-      // (the page's memory tier — the upstream's slots were "about 1 MB each" — as the bytes kept in the page)
-      S.data = new M.GameData({ name, session: S.session, prefetch: 'first-read', cacheBytes: ((window.__omwLruDefault | 0) || 128) << 20,
-        log: (t) => console.warn('[streamfs]', t) });
+    if (!S.started) {
+      S.started = true;
+      open();
+      // (opened before the engine page's preRun set its tier: its bytes kept as the tier says now)
+      S.data.budget = cacheBytes();
       S.data.start();
       if (S.packaged) S.data.prefetchNow();
       // (the engine's start held until the worker answered: its first reads wait synchronously, the page's thread
       // spinning, and Chrome hands a module worker the messages sent before its scripts ran through the page's thread —
       // a read before then is never answered: the engine's boot after a short manifest fetch, "the game data worker
       // stopped answering" 30 s later, the archive unreadable. The engine page's preRun holds its own dependencies until
-      // its mounts, this one with them.)
+      // its mounts, this one with them — here, not at the open: before the engine's script ran there is no run to hold,
+      // and a hold skipped would let that read through again.)
       holdRun(S.data.ready);
       // (the loading in the background, for the Orthros page around the engine: its header's pill)
       if (window.parent !== window) S.data.onProgress((p) => window.parent.postMessage({ type: 'orthros-data', ...p }, location.origin));
@@ -255,7 +276,7 @@
   // waits once (orthrosReadWait) instead of a round trip per file: fetched in parallel by the game data (GameData.want).
   // Returns how many are not in the page yet (0: nothing to wait for); paths not streamed here are left out.)
   window.orthrosWillRead = (list, label) => {
-    if (!S.data) return 0;
+    if (!S.started) return 0;
     const entries = [];
     for (const rec of String(list ?? '').split('\x1E')) {
       if (!rec) continue;
@@ -269,17 +290,19 @@
   // (the engine waits for what it announced, at most `timeoutMs`: 1 when it is all here (or failed — its reads say why),
   // 0 on time out (its reads fetch the rest); 1 at once without game data)
   window.orthrosReadWait = (timeoutMs) => {
-    if (!S.data) return 1;
+    if (!S.started) return 1;
     const ms = Number(timeoutMs);
     return S.data.wantWait(Number.isFinite(ms) && ms >= 0 ? ms : 15000) ? 1 : 0;
   };
 
   window.StreamFS = {
-    stats() { return S.data ? S.data.snapshot() : {}; },
+    stats() { return S.started ? S.data.snapshot() : {}; },
     /** The place predicted for the player's save (anticipate): { place, why, save, listed, asked, atMs (when asked, the page's clock) }, or null. */
     place() { return S.predicted; },
-    /** The game data (data-client.js GameData), once the engine mounted a file: null before. */
-    data() { return S.data; },
+    /** The game data (data-client.js GameData), once the engine used it (its first mount): null before (opened earlier). */
+    data() { return S.started ? S.data : null; },
+    /** The game data closed, opened or used (a test; the page's leaving closes its worker anyway). */
+    close() { S.data?.close(); },
     init() {
       if (!self.crossOriginIsolated) throw new Error('streamfs needs crossOriginIsolated (COOP/COEP)');
       need();

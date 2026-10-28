@@ -20,7 +20,7 @@ import { onAccountChange, accountState } from '../../host/web/account.js';
 import { createMmoLink, LINK } from '../../host/web/mmo-link.js';
 import { openStorage, readStorage, writeStorage } from '../goldsrc/storage.js';
 import { treeFiles } from '../../vfs/game-tree.js';
-import { engineUrls, openPortFiles } from '../port-files.js';
+import { engineUrls, openPortData, mountPortFiles } from '../port-files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
 import { setIniDefaults } from './ini.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../../host/profile-seed.js';
@@ -481,6 +481,9 @@ async function start(mode = null) {
   if (typeof WebAssembly.Suspending !== 'function') throw new Error(S.noJspi);
   const r = config.re3, language = gameLanguage(config), own = r.languages?.[language] ?? {};
   if (!r.module) throw new Error(S.noModule);
+  // (the game data opened now — its worker, the version's store, the learned order's list —, beside the account's saves
+  // and the engine's download, ready by the time the engine's file system takes its files: openPortData)
+  gameData ??= openPortData({ name, tree, manifest: config, session: sessionId, lang: language, log });
   step('engine', 'active'); step('files', ''); step('game', '');
   db = await openStorage(config.saveKey);
   const who = await shell.ready;
@@ -514,7 +517,7 @@ async function start(mode = null) {
   const t0 = performance.now();
   step('files', 'active', fmtMB(0), 0);
   let nodes;
-  ({ data: gameData, nodes } = await openPortFiles({ name, tree, files, FS, root: ROOT, session: sessionId, lang: language, log, db, asyncReads: true, rewritable: true,
+  ({ nodes } = await mountPortFiles(gameData, { name, files, FS, root: ROOT, log, db, asyncReads: true, rewritable: true,
     onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
   session.files = gameData; gameNodes = nodes;
   const loaded = await gameData.startup((p) => {

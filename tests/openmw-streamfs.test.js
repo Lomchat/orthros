@@ -23,16 +23,54 @@ test('the engine does not run before the game data worker answered (its run depe
   ctx.window = ctx; ctx.globalThis = ctx; ctx.window.parent = ctx;
   try {
     vm.runInContext(SRC, ctx, { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER });
-    for (let i = 0; i < 50 && workers.length === 0; i++) {
-      try { ctx.StreamFS.init(); } catch (e) { if (!/not loaded yet/.test(e.message)) throw e; await new Promise((r) => setTimeout(r, 10)); }
-    }
-    assert.equal(workers.length, 1, 'the game data opened');
+    // (opened as soon as the shared modules are loaded, beside the engine's download — docs/slow-network.md "Opened
+    // early" —, the run held only once the engine uses it: before its script ran there is no run to hold)
+    for (let i = 0; i < 50 && workers.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(workers.length, 1, 'the game data opened before the engine asked');
+    assert.deepEqual(deps, [], 'no run held yet');
+    assert.ok(!workers[0].sent.some((m) => m.start), 'not started yet');
+    assert.equal(workers[0].sent[0].init.orderAtOpen, true, 'the learned order\'s list asked at the open');
+    ctx.__omwLruDefault = 192; // (the engine page's tier, set by its preRun: after the open)
+    ctx.StreamFS.init();
+    assert.equal(workers.length, 1, 'the same game data');
+    assert.equal(ctx.StreamFS.data().budget, 192 << 20, 'its bytes kept as the tier says at the engine\'s first use');
+    assert.ok(workers[0].sent.some((m) => m.start), 'started at the engine\'s first use');
     assert.deepEqual(deps, [['add', 'orthros-game-data']], 'held while the worker has not answered');
     ctx.StreamFS.init(); assert.equal(workers.length, 1, 'once');
     workers[0].onmessage({ data: { ready: { trees: {}, kept: {}, manifest: {}, real: [] } } });
     await new Promise((r) => setTimeout(r, 0));
     assert.deepEqual(deps, [['add', 'orthros-game-data'], ['remove', 'orthros-game-data']], 'released once it answered');
-  } finally { ctx.StreamFS?.data()?.close?.(); }
+  } finally { ctx.StreamFS?.close?.(); }
+});
+
+// The game data opened early, before the engine's first use (seconds later: its download): an open that fails meanwhile
+// (/api/tree 5xx) is not an unhandled rejection — the engine page's log opened on it —; the engine's first use reports it.
+test('a game data open failing before the engine asked is not an unhandled rejection', async (t) => {
+  const RealWorker = globalThis.Worker, workers = [], unhandled = [], onUnhandled = (e) => unhandled.push(e);
+  globalThis.Worker = class { constructor() { this.sent = []; workers.push(this); } postMessage(m) { this.sent.push(m); } };
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => { globalThis.Worker = RealWorker; process.off('unhandledRejection', onUnhandled); });
+  const deps = [];
+  const ctx = vm.createContext({
+    console: { ...console, warn() {}, error() {} }, URL, Promise, Map, WeakMap, Math, Object, Error, queueMicrotask, decodeURIComponent,
+    self: { crossOriginIsolated: true }, location: { pathname: '/ports/openmw/morrowind-goty-en/app/index.html', href: 'https://o.test/ports/openmw/morrowind-goty-en/app/index.html' },
+    setInterval: () => 0, clearInterval() {},
+    addRunDependency: (id) => deps.push(['add', id]), removeRunDependency: (id) => deps.push(['remove', id]),
+  });
+  ctx.window = ctx; ctx.globalThis = ctx; ctx.window.parent = ctx;
+  try {
+    vm.runInContext(SRC, ctx, { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER });
+    for (let i = 0; i < 50 && workers.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(workers.length, 1, 'opened early');
+    workers[0].onmessage({ data: { failed: '/api/tree/morrowind-goty-en: HTTP 502' } });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(unhandled.length, 0, `unhandled: ${unhandled.map(String)}`);
+    // (the engine's first use: the same game data, its failure handled there)
+    ctx.StreamFS.init();
+    assert.equal(workers.length, 1, 'the same game data');
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(unhandled.length, 0);
+  } finally { ctx.StreamFS?.close?.(); }
 });
 
 // The link after the engine's package (docs/openmw.md): once Emscripten's file_packager package is in (its run
@@ -51,7 +89,7 @@ test('the engine\'s package in: the game data asked to load its learned order no
     ctx.window = ctx; ctx.globalThis = ctx; ctx.window.parent = ctx;
     try {
       vm.runInContext(SRC, ctx, { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER });
-      const init = async () => { for (let i = 0; i < 50 && !workers.length; i++) { try { ctx.StreamFS.init(); } catch (e) { if (!/not loaded yet/.test(e.message)) throw e; await new Promise((r) => setTimeout(r, 10)); } } };
+      const init = async () => { for (let i = 0; i < 50; i++) { try { ctx.StreamFS.init(); return; } catch (e) { if (!/not loaded yet/.test(e.message)) throw e; await new Promise((r) => setTimeout(r, 10)); } } };
       await init(); // (the shared modules loaded: the hook installed; this first init opens the game data)
       const w = workers[0]; assert.ok(w, 'the game data opened');
       // (the engine's script, run after this one: its function set on Module, then the packager's call through it)
@@ -62,7 +100,7 @@ test('the engine\'s package in: the game data asked to load its learned order no
       assert.deepEqual(deps, ['wasm-instantiate', 'datafile_openmw.data'], 'the engine\'s own function still called');
       assert.equal(w.sent.filter((m) => m.prefetch).length, 1, 'asked once the package is in');
       assert.ok(w.sent.findIndex((m) => m.start) < w.sent.findIndex((m) => m.prefetch), 'after the engine\'s start');
-    } finally { ctx.StreamFS?.data()?.close?.(); }
+    } finally { ctx.StreamFS?.close?.(); }
   }
   // (the package in before the game data opened — a fast link: the manifest fetch after it —: asked at the open)
   const workers = [];
@@ -79,10 +117,11 @@ test('the engine\'s package in: the game data asked to load its learned order no
     for (let i = 0; i < 50 && !hooked(); i++) await new Promise((r) => setTimeout(r, 10));
     assert.ok(hooked(), 'the hook installed once the shared modules are loaded');
     ctx.Module.removeRunDependency('datafile_openmw.data');
-    assert.equal(workers.length, 0, 'no game data yet');
+    assert.equal(workers.length, 1, 'the game data opened with the modules (docs/slow-network.md "Opened early")');
+    assert.equal(workers[0].sent.filter((m) => m.prefetch || m.start).length, 0, 'not started before the engine uses it');
     ctx.StreamFS.init();
-    assert.equal(workers[0].sent.filter((m) => m.prefetch).length, 1, 'asked as it opens');
-  } finally { ctx.StreamFS?.data()?.close?.(); globalThis.Worker = RealWorker; }
+    assert.equal(workers[0].sent.filter((m) => m.prefetch).length, 1, 'asked as the engine first uses it');
+  } finally { ctx.StreamFS?.close?.(); globalThis.Worker = RealWorker; }
 });
 
 test('announced reads (orthrosWillRead / orthrosReadWait): engine paths to the game data\'s handles, an archive\'s range as it, one batch', async () => {
@@ -130,7 +169,7 @@ test('announced reads (orthrosWillRead / orthrosReadWait): engine paths to the g
     Atomics.store(data.ctrl, 12, 2);
     assert.equal(ctx.orthrosReadWait(15000), 1, 'settled (ctrl[12] at the batch)');
     assert.equal(data.snapshot().wantTimeouts, 1);
-  } finally { ctx.StreamFS?.data()?.close?.(); globalThis.Worker = RealWorker; }
+  } finally { ctx.StreamFS?.close?.(); globalThis.Worker = RealWorker; }
 });
 
 // Anticipated places (docs/openmw.md "Anticipated places"): each announced batch posted to the server's learned places
@@ -225,5 +264,5 @@ test('anticipated places: announced batches learned (POST /api/places), the pred
     saves.set('/userdata/saves/player/new.omwsave', { bytes: save(int('Balmora, Lucky Lockup'), 5), mtime: 9000 });
     for (const f of intervals) f();
     assert.deepEqual(hint(), { place: 'balmora, lucky lockup', at: 9000 }, 'at the save\'s date');
-  } finally { ctx.StreamFS?.data()?.close?.(); globalThis.Worker = RealWorker; }
+  } finally { ctx.StreamFS?.close?.(); globalThis.Worker = RealWorker; }
 });
