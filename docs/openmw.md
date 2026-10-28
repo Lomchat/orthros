@@ -1062,6 +1062,87 @@ device. With a warm store the place is in about 4 s after the menu appears (5.5 
 varies between loads (NPCs' equipment: ~30 weapon textures, 0.5 MB, not in the taught set once), which the union of the
 next sessions' lists absorbs.
 
+### The boot's idle time: the gateway's lists, the link after the engine's package (2026-10-27)
+
+Two waits before the engine's first game read, neither the link's:
+- **The gateway's lists.** The gateway builds `mwdata-manifest.json` (a walk of its game tree, 7392 files, 466 KB) and
+  `mwdata-mods.json` (a walk per mod, 764 KB) on the first request after it starts, then keeps them in memory until
+  those folders change (`mwdata-routes.ts`, `manifest_built` in its journal). The first player after each restart (every
+  deploy restarts the gateways) paid 1.5-2.8 s each, in series (owner, 10-20: 1.86 + 1.50 s; 10-26: 2.83 + 2.80 s);
+  warm, 0.02-0.10 s. Rules:
+  - `tools/openmw/server.mjs` builds them as the gateway starts (`warmGatewayLists`, src/host/openmw.js): the manifest
+    polled every 500 ms on its localhost port until it answers — 200, or a final 404 (a gateway that does not serve the
+    data: its `deliveryModel`), not retried —, refused connections and 5xx waited for, given up after 120 s or once the
+    container exits; then the mods' list (404: no mods). One `openmw.lists_warm ...` line in the unit's journal with
+    both times. The same walk as a player's request, once, at the start: nothing else changes in the gateway.
+  - The engine page asks both lists together (`withModsListEarly`, applied by `openmwWebText`): `mwdata-mods.json`
+    fetched beside `mwdata-manifest.json`, its answer (`window.__orthrosModsList`) taken once by `mountServerMods` —
+    which asked it only after mounting the manifest's files. Not with `?nomods=1`, and only on a page that has both
+    fetches (else nothing would take the answer). The early request is marked handled when made (a no-op `catch`): a
+    network failure before `mountServerMods` awaits it (seconds later, or never: no manifest) is not an unhandled
+    rejection — the page's handler would log it as an error, ship it with the client log and open the log with `?hud=1`
+    —; `mountServerMods`' own `try` still turns it into "no mods", as before.
+- **The link after the engine's package.** The game data opens while the engine's package downloads (the manifest's
+  fetch, `StreamFS.init`), and the data worker is ready 20-25 s before the package ends at 500 KB/s; then the engine's
+  main() initialises for 5-8 s before its first read, the link idle (500 KB/s, 90 ms: package end 35.0 s, first `/gamez`
+  43.9 s; 85 KB/s, 150 ms: 5.2 s). What the way to the menu reads first is the head of the learned order (Morrowind.esm,
+  the expansions, the archives' headers: ~48 MB of wire for Vanilla+). Rules:
+  - `GameData.prefetchNow()` (src/vfs/data-client.js, shared: any page whose engine goes quiet on the link before its
+    first read) asks the data worker to load the learned order now (`prefetchNow` in data-worker.js) — only on a cold
+    store: less than half (`LAUNCH_COLD`) of the launch set's bytes here (every part's `launchSet` as this link reads
+    it, `setBytes`): a new device, a cleared store, an updated version (its files' mtimes changed). A warm store waits
+    for the first read as before (`prefetch: 'first-read'` kept) even when it misses part of the set — the server's
+    set is a majority vote that holds the first place most sessions reach (not this player's save), it grows between
+    visits, and a light copy or the file is listed by the link's speed, so a returning store rarely holds all of it:
+    requests beside the boot delayed the engine's first read by 1.7 s (warm store) and 4.5 s (new device) —
+    "Anticipated places". A version with no
+    learned order: nothing. With `'start'`/`'startup'` (the pass already runs): nothing.
+  - The page calls it when the engine's package is in: `onPackageLoaded(Module, fn)` (src/vfs/emscripten-files.js,
+    shared) wraps `Module.removeRunDependency` — an accessor, so it holds whether installed before or after the engine's
+    script sets that function — and calls `fn(name)` when a file_packager dependency `datafile_<name>` is removed (its
+    download and unpacking over). `streamfs.js` installs it once its shared modules are loaded (a few KB, long before the
+    package's MBs); a package in before the game data opened (a fast link) asks at the open.
+  - While the pass runs before the engine's first read (`W.boot`), its progress (`ahead`, `launch`) is told to the page
+    every 5 s (`BOOT_TELL_MS`) instead of every 1-2 s: each post is a task on the page's thread (and the parent page's,
+    the header's pill) the boot shares. The first read ends it.
+
+**Measured** (2026-10-28, before = 93391eb, this change's base, after = the change; same pristine learned order and
+frozen precompressed units, `--lang fr`, the OpenMW lean2 package; a machine at load 20-30, one run at 115):
+- Gateway lists, a scratch gateway (`tools/openmw/server.mjs morrowind-goty-vanilla-plus-fr --port 28190`, scratch
+  state; the live `orthros-openmw@` units untouched), curl 25 s after the start: before, the first request built them —
+  0.51 s (manifest) and 0.76 s (mods), `manifest_built` logged at that request —, the second 2.7 / 5.0 ms; after,
+  `openmw.lists_warm manifest 200 in 555 ms, mods 200 in 850 ms (2425 ms after the start)`, the first curl 4.1 / 4.8 ms.
+  The scratch cold times are below production's 1.5-2.8 s (its files in the page cache of the live gateways); the
+  production check is the first `mwdata-*.json` in Caddy after each restart.
+- New device (`tools/data-matrix.mjs`, the proxy's log; times from the navigation):
+
+| link | code | package end | first `/gamez` | engine's first read | idle link | `/gamez` before it | first frame | shown | playable | demand wait |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 500k:90 | before (2 runs) | 32.8 / 32.9 s | 41.2 / 39.8 s | 40.8 / 39.5 s | 8.4 / 6.9 s | 0 | 177.9 / 175.1 s | 183.0 / 181.2 s | 203.2 / 198.6 s | 12.2 / 11.7 s |
+| 500k:90 | after (3 runs) | 32.9 / 32.8 / 32.8 s | 33.5 / 33.4 / 33.4 s | 39.0 / 40.3 / 39.7 s | 0.6 s | 2.0 / 2.4 / 2.2 MB | 210.0 / 163.3 / 163.9 s | 230.8 / 168.5 / 168.3 s | 255.3 / 190.6 / 188.3 s | 7.8 / 10.6 / 11.2 s |
+| 7m:75 | before (3 runs) | 6.4-6.8 s | 8.1-8.6 s | 7.8-8.3 s | 1.6-1.8 s | 0 | 42.9 / 41.2 / 47.7 s | 49.3 / 46.6 / 57.6 s | 60.8 / 55.8 / 68.8 s | 2.9 / 2.3 / 2.6 s |
+| 7m:75 | after (4 runs) | 6.6-6.8 s | 8.1-8.3 s | 8.1-8.4 s | 1.4-1.7 s | 0-4 KB | 49.9 / 47.5 / 48.4 / 47.2 s | 57.2 / 53.0 / 58.2 / 51.5 s | 69.1 / 64.9 / 68.3 / 63.2 s | 2.7 / 2.7 / 2.6 / 2.3 s |
+
+  At 500 KB/s the pass starts 0.2 s after the package (its `/api/prefetch` at 33.0-33.1 s instead of 39.5-40.8 s) and
+  the link stays busy through main(): 2.0-2.5 MB of the order in before the engine's first read, which comes at the
+  same time (6.1-7.5 s after the package, before 6.6-8.0 s: no boot contention on a new device). First frame and
+  shown 11-15 s earlier in two of three runs, more than the ~4-5 s of link the 2.2 MB stand for (the rest is the
+  machine's noise); the third (210 s) is the slowest of all, the machine's load at the time (its demand wait the
+  lowest, 7.8 s). Read as: the idle 7-8 s filled, a gain of a few seconds to the menu, not yet resolved from the noise. At 7 MB/s the engine reads 1.3-1.8 s after its package, as the order arrives:
+  nothing to fill (`/gamez` before the first read 0-4 KB); the first three pairs (before then after) put the after
+  runs 5-7 s behind, the fourth, its order reversed, 47.2 against 47.7 s — the order of the runs, not the code. One
+  before run at 500 KB/s (the base tree) got no game (the engine's download failed, "network error"), one at 7 MB/s
+  ran at load 115 (first frame 120.7 s): both left out.
+- Warm store (`tools/openmw/place-load.mjs --mode save --profile warm --runs 2`, 1.8 MB/s, 90 ms, the engine from the
+  HTTP cache, Ald'ruhn by F9 after 10 s in the menu): menu 9.4 / 9.6 s before, 9.6 / 10.0 s after; first frame
+  7.7 / 8.3 against 8.2 / 8.5 s; the engine's first read 5.8 / 6.4 against 6.4 / 6.8 s, in both 2.8-3.8 s after the
+  manifest's fetch (which itself moves 2.9-3.6 s with the page's CPU); no `/gamez` before it (the store warm: no pass),
+  only the `/api/prefetch` request 0.6-1.2 s earlier; key → in world 8.8 s in all four, frozen 7.7-7.9 s. The menu is
+  faster than the 20 s of "Anticipated places" (the engine from the HTTP cache, the page's boot cut since).
+- The lists asked together: on the warm runs `mwdata-mods.json` leaves with the manifest (before: 0.6 s after it).
+- `tools/openmw/check.mjs morrowind-goty-vanilla-plus-en --lang fr` on a scratch server of the change: ok, 1653 draws.
+  Not measured: 85 KB/s (a run is 15-30 min on this machine's load).
+
 ### GOTY completion check, 2026-10-18
 
 `make test` passed: 1,076 passed, zero failed, three skipped and two pre-existing TODOs.

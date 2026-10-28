@@ -225,6 +225,14 @@ export class GameData {
   start() { this.worker.postMessage({ start: true }); if (offlineCopy.get()) this.download(true); }
 
   /**
+   * The engine leaves the link idle for a while before its first read (its own download over, its init under way): the
+   * learned order loaded from now ('first-read', 'start' — no-op once it runs), only on a cold store — less than half
+   * the launch set here (data-worker.js prefetchNow: a warm store waits for the first read, as before) —, its progress told
+   * sparingly until that read.
+   */
+  prefetchNow() { this.worker.postMessage({ prefetch: true }); }
+
+  /**
    * The files that have a light copy and are here whole now, as they come: `fn(keys)` (`name\npath` lower case) — an
    * engine that can load a file again (a texture in place) does it for those whose light copy it read (lightRead), after
    * repick(h).

@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { loadGameCatalog } from '../src/host/game-catalog.js';
 import { createServer } from '../src/host/server.js';
-import { openmwProblem, openmwWebText, withStreaming } from '../src/host/openmw.js';
+import { openmwProblem, openmwWebText, withStreaming, withModsListEarly, warmGatewayLists } from '../src/host/openmw.js';
 
 function fixture(t, options = { example: true, files: [] }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-openmw-'));
@@ -128,6 +128,68 @@ test('the engine page loads the build from the release, brotli when taken, and k
     const part = await raw({ headers: { 'accept-encoding': 'br', range: 'bytes=0-3' } });
     assert.equal(part.r.statusCode, 206); assert.equal(part.r.headers['content-encoding'], undefined); assert.equal(part.body.toString(), 'wasm');
   }
+});
+
+test('the engine page asks its gateway\'s two lists together: the mods\' list beside the manifest, taken by mountServerMods once', async () => {
+  const page = `fetch('mwdata-manifest.json').then(function(r){ return r.json(); }).then(function(){ return mountServerMods(); });
+    async function mountServerMods(){ if (/[?&]nomods=1\\b/.test(location.search)) return 'off'; var r = await fetch('mwdata-mods.json'); if (!r.ok) return 'none'; return (await r.json()).v; }`;
+  const early = openmwWebText(page, '/ports/openmw/a/app', 'save');
+  assert.notEqual(early, page);
+  assert.equal(withModsListEarly('fetch(\'mwdata-manifest.json\')'), 'fetch(\'mwdata-manifest.json\')', 'a page without mountServerMods\'s fetch: unchanged');
+  for (const [search, want, asked] of [['', 2, ['mwdata-mods.json', 'mwdata-manifest.json']], ['?nomods=1', 'off', ['mwdata-manifest.json']]]) {
+    const asks = [];
+    const fetch = async (u) => { asks.push(u); return { ok: true, json: async () => (u === 'mwdata-mods.json' ? { v: 2 } : []) }; };
+    let done; const result = new Promise((r) => { done = r; });
+    const ctx = { fetch, location: { search }, done };
+    ctx.window = ctx;
+    runInNewContext(early.replace('return mountServerMods(); });', 'return mountServerMods().then(done); });'), ctx);
+    assert.equal(await result, want, search);
+    assert.deepEqual(asks, asked, 'each list asked once, the mods\' first — beside the manifest');
+    assert.equal(ctx.__orthrosModsList, null, 'the early answer taken once');
+  }
+});
+
+test('the early mods\' list failing (a network error) is no unhandled rejection: mountServerMods still finds "no mods", the manifest\'s failure too', async (t) => {
+  const page = `fetch('mwdata-manifest.json').then(function(r){ if (!r.ok) throw new Error('no data'); return r.json(); }).then(function(){ return later(); }).then(function(){ return mountServerMods(); }, function(){ return 'noGameData'; });
+    async function mountServerMods(){ try { var r = await fetch('mwdata-mods.json'); if (!r.ok) return 'none'; return (await r.json()).v; } catch (e) { return 'out'; } }`;
+  const early = openmwWebText(page, '/ports/openmw/a/app', 'save');
+  const unhandled = [], on = (e) => unhandled.push(e);
+  process.on('unhandledRejection', on); t.after(() => process.off('unhandledRejection', on));
+  for (const [manifestOk, want] of [[true, 'out'], [false, 'noGameData']]) {
+    const fetch = async (u) => {
+      if (u === 'mwdata-mods.json') throw new TypeError('Failed to fetch');
+      return { ok: manifestOk, json: async () => [] };
+    };
+    let done; const result = new Promise((r) => { done = r; });
+    // (the mounts between the manifest and mountServerMods: the early request rejected long before its await)
+    const ctx = { fetch, location: { search: '' }, later: () => new Promise((r) => setTimeout(r, 30)) };
+    ctx.window = ctx;
+    runInNewContext(early.replace("function(){ return 'noGameData'; });", "function(){ return 'noGameData'; }).then(done);"), { ...ctx, done });
+    assert.equal(await result, want);
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  assert.deepEqual(unhandled, [], 'no unhandled rejection');
+});
+
+test('a gateway\'s data lists built at its start: polled until it answers (a final 404 too), then the mods\' list; given up when it exits', async () => {
+  let up = 3, asked = [];
+  const fetch = async (u) => {
+    asked.push(new URL(u).pathname);
+    if (up-- > 0) throw new Error('ECONNREFUSED');
+    return new Response('[]', { status: u.endsWith('mods.json') ? 404 : 200 });
+  };
+  const lines = [], out = await warmGatewayLists({ port: 28999, every: 1, fetch, log: (l) => lines.push(l) });
+  assert.equal(out.manifest.status, 200); assert.equal(out.mods.status, 404);
+  assert.deepEqual(asked, [...Array(4).fill('/mwdata-manifest.json'), '/mwdata-mods.json']);
+  assert.match(lines[0], /openmw\.lists_warm manifest 200 in \d+ ms, mods 404/);
+  // (no data served — deliveryModel —: the manifest's 404 is the answer, not retried)
+  asked = [];
+  const none = await warmGatewayLists({ port: 28999, every: 1, fetch: async (u) => { asked.push(u); return new Response('', { status: 404 }); } });
+  assert.equal(none.manifest.status, 404); assert.equal(asked.length, 2);
+  // (a gateway starting, 503, then gone: given up)
+  let n = 0;
+  const gone = await warmGatewayLists({ port: 28999, every: 1, alive: () => n < 3, fetch: async () => { n++; return new Response('', { status: 503 }); }, log: (l) => lines.push(l) });
+  assert.equal(gone.manifest, null); assert.equal(n, 3); assert.match(lines.at(-1), /gave up .*gateway exited/);
 });
 
 test('world travel scopes destinations received through the engine protocol before rebooting', async () => {

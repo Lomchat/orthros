@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/host/game-catalog.js';
 import { linkGameLayers, engineFile, DEFAULT_ENGINES_DIR } from '../../src/host/goldsrc.js';
-import { openmwInstalled, openmwGatewayImage, OPENMW_STATE_DIR } from '../../src/host/openmw.js';
+import { openmwInstalled, openmwGatewayImage, warmGatewayLists, OPENMW_STATE_DIR } from '../../src/host/openmw.js';
 import { resolveGameFile } from '../../src/host/game-files.js';
 
 const args = process.argv.slice(2), id = args[0], arg = (k) => args.includes(k) ? args[args.indexOf(k) + 1] : null;
@@ -49,3 +49,7 @@ const child = spawn('docker', ['run', '--rm', '--init', '--name', name, '--cpus=
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { if (child.exitCode === null) child.kill(signal); });
 child.on('error', (e) => { console.error(e.message); process.exitCode = 1; });
 child.on('exit', (code) => { process.exitCode = code ?? 1; });
+// (its data lists built now, not for its first player: the gateway walks the game tree and the mods on their first
+// request — 1.5-2.8 s each — and keeps them for its life; docs/openmw.md "The gateway's lists")
+warmGatewayLists({ port, alive: () => child.exitCode === null && child.signalCode === null, log: (l) => console.log(l) })
+  .catch((e) => console.error('openmw.lists_warm', e?.message ?? e));

@@ -159,6 +159,54 @@ test('the data worker reports the pieces the engine used, loads the startup set,
   assert.equal(server.posts[0].session, 'sess1');
 });
 
+test('the learned order loaded now (prefetchNow: the engine\'s link idle before its first read) only on a store that lacks the launch set', async (t) => {
+  const learned = [['Game.esm', 0, 0, 0], ['Game.esm', 1, 0, 500], ['b.dat', 0, 0, 9000]];
+  const files = () => ({ 'Game.esm': bytes(3 << 20), 'b.dat': bytes(70000, 4) });
+  const settle = () => new Promise((r) => setTimeout(r, 60));
+  // (a new device: nothing here — the whole order, before any read; 'first-read' would wait for one)
+  const cold = fakeServer(files(), learned), w = await startWorker(t, cold, { prefetch: 'first-read' });
+  w.handle({ start: true }); await settle();
+  assert.equal(cold.asked.length, 0, 'first-read: nothing before a read');
+  w.handle({ prefetch: true });
+  await w.until(() => cold.asked.some(([p]) => p === 'b.dat'), 'the order past its launch set');
+  assert.ok(cold.asked.some(([p, a]) => p === 'Game.esm' && a === 0), 'its launch set first');
+});
+
+test('prefetchNow on a store that holds the launch set: nothing before the engine\'s first read, as before (no requests beside its boot)', async (t) => {
+  const learned = [['Game.esm', 0, 0, 0], ['Game.esm', 1, 0, 500], ['b.dat', 0, 0, 9000]];
+  const files = () => ({ 'Game.esm': bytes(3 << 20), 'b.dat': bytes(70000, 4) });
+  const settle = () => new Promise((r) => setTimeout(r, 60));
+  const warm = fakeServer(files(), learned), v = await startWorker(t, warm, { prefetch: 'first-read' });
+  v.handle({ startup: true }); await v.until(() => v.out.some((m) => m.startup?.done), 'startup');
+  const had = warm.asked.length;
+  v.handle({ start: true }); v.handle({ prefetch: true }); await settle();
+  assert.equal(warm.asked.length, had, 'the launch set here: no pass before the first read');
+  await v.read('Game.esm', 0, 100);
+  await v.until(() => warm.asked.some(([p]) => p === 'b.dat'), 'the first read starts it');
+});
+
+/** prefetchNow on a store handed `given` ([path, at, bytes] of the files) before: the requests before any read. */
+async function prefetchNowOn(t, given) {
+  // (the launch set: Game.esm's two first blocks and b.dat — all three before the order's first pause)
+  const learned = [['Game.esm', 0, 0, 0], ['Game.esm', 1, 0, 500], ['b.dat', 0, 0, 900]];
+  const files = { 'Game.esm': bytes(3 << 20), 'b.dat': bytes(70000, 4) };
+  const server = fakeServer(files, learned), w = await startWorker(t, server, { prefetch: 'first-read' });
+  w.handle({ migrate: given.map(([path, at, n]) => ({ name: 'v', path, at, bytes: files[path].slice(at, at + n) })) });
+  w.handle({ start: true }); w.handle({ prefetch: true });
+  return { server, w };
+}
+
+test('prefetchNow on a store missing part of the launch set (another place\'s pieces, entries learned since): a warm store all the same, nothing before the first read', async (t) => {
+  const { server } = await prefetchNowOn(t, [['Game.esm', 0, 2 << 20]]);
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(server.asked.length, 0, '2 MB of 2.07 here: no pass beside the boot');
+});
+
+test('prefetchNow on a store holding little of the launch set: a cold one, the pass before any read', async (t) => {
+  const { server, w } = await prefetchNowOn(t, [['b.dat', 0, 70000]]);
+  await w.until(() => server.asked.some(([p, a]) => p === 'Game.esm' && a === 0), '70 KB of 2.07 MB here: the pass');
+});
+
 test('the page\'s phases go with the reports: each one\'s start in the session\'s time, the same one twice in a row once', async (t) => {
   const server = fakeServer({ 'maps/a.bsp': bytes(70000, 4) });
   const w = await startWorker(t, server);

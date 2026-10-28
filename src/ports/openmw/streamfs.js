@@ -13,10 +13,17 @@
   // (a classic script — the page calls StreamFS synchronously — loading the shared modules at once: they are here long
   // before the engine's first mount, which comes after its own requests)
   const modules = Promise.all([import('/src/vfs/data-client.js'), import('/src/vfs/emscripten-files.js'), import('/src/ports/openmw/view-grow.js'), import('/src/ports/openmw/save-place.js')]);
-  let M = null; modules.then(([client, files, view, place]) => { M = { ...client, ...files, inWorld: view.inWorld, savePlace: place }; });
+  let M = null; modules.then(([client, files, view, place]) => {
+    M = { ...client, ...files, inWorld: view.inWorld, savePlace: place };
+    // (the engine's package in — openmw.data, its own download —, its main() initialising for seconds before its first
+    // read: the link idle meanwhile loads the learned order, on a cold store (little of the launch set here) — GameData.prefetchNow,
+    // docs/openmw.md "The link after the engine's package". Installed long before the package ends: these modules are a
+    // few KB, the package MBs over the same link.)
+    M.onPackageLoaded(window.Module, () => { S.packaged = true; S.data?.prefetchNow(); });
+  });
   const app = location.pathname.slice(0, location.pathname.indexOf('/app/') + 5), name = decodeURIComponent(app.split('/')[3]);
   // (predicted: the place the page expects the player's save to load, and what it asked for it — anticipate)
-  const S = { data: null, session: Math.random().toString(36).slice(2, 14), byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [], predicted: null, hinted: false };
+  const S = { data: null, session: Math.random().toString(36).slice(2, 14), byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [], predicted: null, hinted: false, packaged: false };
   /** The learned places of this installation (the server's: POST a load's announced batch, GET a place's set). */
   const placesUrl = `/api/places/${encodeURIComponent(name)}`;
   /** the most entries of a predicted place's set asked for (the server bounds its sets; a bad answer does not flood the link) */
@@ -51,6 +58,7 @@
       S.data = new M.GameData({ name, session: S.session, prefetch: 'first-read', cacheBytes: ((window.__omwLruDefault | 0) || 128) << 20,
         log: (t) => console.warn('[streamfs]', t) });
       S.data.start();
+      if (S.packaged) S.data.prefetchNow();
       // (the engine's start held until the worker answered: its first reads wait synchronously, the page's thread
       // spinning, and Chrome hands a module worker the messages sent before its scripts ran through the page's thread —
       // a read before then is never answered: the engine's boot after a short manifest fetch, "the game data worker

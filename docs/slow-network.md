@@ -325,7 +325,10 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   parts (`extraMounts`: a Windows game over another's folder; a port's required versions are underlays, in its own
   tree) adds their launch sets, each from its own learned order — the startup set, the card's sizes and Prepare alike.
   Once the engine runs (`start()`), the whole learned order loads in the background from the game's position
-  (`prefetch: 'startup'` behaves as `'start'` after the startup set). Until 2026-10-21 it never did for the GoldSrc and
+  (`prefetch: 'startup'` behaves as `'start'` after the startup set). An engine that downloads itself first
+  (`'first-read'`: OpenMW) starts it at its first read — or earlier, when its own download is over and its init leaves
+  the link idle, with `GameData.prefetchNow()`, only on a cold store — less than half the launch set here (docs/openmw.md
+  "The link after the engine's package"). Until 2026-10-21 it never did for the GoldSrc and
   re3 pages: after the startup set the engine read everything on demand, round trip after round trip (Vice City: ~100
   reads per 10 s, 0.25 MB/s on a 1 MB/s link).
 - **Measured (2026-10-21, 1 MB/s + 60 ms RTT shared link, fresh profile, SwiftShader on a loaded machine, one run

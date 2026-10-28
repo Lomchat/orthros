@@ -92,3 +92,23 @@ export function mountFiles(FS, root, data, name, files, o = {}) {
   }
   return nodes;
 }
+
+/**
+ * `fn(name)` once each of the engine's file_packager packages is in (its run dependency `datafile_<name>` removed: its
+ * download and unpacking over — the engine's own download, before its main() and its first read of the game's files),
+ * through `Module.removeRunDependency`, which the packager's code looks up on Module at that moment. Works installed
+ * before the engine's script sets that function on Module (kept through an accessor) or after it. Returns an off().
+ * @param {object} Module the engine's Module (the page's global, the engine's script not loaded yet or loaded)
+ * @param {(name: string) => void} fn
+ */
+export function onPackageLoaded(Module, fn) {
+  if (!Module || typeof Module !== 'object') return () => {};
+  const wrap = (f) => (typeof f !== 'function' ? f : function (id) {
+    const r = f.apply(this, arguments);
+    if (live && typeof id === 'string' && id.startsWith('datafile_')) try { fn(id.slice('datafile_'.length)); } catch { /* the page's */ }
+    return r;
+  });
+  let live = true, current = wrap(Module.removeRunDependency);
+  Object.defineProperty(Module, 'removeRunDependency', { configurable: true, enumerable: true, get: () => current, set: (f) => { current = wrap(f); } });
+  return () => { live = false; };
+}

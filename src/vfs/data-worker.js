@@ -36,6 +36,15 @@ const REPORT_MS = 15000;
 const MARK_READS = 40000;
 /** How often the way to playable (launchWatch) is told to the page while the game is not there. */
 const LAUNCH_TELL_MS = 2000;
+/** How often the learned order's progress (ahead, launch) is told to the page while the engine boots (prefetchNow). */
+const BOOT_TELL_MS = 5000;
+/**
+ * prefetchNow loads the learned order before the engine's first read only on a store holding less than this share of
+ * the launch set's bytes: a cold one (a new device, a store cleared, a version updated — its files' mtimes changed). A
+ * returning store rarely holds all of it (the server's majority set holds other sessions' first places, it learns between
+ * visits, a light copy or the file by the link's speed) and waits for the first read, as before.
+ */
+const LAUNCH_COLD = 0.5;
 /** After this long without a read waiting, the next wait is a new step for the indicator. */
 const STEP_PAUSE_MS = 3000;
 
@@ -52,7 +61,7 @@ export function createDataWorker(post) {
   W = {
     ctrl: null, data: null, version: null, parts: new Map(), handles: new Map(), ready: null, timers: [],
     session: '', lang: null, t0: null, reads: [], seen: new Map(), waiting: 0, lastWait: -1e9, step: null, waits: new Set(), held: new Map(),
-    prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null,
+    prefetchAt: 'none', prefetching: false, runs: null, stop: false, whole: null, learned: null, boot: false, readSeen: false,
     wants: new Map(), wantFrom: 1, wantMax: 0, wantLeft: 0, wantFailed: 0, wantLabel: null,
     legacy: new Map(), adopters: new Map(), sources: new Map(), light: new Map(), marks: new Set(), reports: new ReadReports(), phases: [],
   };
@@ -82,6 +91,7 @@ function dispatch(m) {
   // ('startup': the startup set before the engine, then the whole learned order once it runs — as 'start')
   if (m.start) { W.t0 = performance.now(); if (W.prefetchAt === 'start' || W.prefetchAt === 'startup') prefetchAll(); return; }
   if (m.startup) { startup(); return; }
+  if (m.prefetch) { prefetchNow(); return; }
   if (m.mark) { mark(m.mark); return; }
   if (m.phase) { phase(m.phase); return; }
   if (m.want) { want(m.want); return; }
@@ -155,6 +165,7 @@ async function bytesOf({ name, path, off, len, want, src }, ask = { held: true }
   if (!part || !f) throw new Error(`${name}: ${path} not in the game's files`);
   const end = Math.min(f.len, off + len);
   if (end <= off) return new Uint8Array(0);
+  W.readSeen = true; W.boot = false;
   if (W.prefetchAt === 'first-read' && !W.prefetching) prefetchAll();
   await adoptLegacy(name, path, part, f);
   const wait = f.prepare(off, end - off);
@@ -377,6 +388,27 @@ async function startup() {
 }
 
 /**
+ * The learned order loaded now, before the engine's first read (GameData.prefetchNow: a page whose engine went quiet on
+ * the link — OpenMW's once its package is in, its main() initialising for seconds before it reads a game file), only
+ * on a cold store (less than LAUNCH_COLD of the launch set's bytes here: a new device, a store cleared, a version
+ * updated): the link idle meanwhile fetches what the way to the menu reads first. A warm one, even missing part of the
+ * set (another session's first place, entries learned since), starts at the first read as before
+ * ('first-read': requests beside an engine's boot delay its first read — docs/openmw.md "Anticipated places" —, and
+ * nothing there would be fetched). Its progress told to the page every BOOT_TELL_MS until that first read (boot).
+ */
+async function prefetchNow() {
+  if (W.prefetching || W.stop) return;
+  const lists = await order(), fast = W.version.net.fast();
+  if (W.prefetching || W.stop) return;
+  let bytes = 0, here = 0;
+  W.version.parts.forEach((p, i) => { const s = setBytes(p.files, launchSet(p.files, lists[i], fast)); bytes += s.bytes; here += s.here; });
+  if (!bytes || here >= bytes * LAUNCH_COLD) return;
+  // (paced only before the engine's first read: one that came while the order was on its way ended the boot)
+  W.boot = !W.readSeen;
+  prefetchAll();
+}
+
+/**
  * The whole learned order, in the background from the game's position in it (HttpBackend.prefetch), every part's; its
  * progress to the page every second ({ ahead: { done, total, finished } }: entries of the order passed, of all).
  */
@@ -400,7 +432,9 @@ async function prefetchAll() {
     for (const { p, progress } of runs) { const n = p.files.learned?.entries.length ?? 0; total += n; done += progress.done ? n : Math.min(n, Math.max(0, (progress.k ?? -1) + 1)); }
     postMessage({ ahead: { done, total, finished: runs.every((r) => r.progress.done) } });
   };
-  const tick = setInterval(tell, 1000);
+  // (paced while the engine boots: each post a task of the page's thread — and of the page around it — the boot shares)
+  let told = -1e9;
+  const tick = setInterval(() => { const now = performance.now(); if (W.boot && now - told < BOOT_TELL_MS) return; told = now; tell(); }, 1000);
   await Promise.all(runs.map((r) => r.job));
   clearInterval(tick); tell();
 }
@@ -415,8 +449,11 @@ async function prefetchAll() {
  */
 function launchWatch(lists) {
   if (!lists.some(flagged)) return;
-  let sets = null, fastWas = null, timer = null;
+  let sets = null, fastWas = null, timer = null, told = -1e9;
   const tell = () => {
+    const now = performance.now();
+    if (W.boot && now - told < BOOT_TELL_MS) return false;
+    told = now;
     const net = W.version.net, fast = net.fast();
     if (fast !== fastWas) { fastWas = fast; sets = W.version.parts.map((p, i) => ({ p, set: launchSet(p.files, lists[i], fast) })); }
     let bytes = 0, here = 0;

@@ -54,6 +54,36 @@ export function openmwEngineFiles(man, enginesDir) {
   } catch { return []; }
 }
 
+/**
+ * A multiplayer gateway's two data lists built as it starts, not for its first player (tools/openmw/server.mjs; docs/openmw.md
+ * "The gateway's lists"): the gateway walks its game tree for mwdata-manifest.json (7392 files) and each mod for
+ * mwdata-mods.json on the first request after each start, kept in its memory until those folders change — 1.5-2.8 s
+ * each, paid by the first player after every restart (a deploy restarts them). Polls the manifest every `every` ms until
+ * it answers (200, or a final 404: the gateway does not serve the data — its deliveryModel —, nothing to build), the
+ * gateway not up yet (refused, 5xx) waited for; then the mods' list (404: no mods). Gives up after `limit` ms or once
+ * `alive()` is false (the gateway exited). Resolves { manifest: { status, ms }, mods: { status, ms } } (null: not reached).
+ * @param {{ port: number, alive?: () => boolean, log?: (line: string) => void, every?: number, limit?: number,
+ *   fetch?: typeof fetch, host?: string }} o
+ */
+export async function warmGatewayLists({ port, alive = () => true, log = () => {}, every = 500, limit = 120000, fetch: get = globalThis.fetch, host = '127.0.0.1' }) {
+  const t0 = Date.now(), url = (p) => `http://${host}:${port}/${p}`;
+  const ask = async (p) => {
+    const t = Date.now();
+    try { const r = await get(url(p), { signal: AbortSignal.timeout(Math.max(1000, limit - (t - t0))) }); await r.arrayBuffer().catch(() => {}); return { status: r.status, ms: Date.now() - t }; }
+    catch { return null; }
+  };
+  const out = { manifest: null, mods: null };
+  while (alive() && Date.now() - t0 < limit) {
+    const a = await ask('mwdata-manifest.json');
+    if (a && (a.status === 200 || a.status === 404)) { out.manifest = a; break; }
+    await new Promise((r) => setTimeout(r, every));
+  }
+  if (!out.manifest) { log(`openmw.lists_warm gave up after ${Date.now() - t0} ms (${alive() ? 'no answer' : 'gateway exited'})`); return out; }
+  if (alive()) out.mods = await ask('mwdata-mods.json');
+  log(`openmw.lists_warm manifest ${out.manifest.status} in ${out.manifest.ms} ms, mods ${out.mods?.status ?? 'none'} in ${out.mods?.ms ?? '-'} ms (${Date.now() - t0} ms after the start)`);
+  return out;
+}
+
 const UPSTREAM_IMAGE = /^ghcr\.io\/virtastic\/openmw-web-server@sha256:[a-f0-9]{64}$/;
 /**
  * The native multiplayer gateway's Docker image for an engine release (tools/openmw/server.mjs): its upstream release's
@@ -153,6 +183,22 @@ export const withEngineUrls = (html, urls) => !urls || !Object.keys(urls).length
   .replace(/(locateFile: function\(path\)\{ return [^}]*?)__ENGINE_DIR \+ path; \}/, '$1__orthrosEngineUrl(path); }')
   .replace("s.src = __ENGINE_DIR + 'openmw.js';", "s.src = __orthrosEngineUrl('openmw.js');");
 
+/** The engine page's fetch of its gateway's file list, and the one of its mods' list (mountServerMods, after the mounts). */
+const MANIFEST_FETCH = "fetch('mwdata-manifest.json')", MODS_FETCH = "var r = await fetch('mwdata-mods.json');";
+/**
+ * The page's two gateway lists asked together: mwdata-mods.json fetched beside mwdata-manifest.json (the page asked it
+ * only after mounting the manifest's 7392 files: a round trip and the gateway's time in series before the engine's
+ * start, docs/openmw.md "The gateway's lists"), its answer taken by mountServerMods. Only a page that has both (else
+ * nothing would take it), not with ?nomods=1 (the page skips the list). The early request marked handled as made (a
+ * no-op catch beside it): a network failure before mountServerMods awaits it — seconds later, or never (no manifest) —
+ * is no unhandled rejection (the page's handler logs it as an error, ships it, opens the log with ?hud=1); its await,
+ * in its own try, still turns the failure into "no mods" as before.
+ */
+export const withModsListEarly = (html) => !html.includes(MANIFEST_FETCH) || !html.includes(MODS_FETCH) ? html : html
+  .replace(MANIFEST_FETCH, "(window.__orthrosModsList = /[?&]nomods=1\\b/.test(location.search) ? null : fetch('mwdata-mods.json'), "
+    + 'window.__orthrosModsList && window.__orthrosModsList.catch(function(){}), ' + MANIFEST_FETCH + ')')
+  .replace(MODS_FETCH, "var r = await (window.__orthrosModsList || fetch('mwdata-mods.json')); window.__orthrosModsList = null;");
+
 export function openmwWebText(text, base, saveKey) {
   // Native EM_ASM in the untouched engine glue uses the upstream storage keys too.
   // HTML-only replacements would clear a different resume token than the engine reads.
@@ -167,7 +213,7 @@ export function openmwWebText(text, base, saveKey) {
       };
     }); })();
   `);
-  return text.replace(/ · <a href="\/admin">server administration<\/a>/, '')
+  return withModsListEarly(text).replace(/ · <a href="\/admin">server administration<\/a>/, '')
     .replace(/(["'`])\/(auth(?:\/|["'`])|worlds(?:\/|["'`])|locker(?:\/|["'`])|saves(?:\/|["'`])|w\/|ws(?=["'`])|clientlog(?=["'`])|admin(?:\/|["'`])|mwdata-(?:manifest|mods)\.json|index\.html|launcher\.html|join(?=["'`])|play(?=["'`]))/g, `$1${base}/$2`)
     .replace(/(location\.(?:href\s*=\s*|replace\(\s*))["']\/["']/g, `$1'${base}/'`)
     .replace(/(['"])omwmp:([^'"]+)\1/g, (_m, q, k) => `${q}${saveKey}:mp:${k}${q}`)
