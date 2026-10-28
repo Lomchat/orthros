@@ -197,6 +197,23 @@ test('r12: r11 plus its patch, the same exports; each kept frame-cost change rea
   for (const s of ['STATEGRAPHS', 'PRELOADREADY', 'CELLREADS']) assert.ok(!patch.includes(`OPENMW_ORTHROS_${s}`), s);
 });
 
+test('r13: r12 plus its patch, r12\'s exports and orthros_content_light (launch-set.js CONTENT_EXPORT), exported by the patch', () => {
+  const r12 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r12'), r13 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r13');
+  assert.ok(r13, 'r13 is a build');
+  assert.deepEqual(r13.patches, [...r12.patches, 'orthros-r13.patch']);
+  assert.deepEqual(r13.exports.slice(0, r12.exports.length), r12.exports, 'r12\'s exports kept');
+  assert.deepEqual(r13.exports.slice(r12.exports.length).map((e) => e.name), ['orthros_content_light']);
+  const e = r13.exports.at(-1);
+  assert.equal(e.returns, 'number'); assert.deepEqual(e.args, []); assert.ok(e.call.startsWith("Module.ccall('orthros_content_light'"));
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r13.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  // (exported as r1's are: EMSCRIPTEN_KEEPALIVE in engine.cpp, no change to the link script's exports)
+  assert.ok(patch.includes('+++ b/openmw/apps/openmw/engine.cpp'));
+  for (const k of ['extern "C" EMSCRIPTEN_KEEPALIVE int orthros_content_light()', 'VFS::orthrosContentLoad(false);', 'VFS::orthrosContentLoad(true);',
+    'globalThis.orthrosContentLoaded : globalThis.orthrosContentLoading', 'var f = globalThis.orthrosContentIds;'])
+    assert.ok(added.includes(k), k);
+});
+
 test('r13 patch: the content load told to the page (its content files light until then), the cells\' ranges read ahead or put off', () => {
   const file = path.join(tools, 'patches/orthros-r13.patch');
   const patch = fs.readFileSync(file, 'utf8'), added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
