@@ -48,7 +48,7 @@
     if (!storage) { storage = sp.pageStorage(); storage.ask(); }
     window.orthrosPerf = perf.portPerf({ runtime: 'openmw', game: id, session: Math.random().toString(36).slice(2, 14), version: null, bench: new URLSearchParams(location.search).get('benchrun'),
       tier: () => window.orthrosTierChoice?.tier ?? null, phase: () => (!draws ? 'loading' : view.inWorld(window) ? 'world' : 'menu'),
-      data: () => { const d = window.StreamFS?.data?.(); return d ? { waits: d.stats.misses, ms: d.stats.stallMs } : null; },
+      data: () => perf.portDataSummary(window.StreamFS?.data?.() ?? null),
       gl: () => glc, draws: () => draws, storage });
   }).catch((e) => console.warn('[orthros perf]', e));
   // the engine's loading status (Module.setStatus, src/host/openmw.js): its package download, "Downloading data...

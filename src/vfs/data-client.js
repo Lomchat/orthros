@@ -144,8 +144,8 @@ export class GameData {
     const ctrl = this.ctrl;
     // (wants: announced entries posted; wantWaits / wantWaitMs / wantTimeouts: the engine's waits for them — want, wantWait;
     // bigLoads / bigFiles / bigBytes: the big loads read light first, the files and their bytes left for later; reloaded:
-    // the files the page loaded again in place — reloaded())
-    this.stats = { hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0, syncFetches: 0, wants: 0, wantWaits: 0, wantWaitMs: 0, wantTimeouts: 0, bigLoads: 0, bigFiles: 0, bigBytes: 0, reloaded: 0, get waits() { return this.misses; }, get waitMs() { return this.stallMs; },
+    // the files the page loaded again in place — reloaded(); fileWaits: the waits by file, { path: [waits, ms] } — waited())
+    this.stats = { fileWaits: {}, hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0, syncFetches: 0, wants: 0, wantWaits: 0, wantWaitMs: 0, wantTimeouts: 0, bigLoads: 0, bigFiles: 0, bigBytes: 0, reloaded: 0, get waits() { return this.misses; }, get waitMs() { return this.stallMs; },
       get waitBytes() { return this.bytes; }, get fetchedBytes() { return Atomics.load(ctrl, 2); } };
     this.listeners = { startup: [], whole: [], ahead: [], real: [], launch: [] };
     // (o.worker: a test's stand-in, { postMessage, onmessage })
@@ -719,7 +719,7 @@ export class GameData {
         });
       } finally { this.pending.delete(id); }
       // (the engine's waits: the reads it did not go on past — the time since it asked)
-      if (!background && this.goes === at) { this.stats.misses++; this.stats.stallMs += performance.now() - t0; }
+      if (!background && this.goes === at) this.waited(h, performance.now() - t0);
       this.keep(h, p, bytes);
       p = Math.floor((p * PIECE + Math.max(PIECE, bytes.length)) / PIECE);
     }
@@ -768,10 +768,19 @@ export class GameData {
       const b = Atomics.load(ctrl, 3), now = performance.now();
       if (b !== beat) { beat = b; beatAt = now; } else if (now - beatAt > DEAD_MS) throw new Error(b === 0 ? 'the game data worker never started (a read the page waited for before GameData.ready)' : 'the game data worker stopped answering');
     }
-    this.stats.misses++; this.stats.syncFetches++; this.stats.stallMs += performance.now() - t0;
+    this.stats.syncFetches++; this.waited(h, performance.now() - t0);
     const n = ctrl[1];
     if (n < 0) throw new Error(`${h.path}: read failed at ${start}`);
     this.keep(h, p, this.data.subarray(0, n));
+  }
+
+  /**
+   * One wait of the engine for `h`'s bytes (`ms` long): counted (misses, stallMs) and by file (fileWaits: which file a
+   * session's waits were for — the passive records' attribution, perf-page.js portDataSummary).
+   */
+  waited(h, ms) {
+    const s = this.stats, w = (s.fileWaits[h.path ?? `src:${h.src}`] ??= [0, 0]);
+    s.misses++; s.stallMs += ms; w[0]++; w[1] += ms;
   }
 
   /** Bytes of `h` from piece `p` into the page's pieces (whole pieces, or the file's last), copied. */

@@ -1,15 +1,17 @@
 // Passive session records (src/host/perf-record.js, src/host/web/perf-page.js, docs/real-machine-bench.md "Passive
 // session records"): the recording per minute and per phase, hidden time left out, the counters' differences, the
 // bounds, the server's validation and the /api/telemetry route, the page side with a fake window (frames, the
-// engine's work, the GPU timer, the end), the --perf report.
+// engine's work, the GPU timer, the end), what a port's data waits were for (portDataSummary, compactDataSum), its
+// session events (portEvents), the --perf report.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { PerfRecorder, sanitizePerfRecord, fitRecord, compactProbe, MAX_RECORDS, MAX_ENTRIES, PERF_MAX_BYTES } from '../src/host/perf-record.js';
-import { PerfSession, timerContext } from '../src/host/web/perf-page.js';
+import { PerfRecorder, sanitizePerfRecord, fitRecord, compactProbe, compactDataSum, MAX_RECORDS, MAX_ENTRIES, PERF_MAX_BYTES, PATH_MAX } from '../src/host/perf-record.js';
+import { PerfSession, timerContext, portDataSummary, portEvents } from '../src/host/web/perf-page.js';
+import { GameData } from '../src/vfs/data-client.js';
 import { createServer } from '../src/host/server.js';
 import { perfSessions, perfReport, formatPerf, gpuLabel, buildSessions } from '../tools/telemetry-report.mjs';
 import { HIST_N, histBucket } from '../src/core/frame-acct.js';
@@ -344,4 +346,82 @@ test('--perf: sessions per game × GPU, medians, the worst minutes, slow frames\
   assert.match(out.stdout, /Intel Iris Xe Graphics: 2 session/); assert.doesNotMatch(out.stdout, /NVIDIA/);
   const js = JSON.parse(spawnSync(process.execPath, ['tools/telemetry-report.mjs', dir, '--perf', '--json'], { encoding: 'utf8' }).stdout);
   assert.equal(js.length, 3);
+});
+
+test('data waits attributed: the files, the engine\'s own stops, announced reads, the background by producer; in the totals only', () => {
+  const sum = {
+    files: { 'Audio/VROCK.adf': [120, 35000], 'models/gta3.img': [300, 4200], 'Audio/Water.mp3': [9, 900], 'anim/ped.ifp': [1, 20], 'x': [0, 0] },
+    blocked: { count: 140, ms: 38123.4, max: 812.6, files: { 'Audio/VROCK.adf': 35100.2, 'models/gta3.img': 3000, 'Audio/Water.mp3': 23.2, 'data/x.dat': 0.1 } },
+    wantWaits: 2, wantWaitMs: 310.4, wantTimeouts: 0,
+    bgBy: { pf1: { requests: 10, wire: 2 << 20, raw: 3 << 20, inLoad: 1 << 20 }, mediaAhead: { requests: 3, wire: 512 << 10, raw: 512 << 10, inLoad: 0 }, idle: { requests: 0, wire: 0, raw: 0, inLoad: 0 }, 'bad key': { requests: 1, wire: 9, raw: 9, inLoad: 0 } },
+  };
+  const c = compactDataSum(sum);
+  assert.deepEqual(c, {
+    files: [['Audio/VROCK.adf', 35000, 120], ['models/gta3.img', 4200, 300], ['Audio/Water.mp3', 900, 9]],
+    blocked: { n: 140, ms: 38123, max: 813, top: [['Audio/VROCK.adf', 35100], ['models/gta3.img', 3000], ['Audio/Water.mp3', 23]] },
+    want: { n: 2, ms: 310, to: 0 },
+    bg: { pf1: [10, 2048, 1024], mediaAhead: [3, 512, 0] },
+  });
+  assert.equal(compactDataSum({ files: {}, blocked: null, wantWaits: 0, bgBy: null }), null, 'nothing to say: no part');
+  assert.equal(compactDataSum({ files: { ['d/'.repeat(200) + 'f.bin']: [1, 5] } }).files[0][0].length, PATH_MAX, 'a long path: its end');
+  // in the record: the totals carry the session's so far, the minutes their counts only; the server keeps them
+  const r = new PerfRecorder({ header });
+  r.counters({ data: { waits: 0, ms: 0, sum: null } }); r.clock(0, true, 'running');
+  play(r, 0, 60);
+  r.counters({ data: { waits: 430, ms: 40000, sum } });
+  play(r, 60000, 61);
+  const rec = r.take(121000, true);
+  assert.deepEqual(rec.tot.data, { n: 430, ms: 40000, ...c });
+  for (const m of rec.mins) assert.deepEqual(Object.keys(m.data ?? {}).sort(), ['ms', 'n']);
+  const v = sanitizePerfRecord(JSON.parse(JSON.stringify(rec)));
+  assert.ok(v.ok, v.error); assert.deepEqual(v.rec.tot.data, rec.tot.data);
+  // (the server: the totals' data rebuilt from its known parts, bounded — paths cut, bad lists and keys dropped)
+  const bad = sanitizePerfRecord({ ...rec, tot: { ...rec.tot, data: { n: 1, ms: 2, files: [['a', 1, 2], ['b', -1, 2], ['c'.repeat(400), 1, 1], ['d', 1, 1]], blocked: { n: 1, ms: 2, max: 2, top: [['a', 1, 9]], who: 'x' }, want: 'x', bg: { pf: [1, 2, 3], 'no way': [1, 2, 3], ok: [1, 2] }, secret: 1 } } });
+  assert.ok(bad.ok);
+  assert.deepEqual(bad.rec.tot.data, { n: 1, ms: 2, files: [['a', 1, 2], ['c'.repeat(PATH_MAX), 1, 1]], blocked: { n: 1, ms: 2, max: 2 }, bg: { pf: [1, 2, 3] } });
+  assert.deepEqual(sanitizePerfRecord({ ...rec, mins: [{ ...rec.mins[0], data: { n: 1, ms: 2, files: [['a', 1, 2]] } }] }).rec.mins[0].data, { n: 1, ms: 2 }, 'a minute\'s data: its counts only');
+});
+
+test('a port\'s data for its record: the shared game data\'s waits by file, the engine\'s stops under its root, the link\'s producers', (t) => {
+  assert.equal(portDataSummary(null), null);
+  // (the shared game data counts every wait of the engine by file: data-client.js waited)
+  const gd = { stats: { fileWaits: {}, misses: 0, stallMs: 0, wantWaits: 1, wantWaitMs: 40, wantTimeouts: 1 }, net: { bgBy: { pf: { requests: 2, wire: 4096, raw: 4096, inLoad: 0 } } } };
+  GameData.prototype.waited.call(gd, { path: 'Audio/VROCK.adf' }, 300); GameData.prototype.waited.call(gd, { path: 'Audio/VROCK.adf' }, 200); GameData.prototype.waited.call(gd, { src: 4 }, 10);
+  assert.deepEqual(gd.stats.fileWaits, { 'Audio/VROCK.adf': [2, 500], 'src:4': [1, 10] });
+  assert.equal(gd.stats.misses, 3); assert.equal(gd.stats.stallMs, 510);
+  const engine = { orthrosBlocked: { count: 2, ms: 520, max: 310, files: { '/game/Audio/VROCK.adf': 510, '/elsewhere/x': 10 } } };
+  const d = portDataSummary(gd, engine, { root: '/game' });
+  assert.equal(d.waits, 3); assert.equal(d.ms, 510);
+  assert.deepEqual(d.sum, { files: gd.stats.fileWaits, blocked: { count: 2, ms: 520, max: 310, files: { 'Audio/VROCK.adf': 510, '/elsewhere/x': 10 } }, wantWaits: 1, wantWaitMs: 40, wantTimeouts: 1, bgBy: gd.net.bgBy });
+  assert.equal(portDataSummary(gd).sum.blocked, null, 'an engine that does not count its stops');
+  // through the page's session: the final record's totals say which file the session waited for
+  const win = fakeWindow(), sent = [];
+  let now = 0, draws = 0;
+  const realNow = performance.now; performance.now = () => now; t.after(() => { performance.now = realNow; });
+  const s = new PerfSession({ runtime: 're3', game: 'vc', session: 'sess5678', win, now: () => now, probe: false, send: (r) => sent.push(r), data: () => portDataSummary(gd, engine, { root: '/game' }), env: () => ({}) });
+  t.after(() => clearInterval(s.timer));
+  s.watchFrames({ draws: () => draws });
+  const eng = (ts) => { now = ts + 5; draws++; win.requestAnimationFrame(eng); };
+  win.requestAnimationFrame(eng);
+  for (let f = 1; f <= 30 * 20; f++) { const ts = f * 33.333; now = ts; win.run(ts); if (f % 30 === 0) { now = ts + 20; s.tick(); } }
+  s.end();
+  const last = sent.at(-1);
+  assert.equal(last.final, true);
+  assert.deepEqual(last.tot.data.files[0], ['Audio/VROCK.adf', 500, 2]);
+  assert.deepEqual(last.tot.data.blocked.top, [['Audio/VROCK.adf', 510], ['/elsewhere/x', 10]]);
+  assert.deepEqual(last.tot.data.want, { n: 1, ms: 40, to: 1 }); assert.deepEqual(last.tot.data.bg, { pf: [2, 4, 0] });
+  assert.ok(sanitizePerfRecord(JSON.parse(JSON.stringify(last))).ok);
+});
+
+test('a port\'s session events: the page\'s state and storage, 20 at most, the end once', () => {
+  const sent = [];
+  let state = 'loading';
+  const e = portEvents({ port: 're3', state: () => state, storage: { state: null }, bench: 'b1', send: (b) => sent.push(b) });
+  assert.match(e.session, /^[0-9a-f]{16}$/);
+  e.report('start', { engine: 'x' }); state = 'running';
+  e.end({ frames: null }); e.end({ frames: null });
+  assert.deepEqual(sent.map((b) => [b.event, b.port, b.state, b.bench, b.session === e.session]), [['start', 're3', 'loading', 'b1', true], ['end', 're3', 'running', 'b1', true]]);
+  assert.equal(sent[0].engine, 'x'); assert.ok(sent[0].env);
+  for (let i = 0; i < 30; i++) e.report('error', {});
+  assert.equal(sent.length, 20);
 });

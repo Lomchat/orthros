@@ -2,7 +2,8 @@
 // sources) and touch a submodule the lock pins; every build's engine files are pinned (build.sh refuses one that
 // differs); build ids are unique. The r2 builds carry librw's sample count fix (docs/browser-ports.md, "The engine,
 // built from source"); the r3 builds read sound bank 0 sample by sample (docs/slow-network.md, "Launch set after an
-// engine change").
+// engine change"); the r4 builds seek a streamed MP3/ADF by its byte estimate (docs/slow-network.md, "A radio tuned at
+// its position").
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -66,4 +67,22 @@ test('re3 lock: the r3 builds add the lazy sound bank to r2\'s patches, each edi
   assert.match(patch, /^\+\t+if \(!channelUsed && !SampleManager\.EnsureSample\(soundOffset \+ SFX_CAR_ACCEL_1\)\)\n\+\t+return;$/m);
   // (the page's count of the samples read and skipped, for tools/re3/check.mjs)
   assert.match(patch, /^\+EM_JS\(void, OrthrosSampleCount, \(int read, int frames\)/m);
+});
+
+test('re3 lock: the r4 builds add the fuzzy stream seek to r3\'s patches, each edition', () => {
+  for (const [id, cmake] of [['revc-web-e312f97-r4', undefined], ['revc-web-e312f97-plus-r4', ['-DREVC_ORTHROS_EXTRAS=ON']]]) {
+    const b = lock.builds.find((x) => x.id === id);
+    assert.ok(b, id);
+    assert.deepEqual(b.patches, [['vendor/librw', 'librw-webgl-samples.patch'], ['.', 'revc-lazy-sfx.patch'], ['.', 'revc-fuzzy-stream-seek.patch']]);
+    assert.deepEqual(b.cmake, cmake);
+  }
+  const patch = fs.readFileSync(path.join(dir, 'patches', 'revc-fuzzy-stream-seek.patch'), 'utf8');
+  const files = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]);
+  assert.deepEqual(files, ['src/audio/oal/stream.cpp']);
+  // (the browser build only: a streamed MP3/ADF seeks to its byte estimate, not by reading every frame from byte 0 —
+  // docs/slow-network.md "A radio tuned at its position"; the desktop build's flags unchanged)
+  assert.match(patch, /^\+#ifdef __EMSCRIPTEN__\n(\+\/\/.*\n)+\+#define ORTHROS_MPG123_FLAGS \(MPG123_SEEKBUFFER \| MPG123_GAPLESS \| MPG123_FUZZY\)\n\+#else\n\+#define ORTHROS_MPG123_FLAGS \(MPG123_SEEKBUFFER \| MPG123_GAPLESS\)\n\+#endif$/m);
+  // (both decoders take them: CMP3File — the ambiences, cutscenes' audio — and CADFFile — the radio stations)
+  assert.equal([...patch.matchAll(/^-\t+mpg123_param\(m_pMH, MPG123_FLAGS, MPG123_SEEKBUFFER \| MPG123_GAPLESS, 0\.0\);$/gm)].length, 2);
+  assert.equal([...patch.matchAll(/^\+\t+mpg123_param\(m_pMH, MPG123_FLAGS, ORTHROS_MPG123_FLAGS, 0\.0\);$/gm)].length, 2);
 });

@@ -261,7 +261,20 @@ histogram then the oldest entries; the server refuses larger ones with 413). Eac
 | `env` | `gpu` / `gpuVendor` (WebGL unmasked renderer), `gpuClass` (gpu-class.js: integrated, discrete, software), `cores`, `memGB`, `ua`, `screen` |
 | `probe` | the host timing probe (timing-probe.js), once after a minute of visible play: `atomicsWait1`, `atomicsWait1Timer`, `setTimeout0`, `setTimeout1`, `messageHop` as `[p50, p90, max]` ms late, `battery`; in the first record after it and in the end's |
 | `mins[]` | entries: `t` (start, s from the session's start), `ph` (phase: Win32 the page's status, the ports' session state, OpenMW `loading` / `menu` / `world`), `s` / `hid` (visible / hidden seconds), `n` frames, `fps` (over the visible time), `p50` `p90` `p99` `max` (frame ms, frame-acct.js histogram: 1 ms buckets below 100 ms), `f40` `f100` (frames over 40 / 100 ms), `work` / `wait` (ms per frame), `cats` (Win32: mean ms per frame by frame-accounting category), `slow` (the slow frames' time by cause, ms summed), `gpu` (`{ n, mean, p50, p90, p99 }` timed frames — `lost`: queries whose result never came —, or `{ state }`), `data` (`{ n, ms }` game data waits) |
-| `tot` | the same over the whole session so far (visible play only), with its frame-time histogram `h` (sparse: sessions merge) |
+| `tot` | the same over the whole session so far (visible play only), with its frame-time histogram `h` (sparse: sessions merge); the ports' `tot.data` also says what the session's data waits were for (below) |
+
+**What the data waits were for** (the ports, 2026-10-27): a minute's `data` tells how long the game waited, not for
+what — a single file read from its start for 35 s (a radio station's seek, docs/slow-network.md "A radio tuned at its
+position") and scattered archive reads look the same. Every port's page passes `data: () => portDataSummary(gameData,
+engine, { root })` (`src/host/web/perf-page.js`, one helper for GoldSrc, re3 and OpenMW), and the totals' `data` of
+each record carries the session's attribution so far (`compactDataSum` in `src/host/perf-record.js`; the minutes keep
+`{ n, ms }`): `files` — the 3 files the engine waited for most, `[path, ms, waits]` (the shared game data counts every
+wait by file: `GameData.waited`, `stats.fileWaits`); `blocked` — the engine's own count of its stops for its files when
+it keeps one (reVC's `Module.orthrosBlocked`: `{ n, ms, max, top: [path, ms] x 3 }`, paths under the game folder
+relative); `want` — its waits for its announced reads (`{ n, ms, to }`: wantWaits, wantWaitMs, wantTimeouts); `bg` —
+the background's bytes by producer (the link's `bgBy`: `{ reason: [requests, wire KiB, KiB begun during a load] }`, the
+12 largest). Game file paths only (cut to their last 160 characters); the server rebuilds the part from these fields
+and drops the rest. Not on the Win32 page (its reads are the worker's: `netMs` / `netReq` only).
 
 **Hidden tabs**: the time is counted (`hid`), the frames are not (a hidden tab's frames and the first gap after it).
 

@@ -2,9 +2,9 @@
 // session records"), one for every runtime: the Windows games' page feeds it the worker's stats intervals (frame
 // accounting), a browser port's page (GoldSrc, re3, the OpenMW engine's page) its frames shown — the engine's work a
 // frame measured from the browser's animation frames, its GPU time by the timer query probe (gpu-probe.js, sampled
-// windows), its game data waits from the shared game data's counters (data-client.js). It keeps the clock (visible and
-// hidden time, the phase), runs the host timing probe once (timing-probe.js), and sends a record every 2 minutes of
-// play and one at the end (sendBeacon, else a keepalive fetch).
+// windows), its game data waits from the shared game data's counters (data-client.js) and what they were for
+// (portDataSummary). It keeps the clock (visible and hidden time, the phase), runs the host timing probe once
+// (timing-probe.js), and sends a record every 2 minutes of play and one at the end (sendBeacon, else a keepalive fetch).
 import { PerfRecorder, SLOW_A } from '../perf-record.js';
 import { GpuProbe } from '../../gfx/gpu-probe.js';
 import { runTimingProbe } from './timing-probe.js';
@@ -23,6 +23,24 @@ export function beacon(body, url = '/api/telemetry') {
   try { if (globalThis.navigator?.sendBeacon?.(url, new Blob([text], { type: 'application/json' }))) return true; } catch { /* refused */ }
   try { fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text, keepalive: true }).catch(() => {}); } catch { /* no fetch */ }
   return false;
+}
+
+/**
+ * A browser port's session events (/api/telemetry: its start, errors, crash, audio, end — a few a session; the GoldSrc
+ * and re3 pages): `port` its runtime, `state()` the page's state, `storage` its pageStorage (the env's storage),
+ * `bench` a bench suite's run (bench-suite.js). report(event, data) sends one (20 at most a session); end(data) the
+ * session's end, once. `session`: the id the passive record shares (portPerf). `send`: beacon (tests: their own).
+ * @param {{ port: string, state: () => string, storage: { state: any }, bench?: string|null, max?: number, send?: (body: object) => void }} o
+ */
+export function portEvents({ port, state, storage, bench = null, max = 20, send = beacon }) {
+  const t = { session: crypto.randomUUID().replaceAll('-', '').slice(0, 16), started: performance.now(), sent: 0, ended: false,
+    report(event, data = {}) {
+      if (t.sent >= max) return; t.sent++;
+      send({ session: t.session, game: decodeURIComponent(globalThis.location?.pathname.split('/').filter(Boolean)[2] ?? ''), port, event, ...(bench ? { bench } : {}),
+        seconds: Math.round((performance.now() - t.started) / 1000), state: state(), ...data, env: eventEnv(storage.state) });
+    },
+    end(data = {}) { if (t.ended) return; t.ended = true; t.report('end', data); } };
+  return t;
 }
 
 /**
@@ -66,7 +84,7 @@ export class PerfSession {
   /**
    * @param {{ runtime: string, game: string|null, session: string, version?: string|null, build?: string|null,
    *   tier?: () => string|null, bench?: string|null, env?: () => object, phase?: () => string|null,
-   *   data?: () => ({ waits: number, ms: number }|null), gpu?: () => object|null, send?: (rec: object) => void,
+   *   data?: () => ({ waits: number, ms: number, sum?: object }|null), gpu?: () => object|null, send?: (rec: object) => void,
    *   win?: any, now?: () => number, probe?: boolean, recordMs?: number, storage?: ReturnType<typeof pageStorage> }} o
    *   storage: the page's (storage-persist.js: its env's `storage`, read again after each record), else one of its own
    */
@@ -190,6 +208,27 @@ export function watchEngineFrames(win, o) {
   };
   raf0(tick);
   return { meter: m, shown: () => { m.flag = true; } };
+}
+
+/**
+ * A port's game data for its passive record (PerfSession's `data`, the same for every port): its waits, cumulative
+ * ({ waits, ms }: each minute's), and `sum` what they were for so far (the record's totals, perf-record.js
+ * compactDataSum) — the files waited for (the shared game data's fileWaits), the engine's own stops for its files when
+ * it counts them (`engine.orthrosBlocked`: { count, ms, max, files: ms by path } — reVC; `root` its game folder in the
+ * engine's file system, left out of the paths), its announced reads' waits, the background's bytes by producer (the
+ * link's bgBy; a getter: the frames' meter reads only `ms`, each frame). gameData: the page's GameData
+ * (data-client.js), null before (then null).
+ * @param {any} gameData @param {any} [engine] @param {{ root?: string }} [o]
+ */
+export function portDataSummary(gameData, engine = null, { root = '' } = {}) {
+  if (!gameData) return null;
+  const s = gameData.stats ?? {}, rel = (p) => (root && p.startsWith(root + '/') ? p.slice(root.length + 1) : p);
+  return { waits: s.misses ?? 0, ms: s.stallMs ?? 0,
+    get sum() {
+      const B = engine?.orthrosBlocked;
+      const blocked = B ? { count: B.count ?? 0, ms: B.ms ?? 0, max: B.max ?? 0, files: Object.fromEntries(Object.entries(B.files ?? {}).map(([k, v]) => [rel(k), v])) } : null;
+      return { files: s.fileWaits ?? null, blocked, wantWaits: s.wantWaits ?? 0, wantWaitMs: s.wantWaitMs ?? 0, wantTimeouts: s.wantTimeouts ?? 0, bgBy: gameData.net?.bgBy ?? null };
+    } };
 }
 
 /** The WebGL context an engine made on `canvas` (asked once it drew: never creates one), or null. */

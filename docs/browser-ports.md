@@ -1022,6 +1022,11 @@ the page — else that play is skipped and the bytes fetched (docs/slow-network.
 the rules, and the launch set's reset that goes with the release). Built and pinned at their install (lock.json lists
 them with empty `files` until then: build.sh prints the digests to pin).
 
+`revc-web-e312f97-r4` and `-plus-r4` add `revc-fuzzy-stream-seek.patch` (2026-10-27) on top of r3's: a streamed MP3 or
+ADF (the radio stations, the ambiences) is opened with `MPG123_FUZZY` in the browser build, so a seek jumps to its
+byte estimate instead of reading every frame from the file's start (docs/slow-network.md "A radio tuned at its
+position": the rules, and the learned order's reset that goes with the release). Pinned at their install, as r3.
+
 The fork's commits make the desktop build a browser one, nothing about a game (all under `__EMSCRIPTEN__`):
 
 - **One thread, the browser's turn**: the game's main loop is kept as it is; with JSPI its

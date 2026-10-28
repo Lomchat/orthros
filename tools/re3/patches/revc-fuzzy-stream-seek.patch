@@ -1,0 +1,39 @@
+diff --git a/src/audio/oal/stream.cpp b/src/audio/oal/stream.cpp
+--- a/src/audio/oal/stream.cpp
++++ b/src/audio/oal/stream.cpp
+@@ -506,6 +506,17 @@
+ 
+ #ifdef AUDIO_OAL_USE_MPG123
+ 
++#ifdef __EMSCRIPTEN__
++// (Orthros: a seek in a streamed MP3/ADF jumps to its byte estimate — audio start + mean frame size x frame, exact
++// within a frame for CBR, a Xing table's entry for VBR — instead of reading every frame from the file's start up
++// to it: in the browser the stream runs on the game's thread, MULTITHREADED_AUDIO off, each byte not yet in the page
++// waits on the network, so a radio tuned at its 56 MB position read 56 MB, the game frozen meanwhile. Only the
++// position mpg123_tell reports becomes approximate, by a frame)
++#define ORTHROS_MPG123_FLAGS (MPG123_SEEKBUFFER | MPG123_GAPLESS | MPG123_FUZZY)
++#else
++#define ORTHROS_MPG123_FLAGS (MPG123_SEEKBUFFER | MPG123_GAPLESS)
++#endif
++
+ class CMP3File : public IDecoder
+ {
+ protected:
+@@ -534,7 +545,7 @@
+ 		m_pMH = mpg123_new(nil, nil);
+ 		if ( m_pMH )
+ 		{
+-			mpg123_param(m_pMH, MPG123_FLAGS, MPG123_SEEKBUFFER | MPG123_GAPLESS, 0.0);
++			mpg123_param(m_pMH, MPG123_FLAGS, ORTHROS_MPG123_FLAGS, 0.0);
+ 
+ 			m_bOpened = true;
+ 			m_bFileNotOpenedYet = true;
+@@ -654,7 +665,7 @@
+ 		m_pMH = mpg123_new(nil, nil);
+ 		if (m_pMH)
+ 		{
+-			mpg123_param(m_pMH, MPG123_FLAGS, MPG123_SEEKBUFFER | MPG123_GAPLESS, 0.0);
++			mpg123_param(m_pMH, MPG123_FLAGS, ORTHROS_MPG123_FLAGS, 0.0);
+ 
+ 			m_bOpened = true;
+ 			m_bFileNotOpenedYet = true;

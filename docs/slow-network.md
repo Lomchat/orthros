@@ -1222,6 +1222,112 @@ machine, or the bank's samples now read during the new game: not settled). Not m
 lost on a thin link in play (one-shot sounds before their bytes; a skipped loop heard once its bytes arrive), the French
 launch set, vice-city-orthros' times.
 
+## A radio tuned at its position (2026-10-27)
+
+reVC streams its radio stations and ambiences (`Audio/*.adf`, `Audio/*.mp3`: 128 kbps CBR MP3, no Xing header) through
+mpg123, opened with `MPG123_SEEKBUFFER | MPG123_GAPLESS` only (`src/audio/oal/stream.cpp`, `CMP3File` and `CADFFile`).
+Without `MPG123_FUZZY` and without a frame index past the first frames, mpg123 1.26.2 seeks by **reading every frame
+from the file's start up to the target** (`frame_index_find` → offset 0, `stream_seek_frame` → `read_frame` in a loop).
+A station starts at its new-game timer plus the time played (`MusicManager.cpp` `GetTrackStartPos`): 7-57 MB into a
+65-75 MB file, about 31 MB on average; an ambience at a random position. The stream runs on the game's thread in the
+browser (`MULTITHREADED_AUDIO` off under `__EMSCRIPTEN__`) and each missing byte suspends the engine (JSPI `fd_read`):
+the game shows no frame until the scan reaches the position. Seen in production: the owner's Orthros Edition session of
+2026-10-21 read `VROCK.adf` from 0 to 63 MB in 35 s (Caddy, 130 requests); the learned orders carry the scan's
+signature — `Water.mp3` blocks 0-8 counted 31, 27, 22, 21, 16, 13, 8, 7, 4 times by 31 sessions (~4.8 MB a session, in
+the new game's load), `VROCK.adf` blocks 0-57 once in 36 s, `FLASH.adf` blocks 0-7 (its 7.2 MB start).
+
+The rule, for every engine that runs in the page and streams compressed audio from a game file (an engine's glue,
+nothing about a game): **a seek in a stream reads the bytes at its position, not the file up to it.** For reVC the
+engine releases `revc-web-e312f97-r4` and `-plus-r4` (`tools/re3/patches/revc-fuzzy-stream-seek.patch`, under
+`__EMSCRIPTEN__`) open both decoders with `MPG123_FUZZY`: a seek past the frame index jumps to `audio_start + mean frame
+size x frame` (exact within a frame for CBR — `silent_resync` takes the leftover bytes —; a Xing table's entry for a VBR
+file with one; a VBR file without one lands near, not at, its time). What it costs: `mpg123_tell` becomes approximate
+(within a frame for CBR: the radio position a save keeps). A tuned station then reads the block at its position (and
+the file's first frames and tail at its open, as before).
+
+**The learned order after the change.** The older releases' sessions taught the scan's blocks as entries of the order,
+read after playable (no `pre` count: never flagged), with early times — `Water.mp3` blocks 1-8 at 6.8-9.4 s, before the
+intro cutscene's `int_a.mp3`, so every new device fetches them during the new game's load. An engine release that no
+longer reads a file's blocks moves them to the end of the order: `tools/learn-unflag.mjs` takes blocks of a file
+(`--path 'Audio/Water.mp3#1-8'`, `#a-b`, `#a-` to the end) and `--tail` moves the entries named to the order's end even
+when no session counted them before playable (counts and masks kept; a session of the new release that reads one early
+teaches its time again). Block 0 (the header read at the open) and the tail block (the open's ID3 check) stay.
+
+**How long the move lasts.** The server keeps a block's earliest time over every session (`learnRead`: `e.t =
+Math.min(e.t, t)`) and `prefetchList` sorts by that time alone — its count never weighs in (only the 8192 cap). So the
+move lasts only for blocks the new release no longer reads early: the stations' prefixes (`FLASH.adf`, `VROCK.adf`:
+a station starts at its fixed new-game timer, `NewGameRadioTimers`, so after r4 the prefix before it is not read).
+`Water.mp3` and `City.mp3` are ambiences started at a random position in every new game (`MusicManager.cpp`
+`SetStartingTrackPositions`, `(pos * m_anRandomTable[i % 5]) % m_nLength` from the clock): an r4 session still reads
+the block at its target, at ~7 s, a legitimate read that brings that block back to its early time — each of blocks 1-8
+about once in 10 sessions, so after a few dozen sessions the move of their blocks is undone and on a fast link (where
+media entries are not sent to the tail: `http-backend.js`, `tail` only when `!net.fast()`) a new device fetches the
+whole of `Water.mp3`/`City.mp3` in the new game's load again (at 1.8 MB/s nothing changes: media go to the tail there;
+the gain is the engine's). Resetting their counts or dropping the entries would not keep them late either: one read's
+time wins the minimum. A lasting order needs low-count media blocks out of its early part (time weighed by the count,
+or a media block with a count far under the sessions' left out of the early order) — a follow-up, not part of this
+change; until then the move of the ambiences' blocks is temporary (measure the fast-link order again a few days after
+the deploy). At the deploy of the r4 releases, once the manifests name them:
+
+```
+tools/backup.sh snapshot -m "before moving the radio scan's blocks to the order's end for the reVC r4 engines"
+systemctl stop orthros.service
+node tools/learn-unflag.mjs /var/lib/orthros2/learn --only vice-city-revc --only vice-city-orthros --tail \
+  --path 'Audio/Water.mp3#1-8' --path 'Audio/City.mp3#1-8' --path 'Audio/FLASH.adf#1-53' --path 'Audio/VROCK.adf#1-69' --write
+systemctl start orthros.service
+```
+
+(dry run without `--write` on a copy of the 2026-10-27 orders: 24 entries to the end for vice-city-revc, 81 for
+vice-city-orthros, none counted before playable.)
+
+**Seen in production.** The ports' perf records now say which file a session's data waits were for (`tot.data.files`,
+`tot.data.blocked` — docs/real-machine-bench.md "What the data waits were for"): a station's scan shows as one
+`Audio/*.adf` holding most of the session's blocked time; after the r4 deploy no `Audio/*.adf` should lead it, and a
+check must tell a scan from a single seek: in Caddy, a tuned `Audio/*.adf` or ambience shows its open's ranges (the
+first frames, the tail) and then single ranges at a random offset — expected —, no sequential run from byte 0 up to
+it; in the learned order, per new session `Water.mp3` gains about one random block plus blocks 0 and 9 (blocks 1-8
+keep growing slowly, about 1/10 of a vote a session each, roughly evenly), no longer a 0..k run with counts falling
+from block 1 on (31, 27, 22, … before r4). Counts past block 0 that keep growing are not a regression.
+
+**Measured (2026-10-28).** Scratch servers of this tree, the same copy of the learned state and a frozen copy of the
+precompressed units on both sides, only the engine differing (r3 / r4, `vice-city-revc`), a new browser each run, the
+runs interleaved. A station tuned: `tools/re3/perf.mjs`'s new game, the Sabre Turbo (`--car GETTHEREFAST`, Flash FM),
+then one press of Insert 3 s into the measure — K-Chat, about 39 MB into its file in a new game (a scratch variant of
+perf.mjs that presses it and reads the session's `orthrosBlocked` and the frame gaps over 1 s; Chrome's network
+emulation, 50 ms round trip). The station file's blocked time / the longest frame gap, 2 runs a side:
+
+| link | r3 (before) | r4 (after) |
+| --- | --- | --- |
+| 1.8 MB/s (`--net 1800`) | `KCHAT.adf` 14.1 s / 14.2 s — 14.1 s / 14.2 s | 0.36 s / 0.25 s — 0.26 s / 0.27 s (a third run, `--report`: 0.27 s / 0.25 s) |
+| 6 MB/s (`--net 6000`, owner-like) | 5.3 s / 5.4 s — 6.6 s / 6.7 s | 0.11 s / 0.13 s — 0.19 s / 0.25 s |
+| localhost, no limit | 0.76 s / 0.85 s — 0.45 s / 0.50 s | 0.02 s / 0.13 s — 0.03 s / 0.12 s |
+| 85 KB/s from the measure on (`--net-after 85`, 60 s, 1 run) | frozen from the press to the window's end (≥ 54 s: 1.4 frames shown a second, the data meter shown 55 s) | 8.5 s blocked in 3 stops (2.5, 5.4, 2.8 s; longest gap 4.6 s), 15.2 frames shown a second |
+
+No frame gap over 1 s after r4 on the three faster links (one of 14.2 s, 5.4-6.7 s before). At 85 KB/s the seek is
+one stop where the scan never ended, but a few seconds, not the expected 1-2: the reads at the position are whole
+block units of the data system at the thin link's speed (a station's first seconds are several of them).
+
+The new game's load, `tools/data-matrix.mjs --only vice-city-revc` behind the player's-link proxy (90 ms), the AFTER
+side's learned copy with the order move above applied: in play (s), and from the proxy's log before it, `Water.mp3`
+then the `Audio/*.adf` (MB on the wire, seconds with a request of that file in flight), every `/gamez` byte:
+
+| link | r3 | r4 + moved order |
+| --- | --- | --- |
+| 1.8 MB/s (2 runs) | in play 42.1 / 50.3; Water 5.3 MB 5.3 s / 7.4 MB 7.8 s; adf 9.3 / 9.3 MB; 56.0 / 69.0 MB | in play 46.5 / 41.3; Water 1.1 MB 1.6 s / 0.15 MB 0.8 s; adf 1.9 / 1.9 MB; 60.6 / 52.5 MB |
+| 85 KB/s (1 run each, ~9 min) | in play 530 s; Water 9.9 MB, 139 s in flight; 39.5 MB | in play 431 s; Water 0.34 MB, 8 s; 32.2 MB |
+
+At 1.8 MB/s the bytes leave the load (Water -4 to -7 MB, the stations' scans -7.4 MB) but in play does not move
+beyond its run-to-run spread (±5 s: media go to the tail there and were not the critical path); at 85 KB/s in play is
+99 s earlier (one run a side: the order of magnitude, not a precise gain). `tools/re3/check.mjs --new-game --guest`
+passes on both editions with the r4 engines (vice-city-revc: new game in 41 s, 304 of 306 buffers heard;
+vice-city-orthros: 36 s, 306 of 308), no page error (the checks do not keep the page's console: mpg123's warnings
+after a seek not checked). A `--report` run's final
+`perf` record (scratch telemetry) carries the new totals: `tot.data` `{n: 361, ms: 16811, files: [[models/gta3.img,
+12239, 191], [anim/cuts.img, 1327, 5], [Audio/Water.mp3, 1316, 8]], blocked: {n: 330, ms: 16727, max: 640, top: …},
+bg: {pf1, ahead, want, readAhead, mediaAhead, …}}`, accepted by the server's sanitizer. Not measured: the seek heard
+by a person (no glitch is audible in a headless run; the CBR position is within a frame by construction), VBR files,
+the fast-link order a few days after the deploy.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

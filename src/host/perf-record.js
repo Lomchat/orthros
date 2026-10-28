@@ -2,7 +2,9 @@
 // the Windows games' (src/host/web/main.js), the browser ports' (GoldSrc, re3, OpenMW) — measures its normal play
 // sessions the same way and sends the same compact record (`event: "perf"`): per minute of play (a phase change starts
 // a new entry) the frame rate, the frame-time percentiles, the frames over 40 / 100 ms, the work vs the wait per frame,
-// the GPU time, the game data's waits; the session's totals; the machine; the host timing probe once. Hidden time is
+// the GPU time, the game data's waits; the session's totals — with what its data waits were for (the files, the
+// engine's own stops, the announced reads, the background's producers: compactDataSum); the machine; the host timing
+// probe once. Hidden time is
 // counted apart, its frames left out. This module is the recording and the record's validation (the server's), with
 // no DOM: the page's side is src/host/web/perf-page.js.
 import { HIST_N, histAddSparse, histBucket, histQuantile, histSparse } from '../core/frame-acct.js';
@@ -30,7 +32,32 @@ const topOf = (o, top, scale = 1, min = 0.05) => {
   const e = Object.entries(o).map(([k, v]) => [k, r2(v * scale)]).filter(([, v]) => v >= min).sort((a, b) => b[1] - a[1]).slice(0, top);
   return e.length ? Object.fromEntries(e) : null;
 };
+/** a summary's file paths: at most this many characters (their ends kept), this many files */
+export const PATH_MAX = 160, TOP_FILES = 3, TOP_BG = 12;
+const pathOf = (p) => (p.length > PATH_MAX ? p.slice(-PATH_MAX) : p);
 const grow = (a, b) => (b === undefined || b === null ? 0 : a === undefined || a === null || b < a ? b : b - a);
+
+/**
+ * A session's data attribution (the page's `data().sum`, perf-page.js portDataSummary), compact for the record's totals:
+ * `files` the TOP_FILES files waited for most, [path, ms, waits] (the shared game data's fileWaits, { path: [waits, ms] });
+ * `blocked` the engine's own count of its stops for its files when it keeps one ({ count, ms, max, files: ms by path }:
+ * { n, ms, max, top: [path, ms] x TOP_FILES }); `want` its waits for its announced reads (wantWaits, wantWaitMs,
+ * wantTimeouts: { n, ms, to }); `bg` the background's bytes by producer (NetLink bgBy: { reason: [requests, wire KiB,
+ * KiB begun during a load] }, the TOP_BG largest). Parts without anything are left out; null when none is left.
+ */
+export function compactDataSum(sum) {
+  if (!sum || typeof sum !== 'object') return null;
+  const out = {}, ms = (v) => Math.round(Number(v) || 0), top = (o, f) => Object.entries(o ?? {}).map(f).filter((e) => e[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, TOP_FILES);
+  const files = top(sum.files, ([k, v]) => [pathOf(k), ms(v?.[1]), Math.round(Number(v?.[0]) || 0)]);
+  if (files.length) out.files = files;
+  const b = sum.blocked;
+  if (b && b.count > 0) out.blocked = { n: Math.round(b.count), ms: ms(b.ms), max: ms(b.max), top: top(b.files, ([k, v]) => [pathOf(k), ms(v)]) };
+  if (sum.wantWaits > 0) out.want = { n: Math.round(sum.wantWaits), ms: ms(sum.wantWaitMs), to: Math.round(sum.wantTimeouts ?? 0) };
+  const bg = Object.entries(sum.bgBy ?? {}).filter(([k, v]) => KEY.test(k) && v && v.wire > 0).sort((x, y) => y[1].wire - x[1].wire).slice(0, TOP_BG)
+    .map(([k, v]) => [k, [Math.round(v.requests ?? 0), Math.round(v.wire / 1024), Math.round((v.inLoad ?? 0) / 1024)]]);
+  if (bg.length) out.bg = Object.fromEntries(bg);
+  return Object.keys(out).length ? out : null;
+}
 
 /** Frames and time of one stretch (an entry, or the session's totals). */
 class Acc {
@@ -60,7 +87,8 @@ class Acc {
  * The recording of one session. The page calls `clock(now, visible, phase)` about every second (time, visibility,
  * phase), and either `frame(dtMs, workMs, dataMs)` for each frame shown (the ports: their frame meters) or
  * `interval(acct, dtMs)` for each stats interval (Win32: frame-acct.js FrameStats.takeInterval, ~0.5 s), and
- * `counters({ gpu, data })` with the cumulative GPU timer (gpu-probe.js stats.gpu) and game data waits ({ waits, ms }).
+ * `counters({ gpu, data })` with the cumulative GPU timer (gpu-probe.js stats.gpu) and game data waits ({ waits, ms },
+ * and `sum` the session's attribution so far: compactDataSum, in the totals).
  * `take(now, final)` gives the record when one is due (or at the end).
  */
 export class PerfRecorder {
@@ -69,7 +97,7 @@ export class PerfRecorder {
     this.header = o.header ?? {}; this.recordMs = o.recordMs ?? RECORD_MS; this.minuteMs = o.minuteMs ?? MINUTE_MS;
     this.t0 = null; this.last = null; this.visible = true; this.phase = null;
     this.cur = null; this.done = []; this.dropped = 0; this.tot = new Acc(0); this.seq = 0; this.lastRecord = null; this.ended = false;
-    this.gpuNow = null; this.dataNow = null; this.probe = null; this.probeSent = false;
+    this.gpuNow = null; this.dataNow = null; this.dataSum = null; this.probe = null; this.probeSent = false;
     this.slowFrames = {}; // (the ports' slow frames by cause, summed ms: added to the entry's `slow`)
   }
   /** The time since the last clock goes to the visible or the hidden time; entries close at minutes and phase changes. */
@@ -115,6 +143,7 @@ export class PerfRecorder {
   counters({ gpu, data } = {}) {
     if (gpu !== undefined) this.gpuNow = gpu ? { state: gpu.state ?? null, frames: gpu.frames ?? 0, ms: gpu.ms ?? 0, lost: gpu.lost ?? 0, hist: gpu.hist ? Array.from(gpu.hist) : null } : null;
     if (data !== undefined) this.dataNow = data ? { waits: data.waits ?? 0, ms: data.ms ?? 0 } : null;
+    if (data?.sum !== undefined) this.dataSum = compactDataSum(data.sum); // (the last one known kept: the session's so far)
     if (this.tot.gpu === null && this.gpuNow) this.tot.gpu = { state: this.gpuNow.state, frames: 0, ms: 0, hist: this.gpuNow.hist ? new Array(this.gpuNow.hist.length).fill(0) : null };
     if (this.tot.data === null && this.dataNow) this.tot.data = { waits: 0, ms: 0 };
   }
@@ -141,6 +170,7 @@ export class PerfRecorder {
     // the game data's waits (reads the engine waited for)
     const d0 = c.data, d1 = this.dataNow;
     if (d1) out.data = total ? { n: c.data?.waits ?? 0, ms: Math.round(c.data?.ms ?? 0) } : { n: grow(d0?.waits, d1.waits), ms: Math.round(grow(d0?.ms, d1.ms)) };
+    if (total && this.dataSum) out.data = { ...(out.data ?? { n: 0, ms: 0 }), ...this.dataSum }; // (what the session's waits were for)
     if (total) out.h = histSparse(c.h);
     return out;
   }
@@ -222,6 +252,22 @@ const ENTRY = {
   work: (v) => num(v, 1e6), wait: (v) => num(v, 1e6), cats: numMap, slow: numMap, gpu: gpuPart,
   data: (d) => (d && typeof d === 'object' ? pick(d, { n: (v) => int(v), ms: (v) => num(v) }) : undefined),
 };
+const path = (v) => (typeof v === 'string' && v ? pathOf(v) : undefined);
+/** [path, ms] or [path, ms, waits] lists, TOP_FILES at most */
+const fileList = (n) => (v) => {
+  if (!Array.isArray(v)) return undefined;
+  const e = v.slice(0, TOP_FILES).filter((x) => Array.isArray(x) && x.length === n && path(x[0]) && x.slice(1).every((y) => int(y) !== undefined)).map((x) => [path(x[0]), ...x.slice(1)]);
+  return e.length ? e : undefined;
+};
+/** the totals' data: an entry's, with the session's attribution (compactDataSum) */
+const TOT_DATA = { n: (v) => int(v), ms: (v) => num(v), files: fileList(3),
+  blocked: (b) => (b && typeof b === 'object' ? pick(b, { n: (v) => int(v), ms: (v) => int(v), max: (v) => int(v), top: fileList(2) }) : undefined),
+  want: (w) => (w && typeof w === 'object' ? pick(w, { n: (v) => int(v), ms: (v) => int(v), to: (v) => int(v) }) : undefined),
+  bg: (o) => {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return undefined;
+    const e = Object.entries(o).filter(([k, v]) => KEY.test(k) && Array.isArray(v) && v.length === 3 && v.every((y) => int(y) !== undefined)).slice(0, TOP_BG);
+    return e.length ? Object.fromEntries(e) : undefined;
+  } };
 const TIMES = (v) => (Array.isArray(v) && v.length === 3 && v.every((x) => num(x, 1e6) !== undefined) ? v : undefined);
 const PROBE = Object.fromEntries([...PROBE_KINDS.map((k) => [k, TIMES]), ['battery', (b) => (b && typeof b === 'object' ? { charging: !!b.charging, level: num(b.level, 1) ?? null } : undefined)], ['injected', (v) => num(v, 1000)]]);
 const bool = (v) => (typeof v === 'boolean' ? v : undefined);
@@ -247,7 +293,7 @@ export function sanitizePerfRecord(r) {
     ...pick(r, { version: nullable((v) => str(v, 80)), build: nullable((v) => str(v, 80)), tier: nullable((v) => str(v, 16)), bench: nullable((v) => str(v, 60)) }),
     seq, final: r.final === true, ...pick(r, { len: (v) => num(v, 1e7), vis: (v) => num(v, 1e7), hid: (v) => num(v, 1e7), dropped: (v) => int(v) }),
     mins: r.mins.map((e) => pick(e, ENTRY)),
-    tot: { ...pick(r.tot, ENTRY), ...(hist(r.tot.h) ? { h: r.tot.h } : {}) },
+    tot: { ...pick(r.tot, ENTRY), ...(r.tot.data && typeof r.tot.data === 'object' ? { data: pick(r.tot.data, TOT_DATA) } : {}), ...(hist(r.tot.h) ? { h: r.tot.h } : {}) },
   };
   if (r.env && typeof r.env === 'object') rec.env = pick(r.env, ENV);
   if (r.probe && typeof r.probe === 'object') rec.probe = pick(r.probe, PROBE);
