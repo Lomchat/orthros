@@ -293,6 +293,19 @@ sprint ended) and The Combat Juice's `SettingsCombatJuiceFlash` `FlashOn` (`Neve
 stays in the chain at strength 0 and costs a full-screen pass every frame). Both can be turned back on in Options →
 Scripts.
 
+Per-frame HUD Lua without redundant work (2026-10-29, the owner: constant 60 fps, nothing he sees changed). Measured
+first (`perf.mjs --discard --profile`, Seyda Neen running; scratch A/B dropping content): the five Nexus HUD packs
+cost ~4.7 ms of the frame, `Element:update()` re-applying whole widget trees ~1.9 ms of it. Behaviour-identical overlays
+(each written, reviewed through two lenses — on-screen identity, Lua 5.4/API — and fixed): props applied and
+`:update()` called only when they changed, hidden elements touched only on the visible→hidden transition, constant
+settings cached and refreshed by the storage section's `subscribe` (it runs synchronously in `set`/`setAll`):
+Quest Markers Plus' `skyrim_compass/compass.lua` and `hud.lua` (`orthros-overlay-fr-nexus`, `orthros-overlay-all-nexus`),
+Surefire's `victim.lua` (`orthros-overlay-all-nexus`), Combat Juice's `hitmarkers.lua` (`orthros-overlay-all-pack`;
+also updates on a HUD layer resize, which re-centres the root), and a new root `orthros-overlay-all-perf`: HUDMarkers'
+`HUDM_p.lua`, the proximityTool main menu as Quest Markers Plus ships it (an identical rebuild skipped), Surefire's
+`player.lua`. Measured running (camera always moving, the least favourable case): LuaUi `updateWidget` 2.19 → 1.43
+ms/frame, Lua total ~6.3 → ~5.4, work p50 16.0 → 15.1 ms (single runs, ±1 ms noise). No Lua error in the log.
+
 Checked in scratch (2026-10-29): unit tests (`tests/openmw-settings.test.js`, `tests/openmw-player-defaults.test.js`);
 the generated script run under Lua 5.4 against a mock storage (registered defaults given, a later choice kept,
 a value already moved off its default kept, nothing on a simulation peer); and Vanilla+ EN booted in Chromium through a
