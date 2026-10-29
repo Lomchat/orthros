@@ -420,7 +420,9 @@ Tracking ([58324](https://www.nexusmods.com/morrowind/mods/58324), 1.1.0; also
 [GitHub](https://github.com/Diject/advWMap-tracking)) and HUDMarkers - Detect spells
 ([57112](https://www.nexusmods.com/morrowind/mods/57112), 3.6, Nexus only). The Quest Guider Lite it modifies is
 [57285](https://www.nexusmods.com/morrowind/mods/57285) (1.6.1 now; also [GitHub](https://github.com/Diject/quest_guider_lite)).
-Its bundled copy dates from May 2026, so check that it matches the Quest Guider Lite installed beside it.
+Its bundled Quest Guider Lite matches QGL about v1.3.1 (March 2026) and its two proximityTool files about v1.2.0; QGL's
+author calls it incompatible with current Quest Guider Lite and its newest quest data: never install both. Its quest data
+comes from the English masters (French masters: to be rebuilt with the author's Quest Data Builder).
 
 ### Headless simulation compatibility
 
