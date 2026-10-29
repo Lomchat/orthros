@@ -136,7 +136,7 @@ test('announced reads (orthrosWillRead / orthrosReadWait): engine paths to the g
     lookupPath(p) { const n = nodes.get(p); if (!n) throw new FS.ErrnoError(44); return { node: n }; },
   };
   const ctx = vm.createContext({
-    console, URL, Promise, Map, WeakMap, Math, Object, Error, Number, String, queueMicrotask, decodeURIComponent, FS,
+    console, URL, Promise, Map, WeakMap, Math, Object, Error, Number, String, queueMicrotask, decodeURIComponent, FS, performance,
     self: { crossOriginIsolated: true }, location: { pathname: '/ports/openmw/morrowind-goty-en/app/index.html', href: 'https://o.test/ports/openmw/morrowind-goty-en/app/index.html', origin: 'https://o.test' },
     setInterval: () => 0, clearInterval() {},
   });

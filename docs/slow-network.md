@@ -1783,6 +1783,49 @@ the wire of the content files (real or `.light/`) up to the menu:
 - Not measured: r12 against r13 pictures (only the light copy against the file on r13), a script searching every cell
   (`listRefs` from the copy), a view-grow run, the owner's real link.
 
+## Unannounced serial reads (2026-10-29)
+
+The owner's session (Vanilla+ FR, warm store, ~2 MB/s, the `mid` tier): Chrome's "page unresponsive" through ~430
+serial demand reads that no announce covered — the Lua scripts, localisation and quest data of mods added since the
+last visit, read one by one at the boot and again at the save's load, and the distant chunks a raised view distance or
+a script's ray built in one frame. The two fixes (docs/openmw.md "Serial reads the announces did not cover"):
+- the OpenMW page announces at the boot, in one `wait: false` list, every script, localisation, YAML and shader file
+  its engine's VFS resolves (`src/ports/openmw/boot-reads.js`, `streamfs.js` `announceBoot`; `?bootreads=0`);
+- the engine (`orthros-r14.patch`, dev build) puts off a distant chunk a frame's cull or a script's ray would build
+  while its files are not in the page, as r5/r12 do for the sliced preload — built once they are here, or after 10 s
+  and two of the page's turns (`window.orthrosTurns`: nothing a put-off asks can arrive inside the task that asked it).
+
+Measured (2026-10-29, `place-load.mjs morrowind-goty-vanilla-plus-fr --query tier=mid --after 75`, the proxy at 2 MB/s
+and 85 ms, headless Chromium + SwiftShader; before = `main` 2e7044a with r13, after = this change with the dev build
+r14dev; the learned state of before the owner's session — restic 4e0b7ce7 — and a frozen br-cache copy; reads and
+blocks from the page's own trace — every synchronous read with its engine stack, a 50 ms timer probe for the blocks —;
+"net" = a read that waited ≥ 30 ms. Load average 15-24 during the runs):
+
+| scenario | | before | after |
+|---|---|---|---|
+| save from the menu, new device (the owner analogue: the new mods not learned) | menu | 36.5 / 35.1 s | 30.1 / 31.4 / 29.9 s |
+| | boot → menu: serial reads (their wait) | 161 / 153 (19.6 / 18.1 s) | 82 / 103 / 86 (13.5 / 14.2 / 13.1 s), no Lua among them |
+| | the load (key → in world) | 41.8 / 42.2 s | 16.3 / 16.6 / 16.1 s |
+| | its frozen frame | 37.4 / 37.8 s | 12.7 / 12.9 / 12.5 s |
+| | its serial reads | 299 / 303 (27.6 / 27.8 s) | 16 / 15 / 14 (1.4 s) |
+| | after the load (view 8192 → 12288): serial reads, longest block | 100 / 99 (11.9 / 11.4 s), 10.3 / 10.4 s | 8 / 9 / 7 (1.0-1.6 s), 1.3 / 1.4 / 1.3 s |
+| save from the menu, warm profile | menu; the load; frozen | 11.6 / 11.7 s; 11.7 / 12.0 s; 9.3 / 9.5 s | 13.0 / 11.6 s; 11.6 / 12.0 s; 9.3 / 9.4 s |
+| | serial reads boot / load | 6, 7 / 3, 4 | 6, 5 / 2, 3 |
+| | after the load: serial reads, longest block | 27 / 28 (2.9 / 3.0 s), 3.2 / 3.2 s | 2 / 1 (0.2 s), 1.0 / 1.0 s; final build 0 / 0, 0.95 / 0.91 s |
+| COE Seyda Neen → -2,6, warm profile (the same profile both sides) | frozen | 4.9 / 4.3 s | 4.2 / 4.0 s |
+| | serial reads in the world (their wait) | 35 / 59 (3.5 / 6.1 s) | 5 / 5 (0.5 s) |
+| | longest block in the world | 9.2 / 4.4 s | 4.3 / 4.3 s |
+
+The save runs' after column is the first dev build (wall-clock limit only) unless marked "final build" (with the turns);
+the COE's is the final build. The first build on a warm profile that missed more of those files (its warm-up 55 s
+shorter) froze the COE 13.7 / 14.0 s with 128 serial reads: entries put off inside the COE's one long task, built
+there once their 10 s had passed, their files unable to arrive — the turns' rule; the final build on that profile
+5.3 / 4.3 s, 12 / 7 serial reads (on `?cullwait=0`, as before r14: 4.1 s, 30). In 3 of 4 final COE runs some entries
+were still built after their limit (~23 s put off, their files never ready in the page's answer): not explained yet,
+their reads few (≤ 12 in the world). The boot's remaining serial reads are the engine's common assets, the content
+files' first records and the water's textures (none announced; the learned order has them). Not measured: the
+owner's real GPU and link, the 85 KB/s link, a headed Chrome's hang dialog.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

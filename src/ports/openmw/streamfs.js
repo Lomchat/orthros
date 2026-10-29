@@ -14,9 +14,9 @@
   'use strict';
   // (a classic script — the page calls StreamFS synchronously — loading the shared modules at once: they are here long
   // before the engine's first mount, which comes after its own requests)
-  const modules = Promise.all([import('/src/vfs/data-client.js'), import('/src/vfs/emscripten-files.js'), import('/src/ports/openmw/view-grow.js'), import('/src/ports/openmw/save-place.js')]);
-  let M = null; modules.then(([client, files, view, place]) => {
-    M = { ...client, ...files, inWorld: view.inWorld, savePlace: place };
+  const modules = Promise.all([import('/src/vfs/data-client.js'), import('/src/vfs/emscripten-files.js'), import('/src/ports/openmw/view-grow.js'), import('/src/ports/openmw/save-place.js'), import('/src/ports/openmw/boot-reads.js')]);
+  let M = null; modules.then(([client, files, view, place, boot]) => {
+    M = { ...client, ...files, inWorld: view.inWorld, savePlace: place, bootReads: boot.bootReads };
     // (the engine's package in — openmw.data, its own download —, its main() initialising for seconds before its first
     // read: the link idle meanwhile loads the learned order, on a cold store (little of the launch set here) — GameData.prefetchNow,
     // docs/openmw.md "The link after the engine's package". Installed long before the package ends: these modules are a
@@ -29,7 +29,8 @@
   });
   const app = location.pathname.slice(0, location.pathname.indexOf('/app/') + 5), name = decodeURIComponent(app.split('/')[3]);
   // (predicted: the place the page expects the player's save to load, and what it asked for it — anticipate)
-  const S = { data: null, session: Math.random().toString(36).slice(2, 14), byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [], predicted: null, hinted: false, packaged: false, started: false };
+  // (boot: the boot's announced scripts — announceBoot —, null before)
+  const S = { data: null, session: Math.random().toString(36).slice(2, 14), byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [], predicted: null, hinted: false, packaged: false, started: false, boot: null };
   /** The learned places of this installation (the server's: POST a load's announced batch, GET a place's set). */
   const placesUrl = `/api/places/${encodeURIComponent(name)}`;
   /** the most entries of a predicted place's set asked for (the server bounds its sets; a bad answer does not flood the link) */
@@ -42,6 +43,10 @@
   const BOOT_WAIT_MS = 180000;
   /** how often the engine's reports are looked at for the next place in play (view.lua reports every 500 ms) */
   const LEAD_POLL_MS = 500;
+  /** the page's turns counted (window.orthrosTurns) this often when its thread is free */
+  const TURN_MS = 50;
+  /** how often the engine page is looked at for the end of its mounts (announceBoot), and for how long at most */
+  const MOUNTS_POLL_MS = 100, MOUNTS_WAIT_MS = 120000;
 
   /** A parameter of the page (this engine page's, else the play page's around it: same origin), or null. */
   function pageParam(key) {
@@ -117,12 +122,40 @@
       if (canReload()) S.data.reloads(true);
       else { let n = 0; const look = setInterval(() => { if (canReload()) S.data.reloads(true); if (canReload() || ++n >= 240) clearInterval(look); }, 250); }
       try { Object.defineProperty(window, '__streamfsStats', { configurable: true, get: () => S.data.snapshot() }); } catch { /* defined */ }
+      // (the page's turns, for the Orthros build's put-offs (orthros-r14.patch, QuadTreeWorld::orthrosPutOff): the
+      // files a put-off asks reach the page between its tasks only — a load's frames or one frame's many rays, in one
+      // task, can wait for nothing —, so an entry is built after its time limit only once the page had turns since)
+      window.orthrosTurns = 0;
+      S.turns = setInterval(() => { window.orthrosTurns = (window.orthrosTurns + 1) | 0; }, TURN_MS);
+      // (the scripts the engine reads at its boot and at a save's load, announced once its mounts are over: the engine
+      // page's mod list in — window.__serverMods, set once every mod is mounted, before the engine's run is released —,
+      // or its content load said, whichever first; ?bootreads=0 on this page or the play page: the engine's reads alone)
+      if (pageParam('bootreads') !== '0') {
+        S.data.ready.then(() => until(() => window.__serverMods !== undefined || S.boot !== null, MOUNTS_POLL_MS, MOUNTS_WAIT_MS / MOUNTS_POLL_MS)).then(announceBoot, () => {});
+      } else S.boot = { off: true };
       anticipate().catch((e) => console.warn('[streamfs] place', e?.message ?? e));
       // (in play: the next row's learned set ahead — only with ?lead=1 on this page or the play page: an A/B, off by
       // default — docs/openmw.md "In play: crossings and doors": the learned order already covers a taught row)
       if (pageParam('lead') === '1') import('/src/ports/openmw/place-lead.js').then(leadInPlay).catch((e) => console.warn('[streamfs] lead', e?.message ?? e));
     }
     return S.data;
+  }
+
+  // ---------------------------------------------------------------- the boot's scripts
+
+  /**
+   * The data folders' scripts, localisation and shaders the engine will read (boot-reads.js: the files its VFS resolves,
+   * small first, bounded), announced once in one list — GameData.want `wait: false`: fetched at once in parallel, what
+   * the page or the store holds already left out, the engine's reads of them joining their requests — instead of a
+   * round trip each at its boot and at a save's load (docs/openmw.md "Scripts announced at the boot"). Once, after the
+   * mounts (S.byPath: every file mounted, in the data folders' order).
+   */
+  function announceBoot() {
+    if (S.boot !== null || !S.started || S.closed) return;
+    const entries = M.bootReads(S.byPath);
+    const bytes = entries.reduce((t, e) => t + e.h.size, 0);
+    S.boot = { files: entries.length, bytes, asked: 0, atMs: Math.round(performance.now()) };
+    if (entries.length) S.boot.asked = S.data.want(entries, { wait: false, label: 'boot:scripts' });
   }
 
   // ---------------------------------------------------------------- anticipated places
@@ -311,7 +344,12 @@
   // references' details zeroed —, and once they are loaded — the files themselves from then on, for every read of every
   // reader it keeps open; an engine that says nothing reads the files as they are; ?contentlight=0 on this page or the
   // play page around it: the files as they are all along — the pictures compared, tools/openmw/frame-compare.mjs)
-  window.orthrosContentLoading = () => { if (pageParam('contentlight') !== '0') S.data?.contentLoading(); };
+  // (the content load starts after every mount: the boot's scripts announced now if the engine page did not say its mods
+  // were in — announceBoot)
+  window.orthrosContentLoading = () => {
+    try { if (S.boot === null && S.data && pageParam('bootreads') !== '0') announceBoot(); } catch (e) { console.warn('[streamfs] boot', e?.message ?? e); }
+    if (pageParam('contentlight') !== '0') S.data?.contentLoading();
+  };
   window.orthrosContentLoaded = () => { S.data?.contentLoaded(); };
   // (the engine's reads of its content files for ids only — a cell's references listed: its search through every cell —,
   // `on` 1 then 0: served from the light copies, what the content load read, once it is loaded too — GameData.contentIds)
@@ -345,12 +383,14 @@
     stats() { return S.started ? S.data.snapshot() : {}; },
     /** The place predicted for the player's save (anticipate): { place, why, save, listed, asked, atMs (when asked, the page's clock) }, or null. */
     place() { return S.predicted; },
+    /** The boot's announced scripts (announceBoot): { files, bytes, asked, atMs }, { off: true } (?bootreads=0), or null (not yet). */
+    boot() { return S.boot; },
     /** The places guessed in play (leadInPlay): { guessed, bytes, last }, or null (none yet, or no ?lead=1). */
     leads() { return S.lead?.snapshot() ?? null; },
     /** The game data (data-client.js GameData), once the engine used it (its first mount): null before (opened earlier). */
     data() { return S.started ? S.data : null; },
     /** The game data closed, opened or used (a test; the page's leaving closes its worker anyway). */
-    close() { S.closed = true; if (S.leadTimer) { clearInterval(S.leadTimer); S.leadTimer = null; } S.data?.close(); },
+    close() { S.closed = true; if (S.leadTimer) { clearInterval(S.leadTimer); S.leadTimer = null; } if (S.turns) { clearInterval(S.turns); S.turns = null; } S.data?.close(); },
     init() {
       if (!self.crossOriginIsolated) throw new Error('streamfs needs crossOriginIsolated (COOP/COEP)');
       need();

@@ -1612,6 +1612,59 @@ at 1 MB/s and -295 to -314 s at 85 KB/s (the masters 33 → 7-8 MB of wire), the
 s (its cells' land and references now read after the menu), playable still 12-19 s / ~260 s sooner; at 1.8 MB/s a
 save's load frozen +0.2-0.6 s and a COE +1.0-1.4 s (the cells' bytes, no serial reads), the pictures the same.
 
+### Serial reads the announces did not cover: scripts at the boot, distant chunks in play (2026-10-29)
+
+Shipped: the scripts announced at the boot (page side, every engine). Not shipped yet: the distant-chunk put-off
+(an engine patch, `orthros-r14.patch` in this section's measurements: kept aside, to come in the release after the other
+session's r14 — its script-ray semantics and an unexplained 23 s wait still to settle).
+
+The owner's session of 2026-10-29 (Vanilla+ FR, warm store, Iris Xe — the `mid` tier —, ~2 MB/s; Caddy log): Chrome's
+"page unresponsive" through ~200 serial demand reads ~80 ms apart before the menu and in the save's load (the Lua
+scripts, localisation and quest data of mods added since the owner's last visit), then ~230 more ~10-30 s after the
+announced load (meshes and light textures of distant objects). Attributed by engine stack (symbolized SYNCTRACE of
+`place-load.mjs`, its owner analogue: a new device with the learned order of before that session, `?tier=mid`):
+- **Scripts** (`LuaManager::initConfiguration`/`initPostLoad`, `loadScriptAndCache` and its `require` chains,
+  `L10n::MessageBundles::load`, a script's `YAML::LoadAll`): ~70 reads at the boot, ~280 in the save's load
+  (`StateManager::loadGame` → `ScriptsContainer::addScript`: every object's scripts loaded anew), 30 more in play.
+  No announce covers them; the learned order has a new mod's files only after a session read them.
+- **Distant chunks**: view-grow's raise to the tier's distance (10240 → 12288) — `CullVisitor` → `QuadTreeWorld::accept`
+  → `loadRenderingNode` → `ObjectPaging::createChunk` / `ChunkManager::createChunk` — built tens of chunks in one
+  frame, each mesh and texture a synchronous read (93 reads, a 10 s block); a script's ray (`nearby.castRenderingRay`,
+  `World::castRenderingRay` → `IntersectionVisitor` → the same path) built them the same way (27 reads in a COE's load).
+  r5's and r12's put-offs are asked by the sliced preload only; the cull and the rays never asked.
+
+The fixes, closest to each cause:
+- **The page announces the scripts at the boot** (`src/ports/openmw/boot-reads.js`, `streamfs.js` `announceBoot`):
+  once the engine page's mounts are over (`window.__serverMods` set, or at the latest the engine's content load,
+  `orthrosContentLoading`), every file the engine's VFS resolves — a later data folder's file wins over an earlier one
+  of the same name — whose kind is `.lua`, `.omwscripts`, `.yaml`/`.yml` or `.omwfx`, at most 8 MiB each, 32 MiB and
+  4096 files in all, the smallest first, goes to the game data in one list (`GameData.want` `wait: false`: fetched at
+  once in parallel, what the page or the store holds left out, the engine's reads joining their requests; label
+  `boot:scripts`, not learned as a place). Vanilla+ FR: 636 files, 13.2 MB of files (three quest data YAML of 1-4 MB
+  each, ~2.5 MB of wire in all). A warm store asks nothing; a mod added since asks its files only. `?bootreads=0` on the
+  engine or play page: the engine's reads alone. `StreamFS.boot()`: `{ files, bytes, asked, atMs }`.
+  Not covered: a Lua UI's images (`.png`: Advanced World Map's 28 MB of map tiles are read only when shown).
+- **`orthros-r14.patch`** (on r13; `components/terrain/quadtreeworld.{cpp,hpp}`, `play/index.html`): a traversal — a
+  frame's cull, a ray's intersection other than the focus ray's (r6/r8: it builds nothing) — about to build an entry
+  outside the active grid asks `chunksReady` first (r5/r12's question: the chunk managers' meshes, textures, lands —
+  missing ones then fetched in the background, `orthrosRangeReady`); not ready, the entry is put off
+  (`QuadTreeWorld::orthrosPutOff`): drawn (or hit) with the chunks of the managers ready before the first one that is
+  not — the terrain alone, never objects standing on a missing land —, its node not kept, asked again at the next
+  traversal, built once its files are here or after `OPENMW_ORTHROS_CULLWAIT_MS` (10000 ms; `?cullwait=N` or
+  `?omwenv=OPENMW_ORTHROS_CULLWAIT_MS=N`, 0: as before) **and two of the page's turns since** — then its reads wait
+  as before. The turns (`window.orthrosTurns`, counted by `streamfs.js` every 50 ms the page's thread is free) matter:
+  the files a put-off asks reach the page between its tasks only, and a COE's load with its loading-screen frames and
+  one frame's script rays runs in one task for 10 s and more; on wall time alone the first dev build built every entry
+  put off in that task once its 10 s had passed, one round trip a file (a COE on a store missing those files: frozen
+  4.3 → 13.7 s, 123 serial reads). The active grid is built as
+  before (loaded and waited for with the cell change: never a hole under the player); the water's culling skips an
+  entry without a node. A script's ray misses a distant paged object whose files are not here for that long (r8 had
+  those rays build them; their files now come in the background first).
+
+Development build only (`openmw-web-v1.5.3-orthros-r14dev` in scratch: the kept r13 tree + `orthros-r14.patch`;
+the release number is coordinated before a release is built; not in `lock.json`). Measured: docs/slow-network.md
+"Unannounced serial reads (2026-10-29)".
+
 ### The engine's language and dialogue topic colours (2026-10-28)
 
 OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own
