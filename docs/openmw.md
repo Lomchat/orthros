@@ -207,6 +207,18 @@ moves the enabled plugin selections into the generated root, and refuses an exis
 unsupported declarations before changing the manifest. It must never be used to disable
 gameplay or quest scripts on the simulation peer.
 
+A mod that has gameplay scripts beside its interface is named `<mod-id>:MENU,PLAYER`: only the declarations whose
+targets are all among those types get a wrapper; the others (`GLOBAL`, `CONTAINER`, item types…) stay in the generated
+plugin exactly as shipped, so they still run on the simulation peer, and the manifest lists them (`unguardedEntries`).
+A declaration mixing both kinds (`PLAYER, GLOBAL: …`) is refused. Addons installed after an existing compatibility root
+get their own with `--id <compat-id>`: its wrappers go to `scripts/orthros_<id without -compat>/` (the first root's stay
+`scripts/orthros_client_ui/`), and a wrapper folder another root of the version already holds is refused.
+
+```sh
+node tools/openmw/guard-client-ui.mjs data/games/morrowind-vanilla-plus morrowind-goty-vanilla-plus-fr --id inventory-ui-compat \
+  ui-toolkit inventory-extender-redone:MENU,PLAYER inventory-camera alchemy-redone:MENU,PLAYER
+```
+
 ## Installation and completion
 
 Use Node 24+ (`/usr/local/bin/node` on this server). All browser checks must use the shared slot wrapper.
@@ -240,7 +252,9 @@ node tools/openmw/install-mod.mjs data/games/morrowind-vanilla-plus morrowind-go
 That command has already been run for Atlas. It refuses a second installation. For other
 mods use their declared id from the manifest and their actual data-root names. Enable required
 plugins with `--plugin 'Name.esm'` (repeat for each). It discovers archive **names**, never parses
-game formats, records the selected roots and verifies a sentinel before advertising availability.
+game formats, records the selected roots and verifies a sentinel before advertising availability (an asset, a plugin,
+or for a root of Lua scripts, shaders or l10n texts only — an Orthros overlay of a mod's file, a translation — a
+`.lua`, `.omwfx` or `.yaml` file).
 The manifest array determines order. The native peer and the browser receive that same stack
 through OpenMW-Web's own `modlist.json` format. Do not install MCP, MWSE or MGE XE.
 
