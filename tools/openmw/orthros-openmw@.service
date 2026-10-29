@@ -8,7 +8,9 @@ Type=simple
 WorkingDirectory=/srv/orthros
 EnvironmentFile=-/etc/orthros-openmw.env
 ExecStart=/usr/local/bin/node /srv/orthros/tools/openmw/server.mjs %i
-Restart=on-failure
+# (always: a gateway whose container was stopped from outside — every container of the host stopped at once on 2026-10-29 — exits
+# cleanly; on-failure left the four down. A `systemctl stop` is never restarted.)
+Restart=always
 RestartSec=15
 TimeoutStopSec=60
 
