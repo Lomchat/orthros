@@ -255,3 +255,18 @@ test('r13 patch: the content load told to the page (its content files light unti
   const read = scene.indexOf('orthrosReadCells(records, "meshes:" + std::to_string(');
   assert.ok(read > 0 && read < scene.indexOf('\n             std::vector<CellStore*> cells;', read));
 });
+
+test('r14: r13 plus its patch, the same exports; Lua\'s update on its own thread (off in multiplayer), LuaUi diffing, clock and gamma, each behind its switch', () => {
+  const r13 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r13'), r14 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r14');
+  assert.ok(r14, 'r14 is a build');
+  assert.deepEqual(r14.patches, [...r13.patches, 'orthros-r14.patch']);
+  assert.deepEqual(r14.exports, r13.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r14.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const f of ['openmw/apps/openmw/mwlua/worker.cpp', 'openmw/apps/openmw/mwlua/mainthread.hpp', 'openmw/components/lua_ui/element.cpp',
+    'openmw/apps/openmw/mwrender/postprocessor.cpp', 'wasm-build/orthros-clock.js'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  for (const s of ['LUATHREAD', 'LUAUIDIFF', 'CLOCK', 'GAMMA']) assert.ok(added.includes(`OPENMW_ORTHROS_${s}`), s);
+  // (a multiplayer session keeps Lua's update inline: openmw.mp's state is not shared with another thread)
+  assert.ok(added.includes('OPENMW_MP_URL'));
+});

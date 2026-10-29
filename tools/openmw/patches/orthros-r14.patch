@@ -1,0 +1,1600 @@
+diff --git a/openmw/apps/openmw/engine.cpp b/openmw/apps/openmw/engine.cpp
+index db6164d..79df243 100644
+--- a/openmw/apps/openmw/engine.cpp
++++ b/openmw/apps/openmw/engine.cpp
+@@ -20,6 +20,7 @@
+ #include <cmath>
+ #include <deque>
+ #include <mutex>
++#include <sstream>
+ #include <string>
+ #include <string_view>
+ #include <chrono>
+@@ -471,7 +472,10 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
+             for (osg::Camera* c : cams)
+                 if (c->getStats())
+                     c->getStats()->collectStats("rendering", true);
+-            stats->collectStats("engine", true); // ScopedProfile buckets (prefix + "_time_taken")
++            // (only when not yet: osg::Stats writes its collect map unlocked, and the Lua thread reads it —
++            // OPENMW_ORTHROS_LUATHREAD, mwlua/worker.cpp — its ScopedProfile, in parallel with this)
++            if (!stats->collectStats("engine"))
++                stats->collectStats("engine", true); // ScopedProfile buckets (prefix + "_time_taken")
+             double cull = 0.0, draw = 0.0, v = 0.0;
+             for (osg::Camera* c : cams)
+             {
+@@ -489,12 +493,22 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
+             // directly from the console. Costs a string build, so it is behind its own env flag.
+             if (getenv("OPENMW_PERF_KEYS"))
+             {
+-                std::string keys;
+-                for (const auto& [k, val] : stats->getAttributeMap(frameNumber))
++                // (copied under the stats' own lock, by report(): the Lua thread — OPENMW_ORTHROS_LUATHREAD — may be
++                // adding this frame's lua_time_* to the same map; "    key\tvalue" lines, the first a header)
++                std::ostringstream report;
++                stats->report(report, frameNumber);
++                std::string keys, line;
++                std::istringstream lines(report.str());
++                std::getline(lines, line);
++                while (std::getline(lines, line))
+                 {
+-                    keys += k;
++                    const std::size_t begin = line.find_first_not_of(' ');
++                    const std::size_t tab = line.find('\t');
++                    if (begin == std::string::npos || tab == std::string::npos || tab < begin)
++                        continue;
++                    keys += line.substr(begin, tab - begin);
+                     keys += '=';
+-                    keys += std::to_string(val);
++                    keys += line.substr(tab + 1);
+                     keys += '\n';
+                 }
+                 const bool engineOn = stats->collectStats("engine");
+@@ -503,8 +517,10 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
+             }
+ 
+             // Rest-phase subsystem breakdown (engine ScopedProfile buckets, prefix + "_time_taken").
+-            // NB: Lua is inline on this build (see mwlua/worker.cpp), so UserStatsType::Lua never
+-            // fires and only LuaSyncUpdate does -- report the sum or the bucket reads a false 0.
++            // NB: "lua" is LuaSyncUpdate alone, as it always read here: UserStatsType::Lua (LuaManager::update()) runs
++            // inline in finishUpdate, after this point, or on the Lua thread (mwlua/worker.cpp, OPENMW_ORTHROS_LUATHREAD),
++            // where it may or may not have ended yet — so it is never counted here; luaupdate and luawait below give the
++            // previous frame's update(), complete.
+             auto sub = [&](const char* key) { double x = 0.0; stats->getAttribute(frameNumber, key, x); return x * 1000.0; };
+             // clang-format off
+             // NB: no comma inside the EM_ASM code block — the C preprocessor would split it as a
+@@ -521,10 +537,16 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
+                 globalThis.__omwPhase.input = $7;
+                 globalThis.__omwPhase.sound = $8;
+                 globalThis.__omwPhase.script = $9;
++                globalThis.__omwPhase.luaupdate = $10;
++                globalThis.__omwPhase.luawait = $11;
+             },
+                 cull * 1000.0, draw * 1000.0, sub("physics_time_taken"), sub("mechanics_time_taken"),
+-                sub("world_time_taken"), (sub("lua_time_taken") + sub("luasyncupdate_time_taken")), sub("gui_time_taken"),
+-                sub("input_time_taken"), sub("sound_time_taken"), sub("script_time_taken"));
++                sub("world_time_taken"), sub("luasyncupdate_time_taken"), sub("gui_time_taken"),
++                sub("input_time_taken"), sub("sound_time_taken"), sub("script_time_taken"),
++                // Orthros (OPENMW_ORTHROS_LUATHREAD): the previous frame's LuaManager::update() (its own time, on
++                // whichever thread) and what it cost this thread (inline: all of it; on the Lua thread: finishUpdate's
++                // wait for it past the drawing) — this frame's has not ended yet here.
++                mLuaWorker->getLastUpdateMs(), mLuaWorker->getLastWaitMs());
+             // clang-format on
+         }
+     }
+diff --git a/openmw/apps/openmw/mwlua/inputbindings.cpp b/openmw/apps/openmw/mwlua/inputbindings.cpp
+index bdb5d9b..f7b524b 100644
+--- a/openmw/apps/openmw/mwlua/inputbindings.cpp
++++ b/openmw/apps/openmw/mwlua/inputbindings.cpp
+@@ -16,6 +16,7 @@
+ 
+ #include "context.hpp"
+ #include "luamanagerimp.hpp"
++#include "mainthread.hpp"
+ 
+ namespace sol
+ {
+@@ -244,7 +245,9 @@ namespace MWLua
+         api["_isControllerMenusEnabled"] = []() -> bool { return Settings::gui().mControllerMenus; };
+         api["_setGamepadCursorActive"] = [input](bool v) {
+             input->setGamepadGuiCursorEnabled(v);
+-            MWBase::Environment::get().getWindowManager()->setCursorActive(v);
++            // Orthros (OPENMW_ORTHROS_LUATHREAD): MyGUI's cursor, which the frame's cull reads — run on the page's
++            // thread after the drawing when called from the Lua thread (mwlua/mainthread.hpp).
++            mainThreadPost([v] { MWBase::Environment::get().getWindowManager()->setCursorActive(v); });
+         };
+         api["getMouseMoveX"] = [input]() { return input->getMouseMoveX(); };
+         api["getMouseMoveY"] = [input]() { return input->getMouseMoveY(); };
+diff --git a/openmw/apps/openmw/mwlua/magicbindings.cpp b/openmw/apps/openmw/mwlua/magicbindings.cpp
+index 3f18576..131032a 100644
+--- a/openmw/apps/openmw/mwlua/magicbindings.cpp
++++ b/openmw/apps/openmw/mwlua/magicbindings.cpp
+@@ -38,6 +38,7 @@
+ 
+ #include "localscripts.hpp"
+ #include "luamanagerimp.hpp"
++#include "mainthread.hpp"
+ #include "magictypebindings.hpp"
+ #include "object.hpp"
+ #include "objectvariant.hpp"
+@@ -487,7 +488,11 @@ namespace MWLua
+                     // "X has no effect on you"
+                     std::string message = esmStore.get<ESM::GameSetting>().find("sNotifyMessage50")->mValue.getString();
+                     message = Misc::StringUtils::format(message, ingredient->mName);
+-                    MWBase::Environment::get().getWindowManager()->messageBox(message);
++                    // Orthros (OPENMW_ORTHROS_LUATHREAD): MyGUI, which the frame's cull reads — run on the page's
++                    // thread after the drawing when called from the Lua thread (mwlua/mainthread.hpp).
++                    MWLua::mainThreadPost([message = std::move(message)] {
++                        MWBase::Environment::get().getWindowManager()->messageBox(message);
++                    });
+                 }
+                 return { ingredient->mName, std::move(enams) };
+             }
+diff --git a/openmw/apps/openmw/mwlua/mainthread.hpp b/openmw/apps/openmw/mwlua/mainthread.hpp
+new file mode 100644
+index 0000000..22ee05b
+--- /dev/null
++++ b/openmw/apps/openmw/mwlua/mainthread.hpp
+@@ -0,0 +1,186 @@
++#ifndef OPENMW_MWLUA_MAINTHREAD_H
++#define OPENMW_MWLUA_MAINTHREAD_H
++
++// Orthros (OPENMW_ORTHROS_LUATHREAD): Lua bindings' calls that must run on the page's thread on the web.
++//
++// LuaManager::update() may run on the Lua thread (mwlua/worker.cpp), in parallel with the frame's cull and draw. On the
++// desktop a few bindings call engine subsystems directly from there (OpenAL Soft being thread safe); on the web some of
++// them live in the page's JavaScript (the OpenAL library, its EM_JS extensions, the engine's EM_ASM hooks), which a Web
++// Worker does not have, and a few others mutate state the frame's cull reads (MyGUI's message boxes and cursor, the
++// post-processor's technique list). Those calls go through a queue of their own — not Emscripten's system proxy
++// queue, which the page's thread serves wherever it waits on a lock (mid-cull included, and inside a proxied task that
++// does not serve it again) — that the page's thread runs only in Worker::finishUpdate, after the frame's drawing, in
++// call order: exactly where the inline update() ran them.
++//   mainThreadPost(f): f queued, the Lua thread goes on (calls whose result Lua does not read: play, stop, show).
++//   onMainThread(f):   f queued and waited for (its result returned, its exception thrown again on the Lua thread);
++//                      being behind the calls posted before it, it sees their effects as inline.
++// On the page's thread itself (the switch at 0, synchronizedUpdate, the menu) and off the web: f called directly.
++
++#include <chrono>
++#include <condition_variable>
++#include <deque>
++#include <exception>
++#include <functional>
++#include <mutex>
++#include <optional>
++#include <type_traits>
++#include <utility>
++
++#include <components/debug/debuglog.hpp>
++
++#ifdef __EMSCRIPTEN__
++#include <emscripten/threading.h>
++#endif
++
++namespace MWLua
++{
++    class MainThreadCalls
++    {
++    public:
++        static MainThreadCalls& get()
++        {
++            static MainThreadCalls sCalls;
++            return sCalls;
++        }
++
++        // True on a thread that must queue its calls (the Lua thread, on the web).
++        static bool mustQueue()
++        {
++#ifdef __EMSCRIPTEN__
++            return !emscripten_is_main_runtime_thread();
++#else
++            return false;
++#endif
++        }
++
++        void post(std::function<void()> call)
++        {
++            {
++                std::lock_guard<std::mutex> lk(mMutex);
++                mCalls.push_back(std::move(call));
++            }
++            mCV.notify_all();
++        }
++
++        // The Lua thread: `call` run on the page's thread, waited for.
++        void runAndWait(const std::function<void()>& call)
++        {
++            bool done = false;
++            post([&] {
++                runOne(call);
++                std::lock_guard<std::mutex> lk(mMutex);
++                done = true;
++            });
++            std::unique_lock<std::mutex> lk(mMutex);
++            mCV.wait(lk, [&] { return done; });
++        }
++
++        // The page's thread: runs the queued calls, in order, until finished() is true with none pending (whoever
++        // makes it true calls wake() after). A posted call's exception is logged: it has nobody to be thrown to.
++        // onIdle() is called after each `slice` spent waiting with nothing to do.
++        template <class Finished, class OnIdle, class Rep, class Period>
++        void serveUntil(Finished&& finished, OnIdle&& onIdle, std::chrono::duration<Rep, Period> slice)
++        {
++            std::unique_lock<std::mutex> lk(mMutex);
++            while (true)
++            {
++                if (!mCalls.empty())
++                {
++                    std::function<void()> call = std::move(mCalls.front());
++                    mCalls.pop_front();
++                    lk.unlock();
++                    runOne(call);
++                    mCV.notify_all(); // a runAndWait's done set
++                    lk.lock();
++                    continue;
++                }
++                if (finished())
++                    return;
++                if (mCV.wait_for(lk, slice) == std::cv_status::timeout && mCalls.empty() && !finished())
++                {
++                    lk.unlock();
++                    onIdle();
++                    lk.lock();
++                }
++            }
++        }
++
++        // The page's thread: runs whatever is queued now.
++        void drain()
++        {
++            serveUntil([] { return true; }, [] {}, std::chrono::milliseconds(1));
++        }
++
++        // After serveUntil's condition became true.
++        void wake()
++        {
++            {
++                std::lock_guard<std::mutex> lk(mMutex);
++            }
++            mCV.notify_all();
++        }
++
++    private:
++        static void runOne(const std::function<void()>& call)
++        {
++            try
++            {
++                call();
++            }
++            catch (const std::exception& e)
++            {
++                Log(Debug::Error) << "Lua: a call queued for the page's thread failed: " << e.what();
++            }
++            catch (...)
++            {
++                Log(Debug::Error) << "Lua: a call queued for the page's thread failed (non-C++ exception)";
++            }
++        }
++
++        std::mutex mMutex;
++        std::condition_variable mCV;
++        std::deque<std::function<void()>> mCalls;
++    };
++
++    // f run on the page's thread after the frame's drawing (see above), the caller going on: f must own what it uses.
++    template <class F>
++    void mainThreadPost(F&& f)
++    {
++        if (!MainThreadCalls::mustQueue())
++        {
++            f();
++            return;
++        }
++        MainThreadCalls::get().post(std::function<void()>(std::forward<F>(f)));
++    }
++
++    // f run on the page's thread and waited for: its result returned, its exception thrown again here.
++    template <class F>
++    auto onMainThread(F&& f) -> std::decay_t<std::invoke_result_t<F&>>
++    {
++        using Result = std::decay_t<std::invoke_result_t<F&>>;
++        if (!MainThreadCalls::mustQueue())
++            return static_cast<Result>(f());
++        std::exception_ptr error;
++        std::conditional_t<std::is_void_v<Result>, bool, std::optional<Result>> result{};
++        MainThreadCalls::get().runAndWait([&] {
++            try
++            {
++                if constexpr (std::is_void_v<Result>)
++                    f();
++                else
++                    result.emplace(f());
++            }
++            catch (...)
++            {
++                error = std::current_exception();
++            }
++        });
++        if (error)
++            std::rethrow_exception(error);
++        if constexpr (!std::is_void_v<Result>)
++            return std::move(*result);
++    }
++}
++
++#endif // OPENMW_MWLUA_MAINTHREAD_H
+diff --git a/openmw/apps/openmw/mwlua/postprocessingbindings.cpp b/openmw/apps/openmw/mwlua/postprocessingbindings.cpp
+index 788e606..a0fb47c 100644
+--- a/openmw/apps/openmw/mwlua/postprocessingbindings.cpp
++++ b/openmw/apps/openmw/mwlua/postprocessingbindings.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include "context.hpp"
+ #include "luamanagerimp.hpp"
++#include "mainthread.hpp"
+ 
+ namespace
+ {
+@@ -176,7 +177,10 @@ namespace MWLua
+         }
+ 
+         api["load"] = [](const std::string& name) {
+-            Shader shader{ MWBase::Environment::get().getWorld()->getPostProcessor()->loadTechnique(name, false) };
++            // Orthros (OPENMW_ORTHROS_LUATHREAD): the post-processor's technique list, which the frame reads — loaded on
++            // the page's thread, waited for, when called from the Lua thread (mwlua/mainthread.hpp).
++            Shader shader{ onMainThread(
++                [&] { return MWBase::Environment::get().getWorld()->getPostProcessor()->loadTechnique(name, false); }) };
+ 
+             if (!shader.mShader || !shader.mShader->isValid())
+                 throw std::runtime_error(Misc::StringUtils::format("Failed loading shader '%s'", name));
+diff --git a/openmw/apps/openmw/mwlua/soundbindings.cpp b/openmw/apps/openmw/mwlua/soundbindings.cpp
+index 749f2df..fa0f9f7 100644
+--- a/openmw/apps/openmw/mwlua/soundbindings.cpp
++++ b/openmw/apps/openmw/mwlua/soundbindings.cpp
+@@ -15,6 +15,7 @@
+ #include <components/vfs/pathutil.hpp>
+ 
+ #include "luamanagerimp.hpp"
++#include "mainthread.hpp"
+ #include "objectvariant.hpp"
+ 
+ namespace
+@@ -149,59 +150,80 @@ namespace MWLua
+             auto playMode = getPlayMode(args, false);
+             ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+ 
+-            MWBase::Environment::get().getSoundManager()->playSound(
+-                sound, args.mVolume, args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
++            mainThreadPost([sound, args, playMode] {
++                MWBase::Environment::get().getSoundManager()->playSound(
++                    sound, args.mVolume, args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
++            });
+         };
+         api["playSoundFile"] = [](std::string_view fileName, const sol::optional<sol::table>& options) {
+             auto args = getPlaySoundArgs(options);
+             auto playMode = getPlayMode(args, false);
+ 
+-            MWBase::Environment::get().getSoundManager()->playSound(VFS::Path::Normalized(fileName), args.mVolume,
+-                args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
++            mainThreadPost([path = VFS::Path::Normalized(fileName), args, playMode] {
++                MWBase::Environment::get().getSoundManager()->playSound(
++                    path, args.mVolume, args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
++            });
+         };
+ 
+         api["stopSound"] = [](std::string_view soundId) {
+             ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+-            MWBase::Environment::get().getSoundManager()->stopSound3D(MWWorld::Ptr(), sound);
++            mainThreadPost([sound] { MWBase::Environment::get().getSoundManager()->stopSound3D(MWWorld::Ptr(), sound); });
+         };
+         api["stopSoundFile"] = [](std::string_view fileName) {
+-            MWBase::Environment::get().getSoundManager()->stopSound3D(MWWorld::Ptr(), VFS::Path::Normalized(fileName));
++            mainThreadPost([path = VFS::Path::Normalized(fileName)] {
++                MWBase::Environment::get().getSoundManager()->stopSound3D(MWWorld::Ptr(), path);
++            });
+         };
+ 
+         api["isSoundPlaying"] = [](std::string_view soundId) {
+             ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+-            return MWBase::Environment::get().getSoundManager()->getSoundPlaying(MWWorld::Ptr(), sound);
++            return onMainThread(
++                [&] { return MWBase::Environment::get().getSoundManager()->getSoundPlaying(MWWorld::Ptr(), sound); });
+         };
+         api["isSoundFilePlaying"] = [](std::string_view fileName) {
+-            return MWBase::Environment::get().getSoundManager()->getSoundPlaying(
+-                MWWorld::Ptr(), VFS::Path::Normalized(fileName));
++            return onMainThread([&] {
++                return MWBase::Environment::get().getSoundManager()->getSoundPlaying(
++                    MWWorld::Ptr(), VFS::Path::Normalized(fileName));
++            });
+         };
+ 
+         api["streamMusic"] = [](std::string_view fileName, const sol::optional<sol::table>& options) {
+             auto args = getStreamMusicArgs(options);
+-            MWBase::SoundManager* sndMgr = MWBase::Environment::get().getSoundManager();
+-            sndMgr->streamMusic(VFS::Path::Normalized(fileName), MWSound::MusicType::Normal, args.mFade);
++            mainThreadPost([path = VFS::Path::Normalized(fileName), args] {
++                MWBase::SoundManager* sndMgr = MWBase::Environment::get().getSoundManager();
++                sndMgr->streamMusic(path, MWSound::MusicType::Normal, args.mFade);
++            });
+         };
+ 
+         api["say"]
+             = [luaManager = context.mLuaManager](std::string_view fileName, sol::optional<std::string_view> text) {
+-                  MWBase::Environment::get().getSoundManager()->say(VFS::Path::Normalized(fileName));
++                  mainThreadPost([path = VFS::Path::Normalized(fileName)] {
++                      MWBase::Environment::get().getSoundManager()->say(path);
++                  });
+                   if (text && Settings::gui().mSubtitles)
+                       luaManager->addUIMessage(*text);
+               };
+ 
+-        api["stopSay"] = []() { MWBase::Environment::get().getSoundManager()->stopSay(MWWorld::ConstPtr()); };
+-        api["isSayActive"]
+-            = []() { return MWBase::Environment::get().getSoundManager()->sayActive(MWWorld::ConstPtr()); };
++        api["stopSay"] = []() {
++            mainThreadPost([] { MWBase::Environment::get().getSoundManager()->stopSay(MWWorld::ConstPtr()); });
++        };
++        api["isSayActive"] = []() {
++            return onMainThread(
++                [] { return MWBase::Environment::get().getSoundManager()->sayActive(MWWorld::ConstPtr()); });
++        };
+ 
+-        api["isMusicPlaying"] = []() { return MWBase::Environment::get().getSoundManager()->isMusicPlaying(); };
++        api["isMusicPlaying"] = []() {
++            return onMainThread([] { return MWBase::Environment::get().getSoundManager()->isMusicPlaying(); });
++        };
+ 
+         api["stopMusic"] = []() {
+-            MWBase::SoundManager* sndMgr = MWBase::Environment::get().getSoundManager();
+-            if (sndMgr->getMusicType() == MWSound::MusicType::MWScript)
+-                return;
++            mainThreadPost([] {
++                MWBase::SoundManager* sndMgr = MWBase::Environment::get().getSoundManager();
++                if (sndMgr->getMusicType() == MWSound::MusicType::MWScript)
++                    return;
+ 
+-            sndMgr->stopMusic();
++                sndMgr->stopMusic();
++            });
+         };
+ 
+         lua["openmw_ambient"] = LuaUtil::makeReadOnly(api);
+@@ -213,7 +235,9 @@ namespace MWLua
+         sol::state_view lua = context.sol();
+         sol::table api(lua, sol::create);
+ 
+-        api["isEnabled"] = []() { return MWBase::Environment::get().getSoundManager()->isEnabled(); };
++        api["isEnabled"] = []() {
++            return onMainThread([] { return MWBase::Environment::get().getSoundManager()->isEnabled(); });
++        };
+ 
+         api["playSound3d"]
+             = [](std::string_view soundId, const sol::object& object, const sol::optional<sol::table>& options) {
+@@ -223,8 +247,10 @@ namespace MWLua
+                   ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+                   MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
+ 
+-                  MWBase::Environment::get().getSoundManager()->playSound3D(
+-                      ptr, sound, args.mVolume, args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
++                  mainThreadPost([ptr, sound, args, playMode] {
++                      MWBase::Environment::get().getSoundManager()->playSound3D(
++                          ptr, sound, args.mVolume, args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
++                  });
+               };
+         api["playSoundFile3d"]
+             = [](std::string_view fileName, const sol::object& object, const sol::optional<sol::table>& options) {
+@@ -232,44 +258,52 @@ namespace MWLua
+                   auto playMode = getPlayMode(args, true);
+                   MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
+ 
+-                  MWBase::Environment::get().getSoundManager()->playSound3D(ptr, VFS::Path::Normalized(fileName),
+-                      args.mVolume, args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
++                  mainThreadPost([ptr, path = VFS::Path::Normalized(fileName), args, playMode] {
++                      MWBase::Environment::get().getSoundManager()->playSound3D(
++                          ptr, path, args.mVolume, args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
++                  });
+               };
+ 
+         api["stopSound3d"] = [](std::string_view soundId, const sol::object& object) {
+             ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+             MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
+-            MWBase::Environment::get().getSoundManager()->stopSound3D(ptr, sound);
++            mainThreadPost([ptr, sound] { MWBase::Environment::get().getSoundManager()->stopSound3D(ptr, sound); });
+         };
+         api["stopSoundFile3d"] = [](std::string_view fileName, const sol::object& object) {
+             MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
+-            MWBase::Environment::get().getSoundManager()->stopSound3D(ptr, VFS::Path::Normalized(fileName));
++            mainThreadPost([ptr, path = VFS::Path::Normalized(fileName)] {
++                MWBase::Environment::get().getSoundManager()->stopSound3D(ptr, path);
++            });
+         };
+ 
+         api["isSoundPlaying"] = [](std::string_view soundId, const sol::object& object) {
+             ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+             const MWWorld::Ptr& ptr = getPtrOrThrow(ObjectVariant(object));
+-            return MWBase::Environment::get().getSoundManager()->getSoundPlaying(ptr, sound);
++            return onMainThread([&] { return MWBase::Environment::get().getSoundManager()->getSoundPlaying(ptr, sound); });
+         };
+         api["isSoundFilePlaying"] = [](std::string_view fileName, const sol::object& object) {
+             const MWWorld::Ptr& ptr = getPtrOrThrow(ObjectVariant(object));
+-            return MWBase::Environment::get().getSoundManager()->getSoundPlaying(ptr, VFS::Path::Normalized(fileName));
++            return onMainThread([&] {
++                return MWBase::Environment::get().getSoundManager()->getSoundPlaying(ptr, VFS::Path::Normalized(fileName));
++            });
+         };
+ 
+         api["say"] = [luaManager = context.mLuaManager](
+                          std::string_view fileName, const sol::object& object, sol::optional<std::string_view> text) {
+             MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
+-            MWBase::Environment::get().getSoundManager()->say(ptr, VFS::Path::Normalized(fileName));
++            mainThreadPost([ptr, path = VFS::Path::Normalized(fileName)] {
++                MWBase::Environment::get().getSoundManager()->say(ptr, path);
++            });
+             if (text && Settings::gui().mSubtitles)
+                 luaManager->addUIMessage(*text);
+         };
+         api["stopSay"] = [](const sol::object& object) {
+             MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
+-            MWBase::Environment::get().getSoundManager()->stopSay(ptr);
++            mainThreadPost([ptr] { MWBase::Environment::get().getSoundManager()->stopSay(ptr); });
+         };
+         api["isSayActive"] = [](const sol::object& object) {
+             const MWWorld::Ptr& ptr = getPtrOrThrow(ObjectVariant(object));
+-            return MWBase::Environment::get().getSoundManager()->sayActive(ptr);
++            return onMainThread([&] { return MWBase::Environment::get().getSoundManager()->sayActive(ptr); });
+         };
+ 
+         addRecordFunctionBinding<ESM::Sound>(api, context);
+diff --git a/openmw/apps/openmw/mwlua/worker.cpp b/openmw/apps/openmw/mwlua/worker.cpp
+index a959bb3..9612e52 100644
+--- a/openmw/apps/openmw/mwlua/worker.cpp
++++ b/openmw/apps/openmw/mwlua/worker.cpp
+@@ -3,6 +3,7 @@
+ #include "worker.hpp"
+ 
+ #include "luamanagerimp.hpp"
++#include "mainthread.hpp"
+ 
+ #include "apps/openmw/profile.hpp"
+ 
+@@ -10,16 +11,93 @@
+ #include <components/settings/values.hpp>
+ 
+ #include <cassert>
++#include <exception>
++#include <stdexcept>
++#include <utility>
++
++#ifdef __EMSCRIPTEN__
++#include <cstdlib>
++#include <cstring>
++
++#include <emscripten/threading.h>
++
++namespace
++{
++    // Orthros (OPENMW_ORTHROS_LUATHREAD): LuaManager::update() on its own thread, in parallel with the frame's cull
++    // and draw (as on desktop: allowUpdate starts it, finishUpdate waits for it), when [Lua] lua num threads > 0.
++    // Read once, when the engine makes its worker (absent, or anything but "0": on). "0": the previous code — update()
++    // inline in finishUpdate, after the frame's drawing. Off as well in a multiplayer session (OPENMW_MP_URL, set by
++    // the page with ?mp=): the openmw.mp bindings and MWMP::NetManager (its queues, its WebSocket, whose callbacks go
++    // to the thread that made it) are written for the page's thread alone.
++    bool orthrosLuaThreadEnabled()
++    {
++        const char* value = std::getenv("OPENMW_ORTHROS_LUATHREAD");
++        if (value != nullptr && std::strcmp(value, "0") == 0)
++        {
++            Log(Debug::Info) << "Orthros: OPENMW_ORTHROS_LUATHREAD=0: Lua's update inline, after the frame's drawing";
++            return false;
++        }
++        if (std::getenv("OPENMW_MP_URL") != nullptr)
++        {
++            Log(Debug::Info) << "Orthros: a multiplayer session: Lua's update inline, after the frame's drawing";
++            return false;
++        }
++        return true;
++    }
++
++    // The Lua thread's stack (C++ and Lua's C calls, sol's frames, whatever update() reaches: cell loads, ESM reads).
++    // A pthread's default here is the link's STACK_SIZE (64 KiB); wasm has no guard page, so an overflow would write
++    // over the heap below it instead of failing. 1 MiB, as a desktop thread's order of magnitude.
++    constexpr std::size_t sLuaThreadStack = 1024 * 1024;
++}
++#endif
+ 
+ namespace MWLua
+ {
++#ifdef __EMSCRIPTEN__
++    // What the web's Lua thread is handed: if join() cancels it before the thread starts (its Web Worker loads only
++    // once the page's thread yields), the thread exits without touching the Worker, which may be gone by then; the
++    // thread frees it either way.
++    struct Worker::WebThreadStart
++    {
++        enum State : int
++        {
++            Pending,
++            Running,
++            Cancelled
++        };
++        std::atomic<int> mState{ Pending };
++        Worker* mWorker;
++    };
++#endif
++
+     Worker::Worker(LuaManager& manager)
+         : mManager(manager)
+     {
+ #ifdef __EMSCRIPTEN__
+-        // No Lua worker on the web: the default (lua num threads = 1) makes the main thread
+-        // mCV.wait() on the worker EVERY frame (finishUpdate) — pure per-frame latency in a
+-        // main-thread-bound build. With no thread, update() runs inline (finishUpdate else).
++        // Orthros (OPENMW_ORTHROS_LUATHREAD): the worker thread on the web too. finishUpdate's wait is only the time
++        // update() runs past the frame's cull and draw (meanwhile the page's thread runs the Lua thread's calls queued
++        // for it, mwlua/mainthread.hpp, and — waiting on a futex — serves the calls proxied to it: the Lua thread's
++        // file reads, logs, MAIN_THREAD_EM_ASM). With the switch at 0 (or no thread made), update() runs inline in
++        // finishUpdate, after the drawing, as before.
++        if (Settings::lua().mLuaNumThreads > 0 && orthrosLuaThreadEnabled())
++        {
++            mWebStart = new WebThreadStart{};
++            mWebStart->mWorker = this;
++            pthread_attr_t attr;
++            pthread_attr_init(&attr);
++            pthread_attr_setstacksize(&attr, sLuaThreadStack);
++            mHasWebThread = pthread_create(&mWebThread, &attr, &Worker::webThreadMain, mWebStart) == 0;
++            pthread_attr_destroy(&attr);
++            if (mHasWebThread)
++                Log(Debug::Info) << "Orthros: Lua's update on its own thread, in parallel with the frame's drawing";
++            else
++            {
++                delete mWebStart;
++                mWebStart = nullptr;
++                Log(Debug::Warning) << "Orthros: no thread for Lua's update: inline, after the frame's drawing";
++            }
++        }
+ #else
+         if (Settings::lua().mLuaNumThreads > 0)
+             mThread = std::thread([this] { run(); });
+@@ -28,7 +106,7 @@ namespace MWLua
+ 
+     Worker::~Worker()
+     {
+-        if (mThread && mThread->joinable())
++        if (hasThread())
+         {
+             Log(Debug::Error)
+                 << "Unexpected destruction of LuaWorker; likely there is an unhandled exception in the main thread.";
+@@ -38,28 +116,120 @@ namespace MWLua
+ 
+     void Worker::allowUpdate(osg::Timer_t frameStart, unsigned frameNumber, osg::Stats& stats)
+     {
+-        if (!mThread)
++        if (!hasThread())
+             return;
+         {
+             std::lock_guard<std::mutex> lk(mMutex);
+             mUpdateRequest = UpdateRequest{ .mFrameStart = frameStart, .mFrameNumber = frameNumber, .mStats = &stats };
++#ifdef __EMSCRIPTEN__
++            mUpdatePending.store(true, std::memory_order_relaxed);
++#endif
+         }
+         mCV.notify_one();
+     }
+ 
+     void Worker::finishUpdate(osg::Timer_t frameStart, unsigned frameNumber, osg::Stats& stats)
+     {
+-        if (mThread)
++        const osg::Timer* const timer = osg::Timer::instance();
++        const osg::Timer_t waitStart = timer->tick();
++        if (hasThread())
+         {
+             std::unique_lock<std::mutex> lk(mMutex);
++#ifdef __EMSCRIPTEN__
++            // Orthros (OPENMW_ORTHROS_LUATHREAD): a thread not running yet never takes the request (on the web its Web
++            // Worker starts only once the page's thread yields to the browser, should the pool have been empty) —
++            // the request taken back and run here, as without a thread; the thread finds none when it starts.
++            if (mThreadRunning)
++            {
++                lk.unlock();
++                waitForThreadUpdate();
++                mLastWaitMs.store(timer->delta_m(waitStart, timer->tick()), std::memory_order_relaxed);
++                // As the inline update(): its exception out of finishUpdate (Engine::frame's caller logs it).
++                if (std::exception_ptr error = std::exchange(mUpdateError, nullptr))
++                    std::rethrow_exception(error);
++                return;
++            }
++            mUpdateRequest.reset();
++            mUpdatePending.store(false, std::memory_order_relaxed);
++            lk.unlock();
++#else
+             mCV.wait(lk, [&] { return !mUpdateRequest.has_value(); });
++            return;
++#endif
++        }
++        update(frameStart, frameNumber, stats);
++        mLastWaitMs.store(timer->delta_m(waitStart, timer->tick()), std::memory_order_relaxed);
++    }
++
++    bool Worker::hasThread() const
++    {
++#ifdef __EMSCRIPTEN__
++        return mHasWebThread;
++#else
++        return mThread.has_value();
++#endif
++    }
++
++#ifdef __EMSCRIPTEN__
++    void Worker::waitForThreadUpdate()
++    {
++        // The Lua thread's calls for the page's thread run here, in order, until its update() ended. Never a silent
++        // endless wait: past 10 s (a Lua update reading much over a slow link may take that long), a log line every
++        // 10 s says what the page waits for.
++        const osg::Timer* const timer = osg::Timer::instance();
++        const osg::Timer_t start = timer->tick();
++        double nextReportS = 10.0;
++        MainThreadCalls::get().serveUntil([&] { return !mUpdatePending.load(std::memory_order_acquire); },
++            [&] {
++                const double waitedS = timer->delta_s(start, timer->tick());
++                if (waitedS >= nextReportS)
++                {
++                    Log(Debug::Warning) << "Orthros: the frame has been waiting " << static_cast<int>(waitedS)
++                                        << " s for Lua's update on the Lua thread";
++                    nextReportS += 10.0;
++                }
++            },
++            std::chrono::milliseconds(100));
++    }
++
++    void* Worker::webThreadMain(void* arg)
++    {
++        WebThreadStart* const start = static_cast<WebThreadStart*>(arg);
++        int expected = WebThreadStart::Pending;
++        if (start->mState.compare_exchange_strong(expected, WebThreadStart::Running))
++        {
++            emscripten_set_thread_name(pthread_self(), "Lua");
++            start->mWorker->run();
+         }
+-        else
+-            update(frameStart, frameNumber, stats);
++        delete start;
++        return nullptr;
+     }
++#endif
+ 
+     void Worker::join()
+     {
++#ifdef __EMSCRIPTEN__
++        if (mHasWebThread)
++        {
++            mHasWebThread = false;
++            // A thread that never ran would only start once the page's thread yields: waiting for it here would never
++            // end. Cancelled, it exits on start without touching this Worker; detached, nobody joins it.
++            int expected = WebThreadStart::Pending;
++            if (mWebStart->mState.compare_exchange_strong(expected, WebThreadStart::Cancelled))
++            {
++                mWebStart = nullptr;
++                pthread_detach(mWebThread);
++                return;
++            }
++            mWebStart = nullptr; // the running thread frees it on its way out
++            {
++                std::lock_guard<std::mutex> lk(mMutex);
++                mJoinRequest = true;
++            }
++            mCV.notify_one();
++            pthread_join(mWebThread, nullptr);
++        }
++#else
+         if (mThread)
+         {
+             {
+@@ -69,14 +239,19 @@ namespace MWLua
+             mCV.notify_one();
+             mThread->join();
+         }
++#endif
+     }
+ 
+     void Worker::update(osg::Timer_t frameStart, unsigned frameNumber, osg::Stats& stats)
+     {
+         const osg::Timer* const timer = osg::Timer::instance();
+-        OMW::ScopedProfile<OMW::UserStatsType::Lua> profile(frameStart, frameNumber, *timer, stats);
++        const osg::Timer_t start = timer->tick();
++        {
++            OMW::ScopedProfile<OMW::UserStatsType::Lua> profile(frameStart, frameNumber, *timer, stats);
+ 
+-        mManager.update();
++            mManager.update();
++        }
++        mLastUpdateMs.store(timer->delta_m(start, timer->tick()), std::memory_order_relaxed);
+     }
+ 
+     void Worker::run() noexcept
+@@ -84,12 +259,39 @@ namespace MWLua
+         while (true)
+         {
+             std::unique_lock<std::mutex> lk(mMutex);
++            mThreadRunning = true;
+             mCV.wait(lk, [&] { return mUpdateRequest.has_value() || mJoinRequest; });
+             if (mJoinRequest)
+                 break;
+ 
+             assert(mUpdateRequest.has_value());
+-
++#ifdef __EMSCRIPTEN__
++            // Orthros: mMutex released during update(): finishUpdate waits on the Lua thread's calls queue instead
++            // (mwlua/mainthread.hpp), and nothing else touches the request until update() ended.
++            const UpdateRequest request = *mUpdateRequest;
++            lk.unlock();
++            std::exception_ptr error;
++            try
++            {
++                update(request.mFrameStart, request.mFrameNumber, *request.mStats);
++            }
++            catch (const std::exception&)
++            {
++                error = std::current_exception();
++            }
++            catch (...)
++            {
++                // (a foreign, JavaScript exception: what omw_pump_frame catches from the inline update())
++                error = std::make_exception_ptr(
++                    std::runtime_error("Failed to update LuaManager: non-C++ (likely JS) exception"));
++            }
++            lk.lock();
++            mUpdateRequest.reset();
++            mUpdateError = error;
++            mUpdatePending.store(false, std::memory_order_release);
++            lk.unlock();
++            MainThreadCalls::get().wake();
++#else
+             try
+             {
+                 update(mUpdateRequest->mFrameStart, mUpdateRequest->mFrameNumber, *mUpdateRequest->mStats);
+@@ -98,10 +300,15 @@ namespace MWLua
+             {
+                 Log(Debug::Error) << "Failed to update LuaManager: " << e.what();
+             }
++            catch (...)
++            {
++                Log(Debug::Error) << "Failed to update LuaManager: non-C++ exception";
++            }
+ 
+             mUpdateRequest.reset();
+             lk.unlock();
+             mCV.notify_one();
++#endif
+         }
+     }
+ }
+diff --git a/openmw/apps/openmw/mwlua/worker.hpp b/openmw/apps/openmw/mwlua/worker.hpp
+index 58d69af..11ba879 100644
+--- a/openmw/apps/openmw/mwlua/worker.hpp
++++ b/openmw/apps/openmw/mwlua/worker.hpp
+@@ -4,11 +4,17 @@
+ #include <osg/Timer>
+ #include <osg/ref_ptr>
+ 
++#include <atomic>
+ #include <condition_variable>
++#include <exception>
+ #include <mutex>
+ #include <optional>
+ #include <thread>
+ 
++#ifdef __EMSCRIPTEN__
++#include <pthread.h>
++#endif
++
+ namespace osg
+ {
+     class Stats;
+@@ -31,6 +37,11 @@ namespace MWLua
+ 
+         void join();
+ 
++        // Orthros (OPENMW_ORTHROS_LUATHREAD): the page's thread's wait in the last finishUpdate (ms) and the last
++        // update()'s own time (ms, whichever thread ran it) — for ?perfstats=1 (engine.cpp's window.__omwPhase).
++        double getLastWaitMs() const { return mLastWaitMs.load(std::memory_order_relaxed); }
++        double getLastUpdateMs() const { return mLastUpdateMs.load(std::memory_order_relaxed); }
++
+     private:
+         struct UpdateRequest
+         {
+@@ -43,12 +54,39 @@ namespace MWLua
+ 
+         void run() noexcept;
+ 
++        bool hasThread() const;
++
++#ifdef __EMSCRIPTEN__
++        struct WebThreadStart;
++
++        static void* webThreadMain(void* start);
++
++        void waitForThreadUpdate();
++#endif
++
+         LuaManager& mManager;
+         std::mutex mMutex;
+         std::condition_variable mCV;
+         std::optional<UpdateRequest> mUpdateRequest;
+         bool mJoinRequest = false;
+         std::optional<std::thread> mThread;
++        // Orthros (OPENMW_ORTHROS_LUATHREAD): set by the worker thread under mMutex once it runs. Before that (on the web:
++        // its Web Worker not started yet — the pool was empty and a new one loads only when the page's thread yields),
++        // finishUpdate takes the request back and runs it on the calling thread instead of waiting for nobody.
++        bool mThreadRunning = false;
++#ifdef __EMSCRIPTEN__
++        // The web's worker thread: a pthread with a stack of its own size (std::thread's would be the link's default,
++        // 64 KiB, the main thread's whole stack).
++        pthread_t mWebThread{};
++        bool mHasWebThread = false;
++        WebThreadStart* mWebStart = nullptr;
++        // Set by allowUpdate, cleared once the Lua thread's update() ended (or finishUpdate took the request back).
++        std::atomic<bool> mUpdatePending{ false };
++        // The Lua thread's update()'s exception, thrown again by finishUpdate on the page's thread.
++        std::exception_ptr mUpdateError;
++#endif
++        std::atomic<double> mLastWaitMs{ 0 };
++        std::atomic<double> mLastUpdateMs{ 0 };
+     };
+ }
+ 
+diff --git a/openmw/apps/openmw/mwmp/luabindings.cpp b/openmw/apps/openmw/mwmp/luabindings.cpp
+index 54ea299..c7d3030 100644
+--- a/openmw/apps/openmw/mwmp/luabindings.cpp
++++ b/openmw/apps/openmw/mwmp/luabindings.cpp
+@@ -990,9 +990,12 @@ namespace MWMP
+         // nothing" was the harness overwriting its own hits. A queue cannot clobber, and an
+         // ack tells the sender the command was actually run, not merely handed over.
+ #ifdef __EMSCRIPTEN__
++        // Orthros (OPENMW_ORTHROS_LUATHREAD): run on the page's thread whichever thread calls them — LuaManager::update()
++        // may run on the Lua thread, whose JavaScript global is a Web Worker's (no window.omw, no sessionStorage there).
++        // Synchronous: the strings passed stay valid; from the page's thread itself, a direct call as before.
+         api["set"] = [](std::string_view key, std::string_view value) {
+             std::string keyStr(key), valueStr(value);
+-            EM_ASM(
++            MAIN_THREAD_EM_ASM(
+                 {
+                     try
+                     {
+@@ -1013,7 +1016,7 @@ namespace MWMP
+         };
+         api["emit"] = [](std::string_view name, std::string_view payload) {
+             std::string nameStr(name), payloadStr(payload);
+-            EM_ASM(
++            MAIN_THREAD_EM_ASM(
+                 {
+                     try
+                     {
+@@ -1035,7 +1038,7 @@ namespace MWMP
+         // server-revocable credential scoped to this origin.
+         api["setResumeToken"] = [](std::string_view token) {
+             std::string tokenStr(token);
+-            EM_ASM(
++            MAIN_THREAD_EM_ASM(
+                 {
+                     try
+                     {
+@@ -1052,7 +1055,7 @@ namespace MWMP
+                 tokenStr.c_str());
+         };
+         api["getResumeToken"] = []() -> std::string {
+-            char* token = static_cast<char*>(EM_ASM_PTR({
++            char* token = static_cast<char*>(MAIN_THREAD_EM_ASM_PTR({
+                 try
+                 {
+                     var t = sessionStorage.getItem('omwmp:resume');
+@@ -1071,7 +1074,7 @@ namespace MWMP
+         };
+         api["pollCommands"] = [](sol::this_state state) -> sol::object {
+             // Drains window.omw.queue whole: a JSON array of {id, text}, or nil when empty.
+-            char* cmd = static_cast<char*>(EM_ASM_PTR({
++            char* cmd = static_cast<char*>(MAIN_THREAD_EM_ASM_PTR({
+                 try
+                 {
+                     var w = (typeof window !== 'undefined') ? window : self;
+diff --git a/openmw/components/lua_ui/element.cpp b/openmw/components/lua_ui/element.cpp
+index b4bdb2d..d2e3153 100644
+--- a/openmw/components/lua_ui/element.cpp
++++ b/openmw/components/lua_ui/element.cpp
+@@ -33,12 +33,49 @@ namespace LuaUi
+ 
+         constexpr uint64_t maxDepth = 250;
+ 
++        // Orthros (orthros-luauidiff.patch): LuaUtil::getFieldOrNil(table, field) — the same object — without the
++        // registry references of the table's copy and its lua_table view, when the table has no metatable
++        // (lua_rawget, what safeGet's raw_get does then); a table with a metatable takes getFieldOrNil itself.
++        // Only called when OPENMW_ORTHROS_LUAUIDIFF is on (properties.hpp); its callers keep the original statements
++        // for "0".
++        template <typename Ref>
++        sol::object orthrosFieldOrNil(const Ref& table, std::string_view field)
++        {
++            const int ref = table.registry_index();
++            if (ref == LUA_REFNIL || ref == LUA_NOREF)
++                return sol::nil;
++            lua_State* L = table.lua_state();
++            const int top = lua_gettop(L);
++            table.push();
++            if (lua_type(L, -1) != LUA_TTABLE)
++            {
++                lua_settop(L, top);
++                return sol::nil;
++            }
++            if (lua_getmetatable(L, -1))
++            {
++                lua_settop(L, top);
++                return LuaUtil::getFieldOrNil(table, field);
++            }
++            lua_pushlstring(L, field.data(), field.size());
++            lua_rawget(L, -2);
++            sol::object value(L, -1);
++            lua_settop(L, top);
++            return value;
++        }
++
+         std::string widgetType(const sol::table& layout)
+         {
+-            sol::object typeField = LuaUtil::getFieldOrNil(layout, LayoutKeys::type);
++            // Orthros (orthros-luauidiff.patch): OPENMW_ORTHROS_LUAUIDIFF (properties.hpp), read once; off: the
++            // original statements, in their order. getFieldOrNil(layout, template, type) is
++            // getFieldOrNil(getFieldOrNil(layout, template), type) (luastate.hpp).
++            const bool diff = orthrosLuaUiDiff();
++            sol::object typeField
++                = diff ? orthrosFieldOrNil(layout, LayoutKeys::type) : LuaUtil::getFieldOrNil(layout, LayoutKeys::type);
+             std::string type = LuaUtil::getValueOrDefault(typeField, defaultWidgetType);
+-            sol::object templateTypeField
+-                = LuaUtil::getFieldOrNil(layout, LayoutKeys::templateLayout, LayoutKeys::type);
++            sol::object templateTypeField = diff
++                ? orthrosFieldOrNil(orthrosFieldOrNil(layout, LayoutKeys::templateLayout), LayoutKeys::type)
++                : LuaUtil::getFieldOrNil(layout, LayoutKeys::templateLayout, LayoutKeys::type);
+             if (templateTypeField != sol::nil)
+             {
+                 std::string templateType = LuaUtil::getValueOrDefault(templateTypeField, defaultWidgetType);
+@@ -169,9 +206,13 @@ namespace LuaUi
+         void setTemplate(WidgetExtension* ext, const sol::object& templateLayout, uint64_t depth)
+         {
+             ++depth;
+-            sol::object props = LuaUtil::getFieldOrNil(templateLayout, LayoutKeys::props);
++            // Orthros (orthros-luauidiff.patch): OPENMW_ORTHROS_LUAUIDIFF (properties.hpp), read once per template.
++            const bool diff = orthrosLuaUiDiff();
++            sol::object props = diff ? orthrosFieldOrNil(templateLayout, LayoutKeys::props)
++                                     : LuaUtil::getFieldOrNil(templateLayout, LayoutKeys::props);
+             ext->setTemplateProperties(props);
+-            sol::object content = LuaUtil::getFieldOrNil(templateLayout, LayoutKeys::content);
++            sol::object content = diff ? orthrosFieldOrNil(templateLayout, LayoutKeys::content)
++                                       : LuaUtil::getFieldOrNil(templateLayout, LayoutKeys::content);
+             ext->setTemplateChildren(updateContent(ext->templateChildren(), content, depth));
+         }
+ 
+diff --git a/openmw/components/lua_ui/properties.hpp b/openmw/components/lua_ui/properties.hpp
+index f6e81f7..0ce523a 100644
+--- a/openmw/components/lua_ui/properties.hpp
++++ b/openmw/components/lua_ui/properties.hpp
+@@ -89,6 +89,95 @@ namespace LuaUi
+ 
+         return optional.value_or(defaultValue);
+     }
++
++    // Orthros (orthros-luauidiff.patch): OPENMW_ORTHROS_LUAUIDIFF, read once (util.cpp; absent or anything but "0":
++    // on). On: the fields Element:update() re-reads on every call for every widget of its tree (props, template props,
++    // external values, the layout's widget type) are read straight from the Lua stack when their table is a plain one
++    // (no metatable). "0": every read through parseProperty / parseExternal / LuaUtil::getFieldOrNil, as before.
++    bool orthrosLuaUiDiff();
++
++    // Orthros (orthros-luauidiff.patch): parseValue<T>(sol::object(table), field, errorPrefix) — the same result and
++    // the same errors — without its registry references (the table's copy, its lua_table view, the field's object:
++    // a luaL_ref and a luaL_unref each, per read). parseValue reads through LuaUtil::getFieldOrNil: nil unless
++    // `table` is a Lua table; when the table's metatable has a callable __index, that call; else the raw field. Here a
++    // table with no metatable is read with lua_rawget; a table with a metatable, or a value of the wrong type (the
++    // error and its message), takes parseValue itself. The value is checked and read with the sol::stack::check /
++    // sol::stack::get that sol::object::is / as use.
++    template <typename T, typename Ref>
++    sol::optional<T> orthrosParseValue(const Ref& table, std::string_view field, std::string_view errorPrefix)
++    {
++        using LuaT = std::conditional_t<isMyGuiVector<T>(), osg::Vec2f,
++            std::conditional_t<isMyGuiColor<T>(), Misc::Color, T>>;
++        const int ref = table.registry_index();
++        if (ref == LUA_REFNIL || ref == LUA_NOREF)
++            return sol::nullopt; // (nil: not a table, getFieldOrNil's nil)
++        lua_State* L = table.lua_state();
++        const int top = lua_gettop(L);
++        table.push();
++        if (lua_type(L, -1) != LUA_TTABLE)
++        {
++            lua_settop(L, top);
++            return sol::nullopt;
++        }
++        if (lua_getmetatable(L, -1))
++        {
++            lua_settop(L, top);
++            return parseValue<T>(sol::object(table), field, errorPrefix);
++        }
++        lua_pushlstring(L, field.data(), field.size());
++        lua_rawget(L, -2);
++        if (lua_type(L, -1) == LUA_TNIL)
++        {
++            lua_settop(L, top);
++            return sol::nullopt;
++        }
++        if (!sol::stack::check<LuaT>(L, -1, &sol::no_panic))
++        {
++            lua_settop(L, top);
++            return parseValue<T>(sol::object(table), field, errorPrefix); // (throws its error)
++        }
++        struct Restore
++        {
++            lua_State* L;
++            int top;
++            ~Restore() { lua_settop(L, top); }
++        } restore{ L, top };
++        LuaT luaT = sol::stack::get<LuaT>(L, -1);
++        if constexpr (isMyGuiIntVector<T>())
++            return T(static_cast<int>(luaT.x()), static_cast<int>(luaT.y()));
++        else if constexpr (isMyGuiVector<T>())
++            return T(luaT.x(), luaT.y());
++        else if constexpr (isMyGuiColor<T>())
++            return T(luaT.r(), luaT.g(), luaT.b(), luaT.a());
++        else
++            return luaT;
++    }
++
++    // Orthros (orthros-luauidiff.patch): parseProperty through orthrosParseValue — the props read first, then the
++    // template's (whose errors are thrown even when the props hold the field), as parseProperty does.
++    template <typename T>
++    T orthrosParseProperty(const sol::main_object& props, const sol::main_object& templateProps,
++        std::string_view field, const T& defaultValue)
++    {
++        auto propOptional = orthrosParseValue<T>(props, field, "Property");
++        auto templateOptional = orthrosParseValue<T>(templateProps, field, "Template property");
++
++        if (propOptional.has_value())
++            return propOptional.value();
++        else if (templateOptional.has_value())
++            return templateOptional.value();
++        else
++            return defaultValue;
++    }
++
++    // Orthros (orthros-luauidiff.patch): parseExternal through orthrosParseValue.
++    template <typename T>
++    T orthrosParseExternal(const sol::main_object& external, std::string_view field, const T& defaultValue)
++    {
++        auto optional = orthrosParseValue<T>(external, field, "External value");
++
++        return optional.value_or(defaultValue);
++    }
+ }
+ 
+ #endif // !OPENMW_LUAUI_PROPERTIES
+diff --git a/openmw/components/lua_ui/util.cpp b/openmw/components/lua_ui/util.cpp
+index 305003b..6aadbd5 100644
+--- a/openmw/components/lua_ui/util.cpp
++++ b/openmw/components/lua_ui/util.cpp
+@@ -1,7 +1,11 @@
+ #include "util.hpp"
+ 
++#include <cstdlib>
++#include <cstring>
+ #include <ranges>
+ 
++#include <components/debug/debuglog.hpp>
++
+ #include <MyGUI_FactoryManager.h>
+ 
+ #include "adapter.hpp"
+@@ -17,6 +21,18 @@
+ 
+ namespace LuaUi
+ {
++    // Orthros (orthros-luauidiff.patch): declared in properties.hpp.
++    bool orthrosLuaUiDiff()
++    {
++        static const bool enabled = [] {
++            const char* value = std::getenv("OPENMW_ORTHROS_LUAUIDIFF");
++            const bool on = value == nullptr || std::strcmp(value, "0") != 0;
++            if (!on)
++                Log(Debug::Info) << "Orthros: OPENMW_ORTHROS_LUAUIDIFF=0: Lua UI fields read through sol references";
++            return on;
++        }();
++        return enabled;
++    }
+ 
+     void registerAllWidgets()
+     {
+diff --git a/openmw/components/lua_ui/widget.hpp b/openmw/components/lua_ui/widget.hpp
+index 881be37..dc17512 100644
+--- a/openmw/components/lua_ui/widget.hpp
++++ b/openmw/components/lua_ui/widget.hpp
+@@ -71,6 +71,9 @@ namespace LuaUi
+         template <typename T>
+         T externalValue(std::string_view name, const T& defaultValue) const
+         {
++            // Orthros (orthros-luauidiff.patch): OPENMW_ORTHROS_LUAUIDIFF (properties.hpp).
++            if (orthrosLuaUiDiff())
++                return orthrosParseExternal(mExternal, name, defaultValue);
+             return parseExternal(mExternal, name, defaultValue);
+         }
+ 
+@@ -97,6 +100,9 @@ namespace LuaUi
+         template <typename T>
+         T propertyValue(std::string_view name, const T& defaultValue)
+         {
++            // Orthros (orthros-luauidiff.patch): OPENMW_ORTHROS_LUAUIDIFF (properties.hpp).
++            if (orthrosLuaUiDiff())
++                return orthrosParseProperty(mProperties, mTemplateProperties, name, defaultValue);
+             return parseProperty(mProperties, mTemplateProperties, name, defaultValue);
+         }
+ 
+diff --git a/openmw/apps/openmw/mwrender/postprocessor.cpp b/openmw/apps/openmw/mwrender/postprocessor.cpp
+index 3555422..9a75112 100644
+--- a/openmw/apps/openmw/mwrender/postprocessor.cpp
++++ b/openmw/apps/openmw/mwrender/postprocessor.cpp
+@@ -5,7 +5,10 @@
+ #include <SDL_opengl_glext.h>
+ #include <algorithm>
+ #include <chrono>
++#include <cstdlib>
++#include <cstring>
+ #include <thread>
++#include <variant>
+ 
+ #include <osg/Texture1D>
+ #include <osg/Texture2D>
+@@ -21,6 +24,7 @@
+ #include <components/sceneutil/color.hpp>
+ #include <components/sceneutil/depth.hpp>
+ #include <components/sceneutil/nodecallback.hpp>
++#include <components/settings/shadermanager.hpp>
+ #include <components/settings/values.hpp>
+ #include <components/shader/shadermanager.hpp>
+ #include <components/stereo/multiview.hpp>
+@@ -474,6 +478,83 @@ namespace MWRender
+         mSamplesDirty = true;
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    namespace
++    {
++        // Orthros (unattributed.patch): OPENMW_ORTHROS_GAMMA, read once (absent or anything but "0": on).
++        bool orthrosGammaEnabled()
++        {
++            static const bool enabled = [] {
++                const char* value = std::getenv("OPENMW_ORTHROS_GAMMA");
++                return value == nullptr || std::strcmp(value, "0") != 0;
++            }();
++            return enabled;
++        }
++
++        // The technique's uGamma as setUniform finds it (the first of that name) when setUniform would write it (not
++        // a configuration variable, a float), else null.
++        Fx::Types::UniformBase* orthrosGammaUniform(Fx::Technique& technique)
++        {
++            auto it = technique.findUniform("uGamma");
++            if (it == technique.getUniformMap().end() || !*it || (*it)->mStatic
++                || !std::holds_alternative<Fx::Types::Uniform<float>>((*it)->mData))
++                return nullptr;
++            return it->get();
++        }
++    }
++
++    bool PostProcessor::orthrosGammaUnchanged(Fx::Technique& technique, float gamma)
++    {
++        if (!orthrosGammaEnabled() || !isEnabled())
++            return false;
++        Fx::Types::UniformBase* uniform = orthrosGammaUniform(technique);
++        if (uniform == nullptr)
++            return false;
++        // (weak: a uniform freed since, and another allocated at its address, never matches)
++        const std::shared_ptr<Fx::Types::UniformBase> last = mOrthrosGammaUniform.lock();
++        if (last.get() != uniform || !(mOrthrosGamma == gamma)
++            || mOrthrosGammaWrites
++                != Settings::ShaderManager::get().orthrosWatch(uniform->mTechniqueName, uniform->mName))
++            return false;
++        const auto& value = std::get<Fx::Types::Uniform<float>>(uniform->mData).mValue;
++        return value.has_value() && *value == gamma;
++    }
++
++    Fx::Types::UniformBase* PostProcessor::orthrosGammaBefore(Fx::Technique& technique, unsigned long long& before)
++    {
++        if (!orthrosGammaEnabled())
++            return nullptr;
++        Fx::Types::UniformBase* uniform = orthrosGammaUniform(technique);
++        if (uniform != nullptr)
++            before = Settings::ShaderManager::get().orthrosWatch(uniform->mTechniqueName, uniform->mName);
++        return uniform;
++    }
++
++    void PostProcessor::orthrosGammaWritten(
++        Fx::Technique& technique, float gamma, Fx::Types::UniformBase* watched, unsigned long long before)
++    {
++        mOrthrosGammaUniform.reset();
++        if (watched == nullptr || orthrosGammaUniform(technique) != watched)
++            return;
++        // (kept only when that call wrote that setting once: its count one more; a call that wrote nothing — post
++        // processing off, the settings not loaded — is made again next frame, as before)
++        const unsigned long long after
++            = Settings::ShaderManager::get().orthrosWatch(watched->mTechniqueName, watched->mName);
++        if (after != before + 1)
++            return;
++        for (const auto& candidate : technique.getUniformMap())
++        {
++            if (candidate.get() == watched)
++            {
++                mOrthrosGammaUniform = candidate;
++                break;
++            }
++        }
++        mOrthrosGamma = gamma;
++        mOrthrosGammaWrites = after;
++    }
++#endif
++
+     void PostProcessor::reloadIfRequired()
+     {
+         if (mSamplesDirty)
+@@ -520,7 +601,23 @@ namespace MWRender
+             {
+                 if (technique && technique->getName() == "adjustments")
+                 {
+-                    setUniform(technique, "uGamma", gamma);
++                    // Orthros (unattributed.patch): OPENMW_ORTHROS_GAMMA (absent or anything but "0": on). Each
++                    // call wrote the same float into the uniform and, through Settings::ShaderManager, into the
++                    // shader settings' YAML tree (yaml-cpp's node lookup and a float formatted by an ostream: 0.04 ms
++                    // a frame on r13). It is left out when it would write what is already there: the same uniform
++                    // object (alive) as the last call that wrote, the same gamma, the uniform still holding it, and
++                    // that setting not written (nor the file loaded) since that call (its YAML key still holds that
++                    // value: every write goes through ShaderManager::setValue/load, which count those of the watched
++                    // setting; other settings' writes, e.g. a Lua mod animating its own shader, leave it alone). A
++                    // reload, a recompile, the HUD or a Lua script changing uGamma, or another gamma, write again as
++                    // before. "0": the call every frame.
++                    if (!orthrosGammaUnchanged(*technique, gamma))
++                    {
++                        unsigned long long before = 0;
++                        Fx::Types::UniformBase* watched = orthrosGammaBefore(*technique, before);
++                        setUniform(technique, "uGamma", gamma);
++                        orthrosGammaWritten(*technique, gamma, watched, before);
++                    }
+                     break;
+                 }
+             }
+diff --git a/openmw/apps/openmw/mwrender/postprocessor.hpp b/openmw/apps/openmw/mwrender/postprocessor.hpp
+index 077d547..5e3ea68 100644
+--- a/openmw/apps/openmw/mwrender/postprocessor.hpp
++++ b/openmw/apps/openmw/mwrender/postprocessor.hpp
+@@ -253,6 +253,19 @@ namespace MWRender
+         bool mDirty = false;
+         bool mReload = true;
+         bool mSamplesDirty = false; // live MSAA change pending an FBO rebuild (see setSamples)
++
++#ifdef __EMSCRIPTEN__
++        // Orthros (unattributed.patch): OPENMW_ORTHROS_GAMMA — the adjustments technique's uGamma as the last update()
++        // that wrote it left it: that uniform (weak: never a later one at the same address), the gamma, and that
++        // setting's write count after it (Settings::ShaderManager::orthrosWatch).
++        bool orthrosGammaUnchanged(Fx::Technique& technique, float gamma);
++        Fx::Types::UniformBase* orthrosGammaBefore(Fx::Technique& technique, unsigned long long& before);
++        void orthrosGammaWritten(
++            Fx::Technique& technique, float gamma, Fx::Types::UniformBase* watched, unsigned long long before);
++        std::weak_ptr<Fx::Types::UniformBase> mOrthrosGammaUniform;
++        float mOrthrosGamma = 0.f;
++        unsigned long long mOrthrosGammaWrites = 0;
++#endif
+         bool mTriggerShaderReload = false;
+         bool mUsePostProcessing = false;
+ 
+diff --git a/openmw/components/settings/shadermanager.hpp b/openmw/components/settings/shadermanager.hpp
+index 9f78e8f..4db6fd5 100644
+--- a/openmw/components/settings/shadermanager.hpp
++++ b/openmw/components/settings/shadermanager.hpp
+@@ -4,6 +4,7 @@
+ #include <filesystem>
+ #include <fstream>
+ #include <optional>
++#include <string>
+ #include <unordered_map>
+ #include <vector>
+ 
+@@ -67,9 +68,28 @@ namespace Settings
+             }
+ 
+             mData["config"][tname][uname] = value;
++            OrthrosWatch& watch = orthrosWatchState();
++            if (uname == watch.uname && tname == watch.tname && !uname.empty())
++                ++watch.writes;
+             return true;
+         }
+ 
++        /// Orthros (unattributed.patch): one setting watched (OPENMW_ORTHROS_GAMMA: the adjustments' uGamma). Returns
++        /// its write count: one more at each value set for that technique and uniform, at each load of the file, and
++        /// when the watch moves to another setting. A caller that remembers it knows whether that setting may have
++        /// been written since it looked (the other settings' writes leave it alone).
++        unsigned long long orthrosWatch(const std::string& tname, const std::string& uname)
++        {
++            OrthrosWatch& watch = orthrosWatchState();
++            if (watch.tname != tname || watch.uname != uname)
++            {
++                watch.tname = tname;
++                watch.uname = uname;
++                ++watch.writes;
++            }
++            return watch.writes;
++        }
++
+         template <class T>
+         std::optional<T> getValue(const std::string& tname, const std::string& uname)
+         {
+@@ -102,6 +122,7 @@ namespace Settings
+         {
+             mData = YAML::Null;
+             mPath = path;
++            ++orthrosWatchState().writes;
+ 
+             Log(Debug::Info) << "Loading shader settings file: " << mPath;
+ 
+@@ -161,6 +182,20 @@ namespace Settings
+         }
+ 
+     private:
++        // Orthros (unattributed.patch): the watch's state, outside the class layout (a function-local static of an
++        // inline function: one object in the program): the singleton's members keep their offsets in every unit.
++        struct OrthrosWatch
++        {
++            std::string tname;
++            std::string uname;
++            unsigned long long writes = 0;
++        };
++        static OrthrosWatch& orthrosWatchState()
++        {
++            static OrthrosWatch state;
++            return state;
++        }
++
+         std::filesystem::path mPath;
+         YAML::Node mData;
+         Mode mMode = Mode::Normal;
+diff --git a/wasm-build/link-openmw.sh b/wasm-build/link-openmw.sh
+index 48b4ba9..a7806d8 100755
+--- a/wasm-build/link-openmw.sh
++++ b/wasm-build/link-openmw.sh
+@@ -224,6 +224,8 @@ ninja apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
+   --js-library "$ROOT/wasm-build/orthros-openal.js" \
+   `# Orthros (orthros-r11.patch): the WebGL glue's per-call costs (wasm-build/orthros-gl.js; ENV OPENMW_ORTHROS_GLGLUE=0: off)` \
+   --js-library "$ROOT/wasm-build/orthros-gl.js" \
++  `# Orthros (unattributed.patch): the clock's glue (wasm-build/orthros-clock.js; ENV OPENMW_ORTHROS_CLOCK=0: off)` \
++  --js-library "$ROOT/wasm-build/orthros-clock.js" \
+   --use-port=sdl2 --use-port=freetype --use-port=harfbuzz --use-port=libpng \
+   --use-port=libjpeg --use-port=zlib --use-port=ogg --use-port=vorbis \
+   -sALLOW_MEMORY_GROWTH=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
+diff --git a/wasm-build/orthros-clock.js b/wasm-build/orthros-clock.js
+new file mode 100644
+index 0000000..834228c
+--- /dev/null
++++ b/wasm-build/orthros-clock.js
+@@ -0,0 +1,127 @@
++// Orthros (unattributed.patch): the clock's glue (Emscripten 6.0.1: src/lib/libcore.js emscripten_get_now,
++// src/lib/libwasi.js clock_time_get) in this MEMORY64 + pthreads + ALLOW_MEMORY_GROWTH build, on every thread.
++// OpenMW reads the clock a few hundred times a frame (osg::Timer::tick: every ScopedProfile, the viewer, the cull/draw
++// stats; std::chrono::steady_clock::now: the terrain preload's time slices, the Lua scripts' real-time clock, mods
++// calling it from every onFrame). Profiled on r13 (Vanilla+ FR, Seyda Neen, tools/openmw/perf.mjs --profile): the
++// clock's JS 0.26 ms a frame, of which emscripten_get_now's own time 0.17 and performance.now() 0.03.
++// Linked after the system libraries (--js-library, link-openmw.sh): its entries replace theirs of the same name, whose
++// __sig, __i53abi, __proxy and __nothrow stay (deps are only added to).
++//
++// Switch: OPENMW_ORTHROS_CLOCK, read once per thread, at its first call once it can be read (a call before that takes
++// the library's path and decides nothing). "0": the library's own bodies, kept below as orthrosClockOrig_<name>;
++// absent or anything else: the paths below. On the page's thread: ENV, once the runtime is initialized (the page fills
++// ENV in preRun, before initRuntime). On a pthread (the OSG pager, the preload and async threads, the whole engine
++// under OMW_PROXY), whose JS ENV is empty: the C environment (getenv), in the shared memory, built from the page's ENV
++// by the constructors on the page's thread before any pthread exists, read once the thread runs (its stack set up):
++// every thread follows the switch, so "0" is the previous code path everywhere.
++//
++// - emscripten_get_now (pthreads): performance.timeOrigin + performance.now(). timeOrigin is a getter into the
++//   browser (a Performance attribute, not a fast API call) and the time origin of a global never changes (High
++//   Resolution Time: it is fixed when the global is created), so it is read once and kept: the same double added to
++//   the same performance.now(), the same result. Headless Chromium, 2,000,000 calls: 430 → 236 ns a call.
++// - clock_time_get: wrote its nanoseconds through (growMemViews(), HEAP64)[ptime / 8] = BigInt(nsec): the shared
++//   memory's buffer getter and a BigInt allocated every call. Now the two 32-bit halves of the same integer, through
++//   a view of the heap kept by this glue (a view of a SharedArrayBuffer stays valid when the memory grows: growth gives
++//   a longer buffer, never a detached one; the current one is taken when a write reaches past its end). nsec is an
++//   integer-valued double in [0, 2^64) there (Math.round of a positive time): hi = floor(nsec / 2^32) and
++//   lo = nsec - hi * 2^32 are exact (a power of two scales exactly; the difference is a multiple of nsec's ulp below
++//   2^32, so representable), the same eight bytes BigInt64Array would store, modulo 2^64 as it stores them (checked on
++//   2.2 million values, the edges included). A pointer not 8-aligned (the library wrote nothing there), an unknown
++//   clock or a monotonic clock missing take the library's own body; a NaN or negative time its write (BigInt). The
++//   same calls through a test program linked with and without this file, its clocks made deterministic, print the same
++//   values (clock_gettime of each clock, std::chrono::steady_clock, emscripten_get_now). Headless Chromium: 522 → 273
++//   ns a call.
++
++(() => {
++  // The library's own bodies, kept under $orthrosClockOrig_<name> (no __sig: they take the arguments already
++  // converted); the replaced entries' deps gain their kept body and the switch. (libwasi.js keeps its functions as
++  // their source text, wrapSyscallFunction's: a string the jsifier emits as a function.)
++  const lib = LibraryManager.library;
++  const kept = {};
++  for (const name of ['emscripten_get_now', 'clock_time_get']) {
++    const body = lib[name];
++    if (typeof body != 'function' && !(typeof body == 'string' && /^\s*(\([^)]*\)\s*=>|function\b)/.test(body))) {
++      throw new Error(`orthros-clock.js: no library function ${name}`);
++    }
++    kept['$orthrosClockOrig_' + name] = lib[name];
++    kept['$orthrosClockOrig_' + name + '__deps'] = lib[name + '__deps'] || [];
++    kept[name + '__deps'] = (lib[name + '__deps'] || []).concat(['$orthrosClockOrig_' + name, '$orthrosClockOrigin']);
++  }
++  addToLibrary(kept);
++})();
++
++addToLibrary({
++  // undefined until chosen (the first call once the runtime is initialized); then the page's time origin, kept (on),
++  // or null ("0").
++  $orthrosClockOrigin: undefined,
++  $orthrosClockOrigin__deps: ['$ENV',
++#if PTHREADS
++    'getenv', 'pthread_self', '$stackSave', '$stackRestore', '$stringToUTF8OnStack', '$UTF8ToString',
++#endif
++  ],
++  $orthrosClockOrigin__postset: `
++    // the glue's view of the heap for clock_time_get (see the header); an empty one until the first write
++    var orthrosClockHeapU32 = new Uint32Array(0);
++    var orthrosClockChoose = () => {
++      if (!runtimeInitialized) return orthrosClockOrigin;
++      var off;
++#if PTHREADS
++      if (ENVIRONMENT_IS_PTHREAD) {
++        // (before the worker runs a thread — no thread pointer, no stack of its own — nothing is decided)
++        if (!_pthread_self()) return orthrosClockOrigin;
++        var sp = stackSave();
++        try {
++          var name = stringToUTF8OnStack('OPENMW_ORTHROS_CLOCK');
++#if MEMORY64
++          // (the toolchain gives no signature conversion to a native export only a JS library depends on: the
++          // pointers cross as BigInt; Number/BigInt also accept an already converted value)
++          var value = Number(_getenv(BigInt(name)));
++#else
++          var value = _getenv(name);
++#endif
++          off = !!value && UTF8ToString(value) === '0';
++        } finally {
++          stackRestore(sp);
++        }
++      } else
++#endif
++      off = ENV['OPENMW_ORTHROS_CLOCK'] === '0';
++      orthrosClockOrigin = off ? null : performance.timeOrigin;
++      return orthrosClockOrigin;
++    };
++  `,
++
++  emscripten_get_now: () => {
++    var origin = orthrosClockOrigin;
++    if (origin === undefined) origin = orthrosClockChoose();
++    if (origin == null) return orthrosClockOrig_emscripten_get_now();
++    return origin + performance.now();
++  },
++
++  // (i53abi: ignored_precision and ptime arrive as Numbers)
++  clock_time_get: (clk_id, ignored_precision, ptime) => {
++    var origin = orthrosClockOrigin;
++    if (origin === undefined) origin = orthrosClockChoose();
++    if (origin == null || ptime % 8 !== 0) return orthrosClockOrig_clock_time_get(clk_id, ignored_precision, ptime);
++    var now;
++    // the library's order and results: EINVAL for an unknown clock, Date.now() for the realtime one, the monotonic
++    // clock for the others (nowIsMonotonic: always with performance.now())
++    if (!checkWasiClock(clk_id)) return orthrosClockOrig_clock_time_get(clk_id, ignored_precision, ptime);
++    if (clk_id === 0 /* __WASI_CLOCKID_REALTIME */) now = _emscripten_date_now();
++    else if (nowIsMonotonic) now = _emscripten_get_now();
++    else return orthrosClockOrig_clock_time_get(clk_id, ignored_precision, ptime);
++    var nsec = Math.round(now * 1000 * 1000);
++    if (!(nsec >= 0 && nsec < 18446744073709551616)) {
++      // (the library's write of the same value: BigInt's RangeError for a NaN as before)
++      HEAP64[ptime / 8] = BigInt(nsec);
++      return 0;
++    }
++    var i = ptime / 4, heap = orthrosClockHeapU32;
++    // (the toolchain reads every HEAPxx of library code as (growMemViews(), HEAPxx): the current view)
++    if (i + 2 > heap.length) heap = orthrosClockHeapU32 = HEAPU32;
++    var hi = Math.floor(nsec / 4294967296);
++    heap[i] = nsec - hi * 4294967296;
++    heap[i + 1] = hi;
++    return 0;
++  },
++});

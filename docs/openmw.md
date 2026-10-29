@@ -1665,6 +1665,34 @@ Development build only (`openmw-web-v1.5.3-orthros-r14dev` in scratch: the kept 
 the release number is coordinated before a release is built; not in `lock.json`). Measured: docs/slow-network.md
 "Unannounced serial reads (2026-10-29)".
 
+### Lua beside the frame, LuaUi updates diffed: engine orthros-r14 (2026-10-29)
+
+The owner: a constant 60 fps in Vanilla+ with every mod and option kept ("optimise à mort", weeks of work accepted).
+Attributed first (`perf.mjs --discard --profile`, Seyda Neen running; Vanilla+ FR work p50 16.6 ms against 9.7 for
+the mod-less base): Lua 5.7 ms/frame, of which `LuaManager::update` 2.6 (the web build ran it inline after the
+drawing: `mwlua/worker.cpp` compiled its thread out) and LuaUi `Element::update` ~1.9 (the whole widget tree
+re-applied on each `:update()`). Four changes in `orthros-r14.patch`, each behind its switch (`?omwenv=<switch>=0`),
+written, reviewed through two lenses (threads/web platform, identical behaviour) and fixed by agents, then built
+once and measured alternately (4 runs all off / all on, 3 per switch alone off; load 17-21 from other projects):
+- `OPENMW_ORTHROS_LUATHREAD`: `LuaManager::update()` on its own pthread between `allowUpdate` and `finishUpdate`, as
+  on desktop; off in a multiplayer session (`OPENMW_MP_URL`) and with `[Lua] lua num threads = 0`. What Lua reaches
+  that is main-thread-only goes through a private FIFO (`mwlua/mainthread.hpp`) run only inside `finishUpdate`,
+  where the inline update ran it: void sound calls and the messageBox posted, queries and `postprocessing.load`
+  synchronous; an exception in the thread's update is rethrown on the main thread. On this host the main thread's
+  `update()` (2.2-2.5 ms) moves out and `luawait` is ~0, but its other work grows ~1.9 ms (draw, cull, posts,
+  futex wait): net busy -0.3 ms. Shipped on to be judged on real CPUs by the players' telemetry; `=0` restores the
+  previous path.
+- `OPENMW_ORTHROS_LUAUIDIFF`: `Element::update` skips the setters whose parsed value equals the applied one and the
+  child rebuilds of unchanged content; layer resizes, templates, events still re-applied. `updateWidget` 1.38 → 0.88
+  ms/frame.
+- `OPENMW_ORTHROS_CLOCK` (`wasm-build/orthros-clock.js`: the clock glue without BigInt round trips; `_clock_time_get`
+  0.18 → 0.08 ms/frame) and `OPENMW_ORTHROS_GAMMA` (the post-processing gamma uniform set only when it changes;
+  0.04 ms/frame).
+
+Checked: no Lua error or fault in any run; keys (Space jumps, E activates); `frame-compare.mjs` day, night and
+interior (`--interior "Seyda Nihyn, auberge d'Arrile"` in French) within noise. `morrowind` and `morrowind-vanilla-plus`
+manifests moved to r14 (backups `backups/manual/*-manifest-before-r14-20261029.json`).
+
 ### The engine's language and dialogue topic colours (2026-10-28)
 
 OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own
