@@ -294,6 +294,22 @@ scratch gateway and a scratch server. The engine's `/settings.cfg` held the bloc
 `[orthros] player defaults given: SettingsOMWControls/alwaysRun, …` with no error. A two-client multiplayer session with
 a simulation peer was not run.
 
+In play, solo EN and FR (2026-10-29: Chromium with SwiftShader, the engine page of a scratch catalog through scratch
+gateways; the player's Lua console, `luap`, read the engine's own values back):
+- `/settings.cfg` ended with the version's block (`preferred locales = fr,en` in FR). Options → Prefs showed Always Use
+  Best Attack and Subtitles on. Options → Scripts → OpenMW Controls and OpenMW Camera showed the seven given values as
+  Yes (Oui), in French in the FR version.
+- Show owned: looking at Arrille's Common Robe (Robe ordinaire) turned the crosshair red and the tooltip box red.
+  Show effect duration: the HUD icon of a Fortify Strength potion read `… 10 pts Duration: 20 s` (`Durée : 21 sec`),
+  counting down.
+- Always run: `self.controls.run` set on every sampled frame with W held, peak speed 288 units/s against a walk speed of
+  128. Toggle sneak: one tap of Ctrl kept `self.controls.sneak` on after the key was released. Third person (Tab): the
+  focal offset was the shoulder's (30, −10), auto-switched to (−30, −10) beside a wall. It was centred (0, 15) only while
+  a weapon (fists) was drawn, as the engine's `third_person.lua` does. Preview when standing still (mode Preview) and
+  360° movement were active too.
+- A player's later choice: Toggle Sneak set to No in Options, the window closed, the page reloaded with the same
+  browser profile. It was still No, and no `player defaults given` line was logged again.
+
 ### Combat, stealth and magicka mods (2026-10-29)
 
 The owner asked for these mods in Vanilla+ (EN and FR), together with the settings above. Each is pinned to a commit,
@@ -345,8 +361,66 @@ with `OPENMW_MP_SYSTEM` set in the browser engine ran only the scripts kept for 
 The overlay was run under Lua 5.4 with stubs. In solo it gives the author's time-scale dips and lights; in a shared
 world it gives neither.
 
-Not checked: a real multiplayer session with the native peer, a kill in play (slow motion, flash, lights) and frame
-cost. The flash shader's two passes run every frame while "Kill Flash On" is not "Never", so measure them on a real GPU.
+In play, solo EN and FR (2026-10-29, as in "Recommended settings" above):
+- State-Based Magicka Regen: after a failed cast (50 → 37.2 magicka), magicka rose steadily to 39.6 over 31 s
+  (929 game seconds). Vanilla Morrowind regenerates none outside rest.
+- The Combat Juice: dagger blows on a mudcrab, then on an NPC in FR. The hit-marker textures loaded at the first blow,
+  and the camera's extra pitch, yaw and roll moved (its shake, up to 0.0072 rad). A kill that ended a fight of more than
+  20 s brought the long slow motion: the simulation time scale read 0.200 for about 2 s. During it, the frame showed the
+  `cj_flash` exposure blur and the red kill marker, on WebGL2. A quick kill with other mudcrabs still fighting brought
+  none, because the encounter had not ended and the short slow motion has a 25% chance.
+- Sneak!: the eye meter around the crosshair and the detection markers showed while sneaking. A guard or Arrille in
+  view detected the player within a second or two, and Sneak! then ended the sneak (`SneakPlayer.lua`, by design).
+  Its tutorial (`Rester inaperçu` in FR) and its settings pages were in French in the FR version, as were the pages of
+  SBMR (`Régénération de Magie selon l'état`) and The Combat Juice.
+- Engine log: no Lua error from the four mods or the player defaults, EN and FR. Warnings from them: `No language files
+  for the preferred languages found in "l10n/SneakIsGoodNow"` (EN: Sneak! ships no `l10n` folder; its texts are the
+  English keys), and `Scaling image … from (576,216) to (512,256)` for Sneak!'s eye atlas and detection markers and The
+  Combat Juice's 28×28 hit markers. The ten `Warning generated while parsing layouts of a(n) unnamed LuaWidget` at
+  each boot were already in the live Vanilla+ clients' logs before the pack.
+- Seen while testing, outside this pack: Advanced World Map's `widgets/markers.lua:177` calls
+  `string.format("%s_%s_%d_%d", …)` with non-integer coordinates. Lua 5.4 refuses that (`bad argument #4 to 'format'
+  (number has no integer representation)`), each time its map updates its markers.
+
+Frame cost (`perf.mjs` 60 s, `--discard`, `--query tier=mid`, SwiftShader, Seyda Neen walk; rasterization skipped, so
+these are the engine's and browser's CPU):
+
+| Catalog | fps | work p50 / p90 / p99 (ms) | frames over 50 ms of work | Lua (ms/frame) |
+| --- | --- | --- | --- | --- |
+| EN before the pack (live manifest), 2 runs | 21.07 / 21.01 | 11.2 / 15.1–16.1 / 31.9–39.1 | 8–9 | 0.52–0.62 |
+| EN, the four mods and player defaults, no `openmw.settings` | 19.44 | 11.9 / 16.8 / 38.9 | 8 | 1.18 |
+| EN with the pack and `openmw.settings`, 2 runs | 19.54 / 16.04 | 11.6–12.6 / 17.2–19.4 / 58.2–60.3 | 16–18 | 0.50–1.01 |
+| FR before | 20.93 | 11.0 / 14.9 / 28.4 | 8 | 0.62 |
+| FR with the pack | 18.76 | 11.9 / 19.8 / 70.0 | 26 | 0.78 |
+
+The mods cost about 0.7 ms of work per frame (−1.5 fps here) and leave the long frames as they were. The long frames
+doubled only in the runs with `openmw.settings`: 16–26 against 8–9, in four runs against four. A profiled run with the
+pack (`--profile`: 20.0 fps, 19 frames over 50 ms) found its longest frames (200–240 ms) inside OSG's draw
+(`RenderStage::draw` → `RenderLeaf::render` → `osg::State::apply` and its WebGL calls), not in Lua or in the AI and
+mechanics phases. None of the settings is a rendering one. `[Map] allow zooming` widens the local map's grid only
+above a one-cell view distance, and Orthros' boot value is 8192 units. Each run is also a new game whose weather is
+drawn at random, and rain adds drawing work that a discarded raster still pays on the CPU. So the cause is not
+established. Single runs vary as well (the second EN run with the pack: 16 fps). Measure on a real GPU, with the
+settings in halves, before changing them.
+
+Not checked: a real multiplayer session with the native peer, and the GPU cost of the flash shader's two passes, which
+run every frame while "Kill Flash On" is not "Never".
+
+**Wanted, not installed: Surefire and Quest Markers Plus.** Both are on Nexus Mods only. No GitHub or GitLab copy by
+their authors exists, and modding-openmw.com links only to Nexus. Surefire
+([59646](https://www.nexusmods.com/morrowind/mods/59646), CattoStar): Files tab, MAIN file "Surefire" version 2
+(2026-08-16, 30 KB); not the OSSC patch or the "(Broken)" PureMultiMark patch. It needs nothing else: Lua only, OpenMW
+0.51+; GLOBAL, NPC/CREATURE, PLAYER and MENU scripts. Quest Markers Plus
+([58701](https://www.nexusmods.com/morrowind/mods/58701), RPGKing117): MAIN file "Quest Markers Plus - English" 11.0.5
+(2026-05-30, 5.8 MB). It bundles a modified copy of Quest Guider Lite's scripts and quest data, and two replacement
+proximityTool scripts (`hudmHandler.lua`, `ui/mainMenu.lua`), and must load last. Its requirements are proximityTool
+([57286](https://www.nexusmods.com/morrowind/mods/57286), 1.3.1; also [GitHub](https://github.com/Diject/proximityTool)),
+Advanced World Map ([57881](https://www.nexusmods.com/morrowind/mods/57881), already in Vanilla+), Advanced World Map -
+Tracking ([58324](https://www.nexusmods.com/morrowind/mods/58324), 1.1.0; also
+[GitHub](https://github.com/Diject/advWMap-tracking)) and HUDMarkers - Detect spells
+([57112](https://www.nexusmods.com/morrowind/mods/57112), 3.6, Nexus only). The Quest Guider Lite it modifies is
+[57285](https://www.nexusmods.com/morrowind/mods/57285) (1.6.1 now; also [GitHub](https://github.com/Diject/quest_guider_lite)).
+Its bundled copy dates from May 2026, so check that it matches the Quest Guider Lite installed beside it.
 
 ### Headless simulation compatibility
 
