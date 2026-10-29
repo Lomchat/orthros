@@ -287,6 +287,12 @@ defaults (`qol-client-ui-compat`, `OrthrosQoLInputDefaults`) are unchanged. Vani
 window closes, or when it exits. A value set before that and never saved is given again at the next session. Once the
 window has closed after a player's choice, that choice is kept.
 
+A second root, `orthros-player-defaults-perf` (`--id`, 2026-10-29), turns off two post-processing passes by default:
+RUN!'s `SettingsRUN` `doBlurShader` (its radial blur while sprinting showed artifacts on the web engine until the
+sprint ended) and The Combat Juice's `SettingsCombatJuiceFlash` `FlashOn` (`Never`; otherwise its `cj_flash` shader
+stays in the chain at strength 0 and costs a full-screen pass every frame). Both can be turned back on in Options →
+Scripts.
+
 Checked in scratch (2026-10-29): unit tests (`tests/openmw-settings.test.js`, `tests/openmw-player-defaults.test.js`);
 the generated script run under Lua 5.4 against a mock storage (registered defaults given, a later choice kept,
 a value already moved off its default kept, nothing on a simulation peer); and Vanilla+ EN booted in Chromium through a
