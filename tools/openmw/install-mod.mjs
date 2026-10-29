@@ -38,6 +38,13 @@ for (const [i, rel] of roots.entries()) {
 }
 for (const name of wanted) if (!parts.some((p) => p.plugins.some((f) => f.toLowerCase() === name.toLowerCase()))) throw new Error(`Selected plugin not found: ${name}`);
 for (const part of parts) fs.cpSync(part.src, part.dest, { recursive: true, force: false, errorOnExist: true });
+// (readable by the services' users: cpSync keeps an archive's modes, and a file only root may read was served to nobody)
+const readable = (p) => {
+  const st = fs.statSync(p);
+  fs.chmodSync(p, st.mode | (st.isDirectory() ? 0o555 : 0o444));
+  if (st.isDirectory()) for (const n of fs.readdirSync(p)) readable(path.join(p, n));
+};
+for (const part of parts) readable(part.dest);
 mod.parts = parts.map(({ src, dest, ...p }) => p); mod.installed = true;
 if (values('--sha256')[0]) mod.sha256 = values('--sha256')[0];
 mod.installedAt = new Date().toISOString();

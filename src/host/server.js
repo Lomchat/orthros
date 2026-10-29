@@ -217,6 +217,16 @@ export function createServer(opts = {}) {
     return Number.isFinite(ims) && Math.floor(st.mtimeMs / 1000) * 1000 <= ims;
   };
   const sendNotModified = (res, h) => { const { 'Content-Length': _l, 'Content-Range': _r, ...rest } = h; res.writeHead(304, rest); res.end(); };
+  /**
+   * A file's bytes piped into a response: a read that fails (a file unreadable for the server's user, one gone between its
+   * stat and its open) ends that response, never the process — an unhandled stream error used to bring the whole server
+   * down for every game.
+   */
+  const pipeFile = (res, file, opts) => {
+    const s = fs.createReadStream(file, opts);
+    s.on('error', (e) => { console.warn(`[serve] ${file}: ${e.code ?? e.message}`); if (!res.headersSent) send(res, 500, 'unreadable'); else res.destroy(); });
+    return s.pipe(res);
+  };
   const sendFile = (req, res, file, mime, extra = {}) => {
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
     if (!st.isFile()) return send(res, 404, 'not found');
@@ -231,13 +241,13 @@ export function createServer(opts = {}) {
       if (start > end || start >= st.size) return send(res, 416, 'bad range', { 'Content-Range': `bytes */${st.size}` });
       res.writeHead(206, { ...h, 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1 });
       if (req.method === 'HEAD') return res.end();
-      if (link) { viaLink(res, end - start + 1, () => fs.createReadStream(file, { start, end }).pipe(res)); return; }
-      fs.createReadStream(file, { start, end }).pipe(res);
+      if (link) { viaLink(res, end - start + 1, () => pipeFile(res, file, { start, end })); return; }
+      pipeFile(res, file, { start, end });
       return;
     }
     res.writeHead(200, { ...h, 'Content-Length': st.size });
     if (req.method === 'HEAD') return res.end();
-    fs.createReadStream(file).pipe(res);
+    pipeFile(res, file);
   };
   /**
    * A brotli file sent whole as its decoded content (Content-Encoding: br). No Content-Length: a loader counting the
@@ -252,7 +262,7 @@ export function createServer(opts = {}) {
     if (notModified(req, st, etag)) return sendNotModified(res, h);
     res.writeHead(200, h);
     if (req.method === 'HEAD') return res.end();
-    fs.createReadStream(br).pipe(res);
+    pipeFile(res, br);
   };
   /**
    * An OpenMW lean package (openmw-lean.js: its brotli file `file`, `decoded` bytes), immutable: brotli only — a browser
@@ -1766,7 +1776,7 @@ export function createServer(opts = {}) {
         const pending = !!covers && !url.searchParams.has('full') && covers.pending(f);
         res.writeHead(200, { 'Content-Type': MIME[ext]?.startsWith('image/') ? MIME[ext] : 'image/jpeg', 'Cache-Control': pending ? 'no-cache' : 'public, max-age=86400', 'Cross-Origin-Resource-Policy': 'same-origin',
           ...(ext === '.svg' ? { 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" } : {}) }); // (an SVG opened by itself runs nothing)
-        fs.createReadStream(f).pipe(res);
+        pipeFile(res, f);
         return;
       }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
@@ -1859,7 +1869,7 @@ export function createServer(opts = {}) {
         const f = snapshots.open(m[1], lang, key, String(req.headers['accept-encoding'] ?? ''));
         if (!f || (f.meta.seed ?? null) !== seed) { snapshotJobs?.want(m[1], lang, key); return send(res, 404, 'none yet'); }
         res.writeHead(200, headers({ 'Content-Type': 'application/octet-stream', 'Content-Encoding': f.encoding, 'Content-Length': String(f.size), 'X-Snapshot-Bytes': String(f.meta.bytes), 'Cache-Control': 'no-cache' }));
-        fs.createReadStream(f.file).pipe(res);
+        pipeFile(res, f.file);
         return;
       }
       m = /^\/api\/profile-seed\/([^/]+)$/.exec(p);

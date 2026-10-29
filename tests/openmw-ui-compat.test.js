@@ -109,6 +109,8 @@ test('OpenMW installs a mod data root holding only Lua scripts or l10n texts (an
   t.after(() => fs.rmSync(game, { recursive: true, force: true }));
   const src = path.join(game, 'src'), tool = new URL('../tools/openmw/install-mod.mjs', import.meta.url).pathname;
   fs.mkdirSync(path.join(src, 'l10n/Mod'), { recursive: true }); fs.writeFileSync(path.join(src, 'l10n/Mod/fr.yaml'), 'key: "valeur"\n');
+  // (an archive extracted with owner-only modes: installed readable by everyone, the services' users included)
+  fs.chmodSync(path.join(src, 'l10n/Mod/fr.yaml'), 0o600); fs.chmodSync(path.join(src, 'l10n/Mod'), 0o700);
   fs.mkdirSync(path.join(game, 'versions/one'), { recursive: true });
   fs.writeFileSync(path.join(game, 'manifest.json'), JSON.stringify({ versions: [{ id: 'one', dir: 'one', openmw: { engine: 'engine', files: ['Game.esm'],
     mods: [{ id: 'texts-fr', name: 'Texts', installed: false }] } }] }));
@@ -118,4 +120,6 @@ test('OpenMW installs a mod data root holding only Lua scripts or l10n texts (an
   assert.equal(mod.installed, true);
   assert.deepEqual(mod.parts[0], { dir: 'mods/texts-fr-0', source: '.', sentinel: 'l10n/Mod/fr.yaml', plugins: [], archives: [], files: 1, bytes: 14 });
   assert.equal(fs.readFileSync(path.join(game, 'versions/one/mods/texts-fr-0/l10n/Mod/fr.yaml'), 'utf8'), 'key: "valeur"\n');
+  assert.equal(fs.statSync(path.join(game, 'versions/one/mods/texts-fr-0/l10n/Mod/fr.yaml')).mode & 0o444, 0o444);
+  assert.equal(fs.statSync(path.join(game, 'versions/one/mods/texts-fr-0/l10n/Mod')).mode & 0o555, 0o555);
 });

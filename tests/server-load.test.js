@@ -193,3 +193,29 @@ test('learned sessions bounded: the least recently active out', async (t) => {
   const st = JSON.parse((await get(base, '/api/netstats', '')).body).server;
   assert.ok(st.sessions <= 3, `${st.sessions} sessions kept`);
 });
+
+test('a game file that cannot be read ends its own answer, never the server', async (t) => {
+  const { base, game } = await start(t);
+  fs.writeFileSync(path.join(game, 'Data', 'locked.dat'), Buffer.alloc(4096, 7));
+  fs.writeFileSync(path.join(game, 'Data', 'fine.dat'), Buffer.alloc(100, 1));
+  // (the read fails as it does for a file the server's user may not open: EACCES from the stream, after the stat)
+  const original = fs.createReadStream;
+  fs.createReadStream = function (file, ...rest) {
+    if (String(file).endsWith('locked.dat')) {
+      const s = original.call(fs, __filename_dummy(), ...rest);
+      process.nextTick(() => s.destroy(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })));
+      return s;
+    }
+    return original.call(fs, file, ...rest);
+  };
+  t.after(() => { fs.createReadStream = original; });
+  const warn = console.warn; console.warn = () => {}; t.after(() => { console.warn = warn; });
+  const locked = await get(base, '/game/g/Data/locked.dat', '').catch((e) => ({ error: e.code }));
+  assert.ok(locked.error || locked.status >= 500 || locked.body.length < 4096, 'the unreadable file is not served');
+  const ranged = await new Promise((resolve) => http.get(base + '/game/g/Data/locked.dat', { headers: { range: 'bytes=0-99' } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); res.on('error', () => resolve('reset')); }).on('error', () => resolve('reset')));
+  assert.ok(ranged === 'reset' || ranged >= 200, 'a range of it ends too');
+  const fine = await get(base, '/game/g/Data/fine.dat', '');
+  assert.equal(fine.status, 200, 'the server still answers');
+  assert.equal(fine.body.length, 100);
+});
+const __filename_dummy = () => new URL(import.meta.url).pathname;
