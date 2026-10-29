@@ -17,3 +17,4 @@ __pycache__/
 
 # Local secrets (Nexus account, keys): never committed
 /.env
+.charon/
