@@ -14,3 +14,6 @@ __pycache__/
 /STATUS.md
 /STATUS-history.md
 /AGENTS.md
+
+# Local secrets (Nexus account, keys): never committed
+/.env
