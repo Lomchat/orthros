@@ -108,10 +108,16 @@ for f in (build / 'openmw.wasm', build / 'openmw.js', build / 'openmw.data', pla
 ver = h.hexdigest()[:12]
 if out.exists(): shutil.rmtree(out)
 out.mkdir(parents=True)
+def link(src, dst):
+    # (hard links within one file system; across file systems — a live release under data/ as the base — symlinks)
+    try: os.link(src, dst)
+    except OSError as e:
+        if e.errno != 18: raise
+        os.symlink(os.path.abspath(src), dst)
 for f in base.iterdir():
     if f.name in ('e', 'index.html', 'release.json', 'engine-version.txt'): continue
     # (the base release's other files linked, never written: the portal, notices, the asset pack)
-    (shutil.copytree(f, out / f.name, copy_function=os.link) if f.is_dir() else os.link(f, out / f.name))
+    (shutil.copytree(f, out / f.name, copy_function=link) if f.is_dir() else link(f, out / f.name))
 e = out / 'e' / ver; e.mkdir(parents=True)
 for n in ('openmw.js', 'openmw.wasm', 'openmw.data', 'openmw.js.symbols'): shutil.copy2(build / n, e / n)
 shutil.copy2(play / 'streamfs.js', e / 'streamfs.js')
