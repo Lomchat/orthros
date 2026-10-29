@@ -294,6 +294,60 @@ scratch gateway and a scratch server. The engine's `/settings.cfg` held the bloc
 `[orthros] player defaults given: SettingsOMWControls/alwaysRun, …` with no error. A two-client multiplayer session with
 a simulation peer was not run.
 
+### Combat, stealth and magicka mods (2026-10-29)
+
+The owner asked for these mods in Vanilla+ (EN and FR), together with the settings above. Each is pinned to a commit,
+because none of the GitHub repositories has a release or a tag. Its receipt lists every installed file with its SHA-256,
+and so does the commit archive. The receipts, archives and Orthros' sources (`install-all.sh`, `check-catalog.mjs`, the
+roots below, the declarations) are kept in `data/installers/openmw/vanilla-plus-pack-20261029/`.
+
+| Mod | Version, commit | Installed | Role |
+| --- | --- | --- | --- |
+| [Max Yari's Script Services](https://github.com/MaxYari/MaxYarisScriptServicesOpenMW) | 2, `a543aad` | the repository minus the author's `.nexusignore` | Library of the two below (`I.MSS`: combat targets, damage listeners, interaction ray) |
+| [State-Based Magicka Regen](https://gitlab.com/modding-openmw/state-based-magicka-regen) | 1.3.8, `78eebcc` (MIT) | `00 Core` (the author's `pkg.sh`) | Magicka regenerates over time for every actor (Willpower, Intelligence, fatigue, encumbrance; waiting and resting) |
+| [The Combat Juice](https://github.com/MaxYari/TheCombatJuiceOpenMW) | 1.2, `a5a8ae1` | minus `.nexusignore` | Hit markers and sounds, camera shake, impact and enchanted-hit lights, kill slow motion, kill flash |
+| [Sneak!](https://github.com/MaxYari/SneakIsGoodNowOpenMW) | 2.0, `78023c4` | minus `.nexusignore` and the unused SVG sources | Gradual detection shown by an eye and markers, leaning, NPC wander pacing; its `.omwaddon` sets 3 GMSTs |
+
+The roots are installed in this order: Script Services first, because the others call its interface from their actors'
+scripts. LuaPhysics and OpenMW Impact Effects, both optional for The Combat Juice, are not installed. Without them no gear
+is knocked loose (it stays on the corpse) and there are no sparks. Sneak! needs OMWControls' Toggle Sneak, which
+`orthros-player-defaults` gives (above). None of the four uses `table.maxn`, `setfenv` or another LuaJIT-only call.
+SuperSlider6's `math.log10` exists since engine r9.
+
+**Multiplayer.** The world rules are the simulation peer's. Each mod's gameplay scripts run there as shipped: Script
+Services whole, SBMR's GLOBAL and the CUSTOM actor script it attaches, and The Combat Juice's and Sneak!'s NPC/CREATURE and
+GLOBAL scripts. Their MENU and PLAYER entry points are guarded (`combat-ui-compat`, `guard-client-ui.mjs mod:MENU,PLAYER
+--id combat-ui-compat`). Sneak!'s `.omwaddon` stays enabled in its own root, so every peer loads the same GMSTs. Sneak!'s
+detection runs on each player's own client: it ends the player's sneak once an NPC has noticed, and from then on the
+engine's own detection decides.
+
+The Combat Juice's global script changes the simulation time scale (its kill slow motion). It also creates and moves
+light objects for its impact flashes, and those objects are saved in the world. In a shared world, where
+`openmw.mp.isEnabled()` is true on a joined client and on the peer, `orthros-overlay-all-pack` (a copy of `global.lua`
+loaded after the author's) does neither. On a client the slow motion would only desynchronise that player from the
+world. Solo is unchanged. The kill flash, the markers and the camera shake are local to the client, so they stay on.
+
+**French.** `orthros-overlay-fr-pack` (FR only) routes the hard-coded English of The Combat Juice's settings renderers,
+Sneak!'s select items and slider labels, and Sneak!'s tutorial window through the mods' l10n contexts, with the English
+text as the key. `orthros-l10n-fr-pack` (FR only, the last root) holds `fr.yaml` for `SBMR`, `CombatJuice` and
+`SneakIsGoodNow`, in the French masters' terms. Script Services has no texts.
+
+`guard-client-ui.mjs` now accepts declarations written with the author's separators (`\`) and spaces, as in
+`scripts\MaxYari\combat juice\player.lua`. The wrapper requires them by module name, so a path with any other dot is
+refused. With a type selection, a selected mod's content files (`.esp`, `.omwaddon`) stay enabled in its own root.
+
+Checked in scratch: `check-catalog.mjs` passed on real copies of both games after `install-all.sh`. It checks the
+manifest rules, that nothing else changed, every installed file against its receipt, the overlays and their originals,
+each guard line, the settings against `settings-default.cfg`, and `luac -p` on every Lua file. Solo EN and FR booted in
+Chromium through scratch gateways, with no Lua error. The kill-flash shader sits in the post-processing chain from the
+start, and the frame stays drawn on WebGL2. Toggle sneak opened Sneak!'s tutorial, in French in the FR version. A boot
+with `OPENMW_MP_SYSTEM` set in the browser engine ran only the scripts kept for the peer, with no error, in Seyda Neen.
+The overlay was run under Lua 5.4 with stubs. In solo it gives the author's time-scale dips and lights; in a shared
+world it gives neither.
+
+Not checked: a real multiplayer session with the native peer, a kill in play (slow motion, flash, lights) and frame
+cost. The flash shader's two passes run every frame while "Kill Flash On" is not "Never", so measure them on a real GPU.
+
 ### Headless simulation compatibility
 
 The pinned engine identifies its native simulation peers through `openmw.mp.isSystem()`.

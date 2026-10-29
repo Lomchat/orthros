@@ -76,6 +76,29 @@ test('OpenMW guards only the selected declaration types of a mod with gameplay s
     + 'CUSTOM: scripts/inv/equip.lua\nCONTAINER: scripts/inv/container.lua\nARMOR, BOOK: scripts/inv/item.lua\n');
 });
 
+test('OpenMW guards declarations written with the author\'s separators and spaces; a mod\'s content file stays in its root', (t) => {
+  const f = fixture(t), declaration = 'PLAYER: scripts\\Max\\combat juice\\player.lua\r\nNPC, CREATURE: scripts\\Max\\combat juice\\actor.lua\r\n'
+    + 'MENU: scripts\\Max\\combat juice\\menu.lua\r\n';
+  const mod = addMod(f, 'juice', declaration), file = path.join(f.game, 'manifest.json');
+  fs.writeFileSync(path.join(mod.data, 'Juice.omwaddon'), 'TES3');
+  const spec = JSON.parse(fs.readFileSync(file)); spec.versions[0].openmw.mods.at(-1).parts[0].plugins.unshift('Juice.omwaddon');
+  fs.writeFileSync(file, JSON.stringify(spec));
+  // a whole-mod guard still refuses a content file: only script-only addons are UI-only
+  assert.throws(() => guardClientUi(f.game, 'one', ['juice']), /Only script-only UI addons/);
+  assert.deepEqual(guardClientUi(f.game, 'one', ['juice:MENU,PLAYER'], { id: 'juice-ui-compat' }), { plugins: [mod.plugin], wrappers: 2 });
+  const mods = JSON.parse(fs.readFileSync(file)).versions[0].openmw.mods, root = path.join(f.game, 'versions/one/mods/juice-ui-compat-0');
+  assert.deepEqual(mods.find((m) => m.id === 'juice').parts[0].plugins, ['Juice.omwaddon'], 'the content file stays enabled in its own root');
+  assert.equal(fs.readFileSync(path.join(mod.data, mod.plugin), 'utf8'), declaration, 'the author file is unchanged');
+  assert.equal(fs.readFileSync(path.join(root, mod.plugin), 'utf8'), 'PLAYER: scripts/orthros_juice_ui/0.lua\n'
+    + 'NPC, CREATURE: scripts\\Max\\combat juice\\actor.lua\nMENU: scripts/orthros_juice_ui/1.lua\n');
+  assert.match(fs.readFileSync(path.join(root, 'scripts/orthros_juice_ui/0.lua'), 'utf8'), /require\("scripts\.Max\.combat juice\.player"\)/);
+  assert.match(fs.readFileSync(path.join(root, 'scripts/orthros_juice_ui/1.lua'), 'utf8'), /require\("scripts\.Max\.combat juice\.menu"\)/);
+  assert.equal(openmwProblem({ engine: 'engine', files: ['Game.esm'], mods }), null);
+  // a path whose module name would resolve elsewhere (a dot in a folder) is refused
+  addMod(f, 'dotted', 'PLAYER: scripts/v1.2/player.lua\n');
+  assert.throws(() => guardClientUi(f.game, 'one', ['dotted'], { id: 'dotted-ui-compat' }), /Unsupported UI script declaration/);
+});
+
 test('OpenMW refuses a declaration that mixes guarded and kept types, before changing the installation', (t) => {
   const f = fixture(t); addMod(f, 'mixed', 'PLAYER, GLOBAL: scripts/mixed/both.lua\n');
   const manifest = fs.readFileSync(path.join(f.game, 'manifest.json'));
