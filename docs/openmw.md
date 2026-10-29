@@ -1693,6 +1693,105 @@ Checked: no Lua error or fault in any run; keys (Space jumps, E activates); `fra
 interior (`--interior "Seyda Nihyn, auberge d'Arrile"` in French) within noise. `morrowind` and `morrowind-vanilla-plus`
 manifests moved to r14 (backups `backups/manual/*-manifest-before-r14-20261029.json`).
 
+### Light copies sharpened without hitches (2026-10-29)
+
+The round-2 hunt (Vanilla+ FR, `perf.mjs --discard --profile`, 8 profiles) found half of all hitch time, 30-490 ms
+stretches in the first 15-20 s in the world, in the light copies' reload (`EmscriptenLoop::reloadUpdated` →
+`ImageManager::reloadImage`). Its profile: ~90% `fetchSync` — the file whole in the data worker, not in the page, its
+read waiting for the worker's answer —; decoding, the translucency scan and the page's copy ~10%. A first fix
+(reloads paced by the frame's time, a file read only once its bytes are in the page) removed the hitches but left the
+textures blurry 45-90 s instead of < 20 s (one file a frame at the 2-3 fps SwiftShader draws at): rejected. Now:
+- The page (`GameData.realInPage`, src/vfs/data-client.js; `?realinpage=0`: the previous path) tells the engine a file
+  only once its bytes are in the page, fetched in the background first (docs/slow-network.md "Reloads paced"); only the
+  files a reload will read (the engine reloads in place, the file's last load read light), and no new fetch while the
+  engine's reloads told and not done (`__orthrosTexReloads.pending`, plus the files told since its last report:
+  streamfs.js `reloadBacklog`) and the fetches under way make 8 — their bytes stay in the page until the engine reads
+  them. The engine's read waits for nothing; the pace the page tells files at (2 per 100 ms) is unchanged. A reload's
+  read that waited all the same is counted (`__streamfsStats.realMissed`: its bytes left the page first;
+  `realRaced`: the file loaded anew while its fetch was under way, read through `fetchSync` as before).
+- The engine (`OPENMW_ORTHROS_TEXRELOADPACE`, `engine.cpp`/`imagemanager.cpp`; `=0`: 4 MB a frame, copied): a frame
+  starts no new reload past max(1.5 ms, 10% of the frames' time — the time between ticks averaged, a fifth of the way at
+  each; a gap over 1 s, a loading screen or a hidden tab, changes nothing) nor 4 MB, at least one file; the decoded data
+  handed to the cached image instead of copied (only when nothing else holds the decoded image: else copied). Over 20
+  fps the engine's cap stays above the page's pace (at least one file a frame: more than the 20 files a second the page
+  tells), so the page, not the engine, sets how fast the light copies sharpen, as before; slower, it is 10% of the
+  frames' time (in the runs below, at 2-3 fps, they sharpened at least as fast in the day view).
+
+Measured (one build of r14 + the round-2 patches + this, before the backlog, the counters and the averaged frame time
+above; 2 runs each, 30 s, load 23-48 from other projects; old = `?realinpage=0&omwenv=OPENMW_ORTHROS_TEXRELOADPACE=0`):
+main-thread reload time per run 0.89-1.11 s → 0.12-0.15 s, its `fetchSync` 0.77-0.97 s → 0; its longest stretch
+48-127 ms → 8-10 ms; work p99 run 60.3/61.5 → 34.1/45.1 ms, glide 63.7/63.3 → 45.1/45.9; frames over 50 ms run 14/13 →
+4/4, glide 14/15 → 6/8; data stalls 809-1033 → 104-280 ms. `frame-compare.mjs` (day, old path the reference): at the
+default 20 s settle the same picture (mean abs 0.05, 0% over 24); at 8 s the new path is the closer one to the settled
+picture (mean abs 0.40 against 0.65 and 1.62 for the old path's two captures). Night and interior views not run.
+
+Open: every measure above is SwiftShader's 2-3 fps (a frame's reload cap ~30-50 ms). At 60 fps the cap is 1.5 ms with
+a floor of one file, so each file told still costs one whole decode (not measured alone: the longest reload stretch,
+8-10 ms at 2-3 fps, may hold several files) plus its re-upload at the next apply (not in these profiles: SwiftShader's upload is not the GPU's),
+in one frame, up to 20 times a second while light copies sharpen (the first minute, moving through exteriors). The
+distribution of reload time per frame (frames over 4 and 8 ms) was not taken — the runs' profiles were discarded — and
+the Iris Xe check at 60 fps is to do: the hitches are much smaller, not shown gone at 60 fps.
+
+### Lua's collector beside the frame: `OPENMW_ORTHROS_LUAGCPACE` (round 2, 2026-10-29)
+
+With the Lua thread (`OPENMW_ORTHROS_LUATHREAD`), Lua's collector is the incremental one (upstream's mode), its
+automatic steps stopped: the Lua thread steps it after `update()`, while the main thread still culls and draws
+(`LuaManager::orthrosGcStep`), instead of the generational collector's 16-108 ms collections inside `update()` and
+inside the main thread's own Lua calls. A cycle starts once the heap doubled since the last one (Lua's pause; re-based
+when a game is loaded or started, so the first cycle does not follow the emptied heap of `clear()`); behind Lua's own
+pacing with no drawing time left, at most 1 ms of 1 KB steps per frame, 4 ms past twice the heap the cycle began with,
+everything owed past three times it or 3/4 of `[Lua] memory limit`. `[Lua] gc steps per frame` is ignored (logged).
+`?perfstats=1` adds to `window.__omwPhase`: `luagc` (the steps' ms, apart from `luaupdate`; with the switch off they
+are inside `luaupdate`, so compare `luaupdate + luagc`, or `luawait`), `luaheapkb`, `luapeakkb`, `luagccyclepeakkb`,
+`luagccycles`, `luagccapped`, `luagcforced`, `luagcmaxcatchup`, `luagcmaxwait`; the log has a line at each cycle's
+beginning and end (heap, threshold, wall time, the main thread's longest wait during it).
+What is collected is the same, but not when: finalizers (`__gc`) and weak tables' entries now go once per full cycle
+(about every 1.5-3 min at the heap's doubling, against young collections every ~5 s before) — C++ resources held by
+Lua userdata (an unclosed `vfs.open` handle) live longer, and a mod that saves a weak table's contents in `onSave` or
+relies on `__gc` timing can see more entries. Peak heap is ~2x live with ≥ 2 ms of drawing time per frame (native
+simulation against the tree's Lua 5.4.7), up to ~3.5-7x with none under heavy churn. `=0` restores the previous
+collector and its per-frame step.
+
+### Chrome's code cache off the main thread (2026-10-29)
+
+The hitch hunt's "(program)" stretches (main thread busy with no script frame: 3.8/min in steady play, 78 ms mean, up to
+203 ms, 10.8 % of the hitch time) were traced (CDP Tracing, `v8.wasm` + `toplevel` + `devtools.timeline`, one session
+from the page's load). Not V8's lazy compilation: it is on (`wasm.CompileLazy`, Liftoff on the calling thread — 12,700
+functions, 1.2 s on the main thread), but 95 % of it falls in the loading; in play 10-18 ms over 40 s, never a burst
+over ~17 ms. Not tier-up: TurboFan compiles on thread-pool threads. One share of them is Chrome's WebAssembly code
+cache. The glue streams the module from its fetched answer (`instantiateStreaming`, `application/wasm`, immutable
+content URL: eligible), and Chrome then works the cache on the thread that compiled: each time V8 has ~1 MB of new
+optimized code, the whole module is serialized again (`wasm.SerializeModule`, 20-55 ms on a thread-pool thread) and
+its 18-25 MB copy handed to the cache by a main-thread task without script (`OnMoreFunctionsCanBeSerialized`,
+v8_wasm_response_extensions.cc: 21-57 ms here, growing with the cache): 14 of them in a first visit's first minute (8
+in the loading, 6 in the first 30 s of play), 2 on a later visit (one of them in play), and a cache hit's
+`wasm.Deserialize` 270-320 ms on the main thread at the boot. Measured on dev-perf (SwiftShader `--discard --glide
+8000,0`, a persistent profile, Playwright's request routing off — it disables the HTTP cache, so every measurement
+so far was a first visit). These commits (21-57 ms) are not the hunt's longest stretches (123 and 203 ms): the rest of
+"(program)" is V8's major GC finalization (47-64 ms ~8 s after the world's entry in every run, JS GC), Oilpan sweeps
+(14-35 ms), a data-client message whose continuation copies 16-31 ms (the data reads'), and the profiler itself
+(`CpuProfiler::StartProfiling`, 160 ms at a profile's start).
+
+`src/ports/openmw/wasm-code-cache.js` (put in the engine page's head ahead of its `Module` literal and glue,
+`withWasmStream`) gives the glue `Module.instantiateWasm`: the module compiled by `compileStreaming` in a worker
+(`wasm-compile-worker.js`, started as the script runs, so its script and isolate are ready while the glue downloads;
+kept for the page's life) from the same URL, posted to the page and instantiated there (the pthreads get it from the
+page as before: one module, its code and tier-up shared). Chrome's cache is then read and written on the worker's
+thread. A worker that fails: the module streamed in the page as before; an instantiation that fails, or no module
+anywhere: `Module.onAbort` (the page's fatal overlay), as the glue's own abort. `?omwenv=OPENMW_ORTHROS_WASMWORKER=0`:
+the glue's own path. Measured (40 s from the world's entry, same profile): main-thread code-cache commit tasks in play
+6 (cold) / 1-2 (warm) → 0, both in the worker; a later visit still hits the cache (deserialized in the worker in 44 ms,
+11,744 functions optimized from the start; main-thread lazy compile 143 ms against 1,155 cold), early frames as with
+the cache in the page. What this takes off the main thread: the commits, ~50 ms once or twice in a returning
+session's play, six in the first 30 s of play after each new release, and the cache hit's deserialization at the
+boot — a small part of the hunt's "(program)" time, not its 10.8 %; the hunt's metric ("(program)" stretches over
+25 ms a minute, long frames in play) was not measured again before/after. A cache written by the page's compile is
+not read by the worker's (another key): the first visit after this change is a cold one, so it ships with the next
+engine release (its new content URL makes that visit cold anyway). Chrome's cache could also be refused outright (the
+module streamed from a `Response` the page builds: no URL, no cache): 0 commits, but every visit cold (+1.1 s
+main-thread Liftoff in the loading, ~3 s more TurboFan in the first 40 s, first 10 s of play p50 12.0 / p90 23.2 ms
+against 9.8 / 15.0) — not kept.
+
 ### The engine's language and dialogue topic colours (2026-10-28)
 
 OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own

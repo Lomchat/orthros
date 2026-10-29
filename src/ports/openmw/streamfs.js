@@ -30,7 +30,7 @@
   const app = location.pathname.slice(0, location.pathname.indexOf('/app/') + 5), name = decodeURIComponent(app.split('/')[3]);
   // (predicted: the place the page expects the player's save to load, and what it asked for it — anticipate)
   // (boot: the boot's announced scripts — announceBoot —, null before)
-  const S = { data: null, session: Math.random().toString(36).slice(2, 14), byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [], predicted: null, hinted: false, packaged: false, started: false, boot: null };
+  const S = { data: null, session: Math.random().toString(36).slice(2, 14), byPath: new Map(), byKey: new Map(), byNode: new WeakMap(), byEnginePath: new Map(), legacy: [], predicted: null, hinted: false, packaged: false, started: false, boot: null, reloadQ: { queued: 0, seen: 0 } };
   /** The learned places of this installation (the server's: POST a load's announced batch, GET a place's set). */
   const placesUrl = `/api/places/${encodeURIComponent(name)}`;
   /** the most entries of a predicted place's set asked for (the server bounds its sets; a bad answer does not flood the link) */
@@ -69,10 +69,21 @@
    * —, set by the engine page's preRun (__omwLruDefault), 128 MB before.
    */
   const cacheBytes = () => ((window.__omwLruDefault | 0) || 128) << 20;
+  /**
+   * The engine's reloads told and not done yet (GameData's realBacklog): the queue it reported at its last frame that
+   * reloaded (globalThis.__orthrosTexReloads, engine.cpp reloadUpdated), and the files queued since (S.reloadQ: reset
+   * when that report changes — a file queued twice counted twice until then).
+   */
+  function reloadBacklog() {
+    const s = globalThis.__orthrosTexReloads, done = s ? s.updated + s.skipped : 0, q = S.reloadQ;
+    if (done !== q.seen) { q.seen = done; q.queued = 0; }
+    return (s?.pending ?? 0) + q.queued;
+  }
+
   /** The game data opened (once): its worker started, the version's tree, store and learned order's list asked. */
   function open() {
     if (S.data) return S.data;
-    S.data = new M.GameData({ name, session: S.session, prefetch: 'first-read', orderAtOpen: true, cacheBytes: cacheBytes(), log: (t) => console.warn('[streamfs]', t) });
+    S.data = new M.GameData({ name, session: S.session, prefetch: 'first-read', orderAtOpen: true, cacheBytes: cacheBytes(), realInPage: pageParam('realinpage') !== '0', realBacklog: reloadBacklog, log: (t) => console.warn('[streamfs]', t) });
     // (observed at once, as openPortData's: a failed open before the engine's first need() — its download seconds long —
     // is not an unhandled rejection, the engine page's log opened on it; holdRun reports it at that need())
     S.data.ready.catch(() => {});
@@ -103,7 +114,8 @@
       const inWorld = setInterval(() => { if (M.inWorld(window)) { clearInterval(inWorld); S.data.mark('playable'); } }, 500);
       // (a texture read light, its file here now: loaded again in place by an engine that can — the Orthros build's
       // orthros_file_updated, docs/slow-network.md "Engines that reload in place" —, that load choosing the file itself;
-      // the rest of a load under way keeps the light copy: repick)
+      // the rest of a load under way keeps the light copy: repick. Told with its bytes in the page — GameData.realInPage,
+      // ?realinpage=0 on this page or the play page: told as they come, the engine's read waiting for the worker)
       const canReload = () => typeof Module !== 'undefined' && !!Module._orthros_file_updated;
       S.data.onReal((keys) => {
         const update = canReload() ? (p) => Module.ccall('orthros_file_updated', 'number', ['string'], [p]) : null;
@@ -111,7 +123,7 @@
           const at = S.byKey.get(k), h = at && S.byPath.get(at);
           if (!h || !S.data.lightRead(h)) continue;
           S.data.repick(h);
-          try { if (update) { update(at); S.data.reloaded(); } } catch (e) { console.warn('[streamfs] reload', at, e?.message ?? e); }
+          try { if (update) { if (update(at)) { reloadBacklog(); S.reloadQ.queued++; } S.data.reloaded(); } } catch (e) { console.warn('[streamfs] reload', at, e?.message ?? e); }
         }
       });
       // (an engine that reloads in place: its loads read the light copies first on every link that is not fast, their

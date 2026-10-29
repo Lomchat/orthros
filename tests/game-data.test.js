@@ -1100,7 +1100,8 @@ test('a big announced load of an engine that reloads in place reads light first 
 
 test('the files made sharp in place reach the page\'s listeners a few at a time, the latest first, only those read light (a burst of reloads is a hitch)', () => {
   const fake = { onmessage: null, postMessage() {}, terminate() {} };
-  const data = new GameData({ name: 'v', worker: fake });
+  // (told as they come: realInPage off — the next test tells them with their bytes in the page)
+  const data = new GameData({ name: 'v', worker: fake, realInPage: false });
   try {
     const got = []; data.onReal((keys) => got.push(keys));
     // (5 textures read light — the link not fast —, then thousands of other files whole: the learned order, a download)
@@ -1116,6 +1117,71 @@ test('the files made sharp in place reach the page\'s listeners a few at a time,
     fake.onmessage({ data: { real: ['v\na.dds'] } }); data.holdWatch();
     assert.equal(got.length, 3, 'told once');
     data.reloaded(3); assert.equal(data.snapshot().reloaded, 3);
+  } finally { data.close(); }
+});
+
+test('the files made sharp in place reach the listeners with their bytes in the page: fetched first, a few under way at once, the engine\'s read then waits for nothing', async () => {
+  const asked = [], fake = { onmessage: null, terminate() {}, postMessage: (m) => { if (m.read) asked.push(m.read); } };
+  const data = new GameData({ name: 'v', worker: fake, cacheBytes: 64 << 20, reloads: true });
+  try {
+    clearInterval(data.holdTimer); // (holdWatch called by the test)
+    const got = []; data.onReal((keys) => got.push(...keys));
+    const answer = (r) => fake.onmessage({ data: { id: r.id, bytes: new Uint8Array(r.len).fill(7) } });
+    const task = () => new Promise((r) => setTimeout(r, 0));
+    // (12 textures of 1 MiB read light, then here whole: 8 MiB = 1/8 of the page's bytes under way at most)
+    const read = Array.from({ length: 12 }, (_, i) => { const h = data.fileAs('v', `t${i}.dds`, 1 << 20); h.light = 40000; data.pick(h, 0); return h; });
+    fake.onmessage({ data: { real: read.map((h) => 'v\n' + h.path) } });
+    data.holdWatch();
+    assert.deepEqual(asked.map((r) => r.path), ['t11.dds', 't10.dds'], 'the latest first, REAL_PER_TICK a tick');
+    assert.equal(got.length, 0, 'not told before its bytes are here');
+    for (let i = 0; i < 5; i++) data.holdWatch();
+    assert.equal(asked.length, 8, 'at most 8 MiB under way');
+    for (const r of asked.splice(0, 2)) answer(r);
+    await task();
+    assert.deepEqual(got, ['v\nt11.dds', 'v\nt10.dds']);
+    const out = new Uint8Array(1 << 20), syncs = data.stats.syncFetches;
+    data.repick(read[11]); data.read(read[11], out, 0, 1 << 20, 0);
+    assert.equal(data.stats.syncFetches, syncs, 'read from the page'); assert.equal(out[1000], 7);
+    data.holdWatch(); assert.equal(asked.length, 8, 'two more under way');
+    while (asked.length) { answer(asked.shift()); await task(); data.holdWatch(); }
+    assert.equal(got.length, 12); assert.equal(data.snapshot().realFetches, 12);
+    assert.equal(data.snapshot().realMissed, 0); assert.equal(data.snapshot().realRaced, 0);
+  } finally { data.close(); }
+});
+
+test('the files made sharp in place: none fetched that no reload reads, none past the engine\'s backlog, a reload\'s read that waited all the same counted', async () => {
+  const asked = [], fake = { onmessage: null, terminate() {}, postMessage: (m) => { if (m.read) asked.push(m.read); } };
+  let backlog = 0;
+  const data = new GameData({ name: 'v', worker: fake, cacheBytes: 64 << 20, reloads: true, realBacklog: () => backlog });
+  try {
+    clearInterval(data.holdTimer);
+    const got = []; data.onReal((keys) => got.push(...keys));
+    const answer = (r) => fake.onmessage({ data: { id: r.id, bytes: new Uint8Array(r.len).fill(7) } });
+    const task = () => new Promise((r) => setTimeout(r, 0));
+    const read = Array.from({ length: 6 }, (_, i) => { const h = data.fileAs('v', `t${i}.dds`, 1 << 20); h.light = 40000; data.pick(h, 0); return h; });
+    backlog = 7;
+    fake.onmessage({ data: { real: read.map((h) => 'v\n' + h.path) } });
+    // (t5 loaded itself since: no reload reads it — told, not fetched)
+    read[5].repick = true; data.pick(read[5], 0); assert.equal(data.lightRead(read[5]), false);
+    data.holdWatch();
+    assert.deepEqual(got, ['v\nt5.dds'], 'told at once'); assert.deepEqual(asked.map((r) => r.path), ['t4.dds'], 'the backlog and those under way: 8 at most');
+    data.holdWatch(); assert.equal(asked.length, 1);
+    answer(asked[0]); await task(); assert.deepEqual(got, ['v\nt5.dds', 'v\nt4.dds']);
+    // (its bytes gone from the page before the engine read them: its read waits, counted)
+    data.cache.clear(); data.repick(read[4]);
+    data.fetchSync = (h) => { data.stats.syncFetches++; data.keep(h, 0, new Uint8Array(h.size)); }; // (the worker's answer, as if waited for)
+    data.read(read[4], new Uint8Array(16), 0, 16, 0);
+    assert.equal(data.snapshot().realMissed, 1);
+    // (a load of the file itself while its fetch is under way: realRaced)
+    backlog = 0; data.holdWatch(); assert.deepEqual(asked.slice(1).map((r) => r.path), ['t3.dds', 't2.dds']);
+    read[3].repick = true; data.pick(read[3], 0); assert.equal(read[3].as, null, 'the file itself chosen: realHere');
+    data.read(read[3], new Uint8Array(16), 0, 16, 0);
+    assert.equal(data.snapshot().realRaced, 1);
+    // (an engine that does not reload in place: told as they come, nothing fetched)
+    data.reloadsInPlace = false; const before = asked.length; data.holdWatch();
+    assert.equal(asked.length, before); assert.ok(got.includes('v\nt1.dds') && got.includes('v\nt0.dds'));
+    for (const r of asked.splice(1)) answer(r);
+    await task();
   } finally { data.close(); }
 });
 

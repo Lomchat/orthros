@@ -76,6 +76,21 @@ const BIG_HOLD_MS = 5000;
  * is a hitch) — only those the page read light (the others reload nothing: not queued, the queue never outgrows them).
  */
 const REAL_PER_TICK = 2;
+/**
+ * The files made sharp in place reach the listeners with their bytes in the page (realInPage, by default): each one
+ * fetched from the worker in the background first, its listeners told once it is here — an engine's reload then reads
+ * it without the page's thread waiting (OpenMW's reloads read their files through fetchSync, the worker's answer
+ * waited for: ~90% of their time, 30-490 ms stretches in the first seconds in the world). At most this many files under
+ * way at once, and 1/REAL_FETCH_SHARE of the page's bytes (always one: the others wait in realQ), and no new one while
+ * the engine's reloads told and not done yet (o.realBacklog) and those under way are REAL_FETCHES or more — their bytes
+ * stay in the page until the engine reads them, the next frames. Only the files a reload will read are fetched (an
+ * engine that reloads in place, the file's last load read light): the others are told as they come. A reload's read
+ * that waited all the same is counted (realMissed: its bytes left the page before it; realRaced: a load of the file
+ * itself while its fetch was under way — realHere says it is here from the worker's word — read through fetchSync, as
+ * before realInPage).
+ */
+const REAL_FETCHES = 8;
+const REAL_FETCH_SHARE = 8;
 /** The page's game data is quiet (GameData.quiet) after this long without a read waiting for the network. */
 export const QUIET_MS = 3000;
 
@@ -99,7 +114,8 @@ export class GameData {
   /**
    * The data of version `name` (and the versions it requires), its worker started and its files listed.
    * @param {{ name: string, session?: string, lang?: string|null, bw?: number, prefetch?: 'startup'|'start'|'first-read'|'none',
-   *   cacheBytes?: number, memBytes?: number, cacheBlocks?: number, reloads?: boolean, log?: (text: string) => void,
+   *   cacheBytes?: number, memBytes?: number, cacheBlocks?: number, reloads?: boolean, realInPage?: boolean,
+   *   realBacklog?: () => number, log?: (text: string) => void,
    *   tree?: object, manifest?: object, orderAtOpen?: boolean }} o
    *   tree, manifest: the version's /api/tree and /api/manifest when the page holds them (not asked again: game-data.js
    *   openVersion); orderAtOpen: the learned order's list asked at the open, its bytes not (a page that opens its data
@@ -107,7 +123,9 @@ export class GameData {
    *   lang: the game's language (its sessions' own launch set: the startup set, and the mark it adds to — launch-set.js)
    *   prefetch: when the learned order starts loading in the background — with the startup set (startup() then start()),
    *   at the engine's start, or at its first read (an engine that downloads itself first: its download comes first);
-   *   reloads: the engine loads a file again in place (see reloads)
+   *   reloads: the engine loads a file again in place (see reloads); realInPage: the files made sharp in place told
+   *   with their bytes in the page (true by default, REAL_FETCHES); realBacklog: how many files told the engine has not
+   *   reloaded yet (0 when not given)
    */
   static async open(o) {
     const g = new GameData(o);
@@ -155,6 +173,9 @@ export class GameData {
     /** the files the page read light, here whole now, not delivered to the listeners yet (onReal: REAL_PER_TICK at a
      * time, the latest first); lightReads: the keys of the files whose last load read the light copy (pick) */
     this.realQ = []; this.lightReads = new Set();
+    /** those files told with their bytes in the page (REAL_FETCHES; o.realInPage false: told as they come — the page's
+     * ?realinpage=0), and those under way: { files, bytes } */
+    this.realInPage = o.realInPage ?? true; this.realFetching = { files: 0, bytes: 0 }; this.realBacklog = o.realBacklog ?? (() => 0);
     /** the announced batches not posted yet (want: posted together at the wait, or once the page's thread yields —
      * wantFlush), and the current wait window's verdict: its countable bytes (bigBatch), big or not */
     this.wantPending = []; this.wantTimer = null; this.win = { bytes: 0, big: false };
@@ -254,7 +275,7 @@ export class GameData {
   /**
    * The files that have a light copy and are here whole now, as they come: `fn(keys)` (`name\npath` lower case) — an
    * engine that can load a file again (a texture in place) does it for those whose light copy it read (lightRead), after
-   * repick(h).
+   * repick(h). Their bytes are in the page by then (realInPage: the engine's read does not wait).
    */
   onReal(fn) { this.listeners.real.push(fn); }
 
@@ -374,10 +395,45 @@ export class GameData {
    */
   holdWatch() {
     // (the latest first: the files the player saw last)
-    if (this.realQ.length) { const keys = this.realQ.splice(-REAL_PER_TICK).reverse(); for (const f of this.listeners.real) f(keys); }
+    if (this.realQ.length) {
+      if (this.realInPage) this.realFetch();
+      else this.tellReal(this.realQ.splice(-REAL_PER_TICK).reverse());
+    }
     let told = null;
     for (const [id, a] of this.pending) if (a.held && this.goes !== a.at) { a.held = false; (told ??= []).push([id, 0]); }
     if (told) this.worker.postMessage({ held: told });
+  }
+  /** The files made sharp in place `keys`, to the page's listeners (onReal). */
+  tellReal(keys) { for (const f of this.listeners.real) f(keys); }
+  /**
+   * The next REAL_PER_TICK files of realQ (the latest first) into the page — fetched from the worker in the background,
+   * within REAL_FETCHES and the engine's backlog —, each told to the listeners once its bytes are here (or its fetch
+   * failed: its read waits and says why, as before). A file no reload reads (the page's engine does not reload in place,
+   * or the file's last load read the file itself: the listeners skip it) told at once, nothing fetched. Counted:
+   * realFetches, realFetchMs (the time from the start of their fetches to their telling). h.realFetch: 'fetching',
+   * 'told' (fetched, told), 'reading' (its reload's load started: pick) — realMissed, realRaced (read).
+   */
+  realFetch() {
+    const f = this.realFetching, s = this.stats, backlog = Math.max(0, this.realBacklog() || 0);
+    for (let n = 0; n < REAL_PER_TICK && this.realQ.length; n++) {
+      const key = this.realQ.at(-1), h = this.files.get(key);
+      if (!h || !this.reloadsInPlace || !this.lightRead(h) || this.inPage(h, 0, h.size)) { this.realQ.pop(); this.tellReal([key]); continue; }
+      const size = h.size;
+      if (backlog + f.files >= REAL_FETCHES) break;
+      if (f.files > 0 && f.bytes + size > this.budget / REAL_FETCH_SHARE) break;
+      this.realQ.pop();
+      f.files++; f.bytes += size; h.realFetch = 'fetching';
+      const t0 = performance.now();
+      let ok = false;
+      // (not the engine's progress, nor one of its waits: fetchAsync itself, in the background, the file's own bytes)
+      this.fetchAsync(h, 0, h.size, true, this.goes, true)
+        .then(() => { ok = true; }, (e) => this.log(`${h.path}: ${e?.message ?? e}`))
+        .finally(() => {
+          f.files--; f.bytes -= size; s.realFetches = (s.realFetches ?? 0) + 1; s.realFetchMs = (s.realFetchMs ?? 0) + performance.now() - t0;
+          h.realFetch = ok ? 'told' : null;
+          this.tellReal([key]);
+        });
+    }
   }
   /** The link is thin (measured below THIN_BPS, net-link.js). */
   get thin() { return Atomics.load(this.ctrl, 9) === 1; }
@@ -405,7 +461,7 @@ export class GameData {
    * net: the link as the worker last told it (NetLink.snapshot, every second: rate, waits, loading, the background's
    * bytes by producer — bgBy), null before.
    */
-  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, bigLoads: s.bigLoads, bigFiles: s.bigFiles, bigBytes: s.bigBytes, reloaded: s.reloaded, openMs: this.times.open, readyMs: this.times.ready, mountedMs: this.times.mounted, content: this.content, contentLoadingMs: this.times.contentLoading, contentLoadedMs: this.times.contentLoaded, net: this.net ?? null }; }
+  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, bigLoads: s.bigLoads, bigFiles: s.bigFiles, bigBytes: s.bigBytes, reloaded: s.reloaded, realFetches: s.realFetches ?? 0, realFetchMs: Math.round(s.realFetchMs ?? 0), realMissed: s.realMissed ?? 0, realRaced: s.realRaced ?? 0, openMs: this.times.open, readyMs: this.times.ready, mountedMs: this.times.mounted, content: this.content, contentLoadingMs: this.times.contentLoading, contentLoadedMs: this.times.contentLoaded, net: this.net ?? null }; }
 
   // ---------------------------------------------------------------- light copies
 
@@ -473,6 +529,8 @@ export class GameData {
     if (this.contentFile(h)) { const v = this.contentPick(h); h.as = v === h ? null : v; h.at = now; return v; }
     if (position === 0 && this.newLoad(h, now)) {
       h.repick = false;
+      // (a file fetched for its reload: this load is that reload's; the next one is not — realMissed)
+      if (h.realFetch === 'told') h.realFetch = 'reading'; else if (h.realFetch === 'reading') h.realFetch = null;
       const pin = h.pin && now - h.pin.at <= PIN_MS ? h.pin : null;
       h.pin = null;
       const real = pin ? pin.real || this.realHere.has(h.name + '\n' + h.path.toLowerCase()) : this.loadsReal(h);
@@ -746,7 +804,12 @@ export class GameData {
       const p = Math.floor(pos / PIECE), key = h.id * PER_FILE + p;
       let piece = this.cache.get(key);
       if (piece) { this.cache.delete(key); this.cache.set(key, piece); this.stats.hits++; }
-      else { this.fetchSync(h, p, end); piece = this.cache.get(key); if (!piece) throw new Error(`${h.path}: bytes at ${p * PIECE} missing`); }
+      else {
+        // (a reload's file read through the worker all the same: its bytes left the page before it, or its load came
+        // while realFetch was bringing them — counted, realInPage)
+        if (h.realFetch) { if (h.realFetch === 'fetching') this.stats.realRaced = (this.stats.realRaced ?? 0) + 1; else this.stats.realMissed = (this.stats.realMissed ?? 0) + 1; }
+        this.fetchSync(h, p, end); piece = this.cache.get(key); if (!piece) throw new Error(`${h.path}: bytes at ${p * PIECE} missing`);
+      }
       // (a content file read as itself while the content loads — here whole —: learned as its light copy's read, what
       // that load reads — a content file's own reads learned are those after it: server.js CONTENT_REAL)
       if (piece.fresh) { piece.fresh = false; if (h.src === undefined) this.used.push([h.name, h.content && this.content === 'light' ? `${LIGHT_DIR}/${h.path}` : h.path, p]); }

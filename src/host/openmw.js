@@ -127,6 +127,17 @@ export const withFrameMeter = (html) => html
   .replace('setStatus: (t)=>{ if(t){', 'setStatus: (t)=>{ window.orthrosStatus?.(t); if(t){');
 
 /**
+ * The engine page's module compiled in a worker (src/ports/openmw/wasm-code-cache.js, put in the page's head ahead of the
+ * engine's Module literal and glue — the signed-in page's cloud.js goes before it, which touches neither — and given to
+ * the glue as Module.instantiateWasm): Chrome's WebAssembly code cache read and written on that worker's thread, not the
+ * page's main thread (docs/openmw.md "Chrome's code cache off the main thread"). The glue's own path when the script did
+ * not load or ?omwenv=OPENMW_ORTHROS_WASMWORKER=0 (its hook then undefined).
+ */
+export const withWasmStream = (html) => html
+  .replace('<head>', '<head><script src="/src/ports/openmw/wasm-code-cache.js"></script>')
+  .replace('var Module = {', 'var Module = {\n   instantiateWasm: window.orthrosInstantiateWasm,');
+
+/**
  * The engine build's files from the release's own URL (/engines/<release>/e/<hash>/, immutable) instead of beneath
  * each installation's: one browser copy for every version of a game, never downloaded again.
  */

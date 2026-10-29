@@ -1154,9 +1154,17 @@ batch's sizes and the engine's ability only):
   reloads them over frames, not dozens in one. The other files the worker reports whole (the learned order, the whole
   download, a place's files, plain reads: hundreds a minute on a fast link) reload nothing and are not queued — the
   queue never grows past the textures shown light. The page's choice for the next loads (`realHere`) is updated at
-  once for all. `GameData.reloaded()` counts the reloads done.
+  once for all. `GameData.reloaded()` counts the reloads done. Each file is told with its bytes in the page
+  (`realInPage`, by default; the page's `?realinpage=0`: as they come): fetched from the worker in the background first,
+  at most `REAL_FETCHES` (8) files and 1/8 of the page's bytes under way, and none started while the engine's reloads
+  told and not done yet (`realBacklog`, the page's: OpenMW's streamfs.js `reloadBacklog`) and those under way make 8 —
+  an engine's reload then reads it without the page's thread waiting (OpenMW's reloads waited for the worker through
+  `fetchSync`: ~90% of their time; docs/openmw.md "Light copies sharpened without hitches"). A file no reload reads (an
+  engine that does not reload in place, yet; the file loaded itself since) is told as it comes, nothing fetched.
 - **Counted** (`GameData.snapshot()`, OpenMW's `window.__streamfsStats`): `bigLoads`, `bigFiles`, `bigBytes` (the real
-  bytes left for later), `reloaded`; the upgrades' bytes in `net.bgBy.upgrade`.
+  bytes left for later), `reloaded`, `realFetches` / `realFetchMs` (the files brought into the page before their reload), `realMissed` / `realRaced` (a
+  reload's read that waited all the same: its bytes left the page before it; the file loaded anew while its fetch was
+  under way); the upgrades' bytes in `net.bgBy.upgrade`.
 
 Tests: `tests/game-data.test.js` (a big batch light first and pinned, a preload of the moment light, small loads, places,
 `prefer`, `lightFirst(false)`, an engine that cannot reload, the hold's end; a window of two lists each under the budget;
