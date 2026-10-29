@@ -220,6 +220,80 @@ measured on localhost; a generic engine fix belongs in `QuadTreeWorld::accept` f
 multiplayer engine watches a container 15 s only after it opens (an item moved later is lost on reopening — not from
 these mods); Advanced World Map's `format` error and QuickSelect's "Layer already exists" predate them.
 
+### Recommended settings and player defaults (2026-10-29)
+
+The owner asked for every OpenMW option recommended for a modern feel, on, in Vanilla+ only: the original Morrowind cards
+keep the engine's own rules. They are defaults: a player's own saved choice wins.
+
+**A version's settings** (manifest `openmw.settings`: `{ section: { key: value } }`, OpenMW's `settings-default.cfg`
+names; `openmwProblem` accepts only names of letters, digits and spaces, and values that are a boolean, a number or plain
+text, so nothing else reaches the settings file or the page's script). Two places read them:
+- the engine page: appended after Orthros' own defaults (`withSettingsDefaults`, the version's last: a key of both is the
+  version's) to `/settings.cfg`, the engine's additional defaults. The player's `settings.cfg`, written by the Options
+  menu (its Best attack and Subtitles switches among them), still wins.
+- the native simulation peers of the version's multiplayer gateway: `tools/openmw/server.mjs` writes them to
+  `<state>/sim-settings.cfg` at each start and mounts it, read-only, at `/usr/local/etc/openmw/settings.cfg`
+  (`OPENMW_SIM_SETTINGS`): the image's global config dir (its `defaults.bin`, no `settings.cfg` of its own), the first of a
+  peer's two config dirs. OpenMW reads a `settings.cfg` in every config dir but the last as additional defaults. The last
+  is the world's `peer-config/`: the gateway rewrites its `settings.cfg` (frame pacing, shadows and water off…) at every
+  world start, and its keys still win. The AI and combat rules computed on the peer (followers, collisions, NPC movement,
+  hand-to-hand) are therefore the same as on the players' pages. Checked in the gateway container started by `server.mjs`:
+  the peer binary logs `Loading settings file: /usr/local/etc/openmw/settings.cfg` between `defaults.bin` and its
+  `peer-config` file, and an out-of-range value there stops it (`Invalid int [Game] show owned setting value`).
+  Interface settings are inert on a peer that draws nothing.
+
+An unknown key in additional defaults is silently ignored, and an out-of-range value stops both the browser engine and
+the peer. `tests/openmw-settings.test.js` therefore checks every installed manifest's `openmw.settings`: each key must
+exist in the engine source's `settings-default.cfg`, with a value of the same type. Vanilla+ (EN and FR) declares
+these keys, all verified in production engine r13's `defaults.bin` and in the gateway image's:
+
+| Section | Key | Value | Feel |
+| --- | --- | --- | --- |
+| GUI | `subtitles` | true | Subtitles for voiced lines |
+| Map | `allow zooming` | true | Zoom on the local and world maps |
+| Game | `best attack` | true | Always the best attack type (chop, slash, thrust) |
+| Game | `show owned` | 3 | Owned objects tinted: tooltip and crosshair |
+| Game | `show effect duration` | true | Remaining time of magic effects and lights |
+| Game | `show enchant chance` | true | Success chance when self-enchanting |
+| Game | `show melee info` | true | Weapon reach and speed |
+| Game | `show projectile damage` | true | Arrow and bolt damage bonus |
+| Game | `smooth movement` | true | Smoother movement of the player and NPCs |
+| Game | `turn to movement direction` | true | Lower body turns with diagonal movement |
+| Game | `smooth animation transitions` | true | Blended animation changes |
+| Game | `swim upward correction` | true | Swimming slightly upward from the view line |
+| Game | `followers attack on sight` | true | Companions join a fight at once (rule) |
+| Game | `NPCs avoid collisions` | true | Actors walk around each other (rule) |
+| Game | `trainers training skills based on base skill` | true | Trainers offer their real skills (rule) |
+| Game | `rebalance soul gem values` | true | Filled soul gems valued by their soul (MCP formula; rule) |
+| Game | `strength influences hand to hand` | 2 | Strength scales fists (MCP formula), werewolves excepted (rule) |
+
+`strength influences hand to hand` is 2 rather than 1, because werewolf claws already carry `WerewolfClawMult` and a
+werewolf's high Strength would multiply them again. `[Game] uncapped damage fatigue` stays **off**: it removes the cap
+on Damage Fatigue, so a cheap spell drives fatigue far below zero and keeps any actor knocked down. That makes it a
+stun-lock that breaks combat balance and is not a modern-feel option.
+
+**The player's Lua settings** (Options → Scripts: OMWControls, OMWCamera) live in the player's storage
+(`player_storage.bin`, in the player's profile), not in `settings.cfg`. The engine's MENU scripts register them with
+their defaults before any game starts. `tools/openmw/player-defaults.mjs <game> <version> <defaults.json>` generates
+an Orthros data root (`orthros-player-defaults`) whose PLAYER script, on a browser client only (it returns at once on
+a simulation peer, `openmw.mp.isSystem()`), gives each entry once per player profile. It sets the value only when the
+current one is still the registered default (or unset), then records the entry in the `OrthrosPlayerDefaults` storage
+section. A later choice of the player's, or a value already moved off the default, is never overwritten. Each entry has
+its own record, so a later root may add entries. Never remove the root: its records name its entries. The earlier input
+defaults (`qol-client-ui-compat`, `OrthrosQoLInputDefaults`) are unchanged. Vanilla+ gives `SettingsOMWControls`
+`alwaysRun` and `toggleSneak`, and `SettingsOMWCameraThirdPerson` `viewOverShoulder`, `autoSwitchShoulder`, `move360`,
+`slowViewChange` (smooth view change) and `previewIfStandStill`, all `false` by default in the engine's
+`scripts/omw/input/settings.lua` and `camera/settings.lua`. The engine writes the player's storage when the Options
+window closes, or when it exits. A value set before that and never saved is given again at the next session. Once the
+window has closed after a player's choice, that choice is kept.
+
+Checked in scratch (2026-10-29): unit tests (`tests/openmw-settings.test.js`, `tests/openmw-player-defaults.test.js`);
+the generated script run under Lua 5.4 against a mock storage (registered defaults given, a later choice kept,
+a value already moved off its default kept, nothing on a simulation peer); and Vanilla+ EN booted in Chromium through a
+scratch gateway and a scratch server. The engine's `/settings.cfg` held the block, and the engine log showed
+`[orthros] player defaults given: SettingsOMWControls/alwaysRun, …` with no error. A two-client multiplayer session with
+a simulation peer was not run.
+
 ### Headless simulation compatibility
 
 The pinned engine identifies its native simulation peers through `openmw.mp.isSystem()`.

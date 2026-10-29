@@ -11,6 +11,15 @@ export const OPENMW_STATE_DIR = '/var/lib/orthros-openmw';
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
 const MOD_ID = /^[a-z0-9][a-z0-9-]{0,54}$/;
 const safePath = (s) => typeof s === 'string' && s.length > 0 && !s.includes('\\') && s.split('/').every((p) => p && p !== '.' && p !== '..');
+// OpenMW's settings file names (settings-default.cfg: sections and keys of letters, digits and spaces) and the values a
+// version may give them (booleans, numbers, words, lists, colours, paths): never a line, a section or a comment of their
+// own, nor markup in the page script that carries them (withSettingsDefaults).
+const SETTING_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9 ]{0,62}[A-Za-z0-9])?$/;
+const SETTING_TEXT = /^(?:[A-Za-z0-9.,_/-](?:[A-Za-z0-9 .,_/-]{0,198}[A-Za-z0-9.,_/-])?)?$/;
+const settingText = (v) => typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) ? String(v) : typeof v === 'string' ? v : null;
+const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+const settingsValid = (s) => plainObject(s) && Object.keys(s).length <= 64 && Object.entries(s).every(([section, kv]) => SETTING_NAME.test(section)
+  && plainObject(kv) && Object.keys(kv).length <= 256 && Object.entries(kv).every(([k, v]) => SETTING_NAME.test(k) && SETTING_TEXT.test(settingText(v) ?? '\n')));
 export function openmwProblem(o) {
   if (!o || typeof o !== 'object' || Array.isArray(o) || !ID.test(o.engine ?? '')) return 'openmw.engine doit nommer une release';
   if (o.example !== undefined && typeof o.example !== 'boolean') return 'openmw.example doit être un booléen';
@@ -20,6 +29,7 @@ export function openmwProblem(o) {
   if (o.mods !== undefined && (!Array.isArray(o.mods) || !o.mods.every((m) => m && MOD_ID.test(m.id ?? '') && typeof m.name === 'string' && typeof m.installed === 'boolean') || new Set(o.mods.map((m) => m.id)).size !== o.mods.length)) return 'openmw.mods doit lister les mods et leur état, avec des ids distincts';
   if ((o.mods ?? []).some((m) => m.parts !== undefined && (!Array.isArray(m.parts) || !m.parts.every((p, i) => p && p.dir === `mods/${m.id}-${i}` && safePath(p.sentinel) && Array.isArray(p.plugins) && p.plugins.every(safePath) && Array.isArray(p.archives) && p.archives.every(safePath))))) return 'openmw.mods.parts invalide';
   if (o.languageVersions !== undefined && (!o.languageVersions || Array.isArray(o.languageVersions) || typeof o.languageVersions !== 'object' || !Object.entries(o.languageVersions).every(([code, id]) => /^[a-z]{2}$/.test(code) && typeof id === 'string' && ID.test(id)))) return 'openmw.languageVersions invalide';
+  if (o.settings !== undefined && !settingsValid(o.settings)) return 'openmw.settings doit être { section: { réglage: valeur } } (noms et valeurs des réglages d\'OpenMW : lettres, chiffres, espaces ; valeur booléenne, nombre ou texte simple)';
   if (o.multiplayer !== undefined) {
     const mp = o.multiplayer;
     if (!mp || !Number.isInteger(mp.port) || mp.port < 1024 || mp.port > 65535) return 'openmw.multiplayer.port invalide';
@@ -181,16 +191,40 @@ export function openmwLocales(man) {
   return [...new Set([...codes, 'en'])].join(',');
 }
 
-/** The settings Orthros adds to the engine page's defaults for a version: { section: { key: value } }. */
-export const openmwSettingsDefaults = (man) => ({
-  General: { 'preferred locales': openmwLocales(man) },
-  // dialogue topics coloured by what they hold (an answer of the speaker's own, or already read), in OpenMW's default
-  // colours ([GUI] color topic specific / exhausted); the Options menu has no switch for it
-  GUI: { 'color topic enable': 'true' },
-});
+/**
+ * A version's own settings defaults (manifest `openmw.settings`: { section: { key: value } }, OpenMW's settings-default.cfg
+ * names — a game's rules such as [Game] best attack, or its interface such as [GUI] subtitles), their values as a
+ * settings file writes them (true → 'true', 3 → '3'). {} without them, or when they are not valid (openmwProblem).
+ */
+export function openmwVersionSettings(man) {
+  const s = man?.openmw?.settings;
+  if (!settingsValid(s)) return {};
+  return Object.fromEntries(Object.entries(s).map(([section, kv]) => [section, Object.fromEntries(Object.entries(kv).map(([k, v]) => [k, settingText(v)]))]));
+}
+
+/**
+ * The settings Orthros adds to the engine page's defaults for a version: { section: { key: value } } — Orthros' own for
+ * every version, then the version's (openmwVersionSettings: a key of both is the version's).
+ */
+export function openmwSettingsDefaults(man) {
+  const out = {
+    General: { 'preferred locales': openmwLocales(man) },
+    // dialogue topics coloured by what they hold (an answer of the speaker's own, or already read), in OpenMW's default
+    // colours ([GUI] color topic specific / exhausted); the Options menu has no switch for it
+    GUI: { 'color topic enable': 'true' },
+  };
+  for (const [section, kv] of Object.entries(openmwVersionSettings(man))) out[section] = { ...out[section], ...kv };
+  return out;
+}
+
+/** Settings { section: { key: value } } as the lines of an OpenMW settings file (a section without keys: none). */
+export const openmwSettingsCfg = (sections) => Object.entries(sections).filter(([, kv]) => Object.keys(kv).length)
+  .map(([s, kv]) => `[${s}]\n${Object.entries(kv).map(([k, v]) => `${k} = ${v}\n`).join('')}`).join('');
 
 /** The page writing its settings defaults (settingsCfg: [Video] … [General], [Post Processing]) to /settings.cfg. */
 const SETTINGS_WRITE = "FS.writeFile('/settings.cfg', settingsCfg);";
+/** A string as a script literal inside the page's HTML (no `</script>` can end it). */
+const scriptLiteral = (s) => JSON.stringify(s).replace(/</g, '\\u003c');
 /**
  * The engine page's settings defaults with a version's (openmwSettingsDefaults(man)) after its own. They are appended to
  * what the page writes to /settings.cfg, the first of the engine's config dirs. OpenMW reads that file as additional
@@ -200,11 +234,27 @@ const SETTINGS_WRITE = "FS.writeFile('/settings.cfg', settingsCfg);";
  * wins over them. A line in the page's log lists them.
  */
 export function withSettingsDefaults(html, man) {
-  const sections = Object.entries(openmwSettingsDefaults(man));
-  const cfg = sections.map(([s, kv]) => `[${s}]\n${Object.entries(kv).map(([k, v]) => `${k} = ${v}\n`).join('')}`).join('');
-  const said = sections.map(([s, kv]) => Object.entries(kv).map(([k, v]) => `[${s}] ${k} = ${v}`).join('; ')).join('; ');
-  return html.replace(SETTINGS_WRITE, () => `FS.writeFile('/settings.cfg', settingsCfg + ${JSON.stringify('\n' + cfg)}); append(${JSON.stringify('[orthros] settings defaults: ' + said)});`);
+  const sections = openmwSettingsDefaults(man), cfg = openmwSettingsCfg(sections);
+  const said = Object.entries(sections).flatMap(([s, kv]) => Object.entries(kv).map(([k, v]) => `[${s}] ${k} = ${v}`)).join('; ');
+  return html.replace(SETTINGS_WRITE, () => `FS.writeFile('/settings.cfg', settingsCfg + ${scriptLiteral('\n' + cfg)}); append(${scriptLiteral('[orthros] settings defaults: ' + said)});`);
 }
+
+/**
+ * Where the multiplayer gateway image's simulation peers read additional settings defaults: the native engine's global
+ * config dir (/usr/local/etc/openmw — its defaults.bin and openmw.cfg; no settings.cfg in the image), the first of a
+ * peer's two config dirs. The gateway starts each peer with `--config <world>/peer-config --replace config` and rewrites
+ * that dir's settings.cfg (its pacing: framerate limit, shadows and water off…) at every world start; being the last
+ * config dir, it is the peer's own settings file and its keys win. OpenMW reads settings.cfg from every config dir but
+ * the last as additional defaults (components/settings/settings.cpp), over defaults.bin. tools/openmw/server.mjs mounts
+ * openmwSimSettings(man) there, read-only.
+ */
+export const OPENMW_SIM_SETTINGS = '/usr/local/etc/openmw/settings.cfg';
+/**
+ * The simulation peers' settings defaults: the version's own (openmwVersionSettings — the same rules as its players':
+ * combat, AI, prices…; an interface one is inert on a peer that draws nothing), not Orthros' page defaults.
+ */
+export const openmwSimSettings = (man) => '# Orthros: the version\'s settings defaults (manifest openmw.settings), written by tools/openmw/server.mjs at each start.\n'
+  + openmwSettingsCfg(openmwVersionSettings(man));
 
 export const withSharedEngine =(html, release) => html.replace('("e/" + __ENGINE_VER + "/")', `(${JSON.stringify(`/engines/${release}/e/`)} + __ENGINE_VER + "/")`);
 

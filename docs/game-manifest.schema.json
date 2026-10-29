@@ -50,6 +50,18 @@
                 "description": "Monde de démonstration libre inclus dans le moteur (solo, files vide)."
               },
               "languageVersions": {"type": "object", "propertyNames": {"pattern": "^[a-z]{2}$"}, "additionalProperties": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"}, "description": "Localizations backed by separate installation IDs and native simulations; same game only. Exposed in the launcher as one language selector."},
+              "settings": {
+                "type": "object",
+                "maxProperties": 64,
+                "propertyNames": { "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9 ]{0,62}[A-Za-z0-9])?$" },
+                "additionalProperties": {
+                  "type": "object",
+                  "maxProperties": 256,
+                  "propertyNames": { "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9 ]{0,62}[A-Za-z0-9])?$" },
+                  "additionalProperties": { "oneOf": [{ "type": "boolean" }, { "type": "number" }, { "type": "string", "pattern": "^(?:[A-Za-z0-9.,_/-](?:[A-Za-z0-9 .,_/-]{0,198}[A-Za-z0-9.,_/-])?)?$" }] }
+                },
+                "description": "Réglages par défaut de la version, { section: { réglage: valeur } } aux noms de settings-default.cfg d'OpenMW (ex. Game: { \"best attack\": true }). Ajoutés à ceux de la page du moteur après ceux d'Orthros ; le settings.cfg du joueur (menu Options) l'emporte. Les mêmes pour les pairs de simulation natifs du multijoueur (règles identiques). Une clé inconnue est ignorée sans un mot et une valeur hors de sa plage arrête le moteur : tests/openmw-settings.test.js vérifie les manifestes installés contre settings-default.cfg. docs/openmw.md « Recommended settings »."
+              },
               "multiplayer": {
                 "type": "object",
                 "required": [
