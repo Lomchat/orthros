@@ -1,14 +1,16 @@
 // The engine page's settings defaults a version adds (src/host/openmw.js withSettingsDefaults, put into the page by
-// src/host/server.js): OpenMW's locales in the version's language first, English after, and dialogue topics coloured —
-// appended to what the page writes to /settings.cfg, under the player's own settings.cfg.
+// src/host/server.js): OpenMW's locales in the version's language first, English after, dialogue topics coloured, then
+// the version's own (manifest openmw.settings) — appended to what the page writes to /settings.cfg, under the player's
+// own settings.cfg; and the version's own for its native simulation peers (openmwSimSettings, tools/openmw/server.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/host/server.js';
-import { openmwLocales, openmwSettingsDefaults, withSettingsDefaults } from '../src/host/openmw.js';
+import { OPENMW_SIM_SETTINGS, openmwLocales, openmwProblem, openmwSettingsDefaults, openmwSimSettings, openmwVersionSettings, withSettingsDefaults } from '../src/host/openmw.js';
 import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
+import { DEFAULT_GAMES_DIR } from '../src/host/game-catalog.js';
 
 /**
  * OpenMW's settings file reader (components/settings/parser.cpp, SettingsFileParser::loadSettingsFile) on a text: a
@@ -57,7 +59,8 @@ function written(pageScript, vars = {}) {
   return { cfg: files.get('/settings.cfg'), log };
 }
 
-const ENGINE_DEFAULTS = '[GUI]\ncolor topic enable = false\ncolor topic specific = 0.45 0.5 0.8 1\n[General]\nanisotropy = 4\npreferred locales = en\ngmst overrides l10n = true\n';
+const ENGINE_DEFAULTS = '[GUI]\ncolor topic enable = false\ncolor topic specific = 0.45 0.5 0.8 1\nsubtitles = false\n[General]\nanisotropy = 4\npreferred locales = en\ngmst overrides l10n = true\n'
+  + '[Game]\nbest attack = false\nshow owned = 0\nstrength influences hand to hand = 0\nNPCs avoid collisions = false\n[Map]\nallow zooming = false\n[Video]\nframerate limit = 300\n';
 const PAGE = "var settingsCfg = '[Video]\\nwindow mode = 2\\n' + '[General]\\n' + 'anisotropy = 16\\n';\n"
   + "FS.writeFile('/settings.cfg', settingsCfg);\nappend('[cfg] render resolution');";
 
@@ -97,6 +100,89 @@ test('the page\'s defaults with the version\'s after them: its own [General] key
   assert.equal(engineSettings(ENGINE_DEFAULTS, en)('[GUI] color topic enable'), 'true');
 });
 
+test('a version\'s own settings: OpenMW\'s names and plain values only, after Orthros\' own, under the player\'s choices', () => {
+  const base = { engine: 'v1', files: ['Morrowind.esm'] };
+  const settings = { Game: { 'best attack': true, 'show owned': 3, 'NPCs avoid collisions': true }, GUI: { subtitles: true },
+    Map: { 'allow zooming': true }, General: { 'preferred locales': 'de,en' }, 'Post Processing': { 'chain': 'bloom,adjustments' } };
+  assert.equal(openmwProblem({ ...base, settings }), null);
+  assert.equal(openmwProblem({ ...base, settings: {} }), null);
+  assert.equal(openmwProblem({ ...base, settings: { Game: { 'swim upward coef': -0.5 } } }), null);
+  for (const bad of [[], 'x', null, { Game: [] }, { Game: { 'best attack': null } }, { Game: { 'best attack': { a: 1 } } },
+    { Game: { 'best attack': ['true'] } }, { Game: { 'best attack': Infinity } }, { Game: { 'a': 1e21 } },
+    { 'Game]\n[Video': { a: 1 } }, { '': { a: 1 } }, { ' Game': { a: 1 } }, { Game: { 'a = 1\nb': 1 } }, { Game: { 'a=b': 1 } },
+    { Game: { '# a': 1 } }, { Game: { 'best attack ': true } }, { Game: { a: 'x\ny' } }, { Game: { a: '</script><script>alert(1)' } },
+    { Game: { a: ' padded' } }, { Game: { a: 'x'.repeat(201) } }, { Game: { ['k'.repeat(65)]: 1 } }, { Game: { __proto__x: 1 } }])
+    assert.ok(openmwProblem({ ...base, settings: bad }), JSON.stringify(bad));
+  assert.deepEqual(openmwVersionSettings({ openmw: { ...base, settings } }), {
+    Game: { 'best attack': 'true', 'show owned': '3', 'NPCs avoid collisions': 'true' }, GUI: { subtitles: 'true' },
+    Map: { 'allow zooming': 'true' }, General: { 'preferred locales': 'de,en' }, 'Post Processing': { chain: 'bloom,adjustments' } });
+  assert.deepEqual(openmwVersionSettings({ openmw: { ...base, settings: { Game: { a: 'x\ny' } } } }), {}, 'invalid: none');
+  assert.deepEqual(openmwVersionSettings({}), {});
+  // (Orthros' own first, the version's after them: a key of both is the version's)
+  const man = { languages: ['fr'], openmw: { ...base, settings } };
+  assert.deepEqual(openmwSettingsDefaults(man), {
+    General: { 'preferred locales': 'de,en' }, GUI: { 'color topic enable': 'true', subtitles: 'true' },
+    Game: { 'best attack': 'true', 'show owned': '3', 'NPCs avoid collisions': 'true' }, Map: { 'allow zooming': 'true' },
+    'Post Processing': { chain: 'bloom,adjustments' } });
+  const { cfg, log } = written(withSettingsDefaults(PAGE, man));
+  assert.equal(cfg.split('[General]').length - 1, 2, 'the page\'s [General], then Orthros\' — one block each');
+  assert.match(log[0], /^\[orthros\] settings defaults: \[General\] preferred locales = de,en; \[GUI\] color topic enable = true; \[GUI\] subtitles = true; \[Game\] best attack = true; /);
+  const get = engineSettings(ENGINE_DEFAULTS, cfg);
+  assert.equal(get('[Game] best attack'), 'true');
+  assert.equal(get('[Game] show owned'), '3');
+  assert.equal(get('[GUI] subtitles'), 'true');
+  assert.equal(get('[Map] allow zooming'), 'true');
+  assert.equal(get('[GUI] color topic enable'), 'true');
+  assert.equal(get('[Game] strength influences hand to hand'), '0', 'a key the version does not name: the engine\'s');
+  // (the player's own settings.cfg — the Options menu's Best attack, Subtitles — still wins; their file without them: the version's)
+  const player = engineSettings(ENGINE_DEFAULTS, cfg, '[Game]\nbest attack = false\n[GUI]\nsubtitles = false\n');
+  assert.equal(player('[Game] best attack'), 'false');
+  assert.equal(player('[GUI] subtitles'), 'false');
+  assert.equal(player('[Game] show owned'), '3');
+  // (a value that could end the page's script is refused, so the page gets none of an invalid set)
+  assert.equal(written(withSettingsDefaults(PAGE, { languages: ['en'], openmw: { ...base, settings: { Game: { a: '</script>' } } } })).cfg.includes('[Game]'), false);
+});
+
+test('the simulation peers: the version\'s settings as additional defaults, the gateway\'s own peer settings over them', () => {
+  assert.equal(OPENMW_SIM_SETTINGS, '/usr/local/etc/openmw/settings.cfg');
+  const man = { openmw: { engine: 'v1', files: ['Morrowind.esm'], settings: {
+    Game: { 'NPCs avoid collisions': true, 'strength influences hand to hand': 2 }, Video: { 'framerate limit': 60 } } } };
+  const text = openmwSimSettings(man);
+  assert.match(text, /^# Orthros: /);
+  assert.equal(text.split('\n').slice(1).join('\n'), '[Game]\nNPCs avoid collisions = true\nstrength influences hand to hand = 2\n[Video]\nframerate limit = 60\n');
+  assert.ok(!/preferred locales|color topic/.test(text), 'the page\'s own defaults stay in the page');
+  // (the native engine's config dirs for a peer: the image's global one — defaults.bin, this file as additional defaults —
+  // then the world's peer-config, whose settings.cfg the gateway writes at each world start: the last, the peer's own)
+  const peerCfg = '# GENERATED by openmw-mp for the Phase H simulation peer. Edits are overwritten.\n[Video]\nframerate limit = 20\nvsync mode = 0\n';
+  const get = engineSettings(ENGINE_DEFAULTS, text, peerCfg);
+  assert.equal(get('[Game] NPCs avoid collisions'), 'true');
+  assert.equal(get('[Game] strength influences hand to hand'), '2');
+  assert.equal(get('[Video] framerate limit'), '20', 'the gateway\'s pacing wins');
+  assert.equal(get('[Game] best attack'), 'false');
+  // (a version without settings: a comment only, nothing changed)
+  const none = openmwSimSettings({ openmw: { engine: 'v1', files: ['x'] } });
+  assert.equal(none.split('\n').filter((l) => l && !l.startsWith('#')).length, 0);
+  assert.equal(engineSettings(ENGINE_DEFAULTS, none, peerCfg)('[Game] NPCs avoid collisions'), 'false');
+});
+
+test('the installed versions\' settings are OpenMW\'s, with values of their type', () => {
+  const source = path.join(DEFAULT_ENGINES_DIR, 'src/openmw-web-v1.5.3/openmw-web-v1.5.3/openmw/files/settings-default.cfg');
+  if (!fs.existsSync(source) || !fs.existsSync(DEFAULT_GAMES_DIR)) return;
+  const defaults = loadSettings(fs.readFileSync(source, 'utf8'), new Map(), false);
+  const kind = (v) => /^(true|false)$/.test(v) ? 'boolean' : /^-?\d+$/.test(v) ? 'integer' : /^-?\d*\.\d+$/.test(v) ? 'number' : 'text';
+  for (const game of fs.readdirSync(DEFAULT_GAMES_DIR)) {
+    let spec; try { spec = JSON.parse(fs.readFileSync(path.join(DEFAULT_GAMES_DIR, game, 'manifest.json'), 'utf8')); } catch { continue; }
+    for (const v of [spec.defaults ?? {}, ...(spec.versions ?? [])]) {
+      for (const [section, kv] of Object.entries(openmwVersionSettings(v))) for (const [key, value] of Object.entries(kv)) {
+        const name = `${game} ${v.id ?? 'defaults'} [${section}] ${key}`, engine = defaults.get(`[${section}] ${key}`);
+        // (an unknown key in additional defaults is kept without a word, and never read)
+        assert.ok(engine !== undefined, `${name}: not an OpenMW setting`);
+        assert.ok(kind(engine) === kind(value) || (kind(engine) === 'number' && kind(value) === 'integer'), `${name} = ${value}: OpenMW's is ${engine}`);
+      }
+    }
+  }
+});
+
 test('the engine page served for a version carries its language\'s locales', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-openmw-settings-'));
   t.after(() => fs.rmSync(root, { force: true, recursive: true }));
@@ -104,7 +190,8 @@ test('the engine page served for a version carries its language\'s locales', asy
   for (const d of ['base', 'versions/en', 'versions/fr']) fs.mkdirSync(path.join(game, d), { recursive: true });
   fs.writeFileSync(path.join(game, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'sample', name: 'Sample', defaultVersion: 'sample-en',
     defaults: { runtime: 'openmw', openmw: { engine: 'test-engine', files: [], example: true } },
-    versions: [{ id: 'sample-en', dir: 'en', version: 'EN', languages: ['en'] }, { id: 'sample-fr', dir: 'fr', version: 'FR', languages: ['fr'] }] }));
+    versions: [{ id: 'sample-en', dir: 'en', version: 'EN', languages: ['en'] },
+      { id: 'sample-fr', dir: 'fr', version: 'FR', languages: ['fr'], openmw: { engine: 'test-engine', files: [], example: true, settings: { Game: { 'best attack': true }, GUI: { subtitles: true } } } }] }));
   const release = path.join(engines, 'test-engine');
   fs.mkdirSync(path.join(release, 'e/abc'), { recursive: true });
   fs.writeFileSync(path.join(release, 'index.html'), `<html><head></head><body><script>${PAGE}</script></body></html>`);
@@ -120,6 +207,9 @@ test('the engine page served for a version carries its language\'s locales', asy
     const get = engineSettings(ENGINE_DEFAULTS, written(script).cfg);
     assert.equal(get('[General] preferred locales'), locales, id);
     assert.equal(get('[GUI] color topic enable'), 'true', id);
+    // (the French version's own settings in its page only; the other keeps the engine's)
+    assert.equal(get('[Game] best attack'), id === 'sample-fr' ? 'true' : 'false', id);
+    assert.equal(get('[GUI] subtitles'), id === 'sample-fr' ? 'true' : 'false', id);
   }
 });
 

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/host/game-catalog.js';
 import { linkGameLayers, engineFile, DEFAULT_ENGINES_DIR } from '../../src/host/goldsrc.js';
-import { openmwInstalled, openmwGatewayImage, warmGatewayLists, OPENMW_STATE_DIR } from '../../src/host/openmw.js';
+import { openmwInstalled, openmwGatewayImage, openmwSimSettings, openmwVersionSettings, warmGatewayLists, OPENMW_SIM_SETTINGS, OPENMW_STATE_DIR } from '../../src/host/openmw.js';
 import { resolveGameFile } from '../../src/host/game-files.js';
 
 const args = process.argv.slice(2), id = args[0], arg = (k) => args.includes(k) ? args[args.indexOf(k) + 1] : null;
@@ -42,8 +42,14 @@ fs.writeFileSync(path.join(state, 'modlist.json'), JSON.stringify({ version: 2, 
 }))) }, null, 2) + '\n');
 if (!fs.existsSync(path.join(state, 'config.toml'))) fs.writeFileSync(path.join(state, 'config.toml'), `[server]\nname = ${JSON.stringify(man.name)}\nmaxPlayers = ${man.openmw.multiplayer.maxPlayers ?? 8}\n\n[setup]\ncompleted = true\ndeploymentMode = "multiplayer"\ndeliveryModel = "serve"\nhosting = "internal"\n\n[locker]\npublicBase = ${JSON.stringify(origin + base)}\n\n[auth]\nreturnUrl = ${JSON.stringify(origin + base + '/join')}\n\n[worlds]\nmemBudgetMb = 3072\ngatewayReserveMb = 256\n\n[rules]\npvp = false\n${man.openmw.startCell ? '\n[simPeer]\nstartCell = ' + JSON.stringify(man.openmw.startCell) + '\n' : ''}`, { mode: 0o600 });
 fs.writeFileSync(path.join(state, '.mode'), 'gateway\n');
+// (the version's own settings defaults for its simulation peers too, the rules its players' pages get — AI, combat,
+// prices —: the image's peers read this file as additional defaults, src/host/openmw.js OPENMW_SIM_SETTINGS; rewritten
+// in place at each start, before the container mounts it)
+const simSettings = path.join(state, 'sim-settings.cfg');
+fs.writeFileSync(simSettings, openmwSimSettings(man)); fs.chmodSync(simSettings, 0o644);
+console.log(`openmw.sim_settings ${Object.values(openmwVersionSettings(man)).reduce((n, kv) => n + Object.keys(kv).length, 0)} version settings for the simulation peers`);
 const child = spawn('docker', ['run', '--rm', '--init', '--name', name, '--cpus=2', '--memory=4g', '--pids-limit=256',
-  '-p', `127.0.0.1:${port}:8080`, '-v', `${state}:/data`, '-v', `${games}:${games}:ro`,
+  '-p', `127.0.0.1:${port}:8080`, '-v', `${state}:/data`, '-v', `${games}:${games}:ro`, '-v', `${simSettings}:${OPENMW_SIM_SETTINGS}:ro`,
   '--log-driver=json-file', '--log-opt=max-size=10m', '--log-opt=max-file=3', serverImage], { stdio: 'inherit' });
 // Docker forwards terminal signals to its own container. Never signal another service/process.
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { if (child.exitCode === null) child.kill(signal); });

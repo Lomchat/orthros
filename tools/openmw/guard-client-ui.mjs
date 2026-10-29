@@ -4,7 +4,10 @@
 //   <mod-id>              a UI-only addon: every automatic entry point of its script plugins is guarded
 //   <mod-id>:MENU,PLAYER  a mod with gameplay too: only the declarations whose targets are all among those types are
 //                         guarded; the others (GLOBAL, CONTAINER, item scripts...) stay as shipped and still run on the
-//                         simulation peer. A declaration mixing both kinds is refused.
+//                         simulation peer, and so do its content files (.esp, .omwaddon: left enabled in its own root).
+//                         A declaration mixing both kinds is refused.
+// A declaration's path may use the author's separators (`\` as well as `/`) and spaces; a wrapper requires the script
+// by its module name (separators as dots), so a path with another dot than its `.lua` is refused.
 //   --id <compat-id>      the generated root's mod id (default client-ui-compat), to guard addons installed after an
 //                         earlier root; its wrappers get their own namespace (scripts/orthros_<id without -compat>/)
 import fs from 'node:fs';
@@ -44,15 +47,21 @@ export function guardClientUi(folder, versionId, selected, { id: compatId = DEFA
     const mod = mods.find((m) => m.id === id);
     if (!mod?.installed) throw new Error(`UI mod is not installed: ${id}`);
     for (const part of mod.parts ?? []) for (const plugin of part.plugins) {
-      if (!/^[^/\\]+\.omwscripts$/i.test(plugin)) throw new Error('Only script-only UI addons can be guarded');
+      if (!/^[^/\\]+\.omwscripts$/i.test(plugin)) {
+        // (a mod with gameplay too: its content files are game data every peer loads, left where they are)
+        if (only) continue;
+        throw new Error('Only script-only UI addons can be guarded');
+      }
       if (plugins.some((p) => p.toLowerCase() === plugin.toLowerCase())) throw new Error('Duplicate UI plugin');
       const source = fs.realpathSync(path.join(versionDir, part.dir, plugin));
       if (!source.startsWith(versionDir + path.sep)) throw new Error('UI plugin outside the version directory');
       const lines = [], kept = [], wrappers = new Map();
       for (const line of fs.readFileSync(source, 'utf8').split(/\r?\n/)) {
         if (!line.trim() || /^\s*#/.test(line)) continue;
-        const match = /^\s*([A-Z][A-Z_, ]*):\s*([\w/.-]+\.lua)\s*$/.exec(line);
-        if (!match || match[2].split('/').some((p) => !p || p === '.' || p === '..')) throw new Error(`Unsupported UI script declaration: ${plugin}`);
+        const match = /^\s*([A-Z][A-Z_, ]*):\s*([\w/\\. -]+\.lua)\s*$/.exec(line);
+        // (the path's folders and name, without .lua: what the wrapper's require names, dots for separators)
+        const segments = match?.[2].slice(0, -4).split(/[\\/]/);
+        if (!match || segments.some((p) => !p.trim() || p.includes('.'))) throw new Error(`Unsupported UI script declaration: ${plugin}`);
         // CUSTOM scripts are attached explicitly by their original filename. Renaming that
         // declaration would break GameObject:addScript/hasScript/removeScript in the addon.
         // The guarded automatic entry points never attach them on a simulation peer.
@@ -64,7 +73,7 @@ export function guardClientUi(folder, versionId, selected, { id: compatId = DEFA
           if (guarded.length < targets.length) throw new Error(`Declaration mixes guarded and kept types: ${plugin}: ${match[1].trim()}`);
         }
         const wrapper = `${ns}/${sequence++}.lua`;
-        const module = match[2].slice(0, -4).replaceAll('/', '.');
+        const module = segments.join('.');
         wrappers.set(wrapper, `-- Generated client UI entry point; original addon sources are unchanged.\nlocal ok, mp = pcall(require, 'openmw.mp')\nif ok and mp.isSystem and mp.isSystem() then return {} end\nreturn require(${JSON.stringify(module)})\n`);
         lines.push(`${match[1]}: ${wrapper}`);
       }

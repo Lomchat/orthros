@@ -220,6 +220,210 @@ measured on localhost; a generic engine fix belongs in `QuadTreeWorld::accept` f
 multiplayer engine watches a container 15 s only after it opens (an item moved later is lost on reopening — not from
 these mods); Advanced World Map's `format` error and QuickSelect's "Layer already exists" predate them.
 
+### Recommended settings and player defaults (2026-10-29)
+
+The owner asked for every OpenMW option recommended for a modern feel, on, in Vanilla+ only: the original Morrowind cards
+keep the engine's own rules. They are defaults: a player's own saved choice wins.
+
+**A version's settings** (manifest `openmw.settings`: `{ section: { key: value } }`, OpenMW's `settings-default.cfg`
+names; `openmwProblem` accepts only names of letters, digits and spaces, and values that are a boolean, a number or plain
+text, so nothing else reaches the settings file or the page's script). Two places read them:
+- the engine page: appended after Orthros' own defaults (`withSettingsDefaults`, the version's last: a key of both is the
+  version's) to `/settings.cfg`, the engine's additional defaults. The player's `settings.cfg`, written by the Options
+  menu (its Best attack and Subtitles switches among them), still wins.
+- the native simulation peers of the version's multiplayer gateway: `tools/openmw/server.mjs` writes them to
+  `<state>/sim-settings.cfg` at each start and mounts it, read-only, at `/usr/local/etc/openmw/settings.cfg`
+  (`OPENMW_SIM_SETTINGS`): the image's global config dir (its `defaults.bin`, no `settings.cfg` of its own), the first of a
+  peer's two config dirs. OpenMW reads a `settings.cfg` in every config dir but the last as additional defaults. The last
+  is the world's `peer-config/`: the gateway rewrites its `settings.cfg` (frame pacing, shadows and water off…) at every
+  world start, and its keys still win. The AI and combat rules computed on the peer (followers, collisions, NPC movement,
+  hand-to-hand) are therefore the same as on the players' pages. Checked in the gateway container started by `server.mjs`:
+  the peer binary logs `Loading settings file: /usr/local/etc/openmw/settings.cfg` between `defaults.bin` and its
+  `peer-config` file, and an out-of-range value there stops it (`Invalid int [Game] show owned setting value`).
+  Interface settings are inert on a peer that draws nothing.
+
+An unknown key in additional defaults is silently ignored, and an out-of-range value stops both the browser engine and
+the peer. `tests/openmw-settings.test.js` therefore checks every installed manifest's `openmw.settings`: each key must
+exist in the engine source's `settings-default.cfg`, with a value of the same type. Vanilla+ (EN and FR) declares
+these keys, all verified in production engine r13's `defaults.bin` and in the gateway image's:
+
+| Section | Key | Value | Feel |
+| --- | --- | --- | --- |
+| GUI | `subtitles` | true | Subtitles for voiced lines |
+| Map | `allow zooming` | true | Zoom on the local and world maps |
+| Game | `best attack` | true | Always the best attack type (chop, slash, thrust) |
+| Game | `show owned` | 3 | Owned objects tinted: tooltip and crosshair |
+| Game | `show effect duration` | true | Remaining time of magic effects and lights |
+| Game | `show enchant chance` | true | Success chance when self-enchanting |
+| Game | `show melee info` | true | Weapon reach and speed |
+| Game | `show projectile damage` | true | Arrow and bolt damage bonus |
+| Game | `smooth movement` | true | Smoother movement of the player and NPCs |
+| Game | `turn to movement direction` | true | Lower body turns with diagonal movement |
+| Game | `smooth animation transitions` | true | Blended animation changes |
+| Game | `swim upward correction` | true | Swimming slightly upward from the view line |
+| Game | `followers attack on sight` | true | Companions join a fight at once (rule) |
+| Game | `NPCs avoid collisions` | true | Actors walk around each other (rule) |
+| Game | `trainers training skills based on base skill` | true | Trainers offer their real skills (rule) |
+| Game | `rebalance soul gem values` | true | Filled soul gems valued by their soul (MCP formula; rule) |
+| Game | `strength influences hand to hand` | 2 | Strength scales fists (MCP formula), werewolves excepted (rule) |
+
+`strength influences hand to hand` is 2 rather than 1, because werewolf claws already carry `WerewolfClawMult` and a
+werewolf's high Strength would multiply them again. `[Game] uncapped damage fatigue` stays **off**: it removes the cap
+on Damage Fatigue, so a cheap spell drives fatigue far below zero and keeps any actor knocked down. That makes it a
+stun-lock that breaks combat balance and is not a modern-feel option.
+
+**The player's Lua settings** (Options → Scripts: OMWControls, OMWCamera) live in the player's storage
+(`player_storage.bin`, in the player's profile), not in `settings.cfg`. The engine's MENU scripts register them with
+their defaults before any game starts. `tools/openmw/player-defaults.mjs <game> <version> <defaults.json>` generates
+an Orthros data root (`orthros-player-defaults`) whose PLAYER script, on a browser client only (it returns at once on
+a simulation peer, `openmw.mp.isSystem()`), gives each entry once per player profile. It sets the value only when the
+current one is still the registered default (or unset), then records the entry in the `OrthrosPlayerDefaults` storage
+section. A later choice of the player's, or a value already moved off the default, is never overwritten. Each entry has
+its own record, so a later root may add entries. Never remove the root: its records name its entries. The earlier input
+defaults (`qol-client-ui-compat`, `OrthrosQoLInputDefaults`) are unchanged. Vanilla+ gives `SettingsOMWControls`
+`alwaysRun` and `toggleSneak`, and `SettingsOMWCameraThirdPerson` `viewOverShoulder`, `autoSwitchShoulder`, `move360`,
+`slowViewChange` (smooth view change) and `previewIfStandStill`, all `false` by default in the engine's
+`scripts/omw/input/settings.lua` and `camera/settings.lua`. The engine writes the player's storage when the Options
+window closes, or when it exits. A value set before that and never saved is given again at the next session. Once the
+window has closed after a player's choice, that choice is kept.
+
+Checked in scratch (2026-10-29): unit tests (`tests/openmw-settings.test.js`, `tests/openmw-player-defaults.test.js`);
+the generated script run under Lua 5.4 against a mock storage (registered defaults given, a later choice kept,
+a value already moved off its default kept, nothing on a simulation peer); and Vanilla+ EN booted in Chromium through a
+scratch gateway and a scratch server. The engine's `/settings.cfg` held the block, and the engine log showed
+`[orthros] player defaults given: SettingsOMWControls/alwaysRun, …` with no error. A two-client multiplayer session with
+a simulation peer was not run.
+
+In play, solo EN and FR (2026-10-29: Chromium with SwiftShader, the engine page of a scratch catalog through scratch
+gateways; the player's Lua console, `luap`, read the engine's own values back):
+- `/settings.cfg` ended with the version's block (`preferred locales = fr,en` in FR). Options → Prefs showed Always Use
+  Best Attack and Subtitles on. Options → Scripts → OpenMW Controls and OpenMW Camera showed the seven given values as
+  Yes (Oui), in French in the FR version.
+- Show owned: looking at Arrille's Common Robe (Robe ordinaire) turned the crosshair red and the tooltip box red.
+  Show effect duration: the HUD icon of a Fortify Strength potion read `… 10 pts Duration: 20 s` (`Durée : 21 sec`),
+  counting down.
+- Always run: `self.controls.run` set on every sampled frame with W held, peak speed 288 units/s against a walk speed of
+  128. Toggle sneak: one tap of Ctrl kept `self.controls.sneak` on after the key was released. Third person (Tab): the
+  focal offset was the shoulder's (30, −10), auto-switched to (−30, −10) beside a wall. It was centred (0, 15) only while
+  a weapon (fists) was drawn, as the engine's `third_person.lua` does. Preview when standing still (mode Preview) and
+  360° movement were active too.
+- A player's later choice: Toggle Sneak set to No in Options, the window closed, the page reloaded with the same
+  browser profile. It was still No, and no `player defaults given` line was logged again.
+
+### Combat, stealth and magicka mods (2026-10-29)
+
+The owner asked for these mods in Vanilla+ (EN and FR), together with the settings above. Each is pinned to a commit,
+because none of the GitHub repositories has a release or a tag. Its receipt lists every installed file with its SHA-256,
+and so does the commit archive. The receipts, archives and Orthros' sources (`install-all.sh`, `check-catalog.mjs`, the
+roots below, the declarations) are kept in `data/installers/openmw/vanilla-plus-pack-20261029/`.
+
+| Mod | Version, commit | Installed | Role |
+| --- | --- | --- | --- |
+| [Max Yari's Script Services](https://github.com/MaxYari/MaxYarisScriptServicesOpenMW) | 2, `a543aad` | the repository minus the author's `.nexusignore` | Library of the two below (`I.MSS`: combat targets, damage listeners, interaction ray) |
+| [State-Based Magicka Regen](https://gitlab.com/modding-openmw/state-based-magicka-regen) | 1.3.8, `78eebcc` (MIT) | `00 Core` (the author's `pkg.sh`) | Magicka regenerates over time for every actor (Willpower, Intelligence, fatigue, encumbrance; waiting and resting) |
+| [The Combat Juice](https://github.com/MaxYari/TheCombatJuiceOpenMW) | 1.2, `a5a8ae1` | minus `.nexusignore` | Hit markers and sounds, camera shake, impact and enchanted-hit lights, kill slow motion, kill flash |
+| [Sneak!](https://github.com/MaxYari/SneakIsGoodNowOpenMW) | 2.0, `78023c4` | minus `.nexusignore` and the unused SVG sources | Gradual detection shown by an eye and markers, leaning, NPC wander pacing; its `.omwaddon` sets 3 GMSTs |
+
+The roots are installed in this order: Script Services first, because the others call its interface from their actors'
+scripts. LuaPhysics and OpenMW Impact Effects, both optional for The Combat Juice, are not installed. Without them no gear
+is knocked loose (it stays on the corpse) and there are no sparks. Sneak! needs OMWControls' Toggle Sneak, which
+`orthros-player-defaults` gives (above). None of the four uses `table.maxn`, `setfenv` or another LuaJIT-only call.
+SuperSlider6's `math.log10` exists since engine r9.
+
+**Multiplayer.** The world rules are the simulation peer's. Each mod's gameplay scripts run there as shipped: Script
+Services whole, SBMR's GLOBAL and the CUSTOM actor script it attaches, and The Combat Juice's and Sneak!'s NPC/CREATURE and
+GLOBAL scripts. Their MENU and PLAYER entry points are guarded (`combat-ui-compat`, `guard-client-ui.mjs mod:MENU,PLAYER
+--id combat-ui-compat`). Sneak!'s `.omwaddon` stays enabled in its own root, so every peer loads the same GMSTs. Sneak!'s
+detection runs on each player's own client: it ends the player's sneak once an NPC has noticed, and from then on the
+engine's own detection decides.
+
+The Combat Juice's global script changes the simulation time scale (its kill slow motion). It also creates and moves
+light objects for its impact flashes, and those objects are saved in the world. In a shared world, where
+`openmw.mp.isEnabled()` is true on a joined client and on the peer, `orthros-overlay-all-pack` (a copy of `global.lua`
+loaded after the author's) does neither. On a client the slow motion would only desynchronise that player from the
+world. Solo is unchanged. The kill flash, the markers and the camera shake are local to the client, so they stay on.
+
+**French.** `orthros-overlay-fr-pack` (FR only) routes the hard-coded English of The Combat Juice's settings renderers,
+Sneak!'s select items and slider labels, and Sneak!'s tutorial window through the mods' l10n contexts, with the English
+text as the key. `orthros-l10n-fr-pack` (FR only, the last root) holds `fr.yaml` for `SBMR`, `CombatJuice` and
+`SneakIsGoodNow`, in the French masters' terms. Script Services has no texts.
+
+`guard-client-ui.mjs` now accepts declarations written with the author's separators (`\`) and spaces, as in
+`scripts\MaxYari\combat juice\player.lua`. The wrapper requires them by module name, so a path with any other dot is
+refused. With a type selection, a selected mod's content files (`.esp`, `.omwaddon`) stay enabled in its own root.
+
+Checked in scratch: `check-catalog.mjs` passed on real copies of both games after `install-all.sh`. It checks the
+manifest rules, that nothing else changed, every installed file against its receipt, the overlays and their originals,
+each guard line, the settings against `settings-default.cfg`, and `luac -p` on every Lua file. Solo EN and FR booted in
+Chromium through scratch gateways, with no Lua error. The kill-flash shader sits in the post-processing chain from the
+start, and the frame stays drawn on WebGL2. Toggle sneak opened Sneak!'s tutorial, in French in the FR version. A boot
+with `OPENMW_MP_SYSTEM` set in the browser engine ran only the scripts kept for the peer, with no error, in Seyda Neen.
+The overlay was run under Lua 5.4 with stubs. In solo it gives the author's time-scale dips and lights; in a shared
+world it gives neither.
+
+In play, solo EN and FR (2026-10-29, as in "Recommended settings" above):
+- State-Based Magicka Regen: after a failed cast (50 → 37.2 magicka), magicka rose steadily to 39.6 over 31 s
+  (929 game seconds). Vanilla Morrowind regenerates none outside rest.
+- The Combat Juice: dagger blows on a mudcrab, then on an NPC in FR. The hit-marker textures loaded at the first blow,
+  and the camera's extra pitch, yaw and roll moved (its shake, up to 0.0072 rad). A kill that ended a fight of more than
+  20 s brought the long slow motion: the simulation time scale read 0.200 for about 2 s. During it, the frame showed the
+  `cj_flash` exposure blur and the red kill marker, on WebGL2. A quick kill with other mudcrabs still fighting brought
+  none, because the encounter had not ended and the short slow motion has a 25% chance.
+- Sneak!: the eye meter around the crosshair and the detection markers showed while sneaking. A guard or Arrille in
+  view detected the player within a second or two, and Sneak! then ended the sneak (`SneakPlayer.lua`, by design).
+  Its tutorial (`Rester inaperçu` in FR) and its settings pages were in French in the FR version, as were the pages of
+  SBMR (`Régénération de Magie selon l'état`) and The Combat Juice.
+- Engine log: no Lua error from the four mods or the player defaults, EN and FR. Warnings from them: `No language files
+  for the preferred languages found in "l10n/SneakIsGoodNow"` (EN: Sneak! ships no `l10n` folder; its texts are the
+  English keys), and `Scaling image … from (576,216) to (512,256)` for Sneak!'s eye atlas and detection markers and The
+  Combat Juice's 28×28 hit markers. The ten `Warning generated while parsing layouts of a(n) unnamed LuaWidget` at
+  each boot were already in the live Vanilla+ clients' logs before the pack.
+- Seen while testing, outside this pack: Advanced World Map's `widgets/markers.lua:177` calls
+  `string.format("%s_%s_%d_%d", …)` with non-integer coordinates. Lua 5.4 refuses that (`bad argument #4 to 'format'
+  (number has no integer representation)`), each time its map updates its markers.
+
+Frame cost (`perf.mjs` 60 s, `--discard`, `--query tier=mid`, SwiftShader, Seyda Neen walk; rasterization skipped, so
+these are the engine's and browser's CPU):
+
+| Catalog | fps | work p50 / p90 / p99 (ms) | frames over 50 ms of work | Lua (ms/frame) |
+| --- | --- | --- | --- | --- |
+| EN before the pack (live manifest), 2 runs | 21.07 / 21.01 | 11.2 / 15.1–16.1 / 31.9–39.1 | 8–9 | 0.52–0.62 |
+| EN, the four mods and player defaults, no `openmw.settings` | 19.44 | 11.9 / 16.8 / 38.9 | 8 | 1.18 |
+| EN with the pack and `openmw.settings`, 2 runs | 19.54 / 16.04 | 11.6–12.6 / 17.2–19.4 / 58.2–60.3 | 16–18 | 0.50–1.01 |
+| FR before | 20.93 | 11.0 / 14.9 / 28.4 | 8 | 0.62 |
+| FR with the pack | 18.76 | 11.9 / 19.8 / 70.0 | 26 | 0.78 |
+
+The mods cost about 0.7 ms of work per frame (−1.5 fps here) and leave the long frames as they were. The long frames
+doubled only in the runs with `openmw.settings`: 16–26 against 8–9, in four runs against four. A profiled run with the
+pack (`--profile`: 20.0 fps, 19 frames over 50 ms) found its longest frames (200–240 ms) inside OSG's draw
+(`RenderStage::draw` → `RenderLeaf::render` → `osg::State::apply` and its WebGL calls), not in Lua or in the AI and
+mechanics phases. None of the settings is a rendering one. `[Map] allow zooming` widens the local map's grid only
+above a one-cell view distance, and Orthros' boot value is 8192 units. Each run is also a new game whose weather is
+drawn at random, and rain adds drawing work that a discarded raster still pays on the CPU. So the cause is not
+established. Single runs vary as well (the second EN run with the pack: 16 fps). Measure on a real GPU, with the
+settings in halves, before changing them.
+
+Not checked: a real multiplayer session with the native peer, and the GPU cost of the flash shader's two passes, which
+run every frame while "Kill Flash On" is not "Never".
+
+**Wanted, not installed: Surefire and Quest Markers Plus.** Both are on Nexus Mods only. No GitHub or GitLab copy by
+their authors exists, and modding-openmw.com links only to Nexus. Surefire
+([59646](https://www.nexusmods.com/morrowind/mods/59646), CattoStar): Files tab, MAIN file "Surefire" version 2
+(2026-08-16, 30 KB); not the OSSC patch or the "(Broken)" PureMultiMark patch. It needs nothing else: Lua only, OpenMW
+0.51+; GLOBAL, NPC/CREATURE, PLAYER and MENU scripts. Quest Markers Plus
+([58701](https://www.nexusmods.com/morrowind/mods/58701), RPGKing117): MAIN file "Quest Markers Plus - English" 11.0.5
+(2026-05-30, 5.8 MB). It bundles a modified copy of Quest Guider Lite's scripts and quest data, and two replacement
+proximityTool scripts (`hudmHandler.lua`, `ui/mainMenu.lua`), and must load last. Its requirements are proximityTool
+([57286](https://www.nexusmods.com/morrowind/mods/57286), 1.3.1; also [GitHub](https://github.com/Diject/proximityTool)),
+Advanced World Map ([57881](https://www.nexusmods.com/morrowind/mods/57881), already in Vanilla+), Advanced World Map -
+Tracking ([58324](https://www.nexusmods.com/morrowind/mods/58324), 1.1.0; also
+[GitHub](https://github.com/Diject/advWMap-tracking)) and HUDMarkers - Detect spells
+([57112](https://www.nexusmods.com/morrowind/mods/57112), 3.6, Nexus only). The Quest Guider Lite it modifies is
+[57285](https://www.nexusmods.com/morrowind/mods/57285) (1.6.1 now; also [GitHub](https://github.com/Diject/quest_guider_lite)).
+Its bundled Quest Guider Lite matches QGL about v1.3.1 (March 2026) and its two proximityTool files about v1.2.0; QGL's
+author calls it incompatible with current Quest Guider Lite and its newest quest data: never install both. Its quest data
+comes from the English masters (French masters: to be rebuilt with the author's Quest Data Builder).
+
 ### Headless simulation compatibility
 
 The pinned engine identifies its native simulation peers through `openmw.mp.isSystem()`.
