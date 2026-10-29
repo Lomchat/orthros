@@ -66,9 +66,19 @@ def main(argv):
     links = call(f'/games/{game}/mods/{mod}/files/{file_id}/download_link.json', auth or None)
     if not links:
         sys.exit('Nexus returned no download link')
-    url = links[0]['URI']
+    # (the CDN's address carries the file name as is: spaces and brackets quoted, its query kept)
+    u = urllib.parse.urlsplit(links[0]['URI'])
+    url = urllib.parse.urlunsplit((u.scheme, u.netloc, urllib.parse.quote(urllib.parse.unquote(u.path)), u.query, u.fragment))
     out = pathlib.Path(argv[argv.index('--out') + 1]) if '--out' in argv else ROOT / 'data/installers/nexus' / f'{game}-{mod}-{file_id}'
     out.mkdir(parents=True, exist_ok=False)
+    try:
+        fetch(url, out, meta, info, game, mod, file_id)
+    except BaseException:
+        for f in out.iterdir(): f.unlink()
+        out.rmdir()
+        raise
+
+def fetch(url, out, meta, info, game, mod, file_id):
     name = re.sub(r'[^A-Za-z0-9._ -]', '_', meta.get('file_name') or f'{file_id}.bin')
     target = out / name
     md5, sha = hashlib.md5(), hashlib.sha256()
