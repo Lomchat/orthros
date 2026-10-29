@@ -185,6 +185,41 @@ window open for a long time. Diagnostic sources and receipts, marked NOT DEPLOYE
 in `data/proof/openmw-qol-20261018/`. Original packaged engine Lua hashes match the native
 image; the source archive's `fsroot` copies differ and must not be used as a patch base.
 
+### Inventory, alchemy and dialogue mods; French texts (2026-10-29)
+
+The owner asked for a less dated inventory and dialogue, in English and in French by the language the game is launched
+in. Prepared and tested in scratch (solo EN/FR, two-client multiplayer, an old world resumed, performance), then installed
+in both Vanilla+ versions by one script (`install-all.sh`; archives with receipts and Orthros' sources in
+`data/installers/openmw/vanilla-plus-mods-20261029/`; the manifest before in `backups/manual/`):
+- **UI Toolkit** 1.4.8 (EnderWiggin, commit 334f9be), a library; **Inventory Extender Redone** 0.0.8 (8356f48): the
+  inventory, container, barter and companion windows replaced (sortable table, categories, search, favourites);
+  **Inventory Camera** 3.1 (f86c468): the character framed when the inventory opens; **Alchemy Redone** 2.0.3 (aaafb09).
+  Their gameplay scripts (GLOBAL, CONTAINER, item types) run on the native simulation too; their MENU/PLAYER scripts are
+  guarded there (`inventory-ui-compat`, `guard-client-ui.mjs mod:MENU,PLAYER --id`). Never regenerate that root after
+  release: its wrappers are numbered and the mods' save data is stored under their paths.
+- Dialogue content: FR — *Dialogues étoffés de Django* 1.44, *Salutations génériques variées* 2.0, *Expansion des réponses
+  de persuasion* 4.0 (la Confrérie des Traducteurs); EN — *Greetings for No Lore* 2.0 and *Persuasion Response Expansion*
+  4.0 (cleaned: 72 GMSTs and two records undoing Patch for Purists' fixes removed). Django's English original is on Nexus
+  only: not in the EN version.
+- Overlays (Orthros data roots loaded after the mods; the authors' files untouched): `orthros-overlay-all` — UI Toolkit
+  without `table.maxn` (absent from the engine's Lua 5.4: a window stayed on screen after a container closed), Inventory
+  Camera's depth-of-field shader made valid for WebGL2 (it blanked the frame) and off by default (the web engine's
+  post-processing depth is empty: everything blurred), Alchemy Redone leaving the time scale alone in multiplayer,
+  English keys missing upstream; `orthros-overlay-fr` — the French masters' prison cells for IER, Alchemy's tab label
+  (`sMagicEffects`: `sEffects` is the sound-effects volume in French).
+- `orthros-l10n-fr` (FR only, last): fr.yaml for every mod with texts (the new ones, UI Modes, Questman, Advanced World
+  Map, RUN!, Smart Ammo, QuickSelect, Take All); no « » (the game font lacks them).
+- The engine page now sets `[General] preferred locales` from the version's language (`fr,en` / `en`) and
+  `[GUI] color topic enable = true` (every OpenMW version) — before, OpenMW's own menus and every Lua mod showed in
+  English in the French game (`withSettingsDefaults`, `src/host/openmw.js`).
+- Checked in production: the three cards boot (`check.mjs`), the French inventory opens in French, no Lua error.
+
+Open: Take All and IER's use key both default to R in a container (one Lua error a press, nothing lost); Alchemy Redone's
+apparatus hint ray makes the engine build every view-distance terrain chunk at the start of play (+4.4 s to the world
+measured on localhost; a generic engine fix belongs in `QuadTreeWorld::accept` for intersection visitors); the
+multiplayer engine watches a container 15 s only after it opens (an item moved later is lost on reopening — not from
+these mods); Advanced World Map's `format` error and QuickSelect's "Layer already exists" predate them.
+
 ### Headless simulation compatibility
 
 The pinned engine identifies its native simulation peers through `openmw.mp.isSystem()`.
