@@ -56,7 +56,9 @@
 //   (as tools/openmw/build.sh makes them: quality 11, window 24) made once when missing or older than their file — only
 //   for a release under /tmp/orthros-scratch (a dev build; a release in data/engines has its own) —, else that engine
 //   goes uncompressed through the link (213 MB, ~2 min at 1.8 MB/s) on a new profile. --dry: the options resolved and
-//   the plan printed, nothing started.
+//   the plan printed, nothing started. --read-trace: the page's requests to its game data worker traced (data-client.js
+//   GameData.trace: each read's kind, file, range, ask and end, whether the engine stood suspended), into the run's
+//   folder as read-trace.json.gz with the trigger's time on the page's clock (tools/openmw/read-trace.py reads it).
 //   Scenario S's row adds `stage3`: the place hint (localStorage 'orthros.place.<manifest>') at the menu and at the end,
 //   the learned places (the learn copy's places file: size, places, the target's units), the menu-time prefetch (the
 //   announced ranges, kind 'want', started before the key: before the menu and in it, their end against the key, those
@@ -73,7 +75,7 @@
 //     [--profile-warm <dir>] [--warm-tree /srv/orthros] [--warm-seconds 120] [--rate 1.8m] [--rtt 90] [--listen 18447]
 //     [--start -2,-9] [--to -2,6] [--quiet 10] [--after 30] [--out <scratch>/results.jsonl] [--games-dir ..]
 //     [--engines-dir ..] [--engine <release>] [--covers off|<dir>] [--warm-only]
-//     [--profile warm|new] [--teach 0] [--engine-br] [--dry]
+//     [--profile warm|new] [--teach 0] [--engine-br] [--dry] [--read-trace]
 //     save: [--entry play|engine] [--menu 10] [--save <scratch>/saves/<to>.omwsave] [--make-save]
 //     glide: [--glide 0,1,300,3000] [--seconds 150]   door: [--interior '<cell id>'] [--lead 0]
 //     in play (coe, glide, door) and save --entry engine: [--query lead=1] (added to the measured runs' engine page —
@@ -154,7 +156,7 @@ export function clearScratchGames(out) {
 }
 
 /** The flags without a value (every other option takes the next argument). */
-const FLAGS = ['make-save', 'warm-only', 'engine-br', 'dry'];
+const FLAGS = ['make-save', 'warm-only', 'engine-br', 'dry', 'read-trace'];
 
 /**
  * The command line's options (`argv` after the script: the manifest first), resolved with their defaults — absolute
@@ -199,7 +201,7 @@ export function parseArgs(argv) {
     engine: opt('engine'), engineBr: flags.has('engine-br'),
     saveFile: path.resolve(opt('save', path.join(scratch, 'saves', `${to.replace(/[^0-9a-z-]+/gi, '_')}.omwsave`))),
     covers: opt('covers', 'off'), runs: num('runs', 2, { int: true }), teach: num('teach', 0, { int: true }), tag: opt('tag', 'run'),
-    makeSave: flags.has('make-save'), warmOnly: flags.has('warm-only'), dry: flags.has('dry'),
+    makeSave: flags.has('make-save'), warmOnly: flags.has('warm-only'), dry: flags.has('dry'), readTrace: flags.has('read-trace'),
     glide: glideSpec(opt('glide', '0,1,300,3000')), seconds: num('seconds', 150, { min: 5 }),
     // (the engine's key: its ASCII-only lower case — an id's accented capitals stay, as the learned places have them)
     interior: engineLower(opt('interior', 'balmora, south wall cornerclub')), leadS: num('lead', 0),
@@ -800,8 +802,14 @@ if (MAIN) {
     // (--query on the measured runs only: the teach runs of both arms of an A/B the same; --teach-query on the teach runs)
     const q = teach ? o.teachQuery : o.query;
     const url = play ? enginePage(`&start=${encodeURIComponent(start)}&novid${q ? '&' + q : ''}`) : entry === 'play' ? `/ports/openmw/${encodeURIComponent(id)}/?mode=solo` : enginePage(`&novid${q ? '&' + q : ''}`);
-    const init = save ? [injectSave, { dir: save.dir, character: save.character, file: save.file, b64: fs.readFileSync(saveFile).toString('base64') }] : null;
+    let init = save ? [injectSave, { dir: save.dir, character: save.character, file: save.file, b64: fs.readFileSync(saveFile).toString('base64') }] : null;
     const ready = play ? inWorld : () => window.__placeProbe?.menuAt != null;
+    // (--read-trace: the page's requests to its game data worker traced — data-client.js GameData.trace —, written to the
+    // run's folder as read-trace.json.gz with the trigger's time on the page's clock)
+    // (and the page's long animation frames — a task and the rendering after it, over 50 ms: their rendering's share, k
+    // 'loaf' —, on the same clock)
+    const traceInit = `window.__orthrosReadTrace = []; try { new PerformanceObserver((l) => { const T = window.__orthrosReadTrace; for (const e of l.getEntries()) if (T.length < 50000) T.push({ t: Math.round(e.startTime), k: 'loaf', ms: Math.round(e.duration), render: e.renderStart ? Math.round(e.startTime + e.duration - e.renderStart) : 0, layout: e.styleAndLayoutStart ? Math.round(e.startTime + e.duration - e.styleAndLayoutStart) : 0, block: Math.round(e.blockingDuration ?? 0) }); }).observe({ type: 'long-animation-frame', buffered: true }); } catch { /* no LoAF */ }`;
+    if (o.readTrace) init = init ? [`${traceInit} (${init[0]})(${JSON.stringify(init[1])});`] : [traceInit];
     const res = await session({ codeTree: tree, profile, dir, url, ready, init, learn: learnDir, learnFrom: teach ? null : learnFrom, body: async (frame, { page, proxyNow, faults }) => {
       const boot = await look(frame, () => ({ firstDraw: window.__placeProbe.firstDraw, firstDrawRaf: window.__placeProbe.firstDrawRaf, firstFrameMark: window.__omwBoot?.firstFrame ?? null, menuAt: window.__placeProbe.menuAt, inWorldAt: window.__placeProbe.inWorldAt, cell: window.omw?.state?.['orthros.cell'] ?? null, save: window.__placeSave ?? null }));
       const store0 = await storage(frame, id);
@@ -916,6 +924,11 @@ if (MAIN) {
       clearInterval(jiggler);
       const cpuProfile = cpu ? await stopProfile(cpu, 1, path.join(dir, 'load.cpuprofile')).then((r) => ({ at: profileAt, hitches: r.hitches })).catch((e) => ({ error: String(e?.message ?? e) })) : null;
       const P = await look(frame, () => { const P = window.__placeProbe; return { afterEnd: performance.now(), firstTick: window.__omwBoot?.firstFrame ?? null, from: P.from ?? null, keyAt: P.keyAt, armAt: P.armAt ?? null, coeCall: P.coeCall, coeRet: P.coeRet, coeRan: P.coeRan ?? null, coeInFrame: P.coeInFrame ?? false, coeErr: P.coeErr ?? null, gaps: P.gaps, cellAt: P.cellAt, inWorldAt: P.inWorldAt, menuAt: P.menuAt, firstDraw: P.firstDraw, frames: P.frames.length, cell: window.omw?.state?.['orthros.cell'] ?? null, cells: P.cells, samples: P.samples, leads: window.StreamFS?.leads?.() ?? null, blocks: P.blocks, inputs: P.inputs, jspi: window.StreamFS?.jspi?.() ?? null, precompile: window.__omwPrecompile ? { ...window.__omwPrecompile } : null, view: window.orthrosViewState?.() ?? null, trace: P.trace }; }, undefined, 10000);
+      if (o.readTrace) {
+        const trace = await look(frame, () => window.__orthrosReadTrace ?? null, undefined, 30000);
+        fs.writeFileSync(path.join(dir, 'read-trace.json'), JSON.stringify({ from: P?.from ?? null, keyAt: P?.keyAt ?? null, inWorldAt: P?.inWorldAt ?? null, markAt, trace }));
+        execFileSync('gzip', ['-f', path.join(dir, 'read-trace.json')]);
+      }
       return { cpuProfile, boot, store0, quietWaitS, before, predicted, afterLoad, after: await stats(frame), store1: await storage(frame, id), mark, markAt, end, P, faults, lead, glideEnd };
     } });
     const recs = readLog(path.join(dir, 'proxy.jsonl'));

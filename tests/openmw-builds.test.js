@@ -382,7 +382,9 @@ test('r18 patch: the frame and the boot suspend on a read the page does not answ
   // (the page: a pump that arrives while a frame is in flight runs and counts nothing)
   assert.ok(added.includes('if (pumping) return;'));
   // (the page: the frame's promise awaited before the next is scheduled, the switches)
-  for (const k of ["if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a); }", "ENV.OPENMW_ORTHROS_JSPI='0'", 'ENV.OPENMW_ORTHROS_JSPI_SPIN_MS=', 'ENV.OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS=', 'ENV.OPENMW_ORTHROS_JSPI_PRESENT_MS=', 'ENV.OPENMW_ORTHROS_JSPI_BREATH_MS=',
+  // (and after a load's frame — a promising one that lasted —, the next frame at once, not at the next animation frame)
+  for (const k of ["if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a, true); }", 'scheduleNext(promised && b - a >= 100);',
+    'if (now && !document.hidden) { mc.port2.postMessage(0); return; }', 'ENV.OPENMW_ORTHROS_JSPI_GL_MAX_MS=', "ENV.OPENMW_ORTHROS_JSPI='0'", 'ENV.OPENMW_ORTHROS_JSPI_SPIN_MS=', 'ENV.OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS=', 'ENV.OPENMW_ORTHROS_JSPI_PRESENT_MS=', 'ENV.OPENMW_ORTHROS_JSPI_BREATH_MS=',
     "ENV.OPENMW_ORTHROS_JSPI_PLAIN='0'", 'ENV.OPENMW_ORTHROS_JSPI_SETTLE_MS='])
     assert.ok(added.includes(k), k);
   // (no put-off of distant chunks by the cull: measured no better than JSPI alone — its reads suspend the frame — and
@@ -402,11 +404,11 @@ test('r18: a read suspends in a load (the boot, a loading screen) after a short 
     return line.endsWith('{') ? lib.slice(from, lib.indexOf('\n  },', from) + 4) : line.replace(/,$/, '');
   };
   // (the defaults: never in play, a loading screen's frame presented at most every 200 ms)
-  assert.ok(lib.includes('spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glAt: 0, freedAt: 0'));
+  assert.ok(lib.includes('spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glMaxMs: 300, glAt: 0, freedAt: 0'));
   const J = { on: 0, boot: 0, loading: 0, ready: true, suspended: 0, off: false, plain: 0, want: 0, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, settleMs: 3000, after: [] };
   const may = fn('$orthrosMaySuspend').replace(/^\(\) => \{\{\{ ASYNCIFY == 2 \? '(.*)' : 'false' \}\}\}$/, '$1');
   const maySuspend = () => new Function('OrthrosJspi', `return ${may};`)(J);
-  const make = (src) => new Function('OrthrosJspi', 'orthrosJspiReady', 'orthrosFlush', 'orthrosMaySuspend', 'orthrosSuspend', `return ${src};`)(J, () => {}, () => {}, maySuspend, (p, path, kind, then) => p.then(() => then(true)));
+  const make = (src) => new Function('OrthrosJspi', 'orthrosJspiReady', 'orthrosFlush', 'orthrosMaySuspend', 'orthrosSuspend', 'orthrosNote', `return ${src};`)(J, () => {}, () => {}, maySuspend, (p, path, kind, then) => p.then(() => then(true)), () => {});
   const enter = make(fn('orthros_jspi_enter')), leave = make(fn('orthros_jspi_leave')), loading = make(fn('orthros_jspi_loading')), spin = make(fn('$orthrosSpinMs'));
   enter(1); assert.equal(spin(), 10, 'the boot (main): a load'); assert.ok(maySuspend(), 'the boot may suspend'); leave(1);
   enter(0); assert.ok(!maySuspend(), 'a frame in play never suspends');
@@ -469,7 +471,7 @@ test('r18: a frame of play is plain (never suspending), a load put off to a prom
   const tmpl = (src) => src.replace(/\{\{\{ ASYNCIFY == 2 \? '([^']*)' : '[^']*' \}\}\}/g, '$1');
   const may0 = fn('$orthrosMaySuspend').replace(/^\(\) => /, '');
   const maySuspend = () => new Function('OrthrosJspi', `return ${tmpl(may0)};`)(J);
-  const make = (src) => new Function('OrthrosJspi', 'orthrosJspiReady', 'orthrosMaySuspend', 'orthrosSuspend', 'orthrosGpuIdle', `return ${tmpl(src)};`)(J, () => {}, maySuspend, (p, path, kind, then) => p.then(() => then(true)), () => Promise.resolve());
+  const make = (src) => new Function('OrthrosJspi', 'orthrosJspiReady', 'orthrosMaySuspend', 'orthrosSuspend', 'orthrosGpuIdle', 'orthrosNote', `return ${tmpl(src)};`)(J, () => {}, maySuspend, (p, path, kind, then) => p.then(() => then(true)), () => Promise.resolve(), () => {});
   const enter = make(fn('orthros_jspi_enter')), leave = make(fn('orthros_jspi_leave').replace('queueMicrotask(orthrosFlush)', '0')), plain = make(fn('orthros_jspi_plain')), defer = make(fn('orthros_jspi_defer')), may = make(fn('orthros_jspi_may')), loading = make(fn('orthros_jspi_loading'));
   // (a plain frame: nothing suspends, a load asked put off — the next frame wanted promising)
   plain(1); enter(0); assert.equal(may(), 0, 'a plain frame never calls a suspending import'); loading(1); assert.ok(!maySuspend(), 'not even under a loading screen');
@@ -495,7 +497,7 @@ test('r18: a frame of play is plain (never suspending), a load put off to a prom
   const J2 = { on: 1, boot: 0, loading: 0, plain: 0, suspended: 0, off: false, loadFrame: 0, glMs: 50, glAt: 0 };
   const gl = new Function('OrthrosJspi', 'orthrosMaySuspend', 'orthrosSuspend', 'orthrosGpuIdle', `return ${fn('orthros_gl_settle')};`)(J2, () => true, (p, path, kind, then) => p.then(() => then(true)), () => Promise.resolve());
   assert.equal(gl(), undefined, 'in play: never');
-  const loading2 = new Function('OrthrosJspi', `return ${fn('orthros_jspi_loading')};`)(J2);
+  const loading2 = new Function('OrthrosJspi', 'orthrosNote', `return ${fn('orthros_jspi_loading')};`)(J2, () => {});
   loading2(1); loading2(0); assert.equal(J2.loadFrame, 1, 'the rest of the load\'s frame');
   const g1 = gl(); assert.ok(g1 && typeof g1.then === 'function', 'a load\'s frame: suspends'); await g1;
   assert.equal(gl(), undefined, 'not again within glMs');
@@ -583,17 +585,24 @@ test('r18: the engine\'s WebSocket events reach it — after the frame while sus
   assert.deepEqual(got, [], 'the getter-based check drops the engine\'s events');
 });
 
-test('r19: r18 plus its patch, the same exports; the draw thread behind its switch (off by default) and screenshots read as RGBA on WebGL2', () => {
-  const r18 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r18'), r19 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r19');
-  assert.ok(r19, 'r19 is a build');
-  assert.deepEqual(r19.patches, [...r18.patches, 'orthros-r19.patch']);
-  assert.deepEqual(r19.exports, r18.exports);
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
-  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
-  for (const f of ['deps/src/osg/src/osgViewer/ViewerBase.cpp', 'openmw/components/sdlutil/sdlgraphicswindow.cpp', 'wasm-build/orthros-gl.js',
-    'deps/src/osg/src/osg/Image.cpp'])
-    assert.ok(patch.includes(`+++ b/${f}`), f);
-  assert.ok(added.includes('OPENMW_ORTHROS_DRAWTHREAD'));
-  // (the screenshot fix: an RGB read WebGL2 refuses done as RGBA and converted)
-  assert.ok(/GL_RGBA/.test(added) && added.includes('readPixels'));
+test('r18: a remote player\'s copy is not carried on past a jump (MWMP interp.lua: the step\'s time at least the stream\'s mean gap, no extrapolation above 2000 u/s), with the engine\'s own Lua test of it', () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
+  const at = patch.indexOf('+++ b/openmw/files/data/scripts/mp/interp.lua');
+  assert.ok(at >= 0, 'the patch changes interp.lua');
+  const hunk = patch.slice(at, patch.indexOf('\ndiff --git', at) >>> 0);
+  for (const line of ['+local EXTRAP_MIN_DT = 0.033', '+local EXTRAP_MAX_SPEED = 2000', '+                local dt = math.max(a.t - p.t, self.mean or EXTRAP_MIN_DT, EXTRAP_MIN_DT)',
+    '+                if sx * sx + sy * sy + sz * sz > (EXTRAP_MAX_SPEED * dt) ^ 2 then return a end', '+                local k = h / dt', '-                local k = h / (a.t - p.t)']) {
+    assert.ok(hunk.includes(line), line);
+  }
+  assert.ok(patch.includes('+++ b/wasm-build/lua-tests/run.lua') && patch.includes("+  check('a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands"), 'the engine\'s Lua test of it');
+});
+
+test('r18: a load\'s framebuffer status waits for the GPU\'s queue 300 ms at most by default (?jspiglmax=N), then is asked as is', () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
+  const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
+  const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
+  const settle = lib.slice(lib.indexOf('\n  orthros_gl_settle: ('), lib.indexOf('\n  },', lib.indexOf('\n  orthros_gl_settle: (')));
+  assert.ok(settle.includes('orthrosGpuIdle(J.glMaxMs)'), settle);
+  assert.ok(lib.includes("var glMax = Number(ENV['OPENMW_ORTHROS_JSPI_GL_MAX_MS']);") && lib.includes('glMaxMs: 300'));
+  assert.ok(patch.includes("+       if (/[?&]jspiglmax=(\\d+)\\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MAX_MS="));
 });

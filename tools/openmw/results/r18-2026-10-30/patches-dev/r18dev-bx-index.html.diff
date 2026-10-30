@@ -1,0 +1,41 @@
+--- /tmp/orthros-scratch/data-r17/build-r17/root/play/index.html	2026-10-30 18:17:29.199888946 +0100
++++ /tmp/orthros-scratch/data-r18/pw/work/play/index.html	2026-10-30 19:56:34.864983188 +0100
+@@ -4018,8 +4018,14 @@
+        // visible tab -> next tick scheduled via requestAnimationFrame (vsync-aligned, smooth);
+        // hidden tab  -> direct postMessage (unthrottled, game keeps running in background).
+        var scheduled = false;
+-       function scheduleNext(){
++       function scheduleNext(now){
+          if (scheduled) return; scheduled = true;
++         // Orthros (orthros-r18.patch): after a load's frame (a promising one, a promise returned — orthros-jspi.js), the
++         // next frame at once, not at the next animation frame: the browser holds that one until the GPU process has
++         // drawn the load's first picture of the world (0.8 s in SwiftShader after a save's load), and the engine's
++         // next frame — the player's first in the world, the world's scripts — waited idle meanwhile, where a frame
++         // after a load that held the page's thread (r17) ran at once, its own GPU wait after that work.
++         if (now && !document.hidden) { mc.port2.postMessage(0); return; }
+          // Visible: run the frame INSIDE the rAF callback. Hidden: pace with a timer (~30fps
+          // target; browsers throttle background timers further) and go through the
+          // MessageChannel, which is NOT throttled in a background tab — an unpaced background
+@@ -4079,10 +4085,10 @@
+          pumping = true;
+          try { if (Module._omw_pump_frame) r = Module._omw_pump_frame(); }
+          catch(e){ pumpTrap(e); }
+-         if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a); }, function(e){ pumping = false; pumpTrap(e); pumpDone(a); });
++         if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a, true); }, function(e){ pumping = false; pumpTrap(e); pumpDone(a); });
+          else { pumping = false; pumpDone(a); }
+        }
+-       function pumpDone(a){
++       function pumpDone(a, promised){
+          // End of boot: the first frame the engine actually rendered. Stamped here rather than in
+          // the 500ms status poller so it is exact to one frame. __omwRunning is set by the engine's
+          // own loop, so this fires once the player can genuinely see something.
+@@ -4093,7 +4099,8 @@
+          if (window.__glCalls){ var gc = window.__glCalls; window.__glPerFrame = { total: gc.total - (window.__glLast||0), draw: gc.draw - (window.__glLastDraw||0) }; window.__glLast = gc.total; window.__glLastDraw = gc.draw; }
+          var dt = b - __t0;
+          if (dt >= 1000){ window.__fps = Math.round(__frames*1000/dt); window.__frameMs = +(__accum/__frames).toFixed(2); __frames = 0; __accum = 0; __t0 = b; }
+-         scheduleNext();
++         // (a load's frame: a promising one that lasted — not one of the boot's, which return at once while main() runs)
++         scheduleNext(promised && b - a >= 100);
+        }
+        // The hidden-tab path still arrives as a message; visible frames call pumpFrame directly.
+        mc.port1.onmessage = pumpFrame;

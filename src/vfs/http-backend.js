@@ -1064,6 +1064,8 @@ export class HttpBackend {
       }
       const pr = this.fetchPartBg(path, size, mtime, c, j, PRIO.readAhead, halt, true, { reason: media ? 'mediaAhead' : 'readAhead', forLoad: !media });
       prw = pr.w;
+      // (a measuring harness's trace: the request, its reader — where it stood, how far it read in sequence —, whether whole)
+      this.traceAhead?.({ k: 'ahead', f: path, off: c * CHUNK, len: (j + 1 - c) * CHUNK, end, run, reads, whole: big ? 1 : 0 });
       if (big) { pr.whole = true; if (pr.w && this.net.waiters.includes(pr.w)) queued = true; }
       inFlight++; c = j;
     }

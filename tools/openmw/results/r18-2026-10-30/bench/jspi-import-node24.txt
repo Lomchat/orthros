@@ -1,0 +1,3 @@
+per call: plain export 9 ns; promising export, Suspending import 121 ns; promising export, plain import 17 ns
+per call: plain export 7 ns; promising export, Suspending import 120 ns; promising export, plain import 17 ns
+per call: plain export 7 ns; promising export, Suspending import 119 ns; promising export, plain import 17 ns

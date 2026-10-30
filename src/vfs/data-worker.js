@@ -122,6 +122,14 @@ async function init(o) {
     return s ?? new MemBlockStore(o.memBytes ?? 512 << 20);
   } });
   for (const p of W.version.parts) W.parts.set(p.name, p);
+  // (a measuring harness's trace — the page's GameData.trace —: the readers' requests ahead of the game's reads, posted
+  // in batches with their time since the epoch)
+  if (o.trace) {
+    const q = [];
+    W.trace = (e) => { if (q.length < 5000) q.push({ t: performance.timeOrigin + performance.now(), ...e }); };
+    for (const p of W.version.parts) p.files.traceAhead = W.trace;
+    W.timers.push(setInterval(() => { if (q.length) postMessage({ trace: q.splice(0) }); }, 200));
+  }
   // (the learned order's list asked now, its bytes not: here before the startup set or the engine's first read asks)
   if (o.orderAtOpen) order();
   W.timers.push(setInterval(monitor, 100), setInterval(report, REPORT_MS), setInterval(lightWatch, 1000));
@@ -192,6 +200,7 @@ async function bytesOf({ name, path, off, len, want, src }, ask = { held: true }
     try { await wait; } finally { W.waits.delete(ask); if (ask.tok) { W.version.net.waitEnd(ask.tok); ask.tok = null; } waited(); }
   }
   const stop = Math.max(end, hereUntil(part.files, f, Math.ceil(end / CHUNK) * CHUNK, Math.min(f.len, off + Math.max(len, want ?? 0))));
+  W.trace?.({ k: 'wread', f: path, off, len: stop - off, held: ask.held ? 1 : 0, waited: wait ? 1 : 0 });
   return f.read(off, stop - off);
 }
 

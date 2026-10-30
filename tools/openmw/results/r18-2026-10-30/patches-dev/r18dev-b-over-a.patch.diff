@@ -1,0 +1,167 @@
+--- r18-a.patch	2026-10-30 20:48:34.522368773 +0100
++++ r18-b.patch	2026-10-30 18:16:20.747274250 +0100
+@@ -493,6 +493,42 @@
+          // clang-format off
+          return MAIN_THREAD_EM_ASM_INT({
+              var f = globalThis.orthrosReadWait;
++diff --git a/openmw/files/data/scripts/mp/interp.lua b/openmw/files/data/scripts/mp/interp.lua
++index 8626d36..34b0d57 100644
++--- a/openmw/files/data/scripts/mp/interp.lua
+++++ b/openmw/files/data/scripts/mp/interp.lua
++@@ -27,6 +27,17 @@ local MAX_SNAPSHOTS = 16 -- ~1s of history at 15 Hz
++ -- this long; a real stop then overshoots by <= ~22 u at a run, comfortably under puppet.lua's
++ -- STEER_START (24 u).
++ local EXTRAP_S = 0.09
+++-- Orthros (orthros-r18.patch): A STEP IS CARRIED ON AT ITS SPEED, NOT AT ITS ARRIVAL GAP'S. push() keeps
+++-- an arrival gap under 5 ms as it came, so two poses handled a few ms apart -- two batches bunched by
+++-- the link or by a slow frame, routed in one frame -- made the last step's time 1-5 ms and EXTRAP_S / that
+++-- an 18-90x multiplier: a 300-unit teleport became a target 5,500-13,500 units on (409 after an ordinary
+++-- 66 ms gap), and the server, which relays a pose only when it changes, sent nothing more -- the copy stood
+++-- there until its owner moved again (Orthros' two-client check, 2026-10-30: 15,607-35,173 units off after
+++-- 300-424-unit moves, on the live release too). The
+++-- step's time is at least the stream's mean gap (EXTRAP_MIN_DT before one is known), and a step faster
+++-- than EXTRAP_MAX_SPEED -- a teleport, a cell change, a snap -- is a jump, not a motion: never carried on.
+++local EXTRAP_MIN_DT = 0.033
+++local EXTRAP_MAX_SPEED = 2000
++ 
++ function Interp.new()
++     return setmetatable({ buf = {}, mean = nil, dev = 0.01, cur = START_DELAY, lastNow = nil }, Interp)
++@@ -103,8 +114,11 @@ local function sample(self, rt)
++             local a, b = buf[i], buf[i + 1]
++             if not b then
++                 local p, h = buf[i - 1], math.min(rt - a.t, EXTRAP_S)
++-                if not p or h <= 0 or a.t - p.t < 1e-3 then return a end
++-                local k = h / (a.t - p.t)
+++                if not p or h <= 0 then return a end
+++                local dt = math.max(a.t - p.t, self.mean or EXTRAP_MIN_DT, EXTRAP_MIN_DT)
+++                local sx, sy, sz = a.x - p.x, a.y - p.y, a.z - p.z
+++                if sx * sx + sy * sy + sz * sz > (EXTRAP_MAX_SPEED * dt) ^ 2 then return a end
+++                local k = h / dt
++                 return { t = rt, x = a.x + (a.x - p.x) * k, y = a.y + (a.y - p.y) * k, z = a.z + (a.z - p.z) * k,
++                     yaw = a.yaw, pitch = a.pitch, flags = a.flags, animVel = a.animVel }
++             end
+ diff --git a/play/index.html b/play/index.html
+ index 28f65a4..88167b9 100644
+ --- a/play/index.html
+@@ -595,12 +631,46 @@
+    --use-port=sdl2 --use-port=freetype --use-port=harfbuzz --use-port=libpng \
+    --use-port=libjpeg --use-port=zlib --use-port=ogg --use-port=vorbis \
+    -sALLOW_MEMORY_GROWTH=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
++diff --git a/wasm-build/lua-tests/run.lua b/wasm-build/lua-tests/run.lua
++index 23bb1a9..3caaef6 100644
++--- a/wasm-build/lua-tests/run.lua
+++++ b/wasm-build/lua-tests/run.lua
++@@ -2002,6 +2002,29 @@ do
++   package.loaded['scripts.mp.interp'] = nil
++ end
++ 
+++print('Orthros: a teleport seen in two poses a few ms apart is not carried on 18-90x (the copy stood 15,000+ u away)')
+++do
+++  package.loaded['scripts.mp.interp'] = nil
+++  local Interp = dofile('./openmw/files/data/scripts/mp/interp.lua')
+++  -- The owner walks +x at 140 u/s, poses every 66 ms; then a pose 2 ms after the last one carries it 300 u on
+++  -- (a teleport, its batch handled in the same frame as the previous one), and the stream goes quiet: the
+++  -- server relays changes only.
+++  local function run(gap, jump)
+++    local it, t = Interp.new(), 0
+++    for i = 0, 20 do t = i * 0.066; it:push({ t = t, x = t * 140, y = 0, z = 0, yaw = 0, pitch = 0, flags = 1 }) end
+++    local x0 = t * 140
+++    it:push({ t = t + gap, x = x0 + jump, y = 0, z = 0, yaw = 0, pitch = 0, flags = 1 })
+++    local tg = it:target(t + gap + 5) -- long after: the target the copy settles on
+++    return tg.x - (x0 + jump)
+++  end
+++  local worst = 0
+++  for _, gap in ipairs({ 0.001, 0.002, 0.004, 0.0049 }) do worst = math.max(worst, math.abs(run(gap, 300))) end
+++  check('a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands (was 5,500-13,500 u on)', worst < 48, string.format('%.0f u off', worst))
+++  check('...and a jump after an ordinary gap too (was 409 u on)', math.abs(run(0.066, 300)) < 48, string.format('%.0f u off', run(0.066, 300)))
+++  check('an ordinary step is still carried on (a late pose is not a stop)', run(0.066, 140 * 0.066) > 5, string.format('%.1f u', run(0.066, 140 * 0.066)))
+++  package.loaded['scripts.mp.interp'] = nil
+++end
+++
++ print('players said NPCs are jerky and movement rubber-bandy: the render delay adapts to the stream (it was a fixed 40 ms, below one batch interval)')
++ do
++   package.loaded['scripts.mp.interp'] = nil
+ diff --git a/wasm-build/orthros-jspi.js b/wasm-build/orthros-jspi.js
+ new file mode 100644
+-index 0000000..656e2c0
++index 0000000..177c626
+ --- /dev/null
+ +++ b/wasm-build/orthros-jspi.js
+-@@ -0,0 +1,428 @@
++@@ -0,0 +1,436 @@
+ +// Orthros (orthros-r18.patch, JSPI): the engine's waits for the game's files suspend it (WebAssembly JSPI, -sJSPI,
+ +// link-openmw.sh) while the page fetches the bytes, instead of the page's thread spinning on shared memory (Orthros'
+ +// src/vfs/data-client.js fetchSync, wantWait): the page answers input, draws its own indicator and presents what the
+@@ -711,6 +781,12 @@
+ +    Object.defineProperty(Module, '_omw_pump_frame', { configurable: true, enumerable: true, get: () => pump, set: (f) => { if (!promising) { promising = f; pump = choose; } else pump = f; } });
+ +#endif
+ +  },
+++  // (a measuring harness's trace — globalThis.__orthrosReadTrace, Orthros' data-client.js GameData.trace —: the engine's
+++  // frames, loads and suspensions there too, { t, k: 'jspi', ev, x }; nothing recorded without it)
+++  $orthrosNote: (ev, x) => {
+++    var log = globalThis.__orthrosReadTrace;
+++    if (Array.isArray(log) && log.length < 50000) log.push({ t: Math.round(performance.now()), k: 'jspi', ev: ev, x: x });
+++  },
+ +  // (fn now, or after the frame or boot suspended now: false, or true when put off)
+ +  $orthrosLater__deps: ['$OrthrosJspi'],
+ +  $orthrosLater: (fn) => {
+@@ -811,16 +887,17 @@
+ +    if (ms > b.max) b.max = ms;
+ +  },
+ +  // (`boot`: main()'s — the boot is a load —, else the frame's)
+-+  orthros_jspi_enter__deps: ['$OrthrosJspi', '$orthrosJspiInit', '$orthrosJspiReady'],
+-+  orthros_jspi_enter: (boot) => { if (!OrthrosJspi.ready) orthrosJspiReady(); OrthrosJspi.on++; if (boot) OrthrosJspi.boot++; if (!OrthrosJspi.plain) OrthrosJspi.want = 0; },
+++  orthros_jspi_enter__deps: ['$OrthrosJspi', '$orthrosJspiInit', '$orthrosJspiReady', '$orthrosNote'],
+++  orthros_jspi_enter: (boot) => { if (!OrthrosJspi.ready) orthrosJspiReady(); orthrosNote('enter', boot); OrthrosJspi.on++; if (boot) OrthrosJspi.boot++; if (!OrthrosJspi.plain) OrthrosJspi.want = 0; },
+ +  // (a plain frame — omw_pump_frame_plain, engine.cpp — begins (1) or ends (0): nothing suspends under it)
+-+  orthros_jspi_plain__deps: ['$OrthrosJspi'],
+-+  orthros_jspi_plain: (on) => { var J = OrthrosJspi; if (on) J.plain++; else if (J.plain > 0) J.plain--; },
+++  orthros_jspi_plain__deps: ['$OrthrosJspi', '$orthrosNote'],
+++  orthros_jspi_plain: (on) => { var J = OrthrosJspi; orthrosNote('plain', on); if (on) J.plain++; else if (J.plain > 0) J.plain--; },
+ +  // (a load about to start — a save's, a new game's, the debug COE —: 1 in a plain frame, the next frame then the
+ +  // promising export's (want) and the load put off to it by the engine; 0 in a promising one, or JSPI off: load now)
+-+  orthros_jspi_defer__deps: ['$OrthrosJspi'],
+++  orthros_jspi_defer__deps: ['$OrthrosJspi', '$orthrosNote'],
+ +  orthros_jspi_defer: () => {
+ +    var J = OrthrosJspi;
+++    orthrosNote('defer', J.plain);
+ +    if ({{{ ASYNCIFY == 2 ? 'false' : 'true' }}} || J.off || J.plain === 0) return 0;
+ +    J.want = 1;
+ +    return 1;
+@@ -829,9 +906,10 @@
+ +  // that reached the engine while its frame or boot is suspended —; engine.cpp's wraps and the loading screen's calls ask)
+ +  orthros_jspi_may__deps: ['$OrthrosJspi'],
+ +  orthros_jspi_may: () => {{{ ASYNCIFY == 2 ? '(OrthrosJspi.on > 0 && !OrthrosJspi.plain && !OrthrosJspi.suspended && !OrthrosJspi.off) ? 1 : 0' : '0' }}},
+-+  orthros_jspi_leave__deps: ['$OrthrosJspi', '$orthrosFlush'],
+++  orthros_jspi_leave__deps: ['$OrthrosJspi', '$orthrosFlush', '$orthrosNote'],
+ +  orthros_jspi_leave: (boot) => {
+ +    var J = OrthrosJspi;
+++    orthrosNote('leave', boot);
+ +    if (J.on > 0) J.on--;
+ +    if (boot && J.boot > 0) J.boot--;
+ +    // (a load's frame over — the rest of it after the loading screen, the world's first draw, still a load's: its reads
+@@ -842,8 +920,8 @@
+ +    if (J.on === 0 && J.after.length) queueMicrotask(orthrosFlush);
+ +  },
+ +  // (the engine's loading screen on (1) or off (0), nested as its loads: mwgui/loadingscreen.cpp)
+-+  orthros_jspi_loading__deps: ['$OrthrosJspi'],
+-+  orthros_jspi_loading: (on) => { var J = OrthrosJspi; if (on) { J.loading++; J.loadFrame = 1; } else if (J.loading > 0) J.loading--; },
+++  orthros_jspi_loading__deps: ['$OrthrosJspi', '$orthrosNote'],
+++  orthros_jspi_loading: (on) => { var J = OrthrosJspi; orthrosNote('loading', on); if (on) { J.loading++; J.loadFrame = 1; } else if (J.loading > 0) J.loading--; },
+ +  // (the page's wait before a suspension now: short in a load — the boot, a loading screen —, longer in play)
+ +  $orthrosSpinMs__deps: ['$OrthrosJspi'],
+ +  $orthrosSpinMs: () => (OrthrosJspi.boot > 0 || OrthrosJspi.loading > 0 || OrthrosJspi.loadFrame > 0 ? OrthrosJspi.spinMs : OrthrosJspi.playSpinMs),
+@@ -852,11 +930,11 @@
+ +  $orthrosMaySuspend__deps: ['$OrthrosJspi'],
+ +  $orthrosMaySuspend: () => {{{ ASYNCIFY == 2 ? 'OrthrosJspi.on > 0 && !OrthrosJspi.plain && !OrthrosJspi.suspended && !OrthrosJspi.off && (OrthrosJspi.boot > 0 || OrthrosJspi.loading > 0 || OrthrosJspi.loadFrame > 0 || OrthrosJspi.playSpinMs >= 0)' : 'false' }}},
+ +  // (the engine suspended until `promise` settles — either way —, then `then(ok)`'s value returned to it)
+-+  $orthrosSuspend__deps: ['$OrthrosJspi', '$orthrosBlockedNote'],
+++  $orthrosSuspend__deps: ['$OrthrosJspi', '$orthrosBlockedNote', '$orthrosNote'],
+ +  $orthrosSuspend: (promise, path, kind, then) => {
+ +    var J = OrthrosJspi, t0 = performance.now();
+ +    J.suspended = 1;
+-+    var done = (ok) => { J.suspended = 0; J.freedAt = performance.now(); var ms = J.freedAt - t0; J.suspendedMs += ms; orthrosBlockedNote(ms, path, kind); return then(ok); };
+++    var done = (ok) => { J.suspended = 0; J.freedAt = performance.now(); var ms = J.freedAt - t0; J.suspendedMs += ms; orthrosBlockedNote(ms, path, kind); orthrosNote('suspended', [kind, Math.round(t0), Math.round(ms)]); return then(ok); };
+ +    return promise.then(() => done(true), () => done(false));
+ +  },
+ +  // (a load that held the page's thread breathMs since its last suspension: a turn for the page — a promise settled

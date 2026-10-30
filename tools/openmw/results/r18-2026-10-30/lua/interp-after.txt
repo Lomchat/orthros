@@ -1,0 +1,33 @@
+# interp.lua with orthros-r18.patch
+s172 a late pose is not a stop, and a puppet can catch a running owner
+  ok   a query past the newest pose carries on along the last step (was clamped to it)
+  ok   ...by at most EXTRAP_S of it (a real stop overshoots <= ~22 u at a run, s172 #175)
+  ok   the speed feed-forward keeps reading the run through a late pose
+  ok   velocity points the way the target walks (+y), for the ahead-of-target rule
+  ok   a puppet following a walking target faces within 20 degrees of its travel, wherever the point is (side-to-side jitter, 180s)
+  ok   ...and a target 3 u to the side barely turns it (was 45-90 degrees aiming at the point)
+  ok   puppet.lua steers a walking target by walkHeading
+  ok   puppet steering may exceed top speed to close a gap
+  ok   the engine honours it for puppets only
+Orthros: a teleport seen in two poses a few ms apart is not carried on 18-90x (the copy stood 15,000+ u away)
+  ok   a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands (was 5,400-27,000 u on)
+  ok   ...and a jump after an ordinary gap too
+  ok   an ordinary step is still carried on (a late pose is not a stop)
+players said NPCs are jerky and movement rubber-bandy: the render delay adapts to the stream (it was a fixed 40 ms, below one batch interval)
+  ok   a steady 15 Hz stream settles near one interval (not 40 ms)
+  ok   a jittery stream buys itself more buffer than a steady one
+  ok   a 5 Hz mid-tier stream is interpolated over its own interval
+  ok   a long silence (a stop, a cell load) is not read as jitter
+  ok   rendered speed stays within 1.4x of the real walking speed with the adaptive delay
+  ok   ...where the old fixed 40 ms delay on arrival stamps lurched well past it (the complaint)
+  ok   a self divergence under the dead zone is not corrected (players: slightly rubber-bandy)
+  ok   the delay is bounded and slewed, never a jump
+20 passed, 0 failed
+gap 0.0005 s: 0 u off
+gap 0.0010 s: 0 u off
+gap 0.0020 s: 0 u off
+gap 0.0040 s: 0 u off
+gap 0.0049 s: 0 u off
+gap 0.0060 s: 0 u off
+gap 0.0200 s: 0 u off
+gap 0.0660 s: 0 u off

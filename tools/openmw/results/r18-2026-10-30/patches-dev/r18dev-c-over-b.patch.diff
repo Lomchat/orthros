@@ -1,0 +1,123 @@
+--- r18-b.patch	2026-10-30 18:16:20.747274250 +0100
++++ r18-c.patch	2026-10-30 20:11:08.637460130 +0100
+@@ -530,10 +530,10 @@
+                      yaw = a.yaw, pitch = a.pitch, flags = a.flags, animVel = a.animVel }
+              end
+ diff --git a/play/index.html b/play/index.html
+-index 28f65a4..88167b9 100644
++index 28f65a4..64d3b6c 100644
+ --- a/play/index.html
+ +++ b/play/index.html
+-@@ -1586,8 +1586,28 @@ window.omw = (function(){
++@@ -1586,8 +1586,30 @@ window.omw = (function(){
+         if (/[?&]wqbudget=(\d+(\.\d+)?)\b/.test(location.search)) ENV.OPENMW_WORKQUEUE_BUDGET_MS=/[?&]wqbudget=(\d+(\.\d+)?)/.exec(location.search)[1];
+         // Orthros (orthros-r5.patch): a preload between frames puts off a mesh or a distant-object chunk whose files are
+         // not in the page yet (globalThis.orthrosRangeReady, streamfs.js: then fetched in the background) for up to
+@@ -555,6 +555,8 @@
+ +       if (/[?&]jspiplain=0\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PLAIN='0';
+ +       // ?jspigl=N: in a load's frame, a framebuffer's status asked after the GPU ran its queue (the engine suspended meanwhile), at most every N ms (default 50; 0: never).
+ +       if (/[?&]jspigl=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MS=/[?&]jspigl=(\d+)/.exec(location.search)[1];
+++       // ?jspiglmax=N: that wait N ms at most (default 2000), the status then asked as is (the page's thread waits the rest).
+++       if (/[?&]jspiglmax=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MAX_MS=/[?&]jspiglmax=(\d+)/.exec(location.search)[1];
+ +       // ?jspisettle=N: a load's end waits for the GPU to run what the load gave it, the page's thread free, N ms at most (default 3000; 0: never).
+ +       if (/[?&]jspisettle=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_SETTLE_MS=/[?&]jspisettle=(\d+)/.exec(location.search)[1];
+ +       if (/[?&]jspipresent=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PRESENT_MS=/[?&]jspipresent=(\d+)/.exec(location.search)[1];
+@@ -563,7 +565,23 @@
+         // ?perfkeys=1 (QA): dump the frame's raw osg::Stats attribute keys to window.__omwPhaseKeys
+         // and whether the "engine" collection group is on. Diagnostic for empty __omwPhase buckets.
+         if (/[?&]perfkeys=1/.test(location.search)) ENV.OPENMW_PERF_KEYS='1';
+-@@ -4028,11 +4048,7 @@ window.omw = (function(){
++@@ -3998,8 +4020,14 @@ window.omw = (function(){
++        // visible tab -> next tick scheduled via requestAnimationFrame (vsync-aligned, smooth);
++        // hidden tab  -> direct postMessage (unthrottled, game keeps running in background).
++        var scheduled = false;
++-       function scheduleNext(){
+++       function scheduleNext(now){
++          if (scheduled) return; scheduled = true;
+++         // Orthros (orthros-r18.patch): after a load's frame (a promising one, a promise returned — orthros-jspi.js), the
+++         // next frame at once, not at the next animation frame: the browser holds that one until the GPU process has
+++         // drawn the load's first picture of the world (0.8 s in SwiftShader after a save's load), and the engine's
+++         // next frame — the player's first in the world, the world's scripts — waited idle meanwhile, where a frame
+++         // after a load that held the page's thread (r17) ran at once, its own GPU wait after that work.
+++         if (now && !document.hidden) { mc.port2.postMessage(0); return; }
++          // Visible: run the frame INSIDE the rAF callback. Hidden: pace with a timer (~30fps
++          // target; browsers throttle background timers further) and go through the
++          // MessageChannel, which is NOT throttled in a background tab — an unpaced background
++@@ -4028,11 +4056,7 @@ window.omw = (function(){
+           if (document.hidden) setTimeout(function(){ mc.port2.postMessage(0); }, 33);
+           else requestAnimationFrame(function(){ mc.port2.postMessage(0); });
+         }
+@@ -576,7 +594,7 @@
+             // NEVER SILENT. A C++ exception is caught inside omw_pump_frame and logged there; what
+             // reaches here is a wasm TRAP (RuntimeError: unreachable / memory access out of bounds)
+             // that unwound straight through the engine's re-entrancy guard, so every later pump
+-@@ -4047,7 +4063,26 @@ window.omw = (function(){
++@@ -4047,7 +4071,26 @@ window.omw = (function(){
+               showLogOnce();
+               if (typeof fatalOverlay === 'function') fatalOverlay('The game engine crashed', 'Reload to keep playing. Your progress is saved on the server.');
+             }
+@@ -597,14 +615,21 @@
+ +         pumping = true;
+ +         try { if (Module._omw_pump_frame) r = Module._omw_pump_frame(); }
+ +         catch(e){ pumpTrap(e); }
+-+         if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a); }, function(e){ pumping = false; pumpTrap(e); pumpDone(a); });
+++         if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a, true); }, function(e){ pumping = false; pumpTrap(e); pumpDone(a); });
+ +         else { pumping = false; pumpDone(a); }
+ +       }
+-+       function pumpDone(a){
+++       function pumpDone(a, promised){
+           // End of boot: the first frame the engine actually rendered. Stamped here rather than in
+           // the 500ms status poller so it is exact to one frame. __omwRunning is set by the engine's
+           // own loop, so this fires once the player can genuinely see something.
+-@@ -4063,7 +4098,8 @@ window.omw = (function(){
++@@ -4058,12 +4101,14 @@ window.omw = (function(){
++          if (window.__glCalls){ var gc = window.__glCalls; window.__glPerFrame = { total: gc.total - (window.__glLast||0), draw: gc.draw - (window.__glLastDraw||0) }; window.__glLast = gc.total; window.__glLastDraw = gc.draw; }
++          var dt = b - __t0;
++          if (dt >= 1000){ window.__fps = Math.round(__frames*1000/dt); window.__frameMs = +(__accum/__frames).toFixed(2); __frames = 0; __accum = 0; __t0 = b; }
++-         scheduleNext();
+++         // (a load's frame: a promising one that lasted — not one of the boot's, which return at once while main() runs)
+++         scheduleNext(promised && b - a >= 100);
++        }
+         // The hidden-tab path still arrives as a message; visible frames call pumpFrame directly.
+         mc.port1.onmessage = pumpFrame;
+         // If the tab hides while an rAF-scheduled tick is frozen, take over directly.
+@@ -667,10 +692,10 @@
+    package.loaded['scripts.mp.interp'] = nil
+ diff --git a/wasm-build/orthros-jspi.js b/wasm-build/orthros-jspi.js
+ new file mode 100644
+-index 0000000..177c626
++index 0000000..7ce22aa
+ --- /dev/null
+ +++ b/wasm-build/orthros-jspi.js
+-@@ -0,0 +1,436 @@
++@@ -0,0 +1,438 @@
+ +// Orthros (orthros-r18.patch, JSPI): the engine's waits for the game's files suspend it (WebAssembly JSPI, -sJSPI,
+ +// link-openmw.sh) while the page fetches the bytes, instead of the page's thread spinning on shared memory (Orthros'
+ +// src/vfs/data-client.js fetchSync, wantWait): the page answers input, draws its own indicator and presents what the
+@@ -750,7 +775,7 @@
+ +// Module.orthrosFrames { plain, promising }: the frames the page pumped of each kind;
+ +// Module.orthrosSuspendedMs: the time suspended since the start (a frame's timer: its whole time minus that, its work).
+ +addToLibrary({
+-+  $OrthrosJspi: { on: 0, boot: 0, loading: 0, suspended: 0, after: [], flushing: false, ready: false, off: false, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glAt: 0, freedAt: 0, suspendedMs: 0 },
+++  $OrthrosJspi: { on: 0, boot: 0, loading: 0, suspended: 0, after: [], flushing: false, ready: false, off: false, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glMaxMs: 2000, glAt: 0, freedAt: 0, suspendedMs: 0 },
+ +  $orthrosJspiInit__deps: ['$OrthrosJspi', '$orthrosLater'],
+ +  $orthrosJspiInit__postset: 'orthrosJspiInit();',
+ +  $orthrosJspiInit: () => {
+@@ -829,6 +854,8 @@
+ +    if (ENV['OPENMW_ORTHROS_JSPI_SETTLE_MS'] !== undefined && Number.isFinite(settle) && settle >= 0) J.settleMs = settle;
+ +    var gl = Number(ENV['OPENMW_ORTHROS_JSPI_GL_MS']);
+ +    if (ENV['OPENMW_ORTHROS_JSPI_GL_MS'] !== undefined && Number.isFinite(gl) && gl >= 0) J.glMs = gl;
+++    var glMax = Number(ENV['OPENMW_ORTHROS_JSPI_GL_MAX_MS']);
+++    if (ENV['OPENMW_ORTHROS_JSPI_GL_MAX_MS'] !== undefined && Number.isFinite(glMax) && glMax >= 0) J.glMaxMs = glMax;
+ +#if ASYNCIFY == 2
+ +    if (J.off) { err('[orthros-jspi] off (OPENMW_ORTHROS_JSPI=0): every read waits on the page\'s thread'); return; }
+ +    var later = (f) => function (...a) {
+@@ -1082,7 +1109,7 @@
+ +    var J = OrthrosJspi, now = performance.now();
+ +    if (J.glMs <= 0 || !(J.boot > 0 || J.loading > 0 || J.loadFrame > 0) || now - J.glAt < J.glMs) return;
+ +    J.glAt = now;
+-+    var idle = orthrosGpuIdle(2000);
+++    var idle = orthrosGpuIdle(J.glMaxMs);
+ +    if (idle) return orthrosSuspend(idle, null, 'gl', () => { J.glAt = performance.now(); });
+ +  },
+ +  // (components/vfs/manager.cpp orthrosReadWait, the page's thread only: 1 when everything announced is here — or

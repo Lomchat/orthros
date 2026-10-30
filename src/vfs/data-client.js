@@ -125,6 +125,8 @@ const REAL_FETCH_SHARE = 8;
 const HELD_MAX_MS = 60000;
 /** The page's game data is quiet (GameData.quiet) after this long without a read waiting for the network. */
 export const QUIET_MS = 3000;
+/** The most entries a read trace keeps (GameData.trace). */
+const TRACE_MAX = 50000;
 
 /**
  * A load of a file that has a light copy reads the file itself (true) or its light copy (false): the file when it is
@@ -188,6 +190,9 @@ export class GameData {
      * false (the page's ?piecereuse=0): every piece a copy of its own, the evicted ones and the worker's answers left to
      * the collector, as before */
     this.newest = -1; this.freePieces = []; this.pieceReuse = o.pieceReuse ?? true;
+    /** a measuring harness's trace of the page's requests to the worker (globalThis.__orthrosReadTrace: an array it set
+     * before the page's scripts ran — tools/openmw/place-load.mjs --read-trace —; null otherwise: nothing recorded) */
+    this.traceLog = Array.isArray(globalThis.__orthrosReadTrace) ? globalThis.__orthrosReadTrace : null;
     this.files = new Map(); this.byId = []; this.gen = 0; this.used = [];
     /** the announced batches posted (want): the last one's number — wantWait waits for ctrl[12] to reach it —, and the
      * first one of the current wait's window (the batches announced since the last wait: an older one that never
@@ -260,9 +265,11 @@ export class GameData {
         }
         else if (m.net) this.net = m.net;
         else if (m.log) this.log(m.log);
+        // (the worker's own requests ahead of the game's reads, traced — trace — on the page's clock)
+        else if (m.trace) { if (this.traceLog && this.traceLog.length < TRACE_MAX) for (const e of m.trace) this.traceLog.push({ ...e, t: Math.round(e.t - performance.timeOrigin) }); }
       };
     });
-    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', lang: o.lang ?? null, bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', reloads: !!o.reloads, manifest: o.manifest, orderAtOpen: !!o.orderAtOpen, memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
+    this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', lang: o.lang ?? null, bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', reloads: !!o.reloads, trace: !!this.traceLog, manifest: o.manifest, orderAtOpen: !!o.orderAtOpen, memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
     this.timer = setInterval(() => { if (this.used.length) this.worker.postMessage({ used: this.used.splice(0) }); }, 2000);
     this.holdTimer = setInterval(() => this.holdWatch(), 100);
     // (the page's loading indicator, src/host/web/data-meter.js, when it has one: these counters, read live)
@@ -737,6 +744,7 @@ export class GameData {
         if (r) list.push(r);
       }
       // (an empty batch too: the worker settles its number at once)
+      this.trace('want', null, seq, list.length, { bytes: list.reduce((a, r) => a + r[3], 0), label });
       this.stats.wants += list.length;
       this.worker.postMessage({ want: { seq, from, list, label }, used: this.used.splice(0) });
     }
@@ -814,6 +822,7 @@ export class GameData {
     this.progress();
     const target = this.wantSeq, c = this.ctrl, start = performance.now();
     if (target < this.wantFrom) return true;
+    const tr = this.trace('wwait', null, this.wantFrom, target, { soon: 1, timeoutMs });
     this.wantFrom = target + 1;
     let beat = Atomics.load(c, 3), beatAt = start, ok = true;
     for (let v; (v = Atomics.load(c, 12)) < target;) {
@@ -825,6 +834,7 @@ export class GameData {
     }
     this.stats.wantWaits++; this.stats.wantWaitMs += performance.now() - t0;
     if (!ok) this.stats.wantTimeouts++;
+    this.traced(tr, { ok: ok ? 1 : 0, left: Atomics.load(c, 13) });
     return ok;
   }
   /** wantWait's wait itself. */
@@ -832,8 +842,9 @@ export class GameData {
     this.progress();
     const target = this.wantSeq, c = this.ctrl;
     if (target < this.wantFrom) return true;
+    const tr = this.trace('wwait', null, this.wantFrom, target, { timeoutMs });
     this.wantFrom = target + 1;
-    if (Atomics.load(c, 12) >= target) return true;
+    if (Atomics.load(c, 12) >= target) { this.traced(tr, { ok: 1 }); return true; }
     const t0 = performance.now();
     let beat = Atomics.load(c, 3), beatAt = t0, ok = true;
     while (Atomics.load(c, 12) < target) {
@@ -843,6 +854,7 @@ export class GameData {
     }
     this.stats.wantWaits++; this.stats.wantWaitMs += performance.now() - t0;
     if (!ok) this.stats.wantTimeouts++;
+    this.traced(tr, { ok: ok ? 1 : 0, left: Atomics.load(c, 13) });
     return ok;
   }
   /** Announced entries the worker has not settled yet (ctrl[13]), and those that failed since the start (ctrl[14]). */
@@ -924,6 +936,7 @@ export class GameData {
     let stop = this.askedEnd(h, start, need);
     for (let q = p + 1; q * PIECE < stop; q++) if (this.cache.has(h.id * PER_FILE + q)) { stop = q * PIECE; break; }
     const gen = ++this.gen, late = this.nextAsk++, { ctrl } = this;
+    const tr = this.trace('spin', h, start, Math.min(SPAN, stop - start));
     Atomics.store(ctrl, 16, gen);
     this.worker.postMessage({ gen, late, ...this.whose(h), off: start, len: Math.min(SPAN, stop - start), want: this.takeBytes(h, stop - start), used: this.used.splice(0) });
     const t0 = performance.now();
@@ -938,11 +951,13 @@ export class GameData {
       this.stats.soonSuspends++;
       // (the answer by message: a buffer of its own the worker handed over — data-worker.js settleSync —, freed once in
       // the pieces, as fetchAsync's)
-      return bytes.then((got) => { this.waited(h, performance.now() - t0); this.keep(h, p, got); if (this.pieceReuse) release(got); });
+      if (tr) tr.k = 'late';
+      return bytes.then((got) => { this.traced(tr, { got: got.length }); this.waited(h, performance.now() - t0); this.keep(h, p, got); if (this.pieceReuse) release(got); });
     }
     const ms = performance.now() - t0;
     this.stats.soonSpins++; this.stats.soonSpinMs += ms; this.waited(h, ms);
     const n = ctrl[1];
+    this.traced(tr, { got: n });
     if (n < 0) throw new Error(`${h.path}: read failed at ${start}`);
     this.keep(h, p, this.data.subarray(0, n));
     return true;
@@ -1016,6 +1031,7 @@ export class GameData {
       if (this.cache.has(h.id * PER_FILE + p)) { p++; continue; }
       const id = this.nextAsk++, t0 = performance.now(), held = false;
       if (!background) { this.pending.set(id, { at, held }); setTimeout(() => this.holdCheck(id), 0); }
+      const tr = this.trace(background ? 'bg' : 'async', h, p * PIECE, end - p * PIECE, real ? { real: 1 } : undefined);
       let bytes;
       try {
         bytes = await new Promise((resolve, reject) => {
@@ -1024,6 +1040,7 @@ export class GameData {
           this.worker.postMessage({ read: { id, ...this.whose(h), off: p * PIECE, len: end - p * PIECE, want: this.takeBytes(h, end - p * PIECE), held } });
         });
       } finally { this.pending.delete(id); }
+      this.traced(tr, { got: bytes.length });
       // (the engine's waits: the reads it did not go on past — the time since it asked)
       if (!background && this.goes === at) this.waited(h, performance.now() - t0);
       this.keep(h, p, bytes);
@@ -1108,6 +1125,7 @@ export class GameData {
     let stop = this.askedEnd(h, start, need);
     for (let q = p + 1; q * PIECE < stop; q++) if (this.cache.has(h.id * PER_FILE + q)) { stop = q * PIECE; break; }
     const gen = ++this.gen, { ctrl } = this;
+    const tr = this.trace('sync', h, start, Math.min(SPAN, stop - start));
     this.worker.postMessage({ gen, ...this.whose(h), off: start, len: Math.min(SPAN, stop - start), want: this.takeBytes(h, stop - start), used: this.used.splice(0) });
     const t0 = performance.now();
     let beat = Atomics.load(ctrl, 3), beatAt = t0;
@@ -1117,9 +1135,31 @@ export class GameData {
     }
     this.stats.syncFetches++; this.waited(h, performance.now() - t0);
     const n = ctrl[1];
+    this.traced(tr, { got: n });
     if (n < 0) throw new Error(`${h.path}: read failed at ${start}`);
     this.keep(h, p, this.data.subarray(0, n));
   }
+
+  /**
+   * A request of the page's to the worker, traced when a harness asked (traceLog): { t (the page's clock), k (kind: sync —
+   * fetchSync, the page's thread held —, spin / late — fetchSpin answered within its wait, or given up to a message —,
+   * async / bg — fetchAsync's, an engine's wait or a background fetch —, want — an announced batch posted —, wwait — a
+   * wait for the announced batches —), f (the file), off, len, busy (the engine suspended or its calls put off now:
+   * Module.orthrosEngineBusy), load (the engine in a load: Module.orthrosLoading) } and the caller's stack for a
+   * background fetch (st: who asks while the engine waits); the entry returned (its end — ms — added by the caller),
+   * null when not traced.
+   */
+  trace(k, h, off, len, more) {
+    const log = this.traceLog;
+    if (!log || log.length >= TRACE_MAX) return null;
+    const M = globalThis.Module, e = { t: Math.round(performance.now()), k, f: h ? h.path ?? `src:${h.src}` : null, off, len,
+      busy: M?.orthrosEngineBusy?.() ? 1 : 0, load: M?.orthrosLoading?.() ? 1 : 0, ...more };
+    if (k === 'bg' || k === 'async') e.st = String(new Error().stack ?? '').split('\n').slice(2, 14).map((x) => x.trim().replace(/^at /, '').replace(/\(?https?:\/\/[^)]*\/([^/)]+)\)?/, '$1')).join(' < ');
+    log.push(e);
+    return e;
+  }
+  /** A traced entry's end: its time since the start, and `more`. */
+  traced(e, more) { if (e) { e.ms = Math.round(performance.now() - e.t); if (more) Object.assign(e, more); } }
 
   /**
    * One wait of the engine for `h`'s bytes (`ms` long): counted (misses, stallMs) and by file (fileWaits: which file a

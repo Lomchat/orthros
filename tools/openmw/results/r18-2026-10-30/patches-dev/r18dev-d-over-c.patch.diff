@@ -1,0 +1,54 @@
+--- r18-c.patch	2026-10-30 20:11:08.637460130 +0100
++++ r18-d.patch	2026-10-30 20:47:06.384200964 +0100
+@@ -530,7 +530,7 @@
+                      yaw = a.yaw, pitch = a.pitch, flags = a.flags, animVel = a.animVel }
+              end
+ diff --git a/play/index.html b/play/index.html
+-index 28f65a4..64d3b6c 100644
++index 28f65a4..95a0eef 100644
+ --- a/play/index.html
+ +++ b/play/index.html
+ @@ -1586,8 +1586,30 @@ window.omw = (function(){
+@@ -555,7 +555,7 @@
+ +       if (/[?&]jspiplain=0\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PLAIN='0';
+ +       // ?jspigl=N: in a load's frame, a framebuffer's status asked after the GPU ran its queue (the engine suspended meanwhile), at most every N ms (default 50; 0: never).
+ +       if (/[?&]jspigl=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MS=/[?&]jspigl=(\d+)/.exec(location.search)[1];
+-+       // ?jspiglmax=N: that wait N ms at most (default 2000), the status then asked as is (the page's thread waits the rest).
+++       // ?jspiglmax=N: that wait N ms at most (default 300), the status then asked as is (the page's thread waits the rest).
+ +       if (/[?&]jspiglmax=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MAX_MS=/[?&]jspiglmax=(\d+)/.exec(location.search)[1];
+ +       // ?jspisettle=N: a load's end waits for the GPU to run what the load gave it, the page's thread free, N ms at most (default 3000; 0: never).
+ +       if (/[?&]jspisettle=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_SETTLE_MS=/[?&]jspisettle=(\d+)/.exec(location.search)[1];
+@@ -692,10 +692,10 @@
+    package.loaded['scripts.mp.interp'] = nil
+ diff --git a/wasm-build/orthros-jspi.js b/wasm-build/orthros-jspi.js
+ new file mode 100644
+-index 0000000..7ce22aa
++index 0000000..2b828a6
+ --- /dev/null
+ +++ b/wasm-build/orthros-jspi.js
+-@@ -0,0 +1,438 @@
++@@ -0,0 +1,441 @@
+ +// Orthros (orthros-r18.patch, JSPI): the engine's waits for the game's files suspend it (WebAssembly JSPI, -sJSPI,
+ +// link-openmw.sh) while the page fetches the bytes, instead of the page's thread spinning on shared memory (Orthros'
+ +// src/vfs/data-client.js fetchSync, wantWait): the page answers input, draws its own indicator and presents what the
+@@ -775,7 +775,7 @@
+ +// Module.orthrosFrames { plain, promising }: the frames the page pumped of each kind;
+ +// Module.orthrosSuspendedMs: the time suspended since the start (a frame's timer: its whole time minus that, its work).
+ +addToLibrary({
+-+  $OrthrosJspi: { on: 0, boot: 0, loading: 0, suspended: 0, after: [], flushing: false, ready: false, off: false, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glMaxMs: 2000, glAt: 0, freedAt: 0, suspendedMs: 0 },
+++  $OrthrosJspi: { on: 0, boot: 0, loading: 0, suspended: 0, after: [], flushing: false, ready: false, off: false, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glMaxMs: 300, glAt: 0, freedAt: 0, suspendedMs: 0 },
+ +  $orthrosJspiInit__deps: ['$OrthrosJspi', '$orthrosLater'],
+ +  $orthrosJspiInit__postset: 'orthrosJspiInit();',
+ +  $orthrosJspiInit: () => {
+@@ -1101,7 +1101,10 @@
+ +  // (a framebuffer's status asked — engine.cpp __wrap_glCheckFramebufferStatus, when the engine may suspend —: in a load's
+ +  // frame (the boot, a loading screen on, the rest of its frame: the world's first draw), the engine suspended until the
+ +  // GPU ran its queue — the call then answers at once —, at most once every glMs of the engine's time (ENV
+-+  // OPENMW_ORTHROS_JSPI_GL_MS, 50 by default; ?jspigl=N, 0: never), 2 s at most)
+++  // OPENMW_ORTHROS_JSPI_GL_MS, 50 by default; ?jspigl=N, 0: never), ENV OPENMW_ORTHROS_JSPI_GL_MAX_MS at most (300 by
+++  // default; ?jspiglmax=N), the status then asked as is — waiting for SwiftShader to have drawn the whole queue (a fence)
+++  // held the world's first draw after a save's load 1.2 s, where the status call waits only for the GPU process to have
+++  // read it: 2000 ms of cap put the world 1.0-1.2 s later (2026-10-30, docs/openmw.md "(B) The warm F9 to the world"))
+ +  orthros_gl_settle__sig: 'v',
+ +  orthros_gl_settle__async: true,
+ +  orthros_gl_settle__deps: ['$OrthrosJspi', '$orthrosMaySuspend', '$orthrosSuspend', '$orthrosGpuIdle'],
