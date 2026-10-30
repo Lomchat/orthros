@@ -1814,9 +1814,9 @@ a script's ray built in one frame. The two fixes (docs/openmw.md "Serial reads t
   tree, not the `orthros-r14.patch` released on `main`, Lua's thread and LuaUi's diffing, which has no terrain code)
   puts off a distant chunk a frame's cull or a script's ray would build while its files are not in the page, as r5/r12
   do for the sliced preload — built once they are here, or after 10 s and two of the page's turns
-  (`window.orthrosTurns`: nothing a put-off asks can arrive inside the task that asked it). Revised for the first r17
-  build (the cull alone, the limit counted from the page's first turn), then dropped from `orthros-r17.patch`: with
-  r17's reads suspending the frame (docs/openmw.md "Waits that yield to the browser") it measured no better and held
+  (`window.orthrosTurns`: nothing a put-off asks can arrive inside the task that asked it). Revised for the first r18
+  build (the cull alone, the limit counted from the page's first turn), then dropped from `orthros-r18.patch`: with
+  r18's reads suspending the frame (docs/openmw.md "Waits that yield to the browser") it measured no better and held
   the page longer at a view raise.
 
 Measured (2026-10-29, `place-load.mjs morrowind-goty-vanilla-plus-fr --query tier=mid --after 75`, the proxy at 2 MB/s
@@ -1847,8 +1847,8 @@ there once their 10 s had passed, their files unable to arrive — the turns' ru
 5.3 / 4.3 s, 12 / 7 serial reads (on `?cullwait=0`, as before `r14dev`: 4.1 s, 30). In 3 of 4 final COE runs some entries
 were still built after their limit (~23 s put off, their reads few: ≤ 12 in the world) — explained since: put off by
 the COE's script rays inside its one long task (21-24 s, all within 30 ms of each other), the limit passed inside it,
-the two turns only at its end (the first r17 build's revision had the rays build as before and counted the limit from
-the page's first turn; the put-off was then dropped from r17 altogether). The boot's remaining serial reads are the
+the two turns only at its end (the first r18 build's revision had the rays build as before and counted the limit from
+the page's first turn; the put-off was then dropped from r18 altogether). The boot's remaining serial reads are the
 engine's common assets, the content files' first records and the water's textures (none announced; the learned order has them). Not measured: the
 owner's real GPU and link, the 85 KB/s link, a headed Chrome's hang dialog.
 
@@ -1867,7 +1867,7 @@ Arsenal (`tools/goldsrc/check.mjs … solo --guest --no-save`) and Vice City reV
 
 ## Waits that yield to the browser (2026-10-29)
 
-An engine that can suspend while it waits (JSPI: re3; OpenMW's `orthros-r17.patch`) need not hold the page's thread
+An engine that can suspend while it waits (JSPI: re3; OpenMW's `orthros-r18.patch`) need not hold the page's thread
 for a read: its read asks `GameData.soon(h, position, length, spinMs)` (through the node's `orthrosStreamed.soon`,
 `src/vfs/emscripten-files.js` `asyncReads`) and suspends only on the promise it may return; its announced wait asks
 `GameData.wantWaitSoon(timeoutMs, spinMs)` (OpenMW: `window.orthrosReadWaitSoon`, `streamfs.js`). The rules:
@@ -1892,7 +1892,7 @@ for a read: its read asks `GameData.soon(h, position, length, spinMs)` (through 
 - **In a load only** (OpenMW, 2026-10-30): the engine passes the wait itself — 10 ms in its boot and under its loading
   screen, where the page's thread is what the player has; in play it never suspends (`?jspiplay=N`: after N ms), where
   a frame that suspends presents nothing more and the suspension only cost the frame its wait and a round of the page
-  (docs/openmw.md "In play: what r17 made worse, and the fix", "r16dev-c").
+  (docs/openmw.md "In play: what r18 made worse, and the fix", "r16dev-c").
 - **The worker's word held through a load that yields** (`GameData` `inLoad`, `heldReal`; OpenMW: the engine's
   `Module.orthrosLoading()`, `?heldreal=0` off): its `real` messages — the files here whole — are queued while the
   engine is in a load, applied in order at its end (HELD_MAX_MS at most). An engine that holds the page's thread gets
@@ -1906,7 +1906,7 @@ once its load starts; for the engines whose page asks for it (`GameData` `wholeL
 GoldSrc's and re3's reads unchanged, not measured there) its first missing piece is asked for to the file's end (`GameData.askedEnd`, SPAN at most a
 request; `fetchSync`, `fetchSpin`, `fetchAsync`), one wait instead of one per piece its reads grow into (256 KB, then the
 run's length: a 21 MB texture of OpenMW's in play read in 7 waits, 2 now). Archives, content files, sounds as before
-(their read, and what the worker has beyond, `takeBytes`). OpenMW `?wholeloads=0`: off. Measured in play on a local link (OpenMW r17, 60 s): the waits for images 44-56 → 26 a minute, their time the same
+(their read, and what the worker has beyond, `takeBytes`). OpenMW `?wholeloads=0`: off. Measured in play on a local link (OpenMW r18, 60 s): the waits for images 44-56 → 26 a minute, their time the same
 (the bytes, not the round trips, on that link); over a 2 MB/s, 85 ms link each wait saved is a round trip.
 
 ## What the page says

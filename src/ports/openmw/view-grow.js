@@ -102,7 +102,7 @@ export async function install(win = globalThis, o = {}) {
     const t = now(), f = win.orthrosFrames, state = win.omw?.state ?? {}, report = parseView(state['orthros.view']);
     // (the frames of play only — the player in the world, frames drawn —: the half seconds of a boot or a load without
     // a frame (p99 0) made the usual frame 0 for the next 30 s, every frame of a 20 fps machine then a long one holding
-    // the raise — an engine whose boot yields to the page (OpenMW r17, JSPI) gave this look its turns all along the
+    // the raise — an engine whose boot yields to the page (OpenMW r18, JSPI) gave this look its turns all along the
     // boot, one that holds the page's thread none: its raise 13 s later, 2026-10-30)
     if (report && f && Number.isFinite(f.p99) && f.p99 > 0) {
       s.p99s.push(f.p99); if (s.p99s.length > 60) s.p99s.shift();

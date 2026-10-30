@@ -1,5 +1,5 @@
 diff --git a/openmw/apps/openmw/engine.cpp b/openmw/apps/openmw/engine.cpp
-index 79df243..c66c22b 100644
+index 79df243..a0b5483 100644
 --- a/openmw/apps/openmw/engine.cpp
 +++ b/openmw/apps/openmw/engine.cpp
 @@ -4,6 +4,8 @@
@@ -15,15 +15,15 @@ index 79df243..c66c22b 100644
      void (*g_emTick)(void*) = nullptr;
      void* g_emArg = nullptr;
  }
-+// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): the frame and main() are the engine's promising exports (JSPI);
++// Orthros (orthros-r18.patch, wasm-build/orthros-jspi.js): the frame and main() are the engine's promising exports (JSPI);
 +// a file read (fd_read, fd_pread) or an announced wait (orthros_read_wait) under them that the page does not answer within
 +// a few ms suspends the engine while the page fetches the bytes, instead of the page's thread spinning. Entered and left
 +// around them: the library suspends only inside one, never in a call that reaches the engine meanwhile (an input event,
 +// a worker thread's proxied read), which reads as before; the page's calls into the engine wait for the frame's end.
 +extern "C" void orthros_jspi_enter(int boot);
 +extern "C" void orthros_jspi_leave(int boot);
-+// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): a frame in play runs as a plain export (omw_pump_frame_plain:
-+// on the page's own stack, never suspending, as before r17); a load it would start (a save's, a new game's, the debug
++// Orthros (orthros-r18.patch, wasm-build/orthros-jspi.js): a frame in play runs as a plain export (omw_pump_frame_plain:
++// on the page's own stack, never suspending, as before r18); a load it would start (a save's, a new game's, the debug
 +// COE) is put off to the next frame — orthros_jspi_defer() returns 1 then, that frame the promising export's.
 +extern "C" void orthros_jspi_plain(int on);
 +extern "C" int orthros_jspi_defer();
@@ -84,7 +84,7 @@ index 79df243..c66c22b 100644
 +}
 +namespace
 +{
-+    // Orthros (orthros-r17.patch): the debug COE and teleport the page asked (omw_debug_coe, omw_debug_teleport), run
++    // Orthros (orthros-r18.patch): the debug COE and teleport the page asked (omw_debug_coe, omw_debug_teleport), run
 +    // at the next frame's start — inside the frame, as a console COE or a door: their loads' reads suspend it (JSPI)
 +    // instead of holding the page's thread in the export's own call —; the last of each kind, a COE dropping a
 +    // teleport asked before it.
@@ -98,7 +98,7 @@ index 79df243..c66c22b 100644
 +    OrthrosDebugAsks g_debugAsks;
 +    void orthrosRunDebugAsks();
 +}
-+// Orthros (orthros-r17.patch): the promising exports' stack made deep before their work (orthros_jspi_deep). Chromium's
++// Orthros (orthros-r18.patch): the promising exports' stack made deep before their work (orthros_jspi_deep). Chromium's
 +// native stack walker — base::debug::TraceStackFramePointers, used by its heap profiler on a sampled allocation —
 +// follows the frame pointers from where it runs up to a stack's end; on a JSPI stack it reaches that stack's first
 +// frame, whose caller is on the page's own stack, takes the chain for broken and scans 8 KB further for a frame,
@@ -158,7 +158,7 @@ index 79df243..c66c22b 100644
      }
  }
  
-+// Orthros (orthros-r17.patch): the frame as a plain export — what the page pumps in play (orthros-jspi.js: the promising
++// Orthros (orthros-r18.patch): the frame as a plain export — what the page pumps in play (orthros-jspi.js: the promising
 +// one only for a load, the boot's, or one put off to it, orthros_jspi_defer). A browser's code that walks the page's
 +// stack (Chromium's frame-pointer unwinder, base::debug ScanStackForNextFrame) read past the end of a JSPI stack and
 +// crashed the renderer at random — twice in a day of runs (2026-10-29/30, the kernel's log: the same instruction, a
@@ -177,7 +177,7 @@ index 79df243..c66c22b 100644
      return 1;
  }
  
-+// Orthros (orthros-r17.patch): this engine suspends its frame and its boot while it waits for the game's files (JSPI,
++// Orthros (orthros-r18.patch): this engine suspends its frame and its boot while it waits for the game's files (JSPI,
 +// wasm-build/orthros-jspi.js) — the release's mark, in its list of exports (tools/openmw/lock.json): its page's thread is
 +// free during those waits. Returns 1.
 +extern "C" EMSCRIPTEN_KEEPALIVE int orthros_jspi()
@@ -194,7 +194,7 @@ index 79df243..c66c22b 100644
  
 -// Debug: teleport the player to an absolute world position (within the loaded worldspace).
 +// Debug: teleport the player to an absolute world position (within the loaded worldspace) — at the next frame's start
-+// (orthros-r17.patch: orthrosRunDebugAsks; the last position asked before it).
++// (orthros-r18.patch: orthrosRunDebugAsks; the last position asked before it).
  extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_teleport(float x, float y, float z)
  {
 -    auto world = MWBase::Environment::get().getWorld();
@@ -212,7 +212,7 @@ index 79df243..c66c22b 100644
  
  // Debug: teleport the player to an exterior cell (like the console "COE x y"). Triggers a full
  // exterior worldspace load — used to repro/validate the navmesh cell-load path from JS.
-+// Orthros (orthros-r17.patch): at the next frame's start (orthrosRunDebugAsks), its time then told to the page —
++// Orthros (orthros-r18.patch): at the next frame's start (orthrosRunDebugAsks), its time then told to the page —
 +// globalThis.orthrosDebugRan.coe = [start, end] (performance.now()).
  extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_coe(int x, int y)
 +{
@@ -276,7 +276,7 @@ index 79df243..c66c22b 100644
  // gear-equip path — a cache-miss weapon mesh loaded on the main thread — that used to freeze
  // the browser (WorkQueue worker/main contention). Returns 1 on success, 0/-1 on failure.
 diff --git a/openmw/apps/openmw/main.cpp b/openmw/apps/openmw/main.cpp
-index 0b6147a..efc6d9a 100644
+index 0b6147a..a3059e0 100644
 --- a/openmw/apps/openmw/main.cpp
 +++ b/openmw/apps/openmw/main.cpp
 @@ -269,13 +269,43 @@ int runApplication(int argc, char* argv[])
@@ -284,7 +284,7 @@ index 0b6147a..efc6d9a 100644
  }
  
 +#ifdef __EMSCRIPTEN__
-+// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): main() is a promising export — the boot's reads the page does
++// Orthros (orthros-r18.patch, wasm-build/orthros-jspi.js): main() is a promising export — the boot's reads the page does
 +// not answer within a few ms suspend it instead of holding the page's thread
 +extern "C" void orthros_jspi_enter(int boot);
 +extern "C" void orthros_jspi_leave(int boot);
@@ -324,7 +324,7 @@ index 0b6147a..efc6d9a 100644
  
  // Platform specific for Windows when there is no console built into the executable.
 diff --git a/openmw/apps/openmw/mwgui/loadingscreen.cpp b/openmw/apps/openmw/mwgui/loadingscreen.cpp
-index da9c90f..baf5f1c 100644
+index da9c90f..49af1ff 100644
 --- a/openmw/apps/openmw/mwgui/loadingscreen.cpp
 +++ b/openmw/apps/openmw/mwgui/loadingscreen.cpp
 @@ -27,6 +27,21 @@
@@ -332,7 +332,7 @@ index da9c90f..baf5f1c 100644
  #include "backgroundimage.hpp"
  
 +#ifdef __EMSCRIPTEN__
-+// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): the engine's loads told to the page's glue — while one runs
++// Orthros (orthros-r18.patch, wasm-build/orthros-jspi.js): the engine's loads told to the page's glue — while one runs
 +// (its loading screen on), a read the page does not answer within a few ms suspends the frame; in play, outside them,
 +// it waits on the page's thread as before (a frame that suspends shows nothing more meanwhile)
 +extern "C" void orthros_jspi_loading(int on);
@@ -406,7 +406,7 @@ index da9c90f..baf5f1c 100644
  
  }
 diff --git a/openmw/apps/openmw/mwgui/savegamedialog.cpp b/openmw/apps/openmw/mwgui/savegamedialog.cpp
-index 78e2db8..3b59ab4 100644
+index 78e2db8..0ee70cb 100644
 --- a/openmw/apps/openmw/mwgui/savegamedialog.cpp
 +++ b/openmw/apps/openmw/mwgui/savegamedialog.cpp
 @@ -343,7 +343,13 @@ namespace MWGui
@@ -414,7 +414,7 @@ index 78e2db8..3b59ab4 100644
          {
              assert(mCurrentCharacter && mCurrentSlot);
 +#ifdef __EMSCRIPTEN__
-+            // Orthros (orthros-r17.patch): asked, loaded at the state's update — in a frame that may suspend while it
++            // Orthros (orthros-r18.patch): asked, loaded at the state's update — in a frame that may suspend while it
 +            // reads (wasm-build/orthros-jspi.js orthros_jspi_defer), as the menu script's and the quick load's
 +            MWBase::Environment::get().getStateManager()->requestLoad(mCurrentCharacter, mCurrentSlot->mPath);
 +#else
@@ -424,7 +424,7 @@ index 78e2db8..3b59ab4 100644
      }
  
 diff --git a/openmw/apps/openmw/mwstate/statemanagerimp.cpp b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
-index 82e5f6c..7fb1f66 100644
+index 82e5f6c..5f56e61 100644
 --- a/openmw/apps/openmw/mwstate/statemanagerimp.cpp
 +++ b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
 @@ -869,9 +869,22 @@ MWState::StateManager::CharacterIterator MWState::StateManager::characterEnd()
@@ -432,7 +432,7 @@ index 82e5f6c..7fb1f66 100644
  }
  
 +#ifdef __EMSCRIPTEN__
-+// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): 1 when this frame is a plain one (play: never suspending) — the
++// Orthros (orthros-r18.patch, wasm-build/orthros-jspi.js): 1 when this frame is a plain one (play: never suspending) — the
 +// load asked put off to the next frame, which the page then pumps as the promising export (its reads may suspend)
 +extern "C" int orthros_jspi_defer();
 +#endif
@@ -468,14 +468,14 @@ index 82e5f6c..7fb1f66 100644
          MWBase::Environment::get().getWindowManager()->removeGuiMode(MWGui::GM_MainMenu);
          const Character* character = mLoadRequest->first;
 diff --git a/openmw/components/vfs/manager.cpp b/openmw/components/vfs/manager.cpp
-index d8b3eae..d2ea4e1 100644
+index d8b3eae..a98a15d 100644
 --- a/openmw/components/vfs/manager.cpp
 +++ b/openmw/components/vfs/manager.cpp
 @@ -7,6 +7,12 @@
  #ifdef __EMSCRIPTEN__
  #include <emscripten.h>
  #include <emscripten/threading.h>
-+// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): the page's globalThis.orthrosReadWaitSoon — answered within a
++// Orthros (orthros-r18.patch, wasm-build/orthros-jspi.js): the page's globalThis.orthrosReadWaitSoon — answered within a
 +// few ms, or the engine suspended until it is (JSPI) —, else its orthrosReadWait as before
 +extern "C" int orthros_read_wait(double timeoutMs);
 +// (orthros_read_wait suspends: called only when the engine may — wasm-build/orthros-jspi.js orthros_jspi_may —, else the
@@ -494,23 +494,28 @@ index d8b3eae..d2ea4e1 100644
          return MAIN_THREAD_EM_ASM_INT({
              var f = globalThis.orthrosReadWait;
 diff --git a/play/index.html b/play/index.html
-index 28f65a4..82ecfb9 100644
+index 28f65a4..88167b9 100644
 --- a/play/index.html
 +++ b/play/index.html
-@@ -1588,6 +1588,24 @@ window.omw = (function(){
+@@ -1586,8 +1586,28 @@ window.omw = (function(){
+        if (/[?&]wqbudget=(\d+(\.\d+)?)\b/.test(location.search)) ENV.OPENMW_WORKQUEUE_BUDGET_MS=/[?&]wqbudget=(\d+(\.\d+)?)/.exec(location.search)[1];
+        // Orthros (orthros-r5.patch): a preload between frames puts off a mesh or a distant-object chunk whose files are
         // not in the page yet (globalThis.orthrosRangeReady, streamfs.js: then fetched in the background) for up to
-        // 3000 ms; ?preloadwait=N: N ms (0: never — its reads wait for the network, as before r5).
+-       // 3000 ms; ?preloadwait=N: N ms (0: never — its reads wait for the network, as before r5).
++       // 60000 ms (orthros-r17.patch, OPENMW_ORTHROS_PRELOADPATIENT: the preload waits in cooperative slices, its reads
++       // forced synchronously only past that limit; 3000 ms before r17 and with it off); ?preloadwait=N: N ms (0: never —
++       // its reads wait for the network, as before r5).
         if (/[?&]preloadwait=(\d+)\b/.test(location.search)) ENV.OPENMW_PRELOAD_WAIT_MS=/[?&]preloadwait=(\d+)/.exec(location.search)[1];
-+       // Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): a read or an announced wait the page does not answer
++       // Orthros (orthros-r18.patch, wasm-build/orthros-jspi.js): a read or an announced wait the page does not answer
 +       // within a few ms suspends the frame or the boot (JSPI) instead of holding the page's thread; ?jspi=0: never — every
-+       // read waits on the page's thread, as before r17 —; ?jspispin=N: the ms a read waits on the page's thread first
++       // read waits on the page's thread, as before r18 —; ?jspispin=N: the ms a read waits on the page's thread first
 +       // (default 10; 0: suspends at once while bytes are missing) in the boot and the engine's loads (its loading screen
 +       // on); in play, outside them, a read never suspends — ?jspiplay=N: it may, after N ms —; ?jspipresent=N: a loading
 +       // screen's frame shown (the engine suspended until the browser presented it) at most every N ms (default 200; 0: never).
 +       if (/[?&]jspi=0\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI='0';
 +       // ?jspibreath=N: in a load, a read gives the page's thread a turn when it had none for N ms (default 100; 0: never).
 +       if (/[?&]jspibreath=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_BREATH_MS=/[?&]jspibreath=(\d+)/.exec(location.search)[1];
-+       // ?jspiplain=0: every frame the promising export (as r17's first builds), not only the boot's and the loads' (wasm-build/orthros-jspi.js).
++       // ?jspiplain=0: every frame the promising export (as r18's first builds), not only the boot's and the loads' (wasm-build/orthros-jspi.js).
 +       if (/[?&]jspiplain=0\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PLAIN='0';
 +       // ?jspigl=N: in a load's frame, a framebuffer's status asked after the GPU ran its queue (the engine suspended meanwhile), at most every N ms (default 50; 0: never).
 +       if (/[?&]jspigl=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MS=/[?&]jspigl=(\d+)/.exec(location.search)[1];
@@ -522,7 +527,7 @@ index 28f65a4..82ecfb9 100644
         // ?perfkeys=1 (QA): dump the frame's raw osg::Stats attribute keys to window.__omwPhaseKeys
         // and whether the "engine" collection group is on. Diagnostic for empty __omwPhase buckets.
         if (/[?&]perfkeys=1/.test(location.search)) ENV.OPENMW_PERF_KEYS='1';
-@@ -4028,11 +4046,7 @@ window.omw = (function(){
+@@ -4028,11 +4048,7 @@ window.omw = (function(){
           if (document.hidden) setTimeout(function(){ mc.port2.postMessage(0); }, 33);
           else requestAnimationFrame(function(){ mc.port2.postMessage(0); });
         }
@@ -535,13 +540,13 @@ index 28f65a4..82ecfb9 100644
             // NEVER SILENT. A C++ exception is caught inside omw_pump_frame and logged there; what
             // reaches here is a wasm TRAP (RuntimeError: unreachable / memory access out of bounds)
             // that unwound straight through the engine's re-entrancy guard, so every later pump
-@@ -4047,7 +4061,26 @@ window.omw = (function(){
+@@ -4047,7 +4063,26 @@ window.omw = (function(){
               showLogOnce();
               if (typeof fatalOverlay === 'function') fatalOverlay('The game engine crashed', 'Reload to keep playing. Your progress is saved on the server.');
             }
 -         }
 +       }
-+       // Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): the frame is a promising export — a frame that waits
++       // Orthros (orthros-r18.patch, wasm-build/orthros-jspi.js): the frame is a promising export — a frame that waits
 +       // for the game's files suspends, the page's thread free meanwhile (input, the page's indicator, what the engine
 +       // drew presented) —, and the next frame is scheduled once it ends, never while it is suspended. Its time (__frameMs)
 +       // is the whole frame's, its suspensions included.
@@ -563,7 +568,7 @@ index 28f65a4..82ecfb9 100644
           // End of boot: the first frame the engine actually rendered. Stamped here rather than in
           // the 500ms status poller so it is exact to one frame. __omwRunning is set by the engine's
           // own loop, so this fires once the player can genuinely see something.
-@@ -4063,7 +4096,8 @@ window.omw = (function(){
+@@ -4063,7 +4098,8 @@ window.omw = (function(){
         // The hidden-tab path still arrives as a message; visible frames call pumpFrame directly.
         mc.port1.onmessage = pumpFrame;
         // If the tab hides while an rAF-scheduled tick is frozen, take over directly.
@@ -574,14 +579,14 @@ index 28f65a4..82ecfb9 100644
           if (document.hidden && scheduled) mc.port2.postMessage(0);
         });
 diff --git a/wasm-build/link-openmw.sh b/wasm-build/link-openmw.sh
-index a7806d8..c8865d7 100755
+index a7806d8..f36ac00 100755
 --- a/wasm-build/link-openmw.sh
 +++ b/wasm-build/link-openmw.sh
 @@ -226,6 +226,12 @@ ninja apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
    --js-library "$ROOT/wasm-build/orthros-gl.js" \
    `# Orthros (unattributed.patch): the clock's glue (wasm-build/orthros-clock.js; ENV OPENMW_ORTHROS_CLOCK=0: off)` \
    --js-library "$ROOT/wasm-build/orthros-clock.js" \
-+  `# Orthros (orthros-r17.patch): the frame and main() suspend while the page fetches a file's bytes (wasm-build/orthros-jspi.js)` \
++  `# Orthros (orthros-r18.patch): the frame and main() suspend while the page fetches a file's bytes (wasm-build/orthros-jspi.js)` \
 +  -sJSPI=1 "-sJSPI_EXPORTS=['omw_pump_frame']" -Wno-experimental \
 +  `# (the C library's reads, fsyncs and sleeps: the suspending import only when the engine may suspend — engine.cpp __wrap_*)` \
 +  -Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_sync -Wl,--wrap=emscripten_sleep \
@@ -592,18 +597,18 @@ index a7806d8..c8865d7 100755
    -sALLOW_MEMORY_GROWTH=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
 diff --git a/wasm-build/orthros-jspi.js b/wasm-build/orthros-jspi.js
 new file mode 100644
-index 0000000..62258c1
+index 0000000..656e2c0
 --- /dev/null
 +++ b/wasm-build/orthros-jspi.js
 @@ -0,0 +1,428 @@
-+// Orthros (orthros-r17.patch, JSPI): the engine's waits for the game's files suspend it (WebAssembly JSPI, -sJSPI,
++// Orthros (orthros-r18.patch, JSPI): the engine's waits for the game's files suspend it (WebAssembly JSPI, -sJSPI,
 +// link-openmw.sh) while the page fetches the bytes, instead of the page's thread spinning on shared memory (Orthros'
 +// src/vfs/data-client.js fetchSync, wantWait): the page answers input, draws its own indicator and presents what the
 +// engine drew so far. Linked after the system library (--js-library): fd_read and fd_sync replace libwasi's.
 +//
 +// Where it may suspend: only under the engine's promising exports — omw_pump_frame (a load's frame) and main() (the
 +// boot) —, which say so (orthros_jspi_enter / orthros_jspi_leave, engine.cpp, main.cpp), one suspension at a time.
-+// A frame of play is the plain export (omw_pump_frame_plain: the page's own stack, nothing suspends — as before r17);
++// A frame of play is the plain export (omw_pump_frame_plain: the page's own stack, nothing suspends — as before r18);
 +// the page pumps the promising one only for a load: one put off to the next frame by the engine (orthros_jspi_defer: a
 +// save's load, a new game, the debug COE asked in a plain frame), or the frame of a loading screen still on. A load
 +// that starts in a frame of play by itself — a door, an exterior crossing — runs synchronously there, as r16's. Why: a
@@ -623,7 +628,7 @@ index 0000000..62258c1
 +// page's event loop each — the spike that suspended at once took 2 s more to the menu over ~1,700 store hits. That
 +// short wait holds during the boot (main) and the engine's loads — its loading screen on (orthros_jspi_loading,
 +// mwgui/loadingscreen.cpp: a save's load, a COE, a door, an exterior cell's) —, where the page's thread is what the
-+// player has. In play, outside them, a read never suspends: it waits on the page's thread as before r17 (ENV
++// player has. In play, outside them, a read never suspends: it waits on the page's thread as before r18 (ENV
 +// OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS unset or negative; ?jspiplay=N: it may, after N ms there): a frame that suspends
 +// presents nothing more meanwhile, and in play each suspension cost the frame its short wait, then the round to the page
 +// and back, the page's thread having nothing to show for it — with 100 ms first, 2-3 of 3 measured minutes still had a
@@ -634,7 +639,7 @@ index 0000000..62258c1
 +// (orthros_read_wait, components/vfs/manager.cpp orthrosReadWait) asks the page's globalThis.orthrosReadWaitSoon the
 +// same way (its answer, or a promise of it), else calls orthrosReadWait as before — in play too, after the short wait: it
 +// is a load's (a cell change's read-ahead comes before its loading screen). ENV OPENMW_ORTHROS_JSPI=0 (?jspi=0):
-+// never suspends — every read as before r17. A build without JSPI (ASYNCIFY != 2) never returns a promise.
++// never suspends — every read as before r18. A build without JSPI (ASYNCIFY != 2) never returns a promise.
 +//
 +// A worker thread's read (Lua's update on its own thread, orthros-r14.patch: proxied to the page's thread) is the plain
 +// fd_read, answered at once, synchronously, as before: the page's thread may serve it inside a wait for that very
@@ -694,7 +699,7 @@ index 0000000..62258c1
 +#if ASYNCIFY == 2
 +    // (the page pumps Module._omw_pump_frame: the plain export in play, the promising one for a load put off to the next
 +    // frame (orthros_jspi_defer) or a loading screen still on — chosen at each call; ENV OPENMW_ORTHROS_JSPI_PLAIN=0
-+    // (?jspiplain=0): every frame promising, as r17's first builds. A script that wraps Module._omw_pump_frame (a
++    // (?jspiplain=0): every frame promising, as r18's first builds. A script that wraps Module._omw_pump_frame (a
 +    // frame timer) wraps the choice.)
 +    var promising = null, pump = null;
 +    var choose = function (...a) {

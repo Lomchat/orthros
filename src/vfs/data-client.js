@@ -15,7 +15,7 @@
 // turn at once, having called nothing more; one that asked ahead and goes on (re3's streaming: a model, a sound not here
 // yet shows a moment later) reads, asks for more or shows a frame first (progress) —, until it goes on; one fetched in
 // the background (readable) never. A load made of many short waits counts as a wait all along.
-// An engine that suspends while it waits (JSPI: OpenMW's Orthros build, orthros-r17.patch) asks `soon` before a read
+// An engine that suspends while it waits (JSPI: OpenMW's Orthros build, orthros-r18.patch) asks `soon` before a read
 // and wantWaitSoon before an announced wait: the page's thread waits a few ms first (SOON_SPIN_MS: the browser's copy
 // answers most reads that fast — a suspension costs a round of the page's event loop each), then gives the request up
 // to a message and the engine suspends until it lands (ctrl[16]: the request the page still waits for — the worker
@@ -470,7 +470,7 @@ export class GameData {
    * build, its boot and its loading screens —), in order, once it is over (or HELD_MAX_MS after the first one held: a
    * load that never says its end). An engine that holds the page's thread through a load gets them at its end anyway —
    * the page's messages wait —; one that yields got them in the middle of it, and its big load (bigBatch, pick) then read
-   * the files that came whole meanwhile instead of their light copies: OpenMW r17 on a new device read 270 MB of full
+   * the files that came whole meanwhile instead of their light copies: OpenMW r18 on a new device read 270 MB of full
    * textures at its boot, the in-play loads after it waiting for theirs (2026-10-30, docs/openmw.md).
    */
   heldReal() {
