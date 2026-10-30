@@ -83,7 +83,7 @@
   /** The game data opened (once): its worker started, the version's tree, store and learned order's list asked. */
   function open() {
     if (S.data) return S.data;
-    S.data = new M.GameData({ name, session: S.session, prefetch: 'first-read', orderAtOpen: true, cacheBytes: cacheBytes(), realInPage: pageParam('realinpage') !== '0', realBacklog: reloadBacklog, log: (t) => console.warn('[streamfs]', t) });
+    S.data = new M.GameData({ name, session: S.session, prefetch: 'first-read', orderAtOpen: true, cacheBytes: cacheBytes(), realInPage: pageParam('realinpage') !== '0', pieceReuse: pageParam('piecereuse') !== '0', realBacklog: reloadBacklog, log: (t) => console.warn('[streamfs]', t) });
     // (observed at once, as openPortData's: a failed open before the engine's first need() — its download seconds long —
     // is not an unhandled rejection, the engine page's log opened on it; holdRun reports it at that need())
     S.data.ready.catch(() => {});

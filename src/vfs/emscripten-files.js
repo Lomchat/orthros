@@ -27,13 +27,15 @@ export function fileNode(FS, at, data, h, o = {}) {
   if (getattr) node.node_ops = { ...node.node_ops, getattr(n) { const a = getattr(n); a.size = h.size; return a; } };
   const ops = node.stream_ops, own = { ...ops };
   // (bytes that cannot be had: a read error for the engine (EIO), not an exception through its code)
-  const io = (fn) => { try { return fn(); } catch (e) { if (e instanceof FS.ErrnoError) throw e; o.log?.(`${h.path}: ${e.message}`); throw new FS.ErrnoError(29); } };
+  const fail = (e) => { if (e instanceof FS.ErrnoError) throw e; o.log?.(`${h.path}: ${e.message}`); throw new FS.ErrnoError(29); };
+  const io = (fn) => { try { return fn(); } catch (e) { fail(e); } };
   own.llseek = (stream, off, whence) => {
     const p = whence === 1 ? stream.position + off : whence === 2 ? h.size + off : off;
     if (p < 0) throw new FS.ErrnoError(28);
     return p;
   };
-  own.read = (stream, buffer, offset, length, position) => io(() => data.read(h, buffer, offset, length, position));
+  // (no closure a read: the engine reads thousands of times a second)
+  own.read = (stream, buffer, offset, length, position) => { try { return data.read(h, buffer, offset, length, position); } catch (e) { fail(e); } };
   own.mmap = o.mmap === false ? () => { throw new FS.ErrnoError(52); } : (...a) => io(() => { data.whole(h); return ops.mmap(...a); });
   own.write = () => { throw new FS.ErrnoError(o.mmap === false ? 63 : 69); }; // (EROFS: the game files are read-only)
   node.stream_ops = own;

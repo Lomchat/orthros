@@ -55,6 +55,24 @@ const SPAN = 16 << 20;
 /** A read the engine waits for fails once the worker's heartbeat stopped this long (it died). */
 const DEAD_MS = 30000;
 const PER_FILE = 2 ** 21; // (a piece's key: file id × PER_FILE + piece)
+/**
+ * The most evicted pieces kept for the next ones (GameData.keep): a worker's answer's worth (SPAN), and no more than an
+ * eighth of the budget (a small tier's: its memory is what it is short of) — those past it freed at once (release). Every
+ * piece a buffer of its own otherwise, the evicted ones garbage — the page's external memory the collector is paced by:
+ * its major collections came that often while the game streams.
+ */
+const freePiecesMax = (budget) => Math.min(SPAN / PIECE, Math.floor(budget / PIECE / 8));
+/**
+ * `bytes`, the only view of a buffer of the page's own that nothing uses any more (a worker's answer copied into the
+ * pieces, an evicted piece), freed at once (ArrayBuffer.prototype.transfer(0)) instead of left to the collector: dead
+ * buffers count as the page's external memory, which starts its major collections, and each is freed in the
+ * collection's pause (its array buffers' sweep: 17-25 ms of 50-65 ms collections while the game streamed). A shared
+ * buffer, a view of part of one, or a browser without transfer: left as it is.
+ */
+function release(bytes) {
+  const b = bytes.buffer;
+  if (typeof b.transfer === 'function' && !b.detached && bytes.byteOffset === 0 && bytes.byteLength === b.byteLength) b.transfer(0);
+}
 /** A read at a file's start this long after its last read is a new load of it: light copy or file, chosen again. */
 const LOAD_GAP_MS = 2000;
 /** an announced choice (GameData.want: light copy or file) holds for the load that starts within this time (its waits, ~30 s at most) */
@@ -115,7 +133,7 @@ export class GameData {
    * The data of version `name` (and the versions it requires), its worker started and its files listed.
    * @param {{ name: string, session?: string, lang?: string|null, bw?: number, prefetch?: 'startup'|'start'|'first-read'|'none',
    *   cacheBytes?: number, memBytes?: number, cacheBlocks?: number, reloads?: boolean, realInPage?: boolean,
-   *   realBacklog?: () => number, log?: (text: string) => void,
+   *   realBacklog?: () => number, log?: (text: string) => void, pieceReuse?: boolean,
    *   tree?: object, manifest?: object, orderAtOpen?: boolean }} o
    *   tree, manifest: the version's /api/tree and /api/manifest when the page holds them (not asked again: game-data.js
    *   openVersion); orderAtOpen: the learned order's list asked at the open, its bytes not (a page that opens its data
@@ -125,7 +143,8 @@ export class GameData {
    *   at the engine's start, or at its first read (an engine that downloads itself first: its download comes first);
    *   reloads: the engine loads a file again in place (see reloads); realInPage: the files made sharp in place told
    *   with their bytes in the page (true by default, REAL_FETCHES); realBacklog: how many files told the engine has not
-   *   reloaded yet (0 when not given)
+   *   reloaded yet (0 when not given); pieceReuse: the page's pieces in the evicted ones' buffers and the buffers left
+   *   freed at once (true by default; see the constructor)
    */
   static async open(o) {
     const g = new GameData(o);
@@ -141,7 +160,16 @@ export class GameData {
     this.times = { open: Math.round(performance.now()), ready: null, mounted: null, contentLoading: null, contentLoaded: null };
     this.ctrl = new Int32Array(new SharedArrayBuffer(64));
     this.data = new Uint8Array(new SharedArrayBuffer(SPAN));
+    /** the page's pieces (key → bytes, least recently used first). Private to this class: a piece's buffer holds another
+     * piece once it is evicted, or is freed (pieceReuse) — whoever reads one copies its bytes out at once, nothing
+     * between (read, peek, whole); never a piece's view handed out, nor kept across a fetch or an await */
     this.cache = new Map(); this.held = 0; this.budget = o.cacheBytes ?? 256 << 20;
+    /** the cache's last entry (its most recently used piece's key: a hit on it moves nothing — read), and the evicted
+     * whole pieces' buffers for the next ones (keep: no buffer allocated a piece, nor left to the collector — up to
+     * freePiecesMax); pieceReuse: that pool, and the buffers nothing uses any more freed at once (release) — o.pieceReuse
+     * false (the page's ?piecereuse=0): every piece a copy of its own, the evicted ones and the worker's answers left to
+     * the collector, as before */
+    this.newest = -1; this.freePieces = []; this.pieceReuse = o.pieceReuse ?? true;
     this.files = new Map(); this.byId = []; this.gen = 0; this.used = [];
     /** the announced batches posted (want): the last one's number — wantWait waits for ctrl[12] to reach it —, and the
      * first one of the current wait's window (the batches announced since the last wait: an older one that never
@@ -803,7 +831,11 @@ export class GameData {
     while (pos < end) {
       const p = Math.floor(pos / PIECE), key = h.id * PER_FILE + p;
       let piece = this.cache.get(key);
-      if (piece) { this.cache.delete(key); this.cache.set(key, piece); this.stats.hits++; }
+      if (piece) {
+        // (the least recently used order: moved last — unless it is last already, as a file read in small reads keeps it)
+        if (key !== this.newest) { this.cache.delete(key); this.cache.set(key, piece); this.newest = key; }
+        this.stats.hits++;
+      }
       else {
         // (a reload's file read through the worker all the same: its bytes left the page before it, or its load came
         // while realFetch was bringing them — counted, realInPage)
@@ -814,7 +846,7 @@ export class GameData {
       // that load reads — a content file's own reads learned are those after it: server.js CONTENT_REAL)
       if (piece.fresh) { piece.fresh = false; if (h.src === undefined) this.used.push([h.name, h.content && this.content === 'light' ? `${LIGHT_DIR}/${h.path}` : h.path, p]); }
       const within = pos - p * PIECE, n = Math.min(end - pos, piece.length - within);
-      buffer.set(piece.subarray(within, within + n), out);
+      buffer.set(within === 0 && n === piece.length ? piece : piece.subarray(within, within + n), out);
       pos += n; out += n;
     }
     return end - position;
@@ -857,6 +889,8 @@ export class GameData {
       if (!background && this.goes === at) this.waited(h, performance.now() - t0);
       this.keep(h, p, bytes);
       p = Math.floor((p * PIECE + Math.max(PIECE, bytes.length)) / PIECE);
+      // (the answer, in the pieces now: a buffer of its own the worker handed over — data-worker.js answerAsync)
+      if (this.pieceReuse) release(bytes);
     }
   }
 
@@ -928,12 +962,19 @@ export class GameData {
       if (len < PIECE && (p * PIECE + at + len) !== h.size) break;
       const key = h.id * PER_FILE + p + at / PIECE;
       if (this.cache.has(key)) continue;
-      const piece = bytes.slice(at, at + len); piece.fresh = true;
-      this.cache.set(key, piece); this.held += len; this.stats.bytes += len;
+      // (a whole piece into an evicted one's buffer, else a copy of its own)
+      const free = len === PIECE && this.pieceReuse ? this.freePieces.pop() : undefined;
+      const piece = free ? (free.set(bytes.subarray(at, at + len)), free) : bytes.slice(at, at + len); piece.fresh = true;
+      this.cache.set(key, piece); this.newest = key; this.held += len; this.stats.bytes += len;
     }
     while (this.held > this.budget && this.cache.size > 1) {
       const [key, piece] = this.cache.entries().next().value;
       this.cache.delete(key); this.held -= piece.length; this.stats.evictions++;
+      // (nothing keeps a piece out of the cache: every read copies its bytes — read, peek, whole; see this.cache)
+      if (!this.pieceReuse) continue;
+      if (piece.length === PIECE && this.freePieces.length < freePiecesMax(this.budget)) this.freePieces.push(piece); else release(piece);
     }
+    // (a budget lowered since — the page's tier set after the open: streamfs.js need): the pool kept to its new size
+    while (this.freePieces.length > freePiecesMax(this.budget)) release(this.freePieces.pop());
   }
 }

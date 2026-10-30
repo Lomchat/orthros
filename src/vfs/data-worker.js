@@ -162,7 +162,9 @@ function hereUntil(files, f, from, limit) {
 /**
  * Bytes of `path` from `off`: at least `len` (fetched when missing — the reader's own planning: pieces, blocks, read
  * ahead, the link's measure), and on as far as they are here already, up to `want` in all. `ask`: the read, { held } —
- * whether the engine waits for it (counted among the waits while it waits for the network: waited()).
+ * whether the engine waits for it (counted among the waits while it waits for the network: waited()). Always a buffer
+ * of their own (a copy, or a fetch's response), nothing the worker keeps: answerAsync hands it over to the page, which
+ * frees it.
  */
 async function bytesOf({ name, path, off, len, want, src }, ask = { held: true }) {
   if (src !== undefined) return sourceBytes(src, off, len);
@@ -241,6 +243,10 @@ async function answerSync(m) {
   Atomics.notify(ctrl, 0);
 }
 
+/**
+ * An asynchronous read answered: its bytes a buffer of their own (bytesOf), transferred — the page takes it over and
+ * frees it once copied into its pieces (data-client.js fetchAsync, release). Never a view of what the worker keeps.
+ */
 async function answerAsync(m) {
   // (the engine waits for it once the page says so — held —, at once when it says so with the read)
   const ask = { held: !!m.held };

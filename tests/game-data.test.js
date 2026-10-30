@@ -503,11 +503,66 @@ const nativeFetch = globalThis.fetch;
 async function inThread(t, server, o = {}) {
   globalThis.fetch = server.fetch; t.after(() => { globalThis.fetch = nativeFetch; });
   const fake = { onmessage: null, postMessage: (m) => queueMicrotask(() => handle(m)), terminate() {} };
-  const handle = createDataWorker((m) => queueMicrotask(() => fake.onmessage?.({ data: m })));
+  // (what the worker transfers moved as postMessage moves it: its own copy detached — an answer the page frees is never
+  // the worker's own bytes)
+  const handle = createDataWorker((m, transfer) => queueMicrotask(() => fake.onmessage?.({ data: transfer?.length ? structuredClone(m, { transfer }) : m })));
   const data = await GameData.open({ name: 'v', worker: fake, prefetch: 'none', ...o }); t.after(() => data.close());
   return data;
 }
 const until = async (ok, what, ms = 10000) => { const end = Date.now() + ms; while (!ok() && Date.now() < end) await new Promise((r) => setTimeout(r, 20)); assert.ok(ok(), what); };
+
+/** The page's pieces of three files read and evicted (pieceReuse `reuse`): the buffers A's first pieces were in, the worker's answers, C's pieces in A's buffers, A's buffers freed. */
+async function piecesRun(t, reuse) {
+  const a = bytes(20 * PIECE, 5), b = bytes(3 * PIECE + 100, 7), c = bytes(2 * PIECE, 9), server = fakeServer({ 'A.bsa': a, 'B.bsa': b, 'C.bsa': c, 'D.bsa': bytes(PIECE, 11) });
+  // (16 pieces: the pool holds 2 evicted ones at most — an eighth of the budget)
+  const data = await inThread(t, server, { cacheBytes: 16 * PIECE, pieceReuse: reuse }), [ha, hb, hc] = ['A.bsa', 'B.bsa', 'C.bsa'].map((p) => data.file('v', p));
+  const answers = [], told = data.worker.onmessage;
+  data.worker.onmessage = (e) => { if (e.data?.bytes) answers.push(e.data.bytes); told(e); };
+  const pieceOf = (h, p) => data.cache.get(h.id * 2 ** 21 + p);
+  await data.ensure(ha, 0, 16 * PIECE);
+  assert.equal(data.cache.size, 16);
+  const bufsA = new Set([...Array(16).keys()].map((p) => pieceOf(ha, p).buffer)); assert.equal(bufsA.size, 16);
+  // (piece 0 read again — small reads, the second one of the newest piece: nothing moves —: kept; the copies the engine
+  // and peek took of piece 1, whose buffer holds C's bytes later)
+  const out = new Uint8Array(10); data.read(ha, out, 0, 10, 5); data.read(ha, out, 0, 10, 20); assert.deepEqual(out, a.subarray(20, 30));
+  const read1 = new Uint8Array(PIECE); data.read(ha, read1, 0, PIECE, PIECE);
+  const peek1 = data.peek(ha, PIECE + 7, 1000);
+  data.read(ha, out, 0, 10, 0); // (piece 0 the newest again)
+  await data.ensure(hb, 0, hb.size);
+  assert.ok(pieceOf(ha, 0) && pieceOf(ha, 1) && [2, 3, 4, 5].every((p) => !pieceOf(ha, p)) && pieceOf(ha, 6), 'A\'s pieces 2-5 evicted, 0 and 1 kept (used last)');
+  assert.equal(pieceOf(hb, 3).length, 100); assert.ok(!bufsA.has(pieceOf(hb, 3).buffer), 'a short piece in a buffer of its own');
+  await data.ensure(hc, 0, hc.size);
+  assert.ok([6, 7].every((p) => !pieceOf(ha, p)) && pieceOf(ha, 8) && pieceOf(ha, 0), 'evicted in their order');
+  const cReused = [0, 1].filter((p) => bufsA.has(pieceOf(hc, p).buffer)).length;
+  const all = new Uint8Array(c.length); data.read(hc, all, 0, c.length, 0); assert.deepEqual(all, c);
+  const tail = new Uint8Array(100); data.read(hb, tail, 0, 100, 3 * PIECE); assert.deepEqual(tail, b.subarray(3 * PIECE));
+  // (A's piece 1 evicted and its buffer reused or freed: the copies taken of it untouched)
+  await data.ensure(hb, 0, hb.size); data.read(ha, out, 0, 10, 0); data.read(hb, out, 0, 10, 0);
+  for (let p = 8; p < 16; p++) data.read(ha, out, 0, 10, p * PIECE);
+  await data.ensure(ha, 16 * PIECE, 2 * PIECE); // (and on: the worker has them already)
+  assert.ok(!pieceOf(ha, 1), 'A\'s piece 1 evicted');
+  assert.ok(data.held <= 16 * PIECE);
+  assert.deepEqual(read1, a.subarray(PIECE, 2 * PIECE)); assert.deepEqual(peek1, a.subarray(PIECE + 7, PIECE + 1007));
+  const cached = new Set([...data.cache.values()].map((v) => v.buffer));
+  assert.ok(!cached.has(read1.buffer) && !cached.has(peek1.buffer) && !cached.has(data.peek(ha, 0, 10).buffer), 'copies, never a piece');
+  return { data, bufsA, answers, cReused, freed: [...bufsA].filter((x) => x.detached).length };
+}
+
+test('the page\'s pieces: the least recently used evicted first; an evicted whole piece\'s buffer holds a later one (a pool of an eighth of the budget, the rest freed), a short one has its own; reads and peeks copies', async (t) => {
+  const r = await piecesRun(t, true);
+  assert.equal(r.cReused, 2, 'C\'s pieces in evicted pieces\' buffers');
+  assert.ok(r.freed >= 2, 'the evicted pieces past the pool freed'); assert.ok(r.data.freePieces.length <= 2);
+  assert.ok(r.answers.length >= 3 && r.answers.every((x) => x.buffer.detached), 'the worker\'s answers freed once kept');
+  // (the budget lowered: the pool kept to its share)
+  r.data.budget = 8 * PIECE; await r.data.ensure(r.data.file('v', 'D.bsa'), 0, PIECE);
+  assert.ok(r.data.freePieces.length <= 1);
+});
+
+test('the page\'s pieces without reuse (?piecereuse=0): each a copy of its own, nothing freed', async (t) => {
+  const r = await piecesRun(t, false);
+  assert.equal(r.cReused, 0); assert.equal(r.freed, 0); assert.equal(r.data.freePieces.length, 0);
+  assert.ok(r.answers.length >= 3 && r.answers.every((x) => !x.buffer.detached && x.length > 0), 'the worker\'s answers left as they are');
+});
 
 test('on a link that is not fast a texture\'s load reads its light copy, the file itself fetched after it for its next load', async (t) => {
   const tex = bytes(300000, 2), light = bytes(40000, 8), server = fakeServer({ 'tex.dds': tex }, [], { 'tex.dds': light });

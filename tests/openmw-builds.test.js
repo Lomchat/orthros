@@ -288,3 +288,18 @@ test('r15: r14 plus its patch, the same exports; actor preload, StateGraph prune
   // (measured without a gain or with a visible cost in rounds 2-4: left out)
   for (const s of ['TEXRELOAD', 'COOPDEADLINE', 'LUAGCMINOR', 'SHADERASYNC', 'GLSTATE', 'LUAGCPACE']) assert.ok(!added.includes(`OPENMW_ORTHROS_${s}`), s);
 });
+
+test('r16: r15 plus its patch, the same exports; Lua chunks compiled once per path, textures uploaded ahead, NIF read whole and parsed on a thread, each behind its switch', () => {
+  const r15 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r15'), r16 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r16');
+  assert.ok(r16, 'r16 is a build');
+  assert.deepEqual(r16.patches, [...r15.patches, 'orthros-r16.patch']);
+  assert.deepEqual(r16.exports, r15.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r16.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const f of ['openmw/components/lua/luastate.cpp', 'deps/src/osg/src/osg/Texture2D.cpp', 'openmw/components/resource/imagemanager.cpp',
+    'openmw/components/resource/niffilemanager.cpp', 'openmw/components/files/constrainedfilestreambuf.cpp'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  for (const s of ['LUACHUNKS', 'TEXAHEAD', 'NIFTHREAD', 'WHOLEREAD']) assert.ok(added.includes(`OPENMW_ORTHROS_${s}`), s);
+  // (the diagnostic Lua timings stay out of the production stack)
+  assert.ok(!added.includes('OPENMW_ORTHROS_LUATIMES'));
+});

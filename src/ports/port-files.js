@@ -33,7 +33,9 @@ const BATCH = 16 << 20;
  *   tree, manifest: the version's, as the page fetched them (not asked again: game-data.js openVersion)
  */
 export function openPortData(o) {
-  const data = new GameData({ name: o.name, tree: o.tree, manifest: o.manifest, session: o.session, lang: o.lang, prefetch: 'startup', orderAtOpen: true, log: o.log });
+  const data = new GameData({ name: o.name, tree: o.tree, manifest: o.manifest, session: o.session, lang: o.lang, prefetch: 'startup', orderAtOpen: true, log: o.log,
+    // (the page's ?piecereuse=0: its pieces each a copy of its own, left to the collector — GameData's pieceReuse)
+    pieceReuse: new URLSearchParams(globalThis.location?.search ?? '').get('piecereuse') !== '0' });
   data.ready.catch(() => {}); // (its failure told where the page waits for it: mountPortFiles)
   return data;
 }

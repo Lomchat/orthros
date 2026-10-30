@@ -1834,6 +1834,19 @@ their reads few (≤ 12 in the world). The boot's remaining serial reads are the
 files' first records and the water's textures (none announced; the learned order has them). Not measured: the
 owner's real GPU and link, the 85 KB/s link, a headed Chrome's hang dialog.
 
+## Pieces reused, dead buffers freed (2026-10-30)
+
+The page's JS garbage collector ran on the engine's thread in play: 77-160 ms major collections, fed by the reader's
+pieces (each its own `bytes.slice` copy, dropped when evicted) and the answers' buffers. `GameData` option
+`pieceReuse` (default on; `?piecereuse=0` on the engine or play page, read by `streamfs.js` and `port-files.js`):
+an evicted piece's buffer goes to a small pool the next piece of its size takes, and the buffers nothing uses any more
+(evicted pieces past the pool, the data worker's answers once copied) are freed at once (`ArrayBuffer.transfer(0)`).
+Every reader copies a piece's bytes out when it reads them, so nothing keeps a view into a pooled buffer. Measured on
+Vanilla+ FR (SwiftShader, 30 s): main-thread GC 119-182 → 46-59 ms gliding, 55-164 → 20-113 running; fresh loads
+130-188 → 127-141 (its stretches shorter: mean 109 → 78 ms). Shared by every port: Half-Life and Counter-Strike
+Arsenal (`tools/goldsrc/check.mjs … solo --guest --no-save`) and Vice City reVC (`tools/re3/check.mjs … --new-game
+--guest`) passed with it on a scratch server.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

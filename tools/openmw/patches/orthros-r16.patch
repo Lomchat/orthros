@@ -1,0 +1,1509 @@
+diff --git a/openmw/components/lua/luastate.cpp b/openmw/components/lua/luastate.cpp
+--- a/openmw/components/lua/luastate.cpp
++++ b/openmw/components/lua/luastate.cpp
+@@ -436,6 +436,13 @@
+         auto iter = mCompiledScripts.find(path);
+         if (iter != mCompiledScripts.end())
+         {
++#ifdef __EMSCRIPTEN__
++            // Orthros (OPENMW_ORTHROS_LUACHUNKS): a new closure from the path's factory, instead of re-reading the
++            // bytecode below for every object that starts the script (and every sandbox that requires the file).
++            sol::function instance;
++            if (orthrosInstantiate(path, instance))
++                return instance;
++#endif
+             sol::load_result res = mSol.load(iter->second.as_string_view(), path.value(), sol::load_mode::binary);
+             // Unless we have memory corruption issues, the bytecode is valid at this point, but loading might still
+             // fail because we've hit our Lua memory cap
+@@ -443,11 +450,99 @@
+                 throw std::runtime_error("Lua error: " + res.get<std::string>());
+             return res;
+         }
++#ifdef __EMSCRIPTEN__
++        if (orthrosChunkFactories())
++        {
++            // As loadFromVFS: the source compiled as itself (its errors those of a main chunk), its bytecode cached;
++            // then, at this first load, its factory compiled too (orthrosCompileFactory). A path's first load is
++            // where its compile already lands -- most often the game's load -- so the instances met later (a cell
++            // crossing's objects, a `require` from the page's thread) never compile.
++            std::string fileContent(std::istreambuf_iterator<char>(*mVFS->get(path)), {});
++            sol::load_result loaded = mSol.load(fileContent, path.value(), sol::load_mode::text);
++            if (!loaded.valid())
++                throw std::runtime_error(std::string("Lua error: ") += loaded.get<sol::error>().what());
++            sol::function res = loaded;
++            mCompiledScripts[path] = res.dump();
++            orthrosCompileFactory(path, fileContent);
++            return res;
++        }
++#endif
+         sol::function res = loadFromVFS(path);
+         mCompiledScripts[path] = res.dump();
+         return res;
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    void LuaState::orthrosCompileFactory(const VFS::Path::Normalized& path, const std::string& source)
++    {
++        // The source as the body of a vararg function, its first line kept on line 1 (error lines unchanged). The
++        // function's only possible upvalue is the factory's local _ENV: one fresh per call, so each instance and the
++        // closures it makes share their own environment, as with a main chunk loaded anew; sol::set_environment finds
++        // it by its name, _ENV. Compiled only after the source compiled as itself, so no source that is invalid alone
++        // runs; one that compiles only alone keeps its bytecode re-read per instance (no factory recorded).
++        std::string wrapped;
++        wrapped.reserve(source.size() + 64);
++        wrapped.append("local _ENV = ...; return function(...) ");
++        wrapped.append(source);
++        wrapped.append("\nend");
++        sol::load_result factory = mSol.load(wrapped, path.value(), sol::load_mode::text);
++        if (!factory.valid())
++        {
++            Log(Debug::Warning) << "Orthros: " << path.value()
++                                << " not compiled as a factory, its bytecode re-read per instance (OPENMW_ORTHROS_LUACHUNKS)";
++            return;
++        }
++        mOrthrosFactories[path] = sol::main_function(factory.get<sol::function>());
++    }
++
++    bool LuaState::orthrosInstantiate(const VFS::Path::Normalized& path, sol::function& out)
++    {
++        if (!orthrosChunkFactories())
++            return false;
++        auto it = mOrthrosFactories.find(path);
++        if (it == mOrthrosFactories.end())
++            return false;
++        lua_State* L = mSol.lua_state();
++        // Pushed on the main state, as lua_load did; when this is a `require` run from a coroutine, the main state's
++        // LUA_MINSTACK guarantee belongs to the C function that is running, not to us: make room (else the undump).
++        if (!lua_checkstack(L, 3))
++            return false;
++        // factory(_G): the new closure's _ENV starts at the globals, as lua_load sets a loaded chunk's first upvalue.
++        // The factory runs a few instructions on the main state: a memory error, or the instruction watchdog
++        // (countHook) firing there instead of in the script's first instructions, fails the script's start with the
++        // same "Lua error" as before.
++        const int top = lua_gettop(L);
++        sol::stack::push(L, it->second);
++        lua_pushglobaltable(L);
++        if (lua_pcall(L, 1, 1, 0) != LUA_OK)
++        {
++            std::string message = lua_isstring(L, -1) ? lua_tostring(L, -1) : "error in a script factory";
++            lua_settop(L, top);
++            throw std::runtime_error("Lua error: " + message);
++        }
++        out = sol::stack::pop<sol::function>(L);
++        lua_settop(L, top);
++        return true;
++    }
++#endif
++
++    bool orthrosChunkFactories()
++    {
++#ifdef __EMSCRIPTEN__
++        static const bool on = [] {
++            const char* const value = std::getenv("OPENMW_ORTHROS_LUACHUNKS");
++            const bool off = value != nullptr && std::strcmp(value, "0") == 0;
++            Log(Debug::Info) << "Orthros: Lua scripts met again "
++                             << (off ? "re-read from their bytecode, as before (OPENMW_ORTHROS_LUACHUNKS=0)"
++                                     : "instantiated from a function compiled once per path");
++            return !off;
++        }();
++        return on;
++#else
++        return false;
++#endif
++    }
++
+     sol::function LuaState::loadFromVFS(const VFS::Path::Normalized& path)
+     {
+         std::string fileContent(std::istreambuf_iterator<char>(*mVFS->get(path)), {});
+diff --git a/openmw/components/lua/luastate.hpp b/openmw/components/lua/luastate.hpp
+--- a/openmw/components/lua/luastate.hpp
++++ b/openmw/components/lua/luastate.hpp
+@@ -27,6 +27,12 @@
+     // Read once; always true off the web, where nothing reads it.
+     bool orthrosIncrementalGc();
+ 
++    // Orthros (OPENMW_ORTHROS_LUACHUNKS, luastate.cpp): on the web, true: a script or `require`d file met again is
++    // instantiated from a function compiled once per path (a new closure, its own _ENV) instead of re-reading its
++    // cached bytecode (lua_load, binary) for every object; false (the switch at 0): the bytecode re-read, as before.
++    // Read once; false off the web.
++    bool orthrosChunkFactories();
++
+     class ScriptsContainer;
+     struct ScriptId
+     {
+@@ -164,7 +170,11 @@
+             const std::string& envName = "unnamed", const std::map<std::string, sol::main_object>& packages = {},
+             const sol::main_object& hiddenData = sol::nil);
+ 
+-        void dropScriptCache() { mCompiledScripts.clear(); }
++        void dropScriptCache()
++        {
++            mCompiledScripts.clear();
++            mOrthrosFactories.clear();
++        }
+ 
+         const ScriptsConfiguration& getConfiguration() const { return *mConf; }
+ 
+@@ -198,6 +208,10 @@
+             ScriptId scriptId, const sol::protected_function& fn, Args&&... args);
+ 
+         sol::function loadScriptAndCache(const VFS::Path::Normalized& path);
++        // (OPENMW_ORTHROS_LUACHUNKS, web only: the factory compiled at a path's first load; a new instance from it,
++        // false if the path has none)
++        void orthrosCompileFactory(const VFS::Path::Normalized& path, const std::string& source);
++        bool orthrosInstantiate(const VFS::Path::Normalized& path, sol::function& out);
+         static void countHook(lua_State* state, lua_Debug* ar);
+         static void* trackingAllocator(void* ud, void* ptr, size_t osize, size_t nsize);
+ 
+@@ -226,6 +240,11 @@
+         const ScriptsConfiguration* mConf;
+         sol::table mSandboxEnv;
+         std::map<VFS::Path::Normalized, sol::bytecode> mCompiledScripts;
++        // Orthros (OPENMW_ORTHROS_LUACHUNKS): per path, its factory, compiled at the path's first load --
++        // `local _ENV = ...; return function(...) <source>\nend`, the source's own first line kept on line 1 -- whose
++        // call makes a new closure of the script's main function. mCompiledScripts stays the fallback (a source the
++        // wrapping does not compile: the bytecode re-read, as before). Declared after mSol: destroyed before the state.
++        std::map<VFS::Path::Normalized, sol::main_function> mOrthrosFactories;
+         std::map<std::string, sol::object> mCommonPackages;
+         const VFS::Manager* mVFS;
+         std::vector<std::filesystem::path> mLibSearchPaths;
+diff --git a/deps/src/osg/src/osg/Texture2D.cpp b/deps/src/osg/src/osg/Texture2D.cpp
+index 0eca56f..d1c27f9 100644
+--- a/deps/src/osg/src/osg/Texture2D.cpp
++++ b/deps/src/osg/src/osg/Texture2D.cpp
+@@ -45,6 +45,99 @@ namespace
+ }
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++#include <osg/observer_ptr>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <unordered_map>
++#include <vector>
++
++namespace
++{
++    // Orthros (texahead.patch): the Texture2Ds that hold each image, so that an image updated in place (OpenMW's
++    // ImageManager::reloadImage: a light copy replaced by the file itself) has its textures that were uploaded already
++    // uploaded again at once, and not by the first draw that shows them — a draw that shows many of them at once (the
++    // local map's first render of a cell, a camera turn) uploaded them all in one frame. OPENMW_ORTHROS_TEXAHEAD=0:
++    // no registry (the previous path).
++    bool orthrosTexAheadOn()
++    {
++        static const bool on = [] {
++            const char* v = std::getenv("OPENMW_ORTHROS_TEXAHEAD");
++            return v == nullptr || std::strcmp(v, "0") != 0;
++        }();
++        return on;
++    }
++
++    struct OrthrosTextureClient
++    {
++        // (only compared: the entry leaves the registry wherever the texture lets go of its image — setImage, the
++        // destructor through it, apply's unref of the image data, copyTexImage2D)
++        const osg::Texture2D* mTexture;
++        osg::observer_ptr<osg::Texture2D> mObserver;
++    };
++
++    struct OrthrosTextureRegistry
++    {
++        std::mutex mMutex;
++        std::unordered_multimap<const osg::Image*, OrthrosTextureClient> mClients;
++    };
++
++    // (never destroyed: a texture released during static destruction still finds it)
++    OrthrosTextureRegistry& orthrosRegistry()
++    {
++        static OrthrosTextureRegistry* registry = [] {
++            OrthrosTextureRegistry* created = new OrthrosTextureRegistry;
++            created->mClients.reserve(16384); // (no rehash under the lock while a session's textures come and go)
++            return created;
++        }();
++        return *registry;
++    }
++
++    void orthrosForget(const osg::Image* image, const osg::Texture2D* texture)
++    {
++        OrthrosTextureRegistry& registry = orthrosRegistry();
++        const std::lock_guard<std::mutex> lock(registry.mMutex);
++        // (the texture's entry, and any whose texture is gone: an entry left by a path that missed it never stays to
++        // be taken for a new texture allocated at the same address)
++        auto [it, end] = registry.mClients.equal_range(image);
++        while (it != end)
++        {
++            if (it->second.mTexture == texture || !it->second.mObserver.valid())
++                it = registry.mClients.erase(it);
++            else
++                ++it;
++        }
++    }
++}
++
++namespace osg
++{
++    /// Orthros (texahead.patch): the Texture2Ds alive that hold `image` (appended to `out`, each referenced); none when
++    /// OPENMW_ORTHROS_TEXAHEAD=0. Thread-safe.
++    void orthrosTexture2DsOfImage(const Image* image, std::vector<ref_ptr<Texture2D>>& out)
++    {
++        if (!orthrosTexAheadOn() || image == nullptr)
++            return;
++        // (the observers copied under the registry's lock, locked after it: the lock held as briefly as can be)
++        std::vector<observer_ptr<Texture2D>> observers;
++        {
++            OrthrosTextureRegistry& registry = orthrosRegistry();
++            const std::lock_guard<std::mutex> lock(registry.mMutex);
++            auto [it, end] = registry.mClients.equal_range(image);
++            for (; it != end; ++it)
++                observers.push_back(it->second.mObserver);
++        }
++        for (const observer_ptr<Texture2D>& observer : observers)
++        {
++            ref_ptr<Texture2D> texture;
++            if (observer.lock(texture))
++                out.push_back(std::move(texture));
++        }
++    }
++}
++#endif
++
+ Texture2D::Texture2D():
+             _textureWidth(0),
+             _textureHeight(0),
+@@ -137,6 +230,21 @@ void Texture2D::setImage(Image* image)
+ {
+     if (_image == image) return;
+ 
++#ifdef __EMSCRIPTEN__
++    // Orthros (texahead.patch): the registry follows the image this texture holds
++    if (orthrosTexAheadOn())
++    {
++        if (_image.valid())
++            orthrosForget(_image.get(), this);
++        if (image != NULL)
++        {
++            OrthrosTextureRegistry& registry = orthrosRegistry();
++            const std::lock_guard<std::mutex> lock(registry.mMutex);
++            registry.mClients.emplace(image, OrthrosTextureClient{ this, osg::observer_ptr<osg::Texture2D>(this) });
++        }
++    }
++#endif
++
+     if (_image.valid())
+     {
+         _image->removeClient(this);
+@@ -311,6 +419,10 @@ void Texture2D::apply(State& state) const
+         if (isSafeToUnrefImageData(state) && image->getDataVariance()==STATIC)
+         {
+             Texture2D* non_const_this = const_cast<Texture2D*>(this);
++#ifdef __EMSCRIPTEN__
++            if (orthrosTexAheadOn())
++                orthrosForget(_image.get(), this); // (texahead.patch: the image let go of, not through setImage)
++#endif
+             non_const_this->_image = NULL;
+         }
+ 
+@@ -409,6 +521,10 @@ void Texture2D::copyTexImage2D(State& state, int x, int y, int width, int height
+ 
+ 
+     // remove any previously assigned images as these are nolonger valid.
++#ifdef __EMSCRIPTEN__
++    if (orthrosTexAheadOn() && _image.valid())
++        orthrosForget(_image.get(), this); // (texahead.patch: the image let go of, not through setImage)
++#endif
+     _image = NULL;
+ 
+     // switch off mip-mapping.
+diff --git a/openmw/apps/openmw/mwrender/renderingmanager.cpp b/openmw/apps/openmw/mwrender/renderingmanager.cpp
+index 297fd9b..5ee6c40 100644
+--- a/openmw/apps/openmw/mwrender/renderingmanager.cpp
++++ b/openmw/apps/openmw/mwrender/renderingmanager.cpp
+@@ -5,8 +5,15 @@
+ #include <cstdlib>
+ #ifdef __EMSCRIPTEN__
+ #include <cmath>
++#include <memory>
++#include <string_view>
++#include <vector>
+ 
+ #include <emscripten.h>
++#include <osg/GraphicsContext>
++#include <osg/observer_ptr>
++#include <osg/State>
++#include <osg/Texture2D>
+ #endif
+ 
+ #include <osg/ClipControl>
+@@ -129,6 +136,103 @@ namespace
+     };
+ }
+ 
++#ifdef __EMSCRIPTEN__
++namespace osg
++{
++    // (texahead.patch, osg/Texture2D.cpp: the Texture2Ds alive that hold the image)
++    void orthrosTexture2DsOfImage(const Image* image, std::vector<ref_ptr<Texture2D>>& out);
++}
++
++namespace
++{
++    /// Orthros (texahead.patch): OPENMW_ORTHROS_TEXAHEAD (absent: on; 0: off), read once.
++    bool orthrosTexAhead()
++    {
++        static const bool on = [] {
++            const char* v = std::getenv("OPENMW_ORTHROS_TEXAHEAD");
++            return v == nullptr || std::string_view(v) != "0";
++        }();
++        return on;
++    }
++
++    /// Orthros (texahead.patch): what the uploads ahead spent in the frame that reloads (EmscriptenLoop::reloadUpdated
++    /// runs before the frame: one frame number per tick).
++    struct OrthrosAheadTick
++    {
++        unsigned int mFrame = ~0u;
++        double mMs = 0;
++    };
++
++    /// Orthros (texahead.patch): at most this many ms of uploads ahead in one tick; past it, the rest of the tick's
++    /// textures are left to their next draw (the previous path). A tick that reloads a large set never adds more than
++    /// this to its decode, and the reloads' pacing (their decoded bytes, ImageManager::reloadImage's return) is
++    /// unchanged: no light copy stays longer.
++    constexpr double sOrthrosAheadTickMs = 8.0;
++
++    /// Orthros (texahead.patch): `image` was just updated in place (ImageManager::reloadImage, between frames, on the
++    /// thread that renders: a light copy replaced by the file itself). Its textures that hold an older upload are
++    /// uploaded again now, as their next apply would have, instead of by the first draw that shows them: shown, that
++    /// is this frame's draw anyway — the same work, a little earlier —; not shown (behind the camera, under a roof),
++    /// a later draw used to upload them all at once (the local map's first render of a cell drew a dozen such
++    /// textures, 25 MB, in one frame; a camera turn the same). Within sOrthrosAheadTickMs a tick. A texture never
++    /// uploaded is left to the incremental compile or its first draw, as before. A texture alive but never drawn
++    /// again (only an expiring cache holds it) is uploaded too: it had a GL object already, the cost is its upload
++    /// once, inside the tick's cap. Requires: called between frames on the GL thread (EmscriptenLoop::tick calls
++    /// reloadUpdated before viewer->advance/frame — keep it there).
++    void orthrosUploadAhead(osgViewer::Viewer& viewer, osg::Image& image, OrthrosAheadTick& tick)
++    {
++        std::vector<osg::ref_ptr<osg::Texture2D>> textures;
++        osg::orthrosTexture2DsOfImage(&image, textures);
++        if (textures.empty())
++            return;
++        osg::GraphicsContext* gc = viewer.getCamera()->getGraphicsContext();
++        osg::State* state = gc != nullptr ? gc->getState() : nullptr;
++        if (state == nullptr || viewer.getFrameStamp() == nullptr)
++            return;
++        const unsigned int frame = viewer.getFrameStamp()->getFrameNumber();
++        if (tick.mFrame != frame)
++        {
++            tick.mFrame = frame;
++            tick.mMs = 0;
++        }
++        const unsigned int contextID = state->getContextID();
++        const double start = emscripten_get_now();
++        int uploaded = 0, deferred = 0;
++        double bytes = 0;
++        for (const osg::ref_ptr<osg::Texture2D>& texture : textures)
++        {
++            if (texture->getImage() != &image || texture->getSubloadCallback() != nullptr
++                || texture->getTextureObject(contextID) == nullptr
++                || texture->getModifiedCount(contextID) == image.getModifiedCount())
++                continue;
++            if (tick.mMs + (emscripten_get_now() - start) >= sOrthrosAheadTickMs)
++            {
++                ++deferred; // (its next draw uploads it, as before)
++                continue;
++            }
++            texture->apply(*state);
++            ++uploaded;
++            bytes += image.getTotalSizeInBytesIncludingMipmaps();
++        }
++        if (uploaded == 0 && deferred == 0)
++            return;
++        // (the texture unit's binding changed behind the State's back: its next apply binds again)
++        if (uploaded != 0)
++            state->haveAppliedTextureAttribute(state->getActiveTextureUnit(), osg::StateAttribute::TEXTURE);
++        const double ms = emscripten_get_now() - start;
++        tick.mMs += ms;
++        // clang-format off
++        EM_ASM({
++            var s = globalThis.__orthrosTexAhead || (globalThis.__orthrosTexAhead = { textures: 0, bytes: 0, deferred: 0, ms: 0, max: 0, maxTick: 0 });
++            s.textures += $0; s.bytes += $1; s.deferred += $2; s.ms += $3;
++            if ($3 > s.max) s.max = $3;
++            if ($4 > s.maxTick) s.maxTick = $4;
++        }, uploaded, bytes, deferred, ms, tick.mMs);
++        // clang-format on
++    }
++}
++#endif
++
+ namespace MWRender
+ {
+     class PreloadCommonAssetsWorkItem : public SceneUtil::WorkItem
+@@ -308,6 +412,22 @@ namespace MWRender
+         sceneRoot->addChild(mDebugDraw);
+ 
+         mResourceSystem->getSceneManager()->setIncrementalCompileOperation(mViewer->getIncrementalCompileOperation());
++#ifdef __EMSCRIPTEN__
++        // Orthros (texahead.patch): an image updated in place has its textures that were uploaded already uploaded again at
++        // once (OPENMW_ORTHROS_TEXAHEAD=0: at their next draw)
++        if (orthrosTexAhead())
++        {
++            // (the viewer observed, not owned: ~RenderingManager clears the callback, and a viewer gone before that
++            // only turns it into nothing)
++            osg::observer_ptr<osgViewer::Viewer> viewer = mViewer.get();
++            auto tick = std::make_shared<OrthrosAheadTick>();
++            mResourceSystem->getImageManager()->setOrthrosReloaded([viewer, tick](osg::Image& image) {
++                osg::ref_ptr<osgViewer::Viewer> locked;
++                if (viewer.lock(locked))
++                    orthrosUploadAhead(*locked, image, *tick);
++            });
++        }
++#endif
+ 
+         mEffectManager = std::make_unique<EffectManager>(sceneRoot, mResourceSystem);
+ 
+@@ -459,6 +579,9 @@ namespace MWRender
+ 
+     RenderingManager::~RenderingManager()
+     {
++#ifdef __EMSCRIPTEN__
++        mResourceSystem->getImageManager()->setOrthrosReloaded(nullptr);
++#endif
+         // let background loading thread finish before we delete anything else
+         mWorkQueue = nullptr;
+     }
+diff --git a/openmw/components/resource/imagemanager.cpp b/openmw/components/resource/imagemanager.cpp
+index 0e12340..938169e 100644
+--- a/openmw/components/resource/imagemanager.cpp
++++ b/openmw/components/resource/imagemanager.cpp
+@@ -344,6 +344,8 @@ namespace Resource
+         image->setMipmapLevels(fresh->getMipmapLevels());
+         image->setOrigin(fresh->getOrigin());
+         image->dirty();
++        if (mOrthrosReloaded)
++            mOrthrosReloaded(*image);
+         return size;
+     }
+ 
+diff --git a/openmw/components/resource/imagemanager.hpp b/openmw/components/resource/imagemanager.hpp
+index ba1dda6..3c95ae3 100644
+--- a/openmw/components/resource/imagemanager.hpp
++++ b/openmw/components/resource/imagemanager.hpp
+@@ -1,6 +1,8 @@
+ #ifndef OPENMW_COMPONENTS_RESOURCE_IMAGEMANAGER_H
+ #define OPENMW_COMPONENTS_RESOURCE_IMAGEMANAGER_H
+ 
++#include <functional>
++
+ #include <osg/Image>
+ #include <osg/Texture2D>
+ #include <osg/ref_ptr>
+@@ -43,11 +45,16 @@ namespace Resource
+         /// @note Call between frames, from the thread that renders.
+         std::size_t reloadImage(VFS::Path::NormalizedView path);
+ 
++        /// Orthros (texahead.patch): `callback` called by reloadImage with each image it updated in place, before it
++        /// returns (an empty one: nothing called).
++        void setOrthrosReloaded(std::function<void(osg::Image&)> callback) { mOrthrosReloaded = std::move(callback); }
++
+         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
+ 
+     private:
+         osg::ref_ptr<osg::Image> mWarningImage;
+         osg::ref_ptr<osgDB::Options> mOptions;
++        std::function<void(osg::Image&)> mOrthrosReloaded;
+ 
+         ImageManager(const ImageManager&);
+         void operator=(const ImageManager&);
+diff --git a/openmw/apps/openmw/mwworld/cellpreloader.cpp b/openmw/apps/openmw/mwworld/cellpreloader.cpp
+index 5317680..cbf5f5d 100644
+--- a/openmw/apps/openmw/mwworld/cellpreloader.cpp
++++ b/openmw/apps/openmw/mwworld/cellpreloader.cpp
+@@ -21,6 +21,7 @@
+ #include <components/misc/strings/lower.hpp>
+ #include <components/resource/bulletshapemanager.hpp>
+ #include <components/resource/keyframemanager.hpp>
++#include <components/resource/niffilemanager.hpp>
+ #include <components/resource/resourcesystem.hpp>
+ #include <components/resource/scenemanager.hpp>
+ #include <components/terrain/view.hpp>
+@@ -158,7 +159,25 @@ namespace MWWorld
+ #endif
+         }
+ 
+-        void abort() override { mAbort = true; }
++        void abort() override
++        {
++#ifdef __EMSCRIPTEN__
++            // Orthros (nifparse.patch): a preload cut short by its cell's insertion (CellPreloader::notifyLoaded):
++            // what is left is loaded in the crossing's frame — said, with the NIF parse thread's counters. Read here
++            // only without worker threads (the web's cooperative WorkQueue, or inline: this item runs on this same
++            // thread)
++            static const bool sameThread = std::getenv("OPENMW_WORKQUEUE_THREADED") == nullptr;
++            if (sameThread && !mAbort && (mNextMesh < mMeshes.size() || !mDeferred.empty()))
++            {
++                Log(Debug::Info) << "Orthros: preload of " << mCellId << " cut short by its insertion: "
++                                 << (mMeshes.size() - mNextMesh) << " of " << mMeshes.size() << " meshes not reached, "
++                                 << mDeferred.size() << " put off";
++                if (Resource::NifFileManager::orthrosParseOffThread())
++                    mSceneManager->orthrosNifFileManager()->orthrosLogCounters();
++            }
++#endif
++            mAbort = true;
++        }
+ 
+         /// Preload work to be called from the worker thread.
+         void doWork() override
+@@ -205,7 +224,7 @@ namespace MWWorld
+                 if (mAbort)
+                     return true;
+                 const std::size_t index = mNextMesh;
+-                if (mayWait && !meshReady(mMeshes[index]))
++                if (mayWait && !meshReady(index))
+                 {
+                     ++mNextMesh;
+                     mDeferred.emplace_back(index, std::chrono::steady_clock::now());
+@@ -226,7 +245,7 @@ namespace MWWorld
+                 if (mAbort)
+                     return true;
+                 const auto [index, since] = mDeferred[i];
+-                if (mayWait && std::chrono::steady_clock::now() - since < limit && !meshReady(mMeshes[index]))
++                if (mayWait && std::chrono::steady_clock::now() - since < limit && !meshReady(index))
+                 {
+                     ++i;
+                     continue;
+@@ -248,14 +267,48 @@ namespace MWWorld
+     private:
+         /// Orthros (orthros-r5.patch): preloadMesh(path) reads nothing from the network now (its mesh and its
+         /// textures; the animation's .kf beside it read anyway). A path it would skip: ready.
+-        bool meshReady(std::string_view path)
++        /// Orthros (nifparse.patch, OPENMW_ORTHROS_NIFTHREAD): and parses no NIF on this thread — the mesh's NIF,
++        /// for its template and its collision shape (an extra NPC part or worn item: its template only), and the
++        /// .kf beside an x*.nif (its bytes now asked as well), each cached or parsed on NifFileManager's thread
++        /// (those not yet: handed to it — read here once in the page). An extra creature's base model too (its shape
++        /// is taken when the x*.nif has no collision box, known only once that shape is built): parsed beforehand
++        /// as well, its result unused otherwise (dropped after 30 s: thread time only).
++        bool meshReady(std::size_t index)
+         {
++            const std::string_view path = mMeshes[index];
+             try
+             {
+                 const VFS::Manager& vfs = *mSceneManager->getVFS();
+                 VFS::Path::Normalized mesh = Misc::ResourceHelpers::correctMeshPath(VFS::Path::Normalized(path));
+                 mesh = Misc::ResourceHelpers::correctActorModelPath(mesh, &vfs);
+-                return !vfs.exists(mesh) || mSceneManager->orthrosTemplateReady(mesh);
++                if (!vfs.exists(mesh))
++                    return true;
++                if (!Resource::NifFileManager::orthrosParseOffThread())
++                    return mSceneManager->orthrosTemplateReady(mesh);
++                // (each asked, the missing ones all under way at once)
++                bool ready = mSceneManager->orthrosTemplateReady(mesh, true);
++                const bool templateOnly = index >= mFirstExtra && index < mFirstCreature;
++                if (!templateOnly && !mBulletShapeManager->orthrosShapeReady(mesh))
++                    ready = false;
++                constexpr VFS::Path::ExtensionView nif("nif");
++                if (Misc::getFileName(mesh).starts_with('x') && mesh.extension() == nif)
++                {
++                    VFS::Path::Normalized kfname = mesh;
++                    constexpr VFS::Path::ExtensionView kf("kf");
++                    kfname.changeExtension(kf);
++                    if (vfs.exists(kfname) && !mKeyframeManager->orthrosCached(kfname)
++                        && !mSceneManager->orthrosNifFileManager()->orthrosParsedReady(kfname))
++                        ready = false;
++                }
++                if (index >= mFirstCreature)
++                {
++                    const VFS::Path::Normalized base
++                        = Misc::ResourceHelpers::correctMeshPath(VFS::Path::Normalized(path));
++                    if (base.value() != mesh.value() && vfs.exists(base)
++                        && !mBulletShapeManager->orthrosShapeReady(base))
++                        ready = false;
++                }
++                return ready;
+             }
+             catch (const std::exception&)
+             {
+diff --git a/openmw/components/files/constrainedfilestreambuf.cpp b/openmw/components/files/constrainedfilestreambuf.cpp
+index c3ac2d6..fda322c 100644
+--- a/openmw/components/files/constrainedfilestreambuf.cpp
++++ b/openmw/components/files/constrainedfilestreambuf.cpp
+@@ -1,6 +1,8 @@
+ #include "constrainedfilestreambuf.hpp"
+ 
+ #include <algorithm>
++#include <cstdlib>
++#include <cstring>
+ #include <filesystem>
+ #include <limits>
+ 
+@@ -8,6 +10,43 @@ namespace Files
+ {
+     namespace File = Platform::File;
+ 
++    bool orthrosWholeReads()
++    {
++        static const bool on = [] {
++            const char* v = std::getenv("OPENMW_ORTHROS_WHOLEREAD");
++            return v == nullptr || std::strcmp(v, "0") != 0;
++        }();
++        return on;
++    }
++
++    std::streamsize ConstrainedFileStreamBuf::xsgetn(char_type* s, std::streamsize count)
++    {
++        if (!orthrosWholeReads() || count < static_cast<std::streamsize>(sizeof(mBuffer)))
++            return std::streambuf::xsgetn(s, count);
++        std::streamsize done = 0;
++        // (what the buffer holds first, then the rest from the file in one read — File::read may return less: again
++        // until the region's end)
++        const std::streamsize held = std::min<std::streamsize>(egptr() - gptr(), count);
++        if (held > 0)
++        {
++            std::memcpy(s, gptr(), static_cast<std::size_t>(held));
++            done = held;
++        }
++        setg(nullptr, nullptr, nullptr);
++        while (done < count)
++        {
++            const std::size_t left = (mOrigin + mSize) - File::tell(mFile);
++            const std::size_t toRead = std::min(left, static_cast<std::size_t>(count - done));
++            if (toRead == 0)
++                break;
++            const std::size_t got = File::read(mFile, s + done, toRead);
++            if (got == 0)
++                break;
++            done += static_cast<std::streamsize>(got);
++        }
++        return done;
++    }
++
+     ConstrainedFileStreamBuf::ConstrainedFileStreamBuf(
+         const std::filesystem::path& fname, std::size_t start, std::size_t length)
+         : mOrigin(start)
+diff --git a/openmw/components/files/constrainedfilestreambuf.hpp b/openmw/components/files/constrainedfilestreambuf.hpp
+index c3301fa..4d8482d 100644
+--- a/openmw/components/files/constrainedfilestreambuf.hpp
++++ b/openmw/components/files/constrainedfilestreambuf.hpp
+@@ -8,6 +8,11 @@
+ 
+ namespace Files
+ {
++    /// Orthros (nifparse.patch): OPENMW_ORTHROS_WHOLEREAD (read once, absent = on, 0 = the previous path): large
++    /// reads straight into their destination (ConstrainedFileStreamBuf::xsgetn), and a NIF read whole once, then
++    /// hashed and parsed from memory (Nif::Reader::parse) instead of read twice through the file.
++    bool orthrosWholeReads();
++
+     /// A file streambuf constrained to a specific region in the file, specified by the 'start' and 'length' parameters.
+     class ConstrainedFileStreamBuf final : public std::streambuf
+     {
+@@ -20,6 +25,11 @@ namespace Files
+ 
+         pos_type seekpos(pos_type pos, std::ios_base::openmode mode) final;
+ 
++        /// Orthros (nifparse.patch, OPENMW_ORTHROS_WHOLEREAD): a read of at least the buffer's size goes straight
++        /// into the destination, in one File::read — on the web one call to the page (one fetch for the bytes not
++        /// there yet) instead of one per 8 KB. The bytes read, and the position after, are the same.
++        std::streamsize xsgetn(char_type* s, std::streamsize count) final;
++
+     private:
+         std::size_t mOrigin;
+         std::size_t mSize;
+diff --git a/openmw/components/files/memorystream.hpp b/openmw/components/files/memorystream.hpp
+index 964e3b6..123ff07 100644
+--- a/openmw/components/files/memorystream.hpp
++++ b/openmw/components/files/memorystream.hpp
+@@ -2,6 +2,8 @@
+ #define OPENMW_COMPONENTS_FILES_MEMORYSTREAM_H
+ 
+ #include <istream>
++#include <utility>
++#include <vector>
+ 
+ namespace Files
+ {
+@@ -46,6 +48,57 @@ namespace Files
+         }
+     };
+ 
++    /// Orthros (nifparse.patch): the bytes the stream reads, owned by it (first base: built before MemBuf points
++    /// at them).
++    struct OwnedBytes
++    {
++        std::vector<char> mBytes;
++    };
++
++    /// @brief Orthros (nifparse.patch): a std::istream over a buffer it owns — a file read whole once, then parsed
++    /// (and hashed) from memory.
++    struct IOwnedMemStream : private OwnedBytes, MemBuf, std::istream
++    {
++        explicit IOwnedMemStream(std::vector<char>&& bytes)
++            : OwnedBytes{ std::move(bytes) }
++            , MemBuf(mBytes.data(), mBytes.size())
++            , std::istream(static_cast<std::streambuf*>(static_cast<MemBuf*>(this)))
++        {
++        }
++    };
++
++    /// Orthros (nifparse.patch): the rest of `stream` (from its position to its end) into `out`, in one read. False
++    /// (the stream back at its position): its size unknown, or fewer bytes than that read.
++    inline bool orthrosReadRest(std::istream& stream, std::vector<char>& out)
++    {
++        const std::istream::pos_type start = stream.tellg();
++        if (start == std::istream::pos_type(-1))
++        {
++            stream.clear();
++            return false;
++        }
++        stream.seekg(0, std::ios_base::end);
++        const std::istream::pos_type end = stream.tellg();
++        stream.clear();
++        stream.seekg(start);
++        if (end == std::istream::pos_type(-1) || std::streamoff(end) < std::streamoff(start))
++        {
++            stream.clear();
++            return false;
++        }
++        out.resize(static_cast<std::size_t>(std::streamoff(end) - std::streamoff(start)));
++        if (!out.empty())
++            stream.read(out.data(), static_cast<std::streamsize>(out.size()));
++        if (static_cast<std::size_t>(stream.gcount()) != out.size() && !out.empty())
++        {
++            stream.clear();
++            stream.seekg(start);
++            out.clear();
++            return false;
++        }
++        return true;
++    }
++
+ }
+ 
+ #endif
+diff --git a/openmw/components/nif/niffile.cpp b/openmw/components/nif/niffile.cpp
+index ee56abc..70be772 100644
+--- a/openmw/components/nif/niffile.cpp
++++ b/openmw/components/nif/niffile.cpp
+@@ -1,7 +1,9 @@
+ #include "niffile.hpp"
+ 
+ #include <components/debug/debuglog.hpp>
++#include <components/files/constrainedfilestreambuf.hpp>
+ #include <components/files/hash.hpp>
++#include <components/files/memorystream.hpp>
+ 
+ #include <algorithm>
+ #include <array>
+@@ -542,6 +544,17 @@ namespace Nif
+         if (writeDebug)
+             Log(Debug::Verbose) << "NIF Debug: Reading file: '" << mFilename << "'";
+ 
++        // Orthros (nifparse.patch, OPENMW_ORTHROS_WHOLEREAD): the file read whole once, then hashed and parsed from
++        // memory — getHash read it through to its end and the parse read it all again, 8 KB at a time through the
++        // file (on the web each a call to the page). The same bytes, so the same hash. Already in memory (a parse on
++        // NifFileManager's thread): as it is.
++        if (Files::orthrosWholeReads() && dynamic_cast<Files::IOwnedMemStream*>(stream.get()) == nullptr)
++        {
++            std::vector<char> bytes;
++            if (Files::orthrosReadRest(*stream, bytes))
++                stream = std::make_unique<Files::IOwnedMemStream>(std::move(bytes));
++        }
++
+         const std::array<std::uint64_t, 2> fileHash = Files::getHash(mFilename, *stream);
+         mHash.append(reinterpret_cast<const char*>(fileHash.data()), fileHash.size() * sizeof(std::uint64_t));
+ 
+diff --git a/openmw/components/resource/bulletshapemanager.cpp b/openmw/components/resource/bulletshapemanager.cpp
+index 5632c5b..ee8318d 100644
+--- a/openmw/components/resource/bulletshapemanager.cpp
++++ b/openmw/components/resource/bulletshapemanager.cpp
+@@ -167,6 +167,15 @@ namespace Resource
+         return shape;
+     }
+ 
++    bool BulletShapeManager::orthrosShapeReady(VFS::Path::NormalizedView name)
++    {
++        if (mCache->getRefFromObjectCache(name) != nullptr)
++            return true;
++        if (Misc::getFileExtension(name.value()) != "nif")
++            return true;
++        return mNifFileManager->orthrosParsedReady(name);
++    }
++
+     osg::ref_ptr<BulletShapeInstance> BulletShapeManager::cacheInstance(VFS::Path::NormalizedView name)
+     {
+         osg::ref_ptr<BulletShapeInstance> instance = createInstance(name);
+diff --git a/openmw/components/resource/bulletshapemanager.hpp b/openmw/components/resource/bulletshapemanager.hpp
+index 3c5a495..2a090ef 100644
+--- a/openmw/components/resource/bulletshapemanager.hpp
++++ b/openmw/components/resource/bulletshapemanager.hpp
+@@ -37,6 +37,11 @@ namespace Resource
+         /// as needed.
+         osg::ref_ptr<BulletShapeInstance> cacheInstance(VFS::Path::NormalizedView name);
+ 
++        /// Orthros (nifparse.patch): getShape(name) parses nothing on this thread — the shape is cached, or its NIF
++        /// is (or was parsed on NifFileManager's thread: NifFileManager::orthrosParsedReady, which otherwise starts
++        /// that parse). Not a NIF: true (its template: SceneManager::orthrosTemplateReady).
++        bool orthrosShapeReady(VFS::Path::NormalizedView name);
++
+         /// @note May return a null pointer if the object has no shape.
+         osg::ref_ptr<BulletShapeInstance> getInstance(VFS::Path::NormalizedView name);
+ 
+diff --git a/openmw/components/resource/keyframemanager.cpp b/openmw/components/resource/keyframemanager.cpp
+index fdc4e05..1792b87 100644
+--- a/openmw/components/resource/keyframemanager.cpp
++++ b/openmw/components/resource/keyframemanager.cpp
+@@ -18,6 +18,7 @@
+ #include <components/vfs/pathutil.hpp>
+ 
+ #include "animation.hpp"
++#include "niffilemanager.hpp"
+ #include "objectcache.hpp"
+ #include "scenemanager.hpp"
+ 
+@@ -207,6 +208,11 @@ namespace Resource
+     {
+     }
+ 
++    bool KeyframeManager::orthrosCached(VFS::Path::NormalizedView name) const
++    {
++        return mCache->getRefFromObjectCache(name) != nullptr;
++    }
++
+     osg::ref_ptr<const SceneUtil::KeyframeHolder> KeyframeManager::get(VFS::Path::NormalizedView name)
+     {
+         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(name);
+@@ -218,9 +224,19 @@ namespace Resource
+         constexpr VFS::Path::ExtensionView kf("kf");
+         if (name.extension() == kf)
+         {
+-            auto file = std::make_shared<Nif::NIFFile>(name);
+-            Nif::Reader reader(*file, mEncoder);
+-            reader.parse(mVFS->get(name));
++            // Orthros (nifparse.patch): parsed on NifFileManager's thread already (a preload asked for it), taken;
++            // otherwise parsed here, as before
++            NifFileManager& nifs = *mSceneManager->orthrosNifFileManager();
++            Nif::NIFFilePtr file = nifs.orthrosTakeParsed(name);
++            if (file == nullptr)
++            {
++                const auto hereStart = nifs.orthrosCancelParse(name);
++                auto parsed = std::make_shared<Nif::NIFFile>(name);
++                Nif::Reader reader(*parsed, mEncoder);
++                reader.parse(mVFS->get(name));
++                nifs.orthrosParsedHere(hereStart);
++                file = std::move(parsed);
++            }
+             NifOsg::Loader::loadKf(*file, *loaded.get());
+         }
+         else
+diff --git a/openmw/components/resource/keyframemanager.hpp b/openmw/components/resource/keyframemanager.hpp
+index ef7e7e4..fdf3b59 100644
+--- a/openmw/components/resource/keyframemanager.hpp
++++ b/openmw/components/resource/keyframemanager.hpp
+@@ -58,6 +58,9 @@ namespace Resource
+         /// @note Throws an exception if the resource is not found.
+         osg::ref_ptr<const SceneUtil::KeyframeHolder> get(VFS::Path::NormalizedView name);
+ 
++        /// Orthros (nifparse.patch): `name` is cached (get() parses nothing).
++        bool orthrosCached(VFS::Path::NormalizedView name) const;
++
+         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
+ 
+     private:
+diff --git a/openmw/components/resource/niffilemanager.cpp b/openmw/components/resource/niffilemanager.cpp
+index 0325ba1..40b950a 100644
+--- a/openmw/components/resource/niffilemanager.cpp
++++ b/openmw/components/resource/niffilemanager.cpp
+@@ -1,14 +1,33 @@
+ #include "niffilemanager.hpp"
+ 
++#include <algorithm>
++#include <chrono>
++#include <condition_variable>
++#include <cstdlib>
++#include <cstring>
++#include <deque>
+ #include <iostream>
++#include <map>
++#include <mutex>
++#include <set>
++#include <string>
++#include <vector>
+ 
+ #include <osg/Object>
+ 
++#include <components/debug/debuglog.hpp>
++#include <components/files/memorystream.hpp>
+ #include <components/vfs/manager.hpp>
+ 
+ #include "objectcache.hpp"
+ #include "nifstats.hpp"
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#include <emscripten/threading.h>
++#include <pthread.h>
++#endif
++
+ namespace Resource
+ {
+ 
+@@ -31,15 +50,242 @@ namespace Resource
+         Nif::NIFFilePtr mNifFile;
+     };
+ 
++    /// Orthros (nifparse.patch): NIF parses run on a thread of their own (the web's cooperative WorkQueue runs the
++    /// preloads on the page's thread, where a whole NIF or .kf parse is one indivisible step of 20-250 ms). The page's
++    /// thread reads the file's bytes (from the page, once they are there: no FS read ever happens on the thread — the
++    /// web proxies those to the page's thread) and hands them over; the thread parses them from memory (Nif::Reader
++    /// on an IOwnedMemStream: the same parse, the same hash) and keeps the result until taken (get(),
++    /// orthrosTakeParsed()) or unused for kResultLife; a readiness check only peeks at it (orthrosPeekParsed), so a
++    /// mesh put off for its textures keeps its parse. A failed parse stays recorded (orthrosParsedReady true, never
++    /// queued again) until kResultLife: the caller's own parse reports the error, as before. Nothing on the page's
++    /// thread ever waits for it (but ~NifFileManager, for a parse under way).
++    struct OrthrosNifParses
++    {
++        struct Job
++        {
++            VFS::Path::Normalized mPath;
++            std::vector<char> mBytes;
++        };
++        struct Result
++        {
++            Nif::NIFFilePtr mFile; // (null: the parse failed — the caller parses it again and reports the error)
++            std::chrono::steady_clock::time_point mAt;
++        };
++
++        static constexpr std::chrono::seconds kResultLife{ 30 };
++        static constexpr std::size_t kMaxResults = 256;
++        static constexpr std::size_t kThreadStack = 1024 * 1024;
++
++        const ToUTF8::StatelessUtf8Encoder* mEncoder = nullptr;
++        std::mutex mMutex;
++        std::condition_variable mWake;
++        std::condition_variable mIdle;
++        std::deque<Job> mQueue;
++        std::set<std::string, std::less<>> mPending; // (queued or being parsed)
++        std::map<std::string, Result, std::less<>> mResults;
++        bool mStop = false;
++        bool mBusy = false;
++        bool mStarted = false;
++        bool mNoThread = false;
++        bool mWarnedThread = false;
++        // (counters, logged every kLogEvery parses, at an unfinished preload's abort, and published to the page:
++        // globalThis.__omwNifThreadStats — Resource::nifStatAdd's Parse stage counts the page's thread's parses only)
++        std::size_t mParsed = 0;
++        std::size_t mFailed = 0;
++        std::size_t mTaken = 0;
++        std::size_t mUnused = 0;
++        std::size_t mBytes = 0;
++        double mParseMs = 0;
++        double mReadMs = 0;
++        std::size_t mCancelled = 0; // (queued, then parsed on the page's thread first: dropped unparsed)
++        std::size_t mHereParsed = 0; // (parsed on the page's thread while the switch is on: get(), a .kf)
++        double mHereMs = 0;
++        std::size_t mLoggedAt = 0;
++        static constexpr std::size_t kLogEvery = 10;
++
++        void run()
++        {
++            std::unique_lock<std::mutex> lock(mMutex);
++            while (true)
++            {
++                mWake.wait(lock, [&] { return mStop || !mQueue.empty(); });
++                if (mStop)
++                    break;
++                Job job = std::move(mQueue.front());
++                mQueue.pop_front();
++                mBusy = true;
++                lock.unlock();
++                const auto start = std::chrono::steady_clock::now();
++                Nif::NIFFilePtr file;
++                try
++                {
++                    auto parsed = std::make_shared<Nif::NIFFile>(job.mPath);
++                    Nif::Reader reader(*parsed, mEncoder);
++                    reader.parse(std::make_unique<Files::IOwnedMemStream>(std::move(job.mBytes)));
++                    file = std::move(parsed);
++                }
++                catch (...)
++                {
++                    // (anything: reported by the parse on the page's thread, as before — never out of the thread)
++                    file = nullptr;
++                }
++                const double ms
++                    = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
++                lock.lock();
++                mBusy = false;
++                mPending.erase(std::string(job.mPath.value()));
++                ++mParsed;
++                if (!file)
++                    ++mFailed;
++                mResults[std::string(job.mPath.value())] = Result{ std::move(file), std::chrono::steady_clock::now() };
++                mParseMs += ms;
++                mIdle.notify_all();
++            }
++            mBusy = false;
++            mIdle.notify_all();
++        }
++
++        /// (results unused for kResultLife, or the oldest past kMaxResults, dropped; mMutex held)
++        void prune()
++        {
++            const auto now = std::chrono::steady_clock::now();
++            for (auto it = mResults.begin(); it != mResults.end();)
++            {
++                if (now - it->second.mAt > kResultLife)
++                {
++                    it = mResults.erase(it);
++                    ++mUnused;
++                }
++                else
++                    ++it;
++            }
++            while (mResults.size() > kMaxResults)
++            {
++                auto oldest = mResults.begin();
++                for (auto it = mResults.begin(); it != mResults.end(); ++it)
++                    if (it->second.mAt < oldest->second.mAt)
++                        oldest = it;
++                mResults.erase(oldest);
++                ++mUnused;
++            }
++        }
++
++#ifdef __EMSCRIPTEN__
++        static void* threadMain(void* arg)
++        {
++            auto* self = static_cast<std::shared_ptr<OrthrosNifParses>*>(arg);
++            std::shared_ptr<OrthrosNifParses> parses = std::move(*self);
++            delete self;
++            parses->run();
++            return nullptr;
++        }
++#endif
++
++        /// (the thread, started at the first job; false: none — the callers parse as before; mMutex held)
++        bool start(const std::shared_ptr<OrthrosNifParses>& me)
++        {
++            if (mStarted || mNoThread)
++                return mStarted;
++#ifdef __EMSCRIPTEN__
++            pthread_attr_t attr;
++            pthread_attr_init(&attr);
++            pthread_attr_setstacksize(&attr, kThreadStack);
++            pthread_t thread;
++            auto* arg = new std::shared_ptr<OrthrosNifParses>(me);
++            if (pthread_create(&thread, &attr, &OrthrosNifParses::threadMain, arg) == 0)
++            {
++                pthread_detach(thread);
++                mStarted = true;
++                Log(Debug::Info) << "Orthros: NIF parses on a thread of their own (OPENMW_ORTHROS_NIFTHREAD)";
++            }
++            else
++            {
++                delete arg;
++                mNoThread = true;
++                Log(Debug::Warning) << "Orthros: no thread for NIF parses: on the page's thread, as before";
++            }
++            pthread_attr_destroy(&attr);
++#else
++            (void)me;
++            mNoThread = true;
++#endif
++            return mStarted;
++        }
++
++        /// (the counters as one line, and published to the page; mMutex held — the caller logs it after)
++        std::string counters()
++        {
++            mLoggedAt = mParsed;
++#ifdef __EMSCRIPTEN__
++            if (emscripten_is_main_runtime_thread())
++            {
++                // (no comma inside the EM_ASM block: one statement a field, as nifstats.cpp)
++                EM_ASM({
++                    var s = {};
++                    s.parsed = $0;
++                    s.failed = $1;
++                    s.parseMs = $2;
++                    s.taken = $3;
++                    s.unused = $4;
++                    s.cancelled = $5;
++                    s.queued = $6;
++                    s.readMs = $7;
++                    s.hereParsed = $8;
++                    s.hereMs = $9;
++                    globalThis.__omwNifThreadStats = s;
++                },
++                    static_cast<double>(mParsed), static_cast<double>(mFailed), mParseMs, static_cast<double>(mTaken),
++                    static_cast<double>(mUnused), static_cast<double>(mCancelled), static_cast<double>(mQueue.size()),
++                    mReadMs, static_cast<double>(mHereParsed), mHereMs);
++            }
++#endif
++            return "Orthros: NIF parses on their thread: " + std::to_string(mParsed) + " (" + std::to_string(mFailed)
++                + " failed, " + std::to_string(static_cast<int>(mParseMs)) + " ms there; "
++                + std::to_string(mBytes >> 10) + " KB read for them in " + std::to_string(static_cast<int>(mReadMs))
++                + " ms here), " + std::to_string(mTaken) + " taken, " + std::to_string(mUnused) + " unused, "
++                + std::to_string(mCancelled) + " cancelled, " + std::to_string(mQueue.size()) + " queued; "
++                + std::to_string(mHereParsed) + " parsed on the page's thread meanwhile ("
++                + std::to_string(static_cast<int>(mHereMs)) + " ms)";
++        }
++    };
++
++    bool NifFileManager::orthrosParseOffThread()
++    {
++#ifdef __EMSCRIPTEN__
++        static const bool on = [] {
++            const char* v = std::getenv("OPENMW_ORTHROS_NIFTHREAD");
++            const bool enabled = v == nullptr || std::strcmp(v, "0") != 0;
++            if (!enabled)
++                Log(Debug::Info) << "Orthros: OPENMW_ORTHROS_NIFTHREAD=0: NIF parses on the page's thread";
++            return enabled;
++        }();
++        return on;
++#else
++        return false;
++#endif
++    }
++
+     NifFileManager::NifFileManager(const VFS::Manager* vfs, const ToUTF8::StatelessUtf8Encoder* encoder)
+         // NIF files aren't needed any more once the converted objects are cached in SceneManager / BulletShapeManager,
+         // so no point in using an expiry delay.
+         : ResourceManager(vfs, 0)
+         , mEncoder(encoder)
++        , mOrthrosParses(std::make_shared<OrthrosNifParses>())
+     {
++        mOrthrosParses->mEncoder = encoder;
+     }
+ 
+-    NifFileManager::~NifFileManager() = default;
++    NifFileManager::~NifFileManager()
++    {
++        // (the thread told to stop; a parse under way finished first, however long — it uses the encoder, which its
++        // owner may free after this. A parse is bounded, and the page's thread serves the thread's proxied calls
++        // (its log writes) while it waits. The thread keeps the shared state alive itself)
++        std::unique_lock<std::mutex> lock(mOrthrosParses->mMutex);
++        mOrthrosParses->mStop = true;
++        mOrthrosParses->mQueue.clear();
++        mOrthrosParses->mWake.notify_all();
++        mOrthrosParses->mIdle.wait(lock, [&] { return !mOrthrosParses->mBusy; });
++    }
+ 
+     Nif::NIFFilePtr NifFileManager::get(VFS::Path::NormalizedView name)
+     {
+@@ -47,16 +293,173 @@ namespace Resource
+         if (obj != nullptr)
+             return static_cast<NifFileHolder*>(obj.get())->mNifFile;
+ 
++        if (Nif::NIFFilePtr parsed = orthrosTakeParsed(name))
++        {
++            obj = new NifFileHolder(parsed);
++            mCache->addEntryToObjectCache(name.value(), obj);
++            return parsed;
++        }
++
++        const auto hereStart = orthrosCancelParse(name);
+         auto file = std::make_shared<Nif::NIFFile>(name);
+         Nif::Reader reader(*file, mEncoder);
+         OPENMW_NIF_STAT_BEGIN(nifStatBegin);
+         reader.parse(mVFS->get(name));
+         OPENMW_NIF_STAT_END(Resource::NifStage::Parse, nifStatBegin);
++        orthrosParsedHere(hereStart);
+         obj = new NifFileHolder(file);
+         mCache->addEntryToObjectCache(name.value(), obj);
+         return file;
+     }
+ 
++    Nif::NIFFilePtr NifFileManager::orthrosTakeParsed(VFS::Path::NormalizedView name)
++    {
++        if (!orthrosParseOffThread())
++            return nullptr;
++        OrthrosNifParses& parses = *mOrthrosParses;
++        std::lock_guard<std::mutex> lock(parses.mMutex);
++        const auto found = parses.mResults.find(name.value());
++        if (found == parses.mResults.end() || found->second.mFile == nullptr)
++            return nullptr; // (none, or a failed parse: kept, so that orthrosParsedReady never queues it again)
++        Nif::NIFFilePtr file = std::move(found->second.mFile);
++        parses.mResults.erase(found);
++        ++parses.mTaken;
++        return file;
++    }
++
++    Nif::NIFFilePtr NifFileManager::orthrosPeekParsed(VFS::Path::NormalizedView name, bool* failed)
++    {
++        if (failed != nullptr)
++            *failed = false;
++        if (!orthrosParseOffThread())
++            return nullptr;
++        OrthrosNifParses& parses = *mOrthrosParses;
++        std::lock_guard<std::mutex> lock(parses.mMutex);
++        const auto found = parses.mResults.find(name.value());
++        if (found == parses.mResults.end())
++            return nullptr;
++        if (failed != nullptr)
++            *failed = found->second.mFile == nullptr;
++        return found->second.mFile;
++    }
++
++    std::chrono::steady_clock::time_point NifFileManager::orthrosCancelParse(VFS::Path::NormalizedView name)
++    {
++        if (!orthrosParseOffThread())
++            return {};
++        OrthrosNifParses& parses = *mOrthrosParses;
++        std::lock_guard<std::mutex> lock(parses.mMutex);
++        if (parses.mPending.contains(name.value()))
++        {
++            // (still queued: dropped. Under way: its result comes, unused — kResultLife)
++            const auto queued = std::find_if(parses.mQueue.begin(), parses.mQueue.end(),
++                [&](const OrthrosNifParses::Job& job) { return job.mPath.value() == name.value(); });
++            if (queued != parses.mQueue.end())
++            {
++                parses.mQueue.erase(queued);
++                parses.mPending.erase(std::string(name.value()));
++                ++parses.mCancelled;
++            }
++        }
++        return std::chrono::steady_clock::now();
++    }
++
++    void NifFileManager::orthrosParsedHere(std::chrono::steady_clock::time_point start)
++    {
++        if (!orthrosParseOffThread())
++            return;
++        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
++        OrthrosNifParses& parses = *mOrthrosParses;
++        std::lock_guard<std::mutex> lock(parses.mMutex);
++        ++parses.mHereParsed;
++        parses.mHereMs += ms;
++    }
++
++    void NifFileManager::orthrosLogCounters()
++    {
++        if (!orthrosParseOffThread())
++            return;
++        std::string line;
++        {
++            OrthrosNifParses& parses = *mOrthrosParses;
++            std::lock_guard<std::mutex> lock(parses.mMutex);
++            if (!parses.mStarted)
++                return;
++            line = parses.counters();
++        }
++        Log(Debug::Info) << line;
++    }
++
++    bool NifFileManager::orthrosParsedReady(VFS::Path::NormalizedView name)
++    {
++        if (!orthrosParseOffThread())
++            return true;
++        OrthrosNifParses& parses = *mOrthrosParses;
++#ifdef __EMSCRIPTEN__
++        // (the page's thread only: the one the cooperative WorkQueue runs on. Under the OMW_PROXY spike
++        // (PROXY_TO_PTHREAD) the engine runs on a pthread: the switch is then a no-op — said once)
++        if (!emscripten_is_main_runtime_thread())
++        {
++            std::lock_guard<std::mutex> lock(parses.mMutex);
++            if (!parses.mWarnedThread)
++            {
++                parses.mWarnedThread = true;
++                Log(Debug::Warning) << "Orthros: OPENMW_ORTHROS_NIFTHREAD unused: the engine is not on the page's "
++                                       "thread (NIF parses there, as before)";
++            }
++            return true;
++        }
++#endif
++        if (mCache->getRefFromObjectCache(name) != nullptr)
++            return true;
++        {
++            std::string line;
++            bool ready = false;
++            bool pending = false;
++            {
++                std::lock_guard<std::mutex> lock(parses.mMutex);
++                if (parses.mStarted && parses.mParsed >= parses.mLoggedAt + OrthrosNifParses::kLogEvery)
++                    line = parses.counters();
++                // (a failed parse among the results as well: final until kResultLife)
++                ready = parses.mNoThread || parses.mResults.contains(name.value());
++                pending = parses.mPending.contains(name.value());
++            }
++            if (!line.empty())
++                Log(Debug::Info) << line;
++            if (ready)
++                return true;
++            if (pending)
++                return false;
++        }
++        if (!mVFS->exists(name))
++            return true; // (the caller's own error)
++        if (!mVFS->orthrosDataReady(name))
++            return false; // (on its way)
++        const auto start = std::chrono::steady_clock::now();
++        std::vector<char> bytes;
++        try
++        {
++            Files::IStreamPtr stream = mVFS->get(name);
++            if (!Files::orthrosReadRest(*stream, bytes))
++                return true; // (its size unknown: parsed by the caller, as before)
++        }
++        catch (const std::exception&)
++        {
++            return true; // (the caller's read reports it)
++        }
++        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
++        std::lock_guard<std::mutex> lock(parses.mMutex);
++        if (!parses.start(mOrthrosParses))
++            return true;
++        parses.prune();
++        parses.mReadMs += ms;
++        parses.mBytes += bytes.size();
++        parses.mPending.insert(std::string(name.value()));
++        parses.mQueue.push_back(OrthrosNifParses::Job{ VFS::Path::Normalized(name), std::move(bytes) });
++        parses.mWake.notify_one();
++        return false;
++    }
++
+     void NifFileManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const
+     {
+         Resource::reportStats("Nif", frameNumber, mCache->getStats(), *stats);
+diff --git a/openmw/components/resource/niffilemanager.hpp b/openmw/components/resource/niffilemanager.hpp
+index a5395fe..4ce52eb 100644
+--- a/openmw/components/resource/niffilemanager.hpp
++++ b/openmw/components/resource/niffilemanager.hpp
+@@ -1,6 +1,9 @@
+ #ifndef OPENMW_COMPONENTS_RESOURCE_NIFFILEMANAGER_H
+ #define OPENMW_COMPONENTS_RESOURCE_NIFFILEMANAGER_H
+ 
++#include <chrono>
++#include <memory>
++
+ #include <components/nif/niffile.hpp>
+ 
+ #include "resourcemanager.hpp"
+@@ -12,6 +15,7 @@ namespace ToUTF8
+ 
+ namespace Resource
+ {
++    struct OrthrosNifParses;
+ 
+     /// @brief Handles caching of NIFFiles.
+     /// @note May be used from any thread.
+@@ -26,9 +30,46 @@ namespace Resource
+         /// Retrieve a NIF file from the cache, or load it from the VFS if not cached yet.
+         /// @note For performance reasons the NifFileManager does not handle case folding, needs
+         /// to be done in advance by other managers accessing the NifFileManager.
++        /// Orthros (nifparse.patch): a parse finished on the thread (orthrosParsedReady) is taken instead of parsing.
+         Nif::NIFFilePtr get(VFS::Path::NormalizedView name);
+ 
++        /// Orthros (nifparse.patch, OPENMW_ORTHROS_NIFTHREAD; the web, main thread): the NIF (or .kf) `name` can be
++        /// had without parsing it on this thread — cached, parsed already on the parse thread (get() or
++        /// orthrosTakeParsed() takes it), or its parse failed there (get() then parses it here and reports the
++        /// error as before; the failure stays recorded, so it is never queued again). Otherwise false, and: its
++        /// bytes not in the page yet, fetched in the background
++        /// (VFS::Manager::orthrosDataReady); here, read now (from the page: no wait) and handed to the parse thread.
++        /// True as well when the switch is off, off the web, or without the thread (the caller parses: as before).
++        bool orthrosParsedReady(VFS::Path::NormalizedView name);
++
++        /// Orthros (nifparse.patch): the file parsed on the parse thread, taken out of its results (null: none, or
++        /// its parse failed — the caller parses it itself; a failure stays recorded). For a file not kept in this
++        /// cache (a .kf: KeyframeManager).
++        Nif::NIFFilePtr orthrosTakeParsed(VFS::Path::NormalizedView name);
++
++        /// Orthros (nifparse.patch): the file parsed on the parse thread, left among its results (a readiness check:
++        /// a mesh put off for its textures keeps it, where this cache's 0 s expiry would drop it). Null: none, or
++        /// its parse failed (`failed` then true).
++        Nif::NIFFilePtr orthrosPeekParsed(VFS::Path::NormalizedView name, bool* failed = nullptr);
++
++        /// Orthros (nifparse.patch): `name` is about to be parsed on this thread (get(), a .kf): its job, still
++        /// queued, dropped. Returns the parse's start, for orthrosParsedHere.
++        std::chrono::steady_clock::time_point orthrosCancelParse(VFS::Path::NormalizedView name);
++
++        /// Orthros (nifparse.patch): a parse on this thread, counted (orthrosLogCounters).
++        void orthrosParsedHere(std::chrono::steady_clock::time_point start);
++
++        /// Orthros (nifparse.patch): the parse thread's counters logged (and published to the page:
++        /// globalThis.__omwNifThreadStats), when it runs.
++        void orthrosLogCounters();
++
++        /// Orthros (nifparse.patch): OPENMW_ORTHROS_NIFTHREAD (read once; absent = on, 0 = the previous path).
++        static bool orthrosParseOffThread();
++
+         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
++
++    private:
++        std::shared_ptr<OrthrosNifParses> mOrthrosParses;
+     };
+ 
+ }
+diff --git a/openmw/components/resource/scenemanager.cpp b/openmw/components/resource/scenemanager.cpp
+index c003505..7d361ba 100644
+--- a/openmw/components/resource/scenemanager.cpp
++++ b/openmw/components/resource/scenemanager.cpp
+@@ -960,7 +960,7 @@ namespace Resource
+         return static_cast<osg::Node*>(mErrorMarker->clone(osg::CopyOp::DEEP_COPY_ALL));
+     }
+ 
+-    bool SceneManager::orthrosTemplateReady(VFS::Path::NormalizedView path)
++    bool SceneManager::orthrosTemplateReady(VFS::Path::NormalizedView path, bool parseOffThread)
+     {
+         if (mCache->getRefFromObjectCache(path))
+             return true;
+@@ -968,6 +968,11 @@ namespace Resource
+             return true; // (the error marker: getTemplate's own answer)
+         if (!mVFS->orthrosDataReady(path))
+             return false;
++        // (nifparse.patch: the NIF parsed on NifFileManager's thread first — orthrosTexturesOf then reads it in place;
++        // a failed parse: ready, no textures — getTemplate's error marker)
++        constexpr VFS::Path::ExtensionView nif("nif");
++        if (parseOffThread && path.extension() == nif && !mNifFileManager->orthrosParsedReady(path))
++            return false;
+         // (every texture the file names, each asked: the missing ones all on their way at once)
+         std::vector<VFS::Path::Normalized> images;
+         orthrosTexturesOf(path, images);
+@@ -983,10 +988,16 @@ namespace Resource
+         constexpr VFS::Path::ExtensionView nif("nif");
+         if (path.extension() != nif || !mVFS->exists(path))
+             return;
+-        Nif::NIFFilePtr file;
++        // (nifparse.patch: a parse finished on NifFileManager's thread read in place, left there for getTemplate —
++        // not taken into the NIF cache, whose 0 s expiry would drop it while the textures come; a failed one: none)
++        bool failed = false;
++        Nif::NIFFilePtr file = mNifFileManager->orthrosPeekParsed(path, &failed);
++        if (failed)
++            return; // (getTemplate reports it)
+         try
+         {
+-            file = mNifFileManager->get(path);
++            if (file == nullptr)
++                file = mNifFileManager->get(path);
+         }
+         catch (const std::exception&)
+         {
+diff --git a/openmw/components/resource/scenemanager.hpp b/openmw/components/resource/scenemanager.hpp
+index fa8c1e9..1e3011b 100644
+--- a/openmw/components/resource/scenemanager.hpp
++++ b/openmw/components/resource/scenemanager.hpp
+@@ -158,13 +158,23 @@ namespace Resource
+         /// Orthros (orthros-r5.patch): getTemplate(path) would not wait for the network: the template is cached, or
+         /// its file and, for a NIF, the textures it names are in the browser page (VFS::Manager::orthrosDataReady).
+         /// False: some are not, and they are being fetched in the background; asking again later is cheap (the
+-        /// parsed NIF is kept). Main thread (the web build's cooperative WorkQueue).
+-        bool orthrosTemplateReady(VFS::Path::NormalizedView path);
++        /// parsed NIF is kept until the NIF cache's next update, ~1 s: its expiry is 0 s). Main thread (the web
++        /// build's cooperative WorkQueue).
++        /// Orthros (nifparse.patch): `parseOffThread` (a preload, which nothing waits for): a NIF not parsed yet is
++        /// not ready either — its parse handed to NifFileManager's thread (NifFileManager::orthrosParsedReady)
++        /// instead of run here; the parse then stays among that thread's results until getTemplate takes it
++        /// (asking again while the textures come parses nothing again, within its 30 s life).
++        bool orthrosTemplateReady(VFS::Path::NormalizedView path, bool parseOffThread = false);
++
++        /// Orthros (nifparse.patch): the NIF cache (its parse thread's results).
++        Resource::NifFileManager* orthrosNifFileManager() const { return mNifFileManager; }
+ 
+         /// Orthros (orthros-r10.patch): the textures the NIF `path` names (its external NiSourceTexture files, as the
+         /// loader corrects them, with the shaders' automatic normal / specular maps when enabled), appended to `out`.
+         /// Parses the file (its bytes read, kept in the NIF cache for getTemplate); nothing for another kind or a file
+         /// that fails. Main thread.
++        /// Orthros (nifparse.patch): a NIF parsed on NifFileManager's thread is read in place (left there for
++        /// getTemplate); one whose parse failed there: nothing, no parse here.
+         void orthrosTexturesOf(VFS::Path::NormalizedView path, std::vector<VFS::Path::Normalized>& out);
+ 
+         /// Orthros (orthros-r10.patch): before a synchronous load (a cell change, the sync terrain preload), the files

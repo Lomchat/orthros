@@ -1761,6 +1761,44 @@ in one frame, up to 20 times a second while light copies sharpen (the first minu
 distribution of reload time per frame (frames over 4 and 8 ms) was not taken — the runs' profiles were discarded — and
 the Iris Xe check at 60 fps is to do: the hitches are much smaller, not shown gone at 60 fps.
 
+### Light copies' textures uploaded at their reload: `OPENMW_ORTHROS_TEXAHEAD` (round 5, 2026-10-30, `texahead.patch`)
+
+Scope: only while light copies are replaced in place (a first session, or a link that is not fast, until each file
+is in the OPFS store: docs/slow-network.md). With a fast link or cached data nothing is reloaded and this changes
+nothing. The incremental compile's own misses stay open (about 11 first uploads, ~7 ms, in the local map's first
+render of a cell; ~1 ms in the main view).
+
+Cause: a texture whose image `ImageManager::reloadImage` updated in place uploads again at its next apply. A camera
+that first shows many such textures uploads them all in one draw. In every glide that is the HUD minimap's first
+render of a cell (about 10.3 s in): 23 compressed textures, 25-36 MB, 12 of them reloads (125 ms on SwiftShader). The
+incremental compile cannot catch those: the texture already has a GL object. Now (osg `Texture2D.cpp`: a registry
+image -> its live Texture2Ds; `imagemanager.cpp`: a callback at the end of `reloadImage`; `renderingmanager.cpp`): each
+live Texture2D of the reloaded image that has a GL object, an older modified count and no subload callback is applied
+at once. That happens between frames on the GL thread (`EmscriptenLoop::tick` calls `reloadUpdated` before
+`viewer->advance`/`frame`; keep that order), and then the State's binding on the active unit is marked unknown. A tick
+spends at most 8 ms on these uploads. After that the tick's other textures upload at their next draw, the previous
+path, and the reloads' pace is unchanged. Textures never uploaded are left to the incremental compile or their first
+draw. A texture still alive but never drawn again is uploaded too, once, within the cap. Counters:
+`__orthrosTexAhead` {textures, bytes, deferred, ms, max, maxTick}. `=0`: no registry, no callback.
+
+Measured (one build, the r15 stack + this, Vanilla+ FR, `perf.mjs --discard --profile`, 30 s, load 3-18; off =
+`?omwenv=OPENMW_ORTHROS_TEXAHEAD=0`):
+- Glide 8000,0, two runs each: the ~10.5 s stretch with `tex-upload` 103-104 ms (161-200 ms) was in both off runs and
+  in neither on run.
+- Glide work p99: off 44.4 and 71.1 ms, on 51.4 and 32.8.
+- Glide max: both off runs and one on run had an unrelated ~1 s `fetchSync` data stall at 12.8 s.
+- Ahead: 236-242 textures and 155-159 MB uploaded, 72-83 ms in all, max tick 5.3-8.8 ms.
+- `--run` (walk with mouse turns), fresh, two runs each: work p99 off 33.6/36.2 ms, on 37.4/39.5; over 33 ms off 7/12,
+  on 9/15.
+- In the run, ahead spent 111-127 ms on 239 textures, and its max tick was 19.6/40 ms: a single upload can pass the
+  cap, which is checked before each upload. One 41 ms `tex-upload` stretch appeared in one on run.
+
+So the glide's burst is gone. In the run, the uploads are spread out but not removed, and some may be textures that
+would not have been drawn again.
+
+`frame-compare.mjs morrowind-goty-en` (day, interior; reference = on): off against on 0.001/0.855 mean abs, 0% over
+24, within the noise (0.002/1.338). Open: the Iris Xe check at 60 fps (SwiftShader uploads are not the GPU's).
+
 ### Lua's collector beside the frame: `OPENMW_ORTHROS_LUAGCPACE` (round 2, 2026-10-29)
 
 (Not shipped: `luagc.patch` is in no release — no measured gain in round 3's 30 s windows. Superseded by
@@ -1837,6 +1875,72 @@ each script's cached bytecode again for each object: `loadScriptAndCache`), the 
 step (15-25 ms; up to 39 ms with the steps before it in the same `update()`), more than a 60 fps frame: hidden only
 when the page's thread has that much drawing left, which on Iris Xe at 60 fps it may not. Not checked on Iris Xe. The
 GC hitch is shortened, not shown gone at 60 fps.
+
+### Scripts met again instantiated, not re-read: `OPENMW_ORTHROS_LUACHUNKS` (round 5, 2026-10-30, `luachunks.patch`)
+
+The crossing's Lua work, attributed (Vanilla+ FR, glide `8000,0`, SwiftShader `--discard`; `perfw.mjs` profiles of
+both threads, and `OPENMW_ORTHROS_LUATIMES=1`, a diagnostic in `luatimes.patch`, below). The exterior crossing at ~17 s spans two Lua
+updates; the page's thread waits for them in `waitForThreadUpdate` (86-108 ms in the 0.5 s around the crossing on r15,
+two waits of 35-53 ms). Crossing frame 1 (68 ms, 114 objects whose scripts start, 661 objects becoming active):
+- `onObjectActive` of four global scripts, 661 calls each: proximityTool 10 ms, Advanced World Map - Tracking 9 ms,
+  Quest Guider Lite 3 ms, Advanced World Map 2-2.5 ms. Proximity Tool and Advanced World Map - Tracking each send an event
+  and `addScript` for every supported object. `onInactive` of the cells left: 5-6 ms.
+- Scripts started (`addAutoStartedScripts`, 28 ms): Take All's container script on 92 containers 9 ms, Inventory Extender
+  Redone's container script 3 ms, the two `objectLocal.lua` above on 126 objects 7 ms, and nine actors' six scripts each.
+- `lua_load` re-reading cached bytecode (an undump per script and per `require`, per object): 9-12 ms. This was the only
+  engine-side cost of note. Script compiling from source: 0 (every path was compiled at load).
+Crossing frame 2 (38 ms): events. Advanced World Map's `AdvWMap:cellChanged` took 16 ms; its door bindings load a
+destination cell's references (`CellStore::load`) from the ESM through proxied `fd_read` > `fetchSync` (13-28 ms of
+data wait in a fresh browser profile). The tracking events took 4.4 + 3.7 + 2.9 + 2.3 ms.
+Everything else is the mods' own Lua and their bindings (`serialize` of event payloads 10-16 ms, one `pcall`ed
+error 4-7 ms). Changing that would change what the mods do.
+
+`OPENMW_ORTHROS_LUACHUNKS` (`components/lua/luastate.{hpp,cpp}`; `=0`: the bytecode re-read, as before). At the first
+load of a path, the source is compiled as itself, as before: its errors are a main chunk's, its bytecode is cached, and
+that first instance is that main chunk. Right after, still at that first load, the source is compiled once more as a
+factory: `local _ENV = ...; return function(...) <source>\nend`, with the source's first line kept on line 1. Each later
+load (a second object, or a second sandbox's `require`) calls the factory, which makes a new closure with its own `_ENV`
+upvalue, starting at the globals as `lua_load` sets it; the closures it creates share that upvalue, as with a main chunk
+loaded again. `sol::set_environment` then finds the upvalue by its name, as before. The sandbox has no `debug` library and
+no `load`, so a script cannot see the difference. Two differences remain, neither visible to the player, saves or script
+logic: a C++ `debugTraceback()` line in the log reads "function <path:1>" instead of "main chunk" from the second
+instance on; and the instances share their prototypes, which lowers the Lua heap and its allocation rate, so `__gc`
+finalizers and weak-table entries may go at other times (unspecified by Lua, as already accepted for `luagcinc`). If the
+factory does not compile (a source that is valid only alone), that path keeps the bytecode re-read, with a warning. The
+factory runs on the main Lua state with room checked (`lua_checkstack`, else the undump); a memory error or the
+instruction watchdog firing in its few instructions fails the script's start with the same "Lua error" as before.
+
+Where the factory compile lands: at a path's first load, where its plain compile already lands, so later instances never
+compile, whichever thread they start on (a crossing's objects on the Lua thread, a `require` from a page-thread Lua
+context: `synchronizedUpdate`, UI or input callbacks). In the measured runs every path was first loaded at the game's
+load. The cost: one more compile per path at its first load, so scripts used once (global, player, menu) are compiled
+twice at the game's load (not measured; that is the load screen, not a frame). A script type first met at a crossing pays
+both compiles in that crossing's frame (before: one compile and an undump per further instance); if it is met there on a
+single object, that second compile is a new cost. Not measured: in the glide, no path was first met at a crossing.
+
+The diagnostic `OPENMW_ORTHROS_LUATIMES=1` is in its own patch, `luatimes.patch`, applied after `luachunks.patch` only to a
+diagnostic build; it is not in the production stack. With `OPENMW_ORTHROS_LUATIMES_MS` (default 16), it logs any
+`LuaManager::update` longer than that: the update's phases and, per script, the inclusive time of its start, `onInit`,
+engine handlers, events, timers and chunk loads. Its times map is not locked, so it is valid only while Lua runs on one
+thread at a time. Its log line, written from the Lua thread, is proxied to the page's thread, which serves it while it
+waits in `waitForThreadUpdate`: the waits measured with it on include that write (the times it logs do not).
+
+Measured (dev build r15 stack + the first version of `luachunks.patch`, whose factory was compiled at a path's second
+load rather than its first; alternated `=0`/on, 30 s glide, 3 runs each, load average 19-30). The gain is 5-10 ms of
+Lua-thread work per crossing:
+- `loadScriptAndCache` on the Lua thread: 9.2/11.2/10.8 ms down to 1.1/1.1/0.6 ms (`lua_load` 0).
+- With LUATIMES: crossing frame 1 went from 68 to 62.6 ms, and `autoStartedScripts` from 28.1 to 21.4 ms.
+- `addScript`: 36-39 ms down to 28-33 ms.
+- Work p50: 9.1-9.4 ms in both.
+- The per-run `waitForThreadUpdate` totals (145/141/173 ms off, 107/119/125 ms on) fell by several times what the removed
+  `lua_load` explains: that is mostly noise at this load average, not the gain. The longest wait did not reliably
+  improve (39/43/53 ms off, 34/46/39 ms on).
+Both arms ran the same calls in the same order (114 objects, 661× `onObjectActive`, 92× Take All) and logged no
+errors. The on runs' largest frames (246-378 ms) were first texture uploads in the draw, not Lua.
+The crossing hitch is trimmed, not removed: two waits of 35-46 ms per crossing remain, so 60 fps is still missed there.
+The rest is the mods' own Lua. The next engine-side lever the attribution shows is not Lua: Advanced World Map's door
+bindings load cells (`CellStore::load`) whose ESM reads go through proxied `fd_read` > `fetchSync` (13-28 ms of data wait
+fresh). That belongs to the data system (prefetch and learned order of the ESM's ranges), not to this patch.
 
 ### Post-processing chain changes without recompiles (2026-10-30, `fxprograms.patch`, engine orthros-r15)
 
