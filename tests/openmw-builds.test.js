@@ -303,3 +303,18 @@ test('r16: r15 plus its patch, the same exports; Lua chunks compiled once per pa
   // (the diagnostic Lua timings stay out of the production stack)
   assert.ok(!added.includes('OPENMW_ORTHROS_LUATIMES'));
 });
+
+test('r17: r16 plus its patch, the same exports; preloads patient for their files, LuaUi layout passes and text heights kept, each behind its switch', () => {
+  const r16 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r16'), r17 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r17');
+  assert.ok(r17, 'r17 is a build');
+  assert.deepEqual(r17.patches, [...r16.patches, 'orthros-r17.patch']);
+  assert.deepEqual(r17.exports, r16.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r17.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const f of ['openmw/components/terrain/quadtreeworld.cpp', 'openmw/apps/openmw/mwworld/cellpreloader.cpp', 'openmw/components/sceneutil/workqueue.cpp',
+    'openmw/components/lua_ui/flex.cpp', 'openmw/components/lua_ui/textedit.cpp'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  for (const s of ['PRELOADPATIENT', 'LUAUILAYOUT', 'LUAUITEXTSIZE']) assert.ok(added.includes(`OPENMW_ORTHROS_${s}`), s);
+  // (the diagnostic Lua profiler and the chunk slicing, measured without a gain, stay out)
+  for (const s of ['LUAPROF', 'CHUNKSLICE', 'CHUNKTHREAD', 'REFCACHE']) assert.ok(!added.includes(`OPENMW_ORTHROS_${s}`), s);
+});

@@ -97,7 +97,7 @@ export class PerfRecorder {
     this.header = o.header ?? {}; this.recordMs = o.recordMs ?? RECORD_MS; this.minuteMs = o.minuteMs ?? MINUTE_MS;
     this.t0 = null; this.last = null; this.visible = true; this.phase = null;
     this.cur = null; this.done = []; this.dropped = 0; this.tot = new Acc(0); this.seq = 0; this.lastRecord = null; this.ended = false;
-    this.gpuNow = null; this.dataNow = null; this.dataSum = null; this.probe = null; this.probeSent = false;
+    this.gpuNow = null; this.dataNow = null; this.dataSum = null; this.dataSumSrc = null; this.probe = null; this.probeSent = false;
     this.slowFrames = {}; // (the ports' slow frames by cause, summed ms: added to the entry's `slow`)
   }
   /** The time since the last clock goes to the visible or the hidden time; entries close at minutes and phase changes. */
@@ -143,7 +143,10 @@ export class PerfRecorder {
   counters({ gpu, data } = {}) {
     if (gpu !== undefined) this.gpuNow = gpu ? { state: gpu.state ?? null, frames: gpu.frames ?? 0, ms: gpu.ms ?? 0, lost: gpu.lost ?? 0, hist: gpu.hist ? Array.from(gpu.hist) : null } : null;
     if (data !== undefined) this.dataNow = data ? { waits: data.waits ?? 0, ms: data.ms ?? 0 } : null;
-    if (data?.sum !== undefined) this.dataSum = compactDataSum(data.sum); // (the last one known kept: the session's so far)
+    // (what the waits were for: the source kept, compacted only when a record takes it — take() follows counters() in the
+    // same task, so the same values; compacting every clock tick sorted every file waited for once a second)
+    if (data && 'sum' in data) this.dataSumSrc = data;
+    else if (data !== undefined) this.takeDataSum(); // (the source gone: what it said last kept, as when compacted at each tick)
     if (this.tot.gpu === null && this.gpuNow) this.tot.gpu = { state: this.gpuNow.state, frames: 0, ms: 0, hist: this.gpuNow.hist ? new Array(this.gpuNow.hist.length).fill(0) : null };
     if (this.tot.data === null && this.dataNow) this.tot.data = { waits: 0, ms: 0 };
   }
@@ -181,6 +184,12 @@ export class PerfRecorder {
     if (d && t.data) { t.data.waits += grow(t.dataBase?.waits, d.waits); t.data.ms += grow(t.dataBase?.ms, d.ms); }
     t.gpuBase = g; t.dataBase = d;
   }
+  /** The kept source's attribution compacted into `dataSum` (the last one known kept: the session's so far). */
+  takeDataSum() {
+    if (!this.dataSumSrc) return;
+    const sum = this.dataSumSrc.sum; this.dataSumSrc = null;
+    if (sum !== undefined) this.dataSum = compactDataSum(sum);
+  }
   /** A record is due (RECORD_MS since the last one). */
   due(now) { return !this.ended && this.t0 !== null && this.seq < MAX_RECORDS && now - this.lastRecord >= this.recordMs; }
   /**
@@ -194,6 +203,7 @@ export class PerfRecorder {
     if (final && !this.seq && !this.tot.n && !this.done.length) return null; // (a page that never showed a frame: nothing to send)
     else if (!this.done.length) { this.lastRecord = now; return null; } // (nothing new to say: a hidden tab sends nothing)
     this.lastRecord = now; this.syncTotals();
+    this.takeDataSum();
     const rec = { event: 'perf', v: PERF_VERSION, ...this.header, seq: this.seq++, final: !!final,
       len: Math.round((now - this.t0) / 1000), vis: r1(this.tot.vis / 1000), hid: r1(this.tot.hid / 1000),
       mins: this.done.splice(0), tot: this.entry(this.tot, true) };

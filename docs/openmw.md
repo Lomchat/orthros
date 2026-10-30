@@ -989,7 +989,8 @@ each version of `data/games/morrowind/manifest.json` and `data/games/morrowind-v
   `src/ports/openmw/streamfs.js`: a loose file whole, a BSA member's own bytes) whether the bytes are there; when they
   are not, the page fetches them in the background and the preload puts that work off — a cell preload's mesh, a
   terrain preload's entry (its distant-object chunk: every mesh it may use and the textures their NIFs name) — and
-  goes on with the next, for up to 3 s (`?preloadwait=N`, 0: as before); the cooperative queue runs the other items
+  goes on with the next, for up to 3 s (`?preloadwait=N`, 0: as before; 60 s by default since
+  `OPENMW_ORTHROS_PRELOADPATIENT`, round 6 below — `=0` gives back 3 s); the cooperative queue runs the other items
   meanwhile (`WorkItem::setWaitingForData`). Finishing now (`waitTillDone`, the loading screen) puts nothing off.
 - **r6** (`orthros-r6.patch`): the composite maps' FBO status (`CompositeMapRenderer::compile`) asked until found
   complete, then no more — every composite map is a texture of the same size and format, and WebGL's
@@ -1957,6 +1958,109 @@ The rest is the mods' own Lua. The next engine-side lever the attribution shows 
 bindings load cells (`CellStore::load`) whose ESM reads go through proxied `fd_read` > `fetchSync` (13-28 ms of data wait
 fresh). That belongs to the data system (prefetch and learned order of the ESM's ranges), not to this patch.
 
+### The exterior crossing decomposed; preloads patient on slow links: `OPENMW_ORTHROS_PRELOADPATIENT` (round 6, 2026-10-30, engine orthros-r17)
+
+The exterior crossing frame on r16, measured with `perf.mjs --discard --profile --workers --glide 8000,0` (Vanilla+ FR,
+SwiftShader, the crossing at about 17 s; `tools/openmw/frame-attr.py`, the Lua thread's own profile beside it):
+- **(a) The data wait is gone on a fast link.** `Scene::orthrosReadAhead` costs 2-5 ms of the frame, its
+  `orthrosReadWait` 0.3-1 ms (4 glides, local server). The data wait moved out of the crossing: at 1.5 MB/s
+  (`--net-after 1500`) the next row's preload, started about 4 s before the crossing, waits for its files and, after
+  `WorkItem::dataWaitLimit()` (3 s), reads them anyway, synchronously: a 2.5 s and a 28 s frame on two glides
+  (`PreloadItem` / `TerrainPreloadItem::doWorkSlice` > `getTemplate` > `fetchSync`), 3.1 s and 32 s of data stall in
+  30 s.
+- **(b) The Lua thread's update**: 78 ms on the Lua thread in the crossing's frame (`addAutoStartedScripts`: the new
+  objects' scripts instantiated, 41 ms, their `onActive` handlers, 27 ms), then 28 ms of event handlers in the next
+  one. The page's thread waits for it in `finishUpdate`: 62-105 ms of the crossing's frame. On a slow link it also
+  serves the Lua thread's reads of scripts not in the page yet (70-95 ms of `fetchSync` inside that wait).
+- **(c) `changeCellGrid`'s own work**: 39-63 ms — `loadCell` 22-30 (`insertCell`'s `addObject`, many small inserts:
+  containers, levelled creatures, mechanics, Lua's `objectAddedToScene`), `unloadCell` 9-18 (`PhysicsSystem::remove`
+  3-7), the read-ahead 2-5, the synchronous terrain preload 0-4; and the first cull of the new cells (20-35 ms of the
+  crossing's stretch).
+
+Crossing frame on r16: 106, 129, 147, 151 ms (4 glides), then 35-60 ms.
+
+`OPENMW_ORTHROS_PRELOADPATIENT` (`preloadpatient.patch`: `components/sceneutil/workqueue.{hpp,cpp}`,
+`apps/openmw/mwworld/cellpreloader.cpp`, `components/terrain/quadtreeworld.cpp`; no r17 file):
+- a preload put off for its files waits up to 60 s for them, not 3 s, before reading them synchronously
+  (`?preloadwait=N` still sets it). Whoever needs the work now does not wait for the limit: `waitTillDone` finishes an
+  item at once, and a cell change aborts its cell's preload and loads the cell itself, its files fetched together
+  first. A file whose fetch failed answers ready (`readable()`), so its read happens once and reports the failure:
+  nothing waits 60 s on a dead file.
+- the waiting entries' readiness checks (`meshReady`, `chunksReady`) stop at the slice's deadline, like the rest of
+  the slice. The entries asked go to the back of the list, so the next frame starts with the others (round robin).
+  A list waiting 60 s can be long; its checks no longer grow the frame.
+- a terrain preload holds the one terrain slot until it is done (`CellPreloader::setTerrainPreloadPositions`). One
+  that has waited 3 s for its files (the cadence the old limit gave, when its reads were forced) at positions the
+  player has since left is aborted and restarted at the new positions. The abort is immediate: its slices return
+  on the abort and read nothing. The fetches it started go on, and the chunks it built stay cached. Without this,
+  a 60 s wait would keep stale positions, so the next crossing would build its terrain synchronously and leave far
+  chunks to the cull.
+- `=0`: all as before (3 s, the full scans, no restart). The switch is read once, at `WorkQueue::start` on the main
+  thread, and logged there.
+
+Measured at 1.5 MB/s (`--net-after 1500`), 2 runs per arm, r16 against r16 `?preloadwait=60000`: in the 3 s arm, the
+multi-second synchronous preload reads come back (2.5 s and 28 s). The patient arm has no such read, and its worst
+frame is 208 ms:
+
+| | work p99 | max | frames > 100 ms | data stall | preload slices on the page's thread |
+|---|---|---|---|---|---|
+| r16 (3 s) | 191.6 / 81.9 | 28101 / 2510 | 7 / 5 | 32381 / 3137 ms | 32040 / 3269 ms |
+| r16 `?preloadwait=60000` | 51.7 / 43.4 | 208 / 158.5 | 5 / 3 | 562 / 454 ms | 847 / 781 ms |
+
+The shipped patch (try build r16 + `preloadpatient.patch`), on against `=0` on the same build, `--discard --profile
+--warm 0 --seconds 45`, 1 run each. The terrain columns: `Scene::preloadTerrain` (the cell change's synchronous
+terrain load) and chunk builds in the cull (`QuadTreeWorld::accept` > `loadRenderingNode`):
+
+| run | arm | work p50 / p90 / p99 / max | > 100 ms | preload sync reads | sync terrain load | cull chunk builds | readiness checks |
+|---|---|---|---|---|---|---|---|
+| glide 8000,0, 1.5 MB/s | on | 9.4 / 17.4 / 68.9 / 194 | 9 | 4.7 ms | 0 | 89.7 ms | 486 ms |
+| glide 8000,0, 1.5 MB/s | off | 9.2 / 17.2 / 84.4 / 2510 | 10 | 2409 ms | 0 | 86.1 ms | 286 ms |
+| walk + turns (`--run`), 1.5 MB/s | on | 11.7 / 17.8 / 33.6 / 377 | 2 | 0 | 0 | 12.3 ms | 142 ms |
+| walk + turns (`--run`), 1.5 MB/s | off | 12.2 / 18.8 / 32.6 / 121 | 1 | 0 | 0 | 20.1 ms | 156 ms |
+| walk + turns (`--run`), 500 KB/s | on | 10.5 / 15.9 / 26.2 / 114 | 4 | 0 | 0 | 16.5 ms | 152 ms |
+| walk + turns (`--run`), 500 KB/s | off | 11.7 / 17.9 / 29.7 / 129 | 5 | 0 | 0 | 15.0 ms | 143 ms |
+
+What the table shows:
+- On the glide, the 2.5 s frame is the forced read, and it is gone with the switch on.
+- With the switch on, no run has a synchronous terrain load at the crossing, and the cull builds no more chunks
+  than with it off. Nothing is drawn later.
+- The walk-on run's 377 ms frame is a sound's synchronous file read (`SoundManager::playSound` >
+  `FFmpegDecoder::open`), not a preload.
+- On the glide, the readiness checks cost more with the switch on (486 against 286 ms in 45 s): more entries wait,
+  the checks now bounded per slice. The steady p50/p90 stay within noise, at 1.5 MB/s and at 500 KB/s.
+
+The walk crosses a single cell boundary in 45 s, so a terrain restart (positions left after 3 s of waiting) was
+possible there but is not counted: its log line is at Verbose. Load on the host was 5-17 during these runs. Fast
+link: no difference (the limit is not reached). Ship `preloadpatient.patch` alone, not `crossing6.patch`.
+
+A known risk, not measured: the page's piece cache evicts by insertion and use (`data-client.js`). A readiness
+check (`readable()`) does not refresh a piece. On a low-memory tier with much data in flight, a deferred mesh's early
+pieces could be evicted before its last texture arrives. They would be fetched again, and the item would wait
+longer, up to 60 s, before the same synchronous read as before. Watch `evictions` and the bytes fetched in a
+low-tier slow-link run. The fix would belong to the data system (`src/vfs/`), shared by every port.
+
+Measured and not shipped (`crossing6.patch`, same build, A/B by `?omwenv=`):
+- `OPENMW_ORTHROS_LUALATE` (`mwlua/worker.cpp`; `engine.cpp`'s loop and exports — the r17 files): a Lua update still
+  running when the frame is drawn is waited for at the start of the next tick (and first in any export called from
+  the page), the tick's end (clock, work queue) after it — the frame shown first, nothing computed differently. Glide
+  with the teleport done inside the timed pump (so the wait is counted as a tick's would be): crossing frame 92 / 94 ms
+  on, 106 / 108 off (r16: 129 / 147); the following frames take the rest (42 + 61, 22 on; 39, 52 off). It splits
+  the hitch, it does not remove it: the Lua thread's 78 ms of script work stays serial. Revisit with r17 (JSPI).
+  Before any revisit: while the update is left running, the page's thread runs C++ the exports' settle does not
+  cover — every Emscripten callback registered into the engine (html5 / SDL event handlers: resize, visibility,
+  pointer lock, `webglcontextlost`, input; any `EM_JS` handler that reaches the world, the window manager or the
+  input manager) — so each must settle first or only enqueue; and the Lua thread's proxied main-thread calls (file
+  reads, `fetchSync`) are still served only at the settle or in the browser's yield, serially as before.
+- `OPENMW_ORTHROS_PRELOADLEAD` (`mwworld/scene.cpp`): the exterior grid's next cells preloaded when the position 6 s
+  ahead (at most one cell) comes within the preload distance. Read-ahead in the crossing at 1.5 MB/s: 3.2 ms on,
+  23.3 ms off (1 run each), 2.5 / 4.2 ms on r16 with 60 s patience: within the noise. Not shown to gain.
+
+Left for later: the crossing's Lua work (scripts of the new row's objects, from the mods) can only shrink or move
+by changing when those scripts start (not done: a global event sent to an object whose scripts start later would be
+lost); the slow link's script reads could be announced with the row's read-ahead (each object's local scripts from
+the Lua configuration); `insertCell`'s inserts spread over frames would need object paging to keep a cell drawn
+until its objects are in.
+
 ### Post-processing chain changes without recompiles (2026-10-30, `fxprograms.patch`, engine orthros-r15)
 
 Lua mods change the post-processing chain while playing: RUN! enables its radial blur at each sprint's start and
@@ -1993,6 +2097,60 @@ the old way, a hitch the author's always-on file never had. For a true old-path 
 load the author's `player.lua` (a mods list without that overlay file). Install the overlays and the defaults'
 withdrawal (`player-defaults.mjs --withdraw`) only in the manifest change that moves the versions to the release
 carrying the patch.
+
+### LuaUi layouts without redundant passes: engine orthros-r17 (2026-10-30)
+
+`orthros-r17.patch` (r16 + two changes, each behind its switch): `OPENMW_ORTHROS_PRELOADPATIENT` (above) and, in
+`components/lua_ui`, `OPENMW_ORTHROS_LUAUILAYOUT` (a Flex's second layout pass skipped when its first changed no child's
+size or position) with `OPENMW_ORTHROS_LUAUITEXTSIZE` (a TextEdit's text height kept per width and text). Each has a
+`check` mode (`=check`: on, and the skipped pass or kept height computed anyway and compared): over 30 s of a fresh
+load, 1.16 M Flex second passes left out and 524 k heights kept, 0 different. Measured on r16 + them (SwiftShader
+`--discard`, 3 alternated runs each): LuaUi 0.62-0.74 → 0.46-0.50 ms/frame; fresh load work p99 35.0 → 32.4 ms, max 116
+→ 77; the `LuaFlex::updateCoord` hitches (up to 156 ms) gone. `OPENMW_ORTHROS_UITEXAHEAD` (image sizes read ahead) is in
+the patch but off unless `=1`: one promising run, the thin link not measured. Left out on their numbers: the chunk
+slicing/threading (no gain, a day-view difference unexplained) and the Lua profiler (diagnostic). Live, Vanilla+ FR fresh
+load: work p99 31.8 ms, max 74, no frame over 100 ms, no error. Evidence: `data/proof/openmw-perf/round6/`.
+
+### The steady frame attributed; overlays of the engine's own scripts checked at each release (round 6, 2026-10-30)
+
+Reference r16, Vanilla+ FR, `perf.mjs --run --profile --discard`, 30 s: busy 11.05 ms/frame (osg-draw+GL 3.02,
+osg-cull 1.68, engine-other 1.46, lua-sync 1.12, other 0.72, mechanics 0.73, osg-update 0.68, gui 0.66, sound 0.45,
+lua-ui 0.34). `synchronizedUpdate` is 1.62 ms/frame inclusive: the player's and the menu's onFrame handlers 0.80,
+`applyDelayedActions` 0.60 (LuaUi `Element::update` 0.54), the input actions' update 0.17-0.30. The Lua there is
+interpreter time: no engine API reached from Lua costs over 0.013 ms/frame. Per script, through the opt-in diagnostic
+`luaprof.patch` (`OPENMW_ORTHROS_LUAPROF=1`, below): Skyrim compass 0.27, playercontrols 0.10, HUDMarkers 0.09, camera
+0.07, Combat Juice and SneakPlayer 0.05 each, the rest under 0.03; one UI element queued from the Lua thread ~2.6 ms
+about 3 times a second (0.23 ms/frame, rebuilding its content; not yet named), the compass's marker updates 0.16 (real
+position changes, already diffed).
+
+Micro-savings, not counted toward the p99 target (whole-frame p50/p99 moved within noise):
+- `orthros-overlay-all-perf` `scripts/omw/input/smoothmovement.lua`, an overlay of the engine's **built-in** script
+  (`of: "openmw built-in"`): the five binding callbacks (SmoothMove ×4, Run) re-read the controller's two axes,
+  `isOnGround` and `isSwimming` in the same input-actions pass. Those reads are kept for the pass (nothing in Lua can
+  change them during it: the input state of the frame and the physics state, which Lua changes only through delayed
+  actions), cleared by the script's onFrame after the pass. What an action handler running inside the pass can change
+  synchronously — `controls.sneak`, the walk and run speeds (encumbrance through `activeEffects:modify`) — is still
+  read at every call, in the original order. Checked under Lua 5.4 with stubs against the original: identical action
+  values over 3 × 3000 random frames with handlers flipping sneak and speeds between bindings, 64 % fewer engine
+  calls. About 0.035 ms/frame.
+- `src/host/perf-record.js`: the session record's data summary compacted when a record is taken, no longer at every
+  1 s clock tick (it sorted every file the session ever waited for: ~1-1.5 ms a second, only where the server keeps
+  telemetry — not in `dev-serve.sh` measurements).
+
+An overlay of a built-in script depends on the engine release: a new release that changed the original would have it
+silently brought back. **At every engine release change** of an OpenMW game, before its manifest names the new release:
+`node tools/openmw/overlay-check.mjs data/games/<game>/manifest.json --engine <new release id>` — it hashes the
+release's packed original (`e/<build>/openmw.data`, through `openmw.js`'s package list) against each built-in overlay's
+`originalSha256`, and every installed overlay file against its `sha256`. On a mismatch, regenerate the overlay from the
+new original (and re-measure) or withdraw it. When a mod is added to Vanilla+, read its `registerActionHandler`
+bodies: one that changed the player's ground or water state synchronously would void the smoothmovement overlay's
+invariant (none can through the current API).
+
+`luaprof.patch` is a measuring tool, never part of a production stack: opt-in (absent = off, unlike the
+`OPENMW_ORTHROS_<NAME>` switches), one cached static test per call when off. On, it sums the page thread's Lua time by
+script, handler, binding and delayed action, with the Lua line that queued each action — taken on whichever thread
+queued it, only while that thread runs Lua (inside `protectedCall`, `LuaManager::update` or `synchronizedUpdate`),
+followed into the running coroutine, kept in the action and summed on the page thread.
 
 ### Chrome's code cache off the main thread (2026-10-29)
 

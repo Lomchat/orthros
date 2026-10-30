@@ -1,0 +1,1003 @@
+diff --git a/openmw/apps/openmw/mwlua/uibindings.cpp b/openmw/apps/openmw/mwlua/uibindings.cpp
+index 46ed128..f52bd66 100644
+--- a/openmw/apps/openmw/mwlua/uibindings.cpp
++++ b/openmw/apps/openmw/mwlua/uibindings.cpp
+@@ -1,5 +1,16 @@
+ #include "uibindings.hpp"
+ 
++#include <cstdlib>
++#include <cstring>
++
++#ifdef __EMSCRIPTEN__
++#include <emscripten/em_asm.h>
++#endif
++
++#include <components/debug/debuglog.hpp>
++#include <components/resource/resourcesystem.hpp>
++#include <components/vfs/manager.hpp>
++
+ #include <components/lua/util.hpp>
+ #include <components/lua_ui/alignment.hpp>
+ #include <components/lua_ui/content.hpp>
+@@ -14,12 +25,68 @@
+ 
+ #include "context.hpp"
+ #include "luamanagerimp.hpp"
++#include "mainthread.hpp"
+ 
+ #include "../mwbase/environment.hpp"
+ #include "../mwbase/windowmanager.hpp"
+ 
+ namespace MWLua
+ {
++    namespace
++    {
++        // Orthros (orthros-luauilayout.patch): OPENMW_ORTHROS_UITEXAHEAD, read once — OFF unless "1" (an exception
++        // to the switches' "absent = on": its fetches have no priority below the world's reads, and its effect on a
++        // thin link, where they would compete with the first cell's announced reads, is not measured yet).
++        // A texture a script declares (ui.texture) is read whole, synchronously, by the first LuaUi image widget that
++        // shows it (LuaImage::updateProperties > MyGUI getTextureSize > OSGTexture::loadFromFile > ImageManager::
++        // getImage): on the web build a wait for the data worker (fetchSync) when its bytes are not in the page yet.
++        // With the switch at 1, its path's first registration asks the page for them (VFS::Manager::orthrosDataReady:
++        // the page's orthrosRangeReady, which fetches what is missing in the background) — on the page's thread,
++        // through the Lua bindings' own queue (mainthread.hpp, mainThreadPost: from Lua's thread, run in
++        // Worker::finishUpdate after the frame's drawing, never inside a wait). The image read later is the same.
++        // Counted in globalThis.__omwUiTexAhead { asked, missing }.
++        bool orthrosTextureAheadOn()
++        {
++            static const bool on = [] {
++                const char* value = std::getenv("OPENMW_ORTHROS_UITEXAHEAD");
++                const bool enabled = value != nullptr && std::strcmp(value, "1") == 0;
++                Log(Debug::Info) << "Orthros: Lua UI textures fetched when declared: " << (enabled ? "on" : "off")
++                                 << " (OPENMW_ORTHROS_UITEXAHEAD, off unless 1)";
++                return enabled;
++            }();
++            return on;
++        }
++
++        // (the page's thread only: mainThreadPost)
++        void orthrosTextureAsk(const VFS::Path::Normalized& path)
++        {
++            Resource::ResourceSystem* resources = MWBase::Environment::get().getResourceSystem();
++            if (resources == nullptr || resources->getVFS() == nullptr)
++                return;
++            static double asked = 0;
++            static double missing = 0;
++            ++asked;
++            if (!resources->getVFS()->orthrosDataReady(path))
++                ++missing;
++#ifdef __EMSCRIPTEN__
++            // clang-format off
++            EM_ASM({ var o = globalThis.__omwUiTexAhead || (globalThis.__omwUiTexAhead = {}); o.asked = $0; o.missing = $1; }, asked, missing);
++            // clang-format on
++#endif
++        }
++
++        void orthrosTextureAhead(VFS::Path::Normalized path)
++        {
++#ifdef __EMSCRIPTEN__
++            if (path.empty())
++                return;
++            mainThreadPost([path = std::move(path)] { orthrosTextureAsk(path); });
++#else
++            (void)path;
++#endif
++        }
++    }
++
+     namespace
+     {
+         const std::unordered_map<MWGui::GuiMode, std::string_view> modeToName{
+@@ -227,7 +294,16 @@ namespace MWLua
+             sol::object size = LuaUtil::getFieldOrNil(options, "size");
+             if (size.is<osg::Vec2f>())
+                 data.mSize = size.as<osg::Vec2f>();
+-            return luaManager->uiResourceManager()->registerTexture(std::move(data));
++            // Orthros (orthros-luauilayout.patch): a path's first registration announced (orthrosTextureAhead; with
++            // OPENMW_ORTHROS_UITEXAHEAD off, the previous path exactly)
++            if (!orthrosTextureAheadOn())
++                return luaManager->uiResourceManager()->registerTexture(std::move(data));
++            const bool first = luaManager->uiResourceManager()->orthrosFirstOfPath(data.mPath);
++            VFS::Path::Normalized announced = first ? data.mPath : VFS::Path::Normalized();
++            auto resource = luaManager->uiResourceManager()->registerTexture(std::move(data));
++            if (first)
++                orthrosTextureAhead(std::move(announced));
++            return resource;
+         };
+ 
+         api["screenSize"] = []() {
+diff --git a/openmw/apps/openmw/mwworld/cellpreloader.cpp b/openmw/apps/openmw/mwworld/cellpreloader.cpp
+index cbf5f5d..d1d1b27 100644
+--- a/openmw/apps/openmw/mwworld/cellpreloader.cpp
++++ b/openmw/apps/openmw/mwworld/cellpreloader.cpp
+@@ -217,6 +217,7 @@ namespace MWWorld
+             const auto limit = dataWaitLimit();
+             const bool mayWait = deadline != std::chrono::steady_clock::time_point::max()
+                 && limit > std::chrono::steady_clock::duration::zero();
++            const bool patient = SceneUtil::WorkItem::patientPreloads();
+             bool preloaded = false; // (a mesh preloaded in this call)
+             bool shapeBuilt = false; // (an extra creature's shape built in this call)
+             while (mNextMesh < mMeshes.size())
+@@ -248,6 +249,15 @@ namespace MWWorld
+                 if (mayWait && std::chrono::steady_clock::now() - since < limit && !meshReady(index))
+                 {
+                     ++i;
++                    // Orthros (OPENMW_ORTHROS_PRELOADPATIENT): the readiness checks kept within the slice's deadline
++                    // (each a few calls into the page; a list waiting up to 60 s may be long) — those asked this
++                    // time to the back of the list, the next slice starting with the others (a round robin).
++                    if (patient && std::chrono::steady_clock::now() >= deadline)
++                    {
++                        std::rotate(mDeferred.begin(), mDeferred.begin() + static_cast<std::ptrdiff_t>(i),
++                            mDeferred.end());
++                        break;
++                    }
+                     continue;
+                 }
+                 if (!mayStartExtra(index, deadline, preloaded, shapeBuilt))
+@@ -448,11 +458,17 @@ namespace MWWorld
+                 {
+                     // (orthros-r5.patch: its chunks left wait for their files — the queue's other items run meanwhile)
+                     if (mWorld->preloadWaitingForData())
++                    {
+                         setWaitingForData();
++                        // (PRELOADPATIENT: since when this view waits — CellPreloader::setTerrainPreloadPositions)
++                        if (mWaitingSince == std::chrono::steady_clock::time_point())
++                            mWaitingSince = std::chrono::steady_clock::now();
++                    }
+                     return false;
+                 }
+                 ++mView;
+                 mNext = 0;
++                mWaitingSince = {};
+                 if (std::chrono::steady_clock::now() >= deadline)
+                     break;
+             }
+@@ -466,6 +482,14 @@ namespace MWWorld
+ 
+         void wait(Loading::Listener& listener) const { mLoadingReporter.wait(listener); }
+ 
++        /// Orthros (OPENMW_ORTHROS_PRELOADPATIENT): true when the view being preloaded has waited for its files at
++        /// least `limit` (its chunks put off; the cooperative queue's slices only — a thread's doWork() never waits).
++        bool waitedForData(std::chrono::steady_clock::duration limit) const
++        {
++            return mWaitingSince != std::chrono::steady_clock::time_point()
++                && std::chrono::steady_clock::now() - mWaitingSince >= limit;
++        }
++
+     private:
+         std::atomic<bool> mAbort;
+         std::vector<osg::ref_ptr<Terrain::View>> mTerrainViews;
+@@ -474,6 +498,8 @@ namespace MWWorld
+         Loading::Reporter mLoadingReporter;
+         std::size_t mView = 0;
+         std::size_t mNext = 0;
++        /// (the current view's first slice that left chunks waiting for their files; none: not waiting)
++        std::chrono::steady_clock::time_point mWaitingSince;
+     };
+ 
+     /// Worker thread item: update the resource system's cache, effectively deleting unused entries.
+@@ -675,6 +701,20 @@ namespace MWWorld
+         }
+         else if (contains(mTerrainPreloadPositions, positions, 128.f))
+             return;
++        // Orthros (OPENMW_ORTHROS_PRELOADPATIENT): a terrain preload waits for its files up to 60 s now, not 3 s — and
++        // holds this one slot all that time, the positions the player went on to never preloaded meanwhile (the next
++        // cell change's terrain then built synchronously, its far chunks in the cull). Once it has waited 3 s (the
++        // cadence the old limit gave: its reads were forced then) at positions the player has left, it is aborted —
++        // at once: its slices return on the abort, nothing read — and the new positions preloaded. The fetches it
++        // started go on (their bytes kept in the page), the chunks it built stay in the chunk managers' caches.
++        if (mTerrainPreloadItem && !mTerrainPreloadItem->isDone() && !positions.empty()
++            && SceneUtil::WorkItem::patientPreloads()
++            && mTerrainPreloadItem->waitedForData(SceneUtil::WorkItem::terrainRestartAfter))
++        {
++            mTerrainPreloadItem->abort();
++            mTerrainPreloadItem->waitTillDone();
++            Log(Debug::Verbose) << "Orthros: terrain preload restarted at the player's new positions";
++        }
+         if (mTerrainPreloadItem && !mTerrainPreloadItem->isDone())
+             return;
+         else
+diff --git a/openmw/components/lua_ui/container.cpp b/openmw/components/lua_ui/container.cpp
+index 1999be8..7580887 100644
+--- a/openmw/components/lua_ui/container.cpp
++++ b/openmw/components/lua_ui/container.cpp
+@@ -36,6 +36,9 @@ namespace LuaUi
+             outerSize.width = std::max(outerSize.width, coord.left + coord.width);
+             outerSize.height = std::max(outerSize.height, coord.top + coord.height);
+         }
++        // Orthros (orthros-luauilayout.patch): a change counted (properties.hpp, orthrosLayoutMutated)
++        if (mInnerSize != innerSize || mOuterSize != outerSize)
++            orthrosLayoutMutated();
+         mInnerSize = innerSize;
+         mOuterSize = outerSize;
+     }
+diff --git a/openmw/components/lua_ui/element.cpp b/openmw/components/lua_ui/element.cpp
+index d2e3153..adb38d3 100644
+--- a/openmw/components/lua_ui/element.cpp
++++ b/openmw/components/lua_ui/element.cpp
+@@ -347,6 +347,7 @@ namespace LuaUi
+             updateRootCoord(mRoot);
+             mState = Created;
+             checkWarnings();
++            orthrosLayoutPublish(); // (Orthros, orthros-luauilayout.patch: properties.hpp)
+         }
+     }
+ 
+@@ -392,6 +393,7 @@ namespace LuaUi
+             updateRootCoord(mRoot);
+             mState = Created;
+             checkWarnings();
++            orthrosLayoutPublish(); // (Orthros, orthros-luauilayout.patch: properties.hpp)
+         }
+     }
+ 
+diff --git a/openmw/components/lua_ui/flex.cpp b/openmw/components/lua_ui/flex.cpp
+index 7c639a2..825fa35 100644
+--- a/openmw/components/lua_ui/flex.cpp
++++ b/openmw/components/lua_ui/flex.cpp
+@@ -1,5 +1,7 @@
+ #include "flex.hpp"
+ 
++#include <components/debug/debuglog.hpp>
++
+ namespace LuaUi
+ {
+     void LuaFlex::updateProperties()
+@@ -39,6 +41,24 @@ namespace LuaUi
+     {
+         const auto& flexChildren = children();
+ 
++        // Orthros (orthros-luauilayout.patch): what this layout changes counted (properties.hpp,
++        // orthrosLayoutMutated): its children size, its children's forced coords; and, in updateCoord with
++        // OPENMW_ORTHROS_LUAUILAYOUT on, each child's pass recorded (orthrosSkipChildCoord)
++        // (with the switch at 0 none of it: the counter is read by LUAUILAYOUT only; the previous forced coords kept
++        // in a member reused from layout to layout)
++        const bool count = orthrosLuaUiLayout() != 0;
++        const bool record = mOrthrosRecording;
++        const MyGUI::IntSize oldChildrenSize = mChildrenSize;
++        if (count)
++        {
++            mOrthrosOldForced.clear();
++            for (auto* w : flexChildren)
++                mOrthrosOldForced.push_back(w->orthrosForced());
++        }
++        if (record)
++            mOrthrosPasses.assign(flexChildren.size(), OrthrosChildPass{});
++        OrthrosLayoutStats& stats = orthrosLayoutStats();
++
+         MyGUI::IntSize childrenSize;
+         if (mAutoSized)
+         {
+@@ -133,13 +153,27 @@ namespace LuaUi
+ 
+                 w->forceSize(widgetSize);
+                 w->forcePosition(widgetPosition);
++                if (count && w->orthrosForced() != mOrthrosOldForced[j])
++                    orthrosLayoutMutated();
++                const std::uint64_t before = stats.mMutations;
+                 w->updateCoord();
++                if (record)
++                {
++                    OrthrosChildPass& pass = mOrthrosPasses[j];
++                    pass.mClean = stats.mMutations == before;
++                    MyGUI::Widget* parent = w->widget()->getParent();
++                    pass.mParentVisible = parent == nullptr || parent->getInheritedVisible();
++                    pass.mForced = w->orthrosForced();
++                    pass.mCoord = w->widget()->getCoord();
++                }
+             }
+ 
+             currentSecondaryAxisPosition += secondaryAxisSize + mGap;
+         }
+ 
+         mChildrenSize = childrenSize;
++        if (count && mChildrenSize != oldChildrenSize)
++            orthrosLayoutMutated();
+         WidgetExtension::updateChildren();
+     }
+ 
+@@ -165,8 +199,74 @@ namespace LuaUi
+ 
+     void LuaFlex::updateCoord()
+     {
+-        updateChildren();
+-        WidgetExtension::updateCoord();
++        // Orthros (orthros-luauilayout.patch): OPENMW_ORTHROS_LUAUILAYOUT (properties.hpp): updateChildren's passes
++        // recorded, WidgetExtension::updateCoord's second pass over the children then asking orthrosSkipChildCoord
++        // (and off the page's thread, whose counters they are: properties.hpp)
++        if (orthrosLuaUiLayout() == 0 || !orthrosLayoutOnMainThread())
++        {
++            updateChildren();
++            WidgetExtension::updateCoord();
++            return;
++        }
++        mOrthrosPassesValid = false;
++        mOrthrosRecording = true;
++        try
++        {
++            updateChildren();
++        }
++        catch (...)
++        {
++            mOrthrosRecording = false;
++            throw;
++        }
++        mOrthrosRecording = false;
++        mOrthrosPassesValid = mOrthrosPasses.size() == children().size();
++        try
++        {
++            WidgetExtension::updateCoord();
++        }
++        catch (...)
++        {
++            mOrthrosPassesValid = false;
++            throw;
++        }
++        mOrthrosPassesValid = false;
++    }
++
++    bool LuaFlex::orthrosSkipChildCoord(std::size_t index, WidgetExtension* child)
++    {
++        // Left out: the child's pass in updateChildren changed nothing in its tree — the state it left is a fixpoint of
++        // its layout for what it read from outside its tree — and those inputs are the same now: its forced coord (its
++        // size and position ignore its parent's while forced: every child of a Flex is), its MyGUI parent's inherited
++        // visibility (updateVisible; this Flex's own may have changed since, in WidgetExtension::updateCoord), and its
++        // coord as it left it. Then laying it out again changes nothing either.
++        if (!mOrthrosPassesValid || index >= mOrthrosPasses.size())
++            return false;
++        OrthrosLayoutStats& stats = orthrosLayoutStats();
++        ++stats.mSecondPasses;
++        const OrthrosChildPass& pass = mOrthrosPasses[index];
++        if (!pass.mClean || !(child->orthrosForced() == pass.mForced) || child->widget()->getCoord() != pass.mCoord)
++            return false;
++        MyGUI::Widget* parent = child->widget()->getParent();
++        if ((parent == nullptr || parent->getInheritedVisible()) != pass.mParentVisible)
++            return false;
++        ++stats.mSecondPassesSkipped;
++        if (orthrosLuaUiLayout() == 2)
++        {
++            // (checked: laid out anyway — any change it makes is a pass wrongly left out)
++            const std::uint64_t before = stats.mMutations;
++            child->updateCoord();
++            if (stats.mMutations != before)
++            {
++                ++stats.mSkipMismatches;
++                if (stats.mSkipMismatches <= 20)
++                    Log(Debug::Warning) << "Orthros: Lua UI Flex second pass left out would have changed "
++                                        << child->diagnosticName() << " (" << (stats.mMutations - before)
++                                        << " changes)";
++            }
++            return true;
++        }
++        return true;
+     }
+ 
+     const std::vector<std::string_view>& LuaFlex::allUsedProperties() const
+diff --git a/openmw/components/lua_ui/flex.hpp b/openmw/components/lua_ui/flex.hpp
+index 87229ff..b522fc6 100644
+--- a/openmw/components/lua_ui/flex.hpp
++++ b/openmw/components/lua_ui/flex.hpp
+@@ -19,6 +19,7 @@ namespace LuaUi
+         MyGUI::IntSize childScalingSize() const override;
+ 
+         void updateCoord() override;
++        bool orthrosSkipChildCoord(std::size_t index, WidgetExtension* child) override;
+ 
+         const std::vector<std::string_view>& allUsedProperties() const override;
+ 
+@@ -31,6 +32,21 @@ namespace LuaUi
+         int mGap;
+         bool mWrap;
+ 
++        // Orthros (orthros-luauilayout.patch): each child's layout in this updateCoord's updateChildren — whether it
++        // changed nothing (mClean), and what it read from outside its tree then (its forced coord, its MyGUI parent's
++        // inherited visibility) with the coord it left — valid from updateChildren to the end of updateCoord
++        struct OrthrosChildPass
++        {
++            bool mClean = false;
++            bool mParentVisible = false;
++            OrthrosForced mForced;
++            MyGUI::IntCoord mCoord;
++        };
++        std::vector<OrthrosChildPass> mOrthrosPasses;
++        std::vector<OrthrosForced> mOrthrosOldForced;
++        bool mOrthrosRecording = false;
++        bool mOrthrosPassesValid = false;
++
+         template <typename T>
+         T& primary(MyGUI::types::TPoint<T>& point) const
+         {
+diff --git a/openmw/components/lua_ui/properties.hpp b/openmw/components/lua_ui/properties.hpp
+index 0ce523a..e3d8b6e 100644
+--- a/openmw/components/lua_ui/properties.hpp
++++ b/openmw/components/lua_ui/properties.hpp
+@@ -1,6 +1,8 @@
+ #ifndef OPENMW_LUAUI_PROPERTIES
+ #define OPENMW_LUAUI_PROPERTIES
+ 
++#include <cstdint>
++
+ #include <MyGUI_Colour.h>
+ #include <MyGUI_Types.h>
+ #include <osg/Vec2>
+@@ -96,6 +98,49 @@ namespace LuaUi
+     // (no metatable). "0": every read through parseProperty / parseExternal / LuaUtil::getFieldOrNil, as before.
+     bool orthrosLuaUiDiff();
+ 
++    // Orthros (orthros-luauilayout.patch): OPENMW_ORTHROS_LUAUITEXTSIZE and OPENMW_ORTHROS_LUAUILAYOUT, each read once
++    // (util.cpp): 0 "0" (the previous path), 1 absent or anything else (on), 2 "check" (on, and every result it saves
++    // computed the previous way too and compared: a difference counted and logged, the first 20).
++    // LUAUITEXTSIZE (textedit.cpp): an auto-sized TextEdit's text height kept per width until its properties or its
++    // text change, its MyGUI EditBox resized only when its size does — MyGUI lays its whole text out again
++    // (TextView::update) at every EditBox::setSize, even to the same size.
++    // LUAUILAYOUT (flex.cpp): a Flex lays each child out once in updateChildren, then again from updateChildrenCoord;
++    // the second is left out when the first changed nothing in the child's tree (a fixpoint: the same inputs give the
++    // same state) and nothing the child reads from outside its tree changed since — nested Flexes cost once per level
++    // instead of twice (2^depth).
++    int orthrosLuaUiTextSize();
++    int orthrosLuaUiLayout();
++
++    // Orthros (orthros-luauilayout.patch): the layout's counters — plain, not atomic: the page's thread's alone. LuaUi
++    // lays out there only: Element::create/update run from LuaManager's queued UI actions (addAction, applied by
++    // applyDelayedActions on the page's thread) and MyGUI's events (textChange) are the page's. LUAUILAYOUT relies on
++    // it (a lost count would take a changed pass for a clean one): LuaFlex::updateCoord checks it
++    // (orthrosLayoutOnMainThread) and takes the previous path, logged once, anywhere else.
++    // mMutations: every change a layout makes to a widget's state (a coord, a visibility, a Flex's children size or
++    // forced coords, a Container's sizes, an EditBox resized) — LUAUILAYOUT's test of a pass that changed nothing.
++    struct OrthrosLayoutStats
++    {
++        std::uint64_t mMutations = 0;
++        std::uint64_t mTextHits = 0;
++        std::uint64_t mTextMisses = 0;
++        std::uint64_t mTextResizes = 0;
++        std::uint64_t mTextResizesSkipped = 0;
++        std::uint64_t mTextMismatches = 0;
++        std::uint64_t mSecondPasses = 0;
++        std::uint64_t mSecondPassesSkipped = 0;
++        std::uint64_t mSkipMismatches = 0;
++    };
++    OrthrosLayoutStats& orthrosLayoutStats();
++    inline void orthrosLayoutMutated()
++    {
++        ++orthrosLayoutStats().mMutations;
++    }
++    // True on the page's thread (always off the web); elsewhere false, said once in the log.
++    bool orthrosLayoutOnMainThread();
++    // globalThis.__omwLuaUiLayout refreshed (after an Element is created or updated: once a second at most); with a
++    // switch at "check", a summary line logged every 10 s at most while the counters move
++    void orthrosLayoutPublish();
++
+     // Orthros (orthros-luauidiff.patch): parseValue<T>(sol::object(table), field, errorPrefix) — the same result and
+     // the same errors — without its registry references (the table's copy, its lua_table view, the field's object:
+     // a luaL_ref and a luaL_unref each, per read). parseValue reads through LuaUtil::getFieldOrNil: nil unless
+diff --git a/openmw/components/lua_ui/resources.hpp b/openmw/components/lua_ui/resources.hpp
+index 260e8c4..3da59fd 100644
+--- a/openmw/components/lua_ui/resources.hpp
++++ b/openmw/components/lua_ui/resources.hpp
+@@ -36,6 +36,10 @@ namespace LuaUi
+             return list.back();
+         }
+ 
++        // Orthros (orthros-luauilayout.patch): no texture of this path registered yet (uibindings.cpp's ui.texture
++        // announces a path's first registration to the page: OPENMW_ORTHROS_UITEXAHEAD)
++        bool orthrosFirstOfPath(const VFS::Path::Normalized& path) const { return mTextures.find(path) == mTextures.end(); }
++
+         void clear() { mTextures.clear(); }
+ 
+     private:
+diff --git a/openmw/components/lua_ui/textedit.cpp b/openmw/components/lua_ui/textedit.cpp
+index eee8bc6..0422539 100644
+--- a/openmw/components/lua_ui/textedit.cpp
++++ b/openmw/components/lua_ui/textedit.cpp
+@@ -2,6 +2,12 @@
+ 
+ #include "alignment.hpp"
+ 
++#include <algorithm>
++
++#include <MyGUI_FontManager.h>
++
++#include <components/debug/debuglog.hpp>
++
+ namespace LuaUi
+ {
+     void LuaTextEdit::initialize()
+@@ -10,6 +16,7 @@ namespace LuaUi
+         mEditBox->eventEditTextChange += MyGUI::newDelegate(this, &LuaTextEdit::textChange);
+         mEditBox->setMaxTextLength(std::numeric_limits<std::size_t>::max());
+         registerEvents(mEditBox);
++        orthrosTextChanged();
+         WidgetExtension::initialize();
+     }
+ 
+@@ -17,6 +24,7 @@ namespace LuaUi
+     {
+         mEditBox->eventEditTextChange -= MyGUI::newDelegate(this, &LuaTextEdit::textChange);
+         clearEvents(mEditBox);
++        orthrosTextChanged();
+         WidgetExtension::deinitialize();
+     }
+ 
+@@ -40,21 +48,58 @@ namespace LuaUi
+ 
+         // change caption last, for multiline and wordwrap to apply
+         mEditBox->setCaption(propertyValue("text", std::string()));
++        orthrosTextChanged();
+ 
+         WidgetExtension::updateProperties();
+     }
+ 
+     void LuaTextEdit::textChange(MyGUI::EditBox*)
+     {
++        orthrosTextChanged();
+         protectedCall([this](LuaUtil::LuaView& view) {
+             triggerEvent("textChanged", sol::make_object(view.sol(), mEditBox->getCaption().asUTF8()));
+         });
+     }
+ 
++    void LuaTextEdit::orthrosTextChanged()
++    {
++        mOrthrosHeights.clear();
++        mOrthrosDirty = true;
++    }
++
++    void LuaTextEdit::orthrosResize(const MyGUI::IntSize& size) const
++    {
++        // (a change to the layout's state: properties.hpp, orthrosLayoutMutated — counted in every mode, so that
++        // OPENMW_ORTHROS_LUAUILAYOUT never takes a resized EditBox for an unchanged one)
++        if (mEditBox->getSize() != size)
++            orthrosLayoutMutated();
++        mEditBox->setSize(size);
++    }
++
+     void LuaTextEdit::updateCoord()
+     {
+         WidgetExtension::updateCoord();
+-        mEditBox->setSize(widget()->getSize());
++        // Orthros (orthros-luauilayout.patch): OPENMW_ORTHROS_LUAUITEXTSIZE (properties.hpp): the EditBox resized
++        // when its size changes or its text, properties or parent did since its last resize here — resized to the
++        // same size with nothing changed, MyGUI only lays the same text out again the same way (EditBox::eraseView,
++        // TextView::update) — and never in between, by calculateSize (orthrosResize counts the change: a Flex's pass)
++        const MyGUI::IntSize size = widget()->getSize();
++        if (orthrosLuaUiTextSize() == 0)
++        {
++            orthrosResize(size);
++            return;
++        }
++        OrthrosLayoutStats& stats = orthrosLayoutStats();
++        if (mOrthrosDirty || mEditBox->getSize() != size)
++        {
++            ++stats.mTextResizes;
++            if (mEditBox->getSize() == size)
++                orthrosLayoutMutated(); // (the text's view laid out again: counted as a change all the same)
++            orthrosResize(size);
++            mOrthrosDirty = false;
++        }
++        else
++            ++stats.mTextResizesSkipped;
+     }
+ 
+     void LuaTextEdit::updateChildren()
+@@ -63,6 +108,8 @@ namespace LuaUi
+         // otherwise it won't be focusable
+         mEditBox->detachFromWidget();
+         mEditBox->attachToWidget(this);
++        // Orthros (orthros-luauilayout.patch): the EditBox attached again (its coord kept, but say it changed)
++        orthrosTextChanged();
+     }
+ 
+     MyGUI::IntSize LuaTextEdit::calculateSize() const
+@@ -70,8 +117,62 @@ namespace LuaUi
+         MyGUI::IntSize normalSize = WidgetExtension::calculateSize();
+         if (mAutoSize)
+         {
+-            mEditBox->setSize(normalSize);
+-            int targetHeight = mMultiline ? mEditBox->getTextSize().height : mEditBox->getFontHeight();
++            // Orthros (orthros-luauilayout.patch): OPENMW_ORTHROS_LUAUITEXTSIZE (properties.hpp): the text's height
++            // depends on the EditBox's width only (its client stretches with it; the text wraps at the client's width)
++            // while the text, the properties and the font stay — kept per width, so that the EditBox is not resized
++            // to measure it again (each resize lays the whole text out, TextView::update)
++            const int mode = orthrosLuaUiTextSize();
++            if (mode == 0)
++            {
++                orthrosResize(normalSize);
++                int targetHeight = mMultiline ? mEditBox->getTextSize().height : mEditBox->getFontHeight();
++                normalSize.height = std::max(normalSize.height, targetHeight);
++                return normalSize;
++            }
++            OrthrosLayoutStats& stats = orthrosLayoutStats();
++            // (the font keyed by its object, its name and its height: a font destroyed and made again at the same
++            // address, at another size, does not keep the heights measured with the previous one)
++            const void* font = MyGUI::FontManager::getInstance().getByName(mEditBox->getFontName());
++            const int fontHeight = mEditBox->getFontHeight();
++            if (font != mOrthrosFont || fontHeight != mOrthrosFontHeight || mEditBox->getFontName() != mOrthrosFontName)
++            {
++                mOrthrosHeights.clear();
++                mOrthrosFont = font;
++                mOrthrosFontHeight = fontHeight;
++                mOrthrosFontName = mEditBox->getFontName();
++            }
++            auto found = std::find_if(mOrthrosHeights.begin(), mOrthrosHeights.end(),
++                [&](const std::pair<int, int>& entry) { return entry.first == normalSize.width; });
++            int targetHeight;
++            if (found == mOrthrosHeights.end())
++            {
++                ++stats.mTextMisses;
++                orthrosResize(normalSize);
++                targetHeight = mMultiline ? mEditBox->getTextSize().height : mEditBox->getFontHeight();
++                // (a few widths at most: a Flex measures with its children's sizes as they were, then as they are)
++                if (mOrthrosHeights.size() >= 8)
++                    mOrthrosHeights.erase(mOrthrosHeights.begin());
++                mOrthrosHeights.emplace_back(normalSize.width, targetHeight);
++            }
++            else
++            {
++                ++stats.mTextHits;
++                targetHeight = found->second;
++                if (mode == 2)
++                {
++                    // (checked: measured as before — the EditBox resized to the size it would have had)
++                    orthrosResize(normalSize);
++                    const int measured = mMultiline ? mEditBox->getTextSize().height : mEditBox->getFontHeight();
++                    if (measured != targetHeight)
++                    {
++                        ++stats.mTextMismatches;
++                        if (stats.mTextMismatches <= 20)
++                            Log(Debug::Warning) << "Orthros: Lua UI TextEdit text height kept " << targetHeight
++                                                << ", measured " << measured << " at width " << normalSize.width
++                                                << " (" << diagnosticName() << ")";
++                    }
++                }
++            }
+             normalSize.height = std::max(normalSize.height, targetHeight);
+         }
+         return normalSize;
+diff --git a/openmw/components/lua_ui/textedit.hpp b/openmw/components/lua_ui/textedit.hpp
+index 2b8425f..59ecdd0 100644
+--- a/openmw/components/lua_ui/textedit.hpp
++++ b/openmw/components/lua_ui/textedit.hpp
+@@ -1,6 +1,7 @@
+ #ifndef OPENMW_LUAUI_TEXTEDIT
+ #define OPENMW_LUAUI_TEXTEDIT
+ 
++#include <string>
+ #include <vector>
+ 
+ #include <MyGUI_EditBox.h>
+@@ -32,6 +33,18 @@ namespace LuaUi
+         MyGUI::EditBox* mEditBox = nullptr;
+         bool mMultiline{ false };
+         bool mAutoSize{ false };
++
++        // Orthros (orthros-luauilayout.patch): OPENMW_ORTHROS_LUAUITEXTSIZE (properties.hpp). The text heights
++        // calculateSize measured, per EditBox width (the text's wrap width), for the EditBox's font as it was; and
++        // whether the EditBox's text, properties or parent changed since updateCoord last resized it (mOrthrosDirty:
++        // resized then whatever its size). Both reset by any such change.
++        void orthrosTextChanged();
++        void orthrosResize(const MyGUI::IntSize& size) const;
++        mutable std::vector<std::pair<int, int>> mOrthrosHeights;
++        mutable const void* mOrthrosFont = nullptr;
++        mutable int mOrthrosFontHeight = -1;
++        mutable std::string mOrthrosFontName;
++        bool mOrthrosDirty = true;
+     };
+ }
+ 
+diff --git a/openmw/components/lua_ui/util.cpp b/openmw/components/lua_ui/util.cpp
+index 6aadbd5..9891d50 100644
+--- a/openmw/components/lua_ui/util.cpp
++++ b/openmw/components/lua_ui/util.cpp
+@@ -1,9 +1,16 @@
+ #include "util.hpp"
+ 
++#include <atomic>
++#include <chrono>
+ #include <cstdlib>
+ #include <cstring>
+ #include <ranges>
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten/em_asm.h>
++#include <emscripten/threading.h>
++#endif
++
+ #include <components/debug/debuglog.hpp>
+ 
+ #include <MyGUI_FactoryManager.h>
+@@ -34,6 +41,99 @@ namespace LuaUi
+         return enabled;
+     }
+ 
++    namespace
++    {
++        // Orthros (orthros-luauilayout.patch): 0 "0", 2 "check", 1 otherwise (absent included); said once in the log.
++        int orthrosLuaUiMode(const char* name, const char* what)
++        {
++            const char* value = std::getenv(name);
++            const int mode = value == nullptr ? 1 : std::strcmp(value, "0") == 0 ? 0 : std::strcmp(value, "check") == 0 ? 2 : 1;
++            Log(Debug::Info) << "Orthros: " << what << ": " << (mode == 0 ? "off" : mode == 2 ? "on, checked" : "on")
++                             << " (" << name << ")";
++            return mode;
++        }
++    }
++
++    // Orthros (orthros-luauilayout.patch): declared in properties.hpp.
++    int orthrosLuaUiTextSize()
++    {
++        static const int mode
++            = orthrosLuaUiMode("OPENMW_ORTHROS_LUAUITEXTSIZE", "Lua UI TextEdit text heights kept per width");
++        return mode;
++    }
++
++    int orthrosLuaUiLayout()
++    {
++        static const int mode
++            = orthrosLuaUiMode("OPENMW_ORTHROS_LUAUILAYOUT", "Lua UI Flex second passes left out when the first changed nothing");
++        return mode;
++    }
++
++    OrthrosLayoutStats& orthrosLayoutStats()
++    {
++        static OrthrosLayoutStats stats;
++        return stats;
++    }
++
++    bool orthrosLayoutOnMainThread()
++    {
++#ifdef __EMSCRIPTEN__
++        if (emscripten_is_main_runtime_thread())
++            return true;
++        // (properties.hpp: the counters are plain, the page's thread's alone; a layout elsewhere never skips anything)
++        static std::atomic<bool> said{ false };
++        if (!said.exchange(true))
++            Log(Debug::Warning) << "Orthros: Lua UI laid out off the page's thread: Flex second passes not left out there";
++        return false;
++#else
++        return true;
++#endif
++    }
++
++    void orthrosLayoutPublish()
++    {
++        // (diagnostics only: globalThis.__omwLuaUiLayout written once a second at most; the summary line logged only
++        // with a switch at "check", every 10 s at most)
++        if (!orthrosLayoutOnMainThread())
++            return;
++        const OrthrosLayoutStats& s = orthrosLayoutStats();
++        static std::uint64_t published = ~std::uint64_t{ 0 };
++        const std::uint64_t moved = s.mMutations + s.mTextHits + s.mTextMisses + s.mSecondPasses;
++        if (moved == published)
++            return;
++        const auto now = std::chrono::steady_clock::now();
++        static auto lastPublish = now - std::chrono::seconds(1);
++        if (now - lastPublish < std::chrono::seconds(1))
++            return;
++        lastPublish = now;
++        published = moved;
++#ifdef __EMSCRIPTEN__
++        // (counts as doubles: a 64-bit integer is a BigInt in the wasm64 build's JS)
++        // clang-format off
++        EM_ASM({
++            var o = globalThis.__omwLuaUiLayout || (globalThis.__omwLuaUiLayout = {});
++            o.mutations = $0; o.textHits = $1; o.textMisses = $2; o.textResizes = $3; o.textResizesSkipped = $4;
++            o.textMismatches = $5; o.secondPasses = $6; o.secondPassesSkipped = $7; o.skipMismatches = $8;
++        }, static_cast<double>(s.mMutations), static_cast<double>(s.mTextHits), static_cast<double>(s.mTextMisses),
++            static_cast<double>(s.mTextResizes), static_cast<double>(s.mTextResizesSkipped),
++            static_cast<double>(s.mTextMismatches), static_cast<double>(s.mSecondPasses),
++            static_cast<double>(s.mSecondPassesSkipped), static_cast<double>(s.mSkipMismatches));
++        // clang-format on
++#endif
++        if (orthrosLuaUiTextSize() != 2 && orthrosLuaUiLayout() != 2)
++            return;
++        static auto lastLog = now;
++        if (now - lastLog >= std::chrono::seconds(10))
++        {
++            lastLog = now;
++            Log(Debug::Info) << "Orthros: Lua UI layout: text heights " << s.mTextHits << " kept, " << s.mTextMisses
++                             << " computed, EditBox resizes " << s.mTextResizes << " done, " << s.mTextResizesSkipped
++                             << " left out, " << s.mTextMismatches << " different; Flex second passes "
++                             << s.mSecondPassesSkipped << " of " << s.mSecondPasses << " left out, "
++                             << s.mSkipMismatches << " different";
++        }
++    }
++
+     void registerAllWidgets()
+     {
+         MyGUI::FactoryManager::getInstance().registerFactory<LuaAdapter>("Widget");
+diff --git a/openmw/components/lua_ui/widget.cpp b/openmw/components/lua_ui/widget.cpp
+index a718457..bb6234f 100644
+--- a/openmw/components/lua_ui/widget.cpp
++++ b/openmw/components/lua_ui/widget.cpp
+@@ -107,6 +107,9 @@ namespace LuaUi
+         // parent visibility doesn't affect added children
+         MyGUI::Widget* parent = widget()->getParent();
+         bool inheritedVisible = mVisible && (parent == nullptr || parent->getInheritedVisible());
++        // Orthros (orthros-luauilayout.patch): a change counted (properties.hpp, orthrosLayoutMutated)
++        if (widget()->getVisible() != inheritedVisible)
++            orthrosLayoutMutated();
+         widget()->setVisible(inheritedVisible);
+     }
+ 
+@@ -285,7 +288,11 @@ namespace LuaUi
+         MyGUI::IntCoord newCoord = calculateCoord();
+ 
+         if (oldCoord != newCoord)
++        {
++            // Orthros (orthros-luauilayout.patch): a change counted (properties.hpp, orthrosLayoutMutated)
++            orthrosLayoutMutated();
+             mWidget->setCoord(newCoord);
++        }
+         updateChildrenCoord();
+     }
+ 
+@@ -314,8 +321,11 @@ namespace LuaUi
+     {
+         for (WidgetExtension* w : mTemplateChildren)
+             w->updateCoord();
+-        for (WidgetExtension* w : mChildren)
+-            w->updateCoord();
++        // Orthros (orthros-luauilayout.patch): a child LuaFlex::updateChildren just laid out may be left out
++        // (orthrosSkipChildCoord: false but in a LuaFlex's updateCoord, OPENMW_ORTHROS_LUAUILAYOUT on)
++        for (std::size_t i = 0; i < mChildren.size(); ++i)
++            if (!orthrosSkipChildCoord(i, mChildren[i]))
++                mChildren[i]->updateCoord();
+     }
+ 
+     MyGUI::IntSize WidgetExtension::parentSize() const
+diff --git a/openmw/components/lua_ui/widget.hpp b/openmw/components/lua_ui/widget.hpp
+index dc17512..db1f9cf 100644
+--- a/openmw/components/lua_ui/widget.hpp
++++ b/openmw/components/lua_ui/widget.hpp
+@@ -58,6 +58,15 @@ namespace LuaUi
+         void setExternal(const sol::main_object& external) { mExternal = external; }
+ 
+         MyGUI::IntCoord forcedCoord();
++        // Orthros (orthros-luauilayout.patch): the forced coord and which of its parts are forced, compared whole
++        struct OrthrosForced
++        {
++            bool mPosition = false;
++            bool mSize = false;
++            MyGUI::IntCoord mCoord;
++            bool operator==(const OrthrosForced&) const = default;
++        };
++        OrthrosForced orthrosForced() const { return { mForcePosition, mForceSize, mForcedCoord }; }
+         void forceCoord(const MyGUI::IntCoord& offset);
+         void forceSize(const MyGUI::IntSize& size);
+         void forcePosition(const MyGUI::IntPoint& pos);
+@@ -112,6 +121,14 @@ namespace LuaUi
+         virtual void updateTemplate();
+         virtual void updateProperties();
+         virtual void updateChildren() {}
++        // Orthros (orthros-luauilayout.patch): whether updateChildrenCoord leaves child `index` (mChildren's) out —
++        // LuaFlex's, right after its updateChildren laid it out (flex.cpp); false by default
++        virtual bool orthrosSkipChildCoord(std::size_t index, WidgetExtension* child)
++        {
++            (void)index;
++            (void)child;
++            return false;
++        }
+ 
+         template <class Lambda>
+         void protectedCall(Lambda&& f) const
+diff --git a/openmw/components/sceneutil/workqueue.cpp b/openmw/components/sceneutil/workqueue.cpp
+index 09baa1f..6fa1328 100644
+--- a/openmw/components/sceneutil/workqueue.cpp
++++ b/openmw/components/sceneutil/workqueue.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include <algorithm>
+ #include <cstdlib>
++#include <cstring>
+ 
+ #include <components/debug/debuglog.hpp>
+ 
+@@ -83,6 +84,16 @@ namespace SceneUtil
+             mCooperative = true;
+             workerThreads = 0;
+         }
++        // (the switches read here, on the main thread, and said once — not inside a static's initializer on whichever
++        // thread asks first)
++        if (static bool told = false; !told)
++        {
++            told = true;
++            Log(Debug::Info) << "Orthros: a preload waits up to "
++                             << std::chrono::duration<double, std::milli>(WorkItem::dataWaitLimit()).count()
++                             << " ms for its files before reading them synchronously (OPENMW_ORTHROS_PRELOADPATIENT: "
++                             << (WorkItem::patientPreloads() ? "on" : "off") << ")";
++        }
+ #endif
+         {
+             const std::lock_guard lock(mMutex);
+@@ -158,10 +169,32 @@ namespace SceneUtil
+         return nullptr;
+     }
+ 
++    bool WorkItem::patientPreloads()
++    {
++        // Orthros (OPENMW_ORTHROS_PRELOADPATIENT): read once. (Logged by WorkQueue::start, on the main thread.)
++        static const bool on = [] {
++            const char* v = std::getenv("OPENMW_ORTHROS_PRELOADPATIENT");
++            return v == nullptr || std::strcmp(v, "0") != 0;
++        }();
++        return on;
++    }
++
+     std::chrono::steady_clock::duration WorkItem::dataWaitLimit()
+     {
+         static const std::chrono::steady_clock::duration limit = [] {
+-            double ms = 3000;
++            // Orthros (OPENMW_ORTHROS_PRELOADPATIENT): 60 s by default, not 3 s. Past the limit a preload put off for
++            // its files reads them all the same — synchronously, on the page's thread: on a slow link, behind the
++            // rest of the game data on its way, a frame of seconds (measured at 1.5 MB/s on a glide: one of 28 s, one
++            // of 2.5 s). Waiting costs a frame only its readiness checks (kept within the slice's deadline,
++            // PreloadItem / QuadTreeWorld::preloadSlice): the queue's other items run meanwhile, and whoever needs
++            // the item now does not wait for the limit (waitTillDone finishes it at once; a cell change aborts its
++            // cell's preload and loads the cell itself, its files fetched together first — as before; a terrain
++            // preload left behind by the player is restarted at the new positions after 3 s,
++            // CellPreloader::setTerrainPreloadPositions). A file whose fetch failed answers ready (its read then
++            // says what failed): nothing waits on a dead file. Read once (first at WorkQueue::start). Absent or
++            // anything but "0": 60 s; "0": 3 s, as before. OPENMW_PRELOAD_WAIT_MS (the page's ?preloadwait=N) sets
++            // it either way.
++            double ms = patientPreloads() ? 60000 : 3000;
+             if (const char* v = std::getenv("OPENMW_PRELOAD_WAIT_MS"))
+                 ms = std::max(0.0, std::atof(v));
+             return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+diff --git a/openmw/components/sceneutil/workqueue.hpp b/openmw/components/sceneutil/workqueue.hpp
+index 79c53e5..2480750 100644
+--- a/openmw/components/sceneutil/workqueue.hpp
++++ b/openmw/components/sceneutil/workqueue.hpp
+@@ -44,8 +44,19 @@ namespace SceneUtil
+ 
+         /// Orthros (orthros-r5.patch): how long a slice may put off work whose files are still on their way from the
+         /// network (OPENMW_PRELOAD_WAIT_MS, default 3000; 0: never — the reads wait, as before r5).
++        /// Orthros (OPENMW_ORTHROS_PRELOADPATIENT): default 60000 (patientPreloads()).
+         static std::chrono::steady_clock::duration dataWaitLimit();
+ 
++        /// Orthros (OPENMW_ORTHROS_PRELOADPATIENT; absent or anything but "0": on; read once): preloads wait for their
++        /// files up to 60 s (dataWaitLimit), their waiting entries re-checked within the slice's deadline (a round
++        /// robin over frames), and a terrain preload that waited for its files 3 s at positions the player has left
++        /// is restarted at the new ones (CellPreloader::setTerrainPreloadPositions). "0": all as before (3 s).
++        static bool patientPreloads();
++
++        /// Orthros (PRELOADPATIENT): how long a terrain preload may wait for its files at positions the player has
++        /// left before it is restarted at the new ones — the cadence the 3 s limit gave before (its reads forced then).
++        static constexpr std::chrono::seconds terrainRestartAfter{ 3 };
++
+     protected:
+         /// Orthros (orthros-r5.patch): a slice that stopped early (doWorkSlice returned false) because what it needs
+         /// next is still on its way from the network (VFS::Manager::orthrosDataReady), not because its time is up:
+diff --git a/openmw/components/terrain/quadtreeworld.cpp b/openmw/components/terrain/quadtreeworld.cpp
+index c70007a..c183fb2 100644
+--- a/openmw/components/terrain/quadtreeworld.cpp
++++ b/openmw/components/terrain/quadtreeworld.cpp
+@@ -6,6 +6,7 @@
+ #include <osg/ValueObject>
+ #include <osgUtil/CullVisitor>
+ 
++#include <algorithm>
+ #include <cmath>
+ #include <limits>
+ #include <set>
+@@ -620,6 +621,7 @@ namespace Terrain
+         const auto limit = SceneUtil::WorkItem::dataWaitLimit();
+         const bool mayWait = deadline != std::chrono::steady_clock::time_point::max()
+             && limit > std::chrono::steady_clock::duration::zero();
++        const bool patient = SceneUtil::WorkItem::patientPreloads();
+         if (next == 0 || mDeferredView != view)
+         {
+             mDeferred.clear();
+@@ -672,6 +674,14 @@ namespace Terrain
+                 && !chunksReady(vd->getEntry(index), vd, grid, deferred.mReadyManagers))
+             {
+                 ++i;
++                // Orthros (OPENMW_ORTHROS_PRELOADPATIENT): the readiness checks kept within the slice's deadline (a
++                // list waiting up to 60 s may be long) — those asked this time to the back of the list, the next
++                // slice starting with the others (a round robin).
++                if (patient && std::chrono::steady_clock::now() >= deadline)
++                {
++                    std::rotate(mDeferred.begin(), mDeferred.begin() + static_cast<std::ptrdiff_t>(i), mDeferred.end());
++                    break;
++                }
+                 continue;
+             }
+             mDeferred.erase(mDeferred.begin() + static_cast<std::ptrdiff_t>(i));

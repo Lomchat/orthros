@@ -382,6 +382,29 @@ test('data waits attributed: the files, the engine\'s own stops, announced reads
   assert.deepEqual(sanitizePerfRecord({ ...rec, mins: [{ ...rec.mins[0], data: { n: 1, ms: 2, files: [['a', 1, 2]] } }] }).rec.mins[0].data, { n: 1, ms: 2 }, 'a minute\'s data: its counts only');
 });
 
+test('data waits attributed: compacted only when a record takes them, the same values as compacting at every clock tick', () => {
+  // the page's source (portDataSummary): `sum` a getter over live counters; the record compacts what it says when taken
+  const live = { files: { 'a.bin': [1, 10] }, blocked: null, wantWaits: 0, wantWaitMs: 0, wantTimeouts: 0, bgBy: null };
+  let reads = 0;
+  const src = () => ({ waits: 1, ms: 10, get sum() { reads++; return { ...live, files: { ...live.files } }; } });
+  const r = new PerfRecorder({ header });
+  r.counters({ data: src() }); r.clock(0, true, 'running');
+  for (let s = 1; s <= 30; s++) { live.files[`f${s}.bin`] = [s, s]; play(r, (s - 1) * 1000, 1); r.counters({ data: src() }); r.take(s * 1000); }
+  assert.equal(reads, 0, 'the clock ticks before a record is due: no summary read, no sort');
+  play(r, 30000, 100); r.counters({ data: src() });
+  const rec = r.take(130000);
+  assert.equal(reads, 1, 'one read for the record');
+  assert.deepEqual(rec.tot.data, { n: 1, ms: 10, ...compactDataSum(live) }, 'the values at the record\'s tick');
+  // the source gone (no sum any more): what it said last kept, read when it went — as compacting at each tick did
+  play(r, 130000, 1); r.counters({ data: src() }); r.take(131000);
+  const before = compactDataSum(live);
+  r.counters({ data: { waits: 1, ms: 10 } }); assert.equal(reads, 2, 'compacted when the source goes');
+  live.files['later.bin'] = [9, 9];
+  r.counters({ data: null });
+  play(r, 131000, 130); r.counters({ data: { waits: 1, ms: 10 } });
+  assert.deepEqual(r.take(261000, true).tot.data, { n: 1, ms: 10, ...before });
+});
+
 test('a port\'s data for its record: the shared game data\'s waits by file, the engine\'s stops under its root, the link\'s producers', (t) => {
   assert.equal(portDataSummary(null), null);
   // (the shared game data counts every wait of the engine by file: data-client.js waited)
