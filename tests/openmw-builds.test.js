@@ -270,3 +270,21 @@ test('r14: r13 plus its patch, the same exports; Lua\'s update on its own thread
   // (a multiplayer session keeps Lua's update inline: openmw.mp's state is not shared with another thread)
   assert.ok(added.includes('OPENMW_MP_URL'));
 });
+
+test('r15: r14 plus its patch, the same exports; actor preload, StateGraph prune, programs precompiled under the loading screen, Lua incremental GC, post-processing programs kept, GUI arena buffer, each behind its switch', () => {
+  const r14 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r14'), r15 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r15');
+  assert.ok(r15, 'r15 is a build');
+  assert.deepEqual(r15.patches, [...r14.patches, 'orthros-r15.patch']);
+  assert.deepEqual(r15.exports, r14.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r15.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const f of ['deps/src/osg/src/osgUtil/StateGraph.cpp', 'openmw/apps/openmw/mwworld/cellpreloader.cpp', 'deps/src/osg/src/osg/Program.cpp',
+    'openmw/apps/openmw/mwgui/loadingscreen.cpp', 'openmw/components/lua/luastate.cpp', 'openmw/components/fx/pass.cpp',
+    'openmw/components/myguiplatform/myguirendermanager.cpp'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  for (const s of ['STATEGRAPHS', 'ACTORPRELOAD', 'PRECOMPILE', 'LUAGCINC', 'FXPROGRAMS', 'GUIONEBUFFER']) assert.ok(added.includes(`OPENMW_ORTHROS_${s}`), s);
+  // (multiview programs are never compiled ahead: not GLSL ES, never drawn in WebGL)
+  assert.ok(added.includes('find("multiview")'));
+  // (measured without a gain or with a visible cost in rounds 2-4: left out)
+  for (const s of ['TEXRELOAD', 'COOPDEADLINE', 'LUAGCMINOR', 'SHADERASYNC', 'GLSTATE', 'LUAGCPACE']) assert.ok(!added.includes(`OPENMW_ORTHROS_${s}`), s);
+});

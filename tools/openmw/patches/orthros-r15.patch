@@ -1,0 +1,1735 @@
+diff --git a/deps/src/osg/include/osgUtil/StateGraph b/deps/src/osg/include/osgUtil/StateGraph
+index 897cc48..7728fd6 100644
+--- a/deps/src/osg/include/osgUtil/StateGraph
++++ b/deps/src/osg/include/osgUtil/StateGraph
+@@ -65,6 +65,13 @@ class OSGUTIL_EXPORT StateGraph : public osg::Object
+ 
+         bool                                _dynamic;
+ 
++        /** Orthros (OPENMW_ORTHROS_STATEGRAPHS, StateGraph.cpp): the number of prunes in a row at which this graph held
++          * no leaf in its whole subtree -- the prunes OSG would have erased it at. Erased when it reaches 3 (or as
++          * soon as the graph holds the last reference to its StateSet), so a graph left empty for a cull or two (a
++          * light list StateSet of the other update's parity, an object culled for a frame) is not deleted and made
++          * again the next cull. Counted in prunes of its own tree (one camera's). Always 0 with the switch off. */
++        unsigned int                        _orthrosIdlePrunes;
++
+         StateGraph():
+             _parent(NULL),
+             _stateset(NULL),
+@@ -72,7 +79,8 @@ class OSGUTIL_EXPORT StateGraph : public osg::Object
+             _averageDistance(0),
+             _minimumDistance(0),
+             _userData(NULL),
+-            _dynamic(false)
++            _dynamic(false),
++            _orthrosIdlePrunes(0)
+         {
+         }
+ 
+@@ -83,7 +91,8 @@ class OSGUTIL_EXPORT StateGraph : public osg::Object
+             _averageDistance(0),
+             _minimumDistance(0),
+             _userData(NULL),
+-            _dynamic(false)
++            _dynamic(false),
++            _orthrosIdlePrunes(0)
+         {
+             if (_parent) _depth = _parent->_depth + 1;
+ 
+@@ -175,6 +184,23 @@ class OSGUTIL_EXPORT StateGraph : public osg::Object
+         /** Recursively prune the StateGraph of empty children.*/
+         void prune();
+ 
++        /** Orthros (OPENMW_ORTHROS_STATEGRAPHS): find_or_insert's graph reached again after prunes that left it
++          * without leaves: its constructor's state (see _orthrosIdlePrunes). */
++        void orthrosRevive()
++        {
++            _orthrosIdlePrunes = 0;
++            if (_parent && _parent->_dynamic) _dynamic = true;
++            else _dynamic = _stateset->getDataVariance()==osg::Object::DYNAMIC;
++            _averageDistance = 0;
++            _minimumDistance = 0;
++            _userData = NULL;
++        }
++
++        /** Orthros (OPENMW_ORTHROS_STATEGRAPHS): prune() with the switch on -- true when the subtree holds a leaf
++          * (OSG's prune keeps exactly those graphs); a child without one is erased at its keep-th such prune in a
++          * row, or at once when it holds the only reference to its StateSet; kept otherwise. */
++        bool orthrosPrune(unsigned int keep);
++
+ 
+         void resizeGLObjectBuffers(unsigned int maxSize)
+         {
+@@ -216,7 +242,16 @@ class OSGUTIL_EXPORT StateGraph : public osg::Object
+         {
+             // search for the appropriate state group, return it if found.
+             ChildList::iterator itr = _children.find(stateset);
+-            if (itr!=_children.end()) return itr->second.get();
++            if (itr!=_children.end())
++            {
++                // Orthros (OPENMW_ORTHROS_STATEGRAPHS): a graph kept through prunes OSG would have erased it at is
++                // given the state a new one would have (the constructor's): its dynamic flag from its parent and its
++                // StateSet again, no user data; its leaves were cleared by clean(), its children are graphs kept the
++                // same way (each revived when reached).
++                StateGraph* sg = itr->second.get();
++                if (sg->_orthrosIdlePrunes != 0) sg->orthrosRevive();
++                return sg;
++            }
+ 
+             // create a state group and insert it into the children list
+             // then return the state group.
+diff --git a/deps/src/osg/src/osgUtil/StateGraph.cpp b/deps/src/osg/src/osgUtil/StateGraph.cpp
+index 4f378f3..af55eb4 100644
+--- a/deps/src/osg/src/osgUtil/StateGraph.cpp
++++ b/deps/src/osg/src/osgUtil/StateGraph.cpp
+@@ -14,6 +14,9 @@
+ 
+ #include <osg/Notify>
+ 
++#include <stdlib.h>
++#include <string.h>
++
+ using namespace osg;
+ using namespace osgUtil;
+ 
+@@ -46,9 +49,74 @@ void StateGraph::clean()
+ 
+ }
+ 
++// Orthros (OPENMW_ORTHROS_STATEGRAPHS; absent or anything but "0": on, read once): the cull's StateGraph tree keeps a
++// graph left without leaves for fewer than sOrthrosStateGraphKeep prunes in a row instead of erasing it at the first.
++// OSG's prune() at the end of every cull erases each graph whose subtree drew nothing, so a StateSet seen every other
++// cull -- r11's light list StateSets alternate between two a list, one an update's parity -- or an object culled for a
++// frame had its graph deleted and made again: a map erase, a destructor, an allocation and a map insert each time
++// (~0.1 ms a frame in Vanilla+). The draw never walks the tree (RenderBin's StateGraph lists hold the graphs given
++// leaves this cull, in the order the cull gave them, as before), and a kept graph reached again by find_or_insert takes
++// a new one's state (orthrosRevive), so the same leaves are drawn with the same states in the same order. A kept graph
++// holds its StateSet (ref_ptr) until it is erased: at most sOrthrosStateGraphKeep prunes of the same tree later -- the
++// tree of one camera (a render-to-texture camera's is pruned only when that camera is culled), not frames. A graph
++// whose StateSet nothing else references any more (its node unloaded) is erased at once: find_or_insert can never be
++// given that StateSet again, so keeping it would only hold the StateSet and its textures. "0": OSG's prune.
++static const unsigned int sOrthrosStateGraphKeep = 3;
++
++static bool orthrosReadStateGraphsSwitch()
++{
++    const char* value = getenv("OPENMW_ORTHROS_STATEGRAPHS");
++    const bool enabled = !(value && strcmp(value, "0") == 0);
++    if (enabled)
++    {
++        OSG_NOTICE << "Orthros: StateGraphs kept through " << sOrthrosStateGraphKeep << " prunes without leaves: on" << std::endl;
++    }
++    else
++    {
++        OSG_NOTICE << "Orthros: StateGraphs kept through prunes without leaves: off (OPENMW_ORTHROS_STATEGRAPHS=0)" << std::endl;
++    }
++    return enabled;
++}
++
++static bool orthrosStateGraphsEnabled()
++{
++    static const bool enabled = orthrosReadStateGraphsSwitch();
++    return enabled;
++}
++
++bool StateGraph::orthrosPrune(unsigned int keep)
++{
++    bool live = !_leaves.empty();
++    ChildList::iterator citr=_children.begin();
++    while(citr!=_children.end())
++    {
++        StateGraph* child = citr->second.get();
++        if (child->orthrosPrune(keep))
++        {
++            child->_orthrosIdlePrunes = 0;
++            live = true;
++            ++citr;
++        }
++        else if (++child->_orthrosIdlePrunes >= keep
++                 || (child->_stateset.valid() && child->_stateset->referenceCount() == 1))
++        {
++            ChildList::iterator ditr= citr++;
++            _children.erase(ditr);
++        }
++        else ++citr;
++    }
++    return live;
++}
++
+ /** recursively prune the StateGraph of empty children.*/
+ void StateGraph::prune()
+ {
++    if (orthrosStateGraphsEnabled())
++    {
++        orthrosPrune(sOrthrosStateGraphKeep);
++        return;
++    }
++
+     // call prune on all children.
+     ChildList::iterator citr=_children.begin();
+     while(citr!=_children.end())
+diff --git a/openmw/apps/openmw/mwclass/creaturelevlist.cpp b/openmw/apps/openmw/mwclass/creaturelevlist.cpp
+index ccb71a9..1e4e3f4 100644
+--- a/openmw/apps/openmw/mwclass/creaturelevlist.cpp
++++ b/openmw/apps/openmw/mwclass/creaturelevlist.cpp
+@@ -15,8 +15,17 @@
+ #include "../mwworld/manualref.hpp"
+ #include "../mwworld/worldmodel.hpp"
+ 
++#include "../mwmechanics/actorutil.hpp"
+ #include "../mwmechanics/creaturestats.hpp"
+ 
++#include "../mwworld/cellpreloader.hpp"
++#include "../mwworld/class.hpp"
++
++#include <components/esm3/loadcrea.hpp>
++#include <components/esm3/loadnpc.hpp>
++
++#include <algorithm>
++
+ #include "../mwbase/environment.hpp"
+ #include "../mwbase/mechanicsmanager.hpp"
+ #include "../mwbase/world.hpp"
+@@ -40,6 +49,50 @@ namespace MWClass
+         const CreatureLevListCustomData& asCreatureLevListCustomData() const override { return *this; }
+     };
+ 
++#ifdef __EMSCRIPTEN__
++    namespace
++    {
++        // Orthros (hitch2.patch): at most this many candidates a list reference — an AllLevels list at a high level
++        // would bring many meshes into the preload for one creature shown.
++        constexpr std::size_t orthrosMaxCandidates = 4;
++
++        // The creatures and NPCs getLevelledItem may pick from this list at this level — the same candidates (the
++        // highest level not above it, or every level not above it with AllLevels), nested lists followed; the dice
++        // left out, a list that never rolls anything (chance none 100) skipped.
++        void orthrosCandidates(const ESM::CreatureLevList& list, int level, const MWWorld::ESMStore& store,
++            std::vector<const ESM::Creature*>& creatures, std::vector<const ESM::NPC*>& npcs, int depth)
++        {
++            if (list.mChanceNone >= 100)
++                return;
++            int highestLevel = 0;
++            for (const auto& item : list.mList)
++                if (item.mLevel > highestLevel && item.mLevel <= level)
++                    highestLevel = item.mLevel;
++            const bool allLevels = (list.mFlags & ESM::CreatureLevList::AllLevels) != 0;
++            for (const auto& item : list.mList)
++            {
++                if (creatures.size() + npcs.size() >= orthrosMaxCandidates)
++                    return;
++                if (level < item.mLevel || !(allLevels || item.mLevel == highestLevel))
++                    continue;
++                if (const ESM::Creature* creature = store.get<ESM::Creature>().search(item.mId))
++                {
++                    if (std::find(creatures.begin(), creatures.end(), creature) == creatures.end())
++                        creatures.push_back(creature);
++                }
++                else if (const ESM::NPC* npc = store.get<ESM::NPC>().search(item.mId))
++                {
++                    if (std::find(npcs.begin(), npcs.end(), npc) == npcs.end())
++                        npcs.push_back(npc);
++                }
++                else if (const ESM::CreatureLevList* nested = store.get<ESM::CreatureLevList>().search(item.mId);
++                         nested != nullptr && depth < 8)
++                    orthrosCandidates(*nested, level, store, creatures, npcs, depth + 1);
++            }
++        }
++    }
++#endif
++
+     CreatureLevList::CreatureLevList()
+         : MWWorld::RegisteredClass<CreatureLevList>(ESM::CreatureLevList::sRecordId)
+     {
+@@ -158,6 +211,61 @@ namespace MWClass
+             customData.mSpawn = false;
+     }
+ 
++    void orthrosLevelledCandidateModels(const MWWorld::ConstPtr& ptr, std::vector<std::string_view>& creatures,
++        std::vector<std::string_view>& parts)
++    {
++#ifdef __EMSCRIPTEN__
++        // Orthros (hitch2.patch, OPENMW_ORTHROS_ACTORPRELOAD, called by CellPreloader only when on): a list has no
++        // model, so its creature's — rolled when the cell inserts it (insertObjectRendering) — was loaded in the
++        // crossing's frame, its collision shape above all (PhysicsSystem::addActor > BulletShapeManager::getShape > NIF
++        // parse, btBvh build: 8-46 ms a crossing measured). Not spawned yet (a creature spawned is a reference of its
++        // own, listed with it), not disabled (the insertion skips it), on a process that spawns (a multiplayer client
++        // spawns nothing itself): the candidates of the level insertObjectRendering would roll at.
++        if (!MWMP::localSpawnsEnabled() || !ptr.getRefData().isEnabled())
++            return;
++        const MWWorld::CustomData* customData = ptr.getRefData().getCustomData();
++        if (customData != nullptr && !customData->asCreatureLevListCustomData().mSpawn)
++            return;
++        try
++        {
++            int level = MWBase::Environment::get().getMechanicsManager()->nearestAvatarLevel(
++                ptr.getRefData().getPosition().asVec3());
++            if (level <= 0)
++            {
++                const MWWorld::Ptr player = MWMechanics::getPlayer();
++                level = player.getClass().getCreatureStats(player).getLevel();
++            }
++            const MWWorld::ESMStore& store = *MWBase::Environment::get().getESMStore();
++            const ESM::CreatureLevList* list = store.get<ESM::CreatureLevList>().search(ptr.getCellRef().getRefId());
++            if (list == nullptr)
++                return;
++            std::vector<const ESM::Creature*> creatureRecords;
++            std::vector<const ESM::NPC*> npcRecords;
++            orthrosCandidates(*list, level, store, creatureRecords, npcRecords, 0);
++            for (const ESM::Creature* creature : creatureRecords)
++                if (!creature->mModel.getOriginal().empty())
++                    creatures.push_back(creature->mModel.getOriginal());
++            for (const ESM::NPC* npc : npcRecords)
++            {
++                // (an NPC drawn from a creature list: its body as Npc::getModelsToPreload lists it — every view into
++                // the store's records or the settings, none into the temporary reference — and its record's likely
++                // equipment, as for an NPC of the cell not met yet)
++                const MWWorld::ManualRef ref(store, npc->mId);
++                ref.getPtr().getClass().getModelsToPreload(ref.getPtr(), parts);
++                MWWorld::orthrosNpcRecordModels(*npc, store, parts);
++            }
++        }
++        catch (const std::exception&)
++        {
++            // (no player yet: nothing listed; the insertion loads it as before)
++        }
++#else
++        (void)ptr;
++        (void)creatures;
++        (void)parts;
++#endif
++    }
++
+     void CreatureLevList::ensureCustomData(const MWWorld::Ptr& ptr) const
+     {
+         if (!ptr.getRefData().getCustomData())
+diff --git a/openmw/apps/openmw/mwclass/creaturelevlist.hpp b/openmw/apps/openmw/mwclass/creaturelevlist.hpp
+index ded8f77..02bcbd6 100644
+--- a/openmw/apps/openmw/mwclass/creaturelevlist.hpp
++++ b/openmw/apps/openmw/mwclass/creaturelevlist.hpp
+@@ -3,8 +3,20 @@
+ 
+ #include "../mwworld/registeredclass.hpp"
+ 
++#include <string_view>
++#include <vector>
++
+ namespace MWClass
+ {
++    /// Orthros (hitch2.patch): a levelled creature list's reference not spawned yet (enabled, a list that may roll
++    /// something, on a process that spawns: not a multiplayer client), the models its insertion would load for the
++    /// creature getLevelledItem may pick at the level insertObjectRendering rolls at — the same candidates, nested
++    /// lists followed, at most a few: `creatures`, a creature's model (collision shape and all); `parts`, an NPC
++    /// candidate's body and what it will likely wear (no collision shape). Nothing rolled or created. For CellPreloader
++    /// only: its getModelsToPreload is unchanged (Scene::orthrosReadAhead never waits for a creature never shown).
++    void orthrosLevelledCandidateModels(const MWWorld::ConstPtr& ptr, std::vector<std::string_view>& creatures,
++        std::vector<std::string_view>& parts);
++
+     class CreatureLevList : public MWWorld::RegisteredClass<CreatureLevList>
+     {
+         friend MWWorld::RegisteredClass<CreatureLevList>;
+diff --git a/openmw/apps/openmw/mwworld/cellpreloader.cpp b/openmw/apps/openmw/mwworld/cellpreloader.cpp
+index 7e5dca2..5317680 100644
+--- a/openmw/apps/openmw/mwworld/cellpreloader.cpp
++++ b/openmw/apps/openmw/mwworld/cellpreloader.cpp
+@@ -3,8 +3,11 @@
+ #include <algorithm>
+ #include <atomic>
+ #include <chrono>
++#include <cstdlib>
++#include <cstring>
+ #include <limits>
+ #include <span>
++#include <unordered_set>
+ 
+ #include <osg/Stats>
+ 
+@@ -24,10 +27,19 @@
+ #include <components/terrain/world.hpp>
+ #include <components/vfs/manager.hpp>
+ 
++#include <components/esm3/loadlevlist.hpp>
++#include <components/esm3/loadnpc.hpp>
++#include <components/resource/bulletshape.hpp>
++
++#include "../mwbase/environment.hpp"
++
++#include "../mwclass/creaturelevlist.hpp"
+ #include "../mwrender/landmanager.hpp"
+ 
+ #include "cellstore.hpp"
+ #include "class.hpp"
++#include "esmstore.hpp"
++#include "livecellref.hpp"
+ 
+ namespace MWWorld
+ {
+@@ -51,16 +63,51 @@ namespace MWWorld
+         }
+     }
+ 
++    bool orthrosActorPreload()
++    {
++        static const bool enabled = [] {
++            const char* value = std::getenv("OPENMW_ORTHROS_ACTORPRELOAD");
++            return value == nullptr || std::strcmp(value, "0") != 0;
++        }();
++        return enabled;
++    }
++
+     struct ListModelsVisitor
+     {
+         bool operator()(const MWWorld::ConstPtr& ptr)
+         {
+             ptr.getClass().getModelsToPreload(ptr, mOut);
++#ifdef __EMSCRIPTEN__
++            if (mExtras)
++            {
++                // Orthros (hitch2.patch, OPENMW_ORTHROS_ACTORPRELOAD): what the insertion of an actor would load in
++                // the crossing's frame though the cell's lists never named it. An NPC not met yet has no inventory,
++                // so Npc::getModelsToPreload lists its body only; the parts of what it will wear (InventoryStore::
++                // autoEquip, run when the cell inserts it) were loaded then (NpcAnimation::updateParts > getTemplate >
++                // NIF parse and textures: ~20 ms a crossing measured): its record's likely equipment, as
++                // Scene::orthrosReadAhead already lists its files. A levelled creature not spawned yet: the
++                // creatures its roll may pick (orthrosLevelledCandidateModels). Kept apart, appended after the
++                // cell's own models (those first, in their order), each once.
++                if (ptr.getType() == ESM::NPC::sRecordId && ptr.getRefData().getCustomData() == nullptr)
++                    orthrosNpcRecordModels(
++                        *ptr.get<ESM::NPC>()->mBase, *MWBase::Environment::get().getESMStore(), mExtras->mParts);
++                else if (ptr.getType() == ESM::CreatureLevList::sRecordId)
++                    MWClass::orthrosLevelledCandidateModels(ptr, mExtras->mCreatures, mExtras->mParts);
++            }
++#endif
+ 
+             return true;
+         }
+ 
+         std::vector<std::string_view>& mOut;
++
++        /// Orthros (hitch2.patch): the actors' extra models (null: none listed — the switch off, or not an exterior).
++        struct Extras
++        {
++            std::vector<std::string_view> mParts; // template only: worn, never given a collision shape
++            std::vector<std::string_view> mCreatures; // a creature's model: template and collision shape
++        };
++        Extras* mExtras = nullptr;
+     };
+ 
+     /// Worker thread item: preload models in a cell.
+@@ -85,7 +132,30 @@ namespace MWWorld
+             mTerrainView = mTerrain->createView();
+ 
+             ListModelsVisitor visitor{ mMeshes };
++#ifdef __EMSCRIPTEN__
++            // Orthros (hitch2.patch): the extras for an exterior cell only — the grid's crossing, where the
++            // insertion's loads were measured; a door's or a travel destination's cell (often an interior never
++            // entered) keeps its list as before.
++            ListModelsVisitor::Extras extras;
++            if (orthrosActorPreload() && mIsExterior)
++                visitor.mExtras = &extras;
++#endif
+             cell->forEachConst(visitor);
++            mFirstExtra = mMeshes.size();
++            mFirstCreature = mMeshes.size();
++#ifdef __EMSCRIPTEN__
++            if (visitor.mExtras != nullptr)
++            {
++                std::unordered_set<std::string_view> seen(mMeshes.begin(), mMeshes.end());
++                for (const std::string_view model : extras.mParts)
++                    if (!model.empty() && seen.insert(model).second)
++                        mMeshes.push_back(model);
++                mFirstCreature = mMeshes.size();
++                for (const std::string_view model : extras.mCreatures)
++                    if (!model.empty() && seen.insert(model).second)
++                        mMeshes.push_back(model);
++            }
++#endif
+         }
+ 
+         void abort() override { mAbort = true; }
+@@ -128,15 +198,26 @@ namespace MWWorld
+             const auto limit = dataWaitLimit();
+             const bool mayWait = deadline != std::chrono::steady_clock::time_point::max()
+                 && limit > std::chrono::steady_clock::duration::zero();
++            bool preloaded = false; // (a mesh preloaded in this call)
++            bool shapeBuilt = false; // (an extra creature's shape built in this call)
+             while (mNextMesh < mMeshes.size())
+             {
+                 if (mAbort)
+                     return true;
+-                const std::size_t index = mNextMesh++;
++                const std::size_t index = mNextMesh;
+                 if (mayWait && !meshReady(mMeshes[index]))
++                {
++                    ++mNextMesh;
+                     mDeferred.emplace_back(index, std::chrono::steady_clock::now());
++                }
+                 else
+-                    preloadMesh(mMeshes[index]);
++                {
++                    if (!mayStartExtra(index, deadline, preloaded, shapeBuilt))
++                        return false;
++                    ++mNextMesh;
++                    preloadMesh(index, shapeBuilt);
++                    preloaded = true;
++                }
+                 if (std::chrono::steady_clock::now() >= deadline)
+                     return mNextMesh >= mMeshes.size() && mDeferred.empty();
+             }
+@@ -150,8 +231,11 @@ namespace MWWorld
+                     ++i;
+                     continue;
+                 }
++                if (!mayStartExtra(index, deadline, preloaded, shapeBuilt))
++                    return false;
+                 mDeferred.erase(mDeferred.begin() + static_cast<std::ptrdiff_t>(i));
+-                preloadMesh(mMeshes[index]);
++                preloadMesh(index, shapeBuilt);
++                preloaded = true;
+                 if (std::chrono::steady_clock::now() >= deadline)
+                     break;
+             }
+@@ -179,8 +263,25 @@ namespace MWWorld
+             }
+         }
+ 
+-        void preloadMesh(std::string_view path)
++        /// Orthros (hitch2.patch): an extra (hitch2.patch's actor models, after the cell's own) may start now. A mesh
++        /// cannot be cut: one (its NIF parse; a creature's btBvh build too) runs whole once started. So between frames
++        /// an extra starts only first in this call or with orthrosExtraHeadroom left before the deadline, and one
++        /// extra creature (collision shape) at most a call; otherwise the next frame's slice takes it. The cell's own
++        /// models, and any mesh without a deadline (waitTillDone, a thread): as before.
++        bool mayStartExtra(std::size_t index, std::chrono::steady_clock::time_point deadline,
++            bool preloaded, bool shapeBuilt) const
+         {
++            if (index < mFirstExtra || deadline == std::chrono::steady_clock::time_point::max())
++                return true;
++            if (index >= mFirstCreature && shapeBuilt)
++                return false;
++            constexpr auto orthrosExtraHeadroom = std::chrono::milliseconds(2);
++            return !preloaded || deadline - std::chrono::steady_clock::now() >= orthrosExtraHeadroom;
++        }
++
++        void preloadMesh(std::size_t index, bool& shapeBuilt)
++        {
++            const std::string_view path = mMeshes[index];
+             try
+             {
+                 const VFS::Manager& vfs = *mSceneManager->getVFS();
+@@ -201,6 +302,23 @@ namespace MWWorld
+                 }
+ 
+                 mPreloadedObjects.insert(mSceneManager->getTemplate(mesh));
++                // Orthros (hitch2.patch): an extra NPC part or worn item never gets a collision shape (attached to
++                // its actor), its template only
++                if (index >= mFirstExtra && index < mFirstCreature)
++                    return;
++                if (index >= mFirstCreature)
++                {
++                    shapeBuilt = true;
++                    // (as PhysicsSystem::addActor: a creature whose x*.nif has no collision box takes its base model's)
++                    const VFS::Path::Normalized base
++                        = Misc::ResourceHelpers::correctMeshPath(VFS::Path::Normalized(path));
++                    if (base.value() != mesh.value() && vfs.exists(base))
++                    {
++                        const osg::ref_ptr<const Resource::BulletShape> shape = mBulletShapeManager->getShape(mesh);
++                        if (shape != nullptr && shape->mCollisionBox.mExtents.length2() == 0)
++                            mPreloadedObjects.insert(mBulletShapeManager->getShape(base));
++                    }
++                }
+                 if (mPreloadInstances)
+                     mPreloadedObjects.insert(mBulletShapeManager->cacheInstance(mesh));
+                 else
+@@ -227,6 +345,10 @@ namespace MWWorld
+         std::atomic<bool> mAbort;
+         bool mTerrainCached = false;
+         std::size_t mNextMesh = 0;
++        /// Orthros (hitch2.patch): mMeshes' extras — [mFirstExtra, mFirstCreature): NPC parts and worn items;
++        /// [mFirstCreature, end): levelled creatures' candidates (both mMeshes.size(): none).
++        std::size_t mFirstExtra = 0;
++        std::size_t mFirstCreature = 0;
+         /// Orthros (orthros-r5.patch): meshes put off while their files come (index, since when).
+         std::vector<std::pair<std::size_t, std::chrono::steady_clock::time_point>> mDeferred;
+ 
+diff --git a/openmw/apps/openmw/mwworld/cellpreloader.hpp b/openmw/apps/openmw/mwworld/cellpreloader.hpp
+index 405ba96..0e47cdb 100644
+--- a/openmw/apps/openmw/mwworld/cellpreloader.hpp
++++ b/openmw/apps/openmw/mwworld/cellpreloader.hpp
+@@ -9,12 +9,19 @@
+ 
+ #include <map>
+ #include <span>
++#include <string_view>
++#include <vector>
+ 
+ namespace osg
+ {
+     class Stats;
+ }
+ 
++namespace ESM
++{
++    struct NPC;
++}
++
+ namespace Resource
+ {
+     class ResourceSystem;
+@@ -40,8 +47,20 @@ namespace Loading
+ namespace MWWorld
+ {
+     class CellStore;
++    class ESMStore;
+     class TerrainPreloadItem;
+ 
++    /// Orthros (hitch2.patch): OPENMW_ORTHROS_ACTORPRELOAD, read once (absent or anything but "0": on). On, an
++    /// exterior cell's preload also lists, after its own models and each once, what its actors' insertion would
++    /// otherwise load in the frame that inserts them: an NPC not met yet, its record's likely equipment
++    /// (orthrosNpcRecordModels; templates only); a levelled creature not spawned yet, the creatures its roll may pick
++    /// (MWClass::orthrosLevelledCandidateModels) — those extras started between frames one heavy mesh at a time
++    /// (PreloadItem::mayStartExtra). Nothing drawn, inserted or rolled changes. 0: the previous lists exactly.
++    bool orthrosActorPreload();
++
++    /// Orthros (orthros-r10.patch): what an NPC met for the first time wears, before its inventory exists (scene.cpp).
++    void orthrosNpcRecordModels(const ESM::NPC& npc, const ESMStore& store, std::vector<std::string_view>& models);
++
+     class CellPreloader
+     {
+     public:
+diff --git a/openmw/apps/openmw/mwworld/scene.cpp b/openmw/apps/openmw/mwworld/scene.cpp
+index ed00b8c..179a799 100644
+--- a/openmw/apps/openmw/mwworld/scene.cpp
++++ b/openmw/apps/openmw/mwworld/scene.cpp
+@@ -63,14 +63,13 @@
+ #include "player.hpp"
+ #include "worldimp.hpp"
+ 
+-namespace
+-{
+-    using MWWorld::RotationOrder;
+-
+ #ifdef __EMSCRIPTEN__
+-    // Orthros (orthros-r10.patch): what an NPC met for the first time wears, before its inventory exists (made from its
+-    // record — levelled lists drawn, the best item of each slot equipped: InventoryStore::autoEquip — only once the cell
+-    // inserts it): the body parts (as Npc::getModelsToPreload picks them by sex) of autoEquip's likely choice, roughly —
++namespace MWWorld
++{
++    // Orthros (orthros-r10.patch; hitch2.patch: in MWWorld, declared in cellpreloader.hpp for its preload too): what an
++    // NPC met for the first time wears, before its inventory exists (made from its record — levelled lists drawn, the
++    // best item of each slot equipped: InventoryStore::autoEquip — only once the cell inserts it): the body parts (as
++    // Npc::getModelsToPreload picks them by sex) of autoEquip's likely choice, roughly —
+     // per armor type the best rating, per clothing type the most valuable (two rings), per weapon type (ammo too) the
+     // best damage. Not every item of the record: a merchant's stock (its restocking items, count < 0) would bring dozens
+     // of meshes and their textures into the load it never shows — but kept among the candidates, as autoEquip ranks
+@@ -126,8 +125,13 @@ namespace
+         for (const auto& entry : weapons)
+             models.push_back(entry.second.second->mModel.getOriginal());
+     }
++}
+ #endif
+ 
++namespace
++{
++    using MWWorld::RotationOrder;
++
+     osg::Quat makeActorOsgQuat(const ESM::Position& position)
+     {
+         return osg::Quat(position.rot[2], osg::Vec3(0, 0, -1));
+--- a/openmw/apps/openmw/mwgui/loadingscreen.hpp
++++ b/openmw/apps/openmw/mwgui/loadingscreen.hpp
+@@ -29,6 +29,7 @@
+ {
+     class BackgroundImage;
+     class CopyFramebufferToTextureCallback;
++    class OrthrosPrecompileCallback;
+ 
+     class LoadingScreen : public WindowBase, public Loading::Listener
+     {
+@@ -85,6 +86,9 @@
+ 
+         osg::ref_ptr<osg::Texture2D> mTexture;
+         osg::ref_ptr<CopyFramebufferToTextureCallback> mCopyFramebufferToTextureCallback;
++        /// Orthros (OPENMW_ORTHROS_PRECOMPILE): compiles the programs not linked yet while the loading screen is up.
++        osg::ref_ptr<OrthrosPrecompileCallback> mOrthrosPrecompile;
++        bool mOrthrosPrecompileSaving = false;
+         std::unique_ptr<MyGUI::ITexture> mGuiTexture;
+ 
+         void changeWallpaper();
+--- a/openmw/apps/openmw/mwgui/loadingscreen.cpp
++++ b/openmw/apps/openmw/mwgui/loadingscreen.cpp
+@@ -135,6 +135,56 @@
+         osg::ref_ptr<osg::Texture2D> mTexture;
+     };
+ 
++    // Orthros (OPENMW_ORTHROS_PRECOMPILE; osg/Program.cpp): defined there, declared here so that no OSG header changes.
++}
++namespace osg
++{
++    bool orthrosPrecompileEnabled();
++    unsigned int orthrosCompileUnlinkedPrograms(osg::State& state, double budgetMs, bool finish);
++}
++namespace MWGui
++{
++    /// Orthros (OPENMW_ORTHROS_PRECOMPILE): a program's first draw compiles and links it, and in a browser reading its
++    /// statuses waits for the GPU process to finish that work: up to 300-380 ms for the big ones on SwiftShader, in
++    /// the world's first frames once the loading screen is gone (the water's reflection, refraction and ripples, the
++    /// shadows, the post-processing passes, the transparent depth pass, the objects' first variants). Those programs
++    /// exist by then (made at the start or while the cells load), so they are compiled here instead, on the GL thread
++    /// before the main camera draws: during the loading screen's frames, about one frame interval's worth each
++    /// (a program started runs to its end), then at the first frame after the loading (the one that draws the world
++    /// first) all that are left. Nothing is drawn later or otherwise: a program is linked once, earlier, by the same
++    /// code. Counters: globalThis.__omwPrecompile (osg/Program.cpp).
++    class OrthrosPrecompileCallback : public osg::Camera::DrawCallback
++    {
++    public:
++        enum Mode
++        {
++            Off,
++            Loading,
++            Finish
++        };
++
++        void setMode(Mode mode, double budgetMs = 0.0)
++        {
++            mMode = mode;
++            mBudgetMs = budgetMs;
++        }
++
++        void operator()(osg::RenderInfo& renderInfo) const override
++        {
++            if (mMode == Off)
++                return;
++            const Mode mode = mMode;
++            if (mode == Finish)
++                mMode = Off;
++            if (osg::State* state = renderInfo.getState())
++                osg::orthrosCompileUnlinkedPrograms(*state, mode == Finish ? -1.0 : mBudgetMs, mode == Finish);
++        }
++
++    private:
++        mutable Mode mMode = Off;
++        double mBudgetMs = 0.0;
++    };
++
+     class DontComputeBoundCallback : public osg::Node::ComputeBoundingSphereCallback
+     {
+     public:
+@@ -162,6 +212,21 @@
+ 
+         setVisible(true);
+ 
++        // (Orthros, OPENMW_ORTHROS_PRECOMPILE: not for a save — the only loading with an "important" label, set before
++        // it starts —, which changes nothing in the world: the frames after it are play, programs compile at their draws)
++        mOrthrosPrecompileSaving = mImportantLabel;
++        if (osg::orthrosPrecompileEnabled() && !mOrthrosPrecompileSaving)
++        {
++            if (!mOrthrosPrecompile)
++            {
++                mOrthrosPrecompile = new OrthrosPrecompileCallback;
++                mViewer->getCamera()->addInitialDrawCallback(mOrthrosPrecompile);
++            }
++            mOrthrosPrecompile->setMode(OrthrosPrecompileCallback::Loading, 1000.0 / getTargetFrameRate());
++        }
++        else if (mOrthrosPrecompile)
++            mOrthrosPrecompile->setMode(OrthrosPrecompileCallback::Off);
++
+         mShowWallpaper = MWBase::Environment::get().getStateManager()->getState() == MWBase::StateManager::State_NoGame;
+ 
+         if (mShowWallpaper)
+@@ -190,6 +255,13 @@
+         else
+             mImportantLabel = false; // label was already shown on loading screen
+ 
++        // (the loading screen was drawn: the next frame, the first after it, compiles the programs still not linked
++        // before drawing; a loading too short to show the screen leaves them to their draws, as before)
++        if (mOrthrosPrecompile)
++            mOrthrosPrecompile->setMode(mLastRenderTime < mLoadingOnTime || mOrthrosPrecompileSaving
++                    ? OrthrosPrecompileCallback::Off
++                    : OrthrosPrecompileCallback::Finish);
++
+         mViewer->getSceneData()->setComputeBoundingSphereCallback(nullptr);
+         mViewer->getSceneData()->dirtyBound();
+ 
+--- a/deps/src/osg/src/osg/Program.cpp
++++ b/deps/src/osg/src/osg/Program.cpp
+@@ -39,8 +39,249 @@
+ #include <string.h>
+ #include <stdlib.h>
+ 
++#include <atomic>
++#include <map>
++#include <mutex>
++#include <thread>
++#include <unordered_map>
++#include <unordered_set>
++#include <vector>
++
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#endif
++
+ using namespace osg;
+ 
++namespace osg
++{
++    bool orthrosPrecompileEnabled();
++}
++
++// Orthros (OPENMW_ORTHROS_PRECOMPILE): every live Program, so that the ones not linked yet can be compiled before a
++// frame draws with them (osg::orthrosCompileUnlinkedPrograms, called by the engine while its loading screen is up and
++// at the first frame after it). Without it the first draw that applies a program compiles and links it, reading the
++// statuses synchronously: in a browser each status read waits for the GPU process to finish that compile and link
++// (100-380 ms for the big ones on SwiftShader), in the world's first frames.
++// A Program registers itself in its constructors and leaves first thing in its destructor, under the registry's
++// mutex. ~Program may run on another thread than the GL one (a postprocessing Shader userdata collected by Lua's GC on
++// the Lua thread, r14), so the compile pass holds the mutex while it uses a program: a Program being destroyed
++// elsewhere waits until the pass is done with it, and the pass passes over a program whose last reference is already
++// gone (referenceCount 0: its destructor is running or about to). The mutex is recursive and the pass walks a copy of
++// the list, checking each entry is still registered, so a Program made or destroyed on the GL thread inside a compile
++// can neither deadlock nor invalidate the walk. Order: by registration (a serial), the same from run to run.
++namespace
++{
++    bool orthrosReadPrecompileSwitch()
++    {
++        const char* value = getenv("OPENMW_ORTHROS_PRECOMPILE");
++        if (value && value[0] == '0' && value[1] == 0)
++        {
++            OSG_NOTICE << "OPENMW_ORTHROS_PRECOMPILE=0: a program is compiled at the first draw that applies it" << std::endl;
++            return false;
++        }
++        // (OPENMW_WORKQUEUE_THREADED: worker threads build programs while the pass would read them; off, as before)
++        if (getenv("OPENMW_WORKQUEUE_THREADED") != nullptr)
++        {
++            OSG_NOTICE << "OPENMW_ORTHROS_PRECOMPILE off with OPENMW_WORKQUEUE_THREADED" << std::endl;
++            return false;
++        }
++        return true;
++    }
++
++    struct OrthrosProgramRegistry
++    {
++        std::recursive_mutex mutex;
++        unsigned long long nextSerial = 1;
++        std::unordered_map<const Program*, unsigned long long> serials;
++        std::map<unsigned long long, const Program*> bySerial;
++        // (GL thread only, under the mutex) compiled by a pass and not applied by a draw since
++        std::unordered_set<const Program*> precompiledUnapplied;
++        // (its size, read by Program::apply without the lock)
++        std::atomic<size_t> unappliedSize{ 0 };
++        // the serial given last when the latest Finish pass ran (0: none yet)
++        unsigned long long finishSerial = 0;
++        // counters (published to the page)
++        unsigned int compiled = 0, finishCompiled = 0, passes = 0, offThread = 0;
++        double ms = 0.0, finishMs = 0.0;
++        int left = 0, withDefines = 0, skippedDying = 0;
++        unsigned int lateBefore = 0, lateOld = 0, lateNew = 0, appliedAfter = 0;
++        std::thread::id glThread;
++        bool glThreadKnown = false;
++    };
++
++    OrthrosProgramRegistry& orthrosProgramRegistry()
++    {
++        // (never destroyed: Programs may outlive static destruction order)
++        static OrthrosProgramRegistry* registry = new OrthrosProgramRegistry;
++        return *registry;
++    }
++
++    void orthrosNoteThread(OrthrosProgramRegistry& r)
++    {
++        // (a counter only: a Program made or destroyed off the GL thread, e.g. by Lua's GC; safe, see above)
++        if (r.glThreadKnown && std::this_thread::get_id() != r.glThread) ++r.offThread;
++    }
++
++    void orthrosRegisterProgram(const Program* program)
++    {
++        if (!osg::orthrosPrecompileEnabled()) return;
++        OrthrosProgramRegistry& r = orthrosProgramRegistry();
++        std::lock_guard<std::recursive_mutex> lock(r.mutex);
++        orthrosNoteThread(r);
++        const unsigned long long serial = r.nextSerial++;
++        r.serials[program] = serial;
++        r.bySerial[serial] = program;
++    }
++
++    void orthrosUnregisterProgram(const Program* program)
++    {
++        if (!osg::orthrosPrecompileEnabled()) return;
++        OrthrosProgramRegistry& r = orthrosProgramRegistry();
++        std::lock_guard<std::recursive_mutex> lock(r.mutex);
++        orthrosNoteThread(r);
++        auto it = r.serials.find(program);
++        if (it != r.serials.end())
++        {
++            r.bySerial.erase(it->second);
++            r.serials.erase(it);
++        }
++        r.precompiledUnapplied.erase(program);
++        r.unappliedSize.store(r.precompiledUnapplied.size(), std::memory_order_relaxed);
++    }
++
++    void orthrosPublish(OrthrosProgramRegistry& r)
++    {
++#ifdef __EMSCRIPTEN__
++        // (the counters, for the page's measurements; posted to the page's thread, which is this one in the build
++        // without OMW_PROXY and the page's otherwise; no comma inside the code: EM_ASM is a macro)
++        // clang-format off
++        MAIN_THREAD_ASYNC_EM_ASM({
++            var p = globalThis.__omwPrecompile || (globalThis.__omwPrecompile = {});
++            p.compiled = $0; p.ms = $1; p.finishCompiled = $2; p.finishMs = $3; p.left = $4; p.withDefines = $5;
++            p.passes = $6; p.registered = $7; p.unapplied = $8; p.lateBefore = $9; p.lateOld = $10; p.lateNew = $11;
++            p.skippedDying = $12; p.offThread = $13; p.appliedAfter = $14;
++        }, r.compiled, r.ms, r.finishCompiled, r.finishMs, r.left, r.withDefines, r.passes, (int)r.serials.size(),
++            (int)r.precompiledUnapplied.size(), r.lateBefore, r.lateOld, r.lateNew, r.skippedDying, r.offThread,
++            r.appliedAfter);
++        // clang-format on
++#else
++        (void)r;
++#endif
++    }
++
++    // Program::apply: the program drawn compiled by a pass (counted once), or compiled at this draw after all (late:
++    // before any Finish pass, or registered before the latest one — a define variant, a relink, a program the pass
++    // passed over — or registered since).
++    inline void orthrosNoteApply(const Program* program, bool late)
++    {
++        if (!osg::orthrosPrecompileEnabled()) return;
++        OrthrosProgramRegistry& r = orthrosProgramRegistry();
++        // (the usual case, a draw of a linked program once every precompiled one has been drawn: one atomic read)
++        if (!late && r.unappliedSize.load(std::memory_order_relaxed) == 0) return;
++        std::lock_guard<std::recursive_mutex> lock(r.mutex);
++        const bool wasUnapplied = r.precompiledUnapplied.erase(program) != 0;
++        r.unappliedSize.store(r.precompiledUnapplied.size(), std::memory_order_relaxed);
++        if (!late)
++        {
++            if (wasUnapplied) { ++r.appliedAfter; orthrosPublish(r); }
++            return;
++        }
++        auto it = r.serials.find(program);
++        if (r.finishSerial == 0) ++r.lateBefore;
++        else if (it != r.serials.end() && it->second < r.finishSerial) ++r.lateOld;
++        else ++r.lateNew;
++        orthrosPublish(r);
++    }
++}
++
++namespace osg
++{
++    /** Orthros: OPENMW_ORTHROS_PRECOMPILE read once (the page sets ENV before the engine starts); absent = on, 0 = off,
++     * off as well with OPENMW_WORKQUEUE_THREADED. Off: no Program is registered, nothing is precompiled. */
++    bool orthrosPrecompileEnabled()
++    {
++        static const bool enabled = orthrosReadPrecompileSwitch();
++        return enabled;
++    }
++
++    /** Orthros (OPENMW_ORTHROS_PRECOMPILE): compiles and links, on the State's context, the Programs that a draw would
++     * compile at its first apply: those with shaders whose per-context program is not linked yet (and not tried: a
++     * failed link is not tried again, as at a draw), in registration order. Only a program none of whose imported
++     * defines (#pragma import_defines / requires) is current in the State, so that the per-context program made is
++     * the one a draw without those defines selects; a program drawn with them (FORCE_OPAQUE, DISTORTION) is still
++     * compiled at its draw. budgetMs < 0: all of them; otherwise none is started once budgetMs have passed (one that
++     * has started runs to its end). finish: the pass at the first frame after a loading (counted apart; programs
++     * registered after it and compiled at a draw count as lateNew). Must run on the context's thread, between draws
++     * (compiling and linking leave the current program alone). Returns the number compiled. Not declared in an OSG
++     * header (the caller declares it), so that the change touches no header. */
++    unsigned int orthrosCompileUnlinkedPrograms(State& state, double budgetMs, bool finish)
++    {
++        if (!orthrosPrecompileEnabled()) return 0;
++        const GLExtensions* extensions = state.get<GLExtensions>();
++        if (!extensions || !extensions->isGlslSupported) return 0;
++        const Timer_t start = Timer::instance()->tick();
++        unsigned int compiled = 0;
++        int notStarted = 0, passedOver = 0;
++        OrthrosProgramRegistry& r = orthrosProgramRegistry();
++        std::lock_guard<std::recursive_mutex> lock(r.mutex);
++        r.glThread = std::this_thread::get_id();
++        r.glThreadKnown = true;
++        std::vector<std::pair<unsigned long long, const Program*>> order(r.bySerial.begin(), r.bySerial.end());
++        for (const auto& entry : order)
++        {
++            const Program* program = entry.second;
++            // (still registered: not destroyed by a compile of this pass)
++            auto it = r.serials.find(program);
++            if (it == r.serials.end() || it->second != entry.first) continue;
++            if (program->getNumShaders() == 0) continue;
++            // (multiview programs: built by the engine but never drawn in WebGL — no OVR_multiview2 — and not valid
++            // GLSL ES; compiling them ahead only logged a failure)
++            bool multiview = false;
++            for (unsigned int i = 0; i < program->getNumShaders() && !multiview; ++i)
++                multiview = program->getShader(i) && program->getShader(i)->getName().find("multiview") != std::string::npos;
++            if (multiview) continue;
++            if (program->referenceCount() <= 0)
++            {
++                ++r.skippedDying;
++                continue;
++            }
++            // (the program's imported defines are the union of its shaders': an empty string for it is an empty
++            // string for each of them, so the per-context shaders compiled are the ones that draw will use too)
++            if (!program->getShaderDefines().empty() && !state.getDefineString(program->getShaderDefines()).empty())
++            {
++                ++passedOver;
++                continue;
++            }
++            const Program::PerContextProgram* pcp = program->getPCP(state);
++            if (!pcp || !pcp->needsLink()) continue;
++            if (budgetMs >= 0 && Timer::instance()->delta_m(start, Timer::instance()->tick()) >= budgetMs)
++            {
++                ++notStarted;
++                continue;
++            }
++            program->compileGLObjects(state);
++            r.precompiledUnapplied.insert(program);
++            ++compiled;
++        }
++        r.unappliedSize.store(r.precompiledUnapplied.size(), std::memory_order_relaxed);
++        const double ms = Timer::instance()->delta_m(start, Timer::instance()->tick());
++        ++r.passes;
++        r.compiled += compiled;
++        r.ms += ms;
++        if (finish)
++        {
++            r.finishCompiled += compiled;
++            r.finishMs += ms;
++            r.finishSerial = r.nextSerial;
++        }
++        r.left = notStarted;
++        r.withDefines = passedOver;
++        orthrosPublish(r);
++        return compiled;
++    }
++}
++
+ class GLProgramManager : public GLObjectManager
+ {
+ public:
+@@ -95,6 +336,7 @@
+     _geometryVerticesOut(1), _geometryInputType(GL_TRIANGLES),
+     _geometryOutputType(GL_TRIANGLE_STRIP), _feedbackmode(GL_SEPARATE_ATTRIBS)
+ {
++    orthrosRegisterProgram(this);
+ }
+ 
+ 
+@@ -135,11 +377,15 @@
+ 
+     _feedbackmode=rhs._feedbackmode;
+     _feedbackout=rhs._feedbackout;
++
++    orthrosRegisterProgram(this);
+ }
+ 
+ 
+ Program::~Program()
+ {
++    orthrosUnregisterProgram(this);
++
+     // inform any attached Shaders that we're going away
+     for( unsigned int i=0; i < _shaderList.size(); ++i )
+     {
+@@ -484,7 +730,10 @@
+ 
+ 
+     PerContextProgram* pcp = getPCP( state );
+-    if( pcp->needsLink() ) compileGLObjects( state );
++    // (Orthros, OPENMW_ORTHROS_PRECOMPILE: counted, see orthrosNoteApply)
++    const bool orthrosLate = pcp->needsLink();
++    orthrosNoteApply(this, orthrosLate);
++    if( orthrosLate ) compileGLObjects( state );
+     if( pcp->isLinked() )
+     {
+         // for shader debugging: to minimize performance impact,
+diff --git a/openmw/components/lua/luastate.hpp b/openmw/components/lua/luastate.hpp
+--- a/openmw/components/lua/luastate.hpp
++++ b/openmw/components/lua/luastate.hpp
+@@ -22,6 +22,11 @@
+ 
+     std::string getLuaVersion();
+ 
++    // Orthros (OPENMW_ORTHROS_LUAGCINC, luastate.cpp): on the web, true: Lua's collector incremental with 1 KB steps,
++    // paced by LuaManager (mwlua/luamanagerimp.cpp, orthrosGcStep); false (the switch at 0): the previous code, F41.
++    // Read once; always true off the web, where nothing reads it.
++    bool orthrosIncrementalGc();
++
+     class ScriptsContainer;
+     struct ScriptId
+     {
+diff --git a/openmw/components/lua/luastate.cpp b/openmw/components/lua/luastate.cpp
+--- a/openmw/components/lua/luastate.cpp
++++ b/openmw/components/lua/luastate.cpp
+@@ -4,6 +4,8 @@
+ #include <luajit.h>
+ #endif // NO_LUAJIT
+ 
++#include <cstdlib>
++#include <cstring>
+ #include <filesystem>
+ #include <fstream>
+ 
+@@ -189,22 +191,31 @@
+             lua_sethook(mLuaState.get(), &countHook, LUA_MASKCOUNT, countHookStep);
+ 
+ #ifdef __EMSCRIPTEN__
+-        // F41: generational GC instead of Lua 5.4's default incremental collector.
++        // Orthros (OPENMW_ORTHROS_LUAGCINC, orthrosIncrementalGc below): Lua 5.4's own incremental collector, as upstream
++        // and the desktop build, its step 1 KB (Lua's default: 8 KB) so that each step is short; pause and step
++        // multiplier stay Lua's. Measured (Vanilla+ FR, glides and fresh loads, the Lua thread profiled with the page's
++        // thread): F41's generational mode made every major collection one stop-the-world mark of the whole heap
++        // (atomic2gen, 128-147 ms in one LuaManager::update on the Lua thread, waited for by the page's thread in
++        // finishUpdate: the longest Lua wait of each run), and each minor one still ran a whole atomic phase (20-36 ms).
++        // Who pays the collector's work is LuaManager's (luamanagerimp.cpp, orthrosGcStep): it stops the collector and
++        // pays its debt itself in update(), in short steps, so that no allocation steps it -- neither the Lua thread's
++        // nor the page's thread's (synchronizedUpdate, UI and input callbacks: there a step, or a cycle's atomic one,
++        // would land in the frame). Nothing a script sees changes but when __gc finalizers and weak-table entries go,
++        // which Lua leaves unspecified.
+         //
+-        // On the web Lua runs INLINE on the main thread (mwlua/worker.cpp spawns no worker here),
+-        // so a collection is not merely bookkeeping -- it lands inside the frame budget, and the
+-        // frame finds out afterwards. Generational suits the allocation shape this engine actually
+-        // produces: the per-frame churn is short-lived tables and strings from event payloads,
+-        // which is exactly what a minor collection sweeps cheaply, while the long-lived world
+-        // state stays in the old generation instead of being re-traversed.
+-        //
+-        // Not a measured win yet -- the original argument for touching this leaned on F40, which
+-        // was withdrawn (the MP hot path is binary, not JSON). Kept because the knob being at its
+-        // default is not itself evidence either way, and this is the cheap half of finding out.
+-        // OPENMW_LUA_GC_INCREMENTAL=1 restores the default collector for A/B; measure with
+-        // lua_gc(LUA_GCCOUNT) against the frame stats before concluding anything.
+-        if (std::getenv("OPENMW_LUA_GC_INCREMENTAL") == nullptr)
+-            lua_gc(mLuaState.get(), LUA_GCGEN, 0, 0);
++        // F41 (the previous mode; now OPENMW_ORTHROS_LUAGCINC=0): generational GC instead of the incremental collector,
++        // "not a measured win yet" (written when Lua still ran inline on the page's thread, before
++        // OPENMW_ORTHROS_LUATHREAD). With the switch at 0, OPENMW_LUA_GC_INCREMENTAL=1 still selects Lua's default
++        // incremental collector (8 KB steps, allocation-paced), as before.
++        if (!orthrosIncrementalGc())
++        {
++            if (std::getenv("OPENMW_LUA_GC_INCREMENTAL") == nullptr)
++                lua_gc(mLuaState.get(), LUA_GCGEN, 0, 0);
++        }
++#if LUA_VERSION_NUM >= 504
++        else
++            lua_gc(mLuaState.get(), LUA_GCINC, 0, 0, 10); // (0: pause and step multiplier unchanged; 2^10 B steps)
++#endif
+ #endif
+ 
+         protectedCall([&](LuaView& view) {
+@@ -457,6 +468,23 @@
+         return res;
+     }
+ 
++    bool orthrosIncrementalGc()
++    {
++#ifdef __EMSCRIPTEN__
++        static const bool incremental = [] {
++            const char* const value = std::getenv("OPENMW_ORTHROS_LUAGCINC");
++            const bool off = value != nullptr && std::strcmp(value, "0") == 0;
++            Log(Debug::Info) << "Orthros: Lua's collector "
++                             << (off ? "as before (OPENMW_ORTHROS_LUAGCINC=0)"
++                                    : "incremental, stopped, its debt paid in short steps by LuaManager::update");
++            return !off;
++        }();
++        return incremental;
++#else
++        return true;
++#endif
++    }
++
+     std::string getLuaVersion()
+     {
+ #ifdef NO_LUAJIT
+diff --git a/openmw/apps/openmw/mwlua/luamanagerimp.hpp b/openmw/apps/openmw/mwlua/luamanagerimp.hpp
+--- a/openmw/apps/openmw/mwlua/luamanagerimp.hpp
++++ b/openmw/apps/openmw/mwlua/luamanagerimp.hpp
+@@ -193,6 +193,21 @@
+             std::optional<LuaUtil::ScriptIdsWithInitializationData> autoStartConf = std::nullopt);
+         void reloadAllScriptsImpl();
+         void synchronizedUpdateUnsafe();
++#ifdef __EMSCRIPTEN__
++        // Orthros (OPENMW_ORTHROS_LUAGCINC): Lua's collector paced by update() alone (luamanagerimp.cpp).
++        void orthrosGcStep(int steps);
++        void orthrosGcCollected();
++        struct OrthrosGcPacer
++        {
++            bool mStopped = false; // the collector stopped, its work paid by orthrosGcStep
++            bool mInCycle = false; // a cycle under way (false: Lua's pause, until mOwedKb reaches mPauseKb)
++            double mOwedKb = 0; // KB allocated (and forced) not paid for yet
++            int mLastKb = 0; // the heap after the previous orthrosGcStep
++            int mPauseKb = 0; // the heap at the last cycle's end: the KB the pause lets be allocated (LUAI_GCPAUSE 200 %)
++            int mPeakLoggedKb = 0; // the heap's last peak written to the log
++        };
++        OrthrosGcPacer mOrthrosGc;
++#endif
+ 
+         bool mInitialized = false;
+         bool mGlobalScriptsStarted = false;
+diff --git a/openmw/apps/openmw/mwlua/luamanagerimp.cpp b/openmw/apps/openmw/mwlua/luamanagerimp.cpp
+--- a/openmw/apps/openmw/mwlua/luamanagerimp.cpp
++++ b/openmw/apps/openmw/mwlua/luamanagerimp.cpp
+@@ -2,6 +2,7 @@
+ // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
+ #include "luamanagerimp.hpp"
+ 
++#include <algorithm>
+ #include <filesystem>
+ 
+ #ifdef __EMSCRIPTEN__
+@@ -239,10 +240,118 @@
+         mLuaEvents.addLocalEvent({ getId(target), name, std::move(binary) });
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    // Orthros (OPENMW_ORTHROS_LUAGCINC, components/lua/luastate.cpp): Lua's incremental collector, stopped, its work
++    // paid here alone, in update() -- on the Lua thread beside the frame's cull and draw (OPENMW_ORTHROS_LUATHREAD;
++    // inline, after the drawing, without it). Measured before: left running, the collector was stepped by whichever
++    // thread allocated, the page's thread included (synchronizedUpdate's userdata and UI layers: 36-89 ms of luaC_step
++    // per 30 s there, stretches of 18-25 ms in the frame); and one LUA_GCSTEP(steps) pays its whole debt at once (100 KB
++    // a frame: 20-30 ms of marking in each frame of a cycle). So, Lua's own pacing, kept by hand (LUAI_GCPAUSE 200 %,
++    // step multiplier 100: 1 KB of marking for each KB allocated):
++    //   - each call counts the heap's net growth since the previous one (on every thread: what Lua's debt counts) plus
++    //     upstream's forced `steps` KB ([Lua] gc steps per frame) as owed;
++    //   - between cycles (Lua's pause) nothing runs until the owed KB reach the heap left at the last cycle's end
++    //     (the heap twice that, but for the forced KB); then a cycle starts;
++    //   - during a cycle, the owed KB are paid as LUA_GCSTEP(1) calls (1 KB of debt each: one 1 KB step every other
++    //     call), until a cycle ends or the steps took sOrthrosGcBudgetMs (checked after each step: the step that
++    //     ends the mark phase, the atomic one, is indivisible and can take 15-20 ms). What is left is carried to the
++    //     next frame. Behind (the heap at 4 times the last cycle's, a load's allocations), the budget is
++    //     sOrthrosGcBehindBudgetMs, so that the heap stays bounded.
++    // LUA_GCSTEP runs the collector while it is stopped (lapi.c restores the stop after the step); a stopped
++    // collector's allocation checks only reset its debt (luaC_step), so no other thread ever runs a step.
++    void LuaManager::orthrosGcStep(int steps)
++    {
++        constexpr double sOrthrosGcBudgetMs = 2.0;
++        constexpr double sOrthrosGcBehindBudgetMs = 12.0;
++        lua_State* const L = mLua.unsafeState();
++        OrthrosGcPacer& pacer = mOrthrosGc;
++        const double start = emscripten_get_now();
++        const int countKb = lua_gc(L, LUA_GCCOUNT, 0);
++        if (!pacer.mStopped)
++        {
++            // Whatever Lua's collector was doing (a cycle under way, or its pause): a cycle paid from now on.
++            lua_gc(L, LUA_GCSTOP, 0);
++            pacer.mStopped = true;
++            pacer.mInCycle = false;
++            pacer.mPauseKb = 0;
++            pacer.mLastKb = countKb;
++        }
++        pacer.mOwedKb += static_cast<double>(countKb - pacer.mLastKb) + steps;
++        if (!pacer.mInCycle)
++        {
++            if (pacer.mOwedKb < pacer.mPauseKb)
++            {
++                pacer.mLastKb = countKb;
++                return;
++            }
++            // A cycle starts (Lua's own debt set to 0 by a basic step: from now on each 1 KB of debt is a step).
++            pacer.mOwedKb -= pacer.mPauseKb;
++            pacer.mInCycle = true;
++            if (lua_gc(L, LUA_GCSTEP, 0) > 0)
++                pacer.mInCycle = false;
++        }
++        // (A cycle's work is at most a mark and sweep of the heap: no more debt carried than that.)
++        pacer.mOwedKb = std::min<double>(pacer.mOwedKb, countKb);
++        const double budgetMs = pacer.mPauseKb > 0 && countKb >= 4 * pacer.mPauseKb ? sOrthrosGcBehindBudgetMs
++                                                                                      : sOrthrosGcBudgetMs;
++        while (pacer.mInCycle && pacer.mOwedKb > 0)
++        {
++            const int ended = lua_gc(L, LUA_GCSTEP, 1);
++            pacer.mOwedKb -= 1;
++            if (ended < 0) // (-1: the collector is running a finalizer, never so here)
++                break;
++            if (ended > 0)
++            {
++                // A cycle ended: Lua's pause, the next one at twice the heap left (setpause: LUAI_GCPAUSE 200 %).
++                pacer.mInCycle = false;
++                pacer.mOwedKb = 0;
++                pacer.mPauseKb = lua_gc(L, LUA_GCCOUNT, 0);
++                break;
++            }
++            if (emscripten_get_now() - start >= budgetMs)
++                break;
++        }
++        pacer.mLastKb = lua_gc(L, LUA_GCCOUNT, 0);
++    }
++
++    // A full collection made elsewhere (clear()): Lua's pause, the next cycle at twice the heap left.
++    void LuaManager::orthrosGcCollected()
++    {
++        if (!mOrthrosGc.mStopped)
++            return;
++        mOrthrosGc.mInCycle = false;
++        mOrthrosGc.mOwedKb = 0;
++        mOrthrosGc.mLastKb = lua_gc(mLua.unsafeState(), LUA_GCCOUNT, 0);
++        mOrthrosGc.mPauseKb = mOrthrosGc.mLastKb;
++    }
++#endif
++
+     void LuaManager::update()
+     {
+         if (const int steps = Settings::lua().mGcStepsPerFrame; steps > 0)
+-            lua_gc(mLua.unsafeState(), LUA_GCSTEP, steps);
++        {
++#ifdef __EMSCRIPTEN__
++            if (LuaUtil::orthrosIncrementalGc())
++                orthrosGcStep(steps);
++            else
++#endif
++                lua_gc(mLua.unsafeState(), LUA_GCSTEP, steps);
++        }
++#ifdef __EMSCRIPTEN__
++        else if (mOrthrosGc.mStopped)
++        {
++            // ([Lua] gc steps per frame at 0: Lua's own allocation pacing, as upstream.)
++            lua_gc(mLua.unsafeState(), LUA_GCRESTART, 0);
++            mOrthrosGc.mStopped = false;
++        }
++        // Orthros: the Lua heap's peaks in the log (each 25 % above the previous one, from 16 MB), for A/B runs.
++        if (const int countKb = lua_gc(mLua.unsafeState(), LUA_GCCOUNT, 0);
++            countKb >= 16 * 1024 && countKb * 4 >= mOrthrosGc.mPeakLoggedKb * 5)
++        {
++            mOrthrosGc.mPeakLoggedKb = countKb;
++            Log(Debug::Info) << "Orthros: Lua's heap at " << countKb / 1024 << " MB";
++        }
++#endif
+ 
+         if (mPlayer.isEmpty())
+             return; // The game is not started yet.
+@@ -484,6 +593,9 @@
+         mQueuedAutoStartedScripts.clear();
+         for (int i = 0; i < 5; ++i)
+             lua_gc(mLua.unsafeState(), LUA_GCCOLLECT, 0);
++#ifdef __EMSCRIPTEN__
++        orthrosGcCollected();
++#endif
+     }
+ 
+     void LuaManager::setupPlayer(const MWWorld::Ptr& ptr)
+diff --git a/openmw/apps/openmw/mwlua/postprocessingbindings.cpp b/openmw/apps/openmw/mwlua/postprocessingbindings.cpp
+index a0fb47c..1918e1a 100644
+--- a/openmw/apps/openmw/mwlua/postprocessingbindings.cpp
++++ b/openmw/apps/openmw/mwlua/postprocessingbindings.cpp
+@@ -179,8 +179,13 @@ namespace MWLua
+         api["load"] = [](const std::string& name) {
+             // Orthros (OPENMW_ORTHROS_LUATHREAD): the post-processor's technique list, which the frame reads — loaded on
+             // the page's thread, waited for, when called from the Lua thread (mwlua/mainthread.hpp).
+-            Shader shader{ onMainThread(
+-                [&] { return MWBase::Environment::get().getWorld()->getPostProcessor()->loadTechnique(name, false); }) };
++            // Orthros (OPENMW_ORTHROS_FXPROGRAMS): its programs compiled and linked now, before a first enable.
++            Shader shader{ onMainThread([&] {
++                auto* postProcessor = MWBase::Environment::get().getWorld()->getPostProcessor();
++                auto technique = postProcessor->loadTechnique(name, false);
++                postProcessor->orthrosPrecompile(technique);
++                return technique;
++            }) };
+ 
+             if (!shader.mShader || !shader.mShader->isValid())
+                 throw std::runtime_error(Misc::StringUtils::format("Failed loading shader '%s'", name));
+diff --git a/openmw/apps/openmw/mwrender/postprocessor.cpp b/openmw/apps/openmw/mwrender/postprocessor.cpp
+index 9a75112..1e50e7c 100644
+--- a/openmw/apps/openmw/mwrender/postprocessor.cpp
++++ b/openmw/apps/openmw/mwrender/postprocessor.cpp
+@@ -15,8 +15,10 @@
+ #include <osg/Texture2DArray>
+ #include <osg/Texture2DMultisample>
+ #include <osg/Texture3D>
++#include <osgUtil/IncrementalCompileOperation>
+ 
+ #include <components/files/conversion.hpp>
++#include <components/fx/pass.hpp>
+ #include <components/misc/pathhelpers.hpp>
+ #include <components/misc/strings/algorithm.hpp>
+ #include <components/misc/strings/lower.hpp>
+@@ -283,6 +285,38 @@ namespace MWRender
+             bin->setDrawCallback(nullptr);
+     }
+ 
++    void PostProcessor::orthrosPrecompile(const std::shared_ptr<Fx::Technique>& technique)
++    {
++        // Orthros (OPENMW_ORTHROS_FXPROGRAMS): a technique a Lua script loads (postprocessing.load) and enables later,
++        // e.g. at the first sprint, had its programs compiled and linked at the first frame drawing it - a frame of
++        // several hundred milliseconds on WebGL. Its passes' programs (the ones prepareStateSet will give: Fx::Pass
++        // keeps them) go to the incremental compile operation now, which compiles them on this (GL) thread within its
++        // per-frame budget, or all at once under the loading screen. Linking a program draws nothing. "0": compiled at
++        // the first draw, as before.
++        if (!technique || !Fx::Pass::orthrosKeepsPrograms() || !technique->isValid()
++            || technique->getGLSLVersion() > mGLSLVersion)
++            return;
++        osgUtil::IncrementalCompileOperation* ico = mViewer->getIncrementalCompileOperation();
++        if (!ico)
++            return;
++        osg::ref_ptr<osg::Group> group = new osg::Group;
++        const std::string name = technique->getName();
++        for (const auto& pass : technique->getPasses())
++        {
++            osg::ref_ptr<osg::Group> node = new osg::Group;
++            node->getOrCreateStateSet()->setAttribute(pass->getProgram(name));
++            group->addChild(node);
++        }
++        osgUtil::StateToCompile stateToCompile(osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES, nullptr);
++        group->accept(stateToCompile);
++        if (stateToCompile.empty())
++            return;
++        osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileSet> compileSet
++            = new osgUtil::IncrementalCompileOperation::CompileSet(group);
++        compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
++        ico->add(compileSet.get(), false);
++    }
++
+     void PostProcessor::resize()
+     {
+         mHUDCamera->resize(mWidth, mHeight);
+diff --git a/openmw/apps/openmw/mwrender/postprocessor.hpp b/openmw/apps/openmw/mwrender/postprocessor.hpp
+index 5e3ea68..3586ded 100644
+--- a/openmw/apps/openmw/mwrender/postprocessor.hpp
++++ b/openmw/apps/openmw/mwrender/postprocessor.hpp
+@@ -134,6 +134,11 @@ namespace MWRender
+ 
+         void resize();
+ 
++        /// Orthros (OPENMW_ORTHROS_FXPROGRAMS): builds the programs of a technique a Lua script loaded and hands them
++        /// to the incremental compile operation, so they are compiled and linked before the technique is first
++        /// enabled (during the loading screen when it is loaded with the scripts). Main thread only.
++        void orthrosPrecompile(const std::shared_ptr<Fx::Technique>& technique);
++
+         Status enableTechnique(std::shared_ptr<Fx::Technique> technique, std::optional<int> location = std::nullopt);
+ 
+         Status disableTechnique(std::shared_ptr<Fx::Technique> technique, bool dirty = true);
+diff --git a/openmw/components/fx/pass.cpp b/openmw/components/fx/pass.cpp
+index 11efc76..da9e517 100644
+--- a/openmw/components/fx/pass.cpp
++++ b/openmw/components/fx/pass.cpp
+@@ -2,6 +2,8 @@
+ // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
+ #include "pass.hpp"
+ 
++#include <cstdlib>
++#include <cstring>
+ #include <sstream>
+ #include <string>
+ #include <unordered_set>
+@@ -366,8 +368,28 @@ float omw_EstimateFogCoverageFromUV(vec2 uv)
+         return header;
+     }
+ 
+-    void Pass::prepareStateSet(osg::StateSet* stateSet, const std::string& name) const
++    // Orthros (fxprograms.patch): OPENMW_ORTHROS_FXPROGRAMS, read once (absent or anything but "0": on).
++    bool Pass::orthrosKeepsPrograms()
++    {
++        static const bool enabled = [] {
++            const char* value = std::getenv("OPENMW_ORTHROS_FXPROGRAMS");
++            return value == nullptr || std::strcmp(value, "0") != 0;
++        }();
++        return enabled;
++    }
++
++    osg::ref_ptr<osg::Program> Pass::getProgram(const std::string& name) const
+     {
++        // Orthros (OPENMW_ORTHROS_FXPROGRAMS): every change of the post-processing chain (a technique enabled or
++        // disabled, e.g. by a Lua mod: RUN!'s sprint blur) rebuilt the state sets of every technique in the chain, each
++        // pass with a new osg::Program: every program of the chain compiled and linked again at its next draw, with
++        // WebGL's synchronous status reads (glGetShaderiv/glGetProgramiv round trips to the GPU process). The program
++        // built from this pass' sources is kept and given again: same shaders, same name, same bindings, so the same
++        // linked GL program; a recompile of the technique (new Pass objects) or dirty() builds a new one. "0": a new
++        // program at every rebuild, as before.
++        if (orthrosKeepsPrograms() && mOrthrosProgram && mOrthrosProgramName == name)
++            return mOrthrosProgram;
++
+         osg::ref_ptr<osg::Program> program = new osg::Program;
+         if (mType == Type::Pixel)
+         {
+@@ -395,7 +417,18 @@ float omw_EstimateFogCoverageFromUV(vec2 uv)
+             program->addBindAttribLocation("_omw_Vertex", 0);
+         }
+ 
+-        stateSet->setAttribute(program);
++        if (orthrosKeepsPrograms())
++        {
++            mOrthrosProgram = program;
++            mOrthrosProgramName = name;
++        }
++
++        return program;
++    }
++
++    void Pass::prepareStateSet(osg::StateSet* stateSet, const std::string& name) const
++    {
++        stateSet->setAttribute(getProgram(name));
+ 
+         if (mBlendSource && mBlendDest)
+             stateSet->setAttributeAndModes(new osg::BlendFunc(mBlendSource.value(), mBlendDest.value()));
+@@ -410,6 +443,7 @@ float omw_EstimateFogCoverageFromUV(vec2 uv)
+         mFragment = nullptr;
+         mCompute = nullptr;
+         mCompiled = false;
++        mOrthrosProgram = nullptr;
+     }
+ 
+     void Pass::compile(Technique& technique, std::string_view preamble)
+diff --git a/openmw/components/fx/pass.hpp b/openmw/components/fx/pass.hpp
+index 2e68bdd..0d661ff 100644
+--- a/openmw/components/fx/pass.hpp
++++ b/openmw/components/fx/pass.hpp
+@@ -9,6 +9,7 @@
+ 
+ #include <osg/BlendEquation>
+ #include <osg/BlendFunc>
++#include <osg/Program>
+ #include <osg/Shader>
+ #include <osg/Vec4f>
+ #include <osg/ref_ptr>
+@@ -50,6 +51,13 @@ namespace Fx
+ 
+         void prepareStateSet(osg::StateSet* stateSet, const std::string& name) const;
+ 
++        /// Orthros (OPENMW_ORTHROS_FXPROGRAMS): the program prepareStateSet gives this pass, built from its sources once
++        /// and kept (same name) until dirty(); a new one at every call when the switch is "0".
++        osg::ref_ptr<osg::Program> getProgram(const std::string& name) const;
++
++        /// Orthros: OPENMW_ORTHROS_FXPROGRAMS (absent or anything but "0": on), read once.
++        static bool orthrosKeepsPrograms();
++
+         std::string getName() const { return mName; }
+ 
+         void dirty();
+@@ -76,6 +84,11 @@ namespace Fx
+         std::optional<osg::BlendFunc::BlendFuncMode> mBlendSource;
+         std::optional<osg::BlendFunc::BlendFuncMode> mBlendDest;
+         std::optional<osg::BlendEquation::Equation> mBlendEq;
++
++        // Orthros (OPENMW_ORTHROS_FXPROGRAMS): the program getProgram built from these sources, given again at the
++        // next rebuild of the chain (same name); dropped by dirty().
++        mutable osg::ref_ptr<osg::Program> mOrthrosProgram;
++        mutable std::string mOrthrosProgramName;
+     };
+ }
+ 
+diff --git a/openmw/components/myguiplatform/myguirendermanager.cpp b/openmw/components/myguiplatform/myguirendermanager.cpp
+--- a/openmw/components/myguiplatform/myguirendermanager.cpp
++++ b/openmw/components/myguiplatform/myguirendermanager.cpp
+@@ -2,10 +2,12 @@
+ // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
+ #include "myguirendermanager.hpp"
+ 
++#include <algorithm>
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstdlib>
+ #include <cstring>
++#include <utility>
+ #include <vector>
+ 
+ #if defined(__wasm_simd128__)
+@@ -252,6 +254,18 @@
+ 
+             mReadFrom = (mReadFrom + 1) % sNumBuffers;
+             const std::vector<Batch>& vec = mBatchVector[mReadFrom];
++#ifdef __EMSCRIPTEN__
++            // Orthros: OPENMW_ORTHROS_GUIONEBUFFER (orthrosDrawOneBuffer): the batches from one vertex buffer.
++            if (mOrthrosOneBuffer && orthrosDrawOneBuffer(state, vec, emPosLoc, emColLoc, emUvLoc))
++            {
++                state->popStateSet();
++
++                state->unbindVertexBufferObject();
++                state->dirtyAllVertexArrays();
++                state->disableAllVertexArrays();
++                return;
++            }
++#endif
+             for (std::vector<Batch>::const_iterator it = vec.begin(); it != vec.end(); ++it)
+             {
+                 const Batch& batch = *it;
+@@ -386,6 +400,7 @@
+             // absent or anything but "0": on.
+             const char* orthrosVao = std::getenv("OPENMW_ORTHROS_VAO");
+             mOrthrosEnableOnce = !(orthrosVao && orthrosVao[0] == '0' && orthrosVao[1] == '\0');
++            mOrthrosOneBuffer = orthrosSwitch("OPENMW_ORTHROS_GUIONEBUFFER", "GUI batches drawn from one vertex buffer");
+ #endif
+         }
+         Drawable(const Drawable& copy, const osg::CopyOp& copyop = osg::CopyOp::SHALLOW_COPY)
+@@ -399,6 +414,7 @@
+         {
+ #ifdef __EMSCRIPTEN__
+             mOrthrosEnableOnce = copy.mOrthrosEnableOnce;
++            mOrthrosOneBuffer = copy.mOrthrosOneBuffer;
+ #endif
+         }
+ 
+@@ -420,6 +436,165 @@
+ 
+         void addBatch(const Batch& batch) { mBatchVector[mWriteTo].push_back(batch); }
+ 
++#ifdef __EMSCRIPTEN__
++        // Orthros: OPENMW_ORTHROS_GUIONEBUFFER: the two buffers' GL objects released and resized with the drawable's.
++        void resizeGLObjectBuffers(unsigned int maxSize) override
++        {
++            osg::Drawable::resizeGLObjectBuffers(maxSize);
++            for (const osg::ref_ptr<osg::VertexBufferObject>& vbo : mOrthrosArenaVbo)
++                if (vbo)
++                    vbo->resizeGLObjectBuffers(maxSize);
++        }
++
++        void releaseGLObjects(osg::State* state = nullptr) const override
++        {
++            osg::Drawable::releaseGLObjects(state);
++            for (const osg::ref_ptr<osg::VertexBufferObject>& vbo : mOrthrosArenaVbo)
++                if (vbo)
++                    vbo->releaseGLObjects(state);
++        }
++#endif
++
++#ifdef __EMSCRIPTEN__
++        // Orthros: OPENMW_ORTHROS_GUIONEBUFFER (read once with the drawable, made at startup; absent or anything but
++        // "0": on; "0": the per-batch loop above, as before). The frame's batches drawn from one vertex buffer, the
++        // GUI's own: each batch's vertices copied at its place in it (the batches in their order, each right after the
++        // one before), the three attribute pointers set once, then per batch its StateSet and texture as before and
++        // glDrawArrays from its first vertex. Before, every batch bound its own buffer and pointed the three
++        // attributes at it: a HUD of ~190 batches (Vanilla+'s: mostly window borders of nine pieces, one quad and
++        // one texture each) cost ~1,150 WebGL calls a frame, 760 of them buffer binds and attribute pointers. The
++        // same vertices, textures, states and order: the same picture.
++        // Two such buffers, used in turn (a frame's writes never go into the buffer the frame before drew from).
++        // Uploads: a batch's bytes compared with those its place holds (orthrosSameBytes) and copied only when they
++        // differ; each run of changed bytes uploaded with one glBufferSubData (runs closer than sOrthrosRunGap
++        // merged), nothing when nothing changed. A buffer grows (a new one, uploaded whole by OSG's first compile)
++        // when the frame needs more room, never shrinks. Its bytes are written behind OSG's back (the array is never
++        // dirty()-ed): OSG uploads it at its first compile only, when its bytes are the frame's. The batches' own
++        // buffers are then never bound, so never made on the GPU. Returns false (the per-batch loop runs as before)
++        // when buffer objects are not supported (or the buffer's GL object cannot be had: then before any byte of
++        // the arena changed). Relies on nothing the drawable's vertex array state believes: the buffer is bound
++        // explicitly before its runs go up and its pointers are set.
++        static constexpr size_t sOrthrosRunGap = 16 * 1024;
++
++        bool orthrosDrawOneBuffer(osg::State* state, const std::vector<Batch>& vec, unsigned int posLoc,
++            unsigned int colLoc, unsigned int uvLoc) const
++        {
++            if (!state->isVertexBufferObjectSupported())
++                return false;
++            const size_t stride = sizeof(MyGUI::Vertex);
++            size_t total = 0;
++            for (const Batch& batch : vec)
++                total += batch.mVertexCount * stride;
++
++            mOrthrosArenaIndex = (mOrthrosArenaIndex + 1) % 2;
++            osg::ref_ptr<osg::UByteArray>& arenaArray = mOrthrosArena[mOrthrosArenaIndex];
++            osg::ref_ptr<osg::VertexBufferObject>& arenaVbo = mOrthrosArenaVbo[mOrthrosArenaIndex];
++            if (!arenaArray || arenaArray->size() < total)
++            {
++                // (room to grow: a text window opening adds a few thousand vertices; 64 KiB at least)
++                size_t capacity = std::max<size_t>(total + total / 2, 64 * 1024);
++                capacity = (capacity + stride - 1) / stride * stride;
++                arenaArray = new osg::UByteArray(static_cast<unsigned int>(capacity));
++                arenaVbo = new osg::VertexBufferObject;
++                arenaVbo->setDataVariance(osg::Object::DYNAMIC);
++                arenaVbo->setUsage(GL_DYNAMIC_DRAW);
++                arenaVbo->setArray(0, arenaArray.get());
++            }
++
++            // (its GL object fetched before any byte of the arena changes: when there is none, the per-batch loop
++            // draws and the arena still mirrors its GL buffer)
++            osg::GLBufferObject* bufferobject = arenaVbo->getOrCreateGLBufferObject(state->getContextID());
++            if (!bufferobject)
++                return false;
++            // (a fresh arena's buffer object is a new one: dirty)
++            const bool uploaded = bufferobject->isDirty();
++
++            // The vertices at their places; mOrthrosRuns the [begin, end) spans of bytes that changed.
++            unsigned char* arena = &(*arenaArray)[0];
++            mOrthrosRuns.clear();
++            size_t offset = 0;
++            for (const Batch& batch : vec)
++            {
++                const size_t bytes = batch.mVertexCount * stride;
++                const osg::Array* array = batch.mArray.get();
++                // (a batch whose array holds fewer bytes than its count: the old path's draw read past its buffer --
++                // a WebGL error, nothing drawn; here its place is left as it is and its draw skipped below)
++                if (bytes != 0 && array && array->getTotalDataSize() >= bytes)
++                {
++                    const unsigned char* src = static_cast<const unsigned char*>(array->getDataPointer());
++                    if (uploaded || !orthrosSameBytes(arena + offset, src, bytes))
++                    {
++                        std::memcpy(arena + offset, src, bytes);
++                        if (!mOrthrosRuns.empty() && offset <= mOrthrosRuns.back().second + sOrthrosRunGap)
++                            mOrthrosRuns.back().second = offset + bytes;
++                        else
++                            mOrthrosRuns.emplace_back(offset, offset + bytes);
++                    }
++                }
++                offset += bytes;
++            }
++
++            // The arena's bytes always equal its GL buffer's (or its GL buffer is dirty: uploaded whole at its bind):
++            // the bytes are changed only past this point, where nothing returns before they are uploaded.
++            // (a dirty buffer object -- a fresh arena's, or a new one after its GL objects were released -- is
++            // compiled at its bind: the whole array goes up, the frame's bytes; otherwise it is bound explicitly,
++            // whatever the drawable's vertex array state believes is bound, and the changed runs go up through that
++            // binding)
++            if (uploaded)
++                state->bindVertexBufferObject(bufferobject);
++            else
++            {
++                bufferobject->bindBuffer();
++                state->setCurrentVertexBufferObject(bufferobject);
++            }
++            if (!uploaded)
++                for (const std::pair<size_t, size_t>& run : mOrthrosRuns)
++                    glBufferSubData(GL_ARRAY_BUFFER, static_cast<GLintptr>(run.first),
++                        static_cast<GLsizeiptr>(run.second - run.first), arena + run.first);
++
++            const GLsizei glStride = static_cast<GLsizei>(stride);
++            glEnableVertexAttribArray(posLoc);
++            glVertexAttribPointer(posLoc, 3, GL_FLOAT, GL_FALSE, glStride, reinterpret_cast<char*>(0));
++            glEnableVertexAttribArray(colLoc);
++            glVertexAttribPointer(colLoc, 4, GL_UNSIGNED_BYTE, GL_TRUE, glStride, reinterpret_cast<char*>(12));
++            glEnableVertexAttribArray(uvLoc);
++            glVertexAttribPointer(uvLoc, 2, GL_FLOAT, GL_FALSE, glStride, reinterpret_cast<char*>(16));
++
++            size_t first = 0;
++            for (const Batch& batch : vec)
++            {
++                if (batch.mStateSet)
++                {
++                    state->pushStateSet(batch.mStateSet);
++                    state->apply();
++                }
++
++                osg::Texture2D* texture = batch.mTexture;
++                if (texture)
++                    state->applyTextureAttribute(0, texture);
++                else
++                    state->applyTextureAttribute(0, mDummyTexture);
++
++                const osg::Array* array = batch.mArray.get();
++                const size_t bytes = batch.mVertexCount * stride;
++                if (bytes == 0 || (array && array->getTotalDataSize() >= bytes))
++                    glDrawArrays(GL_TRIANGLES, static_cast<GLint>(first), static_cast<GLsizei>(batch.mVertexCount));
++                first += batch.mVertexCount;
++
++                if (batch.mStateSet)
++                {
++                    state->popStateSet();
++                    state->apply();
++                }
++            }
++
++            glDisableVertexAttribArray(posLoc);
++            glDisableVertexAttribArray(colLoc);
++            glDisableVertexAttribArray(uvLoc);
++            return true;
++        }
++#endif
++
+         // Orthros (orthros-r12.patch): OPENMW_ORTHROS_GUIBATCHES, read once with the drawable (made at startup). On,
+         // a buffer's batches are kept until its next use (sNumBuffers frames later) and overwritten in place:
+         // clear() resets the buffer's count only, orthrosNextBatch() hands out its next element (a new one only past
+@@ -482,6 +657,15 @@
+ #ifdef __EMSCRIPTEN__
+         // Orthros (orthros-r11.patch): the batches' vertex arrays enabled with the first batch of a draw only.
+         bool mOrthrosEnableOnce;
++
++        // Orthros: OPENMW_ORTHROS_GUIONEBUFFER (orthrosDrawOneBuffer): the switch, the two buffers used in turn
++        // (each drawable its own: a copy starts without), the one used last and the changed runs (kept for their
++        // capacity).
++        bool mOrthrosOneBuffer;
++        mutable osg::ref_ptr<osg::UByteArray> mOrthrosArena[2];
++        mutable osg::ref_ptr<osg::VertexBufferObject> mOrthrosArenaVbo[2];
++        mutable unsigned int mOrthrosArenaIndex = 0;
++        mutable std::vector<std::pair<size_t, size_t>> mOrthrosRuns;
+ #endif
+     };
+ 

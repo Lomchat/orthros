@@ -287,11 +287,16 @@ defaults (`qol-client-ui-compat`, `OrthrosQoLInputDefaults`) are unchanged. Vani
 window closes, or when it exits. A value set before that and never saved is given again at the next session. Once the
 window has closed after a player's choice, that choice is kept.
 
-A second root, `orthros-player-defaults-perf` (`--id`, 2026-10-29), turns off two post-processing passes by default:
-RUN!'s `SettingsRUN` `doBlurShader` (its radial blur while sprinting showed artifacts on the web engine until the
-sprint ended) and The Combat Juice's `SettingsCombatJuiceFlash` `FlashOn` (`Never`; otherwise its `cj_flash` shader
-stays in the chain at strength 0 and costs a full-screen pass every frame). Both can be turned back on in Options →
-Scripts.
+A second root, `orthros-player-defaults-perf` (`--id`, 2026-10-29), turned off two post-processing passes by default:
+RUN!'s `SettingsRUN` `doBlurShader` and The Combat Juice's `SettingsCombatJuiceFlash` `FlashOn` (`Never`). Both entries
+were withdrawn with the engine release carrying `fxprograms.patch` (2026-10-30, `player-defaults.mjs --withdraw`; see
+"Post-processing chain changes without recompiles"): RUN!'s blur had never compiled on WebGL2 (its "artifacts" were
+the whole frame drawn flat by the canvas' fallback program) and compiles from an overlay, and a chain change no longer
+recompiles the chain. A profile whose record says the value was given and still holds it gets the
+author's default back once (`OrthrosPlayerDefaultsPerfRestored`). The root, generated before records said `given` or
+`kept`, recorded `true` in both cases, so a player who had chosen `doBlurShader = false` or `FlashOn = Never` before
+the root first ran gets the author's default back once as well; Options → Scripts turns it off again, and that choice
+is kept. Roots generated since record `given` or `kept`, and a withdrawal touches only `given`.
 
 Per-frame HUD Lua without redundant work (2026-10-29, the owner: constant 60 fps, nothing he sees changed). Measured
 first (`perf.mjs --discard --profile`, Seyda Neen running; scratch A/B dropping content): the five Nexus HUD packs
@@ -1693,6 +1698,30 @@ Checked: no Lua error or fault in any run; keys (Space jumps, E activates); `fra
 interior (`--interior "Seyda Nihyn, auberge d'Arrile"` in French) within noise. `morrowind` and `morrowind-vanilla-plus`
 manifests moved to r14 (backups `backups/manual/*-manifest-before-r14-20261029.json`).
 
+### The hitches, by cause: engine orthros-r15 (2026-10-30)
+
+The visible drops are hitches (50-950 ms frames), not the mean. Rounds 2-4 classified every busy stretch over 25 ms
+(SwiftShader `--discard` profiles, the pthread workers profiled too) and fixed causes one by one, each written,
+reviewed through two lenses and measured A/B; page-side fixes shipped at once (light copies below, wasm code cache),
+the engine's kept for one release. `orthros-r15.patch` (r14 + six, each behind its switch):
+- `OPENMW_ORTHROS_ACTORPRELOAD`: the exterior cell preload also lists the actor models insertion used to load in the
+  crossing frame (a 182 ms data wait at a crossing gone).
+- `OPENMW_ORTHROS_STATEGRAPHS`: OSG's StateGraph prune keeps a leafless graph a few frames (prune 0.12 → 0.06 ms/frame).
+- `OPENMW_ORTHROS_PRECOMPILE`: the live programs compiled under the loading screen (one frame's budget each, a last
+  pass when it ends; not for a save load; multiview programs skipped: not GLSL ES); fresh-load compile hitches 4 → 0.
+- `OPENMW_ORTHROS_LUAGCINC` and `OPENMW_ORTHROS_FXPROGRAMS`, `OPENMW_ORTHROS_GUIONEBUFFER`: the sections below.
+Rejected on their numbers: deadline-paced cooperative work, a faster Lua minor collection, asynchronous shader status,
+redundant WebGL state setters, the late unload and null pair cache at crossings, and the first light-copy pacing
+(textures blurry 45-90 s). Measured all on against the r14 stack (3 runs each, work p99): running 34.8 → 29-30 ms,
+gliding across cells 44 → 38, fresh load 42 → 35; frames over 100 ms 2-4 → 0-2.5 per 30 s. Live after the release,
+Vanilla+ FR fresh load: work p99 36.9 ms (79 before round 1), 11 synchronous fetches, no error.
+
+With it, Vanilla+ gets RUN!'s radial blur and Combat Juice's kill flash back: `orthros-overlay-all` carries a GLSL ES
+valid `shaders/radial-blur.omwfx` (the author's did not compile in WebGL2: the frame one flat colour while sprinting),
+`orthros-overlay-all-pack` a Combat Juice `player.lua` whose flash is in the chain only while it runs, and
+`orthros-player-defaults-perf` is withdrawn (`player-defaults.mjs --withdraw`: the author's default back once where
+this root had given its value). Manifests: backups `backups/manual/*-manifest-before-r15-20261030.json`.
+
 ### Light copies sharpened without hitches (2026-10-29)
 
 The round-2 hunt (Vanilla+ FR, `perf.mjs --discard --profile`, 8 profiles) found half of all hitch time, 30-490 ms
@@ -1734,6 +1763,10 @@ the Iris Xe check at 60 fps is to do: the hitches are much smaller, not shown go
 
 ### Lua's collector beside the frame: `OPENMW_ORTHROS_LUAGCPACE` (round 2, 2026-10-29)
 
+(Not shipped: `luagc.patch` is in no release — no measured gain in round 3's 30 s windows. Superseded by
+`OPENMW_ORTHROS_LUAGCINC` below, the same idea made smaller; the finalizer and weak-table remarks here hold for it too.
+The `__omwPhase` fields and the log lines below do not exist in any release.)
+
 With the Lua thread (`OPENMW_ORTHROS_LUATHREAD`), Lua's collector is the incremental one (upstream's mode), its
 automatic steps stopped: the Lua thread steps it after `update()`, while the main thread still culls and draws
 (`LuaManager::orthrosGcStep`), instead of the generational collector's 16-108 ms collections inside `update()` and
@@ -1751,6 +1784,96 @@ Lua userdata (an unclosed `vfs.open` handle) live longer, and a mod that saves a
 relies on `__gc` timing can see more entries. Peak heap is ~2x live with ≥ 2 ms of drawing time per frame (native
 simulation against the tree's Lua 5.4.7), up to ~3.5-7x with none under heavy churn. `=0` restores the previous
 collector and its per-frame step.
+
+### Lua's incremental collector again, short steps: `OPENMW_ORTHROS_LUAGCINC` (round 4, 2026-10-30)
+
+Attributed with the Lua thread profiled beside the page's thread (`perfw.mjs`, a CDP profile of every worker; Vanilla+
+FR, glide `8000,0` and fresh `--warm 0 --run`, dev-stack r14 + stategraphs + hitch2): the page's longest
+`waitForThreadUpdate` of every run (107-143 ms) was not script work but one `luaC_step` of Lua's *generational*
+collector — F41's mode on the web (`components/lua/luastate.cpp`, "not a measured win yet", written when Lua still ran
+inline). A major collection is a stop-the-world mark of the whole heap (`atomic2gen`, 128-147 ms in one
+`LuaManager::update`); every minor one runs a whole atomic phase (20-36 ms). (The round-3 hitch list's "inside
+`changeCellGrid`" for these was `hitches.py` merging the crossing frame's work, draw and futex wait into one stretch.)
+`OPENMW_ORTHROS_LUAGCINC` (`luastate.cpp`, `mwlua/luamanagerimp.cpp` `orthrosGcStep`; `=0`: exactly the previous code,
+`OPENMW_LUA_GC_INCREMENTAL=1` included); it replaces the unshipped `OPENMW_ORTHROS_LUAGCPACE` above:
+- Lua 5.4's incremental collector (upstream's mode, the desktop build's), its step 1 KB (Lua's default 8 KB); pause and
+  step multiplier unchanged.
+- The collector is stopped, and `LuaManager::update` alone pays its work, keeping Lua's own pacing by hand: the heap's
+  net growth since the previous frame (every thread's allocations) plus upstream's `[Lua] gc steps per frame` (100 KB)
+  are owed; between cycles nothing runs until the owed KB reach the heap left by the last cycle (Lua's 200 % pause);
+  during a cycle they are paid as `LUA_GCSTEP(1)` calls (1 KB of debt each) until the cycle ends or 2 ms have gone
+  (12 ms once the heap is 4× the last cycle's), the rest carried to the next frame. So no allocation ever steps the
+  collector: not the Lua thread's, and above all not the page's thread's (`synchronizedUpdate`'s userdata, UI layers,
+  UI and input callbacks). A first version that left the collector running with capped forced steps put 36-89 ms of
+  `luaC_step` per 30 s on the page's thread (stretches of 18-25 ms in the frame) and +1 ms on the work p50: rejected.
+- The time cap is checked after each step: a cycle's atomic step is indivisible (15-25 ms, on the Lua thread, beside the
+  draw). With `OPENMW_ORTHROS_LUATHREAD=0` (or multiplayer) `update()` runs on the page's thread after the drawing, so
+  the steps (2 ms a frame at most, but for the atomic one) land there.
+- Scripts see the same things but for when `__gc` finalizers and weak-table entries go (Lua leaves it unspecified).
+  The log says `Orthros: Lua's collector incremental, stopped, its debt paid in short steps by LuaManager::update`
+  once, and `Orthros: Lua's heap at N MB` at each peak 25 % above the previous one (from 16 MB; both arms).
+
+Measured (one build, `try-luacross` = dev-stack + this patch; alternated on / `=0`, 30 s each, `--discard --profile`,
+load 13-23 from other projects; work = the page's frame work p50/p99 ms; page GC = `luaC_step` on the page's thread
+outside the wait, total/longest ms; Lua GC = the Lua thread's, total/longest; wait = the page's `waitForThreadUpdate`,
+total/longest ms and the count over 16 ms):
+
+| run | work p50 / p99 | page GC | Lua GC | wait | waits > 16 ms |
+|---|---|---|---|---|---|
+| glide on 1 / 2 / 3 | 8.8 / 64.1*, 9.7 / 41.3, 10.5 / 38.0 | 0, 0, 0 | 179/29, 178/27, 164/30 | 203/94, 200/96, 160/88 | 3, 3, 3 |
+| glide off 1 / 2 / 3 | 10.7 / 45.5, 8.4 / 38.5, 10.9 / 48.8 | 26/26, 0, 0 | 195/115, 251/124, 219/113 | 321/114, 361/111, 329/114 | 6, 6, 6 |
+| fresh on 1 / 2 | 12.9 / 32.9, 11.2 / 31.2 | 0, 0 | 187/24, 221/39 | 38/18, 44/28 | 1, 1 |
+| fresh off 1 / 2 | 13.0 / 40.3, 10.7 / 33.9 | 0, 0 | 158/93, 167/107 | 127/91, 164/106 | 2, 3 |
+
+(* a 1.7 s `fetchSync` data stall at t=12.9 s, not Lua.) Work p50 within the runs' noise both ways (on 8.8-12.9, off
+8.4-13.0), the page's thread runs no collector step, the longest GC stretch drops from 93-124 ms to 24-39 ms, waits
+over 16 ms halve (glide 6/min against 12/min; fresh 2/min against 4-6/min). Lua's heap peak (40 s glide, the log):
+97 MB on, 90 MB off.
+
+What remains: at a crossing the wait is still 88-96 ms on the glide — the scripts' own work in the crossing frame's
+`update()`: `addAutoStartedScripts` → `ensureLoaded` → `addScript` (20-65 ms, of which 7-19 ms is `lua_load` undumping
+each script's cached bytecode again for each object: `loadScriptAndCache`), the queued events (`callEventHandlers`,
+~30 ms), `onActive` (`callEngineHandlers<GObject>`, ~22 ms), `onUpdate` and timers. Each cycle still ends in one atomic
+step (15-25 ms; up to 39 ms with the steps before it in the same `update()`), more than a 60 fps frame: hidden only
+when the page's thread has that much drawing left, which on Iris Xe at 60 fps it may not. Not checked on Iris Xe. The
+GC hitch is shortened, not shown gone at 60 fps.
+
+### Post-processing chain changes without recompiles (2026-10-30, `fxprograms.patch`, engine orthros-r15)
+
+Lua mods change the post-processing chain while playing: RUN! enables its radial blur at each sprint's start and
+disables it at its end. Each change (`PostProcessor::dirtyTechniques`) gave every pass of every technique a new
+`osg::Program`, so the whole chain was compiled and linked again at the next draw, with WebGL's synchronous status
+reads. `OPENMW_ORTHROS_FXPROGRAMS` (`?omwenv=OPENMW_ORTHROS_FXPROGRAMS=0` restores the previous path):
+- `Fx::Pass::getProgram` keeps the program built from the pass' sources (same shaders, name and bindings) until the
+  technique is recompiled (new `Pass` objects) or `Pass::dirty()`.
+- A technique a Lua script loads (`postprocessing.load`, normally from the scripts' load under the loading screen) has
+  its programs handed to the incremental compile operation (`PostProcessor::orthrosPrecompile`). Its first enable
+  then links nothing.
+
+Measured (`fxshot.mjs`, Vanilla+ EN, SwiftShader, 1280x800, numpad-driven enable/disable of `radial-blur` from a scratch
+Lua root, load 23-27 from other projects). Without rasterizer discard, the frame of the first enable went from 1503 ms
+(18 shaders compiled, 9 programs linked) to 49.5 ms (0), and the second from 1339 ms to 18 ms. With discard: 358 ms to
+48-50 ms, then 232 ms to 13-17 ms. The steady frame's p50 is 12-13 ms. The first enable's remaining ~35 ms is the
+program's first draw, the driver's lazy work. At load, the precompile adds 18 compiles and 9 links. A sibling change
+(skipping `createObjectsForFrame` and the render targets' new storage when nothing they depend on changed) showed no
+difference in the toggle frames, even at 2560x1440 (enable 44/14/16 ms on, 40/13/16.5 ms off), so it was left out.
+
+Data overlays installed with that release (each file has the same original hash in EN and FR):
+`orthros-overlay-all` `shaders/radial-blur.omwfx` (RUN!: GLSL ES 3.00 has no implicit int-to-float conversion, so
+`float(uSamples - 1.0)` and `col /= uSamples` are written `float(uSamples - 1)` and `col /= float(uSamples)`: same
+values; with the author's file the pass did not link, and the canvas drew the frame flat with its fallback program
+while sprinting), and `orthros-overlay-all-pack` `scripts/MaxYari/combat juice/player.lua` (`cj_flash` built and warmed
+as the author does, then in the chain only while a flash runs, enabled in the frame that sets its first non-zero
+strength, at the place the author's flow gives it; at strength 0 both its passes leave the frame unchanged). Measured
+with discard, same build, 3-4 flashes per run: the frames where a flash starts and ends cost 8-18 ms, like their
+neighbours. The windows' slowest frames fall mid-flash, with or without the overlay (maxima 17-37 ms with it, 14-31 ms
+with the author's file; idle p99 24-28 ms). Between flashes the
+frame is ~4 ms cheaper on SwiftShader (8 against 12-13 ms; the always-on shader's copy and mipmapped bright pass). The
+Combat Juice overlay needs `OPENMW_ORTHROS_FXPROGRAMS`: with it at 0, every flash start and end recompiles the chain
+the old way, a hitch the author's always-on file never had. For a true old-path comparison, set the switch to 0 and
+load the author's `player.lua` (a mods list without that overlay file). Install the overlays and the defaults'
+withdrawal (`player-defaults.mjs --withdraw`) only in the manifest change that moves the versions to the release
+carrying the patch.
 
 ### Chrome's code cache off the main thread (2026-10-29)
 
