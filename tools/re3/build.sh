@@ -13,6 +13,9 @@
 # Usage: sh tools/re3/build.sh [<build id>...] [--engines-dir <dir>]   (all builds by default)
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# (one compile at a time for the whole project, and only with memory to spare: CLAUDE.md "Memory budget")
+exec 8>/tmp/orthros-heavy-build.lock; flock 8
+"$root/tools/mem-check.sh" -w "${ORTHROS_BUILD_MEM_MIN_GB:-24}"
 engines=$root/data/engines ids=
 while [ $# -gt 0 ]; do
   case $1 in
@@ -74,7 +77,7 @@ for repo, patch in build['patches']:
 PY
   # (a build's own CMake options after the engine's: Orthros' modified game, say)
   build_args="$cmake_args $(python3 -c "import json,sys; print(' '.join(next(b for b in json.load(open(sys.argv[1]))['builds'] if b['id'] == sys.argv[2]).get('cmake', [])))" "$lock" "$id")"
-  docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH -e CMAKE_ARGS="$build_args" \
+  docker run --rm --network none --cpus 8 --memory ${ORTHROS_BUILD_MEM:-20g} --memory-swap ${ORTHROS_BUILD_MEM:-20g} -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH -e CMAKE_ARGS="$build_args" \
     -v "$build/src:/revc" -v "$build/wasm:/build" -v "$cache:/emsdk/upstream/emscripten/cache" -w /revc "$image" sh -c '
     emcmake cmake -S /revc -B /build $CMAKE_ARGS && cmake --build /build -j8'
   python3 - "$lock" "$id" "$build" "$release" "$root/tools/re3/patches" <<'PY'

@@ -17,6 +17,9 @@
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
 here=$root/tools/openmw
+# (one compile at a time for the whole project, and only with memory to spare: CLAUDE.md "Memory budget")
+exec 8>/tmp/orthros-heavy-build.lock; flock 8
+"$root/tools/mem-check.sh" -w "${ORTHROS_BUILD_MEM_MIN_GB:-24}"
 engines=$root/data/engines dest= ids= keep=0
 while [ $# -gt 0 ]; do
   case $1 in
@@ -76,7 +79,7 @@ PY
 if [ ! -f "$cache/.orthros-filled" ]; then
   mkdir -p "$cache"
   docker run --rm -u "$(id -u):$(id -g)" -v "$cache:/cache" "$image" sh -c 'cp -r /emsdk/upstream/emscripten/cache/. /cache/'
-  docker run --rm --cpus 8 -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$cache:/emsdk/upstream/emscripten/cache" "$image" nice -n 19 sh -c '
+  docker run --rm --cpus 8 --memory ${ORTHROS_BUILD_MEM:-20g} --memory-swap ${ORTHROS_BUILD_MEM:-20g} -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$cache:/emsdk/upstream/emscripten/cache" "$image" nice -n 19 sh -c '
     set -e; cd /tmp; printf "int main(){return 0;}\n" > p.c
     emcc -m64 -pthread -sUSE_ICU=1 p.c -o icu.js
     emcc -m64 -pthread -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 p.c -o gl.js
@@ -143,7 +146,7 @@ for a in json.load(open(sys.argv[1]))['build']['archives'].values():
   start=$(date +%s)
   # (the container's processes are containerd's children, not the docker client's: niced inside — nice -n 19 as its
   # command, every compile job inheriting it)
-  docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e HOME=/tmp -e FC="$fc" \
+  docker run --rm --network none --cpus 8 --memory ${ORTHROS_BUILD_MEM:-20g} --memory-swap ${ORTHROS_BUILD_MEM:-20g} -u "$(id -u):$(id -g)" -e HOME=/tmp -e FC="$fc" \
     -e ROOT=/build -e EM_LIBEXEC=/emsdk/upstream/emscripten -e EMSDK_BIN=/emsdk/upstream/emscripten -e OMW_WASM64=1 -e JOBS=8 \
     -v "$work/root:/build" -v "$work/bin:/orthros-bin:ro" -v "$cache:/emsdk/upstream/emscripten/cache" -w /build "$image" nice -n 19 sh -c '
     set -e; export PATH=/orthros-bin:$PATH EMSDK_BIN=/emsdk/upstream/emscripten  # (the image entrypoint drops EMSDK_* from -e)

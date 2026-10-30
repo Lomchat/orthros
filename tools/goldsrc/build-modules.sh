@@ -17,6 +17,9 @@
 # Usage: sh tools/goldsrc/build-modules.sh [<build id>...] [--engines-dir <dir>] [--games-dir <dir>] [--installers-dir <dir>]   (all builds by default)
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# (one compile at a time for the whole project, and only with memory to spare: CLAUDE.md "Memory budget")
+exec 8>/tmp/orthros-heavy-build.lock; flock 8
+"$root/tools/mem-check.sh" -w "${ORTHROS_BUILD_MEM_MIN_GB:-24}"
 engines=$root/data/engines games=$root/data/games installers=$root/data/installers ids=
 while [ $# -gt 0 ]; do
   case $1 in
@@ -64,7 +67,7 @@ build = next(b for b in json.load(open(sys.argv[1]))['modules']['builds'] if b['
 for repo, patch in build['patches']:
     subprocess.run(['git', '-C', f'{sys.argv[3]}/{repo}', 'apply', f'{sys.argv[4]}/{patch}'], check=True)
 PY
-  docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH \
+  docker run --rm --network none --cpus 8 --memory ${ORTHROS_BUILD_MEM:-20g} --memory-swap ${ORTHROS_BUILD_MEM:-20g} -u "$(id -u):$(id -g)" -e SOURCE_DATE_EPOCH \
     -v "$build/src:/cs" -v "$build/wasm:/build" -v "$build/out:/out" -v "$root/tools/goldsrc/cmake:/cmake:ro" -w /cs "$image" sh -c '
     emcmake cmake -S /cs -B /build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/out \
       -DCMAKE_PROJECT_INCLUDE=/cmake/emscripten-side-modules.cmake -DCMAKE_PROJECT_regamedll_INCLUDE=/cmake/hidden-visibility.cmake \

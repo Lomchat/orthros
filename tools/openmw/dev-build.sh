@@ -21,6 +21,9 @@
 #          --patch /tmp/orthros-scratch/mw-perf/patches/A.patch
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
+# (one compile at a time for the whole project, and only with memory to spare: CLAUDE.md "Memory budget")
+exec 8>/tmp/orthros-heavy-build.lock; flock 8
+"$here/../mem-check.sh" -w "${ORTHROS_BUILD_MEM_MIN_GB:-24}"
 [ $# -ge 3 ] || { sed -n '2,20p' "$0" >&2; exit 64; }
 root=$(cd "$1" && pwd) base=$2 out=$3; shift 3
 check=0 patches=
@@ -60,7 +63,7 @@ done
 "$here/../disk-check.sh"
 while [ "$(cut -d. -f1 /proc/loadavg)" -ge 24 ]; do echo "load $(cut -d' ' -f1 /proc/loadavg) >= 24, waiting"; sleep 60; done
 run() {
-  docker run --rm --network none --cpus 8 -u "$(id -u):$(id -g)" -e HOME=/tmp \
+  docker run --rm --network none --cpus 8 --memory ${ORTHROS_BUILD_MEM:-20g} --memory-swap ${ORTHROS_BUILD_MEM:-20g} -u "$(id -u):$(id -g)" -e HOME=/tmp \
     -e ROOT=/build -e EM_LIBEXEC=/emsdk/upstream/emscripten -e EMSDK_BIN=/emsdk/upstream/emscripten -e OMW_WASM64=1 -e JOBS=8 \
     -v "$root:/build" -v "$bin:/orthros-bin:ro" -v "$cache:/emsdk/upstream/emscripten/cache" -w /build "$image" nice -n 19 sh -c \
     "set -e; export PATH=/orthros-bin:\$PATH EMSDK_BIN=/emsdk/upstream/emscripten; $1"
