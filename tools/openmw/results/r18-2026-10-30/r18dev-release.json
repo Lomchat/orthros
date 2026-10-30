@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "id": "openmw-web-v1.5.3-orthros-r18dev",
+  "runtime": "openmw",
+  "engineVersion": "32bbece2c037",
+  "upstream": {
+    "id": "openmw-web-v1.5.3",
+    "tag": "v1.5.3",
+    "upstream": "https://github.com/Virtastic/openmw-web",
+    "engineVersion": "098857c7cdb0",
+    "source": {
+      "url": "https://github.com/Virtastic/openmw-web/releases/download/v1.5.3/openmw-web-src-v1.5.3.tar.gz",
+      "sha256": "894c0fc99a4de6edcf0f13a5439bb784e13eb5c6e1010a9a527143a14abc3878"
+    }
+  },
+  "build": {
+    "baseImage": "emscripten/emsdk:6.0.1@sha256:d0be652409a4d3362b8a36c3279dd1123ff1c9327e603d86d9361aa84f1d2e4c",
+    "imagePackages": {
+      "ninja-build": "1.11.1-2",
+      "pkg-config:amd64": "1.8.1-2build1",
+      "pkgconf:amd64": "1.8.1-2build1"
+    },
+    "emscriptenPorts": {
+      "freetype.zip": "a7165cb405dfce349ae64d6f59efb2567565ca8edbacbeff2a8d0e4cfa779cf5",
+      "harfbuzz.2.0.tar.xz": "0ada50a1c199bb6f70843ab893c55867743a443b84d087d54df08ad883ebc2cd",
+      "icu.zip": "047e621bf3ddde8682a569ff26cbfdd27225f892adab76d32c56094823323865",
+      "libjpeg.v9f.tar.gz": "04705c110cb2469caa79fb71fba3d7bf834914706e9641a4589485c1f832565b",
+      "libpng.6.58.tar.gz": "8c9b05b675ca7301a458df2c2e46f26e1d41ff36b8863f8c33530bc58c2e6225",
+      "ogg.3.5.zip": "fd4e5ba7e93b84b3ec41cdf01494cc586ef6e912b313dbab25512dd02665dfaf",
+      "sdl2.32.10.zip": "7a3c207b8509edc487d658df357ad764cd852d68fe248d307b25c0741d52fdf0",
+      "sdl2_image.6.0.zip": "ff4b2f76d54ea6c6aecd1c5c5f3708075f51e83b9f748b827b5bc57e2dba87f4",
+      "vorbis.3.7.zip": "57c8bc92d2741934b8dc939af49c2639edc44b8879cba2ec14ad3189e2814582",
+      "zlib.3.2.tar.gz": "b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1"
+    },
+    "git": {
+      "osg": {
+        "url": "https://github.com/openscenegraph/OpenSceneGraph.git",
+        "tag": "OpenSceneGraph-3.6.5",
+        "commit": "a827840baf0786d72e11ac16d5338a4ee25779db"
+      },
+      "bullet3": {
+        "url": "https://github.com/bulletphysics/bullet3.git",
+        "tag": "3.25",
+        "commit": "2c204c49e56ed15ec5fcfa71d199ab6d6570b3f5"
+      },
+      "mygui": {
+        "url": "https://github.com/MyGUI/mygui.git",
+        "tag": "MyGUI3.4.3",
+        "commit": "dae9ac4be5a09e672bec509b1a8552b107c40214"
+      }
+    },
+    "archives": {
+      "ffmpeg-6.1.2.tar.xz": {
+        "url": "https://ffmpeg.org/releases/ffmpeg-6.1.2.tar.xz",
+        "sha256": "3b624649725ecdc565c903ca6643d41f33bd49239922e45c9b1442c63dca4e38"
+      },
+      "boost_1_85_0.tar.bz2": {
+        "url": "https://archives.boost.io/release/1.85.0/source/boost_1_85_0.tar.bz2",
+        "sha256": "7009fe1faa1697476bdc7027703a2badb84e849b7b0baad5086b087b971f8617"
+      },
+      "lua-5.4.7.tar.gz": {
+        "url": "https://www.lua.org/ftp/lua-5.4.7.tar.gz",
+        "sha256": "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30"
+      },
+      "lz4-1.10.0.tar.gz": {
+        "url": "https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz",
+        "sha256": "537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b"
+      },
+      "recastnavigation-03259f3287ff8330f0d66fcd98d022edddffaa97.zip": {
+        "url": "https://github.com/OpenMW/recastnavigation/archive/03259f3287ff8330f0d66fcd98d022edddffaa97.zip",
+        "sha256": "b337d8ceebd66641e1a9b9ca2c3dbaebc5aa68a3a30f09435e5c420c177b2c62",
+        "fetchContent": "recastnavigation",
+        "dir": "recastnavigation-03259f3287ff8330f0d66fcd98d022edddffaa97"
+      },
+      "sqlite-amalgamation-3410100.zip": {
+        "url": "https://www.sqlite.org/2023/sqlite-amalgamation-3410100.zip",
+        "sha256": "df0d54bf246521360c8148f64e7e5ad07a4665b4f902339e844f4c493d535ff5",
+        "fetchContent": "sqlite3",
+        "dir": "sqlite-amalgamation-3410100"
+      },
+      "yaml-cpp-c2680200486572baf8221ba052ef50b58ecd816e.zip": {
+        "url": "https://github.com/jbeder/yaml-cpp/archive/c2680200486572baf8221ba052ef50b58ecd816e.zip",
+        "sha256": "9cbd53685951e13eaa3257dd33b9f2cdcdda144488ce93c7f438c72533faf303",
+        "fetchContent": "yaml-cpp",
+        "dir": "yaml-cpp-c2680200486572baf8221ba052ef50b58ecd816e"
+      }
+    }
+  },
+  "patches": [
+    {
+      "patch": "orthros-r1.patch",
+      "sha256": "67807ec676e70da596fc2bae002bbbca2090dff9a0eabc3605095b7d64788db2"
+    },
+    {
+      "patch": "orthros-r2.patch",
+      "sha256": "9e0d43cc1664b19bf4634136b73a02fdcd372eec63b66baee54f4a3fa6210084"
+    },
+    {
+      "patch": "orthros-r3.patch",
+      "sha256": "d149b834d682c9b106c664216434d8657b12728c7b8490b78d304568f6cea56b"
+    },
+    {
+      "patch": "orthros-r4.patch",
+      "sha256": "c032c1afcaa731b4da4b751394c222fd0f4ca83d316134a8d661b0c4bf10878a"
+    },
+    {
+      "patch": "orthros-r5.patch",
+      "sha256": "f319fc9894475b9cb2b66d0a8ef6817215dd217dbdd5fc99556fbda33f1b5408"
+    },
+    {
+      "patch": "orthros-r6.patch",
+      "sha256": "3aa5cfebfb3eeca1c0126215a52f32672f89895e053f5a7045aeed2ad8f71ce9"
+    },
+    {
+      "patch": "orthros-r7.patch",
+      "sha256": "6b717ab79ba9827ed16a27699988751891de7a2e31943b6b9179c895271eb550"
+    },
+    {
+      "patch": "orthros-r8.patch",
+      "sha256": "99929ea802ae06846fd25b5203e2b8d8329859a9d7dc332aa14371d698dbc5ae"
+    },
+    {
+      "patch": "orthros-r9.patch",
+      "sha256": "da1dfa9cfb4163be3de1e4094db1a12f0f589885f64cfb0a7253f37dd320961c"
+    },
+    {
+      "patch": "orthros-r10.patch",
+      "sha256": "da0d9fa96362c23ddbc11e7cc1f1f75b5191abf9f5625ab6b9c7bca168da0396"
+    },
+    {
+      "patch": "orthros-r11.patch",
+      "sha256": "e50de7baf50344adcf7736dfd90bbb5be59ad5a4d05f8800f9428025efcb1a0a"
+    },
+    {
+      "patch": "orthros-r12.patch",
+      "sha256": "ad9f4ab6097ba9d68beac9934f009e72b191d98d508b94ade9b345cdbc92dd20"
+    },
+    {
+      "patch": "orthros-r13.patch",
+      "sha256": "7979728aa8fe5f18de8f2fc9a5dd01f250909a8b5fe079968071131da5b4bc7f"
+    },
+    {
+      "patch": "orthros-r14.patch",
+      "sha256": "7c16ea688dba86880c458255ef3b141dbdeec6eb632e95c133ac4b2db5495660"
+    },
+    {
+      "patch": "orthros-r15.patch",
+      "sha256": "4c4d39c6eeb131e74dff811b3dc69b235ab05a1864ee216738f5528092a4dfc0"
+    },
+    {
+      "patch": "orthros-r16.patch",
+      "sha256": "070208d55c14e248855bfcb5e375e6f4952d766f01484b248ed7b66e478722e0"
+    },
+    {
+      "patch": "orthros-r17.patch",
+      "sha256": "c024deee54fb19febb3d517e9f2463240ea27cc90ac6428136d803f208ab79fe"
+    }
+  ],
+  "exports": [
+    {
+      "name": "orthros_file_updated",
+      "returns": "number",
+      "args": [
+        "string"
+      ],
+      "call": "Module.ccall('orthros_file_updated', 'number', ['string'], [path])"
+    },
+    {
+      "name": "orthros_set_view_distance",
+      "returns": "number",
+      "args": [
+        "number"
+      ],
+      "call": "Module.ccall('orthros_set_view_distance', 'number', ['number'], [distance])"
+    },
+    {
+      "name": "orthros_content_light",
+      "returns": "number",
+      "args": [],
+      "call": "Module.ccall('orthros_content_light', 'number', [], [])"
+    },
+    {
+      "name": "orthros_jspi",
+      "returns": "number",
+      "args": [],
+      "call": "Module.ccall('orthros_jspi', 'number', [], [])"
+    }
+  ],
+  "engineFiles": {
+    "openmw.js": "4b0a4adf5dbd55ce45114e90189231b40f27e9a5bcb5e48730955853f02cb53a",
+    "openmw.wasm": "c95060a70d0ffcf5f77318fea20eb5a57630cde592e94bf25038a30f8d7e85bd",
+    "openmw.data": "e659ce681ef67cd124b0180c281152aedbbdab8008bee5e776fb9fa39c39ec53"
+  },
+  "files": [
+    "e/32bbece2c037/openmw.js",
+    "e/32bbece2c037/openmw.wasm",
+    "e/32bbece2c037/openmw.data",
+    "e/32bbece2c037/streamfs.js",
+    "moddata/openmw-web-assets.bsa",
+    "LICENSE",
+    "NOTICE",
+    "THIRD-PARTY-LICENSES.md",
+    "portal/play.html",
+    "portal/play.js",
+    "portal/providers.js"
+  ],
+  "devPatches": [
+    "/tmp/orthros-scratch/data-r18/unbase-old-r17.patch",
+    "/srv/orthros/.claude/worktrees/data-r15/tools/openmw/patches/orthros-r17.patch",
+    "/srv/orthros/.claude/worktrees/data-r15/tools/openmw/patches/orthros-r18.patch"
+  ]
+}

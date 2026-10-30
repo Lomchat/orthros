@@ -2886,6 +2886,18 @@ with its load and memory, the memory and load every 30 s).
    Met in (4): the pictures, `__omwPrecompile.lateOld` 0, check.mjs EN and FR, `make test` (1,697 pass, 0 fail, on
    this tree after the runs).
 
+#### Renumbered r18 on `main`'s r17: the dev build and its smoke (2026-10-30)
+
+`main`'s own orthros-r17 (patient preloads, LuaUi layouts) shipped first, so this release became r18 (above).
+`openmw-web-v1.5.3-orthros-r18dev` (scratch, engine `32bbece2c037`) is the kept `r17dev` tree with three patches
+applied over it by `tools/openmw/dev-build.sh`: the old r16-based patch reverted (`unbase-old-r17.patch`), then
+`main`'s `orthros-r17.patch`, then `orthros-r18.patch`. That gives r1..r17 + r18, the lock entry's set, and it built in
+425 s; memory available never fell under 44 GB. Smoke only: `check.mjs morrowind-goty-vanilla-plus-en --lang fr` passed
+on a `dev-serve.sh` server (1,566 draws, `morrowind-goty-vanilla-plus-fr` ran, r17's `LUAUILAYOUT` on in its log).
+`make test`: 1,700 pass, 0 fail. Not measured on r18dev yet: loads, play, the 85 KB/s link, two clients, and the two
+blocking paths left under JSPI, r17's forced read past `dataWaitLimit` (60 s) and the cell change's load (`waitTillDone` /
+abort + load). Results: `tools/openmw/results/r18-2026-10-30/`.
+
 ### The engine's language and dialogue topic colours (2026-10-28)
 
 OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own

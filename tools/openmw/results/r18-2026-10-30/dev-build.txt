@@ -1,0 +1,11 @@
+51
+Mem:              62          10          18           0          34          51
+ 17:34:39 up  8:15,  1 user,  load average: 4.79, 9.29, 14.81
+disk-check: Orthros scratch 10 GB of 30 GB; disk 39% used (max 85%)
+load 24.75 >= 24, waiting
+load 54.16 >= 24, waiting
+load 32.88 >= 24, waiting
+Linked: openmw.data 204615322
+built in 425 s
+installed /tmp/orthros-scratch/data-r18/engines/openmw-web-v1.5.3-orthros-r18dev (engine 32bbece2c037)
+BUILD-END 0
