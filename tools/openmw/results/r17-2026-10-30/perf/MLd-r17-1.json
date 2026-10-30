@@ -1,0 +1,160 @@
+{
+  "manifest": "morrowind-goty-en",
+  "discard": true,
+  "seconds": 60,
+  "warm": 0,
+  "start": "-2,-9",
+  "glide": null,
+  "query": "tier=mid",
+  "bootMs": 15560,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "canvas": {
+    "buffer": "1280x800",
+    "css": "1280x800",
+    "dpr": 1,
+    "antialias": false,
+    "samples": 0,
+    "preserveDrawingBuffer": false
+  },
+  "tier": {
+    "tier": "mid",
+    "deviceMemory": 32
+  },
+  "tierChoice": null,
+  "tierLog": null,
+  "frames": 1492,
+  "fps": 24.64,
+  "gap": {
+    "p50": 33.3,
+    "p90": 50,
+    "p99": 66.7,
+    "max": 316.7,
+    "over100": 3,
+    "over250": 1
+  },
+  "work": {
+    "p50": 9.6,
+    "p90": 13,
+    "p99": 21.9,
+    "max": 350.9,
+    "over50": 4,
+    "over100": 3
+  },
+  "workEngine": {
+    "p50": 9.6,
+    "p90": 13,
+    "p99": 21.9,
+    "max": 350.9
+  },
+  "suspendedMs": 0,
+  "jspi": {
+    "on": true,
+    "suspendedMs": 3583,
+    "blocked": {
+      "count": 171,
+      "ms": 3189.724999997765,
+      "max": 411.64500000327826,
+      "files": {
+        "/mwdata/Morrowind.bsa": 993.1300000101328,
+        "/mwdata/Tribunal.bsa": 54.7799999974668,
+        "/mwdata/Bloodmoon.bsa": 45.85999999567866,
+        "/mods/openmw-web-assets.bsa": 653.7999999932945,
+        "/mwdata/Splash/Splash_Netch.tga": 411.64500000327826,
+        "/mwdata/Morrowind.esm": 718.9949999935925,
+        "/mwdata/Tribunal.esm": 160.6600000038743,
+        "/mwdata/Bloodmoon.esm": 85.27000000327826,
+        "/mwdata/Textures/water/water01.dds": 5.9849999994039536,
+        "/mwdata/Textures/water/water03.dds": 7.78999999910593,
+        "/mwdata/Textures/water/water05.dds": 0.6749999970197678,
+        "/mwdata/Textures/water/water06.dds": 2.8200000002980232,
+        "/mwdata/Textures/water/water24.dds": 3.9200000017881393,
+        "/mwdata/Textures/water/water27.dds": 0.4699999988079071,
+        "/mwdata/Splash/Splash_Hunger.tga": 18.25,
+        "/mwdata/Splash/Splash_NixHound.tga": 8.629999998956919,
+        "/mwdata/Splash/Splash_KwamaWarrior.tga": 17.04500000178814
+      },
+      "waits": 4,
+      "waitMs": 357.0300000011921,
+      "proxied": 0,
+      "proxiedMs": 0,
+      "proxiedMax": 0,
+      "play": 0,
+      "playMs": 0,
+      "presents": 5,
+      "presentMs": 5.089999992400408,
+      "breaths": 20,
+      "breathMs": 25.86999999731779,
+      "settles": 1,
+      "settleMs": 4.774999998509884,
+      "gls": 1,
+      "glMs": 0.7699999995529652
+    },
+    "frames": {
+      "plain": 1496,
+      "promising": 423
+    },
+    "soonSpins": 126,
+    "soonSpinMs": 481,
+    "soonSuspends": 169,
+    "soonWaits": 4
+  },
+  "syncPerFrame": {
+    "checkFramebufferStatus": 0.001,
+    "getShaderParameter": 0.004,
+    "getProgramParameter": 0.012
+  },
+  "syncTotal": {
+    "getError": 12,
+    "getShaderParameter": 62,
+    "getProgramParameter": 222,
+    "checkFramebufferStatus": 8
+  },
+  "dataStallMs": 286,
+  "shaderVariantsBuilt": 6,
+  "soundsNotReady": 20,
+  "readsPutOff": 206,
+  "syncFetches": 55,
+  "cells": [
+    "-2 -9",
+    "-2 -8"
+  ],
+  "phase": {
+    "cull": 1.5899999999999999,
+    "draw": 2.77,
+    "physics": 0.175,
+    "mechanics": 0.38899999999999996,
+    "world": 0.08499999999999999,
+    "lua": 0.33,
+    "gui": 0.059,
+    "input": 0.03,
+    "sound": 0.06999999999999999,
+    "script": 0.195,
+    "luaupdate": 0.27,
+    "luawait": 0.004
+  },
+  "view": {
+    "phase": "done",
+    "start": 8192,
+    "target": 12288,
+    "value": 12288,
+    "since": 24279.240000002086,
+    "longAt": 17282.25,
+    "sinceRelMs": 8548
+  },
+  "meter": {
+    "samples": 237,
+    "shownS": 1,
+    "waitingS": 0,
+    "shownAt": [
+      [
+        0,
+        0
+      ],
+      [
+        0.7,
+        1.3
+      ]
+    ]
+  },
+  "faults": []
+}

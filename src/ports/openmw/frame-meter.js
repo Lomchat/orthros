@@ -19,6 +19,18 @@
   }
   const tick = (t) => { const d = drawn(); if (d !== seen) { seen = d; frames.push(t); } requestAnimationFrame(tick); };
   requestAnimationFrame(tick);
+  // the engine's frame timed whole (its pump, Module._omw_pump_frame): `done(ms, suspendedMs)` once it ended — a frame
+  // that suspends while it waits for the game's files (the Orthros build's JSPI, orthros-r17.patch) returns a promise
+  // and ends when it settles, its time then the whole of it, `suspendedMs` the part the engine stood suspended
+  // (Module.orthrosSuspendedMs) —; `f` timed returned (the bench hooks below, tools/openmw/perf.mjs)
+  window.orthrosFrameTimer = (f, done) => function (...a) {
+    const M = window.Module, t0 = performance.now(), s0 = M?.orthrosSuspendedMs ?? 0;
+    const end = () => { try { done(performance.now() - t0, (M?.orthrosSuspendedMs ?? 0) - s0); } catch { /* the meter's */ } };
+    let r;
+    try { r = f.apply(this, a); } catch (e) { end(); throw e; }
+    if (r && typeof r.then === 'function') r.then(end, end); else end();
+    return r;
+  };
   setInterval(() => {
     const now = performance.now(); frames = frames.filter((t) => t > now - 1000);
     const recent = frames.filter((t) => t > now - 500), gaps = recent.slice(1).map((t, i) => t - recent[i]).sort((a, b) => a - b);
@@ -32,7 +44,7 @@
     let workMs = 0;
     const wrap = setInterval(() => {
       const M = window.Module, f = M?._omw_pump_frame; if (!f || f.orthrosTimed) return;
-      const timed = function (...a) { const t0 = performance.now(); try { return f.apply(this, a); } finally { workMs += performance.now() - t0; } };
+      const timed = window.orthrosFrameTimer(f, (ms) => { workMs += ms; });
       timed.orthrosTimed = true; M._omw_pump_frame = timed; clearInterval(wrap);
     }, 100);
     window.orthrosBenchHooks = {

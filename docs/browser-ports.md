@@ -314,8 +314,11 @@ order fetched ahead from the game's position.
 - **The rest in the background.** Once the engine runs: the learned order from the game's position, then what the
   reader's policies add (blocks around a miss, a file read in order ahead of its reader).
 - **Reads not there yet.** A read of bytes not in the page waits for the worker on shared memory (the page's thread
-  waits — GoldSrc), or suspends the engine (JSPI — re3); the worker answers with what was asked and as much of the file
-  as it has here already.
+  waits — GoldSrc), or suspends the engine (JSPI — re3; OpenMW from orthros-r17, after waiting a few ms on the page's
+  thread first — 10 ms, in its loads only: `GameData.soon`, docs/openmw.md "Waits that yield to the
+  browser"); the worker answers with what was asked and as much of the file as it has here already — an image (a
+  texture) to its end at its first missing piece where the page asks for it (OpenMW's: `wholeLoads`; docs/slow-network.md
+  "A whole image at its first missing piece").
 - **Learning.** The worker reports the pieces the engine used (path, range, time since its start) to `/api/prefetch`.
 - **Phases: a map's reads together.** A page whose engine has phases of its own tells them (`GameData.phase(name)`;
   GoldSrc: each map's load — an open of `maps/<map>.bsp` that reads half the file or more, `phaseOnRead` in

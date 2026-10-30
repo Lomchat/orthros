@@ -319,21 +319,268 @@ test('r17: r16 plus its patch, the same exports; preloads patient for their file
   for (const s of ['LUAPROF', 'CHUNKSLICE', 'CHUNKTHREAD', 'REFCACHE']) assert.ok(!added.includes(`OPENMW_ORTHROS_${s}`), s);
 });
 
-test('r18: r17 plus its patch, the same exports; a remote player\'s copy is not carried on past a jump (MWMP interp.lua: the step\'s time at least the stream\'s mean gap, no extrapolation above 2000 u/s), with the engine\'s own Lua test of it', () => {
+test('r18 patch: the frame and the boot suspend on a read the page does not answer within a few ms (JSPI), worker threads\' reads at once, the page\'s calls after the frame; no put-off of distant chunks', () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8'), added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  // (r17 plus its patch; its exports r17's and the JSPI mark — the page tells the release by it; files none of its own)
   const r17 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r17'), r18 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r18');
   assert.ok(r18, 'r18 is a build');
   assert.deepEqual(r18.patches, [...r17.patches, 'orthros-r18.patch']);
-  assert.deepEqual(r18.exports, r17.exports);
+  assert.deepEqual(r18.exports.filter((x) => x.name !== 'orthros_jspi'), r17.exports);
+  const e = r18.exports.find((x) => x.name === 'orthros_jspi');
+  assert.ok(e, 'orthros_jspi among its exports'); assert.equal(e.returns, 'number'); assert.deepEqual(e.args, []);
+  assert.ok(r18.exports.some((x) => x.name === 'orthros_content_light'), 'r13\'s exports kept');
+  assert.deepEqual(r18.files, {});
+  for (const f of ['openmw/apps/openmw/engine.cpp', 'openmw/apps/openmw/main.cpp', 'openmw/apps/openmw/mwgui/loadingscreen.cpp', 'openmw/apps/openmw/mwgui/savegamedialog.cpp',
+    'openmw/apps/openmw/mwstate/statemanagerimp.cpp', 'openmw/components/vfs/manager.cpp', 'play/index.html', 'wasm-build/link-openmw.sh', 'wasm-build/orthros-jspi.js'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  // (the link: JSPI, the frame a promising export — main() is by default —, the library after the system's)
+  for (const k of ['-sJSPI=1 "-sJSPI_EXPORTS=[\'omw_pump_frame\']"', '--js-library "$ROOT/wasm-build/orthros-jspi.js"', 'extern "C" EMSCRIPTEN_KEEPALIVE int orthros_jspi()',
+    'orthros_jspi_enter(0);', 'orthros_jspi_leave(0);', 'orthros_jspi_enter(1);', 'orthros_jspi_leave(1);', 'return orthros_read_wait(timeoutMs) != 0;',
+    // (the engine's loads told to the glue: its loading screen on and off)
+    'orthros_jspi_loading(1);', 'orthros_jspi_loading(0);'])
+    assert.ok(added.includes(k), k);
+  const lib = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
+  // (a read spins first — the store's answers — and suspends only on the page's promise; the announced wait alike)
+  for (const k of ['s.soon ? s.soon(position, length, orthrosSpinMs())', "OPENMW_ORTHROS_JSPI_SPIN_MS", "OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS", "ENV['OPENMW_ORTHROS_JSPI'] === '0'",
+    'var r = soon(timeoutMs, J.spinMs);', 'Module.orthrosLoading = () => J.boot > 0 || J.loading > 0 || J.loadFrame > 0;', "if (!r || typeof r.then != 'function') return r ? 1 : 0;", 'orthros_fd_read_async__async: true', 'orthros_fd_sync_async__async: true',
+    // (suspends only under a promising export, one at a time, in a load — or in play when allowed, ?jspiplay=N)
+    "'OrthrosJspi.on > 0 && !OrthrosJspi.plain && !OrthrosJspi.suspended && !OrthrosJspi.off && (OrthrosJspi.boot > 0 || OrthrosJspi.loading > 0 || OrthrosJspi.loadFrame > 0 || OrthrosJspi.playSpinMs >= 0)'"])
+    assert.ok(lib.includes(k), k);
+  // (the C library's read is the plain import — never suspending: a worker thread's read proxied here, a plain frame's,
+  // a call that reached the engine while its frame is suspended — answered at once; the suspending one apart, called by
+  // engine.cpp's wrap only when the engine may suspend: an import that suspends throws SuspendError outside a promising
+  // export even when it returns a number, measured)
+  assert.ok(!lib.includes('fd_read__async') && !lib.includes('fd_sync__async: true,\n  fd_sync:') && !lib.includes('{ then: (f) => f(r) }'));
+  assert.ok(!lib.includes('Promise.resolve().then(pread)'), 'never a pending promise for a proxied read');
+  for (const k of ['__wrap___wasi_fd_read', '__wrap___wasi_fd_sync', '__wrap_emscripten_sleep', 'if (emscripten_is_main_runtime_thread() && orthros_jspi_may())\n+        return orthros_fd_read_async(fd, iovs, n, nread);',
+    '-Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_sync -Wl,--wrap=emscripten_sleep'])
+    assert.ok(patch.includes(k), k);
+  // (the suspending calls of the loading screen and the announced wait made only when the engine may)
+  assert.equal((patch.match(/\+        if \(orthros_jspi_may\(\)\)\n\+            orthros_jspi_(present|breathe)\(\);/g) ?? []).length, 3);
+  assert.ok(patch.includes('+            if (orthros_jspi_may())\n+                orthros_jspi_settle();'));
+  assert.ok(patch.includes('+        if (orthros_jspi_may())\n+            return orthros_read_wait(timeoutMs) != 0;'));
+  // (a frame of play is plain — on the page's stack —; a load it would start put off to the next, promising, frame)
+  for (const k of ['extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame_plain()', 'const bool orthrosLoadLater = (mNewGameRequest || mLoadRequest) && orthros_jspi_defer();',
+    'if (mLoadRequest && !orthrosLoadLater)', 'if (mNewGameRequest && !orthrosLoadLater)', 'getStateManager()->requestLoad(mCurrentCharacter, mCurrentSlot->mPath);', 'if (g_debugAsks.mCoe && orthros_jspi_defer())'])
+    assert.ok(added.includes(k), k);
+  // (the page's calls and the engine's WebSocket events while suspended: after the frame, in order, ccall whole)
+  for (const k of ["Module['ccall'] = later(Module['ccall'])", 'webSockets.allocated.includes(this)', 'queueMicrotask(orthrosFlush)', 'Module.orthrosEngineBusy', 'orthrosSuspendedMs'])
+    assert.ok(lib.includes(k), k);
+  // (a WebSocket event put off and run after its socket was deleted or its handler replaced: dropped — the engine's
+  // object reused by a reconnect never gets the old socket's close or message)
+  assert.ok(lib.includes('if ((current.get(socket) || {})[key] === wrapped && webSockets.allocated.includes(socket)) fn.call(socket, e);'));
+  // (the handler current for a socket is the one the library's setter last set, never read back through the getter: a
+  // script wrapping the same setters — a test's — made every event of the engine dropped)
+  assert.ok(lib.includes('mine[key] = wrapped;') && !lib.includes('d.get.call(socket) === wrapped'));
+  // (the settings' save never put off: the page's leaving persists the file at once after it)
+  assert.ok(lib.includes('/^_(omw_pump_frame|omw_pump_frame_plain|omw_save_settings|orthros_jspi|orthros_content_light)$/'));
+  // (the debug COE and teleport at the next frame's start, under the frame's enter: their loads' reads may suspend)
+  const engine = patch.slice(patch.indexOf('+++ b/openmw/apps/openmw/engine.cpp'), patch.indexOf('+++ b/openmw/apps/openmw/main.cpp'));
+  assert.ok(engine.indexOf('+            orthrosRunDebugAsks();\n             g_emTick(g_emArg);') > engine.indexOf('+        orthros_jspi_enter(0);'));
+  for (const k of ['g_debugAsks.mCoe = true;', 'g_debugAsks.mTeleport = true;', 'var span = Array.of($1); span.push(performance.now()); ran[UTF8ToString($0)] = span;'])
+    assert.ok(engine.includes(k), k);
+  // (the page: a pump that arrives while a frame is in flight runs and counts nothing)
+  assert.ok(added.includes('if (pumping) return;'));
+  // (the page: the frame's promise awaited before the next is scheduled, the switches)
+  for (const k of ["if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a); }", "ENV.OPENMW_ORTHROS_JSPI='0'", 'ENV.OPENMW_ORTHROS_JSPI_SPIN_MS=', 'ENV.OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS=', 'ENV.OPENMW_ORTHROS_JSPI_PRESENT_MS=', 'ENV.OPENMW_ORTHROS_JSPI_BREATH_MS=',
+    "ENV.OPENMW_ORTHROS_JSPI_PLAIN='0'", 'ENV.OPENMW_ORTHROS_JSPI_SETTLE_MS='])
+    assert.ok(added.includes(k), k);
+  // (no put-off of distant chunks by the cull: measured no better than JSPI alone — its reads suspend the frame — and
+  // holding the page 0.7 s more at a view raise; the terrain as r17 builds it)
+  for (const k of ['quadtreeworld.cpp', 'quadtreeworld.hpp', 'orthrosPutOff', 'OPENMW_ORTHROS_CULLWAIT_MS', 'cullwait', 'orthrosTurns', 'orthrosReceived'])
+    assert.ok(!patch.includes(k), k);
+});
+
+test('r18: a read suspends in a load (the boot, a loading screen) after a short wait, never in play unless allowed (?jspiplay=N); the loads nest; a loading screen\'s frame presented', async () => {
   const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
-  // (the multiplayer script and its Lua test only: no engine source)
-  const files = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]);
-  assert.deepEqual(files, ['openmw/files/data/scripts/mp/interp.lua', 'wasm-build/lua-tests/run.lua']);
-  const at = patch.indexOf('+++ b/openmw/files/data/scripts/mp/interp.lua');
-  const hunk = patch.slice(at, patch.indexOf('\ndiff --git', at) >>> 0);
-  for (const line of ['+local EXTRAP_MIN_DT = 0.033', '+local EXTRAP_MAX_SPEED = 2000', '+                local dt = math.max(a.t - p.t, self.mean or EXTRAP_MIN_DT, EXTRAP_MIN_DT)',
-    '+                if sx * sx + sy * sy + sz * sz > (EXTRAP_MAX_SPEED * dt) ^ 2 then return a end', '+                local k = h / dt', '-                local k = h / (a.t - p.t)'])
-    assert.ok(hunk.includes(line), line);
-  assert.ok(patch.includes("+  check('a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands"), 'the engine\'s Lua test of it');
+  const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
+  const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
+  // (a library entry `  name: (args) => body,` — on one line, or a block closed by `  },`)
+  const fn = (name) => {
+    const at = lib.indexOf(`\n  ${name}: (`); assert.ok(at >= 0, name);
+    const from = at + name.length + 5, line = lib.slice(from, lib.indexOf('\n', from));
+    return line.endsWith('{') ? lib.slice(from, lib.indexOf('\n  },', from) + 4) : line.replace(/,$/, '');
+  };
+  // (the defaults: never in play, a loading screen's frame presented at most every 200 ms)
+  assert.ok(lib.includes('spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glAt: 0, freedAt: 0'));
+  const J = { on: 0, boot: 0, loading: 0, ready: true, suspended: 0, off: false, plain: 0, want: 0, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, settleMs: 3000, after: [] };
+  const may = fn('$orthrosMaySuspend').replace(/^\(\) => \{\{\{ ASYNCIFY == 2 \? '(.*)' : 'false' \}\}\}$/, '$1');
+  const maySuspend = () => new Function('OrthrosJspi', `return ${may};`)(J);
+  const make = (src) => new Function('OrthrosJspi', 'orthrosJspiReady', 'orthrosFlush', 'orthrosMaySuspend', 'orthrosSuspend', `return ${src};`)(J, () => {}, () => {}, maySuspend, (p, path, kind, then) => p.then(() => then(true)));
+  const enter = make(fn('orthros_jspi_enter')), leave = make(fn('orthros_jspi_leave')), loading = make(fn('orthros_jspi_loading')), spin = make(fn('$orthrosSpinMs'));
+  enter(1); assert.equal(spin(), 10, 'the boot (main): a load'); assert.ok(maySuspend(), 'the boot may suspend'); leave(1);
+  enter(0); assert.ok(!maySuspend(), 'a frame in play never suspends');
+  loading(1); loading(1); assert.equal(spin(), 10, 'a loading screen on (nested)'); assert.ok(maySuspend());
+  loading(0); assert.equal(spin(), 10, 'still on'); loading(0); assert.ok(maySuspend(), 'off: the rest of the load\'s frame still a load');
+  leave(0); enter(0); assert.ok(!maySuspend(), 'the next frame: play again');
+  J.playSpinMs = 100; assert.ok(maySuspend(), '?jspiplay=100: may in play'); assert.equal(spin(), 100); J.playSpinMs = -1;
+  loading(0); assert.equal(J.loading, 0, 'never below 0'); leave(0);
+  // (a loading screen's frame: presented — a suspension until the browser's rendering update — in a load only, at most
+  // every presentMs, never with ?jspipresent=0)
+  const present = make(fn('orthros_jspi_present'));
+  const raf = globalThis.requestAnimationFrame; globalThis.requestAnimationFrame = (f) => setTimeout(f, 1);
+  try {
+    enter(0); assert.equal(present(), undefined, 'in play: nothing');
+    J.presentedAt = -1e9; loading(1); const p = present(); assert.ok(p && typeof p.then === 'function', 'in a load: suspends'); await p;
+    assert.ok(J.presentedAt > 0, 'presented now'); assert.equal(present(), undefined, 'not again within presentMs');
+    J.presentedAt = -1e9; J.presentMs = 0; assert.equal(present(), undefined, '?jspipresent=0: never'); J.presentMs = 200;
+    loading(0); leave(0);
+  } finally { if (raf) globalThis.requestAnimationFrame = raf; else delete globalThis.requestAnimationFrame; }
+  assert.ok(patch.includes('+        if (orthros_jspi_may())\n+            orthros_jspi_present();'), 'LoadingScreen::draw presents its frame');
+  // (in a load, a read gives the page's thread a turn when it had none for breathMs — never in play, never with 0)
+  const breath = make(fn('$orthrosBreath'));
+  const MC = globalThis.MessageChannel;
+  J.breathMs = 100; J.freedAt = 0;
+  enter(0); assert.equal(breath(), null, 'in play: none');
+  loading(1); assert.equal(breath(), null, 'the first read of a load starts the count'); assert.ok(J.freedAt > 0);
+  assert.equal(breath(), null, 'not within breathMs');
+  J.freedAt = performance.now() - 150; const b = breath(); assert.ok(b && typeof b.then === 'function', 'held 150 ms: a turn'); await b;
+  J.freedAt = performance.now() - 150; J.breathMs = 0; assert.equal(breath(), null, '?jspibreath=0: never'); J.breathMs = 100;
+  loading(0); leave(0); assert.equal(globalThis.MessageChannel, MC);
+  assert.ok(lib.includes("var breath = orthrosBreath();\n    if (breath) return orthrosSuspend(breath, null, 'breath', () => orthrosRead(fd, iov, iovcnt, offset, pnum));"));
+  assert.ok(lib.includes('J.freedAt = performance.now();'), 'every suspension frees the page: the count restarts');
+  // (the load's progress breathes too)
+  assert.equal((patch.match(/\+            orthros_jspi_breathe\(\);/g) ?? []).length, 2, 'setProgress and increaseProgress');
+  assert.ok(lib.includes("orthros_jspi_breathe: () => {\n    var breath = orthrosBreath();\n    if (breath) return orthrosSuspend(breath, null, 'breath', () => {});"));
+  // (an announced wait is a load's: it may suspend in play — a cell change's read-ahead comes before its loading
+  // screen —, after the load's short wait)
+  const wait = fn('orthros_read_wait');
+  assert.ok(wait.includes("{{{ ASYNCIFY == 2 ? 'J.on > 0 && !J.plain && !J.suspended && !J.off' : 'false' }}}") && wait.includes('soon(timeoutMs, J.spinMs)'), wait);
+  assert.ok(!wait.includes('orthrosMaySuspend()'));
+  assert.ok(lib.includes("if (kind === 'present') { b.presents++; b.presentMs += ms; return; }"));
+  // (not a budget of the frame's waits: measured, it put suspensions back in play — docs/openmw.md)
+  assert.ok(!lib.includes('orthrosAsk') && !lib.includes('J.spun'));
+  assert.equal(J.on, 0); assert.equal(J.boot, 0);
+  // (the suspensions in play counted apart: Module.orthrosBlocked.play / playMs)
+  assert.ok(lib.includes("if (kind !== 'proxied' && !(OrthrosJspi.boot > 0 || OrthrosJspi.loading > 0 || OrthrosJspi.loadFrame > 0)) { b.play++; b.playMs += ms; }"));
+  assert.ok(lib.includes("J.playSpinMs = play;"));
+});
+
+test('r18: a frame of play is plain (never suspending), a load put off to a promising frame; the suspending imports only when the engine may; a load\'s end waits for the GPU', async () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
+  const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
+  const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
+  const fn = (name) => {
+    const at = lib.indexOf(`\n  ${name}: (`); assert.ok(at >= 0, name);
+    const from = at + name.length + 5, line = lib.slice(from, lib.indexOf('\n', from));
+    return line.endsWith('{') ? lib.slice(from, lib.indexOf('\n  },', from) + 4) : line.replace(/,$/, '');
+  };
+  const J = { on: 0, boot: 0, loading: 0, ready: true, suspended: 0, off: false, plain: 0, want: 0, settleMs: 3000, after: [] };
+  const tmpl = (src) => src.replace(/\{\{\{ ASYNCIFY == 2 \? '([^']*)' : '[^']*' \}\}\}/g, '$1');
+  const may0 = fn('$orthrosMaySuspend').replace(/^\(\) => /, '');
+  const maySuspend = () => new Function('OrthrosJspi', `return ${tmpl(may0)};`)(J);
+  const make = (src) => new Function('OrthrosJspi', 'orthrosJspiReady', 'orthrosMaySuspend', 'orthrosSuspend', 'orthrosGpuIdle', `return ${tmpl(src)};`)(J, () => {}, maySuspend, (p, path, kind, then) => p.then(() => then(true)), () => Promise.resolve());
+  const enter = make(fn('orthros_jspi_enter')), leave = make(fn('orthros_jspi_leave').replace('queueMicrotask(orthrosFlush)', '0')), plain = make(fn('orthros_jspi_plain')), defer = make(fn('orthros_jspi_defer')), may = make(fn('orthros_jspi_may')), loading = make(fn('orthros_jspi_loading'));
+  // (a plain frame: nothing suspends, a load asked put off — the next frame wanted promising)
+  plain(1); enter(0); assert.equal(may(), 0, 'a plain frame never calls a suspending import'); loading(1); assert.ok(!maySuspend(), 'not even under a loading screen');
+  loading(0); assert.equal(defer(), 1, 'a load put off'); assert.equal(J.want, 1); leave(0); plain(0);
+  // (the next frame, promising: the want cleared, the load now; reads may suspend in its load)
+  enter(0); assert.equal(J.want, 0); assert.equal(defer(), 0, 'in a promising frame the load runs now'); assert.equal(may(), 1);
+  loading(1); assert.ok(maySuspend()); J.suspended = 1; assert.equal(may(), 0, 'a call that reaches the engine while it is suspended: plain imports'); J.suspended = 0;
+  // (the load's end: the GPU's queue waited for, the page's thread free — in a load only, never with ?jspisettle=0)
+  const settle = make(fn('orthros_jspi_settle'));
+  const p = settle(); assert.ok(p && typeof p.then === 'function', 'a load\'s end suspends'); await p;
+  J.settleMs = 0; assert.equal(settle(), undefined, '?jspisettle=0: never'); J.settleMs = 3000;
+  loading(0); leave(0); enter(0); assert.equal(settle(), undefined, 'in play: never'); leave(0);
+  J.off = true; plain(1); enter(0); assert.equal(defer(), 0, 'JSPI off: loads at once'); leave(0); plain(0); J.off = false;
+  assert.equal(J.on, 0); assert.equal(J.plain, 0);
+  // (the page's pump: the plain export unless a load is wanted or on, or ?jspiplain=0; a frame timer wrapping the pump wraps the choice)
+  for (const k of ["if (typeof plain == 'function' && !J.plainOff && !J.want && J.boot === 0 && J.loading === 0) { Module.orthrosFrames.plain++; return plain(...a); }",
+    "Object.defineProperty(Module, '_omw_pump_frame', { configurable: true, enumerable: true, get: () => pump, set: (f) => { if (!promising) { promising = f; pump = choose; } else pump = f; } });",
+    "J.plainOff = ENV['OPENMW_ORTHROS_JSPI_PLAIN'] === '0';", 'c.fenceSync(c.SYNC_GPU_COMMANDS_COMPLETE, 0)', 'c.getSyncParameter(s, c.SYNC_STATUS) === c.SIGNALED'])
+    assert.ok(lib.includes(k), k);
+  assert.ok(patch.includes('+        if (mNestedLoadingCount == 1)\n+            if (orthros_jspi_may())\n+                orthros_jspi_settle();'), 'the outermost loading screen\'s end settles');
+  // (a framebuffer's status in a load's frame — its loading screen, the world's first draw after it —: asked once the GPU
+  // ran its queue, the engine suspended meanwhile; at most every glMs, never in play, never with ?jspigl=0)
+  const J2 = { on: 1, boot: 0, loading: 0, plain: 0, suspended: 0, off: false, loadFrame: 0, glMs: 50, glAt: 0 };
+  const gl = new Function('OrthrosJspi', 'orthrosMaySuspend', 'orthrosSuspend', 'orthrosGpuIdle', `return ${fn('orthros_gl_settle')};`)(J2, () => true, (p, path, kind, then) => p.then(() => then(true)), () => Promise.resolve());
+  assert.equal(gl(), undefined, 'in play: never');
+  const loading2 = new Function('OrthrosJspi', `return ${fn('orthros_jspi_loading')};`)(J2);
+  loading2(1); loading2(0); assert.equal(J2.loadFrame, 1, 'the rest of the load\'s frame');
+  const g1 = gl(); assert.ok(g1 && typeof g1.then === 'function', 'a load\'s frame: suspends'); await g1;
+  assert.equal(gl(), undefined, 'not again within glMs');
+  J2.glAt = -1e9; J2.glMs = 0; assert.equal(gl(), undefined, '?jspigl=0: never');
+  // (the promising exports' stacks made deep first — 1,024 plain wasm frames at their base —: Chromium's native stack
+  // walker, which stops at 255 frames, never reaches a JSPI stack's end, past which it read and crashed the renderer;
+  // the plain frame goes straight to the work)
+  for (const k of ['constexpr int ORTHROS_JSPI_DEPTH = 1024;', 'return orthrosDeep(ORTHROS_JSPI_DEPTH, fn, arg);', 'g_orthrosDeepSink = g_orthrosDeepSink + 1;',
+    'extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()\n+{\n+    orthros_jspi_deep(', '+    orthros_jspi_plain(1);\n+    orthrosPumpFrame();\n+    orthros_jspi_plain(0);',
+    'const int status = orthros_jspi_deep(', 'return Debug::wrapApplication(&runApplication, a->argc, a->argv, "OpenMW");'])
+    assert.ok(patch.includes(k), k);
+  for (const k of ['-Wl,--wrap=glCheckFramebufferStatus -Wl,--wrap=emscripten_glCheckFramebufferStatus', 'unsigned int __wrap_glCheckFramebufferStatus(unsigned int target)', "ENV.OPENMW_ORTHROS_JSPI_GL_MS=", 'if (J.on === 0 && J.loading === 0) J.loadFrame = 0;'])
+    assert.ok(patch.includes(k), k);
+});
+
+/**
+ * The r18 library's WebSocket setter wrappers (wasm-build/orthros-jspi.js, from the patch), run against a stand-in
+ * WebSocket: `wrap` true makes another script wrap the same setters first, as a debugging tool or a test's counter
+ * would (its getter the native one: it answers the tool's own function, never the library's).
+ */
+function r18Sockets({ wrap, variant = (code) => code }) {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
+  const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
+  const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
+  const from = lib.indexOf("    if (typeof WebSocket != 'undefined') {"), to = lib.indexOf('\n#endif', from);
+  assert.ok(from > 0 && to > from, 'the WebSocket block in orthros-jspi.js');
+  class WebSocket { constructor() { this.native = {}; } fire(name, e) { this.native[name]?.call(this, e); } }
+  for (const name of ['onopen', 'onmessage', 'onerror', 'onclose'])
+    Object.defineProperty(WebSocket.prototype, name, { configurable: true, enumerable: true, get() { return this.native[name] ?? null; }, set(fn) { this.native[name] = fn; } });
+  const seen = [];
+  if (wrap) {
+    for (const name of ['onmessage', 'onopen']) {
+      const d = Object.getOwnPropertyDescriptor(WebSocket.prototype, name);
+      Object.defineProperty(WebSocket.prototype, name, { configurable: true, enumerable: true, get: d.get, set(fn) { d.set.call(this, typeof fn == 'function' ? function (e) { seen.push(name); return fn.call(this, e); } : fn); } });
+    }
+  }
+  const J = { suspended: 0, after: [], flushing: false };
+  const orthrosLater = (fn) => { if (J.suspended > 0 || (J.after.length > 0 && !J.flushing)) { J.after.push(fn); return true; } fn(); return false; };
+  const flush = () => { J.flushing = true; while (J.after.length) J.after.shift()(); J.flushing = false; };
+  const webSockets = { allocated: [null] };
+  new Function('WebSocket', 'webSockets', 'orthrosLater', variant(lib.slice(from, to)))(WebSocket, webSockets, orthrosLater);
+  return { WebSocket, webSockets, J, flush, seen };
+}
+
+test('r18: the engine\'s WebSocket events reach it — after the frame while suspended — with or without another script wrapping the setters; dropped once its handler is replaced or its socket deleted', () => {
+  for (const wrap of [false, true]) {
+    const { WebSocket, webSockets, J, flush, seen } = r18Sockets({ wrap });
+    const ws = new WebSocket(), got = [];
+    webSockets.allocated.push(ws);
+    ws.onopen = () => got.push('open');
+    ws.onmessage = (e) => got.push(e.data);
+    ws.fire('onopen', {}); ws.fire('onmessage', { data: 'm1' });
+    assert.deepEqual(got, ['open', 'm1'], `wrap ${wrap}: delivered at once`);
+    // (the engine suspended: put off, in order, delivered at the frame's end)
+    J.suspended = 1; ws.fire('onmessage', { data: 'm2' }); ws.fire('onmessage', { data: 'm3' });
+    assert.deepEqual(got, ['open', 'm1'], `wrap ${wrap}: put off while suspended`);
+    J.suspended = 0; flush();
+    assert.deepEqual(got, ['open', 'm1', 'm2', 'm3'], `wrap ${wrap}: after the frame, in order`);
+    if (wrap) assert.deepEqual(seen, ['onopen', 'onmessage', 'onmessage', 'onmessage'], 'the other script still sees every event');
+    // (a handler replaced while an event of the old one is queued: dropped)
+    J.suspended = 1; ws.fire('onmessage', { data: 'old' });
+    const got2 = []; ws.onmessage = (e) => got2.push(e.data);
+    J.suspended = 0; flush();
+    assert.deepEqual(got.slice(4), [], `wrap ${wrap}: the old handler's queued event dropped`);
+    ws.fire('onmessage', { data: 'new' });
+    assert.deepEqual(got2, ['new'], `wrap ${wrap}: the new handler gets the next event`);
+    // (the socket deleted — emscripten_websocket_delete: out of webSockets.allocated — with an event queued: dropped)
+    J.suspended = 1; ws.fire('onmessage', { data: 'gone' });
+    webSockets.allocated.splice(webSockets.allocated.indexOf(ws), 1);
+    J.suspended = 0; flush();
+    assert.deepEqual(got2, ['new'], `wrap ${wrap}: a deleted socket's queued event dropped`);
+    // (a socket the engine did not make — the page's own —: its handler untouched, never put off)
+    const own = new WebSocket(), mine = [];
+    own.onmessage = (e) => mine.push(e.data);
+    J.suspended = 1; own.fire('onmessage', { data: 'page' }); J.suspended = 0;
+    assert.deepEqual(mine, ['page'], `wrap ${wrap}: the page's own socket not put off`);
+  }
+  // (the check the first two-client run broke on — the handler compared through the socket's getter —: with another
+  // script wrapping the setters, every event of the engine dropped; this test catches it)
+  const { WebSocket, webSockets } = r18Sockets({ wrap: true, variant: (code) => { assert.ok(code.includes('(current.get(socket) || {})[key] === wrapped')); return code.replace('(current.get(socket) || {})[key] === wrapped', 'd.get.call(socket) === wrapped'); } });
+  const ws = new WebSocket(), got = [];
+  webSockets.allocated.push(ws);
+  ws.onmessage = (e) => got.push(e.data);
+  ws.fire('onmessage', { data: 'm' });
+  assert.deepEqual(got, [], 'the getter-based check drops the engine\'s events');
 });
 
 test('r19: r18 plus its patch, the same exports; the draw thread behind its switch (off by default) and screenshots read as RGBA on WebGL2', () => {

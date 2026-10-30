@@ -1,0 +1,96 @@
+diff -ruN a/openmw/apps/openmw/mwstate/statemanagerimp.cpp b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
+--- a/openmw/apps/openmw/mwstate/statemanagerimp.cpp	2026-10-30 15:08:20.178078150 +0100
++++ b/openmw/apps/openmw/mwstate/statemanagerimp.cpp	2026-10-30 15:08:20.278080558 +0100
+@@ -881,9 +881,9 @@
+ #ifdef __EMSCRIPTEN__
+     // (a save's load or a new game asked: run in a frame that may suspend while it reads — the next one, when this one
+     // is plain)
+-    const bool orthrosPutOff = (mNewGameRequest || mLoadRequest) && orthros_jspi_defer();
++    const bool orthrosLoadLater = (mNewGameRequest || mLoadRequest) && orthros_jspi_defer();
+ #else
+-    const bool orthrosPutOff = false;
++    const bool orthrosLoadLater = false;
+ #endif
+ 
+     // Note: It would be nicer to trigger this from InputManager, i.e. the very beginning of the frame update.
+@@ -906,14 +906,14 @@
+         }
+     }
+ 
+-    if (mNewGameRequest && !orthrosPutOff)
++    if (mNewGameRequest && !orthrosLoadLater)
+     {
+         MWBase::Environment::get().getWindowManager()->removeGuiMode(MWGui::GM_MainMenu);
+         newGame();
+         mNewGameRequest = false;
+     }
+ 
+-    if (mLoadRequest && !orthrosPutOff)
++    if (mLoadRequest && !orthrosLoadLater)
+     {
+         MWBase::Environment::get().getWindowManager()->removeGuiMode(MWGui::GM_MainMenu);
+         const Character* character = mLoadRequest->first;
+diff -ruN a/wasm-build/orthros-jspi.js b/wasm-build/orthros-jspi.js
+--- a/wasm-build/orthros-jspi.js	2026-10-30 15:08:20.223079234 +0100
++++ b/wasm-build/orthros-jspi.js	2026-10-30 15:08:20.279080582 +0100
+@@ -1,12 +1,24 @@
+ // Orthros (orthros-r17.patch, JSPI): the engine's waits for the game's files suspend it (WebAssembly JSPI, -sJSPI,
+ // link-openmw.sh) while the page fetches the bytes, instead of the page's thread spinning on shared memory (Orthros'
+ // src/vfs/data-client.js fetchSync, wantWait): the page answers input, draws its own indicator and presents what the
+-// engine drew so far. Linked after the system library (--js-library): fd_read and fd_pread replace libwasi's.
++// engine drew so far. Linked after the system library (--js-library): fd_read and fd_sync replace libwasi's.
+ //
+-// Where it may suspend: only under the engine's promising exports — omw_pump_frame (the frame) and main() (the boot) —,
+-// which say so (orthros_jspi_enter / orthros_jspi_leave, engine.cpp, main.cpp), one suspension at a time. Everything
+-// else that reaches the engine reads synchronously, as before: a suspending import called outside a promising export
+-// would throw (SuspendError).
++// Where it may suspend: only under the engine's promising exports — omw_pump_frame (a load's frame) and main() (the
++// boot) —, which say so (orthros_jspi_enter / orthros_jspi_leave, engine.cpp, main.cpp), one suspension at a time.
++// A frame of play is the plain export (omw_pump_frame_plain: the page's own stack, nothing suspends — as before r17);
++// the page pumps the promising one only for a load: one put off to the next frame by the engine (orthros_jspi_defer: a
++// save's load, a new game, the debug COE asked in a plain frame), or the frame of a loading screen still on. A load
++// that starts in a frame of play by itself — a door, an exterior crossing — runs synchronously there, as r16's. Why: a
++// frame in play gained nothing from suspending (docs/openmw.md), and a JSPI stack is exposed to Chromium's native stack
++// walker (base::debug::TraceStackFramePointers, its heap profiler's on a sampled allocation): from that stack's first
++// frame it scans 8 KB further for a frame pointer, past the stack's end — the renderer's crash (2026-10-29/30, the
++// kernel's log: the same instruction each time; at every run with the heap profiler forced on every renderer, never
++// with r16). The promising exports' stacks are made deep first (engine.cpp orthros_jspi_deep: 1,024 plain wasm frames
++// at their base), so that walker, which stops at 255 frames, never reaches the end. An import that suspends (WebAssembly.Suspending) throws SuspendError when called outside
++// a promising export even when it returns a value at once (V8, measured): the engine calls the suspending imports
++// (orthros_fd_read_async, orthros_fd_sync_async, Emscripten's emscripten_sleep — through engine.cpp's --wrap'd C
++// library functions —, present, breathe, settle, gl_settle, read_wait) only when orthros_jspi_may() says so (under a
++// promising export, not suspended), the plain ones otherwise (fd_read, fd_sync: as a build without JSPI).
+ //
+ // A read first waits a few ms on the page's thread (ENV OPENMW_ORTHROS_JSPI_SPIN_MS, 10 by default; play/index.html
+ // ?jspispin=N): the page's store answers most of the boot's reads that fast, and a suspension costs a round of the
+@@ -26,8 +38,8 @@
+ // is a load's (a cell change's read-ahead comes before its loading screen). ENV OPENMW_ORTHROS_JSPI=0 (?jspi=0):
+ // never suspends — every read as before r17. A build without JSPI (ASYNCIFY != 2) never returns a promise.
+ //
+-// A worker thread's read (Lua's update on its own thread, orthros-r14.patch; PROXY_SYNC_ASYNC: proxied to the page's
+-// thread) is answered at once, synchronously, as before: the page's thread may serve it inside a wait for that very
++// A worker thread's read (Lua's update on its own thread, orthros-r14.patch: proxied to the page's thread) is the plain
++// fd_read, answered at once, synchronously, as before: the page's thread may serve it inside a wait for that very
+ // thread (Worker::finishUpdate's futex wait runs the proxied calls), where no promise could settle — the read waits on
+ // the page's thread when its bytes are missing (counted: proxied). Never a suspension there, never a deadlock.
+ //
+@@ -52,9 +64,17 @@
+ // wait suspends nothing, and its long stretches held the page's thread whole (a COE 3.7 s, a save's load 2 s, measured
+ // 2026-10-30) where the page answered input as late as r16.
+ //
++// A load's end (orthros_jspi_settle, loadingOff, the outermost) waits for the GPU's queue (a fence; ENV
++// OPENMW_ORTHROS_JSPI_SETTLE_MS, 3000 by default, ?jspisettle=N); and in a load's frame — its loading screen, and the
++// rest of that frame after it, the world's first draw (loadFrame) — a framebuffer's status (orthros_gl_settle,
++// engine.cpp's wrapped glCheckFramebufferStatus, at most every ENV OPENMW_ORTHROS_JSPI_GL_MS, 50; ?jspigl=N, 0: never)
++// is asked once the GPU ran its queue, the engine suspended meanwhile: WebGL's call waits for every command before it,
++// and the world's first draw after a save's load held the page's thread 1-2 s there in SwiftShader (2026-10-30).
++//
+ // Module.orthrosBlocked { count, ms, max, files: ms by path, waits, waitMs, proxied, proxiedMs, proxiedMax, play, playMs,
+-// presents, presentMs, breaths, breathMs, settles, settleMs }: the engine's suspensions (reads, announced waits; play/playMs: those in play, outside a load;
+-// presents: the loading screen's frames presented) and the worker threads' reads that waited on the page's thread; Module.orthrosLoading(): the engine in a load now (its boot, a loading screen);
++// presents, presentMs, breaths, breathMs, settles, settleMs, gls, glMs }: the engine's suspensions (reads, announced waits; play/playMs: those in play, outside a load;
++// presents: the loading screen's frames presented; settles, gls: the GPU's queue waited for) and the worker threads' reads that waited on the page's thread; Module.orthrosLoading(): the engine in a load now (its boot, a loading screen, the rest of its frame);
++// Module.orthrosFrames { plain, promising }: the frames the page pumped of each kind;
+ // Module.orthrosSuspendedMs: the time suspended since the start (a frame's timer: its whole time minus that, its work).
+ addToLibrary({
+   $OrthrosJspi: { on: 0, boot: 0, loading: 0, suspended: 0, after: [], flushing: false, ready: false, off: false, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glAt: 0, freedAt: 0, suspendedMs: 0 },

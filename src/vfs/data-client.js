@@ -15,6 +15,11 @@
 // turn at once, having called nothing more; one that asked ahead and goes on (re3's streaming: a model, a sound not here
 // yet shows a moment later) reads, asks for more or shows a frame first (progress) —, until it goes on; one fetched in
 // the background (readable) never. A load made of many short waits counts as a wait all along.
+// An engine that suspends while it waits (JSPI: OpenMW's Orthros build, orthros-r17.patch) asks `soon` before a read
+// and wantWaitSoon before an announced wait: the page's thread waits a few ms first (SOON_SPIN_MS: the browser's copy
+// answers most reads that fast — a suspension costs a round of the page's event loop each), then gives the request up
+// to a message and the engine suspends until it lands (ctrl[16]: the request the page still waits for — the worker
+// answers on shared memory only that one, claimed first; one given up comes by message).
 // Announced reads (want, wantWait — docs/slow-network.md "Announced reads"): an engine that knows what its next load
 // reads says so first; the worker fetches all of it in parallel, and the engine waits once (on shared memory: ctrl[12],
 // the last batch settled) instead of a round trip per file. A big announced load of an engine that reloads in place
@@ -25,7 +30,7 @@
 // once it says its content is loaded (contentLoaded) — every read from then on, every handle, for good; never fetched
 // whole after the copy; an engine that says nothing reads the file (docs/slow-network.md "Content files light before
 // the menu").
-import { treeFile, LIGHT_DIR, isLightContent } from './game-tree.js';
+import { treeFile, LIGHT_DIR, isLightContent, isWholeImage } from './game-tree.js';
 import { FAST_BPS } from './net-link.js';
 
 export const PIECE = 1 << 16;
@@ -54,6 +59,13 @@ export const linkRate = {
 const SPAN = 16 << 20;
 /** A read the engine waits for fails once the worker's heartbeat stopped this long (it died). */
 const DEAD_MS = 30000;
+/** How often the requests answered by message look at the worker's heartbeat while any is pending (watchAsks; ms). */
+const ASK_WATCH_MS = 1000;
+/**
+ * How long the page's thread waits for bytes before an engine that can suspend does (soon, wantWaitSoon; ms): a read
+ * the browser's copy answers takes ~0.3-3 ms, one over the network a round trip at least (tens of ms and more).
+ */
+export const SOON_SPIN_MS = 10;
 const PER_FILE = 2 ** 21; // (a piece's key: file id × PER_FILE + piece)
 /**
  * The most evicted pieces kept for the next ones (GameData.keep): a worker's answer's worth (SPAN), and no more than an
@@ -109,6 +121,8 @@ const REAL_PER_TICK = 2;
  */
 const REAL_FETCHES = 8;
 const REAL_FETCH_SHARE = 8;
+/** The worker's word on the files here whole is held at most this long during an engine's load (GameData.heldReal). */
+const HELD_MAX_MS = 60000;
 /** The page's game data is quiet (GameData.quiet) after this long without a read waiting for the network. */
 export const QUIET_MS = 3000;
 
@@ -133,7 +147,8 @@ export class GameData {
    * The data of version `name` (and the versions it requires), its worker started and its files listed.
    * @param {{ name: string, session?: string, lang?: string|null, bw?: number, prefetch?: 'startup'|'start'|'first-read'|'none',
    *   cacheBytes?: number, memBytes?: number, cacheBlocks?: number, reloads?: boolean, realInPage?: boolean,
-   *   realBacklog?: () => number, log?: (text: string) => void, pieceReuse?: boolean,
+   *   realBacklog?: () => number, wholeLoads?: boolean, inLoad?: () => boolean, log?: (text: string) => void,
+   *   pieceReuse?: boolean,
    *   tree?: object, manifest?: object, orderAtOpen?: boolean }} o
    *   tree, manifest: the version's /api/tree and /api/manifest when the page holds them (not asked again: game-data.js
    *   openVersion); orderAtOpen: the learned order's list asked at the open, its bytes not (a page that opens its data
@@ -143,8 +158,11 @@ export class GameData {
    *   at the engine's start, or at its first read (an engine that downloads itself first: its download comes first);
    *   reloads: the engine loads a file again in place (see reloads); realInPage: the files made sharp in place told
    *   with their bytes in the page (true by default, REAL_FETCHES); realBacklog: how many files told the engine has not
-   *   reloaded yet (0 when not given); pieceReuse: the page's pieces in the evicted ones' buffers and the buffers left
-   *   freed at once (true by default; see the constructor)
+   *   reloaded yet (0 when not given); wholeLoads: a file read whole (a texture) asked for to its end at its first
+   *   missing piece (askedEnd; off by default: an engine's page that measured it sets it — OpenMW's); inLoad: the
+   *   engine is in a load that yields to the page (its words on the files here whole held until its end: heldReal);
+   *   pieceReuse: the page's pieces in the evicted ones' buffers and the buffers left freed at once (true by default;
+   *   see the constructor)
    */
   static async open(o) {
     const g = new GameData(o);
@@ -158,7 +176,7 @@ export class GameData {
      * ready null before; mounted: when a port's page mounted its files, port-files.js) — a page's start measured
      * (docs/slow-network.md "Opened early") */
     this.times = { open: Math.round(performance.now()), ready: null, mounted: null, contentLoading: null, contentLoaded: null };
-    this.ctrl = new Int32Array(new SharedArrayBuffer(64));
+    this.ctrl = new Int32Array(new SharedArrayBuffer(128));
     this.data = new Uint8Array(new SharedArrayBuffer(SPAN));
     /** the page's pieces (key → bytes, least recently used first). Private to this class: a piece's buffer holds another
      * piece once it is evicted, or is freed (pieceReuse) — whoever reads one copies its bytes out at once, nothing
@@ -174,7 +192,7 @@ export class GameData {
     /** the announced batches posted (want): the last one's number — wantWait waits for ctrl[12] to reach it —, and the
      * first one of the current wait's window (the batches announced since the last wait: an older one that never
      * settled — timed out, a request hung — does not hold the next waits) */
-    this.wantSeq = 0; this.wantFrom = 1; this.asks = new Map(); this.nextAsk = 1;
+    this.wantSeq = 0; this.wantFrom = 1; this.asks = new Map(); this.nextAsk = 1; this.askWatch = null;
     /** the asynchronous reads under way the engine may wait for: id → { at (the engine's progress when it asked), held (told so) } */
     this.pending = new Map();
     /** how many times the engine went on (progress: it called the game data, or showed a frame) */
@@ -201,6 +219,12 @@ export class GameData {
     /** the files the page read light, here whole now, not delivered to the listeners yet (onReal: REAL_PER_TICK at a
      * time, the latest first); lightReads: the keys of the files whose last load read the light copy (pick) */
     this.realQ = []; this.lightReads = new Set();
+    /** a file read whole (readsWhole) asked for to its end at its first missing piece (o.wholeLoads, off by default:
+     * measured on OpenMW only, whose page sets it; GoldSrc's and re3's reads as before) */
+    this.wholeLoads = o.wholeLoads ?? false;
+    /** the worker's word on the files here whole (its `real` messages) held while the engine is in a load that yields
+     * (o.inLoad: realHeld, applied in order by holdWatch once it is over — heldReal) */
+    this.inLoad = o.inLoad ?? (() => false); this.realHeld = []; this.realHeldAt = 0;
     /** those files told with their bytes in the page (REAL_FETCHES; o.realInPage false: told as they come — the page's
      * ?realinpage=0), and those under way: { files, bytes } */
     this.realInPage = o.realInPage ?? true; this.realFetching = { files: 0, bytes: 0 }; this.realBacklog = o.realBacklog ?? (() => 0);
@@ -210,10 +234,12 @@ export class GameData {
     // (waits: the reads that waited for the worker — waitMs, waitBytes their time and bytes, syncFetches those that held
     // the page; fetchedBytes: what the worker received)
     const ctrl = this.ctrl;
-    // (wants: announced entries posted; wantWaits / wantWaitMs / wantTimeouts: the engine's waits for them — want, wantWait;
+    // (soonSpins / soonSpinMs: the reads soon() answered within its wait on the page's thread, soonSuspends those it gave
+    // up to a message — the engine suspended —, soonWaits those wantWaitSoon gave up;
+    // wants: announced entries posted; wantWaits / wantWaitMs / wantTimeouts: the engine's waits for them — want, wantWait;
     // bigLoads / bigFiles / bigBytes: the big loads read light first, the files and their bytes left for later; reloaded:
     // the files the page loaded again in place — reloaded(); fileWaits: the waits by file, { path: [waits, ms] } — waited())
-    this.stats = { fileWaits: {}, hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0, syncFetches: 0, wants: 0, wantWaits: 0, wantWaitMs: 0, wantTimeouts: 0, bigLoads: 0, bigFiles: 0, bigBytes: 0, reloaded: 0, get waits() { return this.misses; }, get waitMs() { return this.stallMs; },
+    this.stats = { fileWaits: {}, hits: 0, misses: 0, stallMs: 0, evictions: 0, bytes: 0, syncFetches: 0, soonSpins: 0, soonSpinMs: 0, soonSuspends: 0, soonWaits: 0, wants: 0, wantWaits: 0, wantWaitMs: 0, wantTimeouts: 0, bigLoads: 0, bigFiles: 0, bigBytes: 0, reloaded: 0, get waits() { return this.misses; }, get waitMs() { return this.stallMs; },
       get waitBytes() { return this.bytes; }, get fetchedBytes() { return Atomics.load(ctrl, 2); } };
     this.listeners = { startup: [], whole: [], ahead: [], real: [], launch: [] };
     // (o.worker: a test's stand-in, { postMessage, onmessage })
@@ -229,10 +255,8 @@ export class GameData {
         else if (m.ahead) for (const f of this.listeners.ahead) f(m.ahead);
         else if (m.launch) for (const f of this.listeners.launch) f(m.launch);
         else if (m.real) {
-          for (const k of m.real) { this.realHere.add(k); this.lightHere.delete(k); }
-          for (const k of m.lightHere ?? []) if (!this.realHere.has(k)) this.lightHere.add(k);
-          // (to the listeners paced — holdWatch —, the files the page read light only: the others reload nothing)
-          for (const k of m.real) if (this.lightReads.delete(k) && this.listeners.real.length) this.realQ.push(k);
+          if (this.realHeld.length || this.inLoad()) { if (!this.realHeld.length) this.realHeldAt = performance.now(); this.realHeld.push(m); }
+          else this.realNews(m);
         }
         else if (m.net) this.net = m.net;
         else if (m.log) this.log(m.log);
@@ -422,6 +446,7 @@ export class GameData {
    * loads them again in place does it over frames, not dozens in one.
    */
   holdWatch() {
+    this.heldReal();
     // (the latest first: the files the player saw last)
     if (this.realQ.length) {
       if (this.realInPage) this.realFetch();
@@ -431,6 +456,28 @@ export class GameData {
     for (const [id, a] of this.pending) if (a.held && this.goes !== a.at) { a.held = false; (told ??= []).push([id, 0]); }
     if (told) this.worker.postMessage({ held: told });
   }
+  /**
+   * The worker's word on the files here whole (`real`) and on the light copies here (`lightHere`): the page reads them so
+   * from their next load; those it read light to the listeners, paced (holdWatch: the others reload nothing).
+   */
+  realNews(m) {
+    for (const k of m.real) { this.realHere.add(k); this.lightHere.delete(k); }
+    for (const k of m.lightHere ?? []) if (!this.realHere.has(k)) this.lightHere.add(k);
+    for (const k of m.real) if (this.lightReads.delete(k) && this.listeners.real.length) this.realQ.push(k);
+  }
+  /**
+   * The worker's words held during the engine's load (o.inLoad: an engine whose loads yield to the page — OpenMW's JSPI
+   * build, its boot and its loading screens —), in order, once it is over (or HELD_MAX_MS after the first one held: a
+   * load that never says its end). An engine that holds the page's thread through a load gets them at its end anyway —
+   * the page's messages wait —; one that yields got them in the middle of it, and its big load (bigBatch, pick) then read
+   * the files that came whole meanwhile instead of their light copies: OpenMW r17 on a new device read 270 MB of full
+   * textures at its boot, the in-play loads after it waiting for theirs (2026-10-30, docs/openmw.md).
+   */
+  heldReal() {
+    if (!this.realHeld.length || (this.inLoad() && performance.now() - this.realHeldAt < HELD_MAX_MS)) return;
+    for (const m of this.realHeld.splice(0)) this.realNews(m);
+  }
+
   /** The files made sharp in place `keys`, to the page's listeners (onReal). */
   tellReal(keys) { for (const f of this.listeners.real) f(keys); }
   /**
@@ -479,7 +526,7 @@ export class GameData {
   get received() { return Atomics.load(this.ctrl, 2); }
 
   /** The worker stopped (its pending reports sent first). */
-  close() { this.saveRate(); clearInterval(this.timer); clearInterval(this.holdTimer); clearTimeout(this.wantTimer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
+  close() { this.saveRate(); clearInterval(this.timer); clearInterval(this.holdTimer); clearInterval(this.askWatch); this.askWatch = null; clearTimeout(this.wantTimer); this.worker.postMessage({ close: true }); this.worker.terminate?.(); }
 
   /**
    * The page's pieces and its waits: { cached, lruMax, hits, misses, stallMs, evictions, bytes, fetchedBytes, openMs,
@@ -489,7 +536,7 @@ export class GameData {
    * net: the link as the worker last told it (NetLink.snapshot, every second: rate, waits, loading, the background's
    * bytes by producer — bgBy), null before.
    */
-  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, bigLoads: s.bigLoads, bigFiles: s.bigFiles, bigBytes: s.bigBytes, reloaded: s.reloaded, realFetches: s.realFetches ?? 0, realFetchMs: Math.round(s.realFetchMs ?? 0), realMissed: s.realMissed ?? 0, realRaced: s.realRaced ?? 0, openMs: this.times.open, readyMs: this.times.ready, mountedMs: this.times.mounted, content: this.content, contentLoadingMs: this.times.contentLoading, contentLoadedMs: this.times.contentLoaded, net: this.net ?? null }; }
+  snapshot() { const s = this.stats; return { cached: this.cache.size, lruMax: Math.floor(this.budget / PIECE), hits: s.hits, misses: s.misses, syncFetches: s.syncFetches, soonSpins: s.soonSpins, soonSpinMs: Math.round(s.soonSpinMs), soonSuspends: s.soonSuspends, soonWaits: s.soonWaits, stallMs: s.stallMs, evictions: s.evictions, bytes: s.bytes, fetchedBytes: s.fetchedBytes, wants: s.wants, placeWants: s.placeWants ?? 0, wantWaits: s.wantWaits, wantWaitMs: s.wantWaitMs, wantTimeouts: s.wantTimeouts, bigLoads: s.bigLoads, bigFiles: s.bigFiles, bigBytes: s.bigBytes, reloaded: s.reloaded, realFetches: s.realFetches ?? 0, realFetchMs: Math.round(s.realFetchMs ?? 0), realMissed: s.realMissed ?? 0, realRaced: s.realRaced ?? 0, openMs: this.times.open, readyMs: this.times.ready, mountedMs: this.times.mounted, content: this.content, contentLoadingMs: this.times.contentLoading, contentLoadedMs: this.times.contentLoaded, net: this.net ?? null }; }
 
   // ---------------------------------------------------------------- light copies
 
@@ -739,10 +786,45 @@ export class GameData {
   wantWait(timeoutMs = 15000) {
     this.wantFlush();
     const from = this.wantFrom, target = this.wantSeq;
-    const ok = this.wantWaitFor(timeoutMs);
+    return this.wantWaitEnd(from, target, this.wantWaitFor(timeoutMs));
+  }
+  /** The end of a wait for the batches from..target (wantWait, wantWaitSoon): `ok` returned. */
+  wantWaitEnd(from, target, ok) {
     const b = this.bigLoad;
     if (b && b.seq >= from && b.seq <= target && this.bigLoadNow()) b.end = performance.now();
     this.win = { bytes: 0, big: false };
+    return ok;
+  }
+  /**
+   * wantWait for an engine that suspends while it waits (JSPI): the page's thread waits `spinMs` at most (SOON_SPIN_MS)
+   * — true or false then, as wantWait —, else a promise of the same answer, the page's thread free meanwhile
+   * (Atomics.waitAsync on ctrl[12], which the worker notifies): the same batches, outcome and counts, `timeoutMs` from
+   * the call.
+   */
+  wantWaitSoon(timeoutMs = 15000, spinMs = SOON_SPIN_MS) {
+    this.wantFlush();
+    const from = this.wantFrom, target = this.wantSeq, c = this.ctrl, t0 = performance.now();
+    if (target >= from) while (Atomics.load(c, 12) < target && performance.now() - t0 < spinMs) { /* the worker answers */ }
+    if (target < from || Atomics.load(c, 12) >= target) return this.wantWaitEnd(from, target, this.wantWaitFor(timeoutMs));
+    this.stats.soonWaits++;
+    return this.wantWaitForAsync(Math.max(0, timeoutMs - (performance.now() - t0)), t0).then((ok) => this.wantWaitEnd(from, target, ok));
+  }
+  /** wantWaitFor's wait, awaited (wantWaitSoon): the worker's heartbeat looked at between waits of at most 250 ms. */
+  async wantWaitForAsync(timeoutMs, t0 = performance.now()) {
+    this.progress();
+    const target = this.wantSeq, c = this.ctrl, start = performance.now();
+    if (target < this.wantFrom) return true;
+    this.wantFrom = target + 1;
+    let beat = Atomics.load(c, 3), beatAt = start, ok = true;
+    for (let v; (v = Atomics.load(c, 12)) < target;) {
+      const now = performance.now(), b = Atomics.load(c, 3);
+      if (b !== beat) { beat = b; beatAt = now; } else if (now - beatAt > DEAD_MS) { ok = false; break; }
+      if (now - start >= timeoutMs) { ok = false; break; }
+      const w = Atomics.waitAsync(c, 12, v, Math.min(250, timeoutMs - (now - start)));
+      if (w.async) await w.value;
+    }
+    this.stats.wantWaits++; this.stats.wantWaitMs += performance.now() - t0;
+    if (!ok) this.stats.wantTimeouts++;
     return ok;
   }
   /** wantWait's wait itself. */
@@ -811,6 +893,61 @@ export class GameData {
     return !this.inPage(h, position, length);
   }
 
+  /**
+   * The bytes [position, position + length) of `h` in the page soon, for an engine that suspends while it waits (JSPI):
+   * null when they are here, or once fetched while the page's thread waited `spinMs` at most (SOON_SPIN_MS: an answer
+   * of the browser's copy) — its read then at once —; else a promise settled once they are here (or failed: the read
+   * then says why), the page's thread free meanwhile. The light copy or the file, as read() picks.
+   */
+  soon(h, position, length, spinMs = SOON_SPIN_MS) {
+    if (!this.missing(h, position, length)) return null;
+    const v = this.pick(h, position);
+    if (v !== h) return position < v.size ? this.soon(v, position, Math.min(length, v.size - position), spinMs) : null;
+    const end = Math.min(h.size, position + length);
+    let p = Math.floor(position / PIECE);
+    while (p * PIECE < end && this.cache.has(h.id * PER_FILE + p)) p++;
+    if (p * PIECE >= end) return null;
+    const got = spinMs > 0 ? this.fetchSpin(h, p, end, spinMs) : null;
+    // (the rest — a read longer than one answer, pieces here and missing between —: by message)
+    const rest = () => (this.missing(h, position, length) ? this.ensure(h, position, length) : undefined);
+    if (got === true) { const r = rest(); return r ?? null; }
+    return got ? got.then(rest) : this.ensure(h, position, length);
+  }
+
+  /**
+   * fetchSync's request for piece `p` of `h` on (through `need`), the page's thread waiting `spinMs` at most: true once
+   * its bytes are kept; else the request given up to a message (ctrl[16] taken back before the worker claims it — one
+   * it claimed is a moment away: waited for), a promise settled once its bytes are kept (a failure: rejected).
+   */
+  fetchSpin(h, p, need, spinMs) {
+    const start = p * PIECE;
+    let stop = this.askedEnd(h, start, need);
+    for (let q = p + 1; q * PIECE < stop; q++) if (this.cache.has(h.id * PER_FILE + q)) { stop = q * PIECE; break; }
+    const gen = ++this.gen, late = this.nextAsk++, { ctrl } = this;
+    Atomics.store(ctrl, 16, gen);
+    this.worker.postMessage({ gen, late, ...this.whose(h), off: start, len: Math.min(SPAN, stop - start), want: this.takeBytes(h, stop - start), used: this.used.splice(0) });
+    const t0 = performance.now();
+    let beat = Atomics.load(ctrl, 3), beatAt = t0;
+    while (Atomics.load(ctrl, 0) !== gen) {
+      const b = Atomics.load(ctrl, 3), now = performance.now();
+      if (b !== beat) { beat = b; beatAt = now; } else if (now - beatAt > DEAD_MS) throw new Error('the game data worker stopped answering');
+      if (now - t0 < spinMs || Atomics.load(ctrl, 16) !== gen) continue;
+      const bytes = new Promise((resolve, reject) => this.asks.set(late, { resolve, reject }));
+      if (Atomics.compareExchange(ctrl, 16, gen, 0) !== gen) { this.asks.delete(late); continue; } // (claimed: its answer is being written)
+      this.watchAsks();
+      this.stats.soonSuspends++;
+      // (the answer by message: a buffer of its own the worker handed over — data-worker.js settleSync —, freed once in
+      // the pieces, as fetchAsync's)
+      return bytes.then((got) => { this.waited(h, performance.now() - t0); this.keep(h, p, got); if (this.pieceReuse) release(got); });
+    }
+    const ms = performance.now() - t0;
+    this.stats.soonSpins++; this.stats.soonSpinMs += ms; this.waited(h, ms);
+    const n = ctrl[1];
+    if (n < 0) throw new Error(`${h.path}: read failed at ${start}`);
+    this.keep(h, p, this.data.subarray(0, n));
+    return true;
+  }
+
   /** The bytes [position, position + length) of `h` into the engine's `buffer` at `offset` (waiting when missing). */
   read(h, buffer, offset, length, position) {
     this.progress();
@@ -873,7 +1010,8 @@ export class GameData {
   async fetchAsync(h, position, length, background, at, real = false) {
     const v = real ? h : this.pick(h, position);
     if (v !== h) { if (position < v.size) await this.fetchAsync(v, position, Math.min(length, v.size - position), background, at); return; }
-    const end = Math.min(h.size, position + length);
+    // (an image the engine waits for: to its end — askedEnd)
+    const end = !background && this.wholeLoads && this.readsWhole(h) ? this.askedEnd(h, position, position + length) : Math.min(h.size, position + length);
     for (let p = Math.floor(position / PIECE); p * PIECE < end;) {
       if (this.cache.has(h.id * PER_FILE + p)) { p++; continue; }
       const id = this.nextAsk++, t0 = performance.now(), held = false;
@@ -882,6 +1020,7 @@ export class GameData {
       try {
         bytes = await new Promise((resolve, reject) => {
           this.asks.set(id, { resolve, reject });
+          this.watchAsks();
           this.worker.postMessage({ read: { id, ...this.whose(h), off: p * PIECE, len: end - p * PIECE, want: this.takeBytes(h, end - p * PIECE), held } });
         });
       } finally { this.pending.delete(id); }
@@ -915,8 +1054,44 @@ export class GameData {
     return false;
   }
 
+  /**
+   * The requests answered by message (fetchAsync's, those fetchSpin gave up — an engine suspended on them, JSPI) watched
+   * while any is pending, every ASK_WATCH_MS: the worker's heartbeat (ctrl[3]) still for DEAD_MS once it beat — it
+   * died — rejects them all, as fetchSync's wait throws (the engine then resumes, its read tried again synchronously
+   * says why), instead of a promise nothing settles: a frame suspended for ever, silently.
+   */
+  watchAsks() {
+    if (this.askWatch) return;
+    const c = this.ctrl;
+    let beat = Atomics.load(c, 3), beatAt = performance.now();
+    this.askWatch = setInterval(() => {
+      if (!this.asks.size) { clearInterval(this.askWatch); this.askWatch = null; return; }
+      const b = Atomics.load(c, 3), now = performance.now();
+      // (not started yet: the asks before it are answered once it runs — fetchSync's wait alone says it never started)
+      if (b !== beat || b === 0) { beat = b; beatAt = now; return; }
+      if (now - beatAt <= DEAD_MS) return;
+      const e = new Error('the game data worker stopped answering'), all = [...this.asks.values()];
+      this.asks.clear(); clearInterval(this.askWatch); this.askWatch = null;
+      for (const a of all) a.reject(e);
+    }, ASK_WATCH_MS);
+    this.askWatch.unref?.();
+  }
+
   /** A request's file: a game file's version and path, or a source's id. */
   whose(h) { return h.src !== undefined ? { src: h.src } : { name: h.name, path: h.path }; }
+
+  /**
+   * Where a request for `h`'s bytes from `start` that a read needs through `need` ends: a piece at least; the rest of the
+   * file (SPAN at most a request) for a file read whole (readsWhole: its load reads on to its end) — one wait instead of
+   * one per piece the reads grow into (takeBytes: 256 KB, then the run's length… — a 20 MB texture of a fast link read
+   * in 7 waits of the engine, OpenMW's in play, 2026-10-30).
+   */
+  askedEnd(h, start, need) {
+    const end = Math.min(h.size, Math.max(need, start + PIECE));
+    return this.wholeLoads && this.readsWhole(h) ? Math.max(end, Math.min(h.size, start + SPAN)) : end;
+  }
+  /** `h` is read whole by its loads: an image (game-tree.js isWholeImage — a texture, or its light copy). */
+  readsWhole(h) { return h.src === undefined && isWholeImage(h.path); }
 
   /** How many bytes to take back from the worker (as far as it has them already): more for a file read in order. */
   takeBytes(h, need) { return Math.min(SPAN, Math.max(need, h.run > 0 ? Math.max(1 << 20, h.run) : 256 << 10)); }
@@ -928,9 +1103,9 @@ export class GameData {
    */
   fetchSync(h, p, need) {
     const start = p * PIECE;
-    // (asked: from this piece to the end of the read, short of the first piece the page has — the worker adds what it
-    // has here already beyond, up to want())
-    let stop = Math.min(h.size, Math.max(need, start + PIECE));
+    // (asked: from this piece to the end of the read — of the file, for a load that reads it whole: askedEnd —, short
+    // of the first piece the page has — the worker adds what it has here already beyond, up to want())
+    let stop = this.askedEnd(h, start, need);
     for (let q = p + 1; q * PIECE < stop; q++) if (this.cache.has(h.id * PER_FILE + q)) { stop = q * PIECE; break; }
     const gen = ++this.gen, { ctrl } = this;
     this.worker.postMessage({ gen, ...this.whose(h), off: start, len: Math.min(SPAN, stop - start), want: this.takeBytes(h, stop - start), used: this.used.splice(0) });

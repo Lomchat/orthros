@@ -1,0 +1,119 @@
+{
+  "manifest": "morrowind-goty-en",
+  "discard": true,
+  "seconds": 60,
+  "warm": 0,
+  "start": "-2,-9",
+  "glide": null,
+  "query": "tier=mid",
+  "bootMs": 15496,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "canvas": {
+    "buffer": "1280x800",
+    "css": "1280x800",
+    "dpr": 1,
+    "antialias": false,
+    "samples": 0,
+    "preserveDrawingBuffer": false
+  },
+  "tier": {
+    "tier": "mid",
+    "deviceMemory": 32
+  },
+  "tierChoice": null,
+  "tierLog": null,
+  "frames": 1512,
+  "fps": 25.23,
+  "gap": {
+    "p50": 33.3,
+    "p90": 50,
+    "p99": 66.7,
+    "max": 300,
+    "over100": 3,
+    "over250": 1
+  },
+  "work": {
+    "p50": 9.9,
+    "p90": 13.4,
+    "p99": 22.8,
+    "max": 347.1,
+    "over50": 5,
+    "over100": 4
+  },
+  "workEngine": {
+    "p50": 9.9,
+    "p90": 13.4,
+    "p99": 22.8,
+    "max": 347.1
+  },
+  "suspendedMs": 0,
+  "jspi": {
+    "on": false,
+    "suspendedMs": 0,
+    "blocked": null,
+    "frames": null,
+    "soonSpins": 0,
+    "soonSpinMs": 0,
+    "soonSuspends": 0,
+    "soonWaits": 0
+  },
+  "syncPerFrame": {
+    "checkFramebufferStatus": 0.001,
+    "getShaderParameter": 0.004,
+    "getProgramParameter": 0.012
+  },
+  "syncTotal": {
+    "getError": 12,
+    "getShaderParameter": 62,
+    "getProgramParameter": 222,
+    "checkFramebufferStatus": 8
+  },
+  "dataStallMs": 304,
+  "shaderVariantsBuilt": 6,
+  "soundsNotReady": 18,
+  "readsPutOff": 210,
+  "syncFetches": 56,
+  "cells": [
+    "-2 -9",
+    "-2 -8"
+  ],
+  "phase": {
+    "cull": 2.835,
+    "draw": 5.445,
+    "physics": 0.33,
+    "mechanics": 0.591,
+    "world": 0.096,
+    "lua": 0.514,
+    "gui": 0.09499999999999999,
+    "input": 0.049,
+    "sound": 0.165,
+    "script": 0.33399999999999996,
+    "luaupdate": 0.5239999999999999,
+    "luawait": 0
+  },
+  "view": {
+    "phase": "done",
+    "start": 8192,
+    "target": 12288,
+    "value": 12288,
+    "since": 24772.179999999702,
+    "longAt": 25772.179999999702,
+    "sinceRelMs": 8818
+  },
+  "meter": {
+    "samples": 235,
+    "shownS": 1,
+    "waitingS": 0,
+    "shownAt": [
+      [
+        0,
+        0
+      ],
+      [
+        0.7,
+        1.2
+      ]
+    ]
+  },
+  "faults": []
+}

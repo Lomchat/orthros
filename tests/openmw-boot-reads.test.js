@@ -89,7 +89,6 @@ test('streamfs: the boot\'s scripts announced in one list once the engine page\'
   try {
     const w = await boot(ctx, workers);
     await tick(250);
-    assert.ok(ctx.orthrosTurns > 0, 'the page\'s turns counted (orthros-r14.patch\'s put-offs)');
     assert.equal(w.sent.filter((m) => m.want).length, 0, 'not while the mounts go on');
     assert.equal(ctx.StreamFS.boot(), null);
     ctx.__serverMods = { dirs: ['/mwmods/a-0', '/mwmods/b-0'] }; // (the engine page: every mod mounted)

@@ -2,7 +2,9 @@
 // "Standardization"): the Windows games' reader (game-data.js: HttpBackend over the server's compressed ranges, the
 // browser's OPFS copy, the order earlier sessions read the game in, the whole download) in a worker of its own. The
 // page asks it for bytes through data-client.js: a read the engine waits for synchronously is answered on shared
-// memory (ctrl[0] the request answered, ctrl[1] the bytes delivered or -1), one it can wait for (JSPI) by message.
+// memory (ctrl[0] the request answered, ctrl[1] the bytes delivered or -1), one it can wait for (JSPI) by message. A
+// request the page may give up on (`late`: data-client.js fetchSpin — an engine that suspends after a few ms) is answered
+// on shared memory only while ctrl[16] still names it (claimed first: -gen), else by message, as an asynchronous read.
 // Counters shared with the page's indicator: ctrl[2] bytes received (decoded), ctrl[3] this worker's heartbeat,
 // ctrl[4] / ctrl[5] KB of the current step here / in all (the learned order: HttpBackend.stepEstimate), ctrl[6] the
 // page's reads waiting for the network that the engine waits for — a synchronous read, or an asynchronous one the page
@@ -73,7 +75,7 @@ export function createDataWorker(post) {
       W.ready = init(m.init).catch((err) => { postMessage({ failed: String(err?.message ?? err) }); throw err; });
       return;
     }
-    W.ready.then(() => dispatch(m), () => { if (typeof m.gen === 'number') { W.ctrl[1] = -1; Atomics.store(W.ctrl, 0, m.gen); } });
+    W.ready.then(() => dispatch(m), () => { if (typeof m.gen === 'number') settleSync(m, null, 'the game data did not open'); });
   };
 }
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
@@ -229,16 +231,24 @@ function hold(list) {
 }
 
 async function answerSync(m) {
+  let bytes = null, error = null;
+  try { bytes = await bytesOf(m); } // (the page's thread waits for it)
+  catch (err) { error = String(err?.message ?? err); postMessage({ log: `${m.path}: ${error}` }); }
+  settleSync(m, bytes, error);
+}
+
+/**
+ * A synchronous request's answer: on shared memory (its bytes in W.data, ctrl[1] their count or -1, ctrl[0] its number),
+ * unless the page gave it up (late: ctrl[16] no longer its number — the page's engine suspended meanwhile): then by
+ * message, as answerAsync's.
+ */
+function settleSync(m, bytes, error) {
   const { ctrl, data } = W;
-  try {
-    const bytes = await bytesOf(m); // (the page's thread waits for it)
-    const n = Math.min(bytes.length, data.length);
-    data.set(bytes.subarray(0, n), 0);
-    ctrl[1] = n;
-  } catch (err) {
-    ctrl[1] = -1;
-    postMessage({ log: `${m.path}: ${err?.message ?? err}` });
+  if (m.late !== undefined && Atomics.compareExchange(ctrl, 16, m.gen, -m.gen) !== m.gen) {
+    if (bytes) postMessage({ id: m.late, bytes }, [bytes.buffer]); else postMessage({ id: m.late, error: error ?? 'read failed' });
+    return;
   }
+  if (bytes) { const n = Math.min(bytes.length, data.length); data.set(bytes.subarray(0, n), 0); ctrl[1] = n; } else ctrl[1] = -1;
   Atomics.store(ctrl, 0, m.gen);
   Atomics.notify(ctrl, 0);
 }

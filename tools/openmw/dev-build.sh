@@ -112,11 +112,13 @@ ver = h.hexdigest()[:12]
 if out.exists(): shutil.rmtree(out)
 out.mkdir(parents=True)
 def link(src, dst):
-    # (hard links within one file system; across file systems — a live release under data/ as the base — symlinks)
+    # (hard links within one file system; across file systems — a live release under data/ as the base — copies: the
+    # server serves a release's file only when its real path is inside the release (engineFile), a symlink out of it
+    # answered 404 — the launcher, the portal, the asset pack)
     try: os.link(src, dst)
     except OSError as e:
         if e.errno != 18: raise
-        os.symlink(os.path.abspath(src), dst)
+        shutil.copy2(src, dst)
 for f in base.iterdir():
     if f.name in ('e', 'index.html', 'release.json', 'engine-version.txt'): continue
     # (the base release's other files linked, never written: the portal, notices, the asset pack)

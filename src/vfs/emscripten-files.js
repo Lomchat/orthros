@@ -14,7 +14,8 @@ const O_ACCMODE = 3, O_EXCL = 0o200, O_TRUNC = 0o1000;
  * @param {import('./data-client.js').GameData} data
  * @param {object} h
  * @param {{ asyncReads?: boolean, mmap?: boolean, log?: (text: string) => void }} [o]
- *   asyncReads: the engine asks for missing bytes before reading (node.orthrosStreamed: missing, ensure, complete);
+ *   asyncReads: the engine asks for missing bytes before reading (node.orthrosStreamed: missing, ensure, complete; soon —
+ *   null when they are here within a few ms of the page's thread, else a promise: GameData.soon);
  *   mmap: false — the engine reads the file with read() only (its mmap fails: ENOSYS), as an engine that streams expects
  */
 export function fileNode(FS, at, data, h, o = {}) {
@@ -39,7 +40,10 @@ export function fileNode(FS, at, data, h, o = {}) {
   own.mmap = o.mmap === false ? () => { throw new FS.ErrnoError(52); } : (...a) => io(() => { data.whole(h); return ops.mmap(...a); });
   own.write = () => { throw new FS.ErrnoError(o.mmap === false ? 63 : 69); }; // (EROFS: the game files are read-only)
   node.stream_ops = own;
-  if (o.asyncReads) node.orthrosStreamed = { missing: (position, length) => data.missing(h, position, length), ensure: (position, length) => data.ensure(h, position, length), complete: () => data.wantWhole(h) };
+  if (o.asyncReads) {
+    node.orthrosStreamed = { missing: (position, length) => data.missing(h, position, length), ensure: (position, length) => data.ensure(h, position, length),
+      soon: (position, length, spinMs) => data.soon(h, position, length, spinMs), complete: () => data.wantWhole(h) };
+  }
   return node;
 }
 

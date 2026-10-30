@@ -1,0 +1,426 @@
+{
+ "engine": "openmw-web-v1.5.3-orthros-r16",
+ "manifest": "morrowind-goty-en",
+ "tree": "/srv/orthros/.claude/worktrees/data-r15",
+ "checks": {
+  "both joined": {
+   "ok": true,
+   "detail": {
+    "a": [
+     "/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9",
+     "Joined",
+     "1",
+     null
+    ],
+    "b": [
+     "/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9",
+     "Joined",
+     "1",
+     null
+    ]
+   }
+  },
+  "friend request received": {
+   "ok": true,
+   "detail": [
+    [
+     {
+      "name": "qampa3a670b",
+      "acct": "orthros-c401656a41d36d81b028bd81@players.invalid"
+     }
+    ],
+    null
+   ]
+  },
+  "friends": {
+   "ok": true,
+   "detail": [
+    [
+     {
+      "cellKey": "-2,-9",
+      "online": true,
+      "acct": "orthros-c401656a41d36d81b028bd81@players.invalid",
+      "name": "qampa3a670b",
+      "joinable": true
+     }
+    ],
+    "{\"op\":\"FriendAccept\",\"ok\":true,\"detail\":\"ok\"}"
+   ]
+  },
+  "together, each in the other's roster with a puppet": {
+   "ok": true,
+   "detail": {
+    "a": [
+     "Joined",
+     "1",
+     [
+      {
+       "name": "qampbf5c19a",
+       "id": 3
+      }
+     ],
+     [
+      "3"
+     ]
+    ],
+    "b": [
+     "/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9",
+     "Joined",
+     "1",
+     [
+      {
+       "name": "qampa3a670b",
+       "id": 1
+      },
+      {
+       "name": "qampbf5c19a",
+       "id": 3
+      }
+     ],
+     [
+      "1"
+     ],
+     null,
+     null
+    ]
+   }
+  },
+  "A moves 3 times, B's copy follows to its place": {
+   "ok": true,
+   "detail": [
+    {
+     "ok": true,
+     "moved": 298,
+     "gapEnd": 3,
+     "moverOff": 0,
+     "s": 129
+    },
+    {
+     "ok": true,
+     "moved": 298,
+     "gapEnd": 0,
+     "moverOff": 0,
+     "s": 131
+    },
+    {
+     "ok": true,
+     "moved": 408,
+     "gapEnd": 37,
+     "moverOff": 0,
+     "s": 133
+    }
+   ]
+  },
+  "B moves 3 times, A's copy follows to its place": {
+   "ok": true,
+   "detail": [
+    {
+     "ok": true,
+     "moved": 286,
+     "gapEnd": 0,
+     "moverOff": 0,
+     "s": 135
+    },
+    {
+     "ok": true,
+     "moved": 300,
+     "gapEnd": 0,
+     "moverOff": 0,
+     "s": 137
+    },
+    {
+     "ok": true,
+     "moved": 436,
+     "gapEnd": 17,
+     "moverOff": 0,
+     "s": 139
+    }
+   ]
+  },
+  "both in another cell, each copy where the other stands": {
+   "ok": false,
+   "detail": {
+    "a": [
+     "Joined",
+     "-1,-9",
+     {
+      "z": -131.3886260986328,
+      "x": -3494.31005859375,
+      "y": -69068.953125
+     }
+    ],
+    "b": [
+     "Joined",
+     "-1,-9",
+     {
+      "x": -3345.131591796875,
+      "y": -69069.5078125,
+      "z": -130.79345703125
+     }
+    ],
+    "ga": 1.6528567877173381,
+    "gb": 567898.1871257041
+   }
+  },
+  "still joined, no error": {
+   "ok": true,
+   "detail": {
+    "a": [
+     "Joined",
+     null,
+     null,
+     null
+    ],
+    "b": [
+     "Joined",
+     null,
+     null,
+     null
+    ]
+   }
+  },
+  "no page error": {
+   "ok": true,
+   "detail": {
+    "A": [],
+    "B": []
+   }
+  }
+ },
+ "pages": {
+  "A": {
+   "url": "/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9",
+   "net": "Joined",
+   "simReady": "1",
+   "selfId": "1",
+   "whereNow": "party",
+   "worldMode": null,
+   "amHost": "true",
+   "players": [
+    {
+     "name": "qampbf5c19a",
+     "id": 3
+    }
+   ],
+   "puppets": {
+    "3": {
+     "falls": 0,
+     "actives": [],
+     "flags": 0,
+     "stance": 0,
+     "jumps": 0,
+     "z": 14012.9404296875,
+     "eq": [
+      "common_pants_01",
+      "common_shirt_01",
+      "common_shoes_01"
+     ],
+     "x": 563392.0625,
+     "y": -32774.828125,
+     "dead": false,
+     "name": "qampbf5c19a"
+    }
+   },
+   "pose": {
+    "z": -131.3886260986328,
+    "x": -3494.31005859375,
+    "y": -69068.953125
+   },
+   "friends": [
+    {
+     "name": "qampbf5c19a",
+     "cellKey": "-1,-9",
+     "online": true,
+     "playerId": 3,
+     "acct": "orthros-1a02ec8ade3b71fe1607286a@players.invalid"
+    }
+   ],
+   "friendRequests": [],
+   "socialResult": "{\"detail\":\"sent\",\"op\":\"FriendRequest\",\"ok\":true}",
+   "joinFriendResult": null,
+   "lastError": null,
+   "netfail": null,
+   "reconnectTotal": null,
+   "selfDivergence": "5.0",
+   "cell": "-1,-9",
+   "jspi": {
+    "on": false,
+    "suspendedMs": 0,
+    "blocked": null,
+    "frames": null,
+    "soonSpins": 0,
+    "soonSpinMs": 0,
+    "soonSuspends": 0,
+    "soonWaits": 0
+   },
+   "ws": {
+    "msgs": 19800,
+    "busy": 0,
+    "closes": 0,
+    "busyCloses": 0,
+    "opens": 1,
+    "busyOpens": 0,
+    "errors": 0,
+    "maxBusyRun": 0,
+    "run": 0
+   },
+   "trap": null,
+   "fps": 2,
+   "faults": []
+  },
+  "B": {
+   "url": "/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9",
+   "net": "Joined",
+   "simReady": "1",
+   "selfId": "3",
+   "whereNow": "party",
+   "worldMode": null,
+   "amHost": "false",
+   "players": [
+    {
+     "name": "qampa3a670b",
+     "id": 1
+    }
+   ],
+   "puppets": {
+    "1": {
+     "x": -3495.782958984375,
+     "y": -69068.203125,
+     "falls": 0,
+     "z": -129.06454467773438,
+     "dead": false,
+     "jumps": 0,
+     "flags": 0,
+     "stance": 0,
+     "eq": [
+      "common_pants_01",
+      "common_shirt_01",
+      "common_shoes_01"
+     ],
+     "name": "qampa3a670b",
+     "actives": []
+    }
+   },
+   "pose": {
+    "x": -3344.25439453125,
+    "y": -69069.859375,
+    "z": -129.96665954589844
+   },
+   "friends": [
+    {
+     "online": true,
+     "playerId": 1,
+     "cellKey": "-1,-9",
+     "acct": "orthros-c401656a41d36d81b028bd81@players.invalid",
+     "name": "qampa3a670b"
+    }
+   ],
+   "friendRequests": [],
+   "socialResult": null,
+   "joinFriendResult": null,
+   "lastError": null,
+   "netfail": null,
+   "reconnectTotal": null,
+   "selfDivergence": "4.5",
+   "cell": "-1,-9",
+   "jspi": {
+    "on": false,
+    "suspendedMs": 0,
+    "blocked": null,
+    "frames": null,
+    "soonSpins": 0,
+    "soonSpinMs": 0,
+    "soonSuspends": 0,
+    "soonWaits": 0
+   },
+   "ws": {
+    "msgs": 14117,
+    "busy": 0,
+    "closes": 0,
+    "busyCloses": 0,
+    "opens": 1,
+    "busyOpens": 0,
+    "errors": 0,
+    "maxBusyRun": 0,
+    "run": 0
+   },
+   "trap": null,
+   "fps": 2,
+   "faults": []
+  }
+ },
+ "faults": [],
+ "walkA": {
+  "self": 0,
+  "puppet": 0,
+  "gapEnd": 2
+ },
+ "shots": {
+  "A": {
+   "yaw": 86,
+   "self": {
+    "z": -130.8043975830078,
+    "x": -3493.4052734375,
+    "y": -69069.59375
+   },
+   "copyOfOther": {
+    "falls": 0,
+    "actives": [],
+    "flags": 0,
+    "stance": 0,
+    "jumps": 0,
+    "z": 14012.9404296875,
+    "eq": [
+     "common_pants_01",
+     "common_shirt_01",
+     "common_shoes_01"
+    ],
+    "x": 563392.0625,
+    "y": -32774.828125,
+    "dead": false,
+    "name": "qampbf5c19a"
+   },
+   "otherSelf": {
+    "x": -3349.691650390625,
+    "y": -69061.96875,
+    "z": -127.63103485107422
+   },
+   "gap": 567902,
+   "tourOpen": false
+  },
+  "B": {
+   "yaw": -92,
+   "self": {
+    "x": -3349.691650390625,
+    "y": -69061.96875,
+    "z": -127.63103485107422
+   },
+   "copyOfOther": {
+    "x": -3495.782958984375,
+    "y": -69068.203125,
+    "falls": 0,
+    "z": -129.06454467773438,
+    "dead": false,
+    "jumps": 0,
+    "flags": 0,
+    "stance": 0,
+    "eq": [
+     "common_pants_01",
+     "common_shirt_01",
+     "common_shoes_01"
+    ],
+    "name": "qampa3a670b",
+    "actives": []
+   },
+   "otherSelf": {
+    "z": -130.8043975830078,
+    "x": -3493.4052734375,
+    "y": -69069.59375
+   },
+   "gap": 3,
+   "tourOpen": false
+  }
+ },
+ "ok": false,
+ "seconds": 390
+}

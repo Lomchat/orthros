@@ -45,7 +45,10 @@ export function launchOptions({ gl = 'swiftshader', channel = 'chromium', args =
     process.env.TMPDIR = '/tmp/orthros-scratch/pw';
     mkdirSync(process.env.TMPDIR, { recursive: true });
   }
-  return { headless: true, ...(channel === 'shell' ? {} : { channel }), args: v8LogArgs([...chromeArgs(gl), ...args]) };
+  // (ORTHROS_CHROME_ARGS: more flags, space-separated — a diagnosis', e.g. '--enable-logging=stderr --v=0' for a renderer
+  // crash's reason in the browser's log, DEBUG=pw:browser printing it)
+  const extra = (process.env.ORTHROS_CHROME_ARGS ?? '').split(/\s+/).filter(Boolean);
+  return { headless: true, ...(channel === 'shell' ? {} : { channel }), args: v8LogArgs([...chromeArgs(gl), ...args, ...extra]) };
 }
 
 /** The WebGL methods that wait for the GPU process' answer. */

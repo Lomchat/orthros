@@ -1,0 +1,168 @@
+{
+  "manifest": "morrowind-goty-en",
+  "discard": true,
+  "seconds": 60,
+  "warm": 0,
+  "start": "-2,-9",
+  "glide": null,
+  "query": "tier=mid",
+  "bootMs": 16443,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "canvas": {
+    "buffer": "1280x800",
+    "css": "1280x800",
+    "dpr": 1,
+    "antialias": false,
+    "samples": 0,
+    "preserveDrawingBuffer": false
+  },
+  "tier": {
+    "tier": "mid",
+    "deviceMemory": 32
+  },
+  "tierChoice": null,
+  "tierLog": null,
+  "frames": 1479,
+  "fps": 24.45,
+  "gap": {
+    "p50": 33.3,
+    "p90": 50,
+    "p99": 66.7,
+    "max": 233.3,
+    "over100": 3,
+    "over250": 0
+  },
+  "work": {
+    "p50": 11,
+    "p90": 14.5,
+    "p99": 21.9,
+    "max": 232,
+    "over50": 3,
+    "over100": 2
+  },
+  "workEngine": {
+    "p50": 11,
+    "p90": 14.5,
+    "p99": 21.9,
+    "max": 232
+  },
+  "suspendedMs": 0,
+  "jspi": {
+    "on": true,
+    "suspendedMs": 3244,
+    "blocked": {
+      "count": 170,
+      "ms": 2980.105000026524,
+      "max": 282.10999999940395,
+      "files": {
+        "/mwdata/Morrowind.bsa": 1074.2850000038743,
+        "/mwdata/Tribunal.bsa": 55.5350000038743,
+        "/mwdata/Bloodmoon.bsa": 22.565000001341105,
+        "/mods/openmw-web-assets.bsa": 1034.6400000080466,
+        "/mwdata/Splash/Splash_Bonelord.tga": 98.96499999985099,
+        "/mwdata/Morrowind.esm": 475.23500000685453,
+        "/mwdata/Tribunal.esm": 36.32500000298023,
+        "/mwdata/Bloodmoon.esm": 57.12999999895692,
+        "/mwdata/Textures/water/water00.dds": 7.974999997764826,
+        "/mwdata/Textures/water/water01.dds": 10.839999999850988,
+        "/mwdata/Textures/water/water02.dds": 13.070000000298023,
+        "/mwdata/Textures/water/water03.dds": 9.864999998360872,
+        "/mwdata/Textures/water/water04.dds": 8.730000000447035,
+        "/mwdata/Textures/water/water05.dds": 7.96000000089407,
+        "/mwdata/Textures/water/water06.dds": 2.005000002682209,
+        "/mwdata/Textures/water/water08.dds": 5.160000000149012,
+        "/mwdata/Textures/water/water09.dds": 4.004999998956919,
+        "/mwdata/Textures/water/water12.dds": 5.220000002533197,
+        "/mwdata/Textures/water/water13.dds": 3.855000000447035,
+        "/mwdata/Textures/water/water14.dds": 4.730000000447035,
+        "/mwdata/Textures/water/water15.dds": 2.7049999982118607,
+        "/mwdata/Textures/water/water26.dds": 1.9899999983608723,
+        "/mwdata/Textures/water/water28.dds": 7.480000000447035,
+        "/mwdata/Textures/water/water29.dds": 9.565000001341105,
+        "/mwdata/Splash/Splash_Netch.tga": 20.269999999552965
+      },
+      "waits": 4,
+      "waitMs": 189.5,
+      "proxied": 0,
+      "proxiedMs": 0,
+      "proxiedMax": 0,
+      "play": 0,
+      "playMs": 0,
+      "presents": 5,
+      "presentMs": 14.00000000372529,
+      "breaths": 26,
+      "breathMs": 45.28999999538064,
+      "settles": 1,
+      "settleMs": 13.510000001639128,
+      "gls": 1,
+      "glMs": 1.7300000004470348
+    },
+    "frames": {
+      "plain": 1483,
+      "promising": 413
+    },
+    "soonSpins": 127,
+    "soonSpinMs": 600,
+    "soonSuspends": 168,
+    "soonWaits": 4
+  },
+  "syncPerFrame": {
+    "checkFramebufferStatus": 0.001,
+    "getShaderParameter": 0.003,
+    "getProgramParameter": 0.008
+  },
+  "syncTotal": {
+    "getError": 12,
+    "getShaderParameter": 60,
+    "getProgramParameter": 216,
+    "checkFramebufferStatus": 8
+  },
+  "dataStallMs": 159,
+  "shaderVariantsBuilt": 4,
+  "soundsNotReady": 16,
+  "readsPutOff": 227,
+  "syncFetches": 38,
+  "cells": [
+    "-2 -9",
+    "-2 -8"
+  ],
+  "phase": {
+    "cull": 1.914,
+    "draw": 3.5199999999999996,
+    "physics": 0.319,
+    "mechanics": 0.5499999999999999,
+    "world": 0.166,
+    "lua": 0.5149999999999999,
+    "gui": 0.129,
+    "input": 0.07599999999999998,
+    "sound": 1.07,
+    "script": 0.27999999999999997,
+    "luaupdate": 0.43999999999999995,
+    "luawait": 0.004
+  },
+  "view": {
+    "phase": "done",
+    "start": 8192,
+    "target": 12288,
+    "value": 12288,
+    "since": 27270.759999997914,
+    "longAt": 27770.72999999672,
+    "sinceRelMs": 10648
+  },
+  "meter": {
+    "samples": 236,
+    "shownS": 1,
+    "waitingS": 0,
+    "shownAt": [
+      [
+        0,
+        0
+      ],
+      [
+        0.7,
+        1.2
+      ]
+    ]
+  },
+  "faults": []
+}

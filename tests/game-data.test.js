@@ -751,7 +751,9 @@ test('an Emscripten file node reads its bytes through the game data, maps the fi
   const made = [];
   const FS = { ErrnoError, mkdirTree() {}, createFile(dir, name) { const n = { dir, name, node_ops: { getattr: () => ({ size: 0 }) }, stream_ops: { mmap: () => 'mapped' } }; made.push(n); return n; } };
   const file = bytes(10000), h = { path: 'a.bin', size: 10000, whole: null };
-  const data = { read: (hh, buf, off, len, pos) => { buf.set(file.subarray(pos, pos + len), off); return Math.min(len, file.length - pos); }, whole: (hh) => (hh.whole = file), missing: () => false, ensure: async () => {}, wantWhole() {} };
+  const asked = [];
+  const data = { read: (hh, buf, off, len, pos) => { buf.set(file.subarray(pos, pos + len), off); return Math.min(len, file.length - pos); }, whole: (hh) => (hh.whole = file), missing: () => false, ensure: async () => {}, wantWhole() {},
+    soon: (hh, pos, len, spin) => { asked.push([hh, pos, len, spin]); return null; } };
   const node = fileNode(FS, '/game/a.bin', data, h, { asyncReads: true });
   assert.equal(node.usedBytes, 10000); assert.equal(node.node_ops.getattr(node).size, 10000);
   const buf = new Uint8Array(50); assert.equal(node.stream_ops.read({}, buf, 0, 50, 100), 50); assert.deepEqual(buf, file.subarray(100, 150));
@@ -759,6 +761,8 @@ test('an Emscripten file node reads its bytes through the game data, maps the fi
   assert.throws(() => node.stream_ops.write(), (e) => e.errno === 69);
   assert.equal(node.stream_ops.llseek({ position: 10 }, -5, 2), 9995);
   assert.equal(typeof node.orthrosStreamed.ensure, 'function');
+  // (an engine that suspends asks soon: the game data's, with its spin)
+  assert.equal(node.orthrosStreamed.soon(5, 6, 10), null); assert.deepEqual(asked, [[h, 5, 6, 10]]);
   const failing = fileNode(FS, '/game/b.bin', { ...data, read: () => { throw new Error('gone'); } }, { path: 'b.bin', size: 5 });
   assert.throws(() => failing.stream_ops.read({}, buf, 0, 5, 0), (e) => e.errno === 29, 'EIO for the engine');
   const nodes = mountFiles(FS, '/root', { file: (n, p) => ({ path: p, size: 3 }) }, 'v', [{ path: 'x/y.txt' }, { path: 'z.txt', at: 'w/z.txt' }]);
@@ -1012,6 +1016,59 @@ test('on a link that is not fast a picture read light (a loading screen: a TGA\'
   await until(() => data.realHere.has('v\ntex.dds'), 'the texture\'s file here', 6000);
   assert.ok(!server.asked.some(([p]) => p === 'Splash/load.tga'), `the picture's file never asked: ${JSON.stringify(server.asked)}`);
   assert.ok(!data.realHere.has('v\nsplash/load.tga'));
+});
+
+for (const wholeLoads of [true, false]) test(`an image read is asked for to its end at its first missing piece (one wait, not one per piece its reads grow into); an archive by its read's pieces (wholeLoads ${wholeLoads})`, async (t) => {
+  {
+    const tex = bytes(600000, 2), bsa = bytes(600000, 5);
+    const server = fakeServer({ 'Textures/big.dds': tex, 'Morrowind.bsa': bsa });
+    const data = await inThread(t, server, { wholeLoads }), reads = [];
+    const post = data.worker.postMessage; data.worker.postMessage = (m) => { if (m.read) reads.push([m.read.path, m.read.off, m.read.len]); return post(m); };
+    const img = data.file('v', 'textures/BIG.DDS'), arc = data.file('v', 'morrowind.bsa');
+    await data.ensure(img, 0, 8192);
+    await data.ensure(arc, 0, 8192);
+    // (a later read of the same image: here already when it was asked for whole, else one more wait)
+    await data.ensure(img, 300000, 8192);
+    assert.deepEqual(reads[0], ['Textures/big.dds', 0, wholeLoads ? tex.length : 8192], `wholeLoads ${wholeLoads}: the image`);
+    assert.deepEqual(reads[1], ['Morrowind.bsa', 0, 8192], 'an archive: its read alone');
+    assert.equal(reads.length, wholeLoads ? 2 : 3, wholeLoads ? 'the image whole already: no second wait' : 'piece by piece');
+    if (!wholeLoads) assert.deepEqual(reads[2], ['Textures/big.dds', 300000 - (300000 % 65536), 300000 + 8192 - (300000 - (300000 % 65536))]);
+    assert.equal(data.readsWhole(img), true); assert.equal(data.readsWhole(arc), false);
+    assert.equal(data.readsWhole(data.fileAs('v', '.light/Textures/big.dds', 1000)), true, 'its light copy too');
+    assert.equal(data.readsWhole(data.fileAs('v', 'Morrowind.esm', 1000)), false, 'a content file never');
+  }
+});
+
+test('a whole image is asked for only where the engine\'s page asks for it (wholeLoads: OpenMW\'s page); off by default, the other runtimes\' reads as before', async (t) => {
+  const server = fakeServer({ 'Textures/big.dds': bytes(600000, 2) });
+  const data = await inThread(t, server), reads = [];
+  assert.equal(data.wholeLoads, false);
+  const post = data.worker.postMessage; data.worker.postMessage = (m) => { if (m.read) reads.push([m.read.path, m.read.off, m.read.len]); return post(m); };
+  await data.ensure(data.file('v', 'textures/big.dds'), 0, 8192);
+  assert.deepEqual(reads, [['Textures/big.dds', 0, 8192]]);
+  assert.match(fs.readFileSync(new URL('../src/ports/openmw/streamfs.js', import.meta.url), 'utf8'), /wholeLoads: pageParam\('wholeloads'\) !== '0'/);
+});
+
+test('the worker\'s word on the files here whole is held while the engine is in a load that yields (inLoad), applied in order once it is over', async (t) => {
+  const tex = bytes(300000, 2), light = bytes(40000, 8), server = fakeServer({ 'tex.dds': tex, 'b.dds': bytes(1000, 3) }, [], { 'tex.dds': light });
+  let loading = true;
+  const data = await inThread(t, server, { inLoad: () => loading });
+  const h = data.file('v', 'tex.dds');
+  data.lightReads.add('v\ntex.dds'); data.onReal(() => {});
+  data.worker.onmessage({ data: { real: ['v\ntex.dds'], lightHere: ['v\nb.dds'] } });
+  data.worker.onmessage({ data: { real: ['v\nb.dds'] } });
+  assert.equal(data.realHere.has('v\ntex.dds'), false, 'held during the load: its big load reads as the page knew at its start');
+  assert.equal(data.realHeld.length, 2); assert.equal(data.realQ.length, 0);
+  data.holdWatch();
+  assert.equal(data.realHere.has('v\ntex.dds'), false, 'still in the load');
+  loading = false; data.holdWatch();
+  assert.ok(data.realHere.has('v\ntex.dds') && data.realHere.has('v\nb.dds'), 'applied once the load is over');
+  assert.equal(data.lightHere.has('v\nb.dds'), false, 'in order: b.dds\'s light copy, then the file itself');
+  assert.equal(data.realHeld.length, 0); assert.equal(data.lightReads.has('v\ntex.dds'), false, 'its reload queued (read light)');
+  // (not in a load: applied at once)
+  data.worker.onmessage({ data: { real: ['v\nc.dds'] } });
+  assert.ok(data.realHere.has('v\nc.dds'));
+  void h;
 });
 
 test('announced reads: the page\'s entries (a texture as its light copy, whole; an archive\'s range) fetched by the worker at once, the page\'s wait on ctrl[12]', async (t) => {
@@ -1300,4 +1357,107 @@ test('a predicted place (want prio \'place\'): fetched by the worker in the back
   assert.ok(asked.every(([, , , k]) => k === 'bg'), `background requests (p=1, not learned): ${JSON.stringify(asked)}`);
   assert.equal(data.snapshot().placeWants, 2);
   assert.equal(data.snapshot().wants, 0);
+});
+
+test('an engine that suspends asks soon(): bytes here at once — null —; missing, the worker\'s request given up after the spin and answered by message, kept, then read', async (t) => {
+  const esm = bytes(1 << 20, 5), server = fakeServer({ 'Game.esm': esm });
+  const data = await inThread(t, server), h = data.file('v', 'game.ESM');
+  // (the worker in this thread cannot answer while the page's thread spins: the request given up — the engine suspends)
+  const p = data.soon(h, 3000, 70000, 2);
+  assert.ok(p && typeof p.then === 'function', 'missing: a promise');
+  assert.equal(data.stats.soonSuspends, 1); assert.equal(Atomics.load(data.ctrl, 16), 0, 'given up: no request the page waits for');
+  await p;
+  assert.equal(data.missing(h, 3000, 70000), false, 'kept by message');
+  const out = new Uint8Array(70000); data.read(h, out, 0, 70000, 3000); assert.deepEqual(out, esm.subarray(3000, 73000));
+  assert.equal(data.soon(h, 3000, 70000, 2), null, 'here: null, nothing asked');
+  assert.equal(data.stats.soonSuspends, 1);
+  // (no spin: at once by message, as ensure)
+  const q = data.soon(h, 600000, 1000, 0); assert.ok(q && data.stats.soonSuspends === 1); await q;
+  assert.equal(data.missing(h, 600000, 1000), false);
+});
+
+test('soon(): a request answered within the spin (the browser\'s copy) is read at once, no suspension; a failed one rejects, its read then saying why', async () => {
+  const told = [], fake = { onmessage: null, terminate() {}, postMessage: (m) => {
+    told.push(m);
+    // (the worker answering on shared memory at once — another thread in the browser — when its request is still waited for)
+    if (typeof m.gen === 'number' && m.off === 0) { if (Atomics.compareExchange(data.ctrl, 16, m.gen, -m.gen) === m.gen) { data.data.fill(7, 0, m.len); data.ctrl[1] = m.len; Atomics.store(data.ctrl, 0, m.gen); } }
+  } };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    const h = data.fileAs('v', 'a.bsa', 3 * PIECE);
+    assert.equal(data.soon(h, 10, 100, 50), null, 'answered within the spin');
+    assert.equal(data.stats.soonSpins, 1); assert.equal(data.stats.soonSuspends, 0);
+    const req = told.find((m) => typeof m.gen === 'number');
+    assert.ok(req.late > 0, 'a request the page may give up: its id for a late answer');
+    const out = new Uint8Array(100); data.read(h, out, 0, 100, 10); assert.ok(out.every((b) => b === 7));
+    // (not answered: given up; the late answer an error — rejected)
+    const p = data.soon(h, 2 * PIECE, 100, 1);
+    const late = told.at(-1).late; fake.onmessage({ data: { id: late, error: 'gone' } });
+    await assert.rejects(p, /gone/);
+  } finally { data.close(); }
+});
+
+test('the worker answers a request the page gave up by message, and on shared memory only the one the page still waits for', async (t) => {
+  const esm = bytes(300000, 9), server = fakeServer({ 'Game.esm': esm });
+  globalThis.fetch = server.fetch; t.after(() => { globalThis.fetch = nativeFetch; });
+  const posted = [], ctrl = new Int32Array(new SharedArrayBuffer(128)), data = new Uint8Array(new SharedArrayBuffer(1 << 20));
+  const handle = createDataWorker((m) => posted.push(m));
+  handle({ init: { name: 'v', session: '', prefetch: 'none', ctrl: ctrl.buffer, data: data.buffer } });
+  await until(() => posted.some((m) => m.ready), 'ready');
+  // (still waited for: on shared memory, claimed)
+  Atomics.store(ctrl, 16, 1); handle({ gen: 1, late: 50, name: 'v', path: 'Game.esm', off: 0, len: 1000, want: 1000 });
+  await until(() => Atomics.load(ctrl, 0) === 1, 'answered on shared memory');
+  assert.equal(ctrl[1], 1000); assert.equal(Atomics.load(ctrl, 16), -1, 'claimed'); assert.ok(!posted.some((m) => m.id === 50));
+  assert.deepEqual(data.subarray(0, 1000), esm.subarray(0, 1000));
+  // (given up — ctrl[16] taken back — : by message, the shared answer untouched)
+  Atomics.store(ctrl, 16, 0); handle({ gen: 2, late: 51, name: 'v', path: 'Game.esm', off: 65536, len: 1000, want: 1000 });
+  await until(() => posted.some((m) => m.id === 51), 'answered by message');
+  assert.equal(Atomics.load(ctrl, 0), 1, 'not on shared memory');
+  assert.deepEqual(posted.find((m) => m.id === 51).bytes.subarray(0, 1000), esm.subarray(65536, 66536));
+  handle({ close: true });
+});
+
+test('wantWaitSoon: settled within the spin — the answer —, else a promise of it, the page\'s thread free (Atomics.waitAsync on ctrl[12])', async () => {
+  const fake = { onmessage: null, postMessage() {}, terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    assert.equal(data.wantWaitSoon(1000, 5), true, 'nothing announced');
+    const h = data.fileAs('v', 'm.nif', 1000);
+    data.want([{ h }], 'meshes:x'); data.wantFlush();
+    Atomics.store(data.ctrl, 12, data.wantSeq);
+    assert.equal(data.wantWaitSoon(1000, 5), true, 'settled already');
+    data.want([{ h, off: 0, len: 10 }], 'meshes:y');
+    const p = data.wantWaitSoon(5000, 2);
+    assert.ok(p && typeof p.then === 'function');
+    assert.equal(data.stats.soonWaits, 1);
+    setTimeout(() => { Atomics.store(data.ctrl, 12, data.wantSeq); Atomics.notify(data.ctrl, 12); }, 20);
+    assert.equal(await p, true);
+    // (a time out: false, counted as wantWait's)
+    data.want([{ h, off: 100, len: 10 }], 'meshes:z');
+    const before = data.stats.wantTimeouts;
+    assert.equal(await data.wantWaitSoon(30, 1), false); assert.equal(data.stats.wantTimeouts, before + 1);
+  } finally { data.close(); }
+});
+
+test('a request answered by message (an engine suspended on it) is rejected once the worker stopped beating for DEAD_MS — never a promise nothing settles; a beating worker keeps it', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let skew = 0;
+  const now = performance.now.bind(performance);
+  t.mock.method(performance, 'now', () => now() + skew);
+  const fake = { onmessage: null, postMessage() {}, terminate() {} };
+  const data = new GameData({ name: 'v', worker: fake });
+  try {
+    Atomics.store(data.ctrl, 3, 5); // (the worker beating)
+    const h = data.fileAs('v', 'a.bsa', 3 * PIECE);
+    // (no spin: by message at once — what an engine suspends on)
+    const alive = data.soon(h, 0, 100, 0);
+    assert.ok(alive && typeof alive.then === 'function'); assert.equal(data.asks.size, 1);
+    t.mock.timers.tick(1000);
+    skew = 20000; Atomics.store(data.ctrl, 3, 6); t.mock.timers.tick(1000); // (it beat: no rejection)
+    skew = 45000; t.mock.timers.tick(1000);
+    assert.equal(data.asks.size, 1, 'beating 25 s ago: still waited for');
+    skew = 51000; t.mock.timers.tick(1000);
+    await assert.rejects(alive, /the game data worker stopped answering/);
+    assert.equal(data.asks.size, 0); assert.equal(data.askWatch, null, 'the watch stopped with nothing pending');
+  } finally { data.close(); }
 });

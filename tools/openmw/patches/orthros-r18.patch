@@ -1,70 +1,1026 @@
-diff --git a/openmw/files/data/scripts/mp/interp.lua b/openmw/files/data/scripts/mp/interp.lua
-index 8626d36..34b0d57 100644
---- a/openmw/files/data/scripts/mp/interp.lua
-+++ b/openmw/files/data/scripts/mp/interp.lua
-@@ -27,6 +27,17 @@ local MAX_SNAPSHOTS = 16 -- ~1s of history at 15 Hz
- -- this long; a real stop then overshoots by <= ~22 u at a run, comfortably under puppet.lua's
- -- STEER_START (24 u).
- local EXTRAP_S = 0.09
-+-- Orthros (orthros-r18.patch): A STEP IS CARRIED ON AT ITS SPEED, NOT AT ITS ARRIVAL GAP'S. push() keeps
-+-- an arrival gap under 5 ms as it came, so two poses handled a few ms apart -- two batches bunched by
-+-- the link or by a slow frame, routed in one frame -- made the last step's time 1-5 ms and EXTRAP_S / that
-+-- an 18-90x multiplier: a 300-unit teleport became a target 5,500-13,500 units on (409 after an ordinary
-+-- 66 ms gap), and the server, which relays a pose only when it changes, sent nothing more -- the copy stood
-+-- there until its owner moved again (Orthros' two-client check, 2026-10-30: 15,607-35,173 units off after
-+-- 300-424-unit moves, on the live release too). The
-+-- step's time is at least the stream's mean gap (EXTRAP_MIN_DT before one is known), and a step faster
-+-- than EXTRAP_MAX_SPEED -- a teleport, a cell change, a snap -- is a jump, not a motion: never carried on.
-+local EXTRAP_MIN_DT = 0.033
-+local EXTRAP_MAX_SPEED = 2000
+diff --git a/openmw/apps/openmw/engine.cpp b/openmw/apps/openmw/engine.cpp
+index 79df243..c66c22b 100644
+--- a/openmw/apps/openmw/engine.cpp
++++ b/openmw/apps/openmw/engine.cpp
+@@ -4,6 +4,8 @@
  
- function Interp.new()
-     return setmetatable({ buf = {}, mean = nil, dev = 0.01, cur = START_DELAY, lastNow = nil }, Interp)
-@@ -103,8 +114,11 @@ local function sample(self, rt)
-             local a, b = buf[i], buf[i + 1]
-             if not b then
-                 local p, h = buf[i - 1], math.min(rt - a.t, EXTRAP_S)
--                if not p or h <= 0 or a.t - p.t < 1e-3 then return a end
--                local k = h / (a.t - p.t)
-+                if not p or h <= 0 then return a end
-+                local dt = math.max(a.t - p.t, self.mean or EXTRAP_MIN_DT, EXTRAP_MIN_DT)
-+                local sx, sy, sz = a.x - p.x, a.y - p.y, a.z - p.z
-+                if sx * sx + sy * sy + sz * sz > (EXTRAP_MAX_SPEED * dt) ^ 2 then return a end
-+                local k = h / dt
-                 return { t = rt, x = a.x + (a.x - p.x) * k, y = a.y + (a.y - p.y) * k, z = a.z + (a.z - p.z) * k,
-                     yaw = a.yaw, pitch = a.pitch, flags = a.flags, animVel = a.animVel }
-             end
-diff --git a/wasm-build/lua-tests/run.lua b/wasm-build/lua-tests/run.lua
-index 23bb1a9..3caaef6 100644
---- a/wasm-build/lua-tests/run.lua
-+++ b/wasm-build/lua-tests/run.lua
-@@ -2002,6 +2002,29 @@ do
-   package.loaded['scripts.mp.interp'] = nil
- end
- 
-+print('Orthros: a teleport seen in two poses a few ms apart is not carried on 18-90x (the copy stood 15,000+ u away)')
-+do
-+  package.loaded['scripts.mp.interp'] = nil
-+  local Interp = dofile('./openmw/files/data/scripts/mp/interp.lua')
-+  -- The owner walks +x at 140 u/s, poses every 66 ms; then a pose 2 ms after the last one carries it 300 u on
-+  -- (a teleport, its batch handled in the same frame as the previous one), and the stream goes quiet: the
-+  -- server relays changes only.
-+  local function run(gap, jump)
-+    local it, t = Interp.new(), 0
-+    for i = 0, 20 do t = i * 0.066; it:push({ t = t, x = t * 140, y = 0, z = 0, yaw = 0, pitch = 0, flags = 1 }) end
-+    local x0 = t * 140
-+    it:push({ t = t + gap, x = x0 + jump, y = 0, z = 0, yaw = 0, pitch = 0, flags = 1 })
-+    local tg = it:target(t + gap + 5) -- long after: the target the copy settles on
-+    return tg.x - (x0 + jump)
-+  end
-+  local worst = 0
-+  for _, gap in ipairs({ 0.001, 0.002, 0.004, 0.0049 }) do worst = math.max(worst, math.abs(run(gap, 300))) end
-+  check('a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands (was 5,500-13,500 u on)', worst < 48, string.format('%.0f u off', worst))
-+  check('...and a jump after an ordinary gap too (was 409 u on)', math.abs(run(0.066, 300)) < 48, string.format('%.0f u off', run(0.066, 300)))
-+  check('an ordinary step is still carried on (a late pose is not a stop)', run(0.066, 140 * 0.066) > 5, string.format('%.1f u', run(0.066, 140 * 0.066)))
-+  package.loaded['scripts.mp.interp'] = nil
-+end
+ #ifdef __EMSCRIPTEN__
+ #include <emscripten.h>
++#include <emscripten/threading.h>
++#include <wasi/api.h>
+ #include <osg/NodeVisitor>
+ #include <osg/DisplaySettings>
+ #include <osg/Geometry>
+@@ -1233,7 +1235,126 @@ namespace
+     void (*g_emTick)(void*) = nullptr;
+     void* g_emArg = nullptr;
+ }
++// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): the frame and main() are the engine's promising exports (JSPI);
++// a file read (fd_read, fd_pread) or an announced wait (orthros_read_wait) under them that the page does not answer within
++// a few ms suspends the engine while the page fetches the bytes, instead of the page's thread spinning. Entered and left
++// around them: the library suspends only inside one, never in a call that reaches the engine meanwhile (an input event,
++// a worker thread's proxied read), which reads as before; the page's calls into the engine wait for the frame's end.
++extern "C" void orthros_jspi_enter(int boot);
++extern "C" void orthros_jspi_leave(int boot);
++// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): a frame in play runs as a plain export (omw_pump_frame_plain:
++// on the page's own stack, never suspending, as before r17); a load it would start (a save's, a new game's, the debug
++// COE) is put off to the next frame — orthros_jspi_defer() returns 1 then, that frame the promising export's.
++extern "C" void orthros_jspi_plain(int on);
++extern "C" int orthros_jspi_defer();
++// (1 when the engine may suspend now — under a promising export, on its stack: not a plain frame, not a call that reached
++// the engine while its frame is suspended —: an import that suspends (WebAssembly.Suspending) throws SuspendError when
++// called otherwise, even when it would not suspend — so the engine calls the suspending ones only then)
++extern "C" int orthros_jspi_may();
++extern "C" __wasi_errno_t orthros_fd_read_async(__wasi_fd_t fd, const __wasi_iovec_t* iovs, size_t n, __wasi_size_t* nread);
++extern "C" __wasi_errno_t orthros_fd_sync_async(__wasi_fd_t fd);
++// (the C library's reads, fsyncs and sleeps — linked --wrap'd, wasm-build/link-openmw.sh —: the suspending import when the
++// engine may suspend (its page's thread), else the plain one, as a build without JSPI: a read waits on the page's thread,
++// an fsync does not persist IDBFS, a sleep spins)
++extern "C" __wasi_errno_t __real___wasi_fd_read(__wasi_fd_t fd, const __wasi_iovec_t* iovs, size_t n, __wasi_size_t* nread);
++extern "C" __wasi_errno_t __real___wasi_fd_sync(__wasi_fd_t fd);
++extern "C" void __real_emscripten_sleep(unsigned int ms);
++extern "C" __wasi_errno_t __wrap___wasi_fd_read(__wasi_fd_t fd, const __wasi_iovec_t* iovs, size_t n, __wasi_size_t* nread)
++{
++    if (emscripten_is_main_runtime_thread() && orthros_jspi_may())
++        return orthros_fd_read_async(fd, iovs, n, nread);
++    return __real___wasi_fd_read(fd, iovs, n, nread);
++}
++extern "C" __wasi_errno_t __wrap___wasi_fd_sync(__wasi_fd_t fd)
++{
++    if (emscripten_is_main_runtime_thread() && orthros_jspi_may())
++        return orthros_fd_sync_async(fd);
++    return __real___wasi_fd_sync(fd);
++}
++// (a framebuffer's status — WebGL's checkFramebufferStatus waits for the GPU process to run every command before it —:
++// in a load's frame, its loading screen or the world's first draw after it, the engine suspended first until the GPU's
++// queue ran (orthros_gl_settle: a fence, the page's thread free), then asked; the first frame after a save's load held
++// the page's thread 1-2 s in that call in SwiftShader, 2026-10-30)
++extern "C" void orthros_gl_settle();
++extern "C" unsigned int __real_glCheckFramebufferStatus(unsigned int target);
++extern "C" unsigned int __real_emscripten_glCheckFramebufferStatus(unsigned int target);
++extern "C" unsigned int __wrap_glCheckFramebufferStatus(unsigned int target)
++{
++    if (emscripten_is_main_runtime_thread() && orthros_jspi_may())
++        orthros_gl_settle();
++    return __real_glCheckFramebufferStatus(target);
++}
++extern "C" unsigned int __wrap_emscripten_glCheckFramebufferStatus(unsigned int target)
++{
++    if (emscripten_is_main_runtime_thread() && orthros_jspi_may())
++        orthros_gl_settle();
++    return __real_emscripten_glCheckFramebufferStatus(target);
++}
++extern "C" void __wrap_emscripten_sleep(unsigned int ms)
++{
++    if (emscripten_is_main_runtime_thread() && !orthros_jspi_may())
++    {
++        const double end = emscripten_get_now() + ms;
++        while (emscripten_get_now() < end)
++        {
++        }
++        return;
++    }
++    __real_emscripten_sleep(ms);
++}
++namespace
++{
++    // Orthros (orthros-r17.patch): the debug COE and teleport the page asked (omw_debug_coe, omw_debug_teleport), run
++    // at the next frame's start — inside the frame, as a console COE or a door: their loads' reads suspend it (JSPI)
++    // instead of holding the page's thread in the export's own call —; the last of each kind, a COE dropping a
++    // teleport asked before it.
++    struct OrthrosDebugAsks
++    {
++        bool mCoe = false;
++        int mX = 0, mY = 0;
++        bool mTeleport = false;
++        float mTo[3] = { 0, 0, 0 };
++    };
++    OrthrosDebugAsks g_debugAsks;
++    void orthrosRunDebugAsks();
++}
++// Orthros (orthros-r17.patch): the promising exports' stack made deep before their work (orthros_jspi_deep). Chromium's
++// native stack walker — base::debug::TraceStackFramePointers, used by its heap profiler on a sampled allocation —
++// follows the frame pointers from where it runs up to a stack's end; on a JSPI stack it reaches that stack's first
++// frame, whose caller is on the page's own stack, takes the chain for broken and scans 8 KB further for a frame,
++// past the JSPI stack's end: the renderer crashed (SIGSEGV, the kernel's log; reproduced at every run with the heap
++// profiler on for every renderer, --memlog=all-renderers --memlog-stack-mode=native, and never with r16). It stops
++// at 255 frames: ORTHROS_JSPI_DEPTH plain wasm frames at the base of the stack keep it from ever reaching the end.
++namespace
++{
++    constexpr int ORTHROS_JSPI_DEPTH = 1024;
++    volatile int g_orthrosDeepSink = 0;
++    __attribute__((noinline)) int orthrosDeep(int n, int (*fn)(void*), void* arg)
++    {
++        if (n <= 0)
++            return fn(arg);
++        const int r = orthrosDeep(n - 1, fn, arg);
++        g_orthrosDeepSink = g_orthrosDeepSink + 1; // (not a tail call: each level a frame of its own)
++        return r;
++    }
++}
++extern "C" int orthros_jspi_deep(int (*fn)(void*), void* arg)
++{
++    return orthrosDeep(ORTHROS_JSPI_DEPTH, fn, arg);
++}
 +
- print('players said NPCs are jerky and movement rubber-bandy: the render delay adapts to the stream (it was a fixed 40 ms, below one batch interval)')
- do
-   package.loaded['scripts.mp.interp'] = nil
++static void orthrosPumpFrame();
+ extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()
++{
++    orthros_jspi_deep(
++        [](void*) {
++            orthrosPumpFrame();
++            return 0;
++        },
++        nullptr);
++}
++
++static void orthrosPumpFrame()
+ {
+     // Re-entrancy guard: a long frame can spin the browser event loop (e.g. via a proxied
+     // main-thread call), which dispatches a queued MessageChannel message and would call this
+@@ -1250,8 +1371,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()
+         // Catch here (the engine's cooperative video branch runs outside Engine::frame's own
+         // try/catch), log the cause, and let the next frame carry on.
+         inTick = true;
++        orthros_jspi_enter(0);
+         try
+         {
++            orthrosRunDebugAsks();
+             g_emTick(g_emArg);
+         }
+         catch (const std::exception& e)
+@@ -1262,10 +1385,23 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()
+         {
+             printf("omw_pump_frame: frame threw a non-C++ (likely JS) exception\n");
+         }
++        orthros_jspi_leave(0);
+         inTick = false;
+     }
+ }
+ 
++// Orthros (orthros-r17.patch): the frame as a plain export — what the page pumps in play (orthros-jspi.js: the promising
++// one only for a load, the boot's, or one put off to it, orthros_jspi_defer). A browser's code that walks the page's
++// stack (Chromium's frame-pointer unwinder, base::debug ScanStackForNextFrame) read past the end of a JSPI stack and
++// crashed the renderer at random — twice in a day of runs (2026-10-29/30, the kernel's log: the same instruction, a
++// read just past the stack's end), once at the menu: a frame of play on the page's own stack is not exposed to it.
++extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame_plain()
++{
++    orthros_jspi_plain(1);
++    orthrosPumpFrame();
++    orthros_jspi_plain(0);
++}
++
+ // Flush user settings to the persistent config (called from index.html's pagehide/hidden
+ // lifecycle handlers). Without this, changing settings and refreshing the page loses them:
+ // the Options window only saves on CLOSE, and even then the async IDBFS sync needs a beat.
+@@ -1371,6 +1507,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int orthros_content_light()
+     return 1;
+ }
+ 
++// Orthros (orthros-r17.patch): this engine suspends its frame and its boot while it waits for the game's files (JSPI,
++// wasm-build/orthros-jspi.js) — the release's mark, in its list of exports (tools/openmw/lock.json): its page's thread is
++// free during those waits. Returns 1.
++extern "C" EMSCRIPTEN_KEEPALIVE int orthros_jspi()
++{
++    return 1;
++}
++
+ // Debug: point the camera (yaw/pitch in degrees) so we can verify object rendering without mouse-look.
+ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_look(float yawDeg, float pitchDeg)
+ {
+@@ -1383,13 +1527,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_look(float yawDeg, float pitchDeg
+     }
+ }
+ 
+-// Debug: teleport the player to an absolute world position (within the loaded worldspace).
++// Debug: teleport the player to an absolute world position (within the loaded worldspace) — at the next frame's start
++// (orthros-r17.patch: orthrosRunDebugAsks; the last position asked before it).
+ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_teleport(float x, float y, float z)
+ {
+-    auto world = MWBase::Environment::get().getWorld();
+-    MWWorld::Ptr p = world->getPlayerPtr();
+-    if (!p.isEmpty())
+-        world->moveObject(p, osg::Vec3f(x, y, z), true, true);
++    g_debugAsks.mTeleport = true;
++    g_debugAsks.mTo[0] = x;
++    g_debugAsks.mTo[1] = y;
++    g_debugAsks.mTo[2] = z;
+ }
+ 
+ // Debug: start dialogue with the nearest NPC (same as pointing at it and pressing Activate).
+@@ -1434,7 +1579,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_sethour(float hour)
+ 
+ // Debug: teleport the player to an exterior cell (like the console "COE x y"). Triggers a full
+ // exterior worldspace load — used to repro/validate the navmesh cell-load path from JS.
++// Orthros (orthros-r17.patch): at the next frame's start (orthrosRunDebugAsks), its time then told to the page —
++// globalThis.orthrosDebugRan.coe = [start, end] (performance.now()).
+ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_coe(int x, int y)
++{
++    g_debugAsks.mCoe = true;
++    g_debugAsks.mX = x;
++    g_debugAsks.mY = y;
++    g_debugAsks.mTeleport = false;
++}
++
++static void orthrosDebugCoe(int x, int y)
+ {
+     MWBase::World* world = MWBase::Environment::get().getWorld();
+     MWWorld::Ptr player = world->getPlayerPtr();
+@@ -1452,6 +1607,48 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_coe(int x, int y)
+     world->adjustPosition(player, false);
+ }
+ 
++namespace
++{
++    // (the frame's start, under orthros_jspi_enter: the debug asks since the last frame — omw_debug_coe, then
++    // omw_debug_teleport —, each one's time told to the page: globalThis.orthrosDebugRan[kind] = [start, end])
++    void orthrosRunDebugAsks()
++    {
++        if (!g_debugAsks.mCoe && !g_debugAsks.mTeleport)
++            return;
++        // (a COE is a load: in a plain frame, put off to the next one, promising — orthros_jspi_defer)
++        if (g_debugAsks.mCoe && orthros_jspi_defer())
++            return;
++        const OrthrosDebugAsks asks = g_debugAsks;
++        g_debugAsks = OrthrosDebugAsks{};
++        // (the page's clock — emscripten_get_now() is the epoch's in a build with threads)
++        const auto pageNow = [] { return EM_ASM_DOUBLE({ return performance.now(); }); };
++        const auto ran = [](const char* kind, double start) {
++            // clang-format off
++            // (no comma in the script: the macro's arguments)
++            EM_ASM({
++                var ran = globalThis.orthrosDebugRan || (globalThis.orthrosDebugRan = {});
++                var span = Array.of($1); span.push(performance.now()); ran[UTF8ToString($0)] = span;
++            }, kind, start);
++            // clang-format on
++        };
++        if (asks.mCoe)
++        {
++            const double start = pageNow();
++            orthrosDebugCoe(asks.mX, asks.mY);
++            ran("coe", start);
++        }
++        if (asks.mTeleport)
++        {
++            const double start = pageNow();
++            auto world = MWBase::Environment::get().getWorld();
++            MWWorld::Ptr p = world->getPlayerPtr();
++            if (!p.isEmpty())
++                world->moveObject(p, osg::Vec3f(asks.mTo[0], asks.mTo[1], asks.mTo[2]), true, true);
++            ran("teleport", start);
++        }
++    }
++}
++
+ // Debug: give the player a fresh weapon, equip it, and draw it. Reproduces/validates the
+ // gear-equip path — a cache-miss weapon mesh loaded on the main thread — that used to freeze
+ // the browser (WorkQueue worker/main contention). Returns 1 on success, 0/-1 on failure.
+diff --git a/openmw/apps/openmw/main.cpp b/openmw/apps/openmw/main.cpp
+index 0b6147a..efc6d9a 100644
+--- a/openmw/apps/openmw/main.cpp
++++ b/openmw/apps/openmw/main.cpp
+@@ -269,13 +269,43 @@ int runApplication(int argc, char* argv[])
+     return 0;
+ }
+ 
++#ifdef __EMSCRIPTEN__
++// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): main() is a promising export — the boot's reads the page does
++// not answer within a few ms suspend it instead of holding the page's thread
++extern "C" void orthros_jspi_enter(int boot);
++extern "C" void orthros_jspi_leave(int boot);
++// (the boot's stack made deep first: engine.cpp orthros_jspi_deep)
++extern "C" int orthros_jspi_deep(int (*fn)(void*), void* arg);
++namespace
++{
++    struct OrthrosMainArgs
++    {
++        int argc;
++        char** argv;
++    };
++}
++#endif
++
+ #ifdef ANDROID
+ extern "C" int SDL_main(int argc, char** argv)
+ #else
+ int main(int argc, char** argv)
+ #endif
+ {
++#ifdef __EMSCRIPTEN__
++    orthros_jspi_enter(1);
++    OrthrosMainArgs args{ argc, argv };
++    const int status = orthros_jspi_deep(
++        [](void* p) {
++            auto* a = static_cast<OrthrosMainArgs*>(p);
++            return Debug::wrapApplication(&runApplication, a->argc, a->argv, "OpenMW");
++        },
++        &args);
++    orthros_jspi_leave(1);
++    return status;
++#else
+     return Debug::wrapApplication(&runApplication, argc, argv, "OpenMW");
++#endif
+ }
+ 
+ // Platform specific for Windows when there is no console built into the executable.
+diff --git a/openmw/apps/openmw/mwgui/loadingscreen.cpp b/openmw/apps/openmw/mwgui/loadingscreen.cpp
+index da9c90f..baf5f1c 100644
+--- a/openmw/apps/openmw/mwgui/loadingscreen.cpp
++++ b/openmw/apps/openmw/mwgui/loadingscreen.cpp
+@@ -27,6 +27,21 @@
+ 
+ #include "backgroundimage.hpp"
+ 
++#ifdef __EMSCRIPTEN__
++// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): the engine's loads told to the page's glue — while one runs
++// (its loading screen on), a read the page does not answer within a few ms suspends the frame; in play, outside them,
++// it waits on the page's thread as before (a frame that suspends shows nothing more meanwhile)
++extern "C" void orthros_jspi_loading(int on);
++// (a loading screen's frame drawn: shown — the engine suspended until the browser presented it, at most every 200 ms)
++extern "C" void orthros_jspi_present();
++// (a load's progress: the page's thread given a turn when the engine held it 100 ms — orthrosBreath)
++extern "C" void orthros_jspi_breathe();
++// (a load's end, its screen still on: the engine suspended until the GPU ran what the load gave it — orthrosGpuIdle)
++extern "C" void orthros_jspi_settle();
++// (each of those suspends: called only when the engine may — orthros_jspi_may, engine.cpp)
++extern "C" int orthros_jspi_may();
++#endif
++
+ namespace MWGui
+ {
+ 
+@@ -193,6 +208,9 @@ namespace MWGui
+ 
+     void LoadingScreen::loadingOn()
+     {
++#ifdef __EMSCRIPTEN__
++        orthros_jspi_loading(1);
++#endif
+         // Early-out if already on
+         if (mNestedLoadingCount++ > 0 && mMainWidget->getVisible())
+             return;
+@@ -239,6 +257,12 @@ namespace MWGui
+ 
+     void LoadingScreen::loadingOff()
+     {
++#ifdef __EMSCRIPTEN__
++        if (mNestedLoadingCount == 1)
++            if (orthros_jspi_may())
++                orthros_jspi_settle();
++        orthros_jspi_loading(0);
++#endif
+         if (--mNestedLoadingCount > 0)
+             return;
+ 
+@@ -312,6 +336,10 @@ namespace MWGui
+         mProgressBar->setScrollPosition(0);
+         mProgressBar->setTrackSize(
+             static_cast<int>(value / (float)(mProgressBar->getScrollRange()) * mProgressBar->getLineSize()));
++#ifdef __EMSCRIPTEN__
++        if (orthros_jspi_may())
++            orthros_jspi_breathe();
++#endif
+         draw();
+     }
+ 
+@@ -323,6 +351,10 @@ namespace MWGui
+         mProgress = value;
+         mProgressBar->setTrackSize(
+             static_cast<int>(value / (float)(mProgressBar->getScrollRange()) * mProgressBar->getLineSize()));
++#ifdef __EMSCRIPTEN__
++        if (orthros_jspi_may())
++            orthros_jspi_breathe();
++#endif
+         draw();
+     }
+ 
+@@ -426,6 +458,10 @@ namespace MWGui
+         mViewer->advance(mViewer->getFrameStamp()->getSimulationTime());
+ 
+         mLastRenderTime = mTimer.time_m();
++#ifdef __EMSCRIPTEN__
++        if (orthros_jspi_may())
++            orthros_jspi_present();
++#endif
+     }
+ 
+ }
+diff --git a/openmw/apps/openmw/mwgui/savegamedialog.cpp b/openmw/apps/openmw/mwgui/savegamedialog.cpp
+index 78e2db8..3b59ab4 100644
+--- a/openmw/apps/openmw/mwgui/savegamedialog.cpp
++++ b/openmw/apps/openmw/mwgui/savegamedialog.cpp
+@@ -343,7 +343,13 @@ namespace MWGui
+         else
+         {
+             assert(mCurrentCharacter && mCurrentSlot);
++#ifdef __EMSCRIPTEN__
++            // Orthros (orthros-r17.patch): asked, loaded at the state's update — in a frame that may suspend while it
++            // reads (wasm-build/orthros-jspi.js orthros_jspi_defer), as the menu script's and the quick load's
++            MWBase::Environment::get().getStateManager()->requestLoad(mCurrentCharacter, mCurrentSlot->mPath);
++#else
+             MWBase::Environment::get().getStateManager()->loadGame(mCurrentCharacter, mCurrentSlot->mPath);
++#endif
+         }
+     }
+ 
+diff --git a/openmw/apps/openmw/mwstate/statemanagerimp.cpp b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
+index 82e5f6c..7fb1f66 100644
+--- a/openmw/apps/openmw/mwstate/statemanagerimp.cpp
++++ b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
+@@ -869,9 +869,22 @@ MWState::StateManager::CharacterIterator MWState::StateManager::characterEnd()
+     return mCharacterManager.end();
+ }
+ 
++#ifdef __EMSCRIPTEN__
++// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): 1 when this frame is a plain one (play: never suspending) — the
++// load asked put off to the next frame, which the page then pumps as the promising export (its reads may suspend)
++extern "C" int orthros_jspi_defer();
++#endif
++
+ void MWState::StateManager::update(float duration)
+ {
+     mTimePlayed += duration;
++#ifdef __EMSCRIPTEN__
++    // (a save's load or a new game asked: run in a frame that may suspend while it reads — the next one, when this one
++    // is plain)
++    const bool orthrosLoadLater = (mNewGameRequest || mLoadRequest) && orthros_jspi_defer();
++#else
++    const bool orthrosLoadLater = false;
++#endif
+ 
+     // Note: It would be nicer to trigger this from InputManager, i.e. the very beginning of the frame update.
+     if (mAskLoadRecent)
+@@ -893,14 +906,14 @@ void MWState::StateManager::update(float duration)
+         }
+     }
+ 
+-    if (mNewGameRequest)
++    if (mNewGameRequest && !orthrosLoadLater)
+     {
+         MWBase::Environment::get().getWindowManager()->removeGuiMode(MWGui::GM_MainMenu);
+         newGame();
+         mNewGameRequest = false;
+     }
+ 
+-    if (mLoadRequest)
++    if (mLoadRequest && !orthrosLoadLater)
+     {
+         MWBase::Environment::get().getWindowManager()->removeGuiMode(MWGui::GM_MainMenu);
+         const Character* character = mLoadRequest->first;
+diff --git a/openmw/components/vfs/manager.cpp b/openmw/components/vfs/manager.cpp
+index d8b3eae..d2ea4e1 100644
+--- a/openmw/components/vfs/manager.cpp
++++ b/openmw/components/vfs/manager.cpp
+@@ -7,6 +7,12 @@
+ #ifdef __EMSCRIPTEN__
+ #include <emscripten.h>
+ #include <emscripten/threading.h>
++// Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): the page's globalThis.orthrosReadWaitSoon — answered within a
++// few ms, or the engine suspended until it is (JSPI) —, else its orthrosReadWait as before
++extern "C" int orthros_read_wait(double timeoutMs);
++// (orthros_read_wait suspends: called only when the engine may — wasm-build/orthros-jspi.js orthros_jspi_may —, else the
++// page's orthrosReadWait as before)
++extern "C" int orthros_jspi_may();
+ #endif
+ 
+ #include <components/files/conversion.hpp>
+@@ -262,6 +268,8 @@ namespace VFS
+             return true;
+         // (1: everything announced is there, 0: the timeout; a page without the hook, or one that fails: nothing to
+         // wait for, the reads then waiting one by one as before)
++        if (orthros_jspi_may())
++            return orthros_read_wait(timeoutMs) != 0;
+         // clang-format off
+         return MAIN_THREAD_EM_ASM_INT({
+             var f = globalThis.orthrosReadWait;
+diff --git a/play/index.html b/play/index.html
+index 28f65a4..82ecfb9 100644
+--- a/play/index.html
++++ b/play/index.html
+@@ -1588,6 +1588,24 @@ window.omw = (function(){
+        // not in the page yet (globalThis.orthrosRangeReady, streamfs.js: then fetched in the background) for up to
+        // 3000 ms; ?preloadwait=N: N ms (0: never — its reads wait for the network, as before r5).
+        if (/[?&]preloadwait=(\d+)\b/.test(location.search)) ENV.OPENMW_PRELOAD_WAIT_MS=/[?&]preloadwait=(\d+)/.exec(location.search)[1];
++       // Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): a read or an announced wait the page does not answer
++       // within a few ms suspends the frame or the boot (JSPI) instead of holding the page's thread; ?jspi=0: never — every
++       // read waits on the page's thread, as before r17 —; ?jspispin=N: the ms a read waits on the page's thread first
++       // (default 10; 0: suspends at once while bytes are missing) in the boot and the engine's loads (its loading screen
++       // on); in play, outside them, a read never suspends — ?jspiplay=N: it may, after N ms —; ?jspipresent=N: a loading
++       // screen's frame shown (the engine suspended until the browser presented it) at most every N ms (default 200; 0: never).
++       if (/[?&]jspi=0\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI='0';
++       // ?jspibreath=N: in a load, a read gives the page's thread a turn when it had none for N ms (default 100; 0: never).
++       if (/[?&]jspibreath=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_BREATH_MS=/[?&]jspibreath=(\d+)/.exec(location.search)[1];
++       // ?jspiplain=0: every frame the promising export (as r17's first builds), not only the boot's and the loads' (wasm-build/orthros-jspi.js).
++       if (/[?&]jspiplain=0\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PLAIN='0';
++       // ?jspigl=N: in a load's frame, a framebuffer's status asked after the GPU ran its queue (the engine suspended meanwhile), at most every N ms (default 50; 0: never).
++       if (/[?&]jspigl=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MS=/[?&]jspigl=(\d+)/.exec(location.search)[1];
++       // ?jspisettle=N: a load's end waits for the GPU to run what the load gave it, the page's thread free, N ms at most (default 3000; 0: never).
++       if (/[?&]jspisettle=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_SETTLE_MS=/[?&]jspisettle=(\d+)/.exec(location.search)[1];
++       if (/[?&]jspipresent=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PRESENT_MS=/[?&]jspipresent=(\d+)/.exec(location.search)[1];
++       if (/[?&]jspispin=(\d+(\.\d+)?)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_SPIN_MS=/[?&]jspispin=(\d+(\.\d+)?)/.exec(location.search)[1];
++       if (/[?&]jspiplay=(\d+(\.\d+)?)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS=/[?&]jspiplay=(\d+(\.\d+)?)/.exec(location.search)[1];
+        // ?perfkeys=1 (QA): dump the frame's raw osg::Stats attribute keys to window.__omwPhaseKeys
+        // and whether the "engine" collection group is on. Diagnostic for empty __omwPhase buckets.
+        if (/[?&]perfkeys=1/.test(location.search)) ENV.OPENMW_PERF_KEYS='1';
+@@ -4028,11 +4046,7 @@ window.omw = (function(){
+          if (document.hidden) setTimeout(function(){ mc.port2.postMessage(0); }, 33);
+          else requestAnimationFrame(function(){ mc.port2.postMessage(0); });
+        }
+-       function pumpFrame(){
+-         scheduled = false;
+-         var a = performance.now();
+-         try { if (Module._omw_pump_frame) Module._omw_pump_frame(); }
+-         catch(e){
++       function pumpTrap(e){
+            // NEVER SILENT. A C++ exception is caught inside omw_pump_frame and logged there; what
+            // reaches here is a wasm TRAP (RuntimeError: unreachable / memory access out of bounds)
+            // that unwound straight through the engine's re-entrancy guard, so every later pump
+@@ -4047,7 +4061,26 @@ window.omw = (function(){
+              showLogOnce();
+              if (typeof fatalOverlay === 'function') fatalOverlay('The game engine crashed', 'Reload to keep playing. Your progress is saved on the server.');
+            }
+-         }
++       }
++       // Orthros (orthros-r17.patch, wasm-build/orthros-jspi.js): the frame is a promising export — a frame that waits
++       // for the game's files suspends, the page's thread free meanwhile (input, the page's indicator, what the engine
++       // drew presented) —, and the next frame is scheduled once it ends, never while it is suspended. Its time (__frameMs)
++       // is the whole frame's, its suspensions included.
++       // A pump that arrives while a frame is in flight — the stale rAF after a hide and show during a suspension — runs
++       // nothing and counts nothing: the engine's own guard would return at once, and pumpDone then counted a 0 ms frame
++       // and started a second chain of empty pumps until the suspended frame's end (__fps, __frameMs, the bench's work).
++       var pumping = false;
++       function pumpFrame(){
++         scheduled = false;
++         if (pumping) return;
++         var a = performance.now(), r = null;
++         pumping = true;
++         try { if (Module._omw_pump_frame) r = Module._omw_pump_frame(); }
++         catch(e){ pumpTrap(e); }
++         if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a); }, function(e){ pumping = false; pumpTrap(e); pumpDone(a); });
++         else { pumping = false; pumpDone(a); }
++       }
++       function pumpDone(a){
+          // End of boot: the first frame the engine actually rendered. Stamped here rather than in
+          // the 500ms status poller so it is exact to one frame. __omwRunning is set by the engine's
+          // own loop, so this fires once the player can genuinely see something.
+@@ -4063,7 +4096,8 @@ window.omw = (function(){
+        // The hidden-tab path still arrives as a message; visible frames call pumpFrame directly.
+        mc.port1.onmessage = pumpFrame;
+        // If the tab hides while an rAF-scheduled tick is frozen, take over directly.
+-       // (The stale rAF firing later causes at most one harmless extra tick.)
++       // (The stale rAF firing later causes at most one harmless extra tick — none while that frame is still suspended:
++       // pumping.)
+        document.addEventListener('visibilitychange', function(){
+          if (document.hidden && scheduled) mc.port2.postMessage(0);
+        });
+diff --git a/wasm-build/link-openmw.sh b/wasm-build/link-openmw.sh
+index a7806d8..c8865d7 100755
+--- a/wasm-build/link-openmw.sh
++++ b/wasm-build/link-openmw.sh
+@@ -226,6 +226,12 @@ ninja apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
+   --js-library "$ROOT/wasm-build/orthros-gl.js" \
+   `# Orthros (unattributed.patch): the clock's glue (wasm-build/orthros-clock.js; ENV OPENMW_ORTHROS_CLOCK=0: off)` \
+   --js-library "$ROOT/wasm-build/orthros-clock.js" \
++  `# Orthros (orthros-r17.patch): the frame and main() suspend while the page fetches a file's bytes (wasm-build/orthros-jspi.js)` \
++  -sJSPI=1 "-sJSPI_EXPORTS=['omw_pump_frame']" -Wno-experimental \
++  `# (the C library's reads, fsyncs and sleeps: the suspending import only when the engine may suspend — engine.cpp __wrap_*)` \
++  -Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_sync -Wl,--wrap=emscripten_sleep \
++  -Wl,--wrap=glCheckFramebufferStatus -Wl,--wrap=emscripten_glCheckFramebufferStatus \
++  --js-library "$ROOT/wasm-build/orthros-jspi.js" \
+   --use-port=sdl2 --use-port=freetype --use-port=harfbuzz --use-port=libpng \
+   --use-port=libjpeg --use-port=zlib --use-port=ogg --use-port=vorbis \
+   -sALLOW_MEMORY_GROWTH=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
+diff --git a/wasm-build/orthros-jspi.js b/wasm-build/orthros-jspi.js
+new file mode 100644
+index 0000000..62258c1
+--- /dev/null
++++ b/wasm-build/orthros-jspi.js
+@@ -0,0 +1,428 @@
++// Orthros (orthros-r17.patch, JSPI): the engine's waits for the game's files suspend it (WebAssembly JSPI, -sJSPI,
++// link-openmw.sh) while the page fetches the bytes, instead of the page's thread spinning on shared memory (Orthros'
++// src/vfs/data-client.js fetchSync, wantWait): the page answers input, draws its own indicator and presents what the
++// engine drew so far. Linked after the system library (--js-library): fd_read and fd_sync replace libwasi's.
++//
++// Where it may suspend: only under the engine's promising exports — omw_pump_frame (a load's frame) and main() (the
++// boot) —, which say so (orthros_jspi_enter / orthros_jspi_leave, engine.cpp, main.cpp), one suspension at a time.
++// A frame of play is the plain export (omw_pump_frame_plain: the page's own stack, nothing suspends — as before r17);
++// the page pumps the promising one only for a load: one put off to the next frame by the engine (orthros_jspi_defer: a
++// save's load, a new game, the debug COE asked in a plain frame), or the frame of a loading screen still on. A load
++// that starts in a frame of play by itself — a door, an exterior crossing — runs synchronously there, as r16's. Why: a
++// frame in play gained nothing from suspending (docs/openmw.md), and a JSPI stack is exposed to Chromium's native stack
++// walker (base::debug::TraceStackFramePointers, its heap profiler's on a sampled allocation): from that stack's first
++// frame it scans 8 KB further for a frame pointer, past the stack's end — the renderer's crash (2026-10-29/30, the
++// kernel's log: the same instruction each time; at every run with the heap profiler forced on every renderer, never
++// with r16). The promising exports' stacks are made deep first (engine.cpp orthros_jspi_deep: 1,024 plain wasm frames
++// at their base), so that walker, which stops at 255 frames, never reaches the end. An import that suspends (WebAssembly.Suspending) throws SuspendError when called outside
++// a promising export even when it returns a value at once (V8, measured): the engine calls the suspending imports
++// (orthros_fd_read_async, orthros_fd_sync_async, Emscripten's emscripten_sleep — through engine.cpp's --wrap'd C
++// library functions —, present, breathe, settle, gl_settle, read_wait) only when orthros_jspi_may() says so (under a
++// promising export, not suspended), the plain ones otherwise (fd_read, fd_sync: as a build without JSPI).
++//
++// A read first waits a few ms on the page's thread (ENV OPENMW_ORTHROS_JSPI_SPIN_MS, 10 by default; play/index.html
++// ?jspispin=N): the page's store answers most of the boot's reads that fast, and a suspension costs a round of the
++// page's event loop each — the spike that suspended at once took 2 s more to the menu over ~1,700 store hits. That
++// short wait holds during the boot (main) and the engine's loads — its loading screen on (orthros_jspi_loading,
++// mwgui/loadingscreen.cpp: a save's load, a COE, a door, an exterior cell's) —, where the page's thread is what the
++// player has. In play, outside them, a read never suspends: it waits on the page's thread as before r17 (ENV
++// OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS unset or negative; ?jspiplay=N: it may, after N ms there): a frame that suspends
++// presents nothing more meanwhile, and in play each suspension cost the frame its short wait, then the round to the page
++// and back, the page's thread having nothing to show for it — with 100 ms first, 2-3 of 3 measured minutes still had a
++// frame gap of 400-900 ms that r14's synchronous reads did not (2026-10-30, docs/openmw.md). A read
++// whose file is one the page streams (its node's `orthrosStreamed`: Orthros' src/vfs/emscripten-files.js, asyncReads)
++// asks `soon(position, length, spinMs)`: null when its bytes are in the page by then — read at once —, else a promise
++// the engine suspends on, the read itself then Emscripten's (doReadv: the page's pieces). The announced wait
++// (orthros_read_wait, components/vfs/manager.cpp orthrosReadWait) asks the page's globalThis.orthrosReadWaitSoon the
++// same way (its answer, or a promise of it), else calls orthrosReadWait as before — in play too, after the short wait: it
++// is a load's (a cell change's read-ahead comes before its loading screen). ENV OPENMW_ORTHROS_JSPI=0 (?jspi=0):
++// never suspends — every read as before r17. A build without JSPI (ASYNCIFY != 2) never returns a promise.
++//
++// A worker thread's read (Lua's update on its own thread, orthros-r14.patch: proxied to the page's thread) is the plain
++// fd_read, answered at once, synchronously, as before: the page's thread may serve it inside a wait for that very
++// thread (Worker::finishUpdate's futex wait runs the proxied calls), where no promise could settle — the read waits on
++// the page's thread when its bytes are missing (counted: proxied). Never a suspension there, never a deadlock.
++//
++// While the frame or the boot is suspended, nothing else enters the engine's state from the page: the page's calls
++// (Module._omw_*, Module._orthros_*, Module.ccall / cwrap's — but omw_save_settings, which reads no game file and
++// which the page's leaving persists at once after) and the engine's WebSocket events (multiplayer, MWMP::WebSocket:
++// "callbacks never interleave with a frame"; one whose socket was deleted or handler replaced by then dropped) are put
++// off, in order, to just after its end (a microtask once it returned: before any other task), 0 returned meanwhile
++// (Module.orthrosEngineBusy, Module.orthrosAfterEngine(fn)). Input events still reach SDL's queue at once (the html5
++// callbacks answer synchronously): the next frame reads them. The debug COE and teleport (engine.cpp) run at the next
++// frame's start, inside it.
++//
++// A loading screen's frame (orthros_jspi_present, mwgui/loadingscreen.cpp LoadingScreen::draw) is presented: the engine
++// suspends until the browser's next rendering update has run (a task posted from requestAnimationFrame: the engine
++// resumes after the update, never inside it), at most every ENV OPENMW_ORTHROS_JSPI_PRESENT_MS (200 by default;
++// ?jspipresent=N, 0: never) — a load's reads the browser's copy answers within the short wait suspend nothing, and its
++// loading screen, drawn, was shown only at the frame's end: a COE's whole load one frozen picture, as r16's.
++//
++// In a load, a read — and the load's progress (orthros_jspi_breathe, mwgui/loadingscreen.cpp) — also gives the page's thread a turn when the engine has not let it have one for
++// ENV OPENMW_ORTHROS_JSPI_BREATH_MS (100 by default; ?jspibreath=N, 0: never) — a suspension until a posted message
++// comes back, input and the page's timers run meanwhile —: a load whose reads the browser's copy answers within the short
++// wait suspends nothing, and its long stretches held the page's thread whole (a COE 3.7 s, a save's load 2 s, measured
++// 2026-10-30) where the page answered input as late as r16.
++//
++// A load's end (orthros_jspi_settle, loadingOff, the outermost) waits for the GPU's queue (a fence; ENV
++// OPENMW_ORTHROS_JSPI_SETTLE_MS, 3000 by default, ?jspisettle=N); and in a load's frame — its loading screen, and the
++// rest of that frame after it, the world's first draw (loadFrame) — a framebuffer's status (orthros_gl_settle,
++// engine.cpp's wrapped glCheckFramebufferStatus, at most every ENV OPENMW_ORTHROS_JSPI_GL_MS, 50; ?jspigl=N, 0: never)
++// is asked once the GPU ran its queue, the engine suspended meanwhile: WebGL's call waits for every command before it,
++// and the world's first draw after a save's load held the page's thread 1-2 s there in SwiftShader (2026-10-30).
++//
++// Module.orthrosBlocked { count, ms, max, files: ms by path, waits, waitMs, proxied, proxiedMs, proxiedMax, play, playMs,
++// presents, presentMs, breaths, breathMs, settles, settleMs, gls, glMs }: the engine's suspensions (reads, announced waits; play/playMs: those in play, outside a load;
++// presents: the loading screen's frames presented; settles, gls: the GPU's queue waited for) and the worker threads' reads that waited on the page's thread; Module.orthrosLoading(): the engine in a load now (its boot, a loading screen, the rest of its frame);
++// Module.orthrosFrames { plain, promising }: the frames the page pumped of each kind;
++// Module.orthrosSuspendedMs: the time suspended since the start (a frame's timer: its whole time minus that, its work).
++addToLibrary({
++  $OrthrosJspi: { on: 0, boot: 0, loading: 0, suspended: 0, after: [], flushing: false, ready: false, off: false, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glAt: 0, freedAt: 0, suspendedMs: 0 },
++  $orthrosJspiInit__deps: ['$OrthrosJspi', '$orthrosLater'],
++  $orthrosJspiInit__postset: 'orthrosJspiInit();',
++  $orthrosJspiInit: () => {
++    var J = OrthrosJspi;
++    Module.orthrosJspi = {{{ ASYNCIFY == 2 ? 1 : 0 }}};
++    Module.orthrosBlocked = { count: 0, ms: 0, max: 0, files: {}, waits: 0, waitMs: 0, proxied: 0, proxiedMs: 0, proxiedMax: 0, play: 0, playMs: 0, presents: 0, presentMs: 0, breaths: 0, breathMs: 0, settles: 0, settleMs: 0, gls: 0, glMs: 0 };
++    // (the engine in a load now: its boot or its loading screen — the short wait before a suspension —, else in play)
++    Module.orthrosLoading = () => J.boot > 0 || J.loading > 0 || J.loadFrame > 0;
++    Object.defineProperty(Module, 'orthrosSuspendedMs', { configurable: true, get: () => J.suspendedMs });
++    // (the engine suspended now, or its calls put off not run yet: a call of the page's into it waits — its state is
++    // that of the middle of a frame)
++    Module.orthrosEngineBusy = () => J.suspended > 0 || (J.after.length > 0 && !J.flushing);
++    Module.orthrosAfterEngine = (fn) => { orthrosLater(fn); };
++    // (the frames pumped: plain — on the page's stack, never suspending —, promising — the load's —; orthrosFrames)
++    Module.orthrosFrames = { plain: 0, promising: 0 };
++#if ASYNCIFY == 2
++    // (the page pumps Module._omw_pump_frame: the plain export in play, the promising one for a load put off to the next
++    // frame (orthros_jspi_defer) or a loading screen still on — chosen at each call; ENV OPENMW_ORTHROS_JSPI_PLAIN=0
++    // (?jspiplain=0): every frame promising, as r17's first builds. A script that wraps Module._omw_pump_frame (a
++    // frame timer) wraps the choice.)
++    var promising = null, pump = null;
++    var choose = function (...a) {
++      var plain = Module['_omw_pump_frame_plain'];
++      if (typeof plain == 'function' && !J.plainOff && !J.want && J.boot === 0 && J.loading === 0) { Module.orthrosFrames.plain++; return plain(...a); }
++      Module.orthrosFrames.promising++;
++      return promising.apply(this, a);
++    };
++    Object.defineProperty(Module, '_omw_pump_frame', { configurable: true, enumerable: true, get: () => pump, set: (f) => { if (!promising) { promising = f; pump = choose; } else pump = f; } });
++#endif
++  },
++  // (fn now, or after the frame or boot suspended now: false, or true when put off)
++  $orthrosLater__deps: ['$OrthrosJspi'],
++  $orthrosLater: (fn) => {
++    var J = OrthrosJspi;
++    if (J.suspended > 0 || (J.after.length > 0 && !J.flushing)) { J.after.push(fn); return true; }
++    fn();
++    return false;
++  },
++  // (the calls put off, in order, outside the engine's stack; again at the next end when a frame entered meanwhile)
++  $orthrosFlush__deps: ['$OrthrosJspi'],
++  $orthrosFlush: () => {
++    var J = OrthrosJspi;
++    if (J.on > 0 || J.suspended > 0 || J.flushing) return;
++    J.flushing = true;
++    try {
++      while (J.after.length) { var f = J.after.shift(); try { f(); } catch (e) { err('[orthros-jspi] a call put off: ' + e); } }
++    } finally { J.flushing = false; }
++  },
++  // (once, at the boot's start — the exports and the page's ENV there by then: the switches read, the page's ways into
++  // the engine wrapped)
++  $orthrosJspiReady__deps: ['$OrthrosJspi', '$orthrosLater', '$ENV'
++#if ASYNCIFY == 2
++    , '$webSockets'
++#endif
++  ],
++  $orthrosJspiReady: () => {
++    var J = OrthrosJspi;
++    J.ready = true;
++    J.off = ENV['OPENMW_ORTHROS_JSPI'] === '0';
++    J.plainOff = ENV['OPENMW_ORTHROS_JSPI_PLAIN'] === '0';
++    var spin = Number(ENV['OPENMW_ORTHROS_JSPI_SPIN_MS']);
++    if (ENV['OPENMW_ORTHROS_JSPI_SPIN_MS'] !== undefined && Number.isFinite(spin) && spin >= 0) J.spinMs = spin;
++    var play = Number(ENV['OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS']);
++    if (ENV['OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS'] !== undefined && Number.isFinite(play)) J.playSpinMs = play;
++    var present = Number(ENV['OPENMW_ORTHROS_JSPI_PRESENT_MS']);
++    if (ENV['OPENMW_ORTHROS_JSPI_PRESENT_MS'] !== undefined && Number.isFinite(present) && present >= 0) J.presentMs = present;
++    var breath = Number(ENV['OPENMW_ORTHROS_JSPI_BREATH_MS']);
++    if (ENV['OPENMW_ORTHROS_JSPI_BREATH_MS'] !== undefined && Number.isFinite(breath) && breath >= 0) J.breathMs = breath;
++    var settle = Number(ENV['OPENMW_ORTHROS_JSPI_SETTLE_MS']);
++    if (ENV['OPENMW_ORTHROS_JSPI_SETTLE_MS'] !== undefined && Number.isFinite(settle) && settle >= 0) J.settleMs = settle;
++    var gl = Number(ENV['OPENMW_ORTHROS_JSPI_GL_MS']);
++    if (ENV['OPENMW_ORTHROS_JSPI_GL_MS'] !== undefined && Number.isFinite(gl) && gl >= 0) J.glMs = gl;
++#if ASYNCIFY == 2
++    if (J.off) { err('[orthros-jspi] off (OPENMW_ORTHROS_JSPI=0): every read waits on the page\'s thread'); return; }
++    var later = (f) => function (...a) {
++      if (J.suspended > 0 || (J.after.length > 0 && !J.flushing)) { J.after.push(() => f.apply(this, a)); return 0; }
++      return f.apply(this, a);
++    };
++    // (the engine's exports the page calls, but the frame, the marks that read nothing and the settings' save — it
++    // writes the user's settings file and reads no game file, and the page's leaving (__omwSync: pagehide, a reload)
++    // persists that file at once after it: put off, the changes made since the last save were lost)
++    for (var k of Object.keys(Module)) {
++      if (!/^_(omw|orthros)_/.test(k) || /^_(omw_pump_frame|omw_pump_frame_plain|omw_save_settings|orthros_jspi|orthros_content_light)$/.test(k) || typeof Module[k] != 'function') continue;
++      Module[k] = later(Module[k]);
++    }
++    // (ccall put off whole — its strings are copied onto the stack for the call alone —; cwrap's functions alike)
++    if (typeof Module['ccall'] == 'function') Module['ccall'] = later(Module['ccall']);
++    if (typeof Module['cwrap'] == 'function') { var cw = Module['cwrap']; Module['cwrap'] = (...c) => later(cw(...c)); }
++    // (the engine's WebSockets — those Emscripten's library made, MWMP::WebSocket —: their events after the frame; one
++    // put off is dropped when, by then, its socket was deleted or its handler replaced — emscripten_websocket_delete
++    // nulls the handlers, which no longer cancels an event queued: the engine's object reused by a reconnect would get
++    // the old socket's close or message. The handler current for a socket is the one this setter last set, kept here
++    // (`current`), not read back from the socket: another script that wraps these setters too — a test's, a debugging
++    // tool's — would make the getter answer its own function, and every event of the engine would be dropped.)
++    if (typeof WebSocket != 'undefined') {
++      var current = new WeakMap();
++      for (var name of ['onopen', 'onmessage', 'onerror', 'onclose']) {
++        let d = Object.getOwnPropertyDescriptor(WebSocket.prototype, name), key = name;
++        if (!d || !d.set) continue;
++        Object.defineProperty(WebSocket.prototype, name, {
++          configurable: true, enumerable: d.enumerable, get: d.get,
++          set(fn) {
++            var mine = current.get(this);
++            if (!mine) current.set(this, (mine = {}));
++            var ours = typeof fn == 'function' && webSockets.allocated.includes(this);
++            if (!ours) { mine[key] = null; d.set.call(this, fn); return; }
++            var socket = this, wrapped = function (e) {
++              orthrosLater(() => { if ((current.get(socket) || {})[key] === wrapped && webSockets.allocated.includes(socket)) fn.call(socket, e); });
++            };
++            mine[key] = wrapped;
++            d.set.call(this, wrapped);
++          },
++        });
++      }
++    }
++#endif
++  },
++  $orthrosBlockedNote__deps: ['$OrthrosJspi'],
++  $orthrosBlockedNote: (ms, path, kind) => {
++    var b = Module.orthrosBlocked;
++    if (kind === 'present') { b.presents++; b.presentMs += ms; return; }
++    if (kind === 'breath') { b.breaths++; b.breathMs += ms; return; }
++    if (kind === 'settle') { b.settles++; b.settleMs += ms; return; }
++    if (kind === 'gl') { b.gls++; b.glMs += ms; return; }
++    if (kind !== 'proxied' && !(OrthrosJspi.boot > 0 || OrthrosJspi.loading > 0 || OrthrosJspi.loadFrame > 0)) { b.play++; b.playMs += ms; }
++    if (kind === 'proxied') { b.proxied++; b.proxiedMs += ms; if (ms > b.proxiedMax) b.proxiedMax = ms; return; }
++    if (kind === 'wait') { b.waits++; b.waitMs += ms; } else { b.count++; b.ms += ms; if (path) b.files[path] = (b.files[path] || 0) + ms; }
++    if (ms > b.max) b.max = ms;
++  },
++  // (`boot`: main()'s — the boot is a load —, else the frame's)
++  orthros_jspi_enter__deps: ['$OrthrosJspi', '$orthrosJspiInit', '$orthrosJspiReady'],
++  orthros_jspi_enter: (boot) => { if (!OrthrosJspi.ready) orthrosJspiReady(); OrthrosJspi.on++; if (boot) OrthrosJspi.boot++; if (!OrthrosJspi.plain) OrthrosJspi.want = 0; },
++  // (a plain frame — omw_pump_frame_plain, engine.cpp — begins (1) or ends (0): nothing suspends under it)
++  orthros_jspi_plain__deps: ['$OrthrosJspi'],
++  orthros_jspi_plain: (on) => { var J = OrthrosJspi; if (on) J.plain++; else if (J.plain > 0) J.plain--; },
++  // (a load about to start — a save's, a new game's, the debug COE —: 1 in a plain frame, the next frame then the
++  // promising export's (want) and the load put off to it by the engine; 0 in a promising one, or JSPI off: load now)
++  orthros_jspi_defer__deps: ['$OrthrosJspi'],
++  orthros_jspi_defer: () => {
++    var J = OrthrosJspi;
++    if ({{{ ASYNCIFY == 2 ? 'false' : 'true' }}} || J.off || J.plain === 0) return 0;
++    J.want = 1;
++    return 1;
++  },
++  // (1 when a suspending import may be called now: under a promising export, on its stack — not a plain frame, not a call
++  // that reached the engine while its frame or boot is suspended —; engine.cpp's wraps and the loading screen's calls ask)
++  orthros_jspi_may__deps: ['$OrthrosJspi'],
++  orthros_jspi_may: () => {{{ ASYNCIFY == 2 ? '(OrthrosJspi.on > 0 && !OrthrosJspi.plain && !OrthrosJspi.suspended && !OrthrosJspi.off) ? 1 : 0' : '0' }}},
++  orthros_jspi_leave__deps: ['$OrthrosJspi', '$orthrosFlush'],
++  orthros_jspi_leave: (boot) => {
++    var J = OrthrosJspi;
++    if (J.on > 0) J.on--;
++    if (boot && J.boot > 0) J.boot--;
++    // (a load's frame over — the rest of it after the loading screen, the world's first draw, still a load's: its reads
++  // and its framebuffer's statuses may suspend —: loadFrame off)
++    if (J.on === 0 && J.loading === 0) J.loadFrame = 0;
++    // (the page's calls put off meanwhile: once the export returned — a microtask, before any other task —, outside
++    // the engine's stack)
++    if (J.on === 0 && J.after.length) queueMicrotask(orthrosFlush);
++  },
++  // (the engine's loading screen on (1) or off (0), nested as its loads: mwgui/loadingscreen.cpp)
++  orthros_jspi_loading__deps: ['$OrthrosJspi'],
++  orthros_jspi_loading: (on) => { var J = OrthrosJspi; if (on) { J.loading++; J.loadFrame = 1; } else if (J.loading > 0) J.loading--; },
++  // (the page's wait before a suspension now: short in a load — the boot, a loading screen —, longer in play)
++  $orthrosSpinMs__deps: ['$OrthrosJspi'],
++  $orthrosSpinMs: () => (OrthrosJspi.boot > 0 || OrthrosJspi.loading > 0 || OrthrosJspi.loadFrame > 0 ? OrthrosJspi.spinMs : OrthrosJspi.playSpinMs),
++  // (whether a read or a wait may suspend now: under a promising export, nothing suspended, not switched off, in a load
++  // — the boot, a loading screen — or allowed in play too, ?jspiplay=N)
++  $orthrosMaySuspend__deps: ['$OrthrosJspi'],
++  $orthrosMaySuspend: () => {{{ ASYNCIFY == 2 ? 'OrthrosJspi.on > 0 && !OrthrosJspi.plain && !OrthrosJspi.suspended && !OrthrosJspi.off && (OrthrosJspi.boot > 0 || OrthrosJspi.loading > 0 || OrthrosJspi.loadFrame > 0 || OrthrosJspi.playSpinMs >= 0)' : 'false' }}},
++  // (the engine suspended until `promise` settles — either way —, then `then(ok)`'s value returned to it)
++  $orthrosSuspend__deps: ['$OrthrosJspi', '$orthrosBlockedNote'],
++  $orthrosSuspend: (promise, path, kind, then) => {
++    var J = OrthrosJspi, t0 = performance.now();
++    J.suspended = 1;
++    var done = (ok) => { J.suspended = 0; J.freedAt = performance.now(); var ms = J.freedAt - t0; J.suspendedMs += ms; orthrosBlockedNote(ms, path, kind); return then(ok); };
++    return promise.then(() => done(true), () => done(false));
++  },
++  // (a load that held the page's thread breathMs since its last suspension: a turn for the page — a promise settled
++  // once a posted message comes back —, else null)
++  $orthrosBreath__deps: ['$OrthrosJspi', '$orthrosMaySuspend'],
++  $orthrosBreath: () => {
++    var J = OrthrosJspi, now = performance.now();
++    if (J.breathMs <= 0 || !(J.boot > 0 || J.loading > 0 || J.loadFrame > 0) || !orthrosMaySuspend()) return null;
++    if (J.freedAt === 0) { J.freedAt = now; return null; }
++    if (now - J.freedAt < J.breathMs || typeof MessageChannel != 'function') return null;
++    return new Promise((resolve) => { var mc = new MessageChannel(); mc.port1.onmessage = () => { mc.port1.close(); resolve(); }; mc.port2.postMessage(0); });
++  },
++  $orthrosReadv__deps: ['$doReadv', '$FS'],
++  $orthrosReadv: (stream, iov, iovcnt, offset, pnum) => {
++    try {
++      var num = doReadv(stream, iov, iovcnt, offset);
++      {{{ makeSetValue('pnum', 0, 'num', SIZE_TYPE) }}};
++      return 0;
++    } catch (e) {
++      if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
++      return e.errno;
++    }
++  },
++  $orthrosRead__deps: ['$orthrosReadv', '$SYSCALLS', '$OrthrosJspi', '$orthrosMaySuspend', '$orthrosSuspend', '$orthrosBlockedNote', '$orthrosSpinMs', '$orthrosBreath'],
++  $orthrosRead: (fd, iov, iovcnt, offset, pnum) => {
++    var stream;
++    var breath = orthrosBreath();
++    if (breath) return orthrosSuspend(breath, null, 'breath', () => orthrosRead(fd, iov, iovcnt, offset, pnum));
++    try { stream = SYSCALLS.getStreamFromFD(fd); } catch (e) { if (e.name !== 'ErrnoError') throw e; return e.errno; }
++    var s = stream.node && stream.node.orthrosStreamed;
++    if (s && orthrosMaySuspend()) {
++      var position = typeof offset == 'undefined' ? stream.position : offset, length = 0;
++      for (var i = 0, v = iov; i < iovcnt; i++, v += {{{ C_STRUCTS.iovec.__size__ }}}) length += {{{ makeGetValue('v', C_STRUCTS.iovec.iov_len, '*') }}};
++      var wait = null;
++      try {
++        if (length > 0) wait = s.soon ? s.soon(position, length, orthrosSpinMs()) : s.missing(position, length) ? s.ensure(position, length) : null;
++      } catch (e) { wait = null; }
++      // (a fetch that failed: the read tries again its own way — synchronously — and reports an error if it must)
++      if (wait) return orthrosSuspend(wait, stream.path, 'read', () => orthrosReadv(stream, iov, iovcnt, offset, pnum));
++    }
++    return orthrosReadv(stream, iov, iovcnt, offset, pnum);
++  },
++  // (the C library's read — wrapped, engine.cpp __wrap___wasi_fd_read —: the plain import, answered at once, waiting on
++  // the page's thread for bytes missing — a worker thread's read proxied here too —; the engine's page thread under a
++  // promising export calls orthros_fd_read_async instead)
++  fd_read__sig: 'iippp',
++  fd_read__proxy: 'sync',
++  fd_read__deps: ['$orthrosReadv', '$SYSCALLS', '$orthrosBlockedNote'],
++  fd_read: (fd, iov, iovcnt, pnum) => {
++    var t0 = performance.now(), r;
++    try { r = orthrosReadv(SYSCALLS.getStreamFromFD(fd), iov, iovcnt, undefined, pnum); }
++    catch (e) { if (e.name !== 'ErrnoError') throw e; r = e.errno; }
++#if PTHREADS
++    if (PThread.currentProxiedOperationCallerThread) { var ms = performance.now() - t0; if (ms >= 1) orthrosBlockedNote(ms, null, 'proxied'); }
++#endif
++    return r;
++  },
++  // (the read that may suspend: the page's thread, under a promising export — orthros_jspi_may)
++  orthros_fd_read_async__sig: 'iippp',
++  orthros_fd_read_async__async: true,
++  orthros_fd_read_async__deps: ['$orthrosRead'],
++  orthros_fd_read_async: (fd, iov, iovcnt, pnum) => orthrosRead(fd, iov, iovcnt, undefined, pnum),
++  // (fsync: the plain import as a build without JSPI — the stream's own fsync, IDBFS not persisted there (the page
++  // persists it) —; the suspending one, Emscripten's under JSPI, persists the mount and waits for it)
++  fd_sync__sig: 'ii',
++  fd_sync__proxy: 'sync',
++  // (the system library's says __async under JSPI: not this one)
++  fd_sync__async: false,
++  fd_sync__deps: ['$SYSCALLS'],
++  fd_sync: (fd) => {
++    try { var stream = SYSCALLS.getStreamFromFD(fd); return stream.stream_ops?.fsync ? stream.stream_ops.fsync(stream) : 0; }
++    catch (e) { if (typeof FS == 'undefined' || e.name !== 'ErrnoError') throw e; return e.errno; }
++  },
++  orthros_fd_sync_async__sig: 'ii',
++  orthros_fd_sync_async__async: true,
++  orthros_fd_sync_async__deps: ['$SYSCALLS'],
++  orthros_fd_sync_async: (fd) => {
++    try {
++      var stream = SYSCALLS.getStreamFromFD(fd), rtn = stream.stream_ops?.fsync?.(stream);
++      return new Promise((resolve) => { var mount = stream.node.mount; if (mount?.type.syncfs) mount.type.syncfs(mount, false, (err) => resolve(err ? 29 : 0)); else resolve(rtn); });
++    } catch (e) { if (typeof FS == 'undefined' || e.name !== 'ErrnoError') throw e; return e.errno; }
++  },
++  // (a loading screen's frame drawn — mwgui/loadingscreen.cpp LoadingScreen::draw —: presented, the engine suspended
++  // until the browser's rendering update after it ran — at most every presentMs; a hidden page's 100 ms at most)
++  orthros_jspi_present__sig: 'v',
++  orthros_jspi_present__async: true,
++  orthros_jspi_present__deps: ['$OrthrosJspi', '$orthrosMaySuspend', '$orthrosSuspend'],
++  orthros_jspi_present: () => {
++    var J = OrthrosJspi, now = performance.now();
++    if (J.presentMs <= 0 || !(J.boot > 0 || J.loading > 0 || J.loadFrame > 0) || !orthrosMaySuspend() || now - J.presentedAt < J.presentMs || typeof requestAnimationFrame != 'function') return;
++    var shown = new Promise((resolve) => {
++      var go = () => { clearTimeout(t); resolve(); }, t = setTimeout(go, 100);
++      requestAnimationFrame(() => { var mc = new MessageChannel(); mc.port1.onmessage = () => { mc.port1.close(); go(); }; mc.port2.postMessage(0); });
++    });
++    return orthrosSuspend(shown, null, 'present', () => { J.presentedAt = performance.now(); });
++  },
++  // (a load's progress — mwgui/loadingscreen.cpp setProgress, increaseProgress —: the page's turn when it had none for
++  // breathMs, as a read's)
++  orthros_jspi_breathe__sig: 'v',
++  orthros_jspi_breathe__async: true,
++  orthros_jspi_breathe__deps: ['$orthrosBreath', '$orthrosSuspend'],
++  orthros_jspi_breathe: () => {
++    var breath = orthrosBreath();
++    if (breath) return orthrosSuspend(breath, null, 'breath', () => {});
++  },
++  // (the GPU's queue drained: a promise settled once the commands issued so far ran — a fence, its status looked at
++  // between the page's tasks: WebGL2 updates it there, never blocking — or after `maxMs`; null without a WebGL2 context)
++  $orthrosGpuIdle__deps: ['$GL'],
++  $orthrosGpuIdle: (maxMs) => {
++    var c = GL.currentContext && GL.currentContext.GLctx, s = null;
++    try { if (c && c.fenceSync && !c.isContextLost()) { s = c.fenceSync(c.SYNC_GPU_COMMANDS_COMPLETE, 0); c.flush(); } } catch (e) { s = null; }
++    if (!s) return null;
++    return new Promise((resolve) => {
++      var t0 = performance.now();
++      var look = () => {
++        var done = true;
++        try { done = c.isContextLost() || c.getSyncParameter(s, c.SYNC_STATUS) === c.SIGNALED; } catch (e) { done = true; }
++        if (done || performance.now() - t0 >= maxMs) { try { c.deleteSync(s); } catch (e) { /* lost */ } resolve(); } else setTimeout(look, 2);
++      };
++      setTimeout(look, 0);
++    });
++  },
++  // (a load's end — mwgui/loadingscreen.cpp loadingOff, the outermost one, its screen still on —: the engine suspended
++  // until the GPU ran what the load gave it (its textures, programs, buffers), at most settleMs. The browser's GPU
++  // process works through that queue after the load's last frame; the first frame of play then waited for all of it in
++  // its first synchronous WebGL call (checkFramebufferStatus, a program's status) — the page's thread held 1-2 s after a
++  // save's load in SwiftShader, 2026-10-30 — where the page's thread is now free and the loading screen still shown.)
++  orthros_jspi_settle__sig: 'v',
++  orthros_jspi_settle__async: true,
++  orthros_jspi_settle__deps: ['$OrthrosJspi', '$orthrosMaySuspend', '$orthrosSuspend', '$orthrosGpuIdle'],
++  orthros_jspi_settle: () => {
++    var J = OrthrosJspi;
++    if (J.settleMs <= 0 || !(J.boot > 0 || J.loading > 0 || J.loadFrame > 0) || !orthrosMaySuspend()) return;
++    var idle = orthrosGpuIdle(J.settleMs);
++    if (idle) return orthrosSuspend(idle, null, 'settle', () => {});
++  },
++  // (a framebuffer's status asked — engine.cpp __wrap_glCheckFramebufferStatus, when the engine may suspend —: in a load's
++  // frame (the boot, a loading screen on, the rest of its frame: the world's first draw), the engine suspended until the
++  // GPU ran its queue — the call then answers at once —, at most once every glMs of the engine's time (ENV
++  // OPENMW_ORTHROS_JSPI_GL_MS, 50 by default; ?jspigl=N, 0: never), 2 s at most)
++  orthros_gl_settle__sig: 'v',
++  orthros_gl_settle__async: true,
++  orthros_gl_settle__deps: ['$OrthrosJspi', '$orthrosMaySuspend', '$orthrosSuspend', '$orthrosGpuIdle'],
++  orthros_gl_settle: () => {
++    var J = OrthrosJspi, now = performance.now();
++    if (J.glMs <= 0 || !(J.boot > 0 || J.loading > 0 || J.loadFrame > 0) || now - J.glAt < J.glMs) return;
++    J.glAt = now;
++    var idle = orthrosGpuIdle(2000);
++    if (idle) return orthrosSuspend(idle, null, 'gl', () => { J.glAt = performance.now(); });
++  },
++  // (components/vfs/manager.cpp orthrosReadWait, the page's thread only: 1 when everything announced is here — or
++  // failed —, 0 on time out)
++  orthros_read_wait__sig: 'id',
++  orthros_read_wait__async: true,
++  // An announced wait is a load's, wherever it comes: the engine announces what its next load reads, then waits once —
++  // Scene::changeCellGrid's read-ahead runs before its loading screen is on (a COE, a door, an exterior crossing) —, so
++  // it may suspend in play too, after the load's short wait: synchronous there, a COE over a 2 MB/s link held the page's
++  // thread 3.8 s on it (r16dev-c, 2026-10-30).
++  orthros_read_wait__deps: ['$OrthrosJspi', '$orthrosSuspend'],
++  orthros_read_wait: (timeoutMs) => {
++    try {
++      var soon = globalThis.orthrosReadWaitSoon, f = globalThis.orthrosReadWait, J = OrthrosJspi;
++      if (soon && {{{ ASYNCIFY == 2 ? 'J.on > 0 && !J.plain && !J.suspended && !J.off' : 'false' }}}) {
++        var r = soon(timeoutMs, J.spinMs);
++        if (!r || typeof r.then != 'function') return r ? 1 : 0;
++        var answer = 1;
++        return orthrosSuspend(Promise.resolve(r).then((v) => { answer = v ? 1 : 0; }), null, 'wait', (ok) => (ok ? answer : 1));
++      }
++      return f ? (f(timeoutMs) ? 1 : 0) : 1;
++    } catch (e) { return 1; }
++  },
++});

@@ -41,6 +41,12 @@ export const isLightPicture = (name) => /\.tga$/i.test(name);
  */
 export const isLightContent = (name) => /\.(esm|esp|omwaddon|omwgame)$/i.test(name);
 
+/**
+ * An image file (a texture: DDS, TGA, PNG, JPEG, BMP, KTX), which an engine reads whole once it reads it: its first
+ * missing piece is asked for to the file's end (data-client.js askedEnd, where the engine's page asks for it: wholeLoads).
+ */
+export const isWholeImage = (name) => /\.(dds|tga|png|jpe?g|bmp|ktx2?)$/i.test(name);
+
 /** Native binaries of an installation: useless to a WebAssembly engine, never part of its files. */
 const NATIVE = /\.(exe|dll|so|dylib)$/i;
 

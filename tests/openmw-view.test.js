@@ -66,6 +66,30 @@ test('on a link that is not fast the engine boots short and Orthros\' script ste
   assert.equal(p.data.kind, null, 'the step loaded: the link decides again');
 });
 
+test('the usual frame is play\'s: the boot\'s half seconds without frames (an engine whose boot yields to the page) never make it 0', async () => {
+  const p = page({ slow: true });
+  const g = await install(p.win, p.o);
+  p.win.orthrosViewBoot('16384'); p.win.orthrosContent(p.FS, []);
+  // (a boot of 30 s that gives the page its turns: no frame drawn, p99 0 — none of it counted)
+  p.win.orthrosFrames = { p99: 0 };
+  for (let i = 0; i < 60; i++) { p.at(i * 500); g.tick(); }
+  assert.deepEqual(p.win.orthrosViewState().p99s, [], 'nothing sampled before the world');
+  p.win.omw.state['orthros.view'] = '8192 8192'; p.win.omw.state['orthros.cell'] = '-3 -2';
+  // (in the world at 20 fps: a p99 of 66 ms — long against the fixed bound while the usual frame is unknown, 5 s)
+  p.win.orthrosFrames = { p99: 66 };
+  let t = 30000;
+  for (let i = 0; i < 10; i++) { p.at(t += 500); g.tick(); }
+  assert.equal(p.win.orthrosViewState().p99s.length, 10);
+  const longAt = p.win.orthrosViewState().longAt;
+  p.at(t += 500); g.tick();
+  assert.equal(p.win.orthrosViewState().longAt, longAt, 'once known, the usual frame is not a long one');
+  p.at(t = longAt + VIEW.holdMs); g.tick();
+  assert.equal(p.files.get(VIEW_FILE), '10240 8192', 'raised as soon as the frames are as usual for holdMs');
+  // (the look before the fix: the boot's zeros counted — the median 0 for 30 s, every 66 ms frame a long one)
+  const zeros = [...Array(60).fill(0)], usual = [...zeros.slice(10), ...Array(10).fill(66)].sort((a, b) => a - b)[30];
+  assert.ok(66 > Math.max(VIEW.longFrameMs, VIEW.longFactor * usual), 'counted, the boot\'s zeros held the raise');
+});
+
 test('on a fast link (or the release\'s own streaming) the engine boots at its tier\'s distance, the script left idle', async () => {
   for (const o of [{ slow: false }, { slow: true, streamfs: false }]) {
     const p = page(o);

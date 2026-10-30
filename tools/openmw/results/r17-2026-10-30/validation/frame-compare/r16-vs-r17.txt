@@ -1,0 +1,3 @@
+day {'r16 vs r17': (np.float64(0.011), np.float64(0.0)), 'r16 noise': (np.float64(0.001), np.float64(0.0)), 'r17 noise': (np.float64(1.591), np.float64(0.0))}
+night {'r16 vs r17': (np.float64(0.24), np.float64(0.0)), 'r16 noise': (np.float64(0.013), np.float64(0.0)), 'r17 noise': (np.float64(0.257), np.float64(0.0))}
+interior {'r16 vs r17': (np.float64(0.743), np.float64(0.0)), 'r16 noise': (np.float64(1.401), np.float64(0.0)), 'r17 noise': (np.float64(0.248), np.float64(0.0))}

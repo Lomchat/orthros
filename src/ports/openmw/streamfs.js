@@ -43,8 +43,6 @@
   const BOOT_WAIT_MS = 180000;
   /** how often the engine's reports are looked at for the next place in play (view.lua reports every 500 ms) */
   const LEAD_POLL_MS = 500;
-  /** the page's turns counted (window.orthrosTurns) this often when its thread is free */
-  const TURN_MS = 50;
   /** how often the engine page is looked at for the end of its mounts (announceBoot), and for how long at most */
   const MOUNTS_POLL_MS = 100, MOUNTS_WAIT_MS = 120000;
 
@@ -83,7 +81,8 @@
   /** The game data opened (once): its worker started, the version's tree, store and learned order's list asked. */
   function open() {
     if (S.data) return S.data;
-    S.data = new M.GameData({ name, session: S.session, prefetch: 'first-read', orderAtOpen: true, cacheBytes: cacheBytes(), realInPage: pageParam('realinpage') !== '0', pieceReuse: pageParam('piecereuse') !== '0', realBacklog: reloadBacklog, log: (t) => console.warn('[streamfs]', t) });
+    S.data = new M.GameData({ name, session: S.session, prefetch: 'first-read', orderAtOpen: true, cacheBytes: cacheBytes(), realInPage: pageParam('realinpage') !== '0', pieceReuse: pageParam('piecereuse') !== '0', realBacklog: reloadBacklog, wholeLoads: pageParam('wholeloads') !== '0',
+      inLoad: pageParam('heldreal') === '0' ? undefined : () => typeof Module !== 'undefined' && typeof Module.orthrosLoading === 'function' && Module.orthrosLoading(), log: (t) => console.warn('[streamfs]', t) });
     // (observed at once, as openPortData's: a failed open before the engine's first need() — its download seconds long —
     // is not an unhandled rejection, the engine page's log opened on it; holdRun reports it at that need())
     S.data.ready.catch(() => {});
@@ -134,11 +133,6 @@
       if (canReload()) S.data.reloads(true);
       else { let n = 0; const look = setInterval(() => { if (canReload()) S.data.reloads(true); if (canReload() || ++n >= 240) clearInterval(look); }, 250); }
       try { Object.defineProperty(window, '__streamfsStats', { configurable: true, get: () => S.data.snapshot() }); } catch { /* defined */ }
-      // (the page's turns, for the Orthros build's put-offs (orthros-r14.patch, QuadTreeWorld::orthrosPutOff): the
-      // files a put-off asks reach the page between its tasks only — a load's frames or one frame's many rays, in one
-      // task, can wait for nothing —, so an entry is built after its time limit only once the page had turns since)
-      window.orthrosTurns = 0;
-      S.turns = setInterval(() => { window.orthrosTurns = (window.orthrosTurns + 1) | 0; }, TURN_MS);
       // (the scripts the engine reads at its boot and at a save's load, announced once its mounts are over: the engine
       // page's mod list in — window.__serverMods, set once every mod is mounted, before the engine's run is released —,
       // or its content load said, whichever first; ?bootreads=0 on this page or the play page: the engine's reads alone)
@@ -306,7 +300,9 @@
   }
 
   function node(path, h) {
-    const n = M.fileNode(FS, path, need(), h, { mmap: false, log: (t) => console.warn('[streamfs]', t) });
+    // (asyncReads: an engine that suspends while it waits — the Orthros build's JSPI, orthros-r17.patch — asks for a
+    // read's bytes first, GameData.soon; any other engine reads synchronously, as before)
+    const n = M.fileNode(FS, path, need(), h, { mmap: false, asyncReads: true, log: (t) => console.warn('[streamfs]', t) });
     S.byPath.set(path, h); S.byNode.set(n, h); S.byEnginePath.clear();
     return n;
   }
@@ -390,6 +386,14 @@
     const ms = Number(timeoutMs);
     return S.data.wantWait(Number.isFinite(ms) && ms >= 0 ? ms : 15000) ? 1 : 0;
   };
+  // (the same wait for an engine that suspends meanwhile — the Orthros build's JSPI, orthros-r17.patch: the answer within
+  // `spinMs` of the page's thread, else a promise of it — GameData.wantWaitSoon)
+  window.orthrosReadWaitSoon = (timeoutMs, spinMs) => {
+    if (!S.started) return 1;
+    const ms = Number(timeoutMs), spin = Number(spinMs);
+    const r = S.data.wantWaitSoon(Number.isFinite(ms) && ms >= 0 ? ms : 15000, Number.isFinite(spin) && spin >= 0 ? spin : undefined);
+    return typeof r === 'boolean' ? (r ? 1 : 0) : r.then((ok) => (ok ? 1 : 0));
+  };
 
   window.StreamFS = {
     stats() { return S.started ? S.data.snapshot() : {}; },
@@ -399,10 +403,23 @@
     boot() { return S.boot; },
     /** The places guessed in play (leadInPlay): { guessed, bytes, last }, or null (none yet, or no ?lead=1). */
     leads() { return S.lead?.snapshot() ?? null; },
+    /**
+     * The engine's waits for its files that suspended it instead of holding the page's thread (the Orthros build's JSPI,
+     * orthros-r17.patch — its export orthros_jspi; Module.orthrosBlocked): { on, suspendedMs, blocked, frames, soonSpins, soonSpinMs,
+     * soonSuspends, soonWaits } — `on` false for an engine that does not; frames: the frames pumped plain (play) and
+     * promising (a load's), Module.orthrosFrames —, or null before the engine's script ran.
+     */
+    jspi() {
+      const m = typeof Module !== 'undefined' ? Module : null;
+      if (!m) return null;
+      const s = S.started ? S.data.stats : {};
+      return { on: m.orthrosJspi === 1 && typeof m._orthros_jspi === 'function', suspendedMs: Math.round(m.orthrosSuspendedMs ?? 0), blocked: m.orthrosBlocked ?? null, frames: m.orthrosFrames ? { ...m.orthrosFrames } : null,
+        soonSpins: s.soonSpins ?? 0, soonSpinMs: Math.round(s.soonSpinMs ?? 0), soonSuspends: s.soonSuspends ?? 0, soonWaits: s.soonWaits ?? 0 };
+    },
     /** The game data (data-client.js GameData), once the engine used it (its first mount): null before (opened earlier). */
     data() { return S.started ? S.data : null; },
     /** The game data closed, opened or used (a test; the page's leaving closes its worker anyway). */
-    close() { S.closed = true; if (S.leadTimer) { clearInterval(S.leadTimer); S.leadTimer = null; } if (S.turns) { clearInterval(S.turns); S.turns = null; } S.data?.close(); },
+    close() { S.closed = true; if (S.leadTimer) { clearInterval(S.leadTimer); S.leadTimer = null; } S.data?.close(); },
     init() {
       if (!self.crossOriginIsolated) throw new Error('streamfs needs crossOriginIsolated (COOP/COEP)');
       need();

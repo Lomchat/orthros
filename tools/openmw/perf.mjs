@@ -79,7 +79,7 @@ try {
   await page.route((u) => /\/clientlog$|\/api\/(telemetry|prefetch|profile-seed|programs|regions)(\/|$)/.test(u.pathname), (r) => r.request().method() === 'GET' ? r.continue() : r.fulfill({ status: 204, body: '' }));
   await page.addInitScript(({ discard, glcalls }) => {
     // (its own name: the engine page's window.orthrosPerf is the passive session record, frame-meter.js)
-    const P = window.__omwPerfProbe = { draws: 0, frames: [], work: [], sync: {}, syncFrames: [], cur: {} };
+    const P = window.__omwPerfProbe = { draws: 0, frames: [], work: [], workEngine: [], suspended: 0, timerWait: 0, sync: {}, syncFrames: [], cur: {} };
     const proto = WebGL2RenderingContext.prototype;
     for (const name of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
       const f = proto[name]; proto[name] = function (...a) { P.draws++; return f.apply(this, a); };
@@ -92,7 +92,8 @@ try {
       proto.disable = function (cap) { if (cap === RD) return; return disable.call(this, cap); };
       HTMLCanvasElement.prototype.getContext = function (...a) { const gl = getContext.apply(this, a); if (gl && gl instanceof WebGL2RenderingContext) enable.call(gl, RD); return gl; };
     }
-    // (the engine's frame timed: the page pumps it, Module._omw_pump_frame, from a message after each animation frame)
+    // (the engine's frame timed whole — frame-meter.js orthrosFrameTimer: a frame that suspends while it waits for its
+    // files, JSPI, until its end —: the page pumps it, Module._omw_pump_frame, from a message after each animation frame)
     const raf = window.requestAnimationFrame.bind(window);
     // (and the Orthros build's skipped first plays of sounds: streamfs.js orthrosFileReady answering false)
     // (and, r5, the preloads' reads put off: orthrosRangeReady answering false)
@@ -104,7 +105,11 @@ try {
     }, 50);
     const wrap = setInterval(() => {
       const M = window.Module, f = M?._omw_pump_frame; if (!f || f.orthrosTimed) return;
-      const timed = function (...a) { const t0 = performance.now(); try { return f.apply(this, a); } finally { const t1 = performance.now(); if (P.on) { P.work.push(t1 - t0); if (P.pumps.length < 100000) P.pumps.push(+t0.toFixed(3), +t1.toFixed(3)); } } };
+      // (a page without orthrosFrameTimer 10 s after the engine's frames began — a code tree before r17's frame-meter.js —:
+      // the call timed, as it was then)
+      if (!window.orthrosFrameTimer && ++P.timerWait < 200) return;
+      const done = (ms, suspendedMs) => { if (P.on) { P.work.push(ms); P.workEngine.push(ms - suspendedMs); P.suspended += suspendedMs; } };
+      const timed = window.orthrosFrameTimer?.(f, done) ?? function (...a) { const t0 = performance.now(); try { return f.apply(this, a); } finally { done(performance.now() - t0, 0); } };
       timed.orthrosTimed = true; M._omw_pump_frame = timed; clearInterval(wrap);
     }, 50);
     let seen = 0;
@@ -182,7 +187,9 @@ try {
   const end = Date.now() + seconds * 1000;
   if (glide) {
     // (a straight line at a set speed from the start cell's centre, whatever is in the way: the engine's debug
-    // teleport, omw_debug_teleport, every 33 ms — the cells crossed and their loads the same at every run)
+    // teleport, omw_debug_teleport, every 33 ms — the cells crossed and their loads the same at every run; an Orthros
+    // build from r17 on moves the player at its next frame's start, to the last position asked — inside the frame, its
+    // crossings' reads suspending it as a walk's —, an older one in the call itself)
     const [dx, dy, speed, z] = glide.split(',').map(Number), [cx, cy] = start.split(',').map(Number), n = Math.hypot(dx, dy) || 1;
     await page.evaluate(({ x0, y0, vx, vy, z }) => {
       const t0 = performance.now();
@@ -218,8 +225,9 @@ try {
       gap: { p50: q(gaps, 0.5), p90: q(gaps, 0.9), p99: q(gaps, 0.99), max: q(gaps, 1), over100: gaps.filter((g) => g > 100).length, over250: gaps.filter((g) => g > 250).length },
       work: { p50: q(P.work, 0.5), p90: q(P.work, 0.9), p99: q(P.work, 0.99), max: q(P.work, 1), over16: P.work.filter((w) => w > 1000 / 60).length, over33: P.work.filter((w) => w > 100 / 3).length, over50: P.work.filter((w) => w > 50).length, over100: P.work.filter((w) => w > 100).length },
       workRaw: P.work.map((w) => +w.toFixed(2)),
-      // (each drawn frame's time from the measure's start, ms: the first seconds in the world apart, --warm 0)
-      framesRaw: P.frames.map((t) => +(t - P.frames[0]).toFixed(1)),
+      // (the frames' time without their suspensions — the engine running —, and the suspensions' sum: JSPI builds only)
+      workEngine: { p50: q(P.workEngine, 0.5), p90: q(P.workEngine, 0.9), p99: q(P.workEngine, 0.99), max: q(P.workEngine, 1) }, suspendedMs: Math.round(P.suspended),
+      jspi: window.StreamFS?.jspi?.() ?? null,
       syncPerFrame: perFrame, syncTotal: P.sync,
       glCalls: P.gl ? (() => { const n = Math.max(1, P.frames.length), all = Object.entries(P.gl).sort((x, y) => y[1] - x[1]);
         return { perFrame: +(all.reduce((t, [, v]) => t + v, 0) / n).toFixed(0), top: Object.fromEntries(all.slice(0, 30).map(([k, v]) => [k, +(v / n).toFixed(1)])) }; })() : undefined,
@@ -227,23 +235,8 @@ try {
       shaderVariantsBuilt: (window.__omwShaderMisses ?? 0) - before.misses, soundsNotReady: P.notReady, readsPutOff: P.rangeNotReady,
       syncFetches: window.__streamfsStats ? (window.__streamfsStats.syncFetches ?? 0) - before.sync : null, cells: [...(P.cells ?? [])],
       phase: window.__omwPhase ?? null,
-      // (OPENMW_ORTHROS_DRAWTHREAD: the page thread's waits for the draw thread, osgViewer/ViewerBase.cpp, and the frames shown)
-      // (drawMs: the draw thread's time on each frame of the measure, its swaps — handed every 60 frames)
-      ...(window.__omwDrawThread ? { drawThread: (() => { const { drawMs = [], ...s } = window.__omwDrawThread, d = drawMs.slice(before.drawn);
-        const pr = window.__omwDrawThreadPresent;
-        // (the present delay: from the end of the page thread's dispatch of a frame to its picture handed to the
-        // compositor, ms, and the page's rendering opportunities between — its animation frames: 0 is the page's own
-        // canvas without the draw thread, committed at the next rendering update after the pump; 1 adds a frame)
-        const lat = (pr?.lat ?? []).filter(([a]) => a >= P.t0), delay = lat.map(([a, b]) => b - a);
-        const vs = lat.map(([a, b]) => { let n = 0; for (const t of P.raf) if (t > a && t < b) n++; return n; });
-        const hist = {}; for (const n of vs) { const k = n >= 3 ? '3+' : String(n); hist[k] = (hist[k] ?? 0) + 1; }
-        return { ...s, shown: window.__omwDrawThreadFrames ?? 0, present: pr ? { posted: pr.posted, dropped: pr.dropped, frames: pr.frames, stale: pr.stale, staleShown: pr.staleShown, kicks: pr.kicks } : null,
-          presentDelay: lat.length ? { frames: lat.length, ms: { p50: q(delay, 0.5), p90: q(delay, 0.9), p99: q(delay, 0.99), max: q(delay, 1) }, vsyncs: { p50: q(vs, 0.5), p90: q(vs, 0.9), p99: q(vs, 0.99), max: q(vs, 1), hist } } : null,
-          prepared: window.__omwDrawThreadPrep ?? null,
-          draw: { frames: d.length, p50: q(d, 0.5), p90: q(d, 0.9), p99: q(d, 0.99), max: q(d, 1), over16: d.filter((w) => w > 1000 / 60).length, over33: d.filter((w) => w > 100 / 3).length } }; })() } : {}),
-      // (the engine's own counters at the end: the loading screens' program compiles, OPENMW_ORTHROS_PRECOMPILE; the
-      // textures uploaded ahead and the images reloaded, light copies replaced)
-      engine: { precompile: window.__omwPrecompile ?? null, texAhead: window.__orthrosTexAhead ?? null, texReloads: window.__orthrosTexReloads ?? null },
+      // (the view's growth at the end — view-grow.js —, its last step's time from the measure's start)
+      view: window.orthrosViewState ? (({ p99s, ...v }) => ({ ...v, sinceRelMs: Math.round(v.since - P.frames[0]) }))(window.orthrosViewState()) : null,
     };
   }, { before });
   if (trCdp) { const done = new Promise((ok) => trCdp.once('Tracing.tracingComplete', ok)); await trCdp.send('Tracing.end'); await done; fs.writeFileSync(path.join(dir, 'gc-trace.json'), JSON.stringify(trEvents)); }

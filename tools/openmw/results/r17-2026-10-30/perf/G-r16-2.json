@@ -1,0 +1,119 @@
+{
+  "manifest": "morrowind-goty-en",
+  "discard": true,
+  "seconds": 60,
+  "warm": 0,
+  "start": "-2,-9",
+  "glide": null,
+  "query": "tier=mid",
+  "bootMs": 13943,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "canvas": {
+    "buffer": "1280x800",
+    "css": "1280x800",
+    "dpr": 1,
+    "antialias": false,
+    "samples": 0,
+    "preserveDrawingBuffer": false
+  },
+  "tier": {
+    "tier": "mid",
+    "deviceMemory": 32
+  },
+  "tierChoice": null,
+  "tierLog": "[tier] mid (navigator.deviceMemory=32, lru=96)",
+  "frames": 1555,
+  "fps": 25.71,
+  "gap": {
+    "p50": 33.3,
+    "p90": 50,
+    "p99": 66.7,
+    "max": 250,
+    "over100": 5,
+    "over250": 0
+  },
+  "work": {
+    "p50": 8.5,
+    "p90": 12.7,
+    "p99": 20.3,
+    "max": 306.7,
+    "over50": 4,
+    "over100": 2
+  },
+  "workEngine": {
+    "p50": 8.5,
+    "p90": 12.7,
+    "p99": 20.3,
+    "max": 306.7
+  },
+  "suspendedMs": 0,
+  "jspi": {
+    "on": false,
+    "suspendedMs": 0,
+    "blocked": null,
+    "frames": null,
+    "soonSpins": 0,
+    "soonSpinMs": 0,
+    "soonSuspends": 0,
+    "soonWaits": 0
+  },
+  "syncPerFrame": {
+    "checkFramebufferStatus": 0.001,
+    "getShaderParameter": 0.003,
+    "getProgramParameter": 0.008
+  },
+  "syncTotal": {
+    "getError": 12,
+    "getShaderParameter": 60,
+    "getProgramParameter": 216,
+    "checkFramebufferStatus": 8
+  },
+  "dataStallMs": 253,
+  "shaderVariantsBuilt": 4,
+  "soundsNotReady": 18,
+  "readsPutOff": 195,
+  "syncFetches": 54,
+  "cells": [
+    "-2 -9",
+    "-2 -8"
+  ],
+  "phase": {
+    "cull": 1.9649999999999996,
+    "draw": 3.88,
+    "physics": 0.316,
+    "mechanics": 0.525,
+    "world": 0.09499999999999999,
+    "lua": 0.48,
+    "gui": 0.121,
+    "input": 0.041,
+    "sound": 0.16999999999999998,
+    "script": 0.31999999999999995,
+    "luaupdate": 0.369,
+    "luawait": 0.004
+  },
+  "view": {
+    "phase": "done",
+    "start": 8192,
+    "target": 12288,
+    "value": 12288,
+    "since": 26189.144999999553,
+    "longAt": 27189.14999999851,
+    "sinceRelMs": 12059
+  },
+  "meter": {
+    "samples": 237,
+    "shownS": 1,
+    "waitingS": 0.3,
+    "shownAt": [
+      [
+        0,
+        0
+      ],
+      [
+        0.6,
+        1.1
+      ]
+    ]
+  },
+  "faults": []
+}

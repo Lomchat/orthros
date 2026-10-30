@@ -1,0 +1,6 @@
+Oct 26 16:18:38 chalco.vps kernel: chrome[3887192]: segfault at 706ad7ffffa8 ip 000058843d86fddf sp 0000706ad7ffffb0 error 6 in chrome[58843aa8a000+d8fb000] likely on CPU 28 (core 5, socket 0)
+Oct 29 22:14:53 chalco.vps kernel: chrome[2956832]: segfault at 135c89271000 ip 000059c7026dfd1f sp 0000135c8926d4c0 error 4 in chrome[59c6fee28000+d8fb000] likely on CPU 46 (core 29, socket 0)
+Oct 30 04:14:50 chalco.vps kernel: chrome[3946069]: segfault at 309a62396000 ip 000056e31b694d1f sp 0000309a623937c0 error 4 in chrome[56e317ddd000+d8fb000] likely on CPU 18 (core 24, socket 0)
+Oct 30 13:00:28 chalco.vps kernel: chrome[1003534]: segfault at 11169434000 ip 0000612431675d1f sp 000001116942fa00 error 4 in chrome[61242ddbe000+d8fb000] likely on CPU 29 (core 6, socket 0)
+Oct 30 13:49:16 chalco.vps kernel: chrome[1111965]: segfault at 19e0e884b000 ip 000060727eb66d1f sp 000019e0e8847200 error 4 in chrome[60727b2af000+d8fb000] likely on CPU 45 (core 28, socket 0)
+Oct 30 14:02:18 chalco.vps kernel: chrome[1140109]: segfault at a8fd405c000 ip 00005d4b29157d1f sp 00000a8fd40595c0 error 4 in chrome[5d4b258a0000+d8fb000] likely on CPU 9 (core 12, socket 0)

@@ -99,15 +99,18 @@ export async function install(win = globalThis, o = {}) {
   const write = (v) => FS.writeFile(VIEW_FILE, `${v} ${s.start}`);
   const tick = () => {
     const data = win.StreamFS?.data?.(); if (!data) return;
-    const t = now(), f = win.orthrosFrames;
-    if (f && Number.isFinite(f.p99)) {
+    const t = now(), f = win.orthrosFrames, state = win.omw?.state ?? {}, report = parseView(state['orthros.view']);
+    // (the frames of play only — the player in the world, frames drawn —: the half seconds of a boot or a load without
+    // a frame (p99 0) made the usual frame 0 for the next 30 s, every frame of a 20 fps machine then a long one holding
+    // the raise — an engine whose boot yields to the page (OpenMW r17, JSPI) gave this look its turns all along the
+    // boot, one that holds the page's thread none: its raise 13 s later, 2026-10-30)
+    if (report && f && Number.isFinite(f.p99) && f.p99 > 0) {
       s.p99s.push(f.p99); if (s.p99s.length > 60) s.p99s.shift();
       // (the usual frame once known — 5 s of samples —, else the fixed bound alone)
       const usual = s.p99s.length >= 10 ? [...s.p99s].sort((a, b) => a - b)[s.p99s.length >> 1] : 0;
       if (f.p99 > Math.max(VIEW.longFrameMs, VIEW.longFactor * usual)) s.longAt = t;
     }
-    const state = win.omw?.state ?? {};
-    const r = growStep(s, { now: t, report: parseView(state['orthros.view']), exterior: !!state['orthros.cell'], quiet: data.quiet(VIEW.quietMs), framesOk: t - s.longAt >= VIEW.holdMs });
+    const r = growStep(s, { now: t, report, exterior: !!state['orthros.cell'], quiet: data.quiet(VIEW.quietMs), framesOk: t - s.longAt >= VIEW.holdMs });
     if (r.write !== undefined) write(r.write);
     if ('prefer' in r) data.prefer(r.prefer);
     if (s.phase === 'done' || s.phase === 'stopped') { (o.clearInterval ?? clearInterval)(timer); timer = null; }

@@ -10,8 +10,12 @@
 //   - coe (scenario C, a debug COE): a warm boot to the world (the engine's start measured: navigation to the first
 //     frame drawn and to the player in the world), the data quiet (--quiet seconds without one of the game's own reads),
 //     a marker request through the proxy (its clock and the page's aligned), then Module._omw_debug_coe(--to) — a whole
-//     exterior worldspace load, the page's thread held by it —, the cell reached (view.lua's 'orthros.cell') and frames
-//     flowing, --after seconds more, closed.
+//     exterior worldspace load: in the call itself, the page's thread held by it, up to r16; at the next frame's start
+//     from r17 on (its export orthros_jspi), inside that frame as a console COE, its reads suspending it (JSPI) —, the
+//     cell reached (view.lua's 'orthros.cell') and frames flowing, --after seconds more, closed.
+//   The page's thread (both scenarios): jspiProbe — a 20 ms timer's lateness, a mouse move's delay every 250 ms — over
+//   the load (the trigger to its steady frames) and jspiAfter over the --after stretch (the view raise view-grow.js
+//   makes once the load is quiet; afterReads: that stretch's reads over the network).
 //   - save (scenario S, a save loaded from the menu, the owner's way): the player's own entry (--entry play: the play
 //     page /ports/openmw/<manifest>/?mode=solo, its engine frame app/index.html?src=hosted[&novid] as the play page
 //     chooses; --entry engine: that frame's page alone), so the engine boots to its MENU; a save made once at --to
@@ -72,9 +76,9 @@
 //     [--profile warm|new] [--teach 0] [--engine-br] [--dry]
 //     save: [--entry play|engine] [--menu 10] [--save <scratch>/saves/<to>.omwsave] [--make-save]
 //     glide: [--glide 0,1,300,3000] [--seconds 150]   door: [--interior '<cell id>'] [--lead 0]
-//     in play (coe, glide, door): [--query lead=1] (added to the measured runs' engine page — not the teach runs': an A/B
-//     of a page switch) [--teach-query lead=1] (added to the teach runs' engine page: what a session with the switch
-//     teaches the next ones)
+//     in play (coe, glide, door) and save --entry engine: [--query lead=1] (added to the measured runs' engine page —
+//     not the teach runs': an A/B of a page switch) [--teach-query lead=1] (added to the teach runs' engine page: what
+//     a session with the switch teaches the next ones)
 //   (--profile-warm defaults to <scratch>/profile-warm for --start -2,-9, <scratch>/profile-warm-<start> otherwise)
 import fs from 'node:fs';
 import path from 'node:path';
@@ -465,10 +469,35 @@ async function placeLead({ name, place, kinds = ['meshes', 'terrain'] }) {
   return { at, listed: list.length, asked: d.want(entries, { prio: 'place', label: 'lead:' + place }), MB: Math.round(bytes / 1e4) / 100 };
 }
 
+/**
+ * The page's thread held — a 20 ms timer's lateness over 60 ms: the blocks — and input delays — a mouse move's, from
+ * the browser's receipt to its handler — between the trigger and the frames' return (or the probe's end); with the
+ * engine's suspensions (JSPI, orthros-r17.patch: StreamFS.jspi()); and the frames drawn meanwhile — the picture held,
+ * whether or not the page's thread was (a suspended frame frees the page, not the picture): the longest gap between
+ * frames drawn, the gaps over 250 ms and their time.
+ */
+function jspiProbe(P, from, to) {
+  if (!P || from === null) return null;
+  const end = to ?? Infinity, b = (P.blocks ?? []).filter(([a, z]) => z > from && a < end).map(([a, z]) => z - a);
+  const i = (P.inputs ?? []).filter(([t]) => t > from && t < end).map(([, d]) => d).sort((x, y) => x - y);
+  const q = (f) => (i.length ? Math.round(i[Math.min(i.length - 1, Math.floor(i.length * f))]) : null);
+  const g = (P.gaps ?? []).filter(([a, z]) => z > from && a < end).map(([a, z]) => z - a), gl = g.filter((x) => x > 250);
+  // (an input every 250 ms whatever the page does — the mouse moves above wait for the page, one at most while it is held,
+  // so a long block is one sample among many: its delay then the rest of the block it falls in, from the blocks)
+  const blocks = (P.blocks ?? []).filter(([a, z]) => z > from && a < end), cad = [];
+  if (Number.isFinite(end)) for (let t = from; t < end; t += 250) { const k = blocks.find(([a, z]) => a <= t && t < z); cad.push(k ? k[1] - t : 0); }
+  cad.sort((x, y) => x - y);
+  const cq = (f) => (cad.length ? Math.round(cad[Math.min(cad.length - 1, Math.floor(cad.length * f))]) : null);
+  return { cadenceP50Ms: cq(0.5), cadenceP95Ms: cq(0.95), cadenceMaxMs: cad.length ? Math.round(cad.at(-1)) : null, frameGapMaxMs: g.length ? Math.round(Math.max(...g)) : null, frameGapsOver250: gl.length, frameGapsOver250Ms: Math.round(gl.reduce((s, x) => s + x, 0)), blockMaxMs: b.length ? Math.round(Math.max(...b)) : 0, blocksOver200: b.filter((x) => x > 200).length, blocksOver1000: b.filter((x) => x > 1000).length, blockedMs: Math.round(b.reduce((s, x) => s + x, 0)),
+    inputs: i.length, inputP50Ms: q(0.5), inputP95Ms: q(0.95), inputMaxMs: i.length ? Math.round(i.at(-1)) : null, engine: P.jspi ?? null };
+}
+
 /** The page's probe, before its scripts (the engine page only): frames drawn, the gaps between them once armed, the engine's main loop, the world and the cells reached, the trigger key. */
 function probe() {
+  // (an engine fault's whole stack in the console's log: the engine's frames are deep)
+  Error.stackTraceLimit = 80;
   if (!location.pathname.includes('/app/')) return;
-  const P = window.__placeProbe = { draws: 0, firstDraw: null, menuAt: null, inWorldAt: null, last: null, on: false, frames: [], gaps: [], cellAt: {}, keyAt: null, cells: [], samples: [] };
+  const P = window.__placeProbe = { draws: 0, firstDraw: null, firstDrawRaf: null, menuAt: null, inWorldAt: null, last: null, on: false, frames: [], gaps: [], cellAt: {}, keyAt: null, cells: [], samples: [] };
   for (const type of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
     if (!type) continue;
     for (const m of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
@@ -477,18 +506,34 @@ function probe() {
   }
   const raf = window.requestAnimationFrame.bind(window);
   let seen = 0;
+  // (the first frame drawn: the page's clock when the rAF callback after the first draw runs — the earliest the browser
+  // can present it —, not the callback's argument: that is the frame's begin, stale by a long task's length when the
+  // callback waited behind one — r14's boot ran its whole load in one task, its first draws then dated from before it,
+  // firstDrawRaf)
   const tick = (t) => {
-    // (an engine drawing on its own thread, OPENMW_ORTHROS_DRAWTHREAD: no WebGL call on this page — its frames are the
-    // pictures it hands to the page, window.__omwDrawThreadFrames, as src/ports/openmw/frame-meter.js counts them)
-    const drawn = P.draws + (window.__omwDrawThreadFrames ?? 0);
-    if (drawn !== seen) {
-      seen = drawn; P.firstDraw ??= t;
+    if (P.draws !== seen) {
+      seen = P.draws; P.firstDraw ??= performance.now(); P.firstDrawRaf ??= t;
       if (P.on) { if (P.last !== null && t - P.last > 100) P.gaps.push([P.last, t]); P.frames.push(t); }
       P.last = t;
     }
     raf(tick);
   };
   raf(tick);
+  // (the page's thread held — a 20 ms timer's lateness —, and input answered — a mouse move's delay from the browser's
+  // receipt to its handler —, once armed: jspiProbe)
+  P.blocks = []; P.inputs = [];
+  let tPrev = performance.now();
+  // (and, once armed, the engine's state as the page's turns see it — its loading screen on or off, its time suspended,
+  // the draws so far — at each change: where a load's frozen stretch went, trace)
+  P.trace = []; let traced = '';
+  const beat = () => {
+    const now = performance.now(); if (P.on && now - tPrev > 60) P.blocks.push([tPrev, now]); tPrev = now;
+    const M = window.Module;
+    if (P.on && M?.orthrosLoading) { const st = `${M.orthrosLoading() ? 1 : 0}`; if (st !== traced) { traced = st; P.trace.push([Math.round(now), +st, Math.round(M.orthrosSuspendedMs ?? 0), P.draws]); } }
+    setTimeout(beat, 20);
+  };
+  setTimeout(beat, 20);
+  window.addEventListener('mousemove', (e) => { if (P.on) P.inputs.push([e.timeStamp, performance.now() - e.timeStamp]); }, true);
   // (the trigger key as the engine's frame receives it: the load's start)
   window.addEventListener('keydown', (e) => { if (P.on && P.keyAt === null && e.key === P.key) { P.keyAt = performance.now(); P.from = P.keyAt; } }, true);
   setInterval(() => {
@@ -500,6 +545,12 @@ function probe() {
     if ((c || (c === '' && P.on)) && !(c in P.cellAt)) P.cellAt[c] = now;
     if (P.on && c !== undefined && P.cells.at(-1)?.[0] !== c) P.cells.push([c, now]);
   }, 100);
+  // (the page's memory every 5 s in its console — the wasm memory, the JS heap, the engine's JSPI state: the last lines
+  // before a renderer crash)
+  setInterval(() => {
+    const M = window.Module, J = window.StreamFS?.jspi?.() ?? null;
+    console.debug(`[mem] t=${Math.round(performance.now())} wasm=${M?.HEAP8 ? Math.round(M.HEAP8.buffer.byteLength / 1048576) : '?'}MB js=${performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : '?'}/${performance.memory ? Math.round(performance.memory.totalJSHeapSize / 1048576) : '?'}MB busy=${M?.orthrosEngineBusy?.() ?? '-'} loading=${M?.orthrosLoading?.() ?? '-'} susp=${Math.round(M?.orthrosSuspendedMs ?? 0)} blocked=${J ? JSON.stringify({ c: J.blocked?.count, w: J.blocked?.waits, p: J.blocked?.proxied, play: J.blocked?.play }) : '-'}`);
+  }, 5000);
   // (the game data's counters while armed, twice a second — none while the page's thread is held: the next one has its growth)
   setInterval(() => {
     const s = P.on && window.__streamfsStats;
@@ -593,7 +644,7 @@ if (MAIN) {
     process.exit(0);
   }
   const { chromium } = await import('playwright');
-  const { launchOptions } = await import('../port-perf.mjs');
+  const { launchOptions, startProfile, stopProfile } = await import('../port-perf.mjs');
   const { startProxy, startOrigin, spkiOf, readLog, loadWindow, summarize } = await import('../net-proxy.mjs');
   const certs = path.join(scratch, 'cert');
   const log = (...a) => console.log('[place-load]', ...a);
@@ -629,6 +680,7 @@ if (MAIN) {
    * server's learned directory: `learn` (default <dir>/learn), a copy of `learnFrom` made first unless that is null (a
    * teach run: the invocation's teach copy, used in place).
    */
+  let lastSession = null;
   async function session({ codeTree, profile, dir, url, ready, init = null, body, learn = path.join(dir, 'learn'), learnFrom = path.join(pristine, 'learn') }) {
     fs.mkdirSync(dir, { recursive: true });
     if (learnFrom) execFileSync('cp', ['-a', learnFrom, learn]);
@@ -644,8 +696,10 @@ if (MAIN) {
       if (init) await ctx.addInitScript(...init);
       const page = ctx.pages()[0] ?? await ctx.newPage();
       page.on('pageerror', (e) => faults.push(e.message.slice(0, 300)));
-      page.on('crash', () => faults.push('page crashed'));
+      // (a renderer crash: its time in the console's log, after the page's last lines — the memory traces among them)
+      page.on('crash', () => { faults.push('page crashed'); consoleLog.write(`=== page crashed at ${new Date().toISOString()}\n`); });
       page.on('console', (m) => consoleLog.write(`${m.type()} ${m.text()}\n`));
+      lastSession = { faults, dir };
       await page.goto(`https://127.0.0.1:${listen}${url}`, { timeout: 120000 });
       const frame = await appFrame(page);
       await frame.waitForFunction(ready, null, { timeout: 900000, polling: 500 });
@@ -745,11 +799,11 @@ if (MAIN) {
     const play = mode !== 'save', goal = mode === 'door' ? '' : target;
     // (--query on the measured runs only: the teach runs of both arms of an A/B the same; --teach-query on the teach runs)
     const q = teach ? o.teachQuery : o.query;
-    const url = play ? enginePage(`&start=${encodeURIComponent(start)}&novid${q ? '&' + q : ''}`) : entry === 'play' ? `/ports/openmw/${encodeURIComponent(id)}/?mode=solo` : enginePage('&novid');
+    const url = play ? enginePage(`&start=${encodeURIComponent(start)}&novid${q ? '&' + q : ''}`) : entry === 'play' ? `/ports/openmw/${encodeURIComponent(id)}/?mode=solo` : enginePage(`&novid${q ? '&' + q : ''}`);
     const init = save ? [injectSave, { dir: save.dir, character: save.character, file: save.file, b64: fs.readFileSync(saveFile).toString('base64') }] : null;
     const ready = play ? inWorld : () => window.__placeProbe?.menuAt != null;
     const res = await session({ codeTree: tree, profile, dir, url, ready, init, learn: learnDir, learnFrom: teach ? null : learnFrom, body: async (frame, { page, proxyNow, faults }) => {
-      const boot = await look(frame, () => ({ firstDraw: window.__placeProbe.firstDraw, menuAt: window.__placeProbe.menuAt, inWorldAt: window.__placeProbe.inWorldAt, cell: window.omw?.state?.['orthros.cell'] ?? null, save: window.__placeSave ?? null }));
+      const boot = await look(frame, () => ({ firstDraw: window.__placeProbe.firstDraw, firstDrawRaf: window.__placeProbe.firstDrawRaf, firstFrameMark: window.__omwBoot?.firstFrame ?? null, menuAt: window.__placeProbe.menuAt, inWorldAt: window.__placeProbe.inWorldAt, cell: window.omw?.state?.['orthros.cell'] ?? null, save: window.__placeSave ?? null }));
       const store0 = await storage(frame, id);
       let quietWaitS = null, lead = null, glideEnd = null;
       if (play) {
@@ -776,6 +830,10 @@ if (MAIN) {
       // (the marker: through the proxy, its log's clock against the engine frame's)
       const mark = `place-${n}-${Date.now()}`;
       const markAt = await frame.evaluate(async (mark) => { const t = performance.now(); await fetch(`/__qa/mark?${mark}`, { cache: 'no-store' }).catch(() => {}); return t; }, mark);
+      // (ORTHROS_PLACE_PROFILE=1, a diagnosis: the page's CPU profile from the trigger to the end of --after, its raw
+      // profile in the run's folder — load.cpuprofile —, the page's clock at its start in the row: profileAt)
+      const cpu = process.env.ORTHROS_PLACE_PROFILE === '1' ? await startProfile(page) : null;
+      const profileAt = cpu ? await frame.evaluate(() => performance.now()) : null;
       if (mode === 'glide') {
         // (perf.mjs's glide: the engine's debug teleport every 33 ms along a straight line, the page's own timer — it goes
         // on while this process waits; the cells crossed and their loads the same at every run)
@@ -810,7 +868,15 @@ if (MAIN) {
         const has = await frame.evaluate(({ x, y }) => {
           const P = window.__placeProbe; if (typeof window.Module?._omw_debug_coe !== 'function') return false;
           P.on = true; P.gaps = []; P.frames = [];
-          setTimeout(() => { P.coeCall = P.from = performance.now(); try { window.Module._omw_debug_coe(x, y); } catch (e) { P.coeErr = String(e?.message ?? e); } P.coeRet = performance.now(); }, 0);
+          // (an engine that runs it at its next frame's start — orthros-r17.patch, its load's reads then suspending that
+          // frame as a console COE's —: its end that frame's stamp, globalThis.orthrosDebugRan.coe; else the call's return)
+          const deferred = typeof window.Module._orthros_jspi === 'function';
+          setTimeout(() => {
+            P.coeCall = P.from = performance.now(); P.coeInFrame = deferred;
+            try { window.Module._omw_debug_coe(x, y); } catch (e) { P.coeErr = String(e?.message ?? e); }
+            if (!deferred) { P.coeRet = performance.now(); return; }
+            const ran = setInterval(() => { const r = window.orthrosDebugRan?.coe; if (r && r[0] >= P.coeCall) { P.coeRet = r[1]; P.coeRan = r[0]; clearInterval(ran); } }, 20);
+          }, 0);
           return true;
         }, { x: toX, y: toY });
         if (!has) throw new Error('Module._omw_debug_coe is not exported by this engine');
@@ -827,6 +893,8 @@ if (MAIN) {
       // (the end: the cell reached and frames flowing — SwiftShader draws a town at a few frames a second on this
       // machine: 3 frames in the last 3 s, no gap over 1 s among them; another cell reported than --to: 20 s of that, noted)
       const deadline = Date.now() + (mode === 'glide' ? 0 : 15 * 60000), keyed = Date.now(); let end = null, said = 0;
+      let jig = 0, jiggling = false;
+      const jiggler = setInterval(() => { if (jiggling) return; jiggling = true; const k = ++jig % 2; page.mouse.move(200 + k * 40, 200 + k * 30).catch(() => {}).finally(() => { jiggling = false; }); }, 250);
       while (Date.now() < deadline) {
         await sleep(1000);
         const s = await look(frame, (target) => {
@@ -842,9 +910,13 @@ if (MAIN) {
       if (!end && mode !== 'glide') notes.push(`cell ${goal || 'interior'} not reached with frames flowing`);
       if (mode === 'door') await pressInEngine(page, frame, 'Backquote');
       const afterLoad = await stats(frame);
+      // (the mouse still moving through --after: the view raise there — view-grow.js, once the load is quiet — has its
+      // input delays too, jspiAfter)
       await sleep((teach ? Math.max(afterS, 25) : afterS) * 1000);
-      const P = await look(frame, () => { const P = window.__placeProbe; return { from: P.from ?? null, keyAt: P.keyAt, armAt: P.armAt ?? null, coeCall: P.coeCall, coeRet: P.coeRet, coeErr: P.coeErr ?? null, gaps: P.gaps, cellAt: P.cellAt, inWorldAt: P.inWorldAt, menuAt: P.menuAt, firstDraw: P.firstDraw, frames: P.frames.length, cell: window.omw?.state?.['orthros.cell'] ?? null, cells: P.cells, samples: P.samples, leads: window.StreamFS?.leads?.() ?? null }; }, undefined, 10000);
-      return { boot, store0, quietWaitS, before, predicted, afterLoad, after: await stats(frame), store1: await storage(frame, id), mark, markAt, end, P, faults, lead, glideEnd };
+      clearInterval(jiggler);
+      const cpuProfile = cpu ? await stopProfile(cpu, 1, path.join(dir, 'load.cpuprofile')).then((r) => ({ at: profileAt, hitches: r.hitches })).catch((e) => ({ error: String(e?.message ?? e) })) : null;
+      const P = await look(frame, () => { const P = window.__placeProbe; return { afterEnd: performance.now(), firstTick: window.__omwBoot?.firstFrame ?? null, from: P.from ?? null, keyAt: P.keyAt, armAt: P.armAt ?? null, coeCall: P.coeCall, coeRet: P.coeRet, coeRan: P.coeRan ?? null, coeInFrame: P.coeInFrame ?? false, coeErr: P.coeErr ?? null, gaps: P.gaps, cellAt: P.cellAt, inWorldAt: P.inWorldAt, menuAt: P.menuAt, firstDraw: P.firstDraw, frames: P.frames.length, cell: window.omw?.state?.['orthros.cell'] ?? null, cells: P.cells, samples: P.samples, leads: window.StreamFS?.leads?.() ?? null, blocks: P.blocks, inputs: P.inputs, jspi: window.StreamFS?.jspi?.() ?? null, precompile: window.__omwPrecompile ? { ...window.__omwPrecompile } : null, view: window.orthrosViewState?.() ?? null, trace: P.trace }; }, undefined, 10000);
+      return { cpuProfile, boot, store0, quietWaitS, before, predicted, afterLoad, after: await stats(frame), store1: await storage(frame, id), mark, markAt, end, P, faults, lead, glideEnd };
     } });
     const recs = readLog(path.join(dir, 'proxy.jsonl'));
     const markRec = recs.find((r) => r.url?.startsWith(`/__qa/mark?${res.mark}`)), docRec = recs.find((r) => r.url?.includes('/app/index.html'));
@@ -862,12 +934,17 @@ if (MAIN) {
     const row = {
       tag, run: n, ...(teach ? { teachRun: true } : {}), ...(o.query ? { query: o.query } : {}), ...(o.teachQuery ? { teachQuery: o.teachQuery } : {}), profile: o.profile, teach: o.teach, tree, commit: treeId(tree), scenario: { coe: 'C', save: 'S', glide: 'G', door: 'D' }[mode], manifest: id, link: { rate, rtt }, ...(mode !== 'save' ? { start } : { entry, menuS, save: path.basename(saveFile) }), to: mode === 'door' ? o.interior : mode === 'glide' ? null : target,
       ...(engineNote ? { engine: engineNote } : {}), wallS: Math.round((Date.now() - t0) / 1000),
+      ...(res.cpuProfile ? { cpuProfile: { ...res.cpuProfile, dir } } : {}),
+      // (the view's growth at the end — view-grow.js: its phase, the distance reached, since when (the page's clock) —, and the trigger's time)
+      view: res.P?.view ? { ...res.P.view, p99s: undefined, sinceRelMs: res.P.from != null ? Math.round(res.P.view.since - res.P.from) : null } : null,
       engineStart: mode !== 'save'
-        ? { firstFrameS: s1(res.boot?.firstDraw), inWorldS: s1(res.boot?.inWorldAt), toInWorld: docRec && res.boot ? summarize(recs, docRec.t + res.boot.inWorldAt) : null }
-        : { firstFrameS: s1(res.boot?.firstDraw), menuS: s1(res.boot?.menuAt), toMenu: docRec && res.boot?.menuAt ? summarize(recs, docRec.t + res.boot.menuAt) : null, save: res.boot?.save ?? null },
+        ? { firstFrameS: s1(res.boot?.firstDraw), firstFrameRafS: s1(res.boot?.firstDrawRaf), firstTickS: s1(res.boot?.firstFrameMark ?? P?.firstTick), inWorldS: s1(res.boot?.inWorldAt), toInWorld: docRec && res.boot ? summarize(recs, docRec.t + res.boot.inWorldAt) : null }
+        : { firstFrameS: s1(res.boot?.firstDraw), firstFrameRafS: s1(res.boot?.firstDrawRaf), firstTickS: s1(res.boot?.firstFrameMark ?? P?.firstTick), menuS: s1(res.boot?.menuAt), toMenu: docRec && res.boot?.menuAt ? summarize(recs, docRec.t + res.boot.menuAt) : null, save: res.boot?.save ?? null },
       quietWaitS: res.quietWaitS,
       load: {
-        ...(mode !== 'save' ? { coeSyncMs: P?.coeRet !== undefined ? Math.round(P.coeRet - P.coeCall) : null, coeErr: P?.coeErr ?? null } : { keySeen: P?.keyAt !== null && P?.keyAt !== undefined, inWorldS: inWorldAt !== null ? s1(inWorldAt - from) : null }),
+        // (coeSyncMs: the call to the end of the COE's own load — in the frame that ran it, its suspensions included,
+        // for an engine that runs it there, coeInFrame; coeWaitMs: the call to that frame's start)
+        ...(mode !== 'save' ? { coeSyncMs: P?.coeRet !== undefined ? Math.round(P.coeRet - P.coeCall) : null, coeInFrame: P?.coeInFrame ?? false, coeWaitMs: P?.coeRan !== null && P?.coeRan !== undefined ? Math.round(P.coeRan - P.coeCall) : null, coeErr: P?.coeErr ?? null } : { keySeen: P?.keyAt !== null && P?.keyAt !== undefined, inWorldS: inWorldAt !== null ? s1(inWorldAt - from) : null }),
         frozenMs: lt.frozenMs, frozenStartMs: lt.frozenStartMs, stallsOver250Ms: lt.stallsOver250Ms,
         cellReachedS: cellAt !== null && from !== null ? s1(cellAt - from) : null, steadyS: lt.steadyAt && from !== null ? s1(lt.steadyAt - from) : null, cellAtEnd: P?.cell ?? null,
       },
@@ -898,6 +975,18 @@ if (MAIN) {
         };
       })() } : {}),
       store: { before: res.store0, after: res.store1 }, all: summarize(recs), faults: res.faults, notes,
+      // (the load's — the trigger to its steady frames —, and the --after stretch's: the view raise view-grow.js makes once
+      // the load is quiet, its serial reads beside it — afterReads, the proxy log's demand reads of that stretch)
+      // (r15's PRECOMPILE counters at the end — globalThis.__omwPrecompile: lateOld > 0, a program precompiled under the
+      // loading screen still compiled at its first draw)
+      precompile: P?.precompile ?? null,
+      // (the engine's loading screen on/off as the page's turns saw it, relative to the trigger: [ms, on, suspended ms,
+      // draws]; and the frame gaps over 250 ms, [start, end] relative to it)
+      loadTrace: from !== null && P?.trace ? P.trace.filter(([t]) => t >= from - 1000).map(([t, ...x]) => [Math.round(t - from), ...x]) : null,
+      gapsRel: from !== null && P?.gaps ? P.gaps.filter(([a, z]) => z - a > 250).map(([a, z]) => [Math.round(a - from), Math.round(z - from)]) : null,
+      jspiProbe: jspiProbe(P, from, lt.steadyAt),
+      jspiAfter: lt.steadyAt ? jspiProbe(P, lt.steadyAt, P?.afterEnd ?? null) : null,
+      afterReads: lt.steadyAt && P?.afterEnd ? win(proxyOf(lt.steadyAt), proxyOf(P.afterEnd)) : null,
     };
     if (teach) fs.writeFileSync(path.join(dir, 'row.json'), JSON.stringify(row) + '\n');
     else fs.appendFileSync(outFile, JSON.stringify(row) + '\n');
@@ -931,7 +1020,18 @@ if (MAIN) {
         const places = placesSummary(learnFrom, id, o.place);
         log(`taught ${o.teach}: ${places ? `${places.file} ${places.bytes} bytes, ${places.places} places, ${o.place}: ${places.target} units` : `no places-${id}.json in the learn copy (the tree's server learns none?)`}`);
       }
-      for (let n = 1; n <= runs; n++) await measured(n, { learnFrom });
+      for (let n = 1; n <= runs; n++) {
+        // (a run that fails — the page crashed, a timeout —: its row says so — the error, the page's faults, its folder
+        // with the console's log —, its profile and server copies removed, and the next run goes on)
+        lastSession = null;
+        try { await measured(n, { learnFrom }); } catch (e) {
+          const dir = lastSession?.dir ?? null;
+          const row = { tag, run: n, ...(o.query ? { query: o.query } : {}), manifest: id, scenario: { coe: 'C', save: 'S', glide: 'G', door: 'D' }[mode], error: String(e?.message ?? e).slice(0, 500), faults: lastSession?.faults ?? [], dir };
+          fs.appendFileSync(outFile, JSON.stringify(row) + '\n');
+          if (dir) for (const d of ['profile', 'learn', 'telemetry']) fs.rmSync(path.join(dir, d), { recursive: true, force: true });
+          log(`${tag} #${n} FAILED: ${row.error} (faults: ${row.faults.join(' | ')}; ${dir})`);
+        }
+      }
     } finally {
       // (the teach copy's places file kept beside its runs, small; the learn copy itself removed)
       if (teachDir) {
