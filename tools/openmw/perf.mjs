@@ -9,7 +9,7 @@
 // Always through tools/with-browser-slot.sh:
 //   tools/with-browser-slot.sh node tools/openmw/perf.mjs <manifest> --url <origin> [--seconds 60] [--warm 10]
 //     [--start -2,-9] [--query tier=high] [--discard] [--run] [--profile] [--out <dir>] [--mem-every s] [--mark]
-//     [--net-after KB/s] [--glcalls] [--channel chromium|shell]   (--channel: Chromium itself in its new headless mode by default, as the bench suite
+//     [--net-after KB/s] [--glcalls] [--console] [--workers] [--channel chromium|shell]   (--channel: Chromium itself in its new headless mode by default, as the bench suite
 //     runs it; shell: Playwright's headless shell, which composites otherwise — 47 fps on the glide where Chromium and
 //     the suite measure 31, tools/port-perf.mjs)   (--run: Shift held, running;
 //     --profile: a CPU profile of the measured seconds, its longest busy stretches and what they ran, tools/port-perf.mjs;
@@ -20,10 +20,21 @@
 // own wrapping costs time: not with the timings of a comparison.
 // The game data's indicator over the measured seconds too (meter: the seconds it was shown, those the engine's reads
 // waited; meter-<s>.png at each time it shows, no-meter-<s>.png now and then).
+// The engine's work per frame (the page's pump, Module._omw_pump_frame): its quantiles, the frames over 16.7, 33, 50 and
+// 100 ms (work.over16 ...) and every frame's work in order (workRaw, ms) for a closer look (tools/openmw/frame-attr.py).
+// --console: the engine's log lines (the page's console, from the page's load on) that say error, fail, traceback,
+// abort or warn, and the Orthros switch lines (OPENMW_ORTHROS_*, "Orthros: ..."), into the JSON ("log": "[+s] text",
+// the first 1000; logCount: all of them).
+// --workers (with --profile): the page's workers profiled too — the engine's pthreads (Lua, NIF, physics, work queue),
+// the data worker — each its own <out>/perf-worker-<n>.cpuprofile over the same measured seconds (Chromium's own
+// debugging socket, a free local port: Target.setAutoAttach on the page, flattened sessions, Profiler at 250 µs in each),
+// listed in the JSON ("workers": file, title, busy ms). Each sampling profiler costs its thread a little: compare runs
+// with the same flags. tools/openmw/frame-attr.py reads any of them.
 // --mem-every s: the page's memory every s seconds of the walk (port-perf.mjs memSampler) and its growth per 10 minutes;
 // --seconds up to 3600 then (300 otherwise)
 import fs from 'node:fs';
 import path from 'node:path';
+import net from 'node:net';
 import { chromium } from 'playwright';
 import { launchOptions, startProfile, stopProfile, memSampler, meterSampler } from '../port-perf.mjs';
 
@@ -32,13 +43,20 @@ if (!id) throw new Error('Expected a manifest id');
 const base = arg('--url', 'http://localhost:8080'), seconds = Math.max(5, Math.min(arg('--mem-every') ? 3600 : 300, Number(arg('--seconds', 60))));
 const warm = Math.max(0, Number(arg('--warm', 10))), start = arg('--start', '-2,-9'), extra = arg('--query', '');
 const discard = args.includes('--discard'), profile = args.includes('--profile'), glide = arg('--glide'), glcalls = args.includes('--glcalls');
+const consoleLog = args.includes('--console'), workers = profile && args.includes('--workers');
 const dir = arg('--out', `/tmp/orthros-scratch/openmw-perf-${id}`);
 fs.mkdirSync(dir, { recursive: true }); process.env.TMPDIR = dir;
-const browser = await chromium.launch(launchOptions({ gl: 'swiftshader', channel: arg('--channel', 'chromium') }));
-const faults = [];
+// (--workers: Chromium's debugging socket on a free local port besides Playwright's pipe)
+const cdpPort = workers ? await new Promise((ok) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => ok(p)); }); }) : null;
+const browser = await chromium.launch(launchOptions({ gl: 'swiftshader', channel: arg('--channel', 'chromium'), args: cdpPort ? [`--remote-debugging-port=${cdpPort}`] : [] }));
+const faults = [], logLines = [];
+let logCount = 0;
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   page.on('pageerror', (e) => faults.push(e.message));
+  // (--console: the engine's print/printErr reach the page's console, its pthreads' through the page too)
+  const logT0 = Date.now(), logWanted = /error|fail|traceback|abort|warn|OPENMW_ORTHROS_|\bOrthros:/i;
+  if (consoleLog) page.on('console', (m) => { const t = m.text(); if (!logWanted.test(t)) return; logCount++; if (logLines.length < 1000) logLines.push(`[+${((Date.now() - logT0) / 1000).toFixed(1)}s] ${t.slice(0, 2000)}`); });
   page.on('crash', () => console.error('perf: the page crashed'));
   // (a measurement: nothing reported to the server — its learned order, telemetry and the gateway's client log stay clean)
   await page.route((u) => /\/clientlog$|\/api\/(telemetry|prefetch|profile-seed|programs|regions)(\/|$)/.test(u.pathname), (r) => r.request().method() === 'GET' ? r.continue() : r.fulfill({ status: 204, body: '' }));
@@ -103,7 +121,9 @@ try {
   const before = await page.evaluate(() => ({ stall: window.__streamfsStats?.stallMs ?? null, sync: window.__streamfsStats?.syncFetches ?? 0, misses: window.__omwShaderMisses ?? 0, cell: window.omw?.state?.['orthros.cell'] ?? null }));
   // (the exterior cells walked through: view.lua's report, looked at every half second)
   await page.evaluate(() => { const P = window.__omwPerfProbe; P.cells = new Set(); P.cellLook = setInterval(() => { const c = window.omw?.state?.['orthros.cell']; if (c) P.cells.add(c); }, 500); });
+  const wprof = workers ? await workerProfiler(cdpPort, page.url()) : null;
   const cdp = profile ? await startProfile(page) : null;
+  if (wprof) await wprof.start();
   await page.evaluate(() => { window.__omwPerfProbe.on = true; });
   if (args.includes('--mark')) console.log('MEASURE START', Date.now()); // (for a recorder outside: perf record, a thread sampler)
   const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => Module.HEAPU8.length') : null;
@@ -147,7 +167,8 @@ try {
       renderer, canvas, tier: window.__omwTier ?? null, tierChoice: window.orthrosTierChoice ?? null, tierLog: /\[tier\][^\n]*/.exec(log)?.[0] ?? null,
       frames: P.frames.length, fps: +(P.frames.length / Math.max(0.001, secs)).toFixed(2),
       gap: { p50: q(gaps, 0.5), p90: q(gaps, 0.9), p99: q(gaps, 0.99), max: q(gaps, 1), over100: gaps.filter((g) => g > 100).length, over250: gaps.filter((g) => g > 250).length },
-      work: { p50: q(P.work, 0.5), p90: q(P.work, 0.9), p99: q(P.work, 0.99), max: q(P.work, 1), over50: P.work.filter((w) => w > 50).length, over100: P.work.filter((w) => w > 100).length },
+      work: { p50: q(P.work, 0.5), p90: q(P.work, 0.9), p99: q(P.work, 0.99), max: q(P.work, 1), over16: P.work.filter((w) => w > 1000 / 60).length, over33: P.work.filter((w) => w > 100 / 3).length, over50: P.work.filter((w) => w > 50).length, over100: P.work.filter((w) => w > 100).length },
+      workRaw: P.work.map((w) => +w.toFixed(2)),
       syncPerFrame: perFrame, syncTotal: P.sync,
       glCalls: P.gl ? (() => { const n = Math.max(1, P.frames.length), all = Object.entries(P.gl).sort((x, y) => y[1] - x[1]);
         return { perFrame: +(all.reduce((t, [, v]) => t + v, 0) / n).toFixed(0), top: Object.fromEntries(all.slice(0, 30).map(([k, v]) => [k, +(v / n).toFixed(1)])) }; })() : undefined,
@@ -158,8 +179,69 @@ try {
     };
   }, { before });
   const prof = cdp ? await stopProfile(cdp, r.frames, path.join(dir, 'perf.cpuprofile')) : undefined;
-  const out = { manifest: id, discard, seconds, warm, start, glide, query: extra, bootMs, ...r, meter, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1), memSamples: mem.samples } : {}), faults, profile: prof };
+  const workerProfiles = wprof ? await wprof.stop(dir) : undefined;
+  const out = { manifest: id, discard, seconds, warm, start, glide, query: extra, bootMs, ...r, meter, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1), memSamples: mem.samples } : {}), faults, profile: prof,
+    ...(workerProfiles ? { workers: workerProfiles } : {}), ...(consoleLog ? { logCount, log: logLines } : {}) };
   fs.writeFileSync(path.join(dir, 'perf.json'), JSON.stringify(out, null, 2));
   await page.screenshot({ path: path.join(dir, 'perf.png') });
-  console.log(JSON.stringify(out));
+  // (the printed line without the raw arrays: they stay in perf.json)
+  const { workRaw: _, log: __, ...line } = out;
+  console.log(JSON.stringify(line));
 } finally { await browser.close(); }
+
+/**
+ * --workers: every worker of the page (and theirs) profiled over Chromium's debugging socket on `port` — the page's
+ * target (its URL `pageUrl`) attached in flattened mode, its workers auto-attached (those already running reported at
+ * once, later ones as they start). start(): Profiler at 250 µs in each, and in each worker attached afterwards;
+ * stop(dir): each profile written to dir/perf-worker-<n>.cpuprofile, their list returned (file, title, url, busy ms).
+ */
+async function workerProfiler(port, pageUrl) {
+  const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  const ws = new WebSocket(webSocketDebuggerUrl);
+  await new Promise((ok, ko) => { ws.onopen = ok; ws.onerror = () => ko(new Error('perf: the debugging socket did not open')); });
+  let next = 1, started = false;
+  const waits = new Map(), sessions = new Map();
+  const send = (method, params = {}, sessionId) => new Promise((ok, ko) => {
+    const msgId = next++; waits.set(msgId, { ok, ko });
+    ws.send(JSON.stringify({ id: msgId, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+  const begin = async (sid) => {
+    const s = sessions.get(sid); if (s.running) return; s.running = true;
+    try { await send('Profiler.enable', {}, sid); await send('Profiler.setSamplingInterval', { interval: 250 }, sid); await send('Profiler.start', {}, sid); } catch (e) { s.error = e.message; }
+  };
+  const autoAttach = (sid) => send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, sid).catch(() => {});
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.id) { const w = waits.get(m.id); waits.delete(m.id); if (w) m.error ? w.ko(new Error(`${m.error.message}`)) : w.ok(m.result); return; }
+    if (m.method === 'Target.attachedToTarget') {
+      const { sessionId, targetInfo } = m.params;
+      if (!/worker/.test(targetInfo.type)) return;
+      sessions.set(sessionId, { title: targetInfo.title, url: targetInfo.url, type: targetInfo.type });
+      autoAttach(sessionId);
+      if (started) begin(sessionId);
+    } else if (m.method === 'Target.detachedFromTarget' && sessions.has(m.params.sessionId)) sessions.get(m.params.sessionId).gone = true;
+  };
+  const { targetInfos } = await send('Target.getTargets');
+  const target = targetInfos.find((t) => t.type === 'page' && t.url === pageUrl) ?? targetInfos.find((t) => t.type === 'page' && t.url.split('?')[0] === pageUrl.split('?')[0]);
+  if (!target) throw new Error(`perf: the page's target was not found (${pageUrl})`);
+  const { sessionId: pageSession } = await send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+  await autoAttach(pageSession);
+  await new Promise((ok) => setTimeout(ok, 300)); // (the workers already running: their attachedToTarget events)
+  return {
+    async start() { started = true; await Promise.all([...sessions.keys()].map(begin)); },
+    async stop(dir) {
+      const out = []; let n = 0;
+      for (const [sid, s] of sessions) {
+        if (!s.running || s.gone || s.error) { if (s.error) out.push({ title: s.title, url: s.url, error: s.error }); continue; }
+        let pr; try { ({ profile: pr } = await send('Profiler.stop', {}, sid)); } catch (e) { out.push({ title: s.title, url: s.url, error: e.message }); continue; }
+        const byId = new Map(pr.nodes.map((x) => [x.id, x])); let busy = 0;
+        pr.samples.forEach((nodeId, i) => { if (byId.get(nodeId).callFrame.functionName !== '(idle)') busy += pr.timeDeltas[i] ?? 0; });
+        const file = `perf-worker-${n++}.cpuprofile`;
+        fs.writeFileSync(path.join(dir, file), JSON.stringify(pr));
+        out.push({ file, title: s.title, url: s.url.slice(0, 200), busyMs: Math.round(busy / 1000), samples: pr.samples.length });
+      }
+      ws.close();
+      return out.sort((a, b) => (b.busyMs ?? -1) - (a.busyMs ?? -1));
+    },
+  };
+}

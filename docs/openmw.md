@@ -1192,6 +1192,21 @@ A change to the engine costs a whole `build.sh` (18-25 min) per try; development
   day 0.007 / 0.003 mean absolute difference, night 0.38 / 0.40, interior 0.21 / 3.19 (one capture each, before the
   averaging: the flicker).
 - `perf.mjs --glcalls`: every WebGL call of the measured seconds counted by name, per drawn frame.
+- `perf.mjs` also gives the engine's work per frame over 16.7 and 33 ms (`work.over16`, `work.over33`) and every frame's
+  work in order (`workRaw`, in `perf.json` only). `--console`: the engine's log lines that say error, fail, traceback,
+  abort or warn, and the switch lines (`OPENMW_ORTHROS_*`, `Orthros: ...`), from the page's load on (`log`, `logCount`).
+  `--workers` (with `--profile`): every worker profiled too (the engine's pthreads — Lua, NIF, physics, navigation, work
+  queue — and the data worker), one `perf-worker-<n>.cpuprofile` each (`workers` in the JSON: title, busy ms), through
+  Chromium's debugging socket on a free local port. Each profiler costs its thread a little: compare runs made with
+  the same flags.
+- `python3 -I tools/openmw/frame-attr.py <out>/perf.cpuprofile --symbols <release>/e/<hash>/openmw.js.symbols
+  [--hitches 25] [--top 30] [--callers <text>] [--callees <text>] [--json <file>]`: the busy ms per frame by bucket
+  (osg-draw+GL, osg-cull, osg-update, lua-update, lua-sync, lua-ui, read-sync, wait, physics, mechanics, sound, gui,
+  engine-other, other; each sample to the first bucket walking from its leaf up, a synchronous read anywhere first —
+  the rules in its header); `--hitches N`: every busy stretch over N ms with its top functions and one cause (its
+  outermost specific frame), then a table by cause. A worker's profile reads the same way (its waits apart: `wait`).
+  The frame count comes from `perf.json` beside the profile (`--frames` otherwise); the symbols must be the measured
+  release's (a dev build's own).
 
 ### The frame's draw and cull bookkeeping: engine orthros-r11 (2026-10-26)
 
