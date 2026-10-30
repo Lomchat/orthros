@@ -161,7 +161,9 @@ export async function startProfile(page) {
  * The profile's summary: self time by function (the WebAssembly's share apart), and the longest stretches without an
  * idle sample — the hitches: their length and the functions they spent it in (a function counted once a sample
  * wherever it is on the stack). `frames`: the measured frames (the WebAssembly's milliseconds a frame); `save`: a file
- * the raw profile is written to (a .cpuprofile, for a closer look).
+ * the raw profile is written to (a .cpuprofile, for a closer look). busy: the page's thread busy — every task, not
+ * only the engine's frame (work done between frames counts too) — in ms a frame, and its stretches without an idle
+ * sample over 16.7, 33 and 50 ms (busy.over16 ...).
  */
 export async function stopProfile(cdp, frames, save = null) {
   const { profile: pr } = await cdp.send('Profiler.stop');
@@ -177,6 +179,8 @@ export async function stopProfile(cdp, frames, save = null) {
     run ??= { us: 0, ids: [] }; run.us += us; run.ids.push([id, us]);
   });
   if (run) runs.push(run);
+  const busyUs = runs.reduce((n, r) => n + r.us, 0), over = (ms) => runs.filter((r) => r.us > ms * 1000).length;
+  const busy = { msPerFrame: Math.round(busyUs / 1000 / Math.max(1, frames) * 100) / 100, over16: over(1000 / 60), over33: over(100 / 3), over50: over(50) };
   const parent = new Map(); for (const n of pr.nodes) for (const c of n.children ?? []) parent.set(c, n.id);
   const hitches = runs.sort((a, b) => b.us - a.us).slice(0, 4).map((r) => {
     const incl = new Map();
@@ -186,7 +190,7 @@ export async function stopProfile(cdp, frames, save = null) {
     }
     return { ms: Math.round(r.us / 1000), top: Object.fromEntries([...incl].filter(([f]) => f !== '(root)').sort((a, b) => b[1] - a[1]).slice(0, 18).map(([f, us]) => [f, Math.round(us / 1000)])) };
   });
-  return { wasmMsPerFrame: Math.round(wasm / 1000 / Math.max(1, frames) * 100) / 100, wasmShare: `${(100 * wasm / total).toFixed(1)}%`,
+  return { wasmMsPerFrame: Math.round(wasm / 1000 / Math.max(1, frames) * 100) / 100, wasmShare: `${(100 * wasm / total).toFixed(1)}%`, busy,
     top: Object.fromEntries([...self].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, us]) => [k, `${(100 * us / total).toFixed(1)}%`])), hitches };
 }
 

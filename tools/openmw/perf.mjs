@@ -9,7 +9,8 @@
 // Always through tools/with-browser-slot.sh:
 //   tools/with-browser-slot.sh node tools/openmw/perf.mjs <manifest> --url <origin> [--seconds 60] [--warm 10]
 //     [--start -2,-9] [--query tier=high] [--discard] [--run] [--profile] [--out <dir>] [--mem-every s] [--mark]
-//     [--net-after KB/s] [--glcalls] [--console] [--workers] [--channel chromium|shell]   (--channel: Chromium itself in its new headless mode by default, as the bench suite
+//     [--net-after KB/s] [--glcalls] [--console] [--workers] [--gctrace] [--heap [--heap-old] [--heap-interval bytes]]
+//     [--snapshot] [--channel chromium|shell]   (--channel: Chromium itself in its new headless mode by default, as the bench suite
 //     runs it; shell: Playwright's headless shell, which composites otherwise — 47 fps on the glide where Chromium and
 //     the suite measure 31, tools/port-perf.mjs)   (--run: Shift held, running;
 //     --profile: a CPU profile of the measured seconds, its longest busy stretches and what they ran, tools/port-perf.mjs;
@@ -30,6 +31,16 @@
 // debugging socket, a free local port: Target.setAutoAttach on the page, flattened sessions, Profiler at 250 µs in each),
 // listed in the JSON ("workers": file, title, busy ms). Each sampling profiler costs its thread a little: compare runs
 // with the same flags. tools/openmw/frame-attr.py reads any of them.
+// --gctrace: the page's garbage collections over the measured seconds (a trace with v8, disabled-by-default-v8.gc,
+// blink_gc and cppgc; only the GC events and the metadata kept) into <out>/gc-trace.json — each event with its reason
+// (scavenge, allocation limit, memory reducer...) and its phases.
+// --heap: a V8 allocation profile of the page's thread over the measured seconds (HeapProfiler sampling, every
+// --heap-interval bytes, 16384 by default, the objects that minor and major collections free kept too: the garbage's
+// sources) into <out>/perf.heapprofile (Chromium DevTools' Memory panel or any reader of .heapprofile); --heap-old:
+// without those minor collections free (what reaches the old generation). --snapshot: a heap snapshot of the page
+// once the measure is over (after the trace and the profiles: its forced full collections are in none of them) into
+// <out>/perf.heapsnapshot — over 100 MB for the game: delete it after use. Allocation sampling and the GC trace cost
+// the page's thread time and move its collections: compare GC counts and timings only between runs with the same flags.
 // --mem-every s: the page's memory every s seconds of the walk (port-perf.mjs memSampler) and its growth per 10 minutes;
 // --seconds up to 3600 then (300 otherwise)
 import fs from 'node:fs';
@@ -123,6 +134,10 @@ try {
   await page.evaluate(() => { const P = window.__omwPerfProbe; P.cells = new Set(); P.cellLook = setInterval(() => { const c = window.omw?.state?.['orthros.cell']; if (c) P.cells.add(c); }, 500); });
   const wprof = workers ? await workerProfiler(cdpPort, page.url()) : null;
   const cdp = profile ? await startProfile(page) : null;
+  const heapCdp = args.includes('--heap') ? await page.context().newCDPSession(page) : null;
+  const trCdp = args.includes('--gctrace') ? await page.context().newCDPSession(page) : null, trEvents = [];
+  if (trCdp) { trCdp.on('Tracing.dataCollected', (e) => { for (const v of e.value) if (v.ph === 'M' || /GC|gc|Sweep|Mark|Scaveng/.test(v.name)) trEvents.push(v); }); await trCdp.send('Tracing.start', { traceConfig: { includedCategories: ['devtools.timeline', 'v8', 'disabled-by-default-v8.gc', 'blink_gc', 'cppgc'], excludedCategories: ['*'] }, transferMode: 'ReportEvents' }); }
+  if (heapCdp) { await heapCdp.send('HeapProfiler.enable'); await heapCdp.send('HeapProfiler.startSampling', { samplingInterval: Number(arg('--heap-interval', 16384)), includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: !args.includes('--heap-old') }); }
   if (wprof) await wprof.start();
   await page.evaluate(() => { window.__omwPerfProbe.on = true; });
   if (args.includes('--mark')) console.log('MEASURE START', Date.now()); // (for a recorder outside: perf record, a thread sampler)
@@ -178,8 +193,12 @@ try {
       phase: window.__omwPhase ?? null,
     };
   }, { before });
+  if (trCdp) { const done = new Promise((ok) => trCdp.once('Tracing.tracingComplete', ok)); await trCdp.send('Tracing.end'); await done; fs.writeFileSync(path.join(dir, 'gc-trace.json'), JSON.stringify(trEvents)); }
+  if (heapCdp) { const { profile: hp } = await heapCdp.send('HeapProfiler.stopSampling'); fs.writeFileSync(path.join(dir, 'perf.heapprofile'), JSON.stringify(hp)); }
   const prof = cdp ? await stopProfile(cdp, r.frames, path.join(dir, 'perf.cpuprofile')) : undefined;
   const workerProfiles = wprof ? await wprof.stop(dir) : undefined;
+  // (the heap snapshot last: its forced full collections and its stall outside the trace and the profiles above)
+  if (args.includes('--snapshot')) { const sc = await page.context().newCDPSession(page); const fd = fs.openSync(path.join(dir, 'perf.heapsnapshot'), 'w'); sc.on('HeapProfiler.addHeapSnapshotChunk', (e) => fs.writeSync(fd, e.chunk)); await sc.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false }); fs.closeSync(fd); }
   const out = { manifest: id, discard, seconds, warm, start, glide, query: extra, bootMs, ...r, meter, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1), memSamples: mem.samples } : {}), faults, profile: prof,
     ...(workerProfiles ? { workers: workerProfiles } : {}), ...(consoleLog ? { logCount, log: logLines } : {}) };
   fs.writeFileSync(path.join(dir, 'perf.json'), JSON.stringify(out, null, 2));

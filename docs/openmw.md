@@ -2111,6 +2111,44 @@ the patch but off unless `=1`: one promising run, the thin link not measured. Le
 slicing/threading (no gain, a day-view difference unexplained) and the Lua profiler (diagnostic). Live, Vanilla+ FR fresh
 load: work p99 31.8 ms, max 74, no frame over 100 ms, no error. Evidence: `data/proof/openmw-perf/round6/`.
 
+### Lua UI textures fetched when declared: measured, kept off (round 7, 2026-10-30)
+
+The commonest remaining hitch is a LuaUi image's first show: `LuaImage::updateProperties` > MyGUI `getTextureSize` >
+`OSGTexture::loadFromFile` reads the whole texture synchronously (a `fetchSync` when its bytes are not in the page). r17
+carries a fix behind `OPENMW_ORTHROS_UITEXAHEAD`, off unless `=1`: a path's first `ui.texture` registration asks the
+page for its bytes (`orthrosRangeReady`, on the page's thread through `mainThreadPost`); the image read later is the
+same. Vanilla+ FR declares 556 textures, 525 not in the page yet (~22 MB). A/B on r17 (`perf.mjs --discard --profile`,
+default against `?omwenv=OPENMW_ORTHROS_UITEXAHEAD=1`, alternated; work in ms over the whole run, loading included;
+counts are frames):
+
+| scenario (runs off / on) | p50 off / on | p99 off / on | max off / on | over 16.7 off / on | over 33 off / on | fps off / on |
+|---|---|---|---|---|---|---|
+| fresh, `--warm 0 --run` 30 s (3 / 3) | 10.9 11.1 10.6 / 11.3 12.1 10.9 | 31.3 29.6 25.7 / 26.2 33.5 25.1 | 59 50 36 / 39 42 80 | 77 79 66 / 87 101 62 | 4 5 4 / 2 8 2 | 25.9 26.9 27.9 / 26.1 24.1 26.5 |
+| `--net-after 1500` (2 / 2) | 10.5 12.4 / 11.4 12.3 | 32.0 32.9 / 27.5 29.9 | 134 95 / 37 57 | 57 98 / 83 132 | 8 6 / 2 5 | 26.7 24.2 / 25.3 23.3 |
+| 1500 KB/s from the page's load, 20 s (3 / 3) | 12.8 (37.1) 13.5 / 12.6 13.9 12.8 | 111 (523) 158 / 33 29 29 | 626 (990) 268 / 241 264 240 | 73 (202) 92 / 80 98 64 | 5 (131) 5 / 4 3 2 | 23.0 (9.9) 23.8 / 24.4 24.3 24.3 |
+
+In parentheses: `off-thin2`, a degraded outlier (fps 9.9, 131 frames over 33 ms), left out of the comparisons below.
+
+What it gains: the image's synchronous reads leave the frames (`getTextureSize` 66-84 ms per fresh run off, 22-38 on;
+the data stall roughly halved on the local link and on the link thin from the load, ~10× smaller after the link is thinned), and on the thin links the long
+frames go (over 100 ms: 5 / 5 off, 2 2 2 on; the `LuaImage` read-sync hitches up to 675 ms gone). On the local link it is
+*not* a frame gain: over 33 ms 13 off / 12 on, the worst frame 80 ms on against 58 off.
+
+What it costs, and why it stays off: more frames miss 16.7 ms where the link is fast enough for the fetches to land
+during play — over 16.7 ms 222 → 250 fresh, 155 → 215 after the link is thinned (+39 %), p50 up in 4 of those 5 pairs,
+fps lower in 4 — the fetches' completion (decompression, block store writes) on the page's thread: a big hitch spread
+into many medium frames, which a 60 fps target does not accept. And on a link thin from the page's load the world shows
+up later: 85.6 / 86.3 s off against 92.2 / 89.1 / 89.4 s on (every on run 2.8-6.6 s slower than every normal off run;
+`off-thin2`, 102.4 s, is the outlier) — the fetches have no priority below the world's announced reads. Not checked: a
+frame-compare on the thin link (pop-in of the world while they take the link) and one frame-compare load that never
+reached the world within 900 s, which arm unknown (no console kept). `frame-compare.mjs` on the local link, day view:
+the interface areas identical.
+
+So `uitexahead.patch` (the default flipped) is not shipped; the switch stays off unless `=1`. Its next form, if taken
+up: the declared paths queued and released a few per frame, held while the loading screen is up or the world's
+announced reads are pending, then over 16.7 ms, p50, over 33 and the time to the world measured again (≥ 5 alternated
+pairs per scenario) before any default changes. Evidence: `data/proof/openmw-perf/round7/`.
+
 ### The steady frame attributed; overlays of the engine's own scripts checked at each release (round 6, 2026-10-30)
 
 Reference r16, Vanilla+ FR, `perf.mjs --run --profile --discard`, 30 s: busy 11.05 ms/frame (osg-draw+GL 3.02,
