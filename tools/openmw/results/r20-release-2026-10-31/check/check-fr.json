@@ -1,0 +1,18 @@
+{
+  "isolated": true,
+  "draws": 35148,
+  "frames": 0,
+  "args": [
+    "./this.program"
+  ],
+  "databases": [
+    "orthros-port:morrowind:goty-vanilla-plus-fr"
+  ],
+  "log": "08.169 I] Orthros: light list StateSets kept between frames: on\n[18:11:08.171 I] Orthros: light buffers sized to their light lists: on\n[18:11:08.172 I] Reserving texture unit for shadow maps: 31\n[18:11:08.188 I] Reserving texture unit for opaque depth texture: 30\n[18:11:08.204 I] 'glDisablei' unsupported, pass normals will not be available to shaders.\n[18:11:08.216 I] Post-processing enabled (GLES path).\n[18:11:08.312 I] Initialized fallback fragment shader pipeline for water ripples\n[18:11:08.326 I] Reserving texture unit for sky RTT: 29\n[18:11:10.011 I] Orthros: Lua UI textures fetched when declared: off (OPENMW_ORTHROS_UITEXAHEAD, off unless 1)\n[18:11:17.100 I] Menu[scripts/omw/settings/menu.lua]:\tGroup key SkyrimCompass_Settings doesn't start with Settings\n[18:11:17.108 I] Menu[scripts/omw/settings/menu.lua]:\tGroup key SkyrimCompass_QuestColor doesn't start with Settings\n[18:11:17.124 I] Menu[scripts/omw/settings/menu.lua]:\tGroup key SkyrimCompass_IconColor doesn't start with Settings\n[18:11:17.126 I] Orthros: Lua's update on its own thread, in parallel with the frame's drawing\n[18:11:17.129 I] Playing \"music/special/morrowind title.mp3\"\n[18:11:17.193 I] Orthros: Lua UI Flex second passes left out when the first changed nothing: on (OPENMW_ORTHROS_LUAUILAYOUT)\n[18:11:17.195 I] Orthros: Lua UI TextEdit text heights kept per width: on (OPENMW_ORTHROS_LUAUITEXTSIZE)\n[18:11:17.656 I] Orthros: GUI vertex arrays rewritten unchanged not uploaded again: on\n[18:11:17.667 W] Orthros: StateGraphs kept through 3 prunes without leaves: on\n[focus] canvas lost focus — click to resume\n",
+  "header": {
+    "fps": 60,
+    "mouse": "Mouse free",
+    "save": "Saved in this browser",
+    "loader": true
+  }
+}

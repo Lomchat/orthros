@@ -1,0 +1,9 @@
+18:09:39 avail=45G load=10.50 tools/openmw/check.mjs /tmp/orthros-scratch/r20-rel/res/check-en morrowind-goty-vanilla-plus-en --seconds 10
+18:10:46 avail=48G load=9.35 tools/openmw/check.mjs /tmp/orthros-scratch/r20-rel/res/check-fr morrowind-goty-vanilla-plus-en --lang fr --seconds 10
+18:11:52 avail=45G load=14.58 place-load side=R tag=r20R-dry --mode save --input-trace --dry
+18:12:03 avail=45G load=14.50 place-load side=R tag=r20R-warm --mode save --warm-only
+18:15:17 avail=50G load=11.18 place-load side=R tag=r20R-save-1 --mode save --input-trace --input-block 2000
+18:16:53 avail=48G load=18.46 place-load side=C tag=r20c-save-1 --mode save --input-trace --input-block 2000
+18:18:28 avail=48G load=21.25 place-load side=C tag=r20c-coe-1 --mode coe
+18:19:58 avail=49G load=20.31 place-load side=R tag=r20R-coe-1 --mode coe
+18:21:54 avail=48G load=18.17 mp r20R-1

@@ -1,0 +1,25 @@
+=== 18:12:03 warm-up R
+[place-load] games: /tmp/orthros-scratch/r20-rel/w20R/games-openmw-web-v1.5.3-orthros-r20 (morrowind: morrowind-goty-en on openmw-web-v1.5.3-orthros-r20, was openmw-web-v1.5.3-orthros-r19; 17 versions; live folder unchanged)
+[place-load] warm-up: /srv/orthros/.claude/worktrees/data-r15, 120 s in the world, profile /tmp/orthros-scratch/r20-rel/w20R/profile-warm
+[place-load] warm-up done: in world 42.2 s, store 672.3 MB, netBw null, 191.73 MB on the wire
+=== 18:15:17 save R
+[place-load] games: /tmp/orthros-scratch/r20-rel/w20R/games-openmw-web-v1.5.3-orthros-r20 (morrowind: morrowind-goty-en on openmw-web-v1.5.3-orthros-r20, was openmw-web-v1.5.3-orthros-r19; 17 versions; live folder unchanged)
+[place-load]   load: 6 frames since the key, in world false, cell null, flowing true
+[place-load]   stage 3: hint {"place":"-2,-9","at":1793466759110} -> {"place":"-2,6","at":1793466948801}; places 1 (target null records, null MB); predicted {"place":"-2,6","why":"newest","save":"/userdata/saves/player/Quicksave.omwsave","listed":0,"asked":0}; before the key: place set 0 requests (0 MB wire, 0 in the menu, first null s, last end null s = null s from the key, 0 in flight), announced 0; load: 3.8 s, 9 serial reads, want 46 (1.55 MB), 3 waits 1166 ms, 0 timeouts
+[place-load] r20R-save-1 #1 (S): engine menu 7.4 s; in world 3.8 s after the key, frozen 1917 ms, steady 6.1 s, cell -2 6; frozen: demand 9 reads, 0.83 MB decoded, spacing p50 116 ms; background 2.06 MB {"archive":1,"_engine":0.93,"content":0.13}; to the world: demand 9, background 0.96 MB; inputs (trace) 179 p50 655 p95 2602 max 2902 ms, block 2000 ms: first 2000, residual {"min":46,"p50":47,"max":47} — trace from 18056 (the page's clock)
+=== 18:16:53 save C
+[place-load] games: /tmp/orthros-scratch/r20-rel/w20c/games-openmw-web-v1.5.3-orthros-r20dev-c (morrowind: morrowind-goty-en on openmw-web-v1.5.3-orthros-r20dev-c, was openmw-web-v1.5.3-orthros-r19; 17 versions; live folder unchanged)
+[place-load] engine brotli: 0 made in 0 s, 3 already there (openmw.js 0.4 -> 0.1 MB, openmw.wasm 34 -> 5.7 MB, openmw.data 204.6 -> 33.4 MB)
+[place-load]   load: 8 frames since the key, in world false, cell null, flowing true
+[place-load]   stage 3: hint {"place":"-2,-9","at":1793448963744} -> {"place":"-2,6","at":1793467044084}; places 1 (target null records, null MB); predicted {"place":"-2,6","why":"newest","save":"/userdata/saves/player/Quicksave.omwsave","listed":0,"asked":0}; before the key: place set 0 requests (0 MB wire, 0 in the menu, first null s, last end null s = null s from the key, 0 in flight), announced 0; load: 3.9 s, 8 serial reads, want 46 (1.55 MB), 3 waits 1201 ms, 0 timeouts
+[place-load] r20c-save-1 #1 (S): engine menu 7.4 s; in world 3.9 s after the key, frozen 1900 ms, steady 11.1 s, cell -2 6; frozen: demand 10 reads, 0.75 MB decoded, spacing p50 118 ms; background 6.95 MB {"archive":4.5,"_engine":1.84,"content":0.61}; to the world: demand 8, background 0.96 MB; inputs (trace) 179 p50 497 p95 2014 max 2239 ms, block 2000 ms: first 1997, residual {"min":41,"p50":41,"max":42} — trace from 17638 (the page's clock)
+=== 18:18:28 coe C
+[place-load] games: /tmp/orthros-scratch/r20-rel/w20c/games-openmw-web-v1.5.3-orthros-r20dev-c (morrowind: morrowind-goty-en on openmw-web-v1.5.3-orthros-r20dev-c, was openmw-web-v1.5.3-orthros-r19; 17 versions; live folder unchanged)
+[place-load] engine brotli: 0 made in 0 s, 3 already there (openmw.js 0.4 -> 0.1 MB, openmw.wasm 34 -> 5.7 MB, openmw.data 204.6 -> 33.4 MB)
+[place-load]   load: 1 frames since the COE, in world true, cell -2 -9, flowing false
+[place-load] r20c-coe-1 #1 (C): engine in world 9.8 s; frozen 1533 ms, steady 5.7 s, cell -2 6; frozen: demand 0 reads, 0 MB decoded, spacing p50 null ms; background 0.22 MB {"archive":0.22}; to steady: demand 9, background 2.2 MB
+=== 18:19:58 coe R
+[place-load] games: /tmp/orthros-scratch/r20-rel/w20R/games-openmw-web-v1.5.3-orthros-r20 (morrowind: morrowind-goty-en on openmw-web-v1.5.3-orthros-r20, was openmw-web-v1.5.3-orthros-r19; 17 versions; live folder unchanged)
+[place-load]   load: 1 frames since the COE, in world true, cell -2 -9, flowing false
+[place-load] r20R-coe-1 #1 (C): engine in world 10.6 s; frozen 1750 ms, steady 5.8 s, cell -2 6; frozen: demand 0 reads, 0 MB decoded, spacing p50 null ms; background 0.22 MB {"archive":0.22}; to steady: demand 8, background 2.56 MB
+=== 18:21:27 PL DONE

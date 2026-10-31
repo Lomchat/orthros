@@ -1,0 +1,5 @@
+[Fri Oct 30 13:00:28 2026] chrome[1003534]: segfault at 11169434000 ip 0000612431675d1f sp 000001116942fa00 error 4 in chrome[61242ddbe000+d8fb000] likely on CPU 29 (core 6, socket 0)
+[Fri Oct 30 13:49:16 2026] chrome[1111965]: segfault at 19e0e884b000 ip 000060727eb66d1f sp 000019e0e8847200 error 4 in chrome[60727b2af000+d8fb000] likely on CPU 45 (core 28, socket 0)
+[Fri Oct 30 14:02:17 2026] chrome[1140109]: segfault at a8fd405c000 ip 00005d4b29157d1f sp 00000a8fd40595c0 error 4 in chrome[5d4b258a0000+d8fb000] likely on CPU 9 (core 12, socket 0)
+[Fri Oct 30 15:10:52 2026] serial[1389034]: segfault at 61 ip 000061a43a94727b sp 00007ffd1fd53ff0 error 4 in serial[61a43a944000+70000] likely on CPU 31 (core 9, socket 0)
+[Sat Oct 31 06:06:37 2026] chrome[3573897]: segfault at 7a1ffa6dbfa8 ip 00005d29a3b3bddf sp 00007a1ffa6dbfb0 error 6 in chrome[5d29a0d56000+d8fb000] likely on CPU 36 (core 16, socket 0)
