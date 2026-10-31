@@ -1,0 +1,64 @@
+save     r18 : tags [r18-save-1 r18-save-2 r18-save-3 r18-save-4]
+   menu 7.1-7.5 med 7.25 (4)  firstFrame 7.1-7.5 med 7.25 (4)  inWorld(key->world) 4.8-4.9 med 4.85 (4) each [4.9 4.8 4.9 4.8]  steady 6.3-7 med 6.65 (4)
+   block 4663-4838 med 4789.5 (4)  input p50 448-591 med 511.5 (4) p95 570-843 med 681.0 (4)  freeze(frameGapMax) 4616-4800 med 4749.5 (4)  after-gap 300-700 med 308.5 (4)
+   lateOld 0 med 0.0 (4)  timeouts 0 med 0.0 (4)  suspended 0 med 0.0 (4)  faults 4 errors 0
+save     r19a: tags [r19a-save-1 r19a-save-2 r19a-save-3 r19a-save-4]
+   menu 7-7.7 med 7.25 (4)  firstFrame 7-7.5 med 7.25 (4)  inWorld(key->world) 5.2-5.5 med 5.3 (4) each [5.2 5.3 5.5 5.3]  steady 7.3-7.7 med 7.45 (4)
+   block 659-817 med 680.5 (4)  input p50 12-24 med 14.5 (4) p95 702-1160 med 868.0 (4)  freeze(frameGapMax) 1867-1967 med 1941.5 (4)  after-gap 283-533 med 466.5 (4)
+   lateOld 0 med 0.0 (4)  timeouts 0 med 0.0 (4)  suspended 3158-3284 med 3209.5 (4)  faults 4 errors 0
+coe      r18 : tags [r18-coe-1 r18-coe-2 r18-coe-3 r18-coe-4]
+   menu -  firstFrame 6.5-7 med 6.9 (4)  inWorld(key->world) - each [None None None None]  steady 5.3-5.7 med 5.35 (4)
+   block 2015-2233 med 2138.0 (4)  input p50 711-820 med 764.0 (4) p95 1747-1957 med 1869.5 (4)  freeze(frameGapMax) 1917-2133 med 2008.0 (4)  after-gap 300-550 med 458.5 (4)
+   lateOld 0 med 0.0 (4)  timeouts -  suspended 0 med 0.0 (4)  faults 4 errors 0
+coe      r19a: tags [r19a-coe-1 r19a-coe-2 r19a-coe-3 r19a-coe-4]
+   menu -  firstFrame 6.3-8 med 7.35 (4)  inWorld(key->world) - each [None None None None]  steady 6.4-6.7 med 6.6 (4)
+   block 201-236 med 218.0 (4)  input p50 52-117 med 71.5 (4) p95 548-723 med 655.5 (4)  freeze(frameGapMax) 1700-1783 med 1742.0 (4)  after-gap 300-700 med 308.5 (4)
+   lateOld 0 med 0.0 (4)  timeouts -  suspended 3337-3461 med 3367.5 (4)  faults 8 errors 0
+saveNew  r18 : tags [r18-saveNew-1 r18-saveNew-2 r18-saveNew-3 r18-saveNew-4]
+   menu 25.1-26.6 med 25.75 (4)  firstFrame 25.1-26.6 med 25.7 (4)  inWorld(key->world) 10.8-11.2 med 10.95 (4) each [11.2 10.9 10.8 11]  steady 13-13.4 med 13.0 (4)
+   block 10785-11163 med 10884.5 (4)  input p50 395-1144 med 474.0 (4) p95 748-1232 med 952.5 (4)  freeze(frameGapMax) 10716-11100 med 10833.0 (4)  after-gap 300-833 med 308.5 (4)
+   lateOld 0 med 0.0 (4)  timeouts 0 med 0.0 (4)  suspended 0 med 0.0 (4)  faults 4 errors 0
+saveNew  r19a: tags [r19a-saveNew-1 r19a-saveNew-2 r19a-saveNew-3 r19a-saveNew-4]
+   menu 24.3-27.1 med 25.9 (4)  firstFrame 24-26.8 med 25.7 (4)  inWorld(key->world) 12.3-13 med 12.45 (4) each [12.3 12.3 13 12.6]  steady 14.1-14.9 med 14.7 (4)
+   block 516-607 med 588.0 (4)  input p50 7-15 med 14.0 (4) p95 355-591 med 452.0 (4)  freeze(frameGapMax) 7633-7850 med 7766.0 (4)  after-gap 300-817 med 300.0 (4)
+   lateOld 0 med 0.0 (4)  timeouts 0 med 0.0 (4)  suspended 18602-20369 med 19064.0 (4)  faults 4 errors 0
+save85k  r18 : tags [r18-save85k-1 r18-save85k-2]
+   menu 10.7 (2)  firstFrame 10.6-10.7 (2)  inWorld(key->world) 27.7 (2) each [27.7 27.7]  steady 29.4-29.5 (2)
+   block 27441-27490 (2)  input p50 385-473 (2) p95 551-770 (2)  freeze(frameGapMax) 27399-27416 (2)  after-gap 700-1700 (2)
+   lateOld 0 (2)  timeouts 0 (2)  suspended 0 (2)  faults 2 errors 0
+save85k  r19a: tags [r19a-save85k-1 r19a-save85k-2]
+   menu 10.7-10.8 (2)  firstFrame 10.6-10.8 (2)  inWorld(key->world) 27.2-27.4 (2) each [27.2 27.4]  steady 28.9-29.6 (2)
+   block 281-330 (2)  input p50 11-14 (2) p95 94-163 (2)  freeze(frameGapMax) 21716-21866 (2)  after-gap 267-317 (2)
+   lateOld 0 (2)  timeouts 0 (2)  suspended 25319-25421 (2)  faults 2 errors 0
+forced   r19a: tags [r19a-forced-save r19a-forced-coe]
+   menu 7.2 (1)  firstFrame 6.3-7.2 (2)  inWorld(key->world) 5.1 (1) each [5.1 None]  steady 6.6-7.2 (2)
+   block 210-595 (2)  input p50 12-56 (2) p95 666-752 (2)  freeze(frameGapMax) 1767-1867 (2)  after-gap 300-317 (2)
+   lateOld 0 (2)  timeouts 0 (1)  suspended 3158-3262 (2)  faults 3 errors 0
+glide85k r18 : tags [r18-glide85k-1]
+   menu -  firstFrame 8.3 (1)  inWorld(key->world) - each [None]  steady 91.5 (1)
+   block 38243 (1)  input p50 713 (1) p95 713 (1)  freeze(frameGapMax) 38148 (1)  after-gap 250 (1)
+   lateOld 0 (1)  timeouts -  suspended 0 (1)  faults 0 errors 0
+glide85k r19a: tags [r19a-glide85k-1]
+   menu -  firstFrame 9.5 (1)  inWorld(key->world) - each [None]  steady 100.2 (1)
+   block 26432 (1)  input p50 106 (1) p95 229 (1)  freeze(frameGapMax) 26382 (1)  after-gap 183 (1)
+   lateOld 0 (1)  timeouts -  suspended 535 (1)  faults 0 errors 0
+play     r18 : runs 8  fps 23.31-25.71 med 24.335 (8) each [23.96 24.19 24.53 24.24 24.49 23.31 25.71 24.43]
+   work p99 18.9-24.5 med 21.45 (8) each [23.4 20.4 24.5 24 22.5 20.2 18.9 20.1]  p50 8.2-10.3 med 9.0 (8)  longest gap 233.3-333.3 med 275.0 (8)  stalls/min 237-342 med 286.0 (8)
+play     r19a: runs 8  fps 23.48-25.78 med 24.645 (8) each [24.62 24.09 25.4 24.36 24.78 25.78 24.67 23.48]
+   work p99 18.2-22.2 med 19.3 (8) each [22.2 20.2 19.9 18.3 20.3 18.7 18.2 18.7]  p50 8.1-9 med 8.7 (8)  longest gap 233.3-366.6 med 275.0 (8)  stalls/min 197-344 med 245.5 (8)
+mp       r18 : r18-1:True r18-2:True
+mp       r19a: r19a-1:True r19a-2:True r19a-3:True r19a-4:False
+
+# new device: a save load's phases (scripts/saveph.py runs/<run>): wwaits = (start s after the key, ms) of each announced wait; esm serial = (start, end, count); readMs = the reads before the serial ones
+r18-saveNew-1-1- inWorld 11.22 wwaits [(0.02, 658), (1.02, 304), (1.33, 2868), (4.31, 3007), (7.32, 550), (7.9, 1)] loadOff None esm serial (8.77, 9.86, 9) reads before 303 readMs 155
+r18-saveNew-2-1- inWorld 10.91 wwaits [(0.03, 560), (0.91, 233), (1.15, 2852), (4.13, 3130), (7.26, 546), (7.84, 1)] loadOff None esm serial (8.63, 9.74, 9) reads before 296 readMs 169
+r18-saveNew-3-1- inWorld 10.84 wwaits [(0.03, 677), (1.0, 294), (1.3, 2883), (4.27, 2910), (7.19, 562), (7.78, 0)] loadOff None esm serial (8.49, 9.56, 9) reads before 298 readMs 139
+r18-saveNew-4-1- inWorld 10.98 wwaits [(0.03, 649), (1.01, 167), (1.19, 2998), (4.28, 3087), (7.37, 554), (7.95, 1)] loadOff None esm serial (8.73, 9.77, 9) reads before 303 readMs 149
+r19a-saveNew-1-1 inWorld 12.34 wwaits [(0.81, 739), (2.01, 225), (2.26, 3029), (5.4, 3130), (8.55, 604), (9.21, 0)] loadOff 10.0 esm serial (10.07, 11.11, 9) reads before 283 readMs 925
+r19a-saveNew-2-1 inWorld 12.28 wwaits [(0.59, 659), (1.64, 228), (1.9, 3032), (5.11, 3081), (8.21, 598), (8.86, 0)] loadOff 9.72 esm serial (9.78, 10.98, 10) reads before 282 readMs 751
+r19a-saveNew-3-1 inWorld 12.96 wwaits [(0.47, 739), (2.27, 289), (2.59, 3014), (5.75, 3219), (8.99, 663), (9.71, 0)] loadOff 10.62 esm serial (10.68, 11.72, 9) reads before 284 readMs 1126
+r19a-saveNew-4-1 inWorld 12.58 wwaits [(0.72, 815), (1.95, 214), (2.19, 3001), (5.33, 3247), (8.6, 601), (9.26, 0)] loadOff 10.15 esm serial (10.2, 11.25, 9) reads before 282 readMs 861
+
+# glide 85 KB/s: ranges asked twice while on the link (scripts/dups.py runs/<run>)
+r18-glide85k-1-1-2026-10 ranges asked again while on the link: 4 wire MB 1.65 [(553444, 'Morrowind.bsa', '213909504'), (545113, 'Morrowind.bsa', '214958080'), (531124, 'Morrowind.bsa', '216006656')]
+r19a-glide85k-1-1-2026-1 ranges asked again while on the link: 3 wire MB 1.1 [(545113, 'Morrowind.bsa', '214958080'), (531124, 'Morrowind.bsa', '216006656'), (19481, 'Morrowind.bsa', '157351936')]

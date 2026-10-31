@@ -1,0 +1,119 @@
+{
+  "manifest": "morrowind-goty-en",
+  "url": "http://127.0.0.1:18965",
+  "reference": "",
+  "views": {
+    "day": {
+      "noise": {
+        "meanAbs": 1.444,
+        "over24": 0
+      },
+      "jspi=0": {
+        "meanAbs": 0.063,
+        "over24": 0
+      }
+    },
+    "night": {
+      "noise": {
+        "meanAbs": 0.015,
+        "over24": 0
+      },
+      "jspi=0": {
+        "meanAbs": 0.014,
+        "over24": 0
+      }
+    },
+    "interior": {
+      "noise": {
+        "meanAbs": 1.277,
+        "over24": 0
+      },
+      "jspi=0": {
+        "meanAbs": 0.989,
+        "over24": 0
+      }
+    }
+  },
+  "data": {
+    "day": {
+      "ref": {
+        "content": "done",
+        "contentLoadingMs": 3514,
+        "contentLoadedMs": 6221,
+        "fetchedBytes": 433302124,
+        "wantWaits": 4,
+        "contentLightRequests": 93
+      },
+      "ref2": {
+        "content": "done",
+        "contentLoadingMs": 3216,
+        "contentLoadedMs": 5843,
+        "fetchedBytes": 428909218,
+        "wantWaits": 3,
+        "contentLightRequests": 92
+      },
+      "v1": {
+        "content": "done",
+        "contentLoadingMs": 3160,
+        "contentLoadedMs": 5547,
+        "fetchedBytes": 438610540,
+        "wantWaits": 5,
+        "contentLightRequests": 92
+      }
+    },
+    "night": {
+      "ref": {
+        "content": "done",
+        "contentLoadingMs": 2957,
+        "contentLoadedMs": 5428,
+        "fetchedBytes": 435382112,
+        "wantWaits": 3,
+        "contentLightRequests": 93
+      },
+      "ref2": {
+        "content": "done",
+        "contentLoadingMs": 3260,
+        "contentLoadedMs": 6029,
+        "fetchedBytes": 430255114,
+        "wantWaits": 4,
+        "contentLightRequests": 81
+      },
+      "v1": {
+        "content": "done",
+        "contentLoadingMs": 3050,
+        "contentLoadedMs": 5479,
+        "fetchedBytes": 441756268,
+        "wantWaits": 5,
+        "contentLightRequests": 92
+      }
+    },
+    "interior": {
+      "ref": {
+        "content": "done",
+        "contentLoadingMs": 3228,
+        "contentLoadedMs": 5881,
+        "fetchedBytes": 454391426,
+        "wantWaits": 2,
+        "contentLightRequests": 81
+      },
+      "ref2": {
+        "content": "done",
+        "contentLoadingMs": 3260,
+        "contentLoadedMs": 6170,
+        "fetchedBytes": 454061740,
+        "wantWaits": 2,
+        "contentLightRequests": 92
+      },
+      "v1": {
+        "content": "done",
+        "contentLoadingMs": 3424,
+        "contentLoadedMs": 5806,
+        "fetchedBytes": 458704276,
+        "wantWaits": 2,
+        "contentLightRequests": 92
+      }
+    }
+  },
+  "shots": "/tmp/orthros-scratch/data-r19/v3/res/fc/out",
+  "faults": []
+}

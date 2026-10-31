@@ -1,0 +1,59 @@
+08:20:57 avail=50G load=8.46 place-load side=18 tag=r18-warm --mode save --warm-only 
+08:24:23 avail=50G load=33.47 place-load side=19a tag=r19a-warm --mode save --warm-only 
+08:27:55 avail=51G load=10.81 place-load side=18 tag=r18-save-1 --mode save 
+08:29:23 avail=51G load=14.10 place-load side=19a tag=r19a-save-1 --mode save 
+08:30:55 avail=46G load=18.40 place-load side=19a tag=r19a-coe-1 --mode coe 
+08:32:24 avail=51G load=11.96 place-load side=18 tag=r18-coe-1 --mode coe 
+08:33:52 avail=51G load=15.28 place-load side=19a tag=r19a-save-2 --mode save 
+08:35:21 avail=50G load=9.56 place-load side=18 tag=r18-save-2 --mode save 
+08:36:50 avail=51G load=15.91 place-load side=18 tag=r18-coe-2 --mode coe 
+08:38:19 avail=49G load=11.93 place-load side=19a tag=r19a-coe-2 --mode coe 
+08:39:49 avail=51G load=11.41 place-load side=18 tag=r18-save-3 --mode save 
+08:41:20 avail=51G load=12.24 place-load side=19a tag=r19a-save-3 --mode save 
+08:42:50 avail=46G load=20.17 place-load side=19a tag=r19a-coe-3 --mode coe 
+08:44:19 avail=51G load=12.74 place-load side=18 tag=r18-coe-3 --mode coe 
+08:45:47 avail=46G load=17.79 place-load side=19a tag=r19a-save-4 --mode save 
+08:47:17 avail=51G load=11.32 place-load side=18 tag=r18-save-4 --mode save 
+08:48:46 avail=46G load=18.68 place-load side=18 tag=r18-coe-4 --mode coe 
+08:50:14 avail=51G load=13.38 place-load side=19a tag=r19a-coe-4 --mode coe 
+08:51:45 avail=46G load=19.10 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/v3/res/perf/r18-1 --query tier=mid --discard --seconds 60 --warm 0
+08:53:06 avail=51G load=14.89 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/perf/r19a-1 --query tier=mid --discard --seconds 60 --warm 0
+08:54:30 avail=48G load=14.75 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/perf/r19a-2 --query tier=mid --discard --seconds 60 --warm 0
+08:55:53 avail=46G load=19.27 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/v3/res/perf/r18-2 --query tier=mid --discard --seconds 60 --warm 0
+08:57:15 avail=46G load=18.51 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/v3/res/perf/r18-3 --query tier=mid --discard --seconds 60 --warm 0
+08:58:37 avail=46G load=19.43 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/perf/r19a-3 --query tier=mid --discard --seconds 60 --warm 0
+09:00:00 avail=51G load=19.87 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/perf/r19a-4 --query tier=mid --discard --seconds 60 --warm 0
+09:01:23 avail=51G load=13.76 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/v3/res/perf/r18-4 --query tier=mid --discard --seconds 60 --warm 0
+09:02:46 avail=48G load=15.79 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/v3/res/perf/r18-5 --query tier=mid --discard --seconds 60 --warm 0
+09:04:08 avail=48G load=19.62 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/perf/r19a-5 --query tier=mid --discard --seconds 60 --warm 0
+09:05:31 avail=48G load=18.96 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/perf/r19a-6 --query tier=mid --discard --seconds 60 --warm 0
+09:06:53 avail=48G load=20.42 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/v3/res/perf/r18-6 --query tier=mid --discard --seconds 60 --warm 0
+09:08:17 avail=48G load=19.60 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/v3/res/perf/r18-7 --query tier=mid --discard --seconds 60 --warm 0
+09:09:40 avail=48G load=21.15 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/perf/r19a-7 --query tier=mid --discard --seconds 60 --warm 0
+09:11:03 avail=51G load=15.79 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/perf/r19a-8 --query tier=mid --discard --seconds 60 --warm 0
+09:12:27 avail=51G load=11.01 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/v3/res/perf/r18-8 --query tier=mid --discard --seconds 60 --warm 0
+09:13:49 avail=48G load=13.90 place-load side=18 tag=r18-saveNew-1 --mode save --profile new --read-trace 
+09:15:53 avail=48G load=15.27 place-load side=19a tag=r19a-saveNew-1 --mode save --profile new --read-trace 
+09:17:56 avail=46G load=21.42 place-load side=19a tag=r19a-save85k-1 --mode save --rate 85k --read-trace 
+09:20:00 avail=49G load=11.31 place-load side=18 tag=r18-save85k-1 --mode save --rate 85k --read-trace 
+09:22:05 avail=48G load=19.09 place-load side=19a tag=r19a-saveNew-2 --mode save --profile new --read-trace 
+09:24:09 avail=46G load=20.58 place-load side=18 tag=r18-saveNew-2 --mode save --profile new --read-trace 
+09:26:11 avail=51G load=16.20 place-load side=18 tag=r18-save85k-2 --mode save --rate 85k --read-trace 
+09:28:16 avail=46G load=13.34 place-load side=19a tag=r19a-save85k-2 --mode save --rate 85k --read-trace 
+09:30:23 avail=48G load=19.37 tools/openmw/frame-compare.mjs openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/fc --variant  --variant jspi=0 --out /tmp/orthros-scratch/data-r19/v3/res/fc/out
+09:39:35 avail=47G load=24.12 tools/openmw/check.mjs openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/check-en --seconds 10
+09:40:06 avail=50G load=21.14 tools/openmw/check.mjs openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/check-fr --lang fr --seconds 10
+09:40:37 avail=51G load=18.27 mp openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/mp/r19a-1
+09:44:30 avail=51G load=12.70 mp openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/v3/res/mp/r18-1
+09:48:34 avail=51G load=13.99 mp openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/mp/r19a-2
+09:52:21 avail=51G load=13.04 mp openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/mp/r19a-3
+09:56:11 avail=51G load=13.24 mp openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/v3/res/mp/r18-2
+10:00:09 avail=51G load=19.83 mp openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/v3/res/mp/r19a-4
+10:05:22 avail=51G load=13.69 place-load side=19a tag=r19a-forced-save --mode save chrome-args=--memlog=all-renderers --memlog-sampling-rate=100000 --memlog-stack-mode=native
+10:06:51 avail=46G load=18.31 place-load side=19a tag=r19a-forced-coe --mode coe chrome-args=--memlog=all-renderers --memlog-sampling-rate=100000 --memlog-stack-mode=native
+10:08:20 avail=51G load=20.24 place-load side=19a tag=r19a-glide85k-1 --mode glide --rate 85k --seconds 90 --query preloadwait=1000 --read-trace 
+10:11:23 avail=49G load=8.57 place-load side=18 tag=r18-glide85k-1 --mode glide --rate 85k --seconds 90 --query preloadwait=1000 --read-trace 
+10:14:43 avail=46G load=20.55 place-load side=18 tag=r18-saveNew-3 --mode save --profile new --read-trace 
+10:16:47 avail=46G load=13.31 place-load side=19a tag=r19a-saveNew-3 --mode save --profile new --read-trace 
+10:18:51 avail=47G load=13.56 place-load side=19a tag=r19a-saveNew-4 --mode save --profile new --read-trace 
+10:20:53 avail=46G load=21.36 place-load side=18 tag=r18-saveNew-4 --mode save --profile new --read-trace 

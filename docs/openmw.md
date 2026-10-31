@@ -3330,6 +3330,124 @@ overlay-check run on r19a; `make test` below):**
 `make test` on this tree: 1,708 tests, 1,705 pass, 0 fail (1 skipped, 2 todo). `r19dev-a` is a development build in scratch (engine `515236e0e051`); the release r19 is still to be built from the
 lock entry (files `{}`) by `tools/openmw/build.sh`.
 
+##### The third full validation: `r19dev-a` against the live r18, and the verdict (2026-10-31)
+
+`r19dev-a` (engine `515236e0e051`: r1..r18 + `orthros-r19.patch` with `r19x-a.patch` folded in; this tree's page at
+`18b5143`) validated from scratch against the live `openmw-web-v1.5.3-orthros-r18` (engine `a2808b8cf12a`, served
+read-only from `data/engines`). Both sides ran this tree's page code, so they differ only in the JSPI parts. The live
+learned state and br-cache were copied at 08:19. Every server ran on its own copy of that learned state and on the
+frozen br-cache copy, which holds the lean package `2c6b8e83` (lean3): both engines' `openmw.data` are the same file, so
+one lean package serves both. Each side had its own warm profile, made the same way by its own warm-up (r18 187.7 MB on
+the wire, r19a 190.7 MB; menus 7.1-7.5 against 7.0-7.7 s, so neither side fetched a package the other had).
+
+Runs alternated r18 / r19a, with the order swapped every pair, one browser at a time through
+`tools/with-browser-slot.sh`, from 08:20 to 10:23. Each start's load and memory are in `logs/runs-started.txt` (59
+starts). The slot script held every browser until the load fell under 24. Memory was logged every 30 s
+(`logs/memory.log`); available memory never fell below 40 GB. Results are in
+`tools/openmw/results/r19-2026-10-31/validation3/`: rows, each run's console, proxy log and read trace, `perf.json` files,
+two-client runs, checks, frame comparison, logs and driver scripts. `scripts/summary3.py` prints `summary.txt` from them.
+
+| | r18 (live) | r19 (`r19dev-a`) |
+| --- | --- | --- |
+| in play (`perf.mjs tier=mid --discard --warm 0`, 60 s, 8 a side): fps | 23.31-25.71, median 24.34 | 23.48-25.78, median 24.65 |
+| in play: work p99 (ms) | 18.9-24.5, median 21.45 | 18.2-22.2, median 19.3 |
+| in play: work p50 / longest gap (ms) | 8.2-10.3 / 233-333 | 8.1-9.0 / 233-367 |
+| in play: data stalls (ms a minute) | 237-342 | 197-344 |
+| save, warm (4 a side): menu (s) | 7.1-7.5 | 7.0-7.7 |
+| save, warm: F9 to the world (s) | 4.9, 4.8, 4.9, 4.8 | **5.2, 5.3, 5.5, 5.3** |
+| save, warm: page's longest block (ms) | 4663-4838 | 659-817 |
+| save, warm: input p95 (ms) | 843, 771, 591, 570 (median 681) | **1160, 719, 1017, 702 (median 868)** |
+| save, warm: the visible freeze (`frameGapMaxMs`) | 4616-4800 | 1867-1967 |
+| COE, warm (4 a side): first frame (s) | 6.5-7.0 | 6.3-8.0 |
+| COE: page's longest block (ms) | 2015-2233 | 201-236 |
+| COE: input p95 (ms) | 1747-1957 | 548-723 |
+| COE: the visible freeze (ms) | 1917-2133 | 1700-1783 |
+| COE: steady in the world (s) | 5.3-5.7 | 6.4-6.7 |
+| new device, save (4 a side): menu (s) | 25.1-26.6, median 25.75 | 24.3-27.1, median 25.9 |
+| new device: F9 to the world (s) | 11.2, 10.9, 10.8, 11.0 | **12.3, 12.3, 13.0, 12.6** |
+| new device: page's block / the visible freeze (s) | 10.8-11.2 / 10.7-11.1 | 0.52-0.61 / 7.6-7.9 |
+| 85 KB/s, save (2 a side): menu / F9 to the world (s) | 10.7 / 27.7, 27.7 | 10.7-10.8 / 27.2, 27.4 |
+| 85 KB/s: page's block / input p95 (ms) | 27441-27490 / 551-770 | 281-330 / 94-163 |
+| `__omwPrecompile.lateOld` after the load | 0 (every run) | 0 (every run, including the 2 forced ones) |
+| two clients (`mp-check.mjs`) | 2 of 2 | 3 of 4 |
+
+- **Two clients.** r19's failure (`r19a-4`) is the 57-58-unit gap the second validation saw (`r18-2` there), with the
+  mover reversed. B's third move ended 5 units from its spot, and A's copy of B stayed 58 units from it, 33 lower, for
+  60 s. Every other check of that run passed, including the move to the next cell, where the copies were 0-6 units off.
+- **Pictures** (`frame-compare.mjs` on r19a, `''` against `?jspi=0`; mean absolute difference out of 255, the noise in
+  parentheses): day 0.063 (1.444), night 0.014 (0.015), interior 0.989 (1.277). No pixel differs by more than 24, so the
+  pictures are unchanged.
+- **check.mjs** passed on r19a in English (44,022 draws) and with `--lang fr` (`morrowind-goty-fr`, its scratch manifest
+  moved to r19dev-a: 47,850 draws).
+- **overlay-check.mjs** against `r19dev-a`: both Morrowind games' overlays agree with their originals.
+- **`make test`**: 1,708 tests, 1,705 pass, 0 fail (1 skipped, 2 todo).
+- **Crashes: none in 45 r19a page sessions.** Those were:
+  - 18 place-load sessions (the warm-up included);
+  - 8 `perf.mjs` runs;
+  - frame-compare's 9 page loads;
+  - the 2 checks;
+  - the 8 pages of the 4 two-client runs.
+
+  No page showed an error other than Chromium's pointer-lock message, which appears on both sides. The kernel logged no
+  segfault after 06:06 (another session's browser, see above). With Chromium's heap profiler forced on every renderer, a
+  save boot and its load (F9 to the world 5.1 s) and a COE boot and its load did not crash.
+- **A new device's F9, attributed** (`scripts/saveph.py` on the read traces; `summary.txt` lists every run):
+  - The 9 serial `Morrowind.esm` reads start 9.8-10.7 s after the key on r19a, against 8.5-8.8 s on r18. From their end
+    to the world it is the same on both sides (1.2-1.4 s).
+  - **The load starts later on r19a.** Its first announced wait begins 0.47-0.81 s after the key, against 0.02-0.03 s.
+    The load is put off to the promising frame, and on a new device that frame comes later.
+  - **The reads before the serial ones take longer on r19a.** There are 282-284 of them on r19a against 296-303, but
+    they take 751-1126 ms against 139-169 ms: these are the reads that the 10 ms spin answered, or that suspended after
+    it.
+  - The announced waits are the same length on both sides (about 7.2 s in all).
+  - On a warm profile (validation `load4/` above), the same two parts are smaller: +0.1-0.3 s before the serial reads and
+    +0.2-0.4 s after them.
+- **(d) is not fully closed.** One glide a side at 85 KB/s with `?preloadwait=1000` (`scripts/dups.py`):
+  - **What was measured:** 3 ranges were asked twice while already on the link on r19a (1.10 MB more), and 4 on r18
+    (1.65 MB). The page's longest block was 26.4 s on r19a against 38.2 s on r18.
+  - **Why:** the order was the reverse of the one `80d1ffd` fixed. In both runs a demand read fetched the entry's 1 MiB
+    blocks first (r19a at 34.5 s, r18 at 42.0 s). The preload's announced ask (`w=1`) for the same blocks came 6-8 s
+    later, and `fetchBackgroundNow` does not join a foreground fetch already in flight. The join (`fgFlights`) is only
+    checked by a read, and only `fetchAhead` registers its pieces there.
+  - **Also:** two foreground reads of the same 64 KiB piece overlapped by 0.1 s.
+  - **Status:** this is shared page code, the same on both sides, and is still open.
+
+**Verdict: NO-SHIP.** By criterion:
+1. **Crashes: met.** 0 in 45 r19a sessions, and 0 with the heap profiler forced on a save load and on a COE.
+2. **In play: met on this sample.** Over 8 runs a side:
+   - fps median 24.65 against 24.34 (+0.31, on the better side);
+   - work p99 median 19.3 against 21.45 ms (better);
+   - work p99 spread 18.2-22.2 against 18.9-24.5 (no worse);
+   - longest gap and stalls within r18's range.
+
+   r18's p99 this time was higher than in `play1/` (median 19.95 ms there), at loads of 11-21. Across the three samples
+   (validation2, `play1/`, this one), r19's in-play work is at parity with r18 within the run-to-run noise. It is no
+   longer outside it.
+3. **Loads: the COE met; the warm save not met on two measures.**
+   - COE, met: page block 201-236 ms against 2015-2233; input p95 548-723 ms against 1747-1957; visible freeze 1700-1783
+     ms against 1917-2133. Its time to a steady world is still 0.7-1.4 s later (6.4-6.7 s against 5.3-5.7).
+   - Save, met: page block 0.66-0.82 s against 4.66-4.84 s; the visible freeze 1.87-1.97 s against 4.62-4.80 s, so
+     `frameGapMaxMs` is better.
+   - Save, not met: F9 to the world is 5.2-5.5 s against 4.8-4.9 s in every run, 0.3-0.6 s outside r18's spread.
+   - Save, not met: input p95 is worse, not better (median 868 ms against 681; 702-1160 against 570-843). The second
+     validation's median was 689 against 756, and `load2`-`load4`'s was 780 against 845. Input p95 is about even
+     between the two sides; it is not the clear improvement the criterion asks for.
+4. **New device: not met for F9; everything else met.**
+   - New device, not met: the menu is at parity (medians 25.9 against 25.75 s over 4 pairs, with overlapping ranges),
+     but F9 to the world is 12.3-13.0 s against 10.8-11.2, 1.1-1.8 s later in all 4 pairs. This is attributed above:
+     the load starts later, and the spun or suspended reads before the serial ones take 0.6-1.0 s more.
+   - Met: 85 KB/s (menu 10.7-10.8 against 10.7 s; F9 27.2-27.4 against 27.7 s; page block 0.28-0.33 s against 27.4-27.5
+     s).
+   - Met: the pictures are unchanged, the two-client check passed 3 of 4, `lateOld` is 0, check.mjs passed in EN and
+     FR, overlay-check passed and `make test` is green.
+
+**Next.** What separates r19 from shipping is when a save load starts and how its reads are answered before the serial
+esm reads (criteria 3 and 4). A warm profile adds +0.4 s to F9; a new device adds +1.3-1.5 s. The next step is to start
+the save's load in the frame that receives the key, instead of the next promising frame, and to time the 10 ms spin's
+answers and suspensions per read in that phase. Next comes a CPU and GPU profile of the play page itself over the load
+(still open from (a)). Then an announced background ask should join a foreground fetch already in flight (`fgFlights`
+in `fetchBackgroundNow`) — the remaining part of (d).
+
 ### The engine's language and dialogue topic colours (2026-10-28)
 
 OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own
