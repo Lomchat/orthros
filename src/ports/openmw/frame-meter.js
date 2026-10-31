@@ -20,7 +20,7 @@
   const tick = (t) => { const d = drawn(); if (d !== seen) { seen = d; frames.push(t); } requestAnimationFrame(tick); };
   requestAnimationFrame(tick);
   // the engine's frame timed whole (its pump, Module._omw_pump_frame): `done(ms, suspendedMs)` once it ended — a frame
-  // that suspends while it waits for the game's files (the Orthros build's JSPI, orthros-r19.patch) returns a promise
+  // that suspends while it waits for the game's files (the Orthros build's JSPI, orthros-r20.patch) returns a promise
   // and ends when it settles, its time then the whole of it, `suspendedMs` the part the engine stood suspended
   // (Module.orthrosSuspendedMs) —; `f` timed returned (the bench hooks below, tools/openmw/perf.mjs)
   window.orthrosFrameTimer = (f, done) => function (...a) {

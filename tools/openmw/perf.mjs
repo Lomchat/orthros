@@ -105,10 +105,11 @@ try {
     }, 50);
     const wrap = setInterval(() => {
       const M = window.Module, f = M?._omw_pump_frame; if (!f || f.orthrosTimed) return;
-      // (a page without orthrosFrameTimer 10 s after the engine's frames began — a code tree before r19's frame-meter.js —:
+      // (a page without orthrosFrameTimer 10 s after the engine's frames began — a code tree before r20's frame-meter.js —:
       // the call timed, as it was then)
       if (!window.orthrosFrameTimer && ++P.timerWait < 200) return;
-      const done = (ms, suspendedMs) => { if (P.on) { P.work.push(ms); P.workEngine.push(ms - suspendedMs); P.suspended += suspendedMs; } };
+      // (each pump's start and end too, the page's clock — the frame timeline's, --trace)
+      const done = (ms, suspendedMs) => { if (P.on) { P.work.push(ms); P.workEngine.push(ms - suspendedMs); P.suspended += suspendedMs; if (P.pumps.length < 100000) { const t1 = performance.now(); P.pumps.push(+(t1 - ms).toFixed(3), +t1.toFixed(3)); } } };
       const timed = window.orthrosFrameTimer?.(f, done) ?? function (...a) { const t0 = performance.now(); try { return f.apply(this, a); } finally { done(performance.now() - t0, 0); } };
       timed.orthrosTimed = true; M._omw_pump_frame = timed; clearInterval(wrap);
     }, 50);
@@ -188,7 +189,7 @@ try {
   if (glide) {
     // (a straight line at a set speed from the start cell's centre, whatever is in the way: the engine's debug
     // teleport, omw_debug_teleport, every 33 ms — the cells crossed and their loads the same at every run; an Orthros
-    // build from r19 on moves the player at its next frame's start, to the last position asked — inside the frame, its
+    // build from r20 on moves the player at its next frame's start, to the last position asked — inside the frame, its
     // crossings' reads suspending it as a walk's —, an older one in the call itself)
     const [dx, dy, speed, z] = glide.split(',').map(Number), [cx, cy] = start.split(',').map(Number), n = Math.hypot(dx, dy) || 1;
     await page.evaluate(({ x0, y0, vx, vy, z }) => {
@@ -225,6 +226,8 @@ try {
       gap: { p50: q(gaps, 0.5), p90: q(gaps, 0.9), p99: q(gaps, 0.99), max: q(gaps, 1), over100: gaps.filter((g) => g > 100).length, over250: gaps.filter((g) => g > 250).length },
       work: { p50: q(P.work, 0.5), p90: q(P.work, 0.9), p99: q(P.work, 0.99), max: q(P.work, 1), over16: P.work.filter((w) => w > 1000 / 60).length, over33: P.work.filter((w) => w > 100 / 3).length, over50: P.work.filter((w) => w > 50).length, over100: P.work.filter((w) => w > 100).length },
       workRaw: P.work.map((w) => +w.toFixed(2)),
+      // (each drawn frame's time from the measure's start, ms: the first seconds in the world apart, --warm 0)
+      framesRaw: P.frames.map((t) => +(t - P.frames[0]).toFixed(1)),
       // (the frames' time without their suspensions — the engine running —, and the suspensions' sum: JSPI builds only)
       workEngine: { p50: q(P.workEngine, 0.5), p90: q(P.workEngine, 0.9), p99: q(P.workEngine, 0.99), max: q(P.workEngine, 1) }, suspendedMs: Math.round(P.suspended),
       jspi: window.StreamFS?.jspi?.() ?? null,
@@ -237,6 +240,23 @@ try {
       phase: window.__omwPhase ?? null,
       // (the view's growth at the end — view-grow.js —, its last step's time from the measure's start)
       view: window.orthrosViewState ? (({ p99s, ...v }) => ({ ...v, sinceRelMs: Math.round(v.since - P.frames[0]) }))(window.orthrosViewState()) : null,
+      // (OPENMW_ORTHROS_DRAWTHREAD: the page thread's waits for the draw thread, osgViewer/ViewerBase.cpp, and the frames shown)
+      // (drawMs: the draw thread's time on each frame of the measure, its swaps — handed every 60 frames)
+      ...(window.__omwDrawThread ? { drawThread: (() => { const { drawMs = [], ...s } = window.__omwDrawThread, d = drawMs.slice(before.drawn);
+        const pr = window.__omwDrawThreadPresent;
+        // (the present delay: from the end of the page thread's dispatch of a frame to its picture handed to the
+        // compositor, ms, and the page's rendering opportunities between — its animation frames: 0 is the page's own
+        // canvas without the draw thread, committed at the next rendering update after the pump; 1 adds a frame)
+        const lat = (pr?.lat ?? []).filter(([a]) => a >= P.t0), delay = lat.map(([a, b]) => b - a);
+        const vs = lat.map(([a, b]) => { let n = 0; for (const t of P.raf) if (t > a && t < b) n++; return n; });
+        const hist = {}; for (const n of vs) { const k = n >= 3 ? '3+' : String(n); hist[k] = (hist[k] ?? 0) + 1; }
+        return { ...s, shown: window.__omwDrawThreadFrames ?? 0, present: pr ? { posted: pr.posted, dropped: pr.dropped, frames: pr.frames, stale: pr.stale, staleShown: pr.staleShown, kicks: pr.kicks } : null,
+          presentDelay: lat.length ? { frames: lat.length, ms: { p50: q(delay, 0.5), p90: q(delay, 0.9), p99: q(delay, 0.99), max: q(delay, 1) }, vsyncs: { p50: q(vs, 0.5), p90: q(vs, 0.9), p99: q(vs, 0.99), max: q(vs, 1), hist } } : null,
+          prepared: window.__omwDrawThreadPrep ?? null,
+          draw: { frames: d.length, p50: q(d, 0.5), p90: q(d, 0.9), p99: q(d, 0.99), max: q(d, 1), over16: d.filter((w) => w > 1000 / 60).length, over33: d.filter((w) => w > 100 / 3).length } }; })() } : {}),
+      // (the engine's own counters at the end: the loading screens' program compiles, OPENMW_ORTHROS_PRECOMPILE; the
+      // textures uploaded ahead and the images reloaded, light copies replaced)
+      engine: { precompile: window.__omwPrecompile ?? null, texAhead: window.__orthrosTexAhead ?? null, texReloads: window.__orthrosTexReloads ?? null },
     };
   }, { before });
   if (trCdp) { const done = new Promise((ok) => trCdp.once('Tracing.tracingComplete', ok)); await trCdp.send('Tracing.end'); await done; fs.writeFileSync(path.join(dir, 'gc-trace.json'), JSON.stringify(trEvents)); }

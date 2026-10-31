@@ -1,1097 +1,2184 @@
+diff --git a/deps/src/osg/src/osgViewer/ViewerBase.cpp b/deps/src/osg/src/osgViewer/ViewerBase.cpp
+index 1ff41f7..18de928 100644
+--- a/deps/src/osg/src/osgViewer/ViewerBase.cpp
++++ b/deps/src/osg/src/osgViewer/ViewerBase.cpp
+@@ -40,6 +40,620 @@ static osg::ApplicationUsageProxy ViewerBase_e4(osg::ApplicationUsage::ENVIRONME
+ static osg::ApplicationUsageProxy ViewerBase_e5(osg::ApplicationUsage::ENVIRONMENTAL_VARIABLE,"OSG_RUN_MAX_FRAME_RATE","Set the maximum number of frame as second that viewer run. 0.0 is default and disables an frame rate capping.");
+ static osg::ApplicationUsageProxy ViewerBase_e6(osg::ApplicationUsage::ENVIRONMENTAL_VARIABLE,"OSG_RUN_FRAME_COUNT", "Set the maximum number of frames to run the viewer run method.");
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#include <emscripten/html5.h>
++#include <emscripten/proxying.h>
++#include <emscripten/threading.h>
++#include <osg/GraphicsThread>
++#include <pthread.h>
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cstdint>
++#include <deque>
++#include <mutex>
++#include <vector>
++
++// Orthros (drawthread.patch, OPENMW_ORTHROS_DRAWTHREAD; the engine selects DrawThreadPerContext with it, and only with
++// it, on the web — this file only reacts to that threading model). The web build's graphics thread owns its own WebGL
++// context (an OffscreenCanvas of the pthread, components/sdlutil/sdlgraphicswindow.cpp) and the page thread has none
++// once threading started: stopThreading() cannot hand the context back to the page thread and a new graphics thread
++// would be a new pthread with an empty context. So, with DrawThreadPerContext on the web:
++// - stopThreading() only waits until every frame the page thread dispatched has been drawn and swapped and every
++//   draw-thread job (below) has run (nothing in flight while its caller changes shared state, the reason OpenMW calls
++//   it), the graphics thread kept; startThreading() is then a no-op (_threadsRunning stays true);
++// - the graphics thread waits between frames in a gate of its own (OrthrosFrameGate, before the frame's draws) and not
++//   in the Renderer's draw queue: there it runs the jobs the page thread hands it (orthrosDrawThreadRun: WebGL work
++//   between frames — the uploads ahead, the global map's read), at once, a frame dispatched or not; a page thread
++//   waiting for a job never waits for a frame it has not dispatched. (A GraphicsContext::add operation, after the swap
++//   in the graphics thread's queue, would wait for the next frame.)
++// - the graphics thread is event-driven (OrthrosGraphicsThread, below): once its context is current it returns to its
++//   worker's event loop (emscripten_exit_with_live_runtime) and never blocks there between frames; its operations
++//   (the gate, the frame's draws, the swap) run in tasks — a frame dispatched, a job queued or the page's kick wakes it
++//   with one task proxied to it (orthrosDrawThreadWake: emscripten_proxy_async on the system queue, from any thread,
++//   through Atomics.waitAsync on the worker: no step of the page's event loop), and each task draws at most one frame,
++//   the next frame's in the worker's next task (a MessageChannel self-post: no timer clamp). A task may still block
++//   inside, as the draws wait for the frame's culls. Why: Chrome releases a transferred ImageBitmap's GPU memory through
++//   a task on the worker that made it — a worker that never returns to its event loop leaks every frame it posts
++//   (~4 MB each at 1280x800).
++// The threading model is fixed for the session (setThreadingModel) and the web build never destroys its viewer
++// (~Viewer's close would cancel a graphics thread that is never in its loop).
++
++// (the page thread) the draw thread's worker, made before main() with its WebGL2 context (wasm-build/orthros-gl.js:
++// Module.orthrosDrawWorker): 1 when ready and its context's attributes are the page context's
++// (components/sdlutil/sdlgraphicswindow.cpp compared them); 0 — none asked for, -1 — not made (refused, or no
++// answer), -2 — attributes that differ
++// clang-format off
++EM_JS(int, orthros_drawthread_prepared, (), {
++    var p = Module['orthrosDrawWorker'];
++    if (!p || !p.worker) return p && p.state == 'failed' ? -1 : 0;
++    if (p.state != 'ready') return -1;
++    if (p.claimed) return -3;
++    return p.compatible === false ? -2 : 1;
++});
++
++// (the page thread) that worker handed to the next pthread made: the pool's next one (Emscripten 6.0.1's
++// PThread.getNewWorker takes the last of unusedWorkers); 1 when handed
++EM_JS(int, orthros_drawthread_claim, (), {
++    var p = Module['orthrosDrawWorker'];
++    if (!p || !p.worker || p.claimed || p.state != 'ready') return 0;
++    p.claimed = true;
++    PThread.unusedWorkers.push(p.worker);
++    return 1;
++});
++
++// (the page thread) that worker not used: its context lost (its memory freed), the worker given to the pool — or, not
++// ready (its preparation failed or never answered), ended: a worker never handed to the pool
++EM_JS(void, orthros_drawthread_release, (), {
++    var p = Module['orthrosDrawWorker'];
++    if (!p || !p.worker || p.claimed) return;
++    p.claimed = true;
++    try { p.worker.postMessage({ orthrosDrawRelease: 1 }); } catch (e) {}
++    if (p.state == 'ready') PThread.unusedWorkers.push(p.worker);
++    else { try { p.worker.terminate(); } catch (e) {} }
++});
++
++// (the graphics thread, at its gate's exit for a frame) the drawing buffer sized for that frame before its draws: the
++// size of the window when the page thread dispatched it (a resize takes effect on the frame culled with it, as the
++// page canvas resized synchronously by SDL does without the draw thread). Resizing clears the buffer: nothing drawn yet.
++EM_JS(void, orthros_drawthread_resize, (int width, int height), {
++    var s = globalThis.__omwDrawThreadGL;
++    if (!s || width <= 0 || height <= 0) return;
++    if (s.canvas.width !== width) s.canvas.width = width;
++    if (s.canvas.height !== height) s.canvas.height = height;
++});
++
++// (the graphics thread, its gate with nothing to do) the newest frame held back while the page had not shown the previous one
++// (components/sdlutil/sdlgraphicswindow.cpp, orthros_drawthread_present) posted as soon as the page has shown it — the
++// page shows the newest frame drawn, as the page's canvas shows the last frame drawn in a task without the draw thread
++EM_JS(void, orthros_drawthread_flush_held, (), {
++    var s = globalThis.__omwDrawThreadGL;
++    if (s && s.held && s.flushHeld) s.flushHeld();
++});
++
++// (the page thread) the session ended with the page's fatal notice (play/index.html's fatalOverlay: it stops the engine's
++// main loop, at each call — none before the boot's end —, and shows its panel once): the draw thread has no context.
++// Not the engine's quit (the viewer's done): the page restarts on a quit — a reload, the same failure again, for ever.
++EM_JS(void, orthros_drawthread_fatal, (), {
++    try {
++        if (typeof fatalOverlay === 'function')
++            fatalOverlay('Graphics unavailable', 'This browser could not draw the game on a worker thread. '
++                + 'Reload with ?omwenv=OPENMW_ORTHROS_DRAWTHREAD=0 to draw it on the page.');
++    } catch (e) {}
++});
++
++// (the graphics thread, once its context is current, before it returns to its event loop) its pump's JavaScript side:
++// pump() runs orthros_drawthread_pump (a task proxied to this thread, or the next turn below) — a crash inside (a trap,
++// an abort) told to the page as the thread's crash: its notice (components/sdlutil/sdlgraphicswindow.cpp's `crashed`)
++// and Emscripten's crashed-thread flag, which unwinds the page thread out of its waits for this thread (a task run from
++// the mailbox's promise or a MessageChannel never reaches the worker's own crash path); defer() — the pump again in
++// the worker's next task (a MessageChannel self-post: no timer clamp), one outstanding at most; busy() — a frame drawn
++// in this task already (its next turn pending). Anything thrown out of a pump — a trap, an abort, an exception, even
++// an 'unwind' (this thread never unwinds out of a pump: its pump state would stay "in a pump" and every later frame
++// wait for ever) — is the thread's crash. 0 when Emscripten's mailbox has no Atomics.waitAsync (polyfilled: a task
++// proxied to this thread would be relayed through the page thread's event loop, which a page thread waiting for this
++// thread never reaches — wasm-build/orthros-gl.js checks it first, the session then draws on the page)
++EM_JS(int, orthros_drawthread_event_setup, (), {
++    if (typeof waitAsyncPolyfilled != 'undefined' && waitAsyncPolyfilled) return 0;
++    if (globalThis.__omwDrawThreadTurn) return 1;
++    var t = globalThis.__omwDrawThreadTurn = { posted: false, again: false, turns: 0, pumps: 0, inPump: false };
++    t.pump = function() {
++        t.pumps++;
++        t.inPump = true;
++        try {
++            _orthros_drawthread_pump();
++        } catch (e) {
++            var s = globalThis.__omwDrawThreadGL;
++            var what = e === 'unwind' ? 'unwound out of a pump' : ((e && (e.message || e)) || 'error');
++            try { if (s && s.crashed) s.crashed(what); } catch (x) {}
++            try { if (typeof __emscripten_thread_crashed === 'function') __emscripten_thread_crashed(); } catch (x) {}
++            throw e;
++        } finally {
++            t.inPump = false;
++        }
++    };
++    var channel = new MessageChannel();
++    channel.port1.onmessage = function() {
++        t.posted = false;
++        t.turns++;
++        if (t.again) {
++            t.again = false;
++            t.pump();
++        }
++    };
++    t.defer = function() {
++        t.again = true;
++        if (!t.posted) {
++            t.posted = true;
++            channel.port2.postMessage(0);
++        }
++    };
++    return 1;
++});
++
++EM_JS(void, orthros_drawthread_pump_js, (), {
++    var t = globalThis.__omwDrawThreadTurn;
++    if (t) t.pump();
++});
++
++EM_JS(int, orthros_drawthread_turn_busy, (), {
++    var t = globalThis.__omwDrawThreadTurn;
++    return t && t.posted ? 1 : 0;
++});
++
++EM_JS(void, orthros_drawthread_defer, (), {
++    var t = globalThis.__omwDrawThreadTurn;
++    if (t) t.defer();
++});
++// clang-format on
++
++namespace
++{
++    struct OrthrosDrawThreadCounters
++    {
++        std::mutex mMutex;
++        std::condition_variable mChanged; // (a frame dispatched or swapped, a job queued or run)
++        unsigned long long mDispatched = 0;
++        unsigned long long mSwapped = 0;
++        std::deque<osg::ref_ptr<osg::GraphicsOperation>> mJobs;
++        bool mJobRunning = false;
++        // statistics: the page thread's waits for the draw thread (the end of the frame's dynamic draw), ms
++        double mDynWaitMs = 0;
++        double mDynWaitMax = 0;
++        double mQuiesceMs = 0;
++        unsigned mQuiesces = 0;
++        unsigned mFrames = 0;
++        unsigned mJobsRun = 0;
++        double mJobsMs = 0;
++        // frames drawn before pending jobs (a frame dispatched waits for no job queued before it, at most once: the
++        // jobs then run first), and the jobs' ms before a frame the page waited for vs. between frames
++        unsigned mJobsDeferred = 0;
++        bool mJobsYielded = false;
++        // the window's size when each frame was dispatched (the page thread), its drawing buffer sized at its draw
++        int mSizes[64][2] = {};
++        // the graphics thread's time on each frame, ms: from the later of its gate's exit and the end of the frame's
++        // culls to its swap (a frame's first draws can overlap the culls of its other cameras: a lower bound).
++        // Appended by the graphics thread, handed to the page (__omwDrawThread.drawMs) with the statistics above.
++        double mCulledTimes[64] = {};
++        double mGateExit = 0;
++        std::vector<float> mDrawMs;
++        // the frames' timeline (emscripten_get_now ms; __omwDrawThread.tlPage / tlDraw, page time): the page thread's
++        // [seq, dispatch, culls' end, wait start, wait end] (its own), the graphics thread's [seq, start of the pump
++        // that drew it, gate exit, culls' end, dynamic draw done (the page released), swap, completions]
++        std::vector<double> mPageTl;
++        std::vector<double> mDrawTl;
++        double mPumpT0 = 0;      // (the graphics thread's: its current pump's start)
++        double mCompletedAt = 0; // (the frame drawn: when its last dynamic object was drawn, OrthrosEndOfDynamicDrawBlock)
++        unsigned mCompletions = 0;
++    };
++
++    // The page thread's wait for the frame's dynamic objects (osg::EndOfDynamicDrawBlock), the moment it ends noted
++    // (the graphics thread, Renderer::draw: at the draw's start when the frame has no DYNAMIC drawable or state set)
++    struct OrthrosEndOfDynamicDrawBlock : public osg::EndOfDynamicDrawBlock
++    {
++        explicit OrthrosEndOfDynamicDrawBlock(unsigned int count) : osg::EndOfDynamicDrawBlock(count) {}
++        void completed(osg::State* state) override;
++    };
++
++    OrthrosDrawThreadCounters& orthrosDrawThreadCounters()
++    {
++        static OrthrosDrawThreadCounters* counters = new OrthrosDrawThreadCounters; // (never destroyed: threads)
++        return *counters;
++    }
++
++    // Set once the graphics thread made its context current (OrthrosGraphicsThread::run, before it returns to its event
++    // loop). Creating a WebGL context on a worker waits for a task of the page thread's event loop
++    // (Chromium creates the context provider there), and the page thread does not return to its event loop during the
++    // engine's synchronous boot (main() -> Engine::go(), loading screens included): a page thread waiting for the
++    // graphics thread's draws then would wait for ever. So the context is made before main() runs, on the worker that
++    // runs the graphics thread (wasm-build/orthros-gl.js, orthrosDrawWorker; handed to the graphics thread below,
++    // orthros_drawthread_claim), and startThreading() waits for this flag (or the failure's) before it returns: the
++    // boot's loading screens draw on the graphics thread, their program compiles (OPENMW_ORTHROS_PRECOMPILE) and
++    // incremental uploads with them, as on the page's thread. renderingTraversals() still draws nothing until it is set
++    // (no wait for frames that cannot come: a context made otherwise — no context made before main() — needs the end of
++    // the boot).
++    std::atomic<bool> sOrthrosContextReady{ false };
++    // Set instead when the graphics thread could not make its context (no WebGL2 on a worker's OffscreenCanvas):
++    // renderingTraversals() then ends the session with the page's fatal notice (never a draw without a context).
++    std::atomic<bool> sOrthrosContextFailed{ false };
++    // Set when startThreading() started a graphics thread for DrawThreadPerContext (the session's model: never
++    // changed after, setThreadingModel below).
++    std::atomic<bool> sOrthrosDrawThreadInUse{ false };
++
++    // The graphics thread (set before its context is ready, so before any wake: the page thread dispatches no frame and
++    // queues no job until then), a pump task proxied to it and not run yet (one at most), and the pump's counts
++    // (published with the statistics: __omwDrawThread.wakes / pumps / pumpFrames)
++    std::atomic<pthread_t> sOrthrosDrawPthread{ 0 };
++    std::atomic<bool> sOrthrosPumpQueued{ false };
++    std::atomic<unsigned> sOrthrosWakes{ 0 };
++    std::atomic<unsigned> sOrthrosPumps{ 0 };
++    // the pumps' own time (start to stop, ms), the pumps that ran no operation, and the delay of the next turn (from
++    // its MessageChannel post to the pump it runs, ms: total and max) — __omwDrawThread.pumpMs / emptyPumps / turnMs /
++    // turnMax / turnRuns
++    std::atomic<double> sOrthrosPumpMs{ 0 };
++    std::atomic<unsigned> sOrthrosEmptyPumps{ 0 };
++    std::atomic<double> sOrthrosTurnMs{ 0 };
++    std::atomic<double> sOrthrosTurnMax{ 0 };
++    std::atomic<unsigned> sOrthrosTurnRuns{ 0 };
++    // a wake could not reach the graphics thread (emscripten_proxy_async refused: the thread is gone): the session
++    // ends with the page's notice — renderingTraversals dispatches no more frames, no job is queued
++    std::atomic<bool> sOrthrosWakeFailed{ false };
++
++    // The frames' timeline (tlPage / tlDraw below) is a measuring probe: recorded and published only with
++    // OPENMW_ORTHROS_DTTIMELINE=1 (tools/openmw/perf.mjs asks for it), read once. Off, a frame costs no insert and no
++    // array is kept on the page.
++    bool orthrosTimelineOn()
++    {
++        static const bool on = [] {
++            const char* v = getenv("OPENMW_ORTHROS_DTTIMELINE");
++            return v != nullptr && v[0] == '1';
++        }();
++        return on;
++    }
++
++    // (the page thread's own: set by renderingTraversals from a frame's dispatch to the end of its culls) Inside that
++    // window the graphics thread may be blocked in Renderer::draw's queue on this very thread's cull, so a job queued
++    // from there and waited for would never run: orthrosDrawThreadRun refuses a waited job then.
++    thread_local bool tOrthrosInCull = false;
++
++    // (the graphics thread, a task of its event loop: Emscripten's mailbox) the pump: OrthrosGraphicsThread::pump below.
++    // The only place that clears the queued flag — before the pump looks at the work: a wake after this point proxies
++    // another task, one before it is seen by this pump. (The pump's next turn, a MessageChannel task, leaves the flag
++    // alone: a task proxied meanwhile is still on its way.)
++    void orthrosPumpTask(void*)
++    {
++        sOrthrosPumpQueued.store(false);
++        orthros_drawthread_pump_js();
++    }
++
++    // (any thread) the graphics thread has work — a frame dispatched, a job queued, the page's kick: one pump task
++    // proxied to it, unless one is queued and not run yet. Never waits: the proxied task reaches the worker through
++    // Atomics.waitAsync (Emscripten's mailbox), no step of the page's event loop — a page thread then waiting for the
++    // draw thread does not deadlock. False when the task could not be proxied (sOrthrosWakeFailed set).
++    bool orthrosDrawThreadWake()
++    {
++        const pthread_t thread = sOrthrosDrawPthread.load();
++        if (thread == 0 || sOrthrosPumpQueued.exchange(true))
++            return true;
++        ++sOrthrosWakes;
++        if (!emscripten_proxy_async(emscripten_proxy_get_system_queue(), thread, orthrosPumpTask, nullptr))
++        {
++            sOrthrosPumpQueued.store(false);
++            if (!sOrthrosWakeFailed.exchange(true))
++                OSG_FATAL << "Orthros: the draw thread could not be woken (emscripten_proxy_async failed): the session ends"
++                          << std::endl;
++            return false;
++        }
++        return true;
++    }
++
++    // (the graphics thread, before each frame's draws) the jobs handed meanwhile run, until a frame is dispatched.
++    // Never waits: pass() is false when there is nothing to do (no frame dispatched, no job) — the graphics thread then
++    // returns to its event loop until a wake (OrthrosGraphicsThread::pump)
++    struct OrthrosFrameGate : public osg::GraphicsOperation
++    {
++        OrthrosFrameGate() : osg::GraphicsOperation("OrthrosFrameGate", true) {}
++        // (only a stock GraphicsThread's OperationThread::run calls this — OrthrosGraphicsThread::pump calls pass(),
++        // startThreading always installs it: never expected. r8v's blocking wait then, rather than a busy loop.)
++        void operator()(osg::GraphicsContext* context) override
++        {
++            static std::atomic<bool> told{ false };
++            if (!told.exchange(true))
++                OSG_WARN << "Orthros: the frame gate runs outside OrthrosGraphicsThread::pump: it blocks between frames"
++                         << std::endl;
++            OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++            while (!pass(context))
++            {
++                std::unique_lock<std::mutex> lock(c.mMutex);
++                if (c.mDispatched == c.mSwapped && c.mJobs.empty())
++                    c.mChanged.wait(lock);
++            }
++        }
++        bool pass(osg::GraphicsContext* context)
++        {
++            OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++            std::unique_lock<std::mutex> lock(c.mMutex);
++            while (true)
++            {
++                // (a frame dispatched first: the page thread waits for its dynamic draw, _endDynamicDrawBlock — the
++                // jobs queued meanwhile run after its swap, at the next pass here; once only: a page dispatching faster
++                // than this thread draws would starve them, so jobs passed over once run before the next frame)
++                if (c.mDispatched > c.mSwapped && (c.mJobs.empty() || !c.mJobsYielded))
++                {
++                    if (!c.mJobs.empty())
++                    {
++                        c.mJobsYielded = true;
++                        ++c.mJobsDeferred;
++                    }
++                    break;
++                }
++                if (!c.mJobs.empty())
++                {
++                    c.mJobsYielded = false;
++                    double ms = 0;
++                    {
++                        osg::ref_ptr<osg::GraphicsOperation> job = std::move(c.mJobs.front());
++                        c.mJobs.pop_front();
++                        c.mJobRunning = true;
++                        lock.unlock();
++                        const double t0 = emscripten_get_now();
++                        (*job)(context);
++                        ms = emscripten_get_now() - t0;
++                    }
++                    lock.lock();
++                    c.mJobRunning = false;
++                    ++c.mJobsRun;
++                    c.mJobsMs += ms;
++                    c.mChanged.notify_all();
++                    continue;
++                }
++                // (nothing to do: the newest frame held back posted if the page showed the previous one meanwhile —
++                // orthros_drawthread_kick wakes this thread then —, and back to the event loop)
++                lock.unlock();
++                orthros_drawthread_flush_held();
++                lock.lock();
++                if (c.mDispatched > c.mSwapped || !c.mJobs.empty())
++                    continue;
++                return false;
++            }
++            c.mGateExit = emscripten_get_now();
++            c.mCompletedAt = 0;
++            c.mCompletions = 0;
++            const int width = c.mSizes[c.mSwapped % 64][0], height = c.mSizes[c.mSwapped % 64][1];
++            lock.unlock();
++            orthros_drawthread_resize(width, height);
++            return true;
++        }
++    };
++
++    // SwapBuffersOperation, then the frame counted as swapped (the graphics thread)
++    struct OrthrosCountedSwap : public osg::GraphicsOperation
++    {
++        OrthrosCountedSwap() : osg::GraphicsOperation("OrthrosCountedSwap", true) {}
++        void operator()(osg::GraphicsContext* context) override
++        {
++            if (context)
++            {
++                context->swapBuffersImplementation();
++                context->clear();
++            }
++            const double now = emscripten_get_now();
++            OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++            {
++                std::lock_guard<std::mutex> lock(c.mMutex);
++                const double culled = c.mCulledTimes[c.mSwapped % 64];
++                const double start = culled > c.mGateExit ? culled : c.mGateExit;
++                if (c.mDrawMs.size() < 4096) c.mDrawMs.push_back(static_cast<float>(now - start));
++                if (orthrosTimelineOn() && c.mDrawTl.size() < 7 * 4096)
++                    c.mDrawTl.insert(c.mDrawTl.end(), { static_cast<double>(c.mSwapped + 1), c.mPumpT0, c.mGateExit,
++                        culled, c.mCompletedAt, now, static_cast<double>(c.mCompletions) });
++                ++c.mSwapped;
++            }
++            c.mChanged.notify_all();
++        }
++    };
++
++    // The graphics thread of DrawThreadPerContext on the web: event-driven (the file's head). run() makes the context
++    // current, says so (startThreading's wait), then returns to the worker's event loop for good
++    // (emscripten_exit_with_live_runtime: the pthread stays, isRunning() stays true; no C++ object alive across it).
++    // Each pump() — a task of that event loop — runs the thread's operation queue as OperationThread::run would (the
++    // gate, the frame's draws, the swap, and any operation added to the queue, in order), but stops at the gate when
++    // it has nothing to do, and after one frame swapped: the next frame's operations run in the worker's next task
++    // (orthros_drawthread_defer), so the worker returns to its event loop between any two frames and Chrome frees the
++    // bitmaps the page has replaced. A frame dispatched while this thread draws the previous one waits for that turn
++    // only (no frame of latency added). Operations run with no queue lock held, as in OperationThread::run.
++    class OrthrosGraphicsThread : public osg::GraphicsThread
++    {
++    public:
++        void run() override
++        {
++            bool ready = false;
++            {
++                osg::GraphicsContext* context = dynamic_cast<osg::GraphicsContext*>(getParent());
++                if (context)
++                {
++                    context->makeCurrent();
++                    context->getState()->initializeExtensionProcs();
++                }
++                // (makeCurrent's failure is ignored, as GraphicsThread::run does: a context current on this thread is
++                // the proof it was made)
++                ready = emscripten_webgl_get_current_context() != 0;
++                if (ready && !orthros_drawthread_event_setup())
++                {
++                    // (never here in Chrome: orthros-gl.js gives no draw thread without Atomics.waitAsync)
++                    OSG_FATAL << "Orthros: no Atomics.waitAsync for the draw thread's wakes" << std::endl;
++                    ready = false;
++                }
++                if (ready)
++                    sOrthrosDrawPthread.store(pthread_self());
++                (ready ? sOrthrosContextReady : sOrthrosContextFailed).store(true);
++                OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++                std::lock_guard<std::mutex> lock(c.mMutex);
++                c.mChanged.notify_all();
++            }
++            OSG_INFO << "Orthros: the graphics thread returns to its event loop (OPENMW_ORTHROS_DRAWTHREAD"
++                     << (ready ? "" : ", no context") << ")" << std::endl;
++            // (no context: the thread stays idle — nothing is dispatched to it, renderingTraversals ends the session)
++            emscripten_exit_with_live_runtime();
++        }
++
++        void pump()
++        {
++            // (a frame drawn in this task already, or a pump inside a pump: this one in the next task)
++            if (mInPump || orthros_drawthread_turn_busy())
++            {
++                defer();
++                return;
++            }
++            // (reset however the pump ends; a throw out of it is the thread's crash anyway: orthros_drawthread_event_setup)
++            struct InPump
++            {
++                bool& mFlag;
++                explicit InPump(bool& flag) : mFlag(flag) { mFlag = true; }
++                ~InPump() { mFlag = false; }
++            } inPump(mInPump);
++            const double t0 = emscripten_get_now();
++            if (mDeferredAt > 0)
++            {
++                // (the next turn's delay: from its post to this pump)
++                const double turn = t0 - mDeferredAt;
++                mDeferredAt = 0;
++                sOrthrosTurnMs.store(sOrthrosTurnMs.load() + turn);
++                if (turn > sOrthrosTurnMax.load()) sOrthrosTurnMax.store(turn);
++                ++sOrthrosTurnRuns;
++            }
++            ++sOrthrosPumps;
++            orthrosDrawThreadCounters().mPumpT0 = t0; // (this thread's own: the timeline)
++            osg::Object* parent = getParent();
++            osg::GraphicsContext* context = dynamic_cast<osg::GraphicsContext*>(parent);
++            osg::OperationQueue* queue = getOperationQueue();
++            bool drew = false, ran = false;
++            while (queue != nullptr)
++            {
++                osg::ref_ptr<osg::Operation> operation;
++                if (mGate.valid())
++                    operation.swap(mGate);
++                else
++                    operation = queue->getNextOperation(false);
++                if (!operation.valid())
++                    break;
++                if (OrthrosFrameGate* gate = dynamic_cast<OrthrosFrameGate*>(operation.get()))
++                {
++                    // (stopped here: the gate passed again at the next pump)
++                    if (drew || !gate->pass(context))
++                    {
++                        mGate = operation;
++                        break;
++                    }
++                    ran = true;
++                    continue;
++                }
++                (*operation)(parent);
++                ran = true;
++                if (dynamic_cast<OrthrosCountedSwap*>(operation.get()) != nullptr)
++                    drew = true;
++            }
++            if (!ran) ++sOrthrosEmptyPumps;
++            sOrthrosPumpMs.store(sOrthrosPumpMs.load() + (emscripten_get_now() - t0));
++            if (drew)
++                defer();
++        }
++
++    private:
++        void defer()
++        {
++            if (mDeferredAt == 0) mDeferredAt = emscripten_get_now();
++            orthros_drawthread_defer();
++        }
++
++        osg::ref_ptr<osg::Operation> mGate; // (the gate where the last pump stopped, passed first at the next)
++        bool mInPump = false;
++        double mDeferredAt = 0; // (the next turn's post, for its delay)
++    };
++
++    std::atomic<OrthrosGraphicsThread*> sOrthrosGraphicsThread{ nullptr };
++
++    void OrthrosEndOfDynamicDrawBlock::completed(osg::State* state)
++    {
++        OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++        {
++            std::lock_guard<std::mutex> lock(c.mMutex);
++            c.mCompletedAt = emscripten_get_now();
++            ++c.mCompletions;
++        }
++        osg::EndOfDynamicDrawBlock::completed(state);
++    }
++}
++
++// (the graphics thread, a task of its event loop: orthros_drawthread_event_setup's pump) its operations, until the gate
++// has nothing to do or one frame is swapped
++extern "C" EMSCRIPTEN_KEEPALIVE void orthros_drawthread_pump()
++{
++    if (OrthrosGraphicsThread* thread = sOrthrosGraphicsThread.load())
++        thread->pump();
++}
++
++// (the page thread) the page showed (or dropped) the draw thread's frame: its gate looks again at the frame it holds back
++// (components/sdlutil/sdlgraphicswindow.cpp: Module.orthrosDrawThreadFrame calls it)
++extern "C" EMSCRIPTEN_KEEPALIVE void orthros_drawthread_kick()
++{
++    OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++    {
++        std::lock_guard<std::mutex> lock(c.mMutex);
++        c.mChanged.notify_all();
++    }
++    orthrosDrawThreadWake();
++}
++
++namespace osgViewer
++{
++    /// Orthros (drawthread.patch): 0 — no draw thread (SingleThreaded, the default); 1 — a draw thread whose WebGL
++    /// context is not made yet (no frame drawn, no job run: a page-thread wait for either would wait for ever); 2 — the
++    /// draw thread draws; 3 — its context could not be made, or it could not be woken. Any thread.
++    int orthrosDrawThreadState()
++    {
++        if (!sOrthrosDrawThreadInUse.load()) return 0;
++        if (sOrthrosContextFailed.load() || sOrthrosWakeFailed.load()) return 3;
++        return sOrthrosContextReady.load() ? 2 : 1;
++    }
++
++    /// Orthros (drawthread.patch): `job` run on the draw thread with its context current, between two frames' draws —
++    /// at once if it waits for a frame, else after the frame it draws. Only while orthrosDrawThreadState() is 2 (false
++    /// otherwise, `job` not queued). A caller that waits for its end says so (`wait`): it never waits for a frame, except
++    /// on the page thread between renderingTraversals' dispatch and the end of its culls (the graphics thread may then
++    /// wait for this thread's cull) — a waited job is refused there (false, not queued).
++    bool orthrosDrawThreadRun(osg::GraphicsOperation* job, bool wait)
++    {
++        if (job == nullptr || orthrosDrawThreadState() != 2) return false;
++        if (wait && tOrthrosInCull)
++        {
++            OSG_WARN << "Orthros: a draw-thread job waited for from inside the culls refused (it would never run)"
++                     << std::endl;
++            return false;
++        }
++        OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++        {
++            std::lock_guard<std::mutex> lock(c.mMutex);
++            c.mJobs.emplace_back(job);
++        }
++        c.mChanged.notify_all();
++        if (!orthrosDrawThreadWake())
++        {
++            // (the thread unreachable: the job taken back if it is still queued — its caller does not wait then)
++            std::lock_guard<std::mutex> lock(c.mMutex);
++            for (auto it = c.mJobs.begin(); it != c.mJobs.end(); ++it)
++                if (it->get() == job)
++                {
++                    c.mJobs.erase(it);
++                    return false;
++                }
++        }
++        return true;
++    }
++}
++#endif
++
+ using namespace osgViewer;
+ 
+ ViewerBase::ViewerBase()
+@@ -205,6 +819,16 @@ void ViewerBase::setThreadingModel(ThreadingModel threadingModel)
+ {
+     if (_threadingModel == threadingModel) return;
+ 
++#ifdef __EMSCRIPTEN__
++    // Orthros (drawthread.patch): the draw thread owns every WebGL object of the session (above): its model kept
++    if (_threadingModel == DrawThreadPerContext && sOrthrosDrawThreadInUse.load())
++    {
++        OSG_WARN << "Orthros: the threading model stays DrawThreadPerContext for the session (OPENMW_ORTHROS_DRAWTHREAD)"
++                 << std::endl;
++        return;
++    }
++#endif
++
+     if (_threadsRunning) stopThreading();
+ 
+     _threadingModel = threadingModel;
+@@ -328,6 +952,27 @@ void ViewerBase::stopThreading()
+ {
+     if (!_threadsRunning) return;
+ 
++#ifdef __EMSCRIPTEN__
++    // Orthros (drawthread.patch): the graphics thread kept, the frames in flight drawn and the jobs run (above).
++    // (Before its context exists nothing was dispatched and no job queued: no wait.)
++    if (_threadingModel == DrawThreadPerContext)
++    {
++        OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++        const double t0 = emscripten_get_now();
++        {
++            std::unique_lock<std::mutex> lock(c.mMutex);
++            // (no wait when the graphics thread is unreachable or has no context: what was dispatched never swaps)
++            c.mChanged.wait(lock, [&c] {
++                return (c.mSwapped >= c.mDispatched && c.mJobs.empty() && !c.mJobRunning) || sOrthrosWakeFailed.load()
++                    || sOrthrosContextFailed.load();
++            });
++        }
++        c.mQuiesceMs += emscripten_get_now() - t0;
++        ++c.mQuiesces;
++        return;
++    }
++#endif
++
+     OSG_INFO<<"ViewerBase::stopThreading() - stopping threading"<<std::endl;
+ 
+     Contexts contexts;
+@@ -390,6 +1035,27 @@ void ViewerBase::startThreading()
+ {
+     if (_threadsRunning) return;
+ 
++#ifdef __EMSCRIPTEN__
++    // Orthros (drawthread.patch): no draw thread without its context made before main() (above) — the session draws on
++    // the page's thread, as without the switch
++    if (_threadingModel == DrawThreadPerContext && !sOrthrosDrawThreadInUse.load())
++    {
++        const int prepared = orthros_drawthread_prepared();
++        if (prepared != 1)
++        {
++            OSG_WARN << "Orthros: no draw thread for this session ("
++                     << (prepared == 0 ? "no WebGL2 context asked for before main()"
++                         : prepared == -1 ? "no WebGL2 context on a worker"
++                         : prepared == -3 ? "its worker was handed over already"
++                         : "its context's attributes differ from the page's")
++                     << "): OSG draws on the page's thread (OPENMW_ORTHROS_DRAWTHREAD)" << std::endl;
++            orthros_drawthread_release();
++            _threadingModel = SingleThreaded;
++            return;
++        }
++    }
++#endif
++
+     // SingleThreaded has no threads to start; the switch below only falls through to an
+     // immediate `return` for it anyway. Bail BEFORE releaseContext() — on a single-WebGL-context
+     // (emscripten) build, releasing and not re-acquiring the context leaves nothing current, so
+@@ -486,6 +1152,11 @@ void ViewerBase::startThreading()
+         _startRenderingBarrier = 0;
+         _endRenderingDispatchBarrier = 0;
+         _endDynamicDrawBlock = new osg::EndOfDynamicDrawBlock(numViewerDoubleBufferedRenderingOperation);
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): the same block, the moment each frame's wait ends noted (the timeline, when on)
++        if (_threadingModel == DrawThreadPerContext && orthrosTimelineOn())
++            _endDynamicDrawBlock = new OrthrosEndOfDynamicDrawBlock(numViewerDoubleBufferedRenderingOperation);
++#endif
+ 
+ #ifndef OSGUTIL_RENDERBACKEND_USE_REF_PTR
+         if (!osg::Referenced::getDeleteHandler()) osg::Referenced::setDeleteHandler(new osg::DeleteHandler(2));
+@@ -506,7 +1177,11 @@ void ViewerBase::startThreading()
+ 
+     osg::ref_ptr<osg::BarrierOperation> swapReadyBarrier = contexts.empty() ? 0 : new osg::BarrierOperation(contexts.size(), osg::BarrierOperation::NO_OPERATION);
+ 
+-    osg::ref_ptr<osg::SwapBuffersOperation> swapOp = new osg::SwapBuffersOperation();
++    osg::ref_ptr<osg::GraphicsOperation> swapOp = new osg::SwapBuffersOperation();
++#ifdef __EMSCRIPTEN__
++    // Orthros (drawthread.patch): the swaps counted (stopThreading's wait)
++    if (_threadingModel == DrawThreadPerContext) swapOp = new OrthrosCountedSwap();
++#endif
+ 
+     for(citr = contexts.begin();
+         citr != contexts.end();
+@@ -522,12 +1197,40 @@ void ViewerBase::startThreading()
+ 
+         gc->getState()->setDynamicObjectRenderingCompletedCallback(_endDynamicDrawBlock.get());
+ 
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): the event-driven graphics thread (above), made here for createGraphicsThread —
++        // always: a stock GraphicsThread left from before (none expected: stopThreading clears it) replaced, said
++        if (_threadingModel == DrawThreadPerContext
++            && dynamic_cast<OrthrosGraphicsThread*>(gc->getGraphicsThread()) == nullptr)
++        {
++            if (gc->getGraphicsThread())
++                OSG_WARN << "Orthros: a graphics thread was already set: replaced by the event-driven one" << std::endl;
++            OrthrosGraphicsThread* thread = new OrthrosGraphicsThread;
++            gc->setGraphicsThread(thread);
++            if (gc->getTraits()) thread->setProcessorAffinity(gc->getTraits()->affinity);
++            sOrthrosGraphicsThread.store(thread);
++        }
++#endif
+         // create the a graphics thread for this context
+         gc->createGraphicsThread();
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): the draw traversal's stack (Emscripten's pthread default is 64 KiB; the Lua and
++        // NIF threads have 1 MiB)
++        if (_threadingModel == DrawThreadPerContext && gc->getGraphicsThread()) gc->getGraphicsThread()->setStackSize(1024 * 1024);
++#endif
+ 
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): the context made current is said by OrthrosGraphicsThread::run, before any frame
++        if (_threadingModel == DrawThreadPerContext)
++            sOrthrosDrawThreadInUse.store(true);
++#endif
+         // add the startRenderingBarrier
+         if (_threadingModel==CullDrawThreadPerContext && _startRenderingBarrier.valid()) gc->getGraphicsThread()->add(_startRenderingBarrier.get());
+ 
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): between frames, the graphics thread stops at its gate (above)
++        if (_threadingModel == DrawThreadPerContext) gc->getGraphicsThread()->add(new OrthrosFrameGate());
++#endif
+         // add the rendering operation itself.
+         gc->getGraphicsThread()->add(new osg::RunOperations());
+ 
+@@ -602,11 +1305,40 @@ void ViewerBase::startThreading()
+         if (gc->getGraphicsThread() && !gc->getGraphicsThread()->isRunning())
+         {
+             OSG_INFO<<"  gc->getGraphicsThread()->startThread() "<<gc->getGraphicsThread()<<std::endl;
++#ifdef __EMSCRIPTEN__
++            // Orthros (drawthread.patch): the graphics thread on the worker that made its context before main() (the
++            // next pthread made takes it)
++            if (_threadingModel == DrawThreadPerContext && orthros_drawthread_claim() == 0)
++                OSG_WARN << "Orthros: the draw thread's worker was not handed over (OPENMW_ORTHROS_DRAWTHREAD)" << std::endl;
++#endif
+             gc->getGraphicsThread()->startThread();
+             // OpenThreads::Thread::YieldCurrentThread();
+         }
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    // Orthros (drawthread.patch): the graphics thread's context current (or refused) before the first frame — its
++    // context exists already: no wait for the page's event loop. (Bounded: a context made otherwise waits for the end of
++    // the boot, the frames skipped meanwhile, renderingTraversals.)
++    if (_threadingModel == DrawThreadPerContext)
++    {
++        OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++        const double t0 = emscripten_get_now();
++        bool settled;
++        {
++            std::unique_lock<std::mutex> lock(c.mMutex);
++            settled = c.mChanged.wait_for(lock, std::chrono::seconds(10),
++                [] { return sOrthrosContextReady.load() || sOrthrosContextFailed.load(); });
++        }
++        OSG_NOTICE << "Orthros: the draw thread "
++                   << (!settled ? "has no context yet" : sOrthrosContextReady.load() ? "draws" : "has no context")
++                   << " after " << (emscripten_get_now() - t0) << " ms (OPENMW_ORTHROS_DRAWTHREAD)" << std::endl;
++        // (no context: the page's fatal notice now, the boot's frames skipped behind it)
++        if (sOrthrosContextFailed.load())
++            orthros_drawthread_fatal();
++    }
++#endif
++
+     _threadsRunning = true;
+ 
+     OSG_INFO<<"Set up threading"<<std::endl;
+@@ -765,6 +1497,35 @@ void ViewerBase::renderingTraversals()
+     checkWindowStatus(contexts);
+     if (_done) return;
+ 
++#ifdef __EMSCRIPTEN__
++    // Orthros (drawthread.patch): no frame before the graphics thread has its context (OrthrosGraphicsThread::run above)
++    // (or once a wake could not reach it: the session ends the same way)
++    if (_threadingModel == DrawThreadPerContext && _threadsRunning
++        && (!sOrthrosContextReady.load() || sOrthrosWakeFailed.load()))
++    {
++        if (sOrthrosContextFailed.load() || sOrthrosWakeFailed.load())
++        {
++            // (no context on the graphics thread: the session ends with the page's notice, nothing drawn — each frame
++            // asks again: the page stops the main loop, once it runs)
++            static bool told = false;
++            if (!told)
++            {
++                told = true;
++                OSG_FATAL << "Orthros: the graphics thread has no WebGL2 context (OPENMW_ORTHROS_DRAWTHREAD)" << std::endl;
++            }
++            orthros_drawthread_fatal();
++            return;
++        }
++        static bool said = false;
++        if (!said)
++        {
++            said = true;
++            OSG_NOTICE << "Orthros: frames not drawn until the graphics thread has its WebGL context" << std::endl;
++        }
++        return;
++    }
++#endif
++
+     double beginRenderingTraversals = elapsedTime();
+ 
+     osg::FrameStamp* frameStamp = getViewerFrameStamp();
+@@ -872,6 +1633,32 @@ void ViewerBase::renderingTraversals()
+     // dispatch the rendering threads
+     if (_startRenderingBarrier.valid()) _startRenderingBarrier->block();
+ 
++#ifdef __EMSCRIPTEN__
++    // Orthros (drawthread.patch): one more frame for the graphics thread — its gate opened before the culls (its
++    // draws then wait for each camera's cull in the Renderer's queue, as upstream); stopThreading's wait. (Round 10
++    // measured handing it over after the culls instead, OPENMW_ORTHROS_DTWAKE=cull: no difference.)
++    const bool orthrosDispatch = _threadingModel == DrawThreadPerContext && _threadsRunning;
++    double orthrosTl[4] = { 0, 0, 0, 0 }; // (the timeline: dispatch, culls' end, wait start, wait end)
++    if (orthrosDispatch)
++    {
++        OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++        const osg::GraphicsContext::Traits* traits = contexts.empty() ? nullptr : contexts.front()->getTraits();
++        orthrosTl[0] = emscripten_get_now();
++        {
++            std::lock_guard<std::mutex> lock(c.mMutex);
++            c.mCulledTimes[c.mDispatched % 64] = 0;
++            c.mSizes[c.mDispatched % 64][0] = traits ? traits->width : 0;
++            c.mSizes[c.mDispatched % 64][1] = traits ? traits->height : 0;
++            ++c.mDispatched;
++        }
++        tOrthrosInCull = true;
++        c.mChanged.notify_all();
++        // (the thread unreachable: this frame's wait for its dynamic draw released — the next frame ends the session)
++        if (!orthrosDrawThreadWake() && _endDynamicDrawBlock.valid())
++            _endDynamicDrawBlock->release();
++    }
++#endif
++
+     // reset any double buffer graphics objects
+     for(Cameras::iterator camItr = cameras.begin();
+         camItr != cameras.end();
+@@ -888,6 +1675,17 @@ void ViewerBase::renderingTraversals()
+         }
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    // (Orthros, drawthread.patch: the frame's culls done — the draw time's start, the graphics thread's statistics)
++    if (orthrosDispatch)
++    {
++        OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++        orthrosTl[1] = emscripten_get_now();
++        tOrthrosInCull = false;
++        std::lock_guard<std::mutex> lock(c.mMutex);
++        c.mCulledTimes[(c.mDispatched - 1) % 64] = orthrosTl[1];
++    }
++#endif
+     for(itr = contexts.begin();
+         itr != contexts.end() && !_done;
+         ++itr)
+@@ -935,7 +1733,93 @@ void ViewerBase::renderingTraversals()
+     if (_endDynamicDrawBlock.valid())
+     {
+         // osg::Timer_t startTick = osg::Timer::instance()->tick();
++#ifdef __EMSCRIPTEN__
++        const double orthrosWait0 = emscripten_get_now();
++#endif
+         _endDynamicDrawBlock->block();
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): how long the page thread waited for the frame's dynamic objects to be drawn,
++        // published every 60 frames as globalThis.__omwDrawThread (the page thread's)
++        {
++            OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++            const double waited = emscripten_get_now() - orthrosWait0;
++            if (orthrosDispatch)
++            {
++                orthrosTl[2] = orthrosWait0;
++                orthrosTl[3] = orthrosWait0 + waited;
++                if (orthrosTimelineOn() && c.mPageTl.size() < 5 * 4096)
++                {
++                    std::lock_guard<std::mutex> lock(c.mMutex);
++                    c.mPageTl.insert(c.mPageTl.end(), { static_cast<double>(c.mDispatched), orthrosTl[0], orthrosTl[1],
++                        orthrosTl[2], orthrosTl[3] });
++                }
++            }
++            c.mDynWaitMs += waited;
++            if (waited > c.mDynWaitMax) c.mDynWaitMax = waited;
++            if (++c.mFrames % 60 == 0)
++            {
++                unsigned long long dispatched, swapped;
++                std::vector<float> drawMs;
++                unsigned jobsRun, jobsDeferred;
++                double jobsMs;
++                {
++                    std::lock_guard<std::mutex> lock(c.mMutex);
++                    dispatched = c.mDispatched;
++                    swapped = c.mSwapped;
++                    drawMs.swap(c.mDrawMs);
++                    jobsRun = c.mJobsRun;
++                    jobsMs = c.mJobsMs;
++                    jobsDeferred = c.mJobsDeferred;
++                }
++                // (drawMs: the graphics thread's time on each frame swapped since, appended — at most 100000 kept)
++                // clang-format off
++                EM_ASM({
++                    var s = globalThis.__omwDrawThread || (globalThis.__omwDrawThread = { drawMs: [] });
++                    s.frames = $0; s.dynWaitMs = $1; s.dynWaitMax = $2; s.dispatched = $3; s.swapped = $4;
++                    s.quiesces = $5; s.quiesceMs = $6; s.jobs = $9; s.jobsMs = $10; s.jobsDeferred = $11;
++                    s.wakes = $12; s.pumps = $13;
++                    for (var i = 0; i < $8 && s.drawMs.length < 100000; ++i) s.drawMs.push(HEAPF32[$7 / 4 + i]);
++                }, c.mFrames, c.mDynWaitMs, c.mDynWaitMax, static_cast<double>(dispatched), static_cast<double>(swapped),
++                    c.mQuiesces, c.mQuiesceMs, static_cast<double>(reinterpret_cast<std::uintptr_t>(drawMs.data())),
++                    static_cast<int>(drawMs.size()), jobsRun, jobsMs, jobsDeferred, sOrthrosWakes.load(),
++                    sOrthrosPumps.load());
++                // (the pump's own times: a second call — Emscripten's EM_ASM names 16 arguments at most, $0..$15)
++                EM_ASM({
++                    var s = globalThis.__omwDrawThread;
++                    s.pumpMs = $0; s.emptyPumps = $1; s.turnMs = $2; s.turnMax = $3; s.turnRuns = $4;
++                }, sOrthrosPumpMs.load(), sOrthrosEmptyPumps.load(), sOrthrosTurnMs.load(), sOrthrosTurnMax.load(),
++                    sOrthrosTurnRuns.load());
++                // (OPENMW_ORTHROS_DTTIMELINE=1 only: the timeline since, in the page's time — __omwDrawThread.tlPage, 5
++                // numbers a frame, tlDraw, 7 —, whole records only, at most 300000 numbers each kept: tools/openmw/perf.mjs
++                // writes it to timeline.json)
++                std::vector<double> pageTl, drawTl;
++                if (orthrosTimelineOn())
++                {
++                    std::lock_guard<std::mutex> lock(c.mMutex);
++                    pageTl.swap(c.mPageTl);
++                    drawTl.swap(c.mDrawTl);
++                }
++                if (!pageTl.empty() || !drawTl.empty())
++                EM_ASM({
++                    var s = globalThis.__omwDrawThread;
++                    var o = performance.timeOrigin;
++                    var put = function(name, address, n, stride) {
++                        var a = s[name] || (s[name] = []);
++                        var base = address / 8;
++                        for (var i = 0; i < n; ++i) {
++                            if (i % stride == 0 && a.length + stride > 300000) break;
++                            var v = HEAPF64[base + i];
++                            a.push(i % stride == 0 || (stride == 7 && i % 7 == 6) ? v : (v ? +(v - o).toFixed(3) : null));
++                        }
++                    };
++                    put('tlPage', $0, $1, 5);
++                    put('tlDraw', $2, $3, 7);
++                }, static_cast<double>(reinterpret_cast<std::uintptr_t>(pageTl.data())), static_cast<int>(pageTl.size()),
++                    static_cast<double>(reinterpret_cast<std::uintptr_t>(drawTl.data())), static_cast<int>(drawTl.size()));
++                // clang-format on
++            }
++        }
++#endif
+         // OSG_NOTICE<<"Time waiting "<<osg::Timer::instance()->delta_m(startTick, osg::Timer::instance()->tick())<<std::endl;;
+     }
+ 
+@@ -945,6 +1829,27 @@ void ViewerBase::renderingTraversals()
+         releaseContext();
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    // Orthros (drawthread.patch): when the page thread finished dispatching each frame (its sequence number, 1-based —
++    // the draw thread's swaps count the same), for the delay to its picture shown on the page
++    // (components/sdlutil/sdlgraphicswindow.cpp, Module.orthrosDrawThreadFrame: __omwDrawThreadPresent.lat)
++    if (orthrosDispatch)
++    {
++        OrthrosDrawThreadCounters& c = orthrosDrawThreadCounters();
++        unsigned long long seq;
++        {
++            std::lock_guard<std::mutex> lock(c.mMutex);
++            seq = c.mDispatched;
++        }
++        // clang-format off
++        EM_ASM({
++            var a = globalThis.__omwDispatchEnd || (globalThis.__omwDispatchEnd = new Float64Array(256));
++            a[$0 % 256] = performance.now();
++        }, static_cast<double>(seq));
++        // clang-format on
++    }
++#endif
++
+     if (getViewerStats() && getViewerStats()->collectStats("update"))
+     {
+         double endRenderingTraversals = elapsedTime();
 diff --git a/openmw/apps/openmw/engine.cpp b/openmw/apps/openmw/engine.cpp
-index 79df243..fb1343e 100644
+index 79df243..3ae669d 100644
 --- a/openmw/apps/openmw/engine.cpp
 +++ b/openmw/apps/openmw/engine.cpp
-@@ -4,6 +4,8 @@
- 
- #ifdef __EMSCRIPTEN__
- #include <emscripten.h>
-+#include <emscripten/threading.h>
-+#include <wasi/api.h>
- #include <osg/NodeVisitor>
- #include <osg/DisplaySettings>
- #include <osg/Geometry>
-@@ -1233,7 +1235,133 @@ namespace
-     void (*g_emTick)(void*) = nullptr;
-     void* g_emArg = nullptr;
+@@ -1335,6 +1335,11 @@ namespace
+     std::deque<std::string> g_orthrosUpdated;
+     constexpr std::size_t g_orthrosReloadBudget = std::size_t(4) << 20;
  }
-+// Orthros (orthros-r19.patch, wasm-build/orthros-jspi.js): the frame and main() are the engine's promising exports (JSPI);
-+// a file read (fd_read, fd_pread) or an announced wait (orthros_read_wait) under them that the page does not answer within
-+// a few ms suspends the engine while the page fetches the bytes, instead of the page's thread spinning. Entered and left
-+// around them: the library suspends only inside one, never in a call that reaches the engine meanwhile (an input event,
-+// a worker thread's proxied read), which reads as before; the page's calls into the engine wait for the frame's end.
-+extern "C" void orthros_jspi_enter(int boot);
-+extern "C" void orthros_jspi_leave(int boot);
-+// Orthros (orthros-r19.patch, wasm-build/orthros-jspi.js): a frame in play runs as a plain export (omw_pump_frame_plain:
-+// on the page's own stack, never suspending, as before r19); a load it would start (a save's, a new game's, the debug
-+// COE) is put off to the next frame — orthros_jspi_defer() returns 1 then, that frame the promising export's.
-+extern "C" void orthros_jspi_plain(int on);
-+extern "C" int orthros_jspi_defer();
-+// (1 when the engine may suspend now — under a promising export, on its stack: not a plain frame, not a call that reached
-+// the engine while its frame is suspended —: an import that suspends (WebAssembly.Suspending) throws SuspendError when
-+// called otherwise, even when it would not suspend — so the engine calls the suspending ones only then)
-+extern "C" int orthros_jspi_may();
-+extern "C" __wasi_errno_t orthros_fd_read_async(__wasi_fd_t fd, const __wasi_iovec_t* iovs, size_t n, __wasi_size_t* nread);
-+extern "C" __wasi_errno_t orthros_fd_sync_async(__wasi_fd_t fd);
-+// (the C library's reads, fsyncs and sleeps — linked --wrap'd, wasm-build/link-openmw.sh —: the suspending import when the
-+// engine may suspend (its page's thread), else the plain one, as a build without JSPI: a read waits on the page's thread,
-+// an fsync does not persist IDBFS, a sleep spins)
-+extern "C" __wasi_errno_t __real___wasi_fd_read(__wasi_fd_t fd, const __wasi_iovec_t* iovs, size_t n, __wasi_size_t* nread);
-+extern "C" __wasi_errno_t __real___wasi_fd_sync(__wasi_fd_t fd);
-+extern "C" void __real_emscripten_sleep(unsigned int ms);
-+extern "C" __wasi_errno_t __wrap___wasi_fd_read(__wasi_fd_t fd, const __wasi_iovec_t* iovs, size_t n, __wasi_size_t* nread)
++namespace osgViewer
 +{
-+    if (emscripten_is_main_runtime_thread() && orthros_jspi_may())
-+        return orthros_fd_read_async(fd, iovs, n, nread);
-+    return __real___wasi_fd_read(fd, iovs, n, nread);
++    // (drawthread.patch, osgViewer/ViewerBase.cpp: 0 — no draw thread, 1 — not ready, 2 — drawing, 3 — failed)
++    int orthrosDrawThreadState();
 +}
-+extern "C" __wasi_errno_t __wrap___wasi_fd_sync(__wasi_fd_t fd)
-+{
-+    if (emscripten_is_main_runtime_thread() && orthros_jspi_may())
-+        return orthros_fd_sync_async(fd);
-+    return __real___wasi_fd_sync(fd);
-+}
-+// (a framebuffer's status — WebGL's checkFramebufferStatus waits for the GPU process to run every command before it —:
-+// in a load's frame, its loading screen or the world's first draw after it, the engine suspended first until the GPU's
-+// queue ran (orthros_gl_settle: a fence, the page's thread free), then asked; the first frame after a save's load held
-+// the page's thread 1-2 s in that call in SwiftShader, 2026-10-30)
-+extern "C" void orthros_gl_settle();
-+extern "C" unsigned int __real_glCheckFramebufferStatus(unsigned int target);
-+extern "C" unsigned int __real_emscripten_glCheckFramebufferStatus(unsigned int target);
-+extern "C" unsigned int __wrap_glCheckFramebufferStatus(unsigned int target)
-+{
-+    if (emscripten_is_main_runtime_thread() && orthros_jspi_may())
-+        orthros_gl_settle();
-+    return __real_glCheckFramebufferStatus(target);
-+}
-+extern "C" unsigned int __wrap_emscripten_glCheckFramebufferStatus(unsigned int target)
-+{
-+    if (emscripten_is_main_runtime_thread() && orthros_jspi_may())
-+        orthros_gl_settle();
-+    return __real_emscripten_glCheckFramebufferStatus(target);
-+}
-+extern "C" void __wrap_emscripten_sleep(unsigned int ms)
-+{
-+    // (a worker thread: its entry point is plain — orthros-jspi.js $invokeEntryPoint —, never a JSPI stack: a sleep on
-+    // its own futex, as a build without JSPI)
-+    if (!emscripten_is_main_runtime_thread())
+ extern "C" EMSCRIPTEN_KEEPALIVE int orthros_file_updated(const char* path)
+ {
+     if (!path)
+@@ -1500,7 +1505,23 @@ void OMW::Engine::go()
+     // OSG defaults to DrawThreadPerContext, running draw + GL-object compilation on a
+     // separate thread from the GL context. Under emscripten that proxies GL calls to a
+     // null GL thread and aborts. Force everything onto the single GL thread.
+-    mViewer->setThreadingModel(osgViewer::ViewerBase::SingleThreaded);
++    // Orthros (drawthread.patch): OPENMW_ORTHROS_DRAWTHREAD, read once — off unless set to anything but "0" (this
++    // round). On, DrawThreadPerContext: the graphics thread has its own WebGL context
++    // (components/sdlutil/sdlgraphicswindow.cpp) and draws frame N while this thread updates and culls N+1. This
++    // thread has no current context once threading started: the Orthros paths that issued WebGL calls from it run on
++    // the graphics thread instead — the textures uploaded ahead (OPENMW_ORTHROS_TEXAHEAD, mwrender/renderingmanager.cpp)
++    // and the global map's CPU copy (mwrender/globalmap.cpp) as graphics operations; the images updated in place
++    // (reloadUpdated) wait for the frame in flight. OSG's incremental compile and the loading screen's program
++    // compiles (OPENMW_ORTHROS_PRECOMPILE) already run in draw callbacks: on the graphics thread.
++    const char* orthrosDrawThread = std::getenv("OPENMW_ORTHROS_DRAWTHREAD");
++    if (orthrosDrawThread != nullptr && orthrosDrawThread[0] != 0 && std::string_view(orthrosDrawThread) != "0")
 +    {
-+        emscripten_thread_sleep(ms);
-+        return;
++        mViewer->setThreadingModel(osgViewer::ViewerBase::DrawThreadPerContext);
++        Log(Debug::Info) << "Orthros: OSG's DrawThreadPerContext (OPENMW_ORTHROS_DRAWTHREAD=" << orthrosDrawThread
++                         << ")";
 +    }
-+    if (!orthros_jspi_may())
-+    {
-+        const double end = emscripten_get_now() + ms;
-+        while (emscripten_get_now() < end)
-+        {
-+        }
-+        return;
-+    }
-+    __real_emscripten_sleep(ms);
-+}
-+namespace
-+{
-+    // Orthros (orthros-r19.patch): the debug COE and teleport the page asked (omw_debug_coe, omw_debug_teleport), run
-+    // at the next frame's start — inside the frame, as a console COE or a door: their loads' reads suspend it (JSPI)
-+    // instead of holding the page's thread in the export's own call —; the last of each kind, a COE dropping a
-+    // teleport asked before it.
-+    struct OrthrosDebugAsks
-+    {
-+        bool mCoe = false;
-+        int mX = 0, mY = 0;
-+        bool mTeleport = false;
-+        float mTo[3] = { 0, 0, 0 };
-+    };
-+    OrthrosDebugAsks g_debugAsks;
-+    void orthrosRunDebugAsks();
-+}
-+// Orthros (orthros-r19.patch): the promising exports' stack made deep before their work (orthros_jspi_deep). Chromium's
-+// native stack walker — base::debug::TraceStackFramePointers, used by its heap profiler on a sampled allocation —
-+// follows the frame pointers from where it runs up to a stack's end; on a JSPI stack it reaches that stack's first
-+// frame, whose caller is on the page's own stack, takes the chain for broken and scans 8 KB further for a frame,
-+// past the JSPI stack's end: the renderer crashed (SIGSEGV, the kernel's log; reproduced at every run with the heap
-+// profiler on for every renderer, --memlog=all-renderers --memlog-stack-mode=native, and never with r16). It stops
-+// at 255 frames: ORTHROS_JSPI_DEPTH plain wasm frames at the base of the stack keep it from ever reaching the end.
-+namespace
-+{
-+    constexpr int ORTHROS_JSPI_DEPTH = 1024;
-+    volatile int g_orthrosDeepSink = 0;
-+    __attribute__((noinline)) int orthrosDeep(int n, int (*fn)(void*), void* arg)
-+    {
-+        if (n <= 0)
-+            return fn(arg);
-+        const int r = orthrosDeep(n - 1, fn, arg);
-+        g_orthrosDeepSink = g_orthrosDeepSink + 1; // (not a tail call: each level a frame of its own)
-+        return r;
-+    }
-+}
-+extern "C" int orthros_jspi_deep(int (*fn)(void*), void* arg)
-+{
-+    return orthrosDeep(ORTHROS_JSPI_DEPTH, fn, arg);
-+}
-+
-+static void orthrosPumpFrame();
- extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()
-+{
-+    orthros_jspi_deep(
-+        [](void*) {
-+            orthrosPumpFrame();
-+            return 0;
-+        },
-+        nullptr);
-+}
-+
-+static void orthrosPumpFrame()
- {
-     // Re-entrancy guard: a long frame can spin the browser event loop (e.g. via a proxied
-     // main-thread call), which dispatches a queued MessageChannel message and would call this
-@@ -1250,8 +1378,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()
-         // Catch here (the engine's cooperative video branch runs outside Engine::frame's own
-         // try/catch), log the cause, and let the next frame carry on.
-         inTick = true;
-+        orthros_jspi_enter(0);
-         try
-         {
-+            orthrosRunDebugAsks();
-             g_emTick(g_emArg);
-         }
-         catch (const std::exception& e)
-@@ -1262,10 +1392,23 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()
-         {
-             printf("omw_pump_frame: frame threw a non-C++ (likely JS) exception\n");
-         }
-+        orthros_jspi_leave(0);
-         inTick = false;
-     }
- }
++    else
++        mViewer->setThreadingModel(osgViewer::ViewerBase::SingleThreaded);
  
-+// Orthros (orthros-r19.patch): the frame as a plain export — what the page pumps in play (orthros-jspi.js: the promising
-+// one only for a load, the boot's, or one put off to it, orthros_jspi_defer). A browser's code that walks the page's
-+// stack (Chromium's frame-pointer unwinder, base::debug ScanStackForNextFrame) read past the end of a JSPI stack and
-+// crashed the renderer at random — twice in a day of runs (2026-10-29/30, the kernel's log: the same instruction, a
-+// read just past the stack's end), once at the menu: a frame of play on the page's own stack is not exposed to it.
-+extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame_plain()
-+{
-+    orthros_jspi_plain(1);
-+    orthrosPumpFrame();
-+    orthros_jspi_plain(0);
-+}
-+
- // Flush user settings to the persistent config (called from index.html's pagehide/hidden
- // lifecycle handlers). Without this, changing settings and refreshing the page loses them:
- // the Options window only saves on CLOSE, and even then the async IDBFS sync needs a beat.
-@@ -1371,6 +1514,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int orthros_content_light()
-     return 1;
- }
- 
-+// Orthros (orthros-r19.patch): this engine suspends its frame and its boot while it waits for the game's files (JSPI,
-+// wasm-build/orthros-jspi.js) — the release's mark, in its list of exports (tools/openmw/lock.json): its page's thread is
-+// free during those waits. Returns 1.
-+extern "C" EMSCRIPTEN_KEEPALIVE int orthros_jspi()
-+{
-+    return 1;
-+}
-+
- // Debug: point the camera (yaw/pitch in degrees) so we can verify object rendering without mouse-look.
- extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_look(float yawDeg, float pitchDeg)
- {
-@@ -1383,13 +1534,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_look(float yawDeg, float pitchDeg
-     }
- }
- 
--// Debug: teleport the player to an absolute world position (within the loaded worldspace).
-+// Debug: teleport the player to an absolute world position (within the loaded worldspace) — at the next frame's start
-+// (orthros-r19.patch: orthrosRunDebugAsks; the last position asked before it).
- extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_teleport(float x, float y, float z)
- {
--    auto world = MWBase::Environment::get().getWorld();
--    MWWorld::Ptr p = world->getPlayerPtr();
--    if (!p.isEmpty())
--        world->moveObject(p, osg::Vec3f(x, y, z), true, true);
-+    g_debugAsks.mTeleport = true;
-+    g_debugAsks.mTo[0] = x;
-+    g_debugAsks.mTo[1] = y;
-+    g_debugAsks.mTo[2] = z;
- }
- 
- // Debug: start dialogue with the nearest NPC (same as pointing at it and pressing Activate).
-@@ -1434,7 +1586,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_sethour(float hour)
- 
- // Debug: teleport the player to an exterior cell (like the console "COE x y"). Triggers a full
- // exterior worldspace load — used to repro/validate the navmesh cell-load path from JS.
-+// Orthros (orthros-r19.patch): at the next frame's start (orthrosRunDebugAsks), its time then told to the page —
-+// globalThis.orthrosDebugRan.coe = [start, end] (performance.now()).
- extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_coe(int x, int y)
-+{
-+    g_debugAsks.mCoe = true;
-+    g_debugAsks.mX = x;
-+    g_debugAsks.mY = y;
-+    g_debugAsks.mTeleport = false;
-+}
-+
-+static void orthrosDebugCoe(int x, int y)
- {
-     MWBase::World* world = MWBase::Environment::get().getWorld();
-     MWWorld::Ptr player = world->getPlayerPtr();
-@@ -1452,6 +1614,48 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_coe(int x, int y)
-     world->adjustPosition(player, false);
- }
- 
-+namespace
-+{
-+    // (the frame's start, under orthros_jspi_enter: the debug asks since the last frame — omw_debug_coe, then
-+    // omw_debug_teleport —, each one's time told to the page: globalThis.orthrosDebugRan[kind] = [start, end])
-+    void orthrosRunDebugAsks()
-+    {
-+        if (!g_debugAsks.mCoe && !g_debugAsks.mTeleport)
-+            return;
-+        // (a COE is a load: in a plain frame, put off to the next one, promising — orthros_jspi_defer)
-+        if (g_debugAsks.mCoe && orthros_jspi_defer())
-+            return;
-+        const OrthrosDebugAsks asks = g_debugAsks;
-+        g_debugAsks = OrthrosDebugAsks{};
-+        // (the page's clock — emscripten_get_now() is the epoch's in a build with threads)
-+        const auto pageNow = [] { return EM_ASM_DOUBLE({ return performance.now(); }); };
-+        const auto ran = [](const char* kind, double start) {
-+            // clang-format off
-+            // (no comma in the script: the macro's arguments)
-+            EM_ASM({
-+                var ran = globalThis.orthrosDebugRan || (globalThis.orthrosDebugRan = {});
-+                var span = Array.of($1); span.push(performance.now()); ran[UTF8ToString($0)] = span;
-+            }, kind, start);
-+            // clang-format on
-+        };
-+        if (asks.mCoe)
-+        {
-+            const double start = pageNow();
-+            orthrosDebugCoe(asks.mX, asks.mY);
-+            ran("coe", start);
-+        }
-+        if (asks.mTeleport)
-+        {
-+            const double start = pageNow();
-+            auto world = MWBase::Environment::get().getWorld();
-+            MWWorld::Ptr p = world->getPlayerPtr();
-+            if (!p.isEmpty())
-+                world->moveObject(p, osg::Vec3f(asks.mTo[0], asks.mTo[1], asks.mTo[2]), true, true);
-+            ran("teleport", start);
-+        }
-+    }
-+}
-+
- // Debug: give the player a fresh weapon, equip it, and draw it. Reproduces/validates the
- // gear-equip path — a cache-miss weapon mesh loaded on the main thread — that used to freeze
- // the browser (WorkQueue worker/main contention). Returns 1 on success, 0/-1 on failure.
-diff --git a/openmw/apps/openmw/main.cpp b/openmw/apps/openmw/main.cpp
-index 0b6147a..a3059e0 100644
---- a/openmw/apps/openmw/main.cpp
-+++ b/openmw/apps/openmw/main.cpp
-@@ -269,13 +269,43 @@ int runApplication(int argc, char* argv[])
-     return 0;
- }
- 
-+#ifdef __EMSCRIPTEN__
-+// Orthros (orthros-r19.patch, wasm-build/orthros-jspi.js): main() is a promising export — the boot's reads the page does
-+// not answer within a few ms suspend it instead of holding the page's thread
-+extern "C" void orthros_jspi_enter(int boot);
-+extern "C" void orthros_jspi_leave(int boot);
-+// (the boot's stack made deep first: engine.cpp orthros_jspi_deep)
-+extern "C" int orthros_jspi_deep(int (*fn)(void*), void* arg);
-+namespace
-+{
-+    struct OrthrosMainArgs
-+    {
-+        int argc;
-+        char** argv;
-+    };
-+}
-+#endif
-+
- #ifdef ANDROID
- extern "C" int SDL_main(int argc, char** argv)
- #else
- int main(int argc, char** argv)
- #endif
- {
-+#ifdef __EMSCRIPTEN__
-+    orthros_jspi_enter(1);
-+    OrthrosMainArgs args{ argc, argv };
-+    const int status = orthros_jspi_deep(
-+        [](void* p) {
-+            auto* a = static_cast<OrthrosMainArgs*>(p);
-+            return Debug::wrapApplication(&runApplication, a->argc, a->argv, "OpenMW");
-+        },
-+        &args);
-+    orthros_jspi_leave(1);
-+    return status;
-+#else
-     return Debug::wrapApplication(&runApplication, argc, argv, "OpenMW");
-+#endif
- }
- 
- // Platform specific for Windows when there is no console built into the executable.
+     // F48 -- MEASURED AND CLOSED 2026-08-28. Nothing to do here; the call that used to sit on
+     // this line was a no-op, and the interesting result is why.
+@@ -1653,6 +1674,21 @@ void OMW::Engine::go()
+             std::size_t spent = 0;
+             int updated = 0, skipped = 0;
+             std::size_t pending = 0;
++            // (drawthread.patch: an image updated in place frees its previous pixels — the frame in flight on the draw
++            // thread may be uploading them, and the uploads ahead it runs as jobs read them: both waited for first,
++            // only in a tick that reloads. Nothing of the draw thread runs then until this thread's next frame or job.)
++            if (osgViewer::orthrosDrawThreadState() == 2)
++            {
++                bool any = false;
++                {
++                    std::lock_guard<std::mutex> lock(g_orthrosUpdatedMutex);
++                    any = !g_orthrosUpdated.empty();
++                }
++                if (any)
++                {
++                    self->mViewer->stopThreading(); // (the wait for the frame in flight and the jobs; nothing stopped)
++                }
++            }
+             while (true)
+             {
+                 std::string path;
 diff --git a/openmw/apps/openmw/mwgui/loadingscreen.cpp b/openmw/apps/openmw/mwgui/loadingscreen.cpp
-index da9c90f..49af1ff 100644
+index da9c90f..01ecb56 100644
 --- a/openmw/apps/openmw/mwgui/loadingscreen.cpp
 +++ b/openmw/apps/openmw/mwgui/loadingscreen.cpp
-@@ -27,6 +27,21 @@
+@@ -1,6 +1,7 @@
+ #include "loadingscreen.hpp"
  
- #include "backgroundimage.hpp"
+ #include <array>
++#include <atomic>
  
-+#ifdef __EMSCRIPTEN__
-+// Orthros (orthros-r19.patch, wasm-build/orthros-jspi.js): the engine's loads told to the page's glue — while one runs
-+// (its loading screen on), a read the page does not answer within a few ms suspends the frame; in play, outside them,
-+// it waits on the page's thread as before (a frame that suspends shows nothing more meanwhile)
-+extern "C" void orthros_jspi_loading(int on);
-+// (a loading screen's frame drawn: shown — the engine suspended until the browser presented it, at most every 200 ms)
-+extern "C" void orthros_jspi_present();
-+// (a load's progress: the page's thread given a turn when the engine held it 100 ms — orthrosBreath)
-+extern "C" void orthros_jspi_breathe();
-+// (a load's end, its screen still on: the engine suspended until the GPU ran what the load gave it — orthrosGpuIdle)
-+extern "C" void orthros_jspi_settle();
-+// (each of those suspends: called only when the engine may — orthros_jspi_may, engine.cpp)
-+extern "C" int orthros_jspi_may();
-+#endif
-+
+ #include <osgViewer/Viewer>
+ 
+@@ -29,6 +30,8 @@
+ 
  namespace MWGui
  {
++    // (Orthros, OPENMW_ORTHROS_PRECOMPILE, below: the callback made and added to the viewer's camera, its mode Off)
++    void orthrosAddPrecompile(osgViewer::Viewer* viewer, osg::ref_ptr<OrthrosPrecompileCallback>& callback);
  
-@@ -193,6 +208,9 @@ namespace MWGui
+     LoadingScreen::LoadingScreen(Resource::ResourceSystem* resourceSystem, osgViewer::Viewer* viewer)
+         : WindowBase("openmw_loading_screen.layout")
+@@ -52,6 +55,13 @@ namespace MWGui
+         mProgressBar->setScrollViewPage(1);
  
-     void LoadingScreen::loadingOn()
-     {
-+#ifdef __EMSCRIPTEN__
-+        orthros_jspi_loading(1);
-+#endif
-         // Early-out if already on
-         if (mNestedLoadingCount++ > 0 && mMainWidget->getVisible())
-             return;
-@@ -239,6 +257,12 @@ namespace MWGui
- 
-     void LoadingScreen::loadingOff()
-     {
-+#ifdef __EMSCRIPTEN__
-+        if (mNestedLoadingCount == 1)
-+            if (orthros_jspi_may())
-+                orthros_jspi_settle();
-+        orthros_jspi_loading(0);
-+#endif
-         if (--mNestedLoadingCount > 0)
-             return;
- 
-@@ -312,6 +336,10 @@ namespace MWGui
-         mProgressBar->setScrollPosition(0);
-         mProgressBar->setTrackSize(
-             static_cast<int>(value / (float)(mProgressBar->getScrollRange()) * mProgressBar->getLineSize()));
-+#ifdef __EMSCRIPTEN__
-+        if (orthros_jspi_may())
-+            orthros_jspi_breathe();
-+#endif
-         draw();
-     }
- 
-@@ -323,6 +351,10 @@ namespace MWGui
-         mProgress = value;
-         mProgressBar->setTrackSize(
-             static_cast<int>(value / (float)(mProgressBar->getScrollRange()) * mProgressBar->getLineSize()));
-+#ifdef __EMSCRIPTEN__
-+        if (orthros_jspi_may())
-+            orthros_jspi_breathe();
-+#endif
-         draw();
-     }
- 
-@@ -426,6 +458,10 @@ namespace MWGui
-         mViewer->advance(mViewer->getFrameStamp()->getSimulationTime());
- 
-         mLastRenderTime = mTimer.time_m();
-+#ifdef __EMSCRIPTEN__
-+        if (orthros_jspi_may())
-+            orthros_jspi_present();
-+#endif
-     }
- 
- }
-diff --git a/openmw/apps/openmw/mwgui/savegamedialog.cpp b/openmw/apps/openmw/mwgui/savegamedialog.cpp
-index 78e2db8..0ee70cb 100644
---- a/openmw/apps/openmw/mwgui/savegamedialog.cpp
-+++ b/openmw/apps/openmw/mwgui/savegamedialog.cpp
-@@ -343,7 +343,13 @@ namespace MWGui
-         else
-         {
-             assert(mCurrentCharacter && mCurrentSlot);
-+#ifdef __EMSCRIPTEN__
-+            // Orthros (orthros-r19.patch): asked, loaded at the state's update — in a frame that may suspend while it
-+            // reads (wasm-build/orthros-jspi.js orthros_jspi_defer), as the menu script's and the quick load's
-+            MWBase::Environment::get().getStateManager()->requestLoad(mCurrentCharacter, mCurrentSlot->mPath);
-+#else
-             MWBase::Environment::get().getStateManager()->loadGame(mCurrentCharacter, mCurrentSlot->mPath);
-+#endif
-         }
-     }
- 
-diff --git a/openmw/apps/openmw/mwstate/statemanagerimp.cpp b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
-index 82e5f6c..5f56e61 100644
---- a/openmw/apps/openmw/mwstate/statemanagerimp.cpp
-+++ b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
-@@ -869,9 +869,22 @@ MWState::StateManager::CharacterIterator MWState::StateManager::characterEnd()
-     return mCharacterManager.end();
- }
- 
-+#ifdef __EMSCRIPTEN__
-+// Orthros (orthros-r19.patch, wasm-build/orthros-jspi.js): 1 when this frame is a plain one (play: never suspending) — the
-+// load asked put off to the next frame, which the page then pumps as the promising export (its reads may suspend)
-+extern "C" int orthros_jspi_defer();
-+#endif
+         findSplashScreens();
 +
- void MWState::StateManager::update(float duration)
- {
-     mTimePlayed += duration;
-+#ifdef __EMSCRIPTEN__
-+    // (a save's load or a new game asked: run in a frame that may suspend while it reads — the next one, when this one
-+    // is plain)
-+    const bool orthrosLoadLater = (mNewGameRequest || mLoadRequest) && orthros_jspi_defer();
-+#else
-+    const bool orthrosLoadLater = false;
-+#endif
++        // (Orthros, OPENMW_ORTHROS_PRECOMPILE, with a draw thread only (drawthread.patch, the engine set the model before
++        // this): the camera's callback added once, here, its mode Off — during the boot, before any frame of the draw
++        // thread reads the camera's callbacks; loadingOn then only sets its mode. Without one, made at the first
++        // loadingOn, as before)
++        if (mViewer->getThreadingModel() == osgViewer::ViewerBase::DrawThreadPerContext)
++            orthrosAddPrecompile(mViewer, mOrthrosPrecompile);
+     }
  
-     // Note: It would be nicer to trigger this from InputManager, i.e. the very beginning of the frame update.
-     if (mAskLoadRecent)
-@@ -893,14 +906,14 @@ void MWState::StateManager::update(float duration)
+     LoadingScreen::~LoadingScreen() {}
+@@ -163,28 +173,39 @@ namespace MWGui
+             Finish
+         };
+ 
++        // (drawthread.patch: the mode is set by the thread that updates and read — Finish turned Off — by the one that
++        // draws, the same thread or the draw thread: atomics, and Finish turned Off only if still Finish, a Loading set
++        // meanwhile kept)
+         void setMode(Mode mode, double budgetMs = 0.0)
+         {
+-            mMode = mode;
+-            mBudgetMs = budgetMs;
++            mBudgetMs.store(budgetMs);
++            mMode.store(mode);
          }
-     }
  
--    if (mNewGameRequest)
-+    if (mNewGameRequest && !orthrosLoadLater)
-     {
-         MWBase::Environment::get().getWindowManager()->removeGuiMode(MWGui::GM_MainMenu);
-         newGame();
-         mNewGameRequest = false;
-     }
+         void operator()(osg::RenderInfo& renderInfo) const override
+         {
+-            if (mMode == Off)
++            Mode mode = mMode.load();
++            if (mode == Off)
+                 return;
+-            const Mode mode = mMode;
+-            if (mode == Finish)
+-                mMode = Off;
++            if (mode == Finish && !mMode.compare_exchange_strong(mode, Off))
++                return; // (another mode set meanwhile: the next draw follows it)
+             if (osg::State* state = renderInfo.getState())
+-                osg::orthrosCompileUnlinkedPrograms(*state, mode == Finish ? -1.0 : mBudgetMs, mode == Finish);
++                osg::orthrosCompileUnlinkedPrograms(*state, mode == Finish ? -1.0 : mBudgetMs.load(), mode == Finish);
+         }
  
--    if (mLoadRequest)
-+    if (mLoadRequest && !orthrosLoadLater)
+     private:
+-        mutable Mode mMode = Off;
+-        double mBudgetMs = 0.0;
++        mutable std::atomic<Mode> mMode{ Off };
++        std::atomic<double> mBudgetMs{ 0.0 };
+     };
+ 
++    void orthrosAddPrecompile(osgViewer::Viewer* viewer, osg::ref_ptr<OrthrosPrecompileCallback>& callback)
++    {
++        if (!osg::orthrosPrecompileEnabled())
++            return;
++        callback = new OrthrosPrecompileCallback;
++        viewer->getCamera()->addInitialDrawCallback(callback);
++    }
++
+     class DontComputeBoundCallback : public osg::Node::ComputeBoundingSphereCallback
      {
-         MWBase::Environment::get().getWindowManager()->removeGuiMode(MWGui::GM_MainMenu);
-         const Character* character = mLoadRequest->first;
-diff --git a/openmw/components/vfs/manager.cpp b/openmw/components/vfs/manager.cpp
-index d8b3eae..a98a15d 100644
---- a/openmw/components/vfs/manager.cpp
-+++ b/openmw/components/vfs/manager.cpp
-@@ -7,6 +7,12 @@
+     public:
+@@ -218,10 +239,7 @@ namespace MWGui
+         if (osg::orthrosPrecompileEnabled() && !mOrthrosPrecompileSaving)
+         {
+             if (!mOrthrosPrecompile)
+-            {
+-                mOrthrosPrecompile = new OrthrosPrecompileCallback;
+-                mViewer->getCamera()->addInitialDrawCallback(mOrthrosPrecompile);
+-            }
++                orthrosAddPrecompile(mViewer, mOrthrosPrecompile);
+             mOrthrosPrecompile->setMode(OrthrosPrecompileCallback::Loading, 1000.0 / getTargetFrameRate());
+         }
+         else if (mOrthrosPrecompile)
+diff --git a/openmw/apps/openmw/mwrender/globalmap.cpp b/openmw/apps/openmw/mwrender/globalmap.cpp
+index a2fbd13..effbc0c 100644
+--- a/openmw/apps/openmw/mwrender/globalmap.cpp
++++ b/openmw/apps/openmw/mwrender/globalmap.cpp
+@@ -11,7 +11,91 @@
+ 
+ #include <cstdint>
  #ifdef __EMSCRIPTEN__
++#include <condition_variable>
++#include <mutex>
++
  #include <emscripten.h>
- #include <emscripten/threading.h>
-+// Orthros (orthros-r19.patch, wasm-build/orthros-jspi.js): the page's globalThis.orthrosReadWaitSoon — answered within a
-+// few ms, or the engine suspended until it is (JSPI) —, else its orthrosReadWait as before
-+extern "C" int orthros_read_wait(double timeoutMs);
-+// (orthros_read_wait suspends: called only when the engine may — wasm-build/orthros-jspi.js orthros_jspi_may —, else the
-+// page's orthrosReadWait as before)
-+extern "C" int orthros_jspi_may();
++#include <osg/GraphicsContext>
++
++namespace osgViewer
++{
++    // (drawthread.patch, osgViewer/ViewerBase.cpp: 0 — no draw thread, 1 — not ready, 2 — drawing, 3 — failed)
++    int orthrosDrawThreadState();
++    bool orthrosDrawThreadRun(osg::GraphicsOperation* job, bool wait);
++}
++
++namespace
++{
++    // Orthros (orthros-r3.patch, drawthread.patch): the overlay texture `texture` (a WebGL name of the calling
++    // thread's context) read into `out` (width x height RGBA8, rows unpadded) through a framebuffer of its own, the
++    // previous bindings restored. 1 when read, 0 when this thread has no context, or no such texture, or the
++    // framebuffer was incomplete. (No comma outside parentheses in the JavaScript: the macro would split there.)
++    int orthrosReadOverlayTexture(unsigned int texture, int width, int height, void* out)
++    {
++        // clang-format off
++        return EM_ASM_INT({
++            var gl = GLctx;
++            var tex = GL.textures[$0];
++            if (!gl || !tex) return 0;
++            var read = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
++            var pack = gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING);
++            var fb = gl.createFramebuffer();
++            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fb);
++            gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
++            gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
++            var ok = gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) == gl.FRAMEBUFFER_COMPLETE;
++            if (ok)
++                gl.readPixels(0, 0, $1, $2, gl.RGBA, gl.UNSIGNED_BYTE, HEAPU8.subarray($3, $3 + $1 * $2 * 4));
++            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, read);
++            gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pack);
++            gl.deleteFramebuffer(fb);
++            return ok ? 1 : 0;
++        }, texture, width, height, static_cast<double>(reinterpret_cast<std::uintptr_t>(out)));
++        // clang-format on
++    }
++
++    /// Orthros (drawthread.patch, OPENMW_ORTHROS_DRAWTHREAD): the read above on the draw thread — its context owns
++    /// the texture (WebGL names are a thread's own) —, a job between two frames' draws (osgViewer::
++    /// orthrosDrawThreadRun: run after the frame in flight, never waiting for another); the page thread waits for it.
++    struct OrthrosReadOverlayOperation : public osg::GraphicsOperation
++    {
++        OrthrosReadOverlayOperation(osg::Texture2D* texture, int width, int height, osg::Image* image)
++            : osg::GraphicsOperation("OrthrosReadOverlay", false)
++            , mTexture(texture)
++            , mWidth(width)
++            , mHeight(height)
++            , mImage(image)
++        {
++        }
++
++        void operator()(osg::GraphicsContext* gc) override
++        {
++            int ok = 0;
++            if (gc != nullptr && gc->getState() != nullptr)
++                if (osg::Texture::TextureObject* texture
++                    = mTexture->getTextureObject(gc->getState()->getContextID()))
++                    ok = orthrosReadOverlayTexture(texture->id(), mWidth, mHeight, mImage->data());
++            std::lock_guard<std::mutex> lock(mMutex);
++            mResult = ok;
++            mDone.notify_all();
++        }
++
++        /// 1 when read; 0 otherwise
++        int wait()
++        {
++            std::unique_lock<std::mutex> lock(mMutex);
++            mDone.wait(lock, [this] { return mResult >= 0; });
++            return mResult;
++        }
++
++        osg::ref_ptr<osg::Texture2D> mTexture;
++        int mWidth, mHeight;
++        osg::ref_ptr<osg::Image> mImage;
++        std::mutex mMutex;
++        std::condition_variable mDone;
++        int mResult = -1;
++    };
++}
  #endif
  
- #include <components/files/conversion.hpp>
-@@ -262,6 +268,8 @@ namespace VFS
-             return true;
-         // (1: everything announced is there, 0: the timeout; a page without the hook, or one that fails: nothing to
-         // wait for, the reads then waiting one by one as before)
-+        if (orthros_jspi_may())
-+            return orthros_read_wait(timeoutMs) != 0;
+ #include <osgDB/WriteFile>
+@@ -490,6 +574,29 @@ namespace MWRender
+                                 << " RGBA8";
+             return;
+         }
++        // (drawthread.patch: with the draw thread, read there — its context has the texture; this thread has none.
++        // Not before it has its context: nothing drawn yet, a wait there would never end; the copy stays stale, read
++        // at the next save)
++        if (osgViewer::orthrosDrawThreadState() != 0)
++        {
++            osg::ref_ptr<OrthrosReadOverlayOperation> read
++                = new OrthrosReadOverlayOperation(mOverlayTexture.get(), mWidth, mHeight, mOverlayImage.get());
++            if (!osgViewer::orthrosDrawThreadRun(read.get(), true))
++            {
++                Log(Debug::Warning) << "Global map: CPU copy not refreshed, the draw thread does not draw yet (or the copy was asked from inside the culls)";
++                return;
++            }
++            const double waitStart = emscripten_get_now();
++            const int ok = read->wait();
++            Log(Debug::Info) << "Global map: CPU copy " << (ok ? "read" : "not read") << " on the draw thread ("
++                             << mWidth << "x" << mHeight << ", " << (emscripten_get_now() - waitStart) << " ms)";
++            if (ok == 0)
++                return; // (still stale: read again at the next save)
++            mCpuCopyStale = false;
++            mOverlayImage->dirty();
++            return;
++        }
++        // (without the draw thread: r17's read, unchanged)
+         mCpuCopyStale = false;
          // clang-format off
-         return MAIN_THREAD_EM_ASM_INT({
-             var f = globalThis.orthrosReadWait;
-diff --git a/play/index.html b/play/index.html
-index 28f65a4..95a0eef 100644
---- a/play/index.html
-+++ b/play/index.html
-@@ -1586,8 +1586,30 @@ window.omw = (function(){
-        if (/[?&]wqbudget=(\d+(\.\d+)?)\b/.test(location.search)) ENV.OPENMW_WORKQUEUE_BUDGET_MS=/[?&]wqbudget=(\d+(\.\d+)?)/.exec(location.search)[1];
-        // Orthros (orthros-r5.patch): a preload between frames puts off a mesh or a distant-object chunk whose files are
-        // not in the page yet (globalThis.orthrosRangeReady, streamfs.js: then fetched in the background) for up to
--       // 3000 ms; ?preloadwait=N: N ms (0: never — its reads wait for the network, as before r5).
-+       // 60000 ms (orthros-r17.patch, OPENMW_ORTHROS_PRELOADPATIENT: the preload waits in cooperative slices, its reads
-+       // forced synchronously only past that limit; 3000 ms before r17 and with it off); ?preloadwait=N: N ms (0: never —
-+       // its reads wait for the network, as before r5).
-        if (/[?&]preloadwait=(\d+)\b/.test(location.search)) ENV.OPENMW_PRELOAD_WAIT_MS=/[?&]preloadwait=(\d+)/.exec(location.search)[1];
-+       // Orthros (orthros-r19.patch, wasm-build/orthros-jspi.js): a read or an announced wait the page does not answer
-+       // within a few ms suspends the frame or the boot (JSPI) instead of holding the page's thread; ?jspi=0: never — every
-+       // read waits on the page's thread, as before r19 —; ?jspispin=N: the ms a read waits on the page's thread first
-+       // (default 10; 0: suspends at once while bytes are missing) in the boot and the engine's loads (its loading screen
-+       // on); in play, outside them, a read never suspends — ?jspiplay=N: it may, after N ms —; ?jspipresent=N: a loading
-+       // screen's frame shown (the engine suspended until the browser presented it) at most every N ms (default 200; 0: never).
-+       if (/[?&]jspi=0\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI='0';
-+       // ?jspibreath=N: in a load, a read gives the page's thread a turn when it had none for N ms (default 100; 0: never).
-+       if (/[?&]jspibreath=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_BREATH_MS=/[?&]jspibreath=(\d+)/.exec(location.search)[1];
-+       // ?jspiplain=0: every frame the promising export (as r19's first builds), not only the boot's and the loads' (wasm-build/orthros-jspi.js).
-+       if (/[?&]jspiplain=0\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PLAIN='0';
-+       // ?jspigl=N: in a load's frame, a framebuffer's status asked after the GPU ran its queue (the engine suspended meanwhile), at most every N ms (default 50; 0: never).
-+       if (/[?&]jspigl=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MS=/[?&]jspigl=(\d+)/.exec(location.search)[1];
-+       // ?jspiglmax=N: that wait N ms at most (default 300), the status then asked as is (the page's thread waits the rest).
-+       if (/[?&]jspiglmax=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MAX_MS=/[?&]jspiglmax=(\d+)/.exec(location.search)[1];
-+       // ?jspisettle=N: a load's end waits for the GPU to run what the load gave it, the page's thread free, N ms at most (default 3000; 0: never).
-+       if (/[?&]jspisettle=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_SETTLE_MS=/[?&]jspisettle=(\d+)/.exec(location.search)[1];
-+       if (/[?&]jspipresent=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PRESENT_MS=/[?&]jspipresent=(\d+)/.exec(location.search)[1];
-+       if (/[?&]jspispin=(\d+(\.\d+)?)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_SPIN_MS=/[?&]jspispin=(\d+(\.\d+)?)/.exec(location.search)[1];
-+       if (/[?&]jspiplay=(\d+(\.\d+)?)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS=/[?&]jspiplay=(\d+(\.\d+)?)/.exec(location.search)[1];
-        // ?perfkeys=1 (QA): dump the frame's raw osg::Stats attribute keys to window.__omwPhaseKeys
-        // and whether the "engine" collection group is on. Diagnostic for empty __omwPhase buckets.
-        if (/[?&]perfkeys=1/.test(location.search)) ENV.OPENMW_PERF_KEYS='1';
-@@ -3998,8 +4020,14 @@ window.omw = (function(){
-        // visible tab -> next tick scheduled via requestAnimationFrame (vsync-aligned, smooth);
-        // hidden tab  -> direct postMessage (unthrottled, game keeps running in background).
-        var scheduled = false;
--       function scheduleNext(){
-+       function scheduleNext(now){
-          if (scheduled) return; scheduled = true;
-+         // Orthros (orthros-r19.patch): after a load's frame (a promising one, a promise returned — orthros-jspi.js), the
-+         // next frame at once, not at the next animation frame: the browser holds that one until the GPU process has
-+         // drawn the load's first picture of the world (0.8 s in SwiftShader after a save's load), and the engine's
-+         // next frame — the player's first in the world, the world's scripts — waited idle meanwhile, where a frame
-+         // after a load that held the page's thread (r17) ran at once, its own GPU wait after that work.
-+         if (now && !document.hidden) { mc.port2.postMessage(0); return; }
-          // Visible: run the frame INSIDE the rAF callback. Hidden: pace with a timer (~30fps
-          // target; browsers throttle background timers further) and go through the
-          // MessageChannel, which is NOT throttled in a background tab — an unpaced background
-@@ -4028,11 +4056,7 @@ window.omw = (function(){
-          if (document.hidden) setTimeout(function(){ mc.port2.postMessage(0); }, 33);
-          else requestAnimationFrame(function(){ mc.port2.postMessage(0); });
-        }
--       function pumpFrame(){
--         scheduled = false;
--         var a = performance.now();
--         try { if (Module._omw_pump_frame) Module._omw_pump_frame(); }
--         catch(e){
-+       function pumpTrap(e){
-            // NEVER SILENT. A C++ exception is caught inside omw_pump_frame and logged there; what
-            // reaches here is a wasm TRAP (RuntimeError: unreachable / memory access out of bounds)
-            // that unwound straight through the engine's re-entrancy guard, so every later pump
-@@ -4047,7 +4071,26 @@ window.omw = (function(){
-              showLogOnce();
-              if (typeof fatalOverlay === 'function') fatalOverlay('The game engine crashed', 'Reload to keep playing. Your progress is saved on the server.');
-            }
--         }
-+       }
-+       // Orthros (orthros-r19.patch, wasm-build/orthros-jspi.js): the frame is a promising export — a frame that waits
-+       // for the game's files suspends, the page's thread free meanwhile (input, the page's indicator, what the engine
-+       // drew presented) —, and the next frame is scheduled once it ends, never while it is suspended. Its time (__frameMs)
-+       // is the whole frame's, its suspensions included.
-+       // A pump that arrives while a frame is in flight — the stale rAF after a hide and show during a suspension — runs
-+       // nothing and counts nothing: the engine's own guard would return at once, and pumpDone then counted a 0 ms frame
-+       // and started a second chain of empty pumps until the suspended frame's end (__fps, __frameMs, the bench's work).
-+       var pumping = false;
-+       function pumpFrame(){
-+         scheduled = false;
-+         if (pumping) return;
-+         var a = performance.now(), r = null;
-+         pumping = true;
-+         try { if (Module._omw_pump_frame) r = Module._omw_pump_frame(); }
-+         catch(e){ pumpTrap(e); }
-+         if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a, true); }, function(e){ pumping = false; pumpTrap(e); pumpDone(a); });
-+         else { pumping = false; pumpDone(a); }
-+       }
-+       function pumpDone(a, promised){
-          // End of boot: the first frame the engine actually rendered. Stamped here rather than in
-          // the 500ms status poller so it is exact to one frame. __omwRunning is set by the engine's
-          // own loop, so this fires once the player can genuinely see something.
-@@ -4058,12 +4101,14 @@ window.omw = (function(){
-          if (window.__glCalls){ var gc = window.__glCalls; window.__glPerFrame = { total: gc.total - (window.__glLast||0), draw: gc.draw - (window.__glLastDraw||0) }; window.__glLast = gc.total; window.__glLastDraw = gc.draw; }
-          var dt = b - __t0;
-          if (dt >= 1000){ window.__fps = Math.round(__frames*1000/dt); window.__frameMs = +(__accum/__frames).toFixed(2); __frames = 0; __accum = 0; __t0 = b; }
--         scheduleNext();
-+         // (a load's frame: a promising one that lasted — not one of the boot's, which return at once while main() runs)
-+         scheduleNext(promised && b - a >= 100);
-        }
-        // The hidden-tab path still arrives as a message; visible frames call pumpFrame directly.
-        mc.port1.onmessage = pumpFrame;
-        // If the tab hides while an rAF-scheduled tick is frozen, take over directly.
--       // (The stale rAF firing later causes at most one harmless extra tick.)
-+       // (The stale rAF firing later causes at most one harmless extra tick — none while that frame is still suspended:
-+       // pumping.)
-        document.addEventListener('visibilitychange', function(){
-          if (document.hidden && scheduled) mc.port2.postMessage(0);
-        });
-diff --git a/wasm-build/link-openmw.sh b/wasm-build/link-openmw.sh
-index a7806d8..f36ac00 100755
---- a/wasm-build/link-openmw.sh
-+++ b/wasm-build/link-openmw.sh
-@@ -226,6 +226,12 @@ ninja apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
-   --js-library "$ROOT/wasm-build/orthros-gl.js" \
-   `# Orthros (unattributed.patch): the clock's glue (wasm-build/orthros-clock.js; ENV OPENMW_ORTHROS_CLOCK=0: off)` \
-   --js-library "$ROOT/wasm-build/orthros-clock.js" \
-+  `# Orthros (orthros-r19.patch): the frame and main() suspend while the page fetches a file's bytes (wasm-build/orthros-jspi.js)` \
-+  -sJSPI=1 "-sJSPI_EXPORTS=['omw_pump_frame']" -Wno-experimental \
-+  `# (the C library's reads, fsyncs and sleeps: the suspending import only when the engine may suspend — engine.cpp __wrap_*)` \
-+  -Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_sync -Wl,--wrap=emscripten_sleep \
-+  -Wl,--wrap=glCheckFramebufferStatus -Wl,--wrap=emscripten_glCheckFramebufferStatus \
-+  --js-library "$ROOT/wasm-build/orthros-jspi.js" \
-   --use-port=sdl2 --use-port=freetype --use-port=harfbuzz --use-port=libpng \
-   --use-port=libjpeg --use-port=zlib --use-port=ogg --use-port=vorbis \
-   -sALLOW_MEMORY_GROWTH=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
-diff --git a/wasm-build/orthros-jspi.js b/wasm-build/orthros-jspi.js
-new file mode 100644
-index 0000000..6b755dd
---- /dev/null
-+++ b/wasm-build/orthros-jspi.js
-@@ -0,0 +1,462 @@
-+// Orthros (orthros-r19.patch, JSPI): the engine's waits for the game's files suspend it (WebAssembly JSPI, -sJSPI,
-+// link-openmw.sh) while the page fetches the bytes, instead of the page's thread spinning on shared memory (Orthros'
-+// src/vfs/data-client.js fetchSync, wantWait): the page answers input, draws its own indicator and presents what the
-+// engine drew so far. Linked after the system library (--js-library): fd_read and fd_sync replace libwasi's.
-+//
-+// Where it may suspend: only under the engine's promising exports — omw_pump_frame (a load's frame) and main() (the
-+// boot) —, which say so (orthros_jspi_enter / orthros_jspi_leave, engine.cpp, main.cpp), one suspension at a time.
-+// A frame of play is the plain export (omw_pump_frame_plain: the page's own stack, nothing suspends — as before r19);
-+// the page pumps the promising one only for a load: one put off to the next frame by the engine (orthros_jspi_defer: a
-+// save's load, a new game, the debug COE asked in a plain frame), or the frame of a loading screen still on. A load
-+// that starts in a frame of play by itself — a door, an exterior crossing — runs synchronously there, as r16's. Why: a
-+// frame in play gained nothing from suspending (docs/openmw.md), and a JSPI stack is exposed to Chromium's native stack
-+// walker (base::debug::TraceStackFramePointers, its heap profiler's on a sampled allocation): from that stack's first
-+// frame it scans 8 KB further for a frame pointer, past the stack's end — the renderer's crash (2026-10-29/30, the
-+// kernel's log: the same instruction each time; at every run with the heap profiler forced on every renderer, never
-+// with r16). The promising exports' stacks are made deep first (engine.cpp orthros_jspi_deep: 1,024 plain wasm frames
-+// at their base), so that walker, which stops at 255 frames, never reaches the end. An import that suspends (WebAssembly.Suspending) throws SuspendError when called outside
-+// a promising export even when it returns a value at once (V8, measured): the engine calls the suspending imports
-+// (orthros_fd_read_async, orthros_fd_sync_async, Emscripten's emscripten_sleep — through engine.cpp's --wrap'd C
-+// library functions —, present, breathe, settle, gl_settle, read_wait) only when orthros_jspi_may() says so (under a
-+// promising export, not suspended), the plain ones otherwise (fd_read, fd_sync: as a build without JSPI).
-+//
-+// A read first waits a few ms on the page's thread (ENV OPENMW_ORTHROS_JSPI_SPIN_MS, 10 by default; play/index.html
-+// ?jspispin=N): the page's store answers most of the boot's reads that fast, and a suspension costs a round of the
-+// page's event loop each — the spike that suspended at once took 2 s more to the menu over ~1,700 store hits. That
-+// short wait holds during the boot (main) and the engine's loads — its loading screen on (orthros_jspi_loading,
-+// mwgui/loadingscreen.cpp: a save's load, a COE, a door, an exterior cell's) —, where the page's thread is what the
-+// player has. In play, outside them, a read never suspends: it waits on the page's thread as before r19 (ENV
-+// OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS unset or negative; ?jspiplay=N: it may, after N ms there): a frame that suspends
-+// presents nothing more meanwhile, and in play each suspension cost the frame its short wait, then the round to the page
-+// and back, the page's thread having nothing to show for it — with 100 ms first, 2-3 of 3 measured minutes still had a
-+// frame gap of 400-900 ms that r14's synchronous reads did not (2026-10-30, docs/openmw.md). A read
-+// whose file is one the page streams (its node's `orthrosStreamed`: Orthros' src/vfs/emscripten-files.js, asyncReads)
-+// asks `soon(position, length, spinMs)`: null when its bytes are in the page by then — read at once —, else a promise
-+// the engine suspends on, the read itself then Emscripten's (doReadv: the page's pieces). The announced wait
-+// (orthros_read_wait, components/vfs/manager.cpp orthrosReadWait) asks the page's globalThis.orthrosReadWaitSoon the
-+// same way (its answer, or a promise of it), else calls orthrosReadWait as before — in play too, after the short wait: it
-+// is a load's (a cell change's read-ahead comes before its loading screen). ENV OPENMW_ORTHROS_JSPI=0 (?jspi=0):
-+// never suspends — every read as before r19. A build without JSPI (ASYNCIFY != 2) never returns a promise.
-+//
-+// A worker thread's read (Lua's update on its own thread, orthros-r14.patch: proxied to the page's thread) is the plain
-+// fd_read, answered at once, synchronously, as before: the page's thread may serve it inside a wait for that very
-+// thread (Worker::finishUpdate's futex wait runs the proxied calls), where no promise could settle — the read waits on
-+// the page's thread when its bytes are missing (counted: proxied). Never a suspension there, never a deadlock.
-+//
-+// While the frame or the boot is suspended, nothing else enters the engine's state from the page: the page's calls
-+// (Module._omw_*, Module._orthros_*, Module.ccall / cwrap's — but omw_save_settings, which reads no game file and
-+// which the page's leaving persists at once after) and the engine's WebSocket events (multiplayer, MWMP::WebSocket:
-+// "callbacks never interleave with a frame"; one whose socket was deleted or handler replaced by then dropped) are put
-+// off, in order, to just after its end (a microtask once it returned: before any other task), 0 returned meanwhile
-+// (Module.orthrosEngineBusy, Module.orthrosAfterEngine(fn)). Input events still reach SDL's queue at once (the html5
-+// callbacks answer synchronously): the next frame reads them. The debug COE and teleport (engine.cpp) run at the next
-+// frame's start, inside it.
-+//
-+// A loading screen's frame (orthros_jspi_present, mwgui/loadingscreen.cpp LoadingScreen::draw) is presented: the engine
-+// suspends until the browser's next rendering update has run (a task posted from requestAnimationFrame: the engine
-+// resumes after the update, never inside it), at most every ENV OPENMW_ORTHROS_JSPI_PRESENT_MS (200 by default;
-+// ?jspipresent=N, 0: never) — a load's reads the browser's copy answers within the short wait suspend nothing, and its
-+// loading screen, drawn, was shown only at the frame's end: a COE's whole load one frozen picture, as r16's.
-+//
-+// In a load, a read — and the load's progress (orthros_jspi_breathe, mwgui/loadingscreen.cpp) — also gives the page's thread a turn when the engine has not let it have one for
-+// ENV OPENMW_ORTHROS_JSPI_BREATH_MS (100 by default; ?jspibreath=N, 0: never) — a suspension until a posted message
-+// comes back, input and the page's timers run meanwhile —: a load whose reads the browser's copy answers within the short
-+// wait suspends nothing, and its long stretches held the page's thread whole (a COE 3.7 s, a save's load 2 s, measured
-+// 2026-10-30) where the page answered input as late as r16.
-+//
-+// A load's end (orthros_jspi_settle, loadingOff, the outermost) waits for the GPU's queue (a fence; ENV
-+// OPENMW_ORTHROS_JSPI_SETTLE_MS, 3000 by default, ?jspisettle=N); and in a load's frame — its loading screen, and the
-+// rest of that frame after it, the world's first draw (loadFrame) — a framebuffer's status (orthros_gl_settle,
-+// engine.cpp's wrapped glCheckFramebufferStatus, at most every ENV OPENMW_ORTHROS_JSPI_GL_MS, 50; ?jspigl=N, 0: never)
-+// is asked once the GPU ran its queue, the engine suspended meanwhile: WebGL's call waits for every command before it,
-+// and the world's first draw after a save's load held the page's thread 1-2 s there in SwiftShader (2026-10-30).
-+//
-+// Module.orthrosBlocked { count, ms, max, files: ms by path, waits, waitMs, proxied, proxiedMs, proxiedMax, play, playMs,
-+// presents, presentMs, breaths, breathMs, settles, settleMs, gls, glMs }: the engine's suspensions (reads, announced waits; play/playMs: those in play, outside a load;
-+// presents: the loading screen's frames presented; settles, gls: the GPU's queue waited for) and the worker threads' reads that waited on the page's thread; Module.orthrosLoading(): the engine in a load now (its boot, a loading screen, the rest of its frame);
-+// Module.orthrosFrames { plain, promising }: the frames the page pumped of each kind;
-+// Module.orthrosSuspendedMs: the time suspended since the start (a frame's timer: its whole time minus that, its work).
-+addToLibrary({
-+  $OrthrosJspi: { on: 0, boot: 0, loading: 0, suspended: 0, after: [], flushing: false, ready: false, off: false, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glMaxMs: 300, glAt: 0, freedAt: 0, suspendedMs: 0 },
-+  $orthrosJspiInit__deps: ['$OrthrosJspi', '$orthrosLater'],
-+  $orthrosJspiInit__postset: 'orthrosJspiInit();',
-+  $orthrosJspiInit: () => {
-+    var J = OrthrosJspi;
-+    Module.orthrosJspi = {{{ ASYNCIFY == 2 ? 1 : 0 }}};
-+    Module.orthrosBlocked = { count: 0, ms: 0, max: 0, files: {}, waits: 0, waitMs: 0, proxied: 0, proxiedMs: 0, proxiedMax: 0, play: 0, playMs: 0, presents: 0, presentMs: 0, breaths: 0, breathMs: 0, settles: 0, settleMs: 0, gls: 0, glMs: 0 };
-+    // (the engine in a load now: its boot or its loading screen — the short wait before a suspension —, else in play)
-+    Module.orthrosLoading = () => J.boot > 0 || J.loading > 0 || J.loadFrame > 0;
-+    Object.defineProperty(Module, 'orthrosSuspendedMs', { configurable: true, get: () => J.suspendedMs });
-+    // (the engine suspended now, or its calls put off not run yet: a call of the page's into it waits — its state is
-+    // that of the middle of a frame)
-+    Module.orthrosEngineBusy = () => J.suspended > 0 || (J.after.length > 0 && !J.flushing);
-+    Module.orthrosAfterEngine = (fn) => { orthrosLater(fn); };
-+    // (the frames pumped: plain — on the page's stack, never suspending —, promising — the load's —; orthrosFrames)
-+    Module.orthrosFrames = { plain: 0, promising: 0 };
-+#if ASYNCIFY == 2
-+    // (the page pumps Module._omw_pump_frame: the plain export in play, the promising one for a load put off to the next
-+    // frame (orthros_jspi_defer) or a loading screen still on — chosen at each call; ENV OPENMW_ORTHROS_JSPI_PLAIN=0
-+    // (?jspiplain=0): every frame promising, as r19's first builds. A script that wraps Module._omw_pump_frame (a
-+    // frame timer) wraps the choice.)
-+    var promising = null, pump = null;
-+    var choose = function (...a) {
-+      var plain = Module['_omw_pump_frame_plain'];
-+      if (typeof plain == 'function' && !J.plainOff && !J.want && J.boot === 0 && J.loading === 0) { Module.orthrosFrames.plain++; return plain(...a); }
-+      Module.orthrosFrames.promising++;
-+      return promising.apply(this, a);
+         // (no comma outside parentheses in the JavaScript: the macro would split its argument there)
+diff --git a/openmw/apps/openmw/mwrender/renderingmanager.cpp b/openmw/apps/openmw/mwrender/renderingmanager.cpp
+index 5ee6c40..d32012c 100644
+--- a/openmw/apps/openmw/mwrender/renderingmanager.cpp
++++ b/openmw/apps/openmw/mwrender/renderingmanager.cpp
+@@ -10,6 +10,7 @@
+ #include <vector>
+ 
+ #include <emscripten.h>
++#include <emscripten/threading.h>
+ #include <osg/GraphicsContext>
+ #include <osg/observer_ptr>
+ #include <osg/State>
+@@ -142,6 +143,12 @@ namespace osg
+     // (texahead.patch, osg/Texture2D.cpp: the Texture2Ds alive that hold the image)
+     void orthrosTexture2DsOfImage(const Image* image, std::vector<ref_ptr<Texture2D>>& out);
+ }
++namespace osgViewer
++{
++    // (drawthread.patch, osgViewer/ViewerBase.cpp: 0 — no draw thread, 1 — not ready, 2 — drawing, 3 — failed)
++    int orthrosDrawThreadState();
++    bool orthrosDrawThreadRun(osg::GraphicsOperation* job, bool wait);
++}
+ 
+ namespace
+ {
+@@ -179,7 +186,10 @@ namespace
+     /// again (only an expiring cache holds it) is uploaded too: it had a GL object already, the cost is its upload
+     /// once, inside the tick's cap. Requires: called between frames on the GL thread (EmscriptenLoop::tick calls
+     /// reloadUpdated before viewer->advance/frame — keep it there).
+-    void orthrosUploadAhead(osgViewer::Viewer& viewer, osg::Image& image, OrthrosAheadTick& tick)
++    /// (frame: the tick's frame number, read by the thread that reloads — the page thread — when it reloaded `image`:
++    /// with the draw thread, drawthread.patch, this runs later on the draw thread, which never reads the page's frame
++    /// stamp, and owns `tick` alone)
++    void orthrosUploadAhead(osgViewer::Viewer& viewer, osg::Image& image, OrthrosAheadTick& tick, unsigned int frame)
+     {
+         std::vector<osg::ref_ptr<osg::Texture2D>> textures;
+         osg::orthrosTexture2DsOfImage(&image, textures);
+@@ -187,9 +197,8 @@ namespace
+             return;
+         osg::GraphicsContext* gc = viewer.getCamera()->getGraphicsContext();
+         osg::State* state = gc != nullptr ? gc->getState() : nullptr;
+-        if (state == nullptr || viewer.getFrameStamp() == nullptr)
++        if (state == nullptr)
+             return;
+-        const unsigned int frame = viewer.getFrameStamp()->getFrameNumber();
+         if (tick.mFrame != frame)
+         {
+             tick.mFrame = frame;
+@@ -221,15 +230,53 @@ namespace
+             state->haveAppliedTextureAttribute(state->getActiveTextureUnit(), osg::StateAttribute::TEXTURE);
+         const double ms = emscripten_get_now() - start;
+         tick.mMs += ms;
++        // (drawthread.patch: from the draw thread, told to the page's realm)
+         // clang-format off
+-        EM_ASM({
+-            var s = globalThis.__orthrosTexAhead || (globalThis.__orthrosTexAhead = { textures: 0, bytes: 0, deferred: 0, ms: 0, max: 0, maxTick: 0 });
+-            s.textures += $0; s.bytes += $1; s.deferred += $2; s.ms += $3;
+-            if ($3 > s.max) s.max = $3;
+-            if ($4 > s.maxTick) s.maxTick = $4;
+-        }, uploaded, bytes, deferred, ms, tick.mMs);
++        if (emscripten_is_main_runtime_thread())
++            EM_ASM({
++                var s = globalThis.__orthrosTexAhead || (globalThis.__orthrosTexAhead = { textures: 0, bytes: 0, deferred: 0, ms: 0, max: 0, maxTick: 0 });
++                s.textures += $0; s.bytes += $1; s.deferred += $2; s.ms += $3;
++                if ($3 > s.max) s.max = $3;
++                if ($4 > s.maxTick) s.maxTick = $4;
++            }, uploaded, bytes, deferred, ms, tick.mMs);
++        else
++            MAIN_THREAD_ASYNC_EM_ASM({
++                var s = globalThis.__orthrosTexAhead || (globalThis.__orthrosTexAhead = { textures: 0, bytes: 0, deferred: 0, ms: 0, max: 0, maxTick: 0 });
++                s.textures += $0; s.bytes += $1; s.deferred += $2; s.ms += $3;
++                if ($3 > s.max) s.max = $3;
++                if ($4 > s.maxTick) s.maxTick = $4;
++            }, uploaded, bytes, deferred, ms, tick.mMs);
+         // clang-format on
+     }
++
++    /// Orthros (drawthread.patch, OPENMW_ORTHROS_DRAWTHREAD): with the draw thread, the page thread has no context:
++    /// the uploads ahead of an image updated in place run on the draw thread, a job between two frames' draws
++    /// (osgViewer::orthrosDrawThreadRun) — before the next frame's draw —, within the same cap a tick.
++    /// (EmscriptenLoop::reloadUpdated waits for the frame in flight and the jobs before it updates images in place.)
++    struct OrthrosUploadAheadOperation : public osg::GraphicsOperation
++    {
++        OrthrosUploadAheadOperation(
++            osgViewer::Viewer* viewer, osg::Image* image, std::shared_ptr<OrthrosAheadTick> tick, unsigned int frame)
++            : osg::GraphicsOperation("OrthrosUploadAhead", false)
++            , mViewer(viewer)
++            , mImage(image)
++            , mTick(std::move(tick))
++            , mFrame(frame)
++        {
++        }
++
++        void operator()(osg::GraphicsContext*) override
++        {
++            osg::ref_ptr<osgViewer::Viewer> viewer;
++            if (mViewer.lock(viewer))
++                orthrosUploadAhead(*viewer, *mImage, *mTick, mFrame);
++        }
++
++        osg::observer_ptr<osgViewer::Viewer> mViewer;
++        osg::ref_ptr<osg::Image> mImage;
++        std::shared_ptr<OrthrosAheadTick> mTick; // (the draw thread's alone once jobs exist)
++        unsigned int mFrame; // (the tick's frame number, read on the page thread when queued)
 +    };
-+    Object.defineProperty(Module, '_omw_pump_frame', { configurable: true, enumerable: true, get: () => pump, set: (f) => { if (!promising) { promising = f; pump = choose; } else pump = f; } });
+ }
+ #endif
+ 
+@@ -423,8 +470,21 @@ namespace MWRender
+             auto tick = std::make_shared<OrthrosAheadTick>();
+             mResourceSystem->getImageManager()->setOrthrosReloaded([viewer, tick](osg::Image& image) {
+                 osg::ref_ptr<osgViewer::Viewer> locked;
+-                if (viewer.lock(locked))
+-                    orthrosUploadAhead(*locked, image, *tick);
++                if (!viewer.lock(locked) || locked->getFrameStamp() == nullptr)
++                    return;
++                const unsigned int frame = locked->getFrameStamp()->getFrameNumber();
++                switch (osgViewer::orthrosDrawThreadState())
++                {
++                    case 0: // (no draw thread: this thread renders)
++                        orthrosUploadAhead(*locked, image, *tick, frame);
++                        break;
++                    case 2: // (drawthread.patch: on the draw thread, between two frames' draws)
++                        osgViewer::orthrosDrawThreadRun(
++                            new OrthrosUploadAheadOperation(locked.get(), &image, tick, frame), false);
++                        break;
++                    default: // (a draw thread without its context yet, or none: left to the next draw)
++                        break;
++                }
+             });
+         }
+ #endif
+diff --git a/openmw/apps/openmw/mwrender/screenshotmanager.cpp b/openmw/apps/openmw/mwrender/screenshotmanager.cpp
+index bc9bac7..609ae5e 100644
+--- a/openmw/apps/openmw/mwrender/screenshotmanager.cpp
++++ b/openmw/apps/openmw/mwrender/screenshotmanager.cpp
+@@ -3,6 +3,7 @@
+ #include "screenshotmanager.hpp"
+ 
+ #include <condition_variable>
++#include <cstring>
+ #include <mutex>
+ 
+ #include <components/stereo/multiview.hpp>
+@@ -13,6 +14,14 @@
+ 
+ #include "postprocessor.hpp"
+ 
++#ifdef __EMSCRIPTEN__
++namespace osgViewer
++{
++    // (drawthread.patch, osgViewer/ViewerBase.cpp: 0 — no draw thread, 1 — not ready, 2 — drawing, 3 — failed)
++    int orthrosDrawThreadState();
++}
 +#endif
-+  },
-+  // (a pthread's entry point: plain, on its worker's own stack — Emscripten's under JSPI runs every thread on a JSPI
-+  // stack (WebAssembly.promising) so that it may suspend; none of the engine's do — its suspending imports are the page's
-+  // thread's alone (engine.cpp: emscripten_is_main_runtime_thread), a worker's sleep its futex's (__wrap_emscripten_sleep)
-+  // —, and a thread's whole life on a JSPI stack paid for it in every call to an import — Lua's update, the physics, the
-+  // work queue: the frame waits for them in play)
-+#if PTHREADS && ASYNCIFY == 2
-+  $invokeEntryPoint__deps: ['_emscripten_thread_exit', '$keepRuntimeAlive', '$runtimeKeepaliveCounter'],
-+  $invokeEntryPoint: (ptr, arg) => {
-+    runtimeKeepaliveCounter = 0;
-+#if isSymbolNeeded('$noExitRuntime')
-+    noExitRuntime = 0;
++
+ namespace MWRender
+ {
+ 
+@@ -124,6 +133,17 @@ namespace MWRender
+ 
+     void ScreenshotManager::screenshot(osg::Image* image, int w, int h)
+     {
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): a draw thread without its context draws no frame (osgViewer/ViewerBase.cpp's
++        // gate) — the wait below would never end: a black picture instead (the boot only: nothing was shown yet)
++        if (const int drawThread = osgViewer::orthrosDrawThreadState(); drawThread == 1 || drawThread == 3)
++        {
++            image->allocateImage(w, h, 1, GL_RGB, GL_UNSIGNED_BYTE);
++            if (image->data() != nullptr)
++                std::memset(image->data(), 0, image->getTotalSizeInBytes());
++            return;
++        }
 +#endif
-+    var result = {{{ makeDynCall('pp', 'ptr') }}}(arg);
-+    if (keepRuntimeAlive()) { EXITSTATUS = result; return; }
-+    __emscripten_thread_exit(result);
-+  },
-+#endif
-+  // (a measuring harness's trace — globalThis.__orthrosReadTrace, Orthros' data-client.js GameData.trace —: the engine's
-+  // frames, loads and suspensions there too, { t, k: 'jspi', ev, x }; nothing recorded without it)
-+  $orthrosNote: (ev, x) => {
-+    var log = globalThis.__orthrosReadTrace;
-+    if (Array.isArray(log) && log.length < 50000) log.push({ t: Math.round(performance.now()), k: 'jspi', ev: ev, x: x });
-+  },
-+  // (fn now, or after the frame or boot suspended now: false, or true when put off)
-+  $orthrosLater__deps: ['$OrthrosJspi'],
-+  $orthrosLater: (fn) => {
-+    var J = OrthrosJspi;
-+    if (J.suspended > 0 || (J.after.length > 0 && !J.flushing)) { J.after.push(fn); return true; }
-+    fn();
-+    return false;
-+  },
-+  // (the calls put off, in order, outside the engine's stack; again at the next end when a frame entered meanwhile)
-+  $orthrosFlush__deps: ['$OrthrosJspi'],
-+  $orthrosFlush: () => {
-+    var J = OrthrosJspi;
-+    if (J.on > 0 || J.suspended > 0 || J.flushing) return;
-+    J.flushing = true;
-+    try {
-+      while (J.after.length) { var f = J.after.shift(); try { f(); } catch (e) { err('[orthros-jspi] a call put off: ' + e); } }
-+    } finally { J.flushing = false; }
-+  },
-+  // (once, at the boot's start — the exports and the page's ENV there by then: the switches read, the page's ways into
-+  // the engine wrapped)
-+  $orthrosJspiReady__deps: ['$OrthrosJspi', '$orthrosLater', '$ENV'
-+#if ASYNCIFY == 2
-+    , '$webSockets'
-+#endif
-+  ],
-+  $orthrosJspiReady: () => {
-+    var J = OrthrosJspi;
-+    J.ready = true;
-+    J.off = ENV['OPENMW_ORTHROS_JSPI'] === '0';
-+    J.plainOff = ENV['OPENMW_ORTHROS_JSPI_PLAIN'] === '0';
-+    var spin = Number(ENV['OPENMW_ORTHROS_JSPI_SPIN_MS']);
-+    if (ENV['OPENMW_ORTHROS_JSPI_SPIN_MS'] !== undefined && Number.isFinite(spin) && spin >= 0) J.spinMs = spin;
-+    var play = Number(ENV['OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS']);
-+    if (ENV['OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS'] !== undefined && Number.isFinite(play)) J.playSpinMs = play;
-+    var present = Number(ENV['OPENMW_ORTHROS_JSPI_PRESENT_MS']);
-+    if (ENV['OPENMW_ORTHROS_JSPI_PRESENT_MS'] !== undefined && Number.isFinite(present) && present >= 0) J.presentMs = present;
-+    var breath = Number(ENV['OPENMW_ORTHROS_JSPI_BREATH_MS']);
-+    if (ENV['OPENMW_ORTHROS_JSPI_BREATH_MS'] !== undefined && Number.isFinite(breath) && breath >= 0) J.breathMs = breath;
-+    var settle = Number(ENV['OPENMW_ORTHROS_JSPI_SETTLE_MS']);
-+    if (ENV['OPENMW_ORTHROS_JSPI_SETTLE_MS'] !== undefined && Number.isFinite(settle) && settle >= 0) J.settleMs = settle;
-+    var gl = Number(ENV['OPENMW_ORTHROS_JSPI_GL_MS']);
-+    if (ENV['OPENMW_ORTHROS_JSPI_GL_MS'] !== undefined && Number.isFinite(gl) && gl >= 0) J.glMs = gl;
-+    var glMax = Number(ENV['OPENMW_ORTHROS_JSPI_GL_MAX_MS']);
-+    if (ENV['OPENMW_ORTHROS_JSPI_GL_MAX_MS'] !== undefined && Number.isFinite(glMax) && glMax >= 0) J.glMaxMs = glMax;
-+#if ASYNCIFY == 2
-+    if (J.off) { err('[orthros-jspi] off (OPENMW_ORTHROS_JSPI=0): every read waits on the page\'s thread'); return; }
-+    var later = (f) => function (...a) {
-+      if (J.suspended > 0 || (J.after.length > 0 && !J.flushing)) { J.after.push(() => f.apply(this, a)); return 0; }
-+      return f.apply(this, a);
-+    };
-+    // (the engine's exports the page calls, but the frame, the marks that read nothing and the settings' save — it
-+    // writes the user's settings file and reads no game file, and the page's leaving (__omwSync: pagehide, a reload)
-+    // persists that file at once after it: put off, the changes made since the last save were lost)
-+    for (var k of Object.keys(Module)) {
-+      if (!/^_(omw|orthros)_/.test(k) || /^_(omw_pump_frame|omw_pump_frame_plain|omw_save_settings|orthros_jspi|orthros_content_light)$/.test(k) || typeof Module[k] != 'function') continue;
-+      Module[k] = later(Module[k]);
+         osg::Camera* camera = MWBase::Environment::get().getWorld()->getPostProcessor()->getHUDCamera();
+         osg::ref_ptr<osg::Drawable> tempDrw = new osg::Drawable;
+         tempDrw->setDrawCallback(new ReadImageFromFramebufferCallback(image, w, h));
+diff --git a/openmw/components/sdlutil/sdlgraphicswindow.cpp b/openmw/components/sdlutil/sdlgraphicswindow.cpp
+index bb5ae81..90a34c5 100644
+--- a/openmw/components/sdlutil/sdlgraphicswindow.cpp
++++ b/openmw/components/sdlutil/sdlgraphicswindow.cpp
+@@ -9,6 +9,358 @@
+ #include "gl4esinit.h"
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++
++#include <emscripten.h>
++#include <emscripten/threading.h>
++
++// Orthros (drawthread.patch): OPENMW_ORTHROS_DRAWTHREAD, read once — OFF unless set to anything but "0" in this round
++// ("1": on; "discard": on, and the graphics thread's context has rasterizer discard forced, as tools/openmw/perf.mjs
++// --discard forces it on the page's contexts; "fail" (QA): on, but the graphics thread refuses its context — the
++// failure's path, the page's fatal notice; "lose" (QA): on, and the graphics thread's context lost on purpose
++// (WEBGL_lose_context) at its 600th frame posted — the lost context's path; "crash" (QA): on, and the graphics thread
++// throws at its 600th frame posted — a crashed draw thread's path; "refuse" / "mismatch" (QA, wasm-build/orthros-gl.js):
++// the context made before main() refused / made with other attributes — the session drawn on the page's thread). On, the engine runs OSG's DrawThreadPerContext (apps/openmw/engine.cpp):
++// the page thread updates and culls frame N+1 while a pthread draws frame N. WebGL objects belong to one context, used
++// on one thread: the page thread's context (SDL's, on the page's canvas) only serves the realize operations (OSG
++// releases it when threading starts); the graphics thread makes its own WebGL2 context, on an OffscreenCanvas of its
++// own — made before main() ran, wasm-build/orthros-gl.js (orthrosDrawWorker: a worker cannot make a WebGL context while
++// the page thread is in the boot) —, with the page context's attributes and extensions, made current at its first
++// makeCurrent, and presents each swapped frame as
++// an ImageBitmap posted to the page thread (Emscripten's worker "call handler" message), which shows it on a
++// bitmaprenderer canvas laid over the page's canvas (input stays on the page's canvas: the layer takes no pointer
++// events). The graphics thread returns to its worker's event loop between frames (osgViewer/ViewerBase.cpp,
++// OrthrosGraphicsThread): Chrome frees a transferred bitmap's GPU memory through a task on the worker that made it.
++namespace
++{
++    int orthrosDrawThreadMode()
++    {
++        static const int mode = [] {
++            const char* value = std::getenv("OPENMW_ORTHROS_DRAWTHREAD");
++            if (value == nullptr || value[0] == 0 || std::strcmp(value, "0") == 0)
++                return 0;
++            if (std::strcmp(value, "fail") == 0)
++                return 3;
++            if (std::strcmp(value, "lose") == 0)
++                return 4;
++            if (std::strcmp(value, "crash") == 0)
++                return 5;
++            // ("refuse", "mismatch", QA: on, the context made before main() refused or made with other attributes —
++            // wasm-build/orthros-gl.js —: the session's fallback to the page's thread)
++            return std::strcmp(value, "discard") == 0 ? 2 : 1;
++        }();
++        return mode;
 +    }
-+    // (ccall put off whole — its strings are copied onto the stack for the call alone —; cwrap's functions alike)
-+    if (typeof Module['ccall'] == 'function') Module['ccall'] = later(Module['ccall']);
-+    if (typeof Module['cwrap'] == 'function') { var cw = Module['cwrap']; Module['cwrap'] = (...c) => later(cw(...c)); }
-+    // (the engine's WebSockets — those Emscripten's library made, MWMP::WebSocket —: their events after the frame; one
-+    // put off is dropped when, by then, its socket was deleted or its handler replaced — emscripten_websocket_delete
-+    // nulls the handlers, which no longer cancels an event queued: the engine's object reused by a reconnect would get
-+    // the old socket's close or message. The handler current for a socket is the one this setter last set, kept here
-+    // (`current`), not read back from the socket: another script that wraps these setters too — a test's, a debugging
-+    // tool's — would make the getter answer its own function, and every event of the engine would be dropped.)
-+    if (typeof WebSocket != 'undefined') {
-+      var current = new WeakMap();
-+      for (var name of ['onopen', 'onmessage', 'onerror', 'onclose']) {
-+        let d = Object.getOwnPropertyDescriptor(WebSocket.prototype, name), key = name;
-+        if (!d || !d.set) continue;
-+        Object.defineProperty(WebSocket.prototype, name, {
-+          configurable: true, enumerable: d.enumerable, get: d.get,
-+          set(fn) {
-+            var mine = current.get(this);
-+            if (!mine) current.set(this, (mine = {}));
-+            var ours = typeof fn == 'function' && webSockets.allocated.includes(this);
-+            if (!ours) { mine[key] = null; d.set.call(this, fn); return; }
-+            var socket = this, wrapped = function (e) {
-+              orthrosLater(() => { if ((current.get(socket) || {})[key] === wrapped && webSockets.allocated.includes(socket)) fn.call(socket, e); });
-+            };
-+            mine[key] = wrapped;
-+            d.set.call(this, wrapped);
-+          },
++
++    // the page context's attributes (JSON), read on the page thread after SDL made it
++    std::string sOrthrosContextAttributes;
++
++    // shared by the graphics thread's presenter and the page's (Atomics, JavaScript): [0] the bitmaps posted to the page
++    // thread and not shown yet (0 or 1: the graphics thread keeps only the newest one while the page has not shown the
++    // previous — a loading screen drawing many frames in one page task queues none); [1] the sequence number of the
++    // newest frame swapped (the page drops an older one, the newest shown instead: as the page's canvas shows the last
++    // frame drawn in a task); [2] 1 while the graphics thread holds a frame back (the page wakes it once it showed one)
++    alignas(4) int sOrthrosPresentShared[4] = {};
++
++    double orthrosAddress(const void* p)
++    {
++        return static_cast<double>(reinterpret_cast<std::uintptr_t>(p));
++    }
++}
++
++// (the page thread) the presenter of the graphics thread's frames; the page context's attributes as JSON (ASCII)
++// written at out (a byte address, as a double) within cap bytes, NUL-terminated; returns its length (cap or more: cut)
++// inFlight: sOrthrosBitmapsInFlight's address. The graphics thread's context lost: the page's own handling of a lost
++// context (play/index.html's webglcontextlost listener on the page's canvas: saves synced, notice, reload) runs.
++// The context made before main() for the draw thread (Module.orthrosDrawWorker, wasm-build/orthros-gl.js) compared with
++// the page's: the attributes that change the picture the same, or it is not used (`compatible` false: the session
++// draws on the page's thread, osgViewer/ViewerBase.cpp).
++EM_JS(int, orthros_drawthread_page_setup, (double out, int cap, double inFlight), {
++    var attrs = {};
++    try { attrs = (GLctx && GLctx.getContextAttributes()) || {}; } catch (e) {}
++    var prep = Module['orthrosDrawWorker'];
++    if (prep && prep.state == 'ready') {
++        var differ = [];
++        ['alpha', 'depth', 'stencil', 'antialias', 'premultipliedAlpha', 'preserveDrawingBuffer'].forEach(function(k) {
++            if (!!attrs[k] !== !!(prep.attrs || {})[k]) differ.push(k + ' ' + !!attrs[k] + '/' + !!(prep.attrs || {})[k]);
 +        });
-+      }
++        prep.compatible = differ.length == 0;
++        if (globalThis.__omwDrawThreadPrep) globalThis.__omwDrawThreadPrep.compatible = prep.compatible;
++        if (differ.length) {
++            prep.error = 'attributes differ (page/draw thread): ' + differ.join(', ');
++            console.warn('[orthros] draw thread: its context differs from the page context (' + differ.join(', ') + '): the page draws');
++        }
 +    }
-+#endif
-+  },
-+  $orthrosBlockedNote__deps: ['$OrthrosJspi'],
-+  $orthrosBlockedNote: (ms, path, kind) => {
-+    var b = Module.orthrosBlocked;
-+    if (kind === 'present') { b.presents++; b.presentMs += ms; return; }
-+    if (kind === 'breath') { b.breaths++; b.breathMs += ms; return; }
-+    if (kind === 'settle') { b.settles++; b.settleMs += ms; return; }
-+    if (kind === 'gl') { b.gls++; b.glMs += ms; return; }
-+    if (kind !== 'proxied' && !(OrthrosJspi.boot > 0 || OrthrosJspi.loading > 0 || OrthrosJspi.loadFrame > 0)) { b.play++; b.playMs += ms; }
-+    if (kind === 'proxied') { b.proxied++; b.proxiedMs += ms; if (ms > b.proxiedMax) b.proxiedMax = ms; return; }
-+    if (kind === 'wait') { b.waits++; b.waitMs += ms; } else { b.count++; b.ms += ms; if (path) b.files[path] = (b.files[path] || 0) + ms; }
-+    if (ms > b.max) b.max = ms;
-+  },
-+  // (`boot`: main()'s — the boot is a load —, else the frame's)
-+  orthros_jspi_enter__deps: ['$OrthrosJspi', '$orthrosJspiInit', '$orthrosJspiReady', '$orthrosNote'],
-+  orthros_jspi_enter: (boot) => { if (!OrthrosJspi.ready) orthrosJspiReady(); orthrosNote('enter', boot); OrthrosJspi.on++; if (boot) OrthrosJspi.boot++; if (!OrthrosJspi.plain) OrthrosJspi.want = 0; },
-+  // (a plain frame — omw_pump_frame_plain, engine.cpp — begins (1) or ends (0): nothing suspends under it)
-+  orthros_jspi_plain__deps: ['$OrthrosJspi', '$orthrosNote'],
-+  orthros_jspi_plain: (on) => { var J = OrthrosJspi; orthrosNote('plain', on); if (on) J.plain++; else if (J.plain > 0) J.plain--; },
-+  // (a load about to start — a save's, a new game's, the debug COE —: 1 in a plain frame, the next frame then the
-+  // promising export's (want) and the load put off to it by the engine; 0 in a promising one, or JSPI off: load now)
-+  orthros_jspi_defer__deps: ['$OrthrosJspi', '$orthrosNote'],
-+  orthros_jspi_defer: () => {
-+    var J = OrthrosJspi;
-+    orthrosNote('defer', J.plain);
-+    if ({{{ ASYNCIFY == 2 ? 'false' : 'true' }}} || J.off || J.plain === 0) return 0;
-+    J.want = 1;
-+    return 1;
-+  },
-+  // (1 when a suspending import may be called now: under a promising export, on its stack — not a plain frame, not a call
-+  // that reached the engine while its frame or boot is suspended —; engine.cpp's wraps and the loading screen's calls ask)
-+  orthros_jspi_may__deps: ['$OrthrosJspi'],
-+  orthros_jspi_may: () => {{{ ASYNCIFY == 2 ? '(OrthrosJspi.on > 0 && !OrthrosJspi.plain && !OrthrosJspi.suspended && !OrthrosJspi.off) ? 1 : 0' : '0' }}},
-+  orthros_jspi_leave__deps: ['$OrthrosJspi', '$orthrosFlush', '$orthrosNote'],
-+  orthros_jspi_leave: (boot) => {
-+    var J = OrthrosJspi;
-+    orthrosNote('leave', boot);
-+    if (J.on > 0) J.on--;
-+    if (boot && J.boot > 0) J.boot--;
-+    // (a load's frame over — the rest of it after the loading screen, the world's first draw, still a load's: its reads
-+  // and its framebuffer's statuses may suspend —: loadFrame off)
-+    if (J.on === 0 && J.loading === 0) J.loadFrame = 0;
-+    // (the page's calls put off meanwhile: once the export returned — a microtask, before any other task —, outside
-+    // the engine's stack)
-+    if (J.on === 0 && J.after.length) queueMicrotask(orthrosFlush);
-+  },
-+  // (the engine's loading screen on (1) or off (0), nested as its loads: mwgui/loadingscreen.cpp)
-+  orthros_jspi_loading__deps: ['$OrthrosJspi', '$orthrosNote'],
-+  orthros_jspi_loading: (on) => { var J = OrthrosJspi; orthrosNote('loading', on); if (on) { J.loading++; J.loadFrame = 1; } else if (J.loading > 0) J.loading--; },
-+  // (the page's wait before a suspension now: short in a load — the boot, a loading screen —, longer in play)
-+  $orthrosSpinMs__deps: ['$OrthrosJspi'],
-+  $orthrosSpinMs: () => (OrthrosJspi.boot > 0 || OrthrosJspi.loading > 0 || OrthrosJspi.loadFrame > 0 ? OrthrosJspi.spinMs : OrthrosJspi.playSpinMs),
-+  // (whether a read or a wait may suspend now: under a promising export, nothing suspended, not switched off, in a load
-+  // — the boot, a loading screen — or allowed in play too, ?jspiplay=N)
-+  $orthrosMaySuspend__deps: ['$OrthrosJspi'],
-+  $orthrosMaySuspend: () => {{{ ASYNCIFY == 2 ? 'OrthrosJspi.on > 0 && !OrthrosJspi.plain && !OrthrosJspi.suspended && !OrthrosJspi.off && (OrthrosJspi.boot > 0 || OrthrosJspi.loading > 0 || OrthrosJspi.loadFrame > 0 || OrthrosJspi.playSpinMs >= 0)' : 'false' }}},
-+  // (the engine suspended until `promise` settles — either way —, then `then(ok)`'s value returned to it)
-+  $orthrosSuspend__deps: ['$OrthrosJspi', '$orthrosBlockedNote', '$orthrosNote'],
-+  $orthrosSuspend: (promise, path, kind, then) => {
-+    var J = OrthrosJspi, t0 = performance.now();
-+    J.suspended = 1;
-+    var done = (ok) => { J.suspended = 0; J.freedAt = performance.now(); var ms = J.freedAt - t0; J.suspendedMs += ms; orthrosBlockedNote(ms, path, kind); orthrosNote('suspended', [kind, Math.round(t0), Math.round(ms)]); return then(ok); };
-+    return promise.then(() => done(true), () => done(false));
-+  },
-+  // (a load that held the page's thread breathMs since its last suspension: a turn for the page — a promise settled
-+  // once a posted message comes back —, else null)
-+  $orthrosBreath__deps: ['$OrthrosJspi', '$orthrosMaySuspend'],
-+  $orthrosBreath: () => {
-+    var J = OrthrosJspi, now = performance.now();
-+    if (J.breathMs <= 0 || !(J.boot > 0 || J.loading > 0 || J.loadFrame > 0) || !orthrosMaySuspend()) return null;
-+    if (J.freedAt === 0) { J.freedAt = now; return null; }
-+    if (now - J.freedAt < J.breathMs || typeof MessageChannel != 'function') return null;
-+    return new Promise((resolve) => { var mc = new MessageChannel(); mc.port1.onmessage = () => { mc.port1.close(); resolve(); }; mc.port2.postMessage(0); });
-+  },
-+  $orthrosReadv__deps: ['$doReadv', '$FS'],
-+  $orthrosReadv: (stream, iov, iovcnt, offset, pnum) => {
-+    try {
-+      var num = doReadv(stream, iov, iovcnt, offset);
-+      {{{ makeSetValue('pnum', 0, 'num', SIZE_TYPE) }}};
-+      return 0;
-+    } catch (e) {
-+      if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
-+      return e.errno;
++    var json = JSON.stringify(attrs);
++    var n = Math.min(json.length, cap - 1);
++    for (var i = 0; i < n; ++i) HEAPU8[out + i] = json.charCodeAt(i) & 0x7f;
++    HEAPU8[out + n] = 0;
++    var heap32 = function() {
++        try { if (wasmMemory.buffer !== HEAP32.buffer) return new Int32Array(wasmMemory.buffer); } catch (e) {}
++        return HEAP32;
++    };
++    var shared = inFlight / 4; // ([0] in flight, [1] newest swapped, [2] held: sOrthrosPresentShared)
++    Module['orthrosDrawThreadLost'] = function() {
++        var base = Module['canvas'];
++        if (base) base.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
++    };
++    // (the graphics thread crashed — a trap, an abort, an exception out of its JavaScript: Emscripten unwinds the page
++    // thread out of any wait for it, back to its event loop, where this runs: the page's notice for a crashed engine,
++    // play/index.html's own, saves synced first — as a crash of the page thread's frame shows it)
++    Module['orthrosDrawThreadCrashed'] = function(message) {
++        if (Module['orthrosDrawThreadCrash']) return;
++        Module['orthrosDrawThreadCrash'] = String(message || 'unknown');
++        try { console.error('EXC: [drawthread] the draw thread crashed: ' + Module['orthrosDrawThreadCrash']); } catch (e) {}
++        try { if (window.__omwLog) window.__omwLog('[drawthread] crashed: ' + Module['orthrosDrawThreadCrash'], 'err'); } catch (e) {}
++        try { if (window.__omwSync) window.__omwSync(); } catch (e) {}
++        try {
++            if (typeof fatalOverlay === 'function')
++                fatalOverlay('The game engine crashed', 'Reload to keep playing. Your progress is saved on the server.');
++        } catch (e) {}
++    };
++    var base0 = Module['canvas'];
++    // (the page's canvas made fullscreen — SDL's fullscreen window mode — would hide the layer, its sibling: the
++    // document made fullscreen instead, the canvas filling the viewport as in the page's own layout)
++    if (base0 && !base0.__omwDrawThreadFs) {
++        base0.__omwDrawThreadFs = true;
++        ['requestFullscreen', 'webkitRequestFullscreen'].forEach(function(k) {
++            var own = base0[k];
++            var root = document.documentElement;
++            if (typeof own !== 'function' || typeof root[k] !== 'function') return;
++            base0[k] = function() { return root[k].apply(root, arguments); };
++        });
 +    }
-+  },
-+  $orthrosRead__deps: ['$orthrosReadv', '$SYSCALLS', '$OrthrosJspi', '$orthrosMaySuspend', '$orthrosSuspend', '$orthrosBlockedNote', '$orthrosSpinMs', '$orthrosBreath'],
-+  $orthrosRead: (fd, iov, iovcnt, offset, pnum) => {
-+    var stream;
-+    var breath = orthrosBreath();
-+    if (breath) return orthrosSuspend(breath, null, 'breath', () => orthrosRead(fd, iov, iovcnt, offset, pnum));
-+    try { stream = SYSCALLS.getStreamFromFD(fd); } catch (e) { if (e.name !== 'ErrnoError') throw e; return e.errno; }
-+    var s = stream.node && stream.node.orthrosStreamed;
-+    if (s && orthrosMaySuspend()) {
-+      var position = typeof offset == 'undefined' ? stream.position : offset, length = 0;
-+      for (var i = 0, v = iov; i < iovcnt; i++, v += {{{ C_STRUCTS.iovec.__size__ }}}) length += {{{ makeGetValue('v', C_STRUCTS.iovec.iov_len, '*') }}};
-+      var wait = null;
-+      try {
-+        if (length > 0) wait = s.soon ? s.soon(position, length, orthrosSpinMs()) : s.missing(position, length) ? s.ensure(position, length) : null;
-+      } catch (e) { wait = null; }
-+      // (a fetch that failed: the read tries again its own way — synchronously — and reports an error if it must)
-+      if (wait) return orthrosSuspend(wait, stream.path, 'read', () => orthrosReadv(stream, iov, iovcnt, offset, pnum));
-+    }
-+    return orthrosReadv(stream, iov, iovcnt, offset, pnum);
-+  },
-+  // (the C library's read — wrapped, engine.cpp __wrap___wasi_fd_read —: the plain import, answered at once, waiting on
-+  // the page's thread for bytes missing — a worker thread's read proxied here too —; the engine's page thread under a
-+  // promising export calls orthros_fd_read_async instead)
-+  fd_read__sig: 'iippp',
-+  fd_read__proxy: 'sync',
-+  fd_read__deps: ['$orthrosReadv', '$SYSCALLS', '$orthrosBlockedNote'],
-+  fd_read: (fd, iov, iovcnt, pnum) => {
-+    // (timed only when proxied from a worker thread: a read of the page's own thread costs what libwasi's does)
-+#if PTHREADS
-+    var t0 = PThread.currentProxiedOperationCallerThread ? performance.now() : -1;
-+#endif
-+    var r;
-+    try { r = orthrosReadv(SYSCALLS.getStreamFromFD(fd), iov, iovcnt, undefined, pnum); }
-+    catch (e) { if (e.name !== 'ErrnoError') throw e; r = e.errno; }
-+#if PTHREADS
-+    if (t0 >= 0) { var ms = performance.now() - t0; if (ms >= 1) orthrosBlockedNote(ms, null, 'proxied'); }
-+#endif
-+    return r;
-+  },
-+  // (the read that may suspend: the page's thread, under a promising export — orthros_jspi_may)
-+  orthros_fd_read_async__sig: 'iippp',
-+  orthros_fd_read_async__async: true,
-+  orthros_fd_read_async__deps: ['$orthrosRead'],
-+  orthros_fd_read_async: (fd, iov, iovcnt, pnum) => orthrosRead(fd, iov, iovcnt, undefined, pnum),
-+  // (fsync: the plain import as a build without JSPI — the stream's own fsync, IDBFS not persisted there (the page
-+  // persists it) —; the suspending one, Emscripten's under JSPI, persists the mount and waits for it)
-+  fd_sync__sig: 'ii',
-+  fd_sync__proxy: 'sync',
-+  // (the system library's says __async under JSPI: not this one)
-+  fd_sync__async: false,
-+  fd_sync__deps: ['$SYSCALLS'],
-+  fd_sync: (fd) => {
-+    try { var stream = SYSCALLS.getStreamFromFD(fd); return stream.stream_ops?.fsync ? stream.stream_ops.fsync(stream) : 0; }
-+    catch (e) { if (typeof FS == 'undefined' || e.name !== 'ErrnoError') throw e; return e.errno; }
-+  },
-+  orthros_fd_sync_async__sig: 'ii',
-+  orthros_fd_sync_async__async: true,
-+  orthros_fd_sync_async__deps: ['$SYSCALLS'],
-+  orthros_fd_sync_async: (fd) => {
-+    try {
-+      var stream = SYSCALLS.getStreamFromFD(fd), rtn = stream.stream_ops?.fsync?.(stream);
-+      return new Promise((resolve) => { var mount = stream.node.mount; if (mount?.type.syncfs) mount.type.syncfs(mount, false, (err) => resolve(err ? 29 : 0)); else resolve(rtn); });
-+    } catch (e) { if (typeof FS == 'undefined' || e.name !== 'ErrnoError') throw e; return e.errno; }
-+  },
-+  // (a loading screen's frame drawn — mwgui/loadingscreen.cpp LoadingScreen::draw —: presented, the engine suspended
-+  // until the browser's rendering update after it ran — at most every presentMs; a hidden page's 100 ms at most)
-+  orthros_jspi_present__sig: 'v',
-+  orthros_jspi_present__async: true,
-+  orthros_jspi_present__deps: ['$OrthrosJspi', '$orthrosMaySuspend', '$orthrosSuspend'],
-+  orthros_jspi_present: () => {
-+    var J = OrthrosJspi, now = performance.now();
-+    if (J.presentMs <= 0 || !(J.boot > 0 || J.loading > 0 || J.loadFrame > 0) || !orthrosMaySuspend() || now - J.presentedAt < J.presentMs || typeof requestAnimationFrame != 'function') return;
-+    var shown = new Promise((resolve) => {
-+      var go = () => { clearTimeout(t); resolve(); }, t = setTimeout(go, 100);
-+      requestAnimationFrame(() => { var mc = new MessageChannel(); mc.port1.onmessage = () => { mc.port1.close(); go(); }; mc.port2.postMessage(0); });
-+    });
-+    return orthrosSuspend(shown, null, 'present', () => { J.presentedAt = performance.now(); });
-+  },
-+  // (a load's progress — mwgui/loadingscreen.cpp setProgress, increaseProgress —: the page's turn when it had none for
-+  // breathMs, as a read's)
-+  orthros_jspi_breathe__sig: 'v',
-+  orthros_jspi_breathe__async: true,
-+  orthros_jspi_breathe__deps: ['$orthrosBreath', '$orthrosSuspend'],
-+  orthros_jspi_breathe: () => {
-+    var breath = orthrosBreath();
-+    if (breath) return orthrosSuspend(breath, null, 'breath', () => {});
-+  },
-+  // (the GPU's queue drained: a promise settled once the commands issued so far ran — a fence, its status looked at
-+  // between the page's tasks: WebGL2 updates it there, never blocking — or after `maxMs`; null without a WebGL2 context)
-+  $orthrosGpuIdle__deps: ['$GL'],
-+  $orthrosGpuIdle: (maxMs) => {
-+    var c = GL.currentContext && GL.currentContext.GLctx, s = null;
-+    try { if (c && c.fenceSync && !c.isContextLost()) { s = c.fenceSync(c.SYNC_GPU_COMMANDS_COMPLETE, 0); c.flush(); } } catch (e) { s = null; }
-+    if (!s) return null;
-+    return new Promise((resolve) => {
-+      var t0 = performance.now();
-+      var look = () => {
-+        var done = true;
-+        try { done = c.isContextLost() || c.getSyncParameter(s, c.SYNC_STATUS) === c.SIGNALED; } catch (e) { done = true; }
-+        if (done || performance.now() - t0 >= maxMs) { try { c.deleteSync(s); } catch (e) { /* lost */ } resolve(); } else setTimeout(look, 2);
-+      };
-+      setTimeout(look, 0);
-+    });
-+  },
-+  // (a load's end — mwgui/loadingscreen.cpp loadingOff, the outermost one, its screen still on —: the engine suspended
-+  // until the GPU ran what the load gave it (its textures, programs, buffers), at most settleMs. The browser's GPU
-+  // process works through that queue after the load's last frame; the first frame of play then waited for all of it in
-+  // its first synchronous WebGL call (checkFramebufferStatus, a program's status) — the page's thread held 1-2 s after a
-+  // save's load in SwiftShader, 2026-10-30 — where the page's thread is now free and the loading screen still shown.)
-+  orthros_jspi_settle__sig: 'v',
-+  orthros_jspi_settle__async: true,
-+  orthros_jspi_settle__deps: ['$OrthrosJspi', '$orthrosMaySuspend', '$orthrosSuspend', '$orthrosGpuIdle'],
-+  orthros_jspi_settle: () => {
-+    var J = OrthrosJspi;
-+    if (J.settleMs <= 0 || !(J.boot > 0 || J.loading > 0 || J.loadFrame > 0) || !orthrosMaySuspend()) return;
-+    var idle = orthrosGpuIdle(J.settleMs);
-+    if (idle) return orthrosSuspend(idle, null, 'settle', () => {});
-+  },
-+  // (a framebuffer's status asked — engine.cpp __wrap_glCheckFramebufferStatus, when the engine may suspend —: in a load's
-+  // frame (the boot, a loading screen on, the rest of its frame: the world's first draw), the engine suspended until the
-+  // GPU ran its queue — the call then answers at once —, at most once every glMs of the engine's time (ENV
-+  // OPENMW_ORTHROS_JSPI_GL_MS, 50 by default; ?jspigl=N, 0: never), ENV OPENMW_ORTHROS_JSPI_GL_MAX_MS at most (300 by
-+  // default; ?jspiglmax=N), the status then asked as is — waiting for SwiftShader to have drawn the whole queue (a fence)
-+  // held the world's first draw after a save's load 1.2 s, where the status call waits only for the GPU process to have
-+  // read it: 2000 ms of cap put the world 1.0-1.2 s later (2026-10-30, docs/openmw.md "(B) The warm F9 to the world"))
-+  orthros_gl_settle__sig: 'v',
-+  orthros_gl_settle__async: true,
-+  orthros_gl_settle__deps: ['$OrthrosJspi', '$orthrosMaySuspend', '$orthrosSuspend', '$orthrosGpuIdle'],
-+  orthros_gl_settle: () => {
-+    var J = OrthrosJspi, now = performance.now();
-+    if (J.glMs <= 0 || !(J.boot > 0 || J.loading > 0 || J.loadFrame > 0) || now - J.glAt < J.glMs) return;
-+    J.glAt = now;
-+    var idle = orthrosGpuIdle(J.glMaxMs);
-+    if (idle) return orthrosSuspend(idle, null, 'gl', () => { J.glAt = performance.now(); });
-+  },
-+  // (components/vfs/manager.cpp orthrosReadWait, the page's thread only: 1 when everything announced is here — or
-+  // failed —, 0 on time out)
-+  orthros_read_wait__sig: 'id',
-+  orthros_read_wait__async: true,
-+  // An announced wait is a load's, wherever it comes: the engine announces what its next load reads, then waits once —
-+  // Scene::changeCellGrid's read-ahead runs before its loading screen is on (a COE, a door, an exterior crossing) —, so
-+  // it may suspend in play too, after the load's short wait: synchronous there, a COE over a 2 MB/s link held the page's
-+  // thread 3.8 s on it (r16dev-c, 2026-10-30).
-+  orthros_read_wait__deps: ['$OrthrosJspi', '$orthrosSuspend'],
-+  orthros_read_wait: (timeoutMs) => {
-+    try {
-+      var soon = globalThis.orthrosReadWaitSoon, f = globalThis.orthrosReadWait, J = OrthrosJspi;
-+      if (soon && {{{ ASYNCIFY == 2 ? 'J.on > 0 && !J.plain && !J.suspended && !J.off' : 'false' }}}) {
-+        var r = soon(timeoutMs, J.spinMs);
-+        if (!r || typeof r.then != 'function') return r ? 1 : 0;
-+        var answer = 1;
-+        return orthrosSuspend(Promise.resolve(r).then((v) => { answer = v ? 1 : 0; }), null, 'wait', (ok) => (ok ? answer : 1));
-+      }
-+      return f ? (f(timeoutMs) ? 1 : 0) : 1;
-+    } catch (e) { return 1; }
-+  },
++    // (the layer laid exactly over the page's canvas: fixed like it, in the viewport's coordinates; else absolute,
++    // beside it in the same containing block — its offsets, borders included. Computed when the canvas or the window
++    // changes, never per frame: no style or layout read on the page thread at each frame)
++    var layout = function(s) {
++        var base = Module['canvas'];
++        if (!s.layer || !base) return;
++        var cs = getComputedStyle(base);
++        var z = cs.zIndex;
++        var r = base.getBoundingClientRect();
++        var st = s.layer.style;
++        var fixed = cs.position === 'fixed';
++        var position = fixed ? 'fixed' : 'absolute';
++        var left = (fixed ? r.left : base.offsetLeft + base.clientLeft) + 'px';
++        var top = (fixed ? r.top : base.offsetTop + base.clientTop) + 'px';
++        if (z && z !== 'auto' && st.zIndex !== z) st.zIndex = z;
++        if (st.position !== position) st.position = position;
++        if (st.left !== left) st.left = left;
++        if (st.top !== top) st.top = top;
++        if (st.width !== r.width + 'px') st.width = r.width + 'px';
++        if (st.height !== r.height + 'px') st.height = r.height + 'px';
++    };
++    // (posted, dropped: the graphics thread's counts — the bitmaps it posted, those it closed unposted, replaced by a
++    // newer one while the page had not shown the previous; seq: the frame's sequence number)
++    Module['orthrosDrawThreadFrame'] = function(bitmap, posted, dropped, seq) {
++        var h = heap32();
++        Atomics.sub(h, shared, 1);
++        var s = globalThis.__omwDrawThreadPresent
++            || (globalThis.__omwDrawThreadPresent = { frames: 0, stale: 0, staleShown: 0, staleRun: 0, kicks: 0, lat: [] });
++        s.posted = posted;
++        s.dropped = dropped;
++        var kick = function() { s.kicks++; try { Module['_orthros_drawthread_kick'](); } catch (e) {} };
++        // (a newer frame swapped meanwhile — one page task dispatched several, a loading screen's: this one is stale,
++        // the newest is shown instead, the graphics thread woken to post it; twice in a row at most, never starved)
++        var newest = Atomics.load(h, shared + 1);
++        if (seq < newest && s.staleRun < 2) {
++            bitmap.close();
++            s.stale++;
++            s.staleRun++;
++            kick();
++            return;
++        }
++        if (seq < newest) s.staleShown++;
++        s.staleRun = 0;
++        var base = Module['canvas'];
++        if (!s.layer && base && base.parentNode) {
++            var layer = document.createElement('canvas');
++            layer.id = 'omw-drawthread-layer';
++            layer.style.pointerEvents = 'none';
++            layer.style.margin = '0';
++            layer.style.border = '0';
++            base.parentNode.insertBefore(layer, base.nextSibling);
++            s.layer = layer;
++            // (opaque as the page's canvas is, its context's alpha: the compositor then draws the layer without
++            // blending and leaves out the page's canvas it covers, which no longer changes — else every frame composites
++            // both, a second full-window quad: on a software compositor, round 10, display frames 21.2/s against
++            // 24.9/s without the draw thread, their interval p90 70 ms against 48; opaque, 24.0/s and 52 ms)
++            s.ctx = layer.getContext('bitmaprenderer', { alpha: !!attrs.alpha });
++            s.layerAlpha = !!attrs.alpha; // (said once: the checks read it)
++            console.log('Orthros: draw thread layer made, bitmaprenderer alpha ' + s.layerAlpha);
++            var relayout = function() { layout(s); };
++            try { new ResizeObserver(relayout).observe(base); } catch (e) {}
++            window.addEventListener('resize', relayout);
++            window.addEventListener('scroll', relayout, { passive: true });
++            document.addEventListener('fullscreenchange', relayout);
++            layout(s);
++        }
++        if (!s.ctx) { bitmap.close(); if (Atomics.load(h, shared + 2)) kick(); return; }
++        if (s.layer.width !== bitmap.width) s.layer.width = bitmap.width;
++        if (s.layer.height !== bitmap.height) s.layer.height = bitmap.height;
++        s.ctx.transferFromImageBitmap(bitmap);
++        s.frames++;
++        globalThis.__omwDrawThreadFrames = s.frames;
++        // (the delay from the end of the page thread's dispatch of this frame, osgViewer/ViewerBase.cpp, to its picture
++        // handed to the compositor here: tools/openmw/perf.mjs counts the page's rendering opportunities between them)
++        var ends = globalThis.__omwDispatchEnd;
++        if (ends && s.lat.length < 20000) s.lat.push([ends[seq % 256], performance.now(), seq]);
++        // (a newer frame held back meanwhile: posted now)
++        if (Atomics.load(h, shared + 2)) kick();
++    };
++    return json.length;
 +});
++
++// (the graphics thread) its context registered at the first call, then made current: 2 — the context made before
++// main() (wasm-build/orthros-gl.js: this worker's globalThis.__omwDrawThreadPrepared) —, 1 — one made now (no such
++// context: a worker's context waits for the page thread's event loop, the frames wait meanwhile:
++// osgViewer/ViewerBase.cpp's gate), or 0 when WebGL2 refused.
++// glueOff: OPENMW_ORTHROS_GLGLUE=0 in the engine's environment (wasm-build/orthros-gl.js decides its glue from the JS
++// ENV at a realm's first registerContext, and a pthread's JS ENV is empty: the page's switch passed on here).
++EM_JS(int, orthros_drawthread_make_current, (double attrsJson, int width, int height, int discard, int glueOff), {
++    var s = globalThis.__omwDrawThreadGL;
++    if (!s) {
++        var attrs = {};
++        try { attrs = JSON.parse(UTF8ToString(attrsJson)); } catch (e) {}
++        var prepared = globalThis.__omwDrawThreadPrepared;
++        globalThis.__omwDrawThreadPrepared = null;
++        var canvas, gl;
++        if (prepared && prepared.gl && !prepared.gl.isContextLost()) {
++            canvas = prepared.canvas;
++            gl = prepared.gl;
++            canvas.width = Math.max(1, width);
++            canvas.height = Math.max(1, height);
++        } else {
++            canvas = new OffscreenCanvas(Math.max(1, width), Math.max(1, height));
++            gl = canvas.getContext('webgl2', attrs);
++        }
++        if (!gl) return 0;
++        // (a lost context: the page told, which handles it as the loss of its own canvas's context — saves synced, its
++        // notice, a reload: OSG has no restore path. Told from the event, dispatched between this thread's tasks, so
++        // a loss while no frame is dispatched is told at once; the check at each swap, orthros_drawthread_present,
++        // stays as a backstop. No preventDefault: that would let the browser restore the context, every GL object
++        // gone, and the thread draw on with it — a restore that happens anyway is told as the loss as well.)
++        var tellLost = function() {
++            var g = globalThis.__omwDrawThreadGL;
++            if (g) {
++                if (g.lostTold) return;
++                g.lostTold = true;
++            }
++            try { self.postMessage({ cmd: 9, handler: 'orthrosDrawThreadLost', args: [] }); } catch (e) {}
++        };
++        canvas.addEventListener('webglcontextlost', tellLost);
++        canvas.addEventListener('webglcontextrestored', tellLost);
++        if (glueOff) { try { ENV['OPENMW_ORTHROS_GLGLUE'] = '0'; } catch (e) {} }
++        // (the extensions the page's getContext wrapper enables on its contexts, play/index.html, and the one
++        // OSG's GLExtensions bridges on the context it was made on: OES_draw_buffers_indexed, GLctx.__omwDBI)
++        ['EXT_texture_filter_anisotropic', 'EXT_color_buffer_float', 'EXT_color_buffer_half_float',
++         'OES_texture_float_linear', 'WEBGL_compressed_texture_s3tc', 'WEBGL_compressed_texture_s3tc_srgb'].forEach(function(name) {
++            try { gl.getExtension(name); } catch (e) {}
++        });
++        try { gl.__omwDBI = gl.getExtension('OES_draw_buffers_indexed'); } catch (e) {}
++        if (discard) {
++            var RD = 0x8C89;
++            var disable = gl.disable;
++            gl.enable(RD);
++            gl.disable = function(cap) { if (cap === RD) return; return disable.call(gl, cap); };
++        }
++        attrs.majorVersion = 2;
++        attrs.minorVersion = 0;
++        attrs.enableExtensionsByDefault = 1;
++        s = globalThis.__omwDrawThreadGL = { handle: GL.registerContext(gl, attrs), canvas: canvas, gl: gl,
++            prepared: !!(prepared && gl === prepared.gl), posted: 0, dropped: 0, swaps: 0, held: null, heldSeq: 0 };
++        if (!s.handle) return 0;
++        // (this thread crashed — a trap, an abort, an exception out of its entry point: Emscripten's worker rethrows it
++        // to this realm's error event once the thread is gone; the page told, its crash notice shown)
++        var told = false;
++        var crashed = function(what) {
++            if (told) return;
++            told = true;
++            try { self.postMessage({ cmd: 9, handler: 'orthrosDrawThreadCrashed', args: [String(what)] }); } catch (e) {}
++        };
++        // (also called by the pump's own guard, osgViewer/ViewerBase.cpp: a task's crash reaches no worker error event)
++        s.crashed = crashed;
++        // (the worker's own error events, now that it returns to its event loop between frames: a crash only when
++        // the thread can no longer run — a wasm trap or abort (WebAssembly.RuntimeError), or anything before its pump
++        // is set up (its entry point). Anything else — a stray error or rejection from a browser API or Emscripten's
++        // glue between pumps — is logged, the session goes on.)
++        var fatal = function(x) {
++            try { if (x instanceof WebAssembly.RuntimeError) return true; } catch (e) {}
++            return !globalThis.__omwDrawThreadTurn;
++        };
++        var report = function(x, what) {
++            if (fatal(x)) crashed(what);
++            else try { console.warn('[drawthread] an error on the draw worker, not a crash: ' + what); } catch (e) {}
++        };
++        self.addEventListener('error', function(e) { report(e && e.error, (e && (e.message || e.error)) || 'error'); });
++        self.addEventListener('unhandledrejection', function(e) { report(e && e.reason, (e && e.reason) || 'unhandled rejection'); });
++    }
++    return GL.makeContextCurrent(s.handle) ? (s.prepared ? 2 : 1) : 0;
++});
++
++// (the graphics thread) the frame drawn handed to the page thread (shared: sOrthrosPresentShared's address; a bitmap
++// held while the page has not shown the previous one, replaced by a newer one, posted at the first swap after the page
++// showed it — or by the gate, osgViewer/ViewerBase.cpp, once the page woke it: s.flushHeld). The drawing buffer is
++// sized before each frame's draws (the gate: orthros_drawthread_resize), not here.
++EM_JS(void, orthros_drawthread_present, (double sharedAddress, int loseAt), {
++    var s = globalThis.__omwDrawThreadGL;
++    if (!s) return;
++    var shared = sharedAddress / 4;
++    var heap = function() {
++        var h = HEAP32;
++        try { if (wasmMemory.buffer !== h.buffer) h = new Int32Array(wasmMemory.buffer); } catch (e) {}
++        return h;
++    };
++    // (9: Emscripten 6.0.1's CMD_CALL_HANDLER, src/lib/libpthread.js: the page thread runs Module[handler](...args);
++    // checked when the page prepares this thread's worker, wasm-build/orthros-gl.js)
++    var post = function(bitmap, seq) {
++        Atomics.add(heap(), shared, 1);
++        s.posted++;
++        self.postMessage({ cmd: 9, handler: 'orthrosDrawThreadFrame', args: [bitmap, s.posted, s.dropped, seq] }, [bitmap]);
++    };
++    if (!s.flushHeld) {
++        s.flushHeld = function() {
++            var h = heap();
++            if (!s.held || Atomics.load(h, shared) > 0) return;
++            var bitmap = s.held, seq = s.heldSeq;
++            s.held = null;
++            Atomics.store(h, shared + 2, 0);
++            post(bitmap, seq);
++        };
++    }
++    if (loseAt > 0 && s.posted == loseAt && !s.lostOnPurpose) {
++        s.lostOnPurpose = true;
++        try { var x = s.gl.getExtension('WEBGL_lose_context'); if (x) x.loseContext(); } catch (e) {}
++    }
++    // (a lost context told to the page at the first swap after — isContextLost read here, at each swap, as the
++    // canvas's webglcontextlost event waits for the end of this thread's task)
++    if (!s.lostTold && s.gl.isContextLost()) {
++        s.lostTold = true;
++        self.postMessage({ cmd: 9, handler: 'orthrosDrawThreadLost', args: [] });
++    }
++    var seq = ++s.swaps;
++    var h = heap();
++    Atomics.store(h, shared + 1, seq);
++    var bitmap = null;
++    try { bitmap = s.canvas.transferToImageBitmap(); } catch (e) {}
++    if (bitmap && s.held) { s.held.close(); s.held = null; s.dropped++; }
++    if (!bitmap) { bitmap = s.held || null; seq = s.heldSeq; s.held = null; }
++    if (bitmap && Atomics.load(h, shared) > 0) {
++        s.held = bitmap;
++        s.heldSeq = seq;
++        Atomics.store(h, shared + 2, 1);
++        return;
++    }
++    Atomics.store(h, shared + 2, 0);
++    if (bitmap) post(bitmap, seq);
++});
++#endif
++
+ namespace SDLUtil
+ {
+ 
+@@ -191,6 +543,20 @@ namespace SDLUtil
+         mContext = nullptr;
+ #else
+         mContext = SDL_GL_CreateContext(mWindow);
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): the page context's attributes for the graphics thread's, and the presenter
++        if (mContext && orthrosDrawThreadMode() != 0)
++        {
++            SDL_GL_MakeCurrent(mWindow, mContext);
++            char attrs[1024];
++            const int length = orthros_drawthread_page_setup(
++                orthrosAddress(attrs), static_cast<int>(sizeof(attrs)), orthrosAddress(sOrthrosPresentShared));
++            sOrthrosContextAttributes = length > 0 && length < static_cast<int>(sizeof(attrs)) ? attrs : "{}";
++            OSG_NOTICE << "Orthros: OSG draws on its own thread with its own WebGL context (OPENMW_ORTHROS_DRAWTHREAD"
++                       << (orthrosDrawThreadMode() == 2 ? "=discard" : "") << "), page context " << sOrthrosContextAttributes
++                       << std::endl;
++        }
++#endif
+ #endif
+ #ifndef OPENMW_PROXY_GL
+         // Proxy path deliberately leaves mContext null: SDL owns the window, not the context.
+@@ -271,6 +637,34 @@ namespace SDLUtil
+         // The context is ours, not SDL's (see makeCurrentImplementation above).
+         return emscripten_webgl_make_context_current(mProxyGlContext) == EMSCRIPTEN_RESULT_SUCCESS;
+ #else
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): the graphics thread's own context
++        if (orthrosDrawThreadMode() != 0 && !emscripten_is_main_runtime_thread())
++        {
++            static const int glueOff = [] {
++                const char* value = std::getenv("OPENMW_ORTHROS_GLGLUE");
++                return value != nullptr && std::strcmp(value, "0") == 0 ? 1 : 0;
++            }();
++            // ("fail", QA: the context refused — the failure's path)
++            const int made = orthrosDrawThreadMode() == 3
++                ? 0
++                : orthros_drawthread_make_current(orthrosAddress(sOrthrosContextAttributes.c_str()), _traits->width,
++                    _traits->height, orthrosDrawThreadMode() == 2, glueOff);
++            static bool said = false;
++            if (made != 0 && !said)
++            {
++                said = true;
++                OSG_NOTICE << "Orthros: the graphics thread draws with "
++                           << (made == 2 ? "the WebGL2 context made before main()" : "a WebGL2 context made at its start")
++                           << " (OPENMW_ORTHROS_DRAWTHREAD)" << std::endl;
++            }
++            if (made != 0)
++                return true;
++            OSG_FATAL << "Orthros: the graphics thread's WebGL2 context could not be made (OPENMW_ORTHROS_DRAWTHREAD)"
++                      << std::endl;
++            return false;
++        }
++#endif
+         return SDL_GL_MakeCurrent(mWindow, mContext) == 0;
+ #endif
+     }
+@@ -287,6 +681,11 @@ namespace SDLUtil
+         // 0 is emscripten's "no context"; releasing is how OSG hands the thread off.
+         return emscripten_webgl_make_context_current(0) == EMSCRIPTEN_RESULT_SUCCESS;
+ #else
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): the graphics thread keeps its context to the end (OSG releases it at exit)
++        if (orthrosDrawThreadMode() != 0 && !emscripten_is_main_runtime_thread())
++            return true;
++#endif
+         return SDL_GL_MakeCurrent(nullptr, nullptr) == 0;
+ #endif
+     }
+@@ -315,6 +714,18 @@ namespace SDLUtil
+         // so there is nothing to swap -- and SDL_GL_SwapWindow would drive SDL's EGL, which does
+         // not own this context. Deliberately a no-op rather than an omission.
+ #else
++#ifdef __EMSCRIPTEN__
++        // Orthros (drawthread.patch): the graphics thread's frame handed to the page thread
++        if (orthrosDrawThreadMode() != 0 && !emscripten_is_main_runtime_thread())
++        {
++            // ("crash", QA: a trap on this thread at its 600th frame — a crashed draw thread's path)
++            static int swaps = 0;
++            if (orthrosDrawThreadMode() == 5 && ++swaps == 600)
++                __builtin_trap();
++            orthros_drawthread_present(orthrosAddress(sOrthrosPresentShared), orthrosDrawThreadMode() == 4 ? 600 : 0);
++            return;
++        }
++#endif
+         SDL_GL_SwapWindow(mWindow);
+ #endif
+     }
+diff --git a/wasm-build/orthros-gl.js b/wasm-build/orthros-gl.js
+index 8a718c3..858130e 100644
+--- a/wasm-build/orthros-gl.js
++++ b/wasm-build/orthros-gl.js
+@@ -57,7 +57,7 @@
+ addToLibrary({
+   // undefined until the first context is registered, then true (on) or false ("0").
+   $orthrosGLGlue: undefined,
+-  $orthrosGLGlue__deps: ['$GL', '$ENV'],
++  $orthrosGLGlue__deps: ['$GL', '$ENV', '$orthrosDrawWorker'],
+   $orthrosGLGlue__postset: `
+     var orthrosGLHeapU8 = new Uint8Array(0), orthrosGLHeap32 = new Int32Array(0), orthrosGLHeapF32 = new Float32Array(0);
+     var orthrosGLRegisterContext = GL.registerContext;
+@@ -70,6 +70,154 @@ addToLibrary({
+     };
+   `,
+ 
++  // Orthros (drawthread.patch, OPENMW_ORTHROS_DRAWTHREAD): the draw thread's WebGL context made before main() runs.
++  // A WebGL context made on a worker waits for a task of the page thread's event loop (Chromium makes its context
++  // provider there), and the page thread does not return to its event loop from main() until the world is up (the
++  // boot's loading screens included): a context made by the draw thread at its start would wait for the end of the
++  // boot, and the page thread, waiting for the draw thread's frames, for ever. So, the switch on (read after the page's
++  // preRun filled ENV), one more pthread worker is made and loaded here, kept out of the pool, and it makes its
++  // WebGL2 context on an OffscreenCanvas of its own while the page waits in its event loop (a run dependency);
++  // osgViewer/ViewerBase.cpp hands that worker to the draw thread (orthros_drawthread_claim: the next pthread made),
++  // components/sdlutil/sdlgraphicswindow.cpp makes that context current there. The context's attributes are the page
++  // context's (play/index.html's getContext wrapper: opaque, not premultiplied; SDL's: depth, no stencil, MSAA when
++  // [Video] antialiasing is set — read from the settings files); the page's own context, made later, is compared with
++  // them (orthros_drawthread_page_setup) and a difference leaves the session on the page's thread (SingleThreaded).
++  // Module.orthrosDrawWorker: { state: 'pending' | 'ready' | 'failed', worker, attrs, ms, error, compatible, claimed }
++  // (globalThis.__omwDrawThreadPrep: the same without the worker, for the page's measurements).
++  $orthrosDrawWorker: null,
++  $orthrosDrawWorker__deps: ['$PThread', '$addOnPreRun', '$addRunDependency', '$removeRunDependency', '$ENV', '$FS'],
++  $orthrosDrawWorker__postset: `
++    if (ENVIRONMENT_IS_PTHREAD) {
++      // (a pthread worker: the page's request, before any thread runs here — the context kept for the draw thread. A
++      // worker that starts a thread (cmd 2, Emscripten's "run") was not prepared: the listener leaves it at once)
++      var orthrosDrawListener = (e) => {
++        var d = e.data;
++        if (!d || typeof d != 'object') return;
++        if (d.cmd === 2) { self.removeEventListener('message', orthrosDrawListener); return; }
++        if (d.orthrosDrawPrepare === 1) {
++          var reply = { orthrosDrawPrepared: 1, ok: 0, attrs: null, error: '' };
++          try {
++            var canvas = new OffscreenCanvas(Math.max(1, d.width | 0), Math.max(1, d.height | 0));
++            var gl = d.refuse ? null : canvas.getContext('webgl2', d.attrs);
++            if (gl) {
++              globalThis.__omwDrawThreadPrepared = { canvas: canvas, gl: gl };
++              reply.ok = 1;
++              reply.attrs = gl.getContextAttributes();
++            } else reply.error = d.refuse ? 'refused (QA)' : 'getContext(webgl2) refused on a worker';
++          } catch (err) { reply.error = String(err); }
++          postMessage(reply);
++        } else if (d.orthrosDrawRelease === 1) {
++          // (the session stays on the page's thread: the context lost now, its memory freed)
++          var p = globalThis.__omwDrawThreadPrepared;
++          globalThis.__omwDrawThreadPrepared = null;
++          try { var x = p && p.gl.getExtension('WEBGL_lose_context'); if (x) x.loseContext(); } catch (err) {}
++        }
++      };
++      self.addEventListener('message', orthrosDrawListener);
++    } else {
++      // (run after the page's own preRun callbacks — they fill ENV —: appended to Module.preRun, which Emscripten's
++      // preRun() moves after its own; switch off, nothing at all: no run dependency, no worker, the boot as without it)
++      var orthrosDrawPreRun = () => {
++        var mode = ENV['OPENMW_ORTHROS_DRAWTHREAD'];
++        if (!mode || mode === '0' || ENV['OPENMW_HEADLESS'] || typeof OffscreenCanvas == 'undefined') return;
++        addRunDependency('orthros-drawthread');
++        var prep = orthrosDrawWorker = Module['orthrosDrawWorker'] = { state: 'pending', t0: performance.now() };
++        var settled = false;
++        var settle = (state, error) => {
++          if (settled) return;
++          settled = true;
++          prep.state = state;
++          prep.ms = performance.now() - prep.t0;
++          if (error) prep.error = error;
++          globalThis.__omwDrawThreadPrep = { state: state, ms: prep.ms, attrs: prep.attrs || null, error: prep.error || '',
++            antialias: !!prep.antialias };
++          if (state != 'ready') {
++            console.warn('[orthros] draw thread: no WebGL2 context on a worker (' + (error || state) + '): the page draws');
++            // (never handed to the pool: ended, its context with it)
++            if (prep.worker) {
++              try { prep.worker.postMessage({ orthrosDrawRelease: 1 }); } catch (e) {}
++              try { prep.worker.terminate(); } catch (e) {}
++              prep.worker = null;
++            }
++          }
++          removeRunDependency('orthros-drawthread');
++        };
++        try {
++          // (the Emscripten 6.0.1 internals this relies on, checked: the next pthread takes the last unused worker
++          // (getNewWorker), a worker's message {cmd: 9, handler, args} runs Module[handler](...args) on the page
++          // (components/sdlutil/sdlgraphicswindow.cpp posts its frames so), allocateUnusedWorker / loadWasmModuleToWorker.
++          // Changed: no draw thread — the session draws on the page's thread)
++          var src = (f) => { try { return typeof f == 'function' ? String(f) : ''; } catch (e) { return ''; } };
++          if (typeof PThread.allocateUnusedWorker != 'function' || typeof PThread.loadWasmModuleToWorker != 'function'
++              || !/return\\s*PThread\\.unusedWorkers\\.pop\\(\\)/.test(src(PThread.getNewWorker))
++              || !/case\\s*9\\s*:\\s*Module\\[\\s*\\w+\\.handler\\s*\\]/.test(src(PThread.loadWasmModuleToWorker))) {
++            settle('failed', 'Emscripten internals differ from 6.0.1 (getNewWorker / CMD_CALL_HANDLER)');
++            return;
++          }
++          // (the draw thread is woken by tasks proxied through Emscripten's mailbox, Atomics.waitAsync on its worker:
++          // polyfilled, they would be relayed through this page's event loop, which a page waiting for the draw thread
++          // never reaches — osgViewer/ViewerBase.cpp)
++          if (typeof waitAsyncPolyfilled == 'undefined' || waitAsyncPolyfilled) {
++            settle('failed', 'no Atomics.waitAsync for the draw thread\\'s wakes');
++            return;
++          }
++          var worker = PThread.allocateUnusedWorker();
++          PThread.unusedWorkers.splice(PThread.unusedWorkers.indexOf(worker), 1);
++          prep.worker = worker;
++          var made = new Promise((resolve) => {
++            worker.addEventListener('message', function onPrepared(e) {
++              if (!e.data || e.data.orthrosDrawPrepared !== 1) return;
++              worker.removeEventListener('message', onPrepared);
++              resolve(e.data);
++            });
++          });
++          var loaded = PThread.loadWasmModuleToWorker(worker);
++          // (the antialiasing the page context will get — SDL's MSAA from [Video] antialiasing, apps/openmw/engine.cpp —
++          // read from the settings files once the page's other run dependencies (the saved settings' load) are met:
++          // the defaults, the page's /settings.cfg, the player's; the last one set wins)
++          var antialiasing = () => {
++            var aa = 0;
++            ['/settings.cfg', '/userdata/config/openmw/settings.cfg'].forEach((path) => {
++              try {
++                if (!FS.analyzePath(path).exists) return;
++                var section = '';
++                String(FS.readFile(path, { encoding: 'utf8' })).split('\\n').forEach((line) => {
++                  var m = /^\\s*\\[([^\\]]*)\\]/.exec(line);
++                  if (m) { section = m[1].trim(); return; }
++                  m = /^\\s*antialiasing\\s*=\\s*(\\d+)/.exec(line);
++                  if (m && section == 'Video') aa = +m[1];
++                });
++              } catch (e) {}
++            });
++            return aa;
++          };
++          var ask = () => {
++            if (settled) return;
++            if (typeof runDependencies != 'undefined' && runDependencies > 1) { setTimeout(ask, 10); return; }
++            var canvas = Module['canvas'];
++            prep.antialias = antialiasing() > 0;
++            worker.postMessage({ orthrosDrawPrepare: 1, width: (canvas && canvas.width) || 1, height: (canvas && canvas.height) || 1,
++              refuse: mode === 'refuse',
++              attrs: { alpha: false, premultipliedAlpha: false, depth: true, stencil: mode === 'mismatch',
++                       antialias: prep.antialias, preserveDrawingBuffer: false, powerPreference: 'high-performance' } });
++            // (bounded from the request on: the page's data download before it may take any time)
++            timer = setTimeout(() => settle('failed', 'no answer in 20 s'), 20000);
++          };
++          var timer = null;
++          ask();
++          Promise.all([loaded, made]).then((r) => {
++            clearTimeout(timer);
++            prep.attrs = r[1].attrs;
++            settle(r[1].ok ? 'ready' : 'failed', r[1].error);
++          }, (err) => { clearTimeout(timer); settle('failed', String(err)); });
++        } catch (err) { settle('failed', String(err)); }
++      };
++      if (Array.isArray(Module['preRun'])) Module['preRun'].push(orthrosDrawPreRun);
++      else if (typeof Module['preRun'] == 'function') Module['preRun'] = [Module['preRun'], orthrosDrawPreRun];
++      else addOnPreRun(orthrosDrawPreRun);
++    }
++  `,
++
+   // n (> 0) floats at byte address value: the pool's view of that length filled from the heap, or a view of the heap
+   // above the pool's size (as the library's glUniform*fv do).
+   $orthrosGLFloats__deps: ['$orthrosGLGlue', '$miniTempWebGLFloatBuffers'],
+diff --git a/deps/src/osg/src/osg/Image.cpp b/deps/src/osg/src/osg/Image.cpp
+index 2489538..a019467 100644
+--- a/deps/src/osg/src/osg/Image.cpp
++++ b/deps/src/osg/src/osg/Image.cpp
+@@ -1312,11 +1312,85 @@ void Image::setImage(int s,int t,int r,
+ 
+ }
+ 
++#ifdef __EMSCRIPTEN__
++// Orthros (screenshot.patch): WebGL2's readPixels accepts only GL_RGBA/GL_UNSIGNED_BYTE on a normalized colour buffer
++// (plus the one implementation-chosen pair of GL_IMPLEMENTATION_COLOR_READ_FORMAT/TYPE); another unsigned byte format
++// (GL_RGB: the screen capture handler of a window without alpha — F12 — or a RenderStage image attachment without a
++// format) fails with GL_INVALID_OPERATION and writes nothing, leaving the image's fresh allocation as it was (black, or
++// noise). Those formats are read as RGBA and converted; an image whose read fails is left zeroed (a failed WebGL read
++// writes nothing: the zeroing before it is enough, no glGetError — a synchronous call — on the plain RGBA reads).
++namespace
++{
++    // the bytes per pixel of an unsigned byte format converted from RGBA here, 0 if not converted
++    unsigned int orthrosChannelsFromRGBA(GLenum format)
++    {
++        switch (format)
++        {
++            case GL_RGB: case GL_BGR: return 3;
++            case GL_BGRA: return 4;
++            case GL_RED: case GL_ALPHA: return 1;
++#ifdef GL_RG
++            case GL_RG: return 2;
++#endif
++            default: return 0;
++        }
++    }
++
++    void orthrosConvertFromRGBA(GLenum format, const unsigned char* src, unsigned char* dst, int width)
++    {
++        for (int i = 0; i < width; ++i, src += 4)
++        {
++            switch (format)
++            {
++                case GL_RGB: *dst++ = src[0]; *dst++ = src[1]; *dst++ = src[2]; break;
++                case GL_BGR: *dst++ = src[2]; *dst++ = src[1]; *dst++ = src[0]; break;
++                case GL_BGRA: *dst++ = src[2]; *dst++ = src[1]; *dst++ = src[0]; *dst++ = src[3]; break;
++                case GL_RED: *dst++ = src[0]; break;
++                case GL_ALPHA: *dst++ = src[3]; break;
++                default: *dst++ = src[0]; *dst++ = src[1]; break; // (GL_RG)
++            }
++        }
++    }
++}
++#endif
++
+ void Image::readPixels(int x,int y,int width,int height,
+                        GLenum format, GLenum type, int packing)
+ {
+     allocateImage(width,height,1,format,type, packing);
+ 
++#ifdef __EMSCRIPTEN__
++    if (!_data) return;
++    memset(_data, 0, getTotalSizeInBytes());
++    if (type == GL_UNSIGNED_BYTE && orthrosChannelsFromRGBA(format) != 0)
++    {
++        // (the errors raised before this read cleared, so that the check after it sees only its own: a warning)
++        // (each said at OSG_INFO: an earlier fault stays visible in the log)
++        for (int i = 0; i < 16; ++i)
++        {
++            const GLenum earlier = glGetError();
++            if (earlier == GL_NO_ERROR) break;
++            OSG_INFO<<"Image::readPixels: earlier GL error 0x"<<std::hex<<earlier<<std::dec<<" cleared before the read"<<std::endl;
++        }
++        std::vector<unsigned char> rgba(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
++        glPixelStorei(GL_PACK_ALIGNMENT,4);
++        glPixelStorei(GL_PACK_ROW_LENGTH,0);
++        glReadPixels(x,y,width,height,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());
++        // (the pack state then left as the plain read below leaves it)
++        glPixelStorei(GL_PACK_ALIGNMENT,_packing);
++        glPixelStorei(GL_PACK_ROW_LENGTH,_rowLength);
++        const GLenum error = glGetError();
++        if (error != GL_NO_ERROR)
++        {
++            OSG_WARN<<"Image::readPixels: glReadPixels(GL_RGBA, GL_UNSIGNED_BYTE) failed, GL error 0x"<<std::hex<<error<<std::dec<<": the image is left black"<<std::endl;
++            return;
++        }
++        for (int row = 0; row < height; ++row)
++            orthrosConvertFromRGBA(format, rgba.data() + static_cast<size_t>(row) * width * 4, data(0,row), width);
++        return;
++    }
++#endif
++
+     glPixelStorei(GL_PACK_ALIGNMENT,_packing);
+     glPixelStorei(GL_PACK_ROW_LENGTH,_rowLength);
+ 

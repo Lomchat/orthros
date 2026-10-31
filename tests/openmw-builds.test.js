@@ -336,17 +336,32 @@ test('r18: r17 plus its patch, the same exports; a remote player\'s copy is not 
   assert.ok(patch.includes("+  check('a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands"), 'the engine\'s Lua test of it');
 });
 
-test('r19 patch: the frame and the boot suspend on a read the page does not answer within a few ms (JSPI), worker threads\' reads at once, the page\'s calls after the frame; no put-off of distant chunks', () => {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8'), added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
-  // (r18 plus its patch; its exports r18's and the JSPI mark — the page tells the release by it; files none of its own)
+test('r19: r18 plus its patch, the same exports; the draw thread behind its switch (off by default) and screenshots read as RGBA on WebGL2', () => {
   const r18 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r18'), r19 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r19');
   assert.ok(r19, 'r19 is a build');
   assert.deepEqual(r19.patches, [...r18.patches, 'orthros-r19.patch']);
-  assert.deepEqual(r19.exports.filter((x) => x.name !== 'orthros_jspi'), r18.exports);
-  const e = r19.exports.find((x) => x.name === 'orthros_jspi');
+  assert.deepEqual(r19.exports, r18.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const f of ['deps/src/osg/src/osgViewer/ViewerBase.cpp', 'openmw/components/sdlutil/sdlgraphicswindow.cpp', 'wasm-build/orthros-gl.js',
+    'deps/src/osg/src/osg/Image.cpp'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  assert.ok(added.includes('OPENMW_ORTHROS_DRAWTHREAD'));
+  // (the screenshot fix: an RGB read WebGL2 refuses done as RGBA and converted)
+  assert.ok(/GL_RGBA/.test(added) && added.includes('readPixels'));
+});
+
+test('r20 patch: the frame and the boot suspend on a read the page does not answer within a few ms (JSPI), worker threads\' reads at once, the page\'s calls after the frame; no put-off of distant chunks', () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r20.patch'), 'utf8'), added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  // (r19 plus its patch; its exports r19's and the JSPI mark — the page tells the release by it; files none of its own)
+  const r19 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r19'), r20 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r20');
+  assert.ok(r20, 'r20 is a build');
+  assert.deepEqual(r20.patches, [...r19.patches, 'orthros-r20.patch']);
+  assert.deepEqual(r20.exports.filter((x) => x.name !== 'orthros_jspi'), r19.exports);
+  const e = r20.exports.find((x) => x.name === 'orthros_jspi');
   assert.ok(e, 'orthros_jspi among its exports'); assert.equal(e.returns, 'number'); assert.deepEqual(e.args, []);
-  assert.ok(r19.exports.some((x) => x.name === 'orthros_content_light'), 'r13\'s exports kept');
-  assert.deepEqual(r19.files, {});
+  assert.ok(r20.exports.some((x) => x.name === 'orthros_content_light'), 'r13\'s exports kept');
+  assert.deepEqual(r20.files, {});
   for (const f of ['openmw/apps/openmw/engine.cpp', 'openmw/apps/openmw/main.cpp', 'openmw/apps/openmw/mwgui/loadingscreen.cpp', 'openmw/apps/openmw/mwgui/savegamedialog.cpp',
     'openmw/apps/openmw/mwstate/statemanagerimp.cpp', 'openmw/components/vfs/manager.cpp', 'play/index.html', 'wasm-build/link-openmw.sh', 'wasm-build/orthros-jspi.js'])
     assert.ok(patch.includes(`+++ b/${f}`), f);
@@ -419,8 +434,8 @@ test('r19 patch: the frame and the boot suspend on a read the page does not answ
     assert.ok(!patch.includes(k), k);
 });
 
-test('r19: a read suspends in a load (the boot, a loading screen) after a short wait, never in play unless allowed (?jspiplay=N); the loads nest; a loading screen\'s frame presented', async () => {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
+test('r20: a read suspends in a load (the boot, a loading screen) after a short wait, never in play unless allowed (?jspiplay=N); the loads nest; a loading screen\'s frame presented', async () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r20.patch'), 'utf8');
   const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
   const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
   // (a library entry `  name: (args) => body,` — on one line, or a block closed by `  },`)
@@ -484,8 +499,8 @@ test('r19: a read suspends in a load (the boot, a loading screen) after a short 
   assert.ok(lib.includes("J.playSpinMs = play;"));
 });
 
-test('r19: a frame of play is plain (never suspending), a load put off to a promising frame; the suspending imports only when the engine may; a load\'s end waits for the GPU', async () => {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
+test('r20: a frame of play is plain (never suspending), a load put off to a promising frame; the suspending imports only when the engine may; a load\'s end waits for the GPU', async () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r20.patch'), 'utf8');
   const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
   const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
   const fn = (name) => {
@@ -540,12 +555,12 @@ test('r19: a frame of play is plain (never suspending), a load put off to a prom
 });
 
 /**
- * The r19 library's WebSocket setter wrappers (wasm-build/orthros-jspi.js, from the patch), run against a stand-in
+ * The r20 library's WebSocket setter wrappers (wasm-build/orthros-jspi.js, from the patch), run against a stand-in
  * WebSocket: `wrap` true makes another script wrap the same setters first, as a debugging tool or a test's counter
  * would (its getter the native one: it answers the tool's own function, never the library's).
  */
 function r18Sockets({ wrap, variant = (code) => code }) {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r20.patch'), 'utf8');
   const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
   const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
   const from = lib.indexOf("    if (typeof WebSocket != 'undefined') {"), to = lib.indexOf('\n#endif', from);
@@ -568,7 +583,7 @@ function r18Sockets({ wrap, variant = (code) => code }) {
   return { WebSocket, webSockets, J, flush, seen };
 }
 
-test('r19: the engine\'s WebSocket events reach it — after the frame while suspended — with or without another script wrapping the setters; dropped once its handler is replaced or its socket deleted', () => {
+test('r20: the engine\'s WebSocket events reach it — after the frame while suspended — with or without another script wrapping the setters; dropped once its handler is replaced or its socket deleted', () => {
   for (const wrap of [false, true]) {
     const { WebSocket, webSockets, J, flush, seen } = r18Sockets({ wrap });
     const ws = new WebSocket(), got = [];
@@ -611,8 +626,8 @@ test('r19: the engine\'s WebSocket events reach it — after the frame while sus
   assert.deepEqual(got, [], 'the getter-based check drops the engine\'s events');
 });
 
-test('r19: a load\'s framebuffer status waits for the GPU\'s queue 300 ms at most by default (?jspiglmax=N), then is asked as is', () => {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
+test('r20: a load\'s framebuffer status waits for the GPU\'s queue 300 ms at most by default (?jspiglmax=N), then is asked as is', () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r20.patch'), 'utf8');
   const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
   const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
   const settle = lib.slice(lib.indexOf('\n  orthros_gl_settle: ('), lib.indexOf('\n  },', lib.indexOf('\n  orthros_gl_settle: (')));

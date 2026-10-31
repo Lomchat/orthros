@@ -11,7 +11,7 @@
 //     frame drawn and to the player in the world), the data quiet (--quiet seconds without one of the game's own reads),
 //     a marker request through the proxy (its clock and the page's aligned), then Module._omw_debug_coe(--to) — a whole
 //     exterior worldspace load: in the call itself, the page's thread held by it, up to r17; at the next frame's start
-//     from r19 on (its export orthros_jspi), inside that frame as a console COE, its reads suspending it (JSPI) —, the
+//     from r20 on (its export orthros_jspi), inside that frame as a console COE, its reads suspending it (JSPI) —, the
 //     cell reached (view.lua's 'orthros.cell') and frames flowing, --after seconds more, closed.
 //   The page's thread (both scenarios): jspiProbe — a 20 ms timer's lateness, a mouse move's delay every 250 ms — over
 //   the load (the trigger to its steady frames) and jspiAfter over the --after stretch (the view raise view-grow.js
@@ -475,7 +475,7 @@ async function placeLead({ name, place, kinds = ['meshes', 'terrain'] }) {
 /**
  * The page's thread held — a 20 ms timer's lateness over 60 ms: the blocks — and input delays — a mouse move's, from
  * the browser's receipt to its handler — between the trigger and the frames' return (or the probe's end); with the
- * engine's suspensions (JSPI, orthros-r19.patch: StreamFS.jspi()); and the frames drawn meanwhile — the picture held,
+ * engine's suspensions (JSPI, orthros-r20.patch: StreamFS.jspi()); and the frames drawn meanwhile — the picture held,
  * whether or not the page's thread was (a suspended frame frees the page, not the picture): the longest gap between
  * frames drawn, the gaps over 250 ms and their time.
  */
@@ -514,8 +514,11 @@ function probe() {
   // callback waited behind one — r14's boot ran its whole load in one task, its first draws then dated from before it,
   // firstDrawRaf)
   const tick = (t) => {
-    if (P.draws !== seen) {
-      seen = P.draws; P.firstDraw ??= performance.now(); P.firstDrawRaf ??= t;
+    // (an engine drawing on its own thread, OPENMW_ORTHROS_DRAWTHREAD: no WebGL call on this page — its frames are the
+    // pictures it hands to the page, window.__omwDrawThreadFrames, as src/ports/openmw/frame-meter.js counts them)
+    const drawn = P.draws + (window.__omwDrawThreadFrames ?? 0);
+    if (drawn !== seen) {
+      seen = drawn; P.firstDraw ??= performance.now(); P.firstDrawRaf ??= t;
       if (P.on) { if (P.last !== null && t - P.last > 100) P.gaps.push([P.last, t]); P.frames.push(t); }
       P.last = t;
     }
@@ -882,7 +885,7 @@ if (MAIN) {
         const has = await frame.evaluate(({ x, y }) => {
           const P = window.__placeProbe; if (typeof window.Module?._omw_debug_coe !== 'function') return false;
           P.on = true; P.gaps = []; P.frames = [];
-          // (an engine that runs it at its next frame's start — orthros-r19.patch, its load's reads then suspending that
+          // (an engine that runs it at its next frame's start — orthros-r20.patch, its load's reads then suspending that
           // frame as a console COE's —: its end that frame's stamp, globalThis.orthrosDebugRan.coe; else the call's return)
           const deferred = typeof window.Module._orthros_jspi === 'function';
           setTimeout(() => {
