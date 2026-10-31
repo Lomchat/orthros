@@ -35,6 +35,8 @@ function withFetch(body) {
   return Promise.resolve(body(calls)).finally(() => { globalThis.fetch = real; });
 }
 const settle = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 1)); };
+/** `body(d)` with backend `d`'s link held closed as it sets; open again afterwards, failed or not (no turn left waiting on a timer) */
+const withLinkOf = async (d, body) => { try { await body(d); } finally { d.net.mayStart = () => true; d.net.kick(); } };
 
 test('thin link: a random read fetches its pieces only, keeps them in the store; a second launch reads them locally', () => withFetch(async (calls) => {
   const store = new MemBlockStore();
@@ -152,19 +154,76 @@ test('thin link: a read-ahead of pieces waiting for its turn is dropped once its
   // (a 1 MiB run read from the middle of the file — an archive's entries —: pieces ahead, not a whole block)
   for (const how of ['moved', 'stayed', 'parked']) {
     const d = new HttpBackend(`/game/pq${how}/`, tree(), { net: thin() });
+    await withLinkOf(d, async () => {
     d.net.mayStart = () => false;
     d.open('f.big').read(2 * MiB, MiB);
     await settle(); calls.length = 0;
     d.readAheadParts('f.big', SIZE, 3, 3 * MiB, 0, 40, MiB);
-    assert.ok(d.net.waiters.length >= 1 && (d.stats.wholeAheads ?? 0) === 0, 'pieces waiting for their turn');
-    const first = d.net.waiters[0];
-    if (how === 'parked') first.urgent = true; // (a read of its bytes waits for it — HttpBackend's parked read)
+    // (every read-ahead waiting for its turn, the range each asks)
+    const flights = [...new Set([...d.flights.entries()].filter(([k]) => k.startsWith('f.big#')).map(([, f]) => f))];
+    const ranges = flights.map((f) => { const cs = [...d.flights.entries()].filter(([, g]) => g === f).map(([k]) => +k.split('#')[1]); return [Math.min(...cs) * CHUNK, (Math.max(...cs) + 1) * CHUNK]; });
+    assert.ok(ranges.length >= 2 && (d.stats.wholeAheads ?? 0) === 0, `pieces waiting for their turn: ${JSON.stringify(ranges)}`);
+    assert.equal(d.net.waiters.length, ranges.length);
+    assert.ok(ranges.some(([s0]) => s0 === 3 * MiB));
+    // (a parked read of the first one's bytes: HttpBackend.fetchAhead, what ReadFile waits on — it promotes that one)
+    const parked = how === 'parked' ? d.fetchAhead('f.big', SIZE, 3, 3 * MiB, 3 * MiB + 100, false) : null;
     if (how !== 'stayed') d.open('g.big').read(0, 100);
     await settle(); calls.length = 0;
     d.net.mayStart = () => true; d.net.kick(); await settle();
+    if (parked) await parked;
     const got = calls.filter((x) => x.url.includes('f.big')).map((x) => [x.start, x.end]);
-    if (how === 'moved') { assert.equal(got.length, 0, `dropped: ${JSON.stringify(got)}`); assert.ok(d.stats.aheadsDropped >= 1); }
-    else assert.ok(got.some(([s0]) => s0 === 3 * MiB), `fetched once its turn came (${how}): ${JSON.stringify(got)}`);
+    const fetched = (rg) => got.some(([s0, e0]) => s0 <= rg[0] && e0 >= rg[1]);
+    for (const rg of ranges) {
+      const keep = how === 'stayed' || (how === 'parked' && rg[0] === 3 * MiB);
+      assert.equal(fetched(rg), keep, `${how}: ${JSON.stringify(rg)} ${keep ? 'fetched' : 'dropped'} (${JSON.stringify(got)})`);
+    }
+    assert.equal(got.length, how === 'stayed' ? ranges.length : how === 'parked' ? 1 : 0, `${how}: ${JSON.stringify(got)}`);
+    // (each dropped read-ahead counted once, however many times the link looked at the queue)
+    d.net.kick(); await settle();
+    assert.equal(d.stats.aheadsDropped ?? 0, how === 'moved' ? ranges.length : how === 'parked' ? ranges.length - 1 : 0, how);
+    assert.equal(d.net.waiters.length, 0);
+    });
+  }
+}));
+
+test('thin link: a stream read from inside an archive keeps its queued read-ahead while another file is read in turn', () => withFetch(async (calls) => {
+  // (music from one archive, ambience from another, each read a little at a time by the audio thread: neither is media
+  // in the tree; each drops nothing of the other's)
+  for (const stream of [true, false]) {
+    const d = new HttpBackend(`/game/as${stream}/`, tree(), { net: thin() });
+    const f = d.open('f.big'), g = d.open('g.big');
+    await withLinkOf(d, async () => {
+    d.net.mayStart = () => false;
+    // (a stream: STREAM_READS reads in sequence, 256 KiB from 2 MiB — or a short run of 4 reads, not a stream)
+    const n = stream ? 20 : 4, R = 16 << 10;
+    for (let i = 0; i < n; i++) f.read(2 * MiB + i * R, R);
+    assert.equal(d.streams.has('f.big'), stream);
+    const fEnd = 2 * MiB + n * R;
+    // (its read-ahead asked past the reader, waiting for its turn)
+    d.readAheadParts('f.big', SIZE, 3, fEnd, 16000, n, n * R);
+    const waiting = d.net.waiters.filter((w) => [...d.flights.entries()].some(([k, fl]) => k.startsWith('f.big#') && fl.w === w));
+    assert.ok(waiting.length >= 1, 'f.big read ahead, waiting');
+    // (the other file read in turn: the backend's latest reader is g.big's now, again and again)
+    for (let i = 0; i < 6; i++) { g.read(i * R, R); d.net.kick(); }
+    if (stream) assert.ok(waiting.every((w) => d.net.waiters.includes(w)), 'still queued');
+    await settle(); calls.length = 0;
+    d.net.mayStart = () => true; d.net.kick(); await settle();
+    const got = calls.filter((x) => x.url.includes('f.big'));
+    assert.equal(d.net.waiters.length, 0);
+    if (stream) {
+      // (every one of them, the one past the reader's last byte too)
+      assert.equal(got.length, waiting.length, `fetched: ${JSON.stringify(got)}`);
+      assert.ok(got.some((x) => x.start === fEnd), `the bytes past the reader: ${JSON.stringify(got)}`);
+      assert.equal(d.stats.aheadsDropped ?? 0, 0);
+    } else {
+      assert.equal(got.length, 0, `not a stream: dropped (${JSON.stringify(got)})`);
+      assert.equal(d.stats.aheadsDropped, waiting.length);
+    }
+    // (a read elsewhere in the archive ends the stream: its next read-ahead drops again once its reader moved away)
+    if (stream) {
+      f.read(4 * MiB, 100); assert.ok(!d.streams.has('f.big'));
+    }
+    });
   }
 }));
 

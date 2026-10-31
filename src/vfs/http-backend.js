@@ -1045,13 +1045,23 @@ export class HttpBackend {
       // elsewhere, or past this block — see `reader`; any other read-ahead but a media stream's too, once its reader
       // moved away, unless a read waits for it — a read-ahead queued behind a thin link's other requests went out long
       // after its reader left: a boot's, behind the boot's own reads, took the link 18 s in the middle of the next load
-      // at 85 KB/s, its announced wait timing out — OpenMW, 2026-10-30, docs/openmw.md)
+      // at 85 KB/s, its announced wait timing out — OpenMW, 2026-10-30, docs/openmw.md; nor a stream's read from inside
+      // an archive, `streams` while it lasts — a read elsewhere in the file ends it —: two streams read in turn, music
+      // and ambience from two archives, would else drop each other's on every read and play from synchronous reads)
       let halt = () => false, prw = null;
       const r = this.reader, runs = r.runs;
       if (big) {
         this.stats.wholeAheads = (this.stats.wholeAheads ?? 0) + 1;
         halt = () => r.path !== path || r.runs !== runs || r.end >= (bi + 1) * BLOCK;
-      } else if (!media) halt = () => !prw?.urgent && (r.path !== path || r.runs !== runs) && !!(this.stats.aheadsDropped = (this.stats.aheadsDropped ?? 0) + 1);
+      } else if (!media) {
+        let dropped = false; // (counted once, however often the link asks)
+        halt = () => {
+          if (dropped) return true;
+          if (prw?.urgent || this.streams.has(path) || (r.path === path && r.runs === runs)) return false;
+          this.stats.aheadsDropped = (this.stats.aheadsDropped ?? 0) + 1;
+          return (dropped = true);
+        };
+      }
       const pr = this.fetchPartBg(path, size, mtime, c, j, PRIO.readAhead, halt, true, { reason: media ? 'mediaAhead' : 'readAhead', forLoad: !media });
       prw = pr.w;
       if (big) { pr.whole = true; if (pr.w && this.net.waiters.includes(pr.w)) queued = true; }

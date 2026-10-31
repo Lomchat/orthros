@@ -71,7 +71,10 @@ this server (localhost), where none of this shows.
     at 85 KB/s (`place-load.mjs --rate 85k`, measured with the JSPI development engine), the boot's 1 MiB blocks of
     `Morrowind.bsa` (their readers long gone) used the link for 12-18 s in the middle of the load's announced waits. One
     wait timed out (15 s), and the load took 36.8-37.6 s against 24.3-24.5 s; with the drop it took 25.9 s.
-    A media stream keeps its read-ahead whatever else the game reads (music while a cell loads).
+    A media stream keeps its read-ahead whatever else the game reads (music while a cell loads), and so does a stream
+    read from inside an archive (`streams`: STREAM_READS reads in sequence over STREAM_SKIP bytes, until a read
+    elsewhere in that file ends it). Otherwise two such streams read in turn, such as music and ambience from two
+    archives, would drop each other's read-aheads on every read and play from synchronous reads.
   The rest of the block the reader is inside goes by pieces as before, and so does a block with a piece here or on its
   way (its missing pieces). The background prefetch (`missingRun`) is unchanged. Against the load's two-round-trip
   requests (`requestBytes()`, "The gate" below), the reader of a file read whole wins: it reads that block next, and

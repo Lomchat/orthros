@@ -1,0 +1,1295 @@
+Unable to find image 'alpine:3' locally
+3: Pulling from library/alpine
+3da1513d2124: Download complete
+3ec36f3670df: Download complete
+Digest: sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+Status: Downloaded newer image for alpine:3
+Lua 5.1.5  Copyright (C) 1994-2012 Lua.org, PUC-Rio
+=== WITH FIX (r1..r18)
+net.lua — SessionDisconnect handling
+[mp] server disconnect: SHUTDOWN (test)
+  ok   SHUTDOWN does not become the terminal Failed state
+[mp] server disconnect: SERVER_FULL (test)
+  ok   SERVER_FULL is transient too
+[mp] server disconnect: BANNED (test)
+  ok   BANNED stays terminal
+[mp] server disconnect: KICKED (test)
+  ok   KICKED stays terminal
+[mp] server disconnect: SUPERSEDED (test)
+  ok   SUPERSEDED stays terminal
+[mp] server disconnect: RATE (test)
+  ok   RATE stays terminal
+[mp] server disconnect: BAD_ENGINE (test)
+  ok   BAD_ENGINE stays terminal
+[mp] server disconnect: BAD_CONTENT (test)
+  ok   BAD_CONTENT stays terminal
+[mp] server disconnect: SHUTDOWN (server shutting down)
+  ok   SHUTDOWN publishes serverRestarting for the page
+identity.lua — PlayerItemAcquired
+  ok   nothing persistent is broadcast before the baseline is known
+  ok   the first scan reports nothing
+  ok   a gain is reported
+  ok   a gain goes through global for its net id (mpItemAcquiredOut), never raw
+  ok   a loss is not reported as an acquisition
+  ok   reset re-seeds rather than reporting the restored inventory
+identity.lua — a gain is credited before the declaration that carries it
+  ok   the credit precedes the declaration (else the logout fold doubles it)
+identity.lua — client heal claimed over the peer report
+  ok   the heal is claimed as peer + local gain, not the reset bar
+  ok   a peer-authored drop is neither re-claimed nor echoed
+  ok   the cost of a cast survives the refill from the avatar
+  ok   a raised maximum is claimed even with no change in current
+social.lua -- SocialResult is rendered in English
+  ok   the message tables were found
+  ok   socialText loaded
+  ok   "no_such_player" reads as a sentence
+  ok   "blocked" reads as a sentence
+  ok   "already_friends" reads as a sentence
+  ok   "self" reads as a sentence
+  ok   "too_many_requests" reads as a sentence
+  ok   "no_request" reads as a sentence
+  ok   "not_online" reads as a sentence
+  ok   "private" reads as a sentence
+  ok   a sent invite says so
+  ok   a crossed friend request says you are friends
+  ok   an ordinary friend request says it was sent
+  ok   an unknown code still returns text
+  ok   MP_SocialResult calls socialText
+combat.lua -- an attack is always forwarded when it can be addressed
+  ok   a real swing is NOT forwarded (the peer avatar computes melee)
+  ok   a test-hook swing (mpTest) is forwarded
+  ok   it carries the cell so the server can route it
+  ok   and omits the epoch rather than inventing one
+  ok   a known epoch is quoted
+  ok   a test-hook MISS is forwarded as well as a hit
+  ok   and is not silently promoted to a hit
+[mp] combat: victim has no cell, hit not forwarded
+  ok   a victim with no cell is still not sent
+combat.lua -- a spell hit names which effects, and the owner applies only those
+  ok   the indexes that hit travel with the cast (250)
+  ok   and so does the reflect word (254)
+  ok   a mixed cast is not beneficial (249)
+  ok   PvP off keeps the heal and drops the burn, not the whole cast (249)
+  ok   an all-harmful cast at a player is vetoed under PvP off
+  ok   the owner applies only the indexes that hit (250)
+  ok   and does not reflect a reflection (254)
+  ok   no indexes = the whole record, as before
+  ok   an index past the record applies nothing
+  ok   a scroll resolves through its enchantment, by the item id (251)
+  ok   the spell id crosses as a net id both ways (251)
+  ok   puppet.lua words the cast beneficial only when EVERY hit is (249)
+  ok   puppet.lua never forwards the actor's own ability/disease/blight/curse as a hit
+global.lua -- restore/damage H/M effects are not mirrored (the bars carry them)
+  ok   global.lua BAR_CARRIED_EFFECT drops restorehealth, restoremagicka and damagemagicka only
+  ok   applied on both mirrors: MP_AvatarActiveSpells (peer) and MP_SelfActiveSpells (owner)
+  ok   the helper loads on its own
+  ok   the restore index is dropped, light and fatigue stay
+  ok   an unknown record is left alone
+client -- server events that must not be dropped on the floor
+  ok   global.lua forwards MP_WorldTimeRefused
+  ok   global.lua MP_AvatarActiveSpells stacks only distinct records per owner
+  ok   global.lua mpMintSpell prices the spell at the server cost floor
+  ok   global.lua drains mp.takeScriptNotes inside the Joined tick
+  ok   objects.onScriptNote sends ObjectEnabled under the OBJECT's cell key
+  ok   objects.onScriptNote asks the server for a scripted actor spawn
+  ok   WorldCellState applies persisted re-enables
+  ok   actors.notePosition rides ActorAI and the holder teleports on it
+  ok   mpQuestSpawn places a forwarded PlaceAtPC at its spot
+  ok   global.lua parses
+  ok   player.lua parses
+  ok   identity.lua parses
+  ok   world.lua parses
+  ok   actors.lua parses
+  ok   avatar.lua parses
+  ok   companion.lua parses
+  ok   puppet.lua parses
+  ok   combat.lua parses
+  ok   social.lua parses
+  ok   objects.lua parses
+  ok   net.lua parses
+  ok   admin.lua parses
+  ok   menu.lua parses
+  ok   quests.lua parses
+  ok   interp.lua parses
+  ok   global.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   player.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   identity.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   world.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   actors.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   avatar.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   companion.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   puppet.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   combat.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   social.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   objects.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   net.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   every scripts/mp/*.lua is in the CMake install list (the native peer gets nothing else)
+  ok   net.lua hands an admission refusal to the go-home hook before the fresh-ticket ask
+  ok   global.lua wires net.onRefusedAway to the WorldClosed notice + switch home
+  ok   player.lua reconciles the self pose in a per-frame tick, not in the MP_SelfState handler
+  ok   global.lua re-sends MP_ChargenDone to the player script on every connection
+  ok   identity.reset clears the baselineReady mirror
+  ok   avatar.lua applies MP_Equip on the avatar body (setEquipment is Self-gated)
+  ok   social.lua tells the player why time did not pass
+  ok   global.lua hands a refused rest to world.lua before the notice
+  ok   world.lua gives back the hours a refused rest adopted
+  ok   global.lua MP_PlayerCrime expels from the victim faction
+  ok   global.lua sets werewolf form / vampire spell in place on an appearance change
+  ok   identity.lua carries the mark both ways, nil-guarded for older engines
+  ok   global.lua forwards MP_SocialNotice
+  ok   social.lua tells the player about it
+  ok   social.lua MP_FriendList notices a newly present friend request and invite
+  ok   global.lua does not blame every AUTH_FAILED on the password
+  ok   player.lua puts the use control in pose bit 3, not inAir
+  ok   puppet.lua reads pose bit 3 as the swing, on both edges, latched per received pose
+  ok   global.lua VISIBLE_EFFECT carries levitate, slowfall and waterwalking
+  ok   player.lua raises mpCombatCast on the use edge in the spell stance
+  ok   combat.lua sends CombatCast with spellId, casterId and kind
+  ok   player.lua reconciles against where it stood at lastInputSeq, not where it is now (197)
+  ok   player.lua shifts each ring entry by the corrections sent since it was taken
+  ok   the avatar reports the seq it APPLIED, and the pose stream is stamped with that
+  ok   identity.lua always sends attribute damage, 0 included, so a cure reaches the avatar
+  ok   the sim peer's own dummy player is not a collision body for the avatars
+  ok   avatar.lua latches the jump and use edges until onUpdate consumes them (198)
+  ok   avatar.lua holds the last input through a retransmit stall (205)
+  ok   objects.lua sends the intended door state at activation and keeps it over a stale echo (199)
+  ok   global.lua does not follow-teleport across an exterior border the body walked (200)
+  ok   identity.lua diffs active effects at 0.1 s (201)
+  ok   puppet.lua near-tier snap 256 and a held run flag (211)
+client -- every server->client event has an MP_ handler
+  ok   81 server->client events all have a handler
+objects.lua -- every container refusal the server can send is worded
+  ok   MP_ContainerOpResult was found
+  ok   containerOp() refusal reasons were discovered
+  ok   containerOp "nostate" is worded for the player
+  ok   containerOp "contained" is worded for the player
+  ok   containerOp "gone" is worded for the player
+  ok   containerOp "full" is worded for the player
+  ok   MP_ObjectTakeResult was found
+  ok   take() refusal reasons were discovered
+  ok   take "unreachable" is worded for the player
+  ok   take "gone" is worded for the player
+  ok   take "cell_full" is worded for the player
+  ok   MP_ObjectSpawnRefused was found
+  ok   spawn() refusal reasons were discovered
+  ok   spawn "unowned" is worded for the player
+  ok   spawn "contained" is worded for the player
+objects.lua / player.lua -- a service window syncs for as long as it is open
+  ok   a live watch has no expiry (until_ = math.huge), a chest keeps CONTAINER_WATCH_SECONDS
+  ok   onBarterClose still ends every live watch
+  ok   ContainerOpen contents / put-take ids go out through worldmp.toNet
+  ok   sendContainerOp maps the item id toNet before it is pended and sent
+  ok   setContainerContents creates from worldmp.toLocal(entry.id)
+  ok   applyContainerDelta maps the wire id toLocal
+  ok   player.lua releases the dialogue lock only when leaving every talking mode
+  ok   player.lua no longer releases on the bare Dialogue edge
+world.lua -- the weather handback survives the holder echo guard
+  ok   the handler was found
+  ok   a holder still ignores its own echo
+  ok   but honours the restore handback
+world.lua -- dayspassed counts from the vanilla start, on every engine alike
+  ok   world.lua loads under the stubs
+  ok   the vanilla start is day 1
+  ok   the hour does not move the day
+  ok   the next morning is day 2
+  ok   a month boundary counts the real month length (Last Seed has 31 days)
+  ok   a year later is 366 (365-day calendar, no leap years)
+  ok   before the start it clamps to 1, never 0 or negative
+identity.lua -- the rejoin spell restore replaces rather than merges
+[mp] rejoin restore applied
+  ok   the saved spell is restored
+  ok   the power from the race this slot no longer is does not survive
+[mp] rejoin restore applied
+  ok   an empty saved set leaves the chargen grant alone
+identity.lua -- the restore purges stale ability effects before re-adding
+[mp] rejoin restore applied
+  ok   the active effects are purged during the restore
+  ok   the purge happens BEFORE the spells are re-added
+identity.lua -- a class the restore could not apply is reported, not hidden
+[mp] CLASS MISMATCH AFTER RESTORE: doc=acrobat engine=nightblade
+[mp] rejoin restore applied
+  ok   a class the engine did not end up with is reported
+[mp] rejoin restore applied
+  ok   an agreeing class is silent
+quests.lua -- no global starves behind churning ones
+  ok   the seeding pass broadcasts nothing
+  ok   the quest global is not starved by 40 churning ones
+  ok   every changed global eventually sends
+  ok   one tick still respects the send budget
+quests.lua -- forced greetings take the lock, a dead partner closes the window, locals flush on release
+  ok   player.lua reports a Dialogue window that opened without an activation (mpDialogueForced)
+  ok   global.lua routes mpDialogueForced to quests.onDialogueForced
+  ok   quests.onDialogueForced requests the lock as forced, unless already held or pending
+  ok   a forced grant sets lockHeld/lockDisposition like the activation path and does not re-activate
+  ok   a forced denial closes the window the other holder owns
+  ok   actors.lua hands every MP_ActorDeath to the quest layer
+  ok   #110 an essential NPC death names sKilledEssential on every client, inside pcall
+  ok   quests.onActorDeath closes the window on the lock holder and releases the lock
+  ok   player.lua removes the Dialogue mode on MP_CloseDialogue
+  ok   the lock grant arms an open-ended member-var watch and the release flushes it
+  ok   the re-run activation does not shorten the conversation watch back to 6 s
+quests.lua -- running global scripts are diffed, chargen never travels, the sync starts what is missing
+  ok   the first poll reports the full running list as started
+  ok   chargen and startup scripts never travel
+  ok   a newly started script is sent as started, nothing else
+  ok   a script that ended is sent as stopped
+  ok   no change, no event
+[mp] started 1 campaign global scripts
+  ok   the join sync starts the campaign scripts and skips chargen ones
+scripts/mp/*.lua -- no local table is assigned into before it is declared
+  ok   the scan catches an assignment above the declaration
+  ok   the mp scripts were found
+  ok   actors.lua assigns into no table before declaring it
+  ok   admin.lua assigns into no table before declaring it
+  ok   avatar.lua assigns into no table before declaring it
+  ok   combat.lua assigns into no table before declaring it
+  ok   companion.lua assigns into no table before declaring it
+  ok   global.lua assigns into no table before declaring it
+  ok   identity.lua assigns into no table before declaring it
+  ok   interp.lua assigns into no table before declaring it
+  ok   json.lua assigns into no table before declaring it
+  ok   menu.lua assigns into no table before declaring it
+  ok   net.lua assigns into no table before declaring it
+  ok   objects.lua assigns into no table before declaring it
+  ok   player.lua assigns into no table before declaring it
+  ok   puppet.lua assigns into no table before declaring it
+  ok   quests.lua assigns into no table before declaring it
+  ok   reconcile.lua assigns into no table before declaring it
+  ok   social.lua assigns into no table before declaring it
+  ok   testkill.lua assigns into no table before declaring it
+  ok   world.lua assigns into no table before declaring it
+  ok   the scan catches a call above the local function declaration
+  ok   actors.lua calls no local function above its declaration
+  ok   admin.lua calls no local function above its declaration
+  ok   avatar.lua calls no local function above its declaration
+  ok   combat.lua calls no local function above its declaration
+  ok   companion.lua calls no local function above its declaration
+  ok   global.lua calls no local function above its declaration
+  ok   identity.lua calls no local function above its declaration
+  ok   interp.lua calls no local function above its declaration
+  ok   json.lua calls no local function above its declaration
+  ok   menu.lua calls no local function above its declaration
+  ok   net.lua calls no local function above its declaration
+  ok   objects.lua calls no local function above its declaration
+  ok   player.lua calls no local function above its declaration
+  ok   puppet.lua calls no local function above its declaration
+  ok   quests.lua calls no local function above its declaration
+  ok   reconcile.lua calls no local function above its declaration
+  ok   social.lua calls no local function above its declaration
+  ok   testkill.lua calls no local function above its declaration
+  ok   world.lua calls no local function above its declaration
+identity.lua -- item states carry n per stack, own for tools
+  ok   an inventory snapshot went out (mpInventoryOut, via global for the record registry)
+  ok   a lockpick entry is tagged own with its condition and n
+  ok   ...and names its kind (t) so the server can check it (340)
+  ok   a filled gem and a stateless stack of two are two entries, in order
+  ok   a stateless stack is a bare {n} (positions stay stable)
+global.lua -- applyItemStates splits a stack to fit an entry; the peer report round-trips
+  ok   applyItemStates and snapAvatarItemStates were found
+  ok   applyItemStates loads
+  ok   one entry wrote a state
+  ok   the stack of 3 became a souled 1 and an empty 2
+  ok   two same-record stacks keep their own conditions
+  ok   an entry without n applies to the whole stack, as before
+  ok   snapAvatarItemStates loads
+  ok   the peer reports the 3-stack as two entries with exactly one filled gem
+  ok   MP_SelfItemStates applies in global.lua and no longer forwards to player.lua
+  ok   avatar apply, relog restore and MP_SelfItemStates all use applyItemStates
+  ok   player.lua no longer carries its own item-state applier
+  ok   player.lua answers itemstates:<id> with every stack's state
+  ok   every item-state reader calls types.Item.itemData(obj), never obj.itemData
+mp.omwscripts -- every script path is listed once
+  ok   no script path appears on two lines (the first is silently dropped)
+  ok   every mp.omwscripts path is listed in files/data/CMakeLists.txt (the peer image)
+companion.lua -- a stalled Follow is re-issued when the leader comes back in range (453)
+  ok   companion.lua re-issues a Follow only while the actor has NOT moved and the leader is in range
+  ok   the re-issue is bounded: MP only, at most one every few seconds, under the engine range
+  ok   it is driven from the 1 Hz poll, not from a bare onUpdate
+  ok   Escort is left alone (it has no activation latch, and its destination lives upstream)
+actors.lua / global.lua -- scale: one actor scan per tick, chunked batches, a detach without the script is a no-op
+  ok   actors.tick buckets activeActors by cell ONCE and hands each held cell its list
+  ok   actorPose pcalls module-level functions, not per-actor closures
+  ok   broadcastCell sends a big cell as several batches of at most 255
+  ok   mpPuppetDetached is a no-op on a body without puppet.lua
+information layer -- journal dates, map memory, menus, levels (backlog 256-263)
+  ok   JournalSync replays journalLog with ipairs before the quest map
+  ok   applyJournalEntry stamps through mp.addJournalEntryAt when present, else addJournalEntry
+  ok   a pre-player entry keeps its stamp and order through the retry
+  ok   MP_WorldMapExplored skips unnamed cells
+  ok   the rejoin restore replays record.explored through MP_WorldMapExplored
+  ok   inputTick masks the use bit while a UI mode is open
+  ok   player.lua answers levelup:<a,b,c> with mp.applyLevelup
+actors.lua / objects.lua -- NPC fidelity: run bit from motion, the dead skip the grant, pitch streams, peer polls doors
+  ok   actorPose sets the run bit from animVel, never from a nonexistent isRunning
+  ok   the authority grant loop skips dead snapshot entries
+  ok   actorPose streams the actor pitch
+  ok   the peer polls getDoorState over held cells and the DoorState apply mutes the poll
+melee depth -- armour/block progression rides the avatar, the stagger keeps the tap, the bar drop plays the blow (307, 309, 310)
+  ok   omw/combat/local.lua routes an armour use to I.MPAvatar when SkillProgression is absent
+  ok   the fsroot mirror of combat/local.lua is the same file
+  ok   avatar.lua provides the MPAvatar interface and takes _onSkillUse
+  ok   avatar.lua forwards the armour/block family only
+  ok   global.lua sends the use to the server as AvatarSkillUse with the owner id
+  ok   every MP_ handler in player.lua is forwarded by some script (server events arrive at global only)
+  ok   player.lua counts MP_SelfSkillUse through I.SkillProgression
+  ok   avatar.lua keeps useLatch armed while the body is knocked down or in hit recovery
+  ok   puppet.lua no longer plays the local roll (no miss sound at all)
+  ok   puppet.lua plays Health Damage on an hp drop and a hand-to-hand hit on a fatigue-only drop after a swing
+  ok   global.lua peer rules read the last SimReady (325)
+  ok   puppet.lua stays attached in degraded mode with the hit intercept armed (328)
+  ok   global.lua drops avatarDocs and remoteIdentity on MP_PlayerLeaveWorld (330)
+global.lua -- a stored cell that no longer exists falls back to the Welcome respawn (backlog 317)
+  ok   restoreTick checks the stored cell exists before the teleport, and falls back to flags.respawn
+  ok   cellExists pcalls both the exterior and the named lookup
+  ok   the player is told where they were moved
+client -- review fixes 335/336/340/341/342/343/346 (source checks)
+  ok   quests.lua keeps a per-quest set of applied stages and drops their echoes (335)
+  ok   identity.lua caps forgetDeclared at 3 per kind until the fingerprint changes (336)
+  ok   world.lua waits on a dependency only when it is in flight, and refuses an unsharable kind once (336)
+  ok   identity.lua sends the own-wear kind as t (340)
+  ok   avatar.lua reads isOnGround on self and reports the landing (341)
+  ok   global.lua no longer calls isOnGround on a GObject and prints from mpAvatarLanded (341)
+  ok   puppet.lua marks a remote-player puppet with mp.setPlayerPuppet (342)
+  ok   player.lua skips mpDialogueForced for the Dialogue mode MP_PlayerArrest opened (343)
+  ok   global.lua has no `local net` shadowing the net module (346)
+leftovers -- holder loss detaches everything, the holder's corpse is the loot, followers ride the retry, revive/effects/AI settings travel, the bark and the block (227, 229, 293-297, 312)
+  ok   a holder-lost Info resets every puppet and the whole mirror
+  ok   the death edge hands the corpse to objects.onCorpse, which arms a ContainerOpen
+  ok   tryTeleport takes onLanded and the retry tick fires it
+  ok   the holder sends ActorRevive on the revive edge and clients apply it with mp.resurrect(obj)
+  ok   the holder diffs visible actives into ActorEffects and puppets add/remove them
+  ok   AI settings ride ActorDisposition as `ai` and are applied to the base
+  ok   MP_ActorAI combat rolls iVoiceAttackOdds into mp.say(obj, attack)
+  ok   isChargenCell exact-matches the two vanilla chargen cells in global.lua and objects.lua
+  ok   the stats report drains mp.takeBlock and the owner plays it
+  ok   chargenTick waits on pendingRestore, which is declared before it (404)
+  ok   UNREACHABLE_ATTEMPTS defers to the switchDeadline grace, 45 s on the first dial (407)
+UX rows -- social OK lines reach the feed, the late host hears who went home, a guest's Rest is refused before the bed lies (29, 32, 262)
+  ok   MP_SocialResult notices OK results too, machinery excepted
+  ok   server.ts records the guests the grace sent home and WorldMode carries them once to the owner
+  ok   global.lua narrates the sent-home guests to the returning owner
+  ok   WorldMode carries timeSkip and global.lua forwards it to player.lua
+  ok   a guest's Rest under timeSkip=owner is closed with a notice and the level-up offered
+  ok   restRefusedHere: guest+owner refused, owner never, anyone never
+recv watchdog, the dead do not talk, svc:open, threat.lua gone, same-cell snap is not a door, revive in place (31, 33, 34, 76, 138, 231)
+  ok   net.lua stamps lastRecvAt on open and on every frame, and hangs up after 75 s of silence while Joined
+  ok   identity.lua closes the Dialogue window on the death edge
+  ok   player.lua opens any service window through svc:open and keeps barter:open as its alias
+  ok   threat.lua is gone and nothing requires it
+  ok   actors.lua does not require('scripts.mp.threat')
+  ok   combat.lua does not require('scripts.mp.threat')
+  ok   global.lua does not require('scripts.mp.threat')
+  ok   player.lua does not require('scripts.mp.threat')
+  ok   quests.lua does not require('scripts.mp.threat')
+  ok   puppet.lua does not require('scripts.mp.threat')
+  ok   avatar.lua does not require('scripts.mp.threat')
+  ok   MP_PlayerCellChange treats a same-cell snap within SNAP_DIST as walked
+  ok   revivePuppet resurrects the standing body, moves it to the pose, clears the dead latch and pushes the bars
+net.lua — manifest sha256 from the page
+  ok   SessionHello was sent
+  ok   a hashed plugin carries its sha256 regardless of name case
+  ok   an unhashed file carries no sha256 field
+  ok   no page hashes = the old manifest shape
+creature swings, peer-run scripts, topics/talked-to persisted, AI done, avatar factions, crime witnesses (288, 217, 51, 230, 221, 145, 146)
+  ok   the holder sets the use bit from mp.isAttacking/spellcast and creature puppets play attack1..3
+  ok   the peer arms open-ended member watches over held cells, with the cell key on the wire
+  ok   OpSay on the peer becomes ActorSay and puppets core.sound.say the line
+  ok   TopicsLearned is persisted (doc.topics) and JournalSync replays it via applyTopics
+  ok   talked-to NPCs are reported, persisted and re-flagged on relog
+  ok   AiSequence completion is noted on the holder and written onto puppets
+  ok   getFightTerm reads disposition toward the avatar and AvatarState applies factions
+  ok   a client's crime-combat witness is claimed as ActorAI combat+crime and the server admits it
+#413 script notes are metered, not drained in one burst
+  ok   scriptNotesTick queues notes and sends at most NOTE_SENDS_PER_SEC a second
+  ok   recordScriptNote keeps one pending aidone per ref
+#414 armHeldWatches probes script.variables with pairs, never next
+  ok   quests.lua never calls next() on script.variables (userdata)
+#430 the peer body cannot die and never claims a fight for a cell it does not hold
+  ok   player.lua keeps the system peer in god mode from inputTick
+  ok   noteCombat: a non-holder "fights ME" claim never leaves the system peer
+s171 a puppet never echoes the holder's fight or travel back as the player's own claim
+  ok   a relayed fight, the initial travel or the relayed travel is not claimed outside a conversation
+  ok   ...a travel a script started is, with no conversation
+  ok   ...and a taunt or AITravel from our own conversation still is
+  ok   a dialogue hold reaches the NPC as MP_DialogueHold on, then off
+  ok   ...and is not claimed back as travel or combat
+220 a guest does not carry Dagoth Gares' curse home from another campaign
+[mp] corprus: removed a curse from another campaign
+  ok   at home, a curse our own campaign never earned is removed
+  ok   ...one our own campaign did earn (A2_2_6thHouse 50) stays
+s149 the harness kill takes a LIVE fish, never the corpse or one already dying
+  ok   two kills in one frame take two different live fish
+  ok   the corpse is never picked
+  ok   with every live fish already dying, a third kill finds nothing
+s172 the avatar drops standing time from a backlog instead of lagging for good
+  ok   a standing segment is skipped while the queue is beyond SEGS_LAG_S
+  ok   the avatar stream gate sits under the 50 ms peer frame
+s177 a crowd costs no per-actor scan and no per-pose page call
+  ok   isMpPuppetFn is a lookup by body id, not a scan of every puppet
+  ok   puppet.lua mirrors puppetRx at most twice a second
+s172 a late pose is not a stop, and a puppet can catch a running owner
+  ok   a query past the newest pose carries on along the last step (was clamped to it)
+  ok   ...by at most EXTRAP_S of it (a real stop overshoots <= ~22 u at a run, s172 #175)
+  ok   the speed feed-forward keeps reading the run through a late pose
+  ok   velocity points the way the target walks (+y), for the ahead-of-target rule
+  ok   a puppet following a walking target faces within 20 degrees of its travel, wherever the point is (side-to-side jitter, 180s)
+  ok   ...and a target 3 u to the side barely turns it (was 45-90 degrees aiming at the point)
+  ok   puppet.lua steers a walking target by walkHeading
+  ok   puppet steering may exceed top speed to close a gap
+  ok   the engine honours it for puppets only
+Orthros: a teleport seen in two poses a few ms apart is not carried on 18-90x (the copy stood 15,000+ u away)
+  ok   a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands (was 5,500-13,500 u on)
+  ok   ...and a jump after an ordinary gap too (was 409 u on)
+  ok   an ordinary step is still carried on (a late pose is not a stop)
+players said NPCs are jerky and movement rubber-bandy: the render delay adapts to the stream (it was a fixed 40 ms, below one batch interval)
+  ok   a steady 15 Hz stream settles near one interval (not 40 ms)
+  ok   a jittery stream buys itself more buffer than a steady one
+  ok   a 5 Hz mid-tier stream is interpolated over its own interval
+  ok   a long silence (a stop, a cell load) is not read as jitter
+  ok   rendered speed stays within 1.4x of the real walking speed with the adaptive delay
+  ok   ...where the old fixed 40 ms delay on arrival stamps lurched well past it (the complaint)
+  ok   a self divergence under the dead zone is not corrected (players: slightly rubber-bandy)
+  ok   the delay is bounded and slewed, never a jump
+s120 a puppet that stays far from its owner is snapped to it (#179: 260 u off, under the 256 u snap)
+[mp] puppet far-gap snap: 200 u off for 2.0 s (o:eldafire)
+  ok   a blocked puppet 200 u from its owner is snapped after ~2 s, not before
+  ok   a friend puppet 200 u off for 4 s is not far-snapped
+  ok   a puppet that closes a 200 u gap on its own is not snapped for it
+s177 a near-tier puppet reads interp:speed once a frame, not twice (#175: 20 puppets missed the frame budget)
+  ok   steerMovement takes the caller's tgtV instead of reading interp:speed itself
+  ok   onUpdate reads tgtV once and both call sites reuse it
+s22 a body the engine holds dead above zero hp is said out loud (#178)
+  ok   the peer says an avatar whose isDead disagrees with its bar
+  ok   the owner says it is dead-latched while the peer reports hp
+s120 the avatar says where each swing ends (#178: NPC hp froze after ~10 landed blows)
+  ok   avatar.lua logs the release and a use held past 3 s
+  ok   Npc::hit logs each avatar blow and its fate
+s131 a friend death is counted from the bars, not sampled off the puppet (#179, #181)
+  ok   global.lua counts a puppet death in MP_PlayerStatsDynamic and mirrors puppetDeaths
+s138 the avatar says where each arrow ends (#186)
+  ok   projectileHit logs an avatar arrow with its victim
+s66 the sim peer dummy player never takes a blow meant for a player beside it
+  ok   getHitContact skips the headless peer own player
+s157 the actor probe reports the body the holder drives, not a local twin
+  ok   a puppeted body replaces a local-only twin in the probe
+s172 the sim peer dummy player blocks nobody
+  ok   actors.cpp turns off the headless peer player collision body
+  ok   World::setActorCollisionBody only toggles the body (the actor still walks on the world)
+#431 a fresh holder streams no bars for a cell until the world record has answered
+  ok   broadcastCell gates ActorStatsDynamic on cell.recorded
+  ok   noteCellDeaths marks the cell recorded only after the post-load ResyncRequest
+  ok   MP_WorldCellState hands the record to the holder even with no deaths in it
+s157 #187 a holder retries a recorded death whose key did not resolve on the first answer
+  ok   noteCellDeaths keeps a held cell death keys for a bounded retry
+  ok   the holder tick retries them until they read dead, then says so if they never did
+#432 the peer says what a forwarded spell hit did
+  ok   MP_CombatSpellHit prints resolved victim and hp on the system peer
+#460 the harness rest reports what it healed, so the claim needs no read (s150 in #111/#114/#115/#116)
+  ok   mp.restHours rests inline and returns the hp/mp/ft it healed
+  ok   player.lua banks what the rest healed into the claim
+#461 a client heal reaches the avatar in full: the claim carries the GAIN, not the bar
+  ok   a 50-point restore over 5 s reaches the avatar whole (461: it landed +6..+10)
+  ok   a peer-authored drop stays, and the gain after it lands on the dropped bar
+  ok   the stale-peer snapshot says the gain too (460: the rest's +24 was zeroed unsaid)
+  ok   the mirror names the last hp claim for the scenarios
+  ok   a banked rest is claimed although the local bar never showed it (460, #116: 35+0)
+  ok   the banked gain is not claimed a second time
+#480 a puppet stops following after a far teleport: only the tracked body answers, and it stands in a loaded cell
+  ok   puppet.lua names the asking body on every mpSnapRequest
+  ok   global.lua mpSnapRequest ignores a snap from a body it does not track
+  ok   despawnPuppet retries a remove() refused mid-teleport instead of forgetting the body
+  ok   spawnPuppet skips a pose outside the loaded neighbourhood (a lagging avatar two cells back)
+  ok   the pose cell key floors like ESM::positionToExteriorCellLocation
+avatar bookkeeping: a despawned body leaves the registry and the scene, a rebuilt one gets the effects back
+  ok   a refused remove() disables the body at once (no solid ghost while the retry waits)
+  ok   the remove retry has no deadline, on a once-a-second cadence
+  ok   despawnPuppet takes the body out of the avatar registry
+  ok   the owner re-sends its active effects when its look (the peer rebuild keys) changes
+  ok   a template body and a failed record build are logged
+#481 the overlay hold leaves the engine in Interface when on and off drain in one frame
+  ok   uimode:on puts the engine in Interface
+  ok   off/on/off in one frame leaves no mode on the engine
+  ok   on/off in one frame leaves no mode on the engine
+  ok   (proof) setMode + removeMode in one frame left the engine in Interface -- the #117 trace
+  ok   the hold stacks on an engine window instead of replacing it
+  ok   releasing the hold hands the engine window back
+#482 snapto lands on the ground: a hard-coded z under the terrain no longer drops the body into the sea
+  ok   snapto asks the global snap for onGround (s170 SPOT z=512 is 360 u under the LAND surface)
+  ok   mpSelfSnap hands onGround to the engine teleport (World::adjustPosition force=true)
+  ok   tpz: keeps a deliberate fall (no onGround)
+  ok   the reconciliation snap keeps a levitating pose (no onGround)
+#484 the sim peer ignores PlayerLeaveView: every player is in its view, the avatar stays
+  ok   on the peer LeaveView removes nothing and keeps remoteCell/lastPose (the next MoveBatch could not respawn without them)
+  ok   on a client LeaveView still despawns the puppet and forgets the player
+active effects carry their ROLLED magnitude both ways
+  ok   identity.lua sends the owner roll with each effect (-1 = none)
+  ok   identity.lua holds an instance that is not rolled yet for a tick
+  ok   mpActiveSpellsOut forwards mags
+  ok   the peer reports the avatar roll back to the owner
+  ok   both appliers (avatar and self) pass the roll to activeSpells:add
+  ok   the engine pins a passed roll as min == max, capped at the record max
+  ok   rolledMagnitudes keys by effect index and drops -1
+  ok   rolledMagnitudes of an older sender (no mags) is empty: the engine rolls
+s171 a creature bite held for one peer frame is shown on a client that saw no frame of it
+  ok   a one-frame bite plays the whole attack once
+  ok   ...and never again without a new edge
+  ok   press and release in separate frames: one whole bite, not cut by the release
+  ok   a landed hit (hp drop) plays a hit reaction on the puppet
+  ok   ...but not the killing blow
+s171 a charging creature's puppet keeps up with it and arrives with it
+  ok   while it charges the puppet trails the peer by < 80 u (was 128)
+  ok   the puppet arrives within 0.4 s of the peer's rat (was 1.2 s)
+s120 an NPC puppet keeps walking with its owner while it shows the owner's swings
+  ok   an NPC puppet keeps within 80 u of its owner while the owner swings (was frozen)
+s172 a friend's or an NPC's blow plays keys that exist; a puppet's speed is not ramped twice
+  ok   a friend's swing: wind-up to min attack on the press, the blow to SMALL follow stop on the release
+  ok   character.cpp does not smooth a puppet's speed a second time (the peer already did)
+an avatar moves for exactly as long as its owner simulated, and its poses match the owner's ring
+[mp] avatar motion: speed=250 axis=1.00 run=true backlog=0.00 owed=0.02 seq=28
+[mp] avatar motion: speed=0 axis=0.00 run=true backlog=0.00 owed=0.15 seq=30
+  ok   after the hitch the avatar stands where its owner does (was ~200 u ahead)
+  ok   every pose matches the owner's ring entry for its seq to < 8 u
+[mp] avatar motion: speed=250 axis=1.00 run=true backlog=0.01 owed=0.00 seq=28
+[mp] avatar motion: speed=0 axis=0.00 run=true backlog=0.00 owed=0.15 seq=30
+  ok   with late input bursts the avatar trails a running owner by < 0.35 s of running (0.44 before)
+  ok   ...and stops where the owner stopped
+s172 an NPC's spell cast reaches other screens (reported from the actor, not the global script)
+  ok   companion.lua reads the cast on the actor and reports it on change
+  ok   actors.lua no longer requires openmw.animation in the global script (it threw every time)
+  ok   global.lua routes mpActorCasting to actors.noteCasting
+s175 a put racing a network apply reaches the server (the rebase expects the applied store)
+  ok   setContainerContents and applyContainerDelta record what the store will hold
+  ok   the rebase poll diffs against the expected store once the apply has had its frames
+  ok   objects.tick counts frames
+s172 a copy keeps pace with a walking friend instead of stop-starting behind them
+  ok   the copy never stops while its friend walks (t 2-4 s)
+  ok   ...and trails the friend by little more than the render delay and flight (< 35 u)
+s117 a companion copy settles on a stopped target at 5 fps (200 ms frames)
+  ok   the copy holds still once it reaches a stopped target (moved < 10 u in the last 3 s)
+s175 a weather change reaches the other players as the transition starts
+  ok   MP_WorldWeather applies `next` when the holder is mid-transition, not only `current`
+  ok   the weather holder reads the sky WITH a cell (getCurrent/getNext/getTransition)
+engine API calls the pcalls were hiding
+  ok   every openmw.animation function the local scripts call is bound by the engine
+  ok   no script calls obj:setEnabled (the engine binds obj.enabled, a property)
+  ok   the global-context scripts call no Self-gated setter (found 14 in the bindings)
+  ok   companion.lua writes Fight/Flee/Alarm on itself (mpSetStats ai)
+  ok   companion.lua equips itself from mpSetEquipment
+s124 a dialogue result noticed just after the window closed still sends its claim
+  ok   isTalkingTo honours a grace after release, inside the server's RECENT_LOCK_MS
+reconcile.lua — inventories under the engine's end-of-frame rule
+  ok   reconcile.lua is required only in the global context, and the global onUpdate ends the frame
+  ok   applyAvatarDoc reconciles through reconcile.reconcileInventory and reruns while anything is in flight
+  ok   MP_AvatarState only marks the avatar; avatarDocTick applies once per frame
+  ok   pushEquipmentToPuppet counts what is in flight (reconcile.held), so a spawn grants an equipped item once
+  ok   the rejoin restore applies item states in a later frame (selfStatesTick), not in the grant frame
+  ok   world-given spells wait for a doc applied in an earlier frame
+  ok   frameworld: split lowers the stack at once, a moved piece reads 0, and it lands only at the end of the frame
+  ok   frameworld: moving an object that already says 0 throws, as the engine's removeFn does
+  ok   item states: a soul for one gem fills ONE gem, not the whole stack of three
+  ok   item states: a worn pair in the middle of a stack of four wears two, and the pack still holds four
+  ok   avatar: the same doc twice in one frame grants the shortfall once (not 6 cuirasses)
+  ok   avatar: a rising count seen twice in one frame lands at the latest figure
+  ok   avatar: a drop landing while the grant is in flight is finished on the next frame, not left behind
+  ok   avatar spawn: the equipped cuirass is granted once, not three times
+  ok   avatar: a doc read in the frame an item state was split does not re-grant the split piece
+  ok   restore: item states wait for the grant to land (0 applied in its frame, 1 the next), and the soul survives the relog
+  ok   restore (shed=false): a surplus and an unlisted item stay -- picked up since the last flush
+  ok   container: two canonical states in one frame hold the list once (no doubled loot)
+  ok   world-given spells: none before the doc is applied, none in its frame, then only what the doc lacks
+global.lua -- every MP_ handler in the global context survives an empty and a nil body
+  ok   global.lua loads whole under the stubs (merged modules included)
+MPVECTOR:bool_true:
+MPVECTOR:bool_false:
+MPVECTOR:num_zero:
+MPVECTOR:num_negzero:
+MPVECTOR:num_neghalf:
+MPVECTOR:num_int:
+MPVECTOR:num_bigint:
+MPVECTOR:num_huge:
+MPVECTOR:str_empty:
+MPVECTOR:str_short:
+MPVECTOR:str_31:
+MPVECTOR:str_32:
+MPVECTOR:str_255:
+MPVECTOR:str_unicode:
+MPVECTOR:table_empty:
+MPVECTOR:table_flat:
+MPVECTOR:table_nested:
+MPVECTOR:table_array:
+MPVECTOR:table_mixed:
+MPVECTOR:vec3:
+[mp] pickup veto armed for 12 item types
+  ok   global.lua onInit runs under the stubs (every module initialised)
+[mp] CombatHit on peer: net=nil ref=nil cell=nil resolved=NO hp=100 dead=? obj=-
+[mp] CombatHit on peer: net=nil ref=nil cell=nil resolved=NO hp=100 dead=? obj=-
+[mp] CombatSpellHit on peer: spell=nil net=nil ref=nil cell=nil resolved=NO hp=100
+[mp] CombatSpellHit on peer: spell=nil net=nil ref=nil cell=nil resolved=NO hp=100
+[mp] journal sync applied
+[mp] journal sync applied
+[mp] record refused: nil
+[mp] record refused: nil
+[mp] bad session frame: ./openmw/files/data/scripts/mp/json.lua:212: json.decode: expected string, got table
+[mp] bad session frame: ./openmw/files/data/scripts/mp/json.lua:212: json.decode: expected string, got table
+[mp] session state: HelloSent
+[mp] party level -> 0 (leader #0)
+  ok   every MP_ handler survives an empty and a nil body (100 handlers, 200 calls)
+  ok   an unregistered made record is not reported; an ordinary pickup is, by its id
+  ok   an invite ahead of the Joined transition strips the queued record position (s154)
+player.lua -- every MP_ handler in the player script survives an empty and a nil body
+  ok   player.lua loads whole under the stubs
+  ok   every MP_ handler in player.lua survives an empty and a nil body (18 handlers)
+net.lua -- a crash after a login join climbs the ladder again
+[mp] server disconnect: AUTH_FAILED (account already exists)
+  ok   the first join is register, then login
+[mp] connection lost — reconnecting in 0.8s (attempt 1)
+[mp] server disconnect: AUTH_FAILED (resume token expired or unknown)
+[mp] server disconnect: AUTH_FAILED (account already exists)
+  ok   after a crash the ladder reaches login instead of Failed
+
+497 passed, 0 failed
+exit=0
+=== WITHOUT FIX (r1..r17 + r18 run.lua)
+net.lua — SessionDisconnect handling
+[mp] server disconnect: SHUTDOWN (test)
+  ok   SHUTDOWN does not become the terminal Failed state
+[mp] server disconnect: SERVER_FULL (test)
+  ok   SERVER_FULL is transient too
+[mp] server disconnect: BANNED (test)
+  ok   BANNED stays terminal
+[mp] server disconnect: KICKED (test)
+  ok   KICKED stays terminal
+[mp] server disconnect: SUPERSEDED (test)
+  ok   SUPERSEDED stays terminal
+[mp] server disconnect: RATE (test)
+  ok   RATE stays terminal
+[mp] server disconnect: BAD_ENGINE (test)
+  ok   BAD_ENGINE stays terminal
+[mp] server disconnect: BAD_CONTENT (test)
+  ok   BAD_CONTENT stays terminal
+[mp] server disconnect: SHUTDOWN (server shutting down)
+  ok   SHUTDOWN publishes serverRestarting for the page
+identity.lua — PlayerItemAcquired
+  ok   nothing persistent is broadcast before the baseline is known
+  ok   the first scan reports nothing
+  ok   a gain is reported
+  ok   a gain goes through global for its net id (mpItemAcquiredOut), never raw
+  ok   a loss is not reported as an acquisition
+  ok   reset re-seeds rather than reporting the restored inventory
+identity.lua — a gain is credited before the declaration that carries it
+  ok   the credit precedes the declaration (else the logout fold doubles it)
+identity.lua — client heal claimed over the peer report
+  ok   the heal is claimed as peer + local gain, not the reset bar
+  ok   a peer-authored drop is neither re-claimed nor echoed
+  ok   the cost of a cast survives the refill from the avatar
+  ok   a raised maximum is claimed even with no change in current
+social.lua -- SocialResult is rendered in English
+  ok   the message tables were found
+  ok   socialText loaded
+  ok   "no_such_player" reads as a sentence
+  ok   "blocked" reads as a sentence
+  ok   "already_friends" reads as a sentence
+  ok   "self" reads as a sentence
+  ok   "too_many_requests" reads as a sentence
+  ok   "no_request" reads as a sentence
+  ok   "not_online" reads as a sentence
+  ok   "private" reads as a sentence
+  ok   a sent invite says so
+  ok   a crossed friend request says you are friends
+  ok   an ordinary friend request says it was sent
+  ok   an unknown code still returns text
+  ok   MP_SocialResult calls socialText
+combat.lua -- an attack is always forwarded when it can be addressed
+  ok   a real swing is NOT forwarded (the peer avatar computes melee)
+  ok   a test-hook swing (mpTest) is forwarded
+  ok   it carries the cell so the server can route it
+  ok   and omits the epoch rather than inventing one
+  ok   a known epoch is quoted
+  ok   a test-hook MISS is forwarded as well as a hit
+  ok   and is not silently promoted to a hit
+[mp] combat: victim has no cell, hit not forwarded
+  ok   a victim with no cell is still not sent
+combat.lua -- a spell hit names which effects, and the owner applies only those
+  ok   the indexes that hit travel with the cast (250)
+  ok   and so does the reflect word (254)
+  ok   a mixed cast is not beneficial (249)
+  ok   PvP off keeps the heal and drops the burn, not the whole cast (249)
+  ok   an all-harmful cast at a player is vetoed under PvP off
+  ok   the owner applies only the indexes that hit (250)
+  ok   and does not reflect a reflection (254)
+  ok   no indexes = the whole record, as before
+  ok   an index past the record applies nothing
+  ok   a scroll resolves through its enchantment, by the item id (251)
+  ok   the spell id crosses as a net id both ways (251)
+  ok   puppet.lua words the cast beneficial only when EVERY hit is (249)
+  ok   puppet.lua never forwards the actor's own ability/disease/blight/curse as a hit
+global.lua -- restore/damage H/M effects are not mirrored (the bars carry them)
+  ok   global.lua BAR_CARRIED_EFFECT drops restorehealth, restoremagicka and damagemagicka only
+  ok   applied on both mirrors: MP_AvatarActiveSpells (peer) and MP_SelfActiveSpells (owner)
+  ok   the helper loads on its own
+  ok   the restore index is dropped, light and fatigue stay
+  ok   an unknown record is left alone
+client -- server events that must not be dropped on the floor
+  ok   global.lua forwards MP_WorldTimeRefused
+  ok   global.lua MP_AvatarActiveSpells stacks only distinct records per owner
+  ok   global.lua mpMintSpell prices the spell at the server cost floor
+  ok   global.lua drains mp.takeScriptNotes inside the Joined tick
+  ok   objects.onScriptNote sends ObjectEnabled under the OBJECT's cell key
+  ok   objects.onScriptNote asks the server for a scripted actor spawn
+  ok   WorldCellState applies persisted re-enables
+  ok   actors.notePosition rides ActorAI and the holder teleports on it
+  ok   mpQuestSpawn places a forwarded PlaceAtPC at its spot
+  ok   global.lua parses
+  ok   player.lua parses
+  ok   identity.lua parses
+  ok   world.lua parses
+  ok   actors.lua parses
+  ok   avatar.lua parses
+  ok   companion.lua parses
+  ok   puppet.lua parses
+  ok   combat.lua parses
+  ok   social.lua parses
+  ok   objects.lua parses
+  ok   net.lua parses
+  ok   admin.lua parses
+  ok   menu.lua parses
+  ok   quests.lua parses
+  ok   interp.lua parses
+  ok   global.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   player.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   identity.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   world.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   actors.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   avatar.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   companion.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   puppet.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   combat.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   social.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   objects.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   net.lua uses no Lua 5.1-only math/base functions (the engine is 5.4)
+  ok   every scripts/mp/*.lua is in the CMake install list (the native peer gets nothing else)
+  ok   net.lua hands an admission refusal to the go-home hook before the fresh-ticket ask
+  ok   global.lua wires net.onRefusedAway to the WorldClosed notice + switch home
+  ok   player.lua reconciles the self pose in a per-frame tick, not in the MP_SelfState handler
+  ok   global.lua re-sends MP_ChargenDone to the player script on every connection
+  ok   identity.reset clears the baselineReady mirror
+  ok   avatar.lua applies MP_Equip on the avatar body (setEquipment is Self-gated)
+  ok   social.lua tells the player why time did not pass
+  ok   global.lua hands a refused rest to world.lua before the notice
+  ok   world.lua gives back the hours a refused rest adopted
+  ok   global.lua MP_PlayerCrime expels from the victim faction
+  ok   global.lua sets werewolf form / vampire spell in place on an appearance change
+  ok   identity.lua carries the mark both ways, nil-guarded for older engines
+  ok   global.lua forwards MP_SocialNotice
+  ok   social.lua tells the player about it
+  ok   social.lua MP_FriendList notices a newly present friend request and invite
+  ok   global.lua does not blame every AUTH_FAILED on the password
+  ok   player.lua puts the use control in pose bit 3, not inAir
+  ok   puppet.lua reads pose bit 3 as the swing, on both edges, latched per received pose
+  ok   global.lua VISIBLE_EFFECT carries levitate, slowfall and waterwalking
+  ok   player.lua raises mpCombatCast on the use edge in the spell stance
+  ok   combat.lua sends CombatCast with spellId, casterId and kind
+  ok   player.lua reconciles against where it stood at lastInputSeq, not where it is now (197)
+  ok   player.lua shifts each ring entry by the corrections sent since it was taken
+  ok   the avatar reports the seq it APPLIED, and the pose stream is stamped with that
+  ok   identity.lua always sends attribute damage, 0 included, so a cure reaches the avatar
+  ok   the sim peer's own dummy player is not a collision body for the avatars
+  ok   avatar.lua latches the jump and use edges until onUpdate consumes them (198)
+  ok   avatar.lua holds the last input through a retransmit stall (205)
+  ok   objects.lua sends the intended door state at activation and keeps it over a stale echo (199)
+  ok   global.lua does not follow-teleport across an exterior border the body walked (200)
+  ok   identity.lua diffs active effects at 0.1 s (201)
+  ok   puppet.lua near-tier snap 256 and a held run flag (211)
+client -- every server->client event has an MP_ handler
+  ok   81 server->client events all have a handler
+objects.lua -- every container refusal the server can send is worded
+  ok   MP_ContainerOpResult was found
+  ok   containerOp() refusal reasons were discovered
+  ok   containerOp "nostate" is worded for the player
+  ok   containerOp "contained" is worded for the player
+  ok   containerOp "gone" is worded for the player
+  ok   containerOp "full" is worded for the player
+  ok   MP_ObjectTakeResult was found
+  ok   take() refusal reasons were discovered
+  ok   take "unreachable" is worded for the player
+  ok   take "gone" is worded for the player
+  ok   take "cell_full" is worded for the player
+  ok   MP_ObjectSpawnRefused was found
+  ok   spawn() refusal reasons were discovered
+  ok   spawn "unowned" is worded for the player
+  ok   spawn "contained" is worded for the player
+objects.lua / player.lua -- a service window syncs for as long as it is open
+  ok   a live watch has no expiry (until_ = math.huge), a chest keeps CONTAINER_WATCH_SECONDS
+  ok   onBarterClose still ends every live watch
+  ok   ContainerOpen contents / put-take ids go out through worldmp.toNet
+  ok   sendContainerOp maps the item id toNet before it is pended and sent
+  ok   setContainerContents creates from worldmp.toLocal(entry.id)
+  ok   applyContainerDelta maps the wire id toLocal
+  ok   player.lua releases the dialogue lock only when leaving every talking mode
+  ok   player.lua no longer releases on the bare Dialogue edge
+world.lua -- the weather handback survives the holder echo guard
+  ok   the handler was found
+  ok   a holder still ignores its own echo
+  ok   but honours the restore handback
+world.lua -- dayspassed counts from the vanilla start, on every engine alike
+  ok   world.lua loads under the stubs
+  ok   the vanilla start is day 1
+  ok   the hour does not move the day
+  ok   the next morning is day 2
+  ok   a month boundary counts the real month length (Last Seed has 31 days)
+  ok   a year later is 366 (365-day calendar, no leap years)
+  ok   before the start it clamps to 1, never 0 or negative
+identity.lua -- the rejoin spell restore replaces rather than merges
+[mp] rejoin restore applied
+  ok   the saved spell is restored
+  ok   the power from the race this slot no longer is does not survive
+[mp] rejoin restore applied
+  ok   an empty saved set leaves the chargen grant alone
+identity.lua -- the restore purges stale ability effects before re-adding
+[mp] rejoin restore applied
+  ok   the active effects are purged during the restore
+  ok   the purge happens BEFORE the spells are re-added
+identity.lua -- a class the restore could not apply is reported, not hidden
+[mp] CLASS MISMATCH AFTER RESTORE: doc=acrobat engine=nightblade
+[mp] rejoin restore applied
+  ok   a class the engine did not end up with is reported
+[mp] rejoin restore applied
+  ok   an agreeing class is silent
+quests.lua -- no global starves behind churning ones
+  ok   the seeding pass broadcasts nothing
+  ok   the quest global is not starved by 40 churning ones
+  ok   every changed global eventually sends
+  ok   one tick still respects the send budget
+quests.lua -- forced greetings take the lock, a dead partner closes the window, locals flush on release
+  ok   player.lua reports a Dialogue window that opened without an activation (mpDialogueForced)
+  ok   global.lua routes mpDialogueForced to quests.onDialogueForced
+  ok   quests.onDialogueForced requests the lock as forced, unless already held or pending
+  ok   a forced grant sets lockHeld/lockDisposition like the activation path and does not re-activate
+  ok   a forced denial closes the window the other holder owns
+  ok   actors.lua hands every MP_ActorDeath to the quest layer
+  ok   #110 an essential NPC death names sKilledEssential on every client, inside pcall
+  ok   quests.onActorDeath closes the window on the lock holder and releases the lock
+  ok   player.lua removes the Dialogue mode on MP_CloseDialogue
+  ok   the lock grant arms an open-ended member-var watch and the release flushes it
+  ok   the re-run activation does not shorten the conversation watch back to 6 s
+quests.lua -- running global scripts are diffed, chargen never travels, the sync starts what is missing
+  ok   the first poll reports the full running list as started
+  ok   chargen and startup scripts never travel
+  ok   a newly started script is sent as started, nothing else
+  ok   a script that ended is sent as stopped
+  ok   no change, no event
+[mp] started 1 campaign global scripts
+  ok   the join sync starts the campaign scripts and skips chargen ones
+scripts/mp/*.lua -- no local table is assigned into before it is declared
+  ok   the scan catches an assignment above the declaration
+  ok   the mp scripts were found
+  ok   actors.lua assigns into no table before declaring it
+  ok   admin.lua assigns into no table before declaring it
+  ok   avatar.lua assigns into no table before declaring it
+  ok   combat.lua assigns into no table before declaring it
+  ok   companion.lua assigns into no table before declaring it
+  ok   global.lua assigns into no table before declaring it
+  ok   identity.lua assigns into no table before declaring it
+  ok   interp.lua assigns into no table before declaring it
+  ok   json.lua assigns into no table before declaring it
+  ok   menu.lua assigns into no table before declaring it
+  ok   net.lua assigns into no table before declaring it
+  ok   objects.lua assigns into no table before declaring it
+  ok   player.lua assigns into no table before declaring it
+  ok   puppet.lua assigns into no table before declaring it
+  ok   quests.lua assigns into no table before declaring it
+  ok   reconcile.lua assigns into no table before declaring it
+  ok   social.lua assigns into no table before declaring it
+  ok   testkill.lua assigns into no table before declaring it
+  ok   world.lua assigns into no table before declaring it
+  ok   the scan catches a call above the local function declaration
+  ok   actors.lua calls no local function above its declaration
+  ok   admin.lua calls no local function above its declaration
+  ok   avatar.lua calls no local function above its declaration
+  ok   combat.lua calls no local function above its declaration
+  ok   companion.lua calls no local function above its declaration
+  ok   global.lua calls no local function above its declaration
+  ok   identity.lua calls no local function above its declaration
+  ok   interp.lua calls no local function above its declaration
+  ok   json.lua calls no local function above its declaration
+  ok   menu.lua calls no local function above its declaration
+  ok   net.lua calls no local function above its declaration
+  ok   objects.lua calls no local function above its declaration
+  ok   player.lua calls no local function above its declaration
+  ok   puppet.lua calls no local function above its declaration
+  ok   quests.lua calls no local function above its declaration
+  ok   reconcile.lua calls no local function above its declaration
+  ok   social.lua calls no local function above its declaration
+  ok   testkill.lua calls no local function above its declaration
+  ok   world.lua calls no local function above its declaration
+identity.lua -- item states carry n per stack, own for tools
+  ok   an inventory snapshot went out (mpInventoryOut, via global for the record registry)
+  ok   a lockpick entry is tagged own with its condition and n
+  ok   ...and names its kind (t) so the server can check it (340)
+  ok   a filled gem and a stateless stack of two are two entries, in order
+  ok   a stateless stack is a bare {n} (positions stay stable)
+global.lua -- applyItemStates splits a stack to fit an entry; the peer report round-trips
+  ok   applyItemStates and snapAvatarItemStates were found
+  ok   applyItemStates loads
+  ok   one entry wrote a state
+  ok   the stack of 3 became a souled 1 and an empty 2
+  ok   two same-record stacks keep their own conditions
+  ok   an entry without n applies to the whole stack, as before
+  ok   snapAvatarItemStates loads
+  ok   the peer reports the 3-stack as two entries with exactly one filled gem
+  ok   MP_SelfItemStates applies in global.lua and no longer forwards to player.lua
+  ok   avatar apply, relog restore and MP_SelfItemStates all use applyItemStates
+  ok   player.lua no longer carries its own item-state applier
+  ok   player.lua answers itemstates:<id> with every stack's state
+  ok   every item-state reader calls types.Item.itemData(obj), never obj.itemData
+mp.omwscripts -- every script path is listed once
+  ok   no script path appears on two lines (the first is silently dropped)
+  ok   every mp.omwscripts path is listed in files/data/CMakeLists.txt (the peer image)
+companion.lua -- a stalled Follow is re-issued when the leader comes back in range (453)
+  ok   companion.lua re-issues a Follow only while the actor has NOT moved and the leader is in range
+  ok   the re-issue is bounded: MP only, at most one every few seconds, under the engine range
+  ok   it is driven from the 1 Hz poll, not from a bare onUpdate
+  ok   Escort is left alone (it has no activation latch, and its destination lives upstream)
+actors.lua / global.lua -- scale: one actor scan per tick, chunked batches, a detach without the script is a no-op
+  ok   actors.tick buckets activeActors by cell ONCE and hands each held cell its list
+  ok   actorPose pcalls module-level functions, not per-actor closures
+  ok   broadcastCell sends a big cell as several batches of at most 255
+  ok   mpPuppetDetached is a no-op on a body without puppet.lua
+information layer -- journal dates, map memory, menus, levels (backlog 256-263)
+  ok   JournalSync replays journalLog with ipairs before the quest map
+  ok   applyJournalEntry stamps through mp.addJournalEntryAt when present, else addJournalEntry
+  ok   a pre-player entry keeps its stamp and order through the retry
+  ok   MP_WorldMapExplored skips unnamed cells
+  ok   the rejoin restore replays record.explored through MP_WorldMapExplored
+  ok   inputTick masks the use bit while a UI mode is open
+  ok   player.lua answers levelup:<a,b,c> with mp.applyLevelup
+actors.lua / objects.lua -- NPC fidelity: run bit from motion, the dead skip the grant, pitch streams, peer polls doors
+  ok   actorPose sets the run bit from animVel, never from a nonexistent isRunning
+  ok   the authority grant loop skips dead snapshot entries
+  ok   actorPose streams the actor pitch
+  ok   the peer polls getDoorState over held cells and the DoorState apply mutes the poll
+melee depth -- armour/block progression rides the avatar, the stagger keeps the tap, the bar drop plays the blow (307, 309, 310)
+  ok   omw/combat/local.lua routes an armour use to I.MPAvatar when SkillProgression is absent
+  ok   the fsroot mirror of combat/local.lua is the same file
+  ok   avatar.lua provides the MPAvatar interface and takes _onSkillUse
+  ok   avatar.lua forwards the armour/block family only
+  ok   global.lua sends the use to the server as AvatarSkillUse with the owner id
+  ok   every MP_ handler in player.lua is forwarded by some script (server events arrive at global only)
+  ok   player.lua counts MP_SelfSkillUse through I.SkillProgression
+  ok   avatar.lua keeps useLatch armed while the body is knocked down or in hit recovery
+  ok   puppet.lua no longer plays the local roll (no miss sound at all)
+  ok   puppet.lua plays Health Damage on an hp drop and a hand-to-hand hit on a fatigue-only drop after a swing
+  ok   global.lua peer rules read the last SimReady (325)
+  ok   puppet.lua stays attached in degraded mode with the hit intercept armed (328)
+  ok   global.lua drops avatarDocs and remoteIdentity on MP_PlayerLeaveWorld (330)
+global.lua -- a stored cell that no longer exists falls back to the Welcome respawn (backlog 317)
+  ok   restoreTick checks the stored cell exists before the teleport, and falls back to flags.respawn
+  ok   cellExists pcalls both the exterior and the named lookup
+  ok   the player is told where they were moved
+client -- review fixes 335/336/340/341/342/343/346 (source checks)
+  ok   quests.lua keeps a per-quest set of applied stages and drops their echoes (335)
+  ok   identity.lua caps forgetDeclared at 3 per kind until the fingerprint changes (336)
+  ok   world.lua waits on a dependency only when it is in flight, and refuses an unsharable kind once (336)
+  ok   identity.lua sends the own-wear kind as t (340)
+  ok   avatar.lua reads isOnGround on self and reports the landing (341)
+  ok   global.lua no longer calls isOnGround on a GObject and prints from mpAvatarLanded (341)
+  ok   puppet.lua marks a remote-player puppet with mp.setPlayerPuppet (342)
+  ok   player.lua skips mpDialogueForced for the Dialogue mode MP_PlayerArrest opened (343)
+  ok   global.lua has no `local net` shadowing the net module (346)
+leftovers -- holder loss detaches everything, the holder's corpse is the loot, followers ride the retry, revive/effects/AI settings travel, the bark and the block (227, 229, 293-297, 312)
+  ok   a holder-lost Info resets every puppet and the whole mirror
+  ok   the death edge hands the corpse to objects.onCorpse, which arms a ContainerOpen
+  ok   tryTeleport takes onLanded and the retry tick fires it
+  ok   the holder sends ActorRevive on the revive edge and clients apply it with mp.resurrect(obj)
+  ok   the holder diffs visible actives into ActorEffects and puppets add/remove them
+  ok   AI settings ride ActorDisposition as `ai` and are applied to the base
+  ok   MP_ActorAI combat rolls iVoiceAttackOdds into mp.say(obj, attack)
+  ok   isChargenCell exact-matches the two vanilla chargen cells in global.lua and objects.lua
+  ok   the stats report drains mp.takeBlock and the owner plays it
+  ok   chargenTick waits on pendingRestore, which is declared before it (404)
+  ok   UNREACHABLE_ATTEMPTS defers to the switchDeadline grace, 45 s on the first dial (407)
+UX rows -- social OK lines reach the feed, the late host hears who went home, a guest's Rest is refused before the bed lies (29, 32, 262)
+  ok   MP_SocialResult notices OK results too, machinery excepted
+  ok   server.ts records the guests the grace sent home and WorldMode carries them once to the owner
+  ok   global.lua narrates the sent-home guests to the returning owner
+  ok   WorldMode carries timeSkip and global.lua forwards it to player.lua
+  ok   a guest's Rest under timeSkip=owner is closed with a notice and the level-up offered
+  ok   restRefusedHere: guest+owner refused, owner never, anyone never
+recv watchdog, the dead do not talk, svc:open, threat.lua gone, same-cell snap is not a door, revive in place (31, 33, 34, 76, 138, 231)
+  ok   net.lua stamps lastRecvAt on open and on every frame, and hangs up after 75 s of silence while Joined
+  ok   identity.lua closes the Dialogue window on the death edge
+  ok   player.lua opens any service window through svc:open and keeps barter:open as its alias
+  ok   threat.lua is gone and nothing requires it
+  ok   actors.lua does not require('scripts.mp.threat')
+  ok   combat.lua does not require('scripts.mp.threat')
+  ok   global.lua does not require('scripts.mp.threat')
+  ok   player.lua does not require('scripts.mp.threat')
+  ok   quests.lua does not require('scripts.mp.threat')
+  ok   puppet.lua does not require('scripts.mp.threat')
+  ok   avatar.lua does not require('scripts.mp.threat')
+  ok   MP_PlayerCellChange treats a same-cell snap within SNAP_DIST as walked
+  ok   revivePuppet resurrects the standing body, moves it to the pose, clears the dead latch and pushes the bars
+net.lua — manifest sha256 from the page
+  ok   SessionHello was sent
+  ok   a hashed plugin carries its sha256 regardless of name case
+  ok   an unhashed file carries no sha256 field
+  ok   no page hashes = the old manifest shape
+creature swings, peer-run scripts, topics/talked-to persisted, AI done, avatar factions, crime witnesses (288, 217, 51, 230, 221, 145, 146)
+  ok   the holder sets the use bit from mp.isAttacking/spellcast and creature puppets play attack1..3
+  ok   the peer arms open-ended member watches over held cells, with the cell key on the wire
+  ok   OpSay on the peer becomes ActorSay and puppets core.sound.say the line
+  ok   TopicsLearned is persisted (doc.topics) and JournalSync replays it via applyTopics
+  ok   talked-to NPCs are reported, persisted and re-flagged on relog
+  ok   AiSequence completion is noted on the holder and written onto puppets
+  ok   getFightTerm reads disposition toward the avatar and AvatarState applies factions
+  ok   a client's crime-combat witness is claimed as ActorAI combat+crime and the server admits it
+#413 script notes are metered, not drained in one burst
+  ok   scriptNotesTick queues notes and sends at most NOTE_SENDS_PER_SEC a second
+  ok   recordScriptNote keeps one pending aidone per ref
+#414 armHeldWatches probes script.variables with pairs, never next
+  ok   quests.lua never calls next() on script.variables (userdata)
+#430 the peer body cannot die and never claims a fight for a cell it does not hold
+  ok   player.lua keeps the system peer in god mode from inputTick
+  ok   noteCombat: a non-holder "fights ME" claim never leaves the system peer
+s171 a puppet never echoes the holder's fight or travel back as the player's own claim
+  ok   a relayed fight, the initial travel or the relayed travel is not claimed outside a conversation
+  ok   ...a travel a script started is, with no conversation
+  ok   ...and a taunt or AITravel from our own conversation still is
+  ok   a dialogue hold reaches the NPC as MP_DialogueHold on, then off
+  ok   ...and is not claimed back as travel or combat
+220 a guest does not carry Dagoth Gares' curse home from another campaign
+[mp] corprus: removed a curse from another campaign
+  ok   at home, a curse our own campaign never earned is removed
+  ok   ...one our own campaign did earn (A2_2_6thHouse 50) stays
+s149 the harness kill takes a LIVE fish, never the corpse or one already dying
+  ok   two kills in one frame take two different live fish
+  ok   the corpse is never picked
+  ok   with every live fish already dying, a third kill finds nothing
+s172 the avatar drops standing time from a backlog instead of lagging for good
+  ok   a standing segment is skipped while the queue is beyond SEGS_LAG_S
+  ok   the avatar stream gate sits under the 50 ms peer frame
+s177 a crowd costs no per-actor scan and no per-pose page call
+  ok   isMpPuppetFn is a lookup by body id, not a scan of every puppet
+  ok   puppet.lua mirrors puppetRx at most twice a second
+s172 a late pose is not a stop, and a puppet can catch a running owner
+  ok   a query past the newest pose carries on along the last step (was clamped to it)
+  ok   ...by at most EXTRAP_S of it (a real stop overshoots <= ~22 u at a run, s172 #175)
+  ok   the speed feed-forward keeps reading the run through a late pose
+  ok   velocity points the way the target walks (+y), for the ahead-of-target rule
+  ok   a puppet following a walking target faces within 20 degrees of its travel, wherever the point is (side-to-side jitter, 180s)
+  ok   ...and a target 3 u to the side barely turns it (was 45-90 degrees aiming at the point)
+  ok   puppet.lua steers a walking target by walkHeading
+  ok   puppet steering may exceed top speed to close a gap
+  ok   the engine honours it for puppets only
+Orthros: a teleport seen in two poses a few ms apart is not carried on 18-90x (the copy stood 15,000+ u away)
+  FAIL a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands (was 5,500-13,500 u on)  -- 13500 u off
+  FAIL ...and a jump after an ordinary gap too (was 409 u on)  -- 409 u off
+  ok   an ordinary step is still carried on (a late pose is not a stop)
+players said NPCs are jerky and movement rubber-bandy: the render delay adapts to the stream (it was a fixed 40 ms, below one batch interval)
+  ok   a steady 15 Hz stream settles near one interval (not 40 ms)
+  ok   a jittery stream buys itself more buffer than a steady one
+  ok   a 5 Hz mid-tier stream is interpolated over its own interval
+  ok   a long silence (a stop, a cell load) is not read as jitter
+  ok   rendered speed stays within 1.4x of the real walking speed with the adaptive delay
+  ok   ...where the old fixed 40 ms delay on arrival stamps lurched well past it (the complaint)
+  ok   a self divergence under the dead zone is not corrected (players: slightly rubber-bandy)
+  ok   the delay is bounded and slewed, never a jump
+s120 a puppet that stays far from its owner is snapped to it (#179: 260 u off, under the 256 u snap)
+[mp] puppet far-gap snap: 200 u off for 2.0 s (o:eldafire)
+  ok   a blocked puppet 200 u from its owner is snapped after ~2 s, not before
+  ok   a friend puppet 200 u off for 4 s is not far-snapped
+  ok   a puppet that closes a 200 u gap on its own is not snapped for it
+s177 a near-tier puppet reads interp:speed once a frame, not twice (#175: 20 puppets missed the frame budget)
+  ok   steerMovement takes the caller's tgtV instead of reading interp:speed itself
+  ok   onUpdate reads tgtV once and both call sites reuse it
+s22 a body the engine holds dead above zero hp is said out loud (#178)
+  ok   the peer says an avatar whose isDead disagrees with its bar
+  ok   the owner says it is dead-latched while the peer reports hp
+s120 the avatar says where each swing ends (#178: NPC hp froze after ~10 landed blows)
+  ok   avatar.lua logs the release and a use held past 3 s
+  ok   Npc::hit logs each avatar blow and its fate
+s131 a friend death is counted from the bars, not sampled off the puppet (#179, #181)
+  ok   global.lua counts a puppet death in MP_PlayerStatsDynamic and mirrors puppetDeaths
+s138 the avatar says where each arrow ends (#186)
+  ok   projectileHit logs an avatar arrow with its victim
+s66 the sim peer dummy player never takes a blow meant for a player beside it
+  ok   getHitContact skips the headless peer own player
+s157 the actor probe reports the body the holder drives, not a local twin
+  ok   a puppeted body replaces a local-only twin in the probe
+s172 the sim peer dummy player blocks nobody
+  ok   actors.cpp turns off the headless peer player collision body
+  ok   World::setActorCollisionBody only toggles the body (the actor still walks on the world)
+#431 a fresh holder streams no bars for a cell until the world record has answered
+  ok   broadcastCell gates ActorStatsDynamic on cell.recorded
+  ok   noteCellDeaths marks the cell recorded only after the post-load ResyncRequest
+  ok   MP_WorldCellState hands the record to the holder even with no deaths in it
+s157 #187 a holder retries a recorded death whose key did not resolve on the first answer
+  ok   noteCellDeaths keeps a held cell death keys for a bounded retry
+  ok   the holder tick retries them until they read dead, then says so if they never did
+#432 the peer says what a forwarded spell hit did
+  ok   MP_CombatSpellHit prints resolved victim and hp on the system peer
+#460 the harness rest reports what it healed, so the claim needs no read (s150 in #111/#114/#115/#116)
+  ok   mp.restHours rests inline and returns the hp/mp/ft it healed
+  ok   player.lua banks what the rest healed into the claim
+#461 a client heal reaches the avatar in full: the claim carries the GAIN, not the bar
+  ok   a 50-point restore over 5 s reaches the avatar whole (461: it landed +6..+10)
+  ok   a peer-authored drop stays, and the gain after it lands on the dropped bar
+  ok   the stale-peer snapshot says the gain too (460: the rest's +24 was zeroed unsaid)
+  ok   the mirror names the last hp claim for the scenarios
+  ok   a banked rest is claimed although the local bar never showed it (460, #116: 35+0)
+  ok   the banked gain is not claimed a second time
+#480 a puppet stops following after a far teleport: only the tracked body answers, and it stands in a loaded cell
+  ok   puppet.lua names the asking body on every mpSnapRequest
+  ok   global.lua mpSnapRequest ignores a snap from a body it does not track
+  ok   despawnPuppet retries a remove() refused mid-teleport instead of forgetting the body
+  ok   spawnPuppet skips a pose outside the loaded neighbourhood (a lagging avatar two cells back)
+  ok   the pose cell key floors like ESM::positionToExteriorCellLocation
+avatar bookkeeping: a despawned body leaves the registry and the scene, a rebuilt one gets the effects back
+  ok   a refused remove() disables the body at once (no solid ghost while the retry waits)
+  ok   the remove retry has no deadline, on a once-a-second cadence
+  ok   despawnPuppet takes the body out of the avatar registry
+  ok   the owner re-sends its active effects when its look (the peer rebuild keys) changes
+  ok   a template body and a failed record build are logged
+#481 the overlay hold leaves the engine in Interface when on and off drain in one frame
+  ok   uimode:on puts the engine in Interface
+  ok   off/on/off in one frame leaves no mode on the engine
+  ok   on/off in one frame leaves no mode on the engine
+  ok   (proof) setMode + removeMode in one frame left the engine in Interface -- the #117 trace
+  ok   the hold stacks on an engine window instead of replacing it
+  ok   releasing the hold hands the engine window back
+#482 snapto lands on the ground: a hard-coded z under the terrain no longer drops the body into the sea
+  ok   snapto asks the global snap for onGround (s170 SPOT z=512 is 360 u under the LAND surface)
+  ok   mpSelfSnap hands onGround to the engine teleport (World::adjustPosition force=true)
+  ok   tpz: keeps a deliberate fall (no onGround)
+  ok   the reconciliation snap keeps a levitating pose (no onGround)
+#484 the sim peer ignores PlayerLeaveView: every player is in its view, the avatar stays
+  ok   on the peer LeaveView removes nothing and keeps remoteCell/lastPose (the next MoveBatch could not respawn without them)
+  ok   on a client LeaveView still despawns the puppet and forgets the player
+active effects carry their ROLLED magnitude both ways
+  ok   identity.lua sends the owner roll with each effect (-1 = none)
+  ok   identity.lua holds an instance that is not rolled yet for a tick
+  ok   mpActiveSpellsOut forwards mags
+  ok   the peer reports the avatar roll back to the owner
+  ok   both appliers (avatar and self) pass the roll to activeSpells:add
+  ok   the engine pins a passed roll as min == max, capped at the record max
+  ok   rolledMagnitudes keys by effect index and drops -1
+  ok   rolledMagnitudes of an older sender (no mags) is empty: the engine rolls
+s171 a creature bite held for one peer frame is shown on a client that saw no frame of it
+  ok   a one-frame bite plays the whole attack once
+  ok   ...and never again without a new edge
+  ok   press and release in separate frames: one whole bite, not cut by the release
+  ok   a landed hit (hp drop) plays a hit reaction on the puppet
+  ok   ...but not the killing blow
+s171 a charging creature's puppet keeps up with it and arrives with it
+  ok   while it charges the puppet trails the peer by < 80 u (was 128)
+  ok   the puppet arrives within 0.4 s of the peer's rat (was 1.2 s)
+s120 an NPC puppet keeps walking with its owner while it shows the owner's swings
+  ok   an NPC puppet keeps within 80 u of its owner while the owner swings (was frozen)
+s172 a friend's or an NPC's blow plays keys that exist; a puppet's speed is not ramped twice
+  ok   a friend's swing: wind-up to min attack on the press, the blow to SMALL follow stop on the release
+  ok   character.cpp does not smooth a puppet's speed a second time (the peer already did)
+an avatar moves for exactly as long as its owner simulated, and its poses match the owner's ring
+[mp] avatar motion: speed=250 axis=1.00 run=true backlog=0.00 owed=0.02 seq=28
+[mp] avatar motion: speed=0 axis=0.00 run=true backlog=0.00 owed=0.15 seq=30
+  ok   after the hitch the avatar stands where its owner does (was ~200 u ahead)
+  ok   every pose matches the owner's ring entry for its seq to < 8 u
+[mp] avatar motion: speed=250 axis=1.00 run=true backlog=0.01 owed=0.00 seq=28
+[mp] avatar motion: speed=0 axis=0.00 run=true backlog=0.00 owed=0.15 seq=30
+  ok   with late input bursts the avatar trails a running owner by < 0.35 s of running (0.44 before)
+  ok   ...and stops where the owner stopped
+s172 an NPC's spell cast reaches other screens (reported from the actor, not the global script)
+  ok   companion.lua reads the cast on the actor and reports it on change
+  ok   actors.lua no longer requires openmw.animation in the global script (it threw every time)
+  ok   global.lua routes mpActorCasting to actors.noteCasting
+s175 a put racing a network apply reaches the server (the rebase expects the applied store)
+  ok   setContainerContents and applyContainerDelta record what the store will hold
+  ok   the rebase poll diffs against the expected store once the apply has had its frames
+  ok   objects.tick counts frames
+s172 a copy keeps pace with a walking friend instead of stop-starting behind them
+  ok   the copy never stops while its friend walks (t 2-4 s)
+  ok   ...and trails the friend by little more than the render delay and flight (< 35 u)
+s117 a companion copy settles on a stopped target at 5 fps (200 ms frames)
+  ok   the copy holds still once it reaches a stopped target (moved < 10 u in the last 3 s)
+s175 a weather change reaches the other players as the transition starts
+  ok   MP_WorldWeather applies `next` when the holder is mid-transition, not only `current`
+  ok   the weather holder reads the sky WITH a cell (getCurrent/getNext/getTransition)
+engine API calls the pcalls were hiding
+  ok   every openmw.animation function the local scripts call is bound by the engine
+  ok   no script calls obj:setEnabled (the engine binds obj.enabled, a property)
+  ok   the global-context scripts call no Self-gated setter (found 14 in the bindings)
+  ok   companion.lua writes Fight/Flee/Alarm on itself (mpSetStats ai)
+  ok   companion.lua equips itself from mpSetEquipment
+s124 a dialogue result noticed just after the window closed still sends its claim
+  ok   isTalkingTo honours a grace after release, inside the server's RECENT_LOCK_MS
+reconcile.lua — inventories under the engine's end-of-frame rule
+  ok   reconcile.lua is required only in the global context, and the global onUpdate ends the frame
+  ok   applyAvatarDoc reconciles through reconcile.reconcileInventory and reruns while anything is in flight
+  ok   MP_AvatarState only marks the avatar; avatarDocTick applies once per frame
+  ok   pushEquipmentToPuppet counts what is in flight (reconcile.held), so a spawn grants an equipped item once
+  ok   the rejoin restore applies item states in a later frame (selfStatesTick), not in the grant frame
+  ok   world-given spells wait for a doc applied in an earlier frame
+  ok   frameworld: split lowers the stack at once, a moved piece reads 0, and it lands only at the end of the frame
+  ok   frameworld: moving an object that already says 0 throws, as the engine's removeFn does
+  ok   item states: a soul for one gem fills ONE gem, not the whole stack of three
+  ok   item states: a worn pair in the middle of a stack of four wears two, and the pack still holds four
+  ok   avatar: the same doc twice in one frame grants the shortfall once (not 6 cuirasses)
+  ok   avatar: a rising count seen twice in one frame lands at the latest figure
+  ok   avatar: a drop landing while the grant is in flight is finished on the next frame, not left behind
+  ok   avatar spawn: the equipped cuirass is granted once, not three times
+  ok   avatar: a doc read in the frame an item state was split does not re-grant the split piece
+  ok   restore: item states wait for the grant to land (0 applied in its frame, 1 the next), and the soul survives the relog
+  ok   restore (shed=false): a surplus and an unlisted item stay -- picked up since the last flush
+  ok   container: two canonical states in one frame hold the list once (no doubled loot)
+  ok   world-given spells: none before the doc is applied, none in its frame, then only what the doc lacks
+global.lua -- every MP_ handler in the global context survives an empty and a nil body
+  ok   global.lua loads whole under the stubs (merged modules included)
+MPVECTOR:bool_true:
+MPVECTOR:bool_false:
+MPVECTOR:num_zero:
+MPVECTOR:num_negzero:
+MPVECTOR:num_neghalf:
+MPVECTOR:num_int:
+MPVECTOR:num_bigint:
+MPVECTOR:num_huge:
+MPVECTOR:str_empty:
+MPVECTOR:str_short:
+MPVECTOR:str_31:
+MPVECTOR:str_32:
+MPVECTOR:str_255:
+MPVECTOR:str_unicode:
+MPVECTOR:table_empty:
+MPVECTOR:table_flat:
+MPVECTOR:table_nested:
+MPVECTOR:table_array:
+MPVECTOR:table_mixed:
+MPVECTOR:vec3:
+[mp] pickup veto armed for 12 item types
+  ok   global.lua onInit runs under the stubs (every module initialised)
+[mp] CombatHit on peer: net=nil ref=nil cell=nil resolved=NO hp=100 dead=? obj=-
+[mp] CombatHit on peer: net=nil ref=nil cell=nil resolved=NO hp=100 dead=? obj=-
+[mp] CombatSpellHit on peer: spell=nil net=nil ref=nil cell=nil resolved=NO hp=100
+[mp] CombatSpellHit on peer: spell=nil net=nil ref=nil cell=nil resolved=NO hp=100
+[mp] journal sync applied
+[mp] journal sync applied
+[mp] record refused: nil
+[mp] record refused: nil
+[mp] bad session frame: ./openmw/files/data/scripts/mp/json.lua:212: json.decode: expected string, got table
+[mp] bad session frame: ./openmw/files/data/scripts/mp/json.lua:212: json.decode: expected string, got table
+[mp] session state: HelloSent
+[mp] party level -> 0 (leader #0)
+  ok   every MP_ handler survives an empty and a nil body (100 handlers, 200 calls)
+  ok   an unregistered made record is not reported; an ordinary pickup is, by its id
+  ok   an invite ahead of the Joined transition strips the queued record position (s154)
+player.lua -- every MP_ handler in the player script survives an empty and a nil body
+  ok   player.lua loads whole under the stubs
+  ok   every MP_ handler in player.lua survives an empty and a nil body (18 handlers)
+net.lua -- a crash after a login join climbs the ladder again
+[mp] server disconnect: AUTH_FAILED (account already exists)
+  ok   the first join is register, then login
+[mp] connection lost — reconnecting in 0.8s (attempt 1)
+[mp] server disconnect: AUTH_FAILED (resume token expired or unknown)
+[mp] server disconnect: AUTH_FAILED (account already exists)
+  ok   after a crash the ladder reaches login instead of Failed
+
+495 passed, 2 failed
+exit=1

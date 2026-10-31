@@ -1,0 +1,50 @@
+✔ thin link: a random read fetches its pieces only, keeps them in the store; a second launch reads them locally (101.619871ms)
+✔ thin link: a file read in sequence is fetched a little past each read, never 4 MiB at once; the rest comes ahead in small requests, whole blocks once it is read whole (525.646965ms)
+✔ thin link: a file read whole keeps two whole blocks on their way past its reader (one during a load), its own block by pieces; a block with a piece here by its pieces; a media file never (796.943386ms)
+✔ thin link: whole blocks only for a file read from its start or a long run; never again a block on its way whole; one waiting for its turn at a time, dropped once its reader moved away (1011.910732ms)
+✔ thin link: a read-ahead of pieces waiting for its turn is dropped once its reader moved away, unless a read waits for it (544.006928ms)
+✖ thin link: a stream read from inside an archive keeps its queued read-ahead while another file is read in turn (56.118494ms)
+✔ thin link: the learned prefetch fetches the learned pieces in order from the game's position, nothing else (17.828955ms)
+✔ offline copy: the learned blocks first, then the rest; a second start resumes (stored blocks skipped) (428.733653ms)
+✔ thin link: a parked read of pieces whose background request waits for its turn makes it go at once (no wait behind the game's other reads) (58.037238ms)
+✔ thin link: a synchronous read aborts a background request for the same bytes; the read is exact and the aborted pieces are not kept half (38.01673ms)
+✔ download first on a thin link: one block per request (a 4 MiB request would take 50 s), four on a fast one (862.225685ms)
+✔ a link between thin and fast: a learned block wanted whole goes as the block (the server's unit), not as pieces; a slower one by pieces (245.186708ms)
+✔ a fast link before the game starts (learnedOnly): the learned pieces only, several requests at once, none again of those here; while the game runs, whole blocks one at a time (245.348916ms)
+✔ a block completed by the pieces of one request is stored once, as the block (its pieces not put and dropped: the store appends) (122.938173ms)
+✔ learnedOnly with a full store: an entry the store did not keep is asked once (not again each time the memory evicts it) (213.003176ms)
+✔ between thin and fast: during a run of parked reads (a load) the block fill and the upgrades wait for its end, then go (3856.568152ms)
+✔ between thin and fast: a media stream gets a few seconds of its own rate ahead, not seconds of the link (85.089723ms)
+✔ between thin and fast: a media stream's parked reads are no load (its own read-ahead is not silenced by them); a file's are (108.407604ms)
+✔ between thin and fast: during a load an archive's entry read in a few pieces gets one request ahead of it, a long sequential reader two (51.705511ms)
+ℹ tests 19
+ℹ suites 0
+ℹ pass 18
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9456.876737
+
+✖ failing tests:
+
+test at tests/http-backend-slow.test.js:189:1
+✖ thin link: a stream read from inside an archive keeps its queued read-ahead while another file is read in turn (56.118494ms)
+  AssertionError [ERR_ASSERTION]: still queued
+      at file:///tmp/orthros-scratch/r18-ship/nofix-js/tests/http-backend-slow.test.js:208:24
+      at withLinkOf (file:///tmp/orthros-scratch/r18-ship/nofix-js/tests/http-backend-slow.test.js:39:53)
+      at file:///tmp/orthros-scratch/r18-ship/nofix-js/tests/http-backend-slow.test.js:195:11
+      at withFetch (file:///tmp/orthros-scratch/r18-ship/nofix-js/tests/http-backend-slow.test.js:35:26)
+      at TestContext.<anonymous> (file:///tmp/orthros-scratch/r18-ship/nofix-js/tests/http-backend-slow.test.js:189:126)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
