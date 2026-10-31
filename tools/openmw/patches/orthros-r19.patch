@@ -1,5 +1,5 @@
 diff --git a/openmw/apps/openmw/engine.cpp b/openmw/apps/openmw/engine.cpp
-index 79df243..a0b5483 100644
+index 79df243..fb1343e 100644
 --- a/openmw/apps/openmw/engine.cpp
 +++ b/openmw/apps/openmw/engine.cpp
 @@ -4,6 +4,8 @@
@@ -11,7 +11,7 @@ index 79df243..a0b5483 100644
  #include <osg/NodeVisitor>
  #include <osg/DisplaySettings>
  #include <osg/Geometry>
-@@ -1233,7 +1235,126 @@ namespace
+@@ -1233,7 +1235,133 @@ namespace
      void (*g_emTick)(void*) = nullptr;
      void* g_emArg = nullptr;
  }
@@ -72,7 +72,14 @@ index 79df243..a0b5483 100644
 +}
 +extern "C" void __wrap_emscripten_sleep(unsigned int ms)
 +{
-+    if (emscripten_is_main_runtime_thread() && !orthros_jspi_may())
++    // (a worker thread: its entry point is plain — orthros-jspi.js $invokeEntryPoint —, never a JSPI stack: a sleep on
++    // its own futex, as a build without JSPI)
++    if (!emscripten_is_main_runtime_thread())
++    {
++        emscripten_thread_sleep(ms);
++        return;
++    }
++    if (!orthros_jspi_may())
 +    {
 +        const double end = emscripten_get_now() + ms;
 +        while (emscripten_get_now() < end)
@@ -138,7 +145,7 @@ index 79df243..a0b5483 100644
  {
      // Re-entrancy guard: a long frame can spin the browser event loop (e.g. via a proxied
      // main-thread call), which dispatches a queued MessageChannel message and would call this
-@@ -1250,8 +1371,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()
+@@ -1250,8 +1378,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()
          // Catch here (the engine's cooperative video branch runs outside Engine::frame's own
          // try/catch), log the cause, and let the next frame carry on.
          inTick = true;
@@ -149,7 +156,7 @@ index 79df243..a0b5483 100644
              g_emTick(g_emArg);
          }
          catch (const std::exception& e)
-@@ -1262,10 +1385,23 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()
+@@ -1262,10 +1392,23 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_pump_frame()
          {
              printf("omw_pump_frame: frame threw a non-C++ (likely JS) exception\n");
          }
@@ -173,7 +180,7 @@ index 79df243..a0b5483 100644
  // Flush user settings to the persistent config (called from index.html's pagehide/hidden
  // lifecycle handlers). Without this, changing settings and refreshing the page loses them:
  // the Options window only saves on CLOSE, and even then the async IDBFS sync needs a beat.
-@@ -1371,6 +1507,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int orthros_content_light()
+@@ -1371,6 +1514,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE int orthros_content_light()
      return 1;
  }
  
@@ -188,7 +195,7 @@ index 79df243..a0b5483 100644
  // Debug: point the camera (yaw/pitch in degrees) so we can verify object rendering without mouse-look.
  extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_look(float yawDeg, float pitchDeg)
  {
-@@ -1383,13 +1527,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_look(float yawDeg, float pitchDeg
+@@ -1383,13 +1534,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_look(float yawDeg, float pitchDeg
      }
  }
  
@@ -208,7 +215,7 @@ index 79df243..a0b5483 100644
  }
  
  // Debug: start dialogue with the nearest NPC (same as pointing at it and pressing Activate).
-@@ -1434,7 +1579,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_sethour(float hour)
+@@ -1434,7 +1586,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_sethour(float hour)
  
  // Debug: teleport the player to an exterior cell (like the console "COE x y"). Triggers a full
  // exterior worldspace load — used to repro/validate the navmesh cell-load path from JS.
@@ -226,7 +233,7 @@ index 79df243..a0b5483 100644
  {
      MWBase::World* world = MWBase::Environment::get().getWorld();
      MWWorld::Ptr player = world->getPlayerPtr();
-@@ -1452,6 +1607,48 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_coe(int x, int y)
+@@ -1452,6 +1614,48 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_debug_coe(int x, int y)
      world->adjustPosition(player, false);
  }
  
@@ -622,10 +629,10 @@ index a7806d8..f36ac00 100755
    -sALLOW_MEMORY_GROWTH=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
 diff --git a/wasm-build/orthros-jspi.js b/wasm-build/orthros-jspi.js
 new file mode 100644
-index 0000000..2b828a6
+index 0000000..6b755dd
 --- /dev/null
 +++ b/wasm-build/orthros-jspi.js
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,462 @@
 +// Orthros (orthros-r19.patch, JSPI): the engine's waits for the game's files suspend it (WebAssembly JSPI, -sJSPI,
 +// link-openmw.sh) while the page fetches the bytes, instead of the page's thread spinning on shared memory (Orthros'
 +// src/vfs/data-client.js fetchSync, wantWait): the page answers input, draws its own indicator and presents what the
@@ -736,6 +743,23 @@ index 0000000..2b828a6
 +    Object.defineProperty(Module, '_omw_pump_frame', { configurable: true, enumerable: true, get: () => pump, set: (f) => { if (!promising) { promising = f; pump = choose; } else pump = f; } });
 +#endif
 +  },
++  // (a pthread's entry point: plain, on its worker's own stack — Emscripten's under JSPI runs every thread on a JSPI
++  // stack (WebAssembly.promising) so that it may suspend; none of the engine's do — its suspending imports are the page's
++  // thread's alone (engine.cpp: emscripten_is_main_runtime_thread), a worker's sleep its futex's (__wrap_emscripten_sleep)
++  // —, and a thread's whole life on a JSPI stack paid for it in every call to an import — Lua's update, the physics, the
++  // work queue: the frame waits for them in play)
++#if PTHREADS && ASYNCIFY == 2
++  $invokeEntryPoint__deps: ['_emscripten_thread_exit', '$keepRuntimeAlive', '$runtimeKeepaliveCounter'],
++  $invokeEntryPoint: (ptr, arg) => {
++    runtimeKeepaliveCounter = 0;
++#if isSymbolNeeded('$noExitRuntime')
++    noExitRuntime = 0;
++#endif
++    var result = {{{ makeDynCall('pp', 'ptr') }}}(arg);
++    if (keepRuntimeAlive()) { EXITSTATUS = result; return; }
++    __emscripten_thread_exit(result);
++  },
++#endif
 +  // (a measuring harness's trace — globalThis.__orthrosReadTrace, Orthros' data-client.js GameData.trace —: the engine's
 +  // frames, loads and suspensions there too, { t, k: 'jspi', ev, x }; nothing recorded without it)
 +  $orthrosNote: (ev, x) => {
@@ -941,11 +965,15 @@ index 0000000..2b828a6
 +  fd_read__proxy: 'sync',
 +  fd_read__deps: ['$orthrosReadv', '$SYSCALLS', '$orthrosBlockedNote'],
 +  fd_read: (fd, iov, iovcnt, pnum) => {
-+    var t0 = performance.now(), r;
++    // (timed only when proxied from a worker thread: a read of the page's own thread costs what libwasi's does)
++#if PTHREADS
++    var t0 = PThread.currentProxiedOperationCallerThread ? performance.now() : -1;
++#endif
++    var r;
 +    try { r = orthrosReadv(SYSCALLS.getStreamFromFD(fd), iov, iovcnt, undefined, pnum); }
 +    catch (e) { if (e.name !== 'ErrnoError') throw e; r = e.errno; }
 +#if PTHREADS
-+    if (PThread.currentProxiedOperationCallerThread) { var ms = performance.now() - t0; if (ms >= 1) orthrosBlockedNote(ms, null, 'proxied'); }
++    if (t0 >= 0) { var ms = performance.now() - t0; if (ms >= 1) orthrosBlockedNote(ms, null, 'proxied'); }
 +#endif
 +    return r;
 +  },

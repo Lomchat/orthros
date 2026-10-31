@@ -371,6 +371,13 @@ test('r19 patch: the frame and the boot suspend on a read the page does not answ
   // export even when it returns a number, measured)
   assert.ok(!lib.includes('fd_read__async') && !lib.includes('fd_sync__async: true,\n  fd_sync:') && !lib.includes('{ then: (f) => f(r) }'));
   assert.ok(!lib.includes('Promise.resolve().then(pread)'), 'never a pending promise for a proxied read');
+  // (a pthread's entry point plain — Emscripten's under JSPI runs each thread on a JSPI stack: never suspending there, it
+  // only cost the thread's import calls and hid its samples from the CPU profiler —; a worker's sleep on its own futex)
+  assert.ok(lib.includes('$invokeEntryPoint: (ptr, arg) => {') && lib.includes("var result = {{{ makeDynCall('pp', 'ptr') }}}(arg);"));
+  assert.ok(!lib.includes("makeDynCall('pp', 'ptr', ASYNCIFY == 2)"));
+  assert.ok(patch.includes('+    if (!emscripten_is_main_runtime_thread())\n+    {\n+        emscripten_thread_sleep(ms);\n+        return;\n+    }'));
+  // (the C library's read timed only when proxied from a worker thread)
+  assert.ok(lib.includes('var t0 = PThread.currentProxiedOperationCallerThread ? performance.now() : -1;'));
   for (const k of ['__wrap___wasi_fd_read', '__wrap___wasi_fd_sync', '__wrap_emscripten_sleep', 'if (emscripten_is_main_runtime_thread() && orthros_jspi_may())\n+        return orthros_fd_read_async(fd, iovs, n, nread);',
     '-Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_sync -Wl,--wrap=emscripten_sleep'])
     assert.ok(patch.includes(k), k);
