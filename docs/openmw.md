@@ -2388,6 +2388,11 @@ under the name r18, the `interp.lua` fix in, now say r19; the dev builds and the
   page's thread serves them inside `Worker::finishUpdate`'s futex wait for that very thread, where no promise could
   settle (a pending one there is a deadlock). Their bytes missing, they wait on the page's thread as before r19
   (`Module.orthrosBlocked.proxied` / `proxiedMs` / `proxiedMax`: the reads that took 1 ms or more).
+- **Worker threads on their own stacks** (since `r19dev-a`, 2026-10-31): Emscripten under `-sJSPI` starts every pthread
+  through `WebAssembly.promising`; `orthros-jspi.js` replaces its `$invokeEntryPoint` with the plain one — no worker
+  thread may suspend (the suspending imports are the page's thread's), a worker's `emscripten_sleep` sleeps on its futex
+  (`emscripten_thread_sleep`) — so a worker's import calls cost what they did before r19 (15 ns against 5 on a JSPI
+  stack, measured in Chromium 153) and its samples are attributed again by the CPU profiler (on a JSPI stack: `(program)`).
 - **Nothing else enters the engine's state during a suspension**: the page's calls (`Module._omw_*`, `Module._orthros_*`
   but the marks, `Module.ccall` whole — its strings live on the stack for the call alone —, `cwrap`'s functions) and
   the engine's own WebSocket events (multiplayer: MWMP's "callbacks never interleave with a frame") are put off, in
@@ -3213,6 +3218,117 @@ Two consequences for a real deployment:
      cause is still open.
    - Met: the pictures are unchanged, the two-client check passed 4 of 5 on r19 (r17 4 of 5, its failure the desync
      that r19 fixes), `lateOld` is 0, check.mjs passed in EN and FR, overlay-check passed and `make test` is green.
+
+##### Closing the second validation's gaps: `r19dev-a` (2026-10-31)
+
+What the second validation left open, measured again on this tree (`data-r15` from `80d1ffd`) and attributed. The live
+r18 release, `r18dev-d` (r19 as validated: r1..r18 + the `orthros-r19.patch` of that validation; "r19d" below) and
+`r19dev-a` (engine `515236e0e051`: the kept tree's state rebuilt to r1..r18 + `orthros-r19.patch` + `r19x-a.patch`, now
+folded into `orthros-r19.patch`; "r19a"), all on this tree's page code. One browser at a time through
+`tools/with-browser-slot.sh`, every run started with at least 44 GB available (`logs/runs-started.txt`, `logs/memory.log`
+every 30 s); another session's browser ran beside some of them. Results: `tools/openmw/results/r19-2026-10-31/` (place-load
+rows, each run's console, proxy log and read trace in `runs/`, `perf.json` of every in-play run, chosen CPU profiles in
+`profiles/`, the micro-benchmark in `bench/`, the driver scripts in `scripts/`).
+
+**(d) The forced read joins the fetch already under way — fixed (shared page code).** A preload's background ask
+(`orthrosRangeReady`) and, one wait limit later, the forced read of the same entry both went through the data worker's
+`HttpFile.prepare` → `HttpBackend.fetchAhead`, which joined the background's piece and block flights but not another
+read's own `fetchForeground`: the same 1 MiB blocks went twice on the link at once (validation2: 5-6 ranges asked again
+while on the link, 0.75-1.24 MB more on an 85 KB/s link). `fetchAhead` now registers the pieces it fetches
+(`fgFlights`) and a read of them meanwhile waits for that request (`stats.fgJoined`); a request that fails leaves the
+joiner to fetch by itself (`tests/http-backend-async.test.js`, which fails without the fix). Glide at 85 KB/s with
+`?preloadwait=1000`, one run a side: 1 range asked twice on either side (0.02 MB, a 64 KiB piece by another path),
+against 5-6 before; the forced read of the 3.28 MB `Morrowind.bsa` entry 13.7 s (r18) and 14.8 s (r19a) — the two
+blocks' 1.08 MB at 85 KB/s is 12.7 s — against 16.4-34.8 s in validation2. The page's longest block there is still that
+read (a frame of play is plain: it does not suspend).
+
+**(a) The warm save's F9 to the world: +0.35-0.45 s, the GPU wait after the load and the reads' spin.** With ONE warm
+profile for every side, the store is the same — but its HTTP cache holds the compiled module of the engine that made
+it: on a profile made by r19d's warm-up, r19d 5.0-5.3 s (5 runs) against r18 5.0-5.3 s (8 runs) looked like parity, and
+r19a, not cached, 5.4-5.7 s (5 runs). On a profile made by a fourth engine (r17's warm-up, `load4/`: no side's module
+cached) 3 runs a side: r18 5.0-5.2 s, r19d 5.5-5.6 s, r19a 5.4-5.6 s. The gap is real, ~0.4 s, and r19a's change
+(below) does not move it. Where it goes (`scripts/saveph.py`, the read traces): the same 9 serial `Morrowind.esm` reads
+after the loading screen (1.0 s on every side) split the load in two —
+- before them, +0.1-0.3 s (their start 2.78-2.93 s after the key against 2.63-2.71): the key to the last announced wait's end 1.82-1.92 s (r18) against 1.90-2.03 (the load
+  starts a frame later: put off to the promising frame); its waits' totals equal (1.27 s); the reads the 10 ms spin
+  answered or that suspended after it 394-440 ms against 349-363 ms of synchronous waits (~5 ms more for each of the
+  ~11 that suspended: the round to the page and back);
+- after them, +0.2-0.4 s: the world's first draw, 1.36-1.43 s on r18 against 1.56-1.76 s — the load frame's GPU waits
+  (`orthros_gl_settle`: 3 suspensions, 1 + 300 + 300 ms, the cap twice) then the status calls, which still held the
+  page's thread 0.69 s in r19d's profiled load (`checkFramebufferStatus`, against 1.09 s in r18's).
+- **The play page's, not the engine's**: the same scenario through the engine's page alone (`--entry engine`, `gl5/`, 2
+  runs each, the neutral profile): r19a 4.6, 4.6 s against r18 5.0, 5.0 — r19 0.4 s *ahead*; `?jspiglmax=150` 4.3, 4.4;
+  `?jspigl=0` 4.4, 4.6 (the page held 424-509 ms). Through the play page r19 loses 0.9 s, r18 0.1 s. Not attributed
+  further here; the candidate: while the engine is suspended the play page's thread is free, and the browser renders
+  the play page and its frame (its shell, the data meter) — GPU work in SwiftShader queued before the world's first
+  draw, which r18's held thread never let it do. Input p95 through the engine page: r19a 1219-1507 ms against r18's
+  548-571 — the mouse moves of that page wait for its animation frames, which wait for the GPU.
+- Not the CPU profile's "0.9 s more native time": V8's CPU profiler does not walk a JSPI stack — a sample taken on one
+  is `(program)`. Shown on the worker threads (below): r19d's half-busy worker, 476 ms/s of `(program)` and nothing in
+  `__pthread_cond_timedwait`; r18's and r19a's (plain entry), 478-487 ms/s in `__pthread_cond_timedwait`, no
+  `(program)`. The load's frame runs on a JSPI stack: its wasm is `(program)` there. The earlier comparison of
+  r17's `(program)` with r19's was not like for like.
+
+**(c) In play: worker threads off JSPI stacks; the medians within the criterion.** Emscripten under `-sJSPI` starts every
+pthread through `WebAssembly.promising` (`libpthread.js` `$invokeEntryPoint`, `makeDynCall(…, ASYNCIFY == 2)`): Lua's
+update thread, the NIF parses, the work queue and the physics all ran their whole lives on JSPI stacks, though none of
+them may ever suspend (the engine's suspending imports are the page's thread's alone). Measured in Chromium 153
+(`bench/`: a hot loop at every stack depth 0-4000, plain export against promising, on the page and in a worker): a wasm
+call costs the same on a JSPI stack at every depth (no stack-growth cliff), an import call 15 ns against 5 ns. r19a
+(`orthros-jspi.js`): `$invokeEntryPoint` plain, as a build without JSPI; a worker's `emscripten_sleep` sleeps on its
+futex (`emscripten_thread_sleep`; engine.cpp `__wrap_emscripten_sleep`); the C library's `fd_read` times a call only
+when it is proxied from a worker. In play (`perf.mjs tier=mid --discard --warm 0`, 60 s, 6 a side, the order
+alternated, `play1/`): fps median 24.70 (24.40-25.09) against r18's 24.55 (23.99-26.44) — within 0.3; work p99 median
+20.3 ms (18.8-23.5) against 19.95 (18.8-20.3) — within 0.5; p50 9.2 against 9.1; longest gap 233-333 against 267-333 ms;
+data stalls 208-333 against 239-309 ms a minute. r19a's p99 spread is wider (its first two runs 22.0, 23.5; the other
+four 18.8-20.6), so "no worse than r18's spread" is not met on this sample. r19d, 3 runs beside them: 15.7-21.6. One CPU
+profile a side of the main thread (`profiles/play-main-*`): r19d's wasm 8.4 ms a frame against 8.0, spread over every
+function (the largest, `osg::State::apply`, +0.6 ms/s), nothing r19 adds — not attributed further, and within the run
+to run noise of the same measure (r18 8.0-8.3, r19 7.4-10.4 over 4 profiled runs).
+
+**(b) A new device's menu: link scheduling, not reproduced as a gap.** Three pairs with read traces (new profiles, 2 MB/s,
+85 ms): the menu r19 27.6 (r19d), 23.6, 25.4 s (r19a) against r18 24.9, 26.5, 25.6 — medians 25.4 against 25.6; F9 to
+the world 11.3, 12.9, 12.2 against 12.4, 11.3, 11.5. The first pair (`diag1/`, r19d 2.7 s later) traced
+(`scripts/pair.py`, `cover.py`, `conc.py`): the same reads in the same order; r19's boot reached the archive's reads
+earlier (`Morrowind.bsa` 213516288 at 16.0 s against 16.2, answered in 0.41 s against 1.33), then waited behind
+background requests already on the link — its reads covered by a background request waited 7.55 s in all against
+4.74 s, those requests larger when they started outside a run of waits (256-512 KiB against 64 KiB: `NetLink.loading()`
+had lapsed) and shared with 9-14 other background requests on average. The total demand wait before the menu 13.8 s
+against 11.6. The second and third pairs went the other way. The order in which a 2 MB/s link carries the boot's
+bytes moves the menu by ±1.5 s run to run; the 10 ms spin, the boot's announced batch and the suspensions did not show
+in any of the traces (the boot's reads and requests the same on both sides).
+
+**(1) Crashes.** 0 renderer crashes in 35 r19a page sessions (the check, 7 `perf.mjs`, 27 place-load) and 17 r19d
+sessions; Chromium's heap profiler forced on every renderer: a save boot and its load, a COE boot and its load on r19a,
+no crash. The kernel logged one Chrome segfault at 06:06:37: its crash report (`Crash Reports/pending`, written at
+06:06:38) is another session's browser (`--user-data-dir=/tmp/orthros-scratch/mw-perf/…`); the r19a page measured then
+finished its run (1,511 frames, no fault).
+
+**(3) The COE and the warm save's other measures** (`load2/`, `load3/`, `load4/`; 6-7 a side): the COE's page block
+211-234 ms against 2045-2195, input p95 511-932 against 1789-1922 ms, the longest frame gap 1633-1883 against 1733-2067
+— met. Its time to a steady world 6.0-7.0 s against 5.3-6.0: the debug COE runs at the next frame's start, and in a
+plain frame it is put off once more to the promising one (`coeWaitMs` 415-530 ms). The save: page block 613-767 ms
+against 4915-5232, input p95 544-1129 (median 780) against 576-1365 (median 845) — met, narrowly —, the visible freeze 1.87-2.12 s against
+4.87-5.82 — met; F9 to the world, (a).
+
+**(4) 85 KB/s** (2 a side, `load2/`): F9 to the world 27.7, 27.8 s against 27.7, 27.6, the page's block 0.77 s against
+27.6, input p95 87-89 ms against 434-1272 — met (the menus 80.5-80.8 s on both: neither engine was in that profile's HTTP
+cache).
+
+**Where r19 stands against the ship criteria (not a validation: no frame-compare, two-client, check.mjs FR or
+overlay-check run on r19a; `make test` below):**
+1. Crashes: met (above).
+2. In play: medians met (fps +0.15, work p99 +0.35 ms), r19a's p99 spread wider than r18's on this sample — open; needs
+   more pairs on a quieter machine.
+3. Loads: the COE met; the save's page block, input p95 and visible freeze met, its F9 to the world 0.35-0.45 s later
+   than r18's (5.4-5.6 against 5.0-5.2 s, no side's engine cached) — open: the play page's part (above) is the next
+   thing to attribute (a CPU and GPU profile of the play page itself over the load; the data meter and the shell's
+   rendering held off while the engine is in a load's frame).
+4. New device: the menu no worse over 3 pairs (medians 25.4 against 25.6 s), F9 12.2-12.9 against 11.3-11.5 s in the
+   two r19a pairs (11.3 against 12.4 in r19d's) — within the link's run-to-run spread; 85 KB/s met; (d) fixed.
+
+`make test` on this tree: 1,708 tests, 1,705 pass, 0 fail (1 skipped, 2 todo). `r19dev-a` is a development build in scratch (engine `515236e0e051`); the release r19 is still to be built from the
+lock entry (files `{}`) by `tools/openmw/build.sh`.
 
 ### The engine's language and dialogue topic colours (2026-10-28)
 

@@ -1,0 +1,86 @@
+05:17:58 avail=46G load=16.27 side=19d tag=r19-save-1 --mode save --read-trace
+05:22:27 avail=46G load=17.56 side=18 tag=r18-save-1 --mode save --read-trace
+05:24:11 avail=46G load=16.57 side=19d tag=r19-save-2 --mode save --read-trace
+05:25:51 avail=46G load=14.84 side=18 tag=r18-save-2 --mode save --read-trace
+05:27:34 avail=48G load=12.21 side=19d tag=r19-saveprof-1 --mode save
+05:29:02 avail=47G load=18.23 side=18 tag=r18-saveprof-1 --mode save
+05:30:36 avail=46G load=21.11 side=19d tag=r19-saveNew-1 --mode save --profile new --read-trace
+05:32:39 avail=48G load=17.75 side=18 tag=r18-saveNew-1 --mode save --profile new --read-trace
+05:34:42 avail=52G load=13.38 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/res/diag1/perf/r18-prof --query tier=mid --discard --seconds 60 --warm 0 --profile
+05:36:08 avail=52G load=10.71 perf openmw-web-v1.5.3-orthros-r18dev-d /tmp/orthros-scratch/data-r19/res/diag1/perf/r19-prof --query tier=mid --discard --seconds 60 --warm 0 --profile
+05:46:33 avail=52G load=2.20 tools/openmw/check.mjs openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/res/play1/check-en --seconds 10
+05:47:04 avail=52G load=6.96 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/res/play1/perf/r18-1 --query tier=mid --discard --seconds 60 --warm 0
+05:48:27 avail=52G load=9.69 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/res/play1/perf/r19a-1 --query tier=mid --discard --seconds 60 --warm 0
+05:49:50 avail=52G load=9.78 perf openmw-web-v1.5.3-orthros-r18dev-d /tmp/orthros-scratch/data-r19/res/play1/perf/r19d-1 --query tier=mid --discard --seconds 60 --warm 0
+05:51:15 avail=52G load=11.67 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/res/play1/perf/r19a-2 --query tier=mid --discard --seconds 60 --warm 0
+05:52:39 avail=52G load=10.45 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/res/play1/perf/r18-2 --query tier=mid --discard --seconds 60 --warm 0
+05:54:02 avail=50G load=17.27 perf openmw-web-v1.5.3-orthros-r18dev-d /tmp/orthros-scratch/data-r19/res/play1/perf/r19d-2 --query tier=mid --discard --seconds 60 --warm 0
+05:55:25 avail=50G load=18.15 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/res/play1/perf/r18-3 --query tier=mid --discard --seconds 60 --warm 0
+05:56:47 avail=49G load=18.46 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/res/play1/perf/r19a-3 --query tier=mid --discard --seconds 60 --warm 0
+05:58:10 avail=51G load=17.47 perf openmw-web-v1.5.3-orthros-r18dev-d /tmp/orthros-scratch/data-r19/res/play1/perf/r19d-3 --query tier=mid --discard --seconds 60 --warm 0
+05:59:32 avail=51G load=35.27 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/res/play1/perf/r19a-4 --query tier=mid --discard --seconds 60 --warm 0
+06:01:15 avail=51G load=14.69 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/res/play1/perf/r18-4 --query tier=mid --discard --seconds 60 --warm 0
+06:02:38 avail=52G load=12.26 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/res/play1/perf/r18-5 --query tier=mid --discard --seconds 60 --warm 0
+06:04:02 avail=47G load=19.23 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/res/play1/perf/r19a-5 --query tier=mid --discard --seconds 60 --warm 0
+06:05:25 avail=51G load=14.68 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/res/play1/perf/r19a-6 --query tier=mid --discard --seconds 60 --warm 0
+06:06:47 avail=51G load=16.38 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/res/play1/perf/r18-6 --query tier=mid --discard --seconds 60 --warm 0
+06:08:11 avail=48G load=13.36 perf openmw-web-v1.5.3-orthros-r18 /tmp/orthros-scratch/data-r19/res/play1/perf/r18-w --query tier=mid --discard --seconds 60 --warm 0 --profile --workers
+06:09:38 avail=51G load=13.36 perf openmw-web-v1.5.3-orthros-r18dev-d /tmp/orthros-scratch/data-r19/res/play1/perf/r19d-w --query tier=mid --discard --seconds 60 --warm 0 --profile --workers
+06:11:03 avail=51G load=23.58 perf openmw-web-v1.5.3-orthros-r19dev-a /tmp/orthros-scratch/data-r19/res/play1/perf/r19a-w --query tier=mid --discard --seconds 60 --warm 0 --profile --workers
+06:12:40 avail=51G load=12.12 side=18 tag=r18-save-1 --mode save --read-trace
+06:14:24 avail=51G load=12.46 side=19a tag=r19a-save-1 --mode save --read-trace
+06:23:13 avail=51G load=11.52 side=19a tag=r19a-coe-1 --mode coe
+06:24:46 avail=51G load=11.34 side=18 tag=r18-coe-1 --mode coe
+06:26:18 avail=51G load=15.47 side=19a tag=r19a-save-2 --mode save --read-trace
+06:28:00 avail=47G load=13.83 side=18 tag=r18-save-2 --mode save --read-trace
+06:29:43 avail=47G load=14.02 side=18 tag=r18-coe-2 --mode coe
+06:31:16 avail=46G load=15.31 side=19a tag=r19a-coe-2 --mode coe
+06:32:50 avail=51G load=18.17 side=18 tag=r18-save-3 --mode save --read-trace
+06:34:33 avail=50G load=10.58 side=19a tag=r19a-save-3 --mode save --read-trace
+06:36:16 avail=50G load=10.47 side=19a tag=r19a-coe-3 --mode coe
+06:37:50 avail=51G load=10.89 side=18 tag=r18-coe-3 --mode coe
+06:39:22 avail=49G load=11.27 side=18 tag=r18-saveNew-1 --mode save --profile new --read-trace
+06:41:25 avail=51G load=10.53 side=19a tag=r19a-saveNew-1 --mode save --profile new --read-trace
+06:43:27 avail=49G load=11.36 side=19a tag=r19a-save85k-1 --mode save --rate 85k --read-trace
+06:46:42 avail=47G load=12.90 side=18 tag=r18-save85k-1 --mode save --rate 85k --read-trace
+06:49:59 avail=51G load=11.44 side=19a tag=r19a-saveNew-2 --mode save --profile new --read-trace
+06:52:00 avail=51G load=11.08 side=18 tag=r18-saveNew-2 --mode save --profile new --read-trace
+06:54:03 avail=49G load=12.59 side=18 tag=r18-save85k-2 --mode save --rate 85k --read-trace
+06:57:19 avail=52G load=8.67 side=19a tag=r19a-save85k-2 --mode save --rate 85k --read-trace
+07:00:33 avail=51G load=8.38 side=19a tag=r19a-forced-save --mode save
+07:02:05 avail=52G load=8.83 side=19a tag=r19a-forced-coe --mode coe
+07:03:39 avail=52G load=6.18 side=19a tag=r19a-glide85k-1 --mode glide --rate 85k --seconds 90 --query preloadwait=1000 --read-trace
+07:07:51 avail=52G load=9.12 side=18 tag=r18-glide85k-1 --mode glide --rate 85k --seconds 90 --query preloadwait=1000 --read-trace
+07:12:06 avail=49G load=14.17 side=19d tag=r19d-save-1 --mode save --read-trace
+07:13:46 avail=49G load=14.50 side=19a tag=r19a-save-1 --mode save --read-trace
+07:15:27 avail=48G load=14.49 side=18 tag=r18-save-1 --mode save --read-trace
+07:17:10 avail=51G load=12.22 side=19a tag=r19a-coe-1 --mode coe --read-trace
+07:18:51 avail=49G load=9.55 side=19d tag=r19d-coe-1 --mode coe --read-trace
+07:20:31 avail=49G load=15.34 side=18 tag=r18-coe-1 --mode coe --read-trace
+07:22:14 avail=48G load=16.84 side=18 tag=r18-save-2 --mode save --read-trace
+07:23:57 avail=46G load=19.56 side=19d tag=r19d-save-2 --mode save --read-trace
+07:25:35 avail=51G load=9.87 side=19a tag=r19a-save-2 --mode save --read-trace
+07:27:18 avail=51G load=11.82 side=18 tag=r18-coe-2 --mode coe --read-trace
+07:29:02 avail=50G load=14.46 side=19a tag=r19a-coe-2 --mode coe --read-trace
+07:30:45 avail=51G load=12.43 side=19d tag=r19d-coe-2 --mode coe --read-trace
+07:33:05 avail=47G load=10.99 side=17 tag=r17-warm --mode save --warm-only
+07:36:17 avail=51G load=14.06 side=18 tag=r18-save-1 --mode save --read-trace
+07:38:03 avail=51G load=11.67 side=19d tag=r19d-save-1 --mode save --read-trace
+07:39:51 avail=51G load=11.62 side=19a tag=r19a-save-1 --mode save --read-trace
+07:41:35 avail=51G load=13.52 side=19a tag=r19a-save-2 --mode save --read-trace
+07:43:23 avail=51G load=11.80 side=18 tag=r18-save-2 --mode save --read-trace
+07:45:07 avail=51G load=12.62 side=19d tag=r19d-save-2 --mode save --read-trace
+07:46:52 avail=51G load=11.77 side=19d tag=r19d-save-3 --mode save --read-trace
+07:48:40 avail=51G load=11.26 side=19a tag=r19a-save-3 --mode save --read-trace
+07:50:25 avail=51G load=12.10 side=18 tag=r18-save-3 --mode save --read-trace
+07:52:10 avail=51G load=12.20 side=19a tag=r19a-coe-1 --mode coe --read-trace
+07:54:04 avail=51G load=11.98 side=18 tag=r18-coe-1 --mode coe --read-trace
+07:55:48 avail=51G load=10.70 side=19d tag=r19d-coe-1 --mode coe --read-trace
+07:57:39 avail=51G load=10.22 side=18 tag=r18-eng-1 --mode save --entry engine --read-trace
+07:59:20 avail=49G load=10.36 side=19a tag=r19a-eng-1 --mode save --entry engine --read-trace
+08:01:04 avail=49G load=11.07 side=19a tag=r19a-gl150-1 --mode save --entry engine --read-trace --query jspiglmax=150
+08:02:48 avail=51G load=10.89 side=19a tag=r19a-gl0-1 --mode save --entry engine --read-trace --query jspigl=0
+08:04:31 avail=51G load=11.43 side=18 tag=r18-eng-2 --mode save --entry engine --read-trace
+08:06:13 avail=51G load=11.39 side=19a tag=r19a-eng-2 --mode save --entry engine --read-trace
+08:07:57 avail=51G load=10.74 side=19a tag=r19a-gl150-2 --mode save --entry engine --read-trace --query jspiglmax=150
+08:09:41 avail=51G load=10.90 side=19a tag=r19a-gl0-2 --mode save --entry engine --read-trace --query jspigl=0

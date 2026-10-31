@@ -1,0 +1,114 @@
+# place-load rows (scripts/rows.py) by batch
+## diag1
+r18-save-1         menu 10.3 ff 10.3 inWorld 5.1 steady 7.4 frozen 4933 block 4993 inP50 342 inP95 1343 gapMax 4933 lateOld 0 demandWait 0 faults 1
+r18-save-2         menu 10.5 ff 10.5 inWorld 5.2 steady 7.7 frozen 5066 block 5115 inP50 1365 inP95 1365 gapMax 5066 lateOld 0 demandWait 0 faults 1
+r18-saveNew-1      menu 24.9 ff 24.9 inWorld 12.4 steady 14.3 frozen 12266 block 12283 inP50 479 inP95 698 gapMax 12266 lateOld 0 demandWait 3.8 faults 1
+r18-saveprof-1     menu 10.4 ff 10.4 inWorld 5.1 steady 7.4 frozen 5033 block 5092 inP50 443 inP95 669 gapMax 5033 lateOld 0 demandWait 0 faults 1
+r19-save-1         menu 7.8 ff 7.8 inWorld 5 steady 7.1 frozen 1867 block 626 inP50 8 inP95 581 gapMax 1867 lateOld 0 demandWait 0 faults 1
+r19-save-2         menu 7.1 ff 6.9 inWorld 5.3 steady 7.3 frozen 1950 block 718 inP50 15 inP95 904 gapMax 1950 lateOld 0 demandWait 0 faults 1
+r19-saveNew-1      menu 27.6 ff 27.3 inWorld 11.3 steady 13.6 frozen 7433 block 439 inP50 5 inP95 563 gapMax 7433 lateOld 0 demandWait 4.3 faults 1
+r19-saveprof-1     menu 7.2 ff 7.2 inWorld 5.3 steady 7.5 frozen 2000 block 623 inP50 13 inP95 609 gapMax 2000 lateOld 0 demandWait 0 faults 1
+## load2
+r18-coe-1          menu None ff 10.8 inWorld None steady 5.3 frozen 1950 block 2089 inP50 462 inP95 1821 gapMax 1950 lateOld 0 demandWait None faults 1
+r18-coe-2          menu None ff 10.7 inWorld None steady 5.4 frozen 1733 block 2100 inP50 486 inP95 1843 gapMax 1733 lateOld 0 demandWait None faults 1
+r18-coe-3          menu None ff 10.8 inWorld None steady 5.4 frozen 1967 block 2045 inP50 792 inP95 1789 gapMax 1967 lateOld 0 demandWait None faults 1
+r18-glide85k-1     menu None ff 76.8 inWorld None steady 51.3 frozen 13749 block 13745 inP50 None inP95 None gapMax 13749 lateOld 0 demandWait None faults 0
+r18-save85k-1      menu 80.5 ff 80.5 inWorld 27.7 steady 29.8 frozen 27582 block 27651 inP50 304 inP95 434 gapMax 27582 lateOld 0 demandWait 0 faults 1
+r18-save85k-2      menu 80.7 ff 80.7 inWorld 27.6 steady 29.5 frozen 27516 block 27592 inP50 1272 inP95 1272 gapMax 27516 lateOld 0 demandWait 0 faults 1
+r18-save-1         menu 11.2 ff 11.2 inWorld 5.3 steady 7.1 frozen 5183 block 5232 inP50 472 inP95 750 gapMax 5183 lateOld 0 demandWait 0 faults 1
+r18-save-2         menu 10.6 ff 10.6 inWorld 5.1 steady 7.4 frozen 5816 block 5030 inP50 357 inP95 879 gapMax 5816 lateOld 0 demandWait 0 faults 1
+r18-save-3         menu 10.5 ff 10.5 inWorld 5.2 steady 7.6 frozen 5000 block 5054 inP50 483 inP95 1309 gapMax 5000 lateOld 0 demandWait 0 faults 1
+r18-saveNew-1      menu 26.5 ff 26.5 inWorld 11.3 steady 12.8 frozen 11033 block 11090 inP50 376 inP95 392 gapMax 11033 lateOld 0 demandWait 2.6 faults 1
+r18-saveNew-2      menu 25.6 ff 25.6 inWorld 11.5 steady 13.5 frozen 11183 block 11246 inP50 482 inP95 685 gapMax 11183 lateOld 0 demandWait 3.9 faults 1
+r19a-coe-1         menu None ff 11.5 inWorld None steady 6.6 frozen 1783 block 215 inP50 39 inP95 629 gapMax 1783 lateOld 0 demandWait None faults 2
+r19a-coe-2         menu None ff 11.6 inWorld None steady 6.6 frozen 1883 block 223 inP50 86 inP95 743 gapMax 1883 lateOld 0 demandWait None faults 2
+r19a-coe-3         menu None ff 10.2 inWorld None steady 7 frozen 1800 block 216 inP50 49 inP95 511 gapMax 1800 lateOld 0 demandWait None faults 2
+r19a-forced-save   menu 10.5 ff 10.3 inWorld 5.6 steady 7.1 frozen 2033 block 665 inP50 18 inP95 906 gapMax 2033 lateOld 0 demandWait 0 faults 1
+r19a-forced-coe    menu None ff 11.7 inWorld None steady 6.3 frozen 1783 block 222 inP50 50 inP95 766 gapMax 1783 lateOld 0 demandWait None faults 2
+r19a-glide85k-1    menu None ff 76.4 inWorld None steady 57.1 frozen 14616 block 14845 inP50 None inP95 None gapMax 14616 lateOld 0 demandWait None faults 0
+r19a-save85k-1     menu 80.8 ff 80.8 inWorld 27.7 steady 29.2 frozen 21916 block 769 inP50 16 inP95 89 gapMax 21916 lateOld 0 demandWait 0 faults 1
+r19a-save85k-2     menu 80.8 ff 80.8 inWorld 27.8 steady 29.6 frozen 22066 block 768 inP50 7 inP95 87 gapMax 22066 lateOld 0 demandWait 0 faults 1
+r19a-save-1        menu 11.2 ff 11 inWorld 5.7 steady 7.2 frozen 2117 block 668 inP50 10 inP95 705 gapMax 2117 lateOld 0 demandWait 0 faults 1
+r19a-save-2        menu 10.4 ff 10.4 inWorld 5.6 steady 7.5 frozen 2017 block 626 inP50 19 inP95 823 gapMax 2017 lateOld 0 demandWait 0 faults 1
+r19a-save-3        menu 11.3 ff 11.3 inWorld 5.4 steady 7.5 frozen 1933 block 613 inP50 27 inP95 780 gapMax 1933 lateOld 0 demandWait 0 faults 1
+r19a-saveNew-1     menu 23.6 ff 23.6 inWorld 12.9 steady 14.9 frozen 8000 block 610 inP50 5 inP95 461 gapMax 8000 lateOld 0 demandWait 0.9 faults 1
+r19a-saveNew-2     menu 25.4 ff 25.1 inWorld 12.2 steady 14.1 frozen 7550 block 578 inP50 5 inP95 482 gapMax 7550 lateOld 0 demandWait 2.3 faults 1
+## load3
+r18-coe-1          menu None ff 10.5 inWorld None steady 5.3 frozen 1950 block 2070 inP50 763 inP95 1804 gapMax 1950 lateOld 0 demandWait None faults 1
+r18-coe-2          menu None ff 11.9 inWorld None steady 6 frozen 2067 block 2195 inP50 822 inP95 1922 gapMax 2067 lateOld 0 demandWait None faults 1
+r18-save-1         menu 10.7 ff 10.7 inWorld 5.2 steady 6.7 frozen 5000 block 5042 inP50 592 inP95 592 gapMax 5000 lateOld 0 demandWait 0 faults 1
+r18-save-2         menu 10.5 ff 10.5 inWorld 5 steady 7.1 frozen 4866 block 4915 inP50 445 inP95 810 gapMax 4866 lateOld 0 demandWait 0 faults 1
+r19a-coe-1         menu None ff 9.5 inWorld None steady 6 frozen 1783 block 215 inP50 76 inP95 658 gapMax 1783 lateOld 0 demandWait None faults 2
+r19a-coe-2         menu None ff 11.7 inWorld None steady 6.4 frozen 1833 block 234 inP50 87 inP95 932 gapMax 1833 lateOld 0 demandWait None faults 2
+r19a-save-1        menu 10 ff 10 inWorld 5.7 steady 7.2 frozen 2033 block 767 inP50 7 inP95 544 gapMax 2033 lateOld 0 demandWait 0 faults 1
+r19a-save-2        menu 11.6 ff 11.3 inWorld 5.5 steady 7.2 frozen 2067 block 637 inP50 16 inP95 892 gapMax 2067 lateOld 0 demandWait 0 faults 1
+r19d-coe-1         menu None ff 6.4 inWorld None steady 6.9 frozen 1650 block 225 inP50 81 inP95 634 gapMax 1650 lateOld 0 demandWait None faults 2
+r19d-coe-2         menu None ff 7.5 inWorld None steady 6.5 frozen 1800 block 217 inP50 73 inP95 833 gapMax 1800 lateOld 0 demandWait None faults 2
+r19d-save-1        menu 7.3 ff 7.3 inWorld 5.3 steady 7.4 frozen 1967 block 661 inP50 16 inP95 957 gapMax 1967 lateOld 0 demandWait 0 faults 1
+r19d-save-2        menu 7.1 ff 7.1 inWorld 5.3 steady 7.5 frozen 1867 block 725 inP50 18 inP95 687 gapMax 1867 lateOld 0 demandWait 0 faults 1
+## load4
+r18-coe-1          menu None ff 12.8 inWorld None steady 5.3 frozen 1767 block 2089 inP50 730 inP95 1818 gapMax 1767 lateOld 0 demandWait None faults 1
+r18-save-1         menu 12.7 ff 12.7 inWorld 5.2 steady 7.3 frozen 5050 block 5096 inP50 471 inP95 576 gapMax 5050 lateOld 0 demandWait 0 faults 1
+r18-save-2         menu 12.8 ff 12.8 inWorld 5.1 steady 6.8 frozen 4966 block 5010 inP50 440 inP95 748 gapMax 4966 lateOld 0 demandWait 0 faults 1
+r18-save-3         menu 13 ff 13 inWorld 5 steady 7.5 frozen 5766 block 4979 inP50 495 inP95 935 gapMax 5766 lateOld 0 demandWait 0 faults 1
+r19a-coe-1         menu None ff 12.4 inWorld None steady 6.3 frozen 1633 block 212 inP50 73 inP95 723 gapMax 1633 lateOld 0 demandWait None faults 2
+r19a-save-1        menu 13.1 ff 13.1 inWorld 5.5 steady 7.7 frozen 2083 block 626 inP50 13 inP95 746 gapMax 2083 lateOld 0 demandWait 0 faults 1
+r19a-save-2        menu 13 ff 13 inWorld 5.6 steady 7.4 frozen 2083 block 654 inP50 7 inP95 1023 gapMax 2083 lateOld 0 demandWait 0 faults 1
+r19a-save-3        menu 13.4 ff 13.4 inWorld 5.4 steady 7.7 frozen 2017 block 625 inP50 18 inP95 823 gapMax 2017 lateOld 0 demandWait 0 faults 1
+r19d-coe-1         menu None ff 12.4 inWorld None steady 6.3 frozen 1650 block 211 inP50 118 inP95 692 gapMax 1650 lateOld 0 demandWait None faults 2
+r19d-save-1        menu 13.6 ff 13.6 inWorld 5.6 steady 7.8 frozen 2017 block 711 inP50 18 inP95 746 gapMax 2017 lateOld 0 demandWait 0 faults 1
+r19d-save-2        menu 13.1 ff 13.1 inWorld 5.6 steady 7.7 frozen 2000 block 743 inP50 17 inP95 709 gapMax 2000 lateOld 0 demandWait 0 faults 1
+r19d-save-3        menu 13.5 ff 13.5 inWorld 5.5 steady 7.5 frozen 1967 block 666 inP50 13 inP95 1129 gapMax 1967 lateOld 0 demandWait 0 faults 1
+## gl5
+r18-eng-1          menu 12.5 ff 12.5 inWorld 5 steady 7.2 frozen 4950 block 5000 inP50 479 inP95 548 gapMax 4950 lateOld 0 demandWait 0 faults 1
+r18-eng-2          menu 11.4 ff 11.4 inWorld 5 steady 6.8 frozen 4850 block 4903 inP50 515 inP95 571 gapMax 4850 lateOld 0 demandWait 0 faults 1
+r19a-eng-1         menu 11.6 ff 11.5 inWorld 4.6 steady 6.7 frozen 2067 block 249 inP50 11 inP95 1219 gapMax 2067 lateOld 0 demandWait 0 faults 1
+r19a-eng-2         menu 13 ff 12.9 inWorld 4.6 steady 6.7 frozen 2017 block 210 inP50 14 inP95 1314 gapMax 2017 lateOld 0 demandWait 0 faults 1
+r19a-gl0-1         menu 12.9 ff 12.9 inWorld 4.6 steady 6.7 frozen 2017 block 509 inP50 8 inP95 1418 gapMax 2017 lateOld 0 demandWait 0 faults 1
+r19a-gl0-2         menu 11.4 ff 11.4 inWorld 4.4 steady 6.7 frozen 2050 block 424 inP50 17 inP95 1511 gapMax 2050 lateOld 0 demandWait 0 faults 1
+r19a-gl150-1       menu 11.5 ff 11.5 inWorld 4.3 steady 6.8 frozen 1967 block 216 inP50 16 inP95 1366 gapMax 1967 lateOld 0 demandWait 0 faults 1
+r19a-gl150-2       menu 11.7 ff 11.7 inWorld 4.4 steady 6.7 frozen 2050 block 225 inP50 13 inP95 1507 gapMax 2050 lateOld 0 demandWait 0 faults 1
+## in play (scripts/perfsum.py): run fps workP50 workP99 gapMax dataStallMs syncFetches faults
+r18-prof 24.54 9.5 21.7 333.3 308 53 0
+r19-prof 24.2 10 24.6 333.3 292 53 0
+r18-1 23.99 9.1 20.2 316.7 294 53 0
+r18-2 25.37 8.3 19.7 333.3 306 53 0
+r18-3 24.44 8.7 18.8 266.7 239 54 0
+r18-4 24.07 9.4 20.3 266.7 289 41 0
+r18-5 26.44 8.6 18.8 316.7 296 54 0
+r18-6 24.66 9.5 20.3 283.3 309 40 0
+r18-w 24.95 9.8 19.5 266.7 252 54 0
+  r18: n=7 fps med 24.66 [23.99-26.44]  p99 med 19.7 [18.8-20.3]  p50 med 9.1
+r19a-1 24.67 9 22 250 265 39 0
+r19a-2 24.6 10 23.5 333.3 333 54 0
+r19a-3 24.4 9.1 20.6 283.3 268 54 0
+r19a-4 24.93 9 19.3 233.3 208 53 0
+r19a-5 24.72 9.3 20 333.3 315 54 0
+r19a-6 25.09 9.5 18.8 283.3 250 55 0
+r19a-w 22.67 12.3 24.7 283.3 301 56 0
+  r19a: n=7 fps med 24.67 [22.67-25.09]  p99 med 20.6 [18.8-24.7]  p50 med 9.3
+r19d-1 24.57 8.6 21.6 316.7 288 53 0
+r19d-2 23.86 8.8 19.9 266.7 253 55 0
+r19d-3 27.82 6.4 15.7 250 209 52 0
+r19d-w 26.63 8.3 17.4 233.3 234 39 0
+  r19d: n=4 fps med 25.60 [23.86-27.82]  p99 med 18.6 [15.7-21.6]  p50 med 8.4
+## glide 85 KB/s: ranges asked again while on the link (scripts/dups.py)
+r18-glide85k-1-1-2026-10 ranges asked again while on the link: 1 wire MB 0.02 [(19481, 'Morrowind.bsa', '157351936')]
+r19a-glide85k-1-1-2026-1 ranges asked again while on the link: 1 wire MB 0.02 [(19481, 'Morrowind.bsa', '157351936')]
+r17-glide85k-1-1-2026-10 ranges asked again while on the link: 5 wire MB 0.75 [(531124, 'Morrowind.bsa', '216006656'), (97091, 'Morrowind.bsa', '273874944'), (44143, 'Morrowind.bsa', '157351936')]
+r17-glide85k-2-1-2026-10 ranges asked again while on the link: 5 wire MB 0.75 [(531124, 'Morrowind.bsa', '216006656'), (97091, 'Morrowind.bsa', '273874944'), (44143, 'Morrowind.bsa', '157351936')]
+r18-glide85k-1-1-2026-10 ranges asked again while on the link: 5 wire MB 1.2 [(545113, 'Morrowind.bsa', '214958080'), (531124, 'Morrowind.bsa', '216006656'), (44143, 'Morrowind.bsa', '157351936')]
+r18-glide85k-2-1-2026-10 ranges asked again while on the link: 6 wire MB 1.24 [(545113, 'Morrowind.bsa', '214958080'), (531124, 'Morrowind.bsa', '216006656'), (46530, 'Morrowind.bsa', '280887296')]
+## save phases, neutral profile (scripts/saveph.py)
+r18-save-1-1-202 inWorld 5.17 wwaits [(0.04, 2), (0.36, 642), (1.21, 423), (1.64, 202), (1.87, 0)] loadOff None esm serial (2.71, 3.74, 9) reads before 268 readMs 359
+r18-save-2-1-202 inWorld 5.08 wwaits [(0.03, 2), (0.37, 653), (1.25, 425), (1.68, 203), (1.92, 1)] loadOff None esm serial (2.7, 3.72, 9) reads before 267 readMs 363
+r18-save-3-1-202 inWorld 5.04 wwaits [(0.03, 2), (0.33, 645), (1.16, 422), (1.59, 204), (1.82, 1)] loadOff None esm serial (2.63, 3.68, 9) reads before 268 readMs 349
+r19d-save-1-1-20 inWorld 5.58 wwaits [(0.04, 0), (0.38, 632), (1.28, 430), (1.73, 194), (1.99, 0)] loadOff 2.82 esm serial (2.88, 3.89, 9) reads before 236 readMs 413
+r19d-save-2-1-20 inWorld 5.62 wwaits [(0.05, 0), (0.39, 646), (1.27, 441), (1.73, 191), (1.96, 0)] loadOff 2.79 esm serial (2.85, 3.86, 9) reads before 237 readMs 430
+r19d-save-3-1-20 inWorld 5.48 wwaits [(0.05, 0), (0.37, 630), (1.23, 410), (1.66, 188), (1.9, 0)] loadOff 2.73 esm serial (2.78, 3.78, 9) reads before 236 readMs 398
+r19a-save-1-1-20 inWorld 5.48 wwaits [(0.04, 0), (0.44, 637), (1.33, 444), (1.79, 190), (2.03, 0)] loadOff 2.87 esm serial (2.92, 3.92, 9) reads before 236 readMs 410
+r19a-save-2-1-20 inWorld 5.58 wwaits [(0.05, 0), (0.37, 638), (1.26, 453), (1.73, 193), (1.98, 0)] loadOff 2.87 esm serial (2.93, 3.99, 9) reads before 237 readMs 440
+r19a-save-3-1-20 inWorld 5.42 wwaits [(0.04, 0), (0.38, 636), (1.29, 419), (1.72, 188), (1.98, 0)] loadOff 2.76 esm serial (2.81, 3.84, 9) reads before 237 readMs 394
+## new device boot waits (scripts/conc.py, pair 1)
+r18-saveNew-1-1-2026 waits 39 ms 11423 mean bg in flight 13.8 bg started during waits 262 wireMB 12.94 bg total before 671
+r19-saveNew-1-1-2026 waits 38 ms 13648 mean bg in flight 9.4 bg started during waits 285 wireMB 16.38 bg total before 427

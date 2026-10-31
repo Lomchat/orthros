@@ -1,0 +1,64 @@
+diff -ru a/openmw/apps/openmw/engine.cpp b/openmw/apps/openmw/engine.cpp
+--- a/openmw/apps/openmw/engine.cpp	2026-10-31 05:21:53.313550176 +0100
++++ b/openmw/apps/openmw/engine.cpp	2026-10-31 05:22:08.574907355 +0100
+@@ -1292,7 +1292,14 @@
+ }
+ extern "C" void __wrap_emscripten_sleep(unsigned int ms)
+ {
+-    if (emscripten_is_main_runtime_thread() && !orthros_jspi_may())
++    // (a worker thread: its entry point is plain — orthros-jspi.js $invokeEntryPoint —, never a JSPI stack: a sleep on
++    // its own futex, as a build without JSPI)
++    if (!emscripten_is_main_runtime_thread())
++    {
++        emscripten_thread_sleep(ms);
++        return;
++    }
++    if (!orthros_jspi_may())
+     {
+         const double end = emscripten_get_now() + ms;
+         while (emscripten_get_now() < end)
+diff -ru a/wasm-build/orthros-jspi.js b/wasm-build/orthros-jspi.js
+--- a/wasm-build/orthros-jspi.js	2026-10-31 05:21:53.313550176 +0100
++++ b/wasm-build/orthros-jspi.js	2026-10-31 05:22:08.575907378 +0100
+@@ -108,6 +108,23 @@
+     Object.defineProperty(Module, '_omw_pump_frame', { configurable: true, enumerable: true, get: () => pump, set: (f) => { if (!promising) { promising = f; pump = choose; } else pump = f; } });
+ #endif
+   },
++  // (a pthread's entry point: plain, on its worker's own stack — Emscripten's under JSPI runs every thread on a JSPI
++  // stack (WebAssembly.promising) so that it may suspend; none of the engine's do — its suspending imports are the page's
++  // thread's alone (engine.cpp: emscripten_is_main_runtime_thread), a worker's sleep its futex's (__wrap_emscripten_sleep)
++  // —, and a thread's whole life on a JSPI stack paid for it in every call to an import — Lua's update, the physics, the
++  // work queue: the frame waits for them in play)
++#if PTHREADS && ASYNCIFY == 2
++  $invokeEntryPoint__deps: ['_emscripten_thread_exit', '$keepRuntimeAlive', '$runtimeKeepaliveCounter'],
++  $invokeEntryPoint: (ptr, arg) => {
++    runtimeKeepaliveCounter = 0;
++#if isSymbolNeeded('$noExitRuntime')
++    noExitRuntime = 0;
++#endif
++    var result = {{{ makeDynCall('pp', 'ptr') }}}(arg);
++    if (keepRuntimeAlive()) { EXITSTATUS = result; return; }
++    __emscripten_thread_exit(result);
++  },
++#endif
+   // (a measuring harness's trace — globalThis.__orthrosReadTrace, Orthros' data-client.js GameData.trace —: the engine's
+   // frames, loads and suspensions there too, { t, k: 'jspi', ev, x }; nothing recorded without it)
+   $orthrosNote: (ev, x) => {
+@@ -313,11 +330,15 @@
+   fd_read__proxy: 'sync',
+   fd_read__deps: ['$orthrosReadv', '$SYSCALLS', '$orthrosBlockedNote'],
+   fd_read: (fd, iov, iovcnt, pnum) => {
+-    var t0 = performance.now(), r;
++    // (timed only when proxied from a worker thread: a read of the page's own thread costs what libwasi's does)
++#if PTHREADS
++    var t0 = PThread.currentProxiedOperationCallerThread ? performance.now() : -1;
++#endif
++    var r;
+     try { r = orthrosReadv(SYSCALLS.getStreamFromFD(fd), iov, iovcnt, undefined, pnum); }
+     catch (e) { if (e.name !== 'ErrnoError') throw e; r = e.errno; }
+ #if PTHREADS
+-    if (PThread.currentProxiedOperationCallerThread) { var ms = performance.now() - t0; if (ms >= 1) orthrosBlockedNote(ms, null, 'proxied'); }
++    if (t0 >= 0) { var ms = performance.now() - t0; if (ms >= 1) orthrosBlockedNote(ms, null, 'proxied'); }
+ #endif
+     return r;
+   },

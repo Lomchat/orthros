@@ -1,0 +1,20 @@
+import { chromium } from 'playwright';
+import fs from 'fs';
+import { sweepSrc } from './sweep.mjs';
+const bytes = [...fs.readFileSync(new URL('./b.wasm', import.meta.url))];
+const browser = await chromium.launch({ args: ['--no-sandbox'] });
+const page = await browser.newPage();
+page.on('console', (m) => console.error('[page]', m.text()));
+await page.setContent('<html><body>bench</body></html>');
+const summarize = (r) => { const s = {}; for (const k of ['calls', 'imports']) { const rows = r[k]; const med = (i) => { const v = rows.map((x) => x[i]).sort((a, b) => a - b); return v[v.length >> 1]; }; const slow = rows.filter((x) => x[2] > 2 * med(2) || x[1] > 2 * med(1)); s[k] = { plainMedNs: med(1), jspiMedNs: med(2), plainMax: Math.max(...rows.map((x) => x[1])), jspiMax: Math.max(...rows.map((x) => x[2])), slowDepths: slow.slice(0, 30) }; } return s; };
+const main = await page.evaluate(async ({ src, bytes }) => { eval(src + ';globalThis.sweep=sweep'); return await globalThis.sweep(new Uint8Array(bytes)); }, { src: sweepSrc, bytes });
+console.log('main', JSON.stringify(summarize(main)));
+const worker = await page.evaluate(async ({ src, bytes }) => {
+  const code = src + `;onmessage = async (e) => { postMessage(await sweep(new Uint8Array(e.data))); };`;
+  const w = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+  return await new Promise((res) => { w.onmessage = (e) => res(e.data); w.postMessage(bytes); });
+}, { src: sweepSrc, bytes });
+console.log('worker', JSON.stringify(summarize(worker)));
+fs.writeFileSync(new URL('./chrome-sweep.json', import.meta.url), JSON.stringify({ version: browser.version(), main, worker }));
+console.log('version', browser.version());
+await browser.close();
