@@ -491,6 +491,12 @@ test('a file\'s bytes asked whether here (here: an engine choosing among equival
   await data.ensure(ha, 0, ha.size);
   assert.equal(data.here(ha), true); assert.equal(data.here(ha, 5000, -1), true); assert.equal(data.here(hb), false);
   assert.equal(data.here(hb, hb.size + 5, 10), true, 'nothing to read: here');
+  // (a file with a light copy the worker said is here whole — itself or its light copy —: here, read from the worker's
+  // store; one without a light copy is told nothing so)
+  hb.light = 1000;
+  data.realHere.add('v\nsplash/b.tga'); assert.equal(data.here(hb), true);
+  data.realHere.clear(); data.lightHere.add('v\nsplash/b.tga'); assert.equal(data.here(hb), true);
+  data.lightHere.clear(); assert.equal(data.here(hb), false);
   // (a file whose fetch failed: not here — its read would wait and fail)
   const gone = data.fileAs('v', 'gone.tga', 1000);
   assert.equal(data.readable(gone), false); await gone.ensuring.catch?.(() => {}); await new Promise((r) => setTimeout(r, 20));
