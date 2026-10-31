@@ -2222,6 +2222,32 @@ up: the declared paths queued and released a few per frame, held while the loadi
 announced reads are pending, then over 16.7 ms, p50, over 33 and the time to the world measured again (≥ 5 alternated
 pairs per scenario) before any default changes. Evidence: `data/proof/openmw-perf/round7/`.
 
+### The draw thread (off by default) and screenshots on WebGL2: engine orthros-r19 (2026-10-31)
+
+`orthros-r19.patch` (r18 + two changes):
+- **Screenshots** (`deps/src/osg/src/osg/Image.cpp`, `#ifdef __EMSCRIPTEN__` in `osg::Image::readPixels`): F12 read
+  `GL_RGB`/`GL_UNSIGNED_BYTE` (the window has no alpha), which WebGL2 refuses — the PNG was the image's uninitialised
+  allocation (black, or noise). An `RGB`/`BGR`/`BGRA`/`RED`/`ALPHA`/`RG` read of unsigned bytes is now done as `RGBA` and
+  converted into the image's own format and row padding; every image is zeroed before its read, so a refused read is
+  black, never garbage. Checked: F12 writes the real picture (HUD included, the right way up); save thumbnails and the
+  global map unchanged.
+- **The draw thread** (`OPENMW_ORTHROS_DRAWTHREAD`, **off** unless `1`; `discard` for `perf.mjs --discard`; QA values
+  `crash`, `lose`, `fail`, `refuse`, `mismatch`): OSG's own default threading (DrawThreadPerContext, as desktop OpenMW)
+  instead of the web build's forced SingleThreaded. The GL draw runs on a pthread owning an OffscreenCanvas whose WebGL2
+  context is made in `preRun` (`wasm-build/orthros-gl.js`, before `main()`); the draw thread is event-driven — it returns to
+  its event loop after each frame, each frame a task proxied to it — because Chrome frees a transferred ImageBitmap only
+  through a task on the worker that made it (a blocking draw loop leaked ~4 MB of GPU memory a frame: rounds 8-9, repro in
+  `data/proof/openmw-perf/round9/leak/`). Frames reach the page as ImageBitmaps on an opaque `bitmaprenderer` layer
+  (newest frame wins); GL work the page thread needs (texture uploads ahead, the global map read) runs as draw-thread
+  jobs; a crash or a lost context shows the page's notices and syncs saves. Measured on this GPU-less server (rounds 8-10,
+  `data/proof/openmw-perf/round10/validate/`): page work p50 −22-27 %, frames over 16.7 ms −40-67 %, GPU memory flat over
+  300 s (walk, menu with real drawing), pictures/GUI/F12/thumbnails/map within noise; but the page's frame-gap tail is
+  worse (p99 +6-12 ms, the first second in the world 225 vs 93 ms), 0.3-1.8 % of frames take two vsyncs, and real
+  SwiftShader drawing is 10 % slower — the GPU process's software swaps, not the engine, set the pace here. So it ships
+  off; `?omwenv=OPENMW_ORTHROS_DRAWTHREAD=1` tries it on a real GPU. With r20's JSPI its boot can use the yield point
+  (`data/proof/openmw-perf/round8/r18-boot-yield-note.md`). Tools: `tools/openmw/dtprobe.mjs` (latency, screenshots,
+  saves, crash checks), `perf.mjs --trace` and the frame timeline (`OPENMW_ORTHROS_DTTIMELINE=1`).
+
 ### The steady frame attributed; overlays of the engine's own scripts checked at each release (round 6, 2026-10-30)
 
 Reference r16, Vanilla+ FR, `perf.mjs --run --profile --discard`, 30 s: busy 11.05 ms/frame (osg-draw+GL 3.02,

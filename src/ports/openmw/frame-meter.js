@@ -7,6 +7,9 @@
   const framed = window.parent !== window;
   const tell = (m) => { if (framed) window.parent.postMessage(m, location.origin); };
   let draws = 0, seen = 0, frames = [], glc = null;
+  // (an engine drawing on its own thread, OPENMW_ORTHROS_DRAWTHREAD: no WebGL call on this page — its frames are the
+  // pictures it hands to the page, window.__omwDrawThreadFrames; no GPU time then, gl() stays null)
+  const drawn = () => draws + (window.__omwDrawThreadFrames ?? 0);
   for (const type of [window.WebGL2RenderingContext, window.WebGLRenderingContext]) {
     if (!type) continue;
     for (const method of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
@@ -14,12 +17,12 @@
       type.prototype[method] = function (...args) { draws++; glc = this; return original.apply(this, args); };
     }
   }
-  const tick = (t) => { if (draws !== seen) { seen = draws; frames.push(t); } requestAnimationFrame(tick); };
+  const tick = (t) => { const d = drawn(); if (d !== seen) { seen = d; frames.push(t); } requestAnimationFrame(tick); };
   requestAnimationFrame(tick);
   setInterval(() => {
     const now = performance.now(); frames = frames.filter((t) => t > now - 1000);
     const recent = frames.filter((t) => t > now - 500), gaps = recent.slice(1).map((t, i) => t - recent[i]).sort((a, b) => a - b);
-    const m = { type: 'orthros-frames', fps: recent.length * 2, max: gaps.at(-1) ?? 0, p99: gaps[Math.floor(gaps.length * 0.99)] ?? 0, total: draws > 0 };
+    const m = { type: 'orthros-frames', fps: recent.length * 2, max: gaps.at(-1) ?? 0, p99: gaps[Math.floor(gaps.length * 0.99)] ?? 0, total: drawn() > 0 };
     window.orthrosFrames = m; tell(m);
   }, 500);
   // the bench suite around this page (src/host/web/bench-suite.js, ?benchrun=): what its frame measurement and scripted
@@ -47,9 +50,9 @@
     let storage = null; try { storage = framed ? window.parent.orthrosStorage ?? null : null; } catch { /* another origin */ }
     if (!storage) { storage = sp.pageStorage(); storage.ask(); }
     window.orthrosPerf = perf.portPerf({ runtime: 'openmw', game: id, session: Math.random().toString(36).slice(2, 14), version: null, bench: new URLSearchParams(location.search).get('benchrun'),
-      tier: () => window.orthrosTierChoice?.tier ?? null, phase: () => (!draws ? 'loading' : view.inWorld(window) ? 'world' : 'menu'),
+      tier: () => window.orthrosTierChoice?.tier ?? null, phase: () => (!drawn() ? 'loading' : view.inWorld(window) ? 'world' : 'menu'),
       data: () => perf.portDataSummary(window.StreamFS?.data?.() ?? null),
-      gl: () => glc, draws: () => draws, storage });
+      gl: () => glc, draws: drawn, storage });
   }).catch((e) => console.warn('[orthros perf]', e));
   // the engine's loading status (Module.setStatus, src/host/openmw.js): its package download, "Downloading data...
   // (x/y)" many times a second (a few told), then "Running..."

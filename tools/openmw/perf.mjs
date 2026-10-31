@@ -52,9 +52,13 @@ import { launchOptions, startProfile, stopProfile, memSampler, meterSampler } fr
 const args = process.argv.slice(2), id = args[0], arg = (k, d = null) => args.includes(k) ? args[args.indexOf(k) + 1] : d;
 if (!id) throw new Error('Expected a manifest id');
 const base = arg('--url', 'http://localhost:8080'), seconds = Math.max(5, Math.min(arg('--mem-every') ? 3600 : 300, Number(arg('--seconds', 60))));
-const warm = Math.max(0, Number(arg('--warm', 10))), start = arg('--start', '-2,-9'), extra = arg('--query', '');
+const warm = Math.max(0, Number(arg('--warm', 10))), start = arg('--start', '-2,-9');
 const discard = args.includes('--discard'), profile = args.includes('--profile'), glide = arg('--glide'), glcalls = args.includes('--glcalls');
 const consoleLog = args.includes('--console'), workers = profile && args.includes('--workers');
+// (--discard with the engine drawing on its own thread, ?omwenv=OPENMW_ORTHROS_DRAWTHREAD=1: the init script below only
+// reaches the page's contexts — the draw thread's is the engine's own "discard" value: asked for here, never a run that
+// rasterizes on the worker while the page's contexts discard)
+const extra = discard ? arg('--query', '').replace(/(OPENMW_ORTHROS_DRAWTHREAD=)1(?=$|[,&])/, '$1discard') : arg('--query', '');
 const dir = arg('--out', `/tmp/orthros-scratch/openmw-perf-${id}`);
 fs.mkdirSync(dir, { recursive: true }); process.env.TMPDIR = dir;
 // (--workers: Chromium's debugging socket on a free local port besides Playwright's pipe)
@@ -66,8 +70,10 @@ try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   page.on('pageerror', (e) => faults.push(e.message));
   // (--console: the engine's print/printErr reach the page's console, its pthreads' through the page too)
-  const logT0 = Date.now(), logWanted = /error|fail|traceback|abort|warn|OPENMW_ORTHROS_|\bOrthros:/i;
-  if (consoleLog) page.on('console', (m) => { const t = m.text(); if (!logWanted.test(t)) return; logCount++; if (logLines.length < 1000) logLines.push(`[+${((Date.now() - logT0) / 1000).toFixed(1)}s] ${t.slice(0, 2000)}`); });
+  const logT0 = Date.now(), logWanted = /WebGL|Too many|error|fail|traceback|abort|warn|lost|reload|crash|quit|exit|OPENMW_ORTHROS_|\bOrthros:/i;
+  if (consoleLog) page.on('console', (m) => { const t = m.text(); if (!logWanted.test(t)) return; logCount++; const line = `[+${((Date.now() - logT0) / 1000).toFixed(1)}s] ${t.slice(0, 2000)}`; if (logLines.length < 1000) logLines.push(line); if (logCount < 20000) fs.appendFileSync(path.join(dir, 'console.log'), line + '\n'); });
+  // (a navigation of the engine page after its load — a reload — said: the measure would mix two sessions)
+  page.on('framenavigated', (f) => { if (f === page.mainFrame()) { const line = `[+${((Date.now() - logT0) / 1000).toFixed(1)}s] NAVIGATION ${f.url().slice(0, 200)}`; logLines.push(line); fs.appendFileSync(path.join(dir, 'console.log'), line + '\n'); } });
   page.on('crash', () => console.error('perf: the page crashed'));
   // (a measurement: nothing reported to the server — its learned order, telemetry and the gateway's client log stay clean)
   await page.route((u) => /\/clientlog$|\/api\/(telemetry|prefetch|profile-seed|programs|regions)(\/|$)/.test(u.pathname), (r) => r.request().method() === 'GET' ? r.continue() : r.fulfill({ status: 204, body: '' }));
@@ -98,13 +104,20 @@ try {
     }, 50);
     const wrap = setInterval(() => {
       const M = window.Module, f = M?._omw_pump_frame; if (!f || f.orthrosTimed) return;
-      const timed = function (...a) { const t0 = performance.now(); try { return f.apply(this, a); } finally { if (P.on) P.work.push(performance.now() - t0); } };
+      const timed = function (...a) { const t0 = performance.now(); try { return f.apply(this, a); } finally { const t1 = performance.now(); if (P.on) { P.work.push(t1 - t0); if (P.pumps.length < 100000) P.pumps.push(+t0.toFixed(3), +t1.toFixed(3)); } } };
       timed.orthrosTimed = true; M._omw_pump_frame = timed; clearInterval(wrap);
     }, 50);
     let seen = 0;
+    P.raf = []; P.pumps = [];
     const tick = (t) => {
-      if (P.draws !== seen) {
-        seen = P.draws;
+      // (when each animation frame's callbacks ran — the page's rendering opportunities: the draw thread's present delay
+      // counted in them below)
+      if (P.on && P.raf.length < 200000) P.raf.push(performance.now());
+      // (an engine drawing on its own thread, OPENMW_ORTHROS_DRAWTHREAD: no WebGL call on the page — its frames are the
+      // bitmaps it hands to the page, counted in __omwDrawThreadFrames)
+      const drawn = P.draws + (window.__omwDrawThreadFrames ?? 0);
+      if (drawn !== seen) {
+        seen = drawn;
         if (P.on) { P.frames.push(t); P.syncFrames.push(P.cur); }
         P.cur = {};
       }
@@ -125,11 +138,16 @@ try {
   const t0 = Date.now();
   await page.goto(url);
   // (in the world: Orthros' script's first report, view.lua — or the engine running and drawing for a while)
-  await page.waitForFunction(() => window.omw?.state?.['orthros.view'] !== undefined || (window.Module?.__omwRunning && window.__omwPerfProbe.draws > 2000), null, { timeout: 600000, polling: 500 });
+  await page.waitForFunction(() => window.omw?.state?.['orthros.view'] !== undefined || (window.Module?.__omwRunning && window.__omwPerfProbe.draws + (window.__omwDrawThreadFrames ?? 0) > 2000), null, { timeout: 600000, polling: 500 });
   const bootMs = Date.now() - t0;
+  // (the engine's counters when the world shows: what the boot's loading screens compiled, OPENMW_ORTHROS_PRECOMPILE,
+  // and the draw thread's, OPENMW_ORTHROS_DRAWTHREAD)
+  const atBoot = await page.evaluate(() => { const dt = window.__omwDrawThread; return { precompile: window.__omwPrecompile ? { ...window.__omwPrecompile } : null,
+    drawThread: dt ? { ...dt, drawMs: undefined, drawFrames: dt.drawMs?.length ?? 0, drawMax: dt.drawMs?.length ? Math.max(...dt.drawMs) : null } : null,
+    prepared: window.__omwDrawThreadPrep ?? null, present: window.__omwDrawThreadPresent ? { posted: window.__omwDrawThreadPresent.posted, dropped: window.__omwDrawThreadPresent.dropped, frames: window.__omwDrawThreadPresent.frames } : null }; });
   await page.mouse.click(640, 400);
   await page.waitForTimeout(warm * 1000);
-  const before = await page.evaluate(() => ({ stall: window.__streamfsStats?.stallMs ?? null, sync: window.__streamfsStats?.syncFetches ?? 0, misses: window.__omwShaderMisses ?? 0, cell: window.omw?.state?.['orthros.cell'] ?? null }));
+  const before = await page.evaluate(() => ({ stall: window.__streamfsStats?.stallMs ?? null, sync: window.__streamfsStats?.syncFetches ?? 0, misses: window.__omwShaderMisses ?? 0, cell: window.omw?.state?.['orthros.cell'] ?? null, drawn: window.__omwDrawThread?.drawMs?.length ?? 0 }));
   // (the exterior cells walked through: view.lua's report, looked at every half second)
   await page.evaluate(() => { const P = window.__omwPerfProbe; P.cells = new Set(); P.cellLook = setInterval(() => { const c = window.omw?.state?.['orthros.cell']; if (c) P.cells.add(c); }, 500); });
   const wprof = workers ? await workerProfiler(cdpPort, page.url()) : null;
@@ -139,9 +157,24 @@ try {
   if (trCdp) { trCdp.on('Tracing.dataCollected', (e) => { for (const v of e.value) if (v.ph === 'M' || /GC|gc|Sweep|Mark|Scaveng/.test(v.name)) trEvents.push(v); }); await trCdp.send('Tracing.start', { traceConfig: { includedCategories: ['devtools.timeline', 'v8', 'disabled-by-default-v8.gc', 'blink_gc', 'cppgc'], excludedCategories: ['*'] }, transferMode: 'ReportEvents' }); }
   if (heapCdp) { await heapCdp.send('HeapProfiler.enable'); await heapCdp.send('HeapProfiler.startSampling', { samplingInterval: Number(arg('--heap-interval', 16384)), includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: !args.includes('--heap-old') }); }
   if (wprof) await wprof.start();
-  await page.evaluate(() => { window.__omwPerfProbe.on = true; });
+  // (--trace s: a Chrome trace of the measure's first s seconds — the page's and the workers' tasks, animation frames,
+  // the compositor's frames — trace.json, for the frame timeline's attribution)
+  const traceS = Number(arg('--trace', 0));
+  const tcCdp = traceS > 0 ? await page.context().newCDPSession(page) : null;
+  let traceDone = null;
+  if (tcCdp) {
+    const chunks = [];
+    tcCdp.on('Tracing.dataCollected', (e) => { for (const v of e.value) chunks.push(v); });
+    traceDone = new Promise((ok) => tcCdp.once('Tracing.tracingComplete', () => { fs.writeFileSync(path.join(dir, 'trace.json'), JSON.stringify({ traceEvents: chunks })); ok(); }));
+    await tcCdp.send('Tracing.start', { traceConfig: { recordMode: 'recordAsMuchAsPossible', includedCategories: ['toplevel', 'devtools.timeline', 'disabled-by-default-devtools.timeline.frame', 'blink', 'cc', 'viz', 'gpu', 'benchmark', 'disabled-by-default-devtools.timeline', '__metadata'], excludedCategories: ['*'] }, transferMode: 'ReportEvents' });
+    setTimeout(() => { tcCdp.send('Tracing.end').catch(() => {}); }, traceS * 1000);
+  }
+  await page.evaluate(() => { window.__omwPerfProbe.on = true; window.__omwPerfProbe.t0 = performance.now(); });
   if (args.includes('--mark')) console.log('MEASURE START', Date.now()); // (for a recorder outside: perf record, a thread sampler)
   const memStop = arg('--mem-every') ? await memSampler(page, Number(arg('--mem-every')), '() => Module.HEAPU8.length') : null;
+  // (--mem-every: the browser's processes' resident memory too — the GPU process holds the WebGL objects and the
+  // bitmaps of an engine drawing on its own thread, which no page heap shows)
+  const rssStop = arg('--mem-every') ? rssSampler(Number(arg('--mem-every'))) : null;
   // (--net-after KB/s: Chrome's link at that speed from the measure on, 50 ms round trip — the world streamed over a slow link)
   if (arg('--net-after')) { const c = await page.context().newCDPSession(page); await c.send('Network.enable'); await c.send('Network.emulateNetworkConditions', { offline: false, latency: 50, downloadThroughput: Number(arg('--net-after')) * 1024, uploadThroughput: 64 * 1024 }); }
   // (the game data's indicator over the measured seconds: shown only while the game truly waits — data-meter-worker.js)
@@ -166,6 +199,7 @@ try {
   }
   const meter = await meterStop();
   const mem = memStop ? await memStop() : null;
+  const rss = rssStop ? rssStop() : null;
   const r = await page.evaluate(({ before }) => {
     const P = window.__omwPerfProbe; P.on = false; clearInterval(P.cellLook);
     const q = (a, p) => { const s = [...a].sort((x, y) => x - y); return s.length ? +s[Math.min(s.length - 1, Math.floor(s.length * p))].toFixed(1) : null; };
@@ -184,13 +218,32 @@ try {
       gap: { p50: q(gaps, 0.5), p90: q(gaps, 0.9), p99: q(gaps, 0.99), max: q(gaps, 1), over100: gaps.filter((g) => g > 100).length, over250: gaps.filter((g) => g > 250).length },
       work: { p50: q(P.work, 0.5), p90: q(P.work, 0.9), p99: q(P.work, 0.99), max: q(P.work, 1), over16: P.work.filter((w) => w > 1000 / 60).length, over33: P.work.filter((w) => w > 100 / 3).length, over50: P.work.filter((w) => w > 50).length, over100: P.work.filter((w) => w > 100).length },
       workRaw: P.work.map((w) => +w.toFixed(2)),
+      // (each drawn frame's time from the measure's start, ms: the first seconds in the world apart, --warm 0)
+      framesRaw: P.frames.map((t) => +(t - P.frames[0]).toFixed(1)),
       syncPerFrame: perFrame, syncTotal: P.sync,
       glCalls: P.gl ? (() => { const n = Math.max(1, P.frames.length), all = Object.entries(P.gl).sort((x, y) => y[1] - x[1]);
         return { perFrame: +(all.reduce((t, [, v]) => t + v, 0) / n).toFixed(0), top: Object.fromEntries(all.slice(0, 30).map(([k, v]) => [k, +(v / n).toFixed(1)])) }; })() : undefined,
       dataStallMs: window.__streamfsStats ? +(window.__streamfsStats.stallMs - (before.stall ?? 0)).toFixed(0) : null,
       shaderVariantsBuilt: (window.__omwShaderMisses ?? 0) - before.misses, soundsNotReady: P.notReady, readsPutOff: P.rangeNotReady,
-      syncFetches: window.__streamfsStats ? (window.__streamfsStats.syncFetches ?? 0) - before.sync : null, cells: [...P.cells],
+      syncFetches: window.__streamfsStats ? (window.__streamfsStats.syncFetches ?? 0) - before.sync : null, cells: [...(P.cells ?? [])],
       phase: window.__omwPhase ?? null,
+      // (OPENMW_ORTHROS_DRAWTHREAD: the page thread's waits for the draw thread, osgViewer/ViewerBase.cpp, and the frames shown)
+      // (drawMs: the draw thread's time on each frame of the measure, its swaps — handed every 60 frames)
+      ...(window.__omwDrawThread ? { drawThread: (() => { const { drawMs = [], ...s } = window.__omwDrawThread, d = drawMs.slice(before.drawn);
+        const pr = window.__omwDrawThreadPresent;
+        // (the present delay: from the end of the page thread's dispatch of a frame to its picture handed to the
+        // compositor, ms, and the page's rendering opportunities between — its animation frames: 0 is the page's own
+        // canvas without the draw thread, committed at the next rendering update after the pump; 1 adds a frame)
+        const lat = (pr?.lat ?? []).filter(([a]) => a >= P.t0), delay = lat.map(([a, b]) => b - a);
+        const vs = lat.map(([a, b]) => { let n = 0; for (const t of P.raf) if (t > a && t < b) n++; return n; });
+        const hist = {}; for (const n of vs) { const k = n >= 3 ? '3+' : String(n); hist[k] = (hist[k] ?? 0) + 1; }
+        return { ...s, shown: window.__omwDrawThreadFrames ?? 0, present: pr ? { posted: pr.posted, dropped: pr.dropped, frames: pr.frames, stale: pr.stale, staleShown: pr.staleShown, kicks: pr.kicks } : null,
+          presentDelay: lat.length ? { frames: lat.length, ms: { p50: q(delay, 0.5), p90: q(delay, 0.9), p99: q(delay, 0.99), max: q(delay, 1) }, vsyncs: { p50: q(vs, 0.5), p90: q(vs, 0.9), p99: q(vs, 0.99), max: q(vs, 1), hist } } : null,
+          prepared: window.__omwDrawThreadPrep ?? null,
+          draw: { frames: d.length, p50: q(d, 0.5), p90: q(d, 0.9), p99: q(d, 0.99), max: q(d, 1), over16: d.filter((w) => w > 1000 / 60).length, over33: d.filter((w) => w > 100 / 3).length } }; })() } : {}),
+      // (the engine's own counters at the end: the loading screens' program compiles, OPENMW_ORTHROS_PRECOMPILE; the
+      // textures uploaded ahead and the images reloaded, light copies replaced)
+      engine: { precompile: window.__omwPrecompile ?? null, texAhead: window.__orthrosTexAhead ?? null, texReloads: window.__orthrosTexReloads ?? null },
     };
   }, { before });
   if (trCdp) { const done = new Promise((ok) => trCdp.once('Tracing.tracingComplete', ok)); await trCdp.send('Tracing.end'); await done; fs.writeFileSync(path.join(dir, 'gc-trace.json'), JSON.stringify(trEvents)); }
@@ -199,14 +252,58 @@ try {
   const workerProfiles = wprof ? await wprof.stop(dir) : undefined;
   // (the heap snapshot last: its forced full collections and its stall outside the trace and the profiles above)
   if (args.includes('--snapshot')) { const sc = await page.context().newCDPSession(page); const fd = fs.openSync(path.join(dir, 'perf.heapsnapshot'), 'w'); sc.on('HeapProfiler.addHeapSnapshotChunk', (e) => fs.writeSync(fd, e.chunk)); await sc.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false }); fs.closeSync(fd); }
-  const out = { manifest: id, discard, seconds, warm, start, glide, query: extra, bootMs, ...r, meter, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1), memSamples: mem.samples } : {}), faults, profile: prof,
+  const out = { manifest: id, discard, seconds, warm, start, glide, query: extra, bootMs, atBoot, ...r, meter, ...(mem ? { memGrowthPer10min: mem.growthPer10min, memFirst: mem.samples[0], memLast: mem.samples.at(-1), memSamples: mem.samples } : {}), ...(rss ? { rss } : {}), faults, profile: prof,
     ...(workerProfiles ? { workers: workerProfiles } : {}), ...(consoleLog ? { logCount, log: logLines } : {}) };
+  if (traceDone) await traceDone;
+  // (the frame timeline of the measure, timeline.json: the animation frames, the engine's pumps [start, end], the frames
+  // counted, and with the draw thread its timeline — tools/openmw ../frame-timeline analysis)
+  const tl = await page.evaluate(() => { const P = window.__omwPerfProbe, dt = window.__omwDrawThread, pr = window.__omwDrawThreadPresent;
+    return { t0: P.t0, raf: P.raf, pumps: P.pumps, frames: P.frames, tlPage: dt?.tlPage ?? null, tlDraw: dt?.tlDraw ?? null, lat: pr?.lat ?? null, mode: pr?.mode ?? null, prep: window.__omwDrawThreadPrep ?? null }; });
+  fs.writeFileSync(path.join(dir, 'timeline.json'), JSON.stringify(tl));
   fs.writeFileSync(path.join(dir, 'perf.json'), JSON.stringify(out, null, 2));
   await page.screenshot({ path: path.join(dir, 'perf.png') });
   // (the printed line without the raw arrays: they stay in perf.json)
-  const { workRaw: _, log: __, ...line } = out;
+  const { workRaw: _, log: __, framesRaw: ___, ...line } = out;
   console.log(JSON.stringify(line));
 } finally { await browser.close(); }
+
+/**
+ * --mem-every: the resident memory (MB) of the browser's processes every `everyS` seconds, by kind (gpu, renderer,
+ * other: Chromium's --type), from /proc; at the end the samples and each kind's growth per 10 minutes after 120 s.
+ */
+function rssSampler(everyS) {
+  // (the browser's own process: the one whose profile is in this run's directory — TMPDIR, set above)
+  const root = (() => { for (const d of fs.readdirSync('/proc')) { if (!/^\d+$/.test(d)) continue;
+    try { const c = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8'); if (c.includes(`--user-data-dir=${dir}`) && !c.includes('--type=')) return Number(d); } catch { /* gone */ } } return null; })();
+  const t0 = Date.now(), samples = [];
+  const kids = (pid) => { try { return fs.readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim().split(/\s+/).filter(Boolean).map(Number); } catch { return []; } };
+  const one = () => {
+    if (!root) return;
+    const s = { t: Math.round((Date.now() - t0) / 1000), gpu: 0, renderer: 0, other: 0 };
+    const todo = [root];
+    while (todo.length) {
+      const pid = todo.pop(); todo.push(...kids(pid));
+      try {
+        const kb = Number(/VmRSS:\s+(\d+)/.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1] ?? 0);
+        const type = /--type=([\w-]+)/.exec(fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' '))?.[1];
+        s[type === 'gpu-process' ? 'gpu' : type === 'renderer' ? 'renderer' : 'other'] += kb / 1024;
+      } catch { /* gone */ }
+    }
+    for (const k of ['gpu', 'renderer', 'other']) s[k] = +s[k].toFixed(0);
+    samples.push(s);
+  };
+  one();
+  const timer = setInterval(one, everyS * 1000);
+  return () => {
+    clearInterval(timer); one();
+    const later = samples.filter((s) => s.t >= 120), slope = (k) => {
+      const n = later.length; if (n < 2) return null;
+      const mx = later.reduce((a, s) => a + s.t, 0) / n, my = later.reduce((a, s) => a + s[k], 0) / n;
+      return +(later.reduce((a, s) => a + (s.t - mx) * (s[k] - my), 0) / Math.max(1e-9, later.reduce((a, s) => a + (s.t - mx) ** 2, 0)) * 600).toFixed(1);
+    };
+    return { samples, growthPer10min: { gpu: slope('gpu'), renderer: slope('renderer'), other: slope('other') } };
+  };
+}
 
 /**
  * --workers: every worker of the page (and theirs) profiled over Chromium's debugging socket on `port` — the page's

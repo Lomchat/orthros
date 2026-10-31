@@ -6,7 +6,8 @@
 // into the page's persistent user files, the page loaded again — the swap before the engine reads them, then the same
 // probes. Not a gameplay check. Always through tools/with-browser-slot.sh:
 //   tools/with-browser-slot.sh node tools/openmw/keys-check.mjs <manifest> --url <origin> [--start -2,-9] [--seed-old]
-//     [--draw] [--out <dir>]   (--draw: the pictures drawn — slower; by default rasterizer discard, as perf.mjs --discard)
+//     [--draw] [--query name=value[&...]] [--out <dir>]   (--draw: the pictures drawn — slower; by default rasterizer
+//     discard, as perf.mjs --discard; --query: added to the engine page's address, e.g. omwenv=OPENMW_ORTHROS_DRAWTHREAD=1)
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -34,6 +35,9 @@ const LUA = "local t0, z0, r = core.getRealTime(), self.position.z, {j = false, 
 
 const browser = await chromium.launch(launchOptions({ gl: 'swiftshader', channel: arg('--channel', 'chromium') }));
 const draw = args.includes('--draw');
+// (rasterizer discard with the engine drawing on its own thread: the init script below only reaches the page's contexts —
+// the draw thread's is the engine's own "discard" value)
+const query = draw ? arg('--query', '') : arg('--query', '').replace(/(OPENMW_ORTHROS_DRAWTHREAD=)1(?=$|[,&])/, '$1discard');
 const faults = [], lines = [];
 try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -49,7 +53,7 @@ try {
   page.on('console', (m) => { if (/ORTHROS-KEYS|\[orthros\] saved bindings/.test(m.text())) lines.push(m.text()); });
   // (a check: nothing reported to the server — its learned order, telemetry and the gateway's client log stay clean)
   await page.route((u) => /\/clientlog$|\/api\/(telemetry|prefetch|profile-seed|programs|regions)(\/|$)/.test(u.pathname), (r) => r.request().method() === 'GET' ? r.continue() : r.fulfill({ status: 204, body: '' }));
-  const url = `${base}/ports/openmw/${encodeURIComponent(id)}/app/index.html?src=hosted&start=${encodeURIComponent(start)}`;
+  const url = `${base}/ports/openmw/${encodeURIComponent(id)}/app/index.html?src=hosted&start=${encodeURIComponent(start)}${query ? '&' + query : ''}`;
   const inWorld = async () => {
     await page.waitForFunction(() => window.omw?.state?.['orthros.view'] !== undefined, null, { timeout: 600000, polling: 500 });
     await page.mouse.click(640, 400);

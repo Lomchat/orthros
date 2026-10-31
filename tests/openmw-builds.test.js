@@ -335,3 +335,18 @@ test('r18: r17 plus its patch, the same exports; a remote player\'s copy is not 
     assert.ok(hunk.includes(line), line);
   assert.ok(patch.includes("+  check('a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands"), 'the engine\'s Lua test of it');
 });
+
+test('r19: r18 plus its patch, the same exports; the draw thread behind its switch (off by default) and screenshots read as RGBA on WebGL2', () => {
+  const r18 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r18'), r19 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r19');
+  assert.ok(r19, 'r19 is a build');
+  assert.deepEqual(r19.patches, [...r18.patches, 'orthros-r19.patch']);
+  assert.deepEqual(r19.exports, r18.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const f of ['deps/src/osg/src/osgViewer/ViewerBase.cpp', 'openmw/components/sdlutil/sdlgraphicswindow.cpp', 'wasm-build/orthros-gl.js',
+    'deps/src/osg/src/osg/Image.cpp'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  assert.ok(added.includes('OPENMW_ORTHROS_DRAWTHREAD'));
+  // (the screenshot fix: an RGB read WebGL2 refuses done as RGBA and converted)
+  assert.ok(/GL_RGBA/.test(added) && added.includes('readPixels'));
+});

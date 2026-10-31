@@ -10,7 +10,9 @@
 // slow, the views wait. Not a gameplay check. Always through tools/with-browser-slot.sh:
 //   tools/with-browser-slot.sh node tools/openmw/frame-compare.mjs <manifest> --url <origin> [--variant <query>]...
 //     [--views day,night,interior] [--exterior -2,-9] [--interior "Seyda Neen, Arrille's Tradehouse"] [--settle 20]
-//     [--frames 4] [--out <dir>]   (--frames: captures a view, 1.5 s apart, averaged — interiors' lights flicker)
+//     [--frames 4] [--out <dir>]   (--frames: captures a view, 1.5 s apart, averaged — interiors' lights flicker; and
+//     compared pair by pair, each capture of one run with each of the other's, the nearest pair kept — "nearest": a light
+//     flickering through the whole view lands two runs on the same phase in some pair, noise and difference alike)
 //   The first --variant is the reference ('' for the page's defaults); views: day (the exterior at 13 h, the camera
 //   turned south-west, slightly down), night (the same at 22 h), interior (the cell --interior at 13 h).
 import fs from 'node:fs';
@@ -59,10 +61,11 @@ try {
       await page.evaluate((h) => window.Module._omw_debug_sethour?.(h), view.hour);
       await page.evaluate(([y, p]) => window.Module._omw_debug_look?.(y, p), view.look);
       await page.waitForTimeout(settle * 1000);
-      // (the engine's canvas alone: the page's fixed overlays — the game data's indicator — hidden)
+      // (the engine's canvas alone: the page's fixed overlays — the game data's indicator — hidden; not the layer that
+      // shows the frames of an engine drawing on its own thread, OPENMW_ORTHROS_DRAWTHREAD, laid over the canvas)
       const engine = await page.evaluateHandle(() => {
         const c = window.Module?.canvas ?? document.getElementById('canvas') ?? document.querySelector('canvas');
-        for (const o of document.querySelectorAll('canvas')) if (o !== c && getComputedStyle(o).position === 'fixed') o.style.display = 'none';
+        for (const o of document.querySelectorAll('canvas')) if (o !== c && o.id !== 'omw-drawthread-layer' && getComputedStyle(o).position === 'fixed') o.style.display = 'none';
         return c;
       });
       // (several captures 1.5 s apart, averaged when compared: interiors' lights flicker)
@@ -92,7 +95,16 @@ try {
       const r = Math.abs(p[i] - q[i]), g = Math.abs(p[i + 1] - q[i + 1]), b = Math.abs(p[i + 2] - q[i + 2]);
       sum += (r + g + b) / 3; if (Math.max(r, g, b) > 24) over++;
     }
-    return { meanAbs: +(sum / n).toFixed(3), over24: +(over / n * 100).toFixed(3) };
+    // (each capture against each: the nearest pair — the same flicker phase — and the median pair)
+    const all = [await Promise.all(xs.map(load)), await Promise.all(ys.map(load))], pairs = [];
+    for (const x of all[0]) for (const y of all[1]) {
+      if (x.length !== y.length) continue;
+      let s2 = 0, o2 = 0;
+      for (let i = 0; i < x.length; i += 4) { const r = Math.abs(x[i] - y[i]), g = Math.abs(x[i + 1] - y[i + 1]), b = Math.abs(x[i + 2] - y[i + 2]); s2 += (r + g + b) / 3; if (Math.max(r, g, b) > 24) o2++; }
+      pairs.push({ meanAbs: +(s2 / n).toFixed(3), over24: +(o2 / n * 100).toFixed(3) });
+    }
+    pairs.sort((u, w) => u.meanAbs - w.meanAbs);
+    return { meanAbs: +(sum / n).toFixed(3), over24: +(over / n * 100).toFixed(3), nearest: pairs[0] ?? null, medianPair: pairs[Math.floor(pairs.length / 2)] ?? null };
   }, [a.map((f) => fs.readFileSync(f).toString('base64')), b.map((f) => fs.readFileSync(f).toString('base64'))]);
   const report = {};
   for (const v of views) {

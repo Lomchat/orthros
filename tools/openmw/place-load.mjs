@@ -478,8 +478,11 @@ function probe() {
   const raf = window.requestAnimationFrame.bind(window);
   let seen = 0;
   const tick = (t) => {
-    if (P.draws !== seen) {
-      seen = P.draws; P.firstDraw ??= t;
+    // (an engine drawing on its own thread, OPENMW_ORTHROS_DRAWTHREAD: no WebGL call on this page — its frames are the
+    // pictures it hands to the page, window.__omwDrawThreadFrames, as src/ports/openmw/frame-meter.js counts them)
+    const drawn = P.draws + (window.__omwDrawThreadFrames ?? 0);
+    if (drawn !== seen) {
+      seen = drawn; P.firstDraw ??= t;
       if (P.on) { if (P.last !== null && t - P.last > 100) P.gaps.push([P.last, t]); P.frames.push(t); }
       P.last = t;
     }

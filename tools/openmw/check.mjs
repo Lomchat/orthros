@@ -51,12 +51,15 @@ try {
   // renderer that can come after the fixed wait — waited for, up to 30 s, instead of read at once)
   await page.locator('#loader.hidden').waitFor({ state: 'attached', timeout: 30000 }).catch(() => {});
   const state = await frame.locator('body').evaluate(async () => ({
-    isolated: crossOriginIsolated, draws: window.orthrosDraws, args: window.Module?.arguments,
+    // (an engine drawing on its own thread, OPENMW_ORTHROS_DRAWTHREAD: its frames handed to the page, no draw here)
+    isolated: crossOriginIsolated, draws: window.orthrosDraws, frames: window.__omwDrawThreadFrames ?? 0, args: window.Module?.arguments,
     databases: (await indexedDB.databases()).map((d) => d.name), log: document.querySelector('#log')?.textContent.slice(-1600),
   }));
   const header = await page.evaluate(() => ({ fps: Number(document.querySelector('#tbPerf .fps')?.textContent), mouse: document.querySelector('#tbMouse')?.textContent, save: document.querySelector('#tbSave')?.textContent, loader: document.querySelector('#loader')?.classList.contains('hidden') }));
   Object.assign(state, { header });
-  assert.equal(state.isolated, true); assert.ok(state.draws > 100, `Only ${state.draws} draws`);
+  // (draws: the page's WebGL draw calls; frames: the pictures an engine drawing on its own thread handed to the page)
+  assert.equal(state.isolated, true);
+  if (state.frames > 0) assert.ok(state.frames > 30, `Only ${state.frames} frames from the draw thread`); else assert.ok(state.draws > 100, `Only ${state.draws} draws`);
   assert.ok(header.fps > 0, 'The header shows the engine\'s frame rate'); assert.ok(header.mouse, 'The mouse indicator'); assert.ok(header.loader, 'The loading screen gone once the engine draws');
   assert.ok(state.databases.includes(man.saveKey), 'Installation-specific browser saves');
   // (a start cell is the example world's only — src/ports/openmw/play.js: a hosted game starts at its menu or its save)
@@ -64,5 +67,5 @@ try {
   assert.deepEqual(faults, []);
   fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(state, null, 2));
   await page.screenshot({ path: path.join(dir, 'solo.png') });
-  console.log(JSON.stringify({ ok: true, manifest: id, ...(lang ? { lang, ran: target } : {}), draws: state.draws, isolated: state.isolated, output: dir }));
+  console.log(JSON.stringify({ ok: true, manifest: id, ...(lang ? { lang, ran: target } : {}), draws: state.draws, frames: state.frames, isolated: state.isolated, output: dir }));
 } finally { await browser.close(); }
