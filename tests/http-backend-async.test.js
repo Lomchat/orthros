@@ -251,3 +251,41 @@ test('read-ahead: a parked read of a file read whole waits for the blocks it cov
   calls[1].release(); await p2;
   for (const i of [2, 3, 4, 5]) assert.ok(b.cache.has(`f.big#${i}`));
 }));
+
+test('async read: a read of bytes another read is fetching joins its request (a background ask, then the forced read of the same bytes)', () => withFetch(async (calls) => {
+  const b = new HttpBackend('/game/j/', tree()); b.noteMiss = () => {};
+  b.lastSyncFetchAt = -1e9;
+  // (an entry over two whole blocks, read by pieces: the background ask's fetchAhead)
+  const first = b.fetchAhead('f.big', SIZE, 1, 2 * MiB, 4 * MiB, false);
+  await tick();
+  const asked = calls.filter((c) => !c.bg).length;
+  assert.ok(asked >= 1, 'the first read fetches');
+  // (the same bytes read again before they came — and a part of them: nothing asked again)
+  let second = false, part = false;
+  const s = b.fetchAhead('f.big', SIZE, 1, 2 * MiB, 4 * MiB, false).then(() => { second = true; });
+  const q = b.fetchAhead('f.big', SIZE, 1, 3 * MiB + 100, 3 * MiB + 200, false).then(() => { part = true; });
+  await tick(20);
+  assert.equal(calls.filter((c) => !c.bg).length, asked, 'the second and third reads join the requests on their way');
+  assert.ok(b.stats.fgJoined > 0);
+  assert.equal(second || part, false, 'they wait for them');
+  for (const c of calls) c.release();
+  await Promise.all([first, s, q]);
+  assert.equal(calls.filter((c) => !c.bg).length, asked, 'still one request each once they came');
+  assert.equal(b.fgFlights.size, 0, 'the flights are cleared');
+  assert.deepEqual(b.open('f.big').read(2 * MiB + 5, 100), bytes(2 * MiB + 5, 2 * MiB + 105));
+  assert.deepEqual(b.open('f.big').read(4 * MiB - 100, 100), bytes(4 * MiB - 100, 4 * MiB));
+  // (a failed request: the read that joined it fetches by itself)
+  const f1 = b.fetchAhead('f.big', SIZE, 1, 6 * MiB, 6 * MiB + 1000, false);
+  await tick();
+  const n = calls.length;
+  const f2 = b.fetchAhead('f.big', SIZE, 1, 6 * MiB, 6 * MiB + 1000, false);
+  await tick(20);
+  assert.equal(calls.length, n, 'joined');
+  calls[n - 1].fail();
+  await f1;
+  for (let i = 0; i < 50 && calls.length === n; i++) await tick(10);
+  assert.equal(calls.length, n + 1, 'the joiner asks again once the request failed');
+  calls[n].release();
+  await f2;
+  assert.deepEqual(b.open('f.big').read(6 * MiB, 1000), bytes(6 * MiB, 6 * MiB + 1000));
+}));

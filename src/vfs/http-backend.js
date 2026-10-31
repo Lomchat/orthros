@@ -262,6 +262,10 @@ export class HttpBackend {
     this.flights = new Map();
     /** whole blocks being fetched ahead of a sequential reader: "path#block" -> promise (see readAhead) */
     this.blockFlights = new Map(); this.readAheadPending = 0;
+    /** the pieces a fetchAhead is fetching for a read (fetchForeground: `${path}#${piece}` → its job), joined by any other
+     *  read of them meanwhile — a background ask and the forced read of the same bytes one wait limit later (data-worker
+     *  bytesOf: both through fetchAhead), one request on the link instead of two */
+    this.fgFlights = new Map();
     /** the latest read of any file (HttpFile.readNow): its path, end, and `runs` — counted up at each read that does not
      * continue the latest one (another file, or elsewhere in it); see readAheadParts */
     this.reader = { path: '', end: 0, runs: 0 };
@@ -1437,11 +1441,13 @@ export class HttpBackend {
     // pieces of the read already on their way (fetched ahead from the learned list): waited for, not asked again
     // (and whole blocks fetched ahead of a sequential reader, see readAhead); one still waiting for its turn on the link
     // goes first now (the game waits for it)
-    if (this.flights.size || this.blockFlights.size) {
+    // (and the pieces another read's fetchAhead is fetching: fgFlights — joined, never asked twice at once)
+    if (this.flights.size || this.blockFlights.size || this.fgFlights.size) {
       const flying = new Set();
       if (this.flights.size) for (let c = Math.floor(pos / CHUNK); c * CHUNK < end; c++) { const f = this.flights.get(`${path}#${c}`); if (f) flying.add(f); }
       if (this.blockFlights.size) for (let bi = Math.floor(pos / BLOCK); bi * BLOCK < end; bi++) { const f = this.blockFlights.get(`${path}#${bi}`); if (f) flying.add(f); }
-      for (const f of flying) { this.net.promote(f.w); f.joined = true; }
+      if (this.fgFlights.size) for (let c = Math.floor(pos / CHUNK); c * CHUNK < end; c++) { const f = this.fgFlights.get(`${path}#${c}`); if (f) { flying.add(f); this.stats.fgJoined = (this.stats.fgJoined ?? 0) + 1; } }
+      for (const f of flying) { if (f.w) this.net.promote(f.w); f.joined = true; }
       if (flying.size) await Promise.all(flying);
     }
     const jobs = [];
@@ -1459,7 +1465,7 @@ export class HttpBackend {
         // after them follow asynchronously once it has read, see readAhead)
         let n = 1; while (n < 4 && b0 + n * BLOCK < Math.min(size, end) && !this.blockFlights.has(`${path}#${bi + n}`)) n++;
         const e = Math.min(size, b0 + n * BLOCK);
-        jobs.push(this.fetchForeground(path, b0, e).then((d) => { if (d) for (let i = 0; b0 + i * BLOCK < e; i++) if (!this.cache.has(`${path}#${bi + i}`)) this.installBlock(path, bi + i, d.subarray(i * BLOCK, Math.min(d.length, (i + 1) * BLOCK)), `${path}#${size}#${mtime}#${bi + i}`); this.evict(); }));
+        jobs.push(this.fgFlight(path, b0, e, this.fetchForeground(path, b0, e).then((d) => { if (d) for (let i = 0; b0 + i * BLOCK < e; i++) if (!this.cache.has(`${path}#${bi + i}`)) this.installBlock(path, bi + i, d.subarray(i * BLOCK, Math.min(d.length, (i + 1) * BLOCK)), `${path}#${size}#${mtime}#${bi + i}`); this.evict(); })));
         break;
       }
       const c0 = Math.floor(Math.max(pos, b0) / CHUNK), c1 = Math.floor((Math.min(end, b1) - 1) / CHUNK);
@@ -1470,11 +1476,18 @@ export class HttpBackend {
       if (extra > 0 && Math.min(end, b1) === end) { const last = Math.min(Math.floor((b1 - 1) / CHUNK), Math.floor((end - 1 + extra) / CHUNK)); while (m1 < last && !this.hasPiece(path, size, mtime, m1 + 1) && !this.flights.has(`${path}#${m1 + 1}`)) m1++; }
       this.noteMiss(path, size, mtime, bi);
       const start = m0 * CHUNK, stop = Math.min(size, (m1 + 1) * CHUNK);
-      jobs.push(this.fetchForeground(path, start, stop).then((d) => {
+      jobs.push(this.fgFlight(path, start, stop, this.fetchForeground(path, start, stop).then((d) => {
         if (d && !this.cache.has(`${path}#${bi}`)) this.addPieces(path, m0, m1, d, { size, mtime });
-      }));
+      })));
     }
     try { await Promise.all(jobs); } finally { if (waited) waited.waiters--; }
+  }
+  /** `job` (fetching [start, end) of `path` for a read, its bytes installed once it settles) in fgFlights while it runs. */
+  fgFlight(path, start, end, job) {
+    const c0 = Math.floor(start / CHUNK), c1 = Math.floor((end - 1) / CHUNK);
+    const done = job.finally(() => { for (let c = c0; c <= c1; c++) if (this.fgFlights.get(`${path}#${c}`) === done) this.fgFlights.delete(`${path}#${c}`); });
+    for (let c = c0; c <= c1; c++) this.fgFlights.set(`${path}#${c}`, done);
+    return done;
   }
   /** [start, end) with fetch() for a read the game waits for (counted as the game's own reads; not aborted). */
   async fetchForeground(path, start, end) {
