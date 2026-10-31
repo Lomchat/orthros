@@ -79,6 +79,7 @@
 //     save: [--entry play|engine] [--menu 10] [--save <scratch>/saves/<to>.omwsave] [--make-save]
 //     glide: [--glide 0,1,300,3000] [--seconds 150]   door: [--interior '<cell id>'] [--lead 0]
 //     in play (coe, glide, door) and save --entry engine: [--query lead=1] (added to the measured runs' engine page —
+//     save --entry play: to the play page, which hands its jspi* switches to the engine's frame —
 //     not the teach runs': an A/B of a page switch) [--teach-query lead=1] (added to the teach runs' engine page: what
 //     a session with the switch teaches the next ones)
 //   (--profile-warm defaults to <scratch>/profile-warm for --start -2,-9, <scratch>/profile-warm-<start> otherwise)
@@ -646,7 +647,7 @@ if (MAIN) {
     process.exit(0);
   }
   const { chromium } = await import('playwright');
-  const { launchOptions, startProfile, stopProfile } = await import('../port-perf.mjs');
+  const { launchOptions, startProfile, stopProfile, startTrace, stopTrace } = await import('../port-perf.mjs');
   const { startProxy, startOrigin, spkiOf, readLog, loadWindow, summarize } = await import('../net-proxy.mjs');
   const certs = path.join(scratch, 'cert');
   const log = (...a) => console.log('[place-load]', ...a);
@@ -801,7 +802,7 @@ if (MAIN) {
     const play = mode !== 'save', goal = mode === 'door' ? '' : target;
     // (--query on the measured runs only: the teach runs of both arms of an A/B the same; --teach-query on the teach runs)
     const q = teach ? o.teachQuery : o.query;
-    const url = play ? enginePage(`&start=${encodeURIComponent(start)}&novid${q ? '&' + q : ''}`) : entry === 'play' ? `/ports/openmw/${encodeURIComponent(id)}/?mode=solo` : enginePage(`&novid${q ? '&' + q : ''}`);
+    const url = play ? enginePage(`&start=${encodeURIComponent(start)}&novid${q ? '&' + q : ''}`) : entry === 'play' ? `/ports/openmw/${encodeURIComponent(id)}/?mode=solo${q ? '&' + q : ''}` : enginePage(`&novid${q ? '&' + q : ''}`);
     let init = save ? [injectSave, { dir: save.dir, character: save.character, file: save.file, b64: fs.readFileSync(saveFile).toString('base64') }] : null;
     const ready = play ? inWorld : () => window.__placeProbe?.menuAt != null;
     // (--read-trace: the page's requests to its game data worker traced — data-client.js GameData.trace —, written to the
@@ -842,6 +843,11 @@ if (MAIN) {
       // profile in the run's folder — load.cpuprofile —, the page's clock at its start in the row: profileAt)
       const cpu = process.env.ORTHROS_PLACE_PROFILE === '1' ? await startProfile(page) : null;
       const profileAt = cpu ? await frame.evaluate(() => performance.now()) : null;
+      // (ORTHROS_PLACE_TRACE=1, a diagnosis: a browser trace — every process: the page's tasks and frames, the compositor,
+      // the GPU process — from the trigger to the load's end (before --after), load.trace.json.gz in the run's folder,
+      // the page's clock at its start in the row: traceAt)
+      const tracing = process.env.ORTHROS_PLACE_TRACE === '1' ? await startTrace(page).catch((e) => { notes.push(`trace not started: ${e?.message ?? e}`); return null; }) : null;
+      const traceAt = tracing ? await frame.evaluate(() => performance.now()) : null;
       if (mode === 'glide') {
         // (perf.mjs's glide: the engine's debug teleport every 33 ms along a straight line, the page's own timer — it goes
         // on while this process waits; the cells crossed and their loads the same at every run)
@@ -918,6 +924,7 @@ if (MAIN) {
       if (!end && mode !== 'glide') notes.push(`cell ${goal || 'interior'} not reached with frames flowing`);
       if (mode === 'door') await pressInEngine(page, frame, 'Backquote');
       const afterLoad = await stats(frame);
+      if (tracing) await stopTrace(tracing, path.join(dir, 'load.trace.json.gz')).then(() => notes.push(`trace from ${Math.round(traceAt)} (the page's clock)`), (e) => notes.push(`trace lost: ${e?.message ?? e}`));
       // (the mouse still moving through --after: the view raise there — view-grow.js, once the load is quiet — has its
       // input delays too, jspiAfter)
       await sleep((teach ? Math.max(afterS, 25) : afterS) * 1000);

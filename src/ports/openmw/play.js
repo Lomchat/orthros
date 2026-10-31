@@ -110,6 +110,9 @@ async function enter(chosen) {
     shell.progress(20, S.launching);
     // (?sfs=upstream on this page: the engine release's own file streaming, for a comparison or around a fault)
     if (params.get('sfs') === 'upstream' && src.startsWith('app/index.html')) src += '&sfs=upstream';
+    // (the engine page's JSPI switches on this page — ?jspipresent=N, ?jspigl=N…, play/index.html: a measure's A/B
+    // through the player's own entry, tools/openmw/place-load.mjs --query — handed to it)
+    if (src.startsWith('app/index.html')) for (const [k, v] of params) if (/^jspi[a-z]*$/.test(k) && /^[\w.]*$/.test(v)) src += `&${k}=${v}`;
     frame.src = src; frame.hidden = false;
     session.state = 'running';
   } catch (e) { session.state = 'ready'; shell.phase(S.failed + e.message, true); shell.choices.querySelectorAll('button').forEach((b) => { b.disabled = false; }); }

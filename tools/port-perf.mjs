@@ -161,6 +161,36 @@ export async function startProfile(page) {
 }
 
 /**
+ * A browser trace (CDP Tracing, every process: the page's thread, the compositor, the GPU process) started on `page`'s
+ * session — what the page's rendering, the GPU's queue and input do around a load (a diagnosis: place-load.mjs
+ * ORTHROS_PLACE_TRACE=1). Ended by stopTrace.
+ */
+export async function startTrace(page, categories = TRACE_CATEGORIES) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Tracing.start', { transferMode: 'ReturnAsStream', streamCompression: 'gzip', traceConfig: { recordMode: 'recordContinuously', includedCategories: categories } });
+  return cdp;
+}
+/** The categories of startTrace: tasks and frames of every process, the GPU's scheduling, input's path. */
+export const TRACE_CATEGORIES = ['toplevel', 'devtools.timeline', 'disabled-by-default-devtools.timeline', 'disabled-by-default-devtools.timeline.frame', 'blink', 'cc', 'viz', 'gpu', 'gpu.service',
+  'disabled-by-default-gpu.service', 'input', 'latencyInfo', 'benchmark', 'v8.execute', 'scheduler', 'renderer.scheduler'];
+/** The trace of startTrace ended and written, gzipped (Chrome's JSON trace: chrome://tracing, Perfetto), to `file`. */
+export async function stopTrace(cdp, file) {
+  const fs = await import('node:fs');
+  const done = new Promise((resolve) => cdp.once('Tracing.tracingComplete', resolve));
+  await cdp.send('Tracing.end');
+  const { stream } = await done;
+  const out = fs.openSync(file, 'w');
+  try {
+    for (;;) {
+      const r = await cdp.send('IO.read', { handle: stream, size: 1 << 20 });
+      if (r.data) fs.writeSync(out, r.base64Encoded ? Buffer.from(r.data, 'base64') : Buffer.from(r.data, 'binary'));
+      if (r.eof) break;
+    }
+  } finally { fs.closeSync(out); await cdp.send('IO.close', { handle: stream }).catch(() => {}); }
+  return file;
+}
+
+/**
  * The profile's summary: self time by function (the WebAssembly's share apart), and the longest stretches without an
  * idle sample — the hitches: their length and the functions they spent it in (a function counted once a sample
  * wherever it is on the stack). `frames`: the measured frames (the WebAssembly's milliseconds a frame); `save`: a file

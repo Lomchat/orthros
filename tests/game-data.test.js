@@ -480,6 +480,23 @@ test('a file not in the page yet is not readable at once: fetched in the backgro
   assert.equal(data.readable(gone), true);
 });
 
+test('a file\'s bytes asked whether here (here: an engine choosing among equivalent files the one it reads at once) — nothing fetched', async (t) => {
+  const a = bytes(200000, 7), server = fakeServer({ 'Splash/a.tga': a, 'Splash/b.tga': bytes(200000, 8) });
+  const data = await inThread(t, server), ha = data.file('v', 'splash/A.tga'), hb = data.file('v', 'splash/b.tga');
+  const asked = server.asked.length;
+  assert.equal(data.here(ha), false); assert.equal(data.here(hb, 1000, 10), false);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(server.asked.length, asked, 'asked only: nothing fetched');
+  assert.equal(ha.ensuring ?? null, null);
+  await data.ensure(ha, 0, ha.size);
+  assert.equal(data.here(ha), true); assert.equal(data.here(ha, 5000, -1), true); assert.equal(data.here(hb), false);
+  assert.equal(data.here(hb, hb.size + 5, 10), true, 'nothing to read: here');
+  // (a file whose fetch failed: not here — its read would wait and fail)
+  const gone = data.fileAs('v', 'gone.tga', 1000);
+  assert.equal(data.readable(gone), false); await gone.ensuring.catch?.(() => {}); await new Promise((r) => setTimeout(r, 20));
+  assert.equal(data.here(gone), false);
+});
+
 test('a range of a file (an archive\'s member) not in the page yet: fetched in the background, once, only its pieces; then readable', async (t) => {
   const bsa = bytes(1 << 20, 5), server = fakeServer({ 'Morrowind.bsa': bsa });
   const data = await inThread(t, server), h = data.file('v', 'morrowind.BSA');

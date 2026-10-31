@@ -1051,6 +1051,19 @@ export class GameData {
   }
 
   /**
+   * The bytes [position, position + length) of `h` (by default the whole file; a negative length: to its end) are in the
+   * page now — the light copy or the file, as a read picks (a content file: the file's own) —: asked only, nothing
+   * fetched (readable fetches what is missing). An engine choosing among equivalent files the one it can read at once
+   * (OpenMW's loading screen's splash image, orthros-r19.patch). A file whose fetch failed: false.
+   */
+  here(h, position = 0, length = h.size) {
+    const at = Math.max(0, Math.min(h.size, position)), len = length < 0 ? h.size - at : Math.min(length, h.size - at);
+    if (h.failed) return false;
+    if (!(len > 0)) return true;
+    return this.contentFile(h) ? (this.progress(), this.inPage(h, at, len)) : !this.missing(h, at, len);
+  }
+
+  /**
    * Whether the bytes [position, position + length) of `h` (by default the whole file; a negative length: to its end)
    * can be read without the page's thread waiting: true, or false and those bytes fetched in the background (ensure,
    * once at a time for the same bytes) — an engine that would rather skip or put off a load than wait (OpenMW's sounds

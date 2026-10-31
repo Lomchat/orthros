@@ -337,6 +337,12 @@
     const h = S.data && byEngine(path);
     return !h || S.data.readable(h, offset, size);
   };
+  // (the same question asked only, nothing fetched — the Orthros build's loading screen choosing a splash image already in
+  // the page, orthros-r19.patch: GameData.here; a file not streamed here: true)
+  window.orthrosRangeHere = (path, offset, size) => {
+    const h = S.data && byEngine(path);
+    return !h || S.data.here(h, offset, size);
+  };
   /** The game file the engine opens as `path` (its file system's: an archive's for a file in it), or null (not streamed here). */
   function byEngine(path) {
     let h = S.byEnginePath.get(path);
