@@ -1,0 +1,34 @@
+save    r19L: 6 rows, errors []  tags [r19L-save-1 r19L-save-2 r19L-save-3 r19L-save-4 r19L-save-5 r19L-save-6]
+   menu [7.2 7.5 6.9 7.1 6.8 7.3] med 7.15  F9->world [4.8 4.9 5 4.8 4.9 4.9] med 4.9  steady [6.3 6.6 6.9 6.3 6.5 6.5]
+   input p50 [2128 1735 1588 2121 1682 2252] med 1928.0  p95 [5834 5205 5165 5827 5237 6012] med 5532.0  max [6235 5613 5567 6227 5637 6412]
+   events [183 190 195 183 188 186]  moves p95 [5834 5205 5165 5827 5237 6012]  keys p95 [6127 5502 5460 6119 5530 6305]  byDispatch [0 0 0 0 0 0] unanswered [0 0 0 0 0 0]
+   carriers [{'self': 90, 'coalesced': 93, 'next': 0, 'none': 0}, {'self': 96, 'coalesced': 94, 'next': 0, 'none': 0}, {'self': 99, 'coalesced': 96, 'next': 0, 'none': 0}, {'self': 88, 'coalesced': 95, 'next': 0, 'none': 0}, {'self': 90, 'coalesced': 98, 'next': 0, 'none': 0}, {'self': 92, 'coalesced': 94, 'next': 0, 'none': 0}]
+   block check: moves [40 40 40 40 40 40] first [2002 1994 2107 2000 2002 2034] residual max [40 18 127 33 39 43]
+   page block [4698 4819 4868 4802 4880 4797]  freeze [4650 4783 4816 4766 4833 4750]  lateOld [0 0 0 0 0 0]  faults 6
+save    r20c: 6 rows, errors []  tags [r20c-save-1 r20c-save-2 r20c-save-3 r20c-save-4 r20c-save-5 r20c-save-6]
+   menu [7.3 7.7 7.6 7.1 7.3 8.5] med 7.45  F9->world [4.1 4.1 4.1 4 4.1 4.1] med 4.1  steady [6.2 6 6.2 6.2 6.7 11.6]
+   input p50 [488 563 572 465 715 536] med 549.5  p95 [2089 2029 1962 2067 2758 2291] med 2078.0  max [2349 2214 2280 2268 3116 2598]
+   events [182 178 182 181 191 188]  moves p95 [2067 2013 1925 2028 2708 2291]  keys p95 [2349 2170 2280 2224 3116 2598]  byDispatch [0 0 0 0 0 0] unanswered [0 0 0 0 0 0]
+   carriers [{'self': 152, 'coalesced': 30, 'next': 0, 'none': 0}, {'self': 149, 'coalesced': 29, 'next': 0, 'none': 0}, {'self': 167, 'coalesced': 15, 'next': 0, 'none': 0}, {'self': 150, 'coalesced': 31, 'next': 0, 'none': 0}, {'self': 146, 'coalesced': 45, 'next': 0, 'none': 0}, {'self': 148, 'coalesced': 40, 'next': 0, 'none': 0}]
+   block check: moves [40 39 39 40 40 39] first [2021 1995 1995 2034 2035 1990] residual max [41 42 41 39 42 40]
+   page block [867 769 403 931 1542 2023]  freeze [2000 1933 1933 2000 1917 2000]  lateOld [0 0 0 0 0 0]  faults 6
+saveNew r19L: 4 rows, errors []  tags [r19L-saveNew-1 r19L-saveNew-2 r19L-saveNew-3 r19L-saveNew-4]
+   menu [26.2 25.7 26.5 25.6] med 25.95  F9->world [10.4 12 11.5 12.3] med 11.75  steady [12.8 13.4 13.4 14.7]
+   page block [10227 11973 11285 12258]  freeze [10933 11900 11216 12949]  lateOld [0 0 0 0]  faults 4
+saveNew r20c: 4 rows, errors []  tags [r20c-saveNew-1 r20c-saveNew-2 r20c-saveNew-3 r20c-saveNew-4]
+   menu [26.6 25.5 26.2 26.3] med 26.25  F9->world [10.7 11.2 11.2 12.1] med 11.2  steady [12.7 13.1 13.8 14.3]
+   page block [1379 1148 1268 1049]  freeze [7483 8266 8066 8900]  lateOld [0 0 0 0]  faults 4
+play    r19L: 16 runs (0 without perf.json)
+   fps [24.37 25.03 24.3 24.19 25.13 23.71 23.64 24.01 23.25 25.78 24.28 23.49 25.9 23.65 24.77 25.36] med 24.29
+   work p99 [19 20.9 19.5 20.4 20.2 20.1 23.2 19.9 22.7 19.4 20.4 20.9 18.5 23.2 19.1 17.8] med 20.15  p50 med 8.85  longest gap med 266.7
+play    r20c: 16 runs (0 without perf.json)
+   fps [24.06 24.57 24.31 25.08 23.6 23.84 24.89 24.47 24.47 25.25 24.08 24.61 23.41 24.34 24.25 23.17] med 24.325
+   work p99 [20.4 19.8 21.3 21.3 21.4 17.4 20.6 20.3 20.6 20.7 21.1 20.1 21.9 20.5 20.6 21.1] med 20.6  p50 med 9.05  longest gap med 250.0
+
+Pre-registered criteria
+1a input p95 median r20 2078.0 <= r19 5532.0 + 100 = 5632.0: MET
+1b F9 every r20 (max 4.1) <= r19 max 5 + 0.15 = 5.15: MET
+2a fps median r20 24.325 >= r19 24.29 - 0.3: MET (n 16/16)
+2b work p99 median r20 20.6 <= r19 20.15 + 0.5: MET
+3a new-device menu median r20 26.25 <= r19 25.95 + 0.3: MET
+3b new-device F9 median r20 11.2 <= r19 11.75 + 0.3: MET

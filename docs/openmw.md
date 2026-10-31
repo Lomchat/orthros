@@ -3716,6 +3716,77 @@ Counting every input, r20's p95 is under half of r19's: 2.3-2.6 s against 5.2-5.
 move made during it, and both sides then wait for the post-load GPU burst. Two runs a side is a sanity check, not a
 validation: the next full validation can use `--input-trace` for criterion 3's input measure.
 
+##### Fair measure: the fifth validation of `r20dev-c` against the live r19, and the verdict (2026-10-31)
+
+The fourth validation's open points (the warm save's input p95, the in-play p99 and one new-device menu) were measured
+again on a sample fixed in advance. The plan (`results/jspi-fair-2026-10-31/validation/plan.txt`) was committed
+(`5e1fa1d`) before the first run and not changed afterwards.
+
+How it ran:
+- Sides: the live `openmw-web-v1.5.3-orthros-r19` (read-only from `data/engines`; `main` still at `414dce8`) and
+  `r20dev-c` (engine `c99235bfa872`). Both ran this tree's page code.
+- Each side used its own warm profile from the fourth validation (jspi5). Every run and server had its own copy of the
+  learned state copied at 13:11, and the br-cache was frozen.
+- One browser at a time through the slot script, alternating, with the order swapped every pair. The blocks ran in
+  order, from 16:06 to 17:28: warm save, then in play, then new device.
+- The time, available memory and 1-minute load were logged when each slot was granted (`logs/runs-started.txt`; load
+  2.4-21.5). Available memory never fell below 42 GB (`logs/memory.log`).
+- No run failed and none was repeated. `scripts/summary.py` prints `summary.txt`.
+
+| | r19 (live) | r20 (`r20dev-c`) |
+| --- | --- | --- |
+| warm save (6 a side): F9 to the world (s) | 4.8, 4.9, 5.0, 4.8, 4.9, 4.9 | 4.1, 4.1, 4.1, 4.0, 4.1, 4.1 |
+| warm save: fair input p95 (ms) | 5,165-6,012, **median 5,532** | 1,962-2,758, **median 2,078** |
+| warm save: fair input p50 / max (ms) | 1,588-2,252 (median 1,928) / 5,567-6,412 | 465-715 (median 550) / 2,214-3,116 |
+| warm save: events counted; coalesced | 183-195; 93-98 | 178-191; 15-45 |
+| warm save: block check (2 s loop): first move / residual (ms) | 1,994-2,107 / 18-127 | 1,990-2,035 / 39-42 |
+| warm save: page's longest block / visible freeze (ms) | 4,698-4,880 / 4,650-4,833 | 403-2,023 / 1,917-2,000 |
+| warm save: menu / steady in the world (s) | 6.8-7.5 / 6.3-6.9 | 7.1-8.5 / 6.0-6.7, one 11.6 |
+| in play (16 a side): fps | 23.25-25.90, **median 24.29** | 23.17-25.25, **median 24.33** |
+| in play: work p99 (ms) | 17.8-23.2, **median 20.15** | 17.4-21.9, **median 20.6** |
+| in play: work p50 / longest gap median (ms) | 8.85 / 266.7 | 9.05 / 250.0 |
+| new device (4 a side, load < 16): menu (s) | 26.2, 25.7, 26.5, 25.6, **median 25.95** | 26.6, 25.5, 26.2, 26.3, **median 26.25** |
+| new device: F9 to the world (s) | 10.4, 12.0, 11.5, 12.3, **median 11.75** | 10.7, 11.2, 11.2, 12.1, **median 11.2** |
+| new device: page's block / visible freeze (s) | 10.2-12.3 / 10.9-12.9 | 1.05-1.38 / 7.5-8.9 |
+
+- **The fair input measure** counted every input, with nothing left unanswered and nothing timed by its dispatch alone.
+  Its 2 s check after the window found the block on every run (first move 1,990-2,107 ms). One r19 residual was 127 ms,
+  the others 18-43 ms.
+- **Crashes: none in 26 r20 page sessions** (6 warm saves, 16 in play, 4 new device). The only fault on either side
+  is Chromium's pointer-lock message, once per place-load run. No `perf.json` has a fault. `lateOld` is 0 on every run.
+- One r20 warm save (pair 6) started at load 16.6. Its menu took 8.5 s and its page block 2.0 s. It fetched 7.05 MB in
+  the background against 2.2-2.5 MB for the others, and became steady at 11.6 s. Its F9 (4.1 s) and input p95
+  (2,291 ms) are in line with the other runs.
+- New-device pair 4 overlapped another session's test browser (a 300 s `perf.mjs` started at 17:23:58), on both sides.
+
+**Pre-registered criteria**:
+1. **1a — warm save, fair input p95 median at most live's + 100 ms: met.** 2,078 ms against 5,532 ms.
+2. **1b — warm save, every r20 F9 at most live's maximum + 0.15 s: met.** 4.0-4.1 s against 4.8-5.0 s (bound
+   5.15 s).
+3. **2a — in play, fps median at least live's − 0.3 over all 16: met.** 24.33 against 24.29.
+4. **2b — in play, work p99 median at most live's + 0.5 ms over all 16: met, close to the bound.** 20.6 against
+   20.15 ms: +0.45 ms. The spread is narrower (17.4-21.9 against 17.8-23.2).
+5. **3a — new device, menu median at most live's + 0.3 s: met, exactly at the bound.** 26.25 against 25.95 s.
+   Menus are rounded to 0.1 s, so this is a tie with the bound.
+6. **3b — new device, F9 median at most live's + 0.3 s: met.** 11.2 against 11.75 s.
+
+**Already met in the fourth validation** (not rerun, the same build and page):
+- crashes: 0 in 52 sessions, and 0 with the heap profiler forced;
+- COE: block, input and freeze all better;
+- 85 KB/s: menu 10.2-10.4 against 10.7-11.3 s, F9 25.1-25.2 against 27.7 s;
+- pictures unchanged (frame-compare);
+- two clients 4 of 4;
+- `lateOld` 0;
+- check.mjs in EN and FR, and overlay-check;
+- `make test` green. This tree's code is unchanged since `4c80a6c` (1,717 pass, 0 fail); this validation added only
+  results and docs.
+
+**Verdict: SHIP** (`r20dev-c` as `orthros-r20`). All six pre-registered criteria hold. Two of them hold with little
+margin: the in-play p99 by 0.05 ms, and the new-device menu at exactly its bound. The fair measure reverses the fourth
+validation's input finding: counting every input, r20's warm-save p95 is 2.1 s against r19's 5.5 s. Nothing was merged
+or deployed. Shipping still means building the release from the committed `orthros-r20.patch` (r20dev-c differs only
+by a write-only debug field) and the usual merge checks.
+
 ### The engine's language and dialogue topic colours (2026-10-28)
 
 OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own
