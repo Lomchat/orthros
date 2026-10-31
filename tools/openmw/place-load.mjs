@@ -59,6 +59,17 @@
 //   the plan printed, nothing started. --read-trace: the page's requests to its game data worker traced (data-client.js
 //   GameData.trace: each read's kind, file, range, ask and end, whether the engine stood suspended), into the run's
 //   folder as read-trace.json.gz with the trigger's time on the page's clock (tools/openmw/read-trace.py reads it).
+//   --input-trace (coe, save, door): the input latency the player feels, every input counted (tools/input-latency.mjs):
+//   from just before the trigger, a mouse move every --input-every ms (50) and a key press (F13, bound to nothing) every
+//   --input-keys ms (1000; 0: none) sent through CDP without waiting for the page (in place of the 250 ms jiggler, which
+//   waits: it sends nothing while the page is held), a browser trace of the input categories (with ORTHROS_PLACE_TRACE=1
+//   the full one) until the steady frames + 2 s, input.trace.json.gz in the run's folder. The row's `inputTrace`: over
+//   the events whose own timestamp is in [the trigger, steady + 2 s], each one's delay from that timestamp to the first
+//   frame presented that committed after the page's thread dispatched it — itself, or the move it was coalesced into —
+//   (to that dispatch when no frame is attributable: `byDispatch`), p50/p95/max, by kind (move, key), the carriers
+//   (self, coalesced, next, none). --input-block ms: then a busy loop that long in the engine's frame, the measure
+//   checked on it (`inputTrace.block`: every move made during it should show the block's rest + a frame or two —
+//   `residual` — and the first one ~ the block; tools/input-latency-check.mjs does the same on a plain page).
 //   Scenario S's row adds `stage3`: the place hint (localStorage 'orthros.place.<manifest>') at the menu and at the end,
 //   the learned places (the learn copy's places file: size, places, the target's units), the menu-time prefetch (the
 //   announced ranges, kind 'want', started before the key: before the menu and in it, their end against the key, those
@@ -75,7 +86,7 @@
 //     [--profile-warm <dir>] [--warm-tree /srv/orthros] [--warm-seconds 120] [--rate 1.8m] [--rtt 90] [--listen 18447]
 //     [--start -2,-9] [--to -2,6] [--quiet 10] [--after 30] [--out <scratch>/results.jsonl] [--games-dir ..]
 //     [--engines-dir ..] [--engine <release>] [--covers off|<dir>] [--warm-only]
-//     [--profile warm|new] [--teach 0] [--engine-br] [--dry] [--read-trace]
+//     [--profile warm|new] [--teach 0] [--engine-br] [--dry] [--read-trace] [--input-trace [--input-every 50] [--input-keys 1000] [--input-block 0]]
 //     save: [--entry play|engine] [--menu 10] [--save <scratch>/saves/<to>.omwsave] [--make-save]
 //     glide: [--glide 0,1,300,3000] [--seconds 150]   door: [--interior '<cell id>'] [--lead 0]
 //     in play (coe, glide, door) and save --entry engine: [--query lead=1] (added to the measured runs' engine page —
@@ -90,6 +101,8 @@ import { pathToFileURL } from 'node:url';
 import { parseRate, urlKind, dataRead } from '../net-proxy.mjs';
 import { engineLower } from '../../src/ports/openmw/save-place.js';
 import { nextRow } from '../../src/ports/openmw/place-lead.js';
+import { INPUT_TRACE_CATEGORIES, generateInputs, inputLatency, blockCheck, traceClock, stampsOf, markClock, traceEvents } from '../input-latency.mjs';
+import zlib from 'node:zlib';
 
 const MAIN = !!process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 /** Where the engine's saves may be (IDBFS): the engine's user data folder — /userdata/saves in the r8 page, seen —, its XDG data home's. */
@@ -157,7 +170,7 @@ export function clearScratchGames(out) {
 }
 
 /** The flags without a value (every other option takes the next argument). */
-const FLAGS = ['make-save', 'warm-only', 'engine-br', 'dry', 'read-trace'];
+const FLAGS = ['make-save', 'warm-only', 'engine-br', 'dry', 'read-trace', 'input-trace'];
 
 /**
  * The command line's options (`argv` after the script: the manifest first), resolved with their defaults — absolute
@@ -167,7 +180,8 @@ export function parseArgs(argv) {
   const id = argv[0];
   if (!id || id.startsWith('--')) throw new Error('the manifest id comes first');
   const known = new Set([...FLAGS, 'tree', 'mode', 'runs', 'tag', 'pristine', 'scratch', 'profile-warm', 'warm-tree', 'warm-seconds', 'rate', 'rtt', 'listen', 'start', 'to', 'quiet', 'after', 'out',
-    'games-dir', 'engines-dir', 'engine', 'covers', 'entry', 'menu', 'save', 'profile', 'teach', 'glide', 'seconds', 'interior', 'lead', 'query', 'teach-query']);
+    'games-dir', 'engines-dir', 'engine', 'covers', 'entry', 'menu', 'save', 'profile', 'teach', 'glide', 'seconds', 'interior', 'lead', 'query', 'teach-query',
+    'input-every', 'input-keys', 'input-block']);
   const val = new Map(), flags = new Set();
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i], k = a.startsWith('--') ? a.slice(2) : null;
@@ -207,7 +221,11 @@ export function parseArgs(argv) {
     // (the engine's key: its ASCII-only lower case — an id's accented capitals stay, as the learned places have them)
     interior: engineLower(opt('interior', 'balmora, south wall cornerclub')), leadS: num('lead', 0),
     query: opt('query', ''), teachQuery: opt('teach-query', ''),
+    inputTrace: flags.has('input-trace'), inputEvery: num('input-every', 50, { min: 10 }), inputKeys: num('input-keys', 1000), inputBlock: num('input-block', 0),
   };
+  if (!o.inputTrace && ['input-every', 'input-keys', 'input-block'].some((k) => val.has(k))) throw new Error('--input-every, --input-keys, --input-block: with --input-trace only');
+  if (o.inputTrace && mode === 'glide') throw new Error('--input-trace: a load (coe, save, door), not a glide');
+  if (o.inputKeys > 0 && o.inputKeys < 200) throw new Error(`--input-keys ${o.inputKeys}: 0 (none) or every 200 ms at least`);
   for (const [k, q] of [['query', o.query], ['teach-query', o.teachQuery]]) if (q && !/^[\w.-]+=[\w.,-]*(&[\w.-]+=[\w.,-]*)*$/.test(q)) throw new Error(`--${k} ${q}: name=value[&name=value] for the engine page`);
   if (!o.interior || o.interior.length > 64 || /["\x00-\x1f]/.test(o.interior)) throw new Error(`--interior ${o.interior}: an interior cell's id (64 characters, no quote)`);
   if (!(o.rate > 0)) throw new Error(`--rate ${opt('rate')}: bytes per second, e.g. 1.8m`);
@@ -541,7 +559,7 @@ function probe() {
   setTimeout(beat, 20);
   window.addEventListener('mousemove', (e) => { if (P.on) P.inputs.push([e.timeStamp, performance.now() - e.timeStamp]); }, true);
   // (the trigger key as the engine's frame receives it: the load's start)
-  window.addEventListener('keydown', (e) => { if (P.on && P.keyAt === null && e.key === P.key) { P.keyAt = performance.now(); P.from = P.keyAt; } }, true);
+  window.addEventListener('keydown', (e) => { if (P.on && P.keyAt === null && e.key === P.key) { P.keyAt = performance.now(); P.from = P.keyAt; P.keyTs = e.timeStamp; } }, true);
   setInterval(() => {
     if (P.menuAt === null && window.Module?.__omwRunning !== undefined) P.menuAt = performance.now();
     const st = window.omw?.state ?? {};
@@ -650,7 +668,7 @@ if (MAIN) {
     process.exit(0);
   }
   const { chromium } = await import('playwright');
-  const { launchOptions, startProfile, stopProfile, startTrace, stopTrace } = await import('../port-perf.mjs');
+  const { launchOptions, startProfile, stopProfile, startTrace, stopTrace, TRACE_CATEGORIES } = await import('../port-perf.mjs');
   const { startProxy, startOrigin, spkiOf, readLog, loadWindow, summarize } = await import('../net-proxy.mjs');
   const certs = path.join(scratch, 'cert');
   const log = (...a) => console.log('[place-load]', ...a);
@@ -849,8 +867,14 @@ if (MAIN) {
       // (ORTHROS_PLACE_TRACE=1, a diagnosis: a browser trace — every process: the page's tasks and frames, the compositor,
       // the GPU process — from the trigger to the load's end (before --after), load.trace.json.gz in the run's folder,
       // the page's clock at its start in the row: traceAt)
-      const tracing = process.env.ORTHROS_PLACE_TRACE === '1' ? await startTrace(page).catch((e) => { notes.push(`trace not started: ${e?.message ?? e}`); return null; }) : null;
+      // (--input-trace: the same trace — or one of the input categories alone — and the inputs made at a fixed cadence from
+      // here, never waiting for the page — inputLatency: every one's latency, received by the page or coalesced)
+      const fullTrace = process.env.ORTHROS_PLACE_TRACE === '1';
+      const tracing = fullTrace || o.inputTrace ? await startTrace(page, fullTrace ? [...new Set([...TRACE_CATEGORIES, ...INPUT_TRACE_CATEGORIES])] : INPUT_TRACE_CATEGORIES).catch((e) => { notes.push(`trace not started: ${e?.message ?? e}`); return null; }) : null;
       const traceAt = tracing ? await frame.evaluate(() => performance.now()) : null;
+      const clockMarks = {};
+      if (tracing && o.inputTrace) clockMarks['orthros-input-sync-0'] = await markClock(frame, 'orthros-input-sync-0');
+      const inputs = tracing && o.inputTrace ? await generateInputs(page, { moveMs: o.inputEvery, keyMs: o.inputKeys }) : null;
       if (mode === 'glide') {
         // (perf.mjs's glide: the engine's debug teleport every 33 ms along a straight line, the page's own timer — it goes
         // on while this process waits; the cells crossed and their loads the same at every run)
@@ -911,7 +935,7 @@ if (MAIN) {
       // machine: 3 frames in the last 3 s, no gap over 1 s among them; another cell reported than --to: 20 s of that, noted)
       const deadline = Date.now() + (mode === 'glide' ? 0 : 15 * 60000), keyed = Date.now(); let end = null, said = 0;
       let jig = 0, jiggling = false;
-      const jiggler = setInterval(() => { if (jiggling) return; jiggling = true; const k = ++jig % 2; page.mouse.move(200 + k * 40, 200 + k * 30).catch(() => {}).finally(() => { jiggling = false; }); }, 250);
+      const jiggler = inputs ? null : setInterval(() => { if (jiggling) return; jiggling = true; const k = ++jig % 2; page.mouse.move(200 + k * 40, 200 + k * 30).catch(() => {}).finally(() => { jiggling = false; }); }, 250);
       while (Date.now() < deadline) {
         await sleep(1000);
         const s = await look(frame, (target) => {
@@ -927,11 +951,43 @@ if (MAIN) {
       if (!end && mode !== 'glide') notes.push(`cell ${goal || 'interior'} not reached with frames flowing`);
       if (mode === 'door') await pressInEngine(page, frame, 'Backquote');
       const afterLoad = await stats(frame);
-      if (tracing) await stopTrace(tracing, path.join(dir, 'load.trace.json.gz')).then(() => notes.push(`trace from ${Math.round(traceAt)} (the page's clock)`), (e) => notes.push(`trace lost: ${e?.message ?? e}`));
+      // (--input-trace: the trace goes on to the steady frames + 2 s — its window's end —, then --input-block's busy loop
+      // in the engine's frame and 2 s after it — the measure checked on a known block —, a second clock mark, ended)
+      let inputWin = null;
+      if (tracing && o.inputTrace) {
+        const pp = await look(frame, () => { const P = window.__placeProbe; return { from: P.from ?? null, keyTs: P.keyTs ?? null, coeCall: P.coeCall ?? null, gaps: P.gaps, cellAt: P.cellAt, now: performance.now() }; }, undefined, 10000);
+        if (pp?.from !== null && pp?.from !== undefined) {
+          const st = loadTimes({ gaps: pp.gaps, from: pp.from, cellAt: mode === 'glide' ? null : pp.cellAt?.[goal] ?? null }).steadyAt;
+          inputWin = { from: pp.keyTs ?? pp.coeCall ?? pp.from, steadyAt: st, to: st ? st + 2000 : null };
+          if (inputWin.to !== null && inputWin.to + 300 > pp.now) await sleep(inputWin.to + 300 - pp.now);
+        }
+        if (o.inputBlock > 0) {
+          await frame.evaluate((ms) => setTimeout(() => { console.timeStamp('orthros-block-start'); const t = performance.now(); while (performance.now() - t < ms); console.timeStamp('orthros-block-end'); }, 0), o.inputBlock);
+          await sleep(o.inputBlock + 2000);
+        }
+        clockMarks['orthros-input-sync-1'] = await markClock(frame, 'orthros-input-sync-1').catch(() => null);
+      }
+      const traceFile = path.join(dir, o.inputTrace && !fullTrace ? 'input.trace.json.gz' : 'load.trace.json.gz');
+      if (tracing) await stopTrace(tracing, traceFile).then(() => notes.push(`trace from ${Math.round(traceAt)} (the page's clock)`), (e) => notes.push(`trace lost: ${e?.message ?? e}`));
+      let inputTrace = null;
+      if (tracing && o.inputTrace) {
+        try {
+          const trace = JSON.parse(zlib.gunzipSync(fs.readFileSync(traceFile)));
+          const clock = traceClock(traceEvents(trace), Object.fromEntries(Object.entries(clockMarks).filter(([, v]) => v !== null)));
+          if (!clock) throw new Error('no clock mark in the trace');
+          const sent = inputs ? { ...inputs.sent } : null;
+          // (from 1 ms before the trigger's own timestamp: the key itself counted whatever the clocks' rounding)
+          const lat = inputWin?.to ? inputLatency(trace, { from: clock(inputWin.from) - 1000, to: clock(inputWin.to) }) : null;
+          const [bs] = stampsOf(trace, 'orthros-block-start'), [be] = stampsOf(trace, 'orthros-block-end');
+          inputTrace = { every: o.inputEvery, keys: o.inputKeys, sent, fromMs: inputWin ? Math.round(inputWin.from) : null, toMs: inputWin?.to ? Math.round(inputWin.to) : null, windowMs: inputWin?.to ? Math.round(inputWin.to - inputWin.from) : null, ...(lat ?? { events: 0, error: 'no window: the trigger or the steady frames not seen' }),
+            ...(o.inputBlock > 0 ? { block: bs !== undefined && be !== undefined ? blockCheck(trace, { start: bs, end: be }) : { error: 'block marks not in the trace' } } : {}), file: path.basename(traceFile) };
+        } catch (e) { inputTrace = { error: String(e?.message ?? e) }; }
+      }
       // (the mouse still moving through --after: the view raise there — view-grow.js, once the load is quiet — has its
       // input delays too, jspiAfter)
       await sleep((teach ? Math.max(afterS, 25) : afterS) * 1000);
       clearInterval(jiggler);
+      if (inputs && inputTrace) inputTrace.sentToEnd = await inputs.stop(); else if (inputs) await inputs.stop();
       const cpuProfile = cpu ? await stopProfile(cpu, 1, path.join(dir, 'load.cpuprofile')).then((r) => ({ at: profileAt, hitches: r.hitches })).catch((e) => ({ error: String(e?.message ?? e) })) : null;
       const P = await look(frame, () => { const P = window.__placeProbe; return { afterEnd: performance.now(), firstTick: window.__omwBoot?.firstFrame ?? null, from: P.from ?? null, keyAt: P.keyAt, armAt: P.armAt ?? null, coeCall: P.coeCall, coeRet: P.coeRet, coeRan: P.coeRan ?? null, coeInFrame: P.coeInFrame ?? false, coeErr: P.coeErr ?? null, gaps: P.gaps, cellAt: P.cellAt, inWorldAt: P.inWorldAt, menuAt: P.menuAt, firstDraw: P.firstDraw, frames: P.frames.length, cell: window.omw?.state?.['orthros.cell'] ?? null, cells: P.cells, samples: P.samples, leads: window.StreamFS?.leads?.() ?? null, blocks: P.blocks, inputs: P.inputs, jspi: window.StreamFS?.jspi?.() ?? null, precompile: window.__omwPrecompile ? { ...window.__omwPrecompile } : null, view: window.orthrosViewState?.() ?? null, trace: P.trace }; }, undefined, 10000);
       if (o.readTrace) {
@@ -939,7 +995,7 @@ if (MAIN) {
         fs.writeFileSync(path.join(dir, 'read-trace.json'), JSON.stringify({ from: P?.from ?? null, keyAt: P?.keyAt ?? null, inWorldAt: P?.inWorldAt ?? null, markAt, trace }));
         execFileSync('gzip', ['-f', path.join(dir, 'read-trace.json')]);
       }
-      return { cpuProfile, boot, store0, quietWaitS, before, predicted, afterLoad, after: await stats(frame), store1: await storage(frame, id), mark, markAt, end, P, faults, lead, glideEnd };
+      return { cpuProfile, boot, store0, quietWaitS, before, predicted, afterLoad, after: await stats(frame), store1: await storage(frame, id), mark, markAt, end, P, faults, lead, glideEnd, inputTrace };
     } });
     const recs = readLog(path.join(dir, 'proxy.jsonl'));
     const markRec = recs.find((r) => r.url?.startsWith(`/__qa/mark?${res.mark}`)), docRec = recs.find((r) => r.url?.includes('/app/index.html'));
@@ -1009,6 +1065,7 @@ if (MAIN) {
       gapsRel: from !== null && P?.gaps ? P.gaps.filter(([a, z]) => z - a > 250).map(([a, z]) => [Math.round(a - from), Math.round(z - from)]) : null,
       jspiProbe: jspiProbe(P, from, lt.steadyAt),
       jspiAfter: lt.steadyAt ? jspiProbe(P, lt.steadyAt, P?.afterEnd ?? null) : null,
+      ...(res.inputTrace ? { inputTrace: res.inputTrace } : {}),
       afterReads: lt.steadyAt && P?.afterEnd ? win(proxyOf(lt.steadyAt), proxyOf(P.afterEnd)) : null,
     };
     if (teach) fs.writeFileSync(path.join(dir, 'row.json'), JSON.stringify(row) + '\n');
@@ -1023,7 +1080,7 @@ if (MAIN) {
       log(`  glide: ${JSON.stringify(row.glide.total)}`);
     }
     if (row.door) log(`  door ${row.door.interior}: lead ${row.door.leadS} s ${JSON.stringify(row.door.lead)}; ahead ${row.door.ahead?.count} requests ${row.door.ahead?.wireMB} MB wire; load reads ${row.door.reads?.reads} (${row.door.reads?.MB} MB, learned ${row.door.reads?.inPlaceMB}); waits ${row.streamfs.load?.wantWaits} ${row.streamfs.load?.wantWaitMs} ms`);
-    log(`${tag} ${teach ? 'teach ' : ''}#${n} (${row.scenario}): engine ${mode !== 'save' ? `in world ${row.engineStart.inWorldS}` : `menu ${row.engineStart.menuS}`} s; ${mode === 'save' ? `in world ${row.load.inWorldS} s after the key, ` : ''}frozen ${row.load.frozenMs} ms, steady ${row.load.steadyS} s, cell ${row.load.cellAtEnd}; frozen: demand ${w?.demand.count} reads, ${w?.demand.decodedMB} MB decoded, spacing p50 ${w?.demand.spacing.p50} ms; background ${w?.backgroundMB} MB ${JSON.stringify(w?.backgroundByCategory ?? {})}; ${mode === 'save' ? 'to the world' : 'to steady'}: demand ${l?.demand.count}, background ${l?.backgroundMB} MB${notes.length ? ' — ' + notes.join('; ') : ''}`);
+    log(`${tag} ${teach ? 'teach ' : ''}#${n} (${row.scenario}): engine ${mode !== 'save' ? `in world ${row.engineStart.inWorldS}` : `menu ${row.engineStart.menuS}`} s; ${mode === 'save' ? `in world ${row.load.inWorldS} s after the key, ` : ''}frozen ${row.load.frozenMs} ms, steady ${row.load.steadyS} s, cell ${row.load.cellAtEnd}; frozen: demand ${w?.demand.count} reads, ${w?.demand.decodedMB} MB decoded, spacing p50 ${w?.demand.spacing.p50} ms; background ${w?.backgroundMB} MB ${JSON.stringify(w?.backgroundByCategory ?? {})}; ${mode === 'save' ? 'to the world' : 'to steady'}: demand ${l?.demand.count}, background ${l?.backgroundMB} MB${row.inputTrace ? `; inputs (trace) ${row.inputTrace.error ?? `${row.inputTrace.events} p50 ${row.inputTrace.p50Ms} p95 ${row.inputTrace.p95Ms} max ${row.inputTrace.maxMs} ms`}${row.inputTrace.block ? `, block ${row.inputTrace.block.blockMs} ms: first ${row.inputTrace.block.firstMs}, residual ${JSON.stringify(row.inputTrace.block.residual)}` : ''}` : ''}${notes.length ? ' — ' + notes.join('; ') : ''}`);
     return row;
   }
 

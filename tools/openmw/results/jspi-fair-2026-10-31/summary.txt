@@ -1,0 +1,20 @@
+Warm save (scenario S, --entry play, F9), one browser at a time, jspi5's warm profiles and pristine learned state copy;
+inputTrace: every generated input (a move every 50 ms, F13 every 1 s) from F9 to steady + 2 s, latency to the first frame presented
+after the page dispatched it (or the move that carried it); jspiProbe: the old in-page probe over the moves the page received.
+
+fair-r19L-save-1   r19 live  F9->world 4.9 s steady 7.1 s block 4846 ms freeze 4800 ms
+   inputTrace: 202 events over 9131 ms (moves 182, key events 20): p50 1689 p95 5178 max 5628 ms; moves p95 5178; carriers {'self': 106, 'coalesced': 96, 'next': 0, 'none': 0} byDispatch 0  (before the 1 ms window margin)
+   old probe: 47 moves received, p50 50 p95 51 ms
+   engine block check (2000 ms busy loop in the engine frame after the window): 40 moves, first 1997 ms, residual {'min': 20, 'p50': 21, 'max': 21} ms, carriers {'self': 1, 'coalesced': 39, 'next': 0, 'none': 0}
+fair-r19L-save-2   r19 live  F9->world 4.8 s steady 6.3 s block 4815 ms freeze 4766 ms
+   inputTrace: 184 events over 8341 ms (moves 166, key events 18): p50 2198 p95 5903 max 6308 ms; moves p95 5903; carriers {'self': 88, 'coalesced': 96, 'next': 0, 'none': 0} byDispatch 0
+   old probe: 31 moves received, p50 50 p95 51 ms
+   engine block check (2000 ms busy loop in the engine frame after the window): 40 moves, first 2030 ms, residual {'min': 50, 'p50': 51, 'max': 51} ms, carriers {'self': 0, 'coalesced': 40, 'next': 0, 'none': 0}
+fair-r20c-save-1   r20dev-c  F9->world 4.1 s steady 6.1 s block 380 ms freeze 1833 ms
+   inputTrace: 180 events over 8139 ms (moves 162, key events 18): p50 518 p95 2324 max 2677 ms; moves p95 2273; carriers {'self': 166, 'coalesced': 14, 'next': 0, 'none': 0} byDispatch 0  (before the 1 ms window margin)
+   old probe: 108 moves received, p50 11 p95 51 ms
+   engine block check (2000 ms busy loop in the engine frame after the window): 40 moves, first 2024 ms, residual {'min': 40, 'p50': 40, 'max': 41} ms, carriers {'self': 1, 'coalesced': 39, 'next': 0, 'none': 0}
+fair-r20c-save-2   r20dev-c  F9->world 4.2 s steady 6.7 s block 1309 ms freeze 2183 ms
+   inputTrace: 191 events over 8705 ms (moves 173, key events 18): p50 642 p95 2645 max 3097 ms; moves p95 2695; carriers {'self': 149, 'coalesced': 42, 'next': 0, 'none': 0} byDispatch 0
+   old probe: 92 moves received, p50 9 p95 51 ms
+   engine block check (2000 ms busy loop in the engine frame after the window): 40 moves, first 2008 ms, residual {'min': 43, 'p50': 43, 'max': 44} ms, carriers {'self': 0, 'coalesced': 40, 'next': 0, 'none': 0}

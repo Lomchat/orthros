@@ -93,6 +93,17 @@ test('place-load: the options, resolved and checked', () => {
   ]) assert.throws(() => parseArgs(argv), why, argv.join(' '));
 });
 
+test('place-load: --input-trace and its cadence, block check; only with a load', () => {
+  const d = parseArgs(['mw-en', '--tree', 't', '--mode', 'save']);
+  assert.equal(d.inputTrace, false); assert.equal(d.inputEvery, 50); assert.equal(d.inputKeys, 1000); assert.equal(d.inputBlock, 0);
+  const o = parseArgs(['mw-en', '--tree', 't', '--mode', 'save', '--input-trace', '--input-every', '25', '--input-keys', '0', '--input-block', '2000']);
+  assert.equal(o.inputTrace, true); assert.equal(o.inputEvery, 25); assert.equal(o.inputKeys, 0); assert.equal(o.inputBlock, 2000);
+  for (const [argv, why] of [
+    [['--input-block', '2000'], /with --input-trace only/], [['--input-trace', '--input-every', '5'], />= 10/],
+    [['--input-trace', '--input-keys', '50'], /every 200 ms/], [['--input-trace', '--mode', 'glide'], /not a glide/],
+  ]) assert.throws(() => parseArgs(['mw-en', '--tree', 't', ...argv]), why, argv.join(' '));
+});
+
 test('place-load: a dev engine release\'s brotli siblings, made once, only under the scratch root', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'place-load-br-'));
   try {

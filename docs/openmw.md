@@ -3666,6 +3666,56 @@ Next:
 - Decide the input measure: every move's delay from the browser trace, whether or not the page received it.
 - A longer in-play sample, alternated in both orders, to settle p99.
 
+##### A fair input-latency measure, checked before use (2026-10-31)
+
+The fourth validation's input p95 compared different sets of events. The in-page probe counted only the mouse moves
+the page received: Chrome coalesces moves queued for a held thread into one. Its 250 ms jiggler also awaited each move,
+and CDP answers a move only once the renderer has handled it, so it sent nothing while the page was held. r19 got 3-4
+moves, r20 14-16. And a coalesced move's `performance.now() - e.timeStamp` is measured from the newest merged move, so
+with moves every 50 ms the old probe gives about 51 ms on both sides whatever the block.
+
+**The measure** (`tools/input-latency.mjs`, shared by the ports' tools; `place-load.mjs --input-trace`):
+- Inputs: a mouse move every 50 ms (`--input-every`) and an F13 press every second (`--input-keys`, bound to nothing).
+  They are sent through CDP without waiting for the page (`generateInputs`), from just before the trigger.
+- Trace: categories `input`, `latencyInfo`, `devtools.timeline`, `benchmark`. Chrome writes one `EventLatency` for every
+  event, coalesced or not. Its begin is the event's own timestamp. Its stages say whether the page's thread dispatched it
+  (`RendererMainProcessing`) or the compositor ended it (`RendererCompositorFinishedToTermination`: coalesced).
+- An event's carrier is the dispatch that delivered it: the event itself, or the last earlier move of the same renderer
+  dispatched at or after this one reached the renderer (the queue coalesces into its tail). With neither, the next
+  dispatch of its kind.
+- Answered at: the earliest frame of that renderer presented (`PipelineReporter` in state presented) whose main frame
+  committed at or after the carrier's dispatch ended — the first picture that could show it. Chrome's own presentation
+  stage is used if it is earlier. With no such frame, the dispatch's end (`byDispatch`). Never answered: the window's
+  end, a lower bound (`unanswered`).
+- Latency = answered at − the event's timestamp. p50/p95/max are over every event whose timestamp lies in
+  [the trigger key, steady + 2 s] (the page's clock mapped to the trace's by `console.timeStamp` marks). They are given
+  by kind (moves; key down/up events) with the carriers counted.
+
+**Checked on a known block** (a 2 s busy loop; every move made during it should take the rest of the block plus a frame
+or two — `blockCheck`'s residual):
+- Plain page (`tools/input-latency-check.mjs`, animated canvas): 39 moves in the block, the first 1,958 ms, residual
+  7-8 ms. Before the block p50 50 ms, after it p95 27 ms.
+- Engine (`--input-block 2000`, run in the engine's frame after the window, 4 runs): 40 moves each, the first
+  1,997-2,030 ms, residual 20-51 ms (SwiftShader's next frame).
+- `tests/input-latency.test.js`: the trace parsing on synthetic traces (dispatched, coalesced, the next dispatch,
+  frames not presented, impl-only frames, keys apart, the clock).
+
+**Sanity run** (one warm save a side, then a second pair in the other order; `results/jspi-fair-2026-10-31/`):
+
+| warm save | r19 (live) | r20 (`r20dev-c`) |
+| --- | --- | --- |
+| F9 to the world (s) | 4.9, 4.8 | 4.1, 4.2 |
+| events counted (window, ms) | 202 (9,131), 184 (8,341) | 180 (8,139), 191 (8,705) |
+| input latency p50 (ms) | 1,689, 2,198 | 518, 642 |
+| input latency p95 (ms) | 5,178, 5,903 | 2,324, 2,645 |
+| input latency max (ms) | 5,628, 6,308 | 2,677, 3,097 |
+| coalesced / dispatched themselves | 96/106, 96/88 | 14/166, 42/149 |
+| old probe: moves received, p95 (ms) | 47, 31; 51 | 108, 92; 51 |
+
+Counting every input, r20's p95 is under half of r19's: 2.3-2.6 s against 5.2-5.9 s. r19's 4.8 s block holds every
+move made during it, and both sides then wait for the post-load GPU burst. Two runs a side is a sanity check, not a
+validation: the next full validation can use `--input-trace` for criterion 3's input measure.
+
 ### The engine's language and dialogue topic colours (2026-10-28)
 
 OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own

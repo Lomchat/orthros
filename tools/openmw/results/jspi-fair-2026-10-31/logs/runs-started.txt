@@ -1,0 +1,5 @@
+15:50:08 avail=48G load=10.67 side=19L tag=fair-r19L-save-1 --mode save --input-trace --input-block 2000
+15:51:30 avail=45G load=19.30 side=19L tag=fair-r19L-save-1 --mode save --input-trace --input-block 2000
+15:53:14 avail=50G load=12.65 side=20c tag=fair-r20c-save-1 --mode save --input-trace --input-block 2000
+15:56:07 avail=49G load=10.81 side=20c tag=fair-r20c-save-2 --mode save --input-trace --input-block 2000
+15:57:43 avail=45G load=17.36 side=19L tag=fair-r19L-save-2 --mode save --input-trace --input-block 2000
