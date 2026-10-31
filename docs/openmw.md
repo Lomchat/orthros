@@ -2138,6 +2138,11 @@ in the next cell. The live r17 passed 1 of 3 (12,456 and 229,908 units off in th
 `interp.lua` inside `openmw.data`, the package gets a new content hash, and the server builds its lean package once
 (~70 s) at the first boot.
 
+Built 2026-10-31 (`tools/openmw/build.sh`, compiled in 893 s; release `e/a2808b8cf12a/`): openmw.js `3769b921…`,
+openmw.wasm `7aae70d3…`, openmw.data `2c6b8e83…` (204,616,507 bytes, 33,446,823 in brotli), pinned in lock.json.
+Its lean package (rule 3) was made ahead of the switch with `openmw-lean-worker.js` in 66 s: 4,133,415 bytes
+(r17's: 4,132,827).
+
 ### Lua UI textures fetched when declared: measured, kept off (round 7, 2026-10-30)
 
 The commonest remaining hitch is a LuaUi image's first show: `LuaImage::updateProperties` > MyGUI `getTextureSize` >

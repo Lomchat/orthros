@@ -1,0 +1,34 @@
+build.sh openmw-web-v1.5.3-orthros-r18 --engines-dir /srv/orthros/data/engines (2026-10-31, start 02:23:49)
+disk-check: Orthros scratch 10 GB of 30 GB; disk 39% used (max 85%)
+=== build-deps: target=wasm64 prefix=/build/deps/wasm64 ===
+=== build-deps: emscripten ports (ICU-mt, libGL-getprocaddr) ===
+=== build-deps: GL archive: libGL-getprocaddr.a ===
+=== build-deps: openal_stub (empty) ===
+=== build-deps: sdl2 cmake config shim ===
+=== build-deps: lz4 ===
+=== build-deps: arch is 'none', want 'wasm64' in deps/src/lz4-1.10.0; cleaning in-tree objects ===
+=== build-deps: lua ===
+=== build-deps: boost ===
+=== build-deps: arch is 'none', want 'wasm64' in deps/src/boost_1_85_0; cleaning in-tree objects ===
+=== build-deps: bullet3 ===
+=== build-deps: mygui ===
+=== build-deps: ffmpeg ===
+=== build-deps: arch is 'none', want 'wasm64' in deps/src/ffmpeg-6.1.2; cleaning in-tree objects ===
+=== build-deps: osg (-> build-osg.sh) ===
+=== build-deps: done. staged libs: ===
+Linked: openmw.data 204616507
+openmw-web-v1.5.3-orthros-r18: compiled in 893 s
+{
+  "openmw.js": "3769b921abaf463216a335ae48aed0a258f4ef4ca6f2c5ff8a17c1bc8c10c123",
+  "openmw.wasm": "7aae70d33cb001e36750d48d5ca0c883af0317105f7d86b7fe20d57413eb7873",
+  "openmw.data": "2c6b8e83f75bf78e213aeed98cff939734096e3f682e307e3b95d0186163923d"
+}
+openmw-web-v1.5.3-orthros-r18: installed in /srv/orthros/data/engines/openmw-web-v1.5.3-orthros-r18
+exit 0 02:46:27
+
+lean package: nice -n 19 node src/host/openmw-lean-worker.js <release>/e/a2808b8cf12a/openmw.data <same>/openmw.js /var/lib/orthros2/brcache/engines/_c/2c6b8e83f75bf78e213aeed98cff939734096e3f682e307e3b95d0186163923d/lean3/openmw.data.br 2c6b8e83...; exit 0, 66 s wall, max RSS 372 MB, output 4133415 bytes, decodes to 204616507 bytes
+
+memory/load during build (30 s samples, min avail):
+44G load=39.79
+max load:
+57.86

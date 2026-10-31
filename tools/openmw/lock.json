@@ -817,7 +817,11 @@
           "call": "Module.ccall('orthros_content_light', 'number', [], [])"
         }
       ],
-      "files": {}
+      "files": {
+        "openmw.js": "3769b921abaf463216a335ae48aed0a258f4ef4ca6f2c5ff8a17c1bc8c10c123",
+        "openmw.wasm": "7aae70d33cb001e36750d48d5ca0c883af0317105f7d86b7fe20d57413eb7873",
+        "openmw.data": "2c6b8e83f75bf78e213aeed98cff939734096e3f682e307e3b95d0186163923d"
+      }
     }
   ]
 }
