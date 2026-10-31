@@ -2143,6 +2143,47 @@ openmw.wasm `7aae70d3…`, openmw.data `2c6b8e83…` (204,616,507 bytes, 33,446,
 Its lean package (rule 3) was made ahead of the switch with `openmw-lean-worker.js` in 66 s: 4,133,415 bytes
 (r17's: 4,132,827).
 
+**Validation against the live r17 (2026-10-31): SHIP.** The installed release, served by scratch servers of this
+branch's code (`--games-dir` a scratch overlay whose four Morrowind versions run r18, `--engines-dir data/engines`), each
+on its own fresh copy of the live learned state and a frozen copy of the live br-cache (r18's pre-built lean package in
+it), against the live r17 served by main's code (30ff5ec) the same way; interleaved, one browser at a time. Results and
+scripts: `tools/openmw/results/r18-release-2026-10-31/validation/`.
+
+- Two clients (`mp-check.mjs` of the r17 results, `morrowind-goty-en`): **r18 3 of 4, r17 1 of 3.** r18's passes left
+  the watcher's copy 3-43 units from the mover after each 244-491-unit move. Its one failure (r18-5) was A's third move:
+  the copy stayed 58 units off for 90 s, against the check's 48. That is a small rest offset, not the jump, and r18dev-d
+  had one like it (57). r17's two failures were the jump bug, 14,618, 15,564 and 26,351 units off. A first r18 run was
+  lost before it started (the gateway found no `data/` in the worktree) and was run again.
+- `check.mjs morrowind-goty-vanilla-plus-en`, EN and `--lang fr` (ran `-fr`): passed, 34,626 and 30,885 draws.
+  `overlay-check.mjs --engine …-r18` for both games: every overlay agrees with its original.
+- In play (`perf.mjs --query tier=mid --discard --seconds 60 --warm 0`, `morrowind-goty-en`), 8 runs a side over three
+  rounds. The third round crossed engine and page code: r17's engine with this branch's page, 16.6-19.3, and r18's
+  with main's page, 19.1-21.2, so neither part carries a steady cost. **Parity within the machine's noise** (load
+  average 10-25 during the runs):
+
+  | | fps | work p50 | work p99 | frames' work over 16.7 / 33 ms | gap p99 | longest gap | data stall ms |
+  |---|---|---|---|---|---|---|---|
+  | r17 (8) | 23.9-25.6 (median 25.1) | 8.0-9.2 | 17.7-20.9 (median 19.2) | 17-49 / 3-6 | 66.7 | 200-350 | 227-359 |
+  | r18 (8) | 24.0-27.5 (median 24.4) | 7.1-9.8 | 16.6-23.8 (median 20.4) | 15-45 / 3-6 | 66.7 | 200-367 | 202-345 |
+
+  In the first two rounds, three r18 runs were above r17's highest work p99 (21.4, 22.3, 23.8). In the third round,
+  r18 had the lowest work p99 (16.6) and the highest fps.
+- Save loaded from the menu (`place-load.mjs --mode save`, save at -2,6, warm profiles), 2 a side:
+  - 1.8 MB/s: r18 in the world 4.8 / 4.9 s after the key (frozen 4,700 / 4,733 ms), r17 5.0 / 5.0 s (4,883 / 4,850).
+    The background during the frozen frame was 2.21 / 2.37 MB for r18, against 3.77 / 3.49 MB for r17.
+  - 85 KB/s (`--rate 85k`): r18 27.4 / 27.4 s (frozen 27,349 / 27,266 ms), r17 27.8 / 27.7 s (27,566 / 27,582). Menu
+    10.3-10.6 s on both.
+- Lean package (`validation/lean-engine-files.txt`): the r18 warm-up fetched `…923d/lean3/openmw.data` (4.13 MB) and
+  never the full 33 MB package. Warm runs fetched no engine file.
+- The shared page code (this branch's `http-backend.js`) on the other runtimes:
+  - GoldSrc: `goldsrc/check.mjs half-life-original-en solo` passed.
+  - re3: `re3/check.mjs vice-city-revc --new-game` passed (306 buffers heard, 14 read samples heard).
+  - Win32: `headless.mjs bfme1-108 --seconds 60` running with no crash, still on its splash screen at 60 s.
+  - Thin link: `bfme1-108` behind `net-proxy.mjs --rate 85k --rtt 50`, 300 s, main against this branch. Both runs were
+    the same: 395 game reads, 20.5 MB; 460 other requests, 2.9 MB; 3 frames. Neither had a read-ahead or reached the
+    menu's music in 300 s, so streamed audio could not be compared there. re3's streams were heard on this branch.
+- `make test`: 1689 passed, 0 failed (1 skipped).
+
 ### Lua UI textures fetched when declared: measured, kept off (round 7, 2026-10-30)
 
 The commonest remaining hitch is a LuaUi image's first show: `LuaImage::updateProperties` > MyGUI `getTextureSize` >

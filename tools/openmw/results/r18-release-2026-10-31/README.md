@@ -9,3 +9,14 @@
 - `http-backend-slow-without-fix.txt`: `tests/http-backend-slow.test.js` of this commit run against `http-backend.js`
   without the archive-stream exemption: the new archive-stream test fails (`still queued`: its 5 queued read-aheads
   dropped while another file was read in turn); with the fix, 19 of 19 pass.
+
+# orthros-r18 validated against the live r17 (2026-10-31): SHIP (docs/openmw.md, r18 section)
+
+`validation/`: r18 (data/engines, this branch's code, a scratch games overlay) against r17 (main 30ff5ec, live games),
+each server on a fresh copy of the live learned state and a frozen copy of the live br-cache; one browser at a time.
+- `mp/r18-*.json|log`, `mp/r17-*`: two-client checks (r18-1: harness setup failure, gateway without `data/`; r18-5 is its rerun).
+- `perf/` (5 pairs), `perfx/` (3 crossed rounds: 17 r17+main, 18 r18+branch, 17x r17 engine+branch page, 18x r18 engine+main page).
+- `pl-r1[78]-save.jsonl`, `pl-r1[78]-save85k.jsonl`: place-load save from the menu, 1.8 MB/s and 85 KB/s.
+- `lean-engine-files.txt`: engine files through the proxy in the warm-ups and the measured runs.
+- `check/`, `overlay-check-*.txt`, `other/` (GoldSrc, re3, Win32 boot, Win32 85 KB/s main vs branch), `scripts/`, `logs/`
+  (runs started with memory and load, memory every 30 s: never under 41 GB available).

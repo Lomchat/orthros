@@ -1,0 +1,7 @@
+=== 04:20:52 perf 4
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perf/r18-4
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perf/r17-4
+=== 04:23:36 perf 5
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perf/r18-5
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perf/r17-5
+=== 04:26:22 CHAIN2 DONE

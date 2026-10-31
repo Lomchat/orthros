@@ -1,0 +1,25 @@
+=== 04:26:56 perf 17-1
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/17-1
+=== 04:28:19 perf 18x-1
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/18x-1
+=== 04:29:41 perf 18-1
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/18-1
+=== 04:31:04 perf 17x-1
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/17x-1
+=== 04:32:45 perf 17-2
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/17-2
+=== 04:34:06 perf 18x-2
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/18x-2
+=== 04:35:27 perf 18-2
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/18-2
+=== 04:36:50 perf 17x-2
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/17x-2
+=== 04:38:12 perf 17-3
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/17-3
+=== 04:39:33 perf 18x-3
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/18x-3
+=== 04:40:54 perf 18-3
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/18-3
+=== 04:42:36 perf 17x-3
+tools/openmw/perf.mjs rc=0 /tmp/orthros-scratch/r18-ship/val/perfx/17x-3
+=== 04:43:57 CROSS DONE

@@ -1,0 +1,42 @@
+=== 04:02:11 mp r18-5
+[2.4] gateway up on 28751
+[2.5] operator setup 200
+[5.9] server up http://127.0.0.1:18751
+[6.6] A registered qa-mp-a-1232e9 native qampa1232e9
+[8.8] B registered qa-mp-b-b455ec native qampbb455ec
+[9.2]   waiting: both joined their worlds {"a":["/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9","boot",null,null],"b":["/ports/openmw/morrowind-goty-en/app/join",null,null,null]}
+[35.3] CHECK both joined ok {"a":["/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9","Joined","1",null],"b":["/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9","Joined","1",null]}
+[39.3]   waiting: B gets A's friend request [[],null]
+[41.6] CHECK friend request received ok [[{"name":"qampa1232e9","acct":"orthros-c0ce2ca1dc5190e9db1f1d12@players.invalid"}],null]
+[42.7]   waiting: B sees A as a friend [[],null]
+[44.8] CHECK friends ok [[{"name":"qampa1232e9","online":true,"acct":"orthros-c0ce2ca1dc5190e9db1f1d12@players.invalid","cellKey":"-2,-9","joinable":true}],"{\"op\":\"FriendAccept\",\"detail\":\"ok\",\"ok\":true}"]
+[45.5]   waiting: B in A's world {"a":["Joined","1",[{"name":"qampbb455ec"}],[]],"b":["/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9","Joined","1",[{"name":"qampa1232e9"}],[],null,null]}
+[99.1]   waiting: B in A's world {"a":["Joined","1",[],[]],"b":["/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9","Connecting","0",[],[],null,null]}
+[105.2] CHECK together, each in the other's roster with a puppet ok {"a":["Joined","1",[{"id":3,"name":"qampbb455ec"}],["3"]],"b":["/ports/openmw/morrowind-goty-en/app/index.html?start=-2%2C-9","Joined","1",[{"name":"qampa1232e9","id":1},{"name":"qampbb455ec","id":3}],["1"],null,null]}
+[115.2]   waiting: the watcher's puppet follows {"gap":10.612363638748796,"there":300,"pose":{"x":-12288,"z":87.28959655761719,"y":-69632},"puppet":{"x":-12279.4404296875,"eq":["common_pants_01","common_shirt_01","common_shoes_01"],"stance":0,"actives":[],"jumps":0,"falls":0,"dead":false,"name":"qampa1232e9","flags":0,"z":85.07994079589844,"y":-6
+[117.2]   waiting: the watcher's puppet follows {"gap":27.096894923174116,"there":300,"pose":{"x":-11988,"z":97.01957702636719,"y":-69632},"puppet":{"x":-11960.96484375,"eq":["common_pants_01","common_shirt_01","common_shoes_01"],"stance":0,"actives":[],"jumps":0,"falls":0,"dead":false,"name":"qampa1232e9","flags":0,"z":95.99125671386719,"y":-696
+[119.2]   waiting: the watcher's puppet follows {"gap":26.859836292577484,"there":424.26406871192853,"pose":{"x":-11988,"z":18.349639892578125,"y":-69332},"puppet":{"x":-12010.1484375,"eq":["common_pants_01","common_shirt_01","common_shoes_01"],"stance":0,"actives":[],"jumps":0,"falls":0,"dead":false,"name":"qampa1232e9","flags":0,"z":16.74016571
+[149.5]   waiting: the watcher's puppet follows {"gap":57.49684911470542,"there":5.1865234375,"pose":{"x":-12293.1865234375,"z":86.96543884277344,"y":-69632},"puppet":{"x":-12297.16015625,"eq":["common_pants_01","common_shirt_01","common_shoes_01"],"stance":0,"actives":[],"jumps":0,"falls":0,"dead":false,"name":"qampa1232e9","flags":0,"z":53.8548
+[179.6]   waiting: the watcher's puppet follows {"gap":57.68973571644072,"there":5.1865234375,"pose":{"x":-12293.1865234375,"z":86.96543884277344,"y":-69632},"puppet":{"x":-12287.021484375,"eq":["common_pants_01","common_shirt_01","common_shoes_01"],"stance":0,"actives":[],"jumps":0,"falls":0,"dead":false,"name":"qampa1232e9","flags":0,"z":55.036
+[209.7] CHECK A moves 3 times, B's copy follows to its place FAILED [{"ok":true,"moved":319,"gapEnd":27,"moverOff":0,"s":117},{"ok":true,"moved":317,"gapEnd":27,"moverOff":0,"s":119},{"ok":false,"moved":387,"gapEnd":58,"moverOff":5,"s":210}]
+[209.7]   waiting: the watcher's puppet follows {"gap":53.80443768687696,"there":300,"pose":{"x":-12288,"z":87.28959655761719,"y":-69632},"puppet":{"eq":["common_pants_01","common_shirt_01","common_shoes_01"],"jumps":0,"flags":0,"actives":[],"falls":0,"z":91.47404479980469,"y":-69633.8828125,"x":-12234.228515625,"name":"qampbb455ec","stance":0,"d
+[213.8]   waiting: the watcher's puppet follows {"gap":4.283035351571936,"there":300,"pose":{"x":-11988,"z":97.01957702636719,"y":-69632},"puppet":{"eq":["common_pants_01","common_shirt_01","common_shoes_01"],"jumps":0,"flags":0,"actives":[],"falls":0,"z":94.86625671386719,"y":-69628.171875,"x":-11989.9208984375,"name":"qampbb455ec","stance":0,"d
+[215.8]   waiting: the watcher's puppet follows {"gap":28.721563722336743,"there":424.26406871192853,"pose":{"x":-11988,"z":78.38510131835938,"y":-69332},"puppet":{"eq":["common_pants_01","common_shirt_01","common_shoes_01"],"jumps":0,"flags":0,"actives":[],"falls":0,"z":75.21188354492188,"y":-69308.328125,"x":-11971.734375,"name":"qampbb455ec","
+[217.8] CHECK B moves 3 times, A's copy follows to its place ok [{"ok":true,"moved":244,"gapEnd":4,"moverOff":0,"s":214},{"ok":true,"moved":320,"gapEnd":29,"moverOff":0,"s":216},{"ok":true,"moved":466,"gapEnd":16,"moverOff":0,"s":218}]
+[222.8]   waiting: both in the other cell, each copy where the other stands {"a":["Joined","-1,-9",{"x":-3525.353271484375,"z":24.16943359375,"y":-68979.96875}],"b":["Joined","-2,-9",{"x":-12288,"z":87.28959655761719,"y":-69632}],"ga":8791.826249752397,"gb":47.69043112729726}
+[228.8] CHECK both in another cell, each copy where the other stands ok {"a":["Joined","-1,-9",{"x":-3542.98828125,"z":-123.34677124023438,"y":-68942.0078125}],"b":["Joined","-1,-9",{"x":-3350.940673828125,"z":-146.31475830078125,"y":-69042.3359375}],"ga":0,"gb":7.110873909022383}
+[244.8] walk A {"self":0,"puppet":55,"gapEnd":55}
+[264.8] CHECK still joined, no error ok {"a":["Joined",null,null,null],"b":["Joined",null,null,null]}
+[264.8] CHECK no page error ok {"A":[],"B":[]}
+[292.5] shots {"A":{"yaw":0,"self":{"x":-3542.98828125,"z":217.22158813476562,"y":-68942.0078125},"copyOfOther":{"eq":["common_pants_01","common_shirt_01","common_shoes_01"],"jumps":0,"flags":0,"actives":[],"falls":1,"z":-123.51458740234375,"y":-68782.0078125,"x":-3542.98828125,"name":"qampbb455ec","stance":0,"dead":false},"otherSelf":{"x":-3542.413818359375,"z":-140.2892303466797,"y":-68781.359375},"gap":1,"tourOpen":false},"B":{"yaw":-163,"self":{"x":-3542.413818359375,"z":-140.2892303466797,"y":-68781.359375},"copyOfOther":{"x":-3595.104248046875,"eq":["common_pants_01","common_shirt_01","common_shoes_01"],"stance":0,"actives":[],"jumps":0,"falls":0,"dead":false,"name":"qampa1232e9","flags":0,"z":476.00347900390625,"y":-68958.1796875},"otherSelf":{"x":-3542.98828125,"z":217.22158813476562,"y":-68942.0078125},"gap":55,"tourOpen":false}}
+[295.4] RESULT {"ok":false,"checks":{"both joined":true,"friend request received":true,"friends":true,"together, each in the other's roster with a puppet":true,"A moves 3 times, B's copy follows to its place":false,"B moves 3 times, A's copy follows to its place":true,"both in another cell, each copy where the other stands":true,"still joined, no error":true,"no page error":true}}
+=== 04:07:23 goldsrc
+goldsrc rc=0
+=== 04:08:08 re3
+re3 rc=0
+=== 04:09:17 win32 boot
+win32 rc=0
+=== 04:10:21 thin
+thin main rc=0
+thin r18 rc=0
+=== 04:20:50 OTH DONE

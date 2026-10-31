@@ -1,0 +1,45 @@
+03:05:29 avail=47G load=8.04 side=18 tools/openmw/check.mjs /tmp/orthros-scratch/r18-ship/val/check/r18-en morrowind-goty-vanilla-plus-en --seconds 10
+03:06:08 avail=49G load=14.28 side=18 tools/openmw/check.mjs /tmp/orthros-scratch/r18-ship/val/check/r18-fr morrowind-goty-vanilla-plus-en --lang fr --seconds 10
+03:06:50 avail=48G load=17.39 mp 18 /tmp/orthros-scratch/r18-ship/val/mp/r18-1
+03:06:53 avail=47G load=17.52 mp 17 /tmp/orthros-scratch/r18-ship/val/mp/r17-1
+03:12:17 avail=47G load=27.69 mp 18 /tmp/orthros-scratch/r18-ship/val/mp/r18-2
+03:16:51 avail=52G load=13.64 mp 17 /tmp/orthros-scratch/r18-ship/val/mp/r17-2
+03:23:19 avail=52G load=14.04 mp 18 /tmp/orthros-scratch/r18-ship/val/mp/r18-3
+03:26:56 avail=52G load=13.38 mp 17 /tmp/orthros-scratch/r18-ship/val/mp/r17-3
+03:30:36 avail=50G load=15.38 mp 18 /tmp/orthros-scratch/r18-ship/val/mp/r18-4
+03:34:16 avail=50G load=19.93 side=17 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perf/r17-1 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perf/r17-1 --query tier=mid --discard --seconds 60 --warm 0
+03:35:40 avail=52G load=18.75 side=18 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perf/r18-1 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perf/r18-1 --query tier=mid --discard --seconds 60 --warm 0
+03:37:01 avail=52G load=12.49 side=17 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perf/r17-2 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perf/r17-2 --query tier=mid --discard --seconds 60 --warm 0
+03:38:25 avail=48G load=14.06 side=18 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perf/r18-2 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perf/r18-2 --query tier=mid --discard --seconds 60 --warm 0
+03:39:51 avail=48G load=10.48 side=17 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perf/r17-3 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perf/r17-3 --query tier=mid --discard --seconds 60 --warm 0
+03:41:14 avail=48G load=9.97 side=18 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perf/r18-3 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perf/r18-3 --query tier=mid --discard --seconds 60 --warm 0
+03:42:37 avail=48G load=9.20 pl side=17 tag=r17-save-1 --mode save
+03:46:58 avail=44G load=15.19 pl side=18 tag=r18-save-1 --mode save
+03:51:16 avail=47G load=19.08 pl side=17 tag=r17-save-2 --mode save
+03:52:44 avail=47G load=16.69 pl side=18 tag=r18-save-2 --mode save
+03:54:14 avail=47G load=15.78 pl side=17 tag=r17-save85k-1 --mode save --rate 85k
+03:56:09 avail=47G load=13.57 pl side=18 tag=r18-save85k-1 --mode save --rate 85k
+03:58:06 avail=49G load=10.28 pl side=17 tag=r17-save85k-2 --mode save --rate 85k
+04:00:00 avail=49G load=9.57 pl side=18 tag=r18-save85k-2 --mode save --rate 85k
+04:02:11 avail=49G load=9.84 mp 18 /tmp/orthros-scratch/r18-ship/val/mp/r18-5
+04:07:23 avail=49G load=18.83 goldsrc
+04:08:08 avail=49G load=21.17 re3
+04:09:17 avail=51G load=19.28 win32 boot
+04:10:21 avail=47G load=15.63 thin main
+04:15:36 avail=48G load=12.94 thin r18
+04:20:52 avail=46G load=11.53 side=18 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perf/r18-4 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perf/r18-4 --query tier=mid --discard --seconds 60 --warm 0
+04:22:15 avail=51G load=20.54 side=17 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perf/r17-4 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perf/r17-4 --query tier=mid --discard --seconds 60 --warm 0
+04:23:37 avail=48G load=20.42 side=18 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perf/r18-5 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perf/r18-5 --query tier=mid --discard --seconds 60 --warm 0
+04:25:00 avail=47G load=17.31 side=17 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perf/r17-5 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perf/r17-5 --query tier=mid --discard --seconds 60 --warm 0
+04:26:56 avail=51G load=18.34 side=17 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/17-1 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/17-1 --query tier=mid --discard --seconds 60 --warm 0
+04:28:19 avail=49G load=23.08 side=18x tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/18x-1 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/18x-1 --query tier=mid --discard --seconds 60 --warm 0
+04:29:41 avail=47G load=20.71 side=18 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/18-1 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/18-1 --query tier=mid --discard --seconds 60 --warm 0
+04:31:04 avail=47G load=24.80 side=17x tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/17x-1 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/17x-1 --query tier=mid --discard --seconds 60 --warm 0
+04:32:45 avail=47G load=20.44 side=17 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/17-2 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/17-2 --query tier=mid --discard --seconds 60 --warm 0
+04:34:06 avail=48G load=22.88 side=18x tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/18x-2 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/18x-2 --query tier=mid --discard --seconds 60 --warm 0
+04:35:28 avail=47G load=18.11 side=18 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/18-2 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/18-2 --query tier=mid --discard --seconds 60 --warm 0
+04:36:51 avail=47G load=20.88 side=17x tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/17x-2 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/17x-2 --query tier=mid --discard --seconds 60 --warm 0
+04:38:12 avail=47G load=19.28 side=17 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/17-3 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/17-3 --query tier=mid --discard --seconds 60 --warm 0
+04:39:34 avail=47G load=19.72 side=18x tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/18x-3 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/18x-3 --query tier=mid --discard --seconds 60 --warm 0
+04:40:55 avail=48G load=25.29 side=18 tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/18-3 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/18-3 --query tier=mid --discard --seconds 60 --warm 0
+04:42:37 avail=47G load=20.28 side=17x tools/openmw/perf.mjs /tmp/orthros-scratch/r18-ship/val/perfx/17x-3 morrowind-goty-en --out /tmp/orthros-scratch/r18-ship/val/perfx/17x-3 --query tier=mid --discard --seconds 60 --warm 0

@@ -1,0 +1,11 @@
+{
+ "engine": "openmw-web-v1.5.3-orthros-r18",
+ "manifest": "morrowind-goty-en",
+ "tree": "/srv/orthros/.claude/worktrees/r18-small",
+ "checks": {},
+ "pages": {},
+ "faults": [],
+ "error": "Error: gateway not up (gateway.log)\n    at file:///srv/orthros/.claude/worktrees/data-r15/tools/openmw/results/r17-2026-10-30/mp-check.mjs:43:63\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)",
+ "ok": false,
+ "seconds": 1
+}
