@@ -7,7 +7,7 @@ usage: python3 -I tools/openmw/read-trace.py <run folder> [--from S] [--to S] [-
   <run folder>: place-load's run folder (read-trace.json.gz, proxy.jsonl.gz). Times in seconds from the trigger (the key
   or the COE: the row's P.from), --from/--to the window (default: the trigger to the player in the world, else +60 s).
   --list: every entry of the window (the engine's frames, loads and suspensions among them, from an engine that traces
-  them — orthros-r18.patch orthrosNote —; --plain: its plain frames too); --json: the summary as one JSON line.
+  them — orthros-r19.patch orthrosNote —; --plain: its plain frames too); --json: the summary as one JSON line.
 """
 import gzip, json, os, re, sys, urllib.parse
 from collections import Counter, defaultdict

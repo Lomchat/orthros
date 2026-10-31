@@ -1638,8 +1638,8 @@ save's load frozen +0.2-0.6 s and a COE +1.0-1.4 s (the cells' bytes, no serial 
 Shipped: the scripts announced at the boot (page side, every engine). The distant-chunk put-off (an engine patch of the
 dev build `r14dev`, numbered `orthros-r14.patch` in its scratch tree — **not** the `orthros-r14.patch` released on `main`,
 "Lua beside the frame" below, which has no terrain code; called "the put-off patch" here) is **not shipped**: revised
-for the first r18 build, then measured with r18's suspending reads (below, "Waits that yield to the browser": no better
-than those alone, the page held longer) and dropped from `orthros-r18.patch`.
+for the first r19 build, then measured with r19's suspending reads (below, "Waits that yield to the browser": no better
+than those alone, the page held longer) and dropped from `orthros-r19.patch`.
 
 The owner's session of 2026-10-29 (Vanilla+ FR, warm store, Iris Xe — the `mid` tier —, ~2 MB/s; Caddy log): Chrome's
 "page unresponsive" through ~200 serial demand reads ~80 ms apart before the menu and in the save's load (the Lua
@@ -2331,18 +2331,22 @@ module streamed from a `Response` the page builds: no URL, no cache): 0 commits,
 main-thread Liftoff in the loading, ~3 s more TurboFan in the first 40 s, first 10 s of play p50 12.0 / p90 23.2 ms
 against 9.8 / 15.0) — not kept.
 
-### Waits that yield to the browser: engine orthros-r18 (2026-10-29)
+### Waits that yield to the browser: engine orthros-r19 (2026-10-29)
 
 The owner (2026-10-29): Vanilla+ slow, and Chrome keeps saying the page is not responding. After the boot's scripts
 announced (above), what still held the page's thread was the engine waiting for its files on it: every read of bytes not
 in the page spun on shared memory (`data-client.js` `fetchSync`) — a save's load blocked the page 9 s, a mouse move
-answered after 250 ms. `orthros-r18.patch` (on r17; written and measured on r14 as `r15dev*`, before `main`'s r15
+answered after 250 ms. `orthros-r19.patch` (on r18; written and measured on r14 as `r15dev*`, before `main`'s r15
 and r16 existed, then renumbered and its context regenerated on r16 as `orthros-r17.patch` — the measures below compare
-it with r14, then with the live r16 —, and renumbered r18 once `main`'s own r17 (patient preloads, LuaUi layouts, above)
+it with r14, then with the live r16 —, renumbered r18 once `main`'s own r17 (patient preloads, LuaUi layouts, above)
 shipped first: regenerated on r1..r17, the two patches touching no file in common; its only change then this play page's
-`?preloadwait` comment, which now says r17's 60 s. Below, "r18" names this release in every measure, including those
-made before the renumbering; the dev builds keep the names they were built under, `r17dev*`, and their results stay in
-`tools/openmw/results/r17-2026-10-30/`) makes those waits yield:
+`?preloadwait` comment, which now says r17's 60 s. Below, "r19" names this release in every measure, including those
+made before the renumberings; the dev builds keep the names they were built under, `r17dev*`, and their results stay in
+`tools/openmw/results/r17-2026-10-30/`; then renumbered r19 on 2026-10-31, when its MWMP `interp.lua` fix ("Two clients",
+above) left it for a release of its own, r18: `orthros-r19.patch` is the former `orthros-r18.patch` without the
+`interp.lua` and `run.lua` hunks, applied on r1..r18 — together they make the same tree —, and the measures below made
+under the name r18, the `interp.lua` fix in, now say r19; the dev builds and their results keep their names, `r18dev*` and
+`tools/openmw/results/r18-2026-10-30/`) makes those waits yield:
 
 - **JSPI** (`wasm-build/orthros-jspi.js`, linked `-sJSPI` with `omw_pump_frame` and `main` promising exports): a read
   (`orthros_fd_read_async`) or an announced wait (`orthros_read_wait`, `VFS::orthrosReadWait`) under the frame or the boot
@@ -2360,7 +2364,7 @@ made before the renumbering; the dev builds keep the names they were built under
   as the quick load and the menu script ask it, `orthrosRunDebugAsks`), which the page then pumps promising; a frame
   that starts with a loading screen on is promising too. A load that starts by itself in a frame of play — a door, an
   exterior crossing — runs there synchronously, as r16's. `?jspiplain=0` (`OPENMW_ORTHROS_JSPI_PLAIN=0`): every frame
-  promising, as r18's first builds; `Module.orthrosFrames` `{ plain, promising }` counts them (`StreamFS.jspi().frames`).
+  promising, as r19's first builds; `Module.orthrosFrames` `{ plain, promising }` counts them (`StreamFS.jspi().frames`).
 - **The suspending imports only when the engine may**: V8 throws `SuspendError` when a `WebAssembly.Suspending` import
   is called outside a promising export, even when it returns a value at once (measured in Node 24 and seen in Chrome:
   the first plain frame's post-processing shader read). So the C library's `read`, `fsync` and `sleep` are linked
@@ -2382,7 +2386,7 @@ made before the renumbering; the dev builds keep the names they were built under
 - **Worker threads' reads** (r14's Lua update on its own thread: its `require`, its localisation): proxied to the
   page's thread, they are the plain `fd_read`, answered at once, synchronously — never a pending promise: the
   page's thread serves them inside `Worker::finishUpdate`'s futex wait for that very thread, where no promise could
-  settle (a pending one there is a deadlock). Their bytes missing, they wait on the page's thread as before r18
+  settle (a pending one there is a deadlock). Their bytes missing, they wait on the page's thread as before r19
   (`Module.orthrosBlocked.proxied` / `proxiedMs` / `proxiedMax`: the reads that took 1 ms or more).
 - **Nothing else enters the engine's state during a suspension**: the page's calls (`Module._omw_*`, `Module._orthros_*`
   but the marks, `Module.ccall` whole — its strings live on the stack for the call alone —, `cwrap`'s functions) and
@@ -2415,9 +2419,9 @@ made before the renumbering; the dev builds keep the names they were built under
   in `jspiAfter` over the `--after` stretch — the view raise `view-grow.js` makes once the load is quiet —, its reads
   over the network beside it (`afterReads`).
 - **A data worker that died** while the engine is suspended on a read it was asked by message: rejected after 30 s
-  without its heartbeat (`GameData.watchAsks`), the read then tried again synchronously and failing as before r18 —
+  without its heartbeat (`GameData.watchAsks`), the read then tried again synchronously and failing as before r19 —
   never a frame suspended for ever, silently.
-- **Switches**: `?jspi=0` (`OPENMW_ORTHROS_JSPI=0`): never suspends, every read as before r18; `?jspispin=N`
+- **Switches**: `?jspi=0` (`OPENMW_ORTHROS_JSPI=0`): never suspends, every read as before r19; `?jspispin=N`
   (`OPENMW_ORTHROS_JSPI_SPIN_MS`): the page's wait before a suspension in the boot and under a loading screen (0: at
   once — the spike's behaviour); `?jspiplay=N` (`OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS`): suspends in play too, after N ms
   (by default never: below, "r16dev-c"); `?jspipresent=N` (`OPENMW_ORTHROS_JSPI_PRESENT_MS`, 200; 0: never): a loading
@@ -2436,7 +2440,7 @@ made before the renumbering; the dev builds keep the names they were built under
   suspends for one posted message's round (`orthrosBreath`: input and the page's timers run). A load whose reads the
   browser's copy answers within the short wait otherwise suspends nothing: r16's loading screen was drawn and never
   shown, a COE one frozen picture. `Module.orthrosBlocked.presents` / `presentMs`, `breaths` / `breathMs`.
-- **No put-off of distant chunks.** The first r18 build carried `r14dev`'s put-off patch (above) revised — the frame's cull
+- **No put-off of distant chunks.** The first r19 build carried `r14dev`'s put-off patch (above) revised — the frame's cull
   alone putting off a distant chunk whose files were not in the page, its wait counted from the page's turns
   (`window.orthrosTurns`) and the link's last bytes (`window.orthrosReceived`), `?cullwait=N` —; measured against
   `?cullwait=0` on that build (the first measure below) it added nothing to JSPI's suspensions — the same frame gaps and
@@ -2456,12 +2460,12 @@ Development build only (`openmw-web-v1.5.3-orthros-r15dev-c` in scratch, engine 
 `r15dev-d`, `78f27515a025`, measured beside it and not kept, adds a budget of the frame's waits in play —; `r15dev-b`,
 `62f844e4a4ba`, the third measure's, 10 ms everywhere: the kept r13 tree +
 the released `orthros-r14.patch` of `main` — Lua's thread, LuaUi diffing, clock, gamma; the file `lock.json`'s r14
-entry pins — + `orthros-r18.patch`; `r15dev`, `960119b9a7ab`, the second measure's, differs only by the WebSocket
-handlers above; the lock entry `openmw-web-v1.5.3-orthros-r18` — r17's patches and exports + `orthros-r18.patch` and
+entry pins — + `orthros-r19.patch`; `r15dev`, `960119b9a7ab`, the second measure's, differs only by the WebSocket
+handlers above; the lock entry `openmw-web-v1.5.3-orthros-r19` — r17's patches and exports + `orthros-r19.patch` and
 `orthros_jspi`, its files `{}` until the release is built (tools/openmw/build.sh). The measures below ran this patch on
 r14 (`r15dev*`): `main`'s r15 and r16 came after them, and are not in any of them. `openmw-web-v1.5.3-orthros-r17dev`
 (scratch, engine `f2ca81fc07a4`): the kept r13 tree + `main`'s `orthros-r14.patch`, `orthros-r15.patch`,
-`orthros-r16.patch` + `orthros-r18.patch` — r15's `PRECOMPILE` and this patch's load hooks both in
+`orthros-r16.patch` + `orthros-r19.patch` — r15's `PRECOMPILE` and this patch's load hooks both in
 `mwgui/loadingscreen.cpp` (no textual overlap); r16's Lua chunks, texture queue and NIF thread beside them (its NIF
 bytes read whole on the page's thread: suspended reads in the boot like the others) — smoke-checked only (2026-10-30,
 load 11-13): `check.mjs morrowind-goty-vanilla-plus-en --lang fr` passed on a scratch server (1,740 draws, the menu in
@@ -2477,17 +2481,17 @@ same frozen copy of the learned state and br-cache; SwiftShader, load 14-22; tim
 | scenario (runs) | release | to menu / in world | load: page's longest block | load: input delay p50 / p95 | view raise: page's longest block | view raise: longest frame gap | view raise: serial reads |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | save, warm (4) | r14 | 10.8-11.3 / 10.8-11.1 after F9 | 8856-9175 | 223-417 / 544-687 (5 inputs a load: the probe's own moves held) | 3363-3463 | 3117-3150 | 33-39 |
-| save, warm (4) | r18 | 10.6-11.8 / 9.0-11.1 | 1795-3021 | 4-16 / 971-1936 | 814-1006 | 3150-3733 | 33-38 |
-| save, warm (4) | r18 `?cullwait=0` | 10.8-13.1 / 9.6-10.0 | 2000-2115 | 8-18 / 1014-1162 | 133-172 | 750-3533 | 5-41 |
+| save, warm (4) | r19 | 10.6-11.8 / 9.0-11.1 | 1795-3021 | 4-16 / 971-1936 | 814-1006 | 3150-3733 | 33-38 |
+| save, warm (4) | r19 `?cullwait=0` | 10.8-13.1 / 9.6-10.0 | 2000-2115 | 8-18 / 1014-1162 | 133-172 | 750-3533 | 5-41 |
 | save, new device (2) | r14 | 35.1, 36.3 / 14.3, 14.2 | 11802, 11968 | 144-271 / 379-473 | 6815, 7048 | 6533, 6750 | 74, 75 |
-| save, new device (2) | r18 | 32.0, 29.9 / 13.1, 12.2 | 1039, 1223 | 6-12 / 799-933 | 740, 925 | 3833, 3833 | 74, 81 |
+| save, new device (2) | r19 | 32.0, 29.9 / 13.1, 12.2 | 1039, 1223 | 6-12 / 799-933 | 740, 925 | 3833, 3833 | 74, 81 |
 | COE, warm (2) | r14 | boot in world 19.5, 20.4; COE 4295, 4328 ms (the call) | 4314, 4353 | 4045, 4078 (p95) | 3216, 3239 | — | 36, 37 |
-| COE, warm (2) | r18 | boot in world 16.0, 15.9; COE 5680, 4498 ms (294, 341 ms to its frame) | 337, 364 | 425, 441 (p95) | 130, 190 | 700, 733 | 9, 9 |
-| COE, warm (2) | r18 `?cullwait=0` | boot in world 17.7, 15.7; COE 5246, 5140 ms | 470, 1195 | 449, 470 (p95) | 114, 119 | 750, 867 | 6, 10 |
+| COE, warm (2) | r19 | boot in world 16.0, 15.9; COE 5680, 4498 ms (294, 341 ms to its frame) | 337, 364 | 425, 441 (p95) | 130, 190 | 700, 733 | 9, 9 |
+| COE, warm (2) | r19 `?cullwait=0` | boot in world 17.7, 15.7; COE 5246, 5140 ms | 470, 1195 | 449, 470 (p95) | 114, 119 | 750, 867 | 6, 10 |
 | COE, new device (2) | r14 | boot in world 55.6, 52.3; COE 4923, 5079 ms | 4941, 5130 | 4671, 4829 (p95) | 3355, 3399 | 3083, 3333 | 32, 38 |
-| COE, new device (2) | r18 | boot in world 45.0, 44.6; COE 5221, 5246 ms | 250, 560 | 443, 499 (p95) | 729, 953 | 1750, 2167 | 35, 37 |
+| COE, new device (2) | r19 | boot in world 45.0, 44.6; COE 5221, 5246 ms | 250, 560 | 443, 499 (p95) | 729, 953 | 1750, 2167 | 35, 37 |
 | save, warm, **85 KB/s** (1) | r14 | 15.1 / 77.8 | **76053** | 99 / 552 | 11828 | 11533 | 35 |
-| save, warm, **85 KB/s** (1) | r18 | 18.6 / 80.6 | **2834** | 9 / 26 | 806 | 12066 | 41 |
+| save, warm, **85 KB/s** (1) | r19 | 18.6 / 80.6 | **2834** | 9 / 26 | 806 | 12066 | 41 |
 
 - **The page's thread**: the longest block of a save's load 8.9-9.2 s → 1.8-3.0 s (warm), 11.8-12.0 → 1.0-1.2 s (new
   device), 76 s → 2.8 s at 85 KB/s; a COE's 4.3-5.1 s → 0.25-0.56 s. What still blocks is the engine's own work (the
@@ -2498,43 +2502,43 @@ same frozen copy of the learned state and br-cache; SwiftShader, load 14-22; tim
 - **Times**: boot to menu unchanged (the spike's +2 s gone: 1,500-2,500 reads a session answered in the 10 ms wait,
   0.7-1.5 s of the page's time in all); a save's key to the world equal or 1-2 s shorter; a warm `?start=` boot in the
   world 4 s sooner (16 against 20 s), a new device's 8-10 s sooner (45 against 52-56 s). At 85 KB/s (one run a side)
-  r18's menu came 3.5 s later and its world 2.8 s later: its warm profile (made by its own warm-up) read 2 files on
+  r19's menu came 3.5 s later and its world 2.8 s later: its warm profile (made by its own warm-up) read 2 files on
   demand before the menu that r14's had — not settled whether the engine or the profile.
 - **The first frame of a `?start=` boot** (the multiplayer and QA boot, `--skip-menu`) seemed later — 10.4-11.9 s
-  (warm) and 38.2-38.6 s (new device) against r14's 3.4 s and 7.7-8.9 s —: a fault of the probe, not of r18. It dated
+  (warm) and 38.2-38.6 s (new device) against r14's 3.4 s and 7.7-8.9 s —: a fault of the probe, not of r19. It dated
   a frame by the argument of the `requestAnimationFrame` callback that first saw draws — the frame's begin —, and a
   callback that waited keeps the begin from before its wait. In a diagnostic warm `?start=` boot of r14 (Vanilla+ FR):
   the first draw at 18.5 s, and the first callback that saw draws dated 3.5 s, though it ran after that draw and before
   the next callback, dated 19.9 s — a date 15 s stale —; the page's 20 ms timer did not run from 3.5 to 29.0 s (not
   one task: animation-frame callbacks ran in that stretch, dated 19.9 and 29.1 s; the timers starved), and the engine's
   `firstFrame` mark (its first frame's end) came at 28.9 s. Dated by the page's clock in that callback (the earliest the browser can show the draws, `place-load.mjs`
-  `firstFrameS`; the old date kept as `firstFrameRafS`), the second measure below: r18's first frame as early as r14's.
-- **The view raise** (the 75 s after the load): with the put-off on (r18's default), the page's longest block 0.8-1.0 s
+  `firstFrameS`; the old date kept as `firstFrameRafS`), the second measure below: r19's first frame as early as r14's.
+- **The view raise** (the 75 s after the load): with the put-off on (r19's default), the page's longest block 0.8-1.0 s
   against r14's 3.4 s (warm save), the picture's longest gap unchanged (3.1-3.7 s against 3.1 s) and as many reads (33-38
   against 33-39) — the 100 serial reads → 8 of the first measure is not seen here. With `?cullwait=0` (JSPI alone, the
   cull's reads suspending its frame) the page's longest block 0.13-0.17 s, no frame gap longer (0.75-3.5 s), the same
   reads: **the put-off measures no better than JSPI alone, and holds the page 0.7 s more** (COE warm: 130-190 against
   114-119 ms, gaps 0.70-0.73 against 0.75-0.87 s). At 85 KB/s the picture stopped 12 s at the view raise in both
-  releases (r18 with the put-off; `?cullwait=0` not run there).
+  releases (r19 with the put-off; `?cullwait=0` not run there).
 - **Worker threads' reads** (r14's Lua thread, on in these solo runs): 0-4 a run answered on the page's thread, the
-  longest 1-17 ms warm, 132-134 ms on a new device; no deadlock in any run (19 r18 sessions of place-load, 4 of
+  longest 1-17 ms warm, 132-134 ms on a new device; no deadlock in any run (19 r19 sessions of place-load, 4 of
   perf, 3 checks, 17 page loads of frame-compare).
 - **In play** (`perf.mjs --query tier=mid --discard --seconds 60`, 2 runs a variant, load 17-22): r14 19.1-20.4 fps,
-  work p50 10.9-11.1 / p99 46.8-53.3 ms (its data stalls 0.9-1.1 s a minute); r18 20.1-20.6 fps, p50 11.6 / p99
-  39.9-40.2 ms (the engine's own 34-36 ms, 21-123 ms suspended a minute, stalls 0.09-0.2 s); r18 `?jspi=0` 19.8-20.8 fps,
+  work p50 10.9-11.1 / p99 46.8-53.3 ms (its data stalls 0.9-1.1 s a minute); r19 20.1-20.6 fps, p50 11.6 / p99
+  39.9-40.2 ms (the engine's own 34-36 ms, 21-123 ms suspended a minute, stalls 0.09-0.2 s); r19 `?jspi=0` 19.8-20.8 fps,
   p50 11-12 / p99 35.7-36.1. No regression.
 - **Checks**: `check.mjs` `morrowind-goty-en`, `--lang fr` and `morrowind-goty-vanilla-plus-en --lang fr` pass on r15dev.
-  `frame-compare.mjs morrowind-goty-en` (day, night, interior): r18 against r14 a mean difference of 0.01-1.3 /255 and no
+  `frame-compare.mjs morrowind-goty-en` (day, night, interior): r19 against r14 a mean difference of 0.01-1.3 /255 and no
   pixel over 24, within the captures' own noise (0.02-1.4); `?jspi=0&cullwait=0` the same picture. One renderer crash
-  ("Target crashed") during the first r18 frame-compare's interior reload, not repeated in the second run nor in any
+  ("Target crashed") during the first r19 frame-compare's interior reload, not repeated in the second run nor in any
   other page load — not reproduced since either (second measure: 3 more runs, 27 page loads, 9 of them the interior).
 
 Second measure, the put-off dropped (2026-10-29/30, the same options and scenarios; a new frozen copy of the live learned
-state and br-cache, new warm profiles — r14's warm-up 55 s to the world, 808 MB stored; r18's 43 s, 673 MB —; r18 =
-`r15dev`; 2 runs a cell, r18's COE warm 4; load 11-24; the first frame by the page's clock; "first engine frame" = the
+state and br-cache, new warm profiles — r14's warm-up 55 s to the world, 808 MB stored; r19's 43 s, 673 MB —; r19 =
+`r15dev`; 2 runs a cell, r19's COE warm 4; load 11-24; the first frame by the page's clock; "first engine frame" = the
 page's `firstFrame` mark, the end of the engine's first frame — under JSPI that frame suspends, view.lua's report of
-the world comes during it; that mark is missing in 3 of r18's 8 rows — both runs of the first r18 COE-warm pair and
-the second warm save —, so r18's COE-warm "17.9, 18.0" is the second pair's alone and its warm save's first-frame end
+the world comes during it; that mark is missing in 3 of r19's 8 rows — both runs of the first r19 COE-warm pair and
+the second warm save —, so r19's COE-warm "17.9, 18.0" is the second pair's alone and its warm save's first-frame end
 one run's, 12.9 s. The rows read the mark when the world or the menu is reported, which under JSPI can precede the
 first frame's end; the read at the run's end (`P.firstTick`) is the fallback, and those three rows came before it — an
 inference, not a record: every later row of that build has it, and the mark is set at every frame's end):
@@ -2542,18 +2546,18 @@ inference, not a record: every later row of that build has it, and the mark is s
 | scenario | release | first frame drawn (`firstFrameRafS`) | first engine frame ends / in world | load: page's longest block | load: input p50 / p95 | load: longest frame gap | view raise: page's longest block / longest frame gap / serial reads |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | COE, warm | r14 | 12.0, 11.9 (3.2, 3.4) | 19.4, 19.7 / 19.5, 19.7 | 4981, 4482 | 470-1208 / 4295-4701 | 4550, 4616 | 138-3195 / 383-2800 / 10-34 |
-| COE, warm | r18 | 11.9-12.4 (5.6-12.1) | 17.9, 18.0 / 14.9-15.9 | 210-1068 | 4-14 / 280-548 | 5133-6433 | 123-176 / 683-917 / 6-9 |
+| COE, warm | r19 | 11.9-12.4 (5.6-12.1) | 17.9, 18.0 / 14.9-15.9 | 210-1068 | 4-14 / 280-548 | 5133-6433 | 123-176 / 683-917 / 6-9 |
 | COE, new device | r14 | 41.4, 41.3 (7.8, 7.8) | 52.7, 53.4 / 52.8, 53.5 | 5087, 5012 | 215, 480 / 4813, 4730 | 5066, 4966 | 3806, 3418 / 3517, 3100 / 34, 38 |
-| COE, new device | r18 | 42.3, 39.2 (41.6, 38.8) | 58.2, 52.3 / 48.7, 44.1 | 374, 335 | 16, 12 / 407, 289 | 4866, 4666 | 949, 151 / 3700, 3417 / 32, 34 |
+| COE, new device | r19 | 42.3, 39.2 (41.6, 38.8) | 58.2, 52.3 / 48.7, 44.1 | 374, 335 | 16, 12 / 407, 289 | 4866, 4666 | 949, 151 / 3700, 3417 / 32, 34 |
 | save, warm (menu; F9 to the world) | r14 | 11.2, 10.8 (9.7, 9.5) | menu 11.2, 10.8; world 11.0, 10.9 s after F9 | 9072, 8976 | 322, 309 / 534, 507 | 8983, 8916 | 3408, 3427 / 3067, 3083 / 34, 34 |
-| save, warm (menu; F9 to the world) | r18 | 12.6, 12.6 (11.4, 11.4) | menu 12.6, 12.6; world 9.0, 8.7 s after F9 | 1972, 2017 | 16, 8 / 947, 921 | 5300, 5133 | 137, 138 / 3483, 3483 / 32, 33 |
+| save, warm (menu; F9 to the world) | r19 | 12.6, 12.6 (11.4, 11.4) | menu 12.6, 12.6; world 9.0, 8.7 s after F9 | 1972, 2017 | 16, 8 / 947, 921 | 5300, 5133 | 137, 138 / 3483, 3483 / 32, 33 |
 
 - **The first frame**: as early as r14's — warm 11.9-12.4 s against 11.9-12.0, new device 39.2-42.3 against
   41.3-41.4. The world comes sooner on a warm boot (view.lua's report 14.9-15.9 s against 19.5-19.7; the first engine
   frame's end 17.9-18.0 against 19.4-19.7); on a new device the report 4-9 s sooner, the first frame's end as r14's
-  (52.3-58.2 against 52.7-53.4: the boot's steps from the new game to the music played 22.9-25.3 s on r18, 23.7-24.2 on
+  (52.3-58.2 against 52.7-53.4: the boot's steps from the new game to the music played 22.9-25.3 s on r19, 23.7-24.2 on
   r14 — the same work, its spread run to run).
-- **The menu** (save boot): 12.6 s against 10.8-11.2 — r18's warm profile fetched 4.1 MB before the menu against r14's
+- **The menu** (save boot): 12.6 s against 10.8-11.2 — r19's warm profile fetched 4.1 MB before the menu against r14's
   2.3 MB (the first measure: unchanged, 10.6-11.8 against 10.8-11.3); not settled whether the engine or the profile.
 - **Loads**: a warm save's F9 to the world 8.7-9.0 s against 10.9-11.0, the page's longest block 2.0 s against 9.0 s;
   the COE's page block 0.2-1.1 s against 4.5-5.1 s, its picture still 4.7-6.4 s without a new frame (one frame
@@ -2562,47 +2566,47 @@ inference, not a record: every later row of that build has it, and the mark is s
   device (r14 3.4-3.8 s); the picture's longest gap 0.7-0.9 s after a COE (r14 0.4-2.8 s), 3.5 s after a save's load as
   r14's 3.1 s, 3.4-3.7 s on a new device as r14's 3.1-3.5 s; as many serial reads.
 - **In play** (`perf.mjs --query tier=mid --discard --seconds 60`, 2 runs a release, interleaved, load 11-20): r14 19.3,
-  19.6 fps, work p50 10.8-11.3 / p99 51.1-52.8 ms, data stalls 1.0-1.1 s, 206-217 synchronous fetches; r18 20.0, 20.4
+  19.6 fps, work p50 10.8-11.3 / p99 51.1-52.8 ms, data stalls 1.0-1.1 s, 206-217 synchronous fetches; r19 20.0, 20.4
   fps, p50 11.6-11.7 / p99 34.7-40.8 ms (84-119 ms suspended in the minute), stalls 0.33-0.34 s, 2 synchronous
-  fetches; longest frame gap 167-183 ms (r14) against 300-317 ms (r18: a frame that waited suspended rather than
+  fetches; longest frame gap 167-183 ms (r14) against 300-317 ms (r19: a frame that waited suspended rather than
   stalled). No page error.
 
-Third measure, on the code r18 would ship with (2026-10-30): the two measures above ran r18's page code before `main`'s
+Third measure, on the code r19 would ship with (2026-10-30): the two measures above ran r19's page code before `main`'s
 e584802 (light copies fetched into the page before the engine is told, the module compiled in a worker — it changes
 `data-client.js` and `streamfs.js` too), and r14 on `main` d5546f6. This tree merged with `main` e584802, then the same
 `place-load.mjs` options (2 MB/s, 85 ms, `tier=mid`, `--after 75`), a new frozen copy of the live learned state and
-br-cache, new warm profiles (r14's warm-up 58 s to the world, 673 MB stored; r18's 45 s, 539 MB), one save made once for both; r14 = the
-r14 release on `main` e584802, r18 = `r15dev-b` on this merged tree; 2 runs a cell; load 19-25; COE and save warm only
+br-cache, new warm profiles (r14's warm-up 58 s to the world, 673 MB stored; r19's 45 s, 539 MB), one save made once for both; r14 = the
+r14 release on `main` e584802, r19 = `r15dev-b` on this merged tree; 2 runs a cell; load 19-25; COE and save warm only
 (no new-device run):
 
 | scenario | release | first frame (`firstFrameRafS`) | first engine frame ends / in world | load: page's longest block | load: input p50 / p95 | load: longest frame gap | view raise: page's longest block / longest frame gap / serial reads |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | COE, warm | r14 | 12.4, 12.0 (3.2, 3.0) | 19.9, 18.9 / 19.9, 18.9 | 4101, 4129 | 500, 401 / 3838, 3890 | 4283, 4033 | 3175, 3270 / 2850, 2800 / 34, 33 |
-| COE, warm | r18 | 14.2, 13.5 (12.5, 11.8) | 22.4, 21.6 / 18.5, 17.3 | 300, 196 | 11, 8 / 261, 315 | 6366, 6366 | 194, 161 / 767, 767 / 11, 10 |
+| COE, warm | r19 | 14.2, 13.5 (12.5, 11.8) | 22.4, 21.6 / 18.5, 17.3 | 300, 196 | 11, 8 / 261, 315 | 6366, 6366 | 194, 161 / 767, 767 / 11, 10 |
 | save, warm (menu; F9 to the world) | r14 | 11.4, 12.0 (9.8, 10.4) | menu 11.4, 12.0; world 11.2, 11.3 s after F9 | 9098, 9317 | 249, 564 / 352, 565 | 9050, 9266 | 3465, 3476 / 3150, 3183 / 32, 39 |
-| save, warm (menu; F9 to the world) | r18 | 11.8, 12.6 (10.4, 11.4) | menu 11.8, 12.6; world 10.5, 9.4 s after F9 | 2351, 1986 | 16, 12 / 1425, 1025 | 5433, 4800 | 169, 161 / 3450, 3400 / 35, 34 |
+| save, warm (menu; F9 to the world) | r19 | 11.8, 12.6 (10.4, 11.4) | menu 11.8, 12.6; world 10.5, 9.4 s after F9 | 2351, 1986 | 16, 12 / 1425, 1025 | 5433, 4800 | 169, 161 / 3450, 3400 / 35, 34 |
 
 - Every row has its `firstTickS` this time (the end-of-run read).
 - **The page's thread**: as before — a COE's longest block 0.2-0.3 s against 4.1 s, a save's load 2.0-2.4 s against
   9.1-9.3 s, the view raise 0.16-0.19 s against 3.2-3.5 s; input p50 8-16 ms against 0.25-0.56 s.
-- **Worse on r18 here**: a warm `?start=` boot's first frame 13.5-14.2 s against 12.0-12.4, and the first engine
-  frame's end 21.6-22.4 s against 18.9-19.9 (the second measure had r18 at 17.9-18.0, ahead of r14); view.lua's report
+- **Worse on r19 here**: a warm `?start=` boot's first frame 13.5-14.2 s against 12.0-12.4, and the first engine
+  frame's end 21.6-22.4 s against 18.9-19.9 (the second measure had r19 at 17.9-18.0, ahead of r14); view.lua's report
   of the world 17.3-18.5 against 18.9-19.9, ~1-2 s sooner instead of 4 s. The COE's picture is held longer, 6.4 s
   against 4.0-4.3 (54-55 serial reads while it is held, against 2-27): the page is free, the picture is not. Not
-  attributed: whether the merge (e584802's page side under JSPI) or the run's conditions; the second measure saw r18's
+  attributed: whether the merge (e584802's page side under JSPI) or the run's conditions; the second measure saw r19's
   COE picture at 5.1-6.4 s too.
-- **The menu** (save boot): 11.8-12.6 s against 11.4-12.0 — r18's warm profile again fetched more before the menu
+- **The menu** (save boot): 11.8-12.6 s against 11.4-12.0 — r19's warm profile again fetched more before the menu
   (4.6 MB against 2.5 MB). A warm save's F9 to the world 9.4-10.5 s against 11.2-11.3.
 - **In play** (`perf.mjs --query tier=mid --discard --seconds 60`, 2 runs a release interleaved, servers of the merged
-  tree and of `main`, load 18-24): e584802 brought r14 to r18's level — r14 20.6, 20.7 fps, work p50 8.6-11.3 / p99
-  32.4-33.9 ms, data stalls 95-112 ms, 33-35 synchronous fetches, longest frame gap 167-233 ms; r18 20.5, 20.6 fps, p50
+  tree and of `main`, load 18-24): e584802 brought r14 to r19's level — r14 20.6, 20.7 fps, work p50 8.6-11.3 / p99
+  32.4-33.9 ms, data stalls 95-112 ms, 33-35 synchronous fetches, longest frame gap 167-233 ms; r19 20.5, 20.6 fps, p50
   11.0-11.6 / p99 30.3-31.7 ms (92-140 ms suspended in the minute), stalls 304-394 ms, 2 synchronous fetches, longest
-  gap 283-400 ms. On the merged code r18 shows **no in-play gain** over r14 beyond noise, and **more data-stall time**
+  gap 283-400 ms. On the merged code r19 shows **no in-play gain** over r14 beyond noise, and **more data-stall time**
   (0.3-0.4 s against 0.1 s a minute) and longer frame gaps: its frames wait suspended where r14's few reads are
   answered fast. No page error.
 - Multiplayer on the merged tree: `r15-4` below (passed).
 
-- **Frame-compare, 3 runs** (`frame-compare.mjs morrowind-goty-en`, r18 `''` against `?jspi=0`, day / night / interior):
+- **Frame-compare, 3 runs** (`frame-compare.mjs morrowind-goty-en`, r19 `''` against `?jspi=0`, day / night / interior):
   each view the same picture (0.006-2.1 /255 against the captures' own noise 0.001-1.4, no pixel over 24) but one day capture (3.2 /255,
   5.5 % of pixels over 24: a post's texture — its light copy in one capture, its full file in the other: the data's
   timing, not the engine's drawing); no renderer crash in the 27 page loads.
@@ -2616,18 +2620,18 @@ r14 release on `main` e584802, r18 = `r15dev-b` on this merged tree; 2 runs a ce
   the other stands. Runs (`mp-check.mjs`, scratch): **r14** 3 — `r14-1` FAILED (an older version of the script: "A
   walks" ok, "B walks, A sees its puppet move" failed, the copy moving 7 units; no teleport nor next-cell checks),
   `r14-2` passed (no next-cell check yet: the copies within 0-25 units after the teleports), `r14-3` passed (0-28
-  units; next cell 0 and 40) —; **r18** 4 — `r15-1` (`r15dev`) stuck at "Connecting" (the WebSocket handler bug, below),
+  units; next cell 0 and 40) —; **r19** 4 — `r15-1` (`r15dev`) stuck at "Connecting" (the WebSocket handler bug, below),
   `r15-2` (`r15dev-b`) FAILED "A moves 3 times": one copy stayed 22,416 units off for 90 s after a teleport, the next
   move healing it (B's moves within 0-28 units) —, `r15-3` (`r15dev-b`, the page code before the merge with
   e584802) passed: the copies within 0-1 unit after each teleport, next cell 0 and 6; `r15-4` (`r15dev-b`, this
   tree merged with `main` e584802) passed: within 0-1 unit, next cell 0 and 9. So the follow figures are from the
-  passing runs alone — r14 0-28 (two runs), next cell 0-40 (one run); r18 0-1 (two runs), next cell 0-9 (two runs) —,
-  and of r18's 3 runs on `r15dev-b` one failed. On `r15-3`: 83 of the 14,766 messages and both connections' `open`
+  passing runs alone — r14 0-28 (two runs), next cell 0-40 (one run); r19 0-1 (two runs), next cell 0-9 (two runs) —,
+  and of r19's 3 runs on `r15dev-b` one failed. On `r15-3`: 83 of the 14,766 messages and both connections' `open`
   reached the page while the engine was suspended or its put-off calls not run yet (runs of up to 37 messages),
   delivered after the frame, no error, no reconnection, no page error; on `r15-4` 94 of 17,638 messages (runs up to 45)
   and one of the two `open`s, the same. The 22,416-unit copy of `r15-2` is not
   explained: its look is MWMP's puppet extrapolation (the last two positions processed in one frame, 5 ms apart,
-  extrapolated ×18), which slow frames can feed in r14 too, but it was seen on r18 only (1 run of 3), so r18 is not
+  extrapolated ×18), which slow frames can feed in r14 too, but it was seen on r19 only (1 run of 3), so r19 is not
   ruled out.
   The evidence that each client sees the other is the engine's state (rosters, puppet ids, the copies' coordinates
   in `result.json`). The pictures: `r15-3`'s show the onboarding panel ("You are in the world") over the inventory, not
@@ -2638,9 +2642,9 @@ r14 release on `main` e584802, r18 = `r15dev-b` on this merged tree; 2 runs a ce
   setters, and the library then dropped every event (its handler compared through the getter) — fixed (above), the
   test's counter made a listener of its own.
 
-#### In play: what r18 made worse, and the fix (2026-10-30)
+#### In play: what r19 made worse, and the fix (2026-10-30)
 
-The third measure had r18 worse in play than r14 on the merged code (data stalls 0.3-0.4 s a minute against 0.1, longest
+The third measure had r19 worse in play than r14 on the merged code (data stalls 0.3-0.4 s a minute against 0.1, longest
 frame gap 283-400 ms against 167-233) and its warm `?start=` first frame 1.5 s later. Controls on the same build
 (`r15dev-b`), `perf.mjs`'s scenario with hooks of a scratch script (every `soon` that suspended or waited, with its
 engine stack by `openmw.js.symbols`; every frame's pump, end and next pump; every file load; the view distance and the
@@ -2678,12 +2682,12 @@ a run):
   asked for to its end at its first missing piece (docs/slow-network.md "A whole image at its first missing piece"):
   the image waits 44-56 → 26 a minute, their time the same on the local link.
 - **The warm `?start=` first frame**: `?jspi=0` on the fixed build 13.0, 15.1 s against 11.4-12.6 s default and r14's
-  13.5-14.1 — not JSPI; with the fixes r18's first frame is no later than r14's (table below).
+  13.5-14.1 — not JSPI; with the fixes r19's first frame is no later than r14's (table below).
 
 **Fourth measure** (2026-10-30, merged code, the same options as the third; new frozen copies of the live learned state
 and br-cache, new warm profiles — r14's 54 s to the world, 673 MB; `r15dev-c`'s 46 s, 539 MB —, one save for all; r14 =
-the r14 release on `main` e584802, r18 = `r15dev-c` on this tree (r15dev-d: the same plus a budget of the frame's waits
-in play, 100 ms in all between two turns of the page); runs interleaved r14 / r18, load 8-33; in play `perf.mjs --query
+the r14 release on `main` e584802, r19 = `r15dev-c` on this tree (r15dev-d: the same plus a budget of the frame's waits
+in play, 100 ms in all between two turns of the page); runs interleaved r14 / r19, load 8-33; in play `perf.mjs --query
 tier=mid --discard --seconds 60`, new profile, each side its own server):
 
 | | r14 | r15dev-c | r15dev-d |
@@ -2702,7 +2706,7 @@ tier=mid --discard --seconds 60`, new profile, each side its own server):
 | save warm: page's longest block (ms) | 8371-8545 | 2566, 2421 | 1848, 2186, 1851 |
 | save warm: input p50 / p95 (ms) | 179-358 / 319-572 | 12-22 / 963-1183 | 8-17 / 992-1222 |
 
-- **Loads**: r18 keeps the page free — a COE's page block 0.3-1.3 s against 4.1-5.1 s, a save's 1.8-2.6 s against
+- **Loads**: r19 keeps the page free — a COE's page block 0.3-1.3 s against 4.1-5.1 s, a save's 1.8-2.6 s against
   8.4-8.5 s, input p50 8-49 ms against 0.2-1.0 s; F9 to the world 8.7-9.6 s against 10.3-10.9. The first frame of a
   warm `?start=` boot no longer later (11.4-14.1 s against 13.5-14.1).
 - **In play**: one r15dev-c run in three (500 ms gap, 0.5 s of stalls) and two r15dev-d runs in three (417 and 900 ms,
@@ -2720,7 +2724,7 @@ tier=mid --discard --seconds 60`, new profile, each side its own server):
 The fourth measure left two things open: a renderer crash ("Target crashed") in one of 9 r15dev-c sessions, at the
 menu, and in-play numbers no better than r14's. Rebuilt on `main`'s r16 (`r17dev`, the patch above), measured against
 the live r16 on the same merged page code (`place-load.mjs`, `perf.mjs`; each server its own copy of the learned state
-and a frozen br-cache copy; runs interleaved r16 / r18; one browser at a time; load 5-22).
+and a frozen br-cache copy; runs interleaved r16 / r19; one browser at a time; load 5-22).
 
 **The crash: Chromium's native stack walker on a JSPI stack.** The kernel's log has three renderer segfaults since
 2026-10-29 at the same instruction of Chromium 153 (Playwright's `chromium-1243`, offset `0x38b7d1f` of its executable
@@ -2736,7 +2740,7 @@ Reproduced at will with the heap profiler on for every renderer (`--memlog=all-r
 --memlog-stack-mode=native`, through `ORTHROS_CHROME_ARGS`): `r17dev-g2` crashed in 2 sessions of 2 (a save boot, a
 COE boot), r16 in none (1 session); kernel lines kept with the results.
 
-**The fixes** (`orthros-r18.patch`, above "A frame of play is plain", "The suspending imports only when the engine may",
+**The fixes** (`orthros-r19.patch`, above "A frame of play is plain", "The suspending imports only when the engine may",
 "The GPU's queue in a load's frame"):
 - **Plain frames in play** — the engine on the page's own stack outside the boot and loads: no exposure in play nor at
   the menu (where the r15dev-c crash was), and no JSPI cost in play.
@@ -2750,7 +2754,7 @@ COE boot), r16 in none (1 session); kernel lines kept with the results.
 **What it measures** (`r17dev-d`, its own warm profile; r16 the live release; 3 runs a side interleaved for loads, 4
 for play):
 
-| | r16 | r18 (`r17dev-d`) |
+| | r16 | r19 (`r17dev-d`) |
 | --- | --- | --- |
 | save, warm: menu (s) | 7.1-7.3 | 7.0-8.0 |
 | save, warm: F9 to the world (s) | 4.8-4.9 | 4.9-5.7 |
@@ -2782,10 +2786,10 @@ page block 2.4-2.6 s and its input p95 2.2-2.5 s, the COE's freeze 1.67-2.07 s a
   25.8 s against r16's 23.7, F9 to the world 12.2 against 12.7 s, the page's block 0.2 against 12.6 s, the picture's
   freeze 7.6 against 12.5 s; at 85 KB/s the menu 10.6-10.9 against 10.6-11.0 s, but **F9 to the world 38.8-39.1 s
   against 26.7-26.8** (freeze 30.2-30.5 against 26.5-26.6 s; the page's block 0.2 against 26.6 s): the load's announced
-  wait timed out once (15 s) in both r18 runs, none in r16's, and 1.4 MB went to the game's own reads asked ahead
+  wait timed out once (15 s) in both r19 runs, none in r16's, and 1.4 MB went to the game's own reads asked ahead
   (`a=1`, one 1 MB `Morrowind.bsa` range taking 16.5 s) against r16's 0.19 MB — reads served while the engine stood
   suspended on its announced wait, which r16's held page did not serve until the wait was over (most likely a worker
-  thread's proxied read: the page's thread is free during a suspension). **Open**: on a thin link r18's save load is
+  thread's proxied read: the page's thread is free during a suspension). **Open**: on a thin link r19's save load is
   12 s slower; not fixed here.
 - **Pictures** (`frame-compare.mjs morrowind-goty-en`, `r17dev-d` `''` against `?jspi=0`): day 3.59 against the
   captures' own noise 3.60 /255 (1.8 % over 24 in both), night 0.78 against 0.88, interior 0.63 against 0.30 (no pixel
@@ -2803,18 +2807,18 @@ page block 2.4-2.6 s and its input p95 2.2-2.5 s, the COE's freeze 1.67-2.07 s a
 #### Full validation against the live r16, and the verdict (2026-10-30)
 
 The build measured is `r17dev-e` (scratch, engine `3caae330a30b`): `r17dev-d`'s kept tree with the difference between
-`r17dev-d`'s sources and this `orthros-r18.patch` applied over it. That difference is only a comment in
+`r17dev-d`'s sources and this `orthros-r19.patch` applied over it. That difference is only a comment in
 `orthros-jspi.js` and one local renamed in `statemanagerimp.cpp` (kept as `r17dev-e-over-r17dev-d.patch`), so its code is
 the patch's. r16 is the live release `openmw-web-v1.5.3-orthros-r16`. Both run on this tree's page code (`main`
-8f82f61 and the r18 page changes). Every server had its own fresh copy of the live learned state, all copied at one
+8f82f61 and the r19 page changes). Every server had its own fresh copy of the live learned state, all copied at one
 moment (15:10), and a frozen br-cache copy (`--br-cache-frozen`): place-load made a new copy for each run; `perf.mjs`
 started a new server for each run. Each side used its own warm profile, made by its own engine. The runs were interleaved
-r16 / r18, one browser at a time through `tools/with-browser-slot.sh`, the load at their start 7.7-23.7, and at least 35
+r16 / r19, one browser at a time through `tools/with-browser-slot.sh`, the load at their start 7.7-23.7, and at least 35
 GB of memory available throughout. Results: `tools/openmw/results/r17-2026-10-30/validation/` (the place-load rows, each
 `perf.json`, the frame comparisons, the two-client runs' `result.json` and logs, the job logs gzipped, each run's start
 with its load and memory, the memory and load every 30 s).
 
-| | r16 | r18 (`r17dev-e`) |
+| | r16 | r19 (`r17dev-e`) |
 | --- | --- | --- |
 | in play (`perf.mjs tier=mid --discard --warm 0`, 60 s, the view raise inside; 4 a side): fps | 24.60-25.23 (median 24.87) | 24.16-25.95 (24.63) |
 | in play: longest frame gap (ms) | 283-350 | 267-300 |
@@ -2839,24 +2843,24 @@ with its load and memory, the memory and load every 30 s).
 | 85 KB/s: page's block / the visible freeze (s) | 30.2 / 30.1 | 0.3 / 28.9 |
 | `__omwPrecompile.lateOld` after the load | 0 (every run) | 0 (every run, 12 loads, the 2 forced ones among them) |
 
-- **Pictures**: `frame-compare.mjs morrowind-goty-en` on r18, `''` against `?jspi=0`: day 1.49 /255 against the
+- **Pictures**: `frame-compare.mjs morrowind-goty-en` on r19, `''` against `?jspi=0`: day 1.49 /255 against the
   captures' own noise of 1.59, night 1.10 against 0.26, interior 0.65 against 0.25, no pixel over 24 in any of them.
-  r16's references were also captured on an r16 server and set against r18's (`xcmp.py`, the 4 frames of each averaged):
-  day 0.011, night 0.24, interior 0.74 /255, no pixel over 24. Each is within the noise of one side or the other (r18's
+  r16's references were also captured on an r16 server and set against r19's (`xcmp.py`, the 4 frames of each averaged):
+  day 0.011, night 0.24, interior 0.74 /255, no pixel over 24. Each is within the noise of one side or the other (r19's
   day 1.59, r16's interior 1.40). The pictures are the same.
 - **check.mjs**: `morrowind-goty-en` passed (41,499 draws) and so did `--lang fr` (`morrowind-goty-fr`, 45,327 draws), on
   a server whose OpenMW releases all point to `r17dev-e` (its log: `e/3caae330a30b/openmw.wasm` served).
 - **Two clients** (`mp-check.mjs`, kept with the results: rebuilt from the session's record of the lost script, its
-  paths made options): r18 passed 1 run of 5 and r16 passed 2 of 4 (interleaved: r18, r18, r16, r18, r16, r16,
-  r18, r16, r18). In every run on both sides both clients joined (`Joined`, `simReady=1`), the friend request and the
+  paths made options): r19 passed 1 run of 5 and r16 passed 2 of 4 (interleaved: r19, r19, r16, r19, r16, r16,
+  r19, r16, r19). In every run on both sides both clients joined (`Joined`, `simReady=1`), the friend request and the
   acceptance went through, B joined A's world, each saw the other in its roster with a copy, and there was no page error and
   no reconnection. Every failure was the same: after one of the debug teleport's 300-unit moves, the watcher's copy of
-  the mover went far off and stayed there for the check's 90 s. On r18 that was 15,607-35,173 units, on r16
+  the mover went far off and stayed there for the check's 90 s. On r19 that was 15,607-35,173 units, on r16
   19,933 and 567,898 units (r16-2: on the move into the next cell). That is MWMP's puppet extrapolation, seen in r15dev-b
-  before. It happens on the live r16 as well, so it is not r18's. No WebSocket event reached either page while its
-  engine was suspended or its put-off calls were pending (`busy` 0 in all 18 pages): r18's frames of play are plain.
+  before. It happens on the live r16 as well, so it is not r19's. No WebSocket event reached either page while its
+  engine was suspended or its put-off calls were pending (`busy` 0 in all 18 pages): r19's frames of play are plain.
   The difference in rate (1/5 against 2/4) is within what so few runs can show.
-- **Crashes**: none. r18 had 36 page sessions: 11 place-load sessions (a warm-up, 6 warm loads, 3 new devices, 1 at
+- **Crashes**: none. r19 had 36 page sessions: 11 place-load sessions (a warm-up, 6 warm loads, 3 new devices, 1 at
   85 KB/s), 4 in play, frame-compare's 9 page loads, the 2 checks and the 10 pages of the 5 two-client runs. r16 had 29
   (11 place-load, 4 in play, 6 frame-compare, the 8 pages of 4 two-client runs). Every tool exited 0, no log has
   "crash", and the kernel's log has no chrome segfault between 15:00 and 17:30. The earlier crash's trigger was exercised
@@ -2866,12 +2870,12 @@ with its load and memory, the memory and load every 30 s).
 
 **Verdict: NO-SHIP**, by criterion:
 1. **Crashes: met.** The cause is explained (Chromium's frame-pointer walker on a JSPI stack) and fixed. There were 0
-   crashes in 36 r18 page sessions and 0 in 29 on r16, and 0 in the 2 forced-profiler sessions (`r17dev-g2` crashed in both
+   crashes in 36 r19 page sessions and 0 in 29 on r16, and 0 in the 2 forced-profiler sessions (`r17dev-g2` crashed in both
    of its 2).
-2. **In play: met.** fps median 24.63 against 24.87; the 0.24 difference is under r16's own spread of 0.63, and r18's
+2. **In play: met.** fps median 24.63 against 24.87; the 0.24 difference is under r16's own spread of 0.63, and r19's
    lowest run (24.16) is 0.44 under r16's lowest. The longest gap (267-300 against 283-350 ms), the stalls (231-271
    against 304-335) and work p99 (17.1-19.5 against 18.8-22.8) are each no worse, and better.
-3. **Loads: met.** For the page's longest block and input p95, every r18 run beats every r16 run: save 215-354 against
+3. **Loads: met.** For the page's longest block and input p95, every r19 run beats every r16 run: save 215-354 against
    4674-5124 ms and 599-666 against 765-876; COE 216-470 against 1716-1759 and 597-795 against 1457-1486. The visible
    freeze is shorter: save 1.87-1.92 against 4.63-5.08 s, COE 1.58-1.62 against 1.73-1.80. Outside the criterion:
    **F9 to the world is 0.6 s later** (5.4-6.2 against 4.8-5.2: the load put off one frame, then the GPU's queue waited
@@ -2879,30 +2883,31 @@ with its load and memory, the memory and load every 30 s).
 4. **Not met**, on three points:
    - At **85 KB/s a save load is 8.2 s slower** (38.5 against 30.3 s; the previous measure had 38.8-39.1 against
      26.7-26.8). The announced wait times out once, as before.
-   - On a **new device the save load is a little slower**: F9 to the world 12.1-12.5 against 11.2-12.1 s, r18's
+   - On a **new device the save load is a little slower**: F9 to the world 12.1-12.5 against 11.2-12.1 s, r19's
      fastest equal to r16's slowest. The menu is even (25.7-26.8 against 25.3-27.5 s).
    - The **two-client check passed once in 5**, not twice. The same check fails on the live r16 too (2 of 4 passed),
-     for the same reason (MWMP's puppet extrapolation after a teleport), so it does not single out r18. Still, it
+     for the same reason (MWMP's puppet extrapolation after a teleport), so it does not single out r19. Still, it
      has not passed twice.
 
    Met in (4): the pictures, `__omwPrecompile.lateOld` 0, check.mjs EN and FR, `make test` (1,697 pass, 0 fail, on
    this tree after the runs).
 
-#### Renumbered r18 on `main`'s r17: the dev build and its smoke (2026-10-30)
+#### Renumbered on `main`'s r17 (r18 then, r19 since 2026-10-31): the dev build and its smoke (2026-10-30)
 
-`main`'s own orthros-r17 (patient preloads, LuaUi layouts) shipped first, so this release became r18 (above).
+`main`'s own orthros-r17 (patient preloads, LuaUi layouts) shipped first, so this release became r19 (above).
 `openmw-web-v1.5.3-orthros-r18dev` (scratch, engine `32bbece2c037`) is the kept `r17dev` tree with three patches
 applied over it by `tools/openmw/dev-build.sh`: the old r16-based patch reverted (`unbase-old-r17.patch`), then
-`main`'s `orthros-r17.patch`, then `orthros-r18.patch`. That gives r1..r17 + r18, the lock entry's set, and it built in
+`main`'s `orthros-r17.patch`, then the JSPI patch (then named `orthros-r18.patch`: today's r18 and r19 together). That
+gives r1..r17 + r18 + r19, the lock entry's set, and it built in
 425 s; memory available never fell under 44 GB. Smoke only: `check.mjs morrowind-goty-vanilla-plus-en --lang fr` passed
 on a `dev-serve.sh` server (1,566 draws, `morrowind-goty-vanilla-plus-fr` ran, r17's `LUAUILAYOUT` on in its log).
 `make test`: 1,700 pass, 0 fail. Not measured on r18dev yet: loads, play, the 85 KB/s link, two clients, and the two
 blocking paths left under JSPI, r17's forced read past `dataWaitLimit` (60 s) and the cell change's load (`waitTillDone` /
 abort + load). Results: `tools/openmw/results/r18-2026-10-30/`.
 
-#### r18: the thin link, the warm F9 delay, the two-client teleport desync, the blocking paths (2026-10-30)
+#### r19: the thin link, the warm F9 delay, the two-client teleport desync, the blocking paths (2026-10-30)
 
-The renumbered r18 (`r18dev`, above) measured against the live r17 (`openmw-web-v1.5.3-orthros-r17`) on this tree's page
+The renumbered r19 (`r18dev`, above) measured against the live r17 (`openmw-web-v1.5.3-orthros-r17`) on this tree's page
 code, then fixed and rebuilt: `r18dev-b` (the teleport fix, the engine's marks), `r18dev-c` (and the next frame after a
 load at once, the GPU wait's cap as a switch), `r18dev-d` (the cap's default: the build measured in the validation
 below). Every server had its own copy of the live learned state (copied at 17:53) and the frozen br-cache copy; each
@@ -2924,8 +2929,8 @@ engine's suspensions; `--list` every entry.
 
 ##### (A) The thin link: a boot's read-ahead in the middle of the load
 
-At 85 KB/s (`--rate 85k`, a warm profile, F9 at the menu) the save's load took r17 24.3-24.5 s and r18 36.8-37.6 s
-(2 runs a side, `diag/rows/pl-r1?-save85k.jsonl`). The traces refute the suspects named before: r18's engine asked the
+At 85 KB/s (`--rate 85k`, a warm profile, F9 at the menu) the save's load took r17 24.3-24.5 s and r19 36.8-37.6 s
+(2 runs a side, `diag/rows/pl-r1?-save85k.jsonl`). The traces refute the suspects named before: r19's engine asked the
 worker for the same bytes in the same order as r17's (234-236 `spin` reads answered within the short wait, 10-13 `late`
 — the ten serial `Morrowind.esm` reads of the cell's references, 0.1-1.2 s each, as r17's ten `sync` ones —; the same
 seven announced batches, 7 + 409/396 + 361/374 + … entries; no read asked one at a time where r17 batched; nothing asked
@@ -2937,31 +2942,31 @@ from: the boot's reads, 11-13 s before the key (`ahead`, `run` 1.3-2.1 MB, the r
 read-ahead of a reader whose pieces of 256 KB - 1 MB were answered from the store, queued behind the boot's own
 requests on a link that was not fast, and started whenever the link was free — in the middle of the next load. r17's
 warm store had those blocks (its warm-up's background had fetched them at 125-141 s of its session), so its boot asked
-none; r18's had not.
+none; r19's had not.
 
 The fix (src/vfs/http-backend.js `readAheadParts`, every game): any read-ahead but a media stream's — not only the
 whole blocks of a file read whole — is dropped while it waits for its turn once its reader moved away, unless a read
 waits for it (`w.urgent`); `stats.aheadsDropped` (docs/slow-network.md). With it (`diag/rows/diag-r1?-save85k-fixA.jsonl`)
-r18 25.9 s (no `ahead` block during the load, no time-out), r17 23.4 s. The rest of the gap there is the warm store: r18's
+r19 25.9 s (no `ahead` block during the load, no time-out), r17 23.4 s. The rest of the gap there is the warm store: r19's
 announced batches fetched six more pieces (`Morrowind.bsa` 157.35-157.55, 273.48-273.61, 280.89 MB: 1.68 MB on the
 wire against 1.43 MB) that r17's warm-up had fetched in the background in the last 30 s of its session — which pieces a
 120 s warm-up reaches is the session's timing, not the engine's (both warm-ups fetched 426 MB raw).
 
-##### (B) The warm F9 to the world: where r18's extra time went
+##### (B) The warm F9 to the world: where r19's extra time went
 
-Warm save, local link (`diag/rows/`): r17 4.6-4.9 s, r18 (`r18dev-b`) 5.4-6.1 s. The read trace with the engine's marks
+Warm save, local link (`diag/rows/`): r17 4.6-4.9 s, r19 (`r18dev-b`) 5.4-6.1 s. The read trace with the engine's marks
 splits it (`read-trace.py --list`):
 - **Not the put-off frame**: the load starts 11-25 ms after the key (`defer` then `enter`).
 - **Not the reads' short waits nor the resumes**: 234 reads answered within the 10 ms wait totalled 0.35-0.47 s against
   r17's 0.47 s of synchronous waits for the same reads; the ten serial `Morrowind.esm` reads waited 0.1 s each on both;
   the announced waits 1.2-1.25 s against 1.15-1.17 s.
-- **The warm store, ~0.4 s**: r17 on a copy of r18's warm profile (`diag-r17-on-r18store`) 5.0, 5.1 s against 4.55-4.7 s
+- **The warm store, ~0.4 s**: r17 on a copy of r19's warm profile (`diag-r17-on-r18store`) 5.0, 5.1 s against 4.55-4.7 s
   on its own — the announced batches fetched more (as in A).
 - **An idle frame after the load, 0.4-0.8 s**: the load's frame ended, and the next frame — where the world's scripts
   report the player in the world — waited for the next animation frame, which the browser holds until the GPU process
   has drawn the load's first picture of the world (0.8 s in SwiftShader; the page's thread idle meanwhile: 605 ms
   `(idle)` of 750 in the CPU profile, `diag/runs/r18b-save-prof*`). After r17's load (the page's thread held) the next
-  frame ran at once, its own GPU wait after that work. Fix (play/index.html, `orthros-r18.patch`): after a load's frame (a
+  frame ran at once, its own GPU wait after that work. Fix (play/index.html, `orthros-r19.patch`): after a load's frame (a
   promising one that lasted 100 ms or more) the next frame is pumped at once (the MessageChannel hop, input first), not
   at the next animation frame — `r18dev-bx` (the page only) 5.1, 5.5 s against 5.7, 5.7 s, the next frame 0.05 s after
   the load's instead of 0.36-0.8 s.
@@ -2982,13 +2987,13 @@ splits it (`read-trace.py --list`):
 - **Not the loading screen's frames, nor the suspensions themselves**: the loading screen drew 38 ms in all
   (`LoadingScreen::draw`, symbolised profile); a suspension costs 2-5 µs at 1,024 frames deep and a call to an import
   from a promising export 17 ns against 7 (`bench/`, Node 24's V8); no rendering ran in any of the load's long animation
-  frames (`loaf`: render 0). The page's native time (`(program)`) is 0.98 s in r18's load against 0.11 s in r17's — the
+  frames (`loaf`: render 0). The page's native time (`(program)`) is 0.98 s in r19's load against 0.11 s in r17's — the
   rest of the difference, not attributed further; turning the breaths and presents off (`?jspipresent=0&jspibreath=0`)
   gained 0.1-0.3 s (5.2, 5.3 against 5.4-5.6) for a longer block (273-423 ms): not changed.
 
 ##### (C) Two clients: a copy thrown far off after a teleport — the engine's puppet extrapolation, fixed
 
-Every failed run of the two-client check, on r16, r17 and r18 alike (the validation above: r18 1 pass in 5, r16 2 in
+Every failed run of the two-client check, on r16, r17 and r19 alike (the validation above: r19 1 pass in 5, r16 2 in
 4), was the same: after one of the debug teleport's 300-424-unit moves the watcher's copy of the mover stood 15,607-
 35,173 units off (567,898 after the 8,800-unit move into the next cell) for the check's 90 s, the next move healing it.
 Not the check (it reads the mover's pose and the copy's after the move settled, up to 90 s), not the page's WebSocket
@@ -2998,8 +3003,9 @@ arrival's, smoothed only when the gap to the previous one is 5-500 ms; two poses
 bunched by a slow frame or the link, routed in one frame — keep their 1-5 ms, and the extrapolation past the newest
 pose divides the last step by that time: EXTRAP_S (0.09) / 0.002 = 45× a 300-unit teleport, 13,500 units; and the server
 relays a pose only when it changes, so nothing came to correct it. `lua/interp-before.txt`: 13,500, 6,750, 5,510,
-4,500, 1,350 units for arrival gaps of 2, 4, 4.9, 6, 20 ms, 409 after an ordinary 66 ms. Fix (`orthros-r18.patch`,
-interp.lua `sample`): the step's time is at least the stream's mean gap (33 ms before one is known) and a step faster
+4,500, 1,350 units for arrival gaps of 2, 4, 4.9, 6, 20 ms, 409 after an ordinary 66 ms. Fix (written in this patch,
+then moved to its own release, `orthros-r18.patch`, "Two clients" above; interp.lua `sample`): the step's time is
+at least the stream's mean gap (33 ms before one is known) and a step faster
 than 2,000 units a second — a teleport, a cell change, a snap — is a jump, never carried on; an ordinary step still is
 (the engine's own `wasm-build/lua-tests/run.lua` gets the case; `lua/interp-after.txt`: 0 units at every gap, the
 existing interpolation and late-pose cases unchanged, 20 of 20 under Lua 5.4.7 built from the tree's sources). A player
@@ -3009,30 +3015,30 @@ stands). Runs: `r18dev-b` 2 of 2 passed (copies within 0-38 units after each mov
 in the validation below — 4 of 4 —; the live r17 1 of 3 (`mp-diag/r17-1` passed; the validation's `r17-1` failed on
 the move into the next cell, its copy 229,908 units off, `r17-2` on a 300-unit move, 12,456 units off).
 
-##### (D) The two blocking paths r17 left, under r18
+##### (D) The two blocking paths r17 left, under r19
 
 - **A preload's forced read past `dataWaitLimit`** (`?preloadwait=1000`, glide north from -2,-9 at 85 KB/s for 90 s,
   `diag/rows/d-r1?-glide85k.jsonl`): on both, the exterior preload asked a 3.28 MB `Morrowind.bsa` entry in the
   background (`orthrosRangeReady`, `bg`) and 1.5 s later read it synchronously (`sync`, the page's thread held): 42.2 s
-  (r17), 32.4 s (r18), the page's longest block 42.3 / 32.5 s. r18 does not suspend there — a frame of play is plain, 0
+  (r17), 32.4 s (r19), the page's longest block 42.3 / 32.5 s. r19 does not suspend there — a frame of play is plain, 0
   suspensions after the trigger —: it blocks as r17 does. With r17's default limit (60 s) the same read comes after 60 s
   of waiting.
-- **A door's load** (`--mode door`, Balmora's south wall cornerclub, local link): r18's loading screen on 0.1-1.3 s after
+- **A door's load** (`--mode door`, Balmora's south wall cornerclub, local link): r19's loading screen on 0.1-1.3 s after
   the Enter, 0 suspensions (the load runs in the frame of play that started it, synchronously): the page's longest block
   1,157 ms against r17's 1,356, the visible freeze 1,367 ms on both (one run a side).
-Both paths are unchanged by r18: suspending them needs the load put off to a promising frame (as a save's, a new game's
+Both paths are unchanged by r19: suspending them needs the load put off to a promising frame (as a save's, a new game's
 and the debug COE are), not done here.
 
 ##### The validation of `r18dev-d` against the live r17, and the verdict (2026-10-30)
 
-`r18dev-d` (engine `67ba0ec0e388`, scratch: r1..r17 + this `orthros-r18.patch`) against `openmw-web-v1.5.3-orthros-r17`, both on
+`r18dev-d` (engine `67ba0ec0e388`, scratch: r1..r17 + this `orthros-r19.patch`) against `openmw-web-v1.5.3-orthros-r17`, both on
 this tree's page code (the read-ahead drop of (A) included); new warm profiles, each made by its own engine (both
-warm-ups 41-42 s to the world, 538 MB stored, 190-192 MB on the wire); runs interleaved r17 / r18, one browser at a
+warm-ups 41-42 s to the world, 538 MB stored, 190-192 MB on the wire); runs interleaved r17 / r19, one browser at a
 time, the load at their start 8-20, never under 44 GB of memory available (`validation/logs/`). Results:
 `tools/openmw/results/r18-2026-10-30/validation/` (place-load rows, each `perf.json`, the two-client runs, the checks,
 the frame comparison, the run log; `an/summary.py` prints the table from them).
 
-| | r17 | r18 (`r18dev-d`) |
+| | r17 | r19 (`r18dev-d`) |
 | --- | --- | --- |
 | in play (`perf.mjs tier=mid --discard --warm 0`, 60 s; 4 a side): fps | 24.57-26.13 | 24.62-25.63 |
 | in play: longest frame gap (ms) | 233-300 | 200-267 |
@@ -3061,7 +3067,7 @@ the frame comparison, the run log; `an/summary.py` prints the table from them).
 - **check.mjs**: `morrowind-goty-en` passed (47,241 draws), `--lang fr` passed (`morrowind-goty-fr`, 47,154 draws).
 - **overlay-check.mjs** against `r18dev-d`: both Morrowind games' overlays agree with their originals (interp.lua is no
   overlay's original).
-- **Crashes**: none — 31 r18 page sessions in the validation (place-load 10, `perf.mjs` 4, frame-compare's 9 page
+- **Crashes**: none — 31 r19 page sessions in the validation (place-load 10, `perf.mjs` 4, frame-compare's 9 page
   loads, the 2 checks, the 4 pages of the 2 two-client runs, the 2 forced ones), ~40 more in the diagnosis above; no
   page error but Chromium's pointer-lock message (both sides), the kernel's log has no segfault since 16:50; Chromium's
   heap profiler forced on every renderer (`--memlog=all-renderers --memlog-sampling-rate=100000
@@ -3071,8 +3077,8 @@ the frame comparison, the run log; `an/summary.py` prints the table from them).
 **Verdict: NO-SHIP**, by criterion:
 1. **Crashes: met** (0 in 31 sessions, 0 in the 2 forced).
 2. **In play: not met, narrowly** — fps (24.62-25.63 within r17's 24.57-26.13), the longest gap (200-267 against
-   233-300) and the stalls (220-263 against 223-433) are met, but work p99 is 19.1-22.6 ms against 17.5-19.7: three r18
-   runs of four above r17's slowest (median 20.8 against 18.6). r18's frames of play are plain (no suspension); not
+   233-300) and the stalls (220-263 against 223-433) are met, but work p99 is 19.1-22.6 ms against 17.5-19.7: three r19
+   runs of four above r17's slowest (median 20.8 against 18.6). r19's frames of play are plain (no suspension); not
    attributed here.
 3. **Loads: met for the COE, not for the save** — the page's longest block is better on both (save 0.58-0.72 s against
    4.7-4.8 s; COE 0.21 against 1.7-2.2 s), the visible freeze shorter or equal (save 1.85 against 4.7 s; COE 1.72-1.77
@@ -3083,7 +3089,7 @@ the frame comparison, the run log; `an/summary.py` prints the table from them).
 4. **Not met on a new device; met at 85 KB/s and elsewhere** — at 85 KB/s a save loads in 27.4-27.6 s against 27.5-27.7
    (it was 36.8-37.6 against 24.3-24.5 before (A), 38.5 against 30.3 in the r17dev-e validation) with no announced wait
    timing out, the menu even; on a new device F9 to the world is 12.6-13.7 s against 11.9-12.7 and the menu 23.9-25.4
-   against 23.5-24.2: r18's load carried 5.95-6.09 MB of background requests (3.55-3.62 MB of archives) against r17's
+   against 23.5-24.2: r19's load carried 5.95-6.09 MB of background requests (3.55-3.62 MB of archives) against r17's
    4.40-4.88 (1.50-2.58), and 0.3-0.6 MB more of announced ones — not traced in these runs (no `--read-trace` there),
    open. The pictures, the two-client check (2 of 2, and r17 fails it: the engine's extrapolation fixed in (C)),
    `lateOld` 0, check.mjs EN and FR, overlay-check and `make test`: met.
@@ -3093,20 +3099,20 @@ the frame comparison, the run log; `an/summary.py` prints the table from them).
 The same build (`r18dev-d`, engine `67ba0ec0e388`, this tree at `388dfce`), validated again from scratch against
 `openmw-web-v1.5.3-orthros-r17`. Both sides ran on this tree's page code. Every server had its own copy of the live
 learned state, copied at 22:29, and the frozen copy of the live br-cache. Each side had its own warm profile, made by
-its own engine. The runs alternated r17 / r18, one browser at a time through `tools/with-browser-slot.sh`, from 22:30 to
+its own engine. The runs alternated r17 / r19, one browser at a time through `tools/with-browser-slot.sh`, from 22:30 to
 01:19. Free memory never went below 38 GB (`logs/memory.log`); each start's load and memory are in
 `logs/runs-started.txt`. Results are in `tools/openmw/results/r18-2026-10-30/validation2/`: place-load rows, each run's
 console, proxy log and read trace, each `perf.json`, the two-client runs, the checks, the frame comparison, the logs and
 the driver scripts. `scripts/summary2.py validation2` prints `summary.txt` from them.
 
-**First round discarded: r18's warm profile lacked the engine's lean package.** The copied br-cache had no lean package
-for r18's `openmw.data`: r18 changes `interp.lua` inside it, so the package has a new content hash. The server built
-that package during r18's warm-up (`openmw lean package 2c6b8e83f75b (lean3): 4133415 bytes in 69 s`). Until it was
+**First round discarded: r19's warm profile lacked the engine's lean package.** The copied br-cache had no lean package
+for r19's `openmw.data`: r19 (then with the `interp.lua` fix, now r18's) changes `interp.lua` inside it, so the package has a new content hash. The server built
+that package during r19's warm-up (`openmw lean package 2c6b8e83f75b (lean3): 4133415 bytes in 69 s`). Until it was
 ready, the warm-up page loaded the release's full package instead (219.7 MB on the wire against 190.4).
 
-As a result, every warm r18 run fetched the 4.13 MB lean package before the menu. The menu came at 8.4-9.2 s against
+As a result, every warm r19 run fetched the 4.13 MB lean package before the menu. The menu came at 8.4-9.2 s against
 r17's 7.0-7.8 on the local link, and at 60.5-60.6 s against 10.5-10.7 at 85 KB/s. Those rows are kept in `round1/`
-(`round1/summary.txt`) but not used for the verdict. The r18 warm profile was rebuilt once the package existed, and the
+(`round1/summary.txt`) but not used for the verdict. The r19 warm profile was rebuilt once the package existed, and the
 warm save, COE and 85 KB/s runs were repeated, both sides interleaved again.
 
 Two consequences for a real deployment:
@@ -3114,7 +3120,7 @@ Two consequences for a real deployment:
   changes the package's content.
 - Until the server has built it (about 70 s after the first request), pages load the full 33 MB package.
 
-| | r17 | r18 (`r18dev-d`) |
+| | r17 | r19 (`r18dev-d`) |
 | --- | --- | --- |
 | in play (`perf.mjs tier=mid --discard --warm 0`, 60 s; the 4 required pairs): fps | 25.01-25.94 | 24.55-26.00 |
 | in play, 4 pairs: longest frame gap (ms) | 233-267 | 200-250 |
@@ -3144,17 +3150,17 @@ Two consequences for a real deployment:
 
 - **Two clients.** Both sides passed 4 of 5, but they failed differently:
   - r17's failure (`r17-5`) was the teleport desync that (C) fixes: the copies stood 25,804 and 22,891 units off.
-  - r18's failure (`r18-2`) was a 57-unit gap. A's third move brought it back to its starting spot, and B's copy of A
+  - r19's failure (`r18-2`) was a 57-unit gap. A's third move brought it back to its starting spot, and B's copy of A
     stayed 57 units from it (25 units higher) for 90 s. B itself stood 36 units from that spot, which is consistent with
     the copy being pushed aside by B's own body. That cause is not established.
-  - In the r18 runs that passed, copies ended 0-42 units off; in r17's, 0-28.
+  - In the r19 runs that passed, copies ended 0-42 units off; in r17's, 0-28.
 - **Pictures** (`frame-compare.mjs`, `''` against `?jspi=0`, mean absolute difference out of 255, the noise in
   parentheses): day 1.707 (1.706), night 0.041 (0.226), interior 0.276 (0.586). No pixel differs by more than 24 in any
   view, so the pictures are unchanged.
 - **check.mjs** passed in English (46,545 draws) and with `--lang fr` (45,936 draws).
 - **overlay-check.mjs** against `r18dev-d`: both Morrowind games' overlays agree with their originals.
 - **`make test`**: 1,706 tests, 1,703 pass, 0 fail (1 skipped, 2 todo).
-- **Crashes: none in 53 r18 page sessions.** Those were:
+- **Crashes: none in 53 r19 page sessions.** Those were:
   - 26 place-load sessions (23 measured, the first round's included, plus 3 warm-ups);
   - 6 `perf.mjs` runs;
   - frame-compare's 9 page loads;
@@ -3166,14 +3172,14 @@ Two consequences for a real deployment:
   (`--memlog=all-renderers --memlog-sampling-rate=100000 --memlog-stack-mode=native`), a save boot and its load and a
   COE boot and its load did not crash.
 
-**The two blocking paths (D), again.** Both still block on r18. A play frame is plain, so neither path suspends.
+**The two blocking paths (D), again.** Both still block on r19. A play frame is plain, so neither path suspends.
 - **The forced read past `dataWaitLimit`** (`?preloadwait=1000`, gliding north from -2,-9 at 85 KB/s for 90 s, 2 runs
-  a side). The page's longest block was 12.9 and 16.4 s on r17, against 24.2 and 34.9 s on r18. Read traces:
+  a side). The page's longest block was 12.9 and 16.4 s on r17, against 24.2 and 34.9 s on r19. Read traces:
   - Run 1, r17: the announced wait for the `meshes:-2,-8` batch (3.23 MB) finished in 12.7 s.
-  - Run 1, r18: that wait timed out at 15 s. The same 3.28 MB `Morrowind.bsa` entry was then read synchronously inside
+  - Run 1, r19: that wait timed out at 15 s. The same 3.28 MB `Morrowind.bsa` entry was then read synchronously inside
     the cell load (8.9 s), so the page was held 24 s.
-  - Run 2: the forced synchronous read of that entry took 16.4 s on r17 and 34.8 s on r18.
-  - On the link, during r18's run 2, the entry's two 1 MiB blocks were each requested twice at the same time (four
+  - Run 2: the forced synchronous read of that entry took 16.4 s on r17 and 34.8 s on r19.
+  - On the link, during r19's run 2, the entry's two 1 MiB blocks were each requested twice at the same time (four
     0.53 MB responses, about 35 s each). In r17's run 2, one block went twice. The forced read does not join a
     background fetch of the same block that is already in flight. That is page code shared by both sides and is still
     open. How long the read takes depends on the link and on what the warm store already holds; one run a side in the
@@ -3183,8 +3189,8 @@ Two consequences for a real deployment:
   r17's 1,674, and the visible freeze 1,983 ms against 1,650.
 
 **Verdict: NO-SHIP.** By criterion:
-1. **Crashes: met.** 0 in 53 r18 sessions, and 0 in the 2 sessions with the heap profiler forced.
-2. **In play: not met.** In the 4 required pairs, r18's longest gap is better (200-250 ms against 233-267) and its
+1. **Crashes: met.** 0 in 53 r19 sessions, and 0 in the 2 sessions with the heap profiler forced.
+2. **In play: not met.** In the 4 required pairs, r19's longest gap is better (200-250 ms against 233-267) and its
    stalls are within r17's range (192-223 against 185-240). Its first run is outside r17's range on both fps (24.55
    against 25.01-25.94) and work p99 (21.4 against 17.9-20.0). Two more pairs confirm it: work p99 17.1-22.0 ms (median
    20.0) against 17.9-20.6 (median 18.6), with 3 of 6 runs above r17's slowest, and fps down to 23.81. The previous
@@ -3202,11 +3208,11 @@ Two consequences for a real deployment:
      10.3-10.9).
    - On a new device, F9 to the world is within r17's range (12.4-12.6 s against 12.1-12.6), but the menu comes 0.5-2.6
      s later (25.1-25.9 s against 23.3-24.6). The previous validation saw the same (23.9-25.4 against 23.5-24.2). Before
-     the menu, r18's page waited 3.0-3.2 s on demand reads against r17's 1.3-2.3, with 1.07-1.15 MB of demand traffic
+     the menu, r19's page waited 3.0-3.2 s on demand reads against r17's 1.3-2.3, with 1.07-1.15 MB of demand traffic
      against 0.33-0.98. The engine download was the same (9.87 MB against 9.86). These runs had no read trace, so the
      cause is still open.
-   - Met: the pictures are unchanged, the two-client check passed 4 of 5 on r18 (r17 4 of 5, its failure the desync
-     that r18 fixes), `lateOld` is 0, check.mjs passed in EN and FR, overlay-check passed and `make test` is green.
+   - Met: the pictures are unchanged, the two-client check passed 4 of 5 on r19 (r17 4 of 5, its failure the desync
+     that r19 fixes), `lateOld` is 0, check.mjs passed in EN and FR, overlay-check passed and `make test` is green.
 
 ### The engine's language and dialogue topic colours (2026-10-28)
 

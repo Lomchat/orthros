@@ -105,7 +105,7 @@ try {
     }, 50);
     const wrap = setInterval(() => {
       const M = window.Module, f = M?._omw_pump_frame; if (!f || f.orthrosTimed) return;
-      // (a page without orthrosFrameTimer 10 s after the engine's frames began — a code tree before r18's frame-meter.js —:
+      // (a page without orthrosFrameTimer 10 s after the engine's frames began — a code tree before r19's frame-meter.js —:
       // the call timed, as it was then)
       if (!window.orthrosFrameTimer && ++P.timerWait < 200) return;
       const done = (ms, suspendedMs) => { if (P.on) { P.work.push(ms); P.workEngine.push(ms - suspendedMs); P.suspended += suspendedMs; } };
@@ -188,7 +188,7 @@ try {
   if (glide) {
     // (a straight line at a set speed from the start cell's centre, whatever is in the way: the engine's debug
     // teleport, omw_debug_teleport, every 33 ms — the cells crossed and their loads the same at every run; an Orthros
-    // build from r18 on moves the player at its next frame's start, to the last position asked — inside the frame, its
+    // build from r19 on moves the player at its next frame's start, to the last position asked — inside the frame, its
     // crossings' reads suspending it as a walk's —, an older one in the call itself)
     const [dx, dy, speed, z] = glide.split(',').map(Number), [cx, cy] = start.split(',').map(Number), n = Math.hypot(dx, dy) || 1;
     await page.evaluate(({ x0, y0, vx, vy, z }) => {

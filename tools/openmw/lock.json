@@ -815,6 +815,59 @@
           "returns": "number",
           "args": [],
           "call": "Module.ccall('orthros_content_light', 'number', [], [])"
+        }
+      ],
+      "files": {
+        "openmw.js": "3769b921abaf463216a335ae48aed0a258f4ef4ca6f2c5ff8a17c1bc8c10c123",
+        "openmw.wasm": "7aae70d33cb001e36750d48d5ca0c883af0317105f7d86b7fe20d57413eb7873",
+        "openmw.data": "2c6b8e83f75bf78e213aeed98cff939734096e3f682e307e3b95d0186163923d"
+      }
+    },
+    {
+      "id": "openmw-web-v1.5.3-orthros-r19",
+      "patches": [
+        "orthros-r1.patch",
+        "orthros-r2.patch",
+        "orthros-r3.patch",
+        "orthros-r4.patch",
+        "orthros-r5.patch",
+        "orthros-r6.patch",
+        "orthros-r7.patch",
+        "orthros-r8.patch",
+        "orthros-r9.patch",
+        "orthros-r10.patch",
+        "orthros-r11.patch",
+        "orthros-r12.patch",
+        "orthros-r13.patch",
+        "orthros-r14.patch",
+        "orthros-r15.patch",
+        "orthros-r16.patch",
+        "orthros-r17.patch",
+        "orthros-r18.patch",
+        "orthros-r19.patch"
+      ],
+      "exports": [
+        {
+          "name": "orthros_file_updated",
+          "returns": "number",
+          "args": [
+            "string"
+          ],
+          "call": "Module.ccall('orthros_file_updated', 'number', ['string'], [path])"
+        },
+        {
+          "name": "orthros_set_view_distance",
+          "returns": "number",
+          "args": [
+            "number"
+          ],
+          "call": "Module.ccall('orthros_set_view_distance', 'number', ['number'], [distance])"
+        },
+        {
+          "name": "orthros_content_light",
+          "returns": "number",
+          "args": [],
+          "call": "Module.ccall('orthros_content_light', 'number', [], [])"
         },
         {
           "name": "orthros_jspi",

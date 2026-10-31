@@ -300,7 +300,7 @@
   }
 
   function node(path, h) {
-    // (asyncReads: an engine that suspends while it waits — the Orthros build's JSPI, orthros-r18.patch — asks for a
+    // (asyncReads: an engine that suspends while it waits — the Orthros build's JSPI, orthros-r19.patch — asks for a
     // read's bytes first, GameData.soon; any other engine reads synchronously, as before)
     const n = M.fileNode(FS, path, need(), h, { mmap: false, asyncReads: true, log: (t) => console.warn('[streamfs]', t) });
     S.byPath.set(path, h); S.byNode.set(n, h); S.byEnginePath.clear();
@@ -386,7 +386,7 @@
     const ms = Number(timeoutMs);
     return S.data.wantWait(Number.isFinite(ms) && ms >= 0 ? ms : 15000) ? 1 : 0;
   };
-  // (the same wait for an engine that suspends meanwhile — the Orthros build's JSPI, orthros-r18.patch: the answer within
+  // (the same wait for an engine that suspends meanwhile — the Orthros build's JSPI, orthros-r19.patch: the answer within
   // `spinMs` of the page's thread, else a promise of it — GameData.wantWaitSoon)
   window.orthrosReadWaitSoon = (timeoutMs, spinMs) => {
     if (!S.started) return 1;
@@ -405,7 +405,7 @@
     leads() { return S.lead?.snapshot() ?? null; },
     /**
      * The engine's waits for its files that suspended it instead of holding the page's thread (the Orthros build's JSPI,
-     * orthros-r18.patch — its export orthros_jspi; Module.orthrosBlocked): { on, suspendedMs, blocked, frames, soonSpins, soonSpinMs,
+     * orthros-r19.patch — its export orthros_jspi; Module.orthrosBlocked): { on, suspendedMs, blocked, frames, soonSpins, soonSpinMs,
      * soonSuspends, soonWaits } — `on` false for an engine that does not; frames: the frames pumped plain (play) and
      * promising (a load's), Module.orthrosFrames —, or null before the engine's script ran.
      */

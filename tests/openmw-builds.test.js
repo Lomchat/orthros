@@ -319,20 +319,39 @@ test('r17: r16 plus its patch, the same exports; preloads patient for their file
   for (const s of ['LUAPROF', 'CHUNKSLICE', 'CHUNKTHREAD', 'REFCACHE']) assert.ok(!added.includes(`OPENMW_ORTHROS_${s}`), s);
 });
 
-test('r18 patch: the frame and the boot suspend on a read the page does not answer within a few ms (JSPI), worker threads\' reads at once, the page\'s calls after the frame; no put-off of distant chunks', () => {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8'), added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
-  // (r17 plus its patch; its exports r17's and the JSPI mark — the page tells the release by it; files none of its own)
+test('r18: r17 plus its patch, the same exports; a remote player\'s copy is not carried on past a jump (MWMP interp.lua: the step\'s time at least the stream\'s mean gap, no extrapolation above 2000 u/s), with the engine\'s own Lua test of it', () => {
   const r17 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r17'), r18 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r18');
   assert.ok(r18, 'r18 is a build');
   assert.deepEqual(r18.patches, [...r17.patches, 'orthros-r18.patch']);
-  assert.deepEqual(r18.exports.filter((x) => x.name !== 'orthros_jspi'), r17.exports);
-  const e = r18.exports.find((x) => x.name === 'orthros_jspi');
+  assert.deepEqual(r18.exports, r17.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
+  // (the multiplayer script and its Lua test only: no engine source)
+  const files = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]);
+  assert.deepEqual(files, ['openmw/files/data/scripts/mp/interp.lua', 'wasm-build/lua-tests/run.lua']);
+  const at = patch.indexOf('+++ b/openmw/files/data/scripts/mp/interp.lua');
+  const hunk = patch.slice(at, patch.indexOf('\ndiff --git', at) >>> 0);
+  for (const line of ['+local EXTRAP_MIN_DT = 0.033', '+local EXTRAP_MAX_SPEED = 2000', '+                local dt = math.max(a.t - p.t, self.mean or EXTRAP_MIN_DT, EXTRAP_MIN_DT)',
+    '+                if sx * sx + sy * sy + sz * sz > (EXTRAP_MAX_SPEED * dt) ^ 2 then return a end', '+                local k = h / dt', '-                local k = h / (a.t - p.t)'])
+    assert.ok(hunk.includes(line), line);
+  assert.ok(patch.includes("+  check('a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands"), 'the engine\'s Lua test of it');
+});
+
+test('r19 patch: the frame and the boot suspend on a read the page does not answer within a few ms (JSPI), worker threads\' reads at once, the page\'s calls after the frame; no put-off of distant chunks', () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8'), added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  // (r18 plus its patch; its exports r18's and the JSPI mark — the page tells the release by it; files none of its own)
+  const r18 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r18'), r19 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r19');
+  assert.ok(r19, 'r19 is a build');
+  assert.deepEqual(r19.patches, [...r18.patches, 'orthros-r19.patch']);
+  assert.deepEqual(r19.exports.filter((x) => x.name !== 'orthros_jspi'), r18.exports);
+  const e = r19.exports.find((x) => x.name === 'orthros_jspi');
   assert.ok(e, 'orthros_jspi among its exports'); assert.equal(e.returns, 'number'); assert.deepEqual(e.args, []);
-  assert.ok(r18.exports.some((x) => x.name === 'orthros_content_light'), 'r13\'s exports kept');
-  assert.deepEqual(r18.files, {});
+  assert.ok(r19.exports.some((x) => x.name === 'orthros_content_light'), 'r13\'s exports kept');
+  assert.deepEqual(r19.files, {});
   for (const f of ['openmw/apps/openmw/engine.cpp', 'openmw/apps/openmw/main.cpp', 'openmw/apps/openmw/mwgui/loadingscreen.cpp', 'openmw/apps/openmw/mwgui/savegamedialog.cpp',
     'openmw/apps/openmw/mwstate/statemanagerimp.cpp', 'openmw/components/vfs/manager.cpp', 'play/index.html', 'wasm-build/link-openmw.sh', 'wasm-build/orthros-jspi.js'])
     assert.ok(patch.includes(`+++ b/${f}`), f);
+  // (the multiplayer script's fix and its Lua test are r18's, not this patch's)
+  for (const f of ['openmw/files/data/scripts/mp/interp.lua', 'wasm-build/lua-tests/run.lua']) assert.ok(!patch.includes(`+++ b/${f}`), f);
   // (the link: JSPI, the frame a promising export — main() is by default —, the library after the system's)
   for (const k of ['-sJSPI=1 "-sJSPI_EXPORTS=[\'omw_pump_frame\']"', '--js-library "$ROOT/wasm-build/orthros-jspi.js"', 'extern "C" EMSCRIPTEN_KEEPALIVE int orthros_jspi()',
     'orthros_jspi_enter(0);', 'orthros_jspi_leave(0);', 'orthros_jspi_enter(1);', 'orthros_jspi_leave(1);', 'return orthros_read_wait(timeoutMs) != 0;',
@@ -393,8 +412,8 @@ test('r18 patch: the frame and the boot suspend on a read the page does not answ
     assert.ok(!patch.includes(k), k);
 });
 
-test('r18: a read suspends in a load (the boot, a loading screen) after a short wait, never in play unless allowed (?jspiplay=N); the loads nest; a loading screen\'s frame presented', async () => {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
+test('r19: a read suspends in a load (the boot, a loading screen) after a short wait, never in play unless allowed (?jspiplay=N); the loads nest; a loading screen\'s frame presented', async () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
   const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
   const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
   // (a library entry `  name: (args) => body,` — on one line, or a block closed by `  },`)
@@ -458,8 +477,8 @@ test('r18: a read suspends in a load (the boot, a loading screen) after a short 
   assert.ok(lib.includes("J.playSpinMs = play;"));
 });
 
-test('r18: a frame of play is plain (never suspending), a load put off to a promising frame; the suspending imports only when the engine may; a load\'s end waits for the GPU', async () => {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
+test('r19: a frame of play is plain (never suspending), a load put off to a promising frame; the suspending imports only when the engine may; a load\'s end waits for the GPU', async () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
   const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
   const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
   const fn = (name) => {
@@ -514,12 +533,12 @@ test('r18: a frame of play is plain (never suspending), a load put off to a prom
 });
 
 /**
- * The r18 library's WebSocket setter wrappers (wasm-build/orthros-jspi.js, from the patch), run against a stand-in
+ * The r19 library's WebSocket setter wrappers (wasm-build/orthros-jspi.js, from the patch), run against a stand-in
  * WebSocket: `wrap` true makes another script wrap the same setters first, as a debugging tool or a test's counter
  * would (its getter the native one: it answers the tool's own function, never the library's).
  */
 function r18Sockets({ wrap, variant = (code) => code }) {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
   const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
   const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
   const from = lib.indexOf("    if (typeof WebSocket != 'undefined') {"), to = lib.indexOf('\n#endif', from);
@@ -542,7 +561,7 @@ function r18Sockets({ wrap, variant = (code) => code }) {
   return { WebSocket, webSockets, J, flush, seen };
 }
 
-test('r18: the engine\'s WebSocket events reach it — after the frame while suspended — with or without another script wrapping the setters; dropped once its handler is replaced or its socket deleted', () => {
+test('r19: the engine\'s WebSocket events reach it — after the frame while suspended — with or without another script wrapping the setters; dropped once its handler is replaced or its socket deleted', () => {
   for (const wrap of [false, true]) {
     const { WebSocket, webSockets, J, flush, seen } = r18Sockets({ wrap });
     const ws = new WebSocket(), got = [];
@@ -585,20 +604,8 @@ test('r18: the engine\'s WebSocket events reach it — after the frame while sus
   assert.deepEqual(got, [], 'the getter-based check drops the engine\'s events');
 });
 
-test('r18: a remote player\'s copy is not carried on past a jump (MWMP interp.lua: the step\'s time at least the stream\'s mean gap, no extrapolation above 2000 u/s), with the engine\'s own Lua test of it', () => {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
-  const at = patch.indexOf('+++ b/openmw/files/data/scripts/mp/interp.lua');
-  assert.ok(at >= 0, 'the patch changes interp.lua');
-  const hunk = patch.slice(at, patch.indexOf('\ndiff --git', at) >>> 0);
-  for (const line of ['+local EXTRAP_MIN_DT = 0.033', '+local EXTRAP_MAX_SPEED = 2000', '+                local dt = math.max(a.t - p.t, self.mean or EXTRAP_MIN_DT, EXTRAP_MIN_DT)',
-    '+                if sx * sx + sy * sy + sz * sz > (EXTRAP_MAX_SPEED * dt) ^ 2 then return a end', '+                local k = h / dt', '-                local k = h / (a.t - p.t)']) {
-    assert.ok(hunk.includes(line), line);
-  }
-  assert.ok(patch.includes('+++ b/wasm-build/lua-tests/run.lua') && patch.includes("+  check('a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands"), 'the engine\'s Lua test of it');
-});
-
-test('r18: a load\'s framebuffer status waits for the GPU\'s queue 300 ms at most by default (?jspiglmax=N), then is asked as is', () => {
-  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
+test('r19: a load\'s framebuffer status waits for the GPU\'s queue 300 ms at most by default (?jspiglmax=N), then is asked as is', () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r19.patch'), 'utf8');
   const file = patch.slice(patch.indexOf('+++ b/wasm-build/orthros-jspi.js'));
   const lib = file.slice(file.indexOf('\n') + 1).split('\n').filter((l) => l.startsWith('+')).map((l) => l.slice(1)).join('\n');
   const settle = lib.slice(lib.indexOf('\n  orthros_gl_settle: ('), lib.indexOf('\n  },', lib.indexOf('\n  orthros_gl_settle: (')));
