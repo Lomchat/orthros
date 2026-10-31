@@ -1,0 +1,38 @@
+PRE-REGISTERED PLAN — the fair validation of r20dev-c against the live r19 (written 2026-10-31 before the first run,
+committed before it, not changed afterwards; the driver is scripts/val.sh)
+
+Sides
+  r19L  the LIVE openmw-web-v1.5.3-orthros-r19 (engine f5eb3ec76d9b, data/engines read-only, draw thread off as shipped)
+  r20c  openmw-web-v1.5.3-orthros-r20dev-c (engine c99235bfa872 = r1..r19 + orthros-r20.patch), --engine-br
+  Both run this tree's page code (data-r15). Each side its own warm profile, reused from jspi5 (w19L, w20c: each made by
+  its own warm-up in the fourth validation). Every run/server on its own copy of jspi5's pristine learned state (the live
+  learned state and br-cache copied at 13:11), frozen br-cache. One browser at a time through tools/with-browser-slot.sh;
+  each start's time, available memory and 1-minute load logged when the slot is granted (logs/runs-started.txt, "start"
+  lines; "queued" lines when queued). Memory logged every 30 s (logs/memory.log); this task's jobs stopped under 16 GB.
+  Order of the blocks: (1), then (2), then (3). Within a block, pair i: i odd -> r19L first, i even -> r20c first.
+
+(1) Warm save, 6 runs a side (6 pairs)
+  place-load.mjs --mode save --input-trace --input-block 2000 (a move every 50 ms, F9-free F13 every 1 s; the 2 s busy
+  loop after the measured window checks the measure on every run)
+  Criterion 1a: median over r20c's 6 runs of inputTrace.p95Ms <= median over r19L's 6 runs of inputTrace.p95Ms + 100 ms.
+  Criterion 1b: F9 to the world (load.inWorldS): every r20c run <= the maximum of r19L's 6 runs + 0.15 s
+                (r20c's spread no worse than live's spread + 0.15 s).
+
+(2) In play, 16 runs a side (16 pairs)
+  perf.mjs --query tier=mid --discard --seconds 60 --warm 0 (perf.sh: a server per run)
+  Criterion 2a: fps median of r20c's 16 >= fps median of r19L's 16 - 0.3.
+  Criterion 2b: work p99 median of r20c's 16 <= work p99 median of r19L's 16 + 0.5 ms.
+  Computed over ALL 16 runs a side; no run dropped.
+
+(3) New device, save, 4 runs a side (4 pairs)
+  place-load.mjs --mode save --profile new --read-trace; each run started only while the 1-minute load is < 16
+  (ORTHROS_LOAD_MAX=16 for the slot script: it waits otherwise; the load at the start is logged).
+  Criterion 3a: menu (engineStart.menuS) median of r20c <= median of r19L + 0.3 s.
+  Criterion 3b: F9 to the world (load.inWorldS) median of r20c <= median of r19L + 0.3 s.
+
+Failed runs: a run that ends in an error, without a row, or (block 1) without inputTrace is reported as such; it is run
+again once at the end of its block, same side, and the criteria use the completed runs (the failure is reported, and an
+r20c page crash fails the crash criterion). No other run is added, dropped or repeated.
+
+Verdict: SHIP only if 1a, 1b, 2a, 2b, 3a and 3b all hold, together with the fourth validation's criteria already met
+(crashes, COE, 85 KB/s, pictures, two clients, lateOld, check.mjs, overlay-check, make test), which this plan does not rerun.
