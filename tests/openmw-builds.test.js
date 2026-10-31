@@ -657,3 +657,18 @@ test('r20 (iteration 4): a key or a mouse button makes the next frame promising 
   // (the random draw kept: the same dice rolled, then the first one here from it)
   assert.ok(added.includes('std::size_t splashIndex = Misc::Rng::rollDice(mSplashScreens.size());'));
 });
+
+test('r21: r20 plus its patch, the same exports; exact OSG fast paths and creatures\' gear preloaded, each behind its switch', () => {
+  const r20 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r20'), r21 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r21');
+  assert.ok(r21, 'r21 is a build');
+  assert.deepEqual(r21.patches, [...r20.patches, 'orthros-r21.patch']);
+  assert.deepEqual(r21.exports, r20.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r21.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const f of ['deps/src/osg/src/osg/Drawable.cpp', 'deps/src/osg/src/osg/dxtctool.cpp', 'deps/src/osg/src/osgUtil/TransformAttributeFunctor.cpp',
+    'openmw/apps/openmw/mwworld/cellpreloader.cpp', 'openmw/apps/openmw/mwclass/creaturelevlist.cpp'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  for (const s of ['OSGFAST', 'CREATUREGEAR']) assert.ok(added.includes(`OPENMW_ORTHROS_${s}`), s);
+  // (measured without a gain in round 11: left out)
+  for (const s of ['DOORDEST', 'AHEADGATE']) assert.ok(!added.includes(`OPENMW_ORTHROS_${s}`), s);
+});

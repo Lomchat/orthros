@@ -2250,6 +2250,21 @@ pairs per scenario) before any default changes. Evidence: `data/proof/openmw-per
   (`data/proof/openmw-perf/round8/r18-boot-yield-note.md`). Tools: `tools/openmw/dtprobe.mjs` (latency, screenshots,
   saves, crash checks), `perf.mjs --trace` and the frame timeline (`OPENMW_ORTHROS_DTTIMELINE=1`).
 
+### Exact OSG fast paths, creatures' gear preloaded: engine orthros-r21 (2026-10-31)
+
+Round 11 first played live r19 for 10 minutes (running and a 12-cell glide, `--discard`): work p50 6-10 ms, p99 ~19-20,
+~100 stretches over 25 ms per 10 minutes, led by the page waiting for the Lua thread at crossings (up to ~200 ms),
+terrain/paging preload slices (up to ~175 ms), the crossing's own `changeCellGrid`, GL uploads and Lua's GC atomic step
+(`data/proof/openmw-perf/round11/live-r19/`). `orthros-r21.patch` (r20 + two changes, each behind its switch):
+- `OPENMW_ORTHROS_OSGFAST`: three bit-exact rewrites in OSG — `Drawable` bounds of Vec3f geometry, DXT1
+  `isImageTranslucent`, `TransformAttributeFunctor` on affine matrices — the same bits out (an exactness test), about
+  90 ms less page work per minute of gliding (those leaves 166-187 → 83-90 ms a run).
+- `OPENMW_ORTHROS_CREATUREGEAR`: a creature's gear (`ESM::Creature::Weapon`: no inventory before its cell inserts it,
+  its shield attached at once) and levelled candidates listed in the exterior cell preload, as r15's actor preload does
+  for NPCs: the synchronous reads at creature insertion went from 31-49 ms to 0 in the crossing frame.
+Left out on their numbers: door destination cells fetched ahead (bimodal on thin links) and gated ahead uploads (no
+gain). Proof: `data/proof/openmw-perf/round11/integration/`.
+
 ### The steady frame attributed; overlays of the engine's own scripts checked at each release (round 6, 2026-10-30)
 
 Reference r16, Vanilla+ FR, `perf.mjs --run --profile --discard`, 30 s: busy 11.05 ms/frame (osg-draw+GL 3.02,

@@ -76,6 +76,8 @@ BUCKETS = ['osg-draw+GL', 'osg-cull', 'osg-update', 'lua-update', 'lua-sync', 'l
 # (dispatch: frames passed through when looking for a hitch's cause)
 DISPATCH = re.compile(
     r'^(?:\(root\)|\(anonymous\)|js-to-wasm|wasm-to-js|dynCall|invoke_|callUserCallback|tick|timed|pump\w*|_?omw_pump_frame'
+    # (r20's JSPI pump: the page's frame entered through these)
+    r'|choose|orthrosPumpFrame'
     r'|handleMessage|invokeEntryPoint|\S*::webThreadMain|start_thread|_?emscripten_thread_\w*'
     r'|OMW::Engine::frame|OMW::Engine::go|osgViewer::(?:ViewerBase|Viewer|CompositeViewer)::(?:frame|renderingTraversals|eventTraversal|updateTraversal|advance)'
     r'|osgViewer::Renderer::(?:cull_draw|cull|draw|operator)|osgUtil::SceneView::(?:cull|draw)\w*'

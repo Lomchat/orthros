@@ -1,0 +1,622 @@
+diff --git a/deps/src/osg/src/osg/Drawable.cpp b/deps/src/osg/src/osg/Drawable.cpp
+index 348deaf..74fbf50 100644
+--- a/deps/src/osg/src/osg/Drawable.cpp
++++ b/deps/src/osg/src/osg/Drawable.cpp
+@@ -13,6 +13,8 @@
+ #include <stdio.h>
+ #include <math.h>
+ #include <float.h>
++#include <stdlib.h>
++#include <string.h>
+ 
+ #include <osg/Drawable>
+ #include <osg/State>
+@@ -25,6 +27,7 @@
+ #include <osg/io_utils>
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <map>
+ #include <list>
+ 
+@@ -495,10 +498,30 @@ void Drawable::dirtyGLObjects()
+ }
+ 
+ 
++// Orthros (OPENMW_ORTHROS_OSGFAST, read once): ComputeBound's loops call its own vertex() directly instead of through
++// the virtual table -- nothing derives from this file-local functor, so it is the same function, now inlined into the
++// loop: the same box. "0": the virtual call for every vertex.
++// The same variable is read the same way in dxtctool.cpp and osgUtil's TransformAttributeFunctor.cpp; the environment
++// is fixed before main and first read after it, so the three always agree and this file's line speaks for all three.
++// The guarded initialiser only reads the variable (no I/O under the static's guard); the line is written once after.
++static bool orthrosOsgFastEnabled()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("OPENMW_ORTHROS_OSGFAST");
++        return !(value && strcmp(value, "0") == 0);
++    }();
++    static std::atomic<bool> said(false);
++    if (!said.load(std::memory_order_relaxed) && !said.exchange(true))
++        OSG_NOTICE << "Orthros: exact fast paths in OSG (bounding boxes, flattened vertices, DXT1 alpha test): "
++                   << (enabled ? "on" : "off (OPENMW_ORTHROS_OSGFAST=0)") << std::endl;
++    return enabled;
++}
++
+ struct ComputeBound : public PrimitiveFunctor
+ {
+         ComputeBound()
+         {
++            _direct = orthrosOsgFastEnabled();
+             _vertices2f = 0;
+             _vertices3f = 0;
+             _vertices4f = 0;
+@@ -518,6 +541,12 @@ struct ComputeBound : public PrimitiveFunctor
+         template<typename T>
+         void _drawArrays(T* vert, T* end)
+         {
++            if (_direct)
++            {
++                for(;vert<end;++vert)
++                    ComputeBound::vertex(*vert);
++                return;
++            }
+             for(;vert<end;++vert)
+             {
+                 vertex(*vert);
+@@ -528,6 +557,12 @@ struct ComputeBound : public PrimitiveFunctor
+         template<typename T, typename I>
+         void _drawElements(T* vert, I* indices, I* end)
+         {
++            if (_direct)
++            {
++                for(;indices<end;++indices)
++                    ComputeBound::vertex(vert[*indices]);
++                return;
++            }
+             for(;indices<end;++indices)
+             {
+                 vertex(vert[*indices]);
+@@ -596,6 +631,7 @@ struct ComputeBound : public PrimitiveFunctor
+         const Vec3d*    _vertices3d;
+         const Vec4d*    _vertices4d;
+         BoundingBox     _bb;
++        bool            _direct;
+ };
+ 
+ BoundingSphere Drawable::computeBound() const
+diff --git a/deps/src/osg/src/osg/dxtctool.cpp b/deps/src/osg/src/osg/dxtctool.cpp
+index b8f9ed2..3d7e1fe 100644
+--- a/deps/src/osg/src/osg/dxtctool.cpp
++++ b/deps/src/osg/src/osg/dxtctool.cpp
+@@ -8,6 +8,9 @@
+ 
+ #include "dxtctool.h"
+ 
++#include <cstdlib>
++#include <cstring>
++
+ 
+ namespace dxtc_tool {
+ 
+@@ -184,6 +187,16 @@ struct DXT5TexelsBlock
+     unsigned int   texels4x4;   // interpolated colors (2 bits per texel)
+ };
+ 
++// Orthros (OPENMW_ORTHROS_OSGFAST, read once): exact fast paths (Drawable.cpp, osgUtil's TransformAttributeFunctor.cpp too).
++static bool orthrosOsgFastEnabled()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("OPENMW_ORTHROS_OSGFAST");
++        return !(value && strcmp(value, "0") == 0);
++    }();
++    return enabled;
++}
++
+ bool isCompressedImageTranslucent(size_t width, size_t height, GLenum format, void * imageData)
+ {
+     // OSG_NOTICE<<"isCompressedImageTranslucent("<<width<<", "<<height<<", "<<format<<", "<<imageData<<")"<<std::endl;
+@@ -197,6 +210,20 @@ bool isCompressedImageTranslucent(size_t width, size_t height, GLenum format, vo
+         {
+             const DXT1TexelsBlock *texelsBlock = reinterpret_cast<const DXT1TexelsBlock*>(imageData);
+ 
++            // Orthros (OPENMW_ORTHROS_OSGFAST): the same answer without the loop over the block's 16 texels below --
++            // a texel's 2-bit code is 11 exactly when both its bits are set, so the block has one exactly when
++            // texels4x4 & (texels4x4 >> 1) has one of its even bits set. "0": the loop.
++            if (orthrosOsgFastEnabled())
++            {
++                for (int i = blockCount; i > 0; --i, ++texelsBlock)
++                {
++                    if (texelsBlock->color_0 <= texelsBlock->color_1
++                        && (texelsBlock->texels4x4 & (texelsBlock->texels4x4 >> 1) & 0x55555555u) != 0)
++                        return true;
++                }
++                return false;
++            }
++
+             // Only do the check on the first mipmap level, and stop when we
+             // see the first alpha texel
+             int i = blockCount;
+diff --git a/deps/src/osg/src/osgUtil/TransformAttributeFunctor.cpp b/deps/src/osg/src/osgUtil/TransformAttributeFunctor.cpp
+index 2d0ea3d..8de4a03 100644
+--- a/deps/src/osg/src/osgUtil/TransformAttributeFunctor.cpp
++++ b/deps/src/osg/src/osgUtil/TransformAttributeFunctor.cpp
+@@ -13,8 +13,34 @@
+ 
+ #include <osgUtil/TransformAttributeFunctor>
+ 
++#include <cmath>
++#include <cstdlib>
++#include <cstring>
++
+ using namespace osgUtil;
+ 
++// Orthros (OPENMW_ORTHROS_OSGFAST): Vec3f * Matrixd (Matrixd::preMult) divides every vertex by its w, the dot product
++// of the vertex with the matrix's last column. For an affine matrix -- last column exactly (0, 0, 0, 1), every
++// transform OpenMW's optimizer flattens -- and a finite vertex that w is exactly 1: each 0 * x is +-0, their sum +-0,
++// plus 1 is 1, and 1 / 1 is 1, so the multiply by it changes no bit either. The fast path skips those operations and
++// keeps the others in preMult's order, in double, with the same rounding to float: the same bits out. A vertex with a
++// NaN or infinite coordinate, or any other matrix, takes preMult as before. "0": preMult for every vertex.
++// The exactness needs IEEE arithmetic without contraction into fused multiply-adds (wasm has none outside
++// relaxed-simd) and a real std::isfinite: a build with -ffast-math / -ffinite-math-only keeps preMult always.
++#if defined(__FAST_MATH__) || defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__
++#define ORTHROS_OSGFAST_VERTICES 0
++#else
++#define ORTHROS_OSGFAST_VERTICES 1
++#endif
++static bool orthrosOsgFastEnabled()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("OPENMW_ORTHROS_OSGFAST");
++        return !(value && strcmp(value, "0") == 0);
++    }();
++    return enabled;
++}
++
+ TransformAttributeFunctor::TransformAttributeFunctor(const osg::Matrix& m)
+ {
+     _m = m;
+@@ -30,6 +56,25 @@ void TransformAttributeFunctor::apply(osg::Drawable::AttributeType type,unsigned
+     if (type == osg::Drawable::VERTICES)
+     {
+         osg::Vec3* end = begin+count;
++        const osg::Matrix::value_type* m = _m.ptr(); // (row-major: _mat[row][col] is m[row * 4 + col])
++        if (ORTHROS_OSGFAST_VERTICES && sizeof(osg::Matrix::value_type) == sizeof(double) && orthrosOsgFastEnabled()
++            && m[3] == 0.0 && m[7] == 0.0 && m[11] == 0.0 && m[15] == 1.0)
++        {
++            for (osg::Vec3* itr=begin;itr<end;++itr)
++            {
++                const float fx = itr->x(), fy = itr->y(), fz = itr->z();
++                if (!(std::isfinite(fx) && std::isfinite(fy) && std::isfinite(fz)))
++                {
++                    (*itr) = (*itr)*_m;
++                    continue;
++                }
++                const double x = fx, y = fy, z = fz;
++                (*itr).set(static_cast<float>(m[0]*x + m[4]*y + m[8]*z + m[12]),
++                    static_cast<float>(m[1]*x + m[5]*y + m[9]*z + m[13]),
++                    static_cast<float>(m[2]*x + m[6]*y + m[10]*z + m[14]));
++            }
++            return;
++        }
+         for (osg::Vec3* itr=begin;itr<end;++itr)
+         {
+             (*itr) = (*itr)*_m;
+diff --git a/openmw/apps/openmw/mwclass/creaturelevlist.cpp b/openmw/apps/openmw/mwclass/creaturelevlist.cpp
+index 1e4e3f4..a59d2e2 100644
+--- a/openmw/apps/openmw/mwclass/creaturelevlist.cpp
++++ b/openmw/apps/openmw/mwclass/creaturelevlist.cpp
+@@ -212,7 +212,7 @@ namespace MWClass
+     }
+ 
+     void orthrosLevelledCandidateModels(const MWWorld::ConstPtr& ptr, std::vector<std::string_view>& creatures,
+-        std::vector<std::string_view>& parts)
++        std::vector<std::string_view>& parts, std::vector<std::string_view>& gear)
+     {
+ #ifdef __EMSCRIPTEN__
+         // Orthros (hitch2.patch, OPENMW_ORTHROS_ACTORPRELOAD, called by CellPreloader only when on): a list has no
+@@ -230,11 +230,12 @@ namespace MWClass
+         {
+             int level = MWBase::Environment::get().getMechanicsManager()->nearestAvatarLevel(
+                 ptr.getRefData().getPosition().asVec3());
++            // (c4.patch: the player's read without creating its stats, MWWorld::orthrosKnownPlayerLevel; none
++            // known yet, nothing listed — the insertion loads it as before)
+             if (level <= 0)
+-            {
+-                const MWWorld::Ptr player = MWMechanics::getPlayer();
+-                level = player.getClass().getCreatureStats(player).getLevel();
+-            }
++                level = MWWorld::orthrosKnownPlayerLevel();
++            if (level <= 0)
++                return;
+             const MWWorld::ESMStore& store = *MWBase::Environment::get().getESMStore();
+             const ESM::CreatureLevList* list = store.get<ESM::CreatureLevList>().search(ptr.getCellRef().getRefId());
+             if (list == nullptr)
+@@ -243,8 +244,15 @@ namespace MWClass
+             std::vector<const ESM::NPC*> npcRecords;
+             orthrosCandidates(*list, level, store, creatureRecords, npcRecords, 0);
+             for (const ESM::Creature* creature : creatureRecords)
++            {
+                 if (!creature->mModel.getOriginal().empty())
+                     creatures.push_back(creature->mModel.getOriginal());
++                // (Orthros, c4.patch: a creature with weapon and shield, what it will carry — its shield attached by
++                // its insertion — as for one of the cell, MWWorld::orthrosCreatureRecordModels; templates only, last:
++                // a candidate's, not sure to be drawn)
++                if (MWWorld::orthrosCreatureGearPreload())
++                    MWWorld::orthrosCreatureRecordModels(*creature, store, gear, &gear);
++            }
+             for (const ESM::NPC* npc : npcRecords)
+             {
+                 // (an NPC drawn from a creature list: its body as Npc::getModelsToPreload lists it — every view into
+@@ -263,6 +271,7 @@ namespace MWClass
+         (void)ptr;
+         (void)creatures;
+         (void)parts;
++        (void)gear;
+ #endif
+     }
+ 
+diff --git a/openmw/apps/openmw/mwclass/creaturelevlist.hpp b/openmw/apps/openmw/mwclass/creaturelevlist.hpp
+index 02bcbd6..ea8db07 100644
+--- a/openmw/apps/openmw/mwclass/creaturelevlist.hpp
++++ b/openmw/apps/openmw/mwclass/creaturelevlist.hpp
+@@ -14,8 +14,10 @@ namespace MWClass
+     /// lists followed, at most a few: `creatures`, a creature's model (collision shape and all); `parts`, an NPC
+     /// candidate's body and what it will likely wear (no collision shape). Nothing rolled or created. For CellPreloader
+     /// only: its getModelsToPreload is unchanged (Scene::orthrosReadAhead never waits for a creature never shown).
++    /// Orthros (c4.patch): `gear`, a creature candidate's likely shield and weapons (orthrosCreatureRecordModels;
++    /// templates only), when OPENMW_ORTHROS_CREATUREGEAR is on.
+     void orthrosLevelledCandidateModels(const MWWorld::ConstPtr& ptr, std::vector<std::string_view>& creatures,
+-        std::vector<std::string_view>& parts);
++        std::vector<std::string_view>& parts, std::vector<std::string_view>& gear);
+ 
+     class CreatureLevList : public MWWorld::RegisteredClass<CreatureLevList>
+     {
+diff --git a/openmw/apps/openmw/mwworld/cellpreloader.cpp b/openmw/apps/openmw/mwworld/cellpreloader.cpp
+index d1d1b27..90fde7d 100644
+--- a/openmw/apps/openmw/mwworld/cellpreloader.cpp
++++ b/openmw/apps/openmw/mwworld/cellpreloader.cpp
+@@ -28,6 +28,7 @@
+ #include <components/terrain/world.hpp>
+ #include <components/vfs/manager.hpp>
+ 
++#include <components/esm3/loadcrea.hpp>
+ #include <components/esm3/loadlevlist.hpp>
+ #include <components/esm3/loadnpc.hpp>
+ #include <components/resource/bulletshape.hpp>
+@@ -73,6 +74,15 @@ namespace MWWorld
+         return enabled;
+     }
+ 
++    bool orthrosCreatureGearPreload()
++    {
++        static const bool enabled = [] {
++            const char* value = std::getenv("OPENMW_ORTHROS_CREATUREGEAR");
++            return value == nullptr || std::strcmp(value, "0") != 0;
++        }();
++        return enabled;
++    }
++
+     struct ListModelsVisitor
+     {
+         bool operator()(const MWWorld::ConstPtr& ptr)
+@@ -93,7 +103,16 @@ namespace MWWorld
+                     orthrosNpcRecordModels(
+                         *ptr.get<ESM::NPC>()->mBase, *MWBase::Environment::get().getESMStore(), mExtras->mParts);
+                 else if (ptr.getType() == ESM::CreatureLevList::sRecordId)
+-                    MWClass::orthrosLevelledCandidateModels(ptr, mExtras->mCreatures, mExtras->mParts);
++                    MWClass::orthrosLevelledCandidateModels(
++                        ptr, mExtras->mCreatures, mExtras->mParts, mExtras->mGear);
++                // Orthros (c4.patch, OPENMW_ORTHROS_CREATUREGEAR): a creature with weapon and shield not met yet,
++                // what it will carry (orthrosCreatureRecordModels): its shield, attached by its insertion's
++                // CharacterController (a NIF and its textures read in the crossing's frame, 60 ms measured), with
++                // the parts; its likely weapons, shown once drawn, last (mGear)
++                else if (ptr.getType() == ESM::Creature::sRecordId && ptr.getRefData().getCustomData() == nullptr
++                    && orthrosCreatureGearPreload())
++                    orthrosCreatureRecordModels(*ptr.get<ESM::Creature>()->mBase,
++                        *MWBase::Environment::get().getESMStore(), mExtras->mParts, &mExtras->mGear);
+             }
+ #endif
+ 
+@@ -107,6 +126,8 @@ namespace MWWorld
+         {
+             std::vector<std::string_view> mParts; // template only: worn, never given a collision shape
+             std::vector<std::string_view> mCreatures; // a creature's model: template and collision shape
++            // (c4.patch) template only, last: a creature's likely weapons, a levelled candidate's gear
++            std::vector<std::string_view> mGear;
+         };
+         Extras* mExtras = nullptr;
+     };
+@@ -144,6 +165,7 @@ namespace MWWorld
+             cell->forEachConst(visitor);
+             mFirstExtra = mMeshes.size();
+             mFirstCreature = mMeshes.size();
++            mFirstGear = mMeshes.size();
+ #ifdef __EMSCRIPTEN__
+             if (visitor.mExtras != nullptr)
+             {
+@@ -155,6 +177,10 @@ namespace MWWorld
+                 for (const std::string_view model : extras.mCreatures)
+                     if (!model.empty() && seen.insert(model).second)
+                         mMeshes.push_back(model);
++                mFirstGear = mMeshes.size();
++                for (const std::string_view model : extras.mGear)
++                    if (!model.empty() && seen.insert(model).second)
++                        mMeshes.push_back(model);
+             }
+ #endif
+         }
+@@ -297,7 +323,7 @@ namespace MWWorld
+                     return mSceneManager->orthrosTemplateReady(mesh);
+                 // (each asked, the missing ones all under way at once)
+                 bool ready = mSceneManager->orthrosTemplateReady(mesh, true);
+-                const bool templateOnly = index >= mFirstExtra && index < mFirstCreature;
++                const bool templateOnly = orthrosTemplateOnly(index);
+                 if (!templateOnly && !mBulletShapeManager->orthrosShapeReady(mesh))
+                     ready = false;
+                 constexpr VFS::Path::ExtensionView nif("nif");
+@@ -310,7 +336,7 @@ namespace MWWorld
+                         && !mSceneManager->orthrosNifFileManager()->orthrosParsedReady(kfname))
+                         ready = false;
+                 }
+-                if (index >= mFirstCreature)
++                if (orthrosExtraCreature(index))
+                 {
+                     const VFS::Path::Normalized base
+                         = Misc::ResourceHelpers::correctMeshPath(VFS::Path::Normalized(path));
+@@ -336,7 +362,7 @@ namespace MWWorld
+         {
+             if (index < mFirstExtra || deadline == std::chrono::steady_clock::time_point::max())
+                 return true;
+-            if (index >= mFirstCreature && shapeBuilt)
++            if (orthrosExtraCreature(index) && shapeBuilt)
+                 return false;
+             constexpr auto orthrosExtraHeadroom = std::chrono::milliseconds(2);
+             return !preloaded || deadline - std::chrono::steady_clock::now() >= orthrosExtraHeadroom;
+@@ -367,9 +393,9 @@ namespace MWWorld
+                 mPreloadedObjects.insert(mSceneManager->getTemplate(mesh));
+                 // Orthros (hitch2.patch): an extra NPC part or worn item never gets a collision shape (attached to
+                 // its actor), its template only
+-                if (index >= mFirstExtra && index < mFirstCreature)
++                if (orthrosTemplateOnly(index))
+                     return;
+-                if (index >= mFirstCreature)
++                if (orthrosExtraCreature(index))
+                 {
+                     shapeBuilt = true;
+                     // (as PhysicsSystem::addActor: a creature whose x*.nif has no collision box takes its base model's)
+@@ -412,6 +438,18 @@ namespace MWWorld
+         /// [mFirstCreature, end): levelled creatures' candidates (both mMeshes.size(): none).
+         std::size_t mFirstExtra = 0;
+         std::size_t mFirstCreature = 0;
++        /// Orthros (c4.patch): [mFirstCreature, mFirstGear) the levelled creatures' candidates; [mFirstGear, end):
++        /// creatures' likely weapons and candidates' gear, templates only.
++        std::size_t mFirstGear = 0;
++
++        /// An extra listed for its template only (NPC parts, worn items, creatures' gear): no collision shape.
++        bool orthrosTemplateOnly(std::size_t index) const
++        {
++            return index >= mFirstExtra && (index < mFirstCreature || index >= mFirstGear);
++        }
++
++        /// An extra creature's model: template and collision shape.
++        bool orthrosExtraCreature(std::size_t index) const { return index >= mFirstCreature && index < mFirstGear; }
+         /// Orthros (orthros-r5.patch): meshes put off while their files come (index, since when).
+         std::vector<std::pair<std::size_t, std::chrono::steady_clock::time_point>> mDeferred;
+ 
+diff --git a/openmw/apps/openmw/mwworld/cellpreloader.hpp b/openmw/apps/openmw/mwworld/cellpreloader.hpp
+index 0e47cdb..0af20d6 100644
+--- a/openmw/apps/openmw/mwworld/cellpreloader.hpp
++++ b/openmw/apps/openmw/mwworld/cellpreloader.hpp
+@@ -19,6 +19,7 @@ namespace osg
+ 
+ namespace ESM
+ {
++    struct Creature;
+     struct NPC;
+ }
+ 
+@@ -61,6 +62,24 @@ namespace MWWorld
+     /// Orthros (orthros-r10.patch): what an NPC met for the first time wears, before its inventory exists (scene.cpp).
+     void orthrosNpcRecordModels(const ESM::NPC& npc, const ESMStore& store, std::vector<std::string_view>& models);
+ 
++    /// Orthros (c4.patch): OPENMW_ORTHROS_CREATUREGEAR, read once (absent or anything but "0": on). On, a creature with
++    /// weapon and shield not met yet (no inventory) has what it will carry listed with its model — in an exterior
++    /// cell's preload (templates among the extras: its shield with an NPC's likely equipment, its likely weapons
++    /// last, after every other extra; a levelled creature's candidates' gear last too) and, its shield only (what
++    /// its insertion attaches), in Scene::orthrosReadAhead (its files) — so the shield its insertion attaches
++    /// (CharacterController's showCarriedLeft) is not read and parsed in the crossing's frame. Nothing drawn,
++    /// inserted or rolled changes. 0: those lists as before.
++    bool orthrosCreatureGearPreload();
++
++    /// Orthros (c4.patch): what a creature with weapon and shield met for the first time carries, before its
++    /// inventory exists (scene.cpp): its likely shield (as shown) into `shields`, its likely weapons into `weapons`
++    /// (null: not listed). Nothing for any other creature.
++    void orthrosCreatureRecordModels(const ESM::Creature& creature, const ESMStore& store,
++        std::vector<std::string_view>& shields, std::vector<std::string_view>* weapons);
++
++    /// Orthros (c4.patch): the player's level, read without creating anything (0 until its stats exist).
++    int orthrosKnownPlayerLevel();
++
+     class CellPreloader
+     {
+     public:
+diff --git a/openmw/apps/openmw/mwworld/scene.cpp b/openmw/apps/openmw/mwworld/scene.cpp
+index 179a799..2d40da4 100644
+--- a/openmw/apps/openmw/mwworld/scene.cpp
++++ b/openmw/apps/openmw/mwworld/scene.cpp
+@@ -52,6 +52,8 @@
+ #include "../mwphysics/object.hpp"
+ #include "../mwphysics/physicssystem.hpp"
+ 
++#include "../mwmechanics/creaturestats.hpp"
++
+ #include "../mwworld/actionteleport.hpp"
+ 
+ #include "cellpreloader.hpp"
+@@ -125,6 +127,144 @@ namespace MWWorld
+         for (const auto& entry : weapons)
+             models.push_back(entry.second.second->mModel.getOriginal());
+     }
++
++    namespace
++    {
++        // Orthros (c4.patch): at most this many candidates for one levelled item list of a record, its nested lists'
++        // included (an AllLevels list at a high level would bring many meshes into the preload for one item shown),
++        // and at most this many lists visited for it (a list naming itself, or deeply nested ones, as mods may have).
++        constexpr std::size_t orthrosMaxItemCandidates = 4;
++        constexpr int orthrosMaxListVisits = 16;
++
++        // The items getLevelledItem may pick from this list at this level (as ContainerStore::addInitialItem draws a
++        // record's list: the highest level not above it, or every level not above it with AllLevels; nested lists
++        // followed) — the dice left out, a list that never gives anything (chance none 100) skipped — until `limit`
++        // items are listed or `visits` lists visited.
++        void orthrosItemCandidates(const ESM::ItemLevList& list, int level, const MWWorld::ESMStore& store,
++            std::vector<ESM::RefId>& items, std::size_t limit, int& visits)
++        {
++            if (--visits < 0 || list.mChanceNone >= 100)
++                return;
++            int highestLevel = 0;
++            for (const auto& item : list.mList)
++                if (item.mLevel > highestLevel && item.mLevel <= level)
++                    highestLevel = item.mLevel;
++            const bool allLevels = (list.mFlags & ESM::ItemLevList::AllLevels) != 0;
++            for (const auto& item : list.mList)
++            {
++                if (items.size() >= limit || visits <= 0)
++                    return;
++                if (level < item.mLevel || !(allLevels || item.mLevel == highestLevel))
++                    continue;
++                if (const ESM::ItemLevList* nested = store.get<ESM::ItemLevList>().search(item.mId))
++                    orthrosItemCandidates(*nested, level, store, items, limit, visits);
++                else
++                    items.push_back(item.mId);
++            }
++        }
++    }
++
++    int orthrosKnownPlayerLevel()
++    {
++        // (the player's level as getLevelledItem reads it, without creating anything: the player exists from the
++        // World's construction on, its stats once its custom data does — before, 0, not created here as a stats
++        // query would)
++        try
++        {
++            MWBase::World& world = *MWBase::Environment::get().getWorld();
++            const MWWorld::ConstPtr player = world.getPlayerConstPtr();
++            if (player.isEmpty() || player.getRefData().getCustomData() == nullptr)
++                return 0;
++            const MWWorld::Ptr mutablePlayer = world.getPlayerPtr();
++            return mutablePlayer.getClass().getCreatureStats(mutablePlayer).getLevel();
++        }
++        catch (const std::exception&)
++        {
++            return 0;
++        }
++    }
++
++    // Orthros (c4.patch): what a creature with weapon and shield (ESM::Creature::Weapon: an inventory store and a
++    // CreatureWeaponAnimation) met for the first time shows, before its inventory exists (made from its record —
++    // levelled lists drawn at the player's level, InventoryStore::autoEquip — only once the cell inserts it): its
++    // shield, attached from its insertion on (Actors::addActor > CharacterController > showCarriedLeft >
++    // CreatureWeaponAnimation::updatePart > getTemplate: the NIF and its textures read and parsed in the crossing's
++    // frame, 60 ms measured), into `shields`; and its weapon, attached only once drawn, into `weapons` (null: not
++    // listed). autoEquip's likely choice, roughly: the shield of most health (as autoEquipArmor compares a
++    // creature's), the shield's body part as ActorAnimation::getShieldMesh picks it (male; else the shield's own
++    // model); per weapon type the best damage, ammunition left out, none for a creature that sells weapons
++    // (autoEquipWeapon equips nothing then). Levelled lists' candidates followed (orthrosItemCandidates) at the
++    // player's level once known (orthrosKnownPlayerLevel; before, the record's own items only). Nothing rolled or
++    // created.
++    void orthrosCreatureRecordModels(const ESM::Creature& creature, const MWWorld::ESMStore& store,
++        std::vector<std::string_view>& shields, std::vector<std::string_view>* weapons)
++    {
++        if ((creature.mFlags & ESM::Creature::Weapon) == 0)
++            return;
++        const bool armed
++            = weapons != nullptr && (creature.mAiData.mServices & (ESM::NPC::Weapon | ESM::NPC::MagicItems)) == 0;
++        std::vector<ESM::RefId> items;
++        int level = -1; // (asked once a levelled list is met; 0: not known, lists skipped)
++        for (const ESM::ContItem& item : creature.mInventory.mList)
++        {
++            if (const ESM::ItemLevList* list = store.get<ESM::ItemLevList>().search(item.mItem))
++            {
++                if (level < 0)
++                    level = orthrosKnownPlayerLevel();
++                int visits = orthrosMaxListVisits;
++                if (level > 0)
++                    orthrosItemCandidates(
++                        *list, level, store, items, items.size() + orthrosMaxItemCandidates, visits);
++            }
++            else
++                items.push_back(item.mItem);
++        }
++        const ESM::Armor* shield = nullptr;
++        std::map<int32_t, std::pair<int, const ESM::Weapon*>> best;
++        for (const ESM::RefId& id : items)
++        {
++            if (const ESM::Armor* a = store.get<ESM::Armor>().search(id))
++            {
++                if (a->mData.mType == ESM::Armor::Shield && (shield == nullptr || a->mData.mHealth > shield->mData.mHealth))
++                    shield = a;
++            }
++            else if (const ESM::Weapon* w = store.get<ESM::Weapon>().search(id); armed && w != nullptr
++                     && !w->mModel.getOriginal().empty() && w->mData.mType != ESM::Weapon::Arrow
++                     && w->mData.mType != ESM::Weapon::Bolt)
++            {
++                const int damage = std::max({ w->mData.mChop[1], w->mData.mSlash[1], w->mData.mThrust[1] });
++                const auto it = best.find(w->mData.mType);
++                if (it == best.end() || damage > it->second.first)
++                    best[w->mData.mType] = { damage, w };
++            }
++        }
++        if (shield != nullptr)
++        {
++            // (as getShieldMesh: the first shield body part with a model; one that is not armor, nothing shown)
++            std::string_view model = shield->mModel.getOriginal();
++            for (const ESM::PartReference& part : shield->mParts.mParts)
++            {
++                if (part.mPart != ESM::PRT_Shield || part.mMale.empty())
++                    continue;
++                const ESM::BodyPart* bodypart = store.get<ESM::BodyPart>().search(part.mMale);
++                if (bodypart == nullptr || bodypart->mData.mType != ESM::BodyPart::MT_Armor)
++                {
++                    model = std::string_view();
++                    break;
++                }
++                if (!bodypart->mModel.getOriginal().empty())
++                {
++                    model = bodypart->mModel.getOriginal();
++                    break;
++                }
++            }
++            if (!model.empty())
++                shields.push_back(model);
++        }
++        if (weapons != nullptr)
++            for (const auto& entry : best)
++                weapons->push_back(entry.second.second->mModel.getOriginal());
++    }
+ }
+ #endif
+ 
+@@ -1642,7 +1782,9 @@ namespace MWWorld
+         Resource::SceneManager& sceneManager = *mRendering.getResourceSystem()->getSceneManager();
+         const VFS::Manager& vfs = *sceneManager.getVFS();
+         // (the models as CellPreloader's ListModelsVisitor lists them — an NPC's equipped parts only once its
+-        // inventory exists: before, what its record carries, orthrosNpcRecordModels)
++        // inventory exists: before, what its record carries, orthrosNpcRecordModels; a creature's shield likewise,
++        // orthrosCreatureRecordModels — its shield only, what its insertion attaches: its weapons, shown once drawn,
++        // never waited for here)
+         const MWWorld::ESMStore& store = *MWBase::Environment::get().getESMStore();
+         std::vector<std::string_view> models;
+         std::vector<VFS::Path::Normalized> landTextures;
+@@ -1653,6 +1795,10 @@ namespace MWWorld
+                 ptr.getClass().getModelsToPreload(ptr, models);
+                 if (ptr.getType() == ESM::NPC::sRecordId && ptr.getRefData().getCustomData() == nullptr)
+                     orthrosNpcRecordModels(*ptr.get<ESM::NPC>()->mBase, store, models);
++                // (Orthros, c4.patch: a creature with weapon and shield, its shield, orthrosCreatureRecordModels)
++                else if (ptr.getType() == ESM::Creature::sRecordId && ptr.getRefData().getCustomData() == nullptr
++                    && orthrosCreatureGearPreload())
++                    orthrosCreatureRecordModels(*ptr.get<ESM::Creature>()->mBase, store, models, nullptr);
+                 return true;
+             });
+             if (terrain != nullptr && cell->getCell()->isExterior())
