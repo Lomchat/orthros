@@ -3088,6 +3088,126 @@ the frame comparison, the run log; `an/summary.py` prints the table from them).
    open. The pictures, the two-client check (2 of 2, and r17 fails it: the engine's extrapolation fixed in (C)),
    `lateOld` 0, check.mjs EN and FR, overlay-check and `make test`: met.
 
+##### The second full validation of `r18dev-d` against the live r17, and the verdict (2026-10-31)
+
+The same build (`r18dev-d`, engine `67ba0ec0e388`, this tree at `388dfce`), validated again from scratch against
+`openmw-web-v1.5.3-orthros-r17`. Both sides ran on this tree's page code. Every server had its own copy of the live
+learned state, copied at 22:29, and the frozen copy of the live br-cache. Each side had its own warm profile, made by
+its own engine. The runs alternated r17 / r18, one browser at a time through `tools/with-browser-slot.sh`, from 22:30 to
+01:19. Free memory never went below 38 GB (`logs/memory.log`); each start's load and memory are in
+`logs/runs-started.txt`. Results are in `tools/openmw/results/r18-2026-10-30/validation2/`: place-load rows, each run's
+console, proxy log and read trace, each `perf.json`, the two-client runs, the checks, the frame comparison, the logs and
+the driver scripts. `scripts/summary2.py validation2` prints `summary.txt` from them.
+
+**First round discarded: r18's warm profile lacked the engine's lean package.** The copied br-cache had no lean package
+for r18's `openmw.data`: r18 changes `interp.lua` inside it, so the package has a new content hash. The server built
+that package during r18's warm-up (`openmw lean package 2c6b8e83f75b (lean3): 4133415 bytes in 69 s`). Until it was
+ready, the warm-up page loaded the release's full package instead (219.7 MB on the wire against 190.4).
+
+As a result, every warm r18 run fetched the 4.13 MB lean package before the menu. The menu came at 8.4-9.2 s against
+r17's 7.0-7.8 on the local link, and at 60.5-60.6 s against 10.5-10.7 at 85 KB/s. Those rows are kept in `round1/`
+(`round1/summary.txt`) but not used for the verdict. The r18 warm profile was rebuilt once the package existed, and the
+warm save, COE and 85 KB/s runs were repeated, both sides interleaved again.
+
+Two consequences for a real deployment:
+- Returning players download the new lean package once (4.13 MB, about 50 s at 85 KB/s), as with any release that
+  changes the package's content.
+- Until the server has built it (about 70 s after the first request), pages load the full 33 MB package.
+
+| | r17 | r18 (`r18dev-d`) |
+| --- | --- | --- |
+| in play (`perf.mjs tier=mid --discard --warm 0`, 60 s; the 4 required pairs): fps | 25.01-25.94 | 24.55-26.00 |
+| in play, 4 pairs: longest frame gap (ms) | 233-267 | 200-250 |
+| in play, 4 pairs: data stalls (ms a minute) | 185-240 | 192-223 |
+| in play, 4 pairs: work p50 / p99 (ms) | 7.8-8.3 / 17.9-20.0 | 7.9-8.4 / **17.1-21.4** |
+| in play, 6 pairs (2 more, run after the 4): fps | 24.81-25.94 | **23.81**-26.00 |
+| in play, 6 pairs: longest gap / stalls | 233-317 / 185-336 | 200-300 / 192-276 |
+| in play, 6 pairs: work p99, median | 17.9-20.6, 18.6 | **17.1-22.0, 20.0** (3 of 6 above r17's slowest) |
+| save, warm (3 a side): menu (s) | 7.1-7.8 | 7.2 |
+| save, warm: F9 to the world (s) | 4.8 (each run) | **5.2-5.3** |
+| save, warm: page's longest block (ms) | 4746-4783 | 697-753 |
+| save, warm: input p50 / p95 (ms) | 469-495 / 657-880 (median 756) | 8-20 / 648-801 (median 689) |
+| save, warm: the visible freeze (ms) | 4700-4733 | 1850-1917 |
+| COE, warm (3 a side): first frame (s) | 6.5-7.0 | 6.2-6.6 |
+| COE: page's longest block (ms) | 1808-2206 | 211-445 |
+| COE: input p50 / p95 (ms) | 619-818 / 1534-1933 | 61-87 / 561-723 |
+| COE: the visible freeze (ms) | 1650-2033 | 1550-1617 |
+| COE: steady in the world (s) | 5.2-5.8 | 5.8-6.4 |
+| new device, save (2 a side): menu (s) | 23.3-24.6 | **25.1-25.9** |
+| new device: F9 to the world (s) | 12.1-12.6 | 12.4-12.6 |
+| new device: page's block / the visible freeze (s) | 12.1-12.4 / 12.3-12.8 | 0.6 / 8.3-8.4 |
+| 85 KB/s, save (2 a side): menu (s) | 10.3-10.9 | 10.5-10.6 |
+| 85 KB/s: F9 to the world (s) | 27.7-27.8 | 26.2 (no announced wait timed out on either side) |
+| 85 KB/s: page's block / the visible freeze (s) | 27.5-27.6 / 27.4-27.5 | 0.76-0.78 / 20.5-20.6 |
+| `__omwPrecompile.lateOld` after the load | 0 (every run) | 0 (every run, including the 2 forced ones) |
+| two clients (`mp-check.mjs`, 5 a side) | 4 of 5 | 4 of 5 |
+
+- **Two clients.** Both sides passed 4 of 5, but they failed differently:
+  - r17's failure (`r17-5`) was the teleport desync that (C) fixes: the copies stood 25,804 and 22,891 units off.
+  - r18's failure (`r18-2`) was a 57-unit gap. A's third move brought it back to its starting spot, and B's copy of A
+    stayed 57 units from it (25 units higher) for 90 s. B itself stood 36 units from that spot, which is consistent with
+    the copy being pushed aside by B's own body. That cause is not established.
+  - In the r18 runs that passed, copies ended 0-42 units off; in r17's, 0-28.
+- **Pictures** (`frame-compare.mjs`, `''` against `?jspi=0`, mean absolute difference out of 255, the noise in
+  parentheses): day 1.707 (1.706), night 0.041 (0.226), interior 0.276 (0.586). No pixel differs by more than 24 in any
+  view, so the pictures are unchanged.
+- **check.mjs** passed in English (46,545 draws) and with `--lang fr` (45,936 draws).
+- **overlay-check.mjs** against `r18dev-d`: both Morrowind games' overlays agree with their originals.
+- **`make test`**: 1,706 tests, 1,703 pass, 0 fail (1 skipped, 2 todo).
+- **Crashes: none in 53 r18 page sessions.** Those were:
+  - 26 place-load sessions (23 measured, the first round's included, plus 3 warm-ups);
+  - 6 `perf.mjs` runs;
+  - frame-compare's 9 page loads;
+  - the 2 checks;
+  - the 10 pages of the 5 two-client runs.
+
+  No page showed an error other than Chromium's pointer-lock message, which appears on both sides. The kernel log has no
+  segfault since 15:10 on 10-30. With Chromium's heap profiler forced on every renderer
+  (`--memlog=all-renderers --memlog-sampling-rate=100000 --memlog-stack-mode=native`), a save boot and its load and a
+  COE boot and its load did not crash.
+
+**The two blocking paths (D), again.** Both still block on r18. A play frame is plain, so neither path suspends.
+- **The forced read past `dataWaitLimit`** (`?preloadwait=1000`, gliding north from -2,-9 at 85 KB/s for 90 s, 2 runs
+  a side). The page's longest block was 12.9 and 16.4 s on r17, against 24.2 and 34.9 s on r18. Read traces:
+  - Run 1, r17: the announced wait for the `meshes:-2,-8` batch (3.23 MB) finished in 12.7 s.
+  - Run 1, r18: that wait timed out at 15 s. The same 3.28 MB `Morrowind.bsa` entry was then read synchronously inside
+    the cell load (8.9 s), so the page was held 24 s.
+  - Run 2: the forced synchronous read of that entry took 16.4 s on r17 and 34.8 s on r18.
+  - On the link, during r18's run 2, the entry's two 1 MiB blocks were each requested twice at the same time (four
+    0.53 MB responses, about 35 s each). In r17's run 2, one block went twice. The forced read does not join a
+    background fetch of the same block that is already in flight. That is page code shared by both sides and is still
+    open. How long the read takes depends on the link and on what the warm store already holds; one run a side in the
+    diagnosis gave the opposite order (42.3 against 32.5 s).
+- **A door's load** (`--mode door`, one run a side). The load ran in the play frame that started it (0.17-1.77 s), with
+  0 suspensions and 123 synchronous reads totalling 107 ms (r17: 80 ms). The page's longest block was 1,657 ms against
+  r17's 1,674, and the visible freeze 1,983 ms against 1,650.
+
+**Verdict: NO-SHIP.** By criterion:
+1. **Crashes: met.** 0 in 53 r18 sessions, and 0 in the 2 sessions with the heap profiler forced.
+2. **In play: not met.** In the 4 required pairs, r18's longest gap is better (200-250 ms against 233-267) and its
+   stalls are within r17's range (192-223 against 185-240). Its first run is outside r17's range on both fps (24.55
+   against 25.01-25.94) and work p99 (21.4 against 17.9-20.0). Two more pairs confirm it: work p99 17.1-22.0 ms (median
+   20.0) against 17.9-20.6 (median 18.6), with 3 of 6 runs above r17's slowest, and fps down to 23.81. The previous
+   validation saw the same (19.1-22.6 against 17.5-19.7).
+3. **Loads: met for the COE, not for the save.**
+   - Met: the page's longest block is much better on both (save 0.70-0.75 s against 4.75-4.78; COE 0.21-0.45 against
+     1.81-2.21).
+   - Met: input p95 is better on the COE (561-723 ms against 1534-1933). On the save it is better only narrowly (648-801
+     against 657-880; median 689 against 756).
+   - Met: the visible freeze is shorter (save 1.85-1.92 s against 4.70-4.73; COE 1.55-1.62 against 1.65-2.03).
+   - Not met: the save's F9 to the world is 5.2-5.3 s in all three runs, against 4.8 s in all three of r17's, 0.4-0.5 s
+     outside r17's range. The COE's time to a steady world is also 0.6 s later (5.8-6.4 s against 5.2-5.8).
+4. **Not met on a new device; met at 85 KB/s and everywhere else.**
+   - At 85 KB/s the save reaches the world in 26.2 s against 27.7-27.8, with the menu even (10.5-10.6 against
+     10.3-10.9).
+   - On a new device, F9 to the world is within r17's range (12.4-12.6 s against 12.1-12.6), but the menu comes 0.5-2.6
+     s later (25.1-25.9 s against 23.3-24.6). The previous validation saw the same (23.9-25.4 against 23.5-24.2). Before
+     the menu, r18's page waited 3.0-3.2 s on demand reads against r17's 1.3-2.3, with 1.07-1.15 MB of demand traffic
+     against 0.33-0.98. The engine download was the same (9.87 MB against 9.86). These runs had no read trace, so the
+     cause is still open.
+   - Met: the pictures are unchanged, the two-client check passed 4 of 5 on r18 (r17 4 of 5, its failure the desync
+     that r18 fixes), `lateOld` is 0, check.mjs passed in EN and FR, overlay-check passed and `make test` is green.
+
 ### The engine's language and dialogue topic colours (2026-10-28)
 
 OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own

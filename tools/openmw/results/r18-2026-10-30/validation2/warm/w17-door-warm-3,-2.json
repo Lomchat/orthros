@@ -1,0 +1,166 @@
+{
+ "warm": true,
+ "tree": "/srv/orthros/.claude/worktrees/data-r15",
+ "commit": "388dfce",
+ "seconds": 120,
+ "wallS": 173,
+ "inWorldS": 42,
+ "storage": {
+  "estimateMB": 672.2,
+  "netBw": null,
+  "offlineCopy": null,
+  "placeHint": "{\"place\":\"-3,-2\",\"at\":1793403548059}"
+ },
+ "stats": {
+  "cached": 777,
+  "lruMax": 768,
+  "hits": 205309,
+  "misses": 512,
+  "syncFetches": 512,
+  "soonSpins": 0,
+  "soonSpinMs": 0,
+  "soonSuspends": 0,
+  "soonWaits": 0,
+  "stallMs": 18266.474999919534,
+  "evictions": 3761,
+  "bytes": 294727430,
+  "fetchedBytes": 424651648,
+  "wants": 823,
+  "placeWants": 0,
+  "wantWaits": 5,
+  "wantWaitMs": 10840.175000011921,
+  "wantTimeouts": 0,
+  "bigLoads": 0,
+  "bigFiles": 0,
+  "bigBytes": 0,
+  "reloaded": 0,
+  "realFetches": 0,
+  "realFetchMs": 0,
+  "realMissed": 0,
+  "realRaced": 0,
+  "openMs": 824,
+  "readyMs": 1737,
+  "mountedMs": null,
+  "content": "done",
+  "contentLoadingMs": 8698,
+  "contentLoadedMs": 14322,
+  "net": {
+   "bw": 1770888,
+   "measured": true,
+   "rtt": 91,
+   "demandInFlight": 0,
+   "bgInFlight": 0,
+   "waiting": 0,
+   "loading": false,
+   "demandBytes": 3615342,
+   "demandRequests": 48,
+   "demandMs": 8792.509999997914,
+   "bgBytes": 190299250,
+   "bgRequests": 1423,
+   "abortedRequests": 0,
+   "rawBytes": 424651648,
+   "waits": 83,
+   "waitMs": 33033.1799999997,
+   "bgBy": {
+    "pf1": {
+     "requests": 240,
+     "wire": 61908860,
+     "raw": 95698185,
+     "inLoad": 3930812
+    },
+    "ahead": {
+     "requests": 243,
+     "wire": 17812071,
+     "raw": 97176387,
+     "inLoad": 12003637
+    },
+    "readAhead": {
+     "requests": 16,
+     "wire": 3737170,
+     "raw": 8836120,
+     "inLoad": 3737170
+    },
+    "announced": {
+     "requests": 442,
+     "wire": 17548788,
+     "raw": 31890352,
+     "inLoad": 17060208
+    },
+    "want": {
+     "requests": 248,
+     "wire": 37090042,
+     "raw": 85131264,
+     "inLoad": 0
+    },
+    "mediaAhead": {
+     "requests": 1,
+     "wire": 262144,
+     "raw": 262144,
+     "inLoad": 0
+    },
+    "pf2": {
+     "requests": 219,
+     "wire": 47194224,
+     "raw": 85729743,
+     "inLoad": 0
+    },
+    "near": {
+     "requests": 14,
+     "wire": 4745951,
+     "raw": 13826102,
+     "inLoad": 0
+    }
+   }
+  }
+ },
+ "cell": "-3 -2",
+ "faults": [],
+ "all": {
+  "wireMB": 204.6,
+  "requests": 1961,
+  "byKind": {
+   "page": {
+    "requests": 6,
+    "MB": 0.2
+   },
+   "src": {
+    "requests": 39,
+    "MB": 0.18
+   },
+   "api": {
+    "requests": 25,
+    "MB": 0.06
+   },
+   "engine": {
+    "requests": 3,
+    "MB": 9.86
+   },
+   "background": {
+    "requests": 1398,
+    "MB": 173.03
+   },
+   "demand": {
+    "requests": 48,
+    "MB": 3.62
+   },
+   "want": {
+    "requests": 442,
+    "MB": 17.64
+   }
+  },
+  "dataRequests": 1888,
+  "units": {
+   "hit": 553,
+   "raw": 73,
+   "miss": 833,
+   "none": 429
+  },
+  "unitMB": {
+   "hit": 25.81,
+   "raw": 46.37,
+   "miss": 40.73,
+   "none": 81.38
+  },
+  "demandWaitS": 8.5
+ }
+}

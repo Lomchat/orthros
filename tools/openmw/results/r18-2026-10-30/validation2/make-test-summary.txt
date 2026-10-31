@@ -1,0 +1,10 @@
+ℹ off p50 43.8 p90 48.4, on p50 33.6 p90 37.4 (spin 504.3 ms)
+ℹ tests 1706
+ℹ suites 0
+ℹ pass 1703
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 2
+ℹ duration_ms 216850.35825
+real	3m36.966s
