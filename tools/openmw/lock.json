@@ -930,7 +930,11 @@
           "call": "Module.ccall('orthros_jspi', 'number', [], [])"
         }
       ],
-      "files": {}
+      "files": {
+        "openmw.js": "421d60e99af0b6c8ae20cc256a4caee9e6dc30a4e64d484e8c5a3315355833d5",
+        "openmw.wasm": "82ee01a12be8cb3110608069cfd3ad2fb37d06fb8a8bee9535865b1a67bc2c17",
+        "openmw.data": "2c6b8e83f75bf78e213aeed98cff939734096e3f682e307e3b95d0186163923d"
+      }
     }
   ]
 }

@@ -353,7 +353,8 @@ test('r19: r18 plus its patch, the same exports; the draw thread behind its swit
 
 test('r20 patch: the frame and the boot suspend on a read the page does not answer within a few ms (JSPI), worker threads\' reads at once, the page\'s calls after the frame; no put-off of distant chunks', () => {
   const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r20.patch'), 'utf8'), added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
-  // (r19 plus its patch; its exports r19's and the JSPI mark — the page tells the release by it; files none of its own)
+  // (r19 plus its patch; its exports r19's and the JSPI mark — the page tells the release by it; its built files pinned,
+  // its package r19's: the lean copy made for r18 applies)
   const r19 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r19'), r20 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r20');
   assert.ok(r20, 'r20 is a build');
   assert.deepEqual(r20.patches, [...r19.patches, 'orthros-r20.patch']);
@@ -361,7 +362,8 @@ test('r20 patch: the frame and the boot suspend on a read the page does not answ
   const e = r20.exports.find((x) => x.name === 'orthros_jspi');
   assert.ok(e, 'orthros_jspi among its exports'); assert.equal(e.returns, 'number'); assert.deepEqual(e.args, []);
   assert.ok(r20.exports.some((x) => x.name === 'orthros_content_light'), 'r13\'s exports kept');
-  assert.deepEqual(r20.files, {});
+  assert.deepEqual(Object.keys(r20.files).sort(), ['openmw.data', 'openmw.js', 'openmw.wasm']);
+  assert.equal(r20.files['openmw.data'], r19.files['openmw.data']); assert.notEqual(r20.files['openmw.wasm'], r19.files['openmw.wasm']);
   for (const f of ['openmw/apps/openmw/engine.cpp', 'openmw/apps/openmw/main.cpp', 'openmw/apps/openmw/mwgui/loadingscreen.cpp', 'openmw/apps/openmw/mwgui/savegamedialog.cpp',
     'openmw/apps/openmw/mwstate/statemanagerimp.cpp', 'openmw/components/vfs/manager.cpp', 'play/index.html', 'wasm-build/link-openmw.sh', 'wasm-build/orthros-jspi.js'])
     assert.ok(patch.includes(`+++ b/${f}`), f);
