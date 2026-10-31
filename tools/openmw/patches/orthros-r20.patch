@@ -1,5 +1,5 @@
 diff --git a/openmw/apps/openmw/engine.cpp b/openmw/apps/openmw/engine.cpp
-index 3ae669d..24e2c32 100644
+index 3ae669d..cef393e 100644
 --- a/openmw/apps/openmw/engine.cpp
 +++ b/openmw/apps/openmw/engine.cpp
 @@ -4,6 +4,8 @@
@@ -283,7 +283,7 @@ index 3ae669d..24e2c32 100644
  // gear-equip path — a cache-miss weapon mesh loaded on the main thread — that used to freeze
  // the browser (WorkQueue worker/main contention). Returns 1 on success, 0/-1 on failure.
 diff --git a/openmw/apps/openmw/main.cpp b/openmw/apps/openmw/main.cpp
-index 0b6147a..a7b3e18 100644
+index 0b6147a..6a57378 100644
 --- a/openmw/apps/openmw/main.cpp
 +++ b/openmw/apps/openmw/main.cpp
 @@ -269,13 +269,43 @@ int runApplication(int argc, char* argv[])
@@ -331,7 +331,7 @@ index 0b6147a..a7b3e18 100644
  
  // Platform specific for Windows when there is no console built into the executable.
 diff --git a/openmw/apps/openmw/mwgui/loadingscreen.cpp b/openmw/apps/openmw/mwgui/loadingscreen.cpp
-index 01ecb56..a203184 100644
+index 01ecb56..409abce 100644
 --- a/openmw/apps/openmw/mwgui/loadingscreen.cpp
 +++ b/openmw/apps/openmw/mwgui/loadingscreen.cpp
 @@ -28,6 +28,21 @@
@@ -379,7 +379,33 @@ index 01ecb56..a203184 100644
          if (--mNestedLoadingCount > 0)
              return;
  
-@@ -330,6 +354,10 @@ namespace MWGui
+@@ -299,7 +323,25 @@ namespace MWGui
+     {
+         if (!mSplashScreens.empty())
+         {
++#ifdef __EMSCRIPTEN__
++            // Orthros (orthros-r20.patch): the random splash, or the first after it whose bytes are in the page already
++            // (VFS::Manager::orthrosDataHere: asked, nothing fetched) — a load's first read is its splash, and on a
++            // new device the one drawn was often not fetched yet: the load waited 0.4-0.8 s for its 196 KB before its
++            // first announced read (validation3, 2026-10-31); none here: the random one, as before
++            std::size_t splashIndex = Misc::Rng::rollDice(mSplashScreens.size());
++            for (std::size_t k = 0; k < mSplashScreens.size(); ++k)
++            {
++                const std::size_t i = (splashIndex + k) % mSplashScreens.size();
++                if (mResourceSystem->getVFS()->orthrosDataHere(VFS::Path::toNormalized(mSplashScreens[i])))
++                {
++                    splashIndex = i;
++                    break;
++                }
++            }
++            std::string const& randomSplash = mSplashScreens.at(splashIndex);
++#else
+             std::string const& randomSplash = mSplashScreens.at(Misc::Rng::rollDice(mSplashScreens.size()));
++#endif
+ 
+             // TODO: add option (filename pattern?) to use image aspect ratio instead of 4:3
+             // we can't do this by default, because the Morrowind splash screens are 1024x1024, but should be displayed
+@@ -330,6 +372,10 @@ namespace MWGui
          mProgressBar->setScrollPosition(0);
          mProgressBar->setTrackSize(
              static_cast<int>(value / (float)(mProgressBar->getScrollRange()) * mProgressBar->getLineSize()));
@@ -390,7 +416,7 @@ index 01ecb56..a203184 100644
          draw();
      }
  
-@@ -341,6 +369,10 @@ namespace MWGui
+@@ -341,6 +387,10 @@ namespace MWGui
          mProgress = value;
          mProgressBar->setTrackSize(
              static_cast<int>(value / (float)(mProgressBar->getScrollRange()) * mProgressBar->getLineSize()));
@@ -401,7 +427,7 @@ index 01ecb56..a203184 100644
          draw();
      }
  
-@@ -444,6 +476,10 @@ namespace MWGui
+@@ -444,6 +494,10 @@ namespace MWGui
          mViewer->advance(mViewer->getFrameStamp()->getSimulationTime());
  
          mLastRenderTime = mTimer.time_m();
@@ -413,7 +439,7 @@ index 01ecb56..a203184 100644
  
  }
 diff --git a/openmw/apps/openmw/mwgui/savegamedialog.cpp b/openmw/apps/openmw/mwgui/savegamedialog.cpp
-index 78e2db8..412c7fb 100644
+index 78e2db8..8084121 100644
 --- a/openmw/apps/openmw/mwgui/savegamedialog.cpp
 +++ b/openmw/apps/openmw/mwgui/savegamedialog.cpp
 @@ -343,7 +343,13 @@ namespace MWGui
@@ -431,7 +457,7 @@ index 78e2db8..412c7fb 100644
      }
  
 diff --git a/openmw/apps/openmw/mwstate/statemanagerimp.cpp b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
-index 82e5f6c..02517d6 100644
+index 82e5f6c..dd0e6a8 100644
 --- a/openmw/apps/openmw/mwstate/statemanagerimp.cpp
 +++ b/openmw/apps/openmw/mwstate/statemanagerimp.cpp
 @@ -869,9 +869,22 @@ MWState::StateManager::CharacterIterator MWState::StateManager::characterEnd()
@@ -475,7 +501,7 @@ index 82e5f6c..02517d6 100644
          MWBase::Environment::get().getWindowManager()->removeGuiMode(MWGui::GM_MainMenu);
          const Character* character = mLoadRequest->first;
 diff --git a/openmw/components/vfs/manager.cpp b/openmw/components/vfs/manager.cpp
-index d8b3eae..cfe517c 100644
+index d8b3eae..a821c4d 100644
 --- a/openmw/components/vfs/manager.cpp
 +++ b/openmw/components/vfs/manager.cpp
 @@ -7,6 +7,12 @@
@@ -491,7 +517,36 @@ index d8b3eae..cfe517c 100644
  #endif
  
  #include <components/files/conversion.hpp>
-@@ -262,6 +268,8 @@ namespace VFS
+@@ -141,6 +147,28 @@ namespace VFS
+         return !orthrosRange(path, offset, size) || orthrosRangeReady(path, offset, size);
+     }
+ 
++    bool Manager::orthrosDataHere(VFS::Path::NormalizedView name) const
++    {
++#ifdef __EMSCRIPTEN__
++        const auto found = mIndex.find(name);
++        std::string path;
++        std::uint64_t offset = 0;
++        std::uint64_t size = 0;
++        if (found == mIndex.end() || !found->second->orthrosRange(path, offset, size))
++            return true;
++        // (the page's answer, 1 here, 0 not; a page without the hook, or one that fails: 0)
++        // clang-format off
++        return EM_ASM_INT({
++            var f = globalThis.orthrosRangeHere;
++            try { return f ? (f(UTF8ToString($0), $1, $2) ? 1 : 0) : 0; } catch (e) { return 0; }
++        }, path.c_str(), static_cast<double>(offset), size == ~std::uint64_t{ 0 } ? -1.0 : static_cast<double>(size)) != 0;
++        // clang-format on
++#else
++        (void)name;
++        return false;
++#endif
++    }
++
+     std::size_t Manager::orthrosWillRead(std::span<const Path::Normalized> names, std::string_view label) const
+     {
+ #ifdef __EMSCRIPTEN__
+@@ -262,6 +290,8 @@ namespace VFS
              return true;
          // (1: everything announced is there, 0: the timeout; a page without the hook, or one that fails: nothing to
          // wait for, the reads then waiting one by one as before)
@@ -500,11 +555,27 @@ index d8b3eae..cfe517c 100644
          // clang-format off
          return MAIN_THREAD_EM_ASM_INT({
              var f = globalThis.orthrosReadWait;
+diff --git a/openmw/components/vfs/manager.hpp b/openmw/components/vfs/manager.hpp
+index 147fae2..4486a78 100644
+--- a/openmw/components/vfs/manager.hpp
++++ b/openmw/components/vfs/manager.hpp
+@@ -76,6 +76,11 @@ namespace VFS
+         /// orthrosDataReady); false: its bytes on their way, fetched in the background. A file not found: true.
+         bool orthrosDataReady(VFS::Path::NormalizedView name) const;
+ 
++        /// Orthros (orthros-r20.patch): the file `name`'s bytes are in the page now (globalThis.orthrosRangeHere,
++        /// src/ports/openmw/streamfs.js) — asked only, nothing fetched (orthrosDataReady fetches what is missing). A
++        /// file not found or not streamed: true; a page without the hook, or off the web build: false.
++        bool orthrosDataHere(VFS::Path::NormalizedView name) const;
++
+         /// Orthros (orthros-r10.patch): announces to the page (globalThis.orthrosWillRead, one call) the files about
+         /// to be read synchronously — every name's range (File::orthrosRange; names not found or without a plain
+         /// range left out) — so it fetches them at once, in parallel, instead of one round trip per read. `label`:
 diff --git a/play/index.html b/play/index.html
-index 28f65a4..dbb1d07 100644
+index 28f65a4..de9dcb6 100644
 --- a/play/index.html
 +++ b/play/index.html
-@@ -1586,8 +1586,30 @@ window.omw = (function(){
+@@ -1586,8 +1586,32 @@ window.omw = (function(){
         if (/[?&]wqbudget=(\d+(\.\d+)?)\b/.test(location.search)) ENV.OPENMW_WORKQUEUE_BUDGET_MS=/[?&]wqbudget=(\d+(\.\d+)?)/.exec(location.search)[1];
         // Orthros (orthros-r5.patch): a preload between frames puts off a mesh or a distant-object chunk whose files are
         // not in the page yet (globalThis.orthrosRangeReady, streamfs.js: then fetched in the background) for up to
@@ -524,6 +595,8 @@ index 28f65a4..dbb1d07 100644
 +       if (/[?&]jspibreath=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_BREATH_MS=/[?&]jspibreath=(\d+)/.exec(location.search)[1];
 +       // ?jspiplain=0: every frame the promising export (as r20's first builds), not only the boot's and the loads' (wasm-build/orthros-jspi.js).
 +       if (/[?&]jspiplain=0\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_PLAIN='0';
++       // ?jspihint=0: the frame after a key pressed or a mouse button is plain too (by default promising: a load it asks starts in it, not a frame later).
++       if (/[?&]jspihint=0\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_HINT='0';
 +       // ?jspigl=N: in a load's frame, a framebuffer's status asked after the GPU ran its queue (the engine suspended meanwhile), at most every N ms (default 50; 0: never).
 +       if (/[?&]jspigl=(\d+)\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MS=/[?&]jspigl=(\d+)/.exec(location.search)[1];
 +       // ?jspiglmax=N: that wait N ms at most (default 300), the status then asked as is (the page's thread waits the rest).
@@ -536,7 +609,7 @@ index 28f65a4..dbb1d07 100644
         // ?perfkeys=1 (QA): dump the frame's raw osg::Stats attribute keys to window.__omwPhaseKeys
         // and whether the "engine" collection group is on. Diagnostic for empty __omwPhase buckets.
         if (/[?&]perfkeys=1/.test(location.search)) ENV.OPENMW_PERF_KEYS='1';
-@@ -3998,8 +4020,14 @@ window.omw = (function(){
+@@ -3998,8 +4022,14 @@ window.omw = (function(){
         // visible tab -> next tick scheduled via requestAnimationFrame (vsync-aligned, smooth);
         // hidden tab  -> direct postMessage (unthrottled, game keeps running in background).
         var scheduled = false;
@@ -552,7 +625,7 @@ index 28f65a4..dbb1d07 100644
           // Visible: run the frame INSIDE the rAF callback. Hidden: pace with a timer (~30fps
           // target; browsers throttle background timers further) and go through the
           // MessageChannel, which is NOT throttled in a background tab — an unpaced background
-@@ -4028,11 +4056,7 @@ window.omw = (function(){
+@@ -4028,11 +4058,7 @@ window.omw = (function(){
           if (document.hidden) setTimeout(function(){ mc.port2.postMessage(0); }, 33);
           else requestAnimationFrame(function(){ mc.port2.postMessage(0); });
         }
@@ -565,7 +638,7 @@ index 28f65a4..dbb1d07 100644
             // NEVER SILENT. A C++ exception is caught inside omw_pump_frame and logged there; what
             // reaches here is a wasm TRAP (RuntimeError: unreachable / memory access out of bounds)
             // that unwound straight through the engine's re-entrancy guard, so every later pump
-@@ -4047,7 +4071,26 @@ window.omw = (function(){
+@@ -4047,7 +4073,26 @@ window.omw = (function(){
               showLogOnce();
               if (typeof fatalOverlay === 'function') fatalOverlay('The game engine crashed', 'Reload to keep playing. Your progress is saved on the server.');
             }
@@ -593,13 +666,14 @@ index 28f65a4..dbb1d07 100644
           // End of boot: the first frame the engine actually rendered. Stamped here rather than in
           // the 500ms status poller so it is exact to one frame. __omwRunning is set by the engine's
           // own loop, so this fires once the player can genuinely see something.
-@@ -4058,12 +4101,14 @@ window.omw = (function(){
+@@ -4058,12 +4103,15 @@ window.omw = (function(){
           if (window.__glCalls){ var gc = window.__glCalls; window.__glPerFrame = { total: gc.total - (window.__glLast||0), draw: gc.draw - (window.__glLastDraw||0) }; window.__glLast = gc.total; window.__glLastDraw = gc.draw; }
           var dt = b - __t0;
           if (dt >= 1000){ window.__fps = Math.round(__frames*1000/dt); window.__frameMs = +(__accum/__frames).toFixed(2); __frames = 0; __accum = 0; __t0 = b; }
 -         scheduleNext();
 +         // (a load's frame: a promising one that lasted — not one of the boot's, which return at once while main() runs)
-+         scheduleNext(promised && b - a >= 100);
++         // (a plain frame that put a load off to the next, promising one — orthros_jspi_defer —: that one at once too)
++         scheduleNext((promised && b - a >= 100) || !!(Module.orthrosWantsLoad && Module.orthrosWantsLoad()));
         }
         // The hidden-tab path still arrives as a message; visible frames call pumpFrame directly.
         mc.port1.onmessage = pumpFrame;
@@ -611,7 +685,7 @@ index 28f65a4..dbb1d07 100644
           if (document.hidden && scheduled) mc.port2.postMessage(0);
         });
 diff --git a/wasm-build/link-openmw.sh b/wasm-build/link-openmw.sh
-index a7806d8..ce8f957 100755
+index a7806d8..1f35142 100755
 --- a/wasm-build/link-openmw.sh
 +++ b/wasm-build/link-openmw.sh
 @@ -226,6 +226,12 @@ ninja apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
@@ -629,10 +703,10 @@ index a7806d8..ce8f957 100755
    -sALLOW_MEMORY_GROWTH=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
 diff --git a/wasm-build/orthros-jspi.js b/wasm-build/orthros-jspi.js
 new file mode 100644
-index 0000000..6b755dd
+index 0000000..ccc52c6
 --- /dev/null
 +++ b/wasm-build/orthros-jspi.js
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,487 @@
 +// Orthros (orthros-r20.patch, JSPI): the engine's waits for the game's files suspend it (WebAssembly JSPI, -sJSPI,
 +// link-openmw.sh) while the page fetches the bytes, instead of the page's thread spinning on shared memory (Orthros'
 +// src/vfs/data-client.js fetchSync, wantWait): the page answers input, draws its own indicator and presents what the
@@ -712,7 +786,7 @@ index 0000000..6b755dd
 +// Module.orthrosFrames { plain, promising }: the frames the page pumped of each kind;
 +// Module.orthrosSuspendedMs: the time suspended since the start (a frame's timer: its whole time minus that, its work).
 +addToLibrary({
-+  $OrthrosJspi: { on: 0, boot: 0, loading: 0, suspended: 0, after: [], flushing: false, ready: false, off: false, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glMaxMs: 300, glAt: 0, freedAt: 0, suspendedMs: 0 },
++  $OrthrosJspi: { on: 0, boot: 0, loading: 0, suspended: 0, after: [], flushing: false, ready: false, off: false, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, hint: 0, hintOff: false, plainOff: false, loadFrame: 0, glMs: 50, glMaxMs: 300, glAt: 0, freedAt: 0, suspendedMs: 0 },
 +  $orthrosJspiInit__deps: ['$OrthrosJspi', '$orthrosLater'],
 +  $orthrosJspiInit__postset: 'orthrosJspiInit();',
 +  $orthrosJspiInit: () => {
@@ -727,7 +801,10 @@ index 0000000..6b755dd
 +    Module.orthrosEngineBusy = () => J.suspended > 0 || (J.after.length > 0 && !J.flushing);
 +    Module.orthrosAfterEngine = (fn) => { orthrosLater(fn); };
 +    // (the frames pumped: plain — on the page's stack, never suspending —, promising — the load's —; orthrosFrames)
-+    Module.orthrosFrames = { plain: 0, promising: 0 };
++    Module.orthrosFrames = { plain: 0, promising: 0, hinted: 0 };
++    // (a load asked in a plain frame and put off to the next one, promising (orthros_jspi_defer): the page pumps that
++    // one at once, not at the next animation frame — play/index.html pumpDone)
++    Module.orthrosWantsLoad = () => J.want > 0;
 +#if ASYNCIFY == 2
 +    // (the page pumps Module._omw_pump_frame: the plain export in play, the promising one for a load put off to the next
 +    // frame (orthros_jspi_defer) or a loading screen still on — chosen at each call; ENV OPENMW_ORTHROS_JSPI_PLAIN=0
@@ -736,8 +813,9 @@ index 0000000..6b755dd
 +    var promising = null, pump = null;
 +    var choose = function (...a) {
 +      var plain = Module['_omw_pump_frame_plain'];
-+      if (typeof plain == 'function' && !J.plainOff && !J.want && J.boot === 0 && J.loading === 0) { Module.orthrosFrames.plain++; return plain(...a); }
++      if (typeof plain == 'function' && !J.plainOff && !J.want && !J.hint && J.boot === 0 && J.loading === 0) { Module.orthrosFrames.plain++; return plain(...a); }
 +      Module.orthrosFrames.promising++;
++      if (J.hint && !J.want && J.boot === 0 && J.loading === 0) Module.orthrosFrames.hinted++;
 +      return promising.apply(this, a);
 +    };
 +    Object.defineProperty(Module, '_omw_pump_frame', { configurable: true, enumerable: true, get: () => pump, set: (f) => { if (!promising) { promising = f; pump = choose; } else pump = f; } });
@@ -796,6 +874,7 @@ index 0000000..6b755dd
 +    J.ready = true;
 +    J.off = ENV['OPENMW_ORTHROS_JSPI'] === '0';
 +    J.plainOff = ENV['OPENMW_ORTHROS_JSPI_PLAIN'] === '0';
++    J.hintOff = ENV['OPENMW_ORTHROS_JSPI_HINT'] === '0';
 +    var spin = Number(ENV['OPENMW_ORTHROS_JSPI_SPIN_MS']);
 +    if (ENV['OPENMW_ORTHROS_JSPI_SPIN_MS'] !== undefined && Number.isFinite(spin) && spin >= 0) J.spinMs = spin;
 +    var play = Number(ENV['OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS']);
@@ -812,6 +891,16 @@ index 0000000..6b755dd
 +    if (ENV['OPENMW_ORTHROS_JSPI_GL_MAX_MS'] !== undefined && Number.isFinite(glMax) && glMax >= 0) J.glMaxMs = glMax;
 +#if ASYNCIFY == 2
 +    if (J.off) { err('[orthros-jspi] off (OPENMW_ORTHROS_JSPI=0): every read waits on the page\'s thread'); return; }
++    // (the frame after a key pressed or a mouse button — what may ask a load: F9's quick load, the save dialog's or the
++    // menu's click — is the promising export (hint), so that a load it asks starts in that very frame instead of being
++    // put off to the next one (orthros_jspi_defer: a whole frame later, a slow one on a new device); a key held down
++    // (repeat) or a mouse move hints nothing; ENV OPENMW_ORTHROS_JSPI_HINT=0 (?jspihint=0): never. A frame of play on a
++    // JSPI stack costs what one did before the plain frames (import calls 15 ns against 5), reads there never suspend
++    // (outside a load), and its stack is made deep first (orthros_jspi_deep: Chromium's stack walker))
++    if (!J.hintOff && typeof addEventListener == 'function') {
++      var hint = (e) => { if (!e.repeat) J.hint = 1; };
++      for (var type of ['keydown', 'mousedown', 'mouseup']) addEventListener(type, hint, true);
++    }
 +    var later = (f) => function (...a) {
 +      if (J.suspended > 0 || (J.after.length > 0 && !J.flushing)) { J.after.push(() => f.apply(this, a)); return 0; }
 +      return f.apply(this, a);
@@ -822,6 +911,9 @@ index 0000000..6b755dd
 +    for (var k of Object.keys(Module)) {
 +      if (!/^_(omw|orthros)_/.test(k) || /^_(omw_pump_frame|omw_pump_frame_plain|omw_save_settings|orthros_jspi|orthros_content_light)$/.test(k) || typeof Module[k] != 'function') continue;
 +      Module[k] = later(Module[k]);
++      // (the debug COE is a load: the next frame the promising export at once, the COE run at its start — not a plain
++      // frame first that puts it off again, orthrosRunDebugAsks)
++      if (k === '_omw_debug_coe') { let coe = Module[k]; Module[k] = function (...a) { J.want = 1; return coe.apply(this, a); }; }
 +    }
 +    // (ccall put off whole — its strings are copied onto the stack for the call alone —; cwrap's functions alike)
 +    if (typeof Module['ccall'] == 'function') Module['ccall'] = later(Module['ccall']);
@@ -869,7 +961,7 @@ index 0000000..6b755dd
 +  },
 +  // (`boot`: main()'s — the boot is a load —, else the frame's)
 +  orthros_jspi_enter__deps: ['$OrthrosJspi', '$orthrosJspiInit', '$orthrosJspiReady', '$orthrosNote'],
-+  orthros_jspi_enter: (boot) => { if (!OrthrosJspi.ready) orthrosJspiReady(); orthrosNote('enter', boot); OrthrosJspi.on++; if (boot) OrthrosJspi.boot++; if (!OrthrosJspi.plain) OrthrosJspi.want = 0; },
++  orthros_jspi_enter: (boot) => { if (!OrthrosJspi.ready) orthrosJspiReady(); orthrosNote('enter', boot); OrthrosJspi.on++; if (boot) OrthrosJspi.boot++; if (!OrthrosJspi.plain) { OrthrosJspi.want = 0; OrthrosJspi.hint = 0; } },
 +  // (a plain frame — omw_pump_frame_plain, engine.cpp — begins (1) or ends (0): nothing suspends under it)
 +  orthros_jspi_plain__deps: ['$OrthrosJspi', '$orthrosNote'],
 +  orthros_jspi_plain: (on) => { var J = OrthrosJspi; orthrosNote('plain', on); if (on) J.plain++; else if (J.plain > 0) J.plain--; },
@@ -1026,7 +1118,8 @@ index 0000000..6b755dd
 +    if (breath) return orthrosSuspend(breath, null, 'breath', () => {});
 +  },
 +  // (the GPU's queue drained: a promise settled once the commands issued so far ran — a fence, its status looked at
-+  // between the page's tasks: WebGL2 updates it there, never blocking — or after `maxMs`; null without a WebGL2 context)
++  // between the page's tasks: WebGL2 updates it there, never blocking — or after `maxMs` (then with true: capped); null
++  // without a WebGL2 context)
 +  $orthrosGpuIdle__deps: ['$GL'],
 +  $orthrosGpuIdle: (maxMs) => {
 +    var c = GL.currentContext && GL.currentContext.GLctx, s = null;
@@ -1037,7 +1130,7 @@ index 0000000..6b755dd
 +      var look = () => {
 +        var done = true;
 +        try { done = c.isContextLost() || c.getSyncParameter(s, c.SYNC_STATUS) === c.SIGNALED; } catch (e) { done = true; }
-+        if (done || performance.now() - t0 >= maxMs) { try { c.deleteSync(s); } catch (e) { /* lost */ } resolve(); } else setTimeout(look, 2);
++        if (done || performance.now() - t0 >= maxMs) { try { c.deleteSync(s); } catch (e) { /* lost */ } resolve(!done); } else setTimeout(look, 2);
 +      };
 +      setTimeout(look, 0);
 +    });
@@ -1069,6 +1162,12 @@ index 0000000..6b755dd
 +  orthros_gl_settle: () => {
 +    var J = OrthrosJspi, now = performance.now();
 +    if (J.glMs <= 0 || !(J.boot > 0 || J.loading > 0 || J.loadFrame > 0) || now - J.glAt < J.glMs) return;
++    // (only in the boot and under a loading screen — not in the rest of the frame after it, the world's first draw: the
++    // GPU then runs a long queue (SwiftShader drawing the world's first pictures, 3 s of its main thread after a save's
++    // load: a browser trace, 2026-10-31), a fence comes only at its end, and a wait there ran to its cap and the status
++    // after it held the page's thread as long as without it (1.1 s): the world 0.3 s later for nothing. Without it the
++    // warm save's world came 0.7 s sooner — r20dev-c against r20dev-b, docs/openmw.md "Iteration 4")
++    if (J.loading === 0 && J.boot === 0) return;
 +    J.glAt = now;
 +    var idle = orthrosGpuIdle(J.glMaxMs);
 +    if (idle) return orthrosSuspend(idle, null, 'gl', () => { J.glAt = performance.now(); });

@@ -1,0 +1,7 @@
+# warm save phases (scripts/phases.py): p = CPU-profiled, t = traced, x1 = r19dev-a ?jspi=0, x2 = r19dev-a spin 2000 ms, no breath/present/gl/settle
+p18-save-1-1-2 world  4941 | load  2480 waits  1314 reads 268/ 415 work   751 | esm  1018 | after  1443 susp {}
+t18-save-1-1-2 world  4901 | load  2483 waits  1359 reads 268/ 390 work   734 | esm  1047 | after  1371 susp {}
+p19a-save-1-1- world  5453 | load  2717 waits  1244 reads 237/ 470 work   994 | esm  1035 | after  1701 susp {'read': 934, 'gl': 605}
+t19a-save-1-1- world  5304 | load  2670 waits  1241 reads 235/ 482 work   929 | esm  1029 | after  1605 susp {'read': 929, 'gl': 603}
+x1-save-1-1-20 world  5060 | load  2511 waits  1349 reads 268/ 400 work   762 | esm  1092 | after  1457 susp {}
+x2-save-1-1-20 world  4970 | load  2675 waits     0 reads 237/ 489 work  2186 | esm  1027 | after  1269 susp {}

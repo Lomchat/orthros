@@ -1,0 +1,15 @@
+    41.78%  chrome           
+    30.46%  [anon:v8]        
+    14.72%  [kernel.kallsyms]
+     8.54%  [JIT] tid 30532  
+     2.98%  libc.so.6        
+     1.47%  [vdso]           
+     0.05%  libm.so.6        
+
+    63.30%  chrome           
+    19.35%  [anon:v8]        
+     6.57%  [kernel.kallsyms]
+     4.71%  [JIT] tid 38137  
+     4.52%  [vdso]           
+     1.53%  libc.so.6        
+     0.02%  libm.so.6        

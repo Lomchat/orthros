@@ -1,0 +1,80 @@
+# browser traces of a warm save (r19dev-a, then the live r18), per 250 ms: the page's thread, the GPU main thread, viz (scripts/trsum.py)
+## t19a-save-1-1-2026-10-31T09-44-32-724Z
+renderer long tasks (>80 ms): start s, ms, name
+    0.22     90 RunTask
+    0.96    103 RunTask
+    1.07    102 RunTask
+    1.88    105 RunTask
+    1.99     95 RunTask
+    2.08    101 RunTask
+    3.71     88 RunTask
+    3.80    123 RunTask
+    4.23    558 RunTask
+    5.09    157 RunTask
+per 250 ms: renderer main busy %, GPU main busy %, viz %, GPU top tasks
+   0.00  R  86%  G  66%  V   5%   RunTask:166, Graphics.Pipeline:0, FinishTask:0
+   0.25  R  41%  G   4%  V   1%   RunTask:11
+   0.50  R  17%  G   0%  V   1%   
+   0.75  R  34%  G   6%  V   1%   RunTask:15
+   1.00  R 100%  G   0%  V   1%   RunTask:0
+   1.25  R  19%  G   6%  V   1%   RunTask:15
+   1.50  R  23%  G   0%  V   1%   
+   1.75  R  54%  G   0%  V   1%   
+   2.00  R 100%  G  21%  V   1%   RunTask:53
+   2.25  R 100%  G  91%  V   6%   RunTask:240
+   2.50  R  78%  G  63%  V   4%   RunTask:146
+   2.75  R  16%  G   5%  V   1%   RunTask:12
+   3.00  R  16%  G   0%  V   1%   RunTask:0
+   3.25  R  20%  G   5%  V   1%   RunTask:13
+   3.50  R  26%  G   0%  V   1%   
+   3.75  R  75%  G  75%  V   1%   RunTask:188
+   4.00  R  13%  G 100%  V   0%   RunTask:782
+   4.25  R 100%  G 100%  V   0%   
+   4.50  R 100%  G 100%  V   0%   
+   4.75  R  22%  G 100%  V   1%   RunTask:268
+   5.00  R  68%  G 100%  V   2%   RunTask:239
+   5.25  R  37%  G 100%  V   1%   RunTask:859
+   5.50  R   2%  G 100%  V   0%   
+   5.75  R   9%  G 100%  V   0%   
+   6.00  R  20%  G 100%  V   1%   RunTask:102
+   6.25  R   2%  G 100%  V   0%   RunTask:685
+   6.50  R   3%  G 100%  V   0%   
+   6.75  R  20%  G 100%  V   1%   RunTask:279
+   7.00  R   7%  G  95%  V   1%   RunTask:22, FinishPaintCurrentFrame:1, MakeCurrent:0
+   7.25  R   0%  G   0%  V   0%   
+## t18-save-1-1-2026-10-31T09-46-45-771Z
+renderer long tasks (>80 ms): start s, ms, name
+    0.02   4829 RunTask
+per 250 ms: renderer main busy %, GPU main busy %, viz %, GPU top tasks
+   0.00  R  95%  G  27%  V   2%   RunTask:68, Graphics.Pipeline:0, FinishTask:0
+   0.25  R 100%  G   0%  V   1%   
+   0.50  R 100%  G   0%  V   1%   
+   0.75  R 100%  G   0%  V   1%   
+   1.00  R 100%  G  22%  V   2%   RunTask:55
+   1.25  R 100%  G  12%  V   2%   RunTask:29
+   1.50  R 100%  G  18%  V   2%   RunTask:46
+   1.75  R 100%  G  12%  V   2%   RunTask:31
+   2.00  R 100%  G  49%  V   2%   RunTask:135
+   2.25  R 100%  G  51%  V   2%   RunTask:115
+   2.50  R 100%  G  20%  V   2%   RunTask:50
+   2.75  R 100%  G  10%  V   2%   RunTask:25
+   3.00  R 100%  G  18%  V   2%   RunTask:45
+   3.25  R 100%  G  13%  V   2%   RunTask:32
+   3.50  R 100%  G  66%  V   2%   RunTask:196
+   3.75  R 100%  G  99%  V   1%   RunTask:248
+   4.00  R 100%  G 100%  V   1%   RunTask:746
+   4.25  R 100%  G 100%  V   0%   
+   4.50  R 100%  G 100%  V   0%   
+   4.75  R  96%  G 100%  V   2%   RunTask:879
+   5.00  R  11%  G 100%  V   0%   
+   5.25  R   3%  G 100%  V   0%   
+   5.50  R  21%  G 100%  V   1%   RunTask:95
+   5.75  R   3%  G 100%  V   0%   RunTask:704
+   6.00  R   3%  G 100%  V   0%   
+   6.25  R  20%  G 100%  V   1%   RunTask:49
+   6.50  R  22%  G 100%  V   0%   RunTask:405
+   6.75  R  21%  G 100%  V   1%   RunTask:271
+   7.00  R   8%  G 100%  V   1%   RunTask:223
+   7.25  R  10%  G 100%  V   0%   RunTask:204
+   7.50  R  22%  G 100%  V   1%   RunTask:228
+   7.75  R  10%  G  43%  V   1%   RunTask:22, FinishPaintCurrentFrame:1, MakeCurrent:0

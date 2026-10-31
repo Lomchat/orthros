@@ -1,0 +1,60 @@
+save     r19L: tags [r19L-save-1 r19L-save-2 r19L-save-3 r19L-save-4]
+   menu 6.8-7.2 med 7.05 (4)  firstFrame 6.8-7.2 med 7.05 (4)  inWorld(key->world) 4.7-4.9 med 4.8 (4) each [4.7 4.9 4.8 4.8]  steady 6.2-6.9 med 6.6 (4)
+   block 4681-4831 med 4736.5 (4)  input p50 531-635 med 570.0 (4) p95 560-747 med 660.5 (4)  freeze(frameGapMax) 4633-4783 med 4683.0 (4)  after-gap 250-283 med 275.0 (4)
+   lateOld 0 med 0.0 (4)  timeouts 0 med 0.0 (4)  suspended 0 med 0.0 (4)  faults 4 errors 0
+save     r20b: tags [r20b-save-1 r20b-save-2 r20b-save-3 r20b-save-4]
+   menu 7.1-7.8 med 7.35 (4)  firstFrame 7.1-7.8 med 7.25 (4)  inWorld(key->world) 3.9-5.4 med 5.35 (4) each [5.4 5.3 5.4 3.9]  steady 6.7-7.5 med 7.15 (4)
+   block 210-1131 med 1054.0 (4)  input p50 2-16 med 13.5 (4) p95 1045-1139 med 1120.0 (4)  freeze(frameGapMax) 1733-1967 med 1908.5 (4)  after-gap 267-317 med 283.0 (4)
+   lateOld 0 med 0.0 (4)  timeouts 0 med 0.0 (4)  suspended 2785-2894 med 2841.5 (4)  faults 4 errors 0
+save     r20c: tags [r20c-save-5 r20c-save-6 r20c-save-7]
+   menu 7-7.4 med 7.1 (3)  firstFrame 7-7.2 med 7.1 (3)  inWorld(key->world) 4.1 med 4.1 (3) each [4.1 4.1 4.1]  steady 6.2-6.4 med 6.3 (3)
+   block 928-1022 med 967 (3)  input p50 7-13 med 9 (3) p95 2132-2285 med 2165 (3)  freeze(frameGapMax) 1883-1950 med 1950 (3)  after-gap 617-783 med 750 (3)
+   lateOld 0 med 0 (3)  timeouts 0 med 0 (3)  suspended 2546-2636 med 2605 (3)  faults 3 errors 0
+coe      r19L: tags [r19L-coe-1 r19L-coe-2 r19L-coe-3 r19L-coe-4]
+   menu -  firstFrame 6.6-7 med 6.85 (4)  inWorld(key->world) - each [None None None None]  steady 5.4-5.8 med 5.5 (4)
+   block 2052-2227 med 2160.5 (4)  input p50 576-1167 med 666.0 (4) p95 1778-1951 med 1897.5 (4)  freeze(frameGapMax) 1733-2283 med 2058.5 (4)  after-gap 283-350 med 283.0 (4)
+   lateOld 0 med 0.0 (4)  timeouts -  suspended 0 med 0.0 (4)  faults 4 errors 0
+coe      r20b: tags [r20b-coe-1 r20b-coe-2 r20b-coe-3 r20b-coe-4]
+   menu -  firstFrame 7.8-8 med 7.95 (4)  inWorld(key->world) - each [None None None None]  steady 5.8-6.4 med 6.05 (4)
+   block 226-408 med 235.0 (4)  input p50 49-87 med 63.0 (4) p95 575-1313 med 751.5 (4)  freeze(frameGapMax) 1700-1767 med 1716.5 (4)  after-gap 333-667 med 550.0 (4)
+   lateOld 0 med 0.0 (4)  timeouts -  suspended 3097-3358 med 3226.5 (4)  faults 8 errors 0
+saveNew  r19L: tags [r19L-saveNew-1 r19L-saveNew-2 r19L-saveNew-3]
+   menu 25.5-26.6 med 25.9 (3)  firstFrame 25.5-26.6 med 25.8 (3)  inWorld(key->world) 11.4-11.8 med 11.5 (3) each [11.5 11.4 11.8]  steady 13.5-14 med 13.7 (3)
+   block 11236-11614 med 11369 (3)  input p50 275-476 med 440 (3) p95 642-696 med 648 (3)  freeze(frameGapMax) 11166-12050 med 11550 (3)  after-gap 283-617 med 300 (3)
+   lateOld 0 med 0 (3)  timeouts 0 med 0 (3)  suspended 0 med 0 (3)  faults 3 errors 0
+saveNew  r20b: tags [r20b-saveNew-1 r20b-saveNew-2 r20b-saveNew-3]
+   menu 25.6-27 med 25.9 (3)  firstFrame 25.6-27 med 25.6 (3)  inWorld(key->world) 11.5-12.4 med 11.7 (3) each [11.5 11.7 12.4]  steady 13-14.2 med 13.9 (3)
+   block 625-702 med 649 (3)  input p50 6-16 med 10 (3) p95 283-623 med 528 (3)  freeze(frameGapMax) 7516-8233 med 7583 (3)  after-gap 300-1233 med 500 (3)
+   lateOld 0 med 0 (3)  timeouts 0 med 0 (3)  suspended 17805-20369 med 18798 (3)  faults 3 errors 0
+save85k  r19L: tags [r19L-save85k-1 r19L-save85k-2]
+   menu 10.4-10.6 (2)  firstFrame 10.4-10.6 (2)  inWorld(key->world) 27.3-27.6 (2) each [27.6 27.3]  steady 29.2-29.7 (2)
+   block 27227-27565 (2)  input p50 383-405 (2) p95 534-1175 (2)  freeze(frameGapMax) 27182-27499 (2)  after-gap 283-533 (2)
+   lateOld 0 (2)  timeouts 0 (2)  suspended 0 (2)  faults 2 errors 0
+save85k  r20b: tags [r20b-save85k-1 r20b-save85k-2]
+   menu 10.3-10.6 (2)  firstFrame 10.1-10.6 (2)  inWorld(key->world) 25.4 (2) each [25.4 25.4]  steady 27.5-27.6 (2)
+   block 828-933 (2)  input p50 9-12 (2) p95 44-90 (2)  freeze(frameGapMax) 19799-19899 (2)  after-gap 683-700 (2)
+   lateOld 0 (2)  timeouts 0 (2)  suspended 23170-23186 (2)  faults 2 errors 0
+play     r19L: runs 8  fps 24.53-28.24 med 25.135 (8) each [25.01 25.1 24.53 26.15 25.17 25.77 28.24 24.78]
+   work p99 16.9-21.4 med 19.45 (8) each [20.4 19.5 19.6 17.5 19.4 16.9 17.4 21.4]  p50 6.8-9 med 8.3 (8)  longest gap 200-333.3 med 250.0 (8)  stalls/min 185-290 med 253.0 (8)
+play     r20b: runs 6  fps 23.28-24.78 med 23.905 (6) each [23.51 23.28 23.72 24.09 24.09 24.78]
+   work p99 20.1-23.2 med 21.4 (6) each [20.7 22.3 23.2 21.7 21.1 20.1]  p50 8.3-10.6 med 9.1 (6)  longest gap 283.3-366.6 med 300.0 (6)  stalls/min 201-324 med 297.0 (6)
+play     r20c: runs 2  fps 25.64-26.33 (2) each [25.64 26.33]
+   work p99 17.2-19.1 (2) each [19.1 17.2]  p50 8-8.8 (2)  longest gap 216.7-333.3 (2)  stalls/min 210-239 (2)
+play     r20bj0: runs 2  fps 24.23-25.28 (2) each [25.28 24.23]
+   work p99 21.1-21.7 (2) each [21.1 21.7]  p50 9-9.7 (2)  longest gap 250-316.7 (2)  stalls/min 227-328 (2)
+
+# warm save phases (scripts/phases.py)
+r19L-save-1-1- world  4726 | load  2369 waits  1317 reads 268/ 302 work   750 | esm  1046 | after  1311 susp {}
+r19L-save-2-1- world  4923 | load  2540 waits  1400 reads 267/ 352 work   788 | esm  1028 | after  1356 susp {}
+r19L-save-3-1- world  4790 | load  2499 waits  1369 reads 268/ 389 work   741 | esm  1042 | after  1249 susp {}
+r19L-save-4-1- world  4752 | load  2393 waits  1347 reads 268/ 350 work   696 | esm  1032 | after  1327 susp {}
+r19L-save-5-1- world  4862 | load  2442 waits  1334 reads 268/ 390 work   718 | esm  1038 | after  1382 susp {}
+r19L-save-6-1- world  4809 | load  2480 waits  1338 reads 268/ 380 work   762 | esm  1030 | after  1299 susp {}
+r19L-save-7-1- world  4755 | load  2459 waits  1333 reads 268/ 346 work   780 | esm  1032 | after  1265 susp {}
+r20b-save-1-1- world  5376 | load  2683 waits  1250 reads 237/ 481 work   937 | esm  1037 | after  1656 susp {'read': 939, 'gl': 301}
+r20b-save-2-1- world  5322 | load  2674 waits  1246 reads 237/ 471 work   918 | esm  1022 | after  1626 susp {'read': 920, 'gl': 301}
+r20b-save-3-1- world  5367 | load  2670 waits  1252 reads 237/ 470 work   930 | esm  1040 | after  1657 susp {'read': 942, 'gl': 304}
+r20b-save-4-1- world  3936 | load  2371 waits  1214 reads 237/ 337 work   798 | esm  1028 | after   537 susp {'read': 931, 'gl': 302}
+r20c-save-5-1- world  4102 | load  2647 waits  1255 reads 237/ 483 work   882 | esm  1035 | after   419 susp {'read': 938, 'breath': 1}
+r20c-save-6-1- world  4081 | load  2609 waits  1245 reads 237/ 483 work   867 | esm  1025 | after   448 susp {'read': 927, 'breath': 1}
+r20c-save-7-1- world  4092 | load  2596 waits  1249 reads 237/ 480 work   858 | esm  1020 | after   475 susp {'read': 920, 'breath': 1}

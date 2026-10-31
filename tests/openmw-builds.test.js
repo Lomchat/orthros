@@ -424,7 +424,7 @@ test('r20 patch: the frame and the boot suspend on a read the page does not answ
   assert.ok(added.includes('if (pumping) return;'));
   // (the page: the frame's promise awaited before the next is scheduled, the switches)
   // (and after a load's frame — a promising one that lasted —, the next frame at once, not at the next animation frame)
-  for (const k of ["if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a, true); }", 'scheduleNext(promised && b - a >= 100);',
+  for (const k of ["if (r && typeof r.then === 'function') r.then(function(){ pumping = false; pumpDone(a, true); }", 'scheduleNext((promised && b - a >= 100) || !!(Module.orthrosWantsLoad && Module.orthrosWantsLoad()));',
     'if (now && !document.hidden) { mc.port2.postMessage(0); return; }', 'ENV.OPENMW_ORTHROS_JSPI_GL_MAX_MS=', "ENV.OPENMW_ORTHROS_JSPI='0'", 'ENV.OPENMW_ORTHROS_JSPI_SPIN_MS=', 'ENV.OPENMW_ORTHROS_JSPI_PLAY_SPIN_MS=', 'ENV.OPENMW_ORTHROS_JSPI_PRESENT_MS=', 'ENV.OPENMW_ORTHROS_JSPI_BREATH_MS=',
     "ENV.OPENMW_ORTHROS_JSPI_PLAIN='0'", 'ENV.OPENMW_ORTHROS_JSPI_SETTLE_MS='])
     assert.ok(added.includes(k), k);
@@ -445,7 +445,7 @@ test('r20: a read suspends in a load (the boot, a loading screen) after a short 
     return line.endsWith('{') ? lib.slice(from, lib.indexOf('\n  },', from) + 4) : line.replace(/,$/, '');
   };
   // (the defaults: never in play, a loading screen's frame presented at most every 200 ms)
-  assert.ok(lib.includes('spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, plainOff: false, loadFrame: 0, glMs: 50, glMaxMs: 300, glAt: 0, freedAt: 0'));
+  assert.ok(lib.includes('spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, breathMs: 100, settleMs: 3000, plain: 0, want: 0, hint: 0, hintOff: false, plainOff: false, loadFrame: 0, glMs: 50, glMaxMs: 300, glAt: 0, freedAt: 0'));
   const J = { on: 0, boot: 0, loading: 0, ready: true, suspended: 0, off: false, plain: 0, want: 0, spinMs: 10, playSpinMs: -1, presentMs: 200, presentedAt: 0, settleMs: 3000, after: [] };
   const may = fn('$orthrosMaySuspend').replace(/^\(\) => \{\{\{ ASYNCIFY == 2 \? '(.*)' : 'false' \}\}\}$/, '$1');
   const maySuspend = () => new Function('OrthrosJspi', `return ${may};`)(J);
@@ -528,20 +528,23 @@ test('r20: a frame of play is plain (never suspending), a load put off to a prom
   J.off = true; plain(1); enter(0); assert.equal(defer(), 0, 'JSPI off: loads at once'); leave(0); plain(0); J.off = false;
   assert.equal(J.on, 0); assert.equal(J.plain, 0);
   // (the page's pump: the plain export unless a load is wanted or on, or ?jspiplain=0; a frame timer wrapping the pump wraps the choice)
-  for (const k of ["if (typeof plain == 'function' && !J.plainOff && !J.want && J.boot === 0 && J.loading === 0) { Module.orthrosFrames.plain++; return plain(...a); }",
+  for (const k of ["if (typeof plain == 'function' && !J.plainOff && !J.want && !J.hint && J.boot === 0 && J.loading === 0) { Module.orthrosFrames.plain++; return plain(...a); }",
     "Object.defineProperty(Module, '_omw_pump_frame', { configurable: true, enumerable: true, get: () => pump, set: (f) => { if (!promising) { promising = f; pump = choose; } else pump = f; } });",
     "J.plainOff = ENV['OPENMW_ORTHROS_JSPI_PLAIN'] === '0';", 'c.fenceSync(c.SYNC_GPU_COMMANDS_COMPLETE, 0)', 'c.getSyncParameter(s, c.SYNC_STATUS) === c.SIGNALED'])
     assert.ok(lib.includes(k), k);
   assert.ok(patch.includes('+        if (mNestedLoadingCount == 1)\n+            if (orthros_jspi_may())\n+                orthros_jspi_settle();'), 'the outermost loading screen\'s end settles');
-  // (a framebuffer's status in a load's frame — its loading screen, the world's first draw after it —: asked once the GPU
+  // (a framebuffer's status under a loading screen (or in the boot): asked once the GPU
   // ran its queue, the engine suspended meanwhile; at most every glMs, never in play, never with ?jspigl=0)
   const J2 = { on: 1, boot: 0, loading: 0, plain: 0, suspended: 0, off: false, loadFrame: 0, glMs: 50, glAt: 0 };
   const gl = new Function('OrthrosJspi', 'orthrosMaySuspend', 'orthrosSuspend', 'orthrosGpuIdle', `return ${fn('orthros_gl_settle')};`)(J2, () => true, (p, path, kind, then) => p.then(() => then(true)), () => Promise.resolve());
   assert.equal(gl(), undefined, 'in play: never');
   const loading2 = new Function('OrthrosJspi', 'orthrosNote', `return ${fn('orthros_jspi_loading')};`)(J2, () => {});
-  loading2(1); loading2(0); assert.equal(J2.loadFrame, 1, 'the rest of the load\'s frame');
-  const g1 = gl(); assert.ok(g1 && typeof g1.then === 'function', 'a load\'s frame: suspends'); await g1;
+  loading2(1); const g1 = gl(); assert.ok(g1 && typeof g1.then === 'function', 'under a loading screen: suspends'); await g1;
   assert.equal(gl(), undefined, 'not again within glMs');
+  // (the rest of the load's frame after its loading screen — the world's first draw —: none since r20dev-c, the GPU's
+  // fence there only cost the world its wait)
+  loading2(0); assert.equal(J2.loadFrame, 1, 'the rest of the load\'s frame'); J2.glAt = -1e9;
+  assert.equal(gl(), undefined, 'after the loading screen: none'); loading2(1);
   J2.glAt = -1e9; J2.glMs = 0; assert.equal(gl(), undefined, '?jspigl=0: never');
   // (the promising exports' stacks made deep first — 1,024 plain wasm frames at their base —: Chromium's native stack
   // walker, which stops at 255 frames, never reaches a JSPI stack's end, past which it read and crashed the renderer;
@@ -634,4 +637,21 @@ test('r20: a load\'s framebuffer status waits for the GPU\'s queue 300 ms at mos
   assert.ok(settle.includes('orthrosGpuIdle(J.glMaxMs)'), settle);
   assert.ok(lib.includes("var glMax = Number(ENV['OPENMW_ORTHROS_JSPI_GL_MAX_MS']);") && lib.includes('glMaxMs: 300'));
   assert.ok(patch.includes("+       if (/[?&]jspiglmax=(\\d+)\\b/.test(location.search)) ENV.OPENMW_ORTHROS_JSPI_GL_MAX_MS="));
+});
+
+test('r20 (iteration 4): a key or a mouse button makes the next frame promising (a load it asks starts in it), the debug COE too, a load put off pumped at once; a splash already here chosen; no GPU fence wait after the loading screen', () => {
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r20.patch'), 'utf8'), added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  // (the hint: keydown that is not a repeat, mousedown, mouseup; ?jspihint=0 off; the promising frame clears it)
+  for (const k of ["var hint = (e) => { if (!e.repeat) J.hint = 1; };", "for (var type of ['keydown', 'mousedown', 'mouseup']) addEventListener(type, hint, true);",
+    "J.hintOff = ENV['OPENMW_ORTHROS_JSPI_HINT'] === '0';", "if (!OrthrosJspi.plain) { OrthrosJspi.want = 0; OrthrosJspi.hint = 0; }", "ENV.OPENMW_ORTHROS_JSPI_HINT='0'",
+    // (the debug COE asks the promising frame itself; a deferred load is pumped at once)
+    "if (k === '_omw_debug_coe') { let coe = Module[k]; Module[k] = function (...a) { J.want = 1; return coe.apply(this, a); }; }", 'Module.orthrosWantsLoad = () => J.want > 0;',
+    // (the splash: the random one, or the first after it already here — asked, nothing fetched)
+    'if (mResourceSystem->getVFS()->orthrosDataHere(VFS::Path::toNormalized(mSplashScreens[i])))', 'var f = globalThis.orthrosRangeHere;',
+    'bool orthrosDataHere(VFS::Path::NormalizedView name) const;',
+    // (the GPU's fence only in the boot and under a loading screen)
+    'if (J.loading === 0 && J.boot === 0) return;'])
+    assert.ok(added.includes(k), k);
+  // (the random draw kept: the same dice rolled, then the first one here from it)
+  assert.ok(added.includes('std::size_t splashIndex = Misc::Rng::rollDice(mSplashScreens.size());'));
 });

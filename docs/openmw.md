@@ -3453,6 +3453,103 @@ answers and suspensions per read in that phase. Next comes a CPU and GPU profile
 (still open from (a)). Then an announced background ask should join a foreground fetch already in flight (`fgFlights`
 in `fetchBackgroundNow`) — the remaining part of (d).
 
+##### Iteration 4: the third validation's gaps attributed and closed, `r20dev-b` and `r20dev-c` against the live r19 (2026-10-31)
+
+Renumbered r20 on `main`'s r19 first (above). Builds over the kept tree (`tools/openmw/dev-build.sh`, r1..r19 +
+`orthros-r20.patch` + `r20x-b.patch`, then `r20x-c.patch`; both now folded into `orthros-r20.patch`): `r20dev-b` (engine
+`61fc2db2c1f2`), `r20dev-c` (`c99235bfa872`). Measured against the live `openmw-web-v1.5.3-orthros-r19` (`f5eb3ec76d9b`,
+read-only from `data/engines`, its draw thread off as shipped), each side its own warm profile made by its own warm-up,
+servers on copies of the live learned state and frozen br-cache of the third validation, runs alternated, one browser at
+a time through `tools/with-browser-slot.sh` (available memory never under 42 GB, `logs/memory.log`). Evidence:
+`tools/openmw/results/jspi-iter4-2026-10-31/` (`diag/`: the attribution runs on `r19dev-a` and r18; `validation/`: the
+rows, `perf.json` files, read traces, `summary.txt`; `scripts/`, `patches/`).
+
+**What the third validation's gaps were** (read traces, CPU profiles, browser traces — `place-load.mjs`
+`ORTHROS_PLACE_TRACE=1`, new: every process from the key to the load's end —, Linux `perf` on the renderer):
+- **A new device's F9: the splash image, not the frame deferral.** The promising frame after the deferring plain one
+  came 3-4 ms later (the read traces' `defer`/`enter` marks; the loading screen on 24-47 ms after the key against r18's
+  ~20 ms). What took the 0.47-0.81 s before the first announced wait was the loading screen's first read, its random
+  splash image (196 KB): on r19a every one of the 4 runs drew one not fetched yet (`late`, 412-757 ms; a second splash
+  527 ms more in one run), on r18 every one drew one the learned prefetch had already brought (1-2 ms). r19a's
+  background had ~1.5 MB less done at the key (37.8-41.0 MB against 40.9-42.1), and the splash burst of the learned
+  order came just after the key, sharing the link with the load's first announced batch (those waits +80-150 ms each).
+  The "reads before the serial esm reads" (751-1126 ms against 139-169) were that splash read plus 170-210 ms.
+- **A warm save's F9, +0.55 s, in two parts** (phases, `diag/phases.txt`). (1) The loading screen's own work, +0.2 s
+  (r18 734-751 ms of engine work besides its waits and reads, r19a 929-996): it stays with every suspension switched off
+  (`?jspispin=2000&jspibreath=0&jspipresent=0&jspigl=0&jspisettle=0`: 2675 ms to the serial reads against 2511 with
+  `?jspi=0` on the same binary, where the load runs in a plain frame) — the load running on a JSPI stack. Not attributed
+  further: V8's profiler shows that stack's wasm and the JS it calls as `(program)`; `perf` (`diag/perf-dso.txt`) shows
+  more kernel time on the renderer's thread with JSPI (15 % of its samples against 7 %: page faults, TLB flushes,
+  futex wakes) but no single cause. (2) After the serial reads, +0.3 s: the GPU fence waits of the world's first frame.
+  The browser trace (`diag/trace-busy.txt`): the GPU process' main thread idle through the loading screen, then 100 %
+  busy for 3.25 s from the world's first draw (SwiftShader's work landing in the display compositor's `SwapBuffers`,
+  680-860 ms tasks), the same on both sides. A fence there comes only at that queue's end: each wait ran to its 300 ms
+  cap, and the status call after it held the page's thread 558-680 ms all the same — the world 0.3-0.4 s later for
+  nothing.
+- **The warm save's input p95** is set by that GPU burst after the load, the same work on both sides: the mouse moves
+  (rAF-aligned in Chrome) wait for a frame the busy GPU process does not produce — 599 and 1,512 ms on r19a, 1,742,
+  1,008, 670 and 514 ms on r18 in the traces (`diag/trace-mousemove.txt`). The probe's p95 is over the moves the page
+  received: r18 and r19 hold the page's thread for 4.7 s and receive 2-4 of them (coalesced), r20 receives 15-20 — its
+  p95 is its slowest one or two, the live release's mostly the one after its block.
+- **The play page's own rendering while suspended**: not a cost found. The CPU profile of the play page over the load,
+  split by the engine's state (`scripts/profwin.py`): the page's thread idle 1.9 s of 2.8 s suspended, its scripts
+  (shell, data meter, frame meter, view-grow) a few ms; presents 3 a load (1.5 ms), breaths 28 (32 ms).
+
+**Changes** (`orthros-r20.patch`, the page; page code shared by both sides):
+- **A splash already here** (`mwgui/loadingscreen.cpp`): the dice rolled as before, then the first splash from it whose
+  bytes are here — `VFS::Manager::orthrosDataHere`, the page's `globalThis.orthrosRangeHere` (`streamfs.js`),
+  `GameData.here` (`data-client.js`): in the page's pieces, or a file with a light copy the worker said is here whole —
+  asked only, nothing fetched; none here: the random one.
+- **The load in the frame that receives the key**: a key pressed (not a repeat) or a mouse button makes the next frame
+  the promising export (`orthros-jspi.js`, `?jspihint=0` off; `Module.orthrosFrames.hinted`), so F9, the save dialog's
+  or the menu's click load in that frame; the debug COE asks its own promising frame (`omw_debug_coe` sets the want);
+  a load still put off by a plain frame is pumped at once (`Module.orthrosWantsLoad`, `play/index.html`).
+- **No GPU fence wait after the loading screen** (`orthros_gl_settle`: only in the boot and under a loading screen).
+- Shared page code: `fetchBackgroundNow` joins a read's foreground fetch already bringing the same pieces (the
+  converse of `80d1ffd`: `joinForeground`, before any turn on the link; `tests/http-backend-async.test.js`).
+- Tools: `place-load.mjs` `ORTHROS_PLACE_TRACE=1` (`port-perf.mjs` `startTrace`/`stopTrace`), `--query` through the play
+  page (it hands its `jspi*` switches to the engine frame).
+
+**Numbers** (`validation/summary.txt`; r20b = `r20dev-b`, r20c = `r20dev-c`; the live r19 "r19"):
+
+| | live r19 | r20dev-b | r20dev-c |
+| --- | --- | --- | --- |
+| warm save: F9 to the world (s) | 4.7-4.9 (7) | 5.3, 5.4, 5.4, 3.9 | **4.1, 4.1, 4.1** |
+| warm save: page's longest block (ms) | 4,681-4,831 | 210-1,131 | 928-1,022 |
+| warm save: visible freeze (ms) | 4,633-4,783 | 1,733-1,967 | 1,883-1,950 |
+| warm save: input p95 (ms) [moves received] | 516-1,038 [2-4] | 1,045-1,139 [18-20] | 2,132-2,285 [15-16] |
+| warm save: steady (s) | 6.2-6.9 | 6.7-7.5 | 6.2-6.4 |
+| COE: page's block / input p95 (ms) | 2,052-2,227 / 1,778-1,951 | 226-408 / 575-1,313 | — |
+| COE: first frame / steady (s) | 6.6-7.0 / 5.4-5.8 | 7.8-8.0 / 5.8-6.4 | — |
+| new device: F9 to the world (s) | 11.5, 11.4, 11.8 | 11.5, 11.7, 12.4 | — |
+| new device: first announced wait after the key (s) | 0.03-0.05 | 0.04-0.05 | — |
+| new device: page's block / freeze (s) | 11.2-11.6 / 11.2-12.1 | 0.63-0.70 / 7.5-8.2 | — |
+| 85 KB/s save: F9 (s) / block (ms) | 27.6, 27.3 / 27,227-27,565 | 25.4, 25.4 / 828-933 | — |
+| in play (60 s, `tier=mid --discard`): fps | 24.5-28.2, median 25.1 (8) | 23.3-24.8, median 23.9 (6) | 25.6, 26.3 (2) |
+| in play: work p99 (ms) | 16.9-21.4, median 19.45 | 20.1-23.2, median 21.4 | 19.1, 17.2 |
+
+- **New device**: the splash read 0-4 ms on every r20 run (`spin`), the load's first announced wait 0.04-0.05 s after the
+  key (0.47-0.81 before); F9 at parity (medians 11.7 against 11.5 s; one run 12.4, 0.6 s over the live spread). 85 KB/s:
+  1.9-2.2 s sooner.
+- **Warm save**: without the fence after the loading screen (`r20dev-c`) the world comes 0.7 s *before* the live
+  release's, its steady frames as soon; the status call's wait moved to the frame after the world's first (the block
+  ~1 s, against 4.7). Its input p95 is the GPU burst's (above), 2.1-2.3 s, against the live release's 0.5-1.0 s over 2-4
+  moves. `r20dev-b`'s one fast run (3.9 s) had no status wait at all after its fence.
+- **In play**: `r20dev-b` 1.2 fps under the live release over 6 runs; the same binary with `?jspi=0` 25.3, 24.2 and
+  `r20dev-c` (the same frame-of-play code) 25.6, 26.3 in the next rounds, beside the live 28.2, 24.8 — a session's
+  spread, not attributed to r20, but not shown at parity by 6 runs a side either.
+- **COE**: its first frame 1 s later (7.8-8.0 against 6.6-7.0 s; validation3 6.3-8.0 against 6.5-7.0) — not attributed.
+- Not run this iteration: frame-compare, two clients, check.mjs EN/FR, overlay-check, the forced heap profiler, crashes
+  counted (no renderer crash in the 28 `r20dev-b`/`r20dev-c` page sessions above — 16 loads, 2 warm-ups, 10 in play —, no segfault in the kernel log). `make test`: 1,711 tests,
+  1,708 pass, 0 fail.
+
+**Where r20 stands**: criterion 3's F9 met by `r20dev-c` (4.1 against 4.7-4.9 s), its input p95 not (the probe compares
+15-16 moves with 2-4; the live release's own moves after its load wait as long, by the browser trace); criterion 4 at
+parity on medians, one run over; criterion 2 to measure again on `r20dev-c` (2 runs at parity); the COE's first frame
+and the loading screen's +0.2 s on a JSPI stack open. Next: the full validation of `r20dev-c` (or the release built from
+the lock entry) with ≥ 6 in-play runs a side, and an input measure the coalescing does not bias (every move's delay from
+the browser trace, or moves counted whether received or not).
+
 ### The engine's language and dialogue topic colours (2026-10-28)
 
 OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own
