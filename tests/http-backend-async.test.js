@@ -289,3 +289,53 @@ test('async read: a read of bytes another read is fetching joins its request (a 
   await f2;
   assert.deepEqual(b.open('f.big').read(6 * MiB, 1000), bytes(6 * MiB, 6 * MiB + 1000));
 }));
+
+test('async read: a background ask of bytes a read is fetching joins that read\'s request (the converse: the read first, then an announced ask of the same blocks)', () => withFetch(async (calls) => {
+  const b = new HttpBackend('/game/k/', tree()); b.noteMiss = () => {}; b.fillBackground = () => {};
+  b.lastSyncFetchAt = -1e9;
+  // (a demand read of an entry over two whole blocks: its fetchAhead, bulk — the blocks whole)
+  const read = b.fetchAhead('f.big', SIZE, 1, 2 * MiB, 4 * MiB, true);
+  await tick();
+  const fg = calls.filter((c) => !c.bg);
+  assert.equal(fg.length, 1, 'the read fetches the two blocks');
+  // (then the background asks the same bytes: a part of them through the pieces' path, all of them through the
+  // background request itself — neither goes on the link)
+  const P = CHUNK, c0 = (2 * MiB) / P, c1 = (4 * MiB) / P - 1;
+  let partDone = null, nowDone = null;
+  const part = b.fetchPartBg('f.big', SIZE, 1, c0 + 3, c0 + 5, [0, 0], () => false, false, { reason: 'announced', forLoad: true }).then((r) => { partDone = r; });
+  const now = b.fetchBackgroundNow('f.big', 2 * MiB, 4 * MiB, null, false, false, 'announced').then((d) => { nowDone = d; });
+  await tick(20);
+  assert.equal(calls.filter((c) => c.bg).length, 0, 'no background request for bytes the read brings');
+  assert.equal(b.stats.bgJoinedFg, 2);
+  assert.equal(partDone, null, 'they wait for the read\'s request');
+  fg[0].release();
+  await Promise.all([read, part, now]);
+  assert.equal(partDone, true, 'the pieces came');
+  assert.deepEqual(nowDone, bytes(2 * MiB, 4 * MiB), 'the bytes the read brought');
+  assert.equal(calls.length, 1, 'one request in all');
+  assert.equal(b.fgFlights.size, 0);
+  // (bytes partly on their way: asked as before — whole, on the link)
+  const r2 = b.fetchAhead('f.big', SIZE, 1, 5 * MiB, 5 * MiB + 10, false);
+  await tick();
+  const n = calls.length;
+  const half = b.fetchBackgroundNow('f.big', 5 * MiB, 5 * MiB + 2 * P, null, false, false, 'pf');
+  await tick();
+  assert.equal(calls.length, n + 1, 'a range not wholly on its way is fetched');
+  for (const c of calls) c.release();
+  assert.deepEqual(await half, bytes(5 * MiB, 5 * MiB + 2 * P));
+  await r2;
+  // (a failed read: the background ask that joined it fetches by itself)
+  const r3 = b.fetchAhead('f.big', SIZE, 1, 6 * MiB, 6 * MiB + 1000, false);
+  await tick();
+  const m = calls.length;
+  const again = b.fetchBackgroundNow('f.big', 6 * MiB, 6 * MiB + 1000, null, false, false, 'announced');
+  await tick(20);
+  assert.equal(calls.length, m, 'joined');
+  calls[m - 1].fail();
+  await r3;
+  for (let i = 0; i < 50 && calls.length === m; i++) await tick(10);
+  assert.equal(calls.length, m + 1, 'asked again once the read\'s request failed');
+  assert.equal(b.stats.bgJoinedFgMissed, 1);
+  calls[m].release();
+  assert.deepEqual(await again, bytes(6 * MiB, 6 * MiB + 1000));
+}));

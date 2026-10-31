@@ -1185,6 +1185,12 @@ export class HttpBackend {
     // stop, w, reason, forLoad } — w.urgent set meanwhile by a parked read waiting for this download lets it go at once;
     // forLoad: what a load under way needs, it may go during the load (NetLink.mayStart); a turn free now starts the
     // request now)
+    // (the bytes a read's foreground fetch is bringing already — fgFlights —: that request joined, before any turn on the
+    // link; the link asked only when it did not bring them all)
+    if (turn && this.fgFlights.size) {
+      const joined = this.joinForeground(path, start, end);
+      if (joined) return joined.then((d) => d ?? this.fetchBackground(path, start, end, onStart, abortable, learn, turn, reason));
+    }
     if (turn) {
       const quiet = this.net.fast() ? 0 : turn.prio[1], w = turn.w ?? {};
       if (turn.forLoad) w.forLoad = true;
@@ -1193,6 +1199,12 @@ export class HttpBackend {
     return this.fetchBackgroundNow(path, start, end, onStart, abortable, learn, reason);
   }
   async fetchBackgroundNow(path, start, end, onStart, abortable, learn, reason = 'other') {
+    // (the converse of fetchAhead's join: a background ask — an announced read, a preload's, the learned order — of bytes
+    // a read's fetchAhead is fetching waits for that request instead of asking them again on the link; validation3's
+    // glide at 85 KB/s, 2026-10-31: the demand read's 1 MiB blocks first, the preload's announced ask of the same
+    // blocks 6-8 s later, both on the link at once)
+    const joined = this.joinForeground(path, start, end);
+    if (joined) { const d = await joined; if (d) return d; }
     const ctl = typeof AbortController === 'function' ? new AbortController() : null;
     if (ctl && abortable) this.bgAborts.add(ctl);
     onStart?.(ctl);
@@ -1481,6 +1493,36 @@ export class HttpBackend {
       })));
     }
     try { await Promise.all(jobs); } finally { if (waited) waited.waiters--; }
+  }
+  /**
+   * Every piece of [start, end) of `path` is on its way in a read's foreground fetch (fgFlights): a promise of those
+   * bytes once the fetches settled — read back from memory (memoryRange) —, null then when they did not bring them all (a
+   * request failed, or evicted already); null at once when some piece is not on its way (the caller fetches the range).
+   */
+  joinForeground(path, start, end) {
+    if (!this.fgFlights.size || !(end > start)) return null;
+    const flying = new Set();
+    for (let c = Math.floor(start / CHUNK); c * CHUNK < end; c++) { const f = this.fgFlights.get(`${path}#${c}`); if (!f) return null; flying.add(f); }
+    this.stats.bgJoinedFg = (this.stats.bgJoinedFg ?? 0) + 1;
+    return Promise.allSettled([...flying]).then(() => {
+      const d = this.memoryRange(path, start, end);
+      if (!d) this.stats.bgJoinedFgMissed = (this.stats.bgJoinedFgMissed ?? 0) + 1;
+      return d;
+    });
+  }
+  /** [start, end) of `path` from the memory cache — its whole blocks, else its pieces —, a copy; null when some byte is not there. */
+  memoryRange(path, start, end) {
+    const out = new Uint8Array(end - start);
+    for (let pos = start; pos < end;) {
+      const bi = Math.floor(pos / BLOCK), b = this.cache.get(`${path}#${bi}`);
+      let src = b, at = pos - bi * BLOCK;
+      if (!src) { const c = Math.floor(pos / CHUNK); src = this.chunks.get(`${path}#${c}`); at = pos - c * CHUNK; }
+      const n = src ? Math.min(end - pos, src.length - at) : 0;
+      if (!(n > 0)) return null;
+      out.set(src.subarray(at, at + n), pos - start);
+      pos += n;
+    }
+    return out;
   }
   /** `job` (fetching [start, end) of `path` for a read, its bytes installed once it settles) in fgFlights while it runs. */
   fgFlight(path, start, end, job) {
