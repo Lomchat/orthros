@@ -63,7 +63,15 @@ this server (localhost), where none of this shows.
     this one, or past that block), so a run that ends leaves at most the block already on the link (kept: only a
     synchronous read of the same bytes aborts it — an abort throws its bytes away);
   - a block already on its way whole (`fetchBlocksAhead` of a moment when the link was fast, a missed block's, the block
-    fill's `bgCur`) is counted, never asked again.
+    fill's `bgCur`) is counted, never asked again;
+  - since 2026-10-31, every other read-ahead except a media stream's (pieces, or a block that `wholeBlockFits()` let go
+    whole) is also dropped while it waits for its turn once its reader moved away (a read of another file or a jump in
+    this one), unless a read waits for it (`w.urgent`: a parked read of those bytes). `stats.aheadsDropped` counts them.
+    On a thin link these read-aheads queued behind the boot's own reads and went out much later. In an OpenMW save load
+    at 85 KB/s (`place-load.mjs --rate 85k`, measured with the JSPI development engine), the boot's 1 MiB blocks of
+    `Morrowind.bsa` (their readers long gone) used the link for 12-18 s in the middle of the load's announced waits. One
+    wait timed out (15 s), and the load took 36.8-37.6 s against 24.3-24.5 s; with the drop it took 25.9 s.
+    A media stream keeps its read-ahead whatever else the game reads (music while a cell loads).
   The rest of the block the reader is inside goes by pieces as before, and so does a block with a piece here or on its
   way (its missing pieces). The background prefetch (`missingRun`) is unchanged. Against the load's two-round-trip
   requests (`requestBytes()`, "The gate" below), the reader of a file read whole wins: it reads that block next, and

@@ -1042,14 +1042,18 @@ export class HttpBackend {
       let j = c; while (j + 1 <= last && j + 1 - c < n && Math.floor((j + 1) * CHUNK / BLOCK) === bi && !this.flights.has(`${path}#${j + 1}`) && !this.pieceHere(path, size, mtime, j + 1)) j++;
       this.stats.readAheads = (this.stats.readAheads ?? 0) + 1;
       // (a whole block of a file read whole: dropped while it waits for its turn once its reader moved away — a read
-      // elsewhere, or past this block — see `reader`)
-      let halt = () => false;
+      // elsewhere, or past this block — see `reader`; any other read-ahead but a media stream's too, once its reader
+      // moved away, unless a read waits for it — a read-ahead queued behind a thin link's other requests went out long
+      // after its reader left: a boot's, behind the boot's own reads, took the link 18 s in the middle of the next load
+      // at 85 KB/s, its announced wait timing out — OpenMW, 2026-10-30, docs/openmw.md)
+      let halt = () => false, prw = null;
+      const r = this.reader, runs = r.runs;
       if (big) {
         this.stats.wholeAheads = (this.stats.wholeAheads ?? 0) + 1;
-        const r = this.reader, runs = r.runs;
         halt = () => r.path !== path || r.runs !== runs || r.end >= (bi + 1) * BLOCK;
-      }
+      } else if (!media) halt = () => !prw?.urgent && (r.path !== path || r.runs !== runs) && !!(this.stats.aheadsDropped = (this.stats.aheadsDropped ?? 0) + 1);
       const pr = this.fetchPartBg(path, size, mtime, c, j, PRIO.readAhead, halt, true, { reason: media ? 'mediaAhead' : 'readAhead', forLoad: !media });
+      prw = pr.w;
       if (big) { pr.whole = true; if (pr.w && this.net.waiters.includes(pr.w)) queued = true; }
       inFlight++; c = j;
     }

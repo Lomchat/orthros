@@ -2111,6 +2111,33 @@ the patch but off unless `=1`: one promising run, the thin link not measured. Le
 slicing/threading (no gain, a day-view difference unexplained) and the Lua profiler (diagnostic). Live, Vanilla+ FR fresh
 load: work p99 31.8 ms, max 74, no frame over 100 ms, no error. Evidence: `data/proof/openmw-perf/round6/`.
 
+### Two clients: a remote player's copy thrown far off after a jump: engine orthros-r18 (2026-10-31)
+
+`orthros-r18.patch` (r17 + one change, no engine source: the client's MWMP script and its Lua test). Every failed run of
+the two-client check (`mp-check.mjs`, on r16, r17 and the JSPI development release alike) failed the same way. After one
+of the debug teleport's 300-424-unit moves, the watcher's copy of the mover stood 15,607-35,173 units off (567,898 after
+the 8,800-unit move into the next cell). It stayed there for the check's 90 s, until the mover's next move fixed it.
+Players reported the same: after a friend's recall, intervention or any jump, the friend's figure stayed far away until
+they moved again.
+
+The cause is the client engine's MWMP script `scripts/mp/interp.lua` (openmw-web's, packed into `openmw.data`). The check,
+the page's WebSocket glue and the native gateway were ruled out. A pose's time is its arrival time, smoothed only when the
+gap to the previous pose is 5-500 ms. Two poses handled a few ms apart (two batches bunched by a slow frame or by the
+link, routed in one frame) keep their 1-5 ms gap. The extrapolation past the newest pose divides the last step by that
+gap: EXTRAP_S (0.09 s) / 0.002 s carries a 300-unit teleport 45 times, to 13,500 units. The server relays a pose only when
+it changes, so nothing came to correct it. Measured with the script alone: 13,500, 6,750, 5,510, 4,500 and 1,350 units off
+for arrival gaps of 2, 4, 4.9, 6 and 20 ms, and 409 units after an ordinary 66 ms gap.
+
+The fix (interp.lua `sample`): the step's time is at least the stream's mean gap (33 ms before one is known). A step faster
+than 2,000 units/s (a teleport, a cell change, a snap) counts as a jump and is never extrapolated. An ordinary step still
+is. The engine's own `wasm-build/lua-tests/run.lua` gets the case: before the fix its three new checks give 2 failures
+(13,500 and 409 units off), after it 0 units at every gap. The existing interpolation and late-pose checks are unchanged
+(Lua 5.4.7 built from the tree's sources, with Lua 5.1 shims for `loadstring`/`setfenv`). The two-client check with the
+fix (built in the JSPI development release `r18dev`): 4 of 4 passed, the copies within 0-38 units after each move and 0-36
+in the next cell. The live r17 passed 1 of 3 (12,456 and 229,908 units off in the failures). Because r18 changes
+`interp.lua` inside `openmw.data`, the package gets a new content hash, and the server builds its lean package once
+(~70 s) at the first boot.
+
 ### Lua UI textures fetched when declared: measured, kept off (round 7, 2026-10-30)
 
 The commonest remaining hitch is a LuaUi image's first show: `LuaImage::updateProperties` > MyGUI `getTextureSize` >

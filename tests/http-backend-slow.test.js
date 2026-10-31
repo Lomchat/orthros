@@ -148,6 +148,26 @@ test('thin link: whole blocks only for a file read from its start or a long run;
   }
 }));
 
+test('thin link: a read-ahead of pieces waiting for its turn is dropped once its reader moved away, unless a read waits for it', () => withFetch(async (calls) => {
+  // (a 1 MiB run read from the middle of the file — an archive's entries —: pieces ahead, not a whole block)
+  for (const how of ['moved', 'stayed', 'parked']) {
+    const d = new HttpBackend(`/game/pq${how}/`, tree(), { net: thin() });
+    d.net.mayStart = () => false;
+    d.open('f.big').read(2 * MiB, MiB);
+    await settle(); calls.length = 0;
+    d.readAheadParts('f.big', SIZE, 3, 3 * MiB, 0, 40, MiB);
+    assert.ok(d.net.waiters.length >= 1 && (d.stats.wholeAheads ?? 0) === 0, 'pieces waiting for their turn');
+    const first = d.net.waiters[0];
+    if (how === 'parked') first.urgent = true; // (a read of its bytes waits for it — HttpBackend's parked read)
+    if (how !== 'stayed') d.open('g.big').read(0, 100);
+    await settle(); calls.length = 0;
+    d.net.mayStart = () => true; d.net.kick(); await settle();
+    const got = calls.filter((x) => x.url.includes('f.big')).map((x) => [x.start, x.end]);
+    if (how === 'moved') { assert.equal(got.length, 0, `dropped: ${JSON.stringify(got)}`); assert.ok(d.stats.aheadsDropped >= 1); }
+    else assert.ok(got.some(([s0]) => s0 === 3 * MiB), `fetched once its turn came (${how}): ${JSON.stringify(got)}`);
+  }
+}));
+
 test('thin link: the learned prefetch fetches the learned pieces in order from the game\'s position, nothing else', () => withFetch(async (calls) => {
   const store = new MemBlockStore();
   const b = new HttpBackend('/game/p/', tree(), { store, encoded: true, net: thin() });

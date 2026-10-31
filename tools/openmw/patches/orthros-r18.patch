@@ -1,0 +1,70 @@
+diff --git a/openmw/files/data/scripts/mp/interp.lua b/openmw/files/data/scripts/mp/interp.lua
+index 8626d36..34b0d57 100644
+--- a/openmw/files/data/scripts/mp/interp.lua
++++ b/openmw/files/data/scripts/mp/interp.lua
+@@ -27,6 +27,17 @@ local MAX_SNAPSHOTS = 16 -- ~1s of history at 15 Hz
+ -- this long; a real stop then overshoots by <= ~22 u at a run, comfortably under puppet.lua's
+ -- STEER_START (24 u).
+ local EXTRAP_S = 0.09
++-- Orthros (orthros-r18.patch): A STEP IS CARRIED ON AT ITS SPEED, NOT AT ITS ARRIVAL GAP'S. push() keeps
++-- an arrival gap under 5 ms as it came, so two poses handled a few ms apart -- two batches bunched by
++-- the link or by a slow frame, routed in one frame -- made the last step's time 1-5 ms and EXTRAP_S / that
++-- an 18-90x multiplier: a 300-unit teleport became a target 5,500-13,500 units on (409 after an ordinary
++-- 66 ms gap), and the server, which relays a pose only when it changes, sent nothing more -- the copy stood
++-- there until its owner moved again (Orthros' two-client check, 2026-10-30: 15,607-35,173 units off after
++-- 300-424-unit moves, on the live release too). The
++-- step's time is at least the stream's mean gap (EXTRAP_MIN_DT before one is known), and a step faster
++-- than EXTRAP_MAX_SPEED -- a teleport, a cell change, a snap -- is a jump, not a motion: never carried on.
++local EXTRAP_MIN_DT = 0.033
++local EXTRAP_MAX_SPEED = 2000
+ 
+ function Interp.new()
+     return setmetatable({ buf = {}, mean = nil, dev = 0.01, cur = START_DELAY, lastNow = nil }, Interp)
+@@ -103,8 +114,11 @@ local function sample(self, rt)
+             local a, b = buf[i], buf[i + 1]
+             if not b then
+                 local p, h = buf[i - 1], math.min(rt - a.t, EXTRAP_S)
+-                if not p or h <= 0 or a.t - p.t < 1e-3 then return a end
+-                local k = h / (a.t - p.t)
++                if not p or h <= 0 then return a end
++                local dt = math.max(a.t - p.t, self.mean or EXTRAP_MIN_DT, EXTRAP_MIN_DT)
++                local sx, sy, sz = a.x - p.x, a.y - p.y, a.z - p.z
++                if sx * sx + sy * sy + sz * sz > (EXTRAP_MAX_SPEED * dt) ^ 2 then return a end
++                local k = h / dt
+                 return { t = rt, x = a.x + (a.x - p.x) * k, y = a.y + (a.y - p.y) * k, z = a.z + (a.z - p.z) * k,
+                     yaw = a.yaw, pitch = a.pitch, flags = a.flags, animVel = a.animVel }
+             end
+diff --git a/wasm-build/lua-tests/run.lua b/wasm-build/lua-tests/run.lua
+index 23bb1a9..3caaef6 100644
+--- a/wasm-build/lua-tests/run.lua
++++ b/wasm-build/lua-tests/run.lua
+@@ -2002,6 +2002,29 @@ do
+   package.loaded['scripts.mp.interp'] = nil
+ end
+ 
++print('Orthros: a teleport seen in two poses a few ms apart is not carried on 18-90x (the copy stood 15,000+ u away)')
++do
++  package.loaded['scripts.mp.interp'] = nil
++  local Interp = dofile('./openmw/files/data/scripts/mp/interp.lua')
++  -- The owner walks +x at 140 u/s, poses every 66 ms; then a pose 2 ms after the last one carries it 300 u on
++  -- (a teleport, its batch handled in the same frame as the previous one), and the stream goes quiet: the
++  -- server relays changes only.
++  local function run(gap, jump)
++    local it, t = Interp.new(), 0
++    for i = 0, 20 do t = i * 0.066; it:push({ t = t, x = t * 140, y = 0, z = 0, yaw = 0, pitch = 0, flags = 1 }) end
++    local x0 = t * 140
++    it:push({ t = t + gap, x = x0 + jump, y = 0, z = 0, yaw = 0, pitch = 0, flags = 1 })
++    local tg = it:target(t + gap + 5) -- long after: the target the copy settles on
++    return tg.x - (x0 + jump)
++  end
++  local worst = 0
++  for _, gap in ipairs({ 0.001, 0.002, 0.004, 0.0049 }) do worst = math.max(worst, math.abs(run(gap, 300))) end
++  check('a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands (was 5,500-13,500 u on)', worst < 48, string.format('%.0f u off', worst))
++  check('...and a jump after an ordinary gap too (was 409 u on)', math.abs(run(0.066, 300)) < 48, string.format('%.0f u off', run(0.066, 300)))
++  check('an ordinary step is still carried on (a late pose is not a stop)', run(0.066, 140 * 0.066) > 5, string.format('%.1f u', run(0.066, 140 * 0.066)))
++  package.loaded['scripts.mp.interp'] = nil
++end
++
+ print('players said NPCs are jerky and movement rubber-bandy: the render delay adapts to the stream (it was a fixed 40 ms, below one batch interval)')
+ do
+   package.loaded['scripts.mp.interp'] = nil

@@ -318,3 +318,20 @@ test('r17: r16 plus its patch, the same exports; preloads patient for their file
   // (the diagnostic Lua profiler and the chunk slicing, measured without a gain, stay out)
   for (const s of ['LUAPROF', 'CHUNKSLICE', 'CHUNKTHREAD', 'REFCACHE']) assert.ok(!added.includes(`OPENMW_ORTHROS_${s}`), s);
 });
+
+test('r18: r17 plus its patch, the same exports; a remote player\'s copy is not carried on past a jump (MWMP interp.lua: the step\'s time at least the stream\'s mean gap, no extrapolation above 2000 u/s), with the engine\'s own Lua test of it', () => {
+  const r17 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r17'), r18 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r18');
+  assert.ok(r18, 'r18 is a build');
+  assert.deepEqual(r18.patches, [...r17.patches, 'orthros-r18.patch']);
+  assert.deepEqual(r18.exports, r17.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r18.patch'), 'utf8');
+  // (the multiplayer script and its Lua test only: no engine source)
+  const files = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]);
+  assert.deepEqual(files, ['openmw/files/data/scripts/mp/interp.lua', 'wasm-build/lua-tests/run.lua']);
+  const at = patch.indexOf('+++ b/openmw/files/data/scripts/mp/interp.lua');
+  const hunk = patch.slice(at, patch.indexOf('\ndiff --git', at) >>> 0);
+  for (const line of ['+local EXTRAP_MIN_DT = 0.033', '+local EXTRAP_MAX_SPEED = 2000', '+                local dt = math.max(a.t - p.t, self.mean or EXTRAP_MIN_DT, EXTRAP_MIN_DT)',
+    '+                if sx * sx + sy * sy + sz * sz > (EXTRAP_MAX_SPEED * dt) ^ 2 then return a end', '+                local k = h / dt', '-                local k = h / (a.t - p.t)'])
+    assert.ok(hunk.includes(line), line);
+  assert.ok(patch.includes("+  check('a 300 u jump 1-5 ms after the last pose leaves the copy where its owner stands"), 'the engine\'s Lua test of it');
+});
