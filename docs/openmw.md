@@ -3550,6 +3550,122 @@ and the loading screen's +0.2 s on a JSPI stack open. Next: the full validation 
 the lock entry) with ≥ 6 in-play runs a side, and an input measure the coalescing does not bias (every move's delay from
 the browser trace, or moves counted whether received or not).
 
+##### The fourth full validation: `r20dev-c` against the live r19, and the verdict (2026-10-31)
+
+`r20dev-c` (engine `c99235bfa872`, this tree's page at `09fa36b`) validated from scratch against the live
+`openmw-web-v1.5.3-orthros-r19` (engine `f5eb3ec76d9b`, read-only from `data/engines`, its draw thread off as shipped;
+`main` still at `414dce8`, both Morrowind manifests on r19). `r20dev-c`'s sources are r1..r19 + `orthros-r20.patch` as
+committed, except one debug field: the build's `orthros-jspi.js` also sets `OrthrosJspi.glCapped`, which nothing reads
+(the committed patch dropped it). Both sides ran this tree's page code.
+
+How it ran:
+- The live learned state and br-cache were copied again at 13:11 (`/var/lib/orthros2`, read-only). Every server ran on
+  its own copy of that learned state and on the frozen br-cache copy. That copy holds lean3 of the one package
+  `2c6b8e83`: both engines' `openmw.data` are the same file.
+- Each side had its own warm profile, made the same way by its own warm-up on that copy.
+- Runs alternated, with the order swapped every pair, one browser at a time through `tools/with-browser-slot.sh`, from
+  13:12 to 15:34. Each start's load and memory are in `logs/runs-started.txt` (73 starts).
+- Memory was logged every 30 s (`logs/memory.log`). Available memory never fell below 39 GB.
+- Results: `tools/openmw/results/jspi-iter4-2026-10-31/validation-full/` (rows, run consoles, proxy logs and read traces,
+  `perf.json` files, two-client results, checks, frame comparison, logs, driver scripts `val5.sh`/`val5b.sh`).
+  `scripts/summary5.py` prints `summary.txt`.
+- The in-play and new-device samples were planned at 8 and 4 pairs (`val5.sh`). After the results, 4 more in-play pairs
+  and 2 more new-device pairs were run the same way (`val5b.sh`). They are reported beside the planned sample, not in
+  its place.
+
+| | r19 (live) | r20 (`r20dev-c`) |
+| --- | --- | --- |
+| in play (`perf.mjs tier=mid --discard --warm 0`, 60 s), planned 8 a side: fps | 23.82-26.66, median 24.45 | 23.98-26.57, median 24.52 |
+| in play, planned 8: work p99 (ms) | 18.5-21.0, median 19.45 | **19.2-23.4, median 20.3** |
+| in play, all 12 a side: fps / work p99 median (ms) | 24.45 / 19.9 (p99 18.5-24.1) | 24.24 / 20.35 (p99 18.4-23.4) |
+| in play: work p50 / longest gap (ms) | 8.2-9.3 / 217-350 | 7.3-11.2 / 200-350 |
+| save, warm (5 a side): menu (s) | 7.3-7.7 | 7.3-8.0 |
+| save, warm: F9 to the world (s) | 4.8, 5.0, 4.9, 4.9, 4.9 | 4.0, 4.1, 4.0, 4.0, 4.1 |
+| save, warm: page's longest block (ms) | 4,759-4,922 | 761-1,280 |
+| save, warm: input p95 (ms) [moves received] | 586-884, median 692 [3-4] | **2,124-2,488, median 2,216 [14-16]** |
+| save, warm: a move every 250 ms, its delay from the blocks (`cadenceP95Ms`) | 4,503-4,653 | 338-945 |
+| save, warm: the visible freeze (`frameGapMaxMs`) | 4,716-4,883 | 1,867-2,117 |
+| save, warm: steady in the world (s) | 6.8-7.2 | 6.2-6.5 |
+| COE, warm (5 a side): first frame / steady (s) | 6.7-7.0 / 5.0-5.9 | 6.4-7.6 (median 6.5) / 5.5-6.7 |
+| COE: page's longest block (ms) | 1,989-2,195 | 206-220 |
+| COE: input p95 (ms) [moves] | 1,728-1,931 [5-6] | 607-777 [16-18] |
+| COE: the visible freeze (ms) | 1,900-2,167 | 1,567-1,617 |
+| new device, save (4 planned + 2 a side): menu (s) | 25.5, 26.8, 25.8, 25.9; 25.1, 25.7 | 25.5, **27.2**, 25.9, 25.7; 25.1, 25.8 |
+| new device: F9 to the world (s) | 11.1, 11.3, 12.0, 11.3; 11.8, 12.5 | 11.4, 10.3, 11.8, 11.2; 11.1, 11.0 |
+| new device: page's block / the visible freeze (s) | 11.1-12.3 / 11.0-12.2 | 0.31-1.42 / 7.2-8.5 |
+| 85 KB/s, save (2 a side): menu / F9 to the world (s) | 10.7-11.3 / 27.7, 27.7 | 10.2-10.4 / 25.2, 25.1 |
+| 85 KB/s: page's block / input p95 (ms) | 27,438-27,476 / 555-619 | 1,185-1,306 / 87-110 |
+| `__omwPrecompile.lateOld` after the load | 0 (every run) | 0 (every run, including the 2 forced ones) |
+| two clients (`mp-check.mjs`) | 2 of 2 | 4 of 4 |
+
+- **Warm save's phases** (`scripts/phases.py`, in `summary.txt`). The loading screen up to the serial esm reads takes
+  2.50-2.58 s on r20 against 2.45-2.58 s on r19; its engine work is 887-948 ms against 701-835. The serial esm reads
+  are the same on both sides (1.02 s). After them, r20 reaches the world in 0.40-0.48 s against 1.32-1.44 s. The
+  loading screen's +0.1-0.2 s on a JSPI stack (iteration 4) is still there.
+- **Pictures** (`frame-compare.mjs` on r20dev-c, `''` against `?jspi=0`; mean absolute difference out of 255, the noise
+  in parentheses):
+  - day 0.078 (4.75);
+  - night 0.700 (0.492);
+  - interior 0.816 (0.557).
+
+  No pixel differs by more than 24 in any view, so the pictures are unchanged. Night and interior are a few tenths
+  over the repeat's noise, as in validation3.
+- **check.mjs** passed on r20dev-c in English (45,936 draws) and with `--lang fr` (`morrowind-goty-fr`, 45,588 draws).
+- **overlay-check.mjs** (`--engine openmw-web-v1.5.3-orthros-r20dev-c`): both Morrowind games' overlays agree with their
+  originals.
+- **`make test`**: 1,712 tests, 1,709 pass, 0 fail (1 skipped, 2 todo).
+- **Crashes: none in 52 r20 page sessions.** Those were:
+  - 21 place-load sessions (the warm-up included);
+  - 12 `perf.mjs` runs;
+  - frame-compare's 9 page loads;
+  - the 2 checks;
+  - the 8 pages of the 4 two-client runs.
+
+  With Chromium's heap profiler forced on every renderer
+  (`--memlog=all-renderers --memlog-sampling-rate=100000 --memlog-stack-mode=native`), a save boot and its load (F9 to
+  the world 4.0 s) and a COE boot and its load did not crash either. No page showed an error other than Chromium's
+  pointer-lock message, which appears on both sides (twice a COE run on r20, once on r19). The kernel logged no
+  segfault.
+
+**Verdict: NO-SHIP.** By criterion:
+1. **Crashes: met.** 0 in 52 r20 sessions, and 0 with the heap profiler forced on a save load and on a COE.
+2. **In play: not met on the planned sample. Met on all 12 pairs.**
+   - Planned 8 pairs: fps median +0.07 (24.52 against 24.45, met). Work p99 median 20.3 against 19.45 ms: +0.85, over
+     the 0.5 ms allowed. Its spread is wider too (19.2-23.4 against 18.5-21.0), so "spread no worse" is not met either.
+   - All 12 pairs: fps median -0.21 (24.24 against 24.45), p99 median +0.45 ms (20.35 against 19.9), spread 18.4-23.4
+     against 18.5-24.1. Both are inside the tolerances.
+   - The two samples disagree, so the p99 difference is about as large as the run-to-run noise. Parity is not shown
+     the way the criterion asks.
+3. **Loads (warm save, COE): not met on the save's input p95. Every other measure met.**
+   - Longest block better: save 0.76-1.28 s against 4.76-4.92 s; COE 206-220 ms against 1,989-2,195.
+   - `frameGapMaxMs` better: save 1.87-2.12 s against 4.72-4.88 s; COE 1.57-1.62 s against 1.90-2.17 s.
+   - F9 to the world: 4.0-4.1 s against 4.8-5.0 s, 0.7-1.0 s sooner in every pair.
+   - COE input p95 better: 607-777 ms against 1,728-1,931.
+   - Not met: the save's input p95 is 2,124-2,488 ms against 586-884, as iteration 4 measured. The probe still
+     compares 14-16 received moves with r19's 3-4: its other moves are coalesced into the one after its 4.8 s block.
+     The same 250 ms cadence timed against the page's blocks (`cadenceP95Ms`, already in `jspiProbe`) gives r20
+     338-945 ms against 4,503-4,653. That measure leaves out the delay the GPU burst adds after the load, so it
+     favours r20. As the criterion is written, it is not met.
+4. **New device: met, except one menu 0.1 s over. Everything else met.**
+   - F9 to the world met: 10.3-11.8 s against 11.1-12.5 s; medians 11.15 against 11.55 s over the 6 pairs.
+   - Menu: medians at parity (25.75 s on both sides over 6 pairs). One r20 run, 27.2 s, is 0.1 s over r19's spread
+     + 0.3 s (26.8 + 0.3). The load was 25 when that run was queued, so the slot script held it until the load fell
+     under 24. The r19 run of the same pair was r19's slowest.
+   - 85 KB/s met: menu 10.2-10.4 against 10.7-11.3 s; F9 25.1-25.2 against 27.7 s.
+   - Also met: the pictures are unchanged, two clients passed 4 of 4, `lateOld` is 0, check.mjs passed in EN and FR,
+     overlay-check passed and `make test` is green.
+
+**What separates r20 from shipping**:
+- The warm save's input p95, as the probe measures it. To fix this, the probe should change, or the GPU burst after the
+  load should shrink. The burst is the same work on both sides; r20's page simply receives the moves that wait for it.
+- The in-play work p99. It is within tolerance over 12 pairs, but not over the planned 8.
+- One new-device menu 0.1 s over, at a moment of high load.
+
+None of these is a crash, a picture change or a slower load. On loads r20 is better everywhere except that one probe.
+Next:
+- Decide the input measure: every move's delay from the browser trace, whether or not the page received it.
+- A longer in-play sample, alternated in both orders, to settle p99.
+
 ### The engine's language and dialogue topic colours (2026-10-28)
 
 OpenMW's `[General] preferred locales` defaults to `en`, and Orthros never set it. In the French games, OpenMW's own

@@ -1,0 +1,167 @@
+{
+  "manifest": "morrowind-goty-en",
+  "url": "http://127.0.0.1:18965",
+  "reference": "",
+  "views": {
+    "day": {
+      "noise": {
+        "meanAbs": 4.75,
+        "over24": 0.078,
+        "nearest": {
+          "meanAbs": 3.942,
+          "over24": 0.034
+        },
+        "medianPair": {
+          "meanAbs": 5.028,
+          "over24": 0.084
+        }
+      },
+      "jspi=0": {
+        "meanAbs": 0.078,
+        "over24": 0,
+        "nearest": {
+          "meanAbs": 0.065,
+          "over24": 0
+        },
+        "medianPair": {
+          "meanAbs": 0.083,
+          "over24": 0
+        }
+      }
+    },
+    "night": {
+      "noise": {
+        "meanAbs": 0.492,
+        "over24": 0,
+        "nearest": {
+          "meanAbs": 0.394,
+          "over24": 0
+        },
+        "medianPair": {
+          "meanAbs": 0.495,
+          "over24": 0
+        }
+      },
+      "jspi=0": {
+        "meanAbs": 0.7,
+        "over24": 0,
+        "nearest": {
+          "meanAbs": 0.585,
+          "over24": 0
+        },
+        "medianPair": {
+          "meanAbs": 0.747,
+          "over24": 0
+        }
+      }
+    },
+    "interior": {
+      "noise": {
+        "meanAbs": 0.557,
+        "over24": 0,
+        "nearest": {
+          "meanAbs": 0.103,
+          "over24": 0
+        },
+        "medianPair": {
+          "meanAbs": 1.338,
+          "over24": 0
+        }
+      },
+      "jspi=0": {
+        "meanAbs": 0.816,
+        "over24": 0,
+        "nearest": {
+          "meanAbs": 0.2,
+          "over24": 0
+        },
+        "medianPair": {
+          "meanAbs": 1.405,
+          "over24": 0
+        }
+      }
+    }
+  },
+  "data": {
+    "day": {
+      "ref": {
+        "content": "done",
+        "contentLoadingMs": 3208,
+        "contentLoadedMs": 5729,
+        "fetchedBytes": 442950643,
+        "wantWaits": 5,
+        "contentLightRequests": 89
+      },
+      "ref2": {
+        "content": "done",
+        "contentLoadingMs": 3143,
+        "contentLoadedMs": 5560,
+        "fetchedBytes": 442077226,
+        "wantWaits": 5,
+        "contentLightRequests": 83
+      },
+      "v1": {
+        "content": "done",
+        "contentLoadingMs": 3462,
+        "contentLoadedMs": 5948,
+        "fetchedBytes": 437037676,
+        "wantWaits": 5,
+        "contentLightRequests": 92
+      }
+    },
+    "night": {
+      "ref": {
+        "content": "done",
+        "contentLoadingMs": 2849,
+        "contentLoadedMs": 5282,
+        "fetchedBytes": 438259473,
+        "wantWaits": 5,
+        "contentLightRequests": 94
+      },
+      "ref2": {
+        "content": "done",
+        "contentLoadingMs": 2958,
+        "contentLoadedMs": 5547,
+        "fetchedBytes": 435177341,
+        "wantWaits": 4,
+        "contentLightRequests": 80
+      },
+      "v1": {
+        "content": "done",
+        "contentLoadingMs": 3234,
+        "contentLoadedMs": 5819,
+        "fetchedBytes": 436167067,
+        "wantWaits": 5,
+        "contentLightRequests": 92
+      }
+    },
+    "interior": {
+      "ref": {
+        "content": "done",
+        "contentLoadingMs": 2655,
+        "contentLoadedMs": 5113,
+        "fetchedBytes": 459773922,
+        "wantWaits": 2,
+        "contentLightRequests": 91
+      },
+      "ref2": {
+        "content": "done",
+        "contentLoadingMs": 2670,
+        "contentLoadedMs": 5204,
+        "fetchedBytes": 466246115,
+        "wantWaits": 2,
+        "contentLightRequests": 96
+      },
+      "v1": {
+        "content": "done",
+        "contentLoadingMs": 3017,
+        "contentLoadedMs": 5375,
+        "fetchedBytes": 466866210,
+        "wantWaits": 2,
+        "contentLightRequests": 89
+      }
+    }
+  },
+  "shots": "/tmp/orthros-scratch/jspi5/res/fc/out",
+  "faults": []
+}

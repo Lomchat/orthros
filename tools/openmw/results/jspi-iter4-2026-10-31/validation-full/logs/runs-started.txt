@@ -1,0 +1,73 @@
+13:12:18 avail=49G load=8.23 place-load side=19L tag=r19L-warm --mode save --warm-only  
+13:15:29 avail=51G load=12.14 place-load side=20c tag=r20c-warm --mode save --warm-only  
+13:18:43 avail=51G load=16.20 place-load side=19L tag=r19L-save-1 --mode save --read-trace  
+13:20:25 avail=50G load=9.19 place-load side=20c tag=r20c-save-1 --mode save --read-trace  
+13:22:06 avail=46G load=13.37 place-load side=20c tag=r20c-coe-1 --mode coe  
+13:23:37 avail=51G load=10.63 place-load side=19L tag=r19L-coe-1 --mode coe  
+13:25:08 avail=46G load=15.75 place-load side=20c tag=r20c-save-2 --mode save --read-trace  
+13:26:49 avail=51G load=10.14 place-load side=19L tag=r19L-save-2 --mode save --read-trace  
+13:28:29 avail=46G load=15.69 place-load side=19L tag=r19L-coe-2 --mode coe  
+13:29:59 avail=51G load=12.59 place-load side=20c tag=r20c-coe-2 --mode coe  
+13:31:29 avail=46G load=17.71 place-load side=19L tag=r19L-save-3 --mode save --read-trace  
+13:33:10 avail=51G load=11.85 place-load side=20c tag=r20c-save-3 --mode save --read-trace  
+13:34:50 avail=46G load=11.18 place-load side=20c tag=r20c-coe-3 --mode coe  
+13:36:21 avail=51G load=11.69 place-load side=19L tag=r19L-coe-3 --mode coe  
+13:37:53 avail=46G load=17.28 place-load side=20c tag=r20c-save-4 --mode save --read-trace  
+13:39:33 avail=51G load=10.31 place-load side=19L tag=r19L-save-4 --mode save --read-trace  
+13:41:13 avail=46G load=18.20 place-load side=19L tag=r19L-coe-4 --mode coe  
+13:42:44 avail=51G load=12.53 place-load side=20c tag=r20c-coe-4 --mode coe  
+13:44:14 avail=46G load=16.20 place-load side=19L tag=r19L-save-5 --mode save --read-trace  
+13:45:55 avail=51G load=12.15 place-load side=20c tag=r20c-save-5 --mode save --read-trace  
+13:47:35 avail=46G load=12.50 place-load side=20c tag=r20c-coe-5 --mode coe  
+13:49:04 avail=51G load=11.26 place-load side=19L tag=r19L-coe-5 --mode coe  
+13:50:31 avail=46G load=16.09 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-1 --query tier=mid --discard --seconds 60 --warm 0
+13:51:54 avail=52G load=17.78 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-1 --query tier=mid --discard --seconds 60 --warm 0
+13:53:17 avail=52G load=12.15 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-2 --query tier=mid --discard --seconds 60 --warm 0
+13:54:40 avail=52G load=12.05 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-2 --query tier=mid --discard --seconds 60 --warm 0
+13:56:04 avail=52G load=10.56 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-3 --query tier=mid --discard --seconds 60 --warm 0
+13:57:27 avail=52G load=11.65 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-3 --query tier=mid --discard --seconds 60 --warm 0
+13:58:51 avail=49G load=13.51 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-4 --query tier=mid --discard --seconds 60 --warm 0
+14:00:14 avail=45G load=17.80 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-4 --query tier=mid --discard --seconds 60 --warm 0
+14:01:37 avail=51G load=12.93 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-5 --query tier=mid --discard --seconds 60 --warm 0
+14:03:01 avail=51G load=11.38 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-5 --query tier=mid --discard --seconds 60 --warm 0
+14:04:25 avail=49G load=15.90 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-6 --query tier=mid --discard --seconds 60 --warm 0
+14:05:48 avail=48G load=18.21 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-6 --query tier=mid --discard --seconds 60 --warm 0
+14:07:11 avail=48G load=18.00 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-7 --query tier=mid --discard --seconds 60 --warm 0
+14:08:34 avail=49G load=17.03 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-7 --query tier=mid --discard --seconds 60 --warm 0
+14:09:57 avail=50G load=10.58 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-8 --query tier=mid --discard --seconds 60 --warm 0
+14:11:20 avail=51G load=10.79 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-8 --query tier=mid --discard --seconds 60 --warm 0
+14:12:42 avail=51G load=12.67 place-load side=19L tag=r19L-saveNew-1 --mode save --profile new --read-trace  
+14:14:46 avail=49G load=8.69 place-load side=20c tag=r20c-saveNew-1 --mode save --profile new --read-trace  
+14:16:51 avail=44G load=25.06 place-load side=20c tag=r20c-saveNew-2 --mode save --profile new --read-trace  
+14:19:16 avail=47G load=15.96 place-load side=19L tag=r19L-saveNew-2 --mode save --profile new --read-trace  
+14:21:21 avail=49G load=13.43 place-load side=19L tag=r19L-saveNew-3 --mode save --profile new --read-trace  
+14:23:25 avail=46G load=17.97 place-load side=20c tag=r20c-saveNew-3 --mode save --profile new --read-trace  
+14:25:31 avail=50G load=10.40 place-load side=20c tag=r20c-saveNew-4 --mode save --profile new --read-trace  
+14:27:36 avail=41G load=27.02 place-load side=19L tag=r19L-saveNew-4 --mode save --profile new --read-trace  
+14:30:01 avail=48G load=11.61 place-load side=19L tag=r19L-save85k-1 --mode save --rate 85k --read-trace  
+14:32:08 avail=40G load=24.31 place-load side=20c tag=r20c-save85k-1 --mode save --rate 85k --read-trace  
+14:34:34 avail=46G load=14.52 place-load side=20c tag=r20c-save85k-2 --mode save --rate 85k --read-trace  
+14:36:39 avail=50G load=14.51 place-load side=19L tag=r19L-save85k-2 --mode save --rate 85k --read-trace  
+14:38:45 avail=46G load=15.20 tools/openmw/frame-compare.mjs 20c /tmp/orthros-scratch/jspi5/res/fc --variant  --variant jspi=0 --out /tmp/orthros-scratch/jspi5/res/fc/out
+14:47:43 avail=51G load=13.83 tools/openmw/check.mjs 20c /tmp/orthros-scratch/jspi5/res/check-en --seconds 10
+14:48:14 avail=51G load=14.10 tools/openmw/check.mjs 20c /tmp/orthros-scratch/jspi5/res/check-fr --lang fr --seconds 10
+14:48:44 avail=51G load=12.14 mp 20c /tmp/orthros-scratch/jspi5/res/mp/r20c-1
+14:52:44 avail=51G load=18.29 mp 19L /tmp/orthros-scratch/jspi5/res/mp/r19L-1
+14:56:52 avail=51G load=13.61 mp 20c /tmp/orthros-scratch/jspi5/res/mp/r20c-2
+15:00:45 avail=51G load=11.13 mp 20c /tmp/orthros-scratch/jspi5/res/mp/r20c-3
+15:04:42 avail=51G load=15.38 mp 19L /tmp/orthros-scratch/jspi5/res/mp/r19L-2
+15:08:25 avail=51G load=12.02 mp 20c /tmp/orthros-scratch/jspi5/res/mp/r20c-4
+15:12:12 avail=51G load=13.09 place-load side=20c tag=r20c-forced-save --mode save chrome-args=--memlog=all-renderers --memlog-sampling-rate=100000 --memlog-stack-mode=native 
+15:13:43 avail=51G load=7.12 place-load side=20c tag=r20c-forced-coe --mode coe chrome-args=--memlog=all-renderers --memlog-sampling-rate=100000 --memlog-stack-mode=native 
+15:15:28 avail=51G load=6.04 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-9 --query tier=mid --discard --seconds 60 --warm 0
+15:16:53 avail=51G load=11.02 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-9 --query tier=mid --discard --seconds 60 --warm 0
+15:18:16 avail=51G load=12.00 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-10 --query tier=mid --discard --seconds 60 --warm 0
+15:19:40 avail=51G load=11.16 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-10 --query tier=mid --discard --seconds 60 --warm 0
+15:21:03 avail=51G load=11.62 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-11 --query tier=mid --discard --seconds 60 --warm 0
+15:22:26 avail=48G load=15.54 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-11 --query tier=mid --discard --seconds 60 --warm 0
+15:23:48 avail=46G load=17.31 perf 20c /tmp/orthros-scratch/jspi5/res/perf/r20c-12 --query tier=mid --discard --seconds 60 --warm 0
+15:25:11 avail=51G load=16.15 perf 19L /tmp/orthros-scratch/jspi5/res/perf/r19L-12 --query tier=mid --discard --seconds 60 --warm 0
+15:26:34 avail=51G load=13.28 place-load side=19L tag=r19L-saveNew-5 --mode save --profile new --read-trace  
+15:28:37 avail=45G load=17.34 place-load side=20c tag=r20c-saveNew-5 --mode save --profile new --read-trace  
+15:30:42 avail=48G load=9.82 place-load side=20c tag=r20c-saveNew-6 --mode save --profile new --read-trace  
+15:32:46 avail=46G load=17.44 place-load side=19L tag=r19L-saveNew-6 --mode save --profile new --read-trace  

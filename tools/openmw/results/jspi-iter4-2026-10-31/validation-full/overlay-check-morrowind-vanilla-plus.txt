@@ -1,0 +1,2 @@
+overlays: all agree with their originals
+overlay morrowind-vanilla-plus rc=0
