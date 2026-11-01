@@ -2265,6 +2265,29 @@ terrain/paging preload slices (up to ~175 ms), the crossing's own `changeCellGri
 Left out on their numbers: door destination cells fetched ahead (bimodal on thin links) and gated ahead uploads (no
 gain). Proof: `data/proof/openmw-perf/round11/integration/`.
 
+### Rounds 12-14 and engine orthros-r22 (2026-11-01)
+
+What did not ship, on its numbers (proof `data/proof/openmw-perf/round12..round14/`): preload work run while the page waits
+for the Lua thread (`LUAWAITWORK`), the Lua collector's tail beside the frame (`LUAGCTAIL`: the wait gone, no frame gain),
+the draw thread booted at r20's JSPI yield point (`DTJSPI`: darker pictures, a magenta sky after a COE), behaviour-identical
+overlays of proximityTool, Advanced World Map (Tracking), Quest Guider Lite and TakeAll (harness-proven identical; no
+crossing gain — round 7's "22 ms per mod" was the profiler counting each `async:callback` handler twice), and a crossing's
+object activations deferred one Lua update (`ACTIVELATE`, measurement only: the crossing frame 108 → 103 ms but the next
+one 33 → 67 ms — the cost moves, and mods could observe it). The crossing's remaining cost is the engine's
+`changeCellGrid` (42-62 ms) and per-object script instantiation.
+
+`orthros-r22.patch` (r21 + three exact changes, each behind its switch; no r20 file touched):
+- `OPENMW_ORTHROS_LUAINST` (`components/lua/luastate`): a new sandbox's `loaded` table made at its final size from loaders
+  tested once per LuaState (`=verify` rebuilds each the old way and compares: 3,250 sandboxes in the engine, 12,000 in a
+  native harness, 0 different); about 7 ms less Lua-thread work per minute of gliding.
+- `OPENMW_ORTHROS_CHUNKREFS` (`mwrender/objectpaging`): a paging chunk's build takes the references its listing already
+  read (`=check` re-reads and compares bit for bit: 0 different over 527 builds); 55-74 % of builds skip the re-read.
+- `OPENMW_ORTHROS_LATEPROGRAMS` (OSG `Program.cpp`, `shader/shadermanager.cpp`): the programs first compiled in play are
+  learned (the page's localStorage `orthros.openmw.latePrograms.1`, at most 64 lines) and made ahead at the next boot
+  (11.5-12.4 ms under PRECOMPILE): a returning player's first-crossing ICO stretch loses its 48-137 ms of program compiles.
+Integrated against the live r21 (3 runs a side, a 5-minute soak): no frame metric worse beyond noise, pictures identical,
+check EN/FR and keys pass.
+
 ### The steady frame attributed; overlays of the engine's own scripts checked at each release (round 6, 2026-10-30)
 
 Reference r16, Vanilla+ FR, `perf.mjs --run --profile --discard`, 30 s: busy 11.05 ms/frame (osg-draw+GL 3.02,

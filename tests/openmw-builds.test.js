@@ -672,3 +672,17 @@ test('r21: r20 plus its patch, the same exports; exact OSG fast paths and creatu
   // (measured without a gain in round 11: left out)
   for (const s of ['DOORDEST', 'AHEADGATE']) assert.ok(!added.includes(`OPENMW_ORTHROS_${s}`), s);
 });
+
+test('r22: r21 plus its patch, the same exports; sandboxes made from shared loaders, chunk references read once, programs learned in play made ahead, each behind its switch', () => {
+  const r21 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r21'), r22 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r22');
+  assert.ok(r22, 'r22 is a build');
+  assert.deepEqual(r22.patches, [...r21.patches, 'orthros-r22.patch']);
+  assert.deepEqual(r22.exports, r21.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r22.patch'), 'utf8');
+  const added = patch.split('\n').filter((l) => l.startsWith('+')).join('\n');
+  for (const f of ['openmw/components/lua/luastate.cpp', 'openmw/apps/openmw/mwrender/objectpaging.cpp', 'deps/src/osg/src/osg/Program.cpp'])
+    assert.ok(patch.includes(`+++ b/${f}`), f);
+  for (const s of ['LUAINST', 'CHUNKREFS', 'LATEPROGRAMS']) assert.ok(added.includes(`OPENMW_ORTHROS_${s}`), s);
+  // (measured in round 14 and rejected: the crossing's activations deferred move the cost to the next frame)
+  assert.ok(!added.includes('OPENMW_ORTHROS_ACTIVELATE'));
+});

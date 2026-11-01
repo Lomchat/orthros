@@ -1,0 +1,1099 @@
+diff --git a/openmw/components/lua/luastate.cpp b/openmw/components/lua/luastate.cpp
+index f8d7c10..d82e5a7 100644
+--- a/openmw/components/lua/luastate.cpp
++++ b/openmw/components/lua/luastate.cpp
+@@ -191,6 +191,8 @@ namespace LuaUtil
+             lua_sethook(mLuaState.get(), &countHook, LUA_MASKCOUNT, countHookStep);
+ 
+ #ifdef __EMSCRIPTEN__
++        (void)orthrosLuaInst(); // (OPENMW_ORTHROS_LUAINST read and logged here, on the page's thread)
++
+         // Orthros (OPENMW_ORTHROS_LUAGCINC, orthrosIncrementalGc below): Lua 5.4's own incremental collector, as upstream
+         // and the desktop build, its step 1 KB (Lua's default: 8 KB) so that each step is short; pause and step
+         // multiplier stay Lua's. Measured (Vanilla+ FR, glides and fresh loads, the Lua thread profiled with the page's
+@@ -375,6 +377,8 @@ namespace LuaUtil
+         if (!package.is<sol::function>())
+             package = makeReadOnly(std::move(package));
+         mCommonPackages.insert_or_assign(std::move(packageName), std::move(package));
++        mOrthrosCommon.reset(); // (OPENMW_ORTHROS_LUAINST: built again at the next sandbox)
++        ++mOrthrosCommonGen;
+     }
+ 
+     sol::protected_function_result LuaState::runInNewSandbox(const VFS::Path::Normalized& path,
+@@ -401,17 +405,191 @@ namespace LuaUtil
+             else
+                 return package;
+         };
+-        sol::table loaded(mSol, sol::create);
+-        for (const auto& [key, value] : mCommonPackages)
+-            loaded[key] = maybeRunLoader(value);
+-        for (const auto& [key, value] : packages)
+-            loaded[key] = maybeRunLoader(value);
++        sol::table loaded;
++#ifdef __EMSCRIPTEN__
++        // Orthros (OPENMW_ORTHROS_LUAINST): the same table with the same contents, made for less. Measured (Vanilla+
++        // FR, a 60 s glide over 2 cell crossings, the Lua thread profiled): of the ~50 ms that ScriptsContainer::
++        // addScript spent outside the scripts' own code, ~15 went to these sets -- the table grown 0, 1, 2, 4 ... 32
++        // slots (luaH_resize), each name interned again (luaS_newlstr) -- and ~10 to the loader test and call
++        // (is<sol::function>: a metatable read and a "__call" lookup per package; the protected function made again,
++        // a global read for its handler). Now: the table made at its final size (lua_createtable: only its slot count
++        // differs, and `loaded` is never iterated -- an upvalue of `require` alone); the common packages, in the map's
++        // order as before, set raw from a Lua string kept per name (`loaded` has no metatable: a raw set is the same
++        // set) with each loader's test result and its protected function kept once per state (mOrthrosCommon, built
++        // again after addCommonPackage). A package's test result can only change if its metatable does: the common
++        // packages are functions or read-only tables (makeReadOnly: a userdata whose metatable no sandbox reaches --
++        // getmetatable is getSafeMetatable, tables only). Every loader still runs once per sandbox, in the same order,
++        // with the same arguments; a nil result still leaves no entry; the container's packages are set after them as
++        // before (so they still override). 2 ("verify"): each table also compared with the previous code's.
++        const int inst = orthrosLuaInst();
++        if (inst != 0)
++        {
++            if (!mOrthrosCommon)
++                orthrosBuildCommon();
++            // (a copy of the pointer: the list stays alive through the loop even if a loader made it rebuilt)
++            const std::shared_ptr<const std::vector<OrthrosCommonPackage>> common = mOrthrosCommon;
++            const std::uint64_t gen = mOrthrosCommonGen;
++            lua_State* L = mSol.lua_state();
++            lua_createtable(L, 0, static_cast<int>(common->size() + packages.size()));
++            loaded = sol::stack::pop<sol::table>(L);
++            for (const OrthrosCommonPackage& p : *common)
++            {
++                if (p.mLoader)
++                {
++                    sol::object result = call(scriptId, *p.mLoader, hiddenData);
++                    loaded.raw_set(p.mKey, result);
++                    if (mOrthrosCommonGen != gen)
++                    {
++                        // A loader called addCommonPackage (none does today: only LuaManager's init does). The rest
++                        // as the previous code's map loop goes on after an insert: the names after this one, from
++                        // the map as it is now.
++                        for (auto it = mCommonPackages.upper_bound(p.mName); it != mCommonPackages.end(); ++it)
++                            loaded[it->first] = maybeRunLoader(it->second);
++                        break;
++                    }
++                }
++                else
++                    loaded.raw_set(p.mKey, p.mValue);
++            }
++            for (const auto& [key, value] : packages)
++                loaded[key] = maybeRunLoader(value);
++            if (inst == 2)
++                orthrosVerifyLoaded(loaded, packages, envName);
++        }
++        else
++#endif
++        {
++            loaded = sol::table(mSol, sol::create);
++            for (const auto& [key, value] : mCommonPackages)
++                loaded[key] = maybeRunLoader(value);
++            for (const auto& [key, value] : packages)
++                loaded[key] = maybeRunLoader(value);
++        }
+         env["require"] = mSol["requireGen"](env, loaded, mSol["loadFromVFS"]);
+ 
+         sol::set_environment(env, script);
+         return call(scriptId, script);
+     }
+ 
++    int orthrosLuaInst()
++    {
++#ifdef __EMSCRIPTEN__
++        static const int mode = [] {
++            const char* const value = std::getenv("OPENMW_ORTHROS_LUAINST");
++            const int m = value == nullptr ? 1 : std::strcmp(value, "0") == 0 ? 0 : std::strcmp(value, "verify") == 0 ? 2 : 1;
++            Log(Debug::Info) << "Orthros: a Lua sandbox's packages "
++                             << (m == 0 ? "set one by one into a growing table, as before (OPENMW_ORTHROS_LUAINST=0)"
++                                        : m == 2 ? "set into a table made at its size, each compared with the previous "
++                                                   "code's (OPENMW_ORTHROS_LUAINST=verify)"
++                                                 : "set into a table made at its size, the common ones from kept keys");
++            return m;
++        }();
++        return mode;
++#else
++        return 0;
++#endif
++    }
++
++    void LuaState::orthrosBuildCommon()
++    {
++        // (the previous code's test and conversion: maybeRunLoader's package.is<sol::function>() and the
++        // sol::protected_function that call() was given, made from package.as<sol::function>())
++        // (a new list, never the one in use changed: a loop over the previous one keeps it alive)
++        auto common = std::make_shared<std::vector<OrthrosCommonPackage>>();
++        common->reserve(mCommonPackages.size());
++        for (const auto& [name, package] : mCommonPackages)
++        {
++            OrthrosCommonPackage& p = common->emplace_back();
++            p.mName = name;
++            p.mKey = sol::make_object(mSol, name);
++            p.mValue = package;
++            if (package.is<sol::function>())
++                p.mLoader = sol::protected_function(package.as<sol::function>());
++        }
++        mOrthrosCommon = std::move(common);
++    }
++
++    void LuaState::orthrosVerifyLoaded(
++        const sol::table& loaded, const std::map<std::string, sol::main_object>& packages, const std::string& envName)
++    {
++        // The previous code's table, rebuilt beside `loaded`: the same sets in the same order, with the previous
++        // code's own loader test made now; a loader's result is taken from `loaded` (a loader runs once per sandbox).
++        // Then both tables compared entry by entry (raw equality, both ways), and the kept common list checked against
++        // mCommonPackages (names, values, loader tests). So this checks the keys, the plain values and which packages
++        // are taken as loaders -- not a loader's result itself (a loader runs once): that, and the loaders' call order
++        // and arguments, are what the native harness (round 14, luainst.cpp) compares. Diagnosis only: it logs from
++        // the Lua thread; never in a measured run.
++        std::uint64_t diffs = 0;
++        auto differ = [&](const std::string& what) {
++            ++diffs;
++            Log(Debug::Error) << "Orthros: OPENMW_ORTHROS_LUAINST verify: " << envName << ": " << what;
++        };
++        if (!mOrthrosCommon)
++            orthrosBuildCommon(); // (dropped by an addCommonPackage during this sandbox's loaders)
++        const std::vector<OrthrosCommonPackage>& common = *mOrthrosCommon;
++        if (common.size() != mCommonPackages.size())
++            differ("common package count");
++        auto kept = common.begin();
++        for (const auto& [name, package] : mCommonPackages)
++        {
++            if (kept == common.end())
++                break;
++            const bool loader = package.is<sol::function>();
++            if (!kept->mKey.is<std::string>() || kept->mKey.as<std::string>() != name)
++                differ("common package name " + name);
++            if (loader != kept->mLoader.has_value())
++                differ("loader test of " + name);
++            kept->mValue.push();
++            package.push();
++            const bool sameValue = lua_rawequal(mSol.lua_state(), -1, -2) != 0;
++            lua_pop(mSol.lua_state(), 2);
++            if (!sameValue)
++                differ("common package value " + name);
++            ++kept;
++        }
++        sol::table reference(mSol, sol::create);
++        auto expected = [&](const std::string& name, const sol::object& package) -> sol::object {
++            if (package.is<sol::function>())
++                return loaded.raw_get<sol::object>(name);
++            return package;
++        };
++        for (const auto& [name, package] : mCommonPackages)
++            reference[name] = expected(name, package);
++        for (const auto& [name, package] : packages)
++            reference[name] = expected(name, package);
++        lua_State* L = mSol.lua_state();
++        std::uint64_t inReference = 0, inLoaded = 0;
++        auto count = [&](const sol::table& t, const sol::table& other, std::uint64_t& n, const char* side) {
++            t.push();
++            lua_pushnil(L);
++            while (lua_next(L, -2) != 0)
++            {
++                ++n;
++                other.push();
++                lua_pushvalue(L, -3);
++                lua_rawget(L, -2);
++                const bool same = lua_rawequal(L, -1, -3) != 0;
++                std::string key = lua_type(L, -4) == LUA_TSTRING ? lua_tostring(L, -4) : "(not a string)";
++                lua_pop(L, 3); // (other's value, other, the value: the key stays for lua_next)
++                if (!same)
++                    differ(std::string(side) + " entry " + key);
++            }
++            lua_pop(L, 1);
++        };
++        count(reference, loaded, inReference, "previous code's");
++        count(loaded, reference, inLoaded, "new");
++        if (inReference != inLoaded)
++            differ("entry counts");
++        ++mOrthrosVerifySandboxes;
++        mOrthrosVerifyEntries += inLoaded;
++        mOrthrosVerifyDiffs += diffs;
++        const std::uint64_t n = mOrthrosVerifySandboxes;
++        if (n <= 3 || n % 250 == 0 || diffs != 0)
++            Log(Debug::Info) << "Orthros: OPENMW_ORTHROS_LUAINST verify: " << n << " sandboxes, "
++                             << mOrthrosVerifyEntries << " entries compared, " << mOrthrosVerifyDiffs
++                             << " differences (last: " << envName << ", " << inLoaded << " entries)";
++    }
++
+     sol::environment LuaState::newInternalLibEnvironment()
+     {
+         // TODO
+diff --git a/openmw/components/lua/luastate.hpp b/openmw/components/lua/luastate.hpp
+index c14cf85..dad6e3a 100644
+--- a/openmw/components/lua/luastate.hpp
++++ b/openmw/components/lua/luastate.hpp
+@@ -1,9 +1,13 @@
+ #ifndef COMPONENTS_LUA_LUASTATE_H
+ #define COMPONENTS_LUA_LUASTATE_H
+ 
++#include <cstdint>
+ #include <filesystem>
+ #include <map>
++#include <memory>
++#include <optional>
+ #include <typeinfo>
++#include <vector>
+ 
+ #include <sol/sol.hpp>
+ 
+@@ -33,6 +37,12 @@ namespace LuaUtil
+     // Read once; false off the web.
+     bool orthrosChunkFactories();
+ 
++    // Orthros (OPENMW_ORTHROS_LUAINST, luastate.cpp): on the web, 1: a new sandbox's `loaded` table (what its `require`
++    // reads) made at its final size, the common packages set from keys and loader tests kept once per state; 2
++    // ("verify"): the same, each sandbox's table also compared with the previous code's (engine log); 0 (the switch at
++    // 0): the previous code. Read once (the LuaState's constructor, on the page's thread); 0 off the web.
++    int orthrosLuaInst();
++
+     class ScriptsContainer;
+     struct ScriptId
+     {
+@@ -246,6 +256,26 @@ namespace LuaUtil
+         // wrapping does not compile: the bytecode re-read, as before). Declared after mSol: destroyed before the state.
+         std::map<VFS::Path::Normalized, sol::main_function> mOrthrosFactories;
+         std::map<std::string, sol::object> mCommonPackages;
++        // Orthros (OPENMW_ORTHROS_LUAINST): mCommonPackages as runInNewSandbox sets them, in the map's order: each
++        // name as a Lua string, its value, and -- when the previous code's test (is<sol::function>) calls it a loader --
++        // the function it calls once per sandbox. Built at the first sandbox after addCommonPackage (which drops it and
++        // bumps mOrthrosCommonGen). Held by a shared pointer that runInNewSandbox copies for its loop: a loader that
++        // called addCommonPackage and made a nested sandbox (rebuilding the list) cannot free the list being walked;
++        // the walk then goes on over mCommonPackages itself, as the previous code's map loop did. Declared after
++        // mSol: destroyed before the state.
++        struct OrthrosCommonPackage
++        {
++            std::string mName;
++            sol::object mKey;
++            sol::object mValue;
++            std::optional<sol::protected_function> mLoader;
++        };
++        std::shared_ptr<const std::vector<OrthrosCommonPackage>> mOrthrosCommon;
++        std::uint64_t mOrthrosCommonGen = 0;
++        std::uint64_t mOrthrosVerifySandboxes = 0, mOrthrosVerifyEntries = 0, mOrthrosVerifyDiffs = 0;
++        void orthrosBuildCommon();
++        void orthrosVerifyLoaded(
++            const sol::table& loaded, const std::map<std::string, sol::main_object>& packages, const std::string& envName);
+         const VFS::Manager* mVFS;
+         std::vector<std::filesystem::path> mLibSearchPaths;
+ 
+diff --git a/openmw/apps/openmw/mwrender/objectpaging.cpp b/openmw/apps/openmw/mwrender/objectpaging.cpp
+index d0855b8..b5226d2 100644
+--- a/openmw/apps/openmw/mwrender/objectpaging.cpp
++++ b/openmw/apps/openmw/mwrender/objectpaging.cpp
+@@ -1,5 +1,9 @@
+ #include "objectpaging.hpp"
+ 
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <list>
+ #include <unordered_map>
+ #include <vector>
+ 
+@@ -515,6 +519,7 @@ namespace MWRender
+         , mMinSizeMergeFactor(Settings::terrain().mObjectPagingMinSizeMergeFactor)
+         , mMinSizeCostMultiplier(Settings::terrain().mObjectPagingMinSizeCostMultiplier)
+         , mRefTrackerLocked(false)
++        , mOrthrosKeptRefs(orthrosNewKeptRefs())
+     {
+     }
+ 
+@@ -551,8 +556,9 @@ namespace MWRender
+             };
+         }
+ 
++        // (Orthros, OPENMW_ORTHROS_CHUNKREFS: `failed`, if given, set when a cell's references could not all be read)
+         std::map<ESM::RefNum, PagedCellRef> collectESM3References(
+-            float size, const osg::Vec2i& startCell, const MWWorld::ESMStore& store)
++            float size, const osg::Vec2i& startCell, const MWWorld::ESMStore& store, bool* failed = nullptr)
+         {
+             std::map<ESM::RefNum, PagedCellRef> refs;
+             ESM::ReadersCache readers;
+@@ -599,6 +605,8 @@ namespace MWRender
+                         {
+                             Log(Debug::Warning) << "Failed to collect references from cell \"" << cell->getDescription()
+                                                 << "\": " << e.what();
++                            if (failed != nullptr)
++                                *failed = true;
+                             continue;
+                         }
+                     }
+@@ -659,6 +667,152 @@ namespace MWRender
+         }
+     }
+ 
++    // Orthros (OPENMW_ORTHROS_CHUNKREFS): a chunk is listed before it is built -- chunkReady() and orthrosChunkFiles()
++    // (orthros-r5/r10/r13.patch) read its cells' references from the content files to ask for its meshes -- and
++    // createChunk() then read them all again, on the page's thread, in the same terrain preload slice or a few slices
++    // later: about a quarter of a chunk build (a 60 s glide's profile: 159 of createChunk's 673 ms, 136 more in the
++    // listing). collectESM3References() depends only on the chunk's size and first cell and on the content files'
++    // records, which never change once loaded (ESMStore's static part, the cells' contexts, moved and leased
++    // references; every read after the content load is the files' own bytes, VFS::orthrosContentLoad), so what the
++    // listing read is what createChunk() would read: it is kept, by chunk, and createChunk() takes it -- the same
++    // references in, the same chunk out. Bounded (OrthrosKeptRefs::kMaxChunks chunks, kMaxRefs references): a chunk
++    // listed and never built (a preload aborted, the player gone) is dropped oldest first, and its build, if it comes,
++    // reads them as before. A listing that could not read every cell's references (a read failed: "Failed to collect
++    // references") keeps nothing: its build reads them again, as before. Read once: absent = on; "0" = every build
++    // reads its references again, as before; "check" = the build reads them again and compares them with those kept
++    // (counted, those listed by orthrosChunkFiles() apart; a difference logged), and uses those it read.
++    namespace
++    {
++        int orthrosChunkRefsMode()
++        {
++            static const int mode = [] {
++                const char* value = std::getenv("OPENMW_ORTHROS_CHUNKREFS");
++                const int m = value == nullptr  ? 1
++                    : std::strcmp(value, "0") == 0     ? 0
++                    : std::strcmp(value, "check") == 0 ? 2
++                                                       : 1;
++                Log(Debug::Info) << "Orthros: a chunk's references read once for its listing and its build: "
++                                 << (m == 0 ? "off" : m == 2 ? "check" : "on") << " (OPENMW_ORTHROS_CHUNKREFS)";
++                return m;
++            }();
++            return mode;
++        }
++
++        bool orthrosSameRef(const PagedCellRef& a, const PagedCellRef& b)
++        {
++            // (bits, not values: a NaN kept is the same NaN)
++            return a.mRefId == b.mRefId && a.mRefNum == b.mRefNum
++                && std::memcmp(a.mPosition.ptr(), b.mPosition.ptr(), sizeof(float) * 3) == 0
++                && std::memcmp(a.mRotation.ptr(), b.mRotation.ptr(), sizeof(float) * 3) == 0
++                && std::memcmp(&a.mScale, &b.mScale, sizeof(float)) == 0;
++        }
++    }
++
++    struct ObjectPaging::OrthrosKeptRefs
++    {
++        using Refs = std::map<ESM::RefNum, PagedCellRef>;
++        static constexpr std::size_t kMaxChunks = 256;
++        static constexpr std::size_t kMaxRefs = 262144; // (about 25 MB at most)
++        struct Entry
++        {
++            Refs mRefs;
++            std::list<ChunkId>::iterator mOrder;
++            bool mFromFiles; // (listed by orthrosChunkFiles(), not chunkReady())
++        };
++        std::mutex mMutex;
++        std::map<ChunkId, Entry> mByChunk;
++        std::list<ChunkId> mOrder; // (oldest first)
++        std::size_t mRefs = 0;
++        std::uint64_t mKept = 0, mTaken = 0, mRead = 0, mDropped = 0, mChecked = 0, mCheckedFromFiles = 0,
++                      mDiffer = 0, mBuilds = 0;
++
++        void eraseLocked(std::map<ChunkId, Entry>::iterator it)
++        {
++            mRefs -= it->second.mRefs.size();
++            mOrder.erase(it->second.mOrder);
++            mByChunk.erase(it);
++        }
++
++        void keep(const ChunkId& id, Refs&& refs, bool fromFiles)
++        {
++            const std::lock_guard lock(mMutex);
++            if (const auto found = mByChunk.find(id); found != mByChunk.end())
++                eraseLocked(found); // (listed again: the same references, read anew)
++            if (refs.size() > kMaxRefs)
++            {
++                ++mDropped;
++                return;
++            }
++            while (!mOrder.empty() && (mByChunk.size() >= kMaxChunks || mRefs + refs.size() > kMaxRefs))
++            {
++                eraseLocked(mByChunk.find(mOrder.front()));
++                ++mDropped;
++            }
++            mOrder.push_back(id);
++            mRefs += refs.size();
++            mByChunk.emplace(id, Entry{ std::move(refs), std::prev(mOrder.end()), fromFiles });
++            ++mKept;
++        }
++
++        bool take(const ChunkId& id, Refs& refs, bool& fromFiles)
++        {
++            const std::lock_guard lock(mMutex);
++            const auto found = mByChunk.find(id);
++            if (found == mByChunk.end())
++            {
++                ++mRead;
++                return false;
++            }
++            fromFiles = found->second.mFromFiles;
++            Refs taken = std::move(found->second.mRefs);
++            found->second.mRefs = Refs();
++            mOrder.erase(found->second.mOrder);
++            mRefs -= taken.size();
++            mByChunk.erase(found);
++            refs = std::move(taken);
++            ++mTaken;
++            return true;
++        }
++
++        void check(const Refs& kept, const Refs& read, bool fromFiles)
++        {
++            const std::lock_guard lock(mMutex);
++            ++mChecked;
++            if (fromFiles)
++                ++mCheckedFromFiles;
++            bool same = kept.size() == read.size();
++            for (auto a = kept.begin(), b = read.begin(); same && a != kept.end(); ++a, ++b)
++                same = a->first == b->first && orthrosSameRef(a->second, b->second);
++            if (!same && ++mDiffer <= 5)
++                Log(Debug::Warning) << "Orthros: chunk references check: the references kept differ from those read ("
++                                    << kept.size() << " kept, " << read.size() << " read)";
++        }
++
++        void built()
++        {
++            const std::lock_guard lock(mMutex);
++            if (++mBuilds % 256 == 0)
++                Log(Debug::Info) << "Orthros: chunk references: " << mBuilds << " chunks built, " << mTaken
++                                 << " from their listing, " << mRead << " read, " << mKept << " kept, " << mDropped
++                                 << " dropped, " << mByChunk.size() << " held (" << mRefs << " references), "
++                                 << mChecked << " checked (" << mCheckedFromFiles << " listed by orthrosChunkFiles), "
++                                 << mDiffer << " different";
++        }
++
++        void clear()
++        {
++            const std::lock_guard lock(mMutex);
++            mByChunk.clear();
++            mOrder.clear();
++            mRefs = 0;
++        }
++    };
++
++    std::shared_ptr<ObjectPaging::OrthrosKeptRefs> ObjectPaging::orthrosNewKeptRefs()
++    {
++        return std::make_shared<OrthrosKeptRefs>();
++    }
++
+     osg::ref_ptr<osg::Node> ObjectPaging::getChunkForRay(float size, const osg::Vec2f& center, unsigned char lod,
+         unsigned int lodFlags, bool activeGrid, const osg::Vec3f& viewPoint, bool& missing)
+     {
+@@ -676,7 +830,10 @@ namespace MWRender
+         if (activeGrid && !mActiveGrid)
+             return true;
+         if (mOrthrosPending.size() > 1024)
++        {
+             mOrthrosPending.clear(); // (chunks asked and then never built: a preload aborted, the player gone)
++            mOrthrosKeptRefs->clear(); // (Orthros, OPENMW_ORTHROS_CHUNKREFS: theirs too)
++        }
+         const ChunkId id = std::make_tuple(center, size, activeGrid);
+         if (mCache->getRefFromObjectCache(id))
+         {
+@@ -702,7 +859,7 @@ namespace MWRender
+                 if (!VFS::orthrosRangesReady(ranges))
+                     return false;
+             }
+-            pending = mOrthrosPending.emplace(id, orthrosChunkModels(size, center, lodFlags, activeGrid)).first;
++            pending = mOrthrosPending.emplace(id, orthrosChunkModels(size, center, lodFlags, activeGrid, false)).first;
+         }
+         // (every mesh asked: all the missing files on their way at once; those here dropped from the list)
+         std::erase_if(pending->second, [&](const VFS::Path::Normalized& model) { return mSceneManager->orthrosTemplateReady(model); });
+@@ -713,7 +870,7 @@ namespace MWRender
+     }
+ 
+     std::vector<VFS::Path::Normalized> ObjectPaging::orthrosChunkModels(
+-        float size, const osg::Vec2f& center, unsigned int lodFlags, bool activeGrid)
++        float size, const osg::Vec2f& center, unsigned int lodFlags, bool activeGrid, bool fromFiles)
+     {
+         // (getChunk's own level: its lodFlags' high bits)
+         const unsigned char lod = static_cast<unsigned char>(lodFlags >> (4 * 4));
+@@ -721,8 +878,9 @@ namespace MWRender
+             static_cast<int>(std::floor(center.y() - size / 2.f)));
+         const MWBase::World& world = *MWBase::Environment::get().getWorld();
+         const MWWorld::ESMStore& store = world.getStore();
+-        const std::map<ESM::RefNum, PagedCellRef> refs = mWorldspace == ESM::Cell::sDefaultWorldspaceId
+-            ? collectESM3References(size, startCell, store)
++        bool failed = false; // (Orthros, OPENMW_ORTHROS_CHUNKREFS: a cell's references not all read)
++        std::map<ESM::RefNum, PagedCellRef> refs = mWorldspace == ESM::Cell::sDefaultWorldspaceId
++            ? collectESM3References(size, startCell, store, &failed)
+             : collectESM4References(size, startCell, mWorldspace);
+         std::set<VFS::Path::Normalized> models;
+         for (const auto& [refNum, ref] : refs)
+@@ -753,6 +911,9 @@ namespace MWRender
+             }
+             models.insert(std::move(model));
+         }
++        // Orthros (OPENMW_ORTHROS_CHUNKREFS): what was read kept for the chunk's build -- all of it read, only
++        if (mWorldspace == ESM::Cell::sDefaultWorldspaceId && !failed && orthrosChunkRefsMode() != 0)
++            mOrthrosKeptRefs->keep(std::make_tuple(center, size, activeGrid), std::move(refs), fromFiles);
+         return std::vector<VFS::Path::Normalized>(models.begin(), models.end());
+     }
+ 
+@@ -768,7 +929,7 @@ namespace MWRender
+         const ChunkId id = std::make_tuple(center, size, activeGrid);
+         auto pending = mOrthrosPending.find(id);
+         if (pending == mOrthrosPending.end())
+-            pending = mOrthrosPending.emplace(id, orthrosChunkModels(size, center, lodFlags, activeGrid)).first;
++            pending = mOrthrosPending.emplace(id, orthrosChunkModels(size, center, lodFlags, activeGrid, true)).first;
+         meshes.insert(meshes.end(), pending->second.begin(), pending->second.end());
+     }
+ 
+@@ -786,7 +947,22 @@ namespace MWRender
+ 
+         if (mWorldspace == ESM::Cell::sDefaultWorldspaceId)
+         {
+-            refs = collectESM3References(size, startCell, store);
++            // Orthros (OPENMW_ORTHROS_CHUNKREFS): those its listing read, if kept; read otherwise
++            const int refsMode = orthrosChunkRefsMode();
++            bool fromFiles = false;
++            if (refsMode != 0 && mOrthrosKeptRefs->take(std::make_tuple(center, size, activeGrid), refs, fromFiles))
++            {
++                if (refsMode == 2)
++                {
++                    std::map<ESM::RefNum, PagedCellRef> read = collectESM3References(size, startCell, store);
++                    mOrthrosKeptRefs->check(refs, read, fromFiles);
++                    refs = std::move(read);
++                }
++            }
++            else
++                refs = collectESM3References(size, startCell, store);
++            if (refsMode != 0)
++                mOrthrosKeptRefs->built();
+         }
+         else
+         {
+@@ -1241,6 +1417,7 @@ namespace MWRender
+ 
+     void ObjectPaging::clear()
+     {
++        mOrthrosKeptRefs->clear(); // (Orthros, OPENMW_ORTHROS_CHUNKREFS: a new game or a game loaded)
+         std::lock_guard<std::mutex> lock(mRefTrackerMutex);
+         mRefTrackerNew.mDisabled.clear();
+         mRefTrackerNew.mBlacklist.clear();
+diff --git a/openmw/apps/openmw/mwrender/objectpaging.hpp b/openmw/apps/openmw/mwrender/objectpaging.hpp
+index c033cb5..9b657d5 100644
+--- a/openmw/apps/openmw/mwrender/objectpaging.hpp
++++ b/openmw/apps/openmw/mwrender/objectpaging.hpp
+@@ -5,6 +5,7 @@
+ #include <components/resource/resourcemanager.hpp>
+ #include <components/terrain/quadtreeworld.hpp>
+ 
++#include <memory>
+ #include <mutex>
+ 
+ namespace Resource
+@@ -104,8 +105,16 @@ namespace MWRender
+ 
+         /// Orthros (orthros-r10.patch): the meshes createChunk() may use for the chunk (a few it skips included),
+         /// corrected as it does (LOD names outside the active grid). Main thread.
++        /// `fromFiles`: listed by orthrosChunkFiles() (true) or chunkReady() (OPENMW_ORTHROS_CHUNKREFS's counters).
+         std::vector<VFS::Path::Normalized> orthrosChunkModels(
+-            float size, const osg::Vec2f& center, unsigned int lodFlags, bool activeGrid);
++            float size, const osg::Vec2f& center, unsigned int lodFlags, bool activeGrid, bool fromFiles);
++
++        /// Orthros (OPENMW_ORTHROS_CHUNKREFS): the references orthrosChunkModels() read from the content files for a
++        /// chunk, kept until createChunk() builds it so that they are not read a second time (objectpaging.cpp). Made
++        /// in the constructor, never replaced (createChunk() may run on another thread: the pointer is only read).
++        struct OrthrosKeptRefs;
++        static std::shared_ptr<OrthrosKeptRefs> orthrosNewKeptRefs();
++        const std::shared_ptr<OrthrosKeptRefs> mOrthrosKeptRefs;
+     };
+ 
+     class RefnumMarker : public osg::Object
+diff --git a/deps/src/osg/src/osg/Program.cpp b/deps/src/osg/src/osg/Program.cpp
+index a9252a8..141fb7a 100644
+--- a/deps/src/osg/src/osg/Program.cpp
++++ b/deps/src/osg/src/osg/Program.cpp
+@@ -97,6 +97,8 @@ namespace
+         std::map<unsigned long long, const Program*> bySerial;
+         // (GL thread only, under the mutex) compiled by a pass and not applied by a draw since
+         std::unordered_set<const Program*> precompiledUnapplied;
++        // (OPENMW_ORTHROS_LATEPROGRAMS only, under the mutex) compiled for a link at least once: by a pass or otherwise
++        std::unordered_set<const Program*> linkedOnce;
+         // (its size, read by Program::apply without the lock)
+         std::atomic<size_t> unappliedSize{ 0 };
+         // the serial given last when the latest Finish pass ran (0: none yet)
+@@ -148,6 +150,7 @@ namespace
+         }
+         r.precompiledUnapplied.erase(program);
+         r.unappliedSize.store(r.precompiledUnapplied.size(), std::memory_order_relaxed);
++        r.linkedOnce.erase(program);
+     }
+ 
+     void orthrosPublish(OrthrosProgramRegistry& r)
+@@ -195,6 +198,42 @@ namespace
+     }
+ }
+ 
++// Orthros (OPENMW_ORTHROS_LATEPROGRAMS, components/shader/shadermanager.cpp): a program compiled in play — by the
++// incremental compile operation or at a draw, after the first Finish pass and outside every pass — is reported to the
++// engine through this hook (set once by the engine), which learns it so that the next sessions make it before their
++// first loading screen and the passes compile it there. The hook runs on the GL thread before the compile.
++// Only a program's first link in play is reported: not a relink (a setGlobalDefines in play — a settings change —
++// re-sources every shader and every program drawn relinks; those were compiled before, they are not new materials),
++// and not a compile under a loading screen (an incremental compile operation's while a door's or a crossing's loading
++// screen is up: cheap there, and the loading screens' passes compile what is left anyway).
++namespace
++{
++    std::atomic<void (*)(const Program*)> orthrosLateCompileHook{ nullptr };
++    std::atomic<bool> orthrosFinishedOnce{ false };
++    // (GL thread: set while orthrosCompileUnlinkedPrograms compiles)
++    thread_local bool orthrosInPass = false;
++    // the frame number of the latest loading pass (a loading screen's frame) since the latest Finish pass; -2: none
++    std::atomic<long long> orthrosLoadingFrame{ -2 };
++
++    // (a loading screen up: a loading pass ran at this frame or the one before — a compile that runs before the pass
++    // in the frame is counted under the previous frame's — and no Finish pass since; a loading too short to show its
++    // screen runs no pass, and its window ends one frame after the last)
++    bool orthrosUnderLoading(const State& state)
++    {
++        const long long last = orthrosLoadingFrame.load(std::memory_order_relaxed);
++        const FrameStamp* stamp = state.getFrameStamp();
++        return last >= 0 && stamp && static_cast<long long>(stamp->getFrameNumber()) <= last + 1;
++    }
++
++    // (true the first time the program is compiled for a link, on any path; GL thread)
++    bool orthrosFirstLink(const Program* program)
++    {
++        OrthrosProgramRegistry& r = orthrosProgramRegistry();
++        std::lock_guard<std::recursive_mutex> lock(r.mutex);
++        return r.linkedOnce.insert(program).second;
++    }
++}
++
+ namespace osg
+ {
+     /** Orthros: OPENMW_ORTHROS_PRECOMPILE read once (the page sets ENV before the engine starts); absent = on, 0 = off,
+@@ -205,6 +244,13 @@ namespace osg
+         return enabled;
+     }
+ 
++    /** Orthros (OPENMW_ORTHROS_LATEPROGRAMS): the engine's hook for the programs compiled in play (see above); null:
++     * none. Not declared in an OSG header (the caller declares it). */
++    void orthrosSetLateCompileHook(void (*hook)(const Program*))
++    {
++        orthrosLateCompileHook.store(hook);
++    }
++
+     /** Orthros (OPENMW_ORTHROS_PRECOMPILE): compiles and links, on the State's context, the Programs that a draw would
+      * compile at its first apply: those with shaders whose per-context program is not linked yet (and not tried: a
+      * failed link is not tried again, as at a draw), in registration order. Only a program none of whose imported
+@@ -228,6 +274,12 @@ namespace osg
+         r.glThread = std::this_thread::get_id();
+         r.glThreadKnown = true;
+         std::vector<std::pair<unsigned long long, const Program*>> order(r.bySerial.begin(), r.bySerial.end());
++        // (OPENMW_ORTHROS_LATEPROGRAMS: what this pass compiles is not late)
++        struct InPass
++        {
++            InPass() { orthrosInPass = true; }
++            ~InPass() { orthrosInPass = false; }
++        } inPass;
+         for (const auto& entry : order)
+         {
+             const Program* program = entry.second;
+@@ -274,7 +326,11 @@ namespace osg
+             r.finishCompiled += compiled;
+             r.finishMs += ms;
+             r.finishSerial = r.nextSerial;
++            orthrosFinishedOnce.store(true, std::memory_order_relaxed);
++            orthrosLoadingFrame.store(-2, std::memory_order_relaxed);
+         }
++        else if (const FrameStamp* stamp = state.getFrameStamp())
++            orthrosLoadingFrame.store(static_cast<long long>(stamp->getFrameNumber()), std::memory_order_relaxed);
+         r.left = notStarted;
+         r.withDefines = passedOver;
+         orthrosPublish(r);
+@@ -436,6 +492,15 @@ void Program::compileGLObjects( osg::State& state ) const
+ {
+     if( _shaderList.empty() ) return;
+ 
++    // (Orthros, OPENMW_ORTHROS_LATEPROGRAMS: a program's first link in play, not in a pass nor under a loading screen,
++    // reported — see above. Hook null — the switch off, or before the engine set it —: as before. Set: getPCP is
++    // called here, before the shaders compile, instead of after them below: the per-context program object is made
++    // a few calls earlier, the same object, linked the same way)
++    if (void (*hook)(const Program*) = orthrosLateCompileHook.load())
++        if (getPCP(state)->needsLink() && orthrosFirstLink(this) && orthrosFinishedOnce.load(std::memory_order_relaxed)
++            && !orthrosInPass && !orthrosUnderLoading(state))
++            hook(this);
++
+     for( unsigned int i=0; i < _shaderList.size(); ++i )
+     {
+         _shaderList[i]->compileShader( state );
+diff --git a/openmw/components/shader/shadermanager.cpp b/openmw/components/shader/shadermanager.cpp
+index 366398b..9fd3572 100644
+--- a/openmw/components/shader/shadermanager.cpp
++++ b/openmw/components/shader/shadermanager.cpp
+@@ -7,8 +7,10 @@
+ #endif
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cassert>
+ #include <chrono>
++#include <cstdlib>
+ #include <filesystem>
+ #include <format>
+ #include <fstream>
+@@ -16,6 +18,7 @@
+ #include <sstream>
+ #include <system_error>
+ #include <unordered_map>
++#include <unordered_set>
+ 
+ #include <osg/Program>
+ #include <osgViewer/Viewer>
+@@ -497,6 +500,317 @@ namespace
+     }
+ }
+ 
++#ifdef __EMSCRIPTEN__
++namespace osg
++{
++    // (osg/Program.cpp, OPENMW_ORTHROS_PRECOMPILE and OPENMW_ORTHROS_LATEPROGRAMS: declared here, no OSG header changes)
++    bool orthrosPrecompileEnabled();
++    void orthrosSetLateCompileHook(void (*hook)(const Program*));
++}
++
++namespace
++{
++    // Orthros (OPENMW_ORTHROS_LATEPROGRAMS; absent = on, 0 = off, off as well without OPENMW_ORTHROS_PRECOMPILE): the
++    // programs a session had to compile in play are made at the next sessions' start.
++    //
++    // A program made after the loading screens (a new material's define combination met by a cell or a distant chunk
++    // the cooperative preload builds while the player moves on) is compiled by the incremental compile operation or at
++    // its first draw: in a browser, reading its statuses waits for the GPU process to execute everything queued before
++    // them and then to compile it (120-270 ms on our SwiftShader server, where the GPU process is always a few frames
++    // behind, so no moment in play is cheap; WebGL there has no KHR_parallel_shader_compile, and a compile issued
++    // ahead is not started before its status is read). Its define combination cannot be told before its mesh is
++    // loaded, but it can be remembered: osg::Program::compileGLObjects reports each program linked for the first time
++    // in play (after the first loading screen's last pass, outside the passes, not under a loading screen, not a
++    // relink; orthrosOnLateCompile); a program ShaderManager made from a template with the default program template
++    // is identified by that template's name and its defines, one line in the page's localStorage (see below: the
++    // browser's, per origin, as the IndexedDB user config; not a file of the player's profile, so neither the
++    // account's copy of the profile, cloud.js, nor a profile backup ever sees it, and no sync is asked). At the next
++    // start the first setGlobalDefines (RenderingManager's constructor, before the
++    // first loading screen) makes each line's program through getProgram, the same call ShaderVisitor makes: the same
++    // shaders, sources and Program object the session would make later, made earlier; the loading screens' passes
++    // (OPENMW_ORTHROS_PRECOMPILE) then compile it, and the preload that meets the material later gets that program,
++    // already linked. Nothing drawn changes: no program, source or state is different, only when the compile is done.
++    // At most kMaxLines lines (the oldest dropped first); a line whose shaders cannot be made is dropped. Counters:
++    // globalThis.__omwLatePrograms.
++    constexpr std::size_t kMaxLines = 64;
++    // (the lines are kept in the page's localStorage under 'orthros.openmw.latePrograms.1' — written out in the two
++    // EM_ASM below, which stringify their code —: the lines, oldest first, each ended by '\n')
++
++    struct OrthrosLearnedPrograms
++    {
++        std::mutex mutex;
++        // the programs getProgram(templateName, defines) made with no program template: their line
++        std::unordered_map<const osg::Program*, std::string> lineOf;
++        // programs some caller asked for with its own program template: never learned
++        std::unordered_set<const osg::Program*> templated;
++        // the stored lines, oldest first, and the lines learned in play not stored yet
++        std::vector<std::string> lines, pending;
++        std::set<std::string> known;
++        std::atomic<bool> dirty{ false };
++        bool prepared = false;
++        // counters
++        int made = 0, failed = 0, late = 0, lateOther = 0, learned = 0, writes = 0;
++        double prepareMs = 0;
++    };
++
++    OrthrosLearnedPrograms& orthrosLearned()
++    {
++        // (never destroyed: programs may be compiled while statics are destroyed)
++        static OrthrosLearnedPrograms* learned = new OrthrosLearnedPrograms;
++        return *learned;
++    }
++
++    bool orthrosReadLateProgramsSwitch()
++    {
++        const char* value = getenv("OPENMW_ORTHROS_LATEPROGRAMS");
++        if (value && value[0] == '0' && value[1] == 0)
++        {
++            Log(Debug::Info) << "OPENMW_ORTHROS_LATEPROGRAMS=0: the programs compiled in play are neither learned nor made ahead";
++            return false;
++        }
++        if (!osg::orthrosPrecompileEnabled())
++        {
++            Log(Debug::Info) << "OPENMW_ORTHROS_LATEPROGRAMS off: it needs OPENMW_ORTHROS_PRECOMPILE";
++            return false;
++        }
++        return true;
++    }
++
++    bool orthrosLateProgramsEnabled()
++    {
++        static const bool enabled = orthrosReadLateProgramsSwitch();
++        return enabled;
++    }
++
++    bool orthrosLineSafe(std::string_view text, bool templateName)
++    {
++        if (text.empty())
++            return false;
++        for (char c : text)
++        {
++            const bool ok = templateName ? ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
++                                               || c == '_' || c == '-' || c == '.' || c == '/')
++                                         : (c >= 0x20 && c < 0x7f && c != '=');
++            if (!ok)
++                return false;
++        }
++        return !templateName || (text.find("..") == std::string_view::npos && text.front() != '/');
++    }
++
++    // "<templateName>\t<define>=<value>\t..." in the DefineMap's order; empty: not representable
++    std::string orthrosLine(const std::string& templateName, const Shader::ShaderManager::DefineMap& defines)
++    {
++        if (!orthrosLineSafe(templateName, true))
++            return {};
++        std::string line = templateName;
++        for (const auto& [name, value] : defines)
++        {
++            if (!orthrosLineSafe(name, false) || (!value.empty() && !orthrosLineSafe(value, false)))
++                return {};
++            line += '\t';
++            line += name;
++            line += '=';
++            line += value;
++        }
++        return line;
++    }
++
++    bool orthrosParseLine(const std::string& line, std::string& templateName, Shader::ShaderManager::DefineMap& defines)
++    {
++        std::size_t start = 0, end = line.find('\t');
++        templateName = line.substr(0, end);
++        if (!orthrosLineSafe(templateName, true))
++            return false;
++        while (end != std::string::npos)
++        {
++            start = end + 1;
++            end = line.find('\t', start);
++            const std::string field = line.substr(start, end == std::string::npos ? std::string::npos : end - start);
++            const std::size_t eq = field.find('=');
++            if (eq == std::string::npos || eq == 0)
++                return false;
++            defines[field.substr(0, eq)] = field.substr(eq + 1);
++        }
++        // (the canonical form only: what orthrosLine writes for these)
++        return orthrosLine(templateName, defines) == line;
++    }
++
++    // (the counters, copied under the mutex by the caller: the GL thread changes them, DRAWTHREAD)
++    struct OrthrosLearnedCounters
++    {
++        int lines, made, failed, late, lateOther, learned, writes;
++        double prepareMs;
++    };
++
++    OrthrosLearnedCounters orthrosCountersLocked(const OrthrosLearnedPrograms& l)
++    {
++        return { static_cast<int>(l.lines.size()), l.made, l.failed, l.late, l.lateOther, l.learned, l.writes,
++            l.prepareMs };
++    }
++
++    void orthrosPublishLearned(const OrthrosLearnedCounters& c)
++    {
++        // clang-format off
++        MAIN_THREAD_ASYNC_EM_ASM({
++            var p = globalThis.__omwLatePrograms || (globalThis.__omwLatePrograms = {});
++            p.lines = $0; p.made = $1; p.failed = $2; p.late = $3; p.lateOther = $4; p.learned = $5; p.writes = $6;
++            p.prepareMs = $7;
++        }, c.lines, c.made, c.failed, c.late, c.lateOther, c.learned, c.writes, c.prepareMs);
++        // clang-format on
++    }
++
++    // (osg::Program::compileGLObjects, GL thread: a program compiled in play)
++    void orthrosOnLateCompile(const osg::Program* program)
++    {
++        OrthrosLearnedPrograms& l = orthrosLearned();
++        std::lock_guard<std::mutex> lock(l.mutex);
++        auto it = l.lineOf.find(program);
++        if (it == l.lineOf.end() || l.templated.count(program))
++        {
++            ++l.lateOther;
++            return;
++        }
++        ++l.late;
++        if (!l.known.insert(it->second).second)
++            return;
++        l.pending.push_back(it->second);
++        ++l.learned;
++        l.dirty.store(true, std::memory_order_release);
++    }
++
++    // (getProgram(templateName, defines, programTemplate): the line of a program made from a template)
++    void orthrosNoteProgram(const osg::Program* program, const std::string& templateName,
++        const Shader::ShaderManager::DefineMap& defines, bool withTemplate)
++    {
++        OrthrosLearnedPrograms& l = orthrosLearned();
++        std::lock_guard<std::mutex> lock(l.mutex);
++        if (withTemplate)
++        {
++            l.templated.insert(program);
++            return;
++        }
++        if (l.lineOf.count(program))
++            return;
++        std::string line = orthrosLine(templateName, defines);
++        if (!line.empty())
++            l.lineOf.emplace(program, std::move(line));
++    }
++
++    // (ShaderManager::update, the engine's main thread: the lines learned since, stored; the text built under the
++    // mutex, stored after it — the GL thread's hook and getProgram's notes never wait on the page)
++    void orthrosWriteLearned(OrthrosLearnedPrograms& l)
++    {
++        std::string text;
++        OrthrosLearnedCounters counters;
++        {
++            std::lock_guard<std::mutex> lock(l.mutex);
++            for (std::string& line : l.pending)
++                l.lines.push_back(std::move(line));
++            l.pending.clear();
++            while (l.lines.size() > kMaxLines)
++            {
++                l.known.erase(l.lines.front());
++                l.lines.erase(l.lines.begin());
++            }
++            for (const std::string& line : l.lines)
++            {
++                text += line;
++                text += '\n';
++            }
++            ++l.writes;
++            counters = orthrosCountersLocked(l);
++        }
++        // (a few KB at most, set once per program learned: rare. Synchronous, the text lives on this stack)
++        // clang-format off
++        const int stored = MAIN_THREAD_EM_ASM_INT({
++            try { localStorage.setItem('orthros.openmw.latePrograms.1', UTF8ToString($0)); return 1; } catch (e) { return 0; }
++        }, text.c_str());
++        // clang-format on
++        if (!stored)
++            Log(Debug::Warning) << "OPENMW_ORTHROS_LATEPROGRAMS: localStorage refused the learned programs";
++        orthrosPublishLearned(counters);
++    }
++
++    // (the stored lines; empty: none, or no localStorage)
++    std::string orthrosReadStored()
++    {
++        // clang-format off
++        char* text = static_cast<char*>(MAIN_THREAD_EM_ASM_PTR({
++            try { var t = localStorage.getItem('orthros.openmw.latePrograms.1'); return t ? stringToNewUTF8(t) : 0; }
++            catch (e) { return 0; }
++        }));
++        // clang-format on
++        if (!text)
++            return {};
++        std::string out(text);
++        std::free(text);
++        return out;
++    }
++
++    // (the first setGlobalDefines: every line's program made now, before the first loading screen)
++    void orthrosPrepareLearned(Shader::ShaderManager& manager)
++    {
++        OrthrosLearnedPrograms& l = orthrosLearned();
++        if (l.prepared)
++            return;
++        l.prepared = true;
++        const auto t0 = std::chrono::steady_clock::now();
++        std::vector<std::string> lines;
++        {
++            std::istringstream in(orthrosReadStored());
++            std::string line;
++            std::set<std::string> seen;
++            while (std::getline(in, line))
++                if (!line.empty() && line[0] != '#' && seen.insert(line).second)
++                    lines.push_back(line);
++        }
++        std::vector<std::string> kept;
++        for (const std::string& line : lines)
++        {
++            std::string templateName;
++            Shader::ShaderManager::DefineMap defines;
++            bool ok = orthrosParseLine(line, templateName, defines);
++            if (ok)
++            {
++                try
++                {
++                    // (records the line itself, orthrosNoteProgram)
++                    ok = manager.getProgram(templateName, defines) != nullptr;
++                }
++                catch (const std::exception& e)
++                {
++                    Log(Debug::Warning) << "OPENMW_ORTHROS_LATEPROGRAMS: " << templateName << ": " << e.what();
++                    ok = false;
++                }
++            }
++            if (ok)
++                kept.push_back(line);
++            else
++                ++l.failed;
++        }
++        {
++            std::lock_guard<std::mutex> lock(l.mutex);
++            l.made = static_cast<int>(kept.size());
++            for (const std::string& line : kept)
++                l.known.insert(line);
++            l.lines = std::move(kept);
++            l.prepareMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++            if (l.failed)
++                l.dirty.store(true, std::memory_order_release);
++        }
++        OrthrosLearnedCounters counters;
++        {
++            std::lock_guard<std::mutex> lock(l.mutex);
++            counters = orthrosCountersLocked(l);
++        }
++        Log(Debug::Info) << "OPENMW_ORTHROS_LATEPROGRAMS: " << l.made << " program(s) learned in play made ahead"
++                         << (l.failed ? ", " + std::to_string(l.failed) + " dropped" : std::string());
++        osg::orthrosSetLateCompileHook(&orthrosOnLateCompile);
++        orthrosPublishLearned(counters);
++    }
++}
++#endif
++
+ namespace Shader
+ {
+     struct HotReloadManager
+@@ -964,6 +1278,15 @@ namespace Shader
+         if (!vert || !frag)
+             throw std::runtime_error("failed initializing shader: " + templateName);
+ 
++#ifdef __EMSCRIPTEN__
++        // (Orthros, OPENMW_ORTHROS_LATEPROGRAMS: the program's template name and defines, see above)
++        if (orthrosLateProgramsEnabled())
++        {
++            osg::ref_ptr<osg::Program> program = getProgram(std::move(vert), std::move(frag), programTemplate);
++            orthrosNoteProgram(program.get(), templateName, defines, programTemplate != nullptr);
++            return program;
++        }
++#endif
+         return getProgram(std::move(vert), std::move(frag), programTemplate);
+     }
+ 
+@@ -1062,6 +1385,12 @@ namespace Shader
+             addLinkedShaders(pair.first, program);
+             addLinkedShaders(pair.second, program);
+         }
++#ifdef __EMSCRIPTEN__
++        // (Orthros, OPENMW_ORTHROS_LATEPROGRAMS: the first call — RenderingManager's constructor, before any loading
++        // screen — makes the programs learned in play by the earlier sessions, see above)
++        if (orthrosLateProgramsEnabled())
++            orthrosPrepareLearned(*this);
++#endif
+     }
+ 
+     void ShaderManager::releaseGLObjects(osg::State* state)
+@@ -1154,6 +1483,15 @@ namespace Shader
+     void ShaderManager::update(osgViewer::Viewer& viewer)
+     {
+         mHotReloadManager->update(*this, viewer);
++#ifdef __EMSCRIPTEN__
++        // (Orthros, OPENMW_ORTHROS_LATEPROGRAMS: the programs learned in play written, on the main thread)
++        if (orthrosLateProgramsEnabled())
++        {
++            OrthrosLearnedPrograms& learned = orthrosLearned();
++            if (learned.prepared && learned.dirty.exchange(false, std::memory_order_acq_rel))
++                orthrosWriteLearned(learned);
++        }
++#endif
+     }
+ 
+     void ShaderManager::setHotReloadEnabled(bool value)
