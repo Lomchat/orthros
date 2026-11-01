@@ -177,7 +177,10 @@ export const withQualityTier = (html) => html
     "|| (window.orthrosTier ? window.orthrosTier(__devMem) : (__devMem >= 8 ? 'high' : (__devMem > 0 && __devMem <= 4 ? 'low' : 'mid')));")
   .replace("append('[tier] '+__tier+' (navigator.deviceMemory='", "append('[tier] '+__tier+(window.orthrosTierChoice ? ' (gpu: '+window.orthrosTierChoice.kind+')' : '')+' (navigator.deviceMemory='")
   .replace("'refraction = ' + (/[?&]norefr=1\\b/.test(location.search) ? 'false' : 'true')",
-    "'refraction = ' + (/[?&]norefr=1\\b/.test(location.search) || (!/[?&]refr=1\\b/.test(location.search) && window.orthrosTierSettings && !window.orthrosTierSettings(__tier).refraction) ? 'false' : 'true')");
+    "'refraction = ' + (/[?&]norefr=1\\b/.test(location.search) || (!/[?&]refr=1\\b/.test(location.search) && window.orthrosTierSettings && !window.orthrosTierSettings(__tier).refraction) ? 'false' : 'true')")
+  .replace('}[__tier];', "}[__tier];\n         var __ts = window.orthrosTierSettings ? window.orthrosTierSettings(__tier) : {};\n         if (__ts.vd) TIER = Object.assign({}, TIER, { vd: String(__ts.vd) });")
+  .replace("'distant land fog start = 12288\\n' +", "'distant land fog start = ' + (__ts.fog ? __ts.fog.start : 12288) + '\\n' +")
+  .replace("'distant land fog end = 16384\\n' +", "'distant land fog end = ' + (__ts.fog ? __ts.fog.end : 16384) + '\\n' +");
 
 /**
  * The keyboard layout every player gets (src/ports/openmw/input-keys.js: Activate on E, Jump on Space): the module loaded

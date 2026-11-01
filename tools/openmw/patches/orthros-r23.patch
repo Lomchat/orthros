@@ -1,0 +1,13 @@
+--- a/openmw/apps/openmw/mwinput/bindingsmanager.cpp
++++ b/openmw/apps/openmw/mwinput/bindingsmanager.cpp
+@@ -276,7 +276,9 @@
+         defaultKeyBindings[A_Journal] = SDL_SCANCODE_J;
+         defaultKeyBindings[A_Rest] = SDL_SCANCODE_T;
+         defaultKeyBindings[A_GameMenu] = SDL_SCANCODE_ESCAPE;
+-        defaultKeyBindings[A_TogglePOV] = SDL_SCANCODE_TAB;
++        // Orthros (orthros-r23.patch): Toggle POV on V, Tab left free for the inventory (the owner, 2026-11-01; a saved
++        // bindings file with Toggle POV on Tab is moved to V once by the page, src/ports/openmw/input-keys.js)
++        defaultKeyBindings[A_TogglePOV] = SDL_SCANCODE_V;
+         defaultKeyBindings[A_QuickKey1] = SDL_SCANCODE_1;
+         defaultKeyBindings[A_QuickKey2] = SDL_SCANCODE_2;
+         defaultKeyBindings[A_QuickKey3] = SDL_SCANCODE_3;

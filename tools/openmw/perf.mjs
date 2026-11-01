@@ -63,6 +63,15 @@ const dir = arg('--out', `/tmp/orthros-scratch/openmw-perf-${id}`);
 fs.mkdirSync(dir, { recursive: true }); process.env.TMPDIR = dir;
 // (--workers: Chromium's debugging socket on a free local port besides Playwright's pipe)
 const cdpPort = workers ? await new Promise((ok) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => ok(p)); }); }) : null;
+// (a whole run's bound, --deadline s: the boot's 10 min, the warm and measured seconds, 5 min for the rest — a page or a
+// browser that hangs past it ends the run with an error and the browser closed, never a slot held for hours)
+const deadlineS = Number(arg('--deadline', 600 + warm + seconds + 300));
+const watchdog = setTimeout(() => {
+  console.error(`perf: no result after ${deadlineS} s: stopped`);
+  try { browser.close().catch(() => {}).finally(() => process.exit(2)); } catch { process.exit(2); } // (before the launch ended: exit at once)
+  setTimeout(() => process.exit(2), 10000).unref();
+}, deadlineS * 1000);
+watchdog.unref();
 const browser = await chromium.launch(launchOptions({ gl: 'swiftshader', channel: arg('--channel', 'chromium'), args: cdpPort ? [`--remote-debugging-port=${cdpPort}`] : [] }));
 const faults = [], logLines = [];
 let logCount = 0;

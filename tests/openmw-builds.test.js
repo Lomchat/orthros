@@ -686,3 +686,14 @@ test('r22: r21 plus its patch, the same exports; sandboxes made from shared load
   // (measured in round 14 and rejected: the crossing's activations deferred move the cost to the next frame)
   assert.ok(!added.includes('OPENMW_ORTHROS_ACTIVELATE'));
 });
+
+test('r23: r22 plus its patch, the same exports; Toggle POV\'s default on V, Tab left free (src/ports/openmw/input-keys.js moves a saved Tab once)', () => {
+  const r22 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r22'), r23 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r23');
+  assert.ok(r23, 'r23 is a build');
+  assert.deepEqual(r23.patches, [...r22.patches, 'orthros-r23.patch']);
+  assert.deepEqual(r23.exports, r22.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r23.patch'), 'utf8');
+  assert.ok(patch.includes('+++ b/openmw/apps/openmw/mwinput/bindingsmanager.cpp'));
+  assert.ok(patch.includes('-        defaultKeyBindings[A_TogglePOV] = SDL_SCANCODE_TAB;'));
+  assert.ok(patch.includes('+        defaultKeyBindings[A_TogglePOV] = SDL_SCANCODE_V;'));
+});

@@ -28,7 +28,16 @@ export const FRAMES = {
  * engine page turned it on for every tier. Measured on the integrated GPUs' tier (docs/openmw.md, r9): the engine's
  * work p50 18.2-19.2 -> 16.7-16.8 ms a frame at Seyda Neen. On 'high' only; the player's Options still win.
  */
-export const tierSettings = (tier) => ({ refraction: tier === 'high' });
+export const tierSettings = (tier) => ({ refraction: tier === 'high', ...(VIEW[tier] ? { vd: VIEW[tier], fog: fogFor(VIEW[tier]) } : {}) });
+
+/**
+ * The view distance a tier asks over the engine page's TIER table (the owner, 2026-11-01: "la distance d'affichage est
+ * courte"): 'mid' 12288 -> 16384 (2 cells), 'high' 16384 -> 20480 (2.5 cells); measured on the GPU-less server, mid glide: 20480 cost ~25 % of the frames a second (23 -> 17), 16384 ~12 % (23 -> 20); 'low' keeps the page's 8192. The distant
+ * land fog follows it as the page set it for 12288 (start at the view distance, end at 4/3 of it: the vista's edge into
+ * the sky blend). A tier whose frames stay slow still steps down a tier (FRAMES), and the player's Options still win.
+ */
+export const VIEW = { mid: 16384, high: 20480 };
+export const fogFor = (vd) => ({ start: vd, end: Math.round(vd * 4 / 3) });
 
 const lower = (t) => TIERS[Math.max(0, TIERS.indexOf(t) - 1)];
 const min = (a, b) => TIERS[Math.min(TIERS.indexOf(a), TIERS.indexOf(b))];

@@ -99,3 +99,19 @@ test('the engine page: the module before the engine, the swap once its user file
     for (const k of ['orthrosInputReady = import', 'window.orthrosInputKeys(FS)', 'window.orthrosInputReady]).then']) assert.equal(real.split(k).length - 1, 1, `${id}: ${k}`);
   }
 });
+
+test('Toggle POV moved from Tab to V once (orthros-r23.patch\'s default), unless V is taken or POV is elsewhere', async () => {
+  const { movePov, migratePov, POV_MARK_FILE } = await import('../src/ports/openmw/input-keys.js');
+  const pov = (key) => control(30, [`<KeyBinder key="${key}" direction="INCREASE" />`]);
+  const before = file({ extra: pov(43) });
+  assert.equal(movePov(before), file({ extra: pov(25) }));
+  assert.equal(movePov(file({ extra: pov(20) })), null, 'POV moved by the player');
+  assert.equal(movePov(file({ extra: pov(43) + control(40, ['<KeyBinder key="25" direction="INCREASE" />']) })), null, 'V already taken');
+  assert.equal(movePov(file()), null, 'no POV control');
+  const fsys = memFs({ [INPUT_FILE]: before });
+  assert.equal(migratePov(fsys, () => 'T'), 'moved');
+  assert.equal(fsys.files.get(INPUT_FILE), file({ extra: pov(25) }));
+  assert.equal(migratePov(fsys), 'done', 'once');
+  assert.ok(JSON.parse(fsys.files.get(POV_MARK_FILE)).result === 'moved');
+  assert.equal(migratePov(memFs({})), 'none');
+});

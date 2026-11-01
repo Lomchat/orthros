@@ -58,9 +58,46 @@ export function migrate(FS, now = () => new Date().toISOString()) {
   return swapped !== null ? 'swapped' : 'kept';
 }
 
+// Second change of the layout (orthros-r23.patch): Toggle POV on V, Tab left free (in Vanilla+ a UI Modes overlay opens the
+// inventory with it, as I). A saved file whose Toggle POV is on Tab gets it on V, once, when no control uses V already.
+export const POV_MARK_FILE = '/userdata/config/openmw/orthros-input-pov.json';
+export const TOGGLE_POV = 30;
+export const TAB = 43, V = 25;
+
+/** The bindings file `xml` with Toggle POV moved from Tab to V, or null when it is not on Tab or V is taken. */
+export function movePov(xml) {
+  const binders = [];
+  for (const open of xml.matchAll(/<Control\b[^>]*>/g)) {
+    if (open[0].endsWith('/>')) continue;
+    const name = /\sname="(\d+)"/.exec(open[0]);
+    const start = open.index + open[0].length, end = xml.indexOf('</Control>', start);
+    if (!name || end < 0) return null;
+    for (const b of xml.slice(start, end).matchAll(/<KeyBinder\b[^>]*>/g)) {
+      const key = /\skey="(\d+)"/.exec(b[0]);
+      if (key) binders.push({ control: Number(name[1]), key: Number(key[1]), increase: /\sdirection="INCREASE"/.test(b[0]), at: start + b.index + key.index, text: key[0] });
+    }
+  }
+  const pov = binders.find((b) => b.control === TOGGLE_POV && b.increase);
+  if (pov?.key !== TAB || binders.some((b) => b.key === V)) return null;
+  return xml.slice(0, pov.at) + ` key="${V}"` + xml.slice(pov.at + pov.text.length);
+}
+
+/** The saved bindings' Toggle POV moved from Tab to V, once (as migrate: 'done', 'none', 'moved' or 'kept'). */
+export function migratePov(FS, now = () => new Date().toISOString()) {
+  if (FS.analyzePath(POV_MARK_FILE).exists) return 'done';
+  if (!FS.analyzePath(INPUT_FILE).exists) return 'none';
+  const moved = movePov(FS.readFile(INPUT_FILE, { encoding: 'utf8' }));
+  if (moved !== null) FS.writeFile(INPUT_FILE, moved);
+  FS.writeFile(POV_MARK_FILE, JSON.stringify({ keys: 'toggle-pov-v', result: moved !== null ? 'moved' : 'kept', at: now() }) + '\n');
+  return moved !== null ? 'moved' : 'kept';
+}
+
 /** Into the engine page `win`: window.orthrosInputKeys(FS) for its user files' setup (never throws: the game starts). */
 export function install(win = globalThis) {
   win.orthrosInputKeys = (FS) => {
+    let pov = 'error';
+    try { pov = migratePov(FS); } catch (e) { console.warn('[orthros keys]', e); }
+    if (pov === 'moved') console.info('[orthros keys] saved bindings: Toggle POV on V');
     try { return migrate(FS); } catch (e) { console.warn('[orthros keys]', e); return 'error'; }
   };
 }
