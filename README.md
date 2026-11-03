@@ -137,7 +137,10 @@ dossier contient la base SQLite et doit être persistant. Sur l'instance publiqu
 Connexion avec Google (facultative) : dans la console Google Cloud, créer un écran de consentement OAuth (externe,
 champs d'application `openid`, `email`, `profile`) puis un identifiant client OAuth de type « Application Web » dont
 l'URI de redirection autorisée est `<origine publique>/api/account/google/callback`
-(`https://orthros.chalco.website/api/account/google/callback` sur l'instance publique). Écrire
+(`https://orthros.chalco.website/api/account/google/callback` sur l'instance publique). Le site servi sous un autre nom
+par un mandataire frontal (le Worker Cloudflare `orthros.chalco.workers.dev`, qui transmet `X-Forwarded-Host`) garde
+ses comptes et ses cookies sous ce nom, et Google y revient : enregistrer aussi
+`https://orthros.chalco.workers.dev/api/account/google/callback`, sinon Google répond `redirect_uri_mismatch`. Écrire
 `{ "clientId": "…", "clientSecret": "…" }` dans `google.json`, à côté de la base des comptes (lisible par le service
 seulement) : le bouton « Continuer avec Google » apparaît sans redémarrage, et disparaît si le fichier est retiré.
 

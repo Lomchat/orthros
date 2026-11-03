@@ -3,7 +3,8 @@
 // sessions are in accounts.js; here: the client's settings, Google's addresses, the code exchange, the ID token's
 // checks, the username offered to a new player and the small pages the window shows.
 // The client: <accounts dir>/google.json, { "clientId": "…", "clientSecret": "…" } — a "Web application" OAuth client
-// of the Google Cloud console whose redirect URI is <public origin>/api/account/google/callback. Without it, no button.
+// of the Google Cloud console whose redirect URIs are <public origin>/api/account/google/callback, one for each name the
+// site is served under (a front proxy's: accounts.js forwardedOrigin). Without it, no button.
 import fs from 'node:fs';
 import path from 'node:path';
 

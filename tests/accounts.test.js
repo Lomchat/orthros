@@ -30,6 +30,15 @@ test('optional account, private cloud backups, versions and conflict protection'
     assert.equal(registered.status, 200);
     const cookie = registered.headers.get('set-cookie').split(';')[0];
     assert.equal((await (await request('/api/account', 'GET', undefined, cookie)).json()).user.username, 'player_one');
+    // (the site under another name — a front proxy's X-Forwarded-Host —: its own pages' changes accepted, another site's refused)
+    const viaMirror = (origin, route, body) => fetch(base + route, { method: 'POST', body: JSON.stringify(body),
+      headers: { Origin: origin, 'X-Forwarded-Host': 'orthros.mirror.test', 'X-Forwarded-Proto': 'https', 'Content-Type': 'application/json' } });
+    const mirrored = await viaMirror('https://orthros.mirror.test', '/api/account/register', { username: 'mirror_player', password: 'another long password' });
+    assert.equal(mirrored.status, 200);
+    assert.match(mirrored.headers.get('set-cookie'), /; Secure/);
+    assert.equal((await viaMirror('https://orthros.mirror.test', '/api/account/login', { username: 'mirror_player', password: 'another long password' })).status, 200);
+    assert.equal((await viaMirror('https://elsewhere.test', '/api/account/login', { username: 'mirror_player', password: 'another long password' })).status, 403);
+    assert.equal((await request('/api/account/login', 'POST', JSON.stringify({ username: 'mirror_player', password: 'another long password' }))).status, 200, 'the configured origin still');
     const backup = gzipSync(JSON.stringify({ format: 'orthros-profile', version: 1, game: 'bfme-vanilla', files: [{ path: 'Saves/a.sav', data: 'YQ==' }] }));
     const first = await request('/api/cloud/bfme-vanilla', 'PUT', backup, cookie);
     assert.equal(first.status, 201);

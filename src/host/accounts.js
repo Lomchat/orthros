@@ -61,6 +61,18 @@ async function readBody(req, max) {
 function clientIp(req) {
   return String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0].trim();
 }
+/**
+ * The origin the player's browser addressed, from the front proxy's X-Forwarded-Host (Caddy sets it to the requested host,
+ * or passes on the one a trusted proxy in front of it gave: a Cloudflare Worker serving the site under another name);
+ * without one, `fallback`. Sessions and Google's redirection belong to that origin: the cookies a browser keeps are
+ * its own.
+ */
+function forwardedOrigin(req, fallback) {
+  const host = String(req.headers['x-forwarded-host'] ?? '').split(',')[0].trim().toLowerCase();
+  if (!/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:\d{1,5})?$/.test(host)) return fallback;
+  const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim();
+  return `${proto === 'http' ? 'http' : 'https'}://${host}`;
+}
 function validBackup(bytes, game) {
   try {
     const raw = gunzipSync(bytes, { maxOutputLength: 128 * 1024 * 1024 });
@@ -115,7 +127,6 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     CREATE INDEX IF NOT EXISTS identities_user ON identities(user_id);
   `);
   const google = googleClient(dir, googleSettings);
-  const redirectUri = `${publicOrigin}/api/account/google/callback`;
   const flows = new Map(), signups = new Map(); // (Google sign-ins under way: by state; new players choosing a name: by cookie)
   const keep = (map, key, value) => {
     const now = Date.now();
@@ -124,7 +135,6 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     map.set(key, { ...value, expires: now + FLOW_MS });
   };
   const take = (map, key) => { const v = key ? map.get(key) : null; if (key) map.delete(key); return v && v.expires > Date.now() ? v : null; };
-  const allowedOrigins = new Set([publicOrigin]);
   const limits = new Map();
   const sessionStmt = db.prepare(`SELECT u.id, u.username FROM sessions s JOIN users u ON u.id=s.user_id
     WHERE s.token_hash=? AND s.expires_at>?`);
@@ -183,7 +193,9 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
   const SAY_EN = { 'Trop de tentatives. Réessaie plus tard.': 'Too many attempts. Try again later.', 'Identifiant ou mot de passe incorrect.': 'Wrong username or password.',
     'Identifiant : 3 à 32 caractères, lettres, chiffres, point, tiret ou souligné.': 'Username: 3 to 32 characters, letters, digits, dot, dash or underscore.', 'Cet identifiant est déjà pris.': 'This username is already taken.' };
   async function googleRoute(req, res, url, secure) {
-    const p = url.pathname, webSecure = publicOrigin.startsWith('https:');
+    // (the window comes back to the origin it left from: its redirection, kept with the flow for the code's exchange, is
+    // that origin's — each name the site is served under registered in the Google client)
+    const p = url.pathname, origin = forwardedOrigin(req, publicOrigin), webSecure = origin.startsWith('https:');
     if (p === '/api/account/google/unlink' && req.method === 'POST') {
       const user = session(req); if (!user) return reply(res, 401, { error: 'Connexion requise.' });
       if (!publicUser(user).password) return reply(res, 409, { error: 'Définis d’abord un mot de passe : sans Google, ce sera ta seule façon de te connecter.' });
@@ -202,7 +214,8 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
         link = user.id;
       }
       const state = randomBytes(24).toString('hex'), binding = randomBytes(32).toString('hex'), verifier = randomBytes(32).toString('base64url'), nonce = randomBytes(16).toString('hex');
-      keep(flows, state, { binding: sha256(binding), verifier, nonce, link, lang, ...ctx });
+      const redirectUri = `${origin}/api/account/google/callback`;
+      keep(flows, state, { binding: sha256(binding), verifier, nonce, link, lang, redirectUri, ...ctx });
       const challenge = createHash('sha256').update(verifier).digest('base64url');
       // (Lax: the cookie comes back with Google's redirection, a navigation from another site)
       res.writeHead(302, { Location: google.authUrl({ state, nonce, challenge, redirectUri, lang }), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
@@ -218,7 +231,7 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
       if (!st || !binding || sha256(binding) !== st.binding) return done(400, { result: 'expired', ok: false });
       if (q.get('error')) return done(200, { result: 'cancelled', ok: false });
       let claims;
-      try { claims = await google.exchange({ code: q.get('code') ?? '', verifier: st.verifier, redirectUri, nonce: st.nonce }); }
+      try { claims = await google.exchange({ code: q.get('code') ?? '', verifier: st.verifier, redirectUri: st.redirectUri, nonce: st.nonce }); }
       catch (e) { console.error('Google sign-in:', e.message); return done(502, { result: 'failed', ok: false }); }
       const email = typeof claims.email === 'string' ? claims.email.slice(0, 320) : null;
       const known = db.prepare("SELECT user_id FROM identities WHERE provider='google' AND subject=?").get(claims.sub);
@@ -278,8 +291,10 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
   const api = async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
-    if (req.method !== 'GET' && req.headers.origin &&
-        !allowedOrigins.has(req.headers.origin) && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(req.headers.origin))
+    // (a change comes from a page of the origin the request was addressed to — the public one, or another name a front
+    // proxy serves the site under —: a page elsewhere cannot set the forwarded host, a custom header, without a preflight)
+    if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== publicOrigin &&
+        req.headers.origin !== forwardedOrigin(req, publicOrigin) && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(req.headers.origin))
       return reply(res, 403, { error: 'Origine refusée.' });
     if (req.method !== 'GET' && !req.headers.origin) return reply(res, 403, { error: 'Origine requise.' });
     const secure = req.headers.origin?.startsWith('https:') || req.headers['x-forwarded-proto'] === 'https';

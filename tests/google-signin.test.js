@@ -18,14 +18,15 @@ function fakeGoogle() {
     fetch: async (url, init) => {
       const form = new URLSearchParams(init.body.toString());
       const issued = codes.get(form.get('code'));
-      if (!issued || form.get('client_secret') !== 'secret' || createHash('sha256').update(form.get('code_verifier')).digest('base64url') !== issued.challenge)
+      if (!issued || form.get('client_secret') !== 'secret' || createHash('sha256').update(form.get('code_verifier')).digest('base64url') !== issued.challenge ||
+          form.get('redirect_uri') !== issued.redirectUri)
         return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
       codes.delete(form.get('code'));
       return new Response(JSON.stringify({ id_token: jwt({ iss: 'https://accounts.google.com', aud: google.clientId, exp: Date.now() / 1000 + 3600, nonce: issued.nonce, ...issued.claims }) }));
     },
   };
   return { google, issue: (location, claims, nonce) => { const q = new URL(location).searchParams; const code = Math.random().toString(36).slice(2);
-    codes.set(code, { challenge: q.get('code_challenge'), nonce: nonce ?? q.get('nonce'), claims }); return { state: q.get('state'), code }; } };
+    codes.set(code, { challenge: q.get('code_challenge'), nonce: nonce ?? q.get('nonce'), redirectUri: q.get('redirect_uri'), claims }); return { state: q.get('state'), code }; } };
 }
 
 test('Google sign-in: a new player chooses a name, comes back signed in, links and unlinks; flows bound to their browser', async () => {
@@ -107,6 +108,20 @@ test('Google sign-in: a new player chooses a name, comes back signed in, links a
     assert.equal((await del({ username: 'nope' })).status, 403);
     assert.equal((await del({ username: 'dan' })).status, 200);
     assert.equal(await me(dan), null);
+    // (the site under another name — a front proxy's, its X-Forwarded-Host —: Google comes back to that name, the code
+    // exchanged with it, the name page's form accepted from there)
+    const mirror = { 'X-Forwarded-Host': 'orthros.mirror.test', 'X-Forwarded-Proto': 'https', 'X-Forwarded-For': '203.0.113.7' };
+    const viaMirror = await fetch(base + '/api/account/google/start?lang=en&popup=1', { redirect: 'manual', headers: mirror });
+    const mirrorLocation = viaMirror.headers.get('location');
+    assert.equal(new URL(mirrorLocation).searchParams.get('redirect_uri'), 'https://orthros.mirror.test/api/account/google/callback');
+    assert.match(viaMirror.headers.getSetCookie()[0], /; Secure/);
+    const issued = fake.issue(mirrorLocation, { sub: '555', email: 'eve@example.com', given_name: 'Eve' });
+    const named = await fetch(base + `/api/account/google/callback?state=${issued.state}&code=${issued.code}`, { redirect: 'manual', headers: { ...mirror, Cookie: cookieOf(viaMirror, 'orthros_oauth') } });
+    assert.equal(named.status, 200, 'the code exchanged with the redirection it was issued for');
+    const eve = await fetch(base + '/api/account/google/complete', { method: 'POST', body: JSON.stringify({ mode: 'create', username: 'eve' }),
+      headers: { ...mirror, Origin: 'https://orthros.mirror.test', 'Content-Type': 'application/json', Cookie: cookieOf(named, 'orthros_google') } });
+    assert.equal(eve.status, 200);
+    assert.equal((await me(cookieOf(eve, 'orthros_session'))).username, 'eve');
   } finally {
     server.close(); await once(server, 'close');
     fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(games, { recursive: true, force: true });
