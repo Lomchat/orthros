@@ -63,9 +63,10 @@ function clientIp(req) {
 }
 /**
  * The origin the player's browser addressed, from the front proxy's X-Forwarded-Host (Caddy sets it to the requested host,
- * or passes on the one a trusted proxy in front of it gave: a Cloudflare Worker serving the site under another name);
- * without one, `fallback`. Sessions and Google's redirection belong to that origin: the cookies a browser keeps are
- * its own.
+ * or passes on the one Cloudflare gave: a Worker serving the site under another name); without one, `fallback`. Sessions
+ * and Google's redirection belong to that origin: the cookies a browser keeps are its own. Not an authority: a client
+ * outside a browser sets it as it likes (Cloudflare relays it) — as it sets Origin —; a page cannot, on another site's
+ * request, without a CORS preflight this server never grants; and Google only returns to the redirections registered.
  */
 function forwardedOrigin(req, fallback) {
   const host = String(req.headers['x-forwarded-host'] ?? '').split(',')[0].trim().toLowerCase();
@@ -292,7 +293,8 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
     // (a change comes from a page of the origin the request was addressed to — the public one, or another name a front
-    // proxy serves the site under —: a page elsewhere cannot set the forwarded host, a custom header, without a preflight)
+    // proxy serves the site under —: a page of another site cannot set the forwarded host, a custom header, without a
+    // preflight, never granted)
     if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== publicOrigin &&
         req.headers.origin !== forwardedOrigin(req, publicOrigin) && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(req.headers.origin))
       return reply(res, 403, { error: 'Origine refusée.' });
