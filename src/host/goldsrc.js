@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gameLayers, resolveGameFile } from './game-files.js';
+import { sameOrigin } from './request-origin.js';
 
 export const DEFAULT_ENGINES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data/engines');
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
@@ -259,9 +260,8 @@ export function roomsApi({ getManifest, request = managerRequest, now = () => Da
     if (!mp) { send(404, { error: 'none' }); return true; }
     if (m[2] !== undefined) {
       // (a room closed: its key, checked by the manager)
-      let sameOrigin = false; try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* no Origin: refused */ }
       if (req.method !== 'DELETE') { send(405, { error: 'method' }); return true; }
-      if (!sameOrigin || !mp.rooms) { send(403, { error: 'forbidden' }); return true; }
+      if (!sameOrigin(req) || !mp.rooms) { send(403, { error: 'forbidden' }); return true; }
       let body = '';
       req.on('data', (d) => { body += d; if (body.length > 512) req.destroy(); });
       req.on('end', () => {
@@ -279,8 +279,7 @@ export function roomsApi({ getManifest, request = managerRequest, now = () => Da
       return true;
     }
     if (req.method !== 'POST') { send(405, { error: 'method' }); return true; }
-    let sameOrigin = false; try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* no Origin: refused */ }
-    if (!sameOrigin || !mp.rooms) { send(403, { error: 'forbidden' }); return true; }
+    if (!sameOrigin(req) || !mp.rooms) { send(403, { error: 'forbidden' }); return true; }
     // (on a server with accounts, a room is created by a signed-in player: identify() null)
     if (identify(req) === null) { send(401, { error: 'signin' }); return true; }
     const who = clientAddress(req), t = now();
@@ -334,10 +333,9 @@ export function udpRelay({ getManifest, accept, identify = () => undefined, maxC
     const m = /^\/api\/udp\/([^/]+)$/.exec(url.pathname);
     if (!m) return false;
     const man = getManifest(decodeURIComponent(m[1])), mp = man?.runtime === 'goldsrc' ? man.goldsrc?.multiplayer : null;
-    let sameOrigin = false; try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* no Origin: refused */ }
     // (the refusal, then the socket closed for good: a client keeping its side open would hold it forever)
     // (on a server with accounts, a signed-in player only: identify() null)
-    if (!mp || !sameOrigin || clients.size >= maxClients || identify(req) === null) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy()); return true; }
+    if (!mp || !sameOrigin(req) || clients.size >= maxClients || identify(req) === null) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy()); return true; }
     const tagged = url.searchParams.has('rooms'), count = 1 + roomSlots(mp);
     // (each player its own loopback address: the engine limits queries and connections per address — one for all
     // would let one player's queries starve everyone's, the manager's included; 127.64.0.0/16, never 127.0.0.1)

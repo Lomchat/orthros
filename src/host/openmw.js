@@ -4,6 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import { engineFile, clientAddress } from './goldsrc.js';
 import { resolveGameFile } from './game-files.js';
+import { sameOrigin } from './request-origin.js';
 
 /** The multiplayer gateways' state (worlds, accounts, operator credential), one folder per manifest: beside the other
  * services' state, never under build/ (make clean). A scratch gateway passes its own --state-dir. */
@@ -387,8 +388,7 @@ export function openmwProxy({ getManifest, session, ownsToken }) {
           res.end(JSON.stringify({ error: 'Cette partie appartient à un autre compte ou doit être relancée.' })); return true;
         }
         if (!['GET', 'HEAD'].includes(req.method)) {
-          let origin; try { origin = new URL(req.headers.origin); } catch { /* refused below */ }
-          if (!origin || origin.host !== req.headers.host || !['https:', 'http:'].includes(origin.protocol)) {
+          if (!sameOrigin(req)) {
             res.writeHead(403, isolation); res.end('Origine refusée.'); return true;
           }
         }
@@ -423,8 +423,7 @@ export function openmwProxy({ getManifest, session, ownsToken }) {
       if (!t || !/^\/w\/[a-zA-Z0-9_-]+$/.test(t.path)) return false;
       if (session && !session(req)) { socket.destroy(); return true; }
       // Same origin is required before forwarding a player's credentials or opening a world.
-      let origin; try { origin = new URL(req.headers.origin); } catch { socket.destroy(); return true; }
-      if (!['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host) { socket.destroy(); return true; }
+      if (!sameOrigin(req)) { socket.destroy(); return true; }
       const up = http.request({ hostname: '127.0.0.1', port: t.man.openmw.multiplayer.port,
         path: t.path + url.search, headers: upstreamHeaders(req) });
       up.on('upgrade', (reply, peer, first) => {

@@ -223,6 +223,9 @@ test('the status route, the home\'s flags and the socket\'s refusals: other site
   assert.equal(await rawUpgrade(ctx.base, '/api/mmo/city-online/ws', { Cookie: cookie, Origin: 'http://elsewhere.example' }), 403);
   assert.equal(await rawUpgrade(ctx.base, '/api/mmo/city-online/ws', { Cookie: cookie }), 403);
   assert.equal(await rawUpgrade(ctx.base, '/api/mmo/city-online/ws', { Cookie: cookie, Origin: ctx.base }), 101);
+  // (the site under another name — a front proxy's X-Forwarded-Host —: its pages get a socket, another site's still not)
+  assert.equal(await rawUpgrade(ctx.base, '/api/mmo/city-online/ws', { Cookie: cookie, Origin: 'https://orthros.mirror.test', 'X-Forwarded-Host': 'orthros.mirror.test' }), 101);
+  assert.equal(await rawUpgrade(ctx.base, '/api/mmo/city-online/ws', { Cookie: cookie, Origin: 'https://elsewhere.test', 'X-Forwarded-Host': 'orthros.mirror.test' }), 403);
   // (refusals the page can read: REFUSED, then the socket closed)
   const refused = async (cookie2, version, records = []) => {
     const p = await Peer.open(ctx, cookie2, version);

@@ -20,6 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { acceptWebSocket } from './lan.js';
+import { sameOrigin } from './request-origin.js';
 import { MMO_PROTOCOL, MMO_C as C, MMO_S as S, MMO_REFUSED as R, MMO_RESULT as CR, MMO_DENIED as D, MMO_NOBODY as NOBODY } from './mmo-proto.js';
 
 const VERSION_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
@@ -732,9 +733,8 @@ export function mmoApi({ getManifest, identify = () => undefined, dir = null, lo
   const upgrade = (req, socket, url) => {
     const m = /^\/api\/mmo\/([^/]+)\/ws$/.exec(url.pathname);
     if (!m) return false;
-    let sameOrigin = false; try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* no Origin: refused */ }
     // (a page of another site — a sibling subdomain sends the cookie too — never gets a socket)
-    if (!sameOrigin || closed) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy()); return true; }
+    if (!sameOrigin(req) || closed) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy()); return true; }
     let versionId = ''; try { versionId = decodeURIComponent(m[1]); } catch { /* refused below */ }
     const t = now();
     const s = { peer: null, req, versionId, v: null, user: null, cfg: null, hello: false, lang: 0, lastIn: t, checkedAt: t,

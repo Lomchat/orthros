@@ -118,9 +118,9 @@ test('a port whose engine release is missing is listed as unavailable', async (t
 });
 
 /** A raw WebSocket client (the Origin header set at will): send() binary messages, receive() the next one. */
-function wsConnect(url, origin = new URL(url).origin) {
+function wsConnect(url, origin = new URL(url).origin, headers = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.get(url, { headers: { Connection: 'Upgrade', Upgrade: 'websocket', Origin: origin, 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': randomBytes(16).toString('base64') } });
+    const req = http.get(url, { headers: { Connection: 'Upgrade', Upgrade: 'websocket', Origin: origin, 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': randomBytes(16).toString('base64'), ...headers } });
     req.on('error', reject);
     req.on('response', (res) => { res.resume(); reject(new Error(`HTTP ${res.statusCode}`)); });
     req.on('upgrade', (_res, socket, head) => {
@@ -165,6 +165,10 @@ test('multiplayer: each player gets its own UDP socket to the version\'s local s
     assert.equal(senders.size, 2);
   } finally { players.forEach((p) => p.close()); } // (before the server closes: it waits for its sockets)
   await assert.rejects(wsConnect(`${base}/api/udp/gs-orig`, 'http://elsewhere.example'), /403/);
+  // (the site under another name — a front proxy's X-Forwarded-Host —: its pages get a socket, another site's still not)
+  const mirror = { 'X-Forwarded-Host': 'orthros.mirror.test' };
+  (await wsConnect(`${base}/api/udp/gs-orig`, 'https://orthros.mirror.test', mirror)).close();
+  await assert.rejects(wsConnect(`${base}/api/udp/gs-orig`, 'https://elsewhere.test', mirror), /403/);
   await assert.rejects(wsConnect(`${base}/api/udp/win-1`), /403/);
   await assert.rejects(wsConnect(`${base}/api/udp/none`), /403/);
   // (the virtual LAN of the Windows games shares the upgrade path)

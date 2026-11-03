@@ -7,6 +7,7 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 import { googleClient, suggestUsername, resultPage, choosePage, pageText } from './google-signin.js';
+import { forwardedOrigin, sameOrigin } from './request-origin.js';
 
 const scrypt = promisify(scryptCallback);
 const COOKIE = 'orthros_session';
@@ -60,19 +61,6 @@ async function readBody(req, max) {
 }
 function clientIp(req) {
   return String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0].trim();
-}
-/**
- * The origin the player's browser addressed, from the front proxy's X-Forwarded-Host (Caddy sets it to the requested host,
- * or passes on the one Cloudflare gave: a Worker serving the site under another name); without one, `fallback`. Sessions
- * and Google's redirection belong to that origin: the cookies a browser keeps are its own. Not an authority: a client
- * outside a browser sets it as it likes (Cloudflare relays it) — as it sets Origin —; a page cannot, on another site's
- * request, without a CORS preflight this server never grants; and Google only returns to the redirections registered.
- */
-function forwardedOrigin(req, fallback) {
-  const host = String(req.headers['x-forwarded-host'] ?? '').split(',')[0].trim().toLowerCase();
-  if (!/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:\d{1,5})?$/.test(host)) return fallback;
-  const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim();
-  return `${proto === 'http' ? 'http' : 'https'}://${host}`;
 }
 function validBackup(bytes, game) {
   try {
@@ -293,10 +281,9 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
     // (a change comes from a page of the origin the request was addressed to — the public one, or another name a front
-    // proxy serves the site under —: a page of another site cannot set the forwarded host, a custom header, without a
-    // preflight, never granted)
+    // proxy serves the site under: request-origin.js)
     if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== publicOrigin &&
-        req.headers.origin !== forwardedOrigin(req, publicOrigin) && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(req.headers.origin))
+        !sameOrigin(req) && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(req.headers.origin))
       return reply(res, 403, { error: 'Origine refusée.' });
     if (req.method !== 'GET' && !req.headers.origin) return reply(res, 403, { error: 'Origine requise.' });
     const secure = req.headers.origin?.startsWith('https:') || req.headers['x-forwarded-proto'] === 'https';
