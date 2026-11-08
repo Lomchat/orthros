@@ -496,7 +496,10 @@ moved the camera when a menu opened), OpenMW Dynamic Actors 1.37d (the dialogue 
 Left Shift (`orthros-sprint-on-shift`: a sprint left on the QoL defaults' Left Alt moved once), Combat Sounds Overhaul
 Overhauled's overlay in a root of its own (its `Scripts/` beside the batch's `scripts/`: the gateway folds the two into
 one name and the scripts under the other were unreadable — Impact Effects', Solthas', Dynamic AVE's overlays), Lua
-Physics' new-game debris map built at the first update. A root never holds two names one case apart.
+Physics' new-game debris map built at the first update. A root never holds two names one case apart. Saves made with the removed
+inventory mods named them as dependencies: loading one asked about missing content (a question the owner's page did
+not show — stuck at the menu); `orthros-removed-stubs` keeps two empty plugins of those names. A mod taken out of a
+version leaves an empty plugin of its name.
 
 orthros-r24.patch: the mods' Lua storage (player_storage.bin: their settings, their "already shown" flags — Advanced
 World Map's quick setup, Quest Markers Plus' welcome came back at every launch —, Advanced World Map's 8 MB map cache
