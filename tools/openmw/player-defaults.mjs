@@ -14,6 +14,10 @@
 //        node tools/openmw/player-defaults.mjs <game-folder> <version-id> --withdraw [--id <mod-id>] [--because <text>]
 //   defaults.json: [{ "group": "SettingsOMWControls", "key": "alwaysRun", "value": true, "default": false }, ...]
 //     group: the settings group's storage section (I.Settings.registerGroup key); default: its registered default
+//     or a key binding of a mod's action (Options → Scripts, an inputBinding renderer; OpenMW keeps them in the
+//     OMWInputBindings section under the binding's id): { "binding": "<binding id>", "action": "<action key>",
+//     "keyboard": "G" } — given once, only while that binding is unset (its registered default: none) and no binding
+//     of the profile already uses that key; withdrawn only while it is still the one given
 //   --id: the generated root's mod id (default orthros-player-defaults); its plugin is named after it
 //     (Orthros Player Defaults.omwscripts), its script goes to scripts/<id with _>/player.lua
 import fs from 'node:fs';
@@ -33,6 +37,13 @@ export function playerDefaultsEntries(list) {
   if (!Array.isArray(list) || !list.length || list.length > 256) throw new Error('Expected a non-empty list of player defaults');
   const seen = new Set();
   return list.map((d) => {
+    if (d && typeof d === 'object' && 'binding' in d) {
+      if (!NAME.test(d.binding ?? '') || !NAME.test(d.action ?? '') || !/^[A-Z][A-Za-z0-9]{0,15}$/.test(d.keyboard ?? ''))
+        throw new Error(`Bad key binding default ${JSON.stringify(d)}`);
+      if (seen.has(`OMWInputBindings/${d.binding}`)) throw new Error(`binding ${d.binding} listed twice`);
+      seen.add(`OMWInputBindings/${d.binding}`);
+      return { binding: d.binding, action: d.action, keyboard: d.keyboard };
+    }
     if (!d || typeof d !== 'object' || !NAME.test(d.group ?? '') || !NAME.test(d.key ?? '')) throw new Error(`Bad player default ${JSON.stringify(d)}`);
     if (luaValue(d.value) === null || luaValue(d.default) === null) throw new Error(`${d.group}/${d.key}: value and default must be booleans, numbers or plain words`);
     if (d.value === d.default) throw new Error(`${d.group}/${d.key}: the value is already the engine's default`);
@@ -43,8 +54,58 @@ export function playerDefaultsEntries(list) {
 }
 
 /** The PLAYER script giving `entries` once, its records in storage section `records`. */
+const settingRows = (entries) => entries.filter((e) => !e.binding).map((e) => `    { '${e.group}', '${e.key}', ${luaValue(e.value)}, ${luaValue(e.default)} },`).join('\n');
+const bindingRows = (entries) => entries.filter((e) => e.binding).map((e) => `    { '${e.binding}', '${e.action}', '${e.keyboard}' },`).join('\n');
+// (the key bindings' part of a script: none when a root lists no binding — older roots' scripts unchanged)
+const bindingCode = (entries, records, withdraw) => !entries.some((e) => e.binding) ? '' : withdraw ? `
+-- { binding id, action, keyboard key } this root gave
+local BINDINGS = {
+${bindingRows(entries)}
+}
+local input = require('openmw.input')
+local bindings = storage.playerSection('OMWInputBindings')
+local function withdrawBindings(back)
+    for _, b in ipairs(BINDINGS) do
+        local record = 'OMWInputBindings/' .. b[1]
+        if records:get(record) == 'given' and not restored:get(record) then
+            local current = bindings:get(b[1])
+            if current and current.device == 'keyboard' and current.button == input.KEY[b[3]] and current.key == b[2] then
+                bindings:set(b[1], nil)
+                back[#back + 1] = record
+            end
+            restored:set(record, true)
+        end
+    end
+end
+` : `
+-- { binding id, action, keyboard key }: given only while the binding is unset and no binding uses that key
+local BINDINGS = {
+${bindingRows(entries)}
+}
+local input = require('openmw.input')
+local bindings = storage.playerSection('OMWInputBindings')
+local function giveBindings(given)
+    for _, b in ipairs(BINDINGS) do
+        local record = 'OMWInputBindings/' .. b[1]
+        if not records:get(record) then
+            local button, taken = input.KEY[b[3]], false
+            for _, other in pairs(bindings:asTable()) do
+                if type(other) == 'table' and other.device == 'keyboard' and other.button == button then taken = true end
+            end
+            if bindings:get(b[1]) == nil and not taken and button then
+                bindings:set(b[1], { key = b[2], type = 'action', device = 'keyboard', button = button })
+                given[#given + 1] = record
+                records:set(record, 'given')
+            else
+                records:set(record, 'kept')
+            end
+        end
+    end
+end
+`;
+
 export function playerDefaultsScript(entries, records) {
-  const rows = entries.map((e) => `    { '${e.group}', '${e.key}', ${luaValue(e.value)}, ${luaValue(e.default)} },`).join('\n');
+  const rows = settingRows(entries), binds = bindingCode(entries, records, false);
   return `-- Generated by Orthros (tools/openmw/player-defaults.mjs): the version's player settings defaults, given once.
 -- Each entry is set once per player profile, only over the engine's registered default, and recorded in the
 -- ${records} section: a later choice of the player's is never overwritten. Never on a simulation peer.
@@ -55,9 +116,9 @@ local records = storage.playerSection('${records}')
 -- { settings group, key, value, the engine's default }
 local DEFAULTS = {
 ${rows}
-}
+}${binds}
 local function apply()
-    local given = {}
+    local given = {}${binds ? '\n    giveBindings(given)' : ''}
     for _, d in ipairs(DEFAULTS) do
         local record = d[1] .. '/' .. d[2]
         if not records:get(record) then
@@ -80,7 +141,7 @@ return { engineHandlers = { onInit = apply, onLoad = apply } }
 
 /** The PLAYER script withdrawing `entries` a root gave (records in section `records`): the registered default back once. */
 export function playerDefaultsWithdrawalScript(entries, records) {
-  const rows = entries.map((e) => `    { '${e.group}', '${e.key}', ${luaValue(e.value)}, ${luaValue(e.default)} },`).join('\n');
+  const rows = settingRows(entries), binds = bindingCode(entries, records, true);
   return `-- Generated by Orthros (tools/openmw/player-defaults.mjs --withdraw): this root's entries are withdrawn. A profile
 -- whose ${records} record says the value was given ('given'; true, from a root generated before 2026-10-30, may
 -- also mean the player's own value was kept) and that still holds it gets the engine's registered default back, once
@@ -94,9 +155,9 @@ local restored = storage.playerSection('${records}Restored')
 -- { settings group, key, the value this root gave, the engine's default }
 local WITHDRAWN = {
 ${rows}
-}
+}${binds}
 local function apply()
-    local back = {}
+    local back = {}${binds ? '\n    withdrawBindings(back)' : ''}
     for _, d in ipairs(WITHDRAWN) do
         local record = d[1] .. '/' .. d[2]
         local done = records:get(record)

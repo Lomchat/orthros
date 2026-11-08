@@ -62,7 +62,7 @@ test('OpenMW guards only the selected declaration types of a mod with gameplay s
     + 'CUSTOM: scripts/inv/equip.lua\nCONTAINER: scripts/inv/container.lua\nARMOR, BOOK: scripts/inv/item.lua\n';
   const inv = addMod(f, 'inv', declaration), only = addMod(f, 'world', 'GLOBAL: scripts/world/global.lua\n');
   assert.throws(() => guardClientUi(f.game, 'one', ['world:MENU,PLAYER']), /No enabled UI script plugin: world/, 'nothing of those types to guard');
-  assert.throws(() => guardClientUi(f.game, 'one', ['inv:menu']), /Expected <mod-id> or <mod-id>:TYPE/);
+  assert.throws(() => guardClientUi(f.game, 'one', ['inv:menu']), /Expected <mod-id>, <mod-id>:TYPE,TYPE or <mod-id>:SOLO/);
   const result = guardClientUi(f.game, 'one', ['menu', 'inv:MENU,PLAYER']);
   assert.deepEqual(result, { plugins: ['Menu.omwscripts', 'inv.omwscripts'], wrappers: 4 });
   assert.equal(fs.readFileSync(path.join(inv.data, inv.plugin), 'utf8'), declaration, 'the author file is unchanged');
@@ -145,4 +145,19 @@ test('OpenMW installs a mod data root holding only Lua scripts or l10n texts (an
   assert.equal(fs.readFileSync(path.join(game, 'versions/one/mods/texts-fr-0/l10n/Mod/fr.yaml'), 'utf8'), 'key: "valeur"\n');
   assert.equal(fs.statSync(path.join(game, 'versions/one/mods/texts-fr-0/l10n/Mod/fr.yaml')).mode & 0o444, 0o444);
   assert.equal(fs.statSync(path.join(game, 'versions/one/mods/texts-fr-0/l10n/Mod')).mode & 0o555, 0o555);
+});
+
+test('OpenMW solo-only mods (<mod>:SOLO): every entry point off in a shared world, client and peer alike; a CUSTOM beside other types keeps its name', (t) => {
+  const f = fixture(t, 'GLOBAL: scripts/menu/global.lua\nCUSTOM, MISC_ITEM, WEAPON: scripts/menu/item.lua\nCUSTOM: scripts/menu/actor.lua\n');
+  const result = guardClientUi(f.game, 'one', ['menu:SOLO'], { id: 'solo-compat' });
+  assert.deepEqual(result, { plugins: ['Menu.omwscripts'], wrappers: 2 });
+  const config = JSON.parse(fs.readFileSync(path.join(f.game, 'manifest.json'))).versions[0].openmw, compat = config.mods.at(-1);
+  assert.equal(openmwProblem(config), null);
+  assert.deepEqual(compat.guardedPlugins, [{ mod: 'menu', plugin: 'Menu.omwscripts', soloOnly: true }]);
+  const root = path.join(f.game, 'versions/one', compat.parts[0].dir);
+  const entries = fs.readFileSync(path.join(root, 'Menu.omwscripts'), 'utf8').trim().split('\n');
+  assert.deepEqual(entries, ['GLOBAL: scripts/orthros_solo/0.lua', 'CUSTOM: scripts/menu/item.lua', 'MISC_ITEM, WEAPON: scripts/orthros_solo/1.lua', 'CUSTOM: scripts/menu/actor.lua']);
+  const wrapper = fs.readFileSync(path.join(root, 'scripts/orthros_solo/1.lua'), 'utf8');
+  assert.match(wrapper, /mp\.isEnabled\(\) then return \{\} end/);
+  assert.ok(wrapper.includes('"scripts.menu.item"'));
 });

@@ -58,7 +58,7 @@ def main(argv):
         info = call(f'/games/{game}/mods/{mod}.json')
         print(f"{info['name']} {info['version']} (updated {info.get('updated_time')}) by {info.get('author')}\n{info.get('summary', '')}")
         for f in call(f'/games/{game}/mods/{mod}/files.json')['files']:
-            print(f"  {f['file_id']}  {f['category_name']:<14} v{f['version']:<8} {f['size_kb']:>8} KB  {f['name']}")
+            print(f"  {f['file_id']}  {f['category_name'] or '-':<14} v{f['version'] or '-':<8} {f['size_kb']:>8} KB  {f['name']}")
         return
     game, mod, file_id, auth = parse(argv[0])
     info = call(f'/games/{game}/mods/{mod}.json')

@@ -448,6 +448,32 @@ Its bundled Quest Guider Lite matches QGL about v1.3.1 (March 2026) and its two 
 author calls it incompatible with current Quest Guider Lite and its newest quest data: never install both. Its quest data
 comes from the English masters (French masters: to be rebuilt with the author's Quest Data Builder).
 
+### The owner's 2026-11-08 mods (Orthros Edition)
+
+Asked by the owner ("redécouvrir le jeu avec un gameplay et des graphismes plus modernes", nothing harder, 60 fps kept),
+replayed by `data/proof/openmw-mods-2026-11-08/install-mods2.sh` (declarations, roots, guards, overlays, French texts,
+defaults; the archives and their SHA-256 in `data/installers/morrowind-mods-2026-11-08/`). First batch, live 2026-11-08:
+NCGDMW Lua Edition 4.6.6 (GitLab artifact; its `ncgdmw.omwaddon` for the French masters rebuilt with the French skill
+descriptions and NCGD's sentences in French, its `fr.yaml` completed: 14 → 209 keys), ReAnimation v3 (GitHub d9319b2e,
+`00 Core`), Lua Physics 1.4 (GitHub 4f6b36bc; drag key G given once by `orthros-player-defaults-mods2` when free), CHIM
+Climbing 0.511-dev.6 (the author's release; its debug prints silenced by an overlay), OpenMW Containers Animated 1.2.2,
+Improved Lights for All Shaders 1.2, Aendemika's Kagouti replacer, Pherim's Improved Nix-Hound mesh, Weapon Sheathing 1.6
+(OpenMW file; `[Game] weapon sheathing`, `shield sheathing`, `use additional anim sources`). The mirrored archives
+(Portmod's GitLab mirror) are Nexus' own files: each found by Nexus' `md5_search`. Nexus files that are not mirrored were
+downloaded in the owner's own signed-in session (he signed in and passed Cloudflare's check himself in a browser on this
+server, `tools/nexus-remote.mjs` in the proof folder; nothing automated past a check), each checked by `md5_search` too.
+
+Lua Physics and CHIM Climbing drive the world from one player's side (items' physics, the player teleported): they are
+`<mod>:SOLO` in `guard-client-ui.mjs` (`mods2-compat`): every entry point returns no handlers when `openmw.mp`
+`isEnabled()` (a shared world, on its clients and its simulation peer), solo unchanged; a `CUSTOM` declared beside other
+types keeps a `CUSTOM` line under its original file. NCGDMW and ReAnimation are guarded `MENU,PLAYER` as the earlier
+gameplay mods.
+
+Measured (server, `--discard`, mid tier, FR, two runs a side, `data/proof/openmw-mods-2026-11-08/ab` and `glide`): walk at
+Seyda Neen, engine work p50 live 9.4-9.7 ms / with the batch 9.2-9.9 / without Lua Physics 9.1-9.7 / without Improved
+Lights and Weapon Sheathing 9.2-9.4, p99 22.8-23.5 / 21.0-24.5 / 20.4-23.1 / 22.0-24.4; glide 16000 units east, frames
+over 33 ms 10-24 / 16 / 17-21, over 100 ms 3-8 / 3 / 4-6: no difference beyond the runs' spread.
+
 ### Headless simulation compatibility
 
 The pinned engine identifies its native simulation peers through `openmw.mp.isSystem()`.

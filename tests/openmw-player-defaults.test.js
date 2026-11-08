@@ -110,3 +110,19 @@ test('player defaults: withdrawn, the registered default back once where the val
   fs.appendFileSync(path.join(f.game, 'versions/one/mods/orthros-player-defaults-2-0/scripts/orthros_player_defaults_2/player.lua'), '-- edited\n');
   assert.throws(() => withdrawPlayerDefaults(f.game, 'one', { id: 'orthros-player-defaults-2' }), /differ from the generated/);
 });
+
+test('OpenMW player defaults: a mod action\'s key binding given once, only while unset and its key free; withdrawn only while still the one given', () => {
+  const entries = playerDefaultsEntries([...DEFAULTS, { binding: 'Grab_physics_object_button', action: 'GrabPhysicsObject', keyboard: 'G' }]);
+  assert.deepEqual(entries.at(-1), { binding: 'Grab_physics_object_button', action: 'GrabPhysicsObject', keyboard: 'G' });
+  const script = playerDefaultsScript(entries, 'Rec');
+  assert.match(script, /\{ 'Grab_physics_object_button', 'GrabPhysicsObject', 'G' \},/);
+  assert.match(script, /bindings:get\(b\[1\]\) == nil and not taken and button/);
+  assert.match(script, /giveBindings\(given\)/);
+  assert.ok(!/'Grab_physics_object_button', 'GrabPhysicsObject', 'G', /.test(script));
+  const back = playerDefaultsWithdrawalScript(entries, 'Rec');
+  assert.match(back, /withdrawBindings\(back\)/);
+  assert.match(back, /current\.button == input\.KEY\[b\[3\]\]/);
+  // a root without bindings: its script as before
+  assert.ok(!playerDefaultsScript(playerDefaultsEntries(DEFAULTS), 'Rec').includes('BINDINGS'));
+  assert.throws(() => playerDefaultsEntries([{ binding: 'x y', action: 'A', keyboard: 'G' }]), /Bad key binding/);
+});
