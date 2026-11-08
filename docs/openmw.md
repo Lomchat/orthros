@@ -502,6 +502,17 @@ not show — stuck at the menu); `orthros-removed-stubs` keeps two empty plugins
 version leaves an empty plugin of its name. Surefire's combat hit box (chance, damage, odds) registered off by default by an overlay
 (`orthros-overlay-surefire-hud`, the owner did not want it; Options → Scripts → Surefire turns it back on).
 
+Fourth step, the same evening (`batch5/`): Show Me Everything 1.3 (an actor's name, level, class and health above it;
+its hit chance indicator off by default) and Modernized HUD 0.6 (scaling bars, a yellow remainder, values in the bars
+by default; its own enemy bar off, SME draws it). Modernized HUD's layout was made for OpenMW 0.49: the overlay
+`orthros-overlay-hud` adds the engine's `MouseEmulationCursor` (the HUD looks it up: missing, the HUD would throw) and
+keeps the sneak box small (Sneak! draws its eye). Its cost measured with its own gateway: ~2.3 ms of Lua a frame
+(work p50 live 9.5-11.8 ms / with both 12.2-13.8): `orthros-overlay-hud-perf` updates the HUD element only when a shown
+property changed (it was laid out again every frame) and runs each actor's combat check four times a second instead of
+every frame: 11.2-11.3 ms against 9.7-10.7 live. French: the French game's Speed is Rapidité (sAttributeSpeed), fixed in
+NCGD's French plugin and Solthas' texts. `orthros-health-regen` (Orthros' own, the owner asked): after 10 s without
+losing health, 1 % of the maximum a second until full; Options → Scripts.
+
 orthros-r24.patch: the mods' Lua storage (player_storage.bin: their settings, their "already shown" flags — Advanced
 World Map's quick setup, Quest Markers Plus' welcome came back at every launch —, Advanced World Map's 8 MB map cache
 rebuilt at every launch) was written only when the engine quits, never in a browser. The page's flush
