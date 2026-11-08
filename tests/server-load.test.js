@@ -45,12 +45,16 @@ test('DirListings: a folder listed once, used again while unchanged; a file adde
   assert.equal(resolveGameFile(man, 'data/a.big', memo), path.join(dir, 'Data', 'A.big'));
   fs.writeFileSync(path.join(dir, 'Data', 'z.big'), 'z');
   assert.equal(resolveGameFile(man, 'data/z.big', memo), path.join(dir, 'Data', 'z.big'), 'a file added in the same tick: found');
-  fs.statSync = stat;
   DirListings.RECENT_MS = 0; // (the folders as if old: kept)
+  // (both folders' times held still while unchanged: a loaded machine — the CI's — may otherwise see the fresh folders'
+  // times settle between two listings, a relisting the cache did not cause)
+  const still = Date.now() - 10000;
+  fs.statSync = (p, ...a) => { const st = stat(p, ...a); if (p === dir || p === path.join(dir, 'Data')) { st.mtimeMs = st.ctimeMs = still; } return st; };
   assert.equal(resolveGameFile(man, 'data/a.big', memo), path.join(dir, 'Data', 'A.big'));
   const first = lists;
   assert.equal(resolveGameFile(man, 'DATA/A.BIG', memo), path.join(dir, 'Data', 'A.big'));
   assert.equal(lists, first, 'unchanged folders: not listed again');
+  fs.statSync = stat;
   await new Promise((r) => setTimeout(r, 20)); // (another tick of the file system's clock)
   fs.writeFileSync(path.join(dir, 'Data', 'b.big'), 'b');
   assert.equal(resolveGameFile(man, 'data/B.big', memo), path.join(dir, 'Data', 'b.big'), 'a file added: found');
