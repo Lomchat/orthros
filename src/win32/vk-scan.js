@@ -33,6 +33,31 @@ export function vkOfCode(c) {
   return 0;
 }
 
+/**
+ * A manifest's key remap (`keys`: { "KeyW": "ArrowUp", ... }, physical keys by their DOM code — the key in that place
+ * whatever the player's layout: W on QWERTY, Z on AZERTY) as the window manager applies it (user32.js remapKey): the
+ * source key's scan code (bit 8: extended) -> the key the game gets, { vk, scan }. null when there is none; a code
+ * without a scan code (keyRemapProblem) is left out.
+ * @param {Record<string, string> | undefined} keys
+ */
+export function keyRemap(keys) {
+  if (!keys || typeof keys !== 'object') return null;
+  const map = new Map();
+  for (const [from, to] of Object.entries(keys)) {
+    const src = scanCodeOfVk(vkOfCode(from)), vk = vkOfCode(to), scan = scanCodeOfVk(vk);
+    if (src && scan) map.set(src, { vk, scan });
+  }
+  return map.size ? map : null;
+}
+/** What is wrong with a manifest's `keys` (keyRemap), null when nothing. */
+export function keyRemapProblem(keys) {
+  if (keys === undefined) return null;
+  if (!keys || Array.isArray(keys) || typeof keys !== 'object') return 'keys doit être un objet { "KeyW": "ArrowUp" }';
+  for (const [from, to] of Object.entries(keys))
+    if (typeof to !== 'string' || !scanCodeOfVk(vkOfCode(from)) || !scanCodeOfVk(vkOfCode(to))) return `keys: touche inconnue ${from} -> ${to} (codes DOM : KeyW, ArrowUp...)`;
+  return null;
+}
+
 const KEY_NAMES = { Escape: 'Escape', Backspace: 'Backspace', Tab: 'Tab', Enter: 'Enter', Space: ' ', ArrowLeft: 'ArrowLeft', ArrowUp: 'ArrowUp', ArrowRight: 'ArrowRight', ArrowDown: 'ArrowDown', ShiftLeft: 'Shift', ShiftRight: 'Shift', ControlLeft: 'Control', ControlRight: 'Control', AltLeft: 'Alt', AltRight: 'Alt', PageUp: 'PageUp', PageDown: 'PageDown', Home: 'Home', End: 'End', Insert: 'Insert', Delete: 'Delete', Pause: 'Pause', CapsLock: 'CapsLock' };
 /**
  * A virtual key as a DOM keyboard event's fields (the scripted input of the browser ports' bench, dom-input.js):

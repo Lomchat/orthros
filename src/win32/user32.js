@@ -250,7 +250,8 @@ export class WindowManager {
         if (this.heldSince !== undefined && this.heldSince !== null) { this.heldMs = (this.heldMs ?? 0) + now - this.heldSince; this.heldSince = null; }
         if (ev.type === 'mousedown') (this.pressedAt ??= [])[ev.button] = { frames, t: now };
         q.shift(); // (taken before it is processed: never processed twice)
-        this.inputEvent(ev);
+        const out = this.remapKey(ev);
+        if (out) this.inputEvent(out);
       }
     } finally { this.pumping = false; }
     this.reportCursor();
@@ -392,6 +393,43 @@ export class WindowManager {
     if (!w || w.desktop) { this.setCursorShape(this.systemCursor(IDC_ARROW)); return; }
     this.send(w, WM.SETCURSOR, w.hwnd, ((mouseMsg & 0xffff) << 16) | (this.hitTest(w, x, y) & 0xffff));
   }
+
+  /**
+   * The player's key as the game gets it: the manifest's remap (`keys`, host.keyMap: vk-scan.js keyRemap — WASD
+   * scrolling a game that scrolls with the arrows) changes its virtual key and scan code, and drops the character it
+   * typed (`null`: the event dropped). Not while the game awaits text (textInput: its letters typed as they are), nor
+   * with Ctrl or Alt held (the game's own shortcuts). A key goes up as it went down, whatever changed meanwhile.
+   */
+  remapKey(ev) {
+    const map = this.host?.keyMap;
+    if (!map) return ev;
+    const dropChar = this.remapDropChar; this.remapDropChar = false; // (the page sends a key's character right after it)
+    if (ev.type === 'char') return dropChar ? null : ev;
+    if (ev.type !== 'keydown' && ev.type !== 'keyup') return ev;
+    const from = (ev.extended ? 0x100 : 0) | (ev.scan & 0xff), held = (this.remapHeld ??= {});
+    let to = held[from];
+    if (ev.type === 'keyup') delete held[from];
+    else if (to === undefined) {
+      const chord = ((this.keyState[VK.CONTROL] | this.keyState[VK.MENU]) & 0x80) !== 0, text = this.textInput(), mapped = map.get(from);
+      to = held[from] = chord || text ? null : mapped ?? null;
+      if (mapped) this.vm.log('input', `key ${from.toString(16)} ${to ? `-> vk ${to.vk.toString(16)} scan ${to.scan.toString(16)}` : `as it is (${chord ? 'Ctrl/Alt held' : 'text input'})`}`);
+    }
+    if (!to) return ev;
+    if (ev.type === 'keydown') this.remapDropChar = true;
+    return { ...ev, vk: to.vk, scan: to.scan & 0xff, extended: to.scan > 0xff };
+  }
+  /**
+   * The game awaits text: the focused window has an input context (Imm*), and the game shows its text fields that way —
+   * it associates a context of its own with them, or turns its IME off elsewhere (a null context). Without either, no
+   * sign of a text field: false.
+   */
+  textInput() {
+    const w = this.windows.get(this.focus) ?? this.windows.get(this.active);
+    if (!w || w.imc === 0) return false;
+    return (w.imc !== undefined && w.imc !== this.defaultImc) || !!this.imeOff;
+  }
+  /** The process's default input context (ImmGetContext of a window never given another one). */
+  defaultInputContext() { return (this.defaultImc ??= this.proc.handles.create({ type: 'imc' })); }
 
   inputEvent(ev) {
     const defer = this.deferSends; this.deferSends = true; // (its sent messages wait for the window's thread: send())

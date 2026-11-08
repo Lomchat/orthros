@@ -5,6 +5,7 @@ import { CC_CDECL } from './api.js';
 import { allocString } from './kernel32.js';
 import { TICK_BASE } from '../cpu/jit/runtime.js';
 import { defineWinsock } from './winsock.js';
+import { wmOf } from './user32.js';
 import { verifyAuthenticode, peLayout, TRUST_E_NOSIGNATURE, TRUST_E_SUBJECT_FORM_UNKNOWN } from './authenticode.js';
 
 const S_OK = 0, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001, E_NOINTERFACE = 0x80004002, REGDB_E_CLASSNOTREG = 0x80040154, CLASS_E_NOAGGREGATION = 0x80040110;
@@ -161,12 +162,38 @@ export function registerMiscDlls(api, vm) {
   api.define('shell32.dll', SH);
 
   // ---------------------------------------------------------------- imm32
+  // Input contexts are handles, each window's its own (w.imc; undefined: the process's default one, WindowManager
+  // defaultInputContext): which one a game associates with its window is how it shows its text fields
+  // (WindowManager.textInput — the manifest's key remap waits meanwhile). No IME behind them: no composition, no
+  // candidate list.
   const IM = {};
-  IM.ImmGetContext = [1, () => 0]; IM.ImmReleaseContext = [2, () => 1]; IM.ImmAssociateContext = [2, () => 0]; IM.ImmAssociateContextEx = [3, () => 1];
+  const imWin = (h) => wmOf(vm).windows.get(h);
+  const imcOf = (w) => w.imc ?? wmOf(vm).defaultInputContext();
+  const imAssociate = (w, h) => {
+    if (w.imc !== h) vm.log('input', `input context of window ${w.hwnd.toString(16)}: ${h ? h.toString(16) : 'none'}`);
+    w.imc = h; if (!h) wmOf(vm).imeOff = true;
+  };
+  IM.ImmGetContext = [1, (c) => { const w = imWin(c.arg(0)); return w ? imcOf(w) : 0; }];
+  IM.ImmReleaseContext = [2, () => 1];
+  IM.ImmAssociateContext = [2, (c) => { const w = imWin(c.arg(0)); if (!w) return 0; const prev = imcOf(w); imAssociate(w, c.arg(1)); return prev; }];
+  // (flags: IACE_CHILDREN 1 — its child windows too —, IACE_DEFAULT 0x10 — the default context back —,
+  // IACE_IGNORENOCONTEXT 0x20 — not the windows that have none)
+  IM.ImmAssociateContextEx = [3, (c) => {
+    const top = imWin(c.arg(0)), h = c.arg(1), flags = c.arg(2);
+    if (!top) return 0;
+    const set = (w) => {
+      if (!(flags & 0x20 && w.imc === 0)) { if (flags & 0x10) w.imc = undefined; else imAssociate(w, h); }
+      if (flags & 1) for (const ch of w.children ?? []) set(ch);
+    };
+    set(top);
+    return 1;
+  }];
+  IM.ImmCreateContext = [0, (c) => c.proc.handles.create({ type: 'imc' })];
+  IM.ImmDestroyContext = [1, (c) => { if (!c.proc.handles.getAs(c.arg(0), 'imc')) return 0; c.proc.handles.close(c.arg(0)); return 1; }];
   IM.ImmDisableIME = [1, () => 1]; IM.ImmDisableTextFrameService = [1, () => 1]; IM.ImmGetOpenStatus = [1, () => 0]; IM.ImmSetOpenStatus = [2, () => 1]; IM.ImmSetCompositionWindow = [2, () => 1]; IM.ImmSetCandidateWindow = [2, () => 1];
   IM.ImmGetCompositionStringA = [4, () => 0]; IM.ImmGetCompositionStringW = [4, () => 0]; IM.ImmNotifyIME = [4, () => 1]; IM.ImmGetCandidateListA = [4, () => 0]; IM.ImmGetCandidateListCountA = [2, () => 0];
   IM.ImmGetDefaultIMEWnd = [1, () => 0]; IM.ImmIsIME = [1, () => 0]; IM.ImmGetConversionStatus = [3, () => 0]; IM.ImmSetConversionStatus = [3, () => 1]; IM.ImmGetIMEFileNameA = [3, () => 0]; IM.ImmGetProperty = [2, () => 0]; IM.ImmGetVirtualKey = [1, () => 0];
-  IM.ImmSetCompositionFontA = [2, () => 1]; IM.ImmGetDescriptionA = [3, () => 0]; IM.ImmSimulateHotKey = [2, () => 0]; IM.ImmEscapeA = [4, () => 0]; IM.ImmCreateContext = [0, () => 0]; IM.ImmDestroyContext = [1, () => 1];
+  IM.ImmSetCompositionFontA = [2, () => 1]; IM.ImmGetDescriptionA = [3, () => 0]; IM.ImmSimulateHotKey = [2, () => 0]; IM.ImmEscapeA = [4, () => 0];
   api.define('imm32.dll', IM);
 
   // ---------------------------------------------------------------- comctl32

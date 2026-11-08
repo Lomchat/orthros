@@ -31,7 +31,7 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10)), out = opt('out', 'build/shots');
 // scripted input: --input "180:click:400,300;185:key:Escape;190:move:10,20" (times in seconds; kinds move, click, rclick,
 // down/up (left button, for drags), key, text, shot (screenshot now), waitfps, waitpixel:x,y,r,g,b[,tol], waitframe:minDraws,maxDraws)
-// kinds: move x,y | click x,y | rclick x,y | key vk[,scan] | keydown vk[,scan] / keyup vk[,scan] (a key held) | text <string> | look dx,dy[,n[,ms]] (a captured mouse moved: mouse-look) | blur | focus (window focus loss / return). Times are seconds from launch, or
+// kinds: move x,y | click x,y | rclick x,y | wheel x,y[,notches] (default -1: one notch toward the player) | key vk[,scan] | keydown vk[,scan] / keyup vk[,scan] (a key held) | text <string> | look dx,dy[,n[,ms]] (a captured mouse moved: mouse-look) | blur | focus (window focus loss / return). Times are seconds from launch, or
 // "+N" = N seconds after the first Direct3D frame (the loading time varies from run to run).
 // waitfps F: the following events wait until the game presents more than F frames/s for 3 consecutive seconds
 // (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
@@ -624,6 +624,7 @@ for (;;) {
       else if (kind === 'down') { push(EV.MOUSEMOVE, args[0], args[1], 0); push(EV.MOUSEDOWN, 0, args[0], args[1]); } // a drag: down, moves, up as separate steps
       else if (kind === 'up') { push(EV.MOUSEMOVE, args[0], args[1], 0); push(EV.MOUSEUP, 0, args[0], args[1]); }
       else if (kind === 'rclick') { push(EV.MOUSEMOVE, args[0], args[1], 0); push(EV.MOUSEDOWN, 1, args[0], args[1]); push(EV.MOUSEUP, 1, args[0], args[1]); }
+      else if (kind === 'wheel') push(EV.WHEEL, (args[2] || -1) * 120, args[0], args[1]); // (notches: < 0 toward the player, a camera zooming out)
       else if (kind === 'key') { push(EV.KEYDOWN, args[0], args[1] || 0, 0); push(EV.KEYUP, args[0], args[1] || 0, 0); }
       else if (kind === 'text') window.orthrosInput.typeText(String(args[0]));
       else if (kind === 'blur' || kind === 'focus') dispatchEvent(new Event(kind)); // the browser window loses / regains the focus (the game is deactivated / reactivated)

@@ -16,6 +16,7 @@ import { HeadlessHost } from '../src/host/display.js';
 import { Ctx } from '../src/win32/ctx.js';
 import { writeGuid } from '../src/win32/com.js';
 import { wmOf } from '../src/win32/user32.js';
+import { keyRemap } from '../src/win32/vk-scan.js';
 
 /** a PointerInput writing into an array as the ring would, decoded as the worker decodes it */
 function page(w = 640, h = 480) {
@@ -226,5 +227,35 @@ test('host input pumped by the window thread itself: its sent messages at once, 
     t.state = 1; // (the test's thread is on no stack: the callback left it ready)
     env.input({ type: 'focus', focused: false }); wm.pump();
     assert.deepEqual([mem.read32(rec), mem.read32(rec + 12)], [3, 0], 'nothing waiting: sent at once on its own thread');
+  } finally { vm.current = cur; }
+});
+
+test('key remap (manifest keys): W as the up arrow, its letter typed while the game awaits text, released as pressed', { skip }, () => {
+  const env = boot(), { vm, wm, mem, call, scratch, host } = env;
+  host.keyMap = keyRemap({ KeyW: 'ArrowUp' });
+  const w = wm.makeWindow({ cls: null, style: 0x10000000, exStyle: 0, x: 0, y: 0, w: 640, h: 480, parent: wm.desktop, title: 'game' });
+  w.thread = vm.proc.threads[0]; wm.zorder.unshift(w); wm.active = w.hwnd; wm.focus = w.hwnd;
+  const cur = vm.current; vm.current = vm.proc.threads[0];
+  try {
+    // the key messages posted to the game ([message, virtual key]) and the characters waiting for TranslateMessage
+    const keys = (...evs) => {
+      env.input(...evs); const out = [];
+      while (call('user32.dll', 'PeekMessageA', scratch, 0, 0, 0, 1)) { const m = mem.read32(scratch + 4); if (m === 0x100 || m === 0x101) out.push([m, mem.read32(scratch + 8)]); }
+      const chars = (wm.pendingChars ?? []).map((p) => p.code); wm.pendingChars = []; return [out, chars];
+    };
+    const down = { type: 'keydown', vk: 0x57, scan: 0x11 }, up = { type: 'keyup', vk: 0x57, scan: 0x11 }, ch = { type: 'char', code: 0x77 };
+    assert.deepEqual(keys(down, ch, up), [[[0x100, 0x26], [0x101, 0x26]], []], 'a game that never uses its IME: always the arrow');
+    // a text field takes the focus: the game associates its own input context with the window (BFME's IME manager)
+    const imc = call('imm32.dll', 'ImmCreateContext');
+    assert.ok(imc);
+    const def = call('imm32.dll', 'ImmGetContext', w.hwnd);
+    assert.equal(call('imm32.dll', 'ImmAssociateContext', w.hwnd, imc), def);
+    assert.deepEqual(keys(down, ch), [[[0x100, 0x57]], [0x77]], 'typed as it is');
+    // the field loses the focus (a null context) while W is held: it goes up as W, the next press is the arrow again
+    assert.equal(call('imm32.dll', 'ImmAssociateContext', w.hwnd, 0), imc);
+    assert.equal(call('imm32.dll', 'ImmGetContext', w.hwnd), 0);
+    assert.deepEqual(keys(up, down, ch, up), [[[0x101, 0x57], [0x100, 0x26], [0x101, 0x26]], []]);
+    // Ctrl held: the game's shortcut (Ctrl+W), not the arrow
+    assert.deepEqual(keys({ type: 'keydown', vk: 0xa2, scan: 0x1d }, down, up, { type: 'keyup', vk: 0xa2, scan: 0x1d })[0].map((m) => m[1]), [0xa2, 0x57, 0x57, 0xa2]);
   } finally { vm.current = cur; }
 });

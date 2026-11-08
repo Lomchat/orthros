@@ -10,6 +10,7 @@ import { openmwProblem } from './openmw.js';
 import { re3Problem } from './re3.js';
 import { mmoProblem } from './mmo.js';
 import { profileMovesProblem } from '../vfs/profile-moves.js';
+import { keyRemapProblem } from '../win32/vk-scan.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const DEFAULT_GAMES_DIR = path.join(ROOT, 'data/games');
@@ -73,6 +74,8 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     // its files as they are —, unless the version says false)
     if (manifest.lightCopies !== undefined && typeof manifest.lightCopies !== 'boolean') fail(file, `${id}: lightCopies doit être un booléen`);
     manifest.lightCopies = runtime !== 'win32' && manifest.lightCopies !== false;
+    // (the player's keys as the game gets them: user32.js remapKey)
+    { const problem = keyRemapProblem(manifest.keys); if (problem) fail(file, `${id}: ${problem}`); }
     if (runtime === 'win32' && !resolveGameFile(manifest, manifest.exe)) fail(file, `${id}: exécutable ${manifest.exe} absent de base/ et versions/${dir}/`);
     if (runtime === 'goldsrc') {
       const problem = goldsrcProblem(manifest.goldsrc);

@@ -17,6 +17,7 @@ import { OverlayBackend } from '../vfs/overlay-backend.js';
 import { RealClock } from '../core/clock.js';
 import { HeadlessHost } from './display.js';
 import { Registry } from '../win32/registry.js';
+import { keyRemap } from '../win32/vk-scan.js';
 import { folderManifest, withDefaults } from './manifest.js';
 import { loadGameCatalog, defaultGameManifest, DEFAULT_GAMES_DIR } from './game-catalog.js';
 
@@ -111,6 +112,7 @@ export async function main(argv) {
   const vfs = makeVfs(manifest, dir, saveDir);
   const clock = new RealClock();
   const host = new HeadlessHost({ clock, width: manifest.display.width, height: manifest.display.height });
+  host.keyMap = keyRemap(manifest.keys); // (the manifest's key remap: user32.js remapKey)
   const vm = new Vm({ vfs, clock, host, jit: !o.interp, logKinds: o.log ?? ['loader', 'warn', 'crash', 'win', 'thread'], apiHist: true, profile: o.profile });
   vm.onStdout = (s) => process.stdout.write(s);
   // registry: generic defaults + manifest seed + values persisted from earlier runs (in the save dir)
