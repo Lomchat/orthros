@@ -140,10 +140,10 @@ test('the water\'s refraction (a second rendering of the scene) on the discrete 
   }
 });
 
-test('the view distance a tier asks (the owner, 2026-11-01): mid 16384, high 20480, low the page\'s own; the land fog scaled to it', async () => {
+test('the view distance a tier asks (the owner, 2026-11-01, then 2026-11-08): mid 20480, high 24576, low the page\'s own; the land fog scaled to it', async () => {
   const { tierSettings } = await import('../src/ports/openmw/tier.js');
-  assert.deepEqual(tierSettings('mid'), { refraction: false, vd: 16384, fog: { start: 16384, end: 21845 } });
-  assert.deepEqual(tierSettings('high'), { refraction: true, vd: 20480, fog: { start: 20480, end: 27307 } });
+  assert.deepEqual(tierSettings('mid'), { refraction: false, vd: 20480, fog: { start: 20480, end: 27307 } });
+  assert.deepEqual(tierSettings('high'), { refraction: true, vd: 24576, fog: { start: 24576, end: 32768 } });
   assert.deepEqual(tierSettings('low'), { refraction: false });
   const { withQualityTier } = await import('../src/host/openmw.js');
   const page = "var TIER = { mid: { vd: '12288' } }[__tier];\n'distant land fog start = 12288\\n' +\n'distant land fog end = 16384\\n' +";

@@ -32,11 +32,13 @@ export const tierSettings = (tier) => ({ refraction: tier === 'high', ...(VIEW[t
 
 /**
  * The view distance a tier asks over the engine page's TIER table (the owner, 2026-11-01: "la distance d'affichage est
- * courte"): 'mid' 12288 -> 16384 (2 cells), 'high' 16384 -> 20480 (2.5 cells); measured on the GPU-less server, mid glide: 20480 cost ~25 % of the frames a second (23 -> 17), 16384 ~12 % (23 -> 20); 'low' keeps the page's 8192. The distant
+ * courte"): 'mid' 12288 -> 16384 (2 cells), 'high' 16384 -> 20480 (2.5 cells); measured on the GPU-less server, mid glide: 20480 cost ~25 % of the frames a second (23 -> 17), 16384 ~12 % (23 -> 20); 'low' keeps the page's 8192.
+ * Then (the owner, 2026-11-08, on his Iris Xe at 16384: "fluide, on peut même augmenter encore") 'mid' 20480 (2.5 cells,
+ * the measure above), 'high' 24576 (3 cells). The distant
  * land fog follows it as the page set it for 12288 (start at the view distance, end at 4/3 of it: the vista's edge into
  * the sky blend). A tier whose frames stay slow still steps down a tier (FRAMES), and the player's Options still win.
  */
-export const VIEW = { mid: 16384, high: 20480 };
+export const VIEW = { mid: 20480, high: 24576 };
 export const fogFor = (vd) => ({ start: vd, end: Math.round(vd * 4 / 3) });
 
 const lower = (t) => TIERS[Math.max(0, TIERS.indexOf(t) - 1)];

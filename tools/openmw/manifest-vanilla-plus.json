@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "morrowind-vanilla-plus",
-  "name": "The Elder Scrolls III: Morrowind — Vanilla+",
+  "name": "The Elder Scrolls III: Morrowind — Orthros Edition",
   "defaultVersion": "morrowind-goty-vanilla-plus-en",
   "defaults": {
     "runtime": "openmw",
@@ -12,7 +12,7 @@
     {
       "id": "morrowind-goty-vanilla-plus-en",
       "dir": "goty-vanilla-plus-en",
-      "version": "GOTY · Vanilla+ · OpenMW-Web 1.5.3",
+      "version": "GOTY · Orthros Edition · OpenMW-Web 1.5.3",
       "languages": [
         "en"
       ],
