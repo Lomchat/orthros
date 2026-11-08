@@ -697,3 +697,13 @@ test('r23: r22 plus its patch, the same exports; Toggle POV\'s default on V, Tab
   assert.ok(patch.includes('-        defaultKeyBindings[A_TogglePOV] = SDL_SCANCODE_TAB;'));
   assert.ok(patch.includes('+        defaultKeyBindings[A_TogglePOV] = SDL_SCANCODE_V;'));
 });
+
+test('r24: r23 plus its patch, the same exports; the mods\' Lua storage written by the page\'s flush (in menus or hidden, from the values kept serialized), Run (held) without a default, Always Run on Left Alt', () => {
+  const r23 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r23'), r24 = lock.builds.find((b) => b.id === 'openmw-web-v1.5.3-orthros-r24');
+  assert.ok(r24, 'r24 is a build');
+  assert.deepEqual(r24.patches, [...r23.patches, 'orthros-r24.patch']);
+  assert.deepEqual(r24.exports, r23.exports);
+  const patch = fs.readFileSync(path.join(tools, 'patches/orthros-r24.patch'), 'utf8');
+  for (const s of ['+++ b/openmw/components/lua/storage.cpp', 'orthrosAppendSerialized', 'g_orthrosSaveStorage', "document.visibilityState === 'hidden'",
+    '-        defaultKeyBindings[A_Run] = SDL_SCANCODE_LSHIFT;', '+        defaultKeyBindings[A_AlwaysRun] = SDL_SCANCODE_LALT;']) assert.ok(patch.includes(s), s);
+});

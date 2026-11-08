@@ -1,0 +1,249 @@
+--- a/openmw/components/lua/serialization.hpp
++++ b/openmw/components/lua/serialization.hpp
+@@ -51,6 +51,16 @@
+     };
+ 
+     BinaryData serialize(const sol::object&, const UserdataSerializer* customSerializer = nullptr);
++
++    // Orthros (orthros-r24.patch): a table written from parts already serialized (LuaStorage::save: each value is
++    // kept serialized). orthrosTableOpen starts the data (the format's version, a table), orthrosAppendKey a string
++    // key, orthrosAppendSerialized a value serialize() returned (its version byte left out), orthrosTableClose ends a
++    // table; orthrosTableStart opens a nested one.
++    void orthrosTableOpen(BinaryData& out);
++    void orthrosTableStart(BinaryData& out);
++    void orthrosTableClose(BinaryData& out);
++    void orthrosAppendKey(BinaryData& out, std::string_view key);
++    void orthrosAppendSerialized(BinaryData& out, std::string_view serialized);
+     sol::object deserialize(lua_State* lua, std::string_view binaryData,
+         const UserdataSerializer* customSerializer = nullptr, bool readOnly = false);
+ 
+--- a/openmw/components/lua/serialization.cpp
++++ b/openmw/components/lua/serialization.cpp
+@@ -356,6 +356,21 @@
+         throw std::runtime_error("Unknown type in serialized data: " + std::to_string(type));
+     }
+ 
++    void orthrosTableOpen(BinaryData& out)
++    {
++        out.push_back(FORMAT_VERSION);
++        appendType(out, SerializedType::TABLE_START);
++    }
++    void orthrosTableStart(BinaryData& out) { appendType(out, SerializedType::TABLE_START); }
++    void orthrosTableClose(BinaryData& out) { appendType(out, SerializedType::TABLE_END); }
++    void orthrosAppendKey(BinaryData& out, std::string_view key) { appendString(out, key); }
++    void orthrosAppendSerialized(BinaryData& out, std::string_view serialized)
++    {
++        if (serialized.empty() || serialized[0] != FORMAT_VERSION)
++            throw std::runtime_error("Orthros: a stored value of another serialization format");
++        out.append(serialized.data() + 1, serialized.size() - 1);
++    }
++
+     BinaryData serialize(const sol::object& obj, const UserdataSerializer* customSerializer)
+     {
+         if (obj == sol::nil)
+--- a/openmw/components/lua/storage.hpp
++++ b/openmw/components/lua/storage.hpp
+@@ -1,6 +1,7 @@
+ #ifndef COMPONENTS_LUA_STORAGE_H
+ #define COMPONENTS_LUA_STORAGE_H
+ 
++#include <atomic>
+ #include <map>
+ #include <sol/sol.hpp>
+ #include <stdexcept>
+@@ -15,6 +16,9 @@
+     class LuaStorage
+     {
+     public:
++        // Orthros (orthros-r24.patch): every change of any storage section (set, setAll) counted, so that the page's
++        // periodic save writes the permanent storage only when something changed (apps/openmw/engine.cpp).
++        static std::atomic<unsigned long long> sOrthrosChanges;
+         static void initLuaBindings(LuaUtil::LuaView& view);
+         static sol::table initGlobalPackage(LuaUtil::LuaView& view, LuaStorage* globalStorage);
+         static sol::table initLocalPackage(LuaUtil::LuaView& view, LuaStorage* globalStorage);
+@@ -72,6 +76,7 @@
+             {
+             }
+             sol::object getCopy(lua_State* state) const;
++            const std::string& orthrosSerialized() const { return mSerializedValue; } // (orthros-r24.patch)
+             sol::object getReadOnly(lua_State* state) const;
+ 
+         private:
+--- a/openmw/components/lua/storage.cpp
++++ b/openmw/components/lua/storage.cpp
+@@ -83,10 +83,13 @@
+                 "Too many subscribe callbacks triggering in a chain, likely an infinite recursion");
+     }
+ 
++    std::atomic<unsigned long long> LuaStorage::sOrthrosChanges{ 0 };
++
+     void LuaStorage::Section::set(std::string_view key, const sol::object& value)
+     {
+         checkIfActive();
+         throwIfCallbackRecursionIsTooDeep();
++        sOrthrosChanges.fetch_add(1, std::memory_order_relaxed);
+         if (value != sol::nil)
+             mValues[std::string(key)] = Value(value);
+         else
+@@ -104,6 +107,7 @@
+     {
+         checkIfActive();
+         throwIfCallbackRecursionIsTooDeep();
++        sOrthrosChanges.fetch_add(1, std::memory_order_relaxed);
+         mValues.clear();
+         if (values)
+         {
+@@ -280,13 +284,28 @@
+ 
+     void LuaStorage::save(lua_State* state, const std::filesystem::path& path) const
+     {
+-        sol::table data(state, sol::create);
++        // Orthros (orthros-r24.patch): written from the values as they are kept, already serialized — the same data the
++        // engine wrote through a Lua table copy of every section (deserialized then serialized again: ~0.5 s for the 8 MB
++        // of a modded game's storage in the browser, where the page now writes it while playing; a few ms so)
++        (void)state;
++        std::string serializedData;
++        orthrosTableOpen(serializedData);
+         for (const auto& [sectionName, section] : mData)
+         {
+-            if (section->mLifeTime == Section::Persistent && !section->mValues.empty())
+-                data[sectionName] = section->asTable(state);
++            if (section->mLifeTime != Section::Persistent || section->mValues.empty())
++                continue;
++            orthrosAppendKey(serializedData, sectionName);
++            orthrosTableStart(serializedData);
++            for (const auto& [key, value] : section->mValues)
++            {
++                if (value.orthrosSerialized().empty())
++                    continue;
++                orthrosAppendKey(serializedData, key);
++                orthrosAppendSerialized(serializedData, value.orthrosSerialized());
++            }
++            orthrosTableClose(serializedData);
+         }
+-        std::string serializedData = serialize(data);
++        orthrosTableClose(serializedData);
+         Log(Debug::Info) << "Saving Lua storage \"" << path << "\" (" << serializedData.size() << " bytes)";
+         std::ofstream fout(path, std::fstream::binary);
+         fout.write(serializedData.data(), serializedData.size());
+--- a/openmw/apps/openmw/engine.cpp
++++ b/openmw/apps/openmw/engine.cpp
+@@ -86,6 +86,7 @@
+ #include "mwgui/windowmanagerimp.hpp"
+ 
+ #include "mwlua/luamanagerimp.hpp"
++#include <components/lua/storage.hpp>
+ #include "mwlua/worker.hpp"
+ 
+ #include "mwscript/interpretercontext.hpp"
+@@ -1234,6 +1235,14 @@
+ {
+     void (*g_emTick)(void*) = nullptr;
+     void* g_emArg = nullptr;
++    // Orthros (orthros-r24.patch): the mods' Lua storage (player_storage.bin, global_storage.bin: their settings, their
++    // "already shown" flags) was written only when the engine quits — never in a browser, where the page is closed or
++    // reloaded: every session began with the mods' defaults again. The page's periodic and lifecycle flush
++    // (omw_save_settings) now writes it too, when it changed, between frames only: a frame's Lua update runs on its own
++    // thread, and a frame may be suspended (JSPI) while the page's timers run.
++    bool g_orthrosInTick = false; // (a frame under way, perhaps suspended)
++    bool g_orthrosStorageAsked = false; // (asked during a frame: written at its end)
++    void (*g_orthrosSaveStorage)() = nullptr;
+ }
+ // Orthros (orthros-r20.patch, wasm-build/orthros-jspi.js): the frame and main() are the engine's promising exports (JSPI);
+ // a file read (fd_read, fd_pread) or an announced wait (orthros_read_wait) under them that the page does not answer within
+@@ -1366,7 +1375,7 @@
+     // Re-entrancy guard: a long frame can spin the browser event loop (e.g. via a proxied
+     // main-thread call), which dispatches a queued MessageChannel message and would call this
+     // again mid-frame — recursively re-locking OpenMW's non-recursive mutexes → pthread deadlock.
+-    static bool inTick = false;
++    bool& inTick = g_orthrosInTick;
+     if (inTick)
+         return;
+     if (g_emTick && g_emArg)
+@@ -1422,6 +1431,14 @@
+     {
+         printf("omw_save_settings: %s\n", e.what());
+     }
++    // (the mods' Lua storage: now between frames, else at the end of the frame under way)
++    if (g_orthrosSaveStorage)
++    {
++        if (g_orthrosInTick)
++            g_orthrosStorageAsked = true;
++        else
++            g_orthrosSaveStorage();
++    }
+ }
+ 
+ // Change the render resolution at runtime (Options -> Video Apply, and the harness's debounced
+@@ -1983,6 +2000,8 @@
+             const unsigned frameNumber = self->mViewer->getFrameStamp()->getFrameNumber();
+             if (!self->frame(frameNumber, static_cast<float>(dt)))
+                 return;
++            if (g_orthrosStorageAsked && g_orthrosSaveStorage)
++                g_orthrosSaveStorage(); // (orthros-r24.patch: asked during this frame; its Lua update is over)
+             timeManager.updateIsPaused();
+             if (!timeManager.isPaused())
+             {
+@@ -2011,6 +2030,41 @@
+         maxSimulationInterval };
+     g_emTick = &EmscriptenLoop::tick;
+     g_emArg = loop;
++    // Orthros (orthros-r24.patch): the mods' Lua storage written when it changed since the last write (or the load)
++    {
++        static OMW::Engine* engine = this;
++        static unsigned long long saved = LuaUtil::LuaStorage::sOrthrosChanges.load();
++        g_orthrosSaveStorage = [] {
++            g_orthrosStorageAsked = false;
++            const unsigned long long now = LuaUtil::LuaStorage::sOrthrosChanges.load();
++            if (now == saved || !engine->mLuaManager)
++                return;
++            // (a modded game's storage is large — 8 MB here, its map's cache —: written only while a menu is open or the
++            // page is hidden — the player gone, or closing it —, never in play, where a frame would carry its write)
++            const bool hidden = EM_ASM_INT({ return document.visibilityState === 'hidden' ? 1 : 0; }) != 0;
++            MWBase::WindowManager* windows = MWBase::Environment::get().getWindowManager();
++            if (!hidden && !(windows && windows->isGuiMode()))
++                return;
++            const auto t0 = std::chrono::steady_clock::now();
++            try
++            {
++                engine->mLuaManager->savePermanentStorage(engine->mCfgMgr.getUserConfigPath());
++                saved = now;
++            }
++            catch (const std::exception& e)
++            {
++                printf("Orthros: Lua storage not saved: %s\n", e.what());
++                return;
++            }
++            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++            static int told = 0;
++            if (told < 5 || ms > 8.0)
++            {
++                ++told;
++                printf("Orthros: the mods' Lua storage saved (%.1f ms) (orthros-r24)\n", ms);
++            }
++        };
++    }
+     // SINGLE frame driver: the MessageChannel pump in index.html calls omw_pump_frame()
+     // (-> this tick). The pump paces itself with requestAnimationFrame while the tab is
+     // visible (vsync-aligned) and free-runs unthrottled when hidden. We deliberately do NOT
+--- a/openmw/apps/openmw/mwinput/bindingsmanager.cpp
++++ b/openmw/apps/openmw/mwinput/bindingsmanager.cpp
+@@ -269,7 +269,8 @@
+ 
+         defaultKeyBindings[A_QuickKeysMenu] = SDL_SCANCODE_F1;
+         defaultKeyBindings[A_Console] = SDL_SCANCODE_GRAVE;
+-        defaultKeyBindings[A_Run] = SDL_SCANCODE_LSHIFT;
++        // Orthros (orthros-r24.patch): Left Shift left to the sprint of the version's mods (RUN!, its key given by the
++        // version's player defaults), walking and running toggled with Left Alt (the owner, 2026-11-08); Run when held: none
+         defaultKeyBindings[A_Sneak] = SDL_SCANCODE_LCTRL;
+         defaultKeyBindings[A_AutoMove] = SDL_SCANCODE_Q;
+         defaultKeyBindings[A_Jump] = SDL_SCANCODE_SPACE;
+@@ -292,7 +293,7 @@
+         defaultKeyBindings[A_Screenshot] = SDL_SCANCODE_F12;
+         defaultKeyBindings[A_ToggleHUD] = SDL_SCANCODE_F11;
+         defaultKeyBindings[A_ToggleDebug] = SDL_SCANCODE_F10;
+-        defaultKeyBindings[A_AlwaysRun] = SDL_SCANCODE_CAPSLOCK;
++        defaultKeyBindings[A_AlwaysRun] = SDL_SCANCODE_LALT;
+         defaultKeyBindings[A_QuickSave] = SDL_SCANCODE_F5;
+         defaultKeyBindings[A_QuickLoad] = SDL_SCANCODE_F9;
+         defaultKeyBindings[A_TogglePostProcessorHUD] = SDL_SCANCODE_F2;

@@ -130,6 +130,9 @@ shutil.copy2(play / 'streamfs.js', e / 'streamfs.js')
 (out / 'engine-version.txt').write_text(ver)
 info = json.loads((base / 'release.json').read_text())
 patches = [l for l in (root / '.orthros-dev-patches').read_text().split('\n') if l]
+# (the engine files' own hashes: the server serves a release's engine files by the hashes its release.json lists)
+import hashlib
+if 'engineFiles' in info: info['engineFiles'] = {n: hashlib.sha256((e / n).read_bytes()).hexdigest() for n in ('openmw.js', 'openmw.wasm', 'openmw.data')}
 info.update({'id': out.name, 'engineVersion': ver, 'devPatches': patches,
              'files': [f'e/{ver}/{n}' for n in ('openmw.js', 'openmw.wasm', 'openmw.data', 'streamfs.js')] + [f for f in info['files'] if not f.startswith('e/')]})
 (out / 'release.json').write_text(json.dumps(info, indent=2) + '\n')

@@ -482,6 +482,32 @@ off on simulation peers by an overlay); Solthas, Dynamic AVE and NPC Schedule `:
 (`ab3`: three pairs, walk p50 live 9.3-11.5 ms / with both batches 9.1-9.5, p99 22.7-26.0 / 22.4-26.3; glide `s3`
 p50 7.9, p99 24.7); no Lua error in FR and EN.
 
+**Not live until the gateways restarted** (found 2026-11-08 evening): the page loads its mod list and file sizes
+(`mwdata-mods.json`, `mwdata-manifest.json`) from the game's gateway (`orthros-openmw@<manifest>`), which builds them
+at its start — the two batches above reached the players only once `orthros-openmw@morrowind-goty-vanilla-plus-{en,fr}`
+were restarted. The same proxy made the staged checks above load the live mods: their measures were of the game
+without the batches. A staged check runs its own gateway now (`tools/openmw/server.mjs <manifest> --games-dir
+<staging> --state-dir <scratch> --port <n>`, the staged manifest's `multiplayer.port` set to it). Measured that way,
+with every mod of the day and engine r24 (FR, walk at Seyda Neen, `--discard`): work p50 10.4 ms, p99 30.4 ms.
+
+Third step, live with engine **orthros-r24** (`batch4/install-mods5.sh`): the original inventory back (Inventory
+Extender Redone and Inventory Camera out — the owner prefers dragging items on the paper doll; Inventory Camera also
+moved the camera when a menu opened), OpenMW Dynamic Actors 1.37d (the dialogue staged; French texts), RUN!'s sprint on
+Left Shift (`orthros-sprint-on-shift`: a sprint left on the QoL defaults' Left Alt moved once), Combat Sounds Overhaul
+Overhauled's overlay in a root of its own (its `Scripts/` beside the batch's `scripts/`: the gateway folds the two into
+one name and the scripts under the other were unreadable — Impact Effects', Solthas', Dynamic AVE's overlays), Lua
+Physics' new-game debris map built at the first update. A root never holds two names one case apart.
+
+orthros-r24.patch: the mods' Lua storage (player_storage.bin: their settings, their "already shown" flags — Advanced
+World Map's quick setup, Quest Markers Plus' welcome came back at every launch —, Advanced World Map's 8 MB map cache
+rebuilt at every launch) was written only when the engine quits, never in a browser. The page's flush
+(`omw_save_settings`, every 15 s and on hide) writes it when it changed, only while a menu is open or the page hidden
+(never in play), between frames; written from the values as they are kept serialized (`orthrosAppendSerialized`) —
+the engine's Lua table copy took ~500 ms for those 8 MB, ~70 ms now, in a menu. Its keys: Run (held) without a default
+(Left Shift is the sprint's), Always Run (walk/run toggle) on Left Alt; `src/ports/openmw/input-keys.js` moves a saved
+layout once. Built from the kept r16 tree with r17..r24 (`dev-build.sh`, which now writes the built engine files'
+hashes into the release), its files pinned in the lock.
+
 Lua Physics and CHIM Climbing drive the world from one player's side (items' physics, the player teleported): they are
 `<mod>:SOLO` in `guard-client-ui.mjs` (`mods2-compat`): every entry point returns no handlers when `openmw.mp`
 `isEnabled()` (a shared world, on its clients and its simulation peer), solo unchanged; a `CUSTOM` declared beside other
