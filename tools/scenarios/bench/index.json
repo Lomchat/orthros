@@ -5,7 +5,7 @@
   {"name": "bfme2-quick", "title": "BFME II: menu, skirmish start, two minutes of play", "manifests": ["bfme2"], "file": "bfme2-quick.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 2400},
   {"name": "rotwk-skirmish", "title": "Rise of the Witch-king: menu, skirmish start, one minute of play", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-skirmish.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1200},
   {"name": "rotwk-quick", "title": "Rise of the Witch-king: menu, skirmish start, two minutes of play", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-quick.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1200},
-  {"name": "bfme1-skirmish", "title": "BFME: menu, skirmish start, one minute of play", "manifests": ["bfme-vanilla", "bfme1-103"], "file": "bfme1-skirmish.txt", "coords": [800, 600], "minutes": 6, "maxSeconds": 1200},
+  {"name": "bfme1-skirmish", "title": "BFME: menu, skirmish start, one minute of play", "manifests": ["bfme-vanilla"], "file": "bfme1-skirmish.txt", "coords": [800, 600], "minutes": 6, "maxSeconds": 1200},
   {"name": "bfme1-108-menu", "title": "BFME 1.08: the main menu", "manifests": ["bfme1-108"], "file": "bfme1-108-menu.txt", "coords": [800, 600], "minutes": 3, "maxSeconds": 1500},
   {"name": "bfme1-108-quick", "title": "BFME 1.08: menu, skirmish start, two minutes of play", "manifests": ["bfme1-108"], "file": "bfme1-108-quick.txt", "coords": [800, 600], "minutes": 4, "maxSeconds": 1500},
   {"name": "bfme1-108-skirmish", "title": "BFME 1.08: menu, skirmish start, ten minutes of play", "manifests": ["bfme1-108"], "file": "bfme1-108-skirmish.txt", "coords": [800, 600], "minutes": 15, "maxSeconds": 2700},
