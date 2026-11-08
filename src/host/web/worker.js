@@ -381,7 +381,7 @@ async function start(m) {
   if (restored) readLog = readBackends = null;
   else if (readLog) playableWatch = new PlayableWatch();
   if (!restored) try {
-    vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
+    vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, patches: manifest.patches, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
   } catch (e) { post({ type: 'crash', report: e instanceof GuestCrash ? e.report : String(e.stack || e) }); return; }
   running = true;
   // the options this session runs with, as decided here (perf telemetry: a measurement is read with them)

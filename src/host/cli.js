@@ -125,7 +125,7 @@ export async function main(argv) {
   const t0 = performance.now();
   let code = null;
   try {
-    vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
+    vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, patches: manifest.patches, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
     if (o.seconds) {
       const deadline = t0 + o.seconds * 1000;
       vm.deadline = deadline;

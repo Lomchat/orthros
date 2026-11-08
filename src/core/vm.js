@@ -182,7 +182,7 @@ export class Vm {
 
   // ------------------------------------------------------------------ process lifecycle
   /**
-   * @param {{ exePath: string, args?: string, cwd?: string, env?: any, dllOverrides?: any, exeBytes?: Uint8Array }} opts
+   * @param {{ exePath: string, args?: string, cwd?: string, env?: any, dllOverrides?: any, patches?: any[], exeBytes?: Uint8Array }} opts
    */
   /** A JIT on this machine's memory and interpreter, with the options the page or the tests ask for. */
   newJit(nullPage, interpRanges, opts) {

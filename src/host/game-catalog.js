@@ -21,6 +21,21 @@ const fail = (file, message) => { throw new Error(`${file}: ${message}`); };
 const directory = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
 const RUNTIMES = ['win32', 'goldsrc', 'openmw', 're3'];
 const COVER_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.(png|jpe?g|svg|webp)$/i;
+const HEX = /^(?:[0-9a-f]{2})+$/i;
+/** What is wrong with a version's `patches` (process.js applyPatches), null when nothing. */
+export function patchesProblem(patches) {
+  if (patches === undefined) return null;
+  if (!Array.isArray(patches)) return 'patches doit être une liste';
+  for (const p of patches) {
+    const what = `patches: ${p?.module ?? '?'}+${p?.rva ?? '?'}`;
+    if (!p || typeof p !== 'object' || typeof p.module !== 'string' || !/^[\w.-]+$/.test(p.module) || !/^0x[0-9a-f]+$/i.test(p.rva ?? '') || !HEX.test(p.from ?? '')) return `${what} : module, rva (0x…) et from (octets en hexadécimal) obligatoires`;
+    if ((p.to === undefined) === (p.call === undefined)) return `${what} : to ou call, l'un des deux`;
+    if (p.to !== undefined && (!HEX.test(p.to) || p.to.length !== p.from.length)) return `${what} : to, autant d'octets que from`;
+    if (p.call !== undefined && (!HEX.test(p.call) || p.from.length < 10)) return `${what} : call (octets en hexadécimal) remplace 5 octets ou plus de from`;
+    if (p.why !== undefined && typeof p.why !== 'string') return `${what} : why, un texte`;
+  }
+  return null;
+}
 const safePath = (value) => typeof value === 'string' && value.length > 0 && !path.isAbsolute(value) && !value.includes('\\') && value.split('/').every((part) => part && part !== '.' && part !== '..');
 
 /**
@@ -76,6 +91,8 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     manifest.lightCopies = runtime !== 'win32' && manifest.lightCopies !== false;
     // (the player's keys as the game gets them: user32.js remapKey)
     { const problem = keyRemapProblem(manifest.keys); if (problem) fail(file, `${id}: ${problem}`); }
+    // (patches of the game's code in memory: process.js applyPatches)
+    { const problem = patchesProblem(manifest.patches); if (problem) fail(file, `${id}: ${problem}`); }
     if (runtime === 'win32' && !resolveGameFile(manifest, manifest.exe)) fail(file, `${id}: exécutable ${manifest.exe} absent de base/ et versions/${dir}/`);
     if (runtime === 'goldsrc') {
       const problem = goldsrcProblem(manifest.goldsrc);

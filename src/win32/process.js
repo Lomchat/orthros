@@ -1,6 +1,6 @@
 // Guest process and threads: address space, handles, modules, TEB/PEB, stacks, TLS.
 import { CpuState, THREAD_STATES_BASE, ST, MAX_THREADS } from '../cpu/state.js';
-import { VMem, PAGE_READWRITE } from './vmem.js';
+import { VMem, PAGE_READWRITE, PAGE_EXECUTE_READ } from './vmem.js';
 import { HandleTable } from './handles.js';
 import { Heap } from './heap.js';
 import { PeImage, mapImage } from '../loader/pe.js';
@@ -107,7 +107,7 @@ export class Thread {
 export class Process {
   /**
    * @param {import('../core/vm.js').Vm} vm
-   * @param {{ exePath: string, args?: string, cwd?: string, env?: Record<string,string>, dllOverrides?: Record<string,string> }} opts
+   * @param {{ exePath: string, args?: string, cwd?: string, env?: Record<string,string>, dllOverrides?: Record<string,string>, patches?: any[] }} opts
    */
   constructor(vm, opts) {
     this.vm = vm;
@@ -145,6 +145,7 @@ export class Process {
       ...(opts.env ?? {}),
     }));
     this.dllOverrides = new Map(Object.entries(opts.dllOverrides ?? {}).map(([k, v]) => [ApiRegistry.norm(k), v]));
+    this.patches = opts.patches ?? []; // (the manifest's patches of the modules' code: applyPatches)
     this.exitCode = 0;
     this.exited = false;
     /** @type {Thread[]} */
@@ -349,10 +350,36 @@ export class Process {
     mod = mapImage(img, this.mem, this.vmem, { name: n, path: file ?? this.path(name) });
     this.modules.set(n, mod);
     this.vm.log('loader', `mapped ${n} at ${hex(mod.base)} size ${hex(mod.size)} entry ${hex(mod.entry)}`);
+    this.applyPatches(mod);
     if (mod.tls) { mod.tls.index = this.tlsModules.length; this.tlsModules.push(mod); this.mem.write32(mod.tls.indexAddr, mod.tls.index); for (const t of this.threads) this.allocModuleTls(t, mod.tls.index); }
     this.resolveImports(mod);
     this.moduleList.push(mod);
     return mod;
+  }
+
+  /**
+   * The manifest's patches of a module's code (`patches`, game-catalog.js patchesProblem): a version's own change the
+   * owner asked for (BFME's farthest camera), in memory only — the game's files stay as they are. Each checks the bytes
+   * it replaces and is skipped, with a warning, when they differ (another release of the module). `to`: other bytes in
+   * place; `call`: code of its own (ending in its `ret`) in memory the loader gives it, called from there — `from`
+   * (5 bytes or more) becomes the call, the rest nops.
+   */
+  applyPatches(mod) {
+    const bytes = (h) => Array.from(h.match(/../g), (x) => parseInt(x, 16));
+    for (const p of this.patches) {
+      if (ApiRegistry.norm(p.module) !== mod.name) continue;
+      const at = mod.base + parseInt(p.rva, 16), from = bytes(p.from), now = this.mem.u8.subarray(at, at + from.length);
+      if (!from.every((b, i) => now[i] === b)) { this.vm.warn(`${mod.name}+${p.rva}: patch skipped, other bytes there (${p.why ?? 'no reason given'})`); continue; }
+      if (p.to) this.mem.writeBytes(at, bytes(p.to));
+      else {
+        const code = bytes(p.call), cave = this.vmem.alloc(code.length, PAGE_EXECUTE_READ, `patch ${mod.name}+${p.rva}`, 0, { topDown: true }); // (high: not where the main thread's stack is made next, under 0x130000)
+        if (!cave) { this.vm.warn(`${mod.name}+${p.rva}: patch skipped, no memory for its code`); continue; }
+        this.mem.writeBytes(cave, code);
+        const rel = (cave - (at + 5)) | 0;
+        this.mem.writeBytes(at, [0xe8, rel & 0xff, (rel >> 8) & 0xff, (rel >> 16) & 0xff, (rel >>> 24) & 0xff, ...new Array(from.length - 5).fill(0x90)]);
+      }
+      this.vm.log('loader', `${mod.name}+${p.rva} patched${p.to ? '' : ` (its code at ${hex((this.mem.read32(at + 1) + at + 5) >>> 0)})`}${p.why ? `: ${p.why}` : ''}`);
+    }
   }
 
   resolveImports(mod) {

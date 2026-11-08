@@ -870,7 +870,7 @@ export function registerKernel32(api, vm) {
     let child;
     try {
       child = vm.spawnProcess({ exePath: image, exeBytes: bytes, cmdline: cmd ?? `"${image}"`, cwd: cwd ? proc.path(cwd) : proc.cwd, env,
-        dllOverrides: Object.fromEntries(proc.dllOverrides) }); // (its handles — windows too — from blocks of its own: core/procs.js)
+        dllOverrides: Object.fromEntries(proc.dllOverrides), patches: proc.patches }); // (its handles — windows too — from blocks of its own: core/procs.js)
     } catch (e) { vm.warn(`${what} failed: ${e.message}`); return c.fail(e.processLimit || e instanceof RangeError ? E.NOT_ENOUGH_MEMORY : 193); } // (too many processes, no address space for its memory; else its image did not load)
     const cp = child.proc, main = cp.threads[0];
     if (inherit) for (const o of proc.handles.inheritInto(cp.handles)) shared(o);
