@@ -463,6 +463,25 @@ Improved Lights for All Shaders 1.2, Aendemika's Kagouti replacer, Pherim's Impr
 downloaded in the owner's own signed-in session (he signed in and passed Cloudflare's check himself in a browser on this
 server, `tools/nexus-remote.mjs` in the proof folder; nothing automated past a check), each checked by `md5_search` too.
 
+Second batch, live the same day (`install-mods3.sh`): Improved Lights 1.3 in place of 1.2, OpenMW Impact Effects 1.8b
+(before The Combat Juice, whose spark meshes win), Combat Sounds Overhaul 2.0 with Max Yari's Overhauled 1.4 script (an
+overlay keeps Impact Effects' swing ray silent on living actors when CSO is loaded: no armored hit heard twice), Dynamic
+Ambient Visual Effects 1.18a (its world defaults lighter by an overlay: no smoke on carried candles, moths 50 %, Red
+Mountain lightning halved), Solthas Combat Pack 1.19 — three modules only (Timed Directional Attacks, Sneak Attack Buff,
+Bow Aim Activate, each its folder as a data root and its own omwscripts; every fatigue or trade-off cost 0 by
+`orthros-player-defaults-mods3`, a good thrust no longer damages Willpower and a charged sneak attack no longer resets
+fatigue, by overlays: the owner wants nothing harder; Lose More Health, the dashes and the screen shaders left out) —,
+Lua NPC Schedule 1.7.0.5 (its `go-home.omwaddon` not enabled; the French game gets its cell tables with the French
+masters' cell names and an up-to-date `fr.yaml`), Better Bodies 2.2 (Underwear), New Beast Bodies Clean 3.3, PeterBitt's
+cliff racer and mudcrab, Scamp Replacer, SM Bonewalker, Amazing Atronachs (flame, frost, storm), Weapon Sheathing
+Additions, Skies .IV (one data root assembled by Orthros: its sky textures from 4096 to 2048, top level left out; a
+GLOBAL script sets the moving weathers' cloud speeds to the readme's Morrowind.ini / 5, the manifest having no
+`fallback=`). Cliff racer and scamp textures served at 2048 by overlays. SM Greater Bonewalker left out (its RAR5
+archive does not extract: one texture truncated, also with `unar`). Impact Effects guarded `MENU,PLAYER` (its NPC script
+off on simulation peers by an overlay); Solthas, Dynamic AVE and NPC Schedule `:SOLO`. Measured as the first batch
+(`ab3`: three pairs, walk p50 live 9.3-11.5 ms / with both batches 9.1-9.5, p99 22.7-26.0 / 22.4-26.3; glide `s3`
+p50 7.9, p99 24.7); no Lua error in FR and EN.
+
 Lua Physics and CHIM Climbing drive the world from one player's side (items' physics, the player teleported): they are
 `<mod>:SOLO` in `guard-client-ui.mjs` (`mods2-compat`): every entry point returns no handlers when `openmw.mp`
 `isEnabled()` (a shared world, on its clients and its simulation peer), solo unchanged; a `CUSTOM` declared beside other

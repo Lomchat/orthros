@@ -33,6 +33,9 @@ for (const [i, rel] of roots.entries()) {
   // (game data the engine reads: assets, plugins, Lua scripts and shaders — an overlay of a mod's — and l10n texts)
   const sentinel = files.find((f) => /\.(dds|nif|esm|esp|omwaddon|omwscripts|lua|omwfx|yaml)$/i.test(f.name))?.name;
   if (!sentinel) throw new Error(`No game assets in ${src}`);
+  // (an archive that failed to extract — RAR5 through a 7-Zip without its codec — leaves its files empty: refused)
+  const empty = files.filter((f) => f.size === 0 && /\.(dds|tga|bmp|nif|kf|esm|esp|omwaddon|bsa|wav|mp3)$/i.test(f.name));
+  if (empty.length) throw new Error(`Empty game assets in ${src} (a failed extraction?): ${empty.slice(0, 5).map((f) => f.name).join(', ')}`);
   parts.push({ dir, source: rel, sentinel, plugins: files.filter((f) => !f.name.includes('/') && wanted.some((n) => n.toLowerCase() === f.name.toLowerCase())).map((f) => f.name),
     archives: files.filter((f) => !f.name.includes('/') && /\.(bsa|ba2)$/i.test(f.name)).map((f) => f.name), files: files.length, bytes: files.reduce((s, f) => s + f.size, 0), src, dest });
 }
