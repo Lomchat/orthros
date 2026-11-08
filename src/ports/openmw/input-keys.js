@@ -92,12 +92,56 @@ export function migratePov(FS, now = () => new Date().toISOString()) {
   return moved !== null ? 'moved' : 'kept';
 }
 
+// Third change (orthros-r24.patch, the owner, 2026-11-08): Left Shift is the sprint's (RUN!, a mod's action, its key
+// given by the version), walking and running toggled with Left Alt. A saved file whose Run (held) is on Left Shift loses
+// that key, and its Always Run toggle on Caps Lock moves to Left Alt when no control uses Left Alt; once.
+export const RUN_MARK_FILE = '/userdata/config/openmw/orthros-input-run.json';
+export const RUN = 17, ALWAYS_RUN = 23;
+export const LSHIFT = 225, LALT = 226, CAPSLOCK = 57;
+
+/** The bindings file `xml` with Run's Left Shift dropped and Always Run moved from Caps Lock to Left Alt (when free), or null: nothing to change. */
+export function moveRun(xml) {
+  const binders = [];
+  for (const open of xml.matchAll(/<Control\b[^>]*>/g)) {
+    if (open[0].endsWith('/>')) continue;
+    const name = /\sname="(\d+)"/.exec(open[0]);
+    const start = open.index + open[0].length, end = xml.indexOf('</Control>', start);
+    if (!name || end < 0) return null;
+    for (const b of xml.slice(start, end).matchAll(/[ \t]*<KeyBinder\b[^>]*>\r?\n?/g)) {
+      const key = /\skey="(\d+)"/.exec(b[0]);
+      if (key) binders.push({ control: Number(name[1]), key: Number(key[1]), increase: /\sdirection="INCREASE"/.test(b[0]), at: start + b.index, line: b[0], keyAt: start + b.index + key.index, keyText: key[0] });
+    }
+  }
+  const edits = [];
+  const run = binders.find((b) => b.control === RUN && b.key === LSHIFT);
+  if (run) edits.push({ at: run.at, len: run.line.length, text: '' });
+  const always = binders.find((b) => b.control === ALWAYS_RUN && b.increase && b.key === CAPSLOCK);
+  if (always && !binders.some((b) => b.key === LALT)) edits.push({ at: always.keyAt, len: always.keyText.length, text: ` key="${LALT}"` });
+  if (!edits.length) return null;
+  let out = xml;
+  for (const e of edits.sort((x, y) => y.at - x.at)) out = out.slice(0, e.at) + e.text + out.slice(e.at + e.len);
+  return out;
+}
+
+/** The saved bindings' Run off Left Shift and Always Run on Left Alt, once ('done', 'none', 'moved' or 'kept'). */
+export function migrateRun(FS, now = () => new Date().toISOString()) {
+  if (FS.analyzePath(RUN_MARK_FILE).exists) return 'done';
+  if (!FS.analyzePath(INPUT_FILE).exists) return 'none';
+  const moved = moveRun(FS.readFile(INPUT_FILE, { encoding: 'utf8' }));
+  if (moved !== null) FS.writeFile(INPUT_FILE, moved);
+  FS.writeFile(RUN_MARK_FILE, JSON.stringify({ keys: 'run-shift-sprint-alt-toggle', result: moved !== null ? 'moved' : 'kept', at: now() }) + '\n');
+  return moved !== null ? 'moved' : 'kept';
+}
+
 /** Into the engine page `win`: window.orthrosInputKeys(FS) for its user files' setup (never throws: the game starts). */
 export function install(win = globalThis) {
   win.orthrosInputKeys = (FS) => {
     let pov = 'error';
     try { pov = migratePov(FS); } catch (e) { console.warn('[orthros keys]', e); }
     if (pov === 'moved') console.info('[orthros keys] saved bindings: Toggle POV on V');
+    let run = 'error';
+    try { run = migrateRun(FS); } catch (e) { console.warn('[orthros keys]', e); }
+    if (run === 'moved') console.info('[orthros keys] saved bindings: Run off Left Shift, Always Run on Left Alt');
     try { return migrate(FS); } catch (e) { console.warn('[orthros keys]', e); return 'error'; }
   };
 }

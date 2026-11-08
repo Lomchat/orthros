@@ -115,3 +115,19 @@ test('Toggle POV moved from Tab to V once (orthros-r23.patch\'s default), unless
   assert.ok(JSON.parse(fsys.files.get(POV_MARK_FILE)).result === 'moved');
   assert.equal(migratePov(memFs({})), 'none');
 });
+
+test('Run off Left Shift and Always Run from Caps Lock to Left Alt once (orthros-r24.patch\'s defaults), Left Alt left alone when taken', async () => {
+  const { moveRun, migrateRun, RUN_MARK_FILE } = await import('../src/ports/openmw/input-keys.js');
+  const run = (key) => control(17, [`<KeyBinder key="${key}" direction="INCREASE" />`]);
+  const always = (key) => control(23, [`<KeyBinder key="${key}" direction="INCREASE" />`]);
+  const before = file({ extra: run(225) + always(57) });
+  assert.equal(moveRun(before), file({ extra: control(17, []) + always(226) }));
+  assert.equal(moveRun(file({ extra: run(42) + always(20) })), null, 'both moved by the player');
+  assert.equal(moveRun(file({ extra: run(225) + always(57) + control(40, ['<KeyBinder key="226" direction="INCREASE" />']) })),
+    file({ extra: control(17, []) + always(57) + control(40, ['<KeyBinder key="226" direction="INCREASE" />']) }), 'Left Alt taken: Caps Lock kept');
+  const fsys = memFs({ [INPUT_FILE]: before });
+  assert.equal(migrateRun(fsys, () => 'T'), 'moved');
+  assert.equal(migrateRun(fsys), 'done', 'once');
+  assert.equal(JSON.parse(fsys.files.get(RUN_MARK_FILE)).result, 'moved');
+  assert.equal(migrateRun(memFs({})), 'none');
+});

@@ -8,6 +8,7 @@
 // The page drives it (createShell(...) and the methods it returns); it never names a game. Styles: player.css.
 import { pickLang } from './lang.js';
 import { h } from './dom.js';
+import { gpuInfo, gpuShortName } from './gpu-class.js';
 import { accountState, signIn, onAccountChange, googleSignIn, googleText, GOOGLE_G } from './account.js';
 
 const LOGO = '/src/host/web/orthros_logo.png';
@@ -110,7 +111,10 @@ export function createShell(o) {
 
   // ---------------------------------------------------------------- the header
   const fpsEl = h('span', { class: 'fps' }, '–'), sub = h('span', { class: 'sub' }), graph = h('canvas', { width: 96, height: 24 });
-  const perf = h('div', { class: 'perf', id: 'tbPerf', title: S.perfTitle }, fpsEl, h('span', { class: 'unit' }, 'fps'), graph, sub);
+  // (the GPU the browser draws with, beside the frame rate — on a laptop with two, Windows gives the browser the
+  // integrated one unless told otherwise: the player sees which; its full name on hover)
+  const gpuFull = o.headless ? null : gpuInfo().renderer, gpuEl = h('span', { class: 'gpu', title: gpuFull ?? '' }, gpuShortName(gpuFull) ?? '');
+  const perf = h('div', { class: 'perf', id: 'tbPerf', title: S.perfTitle }, fpsEl, h('span', { class: 'unit' }, 'fps'), graph, sub, gpuEl);
   if (o.onPerf) perf.onclick = o.onPerf; else perf.classList.add('still');
   const mouseText = h('span'), mouse = h('button', { type: 'button', class: 'pill mouse', id: 'tbMouse' }, svg('mouse'), mouseText);
   const saveText = h('span'), save = h('button', { type: 'button', class: 'pill save', id: 'tbSave' }, svg('cloud'), saveText);

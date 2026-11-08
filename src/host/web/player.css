@@ -26,6 +26,8 @@
 #topbar .perf .fps { font: 700 19px/1 ui-monospace, monospace; min-width: 38px; text-align: right; color: #ddd; }
 #topbar .perf .unit { font: 11px system-ui; color: #8a8f9c; margin-left: -3px; }
 #topbar .perf .sub { font: 11px/1.25 ui-monospace, monospace; color: #8a8f9c; white-space: pre; }
+#topbar .perf .gpu { font: 11px/1.25 system-ui; color: #8a8f9c; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#topbar .perf .gpu:empty { display: none; }
 #topbar .good { color: #7ee07e !important; } #topbar .warn { color: #f4c95d !important; } #topbar .bad { color: #ff6b6b !important; }
 #topbar button { font: 600 12px system-ui; color: #e8e2d2; background: rgba(201,165,90,.14); border: 1px solid rgba(201,165,90,.4); padding: 6px 12px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
 #topbar button:hover { background: rgba(201,165,90,.3); }

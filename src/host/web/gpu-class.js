@@ -37,3 +37,21 @@ export function gpuClass(renderer) {
   if (INTEGRATED.test(r)) return 'integrated';
   return 'unknown';
 }
+
+/**
+ * A GPU's short name for the player (the header beside the frame rate): ANGLE's wrapper, the PCI id, the API and the
+ * makers' marks left out — "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Laptop GPU (0x000028E0) Direct3D11 vs_5_0 ps_5_0,
+ * D3D11)" → "RTX 4060 Laptop GPU", "Intel(R) Iris(R) Xe Graphics" → "Iris Xe Graphics", SwiftShader → "SwiftShader
+ * (logiciel)"/"(software)" left to the caller. null when there is no name.
+ */
+export function gpuShortName(renderer) {
+  let r = String(renderer ?? '').trim();
+  if (!r) return null;
+  const angle = /^ANGLE \((?:[^,]*), (.*)\)$/.exec(r);
+  if (angle) r = angle[1];
+  r = r.replace(/\s*\(0x[0-9a-f]+\)/ig, '').replace(/\s+(Direct3D\d+|vs_\d_\d|ps_\d_\d|OpenGL.*|Vulkan.*|, D3D\d+).*$/i, '')
+    .replace(/\((R|TM)\)/g, '').replace(/^(NVIDIA|AMD|Intel|Apple|ANGLE Metal Renderer:)\s+/i, '').replace(/^GeForce\s+(?=RTX|GTX)/i, '')
+    .replace(/,\s*Unspecified Version$/i, '').replace(/\s{2,}/g, ' ').trim();
+  if (SOFTWARE.test(String(renderer))) return 'SwiftShader';
+  return r || null;
+}
