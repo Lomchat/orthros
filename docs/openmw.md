@@ -499,7 +499,8 @@ one name and the scripts under the other were unreadable — Impact Effects', So
 Physics' new-game debris map built at the first update. A root never holds two names one case apart. Saves made with the removed
 inventory mods named them as dependencies: loading one asked about missing content (a question the owner's page did
 not show — stuck at the menu); `orthros-removed-stubs` keeps two empty plugins of those names. A mod taken out of a
-version leaves an empty plugin of its name.
+version leaves an empty plugin of its name. Surefire's combat hit box (chance, damage, odds) registered off by default by an overlay
+(`orthros-overlay-surefire-hud`, the owner did not want it; Options → Scripts → Surefire turns it back on).
 
 orthros-r24.patch: the mods' Lua storage (player_storage.bin: their settings, their "already shown" flags — Advanced
 World Map's quick setup, Quest Markers Plus' welcome came back at every launch —, Advanced World Map's 8 MB map cache
