@@ -8,7 +8,7 @@ import { Vfs, MemBackend } from '../../src/vfs/vfs.js';
 import { VirtualClock } from '../../src/core/clock.js';
 import { HeadlessHost } from '../../src/server/display.js';
 
-const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;
+const PE_DIR = new URL('../../build/pe/', import.meta.url).pathname;
 const vfs = new Vfs(), test = new MemBackend();
 vfs.mount('C:\\', new MemBackend()); vfs.mount('C:\\Test', test);
 test.open('sync.exe', { create: true }).write(0, fs.readFileSync(PE_DIR + 'sync.exe'));

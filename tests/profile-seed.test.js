@@ -193,7 +193,7 @@ test('profile seed server: a canonical set is offered with no reporter and stays
     fs.writeFileSync(path.join(prof, 'AppData', 'G', 'Options.ini'), 'Detail = Medium');
     fs.mkdirSync(path.join(prof, 'Temp'), { recursive: true });
     fs.writeFileSync(path.join(prof, 'Temp', 'scratch.tmp'), 'x');
-    const tool = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'tools', 'profile-seed-make.mjs'), ...a, '--learn', learn], { encoding: 'utf8' });
+    const tool = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'tools', 'ops', 'profile-seed-make.mjs'), ...a, '--learn', learn], { encoding: 'utf8' });
     const put = tool('put', 'g', 'en', prof);
     assert.equal(put.status, 0, put.stderr);
     assert.match(put.stdout, /Detail = Medium/);
@@ -229,7 +229,7 @@ test('profile seed: a region-cased language (pt-BR) lowercased the same way by t
     const learn = path.join(d, 'learn'), prof = path.join(d, 'prof');
     fs.mkdirSync(path.join(prof, 'AppData', 'G'), { recursive: true });
     fs.writeFileSync(path.join(prof, 'AppData', 'G', 'Options.ini'), 'Detail = Medium');
-    const tool = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'tools', 'profile-seed-make.mjs'), ...a, '--learn', learn], { encoding: 'utf8' });
+    const tool = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'tools', 'ops', 'profile-seed-make.mjs'), ...a, '--learn', learn], { encoding: 'utf8' });
     const put = tool('put', 'g', 'pt-BR', prof);
     assert.equal(put.status, 0, put.stderr);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(learn, seedCanonFile('g')), 'utf8')).sets.map((s) => s.lang), ['pt-br']);

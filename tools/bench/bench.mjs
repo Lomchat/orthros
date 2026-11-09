@@ -7,7 +7,7 @@ import { RealClock } from '../../src/core/clock.js';
 import { HeadlessHost } from '../../src/server/display.js';
 
 const which = process.argv[2] ?? 'both';
-const PE = new URL('../build/pe/bench.exe', import.meta.url).pathname;
+const PE = new URL('../../build/pe/bench.exe', import.meta.url).pathname;
 
 function runOnce(useJit) {
   const vfs = new Vfs();

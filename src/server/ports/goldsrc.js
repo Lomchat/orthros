@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { gameLayers, resolveGameFile } from '../game-files.js';
 import { sameOrigin } from '../request-origin.js';
 
-export const DEFAULT_ENGINES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data/engines');
+export const DEFAULT_ENGINES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../data/engines');
 const ID = /^[a-z0-9][a-z0-9._-]*$/;
 const MAP = /^[A-Za-z0-9_.-]+$/;
 const COMMAND = /^[\x20-\x7e]{1,200}$/;

@@ -13,7 +13,7 @@ const pos = args.filter((a) => !a.startsWith('--'));
 const suite = pos[0];
 const show = +(pos[1] || 15);
 const only = pos[2] !== undefined ? +pos[2] : -1;
-const dir = new URL('../tests/generated/', import.meta.url).pathname;
+const dir = new URL('../../tests/generated/', import.meta.url).pathname;
 const c = new Conformance(dir, suite);
 const I = new Interp(c.mem, c.cpu);
 const jit = useJit ? new Jit(c.mem, I) : null;

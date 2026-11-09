@@ -148,7 +148,7 @@ test('profile-seed-make moves: canonical sets rewritten at the new place, once; 
   const old = [['AppData/Roaming/Options.ini', b64('Resolution = 800 600\r\n')]];
   for (const id of ['alpha-1', 'beta-1']) fs.writeFileSync(path.join(learn, `seedcanon-${id}.json`), JSON.stringify({ v: 1, sets: [{ lang: 'en', files: old, at: 1, note: 'made' }] }));
   fs.writeFileSync(path.join(learn, 'profileseed-alpha-1.json'), JSON.stringify({ v: 1, sets: [{ lang: 'en', key: 'k1', files: old, sessions: ['a'], at: 1 }] }));
-  const tool = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'tools', 'profile-seed-make.mjs'), 'moves', '--games-dir', games, '--learn', learn, ...a], { encoding: 'utf8' });
+  const tool = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'tools', 'ops', 'profile-seed-make.mjs'), 'moves', '--games-dir', games, '--learn', learn, ...a], { encoding: 'utf8' });
   const dry = tool('--dry');
   assert.equal(dry.status, 0, dry.stderr);
   assert.match(dry.stdout, /alpha-1 en: canonical set \S+ would be rewritten/);

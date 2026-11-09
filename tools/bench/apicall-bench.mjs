@@ -17,7 +17,7 @@ const { Vm } = await imp('core/vm.js');
 const { Vfs, MemBackend } = await imp('vfs/vfs.js');
 const { RealClock } = await imp('core/clock.js');
 const { HeadlessHost } = await imp('server/display.js');
-const PE = new URL('../build/pe/apibench.exe', import.meta.url).pathname;
+const PE = new URL('../../build/pe/apibench.exe', import.meta.url).pathname;
 const CALLS = 1000000;
 
 function runOnce() {

@@ -6,7 +6,7 @@
 // the files the engine writes there — saves, settings, its ini file — as the player's profile (profile.js), in
 // IndexedDB under the installation's key and on the player's Orthros account (cloud-sync.js). A version with `mmo` has
 // a shared world on the server besides (docs/mmo.md): the engine reaches it through Module.orthrosNet, the shared link
-// (../../host/web/mmo-link.js) and what the engine asks of the page (who plays, a sign-in, its test hooks).
+// (../../web/mmo-link.js) and what the engine asks of the page (who plays, a sign-in, its test hooks).
 // Around the game, the frame every Orthros game has (/src/web/shell.js): the header (the mouse, the saves, the
 // frame rate, full screen, back to the games), the loading screen, the game filling the rest of the window. It never
 // loads the Win32 runtime, and nothing here names a game.

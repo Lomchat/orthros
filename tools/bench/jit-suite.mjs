@@ -18,7 +18,7 @@ import '../../src/cpu/interp-sse.js';
 import { Jit } from '../../src/cpu/jit/jit.js';
 import { OP_NAMES } from '../../src/cpu/decoder.js';
 
-const DIR = new URL('../tests/generated/', import.meta.url).pathname;
+const DIR = new URL('../../tests/generated/', import.meta.url).pathname;
 
 function parseArgs(argv) {
   const o = { suite: null, modules: [], only: null, show: 20 };
