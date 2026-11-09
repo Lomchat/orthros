@@ -17,6 +17,8 @@ function rig({ base, effect = {}, g = {}, visible = true }) {
 
 test('pickVariant: the best one, only when it gains enough', () => {
   assert.equal(pickVariant(14, { a: 13, b: 1.2, c: null }), 'b');
+  assert.equal(pickVariant(14, { cheap: 1.9, dear: 1.2 }), 'cheap'); // (the cheapest of the near-best)
+  assert.equal(pickVariant(14, { cheap: 6, dear: 1.2 }), 'dear');
   assert.equal(pickVariant(14, { a: 13, b: 9 }), null);
   assert.equal(pickVariant(5, { a: 4.5 }), null);
 });

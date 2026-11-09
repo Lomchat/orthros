@@ -4,7 +4,8 @@
 // battery...). A game's frame limiter on a coarse host then oversleeps its last wait (core/host-wait.js spins to hide it,
 // at ~8 ms of a core per frame). This module measures the granularity once (a probe worker's Atomics.wait(1): the p50
 // overshoot), and only when it is coarse (> COARSE_MS) tries small helpers that may hold the 1 ms resolution — a
-// setInterval(1) or a setTimeout(0) chain on the page, the same in a tiny worker, a MessageChannel ping — measuring the
+// setInterval(1) or a setTimeout(0) chain on the page, the same in a tiny worker (each ~1 % of a core; a MessageChannel
+// ping-pong would hold a whole core: measured 107 %, not offered) — measuring the
 // granularity under each, and keeps the best one (when it gains) only while a pacing loop runs and the tab is visible.
 // A fine host (Linux, Windows with a 1 ms resolution already) stays at "fine": nothing is ever started.
 // The decision logic is plain (a fake clock in the tests); the browser variants are at the end of the file.
@@ -22,11 +23,16 @@ export const PACE_IDLE_MS = 5000;
 /** the chosen helper's effect is measured again this often (ms) while it runs (Chrome drops the resolution on battery) */
 export const RECHECK_MS = 30000;
 
-/** The variant to keep: the best p50 of `tried` ({ name: p50 | null }) when it gains over `baseline` enough, else null. */
+/**
+ * The variant to keep: among `tried` ({ name: p50 | null }, in order of cost, cheapest first) the first whose p50 is within
+ * 1 ms (or 1.5 times) of the best one, when that best one gains over `baseline` enough; else null.
+ */
 export function pickVariant(baseline, tried) {
-  let best = null, bp = Infinity;
-  for (const [k, v] of Object.entries(tried)) if (typeof v === 'number' && v < bp) { best = k; bp = v; }
-  return best !== null && bp <= baseline * GAIN_RATIO && baseline - bp >= MIN_GAIN_MS ? best : null;
+  let bp = Infinity;
+  for (const v of Object.values(tried)) if (typeof v === 'number' && v < bp) bp = v;
+  if (!(bp <= baseline * GAIN_RATIO && baseline - bp >= MIN_GAIN_MS)) return null;
+  for (const [k, v] of Object.entries(tried)) if (typeof v === 'number' && v <= Math.max(bp + 1, bp * 1.5)) return k;
+  return null;
 }
 
 export const helperOff = (g = globalThis) => { const v = g.ORTHROS_HOST_TIMER_HELPER_OFF; return v !== undefined && v !== '' && Number(v) !== 0; };
@@ -93,13 +99,12 @@ export class TimerHelper {
 
 // ---------------------------------------------------------------- the browser's variants
 const noop = () => {};
-/** The helper variants of a page, cheapest first. */
+/** The helper variants of a page, cheapest first (measured in Chromium on Linux: tools/timer-helper-bench.mjs). */
 export function browserVariants(win = globalThis) {
   return [
     { name: 'page-interval', start: () => { const id = win.setInterval(noop, 1); return () => win.clearInterval(id); } },
     { name: 'page-timeout', start: () => { let on = true; const f = () => { if (on) win.setTimeout(f, 0); }; win.setTimeout(f, 0); return () => { on = false; }; } },
     { name: 'worker-interval', start: () => { const w = new Worker(import.meta.url, { type: 'module', name: 'orthros-timer-helper' }); return () => w.terminate(); } },
-    { name: 'message-channel', start: () => { const ch = new MessageChannel(); let on = true; ch.port1.onmessage = () => { if (on) ch.port2.postMessage(0); }; ch.port2.postMessage(0); return () => { on = false; ch.port1.close(); }; } },
   ];
 }
 // (this module as the helper worker: a 1 ms interval, nothing else)
