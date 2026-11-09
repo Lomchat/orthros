@@ -12,7 +12,7 @@ import { acct, C as ACCT } from '../core/frame-acct.js';
 import { apiOpt } from '../core/api-opt.js';
 import { GpuProbe } from './gpu-probe.js';
 import { RenderScale, glRect, glEdgeX, glEdgeY, scaledSize, scaledLevel, resampleRgba } from './render-scale.js';
-import { gpuInfo, gpuClass } from '../host/web/gpu-class.js';
+import { gpuInfo, gpuClass } from '../web/gpu-class.js';
 
 const D3D_OK = 0;
 const PT = { POINTLIST: 1, LINELIST: 2, LINESTRIP: 3, TRIANGLELIST: 4, TRIANGLESTRIP: 5, TRIANGLEFAN: 6 };
