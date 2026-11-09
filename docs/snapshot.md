@@ -196,3 +196,29 @@ A sandboxed server (the production service: a dynamic user, no home, its own /tm
 `tools/snapshot-jobs.mjs --queue <file> --server <url>`, run outside the sandbox (the `orthros-snapshot-jobs` service),
 runs the sessions through the browser slot guard. `node tools/snapshot-shared-check.mjs <manifest> [--queue]`: the whole
 path on a private server — a first new player, the server's session, a second new player who must start from it.
+
+## Warm jobs: snapshots and learned lists made ahead (`src/host/warm-jobs.js`)
+
+Until now a shared snapshot was queued only by a new player's 404, so that player (the first one after every deploy that
+changes the key) started cold; BFME1 1.08, BFME II and Age of the Ring had none. With `--warm-jobs` (together with
+`--snapshot-queue` or `--snapshot-jobs`) the server looks, 20 s after it starts (`--warm-delay`) and every 10 minutes
+(`--warm-every`), at every installed, visible Win32 version in its default language (what a plain page starts: `en`, else
+the first declared) and queues **one job at a time**:
+
+- a **publish** job when the version's current key has no shared snapshot (or one made from another first-launch
+  profile). The key is computed by the server as a page computes it (`plainKey`: the sources' hash, the version's
+  `/api/manifest` and `/api/tree` as sent, the machine options of a page with no URL parameter) — the publishing session
+  still refuses to post if its own key differs, so a wrong guess costs a failed job, not a wrong snapshot;
+- a **learn** job when the snapshot exists but the server holds no learned prefetch list for the version (`prefetch-<m>.json`):
+  the runner plays `tools/headless.mjs <m> --server-port <port>` against the server for the shortest bench scenario of
+  `tools/scenarios/bench/index.json` that lists the version (at most 300 s), else boots it for 150 s, so the reads, heat and GL
+  programs of the first minutes are learned. (A publish session teaches the lists as well, so a version without snapshot gets
+  its learn job only if the lists are still missing after the publish.)
+
+The next job is queued when the previous one reached its goal or after two hours (a failed key is not tried again for 6 h:
+the queue's usual dedup). Another language than the default is still made on a player's 404. `--warm-only a,b` restricts
+the versions (tests, a first deploy done step by step).
+
+**Deployment** (the lead): add `--warm-jobs` to `orthros.service`'s `ExecStart` (`... --snapshot-queue --warm-jobs`) and
+restart `orthros.service` then `orthros-snapshot-jobs.service` (the runner must be the new code: it now also runs `learn`
+jobs, through the slot guard like the publish ones). Nothing else: the queue file is the same. To turn it off, remove the flag.

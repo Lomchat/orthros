@@ -454,3 +454,11 @@ and the code around the calls:
 So the cure is not in the emulator's fidelity: either the runtime learns to run a child process in its own address
 space (a large piece of work: a second 2 GB guest, handles and window messages across processes), or the version's
 folder gets a 1.06 `game.dat` that starts without its launcher, as the 1.09 one does (a data change for the owner).
+
+## Learn sessions made ahead (warm jobs, 2026-11-09)
+
+A first player of a newly installed version used to be the one who taught the server its prefetch order, heat and GL
+programs. `--warm-jobs` (docs/snapshot.md "Warm jobs") queues a `learn` job for a version without `prefetch-<manifest>.json`:
+a headless run of its first minutes through the snapshot runner and the slot guard (bench scenario of the version if the
+index has one, else a 150 s boot). No per-game script in `src/`; the scenarios are the existing ones. Numbers: see the
+snapshot document's table.

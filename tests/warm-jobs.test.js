@@ -1,0 +1,46 @@
+// Warm jobs (src/host/warm-jobs.js): one job at a time, a publish before a learn, the default language, a queue that keeps kinds apart.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { Warmer, defaultLanguage, learnScenario } from '../src/host/warm-jobs.js';
+import { SnapshotQueue } from '../src/host/snapshot-store.js';
+
+test('warmer queues one job at a time: publish first, learn once the snapshot is there, nothing when both are', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'warm-'));
+  try {
+    const jobs = new SnapshotQueue(path.join(dir, 'queue.json'));
+    const snaps = new Set(), learned = new Set();
+    const w = new Warmer({
+      versions: () => [{ name: 'a', man: { languages: ['fr', 'en'] } }, { name: 'b', man: { languages: ['De'] } }],
+      fetchVersion: async (n) => ({ manifest: { name: n }, tree: { files: {} } }),
+      sources: () => ({ hash: 'h' }),
+      snapshotReady: (n) => snaps.has(n), hasLearned: (n) => learned.has(n), jobs,
+    });
+    const j1 = await w.tick();
+    assert.deepEqual([j1.kind, j1.name, j1.lang], ['publish', 'a', 'en']);
+    assert.match(j1.key, /^[0-9a-f]{32}$/);
+    assert.equal(await w.tick(), null, 'the first one is not done: nothing more queued');
+    snaps.add('a');
+    const j2 = await w.tick();
+    assert.deepEqual([j2.kind, j2.name], ['learn', 'a']);
+    learned.add('a');
+    const j3 = await w.tick();
+    assert.deepEqual([j3.kind, j3.name, j3.lang], ['publish', 'b', 'de']);
+    snaps.add('b'); learned.add('b');
+    assert.equal(await w.tick(), null);
+    assert.equal(jobs.jobs.length, 3);
+    assert.equal(jobs.job(jobs.jobs[1].token, 'a', 'en', j2.key), null, 'a learn job is no publishing token');
+    assert.ok(jobs.job(jobs.jobs[0].token, 'a', 'en', j1.key));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('default language as the page picks it; a learn scenario only for a version a bench lists', () => {
+  assert.equal(defaultLanguage({ languages: ['fr', 'en'] }), 'en');
+  assert.equal(defaultLanguage({ languages: ['fr'] }), 'fr');
+  assert.equal(defaultLanguage({}), null);
+  const root = new URL('..', import.meta.url).pathname;
+  assert.ok(learnScenario(root, 'bfme1-108').file.endsWith('.txt'));
+  assert.equal(learnScenario(root, 'no-such-game'), null);
+});

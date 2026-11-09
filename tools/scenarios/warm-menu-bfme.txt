@@ -1,0 +1,7 @@
+# Time to the main menu of BFME / BFME II / RotWK, for tools/warm-start-check.sh: the intros skipped as a player does; the anchor of
+# the last step ("waitframe ... anchor at Ns") is the menu (>= 14 s after the first Direct3D frame). 800x600 coordinates.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++12:waitframe:30,100000

@@ -19,6 +19,9 @@
 //            player makes it (tools/snapshot-publish.mjs, one at a time, through the project's browser slots);
 //            --snapshot-queue: the request is only queued, in <learn>/snapshots/queue.json, for tools/snapshot-jobs.mjs
 //            (a sandboxed server: no browser from it)
+//   --warm-jobs: (with --snapshot-jobs or --snapshot-queue) the same jobs queued ahead, one at a time, for every installed
+//            Win32 version's default language whose current key has no shared snapshot, then a learn session for a version with
+//            no learned list (warm-jobs.js); --warm-only <manifest,...>: only those versions; --warm-delay <s> (20) before the first look, --warm-every <s> (600) between looks
 //   --mmo: where the shared worlds of the versions with an `mmo` entry keep their characters and world state
 //            (default <accounts>/mmo; without --accounts there is no shared world: the Orthros account is its identity)
 import http from 'node:http';
@@ -54,6 +57,7 @@ import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64, see
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
 import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY } from './snapshot-store.js';
+import { Warmer } from './warm-jobs.js';
 import { pipeline } from 'node:stream/promises';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -2049,6 +2053,22 @@ export function createServer(opts = {}) {
     if (openmw.upgrade(req, socket, url, head)) return;
     if (!upgrades.some((u) => u.handle(req, socket, url))) socket.destroy();
   });
+  // proactive start-up jobs (warm-jobs.js, docs/snapshot.md "Warm jobs"): at start, then every few minutes, one queued at a
+  // time for the version whose default-language snapshot or learned list is missing (opts.warmJobs: true, or { everyMs, delayMs })
+  if (opts.warmJobs && snapshotJobs && snapshots) {
+    const get = async (p) => (await fetch(`http://127.0.0.1:${server.address().port}${p}`)).json();
+    server.warmer = new Warmer({
+      ...(typeof opts.warmJobs === 'object' ? { everyMs: opts.warmJobs.everyMs, delayMs: opts.warmJobs.delayMs } : {}),
+      versions: () => { refreshCatalog(); return [...manifests].filter(([n, m]) => (!opts.warmJobs.only || opts.warmJobs.only.includes(n)) && runtimeOf(m) === 'win32' && !m.hidden && m.exe && fs.existsSync(m.folder)).map(([name, man]) => ({ name, man })); },
+      fetchVersion: async (name) => ({ manifest: await get(`/api/manifest/${name}`), tree: await get(`/api/tree/${name}`) }),
+      sources: () => snapshotSourcesHash(ROOT),
+      snapshotReady: (name, lang, key) => { const f = snapshots.meta(name, lang, key); return !!f && (f.seed ?? null) === (getManifest(name)?.profileSeed === false ? null : (seedFor(name, lang).key ?? null)); },
+      hasLearned: (name) => learnedOf(name).size > 0,
+      jobs: snapshotJobs, log: (l) => console.log(`orthros: ${l}`),
+    });
+    server.on('listening', () => server.warmer.start());
+    server.on('close', () => server.warmer.stop());
+  }
   server.snapshotJobs = snapshotJobs; // (tools/snapshot-shared-check.mjs: waits for the publishing sessions)
   // (the shared worlds saved and their connections closed when the server closes — first: close() waits for the upgraded
   // sockets, which closeAllConnections() leaves open)
@@ -2081,7 +2101,7 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   // (--no-home-preload: the home without its modulepreload links — a trial's other arm, sendHome)
   // (--br-cache-frozen: the units served as they are, none made — a measurement's copy of another server's)
   const brCacheOptions = args.includes('--br-cache-frozen') ? { generate: false } : undefined;
-  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), learnBorrow: !args.includes('--no-learn-borrow'), homePreload: !args.includes('--no-home-preload') });
+  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), warmJobs: args.includes('--warm-jobs') ? { ...(arg('--warm-only') ? { only: arg('--warm-only').split(',') } : {}), ...(arg('--warm-delay') ? { delayMs: Number(arg('--warm-delay')) * 1000 } : {}), ...(arg('--warm-every') ? { everyMs: Number(arg('--warm-every')) * 1000 } : {}) } : false, learnBorrow: !args.includes('--no-learn-borrow'), homePreload: !args.includes('--no-home-preload') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
   // (a restart — every deployment — saves the shared worlds' last changes and the units' miss queue first: they are
   // written a few seconds after)
