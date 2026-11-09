@@ -300,7 +300,13 @@ export const withModsListEarly = (html) => !html.includes(MANIFEST_FETCH) || !ht
     + 'window.__orthrosModsList && window.__orthrosModsList.catch(function(){}), ' + MANIFEST_FETCH + ')')
   .replace(MODS_FETCH, "var r = await (window.__orthrosModsList || fetch('mwdata-mods.json')); window.__orthrosModsList = null;");
 
-export function openmwWebText(text, base, saveKey) {
+/**
+ * The engine's pages as Orthros serves them. `saveKey`: the installation's key (multiplayer, session and launcher state:
+ * per version); `profile`: the player's /userdata — { db: its IndexedDB (profile-share.js portProfileDb: the game's
+ * shared profile), migrate: what src/ports/port-profile.js migrateIdbfs merges into it once, before the engine first
+ * reads it } —, else /userdata in the installation's database.
+ */
+export function openmwWebText(text, base, saveKey, profile = null) {
   // Native EM_ASM in the untouched engine glue uses the upstream storage keys too.
   // HTML-only replacements would clear a different resume token than the engine reads.
   if (text.includes('async function rebootIntoWorld(wsUrl){') || text.includes('omw-mp-session')) text = text.replace('<script>', `<script>
@@ -325,7 +331,10 @@ export function openmwWebText(text, base, saveKey) {
     // session read Morrowind.esm and the archives over the network again, the page frozen meanwhile.
     .replace("'mwdata/' + encodeURI(f.p) + '?v=2'", "'mwdata/' + encodeURI(f.p)")
     // IDBFS normally names the database after its guest mount point (/userdata).
-    .replace("FS.mount(IDBFS, {}, '/userdata');", `var orthrosGetDB = IDBFS.getDB; IDBFS.getDB = function(name, callback) { return orthrosGetDB.call(IDBFS, name === '/userdata' ? ${JSON.stringify(saveKey)} : name, callback); }; FS.mount(IDBFS, {}, '/userdata');`)
+    .replace("FS.mount(IDBFS, {}, '/userdata');", profile
+      // (the game's profile: the versions' databases of before merged into it first — the engine's first read waits)
+      ? `var orthrosGetDB = IDBFS.getDB; window.orthrosProfileReady = import('/src/ports/port-profile.js').then(function(m) { return m.migrateIdbfs(IDBFS, orthrosGetDB, ${JSON.stringify(profile.migrate)}); }).catch(function(e) { console.error('profile merge:', e); }); IDBFS.getDB = function(name, callback) { if (name !== '/userdata') return orthrosGetDB.call(IDBFS, name, callback); window.orthrosProfileReady.then(function() { orthrosGetDB.call(IDBFS, ${JSON.stringify(profile.db)}, callback); }); }; FS.mount(IDBFS, {}, '/userdata');`
+      : `var orthrosGetDB = IDBFS.getDB; IDBFS.getDB = function(name, callback) { return orthrosGetDB.call(IDBFS, name === '/userdata' ? ${JSON.stringify(saveKey)} : name, callback); }; FS.mount(IDBFS, {}, '/userdata');`)
     // JoinFriend also arrives inside the engine's WebSocket protocol, beyond the HTTP JSON
     // adaptation below. Scope its destination at the page's world-travel boundary, before
     // it is parked in the next boot fragment. Already scoped and foreign targets stay intact.

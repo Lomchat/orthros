@@ -33,6 +33,7 @@ import { moduleGraph, withPreloads } from './module-graph.js';
 import { PERF_MAX_BYTES, sanitizePerfRecord } from './perf-record.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
+import { portProfileDb } from '../vfs/profile-share.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDefaults } from './manifest.js';
@@ -40,7 +41,7 @@ import { listGameTree, dirsStamp, resolveGameFile, resolveLightFile, DirListings
 import { LIGHT_DIR, readLight } from './light-copies.js';
 import { isLightContent } from '../vfs/game-tree.js';
 import { lightCovers } from './light-covers.js';
-import { loadGameCatalog, DEFAULT_GAMES_DIR } from './game-catalog.js';
+import { loadGameCatalog, profileGroups, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, GOLDSRC_MODULE_TREE, goldsrcEngineFiles, goldsrcInstalled, goldsrcPageFiles, goldsrcModes, goldsrcMapPrecache, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
 import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withEngineUrls, withFrameMeter, withInputKeys, withProgressiveView, withQualityTier, withSettingsDefaults, withSharedEngine, withStreaming, withWasmStream } from './openmw.js';
@@ -190,6 +191,18 @@ export function createServer(opts = {}) {
   // (the folders' listings the requests resolve paths with, each checked by a stat of its folder: DirListings)
   const listings = new DirListings(opts.listingNames);
   const getManifest = (id) => { if (!manifests.has(id) && !manifestDir) refreshCatalog(); return manifests.get(id); };
+  // (the players' profiles, one a game unless a version keeps its own — docs/profiles.md: key -> its versions, made once
+  // per catalog)
+  const profileMaps = new WeakMap();
+  const profiles = () => { let g = profileMaps.get(manifests); if (!g) profileMaps.set(manifests, g = profileGroups(manifests)); return g; };
+  /**
+   * The versions whose copies kept before under their own name a version's profile takes once (profile-share.js):
+   * [{ name, saveKey }], the version itself first.
+   */
+  const profileSourcesOf = (name, man) => {
+    const members = profiles().get(man.profileKey ?? name) ?? [name];
+    return [name, ...members.filter((n) => n !== name)].map((n) => ({ name: n, saveKey: manifests.get(n)?.saveKey ?? null }));
+  };
   const coverFile = (man) => man.coverPath ?? (man.cover && resolveGameFile(man, man.cover));
   const runtimeOf = (man) => man.runtime ?? 'win32';
   const headers = (extra = {}) => ({
@@ -1653,7 +1666,18 @@ export function createServer(opts = {}) {
     }
   };
 
-  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game), ...(opts.accountMaxUserBytes ? { maxUserBytes: opts.accountMaxUserBytes } : {}), ...(opts.accountGoogle ? { google: opts.accountGoogle } : {}) }) : null;
+  // (a game's saves on the account under its versions' profile keys — and, readable, under the versions' names the
+  // copies of before; nothing else)
+  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game) || profiles().has(game),
+    profileKeyOf: (game) => getManifest(game)?.profileKey ?? null, ...(opts.accountMaxUserBytes ? { maxUserBytes: opts.accountMaxUserBytes } : {}), ...(opts.accountGoogle ? { google: opts.accountGoogle } : {}) }) : null;
+  // (the players' copies kept per version, merged once into their game's profile: before any request)
+  if (accountApi) {
+    try {
+      const settingsOf = (key) => [...new Set((profiles().get(key) ?? []).flatMap((n) => manifests.get(n)?.profileSettings ?? []))];
+      const done = accountApi.migrateProfiles(profiles(), { settingsOf });
+      if (done.merged || done.skipped) console.log(`account saves: ${done.merged} shared profile(s) made from the versions' copies, ${done.skipped} left as they were`);
+    } catch (e) { console.error('account saves: the shared profiles were not made:', e); }
+  }
   // (the Orthros account is a player's only identity: undefined on a server without accounts, null when nobody is signed in)
   const identify = (req) => (accountApi ? accountApi.session(req) ?? null : undefined);
   // the shared worlds of the versions whose manifest has an `mmo` entry (src/host/mmo.js): none without accounts
@@ -1748,6 +1772,7 @@ export function createServer(opts = {}) {
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : runtime === 're3' ? re3Modes(m.re3) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
             hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, owners: (m.underlayOwners ?? []).map((o) => o.manifest), launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
+            profileKey: m.profileKey ?? name, // (the player's profile: shared by the versions of the game — docs/profiles.md)
             available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwOk(name, m, memo, ok)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
         });
         return send(res, 200, JSON.stringify(out), { 'Content-Type': 'application/json' });
@@ -1762,7 +1787,9 @@ export function createServer(opts = {}) {
         const engineUrls = runtimeOf(man) !== 'win32' ? { engineUrls: engineUrlsOf(man) } : {};
         // (a GoldSrc port: what its game server precaches at every map's load, its release says — announced with the map)
         const mapPrecache = runtimeOf(man) === 'goldsrc' ? { mapPrecache: goldsrcMapPrecache(man, enginesDir) } : {};
-        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, underlayOwners: undefined, owners: (man.underlayOwners ?? []).map((o) => o.manifest), overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...engineUrls, ...mapPrecache, ...portLanguages(man, m[1]) }), { 'Content-Type': 'application/json' });
+        // (its profile's key, and the versions whose copies of before it takes once: profile-share.js)
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, underlayOwners: undefined, owners: (man.underlayOwners ?? []).map((o) => o.manifest), overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...engineUrls, ...mapPrecache, ...portLanguages(man, m[1]),
+          profileKey: man.profileKey ?? m[1], profileSources: profileSourcesOf(m[1], man) }), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
       if (m) { // the game's own image named by its manifest (a splash screen), found whatever the case of its path
@@ -1977,7 +2004,11 @@ export function createServer(opts = {}) {
         if (asset.endsWith('.html') || asset.startsWith('portal/')) {
           const user = accountApi?.session(req), scope = user ? playerScope(user) : null;
           const saveKey = scope ? `${man.saveKey}:user:${scope}` : man.saveKey;
-          let page = openmwWebText(fs.readFileSync(f, 'utf8'), base, saveKey);
+          // (the player's /userdata: the game's profile, with the versions' databases of before — docs/profiles.md)
+          const key = man.profileKey ?? m[1], sources = profileSourcesOf(m[1], man);
+          const profile = { db: portProfileDb(key, scope), migrate: { key, scope, settings: man.profileSettings ?? [],
+            sources: sources.filter((s) => s.saveKey).map((s) => ({ name: s.name, db: scope ? `${s.saveKey}:user:${scope}` : s.saveKey })) } };
+          let page = openmwWebText(fs.readFileSync(f, 'utf8'), base, saveKey, profile);
           if (asset.endsWith('.html')) page = withFrameMeter(page);
           if (asset === 'index.html') {
             // (its engine files by content, by their names in the build directory: engine-content.js)
@@ -1988,7 +2019,8 @@ export function createServer(opts = {}) {
           }
           if (asset === 'index.html' && scope) {
             page = page.replace('<head>', '<head><script src="/src/ports/openmw/cloud.js"></script>');
-            page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(m[1])}, ${JSON.stringify(scope)});`);
+            // (under the profile's key; the versions it takes, for its first sync — cloud.js)
+            page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(key)}, ${JSON.stringify(scope)}, ${JSON.stringify({ shared: sources.some((s) => s.name !== key), settings: man.profileSettings ?? [] })});`);
           }
           return send(res, 200, page, { 'Content-Type': MIME[path.extname(asset)], 'Cache-Control': 'private, no-store', 'Vary': 'Cookie' });
         }

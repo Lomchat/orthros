@@ -10,6 +10,7 @@ import { openmwProblem } from './openmw.js';
 import { re3Problem } from './re3.js';
 import { mmoProblem } from './mmo.js';
 import { profileMovesProblem } from '../vfs/profile-moves.js';
+import { profileSettingsProblem } from '../vfs/profile-merge.js';
 import { keyRemapProblem } from '../win32/vk-scan.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -55,7 +56,7 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
   if (!Array.isArray(spec.versions) || !spec.versions.length) fail(file, 'versions doit contenir au moins une version');
   if (spec.defaults !== undefined && (!spec.defaults || Array.isArray(spec.defaults) || typeof spec.defaults !== 'object')) fail(file, 'defaults doit être un objet');
   const defaults = spec.defaults ?? {};
-  for (const key of ['folder', 'baseFolder', 'gameId', 'id', 'dir', 'requires', 'formerGame', 'extraMounts', 'saveDir', 'coverPath', 'saveKey', 'overlays', 'dataMounts', 'underlays', 'underlayOwners']) if (own(defaults, key)) fail(file, `defaults.${key} est réservé`);
+  for (const key of ['folder', 'baseFolder', 'gameId', 'id', 'dir', 'requires', 'formerGame', 'extraMounts', 'saveDir', 'coverPath', 'saveKey', 'profileKey', 'overlays', 'dataMounts', 'underlays', 'underlayOwners']) if (own(defaults, key)) fail(file, `defaults.${key} est réservé`);
   const versions = new Map();
   for (const entry of spec.versions) {
     if (!entry || Array.isArray(entry) || typeof entry !== 'object') fail(file, 'entrée de version invalide');
@@ -71,7 +72,7 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     // version's, no mount)
     const layered = runtime === 'goldsrc' || runtime === 're3' || runtime === 'openmw';
     if (entry.requires !== undefined && (!Array.isArray(entry.requires) || !entry.requires.every((d) => d && ID.test(d.game ?? '') && ID.test(d.version ?? '') && (layered ? d.mount === undefined : WIN_MOUNT.test(d.mount ?? ''))))) fail(file, `${entry.id}: requires invalide`);
-    for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey', 'overlays', 'dataMounts', 'underlays', 'underlayOwners']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
+    for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey', 'profileKey', 'overlays', 'dataMounts', 'underlays', 'underlayOwners']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
     // (a version moved from another game folder: the browser's saves keep that installation's key — the port's saveKey)
     if (entry.formerGame !== undefined && (!ID.test(entry.formerGame) || entry.formerGame === spec.id)) fail(file, `${entry.id}: formerGame doit nommer un autre dossier de jeu`);
     const { id, dir, requires, formerGame, ...version } = entry;
@@ -81,6 +82,14 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
       saveDir: path.join(ROOT, 'build/saves', id) });
     if (!WIN_MOUNT.test(manifest.mount)) fail(file, `${id}: mount invalide`);
     if (manifest.modified !== undefined && typeof manifest.modified !== 'boolean') fail(file, `${id}: modified doit être un booléen`);
+    // (the player's profile — saves, settings —: one for the whole game folder, kept when the player changes version as a
+    // patch keeps them on a PC; a version with `ownProfile: true` keeps its own, under its name — docs/profiles.md. Its
+    // key names the profile everywhere: the browser's copy, the account's. Not the former folder's of a version moved
+    // from another one: its saves move with it, into its new game's profile, as the installation's key alone stays)
+    if (manifest.ownProfile !== undefined && typeof manifest.ownProfile !== 'boolean') fail(file, `${id}: ownProfile doit être un booléen`);
+    if (manifest.ownProfile === true && id === spec.id) fail(file, `${id}: ownProfile sur la version qui porte le nom du jeu — son profil est celui du jeu`);
+    manifest.profileKey = manifest.ownProfile === true ? id : spec.id;
+    { const problem = profileSettingsProblem(manifest.profileSettings); if (problem) fail(file, `${id}: ${problem}`); }
     // (a shared world, any runtime: src/host/mmo.js)
     { const problem = mmoProblem(manifest.mmo); if (problem) fail(file, `${id}: ${problem}`); }
     // (files of the player's profile the game keeps elsewhere now: moved at each start, src/vfs/profile-moves.js)
@@ -151,17 +160,21 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
 }
 
 export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null, { enginesDir = DEFAULT_ENGINES_DIR } = {}) {
-  const catalog = new Map(), sources = new Map();
+  const catalog = new Map(), sources = new Map(), folders = [];
   if (!directory(root)) throw new Error(`Dossier des jeux introuvable: ${root}`);
   for (const ent of fs.readdirSync(root, { withFileTypes: true })) {
     if (!ent.isDirectory()) continue;
     const game = loadGameFolder(path.join(root, ent.name), { enginesDir });
+    folders.push(game.spec.id);
     for (const [id, item] of game.versions) {
       if (catalog.has(id)) throw new Error(`Identifiant de version dupliqué: ${id}`);
       catalog.set(id, item.manifest);
       sources.set(id, { game: game.spec.id, requires: item.requires });
     }
   }
+  // (a profile key names one profile: a game folder's id never another game's version — whose own key, its saves of
+  // before, would be this game's profile)
+  for (const id of folders) if (sources.has(id) && sources.get(id).game !== id) throw new Error(`${id}: le dossier de jeu porte le nom d'une version de ${sources.get(id).game}`);
   for (const [id, source] of sources) {
     const deps = [];
     for (const dep of source.requires) {
@@ -211,6 +224,21 @@ export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null, { engine
   }
   for (const [id, manifest] of extra ?? []) catalog.set(id, manifest);
   return catalog;
+}
+
+/**
+ * The catalog's profiles: profile key -> the names of the versions keeping their profile under it (in the catalog's
+ * order; a manifest without a key — a test's, a manifest folder's — is its own).
+ * @param {Map<string, any>} catalog
+ */
+export function profileGroups(catalog) {
+  const groups = new Map();
+  for (const [name, m] of catalog) {
+    const key = m.profileKey ?? name;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(name);
+  }
+  return groups;
 }
 
 export function defaultGameManifest(gameDir) {

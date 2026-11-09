@@ -1,5 +1,10 @@
 // Browser-only profile and cache operations. Nothing here sends game files to the server.
-const PROFILE_PREFIX = 'orthros-';
+// A Windows game's profile is kept under its profile key — the game's, shared by its versions (docs/profiles.md,
+// profile-share.js) —, its caches under each version's name.
+import { migrateProfile, profileDir, profileKeyOf, profileSourcesOf } from '../../vfs/profile-share.js';
+import { contentHash } from './cloud-sync.js';
+
+const PROFILE_PREFIX = profileDir('');
 const CACHE_PREFIX = 'orthros-files-';
 // (a game's snapshot of its machine, docs/snapshot.md: regenerable like the cache, counted and cleared with it)
 export const SNAPSHOT_PREFIX = 'orthros-snapshot-';
@@ -88,16 +93,21 @@ function unbase64(s) {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
-async function collect(dir, prefix, out) {
+/** The files under an OPFS folder: { path, data (base64, or the bytes with `raw`), mtime }; its folders' paths in `dirs`. */
+async function collect(dir, prefix, out, raw = false, dirs = null) {
   for await (const [name, handle] of dir.entries()) {
     const path = prefix ? prefix + '/' + name : name;
-    if (handle.kind === 'directory') await collect(handle, path, out);
-    else out.push({ path, data: base64(new Uint8Array(await (await handle.getFile()).arrayBuffer())) });
+    if (handle.kind === 'directory') { dirs?.push(path); await collect(handle, path, out, raw, dirs); }
+    else { const f = await handle.getFile(), bytes = new Uint8Array(await f.arrayBuffer()); out.push({ path, data: raw ? bytes : base64(bytes), mtime: f.lastModified }); }
   }
 }
+/** Is the game running in this page with its profile under `key` (a version of the game: the profile is the game's)? */
+const running = (key, state) => !!state && (state.profileKey ?? state.manifest) === key && ['running', 'loading', 'starting'].includes(state.status);
+/** What the account keeps of a profile (cloud-sync.js): the profile's Temp folder left out (the game's scratch files). */
+export const cloudKept = (files) => files.filter((f) => !/^temp(\/|$)/i.test(f.path));
 async function activeFiles(game, state) {
   const worker = state?.worker;
-  if (!worker || state.manifest !== game || !['running', 'loading', 'starting'].includes(state.status)) return null;
+  if (!worker || !running(game, state)) return null;
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => { worker.removeEventListener('message', onMessage); reject(new Error('Le jeu ne répond pas à la demande de sauvegarde.')); }, 20000);
     function onMessage(event) {
@@ -110,8 +120,8 @@ async function activeFiles(game, state) {
   });
 }
 /**
- * The profile's files a player keeps (cloud-sync.js): [{ path, data: Uint8Array }], from the running game when it is
- * this one, else from this browser's copy. The profile's Temp folder is left out (the game's scratch files).
+ * The profile's files a player keeps (cloud-sync.js): [{ path, data: Uint8Array, mtime? }], from the running game when
+ * it is this one, else from this browser's copy (each file's date then). `game`: the profile key.
  */
 export async function profileFiles(game, state) {
   let files = await activeFiles(game, state);
@@ -121,7 +131,48 @@ export async function profileFiles(game, state) {
     files = [];
     await collect(dir, '', files);
   }
-  return files.filter((f) => !/^temp(\/|$)/i.test(f.path)).map((f) => ({ path: f.path, data: unbase64(f.data) }));
+  return cloudKept(files).map((f) => ({ path: f.path, data: unbase64(f.data), ...(Number.isFinite(f.mtime) ? { mtime: f.mtime } : {}) }));
+}
+
+/**
+ * The copies of the profile a Windows game's versions kept before under their own names (OPFS orthros-<version>)
+ * merged into the game's (orthros-<profile key>), once, before the game or the account's sync read it
+ * (profile-share.js migrateProfile; a key that is also a version's name: that version's folder is the profile's). The
+ * copies stay: the data window lists them as old copies. Folders are kept too (empty ones included), each path found
+ * whatever its case.
+ * @param {any} manifest the version's /api/manifest
+ * @param {(msg: string) => void} [log]
+ */
+export async function mergeVersionProfiles(manifest, log = () => {}) {
+  const key = profileKeyOf(manifest), root = await navigator.storage.getDirectory(), folders = [];
+  const read = async (name) => {
+    let dir; try { dir = await root.getDirectoryHandle(PROFILE_PREFIX + name); } catch { return null; }
+    const out = []; await collect(dir, '', out, true, folders); return out;
+  };
+  const write = async (files) => {
+    const top = await root.getDirectoryHandle(PROFILE_PREFIX + key, { create: true }), names = new Map();
+    // (a folder's entry whatever its case: the game's profile is Windows', one folder however its versions spelled it)
+    const child = async (dir, name) => {
+      if (!names.has(dir)) { const m = new Map(); for await (const [n, h] of dir.entries()) if (h.kind === 'directory') m.set(n.toLowerCase(), h); names.set(dir, m); }
+      const m = names.get(dir), k = name.toLowerCase();
+      if (!m.has(k)) m.set(k, await dir.getDirectoryHandle(name, { create: true }));
+      return m.get(k);
+    };
+    const dirOf = async (parts) => { let d = top; for (const p of parts) d = await child(d, p); return d; };
+    for (const p of folders) await dirOf(p.split('/'));
+    for (const f of files) {
+      const parts = f.path.split('/'), d = await dirOf(parts.slice(0, -1));
+      let name = parts.at(-1);
+      for await (const [n, h] of d.entries()) if (h.kind === 'file' && n.toLowerCase() === name.toLowerCase()) { name = n; break; }
+      const w = await (await d.getFileHandle(name, { create: true })).createWritable();
+      await w.write(f.data); await w.close();
+    }
+  };
+  return migrateProfile({
+    key, settings: manifest.profileSettings, log, target: { read: () => read(key), write },
+    sources: profileSourcesOf(manifest).map((s) => ({ name: s.name, target: s.name === key, read: () => read(s.name) })),
+    hashOf: (name, files) => contentHash(name, cloudKept(files)),
+  });
 }
 /** This browser's profile of the game replaced by `files` ([{ path, data: Uint8Array }]); the previous one kept aside. */
 export async function replaceProfile(game, files, state) {
@@ -141,14 +192,15 @@ export async function archiveProfile(game, state) {
   const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('gzip'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
-export async function parseArchive(bytes, expectedGame) {
+/** An exported profile (archiveProfile, or an account's copy): of profile `expectedGame`, or of one of `alsoFrom` (its versions' own, exported before their profile was shared). */
+export async function parseArchive(bytes, expectedGame, alsoFrom = []) {
   if (bytes.byteLength > 64 * 1024 * 1024) throw new Error('Fichier trop volumineux.');
   let archive;
   try {
     const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
     archive = JSON.parse(await new Response(stream).text());
   } catch { throw new Error('Ce fichier ne contient pas une sauvegarde Orthros valide.'); }
-  if (archive?.format !== ARCHIVE_FORMAT || archive.version !== 1 || archive.game !== expectedGame || !Array.isArray(archive.files))
+  if (archive?.format !== ARCHIVE_FORMAT || archive.version !== 1 || (archive.game !== expectedGame && !alsoFrom.includes(archive.game)) || !Array.isArray(archive.files))
     throw new Error('Cette sauvegarde ne correspond pas à ce jeu.');
   if (archive.files.length > MAX_FILES) throw new Error('Trop de fichiers dans la sauvegarde.');
   const seen = new Set(); let total = 0;
@@ -176,7 +228,7 @@ async function writeArchive(dir, archive) {
   }
 }
 export async function restoreProfile(game, archive, state) {
-  if (state?.manifest === game && ['running', 'loading', 'starting'].includes(state.status))
+  if (running(game, state))
     throw new Error('Quitte ce jeu avant de restaurer ses sauvegardes.');
   const root = await navigator.storage.getDirectory();
   const name = PROFILE_PREFIX + game, tempName = name + '-restore-' + Date.now();
@@ -210,7 +262,7 @@ export async function removeOther(name) {
   await (await navigator.storage.getDirectory()).removeEntry(name, { recursive: true });
 }
 export async function removeProfile(game, state) {
-  if (state?.manifest === game && ['running', 'loading', 'starting'].includes(state.status))
+  if (running(game, state))
     throw new Error('Quitte ce jeu avant de supprimer ses sauvegardes.');
   const root = await navigator.storage.getDirectory();
   await root.removeEntry(PROFILE_PREFIX + game, { recursive: true });

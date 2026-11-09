@@ -79,10 +79,15 @@ const log = (kind, msg) => post({ type: 'log', kind, msg });
 
 const PROFILE_DIRS = ['Temp', 'AppData', 'AppData/Roaming', 'AppData/Local', 'AppData/LocalLow', 'Documents', 'Desktop', 'Saved Games'];
 
-async function loadProfile(mem) {
+/**
+ * The player's profile from this browser's OPFS folder `dir` (the page's: the game's profile, shared by its versions —
+ * docs/profiles.md, src/vfs/profile-share.js profileDir —, the copies of before merged into it by the page first).
+ */
+async function loadProfile(mem, dir) {
   try {
+    if (!dir) throw new Error('no profile folder');
     const root = await navigator.storage.getDirectory();
-    opfsDir = await root.getDirectoryHandle('orthros-' + manifestName, { create: true });
+    opfsDir = await root.getDirectoryHandle(dir, { create: true });
     const walk = async (dir, rel) => {
       for await (const [name, h] of dir.entries()) {
         const p = rel ? rel + '/' + name : name;
@@ -276,7 +281,7 @@ async function start(m) {
   }
   profile = new MemBackend();
   for (const d of PROFILE_DIRS) profile.mkdir(d);
-  if (!m.opts.headless || m.opts.opfs) await loadProfile(profile);
+  if (!m.opts.headless || m.opts.opfs) await loadProfile(profile, m.opts.profileDir);
   // a harness-provided profile (headless runs: `--profile-dir`), base64 files with '/'-separated paths
   for (const f of m.opts.profileFiles ?? []) {
     const parts = f.path.split('/');

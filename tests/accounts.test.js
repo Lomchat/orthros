@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { gzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { createServer } from '../src/host/server.js';
 
 test('optional account, private cloud backups, versions and conflict protection', async () => {
@@ -100,4 +100,47 @@ test('an account over its space loses its oldest versions first, never a game\'s
     assert.equal(history[0], 7, 'the latest is kept'); assert.ok(history.length <= 4, `older versions pruned: ${history}`);
     assert.equal((await (await request('/api/cloud', 'GET', undefined, cookie)).json()).games.find((g) => g.game === 'g2').hash, other, 'another game\'s latest untouched');
   } finally { server.close(); }
+});
+
+test('a game\'s versions\' account copies merge once into its shared profile, nothing lost, the old keys frozen', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-accounts-shared-'));
+  const games = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-accounts-shared-games-'));
+  fs.mkdirSync(path.join(games, 'fixture', 'base'), { recursive: true }); fs.mkdirSync(path.join(games, 'fixture', 'versions', 'v1'), { recursive: true });
+  fs.writeFileSync(path.join(games, 'fixture', 'base', 'game.exe'), 'MZ');
+  fs.writeFileSync(path.join(games, 'fixture', 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'fixture', name: 'Fixture', defaultVersion: 'g1',
+    versions: [{ id: 'g1', dir: 'v1', version: '1', exe: 'game.exe' }, { id: 'g2', dir: 'v1', version: '2', exe: 'game.exe' }, { id: 'g3', dir: 'v1', version: '3', exe: 'game.exe', ownProfile: true }] }));
+  const b64 = (s) => Buffer.from(s).toString('base64');
+  const backup = (game, files) => gzipSync(JSON.stringify({ format: 'orthros-profile', version: 1, game, files: files.map(([p, s]) => ({ path: p, data: b64(s) })) }));
+  const start = async () => { const s = createServer({ accountsDir: dir, gamesDir: games, accountOrigin: 'http://localhost:8080' }); s.listen(0, '127.0.0.1'); await once(s, 'listening'); return s; };
+  let server = await start();
+  const request = (route, method = 'GET', body, cookie, parent = 'none') => fetch('http://127.0.0.1:' + server.address().port + route, { method, body,
+    headers: { Origin: 'http://localhost:8080', ...(cookie ? { Cookie: cookie } : {}), ...(body instanceof Uint8Array ? { 'X-Orthros-Parent-Hash': parent, 'Content-Type': 'application/octet-stream' } : body ? { 'Content-Type': 'application/json' } : {}) } });
+  try {
+    const cookie = (await request('/api/account/register', 'POST', JSON.stringify({ username: 'shared_one', password: 'long secret password' }))).headers.get('set-cookie').split(';')[0];
+    // (each version's copy as an earlier page sent it: a save under the same name, different; settings; a save of its own)
+    assert.equal((await request('/api/cloud/g1', 'PUT', backup('g1', [['Saves/a.sav', 'one'], ['opts.ini', 'old'], ['Saves/only1.sav', 'x']]), cookie)).status, 201);
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal((await request('/api/cloud/g2', 'PUT', backup('g2', [['Saves/a.sav', 'two'], ['opts.ini', 'new']]), cookie)).status, 201);
+    assert.equal((await request('/api/cloud/g3', 'PUT', backup('g3', [['Saves/a.sav', 'own']]), cookie)).status, 201);
+    server.close(); await once(server, 'close');
+    for (let run = 0; run < 2; run++) { // (the next starts: the merge once — the second adds nothing)
+      server = await start();
+      const list = (await (await request('/api/cloud', 'GET', undefined, cookie)).json()).games;
+      const shared = list.find((g) => g.game === 'fixture');
+      assert.equal(shared.version, 1); assert.deepEqual(shared.merged.sort(), ['g1', 'g2']);
+      assert.equal(list.find((g) => g.game === 'g1').migratedTo, 'fixture'); assert.equal(list.find((g) => g.game === 'g3').migratedTo, undefined, 'a version with its own profile untouched');
+      if (run === 0) { server.close(); await once(server, 'close'); }
+    }
+    const doc = JSON.parse(gunzipSync(Buffer.from(await (await request('/api/cloud/fixture', 'GET', undefined, cookie)).arrayBuffer())));
+    assert.equal(doc.game, 'fixture');
+    assert.deepEqual(Object.fromEntries(doc.files.map((f) => [f.path, Buffer.from(f.data, 'base64').toString()])),
+      { 'Saves/a (g1).sav': 'one', 'Saves/a.sav': 'two', 'Saves/only1.sav': 'x', 'opts.ini': 'new' });
+    assert.equal((await request('/api/cloud/g1', 'GET', undefined, cookie)).status, 200, 'the old copy readable');
+    const gone = await request('/api/cloud/g1', 'PUT', backup('g1', [['Saves/a.sav', 'late']]), cookie);
+    assert.equal(gone.status, 410); assert.equal((await gone.json()).profileKey, 'fixture');
+    assert.equal((await request('/api/cloud/g3', 'PUT', backup('g3', [['Saves/a.sav', 'own 2']]), cookie)).status, 409, 'its own key still written (its parent checked)');
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(games, { recursive: true, force: true });
+  }
 });

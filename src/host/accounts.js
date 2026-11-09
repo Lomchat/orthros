@@ -4,10 +4,11 @@ import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSa
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 import { googleClient, suggestUsername, resultPage, choosePage, pageText } from './google-signin.js';
 import { forwardedOrigin, sameOrigin } from './request-origin.js';
+import { mergeProfiles, sameData } from '../vfs/profile-merge.js';
 
 const scrypt = promisify(scryptCallback);
 const COOKIE = 'orthros_session';
@@ -18,6 +19,7 @@ const MAX_BACKUP = 64 * 1024 * 1024;
 const MAX_HISTORY = 20;
 const MAX_USER_BYTES = 512 * 1024 * 1024;
 const MAX_SITE_BYTES = 8 * 1024 * 1024 * 1024;
+const MAX_FILES = 10000;
 const USERNAME = /^[a-z0-9][a-z0-9._-]{2,31}$/;
 const GAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const HASH = /^[a-f0-9]{64}$/;
@@ -62,12 +64,13 @@ async function readBody(req, max) {
 function clientIp(req) {
   return String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0].trim();
 }
-function validBackup(bytes, game) {
+/** A backup's content (gzip bytes): { format, version, game, files: [{ path, data (base64), mtime? }] }, checked; else null. */
+function readBackup(bytes) {
   try {
     const raw = gunzipSync(bytes, { maxOutputLength: 128 * 1024 * 1024 });
     const data = JSON.parse(raw.toString('utf8'));
-    if (data?.format !== 'orthros-profile' || data.version !== 1 || data.game !== game ||
-        !Array.isArray(data.files) || data.files.length > 10000) return false;
+    if (data?.format !== 'orthros-profile' || data.version !== 1 || typeof data.game !== 'string' ||
+        !Array.isArray(data.files) || data.files.length > MAX_FILES) return null;
     const seen = new Set();
     for (const file of data.files) {
       if (typeof file.path !== 'string' || !file.path || file.path.length > 1024 ||
@@ -75,14 +78,20 @@ function validBackup(bytes, game) {
           file.path.split('/').some((part) => !part || part === '.' || part === '..') ||
           typeof file.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(file.data) ||
           (file.mtime !== undefined && !Number.isFinite(file.mtime)) ||
-          seen.has(file.path)) return false;
+          seen.has(file.path)) return null;
       seen.add(file.path);
     }
-    return true;
-  } catch { return false; }
+    return data;
+  } catch { return null; }
 }
+const validBackup = (bytes, game) => readBackup(bytes)?.game === game;
 
-export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGame = () => true, maxUserBytes = MAX_USER_BYTES, google: googleSettings = null } = {}) {
+/**
+ * `allowedGame(key)`: a key the account keeps saves under — a version's name, or a profile key of the catalog;
+ * `profileKeyOf(name)`: the profile key of version `name` (null: none), for the copies kept per version before
+ * (migrateProfiles below, docs/profiles.md).
+ */
+export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGame = () => true, profileKeyOf = () => null, maxUserBytes = MAX_USER_BYTES, google: googleSettings = null } = {}) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path.join(dir, 'accounts.sqlite'));
   db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
@@ -114,7 +123,17 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
       email TEXT, created_at INTEGER NOT NULL, PRIMARY KEY(provider, subject)
     );
     CREATE INDEX IF NOT EXISTS identities_user ON identities(user_id);
+    -- (a player's copies kept per version merged into a game's shared profile, once: the key, when, and from what —
+    -- { <version or key>: { version, hash } } — migrateProfiles)
+    CREATE TABLE IF NOT EXISTS profile_migrations (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, profile_key TEXT NOT NULL,
+      done_at INTEGER NOT NULL, sources TEXT NOT NULL, PRIMARY KEY(user_id, profile_key)
+    );
   `);
+  const markerOf = (userId, key) => db.prepare('SELECT sources FROM profile_migrations WHERE user_id=? AND profile_key=?').get(userId, key);
+  /** A player's merges: key -> the names merged into it. */
+  const mergesOf = (userId) => new Map(db.prepare('SELECT profile_key, sources FROM profile_migrations WHERE user_id=?').all(userId)
+    .map((m) => [m.profile_key, Object.keys(JSON.parse(m.sources))]));
   const google = googleClient(dir, googleSettings);
   const flows = new Map(), signups = new Map(); // (Google sign-ins under way: by state; new players choosing a name: by cookie)
   const keep = (map, key, value) => {
@@ -348,11 +367,19 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
       const rows = db.prepare(`SELECT b.game_id game, b.version, b.hash, b.size, b.created_at updatedAt
         FROM backups b JOIN (SELECT game_id, MAX(version) version FROM backups WHERE user_id=? GROUP BY game_id) h
         ON h.game_id=b.game_id AND h.version=b.version WHERE b.user_id=? ORDER BY b.game_id`).all(user.id, user.id);
-      return reply(res, 200, { games: rows });
+      // (a shared profile's row says which copies it merged — `merged`: the page's first sync under it, cloud-sync.js —,
+      // a merged per-version copy's, the profile it went into — `migratedTo`: kept, readable, no longer written)
+      const merges = mergesOf(user.id), into = new Map();
+      for (const [key, names] of merges) for (const n of names) if (n !== key) into.set(n, key);
+      return reply(res, 200, { games: rows.map((r) => ({ ...r, ...(merges.has(r.game) ? { merged: merges.get(r.game) } : {}), ...(into.has(r.game) ? { migratedTo: into.get(r.game) } : {}) })) });
     }
     const m = /^\/api\/cloud\/([^/]+)(?:\/(history|[0-9]+))?$/.exec(p);
     if (!m || !GAME.test(m[1]) || !allowedGame(m[1])) return reply(res, 404, { error: 'Jeu introuvable.' });
     const game = m[1], tail = m[2];
+    // (a version's own copy, merged into its game's profile: no longer written or deleted under its old key — a page of
+    // before, still open, is told where its saves went)
+    const movedTo = profileKeyOf(game);
+    if (['PUT', 'DELETE'].includes(req.method) && !tail && movedTo && movedTo !== game && markerOf(user.id, movedTo)) return reply(res, 410, { error: 'migrated', profileKey: movedTo });
     if (req.method === 'GET' && tail === 'history') {
       const rows = db.prepare('SELECT version,hash,size,created_at createdAt FROM backups WHERE user_id=? AND game_id=? ORDER BY version DESC LIMIT 20').all(user.id, game);
       return reply(res, 200, { versions: rows });
@@ -363,6 +390,9 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
       return row ? sendBytes(res, row) : reply(res, 404, { error: 'Sauvegarde introuvable.' });
     }
     if (req.method === 'DELETE' && !tail) {
+      // (a shared profile: the versions' copies merged into it go with it)
+      const merged = markerOf(user.id, game);
+      for (const n of merged ? Object.keys(JSON.parse(merged.sources)) : []) db.prepare('DELETE FROM backups WHERE user_id=? AND game_id=?').run(user.id, n);
       db.prepare('DELETE FROM backups WHERE user_id=? AND game_id=?').run(user.id, game);
       return reply(res, 200, { ok: true });
     }
@@ -386,7 +416,10 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
         // (over the account's space: its oldest versions go first — never a game's latest — before the upload is refused;
         // the saves are sent automatically while playing, the history is the part that can give way)
         if (bytesUsed + bytes.length > maxUserBytes) {
-          const old = db.prepare(`SELECT b.id, b.size FROM backups b WHERE b.user_id=? AND b.version < (SELECT MAX(version) FROM backups x WHERE x.user_id=b.user_id AND x.game_id=b.game_id) ORDER BY b.created_at`).all(user.id);
+          // (the versions' copies merged into a shared profile: history too, their latest included)
+          const merged = new Set([...mergesOf(user.id)].flatMap(([key, names]) => names.filter((n) => n !== key)));
+          const old = db.prepare(`SELECT b.id, b.size, b.game_id, b.version < (SELECT MAX(version) FROM backups x WHERE x.user_id=b.user_id AND x.game_id=b.game_id) older FROM backups b WHERE b.user_id=? ORDER BY b.created_at`).all(user.id)
+            .filter((r) => r.older || merged.has(r.game_id));
           for (const row of old) {
             if (bytesUsed + bytes.length <= maxUserBytes) break;
             db.prepare('DELETE FROM backups WHERE id=?').run(row.id); bytesUsed -= row.size;
@@ -404,6 +437,66 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     }
     return reply(res, 405, { error: 'Méthode refusée.' });
   };
+  /**
+   * The copies each player kept per version, merged into their game's shared profile (docs/profiles.md): once per
+   * player and profile key (profile_migrations), at the server's start. `groups`: profile key -> the versions keeping
+   * their profile under it (game-catalog.js profileGroups); `settingsOf(key)`: the manifests' profileSettings. For each
+   * player with a copy under one of a key's versions (another name than the key's): the latest copy of each version, and
+   * the key's own latest when there is one, merged (profile-merge.js — the account's dates: each file's when the copy
+   * has it, else the copy's) into the key's next version. The versions' copies stay, readable (the list tells them
+   * `migratedTo`), no longer written (410). A merge the account's limits refuse (64 MB, 10,000 files, the player's
+   * space, the site's) is not made: told, the versions' copies kept usable, tried again at the next start.
+   * @returns {{ merged: number, skipped: number }}
+   */
+  api.migrateProfiles = (groups, { settingsOf = () => undefined, log = (m) => console.log(m) } = {}) => {
+    const out = { merged: 0, skipped: 0 };
+    for (const [key, members] of groups) {
+      const legacy = members.filter((n) => n !== key);
+      if (!legacy.length || !GAME.test(key)) continue;
+      const users = db.prepare(`SELECT DISTINCT user_id FROM backups WHERE game_id IN (${legacy.map(() => '?').join(',')})
+        AND user_id NOT IN (SELECT user_id FROM profile_migrations WHERE profile_key=?)`).all(...legacy, key).map((r) => r.user_id);
+      for (const userId of users) {
+        const why = migrateOne(userId, key, [key, ...legacy], settingsOf(key));
+        if (why) { out.skipped++; log(`account saves: ${key} of user ${userId} not merged (${why}): its versions' copies stay as they are`); } else out.merged++;
+      }
+    }
+    return out;
+  };
+  /** One player's copies of key's versions merged into it (null), or why not. */
+  function migrateOne(userId, key, names, settings) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const skip = (why) => { db.exec('ROLLBACK'); return why; };
+      if (markerOf(userId, key)) return skip(null);
+      const latest = db.prepare('SELECT * FROM backups WHERE user_id=? AND game_id=? ORDER BY version DESC LIMIT 1');
+      const rows = names.map((n) => latest.get(userId, n)).filter(Boolean), head = rows.find((r) => r.game_id === key) ?? null;
+      const sources = [], from = {};
+      for (const row of rows) {
+        const doc = readBackup(row.data);
+        if (!doc) return skip(`${row.game_id} v${row.version} unreadable`);
+        sources.push({ label: row.game_id, at: row.created_at, files: doc.files });
+        from[row.game_id] = { version: row.version, hash: row.hash };
+      }
+      const merged = mergeProfiles(sources, { settings }).files;
+      const headFiles = head ? sources[rows.indexOf(head)].files : null;
+      // (the key's latest holds it all already: nothing to add)
+      const same = headFiles && headFiles.length === merged.length && merged.every((f) => { const h = headFiles.find((x) => x.path === f.path); return h && sameData(h.data, f.data); });
+      if (!same) {
+        if (merged.length > MAX_FILES) return skip(`${merged.length} files`);
+        const bytes = gzipSync(JSON.stringify({ format: 'orthros-profile', version: 1, game: key, files: merged.map((f) => ({ path: f.path, data: f.data, ...(Number.isFinite(f.mtime) ? { mtime: f.mtime } : {}) })) }));
+        if (bytes.length > MAX_BACKUP) return skip(`${bytes.length} bytes`);
+        const used = db.prepare('SELECT COALESCE(SUM(size),0) total FROM backups WHERE user_id=?').get(userId).total;
+        if (used + bytes.length > maxUserBytes) return skip('the player\'s space is full');
+        if (db.prepare('SELECT COALESCE(SUM(size),0) total FROM backups').get().total + bytes.length > MAX_SITE_BYTES) return skip('the site\'s space is full');
+        const version = (head?.version ?? 0) + 1;
+        db.prepare('INSERT INTO backups(user_id,game_id,version,hash,size,created_at,data) VALUES(?,?,?,?,?,?,?)').run(userId, key, version, sha256(bytes), bytes.length, Date.now(), bytes);
+        db.prepare('DELETE FROM backups WHERE user_id=? AND game_id=? AND version<=?').run(userId, key, version - MAX_HISTORY);
+      }
+      db.prepare('INSERT INTO profile_migrations(user_id,profile_key,done_at,sources) VALUES(?,?,?,?)').run(userId, key, Date.now(), JSON.stringify(from));
+      db.exec('COMMIT');
+      return null;
+    } catch (e) { try { db.exec('ROLLBACK'); } catch { /* none open */ } return e.message; }
+  }
   api.session = session;
   api.googleEnabled = () => google.enabled();
   api.registerPortToken = (user, installation, token) => {

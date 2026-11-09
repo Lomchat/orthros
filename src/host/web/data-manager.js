@@ -7,6 +7,7 @@ import { pickLang } from './lang.js';
 import { h } from './dom.js';
 import { errorText, accountChanged, onAccountChange, googleSignIn, googleText, GOOGLE_G } from './account.js';
 import { CloudSave, MAX_BACKUP, encodeProfile } from './cloud-sync.js';
+import { cloudProfile, portProfileDb } from '../../vfs/profile-share.js';
 
 // ---------------------------------------------------------------- text
 const TEXT = {
@@ -32,6 +33,9 @@ const TEXT = {
     sharedWith: (g) => `Ces fichiers servent aussi à ${g} : ils y seront téléchargés de nouveau si besoin.`,
     keptUnder: (g) => `Les fichiers que ce jeu partage avec ${g} sont désormais gardés sous ${g} : les copies que ce cache en garde encore y passent à mesure qu'elles sont lues, et le vider libère l'espace qu'elles occupaient.`,
     cleanSaves: 'Effacer les sauvegardes', cleanSavesText: 'Supprime définitivement les parties et réglages de cet appareil.',
+    sharedBy: (v) => `Sauvegardes partagées par : ${v}`, cleanSavesShared: (v) => `Supprime définitivement les parties et réglages de cet appareil, pour toutes les versions du jeu (${v}).`,
+    oldCopies: 'Anciennes copies', oldCopiesText: 'Les sauvegardes que chaque version gardait avant d’être partagées par le jeu : elles y ont été reprises. Supprime-les quand tu as vérifié tes parties.',
+    oldAsk: (g) => `Supprimer l’ancienne copie de ${g} ?`, oldAskText: 'Ses parties ont été reprises dans les sauvegardes du jeu. Elle sera supprimée définitivement.',
     playing: 'Jeu en cours : l’import et le nettoyage seront possibles après l’avoir quitté.',
     portOpen: 'Ferme ce jeu dans tes autres onglets avant de nettoyer ses données.',
     noData: (n) => `Jeux sans données sur cet appareil (${n})`, noGames: 'Aucun jeu', noGamesText: 'Les jeux apparaîtront ici dès que le serveur les proposera.',
@@ -70,6 +74,7 @@ const TEXT = {
     importAsk: (g) => `Restaurer la sauvegarde de ${g} ?`, importAskText: 'Les données actuelles de cet appareil seront gardées dans une copie de secours.', importOk: 'Restaurer',
     cacheAsk: (g) => `Vider le cache de ${g} ?`, cacheAskText: 'Les fichiers du jeu seront téléchargés de nouveau si besoin. Tes sauvegardes ne sont pas touchées.', cacheOk: 'Vider le cache',
     savesAsk: (g) => `Effacer les sauvegardes de ${g} ?`, savesAskText: 'C’est définitif sur cet appareil. Exporte-les d’abord si tu veux les garder.', savesOk: 'Effacer',
+    savesAskShared: (v) => `Elles sont partagées par toutes les versions du jeu (${v}) : toutes les perdent. C’est définitif sur cet appareil ; exporte-les d’abord si tu veux les garder.`,
     asideAsk: 'Supprimer cette copie de secours ?', asideAskText: 'Elle sera supprimée définitivement.',
     publishAsk: 'Publier les données de cet appareil ?', publishAskText: 'Elles deviennent la nouvelle version en ligne ; la précédente reste dans l’historique.', publishOk: 'Publier',
     restoreAsk: (g) => `Restaurer la copie en ligne de ${g} ?`, restoreAskText: 'Les données actuelles de cet appareil seront gardées dans une copie de secours.',
@@ -108,6 +113,9 @@ const TEXT = {
     sharedWith: (g) => `These files also serve ${g}: they will be downloaded again there when needed.`,
     keptUnder: (g) => `The files this game shares with ${g} are now kept under ${g}: the copies this cache still holds move there as they are read, and clearing it frees the space they took.`,
     cleanSaves: 'Erase the saves', cleanSavesText: 'Permanently deletes the games and settings on this device.',
+    sharedBy: (v) => `Saves shared by: ${v}`, cleanSavesShared: (v) => `Permanently deletes the games and settings on this device, for every version of the game (${v}).`,
+    oldCopies: 'Old copies', oldCopiesText: 'The saves each version kept before the game shared them: they were taken into the game’s. Delete them once you have checked your games.',
+    oldAsk: (g) => `Delete the old copy of ${g}?`, oldAskText: 'Its games were taken into the game’s saves. It will be deleted for good.',
     playing: 'Game running: import and clean-up are possible once you have left it.',
     portOpen: 'Close this game in your other tabs before cleaning its data.',
     noData: (n) => `Games with no data on this device (${n})`, noGames: 'No games', noGamesText: 'Games will show up here as soon as the server offers them.',
@@ -143,6 +151,7 @@ const TEXT = {
     importAsk: (g) => `Restore the save of ${g}?`, importAskText: 'The current data on this device will be kept in a safety copy.', importOk: 'Restore',
     cacheAsk: (g) => `Clear the cache of ${g}?`, cacheAskText: 'The game files will be downloaded again if needed. Your saves are not touched.', cacheOk: 'Clear the cache',
     savesAsk: (g) => `Erase the saves of ${g}?`, savesAskText: 'This is final on this device. Export them first if you want to keep them.', savesOk: 'Erase',
+    savesAskShared: (v) => `Every version of the game shares them (${v}): all lose them. This is final on this device; export them first if you want to keep them.`,
     asideAsk: 'Delete this safety copy?', asideAskText: 'It will be deleted for good.',
     publishAsk: 'Publish the data of this device?', publishAskText: 'It becomes the new online version; the previous one stays in the history.', publishOk: 'Publish',
     restoreAsk: (g) => `Restore the online copy of ${g}?`, restoreAskText: 'The current data on this device will be kept in a safety copy.',
@@ -175,11 +184,20 @@ const stamp = (ms) => ms ? new Date(ms).toLocaleString(lang, { dateStyle: 'mediu
 const app = {
   tab: 'general', open: false, busy: false, account: null, accountsOn: null, cloud: new Map(), storage: null,
   games: new Map(), accountMode: 'login', expanded: null, histories: new Map(), message: '', tone: 'info', opened: new Set(),
+  // (profile key -> { title, versions, runtime, launchUrl, hidden }; this browser's data: saves by profile key, caches by
+  // version, the copies the versions kept before their profile was shared — `old`)
+  profiles: new Map(), local: null,
 };
 const showAll = new URLSearchParams(location.search).has('all');
 const state = () => window.orthros;
-const activeGame = (game) => state()?.manifest === game && ['running', 'loading', 'starting'].includes(state()?.status);
-const nameOf = (game) => app.games.get(game)?.title ?? game;
+// (saves are kept per profile — a game's, shared by its versions, docs/profiles.md: `key` below —, caches per version)
+const activeProfile = (key) => (state()?.profileKey ?? state()?.manifest) === key && ['running', 'loading', 'starting'].includes(state()?.status);
+const nameOf = (game) => app.games.get(game)?.title ?? app.profiles.get(game)?.title ?? game;
+/** A profile's versions ([] for one the catalog does not know). */
+const versionsOf = (key) => app.profiles.get(key)?.versions ?? [];
+/** A profile shared by several versions: their labels, for "shared by". */
+const sharedBy = (key) => (versionsOf(key).length > 1 ? versionsOf(key).map((v) => versionOf(v) ?? v) : null);
+const portProfile = (key) => (app.profiles.get(key)?.runtime ?? 'win32') !== 'win32';
 /**
  * The other versions that read version `game`'s files (/api/manifests `owners`: the versions whose files a version
  * takes — they are stored under their owner, game-data.js): its cache is theirs too, counted and cleared here only.
@@ -187,9 +205,9 @@ const nameOf = (game) => app.games.get(game)?.title ?? game;
 const readers = (game) => [...app.games].filter(([n, g]) => n !== game && g.owners.includes(game)).map(([n]) => n);
 const versionOf = (game) => app.games.get(game)?.version ?? null;
 /** The account's copy of a Windows game's profile kept in this browser (cloud-sync.js), with its latest hash as listed. */
-const cloudFor = (game) => {
-  const c = new CloudSave({ game, user: app.account?.username, read: () => profileFiles(game, state()), write: (files) => replaceProfile(game, files, state()) });
-  c.remoteHash = app.cloud.get(game)?.hash ?? null;
+const cloudFor = (key) => {
+  const c = new CloudSave({ ...cloudProfile({ name: key, profileKey: key, profileSources: versionsOf(key).map((name) => ({ name })) }), user: app.account?.username, read: () => profileFiles(key, state()), write: (files) => replaceProfile(key, files, state()) });
+  c.remoteHash = app.cloud.get(key)?.hash ?? null;
   return c;
 };
 
@@ -215,14 +233,32 @@ async function refresh({ account = false } = {}) {
     try { app.account = app.accountsOn ? (await jsonApi('/api/account')).user : null; } catch { app.account = null; }
   }
   const [storage, manifests] = await Promise.all([scanStorage(), fetch('/api/manifests').then((r) => r.json()).catch(() => [])]);
-  app.games = new Map(manifests.map((m) => [m.name, { title: m.title ?? m.name, version: m.runtime === 'openmw' ? [m.version, (m.contentLanguages ?? m.languages ?? []).join('/').toUpperCase()].filter(Boolean).join(' · ') : m.version ?? null, hidden: !!m.hidden, runtime: m.runtime, launchUrl: m.launchUrl, saveKey: m.saveKey ?? null, owners: Array.isArray(m.owners) ? m.owners : [] }]));
-  // (the browser ports' data: their own databases, beside the Windows games' OPFS folders — one row a game, both counted)
+  app.games = new Map(manifests.map((m) => [m.name, { title: m.title ?? m.name, version: m.runtime === 'openmw' ? [m.version, (m.contentLanguages ?? m.languages ?? []).join('/').toUpperCase()].filter(Boolean).join(' · ') : m.version ?? null, hidden: !!m.hidden, runtime: m.runtime, launchUrl: m.launchUrl, saveKey: m.saveKey ?? null, owners: Array.isArray(m.owners) ? m.owners : [], profileKey: m.profileKey ?? m.name }]));
+  app.profiles = new Map();
+  for (const [name, g] of app.games) {
+    if (!app.profiles.has(g.profileKey)) app.profiles.set(g.profileKey, { title: g.title, versions: [], runtime: g.runtime ?? 'win32', launchUrl: g.launchUrl, hidden: true });
+    const p = app.profiles.get(g.profileKey); p.versions.push(name); p.hidden &&= g.hidden;
+  }
+  // (this browser's data: the Windows games' OPFS folders — a profile under its key, a version's own of before an old
+  // copy, the caches under each version's name —, the browser ports' databases — the installation's, per version: its
+  // cache and its profile of before; the profile's, per game)
+  const local = { profiles: new Map(), caches: new Map(), old: [] };
+  const add = (map, k, n) => map.set(k, (map.get(k) ?? 0) + n);
+  for (const r of storage.games) {
+    if (r.cache) add(local.caches, r.game, r.cache);
+    if (!r.profile) continue;
+    if (!app.profiles.has(r.game) && app.games.has(r.game)) local.old.push({ name: r.game, bytes: r.profile, port: false });
+    else add(local.profiles, r.game, r.profile);
+  }
   try {
-    for (const r of await scanPorts(manifests.filter((m) => m.saveKey).map((m) => ({ name: m.name, saveKey: m.saveKey })))) {
-      const row = storage.games.find((g) => g.game === r.game);
-      if (row) { row.profile += r.profile; row.cache += r.cache; row.port = true; } else storage.games.push(r);
+    const ports = manifests.filter((m) => m.saveKey);
+    for (const r of await scanPorts(ports.map((m) => ({ name: m.name, saveKey: m.saveKey })))) {
+      if (r.cache) add(local.caches, r.game, r.cache);
+      if (r.profile) local.old.push({ name: r.game, bytes: r.profile, port: true });
     }
+    for (const r of await scanPorts([...new Set(ports.map((m) => m.profileKey ?? m.name))].map((key) => ({ name: key, saveKey: portProfileDb(key) })))) add(local.profiles, r.game, r.profile);
   } catch { /* IndexedDB unavailable */ }
+  app.local = local;
   app.storage = storage;
   if (app.account) {
     try { app.cloud = new Map((await jsonApi('/api/cloud')).games.map((g) => [g.game, g])); } catch { app.cloud = new Map(); }
@@ -349,23 +385,31 @@ function renderGeneral() {
 }
 
 // ---------------------------------------------------------------- tab: this device
-function gameRow(game, data) {
-  const has = !!(data?.profile || data?.cache), card = h('article', { class: 'dm-game' + (has ? '' : ' empty') });
-  const version = versionOf(game), port = (app.games.get(game)?.runtime ?? 'win32') !== 'win32';
+/** This browser's data of a profile: { profile (its saves' bytes), cache (its versions' caches), caches: [[version, bytes]] }. */
+function dataOf(key) {
+  const caches = (versionsOf(key).length ? versionsOf(key) : [key]).map((v) => [v, app.local?.caches.get(v) ?? 0]).filter(([, n]) => n > 0);
+  return { profile: app.local?.profiles.get(key) ?? 0, cache: caches.reduce((n, [, b]) => n + b, 0), caches };
+}
+/** A game's card: its profile's saves (shared by its versions) and each version's cache. */
+function gameRow(key, data) {
+  const has = !!(data.profile || data.cache), card = h('article', { class: 'dm-game' + (has ? '' : ' empty') });
+  const versions = versionsOf(key), shared = sharedBy(key), version = shared ? null : versionOf(versions[0] ?? key), port = portProfile(key);
   card.append(h('div', { class: 'dm-game-top' },
-    h('div', { class: 'dm-game-icon', 'aria-hidden': 'true' }, (nameOf(game)[0] ?? 'O').toUpperCase()),
-    h('div', { class: 'dm-game-id' }, h('strong', {}, nameOf(game)), version ? h('span', { class: 'dm-tag' }, version) : null),
+    h('div', { class: 'dm-game-icon', 'aria-hidden': 'true' }, (nameOf(key)[0] ?? 'O').toUpperCase()),
+    h('div', { class: 'dm-game-id' }, h('strong', {}, nameOf(key)), version ? h('span', { class: 'dm-tag' }, version) : null, shared ? h('small', {}, t('sharedBy', shared.join(', '))) : null),
     has ? h('div', { class: 'dm-figs' },
-      h('span', {}, t('saves'), h('b', {}, fmtBytes(data.profile ?? 0))),
-      h('span', { title: t('cacheHelp') }, t('cache'), h('b', {}, fmtBytes(data.cache ?? 0)))) : null));
+      h('span', {}, t('saves'), h('b', {}, fmtBytes(data.profile))),
+      h('span', { title: t('cacheHelp') }, t('cache'), h('b', {}, fmtBytes(data.cache)))) : null));
   // (a browser port: its saves come back from the account at its start — no import here)
-  card.append(row(data?.profile ? btn(t('export'), () => exportLocal(game), { variant: 'primary', ico: 'download', key: 'export:' + game, small: true }) : null,
-    port ? null : btn(t('import'), () => pickImport(game), { variant: 'ghost', ico: 'upload', key: 'import:' + game, small: true })));
-  if (has) card.append(fold('clean:' + game, t('clean'),
-    data.cache ? h('div', { class: 'dm-clean' }, h('div', {}, h('strong', {}, t('cleanCache') + ' · ' + fmtBytes(data.cache)), h('p', {}, t('cleanCacheText')), readers(game).length ? h('p', {}, t('sharedWith', readers(game).map(nameOf).join(', '))) : null, app.games.get(game)?.owners.length ? h('p', {}, t('keptUnder', app.games.get(game).owners.map(nameOf).join(', '))) : null), btn(t('cleanCache'), () => clearCache(game), { variant: 'danger', ico: 'trash', key: 'cache:' + game, small: true })) : null,
-    data.profile ? h('div', { class: 'dm-clean' }, h('div', {}, h('strong', {}, t('cleanSaves') + ' · ' + fmtBytes(data.profile)), h('p', {}, t('cleanSavesText'))), btn(t('cleanSaves'), () => clearProfile(game), { variant: 'danger', ico: 'trash', key: 'saves:' + game, small: true })) : null));
+  card.append(row(data.profile ? btn(t('export'), () => exportLocal(key), { variant: 'primary', ico: 'download', key: 'export:' + key, small: true }) : null,
+    port ? null : btn(t('import'), () => pickImport(key), { variant: 'ghost', ico: 'upload', key: 'import:' + key, small: true })));
+  // (each version's cache: its own files — those it shares with another version kept under that one)
+  const cacheLine = ([v, bytes]) => h('div', { class: 'dm-clean' }, h('div', {}, h('strong', {}, t('cleanCache') + (shared ? ' · ' + (versionOf(v) ?? v) : '') + ' · ' + fmtBytes(bytes)), h('p', {}, t('cleanCacheText')), readers(v).length ? h('p', {}, t('sharedWith', readers(v).map(nameOf).join(', '))) : null, app.games.get(v)?.owners.length ? h('p', {}, t('keptUnder', app.games.get(v).owners.map(nameOf).join(', '))) : null), btn(t('cleanCache'), () => clearCache(v), { variant: 'danger', ico: 'trash', key: 'cache:' + v, small: true }));
+  if (has) card.append(fold('clean:' + key, t('clean'),
+    ...data.caches.map(cacheLine),
+    data.profile ? h('div', { class: 'dm-clean' }, h('div', {}, h('strong', {}, t('cleanSaves') + ' · ' + fmtBytes(data.profile)), h('p', {}, shared ? t('cleanSavesShared', shared.join(', ')) : t('cleanSavesText'))), btn(t('cleanSaves'), () => clearProfile(key), { variant: 'danger', ico: 'trash', key: 'saves:' + key, small: true })) : null));
   if (port && has) card.append(h('p', { class: 'dm-playing' }, icon('alert'), t('portOpen')));
-  if (activeGame(game)) card.append(h('p', { class: 'dm-playing' }, icon('alert'), t('playing')));
+  if (activeProfile(key)) card.append(h('p', { class: 'dm-playing' }, icon('alert'), t('playing')));
   return card;
 }
 function renderDevice() {
@@ -381,16 +425,25 @@ function renderDevice() {
       h('strong', { class: 'dm-state' }, icon(st.persistent ? 'shield' : 'alert'), st.persistent ? t('protectionOn') : t('protectionOff')),
       h('small', {}, st.persistent ? t('protectionOnText') : t('protectionOffText')),
       st.persistent ? null : btn(t('protectionAsk'), () => run(t('protectionWork'), async () => ((await navigator.storage.persist()) ? t('protectionDone') : t('protectionDenied'))), { variant: 'primary', key: 'persist', small: true }))));
-  const names = new Set([...app.games].filter(([, g]) => showAll || !g.hidden).map(([n]) => n));
-  for (const g of st.games) if (g.profile || g.cache) names.add(g.game);
-  const sorted = [...names].sort((a, b) => nameOf(a).localeCompare(nameOf(b)) || String(versionOf(b)).localeCompare(String(versionOf(a)), undefined, { numeric: true }));
-  const dataOf = (g) => st.games.find((x) => x.game === g);
-  const withData = sorted.filter((g) => dataOf(g)?.profile || dataOf(g)?.cache), without = sorted.filter((g) => !withData.includes(g));
+  // (one card a profile — a game, or a version keeping its own —; a profile or a cache the catalog no longer lists too)
+  const keys = new Set([...app.profiles].filter(([, p]) => showAll || !p.hidden).map(([k]) => k));
+  for (const k of app.local?.profiles.keys() ?? []) keys.add(k);
+  for (const v of app.local?.caches.keys() ?? []) keys.add(app.games.get(v)?.profileKey ?? v);
+  const sorted = [...keys].sort((a, b) => nameOf(a).localeCompare(nameOf(b)) || String(versionOf(versionsOf(b)[0] ?? b)).localeCompare(String(versionOf(versionsOf(a)[0] ?? a)), undefined, { numeric: true }));
+  const withData = sorted.filter((k) => dataOf(k).profile || dataOf(k).cache), without = sorted.filter((k) => !withData.includes(k));
   content.append(h('h3', { class: 'dm-section' }, t('games')));
   if (!sorted.length) content.append(panel('box', t('noGames'), t('noGamesText')));
   else {
-    if (withData.length) content.append(h('div', { class: 'dm-list' }, withData.map((g) => gameRow(g, dataOf(g)))));
-    if (without.length) content.append(fold('nodata', t('noData', without.length), h('div', { class: 'dm-list' }, without.map((g) => gameRow(g, dataOf(g))))));
+    if (withData.length) content.append(h('div', { class: 'dm-list' }, withData.map((k) => gameRow(k, dataOf(k)))));
+    if (without.length) content.append(fold('nodata', t('noData', without.length), h('div', { class: 'dm-list' }, without.map((k) => gameRow(k, dataOf(k))))));
+  }
+  // (the copies a game's versions kept before their profile was shared: merged into it, left here for the player)
+  const old = app.local?.old ?? [];
+  if (old.length) {
+    content.append(h('h3', { class: 'dm-section' }, t('oldCopies')), h('p', { class: 'dm-sub' }, t('oldCopiesText')));
+    content.append(h('div', { class: 'dm-list tight' }, old.map((item) => h('div', { class: 'dm-line' },
+      h('span', {}, h('strong', {}, nameOf(item.name)), h('small', {}, [versionOf(item.name), fmtBytes(item.bytes)].filter(Boolean).join(' · '))),
+      btn(t('delete'), () => removeOld(item), { variant: 'danger', ico: 'trash', key: 'old:' + item.name, small: true })))));
   }
   if (st.asides.length) {
     content.append(h('h3', { class: 'dm-section' }, t('asides')), h('p', { class: 'dm-sub' }, t('asidesText')));
@@ -416,16 +469,16 @@ function renderDevice() {
 
 // ---------------------------------------------------------------- tab: online
 function cloudRow(game) {
-  const remote = app.cloud.get(game), local = app.storage?.games.find((g) => g.game === game), card = h('article', { class: 'dm-game cloud' });
-  const version = versionOf(game), port = (app.games.get(game)?.runtime ?? 'win32') !== 'win32';
+  const remote = app.cloud.get(game), local = app.local?.profiles.get(game) ?? 0, card = h('article', { class: 'dm-game cloud' });
+  const shared = sharedBy(game), version = shared ? null : versionOf(versionsOf(game)[0] ?? game), port = portProfile(game);
   card.append(h('div', { class: 'dm-game-top' },
     h('div', { class: 'dm-game-icon', 'aria-hidden': 'true' }, icon('cloud')),
-    h('div', { class: 'dm-game-id' }, h('strong', {}, nameOf(game)), version ? h('span', { class: 'dm-tag' }, version) : null),
+    h('div', { class: 'dm-game-id' }, h('strong', {}, nameOf(game)), version ? h('span', { class: 'dm-tag' }, version) : null, shared ? h('small', {}, t('sharedBy', shared.join(', '))) : null),
     h('div', { class: 'dm-figs one' }, remote ? h('span', {}, t('online'), h('b', {}, `${t('version', remote.version)} · ${fmtBytes(remote.size)}`), h('small', {}, stamp(remote.updatedAt))) : h('span', { class: 'dim' }, t('noCopy')))));
-  card.append(row(local?.profile ? btn(t('send'), () => uploadGame(game, true), { variant: 'primary', ico: 'upload', key: 'send:' + game, small: true }) : null,
+  card.append(row(local && !port ? btn(t('send'), () => uploadGame(game, true), { variant: 'primary', ico: 'upload', key: 'send:' + game, small: true }) : null,
     remote && !port ? btn(t('restore'), () => restoreCloud(game), { variant: 'ghost', ico: 'restore', key: 'restore:' + game, small: true }) : null,
     remote ? btn(t('history'), () => toggleHistory(game), { variant: 'ghost', ico: 'clock', key: 'history:' + game, small: true }) : null));
-  if (port) card.append(h('p', {}, t('portSaves')), h('a', { href: app.games.get(game).launchUrl }, t('playPort')));
+  if (port && app.profiles.get(game)?.launchUrl) card.append(h('p', {}, t('portSaves')), h('a', { href: app.profiles.get(game).launchUrl }, t('playPort')));
   if (app.expanded === game) {
     card.append(h('div', { class: 'dm-history' }, (app.histories.get(game) ?? []).map((v) => h('div', { class: 'dm-line' },
       h('span', {}, h('strong', {}, t('version', v.version)), h('small', {}, `${stamp(v.createdAt)} · ${fmtBytes(v.size)}`)),
@@ -443,7 +496,8 @@ function renderCloud() {
   }
   content.append(h('div', { class: 'dm-bar' }, h('div', {}, h('strong', {}, t('signedAs', app.account.username)), h('small', {}, t('keeps'))),
     btn(t('syncAll'), () => run(t('wSync'), syncAll), { variant: 'primary', ico: 'sync', key: 'sync' })));
-  const names = new Set([...app.cloud.keys(), ...(app.storage?.games ?? []).filter((g) => g.profile > 0).map((g) => g.game)]);
+  // (a version's copy merged into its game's profile — `migratedTo` — is in the profile's: not a row of its own)
+  const names = new Set([...[...app.cloud.values()].filter((r) => !r.migratedTo).map((r) => r.game), ...(app.local?.profiles.keys() ?? [])]);
   const sorted = [...names].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
   content.append(h('h3', { class: 'dm-section' }, t('games')));
   content.append(sorted.length ? h('div', { class: 'dm-list' }, sorted.map(cloudRow)) : panel('box', t('noSaves'), t('noSavesText')));
@@ -525,14 +579,16 @@ function render() {
 
 // ---------------------------------------------------------------- actions
 const portKey = (game) => app.games.get(game)?.saveKey ?? null;
+/** A port's profile's database (the game's: portProfileDb), null for a Windows game. */
+const portDb = (key) => (portProfile(key) ? portProfileDb(key) : null);
 /** A port's saves as one archive (the account's format): null when it has none. */
-async function archivePort(game) {
-  const files = await portFiles(portKey(game)); if (!files.length) return null;
-  return new Uint8Array(await new Response(new Blob([encodeProfile(game, files)]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+async function archivePort(key) {
+  const files = await portFiles(portDb(key)); if (!files.length) return null;
+  return new Uint8Array(await new Response(new Blob([encodeProfile(key, files)]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
 }
 async function exportLocal(game) {
   return run(t('wExport'), async () => {
-    const bytes = portKey(game) ? await archivePort(game) : await archiveProfile(game, state());
+    const bytes = portDb(game) ? await archivePort(game) : await archiveProfile(game, state());
     if (!bytes) throw new Error(t('rNoSave'));
     download(bytes, game + '-' + new Date().toISOString().slice(0, 10) + '.orthros-save');
     return t('rExported', fmtBytes(bytes.length));
@@ -542,14 +598,14 @@ const picker = h('input', { type: 'file', accept: '.orthros-save,.gz', hidden: t
 document.body.append(picker);
 let importGame = null;
 function pickImport(game) {
-  if (activeGame(game)) { app.tone = 'error'; app.message = t('rQuit'); render(); return; }
+  if (activeProfile(game)) { app.tone = 'error'; app.message = t('rQuit'); render(); return; }
   importGame = game; picker.value = ''; picker.click();
 }
 picker.onchange = () => {
   const file = picker.files?.[0], game = importGame;
   if (!file || !game) return;
   run(t('wImport'), async () => {
-    const archive = await parseArchive(await file.arrayBuffer(), game);
+    const archive = await parseArchive(await file.arrayBuffer(), game, versionsOf(game)); // (an export of one of its versions' own of before too)
     if (!await ask({ title: t('importAsk', nameOf(game)), text: t('importAskText'), ok: t('importOk') })) return t('cancelled');
     return t('rImported', await restoreProfile(game, archive, state()));
   });
@@ -565,9 +621,18 @@ function clearCache(game) {
 }
 function clearProfile(game) {
   return run(t('wSaves'), async () => {
-    if (!await ask({ title: t('savesAsk', nameOf(game)), text: t('savesAskText'), ok: t('savesOk'), danger: true })) return t('cancelled');
-    if (portKey(game)) await clearPortSaves(portKey(game)); else await removeProfile(game, state());
+    const shared = sharedBy(game);
+    if (!await ask({ title: t('savesAsk', nameOf(game)), text: shared ? t('savesAskShared', shared.join(', ')) : t('savesAskText'), ok: t('savesOk'), danger: true })) return t('cancelled');
+    if (portDb(game)) await clearPortSaves(portDb(game)); else await removeProfile(game, state());
     return t('rSaves');
+  });
+}
+/** A version's copy of before its profile was shared (merged into it), deleted. */
+function removeOld(item) {
+  return run(t('wAside'), async () => {
+    if (!await ask({ title: t('oldAsk', nameOf(item.name)), text: t('oldAskText'), ok: t('delete'), danger: true })) return t('cancelled');
+    if (item.port) await clearPortSaves(portKey(item.name)); else await removeProfile(item.name, state());
+    return t('rAside');
   });
 }
 function removeAside(item) {
@@ -593,11 +658,17 @@ function outcome(st, sent) {
   if (st.state === 'off') throw new Error(t('cloudOffText'));
   return t('done');
 }
+/** A profile its versions share (their copies of before merged into it) never in step with the account here yet. */
+const sharedFirst = (key) => versionsOf(key).some((v) => v !== key) && !cloudFor(key).known?.shared;
 /** Every Windows game's profile kept in this browser sent when it changed; the conflicts left for the player. */
 async function syncAll() {
   // (only the games the server lists — the account keeps no other —, and a profile the account could take: each is
   // read whole into memory, several times its size)
-  const rows = (app.storage?.games ?? []).filter((g) => g.profile > 0 && g.profile <= MAX_RAW && !activeGame(g.game) && app.games.has(g.game) && (app.games.get(g.game).runtime ?? 'win32') === 'win32');
+  // (a profile shared by a game's versions not yet in step with the account here, the account having one: left to the
+  // game's next start — its first sync merges both without a question, cloud-sync.js)
+  const rows = [...(app.local?.profiles ?? [])].map(([game, profile]) => ({ game, profile }))
+    .filter((g) => g.profile > 0 && g.profile <= MAX_RAW && !activeProfile(g.game) && app.profiles.has(g.game) && !portProfile(g.game))
+    .filter((g) => !sharedFirst(g.game) || !app.cloud.has(g.game));
   let uploaded = 0, conflicts = 0;
   for (const item of rows) {
     const c = cloudFor(item.game), st = await c.push();
@@ -608,11 +679,11 @@ async function syncAll() {
 }
 async function restoreCloud(game, version) {
   return run(t('wRestore'), async () => {
-    if (activeGame(game)) throw new Error(t('rQuit'));
+    if (activeProfile(game)) throw new Error(t('rQuit'));
     if (!await ask({ title: t('restoreAsk', nameOf(game)), text: t('restoreAskText'), ok: t('importOk') })) return t('cancelled');
     if (!version || version === app.cloud.get(game)?.version) { await cloudFor(game).resolve('account'); return t('rRestored', true); }
     // (an older version of the history: put in place, this device's copy kept aside; the account's latest unchanged)
-    const archive = await parseArchive(new Uint8Array(await (await api('/api/cloud/' + encodeURIComponent(game) + '/' + version)).arrayBuffer()), game);
+    const archive = await parseArchive(new Uint8Array(await (await api('/api/cloud/' + encodeURIComponent(game) + '/' + version)).arrayBuffer()), game, versionsOf(game));
     return t('rRestored', await restoreProfile(game, archive, state()));
   });
 }
