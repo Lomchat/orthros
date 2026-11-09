@@ -829,6 +829,42 @@ concurrent timed pairs.
 - Timed pairs (the same tree, the three first variants off / on, 4 concurrent pairs, launch order alternated): menu
   guest ns per instruction 1.161 / 1.111, 1.158 / 1.168, 1.014 / 0.991, 1.042 / 1.071 — within the spread.
 
+## Displacements in the memarg offset (`memarg`, default on, 2026-11-09)
+
+`Emitter.foldDisp` / `eaOff` / `storeAddr` (translate.js): a `[base + disp]` load with `0 < disp < 0x10000` (no index,
+no 16-bit address, no FS/GS base, not in an if-converted arm) pushes the base register and puts `disp` in the load's
+memarg offset instead of `i32.const disp ; i32.add`; the same for stores addressed by ESP alone (they have no SMC
+check, which needs the whole address in `L_TA`). Every load path takes it (integer, MOVSX, x87 m32/m64/m16/m32 int,
+SSE scalar and vector loads); stores: MOV, FST/FSTP m32/m64, MOVSS/MOVSD/MOVLPS, storeVec.
+
+- **V8 does not fold it itself.** TurboFan (Node 24, `--print-wasm-code`) keeps `i32.add` a 32-bit operation (it must
+  wrap): `[base+16]` compiles to `leal rcx,[rax+0x10] ; movl rbx,[rbx+rcx*1]`, the memarg form to one
+  `movl rbx,[rbx+rcx*1+0x10]` (plus a `movl` zero-extension when V8 does not know the base's upper half is clear). With
+  an index register the lea stays either way (`[base + index*s + disp]` is one lea folded or not): not folded. Three
+  small regions (a prologue, an x87 dot product, struct loads): 4 672 → 4 659 machine instructions, a field-heavy block
+  15 → 9.
+- **Exactness.** x86 wraps `base + disp` at 32 bits, the memarg does not: they differ only when `base + disp >= 2^32`
+  (base a small negative number), where the folded access traps past the 2 GiB memory instead of reaching
+  `base + disp - 2^32 < disp`. With `disp < 0x10000` that address is in the null page, which Windows never maps: the
+  access faults there too — imprecisely here (a WebAssembly trap ends the process; docs/null-page.md "Not exact"),
+  where an unfolded read in the default `'writes'` mode read zeros. Larger displacements (an absolute address plus a
+  possibly negative register: `table[-1]`) could reach real memory and are never folded. ESP-based accesses cannot
+  wrap with a real stack. tests/jit-memarg.test.js checks both sides against the interpreter (`[ecx+0x10010]` with
+  ECX = −16 still reads 0x10000); the CPU conformance suites (oracle + corpus) pass.
+- **Measured** (`dbg:ORTHROS_JIT_AB={"memarg":false}` switches it off in a session):
+  `ab-virtual --perf`, same guest work: JIT instructions −0.57 % (RotWK menu, 218.32 vs 219.56 G), −0.16 % (BFME1 1.08
+  launcher computation, 119.94 vs 120.13 G), −1.25 % and −0.70 % (Vice City load + drive, 129.62 vs 131.24 G; two
+  runs each 130.05 vs 130.96 G); JIT cycles +0.27 %, −1.36 %, −1.95 % / +0.55 % (cycles move ±1 % with the load).
+  Vice City drive, two runs each: 4.248 / 4.263 vs 4.280 / 4.297 ns per guest instruction (−0.8 %). Node in-session
+  A/B (startbench, real clock, `tools/scenarios/*-memarg-ab.txt`, 25 s phases after a 5 s warm-up), guest ns per
+  instruction on / off: BFME1 1.08 play 2.514 / 2.568, 2.844 / 2.892, 2.716 / 2.880 (every pair on, −2 to −6 %);
+  RotWK play 2.713 / 2.677, 2.553 / 2.552, 2.745 / 3.066 (within the spread). The browser A/Bs (Chromium,
+  SwiftShader) could not resolve it: on a machine at load 30-80 Vice City ran at 8-11 fps with the guest time per
+  instruction swinging 7-18 ms per M between phases of the same variant, and BFME1 / RotWK did not reach play (their
+  menus at 1-6 fps missed the scenario's clicks; BFME1 1.08's menu also stalls the worker after Solo Play in other
+  branches' runs). A gain of about 1 % of the translated code, at most, kept on as the instruction counts are
+  consistent.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for
