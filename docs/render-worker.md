@@ -1023,6 +1023,107 @@ per frame against 32-33 around it), `ORTHROS_GL_NEAREST=1` (every sampler point-
 change in any of the three games). Not validated on a real GPU (where none of this was a cost: GPU compilers unroll and
 promote the register array themselves).
 
+## 10. Software rendering: adaptive internal resolution (2026-11-09)
+
+Owner's decision: without a GPU, render the Direct3D 8/9 frames at a lower internal resolution when the render is what
+holds the frame; never on a real GPU; the game must see exactly the same API results — only the picture's sharpness may
+drop. `src/gfx/render-scale.js` (mapping and controller), `src/gfx/d3d8-webgl.js` (scaled storage), tests
+`tests/render-scale.test.js`.
+
+**What is scaled.** One factor `s` per device (steps 1, 0.85, 0.75, 0.6, 0.5). GL storage at `round(w·s) × round(h·s)`
+for the back buffers (their color and depth-stencil renderbuffers — the backend gives every color target its own
+depth-stencil, so the auto depth-stencil follows) and for the render targets whose size is the back buffer's:
+render-target surfaces and render-target 2D textures (level 0 scaled, the other levels halved from it, as GL requires).
+Smaller targets (shadow maps, reflections, UI caches), cube and volume textures, DXT surfaces and plain surfaces stay
+unscaled. The Direct3D side never changes: `GetDesc`, viewport validation, everything the game reads keeps the original
+sizes; the recorder and the device do not know.
+
+**Coordinates.** Each target record has its GL size (`w`, `h`) and its Direct3D size (`dw`, `dh`) with the factors
+`kx`, `ky`. Viewport and scissor rectangles, Clear rectangles and StretchRect rectangles go through `glRect` /
+`glEdgeX` / `glEdgeY`: rows flipped as before, then every edge scaled and rounded (adjacent rectangles stay adjacent).
+The `u_viewport` uniform stays in Direct3D pixels, so pre-transformed vertices (XYZRHW / POSITIONT) land on the same
+part of the picture through the scaled `gl.viewport` with no shader change (program sources, hence the learned
+programs, are unchanged); the half-pixel offset is a fraction of a Direct3D pixel as before. The fixed-function point
+size (`u_pointSize`) is multiplied by the target's `kx`. Not scaled: point sizes written by a vertex shader (`oPts`), and
+line widths (WebGL draws 1-pixel lines only); no generated shader reads `gl_FragCoord.xy` (only `.z`/`.w` for fog).
+StretchRect between two targets of different scales is filtered (linear).
+
+**Readbacks.** `LockRect` on a render target, `GetRenderTargetData`, `GetFrontBuffer(Data)`, CopyRects from a target and
+the render-worker frame comparison read a scaled target through a full-size framebuffer (`readTargetPixels`: a nearest
+blit up, then `readPixels` at the Direct3D size), so the game reads Direct3D-sized data (its own colors, not blends).
+A scaled texture level uploaded from guest memory (after a readback, a context loss) is resampled to its GL size.
+
+**Present.** The back buffer is blitted to the canvas (Direct3D size) with linear filtering (the gamma path samples it
+linearly too).
+
+**Changing scale.** Only at a present, after the frame's flush (`applyRenderScale`): every target whose scale changes
+gets new storage, its color copied over (linear blit), its depth-stencil cleared; render-target textures get a new GL
+texture (levels drawn to are copied, the others uploaded again).
+
+**Controller** (auto mode). Per presented frame: the frame interval and the backend's busy time between two presents —
+in the render worker, the replay loop's busy time (`backend.busyMs`, render-loop.js), which includes the GL calls
+blocked while SwiftShader's GPU process is behind; in-thread, the time inside the backend's entry points. Down one step
+when, over the last 1.5 s (at least 4 frames: menus run at 2-3 fps), the median busy time exceeds the budget, the frame
+interval exceeds 1.05 × budget, and busy ≥ 0.75 × interval (the render is what holds the frame). Each step down is then
+judged over 3 s: kept if the busy time or the frame interval fell by 8 % or more, otherwise undone, and the next step
+down waits 30 s, then 1, 2, 4... up to 10 min (a scene bound by vertices, uploads or the emulator itself does not
+oscillate). Up one step when, over 4 s, the busy time times the pixel ratio of the next step stays under 75 % of the
+budget. Budget: 1000/30 ms (`ORTHROS_RENDER_BUDGET=<ms>`). A fence after the present was tried first as a measure of
+the GPU work left: Chrome updates a sync object's status between tasks of the worker's event loop, which a busy render
+worker reaches late — 3.8-4.8 s measured for frames of 100-160 ms; dropped.
+
+**Switches.** Worker debug global `ORTHROS_RENDER_SCALE` (`?dbg=`, harness `--dbg` or `dbg:` mid-session):
+`auto` (default — active only when `gpuClass(renderer)` of `src/host/web/gpu-class.js` is `software`), `off`, or a number
+in (0, 1] (that fixed scale, on any GPU: testing). Both it and `ORTHROS_RENDER_BUDGET` are host-only flags (snapshot
+keys unchanged). Statistics: the device's `stats.rscale` (mode, scale, changes, lowest, steps kept / undone, frames
+measured, busy and interval sums — measured in every mode on a software GPU), a `mark <label>: render scale ...` line
+per harness phase, and `scale` / `scaleChanges` in the perf record's `gpu` part (telemetry).
+
+**Measurements** (2026-11-09; this server, no GPU: headless Chromium + SwiftShader capped at 4 cores by
+`tools/with-browser-slot.sh`, the shared machine loaded 11-70; fresh profiles; phases of 25-40 s alternated in one
+session with `dbg:ORTHROS_RENDER_SCALE=...`; `render` = the emulator's mean wait for the render worker per frame,
+`[frames]` reports):
+
+| game, scene (display) | phase | fps | frame p50 / p99 ms | > 40 ms /min | render ms/frame |
+|---|---|---|---|---|---|
+| Vice City, street after a new game (640x480), fixed A/B | off ×3 | 9.2 / 8.6 / 9.8 | 99-100 / 291-384 | 444-499 | 43.6 / 51.3 / 30.0 |
+| | 0.5 ×2 | 9.4 / 10.2 | 98-99 / 292-302 | 475-499 | 33.4 / 31.0 |
+| | 0.75 | 10.0 | 98.5 / 294 | 499 | 32.0 |
+| Vice City, same scene, auto (first controller version) | off ×2 | 9.4 / 9.2 | 99 / 303-392 | 459-469 | 39.7 / 49.1 |
+| | auto ×2 (0.85 tried, undone) | 8.1 / 10.0 | 98-102 / 387-392 | 425-501 | 62.9 / 34.5 |
+| BFME 1.08, main menu (1024x768), run 1 | off ×2 | 2.4 / 1.9 | 420 / 886 | 112-146 | 351 / 399 |
+| | auto ×2 (down to 0.75 / no change) | 3.3 / 2.3 | 92-283 / 865-22110 | 95-179 | 281 / 313 |
+| | 0.5 ×2 | 3.5 / 3.7 | 212-220 / 906-1525 | 187-197 | 247 / 216 |
+| BFME 1.08, main menu, run 2 | off ×2 | 3.6 / 2.0 | 100-110 / 2917-3296 | 93-187 | 209 / 455 |
+| | auto ×2 (0.85-0.75, mostly undone) | 2.5 / 3.3 | 106-297 / 1393-1893 | 123-161 | 345 / 261 |
+| | 0.5 ×2 | 3.0 / 2.5 | 99-101 / 2296-6803 | 115-156 | 248 / 344 |
+| RotWK 2.02, skirmish, idle camera (1024x768) | off ×2 | 5.8 / 5.0 | 117 / 685-884 | 273-316 | 90 / 115 |
+| | auto ×2 (0.85 undone twice / down to 0.5-0.6) | 4.0 / 5.3 | 167-197 / 612-873 | 225-298 | 158 / 110 |
+| | 0.5 (first 40 s of play) | 5.1 | 100 / 3315 | 259 | 66 |
+
+Reading: a lower resolution lowers the render wait where pixels are a large part of it (Vice City 0.5: −25 to −35 %
+against the surrounding `off` phases; BFME's run 1: −30 to −45 %), but on this 4-core-capped, loaded machine the frame
+rate barely moves: Vice City's frames stay at a p50 of ~99 ms (the emulator's own work and its late wake-ups, `late`
+22-35 ms per frame, dominate), BFME's menu and RotWK's skirmish drift by ±50 % between phases of the same setting (the
+menu's camera fly-through, the skirmish's growing scene), more than any setting changes. The controller therefore
+mostly tries a step and undoes it for no gain, which is what it is for; where it kept steps (BFME run 1, RotWK auto2)
+the phases are within the drift. Two auto phases are below their run's `off` phases (Vice City auto1 8.1 fps against
+9.2-9.4, RotWK auto1 4.0 against 5.0-5.8) while two are above (BFME run 1 auto1, Vice City auto2): with the scene drift
+of the same size, neither a gain nor a loss is shown. Default `auto` as decided (inactive on real GPUs); when it does
+not help it holds the scale at 1 except for a ~3.5 s try at 0.85 after 30 s, 1, 2, 4... min.
+
+**Visual and input check at 0.5** (`dbg:ORTHROS_RENDER_SCALE=0.5`, game layer read from its canvas — the harness's new
+`shotgl` step, as screenshots time out on a page starved at 2-5 fps): Vice City's main menu (complete; the item under
+the cursor highlighted, the click on "new game" started it) and the opening cutscene (letterbox and subtitles in
+place); BFME 1.08's main menu (3D scene and button bar complete); RotWK's menus driven by clicks at 0.5 through Solo,
+Skirmish, the profile name and the map list, then a skirmish whose units are selected by clicks (selection circles and
+the HUD portrait) — hit-testing unchanged (the game's coordinates never pass through the render). Pictures softer at 0.5,
+nothing missing or displaced. (Scenario coordinates written for 800x600 must be scaled to the display by hand in the
+harness — the first-launch display here is 1024x768; the bench mode scales them itself.)
+
+Not validated: a real GPU-less PC (the owner's machines have GPUs; the controller never runs there), games that read
+back render targets during play at scale (the readback path is unit-tested for size, not seen in these scenes).
+
 ## Appendix: how the numbers were taken
 
 Each run: `tools/with-browser-slot.sh node tools/headless.mjs <manifest> --gl-discard --timescale 1.5 --learn <copy of
