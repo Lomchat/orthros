@@ -8,7 +8,7 @@ import { RealClock } from '../../core/clock.js';
 import { Vfs, MemBackend, normalizeWin, mountGameCdrom } from '../../vfs/vfs.js';
 import { FileAliasBackend } from '../../vfs/file-alias-backend.js';
 import { BLOCK } from '../../vfs/http-backend.js';
-import { openData, openStore, learnedOrder } from '../../vfs/game-data.js';
+import { openVersion, openStore, openLegacyStore, learnedOrders, PartsBackend, UnderStore } from '../../vfs/game-data.js';
 import { launchFirst } from '../../vfs/launch-set.js';
 import { NetLink } from '../../vfs/net-link.js';
 import { MemBlockStore } from '../../vfs/opfs-store.js';
@@ -44,18 +44,24 @@ let profileFilesRestored = 0, profileListing = []; // (the listing goes to the p
  * foreground child process's (docs/processes.md); `rootVm`: the host's machine, which runs every process (its runFor).
  */
 let rootVm = null;
-let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', gameStore = null, gameFilesStats = null, lastNetMs = 0, lastNetReq = 0;
-/** the block stores of the game files (the game's and the games it requires): their index synced by flushProfile */
+let vm = null, host = null, profile = null, opfsDir = null, manifestName = '', lastNetMs = 0, lastNetReq = 0;
+/** the block stores of the game files (every part's, game-data.js): their index synced by flushProfile */
 const fileStores = [];
-/** the player's connection (game file downloads: bandwidth, demand first) and the game folder's backend */
-let netLink = null, primaryFiles = null;
-const offline = { bytes: 0, total: 0, done: false }; // (background download of the game folder, opt-in)
-const offlineDependencies = []; // copies of additional mounted games, counted with the primary game
-const prefetch = { bytes: 0, blocks: 0, total: 0, done: false }; // (learned prefetch, see HttpBackend.prefetch)
-/** the network read counters of the games the manifest requires (mounted beside it), counted with the game's own */
-let extraFilesStats = null;
-/** a network read counter (requests, ms, bytes) of the game's folder and the games it requires */
-const netStat = (k) => { let v = gameFilesStats?.[k] ?? 0; for (const st of extraFilesStats ?? []) v += st[k] ?? 0; return v; };
+/**
+ * the player's connection (game file downloads: bandwidth, demand first); the game folder's backend (game-data.js
+ * PartsBackend: its parts — its own files, its game's shared base… — in `parts`); every part of the opened version (the
+ * game's and those of the versions it requires, each once)
+ */
+let netLink = null, primaryFiles = null, dataParts = [];
+/** the offline copy of each part (opt-in, HttpBackend.downloadAll progress), counted together */
+const offlineCopies = [];
+/** the learned prefetch of each part the game folder reads (HttpBackend.prefetch progress), counted together */
+const prefetches = [];
+const sumOf = (list, k) => list.reduce((n, p) => n + (p[k] ?? 0), 0);
+/** a network read counter (requests, ms, bytes) of every part (the game's folder and the games it requires); `parts`: of those */
+const netStat = (k, parts = dataParts) => { let v = 0; for (const p of parts) v += p.files.stats[k] ?? 0; return v; };
+/** a block store counter of the parts the game folder reads (each store once) */
+const storeStat = (k) => { let v = 0; const seen = new Set(); for (const p of primaryFiles?.parts ?? []) { const st = p.store?.stats; if (st && !seen.has(st)) { seen.add(st); v += st[k] ?? 0; } } return v; };
 let programSink = null, programsPostedAt = 0; // (GL programs this session built at a draw, sent to the server: see server.js)
 /** code regions earlier sessions translated ([module, rva, x87 mode], from the server), translated while the game waits */
 let regionQueue = null, regionPos = 0, regionSink = null, regionsPostedAt = 0;
@@ -216,63 +222,72 @@ async function start(m) {
   const root = new MemBackend();
   vfs.mount('C:\\', root);
   for (const d of ['Windows', 'Windows/System32', 'Windows/Temp', 'Users', 'Users/Player', 'Program Files', 'Program Files/Common Files', 'Game']) root.mkdir(d);
-  // game files over HTTP (the game data every Orthros game reads, src/vfs/game-data.js), kept in a persistent OPFS block
-  // store (pages; headless runs with a persistent profile, --opfs);
-  // the games the manifest requires (mounted beside it) the same way: their own store, learned prefetch and read logs,
-  // and one connection shared with the game's folder (the game's reads through either come first, see HttpBackend.link)
-  const link = new Set();
+  // game files over HTTP (the game data every Orthros game reads, src/vfs/game-data.js): the version and the versions it
+  // requires (manifest.extraMounts, mounted beside it) opened at once (openVersion), on one connection (the game's reads
+  // through any of them come first, see HttpBackend.link). Each part — a version's own files, its game's shared base,
+  // the files it takes from another (the server's owner marks: docs/slow-network.md "Files of a required version") —
+  // is kept in its persistent OPFS block store (pages; headless runs with a persistent profile, --opfs), with its own
+  // learned prefetch and offline copy; the game reads each version through a PartsBackend (its whole tree, each file
+  // read through the part that holds it), its reads reported under that version (ReadLog)
   netLink = new NetLink({ bw: Number(m.opts.netBw) || undefined }); // (the rate this browser measured last time, until measured)
-  const mountFiles = async (name, tree, primary) => {
-    let store = !m.opts.headless || m.opts.opfs ? await openStore(name) : null;
-    if (!store && m.opts.memPrefetch) store = new MemBlockStore((primary ? 1536 : 1024) * 1048576); // (harness: prefetch measured without a persistent profile)
+  const persistent = !m.opts.headless || m.opts.opfs;
+  // (the reads of this session until its game looks playable: sent with the mark — not by a session restored from a
+  // snapshot, which skips the reads of the start)
+  if (m.opts.session) { readLog = new ReadLog(); readBackends = new Map(); playableMeta = { session: m.opts.session, lang: m.opts.gameLanguage || null }; }
+  const storeOf = async (name, primary, shared) => {
+    let store = persistent ? await openStore(name) : null;
+    if (!store && m.opts.memPrefetch) store = new MemBlockStore((primary || shared ? 1536 : 1024) * 1048576); // (harness: prefetch measured without a persistent profile)
     const tag = primary ? '' : ` (${name})`;
     if (store) log('file', `block store${tag}: ${store.map.size} blocks (${Math.round((store.end ?? store.bytes ?? 0) / 1048576)} MiB) from earlier runs${store.resetReason ? ` (emptied: ${store.resetReason})` : ''}`);
     if (store) fileStores.push(store);
     if (store) store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log('warn', `block store${tag}: a stored block did not read back as written, fetched again: ${key}`); };
-    const pf = primary ? prefetch : { bytes: 0, blocks: 0, total: 0, done: false }, rank = new Map();
-    const { files } = await openData(name, { tree, store, cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', link, net: netLink,
-      onRead: readLog ? (p, a, b) => readLog?.add(name, p, a, b, performance.now()) : null,
-      onFetch: m.opts.netLog ? (f) => log('net', `t=${(performance.now() / 1000).toFixed(1)}s ${f.async ? 'parked' : 'sync'} ${primary ? '' : name + ':'}${f.path} [${f.start}, ${f.end}) ${Math.round(f.ms)}ms; learned rank ${rank.get(`${f.path}#${Math.floor(f.start / BLOCK)}`) ?? '-'}, prefetch at ${pf.k ?? '-'}`) : null,
-      onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
-    // learned prefetch: the blocks earlier sessions read, in the order they needed them, downloaded in the background
-    if (store && m.opts.prefetch && !m.opts.offline) {
-      // (its launch set first once sessions marked it playable, as the engines that run in the page take it: a player
-      // waiting in the menu gets the rest of the way to playable first — launch-set.js launchFirst; flags by language)
-      learnedOrder(name, m.opts.gameLanguage || null).then((order) => {
-        const list = launchFirst(files, order, netLink.fast());
-        pf.total = list.length; pf.t0 = performance.now();
-        if (m.opts.netLog) list.forEach(([p, b], i) => rank.set(`${p}#${b}`, i));
-        if (list.length) log('file', `prefetch${tag}: ${list.length} blocks learned from earlier sessions`);
-        return files.prefetch(list, pf, () => stopped, { first: list.first ?? 0 }).then(() => log('file', `prefetch${tag}: ${pf.done ? 'done' : 'stopped'}, ${pf.blocks} blocks (${Math.round(pf.bytes / 1048576)} MB) downloaded in ${((performance.now() - pf.t0) / 1000).toFixed(0)} s; store writes ${Math.round(store.stats.putMs ?? 0)} ms (${store.stats.flushes ?? 0} index flushes, ${Math.round(store.stats.flushMs ?? 0)} ms)`));
-      }).catch(() => {});
-    }
-    // offline copy (opt-in): the whole folder into the block store, in the background while the game runs
-    if (store && m.opts.offline) {
-      const progress = primary ? offline : { bytes: 0, total: 0, done: false };
-      if (!primary) offlineDependencies.push(progress);
-      files.downloadAll(progress, () => stopped).then(() => log('file', `offline copy${tag}: ${progress.done ? 'complete' : 'stopped'} (${Math.round(progress.bytes / 1048576)} MiB of ${Math.round(progress.total / 1048576)})`));
-    }
-    readBackends?.set(name, files);
-    return { files, store };
+    return store;
   };
-  // (the reads of this session until its game looks playable: sent with the mark — not by a session restored from a
-  // snapshot, which skips the reads of the start)
-  if (m.opts.session) { readLog = new ReadLog(); readBackends = new Map(); playableMeta = { session: m.opts.session, lang: m.opts.gameLanguage || null }; }
-  const main = await mountFiles(manifestName, m.tree, true);
-  gameStore = main.store; gameFilesStats = main.files.stats; primaryFiles = main.files;
+  const rank = new Map(); // (?netlog: a block's rank in its part's learned list)
+  const version = await openVersion(manifestName, { tree: m.tree, manifest, net: netLink, store: storeOf, legacy: persistent ? openLegacyStore : null,
+    cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '',
+    onRead: readLog ? (p, a, b, f) => readLog?.add(f?.readName ?? manifestName, f?.readPath ?? p, a, b, performance.now()) : null,
+    onFetch: m.opts.netLog ? (f) => log('net', `t=${(performance.now() / 1000).toFixed(1)}s ${f.async ? 'parked' : 'sync'} ${f.url} [${f.start}, ${f.end}) ${Math.round(f.ms)}ms; learned rank ${rank.get(`${f.path}#${Math.floor(f.start / BLOCK)}`) ?? '-'}`) : null,
+    onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
+  dataParts = version.parts;
+  for (const p of dataParts) if (p.store instanceof UnderStore) { fileStores.push(p.store); log('file', `block store (${p.name}): its files, kept before in ${p.store.below.length} other store(s), moved there as read`); }
+  primaryFiles = new PartsBackend(version, manifestName);
+  readBackends?.set(manifestName, primaryFiles);
   // (a language's view of the game folder: files read under another name — languageFileAliases — and the files of the
   // other languages left out — languageFiles: a patch's files for one language only, which its launcher would not install)
   const aliases = manifest.languageFileAliases?.[m.opts.gameLanguage];
   const hidden = Object.entries(manifest.languageFiles ?? {}).filter(([code]) => code !== m.opts.gameLanguage).flatMap(([, paths]) => paths)
     .filter((p) => !(manifest.languageFiles?.[m.opts.gameLanguage] ?? []).includes(p));
-  const gameFiles = aliases || hidden.length ? new FileAliasBackend(main.files, aliases ?? {}, hidden) : main.files;
+  const gameFiles = aliases || hidden.length ? new FileAliasBackend(primaryFiles, aliases ?? {}, hidden) : primaryFiles;
   vfs.mount(manifest.mount, gameFiles);
   mountGameCdrom(vfs, manifest, gameFiles);
   for (const dependency of manifest.extraMounts ?? []) {
     root.mkdir(dependency.mount.replace(/^C:\\/, ''));
-    const dep = await mountFiles(dependency.manifest, undefined, false); // (its tree fetched: openData)
-    vfs.mount(dependency.mount, dep.files);
-    (extraFilesStats ??= []).push(dep.files.stats);
+    const dep = new PartsBackend(version, dependency.manifest);
+    vfs.mount(dependency.mount, dep);
+    readBackends?.set(dependency.manifest, dep);
+  }
+  // learned prefetch: the blocks earlier sessions read, in the order they needed them, downloaded in the background —
+  // each part its own (learnedOrders: a version's entries of files another part holds go to that part), side by side
+  if (m.opts.prefetch && !m.opts.offline) {
+    learnedOrders(version, m.opts.gameLanguage || null).then((lists) => Promise.all(dataParts.map((p, i) => {
+      if (!p.store) return null;
+      // (its launch set first once sessions marked it playable, as the engines that run in the page take it: a player
+      // waiting in the menu gets the rest of the way to playable first — launch-set.js launchFirst; flags by language)
+      const list = launchFirst(p.files, lists[i], netLink.fast()), pf = { bytes: 0, blocks: 0, total: list.length, done: false, t0: performance.now() };
+      if (primaryFiles.parts.includes(p)) prefetches.push(pf); // (the loading screen's: the game folder's)
+      if (m.opts.netLog) list.forEach(([path, b], j) => rank.set(`${p.files.lookup(path)?.path ?? path}#${b}`, j));
+      const tag = p.name === manifestName ? '' : ` (${p.name})`;
+      if (list.length) log('file', `prefetch${tag}: ${list.length} blocks learned from earlier sessions`);
+      return p.files.prefetch(list, pf, () => stopped, { first: list.first ?? 0 }).then(() => log('file', `prefetch${tag}: ${pf.done ? 'done' : 'stopped'}, ${pf.blocks} blocks (${Math.round(pf.bytes / 1048576)} MB) downloaded in ${((performance.now() - pf.t0) / 1000).toFixed(0)} s; store writes ${Math.round(p.store.stats.putMs ?? 0)} ms (${p.store.stats.flushes ?? 0} index flushes, ${Math.round(p.store.stats.flushMs ?? 0)} ms)`));
+    }))).catch(() => {});
+  }
+  // offline copy (opt-in): every part into its block store, in the background while the game runs
+  if (m.opts.offline) for (const p of dataParts) {
+    if (!p.store) continue;
+    const progress = { bytes: 0, total: 0, done: false }, tag = p.name === manifestName ? '' : ` (${p.name})`;
+    offlineCopies.push(progress);
+    p.files.downloadAll(progress, () => stopped).then(() => log('file', `offline copy${tag}: ${progress.done ? 'complete' : 'stopped'} (${Math.round(progress.bytes / 1048576)} MiB of ${Math.round(progress.total / 1048576)})`));
   }
   profile = new MemBackend();
   for (const d of PROFILE_DIRS) profile.mkdir(d);
@@ -447,7 +462,9 @@ function netInfo() {
   const n = netLink.snapshot();
   n.waiting = (vm?.readsInFlight ?? 0) > 0 || !!vm?.frameThreadWaitsForRead?.() || n.demandInFlight > 0;
   n.ratio = Math.round(netLink.ratio() * 100) / 100;
-  const step = n.waiting ? primaryFiles?.stepEstimate() : null; // (only while the game waits: the page shows it then)
+  // (only while the game waits: the page shows it then — the game folder's parts, each by its learned order)
+  let step = null;
+  if (n.waiting) for (const p of primaryFiles?.parts ?? []) { const e = p.files.stepEstimate(); if (e) step = { bytes: (step?.bytes ?? 0) + e.bytes }; }
   if (step) { n.stepBytes = step.bytes; n.stepWire = Math.round(step.bytes * netLink.ratio()); }
   return n;
 }
@@ -662,7 +679,7 @@ function reportReads(now, mark = null, final = false) {
 function playableStep(now) {
   if (playableWatch) {
     let bytes = 0, videoBytes = 0;
-    for (const f of readBackends.values()) { bytes += f.reads.bytes; videoBytes += f.reads.videoBytes; }
+    for (const p of dataParts) { bytes += p.files.reads.bytes; videoBytes += p.files.reads.videoBytes; } // (each part once)
     if (playableWatch.step(now, { frames: host.framesPresented, bytes, videoBytes, requests: netStat('requests'), pacingMs: acct.acc[ACCT.wait] + acct.acc[ACCT.sleep] })) {
       playableWatch = null;
       const sent = reportReads(now, { kind: 'playable', t: Math.round(now - (readLog.t0 ?? now)) });
@@ -756,10 +773,11 @@ function pump() {
     const netMs = allMs - lastNetMs, netReq = allReq - lastNetReq; lastNetMs = allMs; lastNetReq = allReq;
     const pc = host?.gfx?.programCache;
     // (loading progress for the page's loading screen: the learned downloads, translations and program builds done ahead)
-    const load = { pfDone: prefetch.blocks, pfTotal: prefetch.total, pfFinished: prefetch.done || (prefetch.total > 0 && prefetch.blocks >= prefetch.total), pfMB: Math.round(prefetch.bytes / 1048576),
+    const pfBlocks = sumOf(prefetches, 'blocks'), pfTotal = sumOf(prefetches, 'total'), pfBytes = sumOf(prefetches, 'bytes');
+    const load = { pfDone: pfBlocks, pfTotal, pfFinished: (prefetches.length > 0 && prefetches.every((x) => x.done)) || (pfTotal > 0 && pfBlocks >= pfTotal), pfMB: Math.round(pfBytes / 1048576),
       rgDone: regionQueue ? regionPos : 0, rgTotal: regionQueue ? regionQueue.length : 0, pgDone: pc ? pc.started : 0, pgTotal: pc ? pc.started + pc.queue.length : 0 };
     const fa = host.frameAcct.takeInterval(); if (fa) fa.heavy = acct.heavyApis; // (frame accounting of the interval: frame-acct.js)
-    post({ type: 'stats', acct: fa, load, net: netInfo(), dt, hostWait: hostWaiter.totals(), render: host.remoteGl ? 'worker' : host.gfx ? (host.gfx.mode ?? 'thread') : 'none', busy: Math.round(pumpStats.runMs / dt / 10), jitMs: Math.round((vm.jit?.stats.translateMs ?? 0) - (vm.jit?.stats.prewarmMs ?? 0)), netMs: Math.round(netMs), netReq, frameMax: iv.max, slow33: iv.slow33, slow50: iv.slow50, ioMB: Math.round((gameFilesStats?.bytes ?? 0) / 1048576), offlineMB: Math.round((offline.bytes + offlineDependencies.reduce((n, d) => n + d.bytes, 0)) / 1048576), prefetchMB: Math.round((prefetch.bytes ?? 0) / 1048576), offlineTotalMB: Math.round((offline.total + offlineDependencies.reduce((n, d) => n + d.total, 0)) / 1048576), apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, vmemMB: Math.round(vm.proc.vmem.reservedBytes() / 1048576), frames: host.framesPresented, videoFrames: host.display.videoFrames, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height, programs: vm.d3dDevice.gfx?.stats.programs ?? 0, vaos: vm.d3dDevice.gfx?.stats.vaos ?? 0, programMs: Math.round(vm.d3dDevice.gfx?.stats.programMs ?? 0), programTakeMs: Math.round(vm.d3dDevice.gfx?.stats.prewarmTakeMs ?? 0), gpu: vm.d3dDevice.gfx?.stats.gpu ?? null, glCalls: vm.d3dDevice.gfx?.stats.glCalls ?? null } : null, unknownImports: vm.proc.unknownImports.size, gl: host.gfx?.stats?.() ?? null, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s threads ${threadTimes(dt)}`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${OP_NAMES[k] ?? k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPlaying: audioPlaying(vm.audio), audioMix: !vm.audio ? null : vm.audio.worklet ? 'worklet' : 'worker', audioDecodeFailures: audioDecodeStats.failures, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: hist ? [...hist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
+    post({ type: 'stats', acct: fa, load, net: netInfo(), dt, hostWait: hostWaiter.totals(), render: host.remoteGl ? 'worker' : host.gfx ? (host.gfx.mode ?? 'thread') : 'none', busy: Math.round(pumpStats.runMs / dt / 10), jitMs: Math.round((vm.jit?.stats.translateMs ?? 0) - (vm.jit?.stats.prewarmMs ?? 0)), netMs: Math.round(netMs), netReq, frameMax: iv.max, slow33: iv.slow33, slow50: iv.slow50, ioMB: Math.round(netStat('bytes', primaryFiles?.parts ?? []) / 1048576), offlineMB: Math.round(sumOf(offlineCopies, 'bytes') / 1048576), prefetchMB: Math.round(pfBytes / 1048576), offlineTotalMB: Math.round(sumOf(offlineCopies, 'total') / 1048576), apiPerSec: (vm.apiCalls - lastApi) / dt, mips: (vm.slices - lastSlices) * 0.1 / dt, fps: (host.framesPresented - lastFrames) / dt, frameP50: p(0.5), frameP99: p(0.99), regions: vm.jit?.stats.regions ?? 0, threads: vm.proc.threads.length, vmemMB: Math.round(vm.proc.vmem.reservedBytes() / 1048576), frames: host.framesPresented, videoFrames: host.display.videoFrames, firstD3D: vm.firstD3DCall?.name ?? null, d3d: vm.d3dDevice ? { frames: vm.d3dDevice.frames, draws: vm.d3dDevice.draws, w: vm.d3dDevice.pp.width, h: vm.d3dDevice.pp.height, programs: vm.d3dDevice.gfx?.stats.programs ?? 0, vaos: vm.d3dDevice.gfx?.stats.vaos ?? 0, programMs: Math.round(vm.d3dDevice.gfx?.stats.programMs ?? 0), programTakeMs: Math.round(vm.d3dDevice.gfx?.stats.prewarmTakeMs ?? 0), gpu: vm.d3dDevice.gfx?.stats.gpu ?? null, glCalls: vm.d3dDevice.gfx?.stats.glCalls ?? null } : null, unknownImports: vm.proc.unknownImports.size, gl: host.gfx?.stats?.() ?? null, fallbacksPerSec: ((vm.jit?.stats.fallbackSteps ?? 0) - lastFallbacks) / dt, pump: `${Math.round(pumpStats.runs / dt)} slices/s busy ${Math.round(pumpStats.runMs / dt / 10)}% sleeps ${Math.round(pumpStats.sleeps / dt)}/s avg ${(pumpStats.sleepMs / Math.max(1, pumpStats.sleeps)).toFixed(1)}ms idles ${Math.round(pumpStats.idles / dt)}/s threads ${threadTimes(dt)}`, topFallback: vm.jit?.fallbackHist ? [...vm.jit.fallbackHist].map(([k, v]) => [k, v - (lastFbHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${OP_NAMES[k] ?? k}=${Math.round(v / dt)}`).join(' ') : '', audioBuffers: vm.audio?.buffers.size ?? 0, audioPlaying: audioPlaying(vm.audio), audioMix: !vm.audio ? null : vm.audio.worklet ? 'worklet' : 'worker', audioDecodeFailures: audioDecodeStats.failures, audioPeak: host.audioPeak ?? 0, audioMs: (host.audioMs ?? 0) / dt, audioFrames: (host.audioFrames ?? 0) / dt, topApi: hist ? [...hist].map(([k, v]) => [k, v - (lastHist.get(k) ?? 0)]).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/^(com|kernel32|user32|winmm|gdi32)\.dll!/, '')}=${Math.round(v / dt)}`).join(' ') : '' });
     if (hist) lastHist = hist;
     // (debugging, dbg:ORTHROS_STEP_HIST=1: the instructions translated code leaves to the interpreter, by address, logged
     // with a few samples of the x87 state every 10 s)
@@ -1022,7 +1040,7 @@ self.onmessage = (e) => {
   else if (m.type === 'frames') { const f = host?.frameStats(m.fromMs ?? 0); post({ type: 'frames', text: f ? `frames from t=${((m.fromMs ?? 0) / 1000).toFixed(0)}s: ${f.frames} frames in ${f.seconds.toFixed(0)}s = ${f.fps.toFixed(1)} fps; frame time p50 ${f.p50.toFixed(1)} p90 ${f.p90.toFixed(1)} p99 ${f.p99.toFixed(1)} max ${f.max.toFixed(0)} ms; >33ms ${f.over33} (${(100 * f.over33 / f.frames).toFixed(2)}%), >50ms ${f.over50}` : 'no frames' }); }
   else if (m.type === 'report') {
     const hist = vm?.apiHist();
-    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '') + (vm?.jit ? `[report] JIT: ${vm.jit.stats.regions} regions translated in ${(vm.jit.stats.translateMs / 1000).toFixed(1)} s (emit ${(vm.jit.stats.tEmit / 1000).toFixed(1)}, build ${(vm.jit.stats.tBuild / 1000).toFixed(1)}, compile ${(vm.jit.stats.tModule / 1000).toFixed(1)}, instantiate ${(vm.jit.stats.tInstance / 1000).toFixed(1)}, consolidate ${(vm.jit.stats.tConsolidate / 1000).toFixed(1)} s), ${(vm.jit.stats.bytes / 1048576).toFixed(0)} MiB of WASM, ${vm.jit.stats.blocks} blocks for ${vm.jit.blockMap.size} distinct block addresses, ${vm.jit.stats.fpuVersions ?? 0} FPU-mode versions, ${vm.jit.stats.fpuModeMisses ?? 0} mode misses, ${vm.jit.stats.misses} translated at a miss${vm.jit.stats.coldEntries ? `; cold tier: ${vm.jit.stats.coldEntries} entries interpreted (${vm.jit.stats.coldSteps ?? 0} instructions), ${vm.jit.stats.coldRequests ?? 0} asked of the background worker, ${vm.jit.stats.coldHot ?? 0} translated here when hot` : ''}${vm.jit.stats.prewarmed ? `; ${vm.jit.stats.prewarmed} translated ahead (learned) in ${(vm.jit.stats.prewarmMs / 1000).toFixed(1)} s, ${regionPos} of ${regionQueue?.length ?? 0} entries looked at` : ''}\n` : '') + (netLink ? `[report] connection: ${(() => { const n = netLink.snapshot(); return `${n.bw ? `${Math.round(n.bw / 1024)} KB/s measured` : 'not measured'}, round trip ${n.rtt ?? '-'} ms; game reads ${n.demandRequests} requests ${(n.demandBytes / 1048576).toFixed(1)} MB (waited ${Math.round(n.demandMs / 1000)} s), background ${n.bgRequests} requests ${(n.bgBytes / 1048576).toFixed(1)} MB, ${n.abortedRequests} aborted`; })()}\n` : '') + (gameFilesStats ? `[report] game files over HTTP: ${gameFilesStats.requests} requests, ${(gameFilesStats.bytes / 1048576).toFixed(0)} MiB, ${gameFilesStats.ms.toFixed(0)} ms${gameStore ? `; block store: ${gameStore.stats.hits} hits, ${gameStore.stats.puts} blocks added, writes ${Math.round(gameStore.stats.putMs ?? 0)} ms (${gameStore.stats.flushes ?? 0} index flushes, ${Math.round(gameStore.stats.flushMs ?? 0)} ms)` : ''}${gameFilesStats.aheadRequests ? `; ${gameFilesStats.aheadRequests} learned piece requests ahead of the game (${((gameFilesStats.aheadBytes ?? 0) / 1048576).toFixed(0)} MiB)` : ''}\n` : '') + (host?.gfx?.device?.stats ? `[report] GL programs built at a draw: ${host.gfx.device.stats.programs} in ${(host.gfx.device.stats.programMs ?? 0).toFixed(0)} ms (slowest ${(host.gfx.device.stats.programMaxMs ?? 0).toFixed(1)} ms); ${host.gfx.device.stats.programsShared ?? 0} keys given a program of the same sources\n` : '') + (host?.gfx?.programCache?.started ? `[report] GL programs compiled ahead: ${host.gfx.programCache.started}, ${host.gfx.programCache.resolved ?? 0} resolved ahead when the GPU process had caught up (${host.gfx.programCache.caughtUp ?? 0} times; ${(host.gfx.programCache.resolveMs ?? 0).toFixed(0)} ms, slowest ${(host.gfx.programCache.resolveMaxMs ?? 0).toFixed(1)}; ${host.gfx.programCache.polls ?? 0} completion checks in ${(host.gfx.programCache.pollMs ?? 0).toFixed(0)} ms; starts ${(host.gfx.programCache.startMs ?? 0).toFixed(0)} ms), ${host.gfx.programCache.hits} used (${host.gfx.programCache.resolvedHits ?? 0} of them resolved; ${(host.gfx.device?.stats?.prewarmTakeMs ?? 0).toFixed(0)} ms waiting for the others at draws)\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? `[report] texture level uploads: ${[...host.gfx.device.stats.uploadsBy.values()].reduce((a, b) => a + b, 0)} (${((host.gfx.device.stats.uploadBytes ?? 0) / 1048576).toFixed(0)} MiB as RGBA8) in ${(host.gfx.device.stats.texMs ?? 0).toFixed(0)} ms\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? '[report] texture level uploads by format:size (most frequent):\n  ' + [...host.gfx.device.stats.uploadsBy].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} x${v}`).join(', ') + '\n' : '');
+    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '') + (vm?.jit ? `[report] JIT: ${vm.jit.stats.regions} regions translated in ${(vm.jit.stats.translateMs / 1000).toFixed(1)} s (emit ${(vm.jit.stats.tEmit / 1000).toFixed(1)}, build ${(vm.jit.stats.tBuild / 1000).toFixed(1)}, compile ${(vm.jit.stats.tModule / 1000).toFixed(1)}, instantiate ${(vm.jit.stats.tInstance / 1000).toFixed(1)}, consolidate ${(vm.jit.stats.tConsolidate / 1000).toFixed(1)} s), ${(vm.jit.stats.bytes / 1048576).toFixed(0)} MiB of WASM, ${vm.jit.stats.blocks} blocks for ${vm.jit.blockMap.size} distinct block addresses, ${vm.jit.stats.fpuVersions ?? 0} FPU-mode versions, ${vm.jit.stats.fpuModeMisses ?? 0} mode misses, ${vm.jit.stats.misses} translated at a miss${vm.jit.stats.coldEntries ? `; cold tier: ${vm.jit.stats.coldEntries} entries interpreted (${vm.jit.stats.coldSteps ?? 0} instructions), ${vm.jit.stats.coldRequests ?? 0} asked of the background worker, ${vm.jit.stats.coldHot ?? 0} translated here when hot` : ''}${vm.jit.stats.prewarmed ? `; ${vm.jit.stats.prewarmed} translated ahead (learned) in ${(vm.jit.stats.prewarmMs / 1000).toFixed(1)} s, ${regionPos} of ${regionQueue?.length ?? 0} entries looked at` : ''}\n` : '') + (netLink ? `[report] connection: ${(() => { const n = netLink.snapshot(); return `${n.bw ? `${Math.round(n.bw / 1024)} KB/s measured` : 'not measured'}, round trip ${n.rtt ?? '-'} ms; game reads ${n.demandRequests} requests ${(n.demandBytes / 1048576).toFixed(1)} MB (waited ${Math.round(n.demandMs / 1000)} s), background ${n.bgRequests} requests ${(n.bgBytes / 1048576).toFixed(1)} MB, ${n.abortedRequests} aborted`; })()}\n` : '') + (primaryFiles ? (() => { const parts = primaryFiles.parts, st = (k) => netStat(k, parts); return `[report] game files over HTTP: ${st('requests')} requests, ${(st('bytes') / 1048576).toFixed(0)} MiB, ${st('ms').toFixed(0)} ms${parts.some((p) => p.store) ? `; block store: ${storeStat('hits')} hits, ${storeStat('puts')} blocks added, writes ${Math.round(storeStat('putMs'))} ms (${storeStat('flushes')} index flushes, ${Math.round(storeStat('flushMs'))} ms)` : ''}${st('aheadRequests') ? `; ${st('aheadRequests')} learned piece requests ahead of the game (${(st('aheadBytes') / 1048576).toFixed(0)} MiB)` : ''}${parts.length > 1 ? ` (${parts.map((p) => p.name).join(' + ')})` : ''}\n`; })() : '') + (host?.gfx?.device?.stats ? `[report] GL programs built at a draw: ${host.gfx.device.stats.programs} in ${(host.gfx.device.stats.programMs ?? 0).toFixed(0)} ms (slowest ${(host.gfx.device.stats.programMaxMs ?? 0).toFixed(1)} ms); ${host.gfx.device.stats.programsShared ?? 0} keys given a program of the same sources\n` : '') + (host?.gfx?.programCache?.started ? `[report] GL programs compiled ahead: ${host.gfx.programCache.started}, ${host.gfx.programCache.resolved ?? 0} resolved ahead when the GPU process had caught up (${host.gfx.programCache.caughtUp ?? 0} times; ${(host.gfx.programCache.resolveMs ?? 0).toFixed(0)} ms, slowest ${(host.gfx.programCache.resolveMaxMs ?? 0).toFixed(1)}; ${host.gfx.programCache.polls ?? 0} completion checks in ${(host.gfx.programCache.pollMs ?? 0).toFixed(0)} ms; starts ${(host.gfx.programCache.startMs ?? 0).toFixed(0)} ms), ${host.gfx.programCache.hits} used (${host.gfx.programCache.resolvedHits ?? 0} of them resolved; ${(host.gfx.device?.stats?.prewarmTakeMs ?? 0).toFixed(0)} ms waiting for the others at draws)\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? `[report] texture level uploads: ${[...host.gfx.device.stats.uploadsBy.values()].reduce((a, b) => a + b, 0)} (${((host.gfx.device.stats.uploadBytes ?? 0) / 1048576).toFixed(0)} MiB as RGBA8) in ${(host.gfx.device.stats.texMs ?? 0).toFixed(0)} ms\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? '[report] texture level uploads by format:size (most frequent):\n  ' + [...host.gfx.device.stats.uploadsBy].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} x${v}`).join(', ') + '\n' : '');
     post({ type: 'report', text: vm ? apis + vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
   }
 };

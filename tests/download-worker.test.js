@@ -158,6 +158,11 @@ test('probe: a file a version takes from one it requires counts from that versio
   assert.deepEqual(fresh.opened, ['base']);
   assert.deepEqual(fresh.probed[0].whole, { bytes: 2 * MiB, total: 4 * MiB, done: false });
   assert.equal((await runProbe([{ name: 'ed' }], FAST, { stores: {}, tree, manifest: { owners: ['base'] } })).probed[0].missing, true, 'no store of either: missing');
+  // (neither stored, another version kept the shared files in its own store before they were shared — ownerLegacy: a
+  // game's base —: counted there, not missing)
+  const sib = await runProbe([{ name: 'ed' }], FAST, { stores: { sib: owner }, tree, manifest: { owners: ['base'], ownerLegacy: { base: ['ed', 'sib'] } } });
+  assert.deepEqual(sib.opened, ['sib']);
+  assert.deepEqual(sib.probed[0].whole, { bytes: 2 * MiB, total: 4 * MiB, done: false });
   // (the locks: by name whatever the order asked — a page taking the edition's and the owner's, a probe the other way)
   const real = globalThis.navigator, taken = [];
   const locks = { request: async (name, o, fn) => { taken.push(name); return fn({ name }); } };

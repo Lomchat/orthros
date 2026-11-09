@@ -93,7 +93,49 @@ export function languageFiles(files, overlays = {}, known = []) {
   return [...out, ...translated.values()];
 }
 
-/** The file at `rel` in a tree, found without case: { path (its real names), size, mtime, light? }, or null. */
+/**
+ * The guest's view of a tree (every runtime's reader of it: HttpBackend, game-data.js PartsBackend): `rel` walked
+ * without case — a directory before a file of the same name, either separator, empty parts skipped —: { file, name,
+ * path (the tree's names) } or { dir (its node), name, path }, or null. A file's light copy (LIGHT_DIR/<path>,
+ * src/host/light-copies.js) is a file of its own: its size the tree's `light`. (Which files the guest sees and how: in
+ * the snapshot key with this module — src/host/snapshot-sources.js KEPT.)
+ */
+export function treeLookup(tree, rel) {
+  if (rel.startsWith(LIGHT_DIR + '/')) {
+    const r = treeLookup(tree, rel.slice(LIGHT_DIR.length + 1));
+    return r?.file?.light ? { file: { size: r.file.light, mtime: r.file.mtime ?? 0 }, name: r.name, path: `${LIGHT_DIR}/${r.path}` } : null;
+  }
+  const parts = rel.split(/[\\/]/).filter(Boolean);
+  let node = tree; const realParts = [];
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i], last = i === parts.length - 1;
+    const dirs = node.dirs ?? {}, files = node.files ?? {};
+    let hit = dirs[p] !== undefined ? p : Object.keys(dirs).find((n) => n.toLowerCase() === p.toLowerCase());
+    if (hit !== undefined) { node = dirs[hit]; realParts.push(hit); continue; }
+    if (!last) return null;
+    hit = files[p] !== undefined ? p : Object.keys(files).find((n) => n.toLowerCase() === p.toLowerCase());
+    if (hit === undefined) return null;
+    return { file: files[hit], name: hit, path: [...realParts, hit].join('/') };
+  }
+  return { dir: node, name: realParts[realParts.length - 1] ?? '', path: realParts.join('/') };
+}
+/** A path's stat as the guest sees it (treeLookup): { size, isDir, mtime } (a directory's size and date 0), or null. */
+export function treeStat(tree, rel) {
+  const r = treeLookup(tree, rel);
+  if (!r) return null;
+  return r.dir ? { size: 0, isDir: true, mtime: 0 } : { size: r.file.size, isDir: false, mtime: r.file.mtime ?? 0 };
+}
+/** A directory's listing as the guest sees it (treeLookup): its directories, then its files, each in the tree's order; or null. */
+export function treeReaddir(tree, rel) {
+  const r = treeLookup(tree, rel);
+  if (!r || !r.dir) return null;
+  const out = [];
+  for (const n of Object.keys(r.dir.dirs ?? {})) out.push({ name: n, size: 0, isDir: true, mtime: 0 });
+  for (const [n, f] of Object.entries(r.dir.files ?? {})) out.push({ name: n, size: f.size, isDir: false, mtime: f.mtime ?? 0 });
+  return out;
+}
+
+/** The file at `rel` in a tree, found without case: { path (its real names), size, mtime, light?, owner?, op? }, or null. */
 export function treeFile(tree, rel) {
   let node = tree;
   const parts = rel.split('/').filter(Boolean), real = [];
@@ -107,7 +149,7 @@ export function treeFile(tree, rel) {
     const name = node.files?.[p] !== undefined ? p : Object.keys(node.files ?? {}).find((n) => n.toLowerCase() === low);
     if (name === undefined) return null;
     const f = node.files[name];
-    return { path: [...real, name].join('/'), size: f.size, mtime: f.mtime ?? 0, ...(f.light ? { light: f.light } : {}), ...(f.owner ? { owner: f.owner } : {}) };
+    return { path: [...real, name].join('/'), size: f.size, mtime: f.mtime ?? 0, ...(f.light ? { light: f.light } : {}), ...(f.owner ? { owner: f.owner } : {}), ...(f.op ? { op: f.op } : {}) };
   }
   return null;
 }
@@ -126,7 +168,8 @@ export function treeOwner(tree, rel, self = null) {
 
 /**
  * A version's tree split by owner (treeOwner): { own: the tree of its own files (the tree itself when no file is
- * another's), owners: Map(owner -> the tree of that version's files it takes, at the same paths) }.
+ * another's), owners: Map(owner -> the tree of that version's files it takes, at the same paths — at the owner's own,
+ * `op`, where the server says it differs: the same keys in the browser's store whatever version reads them) }.
  */
 export function splitOwners(tree, self = null) {
   const owners = new Map();
@@ -137,8 +180,9 @@ export function splitOwners(tree, self = null) {
     for (const [name, f] of Object.entries(node.files ?? {})) {
       if (!f.owner || f.owner === self) { own.files[name] = f; continue; }
       let o = owners.get(f.owner); if (!o) owners.set(f.owner, o = { dirs: {}, files: {} });
-      for (const d of at) o = o.dirs[d] ??= { dirs: {}, files: {} };
-      o.files[name] = f;
+      const p = typeof f.op === 'string' && f.op ? f.op.split('/') : null;
+      for (const d of p ? p.slice(0, -1) : at) o = o.dirs[d] ??= { dirs: {}, files: {} };
+      o.files[p ? p[p.length - 1] : name] = f;
     }
     for (const [name, d] of Object.entries(node.dirs ?? {})) own.dirs[name] = split(d, [...at, name]);
     return own;

@@ -21,8 +21,10 @@
 // The files a version takes from one it requires go to that version's store (game-data.js openVersion's shared parts,
 // learnedOrders): a version prepared or probed counts them there — what another version that reads them stored too —
 // and in its own store (what it kept of them before the owners: UnderStore); the owner's store held by another tab's
-// game, they are prepared into its own store, as before.
-import { openVersion, openData, openStore, openStoreNow, storeExists, storeLocks, learnedOrders, UnderStore } from '../../vfs/game-data.js';
+// game, they are prepared into its own store, as before. The files of a game's shared base (owner `<game>@base`) the
+// same way, and what the stores of the game's other versions kept of them before it was shared (manifest
+// ownerLegacy) counts too: a player who played one version has the base of the others.
+import { openVersion, openData, openStore, openStoreNow, openLegacyStore, storeExists, storeLocks, learnedOrders, UnderStore } from '../../vfs/game-data.js';
 import { launchSet, setBytes, lightLaunch } from '../../vfs/launch-set.js';
 
 let stopping = false, running = false;
@@ -125,7 +127,9 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
       stores.push(st);
       return st;
     };
-    const version = await openVersion(name, { bw, store });
+    // (the other versions' stores that kept a shared owner's files before: read there, moved under the owner)
+    const legacy = async (n) => { const st = await (hooks.openLegacy ?? openLegacyStore)(n); if (st) stores.push(st); return st; };
+    const version = await openVersion(name, { bw, store, legacy });
     net = version.net;
     if (kind === 'launch') {
       // (every part's launch set: the version's and those of the versions it requires — the game reads them too —, each
@@ -192,10 +196,11 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
  * exists — `has`: the version's own), its launch set as this link reads it and its whole blocks here: { bytes, here, wb,
  * wt }. A shared part (the files of a version another owns) counts its owner's store and what the stores of the parts
  * reading them kept of them before the owners (UnderStore, as the game reads them) — the owner's store held by another
- * tab's game: those only. Throws when a store cannot be told (unknown, another context holds it).
+ * tab's game: those only — and what the other versions' stores kept of them before they were shared (manifest
+ * ownerLegacy, those that exist: legacyNames). Throws when a store cannot be told (unknown, another context holds it).
  */
 async function countStores(version, orders, stores, exists, open, has = true, reloads = false) {
-  const parts = [], opened = new Map();
+  const parts = [], opened = new Map(), legacy = new Map();
   for (const [i, p] of version.parts.entries()) {
     const kept = i === 0 ? has : await exists(p.name);
     if (kept === null && !p.shared) throw new Error('unknown');
@@ -204,6 +209,10 @@ async function countStores(version, orders, stores, exists, open, has = true, re
     if (st) stores.push(st);
     if (p.shared) {
       const below = version.parts.filter((q) => q.owned?.has(p.name) && opened.get(q.name)).map((q) => opened.get(q.name));
+      for (const n of legacyNames(version, p.name)) {
+        if (!legacy.has(n)) { const o = (await exists(n)) ? await open(n) : null; if (o) stores.push(o); legacy.set(n, o); }
+        if (legacy.get(n)) below.push(legacy.get(n));
+      }
       if (below.length) st = new UnderStore(st, below);
     }
     opened.set(p.name, st);
@@ -219,6 +228,12 @@ async function countStores(version, orders, stores, exists, open, has = true, re
   }
   return { bytes, here, wb, wt };
 }
+
+/** The other versions whose stores may hold shared owner `owner`'s files from before (manifest.ownerLegacy), but the version's parts. */
+const legacyNames = (version, owner) => {
+  const list = version.manifest?.ownerLegacy?.[owner];
+  return Array.isArray(list) ? list.filter((n) => typeof n === 'string' && n && !version.parts.some((p) => p.name === n)) : [];
+};
 
 /**
  * The home's probe (docs/slow-network.md "The card from the store"): for each item { name, lang, engine } in turn (the
@@ -251,8 +266,10 @@ export async function probe(items, bw, hooks = {}) {
         // (its own store not here: the stores of the versions owning files it reads may hold them)
         try { manifest = await fetch(`/api/manifest/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : null)); } catch { /* unknown */ }
         if (stopping) break;
+        // (and the stores of the versions that kept a shared owner's files before: ownerLegacy)
         const owners = Array.isArray(manifest?.owners) ? manifest.owners.filter((o) => typeof o === 'string') : [];
-        if (!(await Promise.all(owners.map(exists))).some(Boolean)) { post({ type: 'probed', name, lang, missing: true }); continue; }
+        const legacy = Object.values(manifest?.ownerLegacy ?? {}).flat().filter((n) => typeof n === 'string' && n !== name);
+        if (!(await Promise.all([...new Set([...owners, ...legacy])].map(exists))).some(Boolean)) { post({ type: 'probed', name, lang, missing: true }); continue; }
       }
       const stores = [];
       try {
@@ -266,7 +283,7 @@ export async function probe(items, bw, hooks = {}) {
         // (the stores, under their locks: opened, counted, closed — a required version's only when it exists, else
         // nothing of it is here)
         running = true;
-        const { bytes, here, wb, wt } = await storeLocks(version.parts.map((p) => p.name), async (locked) => {
+        const { bytes, here, wb, wt } = await storeLocks([...version.parts.map((p) => p.name), ...version.parts.flatMap((p) => (p.shared ? legacyNames(version, p.name) : []))], async (locked) => {
           if (!locked) throw new Error('busy'); // (a game opening one now: unknown)
           // (closed before the locks go, whatever happens: a game waiting on them opens them next)
           try { return await countStores(version, orders, stores, exists, open, has, it.reloads === true); } finally { for (const s of stores.splice(0)) { try { s.close(); } catch { /* closed */ } } }

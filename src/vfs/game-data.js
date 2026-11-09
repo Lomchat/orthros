@@ -6,11 +6,12 @@
 // download (src/host/web/download-worker.js).
 // The files a version takes from one it requires (a port's underlays: the server marks them `owner`, game-files.js) are
 // that version's: read through a part of its own (`shared`), its store orthros-files-<owner> and /gamez/<owner>/ —
-// one copy in the browser for every version that reads them (docs/slow-network.md "Files of a required version").
+// one copy in the browser for every version that reads them (docs/slow-network.md "Files of a required version"). The
+// same for the files of a game's base/ its versions share (owner `<game>@base`): one copy whatever version is played.
 import { HttpBackend } from './http-backend.js';
 import { NetLink } from './net-link.js';
 import { OpfsBlockStore } from './opfs-store.js';
-import { treeBytes, treeOwner, splitOwners } from './game-tree.js';
+import { treeBytes, treeOwner, splitOwners, treeLookup, treeStat, treeReaddir } from './game-tree.js';
 
 const enc = encodeURIComponent;
 async function json(url) {
@@ -50,6 +51,21 @@ const lockedRest = (names, fn, o) => {
   const [n, ...rest] = names;
   return navigator.locks.request('orthros-store-' + n, { ifAvailable: !!o.ifAvailable }, (l) => (l || !o.ifAvailable ? lockedRest(rest, fn, o) : fn(false)));
 };
+
+/**
+ * A store that may hold an owner's files from before they were shared (manifest.ownerLegacy: another version of the
+ * game kept them in its own), opened only when it exists and no other context holds or opens it (its lock taken
+ * without waiting: a page playing that version keeps it), else null. One left empty — every block moved under its
+ * owner, nothing of its own — is removed instead (its data file's bytes are dead: OpfsBlockStore appends only).
+ */
+export const openLegacyStore = (name) => storeLocks([name], async (got) => {
+  if (!got || (await storeExists(name)) !== true) return null;
+  const st = await openStoreNow(name);
+  if (!st || st.map.size) return st;
+  st.close();
+  try { await (await navigator.storage.getDirectory()).removeEntry('orthros-files-' + name, { recursive: true }); } catch { /* opened meanwhile: kept */ }
+  return null;
+}, { ifAvailable: true });
 
 /**
  * The browser has a copy of a version's files: true when its OPFS directory exists (looked up without creating it —
@@ -127,7 +143,10 @@ export async function openData(name, o = {}) {
  * holds it): its files then kept where they were before the owners, the store of the parts that read them.
  * `o.kept(name)`: whether that version's store is the browser's (default: any store; the data worker's in memory are
  * not). A shared part's store is an UnderStore over the stores of the parts that read its files: what they kept of them
- * before (pages before the `owner` marks) is read there, and moved under the owner as it is read.
+ * before (pages before the `owner` marks) is read there, and moved under the owner as it is read — and over the stores
+ * of the other versions that kept them before (manifest.ownerLegacy: a game's versions, before their base was shared),
+ * those `o.legacy(name)` opens (openLegacyStore: the ones that exist and no other context holds; none without it),
+ * closed with that UnderStore.
  * The manifest (`o.manifest`, the page's when it holds it: no request), the version's tree (`o.tree`, likewise) and its
  * store are had at once, then every required version's tree and store at once: one wait each instead of one after
  * another (a page that opens its data while its engine downloads — docs/slow-network.md "Opened early"). A failure
@@ -155,7 +174,9 @@ export async function openVersion(name, o = {}) {
   const got = await Promise.allSettled([first, ...deps.map((n) => both(n, false))]);
   const bad = got.find((g) => g.status === 'rejected');
   if (bad) { for (const g of got) if (g.status === 'fulfilled') g.value.store?.close?.(); throw bad.reason; }
-  const names = [name, ...deps], parts = [], shared = new Map();
+  const names = [name, ...deps], parts = [], shared = new Map(), legacy = new Map();
+  // (the stores of the versions that kept an owner's files before it was shared, but those opened as parts)
+  const legacyOf = (owner) => (Array.isArray(manifest.ownerLegacy?.[owner]) ? manifest.ownerLegacy[owner] : []).filter((n) => typeof n === 'string' && n && !names.includes(n));
   for (const { value: { n, tree, store } } of got) {
     const { own, owners } = splitOwners(tree, n);
     const part = await openData(n, { ...o, net, link, store, tree: own });
@@ -165,8 +186,13 @@ export async function openVersion(name, o = {}) {
   for (const [owner, tree] of shared) {
     if (names.includes(owner)) continue; // (opened already: its tree has them)
     const top = await storeOf(owner, false, true);
-    const below = parts.filter((p) => p.owned.has(owner) && kept(p.name, p.store)).map((p) => p.store);
-    const store = !below.length ? top : new UnderStore(kept(owner, top) ? top : null, below);
+    const old = [];
+    if (o.legacy) for (const n of legacyOf(owner)) {
+      if (!legacy.has(n)) legacy.set(n, Promise.resolve().then(() => o.legacy(n)).catch(() => null));
+      const st = await legacy.get(n); if (st && !old.includes(st)) old.push(st);
+    }
+    const below = [...parts.filter((p) => p.owned.has(owner) && kept(p.name, p.store)).map((p) => p.store), ...old];
+    const store = !below.length ? top : new UnderStore(kept(owner, top) ? top : null, below, old);
     const part = await openData(owner, { ...o, net, link, store, tree, session: '' });
     parts.push(Object.assign(part, { shared: true, owned: new Set() }));
   }
@@ -181,34 +207,89 @@ export async function openVersion(name, o = {}) {
  * go to `top`; with no `top` (the owner's store held by another tab's game) or once it failed (the device full), to the
  * first of `below` that works — as before the owners: the files kept, not fetched again at each launch. A moved
  * block's bytes stay in the data file of the store it left until that store's cache is cleared (OpfsBlockStore appends
- * only). Closing it closes `top` only: each of `below` is its own part's.
+ * only). Closing it closes `top` and those of `below` it was given (`own`: another version's store opened for it,
+ * openVersion's legacy ones), not the others: each is its own part's.
  */
 export class UnderStore {
-  /** @param {object|null} top @param {object[]} below */
-  constructor(top, below) {
-    this.top = top; this.below = below;
-    const has = (k) => !!top?.map.has(k) || below.some((b) => b.map.has(k));
+  /** @param {object|null} top @param {object[]} below @param {object[]} [own] */
+  constructor(top, below, own = []) {
+    this.top = top; this.below = below; this.own = own;
+    /** a store of `below` -> its keys by their lower case (made at the first fold: see fold) */
+    this.lower = new Map();
+    const has = (k) => !!top?.map.has(k) || below.some((b) => b.map.has(k)) || this.fold(k) !== null;
     this.map = { has, get size() { return (top?.map.size ?? 0) + below.reduce((a, b) => a + b.map.size, 0); } };
     this.stats = top?.stats ?? below[0]?.stats ?? { hits: 0, puts: 0, bytes: 0 };
+  }
+  /**
+   * A block of `below` kept under another case of `key`'s path ([store, its key]), or null: a version whose folder
+   * names a directory otherwise than the owner kept the owner's files under its own paths (the owner's part reads them
+   * at the owner's, game-tree.js splitOwners `op`: BFME 1.08's Data/ over the base's data/, 1 GB). One file of a
+   * version's tree a case-insensitive path, its size and date the same: the same bytes.
+   */
+  fold(key) {
+    if (!this.below.length) return null;
+    const low = key.toLowerCase();
+    for (const b of this.below) {
+      let l = this.lower.get(b);
+      if (!l) { l = new Map(); for (const k of b.map.keys?.() ?? []) l.set(k.toLowerCase(), k); this.lower.set(b, l); }
+      const k = l.get(low); if (k !== undefined && k !== key && b.map.has(k)) return [b, k];
+    }
+    return null;
   }
   /** the store new blocks go to (null: none works) */
   get writer() { return this.top && !this.top.failed ? this.top : this.below.find((b) => !b.failed) ?? null; }
   get failed() { return !this.writer; }
   get(key) {
     const t = this.top && !this.top.failed ? this.top.get(key) : null; if (t) return t;
+    const move = (b, k) => {
+      const bytes = b.get(k); if (!bytes) return null;
+      const top = this.top;
+      if (top && !top.failed) { top.put(key, bytes); if (top.map.has(key)) b.drop(k); }
+      return bytes;
+    };
     for (const b of this.below) {
       if (!b.map.has(key)) continue;
-      const bytes = b.get(key); if (!bytes) continue;
-      const top = this.top;
-      if (top && !top.failed) { top.put(key, bytes); if (top.map.has(key)) b.drop(key); }
-      return bytes;
+      const bytes = move(b, key); if (bytes) return bytes;
     }
-    return null;
+    const f = this.fold(key);
+    return f ? move(f[0], f[1]) : null;
   }
   put(key, bytes) { if (!this.map.has(key)) this.writer?.put(key, bytes); }
-  drop(key) { this.top?.drop(key); for (const b of this.below) b.drop(key); }
+  drop(key) { this.top?.drop(key); for (const b of this.below) b.drop(key); const f = this.fold(key); f?.[0].drop(f[1]); }
   flush(force = false) { this.top?.flush?.(force); for (const b of this.below) b.flush?.(force); }
-  close() { this.top?.close?.(); }
+  close() { this.top?.close?.(); for (const b of this.own) b.close?.(); }
+}
+
+/**
+ * A version as a Windows game mounts it (src/host/web/worker.js; any reader of a version by its own paths): version
+ * `name` of an opened version (openVersion) — its whole tree as the server lists it, as the guest sees it — whose files
+ * are read by the parts that hold them (partOf: its own, or an owner's — its game's shared base, a required version's
+ * files). stat, readdir and lookup answer from that tree (game-tree.js); open returns the owning part's file itself:
+ * the guest's reads go to it, nothing in between (synchronous, the hot path). Read-only. A file opened is told the
+ * version and the path the game opened it under (`readName`, `readPath`): reported so (ReadLog, the server's learned
+ * order of the version), whatever part serves it.
+ */
+export class PartsBackend {
+  constructor(version, name) {
+    const own = version.parts.find((p) => p.name === name && !p.shared);
+    if (!own) throw new Error(`${name}: not opened`);
+    this.version = version; this.name = name; this.own = own; this.tree = own.tree;
+    /** the parts its files are read through: its own, then its owners' */
+    this.parts = [own, ...version.parts.filter((p) => p !== own && own.owned?.has(p.name))];
+  }
+  lookup(rel) { return treeLookup(this.tree, rel); }
+  stat(rel) { return treeStat(this.tree, rel); }
+  readdir(rel) { return treeReaddir(this.tree, rel); }
+  open(rel, opts = {}) {
+    if (opts.write || opts.create || opts.truncate) return null; // (read-only mount)
+    const r = treeLookup(this.tree, rel); if (!r || r.dir) return null;
+    const f = (partOf(this.version, this.name, r.path) ?? this.own).files.open(r.path);
+    if (f) { f.readName = this.name; f.readPath = r.path; }
+    return f;
+  }
+  mkdir() { return false; }
+  unlink() { return false; }
+  rename() { return false; }
 }
 
 /** Two trees' files together (`a` changed): those of `b` added. */

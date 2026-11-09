@@ -55,7 +55,13 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
   if (!Array.isArray(spec.versions) || !spec.versions.length) fail(file, 'versions doit contenir au moins une version');
   if (spec.defaults !== undefined && (!spec.defaults || Array.isArray(spec.defaults) || typeof spec.defaults !== 'object')) fail(file, 'defaults doit être un objet');
   const defaults = spec.defaults ?? {};
-  for (const key of ['folder', 'baseFolder', 'gameId', 'id', 'dir', 'requires', 'formerGame', 'extraMounts', 'saveDir', 'coverPath', 'saveKey', 'overlays', 'dataMounts', 'underlays', 'underlayOwners']) if (own(defaults, key)) fail(file, `defaults.${key} est réservé`);
+  for (const key of ['folder', 'baseFolder', 'gameId', 'id', 'dir', 'requires', 'formerGame', 'extraMounts', 'saveDir', 'coverPath', 'saveKey', 'overlays', 'dataMounts', 'underlays', 'underlayOwners', 'baseOwner', 'sharedBase']) if (own(defaults, key)) fail(file, `defaults.${key} est réservé`);
+  if (spec.sharedBase !== undefined && typeof spec.sharedBase !== 'boolean') fail(file, 'sharedBase doit être un booléen');
+  // (the files of base/ a version does not override: one owner for every version of the folder — `<id>@base`, which no
+  // version id can be ('@' is not in ID) —, stored and fetched once by the browsers whatever the version played:
+  // listGameTree marks them, docs/slow-network.md "Files of a required version". A folder of two versions or more,
+  // unless it says sharedBase: false; a version saying sharedBase: false keeps its own copy of them)
+  const sharing = spec.sharedBase !== false && spec.versions.filter((v) => v?.sharedBase !== false).length >= 2;
   const versions = new Map();
   for (const entry of spec.versions) {
     if (!entry || Array.isArray(entry) || typeof entry !== 'object') fail(file, 'entrée de version invalide');
@@ -71,14 +77,16 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     // version's, no mount)
     const layered = runtime === 'goldsrc' || runtime === 're3' || runtime === 'openmw';
     if (entry.requires !== undefined && (!Array.isArray(entry.requires) || !entry.requires.every((d) => d && ID.test(d.game ?? '') && ID.test(d.version ?? '') && (layered ? d.mount === undefined : WIN_MOUNT.test(d.mount ?? ''))))) fail(file, `${entry.id}: requires invalide`);
-    for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey', 'overlays', 'dataMounts', 'underlays', 'underlayOwners']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
+    for (const key of ['folder', 'baseFolder', 'gameId', 'saveDir', 'extraMounts', 'coverPath', 'saveKey', 'overlays', 'dataMounts', 'underlays', 'underlayOwners', 'baseOwner']) if (own(entry, key)) fail(file, `${entry.id}: ${key} est généré depuis le dossier`);
+    if (entry.sharedBase !== undefined && typeof entry.sharedBase !== 'boolean') fail(file, `${entry.id}: sharedBase doit être un booléen`);
     // (a version moved from another game folder: the browser's saves keep that installation's key — the port's saveKey)
     if (entry.formerGame !== undefined && (!ID.test(entry.formerGame) || entry.formerGame === spec.id)) fail(file, `${entry.id}: formerGame doit nommer un autre dossier de jeu`);
-    const { id, dir, requires, formerGame, ...version } = entry;
+    const { id, dir, requires, formerGame, sharedBase, ...version } = entry;
     const installation = `orthros-port:${formerGame ?? spec.id}:${dir}`;
     const manifest = withDefaults({ ...defaults, ...version, runtime, name: spec.name, gameId: spec.id,
       folder: path.join(gameDir, 'versions', dir), baseFolder: path.join(gameDir, 'base'),
       saveDir: path.join(ROOT, 'build/saves', id) });
+    if (sharing && sharedBase !== false) manifest.baseOwner = baseOwnerOf(spec.id);
     if (!WIN_MOUNT.test(manifest.mount)) fail(file, `${id}: mount invalide`);
     if (manifest.modified !== undefined && typeof manifest.modified !== 'boolean') fail(file, `${id}: modified doit être un booléen`);
     // (a shared world, any runtime: src/host/mmo.js)
@@ -211,6 +219,49 @@ export function loadGameCatalog(root = DEFAULT_GAMES_DIR, extra = null, { engine
   }
   for (const [id, manifest] of extra ?? []) catalog.set(id, manifest);
   return catalog;
+}
+
+/** The owner id of a game folder's shared base files (loadGameFolder: manifest.baseOwner). */
+export const baseOwnerOf = (gameId) => `${gameId}@base`;
+
+/**
+ * The manifests of the game folders' shared bases (manifest.baseOwner): owner id -> a manifest of base/ alone, hidden,
+ * served by /gamez/<owner>/ and /api/tree/<owner> only (never a version of the home, nor learned): `baseOf` the
+ * versions that share it; light copies when any of them reads them (a file marked with this owner is served with its
+ * light copy: listGameTree marks one only then).
+ */
+export function baseManifests(catalog) {
+  const out = new Map();
+  for (const [id, m] of catalog) {
+    if (!m.baseOwner || !m.baseFolder) continue;
+    let b = out.get(m.baseOwner);
+    if (!b) out.set(m.baseOwner, b = { name: m.name, gameId: m.gameId, runtime: m.runtime, hidden: true, folder: m.baseFolder, lightCopies: false, baseOf: [] });
+    b.lightCopies ||= !!m.lightCopies;
+    b.baseOf.push(id);
+  }
+  return out;
+}
+
+/**
+ * The versions whose files version `id` reads elsewhere (/api/manifest `owners`: its game's shared base, those of the
+ * versions it mounts — extraMounts —, the versions beneath a port's files and their shared bases), and for each shared
+ * base the versions of its game whose own browser stores may hold its files from before it was shared (`ownerLegacy`:
+ * owner -> [version ids] — the browser reads them there and moves them under the owner: game-data.js openVersion).
+ * `catalog`: the versions' manifests by id (loadGameCatalog's).
+ */
+export function versionOwners(catalog, id) {
+  const lookup = (n) => catalog.get(n), m = lookup(id); if (!m) return { owners: [], ownerLegacy: {} };
+  const owners = [];
+  const add = (o) => { if (o && o !== id && !owners.includes(o)) owners.push(o); };
+  add(m.baseOwner);
+  for (const d of m.extraMounts ?? []) add(lookup(d.manifest)?.baseOwner);
+  for (const o of m.underlayOwners ?? []) { add(o.manifest); add(lookup(o.manifest)?.baseOwner); }
+  const ownerLegacy = {};
+  for (const o of owners) {
+    const game = [...catalog.values()].find((v) => v.baseOwner === o)?.gameId; if (!game) continue;
+    ownerLegacy[o] = [...catalog].filter(([, v]) => v.gameId === game).map(([n]) => n);
+  }
+  return { owners, ownerLegacy };
 }
 
 export function defaultGameManifest(gameDir) {

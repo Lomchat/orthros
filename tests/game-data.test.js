@@ -10,7 +10,7 @@ import { createServer } from '../src/host/server.js';
 import { listGameTree, resolveGameFile } from '../src/host/game-files.js';
 import { treeFile, treeFiles, treeBytes, languageFiles, treeOwner, splitOwners } from '../src/vfs/game-tree.js';
 import { createDataWorker } from '../src/vfs/data-worker.js';
-import { openVersion, learnedOrders, partOf, UnderStore } from '../src/vfs/game-data.js';
+import { openVersion, learnedOrders, partOf, UnderStore, PartsBackend } from '../src/vfs/game-data.js';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';
 import { GameData, PIECE, readsReal } from '../src/vfs/data-client.js';
 import { fileNode, mountFiles, phaseOnRead } from '../src/vfs/emscripten-files.js';
@@ -338,6 +338,44 @@ test('a file a version takes from one it requires is read, kept and loaded ahead
 // Opened early (docs/slow-network.md "Opened early"): a version's manifest, tree and store had at once, then every
 // required version's tree and store at once — one wait each, not one after another —; the page's manifest and tree not
 // asked again; a failure closes the stores that opened.
+test('a game\'s base shared by its versions: marked `<game>@base` (at its own path), served, read through one store — the blocks a version kept before found there, whatever their case, and moved', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-sharedbase-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), g = path.join(games, 'g'), big = bytes((2 << 20) + 5000, 3), exe = bytes(70000, 4);
+  const put = (rel, b) => { fs.mkdirSync(path.dirname(path.join(g, rel)), { recursive: true }); fs.writeFileSync(path.join(g, rel), b); };
+  put('base/data/a.big', big); put('base/data/b.ini', 'base'); put('base/game.exe', exe);
+  put('versions/1/Data/b.ini', 'version 1'); put('versions/2/own.txt', 'two'); // (1 names the base's data/ Data/)
+  fs.writeFileSync(path.join(g, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: 'g', name: 'G', defaultVersion: 'g-1',
+    versions: [{ id: 'g-1', dir: '1', version: '1', exe: 'game.exe' }, { id: 'g-2', dir: '2', version: '2', exe: 'game.exe' }] }));
+  const server = createServer({ gamesDir: games, enginesDir: path.join(root, 'engines'), lanLog: () => {} });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r)); t.after(() => new Promise((r) => { server.closeAllConnections(); server.close(r); }));
+  const origin = `http://127.0.0.1:${server.address().port}`, realFetch = globalThis.fetch, asked = [];
+  globalThis.fetch = (url, init) => { const u = new URL(url, origin); if (u.pathname.startsWith('/gamez/')) asked.push(u.pathname); return realFetch(u, init); };
+  t.after(() => { globalThis.fetch = realFetch; });
+  // (the server: the base's files not overridden marked, at the base's path where the version's case differs)
+  const tree = await (await fetch('/api/tree/g-1')).json(), a = tree.dirs.Data.files['a.big'];
+  assert.deepEqual([a.owner, a.op, tree.dirs.Data.files['b.ini'].owner, tree.files['game.exe'].owner, tree.files['game.exe'].op], ['g@base', 'data/a.big', undefined, 'g@base', undefined]);
+  const man = await (await fetch('/api/manifest/g-1')).json();
+  assert.deepEqual([man.owners, man.ownerLegacy], [['g@base'], { 'g@base': ['g-1', 'g-2'] }]);
+  assert.ok(!(await (await fetch('/api/manifests')).json()).some((m) => m.name.includes('@')), 'never a version of the home');
+  // (the client: version 1's store kept block 0 under its own case, version 2's block 1 — before the base was shared)
+  const key = (p, i) => `${p}#${big.length}#${a.mtime}#${i}`, stores = { 'g-1': new MemBlockStore(), 'g@base': new MemBlockStore() }, old = new MemBlockStore();
+  stores['g-1'].put(key('Data/a.big', 0), big.subarray(0, BLOCK)); old.put(key('data/a.big', 1), big.subarray(BLOCK, 2 * BLOCK));
+  const version = await openVersion('g-1', { tree, manifest: man, store: (n) => stores[n], legacy: (n) => (n === 'g-2' ? old : null) });
+  assert.deepEqual(version.parts.map((p) => [p.name, !!p.shared]), [['g-1', false], ['g@base', true]]);
+  const files = new PartsBackend(version, 'g-1');
+  assert.deepEqual(files.readdir('DATA').map((e) => [e.name, e.size]), [['b.ini', 9], ['a.big', big.length]], 'the guest sees the version\'s tree');
+  const f = files.open('data/A.BIG');
+  assert.deepEqual([f.b === version.parts[1].files, f.path, f.readName, f.readPath], [true, 'data/a.big', 'g-1', 'Data/a.big']);
+  await f.prepare(0, big.length);
+  assert.deepEqual(f.read(0, big.length), big);
+  assert.ok(!asked.some((p) => p.includes('a.big') && !p.endsWith('/data/a.big')), 'fetched at the base\'s path');
+  assert.ok(stores['g@base'].map.has(key('data/a.big', 0)) && stores['g@base'].map.has(key('data/a.big', 1)), 'moved under the base, its own case');
+  assert.ok(!stores['g-1'].map.has(key('Data/a.big', 0)) && !old.map.has(key('data/a.big', 1)), 'and forgotten where it was');
+  assert.equal(asked.filter((p) => p === '/gamez/g@base/data/a.big').length > 0, true, 'only the missing block fetched');
+  const e = files.open('GAME.EXE'); await e.prepare(0, exe.length);
+  assert.deepEqual(e.read(0, exe.length), exe, '/gamez/g@base/ serves the base');
+});
+
 test('openVersion: the manifest, the tree and the store at once, the required versions\' at once; the page\'s manifest not asked again', async (t) => {
   const server = fakeServer({ 'Game.esm': bytes(1000) }, [], {}, { files: { 'R.dat': bytes(2000, 3) } });
   // (the API's answers held until the test opens them: what was asked meanwhile is what went at once)

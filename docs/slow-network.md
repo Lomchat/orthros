@@ -616,6 +616,7 @@ required version under its own name. Now every runtime does it the same way:
   block's bytes stay in the edition's data file (the store appends only) until its cache is cleared: a block read
   once is on disk twice until then. The probe reads nothing (counts both); a version whose own store does not exist
   is probed when one of its owners' (`/api/manifest` `owners`) does — "missing" only when none does.
+- **A game's shared base** is an owner of the same kind since 2026-11-09 (section below): `<game>@base`.
 - **"My data"** (`data-manager.js`): a store is listed under the version it belongs to (the owner's under the owner,
   e.g. the Windows Vice City); clearing a version's cache deletes its own store only — another version's blocks are
   never deleted with it —, the owner's row says which versions read its files too (`sharedWith`), and a reader's row
@@ -648,6 +649,59 @@ required version under its own name. Now every runtime does it the same way:
   209 MB vs 413 MB: the upper bound of what a GOTY player starting Vanilla+ no longer fetches. Arsenal over
   Counter-Strike (all its files now under `counter-strike-rebuilt-en`): `tools/goldsrc/check.mjs
   counter-strike-hl-arsenal-en solo --guest --no-save` passed (8 players, moved 234 units).
+
+## A game's shared base (2026-11-09)
+
+"Files of a required version" stored a file once for every version that reads it through another version. The
+versions of one game folder were still apart: each one's store (`orthros-files-<manifest>`) kept its own copy of the
+game's `base/`, so switching BFME 1.08 → 2.22 (`bfme1-108` → `bfme-vanilla`) fetched again the 3.5 GB both read from
+the same folder. Now a game's base is an owner too, with the same mechanism:
+
+- **The owner**: every game folder of two versions or more (`sharedBase: false` at the manifest's top opts a folder
+  out, on a version keeps that version's own copy — `docs/game-manifest.schema.json`) gives its versions
+  `manifest.baseOwner = '<game>@base'` (`game-catalog.js`; `@` is never in a version id). The server serves it as a
+  hidden manifest of `base/` alone (`baseManifests`: light copies when any of its versions has them, content files light
+  when any of their engines reads them so): `/gamez/<game>@base/<path>`, `/game/…` and `/api/tree/…` only (never in
+  `/api/manifests`, the launch summaries, the learned orders — a `/gamez` read of it is not learned —, the br-cache
+  seeder, the snapshot jobs: they go through the versions).
+- **The marks** (`listGameTree`): a file of a version's tree that comes from its `base/` (none of its folders above
+  overrides it, whatever the case) is `owner: '<game>@base'`, unless it has a light copy the base does not serve; a
+  required version's file that comes from that version's `base/` is its game's base's (`fileOwner`: Vanilla+ over GOTY
+  — `morrowind@base` —, RotWK's `C:\BFME2` mount of `bfme2-106` — `bfme2@base`, the same copy as BFME2's own). When the
+  tree names a directory otherwise than `base/` does (BFME 1.08's `Data/` over the base's `data/`: 273 files, 1,063 MB),
+  the file also says `op`, its path in the owner: the shared part's tree puts it there (`splitOwners`), so its block
+  keys (`path#size#mtime#index`) are the same whatever version reads it.
+- **`/api/manifest(s)`**: `owners` lists the base too (and those of the versions a version mounts, and of a port's
+  underlay owners); `/api/manifest` adds `ownerLegacy` — for each shared base, the game's versions whose own stores
+  may hold its files from before it was shared.
+- **Migration, moved as read**: `openVersion` puts the existing stores of `ownerLegacy` (`openLegacyStore`: only those
+  that exist, their lock taken without waiting — a tab playing that version keeps it —, under the same per-name locks
+  as every store) under the shared part's store, beside the stores of its parts (`UnderStore` `own`: closed with it).
+  A block one of them holds counts as here (the probe, Prepare, the whole download skip it), and is moved under the
+  owner as the game reads it; one kept under a version's own case of a path (`Data/…` where the owner says `data/…`)
+  is found by its key without case (`UnderStore.fold`: one file of a version a case-insensitive path, the same size
+  and time). Nothing is fetched again. A legacy store found empty (every block moved, nothing of its own) is removed
+  at that open; one that still holds its own files keeps the moved blocks' dead bytes in its data file until its cache
+  is cleared (the store appends only — "My data" says so: `keptBase`).
+- **The Windows games** read their versions through `openVersion` now, as the other runtimes (`worker.js`): the
+  version and its `extraMounts` opened once; each mounted version is a `PartsBackend` (`game-data.js`): the guest's
+  stat/readdir answered from its whole tree (`game-tree.js` `treeLookup`/`treeStat`/`treeReaddir`, which
+  `HttpBackend` answers through too), `open` handing the guest the owning part's file itself — the synchronous read
+  path unchanged, no wrapper between the guest and the bytes. Each opened file says the version and path the game
+  opened it under (`readName`, `readPath`): the session's reads are reported under that version (`ReadLog`, the
+  server's learned order unchanged). The learned prefetch and the offline copy run per part (side by side, each
+  yielding to the game's reads on the one link); the HUD sums the parts of the game folder (no part counted twice).
+- **"My data"**: the `<game>@base` row is "<game> — files shared by its versions"; clearing it is refused while a
+  version reading it runs; clearing a version's cache leaves it.
+- **Snapshots**: where a file is kept is out of the key (`snapshot-key.js` drops the tree's `owner`/`op` and the
+  manifest's `owners`/`ownerLegacy`/`baseOwner`): sharing a base or not never changes a snapshot's key.
+- Measured on the live catalog (`listGameTree` over `data/games`, read only): `bfme-vanilla` 3,515 MB of its 4,132
+  marked `bfme1@base` (85 %), `bfme1-108` 3,515 of 3,882 (91 %); `bfme2` 5,705 of 7,050 (81 %), `bfme2-106` all its
+  5,720; `rotwk-202` 3,354 of 4,562 (74 %), `rotwk-201` all its 3,388 — and both mount `bfme2-106`'s 5,720 MB, now
+  `bfme2@base`, the copy BFME2's players have; `morrowind-goty-en` 1,074 of 1,188 (90 %), `morrowind-goty-fr` 273 of
+  1,192 (its French files override most of the base); Vanilla+ EN 1,074 MB `morrowind@base` (was `morrowind-goty-en`),
+  FR 273 MB `morrowind@base` + 805 `morrowind-goty-fr`. Single-version folders (Age of the Ring, Vice City,
+  Half-Life, Counter-Strike) are unchanged. Listing cost unchanged (one prefix test a file).
 
 ## Precompressed units (2026-10-21)
 

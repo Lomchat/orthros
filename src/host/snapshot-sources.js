@@ -9,12 +9,12 @@
 // snapshots valid — until 2026-10-28 48 of the 246 key changes of the month were data-only commits (the 4 of
 // 10-27), each a cold start of 35-50 s to the menu for a returning player instead of a restore. Which files the guest
 // sees and their sizes stay in the key through the version's tree itself (src/host/web/snapshot-key.js); game-tree.js
-// (KEPT) holds only the tree's helpers. How the guest's stat/readdir/open are answered from that tree — case folding,
-// a listing's order, a directory's date: HttpBackend.lookup/stat/readdir — is out with http-backend.js, pinned by a
-// test instead (tests/snapshot-lint.test.js): a change there fails it and must change the key too (moved into a kept
-// module), never ship as a data-only deploy. (Which part serves a file, game-data.js's partOf, is out as well: the
-// owner's copy holds the same bytes.) tests/snapshot-lint.test.js also checks that no module left out registers snapshot
-// state, and that the data modules are out.
+// (KEPT) holds the tree's helpers, and how the guest's stat/readdir/open are answered from that tree — case folding,
+// a listing's order, a directory's date: treeLookup/treeStat/treeReaddir, through which HttpBackend and the Windows
+// games' PartsBackend answer —, pinned by a test too (tests/snapshot-lint.test.js). (Which part serves a file,
+// game-data.js's partOf and PartsBackend.open, is out: the owner's copy holds the same bytes.)
+// tests/snapshot-lint.test.js also checks that no module left out registers snapshot state, and that the data modules
+// are out.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';

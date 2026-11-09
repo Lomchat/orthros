@@ -115,13 +115,13 @@ from it when:
    `src/vfs/game-data.js`, `http-backend.js`, `net-link.js`, `opfs-store.js`, `launch-set.js`, `playable-watch.js`
    (and what only they import, `pcm-codec.js`) — and when a snapshot is taken (`src/host/snapshot-watch.js`) are out:
    the mounts are host objects (`state: false`, `src/core/vm-snapshot.js`), a file is reopened by its path. Which files
-   the guest sees and their sizes stay in through the version's tree itself; `src/vfs/game-tree.js` (`KEPT`) holds only
-   the tree's helpers. How the guest's stat/readdir/open are answered from the tree (`HttpBackend.lookup/stat/readdir`:
-   case folding, directories listed before files, a directory's date 0) is out with `http-backend.js` and pinned by a
-   test instead (`tests/snapshot-lint.test.js`): a change that alters what the guest reads (a size, a listing, a byte)
-   fails it and belongs in a kept module or must change the tree; one that does not is restored over — a failed restore
-   falls back to a cold start. Which part serves a file (`game-data.js`'s `partOf`) is out too: the owner holds the same
-   bytes. Before: 48 of the 246 key changes of October were data-only commits (all 4 of 10-27's), each a cold
+   the guest sees and their sizes stay in through the version's tree itself; `src/vfs/game-tree.js` (`KEPT`) holds the
+   tree's helpers, and since 2026-11-09 how the guest's stat/readdir/open are answered from the tree (`treeLookup`,
+   `treeStat`, `treeReaddir`: case folding, directories listed before files, a directory's date 0 — `HttpBackend` and
+   the Windows games' `PartsBackend` both answer through them), still pinned by `tests/snapshot-lint.test.js`. Which part
+   serves a file (`game-data.js`'s `partOf`, `PartsBackend.open`: a version's own files, its game's shared base, a
+   required version's) is out: the owner holds the same bytes. Where a file is kept (the tree's `owner` and `op` marks,
+   the manifest's `owners`, `ownerLegacy`, `baseOwner`) is left out of the key (`src/host/web/snapshot-key.js`). Before: 48 of the 246 key changes of October were data-only commits (all 4 of 10-27's), each a cold
    start of 35-50 s to the menu for a returning BFME1 player instead of a ~0.6 s restore. A comment-only edit of
    `http-backend.js` or `game-data.js` now keeps the hash (`c707f1…` → `823bb2…` before, unchanged after); one of
    `game-tree.js` still changes it. Over October's commits, 272 → 226 change the key. Measured again 2026-10-28

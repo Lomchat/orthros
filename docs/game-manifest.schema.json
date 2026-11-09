@@ -8,6 +8,7 @@
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
     "defaultVersion": { "$ref": "#/$defs/id" },
+    "sharedBase": { "type": "boolean", "default": true, "description": "Un dossier de deux versions ou plus partage les fichiers de base/ que ses versions ne remplacent pas : le serveur les marque du propriétaire « <id>@base », le navigateur les garde une seule fois (magasin orthros-files-<id>@base, /gamez/<id>@base/), quelle que soit la version jouée (docs/slow-network.md « A game's shared base »). false : chaque version garde sa propre copie. Pas dans defaults." },
     "defaults": { "type": "object", "description": "Champs communs aux versions : runtime, goldsrc, re3, mmo, mount, display, cover, coverFile, registry, cdrom, profileSeed, profileMoves, languageFileAliases, languageFiles, glWorker (false ou 0 : rendu Direct3D dans le fil de l'émulateur au lieu du worker de rendu, docs/render-worker.md), etc." },
     "versions": {
       "type": "array",
@@ -21,6 +22,7 @@
           "version": { "type": "string", "minLength": 1 },
           "versionOrder": { "type": "number" },
           "lightCopies": { "type": "boolean", "default": true, "description": "false : pas de copies légères des textures (docs/slow-network.md « Light copies ») pour cette version d'un portage navigateur ; sans effet pour un jeu Windows, qui lit toujours ses fichiers tels quels. Aussi dans defaults." },
+          "sharedBase": { "type": "boolean", "default": true, "description": "false : cette version garde sa propre copie des fichiers de base/ au lieu de celle partagée par les versions du dossier (sharedBase en tête du manifeste). Pas dans defaults." },
           "formerGame": { "$ref": "#/$defs/id", "description": "Portages navigateur : le dossier de jeu où cette version était installée avant d'être déplacée dans celui-ci (un jeu séparé en deux, par exemple). Les données de la version dans le navigateur (sauvegardes, réglages : la clé orthros-port:<jeu>:<dossier>) gardent la clé de cette installation. Pas dans defaults." },
           "modified": { "type": "boolean", "default": false, "description": "true : une version modifiée du jeu (un mod : du contenu ou des règles qui ne sont pas les siennes), rangée sous « Recompilés et modifiés » dans la bibliothèque. Aussi dans defaults." },
           "runtime": { "enum": ["win32", "goldsrc", "openmw", "re3"], "default": "win32", "description": "win32 : le jeu Windows tel quel dans l'émulateur d'Orthros (exe obligatoire). goldsrc : portage navigateur, un moteur GoldSrc tiers épinglé, compilé en WebAssembly, sur les fichiers du jeu (goldsrc obligatoire ; docs/browser-ports.md). openmw : moteur OpenMW-Web épinglé (openmw obligatoire ; docs/openmw.md). re3 : portage navigateur, un moteur décompilé de la famille re3 compilé en WebAssembly, sur les fichiers du jeu, en solo (re3 obligatoire ; docs/browser-ports.md, « re3 ports »). Aussi dans defaults." },

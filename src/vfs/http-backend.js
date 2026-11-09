@@ -4,7 +4,7 @@
 // bounded LRU cache with read-ahead for sequential access.
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { NetLink, H1_CONNECTIONS, AHEAD_REQUESTS } from './net-link.js';
-import { LIGHT_DIR, isVideoFile, isLightPicture } from './game-tree.js';
+import { LIGHT_DIR, isVideoFile, isLightPicture, treeLookup, treeStat, treeReaddir } from './game-tree.js';
 import { decodePcm, PCM_MAGIC } from './pcm-codec.js';
 
 export const BLOCK = 1 << 20; // 1 MiB
@@ -233,7 +233,7 @@ export class HttpBackend {
     this.stats = { requests: 0, bytes: 0, ms: 0 };
     /** the game's reads, whatever answered them (this browser's copy, memory, the network): bytes, those of movies */
     this.reads = { bytes: 0, videoBytes: 0 };
-    /** each game read, as it happens: (path, start, end) — a page learning what its game read (worker.js, the mark) */
+    /** each game read, as it happens: (path, start, end, its HttpFile) — a page learning what its game read (worker.js, the mark) */
     this.onRead = opts.onRead ?? null;
     /** 64 KiB pieces of blocks not fetched whole yet: "path#chunk" -> bytes (insertion order = LRU) */
     this.chunks = new Map(); this.chunkBytes = 0;
@@ -289,43 +289,10 @@ export class HttpBackend {
     this.wantLoose = 0;
   }
 
-  /**
-   * Walk the tree case-insensitively; returns { node, dirNode, name, path } or null. A file's light copy (LIGHT_DIR/<path>,
-   * src/host/light-copies.js) is a file of its own: its size the tree's `light`.
-   */
-  lookup(rel) {
-    if (rel.startsWith(LIGHT_DIR + '/')) {
-      const r = this.lookup(rel.slice(LIGHT_DIR.length + 1));
-      return r?.file?.light ? { file: { size: r.file.light, mtime: r.file.mtime ?? 0 }, name: r.name, path: `${LIGHT_DIR}/${r.path}` } : null;
-    }
-    const parts = rel.split(/[\\/]/).filter(Boolean);
-    let node = this.tree; const realParts = [];
-    for (let i = 0; i < parts.length; i++) {
-      const p = parts[i], last = i === parts.length - 1;
-      const dirs = node.dirs ?? {}, files = node.files ?? {};
-      let hit = dirs[p] !== undefined ? p : Object.keys(dirs).find((n) => n.toLowerCase() === p.toLowerCase());
-      if (hit !== undefined) { node = dirs[hit]; realParts.push(hit); continue; }
-      if (!last) return null;
-      hit = files[p] !== undefined ? p : Object.keys(files).find((n) => n.toLowerCase() === p.toLowerCase());
-      if (hit === undefined) return null;
-      return { file: files[hit], name: hit, path: [...realParts, hit].join('/') };
-    }
-    return { dir: node, name: realParts[realParts.length - 1] ?? '', path: realParts.join('/') };
-  }
-
-  stat(rel) {
-    const r = this.lookup(rel);
-    if (!r) return null;
-    return r.dir ? { size: 0, isDir: true, mtime: 0 } : { size: r.file.size, isDir: false, mtime: r.file.mtime ?? 0 };
-  }
-  readdir(rel) {
-    const r = this.lookup(rel);
-    if (!r || !r.dir) return null;
-    const out = [];
-    for (const n of Object.keys(r.dir.dirs ?? {})) out.push({ name: n, size: 0, isDir: true, mtime: 0 });
-    for (const [n, f] of Object.entries(r.dir.files ?? {})) out.push({ name: n, size: f.size, isDir: false, mtime: f.mtime ?? 0 });
-    return out;
-  }
+  /** The tree walked as the guest sees it (game-tree.js treeLookup): { file | dir, name, path } or null. */
+  lookup(rel) { return treeLookup(this.tree, rel); }
+  stat(rel) { return treeStat(this.tree, rel); }
+  readdir(rel) { return treeReaddir(this.tree, rel); }
   open(rel, opts = {}) {
     const r = this.lookup(rel);
     if (!r || r.dir) return null;
@@ -1789,7 +1756,9 @@ export class HttpBackend {
 }
 
 class HttpFile {
-  constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; this.run = 0; }
+  // (readName, readPath: the version and path the game opened it under when another's part serves it — game-data.js
+  // PartsBackend —, for the reports of its reads)
+  constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; this.run = 0; this.readName = null; this.readPath = null; }
   size() { return this.len; }
   /**
    * Debugging (?dbg=ORTHROS_VERIFY_READS=1): the bytes a read returned compared with the same range fetched straight
@@ -1847,7 +1816,7 @@ class HttpFile {
     if (off >= end) return new Uint8Array(0);
     this.note(off, end);
     this.b.reads.bytes += end - off; if (this.video) this.b.reads.videoBytes += end - off;
-    this.b.onRead?.(this.path, off, end);
+    this.b.onRead?.(this.path, off, end, this);
     const out = new Uint8Array(end - off);
     const sequential = off === this.lastEnd;
     this.lastEnd = end;
