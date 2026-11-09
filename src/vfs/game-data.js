@@ -120,7 +120,7 @@ export function partOf(version, name, path) {
  * One version's data: { name, tree, store, files (its HttpBackend), total (bytes) }.
  * @param {string} name the manifest
  * @param {{ tree?: object, store?: object|null|'opfs', net?: NetLink, link?: Set<HttpBackend>, session?: string,
- *   cacheBlocks?: number, encoded?: boolean, onFetch?: Function, onRetry?: Function, onRead?: Function }} [o]
+ *   budget?: object, cacheBlocks?: number, encoded?: boolean, onFetch?: Function, onRetry?: Function, onRead?: Function }} [o]
  *   store: the block store, 'opfs' for the version's own, null for none; encoded: the compressed ranges (default);
  *   onRead: each read of the game (path, start, end), whatever answered it
  */
@@ -128,7 +128,7 @@ export async function openData(name, o = {}) {
   const tree = o.tree ?? await json(`/api/tree/${enc(name)}`);
   const store = o.store === 'opfs' ? await openStore(name) : o.store ?? null;
   const files = new HttpBackend(`/game/${name}/`, tree, { cacheBlocks: o.cacheBlocks, store, encoded: o.encoded ?? true, session: o.session ?? '',
-    link: o.link, net: o.net, onFetch: o.onFetch, onRetry: o.onRetry, onRead: o.onRead });
+    link: o.link, net: o.net, budget: o.budget, onFetch: o.onFetch, onRetry: o.onRetry, onRead: o.onRead });
   return { name, tree, store, files, total: treeBytes(tree) };
 }
 
@@ -146,7 +146,8 @@ export async function openData(name, o = {}) {
  * before (pages before the `owner` marks) is read there, and moved under the owner as it is read — and over the stores
  * of the other versions that kept them before (manifest.ownerLegacy: a game's versions, before their base was shared),
  * those `o.legacy(name)` opens (openLegacyStore: the ones that exist and no other context holds; none without it),
- * closed with that UnderStore.
+ * closed with that UnderStore — one opened here already (a part, another shared part's owner) read through its store.
+ * The parts' memory caches share one budget, a mounted version's each (HttpBackend `budget`).
  * The manifest (`o.manifest`, the page's when it holds it: no request), the version's tree (`o.tree`, likewise) and its
  * store are had at once, then every required version's tree and store at once: one wait each instead of one after
  * another (a page that opens its data while its engine downloads — docs/slow-network.md "Opened early"). A failure
@@ -175,29 +176,48 @@ export async function openVersion(name, o = {}) {
   const bad = got.find((g) => g.status === 'rejected');
   if (bad) { for (const g of got) if (g.status === 'fulfilled') g.value.store?.close?.(); throw bad.reason; }
   const names = [name, ...deps], parts = [], shared = new Map(), legacy = new Map();
-  // (the stores of the versions that kept an owner's files before it was shared, but those opened as parts)
-  const legacyOf = (owner) => (Array.isArray(manifest.ownerLegacy?.[owner]) ? manifest.ownerLegacy[owner] : []).filter((n) => typeof n === 'string' && n && !names.includes(n));
+  // (one memory budget for the parts' caches: a mounted version's, each — its own files and those of a shared base it
+  // reads together, as before the base was split from them: HttpBackend `budget`)
+  const budget = { members: new Set(), units: 0 };
   for (const { value: { n, tree, store } } of got) {
     const { own, owners } = splitOwners(tree, n);
-    const part = await openData(n, { ...o, net, link, store, tree: own });
+    const part = await openData(n, { ...o, net, link, budget, store, tree: own });
     parts.push(Object.assign(part, { tree, owned: new Set(owners.keys()) }));
     for (const [owner, t] of owners) shared.set(owner, shared.has(owner) ? mergeTrees(shared.get(owner), t) : t);
   }
-  for (const [owner, tree] of shared) {
-    if (names.includes(owner)) continue; // (opened already: its tree has them)
-    const top = await storeOf(owner, false, true);
-    const old = [];
-    if (o.legacy) for (const n of legacyOf(owner)) {
-      if (!legacy.has(n)) legacy.set(n, Promise.resolve().then(() => o.legacy(n)).catch(() => null));
-      const st = await legacy.get(n); if (st && !old.includes(st)) old.push(st);
+  // (every shared owner's store first: one may be a store that kept another owner's files before — a port's required
+  // version, which held its game's base — read there as that owner's `below`, never opened a second time: OPFS opens a
+  // store in one place at a time)
+  const owners = [...shared.keys()].filter((n) => !names.includes(n)), tops = new Map();
+  for (const owner of owners) tops.set(owner, await storeOf(owner, false, true));
+  /** the store of `n` that may hold an owner's files from before it was shared: a part's (borrowed), else o.legacy's */
+  const legacyStore = async (n) => {
+    const p = parts.find((q) => q.name === n);
+    if (p) return kept(n, p.store) ? p.store : null;
+    if (tops.has(n)) return kept(n, tops.get(n)) ? tops.get(n) : null;
+    if (!o.legacy) return null;
+    if (!legacy.has(n)) legacy.set(n, Promise.resolve().then(() => o.legacy(n)).catch(() => null));
+    return legacy.get(n);
+  };
+  for (const owner of owners) {
+    const top = tops.get(owner), below = parts.filter((p) => p.owned.has(owner) && kept(p.name, p.store)).map((p) => p.store), old = [];
+    const list = Array.isArray(manifest.ownerLegacy?.[owner]) ? manifest.ownerLegacy[owner] : [];
+    for (const n of list) {
+      if (typeof n !== 'string' || !n || n === owner) continue;
+      const st = await legacyStore(n); if (!st || st === top || below.includes(st)) continue;
+      below.push(st);
+      if (!parts.some((p) => p.name === n) && !tops.has(n)) old.push(st); // (opened for it: closed with it)
     }
-    const below = [...parts.filter((p) => p.owned.has(owner) && kept(p.name, p.store)).map((p) => p.store), ...old];
     const store = !below.length ? top : new UnderStore(kept(owner, top) ? top : null, below, old);
-    const part = await openData(owner, { ...o, net, link, store, tree, session: '' });
+    const part = await openData(owner, { ...o, net, link, budget, store, tree: shared.get(owner), session: '' });
     parts.push(Object.assign(part, { shared: true, owned: new Set() }));
   }
+  budget.units = parts.filter((p) => !isBaseOwner(p.name)).length;
   return { net, manifest, parts };
 }
+
+/** A game folder's shared base (game-catalog.js baseOwnerOf: `<game>@base` — '@' is in no version id), not a version. */
+const isBaseOwner = (name) => typeof name === 'string' && name.endsWith('@base');
 
 /**
  * A shared part's store (openVersion): the owner's store `top` over the stores of the versions that read its files
@@ -206,14 +226,17 @@ export async function openVersion(name, o = {}) {
  * a whole store at the open — 1.5 GB of an offline copy before the page is ready —, nothing fetched again). New blocks
  * go to `top`; with no `top` (the owner's store held by another tab's game) or once it failed (the device full), to the
  * first of `below` that works — as before the owners: the files kept, not fetched again at each launch. A moved
- * block's bytes stay in the data file of the store it left until that store's cache is cleared (OpfsBlockStore appends
- * only). Closing it closes `top` and those of `below` it was given (`own`: another version's store opened for it,
- * openVersion's legacy ones), not the others: each is its own part's.
+ * block is forgotten in the store it left once `top`'s index holds it (its sync point: settle) — `top` failing before
+ * (the device full), it is still read there. Its bytes stay in that store's data file until its cache is cleared
+ * (OpfsBlockStore appends only). Closing it closes `top` and those of `below` it was given (`own`: another version's
+ * store opened for it, openVersion's legacy ones), not the others: each is its own part's.
  */
 export class UnderStore {
   /** @param {object|null} top @param {object[]} below @param {object[]} [own] */
   constructor(top, below, own = []) {
     this.top = top; this.below = below; this.own = own;
+    /** blocks moved into `top` whose record waits for its next sync point: [store of `below`, its key] (settle) */
+    this.moving = [];
     /** a store of `below` -> its keys by their lower case (made at the first fold: see fold) */
     this.lower = new Map();
     const has = (k) => !!top?.map.has(k) || below.some((b) => b.map.has(k)) || this.fold(k) !== null;
@@ -239,12 +262,22 @@ export class UnderStore {
   /** the store new blocks go to (null: none works) */
   get writer() { return this.top && !this.top.failed ? this.top : this.below.find((b) => !b.failed) ?? null; }
   get failed() { return !this.writer; }
+  /** The moved blocks `top`'s index now holds forgotten below; none once `top` failed (read below again). */
+  settle() {
+    if (!this.moving.length) return;
+    const top = this.top;
+    if (!top || top.failed) { this.moving = []; return; }
+    if (top.pending?.length) return;
+    for (const [b, k] of this.moving) b.drop(k);
+    this.moving = [];
+  }
   get(key) {
+    this.settle();
     const t = this.top && !this.top.failed ? this.top.get(key) : null; if (t) return t;
     const move = (b, k) => {
       const bytes = b.get(k); if (!bytes) return null;
       const top = this.top;
-      if (top && !top.failed) { top.put(key, bytes); if (top.map.has(key)) b.drop(k); }
+      if (top && !top.failed) { top.put(key, bytes); if (top.map.has(key)) { if (top.pending?.length) this.moving.push([b, k]); else b.drop(k); } }
       return bytes;
     };
     for (const b of this.below) {
@@ -256,8 +289,8 @@ export class UnderStore {
   }
   put(key, bytes) { if (!this.map.has(key)) this.writer?.put(key, bytes); }
   drop(key) { this.top?.drop(key); for (const b of this.below) b.drop(key); const f = this.fold(key); f?.[0].drop(f[1]); }
-  flush(force = false) { this.top?.flush?.(force); for (const b of this.below) b.flush?.(force); }
-  close() { this.top?.close?.(); for (const b of this.own) b.close?.(); }
+  flush(force = false) { this.top?.flush?.(force); this.settle(); for (const b of this.below) b.flush?.(force); }
+  close() { this.flush(true); this.top?.close?.(); for (const b of this.own) b.close?.(); }
 }
 
 /**

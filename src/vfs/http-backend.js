@@ -200,10 +200,12 @@ export class HttpBackend {
   /**
    * @param {string} baseUrl e.g. "/game/bfme-vanilla/"
    * @param {{ dirs: Record<string, any>, files: Record<string, {size: number, mtime: number}> }} tree
-   * @param {{ net?: NetLink, cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[], encoded?: boolean, session?: string, link?: Set<HttpBackend> }} [opts]
+   * @param {{ net?: NetLink, cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[], encoded?: boolean, session?: string, link?: Set<HttpBackend>, budget?: { members: Set<HttpBackend>, units: number } }} [opts]
    *   store: persistent block store (OPFS) consulted before the network and filled with every fetched block
    *   link: the backends sharing the player's connection (the game's folder and the games it requires, mounted beside
    *   it): the game's reads through any of them come first for the background downloads of all of them
+   *   budget: the backends whose memory caches share one budget, `units` times one backend's (game-data.js openVersion:
+   *   the parts of a version — its files split by owner take no more memory than before); the largest trimmed first
    */
   constructor(baseUrl, tree, opts = {}) {
     this.base = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
@@ -215,6 +217,7 @@ export class HttpBackend {
     this.net ??= new NetLink({ fixed: true }); // (no measure given: the local-network policies, as a test or a tool expects)
     this.cache = new Map(); // key "path#block" -> Uint8Array (insertion order = LRU)
     this.maxBlocks = opts.cacheBlocks ?? DEFAULT_CACHE_BLOCKS;
+    this.budget = opts.budget ?? null; this.budget?.members.add(this);
     this.onFetch = opts.onFetch ?? null;
     this.onRetry = opts.onRetry ?? null;
     this.retryWaits = opts.retryWaits ?? RETRY_WAITS;
@@ -1331,7 +1334,15 @@ export class HttpBackend {
     this.trimPieces();
     return true;
   }
-  trimPieces() { while (this.chunkBytes > MAX_CHUNK_BYTES) { const [k, v] = this.chunks.entries().next().value; this.chunks.delete(k); this.chunkBytes -= v.length; } }
+  trimPieces() {
+    const g = this.budget?.units ? this.budget : null;
+    if (!g) { while (this.chunkBytes > MAX_CHUNK_BYTES) { const [k, v] = this.chunks.entries().next().value; this.chunks.delete(k); this.chunkBytes -= v.length; } return; }
+    let n = 0; for (const b of g.members) n += b.chunkBytes;
+    while (n > MAX_CHUNK_BYTES * g.units) {
+      let big = this; for (const b of g.members) if (b.chunkBytes > big.chunkBytes) big = b;
+      const [k, v] = big.chunks.entries().next().value; big.chunks.delete(k); big.chunkBytes -= v.length; n -= v.length;
+    }
+  }
   /** pieces fetched are kept in the persistent store too: on a link that is not fast (whole blocks may never come) */
   keepPieces() { return !!this.store && (!this.net.fast() || this.keepLearned > 0); }
   /** Every piece of block `index` is here: the block is assembled from them and installed (memory, store). */
@@ -1752,7 +1763,12 @@ export class HttpBackend {
     store.flush(true);
     progress.done = true;
   }
-  evict() { while (this.cache.size > this.maxBlocks) { const first = this.cache.keys().next().value; this.cache.delete(first); } }
+  evict() {
+    const g = this.budget?.units ? this.budget : null;
+    if (!g) { while (this.cache.size > this.maxBlocks) { const first = this.cache.keys().next().value; this.cache.delete(first); } return; }
+    let n = 0; for (const b of g.members) n += b.cache.size;
+    for (; n > this.maxBlocks * g.units; n--) { let big = this; for (const b of g.members) if (b.cache.size > big.cache.size) big = b; big.cache.delete(big.cache.keys().next().value); }
+  }
 }
 
 class HttpFile {

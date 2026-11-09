@@ -79,6 +79,12 @@ let snapshotPublish = false; // (the server's publishing session: its snapshots 
 let seedWatch = null, seedSink = null, profileSeeded = 0;
 /** the launch set's mark (playable-watch.js): when the game first looks playable, what it read until then to the server */
 let playableWatch = null, readLog = null, readBackends = null, playableMeta = null;
+/**
+ * a session restored from a snapshot: its log keeps only the reads of the parts whose requests teach no learned order
+ * (a game's shared base, opened without the session — game-data.js openVersion), no mark: the server learns the others
+ * from the requests' session (/gamez s=), as before the base was shared
+ */
+let readLogUnlearnedOnly = false;
 const channel = new MessageChannel();
 const post = (m, transfer) => self.postMessage(m, transfer);
 const log = (kind, msg) => post({ type: 'log', kind, msg });
@@ -232,7 +238,7 @@ async function start(m) {
   netLink = new NetLink({ bw: Number(m.opts.netBw) || undefined }); // (the rate this browser measured last time, until measured)
   const persistent = !m.opts.headless || m.opts.opfs;
   // (the reads of this session until its game looks playable: sent with the mark — not by a session restored from a
-  // snapshot, which skips the reads of the start)
+  // snapshot, which skips the reads of the start: readLogUnlearnedOnly)
   if (m.opts.session) { readLog = new ReadLog(); readBackends = new Map(); playableMeta = { session: m.opts.session, lang: m.opts.gameLanguage || null }; }
   const storeOf = async (name, primary, shared) => {
     let store = persistent ? await openStore(name) : null;
@@ -246,7 +252,7 @@ async function start(m) {
   const rank = new Map(); // (?netlog: a block's rank in its part's learned list)
   const version = await openVersion(manifestName, { tree: m.tree, manifest, net: netLink, store: storeOf, legacy: persistent ? openLegacyStore : null,
     cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '',
-    onRead: readLog ? (p, a, b, f) => readLog?.add(f?.readName ?? manifestName, f?.readPath ?? p, a, b, performance.now()) : null,
+    onRead: readLog ? (p, a, b, f) => { if (!(readLogUnlearnedOnly && f?.b?.session)) readLog?.add(f?.readName ?? manifestName, f?.readPath ?? p, a, b, performance.now()); } : null,
     onFetch: m.opts.netLog ? (f) => log('net', `t=${(performance.now() / 1000).toFixed(1)}s ${f.async ? 'parked' : 'sync'} ${f.url} [${f.start}, ${f.end}) ${Math.round(f.ms)}ms; learned rank ${rank.get(`${f.path}#${Math.floor(f.start / BLOCK)}`) ?? '-'}`) : null,
     onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
   dataParts = version.parts;
@@ -393,7 +399,7 @@ async function start(m) {
   // (refined at each later settled stretch until the player acts — a restored session too: snapshot-watch.js)
   if (m.opts.snapshotAuto) snapshotWatch = new SnapshotWatch({ opens: vm.vfs.opens });
   snapshotPublish = !!m.opts.snapshotPublish;
-  if (restored) readLog = readBackends = null;
+  if (restored && readLog) { readLog = new ReadLog(); readLogUnlearnedOnly = true; }
   else if (readLog) playableWatch = new PlayableWatch();
   if (!restored) try {
     vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, patches: manifest.patches, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });

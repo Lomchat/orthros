@@ -200,22 +200,27 @@ export async function download(name, bw, kind = 'whole', lang = null, engine = n
  * ownerLegacy, those that exist: legacyNames). Throws when a store cannot be told (unknown, another context holds it).
  */
 async function countStores(version, orders, stores, exists, open, has = true, reloads = false) {
-  const parts = [], opened = new Map(), legacy = new Map();
+  // (every part's store first, each once: a legacy name may be one of them — a port's required version, which kept its
+  // game's base — read there)
+  const parts = [], opened = new Map();
   for (const [i, p] of version.parts.entries()) {
     const kept = i === 0 ? has : await exists(p.name);
     if (kept === null && !p.shared) throw new Error('unknown');
-    let st = kept ? await open(p.name) : null;
+    const st = kept ? await open(p.name) : null;
     if (kept && !st && !p.shared) throw new Error('busy'); // (another tab's game holds it: unknown)
     if (st) stores.push(st);
+    opened.set(p.name, st);
+  }
+  for (const p of version.parts) {
+    let st = opened.get(p.name);
     if (p.shared) {
       const below = version.parts.filter((q) => q.owned?.has(p.name) && opened.get(q.name)).map((q) => opened.get(q.name));
       for (const n of legacyNames(version, p.name)) {
-        if (!legacy.has(n)) { const o = (await exists(n)) ? await open(n) : null; if (o) stores.push(o); legacy.set(n, o); }
-        if (legacy.get(n)) below.push(legacy.get(n));
+        if (!opened.has(n)) { const o = (await exists(n)) ? await open(n) : null; if (o) stores.push(o); opened.set(n, o); }
+        const o = opened.get(n); if (o && o !== st && !below.includes(o)) below.push(o);
       }
       if (below.length) st = new UnderStore(st, below);
     }
-    opened.set(p.name, st);
     parts.push(await openData(p.name, { tree: p.files.tree, store: st, net: version.net })); // (its own files: files.tree)
   }
   // (a version whose engine reloads in place: its light set on every link — a light copy or its file whole, lightLaunch)
@@ -229,10 +234,10 @@ async function countStores(version, orders, stores, exists, open, has = true, re
   return { bytes, here, wb, wt };
 }
 
-/** The other versions whose stores may hold shared owner `owner`'s files from before (manifest.ownerLegacy), but the version's parts. */
+/** The versions whose stores may hold shared owner `owner`'s files from before (manifest.ownerLegacy): parts' too. */
 const legacyNames = (version, owner) => {
   const list = version.manifest?.ownerLegacy?.[owner];
-  return Array.isArray(list) ? list.filter((n) => typeof n === 'string' && n && !version.parts.some((p) => p.name === n)) : [];
+  return Array.isArray(list) ? list.filter((n) => typeof n === 'string' && n && n !== owner) : [];
 };
 
 /**

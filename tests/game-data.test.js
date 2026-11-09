@@ -376,6 +376,25 @@ test('a game\'s base shared by its versions: marked `<game>@base` (at its own pa
   assert.deepEqual(e.read(0, exe.length), exe, '/gamez/g@base/ serves the base');
 });
 
+test('a game\'s base read by a port through its required version: that version\'s store, opened once as its own part, is where the base\'s old blocks are found', async (t) => {
+  // (Morrowind Vanilla+ FR: its tree marks files of morrowind-goty-fr and of morrowind@base, whose blocks goty-fr's store
+  // kept before the base was shared — the base listed first: its store must not take goty-fr's)
+  const size = 3 << 20, f = (owner) => ({ size, mtime: 5, ...(owner ? { owner } : {}) }), block = bytes(1 << 20, 7);
+  const tree = { dirs: {}, files: { 'base.dat': f('g@base'), 'u.dat': f('u'), 'own.txt': f() } };
+  const stores = { p: new MemBlockStore(), u: new MemBlockStore(), 'g@base': new MemBlockStore() }, asked = [];
+  stores.u.put(`base.dat#${size}#5#0`, block);
+  const realFetch = globalThis.fetch; globalThis.fetch = async (url) => { asked.push(String(url)); return new Response(null, { status: 404 }); };
+  t.after(() => { globalThis.fetch = realFetch; });
+  const legacy = [], version = await openVersion('p', { tree, manifest: { ownerLegacy: { 'g@base': ['u', 'x'] } }, store: (n) => stores[n], legacy: (n) => { legacy.push(n); return null; } });
+  assert.deepEqual(version.parts.map((p) => p.name), ['p', 'g@base', 'u']);
+  assert.deepEqual(legacy, ['x'], 'the required version\'s store not opened a second time');
+  const base = partOf(version, 'p', 'base.dat');
+  assert.ok(base.store instanceof UnderStore && base.store.below.includes(stores.u) && !base.store.own.includes(stores.u));
+  assert.deepEqual(base.files.open('base.dat').read(0, 10), block.subarray(0, 10));
+  assert.deepEqual([asked, stores['g@base'].map.has(`base.dat#${size}#5#0`), stores.u.map.has(`base.dat#${size}#5#0`)], [[], true, false], 'read there, moved under the base');
+  assert.equal(version.parts[0].files.budget.units, 2, 'one memory budget a version: the base\'s part takes none of its own');
+});
+
 test('openVersion: the manifest, the tree and the store at once, the required versions\' at once; the page\'s manifest not asked again', async (t) => {
   const server = fakeServer({ 'Game.esm': bytes(1000) }, [], {}, { files: { 'R.dat': bytes(2000, 3) } });
   // (the API's answers held until the test opens them: what was asked meanwhile is what went at once)

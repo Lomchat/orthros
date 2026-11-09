@@ -676,11 +676,15 @@ the same folder. Now a game's base is an owner too, with the same mechanism:
   may hold its files from before it was shared.
 - **Migration, moved as read**: `openVersion` puts the existing stores of `ownerLegacy` (`openLegacyStore`: only those
   that exist, their lock taken without waiting — a tab playing that version keeps it —, under the same per-name locks
-  as every store) under the shared part's store, beside the stores of its parts (`UnderStore` `own`: closed with it).
+  as every store) under the shared part's store, beside the stores of its parts (`UnderStore` `own`: closed with it);
+  one of them opened here already — a port's required version, a shared part of its own whose store kept its game's
+  base (Vanilla+ FR: `morrowind-goty-fr` under `morrowind@base`) — is read through that store, never opened twice
+  (OPFS: one context, one handle; every shared owner's store is opened before any legacy one, the probe likewise).
   A block one of them holds counts as here (the probe, Prepare, the whole download skip it), and is moved under the
   owner as the game reads it; one kept under a version's own case of a path (`Data/…` where the owner says `data/…`)
   is found by its key without case (`UnderStore.fold`: one file of a version a case-insensitive path, the same size
-  and time). Nothing is fetched again. A legacy store found empty (every block moved, nothing of its own) is removed
+  and time). Nothing is fetched again. A moved block is forgotten where it was once the owner's store index holds it
+  (its next sync point): an owner's store failing before (the device full) leaves it readable there. A legacy store found empty (every block moved, nothing of its own) is removed
   at that open; one that still holds its own files keeps the moved blocks' dead bytes in its data file until its cache
   is cleared (the store appends only — "My data" says so: `keptBase`).
 - **The Windows games** read their versions through `openVersion` now, as the other runtimes (`worker.js`): the
@@ -691,6 +695,10 @@ the same folder. Now a game's base is an owner too, with the same mechanism:
   opened it under (`readName`, `readPath`): the session's reads are reported under that version (`ReadLog`, the
   server's learned order unchanged). The learned prefetch and the offline copy run per part (side by side, each
   yielding to the game's reads on the one link); the HUD sums the parts of the game folder (no part counted twice).
+  The parts' memory caches share one budget, a mounted version's each as before (`HttpBackend` `budget`: BFME1's own
+  and base parts 256 blocks + 64 MiB of pieces together, not each). A session restored from a snapshot reports the
+  reads of the base's part (opened without the session: its `/gamez` requests teach nothing) through its `ReadLog`,
+  no mark — the reads of its own parts are learned from their requests, as before.
 - **"My data"**: the `<game>@base` row is "<game> — files shared by its versions"; clearing it is refused while a
   version reading it runs; clearing a version's cache leaves it.
 - **Snapshots**: where a file is kept is out of the key (`snapshot-key.js` drops the tree's `owner`/`op` and the

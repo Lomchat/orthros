@@ -245,7 +245,7 @@ export function baseManifests(catalog) {
 /**
  * The versions whose files version `id` reads elsewhere (/api/manifest `owners`: its game's shared base, those of the
  * versions it mounts — extraMounts —, the versions beneath a port's files and their shared bases), and for each shared
- * base the versions of its game whose own browser stores may hold its files from before it was shared (`ownerLegacy`:
+ * base the versions sharing it whose own browser stores may hold its files from before it was shared (`ownerLegacy`:
  * owner -> [version ids] — the browser reads them there and moves them under the owner: game-data.js openVersion).
  * `catalog`: the versions' manifests by id (loadGameCatalog's).
  */
@@ -257,9 +257,10 @@ export function versionOwners(catalog, id) {
   for (const d of m.extraMounts ?? []) add(lookup(d.manifest)?.baseOwner);
   for (const o of m.underlayOwners ?? []) { add(o.manifest); add(lookup(o.manifest)?.baseOwner); }
   const ownerLegacy = {};
+  // (only the versions that share it: one that says sharedBase: false keeps reading its base files from its own store)
   for (const o of owners) {
-    const game = [...catalog.values()].find((v) => v.baseOwner === o)?.gameId; if (!game) continue;
-    ownerLegacy[o] = [...catalog].filter(([, v]) => v.gameId === game).map(([n]) => n);
+    const sharing = [...catalog].filter(([, v]) => v.baseOwner === o).map(([n]) => n);
+    if (sharing.length) ownerLegacy[o] = sharing;
   }
   return { owners, ownerLegacy };
 }
