@@ -983,3 +983,26 @@ clicks; `bfme-skirmish-high`'s for BFME1; `rotwk-skirmish`'s for RotWK with its 
 
 The `[gfx] d3d-webgl: GL timing report` lines give the per-call figures, the `[cpu] phase` lines the A/B, the
 `[profile]` lines the V8 cross-check. The SwiftShader rows (2.3): the same without `--gl-discard` and `--timescale`.
+
+### Early flush (`ORTHROS_GL_FLUSH=<draws>`, measured 2026-11-09, no win, off by default)
+
+A debug global (`dbg:ORTHROS_GL_FLUSH=N` mid-session, `--dbg` at start; 0/unset = off): the WebGL backend calls
+`gl.flush()` every N draws (`flushEarly`, `src/gfx/d3d8-webgl.js`), on top of the one at present, so that SwiftShader's
+GPU process could start rasterizing while the frame is still being recorded. A/B in one session (alternating
+off/16/64/256, 20 s each, two rounds plus a third `off`; `tools/scenarios/{bfme1-108,rotwk,vicecity}-glflush-ab.txt`),
+SwiftShader on a loaded shared server (1-minute load 8-33, so absolute fps are low and noisy). Medians over the phases:
+
+| game (scene) | off | 16 | 64 | 256 |
+|---|---|---|---|---|
+| rotwk-202 (menu): fps / frame p50 ms / p99 ms / render ms | 6.6 / 117 / 507 / 122 | 6.4 / 150 / 406 / 132 | 6.4 / 151 / 400 / 139 | 6.9 / 118 / 398 / 117 |
+| vice-city-1.1 (driving): fps / p50 / p99 | 15.3 / 89 / 198 | 14.0 / 92 / 104 | 15.8 / 73 / 108 | 14.8 / 78 / 128 |
+| bfme1-108 (menu, 1-3 fps in this run): fps | 1.2 | 2.1 | 0.5 | 2.1 |
+
+Differences are inside the run-to-run drift (the same `off` phases differ more from each other than from the flushed
+ones; Vice City's frame time fell steadily across the run whatever the setting). Not better beyond noise on any game,
+so the default stays off. The reason is structural: the render worker replays the recorded commands on its own thread
+and the emulator only waits for it through the ring's back-pressure, so a flush inside the replay moves no work off
+the emulator's critical path; rotwk is bound by the render worker's own 115-140 ms per frame, which one end-of-frame
+flush or many does not shorten (SwiftShader rasterizes on the same cores either way). The present path has no other
+cheap latency to remove: `getError` runs only for the first 64 draws, there is no `finish`, and the only readbacks are
+the guest's own surface reads.
