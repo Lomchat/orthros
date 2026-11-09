@@ -17,6 +17,7 @@ import { linkRate } from '../../vfs/data-client.js';
 import { gpuInfo } from './gpu-class.js';
 import { vkOfCode } from '../../win32/vk-scan.js';
 import { PerfSession } from './perf-page.js';
+import { TimerHelper, browserVariants, createWaitProbe } from './timer-helper.js';
 import { pageStorage, withStorage } from './storage-persist.js';
 import { snapshotKey } from './snapshot-key.js';
 
@@ -244,7 +245,8 @@ async function start(name, language = null) {
   const tree = await treeReq;
   state.status = 'starting'; state.manifest = name;
   // (the passive session record, perf-page.js: every 2 min of play and at the end — docs/real-machine-bench.md)
-  if (state.telemetry) state.perf = new PerfSession({ runtime: 'win32', game: name, session: state.session, version: manifest.version ?? null, build: state.version, bench: BENCH_MARK, env: () => state.env ?? environment(), storage: state.storage ?? undefined, phase: () => state.status });
+  if (state.telemetry) state.perf = new PerfSession({ runtime: 'win32', game: name, session: state.session, version: manifest.version ?? null, build: state.version, bench: BENCH_MARK, env: () => state.env ?? environment(), storage: state.storage ?? undefined, phase: () => state.status, helper: () => state.timerHelper?.report() ?? null });
+  startTimerHelper(params);
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
   state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer'); state.ctxVideo = $('vid').getContext('bitmaprenderer'); $('vid').style.visibility = 'hidden'; // (no movie from a previous run)
   resizeTo(manifest.display.width, manifest.display.height);
@@ -362,6 +364,28 @@ async function sharedSnapshot(name, key, lang) {
 }
 async function dropSnapshot(name) { await (await navigator.storage.getDirectory()).removeEntry(SNAPSHOT_PREFIX + name, { recursive: true }).catch(() => {}); }
 
+/**
+ * The host timer helper (timer-helper.js, docs/thread-scheduling.md "Host timer resolution"): measures the host wait
+ * granularity once the game paces itself; a helper runs only when the host is coarse, while a pacing loop runs.
+ */
+function startTimerHelper(params) {
+  for (const kv of String(params.get('dbg') ?? '').split(',')) { const [k, v] = kv.split('='); if (/^ORTHROS_HOST_TIMER_HELPER_[A-Z]+$/.test(k)) window[k] = v; }
+  let wp = null; const q = Number((String(params.get('dbg') ?? '').match(/ORTHROS_HOST_TIMER_Q=([\d.]+)/) ?? [])[1]) || 0;
+  state.timerHelper = new TimerHelper({ variants: browserVariants(window), visible: () => document.visibilityState === 'visible',
+    probe: async (n) => { wp ??= createWaitProbe(new URL('./timing-probe.js', import.meta.url), q); return wp ? wp.probe(n) : null; } });
+  state.timerHelperWp = () => wp;
+}
+/** A stats message of the worker: its host waits going on (a pacing loop) keep the helper wanted, else it winds down. */
+function noteTimerHelper(m) {
+  const th = state.timerHelper, w = m.hostWait?.waits ?? 0, prev = state.timerHelperWaits ?? w;
+  state.timerHelperWaits = w;
+  if (!th) return;
+  th.pacing(w - prev >= 5);
+  const st = th.rec.status;
+  if (st !== state.timerHelperLogged && st !== 'measuring' && st !== 'idle') { state.timerHelperLogged = st; log('frames', `host timer helper: ${JSON.stringify(th.report())}`); }
+  if (['fine', 'coarse-none', 'unmeasured'].includes(th.rec.status) && !state.timerHelperWpClosed) { state.timerHelperWpClosed = true; state.timerHelperWp?.()?.close(); }
+}
+
 function onWorkerMessage(m) {
   switch (m.type) {
     case 'snapshot':
@@ -396,7 +420,8 @@ function onWorkerMessage(m) {
     case 'log': log(m.kind, m.msg); break;
     case 'stdout': log('stdout', m.text); break;
     case 'started': if (state.sharedSnapshotCopy) { storeSnapshot(state.manifest, state.snapshotKey, state.sharedSnapshotCopy).catch(() => {}); state.sharedSnapshotCopy = null; } state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
-    case 'stats': state.stats = m; state.statsAt = Date.now(); m.seq = state.statsSeq = (state.statsSeq ?? 0) + 1; state.bench?.onStats(m); noteNet(m.net);
+    case 'dbg': if (/^ORTHROS_HOST_TIMER_HELPER_[A-Z]+$/.test(m.k)) { window[m.k] = m.v === undefined || m.v === '' ? undefined : m.v; state.timerHelper?.apply(); } break; // (harness dbg: steps for the page's own switches, forwarded by the worker)
+    case 'stats': noteTimerHelper(m); state.stats = m; state.statsAt = Date.now(); m.seq = state.statsSeq = (state.statsSeq ?? 0) + 1; state.bench?.onStats(m); noteNet(m.net);
       if (m.frames !== state.lastFrames || m.videoFrames !== state.lastVideoFrames) { state.lastFrames = m.frames; state.lastVideoFrames = m.videoFrames; state.lastNewFrameAt = Date.now(); } // (a movie playing: new pictures, not a loading wait)
       if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30 || m.videoFrames > 0) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, a few GDI frames, or a movie's first picture) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } noteAudio(m); recordSample(m); renderHud(); break;
     case 'gl-port': m.port.onmessage = (e) => onWorkerMessage(e.data); break; // (the render worker's frames, logs, captures)

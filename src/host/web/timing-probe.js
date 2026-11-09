@@ -52,6 +52,13 @@ export async function measureHostTiming({ n = PROBE_SAMPLES, q = 0, now = () => 
   return out;
 }
 
+/** The p50 overshoot (ms) of `n` Atomics.wait(1 ms) (timer-helper.js: the granularity of the host's waits). */
+export function waitP50({ n = 24, q = 0, now = () => performance.now() } = {}) {
+  const sab = new Int32Array(new SharedArrayBuffer(4)), v = [];
+  for (let i = 0; i < n; i++) { const t0 = now(); Atomics.wait(sab, 0, 0, quantised(t0, 1, q)); v.push(now() - t0 - 1); }
+  return summarise(v).p50;
+}
+
 /** The battery as the page sees it ({ charging, level } or null without the Battery Status API). */
 export async function batteryState(nav = globalThis.navigator) {
   try { const b = await nav?.getBattery?.(); return b ? { charging: !!b.charging, level: Math.round(b.level * 100) / 100 } : null; } catch { return null; }
@@ -84,5 +91,8 @@ export function runTimingProbe(q = 0, timeoutMs = 10000) {
 
 // (this module as the probe worker)
 if (typeof WorkerGlobalScope !== 'undefined' && globalThis.name === 'orthros-timing-probe') {
-  globalThis.onmessage = async (e) => { globalThis.postMessage(await measureHostTiming({ q: Number(e.data?.q) || 0 })); };
+  globalThis.onmessage = async (e) => {
+    if (e.data?.mode === 'wait') { globalThis.postMessage({ wait: waitP50({ n: e.data.n || 24, q: Number(e.data.q) || 0 }) }); return; }
+    globalThis.postMessage(await measureHostTiming({ q: Number(e.data?.q) || 0 }));
+  };
 }
