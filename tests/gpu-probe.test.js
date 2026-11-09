@@ -39,8 +39,11 @@ test('a run-timed frame that draws nothing never nests a query into the next fra
     getQueryParameter: (q, p) => (p === 1 ? true : q.ns), getParameter: () => false,
     fenceSync: () => ({}), getSyncParameter: () => 0x9119,
   };
-  const p = new GpuProbe(gl, { now: () => 4000, wrapGl: false });
-  // frames with no draw at all (a loading screen): the armed run must not survive into a present-to-present frame
-  for (let f = 0; f < 6; f++) { p.endRun(); p.frame(); if (f % 2) p.draw(); }
-  for (let f = 0; f < 6; f++) { p.endRun(); p.frame(); p.draw(); }
+  let t = 0;
+  const p = new GpuProbe(gl, { now: () => t, wrapGl: false });
+  t = 4000; // (the first window opens at the next present)
+  // frames with no draw at all (a loading screen): the run armed by an odd frame must not outlive it — the next
+  // frame's present-to-present query is active, a draw then would begin a second one
+  for (let f = 0; f < 4; f++) { p.endRun(); t += 10; p.frame(); }
+  p.draw();
 });
