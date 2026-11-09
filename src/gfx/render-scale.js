@@ -100,29 +100,33 @@ export class ScaleController {
   /** the scale for the next frames (`s` the current one, `budget` the frame budget in ms) */
   decide(now, s, budget) {
     const since = now - this.changedAt;
-    const window = (ms) => this.samples.filter((x) => x.s === s && x.t >= now - ms && x.t >= this.changedAt + SETTLE_MS);
+    // (the frames of the last `ms` at this scale, at least the last `n` of them: a menu at 2-3 fps has few frames per window)
+    const window = (ms, n) => {
+      const ok = this.samples.filter((x) => x.s === s && x.t >= this.changedAt + SETTLE_MS), recent = ok.filter((x) => x.t >= now - ms);
+      return recent.length >= n ? recent : ok.slice(-n);
+    };
     const k = SCALE_STEPS.indexOf(s);
     // the verdict on the last step down: neither the render time nor the frame interval lower by 8 % (the frames bound
     // by work that does not scale with pixels — vertices, uploads, the replay, the emulator itself): undone, and the
     // next step down waits, twice longer at each such verdict (30 s, 1 min, ... 10 min: no oscillation)
     if (this.downFrom) {
       if (since < GAIN_MS + SETTLE_MS) return s;
-      const w = window(GAIN_MS);
-      if (w.length < 3) return s;
+      const w = window(GAIN_MS, 4);
+      if (w.length < 4) return s;
       const from = this.downFrom, r = median(w.map((x) => x.r)), i = median(w.map((x) => x.i));
       this.downFrom = null;
       if (r > 0.92 * from.r && i > 0.92 * from.i) { this.hold = Math.min(MAX_HOLD_MS, this.hold ? 2 * this.hold : NO_GAIN_HOLD_MS); this.noDownUntil = now + this.hold; this.undone++; return from.s; }
       this.kept++;
     }
     if (since >= DOWN_MS + SETTLE_MS && k >= 0 && k < SCALE_STEPS.length - 1 && now >= this.noDownUntil) {
-      const w = window(DOWN_MS);
-      if (w.length >= 3) {
+      const w = window(DOWN_MS, 4);
+      if (w.length >= 4) {
         const r = median(w.map((x) => x.r)), i = median(w.map((x) => x.i));
         if (r > budget && i > budget * 1.05 && r >= 0.75 * i) { this.downFrom = { s, r, i }; return SCALE_STEPS[k + 1]; }
       }
     }
     if (since >= UP_MS + SETTLE_MS && k > 0) {
-      const w = window(UP_MS);
+      const w = window(UP_MS, 6);
       if (w.length >= 6) {
         const up = SCALE_STEPS[k - 1], r = median(w.map((x) => x.r)) * (up / s) ** 2;
         if (r < 0.75 * budget) return up;

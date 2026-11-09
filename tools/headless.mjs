@@ -554,6 +554,9 @@ for (;;) {
       continue;
     }
     if (ev.kind === 'shot') { const f = path.join(out, `${name}-step-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); await page.locator('#frame').screenshot({ path: f, timeout: 45000 }).then(() => console.log(`[shot] ${f}`), (e) => console.log(`[shot] failed: ${e.message.split('\n')[0]}`)); continue; }
+    // (shotgl: the game layer's last frame read from its canvas — no compositor frame waited for, unlike a screenshot,
+    // which times out while a software-rendered page is starved; the cursor and the other layers are not in it)
+    if (ev.kind === 'shotgl') { const f = path.join(out, `${name}-gl-${String(shot++).padStart(3, '0')}-${t.toFixed(0)}s.png`); const url = await page.evaluate(() => document.getElementById('gl')?.toDataURL('image/png')).catch(() => null); if (url?.startsWith('data:image/png;base64,')) { fs.writeFileSync(f, Buffer.from(url.slice(22), 'base64')); console.log(`[shot] ${f}`); } else console.log('[shot] game layer unreadable'); continue; }
     // a click holds the button ~100 ms, as a person does (a game polling the button state between two slow frames
     // would miss a press and release delivered together)
     if (ev.kind === 'click' || ev.kind === 'rclick') {
