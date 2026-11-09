@@ -95,13 +95,23 @@ export function declLayout(tokens) {
   return { streams, consts, hasPos: [...streams.values()].some((s) => s.attrs.some((a) => a.reg === 0)) };
 }
 
+/**
+ * Lean shaders (default on; dbg ORTHROS_LEAN_SHADERS_OFF=1: the earlier GLSL, for A/B measurements — the backend
+ * rebuilds its programs when the switch moves): the same results with less work per vertex and per pixel for a
+ * software rasterizer (SwiftShader, the renderer of Chrome without a usable GPU), which runs every statement it is given
+ * for a whole SIMD group: lights unrolled by their known types, shader registers as plain variables instead of an array
+ * cleared in a loop, and only the interpolated inputs a pixel shader reads (an input read anywhere is interpolated for
+ * every pixel). docs/render-worker.md "Software rendering".
+ */
+export const leanShaders = () => !globalThis.ORTHROS_LEAN_SHADERS_OFF;
+
 // ------------------------------------------------------------------ fixed-function vertex shader
 const LIGHT_DIRECTIONAL = 3, LIGHT_POINT = 1, LIGHT_SPOT = 2;
 
 /**
  * @param {{ layout: any, lighting: boolean, lights: number[] (types by enabled index), colorVertex: boolean, diffuseSrc: number, specularSrc: number, ambientSrc: number, emissiveSrc: number, specularEnable: boolean, localViewer: boolean, normalize: boolean, fogVertex: number, rangeFog: boolean, stages: Array<{ tci: number, ttff: number, coordCount: number }>, rhw: boolean, blend: number, pointSize: boolean }} k
  */
-export function ffVertexShader(k) {
+export function ffVertexShader(k, lean = leanShaders()) {
   const L = k.layout;
   const has = (n) => L.attrs.some((a) => a.name === n);
   const lines = ['#version 300 es', 'precision highp float;', VS_INVARIANT];
@@ -159,15 +169,38 @@ export function ffVertexShader(k) {
       lines.push(`  vec4 mDiffuse = ${src(k.diffuseSrc, 'u_mat[0]')}; vec4 mSpecular = ${src(k.specularSrc, 'u_mat[2]')}; vec4 mAmbient = ${src(k.ambientSrc, 'u_mat[1]')}; vec4 mEmissive = ${src(k.emissiveSrc, 'u_mat[3]')};`);
       lines.push('  vec3 diffuseAcc = vec3(0.0); vec3 specAcc = vec3(0.0); vec3 ambientAcc = vec3(0.0);');
       lines.push(`  vec3 eye = ${k.localViewer ? 'normalize(-posView)' : 'vec3(0.0, 0.0, -1.0)'};`);
-      lines.push('  for (int i = 0; i < u_numLights; i++) {');
-      lines.push('    int b = i * 7; Light lt = Light(int(u_ld[b + 3].w), u_ld[b], u_ld[b + 1], u_ld[b + 2], u_ld[b + 3].xyz, u_ld[b + 4].xyz, u_ld[b + 4].w, u_ld[b + 5].w, u_ld[b + 5].xyz, u_ld[b + 6].x, u_ld[b + 6].y); vec3 ldir; float att = 1.0;');
-      lines.push(`    if (lt.type == ${LIGHT_DIRECTIONAL}) { ldir = normalize(-lt.direction); }`);
-      lines.push('    else { vec3 d = lt.position - posView; float dist = length(d); if (dist > lt.range) continue; ldir = d / max(dist, 1e-6); att = 1.0 / max(lt.atten.x + lt.atten.y * dist + lt.atten.z * dist * dist, 1e-6);');
-      lines.push(`      if (lt.type == ${LIGHT_SPOT}) { float rho = dot(-ldir, normalize(lt.direction)); float ct = cos(lt.theta * 0.5), cp = cos(lt.phi * 0.5); if (rho <= cp) continue; if (rho < ct) att *= pow((rho - cp) / max(ct - cp, 1e-6), lt.falloff); } }`);
-      lines.push('    ambientAcc += lt.ambient.rgb * att;');
-      lines.push('    float ndl = max(dot(nView, ldir), 0.0); diffuseAcc += lt.diffuse.rgb * ndl * att;');
-      if (k.specularEnable) lines.push('    if (ndl > 0.0) { vec3 h = normalize(ldir + eye); float ndh = max(dot(nView, h), 0.0); specAcc += lt.specular.rgb * pow(ndh, max(u_mat[4].x, 1e-4)) * att; }');
-      lines.push('  }');
+      const accum = (lt, ind) => {
+        lines.push(`${ind}ambientAcc += ${lt('ambient')}.rgb * att;`);
+        lines.push(`${ind}float ndl = max(dot(nView, ldir), 0.0); diffuseAcc += ${lt('diffuse')}.rgb * ndl * att;`);
+        if (k.specularEnable) lines.push(`${ind}if (ndl > 0.0) { vec3 h = normalize(ldir + eye); float ndh = max(dot(nView, h), 0.0); specAcc += ${lt('specular')}.rgb * pow(ndh, max(u_mat[4].x, 1e-4)) * att; }`);
+      };
+      if (lean) {
+        // the enabled lights' types are in the program key (in the order applyState packs them): one block per light with
+        // constant indices and only its type's code — no loop over a uniform count, no per-vertex branch on the type (a
+        // SIMD rasterizer such as SwiftShader runs both sides of such a branch for its whole group of vertices)
+        const n = Math.min(k.lights.length, MAX_LIGHTS);
+        for (let i = 0; i < n; i++) {
+          const type = k.lights[i], b = i * 7;
+          const F = { diffuse: `u_ld[${b}]`, specular: `u_ld[${b + 1}]`, ambient: `u_ld[${b + 2}]`, position: `u_ld[${b + 3}].xyz`, direction: `u_ld[${b + 4}].xyz`, range: `u_ld[${b + 4}].w`, falloff: `u_ld[${b + 5}].w`, atten: `u_ld[${b + 5}].xyz`, theta: `u_ld[${b + 6}].x`, phi: `u_ld[${b + 6}].y` };
+          const lt = (f) => F[f];
+          lines.push('  { vec3 ldir; float att = 1.0;');
+          if (type === LIGHT_DIRECTIONAL) { lines.push(`    ldir = normalize(-${lt('direction')});`); accum(lt, '    '); lines.push('  }'); continue; }
+          // (a light out of range, or a spot's point outside its cone, adds nothing: the loop's `continue`)
+          lines.push(`    vec3 d = ${lt('position')} - posView; float dist = length(d); if (!(dist > ${lt('range')})) { ldir = d / max(dist, 1e-6); att = 1.0 / max(${lt('atten')}.x + ${lt('atten')}.y * dist + ${lt('atten')}.z * dist * dist, 1e-6);`);
+          if (type === LIGHT_SPOT) {
+            lines.push(`      float rho = dot(-ldir, normalize(${lt('direction')})); float ct = cos(${lt('theta')} * 0.5), cp = cos(${lt('phi')} * 0.5); if (!(rho <= cp)) { if (rho < ct) att *= pow((rho - cp) / max(ct - cp, 1e-6), ${lt('falloff')});`);
+            accum(lt, '      '); lines.push('    } } }');
+          } else { accum(lt, '      '); lines.push('    } }'); }
+        }
+      } else {
+        lines.push('  for (int i = 0; i < u_numLights; i++) {');
+        lines.push('    int b = i * 7; Light lt = Light(int(u_ld[b + 3].w), u_ld[b], u_ld[b + 1], u_ld[b + 2], u_ld[b + 3].xyz, u_ld[b + 4].xyz, u_ld[b + 4].w, u_ld[b + 5].w, u_ld[b + 5].xyz, u_ld[b + 6].x, u_ld[b + 6].y); vec3 ldir; float att = 1.0;');
+        lines.push(`    if (lt.type == ${LIGHT_DIRECTIONAL}) { ldir = normalize(-lt.direction); }`);
+        lines.push('    else { vec3 d = lt.position - posView; float dist = length(d); if (dist > lt.range) continue; ldir = d / max(dist, 1e-6); att = 1.0 / max(lt.atten.x + lt.atten.y * dist + lt.atten.z * dist * dist, 1e-6);');
+        lines.push(`      if (lt.type == ${LIGHT_SPOT}) { float rho = dot(-ldir, normalize(lt.direction)); float ct = cos(lt.theta * 0.5), cp = cos(lt.phi * 0.5); if (rho <= cp) continue; if (rho < ct) att *= pow((rho - cp) / max(ct - cp, 1e-6), lt.falloff); } }`);
+        accum((f) => `lt.${f}`, '    ');
+        lines.push('  }');
+      }
       lines.push('  v_color0 = vec4(clamp(mEmissive.rgb + mAmbient.rgb * (u_ambient.rgb + ambientAcc) + mDiffuse.rgb * diffuseAcc, 0.0, 1.0), mDiffuse.a);');
       lines.push(k.specularEnable ? '  v_color1 = vec4(clamp(mSpecular.rgb * specAcc, 0.0, 1.0), 0.0);' : '  v_color1 = vec4(0.0);');
     } else {
@@ -226,7 +259,7 @@ export function fragmentTail(k) {
 /**
  * @param {{ stages: Array<{ colorOp: number, colorArg1: number, colorArg2: number, colorArg0: number, alphaOp: number, alphaArg1: number, alphaArg2: number, alphaArg0: number, resultTemp: boolean, cube: boolean, projected: boolean, bound: boolean }>, alphaTest: number|0, specular: boolean, fog: number (table mode 0 none / 1 exp / 2 exp2 / 3 linear) | -1 for vertex fog, texEnabled: boolean }} k
  */
-export function ffFragmentShader(k) {
+export function ffFragmentShader(k, lean = leanShaders()) {
   const lines = ['#version 300 es', 'precision highp float; precision highp sampler2D; precision highp samplerCube;'];
   lines.push('in vec4 v_color0; in vec4 v_color1; in float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`in vec4 v_tex${i};`);
@@ -234,7 +267,7 @@ export function ffFragmentShader(k) {
   lines.push('uniform vec4 u_tfactor; uniform vec4 u_fogColor; uniform vec4 u_fogParams; uniform float u_alphaRef; uniform vec4 u_bumpEnv[8];');
   lines.push('out vec4 fragColor;');
   lines.push('void main() {');
-  lines.push('  vec4 diffuse = v_color0; vec4 specular = v_color1; vec4 current = diffuse; vec4 temp = vec4(0.0); vec4 tex = vec4(0.0);');
+  const head = lines.push('  vec4 diffuse = v_color0; vec4 specular = v_color1; vec4 current = diffuse; vec4 temp = vec4(0.0); vec4 tex = vec4(0.0);') - 1;
   const arg = (a, alpha) => {
     let e;
     switch (a & TA.SELECTMASK) { case TA.DIFFUSE: e = 'diffuse'; break; case TA.CURRENT: e = 'current'; break; case TA.TEXTURE: e = 'tex'; break; case TA.TFACTOR: e = 'u_tfactor'; break; case TA.SPECULAR: e = 'specular'; break; case TA.TEMP: e = 'temp'; break; default: e = 'current'; }
@@ -295,6 +328,8 @@ export function ffFragmentShader(k) {
   lines.push(...fragmentTail(k));
   lines.push('  fragColor = result;');
   lines.push('}');
+  // (lean: the specular color is interpolated only when a stage or the specular add reads it)
+  if (lean && !lines.slice(head + 1).some((l) => /\bspecular\b/.test(l))) lines[head] = lines[head].replace(' vec4 specular = v_color1;', '');
   return lines.join('\n');
 }
 
@@ -335,6 +370,13 @@ export function ffProgramFromKey(key) {
 }
 
 // ------------------------------------------------------------------ shader bytecode translation
+/** The register numbers of a prefix (`r`, `t`) the GLSL lines name as plain variables (`r3`, `t0`). */
+export function usedRegs(lines, prefix) {
+  const used = new Set(), re = new RegExp(`\\b${prefix}(\\d+)\\b`, 'g');
+  for (const l of lines) for (const m of l.matchAll(re)) used.add(Number(m[1]));
+  return used;
+}
+
 const SWZ = 'xyzw';
 function swizzle(tok) { let s = ''; for (let i = 0; i < 4; i++) s += SWZ[(tok >> (16 + 2 * i)) & 3]; return s; }
 function writeMask(tok) { let s = ''; for (let i = 0; i < 4; i++) if (tok & (1 << (16 + i))) s += SWZ[i]; return s || 'xyzw'; }
@@ -433,7 +475,7 @@ export function translateVertexShader(code, layout) {
  * @param {Uint32Array} code
  * @param {{ cube: boolean[], fog: number, projected: boolean[] }} env
  */
-export function translatePixelShader(code, env) {
+export function translatePixelShader(code, env, lean = leanShaders()) {
   const version = code[0] & 0xffff, minor = version & 0xff, is14 = minor >= 4;
   const lines = ['#version 300 es', 'precision highp float; precision highp sampler2D; precision highp samplerCube;'];
   lines.push('in vec4 v_color0; in vec4 v_color1; in float v_fog;');
@@ -443,7 +485,8 @@ export function translatePixelShader(code, env) {
   lines.push('out vec4 fragColor;');
   // constants: the 8 ps 1.x registers hold values in [-1, 1] (def overrides one in the shader)
   const body = ['  vec4 r0 = vec4(0.0), r1 = vec4(0.0), r2 = vec4(0.0), r3 = vec4(0.0), r4 = vec4(0.0), r5 = vec4(0.0);', `  vec4 ${Array.from({ length: 8 }, (_, k) => `c${k} = clamp(u_pc[${k}], -1.0, 1.0)`).join(', ')};`];
-  for (let i = 0; i < 6; i++) body.push(`  vec4 t${i} = v_tex${i};`);
+  const tAt = body.length; // (lean: the t registers the shader names, declared once the body is known)
+  if (!lean) for (let i = 0; i < 6; i++) body.push(`  vec4 t${i} = v_tex${i};`);
   const defs = new Map();
   const sample = (n, coordExpr) => (env.cube[n] ? `texture(u_cube${n}, (${coordExpr}).xyz)` : env.projected[n] ? `textureProj(u_tex${n}, ${coordExpr})` : `texture(u_tex${n}, (${coordExpr}).xy)`);
   const reg = (tok, isSrc) => {
@@ -542,6 +585,7 @@ export function translatePixelShader(code, env) {
     }
   }
   void phase;
+  if (lean) { const used = usedRegs(body, 't'); body.splice(tAt, 0, ...[0, 1, 2, 3, 4, 5].filter((i) => used.has(i)).map((i) => `  vec4 t${i} = v_tex${i};`)); }
   body.push('  vec4 result = r0;');
   body.push(...fragmentTail(env));
   body.push('  fragColor = result;');

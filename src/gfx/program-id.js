@@ -26,7 +26,7 @@ export function programSourceId(vs, fs, attrs) {
  * that sources an older translator produced are not compiled ahead for nothing. tests/program-version.test.js fails
  * when the GLSL generated for its corpus changes while this stays the same.
  */
-export const PROGRAM_GLSL_VERSION = 1;
+export const PROGRAM_GLSL_VERSION = 2;
 
 /**
  * Is this the program key of a fixed-function draw with an FVF layout (`ff:f<fvf>:...|ff:...[|flat]`)? Its sources

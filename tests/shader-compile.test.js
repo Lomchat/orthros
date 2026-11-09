@@ -63,3 +63,79 @@ test('generated GLSL compiles and links in WebGL2', { skip: !chromium && 'playwr
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });
+
+// Lean shaders (d3d8-shaders.js leanShaders: lights unrolled by type, registers as variables, only the inputs read) must
+// draw what the earlier GLSL draws: each pair rendered in SwiftShader with the same random vertices, uniforms and
+// textures, the pixels compared (a lean translation that changed a result — a light's type, a register — shows here)
+const leanPairs = [];
+{
+  const st2 = [stage(TOP.MODULATE), stage(TOP.ADD, { colorArg1: 4 })], ffFs = (lean, extra = {}) => ffFragmentShader({ stages: st2, alphaTest: 0, specular: false, fog: 0, ...extra }, lean);
+  for (const lights of [[3, 1], [2], [1, 3, 2], []]) for (const specularEnable of [true, false]) {
+    leanPairs.push([`ff lights ${lights} spec ${specularEnable}`, lights, ...[true, false].flatMap((lean) => [ffVertexShader(ff(st2, { lights, specularEnable, localViewer: specularEnable }), lean), ffFs(lean, { specular: specularEnable })])]);
+  }
+  leanPairs.push(['ff no specular read', [], ...[true, false].flatMap((lean) => [ffVertexShader(ff([stage(TOP.MODULATE)], { lights: [] }), lean), ffFragmentShader({ stages: [stage(TOP.MODULATE)], alphaTest: 0, specular: false, fog: 0 }, lean)])]);
+  leanPairs.push(['dx8 vs.1.1/ps.1.1', [], ...[true, false].flatMap((lean) => [translateVertexShader(vs11, layout8), translatePixelShader(ps11, env, lean)])]);
+  leanPairs.push(['dx9 ps_1_1', [3, 1], ...[true, false].flatMap((lean) => [ffVertexShader(ff([stage(TOP.MODULATE)]), lean), translatePixelShader9(ps11, env, lean).glsl])]);
+  leanPairs.push(['dx9 vs_2_0/ps_2_0', [], ...[true, false].flatMap((lean) => [translateVertexShader9(vs20, null, lean).glsl, translatePixelShader9(ps20, { ...env, alphaTest: 5, fog: 3 }, lean).glsl])]);
+}
+
+test('lean shaders draw the same pixels as the earlier GLSL', { skip: !chromium && 'playwright missing', timeout: 60000 }, async () => {
+  const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-webgl'] });
+  try {
+    const page = await browser.newPage();
+    const res = await page.evaluate((pairs) => {
+      const W = 64, gl = new OffscreenCanvas(W, W).getContext('webgl2', { antialias: false });
+      const fb = gl.createFramebuffer(), rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, W, W);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb); gl.viewport(0, 0, W, W);
+      const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+      let seed = 7; const rnd = () => { seed = (seed * 1103515245 + 12345) >>> 0; return (seed >>> 8) / 16777216; };
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 8, 8, 0, gl.RGBA, gl.UNSIGNED_BYTE, Uint8Array.from({ length: 256 }, (_, i) => ((i & 3) === 3 ? 160 + Math.floor(rnd() * 96) : Math.floor(rnd() * 256))));
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      const draw = (vs, fs, lights) => {
+        seed = 12345;
+        const mk = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+        const p = gl.createProgram(); gl.attachShader(p, mk(gl.VERTEX_SHADER, vs)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+        if (!gl.getProgramParameter(p, gl.LINK_STATUS)) return 'link: ' + gl.getProgramInfoLog(p);
+        gl.useProgram(p);
+        const N = 90, vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+        const attrs = [];
+        for (let i = 0; i < gl.getProgramParameter(p, gl.ACTIVE_ATTRIBUTES); i++) attrs.push(gl.getActiveAttrib(p, i).name);
+        // (the same data per attribute name whatever the program: drawn from the name)
+        for (const name of attrs.sort()) {
+          const loc = gl.getAttribLocation(p, name); let s = [...name].reduce((a, c) => a * 31 + c.charCodeAt(0), 1) >>> 0;
+          const r = () => { s = (s * 1103515245 + 12345) >>> 0; return (s >>> 8) / 16777216; };
+          const d = new Float32Array(N * 4); for (let k = 0; k < d.length; k++) d[k] = /pos|s0_0|v0$/.test(name) ? (k % 4 === 3 ? 1 : k % 4 === 2 ? r() * 0.5 : r() * 2.2 - 1.1) : r() * 2 - 1;
+          const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, d, gl.STATIC_DRAW); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 0, 0);
+        }
+        const U = (n) => gl.getUniformLocation(p, n), set = (n, f) => { const l = U(n); if (l) f(l); };
+        const ident = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+        for (const n of ['u_world[0]', 'u_view', 'u_proj']) set(n, (l) => gl.uniformMatrix4fv(l, false, ident));
+        set('u_viewport', (l) => gl.uniform4f(l, 0, 0, W, W)); set('u_flipY', (l) => gl.uniform1f(l, 1));
+        const r = (n) => Float32Array.from({ length: n }, () => rnd() * 2 - 1);
+        set('u_mat[0]', (l) => gl.uniform4fv(l, r(20).map((x, i) => (i === 16 ? 8 : Math.abs(x))))); set('u_ambient', (l) => gl.uniform4fv(l, r(4)));
+        const ld = r(56).map(Math.abs);
+        lights.forEach((type, i) => { const b = i * 28; ld[b + 15] = type; ld[b + 19] = i === 1 ? 0.3 : 100; ld[b + 20] = 1; ld[b + 21] = 0.1; ld[b + 22] = 0; ld[b + 23] = 1; ld[b + 24] = 1.5; ld[b + 25] = 2.5; });
+        set('u_ld[0]', (l) => gl.uniform4fv(l, ld)); set('u_numLights', (l) => gl.uniform1i(l, lights.length));
+        const vc = r(256 * 4); vc.set(ident, 0); set('u_vc[0]', (l) => gl.uniform4fv(l, vc));
+        set('u_pc[0]', (l) => gl.uniform4fv(l, r(32 * 4).map(Math.abs))); set('u_tfactor', (l) => gl.uniform4fv(l, r(4).map(Math.abs)));
+        set('u_fogColor', (l) => gl.uniform4fv(l, r(4))); set('u_fogParams', (l) => gl.uniform4f(l, 0, 2, 0.5, 0)); set('u_fog', (l) => gl.uniform4f(l, 0, 2, 0.5, 0)); set('u_alphaRef', (l) => gl.uniform1f(l, 0.05));
+        for (let i = 0; i < 8; i++) { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tex); set(`u_tex${i}`, (l) => gl.uniform1i(l, i)); }
+        gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.drawArrays(gl.TRIANGLES, 0, N);
+        const px = new Uint8Array(W * W * 4); gl.readPixels(0, 0, W, W, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        gl.deleteVertexArray(vao);
+        return px;
+      };
+      const out = [];
+      for (const [name, lights, vsL, fsL, vsO, fsO] of pairs) {
+        const a = draw(vsL, fsL, lights), b = draw(vsO, fsO, lights);
+        if (typeof a === 'string' || typeof b === 'string') { out.push(`${name}: ${a.length ? a : b}`); continue; }
+        let diff = 0, max = 0, covered = 0;
+        for (let i = 0; i < a.length; i++) { const d = Math.abs(a[i] - b[i]); if (d) diff++; if (d > max) max = d; if ((i & 3) === 0 && (b[i] | b[i + 1] | b[i + 2] | b[i + 3])) covered++; }
+        if (max > 1 || covered < 200) out.push(`${name}: ${diff} channels differ (max ${max}), ${covered} pixels drawn`);
+      }
+      return out;
+    }, leanPairs);
+    assert.deepEqual(res, []);
+  } finally { await browser.close(); }
+});

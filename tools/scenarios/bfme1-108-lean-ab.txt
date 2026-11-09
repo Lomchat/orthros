@@ -1,0 +1,38 @@
+# BFME 1.08 (bfme1-108): lean shaders (ORTHROS_LEAN_SHADERS_OFF) A/B in one session in the main menu (docs/render-worker.md
+# "Software rendering"). The intro skipped (the Escape that reaches the menu opens its exit box: the click is its NO, at
+# 1024x768, the display a first launch picks headless). The menu, not a skirmish: on a loaded shared machine the menu runs
+# at 2-7 fps in software and the timed clicks of bench/bfme1-108-short.txt land on the wrong screens. Both program sets
+# built (warm-off, warm-on), two probes of the render cost (diag-flatfs: every pixel shader a flat color; diag-nearest:
+# every sampler point-sampled), then on1/off1/on2/off2/on3/off3 of 25 s.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++20:waitframe:30,100000
+0:mark:menu
+5:click:593,470
+20:dbg:ORTHROS_LEAN_SHADERS_OFF=1
+20:mark:warm-off
+40:dbg:ORTHROS_LEAN_SHADERS_OFF=
+40:mark:warm-on
+55:dbg:ORTHROS_GL_FLATFS=1
+55:mark:diag-flatfs
+75:dbg:ORTHROS_GL_FLATFS=
+75:mark:diag-back1
+85:dbg:ORTHROS_GL_NEAREST=1
+85:mark:diag-nearest
+105:dbg:ORTHROS_GL_NEAREST=
+105:mark:diag-back2
+115:mark:on1
+140:dbg:ORTHROS_LEAN_SHADERS_OFF=1
+140:mark:off1
+165:dbg:ORTHROS_LEAN_SHADERS_OFF=
+165:mark:on2
+190:dbg:ORTHROS_LEAN_SHADERS_OFF=1
+190:mark:off2
+215:dbg:ORTHROS_LEAN_SHADERS_OFF=
+215:mark:on3
+240:dbg:ORTHROS_LEAN_SHADERS_OFF=1
+240:mark:off3
+265:dbg:ORTHROS_LEAN_SHADERS_OFF=
+265:mark:fin

@@ -2,7 +2,7 @@
 // shader models 1.x–2.x (DX9 conventions: dcl-declared inputs/samplers, semantic-named
 // attributes `a_s<usage>_<index>`, 256/32 float constants, integer/bool constants, static flow
 // control) to GLSL ES 3.00. Public documentation of the token format only.
-import { MAX_STAGES, D3D_TO_GL_POSITION, VS_INVARIANT, fragmentTail } from './d3d8-shaders.js';
+import { MAX_STAGES, D3D_TO_GL_POSITION, VS_INVARIANT, fragmentTail, leanShaders, usedRegs } from './d3d8-shaders.js';
 
 export const DECLTYPE = { FLOAT1: 0, FLOAT2: 1, FLOAT3: 2, FLOAT4: 3, D3DCOLOR: 4, UBYTE4: 5, SHORT2: 6, SHORT4: 7, UBYTE4N: 8, SHORT2N: 9, SHORT4N: 10, USHORT2N: 11, USHORT4N: 12, UDEC3: 13, DEC3N: 14, FLOAT16_2: 15, FLOAT16_4: 16, UNUSED: 17 };
 export const USAGE = { POSITION: 0, BLENDWEIGHT: 1, BLENDINDICES: 2, NORMAL: 3, PSIZE: 4, TEXCOORD: 5, TANGENT: 6, BINORMAL: 7, TESSFACTOR: 8, POSITIONT: 9, COLOR: 10, FOG: 11, DEPTH: 12, SAMPLE: 13 };
@@ -70,7 +70,7 @@ function* instructions(code) {
  * the vertex declaration gives the D3DCOLOR type — Direct3D expands those bytes (B, G, R, A in memory) to (R, G, B, A),
  * GL reads them in memory order: they are read through a .zyxw copy (vertex colors, blend indices packed as colors).
  */
-export function translateVertexShader9(code, bgra = null) {
+export function translateVertexShader9(code, bgra = null, lean = leanShaders()) {
   const lines = ['#version 300 es', 'precision highp float;', VS_INVARIANT];
   const inputs = new Map(); // v# -> attribute name
   const version = code[0] & 0xffff, major = version >> 8;
@@ -84,7 +84,10 @@ export function translateVertexShader9(code, bgra = null) {
   lines.push('out vec4 v_color0; out vec4 v_color1; out float v_fog;');
   for (let i = 0; i < MAX_STAGES; i++) lines.push(`out vec4 v_tex${i};`);
   const body = [];
-  body.push('  vec4 r[32]; for (int i = 0; i < 32; i++) r[i] = vec4(0.0);');
+  // temporary registers: an array cleared in a loop, or (lean) the registers the shader names as plain variables —
+  // vs_1_1-vs_3_0 address r# by constant indices only
+  const R = (n) => (lean ? `r${n & 31}` : `r[${n & 31}]`), rAt = body.length;
+  if (!lean) body.push('  vec4 r[32]; for (int i = 0; i < 32; i++) r[i] = vec4(0.0);');
   body.push('  vec4 oPos = vec4(0.0), oD0 = vec4(1.0), oD1 = vec4(0.0), oFog = vec4(1.0), oPts = vec4(1.0); ivec4 a0 = ivec4(0); int aL = 0; bvec4 p0 = bvec4(false);');
   for (let i = 0; i < MAX_STAGES; i++) body.push(`  vec4 oT${i} = vec4(0.0);`);
   for (const n of inputs.values()) if (bgra?.has(n)) body.push(`  vec4 i_${n} = a_${n}.zyxw; // D3DCOLOR`);
@@ -94,7 +97,7 @@ export function translateVertexShader9(code, bgra = null) {
     const rel = (tok & 0x2000) !== 0;
     let name;
     switch (type) {
-      case 0: name = `r[${n & 31}]`; break;
+      case 0: name = R(n); break;
       case 1: name = inputs.has(n) ? (bgra?.has(inputs.get(n)) ? `i_${inputs.get(n)}` : `a_${inputs.get(n)}`) : 'vec4(0.0)'; break;
       // (relative addressing: vs 2.0+ name the address register in a following token; vs 1.x always use a0.x)
       case 2: { let idx = `${n}`; if (rel) { const at = args[k + 1] >>> 0; const addr = major < 2 ? 'a0.x' : regType(at) === 15 ? 'aL' : `a0.${SWZ[(at >> 16) & 3]}`; idx = `clamp(${n} + ${addr}, 0, 255)`; } name = consts.has(n) && !rel ? `c${n}` : `u_vc[${idx}]`; break; }
@@ -156,7 +159,7 @@ export function translateVertexShader9(code, bgra = null) {
       case 20: case 21: case 22: case 23: case 24: {
         const rows = { 20: 4, 21: 3, 22: 4, 23: 3, 24: 2 }[op], full = op === 20 || op === 21;
         const base = args[2] & 0x7ff, ctype = regType(args[2]);
-        const cref = (r) => (ctype === 2 ? `u_vc[${base + r}]` : `r[${(base + r) & 31}]`);
+        const cref = (r) => (ctype === 2 ? `u_vc[${base + r}]` : R(base + r));
         const parts = []; for (let r = 0; r < rows; r++) parts.push(full ? `dot(${S[0]}, ${cref(r)})` : `dot((${S[0]}).xyz, ${cref(r)}.xyz)`);
         while (parts.length < 4) parts.push(parts.length === 3 ? '1.0' : '0.0');
         body.push(assign(d, `vec4(${parts.join(', ')})`)); break;
@@ -185,6 +188,7 @@ export function translateVertexShader9(code, bgra = null) {
   body.push(`  gl_Position = ${D3D_TO_GL_POSITION('oPos')};`);
   body.push('  v_color0 = oD0; v_color1 = oD1; v_fog = oFog.x; gl_PointSize = oPts.x;');
   for (let k = 0; k < MAX_STAGES; k++) body.push(`  v_tex${k} = oT${k};`);
+  if (lean) { const used = [...usedRegs(body, 'r')].sort((a, b) => a - b); if (used.length) body.splice(rAt, 0, `  vec4 ${used.map((n) => `r${n} = vec4(0.0)`).join(', ')};`); }
   lines.push('void main() {', ...body, '}');
   return { glsl: lines.join('\n'), inputs };
 }
@@ -193,7 +197,7 @@ export function translateVertexShader9(code, bgra = null) {
  * Translate a DX9 pixel shader (ps_1_x or ps_2_x) to GLSL.
  * @param {{ cube: boolean[], volume?: boolean[], fog: number, projected: boolean[] }} env
  */
-export function translatePixelShader9(code, env) {
+export function translatePixelShader9(code, env, lean = leanShaders()) {
   const version = code[0] & 0xffff, major = version >> 8, minor = version & 0xff;
   const is14 = major === 1 && minor >= 4, sm2 = major >= 2;
   const lines = ['#version 300 es', 'precision highp float; precision highp sampler2D; precision highp samplerCube; precision highp sampler3D;'];
@@ -204,8 +208,13 @@ export function translatePixelShader9(code, env) {
   for (let i = 0; i < 16; i++) { const kind = samplerKind.get(i) ?? (env.cube[i] ? 'cube' : env.volume?.[i] ? 'volume' : '2d'); lines.push(kind === 'cube' ? `uniform samplerCube u_cube${i};` : kind === 'volume' ? `uniform sampler3D u_vol${i};` : `uniform sampler2D u_tex${i};`); }
   lines.push('uniform vec4 u_pc[32]; uniform ivec4 u_pci[16]; uniform bool u_pcb[16]; uniform vec4 u_fogColor; uniform vec4 u_fogParams; uniform float u_alphaRef; uniform vec4 u_bumpEnv[8];');
   lines.push('out vec4 fragColor;');
-  const body = ['  vec4 r[32]; for (int i = 0; i < 32; i++) r[i] = vec4(0.0);', '  vec4 oC0 = vec4(0.0); float oDepth = -1.0;'];
-  for (let i = 0; i < MAX_STAGES; i++) body.push(`  vec4 t${i} = v_tex${i};`);
+  // temporary registers: an array cleared in a loop, or (lean) the registers the shader names as plain variables (pixel
+  // shaders address r# by constant indices only); t# (texture coordinates): every one, or (lean) those it reads — an
+  // input the shader reads is interpolated for every pixel
+  const R = (n) => (lean ? `r${n & 31}` : `r[${n & 31}]`);
+  const body = lean ? ['  vec4 oC0 = vec4(0.0); float oDepth = -1.0;'] : ['  vec4 r[32]; for (int i = 0; i < 32; i++) r[i] = vec4(0.0);', '  vec4 oC0 = vec4(0.0); float oDepth = -1.0;'];
+  const tAt = body.length;
+  if (!lean) for (let i = 0; i < MAX_STAGES; i++) body.push(`  vec4 t${i} = v_tex${i};`);
   const consts = new Map(), defis = new Set(); // (def / defi registers: local constants)
   const sample = (n, coordExpr, proj = false, bias = false) => {
     const kind = samplerKind.get(n) ?? (env.cube[n] ? 'cube' : '2d');
@@ -219,7 +228,7 @@ export function translatePixelShader9(code, env) {
   const constRef = (n) => { const c = consts.has(n) ? `c${n}` : `u_pc[${n & 31}]`; return sm2 ? c : `clamp(${c}, -1.0, 1.0)`; };
   const regName = (tok) => {
     const type = regType(tok), n = tok & 0x7ff;
-    switch (type) { case 0: return `r[${n & 31}]`; case 1: return `v_color${n & 1}`; case 2: return constRef(n); case 3: return `t${n & 7}`; case 8: return 'oC0'; case 9: return 'vec4(oDepth)'; case 7: return `vec4(u_pci[${n & 15}])`; case 14: return `vec4(u_pcb[${n & 15}] ? 1.0 : 0.0)`; default: return 'vec4(0.0)'; }
+    switch (type) { case 0: return R(n); case 1: return `v_color${n & 1}`; case 2: return constRef(n); case 3: return `t${n & 7}`; case 8: return 'oC0'; case 9: return 'vec4(oDepth)'; case 7: return `vec4(u_pci[${n & 15}])`; case 14: return `vec4(u_pcb[${n & 15}] ? 1.0 : 0.0)`; default: return 'vec4(0.0)'; }
   };
   let coRead = null; // co-issued instruction: registers it reads that the previous instruction writes -> snapshot name
   const src = (tok) => {
@@ -281,7 +290,7 @@ export function translatePixelShader9(code, env) {
       case 20: case 21: case 22: case 23: case 24: {
         const rows = { 20: 4, 21: 3, 22: 4, 23: 3, 24: 2 }[op], full = op === 20 || op === 21;
         const base = args[2] & 0x7ff, ctype = regType(args[2]);
-        const cref = (r) => (ctype === 2 ? `u_pc[${(base + r) & 31}]` : `r[${(base + r) & 31}]`);
+        const cref = (r) => (ctype === 2 ? `u_pc[${(base + r) & 31}]` : R(base + r));
         const parts = []; for (let r = 0; r < rows; r++) parts.push(full ? `dot(${S[0]}, ${cref(r)})` : `dot((${S[0]}).xyz, ${cref(r)}.xyz)`);
         while (parts.length < 4) parts.push(parts.length === 3 ? '1.0' : '0.0');
         body.push(assign(d, `vec4(${parts.join(', ')})`)); break;
@@ -329,15 +338,20 @@ export function translatePixelShader9(code, env) {
       case 74: body.push(`  t${dn} = ${sample(dn, `vec4(m3_${dn - 2}.x, m3_${dn - 1}.y, dot((v_tex${dn}).xyz, (${S[0]}).xyz), 1.0)`)};`); break;
       case 86: body.push(`  t${dn} = vec4(m3_${dn - 2}.x, m3_${dn - 1}.y, dot((v_tex${dn}).xyz, (${S[0]}).xyz), 1.0);`); break;
       case 76: case 77: body.push(`  { vec3 n = vec3(m3_${dn - 2}.x, m3_${dn - 1}.y, dot((v_tex${dn}).xyz, (${S[0]}).xyz)); vec3 e = ${op === 76 ? `(${S[1]}).xyz` : `vec3(v_tex${dn - 2}.w, v_tex${dn - 1}.w, v_tex${dn}.w)`}; vec3 rr = 2.0 * n * dot(n, e) / max(dot(n, n), 1e-6) - e; t${dn} = ${sample(dn, 'vec4(rr, 1.0)')}; }`); break;
-      case 87: body.push(`  oDepth = clamp((${S[0] ?? `r[${dn}]`}).x / max((${S[0] ?? `r[${dn}]`}).y, 1e-6), 0.0, 1.0);`); break;
+      case 87: body.push(`  oDepth = clamp((${S[0] ?? R(dn)}).x / max((${S[0] ?? R(dn)}).y, 1e-6), 0.0, 1.0);`); break;
       case 89: body.push(assign(d, `${S[0]} + vec4(dot(u_bumpEnv[${dn}].xy, (${S[1]}).xy), dot(u_bumpEnv[${dn}].zw, (${S[1]}).xy), 0.0, 0.0)`)); break;
       default: body.push(`  // unsupported ps op ${op}`);
     }
   }
-  body.push(`  vec4 result = ${sm2 ? 'oC0' : 'r[0]'};`);
+  body.push(`  vec4 result = ${sm2 ? 'oC0' : R(0)};`);
   body.push(...fragmentTail(env));
   if (body.some((l) => /^\s+oDepth = /.test(l))) body.push('  gl_FragDepth = oDepth >= 0.0 ? oDepth : gl_FragCoord.z;'); // only shaders that write depth (texdepth / oDepth)
   body.push('  fragColor = result;');
+  if (lean) {
+    const t = usedRegs(body, 't'), r = [...usedRegs(body, 'r')].sort((a, b) => a - b);
+    const decl = [...(r.length ? [`  vec4 ${r.map((n) => `r${n} = vec4(0.0)`).join(', ')};`] : []), ...[0, 1, 2, 3, 4, 5, 6, 7].filter((i) => t.has(i)).map((i) => `  vec4 t${i} = v_tex${i};`)];
+    body.splice(tAt, 0, ...decl);
+  }
   lines.push('void main() {', ...body, '}');
   return { glsl: lines.join('\n'), samplers: samplerKind };
 }

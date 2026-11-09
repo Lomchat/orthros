@@ -967,6 +967,62 @@ and the telemetry's `c.render` show it, and `?glworker=0` is the remedy.
 worker logs batches of commands taking 50 ms or more (with the last command) and returns to its loop 50 ms late (the
 first 20 of each: what makes the emulator wait for frames); harness input `spin:<percent>` (the control thread of 3.).
 
+## 9. Software rendering: lean shaders (2026-11-09)
+
+Without a usable GPU Chrome rasterizes with SwiftShader (this server; any player's machine whose GPU Chrome blocks).
+SwiftShader runs the shaders on the CPU, a SIMD group of pixels or vertices at a time, and runs every statement it is
+given for the whole group: a loop is a loop, a branch on a value that differs between lanes runs both sides, an input
+the shader reads anywhere is interpolated for every pixel. The GLSL the translators generated was written for GPUs and
+paid for that: translated shader models 2-3 (`d3d9-shaders.js`) kept their 32 temporary registers in an array cleared
+by a loop, per pixel and per vertex (`vec4 r[32]; for (...) r[i] = vec4(0.0);`), and copied all 8 texture coordinate
+inputs into `t#` (all 8 interpolated); the fixed-function vertex shader looped over the lights with a per-vertex branch
+on each one's type; the fixed-function pixel shader read the specular color even when nothing used it.
+
+**Lean shaders** (`leanShaders()` in `src/gfx/d3d8-shaders.js`, default on; worker debug global
+`ORTHROS_LEAN_SHADERS_OFF=1` — settable mid-session, `dbg:` — gives the earlier GLSL; the backend drops its programs by
+key when the switch moves and keeps them by sources, so switching back costs no compile): the same results with less
+work — registers as plain variables, declared only when the shader names them (shader models 1-3 address `r#` by
+constant indices only); only the `t#` / specular inputs a pixel shader reads; the enabled lights unrolled by the types
+the program key already holds (one block per light, constant uniform indices, only its type's code). Pixel-exact:
+`tests/shader-compile.test.js` draws lean and earlier programs in SwiftShader with the same random inputs (lights of each
+type, registers, co-issue) and compares the pixels. `PROGRAM_GLSL_VERSION` 2: the shader programs learned before are
+built again at their first draw (once; fixed-function ones are regenerated from their keys).
+
+**Cost per program** (`tools/shader-cost-bench.mjs`, every program the three games' sessions learned, lean against
+earlier, in one SwiftShader page; pixel shaders over 4 layers of a 1024x768 target, vertex shaders over 360 k vertices;
+mean ms per program):
+
+| programs | pixel shaders lean / earlier | vertex shaders lean / earlier |
+|---|---|---|
+| RotWK, 14 shader-model-2 programs | 81 / 386 (x0.21) | 55 / 90 (x0.61) |
+| BFME 1.08, 3 shader programs | 100 / 391 (x0.26) | 13 / 49 (x0.27) |
+| RotWK, 51 fixed-function | 35 / 34 (x1.02) | 20 / 36 (x0.56) |
+| BFME 1.08, 135 fixed-function | 48 / 47 (x1.01) | 25 / 56 (x0.45) |
+| Vice City, 60 fixed-function | 34 / 37 (x0.93) | 19 / 42 (x0.45) |
+
+**In game** (headless Chromium, SwiftShader, the shared server loaded 15-38; the switch alternated in one session,
+on1/off1/on2/off2/on3/off3 of ~25 s: `tools/scenarios/*-lean-ab.txt`; `render` = the emulator's mean wait for the
+render worker per frame, i.e. SwiftShader's time; per pair ON − OFF):
+
+| game, scene | fps ON / OFF (medians) | render ms per frame ON / OFF (medians) | pairs (render) |
+|---|---|---|---|
+| Vice City, in the street after a new game (640x480) | 10.1 / 9.8 | 28.9 / 36.1 | −7.8, −7.2, −11.0 |
+| BFME 1.08, main menu (1024x768), run 1 | 3.0 / 1.9 | 238 / 472 | −254, −265, +39 |
+| BFME 1.08, main menu, run 2 | 3.0 / 2.9 | 304 / 314 | −9, −455, −13 |
+| RotWK, skirmish (1024x768), run 1 | 3.3 / 2.9 | 203 / 234 | −133, +38, −16 |
+| RotWK, skirmish, run 2 | 2.8 / 2.9 | 276 / 266 | −152, +24, +55 |
+
+The loaded machine makes single phases noisy (BFME's menu runs at 2-5 fps, its frames 100-900 ms; RotWK's skirmish
+view moves with the game). Render is lower in 11 of the 15 pairs: Vice City 3 of 3, BFME 5 of 6, RotWK 3 of 6 (its
+medians +-10 %: no gain shown there, no loss either — its frames are mostly fixed-function pixels and blending). Default
+on. The per-program bench, free of the game's variation, shows where the gain comes from: shader-model-2 pixel
+shaders 4-5 times cheaper, vertex shaders about twice. Fixed-function pixel shaders cost the same (their texture sampling and blending dominate): a game drawn mostly that way (Vice City)
+gains on its vertices. Probes kept for the next steps (worker debug globals, mid-session): `ORTHROS_GL_FLATFS=1` (every
+pixel shader a flat color: what pixel shading costs against vertices, depth and blending — Vice City: render 15.6 ms
+per frame against 32-33 around it), `ORTHROS_GL_NEAREST=1` (every sampler point-sampled from one level: no measurable
+change in any of the three games). Not validated on a real GPU (where none of this was a cost: GPU compilers unroll and
+promote the register array themselves).
+
 ## Appendix: how the numbers were taken
 
 Each run: `tools/with-browser-slot.sh node tools/headless.mjs <manifest> --gl-discard --timescale 1.5 --learn <copy of

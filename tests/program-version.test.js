@@ -106,7 +106,7 @@ function corpusHash() {
 
 // The hash of the corpus for each version: a translator change that alters it needs a new PROGRAM_GLSL_VERSION and its
 // hash added here (the learned programs of older versions are then left out of the lists sessions compile ahead).
-const CORPUS = { 1: '0de594aa20df8326' };
+const CORPUS = { 1: '0de594aa20df8326', 2: 'dfadc21c7e34eb5a' };
 
 test('program GLSL version: the corpus of generated GLSL matches the version', () => {
   const h = corpusHash();
