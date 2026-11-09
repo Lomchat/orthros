@@ -1865,7 +1865,7 @@ class HttpFile {
     else if (!sequential && this.b.streams.size) this.b.streams.delete(this.path);
     const fast = this.b.net.fast(), bulk = sequential && this.run >= STREAM_BYTES;
     let pos = off;
-    const memoOn = !globalThis.ORTHROS_READ_FAST_OFF;
+    const memoOn = !!globalThis.ORTHROS_READ_FAST;
     while (pos < end) {
       const bi = Math.floor(pos / BLOCK), bo = pos - bi * BLOCK;
       // (the block of the last read still in hand — blocks never change —: no key built, no cache lookup, no LRU move

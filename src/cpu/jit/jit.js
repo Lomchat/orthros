@@ -112,7 +112,7 @@ export class Jit {
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
     // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
-    this.refFast = null; this.refFastOff = false; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.xformOff = !!globalThis.ORTHROS_XFORM_FILTER_OFF; this.xformPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0; this.fxDefer = null; this.fxDeferOff = false;
+    this.refFast = null; this.refFastOff = false; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.xformOff = !globalThis.ORTHROS_XFORM_FILTER; // (default off: not validated in play, see docs/api-layer.md) this.xformPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0; this.fxDefer = null; this.fxDeferOff = false;
     this.abOpts = null; this.abEpoch = 0; this.watches = null;
     this.clearTables();
   }
@@ -155,7 +155,7 @@ export class Jit {
   }
   setFxSpecs() { for (const [idx, spec] of this.fxSpecs ?? []) this.mem.write32(DEFER_SPEC + 4 * idx, this.fxSpecOf(spec)); }
   /**
-   * (measurement, dbg:ORTHROS_XFORM_FILTER_OFF) SetTransform of the matrix the device holds already dropped before it is
+   * (measurement, dbg:ORTHROS_XFORM_FILTER=1, off by default) SetTransform of the matrix the device holds already dropped before it is
    * queued (runtime.js SHADOW_XFORM). Back on only once the queue has run: transforms queued while it was off did not
    * keep their shadow entries (their handlers do; Vm.drainDeferred ends xformPending).
    */

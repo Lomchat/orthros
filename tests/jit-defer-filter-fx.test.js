@@ -6,6 +6,7 @@
 // left to JavaScript, as Vm.dispatchThunk does) and through a reference device that executes every call in order. The
 // filter may only drop calls that change nothing: the devices must agree at every draw (queued too: compared when it
 // runs), version counters included. Also: a queued call carrying a structure (a transform) leaves the filter on.
+globalThis.ORTHROS_XFORM_FILTER = 1; // (the transform filter is opt-in)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuestMemory, THUNK_BASE } from '../src/cpu/memory.js';

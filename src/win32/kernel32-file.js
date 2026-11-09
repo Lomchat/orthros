@@ -172,8 +172,8 @@ export function registerKernel32File(api, vm, k) {
     } else if (c.thread.wakeResult !== undefined) vm.sched.block(c.thread, () => true, 0, 'file read'); // (the recorded outcome of the wait)
     if (vm.logKinds.has('fileio')) vm.log('fileio', `read ${f.path ?? '?'} @${pos} ${n} into ${(c.arg(1) >>> 0).toString(16)} (${(() => { const q = c.proc.vmem.query(c.arg(1)); const r = c.proc.vmem.regions.get(q.allocBase); return `${r?.tag ?? 'unallocated'} ${(q.allocBase >>> 0).toString(16)}+${((r?.size ?? 0) >>> 0).toString(16)}`; })()}) [t${c.thread.id}] esp ${(c.thread.cpu.esp >>> 0).toString(16)}`); // (the destination before the read: its allocation)
     // (the destination handed to the reader — HttpFile, NodeFile, MemFile fill it themselves — when it lies in guest memory:
-    // no second copy; ORTHROS_READ_FAST_OFF: read, then copy, as before)
-    const dest = c.arg(1) >>> 0, direct = !globalThis.ORTHROS_READ_FAST_OFF && n > 0 && n < 0x40000000 && dest + n <= 0x7fff0000;
+    // no second copy; off unless ORTHROS_READ_FAST: read, then copy)
+    const dest = c.arg(1) >>> 0, direct = !!globalThis.ORTHROS_READ_FAST && n > 0 && n < 0x40000000 && dest + n <= 0x7fff0000;
     const d = direct ? f.file.read(pos, n, mem.u8.subarray(dest, dest + n)) : f.file.read(pos, n);
     if (f.ioOwner === c.thread) f.ioOwner = null;
     { const pr = c.thread.parkedRead; if (pr) { c.thread.parkedRead = null; if (pr.buf === (c.arg(1) >>> 0)) { const now = mem.bytes(pr.buf, pr.snap.length); let k = 0; while (k < now.length && now[k] === pr.snap[k]) k++; if (k < now.length && (vm.destChanges = (vm.destChanges ?? 0) + 1) <= 20) vm.warn(`read destination written while its read was parked: ${pr.path} ${pr.n} bytes into ${pr.buf.toString(16)} [t${c.thread.id}], first change at +${k}: ${Array.from(now.subarray(k, k + 16), (x) => x.toString(16).padStart(2, '0')).join('')}\n${vm.registerMemory({ eax: pr.buf + k, ecx: 0, edx: 0, ebx: 0, esi: 0, edi: 0, ebp: 0 }).join('\n')}`); } } }
