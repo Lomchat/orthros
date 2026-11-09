@@ -204,10 +204,15 @@ const activeGame = (game) => state()?.manifest === game && ['running', 'loading'
 /** A game's shared base files (`<game>@base`, game-catalog.js baseManifests): a cache of their own, no version, no profile. */
 const isBase = (game) => game.endsWith('@base');
 /**
- * A shared base's first version of its own game folder (the catalog's order; versions of other games may read it too —
- * extraMounts, a port's underlays —, never its card's).
+ * The version of a shared base's own game folder whose card lists it (versions of other games may read it too —
+ * extraMounts, a port's underlays —, never its card's): the first, in the catalog's order, that reads it and has data in
+ * this browser (its cache or its profile's saves: a player of one language's version finds it in that version's card,
+ * ownProfile), else the folder's first.
  */
-const baseVersion = (base) => [...app.games].find(([, g]) => g.gameId + '@base' === base)?.[0] ?? null;
+const baseVersion = (base) => {
+  const vs = [...app.games].filter(([, g]) => g.gameId + '@base' === base);
+  return (vs.find(([n, g]) => g.owners.includes(base) && (app.local?.caches.get(n) || app.local?.profiles.get(g.profileKey))) ?? vs[0])?.[0] ?? null;
+};
 /** The name of the game whose shared base is `base`. */
 const baseGame = (base) => app.games.get(baseVersion(base))?.title ?? base.slice(0, -'@base'.length);
 const nameOf = (game) => app.games.get(game)?.title ?? app.profiles.get(game)?.title ?? (isBase(game) ? t('baseFiles', baseGame(game)) : game);
@@ -232,6 +237,15 @@ const versionCopy = (game) => !!app.games.get(game) && app.games.get(game).profi
  * and cleared here only.
  */
 const readers = (game) => [...app.games].filter(([n, g]) => n !== game && g.owners.includes(game)).map(([n]) => n);
+/**
+ * Is version `game`'s store held by the game being played? Its version's, one that reads it (readers), or one that
+ * shares its game's base: that one opens the store, for the session, as an old copy of the base's files
+ * (manifest.ownerLegacy — not listed by /api/manifests —, game-data.js openVersion).
+ */
+const heldBy = (game) => {
+  const base = app.games.get(game)?.gameId + '@base', own = !!app.games.get(game)?.owners.includes(base);
+  return [...app.games].some(([n, g]) => activeGame(n) && (n === game || g.owners.includes(game) || (own && g.owners.includes(base))));
+};
 const versionOf = (game) => app.games.get(game)?.version ?? null;
 /** Versions as the lists name them: each one's game with its version, once. */
 const labels = (games) => [...new Set(games.map((g) => [nameOf(g), versionOf(g)].filter(Boolean).join(' ')))].join(', ');
@@ -662,13 +676,13 @@ picker.onchange = () => {
   });
 };
 function clearCache(game) {
-  // (the files of versions that read it: not while one of them runs — its game holds the store)
-  if (readers(game).some(activeGame)) { app.tone = 'error'; app.message = t('rQuit'); render(); return; }
+  // (not while a game that holds the store runs; another tab's: the browser refuses — NoModificationAllowedError)
+  if (heldBy(game)) { app.tone = 'error'; app.message = t('rQuit'); render(); return; }
   return run(t('wCache'), async () => {
     if (!await ask({ title: t('cacheAsk', nameOf(game)), text: t('cacheAskText'), ok: t('cacheOk'), danger: true })) return t('cancelled');
     // (a port: the files its earlier pages kept in its database too)
     if (portKey(game)) await clearPortCache(portKey(game));
-    await removeCache(game, state());
+    await removeCache(game, state()).catch((e) => { throw e?.name === 'NoModificationAllowedError' ? new Error(t('rQuit')) : e; });
     return t('rCache');
   });
 }

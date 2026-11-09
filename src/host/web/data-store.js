@@ -288,9 +288,10 @@ export async function removeCache(game, state) {
   if (state?.manifest === game && ['running', 'loading', 'starting'].includes(state.status))
     throw new Error('Quitte ce jeu avant de vider son cache.');
   const root = await navigator.storage.getDirectory();
+  // (the store first: one another context holds is refused — nothing else removed then)
+  await root.removeEntry(CACHE_PREFIX + game, { recursive: true }).catch((e) => { if (e?.name !== 'NotFoundError') throw e; }); // (none: only translated code)
   await root.removeEntry(SNAPSHOT_PREFIX + game, { recursive: true }).catch(() => {}); // (often none)
   await root.getDirectoryHandle(JIT_CACHE).then((d) => d.removeEntry(game + '.bin')).catch(() => {}); // (often none)
-  await root.removeEntry(CACHE_PREFIX + game, { recursive: true }).catch((e) => { if (e?.name !== 'NotFoundError') throw e; }); // (none: only translated code)
 }
 /** One of the page's other folders (scanStorage's `others`), removed. */
 export async function removeOther(name) {
