@@ -74,12 +74,17 @@ function writeData(mem) {
   const mvar = [mbase, mbase, mbase.map((w, k) => (k === 8 ? 0x80000000 : w)), mbase.map((w, k) => (k === 16 ? f32w(16) : w)), mbase.map((w, k) => (k === 3 ? 0xffc00000 : w))];
   for (const v of mvar) { v.forEach((w, k) => mem.write32(a + 4 * k, w)); mats.push(a); a += 128; }
   const xf = a; for (let i = 0; i < 16; i++) mem.write32(xf + 4 * i, f32w(i % 5 === 0 ? 1 : 0.5)); a += 64;
-  return { lights, mats, xf };
+  // (matrices: the same words again, -0 for +0, a NaN member, another matrix)
+  const xfs = [xf];
+  for (const f of [(i) => f32w(i % 5 === 0 ? 1 : 0.5), (i) => (i === 1 ? 0x80000000 : f32w(i % 5 === 0 ? 1 : 0.5)), (i) => (i === 3 ? 0x7fc00000 : f32w(i % 5 === 0 ? 1 : 0.5)), (i) => f32w(i * 0.25)]) {
+    for (let i = 0; i < 16; i++) mem.write32(a + 4 * i, f(i)); xfs.push(a); a += 64;
+  }
+  return { lights, mats, xf, xfs };
 }
 
 function methodsOf(api9) {
   const I = `com.dll!IDirect3DDevice${api9 ? 9 : 8}::`;
-  const list = [['SetLight', 2], ['LightEnable', 2], ['SetMaterial', 1], ['SetRenderState', 2], ['SetTransform', 2], ['DrawPrimitive', 3], ['BeginStateBlock', 0], ['EndStateBlock', 1], ['Reset', 1], ['ApplyStateBlock', 1], ['TestCooperativeLevel', 0]];
+  const list = [['SetLight', 2], ['LightEnable', 2], ['SetMaterial', 1], ['SetRenderState', 2], ['SetTransform', 2], ['MultiplyTransform', 2], ['DrawPrimitive', 3], ['BeginStateBlock', 0], ['EndStateBlock', 1], ['Reset', 1], ['ApplyStateBlock', 1], ['TestCooperativeLevel', 0]];
   if (api9) list.push(['SetFVF', 1], ['SetVertexDeclaration', 1]);
   const m = list.map(([n, argc]) => [I + n, argc]);
   m.push(['com.dll!ID3DXEffect::CommitChanges', 0]);
@@ -99,11 +104,12 @@ function randomProgram(seed, n, api9, data, W) {
     else if (r < 55) calls.push([M.LightEnable, [W.devPtr, idx(), [0, 1, 1, 1, 0x80][rnd(5)]]]);
     else if (r < 65) calls.push([M.SetMaterial, [W.devPtr, rnd(10) === 0 ? 0 : data.mats[rnd(data.mats.length)]]]);
     else if (r < 70) calls.push([M.SetRenderState, [W.devPtr, [7, 137][rnd(2)], rnd(2)]]);
-    else if (r < 74) calls.push([M.SetTransform, [W.devPtr, 256, data.xf]]);
+    else if (r < 74) calls.push([M.SetTransform, [W.devPtr, [256, 256, 2, 3, 16, 257, 5][rnd(7)], data.xfs[rnd(data.xfs.length)]]]);
     else if (api9 && r < 82) calls.push([M.SetFVF, [W.devPtr, [0, 0x142, 0x152][rnd(3)]]]);
     else if (api9 && r < 85) calls.push([M.SetVertexDeclaration, [W.devPtr, rnd(3) === 0 ? 0 : W.decl]]);
     else if (r < 89) calls.push([M.DrawPrimitive, [W.devPtr, 4, 0, 1]]); // (queued: the state compared when it runs)
-    else if (r < 92) calls.push([M.TestCooperativeLevel, [W.devPtr]]); // (handled in JavaScript: the queue runs)
+    else if (r < 91) calls.push([M.TestCooperativeLevel, [W.devPtr]]);
+    else if (r < 92) calls.push([M.MultiplyTransform, [W.devPtr, 256, data.xf]]); // (handled in JavaScript: the queue runs)
     else if (r < 94) calls.push([M.CommitChanges, [FX]]);
     else if (r < 95) { // (a state block recorded: lights apply at once, the FVF is recorded)
       calls.push([M.BeginStateBlock, [W.devPtr]]);
@@ -121,7 +127,8 @@ function randomProgram(seed, n, api9, data, W) {
 /** what the backend reads of these states (bitwise), and the version counters */
 function stateOf(dev) {
   const lights = [...dev.lights].sort((a, b) => a[0] - b[0]).map(([i, l]) => [i, [...new Int32Array(l.buffer, l.byteOffset, l.length)]]);
-  return JSON.stringify([lights, [...dev.lightEnabled], [...new Int32Array(dev.material.buffer, dev.material.byteOffset, 17)], dev.fvf ?? null, dev.vertexDecl ? 1 : 0, dev.rs.get(7), dev.rs.get(137), dev.stateVersion, dev.programVersion, dev.lightVersion, dev.transformVersion]);
+  const xf = [...dev.transforms].sort((a, b) => a[0] - b[0]).map(([k, m]) => [k, [...new Int32Array(m.buffer, m.byteOffset, 16)]]);
+  return JSON.stringify([xf, lights, [...dev.lightEnabled], [...new Int32Array(dev.material.buffer, dev.material.byteOffset, 17)], dev.fvf ?? null, dev.vertexDecl ? 1 : 0, dev.rs.get(7), dev.rs.get(137), dev.stateVersion, dev.programVersion, dev.lightVersion, dev.transformVersion]);
 }
 
 /** the effect's CommitChanges: sets a light switch and the FVF (states the device shadows but commit lists do not name) */
@@ -129,6 +136,7 @@ function commit(W, api9, n) {
   const c = W.ctx([W.devPtr, n % 3, n % 2]);
   W.dev.LightEnable(c);
   if (api9) W.dev.SetFVF(W.ctx([W.devPtr, n % 2 ? 0x142 : 0x152]));
+  W.dev.SetTransform(W.ctx([W.devPtr, 256, W.data.xfs[n % 5]])); // (a pass setting a matrix: the commit forgets the transforms' entries)
 }
 
 function call(W, api9, name, args, st) {
@@ -138,7 +146,7 @@ function call(W, api9, name, args, st) {
 }
 
 function runReference(seed, n, api9) {
-  const W = d3dWorld(api9), data = writeData(W.mem);
+  const W = d3dWorld(api9), data = writeData(W.mem); W.data = data;
   const calls = randomProgram(seed, n, api9, data, W);
   const names = methodsOf(api9).map(([k]) => k.split('::')[1]);
   const st = { commits: 0, draws: [] };
@@ -148,7 +156,7 @@ function runReference(seed, n, api9) {
 }
 
 function runJitted(seed, n, api9, switching = false) {
-  const W = d3dWorld(api9), { mem } = W, data = writeData(mem);
+  const W = d3dWorld(api9), { mem } = W, data = writeData(mem); W.data = data;
   const calls = randomProgram(seed, n, api9, data, W);
   const methods = methodsOf(api9), names = methods.map(([k]) => k.split('::')[1]);
   const cpu = new CpuState(mem, THREAD_STATES_BASE); cpu.reset();
@@ -180,11 +188,13 @@ function runJitted(seed, n, api9, switching = false) {
     // (switching: short time slices — the measurement switch, dbg:ORTHROS_DRAW_OPT_OFF, arrives between slices, calls
     // queued or not; and now and then at a call left to JavaScript, before its queue runs)
     r = jit.run({ maxInsns: switching ? 1 + rnd() : 1e7 });
-    if (r === EXIT.TIMESLICE) { if (rnd() < 32) jit.setDrawOpt(!!jit.drawOptOff); continue; }
+    if (r === EXIT.TIMESLICE) { if (rnd() < 32) jit.setDrawOpt(!!jit.drawOptOff); if (rnd() < 32) jit.setXformFilter(!!jit.xformOff); continue; }
     if (r !== EXIT.THUNK) break;
     if (switching && rnd() < 32) jit.setDrawOpt(!!jit.drawOptOff);
+    if (switching && rnd() < 32) jit.setXformFilter(!!jit.xformOff);
     drain();
-    if (jit.drawOptPending) { jit.drawOptPending = false; jit.setFxSpecs(true); } // (as Vm.drainDeferred)
+    if (jit.drawOptPending) { jit.drawOptPending = false; jit.setFxSpecs(); }
+    if (jit.xformPending) { jit.xformPending = false; jit.setFxSpecs(); } // (as Vm.drainDeferred)
     const idx = cpu.exitArg, argc = methods[idx][1] + 1, args = Array.from({ length: argc }, (_, i) => mem.read32(cpu.esp + 4 + 4 * i));
     const eax = call(W, api9, names[idx], args, st) ?? 0;
     cpu.eip = mem.read32(cpu.esp); cpu.esp += 4 + 4 * argc; cpu.eax = eax >>> 0;
@@ -219,7 +229,7 @@ for (const api9 of [true, false]) {
 }
 
 test('lights filter: a light set again with its own words, and its switch, never reach JavaScript', () => {
-  const W = d3dWorld(true), { mem } = W, data = writeData(mem);
+  const W = d3dWorld(true), { mem } = W, data = writeData(mem); W.data = data;
   const cpu = new CpuState(mem, THREAD_STATES_BASE); cpu.reset();
   const jit = new Jit(mem, new Interp(mem, cpu), { smc: true }); jit.cpu = cpu;
   const methods = methodsOf(true); methods.forEach(([k], i) => { jit.markFast(i, k, true); mem.write32(SLOTS + 4 * i, THUNK_BASE + i * THUNK_SIZE); });
@@ -253,8 +263,8 @@ test('lights filter: a light set again with its own words, and its switch, never
   drain();
   assert.equal(W.dev.lightVersion, v0, 'nothing changed');
   runCode((emit) => { for (let i = 0; i < 50; i++) { emit(M.SetTransform, [W.devPtr, 256, data.xf]); emit(M.SetLight, [W.devPtr, 1, data.lights[1]]); emit(M.LightEnable, [W.devPtr, 1, 1]); emit(M.SetMaterial, [W.devPtr, data.mats[1]]); emit(M.SetRenderState, [W.devPtr, 7, 1]); } });
-  assert.equal(mem.read32(FAST_STATS) - d0, 200, 'every light, switch, material and render state set dropped');
-  assert.equal(mem.read32(DEFER_QUEUE), 50 * 4 * (2 + 3 + 16), 'only the transforms queued');
+  assert.equal(mem.read32(FAST_STATS) - d0, 200 + 49, 'every light, switch, material and render state set dropped, and the transform repeated');
+  assert.equal(mem.read32(DEFER_QUEUE), 4 * (2 + 3 + 16), 'only the first transform queued');
 });
 
 for (const api9 of [true, false]) {

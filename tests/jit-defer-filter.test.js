@@ -13,7 +13,7 @@ import { Jit } from '../src/cpu/jit/jit.js';
 import { DEFER_QUEUE, DEFER_SPEC, DEFER_WORDS, REFS_ANY, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST, FX_OWNER, SHADOW_OWNER } from '../src/cpu/jit/runtime.js';
 import { StateTable } from '../src/win32/state-table.js';
 
-const CODE = 0x20000000, SLOTS = 0x10000100, DEV = 0x10004000, FX = 0x10004100, SB = 0x10005000, TEX = 0x10004200, STACK = 0x10090000, THUNK_SIZE = 16;
+const CODE = 0x20000000, SLOTS = 0x10000100, DEV = 0x10004000, FX = 0x10004100, SB = 0x10020000, TEX = 0x10004200, STACK = 0x10090000, THUNK_SIZE = 16;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
 const push = (v) => [0x68, ...le(v)];
 const callSlot = (i) => [0xff, 0x15, ...le(SLOTS + 4 * i)];

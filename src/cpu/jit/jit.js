@@ -4,7 +4,7 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_F_FORGET, DEFER_TECH, DEFER_BEGIN, DEFER_END } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_FX_XFORM, DEFER_F_FORGET, DEFER_TECH, DEFER_BEGIN, DEFER_END } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
@@ -112,7 +112,7 @@ export class Jit {
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
     // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
-    this.refFast = null; this.refFastOff = false; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0; this.fxDefer = null; this.fxDeferOff = false;
+    this.refFast = null; this.refFastOff = false; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.xformOff = !!globalThis.ORTHROS_XFORM_FILTER_OFF; this.xformPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0; this.fxDefer = null; this.fxDeferOff = false;
     this.abOpts = null; this.abEpoch = 0; this.watches = null;
     this.clearTables();
   }
@@ -135,7 +135,7 @@ export class Jit {
     if (fid === FID_ADDREF || fid === FID_RELEASE) { (this.refFast ??= []).push([idx, fid]); if (this.refFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     // (the queued draws and the lights / material / FVF filter, switchable for measurement: setDrawOpt)
     if (defer !== undefined && DEFER_DRAWS.has(name)) { (this.drawFast ??= []).push(idx); if (this.drawOptOff) this.mem.u8[FAST_TABLE + idx] = 0; }
-    if (defer !== undefined && (defer & DEFER_FX_MASK)) { (this.fxSpecs ??= []).push([idx, defer]); if (this.drawOptOff) this.mem.write32(DEFER_SPEC + 4 * idx, defer & ~(DEFER_FX_MASK | DEFER_F_FORGET)); }
+    if (defer !== undefined && (defer & DEFER_FX_MASK)) { (this.fxSpecs ??= []).push([idx, defer]); this.mem.write32(DEFER_SPEC + 4 * idx, this.fxSpecOf(defer)); }
   }
   /**
    * (measurement, dbg:ORTHROS_DRAW_OPT_OFF) the draws queued or handled at the call, and the lights / material / FVF
@@ -146,9 +146,24 @@ export class Jit {
     this.drawOptOff = !on;
     for (const idx of this.drawFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? FID_DEFER : 0;
     this.drawOptPending = on && this.mem.read32(DEFER_QUEUE) !== 0;
-    if (!this.drawOptPending) this.setFxSpecs(on);
+    if (!this.drawOptPending) this.setFxSpecs();
   }
-  setFxSpecs(on) { for (const [idx, spec] of this.fxSpecs ?? []) this.mem.write32(DEFER_SPEC + 4 * idx, on ? spec : spec & ~(DEFER_FX_MASK | DEFER_F_FORGET)); }
+  /** a spec as the switches leave it: the filter kinds (DEFER_FX_*) dropped while off (SetTransform's has its own switch) */
+  fxSpecOf(spec) {
+    const off = this.drawOptOff || this.drawOptPending || ((spec & DEFER_FX_MASK) === DEFER_FX_XFORM && (this.xformOff || this.xformPending));
+    return off ? spec & ~(DEFER_FX_MASK | DEFER_F_FORGET) : spec;
+  }
+  setFxSpecs() { for (const [idx, spec] of this.fxSpecs ?? []) this.mem.write32(DEFER_SPEC + 4 * idx, this.fxSpecOf(spec)); }
+  /**
+   * (measurement, dbg:ORTHROS_XFORM_FILTER_OFF) SetTransform of the matrix the device holds already dropped before it is
+   * queued (runtime.js SHADOW_XFORM). Back on only once the queue has run: transforms queued while it was off did not
+   * keep their shadow entries (their handlers do; Vm.drainDeferred ends xformPending).
+   */
+  setXformFilter(on) {
+    this.xformOff = !on;
+    this.xformPending = on && this.mem.read32(DEFER_QUEUE) !== 0;
+    this.setFxSpecs();
+  }
   /** (measurement, Vm.setApiFastPaths) AddRef/Release of Orthros COM objects on the fast path or in JavaScript */
   setRefFast(on) {
     this.refFastOff = !on;

@@ -188,9 +188,11 @@ export class MemBackend {
 class MemFile {
   constructor(f) { this.f = f; }
   size() { return this.f.len; }
-  read(off, len) {
+  read(off, len, into) {
     const end = Math.min(off + len, this.f.len);
-    return off >= end ? new Uint8Array(0) : this.f.data.slice(off, end);
+    if (off >= end) return new Uint8Array(0);
+    if (into && into.length >= end - off) { into.set(this.f.data.subarray(off, end)); return into.subarray(0, end - off); }
+    return this.f.data.slice(off, end);
   }
   write(off, bytes) {
     const need = off + bytes.length;
