@@ -2235,7 +2235,7 @@ Its lean package (rule 3) was made ahead of the switch with `openmw-lean-worker.
 branch's code (`--games-dir` a scratch overlay whose four Morrowind versions run r18, `--engines-dir data/engines`), each
 on its own fresh copy of the live learned state and a frozen copy of the live br-cache (r18's pre-built lean package in
 it), against the live r17 served by main's code (30ff5ec) the same way; interleaved, one browser at a time. Results and
-scripts: `tools/openmw/results/r18-release-2026-10-31/validation/`.
+scripts: `data/proof/openmw-results/r18-release-2026-10-31/validation/`.
 
 - Two clients (`mp-check.mjs` of the r17 results, `morrowind-goty-en`): **r18 3 of 4, r17 1 of 3.** r18's passes left
   the watcher's copy 3-43 units from the mover after each 244-491-unit move. Its one failure (r18-5) was A's third move:
@@ -2466,15 +2466,15 @@ it with r14, then with the live r16 —, renumbered r18 once `main`'s own r17 (p
 shipped first: regenerated on r1..r17, the two patches touching no file in common; its only change then this play page's
 `?preloadwait` comment, which now says r17's 60 s. Below, "r20" names this release in every measure, including those
 made before the renumberings; the dev builds keep the names they were built under, `r17dev*`, and their results stay in
-`tools/openmw/results/r17-2026-10-30/`; then renumbered r19 on 2026-10-31, when its MWMP `interp.lua` fix ("Two clients",
+`data/proof/openmw-results/r17-2026-10-30/`; then renumbered r19 on 2026-10-31, when its MWMP `interp.lua` fix ("Two clients",
 above) left it for a release of its own, r18: the former `orthros-r18.patch` without the `interp.lua` and `run.lua`
 hunks, applied on r1..r18 — together they make the same tree —; the dev builds and their results keep their names,
-`r18dev*` and `tools/openmw/results/r18-2026-10-30/`; then renumbered r20 the same day, when `main`'s own r19 (screenshots
+`r18dev*` and `data/proof/openmw-results/r18-2026-10-30/`; then renumbered r20 the same day, when `main`'s own r19 (screenshots
 as RGBA, the draw thread off by default: "The draw thread", above) shipped first: `orthros-r20.patch` regenerated on
 r1..r19 — the two touch `engine.cpp` and `loadingscreen.cpp` in different places, merged without a conflict —, the lock
 entry r20 = r19's patches + `orthros-r20.patch`, r19's exports + `orthros_jspi`. Below, "r20" names this release in every
 measure, whatever its name then (r17, r18 or r19); the dev builds `r19dev-a`, `r19x-a.patch` and the results
-`tools/openmw/results/r19-2026-10-31/` keep theirs; "the live r18" or "r17" is the live release of that day) makes those
+`data/proof/openmw-results/r19-2026-10-31/` keep theirs; "the live r18" or "r17" is the live release of that day) makes those
 waits yield:
 
 - **JSPI** (`wasm-build/orthros-jspi.js`, linked `-sJSPI` with `omw_pump_frame` and `main` promising exports): a read
@@ -2933,7 +2933,7 @@ page block 2.4-2.6 s and its input p95 2.2-2.5 s, the COE's freeze 1.67-2.07 s a
   exposed to any other native code of the browser that walks it; the walker above is the only one seen.
 - **Crashes**: none in the 24 ordinary page sessions of `r17dev-d` (a warm-up, 6 measured loads, a new device, 2 at
   85 KB/s, 4 in play, frame-compare's 9 page loads) nor the 4 with the heap profiler forced on; `r17dev-g2` crashed once in 13
-  ordinary sessions (a save's load) and 2 of 2 forced. Results: `tools/openmw/results/r17-2026-10-30/` (place-load rows,
+  ordinary sessions (a save's load) and 2 of 2 forced. Results: `data/proof/openmw-results/r17-2026-10-30/` (place-load rows,
   perf.json, frame-compare, the crashed sessions' console logs, the kernel's segfault lines).
 - **Not run on these builds**: the two-client multiplayer check (its scratch script, `mp-check.mjs`, was lost with
   /tmp at the 2026-10-30 reboot; rebuilt for the validation below).
@@ -2948,7 +2948,7 @@ the patch's. r16 is the live release `openmw-web-v1.5.3-orthros-r16`. Both run o
 moment (15:10), and a frozen br-cache copy (`--br-cache-frozen`): place-load made a new copy for each run; `perf.mjs`
 started a new server for each run. Each side used its own warm profile, made by its own engine. The runs were interleaved
 r16 / r20, one browser at a time through `tools/with-browser-slot.sh`, the load at their start 7.7-23.7, and at least 35
-GB of memory available throughout. Results: `tools/openmw/results/r17-2026-10-30/validation/` (the place-load rows, each
+GB of memory available throughout. Results: `data/proof/openmw-results/r17-2026-10-30/validation/` (the place-load rows, each
 `perf.json`, the frame comparisons, the two-client runs' `result.json` and logs, the job logs gzipped, each run's start
 with its load and memory, the memory and load every 30 s).
 
@@ -3037,7 +3037,7 @@ gives r1..r17 + r18 + r20, the lock entry's set, and it built in
 on a `dev-serve.sh` server (1,566 draws, `morrowind-goty-vanilla-plus-fr` ran, r17's `LUAUILAYOUT` on in its log).
 `make test`: 1,700 pass, 0 fail. Not measured on r18dev yet: loads, play, the 85 KB/s link, two clients, and the two
 blocking paths left under JSPI, r17's forced read past `dataWaitLimit` (60 s) and the cell change's load (`waitTillDone` /
-abort + load). Results: `tools/openmw/results/r18-2026-10-30/`.
+abort + load). Results: `data/proof/openmw-results/r18-2026-10-30/`.
 
 #### r20: the thin link, the warm F9 delay, the two-client teleport desync, the blocking paths (2026-10-30)
 
@@ -3046,7 +3046,7 @@ code, then fixed and rebuilt: `r18dev-b` (the teleport fix, the engine's marks),
 load at once, the GPU wait's cap as a switch), `r18dev-d` (the cap's default: the build measured in the validation
 below). Every server had its own copy of the live learned state (copied at 17:53) and the frozen br-cache copy; each
 side its own warm profile made by its own engine; one browser at a time; results in
-`tools/openmw/results/r18-2026-10-30/` (`diag/`: the diagnosis' place-load rows and, per run, its read trace, proxy log,
+`data/proof/openmw-results/r18-2026-10-30/` (`diag/`: the diagnosis' place-load rows and, per run, its read trace, proxy log,
 console and CPU profiles; `mp-diag/`, `lua/`, `bench/`, `an/`: the scripts that read them).
 
 **A read trace for every load** (`place-load.mjs --read-trace`, `tools/openmw/read-trace.py`): the page's requests to
@@ -3169,7 +3169,7 @@ and the debug COE are), not done here.
 this tree's page code (the read-ahead drop of (A) included); new warm profiles, each made by its own engine (both
 warm-ups 41-42 s to the world, 538 MB stored, 190-192 MB on the wire); runs interleaved r17 / r20, one browser at a
 time, the load at their start 8-20, never under 44 GB of memory available (`validation/logs/`). Results:
-`tools/openmw/results/r18-2026-10-30/validation/` (place-load rows, each `perf.json`, the two-client runs, the checks,
+`data/proof/openmw-results/r18-2026-10-30/validation/` (place-load rows, each `perf.json`, the two-client runs, the checks,
 the frame comparison, the run log; `an/summary.py` prints the table from them).
 
 | | r17 | r20 (`r18dev-d`) |
@@ -3235,7 +3235,7 @@ The same build (`r18dev-d`, engine `67ba0ec0e388`, this tree at `388dfce`), vali
 learned state, copied at 22:29, and the frozen copy of the live br-cache. Each side had its own warm profile, made by
 its own engine. The runs alternated r17 / r20, one browser at a time through `tools/with-browser-slot.sh`, from 22:30 to
 01:19. Free memory never went below 38 GB (`logs/memory.log`); each start's load and memory are in
-`logs/runs-started.txt`. Results are in `tools/openmw/results/r18-2026-10-30/validation2/`: place-load rows, each run's
+`logs/runs-started.txt`. Results are in `data/proof/openmw-results/r18-2026-10-30/validation2/`: place-load rows, each run's
 console, proxy log and read trace, each `perf.json`, the two-client runs, the checks, the frame comparison, the logs and
 the driver scripts. `scripts/summary2.py validation2` prints `summary.txt` from them.
 
@@ -3355,7 +3355,7 @@ r18 release, `r18dev-d` (r20 as validated: r1..r18 + the `orthros-r20.patch` of 
 `r19dev-a` (engine `515236e0e051`: the kept tree's state rebuilt to r1..r18 + `orthros-r20.patch` + `r19x-a.patch`, now
 folded into `orthros-r20.patch`; "r19a"), all on this tree's page code. One browser at a time through
 `tools/with-browser-slot.sh`, every run started with at least 44 GB available (`logs/runs-started.txt`, `logs/memory.log`
-every 30 s); another session's browser ran beside some of them. Results: `tools/openmw/results/r19-2026-10-31/` (place-load
+every 30 s); another session's browser ran beside some of them. Results: `data/proof/openmw-results/r19-2026-10-31/` (place-load
 rows, each run's console, proxy log and read trace in `runs/`, `perf.json` of every in-play run, chosen CPU profiles in
 `profiles/`, the micro-benchmark in `bench/`, the driver scripts in `scripts/`).
 
@@ -3473,7 +3473,7 @@ Runs alternated r18 / r19a, with the order swapped every pair, one browser at a 
 `tools/with-browser-slot.sh`, from 08:20 to 10:23. Each start's load and memory are in `logs/runs-started.txt` (59
 starts). The slot script held every browser until the load fell under 24. Memory was logged every 30 s
 (`logs/memory.log`); available memory never fell below 40 GB. Results are in
-`tools/openmw/results/r19-2026-10-31/validation3/`: rows, each run's console, proxy log and read trace, `perf.json` files,
+`data/proof/openmw-results/r19-2026-10-31/validation3/`: rows, each run's console, proxy log and read trace, `perf.json` files,
 two-client runs, checks, frame comparison, logs and driver scripts. `scripts/summary3.py` prints `summary.txt` from them.
 
 | | r18 (live) | r20 (`r19dev-a`) |
@@ -3585,7 +3585,7 @@ Renumbered r20 on `main`'s r19 first (above). Builds over the kept tree (`tools/
 read-only from `data/engines`, its draw thread off as shipped), each side its own warm profile made by its own warm-up,
 servers on copies of the live learned state and frozen br-cache of the third validation, runs alternated, one browser at
 a time through `tools/with-browser-slot.sh` (available memory never under 42 GB, `logs/memory.log`). Evidence:
-`tools/openmw/results/jspi-iter4-2026-10-31/` (`diag/`: the attribution runs on `r19dev-a` and r18; `validation/`: the
+`data/proof/openmw-results/jspi-iter4-2026-10-31/` (`diag/`: the attribution runs on `r19dev-a` and r18; `validation/`: the
 rows, `perf.json` files, read traces, `summary.txt`; `scripts/`, `patches/`).
 
 **What the third validation's gaps were** (read traces, CPU profiles, browser traces — `place-load.mjs`
@@ -3690,7 +3690,7 @@ How it ran:
 - Runs alternated, with the order swapped every pair, one browser at a time through `tools/with-browser-slot.sh`, from
   13:12 to 15:34. Each start's load and memory are in `logs/runs-started.txt` (73 starts).
 - Memory was logged every 30 s (`logs/memory.log`). Available memory never fell below 39 GB.
-- Results: `tools/openmw/results/jspi-iter4-2026-10-31/validation-full/` (rows, run consoles, proxy logs and read traces,
+- Results: `data/proof/openmw-results/jspi-iter4-2026-10-31/validation-full/` (rows, run consoles, proxy logs and read traces,
   `perf.json` files, two-client results, checks, frame comparison, logs, driver scripts `val5.sh`/`val5b.sh`).
   `scripts/summary5.py` prints `summary.txt`.
 - The in-play and new-device samples were planned at 8 and 4 pairs (`val5.sh`). After the results, 4 more in-play pairs

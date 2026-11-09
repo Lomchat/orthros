@@ -1,2 +1,0 @@
-overlays: all agree with their originals
-overlay morrowind rc=0
