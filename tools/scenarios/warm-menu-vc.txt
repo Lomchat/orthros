@@ -1,0 +1,9 @@
+# Time to the main menu of Vice City, for the warm-jobs measurement: the intro movies skipped (Escape, Enter, clicks), the anchor
+# of the waitframe step is the menu. 640x480 coordinates.
+6:key:27
+9:key:13
+12:click:10,10
+15:click:10,10
++2:click:10,10
++5:click:10,10
++8:waitframe:5,40

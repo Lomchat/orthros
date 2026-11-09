@@ -155,6 +155,7 @@ const captureAt = opt('capture-at') ? { t: Number(opt('capture-at').replace(/^@/
 // --gl-count <s>:<frames>: WebGL calls per frame (by function) averaged over <frames> frames from that time (no capture)
 const glCount = opt('gl-count') ? { t: Number(opt('gl-count').split(':')[0]), frames: Number(opt('gl-count').split(':')[1] ?? 30), done: false } : null;
 if (opfsDir) q.set('opfs', '1');
+if (opt('snapshot')) q.set('snapshot', opt('snapshot')); // auto: the page's snapshots on (its own, else the server's shared one for a fresh profile: docs/snapshot.md)
 if (opt('frames-from')) q.set('slowfrom', opt('frames-from')); // slow-frame diagnostics only after that time
 if (args.includes('--audio')) q.set('audio', '1'); // set up the AudioWorklet even headless (checks the output path, not audible)
 // --profile-dir <dir>: the game's user profile (C:\\Users\\Player: Options.ini, saves...) is loaded from this host

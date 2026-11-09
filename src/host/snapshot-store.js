@@ -8,7 +8,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
+import { learnArgs } from './warm-jobs.js';
 import { pipeline } from 'node:stream/promises';
 
 const safe = (s) => s.replace(/[^A-Za-z0-9._-]/g, '_');
@@ -66,24 +68,25 @@ export class SnapshotJobs {
     this.queue = []; this.running = null; this.tried = new Map(); this.tokens = new Map();
   }
   /** Queue a session for (game version, language, key) unless one ran or is waiting. */
-  want(name, lang, key) {
-    const id = `${name}|${lang}|${key}`, t = this.tried.get(id);
+  want(name, lang, key, kind = 'publish') {
+    const id = `${kind === 'publish' ? '' : kind + '|'}${name}|${lang}|${key}`, t = this.tried.get(id);
     if ((t && Date.now() - t < this.retryMs) || this.running?.id === id || this.queue.some((j) => j.id === id)) return false;
-    this.queue.push({ id, name, lang, key }); this.next();
+    this.queue.push({ id, name, lang, key, kind }); this.next();
     return true;
   }
   /** The job a POST's token belongs to (it must name the same game version, language and key), or null. */
-  job(token, name, lang, key) { const j = this.tokens.get(token); return j && j.name === name && j.lang === lang && j.key === key ? j : null; }
+  job(token, name, lang, key) { const j = this.tokens.get(token); return j && j.kind === 'publish' && j.name === name && j.lang === lang && j.key === key ? j : null; }
   next() {
     if (this.running || !this.queue.length) return;
     const j = this.running = this.queue.shift(), token = crypto.randomBytes(16).toString('hex');
     this.tried.set(j.id, Date.now()); this.tokens.set(token, j);
     fs.mkdirSync(this.logDir, { recursive: true });
     const log = fs.openSync(path.join(this.logDir, `publish-${safe(j.name)}-${safe(j.lang || 'none')}.log`), 'w');
-    const args = ['node', 'tools/snapshot-publish.mjs', j.name, '--url', this.url(), '--lang', j.lang, '--key', j.key, '--token', token];
+    const url = this.url(), scratch = j.kind === 'learn' ? fs.mkdtempSync(path.join(fs.existsSync('/tmp/orthros-scratch') ? '/tmp/orthros-scratch' : os.tmpdir(), 'learn-')) : null;
+    const args = ['node', ...(scratch ? learnArgs(this.root, j.name, new URL(url).port, scratch) : ['tools/snapshot-publish.mjs', j.name, '--url', url, '--lang', j.lang, '--key', j.key, '--token', token])];
     const child = spawn('timeout', [String(this.timeoutS), path.join(this.root, 'tools/with-browser-slot.sh'), ...args], { cwd: this.root, stdio: ['ignore', log, log] });
     let ended = false;
-    const done = () => { if (ended) return; ended = true; fs.closeSync(log); this.tokens.delete(token); this.running = null; this.next(); };
+    const done = () => { if (ended) return; ended = true; fs.closeSync(log); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); this.tokens.delete(token); this.running = null; this.next(); };
     child.on('exit', done); child.on('error', done);
   }
 }
@@ -103,16 +106,16 @@ export class SnapshotQueue {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file + '.tmp', JSON.stringify({ v: 1, jobs: this.jobs })); fs.renameSync(this.file + '.tmp', this.file);
   }
-  want(name, lang, key) {
+  want(name, lang, key, kind = 'publish') {
     const now = Date.now();
     this.jobs = this.jobs.filter((j) => now - j.at < Math.max(this.ttlMs, this.retryMs));
-    if (this.jobs.some((j) => j.name === name && j.lang === lang && j.key === key) || this.jobs.length >= this.max) return false;
-    this.jobs.push({ name, lang, key, token: crypto.randomBytes(16).toString('hex'), at: now });
+    if (this.jobs.some((j) => j.name === name && j.lang === lang && j.key === key && (j.kind ?? 'publish') === kind) || this.jobs.length >= this.max) return false;
+    this.jobs.push({ name, lang, key, kind, token: crypto.randomBytes(16).toString('hex'), at: now });
     this.save();
     return true;
   }
   job(token, name, lang, key) {
     const j = this.jobs.find((x) => x.token === token);
-    return j && j.name === name && j.lang === lang && j.key === key && Date.now() - j.at < this.ttlMs ? j : null;
+    return j && (j.kind ?? 'publish') === 'publish' && j.name === name && j.lang === lang && j.key === key && Date.now() - j.at < this.ttlMs ? j : null;
   }
 }

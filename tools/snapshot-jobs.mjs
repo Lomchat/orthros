@@ -7,7 +7,9 @@
 //   --once: the requests there now, then exit
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
+import { learnArgs } from '../src/host/warm-jobs.js';
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const queue = opt('queue'), server = opt('server'), once = args.includes('--once');
@@ -16,11 +18,15 @@ const root = new URL('..', import.meta.url).pathname;
 const done = new Set(); // (tokens run by this runner)
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const run = (j) => new Promise((resolve) => {
-  const a = ['1500', path.join(root, 'tools/with-browser-slot.sh'), 'node', 'tools/snapshot-publish.mjs', j.name, '--url', server, '--lang', j.lang, '--key', j.key, '--token', j.token];
+  // ('learn': a headless run of the version's first minutes against that server, which learns from the reads — warm-jobs.js)
+  const scratch = j.kind === 'learn' ? fs.mkdtempSync(path.join(fs.existsSync('/tmp/orthros-scratch') ? '/tmp/orthros-scratch' : os.tmpdir(), 'warm-learn-')) : null;
+  const a = scratch ? ['1500', path.join(root, 'tools/with-browser-slot.sh'), 'node', ...learnArgs(root, j.name, new URL(server).port, scratch)]
+    : ['1500', path.join(root, 'tools/with-browser-slot.sh'), 'node', 'tools/snapshot-publish.mjs', j.name, '--url', server, '--lang', j.lang, '--key', j.key, '--token', j.token];
   const p = spawn('timeout', a, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
-  const out = (d) => { for (const l of d.toString().split('\n').filter(Boolean)) log(`${j.name} ${j.lang}: ${l.slice(0, 300)}`); };
+  const out = (d) => { for (const l of d.toString().split('\n').filter((x) => x && !(scratch && x.startsWith('[t=')))) log(`${j.name} ${j.lang}: ${l.slice(0, 300)}`); };
   p.stdout.on('data', out); p.stderr.on('data', out);
-  p.on('exit', (code) => resolve(code)); p.on('error', () => resolve(-1));
+  const end = (code) => { if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); resolve(code); };
+  p.on('exit', end); p.on('error', () => end(-1));
 });
 for (;;) {
   let jobs = [];
@@ -28,7 +34,7 @@ for (;;) {
   const todo = jobs.filter((j) => !done.has(j.token) && Date.now() - j.at < 2 * 3600e3);
   for (const j of todo) {
     done.add(j.token);
-    log(`${j.name} ${j.lang}: publishing the snapshot of key ${j.key}`);
+    log(`${j.name} ${j.lang}: ${j.kind === 'learn' ? 'learn session' : 'publishing the snapshot'} of key ${j.key}`);
     log(`${j.name} ${j.lang}: exit ${await run(j)}`);
   }
   if (once) break;
