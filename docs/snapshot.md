@@ -222,3 +222,17 @@ the versions (tests, a first deploy done step by step).
 **Deployment** (the lead): add `--warm-jobs` to `orthros.service`'s `ExecStart` (`... --snapshot-queue --warm-jobs`) and
 restart `orthros.service` then `orthros-snapshot-jobs.service` (the runner must be the new code: it now also runs `learn`
 jobs, through the slot guard like the publish ones). Nothing else: the queue file is the same. To turn it off, remove the flag.
+
+Measured 2026-11-09 (private servers, `--warm-jobs --warm-only`, fresh browser profile, `tools/scenarios/warm-menu-*.txt`; one run
+each; "menu" = the scenario's waitframe anchor, which cannot come before the first Direct3D frame + 14 s for BFME, + 13 s for VC):
+
+| game | no snapshot, empty learn dir | shared snapshot made by the warm job + its lists |
+|---|---|---|
+| BFME 1.08 | first frame 97 s, menu 137 s (load average 72 at that moment) | first frame 3 s, menu 20 s (at the floor; load ~22) |
+| Vice City 1.1 | first frame 10 s, menu 23 s | first frame 1 s, menu 13 s (at the floor) |
+
+The publish jobs found the page's key (the session refused nothing: "running, key ..."); BFME 1.08 published at 186 s
+(302 MiB), Vice City at ~6 min of session. The publish session also left `prefetch-`, `heat-`, `programs2-` and `regions-` files, so the
+learn job only matters for a version whose snapshot exists but whose lists do not: tested on BFME 1.08 (snapshot copied
+into an empty learn directory: the server queued `learn`, the runner's headless run created the four files). Not
+measured: lists without snapshot (the slots were busy), repeated runs. The baseline's load differs from the warm runs'.
