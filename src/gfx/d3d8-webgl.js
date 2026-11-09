@@ -11,6 +11,8 @@ import { programSourceKey, programSourceId, PROGRAM_GLSL_VERSION } from './progr
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { apiOpt } from '../core/api-opt.js';
 import { GpuProbe } from './gpu-probe.js';
+import { RenderScale, glRect, glEdgeX, glEdgeY, scaledSize, scaledLevel, resampleRgba } from './render-scale.js';
+import { gpuInfo, gpuClass } from '../host/web/gpu-class.js';
 
 const D3D_OK = 0;
 const PT = { POINTLIST: 1, LINELIST: 2, LINESTRIP: 3, TRIANGLELIST: 4, TRIANGLESTRIP: 5, TRIANGLEFAN: 6 };
@@ -222,6 +224,12 @@ export class WebGLDevice {
     if (this.glValidate) this.log('d3d-webgl: GL state cache validation on (first 3000 draws, then every 97th)');
     this.captureAt = opts.captureFrame ?? 0; this.frame = 0; this.capturing = false; // one-frame draw dump (like a mini PIX)
     this.dump = opts.dump ?? null; this.captureDraws = !!opts.captureDraws; this.dumpedTex = new Set(); // capture images: bound textures, target after each draw
+    // adaptive internal render resolution (render-scale.js): the scale of the back buffers and of the render targets of
+    // their size (1: off); its controller measures the frames when the GPU is a software rasterizer (or a scale is forced)
+    this.tmpRect = [0, 0, 0, 0];
+    this.rsc = new RenderScale(gl, { software: opts.software ?? gpuClass(gpuInfo(gl).renderer) === 'software', busy: () => opts.busySource?.busyMs ?? this.ownBusyMs() });
+    this.rscale = this.rsc.initial(); this.stats.rscale = this.rsc.stats; this.rsc.stats.s = this.rscale; this.rsc.stats.min = this.rscale; if (this.stats.gpu) { this.stats.gpu.scale = this.rscale; this.stats.gpu.scaleChanges = 0; }
+    if (this.rsc.mode.mode !== 'off') this.log(`d3d-webgl: render scale ${this.rsc.mode.mode}${this.rsc.mode.mode === 'fixed' ? ' ' + this.rscale : ''} (renderer ${this.rsc.software ? 'software' : 'hardware'})`);
     gl.bindVertexArray(this.vao);
     this.reset(dev);
   }
@@ -254,7 +262,7 @@ export class WebGLDevice {
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc'); this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
     this.firstVertexConvention();
     this.programs.clear(); this.programsBySrc.clear(); this.progBySig?.clear(); this.lastProgram = null; if (this.pc) { this.pc.ready.clear(); this.pc.pending = 0; }
-    this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null;
+    this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null; this.fullTmp = null; this.rsc.reset();
     this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer(); this.vao = gl.createVertexArray();
     this.invalidateGlState(); gl.bindVertexArray(this.vao);
@@ -288,7 +296,8 @@ export class WebGLDevice {
     const cube = !!t.faces, volume = !!t.depth;
     const target = cube ? gl.TEXTURE_CUBE_MAP : volume ? gl.TEXTURE_3D : gl.TEXTURE_2D;
     let g = this.textures.get(t.id), fresh = false;
-    if (!g) { fresh = true; g = { tex: gl.createTexture(), target }; this.textures.set(t.id, g); this.bindForUpload(target, g.tex); gl.texParameteri(target, gl.TEXTURE_MAX_LEVEL, (cube ? t.faces[0].length : t.levels?.length ?? 1) - 1); }
+    // (res, scale: the resource, and the scale its levels are stored at — render-scale.js; set again by rescaleTexture)
+    if (!g) { fresh = true; g = { tex: gl.createTexture(), target, res: t, scale: cube || volume ? 1 : this.texScale(t) }; this.textures.set(t.id, g); this.bindForUpload(target, g.tex); gl.texParameteri(target, gl.TEXTURE_MAX_LEVEL, (cube ? t.faces[0].length : t.levels?.length ?? 1) - 1); }
     if (volume) {
       for (let i = 0; i < t.levels.length; i++) { const l = t.levels[i]; if (l.uploaded && !l.dirty && !fresh) continue; this.bindForUpload(target, g.tex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); const data = l.mem ? this.volumeToRgba(t.fmt, l) : null; gl.texImage3D(target, i, gl.RGBA8, l.width, l.height, l.depth, 0, gl.RGBA, gl.UNSIGNED_BYTE, data); l.uploaded = true; l.dirty = false; this.stats.uploads++; }
       return g;
@@ -351,6 +360,15 @@ export class WebGLDevice {
     if (!whole) this.stats.texPartial = (this.stats.texPartial ?? 0) + 1;
     this.stats.uploadBytes = (this.stats.uploadBytes ?? 0) + w * h * 4;
     { const k = `${s.fmt}:${s.width}x${s.height}`, m = this.stats.uploadsBy ?? (this.stats.uploadsBy = new Map()); m.set(k, (m.get(k) ?? 0) + 1); } // (report)
+    if (g.scale && g.scale !== 1 && target === gl.TEXTURE_2D) { // a scaled render-target texture (render-scale.js): its level stored smaller, whole
+      const [gw, gh] = this.levelDims(g, s, level);
+      const px = s.mem ? resampleRgba(surfaceToRgba(this.mem, s.fmt, s.mem, s.width, s.height, s.pitch), s.width, s.height, gw, gh) : null;
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      if (px && alloc[slot] === 'rgba8') gl.texSubImage2D(target, level, 0, 0, gw, gh, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      else gl.texImage2D(target, level, gl.RGBA8, gw, gh, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      alloc[slot] = 'rgba8';
+      return;
+    }
     if (!s.mem) { gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); alloc[slot] = 'rgba8'; return; }
     // a level already specified in the same format is updated in place (no reallocation of GPU storage)
     if (dxt) {
@@ -424,33 +442,166 @@ export class WebGLDevice {
     const back = dev.backBuffers.includes(rt);
     let f = this.fbos.get(rt.id);
     if (!f) {
-      f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, depth: null, color: null, back, flip: !back };
+      // (w, h: the GL storage's size; dw, dh: the Direct3D one — they differ on a scaled target, see render-scale.js)
+      f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, dw: rt.width, dh: rt.height, kx: 1, ky: 1, k: 1, scaled: false, surf: rt, depth: null, color: null, back, flip: !back };
       gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo;
       if (rt.owner && (rt.owner.levels || rt.owner.faces)) {
         const g = this.glTexture(rt.owner);
+        const [w, h] = this.levelDims(g, rt, rt.level); this.sizeTarget(f, w, h); f.k = g.scale ?? 1;
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, rt.owner.faces ? gl.TEXTURE_CUBE_MAP_POSITIVE_X + rt.face : gl.TEXTURE_2D, g.tex, rt.level);
       } else {
-        f.color = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.color); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, rt.width, rt.height);
+        f.k = this.targetScale(rt); this.sizeTarget(f, scaledSize(rt.width, f.k), scaledSize(rt.height, f.k));
+        f.color = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.color); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, f.w, f.h);
         gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, f.color);
       }
-      f.depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, rt.width, rt.height);
+      f.depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, f.w, f.h);
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, f.depth);
       // (checkFramebufferStatus is a round trip to the GPU process that waits for every command queued before it —
       // up to seconds behind a GPU backlog, for a status only logged: --gl-validate or ?dbg=ORTHROS_FBO_CHECK=1)
       if (this.glValidate || globalThis.ORTHROS_FBO_CHECK) { const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`); }
-      if (this.fbos.size < 4) this.log(`d3d-webgl: render target ${rt.width}x${rt.height} fmt ${rt.fmt} ${back ? 'back buffer' : rt.owner ? 'texture level ' + rt.level : 'surface'}`);
+      if (this.fbos.size < 4) this.log(`d3d-webgl: render target ${rt.width}x${rt.height}${f.scaled ? ` (stored ${f.w}x${f.h})` : ''} fmt ${rt.fmt} ${back ? 'back buffer' : rt.owner ? 'texture level ' + rt.level : 'surface'}`);
       this.fbos.set(rt.id, f);
     } else if (this.gs.fbo !== f.fbo) { gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo; } // cached: every draw asks for its target
     return f; // (w, h, flip: read by every draw — the record itself, no object per call)
   }
   setRenderTarget() {}
+  // ---------------------------------------------------------------- render scale (render-scale.js)
+  /** a target record's GL size (w, h) set, with its scale factors from the Direct3D size */
+  sizeTarget(f, w, h) { f.w = w; f.h = h; f.kx = w / f.dw; f.ky = h / f.dh; f.scaled = w !== f.dw || h !== f.dh; }
+  /** the scale a color surface (not a texture level) is stored at: the device's for the back buffers and the render targets of their size */
+  targetScale(rt) {
+    const s = this.rscale, dev = this.dev;
+    if (s === 1) return 1;
+    if (dev.backBuffers.includes(rt)) return s;
+    const bb = dev.backBuffers[0];
+    return (rt.usage & 1) && !(rt.usage & 2) && bb && rt.width === bb.width && rt.height === bb.height && !isDxt(rt.fmt) ? s : 1;
+  }
+  /** the scale a texture is stored at: render-target 2D textures whose top level has the back buffer's size */
+  texScale(t) {
+    const s = this.rscale;
+    if (s === 1 || !(t.usage & 1) || t.faces || t.depth || !t.levels?.length || isDxt(t.fmt)) return 1;
+    const l = t.levels[0], bb = this.dev.backBuffers[0];
+    return bb && l.width === bb.width && l.height === bb.height ? s : 1;
+  }
+  /** GL size of a texture level (`g`: the texture's GL record) */
+  levelDims(g, s, level) {
+    if (!g.scale || g.scale === 1) return [s.width, s.height];
+    const l0 = g.res.levels[0];
+    return scaledLevel(l0.width, l0.height, g.scale, level);
+  }
+  /**
+   * The pixels of a target at its Direct3D size (RGBA8, GL rows): a scaled target is first blitted to a full-size
+   * framebuffer (nearest: the game reads its own colors back, not blends of them).
+   */
+  readTargetPixels(f) {
+    const gl = this.gl, w = f.dw, h = f.dh, rgba = new Uint8Array(w * h * 4);
+    if (f.scaled) {
+      let T = this.fullTmp;
+      if (!T || T.w !== w || T.h !== h) {
+        if (T) { gl.deleteFramebuffer(T.fbo); gl.deleteRenderbuffer(T.rb); }
+        T = this.fullTmp = { fbo: gl.createFramebuffer(), rb: gl.createRenderbuffer(), w, h };
+        gl.bindRenderbuffer(gl.RENDERBUFFER, T.rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, w, h);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, T.fbo); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, T.rb);
+      }
+      this.blit(f.fbo, T.fbo, 0, 0, f.w, f.h, 0, 0, w, h, gl.NEAREST);
+      this.rsc.stats.readbacks = (this.rsc.stats.readbacks ?? 0) + 1;
+    }
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    return rgba;
+  }
+  /** a color blit between two framebuffers outside the scissor test; `dst` left bound (and cached) */
+  blit(src, dst, sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, filter) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, src); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dst);
+    const scissor = this.gs.en[gl.SCISSOR_TEST]; if (scissor) gl.disable(gl.SCISSOR_TEST);
+    gl.blitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, gl.COLOR_BUFFER_BIT, filter);
+    if (scissor) gl.enable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst); this.gs.fbo = dst;
+  }
+  /**
+   * The scale changes (at a present, after the frame's flush): every target whose storage scale changes gets new GL
+   * storage of its new size, its color contents copied over (filtered) and its depth / stencil cleared (games clear them
+   * at the start of a frame); scaled texture levels uploaded from guest memory are uploaded again.
+   */
+  applyRenderScale(s) {
+    const gl = this.gl, from = this.rscale;
+    if (s === from) return;
+    this.rscale = s;
+    gl.disable(gl.SCISSOR_TEST); this.gs.en[gl.SCISSOR_TEST] = false;
+    let n = 0;
+    for (const g of this.textures.values()) if (g.res && g.target === gl.TEXTURE_2D && (g.scale ?? 1) !== this.texScale(g.res)) { this.rescaleTexture(g); n++; }
+    for (const f of new Set(this.fbos.values())) if (f.color && f.k !== this.targetScale(f.surf)) { this.rescaleTarget(f); n++; }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.invalidateGlState();
+    const st = this.rsc.stats; st.s = s; st.changes++; if (s < st.min) st.min = s;
+    if (this.stats.gpu) { this.stats.gpu.scale = s; this.stats.gpu.scaleChanges = st.changes; }
+    this.log(`d3d-webgl: render scale ${from} -> ${s} at frame ${this.frame} (${n} targets resized${st.frames ? `; render ${(st.renderMs / st.frames).toFixed(1)} ms per frame so far` : ''})`);
+  }
+  /** new depth-stencil storage of the target's GL size, cleared, attached to its framebuffer (bound) */
+  newDepth(f) {
+    const gl = this.gl;
+    if (f.depth) gl.deleteRenderbuffer(f.depth);
+    f.depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, f.w, f.h);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, f.depth);
+    gl.depthMask(true); gl.stencilMask(0xff); gl.clearDepth(1); gl.clearStencil(0); gl.clear(gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+  }
+  /** a renderbuffer target (back buffer, render-target surface) at its new scale */
+  rescaleTarget(f) {
+    const gl = this.gl, k = this.targetScale(f.surf), w = scaledSize(f.dw, k), h = scaledSize(f.dh, k);
+    const fbo = gl.createFramebuffer(), color = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, color); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, color);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, f.fbo);
+    gl.blitFramebuffer(0, 0, f.w, f.h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.LINEAR);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.deleteFramebuffer(f.fbo); gl.deleteRenderbuffer(f.color);
+    f.fbo = fbo; f.color = color; f.k = k; this.sizeTarget(f, w, h);
+    this.newDepth(f);
+  }
+  /** a render-target texture at its new scale: a new GL texture, the levels drawn to copied, the others uploaded again */
+  rescaleTexture(g) {
+    const gl = this.gl, t = g.res, old = g.tex, k = this.texScale(t);
+    g.tex = gl.createTexture(); g.scale = k; g.alloc = [];
+    this.bindForUpload(gl.TEXTURE_2D, g.tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, t.levels.length - 1);
+    for (let i = 0; i < t.levels.length; i++) {
+      const s = t.levels[i], f = this.fbos.get(s.id), [w, h] = this.levelDims(g, s, i);
+      this.bindForUpload(gl.TEXTURE_2D, g.tex);
+      if (f) {
+        gl.texImage2D(gl.TEXTURE_2D, i, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); g.alloc[i] = 'rgba8';
+        const fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, g.tex, i);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, f.fbo);
+        gl.blitFramebuffer(0, 0, f.w, f.h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.LINEAR);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.deleteFramebuffer(f.fbo); f.fbo = fbo; f.k = k; this.sizeTarget(f, w, h);
+        this.newDepth(f);
+      } else if (s.uploaded) this.uploadLevel(gl.TEXTURE_2D, i, s, g, i);
+    }
+    gl.deleteTexture(old);
+  }
+  /**
+   * The backend's busy time (ms, cumulative) where no render worker loop measures it (the in-thread backend): the time
+   * inside its entry points, timed from the first call (made by the scale controller in auto mode only).
+   */
+  ownBusyMs() {
+    this.ownBusy ??= { ms: 0, depth: 0 };
+    if (!this.glTime && !Object.prototype.hasOwnProperty.call(this, 'drawPrimitive')) { // (again after the GL timing probe's own wrappers are gone)
+      const B = this.ownBusy, self = this;
+      for (const k of ['drawPrimitive', 'drawIndexedPrimitive', 'drawPrimitiveUP', 'drawIndexedPrimitiveUP', 'clear', 'present', 'readbackSurface', 'stretchRect']) {
+        const fn = Object.getPrototypeOf(this)[k];
+        this[k] = function () { if (B.depth++) { try { return fn.apply(self, arguments); } finally { B.depth--; } } const t0 = performance.now(); try { return fn.apply(self, arguments); } finally { B.depth--; B.ms += performance.now() - t0; } };
+      }
+    }
+    return this.ownBusy.ms;
+  }
   readbackSurface(s) {
-    const gl = this.gl, dev = this.dev;
+    const dev = this.dev;
     const prev = dev.renderTarget; dev.renderTarget = s;
-    const { w, h, flip } = this.bindTarget();
-    const rgba = new Uint8Array(w * h * 4);
+    const f = this.bindTarget(), w = f.dw, h = f.dh, flip = f.flip;
+    let rgba;
     const ap = acct.enter(ACCT.readback), t0 = acct.stamp();
-    try { gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba); } finally { acct.leave(ap); }
+    try { rgba = this.readTargetPixels(f); } finally { acct.leave(ap); }
     // (report: synchronous readbacks — a round trip to the GPU process that waits for every command queued before it;
     // logged at powers of two so a session's count and rhythm show in the log)
     const n = this.stats.readbacks = (this.stats.readbacks ?? 0) + 1, ms = performance.now() - t0; this.stats.readbackMs = (this.stats.readbackMs ?? 0) + ms;
@@ -461,11 +612,10 @@ export class WebGLDevice {
   }
   /** The pixels of back buffer 0 (RGBA8, GL rows) — the render worker's frame comparison (?glworker=compare). */
   readBackBuffer() {
-    const gl = this.gl, dev = this.dev, prev = dev.renderTarget;
+    const dev = this.dev, prev = dev.renderTarget;
     dev.renderTarget = dev.backBuffers[0];
-    const { w, h } = this.bindTarget();
-    const px = new Uint8Array(w * h * 4);
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const f = this.bindTarget(), w = f.dw, h = f.dh;
+    const px = this.readTargetPixels(f);
     dev.renderTarget = prev; this.bindTarget();
     return { w, h, px };
   }
@@ -484,13 +634,10 @@ export class WebGLDevice {
     // (a rectangle in guest memory, or its four values copied by a render worker's recorder)
     const rect = (p, w, h) => (!p ? [0, 0, w, h] : typeof p === 'number' ? [mem.readS32(p), mem.readS32(p + 4), mem.readS32(p + 8), mem.readS32(p + 12)] : p);
     const [sl, st, srr, sb] = rect(sr, src.width, src.height), [dl, dt, drr, db] = rect(dr, dst.width, dst.height);
-    // D3D rows go down; a back buffer's GL rows go up (flip false), a texture target's match D3D (flip true)
-    const sy0 = fs.flip ? st : fs.h - st, sy1 = fs.flip ? sb : fs.h - sb, dy0 = fd.flip ? dt : fd.h - dt, dy1 = fd.flip ? db : fd.h - db;
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fs.fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fd.fbo);
-    const scissor = this.gs.en[gl.SCISSOR_TEST]; if (scissor) gl.disable(gl.SCISSOR_TEST);
-    gl.blitFramebuffer(sl, sy0, srr, sy1, dl, dy0, drr, dy1, gl.COLOR_BUFFER_BIT, filter === 2 ? gl.LINEAR : gl.NEAREST);
-    if (scissor) gl.enable(gl.SCISSOR_TEST);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fd.fbo); this.gs.fbo = fd.fbo;
+    // D3D rows go down; a back buffer's GL rows go up (flip false), a texture target's match D3D (flip true); each
+    // rectangle in its surface's GL storage (scaled targets: render-scale.js), filtered when the two scales differ
+    const filt = filter === 2 || fs.kx !== fd.kx || fs.ky !== fd.ky ? gl.LINEAR : gl.NEAREST;
+    this.blit(fs.fbo, fd.fbo, glEdgeX(fs, sl), glEdgeY(fs, st), glEdgeX(fs, srr), glEdgeY(fs, sb), glEdgeX(fd, dl), glEdgeY(fd, dt), glEdgeX(fd, drr), glEdgeY(fd, db), filt);
     this.stats.blits = (this.stats.blits ?? 0) + 1;
     return 0;
   }
@@ -538,6 +685,9 @@ export class WebGLDevice {
       else { this.capturing = true; this.startGlCount(); this.log(`d3d-webgl: capture frame ${this.frame}`); }
     }
     this.probe?.frame();
+    // (adaptive render resolution: the frame measured, the scale of the next ones — render-scale.js)
+    const s = this.rsc.present(this.rscale);
+    if (s !== this.rscale) this.applyRenderScale(s);
   }
   /** Frame capture: count the WebGL calls of the captured frame per function (instance methods shadow the prototype's). */
   startGlCount() {
@@ -647,18 +797,17 @@ export class WebGLDevice {
   clear(n, rects, flags, color, z, stencil) {
     const gl = this.gl, dev = this.dev;
     if (this.capturing) this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} stencil ${stencil} target ${dev.backBuffers.includes(dev.renderTarget) ? 'screen' : 'FBO'}`);
-    const { h, flip } = this.bindTarget();
+    const f = this.bindTarget(), r = this.tmpRect;
     const v = dev.viewport;
-    const gy = (y, hh) => (flip ? y : h - y - hh);
     this.invalidateGlState(); // masks/scissor are set directly below
     gl.enable(gl.SCISSOR_TEST);
-    gl.scissor(v.x, gy(v.y, v.h), v.w, v.h);
+    glRect(v.x, v.y, v.x + v.w, v.y + v.h, f.dh, f.flip, f.kx, f.ky, r); gl.scissor(r[0], r[1], r[2], r[3]);
     let mask = 0;
     if (flags & 1) { const c = colorToVec(color, this.tmp.v4); gl.colorMask(true, true, true, true); gl.clearColor(c[0], c[1], c[2], c[3]); mask |= gl.COLOR_BUFFER_BIT; }
     if (flags & 2) { gl.depthMask(true); gl.clearDepth(z); mask |= gl.DEPTH_BUFFER_BIT; }
     if (flags & 4) { gl.stencilMask(0xff); gl.clearStencil(stencil); mask |= gl.STENCIL_BUFFER_BIT; }
     // (rectangles in guest memory, or their values copied by a render worker's recorder: 4 per rectangle)
-    if (n && rects) { const mem = this.mem, copied = typeof rects !== 'number'; for (let i = 0; i < n; i++) { const r = rects + 16 * i; const l = copied ? rects[4 * i] : mem.readS32(r), t = copied ? rects[4 * i + 1] : mem.readS32(r + 4), rr = copied ? rects[4 * i + 2] : mem.readS32(r + 8), b = copied ? rects[4 * i + 3] : mem.readS32(r + 12); gl.scissor(l, gy(t, b - t), rr - l, b - t); gl.clear(mask); } }
+    if (n && rects) { const mem = this.mem, copied = typeof rects !== 'number'; for (let i = 0; i < n; i++) { const r = rects + 16 * i; const l = copied ? rects[4 * i] : mem.readS32(r), t = copied ? rects[4 * i + 1] : mem.readS32(r + 4), rr = copied ? rects[4 * i + 2] : mem.readS32(r + 8), b = copied ? rects[4 * i + 3] : mem.readS32(r + 12); const q = glRect(l, t, rr, b, f.dh, f.flip, f.kx, f.ky, this.tmpRect); gl.scissor(q[0], q[1], q[2], q[3]); gl.clear(mask); } }
     else gl.clear(mask);
     gl.disable(gl.SCISSOR_TEST);
   }
@@ -1003,19 +1152,25 @@ export class WebGLDevice {
   // ---------------------------------------------------------------- state application
   applyState(P, info) {
     const gl = this.gl, dev = this.dev;
-    const { h, flip } = this.bindTarget();
+    const tgt = this.bindTarget(), { h, flip } = tgt;
     const v = dev.viewport, gs = this.gs;
-    const vy = flip ? v.y : h - v.y - v.h;
-    if (gs.vpx !== v.x || gs.vpy !== vy || gs.vpw !== v.w || gs.vph !== v.h) { gl.viewport(v.x, vy, v.w, v.h); gs.vpx = v.x; gs.vpy = vy; gs.vpw = v.w; gs.vph = v.h; }
+    // (a scaled target: the viewport and scissor rectangles in its GL storage — render-scale.js; the u_viewport uniform
+    // stays in Direct3D pixels, so pre-transformed vertices land at the same place of the picture)
+    let vx = v.x, vy = flip ? v.y : h - v.y - v.h, vw = v.w, vh = v.h;
+    if (tgt.scaled) { const r = glRect(v.x, v.y, v.x + v.w, v.y + v.h, tgt.dh, flip, tgt.kx, tgt.ky, this.tmpRect); vx = r[0]; vy = r[1]; vw = r[2]; vh = r[3]; }
+    if (gs.vpx !== vx || gs.vpy !== vy || gs.vpw !== vw || gs.vph !== vh) { gl.viewport(vx, vy, vw, vh); gs.vpx = vx; gs.vpy = vy; gs.vpw = vw; gs.vph = vh; }
     if (gs.dzn !== v.minZ || gs.dzf !== v.maxZ) { gl.depthRange(v.minZ, v.maxZ); gs.dzn = v.minZ; gs.dzf = v.maxZ; }
     if (dev.api9 && this.rs(RS9.SCISSORTESTENABLE, 0) && dev.scissor) {
-      const sc = dev.scissor, sx = sc.l, sy = flip ? sc.t : h - sc.b, sw = Math.max(0, sc.r - sc.l), sh = Math.max(0, sc.b - sc.t);
+      const sc = dev.scissor;
+      let sx = sc.l, sy = flip ? sc.t : h - sc.b, sw = Math.max(0, sc.r - sc.l), sh = Math.max(0, sc.b - sc.t);
+      if (tgt.scaled) { const r = glRect(sc.l, sc.t, sc.r, sc.b, tgt.dh, flip, tgt.kx, tgt.ky, this.tmpRect); sx = r[0]; sy = r[1]; sw = Math.max(0, r[2]); sh = Math.max(0, r[3]); }
       this.glEnable(gl.SCISSOR_TEST, true);
       if (gs.scx !== sx || gs.scy !== sy || gs.scw !== sw || gs.sch !== sh) { gl.scissor(sx, sy, sw, sh); gs.scx = sx; gs.scy = sy; gs.scw = sw; gs.sch = sh; }
     } else this.glEnable(gl.SCISSOR_TEST, false);
     if (gs.prog !== P.prog) { gl.useProgram(P.prog); gs.prog = P.prog; }
     const U = P.u;
-    const pv = P.v ?? (P.v = { flip: undefined, t: -1, vp: -1, l: -1, lt: -1, ls: -1, s: -1, c: -1 });
+    const pv = P.v ?? (P.v = { flip: undefined, t: -1, vp: -1, l: -1, lt: -1, ls: -1, s: -1, c: -1, pk: 1 });
+    if (pv.pk !== tgt.kx) { pv.pk = tgt.kx; pv.s = -1; } // (the point size follows the target's scale: render states compared again)
     if (pv.flip !== flip) { pv.flip = flip; if (U('u_flipY')) gl.uniform1f(U('u_flipY'), flip ? -1 : 1); }
     if (this.capturing) this.captureDraw(P, info, v, flip);
     // uniform groups, uploaded only when their source changed since this program last saw it
@@ -1085,7 +1240,7 @@ export class WebGLDevice {
       const fc = this.rs(RS.FOGCOLOR, 0); if (sv.fc !== fc) { sv.fc = fc; if (U('u_fogColor')) gl.uniform4fv(U('u_fogColor'), colorToVec(fc, this.tmp.v4)); }
       const tf = this.rs(RS.TEXTUREFACTOR, 0xffffffff); if (sv.tf !== tf) { sv.tf = tf; if (U('u_tfactor')) gl.uniform4fv(U('u_tfactor'), colorToVec(tf, this.tmp.v4)); }
       const ar = this.rs(RS.ALPHAREF, 0) & 0xff; if (sv.ar !== ar) { sv.ar = ar; if (U('u_alphaRef')) gl.uniform1f(U('u_alphaRef'), ar / 255); }
-      const ps = this.rs(RS.POINTSIZE, 0); if (sv.ps !== ps) { sv.ps = ps; if (U('u_pointSize')) gl.uniform1f(U('u_pointSize'), asFloat(ps) || 1); }
+      const ps = this.rs(RS.POINTSIZE, 0); if (sv.ps !== ps || sv.pk !== tgt.kx) { sv.ps = ps; sv.pk = tgt.kx; if (U('u_pointSize')) gl.uniform1f(U('u_pointSize'), (asFloat(ps) || 1) * tgt.kx); }
       const bumpU = P.bumpU ??= U_BUMPENV.map((n) => U(n)); // (locations, per program)
       for (let i = 0; i < MAX_STAGES; i++) {
         const l = bumpU[i]; if (!l) continue;
@@ -1527,6 +1682,7 @@ export class WebGLDevice {
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     if (this.probe?.hot) this.probe.draw();
+    if (this.rsc.hot) this.rsc.draw();
     gl.drawArrays(this.glMode(type), start, this.vertexCount(type, count));
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dp');
@@ -1568,6 +1724,7 @@ export class WebGLDevice {
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     if (this.probe?.hot) this.probe.draw();
+    if (this.rsc.hot) this.rsc.draw();
     gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dip');
@@ -1588,6 +1745,7 @@ export class WebGLDevice {
     if (!this.bindAttributes(P, info.L, stride)) return;
     if (this.capturing) this.log(`d3d-webgl: [cap] drawPrimitiveUP type ${type} prims ${count} stride ${stride}`);
     if (this.probe?.hot) this.probe.draw();
+    if (this.rsc.hot) this.rsc.draw();
     gl.drawArrays(this.glMode(type), 0, n);
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dpup');
@@ -1605,6 +1763,7 @@ export class WebGLDevice {
     this.streamData(gl.ELEMENT_ARRAY_BUFFER, idx, n * (short ? 2 : 4));
     if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitiveUP type ${type} prims ${count} numV ${numV} stride ${stride}`);
     if (this.probe?.hot) this.probe.draw();
+    if (this.rsc.hot) this.rsc.draw();
     gl.drawElements(this.glMode(type), n, short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, 0);
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dipup');
@@ -1808,7 +1967,7 @@ export function createWebGLBackend(canvas, log, dump) {
       const prog = resolvePrewarmed(gl, programCache, log, budgetMs);
       if (prog) for (const d of programCache.devices) d.gs.prog = prog; // (resolveProgram left it in use: every device's GL state cache — several devices share the context)
     },
-    createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache, probe }); },
+    createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache, probe, busySource: backend }); },
   };
   return backend;
 }

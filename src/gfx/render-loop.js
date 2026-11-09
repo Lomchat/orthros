@@ -47,6 +47,7 @@ export async function replayLoop(ctl, replayer, backend, stats, stop = () => fal
       }
       const t1 = performance.now();
       stats.ms += t1 - t0;
+      if (backend) backend.busyMs = (backend.busyMs ?? 0) + (t1 - t0); // (the render scale controller's busy time: render-scale.js)
       Atomics.add(ctl, CTL.HEARTBEAT, 1);
       if (t1 - lastYield > 8) { await yieldTask(); lastYield = performance.now(); late(lastYield - t1, 'a return to the event loop'); }
       continue;

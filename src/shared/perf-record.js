@@ -147,7 +147,8 @@ export class PerfRecorder {
   /** The cumulative counters now (GPU timer, game data waits). */
   counters({ gpu, data } = {}) {
     if (gpu !== undefined) this.gpuNow = gpu ? { state: gpu.state ?? null, frames: gpu.frames ?? 0, ms: gpu.ms ?? 0, lost: gpu.lost ?? 0, hist: gpu.hist ? Array.from(gpu.hist) : null,
-      run: gpuSeries(gpu.runFrames, gpu.runMs, gpu.runHist), fence: gpuSeries(gpu.fenceN, gpu.fenceMs, gpu.fenceHist) } : null;
+      run: gpuSeries(gpu.runFrames, gpu.runMs, gpu.runHist), fence: gpuSeries(gpu.fenceN, gpu.fenceMs, gpu.fenceHist),
+      scale: Number.isFinite(gpu.scale) ? gpu.scale : null, scaleChanges: gpu.scaleChanges ?? 0 } : null; // (the adaptive render resolution: src/gfx/render-scale.js)
     if (data !== undefined) this.dataNow = data ? { waits: data.waits ?? 0, ms: data.ms ?? 0 } : null;
     // (what the waits were for: the source kept, compacted only when a record takes it — take() follows counters() in the
     // same task, so the same values; compacting every clock tick sorted every file waited for once a second)
@@ -180,6 +181,8 @@ export class PerfRecorder {
       }
       if (!total) { const lost = grow(g0?.lost, g1.lost); if (lost) out.gpu.lost = lost; } // (queries whose result never came)
     } else if (g1) out.gpu = { state: g1.state ?? 'none' };
+    // the render scale at the end of the stretch and its changes in it (the adaptive render resolution)
+    if (g1 && g1.scale !== null && g1.scale !== undefined) { out.gpu.scale = g1.scale; if (!total) out.gpu.scaleChanges = grow(g0?.scaleChanges, g1.scaleChanges); }
     // the game data's waits (reads the engine waited for)
     const d0 = c.data, d1 = this.dataNow;
     if (d1) out.data = total ? { n: c.data?.waits ?? 0, ms: Math.round(c.data?.ms ?? 0) } : { n: grow(d0?.waits, d1.waits), ms: Math.round(grow(d0?.ms, d1.ms)) };
@@ -265,8 +268,9 @@ const nullable = (f) => (v) => (v === null ? null : f(v));
 const GPU_SERIES = { n: (v) => int(v), mean: (v) => num(v, 1e5), p50: nullable((v) => num(v, 1e5)), p99: nullable((v) => num(v, 1e5)) };
 const gpuPart = (g) => {
   if (!g || typeof g !== 'object') return undefined;
-  if (typeof g.state === 'string') return { state: g.state.slice(0, 16) };
-  return pick(g, { n: (v) => int(v), lost: (v) => int(v), mean: (v) => num(v, 1e5), p50: nullable((v) => num(v, 1e5)), p90: nullable((v) => num(v, 1e5)), p99: nullable((v) => num(v, 1e5)),
+  const scale = pick(g, { scale: (v) => num(v, 1), scaleChanges: (v) => int(v) });
+  if (typeof g.state === 'string') return { state: g.state.slice(0, 16), ...scale };
+  return pick(g, { scale: (v) => num(v, 1), scaleChanges: (v) => int(v), n: (v) => int(v), lost: (v) => int(v), mean: (v) => num(v, 1e5), p50: nullable((v) => num(v, 1e5)), p90: nullable((v) => num(v, 1e5)), p99: nullable((v) => num(v, 1e5)),
     run: (v) => (v && typeof v === 'object' ? pick(v, GPU_SERIES) : undefined), fence: (v) => (v && typeof v === 'object' ? pick(v, GPU_SERIES) : undefined) });
 };
 const hist = (h) => (Array.isArray(h) && h.length <= 2 * HIST_N && h.every((x) => Number.isInteger(x) && x >= 0 && x < 1e9) ? h : undefined);

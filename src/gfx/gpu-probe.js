@@ -27,7 +27,7 @@ import { HIST_N, histBucket } from '../core/frame-acct.js';
  * (d3d8-webgl.js); ORTHROS_GL_TIME: every GL call timed for some frames (d3d8-webgl.js glProbeStep). A flag that changes
  * what the guest sees or when (timers, scheduling, the JIT, the APIs' paths) is not one of them.
  */
-export const HOST_ONLY_DBG = Object.freeze(['ORTHROS_GL_COUNT', 'ORTHROS_GL_PROBES', 'ORTHROS_GL_TIME', 'ORTHROS_GPU_METRIC']);
+export const HOST_ONLY_DBG = Object.freeze(['ORTHROS_GL_COUNT', 'ORTHROS_GL_PROBES', 'ORTHROS_GL_TIME', 'ORTHROS_GPU_METRIC', 'ORTHROS_RENDER_SCALE', 'ORTHROS_RENDER_BUDGET']);
 
 const TIME_ELAPSED_EXT = 0x88bf, GPU_DISJOINT_EXT = 0x8fbb;
 export const WINDOW_FRAMES = 120, PERIOD_MS = 10000, GL_FRAMES = 30, GL_PERIOD_MS = 20000;
