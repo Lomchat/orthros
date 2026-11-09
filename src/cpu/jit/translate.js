@@ -134,7 +134,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, jumpTables: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -175,6 +175,36 @@ function inlineApiOf(mem, insn) {
   const fid = mem.u8[FAST_TABLE + (thunk - THUNK_BASE) / THUNK_SIZE];
   return INLINE_FIDS.has(fid) ? { slot, thunk, fid } : null;
 }
+
+/**
+ * Jump tables (opts.jumpTables): `jmp dword ptr [index*4 + table]`, the form compilers give a switch statement (and the
+ * C runtime's memcpy / memset its unrolled tails), names its possible targets in a table of absolute addresses next to
+ * the code. They are read at translation time — entries from the first, while they point within JTAB_SPAN of the jump
+ * (a switch's cases are in its function), at most JTAB_MAX — and the distinct ones become successors of the block like
+ * a branch's (cold ones left out by the heat as for any successor). The translation then compares the address actually
+ * loaded with the entry the index selected when the region was translated: equal, an in-region transfer to that block;
+ * anything else (an index past the entries read, a table rewritten since, a target outside the region) leaves the
+ * region as before. Only where the jump goes changes, never what it loads: exact whatever the table holds.
+ * Returns { reg, targets } (targets[i]: entry i) or null.
+ */
+const JTAB_MAX = 256, JTAB_SPAN = 0x10000, JTAB_TARGETS = 32;
+function jumpTableOf(mem, insn) {
+  if (insn.op !== OP.JMP || insn.opsize !== 4 || insn.adsize === 2 || insn.inlineApi) return null;
+  const o = insn.ops[0];
+  if (o.t !== OT.MEM || o.base >= 0 || o.index < 0 || o.scale !== 4 || o.seg === SEG.FS || o.seg === SEG.GS) return null;
+  const table = o.disp >>> 0;
+  if (table < 0x10000 || table >= THUNK_BASE - 4 * JTAB_MAX) return null;
+  const targets = [], distinct = new Set();
+  for (let i = 0; i < JTAB_MAX; i++) {
+    const t = mem.read32(table + 4 * i) >>> 0;
+    if (Math.abs(t - insn.addr) >= JTAB_SPAN) break;
+    if (!distinct.has(t)) { if (distinct.size >= JTAB_TARGETS) break; distinct.add(t); }
+    targets.push(t);
+  }
+  return targets.length ? { reg: o.index, targets } : null;
+}
+/** the distinct targets of a block ending in a jump table's JMP (insn.jtab), in table order */
+const jtabTargets = (b) => { const j = b.term === TERM_INDIRECT ? b.insns[b.insns.length - 1].jtab : null; return j ? [...new Set(j.targets)] : []; };
 
 // Lazy kinds whose CF / OF Emitter.pushCond computes inline (the same formulas as the flags helper); ZF, SF and PF
 // come from the result for every kind. All of them now: with SHL's (the last bit shifted out, pushShlCarry) the run-time
@@ -364,6 +394,7 @@ function regionRetSites(blocks, byEip) {
       case TERM_NONE: case TERM_CALL: return [b.fallthrough];
       case TERM_JCC: case TERM_LOOP: return [last.ops[0].v, b.fallthrough];
       case TERM_JMP: return [last.ops[0].v];
+      case TERM_INDIRECT: return jtabTargets(b); // (a jump table's cases: the function goes on there)
       default: return [];
     }
   };
@@ -576,6 +607,8 @@ function layoutBlocks(blocks, byEip, entry) {
       case TERM_JCC: case TERM_LOOP: return [last.ops[0].v, b.fallthrough];
       case TERM_JMP: return last.ops[0].t === OT.REL ? [last.ops[0].v] : [];
       case TERM_CALL: return [b.fallthrough, branchTarget(last)];
+      case TERM_INDIRECT: if (last.jtab) return jtabTargets(b); // (a jump table's cases, see jumpTableOf) — else as RET:
+      // falls through
       default: return retSites[b.index] ?? []; // (RET, an import stub's inline-API JMP: their local return sites)
     }
   };
@@ -670,6 +703,7 @@ export function discoverRegion(mem, entry, opts) {
   const cold = (from, t) => (only !== null ? !only.has(t) : heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t));
   // (measurement, startbench --jit-sites: the successors left out for the region's size)
   const limited = globalThis.ORTHROS_SITE_PROF ? new Set() : null;
+  const jtabs = !!(opts.jumpTables ?? JIT_DEFAULTS.jumpTables);
   // pass 1: find leaders
   while (queue.length && leaders.size <= MAX_BLOCKS && total < MAX_INSNS * 2) {
     let a = queue.shift();
@@ -684,6 +718,11 @@ export function discoverRegion(mem, entry, opts) {
       if (term === TERM_JMP) { addLeader(insn.ops[0].v); break; }
       if (term === TERM_JCC || term === TERM_LOOP) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
       if (term === TERM_CALL) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
+      if (term === TERM_INDIRECT && jtabs) { // (a jump table's targets: see jumpTableOf)
+        if (insn.jtab === undefined) insn.jtab = jumpTableOf(mem, insn);
+        if (insn.jtab) for (const t of new Set(insn.jtab.targets)) addLeader(t);
+        break;
+      }
       if (term === TERM_INDIRECT || term === TERM_RET || term === TERM_EXIT) { if (term !== TERM_RET && term !== TERM_INDIRECT) addLeader(insn.next); break; }
       break;
     }
@@ -874,7 +913,9 @@ export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect'
   'nullCheck',
   // x87 arithmetic (translate-x87.js arith): operations run on the 24-bit float / double paths, their entries into the
   // cold path (a result the hot tests sent aside), and the calls of the cold-path kernels (fpmath-x87cold.js)
-  'x87Arith', 'x87ColdEntry', 'x87ColdCall'];
+  'x87Arith', 'x87ColdEntry', 'x87ColdCall',
+  // jump tables (opts.jumpTables): the jumps that stayed in their region (the others count as `indirect`)
+  'jtabLocal'];
 /** state block offset of profiling counter k */
 export const profOffset = (k) => (k < 16 ? ST.PROF + 4 * k : ST.PROF2 + 4 * (k - 16));
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
@@ -1682,6 +1723,34 @@ class Emitter {
       else { this.count(PF.dispatch); this.count(this.inRet ? PF.dispatchRetTop : PF.dispatchBackTop); this.dispatchUsed = true; c.i32(t).set(L_BLK).br(this.dispatchL); }
     }
     this.x87Restore(s);
+  }
+
+  /**
+   * A jump table's JMP (insn.jtab, see jumpTableOf), the target it loaded on the stack: a br_table on the index register
+   * over the entries read at translation time, each in-region entry's arm comparing the loaded target with that entry's
+   * address — equal, an in-region transfer there; otherwise (an index past them, another address loaded, a target
+   * outside the region) the jump leaves the region as before.
+   */
+  jumpTable(insn) {
+    const c = this.c, { reg, targets } = insn.jtab;
+    c.set(L_TV);
+    const local = [...new Set(targets)].filter((a) => this.byEip.has(a));
+    const exit = c.block();
+    const arms = new Array(local.length);
+    for (let k = local.length - 1; k >= 0; k--) arms[k] = c.block();
+    c.get(L_REG + reg).br_table(targets.map((a) => { const k = local.indexOf(a); return k >= 0 ? arms[k] : exit; }), exit);
+    for (let k = 0; k < local.length; k++) {
+      c.end(); // arms[k]
+      c.get(L_TV).i32(local[k] | 0).eq();
+      const i = c.hint(true).if_(); this.count(PF.jtabLocal); this.jumpTo(local[k], this.insnIdx); c.end(); void i;
+      c.br(exit);
+    }
+    c.end(); // exit
+    this.stats.jumpTables = (this.stats.jumpTables ?? 0) + 1;
+    this.count(PF.indirect);
+    if (globalThis.ORTHROS_SITE_PROF) this.siteProf(insn.addr, 'ijmp');
+    c.get(L_TV);
+    this.exitToStack();
   }
 
   // ------------------------------------------------------------------ registers & operands
@@ -2831,6 +2900,7 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
     c.end(); // slow
   }
   E.loadOp(t); if (insn.opsize === 2) E.c.i32(0xffff).and();
+  if (insn.jtab && insn.jtab.targets.some((a) => E.byEip.has(a))) { E.jumpTable(insn); return; }
   E.count(PF.indirect);
   if (globalThis.ORTHROS_SITE_PROF) { E.c.set(L_TV); E.siteProf(insn.addr, 'ijmp'); E.c.get(L_TV); }
   E.exitToStack();

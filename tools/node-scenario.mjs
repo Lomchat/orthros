@@ -178,6 +178,9 @@ export class NodeScenario {
           if (o?.blockCounts) this.vm.mem.i32[BLOCK_COUNTS_BASE >>> 2] = 0;
           this.vm.jit.switchOpts(o); this.log(`[input] dbg ${k}=${v ?? ''}`);
         }
+        // jump tables in translated code (translate.js jumpTableOf) off / on again: every region translated again (as the
+        // browser worker does it)
+        if (k === 'ORTHROS_JIT_JTAB_OFF' && this.vm.jit) { this.vm.jit.switchOpts({ ...this.vm.jit.abOpts, jumpTables: !(v && Number(v)) }); this.log(`[input] dbg ${k}=${v ?? ''}`); }
         // the block heat of the translations with counters made so far (Jit.collectHeat, for opts.coldExits)
         if (k === 'ORTHROS_JIT_HEAT' && this.vm.jit) this.log(`[input] dbg ${k}: ${this.vm.jit.collectHeat()} instructions executed`);
         // the visit flags of the translations made so far (opts.visit), added to the heat (Jit.harvestVisits)
