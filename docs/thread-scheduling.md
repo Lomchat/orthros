@@ -329,6 +329,12 @@ browser's whole process tree, probe p50 of `Atomics.wait(1)` in ms):
 | worker `setInterval(1)` | 0.07 | 1.3 |
 | `MessageChannel` ping-pong (dropped) | 0.07 | 107 |
 
+A/B in one session (`ORTHROS_HOST_TIMER_HELPER_OFF`, 3 pairs of ~20 s, headless Chromium `--gl-discard`, server loaded by
+other jobs, medians of the 3 ON / OFF phases): BFME 1.08 fps 14.5 / 15.0, frame p50 88.5 / 88.8 ms, p99 180 / 178;
+RotWK 2.02 fps 14.0 / 14.2, p50 90.1 / 89.1, p99 190 / 181; Vice City fps 22.3 / 21.7, p50 34.4 / 34.4, p99 91.7 / 91.9,
+> 33 ms per min 795 / 749. No difference beyond noise (all three games reported `status fine`, baseline 0.06-0.11 ms,
+`starts 0`: the ON arm runs the same code as OFF).
+
 Here the granularity is already 0.07 ms: the helper stays at `fine` and never starts, so the cost above is only what a
 coarse host would pay (about 1 % of a core per variant). No gain can be shown on Linux (nothing to gain), only that the
 mechanism stays off. Tests: `tests/timer-helper.test.js` (decision logic on a fake clock and fake variants).
