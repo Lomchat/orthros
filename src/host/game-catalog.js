@@ -128,7 +128,9 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
         if (!manifest.languages?.includes(language) || !paths || Array.isArray(paths) || typeof paths !== 'object') fail(file, `${id}: languageFileAliases.${language} invalide`);
         const seen = new Set();
         for (const [from, to] of Object.entries(paths)) {
-          if (!safePath(from) || !safePath(to) || seen.has(from.toLowerCase()) || !resolveGameFile(manifest, from) || !resolveGameFile(manifest, to))
+          // (`from` a file of the game, or a new name: a file the game looks for in this language — a fallback its
+          // archive pattern finds, a file of its language folder — read from `to`, which must exist)
+          if (!safePath(from) || !safePath(to) || seen.has(from.toLowerCase()) || !resolveGameFile(manifest, to))
             fail(file, `${id}: alias de fichier invalide: ${from} -> ${to}`);
           seen.add(from.toLowerCase());
         }

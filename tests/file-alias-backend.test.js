@@ -14,6 +14,10 @@ test('language file aliases change the bytes served under the original name', ()
   assert.equal(french.readdir('TEXT').find((e) => e.name === 'american.gxt').size, 9);
   assert.equal(new TextDecoder().decode(files.open('TEXT/american.gxt').read(0, 32)), 'English');
   assert.equal(french.open('TEXT/american.gxt', { write: true }), null);
+  // (an alias under a name the folder lacks: listed there too — a language's archive pattern, lang\French*.big,
+  // finds the fallback; a source that does not exist adds nothing)
+  const fallback = new FileAliasBackend(files, { 'TEXT/french~american.gxt': 'TEXT/american.gxt', 'TEXT/none.gxt': 'TEXT/missing.gxt' });
+  assert.deepEqual(fallback.readdir('TEXT').map((e) => [e.name, e.size]).sort(), [['american.gxt', 7], ['french.gxt', 9], ['french~american.gxt', 7]]);
 });
 
 test('a language\'s own files are left out of the game folder in the other languages', () => {
