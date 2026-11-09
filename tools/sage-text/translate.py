@@ -87,6 +87,13 @@ def template(segment):
     return text, numbers
 
 
+def typography(text):
+    """A translation punctuated as EA's French: a no-break space before ':' (the line never wraps there), none
+    before '!' and '?'."""
+    text = re.sub(r'[ \u00a0]+([!?])', r'\1', text)
+    return re.sub(r'(?<=\S) +:', '\u00a0:', text)
+
+
 def fill(text, numbers):
     """A translated template with its numbers back (French decimal comma)."""
     return PLACEHOLDER.sub(lambda m: numbers[int(m.group(0)[1:-1]) - 1].replace('.', ','), text)
@@ -227,6 +234,10 @@ class Job:
             for u in units.values():
                 if u['phase'] == 1 and u['en'] in memory and '{' not in u['en']:
                     glossary.setdefault(u['en'], memory[u['en']])
+        # (official entries right in their own place only — a map's "Gondor" = "Belfalas" — named in the config)
+        for term in self.config.get('glossaryExclude', []):
+            glossary.pop(term, None)
+        glossary = {en: fr for en, fr in glossary.items() if '&' not in fr}
         terms = sorted(glossary, key=len, reverse=True)
         longest = max((len(WORD.findall(t)) for t in terms), default=1)
         limit = self.config.get('chunkWords', 6000)
@@ -338,7 +349,7 @@ class Job:
                     if t is None or check_unit(by_id[uid]['en'], t):
                         complete = False
                         t = by_id[uid]['en']
-                    out.append(fill(t, numbers))
+                    out.append(fill(typography(t), numbers))
                 fr = prefix + ''.join(seg + (separators[i] if i < len(separators) else '') for i, seg in enumerate(out)) + suffix
                 stats['translated' if complete else 'partly-english'] += 1
                 if not complete:
