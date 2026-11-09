@@ -73,7 +73,9 @@ les fichiers de version remplacent ceux de la base sans recopier les données co
 versions BFME1 1.03 et 2.22 v7.0.4, BFME2 1.06 et 1.09 v3.01, et RotWK 2.01 et 2.02 v9.7.7. Les fichiers
 anglais et français requis ont été vérifiés par MD5 ; les fichiers absents ont été récupérés depuis les adresses
 du manifeste de l'installeur. Leurs caches et sauvegardes restent séparés par identifiant de manifeste. RotWK
-monte également les fichiers de BFME2 1.06 dans son second lecteur virtuel.
+monte également les fichiers de BFME2 1.06 dans son second lecteur virtuel. Age of the Ring 10.0
+(`age-of-the-ring`, D113) vient de son propre installeur, qui contient aussi ses copies de BFME2 et RotWK : il ne
+dépend d'aucun autre dossier de jeu.
 
 Le menu permet de choisir la version et la langue avant le lancement. BFME1 2.22 ne propose que l'anglais car ses
 menus ne passent pas en français. BFME2 1.06 est installé mais quitte encore pendant l'initialisation sous Orthros ;
