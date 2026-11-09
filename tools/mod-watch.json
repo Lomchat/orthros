@@ -1,0 +1,21 @@
+{
+  "games": [
+    {
+      "game": "age-of-the-ring",
+      "name": "Age of the Ring",
+      "version": { "url": "https://vps.ageofthering.net/launcher-api/version/current", "field": "game_version" },
+      "feeds": [
+        "https://rss.moddb.com/mods/the-horse-lords-a-total-modification-for-bfme/downloads/feed/rss.xml",
+        "https://rss.moddb.com/mods/the-horse-lords-a-total-modification-for-bfme/addons/feed/rss.xml",
+        "https://rss.moddb.com/mods/the-horse-lords-a-total-modification-for-bfme/news/feed/rss.xml",
+        "https://rss.moddb.com/games/battle-for-middle-earth-ii-rise-of-the-witch-king/downloads/feed/rss.xml",
+        "https://rss.moddb.com/games/battle-for-middle-earth-ii-rise-of-the-witch-king/news/feed/rss.xml",
+        "https://rss.moddb.com/mods/age-of-the-rings-realms-in-exile/downloads/feed/rss.xml",
+        "https://rss.moddb.com/mods/age-of-the-rings-realms-in-exile/news/feed/rss.xml",
+        "https://rss.moddb.com/mods/aotr-8-player-war-of-the-ring/downloads/feed/rss.xml"
+      ],
+      "match": ["age of the ring", "aotr", "age-of-the-ring", "the-horse-lords", "realms in exile", "realms-in-exile"],
+      "highlight": ["faction", "submod", "sub-mod", "french", "français", "traduction"]
+    }
+  ]
+}
