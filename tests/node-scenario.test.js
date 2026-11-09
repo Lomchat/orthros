@@ -1,9 +1,9 @@
-// tools/node-scenario.mjs (startbench --input): the steps parsed as the page parses them (src/host/scenario.js) and
+// tools/bench/node-scenario.mjs (startbench --input): the steps parsed as the page parses them (src/web/scenario.js) and
 // waitframe's several ranges, which the bench scenarios use (tools/scenarios/bench/*.txt).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { NodeScenario } from '../tools/node-scenario.mjs';
+import { NodeScenario } from '../tools/bench/node-scenario.mjs';
 
 const fakeVm = () => ({ host: { inputQueue: [], frameHook: () => {} }, d3dDevice: { draws: 0, frames: 0 }, guestInsns: 0 });
 

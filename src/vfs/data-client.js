@@ -4,7 +4,7 @@
 // A read the engine waits for synchronously waits on shared memory (the page's thread spins: Atomics.wait is not
 // allowed there); one it can wait for (JSPI: `ensure`) by message. The pieces the engine uses are told to the worker,
 // which reports them to the server's learned order. Emscripten engines mount the files with emscripten-files.js.
-// A texture's load reads its light copy (src/host/light-copies.js: the texture without its finest levels) on a thin link
+// A texture's load reads its light copy (src/server/light-copies.js: the texture without its finest levels) on a thin link
 // or one not measured yet, unless the file itself is here; the file comes in the background, for its next load. A page
 // may say what its loads are for (prefer): 'light' — the far ring of a view that grows — or 'real'. A page whose engine
 // loads a file again in place once it is here (reloads: a texture made sharp while it is shown) reads the light copies
@@ -272,7 +272,7 @@ export class GameData {
     this.worker.postMessage({ init: { name: o.name, tree: o.tree, session: o.session ?? '', lang: o.lang ?? null, bw: o.bw ?? linkRate.get(), prefetch: o.prefetch ?? 'start', reloads: !!o.reloads, trace: !!this.traceLog, manifest: o.manifest, orderAtOpen: !!o.orderAtOpen, memBytes: o.memBytes, cacheBlocks: o.cacheBlocks, ctrl: this.ctrl.buffer, data: this.data.buffer } });
     this.timer = setInterval(() => { if (this.used.length) this.worker.postMessage({ used: this.used.splice(0) }); }, 2000);
     this.holdTimer = setInterval(() => this.holdWatch(), 100);
-    // (the page's loading indicator, src/host/web/data-meter.js, when it has one: these counters, read live)
+    // (the page's loading indicator, src/web/data-meter.js, when it has one: these counters, read live)
     globalThis.orthrosDataMeter?.attach?.(this.ctrl.buffer);
     // (the link's rate as measured, kept for the next page: ctrl[8], KB/s)
     this.saveRate = () => linkRate.set(Atomics.load(this.ctrl, 8) * 1024);

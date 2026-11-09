@@ -1,4 +1,4 @@
-// Put into the OpenMW engine's pages by the Orthros server (src/host/server.js): what the Orthros page around the
+// Put into the OpenMW engine's pages by the Orthros server (src/server/server.js): what the Orthros page around the
 // engine shows in its header — the frame rate (a frame: an animation frame in which the engine drew) and whether the
 // game has the mouse — and on its loading screen (the engine's download). Told to the page by messages of its origin;
 // nothing changes in the engine. The frames' last measure is the engine page's too (window.orthrosFrames: its view
@@ -37,7 +37,7 @@
     const m = { type: 'orthros-frames', fps: recent.length * 2, max: gaps.at(-1) ?? 0, p99: gaps[Math.floor(gaps.length * 0.99)] ?? 0, total: drawn() > 0 };
     window.orthrosFrames = m; tell(m);
   }, 500);
-  // the bench suite around this page (src/host/web/bench-suite.js, ?benchrun=): what its frame measurement and scripted
+  // the bench suite around this page (src/web/bench-suite.js, ?benchrun=): what its frame measurement and scripted
   // input use (page-meter.js hooks) — the engine's work a frame (its pump, Module._omw_pump_frame, timed), its debug
   // teleport, its data reads waited for (streamfs.js)
   if (/[?&]benchrun=/.test(location.search)) {
@@ -53,11 +53,11 @@
       data: () => { const s = window.__streamfsStats; return s ? { waits: s.misses ?? 0, waitMs: s.stallMs ?? 0, bytes: s.fetchedBytes ?? 0 } : null; },
     };
   }
-  // the passive session record (src/host/web/perf-page.js, docs/real-machine-bench.md "Passive session records"): the
+  // the passive session record (src/web/perf-page.js, docs/real-machine-bench.md "Passive session records"): the
   // engine's frames (browser frames with draws), its GPU time on its context, the game data's waits (streamfs.js),
   // the phase (loading, the menus, the world: view-grow.js), the quality tier (tier.js) and the browser's storage — the
   // Orthros page's (play.js asks persistence as the game starts), else this page's own, asked here
-  Promise.all([import('/src/host/web/perf-page.js'), import('/src/ports/openmw/view-grow.js'), import('/src/host/web/storage-persist.js')]).then(([perf, view, sp]) => {
+  Promise.all([import('/src/web/perf-page.js'), import('/src/ports/openmw/view-grow.js'), import('/src/web/storage-persist.js')]).then(([perf, view, sp]) => {
     const id = decodeURIComponent(location.pathname.split('/')[3] ?? '');
     let storage = null; try { storage = framed ? window.parent.orthrosStorage ?? null : null; } catch { /* another origin */ }
     if (!storage) { storage = sp.pageStorage(); storage.ask(); }
@@ -66,7 +66,7 @@
       data: () => perf.portDataSummary(window.StreamFS?.data?.() ?? null),
       gl: () => glc, draws: drawn, storage });
   }).catch((e) => console.warn('[orthros perf]', e));
-  // the engine's loading status (Module.setStatus, src/host/openmw.js): its package download, "Downloading data...
+  // the engine's loading status (Module.setStatus, src/server/ports/openmw.js): its package download, "Downloading data...
   // (x/y)" many times a second (a few told), then "Running..."
   if (!framed) return;
   let told = 0;

@@ -1,4 +1,4 @@
-// tools/engine-br.mjs: an engine release's brotli siblings (what sendEngineFile sends and engineOf counts).
+// tools/ops/engine-br.mjs: an engine release's brotli siblings (what sendEngineFile sends and engineOf counts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
-import { precompress } from '../tools/engine-br.mjs';
+import { precompress } from '../tools/ops/engine-br.mjs';
 
 test('engine-br: compressible files get a sibling that decodes to them; archives, gamefiles/ and kept ones left', (t) => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-ebr-'));

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isMediaFile, MEDIA_WAV_BYTES, treeFiles } from '../src/vfs/game-tree.js';
-import { listGameTree } from '../src/host/game-files.js';
+import { listGameTree } from '../src/server/game-files.js';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 import { NetLink } from '../src/vfs/net-link.js';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';

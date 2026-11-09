@@ -6,7 +6,7 @@
 // short; the loads of a step read the light copies of their textures (GameData.prefer('light'): their files come after
 // them, for their next loads). Through Orthros' PLAYER script in the engine (view.lua: the camera's view distance,
 // never the settings), which tells the page the player's own setting — changed in Options, the growth stops — and
-// exterior cell. Loaded by the engine page (src/host/openmw.js, withProgressiveView) before the engine starts.
+// exterior cell. Loaded by the engine page (src/server/ports/openmw.js, withProgressiveView) before the engine starts.
 import { linkRate } from '../../vfs/data-client.js';
 
 export const VIEW = {

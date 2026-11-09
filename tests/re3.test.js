@@ -1,4 +1,4 @@
-// re3 browser ports (src/host/re3.js, src/ports/re3/, docs/browser-ports.md "re3 ports"): catalog entries without an
+// re3 browser ports (src/server/ports/re3.js, src/ports/re3/, docs/browser-ports.md "re3 ports"): catalog entries without an
 // executable, the engine release's availability and routes, its own game files laid over the version's, the INI editor
 // of a language's settings, and the player's profile (the files the engine wrote among the mounted game files).
 import { test } from 'node:test';
@@ -6,10 +6,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadGameCatalog } from '../src/host/game-catalog.js';
-import { gameLayers } from '../src/host/game-files.js';
-import { re3Problem, re3Modes } from '../src/host/re3.js';
-import { createServer } from '../src/host/server.js';
+import { loadGameCatalog } from '../src/server/game-catalog.js';
+import { gameLayers } from '../src/server/game-files.js';
+import { re3Problem, re3Modes } from '../src/server/ports/re3.js';
+import { createServer } from '../src/server/server.js';
 import { setIni, setIniDefaults, readIni, bytesToText, textToBytes } from '../src/ports/re3/ini.js';
 import { profileSnapshot, restoreProfile, setProfileIni, toCloud, findPath, casePath, languageIni, envPreRun } from '../src/ports/re3/profile.js';
 import { mountFiles } from '../src/vfs/emscripten-files.js';

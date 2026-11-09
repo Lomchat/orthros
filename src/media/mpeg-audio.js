@@ -73,7 +73,7 @@ export class Synth {
       out[o + j] = acc;
     }
   }
-  /** the 16 window inputs U[j + 32 i] of output sample j after the last run (tools/mpa-window-fit.mjs) */
+  /** the 16 window inputs U[j + 32 i] of output sample j after the last run (tools/dev/mpa-window-fit.mjs) */
   inputs(j, out) { for (let i = 0; i < 16; i++) out[i] = this.v[(this.off + (i >> 1) * 128 + (i & 1 ? 96 : 0) + j) & 1023]; }
 }
 

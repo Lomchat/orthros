@@ -1,4 +1,4 @@
-// The home's light covers (src/host/light-covers.js, server.js /api/cover).
+// The home's light covers (src/server/light-covers.js, server.js /api/cover).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,8 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { spawnSync } from 'node:child_process';
-import { lightCovers, COVER_WIDTH } from '../src/host/light-covers.js';
-import { createServer } from '../src/host/server.js';
+import { lightCovers, COVER_WIDTH } from '../src/server/light-covers.js';
+import { createServer } from '../src/server/server.js';
 
 const ffmpeg = spawnSync('ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8' });
 const haveWebp = ffmpeg.status === 0 && /libwebp/.test(ffmpeg.stdout);

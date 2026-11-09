@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 import { createWebGLBackend } from '../src/gfx/d3d8-webgl.js';
 import { fakeGl } from './fake-gl.js';
 

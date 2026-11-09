@@ -2,7 +2,7 @@
 // the directory (32 bytes a lump: offset, size in the file, size, type, compression, two pad bytes, a 16-byte name).
 // Its textures (miptex): a 16-byte name, width, height, the offsets of four levels, each half the last's size, of 8-bit
 // palette indices.
-// One reader for every place that reads one: the server's light copies (src/host/light-copies.js: a texture's finest
+// One reader for every place that reads one: the server's light copies (src/server/light-copies.js: a texture's finest
 // level redrawn) and a GoldSrc page that announces the textures a map's load reads (src/ports/goldsrc/bsp-reads.js).
 // Pure: bytes in (a Uint8Array or a Buffer), values out — Node and the browser alike.
 

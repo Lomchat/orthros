@@ -5,7 +5,7 @@ again from 2026-10-03 until the measurements of 8.8 — sections 8.5-8.7 were wr
 or the manifest flag `"glWorker": 0` / `false` keep the in-thread backend; where a render worker cannot run (no
 cross-origin isolation or shared memory) the in-thread backend is used. Implemented in section 7. Phase 1 added for the measurements: the probes `ORTHROS_GL_TIME` and
 `ORTHROS_GL_NULL` and readback / buffer-byte counters (`src/gfx/d3d8-webgl.js`, test `tests/gl-probe.test.js`),
-`GL timing` reports forwarded to the telemetry (`src/host/web/main.js`), and `tools/cmdring-bench.mjs`.
+`GL timing` reports forwarded to the telemetry (`src/web/main.js`), and `tools/bench/cmdring-bench.mjs`.
 
 **Summary.** On the emulator's thread the WebGL calls themselves cost only 1.3-6.9 % of a frame, and no WebGL call
 waits for the GPU in steady state; the backend's translation work (JavaScript that turns Direct3D state into GL
@@ -18,10 +18,10 @@ in-thread path kept as fallback.
 
 ## 1. Today
 
-One dedicated worker (`src/host/web/worker.js`) runs the guest (JIT, green threads), the Win32/Direct3D layer
+One dedicated worker (`src/web/worker.js`) runs the guest (JIT, green threads), the Win32/Direct3D layer
 (`src/win32/d3d8.js`, `d3d9.js`, `d3dx9*.js`) and the WebGL2 backend (`src/gfx/d3d8-webgl.js`) on a worker-owned
 `OffscreenCanvas`. At `Present` the backend blits the back-buffer FBO into the default framebuffer and `flush()`es;
-the host (`src/host/browser-host.js`) hands `canvasGl.transferToImageBitmap()` to the page (`bitmaprenderer`).
+the host (`src/web/browser-host.js`) hands `canvasGl.transferToImageBitmap()` to the page (`bitmaprenderer`).
 
 Per draw, on that one thread:
 
@@ -67,7 +67,7 @@ waits.
   user profiles from `/tmp/orthros-profiles`; BFME1 without a profile (its first-launch detection chose 800×600 in
   the `--gl-discard` runs, 1024×768 in the plain run). Menu = the main menu's 3D scene; skirmish = a skirmish in
   play, idle camera (`tools/scenarios` sequences; input files in the report).
-- **Recording cost:** `tools/cmdring-bench.mjs` (a synthetic frame shaped like the measured ones recorded into a
+- **Recording cost:** `tools/bench/cmdring-bench.mjs` (a synthetic frame shaped like the measured ones recorded into a
   `SharedArrayBuffer` ring read by a second thread) and a `memcpy` of BFME1's per-frame buffer data.
 
 ### 2.2 Worker-side results (`--gl-discard`)
@@ -117,7 +117,7 @@ loaded machine at the time): 1-2.3 µs for the same calls, `bufferSubData` 28 µ
 **Synchronous calls in steady state: none** (0.0 per frame in every skirmish probe; 1.2-2.9 `getUniformLocation` per
 frame in menu probes, answered from Chrome's client-side program cache in 0.56 µs).
 
-**Recording into a ring** (`tools/cmdring-bench.mjs`, this machine): 78-114 ns per call over a plain function call,
+**Recording into a ring** (`tools/bench/cmdring-bench.mjs`, this machine): 78-114 ns per call over a plain function call,
 data copies included (1 500 calls + 113 KiB: 0.17 ms; 3 100 + 233 KiB: 0.30 ms; 6 600 + 495 KiB: 0.71 ms). Copying
 BFME1's 4.5 MiB of per-frame buffer data (1024×768 menu): 0.54 ms. Round trip to the other thread (no GPU work):
 median 11-17 µs, p99 15-28 µs.
@@ -529,7 +529,7 @@ frame comparison.
   frames are posted, readbacks answered; `?glworker=check` and `compare` on this thread: no mismatch.
 - `tests/browser.test.js`: `dx9.exe` and `dx.exe` with `?glworker=inline` and `1` in Chromium: same pixels, same
   readbacks, gamma ramp.
-- `tools/render-record-bench.mjs`: the recording cost per draw.
+- `tools/bench/render-record-bench.mjs`: the recording cost per draw.
 
 ### 7.6 Measurements and decision (default stays `?glworker=0`; revised in section 8)
 
@@ -638,7 +638,7 @@ Why the RotWK and Vice City gains were small:
   and each call of the JIT's deferred queue, i.e. every Direct3D state setter — paid a hash lookup for its thunk
   (`tests/builtin-modules.test.js`). BFME2 main menu in Node, three alternated pairs: `api` 7.28 → 6.53 ms per frame.
 
-**Synthetic scenes** (`tools/backend-draw-bench.mjs`: a D3D9 shader scene with effect-style constants, a texture and a
+**Synthetic scenes** (`tools/bench/backend-draw-bench.mjs`: a D3D9 shader scene with effect-style constants, a texture and a
 stream per draw and a dynamic vertex buffer refilled before every third draw; a D3D8 fixed-function scene with world
 matrix, material and two lights per draw). Instructions per draw on top of the Direct3D layer's own (`perf stat`,
 difference of two run lengths: insensitive to the machine's load):
@@ -649,7 +649,7 @@ difference of two run lengths: insensitive to the machine's load):
 | recording (emulator thread, `?glworker=1`) | 10.8k → 8.0k (−26 %) | 12.6k → 7.7k (−39 %) |
 | render worker (replay + backend) | 37.5k → 18.2k (−51 %) | 31.5k → 20.1k (−36 %) |
 
-**Real scenes, no browser** (`tools/framebench.mjs`: the game in Node, its Direct3D work to the backend over a no-op
+**Real scenes, no browser** (`tools/bench/framebench.mjs`: the game in Node, its Direct3D work to the backend over a no-op
 WebGL2 context or to the recorder; the frame accounting of 300-400 frames once frames carry a 3D scene; two runs each,
 alternated; before the raster watch and the thunk table):
 
@@ -988,7 +988,7 @@ the program key already holds (one block per light, constant uniform indices, on
 type, registers, co-issue) and compares the pixels. `PROGRAM_GLSL_VERSION` 2: the shader programs learned before are
 built again at their first draw (once; fixed-function ones are regenerated from their keys).
 
-**Cost per program** (`tools/shader-cost-bench.mjs`, every program the three games' sessions learned, lean against
+**Cost per program** (`tools/bench/shader-cost-bench.mjs`, every program the three games' sessions learned, lean against
 earlier, in one SwiftShader page; pixel shaders over 4 layers of a 1024x768 target, vertex shaders over 360 k vertices;
 mean ms per program):
 

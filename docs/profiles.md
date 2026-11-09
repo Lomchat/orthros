@@ -7,7 +7,7 @@ one cannot read (a translation whose place names are save identifiers, an incomp
 
 ## The key
 
-The catalog gives every version a generated `profileKey` (`src/host/game-catalog.js`, reserved in the manifest): the
+The catalog gives every version a generated `profileKey` (`src/server/game-catalog.js`, reserved in the manifest): the
 game folder's id, or the version's own id with `ownProfile`. It is not the former folder's of a version moved from
 another one (`formerGame` keeps the installation's key only): a moved version's saves join its new game's. A folder id
 equal to another game's version id is refused (one key, one profile); so is `ownProfile` on the version that carries

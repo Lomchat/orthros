@@ -8,7 +8,7 @@ let Processor = null;
 globalThis.AudioWorkletProcessor = class { constructor() { this.port = { onmessage: null }; } };
 globalThis.registerProcessor = (name, cls) => { Processor = cls; };
 globalThis.sampleRate = 44100;
-await import('../src/host/web/audio-worklet.js');
+await import('../src/web/audio-worklet.js');
 const { VOICE_BASE, VOICE_INTS, VOICE_TABLE_BYTES } = await import('../src/win32/dsound.js');
 
 function setup() {

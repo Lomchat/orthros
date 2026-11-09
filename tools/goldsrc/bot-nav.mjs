@@ -7,8 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/host/game-catalog.js';
-import { DEFAULT_ENGINES_DIR, linkGameLayers } from '../../src/host/goldsrc.js';
+import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/server/game-catalog.js';
+import { DEFAULT_ENGINES_DIR, linkGameLayers } from '../../src/server/ports/goldsrc.js';
 
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
 const id = args[0], library = arg('--library'), profiles = arg('--profiles'), out = arg('--out'), maps = arg('--maps')?.split(',').filter(Boolean);

@@ -1,4 +1,4 @@
-/* A browser port's page (play.html): the game under the page's header (/src/host/web/player.css, as the Windows
+/* A browser port's page (play.html): the game under the page's header (/src/web/player.css, as the Windows
    games'), its choices and loading in the loading screen's box. (No rule here may begin with "canvas": the engine's
    glue rewrites those of the page's first style sheet when it hides the mouse.) */
 html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; color-scheme: dark; }

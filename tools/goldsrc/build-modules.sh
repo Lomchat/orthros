@@ -140,7 +140,7 @@ if build_spec.get('gameFiles'):
     subprocess.run(['python3', '-I', str(tools / 'release-gamefiles.py'), str(stage), *archives], check=True)
 PY
   # (each compressible file's brotli 11 beside it: what the server sends a browser that takes it)
-  node "$root/tools/engine-br.mjs" "$build/stage" > /dev/null
+  node "$root/tools/ops/engine-br.mjs" "$build/stage" > /dev/null
   mv "$build/stage" "$release"
   rm -rf "$build"
   echo "Built $release"

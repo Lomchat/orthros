@@ -1,4 +1,4 @@
-// Passive session records (src/host/perf-record.js, src/host/web/perf-page.js, docs/real-machine-bench.md "Passive
+// Passive session records (src/shared/perf-record.js, src/web/perf-page.js, docs/real-machine-bench.md "Passive
 // session records"): the recording per minute and per phase, hidden time left out, the counters' differences, the
 // bounds, the server's validation and the /api/telemetry route, the page side with a fake window (frames, the
 // engine's work, the GPU timer, the end), what a port's data waits were for (portDataSummary, compactDataSum), its
@@ -9,11 +9,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { PerfRecorder, sanitizePerfRecord, fitRecord, compactProbe, compactDataSum, MAX_RECORDS, MAX_ENTRIES, PERF_MAX_BYTES, PATH_MAX } from '../src/host/perf-record.js';
-import { PerfSession, timerContext, portDataSummary, portEvents } from '../src/host/web/perf-page.js';
+import { PerfRecorder, sanitizePerfRecord, fitRecord, compactProbe, compactDataSum, MAX_RECORDS, MAX_ENTRIES, PERF_MAX_BYTES, PATH_MAX } from '../src/shared/perf-record.js';
+import { PerfSession, timerContext, portDataSummary, portEvents } from '../src/web/perf-page.js';
 import { GameData } from '../src/vfs/data-client.js';
-import { createServer } from '../src/host/server.js';
-import { perfSessions, perfReport, formatPerf, gpuLabel, buildSessions } from '../tools/telemetry-report.mjs';
+import { createServer } from '../src/server/server.js';
+import { perfSessions, perfReport, formatPerf, gpuLabel, buildSessions } from '../tools/dev/telemetry-report.mjs';
 import { HIST_N, histBucket } from '../src/core/frame-acct.js';
 
 const IRIS = 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)';
@@ -341,10 +341,10 @@ test('--perf: sessions per game × GPU, medians, the worst minutes, slow frames\
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-perf-report-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(path.join(dir, 'telemetry-2026-10-23.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-  const out = spawnSync(process.execPath, ['tools/telemetry-report.mjs', dir, '--perf', '--gpu', 'Iris', '--game', 'g1'], { encoding: 'utf8' });
+  const out = spawnSync(process.execPath, ['tools/dev/telemetry-report.mjs', dir, '--perf', '--gpu', 'Iris', '--game', 'g1'], { encoding: 'utf8' });
   assert.equal(out.status, 0, out.stderr);
   assert.match(out.stdout, /Intel Iris Xe Graphics: 2 session/); assert.doesNotMatch(out.stdout, /NVIDIA/);
-  const js = JSON.parse(spawnSync(process.execPath, ['tools/telemetry-report.mjs', dir, '--perf', '--json'], { encoding: 'utf8' }).stdout);
+  const js = JSON.parse(spawnSync(process.execPath, ['tools/dev/telemetry-report.mjs', dir, '--perf', '--json'], { encoding: 'utf8' }).stdout);
   assert.equal(js.length, 3);
 });
 

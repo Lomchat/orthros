@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { createServer } from '../src/host/server.js';
-import { suggestUsername } from '../src/host/google-signin.js';
+import { createServer } from '../src/server/server.js';
+import { suggestUsername } from '../src/server/google-signin.js';
 
 // A fake Google: its sign-in page is never visited — the test reads the state and nonce from the address the server
 // sends the window to, and its token endpoint answers with an ID token for whichever player the next code names.

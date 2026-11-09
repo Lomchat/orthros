@@ -125,10 +125,10 @@ It now consumes the result and looks at the file's owner again.
 ## Short sleeps and the browser's timer clamp (2026-10-21)
 
 When every guest thread waits more than 2 ms, `Vm.runFor` returns 'sleep' and the worker arms a timer for the next pump
-(src/host/web/worker.js `schedulePump`). The HTML timer nesting clamp makes a `setTimeout` armed from a timer
+(src/web/worker.js `schedulePump`). The HTML timer nesting clamp makes a `setTimeout` armed from a timer
 callback, five deep, last at least 4 ms: a chain of short sleeps (every pump returning 'sleep') overslept by 1-3 ms each.
 A pump run by its timer that sleeps again for less than 5 ms now arms the next timer from a message task (one
-MessageChannel hop, ~4 µs), where the clamp does not apply. `tools/timer-clamp-check.mjs` (Chromium worker, 200
+MessageChannel hop, ~4 µs), where the clamp does not apply. `tools/check/timer-clamp-check.mjs` (Chromium worker, 200
 sleeps each): 1/2/3 ms sleeps re-armed from the timer callback oversleep 3.07/2.07/1.07 ms; through the hop they fire
 0.8-0.9 ms early on average (setTimeout truncates the fractional delay; runFor waits the rest), p99 +0.08 ms. BFME1
 play is not affected (its pump never returns 'sleep': the 1 ms waits happen inside runFor). `ORTHROS_TIMER_HOP=0`: the
@@ -293,7 +293,7 @@ region and heap block (and its provenance) it points into.
 
 ## Host timer resolution: a helper that holds 1 ms (2026-11-09)
 
-`src/host/web/timer-helper.js` (`TimerHelper`), wired in `main.js` (`startTimerHelper`, `noteTimerHelper`); the probe worker
+`src/web/timer-helper.js` (`TimerHelper`), wired in `main.js` (`startTimerHelper`, `noteTimerHelper`); the probe worker
 is `timing-probe.js` (mode `wait`: p50 overshoot of 24 `Atomics.wait(1 ms)`).
 
 **Why.** On the owner's RTX 4050 Windows laptop `Atomics.wait(1)` wakes ~15 ms late (p50 14.84 ms; ~2 ms on his Iris Xe
@@ -318,7 +318,7 @@ Switches (page globals, `?dbg=` or harness `dbg:` steps, forwarded by the worker
 never runs a helper (and stops the running one); `ORTHROS_HOST_TIMER_HELPER_FORCE=<variant>` runs that variant while a
 pacing loop runs, without measuring. Default: on (self-adapting).
 
-**Measured on this Linux server** (headless Chromium, SwiftShader; `tools/timer-helper-bench.mjs`, 8 s per row, CPU of the
+**Measured on this Linux server** (headless Chromium, SwiftShader; `tools/bench/timer-helper-bench.mjs`, 8 s per row, CPU of the
 browser's whole process tree, probe p50 of `Atomics.wait(1)` in ms):
 
 | helper running | p50 | CPU (% of a core) |
@@ -338,7 +338,7 @@ RotWK 2.02 fps 14.0 / 14.2, p50 90.1 / 89.1, p99 190 / 181; Vice City fps 22.3 /
 Here the granularity is already 0.07 ms: the helper stays at `fine` and never starts, so the cost above is only what a
 coarse host would pay (about 1 % of a core per variant). No gain can be shown on Linux (nothing to gain), only that the
 mechanism stays off. Tests: `tests/timer-helper.test.js` (decision logic on a fake clock and fake variants).
-`tools/timer-helper-bench.mjs` run in the owner's Chrome gives the real gain per variant.
+`tools/bench/timer-helper-bench.mjs` run in the owner's Chrome gives the real gain per variant.
 A/B scenarios (ON = default, OFF = `ORTHROS_HOST_TIMER_HELPER_OFF=1`): `tools/scenarios/*-host-timer-ab.txt`.
 
 ## The BFME1 investigation (2026-10-03/04)
@@ -395,7 +395,7 @@ first anomaly of a failing run is now a fault at that store (`lotrbfme.exe+0x882
 block whose links are garbage), on which the game's crash handler ends the process (exit through its dialog) — earlier
 and clearer than the calls through garbage pointers that followed before.
 
-**Reproduced in Node.** `tools/startbench.mjs bfme-vanilla --input tools/scenarios/bfme-skirmish-setup.txt` from the
+**Reproduced in Node.** `tools/bench/startbench.mjs bfme-vanilla --input tools/scenarios/bfme-skirmish-setup.txt` from the
 warm profile (menu, SOLO PLAY, SKIRMISH) fails like the browser — same faulting store, same stacks — in a few percent of
 the runs at the default slice, more on a loaded machine, and in 12-25 % with `ORTHROS_SLICE_INSNS=20000` / `5000`
 (amplifiers: more points where threads are interrupted). Tens of runs in parallel, no browser slot.
@@ -430,7 +430,7 @@ Other games with the quantum (Node, same scenarios, before / after): BFME2's pla
 
 ### Follow-up 2 (2026-10-04 evening): what the traces show; what was tried
 
-**Node at the default settings, main against this branch** (`tools/startbench.mjs bfme-vanilla --input
+**Node at the default settings, main against this branch** (`tools/bench/startbench.mjs bfme-vanilla --input
 tools/scenarios/bfme-skirmish-setup.txt` from the warm profile, the two trees' runs interleaved six at a time): main
 (5d528a8, `ORTHROS_NULL_WATCH=1`) **4 / 40**, this branch **4 / 40** — every failure the same release from the same frame
 (`lotrbfme.exe+0x888237 < +0x9fc4e < +0x57d1dd`, the skirmish-setup click). Headless Chromium at the default settings
@@ -478,7 +478,7 @@ interrupted inside one keeps it while the others run) did not change the rate: 7
 
 Question: what in the emulator could make the stale block be reused (or freed) where Windows would not. Looked at
 through Orthros' own traces only (`startbench --api-hist`, the `timer` log, crash reports); every run below is
-`tools/startbench.mjs bfme-vanilla --input tools/scenarios/bfme-skirmish-setup.txt` from the warm profile, eight at a
+`tools/bench/startbench.mjs bfme-vanilla --input tools/scenarios/bfme-skirmish-setup.txt` from the warm profile, eight at a
 time, the two arms alternated within each batch; a failure is the main thread's access violation at
 `lotrbfme.exe+0x882c67` (the program allocator unlinking a block whose links are garbage), the same signature in every
 failing run.

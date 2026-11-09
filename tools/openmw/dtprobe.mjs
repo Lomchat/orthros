@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { launchOptions } from '../port-perf.mjs';
+import { launchOptions } from '../bench/port-perf.mjs';
 
 const args = process.argv.slice(2), id = args[0], arg = (k, d = null) => args.includes(k) ? args[args.indexOf(k) + 1] : d;
 const base = arg('--url'), query = arg('--query', ''), dir = arg('--out'), start = arg('--start', '-2,-9');

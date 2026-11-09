@@ -1,11 +1,11 @@
-// The game data's indicator (src/host/web/data-meter-worker.js), run in a context of its own with a clock, a canvas
+// The game data's indicator (src/web/data-meter-worker.js), run in a context of its own with a clock, a canvas
 // that records what it shows and the game data's shared counters driven by the test.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
-const SOURCE = fs.readFileSync(new URL('../src/host/web/data-meter-worker.js', import.meta.url), 'utf8');
+const SOURCE = fs.readFileSync(new URL('../src/web/data-meter-worker.js', import.meta.url), 'utf8');
 
 /** The worker, its canvas (`shown`: what the screen would show after the worker's turn; `texts`: its last frame's lines). */
 function meter() {

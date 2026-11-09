@@ -102,7 +102,7 @@ test('learned pieces: fetched ahead of the game, not aborted by its reads, waite
 
 test('server: the learned list carries the pieces sessions read in each block', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os'), http = await import('node:http');
-  const { createServer } = await import('../src/host/server.js');
+  const { createServer } = await import('../src/server/server.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-mask-'));
   fs.writeFileSync(path.join(dir, 'a.big'), bytes(0, 3 * MiB));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));

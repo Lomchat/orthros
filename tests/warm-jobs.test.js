@@ -1,11 +1,11 @@
-// Warm jobs (src/host/warm-jobs.js): one job at a time, a publish before a learn, the default language, a queue that keeps kinds apart.
+// Warm jobs (src/server/warm-jobs.js): one job at a time, a publish before a learn, the default language, a queue that keeps kinds apart.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Warmer, defaultLanguage, learnScenario } from '../src/host/warm-jobs.js';
-import { SnapshotQueue } from '../src/host/snapshot-store.js';
+import { Warmer, defaultLanguage, learnScenario } from '../src/server/warm-jobs.js';
+import { SnapshotQueue } from '../src/server/snapshot-store.js';
 
 test('warmer queues one job at a time: publish first, learn once the snapshot is there, nothing when both are', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'warm-'));

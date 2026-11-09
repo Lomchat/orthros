@@ -1,5 +1,5 @@
 // The system cursor's visibility, as Windows decides it, for every game alike (user32.js WindowManager.updateCursor,
-// dinput8.js, the page's cursorView in src/host/web/pointer.js): ShowCursor's display count (shown at >= 0, 0 at start),
+// dinput8.js, the page's cursorView in src/web/pointer.js): ShowCursor's display count (shown at >= 0, 0 at start),
 // SetCursor's shape (NULL: no cursor until the next SetCursor), WM_SETCURSOR sent at each mouse move over a window
 // (DefWindowProc: the class cursor in the client area — none: the application sets it —, the arrow or a sizing cursor
 // on the frame; not sent while the mouse is captured), an exclusive DirectInput mouse hiding it while acquired. The page
@@ -10,11 +10,11 @@ import fs from 'node:fs';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 import { Ctx } from '../src/win32/ctx.js';
 import { writeGuid } from '../src/win32/com.js';
 import { wmOf } from '../src/win32/user32.js';
-import { cursorView } from '../src/host/web/pointer.js';
+import { cursorView } from '../src/web/pointer.js';
 
 const EXE = new URL('../build/pe/hello.exe', import.meta.url).pathname;
 const skip = !fs.existsSync(EXE) && 'build/pe/hello.exe missing (make pe-tests)';

@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { learnArgs } from '../src/host/warm-jobs.js';
+import { learnArgs } from '../src/server/warm-jobs.js';
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const queue = opt('queue'), server = opt('server'), once = args.includes('--once');

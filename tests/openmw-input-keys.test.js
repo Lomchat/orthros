@@ -1,12 +1,12 @@
-// The OpenMW players' keyboard layout (src/ports/openmw/input-keys.js, put into the engine page by src/host/openmw.js
+// The OpenMW players' keyboard layout (src/ports/openmw/input-keys.js, put into the engine page by src/server/ports/openmw.js
 // withInputKeys): Activate on E, Jump on Space — a saved bindings file holding Morrowind's old pair swapped once.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { swapOldPair, migrate, install, INPUT_FILE, MARK_FILE } from '../src/ports/openmw/input-keys.js';
-import { withInputKeys, withProgressiveView } from '../src/host/openmw.js';
-import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
+import { withInputKeys, withProgressiveView } from '../src/server/ports/openmw.js';
+import { DEFAULT_ENGINES_DIR } from '../src/server/ports/goldsrc.js';
 
 // (as the engine's ICS writes it through TinyXML: a control per action, named by its id; Activate 9, Jump 11)
 const control = (name, binders) => binders === null

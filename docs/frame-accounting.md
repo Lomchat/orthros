@@ -58,9 +58,9 @@ report prints the accounting's own clock reads per frame.
   by their largest excess, the worst frames with their categories, the frames of 150 ms and more counted by their
   largest category (`hitches`: e.g. `ioWait 3, guest 2`), and the APIs that took the most time (estimated from the
   samples). `--phases <file>` writes the reports as JSON. The report also gives the guest instructions executed in the phase (as charged to the executors' budgets, `Vm.guestInsns`) and the `guest` time per million of them (`guestMsPerMInsn`, i.e. ns per guest instruction): the speed of the translated code whatever the scene asks of it — the measure to compare code-generator variants with (`dbg:ORTHROS_JIT_AB=<json>` switches translation options within a session).
-- **Node** (`tools/startbench.mjs --input <scenario>`, tools/node-scenario.mjs): each mark gets the same `[frames]`
+- **Node** (`tools/bench/startbench.mjs --input <scenario>`, tools/bench/node-scenario.mjs): each mark gets the same `[frames]`
   report (the page's `FrameStats` over the Direct3D presents); `--gfx recorder` puts the render worker's recording on the
-  thread as in the page (`backend`: the in-thread WebGL backend over a no-op context; tools/node-gfx.mjs, shared with
+  thread as in the page (`backend`: the in-thread WebGL backend over a no-op context; tools/bench/node-gfx.mjs, shared with
   framebench), `--slow-apis <ms>` adds the APIs' time in the frames longer than that (`[slowapis]`), `--gc <ms>` this
   thread's garbage collections per phase and in those frames (`[gc]`, V8's GCProfiler).
 - **Slow-frame log lines** (`[slowframe]`): the frame's categories in brackets after its duration.
@@ -87,7 +87,7 @@ tools/with-browser-slot.sh node tools/headless.mjs bfme2 --seconds 520 --profile
 `*-startup.txt` are the same journeys with the intro videos skipped where the game allows it (Escape) and a mark
 `later` one minute into the match (the `play` phase is then the first minute of play: start-up and first-use
 measurements, `--stop-on "mark later:"` ends the run there); `bfme2-first.txt` is BFME2's for the settings a first
-launch writes (800x600, 2D menu: no profile, or the shared first-launch profile of src/host/profile-seed.js).
+launch writes (800x600, 2D menu: no profile, or the shared first-launch profile of src/shared/profile-seed.js).
 
 `bfme1-108-phases.txt` is the validation target's criterion: BFME 1.08, menu, a skirmish, ten minutes of play (orders,
 camera scrolls; the same steps as the bench `bfme1-108-skirmish`, docs/real-machine-bench.md). Measured 2026-10-22

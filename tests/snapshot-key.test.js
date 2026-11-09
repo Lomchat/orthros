@@ -1,10 +1,10 @@
-// The key a snapshot is kept under (src/host/web/snapshot-key.js, docs/snapshot.md): the debug flags that only measure
+// The key a snapshot is kept under (src/web/snapshot-key.js, docs/snapshot.md): the debug flags that only measure
 // the host (gpu-probe.js HOST_ONLY_DBG) are left out — a ?bench page and a plain page share their snapshots, and a
 // shared-snapshot job a bench queued can be published by tools/snapshot-publish.mjs (a plain page).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { snapshotKey, machineDbg } from '../src/host/web/snapshot-key.js';
+import { snapshotKey, machineDbg } from '../src/web/snapshot-key.js';
 import { HOST_ONLY_DBG } from '../src/gfx/gpu-probe.js';
 
 const base = { gameLanguage: 'fr', timeScale: 1, interp: false, interpRange: '', jitOpts: '', noF32: false, f32Off: '' };
@@ -12,7 +12,7 @@ const key = (opts) => snapshotKey('sources-hash', 'bfme1-108', { name: 'bfme1-10
 
 test('a ?bench page and a plain page get the same snapshot key', async () => {
   // (main.js: dbg is [?dbg=, the bench's flags].join(','))
-  const main = fs.readFileSync(new URL('../src/host/web/main.js', import.meta.url), 'utf8');
+  const main = fs.readFileSync(new URL('../src/web/main.js', import.meta.url), 'utf8');
   const benchFlags = [...main.matchAll(/state\.bench \? '([^']*)'/g)].flatMap((m) => m[1].split(',')).map((kv) => kv.split('=')[0]);
   assert.ok(benchFlags.length, 'main.js adds its bench flags to dbg');
   for (const f of benchFlags) assert.ok(HOST_ONLY_DBG.includes(f), `${f}: a bench's flag that is not host-only would give benches a key of their own`);

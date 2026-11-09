@@ -1,9 +1,9 @@
-// The virtual LAN of the Windows games (src/host/lan.js) on a server with accounts: a signed-in player only, named
+// The virtual LAN of the Windows games (src/server/lan.js) on a server with accounts: a signed-in player only, named
 // after the account (the emulated machine's host name, the games' default player name).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { lanUpgrades, lanName } from '../src/host/lan.js';
+import { lanUpgrades, lanName } from '../src/server/lan.js';
 
 test('lanName: what Windows allows in a host name, 12 characters at most', () => {
   assert.equal(lanName('ana.b_c'), 'anabc');

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 
 const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;
 const skip = (name) => !fs.existsSync(PE_DIR + name) && `build/pe/${name} missing (make pe-tests)`;

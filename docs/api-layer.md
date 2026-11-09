@@ -118,7 +118,7 @@ throttled call's re-execution after its 1 ms park found 1 ms since the previous 
 throttle was followed by 32 more unthrottled turns (BFME1 play: one throttle per ~62 `Sleep(0)`, 700-800 `Sleep` and
 ~1 900 scheduling decisions per frame). The re-executed call now completes the sleep and the streak goes on from the
 wake-up: a throttled spin parks 1 ms at each `Sleep(0)` until work or other calls come between — the same 1 ms pacing
-step as before. `tools/sleepspin-bench.mjs` (tools/pe/sleepspin.c: per 16 ms frame some work, then `Sleep(0)` +
+step as before. `tools/bench/sleepspin-bench.mjs` (tools/pe/sleepspin.c: per 16 ms frame some work, then `Sleep(0)` +
 `timeGetTime` until the next frame, beside a `Sleep(1)` thread; 5 runs): `Sleep(0)` per frame 483 → 48, scheduling
 decisions 1 008 → 137, process CPU per frame 1.35-1.48 → 1.07 ms (medians), frame interval mean 15.98 ms both, p99
 16.76 → 16.46 ms. `?dbg=ORTHROS_SLEEP0_KEEP_STREAK=0` restores the former behaviour (read at each call: in-session A/B,
@@ -165,7 +165,7 @@ batch's cost in the per-API table. `Vm.dispatchThunk` now drains first, timed on
 (`Vm.drainAcctIdx`, named `(deferred queue drain)` in the `[apitop]` / phase reports through `Vm.acctApiName`); the
 order of the calls is unchanged. tests/drain-acct.test.js. BFME1 in Node: the drain is the largest API entry, 0.66-0.75 ms
 per frame for 148 drains per frame in play (5 µs each), 0.86 ms per frame (172 drains) in the menu — time the per-API
-table used to spread over the calls that followed the batches. Dispatch cost unchanged (tools/apicall-bench.mjs, 2×7
+table used to spread over the calls that followed the batches. Dispatch cost unchanged (tools/bench/apicall-bench.mjs, 2×7
 runs alternated: 278 / 269 ns before, 279 / 277 ns after).
 
 **The drain, profiled (2026-10-22).** BFME 1.08 play, Node (`startbench --cpu-prof <file> --cpu-prof-window
@@ -197,7 +197,7 @@ on average: more draws, not a stall. What the profile did find was outside the q
 Vice City's `api` time (19.5 ms per frame on the owner's PC, 17-19 ms here, 60 % of the emulator thread) was not
 Direct3D work: its frame limiter calls `PeekMessage` (and `QueryPerformanceCounter`, on the WASM fast path) in a loop
 until its clock reaches the next frame — ~24 000 empty `PeekMessage` calls per frame, nothing else between them
-(`tools/startbench.mjs --api-seq 600@45 --jit-profile`: `PeekMessageA [+1 fast timer] x599`). In Node, per frame of the
+(`tools/bench/startbench.mjs --api-seq 600@45 --jit-profile`: `PeekMessageA [+1 fast timer] x599`). In Node, per frame of the
 drive: `PeekMessageA` 9.6 ms (24 k calls, 0.4 µs each), `DrawIndexedPrimitive` (with the queued setters it runs) 0.6 ms,
 everything else < 0.5 ms. The game's state setters reach JavaScript non-redundant (counted over a drive: 120 render /
 stage states the filter dropped, 23 of 960 k `SetTexture`, 1 of 660 k `SetIndices` changing nothing): filtering more
@@ -260,7 +260,7 @@ expected end (~1 ms), buffer locks, DirectSound. BFME2 play (no such polling: no
 - A shader's sampler binding keeps the register state table it applied its constant states to: while that table is
   unchanged only the texture is compared. Device methods are resolved once per effect (no lookup by name per call);
   parameter handles index a slot array.
-- Measured (2026-10-06): `tools/effect-bind-bench.mjs` 1.4-1.8 ms -> 0.65-0.7 ms per frame of 300 objects; BFME2
+- Measured (2026-10-06): `tools/bench/effect-bind-bench.mjs` 1.4-1.8 ms -> 0.65-0.7 ms per frame of 300 objects; BFME2
   play in Node, in-session A/B with `dbg:ORTHROS_FX_BIND_OFF` (5 pairs of 20 s phases, 2 runs): api -0.25 and -0.37 ms
   per frame, every pair lower; RotWK -0.14 / -0.16 ms. Browser (`--gl-discard`), in-session `*-fxbind-ab.txt`: BFME2
   api -0.33 / -0.33 ms per frame (every on phase below the next off one), RotWK -0.27 / -0.27 ms; concurrent BFME2
@@ -301,7 +301,7 @@ array selector picking the vertex shader 7 %), render states 18 %; the time of `
   wave's base ca01ae8 or its pre-rewrite equivalent; base and branch run at the same time, launch order alternated;
   `api` = mean API time per frame of the play phase; Node `startbench --bg`, `bfme2-startup.txt` /
   `rotwk-startup.txt`):
-  - `tools/effect-object-bench.mjs` (instructions per frame, `perf stat`, 2 runs each): JavaScript calls 3.75 M ->
+  - `tools/bench/effect-object-bench.mjs` (instructions per frame, `perf stat`, 2 runs each): JavaScript calls 3.75 M ->
     3.19 M (-15 %); `--jit` (guest code, deferred queue) 6.34-6.62 M -> 5.70-5.85 M (-11 %). In that bench the queued
     technique calls themselves are a wash (`--no-defer` 5.68-5.77 M): the gain is the per-object work in JavaScript.
   - Node, BFME2, 5 pairs: api 6.58 -> 6.09, 9.07 -> 8.18, 7.38 -> 8.31, 10.88 -> 9.30, 5.88 -> 5.54 ms per frame
@@ -461,8 +461,8 @@ DXT encoder (`colorBlock`) alone 17 % of the BFME2 load screen's Node profile.
   `D3DXCreateTextureFromFileInMemoryEx` (DDS levels as is, converted to a smaller size, generated, color key, another
   format; the file's buffer overwritten afterwards) on Direct3D 9 textures against the base computation.
 - Switch: `?dbg=ORTHROS_DXT_WASM=0` (harness input `dbg:ORTHROS_DXT_WASM=0`) puts every conversion back on the
-  JavaScript code (the same bytes). Tools: `tools/d3dx-image-bench.mjs --vs <base tree>/src/win32` times both trees'
-  kernels interleaved in one process and checks they give the same bytes; `tools/startbench.mjs --d3dx-prof` prints the
+  JavaScript code (the same bytes). Tools: `tools/bench/d3dx-image-bench.mjs --vs <base tree>/src/win32` times both trees'
+  kernels interleaved in one process and checks they give the same bytes; `tools/bench/startbench.mjs --d3dx-prof` prints the
   D3DX work by kind of operation and the surface lock patterns at each scenario mark.
 
 Measured (2026-10-06, this server heavily loaded by other sessions — 1-minute load 25-65 —, base `bc34f7b` and this
@@ -549,9 +549,9 @@ string cache, the header-only TGA / BMP information, DDS files read in place and
 `dbg:ORTHROS_FX_DEFER_OFF=1` only the queued `SetTechnique` / `Begin` / `End` (also off with the D3DX fast paths).
 Scenarios `tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phases on / off in play (both orders),
 `{bfme2,rotwk}-fxbind-ab.txt` the same for the effect binding, `{bfme2,rotwk}-fxdefer-{ab,ba}.txt` for the queued
-technique calls (both orders). Tools: `tools/draw-bench.mjs` (device + backend per draw over a counting GL), `tools/setter-bench.mjs` (the
-queued setters), `tools/effect-bind-bench.mjs` (effect setters and binds, `--base <tree>` against another checkout),
-`tools/effect-object-bench.mjs` (the effect calls of an engine drawing objects — technique, ~15 parameters, Begin,
+technique calls (both orders). Tools: `tools/bench/draw-bench.mjs` (device + backend per draw over a counting GL), `tools/bench/setter-bench.mjs` (the
+queued setters), `tools/bench/effect-bind-bench.mjs` (effect setters and binds, `--base <tree>` against another checkout),
+`tools/bench/effect-object-bench.mjs` (the effect calls of an engine drawing objects — technique, ~15 parameters, Begin,
 BeginPass, commits, End — over 6 effects with array-selected shaders, preshaders and expression states; `--jit`: as
 guest code through the JIT and the deferred queue; `--base <tree>`; best read as instructions under `perf stat -e
 instructions:u`, insensitive to the server's load). Test of the effect binding: `d3dx9-effect-bind.test.js` (random
@@ -562,7 +562,7 @@ switch.)
 
 ## Draw submission per draw (2026-10-06)
 
-**Where it went.** BFME1's 3D main menu in Node (`tools/framebench.mjs --gfx recorder`, the render worker's recording
+**Where it went.** BFME1's 3D main menu in Node (`tools/bench/framebench.mjs --gfx recorder`, the render worker's recording
 with its commands dropped; 830-890 draws per frame), V8 profile of 300 frames, per frame: the JavaScript API calls 5.0
 ms, of which `IDirect3DVertexBuffer9::Unlock` 1.1 ms (all of it the copy of the written ranges into the command ring,
 2.5-2.7 MB per frame), `DrawIndexedPrimitive` 0.7 ms (the recorder's `flush` 0.6), the queued calls 1.3 ms (7 000-8 000 per

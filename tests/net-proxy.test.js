@@ -1,4 +1,4 @@
-// The player's-link proxy (tools/net-proxy.mjs, docs/slow-network.md "Measuring"): an answer crosses a round trip and
+// The player's-link proxy (tools/dev/net-proxy.mjs, docs/slow-network.md "Measuring"): an answer crosses a round trip and
 // the link's rate, a text answer sent as it is goes gzip on the way (Cloudflare), a data report's mark is seen and
 // listed, one JSON line per request with its wire bytes and unit.
 import { test } from 'node:test';
@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import zlib from 'node:zlib';
-import { startProxy } from '../tools/net-proxy.mjs';
+import { startProxy } from '../tools/dev/net-proxy.mjs';
 
 test('net-proxy: round trip and rate, edge gzip of text, marks, JSON log', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-net-proxy-'));

@@ -1,10 +1,10 @@
-// The saves on the player's Orthros account (src/host/web/cloud-sync.js): what is decided before a game starts, what is
+// The saves on the player's Orthros account (src/web/cloud-sync.js): what is decided before a game starts, what is
 // sent, and that nothing is overwritten without the player's choice — against a fake account API.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { decide, CloudSave, encodeProfile, contentHash } from '../src/host/web/cloud-sync.js';
+import { decide, CloudSave, encodeProfile, contentHash } from '../src/web/cloud-sync.js';
 
 test('decide: restore, send, compare or ask, from what this device knows', () => {
   const known = { parent: 'A', local: 'L' };

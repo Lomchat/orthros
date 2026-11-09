@@ -6,8 +6,8 @@
 // (FRAMES) on a tier above 'low' has the next session start a tier lower, on that same GPU. What a tier sets beyond the
 // page's table: tierSettings (the water's refraction). ?tier= and the player's own Options (the engine's user settings,
 // read over the page's defaults) still win. Loaded by the engine page before its
-// engine starts (src/host/openmw.js, withQualityTier): the page's tier choice calls window.orthrosTier(deviceMemory).
-import { gpuClass, gpuInfo } from '../../host/web/gpu-class.js';
+// engine starts (src/server/ports/openmw.js, withQualityTier): the page's tier choice calls window.orthrosTier(deviceMemory).
+import { gpuClass, gpuInfo } from '../../web/gpu-class.js';
 import { inWorld as worldShown } from './view-grow.js';
 
 export const TIERS = ['low', 'mid', 'high'];

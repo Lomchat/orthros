@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { createServer } from '../src/host/server.js';
+import { createServer } from '../src/server/server.js';
 
 const get = (port, p, h = {}) => new Promise((resolve, reject) => {
   http.get({ host: '127.0.0.1', port, path: p, headers: h }, (res) => {
@@ -45,7 +45,7 @@ test('src: ETag and Last-Modified, 304 on either validator, COOP/COEP kept', asy
 });
 
 test('src: brotli 11 once made, same bytes decoded, 304 for it too', async (t) => {
-  const port = await start(t), p = '/src/host/server.js', file = new URL('../src/host/server.js', import.meta.url);
+  const port = await start(t), p = '/src/server/server.js', file = new URL('../src/server/server.js', import.meta.url);
   const br = { 'Accept-Encoding': 'gzip, br' };
   const first = await get(port, p, br);
   assert.equal(first.status, 200);
@@ -87,7 +87,7 @@ test('paths: no way out of a served directory — decoded "..", "." or backslash
 });
 
 test('paths: isUnder wants the directory and a separator (a sibling with the same prefix is not under it)', async () => {
-  const { isUnder, requestPath } = await import('../src/host/server.js');
+  const { isUnder, requestPath } = await import('../src/server/server.js');
   assert.equal(isUnder('/srv/orthros/src', '/srv/orthros/src/a.js'), true);
   assert.equal(isUnder('/srv/orthros/src', '/srv/orthros/src'), false);
   assert.equal(isUnder('/srv/orthros', '/srv/orthros2/x'), false);
@@ -126,7 +126,7 @@ test('src: prewarmSrc makes every text module brotli at start — the first visi
   for (let i = 0; i < 1200; i++) { const q = server.srcBrJobs(); if (i > 2 && q.queued === 0 && q.running === 0) break; await new Promise((r) => setTimeout(r, 50)); }
   assert.ok(server.srcBrJobs().peak <= 2, 'two at a time');
   // (never asked before: brotli at its first request)
-  for (const p of ['/src/host/web/main.js', '/src/cpu/decoder.js', '/src/vfs/http-backend.js']) {
+  for (const p of ['/src/web/main.js', '/src/cpu/decoder.js', '/src/vfs/http-backend.js']) {
     const r = await get(port, p, { 'Accept-Encoding': 'gzip, br' });
     assert.equal(r.headers['content-encoding'], 'br', p);
     assert.deepEqual(zlib.brotliDecompressSync(r.body), fs.readFileSync(new URL('..' + p, import.meta.url)));

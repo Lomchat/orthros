@@ -118,7 +118,7 @@ test('program GLSL version: the corpus of generated GLSL matches the version', (
 // session built at a draw or took from the list is stamped with its version. Without ?v= the list is whole.
 test('learned programs: listed by translator version', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
-  const { createServer } = await import('../src/host/server.js');
+  const { createServer } = await import('../src/server/server.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-v-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
   fs.mkdirSync(path.join(dir, 'learn'));

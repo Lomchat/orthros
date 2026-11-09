@@ -211,7 +211,7 @@ in both Vanilla+ versions by one script (`install-all.sh`; archives with receipt
   Map, RUN!, Smart Ammo, QuickSelect, Take All); no « » (the game font lacks them).
 - The engine page now sets `[General] preferred locales` from the version's language (`fr,en` / `en`) and
   `[GUI] color topic enable = true` (every OpenMW version) — before, OpenMW's own menus and every Lua mod showed in
-  English in the French game (`withSettingsDefaults`, `src/host/openmw.js`).
+  English in the French game (`withSettingsDefaults`, `src/server/ports/openmw.js`).
 - Checked in production: the three cards boot (`check.mjs`), the French inventory opens in French, no Lua error.
 
 Open: Take All and IER's use key both default to R in a container (one Lua error a press, nothing lost); Alchemy Redone's
@@ -617,7 +617,7 @@ systemctl enable --now orthros-openmw@morrowind-goty-vanilla-plus-en orthros-ope
 ```
 
 The runner refuses an incomplete manifest. It generates a linked read-only game tree and mod
-list under `/var/lib/orthros-openmw/<manifest>/gamedata` (`OPENMW_STATE_DIR`, src/host/openmw.js), then starts the pinned native gateway in Docker.
+list under `/var/lib/orthros-openmw/<manifest>/gamedata` (`OPENMW_STATE_DIR`, src/server/ports/openmw.js), then starts the pinned native gateway in Docker.
 Only `127.0.0.1:28100` is published. Limits: two CPU cores, 4 GiB, 256 tasks; worlds have a
 3 GiB memory budget plus 256 MiB gateway reserve. Worlds start on demand and idle out. Accounts,
 worlds and saves persist under `/var/lib/orthros-openmw/<manifest>/`, separate from the original game files
@@ -636,7 +636,7 @@ Same major version, same module ABI (127): the only native addon, `@node-rs/argo
 build hashes with it. `sh tools/openmw/build-server-image.sh` (also run by `install-engine.py --server`) builds it
 without network, timestamps fixed: the same inputs give the same ID, compared with the lock's `image` (the manifest's
 digest in Docker's containerd store; `config`, its config's digest, in a classic store). `server.mjs` runs that ID for
-every release on that upstream image (`openmwGatewayImage`, `src/host/openmw.js`) and refuses to start if it is not
+every release on that upstream image (`openmwGatewayImage`, `src/server/ports/openmw.js`) and refuses to start if it is not
 built — never the vulnerable base then. `server.mjs --port <n>` starts a scratch gateway beside the live one (its own
 container name), with `--state-dir` in scratch.
 
@@ -674,7 +674,7 @@ on the port page; switch the world to Party and add friends. Party visits advanc
 
 ## Runtime boundary and validation
 
-`runtime: "openmw"` uses `src/ports/openmw/` and `src/host/openmw.js`. The manifest specifies
+`runtime: "openmw"` uses `src/ports/openmw/` and `src/server/ports/openmw.js`. The manifest specifies
 the engine id, required files, optional example/start cell, mod stack and localhost gateway
 port. Every installation has its own URL `/ports/openmw/<manifest>/app/` and its own IDBFS
 database (`saveKey`). Pages, browser assets, range requests, auth and WebSockets use the same
@@ -705,14 +705,14 @@ URLs (with a query the upstream streamfs.js kept none of the pieces it read). Th
 game files synchronously on the page's thread (1–8 KB reads through its own buffers); the page
 cannot paint meanwhile and Chrome may offer to close it. The Orthros loading screen shows the
 package download (received / size, rate) and switches to "reading the game data" at its end;
-`src/host/web/data-meter.js` (every game's; injected with the frame meter) draws an indicator from a worker in an
+`src/web/data-meter.js` (every game's; injected with the frame meter) draws an indicator from a worker in an
 OffscreenCanvas over the Orthros page — its frames reach the screen while the page's thread is held
 (verified in a headed Chrome under Xvfb; headless screenshots cannot show it, they need that thread):
 data received (the streaming's shared byte counter), rate, seconds, and "choose Wait" once Chrome
 may ask.
 
 The engine's package without what a game of its own never reads (2026-10-21; rules 2 and 3 and content keying 2026-10-27,
-`src/host/openmw-lean.js`). The release's `openmw.data` (204 MB, 33.4 MB in brotli) holds the engine's resources
+`src/server/ports/openmw-lean.js`). The release's `openmw.data` (204 MB, 33.4 MB in brotli) holds the engine's resources
 (3.3 MB), ICU's data twice (`/icu/icudt68l.dat` and `/icudt68l.dat`, 28,566,176 bytes each, byte-identical, 28.5 MB
 apart — beyond brotli's 16 MB window, so each costs ~7.1 MB of brotli) and the free example world the page boots with
 `?nomw` (`/gamedata/`, 144 MB: 22 MB of the brotli). Every data path of the engine page for a game of its own (hosted,
@@ -760,7 +760,7 @@ on the loaded test machine). Its rules (`LEAN_RULE`, in its URL and file: a new 
    (`check.mjs`) and draws its Options' values ("Field of View (60.00)"). Then (2026-10-27): Vanilla+ on rule 3 makes a
    save (F5 at -2,6) and loads it from the menu (`tools/openmw/place-load.mjs --mode save --profile new`, 7 MB/s: in the
    world 57 s after the key, cell -2 6, frames flowing), and in a new game its Lua HUD (the quick bar) draws over the
-   chargen name dialog (`tools/data-matrix.mjs`, 500 KB/s). A new player at 85 KB/s (the same matrix, main against this
+   chargen name dialog (`tools/bench/data-matrix.mjs`, 500 KB/s). A new player at 85 KB/s (the same matrix, main against this
    tree, which also has the whole-block reads of docs/slow-network.md): the engine's lean package 13.55 → 9.83 MB on the
    wire, downloaded 67 s earlier (173 → 106 s from navigation).
 
@@ -874,7 +874,7 @@ Also verify solo save/load and the selected visual mods. Measure client GPU perf
 No engine rebuild: of the engine's settings only the view distance changes while it runs (`camera.setViewDistance`,
 `RenderingManager::setViewDistance`); distant terrain and object paging are chosen once per worldspace, so they stay
 on as the page's quality tier says (`TIER`), and the boot distance is what changes. The server's rewrite of the engine
-page (`withProgressiveView`, `src/host/openmw.js`):
+page (`withProgressiveView`, `src/server/ports/openmw.js`):
 - loads `src/ports/openmw/view-grow.js` in its head (`window.orthrosViewReady`; the engine's `openmw.js` is added once
   it is there);
 - its `[Camera] viewing distance` comes from `orthrosViewBoot(TIER.vd)`: on a link not fast last time (`linkRate`, the
@@ -935,7 +935,7 @@ left are dynamic geometry — upstream's A/B, engine.cpp F48), KHR_parallel_shad
 (the threaded WorkQueue was reverted upstream for main-thread freezes: a lock audit, not a setting), wasm32 vs wasm64
 (the JS glue's memory64 share measured about 1.7 %: an A/B costs a second full build for little).
 
-The quality tier (`src/ports/openmw/tier.js`, `withQualityTier`): from the GPU (`src/host/web/gpu-class.js`, WebGL's
+The quality tier (`src/ports/openmw/tier.js`, `withQualityTier`): from the GPU (`src/web/gpu-class.js`, WebGL's
 renderer string: software → low, integrated → mid, discrete → high; deviceMemory ≤ 4 still low; unknown GPU: the
 page's own deviceMemory rule), and a minute in the world whose frame-meter p99 median is over 50 ms starts the next
 session a tier lower on the same GPU (`localStorage['orthros.openmw.tier']`). `?tier=` and the player's Options win.
@@ -1192,7 +1192,7 @@ What r9 changes (`orthros-r9.patch`, on r8):
   the engine's user config, written when the Options window closes, kept in IDBFS and on the account) are swapped by
   the page, once, when they hold the old pair exactly — Activate on Space and Jump on E —: `src/ports/openmw/input-keys.js`,
   loaded before the engine and called once the user files are in place (the account's copy and IDBFS restored), by
-  `withInputKeys` (`src/host/openmw.js`). A marker beside them (`orthros-input.json`) records that the file was looked
+  `withInputKeys` (`src/server/ports/openmw.js`). A marker beside them (`orthros-input.json`) records that the file was looked
   at: the old pair chosen again later stays, any other layout is never touched, and with no file yet nothing is
   recorded (a file the engine writes later is looked at then). The swap edits only the two `key` attributes.
 - **Lua's math** (`wasm-build/build-deps.sh`): the browser engine runs PUC Lua 5.4, desktop OpenMW LuaJIT, and mods
@@ -1562,7 +1562,7 @@ Two waits before the engine's first game read, neither the link's:
   those folders change (`mwdata-routes.ts`, `manifest_built` in its journal). The first player after each restart (every
   deploy restarts the gateways) paid 1.5-2.8 s each, in series (owner, 10-20: 1.86 + 1.50 s; 10-26: 2.83 + 2.80 s);
   warm, 0.02-0.10 s. Rules:
-  - `tools/openmw/server.mjs` builds them as the gateway starts (`warmGatewayLists`, src/host/openmw.js): the manifest
+  - `tools/openmw/server.mjs` builds them as the gateway starts (`warmGatewayLists`, src/server/ports/openmw.js): the manifest
     polled every 500 ms on its localhost port until it answers — 200, or a final 404 (a gateway that does not serve the
     data: its `deliveryModel`), not retried —, refused connections and 5xx waited for, given up after 120 s or once the
     container exits; then the mods' list (404: no mods). One `openmw.lists_warm ...` line in the unit's journal with
@@ -1606,7 +1606,7 @@ frozen precompressed units, `--lang fr`, the OpenMW lean2 package; a machine at 
   `openmw.lists_warm manifest 200 in 555 ms, mods 200 in 850 ms (2425 ms after the start)`, the first curl 4.1 / 4.8 ms.
   The scratch cold times are below production's 1.5-2.8 s (its files in the page cache of the live gateways); the
   production check is the first `mwdata-*.json` in Caddy after each restart.
-- New device (`tools/data-matrix.mjs`, the proxy's log; times from the navigation):
+- New device (`tools/bench/data-matrix.mjs`, the proxy's log; times from the navigation):
 
 | link | code | package end | first `/gamez` | engine's first read | idle link | `/gamez` before it | first frame | shown | playable | demand wait |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -1639,7 +1639,7 @@ frozen precompressed units, `--lang fr`, the OpenMW lean2 package; a machine at 
 
 The owner: "are more engine improvements possible? Find them and make them, in a loop." A workflow looped: profiles of
 four scenarios on the current release (Vanilla+ FR walking at Seyda Neen, gliding across six cells, Balmora's streets,
-goty-en in Balmora's South Wall Cornerclub; `tools/cpuprofile-report.py`: wasm frames named, self/inclusive time,
+goty-en in Balmora's South Wall Cornerclub; `tools/dev/cpuprofile-report.py`: wasm frames named, self/inclusive time,
 callers and callees, ms a frame), five finders with their own lens (cull, draw, non-render CPU, long frames, the page),
 a selection challenged by a skeptic, then for each pick a patch behind its switch, an adversarial review and a revision,
 a compile check, the build, pictures with an adversarial judge, and a profiled measure. A fault of the loop's script
@@ -2396,7 +2396,7 @@ Micro-savings, not counted toward the p99 target (whole-frame p50/p99 moved with
   read at every call, in the original order. Checked under Lua 5.4 with stubs against the original: identical action
   values over 3 × 3000 random frames with handlers flipping sneak and speeds between bindings, 64 % fewer engine
   calls. About 0.035 ms/frame.
-- `src/host/perf-record.js`: the session record's data summary compacted when a record is taken, no longer at every
+- `src/shared/perf-record.js`: the session record's data summary compacted when a record is taken, no longer at every
   1 s clock tick (it sorted every file the session ever waited for: ~1-1.5 ms a second, only where the server keeps
   telemetry — not in `dev-serve.sh` measurements).
 
@@ -3798,7 +3798,7 @@ and CDP answers a move only once the renderer has handled it, so it sent nothing
 moves, r20 14-16. And a coalesced move's `performance.now() - e.timeStamp` is measured from the newest merged move, so
 with moves every 50 ms the old probe gives about 51 ms on both sides whatever the block.
 
-**The measure** (`tools/input-latency.mjs`, shared by the ports' tools; `place-load.mjs --input-trace`):
+**The measure** (`tools/bench/input-latency.mjs`, shared by the ports' tools; `place-load.mjs --input-trace`):
 - Inputs: a mouse move every 50 ms (`--input-every`) and an F13 press every second (`--input-keys`, bound to nothing).
   They are sent through CDP without waiting for the page (`generateInputs`), from just before the trigger.
 - Trace: categories `input`, `latencyInfo`, `devtools.timeline`, `benchmark`. Chrome writes one `EventLatency` for every
@@ -3817,7 +3817,7 @@ with moves every 50 ms the old probe gives about 51 ms on both sides whatever th
 
 **Checked on a known block** (a 2 s busy loop; every move made during it should take the rest of the block plus a frame
 or two — `blockCheck`'s residual):
-- Plain page (`tools/input-latency-check.mjs`, animated canvas): 39 moves in the block, the first 1,958 ms, residual
+- Plain page (`tools/check/input-latency-check.mjs`, animated canvas): 39 moves in the block, the first 1,958 ms, residual
   7-8 ms. Before the block p50 50 ms, after it p95 27 ms.
 - Engine (`--input-block 2000`, run in the engine's frame after the window, 4 runs): 40 moves each, the first
   1,997-2,030 ms, residual 20-51 ms (SwiftShader's next frame).
@@ -3918,8 +3918,8 @@ menus (its Options, its Lua settings pages) and every Lua mod's texts (their `l1
 English, even where the engine ships `fr.yaml` (all eight contexts in the release's package) or the mod does. Only the
 strings OpenMW takes from the game's GMSTs were French (`gmst overrides l10n = true`: the `gmst` locale first).
 
-The server now adds the version's settings defaults to the engine page (`withSettingsDefaults`, `src/host/openmw.js`,
-from the `/ports/openmw/<id>/app/index.html` route of `src/host/server.js`, whose manifest it knows):
+The server now adds the version's settings defaults to the engine page (`withSettingsDefaults`, `src/server/ports/openmw.js`,
+from the `/ports/openmw/<id>/app/index.html` route of `src/server/server.js`, whose manifest it knows):
 - `[General] preferred locales` = the version's `languages`, then `en` (`openmwLocales`): `fr,en` for a version whose
   `languages` is `["fr"]`, `en` for an English one. The engine reads it once at its start (`engine.cpp`,
   `L10n::Manager::setPreferredLocales`): `gmst fr en`, each context's French file where there is one, English

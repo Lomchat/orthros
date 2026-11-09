@@ -1,10 +1,10 @@
-// "Prepare" (src/host/web/download-worker.js): a browser port's engine files come side by side (a release of 17 small
+// "Prepare" (src/web/download-worker.js): a browser port's engine files come side by side (a release of 17 small
 // files was a round trip each), each once, their wire bytes counted once whatever their order.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';
 import { storeLocks } from '../src/vfs/game-data.js';
-import { Downloads } from '../src/host/web/download.js';
+import { Downloads } from '../src/web/download.js';
 
 test('prepare: the engine files side by side (at most 4), each once, the bytes counted once', async () => {
   const real = globalThis.fetch, realSelf = globalThis.self;
@@ -24,7 +24,7 @@ test('prepare: the engine files side by side (at most 4), each once, the bytes c
     return { ok: true, status: 200, headers: new Headers({ 'content-length': String(body.length) }), body: new Response(body).body };
   };
   try {
-    const { download } = await import('../src/host/web/download-worker.js');
+    const { download } = await import('../src/web/download-worker.js');
     await download('g', undefined, 'launch', null, { files: urls, bytes: 9 * 1005 }, { openStore: async () => new MemBlockStore() });
     assert.deepEqual([...asked].sort(), [...urls].sort(), 'each once');
     assert.ok(most > 1 && most <= 4, `side by side: ${most}`);
@@ -45,7 +45,7 @@ test('prepare: the owner\'s store held by another tab\'s game — the shared fil
   };
   const own = new MemBlockStore(), opened = [];
   try {
-    const { download } = await import('../src/host/web/download-worker.js');
+    const { download } = await import('../src/web/download-worker.js');
     await download('ed', undefined, 'launch', null, null, { openStore: async (n) => { opened.push(n); return n === 'ed' ? own : null; } });
     const last = posts.filter((m) => m.type === 'progress').at(-1);
     assert.deepEqual(opened, ['ed', 'base']);
@@ -71,7 +71,7 @@ async function runProbe(items, bw, { stores = {}, exists = (n) => n in stores, e
     throw new Error('unexpected ' + url);
   };
   try {
-    const { probe } = await import('../src/host/web/download-worker.js');
+    const { probe } = await import('../src/web/download-worker.js');
     await probe(items, bw, { exists: async (n) => exists(n), openStore: async (n) => { opened.push(n); return stores[n] ?? null; } });
   } finally { globalThis.fetch = real; globalThis.self = realSelf; }
   return { probed: posts.filter((m) => m.type === 'probed'), stopped: posts.filter((m) => m.type === 'stopped').length, opened };
@@ -128,7 +128,7 @@ test('probe: under the stores\' Web Locks — a store whose lock another context
   globalThis.self = { postMessage: () => {} };
   globalThis.fetch = async (url) => ({ ok: true, status: 200, headers: new Headers(), json: async () => (url.startsWith('/api/tree/') ? probeTree() : url.startsWith('/api/prefetch/') ? probeOrder : {}) });
   try {
-    const { probe } = await import('../src/host/web/download-worker.js');
+    const { probe } = await import('../src/web/download-worker.js');
     await probe([{ name: 'g' }], FAST, { exists: async () => true, openStore: async () => { game = storeLocks(['g'], () => order.push('game opened')); return counted; } });
   } finally { globalThis.fetch = real; globalThis.self = realSelf; }
   await game;
@@ -210,7 +210,7 @@ test('prepare: an engine that reloads in place, on a fast link — the light set
       return new Response(new Uint8Array(b - a), { status: 200, headers: { 'content-length': String(b - a) } });
     };
     try {
-      const { download } = await import('../src/host/web/download-worker.js');
+      const { download } = await import('../src/web/download-worker.js');
       await download('g', FAST, 'launch', null, null, { openStore: async () => new MemBlockStore() }, reloads);
     } finally { globalThis.fetch = real; globalThis.self = realSelf; }
     return { progress: posts.filter((m) => m.type === 'progress'), asked };

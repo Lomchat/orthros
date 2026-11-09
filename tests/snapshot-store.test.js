@@ -1,4 +1,4 @@
-// Shared snapshots (src/host/snapshot-store.js, server routes /api/snapshot/<manifest>, docs/snapshot.md stage 3): a new
+// Shared snapshots (src/server/snapshot-store.js, server routes /api/snapshot/<manifest>, docs/snapshot.md stage 3): a new
 // player's starting point, published by the server's own session (its token), served compressed, stale once the shared
 // first-launch profile changed, the older keys pruned.
 import { test } from 'node:test';
@@ -7,8 +7,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { createServer } from '../src/host/server.js';
-import { toBase64 } from '../src/host/profile-seed.js';
+import { createServer } from '../src/server/server.js';
+import { toBase64 } from '../src/shared/profile-seed.js';
 
 const KEY = 'a'.repeat(32), KEY2 = 'b'.repeat(32), KEY3 = 'c'.repeat(32);
 const snap = (n) => { const b = Buffer.alloc(n, 7); b.writeUInt32BE(0x4f534e50, 0); return b; };

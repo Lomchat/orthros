@@ -1,6 +1,6 @@
 // A returning player's load of a place outside the learned area, OpenMW (docs/slow-network.md "Measuring"): the engine
-// page over the player's-link proxy (tools/net-proxy.mjs: HTTP/2, one shared link, a round trip a request) in front of
-// an Orthros server of the code tree under test (--tree: its src/host/server.js on a fresh copy of the pristine learned
+// page over the player's-link proxy (tools/dev/net-proxy.mjs: HTTP/2, one shared link, a round trip a request) in front of
+// an Orthros server of the code tree under test (--tree: its src/server/server.js on a fresh copy of the pristine learned
 // directory and the pristine precompressed units, frozen), in a browser profile that already played once (its block
 // store, link measure and HTTP cache: the proxy's port and certificate pinned, so the origin is the same at every run).
 // - Warm-up, once (when --profile-warm does not exist yet, with --warm-tree's code): the engine page booted into
@@ -59,7 +59,7 @@
 //   the plan printed, nothing started. --read-trace: the page's requests to its game data worker traced (data-client.js
 //   GameData.trace: each read's kind, file, range, ask and end, whether the engine stood suspended), into the run's
 //   folder as read-trace.json.gz with the trigger's time on the page's clock (tools/openmw/read-trace.py reads it).
-//   --input-trace (coe, save, door): the input latency the player feels, every input counted (tools/input-latency.mjs):
+//   --input-trace (coe, save, door): the input latency the player feels, every input counted (tools/bench/input-latency.mjs):
 //   from just before the trigger, a mouse move every --input-every ms (50) and a key press (F13, bound to nothing) every
 //   --input-keys ms (1000; 0: none) sent through CDP without waiting for the page (in place of the 250 ms jiggler, which
 //   waits: it sends nothing while the page is held), a browser trace of the input categories (with ORTHROS_PLACE_TRACE=1
@@ -69,7 +69,7 @@
 //   (to that dispatch when no frame is attributable: `byDispatch`), p50/p95/max, by kind (move, key), the carriers
 //   (self, coalesced, next, none). --input-block ms: then a busy loop that long in the engine's frame, the measure
 //   checked on it (`inputTrace.block`: every move made during it should show the block's rest + a frame or two —
-//   `residual` — and the first one ~ the block; tools/input-latency-check.mjs does the same on a plain page).
+//   `residual` — and the first one ~ the block; tools/check/input-latency-check.mjs does the same on a plain page).
 //   Scenario S's row adds `stage3`: the place hint (localStorage 'orthros.place.<manifest>') at the menu and at the end,
 //   the learned places (the learn copy's places file: size, places, the target's units), the menu-time prefetch (the
 //   announced ranges, kind 'want', started before the key: before the menu and in it, their end against the key, those
@@ -98,10 +98,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { parseRate, urlKind, dataRead } from '../net-proxy.mjs';
+import { parseRate, urlKind, dataRead } from '../dev/net-proxy.mjs';
 import { engineLower } from '../../src/ports/openmw/save-place.js';
 import { nextRow } from '../../src/ports/openmw/place-lead.js';
-import { INPUT_TRACE_CATEGORIES, generateInputs, inputLatency, blockCheck, traceClock, stampsOf, markClock, traceEvents } from '../input-latency.mjs';
+import { INPUT_TRACE_CATEGORIES, generateInputs, inputLatency, blockCheck, traceClock, stampsOf, markClock, traceEvents } from '../bench/input-latency.mjs';
 import zlib from 'node:zlib';
 
 const MAIN = !!process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
@@ -240,7 +240,7 @@ export const ENGINE_BR_ROOT = '/tmp/orthros-scratch/';
 
 /**
  * The brotli siblings of an engine release's openmw.{js,wasm,data} (e/<hash>/), the server's whole-file answer to a
- * browser asking for br (src/host/server.js: a .br at least as new as its file), made as tools/openmw/build.sh makes
+ * browser asking for br (src/server/server.js: a .br at least as new as its file), made as tools/openmw/build.sh makes
  * them (quality 11, window 24, size hint), at nice 19 in a child, one file at a time — those missing or older than
  * their file. `release`: the release's folder (a link resolved first); refused unless it is under `root`. `make`
  * false: the list only. Returns [{ file, bytes, made, brBytes, ms }].
@@ -273,7 +273,7 @@ export function engineBrotli(release, { root = ENGINE_BR_ROOT, make = true } = {
 }
 
 /**
- * A learn directory's places as the server stores them (places-<id>.json, src/host/server.js placesWrite: [[lang, place,
+ * A learn directory's places as the server stores them (places-<id>.json, src/server/server.js placesWrite: [[lang, place,
  * at, sessions, gen, [[kind index, path, start, end, gen, rank]]]]): { file, bytes, mtime, places, target, targetMB,
  * sessions } — `target` the records of `place` (its most recently announced entry, any language), null when absent —,
  * and `paths` (not for the row: the target's files, to find its requests in a proxy log). null when there is no file.
@@ -668,8 +668,8 @@ if (MAIN) {
     process.exit(0);
   }
   const { chromium } = await import('playwright');
-  const { launchOptions, startProfile, stopProfile, startTrace, stopTrace, TRACE_CATEGORIES } = await import('../port-perf.mjs');
-  const { startProxy, startOrigin, spkiOf, readLog, loadWindow, summarize } = await import('../net-proxy.mjs');
+  const { launchOptions, startProfile, stopProfile, startTrace, stopTrace, TRACE_CATEGORIES } = await import('../bench/port-perf.mjs');
+  const { startProxy, startOrigin, spkiOf, readLog, loadWindow, summarize } = await import('../dev/net-proxy.mjs');
   const certs = path.join(scratch, 'cert');
   const log = (...a) => console.log('[place-load]', ...a);
 
@@ -685,7 +685,7 @@ if (MAIN) {
     fs.rmSync(stamp, { force: true });
     if (appeared) throw new Error(`new links in the live games folder after the scratch setup — stop and look:\n${appeared}`);
     // (the server's catalog of the tree under test on it: the version's engine replaced, its requires resolved)
-    const { loadGameCatalog } = await import(pathToFileURL(path.join(tree, 'src/host/game-catalog.js')).href);
+    const { loadGameCatalog } = await import(pathToFileURL(path.join(tree, 'src/server/game-catalog.js')).href);
     const cat = loadGameCatalog(made.out, null, { enginesDir });
     const m = cat.get(id); if (!m || m.openmw?.engine !== engine) throw new Error(`${id}: the scratch catalog does not run ${engine}`);
     gamesDir = made.out; engineNote = { engine, previous: made.previous, game: made.game, gamesDir };

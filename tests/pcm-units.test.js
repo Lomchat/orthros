@@ -11,8 +11,8 @@ import http from 'node:http';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
-import { createServer } from '../src/host/server.js';
-import { createBrCache } from '../src/host/br-cache.js';
+import { createServer } from '../src/server/server.js';
+import { createBrCache } from '../src/server/br-cache.js';
 import { encodePcm, decodePcm } from '../src/vfs/pcm-codec.js';
 
 const QUIET = { loadLimit: Infinity, diskLimit: 1, idleMs: 50 };

@@ -1,12 +1,12 @@
 // The real-machine measurement kit (docs/real-machine-bench.md): the frame-time histogram, the scenario language and
-// its player (src/host/scenario.js), the telemetry summaries (src/host/perf-summary.js), the GPU / GL call probe
+// its player (src/web/scenario.js), the telemetry summaries (src/web/perf-summary.js), the GPU / GL call probe
 // (src/gfx/gpu-probe.js) and the bench definitions of tools/scenarios/bench.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { HIST_N, histBucket, histUpper, histQuantile, histSparse, histAddSparse, FrameStats, N_CATS, C } from '../src/core/frame-acct.js';
-import { parseScenario, unsupportedSteps, ScenarioPlayer, inRanges, PORT_KINDS } from '../src/host/scenario.js';
-import { PerfWindow, SummaryClock, compactPhase } from '../src/host/perf-summary.js';
+import { parseScenario, unsupportedSteps, ScenarioPlayer, inRanges, PORT_KINDS } from '../src/web/scenario.js';
+import { PerfWindow, SummaryClock, compactPhase } from '../src/web/perf-summary.js';
 import { GpuProbe, WINDOW_FRAMES, PERIOD_MS, GL_FRAMES, GL_PERIOD_MS } from '../src/gfx/gpu-probe.js';
 import { scanCodeOfVk } from '../src/win32/vk-scan.js';
 import { scanCodeOfVk as dinputScan } from '../src/win32/dinput8.js';

@@ -5,14 +5,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { createServer } from '../src/host/server.js';
-import { folderManifest } from '../src/host/manifest.js';
-import { defaultGameManifest } from '../src/host/game-catalog.js';
+import { createServer } from '../src/server/server.js';
+import { folderManifest } from '../src/server/manifest.js';
+import { defaultGameManifest } from '../src/server/game-catalog.js';
 import { decodePng } from '../src/gfx/codecs/png.js';
 import { scanCodeOfVk } from '../src/win32/vk-scan.js';
-import { inRanges } from '../src/host/scenario.js';
+import { inRanges } from '../src/web/scenario.js';
 import { profileGone } from '../src/vfs/profile-opfs.js';
-import { v8LogArgs } from './v8-logs.mjs';
+import { v8LogArgs } from './dev/v8-logs.mjs';
 
 const args = process.argv.slice(2);
 let name = args.find((a) => !a.startsWith('--'));
@@ -61,16 +61,16 @@ if (!name) { console.error('usage: node tools/headless.mjs <manifest | game-fold
 fs.mkdirSync(out, { recursive: true });
 
 // --net <ms>:<Mbit/s>: game file range requests answered after that round trip and transfer rate (a player's connection)
-// (e.g. --net 50:0.68 ~85 KB/s, 50:8 ~1 MB/s, 50:40 ~5 MB/s; tools/slow-net-check.mjs runs a bench at such speeds);
+// (e.g. --net 50:0.68 ~85 KB/s, 50:8 ~1 MB/s, 50:40 ~5 MB/s; tools/check/slow-net-check.mjs runs a bench at such speeds);
 // --net-trace <file>: one line per compressed range answered (start s, duration s, demand/bg, file, range, bytes)
 const netOpt = opt('net') ? opt('net').split(':').map(Number) : null;
-// --br-cache <dir>: the server's precompressed transport units there (src/host/br-cache.js; none without it)
+// --br-cache <dir>: the server's precompressed transport units there (src/server/br-cache.js; none without it)
 // --learn <dir>: the server keeps the learned prefetch order and GL programs there (see server.js); --programs 0: no
 // programs compiled ahead; --memprefetch: the page prefetches
 // into memory (no persistent profile needed); --prefetch 0: no prefetch
 if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 // --profile-seed-quorum N: distinct first sessions that must report identical profile files before the server offers
-// them to an empty profile (default 2; see src/host/profile-seed.js); --profile-seed 0: none offered, none learned
+// them to an empty profile (default 2; see src/shared/profile-seed.js); --profile-seed 0: none offered, none learned
 // --server-port <p>: use an Orthros server already running on 127.0.0.1:<p> (several harness runs on one server: its
 // virtual LAN links them) instead of starting one
 // --games-dir <dir>: the game catalog (folders with their manifest.json) served instead of data/games (a manifest under test)
@@ -82,11 +82,11 @@ const server = opt('server-port') ? null : createServer({ telemetryDir: opt('tel
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 if (server) await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server ? server.address().port : Number(opt('server-port'));
-// --page-origin <origin>: the page loaded from there — a proxy in front of this server (tools/net-proxy.mjs: a player's
+// --page-origin <origin>: the page loaded from there — a proxy in front of this server (tools/dev/net-proxy.mjs: a player's
 // connection, HTTP/2 over TLS; the browser then ignores certificate errors) — the harness's own requests still go here
 const pageOrigin = opt('page-origin') ?? `http://127.0.0.1:${port}`;
 // ORTHROS_CHROME_ARGS: extra browser switches, space-separated (e.g. --js-flags=--trace-gc with DEBUG=pw:browser to see them;
-// a V8 log's files go to the scratch, tools/v8-logs.mjs)
+// a V8 log's files go to the scratch, tools/dev/v8-logs.mjs)
 const chromeArgs = v8LogArgs([...(process.env.ORTHROS_CHROME_ARGS ?? '').split(' ').filter(Boolean), ...(opt('page-origin')?.startsWith('https:') ? ['--ignore-certificate-errors'] : []), '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required']);
 // --opfs <user-data-dir>: persistent browser profile so the worker's OPFS mirror of the game profile (saves,
 // Options.ini) survives across runs, exactly as in a real page (the default fresh context has no persistence).
@@ -185,7 +185,7 @@ async function saveProfile() {
 }
 if (args.includes('--ui') && !args.includes('--quiet-page')) await page.addInitScript(() => { window.__orthrosConsoleLog = true; }); // (the page's log in the run's log file; --quiet-page: not)
 // --account <name>:<password>: the page signed in to that Orthros account first (created when it does not exist yet) — its
-// saves restored before the game and sent while it runs (src/host/web/cloud-sync.js); the server needs accounts
+// saves restored before the game and sent while it runs (src/web/cloud-sync.js); the server needs accounts
 // (--server-port of one started with --accounts)
 if (opt('account')) {
   const [username, password] = opt('account').split(':');

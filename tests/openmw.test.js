@@ -6,9 +6,9 @@ import path from 'node:path';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
-import { loadGameCatalog } from '../src/host/game-catalog.js';
-import { createServer } from '../src/host/server.js';
-import { openmwProblem, openmwWebText, withStreaming, withModsListEarly, warmGatewayLists } from '../src/host/openmw.js';
+import { loadGameCatalog } from '../src/server/game-catalog.js';
+import { createServer } from '../src/server/server.js';
+import { openmwProblem, openmwWebText, withStreaming, withModsListEarly, warmGatewayLists } from '../src/server/ports/openmw.js';
 
 function fixture(t, options = { example: true, files: [] }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-openmw-'));

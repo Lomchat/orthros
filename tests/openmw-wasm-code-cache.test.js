@@ -1,5 +1,5 @@
 // The OpenMW engine page's module compiled in a worker (src/ports/openmw/wasm-code-cache.js, wasm-compile-worker.js,
-// src/host/openmw.js withWasmStream): the glue's Module.instantiateWasm given the page's hook, the module the worker
+// src/server/ports/openmw.js withWasmStream): the glue's Module.instantiateWasm given the page's hook, the module the worker
 // compiled from the engine's URL instantiated here; the worker failing, the module streamed here; an instantiation that
 // fails, or no module anywhere: Module.onAbort, as the glue's abort; ?omwenv=OPENMW_ORTHROS_WASMWORKER=0 leaves no hook
 // (the glue's own path).
@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { withWasmStream } from '../src/host/openmw.js';
+import { withWasmStream } from '../src/server/ports/openmw.js';
 
 const SCRIPT = fs.readFileSync(new URL('../src/ports/openmw/wasm-code-cache.js', import.meta.url), 'utf8');
 /** The smallest WebAssembly module (its header). */

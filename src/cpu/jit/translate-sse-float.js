@@ -226,7 +226,7 @@ function packedUn(op) {
 // replace_lane 0 — the host's mulss/addsd...), never on the whole vector: lanes 1-3 of an x86 register
 // written by scalar code are arbitrary (the integers of an earlier MOVD/PINSRW, the lanes CVTSI2SS keeps...),
 // and a packed host op would also compute on them — every denormal lane costing a microcode assist on the
-// host (DAZ is off in browsers): measured with tools/ssef-bench.mjs, the kernel whose xmm0 carries denormal
+// host (DAZ is off in browsers): measured with tools/bench/ssef-bench.mjs, the kernel whose xmm0 carries denormal
 // upper lanes took 0.92 ns per instruction computed packed, twice its clean-lanes time. Same results bit for bit: the
 // host's scalar and packed instructions round and propagate NaNs alike (first operand's NaN quieted, the
 // default NaN for invalid operations), and an m32/m64 source is read with a plain scalar load.

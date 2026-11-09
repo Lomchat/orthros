@@ -38,7 +38,7 @@ nouveau clic la reprend, aussi après une perte de focus ou la fin d'une mesure 
 mouvements relatifs existent : DirectInput les reçoit sans bornage (caméras à la souris), le curseur du jeu part de sa
 position à lui (un `SetCursorPos` de recentrage compris) et s'arrête aux bords de l'écran et du rectangle `ClipCursor`
 (défilement par les bords) ; la page le dessine. Libre, le pointeur ne transmet de mouvement que tant qu'il reste
-sur le jeu (src/host/web/pointer.js). Au-dessus du jeu, la page montre le curseur système du jeu et lui seul, visible
+sur le jeu (src/web/pointer.js). Au-dessus du jeu, la page montre le curseur système du jeu et lui seul, visible
 quand Windows le montrerait : compteur de `ShowCursor` ≥ 0, une forme posée (`SetCursor(NULL)` l'ôte ; `WM_SETCURSOR`
 envoyé à chaque mouvement, `DefWindowProc` pose le curseur de la classe), aucune souris DirectInput exclusive acquise.
 Caché (un jeu qui dessine son propre curseur), la page n'en montre aucun, capturée ou non ; montré, sa forme (curseur
@@ -157,12 +157,12 @@ seulement) : le bouton « Continuer avec Google » apparaît sans redémarrage, 
   rapport `[frames]` — images > 33 / 40 / 50 ms par minute, percentiles, temps par catégorie (code invité, API, draws,
   JIT, programmes GL, textures, lectures, attentes, réveils tardifs…) des images et des images lentes, pires images ;
   `--phases <fichier>` les écrit en JSON (docs/frame-accounting.md). Télémétrie des joueurs :
-  `node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry [--from AAAA-MM-JJ] [--to …] [--bench [nom]]`
+  `node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry [--from AAAA-MM-JJ] [--to …] [--bench [nom]]`
   (machine, version, mode de rendu, résumés de 20 s : percentiles, images lentes, draws et appels GL par image, temps
   GPU par image quand le navigateur le mesure, attentes du worker de rendu ; mesures `bench` et leur comparaison).
 - Réseau lent (docs/slow-network.md) : `--net <ms>:<Mbit/s>` simule le lien d'un joueur (85 Ko/s : `50:0.68`, 1 Mo/s :
   `50:8`, 5 Mo/s : `50:40`), `--net-trace <fichier>` journalise chaque plage servie ; validation standard d'un lien fin :
-  `node tools/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k,1m,5m --learn-from <copie du dossier
+  `node tools/check/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k,1m,5m --learn-from <copie du dossier
   learn du serveur> --games-dir /srv/orthros/data/games` (profil neuf, temps des phases, octets demandés / d'arrière-plan).
 - Mesures sur une vraie machine (docs/real-machine-bench.md) : ouvrir un lien de mesure dans Chrome, cliquer « Start
   the measurement », ne plus toucher la souris ni le clavier jusqu'au résumé ; les résultats partent dans la télémétrie
@@ -175,5 +175,5 @@ seulement) : le bouton « Continuer avec Google » apparaît sans redémarrage, 
 - Journaux `--log kinds` : `api`, `apisite` (premiers appels de chaque site), `com` / `comx` (COM sans les appels par
   draw), `file`, `filectx`, `procctx`, `reg`, `cpuid`, `debug` / `debugctx` (messages du jeu), `gfx`, `tex`, `jit`, `video`
   (vidéos et fichiers son lus par DirectShow ou MCI : docs/media-playback.md).
-- Outils : `tools/vfs-check.mjs` (octets servis), `tools/sse-bench.mjs`, `tools/x87-bench.mjs`, `tools/chain-bench.mjs`,
-  `tools/jit-dump.mjs` (WASM émis par instruction).
+- Outils : `tools/check/vfs-check.mjs` (octets servis), `tools/bench/sse-bench.mjs`, `tools/bench/x87-bench.mjs`, `tools/bench/chain-bench.mjs`,
+  `tools/dev/jit-dump.mjs` (WASM émis par instruction).

@@ -1,7 +1,7 @@
 // The settings a game language puts in the engine's ini files (the manifest's re3.languages.<code>.ini,
 // docs/browser-ports.md "re3 ports"): each key set in its section, everything else of the file kept byte for byte — its
 // other lines, their order, comments, spacing and line endings. A file is edited as its bytes, one character each
-// (latin1): the manifest's names and values are printable ASCII (src/host/re3.js), so what did not change is written
+// (latin1): the manifest's names and values are printable ASCII (src/server/ports/re3.js), so what did not change is written
 // back as it was read.
 
 const BOM = '\xef\xbb\xbf'; // (UTF-8's, read as latin1)

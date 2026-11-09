@@ -1,4 +1,4 @@
-// GoldSrc browser ports (src/host/goldsrc.js, docs/browser-ports.md): catalog entries without an executable, the
+// GoldSrc browser ports (src/server/ports/goldsrc.js, docs/browser-ports.md): catalog entries without an executable, the
 // port's page and engine routes, the multiplayer relay to a localhost UDP server, the rooms players create (the lobby),
 // and the linked game tree of the native dedicated server.
 import { test } from 'node:test';
@@ -9,9 +9,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { loadGameCatalog } from '../src/host/game-catalog.js';
-import { linkGameLayers, parseServerInfo, roomName, roomOptionCommands, roomPort, roomRequest, roomSlots } from '../src/host/goldsrc.js';
-import { createServer } from '../src/host/server.js';
+import { loadGameCatalog } from '../src/server/game-catalog.js';
+import { linkGameLayers, parseServerInfo, roomName, roomOptionCommands, roomPort, roomRequest, roomSlots } from '../src/server/ports/goldsrc.js';
+import { createServer } from '../src/server/server.js';
 import { groupMaps } from '../src/ports/goldsrc/lobby.js';
 import { distance, lastStatus, playerLine, scoreOf, signedOn } from '../tools/goldsrc/status-lines.mjs';
 

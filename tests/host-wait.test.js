@@ -7,12 +7,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { quantised, OvershootEstimate, HostWaiter, paceEnded, pacePredict, hostWaiter, PACE_SLACK_MS } from '../src/core/host-wait.js';
-import { measureHostTiming, summarise, probeLine } from '../src/host/web/timing-probe.js';
-import { PerfWindow, compactPhase } from '../src/host/perf-summary.js';
+import { measureHostTiming, summarise, probeLine } from '../src/web/timing-probe.js';
+import { PerfWindow, compactPhase } from '../src/web/perf-summary.js';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { RealClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 
 /** Run `f` with the debug globals `g` set (then restored). */
 function withGlobals(g, f) {

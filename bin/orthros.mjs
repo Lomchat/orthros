@@ -2,17 +2,17 @@
 // Orthros command line.
 //
 //   orthros run <game-folder | manifest.json> [--port 8080] [--exe game.exe] [--args "..."] [--open]
-//       serve the folder (its manifest.json, else a manifest synthesized from the folder: see src/host/manifest.js)
+//       serve the folder (its manifest.json, else a manifest synthesized from the folder: see src/server/manifest.js)
 //       and print the page URL that starts it in Chrome; --open launches the system Chrome/Chromium on it
 //   orthros serve [--port 8080] [--manifests dir]      the page with every manifest of the directory
-//   orthros cli <game-folder | manifest.json> [...]    headless Node run (no rendering): src/host/cli.js options
+//   orthros cli <game-folder | manifest.json> [...]    headless Node run (no rendering): src/server/cli.js options
 import path from 'node:path';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createServer } from '../src/host/server.js';
-import { folderManifest, withDefaults } from '../src/host/manifest.js';
-import { defaultGameManifest } from '../src/host/game-catalog.js';
+import { createServer } from '../src/server/server.js';
+import { folderManifest, withDefaults } from '../src/server/manifest.js';
+import { defaultGameManifest } from '../src/server/game-catalog.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const [cmd, ...rest] = process.argv.slice(2);
@@ -72,7 +72,7 @@ async function serve() {
 }
 
 function cli() {
-  const child = spawn(process.execPath, [path.join(ROOT, 'src/host/cli.js'), ...rest], { stdio: 'inherit' });
+  const child = spawn(process.execPath, [path.join(ROOT, 'src/server/cli.js'), ...rest], { stdio: 'inherit' });
   child.on('exit', (code) => process.exit(code ?? 1));
 }
 

@@ -1,9 +1,9 @@
 // Winsock (ws2_32 / wsock32) over the virtual LAN (D061): IPv4 UDP and TCP sockets whose packets travel through the
-// host's LAN link (host.lan: the page's WebSocket to the server's relay, src/host/lan.js), or stay inside the process
+// host's LAN link (host.lan: the page's WebSocket to the server's relay, src/server/lan.js), or stay inside the process
 // (loopback, the own address, broadcasts also reach the process's own sockets as on Windows). Blocking and
 // non-blocking sockets, select, WSAAsyncSelect (window messages), the name functions for the own host.
 // Without a LAN link (tests, the CLI) sockets work inside the process only.
-import { LAN } from '../host/lan-proto.js';
+import { LAN } from '../shared/lan-proto.js';
 import { wmOf } from './user32.js';
 
 const AF_INET = 2, SOCK_STREAM = 1, SOCK_DGRAM = 2;

@@ -1,7 +1,7 @@
 # Browser ports: games whose engine runs as browser code
 
 Orthros runs games in the Win32 emulator and browser ports. All are declared by `data/games/<game>/manifest.json`, listed on the same home,
-served by the same server (`src/host/server.js`, `orthros.service`) on the same origin. The version's `runtime` says
+served by the same server (`src/server/server.js`, `orthros.service`) on the same origin. The version's `runtime` says
 which kind it is:
 
 - **`win32`** (the default): the unmodified Windows game in Orthros' own emulator (`src/cpu`, `src/loader`, `src/win32`,
@@ -25,12 +25,12 @@ only its mod stack: `requires` puts the original game's version's files beneath 
 
 | Path | Content | In Git |
 | --- | --- | --- |
-| `src/host/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
+| `src/server/ports/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`), `bsp-reads.js` (a map's load announced, below "Map loads announced") | yes |
-| `src/host/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `ini.js`, `style.css`) | yes |
+| `src/server/ports/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `ini.js`, `style.css`) | yes |
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `patches/` (a build's own patches), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `release-gamefiles.py` (a release's archives as loose game files), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
-| `tools/port-perf.mjs` | the ports' shared frame measurement (below, "Measuring a port") | yes |
+| `tools/bench/port-perf.mjs` | the ports' shared frame measurement (below, "Measuring a port") | yes |
 | `data/games/<game>/` | `manifest.json`, its cover (`coverFile`), `base/` (the original files), `versions/<version>/` | no |
 | `data/engines/<release>/` | installed engines: `xash3d-web-1.2.2` (browser), `xash3d-web-1.2.2-cs16-15278ca-r2` and `…-arsenal-r12` (the same engine with Counter-Strike modules built from source), `xash3d-dedicated-e0ece3d` (native dedicated server), `revc-web-e312f97-r1` (reVC built from source) and `revc-web-e312f97-plus-r1` (with Orthros' additions) | no |
 | `data/engines/src/` | upstream checkouts at their pinned commits: `xash3d-fwgs` (builds the dedicated server), `cs16-client` with its submodules (builds the Counter-Strike modules), `webxash3d-fwgs-cstrike` and `hlsdk-portable` (reference for later work), `reVC` (Orthros' fork) with its submodules, `emscripten-4.0.23-cache` (Emscripten's SDL2 and mpg123 ports, for builds without network) | no |
@@ -42,7 +42,7 @@ treat `data/engines/` like `data/games/` (the only copy of the recovered modules
 
 ### Measuring a port
 
-`tools/re3/perf.mjs` and `tools/goldsrc/perf.mjs` share `tools/port-perf.mjs`: the browser's flags for a rendering
+`tools/re3/perf.mjs` and `tools/goldsrc/perf.mjs` share `tools/bench/port-perf.mjs`: the browser's flags for a rendering
 mode, a probe in the page before its scripts and its summary — the engine's work a browser frame (from its first
 callback to the engine's request for the next), the gaps between frames shown, the WebGL calls a frame by kind with
 the synchronous ones apart (getError, checkFramebufferStatus, readPixels, shader and program queries… — each one waits
@@ -94,8 +94,8 @@ frames stop 3 s) says it waits only at 0-15 frames a second (Vice City's loads),
 
 On a player's machine (the owner's: a real GPU, Windows), the ports are measured by the **bench suite**
 (`/?benchsuite=all`, docs/real-machine-bench.md "The bench suite"), every game in a row from one link, no Playwright:
-the port's page opens in a frame of the Orthros page, `src/host/web/page-meter.js` measures its frames from outside it
-(the same frame accounting, GPU timer and records as the Windows games'), `src/host/web/dom-input.js` gives it its
+the port's page opens in a frame of the Orthros page, `src/web/page-meter.js` measures its frames from outside it
+(the same frame accounting, GPU timer and records as the Windows games'), `src/web/dom-input.js` gives it its
 scenario's keys and clicks as DOM events, and its console (GoldSrc: `portSession.command`) or debug teleport (OpenMW:
 `window.orthrosBenchHooks`, set by `src/ports/openmw/frame-meter.js` under `?benchrun=`) through hooks. The ports'
 benches are in `tools/scenarios/bench/` (`revc-drive`, `morrowind-glide`, `halflife-c1a0`, `cs-bots`).
@@ -144,7 +144,7 @@ Counter-Strike at its title screen in single player, whichever server module.
 
 ## The page
 
-`src/ports/goldsrc/play.html` has the frame of every Orthros game page (`src/host/web/shell.js`, docs/game-frame.md):
+`src/ports/goldsrc/play.html` has the frame of every Orthros game page (`src/web/shell.js`, docs/game-frame.md):
 the header (game, mouse captured or free, saves, frame rate, the online games, settings, full screen, back to the
 games) and the loading screen over the game's blurred cover — who plays (the Orthros account, or a warning), the
 online games, the start's steps (engine, game files, the game's first images) with their progress, and tips. The game
@@ -202,7 +202,7 @@ starts at once.
 
 - `/api/manifests`: every version, with `runtime`; a port also has `launchUrl` and `modes`, and is `available` only
   when its files, its engine release and the modules it names are installed. The home starts a port by opening its
-  `launchUrl` (`src/host/web/main.js`); the Windows pre-download row is for `win32` versions only.
+  `launchUrl` (`src/web/main.js`); the Windows pre-download row is for `win32` versions only.
 - `/ports/goldsrc/<manifest>/`, `/ports/re3/<manifest>/`: the port's page.
 - `/engines/<release>/<path>`: engine files, only of releases a manifest names, cached as immutable. Pages and the
   home's Prepare are given the content addresses below instead; these keep answering for pages already open.
@@ -232,7 +232,7 @@ starts at once.
 
 Engine releases come often and change one or two files (Arsenal r2 → r12, OpenMW r1 → r11, reVC r1 → r3), and a
 release-keyed URL made every file new to the browser's HTTP cache and to Prepare's. One shared mechanism,
-`src/host/engine-content.js`, gives every runtime's engine files an address by their content, so that a player coming
+`src/server/engine-content.js`, gives every runtime's engine files an address by their content, so that a player coming
 back after a release fetches only the files whose bytes changed. The rules:
 
 - **The sha256.** A file's address is the sha256 of its bytes as the server reads them: hashed once per file, size and
@@ -275,7 +275,7 @@ back after a release fetches only the files whose bytes changed. The rules:
 
 Measured (2026-10-27). For each runtime a new persistent Chromium profile booted the game once on the original release,
 then the same profile booted it again on the next release. Both runs used the same code tree's server: main `a9aae1b`
-for the "before" column, this change for the "after" column. Everything went through `tools/net-proxy.mjs` at 1.8 MB/s
+for the "before" column, this change for the "after" column. Everything went through `tools/dev/net-proxy.mjs` at 1.8 MB/s
 with a 90 ms round trip, on copies of the learned state and the br-cache. Each case ran twice, with identical bytes
 both times. The table gives the `/engines` bytes on the wire for the second boot:
 
@@ -338,7 +338,7 @@ order fetched ahead from the game's position.
   "Light copies"; `lightCopies: false` in a version turns them off).
 - **Earlier copies.** The IndexedDB copy an earlier page kept (`content`) is handed to the block store at the next
   start, then removed.
-- **What the player sees.** Every game's indicators (`src/host/web/data-meter.js`, `shell.setData`): over the page,
+- **What the player sees.** Every game's indicators (`src/web/data-meter.js`, `shell.setData`): over the page,
   "Loading the game data" with the MB received, the rate, the step's percentage when the learned order tells its size —
   drawn by a worker, so it moves while the page's thread waits (GoldSrc) and shows once the engine's reads have waited
   1.5 s (re3: the page goes on painting) —; in the header, a pill while the learned order or the whole game loads in
@@ -353,7 +353,7 @@ timed from its command to the first frame of a steady run (20 frames each within
 game data's waits meanwhile (count, ms, MB), the map file's own (`bspWaits`) and the MB loaded in the background (by
 producer: `bgByMB`). `--report` teaches the server (its learned order); `--report --no-phases` teaches it without the
 session's phases, by time only. `--proxy <rate>:<rtt>` (e.g. `8m:85`, 2026-10-28): the page behind the player's-link
-proxy (`tools/net-proxy.mjs`: HTTP/2 on one connection, as the production front) in front of `--url` instead of
+proxy (`tools/dev/net-proxy.mjs`: HTTP/2 on one connection, as the production front) in front of `--url` instead of
 Chrome's emulation (which keeps HTTP/1.1's six connections a host), its self-signed key trusted; each load's window of
 the proxy's log in its line (`proxy`: the game's own requests, the ahead / announced / background bytes) and the run's
 summary (`proxySummary`). `--spki <key>` / `--insecure`: an https `--url` behind a proxy started elsewhere.
@@ -476,7 +476,7 @@ the sides alternated), load seconds on / off, medians in brackets:
 - Arsenal, 1.8 MB/s, `wait 5,map cs_assault` (the first map: its load includes the game's start, 825-828 waits — not
   comparable with the de_aztec → cs_assault runs above): 37.7, 35.9 / 45.4, 47.3.
 Verdict: the taught map is no slower (faster within the noise at 8 MB/s), the gains on untaught maps and at 1.8 MB/s
-kept. Over HTTP/2 (the production front, `tools/net-proxy.mjs`) not measured.
+kept. Over HTTP/2 (the production front, `tools/dev/net-proxy.mjs`) not measured.
 Over HTTP/2 (2026-10-28, `maps.mjs --proxy 8m:85`, main 5aa05be, a scratch server on copies of the learned directory
 and the unit cache, frozen, sides alternated): Half-Life c1a0 4.7, 3.3 s (431 waits, 4.2, 2.7 s), c1a0d 4.0, 3.9 s
 (50 waits); Half Strike's first map (`wait 5,map de_dust2`) 15.4, 17.2 s (814 waits, 13.8-15.5 s — round trips:
@@ -512,7 +512,7 @@ older builds rebuild as pinned, without `gamefiles/` (a manifest on `…-r2` wou
 The files Orthros builds for a game — the bots' profiles and navigation meshes, Half Strike's models, sprites and
 sounds — are game data like the game's own, not engine files: a GoldSrc release's `gamefiles/` is laid over the
 version's files exactly as an re3 release's ("The engine's files over the version's", below; `releaseGameFiles` in
-`src/host/game-files.js`, the catalog's `overlays` for both runtimes). The rules:
+`src/server/game-files.js`, the catalog's `overlays` for both runtimes). The rules:
 
 - **Where.** `gamefiles/<game folder>/<path>` in the release: `gamefiles/cstrike/maps/de_dust2.nav` is the game's
   `cstrike/maps/de_dust2.nav`. `tools/goldsrc/release-gamefiles.py` writes an archive's members there (the archive's
@@ -523,7 +523,7 @@ version's files exactly as an re3 release's ("The engine's files over the versio
   and a changed file never keeps an old key, even at the same size. `--derive <engines> <from> <new> <archive>...` makes a
   new release from an installed one without rebuilding it (its files copied with their times, `derivedFrom`): how
   `…-r3` and `…-arsenal-r13` came from `…-r2` and `…-arsenal-r12`, keeping their meshes (a rebuild learns them again,
-  one differing). Run `tools/engine-br.mjs` on the new release then (its `release.json`). Two archives giving one path,
+  one differing). Run `tools/ops/engine-br.mjs` on the new release then (its `release.json`). Two archives giving one path,
   a member outside its folder, a path the release has already: refused.
 - **Spelling.** The top layer names a folder: its folders take the game's spelling (`cstrike`, `maps`, `models`,
   `sound`, `sprites`), or every path under them changes for the browsers — their learned order and block store keyed
@@ -547,7 +547,7 @@ version's files exactly as an re3 release's ("The engine's files over the versio
   page announces it after each map's own files, whoever runs the server (its clients load what it precaches): Half
   Strike's 72 Pokémon files are fetched in parallel at a first session's first map, not one demand read each.
 
-Measured (2026-10-28, tools/data-matrix.mjs, new device, 2 runs each, before = main with `…-r2` / `…-arsenal-r12`;
+Measured (2026-10-28, tools/bench/data-matrix.mjs, new device, 2 runs each, before = main with `…-r2` / `…-arsenal-r12`;
 the table in docs/slow-network.md "A port's own archives as game data"): to the menu Half Strike 298 → 160 s and CS
 rebuilt 175 → 126 s at 85 KB/s, 37.5 → 25.8 s and 34.9 → 27.4 s at 1.8 MB/s; to the first map 751 → 667 s and
 580 → 524 s, 65.0 → 61.2 s and 55.1 → 50.8 s; engine bytes before the menu 15.05 → 3.63 MB and 8.47 → 3.53 MB. Half
@@ -797,7 +797,7 @@ engine's writable tree (saves, configuration), written every 10 s, when the page
 2026-11-09 the installation's own `profile` store, merged into it once at the next start (`src/ports/port-profile.js`)
 and left there as an old copy; OpenMW's `/userdata` the same way (`orthros-profile:<key>[:user:<scope>]`), its
 multiplayer, session and launcher state still the installation's. A signed-in player's profile is also on the account
-under the profile key (`src/host/web/cloud-sync.js`: the game's writable tree less logs, screenshots, bots' navigation
+under the profile key (`src/web/cloud-sync.js`: the game's writable tree less logs, screenshots, bots' navigation
 meshes and the decals' cache): restored before the engine starts when the account's is newer, sent every minute when it
 changed and when leaving; a profile replaced so is kept aside in `profile` under `aside-<date>`.
 
@@ -954,7 +954,7 @@ release.
 the Windows card's, by `requires`. reVC takes its language from its ini file, else from the locale; `0` is American
 English, `1` French.)
 
-`src/host/re3.js` (`re3Problem`) checks it; the contract is in `game-manifest.schema.json`. No `exe`. `requires` (no
+`src/server/ports/re3.js` (`re3Problem`) checks it; the contract is in `game-manifest.schema.json`. No `exe`. `requires` (no
 `mount`): versions of other games, of any runtime, whose files lie beneath this version's own, in order (`underlays`,
 as a GoldSrc mod's over its game) — the engine's own files over all; a Windows dependency's own requires are not
 followed (they are drives of its emulated machine). The saved profile's key is the installation's,
@@ -1002,7 +1002,7 @@ ini file at the root, maybe caches.
 The release's `gamefiles/` is the top layer of the version's game tree (a GoldSrc release's the same way: "The
 release's own game files", above): over `versions/<dir>/` and `base/`, its files
 replacing same-named ones whatever their case, as a version's replace the base's. The catalog puts it in the manifest's
-`overlays` (`gameLayers`, `src/host/game-files.js`), from the server's engines folder (`--engines-dir`): `/api/tree`,
+`overlays` (`gameLayers`, `src/server/game-files.js`), from the server's engines folder (`--engines-dir`): `/api/tree`,
 `/game/`, `/gamez/` and the learned reads (`/api/prefetch`) see one tree. A release not installed adds no layer. The
 server lists a tree once, and again when the catalog is read (`/api/manifests`) or when a folder laid over it changed
 (its inode, change or modification time: a release installed, removed or rebuilt while the server runs), so
@@ -1056,7 +1056,7 @@ same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame r
   account's files take the profile's place and the page reloads to start on them. The game over, they wait for its
   restart.
 - **Shared world** (a version with `mmo`, docs/mmo.md): `Module.orthrosNet` is the shared link
-  (`src/host/web/mmo-link.js`, the same for any runtime: WebSocket `/api/mmo/<version>/ws`, whole messages queued for
+  (`src/web/mmo-link.js`, the same for any runtime: WebSocket `/api/mmo/<version>/ws`, whole messages queued for
   the engine's `drain`, reconnection with backoff and the LINK_RESET pseudo-record, PING every 15 s, AWAY when the tab
   is hidden, closed when the page goes) with what only the page knows: `user()`, `signIn()` (the account window, a
   modal over the game — full screen too —, closed once signed in; a sign-in, sign-out or another account closes the
@@ -1205,7 +1205,7 @@ waited for no file (0 ms), 2 gaps over 250 ms (317 ms the longest — SwiftShade
 JavaScript or WebAssembly running), the longest frame 245 ms, 50 MB loaded in the background meanwhile. In the
 measure that kept the loading screen, the game waited 0.2 to 0.4 s in all, for that screen's own files.
 
-The shared first-launch profile (`profileSeed` in the manifest, `src/host/profile-seed.js`) matters here: the game's
+The shared first-launch profile (`profileSeed` in the manifest, `src/shared/profile-seed.js`) matters here: the game's
 first start reads the header of each of its ~1,200 audio files to build `Audio/sound.cache` (a few KiB each, a 64 KiB
 piece each on the wire: ~80 MB). Once two sessions reported the same cache, a new player's empty profile gets it and
 the game reads none of them.
@@ -1265,7 +1265,7 @@ the page starts it as any re3 version (no `modes`).
   100 % world, missions and activities off, the others seen with their pseudo and wanted stars, traffic, pedestrians
   and police shared, PvP, chat on T, `teleport`, cheats for the server's administrators only, garages kept by the
   server. The whole design, the wire protocol and how it was checked: [docs/mmo.md](mmo.md) (DECISIONS.md D102). The
-  server's hub is generic (`src/host/mmo.js`); everything Vice City is in the engine (`src/extras/mmo/`).
+  server's hub is generic (`src/server/mmo.js`); everything Vice City is in the engine (`src/extras/mmo/`).
 
 Checked 2026-10-20 in headless Chromium (SwiftShader), the engine's state read from a trace of a development build
 (menu, page, option, fade, the game's kind): the main menu's "Mode libre", its page, "Continuer" on the game completed
@@ -1318,7 +1318,7 @@ French menus (`?gameLang=fr`), 1280 × 720 and 1280 × 756 screens. The shared f
 reported the same `Audio/sound.cache` (English and French), a third empty profile got it. The mouse's bindings
 (2026-10-20): fire on the left button in a new profile's `reVC.ini`, and in one an earlier build had saved without it.
 Every game page (2026-10-20): in full screen the keys of the browser's shortcuts are the game's (Keyboard Lock);
-out of it, leaving with Ctrl or ⌘ held while a game runs asks first (`src/host/web/shell.js`): checked in the re3
+out of it, leaving with Ctrl or ⌘ held while a game runs asks first (`src/web/shell.js`): checked in the re3
 page (Ctrl held after a click, its `beforeunload` cancelled); the browser's dialog itself and the keyboard lock are not
 (headless Chromium shows neither).
 

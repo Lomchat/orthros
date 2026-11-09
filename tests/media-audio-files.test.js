@@ -1,5 +1,5 @@
 // Audio files of the DirectShow path (src/media): RIFF WAVE (PCM, float, IMA / Microsoft ADPCM) and MPEG audio layer III
-// through the browser's asynchronous decoder (WebCodecs AudioDecoder, here a stand-in; tools/media-browser-check.mjs
+// through the browser's asynchronous decoder (WebCodecs AudioDecoder, here a stand-in; tools/check/media-browser-check.mjs
 // checks the real one against ffmpeg).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

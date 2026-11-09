@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildVersion } from '../src/host/server.js';
+import { buildVersion } from '../src/server/server.js';
 
 test('build version of this tree', () => {
   assert.match(buildVersion(), /^([0-9a-f]{4,}|nogit)\+?@\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);

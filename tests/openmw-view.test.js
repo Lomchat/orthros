@@ -1,13 +1,13 @@
 // The OpenMW engine page's view distance on a link that is not fast (src/ports/openmw/view-grow.js, view.lua; the
-// page's hooks put in by src/host/openmw.js withProgressiveView): short at boot, raised by steps as the game data is
+// page's hooks put in by src/server/ports/openmw.js withProgressiveView): short at boot, raised by steps as the game data is
 // quiet and the frames short, its far loads light; the player's own setting wins; Orthros' script always loaded.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { VIEW, VIEW_FILE, CONTENT, growStep, parseView, install, inWorld } from '../src/ports/openmw/view-grow.js';
-import { withProgressiveView } from '../src/host/openmw.js';
-import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
+import { withProgressiveView } from '../src/server/ports/openmw.js';
+import { DEFAULT_ENGINES_DIR } from '../src/server/ports/goldsrc.js';
 
 const LUA = fs.readFileSync(new URL('../src/ports/openmw/view.lua', import.meta.url), 'utf8');
 

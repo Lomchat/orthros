@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 import { wmOf } from '../src/win32/user32.js';
 import { FAST_STATS } from '../src/cpu/jit/runtime.js';
 
@@ -292,7 +292,7 @@ test('cursor: SetCursor(NULL) hides until the next SetCursor; ShowCursor counts 
 
 // Winsock (D061): UDP and TCP inside the process, then over the virtual LAN with a machine played by the test (it
 // answers the program's broadcast on port 8086, then accepts its TCP connection on 8100 and replies "ok" to "data").
-import { LAN } from '../src/host/lan-proto.js';
+import { LAN } from '../src/shared/lan-proto.js';
 test('net.exe: Winsock inside the process and over the virtual LAN', { skip: skip('net.exe') }, () => {
   const inside = boot('net.exe', { jit: true });
   assert.equal(inside.vm.run(), 0);

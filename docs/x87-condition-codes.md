@@ -6,8 +6,8 @@ from the SDM, both follow the measurement.
 
 ## Measuring
 
-`node tools/x87cc-probe.mjs [--only fcomi,fsin] [--scratch DIR]` builds `tools/oracle/x87cc.c` with clang-18 and runs
-every case of `tools/x87cc-cases.mjs` on the host FPU, in the interpreter and in the JIT (status word in a local and
+`node tools/check/x87cc-probe.mjs [--only fcomi,fsin] [--scratch DIR]` builds `tools/oracle/x87cc.c` with clang-18 and runs
+every case of `tools/check/x87cc-cases.mjs` on the host FPU, in the interpreter and in the JIT (status word in a local and
 not): one x87 instruction executed from known condition codes (none, C1, C3 C2 C0, all four, C0, C3, C2 — set through
 FNSTENV / OR / FLDENV) on seven stacks (negative, positive, -0, +inf, 2^64, a QNaN on top, a zero divisor), then
 FNSTSW AX. It prints the cases where the interpreter's C0 / C2 / C3, then C1, differ from the hardware, and those where

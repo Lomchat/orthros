@@ -1,5 +1,5 @@
 // Virtual key -> keyboard scan code (PC AT set 1) for events that carry only a VK: DirectInput (dinput8.js) and the
-// scripted input of the harness and of the page's bench player (src/host/scenario.js). No dependency: the page loads it.
+// scripted input of the harness and of the page's bench player (src/web/scenario.js). No dependency: the page loads it.
 
 /** virtual key -> scan code (bit 7: extended key) */
 export const VK_TO_SCAN = (() => {

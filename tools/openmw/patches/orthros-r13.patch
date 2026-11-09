@@ -193,7 +193,7 @@ index 797a73f..103108e 100644
 +    bool orthrosLandRange(const ESM::Land& land, VFS::OrthrosRange& out);
 +
 +    /// Orthros (orthros-r13.patch): the ranges of its content files an ESM3 cell is read from once the content is
-+    /// loaded (its content files read light before: src/host/light-copies.js esmZeroRanges): with `refs`, each
++    /// loaded (its content files read light before: src/server/light-copies.js esmZeroRanges): with `refs`, each
 +    /// content file's references to it (CellStore::loadRefs and listRefs, object paging: the CELL record from the
 +    /// context the content load saved), with `land`, an exterior's land with data (orthrosLandRange); appended to
 +    /// `out`.
@@ -483,7 +483,7 @@ index c158b38..fb1ee3b 100644
          mESMVersions.resize(mContentFiles.size(), -1);
  
 +        // Orthros (orthros-r13.patch): the page told that the content load starts — its content files read light, their
-+        // land payloads and cell references' details zeroed (src/host/light-copies.js esmZeroRanges): this load reads
++        // land payloads and cell references' details zeroed (src/server/light-copies.js esmZeroRanges): this load reads
 +        // neither (ESM::Land::load skips the first, ESMStore::countAllCellRefsAndMarkKeys reads a reference's number,
 +        // object, key and deleted flag only, a moved reference's group kept whole) —, and that it is over below: every
 +        // read from then on the files' own (a cell's land and references when it loads).

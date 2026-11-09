@@ -5,7 +5,7 @@ numbers before/after the changes, what was found clean.
 
 ## The server under many players
 
-`tools/server-load.mjs --url <server> --clients 20 --seconds 20 [--pid <server pid>]` — N simulated players at once,
+`tools/bench/server-load.mjs --url <server> --clients 20 --seconds 20 [--pid <server pid>]` — N simulated players at once,
 each a first visit of the home (page, config, catalog, covers) then a game's start as the shared reader does it
 (manifest, tree, learned order, then the order's demand pieces/blocks 4 in flight and background blocks 2 in flight).
 A probe asks `/api/config` every 25 ms: its latency is the event loop's stall. `/api/netstats` now tells the server's
@@ -44,7 +44,7 @@ seeding); its hourly reseed holds the thread ~20 ms.
 
 ## Long sessions
 
-- Win32 (Node, no rendering): `node tools/startbench.mjs bfme2 --games-dir data/games --cold --input
+- Win32 (Node, no rendering): `node tools/bench/startbench.mjs bfme2 --games-dir data/games --cold --input
   tools/scenarios/bfme2-menu-long.txt --limit 2400 --mem 60 --heap-at 300,1500`. BFME2's menu held 40 min: JS heap
   222-241 MB (sawtooth, no trend), translations 14 261 live from minute 11 on (none dropped, none added), heap
   snapshots at 5 and 25 min: +7 400 nodes, +0.2 MB — no leak on the emulator's side.
@@ -61,8 +61,8 @@ Not measured: GPU memory (textures, buffers) over a long session in a real Chrom
 
 ## First visits
 
-`tools/page-weight.mjs <page.html>` — a page's module graph as the server sends it (brotli 11), its depth.
-`tools/home-check.mjs --url <server> --kbps 85 --rtt 80 --runs 3 --pages /,/ports/re3/<id>/` — a fresh profile on a
+`tools/bench/page-weight.mjs <page.html>` — a page's module graph as the server sends it (brotli 11), its depth.
+`tools/check/home-check.mjs --url <server> --kbps 85 --rtt 80 --runs 3 --pages /,/ports/re3/<id>/` — a fresh profile on a
 throttled link (Chrome's own emulation): first paint, the library drawn, the covers in view, the network quiet, bytes.
 
 Home at 85 KB/s, 80 ms, median of 3:
@@ -76,15 +76,15 @@ Home at 85 KB/s, 80 ms, median of 3:
 | bytes (covers) | 773 KiB (560, 11 covers) | 360 KiB (171, 3 covers) |
 
 Changes: covers of the cards near the viewport only (IntersectionObserver), a backdrop's image set when shown; the
-ring constants the page needs in `src/host/host-proto.js` (the host's graph — PNG, frame accounting — not loaded by the
+ring constants the page needs in `src/web/host-proto.js` (the host's graph — PNG, frame accounting — not loaded by the
 home); `bench.js` loaded in bench mode only. Graph 31 → 26 requests, 143 → 121 KiB, depth 4 → 3.
 
 Tried and dropped: `<link rel="modulepreload">` for every module of a page's graph, injected by the server — home
 −0.1 s, the three port pages +0.03 to +0.29 s (the preloads compete with the page's own scripts on a thin link).
-Taken back for the home only (2026-10-28, `server.js` sendHome, `src/host/module-graph.js`): that trial measured a
+Taken back for the home only (2026-10-28, `server.js` sendHome, `src/server/module-graph.js`): that trial measured a
 first visit, where bytes are the bottleneck; a returning player's home revalidates each module (no-cache, a 304 each)
 and walks its graph — 7 levels by then — a round trip per level. The home now carries a `modulepreload` for each module
-of levels 2 and deeper, its ETag its content's. `tools/home-check.mjs --warm` (same profile, second load), median of 5,
+of levels 2 and deeper, its ETag its content's. `tools/check/home-check.mjs --warm` (same profile, second load), median of 5,
 against the same tree run with `--no-home-preload`:
 
 | link | /api/config asked | library drawn |

@@ -1,13 +1,13 @@
 // The OpenMW engine page's quality tier from the GPU and the frames measured (src/ports/openmw/tier.js, put into the
-// page by src/host/openmw.js withQualityTier), and the GPU's kind every runtime reads (src/host/web/gpu-class.js).
+// page by src/server/ports/openmw.js withQualityTier), and the GPU's kind every runtime reads (src/web/gpu-class.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { gpuClass } from '../src/host/web/gpu-class.js';
+import { gpuClass } from '../src/web/gpu-class.js';
 import { chooseTier, framesLook, install, tierSettings, FRAMES, KEY } from '../src/ports/openmw/tier.js';
-import { withQualityTier } from '../src/host/openmw.js';
-import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
+import { withQualityTier } from '../src/server/ports/openmw.js';
+import { DEFAULT_ENGINES_DIR } from '../src/server/ports/goldsrc.js';
 
 test('the GPU\'s kind from the renderer string WebGL gives', () => {
   const cases = {
@@ -145,7 +145,7 @@ test('the view distance a tier asks (the owner, 2026-11-01, then 2026-11-08): mi
   assert.deepEqual(tierSettings('mid'), { refraction: false, vd: 20480, fog: { start: 20480, end: 27307 } });
   assert.deepEqual(tierSettings('high'), { refraction: true, vd: 24576, fog: { start: 24576, end: 32768 } });
   assert.deepEqual(tierSettings('low'), { refraction: false });
-  const { withQualityTier } = await import('../src/host/openmw.js');
+  const { withQualityTier } = await import('../src/server/ports/openmw.js');
   const page = "var TIER = { mid: { vd: '12288' } }[__tier];\n'distant land fog start = 12288\\n' +\n'distant land fog end = 16384\\n' +";
   const out = withQualityTier(page);
   assert.ok(out.includes('if (__ts.vd) TIER = Object.assign({}, TIER, { vd: String(__ts.vd) });'));

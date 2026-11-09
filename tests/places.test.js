@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { createServer } from '../src/host/server.js';
+import { createServer } from '../src/server/server.js';
 import { BLOCK } from '../src/vfs/http-backend.js';
 
 // (the br-cache's generation not paused by the machine's load nor its disk: a test on a busy machine)

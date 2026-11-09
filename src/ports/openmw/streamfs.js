@@ -1,5 +1,5 @@
 // The OpenMW engine page's file streaming (its StreamFS interface: init, mount, mountLocal, mountBlob, setUrl, stats,
-// window.__streamfsStats; and data, for the page's view distance, view-grow.js — src/host/openmw.js swaps the
+// window.__streamfsStats; and data, for the page's view distance, view-grow.js — src/server/ports/openmw.js swaps the
 // release's streamfs.js for this file): the installation's files from the game data every Orthros game reads
 // (src/vfs/data-client.js, emscripten-files.js — CLAUDE.md "Standardization"), the engine's own mounts mapped onto the
 // version's tree: mwdata/<file> → <file>, mwdata/mods/<part>/<file> → mods/<part>/<file>, moddata/<file> →

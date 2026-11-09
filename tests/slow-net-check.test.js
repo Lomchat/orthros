@@ -1,7 +1,7 @@
-// tools/slow-net-check.mjs: speed names to the harness's --net, and a run's output to its summary.
+// tools/check/slow-net-check.mjs: speed names to the harness's --net, and a run's output to its summary.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { netArg, parseRun } from '../tools/slow-net-check.mjs';
+import { netArg, parseRun } from '../tools/check/slow-net-check.mjs';
 
 test('slow-net check: speeds and run summaries', () => {
   assert.equal(netArg('85k'), '50:0.680');

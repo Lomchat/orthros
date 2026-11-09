@@ -1,15 +1,15 @@
-// The page of an OpenMW browser port (src/host/openmw.js, docs/openmw.md), /ports/openmw/<manifest>/: the pinned
-// OpenMW-Web engine's own page in a frame (app/), under the frame every Orthros game has (/src/host/web/shell.js):
+// The page of an OpenMW browser port (src/server/ports/openmw.js, docs/openmw.md), /ports/openmw/<manifest>/: the pinned
+// OpenMW-Web engine's own page in a frame (app/), under the frame every Orthros game has (/src/web/shell.js):
 // the header (the mouse, the saves, the frame rate, full screen, back to the games) and the loading screen, where the
 // player chooses the game's language and plays alone or with friends. Alone, the saves go to the player's Orthros
 // account (cloud.js, in the engine's page); with friends, the world's server keeps the character of the account.
 // The engine's page tells its frames and the mouse (frame-meter.js) and its saves (cloud.js) by messages.
-import { pickLang } from '../../host/web/lang.js';
-import { createShell } from '../../host/web/shell.js';
-import { escapeToGame } from '../../host/web/escape.js';
-import { endonym } from '../../host/web/lang.js';
+import { pickLang } from '../../web/lang.js';
+import { createShell } from '../../web/shell.js';
+import { escapeToGame } from '../../web/escape.js';
+import { endonym } from '../../web/lang.js';
 import { linkRate } from '../../vfs/data-client.js';
-import { pageStorage } from '../../host/web/storage-persist.js';
+import { pageStorage } from '../../web/storage-persist.js';
 
 const STRINGS = {
   en: {

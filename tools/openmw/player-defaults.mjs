@@ -184,7 +184,7 @@ const rootNames = (id) => {
 /** Generates the root in the version and records it in its manifest (installed, with its entries). */
 export function installPlayerDefaults(folder, versionId, list, { id = DEFAULT_ID } = {}) {
   const entries = playerDefaultsEntries(list);
-  // (the manifest's mod id rule, src/host/openmw.js MOD_ID)
+  // (the manifest's mod id rule, src/server/ports/openmw.js MOD_ID)
   if (!/^[a-z0-9][a-z0-9-]{0,54}$/.test(id)) throw new Error('Invalid mod id');
   const game = fs.realpathSync(folder), file = path.join(game, 'manifest.json');
   const spec = JSON.parse(fs.readFileSync(file, 'utf8')), version = spec.versions.find((v) => v.id === versionId);

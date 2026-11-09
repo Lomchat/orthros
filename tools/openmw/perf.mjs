@@ -12,8 +12,8 @@
 //     [--net-after KB/s] [--glcalls] [--console] [--workers] [--gctrace] [--heap [--heap-old] [--heap-interval bytes]]
 //     [--snapshot] [--channel chromium|shell]   (--channel: Chromium itself in its new headless mode by default, as the bench suite
 //     runs it; shell: Playwright's headless shell, which composites otherwise — 47 fps on the glide where Chromium and
-//     the suite measure 31, tools/port-perf.mjs)   (--run: Shift held, running;
-//     --profile: a CPU profile of the measured seconds, its longest busy stretches and what they ran, tools/port-perf.mjs;
+//     the suite measure 31, tools/bench/port-perf.mjs)   (--run: Shift held, running;
+//     --profile: a CPU profile of the measured seconds, its longest busy stretches and what they ran, tools/bench/port-perf.mjs;
 //     --glide <dx>,<dy>[,<speed>[,<z>]]: instead of walking, the player carried in a straight line from the start
 //     cell's centre, <speed> units a second (300: a run) at height <z> (3000) — several cells crossed the same way
 //     at every run, whatever stands in the way)
@@ -47,7 +47,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { chromium } from 'playwright';
-import { launchOptions, startProfile, stopProfile, memSampler, meterSampler } from '../port-perf.mjs';
+import { launchOptions, startProfile, stopProfile, memSampler, meterSampler } from '../bench/port-perf.mjs';
 
 const args = process.argv.slice(2), id = args[0], arg = (k, d = null) => args.includes(k) ? args[args.indexOf(k) + 1] : d;
 if (!id) throw new Error('Expected a manifest id');

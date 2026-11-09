@@ -7,17 +7,17 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createServer } from '../src/host/server.js';
-import { treeSha } from '../src/host/engine-content.js';
-import { DirListings } from '../src/host/game-files.js';
+import { createServer } from '../src/server/server.js';
+import { treeSha } from '../src/server/engine-content.js';
+import { DirListings } from '../src/server/game-files.js';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 import { MemBlockStore } from '../src/vfs/opfs-store.js';
 import { NetLink } from '../src/vfs/net-link.js';
 import { forLink, startupHead, launchSet, launchFirst, setBytes, launchSummary, PRE_PLAYABLE, WIRE_RATIO } from '../src/vfs/launch-set.js';
 import { createDataWorker } from '../src/vfs/data-worker.js';
-import { launchFor, launchStatus } from '../src/host/web/download.js';
-import { fmtBytes } from '../src/host/web/net-status.js';
-import { engineSizes, wireOf } from '../src/host/web/download-worker.js';
+import { launchFor, launchStatus } from '../src/web/download.js';
+import { fmtBytes } from '../src/web/net-status.js';
+import { engineSizes, wireOf } from '../src/web/download-worker.js';
 
 const MiB = 1 << 20;
 const tree = () => ({

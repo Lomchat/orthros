@@ -2,7 +2,7 @@
 # A GoldSrc engine release's own game files as loose files (docs/browser-ports.md "The release's own game files"): the
 # members of the archives Orthros builds for a release (the bots' profiles and navigation meshes, a build's generated
 # assets — tools/goldsrc/build-modules.sh) written under the release's gamefiles/<game folder>/, which the server lays
-# over the version's files (src/host/game-files.js releaseGameFiles). There they are game data — listed in the version's
+# over the version's files (src/server/game-files.js releaseGameFiles). There they are game data — listed in the version's
 # tree, read by pieces through /gamez, kept in the OPFS store, ordered by what sessions read —, not archives the page
 # fetches whole before the menu (the engine reads every member's header of a mounted .pk3 at its mount: xash3d-fwgs
 # filesystem/zip.c FS_LoadZip). The archives stay in the release (an older manifest's goldsrc.extras still names them);
@@ -23,7 +23,7 @@
 #   python3 -I tools/goldsrc/release-gamefiles.py --derive <engines dir> <from id> <new id> [--map-precache=]<archive>...
 #       a new release made from an installed one without rebuilding it: its files copied (times kept), its id changed
 #       (`derivedFrom`: the release it was made from), then the archives' members written; staged beside, then renamed
-#       in place. An installed release is never overwritten. Run tools/engine-br.mjs on it afterwards (release.json).
+#       in place. An installed release is never overwritten. Run tools/ops/engine-br.mjs on it afterwards (release.json).
 import hashlib
 import json
 import os

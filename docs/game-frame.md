@@ -1,9 +1,9 @@
 # The frame around every game
 
-Every game page of Orthros — the Windows games' (`src/host/web/index.html`, `main.js`), the GoldSrc ports'
+Every game page of Orthros — the Windows games' (`src/web/index.html`, `main.js`), the GoldSrc ports'
 (`src/ports/goldsrc/`), the re3 ports' (`src/ports/re3/`) and the OpenMW ports' (`src/ports/openmw/`) — has the same
 frame, built by
-`src/host/web/shell.js` (styles: `src/host/web/player.css`). A page gives it the game's title, version, language,
+`src/web/shell.js` (styles: `src/web/player.css`). A page gives it the game's title, version, language,
 cover, the steps of its start and its own indicators; it never names a game.
 
 ## The header (always shown, hidden in full screen only)
@@ -23,7 +23,7 @@ From left to right:
 
 Narrow windows keep the indicators' icons; their words go (their titles still say them).
 
-**Escape and the mouse** (`src/host/web/escape.js`, every runtime; the owner's rule, 2026-10-20): the first Escape goes
+**Escape and the mouse** (`src/web/escape.js`, every runtime; the owner's rule, 2026-10-20): the first Escape goes
 to the game, the next one frees the mouse — a game's own Escape (its menu, closing a window) must not cost the mouse. In
 full screen the keyboard is locked, so the page decides: the first press passes to the game with the mouse still
 captured, the next is kept from the game and frees it (a press with the mouse free goes to the game; holding Escape
@@ -31,7 +31,7 @@ leaves full screen as before). Out of full screen Chrome frees the mouse at the 
 page — no page can change that (checked with real key presses, Chrome 153: no keydown reaches the page, and capturing
 again needs a click): the game is sent that Escape all the same (a synthesized press and release), a click captures the
 mouse again. Nothing is sent when the page or the game freed the mouse itself, the window lost the focus, the tab was
-left or full screen was left. `tools/escape-check.mjs` replays these cases with real key presses (xdotool, a headed
+left or full screen was left. `tools/check/escape-check.mjs` replays these cases with real key presses (xdotool, a headed
 Chrome under Xvfb).
 
 ## The loading screen
@@ -45,7 +45,7 @@ to the games.
 
 ## One identity: the Orthros account
 
-- **Saves** (`src/host/web/cloud-sync.js`, `CloudSave`): before a game starts, the account's copy is put in place when
+- **Saves** (`src/web/cloud-sync.js`, `CloudSave`): before a game starts, the account's copy is put in place when
   it is newer; while the game runs, the profile is sent after it changed (Windows: 45 s after the worker wrote it;
   GoldSrc and re3: every minute when changed; OpenMW: after each engine sync, `cloud.js`); when leaving by « Games », sent
   first. What this browser knows of the account's copy: `localStorage orthros.sync.<user>.<game>` (`parent`: the
@@ -55,8 +55,8 @@ to the games.
   in step with another account is put aside, not sent. Signing in while a game runs: sent, or — when the account
   already has another copy — the player restarts with the account's or sends this browser's.
 - **Multiplayer** is for signed-in players on a server with accounts: the Windows games' virtual LAN refuses others
-  (`src/host/lan.js`) and names the emulated machine after the account (the games' default player name, `gethostname`);
-  the GoldSrc relay and room creation refuse them (`src/host/goldsrc.js`), the player's name in the game is the
+  (`src/server/lan.js`) and names the emulated machine after the account (the games' default player name, `gethostname`);
+  the GoldSrc relay and room creation refuse them (`src/server/ports/goldsrc.js`), the player's name in the game is the
   account's; OpenMW's worlds already required it (`src/ports/openmw/account-bridge.js`).
 - Without an account, games run and their progress stays in this browser; the home screen, the loading screen and
   the header say so.
@@ -67,7 +67,7 @@ to the games.
   chooses a username there — or gives an existing account's password to link Google to it. The Orthros account stays
   the identity: Google is a way into it (`identities` table), linked or unlinked in the account window; an account
   made with Google has no password until one is set (it is then unlinkable), and is deleted with its name typed again.
-  All server side (`src/host/google-signin.js`: OpenID Connect code flow with PKCE, the flow bound to its browser by a
+  All server side (`src/server/google-signin.js`: OpenID Connect code flow with PKCE, the flow bound to its browser by a
   cookie, the ID token checked — issuer, audience, expiry, nonce — as it comes straight from Google over TLS); no Google
   script in the pages.
 

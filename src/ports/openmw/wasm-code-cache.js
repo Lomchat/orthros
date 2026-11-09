@@ -1,4 +1,4 @@
-// Put into the OpenMW engine's page by the Orthros server (src/host/openmw.js withWasmStream), ahead of the engine's
+// Put into the OpenMW engine's page by the Orthros server (src/server/ports/openmw.js withWasmStream), ahead of the engine's
 // Module literal and glue: the engine's module compiled in a worker (wasm-compile-worker.js) and instantiated here,
 // through the engine glue's Module.instantiateWasm (docs/openmw.md "Chrome's code cache off the main thread"). Chrome
 // keeps a WebAssembly code cache for a module streamed from a fetched answer, and works it on the thread that compiled

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { requestHost, forwardedOrigin, sameOrigin } from '../src/host/request-origin.js';
+import { requestHost, forwardedOrigin, sameOrigin } from '../src/server/request-origin.js';
 
 const req = (headers) => ({ headers });
 

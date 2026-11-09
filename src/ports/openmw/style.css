@@ -1,5 +1,5 @@
 /* The OpenMW port's page (play.html): the engine's own page in a frame under the header every Orthros game has
-   (/src/host/web/player.css). */
+   (/src/web/player.css). */
 html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; color-scheme: dark; }
 #stage { position: absolute; left: 0; right: 0; bottom: 0; top: var(--bar); }
 html:fullscreen #stage { top: 0; }

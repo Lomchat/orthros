@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openmwGatewayImage } from '../src/host/openmw.js';
+import { openmwGatewayImage } from '../src/server/ports/openmw.js';
 
 const tools = path.join(path.dirname(fileURLToPath(import.meta.url)), '../tools/openmw');
 const lock = JSON.parse(fs.readFileSync(path.join(tools, 'lock.json'), 'utf8'));

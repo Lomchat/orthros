@@ -1,4 +1,4 @@
-// Precompressed transport units (src/host/br-cache.js, docs/slow-network.md "Precompressed units"): a request of a
+// Precompressed transport units (src/server/br-cache.js, docs/slow-network.md "Precompressed units"): a request of a
 // unit's shape that takes br is answered from the unit made ahead in the background, else the dynamic way (and the
 // unit is made); a changed file never hits; the budget is kept, launch units last out; the index survives a restart.
 import { test } from 'node:test';
@@ -10,8 +10,8 @@ import http from 'node:http';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { unitOf, rangeUnits, HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
-import { createBrCache, pinShares, WANT_EVERY } from '../src/host/br-cache.js';
-import { createServer } from '../src/host/server.js';
+import { createBrCache, pinShares, WANT_EVERY } from '../src/server/br-cache.js';
+import { createServer } from '../src/server/server.js';
 
 // (the machine's own load and disk never pause the tests' generation)
 const QUIET = { loadLimit: Infinity, diskLimit: 1, idleMs: 50 };
@@ -270,7 +270,7 @@ test('server: a TES3 file\'s light copy seeded only for an engine that reads it 
 });
 
 test('cache: a light copy\'s units are its own version, made from its bytes', async () => {
-  const { lightCopy, readLight } = await import('../src/host/light-copies.js');
+  const { lightCopy, readLight } = await import('../src/server/light-copies.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
   // (a DXT1 texture of 1024², 11 levels: each level's bytes its own value)
   const head = Buffer.alloc(128);
@@ -292,7 +292,7 @@ test('cache: a light copy\'s units are its own version, made from its bytes', as
 });
 
 test('cache: a TES3 file\'s light copy (its payloads zeroed in place) has units of its own format, made from its bytes', async () => {
-  const { lightCopy, readLight, ESM_LIGHT_FROM } = await import('../src/host/light-copies.js');
+  const { lightCopy, readLight, ESM_LIGHT_FROM } = await import('../src/server/light-copies.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-brcache-'));
   // (a header, then LAND records whose heights are noise: zeroed in the copy)
   const rec = (name, subs) => { const body = Buffer.concat(subs), h = Buffer.alloc(16); h.write(name, 0, 'latin1'); h.writeUInt32LE(body.length, 4); return Buffer.concat([h, body]); };

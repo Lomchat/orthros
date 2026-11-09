@@ -1,10 +1,10 @@
-// The host timer helper's decision logic (src/host/web/timer-helper.js) on a fake clock and fake variants: nothing runs
+// The host timer helper's decision logic (src/web/timer-helper.js) on a fake clock and fake variants: nothing runs
 // on a fine host; on a coarse one the best variant that gains is kept and runs only while a pacing loop runs and the tab
 // is visible; one that no longer helps is dropped.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { TimerHelper, pickVariant, COARSE_MS, PACE_IDLE_MS } from '../src/host/web/timer-helper.js';
-import { sanitizePerfRecord, compactProbe, PERF_VERSION } from '../src/host/perf-record.js';
+import { TimerHelper, pickVariant, COARSE_MS, PACE_IDLE_MS } from '../src/web/timer-helper.js';
+import { sanitizePerfRecord, compactProbe, PERF_VERSION } from '../src/shared/perf-record.js';
 
 /** a host whose 1 ms wait overshoots by `base` ms, less by each running variant's effect */
 function rig({ base, effect = {}, g = {}, visible = true }) {

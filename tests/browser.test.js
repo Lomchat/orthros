@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer } from '../src/host/server.js';
+import { createServer } from '../src/server/server.js';
 import { decodePng } from '../src/gfx/codecs/png.js';
 
 let chromium = null;

@@ -1,7 +1,7 @@
-// The automatic snapshot's timing (src/host/snapshot-watch.js, docs/snapshot.md stage 2).
+// The automatic snapshot's timing (src/web/snapshot-watch.js, docs/snapshot.md stage 2).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SnapshotWatch } from '../src/host/snapshot-watch.js';
+import { SnapshotWatch } from '../src/web/snapshot-watch.js';
 
 test('a capture is due once no file was opened for a while as frames went on; kept once the session went on', () => {
   const w = new SnapshotWatch({ quietMs: 4000, minFps: 5, tries: 2, keepMs: 20000, keepFrames: 100 });

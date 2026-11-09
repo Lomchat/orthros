@@ -1,11 +1,11 @@
-// tools/v8-logs.mjs: V8's log files under the scratch, not in the browser's working directory (the repository's root).
+// tools/dev/v8-logs.mjs: V8's log files under the scratch, not in the browser's working directory (the repository's root).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { v8LogArgs } from '../tools/v8-logs.mjs';
-import { launchOptions } from '../tools/port-perf.mjs';
+import { v8LogArgs } from '../tools/dev/v8-logs.mjs';
+import { launchOptions } from '../tools/bench/port-perf.mjs';
 
 test('v8 logs: every --js-flags gets a --logfile in the directory, made first; other switches untouched', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'v8-logs-')), dir = path.join(root, 'logs');

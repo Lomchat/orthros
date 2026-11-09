@@ -286,7 +286,7 @@ export class RenderLink {
    * Recording cost probe (ORTHROS_REC_TIME=<frames>, a worker debug global: harness dbg:): the recorders' entry points
    * (draws, clears, presents, readbacks, blits, dirty records, with the state sync they run) timed over that many
    * frames, the waits for the render worker taken out; one report logged. The state-table and constant hooks run
-   * inside the Direct3D setters and are not counted (tools/render-record-bench.mjs measures everything).
+   * inside the Direct3D setters and are not counted (tools/bench/render-record-bench.mjs measures everything).
    */
   recTimeStep() {
     const T = this.recTime;

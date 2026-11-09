@@ -1,7 +1,7 @@
 // Translated code listing (debugging): the WASM a region's translation emits, as a pseudo-WAT trace of the emitter's
 // instruction-level calls (locals by name) grouped per guest instruction, with the region's block structure (extent,
 // terminator, successors in / out of the region, predicted lazy op, planned x87 shift) and, for a region translated
-// with block counters (Jit opts.blockCounts), each block's execution count. Used by tools/jit-dump.mjs (a byte string
+// with block counters (Jit opts.blockCounts), each block's execution count. Used by tools/dev/jit-dump.mjs (a byte string
 // translated in isolation) and by the page worker (a live region of a running game: the `jitlist` harness input and
 // the profiler's listing of the hottest regions) — to see what the translated code does per guest instruction.
 // The listing re-translates the region with the options it was translated with: the same emitter decisions (the

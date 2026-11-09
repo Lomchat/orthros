@@ -112,7 +112,7 @@ export const envPreRun = (env, log = () => {}) => (M) => {
   for (const [key, value] of Object.entries(env ?? {})) { if (M.ENV) M.ENV[key] = value; else log(`${key}: the engine exposes no environment`); }
 };
 
-// What the account keeps of a profile (src/host/web/cloud-sync.js): its files less what the engine makes again —
+// What the account keeps of a profile (src/web/cloud-sync.js): its files less what the engine makes again —
 // logs and screenshots.
 const KEEP = (path) => !/(^|\/)(screenshots|logs)\//i.test(path) && !/\.log$/i.test(path);
 /** A profile's files as the account keeps them. */

@@ -9,7 +9,7 @@
 // session that teaches the server its learned order). --query: added to the page's address (e.g. mapreads=0: the map loads
 // not announced — src/ports/goldsrc/bsp-reads.js —, to compare). JSON on the last line; evidence under
 // /tmp/orthros-scratch/goldsrc-maps-<manifest>/ (--out: another folder). --proxy <rate>:<rtt> (e.g. 8m:85): the page
-// behind the player's-link proxy (tools/net-proxy.mjs) in front of --url instead of Chrome's emulation — HTTP/2 on one
+// behind the player's-link proxy (tools/dev/net-proxy.mjs) in front of --url instead of Chrome's emulation — HTTP/2 on one
 // connection, as the production front (Cloudflare) speaks to Chrome; Chrome trusts the proxy's self-signed key
 // (--ignore-certificate-errors-spki-list); its log in the out folder, each load's window of it in the map's line
 // (`proxy`: loadWindow — the game's reads, the ahead / want / background bytes) and the run's summary (`proxySummary`).
@@ -23,8 +23,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { chromeArgs, addProbe, quietReports } from '../port-perf.mjs';
-import { startProxy, spkiOf, parseRate, readLog, loadWindow, summarize } from '../net-proxy.mjs';
+import { chromeArgs, addProbe, quietReports } from '../bench/port-perf.mjs';
+import { startProxy, spkiOf, parseRate, readLog, loadWindow, summarize } from '../dev/net-proxy.mjs';
 
 const args = process.argv.slice(2), arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
 const [name] = args;

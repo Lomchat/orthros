@@ -1,5 +1,5 @@
-// The engine page's settings defaults a version adds (src/host/openmw.js withSettingsDefaults, put into the page by
-// src/host/server.js): OpenMW's locales in the version's language first, English after, dialogue topics coloured, then
+// The engine page's settings defaults a version adds (src/server/ports/openmw.js withSettingsDefaults, put into the page by
+// src/server/server.js): OpenMW's locales in the version's language first, English after, dialogue topics coloured, then
 // the version's own (manifest openmw.settings) — appended to what the page writes to /settings.cfg, under the player's
 // own settings.cfg; and the version's own for its native simulation peers (openmwSimSettings, tools/openmw/server.mjs).
 import { test } from 'node:test';
@@ -7,10 +7,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createServer } from '../src/host/server.js';
-import { OPENMW_SIM_SETTINGS, openmwLocales, openmwProblem, openmwSettingsDefaults, openmwSimSettings, openmwVersionSettings, withSettingsDefaults } from '../src/host/openmw.js';
-import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
-import { DEFAULT_GAMES_DIR } from '../src/host/game-catalog.js';
+import { createServer } from '../src/server/server.js';
+import { OPENMW_SIM_SETTINGS, openmwLocales, openmwProblem, openmwSettingsDefaults, openmwSimSettings, openmwVersionSettings, withSettingsDefaults } from '../src/server/ports/openmw.js';
+import { DEFAULT_ENGINES_DIR } from '../src/server/ports/goldsrc.js';
+import { DEFAULT_GAMES_DIR } from '../src/server/game-catalog.js';
 
 /**
  * OpenMW's settings file reader (components/settings/parser.cpp, SettingsFileParser::loadSettingsFile) on a text: a

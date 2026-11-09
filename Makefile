@@ -44,7 +44,7 @@ pe-tests:
 	@sh tools/pe/build.sh
 
 serve:
-	node src/host/server.js
+	node src/server/server.js
 
 # headless Chromium run of a manifest (MANIFEST=name, SECONDS=n); see tools/headless.mjs for capture/profiling options
 headless:

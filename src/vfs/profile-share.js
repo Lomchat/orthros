@@ -1,6 +1,6 @@
 // One profile per game (docs/profiles.md): the saves and settings of every version of a game folder are one profile —
 // like on a PC, where a patch keeps them —, unless a version says `ownProfile: true` in its manifest. The catalog gives
-// each version its `profileKey` (src/host/game-catalog.js): the game folder's id, or the version's own name. Every
+// each version its `profileKey` (src/server/game-catalog.js): the game folder's id, or the version's own name. Every
 // runtime keeps its profile under it, through the names made here; the copies kept per version before (one per version
 // name) are merged into it by migrateProfile below (each copy once, again when it changed) with the one merge
 // (profile-merge.js), and left in place.

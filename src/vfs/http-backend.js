@@ -96,7 +96,7 @@ const PREFETCH_PARTS = 6;
 /**
  * prefetch requests in flight at once on a measured fast link while the game reads nothing from the network (one while it
  * does): one at a time left the link idle a round trip per request — BFME 1.08 through a 7 MB/s, 75 ms link (HTTP/2,
- * tools/net-proxy.mjs) carried 2.3-3 MB/s of learned blocks, and a game that read faster than that waited for them
+ * tools/dev/net-proxy.mjs) carried 2.3-3 MB/s of learned blocks, and a game that read faster than that waited for them
  */
 const FAST_PREFETCH_PARTS = 3;
 /** a pause this long (ms) between two learned entries ends a step of the game (see stepEstimate) */
@@ -145,7 +145,7 @@ const wireOf = (len, header) => { const n = Number(header); return Number.isFini
 
 /**
  * Transport units (docs/slow-network.md "Precompressed units"): the server keeps some ranges of a file compressed ahead
- * at brotli's best (src/host/br-cache.js) — a whole block (the file's tail for its last one), or a single piece — and
+ * at brotli's best (src/server/br-cache.js) — a whole block (the file's tail for its last one), or a single piece — and
  * answers a request of exactly that shape from them. unitOf: the unit [start, end) of a file of `size` bytes is (a
  * block first: a file or a tail of one piece is its block), or null.
  */

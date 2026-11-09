@@ -1,24 +1,24 @@
 // The bench suite (docs/real-machine-bench.md, "The bench suite"): the scenario language's nudge and the ports' steps
-// (src/host/scenario.js), the suite's definitions (tools/scenarios/bench/index.json), the frames of a port's page
-// measured from outside it (src/host/web/page-meter.js), the scripted DOM input (dom-input.js), the virtual keys as DOM
+// (src/web/scenario.js), the suite's definitions (tools/scenarios/bench/index.json), the frames of a port's page
+// measured from outside it (src/web/page-meter.js), the scripted DOM input (dom-input.js), the virtual keys as DOM
 // keys (src/win32/vk-scan.js), the suite's addresses and records (bench-suite.js), and its report
-// (tools/telemetry-report.mjs --suite).
+// (tools/dev/telemetry-report.mjs --suite).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { parseScenario, unsupportedSteps, ScenarioPlayer, PLAYER_KINDS, PORT_KINDS } from '../src/host/scenario.js';
-import { PageMeter, benchHooks } from '../src/host/web/page-meter.js';
-import { domInput, TYPE_GAP_MS } from '../src/host/web/dom-input.js';
+import { parseScenario, unsupportedSteps, ScenarioPlayer, PLAYER_KINDS, PORT_KINDS } from '../src/web/scenario.js';
+import { PageMeter, benchHooks } from '../src/web/page-meter.js';
+import { domInput, TYPE_GAP_MS } from '../src/web/dom-input.js';
 import { domKeyOfVk, vkOfCode } from '../src/win32/vk-scan.js';
-import { PerfWindow, compactPhase } from '../src/host/perf-summary.js';
-import { buildSessions, report, suiteRuns, formatSuites } from '../tools/telemetry-report.mjs';
+import { PerfWindow, compactPhase } from '../src/web/perf-summary.js';
+import { buildSessions, report, suiteRuns, formatSuites } from '../tools/dev/telemetry-report.mjs';
 
 // (bench-suite.js and bench.js read the page's language at load: a page's globals for Node)
 globalThis.location ??= new URL('http://127.0.0.1:8080/?benchsuite=all');
-const { loadSuite, itemUrl, compactResult, suiteRecord, lostRecord, suiteMinutes } = await import('../src/host/web/bench-suite.js');
+const { loadSuite, itemUrl, compactResult, suiteRecord, lostRecord, suiteMinutes } = await import('../src/web/bench-suite.js');
 const BENCH = new URL('../tools/scenarios/bench/', import.meta.url);
 const index = JSON.parse(fs.readFileSync(new URL('index.json', BENCH), 'utf8'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -319,9 +319,9 @@ test('report --suite: per run, its games in order — a game known only from the
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'suite-report-'));
   try {
     fs.writeFileSync(path.join(dir, 'telemetry-2026-10-23.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-    const cli = spawnSync(process.execPath, [new URL('../tools/telemetry-report.mjs', import.meta.url).pathname, dir, '--suite'], { encoding: 'utf8' });
+    const cli = spawnSync(process.execPath, [new URL('../tools/dev/telemetry-report.mjs', import.meta.url).pathname, dir, '--suite'], { encoding: 'utf8' });
     assert.equal(cli.status, 0, cli.stderr); assert.match(cli.stdout, /suite all run r3/);
-    const one = spawnSync(process.execPath, [new URL('../tools/telemetry-report.mjs', import.meta.url).pathname, dir, '--suite', 'r3', '--json'], { encoding: 'utf8' });
+    const one = spawnSync(process.execPath, [new URL('../tools/dev/telemetry-report.mjs', import.meta.url).pathname, dir, '--suite', 'r3', '--json'], { encoding: 'utf8' });
     assert.equal(JSON.parse(one.stdout).suites[0].games.length, 3);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

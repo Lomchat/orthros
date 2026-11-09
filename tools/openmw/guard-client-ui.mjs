@@ -38,7 +38,7 @@ export function guardClientUi(folder, versionId, selected, { id: compatId = DEFA
     return { id, only, solo };
   });
   if (!mods || !picks.length || new Set(picks.map((p) => p.id)).size !== picks.length) throw new Error('Select distinct installed UI mods');
-  // (the manifest's mod id rule, src/host/openmw.js MOD_ID)
+  // (the manifest's mod id rule, src/server/ports/openmw.js MOD_ID)
   if (!/^[a-z0-9][a-z0-9-]{0,54}$/.test(compatId)) throw new Error('Invalid compatibility mod id');
   if (mods.some((m) => m.id === compatId)) throw new Error('Client UI compatibility is already installed');
   const versionDir = fs.realpathSync(path.join(game, 'versions', version.dir));

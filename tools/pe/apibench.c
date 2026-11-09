@@ -1,4 +1,4 @@
-// API dispatch benchmark (tools/apicall-bench.mjs): the round trip of an API call handled in JavaScript — guest code
+// API dispatch benchmark (tools/bench/apicall-bench.mjs): the round trip of an API call handled in JavaScript — guest code
 // calling GetVersion (a trivial JavaScript handler) in a loop, between two GetCommandLineA calls the harness times.
 #include "win.h"
 

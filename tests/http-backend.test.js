@@ -89,7 +89,7 @@ test('http backend: a failed range request (network error, error status, short a
 // the client accepts it and it saves enough, plain otherwise; the backend requests them without a Range header.
 test('server: compressed ranges carry the exact bytes (zstd, gzip, identity), and the backend asks for them', async () => {
   const fs = await import('node:fs'), zlib = await import('node:zlib'), path = await import('node:path'), os = await import('node:os'), http = await import('node:http'), crypto = await import('node:crypto');
-  const { createServer } = await import('../src/host/server.js');
+  const { createServer } = await import('../src/server/server.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-gamez-'));
   const text = Buffer.from('the same line again and again\n'.repeat(40000)); // compressible
   const noise = crypto.randomBytes(300000); // incompressible
@@ -127,7 +127,7 @@ test('server: compressed ranges carry the exact bytes (zstd, gzip, identity), an
 // not hold into its store in the background, and later reads are served from the store.
 test('learned prefetch: the server orders the blocks sessions needed; the backend downloads them ahead', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os'), http = await import('node:http');
-  const { createServer } = await import('../src/host/server.js');
+  const { createServer } = await import('../src/server/server.js');
   const { MemBlockStore } = await import('../src/vfs/opfs-store.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-learn-'));
   fs.writeFileSync(path.join(dir, 'a.big'), FILE);
@@ -173,7 +173,7 @@ test('learned prefetch: the server orders the blocks sessions needed; the backen
 // 64 sessions is dropped (sources of an older translator); a list of the first format (by key) is read and merged.
 test('learned programs: listed by first use, one entry per sources, unused ones age out', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
-  const { createServer } = await import('../src/host/server.js');
+  const { createServer } = await import('../src/server/server.js');
   const { programSourceId } = await import('../src/gfx/program-id.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
@@ -206,7 +206,7 @@ test('learned programs: listed by first use, one entry per sources, unused ones 
 // programs are imported when that file changes, and entries aged out do not come back from it at every start.
 test('learned programs: the new format in its own file, the first format imported when it changes', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
-  const { createServer } = await import('../src/host/server.js');
+  const { createServer } = await import('../src/server/server.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
   const learn = path.join(dir, 'learn'); fs.mkdirSync(learn);
@@ -243,7 +243,7 @@ test('learned programs: the new format in its own file, the first format importe
 // lists them by earliest use across sessions, module names folded to lower case, malformed entries dropped.
 test('learned regions: listed by first use across sessions', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
-  const { createServer } = await import('../src/host/server.js');
+  const { createServer } = await import('../src/server/server.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-regions-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
   const server = createServer({ manifests: path.join(dir, 'man') });
@@ -265,7 +265,7 @@ test('learned regions: listed by first use across sessions', async () => {
 // (names folded to lower case, malformed entries dropped) and keeps them in its learn directory across restarts.
 test('learned heat: ranges merged per module, kept across server restarts', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
-  const { createServer } = await import('../src/host/server.js');
+  const { createServer } = await import('../src/server/server.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-heat-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
   const learnDir = path.join(dir, 'learn'); fs.mkdirSync(learnDir);
@@ -288,7 +288,7 @@ test('learned heat: ranges merged per module, kept across server restarts', asyn
 // are refused or ignored, and a module named __proto__ stays an ordinary key.
 test('learned heat: bounded per manifest, malformed input ignored', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
-  const { createServer } = await import('../src/host/server.js');
+  const { createServer } = await import('../src/server/server.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-heat-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
   const server = createServer({ manifests: path.join(dir, 'man') }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -394,7 +394,7 @@ test('http backend: a stream read a little at a time fetches growing windows, no
 // session built or used; when every entry was built this session, the new one is not kept.
 test('learned programs: a full list makes room by least recent use', async () => {
   const fs = await import('node:fs'), path = await import('node:path'), os = await import('node:os');
-  const { createServer } = await import('../src/host/server.js');
+  const { createServer } = await import('../src/server/server.js');
   const { programSourceId } = await import('../src/gfx/program-id.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-programs-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));

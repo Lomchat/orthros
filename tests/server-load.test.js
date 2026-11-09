@@ -1,4 +1,4 @@
-// The server under many players (tools/server-load.mjs measures it): the folders' listings kept and checked by a stat
+// The server under many players (tools/bench/server-load.mjs measures it): the folders' listings kept and checked by a stat
 // (DirListings), the same range encoded once for the players asking it at once, the on-the-fly encodings bounded (the
 // game's reads first), the learned sessions bounded, and its state in /api/netstats.
 import { test } from 'node:test';
@@ -8,8 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import zlib from 'node:zlib';
-import { createServer } from '../src/host/server.js';
-import { DirListings, resolveGameFile } from '../src/host/game-files.js';
+import { createServer } from '../src/server/server.js';
+import { DirListings, resolveGameFile } from '../src/server/game-files.js';
 
 const get = (base, p, enc = 'gzip') => new Promise((resolve, reject) => {
   http.get(base + p, { headers: { 'accept-encoding': enc } }, (res) => {

@@ -1,4 +1,4 @@
-// Shared worlds ("MMO", src/host/mmo.js, protocol src/host/mmo-proto.js): the manifest's `mmo` entry, the status route,
+// Shared worlds ("MMO", src/server/mmo.js, protocol src/shared/mmo-proto.js): the manifest's `mmo` entry, the status route,
 // refusals, the lobby (characters), joining, the relay and its ownership rules, departures, records and locks, chat,
 // world changes by admins, the world clock frozen while nobody is there, persistence across a restart, and the limits.
 // Players are real Orthros accounts of a server with accounts; their WebSockets are Node's own (Cookie and Origin set).
@@ -9,10 +9,10 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { createServer } from '../src/host/server.js';
-import { loadGameCatalog } from '../src/host/game-catalog.js';
-import { mmoProblem, mmoSettings } from '../src/host/mmo.js';
-import { MMO_C as C, MMO_S as S, MMO_REFUSED as R, MMO_RESULT as CR, MMO_DENIED as D, MMO_NOBODY as NOBODY, mmoClientRecord, mmoServerRecords, mmoPlayerId } from '../src/host/mmo-proto.js';
+import { createServer } from '../src/server/server.js';
+import { loadGameCatalog } from '../src/server/game-catalog.js';
+import { mmoProblem, mmoSettings } from '../src/server/mmo.js';
+import { MMO_C as C, MMO_S as S, MMO_REFUSED as R, MMO_RESULT as CR, MMO_DENIED as D, MMO_NOBODY as NOBODY, mmoClientRecord, mmoServerRecords, mmoPlayerId } from '../src/shared/mmo-proto.js';
 
 const SCRATCH = path.join(os.tmpdir(), 'orthros-scratch', 'mmo-test');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

@@ -3,15 +3,15 @@
 // order, the whole download) opened at the page's start, beside the engine's download (openPortData), then the copy an
 // earlier page kept in IndexedDB handed over to it and the files mounted in the engine's file system
 // (src/vfs/emscripten-files.js) once the engine is in (mountPortFiles), what earlier sessions read first loaded before
-// the start; the loading indicator every game shows while it waits for its data (src/host/web/data-meter.js).
-import '../host/web/data-meter.js'; // (the loading indicator, before the game data: attached to it — data-client.js)
+// the start; the loading indicator every game shows while it waits for its data (src/web/data-meter.js).
+import '../web/data-meter.js'; // (the loading indicator, before the game data: attached to it — data-client.js)
 import { GameData, PIECE } from '../vfs/data-client.js';
 import { mountFiles } from '../vfs/emscripten-files.js';
 import { eachStorage, removeStorage } from './goldsrc/storage.js';
 
 /**
  * A port page's engine file addresses: `at(rel)` the URL of release path `rel` — by its content when the server gives it
- * (/api/manifest engineUrls, src/host/engine-content.js: a release's unchanged files keep their address, and the
+ * (/api/manifest engineUrls, src/server/engine-content.js: a release's unchanged files keep their address, and the
  * browser's copy), else under the release (/engines/<release>/<rel>, encoded `encode`d).
  * @param {{ engineUrls?: Record<string, string> }} config the version's /api/manifest
  * @param {string} release the engine release's id

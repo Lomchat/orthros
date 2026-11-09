@@ -1,4 +1,4 @@
-// tools/learn-prune.mjs: a mask-less learned entry is dropped only when proven stale (a masked entry of the same block,
+// tools/ops/learn-prune.mjs: a mask-less learned entry is dropped only when proven stale (a masked entry of the same block,
 // or enough recent sessions that went through its phase without reading it); a dry run by default.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,9 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { planPrune, pruneFile, splitOrder } from '../tools/learn-prune.mjs';
+import { planPrune, pruneFile, splitOrder } from '../tools/ops/learn-prune.mjs';
 
-const TOOL = fileURLToPath(new URL('../tools/learn-prune.mjs', import.meta.url));
+const TOOL = fileURLToPath(new URL('../tools/ops/learn-prune.mjs', import.meta.url));
 const tmp = (t) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-prune-')); t.after(() => fs.rmSync(d, { recursive: true, force: true })); return d; };
 const verdict = (plan, e) => plan.drops.get(e) ?? null;
 

@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { chromium } from 'playwright';
-import { rendererOf } from '../port-perf.mjs';
+import { rendererOf } from '../bench/port-perf.mjs';
 import { distance, lastStatus, scoreOf, signedOn } from './status-lines.mjs';
 
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);

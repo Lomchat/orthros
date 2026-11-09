@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic texture-like images for tools/codec-bench.mjs (never game files): smooth gradients, grain and
+"""Synthetic texture-like images for tools/bench/codec-bench.mjs (never game files): smooth gradients, grain and
 hard-edged discs, 256/512/1024 squared, saved by PIL (libjpeg / zlib) as JPEG (qualities 50-90, 4:2:0, 4:2:2,
 4:4:4, progressive, grayscale) and PNG (RGB, RGBA, palette, smooth RGBA), each with PIL's own decode as a raw RGBA reference
 (<file>.rgba). Usage: python3 tools/gen/codec_images.py <out dir> [sizes...]"""

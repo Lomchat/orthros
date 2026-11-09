@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { createServer } from '../src/host/server.js';
+import { createServer } from '../src/server/server.js';
 
 test('optional account, private cloud backups, versions and conflict protection', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-accounts-'));

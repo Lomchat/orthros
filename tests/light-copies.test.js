@@ -1,13 +1,13 @@
-// Light copies (src/host/light-copies.js, docs/slow-network.md "Light copies"): a DDS texture without its finest mip
+// Light copies (src/server/light-copies.js, docs/slow-network.md "Light copies"): a DDS texture without its finest mip
 // levels — the format's cases —, marked in a browser port's tree and served under .light/ (its ranges, its read reports).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { lightDds, lightTga, tgaLight, lightCopy, readLight, esmZeroRanges, zeroWithin, LIGHT_SIDE, TGA_LIGHT_FROM, ESM_FORMAT, ESM_LIGHT_FROM } from '../src/host/light-copies.js';
-import { listGameTree, resolveLightFile } from '../src/host/game-files.js';
-import { createServer } from '../src/host/server.js';
+import { lightDds, lightTga, tgaLight, lightCopy, readLight, esmZeroRanges, zeroWithin, LIGHT_SIDE, TGA_LIGHT_FROM, ESM_FORMAT, ESM_LIGHT_FROM } from '../src/server/light-copies.js';
+import { listGameTree, resolveLightFile } from '../src/server/game-files.js';
+import { createServer } from '../src/server/server.js';
 
 /** A DDS texture: its header (DX10's too when `dxgi`), then its levels' bytes (each level's bytes its own value). */
 export function dds({ w, h, mips, four = 'DXT1', bits = 0, rgb = false, dxgi = 0, caps2 = 0, pitch = false, cut = 0 }) {

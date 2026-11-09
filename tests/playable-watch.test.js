@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PlayableWatch, ReadLog } from '../src/vfs/playable-watch.js';
 import { BLOCK, CHUNK } from '../src/vfs/http-backend.js';
-import { createServer } from '../src/host/server.js';
+import { createServer } from '../src/server/server.js';
 
 /** Feeds a watch a timeline: each step 250 ms, `fps` frames a second, `bps` bytes read a second; the first step it fires. */
 function run(w, phases) {

@@ -1,4 +1,4 @@
-// src/host/engine-content.js: every engine file of a browser port addressed by its content (docs/browser-ports.md
+// src/server/engine-content.js: every engine file of a browser port addressed by its content (docs/browser-ports.md
 // "Engine files by content") — the map (the bytes hashed, a release's word checked), the trees of module graphs, the
 // route (a request waiting for the hashing of a server just started).
 import { test } from 'node:test';
@@ -8,10 +8,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { declaredShas, engineContent, treeSha } from '../src/host/engine-content.js';
-import { createServer } from '../src/host/server.js';
-import { withEngineUrls, withSharedEngine } from '../src/host/openmw.js';
-import { withLeanPackage } from '../src/host/openmw-lean.js';
+import { declaredShas, engineContent, treeSha } from '../src/server/engine-content.js';
+import { createServer } from '../src/server/server.js';
+import { withEngineUrls, withSharedEngine } from '../src/server/ports/openmw.js';
+import { withLeanPackage } from '../src/server/ports/openmw-lean.js';
 
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const until = async (fn, ms = 5000) => { const t0 = Date.now(); for (;;) { const v = await fn(); if (v) return v; if (Date.now() - t0 > ms) throw new Error('timeout'); await new Promise((r) => setTimeout(r, 10)); } };

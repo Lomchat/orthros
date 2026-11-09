@@ -12,7 +12,7 @@ import { VirtualClock } from '../src/core/clock.js';
 import { TS } from '../src/win32/process.js';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 
 function fakeSched() {
   const vm = { clock: new VirtualClock(), proc: { threads: [], timers: [] }, guestInsns: 0, warn() {}, logFn() {} };

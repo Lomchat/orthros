@@ -192,7 +192,7 @@ info = {'schemaVersion': 1, 'id': spec['id'], 'runtime': 'openmw', 'engineVersio
 if not want: print(json.dumps(built, indent=2))
 PY
   staging=$(cat "$work/staging")
-  # The brotli siblings the server sends a browser asking for a whole file (src/host/server.js): quality 11 — made once,
+  # The brotli siblings the server sends a browser asking for a whole file (src/server/server.js): quality 11 — made once,
   # sent to every player (openmw.data: 33 MB at 11, 40 MB at 9)
   for f in "$staging"/e/*/openmw.js "$staging"/e/*/openmw.wasm "$staging"/e/*/openmw.data; do
     nice -n 19 node -e "const z=require('zlib'),fs=require('fs');fs.writeFileSync(process.argv[1]+'.br',z.brotliCompressSync(fs.readFileSync(process.argv[1]),{params:{[z.constants.BROTLI_PARAM_QUALITY]:11,[z.constants.BROTLI_PARAM_LGWIN]:24,[z.constants.BROTLI_PARAM_SIZE_HINT]:fs.statSync(process.argv[1]).size}}))" "$f"

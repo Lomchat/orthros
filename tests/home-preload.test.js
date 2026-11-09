@@ -1,4 +1,4 @@
-// The home's module graph preloaded (src/host/module-graph.js, server.js sendHome): the page carries a
+// The home's module graph preloaded (src/server/module-graph.js, server.js sendHome): the page carries a
 // <link rel="modulepreload"> for every module of its static graph below its first level, its validator its content's
 // (a 304 while nothing changed), the page as it is with opts.homePreload false.
 import { test } from 'node:test';
@@ -9,11 +9,11 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { moduleGraph, withPreloads, staticImports } from '../src/host/module-graph.js';
-import { createServer } from '../src/host/server.js';
+import { moduleGraph, withPreloads, staticImports } from '../src/server/module-graph.js';
+import { createServer } from '../src/server/server.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const HOME = path.join(ROOT, 'src/host/web/index.html');
+const HOME = path.join(ROOT, 'src/web/index.html');
 const get = (url, headers = {}) => new Promise((resolve, reject) => http.get(url, { headers }, (res) => {
   const parts = []; res.on('data', (d) => parts.push(d)); res.on('end', () => resolve({ res, body: Buffer.concat(parts) }));
 }).on('error', reject));
@@ -50,7 +50,7 @@ test('server: the home carries its graph\'s deeper levels, revalidated by its co
   const text = plain.body.toString();
   const links = [...text.matchAll(/<link rel="modulepreload" href="([^"]+)">/g)].map((m) => m[1]);
   assert.deepEqual(links.slice().sort(), deep.slice().sort(), 'every module of levels 2+, once');
-  assert.ok(!links.includes('/src/host/web/main.js'), 'not the page\'s own scripts');
+  assert.ok(!links.includes('/src/web/main.js'), 'not the page\'s own scripts');
   assert.ok(text.indexOf('modulepreload') < text.indexOf('<script type="module"'));
   // (brotli for a browser that takes it, the same page)
   const br = await get(`${on}/`, { 'Accept-Encoding': 'br' });

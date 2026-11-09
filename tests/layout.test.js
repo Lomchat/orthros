@@ -5,9 +5,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_GAMES_DIR } from '../src/host/game-catalog.js';
-import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
-import { OPENMW_STATE_DIR } from '../src/host/openmw.js';
+import { DEFAULT_GAMES_DIR } from '../src/server/game-catalog.js';
+import { DEFAULT_ENGINES_DIR } from '../src/server/ports/goldsrc.js';
+import { OPENMW_STATE_DIR } from '../src/server/ports/openmw.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 

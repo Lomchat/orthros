@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pickExe, folderManifest } from '../src/host/manifest.js';
+import { pickExe, folderManifest } from '../src/server/manifest.js';
 
 function folder(name, files) {
   const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-man-')), name);

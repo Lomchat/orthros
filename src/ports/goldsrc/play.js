@@ -1,18 +1,18 @@
-// The page of a GoldSrc browser port (src/host/goldsrc.js, docs/browser-ports.md), /ports/goldsrc/<manifest>/: the
+// The page of a GoldSrc browser port (src/server/ports/goldsrc.js, docs/browser-ports.md), /ports/goldsrc/<manifest>/: the
 // pinned engine release the manifest names (/engines/<release>/), the version's game files streamed (../port-files.js:
 // the game data every Orthros game reads — what the game reads first loaded before it starts, the rest as it goes, kept
 // in the browser), the writable profile (saves,
 // settings) in IndexedDB under the installation's key and on the player's Orthros account (cloud-sync.js), multiplayer
 // through the server's relay (/api/udp/<manifest>) for a signed-in player — the account is the player's name.
-// Around the game, the frame every Orthros game has (/src/host/web/shell.js): the header (the mouse, the saves, the
+// Around the game, the frame every Orthros game has (/src/web/shell.js): the header (the mouse, the saves, the
 // frame rate, the online games, full screen, back to the games), the loading screen, the game filling the rest of the
 // window. It never loads the Win32 runtime, and nothing here names a game.
-import { pickLang } from '../../host/web/lang.js';
-import { createShell, lockKeys } from '../../host/web/shell.js';
-import { escapeToGame } from '../../host/web/escape.js';
-import { canvasGl, portDataSummary, portEvents, portPerf } from '../../host/web/perf-page.js';
-import { pageStorage } from '../../host/web/storage-persist.js';
-import { CloudSave } from '../../host/web/cloud-sync.js';
+import { pickLang } from '../../web/lang.js';
+import { createShell, lockKeys } from '../../web/shell.js';
+import { escapeToGame } from '../../web/escape.js';
+import { canvasGl, portDataSummary, portEvents, portPerf } from '../../web/perf-page.js';
+import { pageStorage } from '../../web/storage-persist.js';
+import { CloudSave } from '../../web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
 import { openPortProfile } from '../port-profile.js';
 import { cloudProfile } from '../../vfs/profile-share.js';

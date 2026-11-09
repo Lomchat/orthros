@@ -3,7 +3,7 @@
 What Orthros does so that a game reaches its menu sooner and does not stall the first time it uses something. All
 of it is generic (nothing names a game) and each part can be switched off.
 
-## Shared first-launch profile (`src/host/profile-seed.js`)
+## Shared first-launch profile (`src/shared/profile-seed.js`)
 
 Some games do a long piece of work on their very first launch only — while no settings file exists in the user
 profile they measure the machine, build caches, choose detail levels — and skip it at every later launch (BFME2 and
@@ -25,7 +25,7 @@ profile (`C:\Users\Player`), so every new player paid it.
   game's defaults, not one player's data. Bounded: 16 sets per manifest (least recently reported out), 32 session
   ids per set. Stored in `<learn dir>/profileseed-<manifest>.json`; a server without this feature ignores the file,
   and the page asks for it only when `/api/config` says `profileSeed: true` (old pages and servers keep working).
-- **Canonical sets** (`tools/profile-seed-make.mjs`, `<learn dir>/seedcanon-<manifest>.json`). What a first-launch
+- **Canonical sets** (`tools/ops/profile-seed-make.mjs`, `<learn dir>/seedcanon-<manifest>.json`). What a first-launch
   benchmark writes depends on the emulated machine's speed (the load of the machine running it, the instrumentation:
   two runs wrote `AudioLOD = High` and `Low`), so independent players rarely report identical sets and the quorum
   rarely forms (live data, 2026-10-21: one reporter per set after weeks, nothing served). An operator therefore makes,
@@ -58,7 +58,7 @@ as on Windows). Players who played before would lose their settings and saves. T
 - **When.** At every start, once the profile is assembled and before the game sees it: the page's worker after the
   browser's copy (OPFS) — into which the account's copy was restored before (`cloud-sync.js` `pull`) — the harness's
   `--profile-dir` files and a shared first-launch profile (a set learned before the change is moved like the rest);
-  the Node runner (`src/host/cli.js`) on its save folder. Every entry of `from` but the folder holding `to` goes to
+  the Node runner (`src/server/cli.js`) on its save folder. Every entry of `from` but the folder holding `to` goes to
   `to/<name>`, folders merged.
 - **Never destructive.** A file whose new place already holds one stays at the old place (the new place's is the
   game's own, newer). **Idempotent** without a marker: once moved there is nothing left to move; a later start does
@@ -75,7 +75,7 @@ as on Windows). Players who played before would lose their settings and saves. T
   `seen` record starts, so a snapshot taken afterwards checks the new layout.
 - **What the server keeps.** Shared first-launch sets (`profileseed-*.json`, `seedcanon-*.json`) made before the
   change still carry the old paths: harmless (moved at the client), but the canonical ones should be made again with
-  `tools/profile-seed-make.mjs` so new players' profiles, and the snapshot key's seed part, match the new layout.
+  `tools/ops/profile-seed-make.mjs` so new players' profiles, and the snapshot key's seed part, match the new layout.
 
 ## Translated code kept across sessions (`src/cpu/jit/code-cache.js`)
 
@@ -232,7 +232,7 @@ The live baseline's first launches (`--suite all`, fresh browser) waited 1.5 / 4
 load, loading screen and play, BFME II 0.8 / 2.9 s in its load and loading screen. Every read that waited was missing
 from the learned order (`?netlog=1`: learned rank `-` for all of them): no session of either version had loaded a map
 with its order as it was. BFME II's map load had been learned in its mask-less entries, which the prune of 2026-10-21
-(`tools/learn-prune.mjs --write`) dropped (its backup holds 225 of the 230 blocks the menu-only run below waited for;
+(`tools/ops/learn-prune.mjs --write`) dropped (its backup holds 225 of the 230 blocks the menu-only run below waited for;
 the tool now drops a mask-less entry only when proven stale, docs/slow-network.md "Mask-less learned orders");
 RotWK 2.02's order (and BFME II 1.06's, which RotWK mounts) had only been taken to the menu (the snapshot jobs' and
 launch sessions). The baseline session itself taught them: a fresh browser on a copy of the live learn directory of
@@ -240,7 +240,7 @@ the same morning (the baseline and one more session learned) waited 0 / 17 / 31 
 (BFME II) in those phases; the learned orders then hold 97 % of the blocks the menu-only runs waited for. Map-load
 reads repeat from one session to the next (the same map); what does not is reads of play (sounds, textures of what
 comes into view: rank `-` in every run). Measured with the orders cut to their launch set (the state of the baseline)
-— `tools/bench-suite-check.mjs --suite <bench> --gl-discard --query netlog=1 --log <file>`, a server of this tree on a
+— `tools/bench/bench-suite-check.mjs --suite <bench> --gl-discard --query netlog=1 --log <file>`, a server of this tree on a
 copy of the live learn directory and br-cache, two runs side by side on the shared server (load 17-31):
 
 | bench (orders cut to the launch set) | map load (load + loading screen) | data waits there | frames > 100 ms there |
@@ -345,7 +345,7 @@ then the game's own error dialog); in that run the code cache only added entries
 
 ## Game file reads on the network: short slices, block store index log (2026-10-06)
 
-**Short slices while a read is in flight** (`src/host/web/worker.js` pump, `Vm.runFor`). A ReadFile of data still on
+**Short slices while a read is in flight** (`src/web/worker.js` pump, `Vm.runFor`). A ReadFile of data still on
 the network parks its thread while the others run; the fetch then needs several event-loop tasks of the worker (the
 response, its body, the promise chain), and each waited behind a 12 ms pump slice of the other threads. While
 `vm.readsInFlight > 0` the pump now asks for 2 ms slices, and `runFor` ends a slice once a read went in flight during

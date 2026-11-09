@@ -1,4 +1,4 @@
-// The page of an re3 browser port (src/host/re3.js, docs/browser-ports.md "re3 ports"), /ports/re3/<manifest>/: the
+// The page of an re3 browser port (src/server/ports/re3.js, docs/browser-ports.md "re3 ports"), /ports/re3/<manifest>/: the
 // pinned engine release the manifest names (/engines/<release>/: an Emscripten ES module — SDL2 on WebGL 2, OpenAL on
 // WebAudio, JSPI), the version's game files streamed into the game's folder with the release's own over them
 // (../port-files.js: the game data every Orthros game reads — what the game reads first loaded before it starts, the
@@ -7,17 +7,17 @@
 // IndexedDB under the installation's key and on the player's Orthros account (cloud-sync.js). A version with `mmo` has
 // a shared world on the server besides (docs/mmo.md): the engine reaches it through Module.orthrosNet, the shared link
 // (../../host/web/mmo-link.js) and what the engine asks of the page (who plays, a sign-in, its test hooks).
-// Around the game, the frame every Orthros game has (/src/host/web/shell.js): the header (the mouse, the saves, the
+// Around the game, the frame every Orthros game has (/src/web/shell.js): the header (the mouse, the saves, the
 // frame rate, full screen, back to the games), the loading screen, the game filling the rest of the window. It never
 // loads the Win32 runtime, and nothing here names a game.
-import { pickLang } from '../../host/web/lang.js';
-import { createShell, lockKeys } from '../../host/web/shell.js';
-import { escapeToGame } from '../../host/web/escape.js';
-import { canvasGl, portDataSummary, portEvents, portPerf } from '../../host/web/perf-page.js';
-import { pageStorage } from '../../host/web/storage-persist.js';
-import { CloudSave } from '../../host/web/cloud-sync.js';
-import { onAccountChange, accountState } from '../../host/web/account.js';
-import { createMmoLink, LINK } from '../../host/web/mmo-link.js';
+import { pickLang } from '../../web/lang.js';
+import { createShell, lockKeys } from '../../web/shell.js';
+import { escapeToGame } from '../../web/escape.js';
+import { canvasGl, portDataSummary, portEvents, portPerf } from '../../web/perf-page.js';
+import { pageStorage } from '../../web/storage-persist.js';
+import { CloudSave } from '../../web/cloud-sync.js';
+import { onAccountChange, accountState } from '../../web/account.js';
+import { createMmoLink, LINK } from '../../web/mmo-link.js';
 import { openStorage, readStorage, writeStorage } from '../goldsrc/storage.js';
 import { openPortProfile } from '../port-profile.js';
 import { cloudProfile } from '../../vfs/profile-share.js';
@@ -25,7 +25,7 @@ import { treeFiles } from '../../vfs/game-tree.js';
 import { engineUrls, openPortData, mountPortFiles } from '../port-files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
 import { setIniDefaults } from './ini.js';
-import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../../host/profile-seed.js';
+import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../../shared/profile-seed.js';
 
 const STRINGS = {
   en: {
@@ -389,7 +389,7 @@ document.addEventListener('pointerdown', () => seedWatch?.input(performance.now(
 document.addEventListener('keydown', (event) => seedWatch?.input(performance.now(), perf.started, event.key.length === 1), { capture: true });
 
 // ---------------------------------------------------------------- the shared world (docs/mmo.md, section 6)
-// A version with `mmo` has a world on the server (src/host/mmo.js, /api/mmo/<version>/ws). The engine owns its rules and
+// A version with `mmo` has a world on the server (src/server/mmo.js, /api/mmo/<version>/ws). The engine owns its rules and
 // every record; the page gives it, as Module.orthrosNet, the shared link (mmo-link.js: open, close, state, refusal,
 // send, drain, away…) and what only the page knows: user() the Orthros account's name ('' when none); signIn() the
 // account window over the game; `testing` (a boolean: ?mmotest in the page's address); `testCommands` (strings the

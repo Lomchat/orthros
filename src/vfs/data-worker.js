@@ -20,7 +20,7 @@
 // window's first, `from`: each entry here, or failed — GameData.wantWait spins on it), ctrl[13] the announced entries not settled yet, ctrl[14] those that failed (since the start).
 // A page's mark (GameData.mark('playable'): its game first draws in play) goes to the server with the reads before it:
 // the launch set later sessions wait for and the home announces (launch-set.js).
-// Light copies (src/host/light-copies.js): on a link that is not fast, the page reads a texture's light copy unless the
+// Light copies (src/server/light-copies.js): on a link that is not fast, the page reads a texture's light copy unless the
 // file itself is here (told: { real: [keys] }); the learned order brings the light copies; the files whose light copy
 // the engine read come last, in the background (HttpBackend.upgrade).
 // The page knows the files by the version it opened (its parts' names); a file that version takes from one it requires

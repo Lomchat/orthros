@@ -2,7 +2,7 @@
 // in part, uncompressed PCM sound (8-bit unsigned or 16-bit signed little-endian, mono or stereo), coded by linear
 // prediction and Rice codes of the residuals — what brotli cannot see in sampled sound (it finds repeated strings, a
 // waveform has almost none: sounds at 0.88-0.95 of their bytes) —, byte-exact. The server makes such units in the
-// background beside its brotli ones (src/host/br-cache.js, src/host/pcm-units.js) and sends one to a request that says
+// background beside its brotli ones (src/server/br-cache.js, src/server/pcm-units.js) and sends one to a request that says
 // it decodes them; the shared reader decodes it (HttpBackend.decodeUnit, src/vfs/http-backend.js) before any byte
 // reaches the game. Written from scratch for Orthros.
 //

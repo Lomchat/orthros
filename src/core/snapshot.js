@@ -388,7 +388,7 @@ export function decodeSnapshot(bytes) {
 /**
  * Where two snapshots differ (empty: they are the same machine): guest memory bytes, then objects, named by the path
  * the walk first reached them by. `ignore`: patterns of field paths not compared (fields read against the host's clock).
- * The oracle of tests/snapshot.test.js and tools/snapshot-check.mjs: a machine restored from a snapshot and the one it
+ * The oracle of tests/snapshot.test.js and tools/check/snapshot-check.mjs: a machine restored from a snapshot and the one it
  * was taken from, run alike, must stay the same.
  */
 export function snapshotsDiffer(a, b, { ignore = [], max = 20 } = {}) {

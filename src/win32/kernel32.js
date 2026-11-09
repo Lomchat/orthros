@@ -345,7 +345,7 @@ export function registerKernel32(api, vm) {
   // The throttled sleep is part of the streak: its re-executed call (the thread woken after the 1 ms) completes it and
   // the streak goes on from the wake-up — a spin that was throttled keeps being throttled at each Sleep(0) until real
   // work or other calls come between. Measured at the end of each park instead, the 1 ms always broke the streak and
-  // every throttle was followed by 32 more unthrottled turns (tools/sleepspin-bench.mjs: ~480 Sleep(0) and ~1000
+  // every throttle was followed by 32 more unthrottled turns (tools/bench/sleepspin-bench.mjs: ~480 Sleep(0) and ~1000
   // scheduling decisions per 16 ms frame). ?dbg=ORTHROS_SLEEP0_KEEP_STREAK=0: the former behaviour (measurement).
   const sleep = (c, ms) => {
     const keepStreak = globalThis.ORTHROS_SLEEP0_KEEP_STREAK === undefined || !!Number(globalThis.ORTHROS_SLEEP0_KEEP_STREAK); // (read each time: in-session A/B)

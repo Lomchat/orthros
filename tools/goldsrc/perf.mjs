@@ -2,18 +2,18 @@
 // ?debug: the player's settings), the manifest's solo map entered as its menu does (its commands run by the page: bots
 // included), --join-keys pressed (a team menu), --commands run (console commands, `;` between them: an A/B of the
 // engine's settings), then --seconds measured while walking (--walk: forward held, turning) after --warm seconds.
-// tools/port-perf.mjs measures: the engine's work a frame, the frames shown, the WebGL calls a frame by kind and the
+// tools/bench/port-perf.mjs measures: the engine's work a frame, the frames shown, the WebGL calls a frame by kind and the
 // synchronous ones, the renderer (--gl swiftshader|discard|gpu; --stacks getError,…: who calls them). The page's
 // reports stay off the server unless --report. JSON on the last line; evidence under
 // /tmp/orthros-scratch/goldsrc-perf-<manifest>/. Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/goldsrc/perf.mjs <manifest> [--url http://127.0.0.1:8080] [--gl discard]
 //     [--map de_dust2] [--join-keys "2,1"] [--commands "gl_vbo 1;…"] [--seconds 30] [--warm 10] [--walk] [--profile]
 //     [--stacks getError] [--size 1280x720] [--query "a=b"] [--report] [--tag t] [--channel chromium|shell]
-// (--channel: Chromium itself by default, as the bench suite; shell: Playwright's headless shell — tools/port-perf.mjs)
+// (--channel: Chromium itself by default, as the bench suite; shell: Playwright's headless shell — tools/bench/port-perf.mjs)
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { launchOptions, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile } from '../port-perf.mjs';
+import { launchOptions, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile } from '../bench/port-perf.mjs';
 
 const args = process.argv.slice(2), arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
 const [name] = args;

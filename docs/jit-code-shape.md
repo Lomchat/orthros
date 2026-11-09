@@ -5,9 +5,9 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
 
 ## Instruments
 
-- **Node play** — `tools/startbench.mjs <manifest-id> --games-dir <catalog> --input <scenario> --phases out.json`: a
+- **Node play** — `tools/bench/startbench.mjs <manifest-id> --games-dir <catalog> --input <scenario> --phases out.json`: a
   harness scenario (tools/scenarios/*.txt, the language of tools/headless.mjs) played in Node on the headless host
-  (tools/node-scenario.mjs): mouse, keys, text, `waitframe` / `waitfps` anchors on the Direct3D device's draws and frames,
+  (tools/bench/node-scenario.mjs): mouse, keys, text, `waitframe` / `waitfps` anchors on the Direct3D device's draws and frames,
   `mark:<label>` phases reporting the guest instructions and the frame accounting's guest time per instruction (the
   browser's `guestMsPerMInsn`), `dbg:ORTHROS_JIT_AB=<json>` switching translation options in the session. No browser
   slot, no GPU process: the guest code of a skirmish is the same as in the page, at the same ~4 ns per instruction.
@@ -18,13 +18,13 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
 - **Dynamic mix** — `startbench --mix` (with block counters; `--list-top n` lists the hottest regions,
   `dbg:ORTHROS_JIT_AB={"blockCounts":true}` in a scenario counts one phase only): instructions by mnemonic, stores
   checked for self-modifying code and how many share their address registers, region duplication, WASM operations
-  per guest instruction kind (tools/jit-mix.mjs). `--jit-profile`: transitions by kind (chains, dispatches, returns), the jump exits not chained by
+  per guest instruction kind (tools/bench/jit-mix.mjs). `--jit-profile`: transitions by kind (chains, dispatches, returns), the jump exits not chained by
   reason (API thunk, stop address, budget, miss) and the API calls (RotWK play: 1.1 G chained transitions, 43 M
   exits to API thunks, 29 M API calls run in JavaScript, 0.2 M budget exits over 48 G guest instructions).
-- **Kernels** — `tools/shape-bench.mjs --opts <json> --vs <json>`: small x86 kernels written for it (binary search, abs,
+- **Kernels** — `tools/bench/shape-bench.mjs --opts <json> --vs <json>`: small x86 kernels written for it (binary search, abs,
   array read-modify-write, calls, predictable branches, x87 at 24/53/64-bit precision, a hot loop next to cold code),
   ns per guest instruction of two variants alternated.
-- **V8 tiers** — `tools/tierup-bench.mjs`: a small region entered over and over for short runs, its speed as the entries
+- **V8 tiers** — `tools/bench/tierup-bench.mjs`: a small region entered over and over for short runs, its speed as the entries
   accumulate (Liftoff until TurboFan; Liftoff charges the tiering budget by code position).
 - **Branch hints in Node** — Node 24's V8 (13.6) ignores WebAssembly branch hints unless
   `--experimental-wasm-branch-hinting` is set; Chrome honours them (since 137). The translator's hints put exits, SMC
@@ -32,7 +32,7 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   had the cold code inline, unlike the browser (checked on the machine code: the unlikely arm inline without the
   flag, after the function's hot code with it; RotWK play IPC 1.04 → 1.17, instruction fills from beyond L2 14.7 →
   10.6 per 1000 host instructions). The measurement tools (startbench, shape-bench, chain-bench, tierup-bench) set
-  it (tools/node-wasm-flags.mjs); earlier Node figures in this document were measured without.
+  it (tools/bench/node-wasm-flags.mjs); earlier Node figures in this document were measured without.
 - **Thread CPU** — node phases also report the emulator thread's CPU time (`threadCpuS`, `process.threadCpuUsage`):
   on a loaded machine the categories' wall-clock time grows while the thread waits for a core, its CPU time does not.
 - **Instruction fetch** — `perf stat -e cycles:u,instructions:u,ic_fetch_stall.ic_stall_any:u,ic_cache_fill_l2:u,
@@ -40,7 +40,7 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   and `perf inject --jit` for where the fills land (the region functions are named `r_<entry>`); `startbench
   --blocks-out <file>` (with `dbg:ORTHROS_JIT_AB={"blockCounts":true}`) lists every counted region's blocks and
   counts: how many regions hold a copy of each hot guest block.
-- **Deterministic concurrent runs** — `tools/ab-virtual.mjs <manifest-id> --input <scenario> --variant A='{}' --variant
+- **Deterministic concurrent runs** — `tools/bench/ab-virtual.mjs <manifest-id> --input <scenario> --variant A='{}' --variant
   B='{...}' [--runs 2] [--heat <file>] [--profile-dir <dir>]`: every run of every variant at once (the same load),
   each under `startbench --virtual` — the virtual clock makes a run repeat its guest work exactly (two runs of the same
   build: the same 47 090 M guest instructions, 3 941 play frames), so a phase compares the same work instead of the
@@ -65,21 +65,21 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   last target and target changes (translate.js siteProf, three counters per site address in the block-counter area):
   totals by kind, how many sites make 90 % of the exits, the share at sites whose target changes in less than 5 % of
   the exits. `--jit-profile` also lists the fast-path API calls the dispatcher ran in WASM, by API.
-- **Code size of x87 regions** — `tools/x87-size.mjs [--ab <root>] [--cw 0x7f,...] [--disasm <case>@<cw>]`: small
+- **Code size of x87 regions** — `tools/bench/x87-size.mjs [--ab <root>] [--cw 0x7f,...] [--disasm <case>@<cw>]`: small
   regions shaped like compiler x87 output (the x87loop-bench loops, double and register operands) translated under
   several control words: WASM operations per x87 arithmetic instruction, WASM body bytes and TurboFan machine code bytes
   per region (V8's `--print-wasm-code`, eager TurboFan, branch hints honoured), against another src tree with `--ab`.
   On a game: `startbench --mix` prints the x87 regions apart (`[shape] x87 regions: ...`), and with
   `ORTHROS_X87_DUMP=<dir>` writes every live x87 region's module translated now and with the earlier x87 options
   (`<dir>/new`, `<dir>/old`); `x87-size.mjs --modules <dir>` compiles both sets for their machine code.
-- **x87 kernels** — `tools/x87loop-bench.mjs` runs TurboFan code only (`--liftoff`: V8's tiers as they come; see
+- **x87 kernels** — `tools/bench/x87loop-bench.mjs` runs TurboFan code only (`--liftoff`: V8's tiers as they come; see
   "x87 regions: the stack cache by use" for why) and checks only the cases it measures.
 - **Hot-path cost of one region** — x87loop-bench's loops under `perf record -e cycles:u,instructions:u` with
   `node --perf-prof --no-liftoff`, `perf inject -j`, the `JS:r_*` symbols' periods divided by the iterations: host
   instructions per iteration are steady on a loaded machine where cycles and wall time are not. x87loop-bench itself
   does not set `--experimental-wasm-branch-hinting`: without it V8 keeps the cold paths inline and a call on one of them
   costs spills on the hot path (one of its loops measured +17-24 % that way, -4 % with the flag) — set the flag
-  (tools/node-wasm-flags.mjs) for anything meant to stand for Chrome.
+  (tools/bench/node-wasm-flags.mjs) for anything meant to stand for Chrome.
 
 ## Where the time goes
 
@@ -103,7 +103,7 @@ and the instruments used to compare code-generator variants. Measured on BFME1, 
   Where the fills land (`perf record -e ic_cache_fill_sys`, 300 000 samples): 65 % in region code, of which region
   prologues 16 %, the chained-exit code 26 %, the dispatch loop 5 % and the bodies 52 % — a region's entry and exit
   code is touched once per transition, cold. A chained call/return between two small regions costs ~23 ns
-  (tools/chain-bench.mjs, everything cached; x87 regions ~36 ns, their stack cache loaded and written back); in play
+  (tools/bench/chain-bench.mjs, everything cached; x87 regions ~36 ns, their stack cache loaded and written back); in play
   ~1 transition per 43 guest instructions (RotWK, `--jit-profile`: returns ~50 %, indirect jumps ~30 %, static exits
   ~25 % of the chained transitions).
 
@@ -253,7 +253,7 @@ kept: fewer transitions came with more copies of the same code, and the play pro
   12 % (import stubs `jmp [IAT]` into the C runtime, switch tables), calls through an absolute slot 5 % (`call [IAT]`).
   The hottest: the C runtime's memcpy / malloc / free family entered from the game through its import stubs, and
   their returns.
-- **What one costs.** tools/chain-bench.mjs: 22.6 ns per call/return pair between integer regions, 36 ns between x87
+- **What one costs.** tools/bench/chain-bench.mjs: 22.6 ns per call/return pair between integer regions, 36 ns between x87
   regions; `perf stat`: ~150 host instructions per transition at IPC 2.95 — the exit's checks (budget, thunk, stop
   address, address 0), the hash computation and probe, the table's signature check, the tail call moving 16
   parameters (11 on the stack), the callee's frame setup and the br_table to its block; the critical path is a chain
@@ -293,7 +293,7 @@ kept: fewer transitions came with more copies of the same code, and the play pro
 - **API exits** (RotWK, whole session): the dispatcher's WASM fast paths ran `timeGetTime` 24 M times and deferred COM
   calls 24 M times (a region exit, the dispatcher's loop and a region entry each); in JavaScript `Sleep` 5 M (4.75 M
   `Sleep(0)` from one spinning loop), DirectInput `Acquire` / `GetDeviceData` 2.1 M each; a JavaScript API round trip
-  costs ~275 ns (tools/apicall-bench.mjs). Each is under 1 % of the session: not changed.
+  costs ~275 ns (tools/bench/apicall-bench.mjs). Each is under 1 % of the session: not changed.
 
 ## Region size (2026-10-05): 96 blocks / 800 instructions, compiled off the game's thread
 
@@ -459,7 +459,7 @@ Changes (all generic, exact against the interpreter):
 - Fidelity found by the new randomized status-word test: unordered FCOM / FICOM / FTST / FCOMI now raise IE as the
   interpreter does (FUCOM / FUCOMI only for a signaling NaN) — in the compare's cold path (C2 / PF set).
 - Tools: per-phase `--jit-profile` in scenarios, `--list-top` lists the counted regions with their x87 mode,
-  `--x87-modes`, `tools/x87loop-bench.mjs --full / --src` and a 41-instruction sums-of-squares kernel.
+  `--x87-modes`, `tools/bench/x87loop-bench.mjs --full / --src` and a 41-instruction sums-of-squares kernel.
 - Tests: tests/jit-x87-narrow.test.js (random programs under every precision / rounding control, time slices, a wide
   operand whose product rounds onto the grid while inexact, narrow products / quotients chained past both ends of the
   double range under truncation), tests/jit-x87-sw-local.test.js (random compare / FNSTSW / SAHF / branch / FNCLEX /
@@ -481,7 +481,7 @@ Results (base ca01ae8 against this branch at e1232f6):
   loads end together.) Concurrent `--virtual` pairs (deterministic guest work), play / drive ns per instruction, two
   alternated pairs each: BFME2 2.587 → 2.457 and 2.522 → 2.549, RotWK 2.308 → 2.308 and 2.714 → 2.671, Vice City drive
   2.141 → 2.074 and 2.145 → 2.166 — neutral.
-- **Kernels** (`tools/x87loop-bench.mjs 2000000 --pos --ab <base>`, alternated in one process, median ns per
+- **Kernels** (`tools/bench/x87loop-bench.mjs 2000000 --pos --ab <base>`, alternated in one process, median ns per
   iteration, control word 0xc7f): sums of squares 83.8 → 34.4, fild + fmul + fstp 21.4 → 12.4, xform 39.9 → 31.6,
   recurrence 18.5 → 15.4, e^x loop 38.1 → 29.8, fcom + fchs + fstp 12.6 → 10.3, fcomp + test ah 13.2 → 11.9.
   Under 0x7f / 0x27f the machine's load (±30 % per run) hid any difference; `perf record` cycles of the translated
@@ -528,7 +528,7 @@ options for measurement, defaults on):
 
 Size (static):
 
-- tools/x87-size.mjs, the 36 synthetic regions (9 loops x control words 0x7f, 0x27f, 0x37f, 0xc7f): WASM bodies
+- tools/bench/x87-size.mjs, the 36 synthetic regions (9 loops x control words 0x7f, 0x27f, 0x37f, 0xc7f): WASM bodies
   122 055 → 73 603 bytes (−39.7 %), TurboFan machine code 193 920 → 162 900 bytes (−16.0 %), Liftoff code 318 064 →
   229 952 bytes (−27.7 %). By change: kernels −24.0 % WASM / −8.4 % machine code, unrotated exits −3.1 / −1.4 %
   more, one exit tail −12.6 / −6.2 % more (a constant ~430 bytes of WASM per region: a large share of these small
@@ -572,7 +572,7 @@ and the inline code give the same bits, status word and interpreter steps, and t
 floats times / plus / minus non-float doubles in a loop (the Dekker / TwoSum path); exits with a pending shift (SMC
 exit, step exit, time slices) against the interpreter and the rotating exits from TOP 0, 3, 7. Mutations caught: the
 exit block ignoring L_XSH, the wrong operation code passed to x87RoundF32. With the earlier options the translator
-emits the base commit's code (tools/x87-size.mjs: the same WASM and machine-code sizes for all 36 regions).
+emits the base commit's code (tools/bench/x87-size.mjs: the same WASM and machine-code sizes for all 36 regions).
 
 Whole runs (2026-10-14, base commit ca01ae8 in its own worktree against this code, concurrent pairs, launch order
 alternated; Node: `startbench --virtual`, the same guest instructions in both runs of a pair; browser: `--gl-discard`,
@@ -590,7 +590,7 @@ copies of the same profile and learned data):
   threads on a client with few cores, not frame time.
 - **Emulator thread per phase (Node), within the noise**: guest ns per guest instruction / thread CPU per frame, base →
   this code: RotWK play +1.0 to +4.9 % CPU per frame in the 5 cross-tree pairs, but −0.4 % and −2.1 % (and +1.1 % in
-  an earlier one) in same-tree pairs of the old and new options (`tools/ab-virtual.mjs`, which removes the second
+  an earlier one) in same-tree pairs of the old and new options (`tools/bench/ab-virtual.mjs`, which removes the second
   source tree); BFME2 play −2.5 to +3.8 %; Vice City drive −1.8 to +9.1 %, drive-end −0.8 to +18 % (runs of 40 s
   where the same code's pairs differ by as much); menus and loading screens ±5 %, `load` phases ±18 %.
 - **BFME1 in the browser (bfme-phases, 3 pairs)**: play 38.3 → 38.3, 36.2 → 36.9 and 38.3 → 38.3 fps, guest
@@ -649,7 +649,7 @@ phase. Vice City in the browser did not reach its drive in either tree in 3 of 4
 36 000 frames of its intro); its comparison is the Node one. Rendering: `?glworker=compare-worker`, 0 differing frames
 (BFME1 menus 500 frames compared, every 10th; BFME2 menu to play 100, every 10th; Vice City menu to drive 80, every
 60th). Thin link
-(`tools/slow-net-check.mjs --bench vicecity-drive --speeds 1m`, nothing learned): menu 161 s, in game 245 s (main 145 /
+(`tools/check/slow-net-check.mjs --bench vicecity-drive --speeds 1m`, nothing learned): menu 161 s, in game 245 s (main 145 /
 258 s), the bench done.
 
 ## x87 regions: the stack cache by use, truncation in vector registers (2026-10-21)
@@ -682,7 +682,7 @@ attempted for bfme1-108 ran its menu at ~5 fps and was useless); medians, concur
   flags). Exact because local L_ST0+k always holds physical register (L_TOP + k) & 7: the locals only move between
   each other in x87Rotate, whose gets and sets mark all eight, and L_TOP otherwise changes only around a write-back
   and reload (fallbacks, FLDENV / FRSTOR, TOP resets). chain-bench x87 call/return 39.3-46.4 -> 29.6-29.9 ns (3
-  alternated runs; integer regions 23-26 ns); tools/x87-size.mjs, 27 regions x 3 control words: TurboFan machine code
+  alternated runs; integer regions 23-26 ns); tools/bench/x87-size.mjs, 27 regions x 3 control words: TurboFan machine code
   124 480 -> 98 020 bytes (-21 %), WASM +0.4 % (the prologue's mask). tests/jit-x87-live.test.js (masks; random
   programs over few registers with every register valued, fallbacks, FNSAVE / FRSTOR, FNSTENV / FLDENV, FDECSTP /
   FINCSTP, slices; it fails when a used register's load is dropped).
@@ -919,7 +919,7 @@ Off by default (`JIT_DEFAULTS.jumpTables`); `?jitopts={"jumpTables":true}` or `d
   (documented in translate-x87.js).
 - Directed rounding up / down on the vector mask as toward zero used to: the sign-dependent step is cheaper as an
   integer add on the bits (kept that way).
-- x87 arithmetic cold path (2026-10-06, tools/x87-size.mjs and host instructions per iteration of x87loop-bench's
+- x87 arithmetic cold path (2026-10-06, tools/bench/x87-size.mjs and host instructions per iteration of x87loop-bench's
   `xform` under `perf record`, branch hints on): the inline zero test of a float result on its bit pattern (`x << 1 ==
   0`) instead of float compares — the result's bits, shared with the hot path's exponent test, then stay live past it:
   221 host instructions per iteration against 207; no inline zero test at all (exact zeros through the kernel too):
@@ -932,7 +932,7 @@ Off by default (`JIT_DEFAULTS.jumpTables`); `?jitopts={"jumpTables":true}` or `d
   stack arguments it saves).
 - 11 i32 region parameters (block, state, 8 registers, budget), EFLAGS and the 4 lazy-flag values in the state block
   (loaded by every region's prologue, stored before every chained tail call) — 2026-10-06, stopped at the gate:
-  `tools/chain-bench.mjs` (Node 24 / V8 13.6, alternated with main) int 22.7 → 26.6 ns, x87 36.2 → 43.0 ns per
+  `tools/bench/chain-bench.mjs` (Node 24 / V8 13.6, alternated with main) int 22.7 → 26.6 ns, x87 36.2 → 43.0 ns per
   call/return pair. The parameter count itself is worth ~0.3 ns per pair (the same 11-parameter code without the five
   loads and stores — exact for that bench only — 22.2 ns); the prologue loads cost ~3.5 ns per pair and the stores
   ~2.2 ns, so skipping the loads for blocks whose flags are dead cannot pay either. The exactness suite passed on the

@@ -10,7 +10,7 @@ import { WebGLDevice } from '../src/gfx/d3d8-webgl.js';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 import { fakeGl, firstDifference } from './fake-gl.js';
 
 const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;

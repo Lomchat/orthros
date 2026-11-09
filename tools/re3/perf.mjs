@@ -1,5 +1,5 @@
 // Frame cost of an re3 port in the city (docs/browser-ports.md, "re3 ports"): its page started as a visitor, a new
-// game from the game's menu, its cutscenes skipped (Enter held), then --seconds of play measured (tools/port-perf.mjs:
+// game from the game's menu, its cutscenes skipped (Enter held), then --seconds of play measured (tools/bench/port-perf.mjs:
 // the engine's work a frame — from the browser's frame callback that resumes it to its next wait for one —, the frames
 // shown, the WebGL calls a frame by kind and the synchronous ones, the renderer; --gl swiftshader draws on the CPU, the
 // GPU's share included; --gl discard sends every call but draws nothing — the CPU a frame costs, an upper bound). Also
@@ -13,13 +13,13 @@
 //     renderer's main thread, the GPU process, their waits on each other —, for a closer look at the frames' gaps)
 //     [--size 1280x720] [--query "a=b"] [--mem-every s] [--channel chromium|shell]
 // --channel: Chromium itself by default, as the bench suite; shell: Playwright's headless shell, which floods a page that
-// holds the pointer lock (the game in the city) with synthetic mouse moves — tools/port-perf.mjs
+// holds the pointer lock (the game in the city) with synthetic mouse moves — tools/bench/port-perf.mjs
 // --mem-every s: the page's memory sampled every s seconds of the measure (port-perf.mjs memSampler: JS heap, the
 // engine's heap, DOM nodes and listeners) and its growth per 10 minutes — a long session's leaks
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { launchOptions, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile, memSampler, meterSampler } from '../port-perf.mjs';
+import { launchOptions, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile, memSampler, meterSampler } from '../bench/port-perf.mjs';
 
 const args = process.argv.slice(2), arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
 const [name] = args;

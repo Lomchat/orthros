@@ -2,8 +2,8 @@
 // (/api/tree), the reader over the server's compressed ranges (HttpBackend, /gamez), the browser's copy of what it read
 // (the OPFS block store orthros-files-<manifest>), the order earlier sessions read it in (/api/prefetch) and the
 // versions it requires (manifest.extraMounts), all on one connection (NetLink). Opened by the Windows games' worker
-// (src/host/web/worker.js), the data worker of the engines that run in the page (data-worker.js) and the whole-game
-// download (src/host/web/download-worker.js).
+// (src/web/worker.js), the data worker of the engines that run in the page (data-worker.js) and the whole-game
+// download (src/web/download-worker.js).
 // The files a version takes from one it requires (a port's underlays: the server marks them `owner`, game-files.js) are
 // that version's: read through a part of its own (`shared`), its store orthros-files-<owner> and /gamez/<owner>/ —
 // one copy in the browser for every version that reads them (docs/slow-network.md "Files of a required version"). The
@@ -294,7 +294,7 @@ export class UnderStore {
 }
 
 /**
- * A version as a Windows game mounts it (src/host/web/worker.js; any reader of a version by its own paths): version
+ * A version as a Windows game mounts it (src/web/worker.js; any reader of a version by its own paths): version
  * `name` of an opened version (openVersion) — its whole tree as the server lists it, as the guest sees it — whose files
  * are read by the parts that hold them (partOf: its own, or an owner's — its game's shared base, a required version's
  * files). stat, readdir and lookup answer from that tree (game-tree.js); open returns the owning part's file itself:

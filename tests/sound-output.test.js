@@ -1,9 +1,9 @@
-// The page's sound output under the browser's autoplay rules (src/host/web/sound.js): resumed at gestures, the
+// The page's sound output under the browser's autoplay rules (src/web/sound.js): resumed at gestures, the
 // "click to enable sound" button, the audio part of the telemetry summaries; the worker's figures it reads
 // (playing DirectSound buffers, audio decoder failures).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GESTURES, resumeOnGesture, soundHintNeeded, AudioStats } from '../src/host/web/sound.js';
+import { GESTURES, resumeOnGesture, soundHintNeeded, AudioStats } from '../src/web/sound.js';
 import { audioPlaying } from '../src/win32/dsound.js';
 import { AsyncAudio, audioDecodeStats } from '../src/media/mpeg-source.js';
 
@@ -118,7 +118,7 @@ test('audioDecodeStats: a browser audio decoder that refuses the codec or fails 
 });
 
 test('renderAudio (worker mix into the ring): the play cursors follow the VM clock while the output consumes nothing', async () => {
-  const { BrowserHost, CTL, AUDIO_RING_FRAMES } = await import('../src/host/browser-host.js');
+  const { BrowserHost, CTL, AUDIO_RING_FRAMES } = await import('../src/web/browser-host.js');
   // an AudioContext suspended until the first click: the ring is full and stays full (nothing read)
   const ctl = new Int32Array(CTL.SIZE); ctl[CTL.AUDIO_WRITE] = 12288; ctl[CTL.AUDIO_READ] = 0;
   let ticks = 0, renders = 0;
@@ -133,7 +133,7 @@ test('renderAudio (worker mix into the ring): the play cursors follow the VM clo
 });
 
 test('audioVerdict: what the summaries say about a session\'s sound', async () => {
-  const { audioVerdict, audioText } = await import('../src/host/web/sound.js');
+  const { audioVerdict, audioText } = await import('../src/web/sound.js');
   const rec = (o) => ({ ctx: 'running', rate: 44100, lat: 30, run: 1, out: 44100, mix: 'worklet', peak: 0.3, play: 4, bufs: 9, dec: 0, resumes: 0, changes: 0, ...o });
   assert.equal(audioVerdict([]).verdict, 'none');
   assert.equal(audioVerdict([undefined, null]).verdict, 'none', 'summaries of an older build');

@@ -1,4 +1,4 @@
-// Frame-limiter benchmark (tools/sleepspin-bench.mjs): the pacing loop many games run between frames — a little work,
+// Frame-limiter benchmark (tools/bench/sleepspin-bench.mjs): the pacing loop many games run between frames — a little work,
 // then Sleep(0) + timeGetTime until the next 16 ms boundary — under timeBeginPeriod(1), with a second thread polling
 // with Sleep(1) as background threads do. The harness times the frames (GetVersion marks the end of a frame's work) and
 // reads the emulator's Sleep counters and the process CPU time: the emulator's cost of the spin, which is pacing.

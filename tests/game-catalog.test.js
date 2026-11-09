@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadGameCatalog, defaultGameManifest } from '../src/host/game-catalog.js';
-import { createServer } from '../src/host/server.js';
+import { loadGameCatalog, defaultGameManifest } from '../src/server/game-catalog.js';
+import { createServer } from '../src/server/server.js';
 
 function game(root, id, spec) {
   const dir = path.join(root, id);

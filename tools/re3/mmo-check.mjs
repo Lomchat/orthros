@@ -52,7 +52,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { v8LogArgs } from '../v8-logs.mjs';
+import { v8LogArgs } from '../dev/v8-logs.mjs';
 
 export const SCENARIOS = Object.freeze(['basic', 'chat', 'combat', 'combatx', 'combatp', 'combatv', 'away', 'aim', 'stars', 'population', 'world', 'garage']);
 /** Scenarios run only when named (not in `all`): crowd (3 players or more), perks (a new character), freemode (alone). */

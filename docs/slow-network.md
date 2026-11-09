@@ -81,7 +81,7 @@ this server (localhost), where none of this shows.
   another read of the load queues behind one block at most (~4 s at 85 KB/s, ~0.8 s at 500 KB/s) — the price of the
   smaller bytes. Residual: the server learns these blocks as the game's reads (`a=1`), the unread rest of a block whose
   reader stopped inside it included. `stats.wholeAheads` counts the blocks asked so where the earlier rule would have
-  asked pieces. Measured (2026-10-27, `tools/data-matrix.mjs --links 85k:150,500k:90 --only
+  asked pieces. Measured (2026-10-27, `tools/bench/data-matrix.mjs --links 85k:150,500k:90 --only
   morrowind-goty-vanilla-plus-fr`, page language en, main a9aae1b against this tree, the same frozen copy of the live
   learned state and units — every Morrowind.esm block unit there, 202 of its piece units; the engine's lean package is
   rule 2 on main and rule 3 here, docs/openmw.md, so the engine's bytes are counted apart; up to the menu shown; one run
@@ -133,7 +133,7 @@ this server (localhost), where none of this shows.
 On a link that is not fast, a large texture is read light first, the file itself after it (the owner's idea: "on
 envoie tout en compressé instantanément, puis en background on charge les grosses textures"):
 
-- **Server** (`src/host/light-copies.js`): a light copy of a DDS texture whose longest side passes `LIGHT_SIDE` (256)
+- **Server** (`src/server/light-copies.js`): a light copy of a DDS texture whose longest side passes `LIGHT_SIDE` (256)
   and which has mip levels: its finest levels left out — the same format, its header telling the smaller size and the
   fewer levels, the remaining levels as they are, two at least (an engine meeting a compressed texture without stored
   levels may turn its mipmapping filter off for good, even once the file replaces it in place; a texture of fewer
@@ -215,7 +215,7 @@ grows by 2048 while quiet.
 
 Movies and music are not what the game waits for to start; on a link that is not fast they come after it:
 
-- **Server** (`src/host/game-files.js` `listGameTree`, the rule `isMediaFile` in `src/vfs/game-tree.js`): a tree file
+- **Server** (`src/server/game-files.js` `listGameTree`, the rule `isMediaFile` in `src/vfs/game-tree.js`): a tree file
   is marked `media: true` by its format — `.bik .bk2 .mp3 .ogg .avi .mpg .mpeg .wmv .smk .webm`, and `.wav` from
   512 KB (`MEDIA_WAV_BYTES`: music, speech; smaller ones are sound effects). Every game, every runtime.
 - **Learned order** (`src/vfs/launch-set.js` `forLink`): on a link that is not fast, the media files' entries move
@@ -257,7 +257,7 @@ tests/http-backend-whole.test.js.
 The owner's BFME 1.08 bench links on his laptop (7-15 MB/s measured, 75 ms round trip, behind Cloudflare): 16.7 s of
 game reads waiting for the network before the menu (112 requests, ~150 ms each), 191 MB downloaded before it, the
 learned prefetch still running through the skirmish (155 MB of background there), 12 frames held 400-600 ms by `ioWait`
-in ten minutes of play. Reproduced here with `tools/net-proxy.mjs` (an HTTP/2 TLS proxy as Cloudflare speaks to Chrome:
+in ten minutes of play. Reproduced here with `tools/dev/net-proxy.mjs` (an HTTP/2 TLS proxy as Cloudflare speaks to Chrome:
 one connection, one link of 7 MB/s shared equally by the answers in transfer, a 75 ms round trip, the origin asked with
 `Accept-Encoding: gzip, br`; `headless --page-origin https://127.0.0.1:<port>`), a fresh browser profile with a block
 store (`--opfs`), the menu bench then the skirmish bench (`--ui --bench`, `--game-lang fr`, `--gl-discard`), a copy of
@@ -331,7 +331,7 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   copy or got from the learned prefetch were never learned again, nor masked: the mask-less orders below). A session
   started from a snapshot does not report (it skips the start's reads). One session marks each version it mounts
   (the versions it requires too): the server keeps a session's reads per version (`learnMark`).
-- **The server** (`learnMark` in `src/host/server.js`): each learned block the marking session had read by then counts
+- **The server** (`learnMark` in `src/server/server.js`): each learned block the marking session had read by then counts
   it (`pre`, the 5th element of a row of `prefetch-<manifest>.json`), the version counts its marking sessions
   (`playable-<manifest>.json`, `{ marks }`). Once one marked, each entry of `/api/prefetch` carries a 5th element, its
   flags: bit 0 (`PRE_PLAYABLE`) when it was read before playable in at least half the marking sessions.
@@ -377,7 +377,7 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   and `engineFiles` a browser port's engine release (its wire bytes and URLs: 8.0 MB for Half-Life, 4.2 MB for Vice
   City, measured, none of it in the launch set — 80 of the 105 s a first French Half-Life launch took at 100 KB/s). The
   card says "Playable
-  after 80 MB, about 10 min at your link (100 KB/s)" (`launchStatus` in `src/host/web/download.js`, the rate
+  after 80 MB, about 10 min at your link (100 KB/s)" (`launchStatus` in `src/web/download.js`, the rate
   `linkRate`; the size only while none was measured), above the whole download's line, hidden once the whole game is
   here or downloading. An engine that reloads in place (`reloads`) is said by its light set on every link, and
   prepared in two stages: "The light launch set of an engine that reloads in place" below.
@@ -426,7 +426,7 @@ all of them, and so did every request meanwhile — a `/gamez` read, the page's 
 orthros.chalco.website, 2026-10-21 to 10-27 (322 calls): median 0.087 s when the previous call was under 60 s before
 (74 of 236 still over 0.3 s: the 30 s stale mark while players were in a game), 0.67 s after 600-3600 s (n 19, up to
 3.2 s), 0.41 s after more than an hour (n 26); after any gap over 600 s, 0.45 s (n 45). The rules now
-(`src/host/server.js` `ownLaunchOf`):
+(`src/server/server.js` `ownLaunchOf`):
 
 - **Stale-while-revalidate.** A summary kept is always answered at once; one past its age — ten minutes
   (`launchRefreshMs`), 30 s after a session's read (`launchStaleMs`), at once after a playable mark (`learnSave`), or of
@@ -497,7 +497,7 @@ the game — the game fills the same store — saw "Playable after 137 MB · ~10
 holding all of it, and nobody uses Prepare (`download-worker.js` fetched 0 times in a month of access logs). And a
 best-effort origin's stores may be evicted when the disk runs short: nothing asked for persistence, nothing told it.
 
-- **The probe** (`probe` in `src/host/web/download-worker.js`, `Downloads.probe` / `probed` in `download.js`, started by
+- **The probe** (`probe` in `src/web/download-worker.js`, `Downloads.probe` / `probed` in `download.js`, started by
   `home.js` `probeStores` 1.5 s after the library is drawn, once a visit): each card's version — the one its game
   language runs — in turn, the resume game first, in the download worker. Rules:
   - a store's directory is looked up first (`storeExists` in `src/vfs/game-data.js`, no `create`): a version never
@@ -522,7 +522,7 @@ best-effort origin's stores may be evicted when the disk runs short: nothing ask
   - the whole game by its blocks here whole (`HttpBackend.storedBytes`: what the whole download skips), "N % downloaded";
   - written as the progress Prepare and the download write (`probed: true`), never over a download running in this
     visit; a store another tab's game holds, OPFS unavailable or an error: unknown, nothing written.
-- **Persistent storage** (`src/host/web/storage-persist.js`, page side only — `persist()` does not exist in workers):
+- **Persistent storage** (`src/web/storage-persist.js`, page side only — `persist()` does not exist in workers):
   `pageStorage().ask()` once a page before its first write of game data — the home's Prepare / download
   (`Downloads.start`), the Windows game's start (`main.js`), the GoldSrc and re3 pages' `start()`, the OpenMW page's
   `enter()` (its `window.orthrosStorage`, which the engine page's perf records take: `frame-meter.js`, the same
@@ -531,7 +531,7 @@ best-effort origin's stores may be evicted when the disk runs short: nothing ask
 - **Telemetry**: `{ storage: { persisted, usageMB, quotaMB, asked } }` in the env of every runtime — one builder,
   `withStorage`: the Windows page's batches (`flushTelemetry`), the ports' event records (`eventEnv` in perf-page.js,
   GoldSrc and re3), and the perf records of all four runtimes (`PerfSession`, read again after each record; the
-  server's check keeps it, `src/host/perf-record.js` `ENV.storage`). MiB, not bytes (a quota to the byte tells the
+  server's check keeps it, `src/shared/perf-record.js` `ENV.storage`). MiB, not bytes (a quota to the byte tells the
   disk). Evictions show as a session whose store was found missing for a game played before — not reported yet.
 - Measured (2026-10-27, `half-life-original-en`, scratch servers on localhost of main and of this change — each a copy
   of the learned files, `--br-cache off --covers off` —, headless Chromium, one persistent profile per run: the home,
@@ -562,7 +562,7 @@ through `/gamez/<manifest>/`: a player of both editions downloaded and stored th
 units (`br-cache.js` keys them by the file), not the browser. The Windows games' `extraMounts` already stored a
 required version under its own name. Now every runtime does it the same way:
 
-- **The server marks the owner** (`listGameTree(manifest, seen, ownerOf)` in `src/host/game-files.js`, from
+- **The server marks the owner** (`listGameTree(manifest, seen, ownerOf)` in `src/server/game-files.js`, from
   `manifest.underlayOwners` — `game-catalog.js`, the version each underlay folder is the folder of, the deepest one for a
   chain): a file of the tree is `owner: <id>` when `/gamez/<id>/<path>` serves that very file — the required version's
   own path resolved (`resolveGameFile`: through its overlays, data mounts and version folder) is the same device and
@@ -622,7 +622,7 @@ required version under its own name. Now every runtime does it the same way:
   never deleted with it —, the owner's row says which versions read its files too (`sharedWith`), and a reader's row
   that its copies of them move under the owner as read, clearing it freeing them (`keptUnder`). A port's row
   counts its OPFS store and its earlier database together, and clearing it clears both (it cleared the database only).
-- Measured (2026-10-27, one fresh persistent Chromium profile per pair behind `tools/net-proxy.mjs` 1.8 MB/s + 90 ms,
+- Measured (2026-10-27, one fresh persistent Chromium profile per pair behind `tools/dev/net-proxy.mjs` 1.8 MB/s + 90 ms,
   scratch server on copies of the learned directory and the br-cache (frozen), main = the branch's base `dbac797`;
   `tools/re3/check.mjs <v> --new-game --guest --profile --insecure`, `vice-city-revc` then `vice-city-orthros`, two
   pairs per variant, all checks passed). The second edition's `/gamez`:
@@ -719,7 +719,7 @@ Every request of `/gamez` used to be compressed on the fly (zstd-3, else gzip-4;
 memory). Behind Cloudflare the origin only ever sees `Accept-Encoding: gzip, br` (no zstd): production sent gzip-4,
 wire/raw 0.69 over 21,740 requests. Brotli at quality 11 saves far more, but costs 1.7-4.8 s of a core per MiB — never
 on the request path. So the server keeps **units** compressed ahead, for every game and runtime
-(`src/host/br-cache.js`):
+(`src/server/br-cache.js`):
 
 - **A unit** is a whole 1 MiB block of a file version (its tail for the last block) or a single 64 KiB piece, of the
   file or of its light copy (`unitOf` in `src/vfs/http-backend.js`: the shapes the shared reader asks for). Independent
@@ -731,7 +731,7 @@ on the request path. So the server keeps **units** compressed ahead, for every g
   stats). A unit brotli makes less than 8 % smaller is kept as an empty `.raw` marker: sent as it is, never made again.
   A request that misses goes the dynamic way — zstd-3 if accepted, else **brotli quality 5** if accepted (~14 % fewer
   bytes than gzip-4 for ~+8 ms per MiB), else gzip-4 — and asks for its unit.
-- **Made** by a forked child (`src/host/br-cache-worker.js`) niced to 19, one unit at a time (one core at most),
+- **Made** by a forked child (`src/server/br-cache-worker.js`) niced to 19, one unit at a time (one core at most),
   pausing while the 1-minute load average is ≥ 24 or the disk is over 85 % full (it evicts meanwhile). Order: first
   the **launch sets** — each manifest's learned order (`/api/prefetch`, its launch set first, then earliest `t` first)
   up to its share of the first half of the budget, pinned (evicted last); the share by the launch set's size when a
@@ -842,7 +842,7 @@ Uncompressed sound (PCM) is what brotli does worst: a waveform has almost no rep
 a second form made beside its brotli one, coded by linear prediction and Rice codes of the residuals — lossless,
 written from scratch (`src/vfs/pcm-codec.js`) —, for every game and runtime alike:
 
-- **Which bytes are sound** (`src/host/pcm-units.js`, by format, no file name looked at): every RIFF WAVE sound in a
+- **Which bytes are sound** (`src/server/pcm-units.js`, by format, no file name looked at): every RIFF WAVE sound in a
   file — a `.wav`, or one stored as it is inside an archive (EA's `.big`: BFME's sounds are 16-bit WAVE members) — whose
   format chunk says integer PCM (tag 1, or WAVE_FORMAT_EXTENSIBLE's PCM subtype), 8 or 16 bits, mono or stereo: its data
   chunk (found by one scan of the file per version, kept in the unit directory's `waves.json`). ADPCM, MP3 and the rest
@@ -867,7 +867,7 @@ written from scratch (`src/vfs/pcm-codec.js`) —, for every game and runtime al
   does not match) turns the audio units off for that backend and the range is asked again without. A body of the
   wrong length that starts as a container is decoded too (a proxy that dropped the header). The home's "playable
   after" counts the audio form's bytes (`brCache.size`).
-- **Measured** (`tools/audio-units.mjs`, a copy of the live learned orders of 2026-10-21, every container decoded and
+- **Measured** (`tools/bench/audio-units.mjs`, a copy of the live learned orders of 2026-10-21, every container decoded and
   compared; the units the generator keeps, brotli 11 against the audio form): the launch set as a thin link reads it,
   and the whole learned order as a fast one does —
 
@@ -899,7 +899,7 @@ Measured with headless Chromium on a local server (Playwright, every response's 
   (warm server), 0 on a return (every module a 304). The home: 500 KB, then 164, then 0. (A versioned, immutable
   `/src` would also save the ~380 conditional requests of a return; not done: the absolute `/src/` URLs of the pages
   and workers would load a module twice under two URLs.)
-- **Engine releases**: `tools/engine-br.mjs <release>` writes `<file>.br` (brotli 11) beside each compressible file
+- **Engine releases**: `tools/ops/engine-br.mjs <release>` writes `<file>.br` (brotli 11) beside each compressible file
   (not the archives, not `gamefiles/`, which the server lays over the game's files); the install and build scripts run
   it (`tools/goldsrc/install-engine.py`, `build-modules.sh`, `tools/re3/build.sh`). The server already sends a newer
   `.br` to a browser that takes it and counts it on the card. Card: Half-Life 7.60 → 3.20 MB, the arsenal
@@ -910,18 +910,18 @@ Measured with headless Chromium on a local server (Playwright, every response's 
   startup files instead of after them: 43.5 / 43.4 s against 39.9 / 41.5 (no gain on a saturated link): not kept.
   Served as game data read by pieces instead (2026-10-22, the server listing them under `_engine/` of the tree): the
   engine reads its three archives whole before its menu (extras 1.48, bots 4.94, pokemon 6.48 MB, 88 requests), so
-  nothing is saved and the first sessions wait for them read by read — 1 MB/s through tools/net-proxy.mjs, a fresh
+  nothing is saved and the first sessions wait for them read by read — 1 MB/s through tools/dev/net-proxy.mjs, a fresh
   browser: menu 50.1 s / 36.4 MB / 11.1 s of demand wait against 42.2 s / 32.9 MB / 5.1 s: not kept.
   The page's game data opened and its startup set loaded beside the engine's download and start, the files mounted
   once the engine's file system exists (the same day, GoldSrc and re3 pages): at 1 MB/s Half Strike's startup set
   began at 4.6 s against 4.2 s and ended at 11.6 against 10.8 (the data worker's own modules wait behind the engine's
   download), so nothing came sooner; the menus (50.3 / 42.2 s) differed by the engine's boot on a loaded machine, the
   learned order filling the link meanwhile (more MB before the menu as it lasts longer): not kept.
-- **Covers**: `/api/cover/<version>` sends a light copy once made (`src/host/light-covers.js`: 960 px wide at most,
+- **Covers**: `/api/cover/<version>` sends a light copy once made (`src/server/light-covers.js`: 960 px wide at most,
   WebP, made by ffmpeg in the background, one at a time, niced, kept in `--covers <dir>`, default
   `<learn>/../covers`; `?full` the image itself; without ffmpeg the covers go as they are): the home's nine covers
   1737 → 388 KB.
-- **Mask-less learned orders**: `tools/learn-prune.mjs <learn dir>` lists each order's mask-less entries (learned
+- **Mask-less learned orders**: `tools/ops/learn-prune.mjs <learn dir>` lists each order's mask-less entries (learned
   before masks: whole blocks — a thin link's learned pass skips them, a between link fetches them whole) and what each
   of its two rules would drop; a dry run unless `--write` (a backup kept; the server stopped meanwhile: it writes its
   orders back; `--list`: each entry's verdict). A mask-less entry is not "a block no recent session read": it is also
@@ -1084,11 +1084,11 @@ with each; the page waits for its last number) — so an older batch that timed 
 that failed since the start. The page's heartbeat check (`ctrl[3]`, `DEAD_MS`) ends a wait whose worker died (0).
 `GameData.snapshot()`: `wants`, `wantWaits`, `wantWaitMs`, `wantTimeouts`.
 
-**The server** (`src/host/server.js` `/gamez`): `&w=1` marks an announced range — not learned (announced is not read:
+**The server** (`src/server/server.js` `/gamez`): `&w=1` marks an announced range — not learned (announced is not read:
 the learned orders and launch sets stay the reads'), answered from the precompressed units like any unit request,
 encoded on the fly in its own queue (`want`, between the game's reads and the background's; a game's read joining one
 moves it to the demand queue, an announced one joining a download moves that to `want`), counted in
-`/api/netstats` as `want`. `tools/net-proxy.mjs`: kind `want` (`urlKind`, `summarize`, `loadWindow`'s `want` — the
+`/api/netstats` as `want`. `tools/dev/net-proxy.mjs`: kind `want` (`urlKind`, `summarize`, `loadWindow`'s `want` — the
 load's own bytes, not background).
 
 The label goes to the worker with each batch (`W.wantLabel`, `stats.wantLabel`): the learned places (stage 3) will key
@@ -1134,7 +1134,7 @@ what that place's load reads. The server learns it from the announcements themse
 for that place, exact and complete, unlike the demand reads a session happened to wait for (the learned order keeps a
 block once per session; a place loaded second learns nothing of what it shares with the first).
 
-**The route** (`src/host/server.js`, beside `/api/prefetch`, same manifest check — unknown: 404; a POST only for a
+**The route** (`src/server/server.js`, beside `/api/prefetch`, same manifest check — unknown: 404; a POST only for a
 runtime whose engine announces, `PLACE_RUNTIMES` — `openmw` —, else 404: no place can be invented for the others):
 - `POST /api/places/<manifest>` `{ session, place, kind, lang?, records: [[path, start, end]] }` — one announced batch
   (`kind` `meshes` | `terrain` | `textures`, `place` the label's: `x,y` or the lowercased interior id; `records` tree
@@ -1304,7 +1304,7 @@ engine that runs in the page and holds a bank of sounds it plays at random (an e
 vice-city-revc, 4 of 4 for vice-city-orthros), and the new release's sessions would take ~20 marks to outvote them —
 meanwhile every new device still waits for the whole bank before the game starts (the startup set the page waits for).
 So an engine release that stops reading a file before playable comes with its entries unflagged:
-`tools/learn-unflag.mjs <learn dir> --only <manifest>... --path <game file>... [--write]` takes the `pre` counts (and their
+`tools/ops/learn-unflag.mjs <learn dir> --only <manifest>... --path <game file>... [--write]` takes the `pre` counts (and their
 per-language counts) off that file's entries — out of the launch set at once — and moves them to the end of the order
 (their time past every other entry's, their phases gone), keeping their counts, masks and the version's marks. Kept at
 their early times (the first version of the tool), the bank was still the first thing the learned order fetched after
@@ -1319,7 +1319,7 @@ snapshot. For this change (at the deploy of the r3 releases, once the manifests 
 ```
 tools/backup.sh snapshot -m "before unflagging sfx.RAW for the reVC r3 engines"
 systemctl stop orthros.service
-node tools/learn-unflag.mjs /var/lib/orthros2/learn --only vice-city-revc --only vice-city-orthros --path Audio/sfx.RAW --write
+node tools/ops/learn-unflag.mjs /var/lib/orthros2/learn --only vice-city-revc --only vice-city-orthros --path Audio/sfx.RAW --write
 systemctl start orthros.service
 ```
 
@@ -1341,7 +1341,7 @@ same set); the page's startup set (`startupBytes`) 3.23 MB. `tools/re3/check.mjs
 vice-city-revc 320 / 318, vice-city-orthros 324 / 322, bank-0 samples read / skipped 6 / 1 each, 14 heard buffers the
 length of a sample read (`Module.orthrosSamples`; a first patch, before the skipped plays' fixes above — slot, channel,
 gear —, counted 105 / 103 and 309 / 307 without telling the bank's samples from the streams'). Time to playable on a new
-device (`tools/data-matrix.mjs --only vice-city-revc --links 85k:90,1.8m:90 --lang en`, two runs per side, interleaved,
+device (`tools/bench/data-matrix.mjs --only vice-city-revc --links 85k:90,1.8m:90 --lang en`, two runs per side, interleaved,
 SwiftShader on a machine loaded 9-37 by other projects; before: the live engine r2 and the learned state as it was;
 after: the final r3 and the reset copy):
 
@@ -1383,7 +1383,7 @@ the file's first frames and tail at its open, as before).
 **The learned order after the change.** The older releases' sessions taught the scan's blocks as entries of the order,
 read after playable (no `pre` count: never flagged), with early times — `Water.mp3` blocks 1-8 at 6.8-9.4 s, before the
 intro cutscene's `int_a.mp3`, so every new device fetches them during the new game's load. An engine release that no
-longer reads a file's blocks moves them to the end of the order: `tools/learn-unflag.mjs` takes blocks of a file
+longer reads a file's blocks moves them to the end of the order: `tools/ops/learn-unflag.mjs` takes blocks of a file
 (`--path 'Audio/Water.mp3#1-8'`, `#a-b`, `#a-` to the end) and `--tail` moves the entries named to the order's end even
 when no session counted them before playable (counts and masks kept; a session of the new release that reads one early
 teaches its time again). Block 0 (the header read at the open) and the tail block (the open's ID3 check) stay.
@@ -1407,7 +1407,7 @@ the deploy). At the deploy of the r4 releases, once the manifests name them:
 ```
 tools/backup.sh snapshot -m "before moving the radio scan's blocks to the order's end for the reVC r4 engines"
 systemctl stop orthros.service
-node tools/learn-unflag.mjs /var/lib/orthros2/learn --only vice-city-revc --only vice-city-orthros --tail \
+node tools/ops/learn-unflag.mjs /var/lib/orthros2/learn --only vice-city-revc --only vice-city-orthros --tail \
   --path 'Audio/Water.mp3#1-8' --path 'Audio/City.mp3#1-8' --path 'Audio/FLASH.adf#1-53' --path 'Audio/VROCK.adf#1-69' --write
 systemctl start orthros.service
 ```
@@ -1442,7 +1442,7 @@ No frame gap over 1 s after r4 on the three faster links (one of 14.2 s, 5.4-6.7
 one stop where the scan never ended, but a few seconds, not the expected 1-2: the reads at the position are whole
 block units of the data system at the thin link's speed (a station's first seconds are several of them).
 
-The new game's load, `tools/data-matrix.mjs --only vice-city-revc` behind the player's-link proxy (90 ms), the AFTER
+The new game's load, `tools/bench/data-matrix.mjs --only vice-city-revc` behind the player's-link proxy (90 ms), the AFTER
 side's learned copy with the order move above applied: in play (s), and from the proxy's log before it, `Water.mp3`
 then the `Audio/*.adf` (MB on the wire, seconds with a request of that file in flight), every `/gamez` byte:
 
@@ -1494,7 +1494,7 @@ game named in the code — docs/browser-ports.md "The release's own game files")
   loose file's time is drawn from its bytes, not its archive's (the store's keys hold path, size and time). Only the
   builds that say `"gameFiles": true` in the lock have loose files: an older id rebuilds as pinned.
 
-Measured (2026-10-28, tools/data-matrix.mjs, new device, 2 runs per variant interleaved, the same pristine state for
+Measured (2026-10-28, tools/bench/data-matrix.mjs, new device, 2 runs per variant interleaved, the same pristine state for
 both — a copy of the live learned directory, a frozen br-cache copy, covers —; before = main 93391eb with `…-r2` /
 `…-arsenal-r12`, after = this change with `…-r3` / `…-arsenal-r13`; menu = the playable mark, first map = in play, the
 matrix enters the map 2 s after the menu; "map wait" = the demand-wait seconds from the `map` command to in play):
@@ -1534,7 +1534,7 @@ coming after as upgrades. Yet the card, the in-page way to playable and "Prepare
 set — the files themselves: Morrowind Vanilla+ FR said "playable after 378 MB" (184.5 MB of wire) on a fast link for a
 game that plays after 137 MB (54.2 MB of wire). One rule now (`src/vfs/launch-set.js` `lightLaunch(fast, reloads)`):
 
-- **The server says it** (`src/host/server.js` `engineReloads`, `launchOf`): /api/manifests `launch.reloads` (and each
+- **The server says it** (`src/server/server.js` `engineReloads`, `launchOf`): /api/manifests `launch.reloads` (and each
   language's) when the version's engine release exports `RELOAD_EXPORT` (`engine-content.js` `exports(release)`, read
   again when its release.json changes). Generic: an engine release's word, no runtime or game named.
 - **The card** (`download.js` `launchStatus`): `lightBytes` / `lightWire` for "Playable after" and its time on every
@@ -1559,7 +1559,7 @@ exports), `tests/download-worker.test.js` (the two stages; the probe of a light 
 Measured (2026-10-28, a scratch server on copies of the live learned state and units — frozen —, before: `main` a5aff0d).
 /api/manifests: the OpenMW versions now say `reloads: true`, no other version changed; Vanilla+ FR on a
 fast link "Playable after" 377.6 MB → 136.9 MB (Vanilla+ EN 218.5 → 118.1 MB, GOTY 161.0 → 150.8 MB). "Prepare"
-(`tools/prepare-bench.mjs --only morrowind-goty-vanilla-plus-fr --known-bw`, behind the player's-link proxy, 80 ms; the
+(`tools/bench/prepare-bench.mjs --only morrowind-goty-vanilla-plus-fr --known-bw`, behind the player's-link proxy, 80 ms; the
 engine's 20.6 MB included — the release's own package, no lean one in the frozen copy; three runs a side, all identical
 to 0.3 s but one 4 MB/s "after" run, 49.0 s / 96.7 s, made while a browser run shared the machine):
 
@@ -1592,7 +1592,7 @@ the bank's fill). The rule (`HttpBackend.laterNext`, generic: what the game wait
 Test: `tests/http-backend-whole.test.js` (two files wanted whole, a parked read on the first, a synchronous one on the
 second, a third waited on before it was wanted whole).
 
-Measured (2026-10-28, `tools/data-matrix.mjs --only vice-city-revc --links 1.8m:90 --parallel 1`, before: `main`
+Measured (2026-10-28, `tools/bench/data-matrix.mjs --only vice-city-revc --links 1.8m:90 --parallel 1`, before: `main`
 a5aff0d, each side's tree copied into scratch; frozen copies of the live learned state and units; the runner kept 330 s
 in play after "in play" — a scratch-only `MATRIX_LINGER`, the player standing — for the fill's end; runs interleaved,
 loaded machine, load average 21-33. A second "before" run's page stopped receiving at ~280 s, replaced by a third;
@@ -1660,7 +1660,7 @@ requests a second of ~90 ms each, 0.2-0.9 MB/s on the wire of the 8 MB/s link.
     at a machine load of 70.
   - 1.8 MB/s (a link between thin and fast: the budget does not change there): Half-Life c1a0 5.1, 5.7 before, 4.9, 6.9
     after, c1a0d 5.6, 5.5 / 5.6, 5.7; Half Strike's cs_assault (untaught) 35.4, 33.1 / 33.0, 33.0 — within the noise.
-  - BFME1 (`bfme1-103`, `tools/data-matrix.mjs --links 8m:85 --win32-seconds 240`, the same pristine copies, 3 runs a
+  - BFME1 (`bfme1-103`, `tools/bench/data-matrix.mjs --links 8m:85 --win32-seconds 240`, the same pristine copies, 3 runs a
     side interleaved a b b a a b): first frame 33.2, 34.2, 29.2 s after, 34.2, 32.2, 29.2 before; ~248 MB on the wire to
     the run's end on both sides (247-253), the page's waits 16 (2.3-2.5 s) after against 29-35 (2.9-3.7 s) before; no
     run reached the worker's playable mark (SwiftShader's menu under 20 fps, both sides: "timeout"). No crash in the
@@ -1714,7 +1714,7 @@ The rules, the same for every port (one mechanism: `src/ports/port-files.js`, `s
 - **Times**: `GameData.times` / `snapshot()` `openMs`, `readyMs`, `mountedMs` (the page's clock from its navigation):
   the open, the worker's answer, the mount — GoldSrc's and re3's `session.startup`, OpenMW's `__streamfsStats`.
 
-Measured (2026-10-28, before = main a5aff0d, after = this change; 2 runs each, behind `tools/net-proxy.mjs` 1.8 MB/s
+Measured (2026-10-28, before = main a5aff0d, after = this change; 2 runs each, behind `tools/dev/net-proxy.mjs` 1.8 MB/s
 90 ms, headless Chromium + SwiftShader, scratch origins on copies of the learned state and a frozen brcache copy; seconds
 from the page's own request in the proxy log, the menu / first frame on the page's clock; OpenMW:
 `tools/openmw/place-load.mjs morrowind-goty-vanilla-plus-fr --mode save`, the warm profile built once by main's code and
@@ -1749,7 +1749,7 @@ heights, colours and texture indices (`skipHSub`: read when a cell loads, `Land:
 `ESMStore::countAllCellRefsAndMarkKeys` reads a cell reference's number, object, key and deleted flag only. Those
 bytes are 38 MB (LAND) and ~9 MB (references' details) of Morrowind.esm's 80 MB.
 
-- **The light copy** (`src/host/light-copies.js` `lightEsm`, `esmZeroRanges`, by format: a file named as a content file
+- **The light copy** (`src/server/light-copies.js` `lightEsm`, `esmZeroRanges`, by format: a file named as a content file
   — `isLightContent` in `src/vfs/game-tree.js`: .esm, .esp, .omwaddon, .omwgame — with a TES3 header, from
   `ESM_LIGHT_FROM` = 1 MiB): **the file's size and every offset**, every record and subrecord header kept, zeroed: a
   LAND record's VNML, VHGT, VCLR, VTEX payloads (INTV, DATA, WNAM kept — the global map reads WNAM); in a CELL record,
@@ -1764,7 +1764,7 @@ bytes are 38 MB (LAND) and ~9 MB (references' details) of Morrowind.esm's 80 MB.
   0.99 → 0.79 MB; the references the content load counts (number, object, key, deleted) identical in all three
   (316 116, 26 473, 15 103 references).
 - **Only for an engine that says it**: the tree marks a content file's light copy only when the version's engine
-  release exports `CONTENT_EXPORT` (`orthros_content_light`, `src/vfs/launch-set.js`; `src/host/server.js`
+  release exports `CONTENT_EXPORT` (`orthros_content_light`, `src/vfs/launch-set.js`; `src/server/server.js`
   `engineContentLight` → `listGameTree(..., { contentLight })`, and `resolveLightFile`: served under `.light/` and seeded
   as units only then). Any other engine (a release before orthros-r13) sees no light copy: nothing listed, served,
   seeded, learned or fetched light — its versions' real units seeded as before.
@@ -1828,7 +1828,7 @@ hooks), `tests/openmw-builds.test.js` (the patch).
 Measured (2026-10-28, a new device, the same pristine state for both — a copy of the live learned directory, a frozen
 br-cache copy, covers —; before = the branch's base fc5fcd7 with the live orthros-r12, after = this change with the
 dev build orthros-r13dev2 (engine 71c3364eba86, its brotli siblings made as a release's) under r12's name; the light
-units not in the frozen copy, so the copies went brotli 5 on the fly). `tools/data-matrix.mjs`, 2 runs per variant at
+units not in the frozen copy, so the copies went brotli 5 on the fly). `tools/bench/data-matrix.mjs`, 2 runs per variant at
 1 MB/s, 1 at 85 KB/s (a run takes 12-25 min); menu = the runner's `shown`, playable = the in-world mark; "masters" =
 the wire of the content files (real or `.light/`) up to the menu:
 
@@ -1978,12 +1978,12 @@ run's length: a 21 MB texture of OpenMW's in play read in 7 waits, 2 now). Archi
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a
   demand read in flight), the loading screen's line and the waiting box say "Downloading game data — 85 KB/s", the
   bytes received, and "about N min for this step" when the learned order tells the step's size
-  (`src/host/web/net-status.js`). On a link below 512 KB/s they suggest the home screen's download.
+  (`src/web/net-status.js`). On a link below 512 KB/s they suggest the home screen's download.
 - The bench banner adds "downloading game data 85 KB/s (14 MB received)"; the bench record carries `network` (measured
   rate, round trip, demand and background bytes and requests, time the demand reads were in flight) and each mark the
   bytes received by then; the result panel shows the connection.
 - **Download first** (home screen, each game card): downloads the whole version — and the versions it requires — into
-  the same OPFS stores before playing (`src/host/web/download-worker.js`, the learned order first, then every block;
+  the same OPFS stores before playing (`src/web/download-worker.js`, the learned order first, then every block;
   4 MiB requests), with size, measured rate, time left, progress; pause / resume, and resume on a later visit (the
   stored blocks are skipped; the progress is kept in `localStorage['orthros.download.<manifest>']`). Starting a game
   stops it first (the game's worker opens the same stores). Above it, **Playable after / Prepare** (see "Playable
@@ -1993,35 +1993,35 @@ run's length: a 21 MB texture of OpenMW's in play read in 7 waits, 2 now). Archi
   (`src/vfs/game-data.js` opens a version for the Windows games' worker, the download worker and the ports' data
   worker, `src/vfs/data-worker.js`); the download first and the offline copy (one choice for every game:
   `offlineCopy` in `src/vfs/data-client.js`) fill the same stores; the ports show the same indicator
-  (`src/host/web/data-meter.js`) and the header's pill for the loading in the background (`shell.setData`).
+  (`src/web/data-meter.js`) and the header's pill for the loading in the background (`shell.setData`).
 
 ## Measuring
 
-`tools/slow-net-check.mjs` plays bench scenarios in a fresh browser profile over a simulated link and prints, per game
+`tools/check/slow-net-check.mjs` plays bench scenarios in a fresh browser profile over a simulated link and prints, per game
 and speed, the phase times, the bytes (demand and background) and the measured rate:
 
 ```
-node tools/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k,1m,5m \
+node tools/check/slow-net-check.mjs --bench vicecity-drive,bfme2-skirmish --speeds 85k,1m,5m \
   --learn-from <copy of the live server's learn dir> --games-dir /srv/orthros/data/games
 ```
 
-`tools/net-proxy.mjs` puts a player's connection in front of a harness server as the production front does (HTTP/2
+`tools/dev/net-proxy.mjs` puts a player's connection in front of a harness server as the production front does (HTTP/2
 over TLS — no six-requests-per-host queue of a local HTTP/1.1 server —, one shared link, a round trip, `Accept-Encoding:
-gzip, br`, a log line per request): `node tools/net-proxy.mjs --upstream http://127.0.0.1:18431 --listen 18443 --rate 7m
+gzip, br`, a log line per request): `node tools/dev/net-proxy.mjs --upstream http://127.0.0.1:18431 --listen 18443 --rate 7m
 --rtt 75 --log proxy.log`, then `headless.mjs ... --port 18431 --page-origin https://127.0.0.1:18443`.
 Its log is one JSON line per request (wire bytes, `X-Orthros-Unit`, first byte, total) and one per data report carrying
 a `playable` mark; a text answer the origin sends as it is goes gzip on the way, as Cloudflare does.
 
-The data matrix — a new player in a fresh browser, per version × link, through that proxy: `node tools/data-matrix.mjs
+The data matrix — a new player in a fresh browser, per version × link, through that proxy: `node tools/bench/data-matrix.mjs
 --pristine <dir with learn/ brcache/ covers/: copies of the live server's> [--links 85k:150,1m:60,7m:75] [--only a,b]
 [--win32-seconds 300]` (each run its own server on a copy of `learn/`, the units frozen — `--br-cache-frozen` —, the
 browser through `tools/with-browser-slot.sh`; per run: first frame, menu / playable mark, in play, and up to the mark
 the wire bytes by kind, requests, unit hits, demand-wait seconds). Prepare alone (the home's launch-set download) in
-Node, no browser: `node tools/prepare-bench.mjs --pristine <dir> [--code <another tree>]`. The launch sets' unit
+Node, no browser: `node tools/bench/prepare-bench.mjs --pristine <dir> [--code <another tree>]`. The launch sets' unit
 coverage of a server: `/api/netstats?launch=1`.
 
 The harness itself: `--net <rtt ms>:<Mbit/s>` (85 KB/s: `50:0.68`, 1 MB/s: `50:8`, 5 MB/s: `50:40`; the simulated link
-is shared fairly by the answers in flight, `src/host/sim-link.js`), `--net-trace <file>` (one line per range answered:
+is shared fairly by the answers in flight, `src/server/sim-link.js`), `--net-trace <file>` (one line per range answered:
 start, duration, demand/bg, file, range, bytes), and every `mark:` step prints the bytes sent by then.
 
 ## Measurements (2026-10-06)

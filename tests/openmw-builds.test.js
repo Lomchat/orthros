@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_ENGINES_DIR } from '../src/host/goldsrc.js';
+import { DEFAULT_ENGINES_DIR } from '../src/server/ports/goldsrc.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url)), tools = path.join(here, '../tools/openmw');
 const lock = JSON.parse(fs.readFileSync(path.join(tools, 'lock.json'), 'utf8'));

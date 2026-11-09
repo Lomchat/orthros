@@ -1,4 +1,4 @@
-// tools/learn-unflag.mjs: a file's entries leave the learned launch set (their `pre` counts gone, the rest of each entry
+// tools/ops/learn-unflag.mjs: a file's entries leave the learned launch set (their `pre` counts gone, the rest of each entry
 // and the version's marks kept), in the rows the server writes; a server started on the result no longer flags them and
 // still lists them. Dry run by default; --write keeps a backup. Blocks of a file ('#1-8'), and --tail: the entries named
 // moved to the order's end even when never counted before playable (a stream's scan from byte 0 an engine no longer does).
@@ -9,11 +9,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parsePath, planUnflag, unflagEntry, unflagFile } from '../tools/learn-unflag.mjs';
-import { createServer } from '../src/host/server.js';
+import { parsePath, planUnflag, unflagEntry, unflagFile } from '../tools/ops/learn-unflag.mjs';
+import { createServer } from '../src/server/server.js';
 import { PRE_PLAYABLE } from '../src/vfs/launch-set.js';
 
-const TOOL = fileURLToPath(new URL('../tools/learn-unflag.mjs', import.meta.url));
+const TOOL = fileURLToPath(new URL('../tools/ops/learn-unflag.mjs', import.meta.url));
 const tmp = (t) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'learn-unflag-')); t.after(() => fs.rmSync(d, { recursive: true, force: true })); return d; };
 // (an order as the server writes it: sfx.RAW flagged by every mark, one block with phases, one counted by few sessions)
 const order = () => [

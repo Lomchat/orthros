@@ -6,9 +6,9 @@
 //   GoldSrc and re3: a 'profile' store, its 'files' entry the engine's writable files [{ path, data }] (GoldSrc's under
 //   /rwdir/, re3's relative to the game's folder) — openPortProfile;
 //   OpenMW: the engine's /userdata IDBFS database, one per account (its scope) beside the anonymous one — migrateIdbfs,
-//   called by the engine page before its first read of /userdata (src/host/openmw.js openmwWebText).
+//   called by the engine page before its first read of /userdata (src/server/ports/openmw.js openmwWebText).
 import { migrateProfile, portProfileDb, profileKeyOf, profileSourcesOf } from '../vfs/profile-share.js';
-import { contentHash } from '../host/web/cloud-sync.js';
+import { contentHash } from '../web/cloud-sync.js';
 import { readStorage, writeStorage } from './goldsrc/storage.js';
 
 const databases = async () => new Set((await indexedDB.databases?.() ?? []).map((d) => d.name));

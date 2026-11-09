@@ -1,10 +1,10 @@
-// This browser's storage as the data window and the account's sync see it (src/host/web/data-store.js scanStorage): a
+// This browser's storage as the data window and the account's sync see it (src/web/data-store.js scanStorage): a
 // game's profile is only its own folder — the page's other folders under the same prefix (the translated code kept
 // across sessions, the OpenMW page's copies of 2026-10-20) are caches, never read whole and sent to the account as a
 // save (2026-10-26: the home's automatic sync read them into memory, "Out of Memory" a few seconds after the home).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scanStorage, removeCache, removeOther } from '../src/host/web/data-store.js';
+import { scanStorage, removeCache, removeOther } from '../src/web/data-store.js';
 
 /** an OPFS directory in memory: files are their sizes */
 class FakeDir {

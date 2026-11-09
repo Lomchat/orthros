@@ -1,6 +1,6 @@
 // Pure-WebAssembly sine / cosine / tangent kernels for the JIT (FSIN, FCOS, FSINCOS, FPTAN).
 // No imports, no memory, no calls into JS (D004): everything lives in locals and immediate
-// constants. Constants come from tools/gen_pi_bits.py (pi by Machin's formula in 700-digit
+// constants. Constants come from tools/gen/gen_pi_bits.py (pi by Machin's formula in 700-digit
 // decimal arithmetic; all derivations are in that script).
 //
 // Algorithm (all from the definitions):
@@ -38,7 +38,7 @@
 //   not trap (NaN propagates through the Cody-Waite path, inf gives an arbitrary finite value).
 import { Code, T } from './wasm.js';
 
-/** Bits of 2/pi: word i holds bits 64 i + 1 .. 64 i + 64 after the binary point (tools/gen_pi_bits.py). */
+/** Bits of 2/pi: word i holds bits 64 i + 1 .. 64 i + 64 after the binary point (tools/gen/gen_pi_bits.py). */
 export const TWO_OVER_PI_WORDS = Object.freeze([
   0xa2f9836e4e441529n, 0xfc2757d1f534ddc0n, 0xdb6295993c439041n, 0xfe5163abdebbc561n,
   0xb7246e3a424dd2e0n, 0x06492eea09d1921cn, 0xfe1deb1cb129a73en, 0xe88235f52ebb4484n,

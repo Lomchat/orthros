@@ -1,7 +1,7 @@
-// Simulated player link of the test server: answers share one rate (see src/host/sim-link.js).
+// Simulated player link of the test server: answers share one rate (see src/server/sim-link.js).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SimLink } from '../src/host/sim-link.js';
+import { SimLink } from '../src/server/sim-link.js';
 
 /** A fake clock: timers run in time order when advanced. */
 function fakeClock() {

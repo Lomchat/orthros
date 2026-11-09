@@ -43,7 +43,7 @@ subtly wrong. So:
    mutex slots.
 5. **An oracle checks the result.** A machine and its restored copy, run alike, must stay the same — guest memory and
    every object of the state (`snapshotsDiffer`). `tests/snapshot.test.js` does it on the test programs (threads,
-   synchronization, priorities, timers, DirectX, MCI) in `make test`; `tools/snapshot-check.mjs` on games. A field a
+   synchronization, priorities, timers, DirectX, MCI) in `make test`; `tools/check/snapshot-check.mjs` on games. A field a
    change adds and the restore misses makes them differ: the DirectSound counter of logged buffers, believed to be mere
    diagnostics, was caught that way.
 
@@ -77,7 +77,7 @@ subtly wrong. So:
 
 ## Results (stage 1, Node, virtual clock)
 
-`node tools/snapshot-check.mjs <manifest> --games-dir /srv/orthros/data/games [--at <s> | --input <scenario> --at-mark
+`node tools/check/snapshot-check.mjs <manifest> --games-dir /srv/orthros/data/games [--at <s> | --input <scenario> --at-mark
 <label>] [--jit] [--input-after <scenario>] [--then <slices>] [--every <slices>]`
 
 | game, capture | objects | guest memory | snapshot (raw) | restore | then |
@@ -93,7 +93,7 @@ harness's startup scenario (18 draws per frame where the scenario waits for 150)
 ## In the page: a player's own snapshot (stages 1b and 2)
 
 A session takes one **once the game settled**: no file opened for 4 s while it went on presenting frames (a loading
-step over), at the next quiet point (`src/host/snapshot-watch.js`, the worker's `snapshotAutoStep`) — then again at each
+step over), at the next quiet point (`src/web/snapshot-watch.js`, the worker's `snapshotAutoStep`) — then again at each
 later settled stretch after more files were opened, until the player's first click or key: an intro that streams its
 video from a file already open settles too, the menu after it is a later point. A session restored from a snapshot goes
 on the same way. A capture refused — a movie playing, a kind of state not supported yet — is tried again after the next
@@ -107,13 +107,13 @@ pages: a WebAssembly SIMD scan, bounded by the page faults of the untouched page
 from it when:
 
 1. **its key is the same** (the page): Orthros' **state-owning sources** — the modules the emulator worker loads,
-   followed from `src/core/vm.js` and `src/host/web/worker.js` through their imports, but for the JIT's translator and
+   followed from `src/core/vm.js` and `src/web/worker.js` through their imports, but for the JIT's translator and
    the GPU backends, which a restore rebuilds anyway, and the game data's transport (`/api/snapshot-sources`,
-   `src/host/snapshot-sources.js`: a deployed change to the JIT or the WebGL backend keeps snapshots, one to an API
+   `src/server/snapshot-sources.js`: a deployed change to the JIT or the WebGL backend keeps snapshots, one to an API
    module or the machine does not; `tests/snapshot-lint.test.js` fails if a module left out registers snapshot state).
    **Rules for the data modules** (since 2026-10-28, `DATA_TRANSPORT`): how the game's bytes come and when —
    `src/vfs/game-data.js`, `http-backend.js`, `net-link.js`, `opfs-store.js`, `launch-set.js`, `playable-watch.js`
-   (and what only they import, `pcm-codec.js`) — and when a snapshot is taken (`src/host/snapshot-watch.js`) are out:
+   (and what only they import, `pcm-codec.js`) — and when a snapshot is taken (`src/web/snapshot-watch.js`) are out:
    the mounts are host objects (`state: false`, `src/core/vm-snapshot.js`), a file is reopened by its path. Which files
    the guest sees and their sizes stay in through the version's tree itself; `src/vfs/game-tree.js` (`KEPT`) holds the
    tree's helpers, and since 2026-11-09 how the guest's stat/readdir/open are answered from the tree (`treeLookup`,
@@ -121,23 +121,23 @@ from it when:
    the Windows games' `PartsBackend` both answer through them), still pinned by `tests/snapshot-lint.test.js`. Which part
    serves a file (`game-data.js`'s `partOf`, `PartsBackend.open`: a version's own files, its game's shared base, a
    required version's) is out: the owner holds the same bytes. Where a file is kept (the tree's `owner` and `op` marks,
-   the manifest's `owners`, `ownerLegacy`, `baseOwner`) is left out of the key (`src/host/web/snapshot-key.js`). Before: 48 of the 246 key changes of October were data-only commits (all 4 of 10-27's), each a cold
+   the manifest's `owners`, `ownerLegacy`, `baseOwner`) is left out of the key (`src/web/snapshot-key.js`). Before: 48 of the 246 key changes of October were data-only commits (all 4 of 10-27's), each a cold
    start of 35-50 s to the menu for a returning BFME1 player instead of a ~0.6 s restore. A comment-only edit of
    `http-backend.js` or `game-data.js` now keeps the hash (`c707f1…` → `823bb2…` before, unchanged after); one of
    `game-tree.js` still changes it. Over October's commits, 272 → 226 change the key. Measured again 2026-10-28
    (`snapshotSourcesHash` on copies of the main tree and this one, a comment appended): main 106 modules, `cfc369…` →
    `25a966…` after `http-backend.js` + `game-data.js`; now 98 modules, `27706d…` → `27706d…` (kept), → `2918d5…` after
-   `game-tree.js`. Not measured: a browser restore across a data-module edit (`tools/snapshot-browser-check.mjs`), and
+   `game-tree.js`. Not measured: a browser restore across a data-module edit (`tools/check/snapshot-browser-check.mjs`), and
    the live gain — no Win32 session in the telemetry since 10-23. — The game version's manifest and
    file tree (sizes, dates), the language and the options that change the machine (`?timescale`, `?interp`, `?dbg`...;
-   `src/host/web/snapshot-key.js`). The debug flags that only measure the host's GL side are not among them
+   `src/web/snapshot-key.js`). The debug flags that only measure the host's GL side are not among them
    (`HOST_ONLY_DBG` in `src/gfx/gpu-probe.js`: `ORTHROS_GL_COUNT`, `ORTHROS_GL_PROBES`, `ORTHROS_GL_TIME`; a flag joins
    the list only if it changes neither what the guest sees nor when): a `?bench` page adds `ORTHROS_GL_COUNT`, and until
    2026-10-27 that alone gave it a key of its own — the shared-snapshot jobs its 404s queued could never be published
    (the publishing session is a plain page: "this session's key is X, the server was asked for Y"), which is why no
    BFME1 1.08 or BFME II shared snapshot existed. The bench/plain key equality is covered by
    `tests/snapshot-key.test.js` only (a bench page and a plain page get the same key; no browser run checked a `?bench`
-   page against a plain publisher). Separately, `tools/snapshot-shared-check.mjs bfme1-108 --lang fr --queue` on a
+   page against a plain publisher). Separately, `tools/check/snapshot-shared-check.mjs bfme1-108 --lang fr --queue` on a
    private server (2026-10-27; plain pages only, which shared their key before as well) proves the BFME1 1.08
    publish/restore chain: published at 252 s of its session (310.6 MiB, 93 MB brotli), a second new player restored it
    in 623 ms — PASSED;
@@ -158,7 +158,7 @@ own snapshot, else the server's shared one, under the players' key since 2026-10
 (`snapshot`: `own`, `shared`, `failed` or null). `window.orthros.snapshot()` takes one
 now, `saveSnapshot()` keeps it as the automatic one.
 
-`tools/with-browser-slot.sh node tools/snapshot-browser-check.mjs <manifest> --games-dir /srv/orthros/data/games`: a
+`tools/with-browser-slot.sh node tools/check/snapshot-browser-check.mjs <manifest> --games-dir /srv/orthros/data/games`: a
 session with automatic snapshots until it kept one, then the page opened again (`--manual --at <s>`: asked for at that
 time).
 
@@ -169,7 +169,7 @@ time).
 ## Shared by the server (stage 3)
 
 A player with no profile of a game yet (a first launch in this browser) and no snapshot of its key asks the server
-for its **shared snapshot** (`/api/snapshot/<manifest>?key=&lang=`, `src/host/snapshot-store.js`): the one a new
+for its **shared snapshot** (`/api/snapshot/<manifest>?key=&lang=`, `src/server/snapshot-store.js`): the one a new
 player's session took on the server itself. When there is none, the server (`--snapshot-jobs`) opens the game in a
 headless browser as a new player would — the same page and worker, the shared first-launch profile — with
 `?snapshot=publish`: each snapshot that session keeps is posted back with the job's token, the later ones replacing the
@@ -197,10 +197,10 @@ said how far it got) and waits for a post in flight.
 A sandboxed server (the production service: a dynamic user, no home, its own /tmp) does not start browsers: with
 `--snapshot-queue` it only queues the request with its token (`<learn>/snapshots/queue.json`), and
 `tools/snapshot-jobs.mjs --queue <file> --server <url>`, run outside the sandbox (the `orthros-snapshot-jobs` service),
-runs the sessions through the browser slot guard. `node tools/snapshot-shared-check.mjs <manifest> [--queue]`: the whole
+runs the sessions through the browser slot guard. `node tools/check/snapshot-shared-check.mjs <manifest> [--queue]`: the whole
 path on a private server — a first new player, the server's session, a second new player who must start from it.
 
-## Warm jobs: snapshots and learned lists made ahead (`src/host/warm-jobs.js`)
+## Warm jobs: snapshots and learned lists made ahead (`src/server/warm-jobs.js`)
 
 Until now a shared snapshot was queued only by a new player's 404, so that player (the first one after every deploy that
 changes the key) started cold; BFME1 1.08, BFME II and Age of the Ring had none. With `--warm-jobs` (together with

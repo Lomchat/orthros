@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { guardClientUi } from '../tools/openmw/guard-client-ui.mjs';
-import { openmwProblem } from '../src/host/openmw.js';
+import { openmwProblem } from '../src/server/ports/openmw.js';
 
 function fixture(t, declaration = 'PLAYER: scripts/menu/player.lua\nMENU: scripts/menu/settings.lua\nCUSTOM: scripts/menu/actor.lua\n') {
   const game = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-ui-compat-'));

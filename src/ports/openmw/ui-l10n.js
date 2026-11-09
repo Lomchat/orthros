@@ -1,6 +1,6 @@
-// Put into the OpenMW engine's pages by the Orthros server (src/host/openmw.js, withFrameMeter): the engine page's own
+// Put into the OpenMW engine's pages by the Orthros server (src/server/ports/openmw.js, withFrameMeter): the engine page's own
 // interface — loading, multiplayer tour, social panel, chat, messages, the character choice — in the language of the
-// Orthros page (the visitor's choice, else the browser's: as src/host/web/lang.js). Only the texts the engine writes
+// Orthros page (the visitor's choice, else the browser's: as src/web/lang.js). Only the texts the engine writes
 // are touched, by exact phrase (or a phrase's start, for the ones ending with a name or a number); the game is not.
 (() => {
   let lang = null;

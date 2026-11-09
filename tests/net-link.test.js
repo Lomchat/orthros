@@ -3,8 +3,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { NetLink, FAST_BPS, BG_SECONDS, LOAD_GAP_MS, LOAD_WINDOW_MS, LOAD_LONG_MS, LOAD_HOLD_MS } from '../src/vfs/net-link.js';
-import { netWaitText, fmtRate, fmtDuration, benchNetwork } from '../src/host/web/net-status.js';
-import { downloadStatus } from '../src/host/web/download.js';
+import { netWaitText, fmtRate, fmtDuration, benchNetwork } from '../src/web/net-status.js';
+import { downloadStatus } from '../src/web/download.js';
 
 /** a fake clock: timers fire when the test advances the time */
 function clock() {

@@ -1,4 +1,4 @@
-// The lossless PCM transport codec (src/vfs/pcm-codec.js) and the server's sound finder (src/host/pcm-units.js,
+// The lossless PCM transport codec (src/vfs/pcm-codec.js) and the server's sound finder (src/server/pcm-units.js,
 // docs/slow-network.md "Audio units"): every container decodes to exactly the bytes it was made from (checked by hash),
 // whatever they are; sampled sound codes smaller than brotli; a damaged container throws.
 import { test } from 'node:test';
@@ -9,7 +9,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { encodePcm, decodePcm, pcmCodedBytes } from '../src/vfs/pcm-codec.js';
-import { parseWave, scanWaves, regionsIn, trialLayouts, estimateCoded } from '../src/host/pcm-units.js';
+import { parseWave, scanWaves, regionsIn, trialLayouts, estimateCoded } from '../src/server/pcm-units.js';
 
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const rng = (seed) => () => { seed = (seed * 1103515245 + 12345) >>> 0; return seed / 2 ** 32; };

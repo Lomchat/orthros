@@ -19,7 +19,7 @@ export const PRE_PLAYABLE = 1;
  * content load (CONTENT_EXPORT) read as the file itself before their game was playable (in at least half of those that
  * marked it): their first cells' land and references, after the content load (whose reads are learned under the light
  * copy's path: data-client.js) — the file's own bytes, not its light copy (contentLight). The server's
- * (src/host/server.js prefetchList); an order learned before such sessions has none.
+ * (src/server/server.js prefetchList); an order learned before such sessions has none.
  */
 export const CONTENT_REAL = 2;
 /** The wire bytes of a decoded byte, when the server does not know them (its compressed units: br-cache.js). */
@@ -36,7 +36,7 @@ export const RELOAD_EXPORT = 'orthros_file_updated';
 /**
  * The export of an engine that reads its content files light while it loads its content and says when it is done
  * (game-tree.js isLightContent; OpenMW's Orthros build from orthros-r13: globalThis.orthrosContentLoading /
- * orthrosContentLoaded, data-client.js): only its versions' trees mark those files' light copies (src/host/game-files.js
+ * orthrosContentLoaded, data-client.js): only its versions' trees mark those files' light copies (src/server/game-files.js
  * listGameTree `contentLight`) — another engine reads them as they are, nothing light listed or fetched for them.
  */
 export const CONTENT_EXPORT = 'orthros_content_light';

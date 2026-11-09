@@ -10,7 +10,7 @@ import { VirtualClock } from '../src/core/clock.js';
 import { TS } from '../src/win32/process.js';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 import { Ctx } from '../src/win32/ctx.js';
 import { TICK_BASE } from '../src/cpu/jit/runtime.js';
 

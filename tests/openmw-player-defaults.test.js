@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { installPlayerDefaults, playerDefaultsEntries, playerDefaultsScript, playerDefaultsWithdrawalScript, withdrawPlayerDefaults } from '../tools/openmw/player-defaults.mjs';
-import { openmwProblem } from '../src/host/openmw.js';
+import { openmwProblem } from '../src/server/ports/openmw.js';
 
 const DEFAULTS = [
   { group: 'SettingsOMWControls', key: 'alwaysRun', value: true, default: false },

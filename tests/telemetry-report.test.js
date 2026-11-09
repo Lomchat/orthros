@@ -1,4 +1,4 @@
-// tools/telemetry-report.mjs: sessions from the telemetry batches, date filters, summaries merged per stretch, bench
+// tools/dev/telemetry-report.mjs: sessions from the telemetry batches, date filters, summaries merged per stretch, bench
 // runs and their comparison, the command line.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildSessions, report, benchComparison, formatReport, summaryStretches, machineLine, telemetryFiles } from '../tools/telemetry-report.mjs';
-import { PerfWindow } from '../src/host/perf-summary.js';
+import { buildSessions, report, benchComparison, formatReport, summaryStretches, machineLine, telemetryFiles } from '../tools/dev/telemetry-report.mjs';
+import { PerfWindow } from '../src/web/perf-summary.js';
 import { FrameStats, N_CATS, C } from '../src/core/frame-acct.js';
 
 const env = { version: 'abc1234', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36', gpu: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)', gpuVendor: 'Google Inc. (Intel)', cores: 20, memGB: 8, screen: '1920x1080@1.25', window: '1536x730', coi: true, webgpu: { vendor: 'intel', architecture: 'xe-lpg', device: '', description: '' } };
@@ -96,7 +96,7 @@ test('command line: a directory, a date range, --bench, --json', () => {
     fs.writeFileSync(path.join(dir, 'telemetry-2026-10-04.jsonl'), b.slice(0, 3).map((x) => JSON.stringify(x)).join('\n') + '\n');
     fs.writeFileSync(path.join(dir, 'telemetry-2026-10-05.jsonl'), b.slice(3).map((x) => JSON.stringify(x)).join('\n') + '\n{torn');
     assert.deepEqual(telemetryFiles([dir], { from: '2026-10-05' }).map((f) => path.basename(f)), ['telemetry-2026-10-05.jsonl']);
-    const tool = new URL('../tools/telemetry-report.mjs', import.meta.url).pathname;
+    const tool = new URL('../tools/dev/telemetry-report.mjs', import.meta.url).pathname;
     const run = (...a) => spawnSync(process.execPath, [tool, ...a], { encoding: 'utf8' });
     const all = run(dir);
     assert.equal(all.status, 0, all.stderr); assert.match(all.stdout, /session sessA/); assert.match(all.stdout, /session sessC/);

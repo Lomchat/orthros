@@ -4,7 +4,7 @@
 // hold the old pair: swapped once, before the engine reads them, when Activate is on Space and Jump on E exactly — any
 // other layout is the player's own choice and stays. A marker file beside them records that the file was looked at,
 // so the old pair chosen again later in Options stays too. Other bindings, mouse and controller ones, are untouched.
-// Loaded by the engine page before its engine starts (src/host/openmw.js withInputKeys); the page calls
+// Loaded by the engine page before its engine starts (src/server/ports/openmw.js withInputKeys); the page calls
 // window.orthrosInputKeys(FS) once its user files are in place (IDBFS and the account's copy restored).
 
 export const INPUT_FILE = '/userdata/config/openmw/input_v3.xml';

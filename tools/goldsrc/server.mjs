@@ -5,7 +5,7 @@
 // Room 0 is the version's permanent server (goldsrc.multiplayer.port, its map, its rotation). With
 // goldsrc.multiplayer.rooms, players create more — a name, a map it stays on, a size, bots — one per port of the
 // range, each stopped after `IDLE` seconds without a human player. Rooms are listed and created over HTTP on
-// 127.0.0.1:<goldsrc.multiplayer.port> (TCP), for the Orthros server only (src/host/goldsrc.js roomsProxy):
+// 127.0.0.1:<goldsrc.multiplayer.port> (TCP), for the Orthros server only (src/server/ports/goldsrc.js roomsProxy):
 //   GET /rooms  -> { rooms: [{ index, port, name, map, players (bots included), humans, maxPlayers, bots, permanent, since, up }], maps,
 //                    slots, maxPlayers, bots: { max } | null }
 //   POST /rooms { name, map, maxPlayers, bots, options, by } -> 201 { room, key } once the server answers, or 400/409/503
@@ -21,8 +21,8 @@ import http from 'node:http';
 import dgram from 'node:dgram';
 import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/host/game-catalog.js';
-import { DEFAULT_ENGINES_DIR, engineFile, linkGameLayers, parseServerInfo, roomOptionCommands, roomPort, roomRequest, roomSlots, sameRoomName } from '../../src/host/goldsrc.js';
+import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/server/game-catalog.js';
+import { DEFAULT_ENGINES_DIR, engineFile, linkGameLayers, parseServerInfo, roomOptionCommands, roomPort, roomRequest, roomSlots, sameRoomName } from '../../src/server/ports/goldsrc.js';
 
 const IDLE = 300; // (seconds a created room stays without a human player)
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);

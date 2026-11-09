@@ -1,9 +1,9 @@
-// tools/port-perf.mjs: the ports' shared frame measurement — launch flags by rendering mode, the page probe (WebGL
+// tools/bench/port-perf.mjs: the ports' shared frame measurement — launch flags by rendering mode, the page probe (WebGL
 // calls by kind, the synchronous ones, the rasterizer discarded, the work a browser frame), the reports kept off the
 // server. The probe runs here on a fake window (its init script is a plain function).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chromeArgs, launchOptions, addProbe, quietReports, startMeasure, readMeasure, SYNC_CALLS } from '../tools/port-perf.mjs';
+import { chromeArgs, launchOptions, addProbe, quietReports, startMeasure, readMeasure, SYNC_CALLS } from '../tools/bench/port-perf.mjs';
 
 test('launch flags: SwiftShader for swiftshader and discard, none for gpu; null refused', () => {
   assert.ok(chromeArgs('swiftshader').includes('--use-angle=swiftshader'));

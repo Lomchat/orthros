@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
 import { encodePng, decodePng } from '../src/gfx/codecs/png.js';
-import { BrowserDisplay } from '../src/host/browser-host.js';
+import { BrowserDisplay } from '../src/web/browser-host.js';
 
 const image = (w, h) => { const px = new Uint8Array(w * h * 4); for (let i = 0; i < px.length; i++) px[i] = (i * 37 + 11) & 255; return px; };
 

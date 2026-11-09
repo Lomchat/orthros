@@ -14,7 +14,7 @@
 // city expected — a menu entry that starts a game (Orthros' Vice City: ArrowDown,Enter,Enter, its free mode).
 // --profile <dir>: one persistent browser profile kept there (its stores: a second version checked after a first one
 // finds what that one stored — docs/slow-network.md "Files of a required version"); --insecure: certificate errors
-// ignored (the page behind tools/net-proxy.mjs, --url https://127.0.0.1:<port>).
+// ignored (the page behind tools/dev/net-proxy.mjs, --url https://127.0.0.1:<port>).
 // Evidence under /tmp/orthros-scratch/re3-check-<manifest>/.
 // Start it through the browser slot guard:
 //   tools/with-browser-slot.sh node tools/re3/check.mjs <manifest> [--url http://127.0.0.1:8080] [--new-game] [--reload]
@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { chromium } from 'playwright';
-import { rendererOf } from '../port-perf.mjs';
+import { rendererOf } from '../bench/port-perf.mjs';
 
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
 const [name] = args;

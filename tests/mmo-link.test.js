@@ -1,8 +1,8 @@
-// The page's end of a shared world (src/host/web/mmo-link.js, docs/mmo.md section 6): its records, the engine's queue
+// The page's end of a shared world (src/web/mmo-link.js, docs/mmo.md section 6): its records, the engine's queue
 // (drain), overflow, reconnection with LINK_RESET, refusal, away, backpressure — over a fake WebSocket and a fake clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createMmoLink, LINK, RECORD, LIMITS, BACKOFF_MS, clientRecord, pingRecord, awayRecord, linkResetRecord, serverRecords, parseRefused, splitRecords } from '../src/host/web/mmo-link.js';
+import { createMmoLink, LINK, RECORD, LIMITS, BACKOFF_MS, clientRecord, pingRecord, awayRecord, linkResetRecord, serverRecords, parseRefused, splitRecords } from '../src/web/mmo-link.js';
 
 /** a fake clock: timers fire when the test advances the time */
 function clock() {
@@ -343,7 +343,7 @@ test('mmo link: a socket that cannot be made is retried like a failed connection
 
 test('mmo link: over a real WebSocket to the server\'s own socket code (lan.js acceptWebSocket)', async (t) => {
   const http = await import('node:http');
-  const { acceptWebSocket } = await import('../src/host/lan.js');
+  const { acceptWebSocket } = await import('../src/server/lan.js');
   const peers = [], got = [];
   const server = http.createServer();
   server.on('upgrade', (req, socket) => {

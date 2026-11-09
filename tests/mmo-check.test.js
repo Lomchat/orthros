@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseArgs, scenarioList, SCENARIOS, vec, distance, offset, tpCommand, characterName, playerIn, seesAt, chatHas, census, netids, unarmed, dead,
   respawnChecks, adminsPathAllowed, withAdmin, summarize, entityAudit, persistentFaults, gathering, killLine } from '../tools/re3/mmo-check.mjs';
-import { MMO_NAME } from '../src/host/mmo.js';
+import { MMO_NAME } from '../src/server/mmo.js';
 
 test('mmo check: its command line', () => {
   const d = parseArgs([]);

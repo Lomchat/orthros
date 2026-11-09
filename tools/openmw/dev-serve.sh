@@ -32,6 +32,6 @@ done
 up="$dir/engines/openmw-web-v1.5.3"; [ -e "$up" ] || ln -s "$live/data/engines/openmw-web-v1.5.3" "$up"
 cp /var/lib/orthros2/learn/*morrowind* "$dir/learn/"
 cd "$root"
-nohup node src/host/server.js --port "$port" --games-dir "$live/data/games" --engines-dir "$dir/engines" --learn "$dir/learn" \
+nohup node src/server/server.js --port "$port" --games-dir "$live/data/games" --engines-dir "$dir/engines" --learn "$dir/learn" \
   --br-cache off --covers off > "$dir/server.log" 2>&1 &
 echo $!

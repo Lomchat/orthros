@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 import { Ctx } from '../src/win32/ctx.js';
 import { writeGuid } from '../src/win32/com.js';
 

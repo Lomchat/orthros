@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { RealClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 
 const EXE = new URL('../build/pe/asyncread.exe', import.meta.url).pathname;
 const SIZE = 200000, PIECE = 65536, DELAY = 150;

@@ -1,7 +1,7 @@
 // Pure-WebAssembly exponential/logarithm kernels for the JIT's x87 instructions: F2XM1 (2^x - 1),
 // FYL2X (log2 x), FYL2XP1 (log2(1 + x)) and FSCALE (x * 2^trunc(y)). No imports, no memory, no
 // calls into JS (D004): everything lives in locals and immediate constants. Constants and the
-// two fitted polynomials come from tools/gen_fpmath_exp.py (Decimal least squares on Chebyshev
+// two fitted polynomials come from tools/gen/gen_fpmath_exp.py (Decimal least squares on Chebyshev
 // nodes; every formula below is derived from the series definitions).
 //
 // Common tool — exact leading product. A double f split by Veltkamp (t = f (2^27 + 1),
@@ -52,7 +52,7 @@
 //   0.625 units of 2^-1074, hardware and kernel 2^-1074, interpreter 0).
 import { Code, T } from './wasm.js';
 
-// ---- constants (tools/gen_fpmath_exp.py)
+// ---- constants (tools/gen/gen_fpmath_exp.py)
 /** ln 2 as a 27-bit head (exact products with 26-bit values) and its tail. */
 export const LN2_HI = 0.693147175014019, LN2_LO = 5.5459262969660605e-09;
 /** log2 e: 27-bit head, tail, and the plain double (for the small correction term). */

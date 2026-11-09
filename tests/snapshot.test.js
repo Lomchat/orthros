@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock, RealClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 import { captureVm, restoreVm, notQuiet, HOST_TIME_FIELDS } from '../src/core/vm-snapshot.js';
 import { encodeSnapshot, decodeSnapshot, snapshotsDiffer, SnapshotError, SnapshotStale } from '../src/core/snapshot.js';
 import { Registry } from '../src/win32/registry.js';

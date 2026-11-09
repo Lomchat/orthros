@@ -1,5 +1,5 @@
 // The polyphase synthesis window of MPEG audio layers I and II (ISO/IEC 11172-3 table B.3), D[0..256] in units of
-// 2^-16 (the other half follows by symmetry, see mpeg-audio.js). Produced by tools/mpa-window-fit.mjs.
+// 2^-16 (the other half follows by symmetry, see mpeg-audio.js). Produced by tools/dev/mpa-window-fit.mjs.
 export const SYNTH_WINDOW_HALF = new Int32Array([
   0, -1, -1, -1, -1, -1, -1, -2, -2, -2, -2, -3, -3, -4, -4, -5,
   -5, -6, -7, -7, -8, -9, -10, -11, -13, -14, -16, -17, -19, -21, -24, -26,

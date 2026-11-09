@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { scratchGames, clearScratchGames, loadTimes, parseArgs, engineBrotli, placesSummary, prefetchReport, glideSpec, glideLine, crossings, learnedSets, readCoverage, glideReport } from '../tools/openmw/place-load.mjs';
-import { loadGameCatalog } from '../src/host/game-catalog.js';
+import { loadGameCatalog } from '../src/server/game-catalog.js';
 
 const openmw = (engine, extra = {}) => ({ engine, files: ['Morrowind.esm'], ...extra });
 function liveGames(root) {

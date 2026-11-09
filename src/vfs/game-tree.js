@@ -2,7 +2,7 @@
 // every runtime (CLAUDE.md "Standardization"): its files as a list, its size, a language's view of it.
 
 /**
- * The light copies' folder in a version's paths (src/host/light-copies.js: a texture without its finest levels, for a
+ * The light copies' folder in a version's paths (src/server/light-copies.js: a texture without its finest levels, for a
  * slow link — the tree tells a file's light size, `light`; read as `.light/<path>`).
  */
 export const LIGHT_DIR = '.light';
@@ -24,7 +24,7 @@ export const MEDIA_WAV_BYTES = 512 << 10;
 export function isMediaFile(name, size) { return MEDIA.test(name) || (/\.wav$/i.test(name) && size >= MEDIA_WAV_BYTES); }
 
 /**
- * A file whose light copy is a picture rather than a texture, by format: src/host/light-copies.js lightens a TGA only
+ * A file whose light copy is a picture rather than a texture, by format: src/server/light-copies.js lightens a TGA only
  * when it is a picture of a screen's size (TGA_LIGHT_FROM: a loading screen, a map) — shown a moment, often never again;
  * on a link that is not fast its file is not fetched after its light copy (HttpBackend.upgrade), it comes with the
  * offline copy, or read itself on a fast link.
@@ -32,7 +32,7 @@ export function isMediaFile(name, size) { return MEDIA.test(name) || (/\.wav$/i.
 export const isLightPicture = (name) => /\.tga$/i.test(name);
 
 /**
- * A content file whose light copy keeps only what an engine reads of it while it loads its content (src/host/light-
+ * A content file whose light copy keeps only what an engine reads of it while it loads its content (src/server/light-
  * copies.js esmZeroRanges, by format: a TES3 file — Morrowind's masters and plugins, its LAND payloads and cell
  * references' details zeroed, every offset kept): read light only until the engine says its content is loaded
  * (data-client.js GameData.contentLoading / contentLoaded), on every link — the file itself from then on, by the ranges
@@ -97,8 +97,8 @@ export function languageFiles(files, overlays = {}, known = []) {
  * The guest's view of a tree (every runtime's reader of it: HttpBackend, game-data.js PartsBackend): `rel` walked
  * without case — a directory before a file of the same name, either separator, empty parts skipped —: { file, name,
  * path (the tree's names) } or { dir (its node), name, path }, or null. A file's light copy (LIGHT_DIR/<path>,
- * src/host/light-copies.js) is a file of its own: its size the tree's `light`. (Which files the guest sees and how: in
- * the snapshot key with this module — src/host/snapshot-sources.js KEPT.)
+ * src/server/light-copies.js) is a file of its own: its size the tree's `light`. (Which files the guest sees and how: in
+ * the snapshot key with this module — src/server/snapshot-sources.js KEPT.)
  */
 export function treeLookup(tree, rel) {
   if (rel.startsWith(LIGHT_DIR + '/')) {
@@ -156,7 +156,7 @@ export function treeFile(tree, rel) {
 
 /**
  * The version that owns the file `rel` of a tree when it is another version's (the server's `owner` mark: a file a
- * version takes from one it requires — its underlays, src/host/game-files.js listGameTree —, stored and fetched under
+ * version takes from one it requires — its underlays, src/server/game-files.js listGameTree —, stored and fetched under
  * that version: docs/slow-network.md "Files of a required version"), else null. A light copy's (LIGHT_DIR/<path>): its
  * file's. `self`: the tree's own version (a mark of its own name is its own file).
  */

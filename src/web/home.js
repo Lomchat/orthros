@@ -1,0 +1,568 @@
+// The home screen: hero (pixel wordmark, the hound, a resume button), the game library and the options. Only
+// rendering and keyboard navigation live here — starting a game stays main.js's job (`onPlay`).
+import { startEmbers } from './embers.js';
+import { UI_LANGS, browserLangs, explicitLang, pickLang, endonym } from './lang.js';
+import { h } from './dom.js';
+import { Downloads, downloadStatus, launchFor, launchStatus } from './download.js';
+import { accountState, onAccountChange } from './account.js';
+
+/** the "download the whole game first" downloads (one at a time, see download.js) */
+const downloads = new Downloads();
+
+const $ = (id) => document.getElementById(id);
+/** the stores' probe after the library is drawn (download.js `probe`): its covers' requests first */
+const PROBE_DELAY_MS = 1500;
+const LOGO = '/src/web/orthros_logo.png';
+
+const STRINGS = {
+  en: {
+    over: 'Windows games and recompiled engines · in your browser', tagline: 'Your games, directly in your browser.',
+    p1: 'Nothing to install', p2: 'The original game files', p3: 'Saves on your Orthros account',
+    warn: 'You are not signed in: your progress will not be saved on an account — it stays only in this browser and can be lost.', warnAction: 'Sign in',
+    signedAs: (u) => `Signed in as ${u}: your progress is saved on your account.`,
+    library: 'Library', games: (n) => `${n} game${n > 1 ? 's' : ''}`, privacy: 'Privacy', terms: 'Terms of use',
+    resume: 'Continue', first: 'Play', play: 'Play', lastPlayed: 'Last played',
+    playAria: (t) => `Play ${t}`, missing: 'Game files not found on the server',
+    emptyTitle: 'No game available', emptyText: 'This server offers no game yet. Add one with',
+    errorTitle: 'Cannot reach the server', retry: 'Try again',
+    settings: 'Settings', account: 'Account', language: 'Language', gameLanguage: 'Game language', gameLanguageShort: 'Language', gameVersion: 'Version', others: 'Others',
+    modes: { solo: 'Single player', multiplayer: 'Multiplayer', story: 'Story', free: 'Free mode' },
+    kinds: { windows: 'Windows', recompiled: 'Recompiled', modified: 'Modified' },
+    kindTitles: { windows: 'The original Windows game, run as it is in Orthros’ emulator', recompiled: 'The game’s engine recompiled for the browser', modified: 'The game’s engine recompiled for the browser and modified' },
+    all: 'All', tagFilter: 'Click: show only the games with this tag (again: all of them)', filterEmpty: 'No game has all these tags.', showAll: 'Show all',
+    live: (rooms, humans) => [rooms > 1 ? `${rooms} games online` : null, humans ? `${humans} playing` : null].filter(Boolean).join(', '),
+    dlStart: 'Download first', dlPause: 'Pause', dlResume: 'Resume', dlRetry: 'Try again',
+    dlTitle: 'Downloads the whole game into this browser now (it resumes where it stopped on your next visit): on a slow connection the game then starts and plays without waiting for the network.',
+    lnStart: 'Prepare', lnTitle: 'What earlier players needed before the game was playable, measured at your connection. Prepare downloads only that into this browser now (it resumes where it stopped): the game then starts without waiting.',
+  },
+  fr: {
+    over: 'Jeux Windows et moteurs recompilés · dans ton navigateur', tagline: 'Tes jeux, directement dans ton navigateur.',
+    p1: 'Rien à installer', p2: 'Les fichiers d’origine du jeu', p3: 'Sauvegardes sur ton compte Orthros',
+    warn: 'Tu n’es pas connecté : ta progression ne sera pas sauvegardée sur un compte — elle reste seulement dans ce navigateur et peut être perdue.', warnAction: 'Se connecter',
+    signedAs: (u) => `Connecté en tant que ${u} : ta progression est sauvegardée sur ton compte.`,
+    library: 'Bibliothèque', games: (n) => `${n} jeu${n > 1 ? 'x' : ''}`, privacy: 'Confidentialité', terms: 'Conditions d’utilisation',
+    resume: 'Reprendre', first: 'Jouer à', play: 'Jouer', lastPlayed: 'Dernière partie',
+    playAria: (t) => `Jouer à ${t}`, missing: 'Fichiers du jeu introuvables sur le serveur',
+    emptyTitle: 'Aucun jeu disponible', emptyText: 'Ce serveur ne propose aucun jeu pour l’instant. Ajoutes-en un avec',
+    errorTitle: 'Serveur injoignable', retry: 'Réessayer',
+    settings: 'Paramètres', account: 'Compte', language: 'Langue', gameLanguage: 'Langue du jeu', gameLanguageShort: 'Langue', gameVersion: 'Version', others: 'Autres',
+    modes: { solo: 'Solo', multiplayer: 'Multijoueur', story: 'Histoire', free: 'Mode libre' },
+    kinds: { windows: 'Windows', recompiled: 'Recompilé', modified: 'Modifié' },
+    kindTitles: { windows: 'Le jeu Windows d’origine, tel quel dans l’émulateur d’Orthros', recompiled: 'Le moteur du jeu recompilé pour le navigateur', modified: 'Le moteur du jeu recompilé pour le navigateur et modifié' },
+    all: 'Tout', tagFilter: 'Clic : seulement les jeux avec ce tag (encore : tous)', filterEmpty: 'Aucun jeu n’a tous ces tags.', showAll: 'Tout afficher',
+    live: (rooms, humans) => [rooms > 1 ? `${rooms} parties en ligne` : null, humans ? `${humans} en jeu` : null].filter(Boolean).join(', '),
+    dlStart: 'Télécharger d’abord', dlPause: 'Pause', dlResume: 'Reprendre', dlRetry: 'Réessayer',
+    dlTitle: 'Télécharge tout le jeu dans ce navigateur maintenant (reprend où il s’est arrêté à la visite suivante) : sur une connexion lente, le jeu démarre et se joue ensuite sans attendre le réseau.',
+    lnStart: 'Préparer', lnTitle: 'Ce dont les joueurs précédents ont eu besoin avant que le jeu soit jouable, mesuré à ta connexion. Préparer télécharge seulement cela dans ce navigateur maintenant (reprend où il s’est arrêté) : le jeu démarre ensuite sans attendre.',
+  },
+};
+
+// ---------------------------------------------------------------- the pixel wordmark
+// 5 x 7 letters, drawn cell by cell like the hound: one SVG, a continuous gradient from bone to ember to blood across
+// all the letters, and a half-cell shadow.
+const GLYPHS = {
+  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
+  T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
+  H: ['#...#', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  S: ['.####', '#....', '#....', '.###.', '....#', '....#', '####.'],
+};
+function wordmark(text) {
+  const NS = 'http://www.w3.org/2000/svg', el = (t, a = {}) => { const n = document.createElementNS(NS, t); for (const [k, v] of Object.entries(a)) n.setAttribute(k, v); return n; };
+  let d = '';
+  [...text].forEach((ch, i) => {
+    GLYPHS[ch].forEach((row, y) => { for (const m of row.matchAll(/#+/g)) d += `M${i * 6 + m.index} ${y}h${m[0].length}v1h-${m[0].length}z`; });
+  });
+  const cols = text.length * 6 - 1;
+  const svg = el('svg', { viewBox: `0 0 ${cols + 1} 8`, 'shape-rendering': 'crispEdges', 'aria-hidden': 'true', focusable: 'false' });
+  const grad = el('linearGradient', { id: 'hmGrad', gradientUnits: 'userSpaceOnUse', x1: 0, y1: 0, x2: 0, y2: 7 });
+  for (const [o, c] of [[0, '#fff1cf'], [0.38, '#ffc06a'], [0.68, '#f8901f'], [1, '#d2381f']]) grad.append(el('stop', { offset: o, 'stop-color': c }));
+  svg.append(el('defs', {}), el('path', { d, fill: '#03050c', 'fill-opacity': '.62', transform: 'translate(.5 .5)' }), el('path', { d, fill: 'url(#hmGrad)' }));
+  svg.firstChild.append(grad);
+  return svg;
+}
+
+// ---------------------------------------------------------------- flags
+// Drawn here as plain shapes on a 3:2 board (emoji flags are letters on Windows), one <symbol> each in a hidden sprite.
+const bands = (dir, ...colors) => colors.map((c, i) => (dir === 'v' ? `<rect x="${i * 10}" width="10" height="20" fill="${c}"/>` : `<rect y="${i * 20 / colors.length}" width="30" height="${20 / colors.length + .01}" fill="${c}"/>`)).join('');
+const FLAGS = {
+  fr: bands('v', '#0055a4', '#fff', '#ef4135'),
+  it: bands('v', '#009246', '#fff', '#ce2b37'),
+  de: bands('h', '#111', '#dd0000', '#ffce00'),
+  nl: bands('h', '#ae1c28', '#fff', '#21468b'),
+  ru: bands('h', '#fff', '#0039a6', '#d52b1e'),
+  pl: bands('h', '#fff', '#dc143c'),
+  es: '<rect width="30" height="20" fill="#aa151b"/><rect y="5" width="30" height="10" fill="#f1bf00"/>',
+  ja: '<rect width="30" height="20" fill="#fff"/><circle cx="15" cy="10" r="6" fill="#bc002d"/>',
+  // the Union Jack: blue board, white saltire, red saltire cut in counterchange, white then red cross
+  en: '<symbol-viewbox 0 0 60 40/><clipPath id="hmf-gb-b"><path d="M0 0h60v40H0z"/></clipPath><clipPath id="hmf-gb-x"><path d="M30 20h30v20zM30 20v20H0zM30 20H0V0zM30 20V0h30z"/></clipPath>'
+    + '<g clip-path="url(#hmf-gb-b)"><rect width="60" height="40" fill="#012169"/><path d="M0 0l60 40M60 0L0 40" stroke="#fff" stroke-width="8"/><path d="M0 0l60 40M60 0L0 40" clip-path="url(#hmf-gb-x)" stroke="#c8102e" stroke-width="5"/>'
+    + '<path d="M30 0v40M0 20h60" stroke="#fff" stroke-width="13"/><path d="M30 0v40M0 20h60" stroke="#c8102e" stroke-width="8"/></g>',
+};
+let spriteReady = false;
+function flagEl(code) {
+  if (!spriteReady) {
+    spriteReady = true;
+    const sprite = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    sprite.setAttribute('aria-hidden', 'true'); sprite.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden';
+    sprite.innerHTML = Object.entries(FLAGS).map(([c, body]) => `<symbol id="hmf-${c}" viewBox="${c === 'en' ? '0 0 60 40' : '0 0 30 20'}">${body.replace('<symbol-viewbox 0 0 60 40/>', '')}</symbol>`).join('');
+    document.body.append(sprite);
+  }
+  const el = h('span', { class: 'hm-flag' + (FLAGS[code] ? '' : ' code'), 'aria-hidden': 'true' });
+  if (FLAGS[code]) el.innerHTML = `<svg viewBox="0 0 30 20"><use href="#hmf-${code}" width="30" height="20"/></svg>`; else el.textContent = code.slice(0, 3).toUpperCase();
+  return el;
+}
+
+// ---------------------------------------------------------------- a row of choices
+/**
+ * One row: its label, then the options as chips (flags for languages); past `max` options, the rest go into a select
+ * ("Others") at the end. A single option is shown, not offered. `set(value)` moves the selection, `onPick` reports a choice.
+ * @param {{ label: string, aria: string, items: { value: string, label?: string, flag?: string, title?: string, disabled?: boolean }[],
+ *   max: number, more: string, onPick: (value: string) => void }} o
+ */
+function choiceRow({ label, aria, items, max, more, onPick }) {
+  const solo = items.length === 1, shown = items.slice(0, max), rest = items.slice(max);
+  const seg = h('div', { class: 'hm-seg', role: solo ? 'group' : 'radiogroup', 'aria-label': aria });
+  for (const it of shown) {
+    const inner = it.flag ? flagEl(it.flag) : it.label, common = { class: 'hm-opt' + (it.flag ? ' is-flag' : '') + (solo ? ' solo on' : ''), 'data-value': it.value, title: it.title ?? (it.flag ? it.label : null) };
+    seg.append(solo ? h('span', { ...common, role: 'img', 'aria-label': it.title ?? it.label }, inner)
+      : h('button', { ...common, type: 'button', role: 'radio', 'aria-label': it.flag ? (it.title ?? it.label) : null, disabled: it.disabled, onclick: () => onPick(it.value) }, inner));
+  }
+  const select = rest.length ? h('select', { class: 'hm-opt hm-more', 'aria-label': `${aria} — ${more}`, onchange: (e) => e.target.value && onPick(e.target.value) },
+    h('option', { value: '', hidden: true }, more), rest.map((it) => h('option', { value: it.value, disabled: it.disabled }, it.label))) : null;
+  if (select) seg.append(select);
+  // left / right move between the options of the row (and choose, as in any group of radio buttons)
+  seg.addEventListener('keydown', (e) => {
+    if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || e.target.tagName === 'SELECT') return;
+    const radios = [...seg.querySelectorAll('button.hm-opt:not(:disabled)')], i = radios.indexOf(document.activeElement);
+    if (i < 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const next = radios[(i + (e.key === 'ArrowLeft' ? -1 : 1) + radios.length) % radios.length];
+    next.focus(); onPick(next.dataset.value);
+  });
+  const set = (value) => {
+    if (!solo) {
+      let on = null;
+      for (const b of seg.querySelectorAll('.hm-opt[data-value]')) {
+        const is = b.dataset.value === value;
+        b.classList.toggle('on', is); b.setAttribute('aria-checked', String(is)); b.tabIndex = is ? 0 : -1;
+        if (is) on = b;
+      }
+      if (!on) seg.querySelector('button.hm-opt:not(:disabled)')?.setAttribute('tabindex', '0'); // (the chosen one is in the select: the row stays reachable)
+    }
+    if (select) { const inRest = rest.some((it) => it.value === value); select.value = inRest ? value : ''; select.classList.toggle('on', inRest); }
+  };
+  return { el: h('div', { class: 'hm-row' }, h('span', { class: 'hm-row-label' }, label), seg), set };
+}
+
+/** Options shown as chips in a row before the rest go into the "Others" select. */
+const MAX_VERSIONS = 3, MAX_LANGS = 6;
+/** A card's download line, shown whole on as many lines as it takes: a figure never apart from its unit, nor ":" or "%" at a line's start. */
+const unbroken = (text) => text.replace(/(\d) (?=\S)/g, '$1\u00a0').replace(/ (?=[:%])/g, '\u00a0');
+
+const ICON = {
+  play: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2.6v10.8a.6.6 0 0 0 .92.5l8.5-5.4a.6.6 0 0 0 0-1L4.92 2.1A.6.6 0 0 0 4 2.6z" fill="currentColor"/></svg>',
+};
+
+/**
+ * Mounts the home screen (the #menu element of index.html) and shows it, with placeholders until the games arrive.
+ * @param {{ onPlay: (name: string, gameLanguage?: string) => void }} opts
+ */
+export function mountHome({ onPlay }) {
+  const menu = $('menu'), grid = $('hmGrid'), nav = $('hmNav');
+  const cleanup = [];
+  let lang = pickLang(), explicit = explicitLang(), games = [], last = null, cards = [], resume = null, embers = null, drawn = false, byName = new Map();
+  let view = { kind: 'loading' }; // (loading, games, error)
+  const S = () => STRINGS[lang];
+  const on = (target, type, fn, o) => { target.addEventListener(type, fn, o); cleanup.push(() => target.removeEventListener(type, fn, o)); };
+
+  // ---- static pieces
+  $('hmTitle').replaceChildren(wordmark('ORTHROS'), h('span', { class: 'sr' }, 'Orthros'));
+  const hound = $('hmHound');
+  const eyes = [['35.3%', '25.6%'], ['77.1%', '23.4%']];
+  hound.replaceChildren(h('div', { class: 'hm-halo' }),
+    h('div', { class: 'hm-sprite' }, h('img', { src: LOGO, width: 140, height: 143, alt: '', draggable: 'false' }), ...eyes.map(([x, y]) => h('span', { class: 'hm-eye', style: `--x:${x};--y:${y}` }))),
+    h('div', { class: 'hm-floor' }));
+
+  function applyLang() {
+    document.documentElement.lang = lang;
+    for (const el of menu.querySelectorAll('[data-i18n]')) el.textContent = S()[el.dataset.i18n];
+    for (const b of menu.querySelectorAll('[data-lang]')) b.setAttribute('aria-pressed', String(b.dataset.lang === lang));
+    for (const [id, label] of [['hmSettingsBtn', S().settings], ['hmAccountBtn', S().account]]) {
+      const user = $(id).dataset.user; // (the signed-in name, set by data-manager.js)
+      $(id).setAttribute('aria-label', label); $(id).title = user ? `${label} · ${user}` : label;
+    }
+    $('hmLang').setAttribute('aria-label', S().language);
+    renderWho();
+    renderView();
+  }
+  // who plays: a warning while no Orthros account is signed in (nothing is then saved on an account), else the name
+  let who = { accounts: null, user: null };
+  const whoEl = h('div', { class: 'hm-who', role: 'status' });
+  $('hmLibTitle').closest('.hm-lib-head').after(whoEl);
+  function renderWho() {
+    whoEl.className = 'hm-who' + (who.accounts && !who.user ? ' warn' : '');
+    whoEl.hidden = !who.accounts;
+    if (!who.accounts) { whoEl.replaceChildren(); return; }
+    whoEl.replaceChildren(who.user ? h('span', {}, S().signedAs(who.user.username))
+      : h('span', {}, S().warn), who.user ? null : h('button', { type: 'button', class: 'hm-btn', onclick: () => window.orthrosData?.open?.('account') }, S().warnAction));
+  }
+  accountState().then((st) => { who = st; renderWho(); });
+  cleanup.push(onAccountChange((st) => { who = st; renderWho(); }));
+  // the flags of the languages the page speaks: the browser's language is the default, a click chooses (and is remembered)
+  $('hmLang').replaceChildren(...UI_LANGS.map((code) => h('button', { type: 'button', 'data-lang': code, lang: code, title: endonym(code), 'aria-label': endonym(code),
+    onclick: () => { lang = explicit = code; try { localStorage.setItem('orthros.lang', code); } catch { /* no storage */ } applyLang(); } }, flagEl(code))));
+
+  // the header turns opaque once the page scrolls under it
+  on(menu, 'scroll', () => nav.classList.toggle('scrolled', menu.scrollTop > 8), { passive: true });
+
+  // ---- the library
+  const backdrops = $('hmBackdrops');
+  // (a backdrop's image set once it is shown: the covers of the games not under the pointer are not downloaded for it)
+  function setBackdrop(name) {
+    for (const b of backdrops.children) {
+      const on_ = b.dataset.name === name;
+      b.classList.toggle('on', on_);
+      if (on_ && b.dataset.src && b.style.backgroundImage !== `url("${b.dataset.src}")`) b.style.backgroundImage = `url("${b.dataset.src}")`;
+    }
+  }
+  // The covers of the cards in view (or close to it) only: a first visit on a thin link downloads those, not the
+  // library's ~0.6 MB, the rest as the page scrolls (a filter shows them) — the game the player starts gets the link.
+  // whenSeen(el, fn): fn once el has come near the viewport (at once if it has).
+  const seen = new WeakSet(), waiting = new WeakMap();
+  const near = typeof IntersectionObserver === 'function' ? new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) { seen.add(e.target); near.unobserve(e.target); const fn = waiting.get(e.target); waiting.delete(e.target); fn?.(); }
+  }, { rootMargin: '200px' }) : null;
+  cleanup.push(() => near?.disconnect());
+  const whenSeen = (el, fn) => { if (!near || seen.has(el)) return fn(); waiting.set(el, fn); near.observe(el); };
+  function heat(on_) { menu.toggleAttribute('data-hot', on_); } // (the hound's eyes flare while a game is under the pointer)
+
+  const pref = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
+  // (the cards' live counts, refreshed together every 30 s)
+  let liveSyncs = [], cardCleanup = [];
+  cleanup.push(() => cardCleanup.forEach((fn) => fn()));
+  cleanup.push((() => { const t = setInterval(() => liveSyncs.forEach((f) => f()), 30000); return () => clearInterval(t); })());
+  // the library's tags, on the cards and as its filters: the kind of game (the Windows games, run as they are in the
+  // emulator; the ones whose engine is recompiled for the browser; those also modified — the manifest's "modified") and
+  // the ways to play it (the manifest's modes; none: solo). A game has the tags of all its versions; the filters of one
+  // group add up (Windows or Recompiled), those of two groups narrow (Recompiled and Multiplayer).
+  const KINDS = ['windows', 'recompiled', 'modified'], MODES = ['solo', 'multiplayer', 'story', 'free'];
+  const tagsOf = (v) => [(v.runtime ?? 'win32') === 'win32' ? 'windows' : v.modified ? 'modified' : 'recompiled', ...(v.modes?.length ? v.modes : ['solo'])];
+  const gameTags = (g) => new Set(g.variants.flatMap(tagsOf));
+  const groupOf = (t) => (KINDS.includes(t) ? 'kind' : 'mode');
+  const tagLabel = (t) => S().kinds[t] ?? S().modes[t] ?? t;
+  const savePref = (key, value) => { try { localStorage.setItem(key, value); } catch { /* storage disabled */ } };
+  // (the filters chosen: in the page's address — a link shows the same games, ?tags=recompiled,multiplayer —, none on
+  // arrival)
+  const TAG = /^[a-z][a-z0-9-]{0,31}$/, rankOf = (t) => { const i = [...KINDS, ...MODES].indexOf(t); return i < 0 ? 99 : i; };
+  const byRank = (a, b) => rankOf(a) - rankOf(b) || a.localeCompare(b);
+  const picked = new Set((new URLSearchParams(location.search).get('tags') ?? '').split(',').filter((t) => TAG.test(t)));
+  function writeUrl() {
+    const rest = location.search.slice(1).split('&').filter((p) => p && !/^tags(=|$)/.test(p));
+    if (picked.size) rest.push('tags=' + [...picked].sort(byRank).join(','));
+    history.replaceState(history.state, '', location.pathname + (rest.length ? '?' + rest.join('&') : '') + location.hash);
+  }
+  /** The game passes the filters (`but`: one group's left out — the count shown beside each of its tags). */
+  const passes = (g, but = null) => {
+    const tags = gameTags(g);
+    return ['kind', 'mode'].every((grp) => { const want = [...picked].filter((t) => groupOf(t) === grp); return grp === but || !want.length || want.some((t) => tags.has(t)); });
+  };
+  // (a card shown again by a filter: no second entrance)
+  const setFilter = (change) => { change(); writeUrl(); for (const el of cards) el.classList.add('still'); applyFilter(); };
+  const toggle = (t) => setFilter(() => { if (!picked.delete(t)) picked.add(t); });
+  const chosen = (g) => g.variants.find((v) => v.name === pref('orthros.version.' + g.id) && v.available)
+    ?? g.variants.find((v) => v.name === last && v.available)
+    ?? g.variants.find((v) => v.available) ?? g.variants[0];
+  /** The game's language for this version: the visitor's last choice, else the page's / the browser's language if the game has it. */
+  const gameLang = (g, variant) => {
+    const options = variant.languages ?? [], saved = pref('orthros.gameLanguage.' + g.id);
+    if (options.includes(saved)) return saved;
+    const wanted = explicit ? [explicit, ...browserLangs()] : [...browserLangs(), lang];
+    return wanted.find((l) => options.includes(l)) ?? (options.includes('en') ? 'en' : options[0] ?? null);
+  };
+  /** The version game language `gl` runs from version `v`: its language's own (languageVersions), else `v`. */
+  const runs = (v, gl) => { const o = gl && v?.languageVersions?.[gl] ? byName.get(v.languageVersions[gl]) : null; return o?.available ? o : v; };
+  /**
+   * What the stores of this browser hold (download.js `probe`): every game's version shown on its card — the one its
+   * game language runs, the line's — with its launch's engine files, the resume game's first; once a visit, after the
+   * library is drawn (the covers first on a thin link). Only the stores that exist are opened (the worker checks).
+   */
+  let probed = false, probeTimer = 0;
+  /** No probe this visit any more (a game chosen: its worker opens the stores — the timer, else a probe after Play). */
+  const cancelProbe = () => { probed = true; clearTimeout(probeTimer); };
+  function probeStores() {
+    if (probed || !games.length) return; probed = true;
+    const items = [], order = resume ? [resume, ...games.filter((g) => g !== resume)] : games;
+    for (const g of order) {
+      const shown = chosen(g); if (!shown?.available) continue;
+      const gl = gameLang(g, shown), v = runs(shown, gl), launch = launchFor(v.launch, gl);
+      items.push({ name: v.name, lang: gl, engine: launch?.engineFiles?.length ? { files: launch.engineFiles, bytes: launch.engine ?? 0 } : null, reloads: launch?.reloads === true });
+    }
+    probeTimer = setTimeout(() => downloads.probe(items), PROBE_DELAY_MS);
+    cleanup.push(cancelProbe);
+  }
+  // (a download or a probe running stops first, and none starts after — download.js `forGame`: the game's worker opens
+  // the same stores; the probe's timer cancelled at once, before anything awaited)
+  const play = async (g) => { const v = chosen(g); if (!v?.available) return; cancelProbe(); await downloads.forGame(); onPlay(v.name, gameLang(g, v)); };
+  function playPill(g) { const el = h('button', { type: 'button', class: 'hm-play', onclick: () => play(g) }); el.innerHTML = `${ICON.play}<span>${S().play}</span>`; return el; }
+
+  // the cover of the game's chosen version behind the page (added, updated or removed as the choice changes)
+  function syncBackdrop(g) {
+    const v = chosen(g), d = [...backdrops.children].find((b) => b.dataset.name === g.id);
+    if (!v?.cover || !v.available) { d?.remove(); return; }
+    const bd = d ?? backdrops.appendChild(h('div', { class: 'hm-bd', 'data-name': g.id }));
+    bd.dataset.src = `/api/cover/${encodeURIComponent(v.name)}`;
+    if (bd.classList.contains('on')) bd.style.backgroundImage = `url("${bd.dataset.src}")`;
+  }
+  /** The hero button: resume the last game, or start the first one. */
+  function renderCta() {
+    resume = games.find((g) => g.variants.some((v) => v.name === last && v.available)) ?? games.find((g) => chosen(g)?.available) ?? null;
+    const cta = $('hmCta');
+    cta.classList.toggle('hidden', !resume);
+    if (!resume) return;
+    cta.querySelector('small').textContent = chosen(resume)?.name === last ? S().resume : S().first;
+    cta.querySelector('b').textContent = resume.title;
+    cta.onclick = () => play(resume);
+  }
+
+  function card(g, i) {
+    const el = h('article', { class: 'hm-card' + (drawn ? ' still' : ''), 'data-name': g.id, style: `--i:${i}`, role: 'group', 'aria-label': g.title });
+    const cover = h('div', { class: 'hm-cover' }), desc = h('p'), meta = h('div', { class: 'hm-meta' }), live = h('span', { class: 'hm-live' }), playBtn = playPill(g), langSlot = h('div', { class: 'hm-slot' });
+    // "download the whole game first": status line and its button (download, pause, resume)
+    const dlText = h('span', { class: 'hm-dl-text' }), dlBar = h('i'), dlBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
+    const dlRow = h('div', { class: 'hm-dl', title: S().dlTitle }, h('div', { class: 'hm-dl-bar' }, dlBar), dlText, dlBtn);
+    // "playable after X MB, about Y min at your link" and its button (prepare: the launch set only, pause, resume)
+    const lnText = h('span', { class: 'hm-dl-text' }), lnBar = h('i'), lnBtn = h('button', { type: 'button', class: 'hm-dl-btn' });
+    const lnRow = h('div', { class: 'hm-dl hm-launch', title: S().lnTitle }, h('div', { class: 'hm-dl-bar' }, lnBar), lnText, lnBtn);
+    function syncLaunch(v, whole, gl) {
+      // (the game language's own launch: what its sessions read before playable — a language's texts among them)
+      const launch = launchFor(v?.launch, gl);
+      const st = v?.available ? launchStatus(launch, { st: downloads.get(v.name, 'launch', gl), whole }, lang) : null;
+      // (the whole game here or on its way: its own line says it)
+      lnRow.hidden = !st || whole.state === 'done' || whole.state === 'running'; if (lnRow.hidden) return;
+      lnText.textContent = unbroken(st.text); lnRow.title = `${st.detail}\n\n${S().lnTitle}`; lnBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
+      lnRow.dataset.state = st.state;
+      lnBtn.hidden = st.state === 'done';
+      lnBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().lnStart;
+      lnBtn.onclick = (e) => { e.stopPropagation(); if (st.state === 'running') downloads.stop(); else downloads.start(v.name, 'launch', { lang: gl, launch }); };
+    }
+    function syncDownload() {
+      // (every runtime: the game data's block store, the one each game reads — src/vfs/game-data.js)
+      // (the version the game language runs — another one when its language has its own, OpenMW's languageVersions)
+      const shown = chosen(g), gl = shown?.available ? gameLang(g, shown) : null, v = runs(shown, gl);
+      dlRow.hidden = !v?.available; if (dlRow.hidden) { lnRow.hidden = true; return; }
+      const st = downloadStatus(downloads.get(v.name), v.bytes, lang);
+      syncLaunch(v, st, gl);
+      dlText.textContent = unbroken(st.text); dlRow.title = `${st.detail}\n\n${S().dlTitle}`; dlBar.style.width = `${st.state === 'none' ? 0 : st.pct}%`;
+      dlRow.dataset.state = st.state;
+      dlBtn.hidden = st.state === 'done';
+      dlBtn.textContent = st.state === 'running' ? S().dlPause : st.state === 'paused' ? S().dlResume : st.state === 'error' ? S().dlRetry : S().dlStart;
+      dlBtn.onclick = (e) => { e.stopPropagation(); if (st.state === 'running') downloads.stop(); else downloads.start(v.name); };
+    }
+    // (the version shown, or the one its game language runs — the lines are that one's)
+    cardCleanup.push(downloads.onChange((name) => { const v = chosen(g); if (name === v?.name || (v?.available && name === runs(v, gameLang(g, v))?.name)) syncDownload(); }));
+    let shown = null, langRow = null;
+    // one row for the versions (chips, the oldest in a select past three), one for the game's languages (flags)
+    const versions = g.variants.length && g.variants.some((v) => v.version) ? choiceRow({ label: S().gameVersion, aria: S().gameVersion, max: MAX_VERSIONS, more: S().others,
+      items: g.variants.map((v) => ({ value: v.name, label: v.version ?? v.name, disabled: !v.available, title: v.available ? null : S().missing })),
+      onPick: (name) => { savePref('orthros.version.' + g.id, name); sync(); syncBackdrop(g); setBackdrop(g.id); renderCta(); } }) : null;
+
+    /** Everything that depends on the chosen version: cover, text, size, languages. */
+    function sync() {
+      const v = chosen(g), ok = !!v?.available;
+      el.classList.toggle('unavailable', !ok); el.tabIndex = ok ? 0 : -1;
+      cover.classList.toggle('none', !v?.cover);
+      const src = v?.cover ? `/api/cover/${encodeURIComponent(v.name)}` : LOGO;
+      if (src !== shown) { // (the new image fades in over the old one)
+        shown = src;
+        whenSeen(el, () => {
+          if (shown !== src) return; // (another version chosen meanwhile)
+          const img = h('img', { src, alt: '', decoding: 'async', draggable: 'false', class: v?.cover ? '' : 'glyph' });
+          const put = () => { const old = [...cover.querySelectorAll('img')]; cover.insertBefore(img, cover.querySelector('.hm-badge')); requestAnimationFrame(() => { img.classList.add('loaded'); setTimeout(() => old.forEach((o) => o.remove()), 700); }); };
+          if (v?.cover) img.onload = put; else put();
+        });
+      }
+      cover.querySelector('.hm-badge')?.remove();
+      if (v?.name === last && ok) cover.append(h('span', { class: 'hm-badge' }, S().lastPlayed));
+      desc.textContent = (lang === 'fr' ? v?.descriptionFr : null) ?? v?.description ?? '';
+      // (the version's tags, each a filter of the library — a Windows game's executable in its tooltip; the size: the
+      // download line's)
+      meta.replaceChildren(...(ok ? tagsOf(v).map((t) => h('button', { type: 'button', class: 'hm-tag', 'data-tag': t, 'aria-pressed': String(picked.has(t)),
+        title: [S().kindTitles[t] && (t === 'windows' && v.exe ? `${S().kindTitles[t]} (${v.exe})` : S().kindTitles[t]), S().tagFilter].filter(Boolean).join('\n'), onclick: () => toggle(t) }, tagLabel(t)))
+        : [h('span', { class: 'hm-missing' }, S().missing)]));
+      syncLive();
+      playBtn.hidden = !ok;
+      versions?.set(v?.name);
+      langRow = v?.languages?.length ? choiceRow({ label: S().gameLanguageShort, aria: S().gameLanguage, max: MAX_LANGS, more: S().others,
+        items: v.languages.map((code) => ({ value: code, flag: code, label: endonym(code) })),
+        onPick: (code) => { savePref('orthros.gameLanguage.' + g.id, code); langRow.set(code); syncDownload(); } }) : null;
+      langRow?.set(gameLang(g, v));
+      langSlot.replaceChildren(...(langRow ? [langRow.el] : []));
+      syncDownload();
+    }
+
+    // the games running on a port's servers (its lobby, /api/rooms): how many, how many play
+    function syncLive() {
+      const v = chosen(g); live.textContent = '';
+      if (!v?.available || v.runtime !== 'goldsrc' || !v.modes?.includes('multiplayer')) return; // (the rooms: the GoldSrc ports' servers)
+      fetch(`/api/rooms/${encodeURIComponent(v.name)}`, { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+        if (chosen(g)?.name !== v.name || !d.rooms) return;
+        live.textContent = S().live(d.rooms.length, d.rooms.reduce((t, r) => t + r.humans, 0));
+      }).catch(() => {});
+    }
+    liveSyncs.push(syncLive);
+    el.append(cover, h('div', { class: 'hm-body' }, h('h3', {}, g.title), desc,
+      h('div', { class: 'hm-choices' }, versions?.el, langSlot),
+      h('div', { class: 'hm-foot-row' }, h('div', { class: 'hm-metas' }, meta, live), playBtn), lnRow, dlRow));
+    sync();
+    el.onclick = (e) => { if (chosen(g)?.available && !e.target.closest('select, button, label, .hm-dl')) play(g); };
+    for (const [type, fn] of [['mouseenter', () => { if (chosen(g)?.available) { setBackdrop(g.id); heat(true); } }], ['mouseleave', () => { setBackdrop(resume?.id ?? null); heat(false); }],
+      ['focus', () => { if (chosen(g)?.available) { setBackdrop(g.id); heat(true); } }], ['blur', () => { setBackdrop(resume?.id ?? null); heat(false); }]]) el.addEventListener(type, fn);
+    return el;
+  }
+
+  /** What the library shows: placeholders while the games load, the error, the empty server, or the games. */
+  function renderView() {
+    const cta = $('hmCta');
+    $('hmTabs').hidden = view.kind !== 'games' || !games.length;
+    if (view.kind === 'loading') {
+      cta.classList.add('hidden'); $('hmCount').textContent = '';
+      grid.style.setProperty('--n', 2);
+      grid.replaceChildren(...[0, 1].map((i) => h('div', { class: 'hm-card skeleton', style: `--i:${i}`, 'aria-hidden': 'true' }, h('div', { class: 'hm-cover' }), h('div', { class: 'hm-body' }, h('h3', {}, ' '), h('p', {}, ' ')))));
+      grid.setAttribute('aria-busy', 'true');
+    } else if (view.kind === 'error') {
+      cta.classList.add('hidden'); $('hmCount').textContent = '';
+      message('error', S().errorTitle, view.text, h('button', { class: 'hm-btn', onclick: view.retry }, S().retry));
+    } else if (!games.length) {
+      cta.classList.add('hidden'); $('hmCount').textContent = '';
+      message('empty', S().emptyTitle, [S().emptyText + ' ', h('code', {}, 'orthros run <folder>')]);
+    } else renderGames();
+  }
+  /** The filters: all, then the tags the library has, by group (their counts and states: applyFilter). */
+  function renderTabs() {
+    const order = [...new Set(games.flatMap((g) => [...gameTags(g)]))].sort(byRank);
+    $('hmTabs').replaceChildren(
+      h('button', { type: 'button', class: 'hm-tab', onclick: () => setFilter(() => picked.clear()) }, S().all, h('span', { class: 'n' }, String(games.length))),
+      ...order.flatMap((t, i) => [i === 0 || groupOf(t) !== groupOf(order[i - 1]) ? h('span', { class: 'sep', 'aria-hidden': 'true' }) : null,
+        h('button', { type: 'button', class: 'hm-tab', 'data-tag': t, title: S().kindTitles[t] ?? null, onclick: () => toggle(t) }, tagLabel(t), h('span', { class: 'n' }))]).filter(Boolean));
+  }
+  /** Every game's card, built once (a language change builds them again); the filters only show or hide them. */
+  let noneEl = null;
+  function renderGames() {
+    const focused = document.activeElement?.dataset?.name;
+    renderCta();
+    renderTabs();
+    // covers behind the page: the one of the game under the pointer, else the resumable one
+    backdrops.replaceChildren();
+    for (const g of games) syncBackdrop(g);
+    setBackdrop(resume?.id ?? null);
+    for (const fn of cardCleanup) fn();
+    cardCleanup = []; liveSyncs = [];
+    cards = games.map(card);
+    drawn = true; // (later drawings — a language change — do not replay the entrance)
+    noneEl = emptyEl('empty', S().filterEmpty, '', h('button', { class: 'hm-btn', onclick: () => setFilter(() => picked.clear()) }, S().showAll));
+    grid.replaceChildren(...cards, noneEl);
+    grid.setAttribute('aria-busy', 'false');
+    applyFilter();
+    if (focused) grid.querySelector(`[data-name="${CSS.escape(focused)}"]:not([hidden])`)?.focus({ preventScroll: true });
+  }
+  /** The filters applied: the cards they let through shown (nothing rebuilt), the counts, the address. */
+  function applyFilter() {
+    if (view.kind !== 'games' || !games.length) return;
+    const present = new Set(games.flatMap((g) => [...gameTags(g)]));
+    const gone = [...picked].filter((t) => !present.has(t)); // (a tag no game has: a link from another server)
+    if (gone.length) { gone.forEach((t) => picked.delete(t)); writeUrl(); }
+    for (const b of $('hmTabs').querySelectorAll('button')) {
+      const t = b.dataset.tag;
+      if (!t) { b.setAttribute('aria-pressed', String(!picked.size)); continue; }
+      const n = games.filter((g) => gameTags(g).has(t) && passes(g, groupOf(t))).length;
+      b.setAttribute('aria-pressed', String(picked.has(t))); b.classList.toggle('none', !n && !picked.has(t)); b.querySelector('.n').textContent = String(n);
+    }
+    const byId = new Map(games.map((g) => [g.id, g]));
+    let shown = 0, left = false;
+    for (const el of cards) {
+      const on = passes(byId.get(el.dataset.name));
+      if (!on && el.matches(':hover, :focus-within')) left = true;
+      el.hidden = !on; shown += on;
+    }
+    for (const b of grid.querySelectorAll('.hm-tag')) b.setAttribute('aria-pressed', String(picked.has(b.dataset.tag)));
+    if (left) { setBackdrop(resume?.id ?? null); heat(false); } // (the card under the pointer hidden: no mouseleave)
+    noneEl.hidden = shown > 0;
+    grid.style.setProperty('--n', shown || 2);
+    $('hmCount').textContent = S().games(shown);
+  }
+
+  function emptyEl(kind, title, text, action) {
+    return h('div', { class: 'hm-empty ' + kind },
+      h('img', { src: LOGO, alt: '', width: 70, height: 71, draggable: 'false' }),
+      h('div', {}, h('h3', {}, title), h('p', {}, text), action));
+  }
+  function message(kind, title, text, action) {
+    grid.style.setProperty('--n', 2);
+    grid.replaceChildren(emptyEl(kind, title, text, action));
+    grid.setAttribute('aria-busy', 'false');
+  }
+
+  // ---- keyboard: arrows move between the games (nearest card in that direction), Enter / Space plays
+  on(menu, 'keydown', (e) => {
+    if (e.target.closest?.('input, textarea, select')) return;
+    const list = cards.filter((c) => !c.hidden && !c.classList.contains('unavailable')), i = list.indexOf(document.activeElement);
+    if ((e.key === 'Enter' || e.key === ' ') && i >= 0) { e.preventDefault(); play(games.find((g) => g.id === list[i].dataset.name)); return; }
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) || !list.length) return;
+    if (i < 0 && document.activeElement !== document.body && document.activeElement !== menu) return; // (arrows on a button stay the button's)
+    e.preventDefault();
+    if (i < 0) { (list.find((c) => c.dataset.name === resume?.id) ?? list[0]).focus(); return; }
+    // (layout positions, not bounding boxes: the hover lift of a card must not make it look lower than its neighbour)
+    const mid = (c) => [c.offsetLeft + c.offsetWidth / 2, c.offsetTop + c.offsetHeight / 2], [cx, cy] = mid(list[i]);
+    let best = null, bestScore = Infinity;
+    for (const c of list) {
+      if (c === list[i]) continue;
+      const [mx, my] = mid(c), dx = mx - cx, dy = my - cy;
+      const along = { ArrowLeft: -dx, ArrowRight: dx, ArrowUp: -dy, ArrowDown: dy }[e.key], across = e.key === 'ArrowLeft' || e.key === 'ArrowRight' ? Math.abs(dy) : Math.abs(dx);
+      if (along <= 8) continue;
+      const score = along + across * 3;
+      if (score < bestScore) { best = c; bestScore = score; }
+    }
+    best?.focus();
+  });
+
+  // ---- alive
+  embers = startEmbers($('hmEmbers'), () => {
+    const r = hound.getBoundingClientRect();
+    return r.bottom > 40 && r.bottom < innerHeight + 60 ? { x: r.left + r.width * 0.15, y: r.bottom - r.height * 0.06, w: r.width * 0.7 } : null;
+  });
+
+  // ---- go
+  applyLang();
+  menu.classList.remove('hidden');
+
+  return {
+    /**
+     * The games to show (`last`: the one played last, for the badge and the resume button; `all`: every version, the
+     * hidden ones too — those a game language runs, `languageVersions`).
+     */
+    setGames(list, lastPlayed, all = list) {
+      byName = new Map(all.map((m) => [m.name, m]));
+      const groups = new Map();
+      for (const variant of list) {
+        const id = variant.gameId ?? variant.name;
+        if (!groups.has(id)) groups.set(id, { id, title: variant.title, variants: [] });
+        groups.get(id).variants.push(variant);
+      }
+      const rank = (g) => Math.min(...[...gameTags(g)].map((t) => KINDS.indexOf(t)).filter((i) => i >= 0));
+      games = [...groups.values()].sort((a, b) => rank(a) - rank(b)); // (stable: the server's order within a kind)
+      for (const group of games) group.variants.sort((a, b) => (b.versionOrder ?? 0) - (a.versionOrder ?? 0));
+      last = lastPlayed; view = { kind: 'games' };
+      applyLang();
+      probeStores();
+      (cards.find((c) => !c.hidden && c.dataset.name === resume?.id) ?? cards.find((c) => !c.hidden && !c.classList.contains('unavailable')))?.focus({ preventScroll: true });
+    },
+    setError(text, retry) { view = { kind: 'error', text, retry }; renderView(); },
+    setLoading() { view = { kind: 'loading' }; renderView(); },
+    /** Leaves the screen for good (a game starts): the animations stop, the listeners go. */
+    destroy() {
+      embers?.stop(); for (const fn of cleanup) fn();
+      menu.classList.add('hidden');
+    },
+  };
+}

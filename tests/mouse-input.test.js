@@ -1,4 +1,4 @@
-// The mouse, the same for every game: the page's captured (pointer lock) and free pointer (src/host/web/pointer.js),
+// The mouse, the same for every game: the page's captured (pointer lock) and free pointer (src/web/pointer.js),
 // the input ring's encoding (browser-host.js decodeInput), and the window manager / DirectInput side (user32.js,
 // dinput8.js) — relative motion reaching DirectInput unclamped, the guest cursor moved from where it is (SetCursorPos
 // warps of a mouse-look camera), kept in the screen and the ClipCursor rectangle; host input processed in a wait
@@ -7,12 +7,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { PointerInput, winButton } from '../src/host/web/pointer.js';
-import { EV, BUTTON_AT_CURSOR, decodeInput } from '../src/host/browser-host.js';
+import { PointerInput, winButton } from '../src/web/pointer.js';
+import { EV, BUTTON_AT_CURSOR, decodeInput } from '../src/web/browser-host.js';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 import { Ctx } from '../src/win32/ctx.js';
 import { writeGuid } from '../src/win32/com.js';
 import { wmOf } from '../src/win32/user32.js';

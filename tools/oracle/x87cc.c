@@ -1,4 +1,4 @@
-// Native runner of the x87 condition-code probe (tools/x87cc-cases.mjs, tools/x87cc-probe.mjs): runs byte sequences on
+// Native runner of the x87 condition-code probe (tools/check/x87cc-cases.mjs, tools/check/x87cc-probe.mjs): runs byte sequences on
 // the host FPU in 64-bit mode (the encodings used mean the same there: x87 instructions, [eax + disp] operands with
 // eax < 2^32, `or word`, `mov eax, imm32`). Input file: the 256-byte data block, then (u16 length, bytes)* ; output on
 // stdout: one u16 (AX after the sequence) per case. Build: clang-18 -O1 -o x87cc tools/oracle/x87cc.c

@@ -1,9 +1,9 @@
-// tools/input-latency.mjs: every generated input's latency from a Chrome trace — EventLatency reports (dispatched,
+// tools/bench/input-latency.mjs: every generated input's latency from a Chrome trace — EventLatency reports (dispatched,
 // coalesced), PipelineReporter frames, the page's console.timeStamp marks — on synthetic traces shaped as Chrome writes
 // them (nested async slices under a reused id, a report's events together on one thread).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { asyncReports, inputLatency, traceClock, blockCheck, stampsOf, INPUT_TRACE_CATEGORIES } from '../tools/input-latency.mjs';
+import { asyncReports, inputLatency, traceClock, blockCheck, stampsOf, INPUT_TRACE_CATEGORIES } from '../tools/bench/input-latency.mjs';
 
 const PID = 10, ms = (x) => x * 1000;
 const slice = (name, id, b, e, args = {}, tid = 1) => [

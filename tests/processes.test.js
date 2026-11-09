@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
-import { HeadlessHost } from '../src/host/display.js';
+import { HeadlessHost } from '../src/server/display.js';
 import { notQuiet } from '../src/core/vm-snapshot.js';
 import { wmOf } from '../src/win32/user32.js';
 import { Ctx } from '../src/win32/ctx.js';
@@ -344,7 +344,7 @@ test('render worker: a released guest memory is forgotten, its devices destroyed
 });
 
 test('audio: the page\'s worklet follows the machine the page follows, back to the parent when its child ends', async () => {
-  const { BrowserHost } = await import('../src/host/browser-host.js');
+  const { BrowserHost } = await import('../src/web/browser-host.js');
   const posted = [];
   const host = { post: (m) => posted.push(m), audioVm: null };
   const mkAudio = () => ({ voices: null, attachVoices(sab) { this.voices = new Int32Array(sab); } });

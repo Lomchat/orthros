@@ -5,8 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/host/game-catalog.js';
-import { OPENMW_STATE_DIR } from '../../src/host/openmw.js';
+import { loadGameCatalog, DEFAULT_GAMES_DIR } from '../../src/server/game-catalog.js';
+import { OPENMW_STATE_DIR } from '../../src/server/ports/openmw.js';
 
 const args = process.argv.slice(2), [id, name] = args, arg = (k) => args.includes(k) ? args[args.indexOf(k) + 1] : null;
 if (!name || !args.includes('--password-stdin')) throw new Error('Expected manifest, username and --password-stdin');

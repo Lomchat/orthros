@@ -37,7 +37,7 @@ fault in translated code.
 zeros (the pages stay zero: nothing can store there) and a read past 2 GiB still traps.
 
 Why: writes are what corrupt; they are checked at no cost on the JIT's hot path (below). Checking every read costs a
-compare and a branch per load that is not proven safe. Measured in Node (`tools/startbench.mjs` with the menu-to-skirmish
+compare and a branch per load that is not proven safe. Measured in Node (`tools/bench/startbench.mjs` with the menu-to-skirmish
 scenarios, from the warm profiles, `perf stat -e instructions:u` of the whole process — the compilers' threads included
 —, the variants run side by side in pairs):
 

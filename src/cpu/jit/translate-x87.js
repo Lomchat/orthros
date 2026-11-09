@@ -220,7 +220,7 @@ function roundPC(E, op, insn, narrowOps = false) {
  * shares one cold tail with one exit. The previous nesting (if normal { if off-grid {...} else {... exit} } else {...
  * exit}, plus a NaN test with its own exit in the caller) gave every arithmetic instruction three exit edges, each
  * carrying the whole register state to the region's exit block: a truncating vertex transform ran 2.5x slower than the
- * round-to-nearest one (tools/x87loop-bench.mjs xform).
+ * round-to-nearest one (tools/bench/x87loop-bench.mjs xform).
  */
 function roundDirected24(E, op, insn, rc, narrowOps = false) {
   const c = E.c;
@@ -261,7 +261,7 @@ function roundDirected24(E, op, insn, rc, narrowOps = false) {
  * The previous code computed the mask in a vector register (its constant rebuilt for each instruction) and tested the
  * range with f64 compares on |s| (two constants loaded, three compares, results combined as integers), and the on-grid
  * exactness with f32 round trips of both operands: ~25 host instructions per arithmetic instruction where an off-grid
- * result now takes ~11 (tools/x87loop-bench.mjs, docs/jit-code-shape.md "BFME1's map load").
+ * result now takes ~11 (tools/bench/x87loop-bench.mjs, docs/jit-code-shape.md "BFME1's map load").
  */
 function roundTowardZero24(E, op, insn, narrowOps) {
   const c = E.c;
@@ -703,7 +703,7 @@ function arith(op, doPop, integer) {
         c.end(); void nan;
       }
       // (ZE / OE of an infinite result at 53 / 64-bit precision are not raised here, unlike X87.arith: testing for it on
-      // this hot path cost +15 % on a 53-bit sums-of-squares loop, tools/x87loop-bench.mjs; docs/jit-code-shape.md)
+      // this hot path cost +15 % on a 53-bit sums-of-squares loop, tools/bench/x87loop-bench.mjs; docs/jit-code-shape.md)
       c.get(L_F64C); storeSTStack(E, dst);
       // (24-bit precision with a static directed rounding: every result that stays in the region is on its 24-bit grid,
       // or a zero)

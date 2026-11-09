@@ -152,7 +152,7 @@ data's own `game.dat` is started by it).
   named mapping written by the child while the parent's view is open, the process wait and exit code), JIT and
   interpreter; the single-process path without a group; CreateProcess failures (not a program: 193, missing: 2); the
   input and display following the foreground process.
-- BFME II 1.06 through `lotrbfme2.exe` (Node, `src/host/cli.js`): the launcher creates the game's process, the game
+- BFME II 1.06 through `lotrbfme2.exe` (Node, `src/server/cli.js`): the launcher creates the game's process, the game
   finds the launcher's mutex, sets the launcher's event, receives `0xBEEF` with the mapping handle and maps it, and goes
   on with its start (window, fonts, Miles, Direct3D); the launcher waits on the process.
 - In the page (headless Chromium, SwiftShader, render worker): `tools/headless.mjs bfme2-106 --games-dir <scratch with

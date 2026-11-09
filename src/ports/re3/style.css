@@ -1,4 +1,4 @@
-/* An re3 port's page (play.html): the game under the page's header (/src/host/web/player.css, as the Windows games'),
+/* An re3 port's page (play.html): the game under the page's header (/src/web/player.css, as the Windows games'),
    its loading in the loading screen's box. (No rule here begins with "canvas", as on the GoldSrc ports' page: an
    engine's glue may rewrite those of the page's first style sheet when it hides the mouse.) */
 html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; color-scheme: dark; }

@@ -1,4 +1,4 @@
-// The proxy log's readers (tools/net-proxy.mjs): a request's kind from its URL (an `a=1` read carries the session too),
+// The proxy log's readers (tools/dev/net-proxy.mjs): a request's kind from its URL (an `a=1` read carries the session too),
 // a game data read's path and decoded size, its file category (a light copy's full file read later: an upgrade), and a
 // stretch of the log — the game's own reads, their spacing and waits, the background's bytes by kind and category.
 import { test } from 'node:test';
@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { urlKind, dataRead, fileCategory, loadWindow, readLog, summarize } from '../tools/net-proxy.mjs';
+import { urlKind, dataRead, fileCategory, loadWindow, readLog, summarize } from '../tools/dev/net-proxy.mjs';
 
 const M = '/gamez/mw';
 const rec = (t, url, wire, ms, first = 45) => ({ t, url, kind: 'x', status: 200, wire, first, ms });

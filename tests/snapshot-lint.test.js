@@ -48,8 +48,8 @@ test('every module variable that could hold machine state is handed to snapshots
 });
 
 test('modules that register snapshot state are among the sources a snapshot depends on', async () => {
-  // (src/host/snapshot-sources.js: a change to a module left out of the hash keeps snapshots valid — it must own no state)
-  const { snapshotSourceFiles } = await import('../src/host/snapshot-sources.js');
+  // (src/server/snapshot-sources.js: a change to a module left out of the hash keeps snapshots valid — it must own no state)
+  const { snapshotSourceFiles } = await import('../src/server/snapshot-sources.js');
   const sources = new Set(snapshotSourceFiles(ROOT)), out = [];
   const walk = (dir) => {
     for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
@@ -61,23 +61,23 @@ test('modules that register snapshot state are among the sources a snapshot depe
   };
   walk('src');
   assert.ok(sources.has('src/win32/kernel32.js') && sources.has('src/core/vm-snapshot.js') && !sources.has('src/cpu/jit/translate.js'), 'the closure is followed');
-  assert.deepEqual(out, [], 'modules outside the snapshot sources (src/host/snapshot-sources.js) registering state');
+  assert.deepEqual(out, [], 'modules outside the snapshot sources (src/server/snapshot-sources.js) registering state');
 });
 
 test('the game data\'s transport is out of the snapshot sources, the guest-visible tree in', async () => {
-  // (a data-only deploy keeps a returning player's snapshot: src/host/snapshot-sources.js DATA_TRANSPORT)
-  const { snapshotSourceFiles, DATA_TRANSPORT, KEPT } = await import('../src/host/snapshot-sources.js');
+  // (a data-only deploy keeps a returning player's snapshot: src/server/snapshot-sources.js DATA_TRANSPORT)
+  const { snapshotSourceFiles, DATA_TRANSPORT, KEPT } = await import('../src/server/snapshot-sources.js');
   const sources = new Set(snapshotSourceFiles(ROOT));
   for (const f of DATA_TRANSPORT) assert.ok(!sources.has(f), `${f} out`);
   assert.ok(!sources.has('src/vfs/pcm-codec.js'), 'what only the transport imports out with it');
   for (const f of KEPT) assert.ok(sources.has(f), `${f} kept (which files the guest sees, their sizes)`);
-  assert.ok(sources.has('src/vfs/vfs.js') && sources.has('src/host/web/worker.js'), 'the guest\'s file system and the worker kept');
+  assert.ok(sources.has('src/vfs/vfs.js') && sources.has('src/web/worker.js'), 'the guest\'s file system and the worker kept');
 });
 
 test('what the guest sees of the game folder through the data transport is pinned (out of the snapshot key)', async () => {
   // (http-backend.js is out of the key, DATA_TRANSPORT: its answers to the guest's stat/readdir/open — case folding, the
   // listing's order, a directory's date — come from game-tree.js treeLookup/treeStat/treeReaddir, a kept module —
-  // src/host/snapshot-sources.js KEPT —; changing one here fails this test: never a data-only deploy)
+  // src/server/snapshot-sources.js KEPT —; changing one here fails this test: never a data-only deploy)
   const { HttpBackend } = await import('../src/vfs/http-backend.js');
   const { LIGHT_DIR } = await import('../src/vfs/game-tree.js');
   const tree = { dirs: {

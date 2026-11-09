@@ -1,7 +1,7 @@
 # Vice City — Orthros Edition: the shared world ("MMO")
 
 Status: built 2026-10-20/21 (DECISIONS.md D102). The owner's decisions are binding (section 1). This is the contract
-between the server (`src/host/mmo.js`, `mmo-proto.js`), the page (`src/host/web/mmo-link.js`, `src/ports/re3/play.js`)
+between the server (`src/server/mmo.js`, `mmo-proto.js`), the page (`src/web/mmo-link.js`, `src/ports/re3/play.js`)
 and the engine (fork Lomchat/reVC, branch `orthros`, `src/extras/mmo/`, built with `-DREVC_ORTHROS_EXTRAS=ON`: the
 Orthros Edition's release; the plain reVC build has none of it). Engine-defined record bodies (PLAYER_STATE, the
 ENTITY_STATE kinds, EVENT / TARGETED subs, the character state blob, debug keys, test commands) are documented at the
@@ -40,7 +40,7 @@ manifest version has an `mmo` object.
 
 ```
  engine (C++/wasm, one per browser tab)          page (JS)                     server (Node, one process)
- src/extras/mmo/*.cpp  --EM_JS-->  Module.orthrosNet = mmo-link  --WebSocket-->  src/host/mmo.js
+ src/extras/mmo/*.cpp  --EM_JS-->  Module.orthrosNet = mmo-link  --WebSocket-->  src/server/mmo.js
    owns every game rule                generic: framing, queue,          generic hub: accounts, characters,
    (what a record means)               reconnect, heartbeat, away        slots, relay, ownership of ids,
                                                                           records + locks, world clock + vars,
@@ -51,7 +51,7 @@ manifest version has an `mmo` object.
   state, records), opaque world variables (id → int32), a clock (game minutes advancing at a rate), and arbitrates
   ownership of 32-bit network ids. Admin rights are checked on the server for world changes; personal cheats are a
   client rule (the engine refuses cheats when the server said "not admin").
-* The page is a generic relay (`src/host/web/mmo-link.js`, Standardization rule: one shared module, usable by any
+* The page is a generic relay (`src/web/mmo-link.js`, Standardization rule: one shared module, usable by any
   runtime): the engine builds and parses every record; the page only adds its own PING / AWAY records.
 * The engine is authoritative for its own player and for the ambient entities it owns (section 7). Hits are decided
   by the shooter's client and applied by the victim's owner.
@@ -69,7 +69,7 @@ Version level (any runtime may use it; validated by the server's `mmoProblem(ver
 WebSocket refuses with reason 2 and the page does not create `Module.orthrosNet`. `docs/game-manifest.schema.json`
 documents it. `/api/manifests` exposes `mmo: true` for such versions (the home card may show "Multijoueur").
 
-## 4. Server (`src/host/mmo.js`)
+## 4. Server (`src/server/mmo.js`)
 
 `mmoApi({ getManifest, identify, dir, log, now }) → { handle(req, res, url) → bool, upgrade(req, socket, url) → bool,
 flush() → void, close() → void }`, all state in its closure; wired in `server.js` (import; create after the account
@@ -193,7 +193,7 @@ pseudo-record into the engine queue after a reconnection: `u16 len=2 | u8 0xFE |
   module), 3–15 reserved for the world module. Records: keys 0x0100 + hideout index (garages, 160 bytes).
 * WORLD_EVENT ids: 1 BIGBANG (blow up cars: each client its own), others by the world module.
 
-## 6. Page (`src/host/web/mmo-link.js` + `src/ports/re3/play.js`)
+## 6. Page (`src/web/mmo-link.js` + `src/ports/re3/play.js`)
 
 `createMmoLink({ url, log, onState }) → link` (generic, no game knowledge; node-testable):
 * `link.open()` connect (idempotent); automatic reconnection with backoff (1, 2, 4, 8, 15 s…) after an unexpected

@@ -8,13 +8,13 @@ from the server's telemetry.
 Three parts, all generic (no game-specific code; the only per-game artifacts are the scenario files):
 
 1. **Telemetry** of every normal session (when the server runs with `--telemetry <dir>`, as the live server does):
-   the machine, the options, and every ~20 s a frame summary (`src/host/perf-summary.js`); and in every runtime
+   the machine, the options, and every ~20 s a frame summary (`src/web/perf-summary.js`); and in every runtime
    (Win32, GoldSrc, re3, OpenMW) the passive session record, every 2 min and at the end (below, "Passive session
    records"; `telemetry-report.mjs --perf`).
 2. **Bench mode** of the page: `?bench=<name>` plays a scripted scenario (`tools/scenarios/bench/`) in the player's
    browser, shows a banner while it runs and a summary at the end, and sends one `bench` record with the per-phase
-   results and the machine (`src/host/web/bench.js`, `src/host/scenario.js`).
-3. **Report**: `tools/telemetry-report.mjs` prints per session the machine, game / version, build, options (render
+   results and the machine (`src/web/bench.js`, `src/web/scenario.js`).
+3. **Report**: `tools/dev/telemetry-report.mjs` prints per session the machine, game / version, build, options (render
    mode actually used), the stretches of play with their slow-frame categories, the summaries, the bench phases, and a
    comparison of the bench runs.
 
@@ -59,7 +59,7 @@ scenario runs here headless (`tools/scenarios/bfme1-108-phases.txt`, kept equal 
 tools/with-browser-slot.sh node tools/headless.mjs bfme1-108 --games-dir <catalog with bfme1> --profile-dir <copy of a warm profile> \
   --learn <copy of the live learned data> --gl-discard --memprefetch --seconds 1100 --stop-on "mark end:" \
   --phases out.json --input-file tools/scenarios/bfme1-108-phases.txt
-node tools/startbench.mjs bfme1-108 --games-dir <catalog> --save <copy of a warm profile> --input tools/scenarios/bfme1-108-phases.txt \
+node tools/bench/startbench.mjs bfme1-108 --games-dir <catalog> --save <copy of a warm profile> --input tools/scenarios/bfme1-108-phases.txt \
   --cold --regions <learn>/regions-bfme1-108.json --heat <learn>/heat-bfme1-108.json --gfx recorder --until-api NONE --limit 1300
 ```
 
@@ -73,7 +73,7 @@ the server's canonical first-launch set (`<learn>/seedcanon-<manifest>.json`, th
 written under `--save`) it is the page's first launch without downloads:
 
 ```
-node tools/startbench.mjs bfme1-108 --games-dir <catalog> --save <seeded profile dir> --bench bfme1-108-quick --cold \
+node tools/bench/startbench.mjs bfme1-108 --games-dir <catalog> --save <seeded profile dir> --bench bfme1-108-quick --cold \
   --regions <learn>/regions-bfme1-108.json --heat <learn>/heat-bfme1-108.json --gfx recorder --until-api NONE --limit 600
 ```
 
@@ -117,7 +117,7 @@ starts without the click. The suites are in `tools/scenarios/bench/index.json` (
 with its version and game language), the ports' benches there too (`runtime`: `re3`, `goldsrc`, `openmw`; `page`: the
 port page's address under the version's launch address, e.g. OpenMW's engine page with `?start=`).
 
-How it runs (`src/host/web/bench-suite.js`): the suite page (the Orthros page, `main.js` `?benchsuite=`) opens each game
+How it runs (`src/web/bench-suite.js`): the suite page (the Orthros page, `main.js` `?benchsuite=`) opens each game
 in a full-window frame of its own, the game's page as a player opens it, with the game's normal profile in this browser,
 and shows its banner above it ("3/7 Vice City (reVC) · 0:40 · phase drive · 54 fps", a progress bar, **Skip this
 game**, **Stop everything**). Before the next game, the page is left as a player leaves it (the shell's save — the
@@ -125,12 +125,12 @@ runtime's `onQuit`, `shell.save()` — then the frame emptied).
 - **A Win32 game**: its page in bench mode (`/?bench=<name>&benchauto=1&benchrun=<run>…`): its own BenchRun plays the
   scenario and measures its worker's frames, without its banner or summary (the suite's), and sends its record.
 - **A browser port**: its page in the frame; the suite runs the BenchRun (the same class), the port's frames measured
-  from outside its page (`src/host/web/page-meter.js`: installed into the frame's window once it is there — the
+  from outside its page (`src/web/page-meter.js`: installed into the frame's window once it is there — the
   engine's WebGL draw calls counted on the context prototypes, a frame = a browser frame in which it drew, its work from
   the frame's first callback to its request for the next one or the port's own count, those frames fed to the frame
   accounting every runtime uses, `FrameStats`, and to the scenario player as the Win32 worker's stats messages; GPU time
   with the Win32 runtime's probe, `gpu-probe.js`, on the engine's context; its renderer string) and its input given as
-  DOM events of its own window (`src/host/web/dom-input.js`: keys with their `code` / `keyCode` and a `keypress` for
+  DOM events of its own window (`src/web/dom-input.js`: keys with their `code` / `keyCode` and a `keypress` for
   characters, typed text one key at a time, the mouse at the canvas' place) or through the page's hooks — the GoldSrc
   console (`cmd:` steps, `portSession.command`), OpenMW's debug teleport (`glide:` steps, `window.orthrosBenchHooks`
   set by `src/ports/openmw/frame-meter.js` when the page has `?benchrun=`). Data waits: the game data's reads that
@@ -153,7 +153,7 @@ ports' own session reports and every page's passive session records (`bench` of 
 leaves them out) carry it too. A port's frames are measured as its passive records measure them: `page-meter.js` and
 `PerfSession.watchFrames` share `perf-page.js` `watchEngineFrames` (and `timerContext`, WebGL 1's GPU timer).
 
-**Read it**: `node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --suite` (every run; `--suite <run>`
+**Read it**: `node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --suite` (every run; `--suite <run>`
 one, `--json`): per run the machine and build, per game its outcome, renderer and phases (fps, frame p50 / p90 / p99,
 frames > 40 ms per minute, work p50 / p99, GPU p50 / p99, data waits, draws per frame) and the host's timers. A game
 whose own record never came is shown from the suite's record.
@@ -161,9 +161,9 @@ whose own record never came is shown from the suite's record.
 **Check it here** (headless Chromium, fresh profile: every game's first launch, through the browser slots):
 
 ```
-tools/with-browser-slot.sh node tools/bench-suite-check.mjs --url http://127.0.0.1:<port> --suite all --gl-discard \
+tools/with-browser-slot.sh node tools/bench/bench-suite-check.mjs --url http://127.0.0.1:<port> --suite all --gl-discard \
   --minutes 45 --shots 20 --out /tmp/orthros-scratch/<task>/suite
-node tools/telemetry-report.mjs <the server's --telemetry dir> --suite
+node tools/dev/telemetry-report.mjs <the server's --telemetry dir> --suite
 ```
 
 ## What is measured and sent
@@ -193,7 +193,7 @@ fall back to the in-thread backend). Nothing else: no account, no address beyond
 | `busy`, `mips` | share of the time the emulator's worker ran the game, emulated MIPS |
 | `hostWait` | the emulator's host waits (`src/core/host-wait.js`, docs/thread-scheduling.md "Host wake-up overshoot"): `waits` measured, `overMean` how late they woke on average (ms), `lateMsPerFrame` the part of it that lengthened frames (the frame accounting's `late`), `spinMsPerFrame` the spin that made a frame limiter's last waits precise, `est` / `timerEst` the measured overshoot of Atomics.wait / of the pump's timer |
 | `visible`, `fullscreen`, `status`, `renderMode` | share of the window the tab was visible / in full screen, the page's state, the rendering used |
-| `audio` | the sound output over the window (`src/host/web/sound.js` `AudioStats`): `ctx` the AudioContext's last state (`running`, `suspended` — Chrome's autoplay policy before the player's first click —, `interrupted`, `none`: not set up), `rate` its sample rate, `lat` output + base latency (ms), `run` share of the window it was running, `out` frames/s the AudioWorklet played (~`rate` when it plays, 0 stalled), `mix` (`worklet`: the worklet mixes the DirectSound buffers from guest memory; `worker`: the emulator's worker mixes into the ring), `peak` the mix's highest level (0: silence), `play` / `bufs` the most DirectSound buffers playing / existing, `dec` browser audio decoder (WebCodecs, MP3 of movies) failures, `resumes` resumes tried at gestures and `changes` state changes so far, `err` the output's set-up error. The report prints a verdict per session and per bench: `OK`, `SUSPENDED` (never ran: no click), `STALLED`, `SILENT` (buffers played, zero mix), `QUIET` (no buffer played), `ERROR` |
+| `audio` | the sound output over the window (`src/web/sound.js` `AudioStats`): `ctx` the AudioContext's last state (`running`, `suspended` — Chrome's autoplay policy before the player's first click —, `interrupted`, `none`: not set up), `rate` its sample rate, `lat` output + base latency (ms), `run` share of the window it was running, `out` frames/s the AudioWorklet played (~`rate` when it plays, 0 stalled), `mix` (`worklet`: the worklet mixes the DirectSound buffers from guest memory; `worker`: the emulator's worker mixes into the ring), `peak` the mix's highest level (0: silence), `play` / `bufs` the most DirectSound buffers playing / existing, `dec` browser audio decoder (WebCodecs, MP3 of movies) failures, `resumes` resumes tried at gestures and `changes` state changes so far, `err` the output's set-up error. The report prints a verdict per session and per bench: `OK`, `SUSPENDED` (never ran: no click), `STALLED`, `SILENT` (buffers played, zero mix), `QUIET` (no buffer played), `ERROR` |
 
 **GPU time** (`src/gfx/gpu-probe.js`): a `TIME_ELAPSED_EXT` query from one present to the next (the GPU execution time
 of the frame's commands, the final blit included), over windows of 120 consecutive frames every 10 s, read at later
@@ -232,7 +232,7 @@ draws per frame, GL calls per frame, GPU time, render worker waits, busy and vis
 the first mark: downloads, start-up, intro), then the scenario's marks; the scenario's last mark `end` closes the last
 phase.
 
-**Host-timing probe** (`hostTiming` of the bench record, `src/host/web/timing-probe.js`): at the start and at each
+**Host-timing probe** (`hostTiming` of the bench record, `src/web/timing-probe.js`): at the start and at each
 mark, a small worker of the page (the timer resolution is the process's: the emulator's worker sees the same) measures
 how late this browser wakes it up — `atomicsWait1` (Atomics.wait(1 ms), as the emulator's own short waits),
 `atomicsWait1Timer` (the same while a 4 ms setTimeout is pending: Chrome may raise the timer resolution for it),
@@ -253,10 +253,10 @@ Volume: the 0.5 s samples (~0.3 kB each) as before, plus ~2 kB per summary (ever
 ## Passive session records
 
 The owner (and most players) will not run benchmarks: what a game does on a player's machine is learned from their
-normal play sessions, passively. Every runtime's page — the Windows games' (`src/host/web/main.js`), the GoldSrc and re3
+normal play sessions, passively. Every runtime's page — the Windows games' (`src/web/main.js`), the GoldSrc and re3
 ports' (`src/ports/*/play.js`) and the OpenMW engine's page (`src/ports/openmw/frame-meter.js`, put in by the server) —
-sends the same compact record, `event: "perf"`, built by one shared module: `src/host/perf-record.js` (the recording
-and the server's validation, no DOM) and `src/host/web/perf-page.js` (the page side: clock, frame meter, GPU timer,
+sends the same compact record, `event: "perf"`, built by one shared module: `src/shared/perf-record.js` (the recording
+and the server's validation, no DOM) and `src/web/perf-page.js` (the page side: clock, frame meter, GPU timer,
 timing probe, sending). Only when the server keeps telemetry (`/api/config` `telemetry`; the Win32 page also not with
 `?headless=1`). There is no opt-out in Orthros today (none existed for the other telemetry either); the record holds
 nothing beyond what the telemetry already held (the browser's user agent, cores, memory, screen, WebGL renderer).
@@ -280,8 +280,8 @@ histogram then the oldest entries; the server refuses larger ones with 413). Eac
 **What the data waits were for** (the ports, 2026-10-27): a minute's `data` tells how long the game waited, not for
 what — a single file read from its start for 35 s (a radio station's seek, docs/slow-network.md "A radio tuned at its
 position") and scattered archive reads look the same. Every port's page passes `data: () => portDataSummary(gameData,
-engine, { root })` (`src/host/web/perf-page.js`, one helper for GoldSrc, re3 and OpenMW), and the totals' `data` of
-each record carries the session's attribution so far (`compactDataSum` in `src/host/perf-record.js`; the minutes keep
+engine, { root })` (`src/web/perf-page.js`, one helper for GoldSrc, re3 and OpenMW), and the totals' `data` of
+each record carries the session's attribution so far (`compactDataSum` in `src/shared/perf-record.js`; the minutes keep
 `{ n, ms }`): `files` — the 3 files the engine waited for most, `[path, ms, waits]` (the shared game data counts every
 wait by file: `GameData.waited`, `stats.fileWaits`); `blocked` — the engine's own count of its stops for its files when
 it keeps one (reVC's `Module.orthrosBlocked`: `{ n, ms, max, top: [path, ms] x 3 }`, paths under the game folder
@@ -310,9 +310,9 @@ and drops the rest. Not on the Win32 page (its reads are the worker's: `netMs` /
 **The report**:
 
 ```
-node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf                     # every game × GPU
-node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf --game bfme1-108 --gpu Iris
-node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf --json
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf                     # every game × GPU
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf --game bfme1-108 --gpu Iris
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf --json
 ```
 
 Per game × GPU (the renderer's short name, e.g. `Intel Iris Xe Graphics`; `--gpu` matches a part of it or of the
@@ -330,7 +330,7 @@ the first one by default, `&manifest=` picks another), `file`, `coords` (the dis
 written for: they are scaled to the game's display, so a profile with another resolution plays the same clicks),
 `minutes` (shown in the banner), `maxSeconds` (the bench stops there, outcome `timeout`).
 
-The scenario language is the harness's (`tools/headless.mjs --input`), parsed by `src/host/scenario.js` (shared):
+The scenario language is the harness's (`tools/headless.mjs --input`), parsed by `src/web/scenario.js` (shared):
 steps `time:kind:args` separated by `;` or new lines, `#` comment lines; times in seconds from the launch, `+N` after
 the first Direct3D frame, and after a wait from the moment the wait was satisfied. The page plays `move`, `click`,
 `rclick`, `down`, `up`, `key`, `keydown`, `keyup`, `text`, `mark`, `waitfps`, `waitframe` (and skips `shot`, `blur`,
@@ -349,7 +349,7 @@ page sends its records there; the run ends with the bench and prints its phases)
 ```
 tools/with-browser-slot.sh node tools/headless.mjs vice-city-1.1-elamigos-2014 --games-dir /srv/orthros/data/games \
   --ui --bench vicecity-drive --telemetry /tmp/tel --seconds 600 --learn <copy of /tmp/orthros-profiles/learn-live>
-node tools/telemetry-report.mjs /tmp/tel --bench
+node tools/dev/telemetry-report.mjs /tmp/tel --bench
 ```
 
 `--input-file <file>` plays a scenario file in the harness itself (comments and new lines allowed).
@@ -357,10 +357,10 @@ node tools/telemetry-report.mjs /tmp/tel --bench
 ## The report
 
 ```
-node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry                 # every session of 60 s and more
-node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --from 2026-10-05 --to 2026-10-06
-node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --bench           # bench runs only, and their comparison
-node tools/telemetry-report.mjs /var/lib/private/orthros2/telemetry --bench vicecity-drive --json
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry                 # every session of 60 s and more
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --from 2026-10-05 --to 2026-10-06
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --bench           # bench runs only, and their comparison
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --bench vicecity-drive --json
 ```
 
 Options: `--from` / `--to` (dates, inclusive: file names and the server's receipt time), `--session <id>`,
@@ -451,7 +451,7 @@ spin: 45 per frame, 491 scheduling decisions per frame).
 
 ## Checks made (2026-10-23: the bench suite in headless Chromium, every game's first launch)
 
-`tools/bench-suite-check.mjs --suite all --gl-discard` on a server of this branch (`--games-dir` a scratch catalog
+`tools/bench/bench-suite-check.mjs --suite all --gl-discard` on a server of this branch (`--games-dir` a scratch catalog
 linking the live games, `--learn` a copy of the live learned data, `--telemetry`): a fresh browser, the intro's button
 clicked, nothing else. SwiftShader with the rasterizer discarded, load 17-60 (other projects). Second run, all fixes in:
 **7/7 `done` in 875 s** (14.6 min), 8 records written (7 games, the suite's), `telemetry-report.mjs --suite` reads them:

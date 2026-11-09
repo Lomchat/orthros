@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { listGameTree, resolveGameFile, dirsStamp, DirListings } from '../src/host/game-files.js';
+import { listGameTree, resolveGameFile, dirsStamp, DirListings } from '../src/server/game-files.js';
 import { OverlayBackend } from '../src/vfs/overlay-backend.js';
-import { createServer } from '../src/host/server.js';
+import { createServer } from '../src/server/server.js';
 
 test('version files override base files and both directory trees remain visible', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-layers-'));

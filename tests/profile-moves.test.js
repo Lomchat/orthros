@@ -9,7 +9,7 @@ import path from 'node:path';
 import { MemBackend } from '../src/vfs/vfs.js';
 import { NodeBackend } from '../src/vfs/node-backend.js';
 import { applyProfileMoves, profileMovesProblem } from '../src/vfs/profile-moves.js';
-import { loadGameCatalog } from '../src/host/game-catalog.js';
+import { loadGameCatalog } from '../src/server/game-catalog.js';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 

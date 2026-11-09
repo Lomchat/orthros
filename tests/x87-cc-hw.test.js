@@ -1,5 +1,5 @@
 // The x87 condition codes after one instruction, against values measured on the reference CPU (AMD EPYC 7402P, Zen 2)
-// with tools/x87cc-probe.mjs --table (cases: tools/x87cc-cases.mjs — every instruction from the condition codes
+// with tools/check/x87cc-probe.mjs --table (cases: tools/check/x87cc-cases.mjs — every instruction from the condition codes
 // 0000 / C1 / C3 C2 C0 / all four / C0 / C3 / C2, on seven stacks: negative, positive, -0, +inf, 2^64, a QNaN on top,
 // and a zero divisor). Then the JIT (status word in a local and not) against the interpreter on the same cases.
 // Facts this pins (the SDM leaves them undefined or, for FCOMI, documents otherwise): FCOMI / FUCOMI / FCOMIP /
@@ -12,7 +12,7 @@
 // JIT (pre-existing, see jit-x87-sw-local.test.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cases, INS, STACKS, CCS, runOrthros } from '../tools/x87cc-cases.mjs';
+import { cases, INS, STACKS, CCS, runOrthros } from '../tools/check/x87cc-cases.mjs';
 
 // per instruction: the status words of its cases in (stack, condition codes) order, 4 hex digits each
 const HW = {

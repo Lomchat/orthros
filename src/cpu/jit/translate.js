@@ -798,7 +798,7 @@ export function translateRegion(mem, entry, opts = {}) {
 // is left the shift is materialized: the 8 stack locals rotated, the tag word rotated, L_TOP adjusted. A C-runtime
 // math routine entered with its argument pushed (fld ; jcc to the SSE2 code) or pushing its result before a jump
 // to a common epilogue (fld ; jmp L ; ... L: fstp) paid one such rotation on every in-region branch: 8 f64 moves of
-// loop-carried locals (tools/crtmath-bench.mjs: 4 of them per element of an SSE2 sin). A block may instead be
+// loop-carried locals (tools/bench/crtmath-bench.mjs: 4 of them per element of an SSE2 sin). A block may instead be
 // entered with a non-zero shift, its planned entry shift: an in-region transfer (fallthrough, branch, dispatch
 // through L_BLK) rotates only by the difference between its shift and the target's plan, nothing when they agree.
 // A region entry (dispatcher, chain, return) finds the x87 state in the state block: the prologue loads the locals
@@ -1862,7 +1862,7 @@ class Emitter {
    * or the next one, or a watch). The byte is shifted to the top of the word rather than tested directly: V8
    * (TurboFan, x64) turns `if (i32.load8_u ...)` into a movzx load, kept for its out-of-bounds trap, plus a
    * `cmpb [mem], 0` that reads the byte again — two loads per check where the shift leaves one (movzx ; shl ; jnz).
-   * The check follows every store not addressed by ESP (tools/memop-bench.mjs, a `mov [edi+4], eax` over an empty
+   * The check follows every store not addressed by ESP (tools/bench/memop-bench.mjs, a `mov [edi+4], eax` over an empty
    * loop: 0.63 -> 0.37 ns per store, 0.15 without any check).
    * `shift` 30 keeps SMC_CODE | SMC_WATCH only (the byte's other bits leave the word).
    */
@@ -3104,7 +3104,7 @@ HANDLERS[OP.CLI] = () => {}; HANDLERS[OP.STI] = () => {};
 // ---- string ops (32-bit address size; DF from EFLAGS)
 /** REP MOVS / REP STOS below this many elements run the element loop: memory.copy / memory.fill cost a call into
  *  the engine (~8-10 ns in V8, more for overlapping copies) where the loop moves an element in ~0.6 ns (MOVS) or
- *  ~0.4 ns (STOS) — the crossovers measured with tools/strop-bench.mjs. */
+ *  ~0.4 ns (STOS) — the crossovers measured with tools/bench/strop-bench.mjs. */
 const REP_BULK_MIN = { movs: 12, stos: 28 };
 /**
  * REP MOVS / REP STOS (L_T4 = the signed element step, L_T6 = EDI before). The whole range goes to one

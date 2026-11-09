@@ -1,4 +1,4 @@
-// Shared first-launch profile (src/host/profile-seed.js, server /api/profile-seed): selection limits, set identity,
+// Shared first-launch profile (src/shared/profile-seed.js, server /api/profile-seed): selection limits, set identity,
 // the worker's snapshot rules, the server's quorum, bounds, opt-out and persistence.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,8 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, SeedWatch, toBase64, fromBase64, seedCanonFile, canonSets } from '../src/host/profile-seed.js';
-import { createServer } from '../src/host/server.js';
+import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, SeedWatch, toBase64, fromBase64, seedCanonFile, canonSets } from '../src/shared/profile-seed.js';
+import { createServer } from '../src/server/server.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bytes = (s) => new TextEncoder().encode(s);

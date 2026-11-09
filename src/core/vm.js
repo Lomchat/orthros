@@ -191,7 +191,7 @@ export class Vm {
 
   /**
    * An empty JIT in place of this one: its tables in guest memory cleared, every API thunk and process constant given
-   * to it again — the machine then runs as one just restored from its snapshot does (tools/snapshot-check.mjs: the
+   * to it again — the machine then runs as one just restored from its snapshot does (tools/check/snapshot-check.mjs: the
    * original and its copy compared at the JIT's speed, translating alike).
    */
   resetJit() {

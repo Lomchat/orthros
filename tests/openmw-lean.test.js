@@ -1,4 +1,4 @@
-// The OpenMW engine package without what a game of its own never reads (src/host/openmw-lean.js, docs/openmw.md "The
+// The OpenMW engine package without what a game of its own never reads (src/server/ports/openmw-lean.js, docs/openmw.md "The
 // engine's package"): the same package, the example world's and ICU's unused root copy's bytes zeroed, made once per
 // content by a niced child, loaded by a game of its own, at an address every release with that package shares.
 import { test } from 'node:test';
@@ -9,9 +9,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { leanPackages, leanRanges, leanRewrites, leanIcuData, packageFiles, withLeanPackage, LEAN_RULE, ICU_DROPPED } from '../src/host/openmw-lean.js';
-import { createServer } from '../src/host/server.js';
-import { engineContent } from '../src/host/engine-content.js';
+import { leanPackages, leanRanges, leanRewrites, leanIcuData, packageFiles, withLeanPackage, LEAN_RULE, ICU_DROPPED } from '../src/server/ports/openmw-lean.js';
+import { createServer } from '../src/server/server.js';
+import { engineContent } from '../src/server/engine-content.js';
 
 const LOCATE = 'locateFile: function(path){ return __ENGINE_DIR + path; }';
 
@@ -119,7 +119,7 @@ test('rule 3 made by the child: the opened ICU copy rewritten in place across re
   fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, 'openmw.data'), data); fs.writeFileSync(path.join(dir, 'openmw.js'), `loadPackage({files:[${meta.join(',')}]})`);
   const out = path.join(root, 'lean.br'), sha = crypto.createHash('sha256').update(data).digest('hex');
   const { fork } = await import('node:child_process');
-  const code = await new Promise((res) => fork(new URL('../src/host/openmw-lean-worker.js', import.meta.url).pathname, [path.join(dir, 'openmw.data'), path.join(dir, 'openmw.js'), out, sha]).on('exit', res));
+  const code = await new Promise((res) => fork(new URL('../src/server/ports/openmw-lean-worker.js', import.meta.url).pathname, [path.join(dir, 'openmw.data'), path.join(dir, 'openmw.js'), out, sha]).on('exit', res));
   assert.equal(code, 0);
   const got = zlib.brotliDecompressSync(fs.readFileSync(out)), want = Buffer.concat([files[0][1], Buffer.alloc(5), leanIcuData(icu), Buffer.alloc(icu.length), files[4][1]]);
   assert.equal(got.length, data.length); assert.ok(got.equals(want), 'the package: the opened ICU copy rewritten at its offset, the root copy and the example zeroed');

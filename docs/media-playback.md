@@ -85,7 +85,7 @@ few of the audio formats, so most are decoded here, written from the standards; 
   precision (even / odd butterflies; equal to the definition up to the rounding of exact halves).
 - `mpeg-audio.js`: layers I and II (all bit allocation tables, MPEG-2 low sampling frequencies, intensity stereo),
   polyphase synthesis. The synthesis window (`mpeg-audio-window.js`, a constant of the standard, table B.3) was
-  recovered by `tools/mpa-window-fit.mjs`: the decoder's output is linear in the 512 window values, so a least-squares
+  recovered by `tools/dev/mpa-window-fit.mjs`: the decoder's output is linear in the 512 window values, so a least-squares
   fit against a reference decoding gives them; every value lands within 0.07 units of a multiple of 2^-16 (the table's
   unit) and the halves mirror each other as the standard says.
 - `mpeg-source.js`: a file being played: read ahead in 256 KiB chunks (asynchronously when the range is still on the
@@ -109,7 +109,7 @@ exact (RLE, DIB, gray Cinepak) or within 1 per component (the 5-bit expansion of
 conversion rounding); MPEG-1 video 45-66 dB PSNR per
 picture (only the inverse DCT's rounding differs from ffmpeg's integer transform), layer I / II > 100 dB SNR, PCM and
 Microsoft ADPCM exact, IMA ADPCM ~44 dB (ffmpeg computes the step product otherwise); MP3 through WebCodecs in Chromium
-118 dB against ffmpeg (tools/media-browser-check.mjs; the browser's decoder, like Windows', plays the encoder delay and
+118 dB against ffmpeg (tools/check/media-browser-check.mjs; the browser's decoder, like Windows', plays the encoder delay and
 the LAME header frame that ffmpeg drops).
 
 ## Output
@@ -150,7 +150,7 @@ graph, the layer disappears) and the game goes on to its main menu.
 - `make test`: tests/media-mpeg.test.js, media-audio-files.test.js, media-avi.test.js (decoders; against ffmpeg when it
   is installed), quartz.test.js and mci.test.js (tools/pe/quartz.c and mci.c through the COM / winmm ABI, an MPEG
   movie and an AVI each).
-- `tools/with-browser-slot.sh node tools/media-browser-check.mjs`: MP3 through WebCodecs and the VideoFrame colors in
+- `tools/with-browser-slot.sh node tools/check/media-browser-check.mjs`: MP3 through WebCodecs and the VideoFrame colors in
   headless Chromium against ffmpeg.
 - The test programs in the browser: a folder holding `build/pe/mci.exe` (or `quartz.exe`) with `movie.mpg` (and
   `clip.avi`, written by tests/media-avi-writer.js) runs with `node tools/headless.mjs <folder> --games-dir

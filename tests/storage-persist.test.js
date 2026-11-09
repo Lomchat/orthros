@@ -1,11 +1,11 @@
-// The browser's storage of the game data (src/host/web/storage-persist.js, docs/slow-network.md "Persistent storage"):
+// The browser's storage of the game data (src/web/storage-persist.js, docs/slow-network.md "Persistent storage"):
 // persistent storage asked once, its state in every runtime's telemetry env, kept by the server's perf-record check;
 // and the home's lines written from a store's probe (download.js Downloads.probed).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { storageState, askPersist, pageStorage, withStorage } from '../src/host/web/storage-persist.js';
-import { sanitizePerfRecord } from '../src/host/perf-record.js';
-import { PerfSession, eventEnv } from '../src/host/web/perf-page.js';
+import { storageState, askPersist, pageStorage, withStorage } from '../src/web/storage-persist.js';
+import { sanitizePerfRecord } from '../src/shared/perf-record.js';
+import { PerfSession, eventEnv } from '../src/web/perf-page.js';
 
 const MiB = 1 << 20;
 /** a navigator whose storage persists once asked (`grant`), counting the calls */
@@ -62,7 +62,7 @@ test('the home\'s lines from a probe: the launch and the whole download kept as 
   const kept = new Map();
   globalThis.localStorage = { getItem: (k) => kept.get(k) ?? null, setItem: (k, v) => kept.set(k, String(v)), removeItem: (k) => kept.delete(k) };
   try {
-    const { Downloads, launchStatus, downloadStatus } = await import('../src/host/web/download.js');
+    const { Downloads, launchStatus, downloadStatus } = await import('../src/web/download.js');
     const d = new Downloads(), seen = []; d.onChange((n) => seen.push(n));
     const launch = { bytes: 100 * MiB, lightBytes: 40 * MiB, wire: 50 * MiB, lightWire: 20 * MiB, engine: 8 * MiB, engineFiles: ['/engines/r/a.wasm'] };
     assert.equal(launchStatus(launch, { st: d.get('g', 'launch', 'en'), bw: 85000 }).state, 'none', 'before: "Playable after"');
