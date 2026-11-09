@@ -44,7 +44,7 @@ import { listGameTree, dirsStamp, resolveGameFile, resolveLightFile, DirListings
 import { LIGHT_DIR, readLight } from './light-copies.js';
 import { isLightContent } from '../vfs/game-tree.js';
 import { lightCovers } from './light-covers.js';
-import { loadGameCatalog, profileGroups, DEFAULT_GAMES_DIR } from './game-catalog.js';
+import { loadGameCatalog, profileGroups, baseManifests, versionOwners, DEFAULT_GAMES_DIR } from './game-catalog.js';
 import { lanUpgrades, acceptWebSocket } from './lan.js';
 import { DEFAULT_ENGINES_DIR, engineFile, GOLDSRC_MODULE_TREE, goldsrcEngineFiles, goldsrcInstalled, goldsrcPageFiles, goldsrcModes, goldsrcMapPrecache, mapImageFile, portLaunchUrl, roomsApi, udpRelay } from './goldsrc.js';
 import { openmwEngineFiles, openmwInstalled, openmwModes, openmwProxy, openmwWebText, withEngineUrls, withFrameMeter, withInputKeys, withProgressiveView, withQualityTier, withSettingsDefaults, withSharedEngine, withStreaming, withWasmStream } from './openmw.js';
@@ -141,15 +141,23 @@ export function createServer(opts = {}) {
   const enginesDir = path.resolve(opts.enginesDir ?? DEFAULT_ENGINES_DIR);
   const readCatalog = () => manifestDir ? loadManifests(manifestDir, opts.extra) : loadGameCatalog(gamesDir, opts.extra, { enginesDir });
   let manifests = readCatalog();
+  // (the game folders' shared bases, `<game>@base`: their files served and listed — /gamez, /game, /api/tree: dataManifest
+  // — never a version of the home, of the learned orders or of the jobs that go through `manifests`)
+  let bases = baseManifests(manifests);
+  /** A version's manifest, or a shared base's (game-catalog.js baseManifests). */
+  const anyManifest = (id) => manifests.get(id) ?? bases.get(id);
   const trees = new Map(), treeObjs = new Map();
   // (the catalog read again — at each /api/manifests: a game added appears —, the trees of the manifests that say the
   // same kept: listing a game's tree is a stat of each of its files, all of them ~0.5 s that held every request)
   const refreshCatalog = () => {
-    const before = manifests; manifests = readCatalog();
-    // (a tree marks the files of the versions it requires by their owner — listGameTree: one of those changed, it too)
-    const same = (id) => manifests.has(id) && JSON.stringify(manifests.get(id)) === JSON.stringify(before.get(id));
+    const before = manifests, beforeBases = bases; manifests = readCatalog(); bases = baseManifests(manifests);
+    // (a tree marks the files of the versions it requires and of its shared base by their owner — listGameTree: one of
+    // those changed, it too)
+    const was = (id) => before.get(id) ?? beforeBases.get(id);
+    const same = (id) => !!anyManifest(id) && JSON.stringify(anyManifest(id)) === JSON.stringify(was(id));
     for (const id of [...treeObjs.keys()]) {
-      if (same(id) && (manifests.get(id).underlayOwners ?? []).every((o) => same(o.manifest))) continue;
+      const m = anyManifest(id);
+      if (same(id) && (!m.baseOwner || same(m.baseOwner)) && (m.underlayOwners ?? []).every((o) => same(o.manifest) && (!manifests.get(o.manifest)?.baseOwner || same(manifests.get(o.manifest).baseOwner)))) continue;
       treeObjs.delete(id); trees.delete(id);
     }
   };
@@ -162,7 +170,7 @@ export function createServer(opts = {}) {
     if (cached && dirsStamp(cached.dirs) === cached.stamp && cached.contentLight === contentLight) return cached.tree;
     // (the files of the versions it requires marked with their owner: the browsers store and fetch them under it; its
     // content files' light copies marked when its engine reads them so — engineContentLight)
-    const dirs = [], tree = listGameTree(man, dirs, (owner) => manifests.get(owner), { contentLight });
+    const dirs = [], tree = listGameTree(man, dirs, anyManifest, { contentLight });
     treeObjs.set(id, { tree, dirs, stamp: dirsStamp(dirs), contentLight }); trees.delete(id);
     return tree;
   };
@@ -207,6 +215,11 @@ export function createServer(opts = {}) {
     const members = profiles().get(man.profileKey ?? name) ?? [name];
     return [name, ...members.filter((n) => n !== name)].map((n) => ({ name: n, saveKey: manifests.get(n)?.saveKey ?? null }));
   };
+  /** A manifest whose files are served (/gamez, /game, /api/tree): a version's, or a game's shared base's. */
+  // (a base looked up first: getManifest reads the catalog again for an id it does not know)
+  const dataManifest = (id) => bases.get(id) ?? getManifest(id) ?? bases.get(id);
+  /** A version's owners and the stores they may be in before (/api/manifest(s) `owners`, `ownerLegacy`). */
+  const ownersOf = (id, m) => (manifestDir ? { owners: (m.underlayOwners ?? []).map((o) => o.manifest), ownerLegacy: {} } : versionOwners(manifests, id));
   const coverFile = (man) => man.coverPath ?? (man.cover && resolveGameFile(man, man.cover));
   const runtimeOf = (man) => man.runtime ?? 'win32';
   const headers = (extra = {}) => ({
@@ -802,7 +815,7 @@ export function createServer(opts = {}) {
    * CONTENT_EXPORT, launch-set.js): its tree marks their light copies (gameTree).
    */
   // (false before the engine files' index exists — a tree listed while the server starts: listed again once it does)
-  const engineContentLight = (man) => { const release = man[man.runtime]?.engine; try { return man.runtime !== 'win32' && typeof release === 'string' && contentFiles.exports(release).has(CONTENT_EXPORT); } catch { return false; } };
+  const engineContentLight = (man) => { if (man.baseOf) return man.baseOf.some((id) => engineContentLight(manifests.get(id) ?? {})); const release = man[man.runtime]?.engine; try { return man.runtime !== 'win32' && typeof release === 'string' && contentFiles.exports(release).has(CONTENT_EXPORT); } catch { return false; } };
   /**
    * A browser port's engine release as its page downloads it at a first launch: { wire (bytes, brotli when served so —
    * sendEngineFile), urls } — none for a Win32 game.
@@ -1776,7 +1789,7 @@ export function createServer(opts = {}) {
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name, memo, ok), runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : runtime === 're3' ? re3Modes(m.re3) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
-            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, owners: (m.underlayOwners ?? []).map((o) => o.manifest), launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
+            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, owners: ownersOf(name, m).owners, launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
             profileKey: m.profileKey ?? name, // (the player's profile: shared by the versions of the game — docs/profiles.md)
             available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwOk(name, m, memo, ok)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
         });
@@ -1792,8 +1805,8 @@ export function createServer(opts = {}) {
         const engineUrls = runtimeOf(man) !== 'win32' ? { engineUrls: engineUrlsOf(man) } : {};
         // (a GoldSrc port: what its game server precaches at every map's load, its release says — announced with the map)
         const mapPrecache = runtimeOf(man) === 'goldsrc' ? { mapPrecache: goldsrcMapPrecache(man, enginesDir) } : {};
-        // (its profile's key, and the versions whose copies of before it takes once: profile-share.js)
-        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, underlayOwners: undefined, owners: (man.underlayOwners ?? []).map((o) => o.manifest), overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...engineUrls, ...mapPrecache, ...portLanguages(man, m[1]),
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, underlayOwners: undefined, ...ownersOf(m[1], man), overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...engineUrls, ...mapPrecache, ...portLanguages(man, m[1]),
+          // (its profile's key, and the versions whose copies of before it takes once: profile-share.js)
           profileKey: man.profileKey ?? m[1], profileSources: profileSourcesOf(m[1], man) }), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/cover\/([^/]+)$/.exec(p);
@@ -1812,20 +1825,20 @@ export function createServer(opts = {}) {
         return;
       }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
-      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return sendTree(req, res, m[1], man); }
+      if (m) { const man = dataManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return sendTree(req, res, m[1], man); }
       // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd, brotli
       // or gzip when that saves enough (a unit made ahead at brotli 11 when there is one: br-cache.js) (Content-Encoding: the browser decodes before the page sees them), else sent as they are;
       // /gamez/<manifest>/.light/<path>: the file's light copy (light-copies.js), when the version has them
       m = /^\/gamez\/([^/]+)\/(.*)$/.exec(p);
       if (m) {
-        const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
+        const man = dataManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
         const light = m[2].startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, m[2], listings, { contentLight: engineContentLight(man) }) : null;
         const file = light ? light.file : resolveGameFile(man, m[2], listings); if (!file) return send(res, 404, 'not found');
         const r = url.searchParams.get('r') ?? '', rm = /^(\d+)-(\d+)$/.exec(r);
         // (&w=1: a range the engine announced it reads next — not a read, not learned; queued between the game's reads
         // and the background's, counted apart: netStats.want)
         const announced = !!url.searchParams.get('w');
-        if (rm && !url.searchParams.get('p') && !announced) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
+        if (rm && !url.searchParams.get('p') && !announced && !man.baseOf) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
         return sendRangeEncoded(req, res, file, r, announced ? 'want' : url.searchParams.get('p') || url.searchParams.get('a') ? 'bg' : 'demand', light);
       }
       m = /^\/api\/regions\/([^/]+)$/.exec(p);
@@ -1992,7 +2005,7 @@ export function createServer(opts = {}) {
         return send(res, 200, JSON.stringify({ ...netStats, server: state, ...(brCache ? { brCache: brCache.stats() } : {}), ...(url.searchParams.has('launch') ? { launch: launchCoverage() } : {}) }), { 'Content-Type': 'application/json' });
       }
       m = /^\/game\/([^/]+)\/(.*)$/.exec(p);
-      if (m) { const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2], listings); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
+      if (m) { const man = dataManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); const file = resolveGameFile(man, m[2], listings); if (!file) return send(res, 404, 'not found'); return sendFile(req, res, file, 'application/octet-stream'); }
       // browser ports: the version's page (its runtime's own, src/ports/<runtime>/), and the engine releases they name,
       // immutable under their release id
       m = /^\/ports\/openmw\/([^/]+)\/app\/(.*)$/.exec(p);

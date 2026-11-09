@@ -59,17 +59,42 @@ function mergeDir(layers, mark = null, seen = null, rel = '') {
  * (the version's engine reads it light: launch-set.js CONTENT_EXPORT). A media file by its format (isMediaFile,
  * game-tree.js) is marked `media: true`. `seen`: the folders it was listed from pushed to it (dirsStamp: whether it changed since).
  * `ownerOf(id)`: the manifest of a version the tree's underlays belong to (manifest.underlayOwners, game-catalog.js) —
- * a file taken from one is marked `owner: <id>` (fileOwner): the browsers store and fetch it under that version.
+ * a file taken from one is marked `owner: <id>` (fileOwner): the browsers store and fetch it under that version —, or
+ * of a game folder's shared base (manifest.baseOwner, game-catalog.js baseManifests): a file of the version's base/
+ * (one its own folder does not override) is marked `owner: <baseOwner>` (baseFile), shared by every version of the
+ * folder. A marked file whose path in its owner differs from the tree's (a directory's case: the version's folder
+ * names it otherwise) tells it, `op`: the owner's path — the browsers' keys the same whatever version reads it.
  */
 export function listGameTree(manifest, seen = null, ownerOf = null, { contentLight = false } = {}) {
   // (a content file's light copy — a TES3 file's, ESM_FORMAT — only for an engine that reads it light and says when it
   // is done: `contentLight`, its release's CONTENT_EXPORT — launch-set.js)
   const light = manifest.lightCopies ? (file, st, e) => { const c = lightCopy(file, st); if (c && (contentLight || c.format !== ESM_FORMAT)) e.light = c.size; } : null;
-  const owner = ownerOf && manifest.underlayOwners?.length ? fileOwner(manifest, ownerOf, seen) : null;
+  const base = ownerOf && manifest.baseOwner && manifest.baseFolder ? baseFile(manifest.baseFolder, manifest.baseOwner, ownerOf(manifest.baseOwner)) : null;
+  const under = ownerOf && manifest.underlayOwners?.length ? fileOwner(manifest, ownerOf, seen) : null;
+  const owner = base && under ? (file, st, e, rel) => { if (!base(file, st, e, rel)) under(file, st, e, rel); } : base ?? under;
   const mark = light && owner ? (file, st, e, rel) => { light(file, st, e); owner(file, st, e, rel); } : light ?? owner;
   const tree = mergeDir(gameLayers(manifest), mark, seen);
   for (const { at, dir } of manifest.dataMounts ?? []) { if (fs.existsSync(dir)) tree.dirs[at] = mergeDir([dir], mark, seen, at); else seen?.push(dir); }
   return tree;
+}
+
+/** `file`'s path in `dir` ('/'-separated), or null when it is not there. */
+const pathIn = (dir, file) => (file.startsWith(dir + path.sep) ? file.slice(dir.length + 1).split(path.sep).join('/') : null);
+
+/**
+ * listGameTree's marker of a version's shared base files (manifest.baseOwner): (file, st, entry, rel) marks a file of
+ * `baseFolder` — mergeDir took it from there: none of the version's folders above overrides it, whatever the case —
+ * `owner: <owner>` (and `op`, its path there, when the tree's differs), unless it has a light copy the base's manifest
+ * `bm` does not serve; true when marked.
+ */
+function baseFile(baseFolder, owner, bm) {
+  if (!bm) return null;
+  return (file, st, e, rel) => {
+    const at = pathIn(baseFolder, file); if (at === null) return false;
+    if (e.light && !bm.lightCopies) return false;
+    e.owner = owner; if (at !== rel) e.op = at;
+    return true;
+  };
 }
 
 /**
@@ -80,7 +105,9 @@ export function listGameTree(manifest, seen = null, ownerOf = null, { contentLig
  * folder — Morrowind Vanilla+ FR keeps GOTY FR's archives so —, the same size and time then: the browsers' block keys
  * agree), and, when it has a light copy, when that version serves light copies too. Any other file stays the version's
  * own (fetched as before): one the owner's folder overrides (two versions of one game folder share its base), one the
- * owner hides. The folders the owners' paths were resolved in pushed to `seen` (a file added there changes the answer).
+ * owner hides. A file of the owner's shared base (manifest.baseOwner) is that base's: one copy for that game's versions
+ * and every version that requires one of them. The folders the owners' paths were resolved in pushed to `seen` (a
+ * file added there changes the answer).
  */
 function fileOwner(manifest, ownerOf, seen) {
   const owners = [];
@@ -94,6 +121,12 @@ function fileOwner(manifest, ownerOf, seen) {
       const at = resolveGameFile(o.m, rel, memo); if (!at) continue;
       let ost; try { ost = at === file ? st : fs.statSync(at); } catch { continue; }
       if (ost.ino !== st.ino || ost.dev !== st.dev || ost.size !== st.size || ost.mtimeMs !== st.mtimeMs) continue;
+      // (a file of that version's shared base: that base's — game-catalog.js baseManifests —, at its path there)
+      const inBase = o.m.baseOwner && o.m.baseFolder ? pathIn(o.m.baseFolder, at) : null, bm = inBase !== null ? ownerOf(o.m.baseOwner) : null;
+      if (bm) {
+        if (e.light && !bm.lightCopies) return;
+        e.owner = o.m.baseOwner; if (inBase !== rel) e.op = inBase; return;
+      }
       if (e.light && !o.m.lightCopies) return;
       e.owner = o.id; return;
     }

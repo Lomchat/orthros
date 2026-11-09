@@ -111,6 +111,9 @@ test('a required version\'s file is marked only when it is that version\'s own a
   assert.equal(tree.files['Y.dat'].owner, 'a', 'the base\'s Y: the same file through a');
   assert.equal(tree.files['own.dat'].owner, undefined);
   assert.ok(seen.includes(a.folder), 'a\'s folder watched (a file added there changes the marks)');
+  // (a's game shares its base among its versions — game-catalog.js baseOwner —: a's base files are that base's)
+  const shared = listGameTree(b, null, (id) => (id === 'a' ? { ...a, baseOwner: 'G@base' } : id === 'G@base' ? { folder: a.baseFolder } : null));
+  assert.deepEqual([shared.files['Y.dat'].owner, shared.files['X.dat'].owner], ['G@base', undefined]);
   // (a port's version folder keeping hard links of the files of the version it requires — not a copy)
   const c = { folder: path.join(root, 'H/c'), underlays: [path.join(root, 'H/a')], underlayOwners: [{ manifest: 'a2', dirs: [path.join(root, 'H/a')] }] };
   fs.mkdirSync(c.folder, { recursive: true });

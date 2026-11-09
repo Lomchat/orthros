@@ -4,7 +4,7 @@
 // bounded LRU cache with read-ahead for sequential access.
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { NetLink, H1_CONNECTIONS, AHEAD_REQUESTS } from './net-link.js';
-import { LIGHT_DIR, isVideoFile, isLightPicture } from './game-tree.js';
+import { LIGHT_DIR, isVideoFile, isLightPicture, treeLookup, treeStat, treeReaddir } from './game-tree.js';
 import { decodePcm, PCM_MAGIC } from './pcm-codec.js';
 
 export const BLOCK = 1 << 20; // 1 MiB
@@ -200,10 +200,12 @@ export class HttpBackend {
   /**
    * @param {string} baseUrl e.g. "/game/bfme-vanilla/"
    * @param {{ dirs: Record<string, any>, files: Record<string, {size: number, mtime: number}> }} tree
-   * @param {{ net?: NetLink, cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[], encoded?: boolean, session?: string, link?: Set<HttpBackend> }} [opts]
+   * @param {{ net?: NetLink, cacheBlocks?: number, store?: import('./opfs-store.js').OpfsBlockStore | null, onFetch?: (info: {url: string, start: number, end: number, ms: number}) => void, onRetry?: (info: {url: string, start: number, end: number, problem: string, attempt: number}) => void, retryWaits?: number[], encoded?: boolean, session?: string, link?: Set<HttpBackend>, budget?: { members: Set<HttpBackend>, units: number } }} [opts]
    *   store: persistent block store (OPFS) consulted before the network and filled with every fetched block
    *   link: the backends sharing the player's connection (the game's folder and the games it requires, mounted beside
    *   it): the game's reads through any of them come first for the background downloads of all of them
+   *   budget: the backends whose memory caches share one budget, `units` times one backend's (game-data.js openVersion:
+   *   the parts of a version — its files split by owner take no more memory than before); the largest trimmed first
    */
   constructor(baseUrl, tree, opts = {}) {
     this.base = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
@@ -215,6 +217,7 @@ export class HttpBackend {
     this.net ??= new NetLink({ fixed: true }); // (no measure given: the local-network policies, as a test or a tool expects)
     this.cache = new Map(); // key "path#block" -> Uint8Array (insertion order = LRU)
     this.maxBlocks = opts.cacheBlocks ?? DEFAULT_CACHE_BLOCKS;
+    this.budget = opts.budget ?? null; this.budget?.members.add(this);
     this.onFetch = opts.onFetch ?? null;
     this.onRetry = opts.onRetry ?? null;
     this.retryWaits = opts.retryWaits ?? RETRY_WAITS;
@@ -233,7 +236,7 @@ export class HttpBackend {
     this.stats = { requests: 0, bytes: 0, ms: 0 };
     /** the game's reads, whatever answered them (this browser's copy, memory, the network): bytes, those of movies */
     this.reads = { bytes: 0, videoBytes: 0 };
-    /** each game read, as it happens: (path, start, end) — a page learning what its game read (worker.js, the mark) */
+    /** each game read, as it happens: (path, start, end, its HttpFile) — a page learning what its game read (worker.js, the mark) */
     this.onRead = opts.onRead ?? null;
     /** 64 KiB pieces of blocks not fetched whole yet: "path#chunk" -> bytes (insertion order = LRU) */
     this.chunks = new Map(); this.chunkBytes = 0;
@@ -289,43 +292,10 @@ export class HttpBackend {
     this.wantLoose = 0;
   }
 
-  /**
-   * Walk the tree case-insensitively; returns { node, dirNode, name, path } or null. A file's light copy (LIGHT_DIR/<path>,
-   * src/host/light-copies.js) is a file of its own: its size the tree's `light`.
-   */
-  lookup(rel) {
-    if (rel.startsWith(LIGHT_DIR + '/')) {
-      const r = this.lookup(rel.slice(LIGHT_DIR.length + 1));
-      return r?.file?.light ? { file: { size: r.file.light, mtime: r.file.mtime ?? 0 }, name: r.name, path: `${LIGHT_DIR}/${r.path}` } : null;
-    }
-    const parts = rel.split(/[\\/]/).filter(Boolean);
-    let node = this.tree; const realParts = [];
-    for (let i = 0; i < parts.length; i++) {
-      const p = parts[i], last = i === parts.length - 1;
-      const dirs = node.dirs ?? {}, files = node.files ?? {};
-      let hit = dirs[p] !== undefined ? p : Object.keys(dirs).find((n) => n.toLowerCase() === p.toLowerCase());
-      if (hit !== undefined) { node = dirs[hit]; realParts.push(hit); continue; }
-      if (!last) return null;
-      hit = files[p] !== undefined ? p : Object.keys(files).find((n) => n.toLowerCase() === p.toLowerCase());
-      if (hit === undefined) return null;
-      return { file: files[hit], name: hit, path: [...realParts, hit].join('/') };
-    }
-    return { dir: node, name: realParts[realParts.length - 1] ?? '', path: realParts.join('/') };
-  }
-
-  stat(rel) {
-    const r = this.lookup(rel);
-    if (!r) return null;
-    return r.dir ? { size: 0, isDir: true, mtime: 0 } : { size: r.file.size, isDir: false, mtime: r.file.mtime ?? 0 };
-  }
-  readdir(rel) {
-    const r = this.lookup(rel);
-    if (!r || !r.dir) return null;
-    const out = [];
-    for (const n of Object.keys(r.dir.dirs ?? {})) out.push({ name: n, size: 0, isDir: true, mtime: 0 });
-    for (const [n, f] of Object.entries(r.dir.files ?? {})) out.push({ name: n, size: f.size, isDir: false, mtime: f.mtime ?? 0 });
-    return out;
-  }
+  /** The tree walked as the guest sees it (game-tree.js treeLookup): { file | dir, name, path } or null. */
+  lookup(rel) { return treeLookup(this.tree, rel); }
+  stat(rel) { return treeStat(this.tree, rel); }
+  readdir(rel) { return treeReaddir(this.tree, rel); }
   open(rel, opts = {}) {
     const r = this.lookup(rel);
     if (!r || r.dir) return null;
@@ -1364,7 +1334,15 @@ export class HttpBackend {
     this.trimPieces();
     return true;
   }
-  trimPieces() { while (this.chunkBytes > MAX_CHUNK_BYTES) { const [k, v] = this.chunks.entries().next().value; this.chunks.delete(k); this.chunkBytes -= v.length; } }
+  trimPieces() {
+    const g = this.budget?.units ? this.budget : null;
+    if (!g) { while (this.chunkBytes > MAX_CHUNK_BYTES) { const [k, v] = this.chunks.entries().next().value; this.chunks.delete(k); this.chunkBytes -= v.length; } return; }
+    let n = 0; for (const b of g.members) n += b.chunkBytes;
+    while (n > MAX_CHUNK_BYTES * g.units) {
+      let big = this; for (const b of g.members) if (b.chunkBytes > big.chunkBytes) big = b;
+      const [k, v] = big.chunks.entries().next().value; big.chunks.delete(k); big.chunkBytes -= v.length; n -= v.length;
+    }
+  }
   /** pieces fetched are kept in the persistent store too: on a link that is not fast (whole blocks may never come) */
   keepPieces() { return !!this.store && (!this.net.fast() || this.keepLearned > 0); }
   /** Every piece of block `index` is here: the block is assembled from them and installed (memory, store). */
@@ -1667,6 +1645,9 @@ export class HttpBackend {
     }
   }
 
+  /** The reader gone (its data worker closed): the background fill's queues dropped — its loop ends at its next turn. */
+  stopFill() { this.want.clear(); this.near.clear(); this.later.clear(); this.upgrades.clear(); }
+
   /** Download the wanted blocks, one at a time, while the game is not reading synchronously. */
   async fillBackground() {
     if (this.filling || typeof fetch !== 'function') return;
@@ -1785,11 +1766,18 @@ export class HttpBackend {
     store.flush(true);
     progress.done = true;
   }
-  evict() { while (this.cache.size > this.maxBlocks) { const first = this.cache.keys().next().value; this.cache.delete(first); } }
+  evict() {
+    const g = this.budget?.units ? this.budget : null;
+    if (!g) { while (this.cache.size > this.maxBlocks) { const first = this.cache.keys().next().value; this.cache.delete(first); } return; }
+    let n = 0; for (const b of g.members) n += b.cache.size;
+    for (; n > this.maxBlocks * g.units; n--) { let big = this; for (const b of g.members) if (b.cache.size > big.cache.size) big = b; big.cache.delete(big.cache.keys().next().value); }
+  }
 }
 
 class HttpFile {
-  constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; this.run = 0; this.memoIndex = -1; this.memoBlock = null; }
+  // (readName, readPath: the version and path the game opened it under when another's part serves it — game-data.js
+  // PartsBackend —, for the reports of its reads)
+  constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; this.run = 0; this.memoIndex = -1; this.memoBlock = null; this.readName = null; this.readPath = null; }
   size() { return this.len; }
   /**
    * Debugging (?dbg=ORTHROS_VERIFY_READS=1): the bytes a read returned compared with the same range fetched straight
@@ -1848,7 +1836,7 @@ class HttpFile {
     if (off >= end) return new Uint8Array(0);
     this.note(off, end);
     this.b.reads.bytes += end - off; if (this.video) this.b.reads.videoBytes += end - off;
-    this.b.onRead?.(this.path, off, end);
+    this.b.onRead?.(this.path, off, end, this);
     const out = into && into.length >= end - off ? into : new Uint8Array(end - off);
     const sequential = off === this.lastEnd;
     this.lastEnd = end;

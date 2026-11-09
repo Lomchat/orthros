@@ -25,7 +25,7 @@
 // the engine read come last, in the background (HttpBackend.upgrade).
 // The page knows the files by the version it opened (its parts' names); a file that version takes from one it requires
 // is read, kept and learned-ahead through that version's part (game-data.js partOf, learnedOrders): its store, its URLs.
-import { openVersion, openStore, learnedOrders, partOf } from './game-data.js';
+import { openVersion, openStore, openLegacyStore, learnedOrders, partOf } from './game-data.js';
 import { MemBlockStore } from './opfs-store.js';
 import { BLOCK, CHUNK } from './http-backend.js';
 import { LIGHT_DIR, isLightContent, treeFiles } from './game-tree.js';
@@ -104,7 +104,7 @@ function dispatch(m) {
   if (m.light) { upgrade(m.light.name, m.light.path, !!m.light.soon); return; }
   if ('whole' in m) { m.whole ? wholeDownload() : (W.whole && (W.whole.stop = true)); return; }
   if (m.migrate) { migrate(m.migrate); return; }
-  if (m.close) { W.stop = true; report(true); for (const t of W.timers) clearInterval(t); for (const p of W.parts.values()) try { p.store?.close(); } catch { /* closed */ } }
+  if (m.close) { W.stop = true; report(true); for (const t of W.timers) clearInterval(t); for (const p of W.parts.values()) try { p.files?.stopFill?.(); p.store?.close(); } catch { /* closed */ } }
 }
 
 /**
@@ -117,7 +117,9 @@ function dispatch(m) {
 async function init(o) {
   W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.lang = typeof o.lang === 'string' && o.lang ? o.lang : null; W.prefetchAt = o.prefetch ?? 'none'; W.reloads = !!o.reloads;
   const kept = {};
-  W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, manifest: o.manifest, cacheBlocks: o.cacheBlocks, kept: (n) => kept[n], store: async (n) => {
+  // (legacy: the stores of the game's other versions that kept its shared base's files before — ownerLegacy —, closed
+  // with the shared part's store)
+  W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, manifest: o.manifest, cacheBlocks: o.cacheBlocks, kept: (n) => kept[n], legacy: openLegacyStore, store: async (n) => {
     const s = await openStore(n); kept[n] = !!s;
     return s ?? new MemBlockStore(o.memBytes ?? 512 << 20);
   } });

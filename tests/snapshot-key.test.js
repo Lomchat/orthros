@@ -32,3 +32,11 @@ test('the flags that change the machine still change the key, in their order', a
   assert.notEqual(await key({ dbg: '', gameLanguage: 'en' }), plain, 'the language');
   assert.notEqual(await key({ dbg: '', timeScale: 2 }), plain, 'the options that change the machine');
 });
+
+test('where the files are kept (a shared base, an owner) leaves the key as it is', async () => {
+  const plain = await key({ dbg: '' });
+  const marked = await snapshotKey('sources-hash', 'bfme1-108', { name: 'bfme1-108', exe: 'game.exe', owners: ['bfme1@base'], ownerLegacy: { 'bfme1@base': ['bfme1-108'] }, baseOwner: 'bfme1@base' },
+    { files: { 'game.exe': { size: 2, mtime: 1, owner: 'bfme1@base', op: 'GAME.exe' } } }, { ...base, dbg: '' });
+  assert.equal(marked, plain);
+  assert.notEqual(await snapshotKey('sources-hash', 'bfme1-108', { name: 'bfme1-108', exe: 'game.exe' }, { files: { 'game.exe': { size: 3, mtime: 1 } } }, { ...base, dbg: '' }), plain, 'a file\'s size still counts');
+});

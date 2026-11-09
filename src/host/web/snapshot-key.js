@@ -10,13 +10,26 @@ import { HOST_ONLY_DBG } from '../../gfx/gpu-probe.js';
 export const machineDbg = (dbg) => String(dbg ?? '').split(',').filter((kv) => kv && !HOST_ONLY_DBG.includes(kv.split('=')[0])).join(',');
 
 /**
+ * Which browser store keeps a file and where it is fetched from — the manifest's `owners`, `ownerLegacy`, `baseOwner`, a
+ * tree file's `owner` and `op` (game-data.js: a shared base, a required version's files) — the guest never sees: left
+ * out of the key (a game's base shared or not, the same snapshot). A tree file's entry is the object with a numeric
+ * `size` (a file named "owner" in a folder is a key of `files`, whose holder has none).
+ */
+// (profileSources: the versions sharing the version's profile — a version added to its game — are not its machine's)
+const KEY_SKIPS_MANIFEST = new Set(['owners', 'ownerLegacy', 'baseOwner', 'profileSources']), KEY_SKIPS_FILE = new Set(['owner', 'op']);
+const keyReplacer = function (k, v) {
+  if (KEY_SKIPS_FILE.has(k) && typeof this?.size === 'number' && !Array.isArray(this)) return undefined;
+  return v;
+};
+
+/**
  * The key of a snapshot of game `name` (a hex string, 32 digits): `sources` the state-owning sources' hash, `manifest`
- * and `tree` the version's, `opts` the worker's start options (main.js) — those that change the machine only.
+ * and `tree` the version's (where their files are kept left out: keyReplacer), `opts` the worker's start options
+ * (main.js) — those that change the machine only.
  */
 export async function snapshotKey(sources, name, manifest, tree, opts) {
   const machine = { lang: opts.gameLanguage, timeScale: opts.timeScale, interp: opts.interp, interpRange: opts.interpRange, dbg: machineDbg(opts.dbg), jitOpts: opts.jitOpts, noF32: opts.noF32, f32Off: opts.f32Off };
-  // (the versions sharing the version's profile — a version added to its game — are not its machine's)
-  const own = { ...manifest, profileSources: undefined };
-  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ sources, name, manifest: own, tree, machine })));
+  const m = manifest && typeof manifest === 'object' ? Object.fromEntries(Object.entries(manifest).filter(([k]) => !KEY_SKIPS_MANIFEST.has(k))) : manifest;
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ sources, name, manifest: m, tree, machine }, keyReplacer)));
   return Array.from(new Uint8Array(d).subarray(0, 16), (b) => b.toString(16).padStart(2, '0')).join('');
 }

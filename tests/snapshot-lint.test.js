@@ -76,9 +76,8 @@ test('the game data\'s transport is out of the snapshot sources, the guest-visib
 
 test('what the guest sees of the game folder through the data transport is pinned (out of the snapshot key)', async () => {
   // (http-backend.js is out of the key, DATA_TRANSPORT: its answers to the guest's stat/readdir/open — case folding, the
-  // listing's order, a directory's date — are restored over silently if they change. Changing one here fails this test:
-  // such a change must change the key too — moved into a kept module, src/host/snapshot-sources.js KEPT —, never a
-  // data-only deploy)
+  // listing's order, a directory's date — come from game-tree.js treeLookup/treeStat/treeReaddir, a kept module —
+  // src/host/snapshot-sources.js KEPT —; changing one here fails this test: never a data-only deploy)
   const { HttpBackend } = await import('../src/vfs/http-backend.js');
   const { LIGHT_DIR } = await import('../src/vfs/game-tree.js');
   const tree = { dirs: {
