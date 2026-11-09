@@ -64,11 +64,11 @@ export class GpuProbe {
   /** Something else wraps or replaces GL methods (frame capture, GL timing, null mode): the call counter stays away. */
   set busy(v) { this.isBusy = v; if (v) this.stopGlCount(false); }
   /** The context was lost and restored: the queries in flight are gone (counted lost), wrapped methods kept. */
-  reset() { this.stats.gpu.lost += this.pending.length + (this.cur ? 1 : 0); this.pending.length = 0; this.cur = null; this.runQ = null; this.runArm = false; this.fences.length = 0; this.hot = false; this.left = 0; }
+  reset() { this.stats.gpu.lost += this.pending.length + (this.cur ? 1 : 0); this.pending.length = 0; for (const f of this.fences) try { this.gl.deleteSync(f.sync); } catch { /* context lost */ } this.cur = null; this.runQ = null; this.runArm = false; this.fences.length = 0; this.hot = false; this.left = 0; }
   /** A draw call is about to be issued: the first of a run-timed frame opens its query; pending fences are polled. */
   draw() {
     if (this.runArm) {
-      this.runArm = false;
+      this.runArm = false; if (this.cur) return; // (never two TIME_ELAPSED queries at once)
       const q = this.gl.createQuery(); if (q) { q.run = true; this.gl.beginQuery(TIME_ELAPSED_EXT, q); this.runQ = q; }
     }
     if (this.fences.length) { const now = this.now(); if (now - this.lastPoll >= POLL_MS) this.pollFences(now); }
@@ -103,6 +103,7 @@ export class GpuProbe {
   gpuFrame(now) {
     const gl = this.gl, g = this.stats.gpu;
     this.presents = (this.presents ?? 0) + 1;
+    this.runArm = false; // (a run-timed frame that drew nothing — a loading screen, clears or blits only — times no run)
     if (this.cur) { gl.endQuery(TIME_ELAPSED_EXT); this.cur.endAt = this.presents; this.pending.push(this.cur); this.cur = null; }
     this.poll();
     const metric = globalThis.ORTHROS_GPU_METRIC !== 0 && typeof gl.fenceSync === 'function';

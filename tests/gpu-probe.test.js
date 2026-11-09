@@ -28,3 +28,19 @@ test('window: even frames time present to present, odd ones the draw run, fences
   assert.equal(g.runMs / g.runFrames, 5);
   assert.ok(g.fenceN > 0, 'fences resolved');
 });
+
+test('a run-timed frame that draws nothing never nests a query into the next frame', () => {
+  let active = null;
+  const gl = {
+    QUERY_RESULT_AVAILABLE: 1, QUERY_RESULT: 2,
+    getExtension: () => ({}), createQuery: () => ({}), deleteQuery() {}, deleteSync() {},
+    beginQuery(_, q) { assert.equal(active, null, 'one TIME_ELAPSED at a time'); active = q; },
+    endQuery() { assert.ok(active, 'an active query ended'); active.ns = 1e6; active = null; },
+    getQueryParameter: (q, p) => (p === 1 ? true : q.ns), getParameter: () => false,
+    fenceSync: () => ({}), getSyncParameter: () => 0x9119,
+  };
+  const p = new GpuProbe(gl, { now: () => 4000, wrapGl: false });
+  // frames with no draw at all (a loading screen): the armed run must not survive into a present-to-present frame
+  for (let f = 0; f < 6; f++) { p.endRun(); p.frame(); if (f % 2) p.draw(); }
+  for (let f = 0; f < 6; f++) { p.endRun(); p.frame(); p.draw(); }
+});
