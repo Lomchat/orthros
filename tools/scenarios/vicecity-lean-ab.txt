@@ -1,0 +1,37 @@
+# Vice City 1.1 (vice-city-1.1-elamigos-2014), the start of vicecity-drive.txt (a new game, into the car), then still: lean shaders (ORTHROS_LEAN_SHADERS_OFF) A/B in one session (docs/render-worker.md "Software rendering"):
+# after the play anchor, both program sets built (warm-off, warm-on), two probes of the render cost (diag-flatfs:
+# every pixel shader a flat color; diag-nearest: every sampler point-sampled), then on1/off1/on2/off2/on3/off3 of 25 s.
+10:click:10,10
+13:click:10,10
+16:waitframe:5,40
+2:click:320,192
+4:waitframe:1,100000
+2:click:320,177
+8:waitframe:150,100000
+3:key:13
+25:key:70
+35:dbg:ORTHROS_LEAN_SHADERS_OFF=1
+35:mark:warm-off
+55:dbg:ORTHROS_LEAN_SHADERS_OFF=
+55:mark:warm-on
+70:dbg:ORTHROS_GL_FLATFS=1
+70:mark:diag-flatfs
+90:dbg:ORTHROS_GL_FLATFS=
+90:mark:diag-back1
+100:dbg:ORTHROS_GL_NEAREST=1
+100:mark:diag-nearest
+120:dbg:ORTHROS_GL_NEAREST=
+120:mark:diag-back2
+130:mark:on1
+155:dbg:ORTHROS_LEAN_SHADERS_OFF=1
+155:mark:off1
+180:dbg:ORTHROS_LEAN_SHADERS_OFF=
+180:mark:on2
+205:dbg:ORTHROS_LEAN_SHADERS_OFF=1
+205:mark:off2
+230:dbg:ORTHROS_LEAN_SHADERS_OFF=
+230:mark:on3
+255:dbg:ORTHROS_LEAN_SHADERS_OFF=1
+255:mark:off3
+280:dbg:ORTHROS_LEAN_SHADERS_OFF=
+280:mark:fin

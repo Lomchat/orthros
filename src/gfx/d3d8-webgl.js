@@ -5,7 +5,7 @@
 // viewport onto GL. DX8 and DX9 devices share the state model; DX9 adds vertex declarations,
 // sampler states, shader objects (SM 1.x–2.x), stream offsets, base vertices, MRT/scissor.
 import { FMT, surfacePitch, surfaceBytes } from '../win32/d3d8.js';
-import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, ffProgramFromKey, flatVaryings, translateVertexShader, translatePixelShader, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
+import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, ffProgramFromKey, flatVaryings, translateVertexShader, translatePixelShader, leanShaders, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
 import { translateVertexShader9, translatePixelShader9, semName, disasmShader9 } from './d3d9-shaders.js';
 import { programSourceKey, programSourceId, PROGRAM_GLSL_VERSION } from './program-id.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
@@ -740,6 +740,10 @@ export class WebGLDevice {
   // ---------------------------------------------------------------- programs
   program() {
     const dev = this.dev;
+    // (the translators' switches, debug globals that may move within a session — lean shaders, the flat-color probe:
+    // the programs by key are dropped, those by sources kept, so that switching back costs no compile)
+    const mode = (leanShaders() ? 1 : 0) | (globalThis.ORTHROS_GL_FLATFS ? 2 : 0);
+    if (mode !== (this.shaderMode ?? 1)) { this.shaderMode = mode; this.programs.clear(); this.progBySig?.clear(); this.lastProgram = null; this.log(`d3d-webgl: shader mode ${mode} (lean ${mode & 1 ? 'on' : 'off'}${mode & 2 ? ', flat-color pixel shaders' : ''})`); }
     // nothing that feeds the key changed since the last draw (programVersion: the states of the key only; the
     // stages' texture objects are read from the device at bind time)
     if (this.lastProgram && this.lastProgramVersion === dev.programVersion && this.lastProgramDev === dev) return this.lastProgram;
@@ -869,6 +873,9 @@ export class WebGLDevice {
     const env = { cube: stages.map((s) => s.cube), volume: stages.map((s) => s.volume), projected: stages.map((s) => s.projected), fog, alphaTest };
     let fsSrc = ff ? ff.fs : ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
     if (flat && !ff) ({ vs: vsSrc, fs: fsSrc } = flatVaryings(vsSrc, fsSrc)); // (ffProgramFromKey: done)
+    // (measurement, dbg ORTHROS_GL_FLATFS=1: every pixel shader replaced by a constant color — what the pixels' shading,
+    // texture sampling and interpolation cost a software rasterizer, against depth tests, blending and vertex work)
+    if (globalThis.ORTHROS_GL_FLATFS) fsSrc = '#version 300 es\nprecision highp float;\nout vec4 fragColor;\nvoid main() { fragColor = vec4(0.5, 0.5, 0.5, 1.0); }';
     // the same sources as a program built for another key (another shader object with the same code, a state the
     // key records but these sources ignore): that program, without a new compile and link
     const srcKey = programSourceKey(vsSrc, fsSrc, attrNames);
@@ -1112,7 +1119,7 @@ export class WebGLDevice {
       // the sampler of this stage's last draw when neither its states (the table's version) nor its texture changed
       const stbl = dev.api9 ? dev.samplers[i] : dev.tss[i], sc = this.smpCache ??= [];
       let ce = sc[i];
-      const smpHit = ce !== undefined && ce.tbl === stbl && ce.ver === stbl?.ver && ce.tex === tex && ce.lod === tex.lod && ce.dev === dev && !this.glValidate && !this.noStateCache;
+      const smpHit = ce !== undefined && ce.tbl === stbl && ce.ver === stbl?.ver && ce.tex === tex && ce.lod === tex.lod && ce.dev === dev && ce.nearest === !!globalThis.ORTHROS_GL_NEAREST && !this.glValidate && !this.noStateCache;
       if (smpHit && !apiOpt.glCheck) {
         if (gs.smp[i] !== ce.smp) { gl.bindSampler(i, ce.smp); gs.smp[i] = ce.smp; }
         continue;
@@ -1129,23 +1136,25 @@ export class WebGLDevice {
       // D3DSAMP_MAXMIPLEVEL / IDirect3DBaseTexture::SetLOD (managed textures): the most detailed level sampled (0: the
       // largest) — GL's minimum LOD (mipmapped sampling; the levels below it stay in use)
       const minLod = levels > 1 && mip ? Math.min(levels - 1, Math.max(this.samp(i, SAMP.MAXMIPLEVEL, 0) >>> 0, tex.lod ?? 0)) : 0;
-      const skey = ((au & 7) | ((av & 7) << 3) | ((aw & 7) << 6) | ((mag & 3) << 9) | ((min & 3) << 11) | ((mip & 3) << 13) | ((levels > 1 ? 1 : 0) << 15) | ((an & 31) << 16)) + minLod * 0x200000;
+      // (measurement, dbg ORTHROS_GL_NEAREST=1: every sampler point-sampled from one level — the texture filtering's cost)
+      const nearest = !!globalThis.ORTHROS_GL_NEAREST;
+      const skey = ((au & 7) | ((av & 7) << 3) | ((aw & 7) << 6) | ((mag & 3) << 9) | ((min & 3) << 11) | ((mip & 3) << 13) | ((levels > 1 ? 1 : 0) << 15) | ((an & 31) << 16)) + minLod * 0x200000 + (nearest ? 2 ** 40 : 0);
       let smp = this.samplerPool.get(skey);
       if (!smp) {
         smp = gl.createSampler(); this.samplerPool.set(skey, smp);
         const wrap = (m) => (m === 2 ? gl.MIRRORED_REPEAT : m === 3 || m === 4 || m === 5 ? gl.CLAMP_TO_EDGE : gl.REPEAT);
         gl.samplerParameteri(smp, gl.TEXTURE_WRAP_S, wrap(au)); gl.samplerParameteri(smp, gl.TEXTURE_WRAP_T, wrap(av)); gl.samplerParameteri(smp, gl.TEXTURE_WRAP_R, wrap(aw));
-        gl.samplerParameteri(smp, gl.TEXTURE_MAG_FILTER, mag >= 2 ? gl.LINEAR : gl.NEAREST);
-        gl.samplerParameteri(smp, gl.TEXTURE_MIN_FILTER, levels > 1 && mip ? (min >= 2 ? (mip >= 2 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR_MIPMAP_NEAREST) : (mip >= 2 ? gl.NEAREST_MIPMAP_LINEAR : gl.NEAREST_MIPMAP_NEAREST)) : (min >= 2 ? gl.LINEAR : gl.NEAREST));
-        if (this.aniso) gl.samplerParameterf(smp, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, an);
+        gl.samplerParameteri(smp, gl.TEXTURE_MAG_FILTER, mag >= 2 && !nearest ? gl.LINEAR : gl.NEAREST);
+        gl.samplerParameteri(smp, gl.TEXTURE_MIN_FILTER, nearest ? (levels > 1 && mip ? gl.NEAREST_MIPMAP_NEAREST : gl.NEAREST) : levels > 1 && mip ? (min >= 2 ? (mip >= 2 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR_MIPMAP_NEAREST) : (mip >= 2 ? gl.NEAREST_MIPMAP_LINEAR : gl.NEAREST_MIPMAP_NEAREST)) : (min >= 2 ? gl.LINEAR : gl.NEAREST));
+        if (this.aniso) gl.samplerParameterf(smp, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, nearest ? 1 : an);
         gl.samplerParameterf(smp, gl.TEXTURE_MIN_LOD, minLod);
         if (minLod && (this.minLodLogs = (this.minLodLogs ?? 0) + 1) <= 4) this.log(`d3d-webgl: sampler from mip level ${minLod} (MAXMIPLEVEL ${this.samp(i, SAMP.MAXMIPLEVEL, 0)}, texture LOD ${tex.lod ?? 0}, ${levels} levels)`);
         if (levels <= 1) gl.samplerParameterf(smp, gl.TEXTURE_MAX_LOD, 0);
       }
       if (smpHit && smp !== ce.smp) this.cacheMiss(`sampler of stage ${i}`);
       if (gs.smp[i] !== smp) { gl.bindSampler(i, smp); gs.smp[i] = smp; }
-      if (ce === undefined) ce = sc[i] = { tbl: null, ver: -1, tex: null, lod: 0, dev: null, smp: null };
-      ce.tbl = stbl; ce.ver = stbl?.ver; ce.tex = tex; ce.lod = tex.lod; ce.dev = dev; ce.smp = smp;
+      if (ce === undefined) ce = sc[i] = { tbl: null, ver: -1, tex: null, lod: 0, dev: null, smp: null, nearest: false };
+      ce.tbl = stbl; ce.ver = stbl?.ver; ce.tex = tex; ce.lod = tex.lod; ce.dev = dev; ce.smp = smp; ce.nearest = nearest;
     }
     // depth / stencil / blending / color mask / culling: from the render states and the target's orientation only — not
     // looked at again while none of them changed since this device's last draw (the render state table's version) and

@@ -10,7 +10,7 @@ test('ps_1_1: def constants of 0.0 are values, not instructions (no length field
   assert.equal(disasmShader9(code), 'ps_1_1\ndef c3, 0, 0, 0, 0\ntex t0\nmov r0, t0');
   const glsl = translatePixelShader9(code, { cube: [], projected: [], fog: 0 }).glsl;
   assert.match(glsl, /t0 = texture\(u_tex0, \(v_tex0\)\.xy\);/);
-  assert.match(glsl, /r\[0\] = clamp\(t0\.xyzw, -1\.0, 1\.0\);/);
+  assert.match(glsl, /r(\[0\]|0) = clamp\(t0\.xyzw, -1\.0, 1\.0\);/);
   assert.doesNotMatch(glsl, /gl_FragDepth/, 'no depth output unless the shader writes depth');
 });
 
@@ -29,7 +29,7 @@ test('ps_1_1: a co-issued instruction reads the registers of before its pair; co
   assert.equal(disasmShader9(code), 'ps_1_1\nmov r0.xyz, c0\n+mov r0.w, r0.z');
   const glsl = translatePixelShader9(code, { cube: [], projected: [], fog: 0 }).glsl;
   const lines = glsl.split('\n');
-  const snap = lines.findIndex((l) => /vec4 co0 = r\[0\];/.test(l)), rgb = lines.findIndex((l) => /r\[0\]\.xyz = /.test(l)), a = lines.findIndex((l) => /r\[0\]\.w = .*co0\.zzzz/.test(l));
+  const snap = lines.findIndex((l) => /vec4 co0 = r(\[0\]|0);/.test(l)), rgb = lines.findIndex((l) => /r(\[0\]|0)\.xyz = /.test(l)), a = lines.findIndex((l) => /r(\[0\]|0)\.w = .*co0\.zzzz/.test(l));
   assert.ok(snap >= 0 && rgb > snap && a > rgb, glsl);
   assert.match(glsl, /clamp\(u_pc\[0\], -1\.0, 1\.0\)/);
 });
