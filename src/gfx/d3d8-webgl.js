@@ -212,7 +212,7 @@ export class WebGLDevice {
     if (this.probe) { this.stats.gpu = this.probe.stats.gpu; this.stats.glCalls = this.probe.stats.glCalls; }
     this.tmp = { v4: new Float32Array(4) };
     this.fvfCache = new Map();
-    this.frameDraws = 0;
+    this.frameDraws = 0; this.sinceFlush = 0;
     this.dumpShaders = !!opts.dumpShaders;
     this.noCull = !!opts.noCull;
     // (measurement / tests: the draw's sampler and raster states derived again at every draw, as before their caches;
@@ -498,6 +498,14 @@ export class WebGLDevice {
   copyRects(src, dst, rects, n, points) { return copyRectsCpu(this.mem, this.dev.proc, src, dst, rects, n, points, (s) => this.readbackSurface(s)); }
 
   // ---------------------------------------------------------------- frame
+  /**
+   * ORTHROS_GL_FLUSH=<draws> (debug global, 0/unset: off): a gl.flush() every that many draws, so the GL process (SwiftShader
+   * on a machine without GPU: other cores) starts rasterizing while the game still builds the rest of the frame, instead of
+   * receiving the whole frame's commands at present.
+   */
+  flushEarly() {
+    if (++this.sinceFlush >= globalThis.ORTHROS_GL_FLUSH) { this.sinceFlush = 0; this.gl.flush(); this.stats.earlyFlushes = (this.stats.earlyFlushes ?? 0) + 1; }
+  }
   beginScene() { this.frameDraws = 0; }
   endScene() {}
   present() {
@@ -518,7 +526,7 @@ export class WebGLDevice {
       for (let i = 0; i < ids.length - 1; i++) { const f = this.fbos.get(ids[i + 1]); if (f) this.fbos.set(ids[i], f); else this.fbos.delete(ids[i]); }
       if (first) this.fbos.set(ids[ids.length - 1], first); else this.fbos.delete(ids[ids.length - 1]);
     }
-    gl.flush(); this.frame++;
+    gl.flush(); this.sinceFlush = 0; this.frame++;
     // (the GL call counter keeps away from the probes that wrap or replace GL methods themselves)
     if (this.probe) this.probe.busy = !!(globalThis.ORTHROS_GL_TIME || this.glTime || this.glNull || globalThis.ORTHROS_GL_NULL || this.capturing || this.countLeft || this.captureAt > this.frame || this.glCallCounts);
     if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
@@ -1520,7 +1528,7 @@ export class WebGLDevice {
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     if (this.probe?.hot) this.probe.draw();
     gl.drawArrays(this.glMode(type), start, this.vertexCount(type, count));
-    this.stats.draws++; this.frameDraws++;
+    this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dp');
     if (this.stats.draws <= 64) this.checkErrors(`drawPrimitive(${type}, ${start}, ${count}) program ${P.key.slice(0, 60)} attrs ${P.attrNames.join(',')}`); // (the message is built only while it is checked)
     if (this.stats.draws <= 2) this.debugDraw(P, info);
@@ -1561,7 +1569,7 @@ export class WebGLDevice {
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     if (this.probe?.hot) this.probe.draw();
     gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
-    this.stats.draws++; this.frameDraws++;
+    this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dip');
     void minIdx;
   }
@@ -1581,7 +1589,7 @@ export class WebGLDevice {
     if (this.capturing) this.log(`d3d-webgl: [cap] drawPrimitiveUP type ${type} prims ${count} stride ${stride}`);
     if (this.probe?.hot) this.probe.draw();
     gl.drawArrays(this.glMode(type), 0, n);
-    this.stats.draws++; this.frameDraws++;
+    this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dpup');
   }
   drawIndexedPrimitiveUP(type, minIdx, numV, count, idx, ifmt, data, stride) {
@@ -1598,7 +1606,7 @@ export class WebGLDevice {
     if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitiveUP type ${type} prims ${count} numV ${numV} stride ${stride}`);
     if (this.probe?.hot) this.probe.draw();
     gl.drawElements(this.glMode(type), n, short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, 0);
-    this.stats.draws++; this.frameDraws++;
+    this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dipup');
   }
 }
