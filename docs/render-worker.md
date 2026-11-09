@@ -1073,7 +1073,7 @@ the GPU work left: Chrome updates a sync object's status between tasks of the wo
 worker reaches late — 3.8-4.8 s measured for frames of 100-160 ms; dropped.
 
 **Switches.** Worker debug global `ORTHROS_RENDER_SCALE` (`?dbg=`, harness `--dbg` or `dbg:` mid-session):
-`auto` (default — active only when `gpuClass(renderer)` of `src/host/web/gpu-class.js` is `software`), `off`, or a number
+`off` (default), `auto` (active only when `gpuClass(renderer)` of `src/host/web/gpu-class.js` is `software`; not the default: the measurements below show no fps gain on a 4-core GPU-less machine, where the emulator and SwiftShader share the cores), or a number
 in (0, 1] (that fixed scale, on any GPU: testing). Both it and `ORTHROS_RENDER_BUDGET` are host-only flags (snapshot
 keys unchanged). Statistics: the device's `stats.rscale` (mode, scale, changes, lowest, steps kept / undone, frames
 measured, busy and interval sums — measured in every mode on a software GPU), a `mark <label>: render scale ...` line

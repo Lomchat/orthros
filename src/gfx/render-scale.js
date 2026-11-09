@@ -1,4 +1,4 @@
-// Adaptive internal render resolution of the Direct3D 8/9 backend (docs/render-worker.md section 9).
+// Adaptive internal render resolution of the Direct3D 8/9 backend (docs/render-worker.md section 10).
 //
 // On a machine without a GPU (the WebGL renderer is a software rasterizer: SwiftShader, llvmpipe, Microsoft Basic
 // Render...) the browser's GPU process rasterizes on the CPU and the frame's pixel work dominates. The backend then
@@ -15,7 +15,7 @@
 // after the present was tried as a measure of the GPU work left: Chrome updates a sync object's status between tasks of
 // the worker's event loop, which a busy render worker reaches late — seconds measured, useless.)
 //
-// ORTHROS_RENDER_SCALE (worker debug global, switchable within a session): 'auto' (default: on a software GPU only),
+// ORTHROS_RENDER_SCALE (worker debug global, switchable within a session): 'auto' (on a software GPU only; not the default: no fps gain measured),
 // 'off', or a number in (0, 1] (that fixed scale, on any GPU — testing). ORTHROS_RENDER_BUDGET: the frame budget in ms
 // (default 1000/30).
 
@@ -76,7 +76,8 @@ export function scaleMode(v, software) {
   if (v === 'off' || v === 0 || v === '0' || v === false) return { mode: 'off', s: 1 };
   const n = typeof v === 'number' ? v : typeof v === 'string' && v !== '' && v !== 'auto' ? Number(v) : NaN;
   if (n > 0 && n <= 1) return { mode: 'fixed', s: Math.max(FIXED_MIN, n) };
-  return software ? { mode: 'auto', s: null } : { mode: 'off', s: 1 };
+  // (auto only when asked: measured without an fps gain on a 4-core GPU-less machine, 2026-11-09 — docs/render-worker.md)
+  return v === 'auto' && software ? { mode: 'auto', s: null } : { mode: 'off', s: 1 };
 }
 
 const median = (a) => { const s = a.slice().sort((x, y) => x - y); return s.length ? s[s.length >> 1] : 0; };
@@ -116,7 +117,7 @@ export class ScaleController {
       const from = this.downFrom, r = median(w.map((x) => x.r)), i = median(w.map((x) => x.i));
       this.downFrom = null;
       if (r > 0.92 * from.r && i > 0.92 * from.i) { this.hold = Math.min(MAX_HOLD_MS, this.hold ? 2 * this.hold : NO_GAIN_HOLD_MS); this.noDownUntil = now + this.hold; this.undone++; return from.s; }
-      this.kept++;
+      this.kept++; this.hold = 0; // (a step that helped: the next ones are tried without the backed-off wait)
     }
     if (since >= DOWN_MS + SETTLE_MS && k >= 0 && k < SCALE_STEPS.length - 1 && now >= this.noDownUntil) {
       const w = window(DOWN_MS, 4);

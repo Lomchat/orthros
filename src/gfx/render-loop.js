@@ -23,6 +23,7 @@ const yieldTask = NODE ? () => new Promise((r) => setImmediate(r)) : (() => { le
  * batches) or null; `stats`: { ms (replaying), waitMs (sleeping) } updated.
  */
 export async function replayLoop(ctl, replayer, backend, stats, stop = () => false, log = null) {
+  if (backend) backend.busyMs ??= 0; // (from the start: the render scale controller then never times the device itself)
   const r = replayer.reader;
   let idle = true, lastYield = performance.now();
   // (the loop away 50 ms or more where it planned a short pause: its event loop's other tasks, garbage collection, or the
