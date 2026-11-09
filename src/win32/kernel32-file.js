@@ -171,15 +171,18 @@ export function registerKernel32File(api, vm, k) {
       if (p) { let done = false; vm.readsInFlight = (vm.readsInFlight ?? 0) + 1; const end = () => { done = true; vm.readsInFlight--; vm.host?.wake?.(); }; p.then(end, end); vm.sched.block(c.thread, () => done || vm.sched.nestedWaits > 0, 60000, 'file read'); }
     } else if (c.thread.wakeResult !== undefined) vm.sched.block(c.thread, () => true, 0, 'file read'); // (the recorded outcome of the wait)
     if (vm.logKinds.has('fileio')) vm.log('fileio', `read ${f.path ?? '?'} @${pos} ${n} into ${(c.arg(1) >>> 0).toString(16)} (${(() => { const q = c.proc.vmem.query(c.arg(1)); const r = c.proc.vmem.regions.get(q.allocBase); return `${r?.tag ?? 'unallocated'} ${(q.allocBase >>> 0).toString(16)}+${((r?.size ?? 0) >>> 0).toString(16)}`; })()}) [t${c.thread.id}] esp ${(c.thread.cpu.esp >>> 0).toString(16)}`); // (the destination before the read: its allocation)
-    const d = f.file.read(pos, n);
+    // (the destination handed to the reader — HttpFile, NodeFile, MemFile fill it themselves — when it lies in guest memory:
+    // no second copy; off unless ORTHROS_READ_FAST: read, then copy)
+    const dest = c.arg(1) >>> 0, direct = !!globalThis.ORTHROS_READ_FAST && n > 0 && n < 0x40000000 && dest + n <= 0x7fff0000;
+    const d = direct ? f.file.read(pos, n, mem.u8.subarray(dest, dest + n)) : f.file.read(pos, n);
     if (f.ioOwner === c.thread) f.ioOwner = null;
     { const pr = c.thread.parkedRead; if (pr) { c.thread.parkedRead = null; if (pr.buf === (c.arg(1) >>> 0)) { const now = mem.bytes(pr.buf, pr.snap.length); let k = 0; while (k < now.length && now[k] === pr.snap[k]) k++; if (k < now.length && (vm.destChanges = (vm.destChanges ?? 0) + 1) <= 20) vm.warn(`read destination written while its read was parked: ${pr.path} ${pr.n} bytes into ${pr.buf.toString(16)} [t${c.thread.id}], first change at +${k}: ${Array.from(now.subarray(k, k + 16), (x) => x.toString(16).padStart(2, '0')).join('')}\n${vm.registerMemory({ eax: pr.buf + k, ecx: 0, edx: 0, ebx: 0, esi: 0, edi: 0, ebp: 0 }).join('\n')}`); } } }
     if (globalThis.ORTHROS_VERIFY_READS && f.file.verify) { const bad = f.file.verify(pos, d); if (bad && (vm.readMismatches = (vm.readMismatches ?? 0) + 1) <= 20) vm.warn(`read mismatch: ${f.path ?? '?'} @${pos} ${n} -> ${d.length}: byte ${bad.at} is ${bad.got}, the file has ${bad.want} [t${c.thread.id}${c.thread.wakeResult !== undefined ? ' parked' : ''}]`); }
-    if (d.length) mem.writeBytes(c.arg(1), d);
+    if (d.length && !(direct && d.buffer === mem.u8.buffer && d.byteOffset === dest)) mem.writeBytes(dest, d);
     if (ovl) { mem.write32(ovl, 0); mem.write32(ovl + 4, d.length); } // Internal = status, InternalHigh = bytes; Offset/OffsetHigh are inputs and stay
     f.pos = pos + d.length; // a synchronous handle's file pointer follows the read even when the offset came from OVERLAPPED
     c.out32(3, d.length);
-    { const r = (vm.recentReads ??= { a: new Array(32), i: 0 }); r.a[r.i++ & 31] = `${f.path ?? '?'} @${pos} ${n}${d.length !== n ? ` -> ${d.length}` : ''} [t${c.thread.id}]`; } // (failure reports)
+    { const r = (vm.recentReads ??= { f: new Array(32), v: new Array(128).fill(0), i: 0 }), k = r.i++ & 31; r.f[k] = f.path; const o = 4 * k; r.v[o] = pos; r.v[o + 1] = n; r.v[o + 2] = d.length; r.v[o + 3] = c.thread.id; } // (failure reports: seh.js formats them)
     if (vm.logKinds.has('fileio') && d.length !== n) vm.log('fileio', `  -> ${d.length} bytes read [t${c.thread.id}]`);
     if (d.length < n && pos + d.length < (f.file.size?.() ?? Infinity) && (this_shortReads = (this_shortReads ?? 0) + 1) <= 16) vm.log('file', `short read ${f.path ?? '?'} at ${pos} (${n} requested, ${d.length} read, size ${f.file.size?.() ?? '?'}) [t${c.thread.id}]`); // short before EOF: a backend problem
     if (d.length === 0 && n > 0 && ovl) return c.fail(E.HANDLE_EOF);

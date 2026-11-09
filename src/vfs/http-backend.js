@@ -1789,7 +1789,7 @@ export class HttpBackend {
 }
 
 class HttpFile {
-  constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; this.run = 0; }
+  constructor(backend, path, size, mtime) { this.b = backend; this.path = path; this.len = size; this.mtime = mtime; this.lastEnd = -1; this.run = 0; this.memoIndex = -1; this.memoBlock = null; }
   size() { return this.len; }
   /**
    * Debugging (?dbg=ORTHROS_VERIFY_READS=1): the bytes a read returned compared with the same range fetched straight
@@ -1838,17 +1838,18 @@ class HttpFile {
     const extra = !fast && sequential ? this.b.net.demandExtra(Math.min(this.run + (end - off), BLOCK)) : 0;
     return missing ? this.b.fetchAhead(this.path, this.len, this.mtime, off, end, bulk, extra) : null;
   }
-  read(off, len) {
+  /** `into`: where the bytes go when the caller owns a destination of `len` bytes (guest memory: no second copy) */
+  read(off, len, into) {
     const ap = acct.enter(ACCT.io); // (frame accounting: a game file read — its network part is `net`)
-    try { return this.readNow(off, len); } finally { acct.leave(ap); }
+    try { return this.readNow(off, len, into); } finally { acct.leave(ap); }
   }
-  readNow(off, len) {
+  readNow(off, len, into) {
     const end = Math.min(off + len, this.len);
     if (off >= end) return new Uint8Array(0);
     this.note(off, end);
     this.b.reads.bytes += end - off; if (this.video) this.b.reads.videoBytes += end - off;
     this.b.onRead?.(this.path, off, end);
-    const out = new Uint8Array(end - off);
+    const out = into && into.length >= end - off ? into : new Uint8Array(end - off);
     const sequential = off === this.lastEnd;
     this.lastEnd = end;
     // bytes read in sequence so far: a bulk read (loading a file whole) fetches whole blocks ahead synchronously; a
@@ -1864,8 +1865,18 @@ class HttpFile {
     else if (!sequential && this.b.streams.size) this.b.streams.delete(this.path);
     const fast = this.b.net.fast(), bulk = sequential && this.run >= STREAM_BYTES;
     let pos = off;
+    const memoOn = !!globalThis.ORTHROS_READ_FAST;
     while (pos < end) {
       const bi = Math.floor(pos / BLOCK), bo = pos - bi * BLOCK;
+      // (the block of the last read still in hand — blocks never change —: no key built, no cache lookup, no LRU move
+      // for the reads that follow one another inside a block, the common case of a loader's small reads)
+      if (memoOn && bi === this.memoIndex && this.memoBlock) {
+        const m = this.memoBlock, n = Math.min(end - pos, m.length - bo);
+        if (n <= 0) break;
+        if (n === 1) out[pos - off] = m[bo]; else out.set(m.subarray(bo, bo + n), pos - off);
+        pos += n;
+        continue;
+      }
       // (one read that covers several whole blocks none of which is here — a file read whole in one call, as a program
       // image is loaded —: those blocks in one request, as the game waits for all of them anyway; one round trip instead
       // of one per block — BFME 1.08's 16 MB executable through a 75 ms link: 16 requests, 2.6 s before)
@@ -1881,6 +1892,7 @@ class HttpFile {
         if (this.b.readPieces(this.path, this.len, this.mtime, bi, pos, stop, out, pos - off, sequential ? 2 : 0, extra)) { pos = stop; continue; }
       }
       const blk = this.b.block(this.path, this.len, bi, sequential && fast ? 4 : 1, this.mtime);
+      if (memoOn) { this.memoIndex = bi; this.memoBlock = blk; }
       const n = Math.min(end - pos, blk.length - bo);
       if (n <= 0) break;
       out.set(blk.subarray(bo, bo + n), pos - off);
@@ -1888,7 +1900,7 @@ class HttpFile {
     }
     // (a file read whole: its next blocks on their way before the reader gets there)
     if (pos === end && (bulk || (!fast && sequential && this.run >= CHUNK))) this.b.readAhead(this.path, this.len, this.mtime, end, this.run / Math.max(0.25, (performance.now() - this.runT0) / 1000), this.runReads, end - this.runFrom);
-    return pos === end ? out : out.subarray(0, pos - off);
+    return out.length === pos - off ? out : out.subarray(0, pos - off);
   }
   write() { return 0; }
   truncate() {}

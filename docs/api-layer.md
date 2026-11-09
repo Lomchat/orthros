@@ -59,6 +59,23 @@ frame down, all generic (no game-specific code), and how to switch them off with
   through the JIT against the real Direct3D 8 / 9 devices executing every call: -0 for +0, NaN members, odd types, null
   pointers, lights 8+, odd BOOLs, declarations resetting the FVF, state blocks, Reset, an effect commit setting lights
   and the FVF; the devices agree at every draw, version counters included).
+- **SetTransform that changes nothing** (`DEFER_FX_XFORM`, switch `ORTHROS_XFORM_FILTER=1`, **off by default**): the device
+  shadow holds 16 words per matrix slot (view, projection, texture 0..7, world 0..3: `SHADOW_XFORM`, `xformSlot`), a word
+  known unless it is a NaN; a Direct3D 8 / 9 `SetTransform` whose 16 words equal the entries is dropped before it is
+  queued (the handler already dropped it after the round trip). The handlers (`SetTransform`, `MultiplyTransform`,
+  `ApplyStateBlock`, `Reset`) keep the entries; a queued effect `CommitChanges` forgets all of them (a pass may set a
+  matrix). Test: `jit-defer-filter-fx.test.js` (random matrices through the JIT against executing every call, `-0`, NaN,
+  unslotted states, a commit setting a matrix, the switch flipped at random points). Not enabled: the in-session A/B on
+  the three games could not be completed (the 3 browser slots stayed taken by other jobs, load average 35-80; the two runs
+  that started, rotwk-202 and bfme1-108, ended abnormally at the skirmish load — a process exit and a stalled worker —
+  without a control run to say whether the change is involved), so no number is claimed. Scenarios:
+  `tools/scenarios/{rotwk,bfme1-108,vicecity}-xform-ab.txt`.
+- **ReadFile straight into guest memory** (switch `ORTHROS_READ_FAST=1`, **off by default**): `File.read(off, len, into)`
+  (HttpFile, NodeFile, MemFile) fills the guest buffer itself instead of returning a new array that `ReadFile` copies, and an
+  HttpFile keeps the block of its last read in hand (no `path#index` key, cache lookup and LRU move for the reads inside
+  one block); the recent-reads ring for crash reports holds numbers and is formatted only by `seh.js`. Micro-benchmark
+  (Node, blocks cached, per read, OFF / ON): 16 B 0.9-1.2 / 0.65 us, 256 B 2.5 / 0.8 us, 4 KiB 5.5-5.8 / 1.3-1.4 us,
+  64 KiB 40-54 / 2.8 us. Not measured in the game (load times) for the reason above.
 - **Draws from buffers are queued** (`DEFER_DRAWS`: `DrawIndexedPrimitive`, `DrawPrimitive`, Direct3D 8 and 9): they
   always return `D3D_OK`, and what they read changes only through queued calls (run before them) or calls handled in
   JavaScript (which run the queue first: a buffer lock, a texture lock, `Present`, a query's `GetData`...). A frame's

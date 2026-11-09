@@ -129,7 +129,7 @@ export class Seh {
     // the first C++ exceptions: what the thread did just before (its API calls, the last file reads of the process) —
     // later ones are often the program's own error handling
     if (code === EXC.CPP && (this.cppContexts ??= []).length < 2) {
-      const r = this.vm.recentReads, reads = r ? Array.from({ length: 32 }, (_, k) => r.a[(r.i + k) & 31]).filter(Boolean).slice(-12) : [];
+      const r = this.vm.recentReads, reads = r ? Array.from({ length: 32 }, (_, k) => (r.i + k) & 31).filter((q) => r.i >= 32 || q < r.i).map((q) => `${r.f[q] ?? '?'} @${r.v[4 * q]} ${r.v[4 * q + 1]}${r.v[4 * q + 2] !== r.v[4 * q + 1] ? ` -> ${r.v[4 * q + 2]}` : ''} [t${r.v[4 * q + 3]}]`).slice(-12) : [];
       this.cppContexts.push(`C++ exception #${this.cppContexts.length + 1} (${what.trim() || 'type unknown'}) — the thread's previous API calls:\n    ${this.vm.recentApiCalls(40, thread.id).join('\n    ')}\n  the last file reads:\n    ${reads.join('\n    ') || '-'}`);
     }
     if (this.recent.length > 16) this.recent.shift();

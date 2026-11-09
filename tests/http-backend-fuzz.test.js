@@ -2,6 +2,7 @@
 // mix of 64 KiB pieces, whole blocks, background downloads (completing, failing or aborted at random moments),
 // asynchronous prepare() fetches, the persistent store (shared by two versions of the files: another mtime), the
 // offline copy, the prefetch and injected range request failures. FUZZ_SEEDS=n runs more seeds.
+globalThis.ORTHROS_READ_FAST = 1; // (the read memo is opt-in)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
@@ -82,7 +83,7 @@ async function run(seed, bw = null) {
       let fail = false;
       if (R() < 0.1) { const k = ri(4); if (k === 3) { xhrFaults.push('status', 'status', 'status'); fail = true; } else xhrFaults.push(['network', 'status', 'short', 'full'][k]); }
       let got;
-      try { got = s.handles[fi].read(off, len); } catch (e) { if (!fail) throw e; xhrFaults.length = 0; return; }
+      try { const into = R() < 0.5 ? new Uint8Array(len).fill(0xa5) : undefined; got = s.handles[fi].read(off, len, into); } catch (e) { if (!fail) throw e; xhrFaults.length = 0; return; }
       xhrFaults.length = 0;
       const end = Math.min(off + len, data.length), want = off >= end ? new Uint8Array(0) : data.subarray(off, end);
       assert.equal(got.length, want.length, `seed ${seed}: v${s.v} ${name} @${off} +${len}: ${got.length} bytes, not ${want.length}`);

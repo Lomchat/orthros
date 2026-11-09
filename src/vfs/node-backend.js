@@ -106,8 +106,8 @@ export class NodeBackend {
 class NodeFile {
   constructor(fd, write) { this.fd = fd; this.writable = write; }
   size() { return fs.fstatSync(this.fd).size; }
-  read(off, len) {
-    const buf = new Uint8Array(len);
+  read(off, len, into) {
+    const buf = into && into.length >= len ? into : new Uint8Array(len);
     const n = fs.readSync(this.fd, buf, 0, len, off);
     return n === len ? buf : buf.subarray(0, n);
   }

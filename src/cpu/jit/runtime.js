@@ -187,7 +187,7 @@ export const DEFER_F_TEX = 1 << 24, DEFER_F_STREAM = 1 << 25, DEFER_F_IB = 1 << 
  * instead: DEFER_FX_DECL (SetVertexDeclaration, which resets the FVF) is never filtered and forgets SHADOW_FVF. A queued
  * effect commit (DEFER_STATES) forgets SHADOW_FVF and SHADOW_LIGHTON as well: a pass may set them.
  */
-export const DEFER_FX_LIGHTON = 1 << 27, DEFER_FX_LIGHT = 2 << 27, DEFER_FX_MATERIAL = 3 << 27, DEFER_FX_FVF = 4 << 27, DEFER_FX_DECL = 5 << 27, DEFER_FX_MASK = 7 << 27;
+export const DEFER_FX_LIGHTON = 1 << 27, DEFER_FX_LIGHT = 2 << 27, DEFER_FX_MATERIAL = 3 << 27, DEFER_FX_FVF = 4 << 27, DEFER_FX_DECL = 5 << 27, DEFER_FX_XFORM = 6 << 27, DEFER_FX_MASK = 7 << 27;
 export const DEFER_F_FORGET = 1 << 30;
 export const DEFER_F_ANY = DEFER_F_RS | DEFER_F_TSS | DEFER_F_SAMP | DEFER_F_TEX | DEFER_F_STREAM | DEFER_F_IB | DEFER_FX_MASK;
 /**
@@ -217,7 +217,14 @@ export const SHADOW_RS = 0, SHADOW_TSS = 256, SHADOW_SAMP = SHADOW_TSS + 8 * 40,
 /** D3DLIGHT8/9 and D3DMATERIAL8/9 in words; lights 0..SHADOW_LIGHTS-1 shadowed */
 export const LIGHT_WORDS = 26, MATERIAL_WORDS = 17, SHADOW_LIGHTS = 8;
 export const SHADOW_FVF = SHADOW_IB + 1, SHADOW_LIGHTON = SHADOW_FVF + 1, SHADOW_LIGHT = SHADOW_LIGHTON + SHADOW_LIGHTS, SHADOW_MATERIAL = SHADOW_LIGHT + LIGHT_WORDS * SHADOW_LIGHTS;
-export const SHADOW_ENTRIES = SHADOW_MATERIAL + MATERIAL_WORDS, SHADOW_BYTES = 16 + 8 * SHADOW_ENTRIES, SHADOW_OWNER = 4;
+/**
+ * SetTransform's shadow: the matrices the device holds, 16 words per slot — view, projection, texture 0..7, world 0..3
+ * (xformSlot: D3DTS 2, 3, 16..23, 256..259) — a word known only when it is no NaN (the handler compares the bits of its
+ * floats, a NaN's payload may change in the round trip). A call whose 16 words all equal the entries' is dropped.
+ */
+export const SHADOW_XFORM_SLOTS = 14, XFORM_WORDS = 16, SHADOW_XFORM = SHADOW_MATERIAL + MATERIAL_WORDS;
+export const xformSlot = (st) => (st === 2 || st === 3) ? st - 2 : (st >>> 0) - 16 < 8 ? st - 14 : (st >>> 0) - 256 < 4 ? st - 246 : -1;
+export const SHADOW_ENTRIES = SHADOW_XFORM + XFORM_WORDS * SHADOW_XFORM_SLOTS, SHADOW_BYTES = 16 + 8 * SHADOW_ENTRIES, SHADOW_OWNER = 4;
 export const COMMIT_LIST_WORDS = 2 + SHADOW_ENTRIES;
 /** Orthros COM objects (com.js): +4 this marker, +16 the reference count (AddRef/Release on the fast path), +20 an effect's commit list */
 export const COM_MARKER = 0x4d4f4321, COM_REFS = 16;
@@ -250,8 +257,9 @@ export const DEFER_SPECS = {
   ...deferSpecs('IDirect3DDevice9', [['SetRenderState', 3]], DEFER_F_RS),
   ...deferSpecs('IDirect3DDevice9', [['SetTextureStageState', 4]], DEFER_F_TSS),
   ...deferSpecs('IDirect3DDevice9', [['SetSamplerState', 4]], DEFER_F_SAMP),
-  ...deferSpecs('IDirect3DDevice9', [['SetTransform', 3, 2, 16], ['SetVertexShader', 2], ['SetPixelShader', 2],
+  ...deferSpecs('IDirect3DDevice9', [['SetVertexShader', 2], ['SetPixelShader', 2],
     ['SetViewport', 2, 1, 6], ['SetScissorRect', 2, 1, 4], ['SetSoftwareVertexProcessing', 2]]),
+  ...deferSpecs('IDirect3DDevice9', [['SetTransform', 3, 2, 16]], DEFER_FX_XFORM),
   ...deferSpecs('IDirect3DDevice9', [['SetLight', 3, 2, LIGHT_WORDS]], DEFER_FX_LIGHT),
   ...deferSpecs('IDirect3DDevice9', [['SetMaterial', 2, 1, MATERIAL_WORDS]], DEFER_FX_MATERIAL),
   ...deferSpecs('IDirect3DDevice9', [['LightEnable', 3]], DEFER_FX_LIGHTON),
@@ -265,7 +273,8 @@ export const DEFER_SPECS = {
   ...deferSpecs('IDirect3DDevice9', [['SetTexture', 3]], DEFER_REFS | DEFER_F_TEX),
   ...deferSpecs('IDirect3DDevice8', [['SetRenderState', 3]], DEFER_F_RS),
   ...deferSpecs('IDirect3DDevice8', [['SetTextureStageState', 4]], DEFER_F_TSS),
-  ...deferSpecs('IDirect3DDevice8', [['SetTransform', 3, 2, 16], ['SetVertexShader', 2], ['SetPixelShader', 2], ['SetViewport', 2, 1, 6]]),
+  ...deferSpecs('IDirect3DDevice8', [['SetVertexShader', 2], ['SetPixelShader', 2], ['SetViewport', 2, 1, 6]]),
+  ...deferSpecs('IDirect3DDevice8', [['SetTransform', 3, 2, 16]], DEFER_FX_XFORM),
   ...deferSpecs('IDirect3DDevice8', [['SetLight', 3, 2, LIGHT_WORDS]], DEFER_FX_LIGHT),
   ...deferSpecs('IDirect3DDevice8', [['SetMaterial', 2, 1, MATERIAL_WORDS]], DEFER_FX_MATERIAL),
   ...deferSpecs('IDirect3DDevice8', [['LightEnable', 3]], DEFER_FX_LIGHTON),
@@ -578,6 +587,17 @@ export function buildRuntime(opts = {}) {
             xkind(DEFER_FX_LIGHTON, () => { c.get(A1).i32(SHADOW_LIGHTS).ge_u().br_if(nofilter); c.get(A1).i32(SHADOW_LIGHTON).add().set(TEB); c.get(SP).i32(12).add().set(VP); });
             xkind(DEFER_FX_LIGHT, () => { c.get(A1).i32(SHADOW_LIGHTS).ge_u().br_if(nofilter); ptrOk(A2, LIGHT_WORDS); c.get(A1).i32(LIGHT_WORDS).mul().i32(SHADOW_LIGHT).add().set(TEB); c.get(A2).set(VP); c.i32(LIGHT_WORDS).set(KC); });
             xkind(DEFER_FX_MATERIAL, () => { ptrOk(A1, MATERIAL_WORDS); c.i32(SHADOW_MATERIAL).set(TEB); c.get(A1).set(VP); c.i32(MATERIAL_WORDS).set(KC); });
+            xkind(DEFER_FX_XFORM, () => { // (the slot of the state: view, projection, texture 0..7, world 0..3)
+              ptrOk(A2, XFORM_WORDS);
+              c.get(A1).i32(2).sub().i32(2).lt_u();
+              const v = c.if_(); c.get(A1).i32(2).sub().set(TEB); c.else_();
+              c.get(A1).i32(16).sub().i32(8).lt_u();
+              const t = c.if_(); c.get(A1).i32(14).sub().set(TEB); c.else_();
+              c.get(A1).i32(256).sub().i32(4).lt_u().eqz().br_if(nofilter);
+              c.get(A1).i32(246).sub().set(TEB);
+              c.end(); c.end(); void v; void t;
+              c.get(TEB).i32(XFORM_WORDS).mul().i32(SHADOW_XFORM).add().set(TEB); c.get(A2).set(VP); c.i32(XFORM_WORDS).set(KC);
+            });
             xkind(DEFER_FX_FVF, () => { c.i32(SHADOW_FVF).set(TEB); c.get(SP).i32(8).add().set(VP); });
             xkind(DEFER_FX_DECL, () => { c.i32(SHADOW_FVF).set(TEB); c.get(SP).i32(8).add().set(VP); }); // (never dropped: forgets the FVF)
             c.i32(PROC_CONSTS).i32load(4).br_if(nofilter); c.i32(SHADOW_IB).set(TEB); c.get(SP).i32(8).add().set(VP); // (DEFER_F_IB)
@@ -683,7 +703,7 @@ export function buildRuntime(opts = {}) {
             // compares as a float not a NaN (never equal to itself)
             c.get(TM).i32(DEFER_F_FORGET).and(); const fg = c.if_(T.i32); c.i32(0); c.else_();
             c.get(TEB).i32(DEFER_FX_LIGHT).eq().get(A2).eqz().and(); const ty = c.if_(T.i32); c.get(WD).i32(0x1000000).lt_u(); c.else_();
-            c.get(TEB).i32(DEFER_FX_LIGHT).eq().get(TEB).i32(DEFER_FX_MATERIAL).eq().or(); const fl = c.if_(T.i32); c.get(WD).i32(0x7fffffff).and().i32(0x7f800000).le_u(); c.else_(); c.i32(1); c.end(); void fl;
+            c.get(TEB).i32(DEFER_FX_LIGHT).eq().get(TEB).i32(DEFER_FX_MATERIAL).eq().or().get(TEB).i32(DEFER_FX_XFORM).eq().or(); const fl = c.if_(T.i32); c.get(WD).i32(0x7fffffff).and().i32(0x7f800000).le_u(); c.else_(); c.i32(1); c.end(); void fl;
             c.end(); void ty;
             c.end(); void fg;
           }
@@ -733,6 +753,12 @@ export function buildRuntime(opts = {}) {
             const inRange = c.if_(); c.get(FE).get(TEB).i32(3).shl().add().i32(0).i32store(16); c.end(); void inRange;
             c.get(A2).i32(1).add().set(A2); c.br(lp);
             c.end(); c.end(); void lpEnd;
+            // (the transforms: a pass may set them, no list names them)
+            c.i32(SHADOW_XFORM).set(A2);
+            const xl = c.loop();
+            c.get(FE).get(A2).i32(3).shl().add().i32(0).i32store(16);
+            c.get(A2).i32(1).add().tee(A2).i32(SHADOW_ENTRIES).lt_u().br_if(xl);
+            c.end(); void xl;
             // (and the FVF and the lights' switches, which commit lists do not name: a pass may set them)
             for (let i = SHADOW_FVF; i < SHADOW_LIGHTON + SHADOW_LIGHTS; i++) c.get(FE).i32(0).i32store(16 + 8 * i);
             c.br(done);
