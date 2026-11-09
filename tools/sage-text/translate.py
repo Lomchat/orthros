@@ -62,6 +62,12 @@ def apply_hotkey(fr, key):
     if not key:
         return fr
     letter, style = key
+    # (a letter shown in brackets, as a translator writes it when the word lacks it: "[W]" -> "[&W]"; another
+    # letter there — a translation's keys moved for AZERTY — becomes the English one: Orthros sends the key's position,
+    # as the English, so the English letter is the one at the place the player's finger goes)
+    m = re.search(r'\[([A-Za-z0-9])\]', fr) or re.search(rf'\(({re.escape(letter)})\)', fr, re.I)
+    if m:
+        return fr[:m.start(1)] + '&' + (m.group(1) if m.group(1).lower() == letter.lower() else letter.upper()) + fr[m.end(1):]
     if style == 'inline':
         protected = re.sub(r'\{\d+\}|%\S|\\.', lambda m: '\0' * len(m.group(0)), fr)
         for pattern in (rf'(?<![A-Za-zÀ-ÿ]){re.escape(letter)}', re.escape(letter)):
@@ -87,11 +93,18 @@ def template(segment):
     return text, numbers
 
 
-def typography(text):
-    """A translation punctuated as EA's French: a no-break space before ':' (the line never wraps there), none
-    before '!' and '?'."""
-    text = re.sub(r'[ \u00a0]+([!?])', r'\1', text)
-    return re.sub(r'(?<=\S) +:', '\u00a0:', text)
+TYPOGRAPHY = {'bang': '', 'colon': '\u00a0', 'percent': None}  # (EA's French; config "typography" for another)
+
+
+def typography(text, rules=TYPOGRAPHY):
+    """A translation punctuated as the French around it: `bang` before '!' and '?' after a word ('' none, as EA's;
+    a no-break space, as La Terre du Milieu's), `colon` before ':' (a no-break space: the line never wraps there),
+    `percent` between a number and '%' ('' none; None: as the translator wrote)."""
+    text = re.sub(r'(?<=[\w)\]}])[ \u00a0]*([!?])', lambda m: rules['bang'] + m.group(1), text)
+    text = re.sub(r'(?<=[^\s\d:])[ \u00a0]*:(?=\s|$)', rules['colon'] + ':', text)
+    if rules.get('percent') is not None:
+        text = re.sub(r'(\{\d+\}|\d)[ \u00a0]*%', lambda m: m.group(1) + rules['percent'] + '%', text)
+    return text
 
 
 def fill(text, numbers):
@@ -124,9 +137,41 @@ class Job:
         self.official_glossary = self.glossary_from(tm, order)
         root = self.path(self.config['root'])
         self.files = []
+        self.human, self.human_glossary = {}, {}
         for pattern in self.config['files']:
             for path in sorted(glob.glob(os.path.join(root, pattern))):
                 self.files.append((os.path.relpath(path, root), StrFile(open(path, 'rb').read())))
+        self.load_human()
+
+    def load_human(self):
+        """A human translation of an earlier release (config "human": {name, files: [{file, en, fr}], folders:
+        [{under, en, fr}]} — `folders`: each source file under `under` paired with the same-named folder's file in the
+        `en` and `fr` trees): its French is used where the English did not change since, its wording is the hint where
+        it did, its names are the glossary."""
+        h = self.config.get('human')
+        if not h:
+            return
+        self.human_name = h.get('name', 'human')
+        load = lambda p: {k: v for k, v in StrFile(open(self.path(p), 'rb').read()).values().items()}
+        for pair in h.get('files', []):
+            self.human[pair['file'].lower()] = (load(pair['en']), load(pair['fr']))
+        for tree in h.get('folders', []):
+            index = lambda d: {os.path.basename(os.path.dirname(p)).lower(): p
+                               for p in glob.glob(os.path.join(self.path(d), '**', os.path.basename(tree.get('name', 'map.str'))), recursive=True)}
+            en, fr = index(tree['en']), index(tree['fr'])
+            for rel, _ in self.files:
+                rel = rel.replace(os.sep, '/')
+                folder = os.path.basename(os.path.dirname(rel)).lower()
+                if rel.lower().startswith(tree['under'].lower()) and folder in en and folder in fr:
+                    self.human[rel.lower()] = (load(en[folder]), load(fr[folder]))
+        for en, fr in self.human.values():
+            for label, f in fr.items():
+                e = en.get(label)
+                if not e or label.split(':')[0].upper() not in NAME_PREFIXES or 'tooltip' in label or '\\n' in e:
+                    continue
+                e, f = ' '.join(clean(e).split()), ' '.join(clean(f).split())
+                if e and f and e != f and len(e.split()) <= 5 and LETTERS.search(e) and ',' not in f:
+                    self.human_glossary.setdefault(e, f)
 
     def path(self, p):
         return p if os.path.isabs(p) else os.path.join(self.base, p)
@@ -158,6 +203,13 @@ class Job:
                     plan.append((fi, ei, 'keep', None))
                     continue
                 key = norm(clean(value))
+                human_en, human_fr = self.human.get(rel.replace(os.sep, '/').lower(), ({}, {}))
+                lower = label.lower()
+                # (their French only with the English's printf codes: "15%d'armure" or a lost %ls is not theirs to keep)
+                if lower in human_en and lower in human_fr and norm(clean(human_en[lower])) == key \
+                        and PRINTF.findall(human_fr[lower]) == PRINTF.findall(value):
+                    plan.append((fi, ei, 'human', human_fr[lower]))
+                    continue
                 official = self.by_label.get(label.lower())
                 if official and norm(clean(official[0])) == key:
                     plan.append((fi, ei, 'official', official[1]))
@@ -179,7 +231,10 @@ class Job:
                     if u is None:
                         u = units[text] = {'id': f'u{len(units) + 1:05d}', 'en': text, 'n': 0, 'phase': 2,
                                            'ex': f'{label} ({rel}): {clean(value)[:400]}'}
-                        if official:
+                        if lower in human_fr and lower in human_en:
+                            u['hint'] = {'oldEnglish': clean(human_en[lower])[:600], 'officialFrench': clean(human_fr[lower])[:600],
+                                         'source': self.human_name}
+                        elif official:
                             u['hint'] = {'oldEnglish': clean(official[0])[:600], 'officialFrench': clean(official[1])[:600]}
                     u['n'] += 1
                     if is_name:
@@ -222,15 +277,20 @@ class Job:
     def prepare(self, phase):
         plan, units = self.plan()
         memory = self.memory()
-        todo = [u for u in units.values() if u['en'] not in memory and (u['phase'] == phase or phase == 2)]
-        glossary = dict(self.official_glossary)
+        if phase == 3:  # (revision: every unit still translated by us, its draft beside it)
+            todo = [dict(u, draft=memory[u['en']]) if u['en'] in memory else u for u in units.values()]
+        else:
+            todo = [u for u in units.values() if u['en'] not in memory and (u['phase'] == phase or phase == 2)]
+        glossary = dict(self.human_glossary)
+        for en, fr in self.official_glossary.items():
+            glossary.setdefault(en, fr)
         terms_file = self.path('terms.tsv')  # (a reviewer's canonical terms: English<TAB>French<TAB>source)
-        if phase == 2 and os.path.exists(terms_file):
+        if phase >= 2 and os.path.exists(terms_file):
             for line in open(terms_file, encoding='utf-8'):
                 cols = line.rstrip('\n').split('\t')
                 if len(cols) >= 2 and cols[0] and cols[1]:
                     glossary.setdefault(cols[0], cols[1])
-        if phase == 2:
+        if phase >= 2:
             for u in units.values():
                 if u['phase'] == 1 and u['en'] in memory and '{' not in u['en']:
                     glossary.setdefault(u['en'], memory[u['en']])
@@ -244,7 +304,7 @@ class Job:
         max_units = self.config.get('chunkUnits', 700)
         chunks, current, words = [], [], 0
         for u in todo:
-            w = len(u['en'].split()) + (len(u['ex'].split()) // 4 if phase == 2 else 0)
+            w = len(u['en'].split()) + (len(u['ex'].split()) // 4 if phase >= 2 else 0)
             if current and (words + w > limit or len(current) >= max_units):
                 chunks.append(current)
                 current, words = [], 0
@@ -256,7 +316,7 @@ class Job:
         for p in glob.glob(os.path.join(d, f'p{phase}-*.json')) + glob.glob(os.path.join(d, f'p{phase}-*.txt')):
             os.remove(p)
         for i, chunk in enumerate(chunks, 1):
-            text = '\n'.join(u['en'] + ' ' + (u['ex'] if phase == 2 else '') for u in chunk)
+            text = '\n'.join(u['en'] + ' ' + (u['ex'] if phase >= 2 else '') for u in chunk)
             # (the terms whose words appear in a row in the chunk: its word sequences up to the longest term's)
             words = WORD.findall(text)
             spans = {' '.join(words[i:i + n]) for n in range(1, longest + 1) for i in range(len(words) - n + 1)}
@@ -266,7 +326,7 @@ class Job:
                     break
                 if ' '.join(WORD.findall(t)) in spans:
                     used[t] = glossary[t]
-            items = [{k: u[k] for k in ('id', 'en', 'ex', 'hint') if k in u} for u in chunk]
+            items = [{k: u[k] for k in ('id', 'en', 'ex', 'hint', 'draft') if k in u} for u in chunk]
             with open(os.path.join(d, f'p{phase}-{i:03d}.json'), 'w', encoding='utf-8') as f:
                 json.dump({'phase': phase, 'units': items, 'glossary': used}, f, ensure_ascii=False, indent=0)
             with open(os.path.join(d, f'p{phase}-{i:03d}.txt'), 'w', encoding='utf-8') as f:
@@ -325,6 +385,7 @@ class Job:
     def build(self):
         plan, units = self.plan()
         memory = self.memory()
+        rules = {**TYPOGRAPHY, **self.config.get('typography', {})}
         by_id = {u['id']: u for u in units.values()}
         replace = collections.defaultdict(dict)
         stats = collections.Counter()
@@ -334,9 +395,9 @@ class Job:
                 continue
             s = self.files[fi][1]
             value = s.entries[ei]['value']
-            if kind == 'official':
+            if kind in ('official', 'human'):
                 fr = data
-                stats['official'] += 1
+                stats[kind] += 1
             else:
                 parts, separators, prefix, suffix = data
                 out = []
@@ -349,7 +410,7 @@ class Job:
                     if t is None or check_unit(by_id[uid]['en'], t):
                         complete = False
                         t = by_id[uid]['en']
-                    out.append(fill(typography(t), numbers))
+                    out.append(fill(typography(t, rules), numbers))
                 fr = prefix + ''.join(seg + (separators[i] if i < len(separators) else '') for i, seg in enumerate(out)) + suffix
                 stats['translated' if complete else 'partly-english'] += 1
                 if not complete:
@@ -374,7 +435,7 @@ class Job:
 
 def chunk_text(items, glossary):
     """A chunk as the translator reads it: the glossary, then one block per unit."""
-    out = ['# GLOSSARY (official French of the games: use these exactly)']
+    out = ['# GLOSSARY (French names to use)']
     out += [f'{en} = {fr}' for en, fr in glossary.items()]
     out.append('')
     out.append('# UNITS')
@@ -386,8 +447,11 @@ def chunk_text(items, glossary):
         elif u.get('ex'):
             out.append(f'LABEL: {u["ex"].split(" ", 1)[0]}')
         if u.get('hint'):
+            source = u['hint'].get('source')
             out.append(f'OLD EN: {u["hint"]["oldEnglish"]}')
-            out.append(f'OLD OFFICIAL FR: {u["hint"]["officialFrench"]}')
+            out.append(f'OLD FR ({source}): {u["hint"]["officialFrench"]}' if source else f'OLD OFFICIAL FR: {u["hint"]["officialFrench"]}')
+        if u.get('draft'):
+            out.append(f'DRAFT: {u["draft"]}')
     return '\n'.join(out) + '\n'
 
 
