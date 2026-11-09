@@ -3,6 +3,7 @@
 // profile-share.js) —, its caches under each version's name.
 import { migrateProfile, profileDir, profileKeyOf, profileSourcesOf } from '../../vfs/profile-share.js';
 import { contentHash } from './cloud-sync.js';
+import { sameData } from '../../vfs/profile-merge.js';
 
 const PROFILE_PREFIX = profileDir('');
 const CACHE_PREFIX = 'orthros-files-';
@@ -101,6 +102,21 @@ async function collect(dir, prefix, out, raw = false, dirs = null) {
     else { const f = await handle.getFile(), bytes = new Uint8Array(await f.arrayBuffer()); out.push({ path, data: raw ? bytes : base64(bytes), mtime: f.lastModified }); }
   }
 }
+// (OPFS dates a file with the time it is written: a file written from another copy — the merge of the versions'
+// copies, the account's copy or an archive put in place — keeps that copy's date here until it is written again, so
+// that a late merge or a restore never makes old saves and settings look newest (profile-merge.js takes the newest):
+// localStorage orthros.profileDates.<folder>, { path: [its OPFS date, its own] })
+const datesKey = (name) => 'orthros.profileDates.' + name;
+function readDates(name) { try { return JSON.parse(globalThis.localStorage?.getItem(datesKey(name)) ?? '{}') ?? {}; } catch { return {}; } }
+function saveDates(name, dates) {
+  try { if (Object.keys(dates).length) globalThis.localStorage?.setItem(datesKey(name), JSON.stringify(dates)); else globalThis.localStorage?.removeItem(datesKey(name)); } catch { /* storage off: the write dates */ }
+}
+/** Files of folder `name` (collect) with their own dates where they were written from another copy. */
+function ownDates(name, files) {
+  const dates = readDates(name);
+  for (const f of files) { const d = dates[f.path]; if (d && d[0] === f.mtime) f.mtime = d[1]; }
+  return files;
+}
 /** Is the game running in this page with its profile under `key` (a version of the game: the profile is the game's)? */
 const running = (key, state) => !!state && (state.profileKey ?? state.manifest) === key && ['running', 'loading', 'starting'].includes(state.status);
 /** What the account keeps of a profile (cloud-sync.js): the profile's Temp folder left out (the game's scratch files). */
@@ -129,7 +145,7 @@ export async function profileFiles(game, state) {
     const root = await navigator.storage.getDirectory();
     let dir; try { dir = await root.getDirectoryHandle(PROFILE_PREFIX + game); } catch { return []; }
     files = [];
-    await collect(dir, '', files);
+    await collect(dir, '', files); ownDates(game, files);
   }
   return cloudKept(files).map((f) => ({ path: f.path, data: unbase64(f.data), ...(Number.isFinite(f.mtime) ? { mtime: f.mtime } : {}) }));
 }
@@ -147,7 +163,7 @@ export async function mergeVersionProfiles(manifest, log = () => {}) {
   const key = profileKeyOf(manifest), root = await navigator.storage.getDirectory(), folders = [];
   const read = async (name) => {
     let dir; try { dir = await root.getDirectoryHandle(PROFILE_PREFIX + name); } catch { return null; }
-    const out = []; await collect(dir, '', out, true, folders); return out;
+    const out = []; await collect(dir, '', out, true, folders); return ownDates(name, out);
   };
   const write = async (files) => {
     const top = await root.getDirectoryHandle(PROFILE_PREFIX + key, { create: true }), names = new Map();
@@ -158,15 +174,24 @@ export async function mergeVersionProfiles(manifest, log = () => {}) {
       if (!m.has(k)) m.set(k, await dir.getDirectoryHandle(name, { create: true }));
       return m.get(k);
     };
-    const dirOf = async (parts) => { let d = top; for (const p of parts) d = await child(d, p); return d; };
+    const dirOf = async (parts) => { let d = top; const path = []; for (const p of parts) { d = await child(d, p); path.push(d.name); } return { d, path }; };
     for (const p of folders) await dirOf(p.split('/'));
+    const at = [], dates = readDates(key);
     for (const f of files) {
-      const parts = f.path.split('/'), d = await dirOf(parts.slice(0, -1));
-      let name = parts.at(-1);
-      for await (const [n, h] of d.entries()) if (h.kind === 'file' && n.toLowerCase() === name.toLowerCase()) { name = n; break; }
-      const w = await (await d.getFileHandle(name, { create: true })).createWritable();
-      await w.write(f.data); await w.close();
+      const parts = f.path.split('/'), { d, path } = await dirOf(parts.slice(0, -1));
+      let name = parts.at(-1), old = null;
+      for await (const [n, h] of d.entries()) if (h.kind === 'file' && n.toLowerCase() === name.toLowerCase()) { name = n; old = h; break; }
+      at.push({ f, d, name, old, path: [...path, name].join('/') });
     }
+    // (the paths new to the profile first: a file kept beside a newer one is written before that one takes its path —
+    // a page closed in between loses nothing; the same bytes not written again: their date kept)
+    for (const w of [...at.filter((w) => !w.old), ...at.filter((w) => w.old)]) {
+      if (w.old && sameData(new Uint8Array(await (await w.old.getFile()).arrayBuffer()), w.f.data)) continue;
+      const handle = await w.d.getFileHandle(w.name, { create: true }), out = await handle.createWritable();
+      await out.write(w.f.data); await out.close();
+      if (Number.isFinite(w.f.mtime)) dates[w.path] = [(await handle.getFile()).lastModified, w.f.mtime]; else delete dates[w.path];
+    }
+    saveDates(key, dates);
   };
   return migrateProfile({
     key, settings: manifest.profileSettings, log, target: { read: () => read(key), write },
@@ -176,7 +201,7 @@ export async function mergeVersionProfiles(manifest, log = () => {}) {
 }
 /** This browser's profile of the game replaced by `files` ([{ path, data: Uint8Array }]); the previous one kept aside. */
 export async function replaceProfile(game, files, state) {
-  return restoreProfile(game, { files: files.map((f) => ({ path: f.path, data: base64(f.data) })) }, state);
+  return restoreProfile(game, { files: files.map((f) => ({ path: f.path, data: base64(f.data), ...(Number.isFinite(f.mtime) ? { mtime: f.mtime } : {}) })) }, state);
 }
 export async function archiveProfile(game, state) {
   let files = await activeFiles(game, state);
@@ -184,7 +209,7 @@ export async function archiveProfile(game, state) {
     const root = await navigator.storage.getDirectory();
     let dir; try { dir = await root.getDirectoryHandle(PROFILE_PREFIX + game); } catch { return null; }
     files = [];
-    await collect(dir, '', files);
+    await collect(dir, '', files); ownDates(game, files);
   }
   if (!files.length) return null;
   files.sort((a, b) => a.path.localeCompare(b.path));
@@ -246,6 +271,17 @@ export async function restoreProfile(game, archive, state) {
     if (asideName) await copyDirectory(await root.getDirectoryHandle(asideName), await root.getDirectoryHandle(name, { create: true }));
     throw e;
   } finally { await root.removeEntry(tempName, { recursive: true }).catch(() => {}); }
+  // (the files' own dates: the copy's — readDates)
+  const dates = {}, dir = await root.getDirectoryHandle(name);
+  for (const f of archive.files) {
+    if (!Number.isFinite(f.mtime)) continue;
+    try {
+      const parts = f.path.split('/'); let d = dir;
+      for (const part of parts.slice(0, -1)) d = await d.getDirectoryHandle(part);
+      dates[f.path] = [(await (await d.getFileHandle(parts.at(-1))).getFile()).lastModified, f.mtime];
+    } catch { /* (gone meanwhile) */ }
+  }
+  saveDates(game, dates);
   return asideName;
 }
 export async function removeCache(game, state) {
@@ -266,6 +302,7 @@ export async function removeProfile(game, state) {
     throw new Error('Quitte ce jeu avant de supprimer ses sauvegardes.');
   const root = await navigator.storage.getDirectory();
   await root.removeEntry(PROFILE_PREFIX + game, { recursive: true });
+  saveDates(game, {});
 }
 export function download(bytes, filename) {
   const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
@@ -295,13 +332,18 @@ function openDb(name) {
 const req = (r) => new Promise((resolve, reject) => { r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
 const sizeOf = (v) => (v == null ? 0 : ArrayBuffer.isView(v) || v instanceof ArrayBuffer ? v.byteLength : typeof v === 'string' ? v.length
   : Array.isArray(v) ? v.reduce((n, e) => n + sizeOf(e?.data ?? e), 0) : typeof v === 'object' ? sizeOf(v.contents ?? v.data) : 0);
-/** Each port's data in this browser: [{ game, profile (bytes of saves), cache (bytes of game files), port: true }]. */
+/**
+ * Each port's data in this browser: [{ game, profile (bytes of saves), cache (bytes of game files), dbs (the databases
+ * holding saves), port: true }].
+ */
 export async function scanPorts(ports) {
   const rows = [];
   for (const { name, saveKey } of ports) {
     let profile = 0, cache = 0;
+    const dbs = [];
     for (const dbName of await portDbs(saveKey)) {
       let db; try { db = await openDb(dbName); } catch { continue; }
+      const had = profile;
       try {
         for (const store of db.objectStoreNames) {
           const os = db.transaction(store).objectStore(store);
@@ -310,8 +352,9 @@ export async function scanPorts(ports) {
           } else for (const v of await req(os.getAll())) profile += sizeOf(v);
         }
       } finally { db.close(); }
+      if (profile > had) dbs.push(dbName);
     }
-    if (profile || cache) rows.push({ game: name, profile, cache, files: 0, locked: 0, port: true });
+    if (profile || cache) rows.push({ game: name, profile, cache, dbs, files: 0, locked: 0, port: true });
   }
   return rows;
 }

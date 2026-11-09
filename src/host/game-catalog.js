@@ -156,6 +156,10 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     versions.set(id, { manifest, requires: requires ?? [] });
   }
   if (!versions.has(spec.defaultVersion)) fail(file, 'defaultVersion doit désigner une version');
+  // (one profile, one runtime: a Windows profile — an AppData tree — and a port's — paths under its engine's folder —
+  // are not the same files; a version of another runtime keeps its own, `ownProfile`)
+  const runtimes = new Set([...versions.values()].filter((v) => v.manifest.profileKey === spec.id).map((v) => v.manifest.runtime ?? 'win32'));
+  if (runtimes.size > 1) fail(file, `les versions qui partagent le profil du jeu ont des runtimes différents (${[...runtimes].join(', ')}) : ownProfile sur celles d'un autre runtime`);
   return { spec, versions };
 }
 

@@ -1668,8 +1668,9 @@ export function createServer(opts = {}) {
 
   // (a game's saves on the account under its versions' profile keys — and, readable, under the versions' names the
   // copies of before; nothing else)
-  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => !!getManifest(game) || profiles().has(game),
-    profileKeyOf: (game) => getManifest(game)?.profileKey ?? null, ...(opts.accountMaxUserBytes ? { maxUserBytes: opts.accountMaxUserBytes } : {}), ...(opts.accountGoogle ? { google: opts.accountGoogle } : {}) }) : null;
+  const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => manifests.has(game) || profiles().has(game) || !!getManifest(game),
+    // (the catalog as loaded: a profile key that is no version's name never reloads it — every save request names one)
+    profileKeyOf: (game) => manifests.get(game)?.profileKey ?? null, ...(opts.accountMaxUserBytes ? { maxUserBytes: opts.accountMaxUserBytes } : {}), ...(opts.accountGoogle ? { google: opts.accountGoogle } : {}) }) : null;
   // (the players' copies kept per version, merged once into their game's profile: before any request)
   if (accountApi) {
     try {

@@ -194,8 +194,9 @@ export class CloudSave {
     this.remoteHash = remote.hash;
     // (nothing here the account lacks: in step with it; else sent over its head)
     if (mergedHash === await contentHash(this.game, doc.files)) { this.known = { parent: remote.hash, local: mergedHash }; this.set({ state: 'saved', at: Date.now() }); return; }
-    this.known = { parent: remote.hash, local: localHash };
-    await this.push();
+    // (sent whatever this profile's hash — the merge may have added nothing here, the account still lacking files of it)
+    this.known = { parent: remote.hash, local: mergedHash };
+    await this.push({ force: true });
   }
   async applyRemote(remote, decoded = null) {
     const doc = decoded ?? await decodeProfile(this.game, remote.bytes);

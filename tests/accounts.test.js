@@ -139,6 +139,13 @@ test('a game\'s versions\' account copies merge once into its shared profile, no
     const gone = await request('/api/cloud/g1', 'PUT', backup('g1', [['Saves/a.sav', 'late']]), cookie);
     assert.equal(gone.status, 410); assert.equal((await gone.json()).profileKey, 'fixture');
     assert.equal((await request('/api/cloud/g3', 'PUT', backup('g3', [['Saves/a.sav', 'own 2']]), cookie)).status, 409, 'its own key still written (its parent checked)');
+    // (a version joining the game later — its ownProfile dropped —: its copy merged at the next start, then frozen)
+    const spec = JSON.parse(fs.readFileSync(path.join(games, 'fixture', 'manifest.json'), 'utf8')); delete spec.versions[2].ownProfile;
+    fs.writeFileSync(path.join(games, 'fixture', 'manifest.json'), JSON.stringify(spec));
+    server.close(); await once(server, 'close'); server = await start();
+    const after = JSON.parse(gunzipSync(Buffer.from(await (await request('/api/cloud/fixture', 'GET', undefined, cookie)).arrayBuffer())));
+    assert.equal(Object.fromEntries(after.files.map((f) => [f.path, Buffer.from(f.data, 'base64').toString()]))['Saves/a (g3).sav'], 'own');
+    assert.equal((await request('/api/cloud/g3', 'PUT', backup('g3', [['Saves/a.sav', 'late']]), cookie)).status, 410);
   } finally {
     server.close();
     fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(games, { recursive: true, force: true });

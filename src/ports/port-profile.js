@@ -39,11 +39,12 @@ export async function openPortProfile(config, { toCloud, log = () => {} }) {
       try { return old.objectStoreNames.contains('profile') ? (await readStorage(old, 'profile', 'files')) ?? null : null; } finally { old.close(); }
     },
   }));
+  // (a copy not read: the profile as it is, the merge done at the next start)
   await migrateProfile({
     key, sources, settings: config.profileSettings, log,
     target: { read: () => readStorage(db, 'profile', 'files'), write: (files) => writeStorage(db, 'profile', 'files', files.map((f) => ({ path: f.path, data: f.data }))) },
     hashOf: (name, files) => contentHash(name, toCloud(files)),
-  });
+  }).catch((e) => log(`profile merge: ${e.message}`));
   return db;
 }
 

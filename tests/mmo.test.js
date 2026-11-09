@@ -192,7 +192,7 @@ test('a version\'s `mmo` entry: checked by the catalog (any runtime) and the sch
   edit((spec) => { delete spec.versions[0].mmo; spec.defaults.mmo = { maxPlayers: 4 }; });
   assert.equal(loadGameCatalog(f.games, null, { enginesDir: f.engines }).get('city-solo').mmo.maxPlayers, 4);
   fs.writeFileSync(path.join(f.game, 'base', 'game.exe'), 'MZ');
-  edit((spec) => { delete spec.defaults.mmo; spec.versions[0] = { id: 'city-online', dir: 'online', version: '1', runtime: 'win32', exe: 'game.exe', mmo: { maxCharacters: 3 } }; });
+  edit((spec) => { delete spec.defaults.mmo; spec.versions[0] = { id: 'city-online', dir: 'online', version: '1', runtime: 'win32', exe: 'game.exe', ownProfile: true, mmo: { maxCharacters: 3 } }; });
   assert.equal(loadGameCatalog(f.games, null, { enginesDir: f.engines }).get('city-online').mmo.maxCharacters, 3);
   // (the schema says the same)
   const schema = JSON.parse(fs.readFileSync(new URL('../docs/game-manifest.schema.json', import.meta.url), 'utf8')).properties.versions.items.properties.mmo;

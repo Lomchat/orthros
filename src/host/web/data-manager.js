@@ -7,7 +7,7 @@ import { pickLang } from './lang.js';
 import { h } from './dom.js';
 import { errorText, accountChanged, onAccountChange, googleSignIn, googleText, GOOGLE_G } from './account.js';
 import { CloudSave, MAX_BACKUP, encodeProfile } from './cloud-sync.js';
-import { cloudProfile, portProfileDb } from '../../vfs/profile-share.js';
+import { cloudProfile, mergedMarker, portProfileDb } from '../../vfs/profile-share.js';
 
 // ---------------------------------------------------------------- text
 const TEXT = {
@@ -34,7 +34,8 @@ const TEXT = {
     keptUnder: (g) => `Les fichiers que ce jeu partage avec ${g} sont désormais gardés sous ${g} : les copies que ce cache en garde encore y passent à mesure qu'elles sont lues, et le vider libère l'espace qu'elles occupaient.`,
     cleanSaves: 'Effacer les sauvegardes', cleanSavesText: 'Supprime définitivement les parties et réglages de cet appareil.',
     sharedBy: (v) => `Sauvegardes partagées par : ${v}`, cleanSavesShared: (v) => `Supprime définitivement les parties et réglages de cet appareil, pour toutes les versions du jeu (${v}).`,
-    oldCopies: 'Anciennes copies', oldCopiesText: 'Les sauvegardes que chaque version gardait avant d’être partagées par le jeu : elles y ont été reprises. Supprime-les quand tu as vérifié tes parties.',
+    oldCopies: 'Anciennes copies', oldCopiesText: 'Les sauvegardes que chaque version gardait avant d’être partagées par le jeu. Celles qui y ont été reprises peuvent être supprimées quand tu as vérifié tes parties.',
+    notMerged: 'Pas encore reprise : lance le jeu une fois sur cet appareil.', notMergedOnline: 'Ancienne copie de cette version, pas encore reprise dans les sauvegardes du jeu : elle reste téléchargeable depuis l’historique.',
     oldAsk: (g) => `Supprimer l’ancienne copie de ${g} ?`, oldAskText: 'Ses parties ont été reprises dans les sauvegardes du jeu. Elle sera supprimée définitivement.',
     playing: 'Jeu en cours : l’import et le nettoyage seront possibles après l’avoir quitté.',
     portOpen: 'Ferme ce jeu dans tes autres onglets avant de nettoyer ses données.',
@@ -114,7 +115,8 @@ const TEXT = {
     keptUnder: (g) => `The files this game shares with ${g} are now kept under ${g}: the copies this cache still holds move there as they are read, and clearing it frees the space they took.`,
     cleanSaves: 'Erase the saves', cleanSavesText: 'Permanently deletes the games and settings on this device.',
     sharedBy: (v) => `Saves shared by: ${v}`, cleanSavesShared: (v) => `Permanently deletes the games and settings on this device, for every version of the game (${v}).`,
-    oldCopies: 'Old copies', oldCopiesText: 'The saves each version kept before the game shared them: they were taken into the game’s. Delete them once you have checked your games.',
+    oldCopies: 'Old copies', oldCopiesText: 'The saves each version kept before the game shared them. Those taken into the game’s can be deleted once you have checked your games.',
+    notMerged: 'Not taken in yet: start the game once on this device.', notMergedOnline: 'This version’s old copy, not taken into the game’s saves yet: it can still be downloaded from the history.',
     oldAsk: (g) => `Delete the old copy of ${g}?`, oldAskText: 'Its games were taken into the game’s saves. It will be deleted for good.',
     playing: 'Game running: import and clean-up are possible once you have left it.',
     portOpen: 'Close this game in your other tabs before cleaning its data.',
@@ -199,6 +201,14 @@ const versionsOf = (key) => app.profiles.get(key)?.versions ?? [];
 const sharedBy = (key) => (versionsOf(key).length > 1 ? versionsOf(key).map((v) => versionOf(v) ?? v) : null);
 const portProfile = (key) => (app.profiles.get(key)?.runtime ?? 'win32') !== 'win32';
 /**
+ * Was version `name`'s copy of before (one per account `scope` for OpenMW) taken into its game's profile in this
+ * browser? Its merge's record names it (profile-share.js mergedMarker) — not yet: the game not started since, the copy
+ * left to the player only once it was.
+ */
+const tookIn = (name, scopes) => scopes.every((scope) => !!mergedMarker(app.games.get(name)?.profileKey ?? name, scope)?.sources?.some((s) => s.name === name && s.files > 0));
+/** A version's account copy of before its profile was shared, not under its profile's key. */
+const versionCopy = (game) => !!app.games.get(game) && app.games.get(game).profileKey !== game;
+/**
  * The other versions that read version `game`'s files (/api/manifests `owners`: the versions whose files a version
  * takes — they are stored under their owner, game-data.js): its cache is theirs too, counted and cleared here only.
  */
@@ -247,14 +257,15 @@ async function refresh({ account = false } = {}) {
   for (const r of storage.games) {
     if (r.cache) add(local.caches, r.game, r.cache);
     if (!r.profile) continue;
-    if (!app.profiles.has(r.game) && app.games.has(r.game)) local.old.push({ name: r.game, bytes: r.profile, port: false });
+    if (!app.profiles.has(r.game) && app.games.has(r.game)) local.old.push({ name: r.game, bytes: r.profile, port: false, merged: tookIn(r.game, [null]) });
     else add(local.profiles, r.game, r.profile);
   }
   try {
     const ports = manifests.filter((m) => m.saveKey);
     for (const r of await scanPorts(ports.map((m) => ({ name: m.name, saveKey: m.saveKey })))) {
       if (r.cache) add(local.caches, r.game, r.cache);
-      if (r.profile) local.old.push({ name: r.game, bytes: r.profile, port: true });
+      // (OpenMW: one database a player's account scope, each merged by its own page — profile-share.js mergedMarker)
+      if (r.profile) local.old.push({ name: r.game, bytes: r.profile, port: true, merged: tookIn(r.game, r.dbs.map((db) => (app.games.get(r.game)?.runtime === 'openmw' && db.startsWith(portKey(r.game) + ':user:') ? db.slice(portKey(r.game).length + 6) : null))) });
     }
     for (const r of await scanPorts([...new Set(ports.map((m) => m.profileKey ?? m.name))].map((key) => ({ name: key, saveKey: portProfileDb(key) })))) add(local.profiles, r.game, r.profile);
   } catch { /* IndexedDB unavailable */ }
@@ -443,7 +454,8 @@ function renderDevice() {
     content.append(h('h3', { class: 'dm-section' }, t('oldCopies')), h('p', { class: 'dm-sub' }, t('oldCopiesText')));
     content.append(h('div', { class: 'dm-list tight' }, old.map((item) => h('div', { class: 'dm-line' },
       h('span', {}, h('strong', {}, nameOf(item.name)), h('small', {}, [versionOf(item.name), fmtBytes(item.bytes)].filter(Boolean).join(' · '))),
-      btn(t('delete'), () => removeOld(item), { variant: 'danger', ico: 'trash', key: 'old:' + item.name, small: true })))));
+      row(btn(t('export'), () => exportOld(item), { variant: 'ghost', ico: 'download', key: 'oldx:' + item.name, small: true }),
+        item.merged ? btn(t('delete'), () => removeOld(item), { variant: 'danger', ico: 'trash', key: 'old:' + item.name, small: true }) : h('small', {}, t('notMerged')))))));
   }
   if (st.asides.length) {
     content.append(h('h3', { class: 'dm-section' }, t('asides')), h('p', { class: 'dm-sub' }, t('asidesText')));
@@ -471,18 +483,22 @@ function renderDevice() {
 function cloudRow(game) {
   const remote = app.cloud.get(game), local = app.local?.profiles.get(game) ?? 0, card = h('article', { class: 'dm-game cloud' });
   const shared = sharedBy(game), version = shared ? null : versionOf(versionsOf(game)[0] ?? game), port = portProfile(game);
+  // (a version's copy of before not merged into its game's profile yet: no version reads it in this browser — kept,
+  // downloadable, never put in place)
+  const before = versionCopy(game), restorable = !port && !before;
   card.append(h('div', { class: 'dm-game-top' },
     h('div', { class: 'dm-game-icon', 'aria-hidden': 'true' }, icon('cloud')),
     h('div', { class: 'dm-game-id' }, h('strong', {}, nameOf(game)), version ? h('span', { class: 'dm-tag' }, version) : null, shared ? h('small', {}, t('sharedBy', shared.join(', '))) : null),
     h('div', { class: 'dm-figs one' }, remote ? h('span', {}, t('online'), h('b', {}, `${t('version', remote.version)} · ${fmtBytes(remote.size)}`), h('small', {}, stamp(remote.updatedAt))) : h('span', { class: 'dim' }, t('noCopy')))));
-  card.append(row(local && !port ? btn(t('send'), () => uploadGame(game, true), { variant: 'primary', ico: 'upload', key: 'send:' + game, small: true }) : null,
-    remote && !port ? btn(t('restore'), () => restoreCloud(game), { variant: 'ghost', ico: 'restore', key: 'restore:' + game, small: true }) : null,
+  card.append(row(local && restorable ? btn(t('send'), () => uploadGame(game, true), { variant: 'primary', ico: 'upload', key: 'send:' + game, small: true }) : null,
+    remote && restorable ? btn(t('restore'), () => restoreCloud(game), { variant: 'ghost', ico: 'restore', key: 'restore:' + game, small: true }) : null,
     remote ? btn(t('history'), () => toggleHistory(game), { variant: 'ghost', ico: 'clock', key: 'history:' + game, small: true }) : null));
+  if (before) card.append(h('p', {}, t('notMergedOnline')));
   if (port && app.profiles.get(game)?.launchUrl) card.append(h('p', {}, t('portSaves')), h('a', { href: app.profiles.get(game).launchUrl }, t('playPort')));
   if (app.expanded === game) {
     card.append(h('div', { class: 'dm-history' }, (app.histories.get(game) ?? []).map((v) => h('div', { class: 'dm-line' },
       h('span', {}, h('strong', {}, t('version', v.version)), h('small', {}, `${stamp(v.createdAt)} · ${fmtBytes(v.size)}`)),
-      row(!port ? btn(t('restore'), () => restoreCloud(game, v.version), { variant: 'ghost', ico: 'restore', small: true }) : null, btn(t('downloadBtn'), () => downloadCloud(game, v.version), { variant: 'ghost', ico: 'download', small: true }))))));
+      row(restorable ? btn(t('restore'), () => restoreCloud(game, v.version), { variant: 'ghost', ico: 'restore', small: true }) : null, btn(t('downloadBtn'), () => downloadCloud(game, v.version), { variant: 'ghost', ico: 'download', small: true }))))));
   }
   if (remote) card.append(fold('online:' + game, t('more'), h('div', { class: 'dm-clean' }, h('div', {}, h('strong', {}, t('deleteOnline'))), btn(t('deleteOnline'), () => deleteCloud(game), { variant: 'danger', ico: 'trash', key: 'del:' + game, small: true }))));
   return card;
@@ -582,8 +598,8 @@ const portKey = (game) => app.games.get(game)?.saveKey ?? null;
 /** A port's profile's database (the game's: portProfileDb), null for a Windows game. */
 const portDb = (key) => (portProfile(key) ? portProfileDb(key) : null);
 /** A port's saves as one archive (the account's format): null when it has none. */
-async function archivePort(key) {
-  const files = await portFiles(portDb(key)); if (!files.length) return null;
+async function archivePort(key, db = portDb(key)) {
+  const files = await portFiles(db); if (!files.length) return null;
   return new Uint8Array(await new Response(new Blob([encodeProfile(key, files)]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
 }
 async function exportLocal(game) {
@@ -627,8 +643,18 @@ function clearProfile(game) {
     return t('rSaves');
   });
 }
+/** A version's copy of before its profile was shared, exported as it is (an import into the game's takes it). */
+function exportOld(item) {
+  return run(t('wExport'), async () => {
+    const bytes = item.port ? await archivePort(item.name, portKey(item.name)) : await archiveProfile(item.name, state());
+    if (!bytes) throw new Error(t('rNoSave'));
+    download(bytes, item.name + '-' + new Date().toISOString().slice(0, 10) + '.orthros-save');
+    return t('rExported', fmtBytes(bytes.length));
+  });
+}
 /** A version's copy of before its profile was shared (merged into it), deleted. */
 function removeOld(item) {
+  if (!item.merged) return;
   return run(t('wAside'), async () => {
     if (!await ask({ title: t('oldAsk', nameOf(item.name)), text: t('oldAskText'), ok: t('delete'), danger: true })) return t('cancelled');
     if (item.port) await clearPortSaves(portKey(item.name)); else await removeProfile(item.name, state());

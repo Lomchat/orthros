@@ -131,9 +131,15 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     );
   `);
   const markerOf = (userId, key) => db.prepare('SELECT sources FROM profile_migrations WHERE user_id=? AND profile_key=?').get(userId, key);
+  /**
+   * The names whose copies a player's profile `key` took (its own included), as `sources` records them — those still
+   * keeping their profile under it (a version given its own since — `ownProfile` — is its own again: its copies too).
+   */
+  const stillIn = (key, sources) => Object.keys(JSON.parse(sources)).filter((n) => n === key || profileKeyOf(n) === key);
+  const mergedInto = (userId, key) => { const m = markerOf(userId, key); return m ? stillIn(key, m.sources) : []; };
   /** A player's merges: key -> the names merged into it. */
   const mergesOf = (userId) => new Map(db.prepare('SELECT profile_key, sources FROM profile_migrations WHERE user_id=?').all(userId)
-    .map((m) => [m.profile_key, Object.keys(JSON.parse(m.sources))]));
+    .map((m) => [m.profile_key, stillIn(m.profile_key, m.sources)]));
   const google = googleClient(dir, googleSettings);
   const flows = new Map(), signups = new Map(); // (Google sign-ins under way: by state; new players choosing a name: by cookie)
   const keep = (map, key, value) => {
@@ -379,7 +385,7 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     // (a version's own copy, merged into its game's profile: no longer written or deleted under its old key — a page of
     // before, still open, is told where its saves went)
     const movedTo = profileKeyOf(game);
-    if (['PUT', 'DELETE'].includes(req.method) && !tail && movedTo && movedTo !== game && markerOf(user.id, movedTo)) return reply(res, 410, { error: 'migrated', profileKey: movedTo });
+    if (['PUT', 'DELETE'].includes(req.method) && !tail && movedTo && movedTo !== game && mergedInto(user.id, movedTo).includes(game)) return reply(res, 410, { error: 'migrated', profileKey: movedTo });
     if (req.method === 'GET' && tail === 'history') {
       const rows = db.prepare('SELECT version,hash,size,created_at createdAt FROM backups WHERE user_id=? AND game_id=? ORDER BY version DESC LIMIT 20').all(user.id, game);
       return reply(res, 200, { versions: rows });
@@ -391,8 +397,7 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     }
     if (req.method === 'DELETE' && !tail) {
       // (a shared profile: the versions' copies merged into it go with it)
-      const merged = markerOf(user.id, game);
-      for (const n of merged ? Object.keys(JSON.parse(merged.sources)) : []) db.prepare('DELETE FROM backups WHERE user_id=? AND game_id=?').run(user.id, n);
+      for (const n of mergedInto(user.id, game)) db.prepare('DELETE FROM backups WHERE user_id=? AND game_id=?').run(user.id, n);
       db.prepare('DELETE FROM backups WHERE user_id=? AND game_id=?').run(user.id, game);
       return reply(res, 200, { ok: true });
     }
@@ -439,7 +444,8 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
   };
   /**
    * The copies each player kept per version, merged into their game's shared profile (docs/profiles.md): once per
-   * player and profile key (profile_migrations), at the server's start. `groups`: profile key -> the versions keeping
+   * player, key and copy (profile_migrations records each name's version merged — a version joining the group later, or
+   * a copy written since under a name that was not refused, is merged then), at the server's start. `groups`: profile key -> the versions keeping
    * their profile under it (game-catalog.js profileGroups); `settingsOf(key)`: the manifests' profileSettings. For each
    * player with a copy under one of a key's versions (another name than the key's): the latest copy of each version, and
    * the key's own latest when there is one, merged (profile-merge.js — the account's dates: each file's when the copy
@@ -453,24 +459,29 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
     for (const [key, members] of groups) {
       const legacy = members.filter((n) => n !== key);
       if (!legacy.length || !GAME.test(key)) continue;
-      const users = db.prepare(`SELECT DISTINCT user_id FROM backups WHERE game_id IN (${legacy.map(() => '?').join(',')})
-        AND user_id NOT IN (SELECT user_id FROM profile_migrations WHERE profile_key=?)`).all(...legacy, key).map((r) => r.user_id);
+      // (the players with a copy under one of its versions newer than the one their merge took, or not taken yet)
+      const done = new Map(db.prepare('SELECT user_id, sources FROM profile_migrations WHERE profile_key=?').all(key).map((r) => [r.user_id, JSON.parse(r.sources)]));
+      const users = new Set(db.prepare(`SELECT user_id, game_id, MAX(version) version FROM backups WHERE game_id IN (${legacy.map(() => '?').join(',')}) GROUP BY user_id, game_id`)
+        .all(...legacy).filter((r) => r.version > (done.get(r.user_id)?.[r.game_id]?.version ?? 0)).map((r) => r.user_id));
       for (const userId of users) {
-        const why = migrateOne(userId, key, [key, ...legacy], settingsOf(key));
+        const why = migrateOne(userId, key, legacy, settingsOf(key));
         if (why) { out.skipped++; log(`account saves: ${key} of user ${userId} not merged (${why}): its versions' copies stay as they are`); } else out.merged++;
       }
     }
     return out;
   };
-  /** One player's copies of key's versions merged into it (null), or why not. */
-  function migrateOne(userId, key, names, settings) {
+  /** One player's copies of key's versions (`legacy`) not merged yet merged into it (null), or why not. */
+  function migrateOne(userId, key, legacy, settings) {
     db.exec('BEGIN IMMEDIATE');
     try {
       const skip = (why) => { db.exec('ROLLBACK'); return why; };
-      if (markerOf(userId, key)) return skip(null);
+      const marker = markerOf(userId, key), before = marker ? JSON.parse(marker.sources) : {};
       const latest = db.prepare('SELECT * FROM backups WHERE user_id=? AND game_id=? ORDER BY version DESC LIMIT 1');
-      const rows = names.map((n) => latest.get(userId, n)).filter(Boolean), head = rows.find((r) => r.game_id === key) ?? null;
-      const sources = [], from = {};
+      // (the key's latest — the profile as it is —, and each version's copy newer than the one merged before)
+      const fresh = legacy.map((n) => latest.get(userId, n)).filter((r) => r && r.version > (before[r.game_id]?.version ?? 0));
+      if (!fresh.length) return skip(null);
+      const head = latest.get(userId, key) ?? null, rows = [...(head ? [head] : []), ...fresh];
+      const sources = [], from = { ...before };
       for (const row of rows) {
         const doc = readBackup(row.data);
         if (!doc) return skip(`${row.game_id} v${row.version} unreadable`);
@@ -492,7 +503,7 @@ export function createAccountApi(dir, { publicOrigin = DEFAULT_ORIGIN, allowedGa
         db.prepare('INSERT INTO backups(user_id,game_id,version,hash,size,created_at,data) VALUES(?,?,?,?,?,?,?)').run(userId, key, version, sha256(bytes), bytes.length, Date.now(), bytes);
         db.prepare('DELETE FROM backups WHERE user_id=? AND game_id=? AND version<=?').run(userId, key, version - MAX_HISTORY);
       }
-      db.prepare('INSERT INTO profile_migrations(user_id,profile_key,done_at,sources) VALUES(?,?,?,?)').run(userId, key, Date.now(), JSON.stringify(from));
+      db.prepare('INSERT INTO profile_migrations(user_id,profile_key,done_at,sources) VALUES(?,?,?,?) ON CONFLICT(user_id,profile_key) DO UPDATE SET done_at=excluded.done_at, sources=excluded.sources').run(userId, key, Date.now(), JSON.stringify(from));
       db.exec('COMMIT');
       return null;
     } catch (e) { try { db.exec('ROLLBACK'); } catch { /* none open */ } return e.message; }

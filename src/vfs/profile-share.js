@@ -2,7 +2,8 @@
 // like on a PC, where a patch keeps them —, unless a version says `ownProfile: true` in its manifest. The catalog gives
 // each version its `profileKey` (src/host/game-catalog.js): the game folder's id, or the version's own name. Every
 // runtime keeps its profile under it, through the names made here; the copies kept per version before (one per version
-// name) are merged into it once, by migrateProfile below with the one merge (profile-merge.js), and left in place.
+// name) are merged into it by migrateProfile below (each copy once, again when it changed) with the one merge
+// (profile-merge.js), and left in place.
 import { mergeProfiles } from './profile-merge.js';
 
 /** A version's profile key (a manifest from the catalog, /api/manifest or /api/manifests; an older one: its name). */
@@ -50,10 +51,12 @@ export function mergedMarker(key, scope = null, storage = globalThis.localStorag
 }
 
 /**
- * The per-version copies of profile `key` merged into it, once (the marker, in the page's storage, says it is done;
- * under an exclusive Web Lock, so that two tabs never do it at once). The copies are only read: a player deletes them
- * from the data window. Done again (no marker: an earlier page closed before the end) it gives the same files — the
- * profile's own files are one of the copies.
+ * The per-version copies of profile `key` merged into it (under an exclusive Web Lock, so that two tabs never do it at
+ * once). The marker, in the page's storage, records each copy's content hash as merged: at every start a copy missing
+ * from it (a version that joined the game later) or changed since (written by a page of before still open) is merged
+ * again into the profile as it is — the others are not, so a file the player removed since does not come back. The
+ * copies are only read: a player deletes them from the data window. A copy that cannot be read stops it, no marker
+ * written: done at the next start (done again it gives the same files — the merge is idempotent).
  * @param {{
  *   key: string, scope?: string | null,
  *   sources: { name: string, read: () => Promise<{ path: string, data: any, mtime?: number }[] | null>, target?: boolean }[],
@@ -61,41 +64,46 @@ export function mergedMarker(key, scope = null, storage = globalThis.localStorag
  *   hashOf: (name: string, files: any[]) => Promise<string>,
  *   settings?: string[], storage?: Storage, log?: (msg: string) => void,
  * }} o  the sources in the caller's order of preference (on equal dates, the first is the newer: the version being
- *   started); a source `target`: the profile's own storage (a Windows game whose key is also a version's name: one
- *   OPFS folder); `target.read`: the profile's files now; `hashOf`: a copy's content hash as the account's sync computes it.
+ *   started); `read()`: a copy's files, null when it does not exist (an error: not read); a source `target`: the
+ *   profile's own storage (a Windows game whose key is also a version's name: one OPFS folder — the profile itself,
+ *   never merged again); `target.read`: the profile's files now; `hashOf`: a copy's content hash as the account's sync
+ *   computes it.
  */
 export async function migrateProfile(o) {
   const { key, scope = null, sources, target, hashOf, settings, storage = globalThis.localStorage, log = () => {} } = o;
   const run = async () => {
-    const done = mergedMarker(key, scope, storage);
-    if (done) return done;
+    const done = mergedMarker(key, scope, storage), before = new Map((done?.sources ?? []).map((s) => [s.name, s.hash]));
     const copies = [];
     for (const s of sources) {
-      const files = (await s.read().catch((e) => { log(`profile: ${s.name}'s copy not read (${e.message})`); return null; })) ?? [];
-      copies.push({ label: s.name, at: Math.max(0, ...files.map((f) => f.mtime ?? 0)), files, source: true, target: !!s.target });
+      const files = (await s.read()) ?? [];
+      copies.push({ label: s.name, at: Math.max(0, ...files.map((f) => f.mtime ?? 0)), files, source: true, target: !!s.target, hash: await hashOf(s.name, files) });
     }
-    // (the profile's own files when it is none of the copies: what an earlier page wrote — the same again, or the game
-    // played since)
-    if (!sources.some((s) => s.target)) {
+    // (the copies to take: all the first time; then those new or changed since)
+    const fresh = done ? copies.filter((c) => !c.target && before.get(c.label) !== c.hash) : copies;
+    if (done && !fresh.length) return done;
+    // (the profile's own files when it is none of the copies, or merged before: what an earlier page wrote — the same
+    // again, or the game played since —, first among equal dates)
+    const inputs = done ? [...copies.filter((c) => c.target), ...fresh] : [...copies];
+    if (!inputs.some((c) => c.target)) {
       const own = (await target.read()) ?? [];
-      if (own.length) copies.unshift({ label: key, at: Math.max(0, ...own.map((f) => f.mtime ?? 0)), files: own });
+      if (own.length) inputs.unshift({ label: key, at: Math.max(0, ...own.map((f) => f.mtime ?? 0)), files: own });
     }
-    const full = copies.filter((c) => c.files.length);
-    // (the version being started first among equal dates: the caller's order)
+    const full = inputs.filter((c) => c.files.length);
     const merged = full.length ? mergeProfiles(full, { settings }) : { files: [], report: [] };
     // (the profile's own files alone: nothing to write)
     const alone = full.length === 1 && (full[0].target || !full[0].source);
     // (the result as the profile now holds it — names as its storage spells them —: what the account's sync will read)
     let now = merged.files;
     if (full.length && !alone) { await target.write(merged.files); now = (await target.read()) ?? merged.files; }
+    const renamed = merged.report.filter((r) => r.action === 'renamed').map((r) => r.to);
     const marker = {
       at: Date.now(),
-      sources: await Promise.all(copies.filter((c) => c.source).map(async (c) => ({ name: c.label, files: c.files.length, hash: await hashOf(c.label, c.files) }))),
+      sources: copies.map((c) => ({ name: c.label, files: c.files.length, hash: c.hash })),
       merged: await hashOf(key, now),
-      renamed: merged.report.filter((r) => r.action === 'renamed').map((r) => r.to),
+      renamed: [...(done?.renamed ?? []), ...renamed],
     };
     try { storage?.setItem(markerKey(key, scope), JSON.stringify(marker)); } catch { /* storage off: done again next time, the same */ }
-    if (full.length > 1) log(`profile ${key}: ${full.map((c) => c.label).join(', ')} merged (${merged.files.length} files${marker.renamed.length ? `, ${marker.renamed.length} kept beside a newer one` : ''})`);
+    if (full.length > 1) log(`profile ${key}: ${full.map((c) => c.label).join(', ')} merged (${merged.files.length} files${renamed.length ? `, ${renamed.length} kept beside a newer one` : ''})`);
     return marker;
   };
   const locks = globalThis.navigator?.locks;

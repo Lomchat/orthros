@@ -126,4 +126,8 @@ test('CloudSave: a profile now shared by a game\'s versions — no question for 
   assert.equal(await cb.pull(), 'merge');
   assert.equal(cb.status.state, 'saved'); assert.equal(b.puts.length, 1, 'sent once, with the head as its parent');
   assert.deepEqual(b.remote(), ['save/a.sav', 'save/b.sav', 'save/c.sav']); assert.deepEqual(b.device.files.map((f) => f.path), ['save/a.sav', 'save/b.sav', 'save/c.sav']);
+  // (this profile holding all the account has and more: the merge adds nothing here, the account's copy still gets it)
+  const c = shared([...merged, file('save/d.sav', 4)], {}), cc = c.save(markerB);
+  assert.equal(await cc.pull(), 'merge'); assert.equal(c.puts.length, 1);
+  assert.deepEqual(c.remote(), ['save/a.sav', 'save/b.sav', 'save/d.sav']);
 });
