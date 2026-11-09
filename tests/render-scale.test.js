@@ -53,4 +53,8 @@ test('controller: steps down when render-bound, not back up while the next step 
   const before = s;
   for (; t < 60000; t += 33) { c.add(t, s, B, render(s)); const n = c.decide(t, s, B); if (n !== s) { c.changed(t); s = n; } }
   assert.equal(s, before);
+  // frames bound by work that does not scale with pixels: the step down is undone, not repeated at once
+  const d = new ScaleController(); let u = 1, changes = 0;
+  for (t = 0; t < 20000; t += 80) { d.add(t, u, 80, 78); const n = d.decide(t, u, B); if (n !== u) { d.changed(t); u = n; changes++; } }
+  assert.equal(u, 1); assert.equal(changes, 2);
 });

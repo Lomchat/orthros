@@ -227,7 +227,7 @@ export class WebGLDevice {
     // adaptive internal render resolution (render-scale.js): the scale of the back buffers and of the render targets of
     // their size (1: off); its controller measures the frames when the GPU is a software rasterizer (or a scale is forced)
     this.tmpRect = [0, 0, 0, 0];
-    this.rsc = new RenderScale(gl, { software: opts.software ?? gpuClass(gpuInfo(gl).renderer) === 'software', busy: () => opts.busySource?.busyMs ?? this.ownBusyMs() });
+    this.rsc = new RenderScale({ software: opts.software ?? gpuClass(gpuInfo(gl).renderer) === 'software', busy: () => opts.busySource?.busyMs ?? this.ownBusyMs() });
     this.rscale = this.rsc.initial(); this.stats.rscale = this.rsc.stats; this.rsc.stats.s = this.rscale; this.rsc.stats.min = this.rscale; if (this.stats.gpu) { this.stats.gpu.scale = this.rscale; this.stats.gpu.scaleChanges = 0; }
     if (this.rsc.mode.mode !== 'off') this.log(`d3d-webgl: render scale ${this.rsc.mode.mode}${this.rsc.mode.mode === 'fixed' ? ' ' + this.rscale : ''} (renderer ${this.rsc.software ? 'software' : 'hardware'})`);
     gl.bindVertexArray(this.vao);
@@ -1682,7 +1682,6 @@ export class WebGLDevice {
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     if (this.probe?.hot) this.probe.draw();
-    if (this.rsc.hot) this.rsc.draw();
     gl.drawArrays(this.glMode(type), start, this.vertexCount(type, count));
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dp');
@@ -1724,7 +1723,6 @@ export class WebGLDevice {
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     if (this.probe?.hot) this.probe.draw();
-    if (this.rsc.hot) this.rsc.draw();
     gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dip');
@@ -1745,7 +1743,6 @@ export class WebGLDevice {
     if (!this.bindAttributes(P, info.L, stride)) return;
     if (this.capturing) this.log(`d3d-webgl: [cap] drawPrimitiveUP type ${type} prims ${count} stride ${stride}`);
     if (this.probe?.hot) this.probe.draw();
-    if (this.rsc.hot) this.rsc.draw();
     gl.drawArrays(this.glMode(type), 0, n);
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dpup');
@@ -1763,7 +1760,6 @@ export class WebGLDevice {
     this.streamData(gl.ELEMENT_ARRAY_BUFFER, idx, n * (short ? 2 : 4));
     if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitiveUP type ${type} prims ${count} numV ${numV} stride ${stride}`);
     if (this.probe?.hot) this.probe.draw();
-    if (this.rsc.hot) this.rsc.draw();
     gl.drawElements(this.glMode(type), n, short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, 0);
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dipup');
