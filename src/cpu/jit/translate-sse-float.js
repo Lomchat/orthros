@@ -152,16 +152,16 @@ for (const k of MOV16) HANDLERS[OP[k]] = mov16();
 // its low qword into the shadow; xmm <- xmm copies shadow to shadow (the destination's high qword kept)
 HANDLERS[OP.MOVSD] = (E, insn) => {
   const c = E.c; const [d, s] = insn.ops;
-  if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA); scalarF64(E, s); c.f64store(0, 0); E.smcCheck(insn); }
-  else if (s.t === OT.MEM) xmmStoreShadowed64(E, d.r, () => { E.ea(s); c.v128load64zero(0); });
+  if (d.t === OT.MEM) { const off = E.storeAddr(d); scalarF64(E, s); c.f64store(off, 0); E.smcCheck(insn); }
+  else if (s.t === OT.MEM) xmmStoreShadowed64(E, d.r, () => { c.v128load64zero(E.eaOff(s)); });
   else xmmStoreF64(E, d.r, () => scalarF64(E, s));
 };
 // MOVSS through the lane-0 shadows (XMM_SHADOW_OPS below): m32 <- the shadow; xmm <- m32 loads the zero-extended
 // vector and its lane 0 into the shadow; xmm <- xmm copies shadow to shadow (lanes 1-3 of the destination kept)
 HANDLERS[OP.MOVSS] = (E, insn) => {
   const c = E.c; const [d, s] = insn.ops;
-  if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA); scalarF32(E, s); c.f32store(0, 0); E.smcCheck(insn); }
-  else if (s.t === OT.MEM) xmmStoreShadowed(E, d.r, () => { E.ea(s); c.v128load32zero(0); });
+  if (d.t === OT.MEM) { const off = E.storeAddr(d); scalarF32(E, s); c.f32store(off, 0); E.smcCheck(insn); }
+  else if (s.t === OT.MEM) xmmStoreShadowed(E, d.r, () => { c.v128load32zero(E.eaOff(s)); });
   else xmmStoreF32(E, d.r, () => scalarF32(E, s));
 };
 
@@ -170,15 +170,15 @@ HANDLERS[OP.MOVSS] = (E, insn) => {
 // contents (two floats, integers, signaling NaNs): WASM loads, stores and locals keep an f64's bits
 HANDLERS[OP.MOVLPS] = HANDLERS[OP.MOVLPD] = (E, insn) => {
   const c = E.c; const [d, s] = insn.ops;
-  if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA); scalarF64(E, s); c.f64store(0, 0); E.smcCheck(insn); }
-  else xmmStoreF64(E, d.r, () => { E.ea(s); c.f64load(0, 0); });
+  if (d.t === OT.MEM) { const off = E.storeAddr(d); scalarF64(E, s); c.f64store(off, 0); E.smcCheck(insn); }
+  else xmmStoreF64(E, d.r, () => { c.f64load(E.eaOff(s), 0); });
 };
 // MOVHPS/MOVHPD: high qword <-> m64 (low preserved). In XMM_SHADOW64_OPS without using the shadow: they never read nor
 // write the low qword, which may stay stale in the v128 local (a dirty f64 shadow)
 HANDLERS[OP.MOVHPS] = HANDLERS[OP.MOVHPD] = (E, insn) => {
   const c = E.c; const [d, s] = insn.ops;
   if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA); xmmLoad(E, s.r); c.v128store64lane(0, 1); E.smcCheck(insn); return; }
-  c.get(xmmLocal(d.r)); E.ea(s); c.i64load(0, 0).i64x2replacelane(1).set(xmmLocal(d.r));
+  c.get(xmmLocal(d.r)); c.i64load(E.eaOff(s), 0).i64x2replacelane(1).set(xmmLocal(d.r));
 };
 // MOVHLPS: d.q0 = s.q1 ; MOVLHPS: d.q1 = s.q0
 HANDLERS[OP.MOVHLPS] = (E, insn) => { const c = E.c; const [d, s] = insn.ops; c.get(xmmLocal(d.r)).get(xmmLocal(s.r)).i64x2extractlane(1).i64x2replacelane(0).set(xmmLocal(d.r)); };
@@ -196,7 +196,7 @@ HANDLERS[OP.MOVSLDUP] = dupMove(M_MOVSLDUP);
 HANDLERS[OP.MOVSHDUP] = dupMove(M_MOVSHDUP);
 HANDLERS[OP.MOVDDUP] = (E, insn) => { // Vpd,Wq: low qword of xmm / m64 into both qwords
   const c = E.c; const [d, s] = insn.ops;
-  xmmStore(E, d.r, () => { if (s.t === OT.XMM) c.get(xmmLocal(s.r)).i64x2extractlane(0).i64x2splat(); else { E.ea(s); c.v128load64splat(0); } });
+  xmmStore(E, d.r, () => { if (s.t === OT.XMM) c.get(xmmLocal(s.r)).i64x2extractlane(0).i64x2splat(); else c.v128load64splat(E.eaOff(s)); });
 };
 
 // ------------------------------------------------------------------ packed / scalar arithmetic

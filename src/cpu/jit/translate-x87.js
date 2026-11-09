@@ -415,18 +415,18 @@ function loadFpOperand(E, o) {
   const c = E.c;
   if (o.t === OT.ST) { loadST(E, o.r); return true; }
   if (o.t === OT.MEM) {
-    if (o.size === 4) { E.ea(o); c.f32load(0, 0).f64promote(); return true; }
-    if (o.size === 8) { E.ea(o); c.f64load(0, 0); return true; }
+    if (o.size === 4) { c.f32load(E.eaOff(o), 0).f64promote(); return true; }
+    if (o.size === 8) { c.f64load(E.eaOff(o), 0); return true; }
     return false; // m80
   }
   return false;
 }
 function loadIntOperand(E, o) {
   const c = E.c;
-  E.ea(o);
-  if (o.size === 2) c.i32load16s(0).f64convert_i32_s();
-  else if (o.size === 4) c.i32load(0, 0).f64convert_i32_s();
-  else c.i64load(0, 0).f64convert_i64_s();
+  const off = E.eaOff(o);
+  if (o.size === 2) c.i32load16s(off).f64convert_i32_s();
+  else if (o.size === 4) c.i32load(off, 0).f64convert_i32_s();
+  else c.i64load(off, 0).f64convert_i64_s();
 }
 /** C2 cleared (a trig instruction's reduction complete); C0 and C3 are kept, as on the reference CPU (the SDM: undefined),
  * and C1 is cleared by the instruction's C1 prologue (see C1_CLEARING) */
@@ -476,7 +476,7 @@ HANDLERS[OP.FLD] = (E, insn) => {
   // m80: inline conversion (fpmath-f80.js, the interpreter's readF80 bit for bit)
   if (o.t === OT.MEM && o.size === 10) { E.eaTo(o); emitF80Load(E.c, L_TA, 0, F80_LOAD); push(E); storeSTStack(E, 0); return; }
   // 24-bit mode: a float operand (or a register held as one) stays a float
-  if (f32Mode(E) && !f32Off('m32', insn.addr) && o.t === OT.MEM && o.size === 4) { E.ea(o); E.c.f32load(0, 0); push(E); storeST32Stack(E, 0); return; }
+  if (f32Mode(E) && !f32Off('m32', insn.addr) && o.t === OT.MEM && o.size === 4) { E.c.f32load(E.eaOff(o), 0); push(E); storeST32Stack(E, 0); return; }
   if (o.t === OT.ST && isF32(E, o.r)) { E.c.get(L_S32 + slot(E, o.r)); push(E); storeST32Stack(E, 0); return; }
   const nw = o.t === OT.ST ? narrow(E, o.r) : o.t === OT.MEM && o.size === 4; // (see narrow)
   loadFpOperand(E, o); // value on the WASM stack survives the rotation of the locals
@@ -499,14 +499,14 @@ function fstore(E, insn, doPop) {
     E.smcCheck(insn, 10);
     return;
   }
-  E.eaTo(o);
+  const { off, addr } = E.storeAddrLater(o); // (a store addressed by ESP alone: its displacement in the memarg)
   if (o.size === 4 && isF32(E, 0)) {
-    c.get(L_TA).get(L_S32 + slot(E, 0)).f32store(0, 0); // an exact float: no rounding in any mode
+    addr(); c.get(L_S32 + slot(E, 0)).f32store(off, 0); // an exact float: no rounding in any mode
   } else if (o.size === 4) {
     loadST(E, 0); c.set(L_F64A);
     // nearest: f32.demote (IEEE, exact); directed rounding: a value that is already a float (every 24-bit precision
     // result in the float range) is stored as is, anything else through the f32rc kernel (denormals, overflow)
-    c.get(L_TA);
+    addr();
     if (E.fpcStatic !== null && (E.fpcStatic & 0xc00) === 0) c.get(L_F64A).f32demote();
     else if (E.fpcStatic !== null) pushF32Directed(E, E.fpcStatic >> 10); // (no call: see pushF32Directed)
     else {
@@ -515,8 +515,8 @@ function fstore(E, insn, doPop) {
       pushRC(E); c.set(L_T4); c.get(L_T4); const i = c.if_(T.f32); c.get(L_F64A).get(L_T4).call(IMP_F32RC); c.else_(); c.get(L_F64A).f32demote(); c.end(); void i;
       c.end(); void exact;
     }
-    c.f32store(0, 0);
-  } else { loadST(E, 0); c.set(L_F64A); c.get(L_TA).get(L_F64A).f64store(0, 0); }
+    c.f32store(off, 0);
+  } else { loadST(E, 0); c.set(L_F64A); addr(); c.get(L_F64A).f64store(off, 0); }
   // pop before the SMC check: its exit resumes at insn.next with the instruction completed
   if (doPop) pop(E);
   E.smcCheck(insn);
@@ -657,7 +657,7 @@ function arith(op, doPop, integer) {
       const d = two ? insn.ops[0].r : 0, o = two ? insn.ops[1] : insn.ops[insn.ops.length - 1];
       if (isF32(E, d) && ((o.t === OT.ST && isF32(E, o.r)) || (o.t === OT.MEM && o.size === 4))) {
         c.get(L_S32 + slot(E, d)).set(L_F32A);
-        if (o.t === OT.ST) c.get(L_S32 + slot(E, o.r)); else { E.ea(o); c.f32load(0, 0); }
+        if (o.t === OT.ST) c.get(L_S32 + slot(E, o.r)); else c.f32load(E.eaOff(o), 0);
         c.set(L_F32B);
         arithF32(E, insn, op);
         c.get(L_F32C); storeST32Stack(E, d);

@@ -83,7 +83,9 @@ translated code runs as fast. The cost of reads is mostly the code they add, not
   own; a float compare is not fused with a following SETcc/CMOVcc that may leave before itself.
 
 Not exact, as before these checks: a plain store or read-modify-write to an address past 2 GiB (`[null - 4]`, a register
-holding garbage) traps in WebAssembly before its check (an imprecise fault: the process ends); a plain store straddling
+holding garbage) traps in WebAssembly before its check (an imprecise fault: the process ends) — and so does, with the
+JIT's `memarg` option, a `[reg + disp]` load (or ESP store) whose 32-bit sum wraps into the null page (`reg` a small
+negative number, `0 < disp < 0x10000`: docs/jit-code-shape.md "Displacements in the memarg offset"); a plain store straddling
 0x10000 from below keeps its bytes from 0x10000 on.
 
 ## Tests
