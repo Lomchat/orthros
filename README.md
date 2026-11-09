@@ -81,6 +81,21 @@ Le menu permet de choisir la version et la langue avant le lancement. BFME1 2.22
 menus ne passent pas en français. BFME2 1.06 est installé mais quitte encore pendant l'initialisation sous Orthros ;
 sa 1.09 fonctionne. La langue du site se règle indépendamment dans l'en-tête.
 
+## Arborescence du code
+
+| Dossier | Rôle | Tourne |
+|---|---|---|
+| `src/cpu`, `src/loader`, `src/win32`, `src/gfx`, `src/media`, `src/vfs`, `src/core` | l'émulateur Win32 (x86, PE, API Windows, DirectX→WebGL, fichiers du jeu, snapshots) | navigateur (worker) et Node |
+| `src/web` | la page du joueur : accueil, cadre commun (`shell.js`), worker du jeu, téléchargement, compte | navigateur |
+| `src/ports/<goldsrc\|openmw\|re3>` | la page de chaque portage (moteurs tiers) ; `port-files.js`, `port-profile.js` communs | navigateur |
+| `src/server` | le serveur Node (`server.js`) : catalogue, fichiers des jeux, comptes, multijoueur, snapshots, apprentissage | Node |
+| `src/server/ports` | la partie serveur des portages (`goldsrc.js` : routes communes à tous les portages ; `openmw.js`, `re3.js`) | Node |
+| `src/shared` | protocoles et formats lus des deux côtés (LAN, MMO, mesures, profils de premier lancement) | les deux |
+| `tests` | `node --test` (`make test`) | Node |
+| `tools/` | à la racine, l'exploitation : `headless.mjs`, `with-browser-slot.sh`, `mem-check.sh`, `disk-check.sh`, `backup.sh`, `snapshot-jobs.mjs`, `snapshot-publish.mjs` | — |
+| `tools/bench`, `tools/check`, `tools/dev`, `tools/ops`, `tools/gen` | mesures, vérifications en navigateur, diagnostics, opérations sur les données (apprentissage, profils, Nexus, traductions `sage-text`), générateurs de tests | — |
+| `tools/<goldsrc\|openmw\|re3>`, `tools/pe`, `tools/oracle`, `tools/scenarios` | construction et installation de chaque portage ; programmes PE de test ; oracle x86 natif ; scénarios du harnais | — |
+
 ## Dossiers hors Git
 
 Trois dossiers de `/srv/orthros` restent hors Git, chacun avec sa règle :
