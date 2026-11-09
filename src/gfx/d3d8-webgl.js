@@ -502,6 +502,7 @@ export class WebGLDevice {
   endScene() {}
   present() {
     const gl = this.gl, dev = this.dev;
+    this.probe?.endRun();
     const prev = dev.renderTarget; dev.renderTarget = dev.backBuffers[0];
     const { w, h } = this.bindTarget();
     dev.renderTarget = prev;
@@ -1517,6 +1518,7 @@ export class WebGLDevice {
       this.log(`d3d-webgl: [cap] drawPrimitive type ${type} start ${start} prims ${count} ${Array.from({ length: nv }, (_, i) => `v${i}=(${vtx(i)})`).join(' ')} world=${Array.from(this.dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')} view=${Array.from(this.dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')}`);
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
+    if (this.probe?.hot) this.probe.draw();
     gl.drawArrays(this.glMode(type), start, this.vertexCount(type, count));
     this.stats.draws++; this.frameDraws++;
     if (this.capturing) this.dumpTarget('dp');
@@ -1557,6 +1559,7 @@ export class WebGLDevice {
       this.log(`d3d-webgl: [cap] drawIndexedPrimitive type ${type} base ${baseVertex} start ${start} prims ${count} numV ${numV} tri0=[${vtx(0)} ${vtx(1)} ${vtx(2)}] ${uvr.join(' ')} stride=${st.stride} off=${st.offset ?? 0} fvf=${this.dev.fvf}${vdump} tss=${info.stages.map((st, i) => `${i}:${st.colorOp}/${st.colorArg1},${st.colorArg2}|${st.alphaOp}/${st.alphaArg1},${st.alphaArg2} tci${st.tci} ttff${st.ttff}`).join(' ')}${info.stages.map((st, i) => (st.ttff & 0xff) ? ` texmat${i}=[${Array.from(dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]` : '').join('')} world=[${Array.from(dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}] view=[${Array.from(dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]`);
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
+    if (this.probe?.hot) this.probe.draw();
     gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
     this.stats.draws++; this.frameDraws++;
     if (this.capturing) this.dumpTarget('dip');
@@ -1576,6 +1579,7 @@ export class WebGLDevice {
     this.streamData(gl.ARRAY_BUFFER, data, n * stride);
     if (!this.bindAttributes(P, info.L, stride)) return;
     if (this.capturing) this.log(`d3d-webgl: [cap] drawPrimitiveUP type ${type} prims ${count} stride ${stride}`);
+    if (this.probe?.hot) this.probe.draw();
     gl.drawArrays(this.glMode(type), 0, n);
     this.stats.draws++; this.frameDraws++;
     if (this.capturing) this.dumpTarget('dpup');
@@ -1592,6 +1596,7 @@ export class WebGLDevice {
     this.bindIndices(this.upIbo);
     this.streamData(gl.ELEMENT_ARRAY_BUFFER, idx, n * (short ? 2 : 4));
     if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitiveUP type ${type} prims ${count} numV ${numV} stride ${stride}`);
+    if (this.probe?.hot) this.probe.draw();
     gl.drawElements(this.glMode(type), n, short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, 0);
     this.stats.draws++; this.frameDraws++;
     if (this.capturing) this.dumpTarget('dipup');

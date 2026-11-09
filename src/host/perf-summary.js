@@ -18,6 +18,7 @@ function counters(m) {
   return {
     d3dFrames: d?.frames, draws: d?.draws,
     gpuState: gpu?.state ?? null, gpuFrames: gpu?.frames, gpuMs: gpu?.ms, gpuOver33: gpu?.over33, gpuDisjoint: gpu?.disjoint, gpuLost: gpu?.lost, gpuHist: gpu?.hist ? Array.from(gpu.hist) : null, gpuMax: gpu?.max,
+    gpuRun: gpu?.runHist ? { n: gpu.runFrames, ms: gpu.runMs, hist: Array.from(gpu.runHist) } : null, gpuFence: gpu?.fenceHist ? { n: gpu.fenceN, ms: gpu.fenceMs, hist: Array.from(gpu.fenceHist) } : null,
     glState: gc?.state ?? null, glFrames: gc?.frames, glCalls: gc?.calls, glDraws: gc?.draws,
     rwWaitMs: g?.gpuWaitMs, rwFenceMs: g?.fenceMs, rwFrameMs: g?.frameMs, rwReplayMs: g?.replayMs, rwReadbackMs: g?.readbackMs,
     hw: m?.hostWait ?? null, // (core/host-wait.js totals: the worker's host waits, how late they ended, the spins)
@@ -86,6 +87,13 @@ export class PerfWindow {
       const max = (l.gpuMax ?? 0) > (b.gpuMax ?? 0) ? l.gpuMax : null; // (the cumulative maximum grew in this window: it is this window's)
       out.gpu = f > 0 ? { state: 'on', frames: f, mean: r2(ms / f), p50: h ? hq(h, 0.5, max ?? Infinity) : null, p90: h ? hq(h, 0.9, max ?? Infinity) : null, p99: h ? hq(h, 0.99, max ?? Infinity) : null, max: max !== null ? r1(max) : null, over33: grow(b.gpuOver33, l.gpuOver33), disjoint: grow(b.gpuDisjoint, l.gpuDisjoint), lost: grow(b.gpuLost, l.gpuLost), h: h ? histSparse(h) : null }
         : { state: 'on', frames: 0, disjoint: grow(b.gpuDisjoint, l.gpuDisjoint), lost: grow(b.gpuLost, l.gpuLost) };
+      // (idle-free views, gpu-probe.js: the draw run's GPU time, the fence latency at the frame's end)
+      for (const [k, key] of [['run', 'gpuRun'], ['fence', 'gpuFence']]) {
+        const a = b[key], z = l[key]; if (!z) continue;
+        const n = grow(a?.n, z.n); if (n <= 0) continue;
+        const hh = z.hist.map((v, i) => grow(a?.hist?.[i], v));
+        out.gpu[k] = { n, mean: r2(grow(a?.ms, z.ms) / n), p50: hq(hh, 0.5, Infinity), p99: hq(hh, 0.99, Infinity) };
+      }
     } else out.gpu = { state: l.gpuState ?? 'none' }; // ('unavailable': no timer query extension; 'none': no Direct3D device)
     // WebGL calls per frame (sampled windows)
     if (l.glState === 'on') { const f = grow(b.glFrames, l.glFrames); out.glCalls = f > 0 ? { frames: f, perFrame: r1(grow(b.glCalls, l.glCalls) / f), drawsPerFrame: r1(grow(b.glDraws, l.glDraws) / f) } : { frames: 0 }; }

@@ -319,7 +319,7 @@ function sessionFigures(s) {
   const t = s.tot ?? {}, sec = t.s ?? s.vis ?? 0;
   return { session: s.id, at: s.first, runtime: s.runtime, tier: s.tier, build: s.build, seconds: Math.round(sec), len: s.len, visible: s.len ? +(s.vis / s.len).toFixed(2) : null, final: s.final,
     fps: t.fps ?? null, p50: t.p50 ?? null, p90: t.p90 ?? null, p99: t.p99 ?? null, max: t.max ?? null, per40: per(t.f40 ?? 0, sec), per100: per(t.f100 ?? 0, sec),
-    work: t.work ?? null, wait: t.wait ?? null, gpu: t.gpu?.n ? t.gpu : null, gpuState: t.gpu?.state ?? null, dataMsPerMin: t.data ? per(t.data.ms, sec) : null, dataWaits: t.data?.n ?? null,
+    work: t.work ?? null, wait: t.wait ?? null, gpu: t.gpu?.n ? t.gpu : null, gpuRun: t.gpu?.run ?? null, gpuFence: t.gpu?.fence ?? null, gpuState: t.gpu?.state ?? null, dataMsPerMin: t.data ? per(t.data.ms, sec) : null, dataWaits: t.data?.n ?? null,
     machine: machineLine(s.env), probe: s.probe };
 }
 
@@ -345,7 +345,7 @@ export function perfReport(sessions, { minSeconds = 60 } = {}) {
     const probes = f.map((x) => x.probe).filter(Boolean);
     return {
       game: g.game, gpu: g.gpu, runtime: g.runtime, sessions: f.length, noFrames: g.noFrames, minutes: +(g.seconds / 60).toFixed(1),
-      median: { fps: m('fps'), p50: m('p50'), p90: m('p90'), p99: m('p99'), per40: m('per40'), per100: m('per100'), work: m('work'), wait: m('wait'), gpuMean: median(f.map((x) => x.gpu?.mean)), gpuP90: median(f.map((x) => x.gpu?.p90)), dataMsPerMin: m('dataMsPerMin'), visible: m('visible') },
+      median: { fps: m('fps'), p50: m('p50'), p90: m('p90'), p99: m('p99'), per40: m('per40'), per100: m('per100'), work: m('work'), wait: m('wait'), gpuMean: median(f.map((x) => x.gpu?.mean)), runMean: median(f.map((x) => x.gpuRun?.mean)), fenceMean: median(f.map((x) => x.gpuFence?.mean)), gpuP90: median(f.map((x) => x.gpu?.p90)), dataMsPerMin: m('dataMsPerMin'), visible: m('visible') },
       merged: { p50: histQuantile(g.hist, 0.5, g.max || Infinity), p90: histQuantile(g.hist, 0.9, g.max || Infinity), p99: histQuantile(g.hist, 0.99, g.max || Infinity), max: g.max || null },
       gpuStates: [...new Set(f.map((x) => x.gpuState).filter(Boolean))],
       slowShares: slowTotal ? Object.fromEntries(Object.entries(g.slow).map(([k, v]) => [k, Math.round(v / slowTotal * 100)]).filter(([, v]) => v >= 1).sort((a, b) => b[1] - a[1])) : null,
@@ -363,12 +363,12 @@ export function formatPerf(groups) {
   for (const g of groups) {
     const md = g.median;
     L.push(`${g.game ?? '?'} (${g.runtime}) × ${g.gpu}: ${g.sessions} session(s), ${g.minutes} min of visible play${g.noFrames ? `; ${g.noFrames} session(s) without a frame shown` : ''}`);
-    L.push(`  medians over the sessions: ${v(md.fps)} fps; frame ms p50 ${v(md.p50)} p90 ${v(md.p90)} p99 ${v(md.p99)}; >40 ms ${v(md.per40)}/min >100 ms ${v(md.per100)}/min; work ${v(md.work)} wait ${v(md.wait)} ms/frame; GPU ${md.gpuMean !== null ? `${md.gpuMean} ms/frame p90 ${v(md.gpuP90)}` : g.gpuStates.join('/') || '-'}; data waits ${v(md.dataMsPerMin)} ms/min; visible ${md.visible !== null ? Math.round(md.visible * 100) + '%' : '-'}`);
+    L.push(`  medians over the sessions: ${v(md.fps)} fps; frame ms p50 ${v(md.p50)} p90 ${v(md.p90)} p99 ${v(md.p99)}; >40 ms ${v(md.per40)}/min >100 ms ${v(md.per100)}/min; work ${v(md.work)} wait ${v(md.wait)} ms/frame; GPU ${md.gpuMean !== null ? `${md.gpuMean} ms/frame p90 ${v(md.gpuP90)}${md.runMean !== null ? `, draw run ${md.runMean}` : ''}${md.fenceMean !== null ? `, fence backlog ${md.fenceMean}` : ''}` : g.gpuStates.join('/') || '-'}; data waits ${v(md.dataMsPerMin)} ms/min; visible ${md.visible !== null ? Math.round(md.visible * 100) + '%' : '-'}`);
     L.push(`  all frames merged: p50 ${v(g.merged.p50)} p90 ${v(g.merged.p90)} p99 ${v(g.merged.p99)} max ${v(g.merged.max)} ms`);
     if (g.slowShares) L.push(`  slow frames' time by cause (%): ${Object.entries(g.slowShares).map(([k, x]) => `${k} ${x}`).join(', ')}`);
     for (const w of g.worst) L.push(`  worst minute: ${w.session} t=${w.t}s ${w.ph ?? '-'} ${w.fps} fps p99 ${v(w.p99)} >40 ms ${w.per40}/min${w.work !== undefined ? ` work ${w.work} wait ${w.wait}` : ''}${w.gpu?.n ? ` gpu ${w.gpu.mean}` : ''}${w.data?.ms ? ` data ${w.data.ms} ms` : ''}${w.slow ? ` slow: ${Object.entries(w.slow).map(([k, x]) => `${k} ${x}`).join(', ')}` : ''}`);
     if (g.probe) L.push(`  host timing: Atomics.wait(1) late p50 ${v(g.probe.atomicsWait1P50)} ms, setTimeout(1) ${v(g.probe.setTimeout1P50)} ms (median of ${g.probe.n}); ${g.probe.onBattery} on battery`);
-    for (const s of g.perSession) L.push(`    ${(s.at ?? '').slice(0, 16).replace('T', ' ')} ${s.session} ${s.seconds} s${s.visible !== null && s.visible < 0.99 ? ` (visible ${Math.round(s.visible * 100)}%)` : ''}${s.final ? '' : ' (no end record)'}: ${v(s.fps)} fps p99 ${v(s.p99)} >40 ${v(s.per40)}/min work ${v(s.work)} gpu ${s.gpu ? s.gpu.mean : v(s.gpuState)}${s.tier ? ` tier ${s.tier}` : ''} | ${s.machine}${s.build ? ` | build ${s.build}` : ''}`);
+    for (const s of g.perSession) L.push(`    ${(s.at ?? '').slice(0, 16).replace('T', ' ')} ${s.session} ${s.seconds} s${s.visible !== null && s.visible < 0.99 ? ` (visible ${Math.round(s.visible * 100)}%)` : ''}${s.final ? '' : ' (no end record)'}: ${v(s.fps)} fps p99 ${v(s.p99)} >40 ${v(s.per40)}/min work ${v(s.work)} gpu ${s.gpu ? s.gpu.mean : v(s.gpuState)}${s.gpuRun ? ` run ${s.gpuRun.mean}` : ''}${s.gpuFence ? ` fence ${s.gpuFence.mean}` : ''}${s.tier ? ` tier ${s.tier}` : ''} | ${s.machine}${s.build ? ` | build ${s.build}` : ''}`);
   }
   return L.join('\n');
 }

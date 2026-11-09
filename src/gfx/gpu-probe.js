@@ -5,6 +5,13 @@
 //   frames every PERIOD_MS. Results are read at later presents, when available; a disjoint operation (GPU reset,
 //   frequency change, another context) discards the results in flight. Without the extension the measurement is
 //   reported as unavailable — never estimated.
+// - Idle-free views of the same windows (the present-to-present query includes the time the GPU waits for the next
+//   frame's commands: under ANGLE D3D11 a self-paced 30 fps game reads ~33 ms whatever the load). On alternate frames of
+//   a window, a second TIME_ELAPSED query covers only the run of draws (from the frame's first draw, `draw()`, to the
+//   start of the present, `endRun()`: `runMs`, no idle in it); and every sampled frame gets a fence after the present's
+//   flush, polled at later presents and draws: its latency is the GPU backlog at the end of the frame (`fence*`;
+//   resolution = the polling interval, a few ms at worst). Both only inside the windows; ORTHROS_GPU_METRIC=0 turns
+//   them off (the present-to-present query stays).
 // - WebGL calls per frame (bench runs only: ORTHROS_GL_COUNT, set by the page's ?bench mode — swapping the
 //   prototype's methods makes V8 drop the code optimized against them, a cost ordinary sessions need not pay): every
 //   GL_PERIOD_MS, the calls made through the context object over GL_FRAMES frames are counted (the context prototype's methods wrapped by counting closures for that window only, then restored; the
@@ -20,7 +27,7 @@ import { HIST_N, histBucket } from '../core/frame-acct.js';
  * (d3d8-webgl.js); ORTHROS_GL_TIME: every GL call timed for some frames (d3d8-webgl.js glProbeStep). A flag that changes
  * what the guest sees or when (timers, scheduling, the JIT, the APIs' paths) is not one of them.
  */
-export const HOST_ONLY_DBG = Object.freeze(['ORTHROS_GL_COUNT', 'ORTHROS_GL_PROBES', 'ORTHROS_GL_TIME']);
+export const HOST_ONLY_DBG = Object.freeze(['ORTHROS_GL_COUNT', 'ORTHROS_GL_PROBES', 'ORTHROS_GL_TIME', 'ORTHROS_GPU_METRIC']);
 
 const TIME_ELAPSED_EXT = 0x88bf, GPU_DISJOINT_EXT = 0x8fbb;
 export const WINDOW_FRAMES = 120, PERIOD_MS = 10000, GL_FRAMES = 30, GL_PERIOD_MS = 20000;
@@ -28,6 +35,9 @@ export const WINDOW_FRAMES = 120, PERIOD_MS = 10000, GL_FRAMES = 30, GL_PERIOD_M
 const IN_FLIGHT = 16;
 /** presents after which a query still unavailable is given up (counted lost): a result that never comes must not stop the others */
 const STALE_FRAMES = 240;
+/** fences in flight at most; polling in draws at most every POLL_MS */
+const FENCES = 8, POLL_MS = 0.5;
+const SYNC_GPU_COMMANDS_COMPLETE = 0x9117, SYNC_STATUS = 0x9114, SIGNALED = 0x9119;
 const DRAW_FNS = new Set(['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']);
 
 export class GpuProbe {
@@ -44,16 +54,46 @@ export class GpuProbe {
     this.wrapGl = opts.wrapGl ?? (real && !!globalThis.ORTHROS_GL_COUNT);
     // gpu: cumulative; `state`: 'on' | 'unavailable' (no extension) | 'off' (switched off) ; hist: frames by GPU ms (frame-acct.js buckets)
     this.stats = {
-      gpu: { state: this.ext ? 'on' : 'unavailable', frames: 0, ms: 0, max: 0, over16: 0, over33: 0, disjoint: 0, lost: 0, hist: new Array(HIST_N).fill(0) },
+      gpu: { state: this.ext ? 'on' : 'unavailable', frames: 0, ms: 0, max: 0, over16: 0, over33: 0, disjoint: 0, lost: 0, hist: new Array(HIST_N).fill(0),
+        runFrames: 0, runMs: 0, runMax: 0, runHist: new Array(HIST_N).fill(0), fenceN: 0, fenceMs: 0, fenceMax: 0, fenceHist: new Array(HIST_N).fill(0) },
       glCalls: { state: this.wrapGl ? 'on' : real ? 'off' : 'unavailable', frames: 0, calls: 0, draws: 0 },
     };
-    this.cur = null; this.pending = []; this.left = 0; this.nextWindow = this.now() + 3000; // (the first window soon after the start)
+    this.cur = null; this.pending = []; this.left = 0; this.runArm = false; this.runQ = null; this.fences = []; this.hot = false; this.lastPoll = 0; this.nextWindow = this.now() + 3000; // (the first window soon after the start)
     this.glLeft = 0; this.glNext = this.now() + 5000; this.glWrapped = null; this.glCount = 0; this.glDraws = 0;
   }
   /** Something else wraps or replaces GL methods (frame capture, GL timing, null mode): the call counter stays away. */
   set busy(v) { this.isBusy = v; if (v) this.stopGlCount(false); }
   /** The context was lost and restored: the queries in flight are gone (counted lost), wrapped methods kept. */
-  reset() { this.stats.gpu.lost += this.pending.length + (this.cur ? 1 : 0); this.pending.length = 0; this.cur = null; this.left = 0; }
+  reset() { this.stats.gpu.lost += this.pending.length + (this.cur ? 1 : 0); this.pending.length = 0; this.cur = null; this.runQ = null; this.runArm = false; this.fences.length = 0; this.hot = false; this.left = 0; }
+  /** A draw call is about to be issued: the first of a run-timed frame opens its query; pending fences are polled. */
+  draw() {
+    if (this.runArm) {
+      this.runArm = false;
+      const q = this.gl.createQuery(); if (q) { q.run = true; this.gl.beginQuery(TIME_ELAPSED_EXT, q); this.runQ = q; }
+    }
+    if (this.fences.length) { const now = this.now(); if (now - this.lastPoll >= POLL_MS) this.pollFences(now); }
+    this.hot = this.runArm || this.fences.length > 0;
+  }
+  /** The present starts (all the frame's draws are issued): the run query ends. */
+  endRun() {
+    const q = this.runQ; if (!q) return;
+    this.runQ = null; this.gl.endQuery(TIME_ELAPSED_EXT); q.endAt = this.presents; this.pending.push(q);
+  }
+  /** Fences signaled: their latency (since the flush that followed the frame's present) is the backlog the frame left. */
+  pollFences(now) {
+    const gl = this.gl, g = this.stats.gpu; this.lastPoll = now;
+    while (this.fences.length) {
+      const f = this.fences[0];
+      if (gl.getSyncParameter(f.sync, SYNC_STATUS) !== SIGNALED) { // (the non-blocking status, as the render worker's own polls)
+        if (this.presents - f.at < STALE_FRAMES) break;
+        gl.deleteSync(f.sync); this.fences.shift(); g.lost++; continue;
+      }
+      gl.deleteSync(f.sync); this.fences.shift();
+      const ms = now - f.t;
+      if (!(ms >= 0) || ms > 60000) continue;
+      g.fenceN++; g.fenceMs += ms; if (ms > g.fenceMax) g.fenceMax = ms; g.fenceHist[histBucket(ms)]++;
+    }
+  }
   /** A frame was presented (after its commands were flushed). */
   frame() {
     const now = this.now();
@@ -65,12 +105,18 @@ export class GpuProbe {
     this.presents = (this.presents ?? 0) + 1;
     if (this.cur) { gl.endQuery(TIME_ELAPSED_EXT); this.cur.endAt = this.presents; this.pending.push(this.cur); this.cur = null; }
     this.poll();
+    const metric = globalThis.ORTHROS_GPU_METRIC !== 0 && typeof gl.fenceSync === 'function';
+    if (this.fences.length) this.pollFences(now);
+    if (metric && this.left > 0 && this.fences.length < FENCES) { const sync = gl.fenceSync(SYNC_GPU_COMMANDS_COMPLETE, 0); if (sync) this.fences.push({ sync, t: now, at: this.presents }); }
     if (!this.left && now >= this.nextWindow) { this.left = WINDOW_FRAMES; this.nextWindow = now + PERIOD_MS; }
     if (this.left > 0) {
       this.left--;
-      if (this.pending.length < IN_FLIGHT) { const q = gl.createQuery(); if (q) { gl.beginQuery(TIME_ELAPSED_EXT, q); this.cur = q; } }
-      else g.lost++;
+      // (even frames: present to present; odd ones: the run of draws only — one TIME_ELAPSED query at a time)
+      if (this.pending.length >= IN_FLIGHT) g.lost++;
+      else if (metric && (this.left & 1)) this.runArm = true;
+      else { const q = gl.createQuery(); if (q) { gl.beginQuery(TIME_ELAPSED_EXT, q); this.cur = q; } }
     }
+    this.hot = this.runArm || this.fences.length > 0;
   }
   /** Results of the queries that completed, in order; all of them dropped after a disjoint operation. */
   poll() {
@@ -88,6 +134,7 @@ export class GpuProbe {
       const ns = Number(gl.getQueryParameter(q, gl.QUERY_RESULT)); gl.deleteQuery(q); this.pending.shift();
       const ms = ns / 1e6;
       if (!(ms >= 0) || ms > 60000) { g.lost++; continue; }
+      if (q.run) { g.runFrames++; g.runMs += ms; if (ms > g.runMax) g.runMax = ms; g.runHist[histBucket(ms)]++; continue; }
       g.frames++; g.ms += ms; if (ms > g.max) g.max = ms; if (ms > 16.7) g.over16++; if (ms > 33.4) g.over33++;
       g.hist[histBucket(ms)]++;
     }

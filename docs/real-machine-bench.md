@@ -201,6 +201,20 @@ presents when available; a disjoint operation discards the results in flight. It
 render worker by default, the emulator's worker with `?glworker=0`). Absent extension: reported unavailable, never
 estimated. Disable with `?dbg=ORTHROS_GL_PROBES=0` (also stops the GL call counting).
 
+The present-to-present query includes the time the GPU waits for the next frame's commands (idle): under ANGLE D3D11 a
+self-paced 30 fps game reads ~33 ms. Two idle-free figures ride on the same windows (stats `runMs`/`runHist`,
+`fenceMs`/`fenceHist`; perf record `gpu.run` and `gpu.fence` = `{ n, mean, p50, p99 }`; `telemetry-report.mjs --perf`
+prints them as `draw run` and `fence backlog`; harness bench lines `draw-run` / `fence`): on the odd frames of a window a
+second `TIME_ELAPSED` query covers only the run of draws (first draw of the frame, `GpuProbe.draw()`, to the start of the
+present, `endRun()`; one query is active at a time, hence the alternation); on every sampled frame a fence is set after
+the present's flush and polled (`getSyncParameter`, non-blocking) at later presents and at draws (at most every 0.5 ms):
+its latency is the GPU backlog at the end of the frame (the resolution is the polling interval). Cost outside a window:
+one boolean test per draw. `?dbg=ORTHROS_GPU_METRIC=0` (a host-only flag) turns both off.
+SwiftShader (Vice City 1.1, `vc-quick`, harness): drive phase draw run mean 49-75 ms against a present-to-present p50 of
+50-95 ms (the CPU rasteriser is never idle: they agree); menu at 60 fps: draw run 3.5 ms against 17 ms present-to-present
+(the idle part), fence 16-34 ms (about one frame: the polling resolution); GPU-bound phases show a fence backlog of
+seconds.
+
 **GL calls**: during a 30-frame window every 20 s the context's methods are wrapped by counting closures (calls made
 through the context object; the wrapping is removed after the window; it stays away while a frame capture, GL timing or
 the GL null mode wraps the methods themselves).
