@@ -59,7 +59,8 @@ async function signIn(context, clean = true) {
   if (result.status !== 200) throw new Error(`QA account ${account.username}: ${result.status} ${JSON.stringify(result.body)}`);
   if (!known) { qa[0] = account; let all = {}; try { all = JSON.parse(fs.readFileSync(qaFile, 'utf8')); } catch { /* new */ } all[base] = qa; fs.writeFileSync(qaFile, JSON.stringify(all, null, 1), { mode: 0o600 }); }
   // (a clean start: the account's earlier copy of this game removed — the check then knows what it finds there)
-  if (clean) await page.evaluate((game) => fetch(`/api/cloud/${encodeURIComponent(game)}`, { method: 'DELETE' }), name);
+  // (under the version's profile key: the game's — docs/profiles.md)
+  if (clean) await page.evaluate(async (game) => { const { profileKeyOf } = await import('/src/vfs/profile-share.js'); const key = profileKeyOf(await (await fetch(`/api/manifest/${encodeURIComponent(game)}`)).json()) ?? game; await fetch(`/api/cloud/${encodeURIComponent(key)}`, { method: 'DELETE' }); }, name);
   await page.close();
   return account.username;
 }
@@ -90,7 +91,7 @@ const probe = () => {
   };
 };
 /** The profile as the page keeps it: paths and sizes. */
-const profileOf = (page) => page.evaluate(async () => { await portSession.save(); const db = await new Promise((ok, ko) => { const r = indexedDB.open(portSession.config.saveKey); r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error); }); const files = await new Promise((ok) => { const r = db.transaction('profile').objectStore('profile').get('files'); r.onsuccess = () => ok(r.result ?? []); }); return files.map((f) => ({ path: f.path, size: f.data.length })).sort((a, b) => a.path.localeCompare(b.path)); });
+const profileOf = (page) => page.evaluate(async () => { await portSession.save(); const { portProfileDb, profileKeyOf } = await import('/src/vfs/profile-share.js'); const db = await new Promise((ok, ko) => { const r = indexedDB.open(portProfileDb(profileKeyOf(portSession.config))); r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error); }); const files = await new Promise((ok) => { const r = db.transaction('profile').objectStore('profile').get('files'); r.onsuccess = () => ok(r.result ?? []); }); return files.map((f) => ({ path: f.path, size: f.data.length })).sort((a, b) => a.path.localeCompare(b.path)); });
 /** Draws per frame over `ms` (the menu draws a few, a 3D scene hundreds). */
 const drawRate = async (page, ms = 3000) => {
   const a = await page.evaluate(() => ({ ...renderProbe })); await page.waitForTimeout(ms);

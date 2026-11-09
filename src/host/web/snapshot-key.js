@@ -15,6 +15,8 @@ export const machineDbg = (dbg) => String(dbg ?? '').split(',').filter((kv) => k
  */
 export async function snapshotKey(sources, name, manifest, tree, opts) {
   const machine = { lang: opts.gameLanguage, timeScale: opts.timeScale, interp: opts.interp, interpRange: opts.interpRange, dbg: machineDbg(opts.dbg), jitOpts: opts.jitOpts, noF32: opts.noF32, f32Off: opts.f32Off };
-  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ sources, name, manifest, tree, machine })));
+  // (the versions sharing the version's profile — a version added to its game — are not its machine's)
+  const own = { ...manifest, profileSources: undefined };
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ sources, name, manifest: own, tree, machine })));
   return Array.from(new Uint8Array(d).subarray(0, 16), (b) => b.toString(16).padStart(2, '0')).join('');
 }

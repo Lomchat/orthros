@@ -1,8 +1,10 @@
 // Bridge the engine's saved user state (excluding logs and screenshots) to Orthros versioned account backups.
 // Game data is excluded. IDBFS remains the working cache; optimistic hashes protect other devices.
+// `game`: the game's profile key (docs/profiles.md: the profile its versions share); `shared` (opts): the profile takes
+// the copies its versions kept before — its first sync here follows cloud-sync.js's rule (firstShared below).
 (() => {
-  window.orthrosCloudInstall = (FS, game, scope) => {
-    const original = FS.syncfs.bind(FS), key = `orthros.openmw.cloud.${scope}.${game}`;
+  window.orthrosCloudInstall = (FS, game, scope, opts = {}) => {
+    const original = FS.syncfs.bind(FS), stateKey = (g) => `orthros.openmw.cloud.${scope}.${g}`, key = stateKey(game);
     const endpoint = `/api/cloud/${encodeURIComponent(game)}`;
     let parent = 'none', uploading = false, queued = false, blocked = false, lastHash = null;
     // (told to the Orthros page around the engine: its header's save indicator — states as cloud-sync.js's)
@@ -14,8 +16,8 @@
     async function transform(bytes, decompress = false) {
       return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(decompress ? new DecompressionStream('gzip') : new CompressionStream('gzip'))).arrayBuffer());
     }
-    const savedState = () => { try { return JSON.parse(localStorage.getItem(key) ?? '{}'); } catch { return {}; } };
-    const remember = (dirty) => localStorage.setItem(key, JSON.stringify({ parent, dirty }));
+    const savedState = (k = key) => { try { return JSON.parse(localStorage.getItem(k) ?? '{}') ?? {}; } catch { return {}; } };
+    const remember = (dirty) => localStorage.setItem(key, JSON.stringify({ parent, dirty, ...(opts.shared ? { shared: true } : {}) }));
     // (each file's last reading — its size, date and base64 — and the files as the account last took them: a sync that
     // changed nothing reads, encodes and hashes nothing; the engine page syncs every 15 s, and reading every save each
     // time cost 78 ms per MB of saves on the page's thread)
@@ -70,6 +72,9 @@
       const remote = r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
       parent = r.ok ? r.headers.get('X-Orthros-Backup-Hash') : 'none';
       const local = savedState();
+      // (a shared profile's first sync here: the account's merged copy put in place when this browser's copies were all
+      // in step with it, else the two merged and sent over it — cloud-sync.js's rule, profile-merge.js's merge)
+      if (opts.shared && remote && !local.shared && !local.dirty && await firstShared() === 'merge') { await mergeWithAccount(remote); return; }
       if (local.dirty && local.parent !== parent) {
         blocked = true;
         throw new Error('Conflit de sauvegardes : cet appareil a des changements non envoyés et une autre partie existe en ligne. Garde cet onglet et sa copie locale.');
@@ -94,6 +99,35 @@
       }
       remember(!!local.dirty);
       notify(local.dirty ? 'idle' : 'saved');
+    }
+    let firstRow = null;
+    /** 'adopt' (the account's copy is this profile's newer state) or 'merge' — this browser's merge of the versions' copies, its record of each. */
+    async function firstShared() {
+      const { mergedMarker } = await import('/src/vfs/profile-share.js');
+      const marker = mergedMarker(game, scope), sources = (marker?.sources ?? []).filter((s) => s.files > 0);
+      if (!marker) return 'merge';
+      if (!sources.length) return 'adopt';
+      const list = await fetch('/api/cloud', { cache: 'no-store', headers: { 'X-Orthros-Player-Scope': scope } }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      firstRow = list?.games?.find((g) => g.game === game) ?? null;
+      const merged = firstRow?.merged ?? [];
+      return sources.every((s) => { const st = savedState(stateKey(s.name)); return !!st.parent && !st.dirty && (s.name === game || merged.includes(s.name)); }) ? 'adopt' : 'merge';
+    }
+    /** This profile and the account's copy merged (profile-merge.js), put in place, then sent over the account's head. */
+    async function mergeWithAccount(remote) {
+      const { mergeProfiles } = await import('/src/vfs/profile-merge.js');
+      const doc = JSON.parse(new TextDecoder().decode(await transform(remote, true)));
+      if (doc.format !== 'orthros-profile' || doc.game !== game || !Array.isArray(doc.files)) throw new Error('Sauvegarde en ligne invalide.');
+      for (const f of doc.files) if (typeof f.path !== 'string' || f.path.startsWith('/') || f.path.includes('\\') || f.path.split('/').some((p) => !p || p === '.' || p === '..')) throw new Error('Chemin de sauvegarde invalide.');
+      const merged = mergeProfiles([{ label: 'local', at: Date.now(), files: collect() }, { label: 'account', at: firstRow?.updatedAt ?? 0, files: doc.files }], { settings: opts.settings }).files;
+      clear(); known.clear();
+      for (const f of merged) {
+        const p = `/userdata/${f.path}`; FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
+        FS.writeFile(p, Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0)));
+        if (Number.isFinite(f.mtime) && typeof FS.utime === 'function') FS.utime(p, f.mtime, f.mtime);
+      }
+      await new Promise((resolve, reject) => original(false, (e) => e ? reject(e) : resolve()));
+      remember(true); notify('idle');
+      pending = upload();
     }
     async function upload() {
       if (blocked) return;

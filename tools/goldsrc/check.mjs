@@ -47,7 +47,8 @@ async function signIn(context, i, clean = true) {
   if (result.status !== 200) throw new Error(`QA account ${account.username}: ${result.status} ${JSON.stringify(result.body)}`);
   if (!known) { qa[i] = account; let all = {}; try { all = JSON.parse(fs.readFileSync(qaFile, 'utf8')); } catch { /* new */ } all[base] = qa; fs.writeFileSync(qaFile, JSON.stringify(all, null, 1), { mode: 0o600 }); }
   // (a clean start: the account's earlier copy of this game removed — the check then knows what it finds there)
-  if (clean) await page.evaluate((game) => fetch(`/api/cloud/${encodeURIComponent(game)}`, { method: 'DELETE' }), name);
+  // (under the version's profile key: the game's — docs/profiles.md)
+  if (clean) await page.evaluate(async (game) => { const { profileKeyOf } = await import('/src/vfs/profile-share.js'); const key = profileKeyOf(await (await fetch(`/api/manifest/${encodeURIComponent(game)}`)).json()) ?? game; await fetch(`/api/cloud/${encodeURIComponent(key)}`, { method: 'DELETE' }); }, name);
   await page.close();
   return account.username;
 }
@@ -178,7 +179,7 @@ try {
       // (the header's back to the games: it saves — here and on the account — and quits, once the player confirmed)
       await page.click('#tbGames'); await page.locator('#ask button.primary').click();
       await page.waitForURL((url) => url.pathname === '/' && url.searchParams.has('menu'), { timeout: 60000 });
-      const cloud = nicknames[0] ? await page.evaluate((game) => fetch(`/api/cloud/${encodeURIComponent(game)}/history`).then((r) => r.json()), name) : null;
+      const cloud = nicknames[0] ? await page.evaluate(async (game) => { const { profileKeyOf } = await import('/src/vfs/profile-share.js'); const key = profileKeyOf(await (await fetch(`/api/manifest/${encodeURIComponent(game)}`)).json()) ?? game; return fetch(`/api/cloud/${encodeURIComponent(key)}/history`).then((r) => r.json()); }, name) : null;
       console.log('ACCOUNT COPY', JSON.stringify(cloud?.versions?.slice(0, 3) ?? null));
       // (signed in: started again in a new browser context — another device, nothing kept but the account; else here)
       let again = page;

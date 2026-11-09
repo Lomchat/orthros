@@ -790,10 +790,14 @@ sequence, their blends and controllers neutral. Click buys (the server's buy ali
 ## Browser storage
 
 IndexedDB database `orthros-port:<game>:<version folder>` (the installation; unchanged since the first release):
-`profile` holds the engine's writable tree (saves, configuration), written every 10 s, when the page is hidden and on
-quit; `content` holds the game files fetched, whole (`<path>\n<size>\n<mtime>`) or as 64 KiB pieces (the same key and
-`\n#<piece>`); entries of other files or older versions are deleted at the start. A signed-in player's profile is
-also on the account (`src/host/web/cloud-sync.js`: the game's writable tree less logs, screenshots, bots' navigation
+`content` holds the game files fetched, whole (`<path>\n<size>\n<mtime>`) or as 64 KiB pieces (the same key and
+`\n#<piece>`); entries of other files or older versions are deleted at the start. The player's profile is the game's,
+shared by its versions (docs/profiles.md): IndexedDB `orthros-profile:<profile key>`, whose `profile` store holds the
+engine's writable tree (saves, configuration), written every 10 s, when the page is hidden and on quit — before
+2026-11-09 the installation's own `profile` store, merged into it once at the next start (`src/ports/port-profile.js`)
+and left there as an old copy; OpenMW's `/userdata` the same way (`orthros-profile:<key>[:user:<scope>]`), its
+multiplayer, session and launcher state still the installation's. A signed-in player's profile is also on the account
+under the profile key (`src/host/web/cloud-sync.js`: the game's writable tree less logs, screenshots, bots' navigation
 meshes and the decals' cache): restored before the engine starts when the account's is newer, sent every minute when it
 changed and when leaving; a profile replaced so is kept aside in `profile` under `aside-<date>`.
 

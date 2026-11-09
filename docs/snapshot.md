@@ -146,7 +146,10 @@ from it when:
    the manifest's `profileMoves` left it, docs/startup.md: moved before anything is recorded) the game had seen — its existence and size (`stat`), its listing (`readdir`), its bytes (`open`) — is as it saw it. The
    profile is never the snapshot's: it stays the player's, kept by the browser; saves made after the snapshot in a
    folder the game had not listed leave it valid, a changed setting or a new save where the game had listed its saves
-   gives a usual start (and a new snapshot, the old one deleted).
+   gives a usual start (and a new snapshot, the old one deleted). Since 2026-11-09 the profile is the game's, shared by
+   its versions (docs/profiles.md) while snapshots stay per version: another version that wrote the profile since
+   makes this version's snapshot stale the same way (a usual start, then a new one) — expected, never wrong. A player
+   who played another version of the game has a profile, so gets no shared snapshot (stage 3) for this one.
 
 A restore that fails midway (not refused beforehand) leaves a machine in pieces: the page deletes the snapshot and
 starts again. `?snapshot=0`: none (a bench that measures a cold start passes it; `?benchsuite=...&snapshot=0` passes it on to

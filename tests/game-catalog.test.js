@@ -61,3 +61,13 @@ test('catalog accepts only language aliases to installed files', (t) => {
   fs.writeFileSync(file, JSON.stringify(spec));
   assert.throws(() => loadGameCatalog(root), /alias de fichier invalide/);
 });
+
+test('catalog: one profile key a game folder, a version\'s own with ownProfile, never another game\'s version name', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-games-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  game(root, 'alpha', { versions: [{ id: 'alpha-1', dir: '1.0', version: '1.0', exe: 'Game.exe' }, { id: 'alpha-2', dir: '2.0', version: '2.0', exe: 'Game.exe' }, { id: 'alpha-fr', dir: 'fr', version: 'fr', exe: 'Game.exe', ownProfile: true }] });
+  const catalog = loadGameCatalog(root);
+  assert.deepEqual(['alpha-1', 'alpha-2', 'alpha-fr'].map((id) => catalog.get(id).profileKey), ['alpha', 'alpha', 'alpha-fr']);
+  game(root, 'alpha-1', { versions: [{ id: 'other', dir: '1.0', version: '1.0', exe: 'Game.exe' }] });
+  assert.throws(() => loadGameCatalog(root), /porte le nom d'une version de alpha/);
+});

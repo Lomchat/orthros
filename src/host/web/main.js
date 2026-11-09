@@ -7,7 +7,8 @@ import { SummaryClock } from '../perf-summary.js';
 import { netWaitText, fmtRate, fmtBytes, received } from './net-status.js';
 import { resumeOnGesture, soundHintNeeded, AudioStats } from './sound.js';
 import { PointerInput, winButton, cursorView } from './pointer.js';
-import { SNAPSHOT_PREFIX, profileFiles, replaceProfile } from './data-store.js';
+import { SNAPSHOT_PREFIX, profileFiles, replaceProfile, mergeVersionProfiles } from './data-store.js';
+import { cloudProfile, profileDir, profileKeyOf } from '../../vfs/profile-share.js';
 import { createShell, lockKeys } from './shell.js';
 import { escapeToGame } from './escape.js';
 import { CloudSave } from './cloud-sync.js';
@@ -100,7 +101,7 @@ function showStatus(title, detail = '', report = null, error = false, restart = 
   b.textContent = TEXT.restart; fresh.textContent = TEXT.fresh; fresh.title = TEXT.freshTitle; back.textContent = TEXT.back;
   back.classList.toggle('hidden', !restart || headless); back.onclick = backToGames;
   fresh.classList.toggle('hidden', !restart || !state.manifest || headless);
-  fresh.onclick = async () => { fresh.disabled = true; fresh.textContent = TEXT.freshing; await setProfileAside(state.manifest).catch(() => {}); location.reload(); };
+  fresh.onclick = async () => { fresh.disabled = true; fresh.textContent = TEXT.freshing; await setProfileAside(state.profileKey).catch(() => {}); location.reload(); };
   el.querySelector('.title').textContent = title; el.querySelector('.detail').textContent = detail;
   const pre = el.querySelector('pre'); pre.classList.toggle('hidden', !report); pre.textContent = report ?? '';
 }
@@ -111,15 +112,16 @@ function backToGames() {
   location.href = u.toString();
 }
 /**
- * The game's saved user profile (settings, saves: OPFS directory orthros-<manifest>) moved to orthros-<manifest>-aside-<time>,
- * so the next start begins with a fresh profile (a profile left in a bad state by an interrupted run can make every
- * start fail); nothing is deleted. The game file block store is kept.
+ * The game's saved user profile (settings, saves: OPFS directory orthros-<profile key>, the game's — shared by its
+ * versions, docs/profiles.md) moved to orthros-<key>-aside-<time>, so the next start begins with a fresh profile (a
+ * profile left in a bad state by an interrupted run can make every start fail); nothing is deleted. The game file block
+ * store is kept.
  */
-state.setProfileAside = (name) => setProfileAside(name ?? state.manifest); // (window.orthros.setProfileAside(): the same from the console)
-async function setProfileAside(name) {
+state.setProfileAside = (key) => setProfileAside(key ?? state.profileKey); // (window.orthros.setProfileAside(): the same from the console)
+async function setProfileAside(key) {
   const root = await navigator.storage.getDirectory();
-  let src; try { src = await root.getDirectoryHandle('orthros-' + name); } catch { return; }
-  const dst = await root.getDirectoryHandle(`orthros-${name}-aside-${new Date().toISOString().replace(/[:.]/g, '-')}`, { create: true });
+  let src; try { src = await root.getDirectoryHandle(profileDir(key)); } catch { return; }
+  const dst = await root.getDirectoryHandle(`${profileDir(key)}-aside-${new Date().toISOString().replace(/[:.]/g, '-')}`, { create: true });
   const copy = async (from, to) => {
     for await (const [n, h] of from.entries()) {
       if (h.kind === 'directory') await copy(h, await to.getDirectoryHandle(n, { create: true }));
@@ -127,7 +129,7 @@ async function setProfileAside(name) {
     }
   };
   await copy(src, dst);
-  await root.removeEntry('orthros-' + name, { recursive: true });
+  await root.removeEntry(profileDir(key), { recursive: true });
 }
 /** What Orthros needs from the browser; the first missing piece, or null. */
 function missingFeature() {
@@ -207,6 +209,8 @@ async function start(name, language = null) {
   (state.storage ??= pageStorage()).ask();
   const sourcesReq = snapshotsOn() ? fetch('/api/snapshot-sources').then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
   const manifest = await (await fetch(`/api/manifest/${name}`)).json();
+  // (the player's profile: the game's, shared by its versions unless this one keeps its own — docs/profiles.md)
+  state.gameManifest = manifest; state.profileKey = profileKeyOf(manifest) ?? name;
   if (manifest.launchUrl) { const portUrl = new URL(manifest.languageLaunchUrls?.[language] ?? manifest.launchUrl, location.href); if (language) portUrl.searchParams.set('gameLang', language); location.href = portUrl.href; return; } // (a browser port: its own page, docs/browser-ports.md)
   const options = manifest.languages ?? [];
   if (!options.includes(language)) {
@@ -221,6 +225,9 @@ async function start(name, language = null) {
   // (headless: no header nor loading screen — the harness reads the stats, and screenshots the frame alone)
   if (headless) document.body.classList.add('nobar');
   else { makeShell(name, manifest, language); showLoader(name); }
+  // (the copies of the profile the game's versions kept before, merged into its profile once: before the account's sync
+  // and the game read it — data-store.js, profile-share.js)
+  await mergeVersionProfiles(manifest, (msg) => log('loader', msg)).catch((e) => log('warn', `profile merge: ${e.message}`));
   // the player's saves on the account (cloud-sync.js): the account's copy in place before the game reads its profile
   if (shell) {
     const st = await shell.ready;
@@ -256,7 +263,7 @@ async function start(name, language = null) {
   state.worker = worker;
   worker.onmessage = (e) => onWorkerMessage(e.data);
   worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
-  const opts = { headless, gameLanguage: language, dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined, netBw: savedNetBw() };
+  const opts = { headless, gameLanguage: language, profileDir: profileDir(state.profileKey), dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined, netBw: savedNetBw() };
   // (this browser's snapshot of the game, docs/snapshot.md: the machine goes on from it)
   let snapshot = null;
   const sources = await sourcesReq;
@@ -340,9 +347,9 @@ async function storeSnapshot(name, key, bytes) {
   const j = await (await dir.getFileHandle('machine.json', { create: true })).createWritable(); await j.write(JSON.stringify({ key, bytes: bytes.byteLength, at: new Date().toISOString() })); await j.close();
   return file;
 }
-/** Has this browser a profile of game `name` (files the game wrote)? */
-async function hasProfile(name) {
-  try { for await (const _ of (await (await navigator.storage.getDirectory()).getDirectoryHandle('orthros-' + name)).keys()) return true; } catch { /* none */ }
+/** Has this browser a profile under `key` (files a version of the game wrote: its profile is the game's)? */
+async function hasProfile(key) {
+  try { for await (const _ of (await (await navigator.storage.getDirectory()).getDirectoryHandle(profileDir(key))).keys()) return true; } catch { /* none */ }
   return false;
 }
 /**
@@ -350,7 +357,7 @@ async function hasProfile(name) {
  * — none, or one that would come slower than the game starts (60 s at the connection's last measured rate).
  */
 async function sharedSnapshot(name, key, lang) {
-  if (params.get('snapshot') === 'publish' || await hasProfile(name)) return null;
+  if (params.get('snapshot') === 'publish' || await hasProfile(state.profileKey ?? name)) return null;
   const ctl = new AbortController();
   try {
     const r = await fetch(`/api/snapshot/${encodeURIComponent(name)}?key=${key}&lang=${encodeURIComponent(lang ?? '')}`, { signal: ctl.signal });
@@ -528,8 +535,9 @@ function makeShell(name, manifest, language) {
 }
 /** The account's copy of this game's profile (cloud-sync.js): this browser's OPFS copy, or the running game's own. */
 function newCloud(name, username) {
-  const running = () => (['running', 'starting'].includes(state.status) && state.manifest === name ? state : null);
-  return new CloudSave({ game: name, user: username, read: () => profileFiles(name, running()), write: (files) => replaceProfile(name, files, running()), onStatus: (s) => { shell?.setSave(s); if (!shell) log('loader', `account saves: ${s.state}${s.version ? ' v' + s.version : ''}`); } });
+  // (under the version's profile key: the game's, shared by its versions — docs/profiles.md)
+  const running = () => (['running', 'starting'].includes(state.status) && state.manifest === name ? state : null), key = state.profileKey ?? name;
+  return new CloudSave({ ...cloudProfile(state.gameManifest ?? { name }), user: username, read: () => profileFiles(key, running()), write: (files) => replaceProfile(key, files, running()), onStatus: (s) => { shell?.setSave(s); if (!shell) log('loader', `account saves: ${s.state}${s.version ? ' v' + s.version : ''}`); } });
 }
 /** The profile sent to the account now (back to the games, the page hidden): false when it could not be. */
 async function saveNow() {

@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { decide, CloudSave, encodeProfile } from '../src/host/web/cloud-sync.js';
+import { decide, CloudSave, encodeProfile, contentHash } from '../src/host/web/cloud-sync.js';
 
 test('decide: restore, send, compare or ask, from what this device knows', () => {
   const known = { parent: 'A', local: 'L' };
@@ -87,4 +87,47 @@ test('CloudSave: signed out, nothing leaves the browser', async () => {
   const w = world(); w.device.files = [file('s', 1)];
   const c = w.save(null);
   assert.equal(await c.pull(), 'none'); assert.equal((await c.push()).state, 'off'); assert.equal(w.puts, 0);
+});
+
+test('CloudSave: a profile now shared by a game\'s versions — no question for copies in step, nothing lost otherwise', async () => {
+  const sha = (b) => createHash('sha256').update(b).digest('hex');
+  // (the account after its merge: the game's key holds both versions' copies — accounts.js migrateProfiles)
+  const accountFiles = [file('save/a.sav', 1), file('save/b.sav', 2)];
+  const shared = (deviceFiles, records) => {
+    let head = { gz: gzipSync(Buffer.from(encodeProfile('game', accountFiles))) }; head.hash = sha(head.gz);
+    const puts = [];
+    const fetchImpl = async (url, o = {}) => {
+      if (url === '/api/cloud') return new Response(JSON.stringify({ games: [{ game: 'game', hash: head.hash, updatedAt: 1, merged: ['v1', 'v2'] }] }));
+      if (o.method === 'PUT') {
+        if (o.headers['X-Orthros-Parent-Hash'] !== head.hash) return new Response('{}', { status: 409 });
+        head = { gz: Buffer.from(o.body) }; head.hash = sha(head.gz); puts.push(head);
+        return new Response(JSON.stringify({ hash: head.hash, version: 2 }), { status: 201 });
+      }
+      return new Response(head.gz, { headers: { 'X-Orthros-Backup-Hash': head.hash } });
+    };
+    const store = new Map(Object.entries(records)), storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
+    const device = { files: deviceFiles };
+    return { device, puts, store, remote: () => JSON.parse(gunzipSync(head.gz)).files.map((f) => f.path),
+      save: (marker) => new CloudSave({ game: 'game', user: 'ana', storage, fetchImpl, shared: { marker: () => marker }, read: async () => device.files, write: async (files) => { device.files = files; } }) };
+  };
+  // (this browser's two per-version copies, both in step with the account before: merged here into the same files)
+  const v1 = [file('save/a.sav', 1)], v2 = [file('save/b.sav', 2)], merged = [...v1, ...v2];
+  const marker = { sources: [{ name: 'v1', files: 1, hash: await contentHash('v1', v1) }, { name: 'v2', files: 1, hash: await contentHash('v2', v2) }], merged: await contentHash('game', merged) };
+  const inStep = { 'orthros.sync.ana.v1': JSON.stringify({ parent: 'p1', local: marker.sources[0].hash }), 'orthros.sync.ana.v2': JSON.stringify({ parent: 'p2', local: marker.sources[1].hash }), 'orthros.owner.v1': 'ana', 'orthros.owner.v2': 'ana' };
+  const a = shared(merged, inStep), ca = a.save(marker);
+  assert.equal(await ca.pull(), 'restore', 'the account\'s merged copy taken, no question');
+  assert.equal(a.puts.length, 0); assert.equal(ca.known.shared, true);
+  assert.equal(await a.save(marker).pull(), 'same', 'then in step as any profile');
+  // (a copy never sent from here — v2 played signed out —: both merged, sent over the account's head, nothing lost)
+  const local = [file('save/a.sav', 1), file('save/c.sav', 3)];
+  const b = shared(local, { 'orthros.sync.ana.v1': inStep['orthros.sync.ana.v1'], 'orthros.owner.v1': 'ana' });
+  const markerB = { sources: [marker.sources[0], { name: 'v2', files: 1, hash: await contentHash('v2', [file('save/c.sav', 3)]) }], merged: await contentHash('game', local) };
+  const cb = b.save(markerB);
+  assert.equal(await cb.pull(), 'merge');
+  assert.equal(cb.status.state, 'saved'); assert.equal(b.puts.length, 1, 'sent once, with the head as its parent');
+  assert.deepEqual(b.remote(), ['save/a.sav', 'save/b.sav', 'save/c.sav']); assert.deepEqual(b.device.files.map((f) => f.path), ['save/a.sav', 'save/b.sav', 'save/c.sav']);
+  // (this profile holding all the account has and more: the merge adds nothing here, the account's copy still gets it)
+  const c = shared([...merged, file('save/d.sav', 4)], {}), cc = c.save(markerB);
+  assert.equal(await cc.pull(), 'merge'); assert.equal(c.puts.length, 1);
+  assert.deepEqual(c.remote(), ['save/a.sav', 'save/b.sav', 'save/d.sav']);
 });

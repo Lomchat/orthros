@@ -14,6 +14,8 @@ import { canvasGl, portDataSummary, portEvents, portPerf } from '../../host/web/
 import { pageStorage } from '../../host/web/storage-persist.js';
 import { CloudSave } from '../../host/web/cloud-sync.js';
 import { openStorage, readStorage, writeStorage, writableSnapshot, restoreSnapshot } from './storage.js';
+import { openPortProfile } from '../port-profile.js';
+import { cloudProfile } from '../../vfs/profile-share.js';
 import { treeFiles, languageFiles } from '../../vfs/game-tree.js';
 import { engineUrls, openPortData, mountPortFiles } from '../port-files.js';
 import { phaseOnRead } from '../../vfs/emscripten-files.js';
@@ -109,7 +111,7 @@ function soundHint() {
   shell?.sound.classList.toggle('hidden', !blocked);
 }
 setInterval(soundHint, 1000);
-let engine, db, relay, timer, cloudTimer, saving, stopped = false;
+let engine, db, profileDb, relay, timer, cloudTimer, saving, stopped = false;
 function log(line) { logs.push(String(line)); if (logs.length > 500) logs.shift(); shell?.log(String(line)); }
 window.addEventListener('error', event => {
   if (stopped && (event.error === Infinity || event.error === 'unwind')) { event.preventDefault(); return; }
@@ -287,14 +289,15 @@ for (const type of ['keydown', 'keyup', 'keypress']) {
 const KEEP = (path) => !/(^|\/)(screenshots|logs)\//i.test(path) && !/\.(log|nav|hpk)$/i.test(path);
 const toCloud = (list) => (list ?? []).filter((f) => f.path.startsWith('/rwdir/')).map((f) => ({ path: f.path.slice(7), data: f.data })).filter((f) => KEEP(f.path));
 function newCloud(username) {
+  // (the game's profile, shared by its versions: docs/profiles.md)
   return new CloudSave({
-    game: name, user: username, onStatus: (s) => shell.setSave(s),
-    read: async () => toCloud(engine?.em && session.state === 'running' ? writableSnapshot(engine.em.FS) : await readStorage(db, 'profile', 'files')),
+    ...cloudProfile(config), user: username, onStatus: (s) => shell.setSave(s),
+    read: async () => toCloud(engine?.em && session.state === 'running' ? writableSnapshot(engine.em.FS) : await readStorage(profileDb, 'profile', 'files')),
     // (before the engine starts only: the previous profile kept aside in the same store)
     write: async (list) => {
-      const old = await readStorage(db, 'profile', 'files');
-      if (old?.length) await writeStorage(db, 'profile', `aside-${new Date().toISOString()}`, old);
-      await writeStorage(db, 'profile', 'files', list.map((f) => ({ path: '/rwdir/' + f.path, data: f.data })));
+      const old = await readStorage(profileDb, 'profile', 'files');
+      if (old?.length) await writeStorage(profileDb, 'profile', `aside-${new Date().toISOString()}`, old);
+      await writeStorage(profileDb, 'profile', 'files', list.map((f) => ({ path: '/rwdir/' + f.path, data: f.data })));
     },
   });
 }
@@ -306,7 +309,7 @@ async function lateSignIn(user) {
   if (engine && session.state === 'running') engine.Cmd_ExecuteString(`name "${playerName()}"`);
   if (relay) { relay.enabled = true; relay.open(); }
   if (config?.goldsrc.multiplayer) toast(S.online(user.username), 5000);
-  if (cloud || !db) return;
+  if (cloud || !profileDb) return;
   cloud = newCloud(user.username);
   const head = await cloud.remoteHead().catch(() => null);
   cloud.remoteHash = head;
@@ -318,8 +321,8 @@ async function lateSignIn(user) {
 }
 
 async function save() {
-  if (!db || !engine?.em || saving || stopped) return saving; // (stopped: the page goes, or the account's copy replaces this one)
-  saving = writeStorage(db, 'profile', 'files', writableSnapshot(engine.em.FS));
+  if (!profileDb || !engine?.em || saving || stopped) return saving; // (stopped: the page goes, or the account's copy replaces this one)
+  saving = writeStorage(profileDb, 'profile', 'files', writableSnapshot(engine.em.FS));
   try { await saving; session.lastSaveAt = Date.now(); } finally { saving = null; }
 }
 session.save = save;
@@ -426,6 +429,8 @@ async function start() {
   gameData ??= openPortData({ name, tree, manifest: config, session: sessionId, lang: language, log });
   step('engine', 'active'); step('files', ''); step('game', '');
   db = await openStorage(config.saveKey);
+  // (the player's profile: the game's, its versions' copies of before merged in once — port-profile.js)
+  profileDb = await openPortProfile(config, { toCloud, log });
   const who = await shell.ready;
   if (who.user) {
     status(S.account);
@@ -460,7 +465,7 @@ async function start() {
   const FS = engine.em.FS;
   // (the game's writable folder, with its maps folder: files the game writes there, as its bots' navigation meshes)
   FS.mkdirTree('/rodir'); FS.mkdirTree('/rwdir/' + g.gameDir + '/maps');
-  restoreSnapshot(FS, await readStorage(db, 'profile', 'files'));
+  restoreSnapshot(FS, await readStorage(profileDb, 'profile', 'files'));
   // (the game's files: its whole tree now — a language's folders over the ones they translate —, what earlier sessions
   // read first loaded before the start, the rest later)
   const shown = languageFiles(files, own.overlays, Object.values(g.languages ?? {}).flatMap((l) => Object.keys(l.overlays ?? {})));

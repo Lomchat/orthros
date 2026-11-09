@@ -19,6 +19,8 @@ import { CloudSave } from '../../host/web/cloud-sync.js';
 import { onAccountChange, accountState } from '../../host/web/account.js';
 import { createMmoLink, LINK } from '../../host/web/mmo-link.js';
 import { openStorage, readStorage, writeStorage } from '../goldsrc/storage.js';
+import { openPortProfile } from '../port-profile.js';
+import { cloudProfile } from '../../vfs/profile-share.js';
 import { treeFiles } from '../../vfs/game-tree.js';
 import { engineUrls, openPortData, mountPortFiles } from '../port-files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
@@ -118,7 +120,7 @@ function soundHint() {
   shell?.sound.classList.toggle('hidden', !blocked);
 }
 setInterval(soundHint, 1000);
-let engine, FS = null, db, timer, cloudTimer, saving, stopped = false, profileReady = false, finalSave = null, reloadWhenSaved = false;
+let engine, FS = null, db, profileDb, timer, cloudTimer, saving, stopped = false, profileReady = false, finalSave = null, reloadWhenSaved = false;
 /** The nodes of the mounted game files: never part of the profile. */
 let gameNodes = new Set();
 function log(line) { logs.push(String(line)); if (logs.length > 500) logs.shift(); shell?.log(String(line)); }
@@ -297,10 +299,10 @@ function watchProfileWrites() {
     FS[op] = function (...a) { profileDirty = true; return original.apply(this, a); };
   }
 }
-const currentProfile = async () => (profileReady && !stopped ? snapshot() : (await readStorage(db, 'profile', 'files')) ?? []);
+const currentProfile = async () => (profileReady && !stopped ? snapshot() : (await readStorage(profileDb, 'profile', 'files')) ?? []);
 function newCloud(username) {
   return new CloudSave({
-    game: name, user: username,
+    ...cloudProfile(config), user: username, // (the game's profile, shared by its versions: docs/profiles.md)
     // (the account's copy put in place while the game runs: recorded as in step, the page reloaded to start on it)
     onStatus: (s) => { if (!world?.link.joined()) shell.setSave(s); if (reloadWhenSaved && s.state === 'saved') location.reload(); },
     read: async () => toCloud(await currentProfile()),
@@ -311,9 +313,9 @@ function newCloud(username) {
       const replacing = profileReady && !stopped;
       if (replacing) stopped = true;
       try {
-        const old = replacing ? snapshot() : await readStorage(db, 'profile', 'files');
-        if (old?.length) await writeStorage(db, 'profile', `aside-${new Date().toISOString()}`, old);
-        await writeStorage(db, 'profile', 'files', list.map((f) => ({ path: f.path, data: f.data })));
+        const old = replacing ? snapshot() : await readStorage(profileDb, 'profile', 'files');
+        if (old?.length) await writeStorage(profileDb, 'profile', `aside-${new Date().toISOString()}`, old);
+        await writeStorage(profileDb, 'profile', 'files', list.map((f) => ({ path: f.path, data: f.data })));
       } catch (error) { if (replacing) stopped = false; throw error; }
       if (replacing && session.state === 'running') reloadWhenSaved = true;
     },
@@ -324,7 +326,7 @@ function newCloud(username) {
  * player chooses: restart with the account's, or this browser's sent over it.
  */
 async function lateSignIn(user) {
-  if (cloud || !db) return;
+  if (cloud || !profileDb) return;
   cloud = newCloud(user.username);
   const head = await cloud.remoteHead().catch(() => null);
   cloud.remoteHash = head;
@@ -337,10 +339,10 @@ async function lateSignIn(user) {
 
 let savedSnapshot = null;
 async function save() {
-  if (!db || !profileReady || saving || stopped) return saving; // (stopped: the page goes, or the account's copy replaces this one)
+  if (!profileDb || !profileReady || saving || stopped) return saving; // (stopped: the page goes, or the account's copy replaces this one)
   const files = snapshot();
   if (files === savedSnapshot) return; // (nothing written since the last save)
-  saving = writeStorage(db, 'profile', 'files', files);
+  saving = writeStorage(profileDb, 'profile', 'files', files);
   try { await saving; savedSnapshot = files; session.lastSaveAt = Date.now(); } finally { saving = null; }
 }
 session.save = save;
@@ -486,6 +488,8 @@ async function start(mode = null) {
   gameData ??= openPortData({ name, tree, manifest: config, session: sessionId, lang: language, log });
   step('engine', 'active'); step('files', ''); step('game', '');
   db = await openStorage(config.saveKey);
+  // (the player's profile: the game's, its versions' copies of before merged in once — port-profile.js)
+  profileDb = await openPortProfile(config, { toCloud, log });
   const who = await shell.ready;
   if (who.user) {
     status(S.account);
@@ -530,7 +534,7 @@ async function start(mode = null) {
   // (the profile in the game's folder, over the game's files it replaced; the language's settings — re3.languages.<code>,
   // the player's choice of the version's languages —, in every ini file a language names: a game's own copied into the
   // profile even when it has these settings, for the engine to write in)
-  const kept = (await readStorage(db, 'profile', 'files')) ?? [];
+  const kept = (await readStorage(profileDb, 'profile', 'files')) ?? [];
   if (config.profileSeed && params.get('profileseed') !== '0' && !kept.length) {
     await seedProfile(language, new Set([...languageIni(r.languages, language).map(([file]) => file), ...Object.keys(r.defaults ?? {})].map((file) => file.toLowerCase())));
   }

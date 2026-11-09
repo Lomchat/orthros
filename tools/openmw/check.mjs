@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { portProfileDb } from '../../src/vfs/profile-share.js';
 
 const args = process.argv.slice(2), id = args[0], arg = (k) => args.includes(k) ? args[args.indexOf(k) + 1] : null;
 if (!id) throw new Error('Expected a manifest id');
@@ -61,7 +62,7 @@ try {
   assert.equal(state.isolated, true);
   if (state.frames > 0) assert.ok(state.frames > 30, `Only ${state.frames} frames from the draw thread`); else assert.ok(state.draws > 100, `Only ${state.draws} draws`);
   assert.ok(header.fps > 0, 'The header shows the engine\'s frame rate'); assert.ok(header.mouse, 'The mouse indicator'); assert.ok(header.loader, 'The loading screen gone once the engine draws');
-  assert.ok(state.databases.includes(man.saveKey), 'Installation-specific browser saves');
+  assert.ok(state.databases.includes(portProfileDb(man.profileKey ?? target)), 'The game\'s profile in its own browser database (docs/profiles.md)');
   // (a start cell is the example world's only — src/ports/openmw/play.js: a hosted game starts at its menu or its save)
   if (man.openmw.example && man.openmw.startCell) assert.ok(state.args?.includes(man.openmw.startCell), 'The manifest start cell reaches the engine');
   assert.deepEqual(faults, []);
