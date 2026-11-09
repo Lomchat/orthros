@@ -134,7 +134,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: true, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -938,6 +938,7 @@ class Emitter {
     this.logicRes = !!(opts.logicRes ?? JIT_DEFAULTS.logicRes); // (see binArith)
     this.lzaFree = !!(opts.lzaFree ?? JIT_DEFAULTS.lzaFree); // (see LZA_FREE)
     this.lzaSub = this.lzaFree && !!(opts.lzaSub ?? JIT_DEFAULTS.lzaSub); // (SUB as SUBR: see LZA_FREE)
+    this.memarg = !!(opts.memarg ?? JIT_DEFAULTS.memarg); // (displacements in the memarg offset: see foldDisp)
     this.ifcvt = opts.ifcvt ?? JIT_DEFAULTS.ifcvt; // (see ifcvtPlan: true, 'all' or false)
     this.spec = 0; // emitting an if-converted arm: its loads read address 0 unless the arm is the path taken (see loadMem)
     this.ncPlan = null; // null-page checks of the block being emitted (planNullChecks)
@@ -1710,8 +1711,47 @@ class Emitter {
     if (o.seg === SEG.FS) c.get(L_FS).add();
     else if (o.seg === SEG.GS) c.get(L_STATE).i32load(ST.GS_BASE).add();
   }
-  /** address on stack -> value (`signed`: an 8 / 16-bit value sign-extended by the load itself) */
-  loadMem(size, signed = false) {
+  /**
+   * The displacement of memory operand o that the access's memarg offset can carry instead of an i32.add (opts.memarg;
+   * 0: none). V8 adds a memarg offset to the zero-extended 32-bit index in the x64 addressing mode ([mem + base + disp]),
+   * where `base + disp` computed in WebAssembly first costs an instruction of its own (lea; checked on the machine code,
+   * docs/jit-code-shape.md); with an index register the lea is there either way ([base + index*s + disp] or not), so
+   * only [base + disp] forms are folded. Exactness: x86 wraps the address at 32 bits, the memarg offset does not — the
+   * two differ only when base + disp >= 2^32, where the folded access traps (past the 2 GiB memory) instead of
+   * reaching base + disp - 2^32 < disp. With 0 < disp < NULL_PAGE_END that address is in the null page, never mapped by
+   * Windows: the access faults there too (only less precisely: a WebAssembly trap; in the default nullPage 'writes'
+   * mode an unfolded read there returned zeros). A larger displacement (an absolute address plus a register holding
+   * a negative offset: table[-1]) could reach real memory: not folded. Not in an if-converted arm (its loads read
+   * address 0 unless the arm is taken, see loadMem) nor with a 16-bit address or an FS/GS base.
+   */
+  foldDisp(o) {
+    return this.memarg && !this.spec && o.base >= 0 && o.index < 0 && !o.a16 && o.seg !== SEG.FS && o.seg !== SEG.GS &&
+      o.disp > 0 && o.disp < NULL_PAGE_END ? o.disp : 0;
+  }
+  /** push the effective address of o less the displacement returned, which the access adds in its memarg (foldDisp) */
+  eaOff(o) {
+    const d = this.foldDisp(o);
+    if (d) { this.c.get(L_REG + o.base); return d; }
+    this.ea(o); return 0;
+  }
+  /**
+   * Push the address for a store to memory operand o and return the memarg offset to store at: a store addressed by
+   * ESP alone (no SMC check, see smcCheck) with its displacement folded (foldDisp); otherwise the EA in L_TA (eaTo)
+   * for the store's SMC check, offset 0.
+   */
+  storeAddr(o) {
+    const { off, addr } = this.storeAddrLater(o);
+    addr(); return off;
+  }
+  /** storeAddr in two steps: the EA computed now (unless folded), `addr()` pushing the address where the store is */
+  storeAddrLater(o) {
+    const off = o.base === 4 ? this.foldDisp(o) : 0;
+    if (!off) this.eaTo(o);
+    const c = this.c, l = off ? L_REG + 4 : L_TA;
+    return { off, addr: () => { c.get(l); } };
+  }
+  /** address on stack -> value (`signed`: an 8 / 16-bit value sign-extended by the load itself; `off`: see foldDisp) */
+  loadMem(size, signed = false, off = 0) {
     const c = this.c;
     if (this.spec) { // (an if-converted arm: see emitIfcvt)
       if (this.specCheck) { // (a null-page load on the path taken: noted — it reads address 0 too — and the arms' effects undone after them, see emitIfcvt)
@@ -1721,19 +1761,19 @@ class Emitter {
         c.get(L_NCK); this.unmappedTest(); c.eqz().and().select();
       } else { c.i32(0).get(L_IC); if (this.spec === 2) c.eqz(); c.select(); }
     }
-    if (size === 4) c.i32load(0, 0); else if (size === 2) { if (signed) c.i32load16s(0); else c.i32load16u(0); } else if (signed) c.i32load8s(0); else c.i32load8u(0);
+    if (size === 4) c.i32load(off, 0); else if (size === 2) { if (signed) c.i32load16s(off); else c.i32load16u(off); } else if (signed) c.i32load8s(off); else c.i32load8u(off);
   }
-  /** (addr, value) on stack -> store */
-  storeMem(size) {
+  /** (addr, value) on stack -> store (`off`: see storeAddr) */
+  storeMem(size, off = 0) {
     const c = this.c;
-    if (size === 4) c.i32store(0, 0); else if (size === 2) c.i32store16(0); else c.i32store8(0);
+    if (size === 4) c.i32store(off, 0); else if (size === 2) c.i32store16(off); else c.i32store8(off);
   }
   /** push operand value (zero-extended to 32) */
   loadOp(o) {
     const c = this.c;
     switch (o.t) {
       case OT.REG: this.loadReg(o.size, o.r); return;
-      case OT.MEM: this.ea(o); this.loadMem(o.size); return;
+      case OT.MEM: { const off = this.eaOff(o); this.loadMem(o.size, false, off); return; }
       case OT.IMM: c.i32(o.size === 4 ? o.v | 0 : o.v & MASK[o.size]); return;
       case OT.SEG: c.get(L_STATE).i32load16u(ST.SEG + 2 * o.r); return;
     }
@@ -2629,14 +2669,14 @@ HANDLERS[OP.MOV] = (E, insn) => {
     if (d.t === OT.MEM) { E.eaTo(d); c.get(L_TA).get(L_TV).i32store16(0); E.smcCheck(insn, 2); } else E.storeRegFrom(d.size, d.r, L_TV);
     return;
   }
-  if (d.t === OT.MEM) { E.eaTo(d); E.loadOp(s); c.set(L_TV); c.get(L_TA).get(L_TV); E.storeMem(d.size); E.smcCheck(insn); return; }
+  if (d.t === OT.MEM) { const off = E.storeAddr(d); E.loadOp(s); E.storeMem(d.size, off); E.smcCheck(insn); return; }
   E.loadOp(s); c.set(L_TV); E.storeRegFrom(d.size, d.r, L_TV);
 };
 HANDLERS[OP.MOVZX] = (E, insn) => { const c = E.c; const d = insn.ops[0], s = insn.ops[1]; E.loadOp(s); c.set(L_TV); E.storeRegFrom(d.size, d.r, L_TV); };
 HANDLERS[OP.MOVSX] = (E, insn) => {
   const c = E.c; const d = insn.ops[0], s = insn.ops[1];
   // (a memory source with a sign-extending load: movsx r32, m16 was a zero-extending load and a movsx of the register)
-  if (s.t === OT.MEM) { E.ea(s); E.loadMem(s.size, true); } else { E.loadOp(s); if (s.size === 1) c.extend8_s(); else c.extend16_s(); }
+  if (s.t === OT.MEM) { const off = E.eaOff(s); E.loadMem(s.size, true, off); } else { E.loadOp(s); if (s.size === 1) c.extend8_s(); else c.extend16_s(); }
   c.set(L_TV); E.storeRegFrom(d.size, d.r, L_TV);
 };
 HANDLERS[OP.LEA] = (E, insn) => {

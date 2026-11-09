@@ -97,14 +97,14 @@ export function loadVec(E, o, bytes = width(o)) {
   if (o.t !== OT.MEM) throw new Error('loadVec: bad operand');
   if (bytes === 2 || bytes === 1) {
     // (addr, zero) -> load lane 0
-    E.ea(o); pushZero(E);
-    if (bytes === 2) c.v128load16lane(0, 0); else c.v128load8lane(0, 0);
+    const off = E.eaOff(o); pushZero(E);
+    if (bytes === 2) c.v128load16lane(off, 0); else c.v128load8lane(off, 0);
     return;
   }
-  E.ea(o);
-  if (bytes === 16) c.v128load(0);
-  else if (bytes === 8) c.v128load64zero(0);
-  else if (bytes === 4) c.v128load32zero(0);
+  const off = E.eaOff(o); // (see Emitter.foldDisp)
+  if (bytes === 16) c.v128load(off);
+  else if (bytes === 8) c.v128load64zero(off);
+  else if (bytes === 4) c.v128load32zero(off);
   else throw new Error(`loadVec: bad width ${bytes}`);
 }
 
@@ -128,13 +128,13 @@ export function storeVec(E, o, insn, bytes, emitValue) {
     return;
   }
   if (o.t !== OT.MEM) throw new Error('storeVec: bad operand');
-  E.eaTo(o);
-  c.get(L_TA); emitValue(E);
-  if (bytes === 16) c.v128store(0);
-  else if (bytes === 8) c.v128store64lane(0, 0);
-  else if (bytes === 4) c.v128store32lane(0, 0);
-  else if (bytes === 2) c.v128store16lane(0, 0);
-  else if (bytes === 1) c.v128store8lane(0, 0);
+  const off = E.storeAddr(o); // (see Emitter.storeAddr)
+  emitValue(E);
+  if (bytes === 16) c.v128store(off);
+  else if (bytes === 8) c.v128store64lane(off, 0);
+  else if (bytes === 4) c.v128store32lane(off, 0);
+  else if (bytes === 2) c.v128store16lane(off, 0);
+  else if (bytes === 1) c.v128store8lane(off, 0);
   else throw new Error(`storeVec: bad width ${bytes}`);
   E.smcCheck(insn, bytes);
 }
@@ -161,7 +161,7 @@ export function scalarF32(E, o) {
     E.xsValid |= bit;
     return;
   }
-  if (o.t === OT.MEM) { E.ea(o); c.f32load(0, 0); return; }
+  if (o.t === OT.MEM) { c.f32load(E.eaOff(o), 0); return; }
   throw new Error('scalarF32: bad operand');
 }
 
@@ -179,7 +179,7 @@ export function scalarF64(E, o) {
     E.xdValid |= bit;
     return;
   }
-  if (o.t === OT.MEM) { E.ea(o); c.f64load(0, 0); return; }
+  if (o.t === OT.MEM) { c.f64load(E.eaOff(o), 0); return; }
   throw new Error('scalarF64: bad operand');
 }
 
@@ -189,7 +189,7 @@ export function scalarI32(E, o) {
   const c = E.c;
   if (o.t === OT.XMM) { if (E.xdOK && (E.xdValid & (1 << (o.r & 7)))) { xmmLowI64(E, o.r); c.wrap(); } else c.get(xmmLocal(o.r)).i32x4extractlane(0); return; }
   if (o.t === OT.MM) { mmTouch(E); c.get(L_STATE).i32load(mmOff(o.r)); return; }
-  if (o.t === OT.MEM) { E.ea(o); c.i32load(0, 0); return; }
+  if (o.t === OT.MEM) { c.i32load(E.eaOff(o), 0); return; }
   throw new Error('scalarI32: bad operand');
 }
 
@@ -198,7 +198,7 @@ export function scalarI64(E, o) {
   const c = E.c;
   if (o.t === OT.XMM) { xmmLowI64(E, o.r); return; }
   if (o.t === OT.MM) { mmTouch(E); c.get(L_STATE).i64load(mmOff(o.r)); return; }
-  if (o.t === OT.MEM) { E.ea(o); c.i64load(0, 0); return; }
+  if (o.t === OT.MEM) { c.i64load(E.eaOff(o), 0); return; }
   throw new Error('scalarI64: bad operand');
 }
 
