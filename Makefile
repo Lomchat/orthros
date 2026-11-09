@@ -16,6 +16,10 @@ test: gen pe-tests test-unit
 test-unit:
 	node --test 'tests/**/*.test.js'
 
+# Every test at its full depth (tests/depth.js): the randomized and exhaustive sweeps the default pass shortens
+test-full: gen pe-tests
+	ORTHROS_TEST_FULL=1 node --test 'tests/**/*.test.js'
+
 # ---- native x86-32 reference oracle (runs the same snippets on the host CPU)
 tools: $(BUILD)/oracle
 
