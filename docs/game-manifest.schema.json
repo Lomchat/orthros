@@ -192,7 +192,7 @@
           "languages": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[a-z]{2}(-[A-Z]{2})?$" } },
           "languageFileAliases": {
             "type": "object",
-            "description": "Pour chaque langue proposée, redirige la lecture de chemins du jeu vers d'autres fichiers déjà présents dans ce jeu, sans modifier les fichiers installés. Également accepté dans defaults.",
+            "description": "Pour chaque langue proposée, redirige la lecture de chemins du jeu vers d'autres fichiers déjà présents dans ce jeu, sans modifier les fichiers installés. Un chemin peut aussi être un nom que le jeu n'a pas : le fichier apparaît alors là (dans la liste de son dossier aussi, quand ce dossier existe), lu depuis sa source, qui doit exister — par exemple une archive de secours que le motif de la langue trouve. Également accepté dans defaults.",
             "patternProperties": {
               "^[a-z]{2}(-[A-Z]{2})?$": {
                 "type": "object",

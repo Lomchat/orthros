@@ -3,7 +3,8 @@
 # this shared server (see CLAUDE.md, "Shared server budget"): at most ORTHROS_BROWSERS (default 3) such commands at
 # once for the whole project, and a new one starts only while the 1-minute load average is below ORTHROS_LOAD_MAX
 # (default half the CPU count) and at least ORTHROS_MEM_MIN_GB (default 12) GB of memory are available. Otherwise it
-# waits (every 20 s) for a slot. The command runs in a memory-limited scope (ORTHROS_BROWSER_MEM, default 12G, no swap):
+# waits (every 20 s) for a slot. The command runs in a memory-limited scope (ORTHROS_BROWSER_MEM, default 12G, no swap),
+# its CPU capped (ORTHROS_BROWSER_CPU, default 400%: 4 cores, as the server's navig does; low CPU weight):
 # a browser that grows past it (SwiftShader's GPU process grows over long runs) is killed alone instead of the server
 # running out of memory (incident of 2026-10-30: the server froze and rebooted). ORTHROS_BROWSER_MEM=0: no scope.
 # Usage: tools/with-browser-slot.sh node tools/headless.mjs bfme2 --seconds 120 ...
@@ -16,7 +17,7 @@ memmin=${ORTHROS_MEM_MIN_GB:-12}
 mem=${ORTHROS_BROWSER_MEM:-12G}
 scope=()
 if [ "$mem" != "0" ] && command -v systemd-run >/dev/null && systemd-run --scope --quiet -p MemoryMax=64M -- true 2>/dev/null; then
-  scope=(systemd-run --scope --quiet -p "MemoryMax=$mem" -p MemorySwapMax=0 --)
+  scope=(systemd-run --scope --quiet -p "MemoryMax=$mem" -p MemorySwapMax=0 -p "CPUQuota=${ORTHROS_BROWSER_CPU:-400%}" -p CPUWeight=20 --)
 fi
 while :; do
   load=$(cut -d' ' -f1 /proc/loadavg)
