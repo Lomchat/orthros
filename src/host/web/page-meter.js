@@ -95,7 +95,7 @@ export class PageMeter {
     const g = this.gpu?.stats.gpu, data = safe(() => this.hooks?.data?.()) ?? null;
     const m = {
       seq: ++this.seq, dt, fps: frames / dt, acct: this.fs.takeInterval(),
-      d3d: { frames: this.frames, draws: this.framesDraws, gpu: g ? { ...g, hist: Array.from(g.hist) } : { state: this.gl ? 'unavailable' : 'none' } },
+      d3d: { frames: this.frames, draws: this.framesDraws, gpu: g ? { ...g, hist: Array.from(g.hist), runHist: Array.from(g.runHist), fenceHist: Array.from(g.fenceHist) } : { state: this.gl ? 'unavailable' : 'none' } },
       ...(data ? { data } : {}),
     };
     this.last = m;

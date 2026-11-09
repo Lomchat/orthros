@@ -59,6 +59,11 @@ export function compactDataSum(sum) {
   return Object.keys(out).length ? out : null;
 }
 
+/** A cumulative series of the GPU probe ({ n, ms, hist }), null when the probe has none. */
+const gpuSeries = (n, ms, hist) => (hist ? { n: n ?? 0, ms: ms ?? 0, hist: Array.from(hist) } : null);
+/** What a series gained since `a` (the counters at the start; null: all of it). */
+const seriesDelta = (a, b) => (b ? { n: grow(a?.n, b.n), ms: grow(a?.ms, b.ms), hist: b.hist.map((v, i) => grow(a?.hist?.[i], v)) } : null);
+
 /** Frames and time of one stretch (an entry, or the session's totals). */
 class Acc {
   constructor(t0 = 0, ph = null) {
@@ -141,13 +146,14 @@ export class PerfRecorder {
   }
   /** The cumulative counters now (GPU timer, game data waits). */
   counters({ gpu, data } = {}) {
-    if (gpu !== undefined) this.gpuNow = gpu ? { state: gpu.state ?? null, frames: gpu.frames ?? 0, ms: gpu.ms ?? 0, lost: gpu.lost ?? 0, hist: gpu.hist ? Array.from(gpu.hist) : null } : null;
+    if (gpu !== undefined) this.gpuNow = gpu ? { state: gpu.state ?? null, frames: gpu.frames ?? 0, ms: gpu.ms ?? 0, lost: gpu.lost ?? 0, hist: gpu.hist ? Array.from(gpu.hist) : null,
+      run: gpuSeries(gpu.runFrames, gpu.runMs, gpu.runHist), fence: gpuSeries(gpu.fenceN, gpu.fenceMs, gpu.fenceHist) } : null;
     if (data !== undefined) this.dataNow = data ? { waits: data.waits ?? 0, ms: data.ms ?? 0 } : null;
     // (what the waits were for: the source kept, compacted only when a record takes it — take() follows counters() in the
     // same task, so the same values; compacting every clock tick sorted every file waited for once a second)
     if (data && 'sum' in data) this.dataSumSrc = data;
     else if (data !== undefined) this.takeDataSum(); // (the source gone: what it said last kept, as when compacted at each tick)
-    if (this.tot.gpu === null && this.gpuNow) this.tot.gpu = { state: this.gpuNow.state, frames: 0, ms: 0, hist: this.gpuNow.hist ? new Array(this.gpuNow.hist.length).fill(0) : null };
+    if (this.tot.gpu === null && this.gpuNow) this.tot.gpu = { state: this.gpuNow.state, frames: 0, ms: 0, hist: this.gpuNow.hist ? new Array(this.gpuNow.hist.length).fill(0) : null, run: null, fence: null };
     if (this.tot.data === null && this.dataNow) this.tot.data = { waits: 0, ms: 0 };
   }
   /** The host timing probe's results (timing-probe.js runTimingProbe), sent once. */
@@ -168,6 +174,10 @@ export class PerfRecorder {
       const f = total ? c.gpu?.frames ?? 0 : grow(g0?.frames, g1.frames), ms = total ? c.gpu?.ms ?? 0 : grow(g0?.ms, g1.ms);
       const h = total ? c.gpu?.hist : g1.hist ? g1.hist.map((v, i) => grow(g0?.hist?.[i], v)) : null;
       out.gpu = f > 0 ? { n: f, mean: r2(ms / f), p50: h ? hq(h, 0.5, Infinity) : null, p90: h ? hq(h, 0.9, Infinity) : null, p99: h ? hq(h, 0.99, Infinity) : null } : { n: 0 };
+      for (const k of ['run', 'fence']) { // (the idle-free views: the draw run's GPU time, the fence latency at the frame's end)
+        const x = total ? c.gpu?.[k] : seriesDelta(g0?.[k], g1[k]);
+        if (x?.n > 0) out.gpu[k] = { n: x.n, mean: r2(x.ms / x.n), p50: hq(x.hist, 0.5, Infinity), p99: hq(x.hist, 0.99, Infinity) };
+      }
       if (!total) { const lost = grow(g0?.lost, g1.lost); if (lost) out.gpu.lost = lost; } // (queries whose result never came)
     } else if (g1) out.gpu = { state: g1.state ?? 'none' };
     // the game data's waits (reads the engine waited for)
@@ -180,7 +190,8 @@ export class PerfRecorder {
   /** The totals' GPU and data parts follow the counters (added at each record). */
   syncTotals() {
     const t = this.tot, g = this.gpuNow, d = this.dataNow;
-    if (g && t.gpu) { t.gpu.frames += grow(t.gpuBase?.frames, g.frames); t.gpu.ms += grow(t.gpuBase?.ms, g.ms); if (g.hist && t.gpu.hist) g.hist.forEach((v, i) => { t.gpu.hist[i] += grow(t.gpuBase?.hist?.[i], v); }); t.gpu.state = g.state; }
+    if (g && t.gpu) { t.gpu.frames += grow(t.gpuBase?.frames, g.frames); t.gpu.ms += grow(t.gpuBase?.ms, g.ms); if (g.hist && t.gpu.hist) g.hist.forEach((v, i) => { t.gpu.hist[i] += grow(t.gpuBase?.hist?.[i], v); }); t.gpu.state = g.state;
+      for (const k of ['run', 'fence']) if (g[k]) { const d = seriesDelta(t.gpuBase?.[k], g[k]), a = t.gpu[k] ??= { n: 0, ms: 0, hist: new Array(g[k].hist.length).fill(0) }; a.n += d.n; a.ms += d.ms; d.hist.forEach((v, i) => { a.hist[i] += v; }); } }
     if (d && t.data) { t.data.waits += grow(t.dataBase?.waits, d.waits); t.data.ms += grow(t.dataBase?.ms, d.ms); }
     t.gpuBase = g; t.dataBase = d;
   }
@@ -250,10 +261,12 @@ const pick = (o, spec) => {
   return out;
 };
 const nullable = (f) => (v) => (v === null ? null : f(v));
+const GPU_SERIES = { n: (v) => int(v), mean: (v) => num(v, 1e5), p50: nullable((v) => num(v, 1e5)), p99: nullable((v) => num(v, 1e5)) };
 const gpuPart = (g) => {
   if (!g || typeof g !== 'object') return undefined;
   if (typeof g.state === 'string') return { state: g.state.slice(0, 16) };
-  return pick(g, { n: (v) => int(v), lost: (v) => int(v), mean: (v) => num(v, 1e5), p50: nullable((v) => num(v, 1e5)), p90: nullable((v) => num(v, 1e5)), p99: nullable((v) => num(v, 1e5)) });
+  return pick(g, { n: (v) => int(v), lost: (v) => int(v), mean: (v) => num(v, 1e5), p50: nullable((v) => num(v, 1e5)), p90: nullable((v) => num(v, 1e5)), p99: nullable((v) => num(v, 1e5)),
+    run: (v) => (v && typeof v === 'object' ? pick(v, GPU_SERIES) : undefined), fence: (v) => (v && typeof v === 'object' ? pick(v, GPU_SERIES) : undefined) });
 };
 const hist = (h) => (Array.isArray(h) && h.length <= 2 * HIST_N && h.every((x) => Number.isInteger(x) && x >= 0 && x < 1e9) ? h : undefined);
 const ENTRY = {
