@@ -228,6 +228,7 @@ export function compactProbe(p) {
   if (!p) return null;
   const out = {};
   for (const k of PROBE_KINDS) if (p[k]) out[k] = [p[k].p50, p[k].p90, p[k].max];
+  if (p.helper && typeof p.helper === 'object') out.helper = p.helper;
   if (p.battery) out.battery = { charging: !!p.battery.charging, level: p.battery.level };
   if (p.injected) out.injected = p.injected;
   return out;
@@ -279,7 +280,7 @@ const TOT_DATA = { n: (v) => int(v), ms: (v) => num(v), files: fileList(3),
     return e.length ? Object.fromEntries(e) : undefined;
   } };
 const TIMES = (v) => (Array.isArray(v) && v.length === 3 && v.every((x) => num(x, 1e6) !== undefined) ? v : undefined);
-const PROBE = Object.fromEntries([...PROBE_KINDS.map((k) => [k, TIMES]), ['battery', (b) => (b && typeof b === 'object' ? { charging: !!b.charging, level: num(b.level, 1) ?? null } : undefined)], ['injected', (v) => num(v, 1000)]]);
+const PROBE = Object.fromEntries([...PROBE_KINDS.map((k) => [k, TIMES]), ['battery', (b) => (b && typeof b === 'object' ? { charging: !!b.charging, level: num(b.level, 1) ?? null } : undefined)], ['injected', (v) => num(v, 1000)], ['helper', (h) => (h && typeof h === 'object' ? { ...(str(h.status, 24) !== undefined ? { status: str(h.status, 24) } : {}), baseline: nullable((v) => num(v, 1e4))(h.baseline), after: nullable((v) => num(v, 1e4))(h.after), chosen: nullable((v) => str(v, 24))(h.chosen), running: nullable((v) => str(v, 24))(h.running), runMs: num(h.runMs, 1e9), starts: int(h.starts, 1e6), tried: Object.fromEntries(Object.entries(h.tried && typeof h.tried === 'object' ? h.tried : {}).filter(([k, v]) => KEY.test(k.replaceAll('-', '_')) && (v === null || num(v, 1e4) !== undefined)).slice(0, 8)) } : undefined)]]);
 const bool = (v) => (typeof v === 'boolean' ? v : undefined);
 /** the browser's storage (src/host/web/storage-persist.js: persisted, its usage and quota in MiB, persist() asked) */
 const STORAGE = { persisted: nullable(bool), usageMB: nullable((v) => int(v, 1 << 30)), quotaMB: nullable((v) => int(v, 1 << 30)), asked: bool };

@@ -291,6 +291,56 @@ loop's end against its prediction (`[timer]` lines).
 Crash reports also show the instructions before each return address and 128 bytes around each register, with the
 region and heap block (and its provenance) it points into.
 
+## Host timer resolution: a helper that holds 1 ms (2026-11-09)
+
+`src/host/web/timer-helper.js` (`TimerHelper`), wired in `main.js` (`startTimerHelper`, `noteTimerHelper`); the probe worker
+is `timing-probe.js` (mode `wait`: p50 overshoot of 24 `Atomics.wait(1 ms)`).
+
+**Why.** On the owner's RTX 4050 Windows laptop `Atomics.wait(1)` wakes ~15 ms late (p50 14.84 ms; ~2 ms on his Iris Xe
+machine): the process has no 1 ms timer resolution (Windows coalesces at 15.6 ms; Chrome raises the resolution only in
+some cases). The adaptive waits above then spin ~8 ms a frame. If something in the process holds the resolution at 1 ms,
+the host wait is precise and the spin is not needed.
+
+**What it does.** Once a pacing loop runs (the worker's stats show host waits going on) and the tab is visible, the page
+measures the granularity (probe worker). At most 4 ms (`COARSE_MS`): status `fine`, nothing is ever started (Linux, a
+Windows with the resolution already held). Above: each variant is started in turn, 150 ms later the probe measures again,
+and it is stopped; the variants are, cheapest first, a `setInterval(1)` on the page, a `setTimeout(0)` chain on the page,
+a `setInterval(1)` in a tiny worker. `pickVariant` keeps the cheapest one within 1 ms (or 1.5x) of the best p50, if that
+best one is under 0.6x the baseline and gains at least 1 ms; else `coarse-none`. The chosen one runs only while a pacing
+loop runs (`PACE_IDLE_MS` 5 s after the last sign of one) and the page is visible; it is stopped otherwise. While it
+runs it is measured again every 30 s: a p50 back over 4 ms (Chrome dropped the resolution, battery) stops it
+(`ineffective`). A `MessageChannel` ping-pong variant was measured and dropped: it keeps a whole core busy.
+The record (`status`, `baseline`, `tried` per variant, `chosen`, `after`, `runMs`, `starts`) is logged once (`[frames] host
+timer helper: {...}`), and goes with the timing probe into the passive session record (`probe.helper`, perf-page.js), so
+the owner's next session tells which variant (if any) held 1 ms and the before / after granularity.
+
+Switches (page globals, `?dbg=` or harness `dbg:` steps, forwarded by the worker): `ORTHROS_HOST_TIMER_HELPER_OFF=1`
+never runs a helper (and stops the running one); `ORTHROS_HOST_TIMER_HELPER_FORCE=<variant>` runs that variant while a
+pacing loop runs, without measuring. Default: on (self-adapting).
+
+**Measured on this Linux server** (headless Chromium, SwiftShader; `tools/timer-helper-bench.mjs`, 8 s per row, CPU of the
+browser's whole process tree, probe p50 of `Atomics.wait(1)` in ms):
+
+| helper running | p50 | CPU (% of a core) |
+|---|---|---|
+| none | 0.07 | 0.5 |
+| page `setInterval(1)` | 0.07 | 1.3 |
+| page `setTimeout(0)` chain | 0.07 | 1.5 |
+| worker `setInterval(1)` | 0.07 | 1.3 |
+| `MessageChannel` ping-pong (dropped) | 0.07 | 107 |
+
+A/B in one session (`ORTHROS_HOST_TIMER_HELPER_OFF`, 3 pairs of ~20 s, headless Chromium `--gl-discard`, server loaded by
+other jobs, medians of the 3 ON / OFF phases): BFME 1.08 fps 14.5 / 15.0, frame p50 88.5 / 88.8 ms, p99 180 / 178;
+RotWK 2.02 fps 14.0 / 14.2, p50 90.1 / 89.1, p99 190 / 181; Vice City fps 22.3 / 21.7, p50 34.4 / 34.4, p99 91.7 / 91.9,
+> 33 ms per min 795 / 749. No difference beyond noise (all three games reported `status fine`, baseline 0.06-0.11 ms,
+`starts 0`: the ON arm runs the same code as OFF).
+
+Here the granularity is already 0.07 ms: the helper stays at `fine` and never starts, so the cost above is only what a
+coarse host would pay (about 1 % of a core per variant). No gain can be shown on Linux (nothing to gain), only that the
+mechanism stays off. Tests: `tests/timer-helper.test.js` (decision logic on a fake clock and fake variants).
+`tools/timer-helper-bench.mjs` run in the owner's Chrome gives the real gain per variant.
+A/B scenarios (ON = default, OFF = `ORTHROS_HOST_TIMER_HELPER_OFF=1`): `tools/scenarios/*-host-timer-ab.txt`.
+
 ## The BFME1 investigation (2026-10-03/04)
 
 Symptom: in about 1 run in 5 to 1 in 20 depending on the load, ~150 s after the click opening the skirmish setup, a

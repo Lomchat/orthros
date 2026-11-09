@@ -85,7 +85,7 @@ export class PerfSession {
    * @param {{ runtime: string, game: string|null, session: string, version?: string|null, build?: string|null,
    *   tier?: () => string|null, bench?: string|null, env?: () => object, phase?: () => string|null,
    *   data?: () => ({ waits: number, ms: number, sum?: object }|null), gpu?: () => object|null, send?: (rec: object) => void,
-   *   win?: any, now?: () => number, probe?: boolean, recordMs?: number, storage?: ReturnType<typeof pageStorage> }} o
+   *   helper?: () => object|null, win?: any, now?: () => number, probe?: boolean, recordMs?: number, storage?: ReturnType<typeof pageStorage> }} o
    *   storage: the page's (storage-persist.js: its env's `storage`, read again after each record), else one of its own
    */
   constructor(o) {
@@ -113,7 +113,7 @@ export class PerfSession {
     this.rec.clock(now, vis, this.o.phase?.() ?? null);
     if (!this.probeAsked && vis && this.rec.tot.vis >= PROBE_AFTER_MS) {
       this.probeAsked = true;
-      runTimingProbe().then((p) => { if (p) this.rec.setProbe(p); }, () => {});
+      runTimingProbe().then((p) => { if (p) this.rec.setProbe({ ...p, helper: this.o.helper?.() ?? undefined }); }, () => {});
     }
     const r = this.rec.take(now); if (r) this.send(r);
     else if (!(now - (this.storageRead ?? -Infinity) < STORAGE_READ_MS)) { this.storageRead = now; this.storage.read(); } // (the usage grows as the game data comes: the end's record too)
