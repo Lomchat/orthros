@@ -40,7 +40,9 @@ test('the folders a tree is listed from tell when it changes; many paths resolve
     assert.deepEqual(dirs.sort(), [baseFolder, path.join(baseFolder, 'Data'), path.join(baseFolder, 'Data', 'Maps'), folder].sort());
     // (folders changed a moment ago: a stamp of their own each time — the file system's clock is coarse)
     assert.notEqual(dirsStamp(dirs), dirsStamp(dirs), 'just changed: not trusted');
-    DirListings.RECENT_MS = 0; // (as if older)
+    // (as if older — not 0: a folder just made can carry a time a little past Date.now(), `now - mtime < 0` is then
+    // "recent" and its stamp a new one each time; the CI failed so, 2026-11-09)
+    DirListings.RECENT_MS = -Infinity;
     const stamp = dirsStamp(dirs);
     assert.equal(dirsStamp(dirs), stamp, 'nothing changed');
     // (past the file system's timestamp tick, ~4 ms here: a folder changed within the tick of its first listing keeps
