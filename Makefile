@@ -6,7 +6,7 @@ GEN := tests/generated
 SUITES := alu stack branch string x87 sse verify_float verify_mech verify_int verify_trans verify_trans2
 CASES ?= 1500
 
-.PHONY: all test test-unit tools gen serve headless clean
+.PHONY: all test test-unit test-full tools gen serve headless clean
 
 all: test
 
