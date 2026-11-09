@@ -7,6 +7,7 @@ config.json (paths relative to its folder unless absolute):
   root               folder of the source files; files: globs of .str files under it
   dst: {from, to}    where a translated file goes: its path with the prefix `from` replaced by `to`
   out                folder the translated files are written under (build)
+  pack               optional: an archive (.big) the built files are also packed into, at their paths
   chunkWords         words of English per chunk handed to a translator
 
 prepare 1  units (unique English lines, numbers as {1}, {2}…) of the names (objects, upgrades, buttons…) in
@@ -26,7 +27,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sagetext import ENCODING, StrFile, norm  # noqa: E402
+from sagetext import ENCODING, StrFile, norm, write_big  # noqa: E402
 
 NAME_PREFIXES = {'OBJECT', 'UPGRADE', 'SIDE', 'INI', 'BANNERUI', 'LW', 'LWA', 'MAP', 'CAMPAIGNNAME', 'CAH',
                  'CREATEAHERO', 'CONTROLBAR', 'COLOR', 'LWSCENARIO'}
@@ -140,7 +141,14 @@ class Job:
         self.human, self.human_glossary = {}, {}
         for pattern in self.config['files']:
             for path in sorted(glob.glob(os.path.join(root, pattern))):
-                self.files.append((os.path.relpath(path, root), StrFile(open(path, 'rb').read())))
+                # (config "sourceEncoding": the originals' encoding when not the game's cp1252, or "auto" — 2.22 mixes UTF-8 and cp1252;
+                # the translations are written in cp1252, what the game reads)
+                raw = open(path, 'rb').read()
+                try:  # ("auto": UTF-8 when the file is valid UTF-8, else cp1252)
+                    data = raw.decode('utf-8' if self.config.get('sourceEncoding') == 'auto' else self.config.get('sourceEncoding', ENCODING))
+                except UnicodeDecodeError:
+                    data = raw.decode(ENCODING)
+                self.files.append((os.path.relpath(path, root), StrFile(data)))
         self.load_human()
 
     def load_human(self):
@@ -211,10 +219,12 @@ class Job:
                     plan.append((fi, ei, 'human', human_fr[lower]))
                     continue
                 official = self.by_label.get(label.lower())
-                if official and norm(clean(official[0])) == key:
+                # (an official French only with the English's printf codes: a value cut short loses its %s)
+                codes = PRINTF.findall(value)
+                if official and norm(clean(official[0])) == key and PRINTF.findall(official[1]) == codes:
                     plan.append((fi, ei, 'official', official[1]))
                     continue
-                if key in self.by_text:
+                if key in self.by_text and PRINTF.findall(self.by_text[key]) == codes:
                     plan.append((fi, ei, 'official', self.by_text[key]))
                     continue
                 segments, separators, prefix, suffix = split(clean(value))
@@ -428,6 +438,9 @@ class Job:
             with open(target, 'wb') as f:
                 f.write(s.dump(replace[fi]))
             written.append((rel, dst))
+        if self.config.get('pack'):  # (the French files in one archive, at the paths the game reads them from)
+            write_big(self.path(self.config['pack']), [(dst.replace('/', '\\'),
+                      open(os.path.join(self.path(self.config['out']), dst), 'rb').read()) for _, dst in written])
         with open(self.path('built.json'), 'w', encoding='utf-8') as f:
             json.dump({'files': written, 'stats': stats, 'untranslated': untranslated}, f, ensure_ascii=False, indent=1)
         print(f'{len(written)} files, {dict(stats)}, {len(untranslated)} entries still partly English')

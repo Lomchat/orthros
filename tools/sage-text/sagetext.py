@@ -51,6 +51,26 @@ class Big:
             return f.read(hit[2])
 
 
+def write_big(path, files):
+    """A BIGF archive of [(name with '\\' separators, bytes)], as the community tools write it (index, then "L225"
+    and 4 zero bytes, then the data in index order)."""
+    index_size = sum(8 + len(name.encode('latin1')) + 1 for name, _ in files)
+    first = 16 + index_size + 8
+    total = first + sum(len(data) for _, data in files)
+    out = bytearray(b'BIGF' + struct.pack('<I', total) + struct.pack('>II', len(files), first))
+    offset = first
+    for name, data in files:
+        out += struct.pack('>II', offset, len(data)) + name.encode('latin1') + b'\0'
+        offset += len(data)
+    out += b'L225\0\0\0\0'
+    for _, data in files:
+        out += data
+    with open(path + '.new', 'wb') as f:
+        f.write(out)
+    import os
+    os.replace(path + '.new', path)
+
+
 def csf_to_str_value(text):
     """A .csf string as a .str value (without its quotes): newlines and quotes escaped."""
     return text.replace('\r\n', '\n').replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
