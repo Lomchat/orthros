@@ -829,7 +829,7 @@ concurrent timed pairs.
 - Timed pairs (the same tree, the three first variants off / on, 4 concurrent pairs, launch order alternated): menu
   guest ns per instruction 1.161 / 1.111, 1.158 / 1.168, 1.014 / 0.991, 1.042 / 1.071 — within the spread.
 
-## Displacements in the memarg offset (`memarg`, default on, 2026-11-09)
+## Displacements in the memarg offset (`memarg`, off by default, 2026-11-09)
 
 `Emitter.foldDisp` / `eaOff` / `storeAddr` (translate.js): a `[base + disp]` load with `0 < disp < 0x10000` (no index,
 no 16-bit address, no FS/GS base, not in an if-converted arm) pushes the base register and puts `disp` in the load's
@@ -862,8 +862,45 @@ SSE scalar and vector loads); stores: MOV, FST/FSTP m32/m64, MOVSS/MOVSD/MOVLPS,
   SwiftShader) could not resolve it: on a machine at load 30-80 Vice City ran at 8-11 fps with the guest time per
   instruction swinging 7-18 ms per M between phases of the same variant, and BFME1 / RotWK did not reach play (their
   menus at 1-6 fps missed the scenario's clicks; BFME1 1.08's menu also stalls the worker after Solo Play in other
-  branches' runs). A gain of about 1 % of the translated code, at most, kept on as the instruction counts are
-  consistent.
+  branches' runs). A gain of about 1 % of the translated code at most, no time gain resolved, and a fault made imprecise in the null
+  page: off by default (`?jitopts={"memarg":true}` or `dbg:ORTHROS_JIT_AB={"memarg":true}` to measure again).
+
+## Jump tables in the region (2026-11-09): exact, fewer transitions, no faster — off by default
+
+Where play time goes now (RotWK, Node, `startbench --cpu-prof` over 40 s of play with the background translator):
+region code 74 % of the emulator thread's busy time, flat (the hottest region 0.8 %); msvcr71 7.7 % of the region time
+(`floor` 1.7 %, `fabs` 1.6 % — its `_ctrlfp` calls switch the control word twice per call, so each call leaves its
+x87-mode version twice —, `memcmp` 0.8 %); JavaScript: D3DX effects 4.5 %, vm.js 3.8 %, the dispatcher 2.3 %. Whole
+session (`--jit-profile`): 739 M chained transitions, 304 M indirect exits, 1 928 M backward transfers through the
+region dispatcher (mostly the startup computation).
+
+`jumpTables` (translate.js jumpTableOf / Emitter.jumpTable): `jmp [index*4 + table]` — a switch, and the C runtime's
+memcpy / memset tails — reads its table at translation time (entries while they point within 64 KiB of the jump, at
+most 256 entries / 32 targets, cold ones left out by the heat), the targets become successors of the block, and the
+jump is a `br_table` on the index register whose arms compare the address actually loaded with the entry seen then:
+equal, an in-region transfer; otherwise the region is left as before. Exact whatever the table holds
+(tests/jit-jump-tables.test.js: random switch loops with indices past the entries read, entries rewritten while the
+loop runs, flags read across the jump, time-sliced; a mutation dropping the compare fails it).
+
+- Vice City drive (Node, `--jit-profile`): 4.9 M jumps stay in their region in 22 s; chained transitions 33.0 → 30.0 M
+  (−9 %), indirect exits 11.3 → 7.0 M.
+- Node, in-session A/B (`dbg:ORTHROS_JIT_JTAB_OFF`, tools/scenarios/*-jtab-ab.txt: 8 s warm-up after each switch, 22 s
+  phases, on1/off1/on2/off2/on3/off3), guest ns per instruction and guest ms per frame, on / off:
+  RotWK 2.116/2.245, 2.188/2.240, 2.421/2.233 ns (median 2.188 vs 2.240), 15.6 vs 15.9 ms per frame;
+  BFME1 1.08 2.203/2.712, 2.578/2.251, 2.215/2.281 ns (median 2.215 vs 2.281), 11.5 vs 11.1 ms per frame;
+  Vice City 2.383/2.179, 2.165/1.888, 2.276/2.301 ns (median 2.276 vs 2.179; fewer instructions per frame on, same
+  guest time: 11.7 vs 12.1 ms per frame). Within the spread of the phases (±5-10 %).
+- Browser (SwiftShader, this server loaded: Vice City at ~11 fps, render-bound), same scenarios, on / off medians:
+  Vice City fps 10.9 / 10.9, frame p50 96.4 / 96.8 ms, p99 213 / 237 ms, guest 37.3 / 35.4 ms per frame, 7.57 / 6.97 ns
+  per instruction (the first pair biased by translation after the first switch: on1 jit 39.5 ms per frame).
+  BFME1 1.08 and RotWK 2.02 gave no browser figures that day: with the server loaded by other sessions' browsers,
+  SwiftShader drew BFME1's menu at 0.7 fps (its skirmish never started in 900 s) and RotWK's loading screen at 1.7 fps
+  (play, anchored at 12 fps, never reached in 1 000 s).
+
+Fewer transitions again buy nothing measurable (as the predicted transfers above): the play profile is bound by the
+instruction fetch of a large, flat body of translated code, and a jump table adds blocks to the regions holding it.
+Off by default (`JIT_DEFAULTS.jumpTables`); `?jitopts={"jumpTables":true}` or `dbg:ORTHROS_JIT_JTAB_OFF=` (empty: on,
+`=1`: off; both retranslate everything) for measurement.
 
 ## Measured, not kept
 
