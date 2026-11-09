@@ -28,7 +28,9 @@ const DOWN_MS = 1500, UP_MS = 4000;
 /** after a change, the frames of this long are not judged (their GL work straddles the change) */
 const SETTLE_MS = 500;
 /** a step down that brought no gain is undone and the next one waits this long (ms) */
-const NO_GAIN_HOLD_MS = 30000;
+const NO_GAIN_HOLD_MS = 30000, MAX_HOLD_MS = 600000;
+/** a step down is judged over the frames of this long after it (ms) */
+const GAIN_MS = 3000;
 
 /** GL size of a Direct3D size `w` at scale `k` */
 export const scaledSize = (w, k) => (k === 1 ? w : Math.max(1, Math.round(w * k)));
@@ -87,7 +89,7 @@ const median = (a) => { const s = a.slice().sort((x, y) => x - y); return s.leng
  * down again.
  */
 export class ScaleController {
-  constructor() { this.samples = []; this.changedAt = -Infinity; this.downFrom = null; this.noDownUntil = -Infinity; }
+  constructor() { this.samples = []; this.changedAt = -Infinity; this.downFrom = null; this.noDownUntil = -Infinity; this.hold = 0; this.kept = 0; this.undone = 0; }
   /** the frame presented at `t` (scale `s`): `interval` since the previous present, `render` its render time (ms) */
   add(t, s, interval, render) {
     this.samples.push({ t, s, i: interval, r: render });
@@ -100,15 +102,23 @@ export class ScaleController {
     const since = now - this.changedAt;
     const window = (ms) => this.samples.filter((x) => x.s === s && x.t >= now - ms && x.t >= this.changedAt + SETTLE_MS);
     const k = SCALE_STEPS.indexOf(s);
-    if (since >= DOWN_MS + SETTLE_MS && k >= 0) {
+    // the verdict on the last step down: neither the render time nor the frame interval lower by 8 % (the frames bound
+    // by work that does not scale with pixels — vertices, uploads, the replay, the emulator itself): undone, and the
+    // next step down waits, twice longer at each such verdict (30 s, 1 min, ... 10 min: no oscillation)
+    if (this.downFrom) {
+      if (since < GAIN_MS + SETTLE_MS) return s;
+      const w = window(GAIN_MS);
+      if (w.length < 3) return s;
+      const from = this.downFrom, r = median(w.map((x) => x.r)), i = median(w.map((x) => x.i));
+      this.downFrom = null;
+      if (r > 0.92 * from.r && i > 0.92 * from.i) { this.hold = Math.min(MAX_HOLD_MS, this.hold ? 2 * this.hold : NO_GAIN_HOLD_MS); this.noDownUntil = now + this.hold; this.undone++; return from.s; }
+      this.kept++;
+    }
+    if (since >= DOWN_MS + SETTLE_MS && k >= 0 && k < SCALE_STEPS.length - 1 && now >= this.noDownUntil) {
       const w = window(DOWN_MS);
       if (w.length >= 3) {
         const r = median(w.map((x) => x.r)), i = median(w.map((x) => x.i));
-        // a step down that did not lower the render time (the frames bound by work that does not scale with pixels —
-        // vertices, uploads, the replay itself): undone, and no step down for a while
-        const from = this.downFrom; this.downFrom = null;
-        if (from && r > 0.9 * from.r) { this.noDownUntil = now + NO_GAIN_HOLD_MS; return from.s; }
-        if (k < SCALE_STEPS.length - 1 && now >= this.noDownUntil && r > budget && i > budget * 1.05 && r >= 0.75 * i) { this.downFrom = { s, r }; return SCALE_STEPS[k + 1]; }
+        if (r > budget && i > budget * 1.05 && r >= 0.75 * i) { this.downFrom = { s, r, i }; return SCALE_STEPS[k + 1]; }
       }
     }
     if (since >= UP_MS + SETTLE_MS && k > 0) {
@@ -147,7 +157,8 @@ export class RenderScale {
   /** A frame was presented and flushed at scale `s`: measured; the scale for the next frame returned. */
   present(s) {
     const m = this.currentMode(), now = this.now();
-    if (m.mode !== 'auto') return m.s;
+    // (measured in every mode on a software GPU, or with a forced scale: the statistics compare phases of either mode)
+    if (m.mode === 'off' && !this.software) return 1;
     const busy = this.busy?.() ?? 0, st = this.stats;
     if (this.lastT !== null) {
       const interval = now - this.lastT, b = Math.max(0, Math.min(interval, busy - this.lastBusy));
@@ -155,8 +166,11 @@ export class RenderScale {
       this.ctl.add(now, s, interval, b);
     }
     this.lastT = now; this.lastBusy = busy;
+    if (m.mode !== 'auto') return m.s;
     const budget = Number(globalThis.ORTHROS_RENDER_BUDGET) > 0 ? Number(globalThis.ORTHROS_RENDER_BUDGET) : 1000 / 30;
-    const next = this.ctl.decide(now, s, budget);
+    const c = this.ctl, k0 = c.kept, u0 = c.undone;
+    const next = c.decide(now, s, budget);
+    st.kept = (st.kept ?? 0) + c.kept - k0; st.undone = (st.undone ?? 0) + c.undone - u0; // (steps down kept / undone for no gain)
     if (next !== s) this.ctl.changed(now);
     return next;
   }
