@@ -70,14 +70,8 @@ test('suite definitions: every bench of a suite exists, plays its version, ports
     const b = names.get(it.bench); assert.ok(b, it.bench);
     assert.ok(!it.manifest || b.manifests.includes(it.manifest), `${it.bench}: ${it.manifest}`);
   }
-  for (const b of index.benches.filter((x) => x.runtime && x.runtime !== 'win32')) {
-    assert.ok(['re3', 'goldsrc', 'openmw'].includes(b.runtime), b.name);
-    const { steps, errors } = parseScenario(fs.readFileSync(new URL(b.file, BENCH), 'utf8'));
-    assert.deepEqual(errors, [], b.name); assert.deepEqual(unsupportedSteps(steps, PORT_KINDS), [], b.name);
-    const marks = steps.filter((s) => s.kind === 'mark').map((s) => s.args[0]);
-    assert.equal(marks.at(-1), 'end', b.name);
-    assert.ok(steps.some((s) => s.kind.startsWith('wait')), `${b.name}: waits for its game`);
-  }
+  // (each bench's scenario parses, plays the ports' steps, waits and ends: tests/bench-kit.test.js, bench definitions)
+  for (const b of index.benches.filter((x) => x.runtime && x.runtime !== 'win32')) assert.ok(['re3', 'goldsrc', 'openmw'].includes(b.runtime), b.name);
   // (the suite's games: ~60-75 s measured each once in the game — the time from the first mark after the last wait to the end)
   for (const it of all.benches) {
     const b = names.get(it.bench), steps = parseScenario(fs.readFileSync(new URL(b.file, BENCH), 'utf8')).steps;

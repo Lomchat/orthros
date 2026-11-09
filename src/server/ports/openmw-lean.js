@@ -1,4 +1,4 @@
-// OpenMW engine releases: the engine's data package without what a game of its own never reads (docs/openmw.md "The
+// OpenMW engine releases: the engine's data package without what a game of its own never reads (docs/openmw-history.md "The
 // engine's package"). An OpenMW-Web build preloads one Emscripten package (openmw.data, 204 MB; 33 MB in brotli) holding
 // the engine's resources, the free example world it boots with ?nomw (/gamedata/: 144 MB, 22 MB of the brotli) and ICU's
 // data twice (/icu/icudt68l.dat, the one the engine opens: u_setDataDirectory("/icu") in its main.cpp, and an unused
@@ -39,7 +39,7 @@ const EXAMPLE_DIR = '/gamedata/';
 const ICU_OPENED = '/icu/icudt68l.dat', ICU_UNUSED = '/icudt68l.dat';
 /**
  * The trees of ICU's common data the engine never opens (rule 3), by what opens them in ICU 68 and what the engine
- * calls (docs/openmw.md "The engine's package"): its only ICU uses are MessageFormat (number skeletons ::.00 and
+ * calls (docs/openmw-history.md "The engine's package"): its only ICU uses are MessageFormat (number skeletons ::.00 and
  * :: group-off, plural, select — DecimalFormatSymbols, number patterns, plurals.res, numberingSystems.res, all kept) and
  * Locale::getDisplayName in the Options' language list (lang/ and region/, kept: a mod's zh-cn needs region/).
  * Kept too: curr/ (DecimalFormatSymbols::initialize opens it with the caller's status: without it every number fails),

@@ -11,6 +11,7 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { translateRegion, IMP_FLAGS } from '../src/cpu/jit/translate.js';
+import { FULL } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -89,17 +90,24 @@ function check(w, values, via, predictor, what, slices = [0]) {
   }
 }
 
+// (the quick pass: every writer, reader and predictor, but each writer with a rotating share of the edge values / slice
+// sizes and one entry path per predictor (alternating) — every value, slice and path still met across the writers;
+// ORTHROS_TEST_FULL=1: the whole product)
+const STRIDE = FULL ? 1 : 6;
+const share = (list, wi, stride = STRIDE) => list.filter((_, i) => i % stride === wi % stride);
+
 test('lazy op predicted at a block entry: every condition after every writer, predicted path and mispredicted entries, match the interpreter', () => {
-  for (const w of WRITERS) {
+  WRITERS.forEach((w, wi) => {
+    const values = share(EDGE, wi);
     for (const via of [true, false]) {
-      check(w, EDGE, via, [0x39, 0xc8], `predictor cmp, ${via ? 'through it' : 'indirect entry'}`); // cmp eax, ecx (SUB 32)
-      check(w, EDGE, via, w, `predictor = writer, ${via ? 'through it' : 'indirect entry'}`); // (the prediction holds on both paths)
+      if (FULL || via === !(wi & 1)) check(w, values, via, [0x39, 0xc8], `predictor cmp, ${via ? 'through it' : 'indirect entry'}`); // cmp eax, ecx (SUB 32)
+      if (FULL || via === !!(wi & 1)) check(w, values, via, w, `predictor = writer, ${via ? 'through it' : 'indirect entry'}`); // (the prediction holds on both paths)
     }
-  }
+  });
 });
 
 test('lazy op prediction: time-sliced runs (entries by the dispatcher at every block) match the interpreter', () => {
-  for (const w of WRITERS) check(w, [0x80, 0xffffffff], true, [0x39, 0xc8], 'predictor cmp', [1, 3, 7]);
+  WRITERS.forEach((w, wi) => check(w, [0x80, 0xffffffff], true, [0x39, 0xc8], 'predictor cmp', share([1, 3, 7], wi, FULL ? 1 : 3)));
 });
 
 test('no flags helper call for conditions read at a block entry (JCC after JCC, DEC at a block head, after SHL)', () => {

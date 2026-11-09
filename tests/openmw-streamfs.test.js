@@ -73,7 +73,7 @@ test('a game data open failing before the engine asked is not an unhandled rejec
   } finally { ctx.StreamFS?.close?.(); }
 });
 
-// The link after the engine's package (docs/openmw.md): once Emscripten's file_packager package is in (its run
+// The link after the engine's package (docs/openmw-history.md): once Emscripten's file_packager package is in (its run
 // dependency 'datafile_<name>' removed — the packager calls Module.removeRunDependency, set by the engine's script after
 // this one ran), the game data's learned order is asked to load now (GameData.prefetchNow; the worker decides by its store).
 test('the engine\'s package in: the game data asked to load its learned order now, before or after the game data opened', async () => {
@@ -180,7 +180,7 @@ test('announced reads (orthrosWillRead / orthrosReadWait): engine paths to the g
   } finally { ctx.StreamFS?.close?.(); globalThis.Worker = RealWorker; }
 });
 
-// Anticipated places (docs/openmw.md "Anticipated places"): each announced batch posted to the server's learned places
+// Anticipated places (docs/openmw-history.md "Anticipated places"): each announced batch posted to the server's learned places
 // with its place (the files themselves: tree paths and ranges), the place remembered; once the saves are readable the
 // save the player most likely loads is parsed (save-place.js), its place's learned set asked of the server and handed
 // to the game data at the place's priority (GameData.want prio 'place': the worker's wantPlace, no wait window).

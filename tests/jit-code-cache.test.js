@@ -12,6 +12,7 @@ import { Jit } from '../src/cpu/jit/jit.js';
 import { translateRegion, patchAltSlot } from '../src/cpu/jit/translate.js';
 import { handleMessage } from '../src/cpu/jit/bg-translate.js';
 import { CodeCache, MemStore, moduleClosureText, hashText } from '../src/cpu/jit/code-cache.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, CW = DATA + 0x100;
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -112,7 +113,7 @@ test('code cache: a body moved to another table index differs only by its alt sl
 test('code cache: randomized programs reuse an earlier session translations and match the interpreter', async () => {
   const key = 'test|translator', store = new MemStore();
   let reused = 0, programs = 0, mutatedMisses = 0;
-  for (let t = 0; t < 36; t++) {
+  for (let t = 0; t < depth(36, 6); t++) { // quick pass: the full run's first programs (t = 5 included: a faulting one)
     const fault = t % 6 === 5;
     const code = gen({ fault }), regs = [val(), rnd(40), val(), 0, val(), val(), 0, 0, rnd(0x1000)];
     const ref = reference(code, regs);
@@ -141,7 +142,7 @@ test('code cache: randomized programs reuse an earlier session translations and 
 
 test('code cache: two threads run the reused translations, each like the interpreter', async () => {
   const key = 'test|threads', store = new MemStore();
-  for (let t = 0; t < 12; t++) {
+  for (let t = 0; t < depth(12, 4); t++) {
     const code = gen({ mem: false, smc: false, x87: false });
     const ra = [val(), rnd(40), val(), 0, val(), val(), 0, 0, rnd(0x1000)], rb = [val(), rnd(40), val(), 0, val(), val(), 0, 0, rnd(0x1000)];
     const refA = reference(code, ra), refB = reference(code, rb);

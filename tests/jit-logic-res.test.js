@@ -9,6 +9,7 @@ import { GuestMemory } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { depth } from './depth.js';
 const CODE = 0x20000000, DATA = 0x10000000;
 let seed = 7;
 const rnd = (n) => { seed = (seed * 1103515245 + 12345) >>> 0; return (seed >>> 8) % n; };
@@ -76,7 +77,7 @@ function gen() {
 const V = [0, 1, 0x7f, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0xffff, 0x7fffffff, 0x80000000, 0xffffffff, 0x12345678, 0xdeadbeef];
 const val = () => rnd(3) ? V[rnd(V.length)] : (rnd(65536) << 16 | rnd(65536)) >>> 0;
 test('logicRes: random logic-op programs match the interpreter (on and off, whole and time-sliced)', () => {
-  for (let t = 0; t < 60; t++) {
+  for (let t = 0; t < depth(60, 10); t++) { // one RNG for every program: the quick pass is the full run's prefix
     const code = gen(); const end = CODE + code.length - 1;
     const regs = [val(), 1 + rnd(20), val(), 0, 0, 0, 0, 0, rnd(0x1000)];
     const EI = makeExec(null); EI.load(code, regs); const ri = EI.run(end, 1e5);

@@ -9,6 +9,7 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { FULL } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, A = DATA, B = DATA + 8, OUT = DATA + 0x100;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -53,10 +54,13 @@ function executor(code, jit, cw) {
 }
 const isNan64 = (v) => (v & 0x7ff0000000000000n) === 0x7ff0000000000000n && (v & 0x000fffffffffffffn) !== 0n;
 
-for (const cw of [0x007e, 0x027e, 0x0c7f, 0x0e7f, 0x037f, 0x047f]) {
+// every operation under every control word at full depth; the quick pass two operations per control word, rotated so
+// that the six control words cover each operation twice (each pair still gives > 900 NaN results)
+[0x007e, 0x027e, 0x0c7f, 0x0e7f, 0x037f, 0x047f].forEach((cw, ci) => {
+  const ops = FULL ? OPS : [OPS[ci % 6], OPS[(ci + 3) % 6]];
   test(`NaN results of x87 arithmetic, control word ${cw.toString(16)}, m32 / m64 operands and registers: the interpreter's bits and status word`, () => {
     let nanCases = 0;
-    for (const op of OPS) for (const form of [0, 1, 2, 3, 4, 5]) {
+    for (const op of ops) for (const form of [0, 1, 2, 3, 4, 5]) {
       const code = program(op, form), interp = executor(code, false, cw), jit = executor(code, true, cw);
       for (const a of form >= 4 ? BITS64 : BITS32) for (const b of form >= 3 ? BITS64 : BITS32) {
         const i = interp(a, b, form >= 3), j = jit(a, b, form >= 3);
@@ -74,4 +78,4 @@ for (const cw of [0x007e, 0x027e, 0x0c7f, 0x0e7f, 0x037f, 0x047f]) {
     }
     assert.ok(nanCases > 900, `${nanCases} NaN results`);
   });
-}
+});

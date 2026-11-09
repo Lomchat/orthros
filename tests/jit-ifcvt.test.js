@@ -11,6 +11,7 @@ import { GuestMemory } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 let seed = 7;
@@ -125,7 +126,8 @@ const state = (E) => [E.cpu.eax, E.cpu.ecx, E.cpu.edx, E.cpu.ebx, E.cpu.esi, E.c
 
 test('random branches over short arms: if-converted translations match the interpreter, whole and time-sliced', () => {
   let converted = 0, heuristic = 0;
-  for (let t = 0; t < 250; t++) {
+  const N = depth(250, 16); // (the thresholds below scale with the number of programs: as before at full depth)
+  for (let t = 0; t < N; t++) {
     const { code, end } = gen();
     const regs = [val(), rnd(40), val(), val(), ptr(), rnd(0x1000)];
     const EI = makeExec(null); EI.load(code, regs); const ri = EI.run(CODE + end, 1e5);
@@ -140,5 +142,5 @@ test('random branches over short arms: if-converted translations match the inter
       assert.equal(state(EJ), state(EI), msg);
     }
   }
-  assert.ok(converted > 200 && heuristic > 50 && heuristic < converted, `branches converted: ${converted}, by the data heuristic: ${heuristic}`);
+  assert.ok(converted > 200 * N / 250 && heuristic > 50 * N / 250 && heuristic < converted, `branches converted: ${converted}, by the data heuristic: ${heuristic}`);
 });

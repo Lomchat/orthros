@@ -15,6 +15,7 @@ import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import '../src/cpu/jit/translate-sse-float.js';
 import '../src/cpu/jit/translate-sse-int.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, DATA_SIZE = 0x10000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -231,7 +232,8 @@ for (const mode of [true, 'writes']) test(`random programs through null, small a
   const EJs = [makeExec({}, mode), makeExec({ ifcvt: 'all' }, mode)];
   const r = prng(mode === true ? 0x6e756c6c : 0x77726974);
   let faults = 0, clean = 0, skipped = 0;
-  for (let n = 0; n < 300; n++) {
+  const N = depth(300, 100); // (the thresholds below scale with the number of programs: as before at full depth)
+  for (let n = 0; n < N; n++) {
     // a third of the programs without null pointers (those reach the end), the others with rare or frequent ones
     const pNull = [0, 1 / 64, 1 / 4][n % 3 === 0 ? 0 : 1 + (r() % 2)];
     // (writes only: no negative displacements — an unchecked load from [null - 8] runs past the guest memory, where the
@@ -267,5 +269,5 @@ for (const mode of [true, 'writes']) test(`random programs through null, small a
     }
     assert.equal(si.nullPage, 'intact');
   }
-  assert.ok(faults > 40 && clean > 40 && skipped < 60, `both outcomes exercised (${faults} faults, ${clean} clean, ${skipped} not compared)`);
+  assert.ok(faults > 40 * N / 300 && clean > 40 * N / 300 && skipped < 60 * N / 300, `both outcomes exercised (${faults} faults, ${clean} clean, ${skipped} not compared)`);
 });

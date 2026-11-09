@@ -12,6 +12,7 @@ import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { DEFER_QUEUE, DEFER_SPEC, DEFER_WORDS, REFS_ANY, SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, COM_MARKER, COM_REFS, FAST_STATS, COMMIT_LIST, FX_OWNER, SHADOW_OWNER } from '../src/cpu/jit/runtime.js';
 import { StateTable } from '../src/win32/state-table.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, SLOTS = 0x10000100, DEV = 0x10004000, FX = 0x10004100, SB = 0x10020000, TEX = 0x10004200, STACK = 0x10090000, THUNK_SIZE = 16;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -146,7 +147,7 @@ function runJit(env, calls, model, onThunk) {
 
 test('issued-state filter: randomized call sequences end in the same state with the same changes as executing every call', () => {
   let dropped = 0;
-  for (let seed = 1; seed <= 40; seed++) {
+  for (let seed = 1, n = depth(40); seed <= n; seed++) {
     const env = setup(), { mem } = env;
     mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.write32(FX + 4, COM_MARKER); mem.write32(FX + 12, 0x10006000); mem.write32(0x10006000 + FX_OWNER, FX);
     mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1); mem.write32(SB + SHADOW_OWNER, DEV);
@@ -229,7 +230,7 @@ test('COM AddRef/Release: counted in guest memory by the fast path; the last Rel
 
 test('COM AddRef/Release with Direct3D 9 bindings queued: on the fast path with the counts the queue will leave; results, final counts and no count reaching 0 early, as executing every call', () => {
   const OBJS = [0x10004400, 0x10004440, 0x10004480, 0x100044c0, 0x10004500]; // (textures, a vertex buffer, an index buffer: COM objects)
-  for (let seed = 1; seed <= 40; seed++) {
+  for (let seed = 1, n = depth(40); seed <= n; seed++) {
     const env = setup(), { mem, cpu } = env;
     mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1); mem.write32(SB + SHADOW_OWNER, DEV);
     for (const o of OBJS) { mem.write32(o + 4, COM_MARKER); mem.write32(o + COM_REFS, 3); }
@@ -315,7 +316,7 @@ test('COM AddRef/Release with Direct3D 9 bindings queued: on the fast path with 
 test('issued-state filter: an effect commit list that misses a state it sets is caught by the randomized comparison', () => {
   // (the test's sensitivity: CommitChanges sets samp2.5, the list forgets only rs7 and tss0.1)
   let mismatches = 0;
-  for (let seed = 1; seed <= 20; seed++) {
+  for (let seed = 1, n = depth(20, 5); seed <= n; seed++) {
     const env = setup(), { mem } = env;
     mem.write32(DEV + 4, COM_MARKER); mem.write32(DEV + 12, SB); mem.write32(FX + 4, COM_MARKER); mem.write32(FX + 12, 0x10006000); mem.write32(0x10006000 + FX_OWNER, FX);
     mem.fill(SB, SHADOW_BYTES, 0); mem.write32(SB, 1); mem.write32(SB + SHADOW_OWNER, DEV);

@@ -56,6 +56,6 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { if (child
 child.on('error', (e) => { console.error(e.message); process.exitCode = 1; });
 child.on('exit', (code) => { process.exitCode = code ?? 1; });
 // (its data lists built now, not for its first player: the gateway walks the game tree and the mods on their first
-// request — 1.5-2.8 s each — and keeps them for its life; docs/openmw.md "The gateway's lists")
+// request — 1.5-2.8 s each — and keeps them for its life; docs/openmw-history.md "The gateway's lists")
 warmGatewayLists({ port, alive: () => child.exitCode === null && child.signalCode === null, log: (l) => console.log(l) })
   .catch((e) => console.error('openmw.lists_warm', e?.message ?? e));

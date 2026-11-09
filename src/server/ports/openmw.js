@@ -66,7 +66,7 @@ export function openmwEngineFiles(man, enginesDir) {
 }
 
 /**
- * A multiplayer gateway's two data lists built as it starts, not for its first player (tools/openmw/server.mjs; docs/openmw.md
+ * A multiplayer gateway's two data lists built as it starts, not for its first player (tools/openmw/server.mjs; docs/openmw-history.md
  * "The gateway's lists"): the gateway walks its game tree for mwdata-manifest.json (7392 files) and each mod for
  * mwdata-mods.json on the first request after each start, kept in its memory until those folders change — 1.5-2.8 s
  * each, paid by the first player after every restart (a deploy restarts them). Polls the manifest every `every` ms until
@@ -131,7 +131,7 @@ export const withFrameMeter = (html) => html
  * The engine page's module compiled in a worker (src/ports/openmw/wasm-code-cache.js, put in the page's head ahead of the
  * engine's Module literal and glue — the signed-in page's cloud.js goes before it, which touches neither — and given to
  * the glue as Module.instantiateWasm): Chrome's WebAssembly code cache read and written on that worker's thread, not the
- * page's main thread (docs/openmw.md "Chrome's code cache off the main thread"). The glue's own path when the script did
+ * page's main thread (docs/openmw-history.md "Chrome's code cache off the main thread"). The glue's own path when the script did
  * not load or ?omwenv=OPENMW_ORTHROS_WASMWORKER=0 (its hook then undefined).
  */
 export const withWasmStream = (html) => html
@@ -289,7 +289,7 @@ const MANIFEST_FETCH = "fetch('mwdata-manifest.json')", MODS_FETCH = "var r = aw
 /**
  * The page's two gateway lists asked together: mwdata-mods.json fetched beside mwdata-manifest.json (the page asked it
  * only after mounting the manifest's 7392 files: a round trip and the gateway's time in series before the engine's
- * start, docs/openmw.md "The gateway's lists"), its answer taken by mountServerMods. Only a page that has both (else
+ * start, docs/openmw-history.md "The gateway's lists"), its answer taken by mountServerMods. Only a page that has both (else
  * nothing would take it), not with ?nomods=1 (the page skips the list). The early request marked handled as made (a
  * no-op catch beside it): a network failure before mountServerMods awaits it — seconds later, or never (no manifest) —
  * is no unhandled rejection (the page's handler logs it as an error, ships it, opens the log with ?hud=1); its await,

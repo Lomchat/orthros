@@ -11,10 +11,11 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
-/** random programs per test (X87_SEEDS=3000 for a longer stress run) */
-const SEEDS = Number(process.env.X87_SEEDS ?? 400);
+/** random programs per test (X87_SEEDS=3000 for a longer stress run; 400 at full depth, 8 in the quick pass) */
+const SEEDS = Number(process.env.X87_SEEDS ?? depth(400, 8));
 const F32S = DATA, F64S = DATA + 0x100, OUT = DATA + 0x200;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
 const F32_VALUES = [0, -0, 1, -1, 0.1, 3.0000002, 1e-38, 1.17549435e-38, 1e-45, -2.5e-42, 3.4028235e38, -1e38, 2 ** -100, 2 ** 100, 12345.678, -0.75, Infinity, -Infinity, NaN, 1.5, 7, 1e20, 1e-20, 65504];

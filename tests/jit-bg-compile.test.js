@@ -14,6 +14,7 @@ import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { handleMessage } from '../src/cpu/jit/bg-translate.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, CW = DATA + 0x100;
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -109,7 +110,7 @@ test('opts.bgCompile: the background translator compiles its regions by calling 
   // (the memory a call could touch: the program's code and data, the thread's state block, the x87-version slots)
   const snap = (m) => [m.mem.bytes(CODE, 0x1000), m.mem.bytes(DATA, 0x1000), m.mem.bytes(THREAD_STATES_BASE, 0x400), m.mem.bytes(JIT_ALT_BASE, 0x1000)].map((b) => Buffer.from(b).toString('base64')).join('|');
   let warmed = 0;
-  for (let i = 0; i < 32; i++) {
+  for (let i = 0, n = depth(32, 8); i < n; i++) { // (8 programs in the quick pass: every i % 2, 3, 4 and 5 case)
     const p = gen({ x87: i % 2 === 0, smc: i % 5 === 0 });
     const regs = [val(), val(), val(), val(), val()];
     const ref = reference(p, regs);
@@ -133,7 +134,7 @@ test('opts.bgCompile with instrumented translations (visit flags, block counters
   // (the instrumentation memory outside the state block: visit flags / block counters, the unchained-transition counters)
   const snap = (m) => [m.mem.bytes(CODE, 0x1000), m.mem.bytes(DATA, 0x1000), m.mem.bytes(THREAD_STATES_BASE, 0x400), m.mem.bytes(JIT_ALT_BASE, 0x1000), m.mem.bytes(BLOCK_COUNTS_BASE + 4, 4 * BLOCK_COUNTS_SLOTS - 4), m.mem.bytes(PROF_OPS_BASE, 0x1000)].map((b) => Buffer.from(b).toString('base64')).join('|');
   const modes = [{ visit: true }, { blockCounts: true }, { profile: true }];
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0, n = depth(12, 6); i < n; i++) { // (6 in the quick pass: every mode with and without x87)
     const extra = modes[i % 3];
     const p = gen({ x87: i % 2 === 0, smc: false });
     const regs = [val(), val(), val(), val(), val()];

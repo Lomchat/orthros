@@ -21,6 +21,7 @@ import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { decode, OP, OP_NAMES } from '../src/cpu/decoder.js';
 import { touchesFpu } from '../src/cpu/jit/translate.js';
+import { depth, FULL } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -800,7 +801,9 @@ test('random x87 sequences with transcendentals: interpreter vs JIT (single regi
   const r = rng(0x5eed);
   const EM = makeExec(false), EI = makeExec(false), EJ = makeExec(true);
   let checked = 0, oor = 0;
-  for (let p = 0; p < 400; p++) {
+  // one RNG for every program: the quick pass is the full run's prefix; the coverage floor scales with the count
+  const NPROG = depth(400, 40), atLeast = (n) => Math.floor(n * NPROG / 400);
+  for (let p = 0; p < NPROG; p++) {
     const prog = randomProgram(r, EM);
     const slots = []; for (let i = 0; i < prog.slots; i++) slots.push(SLOT_BASE + 8 * i);
     load(EI, prog.code, CONST_DATA);
@@ -823,8 +826,8 @@ test('random x87 sequences with transcendentals: interpreter vs JIT (single regi
       checked++;
     }
   }
-  assert.equal(checked, 1200);
-  assert.ok(oor > 10, `programs ending with C2 set: ${oor}`);
+  assert.equal(checked, 3 * NPROG);
+  assert.ok(oor > atLeast(10), `programs ending with C2 set: ${oor}`);
   for (const op of TRANS) assert.equal(EJ.jit.fallbackHist.get(op), undefined, `${OP_NAMES[op]} fell back`);
 });
 
@@ -1009,7 +1012,10 @@ test('random x87 sequences with inf / NaN / SNaN / denormal operands and control
   const r = rng(Number(process.env.JIT_X87_SEED ?? 0xd034));
   const EM = makeExec(false), EI = makeExec(false), EJ = makeExec(true), EJC = makeExec(true, { consolidateEvery: 2 });
   let checked = 0, oor = 0, ie = 0, es = 0, nan = 0, denorm = 0, chained = 0, skipped = 0, emitted = 0;
-  const NPROG = Number(process.env.JIT_X87_NPROG ?? 500);
+  // quick pass: the full run's first programs (one RNG). The coverage floors below describe the generator over the
+  // whole run (the ES cases come late in the sequence): checked at full depth or with JIT_X87_NPROG, as before
+  const NPROG = Number(process.env.JIT_X87_NPROG ?? depth(500, 40));
+  const atLeast = (n) => (FULL || process.env.JIT_X87_NPROG ? n : -1);
   for (let p = 0; p < NPROG; p++) {
     const prog = randomProgram2(r, EM);
     skipped += prog.skipped; emitted += prog.ops.length;
@@ -1047,13 +1053,13 @@ test('random x87 sequences with inf / NaN / SNaN / denormal operands and control
     checked += 2;
   }
   assert.equal(checked, 5 * NPROG);
-  assert.ok(oor > 10, `programs ending with C2 set: ${oor}`);
-  assert.ok(ie > 50, `programs ending with IE set: ${ie}`);
-  assert.ok(es > 10, `programs ending with ES set (unmasked exception): ${es}`);
-  assert.ok(nan > 100, `NaN registers at the end: ${nan}`);
-  assert.ok(denorm > 20, `denormal registers at the end: ${denorm}`);
-  assert.ok(chained > 50, `programs whose second consolidated run chained: ${chained}`);
-  assert.ok((EJC.jit.stats.consolidations ?? 0) > 100, `consolidations: ${EJC.jit.stats.consolidations}`);
+  assert.ok(oor > atLeast(10), `programs ending with C2 set: ${oor}`);
+  assert.ok(ie > atLeast(50), `programs ending with IE set: ${ie}`);
+  assert.ok(es > atLeast(10), `programs ending with ES set (unmasked exception): ${es}`);
+  assert.ok(nan > atLeast(100), `NaN registers at the end: ${nan}`);
+  assert.ok(denorm > atLeast(20), `denormal registers at the end: ${denorm}`);
+  assert.ok(chained > atLeast(50), `programs whose second consolidated run chained: ${chained}`);
+  assert.ok((EJC.jit.stats.consolidations ?? 0) > atLeast(100), `consolidations: ${EJC.jit.stats.consolidations}`);
   for (const op of TRANS) assert.equal(EJ.jit.fallbackHist.get(op), undefined, `${OP_NAMES[op]} fell back`);
   assert.ok(skipped < emitted / 20, `ill-conditioned candidates skipped: ${skipped} of ${emitted} emitted`);
   console.log(`[jit-x87-trans] D034 random: ${NPROG} programs x 5 runs, ${emitted} instructions (${skipped} ill-conditioned candidates skipped); C2 ${oor}, IE ${ie}, ES ${es}, NaN regs ${nan}, denormal regs ${denorm}, chained ${chained}`);

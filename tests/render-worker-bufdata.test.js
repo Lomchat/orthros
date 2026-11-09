@@ -10,6 +10,10 @@ import { RenderLink, Recorder } from '../src/gfx/d3d-recorder.js';
 import { WebGLDevice } from '../src/gfx/d3d8-webgl.js';
 import { d3dEnv } from './d3d-random.js';
 import { fakeGl, firstDifference } from './fake-gl.js';
+import { depth } from './depth.js';
+
+// (the quick pass: the first seed of each session test, a quarter of the random range steps)
+const SEEDS = [1, 2, 3].slice(0, depth(3, 1));
 
 function session(gfx, seed, api9, onEnd) {
   const E = d3dEnv(gfx), { mem, ctx, com } = E;
@@ -60,7 +64,7 @@ const pick = (rnd, a) => a[rnd(a.length)];
 for (const api9 of [true, false]) for (const lazy of [false, true]) {
   test(`Direct3D ${api9 ? 9 : 8}: buffer contents through the ring — large, unaligned, switched and released buffers replayed late give the same WebGL ${lazy ? 'draws (bytes copied at draws)' : 'calls'}`, () => {
     globalThis.ORTHROS_VB_LAZY = lazy ? undefined : 0; globalThis.ORTHROS_VB_CHECK = lazy ? 1 : undefined;
-    try { for (const seed of [1, 2, 3]) {
+    try { for (const seed of SEEDS) {
       const A = fakeGl(800, 600, { reads: lazy }), B = fakeGl(800, 600, { reads: lazy });
       session({ createDevice: (dev) => new WebGLDevice(A.gl, dev, {}) }, seed, api9);
       // (the production ring size: a 1 MiB chunk must fit)
@@ -147,7 +151,7 @@ for (const api9 of [true, false]) {
       for (const lazy of [false, true]) {
         globalThis.ORTHROS_VB_LAZY = lazy ? undefined : 0; globalThis.ORTHROS_VB_CHECK = 1;
         bytes[lazy] = 0;
-        for (const seed of [1, 2, 3]) {
+        for (const seed of SEEDS) {
           const A = fakeGl(800, 600, { reads: true }), B = fakeGl(800, 600, { reads: true });
           partialSession({ createDevice: (dev) => new WebGLDevice(A.gl, dev, {}) }, seed, api9);
           const words = new Int32Array(1 << 20), ack = new Int32Array(1 << 16).fill(-1);
@@ -174,7 +178,7 @@ test('pending buffer ranges: random writes and reads against a byte map — read
   const LEN = 5000, copied = new Uint8Array(LEN);
   link.bufData = (b, start, size) => { for (let i = start; i < start + size; i++) { assert.equal(copied[i], 0, `byte ${i} copied twice by one read`); copied[i] = 1; } };
   const rr = {}, b = { length: LEN }, pending = new Uint8Array(LEN);
-  for (let step = 0; step < 20000; step++) {
+  for (let step = 0, n = depth(20000, 5000); step < n; step++) {
     const lo = rnd(LEN), hi = Math.min(LEN, lo + 1 + rnd(step % 7 === 0 ? LEN : 60));
     if (rnd(2)) { link.lazyAdd(rr, lo, hi); pending.fill(1, lo, hi); continue; }
     copied.fill(0);

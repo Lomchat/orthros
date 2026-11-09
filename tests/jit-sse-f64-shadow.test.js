@@ -10,6 +10,7 @@
 // MXCSR rounding mode.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { depth } from './depth.js';
 import { GuestMemory, SMC_MAP_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, ST, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
@@ -182,7 +183,7 @@ test('the scalar double-precision family and the low-qword moves go through the 
 });
 
 test('generated scalar-double programs match the interpreter (every MXCSR rounding mode)', () => {
-  for (let seed = 1; seed <= 400; seed++) {
+  for (let seed = 1; seed <= depth(400, 60); seed++) {
     const code = program(seed * 7919 + 11);
     const mx = 0x1f80 | ((seed & 3) << 13);
     runBoth(code, seed, mx, `seed ${seed} (${Buffer.from(code).toString('hex')})`);

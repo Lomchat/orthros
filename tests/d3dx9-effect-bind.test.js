@@ -11,6 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { d3dEnv } from './d3d-random.js';
+import { depth } from './depth.js';
 import { defineEffects } from '../src/win32/d3dx9-effect.js';
 import { apiOpt } from '../src/core/api-opt.js';
 import { effectBinary, shader, op } from './fx-build.js';
@@ -238,7 +239,7 @@ function covered(S, before, where) {
 // of the other stage too, writing that register twice per pass: same state, more notifications; compared by coverage)
 for (const [special, overlap] of [[false, false], [false, true], [true, true]]) {
   test(`effect binding: the same device state as the reference path after every call (random sessions${special ? ', -0 and NaNs' : ''}${overlap ? ', overlapping preshader' : ''})`, () => {
-    for (let seed = 1; seed <= 6; seed++) {
+    for (let seed = 1; seed <= depth(6, 1); seed++) {
       // (A the reference path, B the optimized one, C either at random from call to call)
       const A = session(true, overlap), B = session(false, overlap), C = session(null, overlap), all = [A, B, C], rnd = rng(seed * 7919 + (special ? 1 : 0) + (overlap ? 2 : 0));
       for (const S of all) S.v0 = S.dev.constVersion;

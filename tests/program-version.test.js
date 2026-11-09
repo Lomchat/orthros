@@ -11,6 +11,7 @@ import { RS, TSS, PROGRAM_RS, PROGRAM_TSS, ffProgramFromKey, translateVertexShad
 import { translateVertexShader9, translatePixelShader9 } from '../src/gfx/d3d9-shaders.js';
 import { PROGRAM_GLSL_VERSION, ffKeyRegenerable } from '../src/gfx/program-id.js';
 import { StateTable } from '../src/win32/state-table.js';
+import { depth } from './depth.js';
 
 function mockGl() {
   const base = { canvas: { width: 800, height: 600 }, drawingBufferWidth: 800, drawingBufferHeight: 600 };
@@ -66,7 +67,7 @@ function randomDevices(api9, seed, steps, onBuild) {
 test('fixed-function programs: the key a draw builds regenerates its exact sources', () => {
   let n = 0, flat = 0, lit = 0, rhw = 0;
   for (const api9 of [true, false]) {
-    randomDevices(api9, api9 ? 11 : 12, 4000, (key, vs, fs, attrs) => {
+    randomDevices(api9, api9 ? 11 : 12, depth(4000, 1000), (key, vs, fs, attrs) => {
       assert.ok(ffKeyRegenerable(key), key);
       const r = ffProgramFromKey(key);
       assert.ok(r, key);

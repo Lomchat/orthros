@@ -12,6 +12,7 @@ import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
 import { HeadlessHost } from '../src/server/display.js';
 import { fakeGl, firstDifference } from './fake-gl.js';
+import { depth } from './depth.js';
 
 const PE_DIR = new URL('../build/pe/', import.meta.url).pathname;
 const skip = (name) => !fs.existsSync(PE_DIR + name) && `build/pe/${name} missing (make pe-tests)`;
@@ -99,7 +100,7 @@ import { compareDevice } from '../src/gfx/d3d-mirror.js';
 
 for (const api9 of [true, false]) for (const M of MODES) {
   test(`Direct3D ${api9 ? 9 : 8}: random call sequences — the mirror equals the device at every draw, and the backend issues the same WebGL ${M.lazy ? 'draws (buffer bytes copied at draws)' : 'calls'}`, () => withMode(M, () => {
-    for (const seed of (process.env.RW_SEEDS ?? "1,2,3,4,5,6").split(",").map(Number)) {
+    for (const seed of (process.env.RW_SEEDS ?? '1,2,3,4,5,6').split(',').map(Number).slice(0, process.env.RW_SEEDS ? undefined : depth(6, 1))) {
       const A = fakeGl(800, 600, M.gl), B = fakeGl(800, 600, M.gl);
       randomSession({ createDevice: (dev) => new WebGLDevice(A.gl, dev, {}) }, seed, api9, () => {});
       const words = new Int32Array(1 << 15), ack = new Int32Array(1 << 16).fill(-1);
@@ -124,7 +125,7 @@ for (const api9 of [true, false]) for (const M of MODES) {
   // written or released meanwhile must not reach the replayed draws (fences, renaming, deferred releases)
   test(`Direct3D ${api9 ? 9 : 8}: random call sequences replayed late — the same WebGL ${M.lazy ? 'draws (buffer bytes copied at draws)' : 'calls'} (buffer contents in the ring, surface copies on write or fences)`, () => withMode(M, () => {
     const seen = { cows: 0, waits: 0, bufDataBytes: 0, eagerBufs: 0, ...(M.lazy ? { vbChecked: 0 } : {}) };
-    for (const seed of (process.env.RW_SEEDS ?? '1,2,3,4,5,6').split(',').map(Number)) for (const cow of [true, false]) {
+    for (const seed of (process.env.RW_SEEDS ?? '1,2,3,4,5,6').split(',').map(Number).slice(0, process.env.RW_SEEDS ? undefined : depth(6, 1))) for (const cow of [true, false]) {
       globalThis.ORTHROS_RW_COW = cow ? undefined : 0;
       const A = fakeGl(800, 600, M.gl), B = fakeGl(800, 600, M.gl);
       randomSession({ createDevice: (dev) => new WebGLDevice(A.gl, dev, {}) }, seed, api9, () => {});

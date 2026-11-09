@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ModuleBuilder, Code, T } from '../src/cpu/jit/wasm.js';
 import { addAtanKernels, BASES } from '../src/cpu/jit/fpmath-atan.js';
+import { depth } from './depth.js';
 
 const TOL = 1e-14;
 
@@ -131,7 +132,7 @@ test('atan2 special values: signed zeros, infinities, NaN, denormals, extremes',
 });
 
 test('atan2 random sweeps (tol 1e-14, max relative error printed)', () => {
-  const N = 200_000;
+  const N = depth(200_000, 20_000);
   const sweeps = {
     'log-uniform 1e-300..1e300, random signs': () => [logUniform(-300, 300), logUniform(-300, 300)],
     'uniform [-10, 10]': () => [uniform(-10, 10), uniform(-10, 10)],
@@ -160,7 +161,7 @@ test('atan(x) whole real line, specials and random sweeps', () => {
   assert.ok(Object.is(atan(0), 0) && Object.is(atan(-0), -0));
   assert.ok(Object.is(atan(1e-300), 1e-300) && Object.is(atan(-Number.MIN_VALUE), -Number.MIN_VALUE));
   assert.ok(Object.is(atan(1), Math.PI / 4) && Object.is(atan(-1), -Math.PI / 4));
-  const N = 200_000;
+  const N = depth(200_000, 20_000);
   const sweeps = {
     'atan log-uniform 1e-300..1e300': () => logUniform(-300, 300),
     'atan uniform [-10, 10]': () => uniform(-10, 10),

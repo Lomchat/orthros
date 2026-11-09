@@ -13,6 +13,7 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { FULL } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, A = DATA, B = DATA + 8, OUT = DATA + 0x100;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -28,6 +29,11 @@ const BITS64 = [0n, 0x8000000000000000n, f64bits(0.9), f64bits(0.1), f64bits(-1 
   f64bits(1e300), f64bits(-1e-300), 1n, f64bits(2 ** 128), 0x7ff0000000000000n, 0xfff0000000000000n, 0x7ff8000000000000n,
   0xfffa468ac0000000n, 0x7ff8000000000001n, 0x7ff0000000000001n];
 const OPS = [0, 1, 4, 5, 6, 7]; // fadd fmul fsub fsubr fdiv fdivr
+// The quick pass (tests/depth.js): each sweep translates one program in PROGS (a JIT costs ~65 ms to start), a different
+// share for each sweep so that the nine sweeps together cover every op and form, and runs every STRIDE-th operand pair
+// of it; make test-full runs every program and every pair of every sweep.
+const PROGS = FULL ? 1 : 9, STRIDE = FULL ? 1 : 3, SHARE = PROGS * STRIDE;
+let sweeps = 0;
 
 /**
  * form 0: fld m32 [A]; fop m32 [B] — 1: fld m32 [A]; fld m32 [B]; fop st(0), st(1) — 2: ...; fop st(1), st(0) —
@@ -67,12 +73,15 @@ const isNan64 = (v) => (v & 0x7ff0000000000000n) === 0x7ff0000000000000n && (v &
 const snan32 = (x) => (x & 0x7fc00000) === 0x7f800000 && (x & 0x3fffff) !== 0;
 
 function compareAll(cw, label, extra = {}) {
-  let n = 0, kernelSettled = 0;
+  let n = 0, kernelSettled = 0, idx = 0, prog = 0;
+  const share = sweeps++;
   for (const op of OPS) for (let form = 0; form < 6; form++) {
+    if ((prog++ + share) % PROGS) continue;
     const code = program(op, form);
     const interp = executor(code, null, cw), call = executor(code, { x87Cold: 'call', ...extra }, cw), inline = executor(code, { x87Cold: 'inline', ...extra }, cw);
     const aw = form >= 4, bw = form === 3 || form === 4;
     for (const a of aw ? BITS64 : BITS32) for (const b of bw ? BITS64 : BITS32) {
+      if (idx++ % STRIDE) continue;
       const what = `${label} cw ${cw.toString(16)} op ${op} form ${form} a ${a.toString(16)} b ${b.toString(16)}`;
       const i = interp(a, b, aw, bw), c = call(a, b, aw, bw), l = inline(a, b, aw, bw);
       // the kernels and the inline code: the same bits, status word and interpreter steps
@@ -96,7 +105,7 @@ for (const cw of [0x007f, 0x047f, 0x0c7f, 0x027f, 0x037f]) {
     const { n, kernelSettled } = compareAll(cw, '');
     // (directed rounding at 24-bit precision leaves every NaN / infinite result to the interpreter: roundDirected24)
     const directed24 = (cw & 0x300) === 0 && (cw & 0xc00) !== 0;
-    assert.ok(n > 5000 && (directed24 || kernelSettled > 500), `${n} cases, ${kernelSettled} NaN / infinite results without an interpreter step`);
+    assert.ok(n > 5000 / SHARE && (directed24 || kernelSettled > 500 / SHARE), `${n} cases, ${kernelSettled} NaN / infinite results without an interpreter step`);
   });
 }
 
@@ -107,7 +116,7 @@ for (const cw of [0x007f, 0x047f, 0x0c7f, 0x027f, 0x037f]) {
 for (const cw of [0x007f, 0x027f, 0x037f]) {
   test(`x87 cold paths with the status word in the state block (swLocal off, control word ${cw.toString(16)})`, () => {
     const { n } = compareAll(cw, 'swLocal off', { swLocal: false });
-    assert.ok(n > 5000);
+    assert.ok(n > 5000 / SHARE);
   });
 }
 

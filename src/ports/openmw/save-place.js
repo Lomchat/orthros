@@ -1,4 +1,4 @@
-// Where an OpenMW saved game loads (docs/openmw.md "Anticipated places"), read from the save itself without the engine:
+// Where an OpenMW saved game loads (docs/openmw-history.md "Anticipated places"), read from the save itself without the engine:
 // the page predicts the place the player will load from the menu and fetches that place's files (the server's learned
 // place sets, GET /api/places) while the engine boots and the player sits in the menu. The place's key is the engine's
 // own (orthros-r10.patch: its announced reads' labels '<kind>:<place>'): 'x,y' for an exterior cell — the grid centre

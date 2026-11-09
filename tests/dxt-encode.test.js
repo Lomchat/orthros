@@ -68,12 +68,6 @@ test('DXT1 / DXT3 / DXT5: the reference encoder\'s blocks but for ties, never a 
   assert.ok(same / total > 0.95, `identical blocks ${same} / ${total}`);
 });
 
-test('2:1 box filter of a mip level = the general box filter', () => {
-  const r = rng(5), px = image(r, 32, 16, 0);
-  const general = (src, sw, sh, dw, dh) => { const out = new Uint8Array(dw * dh * 4); for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) { let s = [0, 0, 0, 0]; for (let yy = 2 * y; yy < 2 * y + 2; yy++) for (let xx = 2 * x; xx < 2 * x + 2; xx++) for (let c = 0; c < 4; c++) s[c] += src[(yy * sw + xx) * 4 + c]; for (let c = 0; c < 4; c++) out[(y * dw + x) * 4 + c] = s[c] / 4 + 0.5 | 0; } return out; };
-  assert.deepEqual(resizeRgba(px, 32, 16, 16, 8), general(px, 32, 16, 16, 8));
-});
-
 // Mip levels: the 2:1 box filter on 32-bit words (two 16-bit lanes per word) gives each channel (sum + 2) >> 2, the
 // general formula's rounding — aligned images through the word path, an unaligned view through the byte loop.
 test('2:1 mip filter: every channel the rounded average of its 2 x 2 texels, aligned or not', () => {

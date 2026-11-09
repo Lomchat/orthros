@@ -315,7 +315,7 @@ order fetched ahead from the game's position.
   reader's policies add (blocks around a miss, a file read in order ahead of its reader).
 - **Reads not there yet.** A read of bytes not in the page waits for the worker on shared memory (the page's thread
   waits — GoldSrc), or suspends the engine (JSPI — re3; OpenMW from orthros-r19, after waiting a few ms on the page's
-  thread first — 10 ms, in its loads only: `GameData.soon`, docs/openmw.md "Waits that yield to the
+  thread first — 10 ms, in its loads only: `GameData.soon`, docs/openmw-history.md "Waits that yield to the
   browser"); the worker answers with what was asked and as much of the file as it has here already — an image (a
   texture) to its end at its first missing piece where the page asks for it (OpenMW's: `wholeLoads`; docs/slow-network.md
   "A whole image at its first missing piece").

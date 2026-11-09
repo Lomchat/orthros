@@ -2,6 +2,7 @@
 // algorithms they replaced: a whole harvest pass over every live region, and a merge sorting all ranges again.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { depth } from './depth.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { RangeHeat } from '../src/cpu/jit/heat.js';
 
@@ -74,7 +75,7 @@ const eipsOf = (p) => { const s = new Set(); for (let i = 0; i < p.length; i += 
 const BUDGETS = [0, 1e-6, 0.02, Infinity];
 
 test('harvestVisitsStep: a pass gives exactly the old harvest\'s pairs (budgets 0, tiny, Infinity), the heat gets them', () => {
-  for (let t = 0; t < 300; t++) {
+  for (let t = 0; t < depth(300, 40); t++) {
     const w = world(), budget = BUDGETS[rnd(BUDGETS.length)];
     for (let i = 0, n = rnd(400); i < n; i++) w.add();
     for (let pass = 0; pass < 4; pass++) {
@@ -97,7 +98,7 @@ test('harvestVisitsStep: a pass gives exactly the old harvest\'s pairs (budgets 
 });
 
 test('harvestVisitsStep: flags set and regions registered between steps — each reported once, same blocks as the old harvest', () => {
-  for (let t = 0; t < 300; t++) {
+  for (let t = 0; t < depth(300, 40); t++) {
     const w = world(), budget = BUDGETS[rnd(3)]; // (budgets that cut passes)
     for (let i = 0, n = 64 + rnd(400); i < n; i++) w.add();
     const got = [], want = [];
@@ -118,7 +119,7 @@ test('harvestVisitsStep: flags set and regions registered between steps — each
 });
 
 test('harvestVisitsStep: regions dropped between steps — their flags not reported after the drop, the others all reported', () => {
-  for (let t = 0; t < 300; t++) {
+  for (let t = 0; t < depth(300, 40); t++) {
     const w = world(), budget = BUDGETS[rnd(3)];
     for (let i = 0, n = 64 + rnd(400); i < n; i++) w.add();
     const got = [];
@@ -142,7 +143,7 @@ test('harvestVisitsStep: regions dropped between steps — their flags not repor
 
 // ---------------------------------------------------------------- merge
 test('RangeHeat.merge: lo/hi identical to sorting all ranges (overlapping, nested, adjacent, duplicate, empty ranges)', () => {
-  for (let t = 0; t < 2000; t++) {
+  for (let t = 0; t < depth(2000, 250); t++) {
     const h = new RangeHeat();
     let lo = new Int32Array(0), hi = new Int32Array(0), aLo = [], aHi = [];
     const span = [50, 400, 5000, 0x7ff00000][rnd(4)];

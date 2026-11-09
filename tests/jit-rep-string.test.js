@@ -9,6 +9,7 @@ import { GuestMemory } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { FULL } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, WIN = 0x1000; // the data window compared: [DATA, DATA + WIN)
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -41,6 +42,10 @@ function makeExec(useJit) {
 const EI = makeExec(false), EJ = makeExec(true);
 // every case runs at its own address: the interpreter's decoded instructions and the JIT's regions stay valid
 let slot = 0;
+// (the quick pass, tests/depth.js: every STRIDE-th case of the two sweeps — the full pass, ORTHROS_TEST_FULL=1: all)
+const STRIDE = FULL ? 1 : 7;
+let sweep = 0;
+const sampled = () => sweep++ % STRIDE === 0;
 
 /** mov esi, S ; mov edi, D ; mov ecx, N ; std|cld ; [66] [64] rep movs|stos ; cld ; hlt */
 function prog(op, size, back, src, dst, n, fs = false) {
@@ -69,7 +74,7 @@ test('rep movs: every size, direction, count around the bulk threshold and overl
           // src/dst: the first element forward, the last one backward (ESI/EDI as a memmove sets them)
           const lo = DATA + 0x600, last = back ? bytes - size : 0;
           const src = lo + last, dst = lo + d + last;
-          same(prog('movs', size, back, src, dst, n), { eax: 0x5a5a5a5a }, `movs${size} ${back ? 'bwd' : 'fwd'} n=${n} d=${d}`);
+          if (sampled()) same(prog('movs', size, back, src, dst, n), { eax: 0x5a5a5a5a }, `movs${size} ${back ? 'bwd' : 'fwd'} n=${n} d=${d}`);
         }
       }
     }
@@ -82,7 +87,7 @@ test('rep stos: every size and direction, fill values with and without a repeate
       for (const n of [0, 1, 11, 12, 13, 64, 300]) {
         for (const eax of [0, 0xffffffff, 0x41414141, 0x11223344, 0x00004141, 0x41410041, 0x12344141, 0x41414140]) {
           const last = back ? (n - 1) * size : 0;
-          same(prog('stos', size, back, 0, DATA + 0x400 + Math.max(0, last), n), { eax }, `stos${size} ${back ? 'bwd' : 'fwd'} n=${n} eax=${hex(eax)}`);
+          if (sampled()) same(prog('stos', size, back, 0, DATA + 0x400 + Math.max(0, last), n), { eax }, `stos${size} ${back ? 'bwd' : 'fwd'} n=${n} eax=${hex(eax)}`);
         }
       }
     }

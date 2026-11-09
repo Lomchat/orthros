@@ -1,4 +1,4 @@
-// Where an OpenMW saved game loads (src/ports/openmw/save-place.js, docs/openmw.md "Anticipated places"): a save made
+// Where an OpenMW saved game loads (src/ports/openmw/save-place.js, docs/openmw-history.md "Anticipated places"): a save made
 // here byte for byte as the engine writes one (components/esm3: TES3 with FORM, SAVE, the world's records, PLAY with the
 // player's cell just before LKEP), its place read as the engine's announced reads name it; the save the player most
 // likely loads chosen (the remembered place, the newest, the most played after a restore from the account).

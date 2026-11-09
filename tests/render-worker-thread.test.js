@@ -10,6 +10,7 @@ import { RenderLink, Recorder } from '../src/gfx/d3d-recorder.js';
 import { WebGLDevice } from '../src/gfx/d3d8-webgl.js';
 import { CTL_WORDS, ACK_SLOTS } from '../src/gfx/cmd-ring.js';
 import { fakeGl, firstDifference } from './fake-gl.js';
+import { depth } from './depth.js';
 
 async function threaded(seed, api9, slow, reads) {
   const ring = new SharedArrayBuffer(4 << 18), ctl = new SharedArrayBuffer(CTL_WORDS * 4), ack = new SharedArrayBuffer(ACK_SLOTS * 4), stop = new SharedArrayBuffer(4);
@@ -35,7 +36,9 @@ async function threaded(seed, api9, slow, reads) {
 // draws, compared by the bytes they read, fakeGl `reads`)
 for (const api9 of [true, false]) for (const lazy of [false, true]) {
   test(`Direct3D ${api9 ? 9 : 8}: random sequences replayed in a worker thread — the same WebGL ${lazy ? 'draws (buffer bytes copied at draws)' : 'calls'} as in-thread`, async () => {
-    const seeds = process.env.RW_THREAD_SEEDS ? process.env.RW_THREAD_SEEDS.split(',').map((x, i) => [Number(x), i % 3]) : [[11, 0], [12, 0], [13, 1], [14, 2]];
+    // quick pass: seeds 11 (prompt worker) and 13 (slow worker); full depth: all four
+    const all = [[11, 0], [12, 0], [13, 1], [14, 2]], quick = depth(all.length, 2);
+    const seeds = process.env.RW_THREAD_SEEDS ? process.env.RW_THREAD_SEEDS.split(',').map((x, i) => [Number(x), i % 3]) : all.filter((_, i) => i % (all.length / quick) === 0);
     globalThis.ORTHROS_VB_LAZY = lazy ? undefined : 0;
     try { for (const [seed, slow] of seeds) {
       const A = fakeGl(800, 600, { reads: lazy });

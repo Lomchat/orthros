@@ -20,13 +20,7 @@ function compare(got, want, tol, what) {
   assert.ok(max <= tol, `${what}: max diff ${max} > ${tol} (mean ${(sum / want.length).toFixed(3)})`);
 }
 
-test('inflate: zlib streams (dynamic and stored blocks)', () => {
-  const want = inflate(read('z.bin.z'));
-  assert.equal(want.length, 50000);
-  compare(inflate(read('z.z')), want, 0, 'z');
-  compare(inflate(read('z0.z')), want, 0, 'z0 (stored)');
-});
-
+// (inflate itself: tests/codecs-fast.test.js, against Node's zlib on every block kind)
 test('png: RGB, gray, palette, RGBA, 1-bit', () => {
   for (const [n, r] of [['rgb', 'rgb'], ['gray', 'gray'], ['pal', 'pal'], ['rgba', 'rgba'], ['bw', 'bw']]) {
     const img = decodePng(read(n + '.png'));

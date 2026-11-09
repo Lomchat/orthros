@@ -695,7 +695,7 @@ export class HttpBackend {
    * (still a load under way, loadUnderWay). Returns one promise per entry: true once all its bytes are here, false when one of its units failed (the
    * engine's read then asks itself, and says what failed). `opts.label`: what the load is for (kept in stats.wantLabel).
    * `opts.prio` 'place': a list the page predicts (the place a saved game will load, fetched while the player sits in
-   * the menu — docs/openmw.md "Anticipated places"), not one the engine waits for: the same units, deduplicated the same
+   * the menu — docs/openmw-history.md "Anticipated places"), not one the engine waits for: the same units, deduplicated the same
    * way, but each a background turn of PRIO.place (after the game's reads, the load's, the launch set; never urgent nor
    * forLoad: a load's silence holds it), PLACE_REQUESTS at once and only while no announced unit waits for its
    * request, a flight on its way joined without promoting it, no wait of the link's, the learned read-ahead not paused,
@@ -1019,7 +1019,7 @@ export class HttpBackend {
       // elsewhere, or past this block — see `reader`; any other read-ahead but a media stream's too, once its reader
       // moved away, unless a read waits for it — a read-ahead queued behind a thin link's other requests went out long
       // after its reader left: a boot's, behind the boot's own reads, took the link 18 s in the middle of the next load
-      // at 85 KB/s, its announced wait timing out — OpenMW, 2026-10-30, docs/openmw.md; nor a stream's read from inside
+      // at 85 KB/s, its announced wait timing out — OpenMW, 2026-10-30, docs/openmw-history.md; nor a stream's read from inside
       // an archive, `streams` while it lasts — a read elsewhere in the file ends it —: two streams read in turn, music
       // and ambience from two archives, would else drop each other's on every read and play from synchronous reads)
       let halt = () => false, prw = null;

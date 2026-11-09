@@ -1,4 +1,4 @@
-// The OpenMW engine page's boot reads announced (src/ports/openmw/boot-reads.js, streamfs.js announceBoot — docs/openmw.md
+// The OpenMW engine page's boot reads announced (src/ports/openmw/boot-reads.js, streamfs.js announceBoot — docs/openmw-history.md
 // "Scripts announced at the boot"): the data folders' scripts, localisation and shaders the engine's VFS resolves, in one
 // list once the mounts are over, instead of a round trip each at the engine's boot and at a save's load.
 import { test } from 'node:test';

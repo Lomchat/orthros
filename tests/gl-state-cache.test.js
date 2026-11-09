@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomSession } from './d3d-random.js';
 import { WebGLDevice } from '../src/gfx/d3d8-webgl.js';
+import { depth } from './depth.js';
 
 /** A WebGL2 context that keeps the state its calls set, and a snapshot of it at every draw. */
 function stateGl() {
@@ -21,6 +22,8 @@ function stateGl() {
   const st = new Map(), draws = [], uploads = [];
   const hash = (x) => { const b = new Uint8Array(x.buffer, x.byteOffset, x.byteLength); let h = 0x811c9dc5; for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193); return `${b.length}:${h >>> 0}`; };
   let unit = 0, prog = null, vao = null;
+  // (the state sorted as Array.prototype.sort() sorts it — by each entry's string — with that string computed once per entry)
+  const sorted = () => [...st].map((e) => [String(e), e]).sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0)).map((x) => x[1]);
   const set = (k, ...a) => st.set(k, JSON.stringify(a.map(val)));
   const own = {
     shaderSource: (sh, s) => { src.set(sh, s); },
@@ -38,8 +41,8 @@ function stateGl() {
     stencilOp: (...a) => { set(`stencilOp${E('FRONT')}`, ...a); set(`stencilOp${E('BACK')}`, ...a); },
     vertexAttribPointer: (i, ...a) => set(`vap${id(vao)}:${i}`, ...a),
     bindBuffer: (t, b) => { if (t === E('ELEMENT_ARRAY_BUFFER')) set(`ib${id(vao)}`, b); else set(`buf${t}`, b); },
-    drawElements: (...a) => draws.push(JSON.stringify(['dE', ...a, ...[...st].sort()])),
-    drawArrays: (...a) => draws.push(JSON.stringify(['dA', ...a, ...[...st].sort()])),
+    drawElements: (...a) => draws.push(JSON.stringify(['dE', ...a, ...sorted()])),
+    drawArrays: (...a) => draws.push(JSON.stringify(['dA', ...a, ...sorted()])),
   };
   const STATEFUL = /^(viewport|depthRange|scissor|depthFunc|depthMask|polygonOffset|stencilMask|blendFuncSeparate|blendEquationSeparate|blendColor|colorMask|frontFace|cullFace|bindFramebuffer|clearColor|clearDepth|clearStencil)$/;
   const gl = Object.create(new Proxy({}, {
@@ -72,7 +75,7 @@ function stateGl() {
 for (const api9 of [true, false]) {
   test(`GL state at every draw with the backend's sampler and raster caches as without them (Direct3D ${api9 ? 9 : 8})`, () => {
     let compared = 0;
-    for (let seed = 1; seed <= 4; seed++) {
+    for (let seed = 1; seed <= depth(4, 3); seed++) { // (3 seeds: the 300 draws compared)
       const run = (noStateCache) => { const gl = stateGl(); randomSession({ createDevice: (dev) => new WebGLDevice(gl, dev, { noStateCache }) }, seed, api9, () => {}); return gl; };
       const A = run(false), B = run(true), a = A.draws, b = B.draws;
       for (let i = 0; i < Math.max(A.uploads.length, B.uploads.length); i++) assert.equal(A.uploads[i]?.slice(0, 300), B.uploads[i]?.slice(0, 300), `seed ${seed}: upload ${i}`);
@@ -96,7 +99,7 @@ test('cache check: random Direct3D 8 / 9 sessions find no stale per-draw cache; 
   try {
     assert.equal(apiOpt.glCheck, true);
     for (const api9 of [true, false]) {
-      for (let seed = 1; seed <= 4; seed++) {
+      for (let seed = 1; seed <= depth(4, 1); seed++) {
         const logs = [], devs = [];
         randomSession({ createDevice: (dev) => { const g = new WebGLDevice(stateGl(), dev, { log: (m) => logs.push(m) }); devs.push(g); return g; } }, seed, api9, () => {});
         assert.deepEqual(logs.filter((l) => l.includes('GL cache check')), [], `D3D${api9 ? 9 : 8} seed ${seed}`);

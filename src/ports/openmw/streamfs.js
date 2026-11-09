@@ -7,8 +7,8 @@
 // an earlier page kept of a file (legacy-copies.js) is taken before its first read. The player first in the world marks
 // the session playable (GameData.mark). The places the engine announces it loads are learned by the server
 // (POST /api/places), and the place the player's saved game will load is predicted from the saves and fetched while
-// the engine boots and the player sits in the menu (docs/openmw.md "Anticipated places", save-place.js); in play, the
-// learned set of the next exterior row is fetched ahead the same way (docs/openmw.md "In
+// the engine boots and the player sits in the menu (docs/openmw-history.md "Anticipated places", save-place.js); in play, the
+// learned set of the next exterior row is fetched ahead the same way (docs/openmw-history.md "In
 // play: crossings and doors", place-lead.js).
 (() => {
   'use strict';
@@ -19,7 +19,7 @@
     M = { ...client, ...files, inWorld: view.inWorld, savePlace: place, bootReads: boot.bootReads };
     // (the engine's package in — openmw.data, its own download —, its main() initialising for seconds before its first
     // read: the link idle meanwhile loads the learned order, on a cold store (little of the launch set here) — GameData.prefetchNow,
-    // docs/openmw.md "The link after the engine's package". Installed long before the package ends: these modules are a
+    // docs/openmw-history.md "The link after the engine's package". Installed long before the package ends: these modules are a
     // few KB, the package MBs over the same link.)
     M.onPackageLoaded(window.Module, () => { S.packaged = true; if (S.started) S.data.prefetchNow(); });
     // (the game data opened now — its worker, the version's tree and store, the learned order's list —, while the
@@ -141,7 +141,7 @@
       } else S.boot = { off: true };
       anticipate().catch((e) => console.warn('[streamfs] place', e?.message ?? e));
       // (in play: the next row's learned set ahead — only with ?lead=1 on this page or the play page: an A/B, off by
-      // default — docs/openmw.md "In play: crossings and doors": the learned order already covers a taught row)
+      // default — docs/openmw-history.md "In play: crossings and doors": the learned order already covers a taught row)
       if (pageParam('lead') === '1') import('/src/ports/openmw/place-lead.js').then(leadInPlay).catch((e) => console.warn('[streamfs] lead', e?.message ?? e));
     }
     return S.data;
@@ -153,7 +153,7 @@
    * The data folders' scripts, localisation and shaders the engine will read (boot-reads.js: the files its VFS resolves,
    * small first, bounded), announced once in one list — GameData.want `wait: false`: fetched at once in parallel, what
    * the page or the store holds already left out, the engine's reads of them joining their requests — instead of a
-   * round trip each at its boot and at a save's load (docs/openmw.md "Scripts announced at the boot"). Once, after the
+   * round trip each at its boot and at a save's load (docs/openmw-history.md "Scripts announced at the boot"). Once, after the
    * mounts (S.byPath: every file mounted, in the data folders' order).
    */
   function announceBoot() {
@@ -175,7 +175,7 @@
   /** A multiplayer session (the engine page's __omwMPEnabled): the server decides where the player spawns, its solo saves say nothing. */
   const multiplayer = () => !!window.__omwMPEnabled;
   /**
-   * The place the player's saved game will load, fetched before the click (docs/openmw.md "Anticipated places"): once
+   * The place the player's saved game will load, fetched before the click (docs/openmw-history.md "Anticipated places"): once
    * the saves are readable — the engine page's __idbfsReady: IDBFS populated, the account's profile restored (cloud.js
    * answers the populate after it) — and the engine draws its first frame (its boot over, the player at the menu), the
    * saves parsed (save-place.js: their records' headers, read in place), one chosen (the remembered place, the newest,

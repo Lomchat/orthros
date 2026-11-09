@@ -13,6 +13,7 @@ import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { translateRegion } from '../src/cpu/jit/translate.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, DATA_SIZE = 0x1000, MEMOP = DATA + 0x100;
 const hexb = (s) => Uint8Array.from(s.replace(/\s+/g, '').match(/../g).map((h) => parseInt(h, 16)));
@@ -102,7 +103,7 @@ function program(seed) {
 
 test('x87Live: random programs over few registers, every register value as the interpreter leaves it', () => {
   const EI = makeExec(null), EJ = makeExec({ x87Live: true }), EO = makeExec({ x87Live: false });
-  for (let seed = 1; seed <= 300; seed++) {
+  for (let seed = 1, n = depth(300, 40); seed <= n; seed++) {
     const code = program(seed), end = CODE + code.length - 1;
     for (const slice of [1e6, 1 + (seed % 7)]) {
       setup(EI, code, seed); setup(EJ, code, seed); setup(EO, code, seed);
@@ -146,7 +147,8 @@ function readerProgram(seed) {
 test('x87LiveStores: registers read but never set keep their values, as the interpreter leaves them', () => {
   const EI = makeExec(null), EJ = makeExec({ x87Live: true }), EO = makeExec({ x87Live: true, x87LiveStores: false });
   let dropped = 0;
-  for (let seed = 1; seed <= 300; seed++) {
+  const seeds = depth(300, 40);
+  for (let seed = 1; seed <= seeds; seed++) {
     const { code, d0 } = readerProgram(seed), end = CODE + code.length - 1;
     const tr = (() => { const mem = new GuestMemory(); mem.writeBytes(CODE, code); return translateRegion(mem, CODE, { fpcAssume: null }); })();
     if (tr.stats.x87Live) dropped++;
@@ -164,5 +166,5 @@ test('x87LiveStores: registers read but never set keep their values, as the inte
       assert.deepEqual(snapshot(EO), snapshot(EI), `seed ${seed} slice ${slice}: x87LiveStores off differs`);
     }
   }
-  assert.ok(dropped > 100, `regions translated with a mask: ${dropped}`);
+  assert.ok(dropped > Math.floor(100 * seeds / 300), `regions translated with a mask: ${dropped}`);
 });

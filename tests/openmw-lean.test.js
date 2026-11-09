@@ -1,4 +1,4 @@
-// The OpenMW engine package without what a game of its own never reads (src/server/ports/openmw-lean.js, docs/openmw.md "The
+// The OpenMW engine package without what a game of its own never reads (src/server/ports/openmw-lean.js, docs/openmw-history.md "The
 // engine's package"): the same package, the example world's and ICU's unused root copy's bytes zeroed, made once per
 // content by a niced child, loaded by a game of its own, at an address every release with that package shares.
 import { test } from 'node:test';

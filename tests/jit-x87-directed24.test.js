@@ -13,6 +13,7 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, VALS = DATA, OUT = DATA + 0x4000;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -109,7 +110,7 @@ test('24-bit directed rounding: every arithmetic form over off-grid, on-grid, in
 });
 
 test('24-bit directed rounding: time slices of every length through the same sequences', () => {
-  const P = pairs().slice(0, 40), { code, outLen } = program(P);
+  const P = pairs().slice(0, depth(40, 5)), { code, outLen } = program(P);
   for (const cw of MODES) {
     const want = exec(false, code, outLen, P, cw);
     for (const slice of [1, 2, 3, 5, 8, 13]) {

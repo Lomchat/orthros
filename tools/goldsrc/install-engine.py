@@ -92,7 +92,7 @@ def main():
             raise ValueError('Integrity mismatch: ' + entry['path'])
     (stage / 'release.json').write_text(json.dumps({**{k: LOCK[k] for k in ('id', 'upstream', 'commit', 'engineArtifact')}, 'browserImportFixes': fixes, 'files': LOCK['files']}, indent=2) + '\n')
     # (each compressible file's brotli 11 beside it: what the server sends a browser that takes it, tools/ops/engine-br.mjs)
-    subprocess.run(['node', str(ROOT / 'tools' / 'engine-br.mjs'), str(stage)], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(['node', str(ROOT / 'tools' / 'ops' / 'engine-br.mjs'), str(stage)], check=True, stdout=subprocess.DEVNULL)
     release.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(stage), str(release))
     shutil.rmtree(SCRATCH, ignore_errors=True)

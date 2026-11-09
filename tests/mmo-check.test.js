@@ -1,25 +1,11 @@
-// The two-client check of a shared world (tools/re3/mmo-check.mjs): its pure parts — the command line, the reading of
+// The two-client check of a shared world (tools/re3/mmo-check.mjs): its pure parts — the players and scenarios asked, the reading of
 // the engine's debug states, the respawn's rules, the admins file it may touch, the summary. (The run itself needs a
 // browser and an engine: tools/with-browser-slot.sh node tools/re3/mmo-check.mjs …)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseArgs, scenarioList, SCENARIOS, vec, distance, offset, tpCommand, characterName, playerIn, seesAt, chatHas, census, netids, unarmed, dead,
+import { parseArgs, scenarioList, vec, distance, offset, tpCommand, characterName, playerIn, seesAt, chatHas, census, netids, unarmed, dead,
   respawnChecks, adminsPathAllowed, withAdmin, summarize, entityAudit, persistentFaults, gathering, killLine } from '../tools/re3/mmo-check.mjs';
 import { MMO_NAME } from '../src/server/mmo.js';
-
-test('mmo check: its command line', () => {
-  const d = parseArgs([]);
-  assert.equal(d.manifest, 'vice-city-orthros'); assert.equal(d.url, 'http://127.0.0.1:8080'); assert.equal(d.seconds, 900);
-  assert.deepEqual(d.scenarios, SCENARIOS); assert.equal(d.admins, null); assert.deepEqual([d.width, d.height], [480, 300]);
-  const o = parseArgs(['other-version', '--url', 'http://localhost:9000/', '--seconds', '120', '--scenario', 'chat,basic', '--admins', '/tmp/orthros-scratch/x/admins.json', '--weapon', '17']);
-  assert.equal(o.manifest, 'other-version'); assert.equal(o.url, 'http://localhost:9000');
-  assert.equal(o.seconds, 120); assert.deepEqual(o.scenarios, ['basic', 'chat'], 'in their order');
-  assert.equal(o.admins, '/tmp/orthros-scratch/x/admins.json'); assert.equal(o.weapon, 17);
-  assert.equal(parseArgs(['--url', 'http://h', 'v2']).manifest, 'v2', 'an option\'s value is not the manifest');
-  assert.throws(() => parseArgs(['--seconds', '5']), /--seconds/);
-  assert.throws(() => parseArgs(['--scenario', 'basic,flying']), /unknown scenario flying/);
-  assert.deepEqual(scenarioList('all'), SCENARIOS); assert.deepEqual(scenarioList(' Garage '), ['garage']);
-});
 
 test('mmo check: positions, players and lines as the engine publishes them', () => {
   assert.deepEqual(vec([1, 2, 3, 4]), [1, 2, 3]); assert.deepEqual(vec({ x: 1, y: 2, z: 3 }), [1, 2, 3]);

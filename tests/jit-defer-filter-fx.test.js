@@ -13,6 +13,7 @@ import { GuestMemory, THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { depth } from './depth.js';
 import { registerDirect3D8 } from '../src/win32/d3d8.js';
 import { registerDirect3D9 } from '../src/win32/d3d9.js';
 import { DEFER_QUEUE, DEFER_SPEC, DEFER_RAW, DEFER_WORDS, COM_MARKER, COMMIT_LIST, FAST_STATS, COMMIT_LIST_WORDS, FX_OWNER, SHADOW_OWNER } from '../src/cpu/jit/runtime.js';
@@ -210,17 +211,17 @@ function runJitted(seed, n, api9, switching = false) {
 for (const api9 of [true, false]) {
   test(`lights / material / FVF filter (Direct3D ${api9 ? 9 : 8}): the devices agree at every draw with the reference that executes every call`, () => {
     let dropped = 0;
-    for (let seed = 1; seed <= 30; seed++) {
+    for (let seed = 1, last = depth(30, 3); seed <= last; seed++) {
       const ref = runReference(seed, 300, api9);
       const jit = runJitted(seed, 300, api9);
       assert.equal(jit.draws.length, ref.draws.length);
       for (let i = 0; i < ref.draws.length; i++) assert.equal(jit.draws[i], ref.draws[i], `seed ${seed}, draw ${i}`);
       dropped += jit.dropped;
     }
-    assert.ok(dropped > 1000, `the filter drops the redundant calls (${dropped})`);
+    assert.ok(dropped > depth(1000, 100), `the filter drops the redundant calls (${dropped})`);
   });
   test(`lights / material / FVF filter (Direct3D ${api9 ? 9 : 8}): the same with the measurement switch (queued draws and this filter off / on) flipped at random points`, () => {
-    for (let seed = 101; seed <= 115; seed++) {
+    for (let seed = 101, last = 100 + depth(15, 2); seed <= last; seed++) {
       const ref = runReference(seed, 300, api9);
       const jit = runJitted(seed, 300, api9, true);
       assert.equal(jit.draws.length, ref.draws.length);

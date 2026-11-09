@@ -16,6 +16,7 @@ import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { X87_MODE_TOP, translateRegion } from '../src/cpu/jit/translate.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, DATA_SIZE = 0x1000;
 const MEMOP = DATA + 0x100; // esi: base of the [esi+disp8] operands
@@ -156,7 +157,7 @@ function isCallSite(out, at) {
 test('generated x87 programs entered with random stack tops, contents and control words match the interpreter', () => {
   const EI = makeExec(false), EJ = makeExec(true);
   let specialized = 0;
-  for (let seed = 1; seed <= 300; seed++) {
+  for (let seed = 1, n = depth(300, 150); seed <= n; seed++) {
     const { code, end } = program(seed * 6007 + 1);
     check(EI, EJ, code, seed, `seed ${seed} (${Buffer.from(code).toString('hex')})`, 1e6, CODE + end);
     specialized += EJ.J.regions.filter((r) => r.fpc !== null && (r.fpc & X87_MODE_TOP)).length;
@@ -166,7 +167,7 @@ test('generated x87 programs entered with random stack tops, contents and contro
 
 test('time slices at every instruction: entries into planned blocks check the top less the planned shift', () => {
   const EI = makeExec(false), EJ = makeExec(true);
-  for (let seed = 1; seed <= 100; seed++) {
+  for (let seed = 1, n = depth(100, 25); seed <= n; seed++) {
     const { code, end } = program(seed * 7703 + 2, 20);
     check(EI, EJ, code, seed + 500, `slice seed ${seed} (${Buffer.from(code).toString('hex')})`, 1 + (seed % 4), CODE + end);
   }
@@ -174,7 +175,7 @@ test('time slices at every instruction: entries into planned blocks check the to
 
 test('calls into separate regions returning values on the stack (return sites entered with another top)', () => {
   const EI = makeExec(false), EJ = makeExec(true);
-  for (let seed = 1; seed <= 150; seed++) {
+  for (let seed = 1, n = depth(150, 30); seed <= n; seed++) {
     const { code, end, callees } = program(seed * 911 + 3, 30, true);
     EJ.extra = callees.map((f) => CODE + f); // (the callees: regions of their own)
     for (const slice of [1e6, 3]) check(EI, EJ, code, seed + 900, `call seed ${seed} slice ${slice} (${Buffer.from(code).toString('hex')})`, slice, CODE + end);
@@ -185,7 +186,7 @@ test('calls into separate regions returning values on the stack (return sites en
 test('one JIT running the same code from other tops and control words: versions, regions translated again testing the top', () => {
   const EI = makeExec(false), EJ = makeExec(true, { warn: () => {} });
   let topless = 0;
-  for (let seed = 1; seed <= 60; seed++) {
+  for (let seed = 1, n = depth(60, 20); seed <= n; seed++) {
     const { code, end, callees } = program(seed * 3301 + 7, 24, seed & 1);
     EJ.extra = callees.map((f) => CODE + f);
     EJ.J.reset();

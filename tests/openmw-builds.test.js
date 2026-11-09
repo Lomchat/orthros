@@ -493,7 +493,7 @@ test('r20: a read suspends in a load (the boot, a loading screen) after a short 
   assert.ok(wait.includes("{{{ ASYNCIFY == 2 ? 'J.on > 0 && !J.plain && !J.suspended && !J.off' : 'false' }}}") && wait.includes('soon(timeoutMs, J.spinMs)'), wait);
   assert.ok(!wait.includes('orthrosMaySuspend()'));
   assert.ok(lib.includes("if (kind === 'present') { b.presents++; b.presentMs += ms; return; }"));
-  // (not a budget of the frame's waits: measured, it put suspensions back in play — docs/openmw.md)
+  // (not a budget of the frame's waits: measured, it put suspensions back in play — docs/openmw-history.md)
   assert.ok(!lib.includes('orthrosAsk') && !lib.includes('J.spun'));
   assert.equal(J.on, 0); assert.equal(J.boot, 0);
   // (the suspensions in play counted apart: Module.orthrosBlocked.play / playMs)

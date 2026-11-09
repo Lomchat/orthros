@@ -4,6 +4,7 @@
 // larger than one move span (MOVE_SPAN) keep every byte.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { depth } from './depth.js';
 import { CodeCache, MemStore } from '../src/cpu/jit/code-cache.js';
 
 /** a store whose writes stop at the n-th (the tab closed): every later write, truncate and flush throws */
@@ -22,7 +23,7 @@ test('code cache: a session cut short at any write leaves a file that loads to c
   const r = (n) => { rs = (Math.imul(rs, 1103515245) + 12345) >>> 0; return (rs >>> 8) % n; };
   const u8 = new Uint8Array(0x10000);
   let cuts = 0, restarts = 0, hits = 0, compactCuts = 0;
-  for (let trial = 0; trial < 120; trial++) {
+  for (let trial = 0; trial < depth(120); trial++) {
     const store = new MemStore(), MAX = 8000 + r(16000);
     const model = new Map(); // key -> Set of bodies ever added for it (a cut add may or may not have landed)
     for (let session = 0; session < 12; session++) {

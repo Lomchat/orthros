@@ -10,6 +10,7 @@ import { GuestMemory } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, FAR = CODE + 0x30000, DATA = 0x10000000, TABLE = DATA + 0x400, VALUES = DATA + 0x200;
 let seed = 7;
@@ -78,7 +79,7 @@ function makeExec(jitOpts) {
 }
 
 test('jumpTables: random switch loops match the interpreter (on and off, whole and time-sliced)', () => {
-  for (let t = 0; t < 80; t++) {
+  for (let t = 0, n = depth(80, 10); t < n; t++) {
     const p = gen();
     const values = Array.from({ length: 32 }, () => rnd(4) ? rnd(8) : (rnd(65536) << 16 | rnd(65536)) >>> 0);
     const regs = [1 + rnd(31), rnd(10), rnd(1000), rnd(1000), rnd(1000)];

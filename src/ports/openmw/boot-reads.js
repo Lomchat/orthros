@@ -1,4 +1,4 @@
-// The OpenMW engine page's boot reads announced (docs/openmw.md "Scripts announced at the boot"): the engine reads its
+// The OpenMW engine page's boot reads announced (docs/openmw-history.md "Scripts announced at the boot"): the engine reads its
 // data folders' Lua scripts, their localisation and the post-processing shaders one small file at a time — at its boot
 // (LuaManager::initConfiguration, the scripts' `require` chains, L10n::MessageBundles::load, a script's YAML::LoadAll),
 // then again at a saved game's load (StateManager::loadGame: every object's scripts loaded anew, ScriptsContainer::

@@ -22,6 +22,7 @@ import { RangeHeat } from '../src/cpu/jit/heat.js';
 import { translateRegion, allocBlockCounters, discoverRegion, VisitSlots } from '../src/cpu/jit/translate.js';
 import { MemStore } from '../src/cpu/jit/code-cache.js';
 import { handleMessage, sensitive, touched } from '../src/cpu/jit/bg-translate.js';
+import { depth, FULL } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -98,10 +99,13 @@ function randomPairs(addrs) {
   return p;
 }
 const tick = () => new Promise((r) => setTimeout(r, 0));
+// the coverage floors below hold for the full sweep; the quick pass (a few programs) only asks that every path ran
+const need = (n) => (FULL ? n : 0);
 
 test('code cache under heat, adversarial: sessions sharing one cache, heats repeated / changed / grown, x87 modes, covered entries', async () => {
   let hits = 0, missHeat = 0, missExtent = 0, versions = 0, covered = 0, checked = 0, grown = 0, superseded = 0, evicted = 0, compactions = 0, refreshed = 0;
-  for (let t = 0; t < 40; t++) {
+  // (the quick pass: 3 programs, every path below exercised; ~1 s of each idle session is the worker's quiet delay)
+  for (let t = 0, n = depth(40, 3); t < n; t++) {
     const { code, end } = gen();
     const scratch = new GuestMemory(); scratch.writeBytes(CODE, code);
     const addrs = [];
@@ -184,19 +188,19 @@ test('code cache under heat, adversarial: sessions sharing one cache, heats repe
       if (jit.bg.cache) { missHeat += jit.bg.cache.missHeat; missExtent += jit.bg.cache.missExtent; superseded += jit.bg.cache.superseded; evicted += jit.bg.cache.evicted; compactions += jit.bg.cache.compactions; }
     }
   }
-  assert.ok(hits > 100, `regions reused: ${hits}`);
-  assert.ok(missHeat > 10, `other heat answers: ${missHeat}`);
-  assert.ok(missExtent > 10, `other extents: ${missExtent}`);
-  assert.ok(superseded > 10 && evicted > 5 && compactions > 3 && refreshed > 10, `superseded ${superseded}, evicted ${evicted}, compactions ${compactions}, refreshed ${refreshed}`);
-  assert.ok(versions > 5, `x87-mode versions: ${versions}`);
-  assert.ok(covered > 20, `covered entries: ${covered}`);
-  assert.ok(grown > 20 && checked > 500, `heat grown ${grown}, regions checked ${checked}`);
+  assert.ok(hits > need(100), `regions reused: ${hits}`);
+  assert.ok(missHeat > need(10), `other heat answers: ${missHeat}`);
+  assert.ok(missExtent > need(10), `other extents: ${missExtent}`);
+  assert.ok(superseded > need(10) && evicted > need(5) && compactions > need(3) && refreshed > need(10), `superseded ${superseded}, evicted ${evicted}, compactions ${compactions}, refreshed ${refreshed}`);
+  assert.ok(versions > need(5), `x87-mode versions: ${versions}`);
+  assert.ok(covered > need(20), `covered entries: ${covered}`);
+  assert.ok(grown > need(20) && checked > need(500), `heat grown ${grown}, regions checked ${checked}`);
 });
 
 test('refresh filter: a region none of whose heat-sensitive addresses gained heat keeps its extent and visit flags', () => {
   // (bg-translate.js sensitive / touched: a refresh pass discovers again only the regions the added heat touches)
   let same = 0, rediscovered = 0, changed = 0;
-  for (let t = 0; t < 300; t++) {
+  for (let t = 0, n = depth(300, 30); t < n; t++) {
     const { code, end } = gen();
     const mem = new GuestMemory(); mem.fill(CODE, 0x1000, 0xcc); mem.writeBytes(CODE, code);
     const addrs = [];
@@ -218,5 +222,5 @@ test('refresh filter: a region none of whose heat-sensitive addresses gained hea
       else { rediscovered++; if (b.key !== a.key) changed++; }
     }
   }
-  assert.ok(same > 200 && rediscovered > 200 && changed > 50, `untouched ${same}, rediscovered ${rediscovered} (changed ${changed})`);
+  assert.ok(same > need(200) && rediscovered > need(200) && changed > need(50), `untouched ${same}, rediscovered ${rediscovered} (changed ${changed})`);
 });

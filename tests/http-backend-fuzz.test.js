@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
 import { NetLink } from '../src/vfs/net-link.js';
+import { depth } from './depth.js';
 
 function rng(seed) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
 
@@ -188,11 +189,11 @@ test('http backend (randomized): pieces evicted in the middle of a read (past 64
 });
 
 test('http backend (randomized): reads return exactly the file bytes under pieces, blocks, background fills and failures', async () => {
-  const seeds = process.env.FUZZ_SEEDS ? +process.env.FUZZ_SEEDS : 30;
+  const seeds = process.env.FUZZ_SEEDS ? +process.env.FUZZ_SEEDS : depth(30, 4);
   for (let s = 1; s <= seeds; s++) await run(s * 7919);
 });
 
 test('http backend (randomized): exact bytes on a thin and a mid link too (pieces kept in the store, background turns, overlap aborts)', async () => {
-  const seeds = process.env.FUZZ_SEEDS ? +process.env.FUZZ_SEEDS : 20;
+  const seeds = process.env.FUZZ_SEEDS ? +process.env.FUZZ_SEEDS : depth(20, 2);
   for (let s = 1; s <= seeds; s++) { await run(s * 104729, 85000); await run(s * 15485863, 1000000); }
 });

@@ -478,7 +478,7 @@ export class GameData {
    * load that never says its end). An engine that holds the page's thread through a load gets them at its end anyway —
    * the page's messages wait —; one that yields got them in the middle of it, and its big load (bigBatch, pick) then read
    * the files that came whole meanwhile instead of their light copies: OpenMW r20 (JSPI) on a new device read 270 MB of full
-   * textures at its boot, the in-play loads after it waiting for theirs (2026-10-30, docs/openmw.md).
+   * textures at its boot, the in-play loads after it waiting for theirs (2026-10-30, docs/openmw-history.md).
    */
   heldReal() {
     if (!this.realHeld.length || (this.inLoad() && performance.now() - this.realHeldAt < HELD_MAX_MS)) return;
@@ -666,7 +666,7 @@ export class GameData {
    * once the page's thread yields — the window's light-or-file verdict is the whole window's). Returns how many entries
    * are not in the page as either copy that verdict may choose (0: nothing to wait for — no batch).
    * `opts` (or the label alone): { label, prio } — prio 'place': a list the page predicts (the place a saved game will
-   * load, docs/openmw.md "Anticipated places"), not one the engine waits for: fetched in the background below the
+   * load, docs/openmw-history.md "Anticipated places"), not one the engine waits for: fetched in the background below the
    * game's reads, a load's and the launch set (HttpBackend.wantList `prio: 'place'`), outside the wait's window (no
    * batch number: wantWait never waits for it), its light-or-file choice made by the link now and not pinned (nor
    * made light by a big load: the player idles meanwhile, a fast link brings the files themselves).

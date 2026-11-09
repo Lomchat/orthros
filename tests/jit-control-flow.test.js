@@ -11,6 +11,7 @@ import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -128,7 +129,9 @@ function snapshot(E) {
 
 test('random control flow: whole runs and time-sliced runs match the interpreter (innermost and nested structured loops)', () => {
   let loops = 0, dispatches = 0;
-  for (let seed = 1; seed <= 80; seed++) {
+  // quick pass: every 8th seed, both halves (flat and nested loops) still covered
+  const seedStep = 80 / depth(80, 10);
+  for (let seed = 1; seed <= 80; seed += seedStep) {
     const nestLoops = seed > 40;
     const n = 3 + ((seed % 40) * 7) % 58; // up to 60 blocks: some regions exceed MAX_BLOCKS
     const { code, exit } = program(seed % 40 + 1, n);
@@ -155,7 +158,7 @@ test('random control flow: whole runs and time-sliced runs match the interpreter
 });
 
 test('flags consumed at block entry (every lazy kind and size) match the interpreter', () => {
-  for (let seed = 100; seed < 160; seed++) {
+  for (let seed = 100; seed < 100 + depth(60, 8); seed++) {
     const n = 4 + (seed * 5) % 40;
     const { code, exit } = flagsProgram(seed, n);
     const EI = makeExec(false);
@@ -271,7 +274,7 @@ test('flags liveness: partial flag writers (rotates, bit tests, inc/dec, clc/stc
     },
     () => [0x8d, 0x04 | (reg() << 3), (reg() << 3) | [0, 1, 2, 3, 6, 7][pick(6)]], // lea r, [base + index] (transparent)
   ];
-  for (let seed = 0; seed < 300; seed++) {
+  for (let seed = 0; seed < depth(300, 20); seed++) { // one RNG for every seed: the quick pass is the full run's prefix
     const bytes = [];
     for (let i = 0; i < 40; i++) {
       bytes.push(...ops[pick(ops.length)]());
@@ -292,7 +295,12 @@ test('every condition after every flag writer on boundary values, in the same bl
   const WRITERS = [[0x40], [0x48], [0xfe, 0xc0], [0x66, 0x48], [0xf7, 0xd8], [0xf6, 0xd8], [0x83, 0xc0, 0x01], [0x83, 0xe8, 0x01], [0x04, 0x01], [0x66, 0x2d, 0x01, 0x00],
     [0x83, 0xd0, 0x00], [0x83, 0xd8, 0x00], [0x01, 0xc8], [0x29, 0xc8], [0x85, 0xc0], [0x84, 0xc0], [0xd1, 0xe8], [0xd1, 0xf8], [0xd1, 0xe0], [0xc1, 0xe8, 0x03], [0xc0, 0xf8, 0x03],
     [0xd3, 0xe8], [0x0f, 0xaf, 0xc1], [0xf7, 0xe1], [0x0f, 0xa4, 0xc8, 0x03], [0x3c, 0x80], [0x66, 0x3d, 0x00, 0x80]];
-  for (const w of WRITERS) for (const v of EDGE) for (const split of [false, true]) {
+  const cases = [];
+  for (const w of WRITERS) for (const v of EDGE) for (const split of [false, true]) cases.push([w, v, split]);
+  // quick pass: an evenly spread sample of the (writer, value, split) grid; full depth: every case, in order
+  const take = depth(cases.length, 30);
+  for (let i = 0; i < take; i++) {
+    const [w, v, split] = cases[Math.floor(i * cases.length / take)];
     const bytes = [];
     for (let cc = 0; cc < 16; cc++) {
       // stc/clc give adc/sbb a known carry-in; setcc into cl, accumulated in ebx

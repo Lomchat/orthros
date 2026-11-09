@@ -1,9 +1,8 @@
 // The player's connection model (src/vfs/net-link.js): bandwidth measured from the transfers, the game's reads first,
-// background turns by priority, request sizes from the measure; and the page's wording of a wait (net-status.js).
+// background turns by priority, request sizes from the measure; the home screen's download line (download.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { NetLink, FAST_BPS, BG_SECONDS, LOAD_GAP_MS, LOAD_WINDOW_MS, LOAD_LONG_MS, LOAD_HOLD_MS } from '../src/vfs/net-link.js';
-import { netWaitText, fmtRate, fmtDuration, benchNetwork } from '../src/web/net-status.js';
 import { downloadStatus } from '../src/web/download.js';
 
 /** a fake clock: timers fire when the test advances the time */
@@ -236,20 +235,6 @@ test('net link: the background bytes counted by producer, those begun during a l
   const s = n.snapshot();
   assert.deepEqual(s.bgBy.upgrade, { requests: 1, wire: 40000, raw: 65536, inLoad: 0 });
   assert.deepEqual(s.bgBy.ahead, { requests: 1, wire: 30000, raw: 65536, inLoad: 30000 });
-});
-
-test('net status: the waiting message names the rate, what came and the step\'s time', () => {
-  assert.equal(netWaitText(null), null);
-  assert.equal(netWaitText({ waiting: false, bw: 1 }), null);
-  const t = netWaitText({ waiting: true, bw: 87040, demandBytes: 10 << 20, bgBytes: 4 << 20, stepWire: 87040 * 240 });
-  assert.match(t.title, /^Downloading game data — 85 KB\/s$/);
-  assert.match(t.detail, /14 MB received/);
-  assert.match(t.detail, /about 4 min for this step/);
-  assert.match(t.detail, /download the whole game first/);
-  assert.equal(fmtRate(5 * 1048576), '5.0 MB/s');
-  assert.equal(fmtDuration(7300), 'about 2 h 2 min');
-  assert.equal(fmtDuration(42, 'fr', true), '~40 s');
-  assert.deepEqual(Object.keys(benchNetwork({ bw: 5, demandBytes: 1 })).sort(), ['aborted', 'bgBytes', 'bgRequests', 'bw', 'demandBytes', 'demandMs', 'demandRequests', 'measured', 'rtt']);
 });
 
 test('download first: the home screen line from the kept progress', () => {

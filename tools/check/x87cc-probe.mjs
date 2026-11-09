@@ -18,7 +18,7 @@ const scratch = opt('--scratch', '/tmp/orthros-scratch/x87cc');
 fs.mkdirSync(scratch, { recursive: true });
 const root = path.dirname(fileURLToPath(import.meta.url));
 const exe = path.join(scratch, 'x87cc');
-execFileSync('clang-18', ['-O1', '-o', exe, path.join(root, 'oracle/x87cc.c')]);
+execFileSync('clang-18', ['-O1', '-o', exe, path.join(root, '../oracle/x87cc.c')]);
 const list = cases(only);
 const parts = [Buffer.from(dataBlock())];
 for (const c of list) { const l = Buffer.alloc(2); l.writeUInt16LE(c.code.length); parts.push(l, Buffer.from(c.code)); }

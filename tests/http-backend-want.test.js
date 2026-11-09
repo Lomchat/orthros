@@ -273,7 +273,7 @@ test('on an HTTP/1.x origin a list the engine waits for through its reads keeps 
   } finally { F.release(); F.restore(); }
 });
 
-// A predicted place (wantList `prio: 'place'`, docs/openmw.md "Anticipated places"): the set of the place a saved game
+// A predicted place (wantList `prio: 'place'`, docs/openmw-history.md "Anticipated places"): the set of the place a saved game
 // will load, fetched while the link is idle before the player clicks — background turns below the game's reads, a
 // load's and the launch set, not learned, no wait of the link's, joined (and promoted) by what the game then needs.
 test('a predicted place: background requests (p=1, not learned), a small window, held by a load\'s silence, no wait of the link\'s', async () => {

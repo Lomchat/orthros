@@ -1,15 +1,15 @@
-// The OpenMW engine page's guesses of the player's next place in play (docs/openmw.md "In play: crossings and doors"):
+// The OpenMW engine page's guesses of the player's next place in play (docs/openmw-history.md "In play: crossings and doors"):
 // the learned set (GET /api/places, what the engine announced when some player loaded that place) of the exterior grid
 // the player is heading into — the cell after the one just entered, in the same direction: a whole cell's walk ahead
 // (~27 s at a run), where the engine's own preload starts ~4 s before the crossing —, fetched by the page (streamfs.js)
 // at the place's priority (GameData.want `prio: 'place'`: the link's idle time only, below the game's reads, a load's
 // and the launch set). No engine change: the cell comes from view.lua's report. No door guess: standing at a door gives
 // under a second of warning where a guess needs ~10 s at 300 KB/s to save anything, and each door passed would spend
-// the session's bounds (docs/openmw.md, the door runs). Bounded for thin links:
+// the session's bounds (docs/openmw-history.md, the door runs). Bounded for thin links:
 // a guess takes its set's meshes and terrain only — never textures (a wrong guess on a mod's textures costs tens of MB;
 // the load reads them, light first on a link that is not fast) —, LEAD.bytes of them at most, each place once a
 // session, LEAD.sessionBytes in all; a place the server never learned costs one small GET. Off unless the page asks
-// (?lead=1): measured, the learned order already brings a taught row before the player (docs/openmw.md, the A/B).
+// (?lead=1): measured, the learned order already brings a taught row before the player (docs/openmw-history.md, the A/B).
 
 export const LEAD = {
   /** the kinds of a learned set a guess fetches (the server's list: [path, start, end, kind]) */

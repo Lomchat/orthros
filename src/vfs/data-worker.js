@@ -446,7 +446,7 @@ async function startup() {
  * on a cold store (less than LAUNCH_COLD of the launch set's bytes here: a new device, a store cleared, a version
  * updated): the link idle meanwhile fetches what the way to the menu reads first. A warm one, even missing part of the
  * set (another session's first place, entries learned since), starts at the first read as before
- * ('first-read': requests beside an engine's boot delay its first read — docs/openmw.md "Anticipated places" —, and
+ * ('first-read': requests beside an engine's boot delay its first read — docs/openmw-history.md "Anticipated places" —, and
  * nothing there would be fetched). Its progress told to the page every BOOT_TELL_MS until that first read (boot).
  */
 async function prefetchNow() {

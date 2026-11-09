@@ -84,7 +84,7 @@ this server (localhost), where none of this shows.
   asked pieces. Measured (2026-10-27, `tools/bench/data-matrix.mjs --links 85k:150,500k:90 --only
   morrowind-goty-vanilla-plus-fr`, page language en, main a9aae1b against this tree, the same frozen copy of the live
   learned state and units — every Morrowind.esm block unit there, 202 of its piece units; the engine's lean package is
-  rule 2 on main and rule 3 here, docs/openmw.md, so the engine's bytes are counted apart; up to the menu shown; one run
+  rule 2 on main and rule 3 here, docs/openmw-history.md, so the engine's bytes are counted apart; up to the menu shown; one run
   at 85 KB/s, two at 500 KB/s):
 
   | | 85 KB/s before → after | 500 KB/s run 1 | 500 KB/s run 2 |
@@ -208,7 +208,7 @@ A page whose engine can draw less far loads its near world first and the far one
 worker's ctrl[11], ctrl[6]), and the learned order has nothing left for the game's current step (ctrl[10]: it does not
 run, is over, or `HttpBackend.stepEstimate` is 0) —, and `GameData.prefer('light')` makes the loads of a step read the
 light copies of their textures (upgraded later, as any). The OpenMW port uses it for its view distance
-(`src/ports/openmw/view-grow.js`, `docs/openmw.md`): on a link not fast last time the engine boots at 8192 units, then
+(`src/ports/openmw/view-grow.js`, `docs/openmw-history.md`): on a link not fast last time the engine boots at 8192 units, then
 grows by 2048 while quiet.
 
 ## Media files after the rest (2026-10-21)
@@ -350,7 +350,7 @@ every runtime, one implementation (`src/vfs/launch-set.js`):
   Once the engine runs (`start()`), the whole learned order loads in the background from the game's position
   (`prefetch: 'startup'` behaves as `'start'` after the startup set). An engine that downloads itself first
   (`'first-read'`: OpenMW) starts it at its first read — or earlier, when its own download is over and its init leaves
-  the link idle, with `GameData.prefetchNow()`, only on a cold store — less than half the launch set here (docs/openmw.md
+  the link idle, with `GameData.prefetchNow()`, only on a cold store — less than half the launch set here (docs/openmw-history.md
   "The link after the engine's package"). Until 2026-10-21 it never did for the GoldSrc and
   re3 pages: after the startup set the engine read everything on demand, round trip after round trip (Vice City: ~100
   reads per 10 s, 0.25 MB/s on a 1 MB/s link).
@@ -1234,7 +1234,7 @@ batch's sizes and the engine's ability only):
   at most `REAL_FETCHES` (8) files and 1/8 of the page's bytes under way, and none started while the engine's reloads
   told and not done yet (`realBacklog`, the page's: OpenMW's streamfs.js `reloadBacklog`) and those under way make 8 —
   an engine's reload then reads it without the page's thread waiting (OpenMW's reloads waited for the worker through
-  `fetchSync`: ~90% of their time; docs/openmw.md "Light copies sharpened without hitches"). A file no reload reads (an
+  `fetchSync`: ~90% of their time; docs/openmw-history.md "Light copies sharpened without hitches"). A file no reload reads (an
   engine that does not reload in place, yet; the file loaded itself since) is told as it comes, nothing fetched.
 - **Counted** (`GameData.snapshot()`, OpenMW's `window.__streamfsStats`): `bigLoads`, `bigFiles`, `bigBytes` (the real
   bytes left for later), `reloaded`, `realFetches` / `realFetchMs` (the files brought into the page before their reload), `realMissed` / `realRaced` (a
@@ -1815,7 +1815,7 @@ bytes are 38 MB (LAND) and ~9 MB (references' details) of Morrowind.esm's 80 MB.
     door destination's preload (`Scene::orthrosCellReady`), an object paging chunk's model list (`chunkReady`), r12's
     terrain chunks (their LAND, as before).
   Announced places are learned (`/api/places`), so a predicted save's place brings its cells' ranges while the player
-  sits in the menu (docs/openmw.md "Anticipated places").
+  sits in the menu (docs/openmw-history.md "Anticipated places").
 
 Tests: `tests/light-copies.test.js` (a synthetic TES3 file: offsets, zeroed payloads, kept headers and references, a
 moved reference's group, any range; the size threshold and the tree's mark), `tests/br-cache.test.js` (its units),
@@ -1871,7 +1871,7 @@ the wire of the content files (real or `.light/`) up to the menu:
 The owner's session (Vanilla+ FR, warm store, ~2 MB/s, the `mid` tier): Chrome's "page unresponsive" through ~430
 serial demand reads that no announce covered — the Lua scripts, localisation and quest data of mods added since the
 last visit, read one by one at the boot and again at the save's load, and the distant chunks a raised view distance or
-a script's ray built in one frame. The two fixes (docs/openmw.md "Serial reads the announces did not cover"):
+a script's ray built in one frame. The two fixes (docs/openmw-history.md "Serial reads the announces did not cover"):
 - the OpenMW page announces at the boot, in one `wait: false` list, every script, localisation, YAML and shader file
   its engine's VFS resolves (`src/ports/openmw/boot-reads.js`, `streamfs.js` `announceBoot`; `?bootreads=0`);
 - the engine (the put-off patch of the dev build `r14dev`, never shipped — numbered `orthros-r14.patch` in its scratch
@@ -1880,7 +1880,7 @@ a script's ray built in one frame. The two fixes (docs/openmw.md "Serial reads t
   do for the sliced preload — built once they are here, or after 10 s and two of the page's turns
   (`window.orthrosTurns`: nothing a put-off asks can arrive inside the task that asked it). Revised for the first r19
   build (the cull alone, the limit counted from the page's first turn), then dropped from `orthros-r19.patch`: with
-  r19's reads suspending the frame (docs/openmw.md "Waits that yield to the browser") it measured no better and held
+  r19's reads suspending the frame (docs/openmw-history.md "Waits that yield to the browser") it measured no better and held
   the page longer at a view raise.
 
 Measured (2026-10-29, `place-load.mjs morrowind-goty-vanilla-plus-fr --query tier=mid --after 75`, the proxy at 2 MB/s
@@ -1956,7 +1956,7 @@ for a read: its read asks `GameData.soon(h, position, length, spinMs)` (through 
 - **In a load only** (OpenMW, 2026-10-30): the engine passes the wait itself — 10 ms in its boot and under its loading
   screen, where the page's thread is what the player has; in play it never suspends (`?jspiplay=N`: after N ms), where
   a frame that suspends presents nothing more and the suspension only cost the frame its wait and a round of the page
-  (docs/openmw.md "In play: what r19 made worse, and the fix", "r16dev-c").
+  (docs/openmw-history.md "In play: what r19 made worse, and the fix", "r16dev-c").
 - **The worker's word held through a load that yields** (`GameData` `inLoad`, `heldReal`; OpenMW: the engine's
   `Module.orthrosLoading()`, `?heldreal=0` off): its `real` messages — the files here whole — are queued while the
   engine is in a load, applied in order at its end (HELD_MAX_MS at most). An engine that holds the page's thread gets

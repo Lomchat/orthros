@@ -12,6 +12,7 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { decode } from '../src/cpu/decoder.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -78,7 +79,7 @@ const V = [0, 1, 0x7f, 0x80, 0xffff, 0x7fffffff, 0x80000000, 0xffffffff, 0x12345
 const val = () => (rnd(2) ? V[rnd(V.length)] : ((rnd(65536) << 16) | rnd(65536)) >>> 0);
 
 test('reverse-postorder layout: random programs with in-region calls and backward branches match the interpreter, with the same time slices', () => {
-  for (let t = 0; t < 200; t++) {
+  for (let t = 0, n = depth(200, 5); t < n; t++) {
     const { code, end } = gen();
     const regs = [val(), val(), val(), val(), rnd(0x1000)];
     const s0 = seed;
@@ -100,7 +101,7 @@ test('reverse-postorder layout: random programs with in-region calls and backwar
 // slices with and without it; both kinds of region occur.
 test('a dispatcher no transfer goes back through is a block: random programs match the interpreter, same time slices', () => {
   let blocks = 0, regions = 0;
-  for (let t = 0; t < 200; t++) {
+  for (let t = 0, n = depth(200, 6); t < n; t++) {
     const { code, end } = gen();
     const regs = [val(), val(), val(), val(), rnd(0x1000)];
     const s0 = seed;
@@ -195,7 +196,8 @@ function runThreads(code, end, regs, jitOpts, slice, nThreads) {
 }
 test('reverse-postorder layout with self-modifying code and threads: one thread matches the interpreter; two alternated threads give the same results and slices with and without it', () => {
   let n = 0, smc = 0;
-  for (let t = 0; t < 150; t++) {
+  const programs = depth(150, 6);
+  for (let t = 0; t < programs; t++) {
     const p = genSmc(); if (!p) continue; n++;
     const regs = [val(), val(), val(), val(), rnd(0x1000)];
     const msg = `program ${t}: ${Buffer.from(p.code).toString('hex')} regs ${regs.map((x) => (x >>> 0).toString(16)).join(' ')}`;
@@ -208,5 +210,5 @@ test('reverse-postorder layout with self-modifying code and threads: one thread 
       smc += on.trace.split('smc').length - 1;
     }
   }
-  assert.ok(n > 80 && smc > n, `programs with self-modifying code: ${n}, SMC exits: ${smc}`);
+  assert.ok(n > Math.floor(80 * programs / 150) && smc > n, `programs with self-modifying code: ${n}, SMC exits: ${smc}`);
 });

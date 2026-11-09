@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HttpBackend } from '../src/vfs/http-backend.js';
+import { FULL } from './depth.js';
 
 const MiB = 1 << 20;
 const FILE = Uint8Array.from({ length: 3 * MiB + 1234 }, (_, i) => (i * 7 + (i >> 11)) & 0xff);
@@ -269,7 +270,8 @@ test('learned heat: ranges merged per module, kept across server restarts', asyn
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-heat-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
   const learnDir = path.join(dir, 'learn'); fs.mkdirSync(learnDir);
-  const start = async () => { const s = createServer({ manifests: path.join(dir, 'man'), learnDir }); await new Promise((r) => s.listen(0, '127.0.0.1', r)); return s; };
+  // (quick pass: the heat file written after 10 ms instead of the server's default 20 s, the restart test unchanged)
+  const start = async () => { const s = createServer({ manifests: path.join(dir, 'man'), learnDir, ...(FULL ? {} : { learnWriteMs: 10 }) }); await new Promise((r) => s.listen(0, '127.0.0.1', r)); return s; };
   let server = await start();
   const url = () => `http://127.0.0.1:${server.address().port}/api/heat/g`;
   const post = (heat) => fetch(url(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ heat }) });

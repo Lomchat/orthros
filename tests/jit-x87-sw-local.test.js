@@ -14,6 +14,7 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, T32 = DATA, T64 = DATA + 0x1000, OUT = DATA + 0x8000;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -148,7 +149,7 @@ function check(seed, cw, slices, ext = false) {
 }
 
 test('x87 status word in a local: random compare / branch / exception programs match the interpreter', () => {
-  for (let seed = 1; seed <= 100; seed++) for (const cw of [0x037f, 0x0c7f, 0x007f]) check(seed, cw, [1e7]);
+  for (let seed = 1; seed <= depth(100, 3); seed++) for (const cw of [0x037f, 0x0c7f, 0x007f]) check(seed, cw, [1e7]);
 });
 
 test('x87 status word in a local: the seeds that found FCOMI / FUCOMI clearing C1 in the interpreter only', () => {
@@ -158,12 +159,12 @@ test('x87 status word in a local: the seeds that found FCOMI / FUCOMI clearing C
 });
 
 test('x87 status word in a local: FCOMIP / FCMOVcc / FFREE / FPREM1 / FXAM / FINCSTP mixed in', () => {
-  for (let seed = 3000; seed < 3030; seed++) for (const cw of [0x037f, 0x0c7f, 0x007f]) check(seed, cw, [1e7], true);
-  for (let seed = 3100; seed < 3110; seed++) check(seed, 0x037f, [1, 7], true);
+  for (let seed = 3000; seed < 3000 + depth(30, 2); seed++) for (const cw of [0x037f, 0x0c7f, 0x007f]) check(seed, cw, [1e7], true);
+  for (let seed = 3100; seed < 3100 + depth(10, 1); seed++) check(seed, 0x037f, [1, 7], true);
 });
 
 test('x87 status word in a local: time slices through random programs', () => {
-  for (let seed = 500; seed < 520; seed++) for (const cw of [0x037f, 0x0c7f]) check(seed, cw, [1, 7]);
+  for (let seed = 500; seed < 500 + depth(20, 2); seed++) for (const cw of [0x037f, 0x0c7f]) check(seed, cw, [1, 7]);
 });
 
 test('x87 status word in a local: a loop-carried FCOM / FNSTSW / TEST AH / Jcc chain', () => {

@@ -433,7 +433,7 @@ function startBackground(v) {
     translator.onmessage = (e) => { if (e.data?.type === 'batch') { jit.bgInstall(e.data); if (bgTranslator === translator) feedBackground(); } else if (e.data?.type === 'cache-error') log('warn', `translated code cache unavailable: ${e.data.message}`); else if (e.data?.type === 'cache-stats' && jit.bg) jit.bg.cache = e.data.cache; };
     translator.onerror = (e) => { log('warn', `background translation unavailable: ${e.message ?? e}`); if (bgTranslator === translator) bgTranslator = null; };
     // (translations kept across sessions in OPFS, keyed by the translator's own sources: ?codecache=0, off)
-    const jitUrl = (f) => new URL(`../../cpu/jit/${f}`, import.meta.url).href;
+    const jitUrl = (f) => new URL(`../cpu/jit/${f}`, import.meta.url).href;
     jit.attachBackground(translator, codeCacheOn(m.opts) ? { name: manifestName, sources: [jitUrl('bg-translate.js'), jitUrl('jit.js'), jitUrl('runtime.js')] } : null);
     // cold tier (Jit.runCold): new code interpreted while the background worker translates it (?dbg=ORTHROS_COLD_TIER=0|1)
     jit.coldTier = !!(globalThis.ORTHROS_COLD_TIER ?? COLD_TIER_DEFAULT);

@@ -17,6 +17,7 @@ import { d3dEnv } from './d3d-random.js';
 import { defineEffects } from '../src/win32/d3dx9-effect.js';
 import { effectBinary, shader, op } from './fx-build.js';
 import { PT, PC } from '../src/win32/d3dx9-fxparse.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, SLOTS = 0x10000100, STACK = 0x10090000, RESULTS = 0x10100000, THUNK_SIZE = 16;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -192,7 +193,7 @@ function compare(A, B, calls, where) {
 test('effect technique calls queued: the same results, pass counts and device states as running every call in order', () => {
   const queued = new Array(METHODS.length).fill(0), total = new Array(METHODS.length).fill(0);
   let dropped = 0;
-  for (let seed = 1; seed <= 20; seed++) {
+  for (let seed = 1, n = depth(20, 3); seed <= n; seed++) {
     const A = session(true), B = session(false), calls = program(A, seed, 160);
     const d0 = A.mem.read32(FAST_STATS);
     const toJs = runJit(A, calls);
@@ -236,7 +237,7 @@ test('effect technique calls queued: Begin answers the pass count of the techniq
 test('effect technique calls queued: a restore list missing a state is caught by the randomized comparison', () => {
   // (the test's sensitivity: every list published by Begin loses its last entry)
   let mismatches = 0;
-  for (let seed = 1; seed <= 16; seed++) {
+  for (let seed = 1, n = depth(16, 2); seed <= n; seed++) {
     const A = session(true), B = session(false), calls = program(A, seed, 160);
     const cut = new Set();
     const hook = (S) => { for (const f of S.fxs) { const L = S.mem.read32(f.fx.handleBlock + FX_SLOTS + 4), n = L ? S.mem.read32(L + 4) : 0; if (L && n > 0 && n < 0xffffffff && !cut.has(L)) { cut.add(L); S.mem.write32(L + 4, n - 1); } } };

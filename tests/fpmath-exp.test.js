@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { ModuleBuilder, Code, T } from '../src/cpu/jit/wasm.js';
 import { addExpKernels, INDEFINITE_BITS, LOG2P1_LO, LOG2P1_HI } from '../src/cpu/jit/fpmath-exp.js';
 import { scalb as scalbInterp } from '../src/cpu/interp-x87.js';
+import { depth } from './depth.js';
 
 const TOL = 1e-14;
 const ULP1 = 2 ** -52;
@@ -75,6 +76,13 @@ const logUniform = (lo, hi) => Math.pow(10, lo + (hi - lo) * next());
 const denormal = () => sign() * Math.floor(next() * 2 ** 52) * Number.MIN_VALUE;
 /** a random double with the given number of leading mantissa bits chosen freely (any full 53-bit value) */
 const fullBits = (lo, hi) => { const v = uniform(lo, hi); f64[0] = v; u64[0] ^= BigInt(Math.floor(next() * 2 ** 20)); return f64[0]; };
+
+/**
+ * `n` draws of `gen`, `fn` called on the first `quick` of them (all of them with ORTHROS_TEST_FULL=1): the quick pass
+ * checks a prefix of the very inputs the full run checks, and the shared stream ends where the full run leaves it, so
+ * the later tests (their fixed-count draws included) see the same inputs at both depths.
+ */
+function sweep(n, quick, gen, fn) { for (let i = 0; i < n; i++) { const x = gen(); if (i < quick) fn(x); } }
 
 /** true relative error (not the oracle's max(1, ...) normalization) */
 const relErr = (got, want) => Math.abs(got - want) / Math.abs(want);
@@ -233,7 +241,7 @@ test('exp2m1: special values and exact cases', () => {
 });
 
 test('exp2m1: random sweeps vs Math (tol 1e-14) and vs the exact reference', () => {
-  const N = 200_000, NX = 10_000;
+  const N = 200_000, NX = 10_000, NQ = depth(N, 10_000), NXQ = depth(NX, 1000);
   const sweeps = {
     'uniform [-1, 1]': () => uniform(-1, 1),
     'uniform [-1, 1] full mantissas': () => fullBits(-1, 1),
@@ -246,19 +254,19 @@ test('exp2m1: random sweeps vs Math (tol 1e-14) and vs the exact reference', () 
   let overall = 0;
   for (const [name, gen] of Object.entries(sweeps)) {
     const stats = { max: 0, at: null };
-    for (let i = 0; i < N; i++) check('exp2m1', exp2m1, expRef, gen(), stats);
-    report('exp2m1 ' + name, stats, N);
+    sweep(N, NQ, gen, (x) => check('exp2m1', exp2m1, expRef, x, stats));
+    report('exp2m1 ' + name, stats, NQ);
     overall = Math.max(overall, stats.max);
   }
   // denormal inputs: within one unit of 2^-1074 of Math (both round on the grid)
-  for (let i = 0; i < N; i++) check('exp2m1', exp2m1, expRef, denormal());
+  sweep(N, NQ, denormal, (x) => check('exp2m1', exp2m1, expRef, x));
   console.log(`[fpmath-exp] exp2m1 overall max rel err vs Math ${fmtUlp(overall)}`);
   assert.ok(overall <= TOL);
   let exact = 0;
   for (const [name, gen] of Object.entries({ 'exact uniform [-1, 1]': () => uniform(-1, 1), 'exact full mantissas [-1, 1]': () => fullBits(-1, 1), 'exact log-uniform 1e-300..1 (signed)': () => sign() * logUniform(-300, 0), 'exact near +-1': () => sign() * (1 - logUniform(-16, -3)) })) {
     const stats = { max: 0, at: null };
-    for (let i = 0; i < NX; i++) checkExact('exp2m1', exp2m1, exp2m1Ref, gen(), stats);
-    report('exp2m1 ' + name, stats, NX);
+    sweep(NX, NXQ, gen, (x) => checkExact('exp2m1', exp2m1, exp2m1Ref, x, stats));
+    report('exp2m1 ' + name, stats, NXQ);
     exact = Math.max(exact, stats.max);
   }
   console.log(`[fpmath-exp] exp2m1 overall max rel err vs exact ${fmtUlp(exact)}`);
@@ -285,7 +293,7 @@ test('log2: special values and exact powers of two', () => {
 });
 
 test('log2: random sweeps vs Math.log2 (tol 1e-14) and vs the exact reference', () => {
-  const N = 200_000, NX = 10_000;
+  const N = 200_000, NX = 10_000, NQ = depth(N, 10_000), NXQ = depth(NX, 1000);
   const sweeps = {
     'log-uniform 1e-300..1e300': () => logUniform(-300, 300),
     'uniform [0.5, 2]': () => uniform(0.5, 2),
@@ -298,8 +306,8 @@ test('log2: random sweeps vs Math.log2 (tol 1e-14) and vs the exact reference', 
   let overall = 0;
   for (const [name, gen] of Object.entries(sweeps)) {
     const stats = { max: 0, at: null };
-    for (let i = 0; i < N; i++) check('log2', log2, Math.log2, gen(), stats);
-    report('log2 ' + name, stats, N);
+    sweep(N, NQ, gen, (x) => check('log2', log2, Math.log2, x, stats));
+    report('log2 ' + name, stats, NQ);
     overall = Math.max(overall, stats.max);
   }
   console.log(`[fpmath-exp] log2 overall max rel err vs Math ${fmtUlp(overall)}`);
@@ -307,8 +315,8 @@ test('log2: random sweeps vs Math.log2 (tol 1e-14) and vs the exact reference', 
   let exact = 0;
   for (const [name, gen] of Object.entries({ 'exact log-uniform 1e-300..1e300': () => logUniform(-300, 300), 'exact uniform [0.5, 2] full mantissas': () => fullBits(0.5, 2), 'exact near 1': () => 1 + sign() * logUniform(-16, -2), 'exact denormals': () => Math.abs(denormal()) || Number.MIN_VALUE })) {
     const stats = { max: 0, at: null };
-    for (let i = 0; i < NX; i++) checkExact('log2', log2, log2Ref, gen(), stats);
-    report('log2 ' + name, stats, NX);
+    sweep(NX, NXQ, gen, (x) => checkExact('log2', log2, log2Ref, x, stats));
+    report('log2 ' + name, stats, NXQ);
     exact = Math.max(exact, stats.max);
   }
   console.log(`[fpmath-exp] log2 overall max rel err vs exact ${fmtUlp(exact)}`);
@@ -337,7 +345,7 @@ test('log2p1: special values and exact cases', () => {
 });
 
 test('log2p1: random sweeps vs Math.log1p / ln2 (tol 1e-14) and vs the exact reference', () => {
-  const N = 200_000, NX = 10_000;
+  const N = 200_000, NX = 10_000, NQ = depth(N, 10_000), NXQ = depth(NX, 1000);
   const sweeps = {
     'FYL2XP1 domain |x| < 1 - sqrt(2)/2': () => uniform(-0.29289, 0.29289),
     'direct window full mantissas': () => fullBits(LOG2P1_LO, LOG2P1_HI),
@@ -350,18 +358,18 @@ test('log2p1: random sweeps vs Math.log1p / ln2 (tol 1e-14) and vs the exact ref
   let overall = 0;
   for (const [name, gen] of Object.entries(sweeps)) {
     const stats = { max: 0, at: null };
-    for (let i = 0; i < N; i++) check('log2p1', log2p1, log2p1MathRef, gen(), stats);
-    report('log2p1 ' + name, stats, N);
+    sweep(N, NQ, gen, (x) => check('log2p1', log2p1, log2p1MathRef, x, stats));
+    report('log2p1 ' + name, stats, NQ);
     overall = Math.max(overall, stats.max);
   }
-  for (let i = 0; i < N; i++) check('log2p1', log2p1, log2p1MathRef, denormal());
+  sweep(N, NQ, denormal, (x) => check('log2p1', log2p1, log2p1MathRef, x));
   console.log(`[fpmath-exp] log2p1 overall max rel err vs Math ${fmtUlp(overall)}`);
   assert.ok(overall <= TOL);
   let exact = 0;
   for (const [name, gen] of Object.entries({ 'exact FYL2XP1 domain': () => uniform(-0.29289, 0.29289), 'exact direct window full mantissas': () => fullBits(LOG2P1_LO, LOG2P1_HI), 'exact tiny signed 1e-300..0.29': () => sign() * logUniform(-300, Math.log10(0.29)), 'exact (-1, 8]': () => uniform(-0.999999, 8), 'exact near -1': () => -1 + logUniform(-16, -1), 'exact 1..1e300': () => logUniform(0, 300) })) {
     const stats = { max: 0, at: null };
-    for (let i = 0; i < NX; i++) checkExact('log2p1', log2p1, log2p1Ref, gen(), stats);
-    report('log2p1 ' + name, stats, NX);
+    sweep(NX, NXQ, gen, (x) => checkExact('log2p1', log2p1, log2p1Ref, x, stats));
+    report('log2p1 ' + name, stats, NXQ);
     exact = Math.max(exact, stats.max);
   }
   console.log(`[fpmath-exp] log2p1 overall max rel err vs exact ${fmtUlp(exact)}`);
@@ -395,7 +403,8 @@ test('scalb: bit-for-bit against the exact single-rounding reference (specials a
   assert.ok(Object.is(scalb(-3, -Infinity), -0) && Object.is(scalb(3, -Infinity), 0));
   assert.equal(scalb(-3, Infinity), -Infinity);
   // random: mantissas everywhere, exponents that cross the denormal/overflow thresholds and the clamps
-  const N = 300_000;
+  // (the last tests drawing from the shared stream: their counts shrink in the quick pass)
+  const N = depth(300_000, 20_000);
   for (let i = 0; i < N; i++) {
     const a = (next() < 0.1 ? denormal() : sign() * logUniform(-308, 308));
     const kind = next();
@@ -403,11 +412,11 @@ test('scalb: bit-for-bit against the exact single-rounding reference (specials a
     same(a, b);
   }
   // sample with fractional exponents (trunc toward zero) in the denormal-producing region
-  for (let i = 0; i < 50_000; i++) same(fullBits(0.5, 2), uniform(-1080, -1020));
+  for (let i = 0, m = depth(50_000, 5000); i < m; i++) same(fullBits(0.5, 2), uniform(-1080, -1020));
 });
 
 test('timing: 1e7 calls of each kernel from a WASM loop', () => {
-  const n = 1e7;
+  const n = depth(1e7, 1e6);
   const time = (name, fn, jsFn) => {
     fn(1e6); // warm-up (tier-up)
     const t0 = process.hrtime.bigint();
@@ -416,7 +425,7 @@ test('timing: 1e7 calls of each kernel from a WASM loop', () => {
     const t1 = process.hrtime.bigint();
     const ref = jsFn(n);
     const nsJs = Number(process.hrtime.bigint() - t1) / n;
-    console.log(`[fpmath-exp] ${name}: ${ns.toFixed(1)} ns/call (WASM loop, 1e7 calls); JS Math equivalent: ${nsJs.toFixed(1)} ns/call; sums ${acc} vs ${ref}`);
+    console.log(`[fpmath-exp] ${name}: ${ns.toFixed(1)} ns/call (WASM loop, ${n} calls); JS Math equivalent: ${nsJs.toFixed(1)} ns/call; sums ${acc} vs ${ref}`);
     assert.ok(Math.abs(acc - ref) <= 1e-9 * Math.max(1, Math.abs(ref)), `sum mismatch ${acc} vs ${ref}`);
     assert.ok(ns < 500, `${name} too slow: ${ns} ns/call`);
   };

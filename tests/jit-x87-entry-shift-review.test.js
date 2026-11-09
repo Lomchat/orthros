@@ -12,6 +12,7 @@ import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { translateRegion } from '../src/cpu/jit/translate.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, DATA_SIZE = 0x1000;
 const MEMOP = DATA + 0x100; // esi
@@ -139,7 +140,7 @@ function program(seed, n = 30) {
 
 test('review: planned blocks with TOP readers / re-basers, in-region calls, MMX, match the interpreter', () => {
   let planned = 0;
-  for (let seed = 1; seed <= 300; seed++) {
+  for (let seed = 1, n = depth(300, 40); seed <= n; seed++) {
     const code = program(seed * 4099 + 3);
     runBoth(code, seed, `seed ${seed} (${Buffer.from(code).toString('hex')})`);
     const mem = new GuestMemory(); mem.writeBytes(CODE, code);

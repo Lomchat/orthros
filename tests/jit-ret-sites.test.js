@@ -10,6 +10,7 @@ import { GuestMemory, THUNK_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, TEB = 0x10002000, SLOT = 0x10003000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -197,7 +198,7 @@ test('random call graphs (tail calls, return-address skews, RET imm16, flags rea
   let seed = 0x2545f491;
   const rnd = (n) => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) % n; };
   let local = 0;
-  for (let round = 0; round < 20; round++) {
+  for (let round = 0, n = depth(20, 5); round < n; round++) {
     const a = new Asm();
     const nf = 3 + rnd(8);
     let lbl = 0;

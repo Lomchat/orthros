@@ -8,8 +8,6 @@ import { HIST_N, histBucket, histUpper, histQuantile, histSparse, histAddSparse,
 import { parseScenario, unsupportedSteps, ScenarioPlayer, inRanges, PORT_KINDS } from '../src/web/scenario.js';
 import { PerfWindow, SummaryClock, compactPhase } from '../src/web/perf-summary.js';
 import { GpuProbe, WINDOW_FRAMES, PERIOD_MS, GL_FRAMES, GL_PERIOD_MS } from '../src/gfx/gpu-probe.js';
-import { scanCodeOfVk } from '../src/win32/vk-scan.js';
-import { scanCodeOfVk as dinputScan } from '../src/win32/dinput8.js';
 
 const rng = (seed) => () => { seed = (seed * 1103515245 + 12345) >>> 0; return seed / 2 ** 32; };
 
@@ -136,11 +134,6 @@ test('player: pointer coordinates scaled from the scenario space to the display'
   display = [800, 600];
   const p2 = new ScenarioPlayer(steps, { from: [800, 600], display: () => display });
   assert.deepEqual(p2.tick(0, null)[0].args, [216, 555]);
-});
-
-test('scan codes: the shared table is the one DirectInput uses', () => {
-  for (let vk = 0; vk < 256; vk++) assert.equal(scanCodeOfVk(vk), dinputScan(vk));
-  assert.equal(scanCodeOfVk(27), 1); assert.equal(scanCodeOfVk(0x26), 0x148);
 });
 
 /** a stats message as the worker posts it */

@@ -1,13 +1,18 @@
 // Every shader translator must produce GLSL that a real WebGL2 implementation compiles and links:
 // fixed-function variants, DX8 vs1.1/ps1.x and DX9 SM 1.x-2.x programs (synthetic token streams),
 // compiled in headless Chromium.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { ffVertexShader, ffFragmentShader, fvfLayout, translateVertexShader, translatePixelShader, TOP } from '../src/gfx/d3d8-shaders.js';
 import { translatePixelShader9, translateVertexShader9 } from '../src/gfx/d3d9-shaders.js';
 
 let chromium = null;
 try { ({ chromium } = await import('playwright')); } catch { /* playwright not installed */ }
+
+// (one browser for both browser tests, closed at the end)
+let browserP = null;
+const sharedBrowser = () => (browserP ??= chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-webgl'] }));
+after(async () => { if (browserP) await (await browserP).close(); });
 
 const f = (x) => new Uint32Array(new Float32Array([x]).buffer)[0];
 const env = { cube: [], volume: [], projected: [], fog: 0 };
@@ -45,9 +50,8 @@ test('D3DCOLOR vertex inputs of vertex shaders are read as (R, G, B, A)', () => 
 });
 
 test('generated GLSL compiles and links in WebGL2', { skip: !chromium && 'playwright missing', timeout: 60000 }, async () => {
-  const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-webgl'] });
+  const page = await (await sharedBrowser()).newPage();
   try {
-    const page = await browser.newPage();
     const errors = await page.evaluate((progs) => {
       const gl = new OffscreenCanvas(4, 4).getContext('webgl2');
       const out = [];
@@ -61,7 +65,7 @@ test('generated GLSL compiles and links in WebGL2', { skip: !chromium && 'playwr
       return out;
     }, programs);
     assert.deepEqual(errors, []);
-  } finally { await browser.close(); }
+  } finally { await page.close(); }
 });
 
 // Lean shaders (d3d8-shaders.js leanShaders: lights unrolled by type, registers as variables, only the inputs read) must
@@ -80,9 +84,8 @@ const leanPairs = [];
 }
 
 test('lean shaders draw the same pixels as the earlier GLSL', { skip: !chromium && 'playwright missing', timeout: 60000 }, async () => {
-  const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-webgl'] });
+  const page = await (await sharedBrowser()).newPage();
   try {
-    const page = await browser.newPage();
     const res = await page.evaluate((pairs) => {
       const W = 64, gl = new OffscreenCanvas(W, W).getContext('webgl2', { antialias: false });
       const fb = gl.createFramebuffer(), rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, W, W);
@@ -137,5 +140,5 @@ test('lean shaders draw the same pixels as the earlier GLSL', { skip: !chromium 
       return out;
     }, leanPairs);
     assert.deepEqual(res, []);
-  } finally { await browser.close(); }
+  } finally { await page.close(); }
 });

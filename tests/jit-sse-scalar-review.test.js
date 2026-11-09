@@ -12,6 +12,7 @@ import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import '../src/cpu/jit/translate-sse-float.js';
 import '../src/cpu/jit/translate-sse-int.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, DATA_SIZE = 0x1000;
 const MEMOP = DATA + 0x100;
@@ -103,7 +104,10 @@ test('fused COMISS + JCC whose successors read the flags (in-region blocks, PUSH
     [0x01, 0xd1], // add ecx, edx (flags overwritten)
   ];
   const pairs = [[1, 2], [2, 1], [3, 3], [NaN, 0], [-0, 0]];
-  for (let cc = 0; cc < 16; cc++) for (const t1 of tails) for (const t2 of tails) for (const [a, b] of pairs) for (const op of [0x2e, 0x2f]) {
+  // (quick pass: every t1 with t2 at the same index and the next one, every cc, pair and opcode; full: every t1 x t2)
+  const shifts = depth(tails.length, 2);
+  for (let cc = 0; cc < 16; cc++) for (const [i1, t1] of tails.entries()) for (const [i2, t2] of tails.entries()) for (const [a, b] of pairs) for (const op of [0x2e, 0x2f]) {
+    if ((i2 - i1 + tails.length) % tails.length >= shifts) continue;
     // comiss xmm1,xmm2 ; jcc T ; <t1> ; jmp E ; T: <t2> ; E: mulss xmm1, xmm2
     const code = [0x0f, op, 0xca, 0x70 + cc, t1.length + 2, ...t1, 0xeb, t2.length, ...t2, 0xf3, 0x0f, 0x59, 0xca];
     runBoth(Uint8Array.from(code), cc + 1, `cc ${cc} t1 ${t1} t2 ${t2} a=${a} b=${b}`, {
@@ -197,7 +201,7 @@ function program(seed, n = 40) {
   return Uint8Array.from(out);
 }
 test('random scalar-single programs (extended mix) match the interpreter', () => {
-  for (let seed = 1; seed <= 400; seed++) {
+  for (let seed = 1, n = depth(400, 50); seed <= n; seed++) {
     const code = program(seed * 65537 + 17);
     runBoth(code, seed, `seed ${seed} (${Buffer.from(code).toString('hex')})`, { slice: seed % 4 === 0 ? 1 + (seed % 5) : 1e6 });
   }

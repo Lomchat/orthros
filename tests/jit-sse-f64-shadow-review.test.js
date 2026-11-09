@@ -4,6 +4,7 @@
 // MOVSD / MOVQ / MOVAPS, loops), whole and at every time slice, against the reference interpreter.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { depth } from './depth.js';
 import { GuestMemory, SMC_MAP_BASE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, ST, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
@@ -159,13 +160,13 @@ function program(seed, n = 40) {
 }
 
 test('review: dirty f64 / f32 shadows meet the instructions around them (moves, shuffles, MMX-free packed ops)', () => {
-  for (let seed = 1; seed <= 300; seed++) {
+  for (let seed = 1; seed <= depth(300, 50); seed++) {
     const code = program(seed * 6151 + 13);
     runBoth(code, seed, 0x1f80 | ((seed & 3) << 13), `seed ${seed} (${Buffer.from(code).toString('hex')})`);
   }
 });
 test('review: the same at every time slice', () => {
-  for (let seed = 1; seed <= 120; seed++) {
+  for (let seed = 1; seed <= depth(120, 30); seed++) {
     const code = program(seed * 1543 + 29, 25);
     runBoth(code, seed + 7000, 0x1f80, `slice seed ${seed} (${Buffer.from(code).toString('hex')})`, 1 + (seed % 3));
   }

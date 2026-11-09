@@ -17,6 +17,7 @@ import '../src/cpu/jit/translate-sse-float.js';
 import '../src/cpu/jit/translate-sse-int.js';
 import { XMM_SHADOW_OPS } from '../src/cpu/jit/translate.js';
 import { OP } from '../src/cpu/decoder.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, DATA_SIZE = 0x1000;
 const MEMOP = DATA + 0x100; // eax: base of the [eax+disp8] operands
@@ -150,7 +151,7 @@ test('the scalar single-precision family is translated through the lane-0 shadow
 });
 
 test('generated scalar-single programs match the interpreter (every MXCSR rounding mode)', () => {
-  for (let seed = 1; seed <= 400; seed++) {
+  for (let seed = 1, n = depth(400, 100); seed <= n; seed++) {
     const code = program(seed * 7919);
     const mx = 0x1f80 | ((seed & 3) << 13);
     runBoth(code, seed, mx, `seed ${seed} (${Buffer.from(code).toString('hex')})`);
@@ -158,7 +159,7 @@ test('generated scalar-single programs match the interpreter (every MXCSR roundi
 });
 
 test('generated programs survive time slices at every instruction (exits with dirty shadows)', () => {
-  for (let seed = 1; seed <= 60; seed++) {
+  for (let seed = 1, n = depth(60, 20); seed <= n; seed++) {
     const code = program(seed * 104729 + 3, 25);
     runBoth(code, seed + 1000, 0x1f80, `slice seed ${seed} (${Buffer.from(code).toString('hex')})`, 1 + (seed % 3));
   }

@@ -14,6 +14,7 @@ import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { decode } from '../src/cpu/decoder.js';
 import { RangeHeat } from '../src/cpu/jit/heat.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -98,7 +99,7 @@ function randomHeat(addrs) {
 
 test('heat replaced between runs, code invalidated, x87 modes, faults: every run matches the interpreter', () => {
   let faults = 0, versions = 0, regionsMore = 0;
-  for (let t = 0; t < 80; t++) {
+  for (let t = 0, programs = depth(80, 16); t < programs; t++) { // (16: the counts asserted below reached with a margin)
     const { code, end } = gen();
     const scratch = new GuestMemory(); scratch.writeBytes(CODE, code);
     const addrs = [];

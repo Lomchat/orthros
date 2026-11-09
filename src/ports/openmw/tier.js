@@ -25,7 +25,7 @@ export const FRAMES = {
 /**
  * What a tier sets beyond the engine page's TIER table. The water's refraction draws the scene a second time each frame
  * water is in view (its render-to-texture camera: the whole cull and draw again); OpenMW's own default is off, the
- * engine page turned it on for every tier. Measured on the integrated GPUs' tier (docs/openmw.md, r9): the engine's
+ * engine page turned it on for every tier. Measured on the integrated GPUs' tier (docs/openmw-history.md, r9): the engine's
  * work p50 18.2-19.2 -> 16.7-16.8 ms a frame at Seyda Neen. On 'high' only; the player's Options still win.
  */
 export const tierSettings = (tier) => ({ refraction: tier === 'high', ...(VIEW[tier] ? { vd: VIEW[tier], fog: fogFor(VIEW[tier]) } : {}) });

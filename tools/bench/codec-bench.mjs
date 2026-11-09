@@ -19,7 +19,7 @@ const runs = +opt('--runs', 7);
 const images = opt('--images', '/tmp/orthros-codec-images');
 const filter = args[0] ?? '';
 if (!fs.existsSync(path.join(images, 't1024_ui.png.rgba'))) {
-  const r = spawnSync('python3', [path.join(here, 'gen/codec_images.py'), images], { stdio: 'inherit' });
+  const r = spawnSync('python3', [path.join(here, '../gen/codec_images.py'), images], { stdio: 'inherit' });
   if (r.status) process.exit(1);
 }
 const { decodeJpeg } = await import(pathToFileURL(path.join(dir, 'jpeg.js')).href);

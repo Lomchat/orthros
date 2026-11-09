@@ -14,6 +14,7 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, T32 = DATA, T64 = DATA + 0x1000, T16 = DATA + 0x2000, TI32 = DATA + 0x3000, OUT = DATA + 0x8000;
 const le = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
@@ -117,11 +118,11 @@ function check(seed, cw, slices) {
 }
 
 test('narrow x87 values: random programs under every rounding and precision control match the interpreter', () => {
-  for (let seed = 1; seed <= 300; seed++) for (const cw of MODES) check(seed, cw, [1e7]);
+  for (let seed = 1, n = depth(300, 6); seed <= n; seed++) for (const cw of MODES) check(seed, cw, [1e7]);
 });
 
 test('narrow x87 values: time slices through random programs', () => {
-  for (let seed = 1000; seed < 1040; seed++) for (const cw of [0x0c7f, 0x047f, 0x007f]) check(seed, cw, [1, 2, 3, 7]);
+  for (let seed = 1000, n = 1000 + depth(40, 3); seed < n; seed++) for (const cw of [0x0c7f, 0x047f, 0x007f]) check(seed, cw, [1, 2, 3, 7]);
 });
 
 test('a product of a wide operand that rounds onto the 24-bit grid while inexact is not taken as exact', () => {

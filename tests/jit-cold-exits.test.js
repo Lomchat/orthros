@@ -13,6 +13,7 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { decode } from '../src/cpu/decoder.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -81,7 +82,7 @@ function setup(code) {
 
 test('cold exits from a counted or visited run: random programs on other inputs match the interpreter, whole and time-sliced', () => {
   let left = 0;
-  for (let t = 0; t < 60; t++) {
+  for (let t = 0, n = depth(60, 5); t < n; t++) {
     const { code, end } = gen();
     // counted run: short (few edges taken), then the heat of its translations — block counters (collectHeat) or, every
     // other program, visit flags (harvestVisits: the ranges a session sends to the server)
@@ -107,12 +108,12 @@ test('cold exits from a counted or visited run: random programs on other inputs 
       }
     }
   }
-  assert.ok(left > 10, `programs whose cold edges were taken later (more regions): ${left}`);
+  assert.ok(left > depth(10, 0), `programs whose cold edges were taken later (more regions): ${left}`);
 });
 
 test('cold exits under an arbitrary heat map and self-modifying code match the interpreter', () => {
   let smc = 0;
-  for (let t = 0; t < 120; t++) {
+  for (let t = 0, n = depth(120, 10); t < n; t++) {
     const g = gen(), body = [...g.code], imms = [];
     const scratch = new GuestMemory(); scratch.writeBytes(CODE, g.code);
     const addrs = [];
@@ -149,11 +150,11 @@ test('cold exits under an arbitrary heat map and self-modifying code match the i
       assert.equal(got, want, `program ${t} slice ${slice}: ${Buffer.from(code).toString('hex')}`);
     }
   }
-  assert.ok(smc > 50, `SMC exits: ${smc}`);
+  assert.ok(smc > depth(50, 4), `SMC exits: ${smc}`);
 });
 
 test('visit flags: the harvested ranges are the translated blocks that ran, each reported once', () => {
-  for (let t = 0; t < 80; t++) {
+  for (let t = 0, n = depth(80, 8); t < n; t++) {
     const { code, end } = gen();
     const inp = input(30 + rnd(200));
     // the instructions the interpreter executes
@@ -222,7 +223,7 @@ test('x87-mode versions keep the first version\'s blocks when the heat grows mea
 // Threads: three guest threads run one program (each its own registers, stack and data) alternated every few
 // instructions under cold exits from a random heat; each ends as the interpreter does on its own inputs.
 test('cold exits with threads alternated every few instructions: each thread matches the interpreter', () => {
-  for (let t = 0; t < 60; t++) {
+  for (let t = 0, n = depth(60, 5); t < n; t++) {
     const { code, end } = gen();
     const scratch = new GuestMemory(); scratch.writeBytes(CODE, code);
     const heat = new Map([[CODE, 1000]]);

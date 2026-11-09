@@ -13,6 +13,7 @@ import { CpuState, THREAD_STATES_BASE, EXIT, F } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { LZ, materializeFlags } from '../src/cpu/jit/runtime.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000;
 let seed = 23;
@@ -91,7 +92,7 @@ const V = [0, 1, 0x0f, 0x10, 0x7f, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0xffff, 0x
 const val = () => rnd(3) ? V[rnd(V.length)] : (rnd(65536) << 16 | rnd(65536)) >>> 0;
 
 test('lzaFree: random ADD / SUB / INC / DEC / NEG programs match the interpreter (on and off, whole and time-sliced)', () => {
-  for (let t = 0; t < 100; t++) {
+  for (let t = 0; t < depth(100, 6); t++) {
     const code = gen(); const end = CODE + code.length - 1;
     const regs = [val(), 1 + rnd(20), val(), 0, 0, 0, 0, 0, rnd(0x1000)];
     const EI = makeExec(null); EI.load(code, regs); const ri = EI.run(end, 1e5);

@@ -14,6 +14,7 @@ import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { translateRegion } from '../src/cpu/jit/translate.js';
+import { depth } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, DATA_SIZE = 0x1000;
 const MEMOP = DATA + 0x100; // esi: base of the [esi+disp8] operands
@@ -175,14 +176,14 @@ test('joins reached with different shifts rotate by the difference', () => {
 });
 
 test('generated programs keeping x87 values across branches and loops match the interpreter', () => {
-  for (let seed = 1; seed <= 300; seed++) {
+  for (let seed = 1, n = depth(300, 75); seed <= n; seed++) {
     const code = program(seed * 6007 + 1);
     runBoth(code, seed, `seed ${seed} (${Buffer.from(code).toString('hex')})`);
   }
 });
 
 test('generated programs survive time slices at every instruction (dispatcher entries into planned blocks)', () => {
-  for (let seed = 1; seed <= 80; seed++) {
+  for (let seed = 1, n = depth(80, 20); seed <= n; seed++) {
     const code = program(seed * 7703 + 2, 20);
     runBoth(code, seed + 500, `slice seed ${seed} (${Buffer.from(code).toString('hex')})`, 1 + (seed % 4));
   }

@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ModuleBuilder, Code, T } from '../src/cpu/jit/wasm.js';
 import { addTrigKernels, PIO4, PIO2_LO, CW_LIMIT } from '../src/cpu/jit/fpmath-trig.js';
+import { depth } from './depth.js';
 
 const TOL = 1e-14;
 
@@ -130,7 +131,7 @@ test('the two reduction paths agree on [2^20, Cody-Waite limit)', () => {
   // both paths are valid there: the Cody-Waite pieces of pi/2 and the 2/pi word table are
   // independent constants, so agreement to an ulp of r cross-checks them
   let maxd = 0, n = 0;
-  for (let i = 0; i < 50_000; i++) {
+  for (let i = 0, m = depth(50_000, 5000); i < m; i++) {
     const x = sign() * uniform(2 ** 20, CW_LIMIT);
     const [ah, al, aq] = W.reduce3(x), [bh, bl, bq] = W.reduceLarge(x);
     assert.equal(aq, bq, `quadrant mismatch at ${x}: ${aq} vs ${bq}`);
@@ -140,7 +141,7 @@ test('the two reduction paths agree on [2^20, Cody-Waite limit)', () => {
     n++;
   }
   // and the reduced argument is always within pi/4 (plus the rounding of k)
-  for (let i = 0; i < 50_000; i++) {
+  for (let i = 0, m = depth(50_000, 5000); i < m; i++) {
     const x = logUniform(-1, 308);
     const [rh] = W.reduce3(x);
     assert.ok(Math.abs(rh) <= PIO4 * (1 + 1e-9), `reduce(${x}) = ${rh}`);
@@ -149,7 +150,7 @@ test('the two reduction paths agree on [2^20, Cody-Waite limit)', () => {
 });
 
 test('random sweeps (tol 1e-14, max relative error printed)', () => {
-  const N = 200_000;
+  const N = depth(200_000, 10_000);
   const sweeps = {
     'uniform [-10, 10]': () => uniform(-10, 10),
     'uniform [-pi/4, pi/4] (no reduction)': () => uniform(-PIO4, PIO4),
@@ -177,7 +178,7 @@ test('sincos: bit-identical to sin and cos (specials, thresholds, random sweeps)
   const r = rng(7);
   const xs = [0, -0, Number.MIN_VALUE, 1e-300, 1e-9, 2 ** -27, -(2 ** -27), 2 ** -26.5, 2 ** -26, 1.4e-8, 0.5, PIO4, 1, 2, 3, 1e6, CW_LIMIT, 1e18, 2 ** 62, 2 ** 63, 1e300];
   for (const b of [2 ** -27, 2 ** -26, 1e-5, PIO4, Math.PI / 2, Math.PI]) xs.push(...neighbours(b, 3));
-  for (let i = 0; i < 200_000; i++) {
+  for (let i = 0, m = depth(200_000, 20_000); i < m; i++) {
     const k = r();
     xs.push((k < 0.4 ? r() * 10 : k < 0.7 ? r() * 1e6 : k < 0.9 ? 10 ** (-8 + 23 * r()) : 10 ** (15 + 285 * r())));
   }
@@ -195,7 +196,7 @@ test('sincos: bit-identical to sin and cos (specials, thresholds, random sweeps)
 });
 
 test('timing: 1e7 calls from a WASM loop (small, medium, huge arguments)', () => {
-  const n = 1e7;
+  const n = depth(1e7, 5e5);
   const cases = { 'small |x| < 10': [-10, 2e-6], 'medium ~1e6': [-1e6, 0.2], 'huge ~1e300': [1e300, 1e284] };
   for (const name of ['sin', 'cos', 'tan', 'sincos']) {
     const bench = W['bench_' + name], ref = name === 'sincos' ? (x) => Math.sin(x) + Math.cos(x) : FN[name][1];
@@ -213,6 +214,6 @@ test('timing: 1e7 calls from a WASM loop (small, medium, huge arguments)', () =>
       assert.ok(ns < 1000, `${name} too slow: ${ns} ns/call`);
       lines.push(`${label}: ${ns.toFixed(1)} ns/call (Math ${name}: ${nsJs.toFixed(1)})`);
     }
-    console.log(`[fpmath-trig] ${name} timing, 1e7 calls: ${lines.join('; ')}`);
+    console.log(`[fpmath-trig] ${name} timing, ${n} calls: ${lines.join('; ')}`);
   }
 });
