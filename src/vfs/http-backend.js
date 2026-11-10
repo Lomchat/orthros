@@ -751,6 +751,10 @@ export class HttpBackend {
    */
   batching(use) {
     if (!this.encoded || this.batchOff || !this.batchUrl || typeof fetch !== 'function') return false;
+    // (not on a link measured fast: its round trips cost little beside its bytes, and a launch set done sooner there
+    // only started the whole-block passes sooner, into the next load — RotWK 2.02's skirmish at 3.75 MB/s, 60 s against
+    // 46; ?dbg=ORTHROS_BATCH=all: there too)
+    if (this.net.fast() && this.net.measured && globalThis.ORTHROS_BATCH !== 'all') return false;
     const v = String(globalThis.ORTHROS_BATCH ?? '');
     return v === '' || v === use || (v !== 'pf' && v !== 'ahead' && Number(v) !== 0);
   }
