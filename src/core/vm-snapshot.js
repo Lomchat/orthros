@@ -68,7 +68,7 @@ snapshotClass(FileHandle, { skip: ['file'], init: (h, vm) => {
   if (!h.file) throw new SnapshotError(`an open file is gone: ${h.path}`);
 } });
 snapshotClass(Surface, { name: 'gdi.Surface' });
-snapshotClass(TextEngine, { skip: ['pending', 'onReady', 'canvas', 'ctx', 'hasCanvas', 'fontSet'], init: (e) => e.attachHost(), resume: (e, vm) => e.reloadFonts((p) => vm.vfs.readFile(p)) });
+snapshotClass(TextEngine, { skip: ['pending', 'onReady', 'canvas', 'ctx', 'hasCanvas', 'fontSet', 'cmaps'], init: (e) => e.attachHost(), resume: (e, vm) => e.reloadFonts((p) => vm.vfs.readFile(p)) });
 
 /** The registry of a new Vm (built before its modules register: they declare their own state to it). */
 export function vmSnapRegistry(vm) {

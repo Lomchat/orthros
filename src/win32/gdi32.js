@@ -462,14 +462,12 @@ export function registerGdi32(api, vm) {
   };
   G.TextOutA = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; textOut(c, dc, c.sarg(1), c.sarg(2), ansi(mem.readCStringN(c.arg(3), c.arg(4)))); return 1; }];
   G.TextOutW = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; textOut(c, dc, c.sarg(1), c.sarg(2), mem.readWStringN(c.arg(3), c.arg(4))); return 1; }];
-  // snapshot: diagnostics
-  let glyphIndexWarned = false;
   const extTextOut = (c, wide) => {
     const dc = dcOf(c, c.arg(0)); if (!dc) return 0;
     const opt = c.arg(3), rp = c.arg(4), n = c.arg(6), dxp = c.arg(7);
-    if ((opt & 0x10) && !glyphIndexWarned) { glyphIndexWarned = true; vm.warn('ExtTextOut: ETO_GLYPH_INDEX strings are drawn as character codes'); }
     let s = '';
-    if (c.arg(5)) { if (wide || (opt & 0x10)) { for (let i = 0; i < n; i++) s += String.fromCharCode(mem.read16(c.arg(5) + 2 * i)); } else { for (let i = 0; i < n; i++) s += String.fromCharCode(mem.read8(c.arg(5) + i)); s = ansi(s); } }
+    // (ETO_GLYPH_INDEX: glyph indices of the selected font, drawn as the characters its character map gives them)
+    if (c.arg(5)) { if (opt & 0x10) { const r = realFont(c, dc); for (let i = 0; i < n; i++) s += String.fromCharCode(engine().charOfGlyph(r, mem.read16(c.arg(5) + 2 * i))); } else if (wide) { for (let i = 0; i < n; i++) s += String.fromCharCode(mem.read16(c.arg(5) + 2 * i)); } else { for (let i = 0; i < n; i++) s += String.fromCharCode(mem.read8(c.arg(5) + i)); s = ansi(s); } }
     const o = {};
     if (rp) { const r = readRect(rp); const a = dev(dc, r.l, r.t), b = dev(dc, r.r, r.b); const dr = { l: a.x, t: a.y, r: b.x, b: b.y }; if (opt & 2) o.opaque = dr; if (opt & 4) o.clip = dr; }
     if (dxp && n) { const step = opt & 0x2000 ? 8 : 4; o.dx = new Int32Array(n); for (let i = 0; i < n; i++) o.dx[i] = mem.readS32(dxp + step * i); } // ETO_PDY: (dx, dy) pairs
@@ -591,8 +589,9 @@ export function registerGdi32(api, vm) {
     const dc = dcOf(c, c.arg(0)); if (!dc) return 0xffffffff;
     const fmt = c.arg(2) & 0x7f, gm = c.arg(3), size = c.arg(4), buf = c.arg(5);
     if (fmt === 2 || fmt === 3) return 0xffffffff;
-    let code = c.arg(1); if (!wide) code = ansiCode(code & 0xffff);
-    const r = realFont(c, dc), g = engine().glyph(r, code);
+    const r = realFont(c, dc);
+    let code = c.arg(1); if (c.arg(2) & 0x80 /* GGO_GLYPH_INDEX */) code = engine().charOfGlyph(r, code & 0xffff); else if (!wide) code = ansiCode(code & 0xffff);
+    const g = engine().glyph(r, code);
     const blank = g.w <= 1 && g.h <= 1 && !g.data[0];
     if (gm) { mem.write32(gm, blank ? 0 : g.w); mem.write32(gm + 4, blank ? 0 : g.h); mem.write32(gm + 8, g.originX); mem.write32(gm + 12, g.originY); mem.write16(gm + 16, g.advance); mem.write16(gm + 18, 0); }
     if (fmt === 0 || blank) return fmt === 0 ? 1 : 0;
@@ -647,9 +646,24 @@ export function registerGdi32(api, vm) {
   G.PolyBezierTo = [3, (c) => G.PolylineTo[1](c)];
   G.BeginPath = [1, () => 1]; G.EndPath = [1, () => 1]; G.StrokePath = [1, () => 1]; G.FillPath = [1, () => 1]; G.CloseFigure = [1, () => 1];
   G.SetWorldTransform = [2, () => 1]; G.ModifyWorldTransform = [3, () => 1]; G.GetWorldTransform = [2, () => 1];
-  G.GetCharABCWidthsI = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const r = realFont(c, dc); for (let i = 0; i < c.arg(2); i++) { const p = c.arg(4) + 12 * i; const g = c.arg(3) ? mem.read16(c.arg(3) + 2 * i) : c.arg(1) + i; const w = engine().abc(r, g); mem.write32(p, w.a); mem.write32(p + 4, w.b); mem.write32(p + 8, w.c); } return 1; }];
-  G.GetGlyphIndicesW = [5, (c) => { for (let i = 0; i < c.arg(2); i++) mem.write16(c.arg(3) + 2 * i, mem.read16(c.arg(1) + 2 * i)); return c.arg(2); }];
-  G.GetTextExtentPointI = [4, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; let t = ''; for (let i = 0; i < c.arg(2); i++) t += String.fromCharCode(mem.read16(c.arg(1) + 2 * i)); const e = engine().extent(realFont(c, dc), t); mem.write32(c.arg(3), e.w); mem.write32(c.arg(3) + 4, e.h); return 1; }];
+  G.GetCharABCWidthsI = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const r = realFont(c, dc); for (let i = 0; i < c.arg(2); i++) { const p = c.arg(4) + 12 * i; const g = c.arg(3) ? mem.read16(c.arg(3) + 2 * i) : c.arg(1) + i; const w = engine().abc(r, engine().charOfGlyph(r, g)); mem.write32(p, w.a); mem.write32(p + 4, w.b); mem.write32(p + 8, w.c); } return 1; }];
+  /**
+   * GetGlyphIndices: each character's glyph in the selected font; a character the font lacks gets 0xFFFF with
+   * GGI_MARK_NONEXISTING_GLYPHS, else the default glyph 0 (applications switch to another font for those).
+   */
+  const glyphIndices = (c, wide) => {
+    const dc = dcOf(c, c.arg(0)); if (!dc) return 0xffffffff;
+    const r = realFont(c, dc), n = c.arg(2), missing = c.arg(4) & 1 ? 0xffff : 0;
+    for (let i = 0; i < n; i++) {
+      const code = wide ? mem.read16(c.arg(1) + 2 * i) : ansiCode(mem.read8(c.arg(1) + i));
+      const g = engine().glyphIndex(r, code);
+      mem.write16(c.arg(3) + 2 * i, g < 0 ? missing : g);
+    }
+    return n;
+  };
+  G.GetGlyphIndicesW = [5, (c) => glyphIndices(c, true)];
+  G.GetGlyphIndicesA = [5, (c) => glyphIndices(c, false)];
+  G.GetTextExtentPointI = [4, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const r = realFont(c, dc); let t = ''; for (let i = 0; i < c.arg(2); i++) t += String.fromCharCode(engine().charOfGlyph(r, mem.read16(c.arg(1) + 2 * i))); const e = engine().extent(realFont(c, dc), t); mem.write32(c.arg(3), e.w); mem.write32(c.arg(3) + 4, e.h); return 1; }];
   G.SetDIBColorTable = [4, (c) => { const dc = dcOf(c, c.arg(0)); const bm = dc ? obj(c, dc.bitmap) : null; if (!bm?.surface?.palette) return 0; const n = c.arg(2); for (let i = 0; i < n; i++) { const e = c.arg(3) + 4 * i; const idx = c.arg(1) + i; if (idx < bm.surface.palette.length) bm.surface.palette[idx] = (mem.u8[e + 2] << 16) | (mem.u8[e + 1] << 8) | mem.u8[e]; } return n; }];
   G.GetDIBColorTable = [4, (c) => { const dc = dcOf(c, c.arg(0)); const bm = dc ? obj(c, dc.bitmap) : null; if (!bm?.surface?.palette) return 0; const n = c.arg(2); for (let i = 0; i < n; i++) { const p = bm.surface.palette[(c.arg(1) + i) % bm.surface.palette.length]; mem.write32(c.arg(3) + 4 * i, ((p >> 16) & 0xff) | (p & 0xff00) | ((p & 0xff) << 16)); } return n; }];
 

@@ -7,7 +7,7 @@
 // the ones an application registers with AddFontResource(Ex), read from its own files, and the host's
 // system fonts standing in for the Windows ones), or the built-in bitmap font when no canvas exists
 // (Node: tests and the CLI), whose output is unchanged from the original GDI text path.
-import { parseFontFile } from './ttf.js';
+import { parseFontFile, parseCmap } from './ttf.js';
 import { drawText as drawBitmapText, CELL_W, CELL_H } from './font.js';
 
 /** Windows face names -> CSS families of the host (metric-compatible stand-ins first). */
@@ -47,6 +47,9 @@ export const ENUMERATED_SYSTEM_FACES = ['Arial', 'Courier New', 'Times New Roman
 /** LOGFONT quality values */
 const NONANTIALIASED_QUALITY = 3;
 const FW_NORMAL = 400;
+const FW_SEMIBOLD = 600;
+/** Key of a registered face's character map. */
+const cmapKey = (info) => `${info.family}|${info.subfamily}|${info.offset}`.toLowerCase();
 
 /**
  * @typedef {{ height: number, width?: number, weight?: number, italic?: number, underline?: number, strike?: number,
@@ -76,6 +79,7 @@ export class TextEngine {
     this.canvas = null; this.ctx = null;
     this.hasCanvas = typeof OffscreenCanvas !== 'undefined' && typeof FontFace !== 'undefined' && !globalThis.ORTHROS_GDI_BITMAP_FONTS; // (debugging: ?dbg=ORTHROS_GDI_BITMAP_FONTS=1, the built-in bitmap font only)
     this.fontSet = this.hasCanvas ? (globalThis.fonts ?? globalThis.document?.fonts ?? null) : null;
+    this.cmaps = new Map(); // registered face key (cmapKey) -> its character map (from the file: rebuilt by reloadFonts)
   }
 
   /** Ready to measure: no registered font file is still loading (a thread may wait on this after AddFontResource). */
@@ -97,6 +101,7 @@ export class TextEngine {
       const entry = { info, css };
       if (!this.faces.has(info.family.toLowerCase()) || !/bold|italic/i.test(info.subfamily)) this.faces.set(info.family.toLowerCase(), entry);
       if (info.fullName) this.faces.set(info.fullName.toLowerCase(), entry);
+      this.cmaps.set(cmapKey(info), parseCmap(bytes, info.offset));
       this.loadFace(info, bytes);
     }
     return infos.length;
@@ -120,7 +125,7 @@ export class TextEngine {
    * the new page's browser. Resolves once it decoded them (at once without a browser).
    */
   reloadFonts(readFile) {
-    for (const path of this.files.keys()) { const bytes = readFile(path); if (bytes) for (const info of parseFontFile(bytes)) this.loadFace(info, bytes); }
+    for (const path of this.files.keys()) { const bytes = readFile(path); if (bytes) for (const info of parseFontFile(bytes)) { this.cmaps.set(cmapKey(info), parseCmap(bytes, info.offset)); this.loadFace(info, bytes); } }
     return this.ready ? Promise.resolve() : new Promise((resolve) => { this.onReady = () => { this.onReady = null; resolve(); }; });
   }
 
@@ -152,12 +157,13 @@ export class TextEngine {
     const italic = !!lf.italic;
     const ctx = this.context();
     // vertical metrics per unit of em: the font's Windows metrics when we have its file, else the browser's font box
-    let asc, desc, lineGapExt, avg, fixed;
+    let asc, desc, lineGapExt, avg, fixed, bbox = 0;
     if (reg) {
       const i = reg.info, u = i.unitsPerEm;
       asc = i.winAscent / u; desc = i.winDescent / u;
       lineGapExt = Math.max(0, i.hheaLineGap - ((i.winAscent + i.winDescent) - (i.hheaAscender - i.hheaDescender))) / u;
       avg = i.avgCharWidth > 0 ? i.avgCharWidth / u : 0; fixed = i.fixedPitch;
+      bbox = (i.bboxWidth ?? 0) / u;
     } else {
       ctx.font = `${italic ? 'italic ' : ''}${weight} 100px ${css}`;
       const m = ctx.measureText('Hg');
@@ -176,14 +182,21 @@ export class TextEngine {
     if (aveCharWidth <= 0) aveCharWidth = Math.max(1, Math.round(xw));
     const hscale = lf.width > 0 ? lf.width / aveCharWidth : 1;
     if (lf.width > 0) aveCharWidth = lf.width;
+    // GDI's simulated bold: a bold weight asked of a registered family without a bold face is the regular outline
+    // emboldened, every advance one pixel wider (TEXTMETRIC's average and maximum widths too, no overhang)
+    const synthBold = !!reg && weight >= FW_SEMIBOLD && !this.hasBoldFace(reg.info.family);
+    if (synthBold) aveCharWidth += 1;
     const r = {
       key: font + '|' + hscale, bitmap: false, css, em, hscale, font, ascent, descent, height,
-      internalLeading: Math.max(0, height - Math.round(em)), externalLeading: Math.round(lineGapExt * em),
+      internalLeading: height - Math.round(em), externalLeading: Math.round(lineGapExt * em),
       aveCharWidth, maxCharWidth: 0, weight, italic, underline: !!lf.underline, strike: !!lf.strike, charset: lf.charset ?? 0,
       fixedPitch: fixed, face: reg ? reg.info.family : faceName || 'Arial', antialias: (lf.quality ?? 0) !== NONANTIALIASED_QUALITY,
       scale: 1, adv: new Map(), family: pf & 0xf0 || (generic === 'serif' ? 0x10 : generic === 'monospace' ? 0x30 : 0x20),
+      boldExtra: synthBold ? 1 : 0, cmapKey: reg ? cmapKey(reg.info) : '',
     };
-    r.maxCharWidth = Math.max(aveCharWidth, Math.round(ctx.measureText('W').width * hscale), Math.round(ctx.measureText('M').width * hscale));
+    // tmMaxCharWidth: the font's bounding box width (head xMax - xMin) when its file is at hand
+    r.maxCharWidth = bbox > 0 ? Math.round(bbox * em * hscale) + r.boldExtra
+      : Math.max(aveCharWidth, Math.round(ctx.measureText('W').width * hscale), Math.round(ctx.measureText('M').width * hscale));
     return r;
   }
 
@@ -192,12 +205,33 @@ export class TextEngine {
     return this.ctx;
   }
 
+  /** A bold face (weight >= 600) of this family was registered (else GDI simulates bold). */
+  hasBoldFace(family) { for (const e of this.faces.values()) if (e.info.family === family && e.info.weight >= FW_SEMIBOLD) return true; return false; }
+
+  /**
+   * GetGlyphIndices: the glyph of a character in the realized font, -1 when the font has none. Registered fonts answer
+   * from their character map; system fonts (the host's stand-ins, no file at hand) have every character, the glyph
+   * index then being the character code (the glyph-index calls map it back, see charOfGlyph).
+   */
+  glyphIndex(r, code) {
+    const m = r.cmapKey ? this.cmaps.get(r.cmapKey) : null;
+    if (!m) return code;
+    return m.toGlyph.get(code) ?? -1;
+  }
+
+  /** The character drawn for a glyph index (ETO_GLYPH_INDEX, GetCharABCWidthsI, GetTextExtentPointI). */
+  charOfGlyph(r, glyph) {
+    const m = r.cmapKey ? this.cmaps.get(r.cmapKey) : null;
+    if (!m) return glyph;
+    return m.toChar.get(glyph) ?? 0xfffd;
+  }
+
   /** Integer advance of one character (GDI positions every glyph on whole pixels). */
   advance(r, code) {
     let a = r.adv.get(code);
     if (a !== undefined) return a;
     if (r.bitmap) a = CELL_W * r.scale;
-    else { const ctx = this.context(); ctx.font = r.font; a = Math.round(ctx.measureText(String.fromCharCode(code)).width * r.hscale); }
+    else { const ctx = this.context(); ctx.font = r.font; a = Math.round(ctx.measureText(String.fromCharCode(code)).width * r.hscale) + (r.boldExtra ?? 0); }
     r.adv.set(code, a);
     return a;
   }

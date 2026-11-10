@@ -19,3 +19,9 @@ GetTextExtentPoint32A@16
 SetTextColor@8
 SetBkMode@8
 GetCharWidth32A@16
+AddFontResourceExA@12
+GetTextExtentPoint32W@16
+GetCharABCWidthsW@16
+ExtTextOutW@32
+GetTextFaceA@12
+GetGlyphIndicesW@20

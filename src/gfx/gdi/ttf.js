@@ -7,8 +7,58 @@
  * @typedef {{ family: string, subfamily: string, fullName: string, unitsPerEm: number, winAscent: number,
  *   winDescent: number, typoAscender: number, typoDescender: number, typoLineGap: number, hheaAscender: number,
  *   hheaDescender: number, hheaLineGap: number, avgCharWidth: number, weight: number, italic: boolean,
- *   fixedPitch: boolean, firstChar: number, lastChar: number, offset: number }} FontInfo
+ *   fixedPitch: boolean, firstChar: number, lastChar: number, offset: number, bboxWidth: number }} FontInfo
+ * @typedef {{ toGlyph: Map<number, number>, toChar: Map<number, number> }} CharMap
  */
+
+/**
+ * The Unicode character map of the face at `offset` (cmap formats 4 and 12, Windows or Unicode platform): character
+ * code -> glyph index (GetGlyphIndices) and glyph index -> first character code (the glyph-index text calls).
+ * @param {Uint8Array} bytes
+ * @returns {CharMap|null}
+ */
+export function parseCmap(bytes, offset = 0) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const numTables = dv.getUint16(offset + 4);
+  let cmap = -1;
+  for (let i = 0; i < numTables; i++) {
+    const r = offset + 12 + 16 * i;
+    if (dv.getUint32(r) === 0x636d6170) { cmap = dv.getUint32(r + 8); break; } // 'cmap'
+  }
+  if (cmap < 0 || cmap + 4 > bytes.length) return null;
+  // best subtable: Windows UCS-4 (3,10) / Unicode full (0,4..6) format 12, else Windows BMP (3,1) / Unicode (0,x) format 4
+  let best = -1, bestScore = -1;
+  const n = dv.getUint16(cmap + 2);
+  for (let i = 0; i < n; i++) {
+    const p = cmap + 4 + 8 * i, platform = dv.getUint16(p), enc = dv.getUint16(p + 2), sub = cmap + dv.getUint32(p + 4);
+    if (sub + 2 > bytes.length) continue;
+    const fmt = dv.getUint16(sub);
+    const score = fmt === 12 && (platform === 3 || platform === 0) ? 3 : fmt === 4 && platform === 3 && enc === 1 ? 2 : fmt === 4 && platform === 0 ? 1 : -1;
+    if (score > bestScore) { best = sub; bestScore = score; }
+  }
+  if (best < 0) return null;
+  const toGlyph = new Map(), toChar = new Map();
+  const put = (c, g) => { if (!g) return; toGlyph.set(c, g); if (!toChar.has(g)) toChar.set(g, c); };
+  try {
+    if (dv.getUint16(best) === 4) {
+      const segs = dv.getUint16(best + 6) >> 1, ends = best + 14, starts = ends + 2 * segs + 2, deltas = starts + 2 * segs, ranges = deltas + 2 * segs;
+      for (let s = 0; s < segs; s++) {
+        const end = dv.getUint16(ends + 2 * s), start = dv.getUint16(starts + 2 * s), delta = dv.getUint16(deltas + 2 * s), ro = dv.getUint16(ranges + 2 * s);
+        for (let c = start; c <= end && c !== 0xffff; c++) {
+          if (!ro) put(c, (c + delta) & 0xffff);
+          else { const g = dv.getUint16(ranges + 2 * s + ro + 2 * (c - start)); put(c, g ? (g + delta) & 0xffff : 0); }
+        }
+      }
+    } else {
+      const groups = dv.getUint32(best + 12);
+      for (let i = 0; i < groups; i++) {
+        const p = best + 16 + 12 * i, start = dv.getUint32(p), end = Math.min(dv.getUint32(p + 4), start + 0xffff), g0 = dv.getUint32(p + 8);
+        for (let c = start; c <= end; c++) put(c, g0 + (c - start));
+      }
+    }
+  } catch { /* truncated table: what was read */ }
+  return { toGlyph, toChar };
+}
 
 /**
  * Parse every face of a .ttf/.otf file or a .ttc collection.
@@ -51,6 +101,8 @@ function parseFace(dv, off) {
     info.typoAscender = dv.getInt16(o + 68); info.typoDescender = dv.getInt16(o + 70); info.typoLineGap = dv.getInt16(o + 72);
     info.winAscent = dv.getUint16(o + 74); info.winDescent = dv.getUint16(o + 76);
   }
+  // font bounding box width (GDI's tmMaxCharWidth)
+  info.bboxWidth = dv.getInt16(head.offset + 40) - dv.getInt16(head.offset + 36);
   if (!info.winAscent && !info.winDescent) { info.winAscent = info.hheaAscender; info.winDescent = -info.hheaDescender; }
   if (post && post.length >= 16) info.fixedPitch = dv.getUint32(post.offset + 12) !== 0;
   if (name) {
