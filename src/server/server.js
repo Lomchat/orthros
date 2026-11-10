@@ -1712,7 +1712,7 @@ export function createServer(opts = {}) {
       netStats.batches = (netStats.batches ?? 0) + 1; netStats.batchItems = (netStats.batchItems ?? 0) + items.length;
       const k = netStats[kind]; k.requests++;
       let finished = false;
-      res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind === 'want' ? 'want' : 'bg'} batch:${items.length} ${path.basename(items[0].file)} 0-${total} ${body.length} batch`); });
+      res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind === 'want' ? 'want' : 'bg'} batch:${items.length} ${path.basename(items[0].file)} 0-${total} ${body.length} batch ${items.map((it) => `${path.basename(it.file)}:${it.start}-${it.end}`).join(',')}`); });
       res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': total, 'X-Orthros-Items': items.length });
       if (encoding) h['Content-Encoding'] = encoding;

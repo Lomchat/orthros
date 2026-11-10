@@ -2086,6 +2086,65 @@ browser's 4-core cap (`with-browser-slot.sh`), the emulator's thread then desche
 against 133 s of guest, API and read time in the frame accounting. A player's GPU does not take the emulator's cores; the
 runs above are measured with the rasterization off for that reason.
 
+## Batched requests (2026-11-10)
+
+**What was slow.** A learned order is mostly small pieces: Age of the Ring's launch set is 5 604 entries (305 MB of
+file), ~2 700 `.ini` files of ~44 KiB and ~2 300 tiny `.bse` files among them; a later load (Create-a-Hero) reads ~900
+loose W3D / TGA / DDS files. Each piece went as its own request — 5 340 requests of 27 KiB of file (5 KB on the wire)
+before AotR's menu at 1.25 MB/s — about three at a time (`PREFETCH_PARTS`, the bytes rule): bound by round trips, the
+link 0.37-0.52 used while the launch set came. And each piece was compressed alone (its precompressed unit, or brotli 5
+on the fly), so the bytes ten thousand nearly identical `.ini` / `.bse` files share crossed the link ten thousand times.
+
+**The change** (generic: the request's shape only, every game and runtime that reads through `HttpBackend`):
+- **Server** (`src/server/server.js` `sendBatchEncoded`): `POST /gamezb/<version>?p=1` (or `w=1`), the body a JSON array
+  `[[path, start, end], ...]` (1 024 ranges, 16 MiB at most; light copies' paths too). The answer is the ranges' bytes
+  one after another in the body's order, compressed **together** as one stream — brotli quality 5 with a window that
+  holds the whole batch (`Content-Encoding: br`, else zstd, else gzip: the browser decodes it) —, `X-Orthros-Raw` /
+  `X-Orthros-Items`. A file it does not have answers 404 `batch item not found`. Encoded in the same queue as the other
+  background ranges (`encodeSlot`, demand reads first); never learned as the game's reads. `/api/netstats` counts
+  `batches` and `batchItems`.
+- **Client** (`HttpBackend.batch`, `fetchBatchNow`): one turn on the link (`NetLink`, the batch's bytes), one request;
+  the answer is read as a stream and each run is settled as soon as its bytes are here (in the order's order: the
+  first pieces the game needs are not held until the last arrives). Its pieces are registered as on their way like any
+  background run (a parked read of one joins the batch and makes it go first). A batch carries runs of at most
+  `BATCH_ITEM_MAX` (256 KiB) each, `BATCH_RUNS` (256) of them, at most half of `NetLink.requestBytes()` together (two
+  side by side within the link's bytes rule: one alone would leave the link idle a round trip between two); a larger
+  run, or a batch of one, is the ordinary request (its transport units). Used by the learned order's pieces
+  (`prefetchList` on a link that is not fast, and the startup set — `learnedOnly` — on any link: the batch is filled
+  from the next runs it would fetch anyway, `nextPart` going on from the last one found) and by the learned read-ahead
+  (`pumpAhead`: a batch is one request of its budget; a small file's whole block joins it too). Not the game's own
+  reads (one range each, synchronous), the whole blocks of a fast link, announced lists or the block fill.
+- **Compatibility**: a server without the route (404/405 other than `batch item ...`) turns batches off for the
+  backend, its runs going one request each; asked only by `game-data.js`'s openers (`openData`, `batch` option, on by
+  default), so a tool or a test's `fetch` stand-in never sees them. **Switch**: `?dbg=ORTHROS_BATCH=0` (or
+  `--dbg ORTHROS_BATCH=0` in `tools/headless.mjs`) turns them off in the page.
+- **Measuring**: `SimLink` (the harness's `--net`) writes a batch's body as it crosses (`onProgress`), as a real
+  connection delivers it; `tools/headless.mjs --br-cache-frozen` serves a copy of the live server's units without
+  making more (the same units in every run), a `quit` step ends a run once its timed load is over, and the `[mark]`
+  and `[net]` lines count the batches.
+
+**Bytes on the wire** (AotR 10.0's learned order, offline: `node` over the files the order names, 64 KiB pieces as the
+order lists them; solid = the pieces of ~2 MiB batches compressed together; units = each piece alone at brotli 11, as
+`br-cache.js` makes them; MB/s = raw MB encoded per second of one core):
+
+| files (sample) | units, brotli 11 | per piece, brotli 5 | solid brotli 5 | solid brotli 9 | solid brotli 11 | solid zstd 3 | solid gzip 4 |
+|---|---|---|---|---|---|---|---|
+| `.ini` (12 MB, launch set) | 0.199 | 0.228 | **0.076** (95 MB/s) | 0.066 | 0.060 | 0.103 | 0.159 |
+| `.bse` (6 MB, launch set) | 0.320 | 0.329 | **0.003** (206 MB/s) | 0.003 | 0.003 | 0.003 | 0.017 |
+| `.big` / `.dat` archives (30 MB) | 0.316 | 0.348 | 0.329 (51 MB/s) | 0.325 | 0.288 | 0.357 | 0.375 |
+| `.w3d` (10 MB, Create-a-Hero) | 0.435 | 0.465 | **0.394** (45 MB/s) | 0.389 | — | 0.431 | — |
+| `.tga` (10 MB) | **0.108** | 0.133 | 0.128 (65 MB/s) | 0.125 | — | 0.150 | — |
+| `.dds` (10 MB) | **0.494** | 0.540 | 0.538 (40 MB/s) | 0.533 | — | 0.565 | — |
+| `.mp3` (9 MB) | 0.912 | 0.916 | 0.911 | 0.907 | 0.897 | 0.914 | 0.911 |
+
+Text-like loose files share most of their bytes: the batch sends AotR's `.ini` in 0.38 of their units' bytes and its
+`.bse` in 1 %. Textures alone at brotli 11 stay 9-18 % smaller than in a brotli-5 batch (the batch's quality is what a
+request can afford: brotli 11 costs ~1 s of a core per MiB); an archive's pieces are about even. Brotli 5 encodes a
+batch at 40-200 MB/s, so the server's cost stays small beside the link's (the harness server's whole encoding time
+below).
+
+**Measured** — TBD
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a
