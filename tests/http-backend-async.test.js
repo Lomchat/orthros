@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';
+import { NetLink } from '../src/vfs/net-link.js';
 
 const MiB = 1 << 20;
 const SIZE = 8 * MiB;
@@ -345,7 +346,10 @@ test('a small file\'s first read that misses fetches the whole file in one reque
   // waited for on a link that is not fast, and the block was fetched again in the background on a fast one: Age of the
   // Ring's Create-a-Hero load reads ~900 such files)
   const size = 3 * CHUNK + 4000;
-  const b = new HttpBackend('/game/w/', { dirs: {}, files: { 'm.w3d': { size, mtime: 1 } } });
+  // (a link that is not fast — the owner's, ~1.2 MB/s —: there every further piece was a wait; a fast link keeps the piece
+  // and the block in the background)
+  const mid = () => new NetLink({ bw: 1200 << 10, fixed: true });
+  const b = new HttpBackend('/game/w/', { dirs: {}, files: { 'm.w3d': { size, mtime: 1 } } }, { net: mid() });
   b.lastSyncFetchAt = -1e9;
   const sync0 = syncReqs.length;
   const f = b.open('m.w3d');
@@ -364,7 +368,7 @@ test('a small file\'s first read that misses fetches the whole file in one reque
   // (with the switch off: the piece the read touches only, as before)
   globalThis.ORTHROS_WHOLE_FIRST = 0;
   try {
-    const b2 = new HttpBackend('/game/w2/', { dirs: {}, files: { 'm.w3d': { size, mtime: 1 } } }); b2.noteMiss = () => {};
+    const b2 = new HttpBackend('/game/w2/', { dirs: {}, files: { 'm.w3d': { size, mtime: 1 } } }, { net: mid() }); b2.noteMiss = () => {};
     const p2 = b2.open('m.w3d').prepare(size - 100, 50, true);
     await tick();
     assert.deepEqual([calls[1].start, calls[1].end], [3 * CHUNK, size]);

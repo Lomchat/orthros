@@ -2005,7 +2005,8 @@ measure only):
   that one request, when the link carries it within `DEMAND_SECONDS` (`NetLink.demandExtra`: at 1.2 MB/s about 600 KB of
   file at a 0.5 compression ratio; a thin link only files of a few pieces). `?dbg=ORTHROS_WHOLE_FIRST=0`: off.
 - A parked read whose request covers a whole block (`fetchAhead`) no longer queues that block in the background too
-  (`noteMiss`): every piece it misses is in the request, the block is assembled from them.
+  (`noteMiss(..., covered)`): every piece it misses is in the request, the block is assembled from them. Its neighbour
+  blocks are still noted for speculation (`near`), as before.
 - The read fast path is on by default (docs/api-layer.md "ReadFile straight into guest memory", `readFast`): the block
   of the file's last read kept in hand — now also checked first by `prepare`, which a parked-capable `ReadFile` calls
   before every read —, the bytes straight into guest memory; the read log told only once per 64 KiB piece (it keeps
@@ -2031,7 +2032,36 @@ B A, machine load 5-33):
 | … of them a later piece of a loose file | 94, 90, 97 | 52, 68, 60 |
 | background requests in the load | 1 313, 1 314, 1 318 (326-328 MB) | 746, 712, 769 (250-282 MB) |
 
-SLOWLINK_TABLE
+The owner's link, emulated (`--net 50:10`: 50 ms and 1.25 MB/s per answer, one run a side; the first launch then takes
+500 s to its first frame):
+
+| 1.25 MB/s, 50 ms | before | after |
+|---|---|---|
+| click → Create-a-Hero screen | 298 s | 301 s |
+| game reads to the network in the load (MB) | 1 862 (96.9) | 1 500 (98.7) |
+| … of them a later piece of a loose file | 773 | 410 |
+| their time in flight (the page's `net`) | 108 s, 121 ms a read | 112 s, 151 ms a read |
+
+This reproduces the owner's load (4-6 minutes, ~1 700 reads of ~120 ms one after another) and shows what the first visit
+is bound by: the ~97 MB the game reads, one file after the other — 78 s of transfer at 1.25 MB/s, plus a round trip, the
+server's encoding and the page's wake-up per read. Fetching small files whole took 362 waits away (the reads that remain
+later pieces: files over the link's `DEMAND_SECONDS`, and a second handle on a file) but each remaining read carries
+more bytes: the same time within one run's spread. What does remove the waits is the learned order — the server learns
+every session's reads (the live one had 893 of this load's 897 files on 2026-11-10, from the owner's sessions) and a
+later session fetches them ahead of the game, several at once (`pumpAhead`).
+
+The second visit (the learned order of the first-launch runs above, `--memprefetch`: a block store in memory, as a player's OPFS
+store; local link):
+
+| second launch, learned (2 runs a side) | before | after |
+|---|---|---|
+| click → Create-a-Hero screen | 74, 62 s | 39, 36 s |
+| game reads to the network in the whole run | 10, 20 | 4, 10 |
+| emulator thread CPU in the load | 34.3, 32.6 s | 24.3, 24.3 s |
+| `ReadFile` in the load (~1.94 M calls) | 6.5, 3.9 µs a call (12.6, 7.6 s) | 1.05, 1.5 µs (2.0, 2.9 s) |
+
+With the data ahead of the game, the load is the emulator's own work, and the small reads were a third of it.
+
 
 **The harness's own 3-4 minutes.** Without `--gl-discard` the same load took 193-212 s here (2 runs): the loading
 screen at 30 fps rasterized by SwiftShader kept the GPU process at 3.2 cores (800 s of CPU in 252 s) inside the

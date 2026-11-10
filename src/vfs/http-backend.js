@@ -1084,7 +1084,7 @@ export class HttpBackend {
    * once the game had stopped reading it. The reads that follow wait for this download (fetchAhead) rather than each
    * for its own pieces. The bytes are the ones the fill would download anyway; only their priority changes.
    */
-  noteMiss(path, size, mtime, index) {
+  noteMiss(path, size, mtime, index, covered = false) {
     if (typeof fetch !== 'function' || this.net.thin()) return;
     const k = `${path}#${index}`, guess = this.speculate(path);
     for (let j = Math.max(0, index - NEAR_BLOCKS); guess && j <= index + NEAR_BLOCKS && j * BLOCK < size; j++) {
@@ -1096,7 +1096,8 @@ export class HttpBackend {
     // (on a link that is not fast the block waits for the background fill: it would hold the game's next reads up)
     if (!this.net.fast()) return;
     if (this.learnedDone && this.store && !this.isMedia(path) && !this.streams.has(path) && globalThis.ORTHROS_WHOLE_AFTER_MISSES === 1) this.noteMissAfter(path, index); // (off by default — measured: ~400 MB more per session for 0.6 → 0.3 frames over 100 ms a minute; ?dbg=ORTHROS_WHOLE_AFTER_MISSES=1: on)
-    if (this.missFlights >= MISSED_BLOCK_FLIGHTS || this.blockFlights.has(k) || this.cache.has(k) || this.bgCur?.key === k || this.store?.map.has(`${path}#${size}#${mtime}#${index}`)) return;
+    // (`covered`: the read's own request brings every piece of the block it misses — fetchAhead —: not asked again)
+    if (covered || this.missFlights >= MISSED_BLOCK_FLIGHTS || this.blockFlights.has(k) || this.cache.has(k) || this.bgCur?.key === k || this.store?.map.has(`${path}#${size}#${mtime}#${index}`)) return;
     this.missFlights++;
     this.stats.missBlocks = (this.stats.missBlocks ?? 0) + 1;
     // (not learned as the game's own read: its pieces are, with the mask of what it read)
@@ -1472,8 +1473,8 @@ export class HttpBackend {
       // (a stream: the `extra` bytes past the read too, within the block, as readPieces does)
       if (extra > 0 && Math.min(end, b1) === end) { const last = Math.min(Math.floor((b1 - 1) / CHUNK), Math.floor((end - 1 + extra) / CHUNK)); while (m1 < last && !this.hasPiece(path, size, mtime, m1 + 1) && !this.flights.has(`${path}#${m1 + 1}`)) m1++; }
       // (a read covering the whole block — a small file fetched whole, HttpFile.wholeFirst — brings every piece it misses:
-      // the block is assembled from them, no background request for it again)
-      if (!(pos <= b0 && end >= b1)) this.noteMiss(path, size, mtime, bi);
+      // the block is assembled from them, no background request for it again; its neighbours as before)
+      this.noteMiss(path, size, mtime, bi, pos <= b0 && end >= b1);
       const start = m0 * CHUNK, stop = Math.min(size, (m1 + 1) * CHUNK);
       jobs.push(this.fgFlight(path, start, stop, this.fetchForeground(path, start, stop).then((d) => {
         if (d && !this.cache.has(`${path}#${bi}`)) this.addPieces(path, m0, m1, d, { size, mtime });
@@ -1846,7 +1847,9 @@ class HttpFile {
    * DEMAND_SECONDS (NetLink.demandExtra: on a thin link only files of a few pieces). ?dbg=ORTHROS_WHOLE_FIRST=0: off.
    */
   wholeFirst() {
-    if (this.lastEnd !== -1 || this.len > BLOCK || this.len <= CHUNK) return false;
+    // (not on a fast link: there the block follows the piece in the background at once — noteMiss — and a round trip is
+    // short; a whole file asked for a header read only made the game wait for its bytes)
+    if (this.lastEnd !== -1 || this.len > BLOCK || this.len <= CHUNK || this.b.net.fast()) return false;
     const v = globalThis.ORTHROS_WHOLE_FIRST; if (v !== undefined && v !== '' && Number(v) === 0) return false;
     return this.b.net.demandExtra(this.len) >= this.len;
   }
