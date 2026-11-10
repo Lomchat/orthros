@@ -672,7 +672,9 @@ export class HttpBackend {
         // (a small file's only block — whole, of a piece or a few — joins a batch too: most of a load of loose files)
         if (batched && n <= BATCH_ITEM_MAX) {
           if (B && !B.fits(n)) sendB();
-          if (!B) { if (!room()) break; B = this.aheadBatch(L); }
+          // (the entry is marked ahead: its runs all go, a new batch past the budget's count if need be — the loop's head
+          // checks the budget before the next entry)
+          B ??= this.aheadBatch(L);
           this.fetchPiecesAhead(e, c0 + i, c0 + j, whole, B);
         } else this.fetchPiecesAhead(e, c0 + i, c0 + j, whole);
         i = j;
