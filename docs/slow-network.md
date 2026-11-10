@@ -2086,6 +2086,100 @@ browser's 4-core cap (`with-browser-slot.sh`), the emulator's thread then desche
 against 133 s of guest, API and read time in the frame accounting. A player's GPU does not take the emulator's cores; the
 runs above are measured with the rasterization off for that reason.
 
+## Predicted opens: a first visit's serial reads made parallel (2026-11-10)
+
+**The problem.** A version nobody played yet (no learned order) loads its loose files one after another: each file's
+first read misses, parks the game for a round trip and the transfer, then the next file is opened. Age of the Ring's
+first launch at 1.25 MB/s, 50 ms (`--net 50:10`, empty learned directory): 5 607 game reads to the menu, 5 570 waits
+(352 s) — 2 700 `.ini` files of `data/ini/object/**` in the order the game's enumeration sorted them, then 2 300 base
+files (`bases/<name>/<name>.bse`, ~7 KB each) in the order an INI list names them —, the link used ~0.2 of its rate;
+Create-a-Hero after it: 1 780 game reads, 1 926 waits (208 s). That is the owner's telemetry (1 640 reads of ~116 ms).
+
+**The change** (`src/vfs/open-predict.js`, one `OpenPredictor` per mounted version — `game-data.js` `PartsBackend`,
+fed by its `open` and by every range of its parts' files that arrives, `HttpBackend.arrivals`; generic: the tree's
+paths, the game's opens and its files' bytes only). Three guesses, each fetched as a predicted range
+(`HttpBackend.predict`: the announced-read machinery — `wantRange`'s transport units, deduplicated against everything on
+its way, urgent once started, up to `WANT_REQUESTS` in flight, `WANT_REQUESTS_H1_LOOSE` on an HTTP/1.1 origin, asked with
+`w=1`: not learned as reads — the page's read log reports the game's reads of them; counted as `predict` in
+`NetLink.bgBy`):
+- **Walks** (`?dbg=ORTHROS_PREDICT=0` turns all three off): a game that opens files of one extension one after another
+  under one folder walks them in an order. Each extension has a run: its folder (the common ancestor of its opens, at
+  most 3 levels up) and the files of that extension there, sorted as an enumeration sorts paths (lower case, `\`). The
+  window is the next 8 unopened files after each of the run's last 4 opens (several walks in turn: an INI list naming
+  `standard base66`, `siege base68`, `fortress base68` interleaves three runs of the tree's order). Nothing is fetched
+  until 3 of the last 5 opens landed in the previous window (measured without fetching). Then the next files after
+  those places go, as many as the run's own predictions proved right (3, plus 2 per hit among its last 16 opens, 32 at
+  most) within 2 s of the link's bytes (0.75 s on a thin link). A run whose predictions are opened less than half the
+  time (of its last 12, once 4 are known; a prediction not opened within 24 opens of its run or 30 s is a miss)
+  predicts nothing more until every one of its last 5 opens lands in a window again.
+- **Referenced names** (`?dbg=ORTHROS_PREDICT_REFS=0`): the bytes of an opened file of at most 4 MiB, as they arrive
+  (or when it is opened, if a guess brought them before), are scanned for names (`stem.ext`); a stem that names at most 3
+  files of the tree refers to them (a W3D model names `ptfirtree.tga`, the game opens `compiledtextures/pt/ptfirtree.dds`).
+  Each pair of extensions is measured without fetching first: once at least 12 of its references were settled (opened,
+  or not within 60 s) and half were opened, its new references are fetched. Measured in the replay of Create-a-Hero's
+  order: `w3d>dds` 308 of 324 opened; INI files' references to models, far fewer — never fetched.
+- **The whole small file at its open** (`?dbg=ORTHROS_PREDICT_OPEN=0`): a file opened that is not here goes whole, at
+  once, when it is at most 1 MiB and worth it (below) — its pieces would each be a wait of the game's otherwise (582 of
+  the 592 Create-a-Hero files of more than a piece are read whole). Unlike `HttpFile.wholeFirst` (off, no gain), the game
+  is not made to wait for more than its read: the read joins the request on its way, and the file's next reads find
+  their pieces arriving while the game parses the first.
+- **The cost rule** (all three): a guess of `b` bytes right with probability `p` saves a round trip, wrong it costs its
+  bytes; it goes when `(1 − p) × b ≤ 2 × p × rate × round trip` (the link's measure, as file bytes; `p` the run's
+  proven share, a pair's, or 0.8 for the whole file at its open). At 1.25 MB/s and 50 ms a file opened goes whole up to
+  ~1 MB; at 85 KB/s up to ~70 KB.
+- Never while the learned order follows the game (`learned.tracked`: it knows the next reads already; nor the names'
+  scan then), and never before the link is measured nor on a thin one (`OpenPredictor.linkOk`; the walks and the pairs
+  are still measured there, nothing fetched): see the thin link below.
+
+**Measured** (2026-11-10, `tools/headless.mjs aotr-10 --net <ms>:<Mbit/s> --gl-discard`, a fresh profile and an empty
+learned directory each run (the very first player), a copy of the live server's precompressed units, through
+`tools/with-browser-slot.sh` with `ORTHROS_BROWSER_CPU=800%` — at the default 4 cores SwiftShader's GPU process took 2.7 of
+them during the loading screens and the emulator waited for the CPU (Create-a-Hero 375 s off at 4 cores, 255 s at 8);
+Escape ×6, `waitframe:14` for the menu (16 draws a frame), MY CAPTAINS, `waitframe:40` for its screen; before =
+`--dbg ORTHROS_PREDICT=0`, the same build):
+
+| first visit, AotR | | off | on |
+|---|---|---|---|
+| 1.25 MB/s, 50 ms | launch → menu | 533 s | 286 s |
+| | game reads to the network / waits (their time) to the menu | 5 607 / 5 570 (352 s) | 259 / 2 954 (123 s) |
+| | MB on the link by the menu | 127 | 140 |
+| | MY CAPTAINS → Create-a-Hero screen | 255 s | 203 s |
+| | waits in that load (their time) | 1 926 (208 s) | 1 115 (160 s) |
+| | MB on the link in that load | 154 | 160 |
+| 3.75 MB/s, 50 ms | launch → menu | 514 s | 272 s |
+| | MY CAPTAINS → Create-a-Hero screen | 143 s | 122 s |
+| | MB on the link: to the menu / that load | 150 / 208 | 155 / 301 |
+
+At 4 cores (the earlier builds of this change, one run each): menu 525 s off, 285-300 s on; Create-a-Hero 375 s off,
+313-363 s on — the emulator starved by the GPU process there. What the waits still are: the menu's are mostly reads
+joining a predicted request on its way (the launch is CPU-bound from there: 272 s at 3.75 MB/s, 286 s at 1.25); in
+Create-a-Hero, the models nothing names before they are opened (~250 first reads of a `.w3d`), their textures' the same
+moment, and the archive entries read in sequence. The 3.75 MB/s link counts as fast (`FAST_BPS`): there the whole
+blocks of its policies (`near`, `miss`) carried the 93 MB more.
+
+The final build (guesses off thin and unmeasured links, no names scanned while the learned order follows) measured the
+same at 1.25 MB/s: menu 288 s (259 game reads, 2 947 waits, 123 s), Create-a-Hero 204 s. A second first visit at 1.25 MB/s with the live server's learned JIT heat (its file order unused: no block store in
+those runs) measured the same: menu 545 s off, 293 s on; Create-a-Hero 248 s off, 198 s on.
+
+**A later player** (the live learned order, `--memprefetch`: a block store as a player's OPFS one; 1.25 MB/s, two runs a
+side, interleaved): the predictor stays out of the way — 21-54 predicted requests (1-2.4 MB) in the whole run. Menu
+195, 198 s off; 214 s (the first build, which scanned every opened file's bytes for names even while the learned order
+followed the game: dropped since), 195 s on. Create-a-Hero 122, 121 s off; 122, 123 s on.
+
+**RotWK 2.02** (learned, `--memprefetch`, 1.25 MB/s): menu 82 s off, 80 s on — an archive game: 206 opens, no
+prediction made. Its skirmish start was not reached by the scenario's clicks in either run (not measured).
+
+**The thin link** (85 KB/s, 50 ms, learned, `--memprefetch`): the first build fetched guesses there too, and the launch
+stopped at 4.3 MB for 10 minutes — the worker blocked in a synchronous read of the launcher's (its `[net]` marks never
+answered) while the guesses it could not receive held the origin's connections (HTTP/1.1: six; the guesses are not
+aborted by a demand read). With guesses kept off thin links: 19.4 MB and 575 waits (195 s) at 300 s, 41.4 MB at 600 s, as off
+(19.5 MB, 563 waits, 195 s; 41.5 MB) and as `main` (19.6 MB at 300 s). A first visit at 85 KB/s (empty learned directory) stopped after the launcher's
+11 MB `game.dat` read with the predictor off as well (5.2 MB in 15 minutes, on and off alike): not this change's, not
+explained here.
+
+Not measured: the owner's real machine and link, HTTP/2 (the harness origin is HTTP/1.1: four predicted requests at once
+— `WANT_REQUESTS_H1_LOOSE` —, 32 over HTTP/2 in production), BFME 1.08 and Vice City.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

@@ -160,6 +160,12 @@ export class OpenPredictor {
     if (!(v === undefined || v === '' || Number(v) !== 0)) return false;
     return size > 0 && size <= WHOLE_MAX && this.worth(size, OPEN_P) && !this.io.tracked?.();
   }
+  /**
+   * The link allows guesses: measured, and not thin (NetLink.thin). On a thin link a guess's bytes are what the game
+   * waits for, and a synchronous read of the game's waited behind the guesses on their way: measured at 85 KB/s, the
+   * launch stopped at its first archive for 10 minutes with the guesses on, went on with them off.
+   */
+  linkOk() { const net = this.io.net; return !net || (net.bw !== null && net.bw !== undefined && !net.thin?.()); }
   /** A guess of `bytes` right with probability `p` is worth its bytes on the link (see rttBytes). */
   worth(bytes, p) { return (1 - p) * bytes <= GAIN * p * this.rttBytes(); }
   byteBudget() {
@@ -231,6 +237,7 @@ export class OpenPredictor {
         if (this.issued.has(tk) || R.out >= PREDICT_MAX || R.outBytes >= budget) continue;
         const end = t.size <= WHOLE_MAX ? t.size : HEAD_BYTES;
         if (!(end > 0) || !this.worth(end, P.hit / (P.hit + P.gone))) continue;
+        if (!this.linkOk()) continue;
         const r = this.io.fetch(t.path, end);
         if (r === true) continue;
         this.issued.set(tk, { t: now, n: R.n, bytes: end, run: R }); R.out++; R.outBytes += end;
@@ -252,7 +259,7 @@ export class OpenPredictor {
     if (size <= REF_FILE_MAX && this.io.peek && predictRefsOn() && !this.io.tracked?.()) this.io.peek(path, size, (start, bytes) => this.noteBytes(path, start, bytes));
     // (a small file opened, not here: all of it on its way at once — the game reads it whole, piece after piece, each
     // piece a wait of its own otherwise; see openWhole)
-    if (this.openWhole(size)) {
+    if (this.openWhole(size) && this.linkOk()) {
       const r = this.io.fetch(path, size);
       if (r !== true) { this.stats.openFiles++; this.stats.openBytes += size; }
     }
@@ -284,7 +291,7 @@ export class OpenPredictor {
     // (its predictions missed lately: none until every open of its last HISTORY lands in a window again)
     const proved = s.res.filter(Boolean).length;
     if (s.res.length >= RESULTS_MIN && proved < RESULTS_SHARE * s.res.length) { if (shadow < HISTORY) return; s.res = []; }
-    if (this.io.tracked?.()) return;
+    if (this.io.tracked?.() || !this.linkOk()) return;
     const most = Math.min(PREDICT_MAX, PREDICT_MIN + 2 * s.hits.filter(Boolean).length), budget = this.byteBudget();
     // (the chance a guess is right: its predictions' outcomes once RESULTS_MIN are known, else the shadow's share)
     const p = s.res.length >= RESULTS_MIN ? proved / s.res.length : shadow / HISTORY;
