@@ -2003,7 +2003,9 @@ files of more than one 64 KiB piece were read whole. Two costs followed:
 measure only):
 - `HttpFile.wholeFirst`: the first read of a file of at most one block (1 MiB) that misses asks for the whole file in
   that one request, when the link carries it within `DEMAND_SECONDS` (`NetLink.demandExtra`: at 1.2 MB/s about 600 KB of
-  file at a 0.5 compression ratio; a thin link only files of a few pieces). `?dbg=ORTHROS_WHOLE_FIRST=0`: off.
+  file at a 0.5 compression ratio; a thin link only files of a few pieces) and the link is not fast (`NetLink.fast`: on a
+  fast link the block follows the piece in the background at once and a round trip is short; there RotWK 2.02's
+  My Heroes load measured no better with it — below). `?dbg=ORTHROS_WHOLE_FIRST=0`: off.
 - A parked read whose request covers a whole block (`fetchAhead`) no longer queues that block in the background too
   (`noteMiss(..., covered)`): every piece it misses is in the request, the block is assembled from them. Its neighbour
   blocks are still noted for speculation (`near`), as before.
@@ -2021,16 +2023,23 @@ its first missing piece"). Not measured on the ports.
 an empty learned directory each run, `tools/headless.mjs aotr-10 ... --input-file` Escape ×6, click MY CAPTAINS at
 (199, 299), `waitframe:40,100000` — the Create-a-Hero screen draws 55-141 per frame, the loading screen 3 —; time =
 click → anchor, the anchor 3 s after the screen; before = `main` 7e3d57f, after = this change; runs interleaved B A B A
-B A, machine load 5-33):
+B A, machine load 5-33; the local "after" runs 1-3 had the whole small file on every link, runs 4-5 the final code, which
+keeps it to links that are not fast):
 
 | local link (~10 MB/s) | before | after |
 |---|---|---|
-| click → Create-a-Hero screen | 83, 86, 85 s | 108, 68, 74 s |
-| emulator thread CPU in that phase | 44.7, 45.6, 46.2 s | 41.6, 35.2, 40.1 s |
-| `ReadFile` (accounting estimate, ~1.9 M calls) | 6.5, 7.3, 6.8 µs a call (12.6, 14.3, 13.2 s) | 3.7, 3.1, 5.0 µs (7.2, 6.0, 9.4 s) |
+| click → Create-a-Hero screen | 83, 86, 85 s | 108, 68, 74; 119, 84 s |
+| the harness server's encoding time in the run (its CPU share: the machine's contention) | 21.5, 23.9, 23.0 s | 31.2, 22.2, 20.0; 35.0, 28.0 s |
+| emulator thread CPU in that phase | 44.7, 45.6, 46.2 s | 41.6, 35.2, 40.1; 43.7, 39.0 s |
+| `ReadFile` (accounting estimate, ~1.9 M calls) | 6.5, 7.3, 6.8 µs a call (12.6, 14.3, 13.2 s) | 3.7, 3.1, 5.0; 5.5, 5.8 µs |
 | game reads to the network in the load | 1 073, 1 074, 1 076 | 1 066, 1 078, 1 075 |
 | … of them a later piece of a loose file | 94, 90, 97 | 52, 68, 60 |
 | background requests in the load | 1 313, 1 314, 1 318 (326-328 MB) | 746, 712, 769 (250-282 MB) |
+
+On the local link the first visit is not shown faster: the runs that came out slow (108, 119 s) are the ones where the
+machine was busiest (the harness server's own encoding 31-35 s against 20-24 s), the others 68-84 s against 83-86 s. The
+load is half the emulator's own work there (35-46 s of CPU), the rest the browser's 4-core cap shared with the GPU
+process (below) and ~10 s of reads waited for.
 
 The owner's link, emulated (`--net 50:10`: 50 ms and 1.25 MB/s per answer, one run a side; the first launch then takes
 500 s to its first frame):
@@ -2062,6 +2071,14 @@ store; local link):
 
 With the data ahead of the game, the load is the emulator's own work, and the small reads were a third of it.
 
+**The other games** (same harness, `--gl-discard`, fresh profile; final code unless said):
+- RotWK 2.02, main menu → MY HEROES (715, 710) → its Create-a-Hero screen (`waitframe:40`; the load reads `.big`
+  archives, ~7 000 `ReadFile`s): before 36, 38, 36, 32, 52, 33 s; after 35, 35 s. With the whole small file on a fast
+  link too (the first version) 41, 54, 49, 53, 58 s, and that version with both switches off 37, 46 s: no cause found
+  within the time (fewer reads, 85-97 against 101-109, the same `net` time, the slow runs those with the busiest
+  machine), the whole small file kept off fast links since.
+- BFME 1.08 skirmish load (`tools/scenarios/bfme1-108-phases.txt`'s clicks scaled to the 1024x768 display, Start →
+  360 draws per frame): before 64, 67 s; after 67, 65 s (the first version) — not slower.
 
 **The harness's own 3-4 minutes.** Without `--gl-discard` the same load took 193-212 s here (2 runs): the loading
 screen at 30 fps rasterized by SwiftShader kept the GPU process at 3.2 cores (800 s of CPU in 252 s) inside the
