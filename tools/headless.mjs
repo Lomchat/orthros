@@ -65,7 +65,8 @@ fs.mkdirSync(out, { recursive: true });
 // (e.g. --net 50:0.68 ~85 KB/s, 50:8 ~1 MB/s, 50:40 ~5 MB/s; tools/check/slow-net-check.mjs runs a bench at such speeds);
 // --net-trace <file>: one line per compressed range answered (start s, duration s, demand/bg, file, range, bytes)
 const netOpt = opt('net') ? opt('net').split(':').map(Number) : null;
-// --br-cache <dir>: the server's precompressed transport units there (src/server/br-cache.js; none without it)
+// --br-cache <dir>: the server's precompressed transport units there (src/server/br-cache.js; none without it);
+// --br-cache-frozen: served as they are, none made (a copy of the live server's: the same units in every run)
 // --learn <dir>: the server keeps the learned prefetch order and GL programs there (see server.js); --programs 0: no
 // programs compiled ahead; --memprefetch: the page prefetches
 // into memory (no persistent profile needed); --prefetch 0: no prefetch
@@ -80,7 +81,7 @@ if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 // --bench <name>: the page's bench mode (?bench=<name>, tools/scenarios/bench, docs/real-machine-bench.md): the page
 // plays the scenario itself (with --ui its banner's start button is clicked); the run ends with the bench's record
 if (opt('telemetry')) fs.mkdirSync(opt('telemetry'), { recursive: true });
-const server = opt('server-port') ? null : createServer({ telemetryDir: opt('telemetry'), extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), brCacheDir: opt('br-cache'), gamesDir: opt('games-dir'), learnWriteMs: 2000, netTrace: opt('net-trace'), profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
+const server = opt('server-port') ? null : createServer({ telemetryDir: opt('telemetry'), extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), brCacheDir: opt('br-cache'), ...(args.includes('--br-cache-frozen') ? { brCacheOptions: { generate: false } } : {}), gamesDir: opt('games-dir'), learnWriteMs: 2000, netTrace: opt('net-trace'), profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 if (server) await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server ? server.address().port : Number(opt('server-port'));
@@ -552,7 +553,7 @@ for (;;) {
       if (markState) { let best = 0, next = 0, gpu = 0; for (const [k, v] of ticks) { const d = v - (markState.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else if (d > best) { next = best; best = d; } else if (d > next) next = d; } console.log(`[cpu] phase ${markState.label} -> ${ev.args[0]}: ${(t - markState.t).toFixed(0)} s, worker thread ${(best / 100).toFixed(1)} s CPU, next worker thread ${(next / 100).toFixed(1)} s CPU, GPU process ${(gpu / 100).toFixed(1)} s CPU, ${frames - markState.frames} frames`); }
       markState = { ticks, frames, t, label: ev.args[0] };
       // (what the network had carried by then: time to a phase on a simulated link reads with it)
-      try { const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json(); if (ns.demand) console.log(`[mark] ${ev.args[0]} at ${t.toFixed(0)} s: ${(ns.sent / 1048576).toFixed(1)} MB sent (demand ${(ns.demand.sent / 1048576).toFixed(1)} MB in ${ns.demand.requests} requests, background ${(ns.bg.sent / 1048576).toFixed(1)} MB)`); } catch { /* no stats */ }
+      try { const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json(); if (ns.demand) console.log(`[mark] ${ev.args[0]} at ${t.toFixed(0)} s: ${(ns.sent / 1048576).toFixed(1)} MB sent (demand ${(ns.demand.sent / 1048576).toFixed(1)} MB in ${ns.demand.requests} requests, background ${(ns.bg.sent / 1048576).toFixed(1)} MB in ${ns.bg.requests} requests${ns.batches ? `, ${ns.batches} of them batches of ${ns.batchItems} runs` : ''})`); } catch { /* no stats */ }
       await page.evaluate((label) => window.orthros.worker?.postMessage({ type: 'mark', label }), String(ev.args[0]));
       continue;
     }

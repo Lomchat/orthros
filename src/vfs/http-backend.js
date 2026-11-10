@@ -196,6 +196,12 @@ export function rangeUnits(start, end, size) {
  * server (br-cache.js `want`), the next probes find them.
  */
 const UNIT_HIT_MIN = 0.66, UNIT_HIT_WEIGHT = 0.3, UNIT_PROBE_EVERY = 8;
+/**
+ * Batched requests (HttpBackend.batch, docs/slow-network.md "Batched requests"): runs of pieces of at most BATCH_ITEM_MAX
+ * bytes each join a batch — larger ones go alone, as their transport units —, BATCH_RUNS of them at most (the server
+ * takes 1024).
+ */
+const BATCH_ITEM_MAX = 256 << 10, BATCH_RUNS = 256;
 
 /** Block the calling worker for `ms` (the reads are synchronous: nothing else can run meanwhile anyway). */
 function pause(ms) {
@@ -237,6 +243,10 @@ export class HttpBackend {
     this.unitRequests = opts.unitRequests ?? true;
     /** the share of the parts lately answered from the server's units (see UNIT_HIT_MIN), the cut requests since a probe */
     this.unitHitRate = 1; this.unitSkips = 0;
+    /** batched requests (see batch): POST /gamezb/<version> — the compressed ranges of a version's folder only; asked by
+     * the opener (game-data.js: every page's), off otherwise (a tool, a test's request stand-in) */
+    const bm = this.encoded && opts.batch === true ? /^(.*)\/game\/([^/]+)\/$/.exec(this.base) : null;
+    this.batchUrl = bm ? `${bm[1]}/gamezb/${bm[2]}` : null; this.batchOff = false;
     /** session id sent with the compressed ranges (the server learns the order blocks are needed in, see prefetch) */
     this.session = opts.session ?? '';
     this.store = opts.store ?? null;
@@ -473,16 +483,29 @@ export class HttpBackend {
         progress.k = job.r;
         // (learnedOnly: the set a page waits for before its game — what its first load needs —; else the learned order,
         // which waits for a load under way to end: the load's own next pieces go ahead of it, see pumpAhead)
-        const pr = this.fetchPartBg(job.e.path, job.e.size, job.e.mtime, job.run[0], job.run[1], prioOf(job.r), stop, false, { reason: job.tier === 1 ? 'pf1' : 'pf2', forLoad: !!opts.learnedOnly }).then((r) => {
+        // (batched: the next runs of small pieces with it, one request — see batch)
+        const B = this.batching() ? this.batch({ prio: prioOf(job.r), stop, reason: job.tier === 1 ? 'pf1' : 'pf2', forLoad: !!opts.learnedOnly }) : null;
+        const settle = (j) => (r) => {
           if (r === null) failed = true;
-          else if (r === undefined) job.e.skip = true;
+          else if (r === undefined) j.e.skip = true;
           else if (r === true) {
-            progress.bytes += Math.min(job.e.size, (job.run[1] + 1) * CHUNK) - job.run[0] * CHUNK;
+            progress.bytes += Math.min(j.e.size, (j.run[1] + 1) * CHUNK) - j.run[0] * CHUNK;
             // (what came the store did not keep — full —: done with this entry, it would be asked again each time the
             // memory's copy is evicted)
-            if (!this.keptInStore(job.e, job.run[0])) job.e.skip = true;
+            if (!this.keptInStore(j.e, j.run[0])) j.e.skip = true;
           }
-        }).finally(() => parts.delete(pr));
+        };
+        let pr;
+        if (B) {
+          const all = [];
+          for (let j = job; j; j = nextPart()) {
+            const n = Math.min(j.e.size, (j.run[1] + 1) * CHUNK) - j.run[0] * CHUNK;
+            if (!B.fits(n)) break;
+            all.push(B.add(j.e.path, j.e.size, j.e.mtime, j.run[0], j.run[1]).then(settle(j)));
+          }
+          B.send();
+          pr = Promise.all(all).finally(() => parts.delete(pr));
+        } else pr = this.fetchPartBg(job.e.path, job.e.size, job.e.mtime, job.run[0], job.run[1], prioOf(job.r), stop, false, { reason: job.tier === 1 ? 'pf1' : 'pf2', forLoad: !!opts.learnedOnly }).then(settle(job)).finally(() => parts.delete(pr));
         parts.add(pr);
         if (failed) { failed = false; if (stop()) return; await new Promise((res) => setTimeout(res, 1000)); }
         continue;
@@ -615,7 +638,11 @@ export class HttpBackend {
     // blocks stay at about main's three on a fast link, pieces go by the bandwidth-delay product)
     const room = () => L.inFlight < budget.requests && (L.inFlight < AHEAD_REQUESTS || (L.inBytes ?? 0) < budget.bytes);
     const span = Math.max(AHEAD_WINDOW, 2 * budget.requests);
-    for (let r = L.pos + 1, lim = Math.min(L.entries.length, L.pos + 1 + span); r < lim && room(); r++) {
+    // (batched: the runs of pieces in batches — one request each, counted as one in flight —, see batch; a whole block alone)
+    let B = null;
+    const batched = this.batching();
+    const sendB = () => { if (B) { B.send(); B = null; } };
+    for (let r = L.pos + 1, lim = Math.min(L.entries.length, L.pos + 1 + span); r < lim && (B || room()); r++) {
       const e = L.entries[r];
       // (nor a media file's entry at the order's tail: the game streams it, read ahead of its reader — readAhead)
       if (e.ahead || e.seen || !e.mask || e.tail || this.doneWith(e.path)) continue;
@@ -636,25 +663,48 @@ export class HttpBackend {
         if (!want(i)) continue;
         let j = i; while (j + 1 < pieces && want(j + 1) && j + 1 - i < most) j++;
         // (every piece of the block wanted: the block itself, stored)
-        this.fetchPiecesAhead(e, c0 + i, c0 + j, all && i === 0 && j === pieces - 1);
+        const whole = all && i === 0 && j === pieces - 1, n = Math.min(e.size, (c0 + j + 1) * CHUNK) - (c0 + i) * CHUNK;
+        if (batched && !whole) {
+          if (B && !B.fits(n)) sendB();
+          if (!B) { if (!room()) break; B = this.aheadBatch(L); }
+          this.fetchPiecesAhead(e, c0 + i, c0 + j, false, B);
+        } else this.fetchPiecesAhead(e, c0 + i, c0 + j, whole);
         i = j;
       }
     }
+    sendB();
+  }
+  /** A batch of learned pieces ahead (see pumpAhead): one request in flight for the learned order's budget. */
+  aheadBatch(L0) {
+    const at = () => { let L = L0; while (L.moved) L = L.moved; return L; };
+    const B = this.batch({ prio: PRIO.ahead, stop: L0.stop, w: { get forLoad() { return at().tracked; } }, reason: 'ahead' });
+    L0.inFlight++;
+    const send = B.send, all = [];
+    B.track = (p) => all.push(p);
+    B.send = () => { send(); Promise.allSettled(all).then(() => { const L = at(); L.inFlight--; this.pumpAhead(); }); };
+    return B;
   }
   /** Pieces m0..m1 of a learned entry, fetched ahead (see pumpAhead); `whole`: they are the whole block. */
-  fetchPiecesAhead(e, m0, m1, whole) {
+  // (`B`: a batch the pieces join — aheadBatch: counted once in L.inFlight, its bytes per run)
+  fetchPiecesAhead(e, m0, m1, whole, B = null) {
     const L0 = this.learned, at = () => { let L = L0; while (L.moved) L = L.moved; return L; }; // (see prefetchList's carry)
     const start = m0 * CHUNK, stop = Math.min(e.size, (m1 + 1) * CHUNK);
-    L0.inFlight++; L0.inBytes = (L0.inBytes ?? 0) + stop - start;
+    if (!B) L0.inFlight++;
+    L0.inBytes = (L0.inBytes ?? 0) + stop - start;
     this.stats.aheadRequests = (this.stats.aheadRequests ?? 0) + 1;
-    // (the learned position followed (L.tracked): these are the load's next reads — they may go during it; read when the
-    // turn is looked at, not when it was queued: tracking found or lost meanwhile)
-    const w = { get forLoad() { return !e.tail && at().tracked; } };
-    const done = this.fetchBackground(e.path, start, stop, null, false, false, { prio: PRIO.ahead, stop: L0.stop, w, reason: 'ahead' }).then((d) => {
+    const got = (d) => {
       if (!(d instanceof Uint8Array) || this.cache.has(`${e.path}#${e.index}`)) return;
       this.stats.aheadBytes = (this.stats.aheadBytes ?? 0) + d.length;
       if (whole) { this.installBlock(e.path, e.index, d, `${e.path}#${e.size}#${e.mtime}#${e.index}`); this.evict(); } else this.addPieces(e.path, m0, m1, d, e);
-    }).finally(() => {
+    };
+    if (B) {
+      B.track(B.add(e.path, e.size, e.mtime, m0, m1, (d) => { got(d); return true; }).finally(() => { const L = at(); L.inBytes = Math.max(0, (L.inBytes ?? 0) - (stop - start)); }));
+      return;
+    }
+    // (the learned position followed (L.tracked): these are the load's next reads — they may go during it; read when the
+    // turn is looked at, not when it was queued: tracking found or lost meanwhile)
+    const w = { get forLoad() { return !e.tail && at().tracked; } };
+    const done = this.fetchBackground(e.path, start, stop, null, false, false, { prio: PRIO.ahead, stop: L0.stop, w, reason: 'ahead' }).then(got).finally(() => {
       for (let c = m0; c <= m1; c++) if (this.flights.get(`${e.path}#${c}`) === done) this.flights.delete(`${e.path}#${c}`);
       const L = at(); L.inFlight--; L.inBytes = Math.max(0, (L.inBytes ?? 0) - (stop - start));
       this.pumpAhead();
@@ -682,6 +732,105 @@ export class HttpBackend {
     done.w = w;
     for (let c = c0; c <= c1; c++) this.flights.set(`${path}#${c}`, done);
     return done;
+  }
+  // ---------------------------------------------------------------- batched requests
+
+  /** batched requests are on (docs/slow-network.md "Batched requests"; ?dbg=ORTHROS_BATCH=0: off) */
+  batching() {
+    if (!this.encoded || this.batchOff || !this.batchUrl || typeof fetch !== 'function') return false;
+    const v = globalThis.ORTHROS_BATCH; return v === undefined || v === '' || Number(v) !== 0;
+  }
+  /**
+   * File bytes one batch carries at most: half of what one background request may carry (NetLink.requestBytes), so that
+   * two go side by side within the link's bytes rule (one alone leaves the link idle a round trip between two).
+   */
+  batchBytes() { return Math.max(CHUNK, Math.floor(this.net.requestBytes() / 2 / CHUNK) * CHUNK); }
+  /**
+   * A batch of background piece runs (docs/slow-network.md "Batched requests"): one turn on the link (`turn`: prio,
+   * stop, w, reason, forLoad — fetchBackground's), one POST /gamezb request, the runs' bytes compressed together by the
+   * server. `add(path, size, mtime, c0, c1)` registers pieces c0..c1 as on their way (flights: a parked read of one joins
+   * the batch and makes it go first) and returns a promise with fetchPartBg's answers (true, undefined to skip, false
+   * aborted, null failed) — the pieces added (addPieces) unless the run has its own `onData(bytes)`, which then decides;
+   * `send()` starts it. A batch of one run is that run's ordinary request (its transport units). `fits(bytes)`: a run
+   * of that many file bytes may join (BATCH_ITEM_MAX each, batchBytes() and BATCH_RUNS together).
+   */
+  batch(turn) {
+    const runs = [], w = turn.w ?? {};
+    let bytes = 0;
+    const B = {
+      runs, w,
+      get bytes() { return bytes; },
+      fits: (n) => !runs.length || (runs.length < BATCH_RUNS && n <= BATCH_ITEM_MAX && runs[0].end - runs[0].start <= BATCH_ITEM_MAX && bytes + n <= this.batchBytes()),
+      add: (path, size, mtime, c0, c1, onData = null) => {
+        let resolve; const done = new Promise((res) => { resolve = res; });
+        const start = c0 * CHUNK, end = Math.min(size, (c1 + 1) * CHUNK);
+        runs.push({ path, size, mtime, c0, c1, start, end, onData, resolve });
+        bytes += end - start;
+        done.w = w;
+        for (let c = c0; c <= c1; c++) this.flights.set(`${path}#${c}`, done);
+        // (a run settled: its flights gone, its pieces here or asked again later)
+        const out = done.finally(() => { for (let c = c0; c <= c1; c++) if (this.flights.get(`${path}#${c}`) === done) this.flights.delete(`${path}#${c}`); });
+        return out;
+      },
+      send: () => {
+        if (!runs.length) return;
+        const settle = (r, d) => {
+          if (d === ABORTED) return r.resolve(false);
+          if (d === null) return r.resolve(null);
+          if (!(d instanceof Uint8Array)) return r.resolve(undefined);
+          this.stats.partBytes = (this.stats.partBytes ?? 0) + d.length;
+          if (r.onData) return r.resolve(r.onData(d) ?? true);
+          this.addPieces(r.path, r.c0, r.c1, d, { size: r.size, mtime: r.mtime });
+          r.resolve(true);
+        };
+        const fail = () => { for (const r of runs) r.resolve(null); };
+        if (runs.length === 1) {
+          const r = runs[0];
+          this.fetchBackground(r.path, r.start, r.end, null, false, false, { ...turn, w }).then((d) => settle(r, d), fail);
+          return;
+        }
+        const total = bytes, go = (ok) => (ok ? this.fetchBatchNow(runs, turn.reason ?? 'other') : runs.map(() => null));
+        const quiet = this.net.fast() ? 0 : turn.prio[1];
+        if (turn.forLoad) w.forLoad = true;
+        const started = this.net.tryTurn(quiet, w, total) ? go(true) : this.net.turn(turn.prio[0], quiet, turn.stop, w, total).then(go);
+        Promise.resolve(started).then((ds) => runs.forEach((r, i) => settle(r, ds[i])), fail);
+      },
+    };
+    return B;
+  }
+  /**
+   * The runs of a batch in one request, its turn on the link taken: one answer per run (bytes, undefined for one to skip,
+   * null when the network failed). A server without batches (an older one: 404/405) turns them off for this backend and
+   * the runs go one request each.
+   */
+  async fetchBatchNow(runs, reason = 'other') {
+    const total = runs.reduce((n, r) => n + r.end - r.start, 0);
+    const tok = this.net.begin('bg', total, null, null, reason); tok.keep = true;
+    let wire = 0, ok = false;
+    try {
+      const announced = reason === 'announced';
+      const res = await fetch(`${this.batchUrl}?${announced ? 'w=1' : 'p=1'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(runs.map((r) => [r.path, r.start, r.end])) });
+      this.net.firstByte(tok);
+      if (res.status === 404 || res.status === 405 || res.status === 400 || res.status === 413) {
+        // (not a batch server — off for this backend —, or a run it does not know: each run alone, a file gone then that
+        // run's answer only)
+        const why = await res.text().catch(() => '');
+        if ((res.status === 404 || res.status === 405) && !/^batch item/.test(why)) this.batchOff = true;
+        this.stats.batchFallbacks = (this.stats.batchFallbacks ?? 0) + 1;
+        return await Promise.all(runs.map((r) => this.fetchBackgroundNow(r.path, r.start, r.end, null, false, false, reason)));
+      }
+      if (res.status !== 200) return runs.map(() => undefined);
+      const data = new Uint8Array(await res.arrayBuffer());
+      wire = wireOf(data.length, res.headers?.get?.('content-length'));
+      if (data.length !== total) return runs.map(() => null);
+      ok = true;
+      this.stats.batches = (this.stats.batches ?? 0) + 1; this.stats.batchRuns = (this.stats.batchRuns ?? 0) + runs.length;
+      this.stats.batchRaw = (this.stats.batchRaw ?? 0) + total; this.stats.batchWire = (this.stats.batchWire ?? 0) + wire;
+      let at = 0;
+      return runs.map((r) => { const d = data.subarray(at, at + r.end - r.start); at += r.end - r.start; return d; });
+    } catch { return runs.map(() => null); } finally {
+      this.net.end(tok, wire, total, ok);
+    }
   }
   // ---------------------------------------------------------------- announced reads
 
