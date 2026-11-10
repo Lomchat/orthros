@@ -39,6 +39,7 @@ const TEXT = {
     cannotRun: 'Orthros cannot run here', noBench: 'This measurement cannot run',
     exited: (t) => `${t} has exited`, exitCode: (c, r) => `exit code ${c}${r ? ` (${r})` : ''}`,
     crashed: (t) => `${t} stopped on an emulation error`, crashDetail: 'the report below describes the state at the fault',
+    noEngine: 'The emulator could not start', noEngineDetail: 'its code did not load (Orthros may have just been updated): reload the page',
     restart: 'Restart', fresh: 'Restart with a fresh game profile', freshTitle: 'the saved settings and saves are moved aside (kept), the game starts as on its first launch', back: 'Back to the games', freshing: 'moving the saved profile aside…',
     noIsolation: 'the page is not cross-origin isolated (SharedArrayBuffer unavailable): serve it with Orthros\' server (COOP/COEP headers)',
     noWebgl: 'WebGL 2 is unavailable (hardware acceleration disabled?)', noTail: 'this browser lacks WebAssembly tail calls: use a recent Chrome',
@@ -67,6 +68,7 @@ const TEXT = {
     cannotRun: 'Orthros ne peut pas fonctionner ici', noBench: 'Cette mesure ne peut pas être lancée',
     exited: (t) => `${t} s’est arrêté`, exitCode: (c, r) => `code de sortie ${c}${r ? ` (${r})` : ''}`,
     crashed: (t) => `${t} s’est arrêté sur une erreur d’émulation`, crashDetail: 'le rapport ci-dessous décrit l’état au moment de l’erreur',
+    noEngine: 'L’émulateur n’a pas pu démarrer', noEngineDetail: 'son code ne s’est pas chargé (Orthros vient peut-être d’être mis à jour) : recharge la page',
     restart: 'Relancer', fresh: 'Relancer avec un profil de jeu neuf', freshTitle: 'les réglages et sauvegardes sont mis de côté (conservés), le jeu démarre comme à son premier lancement', back: 'Retour aux jeux', freshing: 'mise de côté du profil…',
     noIsolation: 'la page n’est pas isolée (SharedArrayBuffer indisponible) : servez-la avec le serveur d’Orthros (en-têtes COOP/COEP)',
     noWebgl: 'WebGL 2 est indisponible (accélération matérielle désactivée ?)', noTail: 'ce navigateur ne gère pas les appels terminaux WebAssembly : utilisez un Chrome récent',
@@ -94,6 +96,13 @@ const TEXT = {
 }[lang];
 
 /** Centered message over the stage: progress while the game starts, or an error (with its report) that stays. */
+const STALE_RELOAD = 'orthros.staleReload';
+/** The page's code is older than the server's (the emulator's worker did not load): one reload, then an error. */
+function staleCode() {
+  let tried = null; try { tried = sessionStorage.getItem(STALE_RELOAD); } catch { /* storage off */ }
+  if (!tried) { try { sessionStorage.setItem(STALE_RELOAD, String(Date.now())); } catch { /* storage off */ } location.reload(); return; }
+  hideLoader(true); state.status = 'crashed'; showStatus(TEXT.noEngine, TEXT.noEngineDetail, null, true, true);
+}
 function showStatus(title, detail = '', report = null, error = false, restart = false) {
   const el = $('status');
   el.classList.remove('hidden'); el.classList.toggle('error', error);
@@ -261,8 +270,10 @@ async function start(name, language = null) {
   state.ctl = new Int32Array(ctlSab); state.inputRing = new Int32Array(inputSab);
   const worker = new Worker('/src/web/worker.js', { type: 'module' });
   state.worker = worker;
-  worker.onmessage = (e) => onWorkerMessage(e.data);
-  worker.onerror = (e) => log('crash', `worker error: ${e.message}`);
+  worker.onmessage = (e) => { if (!state.workerAlive) { state.workerAlive = true; try { sessionStorage.removeItem(STALE_RELOAD); } catch { /* storage off */ } } onWorkerMessage(e.data); };
+  // (the worker's script failing to load before its first message — a page opened before a deploy that moved or changed
+  // the code: its modules 404 — is not a game error: reloaded once to take the served code, then said plainly)
+  worker.onerror = (e) => { log('crash', `worker error: ${e.message}`); if (!state.workerAlive && !headless) staleCode(); };
   const opts = { headless, gameLanguage: language, profileDir: profileDir(state.profileKey), dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined, netBw: savedNetBw() };
   // (this browser's snapshot of the game, docs/snapshot.md: the machine goes on from it)
   let snapshot = null;
