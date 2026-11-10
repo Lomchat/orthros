@@ -432,12 +432,17 @@ export class HttpBackend {
     // a link that is not fast: the pieces the earlier sessions read first (the learned masks: what the game will read),
     // in the order they needed them from the game's position, then the rest of those blocks; in background requests
     // of the link's size (see NetLink), each piece kept as it comes
-    const nextPart = () => {
+    // (`after`: the job found last — a batch being filled goes on from there, not from the order's start again: the entries
+    // before it have nothing more to fetch, and those on their way cost a scan each, hundreds of them in a batch's flight)
+    const nextPart = (after = null) => {
       // (a thin link: the learned pieces only — whole blocks are for links that can afford them)
       for (const tier of this.net.thin() || opts.learnedOnly ? [1] : [1, 2]) {
+        if (after && tier < after.tier) continue;
         // (pass 0: the launch set while the position is past it — next's order)
         for (let pass = L.pos >= L.first ? 0 : 1; pass < 3; pass++) {
-          const from = pass === 1 ? L.pos + 1 : 0, to = pass === 0 ? L.first : pass === 1 ? entries.length : Math.min(entries.length, L.pos + 1);
+          if (after && tier === after.tier && pass < after.pass) continue;
+          const from0 = pass === 1 ? L.pos + 1 : 0, to = pass === 0 ? L.first : pass === 1 ? entries.length : Math.min(entries.length, L.pos + 1);
+          const from = after && tier === after.tier && pass === after.pass ? Math.max(from0, after.r) : from0;
           for (let r = from; r < to; r++) {
             // (learnedOnly: an entry learned without its pieces — an older list — was read whole)
             const e = entries[r], mask = e.mask || (opts.learnedOnly ? 0xffff : 0);
@@ -446,7 +451,7 @@ export class HttpBackend {
             // of it goes whole on any link, the transport unit the server makes for it — br-cache.js: a block learned
             // whole is a block unit, its pieces are not —, as one request; a light copy's go by pieces, as made)
             const run = this.missingRun(e.path, e.size, e.mtime, e.index, tier === 1 ? mask : 0, !!opts.learnedOnly && !e.path.startsWith(LIGHT_DIR + '/'));
-            if (run) return { r, e, run, tier };
+            if (run) return { r, e, run, tier, pass };
             if (tier === 1) { let fly = false; for (let c = e.index * 16; c < e.index * 16 + 16; c++) if (this.flights.has(`${e.path}#${c}`)) fly = true; if (!fly) { e.maskDone = true; progress.blocks++; } }
           }
         }
@@ -498,7 +503,7 @@ export class HttpBackend {
         let pr;
         if (B) {
           const all = [];
-          for (let j = job; j; j = nextPart()) {
+          for (let j = job; j; j = nextPart(j)) {
             const n = Math.min(j.e.size, (j.run[1] + 1) * CHUNK) - j.run[0] * CHUNK;
             if (!B.fits(n)) break;
             all.push(B.add(j.e.path, j.e.size, j.e.mtime, j.run[0], j.run[1]).then(settle(j)));
@@ -638,7 +643,7 @@ export class HttpBackend {
     // blocks stay at about main's three on a fast link, pieces go by the bandwidth-delay product)
     const room = () => L.inFlight < budget.requests && (L.inFlight < AHEAD_REQUESTS || (L.inBytes ?? 0) < budget.bytes);
     const span = Math.max(AHEAD_WINDOW, 2 * budget.requests);
-    // (batched: the runs of pieces in batches — one request each, counted as one in flight —, see batch; a whole block alone)
+    // (batched: the runs of pieces in batches — one request each, counted as one in flight —, see batch; a large run alone)
     let B = null;
     const batched = this.batching();
     const sendB = () => { if (B) { B.send(); B = null; } };
@@ -664,10 +669,11 @@ export class HttpBackend {
         let j = i; while (j + 1 < pieces && want(j + 1) && j + 1 - i < most) j++;
         // (every piece of the block wanted: the block itself, stored)
         const whole = all && i === 0 && j === pieces - 1, n = Math.min(e.size, (c0 + j + 1) * CHUNK) - (c0 + i) * CHUNK;
-        if (batched && !whole) {
+        // (a small file's only block — whole, of a piece or a few — joins a batch too: most of a load of loose files)
+        if (batched && n <= BATCH_ITEM_MAX) {
           if (B && !B.fits(n)) sendB();
           if (!B) { if (!room()) break; B = this.aheadBatch(L); }
-          this.fetchPiecesAhead(e, c0 + i, c0 + j, false, B);
+          this.fetchPiecesAhead(e, c0 + i, c0 + j, whole, B);
         } else this.fetchPiecesAhead(e, c0 + i, c0 + j, whole);
         i = j;
       }
