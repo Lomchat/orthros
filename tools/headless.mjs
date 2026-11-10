@@ -45,7 +45,8 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // COM AddRef/Release fast path and the Direct3D issued-state filter off / on again (Vm.setApiFastPaths).
 // Fidelity traces: dbg:ORTHROS_TRACE_API=1 (or --dbg at start) logs every completed API call with its arguments, result,
 // last error and caller as [api] (2: COM / D3DX calls too; =: off again) — e.g. around a click whose effect differs
-// from Windows; --dbg ORTHROS_SEH_LOG_MAX=<n> lifts the 80-line cap of --log seh; --log sync names the named kernel
+// from Windows; --dbg ORTHROS_SEH_LOG_MAX=<n> lifts the 80-line cap of --log seh; --dbg ORTHROS_WATCH_STACK=<n>: the
+// writers reported by watch:addr,len (then unwatch) carry n stack words instead of 5 (a small setter's caller); --log sync names the named kernel
 // objects created / opened; --log d3dx describes the first D3DXLoadSurfaceFromMemory calls.
 let afterWait = false;
 let pagePointer = null, benchDone = false; // (the pointer position of the pageclick / pagemove steps)

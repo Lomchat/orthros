@@ -611,9 +611,10 @@ export class Jit {
     for (const last = (addr + len - 1) >>> 12; p <= last && !(w = this.watches.get(p)); p++);
     if (!w) return false;
     if (addr + len <= w.lo || addr >= w.hi) return true; // (another address of the watched page)
-    // the writer's resume EIP, with the first words of its stack (a memcpy's return address)
+    // the writer's resume EIP, with the first words of its stack (a memcpy's return address; ORTHROS_WATCH_STACK=<n>
+    // words instead of 5: the caller of a small setter sits a few frames up)
     let key = eip;
-    if (thread) { const sp = thread.cpu.esp; key = `t${thread.id}:` + [eip, ...[0, 4, 8, 12, 16].map((o) => this.mem.read32(sp + o))].map((x) => (x >>> 0).toString(16)).join('/'); }
+    if (thread) { const sp = thread.cpu.esp, n = globalThis.ORTHROS_WATCH_STACK || 5; key = `t${thread.id}:` + [eip, ...Array.from({ length: n }, (_, i) => this.mem.read32(sp + 4 * i))].map((x) => (x >>> 0).toString(16)).join('/'); }
     w.sites.set(key, (w.sites.get(key) ?? 0) + 1);
     if (++w.hits >= w.max) { this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_WATCH; this.watches.delete(p); this.watchDone?.(w); }
     return true;
