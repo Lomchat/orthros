@@ -1,8 +1,9 @@
 // Cursor files (.cur / .ani) and the GDI text engine's TrueType header reader.
+import fs from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCursorFile } from '../src/gfx/gdi/cursor.js';
-import { parseFontFile } from '../src/gfx/gdi/ttf.js';
+import { parseFontFile, parseCmap } from '../src/gfx/gdi/ttf.js';
 
 /** A 4x4 cursor, 1 bpp (black/white palette) with an AND mask, hotspot (1, 2). */
 function makeCur() {
@@ -71,6 +72,15 @@ test('ttf: family and Windows metrics from a minimal sfnt header', () => {
   assert.equal(f.family, 'Test Face');
   assert.equal(f.unitsPerEm, 2048);
   assert.deepEqual([f.winAscent, f.winDescent, f.avgCharWidth, f.weight], [1854, 434, 904, 700]);
+});
+
+const LIBERATION = '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf';
+test('ttf: character map (GetGlyphIndices: missing characters are reported, glyph-index calls map back)', { skip: !fs.existsSync(LIBERATION) && 'no Liberation Sans' }, () => {
+  const m = parseCmap(new Uint8Array(fs.readFileSync(LIBERATION)));
+  const a = m.toGlyph.get(0x41), oacute = m.toGlyph.get(0xf3);
+  assert.ok(a > 0 && oacute > 0 && a !== oacute);
+  assert.equal(m.toGlyph.get(0x4e00), undefined, 'no CJK glyph: the application falls back to another font');
+  assert.equal(m.toChar.get(oacute), 0xf3);
 });
 
 test('strings: Windows case mapping keeps lengths and code pages; CP1252 undefined slots round-trip', async () => {
