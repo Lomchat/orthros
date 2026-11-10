@@ -73,6 +73,7 @@ if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 // them to an empty profile (default 2; see src/shared/profile-seed.js); --profile-seed 0: none offered, none learned
 // --server-port <p>: use an Orthros server already running on 127.0.0.1:<p> (several harness runs on one server: its
 // virtual LAN links them) instead of starting one
+// --screen WxH: the screen size the page reports (default: the viewport's), which caps the display modes listed (docs/display-modes.md)
 // --games-dir <dir>: the game catalog (folders with their manifest.json) served instead of data/games (a manifest under test)
 // --telemetry <dir>: the server keeps the page's telemetry there (as the live server does; the page sends it with --ui)
 // --bench <name>: the page's bench mode (?bench=<name>, tools/scenarios/bench, docs/real-machine-bench.md): the page
@@ -92,7 +93,8 @@ const chromeArgs = v8LogArgs([...(process.env.ORTHROS_CHROME_ARGS ?? '').split('
 // Options.ini) survives across runs, exactly as in a real page (the default fresh context has no persistence).
 const opfsDir = opt('opfs');
 const browser = opfsDir ? await chromium.launchPersistentContext(opfsDir, { args: chromeArgs, viewport: { width: 1280, height: 900 }, ignoreHTTPSErrors: pageOrigin.startsWith('https:') }) : await chromium.launch({ args: chromeArgs });
-const page = opfsDir ? (browser.pages()[0] ?? await browser.newPage()) : await browser.newPage({ viewport: { width: 1280, height: 900 }, ignoreHTTPSErrors: pageOrigin.startsWith('https:') });
+const screenOpt = opt('screen') ? { width: Number(opt('screen').split('x')[0]), height: Number(opt('screen').split('x')[1]) } : undefined; // (--screen WxH: the player's screen the game sees, the modes its display lists)
+const page = opfsDir ? (browser.pages()[0] ?? await browser.newPage()) : await browser.newPage({ viewport: { width: 1280, height: 900 }, screen: screenOpt, ignoreHTTPSErrors: pageOrigin.startsWith('https:') });
 const logFile = fs.createWriteStream(path.join(out, `${name}.log`));
 // --stop-on <text>: the run ends (as at its time limit: report, profile saved) once a log line contains that text — a
 // benchmark of the time to some point (e.g. the end of a game's first-launch computation) without running past it

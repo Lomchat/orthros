@@ -3,6 +3,7 @@
 // palettes are not implemented (DDERR_UNSUPPORTED): a game drawing through DirectDraw itself needs more than this.
 import { snapClass } from '../core/snapshot.js';
 import { readGuid } from './com.js';
+import { displayModes } from './display-modes.js';
 
 export const IID_IDirectDraw = '6c14db80-a733-11ce-a521-0020af0be560';
 export const IID_IDirectDraw2 = 'b3a6f3e0-2b43-11cf-a2de-00aa00b93356';
@@ -13,7 +14,6 @@ const DD_OK = 0, DDERR_INVALIDPARAMS = 0x80070057, DDERR_UNSUPPORTED = 0x8000400
 const DDERR_ALREADYINITIALIZED = 0x88760005;
 /** video memory reported (the same as IDirect3DDevice8/9::GetAvailableTextureMem) */
 export const VIDEO_MEMORY = 256 * 1024 * 1024;
-const MODES = [[640, 480], [800, 600], [1024, 768], [1152, 864], [1280, 720], [1280, 768], [1280, 800], [1280, 960], [1280, 1024], [1360, 768], [1366, 768], [1440, 900], [1600, 900], [1600, 1200], [1680, 1050], [1920, 1080], [1920, 1200], [2560, 1440]];
 const BPPS = [16, 32];
 const FOURCCS = ['DXT1', 'DXT2', 'DXT3', 'DXT4', 'DXT5'];
 
@@ -46,7 +46,7 @@ export function registerDirectDraw(api, vm) {
   const VERSIONS = new Map([[IID_IDirectDraw, 'IDirectDraw'], [IID_IDirectDraw2, 'IDirectDraw2'], [IID_IDirectDraw4, 'IDirectDraw4'], [IID_IDirectDraw7, 'IDirectDraw7']]);
 
   const display = () => { const d = vm.host?.display; return { width: d?.width ?? 1024, height: d?.height ?? 768, bpp: 32, refresh: 60 }; };
-  const modeList = () => { const d = display(), list = []; for (const bpp of BPPS) { const seen = new Set(); for (const [w, h] of [...MODES, [d.width, d.height]]) { if (seen.has(w * 100000 + h)) continue; seen.add(w * 100000 + h); list.push([w, h, bpp]); } } return list; };
+  const modeList = () => { const list = [], all = displayModes(vm.host?.display ?? { width: 1024, height: 768 }); for (const bpp of BPPS) for (const [w, h] of all) list.push([w, h, bpp]); return list; };
 
   /** One DirectDraw object: an interface object per version asked for (QueryInterface), all sharing this state. */
   class DirectDraw {
