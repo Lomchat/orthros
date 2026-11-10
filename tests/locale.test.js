@@ -33,3 +33,15 @@ test('GetLocaleInfo en-US values by LCTYPE', () => {
   assert.equal(localeInfoValue((LOCALE_SDECIMAL | LOCALE_NOUSEROVERRIDE) >>> 0), '.');
   assert.equal(localeInfoValue(0x7fff), undefined);
 });
+
+test('the locale follows the session language: fr-FR date and time formats, en-US otherwise', async () => {
+  const { localeTag, formatDate, formatTime, localeInfo, lcidOf } = await import('../src/win32/locale.js');
+  const t = Date.UTC(2026, 10, 10, 12, 51, 34); // Tuesday 10 Nov 2026
+  assert.equal(localeTag('fr'), 'fr-FR'); assert.equal(localeTag('fr-CA'), 'fr-FR'); assert.equal(localeTag('xx'), 'en-US'); assert.equal(localeTag(undefined), 'en-US');
+  assert.equal(lcidOf('fr-FR'), 0x40c);
+  assert.equal(formatDate('fr-FR', 0, t), '10/11/2026'); assert.equal(formatTime('fr-FR', 0, t), '12:51:34');
+  assert.equal(formatDate('en-US', 0, t), '11/10/2026'); assert.equal(formatTime('en-US', 0, t + 3600e3), '1:51:34 PM');
+  assert.equal(formatDate('fr-FR', 2, t), 'mardi 10 novembre 2026');
+  assert.equal(formatTime('en-US', 2 | 4, t), '12:51');
+  assert.equal(localeInfo('fr-FR', 0x1f), 'dd/MM/yyyy'); assert.equal(localeInfo('fr-FR', 0x2a), 'lundi');
+});

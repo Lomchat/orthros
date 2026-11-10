@@ -111,6 +111,14 @@ function readDates(name) { try { return JSON.parse(globalThis.localStorage?.getI
 function saveDates(name, dates) {
   try { if (Object.keys(dates).length) globalThis.localStorage?.setItem(datesKey(name), JSON.stringify(dates)); else globalThis.localStorage?.removeItem(datesKey(name)); } catch { /* storage off: the write dates */ }
 }
+/** The profile's own dates of folder `name` (worker.js loadProfile: the files the game sees keep their date across starts). */
+export const profileDates = (name) => readDates(name);
+/** Records dates the running game reported (profile-opfs.js flushProfileOpfs: [path, OPFS date, own date]). */
+export function noteProfileDates(name, entries) {
+  const dates = readDates(name);
+  for (const [path, lm, own] of entries) dates[path] = [lm, own];
+  saveDates(name, dates);
+}
 /** Files of folder `name` (collect) with their own dates where they were written from another copy. */
 function ownDates(name, files) {
   const dates = readDates(name);

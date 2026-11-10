@@ -18,7 +18,9 @@ export async function flushProfileOpfs(dir, profile, since, o = {}) {
   const changes = profile.changes ? [...profile.changes] : []; profile.changes?.clear();
   const dirty = new Map([...profile.files].filter(([, f]) => f.mtime > since));
   for (const k of changes) if (profile.files.has(k)) dirty.set(k, profile.files.get(k)); // (renamed: same date)
-  const out = { written: 0, removed: 0, failed: 0, changed: dirty.size > 0 || changes.length > 0 };
+  /** @type {[string, number, number][]} [path, the OPFS file's own date, the guest-visible date]: OPFS dates a file by its write, so the page keeps the guest's (data-store.js readDates) */
+  const dates = [];
+  const out = { written: 0, removed: 0, failed: 0, changed: dirty.size > 0 || changes.length > 0, dates };
   const dirOf = async (parts, create) => { let d = dir; for (let i = 0; i < parts.length; i++) d = await d.getDirectoryHandle(profile.names.get(parts.slice(0, i + 1).join('/')) ?? parts[i], { create }); return d; };
   const gone = [];
   // (folders made: before the files they hold)
@@ -35,6 +37,10 @@ export async function flushProfileOpfs(dir, profile, since, o = {}) {
       await w.write(f.data.subarray(0, f.len));
       await w.close();
       out.written++;
+      if (Number.isFinite(f.mtime)) {
+        let lm; try { lm = (await fh.getFile()).lastModified; } catch { /* (the write itself succeeded: a date not read is no failure) */ }
+        if (Number.isFinite(lm)) dates.push([parts.map((_, i) => profile.names.get(parts.slice(0, i + 1).join('/')) ?? parts[i]).join('/'), lm, f.mtime]);
+      }
     } catch (e) { out.failed++; profile.changes?.add(key); o.log?.(`OPFS write failed for ${key}: ${e.message}`); }
   }
   // (files removed or renamed away, folders removed: the browser's copy follows — a deleted save must not come back —
@@ -54,12 +60,12 @@ export async function flushProfileOpfs(dir, profile, since, o = {}) {
  * harness never takes a profile it has not seen whole for one the game emptied.
  * @param {any} profile
  * @param {boolean} ready
- * @param {(p: any) => { path: string, data: Uint8Array }[]} list
+ * @param {(p: any) => { path: string, data: Uint8Array, mtime?: number }[]} list
  * @param {(d: Uint8Array) => string} toBase64
  */
 export function profileDumpOf(profile, ready, list, toBase64) {
   if (!profile || !ready) return null;
-  return list(profile).map((f) => ({ path: f.path, data: toBase64(f.data) }));
+  return list(profile).map((f) => ({ path: f.path, data: toBase64(f.data), ...(Number.isFinite(f.mtime) ? { mtime: f.mtime } : {}) }));
 }
 
 /**

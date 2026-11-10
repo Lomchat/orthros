@@ -31,6 +31,7 @@ import { acct, C as ACCT, catsObject } from '../core/frame-acct.js';
 import { refreshApiOpt } from '../core/api-opt.js';
 import { hostWaiter } from '../core/host-wait.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../shared/profile-seed.js';
+import { localeTag } from '../win32/locale.js';
 import { applyProfileMoves } from '../vfs/profile-moves.js';
 import { flushProfileOpfs, profileDumpOf } from '../vfs/profile-opfs.js';
 import { LearnedHeat } from '../cpu/jit/heat.js';
@@ -92,11 +93,17 @@ const log = (kind, msg) => post({ type: 'log', kind, msg });
 
 const PROFILE_DIRS = ['Temp', 'AppData', 'AppData/Roaming', 'AppData/Local', 'AppData/LocalLow', 'Documents', 'Desktop', 'Saved Games'];
 
+/** A restored file keeps the date the guest saw: the page's record [OPFS date, own date] when OPFS still has that date, else OPFS's. */
+function restoreDate(mem, path, lastModified, own) {
+  const f = mem.files.get(mem.key(path));
+  if (f) f.mtime = Array.isArray(own) && own[0] === lastModified && Number.isFinite(own[1]) ? own[1] : lastModified;
+}
+
 /**
  * The player's profile from this browser's OPFS folder `dir` (the page's: the game's profile, shared by its versions —
  * docs/profiles.md, src/vfs/profile-share.js profileDir —, the copies of before merged into it by the page first).
  */
-async function loadProfile(mem, dir) {
+async function loadProfile(mem, dir, dates = {}) {
   try {
     if (!dir) throw new Error('no profile folder');
     const root = await navigator.storage.getDirectory();
@@ -105,7 +112,7 @@ async function loadProfile(mem, dir) {
       for await (const [name, h] of dir.entries()) {
         const p = rel ? rel + '/' + name : name;
         if (h.kind === 'directory') { mem.mkdir(p); await walk(h, p); }
-        else { const f = await h.getFile(); const data = new Uint8Array(await f.arrayBuffer()); mem.open(p, { create: true }).write(0, data); profileFilesRestored++; profileListing.push({ path: p, size: data.length, modified: f.lastModified }); }
+        else { const f = await h.getFile(); const data = new Uint8Array(await f.arrayBuffer()); mem.open(p, { create: true }).write(0, data); restoreDate(mem, p, f.lastModified, dates[p]); profileFilesRestored++; profileListing.push({ path: p, size: data.length, modified: f.lastModified }); }
       }
     };
     await walk(opfsDir, '');
@@ -139,7 +146,7 @@ const codeCacheOn = (o) => o.codeCache !== false && (!o.headless || !!o.opfs);
 /** The profile's files: { path (original case, '/'-separated), data (a view: copy to keep) } */
 function profileFilesList() {
   const out = [];
-  for (const [key, f] of profile.files) out.push({ path: profilePath(key), data: f.data.subarray(0, f.len) });
+  for (const [key, f] of profile.files) out.push({ path: profilePath(key), data: f.data.subarray(0, f.len), mtime: f.mtime });
   return out;
 }
 /** A profile path in its original case ('/'-separated) from its lowercase key. */
@@ -162,6 +169,7 @@ async function flushProfile(force = false) {
   const since = lastFlush; lastFlush = now;
   // (the files written first, the removals once they all are: a moved save is never gone from both places, profile-opfs.js)
   const r = await flushProfileOpfs(opfsDir, profile, since, { log: (msg) => log('warn', msg) });
+  if (r.dates.length) post({ type: 'profile-dates', dates: r.dates }); // (the guest's file dates: OPFS keeps its write's, the page keeps these for the next start)
   if (r.changed) post({ type: 'profile-changed' }); // (the page sends the profile to the player's account a while after)
 }
 
@@ -303,12 +311,13 @@ async function start(m) {
   }
   profile = new MemBackend();
   for (const d of PROFILE_DIRS) profile.mkdir(d);
-  if (!m.opts.headless || m.opts.opfs) await loadProfile(profile, m.opts.profileDir);
+  if (!m.opts.headless || m.opts.opfs) await loadProfile(profile, m.opts.profileDir, m.opts.profileDates ?? {});
   // a harness-provided profile (headless runs: `--profile-dir`), base64 files with '/'-separated paths
   for (const f of m.opts.profileFiles ?? []) {
     const parts = f.path.split('/');
     for (let i = 1; i < parts.length; i++) profile.mkdir(parts.slice(0, i).join('/'));
     profile.open(f.path, { create: true }).write(0, Uint8Array.from(atob(f.data), (ch) => ch.charCodeAt(0)));
+    if (Number.isFinite(f.mtime)) profile.files.get(profile.key(f.path)).mtime = f.mtime;
   }
   // (a profile still empty here: the game's first launch on this browser — the files a first session of this game
   // wrote, as the server learned them, are put in place: the game skips its first-launch work; else this session's are
@@ -329,7 +338,7 @@ async function start(m) {
   profileReady = true;
   audioMixDirect = m.opts.audioMix !== 'worker';
   const bgWanted = !m.opts.interp && m.opts.bgTranslate !== false && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated;
-  vm = rootVm = new Vm({ vfs, clock, host, jit: !m.opts.interp, sharedMemory: bgWanted || renderWorker, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
+  vm = rootVm = new Vm({ vfs, clock, host, locale: localeTag(m.opts.gameLanguage || m.opts.browserLanguage || navigator.language), jit: !m.opts.interp, sharedMemory: bgWanted || renderWorker, logKinds: m.opts.log ?? ['loader', 'warn', 'crash', 'win', 'thread', 'gfx', 'audio', 'input'], log: log, apiHist: true });
   // (a ReadFile whose data is still on the network parks its thread while the fetch runs: the other threads and the
   // page go on; ?asyncreads=0 restores the synchronous reads)
   vm.asyncReads = m.opts.asyncReads !== false;

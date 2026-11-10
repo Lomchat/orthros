@@ -72,3 +72,11 @@ test('the harness\'s profile dump: null until the profile is complete; no dump r
   assert.deepEqual(profileGone(loaded, null), [], 'not ready: the host folder kept whole');
   assert.deepEqual(profileGone(loaded, [{ path: 'options.ini' }]), ['Saves/one.sav']);
 });
+
+test('flushProfileOpfs reports the guest-visible date of each written file (OPFS dates its own write)', async () => {
+  const p = new MemBackend(); p.changes = new Set(); p.mkdir('Saves');
+  p.open('Saves/A.sav', { create: true }).write(0, new Uint8Array([1])); p.files.get('saves/a.sav').mtime = 1234567;
+  const mk = () => ({ getDirectoryHandle: async () => mk(), getFileHandle: async () => ({ createWritable: async () => ({ write: async () => {}, close: async () => {} }), getFile: async () => ({ lastModified: 999 }) }) });
+  const r = await flushProfileOpfs(mk(), p, 0);
+  assert.deepEqual(r.dates, [['Saves/A.sav', 999, 1234567]]);
+});

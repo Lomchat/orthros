@@ -163,7 +163,7 @@ if (args.includes('--audio')) q.set('audio', '1'); // set up the AudioWorklet ev
 const profileDir = opt('profile-dir'), profileLoaded = [];
 if (profileDir) {
   const files = [];
-  const walk = (dir, rel) => { if (!fs.existsSync(dir)) return; for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = rel ? rel + '/' + e.name : e.name; if (e.isDirectory()) walk(path.join(dir, e.name), p); else files.push({ path: p, data: fs.readFileSync(path.join(dir, e.name)).toString('base64') }); } };
+  const walk = (dir, rel) => { if (!fs.existsSync(dir)) return; for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = rel ? rel + '/' + e.name : e.name; if (e.isDirectory()) walk(path.join(dir, e.name), p); else files.push({ path: p, data: fs.readFileSync(path.join(dir, e.name)).toString('base64'), mtime: fs.statSync(path.join(dir, e.name)).mtimeMs }); } };
   walk(profileDir, '');
   for (const f of files) profileLoaded.push(f.path);
   console.log(`[profile] ${files.length} file(s) loaded from ${profileDir}`);
@@ -176,7 +176,7 @@ async function saveProfile() {
     let files = null;
     for (let i = 0; i < 50 && !files; i++) { files = await page.evaluate(() => window.orthros.profile); if (!files) await page.waitForTimeout(100); }
     if (!files) { console.log('[profile] no profile received (not complete yet: nothing saved or removed)'); return; }
-    for (const f of files) { const p = path.join(profileDir, f.path); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from(f.data, 'base64')); }
+    for (const f of files) { const p = path.join(profileDir, f.path); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.from(f.data, 'base64')); if (Number.isFinite(f.mtime)) fs.utimesSync(p, f.mtime / 1000, f.mtime / 1000); } // (the guest's file dates kept on the host)
     // (a file loaded that the profile no longer has — the game deleted it, a manifest's profileMoves moved it — goes too)
     const gone = profileGone(profileLoaded, files); // (none without a complete profile: the worker answers null until then)
     for (const p of gone) fs.rmSync(path.join(profileDir, p), { force: true });
