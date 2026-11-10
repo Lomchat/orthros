@@ -72,6 +72,8 @@ export class Vm {
     /** the machine's processes when it started a child (core/procs.js ProcessGroup; null: one process, the usual path) */
     this.group = opts.group ?? null;
     this.clock = opts.clock ?? new RealClock();
+    /** the guest's locale (win32/locale.js localeTag): the session's language, not machine state */
+    this.locale = opts.locale ?? 'en-US';
     /** the guest's clock interrupt (timer-res.js): when timed waits end, the tick counters' steps, timeBeginPeriod */
     this.timerRes = opts.timerRes ?? timerResFromDebug();
     this.host = opts.host ?? null;

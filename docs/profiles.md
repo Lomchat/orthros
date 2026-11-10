@@ -51,6 +51,16 @@ Until 2026-11-09 each version had its own profile, under its name. Nothing is de
   (the others: "not taken in yet", until the game is started). A Windows file written from another copy (this merge,
   the account's copy or an archive put in place) keeps that copy's date (`data-store.js`, localStorage
   `orthros.profileDates.<folder>`: OPFS dates a file with its write), so a late merge never makes old files look newest.
+  The same record keeps the dates the guest saw across restarts: the worker reports `[path, OPFS date, own date]` for
+  each file it flushes (`profile-opfs.js`, message `profile-dates`), the page stores them, and at the next start passes
+  them (`profileDates`) so that `worker.js` `loadProfile` gives each restored file its own date (not the restore's:
+  `GetFileTime` / `FindFirstFile` of a save keep its save time). The running game's dump to the account carries each
+  file's `mtime` too. The headless harness does the same with the host files' dates (`--profile-dir`).
+- **Locale** (`src/win32/locale.js`): the guest's locale follows the session's game language (else the browser's):
+  `vm.locale` ('fr-FR'...), set by the worker. `GetUserDefaultLCID` / `GetSystemDefaultLangID` / `GetThreadLocale`,
+  `GetLocaleInfo` (separators, date and time pictures, day and month names from the platform's CLDR data, code pages),
+  `GetDateFormat` / `GetTimeFormat` (flags and format pictures) answer as a Windows in that language does (fr-FR:
+  `dd/MM/yyyy`, `HH:mm:ss`, decimal `,`). Unknown languages answer en-US. The C runtime's `setlocale` stays "C".
 - **Account** (`accounts.js` `migrateProfiles`, at the server's start — table `profile_migrations`, per player and key,
   the version of each name it merged): the latest copy of each version not merged yet, or newer than the one merged (a
   version that joined the game later), and the key's own latest, merged into the key's next version.

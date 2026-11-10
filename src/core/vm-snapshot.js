@@ -32,7 +32,7 @@ const VM_TRANSIENT = ['vfs', 'clock', 'host', 'mem', 'api', 'interp', 'jit', 'ex
   'profile', 'progressAt', 'progressEvery', 'onProgress', 'heapProv', 'heapProvMap', 'stdout', 'onStdout', 'deadline', 'sliceInsns',
   'runOptsByDepth', 'restoring', 'traceCom', 'traceComQuiet', 'GuestCrash', 'returnThunk', 'callbackReturnThunk', 'exitThreadThunk', 'exitProcessThunk',
   'jitArgs', 'waitLogMin', 'mainWaits', 'recentFiles', 'recentReads', 'readSliceMs', 'apiTail', 'exitReport', 'traceRing', 'traceByArg',
-  'ctorOpts', 'group', 'parentVm', 'kernelNamed']; // (group...: child processes, core/procs.js — a machine with several is not snapshotted)
+  'ctorOpts', 'locale', 'group', 'parentVm', 'kernelNamed']; // (group...: child processes, core/procs.js — a machine with several is not snapshotted)
 
 snapshotConstant('sched.PARK', PARK);
 snapshotConstant('process.TS', TS);
