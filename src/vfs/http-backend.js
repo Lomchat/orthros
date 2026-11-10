@@ -489,7 +489,7 @@ export class HttpBackend {
         // (learnedOnly: the set a page waits for before its game — what its first load needs —; else the learned order,
         // which waits for a load under way to end: the load's own next pieces go ahead of it, see pumpAhead)
         // (batched: the next runs of small pieces with it, one request — see batch)
-        const B = this.batching() ? this.batch({ prio: prioOf(job.r), stop, reason: job.tier === 1 ? 'pf1' : 'pf2', forLoad: !!opts.learnedOnly }) : null;
+        const B = this.batching('pf') ? this.batch({ prio: prioOf(job.r), stop, reason: job.tier === 1 ? 'pf1' : 'pf2', forLoad: !!opts.learnedOnly }) : null;
         const settle = (j) => (r) => {
           if (r === null) failed = true;
           else if (r === undefined) j.e.skip = true;
@@ -645,7 +645,7 @@ export class HttpBackend {
     const span = Math.max(AHEAD_WINDOW, 2 * budget.requests);
     // (batched: the runs of pieces in batches — one request each, counted as one in flight —, see batch; a large run alone)
     let B = null;
-    const batched = this.batching();
+    const batched = this.batching('ahead');
     const sendB = () => { if (B) { B.send(); B = null; } };
     for (let r = L.pos + 1, lim = Math.min(L.entries.length, L.pos + 1 + span); r < lim && (B || room()); r++) {
       const e = L.entries[r];
@@ -741,10 +741,14 @@ export class HttpBackend {
   }
   // ---------------------------------------------------------------- batched requests
 
-  /** batched requests are on (docs/slow-network.md "Batched requests"; ?dbg=ORTHROS_BATCH=0: off) */
-  batching() {
+  /**
+   * Batched requests are on for `use` — 'pf' the learned order's pass, 'ahead' its read-ahead (docs/slow-network.md
+   * "Batched requests"; ?dbg=ORTHROS_BATCH=0: off, =pf or =ahead: that use only).
+   */
+  batching(use) {
     if (!this.encoded || this.batchOff || !this.batchUrl || typeof fetch !== 'function') return false;
-    const v = globalThis.ORTHROS_BATCH; return v === undefined || v === '' || Number(v) !== 0;
+    const v = String(globalThis.ORTHROS_BATCH ?? '');
+    return v === '' || v === use || (v !== 'pf' && v !== 'ahead' && Number(v) !== 0);
   }
   /**
    * File bytes one batch carries at most: half of what one background request may carry (NetLink.requestBytes), so that
