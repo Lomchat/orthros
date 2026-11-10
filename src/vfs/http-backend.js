@@ -202,6 +202,8 @@ const UNIT_HIT_MIN = 0.66, UNIT_HIT_WEIGHT = 0.3, UNIT_PROBE_EVERY = 8;
  * takes 1024).
  */
 const BATCH_ITEM_MAX = 256 << 10, BATCH_RUNS = 256;
+/** batches only on a link that never carried this many bytes/s (measured; see batching) */
+const BATCH_MAX_BPS = 2 << 20;
 
 /** Block the calling worker for `ms` (the reads are synchronous: nothing else can run meanwhile anyway). */
 function pause(ms) {
@@ -751,10 +753,11 @@ export class HttpBackend {
    */
   batching(use) {
     if (!this.encoded || this.batchOff || !this.batchUrl || typeof fetch !== 'function') return false;
-    // (not on a link measured fast: its round trips cost little beside its bytes, and a launch set done sooner there
-    // only started the whole-block passes sooner, into the next load — RotWK 2.02's skirmish at 3.75 MB/s, 60 s against
-    // 46; ?dbg=ORTHROS_BATCH=all: there too)
-    if (this.net.fast() && this.net.measured && globalThis.ORTHROS_BATCH !== 'all') return false;
+    // (not on a link that has carried BATCH_MAX_BPS: its round trips cost little beside its bytes, and there the batches
+    // made things slower — AotR's Create-a-Captain at 3.75 MB/s 61-73 s against 55-56, RotWK 2.02's skirmish 60-82
+    // against 46: the round trips gone, the link measured fast sooner and the whole-block passes went sooner, into the
+    // loads. Once for the session: without batches the same link measures slower again. ?dbg=ORTHROS_BATCH=all: there too)
+    if (globalThis.ORTHROS_BATCH !== 'all' && (this.batchFast ||= (this.net.bw ?? 0) >= BATCH_MAX_BPS)) return false;
     const v = String(globalThis.ORTHROS_BATCH ?? '');
     return v === '' || v === use || (v !== 'pf' && v !== 'ahead' && Number(v) !== 0);
   }
