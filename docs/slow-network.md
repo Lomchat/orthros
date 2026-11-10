@@ -2110,14 +2110,16 @@ on the fly), so the bytes ten thousand nearly identical `.ini` / `.bse` files sh
   `BATCH_ITEM_MAX` (256 KiB) each, `BATCH_RUNS` (256) of them, at most half of `NetLink.requestBytes()` together (two
   side by side within the link's bytes rule: one alone would leave the link idle a round trip between two); a larger
   run, or a batch of one, is the ordinary request (its transport units). Used by the learned order's pieces
-  (`prefetchList` on a link that is not fast, and the startup set — `learnedOnly` — on any link: the batch is filled
-  from the next runs it would fetch anyway, `nextPart` going on from the last one found) and by the learned read-ahead
-  (`pumpAhead`: a batch is one request of its budget; a small file's whole block joins it too). Not the game's own
-  reads (one range each, synchronous), the whole blocks of a fast link, announced lists or the block fill.
+  (`prefetchList` on a link that is not fast, and the startup set — `learnedOnly`: the batch takes its turn on the link
+  first, then is filled with the next runs it would fetch anyway — `sendWhenDue`, `nextPart` going on from the last one
+  found) and by the learned read-ahead (`pumpAhead`: a batch is one request of its budget; a small file's whole block
+  joins it too). Only on a link that never carried `BATCH_MAX_BPS` (2 MiB/s; below). Not the game's own reads (one
+  range each, synchronous), the whole blocks of a fast link, announced lists or the block fill.
 - **Compatibility**: a server without the route (404/405 other than `batch item ...`) turns batches off for the
   backend, its runs going one request each; asked only by `game-data.js`'s openers (`openData`, `batch` option, on by
-  default), so a tool or a test's `fetch` stand-in never sees them. **Switch**: `?dbg=ORTHROS_BATCH=0` (or
-  `--dbg ORTHROS_BATCH=0` in `tools/headless.mjs`) turns them off in the page.
+  default), so a tool or a test's `fetch` stand-in never sees them. **Switches** (`?dbg=` in the page,
+  `--dbg` in `tools/headless.mjs`): `ORTHROS_BATCH=0` off, `=pf` / `=ahead` for the learned order's pass or its
+  read-ahead only, `=all` on every link (past `BATCH_MAX_BPS` too); the batch endpoint itself is always served.
 - **Measuring**: `SimLink` (the harness's `--net`) writes a batch's body as it crosses (`onProgress`), as a real
   connection delivers it; `tools/headless.mjs --br-cache-frozen` serves a copy of the live server's units without
   making more (the same units in every run), a `quit` step ends a run once its timed load is over, and the `[mark]`
@@ -2165,8 +2167,8 @@ worker's CPU to the first frame): the same within the runs' spread.
 
 | AotR 10.0, 3.75 MB/s, 50 ms | first frame | menu | click → Create-a-Captain |
 |---|---|---|---|
-| batches, on any link (before the fast-link rule) | 200; 211 | 224; 235 | 66; 61 |
-| batches, not on a link measured fast | A30B5 |
+| batches on every link (earlier versions) | 200; 211; 197 | 224; 235; 222 | 66; 61; 73 |
+| batches as kept (off past 2 MiB/s: 1 batch in the run) | 182 | 207 | 88 |
 | off | 191; 176 (`.vp6` not media) | 216; 200 | 55; 56 |
 
 | RotWK 2.02, 1.25 MB/s, 50 ms | first frame | menu | PLAY → in game | requests (session) | MB sent |
@@ -2178,22 +2180,25 @@ worker's CPU to the first frame): the same within the runs' spread.
 
 | RotWK 2.02, 3.75 MB/s, 50 ms | first frame | menu | PLAY → in game |
 |---|---|---|---|
-| batches, on any link | 42; 46 (an earlier version) | 67; 71 | **60; 79** |
-| batches, not on a link measured fast | R30B3 |
-| off | 48 | 73 | 46 |
+| batches on every link (earlier versions) | 42; 46; 47 | 67; 71; 72 | 60; 79; 82 |
+| off | 48; 46 | 73; 71 | 46; 66 |
 
-On a fast link the batches made the skirmish slower: the launch set done sooner, the learned order's whole-block pass
-(a fast link's policy, `prefetchList`'s `overlap` branch) reached the rest of the order sooner and was on the link
-during the load (303 MB moved from PLAY to in game against 182). Its round trips are not what a fast link waits for,
-so batches stay off once the link is measured fast (`?dbg=ORTHROS_BATCH=all`: on there too).
+At 3.75 MB/s no gain shows beyond the spread, which is wide there (the same code without batches: 55-88 s for
+Create-a-Captain, 46-66 s for the skirmish), and the batch runs came out slower on average: with the round trips gone
+the link was measured fast sooner (~3.3 MB/s from the first half-minute, against ~1.7 MB/s), the fast link's whole-block
+passes started sooner and were on the link during the loads (RotWK: 303-364 MB moved from PLAY to in game against
+182). So batches stop for the session once the link has carried `BATCH_MAX_BPS` (2 MiB/s, measured — or the rate a
+page kept from an earlier visit): the owner's 1.2 MB/s and slower keep them, a link like 3.75 MB/s goes back to one
+request a run (`?dbg=ORTHROS_BATCH=all`: batches there too).
 
 | 85 KB/s, 50 ms | AotR first frame | AotR by 450 s | RotWK first frame |
 |---|---|---|---|
-| batches | 542; 462 (an earlier version) | 2 386 requests, 150 MB of file in 30.9 MB | R68B2 |
+| batches | 542; 462 (an earlier version) | 2 386 requests, 150 MB of file in 30.9 MB | 542 (3 batches in the run) |
 | off | 539 | 4 361 requests, 154 MB of file in 30.4 MB | 512 |
 
 On the thin link the link is full in both arms (the same bytes by any time) and a batch is small (half of
-`requestBytes()`: ~64 KiB of file at 85 KB/s), so the gain is in requests only; neither reached AotR's menu in 1 000 s.
+`requestBytes()`: ~64 KiB of file at 85 KB/s), so the gain is in requests only — not worse: RotWK's runs, 3 batches in
+one, differ by 30 s, the spread of a thin-link boot. Neither run reached either menu in 1 000 / 700 s.
 
 **What went wrong first, kept as rules:**
 - A batch built when it was queued held its runs' pieces "on their way" until its turn — and the learned order's
