@@ -17,7 +17,8 @@
  * @param {Uint8Array} bytes
  * @returns {CharMap|null}
  */
-export function parseCmap(bytes, offset = 0) {
+export function parseCmap(bytes, offset = 0) { try { return parseCmapUnsafe(bytes,offset); } catch { return null; } } // (a malformed table: no cmap, the font's glyphs by code)
+function parseCmapUnsafe(bytes, offset = 0) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const numTables = dv.getUint16(offset + 4);
   let cmap = -1;
