@@ -11,6 +11,7 @@
 import { HttpBackend } from './http-backend.js';
 import { NetLink } from './net-link.js';
 import { OpfsBlockStore } from './opfs-store.js';
+import { OpenPredictor } from './open-predict.js';
 import { treeBytes, treeOwner, splitOwners, treeLookup, treeStat, treeReaddir } from './game-tree.js';
 
 const enc = encodeURIComponent;
@@ -309,6 +310,16 @@ export class PartsBackend {
     this.version = version; this.name = name; this.own = own; this.tree = own.tree;
     /** the parts its files are read through: its own, then its owners' */
     this.parts = [own, ...version.parts.filter((p) => p !== own && own.owned?.has(p.name))];
+    /** the files it is about to open, guessed from its opens and fetched ahead (open-predict.js; ?dbg=ORTHROS_PREDICT=0: off) */
+    this.predictor = new OpenPredictor(this.tree, {
+      net: version.net ?? own.files.net,
+      fetch: (path, end) => (partOf(this.version, this.name, path) ?? this.own).files.predict(path, 0, end),
+      // (the learned order follows the game: it fetches the next reads already)
+      tracked: () => this.parts.some((p) => p.files.learned?.tracked),
+      peek: (path, size, fn) => (partOf(this.version, this.name, path) ?? this.own).files.memoryPieces(path, size, fn),
+    });
+    // (the bytes of its parts' files as they arrive: the names an opened file holds — open-predict.js noteBytes)
+    for (const p of this.parts) p.files.arrivals?.add((path, start, bytes) => this.predictor.noteBytes(path, start, bytes));
   }
   lookup(rel) { return treeLookup(this.tree, rel); }
   stat(rel) { return treeStat(this.tree, rel); }
@@ -317,7 +328,7 @@ export class PartsBackend {
     if (opts.write || opts.create || opts.truncate) return null; // (read-only mount)
     const r = treeLookup(this.tree, rel); if (!r || r.dir) return null;
     const f = (partOf(this.version, this.name, r.path) ?? this.own).files.open(r.path);
-    if (f) { f.readName = this.name; f.readPath = r.path; }
+    if (f) { f.readName = this.name; f.readPath = r.path; this.predictor.noteOpen(r.path, r.file.size ?? 0); }
     return f;
   }
   mkdir() { return false; }

@@ -297,6 +297,8 @@ export class HttpBackend {
     this.wantLists = 0; this.wantHeld = 0;
     /** announced lists not all here yet that the engine waits for through its own reads (wantList `wait` false) */
     this.wantLoose = 0;
+    /** told every file range that arrives from the network: (path, start, bytes) — open-predict.js's referenced names */
+    this.arrivals = new Set();
   }
 
   /** The tree walked as the guest sees it (game-tree.js treeLookup): { file | dir, name, path } or null. */
@@ -738,6 +740,23 @@ export class HttpBackend {
     return ranges.map((x) => (typeof x === 'boolean' ? Promise.resolve(x) : x));
   }
   /**
+   * Predicted opens (src/vfs/open-predict.js): [start, end) of `path` (as listed), a file the game is about to open,
+   * fetched as an announced range the engine waits for through its own reads (wantList `wait` false: the same units,
+   * window and deduplication, urgent once started — a load's own next reads), counted as `predict` (NetLink.bgBy,
+   * stats.predict*), not learned as reads (the server's `w=1`: the game's reads of it are, by the page's read log).
+   * True when here already (nothing asked), else the promise of wantRange.
+   */
+  predict(path, start, end) {
+    const r = this.lookup(path);
+    if (!r?.file || typeof fetch !== 'function') return true;
+    const size = r.file.size, stop = Math.min(size, end);
+    this.predicting = true;
+    let p;
+    try { p = this.wantRange(r.path, size, r.file.mtime ?? 0, Math.max(0, start), stop, false, false, true); } finally { this.predicting = false; }
+    if (p !== true) this.stats.predictRanges = (this.stats.predictRanges ?? 0) + 1;
+    return p;
+  }
+  /**
    * [start, end) of a file (`path` as listed) here: true when it is (no promise: nothing to wait for); else a promise of
    * true once its missing units came (false: one failed). A unit on its way already is joined, and goes first
    * (NetLink.promote, as for a parked read; `joined`: this range joined one already — its missing bytes are asked now,
@@ -787,7 +806,7 @@ export class HttpBackend {
     const self = this;
     // (the turn's mark: urgent once a parked read waits for it — the queue starts it first, past the window)
     const w = { forLoad: !place, u: false, get urgent() { return this.u; }, set urgent(v) { this.u = !!v; if (v && job.queued) self.pumpWant(); } };
-    const job = { path, size, mtime, c0, c1, whole, w, place, loose, queued: true, resolve: null };
+    const job = { path, size, mtime, c0, c1, whole, w, place, loose, predict: !!this.predicting, queued: true, resolve: null };
     const done = new Promise((res) => { job.resolve = res; });
     done.w = w; done.job = job;
     for (let c = c0; c <= c1; c++) this.flights.set(`${path}#${c}`, done);
@@ -830,7 +849,7 @@ export class HttpBackend {
   }
   /** An announced (or a predicted place's) unit's request (retried on a network failure): its pieces here, true; or false. */
   async runWant(job) {
-    const { path, size, mtime, c0, c1, whole, w, place, loose } = job;
+    const { path, size, mtime, c0, c1, whole, w, place, loose, predict } = job;
     job.queued = false;
     if (place) this.placeInFlight++; else this.wantInFlight++;
     if (loose) this.wantLooseInFlight++;
@@ -841,12 +860,13 @@ export class HttpBackend {
     try {
       for (let attempt = 0; ; attempt++) {
         if (here()) { ok = true; break; }
-        const d = typeof fetch === 'function' ? await this.fetchBackground(path, c0 * CHUNK, Math.min(size, (c1 + 1) * CHUNK), null, false, false, place ? { prio: PRIO.place, w, reason: 'place' } : { prio: PRIO.announced, w, reason: 'announced', forLoad: true }) : undefined;
+        const d = typeof fetch === 'function' ? await this.fetchBackground(path, c0 * CHUNK, Math.min(size, (c1 + 1) * CHUNK), null, false, false, place ? { prio: PRIO.place, w, reason: 'place' } : { prio: PRIO.announced, w, reason: predict ? 'predict' : 'announced', forLoad: true }) : undefined;
         if (d instanceof Uint8Array) {
           const bi = Math.floor(c0 / P);
           if (whole && c0 % P === 0) { if (!this.cache.has(`${path}#${bi}`)) { this.installBlock(path, bi, d, `${path}#${size}#${mtime}#${bi}`); this.evict(); } }
           else this.addPieces(path, c0, c1, d, { size, mtime });
-          this.stats[place ? 'placeBytes' : 'wantBytes'] = (this.stats[place ? 'placeBytes' : 'wantBytes'] ?? 0) + d.length;
+          const sk = place ? 'placeBytes' : predict ? 'predictBytes' : 'wantBytes';
+          this.stats[sk] = (this.stats[sk] ?? 0) + d.length;
           ok = true; break;
         }
         // (aborted by a read of the same bytes: that read brought them; an answer refused, or the network still down: failed)
@@ -1190,7 +1210,7 @@ export class HttpBackend {
     // abortable ones by a demand read elsewhere)
     const tok = this.net.begin('bg', end - start, ctl ? () => ctl.abort() : null, { key: this.base + path, start, end }, reason);
     if (!abortable) tok.keep = true;
-    const announced = reason === 'announced'; // (wantList's: the server's `w=1`)
+    const announced = reason === 'announced' || reason === 'predict'; // (wantList's, predict's: the server's `w=1`)
     let wire = 0, ok = false;
     try {
       // (compressed ranges: one request per transport unit the range covers, in parallel — each answered from the
@@ -1312,8 +1332,9 @@ export class HttpBackend {
     return data.subarray(0, Math.min(data.length, BLOCK));
   }
   /** A whole block arrived: memory cache, persistent store; its pieces and its background request are dropped. */
-  installBlock(path, index, bytes, skey) {
+  installBlock(path, index, bytes, skey, assembled = false) {
     const k = `${path}#${index}`;
+    if (!assembled && this.arrivals.size) for (const fn of this.arrivals) fn(path, index * BLOCK, bytes);
     this.cache.set(k, bytes);
     this.store?.put(skey, bytes);
     this.want.delete(k); this.near.delete(k); this.later.delete(k); this.upgrades.delete(k);
@@ -1361,12 +1382,13 @@ export class HttpBackend {
     for (let c = c0; c < c0 + n; c++) if (!this.chunks.has(`${path}#${c}`)) return;
     const out = new Uint8Array(len);
     for (let c = c0; c < c0 + n; c++) out.set(this.chunks.get(`${path}#${c}`), (c - c0) * CHUNK);
-    this.installBlock(path, index, out, `${path}#${size}#${mtime}#${index}`);
+    this.installBlock(path, index, out, `${path}#${size}#${mtime}#${index}`, true);
     this.evict();
   }
 
   /** Pieces m0..m1 of a file from `data` (fetched from piece m0), those not here yet; the piece cache stays bounded. */
   addPieces(path, m0, m1, data, file = null) {
+    if (this.arrivals.size) for (const fn of this.arrivals) fn(path, m0 * CHUNK, data);
     const keep = file && this.keepPieces(), added = [];
     for (let c = m0; c <= m1; c++) {
       const ck = `${path}#${c}`, piece = data.subarray((c - m0) * CHUNK, Math.min(data.length, (c - m0 + 1) * CHUNK));
@@ -1511,6 +1533,14 @@ export class HttpBackend {
       pos += n;
     }
     return out;
+  }
+  /** Each part of the first `size` bytes of `path` in memory — its whole blocks, else its pieces —: fn(start, bytes). */
+  memoryPieces(path, size, fn) {
+    for (let bi = 0; bi * BLOCK < size; bi++) {
+      const b = this.cache.get(`${path}#${bi}`);
+      if (b) { fn(bi * BLOCK, b); continue; }
+      for (let c = bi * (BLOCK / CHUNK); c < (bi + 1) * (BLOCK / CHUNK) && c * CHUNK < size; c++) { const p = this.chunks.get(`${path}#${c}`); if (p) fn(c * CHUNK, p); }
+    }
   }
   /** `job` (fetching [start, end) of `path` for a read, its bytes installed once it settles) in fgFlights while it runs. */
   fgFlight(path, start, end, job) {

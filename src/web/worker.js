@@ -54,7 +54,7 @@ const fileStores = [];
  * PartsBackend: its parts — its own files, its game's shared base… — in `parts`); every part of the opened version (the
  * game's and those of the versions it requires, each once)
  */
-let netLink = null, primaryFiles = null, dataParts = [];
+let netLink = null, primaryFiles = null, dataParts = [], partsMounted = [];
 /** the offline copy of each part (opt-in, HttpBackend.downloadAll progress), counted together */
 const offlineCopies = [];
 /** the learned prefetch of each part the game folder reads (HttpBackend.prefetch progress), counted together */
@@ -273,6 +273,7 @@ async function start(m) {
   dataParts = version.parts;
   for (const p of dataParts) if (p.store instanceof UnderStore) { fileStores.push(p.store); log('file', `block store (${p.name}): its files, kept before in ${p.store.below.length} other store(s), moved there as read`); }
   primaryFiles = new PartsBackend(version, manifestName);
+  partsMounted = [primaryFiles];
   readBackends?.set(manifestName, primaryFiles);
   // (a language's view of the game folder: files read under another name — languageFileAliases — and the files of the
   // other languages left out — languageFiles: a patch's files for one language only, which its launcher would not install)
@@ -285,6 +286,7 @@ async function start(m) {
   for (const dependency of manifest.extraMounts ?? []) {
     root.mkdir(dependency.mount.replace(/^C:\\/, ''));
     const dep = new PartsBackend(version, dependency.manifest);
+    partsMounted.push(dep);
     vfs.mount(dependency.mount, dep);
     readBackends?.set(dependency.manifest, dep);
   }
@@ -1025,6 +1027,9 @@ self.onmessage = (e) => {
     if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) { globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v); log('input', `dbg ${k}=${v ?? ''}`); if (k.startsWith('ORTHROS_HOST_TIMER_HELPER_')) post({ type: 'dbg', k, v }); if (k === 'ORTHROS_API_FAST_OFF') vm?.setApiFastPaths(!globalThis[k]); if (k === 'ORTHROS_XFORM_FILTER') vm?.jit?.setXformFilter?.(!!globalThis[k]); if (k === 'ORTHROS_DRAW_OPT_OFF') vm?.jit?.setDrawOpt?.(!globalThis[k]); if (k === 'ORTHROS_FX_DEFER_OFF') vm?.jit?.setFxDefer?.(!globalThis[k]); if (k === 'ORTHROS_TRACE_API' && vm) vm.traceApiRet = Number(globalThis[k] ?? 0); refreshApiOpt(); if (k === 'ORTHROS_D3DX_FAST_OFF' || k === 'ORTHROS_API_OPT_OFF') vm?.jit?.setD3dxFast?.(!globalThis[k]); if (k === 'ORTHROS_COLD_TIER' && vm?.jit?.bg) vm.jit.coldTier = !!globalThis[k]; if (k === 'ORTHROS_JIT_AB' && vm?.jit) vm.jit.switchOpts(v ? JSON.parse(v) : null); if (k === 'ORTHROS_JIT_JTAB_OFF' && vm?.jit) vm.jit.switchOpts({ ...vm.jit.abOpts, jumpTables: !globalThis[k] }); if (k === 'ORTHROS_ACCT_OFF') acct.setClock(globalThis[k] ? null : () => performance.now()); host?.gfx?.post?.(m); }
   }
   else if (m.type === 'mark') { // (harness mark:<label>: texture work and API time since the previous mark)
+    // (the link's totals by then — the game's waits, the background by producer — and the predicted opens' counts:
+    // docs/slow-network.md "Predicted opens")
+    if (netLink) { const n = netLink.snapshot(); log('net', `mark ${m.label}: waits ${n.waits} (${(n.waitMs / 1000).toFixed(1)} s), demand ${n.demandRequests} requests ${(n.demandBytes / 1e6).toFixed(1)} MB, background ${Object.entries(n.bgBy).map(([k, v]) => `${k} ${v.requests}/${(v.wire / 1e6).toFixed(1)} MB`).join(', ')}; predicted ${partsMounted.map((b) => JSON.stringify(b.predictor?.stats ?? {})).join(' ')}`); }
     // guest instructions executed in the phase: the guest category's time per instruction is the translated code's speed,
     // whatever the scene asks of it (an A/B of the code generator less sensitive to what the game does meanwhile)
     const guestInsns = (vm?.guestInsns ?? 0) - (markPrev?.guestInsns ?? 0);

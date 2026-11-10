@@ -2125,6 +2125,7 @@ export function createServer(opts = {}) {
   server.close = (cb) => { mmo.close(); brCache?.close(); return closeServer(cb); };
   server.on('close', () => { mmo.close(); brCache?.close(); if (launchTurn) clearImmediate(launchTurn); launchTurn = null; launchesDue.clear(); });
   server.brCache = brCache; // (tests: its state, drain)
+  server.simLink = link; // (testing: the simulated link of opts.net — tools/headless.mjs `net:<ms>,<Mbit/s>` changes it during a run)
   server.launchesKept = () => [...launches].flatMap(([n, byLang]) => [...byLang.keys()].map((l) => `${n}:${l}`)).sort(); // (tests: the summaries kept)
   server.srcBrJobs = () => ({ running: srcBrRunning, queued: srcBrJobs.length, peak: srcBrPeak }); // (tests: the src brotli queue)
   return server;
