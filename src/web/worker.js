@@ -176,6 +176,7 @@ async function start(m) {
   // the worker owns its canvases and hands complete frames to the page as ImageBitmaps (see BrowserDisplay)
   const canvas2d = new OffscreenCanvas(manifest.display.width, manifest.display.height), canvasGl = new OffscreenCanvas(manifest.display.width, manifest.display.height);
   host = new BrowserHost({ clock, ctl, inputRing, audioRing, canvas2d, canvasGl, width: manifest.display.width, height: manifest.display.height, post });
+  if (Array.isArray(m.screen)) host.display.screenSize = m.screen; // (the player's screen: the display modes the machine lists, win32/display-modes.js)
   host.keyMap = keyRemap(manifest.keys); // (the manifest's key remap: user32.js remapKey)
   // (debugging: ?dbg=NAME=value,... sets worker globals, e.g. ORTHROS_FX_BURST=30000)
   for (const kv of (m.opts.dbg ?? '').split(',').filter(Boolean)) { const [k, v] = kv.split('='); if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) globalThis[k] = Number.isNaN(Number(v)) ? v : Number(v); }

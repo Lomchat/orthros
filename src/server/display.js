@@ -53,7 +53,7 @@ export class HeadlessDisplay {
     this.last = null;
     this.title = '';
     this.cursorVisible = true;
-    this.modes = [[640, 480], [800, 600], [1024, 768], [1280, 720], [1280, 1024], [1600, 1200], [1920, 1080]];
+    this.nominal = [width, height]; this.screenSize = null;
   }
 
   /** Present a surface region at screen position (x, y). Copies the pixels (headless). */

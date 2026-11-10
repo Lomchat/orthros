@@ -2,6 +2,7 @@
 // modes, and the DefWindowProc behaviour games rely on. Rendering goes through the software GDI
 // (src/gfx/gdi) onto per-window client surfaces which are presented by the host display.
 import { E } from './errors.js';
+import { displayModes } from './display-modes.js';
 import { INFINITE, WAIT_OBJECT_0, WAIT_TIMEOUT, WAIT_FAILED, PARK } from '../core/sched.js';
 import { makeDC, gdiOf, crToRgb, parseBitmapInfo, dibSurface, fillRect, blit, dcFont } from './gdi32.js';
 import { allocSurface, freeSurface } from '../gfx/gdi/surface.js';
@@ -1748,8 +1749,8 @@ function vkToChar(vk, keyState) {
 function enumDisplaySettings(c, wm, wide) {
   const mem = c.mem;
   const i = c.arg(1) >>> 0, p = c.arg(2);
-  const modes = [];
-  for (const [w, h] of wm.host?.display?.modes ?? [[640, 480], [800, 600], [1024, 768], [1280, 720], [1280, 1024], [1600, 1200], [1920, 1080]]) for (const bpp of [16, 32]) modes.push([w, h, bpp]);
+  const modes = [], all = displayModes(wm.host?.display ?? { width: wm.screen.width, height: wm.screen.height });
+  for (const bpp of [16, 32]) for (const [w, h] of all) modes.push([w, h, bpp]);
   let m;
   if (i === 0xffffffff || i === 0xfffffffe) m = [wm.screen.width, wm.screen.height, wm.screen.bpp];
   else if (i < modes.length) m = modes[i];

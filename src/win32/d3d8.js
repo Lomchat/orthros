@@ -10,6 +10,7 @@ import { Surface as GdiSurface } from '../gfx/gdi/surface.js';
 import { makeDC } from './gdi32.js';
 import { PROGRAM_RS, PROGRAM_TSS } from '../gfx/d3d8-shaders.js';
 import { StateTable } from './state-table.js';
+import { displayModes } from './display-modes.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { PARK } from '../core/sched.js';
 import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, SHADOW_FVF, SHADOW_LIGHTON, SHADOW_LIGHT, SHADOW_MATERIAL, SHADOW_XFORM, XFORM_WORDS, xformSlot, SHADOW_LIGHTS, LIGHT_WORDS, MATERIAL_WORDS, SURF_DESC_BYTES, SHADOW_OWNER } from '../cpu/jit/runtime.js';
@@ -24,7 +25,6 @@ export const FMT = { UNKNOWN: 0, R8G8B8: 20, A8R8G8B8: 21, X8R8G8B8: 22, R5G6B5:
 const RTYPE = { SURFACE: 1, VOLUME: 2, TEXTURE: 3, VOLUMETEXTURE: 4, CUBETEXTURE: 5, VERTEXBUFFER: 6, INDEXBUFFER: 7 };
 const POOL = { DEFAULT: 0, MANAGED: 1, SYSTEMMEM: 2, SCRATCH: 3 };
 const USAGE_RENDERTARGET = 1, USAGE_DEPTHSTENCIL = 2, USAGE_DYNAMIC = 0x200;
-const MODES = [[640, 480], [800, 600], [1024, 768], [1152, 864], [1280, 720], [1280, 768], [1280, 800], [1280, 960], [1280, 1024], [1360, 768], [1366, 768], [1440, 900], [1600, 900], [1600, 1200], [1680, 1050], [1920, 1080], [1920, 1200], [2560, 1440]];
 const MODE_FORMATS = [FMT.X8R8G8B8, FMT.R5G6B5];
 const DISPLAY_FORMATS = new Set([FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5]);
 const BACKBUFFER_FORMATS = new Set([FMT.X8R8G8B8, FMT.A8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5]);
@@ -119,7 +119,7 @@ export function d3dCore(vm) {
   };
   const displayMode = () => { const d = vm.host?.display; return { width: d?.width ?? 1024, height: d?.height ?? 768, refresh: 60, format: FMT.X8R8G8B8 }; };
   const writeMode = (a, m) => { mem.write32(a, m.width); mem.write32(a + 4, m.height); mem.write32(a + 8, m.refresh); mem.write32(a + 12, m.format); };
-  const modes = () => { const list = []; const d = displayMode(); for (const f of MODE_FORMATS) { const seen = new Set(); for (const [w, h] of [...MODES, [d.width, d.height]]) { const k = w * 100000 + h; if (seen.has(k)) continue; seen.add(k); list.push({ width: w, height: h, refresh: 60, format: f }); } } return list; };
+  const modes = () => { const list = [], all = displayModes(vm.host?.display ?? { width: 1024, height: 768 }); for (const f of MODE_FORMATS) for (const [w, h] of all) list.push({ width: w, height: h, refresh: 60, format: f }); return list; };
 
   /** D3DCAPS8 of the generic device. */
   function writeCaps(a, adapter, devType) {

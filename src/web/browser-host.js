@@ -19,7 +19,7 @@ export class BrowserDisplay {
     this.canvas2d = canvas2d; this.canvasGl = canvasGl;
     this.width = width; this.height = height; this.bpp = 32; this.fullscreen = false;
     this.frames = 0; this.title = ''; this.cursorVisible = true;
-    this.modes = [[640, 480], [800, 600], [1024, 768], [1152, 864], [1280, 720], [1280, 800], [1280, 960], [1280, 1024], [1366, 768], [1440, 900], [1600, 900], [1600, 1200], [1680, 1050], [1920, 1080], [1920, 1200]];
+    this.nominal = [width, height]; this.screenSize = null; // (the game's display from the manifest; the player's screen, set by the worker: display-modes.js)
     this.ctx = canvas2d.getContext('2d', { alpha: false });
     this.desk = null; this.row = null; // full desktop image on the 2D layer (transferToImageBitmap blanks the canvas)
     this.glActive = false;
