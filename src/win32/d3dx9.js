@@ -9,6 +9,7 @@ import { parseImage, parseImageInfo, toRgba, toRgbaRows, fromRgba, resizeRgba, a
 import { defineEffects } from './d3dx9-effect.js';
 import { assembleShader } from './d3dx9-asm.js';
 import { unshared } from './strings.js';
+import { resAlloc, resFree, outOfAddressSpace } from './res-mem.js';
 
 const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DXERR_INVALIDDATA = 0x88760b59, E_OUTOFMEMORY = 0x8007000e, E_NOTIMPL = 0x80004001;
 const D3DX_DEFAULT = 0xffffffff, D3DX_DEFAULT_NONPOW2 = 0xfffffffe, D3DX_FROM_FILE = 0xfffffffd;
@@ -27,10 +28,10 @@ export function registerD3DX9(api, vm) {
   // ---------------------------------------------------------------- ID3DXBuffer
   com.interface('ID3DXBuffer', '8ba5fb08-5195-40e2-ac58-0d989c3a0102', 'IUnknown', [['GetBufferPointer', 0], ['GetBufferSize', 0]]);
   class DxBuffer {
-    constructor(proc, n) { this.proc = proc; this.size = n; this.addr = proc.vmem.alloc(Math.max(16, n), 4, 'd3dx:buffer'); }
+    constructor(proc, n) { this.proc = proc; this.size = n; this.addr = resAlloc(proc, n, 'd3dx:buffer'); if (!this.addr) throw outOfAddressSpace(proc, 'ID3DXBuffer', n); }
     GetBufferPointer() { return this.addr; }
     GetBufferSize() { return this.size; }
-    destroy() { this.proc.vmem.release(this.addr); }
+    destroy() { resFree(this.proc, this.addr); }
   }
   for (const C of [DxBuffer]) snapClass(vm, C, { name: `d3dx9.${C.name}` }); // (snapshots: core/vm-snapshot.js)
   /** a new ID3DXBuffer holding `bytes` (Uint8Array) or `n` zero bytes */

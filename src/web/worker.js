@@ -22,6 +22,7 @@ import { createWebGLBackend } from '../gfx/d3d8-webgl.js';
 import { programsUrl, programsPost } from '../gfx/program-id.js';
 import { createInlineGfx, createRemoteGfx, createCompareGfx, renderMode } from '../gfx/render-host.js';
 import { stateUseReport } from '../win32/d3d8.js';
+import { resHeapStats } from '../win32/res-mem.js';
 import { decode, OP_NAMES, OT, fmtInsn } from '../cpu/decoder.js';
 import { HANDLERS, PROF_OPS_BASE, NOCHAIN_PROF } from '../cpu/jit/translate.js';
 import { MATH_KERNELS, FAST_NAMES, FAST_PROF, FAST_STATS } from '../cpu/jit/runtime.js';
@@ -481,6 +482,8 @@ function netInfo() {
 }
 let lastProf = {};
 let statsAt = 0, lastApi = 0, lastSlices = 0, lastFrames = 0, lastHist = new Map(), lastFallbacks = 0, lastFbHist = new Map();
+/** (--log vmem) when the address space was last logged */
+let vmemLogAt = null;
 const pumpStats = { runs: 0, sleeps: 0, idles: 0, sleepMs: 0, runMs: 0 }; // how the worker spends its time between slices
 let longSliceStart = 0, longSliceLogs = 0, longWaitLogs = 0, longWaitMin = 1000, idleFrameLogs = 0;
 /**
@@ -773,6 +776,8 @@ function pump() {
     if (list.length || covered.length) regionSink(list, covered);
   }
   heatDue(now);
+  // (--log vmem: the guest address space every 30 s — what fills it over a long session)
+  if (vm.logKinds.has('vmem') && now - (vmemLogAt ?? -Infinity) > 30000) { vmemLogAt = now; vm.log('vmem', `${vm.proc.vmem.summary()}; ${resHeapStats(vm.proc)}`); }
   if (now - statsAt > 500) {
     const dt = (now - statsAt) / 1000; statsAt = now;
     const hist = vm.apiHist();

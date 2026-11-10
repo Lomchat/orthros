@@ -16,6 +16,7 @@ import { OP, CTL, VERSION_FIELDS, CONST_FIELDS, RingWriter, TWO32, ACK_SLOTS } f
 import { copyRectsCpu } from './d3d8-webgl.js';
 import { fvfLayout, declLayout } from './d3d8-shaders.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
+import { resAlloc, resFree } from '../win32/res-mem.js';
 
 const READONLY = 0x10, NOOVERWRITE = 0x1000;
 /** frames recorded ahead of the frames the render worker has shown */
@@ -137,7 +138,7 @@ export class RenderLink {
     this.failed = true;
     this.w.waitSpace = () => { this.w.consumed = this.w.produced; }; // (nobody reads the ring any more: whatever is still recorded is dropped)
     this.log(`render worker: ${reason}; rendering goes on in this thread`);
-    for (let i = 0; i < this.deferred.length; i += 2) this.proc?.vmem.release(this.deferred[i]);
+    for (let i = 0; i < this.deferred.length; i += 2) if (this.proc) resFree(this.proc, this.deferred[i]);
     this.deferred.length = 0;
     this.onFail?.(reason);
   }
@@ -165,7 +166,7 @@ export class RenderLink {
     if (r.bytes !== undefined && r.owner !== undefined) { // (a surface)
       if (!r.mem) return; // (no memory yet: nothing a pending command could read)
       if (r.bytes <= COW_MAX && COW()) {
-        const vmem = r.dev.proc.vmem, addr = vmem.alloc(Math.max(r.bytes, 16), 4, 'd3d8:surface-cow') >>> 0;
+        const addr = resAlloc(r.dev.proc, r.bytes, 'd3d8:surface-cow');
         if (addr) {
           r.dev.proc.mem.copy(addr, r.mem, r.bytes);
           this.deferred.push(r.mem, this.lastRefOf(rr));
@@ -279,7 +280,7 @@ export class RenderLink {
   releaseDeferred() {
     const c = this.consumedNow(), d = this.deferred;
     let j = 0;
-    for (let i = 0; i < d.length; i += 2) { if (d[i + 1] <= c) this.proc?.vmem.release(d[i]); else { d[j++] = d[i]; d[j++] = d[i + 1]; } }
+    for (let i = 0; i < d.length; i += 2) { if (d[i + 1] <= c) { if (this.proc) resFree(this.proc, d[i]); } else { d[j++] = d[i]; d[j++] = d[i + 1]; } }
     d.length = j;
   }
   /**

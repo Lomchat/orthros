@@ -183,6 +183,20 @@ export class VMem {
     return true;
   }
 
+  /**
+   * The address space in one line (diagnostics: a failed allocation, `--log vmem`): reserved MiB, free MiB and the
+   * largest free run, then the reservations by tag (count / MiB) — the tags taking the most first.
+   */
+  summary(maxTags = 8) {
+    let free = 0, run = 0, best = 0;
+    for (let p = 0; p < this.pages; p++) { if (this.state[p] === STATE_FREE) { free++; if (++run > best) best = run; } else run = 0; }
+    const by = new Map();
+    for (const r of this.regions.values()) { const k = r.tag.replace(/[:\s].*$/, '') || '?'; const e = by.get(k) ?? [0, 0]; e[0]++; e[1] += r.size; by.set(k, e); }
+    const MB = (n) => (n / 2 ** 20).toFixed(n < 2 ** 24 ? 1 : 0);
+    const tags = [...by].sort((a, b) => b[1][1] - a[1][1]).slice(0, maxTags).map(([k, [n, b]]) => `${k} ${n}/${MB(b)}`).join(', ');
+    return `${MB(this.reservedBytes())} MiB reserved in ${this.regions.size} regions, ${MB(free * PAGE_SIZE)} MiB free (largest run ${MB(best * PAGE_SIZE)} MiB); by tag (count/MiB): ${tags}`;
+  }
+
   isCommitted(addr, size = 1) {
     const p0 = this.pageOf(addr), p1 = this.pageOf(addr + size - 1);
     if (p1 >= this.pages) return false;

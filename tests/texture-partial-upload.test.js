@@ -7,7 +7,7 @@ import { GuestMemory } from '../src/cpu/memory.js';
 import { d3dCore, FMT } from '../src/win32/d3d8.js';
 import { WebGLDevice, surfaceToRgba } from '../src/gfx/d3d8-webgl.js';
 
-const mem = new GuestMemory({ sizeBytes: 1 << 20 });
+const mem = new GuestMemory({ sizeBytes: 4 << 20 }); // (room for the resource heap's first 1 MiB chunk: src/win32/res-mem.js)
 let heap = 0x10000;
 const proc = { mem, vmem: { alloc: (n) => { const a = heap; heap += (n + 15) & ~15; return a; }, release() {} } };
 const core = d3dCore({ mem, com: {} });

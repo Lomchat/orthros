@@ -13,6 +13,7 @@ import { StateTable } from './state-table.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { PARK } from '../core/sched.js';
 import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, SHADOW_FVF, SHADOW_LIGHTON, SHADOW_LIGHT, SHADOW_MATERIAL, SHADOW_XFORM, XFORM_WORDS, xformSlot, SHADOW_LIGHTS, LIGHT_WORDS, MATERIAL_WORDS, SURF_DESC_BYTES, SHADOW_OWNER } from '../cpu/jit/runtime.js';
+import { resAlloc, resFree, outOfAddressSpace, OutOfAddressSpace } from './res-mem.js';
 
 const NEVER = () => false; // (Present's pacing wait: its timeout alone wakes it)
 
@@ -102,6 +103,20 @@ export function surfaceBytes(fmt, w, h) {
 export function d3dCore(vm) {
   if (vm.d3dCore) return vm.d3dCore;
   const mem = vm.mem, com = vm.com;
+  // snapshot: diagnostics
+  let lockFailures = 0;
+  /**
+   * The memory of a resource being locked, or 0 when the address space has no room for it: the lock then fails with
+   * E_OUTOFMEMORY (the first failures logged with the address space) — never a success with pBits = 0, which made the
+   * program write the texels over the bottom of the address space (docs/address-space.md).
+   */
+  const lockMem = (c, r) => {
+    try { return r.ensureMem(c.proc); } catch (e) {
+      if (!(e instanceof OutOfAddressSpace)) throw e;
+      if (++lockFailures <= 8) vm.warn?.(`lock from ${c.proc.symbolize(c.retAddr)} failed: ${e.message}`);
+      return 0;
+    }
+  };
   const displayMode = () => { const d = vm.host?.display; return { width: d?.width ?? 1024, height: d?.height ?? 768, refresh: 60, format: FMT.X8R8G8B8 }; };
   const writeMode = (a, m) => { mem.write32(a, m.width); mem.write32(a + 4, m.height); mem.write32(a + 8, m.refresh); mem.write32(a + 12, m.format); };
   const modes = () => { const list = []; const d = displayMode(); for (const f of MODE_FORMATS) { const seen = new Set(); for (const [w, h] of [...MODES, [d.width, d.height]]) { const k = w * 100000 + h; if (seen.has(k)) continue; seen.add(k); list.push({ width: w, height: h, refresh: 60, format: f }); } } return list; };
@@ -184,11 +199,11 @@ export function d3dCore(vm) {
      * copies, fills, D3DX loads): with a render worker, it first waits until no pending command still reads the old
      * contents (gfx.beforeWrite).
      */
-    ensureMem(proc, overwrite = false) { this.dev.gfx?.beforeWrite?.(this); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:surface'); if (!overwrite) mem.fill(this.mem, this.bytes, 0); } return this.mem; } // (overwrite: the caller writes every byte at once, no zeroing first)
+    ensureMem(proc, overwrite = false) { this.dev.gfx?.beforeWrite?.(this); if (!this.mem) { const a = resAlloc(proc, this.bytes, 'd3d8:surface'); if (!a) throw outOfAddressSpace(proc, `${this.width}x${this.height} surface (format ${this.fmt})`, this.bytes); this.mem = a; if (!overwrite) mem.fill(this.mem, this.bytes, 0); } return this.mem; } // (overwrite: the caller writes every byte at once, no zeroing first)
     /** Recent write operations on this surface (frame capture shows them next to the dumped textures). */
     trace(c, what) { if (!tracingResources()) return; const h = this.history ??= []; h.push({ what, site: c.retAddr }); if (h.length > 24) h.shift(); }
     historyText() { return (this.history ?? []).map((e) => `${e.what} from ${this.dev.proc.symbolize(e.site)}`); }
-    free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this.owner ?? this, a)) this.dev.proc.vmem.release(a); } }
+    free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this.owner ?? this, a)) resFree(this.dev.proc, a); } }
     // (the object carries the surface's description after it, its address at +12: GetDesc on the JIT's fast path,
     // runtime.js FID_SURF_DESC — the same 32 bytes GetDesc writes)
     ptrOf(c) {
@@ -244,7 +259,8 @@ export function d3dCore(vm) {
       if (!pLocked) return D3DERR_INVALIDCALL;
       if (this.locked) return D3DERR_INVALIDCALL;
       if ((this.usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)) && this.pool === POOL.DEFAULT && !this.lockable) { this.dev.gfx?.readbackSurface?.(this); }
-      const base = this.ensureMem(c.proc);
+      const base = lockMem(c, this);
+      if (!base) return E_OUTOFMEMORY;
       let off = 0, rectPx = 0;
       this.lockRect = null;
       if (pRect) {
@@ -344,7 +360,7 @@ export function d3dCore(vm) {
     get keepAlive() { return !this.owner.gone; }
     destroy() { this.ptr = 0; }
     /** the contents in guest memory, allocated (zeroed) on first use; with a render worker, after the commands reading them */
-    ensureMem(proc) { this.dev.gfx?.beforeWrite?.(this.owner); if (!this.mem) { this.mem = proc.vmem.alloc(Math.max(this.bytes, 16), 4, 'd3d8:volume'); mem.fill(this.mem, this.bytes, 0); this.dev.gfx?.volumeMem?.(this.owner, this.level); } return this.mem; }
+    ensureMem(proc) { this.dev.gfx?.beforeWrite?.(this.owner); if (!this.mem) { const a = resAlloc(proc, this.bytes, 'd3d8:volume'); if (!a) throw outOfAddressSpace(proc, `${this.width}x${this.height}x${this.depth} volume (format ${this.fmt})`, this.bytes); this.mem = a; mem.fill(this.mem, this.bytes, 0); this.dev.gfx?.volumeMem?.(this.owner, this.level); } return this.mem; }
     /** the contents changed: uploaded again at the texture's next use */
     updated() { this.dirty = true; this.dev.gfx?.volumeUpdated?.(this.owner, this.level); }
     GetDevice(c) { return Resource.prototype.GetDevice.call(this, c); }
@@ -359,7 +375,8 @@ export function d3dCore(vm) {
     /** D3DLOCKED_BOX { RowPitch, SlicePitch, pBits }; a D3DBOX { Left, Top, Right, Bottom, Front, Back } offsets pBits to its corner */
     lock(c, pLocked, pBox) {
       if (!pLocked || this.locked) return D3DERR_INVALIDCALL;
-      const base = this.ensureMem(c.proc);
+      const base = lockMem(c, this);
+      if (!base) return E_OUTOFMEMORY;
       let off = 0;
       if (pBox) {
         const l = mem.read32(pBox), t = mem.read32(pBox + 4), front = mem.read32(pBox + 16);
@@ -381,7 +398,7 @@ export function d3dCore(vm) {
       for (let i = 0, lw = w, lh = h, ld = d; i < levels; i++, lw = Math.max(1, lw >> 1), lh = Math.max(1, lh >> 1), ld = Math.max(1, ld >> 1)) this.levels.push(new Volume(this, i, lw, lh, ld));
       this.iids = [IID_IDirect3DResource8, IID_IDirect3DBaseTexture8];
     }
-    free() { for (const l of this.levels) if (l.mem) { const a = l.mem; l.mem = 0; if (!this.dev.gfx?.deferFree?.(this, a)) this.dev.proc.vmem.release(a); } }
+    free() { for (const l of this.levels) if (l.mem) { const a = l.mem; l.mem = 0; if (!this.dev.gfx?.deferFree?.(this, a)) resFree(this.dev.proc, a); } }
     SetLOD(c) { return setLod(this, c.arg(1)); }
     GetLOD() { return this.lod; }
     GetLevelCount() { return this.levels.length; }
@@ -400,13 +417,13 @@ export function d3dCore(vm) {
     constructor(dev, type, length, usage, fvfOrFmt, pool) {
       super(dev, type, pool, usage, type === RTYPE.INDEXBUFFER ? fvfOrFmt : FMT.VERTEXDATA);
       this.length = length; this.fvf = type === RTYPE.VERTEXBUFFER ? fvfOrFmt : 0;
-      this.mem = dev.proc.vmem.alloc(Math.max(length, 16), 4, type === RTYPE.VERTEXBUFFER ? 'd3d8:vb' : 'd3d8:ib');
+      this.mem = resAlloc(dev.proc, length, type === RTYPE.VERTEXBUFFER ? 'd3d8:vb' : 'd3d8:ib');
       // (zeroed, as fresh pages are: contents never written read the same whatever memory was released before — the
       // allocator reuses blocks without clearing them, and a render worker releases memory later than the device does)
       if (this.mem) mem.fill(this.mem, Math.max(length, 16), 0);
       this.locked = false; this.dirty = false; this.lockStack = null; // (the locks open under the latest, see Lock)
     }
-    free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this, a)) this.dev.proc.vmem.release(a); } }
+    free() { if (this.mem) { const a = this.mem; this.mem = 0; if (!this.dev.gfx?.deferFree?.(this, a)) resFree(this.dev.proc, a); } }
     /**
      * (with a render worker, gfx.lockBuffer waits until pending commands no longer read the contents — once: such a
      * buffer's written ranges then travel in the command ring at Unlock, as dynamic buffers' always do)
