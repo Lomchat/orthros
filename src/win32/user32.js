@@ -33,7 +33,7 @@ const PM_REMOVE = 1;
 // system cursors (IDC_*) and the hit-test codes of WM_SETCURSOR's default processing
 const IDC_ARROW = 32512, IDC_IBEAM = 32513, IDC_SIZENWSE = 32642, IDC_SIZENESW = 32643, IDC_SIZEWE = 32644, IDC_SIZENS = 32645;
 const HT = { ERROR: -2, NOWHERE: 0, CLIENT: 1, CAPTION: 2, LEFT: 10, RIGHT: 11, TOP: 12, TOPLEFT: 13, TOPRIGHT: 14, BOTTOM: 15, BOTTOMLEFT: 16, BOTTOMRIGHT: 17, BORDER: 18 };
-const VK = { LBUTTON: 1, RBUTTON: 2, MBUTTON: 4, SHIFT: 0x10, CONTROL: 0x11, MENU: 0x12, CAPITAL: 0x14, LSHIFT: 0xa0, RSHIFT: 0xa1, LCONTROL: 0xa2, RCONTROL: 0xa3, LMENU: 0xa4, RMENU: 0xa5 };
+const VK = { LBUTTON: 1, RBUTTON: 2, MBUTTON: 4, RETURN: 0x0d, ESCAPE: 0x1b, SHIFT: 0x10, CONTROL: 0x11, MENU: 0x12, CAPITAL: 0x14, LSHIFT: 0xa0, RSHIFT: 0xa1, LCONTROL: 0xa2, RCONTROL: 0xa3, LMENU: 0xa4, RMENU: 0xa5 };
 const CAPTION_H = 19, FRAME_THICK = 4, FRAME_THIN = 1, FRAME_DLG = 3, MENU_H = 19;
 
 
@@ -226,7 +226,8 @@ export class WindowManager {
    * Convert host input into posted messages. A mouse button release waits (at most 250 ms) until the game has presented
    * a frame since the press: a game sampling the button state once per frame would otherwise miss a click shorter than
    * one of its frames — a person's ~100 ms click during an emulation hitch. Only with a rendering Direct3D device (a
-   * frame count to watch); the events after a held release wait with it (order kept).
+   * frame count to watch); the events after a held release wait with it (order kept). A press right after a move waits
+   * the same way (see below).
    */
   pump() {
     if (this.vm.group && this.vm.group.foreground !== this.vm) return; // (input goes to the foreground process: core/procs.js)
@@ -247,9 +248,18 @@ export class WindowManager {
           const d = this.pressedAt?.[ev.button];
           if (d && d.frames === frames && now - d.t < 250) { this.heldSince ??= now; break; }
         }
+        if (ev.type === 'mousedown' && frames !== null) {
+          // (a press at a position the cursor has just reached waits one frame: a game's widgets learn they are hovered
+          // in their per-frame update — AotR's check boxes ignore a press that arrives with the move; at Windows' frame
+          // rates the move was always seen a frame earlier)
+          const m = this.movedAt;
+          if (m && m.frames === frames && now - m.t < 250) { this.heldSince ??= now; break; }
+        }
+        if (ev.type === 'mousemove') this.movedAt = { frames, t: now };
         if (this.heldSince !== undefined && this.heldSince !== null) { this.heldMs = (this.heldMs ?? 0) + now - this.heldSince; this.heldSince = null; }
         if (ev.type === 'mousedown') (this.pressedAt ??= [])[ev.button] = { frames, t: now };
         q.shift(); // (taken before it is processed: never processed twice)
+        if (ev.type === 'mousedown') this.textClick = this.textCursor(); // (a click on a text area focuses it: the cursor it showed)
         const out = this.remapKey(ev);
         if (out) this.inputEvent(out);
       }
@@ -408,6 +418,7 @@ export class WindowManager {
     if (ev.type !== 'keydown' && ev.type !== 'keyup') return ev;
     const from = (ev.extended ? 0x100 : 0) | (ev.scan & 0xff), held = (this.remapHeld ??= {});
     let to = held[from];
+    if (ev.type === 'keydown' && (ev.vk === VK.RETURN || ev.vk === VK.ESCAPE)) this.textClick = false;
     if (ev.type === 'keyup') delete held[from];
     else if (to === undefined) {
       const chord = ((this.keyState[VK.CONTROL] | this.keyState[VK.MENU]) & 0x80) !== 0, text = this.textInput(), mapped = map.get(from);
@@ -425,8 +436,19 @@ export class WindowManager {
    */
   textInput() {
     const w = this.windows.get(this.focus) ?? this.windows.get(this.active);
+    if (this.textCursor() || this.textClick) return true;
     if (!w || w.imc === 0) return false;
     return (w.imc !== undefined && w.imc !== this.defaultImc) || !!this.imeOff;
+  }
+  /**
+   * The cursor shown is a text (I-beam) one: the system IDC_IBEAM, or a cursor file named as the I-beam ones are (a game
+   * drawing its own text fields over a plain window — no Imm* call, no edit control: its only sign is the cursor it sets
+   * over them). The last click's cursor counts too (`textClick`, until another click or Enter / Escape ends the edit):
+   * the pointer may leave the field while the player types.
+   */
+  textCursor() {
+    const o = this.cursorHandle ? this.proc.handles.getAs(this.cursorHandle, 'gdi') : null;
+    return o?.kind === 'cursor' && (o.id === IDC_IBEAM || (!!o.file && /beam/i.test(String(o.file).split(/[\\/]/).pop())));
   }
   /** The process's default input context (ImmGetContext of a window never given another one). */
   defaultInputContext() { return (this.defaultImc ??= this.proc.handles.create({ type: 'imc' })); }
