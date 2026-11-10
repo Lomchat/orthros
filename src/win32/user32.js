@@ -251,7 +251,7 @@ export class WindowManager {
         }
         if (ev.type === 'mousedown' && frames !== null) {
           // (a press at a position the cursor has just reached waits one frame: a game's widgets learn they are hovered
-          // in their per-frame update — AotR's check boxes ignore a press that arrives with the move; at Windows' frame
+          // in their per-frame update — a game's check boxes ignore a press that arrives with the move; at Windows' frame
           // rates the move was always seen a frame earlier)
           const m = this.movedAt;
           if (m && m.frames === frames && now - m.t < 250) { this.heldSince ??= now; break; }
